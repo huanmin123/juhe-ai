@@ -316,26 +316,6 @@ export function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
       items.push({ key: 'restore-normal', label: '恢复正常' })
     }
     pushDispatchFlagItems(items, account)
-    if (account.status === 'active' && isAccountScheduleActive(account)) {
-      items.push({
-        key: 'schedule-disable',
-        label: '提前关闭',
-        danger: true,
-        icon: 'pause',
-        tone: 'warning',
-        confirmTitle: `确认提前关闭账户「${account.name}」？关闭后会立即退出调度，下一次计划边界会自动恢复。`,
-        confirmOkText: '提前关闭'
-      })
-    } else if (account.status === 'active' && isAccountScheduleInactive(account)) {
-      items.push({
-        key: 'schedule-enable',
-        label: '提前启用',
-        icon: 'enable',
-        tone: 'success',
-        confirmTitle: `当前时间计划派生状态为停用。确认提前启用账户「${account.name}」？启用后会立即恢复调度，后续仍按下一次计划边界切换。`,
-        confirmOkText: '提前启用'
-      })
-    }
     if (account.status !== 'pending_test') {
       items.push({ key: 'migrate-traffic', label: '迁移流量' })
       items.push({
@@ -394,16 +374,6 @@ function normalizeAccountMenuItem(item: AccountMenuItem): AccountMenuItem {
   if (item.key === 'super-priority-off') return { ...item, icon: 'superPriority', tone: 'default' }
   if (item.key === 'fallback-on') return { ...item, icon: 'fallback', tone: 'purple' }
   if (item.key === 'fallback-off') return { ...item, icon: 'fallback', tone: 'default' }
-  if (item.key === 'schedule-enable') return { ...item, icon: 'enable', tone: 'success' }
-  if (item.key === 'schedule-disable') return { ...item, icon: 'pause', tone: 'warning' }
   if (item.key === 'migrate-traffic') return { ...item, icon: 'migrate', tone: 'purple' }
   return item
-}
-
-function isAccountScheduleActive(account: AccountSummary): boolean {
-  return Boolean(account.availabilitySchedule?.enabled && account.availabilityScheduleActive === true)
-}
-
-function isAccountScheduleInactive(account: AccountSummary): boolean {
-  return Boolean(account.availabilitySchedule?.enabled && account.availabilityScheduleActive === false)
 }

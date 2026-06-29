@@ -28,43 +28,28 @@ export function apiKeyRouteStrategyTagColor(apiKey: ApiKeySummary): string {
 }
 
 export function apiKeyStatusTagLabel(apiKey: ApiKeySummary): string {
-  return apiKey.status === 'active' && !isApiKeyScheduleInactive(apiKey) ? '启用' : '停用'
+  return apiKey.status === 'active' ? '启用' : '停用'
 }
 
 export function apiKeyStatusTagColor(apiKey: ApiKeySummary): string {
-  return apiKey.status === 'active' && !isApiKeyScheduleInactive(apiKey) ? 'green' : 'default'
+  return apiKey.status === 'active' ? 'green' : 'default'
 }
 
 export function apiKeyStatusTooltipLines(apiKey: ApiKeySummary): string[] {
-  if (!isApiKeyScheduleInactive(apiKey)) return []
-  return [
-    apiKey.status === 'disabled'
-      ? 'API Key 已停用；时间计划派生状态当前为停用'
-      : '时间计划派生状态当前为停用，可提前启用到下一次计划边界'
-  ]
+  return apiKey.availabilitySchedule?.enabled
+    ? ['已配置时间计划；计划边界会自动更新当前运行状态']
+    : []
 }
 
-export function isApiKeyScheduleInactive(apiKey: ApiKeySummary): boolean {
-  return Boolean(apiKey.availabilitySchedule?.enabled && apiKey.availabilityScheduleActive === false)
-}
-
-export function isApiKeyScheduleActive(apiKey: ApiKeySummary): boolean {
-  return Boolean(apiKey.availabilitySchedule?.enabled && apiKey.availabilityScheduleActive === true)
-}
-
-export function apiKeyScheduleSummary(schedule?: ApiKeyAvailabilitySchedule, active?: boolean): string {
+export function apiKeyScheduleSummary(schedule?: ApiKeyAvailabilitySchedule): string {
   return timeScheduleSummary(schedule, {
-    active,
-    label: apiKeyScheduleLabel,
-    showActiveState: true
+    label: apiKeyScheduleLabel
   })
 }
 
 export function apiKeyScheduleTagColor(apiKey: ApiKeySummary): string {
   return timeScheduleTagColor(apiKey.availabilitySchedule, {
-    active: apiKey.availabilityScheduleActive,
-    label: apiKeyScheduleLabel,
-    showActiveState: true
+    label: apiKeyScheduleLabel
   })
 }
 

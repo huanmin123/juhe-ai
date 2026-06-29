@@ -195,6 +195,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     form,
     isManagementView: options.isManagementView,
     loadData: options.loadData,
+    mappingAnthropicSourceModelOptions,
+    mappingGeminiSourceModelOptions,
+    mappingSourceModelOptions,
+    providerModelOptions,
     modalOpen,
     providers: availableProviders
   })

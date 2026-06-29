@@ -1,11 +1,13 @@
 import type { AccountAvailabilitySchedule } from '../domain/types.js'
 import {
+  apiKeyAvailabilityScheduleStatus,
   apiKeyAvailabilityScheduleJson,
   evaluateApiKeyAvailabilitySchedule,
   nextApiKeyAvailabilityScheduleCheckAt,
   normalizeApiKeyAvailabilitySchedule,
   parseApiKeyAvailabilityScheduleJson
 } from './api-key-availability-schedule.js'
+import type { AccountStatus } from '../domain/types.js'
 
 export function accountAvailabilityScheduleFromRequest(input: Record<string, unknown>): AccountAvailabilitySchedule | undefined {
   return normalizeAccountAvailabilitySchedule(input.availabilitySchedule)
@@ -29,6 +31,21 @@ export function isAccountAvailabilityScheduleAllowed(value: string | null | unde
   return evaluateApiKeyAvailabilitySchedule(schedule, now).allowed
 }
 
+export function accountAvailabilityScheduleStatus(schedule: AccountAvailabilitySchedule | undefined, now = new Date()): 'active' | 'disabled' | undefined {
+  return apiKeyAvailabilityScheduleStatus(schedule, now)
+}
+
+export function accountStatusForScheduleMutation(input: {
+  requestedStatus: AccountStatus
+  schedule: AccountAvailabilitySchedule | undefined
+  now: Date
+}): AccountStatus {
+  if (input.requestedStatus !== 'active' && input.requestedStatus !== 'disabled') {
+    return input.requestedStatus
+  }
+  return accountAvailabilityScheduleStatus(input.schedule, input.now) ?? input.requestedStatus
+}
+
 export function nextAccountAvailabilityScheduleCheckAt(schedule: AccountAvailabilitySchedule | undefined, now = new Date()): string | null {
   return nextApiKeyAvailabilityScheduleCheckAt(schedule, now)
 }
@@ -43,4 +60,3 @@ function normalizeAccountAvailabilitySchedule(input: unknown): AccountAvailabili
     throw error
   }
 }
-

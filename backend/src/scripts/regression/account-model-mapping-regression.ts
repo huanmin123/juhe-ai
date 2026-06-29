@@ -12,7 +12,11 @@ import {
   GEMINI_NATIVE_V1BETA_PROFILE_ID,
   GEMINI_PROVIDER_CODE,
   GLM_PROVIDER_CODE,
-  GPT_VENDOR_CODE
+  GLM_GENERAL_OPENAI_V1_PROFILE_ID,
+  GPT_OPENAI_V1_PROFILE_ID,
+  GPT_VENDOR_CODE,
+  HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
+  HYBRID_PROVIDER_CODE
 } from '../../domain/provider-protocol.js'
 import type { AccountModelMapping } from '../../domain/types.js'
 import {
@@ -80,6 +84,14 @@ function responsesMapping(sourceModel: string, upstreamModel: string, enabled = 
     upstreamEndpointFamily: 'responses',
     enabled
   }
+}
+
+function profileIdForProvider(providerCode: string): string {
+  if (providerCode === ANTHROPIC_PROVIDER_CODE) return ANTHROPIC_ANTHROPIC_V1_PROFILE_ID
+  if (providerCode === GEMINI_PROVIDER_CODE) return GEMINI_NATIVE_V1BETA_PROFILE_ID
+  if (providerCode === GLM_PROVIDER_CODE) return GLM_GENERAL_OPENAI_V1_PROFILE_ID
+  if (providerCode === HYBRID_PROVIDER_CODE) return HYBRID_OPENAI_CHAT_V1_PROFILE_ID
+  return GPT_OPENAI_V1_PROFILE_ID
 }
 
 function responsesToChatMapping(sourceModel: string, upstreamModel: string, enabled = true): AccountModelMapping {
@@ -287,10 +299,12 @@ try {
 
   const group = repositories.createGroup({
     name: '账号模型映射回归分组',
-    providerCode: GPT_VENDOR_CODE
+    providerCode: GPT_VENDOR_CODE,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, ownerAccess)
   const account = repositories.createAccount({
     providerCode: GPT_VENDOR_CODE,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '账号模型映射回归账户',
     type: 'api_key',
     credentials: {
@@ -334,6 +348,7 @@ try {
 
   const caseAccount = repositories.createAccount({
     providerCode: GPT_VENDOR_CODE,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '账号模型映射大小写回归账户',
     type: 'api_key',
     credentials: {
@@ -408,7 +423,7 @@ try {
     modelMappings: [
       responsesMapping(crossProviderSourceModel, replacementUpstreamModel)
     ]
-  }, ownerAccess), /账号模型别名来源模型不在当前供应商模型目录中/, '账号模型别名来源模型必须来自当前供应商模型池')
+  }, ownerAccess), /账号模型别名来源模型不在当前供应商的对应协议模型目录中/, '账号模型别名来源模型必须来自当前供应商协议模型池')
   const crossProviderSourceBindings = customProviderModelBindings({
     providerCode: GLM_PROVIDER_CODE,
     model: crossProviderSourceModel,
@@ -423,7 +438,7 @@ try {
         responsesMapping(unavailableSourceModel, replacementUpstreamModel)
       ]
     }, ownerAccess)
-  }, /账号模型别名来源模型不在当前供应商模型目录中/, '草稿模型不能作为下游映射源')
+  }, /账号模型别名来源模型不在当前供应商的对应协议模型目录中/, '草稿模型不能作为下游映射源')
 
   assert.throws(() => {
     repositories.updateAccount(account.id, {
@@ -432,6 +447,14 @@ try {
       ]
     }, ownerAccess)
   }, /账号模型别名目标模型不在当前供应商模型目录中/, '映射上游模型必须存在于当前账号可用模型池')
+  assert.throws(() => {
+    repositories.updateAccount(account.id, {
+      modelMappings: [
+        responsesMapping(chatCompletionsUpstreamModel, replacementUpstreamModel)
+      ]
+    }, ownerAccess)
+  }, /账号模型别名来源模型不在当前供应商的对应协议模型目录中/, 'Responses 来源模型必须声明支持 Responses 协议，不能选择 Chat-only 模型')
+  assertHybridProtocolModelPools()
   assertImportPreviewRejectsInvalidMapping(group.id)
   assertImportPreviewRejectsNonNativeResponsesMapping(group.id)
   assertImportPreviewRejectsUnsupportedMessagesMapping(group.id)
@@ -450,11 +473,13 @@ try {
 function assertNativeResponsesUpstreamRequiresEndpointModes(): void {
   const group = repositories.createGroup({
     name: '账号模型映射 Responses 原生能力约束分组',
-    providerCode: GPT_VENDOR_CODE
+    providerCode: GPT_VENDOR_CODE,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, ownerAccess)
   assert.throws(() => {
     repositories.createAccount({
       providerCode: GPT_VENDOR_CODE,
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: 'Chat-only 账号不能配置 Responses 上游',
       type: 'api_key',
       credentials: {
@@ -473,6 +498,7 @@ function assertNativeResponsesUpstreamRequiresEndpointModes(): void {
   assert.throws(() => {
     repositories.createAccount({
       providerCode: GPT_VENDOR_CODE,
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: 'Chat-only 账号不能配置 Chat 转 Responses',
       type: 'api_key',
       credentials: {
@@ -491,6 +517,7 @@ function assertNativeResponsesUpstreamRequiresEndpointModes(): void {
   assert.throws(() => {
     repositories.createAccount({
       providerCode: GPT_VENDOR_CODE,
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: '原生 Responses 账号也不能配置 Chat 转 Responses',
       type: 'api_key',
       credentials: {
@@ -509,6 +536,7 @@ function assertNativeResponsesUpstreamRequiresEndpointModes(): void {
   assert.throws(() => {
     repositories.createAccount({
       providerCode: GPT_VENDOR_CODE,
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: 'Chat-only 账号不能配置 Responses 转 Chat',
       type: 'api_key',
       credentials: {
@@ -527,6 +555,7 @@ function assertNativeResponsesUpstreamRequiresEndpointModes(): void {
   assert.throws(() => {
     repositories.createAccount({
       providerCode: GPT_VENDOR_CODE,
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: 'Codex Chat-only 账号不能配置 Responses 转 Chat',
       type: 'api_key',
       credentials: {
@@ -584,6 +613,7 @@ function assertCrossProtocolAccountMappingsRejected(groupId: string): void {
   assert.throws(() => {
     repositories.createAccount({
       providerCode: GPT_VENDOR_CODE,
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: '账号模型别名不能配置 Messages 到 Chat',
       type: 'api_key',
       credentials: {
@@ -645,6 +675,52 @@ function assertCrossProtocolAccountMappingsRejected(groupId: string): void {
       groupId: geminiGroup.id
     }, ownerAccess)
   }, /账号模型别名只支持同协议映射/, '账号模型别名不应允许 OpenAI Responses -> Gemini GenerateContent')
+}
+
+function assertHybridProtocolModelPools(): void {
+  const group = repositories.createGroup({
+    name: '混合供应商协议模型池约束分组',
+    providerCode: HYBRID_PROVIDER_CODE,
+    providerProtocolProfileId: HYBRID_OPENAI_CHAT_V1_PROFILE_ID
+  }, ownerAccess)
+  assert.throws(() => {
+    repositories.createAccount({
+      providerCode: HYBRID_PROVIDER_CODE,
+      providerProtocolProfileId: HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
+      name: '混合供应商 Responses 不能选择 Chat-only 来源模型',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-hybrid-account-model-mapping-chat-only-source',
+        base_url: 'https://api.openai.com/v1',
+        supported_endpoint_modes: ['chat_json', 'chat_sse']
+      },
+      supportedModels: [chatCompletionsUpstreamModel],
+      modelMappings: [
+        responsesToChatMapping(chatCompletionsUpstreamModel, chatCompletionsUpstreamModel)
+      ],
+      groupId: group.id
+    }, ownerAccess)
+  }, /账号模型别名来源模型不在对应协议模型池中/, '混合供应商 Responses 来源模型必须来自支持 Responses 的模型池')
+
+  assert.doesNotThrow(() => {
+    const account = repositories.createAccount({
+      providerCode: HYBRID_PROVIDER_CODE,
+      providerProtocolProfileId: HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
+      name: '混合供应商 Responses 到 Chat 合法模型池',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-hybrid-account-model-mapping-responses-source',
+        base_url: 'https://api.openai.com/v1',
+        supported_endpoint_modes: ['chat_json', 'chat_sse']
+      },
+      supportedModels: [chatCompletionsUpstreamModel],
+      modelMappings: [
+        responsesToChatMapping(sourceModel, chatCompletionsUpstreamModel)
+      ],
+      groupId: group.id
+    }, ownerAccess)
+    assert.equal(account.modelMappings?.[0]?.sourceModel, sourceModel, '合法混合供应商映射应保留 Responses 来源模型')
+  }, '混合供应商应允许 Responses 协议模型映射到 Chat 上游模型')
 }
 
 function assertProtocolMatrixHelper(): void {
@@ -734,6 +810,7 @@ function assertUnsupportedAnthropicMessagesMappingsRejected(groupId: string): vo
   assert.throws(() => {
     repositories.createAccount({
       providerCode: GPT_VENDOR_CODE,
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: 'Messages 不能桥接到 Responses',
       type: 'api_key',
       credentials: {
@@ -752,6 +829,7 @@ function assertUnsupportedAnthropicMessagesMappingsRejected(groupId: string): vo
   assert.throws(() => {
     repositories.createAccount({
       providerCode: GPT_VENDOR_CODE,
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: 'Messages 不能配置为 Messages 上游',
       type: 'api_key',
       credentials: {
@@ -769,6 +847,7 @@ function assertUnsupportedAnthropicMessagesMappingsRejected(groupId: string): vo
   assert.throws(() => {
     repositories.createAccount({
       providerCode: GPT_VENDOR_CODE,
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: 'Messages source 必须来自 Anthropic 模型池',
       type: 'api_key',
       credentials: {
@@ -793,6 +872,7 @@ function assertImportPreviewRejectsInvalidMapping(groupId: string): void {
       {
         name: '账号模型映射非法导入预览',
         providerCode: GPT_VENDOR_CODE,
+        providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
         type: 'api_key',
         status: 'active',
         groupId,
@@ -808,7 +888,7 @@ function assertImportPreviewRejectsInvalidMapping(groupId: string): void {
   }, {}, ownerAccess)
   assert.equal(result.canImport, false, '非法模型映射导入预览不应允许确认导入')
   assert.equal(result.accounts[0]?.action, 'failed', '非法模型映射导入预览应标记账户失败')
-  assert(result.accounts[0]?.messages.some((message) => message.includes('账号模型别名来源模型不在当前供应商模型目录中')), '导入预览应在预览阶段暴露模型映射目录错误')
+  assert(result.accounts[0]?.messages.some((message) => message.includes('账号模型别名来源模型不在当前供应商的对应协议模型目录中')), '导入预览应在预览阶段暴露模型映射目录错误')
 }
 
 function assertImportPreviewRejectsNonNativeResponsesMapping(groupId: string): void {
@@ -819,6 +899,7 @@ function assertImportPreviewRejectsNonNativeResponsesMapping(groupId: string): v
       {
         name: '账号模型映射 Chat-only 非法 Responses 上游导入预览',
         providerCode: GPT_VENDOR_CODE,
+        providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
         type: 'api_key',
         status: 'active',
         groupId,
@@ -846,6 +927,7 @@ function assertImportPreviewRejectsUnsupportedMessagesMapping(groupId: string): 
       {
         name: '账号模型映射非法 Messages 上游导入预览',
         providerCode: GPT_VENDOR_CODE,
+        providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
         type: 'api_key',
         status: 'active',
         groupId,
@@ -949,6 +1031,7 @@ async function assertInvalidMappingBodyDoesNotSwitchAccount(groupId: string): Pr
   try {
     const fallback = repositories.createAccount({
       providerCode: GPT_VENDOR_CODE,
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: '账号模型映射非法请求不应切到的后备账户',
       type: 'api_key',
       credentials: {

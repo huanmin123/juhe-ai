@@ -92,7 +92,6 @@ try {
   const smokeRows = await readImportedRows(accountId)
   assert.equal(smokeRows.account?.name, accountName, 'PG 导入账户名称应落库')
   assert.equal(smokeRows.account?.status, 'pending_test', 'active 导入账户应先进入 pending_test')
-  assert([0, 1].includes(Number(smokeRows.account?.availability_schedule_active)), 'PG 导入账户应保存时间计划当前状态')
   assert.match(String(smokeRows.account?.availability_schedule_json ?? ''), /22:00/, 'PG 导入账户应保存 availabilitySchedule JSON')
   assert.equal(smokeRows.group?.name, groupName, 'PG 导入自动创建分组应落库')
   assert.equal(smokeRows.bindingCount, 1, 'PG 导入账户应绑定到自动创建分组')
@@ -179,7 +178,6 @@ async function readImportedRows(accountId: string): Promise<{
       accounts.name,
       accounts.status,
       accounts.availability_schedule_json,
-      accounts.availability_schedule_active,
       groups.id AS group_id,
       groups.name AS group_name,
       (SELECT COUNT(*) FROM juhe_business.group_accounts WHERE account_id = accounts.id AND group_id = groups.id) AS binding_count,

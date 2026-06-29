@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path'
 import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
+import { DEFAULT_GPT_GROUP } from '../../storage/schema-defaults.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-gateway-runtime-cache-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'gateway-runtime-cache.sqlite3')
@@ -156,7 +157,7 @@ try {
   const scheduleActiveAt = Date.parse('2026-06-01T00:00:30.000Z')
   syncApiKeyScheduleStatusAt(scheduleActiveAt)
   const scheduledFirst = await withMockedNow(scheduleActiveAt, () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.scheduledKey))
-  assert.equal(scheduledFirst.apiKey?.status, 'active', '计划允许时段内人工启停状态应保持启用')
+  assert.equal(scheduledFirst.apiKey?.status, 'active', '计划允许时段内 API Key 状态应启用')
   assert.equal(scheduledFirst.accounts.length, 2, '计划允许时段内应返回候选账号')
   assert.equal(fakeChild.sentOperationCount, 7, '首次读取计划 API Key 应请求 DB service')
   const scheduledSecond = await withMockedNow(scheduleActiveAt + 10_000, () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.scheduledKey))
@@ -177,8 +178,8 @@ try {
   clearGatewayCachesForRegression()
   syncApiKeyScheduleStatusAt(Date.parse('2026-06-01T00:01:30.000Z'))
   const scheduledAfterManualEnable = await withMockedNow(Date.parse('2026-06-01T00:01:30.000Z'), () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.scheduledKey))
-  assert.equal(scheduledAfterManualEnable.apiKey, undefined, '结束边界执行过后，时段外手动启用应被计划再次关闭')
-  assert.equal(scheduledAfterManualEnable.accounts.length, 0, '结束边界之后时段外手动启用不应返回候选账号')
+  assert.equal(scheduledAfterManualEnable.apiKey?.status, 'active', '结束边界执行过后，时段外手动启用应保留到下一次计划边界')
+  assert.equal(scheduledAfterManualEnable.accounts.length, 2, '结束边界之后时段外手动启用应返回候选账号')
   assert.equal(fakeChild.sentOperationCount, 10, '结束边界之后时段外手动启用读取应重新请求 DB service')
   const groupAccountsAfterInactiveKeySchedule = await withMockedNow(Date.parse('2026-06-01T00:01:01.000Z'), () => gatewayCache.listCachedOpenAIAccountsForGroupAsync(apiKey.accountGroupId, 'sys_admin'))
   assert.equal(groupAccountsAfterInactiveKeySchedule.length, 2, 'API Key 时段外不应污染同分组账户候选缓存')
@@ -189,17 +190,17 @@ try {
   const disabledScheduleInactiveAt = Date.parse('2026-06-01T00:03:01.000Z')
   syncApiKeyScheduleStatusAt(disabledScheduleActiveAt)
   const disabledScheduledFirst = await withMockedNow(disabledScheduleActiveAt, () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.disabledScheduledKey))
-  assert.equal(disabledScheduledFirst.apiKey, undefined, '计划窗口内不应覆盖手动停用的 API Key')
-  assert.equal(disabledScheduledFirst.accounts.length, 0, '手动停用的 API Key 即使计划允许也不应返回候选账号')
+  assert.equal(disabledScheduledFirst.apiKey?.status, 'active', '计划窗口开始边界应启用此前停用的 API Key')
+  assert.equal(disabledScheduledFirst.accounts.length, 2, '计划窗口内启用的 API Key 应返回候选账号')
   assert.equal(fakeChild.sentOperationCount, disabledScheduledOperationCount + 1, '首次读取手动停用计划 API Key 应请求 DB service')
   const disabledScheduledSecond = await withMockedNow(disabledScheduleActiveAt + 5_000, () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.disabledScheduledKey))
-  assert.equal(disabledScheduledSecond.apiKey, undefined, '手动停用计划 API Key 边界前应继续命中不可用缓存')
-  assert.equal(fakeChild.sentOperationCount, disabledScheduledOperationCount + 1, '手动停用计划 API Key 短期重复读取应命中负缓存')
+  assert.equal(disabledScheduledSecond.apiKey?.status, 'active', '计划启用后边界前应继续命中可用缓存')
+  assert.equal(fakeChild.sentOperationCount, disabledScheduledOperationCount + 1, '计划启用后短期重复读取应命中缓存')
   syncApiKeyScheduleStatusAt(disabledScheduleInactiveAt)
   const disabledScheduledAfterBoundary = await withMockedNow(disabledScheduleInactiveAt, () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.disabledScheduledKey))
-  assert.equal(disabledScheduledAfterBoundary.apiKey, undefined, '手动停用计划 API Key 时段外仍应不可用')
-  assert.equal(disabledScheduledAfterBoundary.accounts.length, 0, '手动停用计划 API Key 时段外不应返回候选账号')
-  assert.equal(fakeChild.sentOperationCount, disabledScheduledOperationCount + 2, '手动停用计划 API Key 跨计划边界后应重新请求 DB service')
+  assert.equal(disabledScheduledAfterBoundary.apiKey, undefined, '计划结束边界后 API Key 应不可用')
+  assert.equal(disabledScheduledAfterBoundary.accounts.length, 0, '计划结束边界后不应返回候选账号')
+  assert.equal(fakeChild.sentOperationCount, disabledScheduledOperationCount + 2, 'API Key 跨计划边界后应重新请求 DB service')
 
   gatewayCache.clearGatewayRuntimeCacheLocal()
   const unscheduledGroupListOperationCount = fakeChild.sentOperationCount
@@ -296,7 +297,7 @@ try {
   assert(concurrentRuntimeReads.every((runtime) => runtime.apiKey?.id === apiKey.id), '冷缓存并发读取应全部返回同一个 API Key 运行配置')
   assert.equal(fakeChild.sentOperationCount, coldConcurrentOperationCount + 1, '同一 API Key 冷缓存并发读取应合并为一次 DB service 请求')
 
-  console.log('网关运行配置缓存回归通过：server 按需缓存本地 API Key、分组和 OAuth/API Key 混合候选账号，运行态软过期后请求继续使用内存快照并后台刷新，清缓存后重新加载，对重复无效 Key 做短期负缓存，无计划 API Key 停用不污染分组账号缓存，API Key 和账户时间计划由后台同步任务维护派生运行状态，无账户计划分组不被分钟边界误伤，并在 API Key、账户计划同步、API Key 过期、账户到期和授权过期边界后重新计算运行态，同 Key 冷缓存并发读取只请求一次 DB service')
+  console.log('网关运行配置缓存回归通过：server 按需缓存本地 API Key、分组和 OAuth/API Key 混合候选账号，运行态软过期后请求继续使用内存快照并后台刷新，清缓存后重新加载，对重复无效 Key 做短期负缓存，无计划 API Key 停用不污染分组账号缓存，API Key 和账户时间计划都由后台同步任务维护单一状态，无账户计划分组不被分钟边界误伤，并在 API Key、账户计划同步、API Key 过期、账户到期和授权过期边界后重新计算运行态，同 Key 冷缓存并发读取只请求一次 DB service')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()
@@ -328,11 +329,13 @@ function seedGatewayRuntime(): {
 } {
   const group = repositories.createGroup({
     name: '运行配置缓存混合账号分组',
-    providerCode: 'gpt',
+    providerCode: DEFAULT_GPT_GROUP.providerCode,
+    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     enabled: true
   }, { systemAccountId: 'sys_admin', role: 'admin' })
   const apiKeyAccount = repositories.createAccount({
-    providerCode: 'gpt',
+    providerCode: DEFAULT_GPT_GROUP.providerCode,
+    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     name: '运行配置缓存 API Key 账号',
     type: 'api_key',
     credentials: {
@@ -345,7 +348,8 @@ function seedGatewayRuntime(): {
     schedulable: true
   }, { systemAccountId: 'sys_admin', role: 'admin' })
   const oauthAccount = repositories.createAccount({
-    providerCode: 'gpt',
+    providerCode: DEFAULT_GPT_GROUP.providerCode,
+    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     name: '运行配置缓存 OAuth 账号',
     type: 'oauth',
     credentials: {
@@ -404,11 +408,13 @@ function seedGatewayRuntime(): {
   })
   const authorizedGroup = repositories.createGroup({
     name: '运行配置缓存临期授权分组',
-    providerCode: 'gpt',
+    providerCode: DEFAULT_GPT_GROUP.providerCode,
+    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     enabled: true
   }, { systemAccountId: 'sys_admin', role: 'admin' })
   repositories.createAccount({
-    providerCode: 'gpt',
+    providerCode: DEFAULT_GPT_GROUP.providerCode,
+    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     name: '运行配置缓存临期授权账号',
     type: 'api_key',
     credentials: {
@@ -429,11 +435,13 @@ function seedGatewayRuntime(): {
   }, { systemAccountId: 'sys_admin', role: 'admin' })
   const accountScheduledGroup = repositories.createGroup({
     name: '运行配置缓存账户计划分组',
-    providerCode: 'gpt',
+    providerCode: DEFAULT_GPT_GROUP.providerCode,
+    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     enabled: true
   }, { systemAccountId: 'sys_admin', role: 'admin' })
   withMockedNowSync(Date.parse('2026-05-31T23:59:30.000Z'), () => repositories.createAccount({
-    providerCode: 'gpt',
+    providerCode: DEFAULT_GPT_GROUP.providerCode,
+    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     name: '运行配置缓存账户计划账号',
     type: 'api_key',
     credentials: {
@@ -459,12 +467,14 @@ function seedGatewayRuntime(): {
   }, { systemAccountId: 'sys_admin', role: 'admin' })
   const accountExpiringGroup = repositories.createGroup({
     name: '运行配置缓存账户到期分组',
-    providerCode: 'gpt',
+    providerCode: DEFAULT_GPT_GROUP.providerCode,
+    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     enabled: true
   }, { systemAccountId: 'sys_admin', role: 'admin' })
   const accountExpiringExpiresAt = new Date(Date.now() + 30_000).toISOString()
   repositories.createAccount({
-    providerCode: 'gpt',
+    providerCode: DEFAULT_GPT_GROUP.providerCode,
+    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     name: '运行配置缓存临期账户',
     type: 'api_key',
     credentials: {
@@ -483,17 +493,20 @@ function seedGatewayRuntime(): {
   }, { systemAccountId: 'sys_admin', role: 'admin' })
   const multiGroupAccountScheduledPrimaryGroup = repositories.createGroup({
     name: '运行配置缓存多分组账户计划主分组',
-    providerCode: 'gpt',
+    providerCode: DEFAULT_GPT_GROUP.providerCode,
+    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     enabled: true
   }, { systemAccountId: 'sys_admin', role: 'admin' })
   const multiGroupAccountScheduledFallbackGroup = repositories.createGroup({
     name: '运行配置缓存多分组账户计划备用分组',
-    providerCode: 'gpt',
+    providerCode: DEFAULT_GPT_GROUP.providerCode,
+    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     enabled: true
   }, { systemAccountId: 'sys_admin', role: 'admin' })
   for (const [index, groupId] of [multiGroupAccountScheduledPrimaryGroup.id, multiGroupAccountScheduledFallbackGroup.id].entries()) {
     withMockedNowSync(Date.parse('2026-06-01T00:03:30.000Z'), () => repositories.createAccount({
-      providerCode: 'gpt',
+      providerCode: DEFAULT_GPT_GROUP.providerCode,
+      providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
       name: `运行配置缓存多分组账户计划账号 ${index + 1}`,
       type: 'api_key',
       credentials: {
@@ -733,4 +746,3 @@ async function withMockedNow<T>(nowMs: number, operation: () => Promise<T> | T):
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
-

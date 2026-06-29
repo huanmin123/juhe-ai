@@ -15,14 +15,13 @@ import { invalidateAccountLookupCache } from './repository-lookups.js'
 
 interface ScheduledAccountAvailabilityRow {
   id: string
+  status: 'active' | 'disabled' | 'pending_test' | 'error' | 'rate_limited' | 'temporary_unavailable'
   availability_schedule_json: string | null
-  availability_schedule_active: number
   availability_schedule_next_check_at: string | null
 }
 
 interface ScheduledAccountAvailabilityUpdate {
   id: string
-  active?: number
   nextCheckAt: string | null
   eventKey?: string
   status?: 'active' | 'disabled'
@@ -68,9 +67,13 @@ export function syncAccountAvailabilityScheduleStatuses(now = new Date()): Accou
         result.unchanged += 1
         continue
       }
+      if (!isScheduleMutableAccountStatus(row.status)) {
+        updates.push({ id: row.id, nextCheckAt })
+        result.unchanged += 1
+        continue
+      }
       updates.push({
         id: row.id,
-        active: event.status === 'active' ? 1 : 0,
         nextCheckAt,
         eventKey: `${row.id}:${event.eventKey}`,
         status: event.status
@@ -78,8 +81,8 @@ export function syncAccountAvailabilityScheduleStatuses(now = new Date()): Accou
     } catch {
       result.invalid += 1
       result.invalidIds.push(row.id)
-      if (row.availability_schedule_active !== 0) {
-        updates.push({ id: row.id, active: 0, nextCheckAt: null })
+      if (row.status === 'active') {
+        updates.push({ id: row.id, nextCheckAt: null, status: 'disabled' })
       } else {
         updates.push({ id: row.id, nextCheckAt: null })
       }
@@ -98,11 +101,12 @@ export function syncAccountAvailabilityScheduleStatuses(now = new Date()): Accou
     `)
     const updateStatus = database.prepare(`
       UPDATE accounts
-      SET availability_schedule_active = ?, availability_schedule_next_check_at = ?, updated_at = ?
+      SET status = ?, availability_schedule_next_check_at = ?, updated_at = ?
       WHERE id = ?
         AND availability_schedule_json IS NOT NULL
         AND deleted_at IS NULL
-        AND availability_schedule_active <> ?
+        AND status IN ('active', 'disabled')
+        AND status <> ?
     `)
     const updateNextCheck = database.prepare(`
       UPDATE accounts
@@ -121,18 +125,18 @@ export function syncAccountAvailabilityScheduleStatuses(now = new Date()): Accou
           continue
         }
       }
-      if (update.active === undefined) {
+      if (update.status === undefined) {
         updateNextCheck.run(update.nextCheckAt, update.id, update.nextCheckAt)
         continue
       }
-      const changes = updateStatus.run(update.active, update.nextCheckAt, updatedAt, update.id, update.active).changes ?? 0
+      const changes = updateStatus.run(update.status, update.nextCheckAt, updatedAt, update.id, update.status).changes ?? 0
       if (changes <= 0) {
         updateNextCheck.run(update.nextCheckAt, update.id, update.nextCheckAt)
         result.unchanged += 1
         continue
       }
       result.changedIds.push(update.id)
-      if (update.active === 1) {
+      if (update.status === 'active') {
         result.activated += 1
       } else {
         result.disabled += 1
@@ -186,9 +190,13 @@ export async function syncAccountAvailabilityScheduleStatusesAsync(now = new Dat
         result.unchanged += 1
         continue
       }
+      if (!isScheduleMutableAccountStatus(row.status)) {
+        updates.push({ id: row.id, nextCheckAt })
+        result.unchanged += 1
+        continue
+      }
       updates.push({
         id: row.id,
-        active: event.status === 'active' ? 1 : 0,
         nextCheckAt,
         eventKey: `${row.id}:${event.eventKey}`,
         status: event.status
@@ -196,8 +204,8 @@ export async function syncAccountAvailabilityScheduleStatusesAsync(now = new Dat
     } catch {
       result.invalid += 1
       result.invalidIds.push(row.id)
-      if (Number(row.availability_schedule_active) !== 0) {
-        updates.push({ id: row.id, active: 0, nextCheckAt: null })
+      if (row.status === 'active') {
+        updates.push({ id: row.id, nextCheckAt: null, status: 'disabled' })
       } else {
         updates.push({ id: row.id, nextCheckAt: null })
       }
@@ -222,25 +230,26 @@ export async function syncAccountAvailabilityScheduleStatusesAsync(now = new Dat
           continue
         }
       }
-      if (update.active === undefined) {
+      if (update.status === undefined) {
         await updateAccountNextCheckAtAsync(tx, update)
         continue
       }
       const changes = await tx.execute(`
         UPDATE ${accountScheduleStatusTable(tx, 'accounts')}
-        SET availability_schedule_active = ?, availability_schedule_next_check_at = ?, updated_at = ?
+        SET status = ?, availability_schedule_next_check_at = ?, updated_at = ?
         WHERE id = ?
           AND availability_schedule_json IS NOT NULL
           AND deleted_at IS NULL
-          AND availability_schedule_active <> ?
-      `, [update.active, update.nextCheckAt, updatedAt, update.id, update.active])
+          AND status IN ('active', 'disabled')
+          AND status <> ?
+      `, [update.status, update.nextCheckAt, updatedAt, update.id, update.status])
       if (changes.changes <= 0) {
         await updateAccountNextCheckAtAsync(tx, update)
         result.unchanged += 1
         continue
       }
       result.changedIds.push(update.id)
-      if (update.active === 1) {
+      if (update.status === 'active') {
         result.activated += 1
       } else {
         result.disabled += 1
@@ -259,7 +268,7 @@ export async function syncAccountAvailabilityScheduleStatusesAsync(now = new Dat
 }
 
 function listScheduledAccountStatusRows(database: ReturnType<typeof getBusinessDatabase>, dueAt: string): ScheduledAccountAvailabilityRow[] {
-  const selectColumns = 'id, availability_schedule_json, availability_schedule_active, availability_schedule_next_check_at'
+  const selectColumns = 'id, status, availability_schedule_json, availability_schedule_next_check_at'
   return database
     .prepare(`
       SELECT ${selectColumns}
@@ -277,7 +286,7 @@ function listScheduledAccountStatusRows(database: ReturnType<typeof getBusinessD
 }
 
 async function listScheduledAccountStatusRowsAsync(client: DatabaseClient, dueAt: string): Promise<ScheduledAccountAvailabilityRow[]> {
-  const selectColumns = 'id, availability_schedule_json, availability_schedule_active, availability_schedule_next_check_at'
+  const selectColumns = 'id, status, availability_schedule_json, availability_schedule_next_check_at'
   return client.query<ScheduledAccountAvailabilityRow>(`
     SELECT ${selectColumns}
     FROM ${accountScheduleStatusTable(client, 'accounts')}
@@ -307,4 +316,8 @@ function accountScheduleStatusTable(client: DatabaseClient, tableName: string): 
   return client.driver === 'postgres'
     ? client.dialect.qualifyTable(businessSchemaName, tableName)
     : client.dialect.quoteIdentifier(tableName)
+}
+
+function isScheduleMutableAccountStatus(status: ScheduledAccountAvailabilityRow['status']): boolean {
+  return status === 'active' || status === 'disabled'
 }

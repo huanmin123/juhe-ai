@@ -57,15 +57,14 @@ try {
     name: `时间计划授权 PG smoke Key ${marker}`,
     routeStrategyId: routeStrategy.id,
     status: 'active',
-    availabilitySchedule: schedule,
-    availabilityScheduleActive: false
+    availabilitySchedule: schedule
   }, access)
   createdApiKeyIds.push(apiKey.id)
   await forceApiKeyScheduleBoundary(apiKey.id, false, boundaryAt)
   const apiKeyFirst = await syncApiKeyAvailabilityScheduleStatusesAsync(new Date(boundaryAt))
-  assert.equal(apiKeyFirst.activated, 1, 'PG API Key 时间计划开始边界应激活派生状态')
+  assert.equal(apiKeyFirst.activated, 1, 'PG API Key 时间计划开始边界应启用 status')
   assert(apiKeyFirst.changedIds.includes(apiKey.id), 'PG API Key 时间计划结果应返回 changedIds')
-  assert.equal(await readApiKeyScheduleActive(apiKey.id), 1, 'PG API Key 时间计划应写回 active=1')
+  assert.equal(await readApiKeyStatus(apiKey.id), 'active', 'PG API Key 时间计划应写回 status=active')
   await forceApiKeyScheduleBoundary(apiKey.id, true, boundaryAt)
   const apiKeySecond = await syncApiKeyAvailabilityScheduleStatusesAsync(new Date(boundaryAt))
   assert.equal(apiKeySecond.skipped, 1, 'PG API Key 时间计划重复事件应被事件表幂等跳过')
@@ -80,17 +79,16 @@ try {
     credentials: {
       api_key: `sk-schedule-auth-pg-${marker}`,
       base_url: 'https://example.invalid/v1'
-    },
-    supportedModels: [DEFAULT_OPENAI_SUPPORTED_MODELS[0]],
-    availabilitySchedule: schedule,
-    availabilityScheduleActive: false
-  }, access)
-  createdAccountIds.push(account.id)
-  await forceAccountScheduleBoundary(account.id, false, boundaryAt)
-  const accountFirst = await syncAccountAvailabilityScheduleStatusesAsync(new Date(boundaryAt))
-  assert.equal(accountFirst.activated, 1, 'PG 账户时间计划开始边界应激活派生状态')
-  assert(accountFirst.changedIds.includes(account.id), 'PG 账户时间计划结果应返回 changedIds')
-  assert.equal(await readAccountScheduleActive(account.id), 1, 'PG 账户时间计划应写回 active=1')
+	    },
+	    supportedModels: [DEFAULT_OPENAI_SUPPORTED_MODELS[0]],
+	    availabilitySchedule: schedule
+	  }, access)
+	  createdAccountIds.push(account.id)
+	  await forceAccountScheduleBoundary(account.id, false, boundaryAt)
+	  const accountFirst = await syncAccountAvailabilityScheduleStatusesAsync(new Date(boundaryAt))
+	  assert.equal(accountFirst.activated, 1, 'PG 账户时间计划开始边界应启用 status')
+	  assert(accountFirst.changedIds.includes(account.id), 'PG 账户时间计划结果应返回 changedIds')
+	  assert.equal(await readAccountStatus(account.id), 'active', 'PG 账户时间计划应写回 status=active')
   await forceAccountScheduleBoundary(account.id, true, boundaryAt)
   const accountSecond = await syncAccountAvailabilityScheduleStatusesAsync(new Date(boundaryAt))
   assert.equal(accountSecond.skipped, 1, 'PG 账户时间计划重复事件应被事件表幂等跳过')
@@ -130,40 +128,36 @@ async function forceApiKeyScheduleBoundary(id: string, active: boolean, nextChec
   const pool = await getPostgresPool()
   await pool.query(
     `UPDATE juhe_business.api_keys
-     SET availability_schedule_active = $1,
+     SET status = $1,
          availability_schedule_next_check_at = $2
      WHERE id = $3`,
-    [active ? 1 : 0, nextCheckAt, id]
+    [active ? 'active' : 'disabled', nextCheckAt, id]
   )
 }
 
-async function readApiKeyScheduleActive(id: string): Promise<number | undefined> {
+async function readApiKeyStatus(id: string): Promise<string | undefined> {
   const pool = await getPostgresPool()
-  const result = await pool.query('SELECT availability_schedule_active FROM juhe_business.api_keys WHERE id = $1', [id])
-  const row = result.rows[0] as { availability_schedule_active?: unknown } | undefined
-  return typeof row?.availability_schedule_active === 'number'
-    ? row.availability_schedule_active
-    : Number(row?.availability_schedule_active)
+  const result = await pool.query('SELECT status FROM juhe_business.api_keys WHERE id = $1', [id])
+  const row = result.rows[0] as { status?: string } | undefined
+  return row?.status
 }
 
 async function forceAccountScheduleBoundary(id: string, active: boolean, nextCheckAt: string): Promise<void> {
   const pool = await getPostgresPool()
   await pool.query(
     `UPDATE juhe_business.accounts
-     SET availability_schedule_active = $1,
+     SET status = $1,
          availability_schedule_next_check_at = $2
      WHERE id = $3`,
-    [active ? 1 : 0, nextCheckAt, id]
+    [active ? 'active' : 'disabled', nextCheckAt, id]
   )
 }
 
-async function readAccountScheduleActive(id: string): Promise<number | undefined> {
+async function readAccountStatus(id: string): Promise<string | undefined> {
   const pool = await getPostgresPool()
-  const result = await pool.query('SELECT availability_schedule_active FROM juhe_business.accounts WHERE id = $1', [id])
-  const row = result.rows[0] as { availability_schedule_active?: unknown } | undefined
-  return typeof row?.availability_schedule_active === 'number'
-    ? row.availability_schedule_active
-    : Number(row?.availability_schedule_active)
+  const result = await pool.query('SELECT status FROM juhe_business.accounts WHERE id = $1', [id])
+  const row = result.rows[0] as { status?: string } | undefined
+  return row?.status
 }
 
 async function insertSmokeSystemAccount(id: string): Promise<void> {

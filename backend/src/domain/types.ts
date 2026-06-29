@@ -381,7 +381,6 @@ export type AccountEffectiveAvailabilityStatus =
   | 'source_temporary_unavailable'
   | 'source_cooldown'
   | 'source_unschedulable'
-  | 'source_schedule_inactive'
   | 'instance_expired'
   | 'instance_disabled'
   | 'instance_pending_test'
@@ -390,7 +389,6 @@ export type AccountEffectiveAvailabilityStatus =
   | 'instance_temporary_unavailable'
   | 'instance_cooldown'
   | 'instance_unschedulable'
-  | 'instance_schedule_inactive'
   | 'binding_missing'
   | 'api_key_pool_unavailable'
   | 'runtime_degraded'
@@ -504,7 +502,6 @@ export interface AccountSummary {
   proxyProfileErrorMessage?: string
   schedulable: boolean
   availabilitySchedule?: AccountAvailabilitySchedule
-  availabilityScheduleActive?: boolean
   accountExpiresAt?: string
   cooldownUntil?: string
   lastErrorCode?: string
@@ -536,7 +533,6 @@ export interface AccountSummary {
   authorizationInstanceSourceAccountStatus?: AccountStatus
   authorizationInstanceSourceAccountSchedulable?: boolean
   authorizationInstanceSourceAccountAvailabilitySchedule?: AccountAvailabilitySchedule
-  authorizationInstanceSourceAccountScheduleActive?: boolean
   authorizationInstanceSourceAccountExpiresAt?: string
   authorizationInstanceSourceAccountCooldownUntil?: string
   authorizationInstanceSourceAccountLastErrorCode?: string
@@ -1215,7 +1211,6 @@ export interface ApiKeySummary {
   expiresAt?: string
   quotaLimits: ApiKeyQuotaLimits
   availabilitySchedule?: ApiKeyAvailabilitySchedule
-  availabilityScheduleActive?: boolean
   usage: AccountUsageSummary
 }
 

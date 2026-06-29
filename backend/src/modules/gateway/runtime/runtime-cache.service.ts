@@ -936,7 +936,7 @@ function ttlBoundedByIsoExpiries(baseTtlMs: number, expiresAtValues: Array<strin
 
 function isGatewayApiKeyRuntimeUsableAt(apiKey: DbServiceGatewayRuntime['apiKey'], now = Date.now()): boolean {
   if (!apiKey) return false
-  if (apiKey.status !== 'active' || apiKey.availability_schedule_active !== 1) return false
+  if (apiKey.status !== 'active') return false
   return !isoTimeExpired(apiKey.expires_at ?? undefined, now)
 }
 

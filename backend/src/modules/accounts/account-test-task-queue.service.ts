@@ -861,7 +861,6 @@ function accountSummaryFromDraftSnapshot(draft: AccountTestDraftSnapshot): Accou
     proxyProfileId: draft.proxyProfileId,
     schedulable: true,
     availabilitySchedule: draft.availabilitySchedule,
-    availabilityScheduleActive: true,
     accountExpiresAt: draft.accountExpiresAt,
     todayUsage: usage,
     usage,

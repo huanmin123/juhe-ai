@@ -1,5 +1,5 @@
 import type { AccountDraftTestAccountPayload } from '@/api/client'
-import type { AccountSummary, ProviderModelPricing } from '@/types/domain'
+import type { AccountSummary, ProviderModelApiProtocol, ProviderModelPricing } from '@/types/domain'
 import { asString } from './accountBasicFormatters'
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountSavePayload } from './accountSavePayload'
@@ -8,12 +8,14 @@ import type { SuccessfulDraftActivationTest } from './useAccountTestModal'
 export interface AccountModelSelectOption {
   label: string
   value: string
+  supportedApiProtocols?: ProviderModelApiProtocol[]
 }
 
 export function providerModelsToOptions(models: ProviderModelPricing[]): AccountModelSelectOption[] {
   return models.map((item) => ({
     label: item.model,
-    value: item.model
+    value: item.model,
+    supportedApiProtocols: item.supportedApiProtocols
   }))
 }
 

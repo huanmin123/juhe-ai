@@ -327,7 +327,6 @@ function candidateWindowRow(
     last_error_message: null,
     stream_failure_count: 0,
     stream_failure_window_started_at: null,
-    availability_schedule_active: 1,
     account_expires_at: null,
     last_successful_test_model: null,
     quality_score: options.qualityScore ?? null,
@@ -411,14 +410,12 @@ function explainDispatchCandidateWindowQuery(
         AND accounts.provider_code = 'gpt'
         AND accounts.status = 'active'
         AND accounts.schedulable = 1
-        AND accounts.availability_schedule_active = 1
         AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?)
         AND (
           (accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth'))
           OR (
             accounts.authorization_instance_authorization_id IS NOT NULL
             AND source_accounts.type IN ('api_key', 'oauth')
-            AND source_accounts.availability_schedule_active = 1
           )
         )
         AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ?)

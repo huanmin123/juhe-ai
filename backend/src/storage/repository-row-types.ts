@@ -42,7 +42,6 @@ export interface AccountRow {
   model_mappings?: AccountModelMapping[]
   schedulable: number
   availability_schedule_json: string | null
-  availability_schedule_active: number
   account_expires_at: string | null
   last_used_at: string | null
   cooldown_until: string | null
@@ -206,7 +205,6 @@ export type AccountListRow = AccountRow & {
   source_status?: AccountStatus | null
   source_schedulable?: number | null
   source_availability_schedule_json?: string | null
-  source_availability_schedule_active?: number | null
   source_account_expires_at?: string | null
   source_cooldown_until?: string | null
   source_last_error_code?: string | null

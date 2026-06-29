@@ -25,7 +25,6 @@ export interface GatewayApiKeyRow {
   route_strategy_config_json: string | null
   selected_group_id: string
   status: 'active' | 'disabled'
-  availability_schedule_active: number
   expires_at: string | null
   quota_limits_json: string | null
   hybrid_routing_config?: ApiKeyHybridRoutingConfig
@@ -99,7 +98,6 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
       route_strategies.config_json AS route_strategy_config_json,
       '' AS selected_group_id,
       api_keys.status,
-      api_keys.availability_schedule_active,
       api_keys.expires_at,
       api_keys.quota_limits_json,
       system_accounts.image_generation_enabled AS system_account_image_generation_enabled
@@ -120,7 +118,7 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
     gatewayApiKeyCache.delete(keyHash)
     return undefined
   }
-  if (row.status !== 'active' || row.availability_schedule_active !== 1) {
+  if (row.status !== 'active') {
     gatewayApiKeyCache.delete(keyHash)
     return undefined
   }
@@ -184,7 +182,6 @@ export async function validateGatewayApiKeyAsync(key: string): Promise<GatewayAp
       route_strategies.config_json AS route_strategy_config_json,
       '' AS selected_group_id,
       api_keys.status,
-      api_keys.availability_schedule_active,
       api_keys.expires_at,
       api_keys.quota_limits_json,
       system_accounts.image_generation_enabled AS system_account_image_generation_enabled
@@ -205,7 +202,7 @@ export async function validateGatewayApiKeyAsync(key: string): Promise<GatewayAp
     gatewayApiKeyCache.delete(keyHash)
     return undefined
   }
-  if (row.status !== 'active' || Number(row.availability_schedule_active) !== 1) {
+  if (row.status !== 'active') {
     gatewayApiKeyCache.delete(keyHash)
     return undefined
   }
@@ -235,7 +232,6 @@ export function findActiveGatewayApiKeyById(id: string): GatewayApiKeyRow | unde
       route_strategies.config_json AS route_strategy_config_json,
       '' AS selected_group_id,
       api_keys.status,
-      api_keys.availability_schedule_active,
       api_keys.expires_at,
       api_keys.quota_limits_json,
       system_accounts.image_generation_enabled AS system_account_image_generation_enabled
@@ -255,7 +251,7 @@ export function findActiveGatewayApiKeyById(id: string): GatewayApiKeyRow | unde
   if (isGatewayApiKeyRowExpired(row)) {
     return undefined
   }
-  if (row.status !== 'active' || row.availability_schedule_active !== 1) {
+  if (row.status !== 'active') {
     return undefined
   }
   normalizeGatewayApiKeyRouteFields(row)

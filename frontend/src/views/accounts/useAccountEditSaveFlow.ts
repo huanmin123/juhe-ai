@@ -19,7 +19,8 @@ import {
 } from './accountSavePayload'
 import {
   normalizeFormTagNames,
-  sameTagNames
+  sameTagNames,
+  type AccountModelSelectOption
 } from './accountEditFormPayload'
 import {
   invalidateAccountTagOptionsCache,
@@ -49,6 +50,10 @@ interface UseAccountEditSaveFlowOptions {
   form: AccountFormModel
   isManagementView: ComputedRef<boolean>
   loadData: () => Promise<void>
+  mappingAnthropicSourceModelOptions: ReadonlyValue<AccountModelSelectOption[]>
+  mappingGeminiSourceModelOptions: ReadonlyValue<AccountModelSelectOption[]>
+  mappingSourceModelOptions: ReadonlyValue<AccountModelSelectOption[]>
+  providerModelOptions: ReadonlyValue<AccountModelSelectOption[]>
   modalOpen: Ref<boolean>
   providers: ReadonlyValue<ProviderDefinition[]>
 }
@@ -71,7 +76,11 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       hasAuthSession: Boolean(authResult.value?.sessionId),
       errorPolicyRules: options.accountErrorPolicyRules.value,
       responseInspectionRules: options.accountResponseInspectionRules.value,
-      providers: options.providers.value
+      providers: options.providers.value,
+      mappingAnthropicSourceModelOptions: options.mappingAnthropicSourceModelOptions.value,
+      mappingGeminiSourceModelOptions: options.mappingGeminiSourceModelOptions.value,
+      mappingSourceModelOptions: options.mappingSourceModelOptions.value,
+      mappingUpstreamModelOptions: options.providerModelOptions.value
     })
     if (validationMessage) {
       message.warning(validationMessage)

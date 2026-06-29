@@ -160,7 +160,6 @@ async function findAuthorizedAccountRowByIdAsync(
       source_accounts.status AS source_status,
       source_accounts.schedulable AS source_schedulable,
       source_accounts.availability_schedule_json AS source_availability_schedule_json,
-      source_accounts.availability_schedule_active AS source_availability_schedule_active,
       source_accounts.account_expires_at AS source_account_expires_at,
       source_accounts.cooldown_until AS source_cooldown_until,
       source_accounts.last_error_code AS source_last_error_code,
@@ -241,15 +240,12 @@ async function authorizedAccountSummaryFromRowAsync(
     && isAuthorizedSourceAccountAvailableForDispatch(row, currentNow)
     && row.status === 'active'
     && row.schedulable === 1
-    && row.availability_schedule_active !== 0
     && !isLaterIso(row.cooldown_until ?? undefined, currentNow)
   const resourceProviderCode = accountResourceProviderCode(row)
   const resourceType = accountResourceType(row)
   const dispatchPriority = Number(row.bound_group_local_priority ?? row.priority ?? 0)
   const dispatchSuperPriorityEnabled = row.bound_group_local_super_priority_enabled === 1
   const dispatchFallbackEnabled = row.bound_group_local_fallback_enabled === 1
-  const sourceAvailabilityScheduleActive = row.source_availability_schedule_active !== 0
-
   return accountSummaryWithEffectiveAvailability({
     id: row.id,
     systemAccountId: includeAccountNames ? row.system_account_id : undefined,
@@ -277,7 +273,6 @@ async function authorizedAccountSummaryFromRowAsync(
     proxyProfileId: accountResourceProxyProfileId(row) ?? undefined,
     schedulable: effectiveAuthorizedSchedulable,
     availabilitySchedule: parseAccountAvailabilityScheduleJson(row.availability_schedule_json),
-    availabilityScheduleActive: row.availability_schedule_active !== 0,
     accountExpiresAt: row.account_expires_at ?? undefined,
     cooldownUntil: row.cooldown_until ?? undefined,
     lastErrorMessage: row.last_error_message ?? undefined,
@@ -301,7 +296,6 @@ async function authorizedAccountSummaryFromRowAsync(
     authorizationInstanceSourceAccountStatus: row.source_status ?? undefined,
     authorizationInstanceSourceAccountSchedulable: typeof row.source_schedulable === 'number' ? row.source_schedulable === 1 : undefined,
     authorizationInstanceSourceAccountAvailabilitySchedule: parseAccountAvailabilityScheduleJson(row.source_availability_schedule_json),
-    authorizationInstanceSourceAccountScheduleActive: sourceAvailabilityScheduleActive,
     authorizationInstanceSourceAccountExpiresAt: row.source_account_expires_at ?? undefined,
     authorizationInstanceSourceAccountCooldownUntil: row.source_cooldown_until ?? undefined,
     authorizationInstanceSourceAccountLastErrorCode: row.source_last_error_code ?? undefined,
@@ -476,7 +470,6 @@ async function ownerAccountSummariesFromRowsAsync(
       proxyProfileId: row.proxy_profile_id ?? undefined,
       schedulable: row.schedulable === 1,
       availabilitySchedule: parseAccountAvailabilityScheduleJson(row.availability_schedule_json),
-      availabilityScheduleActive: row.availability_schedule_active !== 0,
       accountExpiresAt: row.account_expires_at ?? undefined,
       cooldownUntil: row.cooldown_until ?? undefined,
       lastErrorCode: row.last_error_code ?? undefined,
@@ -681,7 +674,6 @@ function ownerAccountEffectiveStatusSql(): string {
     THEN 'disabled'
     WHEN accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN accounts.status
     WHEN accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until::timestamptz > now() THEN 'temporary_unavailable'
-    WHEN COALESCE(accounts.availability_schedule_active, 1) = 0 THEN 'disabled'
     WHEN accounts.schedulable <> 1 THEN 'disabled'
     ELSE accounts.status
   END`
@@ -691,7 +683,6 @@ function ownerAccountEffectiveSchedulableSql(): string {
   return `CASE
     WHEN accounts.status = 'active'
       AND accounts.schedulable = 1
-      AND COALESCE(accounts.availability_schedule_active, 1) <> 0
       AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until::timestamptz <= now())
       AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at::timestamptz > now())
       AND (accounts.last_error_code IS NULL OR accounts.last_error_code <> 'account_expired')
@@ -769,7 +760,6 @@ function accountSummariesFromRows(
         && isAuthorizedSourceAccountAvailableForDispatch(row, currentNow)
         && row.status === 'active'
         && row.schedulable === 1
-        && row.availability_schedule_active !== 0
         && !isLaterIso(row.cooldown_until ?? undefined, currentNow)
       : row.schedulable === 1
     const displayOwnerSystemAccountId = isAuthorizedView
@@ -782,10 +772,6 @@ function accountSummariesFromRows(
     const dispatchFallbackEnabled = isAuthorizedView ? row.bound_group_local_fallback_enabled === 1 : row.fallback_enabled === 1
     const clientCompatibility = accountResourceClientCompatibility(row)
     const availabilitySchedule = parseAccountAvailabilityScheduleJson(row.availability_schedule_json)
-    const availabilityScheduleActive = row.availability_schedule_active !== 0
-    const sourceAvailabilityScheduleActive = isAuthorizedView
-      ? row.source_availability_schedule_active !== 0
-      : undefined
     const authorizationSources = row.authorization_id ? sourcesByAuthorization.get(row.authorization_id) ?? [] : []
     const authorizationQuotaExceeded = row.authorization_id ? quotaExceededByAuthorization.get(row.authorization_id) : undefined
     return accountSummaryWithEffectiveAvailability({
@@ -826,7 +812,6 @@ function accountSummariesFromRows(
       proxyProfileId: accountResourceProxyProfileId(row) ?? undefined,
       schedulable: isAuthorizedView ? effectiveAuthorizedSchedulable && authorizationQuotaExceeded !== true : effectiveAuthorizedSchedulable,
       availabilitySchedule,
-      availabilityScheduleActive,
       accountExpiresAt: row.account_expires_at ?? undefined,
       cooldownUntil: row.cooldown_until ?? undefined,
       lastErrorCode: isAuthorizedView ? undefined : row.last_error_code ?? undefined,
@@ -858,7 +843,6 @@ function accountSummariesFromRows(
       authorizationInstanceSourceAccountStatus: isAuthorizedView ? row.source_status ?? undefined : undefined,
       authorizationInstanceSourceAccountSchedulable: isAuthorizedView && typeof row.source_schedulable === 'number' ? row.source_schedulable === 1 : undefined,
       authorizationInstanceSourceAccountAvailabilitySchedule: isAuthorizedView ? parseAccountAvailabilityScheduleJson(row.source_availability_schedule_json) : undefined,
-      authorizationInstanceSourceAccountScheduleActive: sourceAvailabilityScheduleActive,
       authorizationInstanceSourceAccountExpiresAt: isAuthorizedView ? row.source_account_expires_at ?? undefined : undefined,
       authorizationInstanceSourceAccountCooldownUntil: isAuthorizedView ? row.source_cooldown_until ?? undefined : undefined,
       authorizationInstanceSourceAccountLastErrorCode: isAuthorizedView ? row.source_last_error_code ?? undefined : undefined,
@@ -988,7 +972,6 @@ export function isAuthorizedSourceAccountAvailableForDispatch(row: AccountListRo
   return Boolean(row.source_status)
     && row.source_status === 'active'
     && row.source_schedulable === 1
-    && row.source_availability_schedule_active !== 0
     && row.source_last_error_code !== 'account_expired'
     && !isAccountExpired(row.source_account_expires_at ?? undefined, Number.isFinite(nowMs) ? nowMs : undefined)
     && !isLaterIso(row.source_cooldown_until ?? undefined, now)

@@ -89,15 +89,13 @@ async function assertSystemAccountManagementAsync(repositories: typeof import('.
 
   const defaultGroupCount = await defaultGroupCountForSystemAccount(created.id)
   assert.equal(defaultGroupCount, DEFAULT_BUILT_IN_GROUPS.length, '异步创建系统账户应同步创建全部默认内置分组')
-  const defaultRouteStrategyCount = await defaultRouteStrategyCountForSystemAccount(created.id)
-  assert.equal(defaultRouteStrategyCount, DEFAULT_BUILT_IN_GROUPS.length, '异步创建系统账户应为每个默认分组同步创建默认策略路由')
-  const defaultApiKeyCount = await defaultApiKeyCountForSystemAccount(created.id)
-  assert.equal(defaultApiKeyCount, DEFAULT_BUILT_IN_GROUPS.length, '异步创建系统账户应为每个默认策略路由同步创建默认 API Key')
+  const createdDefaultRouteStrategyCount = await defaultRouteStrategyCountForSystemAccount(created.id)
+  assert.equal(createdDefaultRouteStrategyCount, 0, '异步创建系统账户不应自动创建默认策略路由')
+  const createdDefaultApiKeyCount = await defaultApiKeyCountForSystemAccount(created.id)
+  assert.equal(createdDefaultApiKeyCount, 0, '异步创建系统账户不应自动创建默认 API Key')
 
   const routeStrategyOptions = await repositories.listRouteStrategyOptionsAsync({ systemAccountId: created.id, role: 'user' }, { limit: DEFAULT_BUILT_IN_GROUPS.length + 5 })
-  assert.equal(routeStrategyOptions[0]?.isDefault, true, '策略路由选项应优先返回默认策略路由')
-  assert.equal(routeStrategyOptions[0]?.mode, 'normal', '默认策略路由应为普通路由')
-  assert.equal(routeStrategyOptions.filter((item) => item.isDefault).length, DEFAULT_BUILT_IN_GROUPS.length, '策略路由选项应返回全部默认策略路由')
+  assert.equal(routeStrategyOptions.length, 0, '策略路由选项不应自动补齐默认策略路由')
 
   const page = await repositories.listSystemAccountsPageAsync({ keyword: username, page: 1, pageSize: 20 })
   assert.ok(page.items.some((item) => item.id === created.id), '异步系统账户列表应能按用户名查到新账户')

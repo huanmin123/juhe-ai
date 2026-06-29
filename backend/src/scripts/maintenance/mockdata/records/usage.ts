@@ -486,7 +486,6 @@ function buildUsageRecord(input: BuildUsageRecordInput): UsageRecordSeed {
     || input.account.status === 'rate_limited'
     || input.account.status === 'temporary_unavailable'
     || input.account.schedulable === false
-    || input.account.availabilityScheduleActive === false
   const failureRoll = pseudoRandom(input.ordinal, 10)
   const success = !forcedFailure && failureRoll > 0.11
   const error = success ? undefined : errorForOrdinal(input.ordinal, forcedFailure)

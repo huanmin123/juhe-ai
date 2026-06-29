@@ -114,7 +114,7 @@ try {
   assert.equal(updatedGroup.group?.name, updatedGroupName, 'PG 公开分组修改应返回新名称')
   assert.equal(updatedGroup.group?.enabled, false, 'PG 公开分组修改应更新启用状态')
 
-  const routeStrategyId = await loadDefaultRouteStrategyId(targetSystemAccountId)
+  const routeStrategyId = await createSmokeRouteStrategy(targetSystemAccountId, extraGroupId)
   const createdApiKey = await addPublicApiKeyAsync({
     targetUsername,
     name: apiKeyName,
@@ -173,19 +173,21 @@ try {
   await closePostgresPool()
 }
 
-async function loadDefaultRouteStrategyId(systemAccountId: string): Promise<string> {
+async function createSmokeRouteStrategy(systemAccountId: string, groupId: string): Promise<string> {
   const pool = await getPostgresPool()
-  const result = await pool.query(`
-    SELECT id
-    FROM juhe_business.route_strategies
-    WHERE system_account_id = $1
-      AND is_default = 1
-    ORDER BY created_at DESC, id ASC
-    LIMIT 1
-  `, [systemAccountId])
-  const rows = result.rows as Array<{ id?: string }>
-  const id = rows[0]?.id
-  assert.ok(id, 'PG 公开 API Key 新增前应能找到目标用户默认路由策略')
+  const id = `route_strategy_public_push_${marker}`
+  const bindingId = `rsg_public_push_${marker}`
+  const now = new Date().toISOString()
+  await pool.query(`
+    INSERT INTO juhe_business.route_strategies (
+      id, system_account_id, name, description, mode, status, is_default, config_json, created_at, updated_at
+    ) VALUES ($1, $2, $3, NULL, 'normal', 'active', 0, NULL, $4, $4)
+  `, [id, systemAccountId, `公开推送 PG smoke 策略 ${marker}`, now])
+  await pool.query(`
+    INSERT INTO juhe_business.route_strategy_groups (
+      id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at, updated_at
+    ) VALUES ($1, $2, $3, $4, 1, 1, 'active', $5, $5)
+  `, [bindingId, id, systemAccountId, groupId, now])
   return id
 }
 

@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path'
 import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
+import { DEFAULT_GPT_GROUP } from '../../storage/schema-defaults.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-api-key-list-query-guard-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -28,7 +29,8 @@ try {
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
   const group = repositories.createGroup({
     name: 'API Key 列表查询防护分组',
-    providerCode: 'gpt',
+    providerCode: DEFAULT_GPT_GROUP.providerCode,
+    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     enabled: true
   }, access)
   const matchedByName = createApiKeyRecordWithRouteStrategy(repositories, {

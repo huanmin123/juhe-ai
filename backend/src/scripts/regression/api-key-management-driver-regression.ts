@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import type { AccessScope } from '../../storage/access-scope.js'
+import { DEFAULT_GPT_GROUP } from '../../storage/schema-defaults.js'
 
 const createdApiKeyIds: string[] = []
 const createdGroupIds: string[] = []
@@ -78,20 +79,13 @@ async function assertApiKeyManagementAsync(repositories: typeof import('../../st
   const { logger } = await import('../../shared/logger.js')
   logger.level = 'silent'
   const defaultApiKeyPage = await repositories.listApiKeysPageAsync(adminAccess, { page: 1, pageSize: 50 })
-  const defaultApiKey = defaultApiKeyPage.items.find((item) => item.isDefault)
-  assert(defaultApiKey, 'API Key 列表应自动补齐并返回默认 API Key')
-  await assert.rejects(
-    () => repositories.deleteApiKeyWithRelatedCleanupAsync(defaultApiKey.id, adminAccess),
-    /默认 API Key 不允许删除/,
-    '默认 API Key 不允许删除'
-  )
-  const refreshedDefaultApiKey = await repositories.refreshApiKeySecretAsync(defaultApiKey.id, adminAccess)
-  assert.ok(refreshedDefaultApiKey?.key.startsWith('sk-'), '默认 API Key 允许刷新密钥')
+  assert.equal(defaultApiKeyPage.items.some((item) => item.isDefault), false, 'API Key 列表不应自动补齐默认 API Key')
 
   const suffix = `${Date.now()}${Math.random().toString(16).slice(2, 8)}`
   const group = await repositories.createGroupAsync({
     name: `APIKey回归分组${suffix}`,
-    providerCode: 'gpt',
+    providerCode: DEFAULT_GPT_GROUP.providerCode,
+    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     enabled: true
   }, adminAccess)
   createdGroupIds.push(group.id)
@@ -241,7 +235,7 @@ async function seedActiveGatewayAccountForGroup(
   const apiKey = `sk-api-key-management-driver-${suffix}`
   const account = await repositories.createAccountAsync({
     name: `APIKey管理回归账号${suffix}`,
-    providerCode: 'gpt',
+    providerCode: DEFAULT_GPT_GROUP.providerCode,
     providerProtocolProfileId,
     type: 'api_key',
     status: 'active',

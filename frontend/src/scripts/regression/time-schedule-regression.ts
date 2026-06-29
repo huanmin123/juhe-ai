@@ -81,8 +81,9 @@ assertEqual(validateTimeScheduleForm(form), undefined, '合法跨天计划应通
 assertDeepEqual(buildTimeSchedulePayload(form), crossDaySchedule, '前端保存 payload 应保留日期范围和例外日期')
 assertEqual(timeScheduleFormFingerprint(form).includes('2026-06-10'), true, '表单指纹应包含例外日期，避免编辑态误判未变更')
 assertEqual(timeScheduleSummary(crossDaySchedule).includes('22:00-次日 02:00'), true, '跨天时段摘要应显示次日')
-assertEqual(apiKeyScheduleSummary(crossDaySchedule, true).startsWith('计划窗口内：'), true, 'API Key 摘要应展示当前派生可用状态')
-assertEqual(apiKeyScheduleSummary(crossDaySchedule, false).startsWith('等待窗口开启：'), true, 'API Key 摘要应展示当前派生停用状态')
+assertEqual(apiKeyScheduleSummary(crossDaySchedule).includes('22:00-次日 02:00'), true, 'API Key 摘要应展示时间计划规则')
+assertEqual(apiKeyScheduleSummary(crossDaySchedule).startsWith('计划窗口内：'), false, 'API Key 摘要不应展示派生可用前缀')
+assertEqual(apiKeyScheduleSummary(crossDaySchedule).startsWith('等待窗口开启：'), false, 'API Key 摘要不应展示派生停用前缀')
 
 const duplicateDaysForm = createTimeScheduleForm(crossDaySchedule)
 duplicateDaysForm.windows[0].daysOfWeek = [5, 1, 5]

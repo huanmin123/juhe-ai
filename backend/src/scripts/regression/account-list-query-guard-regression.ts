@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 import { maxAccountExpirySweepBatchSize } from '../../storage/account-sweep-limits.js'
 
@@ -31,11 +32,13 @@ try {
   const matchedGroup = repositories.createGroup({
     name: '账户绑定前缀分组',
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   const middleGroup = repositories.createGroup({
     name: '普通账户绑定前缀分组',
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   const matchedByName = createGuardAccount('账户检索目标', 'sk-account-list-query-guard-name', '普通备注', matchedGroup.id)
@@ -68,7 +71,8 @@ try {
   const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
   const granteeTargetGroup = repositories.createGroup({
     name: '账户列表防护被授权目标分组',
-    providerCode: 'gpt'
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, granteeAccess)
   repositories.createResourceAuthorization({
     resourceType: 'account',
@@ -241,9 +245,10 @@ function createGuardAccount(
   groupId: string,
   status: 'active' | 'disabled' | 'error' | 'rate_limited' | 'temporary_unavailable' = 'active'
 ): { id: string } {
-  return repositories.createAccount({
-    providerCode: 'gpt',
-    name,
+	  return repositories.createAccount({
+	    providerCode: 'gpt',
+	    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+	    name,
     type: 'api_key',
     credentials: {
       api_key: apiKey,
@@ -335,11 +340,14 @@ function assertAccountListRouteBoundary(): void {
     'PG 账户 options 名称前缀搜索不能回退 lower(name) LIKE lower(?)'
   )
   assert(
-    accountReadRepositorySource.includes('availability_schedule_active')
-      && accountReadRepositorySource.includes('accountApiKeyPoolAllUnavailableSql')
-      && accountOptionsRepositorySource.includes('availability_schedule_active')
+    accountReadRepositorySource.includes('accountApiKeyPoolAllUnavailableSql')
       && accountOptionsRepositorySource.includes('accountApiKeyPoolAllUnavailableSql'),
-    '账户列表和 options 派生状态应下推时间计划与 Key 池 SQL 判断'
+    '账户列表和 options 派生状态应下推 Key 池 SQL 判断'
+  )
+  assert(
+    !accountReadRepositorySource.includes('availability_schedule_active')
+      && !accountOptionsRepositorySource.includes('availability_schedule_active'),
+    '账户列表和 options 不应再读取旧账户时间计划派生列'
   )
 }
 
@@ -416,16 +424,18 @@ function assertExpiredAccountCleanupIsBoundedAndIndexed(access: { systemAccountI
   assertAccountExpirySweepQueryPlan()
   assertAccountExpirySweepQueryPlan(access.systemAccountId)
 
-  const group = repositories.createGroup({
-    name: '过期账号批量停用防护分组',
-    providerCode: 'gpt',
-    enabled: true
-  }, access)
+	  const group = repositories.createGroup({
+	    name: '过期账号批量停用防护分组',
+	    providerCode: 'gpt',
+	    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+	    enabled: true
+	  }, access)
   const accountIds: string[] = []
   for (let index = 0; index < maxAccountExpirySweepBatchSize + 1; index += 1) {
-    const account = repositories.createAccount({
-      providerCode: 'gpt',
-      name: `过期账号批量停用防护 ${String(index).padStart(2, '0')}`,
+	    const account = repositories.createAccount({
+	      providerCode: 'gpt',
+	      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+	      name: `过期账号批量停用防护 ${String(index).padStart(2, '0')}`,
       type: 'api_key',
       credentials: {
         api_key: `sk-account-expiry-batch-guard-${index}`,

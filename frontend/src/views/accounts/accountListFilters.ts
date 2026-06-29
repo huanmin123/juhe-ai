@@ -77,8 +77,6 @@ function statusFilterForEffectiveAvailability(status: AccountEffectiveAvailabili
     || status === 'source_unschedulable'
     || status === 'instance_expired'
     || status === 'instance_disabled'
-    || status === 'source_schedule_inactive'
-    || status === 'instance_schedule_inactive'
     || status === 'instance_unschedulable'
   ) {
     return 'disabled'

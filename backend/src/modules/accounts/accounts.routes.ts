@@ -211,7 +211,6 @@ accountsRouter.post('/', mutationGuard({
             safeChange('proxyProfileId', '代理', undefined, account.proxyProfileId),
             safeChange('accountExpiresAt', '过期时间', undefined, account.accountExpiresAt),
             safeChange('availabilitySchedule', '时间计划', undefined, account.availabilitySchedule),
-            safeChange('availabilityScheduleActive', '时间计划派生状态', undefined, account.availabilityScheduleActive),
             safeChange('notes', '备注', undefined, account.notes)
           ],
           viewers: viewer(ownerSystemAccountId, 'resource_owner')
@@ -359,7 +358,6 @@ accountsRouter.patch('/:id', async (req, res) => {
               schedulable: '参与调度',
               accountExpiresAt: '过期时间',
               availabilitySchedule: '时间计划',
-              availabilityScheduleActive: '时间计划派生状态',
               boundGroupId: '绑定分组',
               cooldownUntil: '冷却结束时间',
               lastErrorCode: '异常类型',

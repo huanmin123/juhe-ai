@@ -595,7 +595,6 @@ function draftTestAccountSummary(input: {
     proxyProfileId: optionalText(input.account.proxyProfileId),
     schedulable: true,
     availabilitySchedule: input.availabilitySchedule,
-    availabilityScheduleActive: true,
     accountExpiresAt: optionalText(input.account.accountExpiresAt),
     todayUsage: usage,
     usage,

@@ -82,6 +82,7 @@ export function normalizeAccountModelMappingsForProvider(
         supportedEndpointModes: options.supportedEndpointModes
       })
     }
+    assertMappingModelsInProtocolPools(mappings, systemAccountId)
     return mappings
   }
   for (const mapping of mappings) {
@@ -93,16 +94,22 @@ export function normalizeAccountModelMappingsForProvider(
 
   const accountModelPool = upstreamModelPoolForAccount(providerCode, systemAccountId, normalizedProfile)
   const invalidSourceModels = mappings
-    .filter((mapping) => !accountModelPool.has(mapping.sourceModel))
+    .filter((mapping) => !accountEndpointModelPoolForAccount(providerCode, systemAccountId, normalizedProfile, mapping.sourceEndpointFamily).has(mapping.sourceModel))
     .map((mapping) => mapping.sourceModel)
   if (invalidSourceModels.length > 0) {
-    throw new Error(`账号模型别名来源模型不在当前供应商模型目录中：${invalidSourceModels.slice(0, 5).join('、')}`)
+    throw new Error(`账号模型别名来源模型不在当前供应商的对应协议模型目录中：${invalidSourceModels.slice(0, 5).join('、')}`)
   }
   const invalidUpstreamModels = mappings
     .map((mapping) => mapping.upstreamModel)
     .filter((model) => !accountModelPool.has(model))
   if (invalidUpstreamModels.length > 0) {
     throw new Error(`账号模型别名目标模型不在当前供应商模型目录中：${invalidUpstreamModels.slice(0, 5).join('、')}`)
+  }
+  const invalidUpstreamProtocolModels = mappings
+    .filter((mapping) => !accountEndpointModelPoolForAccount(providerCode, systemAccountId, normalizedProfile, mapping.upstreamEndpointFamily).has(mapping.upstreamModel))
+    .map((mapping) => mapping.upstreamModel)
+  if (invalidUpstreamProtocolModels.length > 0) {
+    throw new Error(`账号模型别名目标模型不支持对应上游协议：${invalidUpstreamProtocolModels.slice(0, 5).join('、')}`)
   }
   return mappings
 }
@@ -131,6 +138,7 @@ export async function normalizeAccountModelMappingsForProviderAsync(
         supportedEndpointModes: options.supportedEndpointModes
       })
     }
+    await assertMappingModelsInProtocolPoolsAsync(mappings, systemAccountId)
     return mappings
   }
   for (const mapping of mappings) {
@@ -143,18 +151,29 @@ export async function normalizeAccountModelMappingsForProviderAsync(
   const accountModelPool = await upstreamModelPoolForAccountAsync(providerCode, systemAccountId, normalizedProfile)
   const invalidSourceModels: string[] = []
   for (const mapping of mappings) {
-    if (!accountModelPool.has(mapping.sourceModel)) {
+    const sourceModelPool = await accountEndpointModelPoolForAccountAsync(providerCode, systemAccountId, normalizedProfile, mapping.sourceEndpointFamily)
+    if (!sourceModelPool.has(mapping.sourceModel)) {
       invalidSourceModels.push(mapping.sourceModel)
     }
   }
   if (invalidSourceModels.length > 0) {
-    throw new Error(`账号模型别名来源模型不在当前供应商模型目录中：${invalidSourceModels.slice(0, 5).join('、')}`)
+    throw new Error(`账号模型别名来源模型不在当前供应商的对应协议模型目录中：${invalidSourceModels.slice(0, 5).join('、')}`)
   }
   const invalidUpstreamModels = mappings
     .map((mapping) => mapping.upstreamModel)
     .filter((model) => !accountModelPool.has(model))
   if (invalidUpstreamModels.length > 0) {
     throw new Error(`账号模型别名目标模型不在当前供应商模型目录中：${invalidUpstreamModels.slice(0, 5).join('、')}`)
+  }
+  const invalidUpstreamProtocolModels: string[] = []
+  for (const mapping of mappings) {
+    const upstreamModelPool = await accountEndpointModelPoolForAccountAsync(providerCode, systemAccountId, normalizedProfile, mapping.upstreamEndpointFamily)
+    if (!upstreamModelPool.has(mapping.upstreamModel)) {
+      invalidUpstreamProtocolModels.push(mapping.upstreamModel)
+    }
+  }
+  if (invalidUpstreamProtocolModels.length > 0) {
+    throw new Error(`账号模型别名目标模型不支持对应上游协议：${invalidUpstreamProtocolModels.slice(0, 5).join('、')}`)
   }
   return mappings
 }
@@ -263,6 +282,38 @@ export async function geminiProtocolModelPoolAsync(systemAccountId: string): Pro
   return models
 }
 
+function openAIProtocolEndpointModelPool(endpointFamily: AccountModelMapping['sourceEndpointFamily'] | AccountModelMapping['upstreamEndpointFamily'], systemAccountId: string): Set<string> {
+  const models = new Set<string>()
+  for (const providerCode of listOpenAIProtocolProviderCodes()) {
+    for (const item of listProviderModelCatalog({
+      providerCode,
+      systemAccountId,
+      includeUnpriced: true
+    })) {
+      if (item.supportedApiProtocols.includes(endpointFamily)) {
+        models.add(item.model)
+      }
+    }
+  }
+  return models
+}
+
+async function openAIProtocolEndpointModelPoolAsync(endpointFamily: AccountModelMapping['sourceEndpointFamily'] | AccountModelMapping['upstreamEndpointFamily'], systemAccountId: string): Promise<Set<string>> {
+  const models = new Set<string>()
+  for (const providerCode of await listOpenAIProtocolProviderCodesAsync()) {
+    for (const item of await listProviderModelCatalogAsync({
+      providerCode,
+      systemAccountId,
+      includeUnpriced: true
+    })) {
+      if (item.supportedApiProtocols.includes(endpointFamily)) {
+        models.add(item.model)
+      }
+    }
+  }
+  return models
+}
+
 function upstreamModelPoolForAccount(providerCode: string, systemAccountId: string, providerProfile: ProviderProtocolProfileDefinition): Set<string> {
   const normalizedProviderCode = normalizeProviderToken(providerCode)
   const models = new Set<string>()
@@ -281,6 +332,31 @@ function upstreamModelPoolForAccount(providerCode: string, systemAccountId: stri
   return models
 }
 
+function accountEndpointModelPoolForAccount(
+  providerCode: string,
+  systemAccountId: string,
+  providerProfile: ProviderProtocolProfileDefinition,
+  endpointFamily: AccountModelMapping['sourceEndpointFamily'] | AccountModelMapping['upstreamEndpointFamily']
+): Set<string> {
+  const normalizedProviderCode = normalizeProviderToken(providerCode)
+  const models = new Set<string>()
+  if (!normalizedProviderCode) {
+    return models
+  }
+  if (!isOpenAIProtocolProviderCode(normalizedProviderCode) && !isAnthropicProtocolProfile(providerProfile) && !isGeminiProtocolProfile(providerProfile)) {
+    return models
+  }
+  for (const item of listProviderModelCatalog({
+    providerCode: normalizedProviderCode,
+    systemAccountId
+  })) {
+    if (item.supportedApiProtocols.includes(endpointFamily)) {
+      models.add(item.model)
+    }
+  }
+  return models
+}
+
 function sourceModelPoolForMapping(sourceEndpointFamily: AccountModelMapping['sourceEndpointFamily'], systemAccountId: string): Set<string> {
   if (sourceEndpointFamily === ANTHROPIC_MESSAGES_FAMILY) {
     return anthropicProtocolModelPool(systemAccountId)
@@ -288,7 +364,36 @@ function sourceModelPoolForMapping(sourceEndpointFamily: AccountModelMapping['so
   if (sourceEndpointFamily === GEMINI_GENERATE_CONTENT_FAMILY || sourceEndpointFamily === GEMINI_STREAM_GENERATE_CONTENT_FAMILY) {
     return geminiProtocolModelPool(systemAccountId)
   }
-  return openAIProtocolModelPool(systemAccountId)
+  return openAIProtocolEndpointModelPool(sourceEndpointFamily, systemAccountId)
+}
+
+function upstreamProtocolModelPoolForMapping(upstreamEndpointFamily: AccountModelMapping['upstreamEndpointFamily'], systemAccountId: string): Set<string> {
+  if (upstreamEndpointFamily === ANTHROPIC_MESSAGES_FAMILY) {
+    return anthropicProtocolModelPool(systemAccountId)
+  }
+  if (upstreamEndpointFamily === GEMINI_GENERATE_CONTENT_FAMILY) {
+    return geminiProtocolModelPool(systemAccountId)
+  }
+  return openAIProtocolEndpointModelPool(upstreamEndpointFamily, systemAccountId)
+}
+
+function assertMappingModelsInProtocolPools(mappings: AccountModelMapping[], systemAccountId: string): void {
+  const invalidSourceModels: string[] = []
+  const invalidUpstreamModels: string[] = []
+  for (const mapping of mappings) {
+    if (!sourceModelPoolForMapping(mapping.sourceEndpointFamily, systemAccountId).has(mapping.sourceModel)) {
+      invalidSourceModels.push(mapping.sourceModel)
+    }
+    if (!upstreamProtocolModelPoolForMapping(mapping.upstreamEndpointFamily, systemAccountId).has(mapping.upstreamModel)) {
+      invalidUpstreamModels.push(mapping.upstreamModel)
+    }
+  }
+  if (invalidSourceModels.length > 0) {
+    throw new Error(`账号模型别名来源模型不在对应协议模型池中：${invalidSourceModels.slice(0, 5).join('、')}`)
+  }
+  if (invalidUpstreamModels.length > 0) {
+    throw new Error(`账号模型别名目标模型不在对应上游协议模型池中：${invalidUpstreamModels.slice(0, 5).join('、')}`)
+  }
 }
 
 async function upstreamModelPoolForAccountAsync(providerCode: string, systemAccountId: string, providerProfile: ProviderProtocolProfileDefinition): Promise<Set<string>> {
@@ -309,6 +414,31 @@ async function upstreamModelPoolForAccountAsync(providerCode: string, systemAcco
   return models
 }
 
+async function accountEndpointModelPoolForAccountAsync(
+  providerCode: string,
+  systemAccountId: string,
+  providerProfile: ProviderProtocolProfileDefinition,
+  endpointFamily: AccountModelMapping['sourceEndpointFamily'] | AccountModelMapping['upstreamEndpointFamily']
+): Promise<Set<string>> {
+  const normalizedProviderCode = normalizeProviderToken(providerCode)
+  const models = new Set<string>()
+  if (!normalizedProviderCode) {
+    return models
+  }
+  if (!(await isOpenAIProtocolProviderCodeAsync(normalizedProviderCode)) && !isAnthropicProtocolProfile(providerProfile) && !isGeminiProtocolProfile(providerProfile)) {
+    return models
+  }
+  for (const item of await listProviderModelCatalogAsync({
+    providerCode: normalizedProviderCode,
+    systemAccountId
+  })) {
+    if (item.supportedApiProtocols.includes(endpointFamily)) {
+      models.add(item.model)
+    }
+  }
+  return models
+}
+
 async function sourceModelPoolForMappingAsync(sourceEndpointFamily: AccountModelMapping['sourceEndpointFamily'], systemAccountId: string): Promise<Set<string>> {
   if (sourceEndpointFamily === ANTHROPIC_MESSAGES_FAMILY) {
     return anthropicProtocolModelPoolAsync(systemAccountId)
@@ -316,7 +446,38 @@ async function sourceModelPoolForMappingAsync(sourceEndpointFamily: AccountModel
   if (sourceEndpointFamily === GEMINI_GENERATE_CONTENT_FAMILY || sourceEndpointFamily === GEMINI_STREAM_GENERATE_CONTENT_FAMILY) {
     return geminiProtocolModelPoolAsync(systemAccountId)
   }
-  return openAIProtocolModelPoolAsync(systemAccountId)
+  return openAIProtocolEndpointModelPoolAsync(sourceEndpointFamily, systemAccountId)
+}
+
+async function upstreamProtocolModelPoolForMappingAsync(upstreamEndpointFamily: AccountModelMapping['upstreamEndpointFamily'], systemAccountId: string): Promise<Set<string>> {
+  if (upstreamEndpointFamily === ANTHROPIC_MESSAGES_FAMILY) {
+    return anthropicProtocolModelPoolAsync(systemAccountId)
+  }
+  if (upstreamEndpointFamily === GEMINI_GENERATE_CONTENT_FAMILY) {
+    return geminiProtocolModelPoolAsync(systemAccountId)
+  }
+  return openAIProtocolEndpointModelPoolAsync(upstreamEndpointFamily, systemAccountId)
+}
+
+async function assertMappingModelsInProtocolPoolsAsync(mappings: AccountModelMapping[], systemAccountId: string): Promise<void> {
+  const invalidSourceModels: string[] = []
+  const invalidUpstreamModels: string[] = []
+  for (const mapping of mappings) {
+    const sourceModelPool = await sourceModelPoolForMappingAsync(mapping.sourceEndpointFamily, systemAccountId)
+    if (!sourceModelPool.has(mapping.sourceModel)) {
+      invalidSourceModels.push(mapping.sourceModel)
+    }
+    const upstreamModelPool = await upstreamProtocolModelPoolForMappingAsync(mapping.upstreamEndpointFamily, systemAccountId)
+    if (!upstreamModelPool.has(mapping.upstreamModel)) {
+      invalidUpstreamModels.push(mapping.upstreamModel)
+    }
+  }
+  if (invalidSourceModels.length > 0) {
+    throw new Error(`账号模型别名来源模型不在对应协议模型池中：${invalidSourceModels.slice(0, 5).join('、')}`)
+  }
+  if (invalidUpstreamModels.length > 0) {
+    throw new Error(`账号模型别名目标模型不在对应上游协议模型池中：${invalidUpstreamModels.slice(0, 5).join('、')}`)
+  }
 }
 
 export function assertAccountModelMappingEndpointFamilies(mappings: AccountModelMapping[]): void {

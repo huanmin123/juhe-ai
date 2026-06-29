@@ -84,7 +84,6 @@ export function accountErrorCodeText(code?: string): string {
 }
 
 export function accountStatusColor(account: AccountSummary) {
-  if (isScheduleInactiveEffectiveAvailability(account)) return statusColor('disabled')
   if (shouldDisplayEffectiveAvailabilityAsStatus(account)) return account.effectiveAvailability.color
   if (isAuthorizationPaused(account)) return 'orange'
   if (isAuthorizationExpired(account) || isAuthorizationBindingUnavailable(account)) return 'red'
@@ -102,7 +101,6 @@ export function accountStatusColor(account: AccountSummary) {
 }
 
 export function accountStatusText(account: AccountSummary) {
-  if (isScheduleInactiveEffectiveAvailability(account)) return statusText('disabled')
   if (isAccountInstanceEffectiveAvailability(account) && isDirectAccountStatus(account.effectiveAvailability.status)) {
     return directAccountStatusText(account)
   }
@@ -208,14 +206,11 @@ export function accountStatusTooltipLines(account: AccountSummary): string[] {
   const lines: string[] = []
   const effectiveAvailability = account.effectiveAvailability
   const conciseOwnStatus = isAccountInstanceEffectiveAvailability(account)
-    && !isScheduleInactiveStatus(account.effectiveAvailability.status)
     && isConciseAccountStatus(account.effectiveAvailability.status)
   if (conciseOwnStatus) {
     return conciseAccountStatusTooltipLines(account)
   }
-  if (effectiveAvailability?.status === 'instance_schedule_inactive') {
-    lines.push(effectiveAvailability.reason || '账户当前不在允许使用时段，实际不参与调度')
-  } else if (effectiveAvailability && shouldShowEffectiveAvailabilitySummary(account)) {
+  if (effectiveAvailability && shouldShowEffectiveAvailabilitySummary(account)) {
     lines.push(`实际状态：${effectiveAvailability.label}`)
     if (effectiveAvailability.reason && effectiveAvailability.reason !== effectiveAvailability.label) {
       lines.push(`实际原因：${effectiveAvailability.reason}`)
@@ -366,7 +361,6 @@ function formatAccountHealthCheckError(message?: string): string {
 function shouldShowEffectiveAvailabilitySummary(account: AccountSummary): boolean {
   const availability = account.effectiveAvailability
   if (!availability || availability.available) return false
-  if (isScheduleInactiveStatus(availability.status)) return false
   if (isDirectAccountStatus(availability.status)) return false
   if (availability.blockerScope === 'source_account' || availability.blockerScope === 'runtime') return false
   if (availability.status === 'authorization_expired'
@@ -379,12 +373,7 @@ function shouldShowEffectiveAvailabilitySummary(account: AccountSummary): boolea
 
 function shouldDisplayEffectiveAvailabilityAsStatus(account: AccountSummary): account is AccountSummary & { effectiveAvailability: NonNullable<AccountSummary['effectiveAvailability']> } {
   const availability = account.effectiveAvailability
-  return Boolean(availability && !availability.available && !isScheduleInactiveStatus(availability.status))
-}
-
-function isScheduleInactiveEffectiveAvailability(account: AccountSummary): boolean {
-  const status = account.effectiveAvailability?.status
-  return status === 'instance_schedule_inactive' || status === 'source_schedule_inactive'
+  return Boolean(availability && !availability.available)
 }
 
 function authorizedInstanceLocalStatusTooltipLines(account: AccountSummary): string[] {
@@ -464,9 +453,6 @@ export function authorizationSourceAccountTooltipLines(account: AccountSummary):
   }
   if (account.authorizationInstanceSourceAccountSchedulable === false) {
     lines.push('授权方原账户已关闭调度，授权实例实际不可调用')
-  }
-  if (account.authorizationInstanceSourceAccountScheduleActive === false) {
-    lines.push('授权方原账户当前不在允许使用时段，授权实例实际不可调用')
   }
   if (isFutureTime(account.authorizationInstanceSourceAccountCooldownUntil)) {
     lines.push(`授权方原账户冷却至 ${formatDateTime(account.authorizationInstanceSourceAccountCooldownUntil)}`)
@@ -567,11 +553,7 @@ function isLongTermUnavailableAccount(account: AccountSummary): boolean {
 }
 
 function isDirectAccountStatus(status: NonNullable<AccountSummary['effectiveAvailability']>['status']): boolean {
-  return status.startsWith('instance_') && !isScheduleInactiveStatus(status)
-}
-
-function isScheduleInactiveStatus(status?: NonNullable<AccountSummary['effectiveAvailability']>['status']): boolean {
-  return status === 'instance_schedule_inactive' || status === 'source_schedule_inactive'
+  return status.startsWith('instance_')
 }
 
 function isAccountInstanceEffectiveAvailability(account: AccountSummary): account is AccountSummary & { effectiveAvailability: NonNullable<AccountSummary['effectiveAvailability']> } {

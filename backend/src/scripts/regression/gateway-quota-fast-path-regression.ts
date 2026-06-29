@@ -63,7 +63,6 @@ function apiKeyWithoutQuota(): GatewayApiKeyRow {
     route_strategy_config_json: null,
     selected_group_id: 'grp_fast_path',
     status: 'active',
-    availability_schedule_active: 1,
     expires_at: null,
     quota_limits_json: null,
     system_account_image_generation_enabled: 0

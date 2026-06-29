@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path'
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 import { maxRouteStrategyGroupBindings } from '../../storage/route-strategy-group-binding-limits.js'
+import { DEFAULT_GPT_GROUP } from '../../storage/schema-defaults.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-route-strategy-group-bindings-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -26,25 +27,41 @@ const [databaseModule, repositories] = await Promise.all([
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 
 try {
+  assert.equal(repositories.listRouteStrategyOptions(access, { limit: 20 }).some((strategy) => strategy.isDefault), false, '策略路由列表不应自动补齐默认策略路由')
+
+  const database = databaseModule.getBusinessDatabase()
+  const defaultGroup = repositories.listGroups(access).find((group) => group.enabled)
+  assert(defaultGroup, '默认保护回归需要一个可绑定分组')
+  database.prepare(`
+    INSERT INTO route_strategies (id, system_account_id, name, description, mode, status, is_default, config_json, created_at, updated_at)
+    VALUES ('route_strategy_default_delete_guard_regression', 'sys_admin', '默认删除保护回归策略', NULL, 'normal', 'active', 1, NULL, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+  `).run()
+  database.prepare(`
+    INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at, updated_at)
+    VALUES ('rsg_default_delete_guard_regression', 'route_strategy_default_delete_guard_regression', 'sys_admin', ?, 1, 1, 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+  `).run(defaultGroup.id)
   const defaultStrategy = repositories.listRouteStrategyOptions(access, { limit: 20 }).find((strategy) => strategy.isDefault)
-  assert(defaultStrategy, '系统账户应具备默认策略路由')
+  assert(defaultStrategy, '手工标记的默认策略路由应能正常读取')
   assert.throws(() => {
     repositories.deleteRouteStrategy(defaultStrategy.id, access)
   }, /默认策略路由不允许删除/, '默认策略路由不能删除')
 
   const primaryGroup = repositories.createGroup({
     name: '策略路由回归主分组',
-    providerCode: 'gpt',
+    providerCode: DEFAULT_GPT_GROUP.providerCode,
+    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     enabled: true
   }, access)
   const fallbackGroup = repositories.createGroup({
     name: '策略路由回归后备分组',
-    providerCode: 'gpt',
+    providerCode: DEFAULT_GPT_GROUP.providerCode,
+    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     enabled: true
   }, access)
   const disabledGroup = repositories.createGroup({
     name: '策略路由回归停用分组',
-    providerCode: 'gpt',
+    providerCode: DEFAULT_GPT_GROUP.providerCode,
+    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     enabled: false
   }, access)
 
@@ -178,7 +195,8 @@ try {
   const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
   const authorizedSourceGroup = repositories.createGroup({
     name: '策略路由授权来源分组',
-    providerCode: 'gpt',
+    providerCode: DEFAULT_GPT_GROUP.providerCode,
+    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     enabled: true
   }, ownerAccess)
   repositories.createResourceAuthorization({
@@ -204,7 +222,8 @@ try {
 
   const extraGroups = Array.from({ length: maxRouteStrategyGroupBindings }, (_, index) => repositories.createGroup({
     name: `策略路由绑定上限回归分组 ${index + 1}`,
-    providerCode: 'gpt',
+    providerCode: DEFAULT_GPT_GROUP.providerCode,
+    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     enabled: true
   }, access))
   assert.throws(() => {

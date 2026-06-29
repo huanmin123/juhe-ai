@@ -1,4 +1,4 @@
-import type { AccountSummary, ProviderDefinition } from '@/types/domain'
+import type { AccountSummary, ProviderDefinition, ProviderModelApiProtocol } from '@/types/domain'
 import { formatServerDateTimeInput } from './accountFormatters'
 import { validateAccountErrorPolicyRules } from './accountErrorPolicyPayload'
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
@@ -71,6 +71,10 @@ export function validateAccountSaveForm(input: {
   errorPolicyRules: AccountErrorPolicyRuleForm[]
   responseInspectionRules: AccountResponseInspectionRuleForm[]
   providers?: ProviderDefinition[]
+  mappingAnthropicSourceModelOptions?: ModelMappingProtocolOption[]
+  mappingGeminiSourceModelOptions?: ModelMappingProtocolOption[]
+  mappingSourceModelOptions?: ModelMappingProtocolOption[]
+  mappingUpstreamModelOptions?: ModelMappingProtocolOption[]
 }): string | undefined {
   const { editingId, form } = input
   if (!form.providerCode) return '请先选择供应商'
@@ -108,7 +112,23 @@ export function validateAccountSaveForm(input: {
   if (!accountErrorPolicyValidation.valid) return accountErrorPolicyValidation.message || '账户错误处理策略配置不完整'
   const responseInspectionValidation = validateAccountResponseInspectionRules(input.responseInspectionRules)
   if (!responseInspectionValidation.valid) return responseInspectionValidation.message || '账户响应检查策略配置不完整'
-  return validateAccountModelMappings(form.modelMappings, supportedModels, form.supportedEndpointModes, formProviderProfile.profile ?? formProviderProfile.provider)
+  return validateAccountModelMappings(
+    form.modelMappings,
+    supportedModels,
+    form.supportedEndpointModes,
+    formProviderProfile.profile ?? formProviderProfile.provider,
+    {
+      mappingAnthropicSourceModelOptions: input.mappingAnthropicSourceModelOptions,
+      mappingGeminiSourceModelOptions: input.mappingGeminiSourceModelOptions,
+      mappingSourceModelOptions: input.mappingSourceModelOptions,
+      mappingUpstreamModelOptions: input.mappingUpstreamModelOptions
+    }
+  )
+}
+
+type ModelMappingProtocolOption = {
+  value: string
+  supportedApiProtocols?: ProviderModelApiProtocol[]
 }
 
 function resolveFormProviderProfile(form: AccountFormModel, providers: ProviderDefinition[] = FALLBACK_PROVIDERS): {
@@ -287,7 +307,13 @@ function validateAccountModelMappings(
   value: AccountFormModel['modelMappings'],
   supportedModels: string[],
   supportedEndpointModes: AccountFormModel['supportedEndpointModes'],
-  providerProfile?: ProviderDefinition | ProviderDefinition['protocolProfiles'][number]
+  providerProfile?: ProviderDefinition | ProviderDefinition['protocolProfiles'][number],
+  options: {
+    mappingAnthropicSourceModelOptions?: ModelMappingProtocolOption[]
+    mappingGeminiSourceModelOptions?: ModelMappingProtocolOption[]
+    mappingSourceModelOptions?: ModelMappingProtocolOption[]
+    mappingUpstreamModelOptions?: ModelMappingProtocolOption[]
+  } = {}
 ): string | undefined {
   const seenSources = new Set<string>()
   const supportedModelSet = new Set(supportedModels.map((model) => model.trim()).filter(Boolean))
@@ -311,6 +337,12 @@ function validateAccountModelMappings(
     if (sourceModel === upstreamModel && sourceEndpointFamily === upstreamEndpointFamily) {
       return '模型映射的下游模型和上游模型不能完全相同'
     }
+    if (!modelOptionSupportsProtocol(sourceModel, sourceEndpointFamily, sourceModelOptionsForEndpointFamily(sourceEndpointFamily, options))) {
+      return `下游模型 ${sourceModel} 不支持 ${accountModelMappingEndpointFamilyText(sourceEndpointFamily)} 协议，请先选择协议支持的模型`
+    }
+    if (!modelOptionSupportsProtocol(upstreamModel, upstreamEndpointFamily, options.mappingUpstreamModelOptions)) {
+      return `上游模型 ${upstreamModel} 不支持 ${accountModelMappingEndpointFamilyText(upstreamEndpointFamily)} 协议，请先选择协议支持的模型`
+    }
     if (!supportedModelSet.has(upstreamModel)) {
       return `模型映射的上游模型必须从支持模型中选择：${upstreamModel}`
     }
@@ -321,4 +353,28 @@ function validateAccountModelMappings(
     seenSources.add(sourceKey)
   }
   return undefined
+}
+
+function sourceModelOptionsForEndpointFamily(
+  endpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily'],
+  options: {
+    mappingAnthropicSourceModelOptions?: ModelMappingProtocolOption[]
+    mappingGeminiSourceModelOptions?: ModelMappingProtocolOption[]
+    mappingSourceModelOptions?: ModelMappingProtocolOption[]
+  }
+): ModelMappingProtocolOption[] | undefined {
+  if (endpointFamily === 'messages') return options.mappingAnthropicSourceModelOptions
+  if (endpointFamily === 'generate_content' || endpointFamily === 'stream_generate_content') return options.mappingGeminiSourceModelOptions
+  return options.mappingSourceModelOptions
+}
+
+function modelOptionSupportsProtocol(
+  model: string,
+  endpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily'] | AccountFormModel['modelMappings'][number]['upstreamEndpointFamily'],
+  options?: ModelMappingProtocolOption[]
+): boolean {
+  if (!options?.length) return true
+  const item = options.find((option) => option.value === model)
+  if (!item) return true
+  return Boolean(item.supportedApiProtocols?.includes(endpointFamily as ProviderModelApiProtocol))
 }

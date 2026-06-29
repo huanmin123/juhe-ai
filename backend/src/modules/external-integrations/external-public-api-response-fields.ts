@@ -258,8 +258,7 @@ function publicApiKeyFields(prefix: string): ExternalPublicApiField[] {
     apiDocField(`${prefix}.routeStrategyMode`, 'string', false, '策略路由模式。', 'normal'),
     apiDocField(`${prefix}.routeStrategyStatus`, 'string', false, '策略路由状态：active 或 disabled。', 'active'),
     apiDocField(`${prefix}.expiresAt`, 'string', false, 'API Key 到期时间，ISO 8601 字符串；未设置时缺省。', '2026-12-31T23:59:59.000Z'),
-    apiDocField(`${prefix}.availabilitySchedule`, 'object', false, 'API Key 时间计划；未设置时缺省。'),
-    apiDocField(`${prefix}.availabilityScheduleActive`, 'boolean', false, 'API Key 时间计划当前派生状态；真实可用性仍需同时满足 status、过期时间和系统账户状态，未设置计划时缺省。', true)
+    apiDocField(`${prefix}.availabilitySchedule`, 'object', false, 'API Key 时间计划；未设置时缺省。计划命中开始 / 结束边界时会直接更新 API Key status。')
   ]
 }
 

@@ -148,7 +148,7 @@ export function listGatewayDispatchCandidateRows(
         group_accounts.local_priority, group_accounts.local_super_priority_enabled, group_accounts.local_fallback_enabled,
         accounts.id, accounts.system_account_id, accounts.provider_code, accounts.provider_protocol_profile_id, accounts.protocol_code, accounts.protocol_version, accounts.name, accounts.type, accounts.status, accounts.schedulable, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled, accounts.client_compatibility,
         accounts.credentials_encrypted, accounts.proxy_profile_id, accounts.cooldown_until, accounts.last_error_message, accounts.stream_failure_count, accounts.stream_failure_window_started_at,
-        accounts.availability_schedule_active, accounts.account_expires_at, accounts.last_successful_test_model, accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id, accounts.authorization_instance_owner_system_account_id,
+        accounts.account_expires_at, accounts.last_successful_test_model, accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id, accounts.authorization_instance_owner_system_account_id,
         source_accounts.id AS resource_account_id,
         source_accounts.provider_code AS resource_provider_code,
         source_accounts.provider_protocol_profile_id AS resource_provider_protocol_profile_id,
@@ -157,7 +157,6 @@ export function listGatewayDispatchCandidateRows(
         source_accounts.type AS resource_type,
         source_accounts.status AS resource_status,
         source_accounts.schedulable AS resource_schedulable,
-        source_accounts.availability_schedule_active AS resource_availability_schedule_active,
         source_accounts.account_expires_at AS resource_account_expires_at,
         source_accounts.cooldown_until AS resource_cooldown_until,
         source_accounts.last_error_code AS resource_last_error_code,
@@ -178,7 +177,6 @@ export function listGatewayDispatchCandidateRows(
         AND accounts.deleted_at IS NULL
         AND accounts.status IN (${statusSetSql})
         AND accounts.schedulable = 1
-        AND accounts.availability_schedule_active = 1
         AND (? = 1 OR accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?)
         AND (
           (accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth'))
@@ -189,7 +187,6 @@ export function listGatewayDispatchCandidateRows(
             AND source_accounts.type IN ('api_key', 'oauth')
             AND source_accounts.status IN (${statusSetSql})
             AND source_accounts.schedulable = 1
-            AND source_accounts.availability_schedule_active = 1
             AND (? = 1 OR source_accounts.cooldown_until IS NULL OR source_accounts.cooldown_until <= ?)
             AND (source_accounts.account_expires_at IS NULL OR source_accounts.account_expires_at > ?)
             AND (source_accounts.last_error_code IS NULL OR source_accounts.last_error_code <> 'account_expired')
@@ -240,7 +237,7 @@ export async function listGatewayDispatchCandidateRowsAsync(
       group_accounts.local_priority, group_accounts.local_super_priority_enabled, group_accounts.local_fallback_enabled,
       accounts.id, accounts.system_account_id, accounts.provider_code, accounts.provider_protocol_profile_id, accounts.protocol_code, accounts.protocol_version, accounts.name, accounts.type, accounts.status, accounts.schedulable, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled, accounts.client_compatibility,
       accounts.credentials_encrypted, accounts.proxy_profile_id, accounts.cooldown_until, accounts.last_error_message, accounts.stream_failure_count, accounts.stream_failure_window_started_at,
-      accounts.availability_schedule_active, accounts.account_expires_at, accounts.last_successful_test_model, accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id, accounts.authorization_instance_owner_system_account_id,
+      accounts.account_expires_at, accounts.last_successful_test_model, accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id, accounts.authorization_instance_owner_system_account_id,
       source_accounts.id AS resource_account_id,
       source_accounts.provider_code AS resource_provider_code,
       source_accounts.provider_protocol_profile_id AS resource_provider_protocol_profile_id,
@@ -249,7 +246,6 @@ export async function listGatewayDispatchCandidateRowsAsync(
       source_accounts.type AS resource_type,
       source_accounts.status AS resource_status,
       source_accounts.schedulable AS resource_schedulable,
-      source_accounts.availability_schedule_active AS resource_availability_schedule_active,
       source_accounts.account_expires_at AS resource_account_expires_at,
       source_accounts.cooldown_until AS resource_cooldown_until,
       source_accounts.last_error_code AS resource_last_error_code,
@@ -270,7 +266,6 @@ export async function listGatewayDispatchCandidateRowsAsync(
       AND accounts.deleted_at IS NULL
       AND accounts.status IN (${statusSetSql})
       AND accounts.schedulable = 1
-      AND accounts.availability_schedule_active = 1
       AND (? = 1 OR accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?)
       AND (
         (accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth'))
@@ -281,7 +276,6 @@ export async function listGatewayDispatchCandidateRowsAsync(
           AND source_accounts.type IN ('api_key', 'oauth')
           AND source_accounts.status IN (${statusSetSql})
           AND source_accounts.schedulable = 1
-          AND source_accounts.availability_schedule_active = 1
           AND (? = 1 OR source_accounts.cooldown_until IS NULL OR source_accounts.cooldown_until <= ?)
           AND (source_accounts.account_expires_at IS NULL OR source_accounts.account_expires_at > ?)
           AND (source_accounts.last_error_code IS NULL OR source_accounts.last_error_code <> 'account_expired')
@@ -336,7 +330,7 @@ export function listGatewayDispatchModelCandidateRows(
           group_accounts.created_at AS binding_created_at,
           accounts.id, accounts.system_account_id, accounts.provider_code, accounts.provider_protocol_profile_id, accounts.protocol_code, accounts.protocol_version, accounts.name, accounts.type, accounts.status, accounts.schedulable, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled, accounts.client_compatibility,
           accounts.credentials_encrypted, accounts.proxy_profile_id, accounts.cooldown_until, accounts.last_error_message, accounts.stream_failure_count, accounts.stream_failure_window_started_at,
-          accounts.availability_schedule_active, accounts.account_expires_at, accounts.last_successful_test_model, accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id, accounts.authorization_instance_owner_system_account_id,
+          accounts.account_expires_at, accounts.last_successful_test_model, accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id, accounts.authorization_instance_owner_system_account_id,
           source_accounts.id AS resource_account_id,
           source_accounts.provider_code AS resource_provider_code,
           source_accounts.provider_protocol_profile_id AS resource_provider_protocol_profile_id,
@@ -345,7 +339,6 @@ export function listGatewayDispatchModelCandidateRows(
           source_accounts.type AS resource_type,
           source_accounts.status AS resource_status,
           source_accounts.schedulable AS resource_schedulable,
-          source_accounts.availability_schedule_active AS resource_availability_schedule_active,
           source_accounts.account_expires_at AS resource_account_expires_at,
           source_accounts.cooldown_until AS resource_cooldown_until,
           source_accounts.last_error_code AS resource_last_error_code,
@@ -368,7 +361,6 @@ export function listGatewayDispatchModelCandidateRows(
           AND accounts.deleted_at IS NULL
           AND accounts.status IN (${statusSetSql})
           AND accounts.schedulable = 1
-          AND accounts.availability_schedule_active = 1
           AND (? = 1 OR accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?)
           AND (
             (accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth'))
@@ -379,7 +371,6 @@ export function listGatewayDispatchModelCandidateRows(
               AND source_accounts.type IN ('api_key', 'oauth')
               AND source_accounts.status IN (${statusSetSql})
               AND source_accounts.schedulable = 1
-              AND source_accounts.availability_schedule_active = 1
               AND (? = 1 OR source_accounts.cooldown_until IS NULL OR source_accounts.cooldown_until <= ?)
               AND (source_accounts.account_expires_at IS NULL OR source_accounts.account_expires_at > ?)
               AND (source_accounts.last_error_code IS NULL OR source_accounts.last_error_code <> 'account_expired')
@@ -510,7 +501,7 @@ export async function listGatewayDispatchModelCandidateRowsAsync(
         group_accounts.created_at AS binding_created_at,
         accounts.id, accounts.system_account_id, accounts.provider_code, accounts.provider_protocol_profile_id, accounts.protocol_code, accounts.protocol_version, accounts.name, accounts.type, accounts.status, accounts.schedulable, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled, accounts.client_compatibility,
         accounts.credentials_encrypted, accounts.proxy_profile_id, accounts.cooldown_until, accounts.last_error_message, accounts.stream_failure_count, accounts.stream_failure_window_started_at,
-        accounts.availability_schedule_active, accounts.account_expires_at, accounts.last_successful_test_model, accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id, accounts.authorization_instance_owner_system_account_id,
+        accounts.account_expires_at, accounts.last_successful_test_model, accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id, accounts.authorization_instance_owner_system_account_id,
         source_accounts.id AS resource_account_id,
         source_accounts.provider_code AS resource_provider_code,
         source_accounts.provider_protocol_profile_id AS resource_provider_protocol_profile_id,
@@ -519,7 +510,6 @@ export async function listGatewayDispatchModelCandidateRowsAsync(
         source_accounts.type AS resource_type,
         source_accounts.status AS resource_status,
         source_accounts.schedulable AS resource_schedulable,
-        source_accounts.availability_schedule_active AS resource_availability_schedule_active,
         source_accounts.account_expires_at AS resource_account_expires_at,
         source_accounts.cooldown_until AS resource_cooldown_until,
         source_accounts.last_error_code AS resource_last_error_code,
@@ -542,7 +532,6 @@ export async function listGatewayDispatchModelCandidateRowsAsync(
         AND accounts.deleted_at IS NULL
         AND accounts.status IN (${statusSetSql})
         AND accounts.schedulable = 1
-        AND accounts.availability_schedule_active = 1
         AND (? = 1 OR accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?)
         AND (
           (accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth'))
@@ -553,7 +542,6 @@ export async function listGatewayDispatchModelCandidateRowsAsync(
             AND source_accounts.type IN ('api_key', 'oauth')
             AND source_accounts.status IN (${statusSetSql})
             AND source_accounts.schedulable = 1
-            AND source_accounts.availability_schedule_active = 1
             AND (? = 1 OR source_accounts.cooldown_until IS NULL OR source_accounts.cooldown_until <= ?)
             AND (source_accounts.account_expires_at IS NULL OR source_accounts.account_expires_at > ?)
             AND (source_accounts.last_error_code IS NULL OR source_accounts.last_error_code <> 'account_expired')

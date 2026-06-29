@@ -103,7 +103,6 @@ try {
     route_strategy_config_json: null,
     selected_group_id: 'group_passive_quota',
     status: 'active',
-    availability_schedule_active: 1,
     expires_at: null,
     system_account_image_generation_enabled: 0,
     quota_limits_json: JSON.stringify({
@@ -202,7 +201,6 @@ try {
     route_strategy_config_json: null,
     selected_group_id: 'group_passive_quota',
     status: 'active',
-    availability_schedule_active: 1,
     expires_at: null,
     system_account_image_generation_enabled: 0,
     quota_limits_json: JSON.stringify({ daily: { enabled: true, limit: 10 } })
@@ -221,7 +219,6 @@ try {
     route_strategy_config_json: null,
     selected_group_id: 'group_passive_quota',
     status: 'active',
-    availability_schedule_active: 1,
     expires_at: null,
     system_account_image_generation_enabled: 0,
     quota_limits_json: JSON.stringify({ daily: { enabled: true, limit: 1 } })
@@ -241,7 +238,6 @@ try {
     route_strategy_config_json: null,
     selected_group_id: 'group_passive_quota',
     status: 'active',
-    availability_schedule_active: 1,
     expires_at: null,
     system_account_image_generation_enabled: 0,
     quota_limits_json: JSON.stringify({ daily: { enabled: true, limit: 1 } })
@@ -264,7 +260,6 @@ try {
     route_strategy_config_json: null,
     selected_group_id: 'group_passive_quota',
     status: 'active',
-    availability_schedule_active: 1,
     expires_at: null,
     system_account_image_generation_enabled: 0,
     quota_limits_json: JSON.stringify({ daily: { enabled: true, limit: 1 } })
@@ -394,7 +389,6 @@ function assertLocalQuotaReadersRejectServerRole(): void {
       route_strategy_config_json: null,
       selected_group_id: 'group_sync_reject',
       status: 'active',
-      availability_schedule_active: 1,
       expires_at: null,
       system_account_image_generation_enabled: 0,
       quota_limits_json: JSON.stringify({ daily: { enabled: true, limit: 1 } })

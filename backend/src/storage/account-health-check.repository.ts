@@ -371,9 +371,6 @@ function dueHealthCheckRows(rows: AccountListRow[], options: AccountHealthCheckS
   const dueRows: AccountListRow[] = []
   const recentSuccessSignals = new Map<string, string>()
   for (const row of rows) {
-    if (row.availability_schedule_active === 0) {
-      continue
-    }
     const recentSuccessAt = normalizedIso(row.last_health_success_at)
     const recentSuccessMs = recentSuccessAt ? Date.parse(recentSuccessAt) : NaN
     if (recentSuccessAt && Number.isFinite(recentSuccessMs) && recentSuccessMs >= cutoffMs) {
@@ -392,9 +389,6 @@ async function dueHealthCheckRowsAsync(client: DatabaseClient, rows: AccountList
   const dueRows: AccountListRow[] = []
   const recentSuccessSignals = new Map<string, string>()
   for (const row of rows) {
-    if (row.availability_schedule_active === 0) {
-      continue
-    }
     const recentSuccessAt = normalizedIso(row.last_health_success_at)
     const recentSuccessMs = recentSuccessAt ? Date.parse(recentSuccessAt) : NaN
     if (recentSuccessAt && Number.isFinite(recentSuccessMs) && recentSuccessMs >= cutoffMs) {
@@ -579,7 +573,6 @@ function healthCheckAccountSelectColumnsAsync(client: DatabaseClient): string {
         source_accounts.status AS source_status,
         source_accounts.schedulable AS source_schedulable,
         source_accounts.availability_schedule_json AS source_availability_schedule_json,
-        source_accounts.availability_schedule_active AS source_availability_schedule_active,
         source_accounts.account_expires_at AS source_account_expires_at,
         source_accounts.cooldown_until AS source_cooldown_until,
         source_accounts.last_error_code AS source_last_error_code,
@@ -637,7 +630,6 @@ function healthCheckAccountSummaries(rows: AccountListRow[]): AccountSummary[] {
       proxyProfileId: accountResourceProxyProfileId(row) ?? undefined,
       schedulable: row.schedulable === 1,
       availabilitySchedule: parseAccountAvailabilityScheduleJson(row.availability_schedule_json),
-      availabilityScheduleActive: row.availability_schedule_active !== 0,
       accountExpiresAt: row.account_expires_at ?? undefined,
       cooldownUntil: row.cooldown_until ?? undefined,
       lastErrorCode: row.last_error_code ?? undefined,
@@ -665,7 +657,6 @@ function healthCheckAccountSummaries(rows: AccountListRow[]): AccountSummary[] {
       authorizationInstanceSourceAccountStatus: isAuthorizedView ? row.source_status ?? undefined : undefined,
       authorizationInstanceSourceAccountSchedulable: isAuthorizedView && typeof row.source_schedulable === 'number' ? row.source_schedulable === 1 : undefined,
       authorizationInstanceSourceAccountAvailabilitySchedule: isAuthorizedView ? parseAccountAvailabilityScheduleJson(row.source_availability_schedule_json) : undefined,
-      authorizationInstanceSourceAccountScheduleActive: isAuthorizedView ? row.source_availability_schedule_active !== 0 : undefined,
       authorizationInstanceSourceAccountExpiresAt: isAuthorizedView ? row.source_account_expires_at ?? undefined : undefined,
       authorizationInstanceSourceAccountCooldownUntil: isAuthorizedView ? row.source_cooldown_until ?? undefined : undefined,
       authorizationInstanceSourceAccountLastErrorCode: isAuthorizedView ? row.source_last_error_code ?? undefined : undefined,
@@ -744,7 +735,6 @@ async function healthCheckAccountSummariesAsync(client: DatabaseClient, rows: Ac
       proxyProfileId: accountResourceProxyProfileId(row) ?? undefined,
       schedulable: row.schedulable === 1,
       availabilitySchedule: parseAccountAvailabilityScheduleJson(row.availability_schedule_json),
-      availabilityScheduleActive: row.availability_schedule_active !== 0,
       accountExpiresAt: row.account_expires_at ?? undefined,
       cooldownUntil: row.cooldown_until ?? undefined,
       lastErrorCode: row.last_error_code ?? undefined,
@@ -772,7 +762,6 @@ async function healthCheckAccountSummariesAsync(client: DatabaseClient, rows: Ac
       authorizationInstanceSourceAccountStatus: isAuthorizedView ? row.source_status ?? undefined : undefined,
       authorizationInstanceSourceAccountSchedulable: isAuthorizedView && typeof row.source_schedulable === 'number' ? row.source_schedulable === 1 : undefined,
       authorizationInstanceSourceAccountAvailabilitySchedule: isAuthorizedView ? parseAccountAvailabilityScheduleJson(row.source_availability_schedule_json) : undefined,
-      authorizationInstanceSourceAccountScheduleActive: isAuthorizedView ? row.source_availability_schedule_active !== 0 : undefined,
       authorizationInstanceSourceAccountExpiresAt: isAuthorizedView ? row.source_account_expires_at ?? undefined : undefined,
       authorizationInstanceSourceAccountCooldownUntil: isAuthorizedView ? row.source_cooldown_until ?? undefined : undefined,
       authorizationInstanceSourceAccountLastErrorCode: isAuthorizedView ? row.source_last_error_code ?? undefined : undefined,

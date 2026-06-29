@@ -92,7 +92,6 @@ function apiKeySummariesForMockdata(
       routeStrategyStatus: key.routeStrategyStatus,
       status: key.status,
       expiresAt: key.expiresAt,
-      availabilityScheduleActive: key.availabilityScheduleActive,
       key: key.key
     }
   })

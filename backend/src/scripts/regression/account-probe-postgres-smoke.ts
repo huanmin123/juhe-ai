@@ -164,7 +164,6 @@ async function setHealthCheckDue(accountId: string, dueAt: string): Promise<void
         cooldown_until = NULL,
         cooldown_retest_failure_count = 0,
         cooldown_retest_observation_started_at = NULL,
-        availability_schedule_active = 1,
         account_expires_at = NULL,
         updated_at = $1
     WHERE id = $2
@@ -182,7 +181,6 @@ async function setCooldownDue(accountId: string, dueAt: string): Promise<void> {
         cooldown_retest_observation_started_at = NULL,
         cooldown_retest_last_at = NULL,
         cooldown_retest_last_status_code = NULL,
-        availability_schedule_active = 1,
         account_expires_at = NULL,
         updated_at = $1
     WHERE id = $2

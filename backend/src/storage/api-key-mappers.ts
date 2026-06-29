@@ -31,7 +31,6 @@ export interface ApiKeyRow {
   expires_at: string | null
   quota_limits_json: string | null
   availability_schedule_json?: string | null
-  availability_schedule_active?: number | null
 }
 
 export function apiKeySummariesFromRows(
@@ -104,9 +103,6 @@ function apiKeySummaryFromRow(
     expiresAt: row.expires_at ?? undefined,
     quotaLimits: parseRequestQuotaLimitsJson(row.quota_limits_json),
     availabilitySchedule,
-    availabilityScheduleActive: availabilitySchedule?.enabled
-      ? Number(row.availability_schedule_active ?? 1) !== 0
-      : undefined,
     usage: options.usage
   }
 }

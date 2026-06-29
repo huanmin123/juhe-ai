@@ -14,25 +14,6 @@
       <div v-if="form.modelMappings.length" class="model-mapping-list">
         <div v-for="(mapping, index) in form.modelMappings" :key="index" class="model-mapping-row">
           <div class="model-mapping-side">
-            <a-auto-complete
-              v-if="isHybridAccount"
-              v-model:value="mapping.sourceModel"
-              allow-clear
-              :disabled="authorizedEditing"
-              :options="mappingSourceModelOptionsFor(mapping.sourceEndpointFamily)"
-              placeholder="来源模型"
-              show-search
-            />
-            <a-select
-              v-else
-              v-model:value="mapping.sourceModel"
-              allow-clear
-              :disabled="authorizedEditing"
-              option-filter-prop="label"
-              :options="mappingSourceModelOptionsFor(mapping.sourceEndpointFamily)"
-              placeholder="来源模型"
-              show-search
-            />
             <a-select
               v-model:value="mapping.sourceEndpointFamily"
               :disabled="authorizedEditing"
@@ -40,34 +21,33 @@
               class="model-mapping-endpoint"
               placeholder="来源协议"
             />
-          </div>
-          <SwapRightOutlined class="model-mapping-arrow" />
-          <div class="model-mapping-side">
-            <a-auto-complete
-              v-if="isHybridAccount"
-              v-model:value="mapping.upstreamModel"
-              allow-clear
-              :disabled="authorizedEditing"
-              :options="mappingUpstreamModelOptions"
-              placeholder="目标模型"
-              show-search
-            />
             <a-select
-              v-else
-              v-model:value="mapping.upstreamModel"
+              v-model:value="mapping.sourceModel"
               allow-clear
               :disabled="authorizedEditing"
               option-filter-prop="label"
-              :options="mappingUpstreamModelOptions"
-              placeholder="目标模型"
+              :options="mappingSourceModelOptionsFor(mapping.sourceEndpointFamily)"
+              placeholder="来源模型"
               show-search
             />
+          </div>
+          <SwapRightOutlined class="model-mapping-arrow" />
+          <div class="model-mapping-side">
             <a-select
               v-model:value="mapping.upstreamEndpointFamily"
               :disabled="authorizedEditing"
               :options="upstreamEndpointFamilyOptions(mapping.sourceEndpointFamily)"
               class="model-mapping-endpoint"
               placeholder="目标协议"
+            />
+            <a-select
+              v-model:value="mapping.upstreamModel"
+              allow-clear
+              :disabled="authorizedEditing"
+              option-filter-prop="label"
+              :options="mappingUpstreamModelOptionsFor(mapping.upstreamEndpointFamily)"
+              placeholder="目标模型"
+              show-search
             />
           </div>
           <div class="model-mapping-actions">
@@ -127,12 +107,19 @@ import { DeleteOutlined, PlusOutlined, QuestionCircleOutlined, SwapRightOutlined
 import ProxySelect from '@/components/ProxySelect.vue'
 import type { SelectOption } from '@/shared/selectLabelCache'
 import {
+  ANTHROPIC_MESSAGES_FAMILY,
   GEMINI_GENERATE_CONTENT_FAMILY,
   GEMINI_STREAM_GENERATE_CONTENT_FAMILY,
+  OPENAI_CHAT_COMPLETIONS_FAMILY,
   isHybridProviderCode
 } from '@/shared/providerProtocol'
 import type { ProviderProtocolProfileDefinition } from '@/types/domain'
 import type { AccountFormModel } from './accountFormTypes'
+import {
+  accountModelMappingEndpointFamilyProtocol,
+  filterAccountModelMappingOptionsByEndpointFamily,
+  type AccountModelMappingModelOption
+} from './accountModelMappingModelOptions'
 import { accountEndpointModeOptionsForProfile } from './accountEndpointModes'
 import {
   endpointModesForProfile
@@ -148,19 +135,21 @@ const props = defineProps<{
   form: AccountFormModel
   isOAuthForm: boolean
   isManagementView: boolean
-  mappingAnthropicSourceModelOptions: Array<{ label: string; value: string }>
-  mappingGeminiSourceModelOptions: Array<{ label: string; value: string }>
-  mappingSourceModelOptions: Array<{ label: string; value: string }>
-  mappingUpstreamModelOptions: Array<{ label: string; value: string }>
+  mappingAnthropicSourceModelOptions: ModelMappingSourceModelOption[]
+  mappingGeminiSourceModelOptions: ModelMappingSourceModelOption[]
+  mappingSourceModelOptions: ModelMappingSourceModelOption[]
+  mappingUpstreamModelOptions: ModelMappingSourceModelOption[]
   proxyOptions: SelectOption[]
   selectedProtocolProfile?: ProviderProtocolProfileDefinition
 }>()
+
+type ModelMappingSourceModelOption = AccountModelMappingModelOption
 
 const activeProfile = computed(() => props.selectedProtocolProfile ?? props.form)
 const isHybridAccount = computed(() => isHybridProviderCode(props.form.providerCode))
 const modelMappingTooltip = computed(() => (
   isHybridAccount.value
-    ? '混合供应商账户在这里配置下游模型和协议入口到真实上游模型的映射；右侧上游模型只能选择账户支持模型。'
+    ? '混合供应商账户在这里配置下游协议和模型到真实上游协议和模型的映射；左侧模型只能选择对应协议支持的模型，右侧上游模型只能选择账户支持模型。'
     : '只在当前供应商和当前协议内做模型名改写；右侧上游模型只能选择账户支持模型。'
 ))
 const endpointModeOptions = computed(() => {
@@ -189,7 +178,11 @@ watch(() => [
   props.form.modelMappings.map((mapping) => `${mapping.sourceEndpointFamily}:${mapping.upstreamEndpointFamily}`).join('|'),
   props.selectedProtocolProfile?.protocolCode ?? '',
   props.selectedProtocolProfile?.protocolVersion ?? '',
-  props.form.supportedEndpointModes.join(',')
+  props.form.supportedEndpointModes.join(','),
+  sourceModelOptionsFingerprint(props.mappingSourceModelOptions),
+  sourceModelOptionsFingerprint(props.mappingAnthropicSourceModelOptions),
+  sourceModelOptionsFingerprint(props.mappingGeminiSourceModelOptions),
+  sourceModelOptionsFingerprint(props.mappingUpstreamModelOptions)
 ].join('|'), () => {
   for (const mapping of props.form.modelMappings) {
     if (!isAccountModelMappingSourceEndpointFamilyAllowed(mapping.sourceEndpointFamily, modelMappingProtocolContext())) {
@@ -198,15 +191,50 @@ watch(() => [
     if (upstreamEndpointFamilyDisabled(mapping.sourceEndpointFamily, mapping.upstreamEndpointFamily)) {
       mapping.upstreamEndpointFamily = defaultUpstreamEndpointFamilyForSource(mapping.sourceEndpointFamily)
     }
+    if (!mappingSourceModelAllowed(mapping)) {
+      mapping.sourceModel = ''
+    }
+    if (!mappingUpstreamModelAllowed(mapping)) {
+      mapping.upstreamModel = ''
+    }
   }
 })
 
 function mappingSourceModelOptionsFor(sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']) {
-  if (sourceEndpointFamily === 'messages') return props.mappingAnthropicSourceModelOptions
+  const options = rawMappingSourceModelOptionsFor(sourceEndpointFamily)
+  return filterAccountModelMappingOptionsByEndpointFamily(options, sourceEndpointFamily)
+}
+
+function rawMappingSourceModelOptionsFor(sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']) {
+  if (sourceEndpointFamily === ANTHROPIC_MESSAGES_FAMILY) return props.mappingAnthropicSourceModelOptions
   if (sourceEndpointFamily === GEMINI_GENERATE_CONTENT_FAMILY || sourceEndpointFamily === GEMINI_STREAM_GENERATE_CONTENT_FAMILY) {
     return props.mappingGeminiSourceModelOptions
   }
   return props.mappingSourceModelOptions
+}
+
+function mappingSourceModelAllowed(mapping: AccountFormModel['modelMappings'][number]): boolean {
+  const sourceModel = mapping.sourceModel.trim()
+  if (!sourceModel) return true
+  const options = mappingSourceModelOptionsFor(mapping.sourceEndpointFamily)
+  if (!options.length) return true
+  return options.some((option) => option.value === sourceModel)
+}
+
+function sourceModelOptionsFingerprint(options: ModelMappingSourceModelOption[]): string {
+  return options.map((option) => `${option.value}:${option.supportedApiProtocols?.join(',') ?? ''}`).join('|')
+}
+
+function mappingUpstreamModelOptionsFor(upstreamEndpointFamily: AccountFormModel['modelMappings'][number]['upstreamEndpointFamily']) {
+  return filterAccountModelMappingOptionsByEndpointFamily(props.mappingUpstreamModelOptions, upstreamEndpointFamily)
+}
+
+function mappingUpstreamModelAllowed(mapping: AccountFormModel['modelMappings'][number]): boolean {
+  const upstreamModel = mapping.upstreamModel.trim()
+  if (!upstreamModel) return true
+  const options = mappingUpstreamModelOptionsFor(mapping.upstreamEndpointFamily)
+  if (!options.length) return true
+  return options.some((option) => option.value === upstreamModel)
 }
 
 function upstreamEndpointFamilyOptions(sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']) {
@@ -236,9 +264,9 @@ function defaultUpstreamEndpointFamilyForSource(
 function addModelMapping(): void {
   props.form.modelMappings.push({
     sourceModel: '',
-    sourceEndpointFamily: 'chat_completions',
+    sourceEndpointFamily: OPENAI_CHAT_COMPLETIONS_FAMILY,
     upstreamModel: '',
-    upstreamEndpointFamily: 'chat_completions',
+    upstreamEndpointFamily: OPENAI_CHAT_COMPLETIONS_FAMILY,
     enabled: true
   })
 }
@@ -355,7 +383,7 @@ function modelMappingProtocolContext() {
 
 .model-mapping-side {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(126px, 148px);
+  grid-template-columns: minmax(126px, 148px) minmax(0, 1fr);
   gap: 8px;
   min-width: 0;
 }

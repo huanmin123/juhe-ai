@@ -257,7 +257,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       client_compatibility TEXT NOT NULL DEFAULT 'openai_standard',
       schedulable INTEGER NOT NULL DEFAULT 1,
       availability_schedule_json TEXT,
-      availability_schedule_active INTEGER NOT NULL DEFAULT 1,
       availability_schedule_next_check_at TEXT,
       notes TEXT,
       account_expires_at TEXT,
@@ -631,7 +630,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       expires_at TEXT,
       quota_limits_json TEXT,
       availability_schedule_json TEXT,
-      availability_schedule_active INTEGER NOT NULL DEFAULT 1,
       availability_schedule_next_check_at TEXT,
       last_used_at TEXT,
       created_at TEXT NOT NULL,
@@ -807,9 +805,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_accounts_owner_expiry_sweep
       ON accounts(system_account_id, account_expires_at ASC, updated_at ASC, id ASC)
       WHERE account_expires_at IS NOT NULL;
-    CREATE INDEX IF NOT EXISTS idx_accounts_availability_schedule_status_sync
-      ON accounts(availability_schedule_active, id)
-      WHERE availability_schedule_json IS NOT NULL AND deleted_at IS NULL;
     CREATE INDEX IF NOT EXISTS idx_accounts_availability_schedule_next_check
       ON accounts(availability_schedule_next_check_at ASC, id ASC)
       WHERE availability_schedule_json IS NOT NULL AND deleted_at IS NULL;
@@ -915,9 +910,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_api_keys_quota_snapshot
       ON api_keys(status, updated_at DESC, id)
       WHERE quota_limits_json IS NOT NULL;
-    CREATE INDEX IF NOT EXISTS idx_api_keys_availability_schedule_status_sync
-      ON api_keys(availability_schedule_active, updated_at ASC, id ASC)
-      WHERE availability_schedule_json IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_api_keys_availability_schedule_next_check
       ON api_keys(availability_schedule_next_check_at ASC, id ASC)
       WHERE availability_schedule_json IS NOT NULL;

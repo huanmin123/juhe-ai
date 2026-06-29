@@ -101,7 +101,6 @@ interface AccountSummary {
   authorizationInstanceSourceAccountStatus?: string
   authorizationInstanceSourceAccountSchedulable?: boolean
   authorizationInstanceSourceAccountAvailabilitySchedule?: Record<string, unknown>
-  authorizationInstanceSourceAccountScheduleActive?: boolean
   authorizationInstanceSourceAccountExpiresAt?: string
   boundGroupId?: string
   credentials?: Record<string, unknown>

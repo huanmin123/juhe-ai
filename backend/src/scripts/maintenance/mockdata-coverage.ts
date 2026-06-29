@@ -80,7 +80,7 @@ function assertBusinessCoverage(database: BusinessDatabase, created: CreatedMock
     FROM account_model_mappings
     WHERE account_id IN (${placeholders(accountIds)})
   `, ...accountIds), 2)
-  assertMinimum('账户时间计划样本缺失', scalar(database, `SELECT COUNT(*) AS value FROM accounts WHERE id IN (${placeholders(accountIds)}) AND availability_schedule_json IS NOT NULL AND availability_schedule_active = 0`, ...accountIds), 1)
+  assertMinimum('账户时间计划样本缺失', scalar(database, `SELECT COUNT(*) AS value FROM accounts WHERE id IN (${placeholders(accountIds)}) AND availability_schedule_json IS NOT NULL AND status = 'disabled'`, ...accountIds), 1)
   assertMinimum('API Key 时间计划样本缺失', scalar(database, `SELECT COUNT(*) AS value FROM api_keys WHERE id IN (${placeholders(apiKeyIds)}) AND availability_schedule_json IS NOT NULL`, ...apiKeyIds), 1)
   assertMinimum('系统账号图像权限样本缺失', scalar(database, "SELECT COUNT(*) AS value FROM system_accounts WHERE username LIKE 'mockdata_%' AND image_generation_enabled = 1"), 1)
 }

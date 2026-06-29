@@ -30,8 +30,7 @@ const apiKeyMutationSchema = z.object({
   status: z.enum(['active', 'disabled']).optional(),
   expiresAt: z.string().nullable().optional(),
   quotaLimits: requestQuotaLimitsSchema.nullable().optional(),
-  availabilitySchedule: apiKeyAvailabilityScheduleSchema.nullable().optional(),
-  availabilityScheduleActive: z.boolean().optional()
+  availabilitySchedule: apiKeyAvailabilityScheduleSchema.nullable().optional()
 }).strict()
 
 const apiKeyCreateSchema = apiKeyMutationSchema.refine((value) => Boolean(value.routeStrategyId?.trim()), {
@@ -219,8 +218,7 @@ apiKeysRouter.patch('/:id', async (req, res, next) => {
             routeStrategyId: '策略路由',
             expiresAt: '过期时间',
             quotaLimits: '额度限制',
-            availabilitySchedule: '时间计划',
-            availabilityScheduleActive: '时间计划派生状态'
+            availabilitySchedule: '时间计划'
           }),
           viewers: viewer(ownerSystemAccountId, 'resource_owner')
         }

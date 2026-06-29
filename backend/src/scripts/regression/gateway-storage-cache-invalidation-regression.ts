@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path'
 
 import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-gateway-storage-cache-invalidation-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -54,7 +55,8 @@ try {
   const adminAccess = { systemAccountId: 'sys_admin', role: 'admin' as const }
   const ownerGroup = repositories.createGroup({
     name: '缓存失效所有者分组',
-    providerCode: 'gpt'
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, ownerAccess)
 
   const proxy = repositories.createProxy({
@@ -66,6 +68,7 @@ try {
   }, ownerAccess)
   const account = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '缓存失效主账户',
     type: 'api_key',
     status: 'active',
@@ -113,7 +116,8 @@ try {
 
   const emptyGroup = repositories.createGroup({
     name: '缓存失效新空分组',
-    providerCode: 'gpt'
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, ownerAccess)
   repositories.updateRouteStrategy(apiKey.routeStrategyId, {
     groupBindings: [{ groupId: emptyGroup.id, priority: 1, status: 'active' }]
@@ -167,7 +171,8 @@ try {
   assert.deepEqual(await runtimeAccountIds(granteeAuthorizedGroupApiKey.key), [], '直接回收分组授权后绑定该授权分组的 API Key 不应继续返回候选账号')
   const granteeGroup = repositories.createGroup({
     name: '缓存失效被授权分组',
-    providerCode: 'gpt'
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, granteeAccess)
   const replacedRevokedGroupBindingRouteStrategy = repositories.updateRouteStrategy(granteeAuthorizedGroupApiKey.routeStrategyId, {
     groupBindings: [
@@ -183,6 +188,7 @@ try {
   }, granteeAccess)
   const sharedAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '缓存失效共享账户',
     type: 'api_key',
     status: 'active',
@@ -258,10 +264,12 @@ try {
   const statusOwnerAccess = { systemAccountId: statusOwner.id, role: 'user' as const }
   const statusGroup = repositories.createGroup({
     name: '缓存失效状态分组',
-    providerCode: 'gpt'
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, statusOwnerAccess)
   const statusAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '缓存失效状态账户',
     type: 'api_key',
     status: 'active',

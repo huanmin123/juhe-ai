@@ -69,7 +69,7 @@
 | `cooldown-account-retest` / `account-api-key-cooldown-retest` | `ops-worker` | 外部复测 I/O，可受控并发，写记录仍投递 ingest |
 | `openai-oauth-access-token-refresh` | `ops-worker` | OAuth token 保活 |
 | `proxy-latency-refresh` | `ops-worker` | 代理延迟检测 |
-| `api-key-availability-schedule-status-sync` / `account-availability-schedule-status-sync` | `ops-worker` | 时间计划派生状态同步 |
+| `api-key-availability-schedule-status-sync` / `account-availability-schedule-status-sync` | `ops-worker` | 时间计划状态同步 |
 | `resource-authorization-expiry-sweep` | `ops-worker` | 授权到期扫描 |
 | `expired-deleted-account-cleanup` | `ops-worker` + DB service + ingest / stats | ops 调度业务库候选和最终删除；明细清理由 ingest / stats 推进 |
 

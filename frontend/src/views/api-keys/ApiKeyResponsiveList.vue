@@ -42,7 +42,7 @@
       </template>
       <template v-else-if="column.key === 'availabilitySchedule'">
         <a-tag class="schedule-tag" :color="apiKeyScheduleTagColor(record)">
-          {{ apiKeyScheduleSummary(record.availabilitySchedule, record.availabilityScheduleActive) }}
+          {{ apiKeyScheduleSummary(record.availabilitySchedule) }}
         </a-tag>
       </template>
       <template v-else-if="column.key === 'usage'">
@@ -123,7 +123,7 @@
           </div>
           <div class="mobile-list-meta-item mobile-list-meta-wide">
             <span>时间计划</span>
-            <strong>{{ apiKeyScheduleSummary(record.availabilitySchedule, record.availabilityScheduleActive) }}</strong>
+            <strong>{{ apiKeyScheduleSummary(record.availabilitySchedule) }}</strong>
           </div>
           <div class="mobile-list-meta-item mobile-list-meta-wide">
             <span>累计用量</span>

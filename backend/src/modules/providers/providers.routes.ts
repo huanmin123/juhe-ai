@@ -25,12 +25,14 @@ import {
   saveCustomProviderModelAsync,
   type ProviderModelCatalogItem
 } from '../model-pricing/model-catalog.service.js'
+import type { ProviderModelApiProtocol } from '../model-pricing/provider-driver.types.js'
 
 export const providersRouter = Router()
 
 interface ProviderModelOption {
   providerCode: string
   model: string
+  supportedApiProtocols?: ProviderModelApiProtocol[]
 }
 
 providersRouter.get('/', requireAdmin, async (_req, res, next) => {
@@ -65,7 +67,8 @@ providersRouter.get('/models/options', async (req, res, next) => {
     const options = dedupeProviderModelOptions(
       catalogs.flatMap((catalog) => catalog.map((item) => ({
         providerCode: item.providerCode,
-        model: item.model
+        model: item.model,
+        supportedApiProtocols: item.supportedApiProtocols
       })))
     )
     res.json(ok(options))
@@ -377,7 +380,7 @@ function providerWithDefaultTestModelPreference(provider: ProviderDefinition, pr
 }
 
 export function dedupeProviderModelOptions(options: ProviderModelOption[]): ProviderModelOption[] {
-  const seenProviderModels = new Set<string>()
+  const seenProviderModels = new Map<string, ProviderModelOption>()
   const result: ProviderModelOption[] = []
   for (const option of options) {
     const providerCode = option.providerCode.trim()
@@ -385,11 +388,33 @@ export function dedupeProviderModelOptions(options: ProviderModelOption[]): Prov
     if (!providerCode || !model) continue
     const normalizedProviderCode = providerCode.toLowerCase()
     const providerModelKey = `${normalizedProviderCode}\n${model}`
-    if (seenProviderModels.has(providerModelKey)) continue
-    seenProviderModels.add(providerModelKey)
-    result.push({ providerCode, model })
+    const existing = seenProviderModels.get(providerModelKey)
+    const supportedApiProtocols = normalizedProviderModelApiProtocols([
+      ...(existing?.supportedApiProtocols ?? []),
+      ...(option.supportedApiProtocols ?? [])
+    ])
+    if (existing) {
+      existing.supportedApiProtocols = supportedApiProtocols
+      continue
+    }
+    const item: ProviderModelOption = supportedApiProtocols.length
+      ? { providerCode, model, supportedApiProtocols }
+      : { providerCode, model }
+    seenProviderModels.set(providerModelKey, item)
+    result.push(item)
   }
   return result
+}
+
+function normalizedProviderModelApiProtocols(value: readonly ProviderModelApiProtocol[]): ProviderModelApiProtocol[] {
+  const seen = new Set<ProviderModelApiProtocol>()
+  const output: ProviderModelApiProtocol[] = []
+  for (const item of value) {
+    if (!item || seen.has(item)) continue
+    seen.add(item)
+    output.push(item)
+  }
+  return output
 }
 
 async function listProviderModelsForRequestAsync(input: {

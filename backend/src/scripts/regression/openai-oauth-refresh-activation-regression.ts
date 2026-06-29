@@ -211,7 +211,6 @@ function draftAccountSummary(draft: AccountTestDraftSnapshot): AccountSummary {
     supportedModels: draft.supportedModels,
     modelMappings: draft.modelMappings,
     schedulable: true,
-    availabilityScheduleActive: true,
     todayUsage: usage,
     usage,
     accessType: 'owner',

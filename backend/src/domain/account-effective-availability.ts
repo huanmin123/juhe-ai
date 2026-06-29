@@ -18,7 +18,6 @@ export type AccountEffectiveAvailabilityInput = Pick<
   | 'authorizationInstanceSourceAccountId'
   | 'authorizationInstanceSourceAccountStatus'
   | 'authorizationInstanceSourceAccountSchedulable'
-  | 'authorizationInstanceSourceAccountScheduleActive'
   | 'authorizationInstanceSourceAccountExpiresAt'
   | 'authorizationInstanceSourceAccountCooldownUntil'
   | 'authorizationInstanceSourceAccountLastErrorCode'
@@ -26,7 +25,6 @@ export type AccountEffectiveAvailabilityInput = Pick<
   | 'accountExpiresAt'
   | 'status'
   | 'schedulable'
-  | 'availabilityScheduleActive'
   | 'cooldownUntil'
   | 'lastErrorCode'
   | 'lastErrorMessage'
@@ -136,9 +134,6 @@ function sourceAccountAvailability(account: AccountEffectiveAvailabilityInput, n
   if (account.authorizationInstanceSourceAccountSchedulable === false) {
     return blocked('source_unschedulable', '来源停调', 'orange', 'source_account', '授权方原账户已关闭调度，当前账户不能调用')
   }
-  if (account.authorizationInstanceSourceAccountScheduleActive === false) {
-    return blocked('source_schedule_inactive', '来源时段外', 'gold', 'source_account', '授权方原账户当前不在允许使用时段，当前账户不能调用')
-  }
   return undefined
 }
 
@@ -166,9 +161,6 @@ function instanceAccountAvailability(account: AccountEffectiveAvailabilityInput,
   }
   if (isFuture(account.cooldownUntil, now)) {
     return blocked('instance_cooldown', `${instanceLabel}冷却`, 'gold', blockerScope, `${instanceReasonPrefix}正在冷却，恢复前不会参与调度`, account.cooldownUntil)
-  }
-  if (account.availabilityScheduleActive === false) {
-    return blocked('instance_schedule_inactive', `${instanceLabel}时段外`, 'gold', blockerScope, `${instanceReasonPrefix}当前不在允许使用时段，恢复前不会参与调度`)
   }
   if (!account.schedulable) {
     return blocked('instance_unschedulable', `${instanceLabel}停调`, 'orange', blockerScope, `${instanceReasonPrefix}暂时不可调用，恢复前不会参与调度`)

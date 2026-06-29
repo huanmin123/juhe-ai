@@ -221,48 +221,6 @@ assertEqual(
   1,
   '长期不可用仍应归入临时不可调用筛选'
 )
-const scheduleInactiveAccount = accountFixture({
-  effectiveAvailability: {
-    available: false,
-    status: 'instance_schedule_inactive',
-    label: '账户时段外',
-    color: 'gold',
-    blockerScope: 'account',
-    reason: '账户当前不在允许使用时段，恢复前不会参与调度'
-  },
-  availabilityScheduleActive: false
-})
-assertStatus('账户时段外', scheduleInactiveAccount, '停用', 'default')
-assertEqual(
-  filterAccounts({ accounts: [scheduleInactiveAccount], filters: accountFilters(['disabled']), isManagementView: false }).length,
-  1,
-  '账户时段外应能被停用状态筛选命中'
-)
-assertEqual(
-  filterAccounts({ accounts: [scheduleInactiveAccount], filters: accountFilters(['temporary_unavailable']), isManagementView: false }).length,
-  0,
-  '账户时段外不应被临时不可调用状态筛选命中'
-)
-const sourceScheduleInactiveAccount = accountFixture({
-  accessType: 'authorized',
-  authorizationInstanceSourceAccountId: 'source_schedule_inactive_account',
-  authorizationInstanceSourceAccountStatus: 'active',
-  authorizationInstanceSourceAccountScheduleActive: false,
-  effectiveAvailability: {
-    available: false,
-    status: 'source_schedule_inactive',
-    label: '来源时段外',
-    color: 'gold',
-    blockerScope: 'source_account',
-    reason: '授权方原账户当前不在允许使用时段，当前账户不能调用'
-  }
-})
-assertStatus('来源时段外', sourceScheduleInactiveAccount, '停用', 'default')
-assertEqual(
-  filterAccounts({ accounts: [sourceScheduleInactiveAccount], filters: accountFilters(['disabled']), isManagementView: false }).length,
-  1,
-  '来源时段外应能被停用状态筛选命中'
-)
 const permissionDeniedAccount = accountFixture({
   effectiveAvailability: {
     available: false,
@@ -344,37 +302,6 @@ assertTrue(precheckTooltip.some((line) => line.includes('运行态状态：待�
 assertTrue(precheckTooltip.some((line) => line.includes('数据库状态仍为正常')), '事前确认 tooltip 应说明数据库状态未被写死')
 assertTrue(precheckTooltip.some((line) => line.includes('短窗口失败：6 次')), '事前确认 tooltip 应展示短窗口失败次数')
 
-const scheduleInactiveTooltip = accountStatusTooltipLines(accountFixture({
-  effectiveAvailability: {
-    available: false,
-    status: 'instance_schedule_inactive',
-    label: '账户时段外',
-    color: 'gold',
-    blockerScope: 'account',
-    reason: '账户当前不在允许使用时段，恢复前不会参与调度'
-  },
-  availabilityScheduleActive: false
-}))
-assertTrue(scheduleInactiveTooltip.some((line) => line.includes('账户当前不在允许使用时段')), '账户时段外 tooltip 应展示原因')
-assertTrue(!scheduleInactiveTooltip.some((line) => line.includes('实际状态：账户时段外')), '账户时段外不应作为状态名进入 tooltip')
-
-const sourceScheduleInactiveTooltip = accountStatusTooltipLines(accountFixture({
-  accessType: 'authorized',
-  authorizationInstanceSourceAccountId: 'source_schedule_inactive_account',
-  authorizationInstanceSourceAccountStatus: 'active',
-  authorizationInstanceSourceAccountScheduleActive: false,
-  effectiveAvailability: {
-    available: false,
-    status: 'source_schedule_inactive',
-    label: '来源时段外',
-    color: 'gold',
-    blockerScope: 'source_account',
-    reason: '授权方原账户当前不在允许使用时段，当前账户不能调用'
-  }
-}))
-assertTrue(sourceScheduleInactiveTooltip.some((line) => line.includes('授权方原账户当前不在允许使用时段')), '来源时段外 tooltip 应展示授权来源原因')
-assertTrue(!sourceScheduleInactiveTooltip.some((line) => line.includes('实际状态：来源时段外')), '来源时段外不应作为状态名进入 tooltip')
-
 const effectiveAvailabilityStatusFilterExpectations = {
   available: 'active',
   permission_denied: 'disabled',
@@ -391,7 +318,6 @@ const effectiveAvailabilityStatusFilterExpectations = {
   source_temporary_unavailable: 'temporary_unavailable',
   source_cooldown: 'temporary_unavailable',
   source_unschedulable: 'disabled',
-  source_schedule_inactive: 'disabled',
   instance_expired: 'disabled',
   instance_pending_test: 'pending_test',
   instance_disabled: 'disabled',
@@ -400,7 +326,6 @@ const effectiveAvailabilityStatusFilterExpectations = {
   instance_temporary_unavailable: 'temporary_unavailable',
   instance_cooldown: 'temporary_unavailable',
   instance_unschedulable: 'disabled',
-  instance_schedule_inactive: 'disabled',
   binding_missing: 'disabled',
   api_key_pool_unavailable: 'temporary_unavailable',
   runtime_degraded: 'active',
@@ -414,19 +339,11 @@ for (const [effectiveStatus, expectedStatus] of Object.entries(effectiveAvailabi
 }
 
 const apiKeyScheduleInactive = apiKeyFixture({
-  status: 'disabled',
-  availabilityScheduleActive: false
+  status: 'disabled'
 })
-assertEqual(apiKeyStatusTagLabel(apiKeyScheduleInactive), '停用', 'API Key 时间计划外状态标签仍应显示停用')
-assertEqual(apiKeyStatusTagColor(apiKeyScheduleInactive), 'default', 'API Key 时间计划外状态颜色仍应使用停用颜色')
-assertTrue(apiKeyStatusTooltipLines(apiKeyScheduleInactive).some((line) => line.includes('时间计划派生状态当前为停用')), 'API Key 时间计划外应在状态 tooltip 展示原因')
-const apiKeyScheduleInactiveWaitingSync = apiKeyFixture({
-  status: 'active',
-  availabilityScheduleActive: false
-})
-assertEqual(apiKeyStatusTagLabel(apiKeyScheduleInactiveWaitingSync), '停用', 'API Key 时间计划外状态标签仍应显示停用')
-assertEqual(apiKeyStatusTagColor(apiKeyScheduleInactiveWaitingSync), 'default', 'API Key 时间计划外状态颜色仍应使用停用颜色')
-assertTrue(apiKeyStatusTooltipLines(apiKeyScheduleInactiveWaitingSync).some((line) => line.includes('可提前启用')), 'API Key 时间计划外 tooltip 应展示提前启用提示')
+assertEqual(apiKeyStatusTagLabel(apiKeyScheduleInactive), '停用', 'API Key 停用状态标签应显示停用')
+assertEqual(apiKeyStatusTagColor(apiKeyScheduleInactive), 'default', 'API Key 停用状态颜色应使用停用颜色')
+assertTrue(apiKeyStatusTooltipLines(apiKeyScheduleInactive).some((line) => line.includes('计划边界会自动更新当前运行状态')), 'API Key 配置时间计划时应在状态 tooltip 展示单状态提示')
 
 console.log('账户状态 formatter 回归通过：正常、待测试、停用、异常、限流、冷却、停调、近期失败、近期不稳、频繁失败、质量归因说明、运行态调度降级、运行态短暂避让、运行态事前确认、运行态半开探测、运行态探针确认失败、授权额度、授权绑定、Key 池不可用、派生可用性筛选映射、持久临时不可调用、长期不可用、时间计划提示、无可用权限均可显示和筛选')
 
@@ -483,7 +400,6 @@ function apiKeyFixture(overrides: Partial<ApiKeySummary> = {}): ApiKeySummary {
         { daysOfWeek: [1, 2, 3, 4, 5, 6, 7], start: '22:00', end: '23:55' }
       ]
     },
-    availabilityScheduleActive: true,
     usage: emptyUsage(),
     ...overrides
   }

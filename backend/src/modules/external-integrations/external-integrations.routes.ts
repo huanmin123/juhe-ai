@@ -218,8 +218,7 @@ const apiKeyAddSchema = z.object({
   status: z.enum(['active', 'disabled']).optional(),
   expiresAt: z.string().trim().optional(),
   quotaLimits: requestQuotaLimitsSchema.nullable().optional(),
-  availabilitySchedule: apiKeyAvailabilityScheduleSchema.nullable().optional(),
-  availabilityScheduleActive: z.boolean().optional()
+  availabilitySchedule: apiKeyAvailabilityScheduleSchema.nullable().optional()
 }).strict()
 const apiKeyUpdateMutableFields = [
   'name',
@@ -228,8 +227,7 @@ const apiKeyUpdateMutableFields = [
   'status',
   'expiresAt',
   'quotaLimits',
-  'availabilitySchedule',
-  'availabilityScheduleActive'
+  'availabilitySchedule'
 ] as const
 const apiKeyUpdateSchema = z.object({
   targetUsername: z.string().trim().min(2).max(80).optional(),
@@ -240,8 +238,7 @@ const apiKeyUpdateSchema = z.object({
   status: z.enum(['active', 'disabled']).optional(),
   expiresAt: z.string().trim().nullable().optional(),
   quotaLimits: requestQuotaLimitsSchema.nullable().optional(),
-  availabilitySchedule: apiKeyAvailabilityScheduleSchema.nullable().optional(),
-  availabilityScheduleActive: z.boolean().optional()
+  availabilitySchedule: apiKeyAvailabilityScheduleSchema.nullable().optional()
 }).strict().refine(
   (value) => apiKeyUpdateMutableFields.some((field) => Object.prototype.hasOwnProperty.call(value, field)),
   { message: 'API Key 修改至少提供一个要修改的字段' }

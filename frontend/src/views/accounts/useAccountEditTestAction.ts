@@ -8,6 +8,7 @@ import type { AccountSummary, ProviderDefinition, ProviderProtocolProfileDefinit
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
+import type { AccountModelSelectOption } from './accountEditFormPayload'
 import { accountOperationScopeParams } from './accountOperationScope'
 import {
   buildAccountDraftTestPayload,
@@ -25,6 +26,10 @@ interface UseAccountEditTestActionOptions {
   editingId: MaybeRefOrGetter<string | undefined>
   errorPolicyRules: MaybeRefOrGetter<AccountErrorPolicyRuleForm[]>
   form: AccountFormModel
+  mappingAnthropicSourceModelOptions: MaybeRefOrGetter<AccountModelSelectOption[]>
+  mappingGeminiSourceModelOptions: MaybeRefOrGetter<AccountModelSelectOption[]>
+  mappingSourceModelOptions: MaybeRefOrGetter<AccountModelSelectOption[]>
+  mappingUpstreamModelOptions: MaybeRefOrGetter<AccountModelSelectOption[]>
   openDraftTestModal: (account: AccountSummary, draftPayload: AccountDraftTestAccountPayload) => void | Promise<void>
   openSavedDraftTestModal: (account: AccountSummary, draftPayload: AccountDraftTestAccountPayload) => void | Promise<void>
   openTestModal: (account: AccountSummary) => void | Promise<void>
@@ -56,6 +61,10 @@ export function useAccountEditTestAction(options: UseAccountEditTestActionOption
       hasAuthSession: Boolean(toValue(options.authSessionId)),
       errorPolicyRules: toValue(options.errorPolicyRules),
       responseInspectionRules: toValue(options.responseInspectionRules),
+      mappingAnthropicSourceModelOptions: toValue(options.mappingAnthropicSourceModelOptions),
+      mappingGeminiSourceModelOptions: toValue(options.mappingGeminiSourceModelOptions),
+      mappingSourceModelOptions: toValue(options.mappingSourceModelOptions),
+      mappingUpstreamModelOptions: toValue(options.mappingUpstreamModelOptions),
       providers: toValue(options.providers)
     })
     if (validationMessage) {
@@ -71,6 +80,10 @@ export function useAccountEditTestAction(options: UseAccountEditTestActionOption
         form: options.form,
         errorPolicyRules: toValue(options.errorPolicyRules),
         responseInspectionRules: toValue(options.responseInspectionRules),
+        mappingAnthropicSourceModelOptions: toValue(options.mappingAnthropicSourceModelOptions),
+        mappingGeminiSourceModelOptions: toValue(options.mappingGeminiSourceModelOptions),
+        mappingSourceModelOptions: toValue(options.mappingSourceModelOptions),
+        mappingUpstreamModelOptions: toValue(options.mappingUpstreamModelOptions),
         providers: toValue(options.providers)
       })
       if (!draftPayload.groupId) {

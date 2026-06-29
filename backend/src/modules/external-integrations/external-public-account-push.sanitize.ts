@@ -182,8 +182,7 @@ export function sanitizeApiKey(apiKey: ApiKeySummary & { key?: string }, options
     routeStrategyMode: apiKey.routeStrategyMode,
     routeStrategyStatus: apiKey.routeStrategyStatus,
     expiresAt: apiKey.expiresAt,
-    availabilitySchedule: apiKey.availabilitySchedule,
-    availabilityScheduleActive: apiKey.availabilityScheduleActive
+    availabilitySchedule: apiKey.availabilitySchedule
   }
 }
 

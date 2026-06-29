@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-import-availability-schedule-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -188,19 +189,21 @@ function assertAccountImportRouteBoundary(): void {
 assertAccountImportRouteBoundary()
 
 try {
-  repositories.createGroup({
-    name: importGroupName,
-    providerCode: 'gpt'
-  }, access)
+	  repositories.createGroup({
+	    name: importGroupName,
+	    providerCode: 'gpt',
+	    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
+	  }, access)
 
   const importData = {
     type: accountImport.accountImportProtocolType,
     version: accountImport.accountImportProtocolVersion,
     accounts: [
       {
-        name: '导入计划账户',
-        providerCode: 'gpt',
-        type: 'api_key',
+	        name: '导入计划账户',
+	        providerCode: 'gpt',
+	        providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+	        type: 'api_key',
         status: 'active',
         groupName: importGroupName,
         availabilitySchedule: schedule,
@@ -210,9 +213,10 @@ try {
         }
       },
       {
-        name: '导入无计划账户',
-        providerCode: 'gpt',
-        type: 'api_key',
+	        name: '导入无计划账户',
+	        providerCode: 'gpt',
+	        providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+	        type: 'api_key',
         status: 'active',
         groupName: importGroupName,
         credentials: {
@@ -233,9 +237,10 @@ try {
     version: accountImport.accountImportProtocolVersion,
     accounts: [
       {
-        name: '导入 async 计划账户',
-        providerCode: 'gpt',
-        type: 'api_key',
+	        name: '导入 async 计划账户',
+	        providerCode: 'gpt',
+	        providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+	        type: 'api_key',
         status: 'active',
         groupName: importGroupName,
         availabilitySchedule: schedule,
@@ -372,9 +377,10 @@ try {
         }
       },
       {
-        name: '导入账户空支持模型',
-        providerCode: 'gpt',
-        type: 'api_key',
+	        name: '导入账户空支持模型',
+	        providerCode: 'gpt',
+	        providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+	        type: 'api_key',
         status: 'pending_test',
         groupName: importGroupName,
         supportedModels: [],
@@ -496,5 +502,4 @@ try {
   }
   rmSync(tempRoot, { recursive: true, force: true })
 }
-
 

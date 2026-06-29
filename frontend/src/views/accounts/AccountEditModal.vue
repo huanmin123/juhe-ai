@@ -169,7 +169,7 @@ import { computed, ref, watch } from 'vue'
 import { QuestionCircleOutlined } from '@ant-design/icons-vue'
 
 import { formatDateTime } from '@/shared/formatters'
-import type { AccountSummary, AccountTagSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
+import type { AccountSummary, AccountTagSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderModelApiProtocol, ProviderProtocolProfileDefinition } from '@/types/domain'
 import AccountAvailabilityScheduleSection from './AccountAvailabilityScheduleSection.vue'
 import AccountApiKeySection from './AccountApiKeySection.vue'
 import AccountBasicInfoSection from './AccountBasicInfoSection.vue'
@@ -194,6 +194,7 @@ import type { AccountTypeChoice } from './accountEditFormDisplay'
 interface SelectOption<T = string> {
   label: string
   value: T
+  supportedApiProtocols?: ProviderModelApiProtocol[]
 }
 
 const open = defineModel<boolean>('open', { required: true })
@@ -269,11 +270,12 @@ const readonlyModelMappings = computed(() => props.form.modelMappings ?? [])
 const mappingUpstreamModelOptions = computed<SelectOption[]>(() => {
   const output: SelectOption[] = []
   const seen = new Set<string>()
+  const optionProtocolsByModel = new Map(props.modelOptions.map((option) => [option.value, option.supportedApiProtocols ?? []]))
   for (const item of props.form.supportedModels) {
     const model = item.trim()
     if (!model || seen.has(model)) continue
     seen.add(model)
-    output.push({ label: model, value: model })
+    output.push({ label: model, value: model, supportedApiProtocols: optionProtocolsByModel.get(model) ?? [] })
   }
   return output
 })

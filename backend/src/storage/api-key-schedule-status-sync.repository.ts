@@ -12,18 +12,18 @@ import {
   nowIso,
   rollbackDatabaseTransaction
 } from './database.js'
+import { invalidateGatewayApiKeyCacheById } from './gateway-api-key.repository.js'
 import { getPostgresPool } from './postgres-client.js'
 
 interface ScheduledApiKeyStatusRow {
   id: string
+  status: 'active' | 'disabled'
   availability_schedule_json: string | null
-  availability_schedule_active: number
   availability_schedule_next_check_at: string | null
 }
 
 interface ScheduledApiKeyStatusUpdate {
   id: string
-  active?: number
   nextCheckAt: string | null
   eventKey?: string
   status?: 'active' | 'disabled'
@@ -69,18 +69,18 @@ export function syncApiKeyAvailabilityScheduleStatuses(now = new Date()): ApiKey
         result.unchanged += 1
         continue
       }
+      const nextStatus = event.status
       updates.push({
         id: row.id,
-        active: event.status === 'active' ? 1 : 0,
         nextCheckAt,
         eventKey: `${row.id}:${event.eventKey}`,
-        status: event.status
+        status: nextStatus
       })
     } catch {
       result.invalid += 1
       result.invalidIds.push(row.id)
-      if (row.availability_schedule_active !== 0) {
-        updates.push({ id: row.id, active: 0, nextCheckAt: null })
+      if (row.status !== 'disabled') {
+        updates.push({ id: row.id, nextCheckAt: null, status: 'disabled' })
       } else {
         updates.push({ id: row.id, nextCheckAt: null })
       }
@@ -99,10 +99,10 @@ export function syncApiKeyAvailabilityScheduleStatuses(now = new Date()): ApiKey
     `)
     const updateStatus = database.prepare(`
       UPDATE api_keys
-      SET availability_schedule_active = ?, availability_schedule_next_check_at = ?, updated_at = ?
+      SET status = ?, availability_schedule_next_check_at = ?, updated_at = ?
       WHERE id = ?
         AND availability_schedule_json IS NOT NULL
-        AND availability_schedule_active <> ?
+        AND status <> ?
     `)
     const updateNextCheck = database.prepare(`
       UPDATE api_keys
@@ -120,18 +120,18 @@ export function syncApiKeyAvailabilityScheduleStatuses(now = new Date()): ApiKey
           continue
         }
       }
-      if (update.active === undefined) {
+      if (update.status === undefined) {
         updateNextCheck.run(update.nextCheckAt, update.id, update.nextCheckAt)
         continue
       }
-      const changes = updateStatus.run(update.active, update.nextCheckAt, updatedAt, update.id, update.active).changes ?? 0
+      const changes = updateStatus.run(update.status, update.nextCheckAt, updatedAt, update.id, update.status).changes ?? 0
       if (changes <= 0) {
         updateNextCheck.run(update.nextCheckAt, update.id, update.nextCheckAt)
         result.unchanged += 1
         continue
       }
       result.changedIds.push(update.id)
-      if (update.active === 1) {
+      if (update.status === 'active') {
         result.activated += 1
       } else {
         result.disabled += 1
@@ -146,6 +146,7 @@ export function syncApiKeyAvailabilityScheduleStatuses(now = new Date()): ApiKey
     throw error
   }
 
+  invalidateChangedApiKeyCaches(result.changedIds)
   return result
 }
 
@@ -178,18 +179,18 @@ export async function syncApiKeyAvailabilityScheduleStatusesAsync(now = new Date
         result.unchanged += 1
         continue
       }
+      const nextStatus = event.status
       updates.push({
         id: row.id,
-        active: event.status === 'active' ? 1 : 0,
         nextCheckAt,
         eventKey: `${row.id}:${event.eventKey}`,
-        status: event.status
+        status: nextStatus
       })
     } catch {
       result.invalid += 1
       result.invalidIds.push(row.id)
-      if (Number(row.availability_schedule_active) !== 0) {
-        updates.push({ id: row.id, active: 0, nextCheckAt: null })
+      if (row.status !== 'disabled') {
+        updates.push({ id: row.id, nextCheckAt: null, status: 'disabled' })
       } else {
         updates.push({ id: row.id, nextCheckAt: null })
       }
@@ -214,24 +215,24 @@ export async function syncApiKeyAvailabilityScheduleStatusesAsync(now = new Date
           continue
         }
       }
-      if (update.active === undefined) {
+      if (update.status === undefined) {
         await updateApiKeyNextCheckAtAsync(tx, update)
         continue
       }
       const changes = await tx.execute(`
         UPDATE ${apiKeyScheduleStatusTable(tx, 'api_keys')}
-        SET availability_schedule_active = ?, availability_schedule_next_check_at = ?, updated_at = ?
+        SET status = ?, availability_schedule_next_check_at = ?, updated_at = ?
         WHERE id = ?
           AND availability_schedule_json IS NOT NULL
-          AND availability_schedule_active <> ?
-      `, [update.active, update.nextCheckAt, updatedAt, update.id, update.active])
+          AND status <> ?
+      `, [update.status, update.nextCheckAt, updatedAt, update.id, update.status])
       if (changes.changes <= 0) {
         await updateApiKeyNextCheckAtAsync(tx, update)
         result.unchanged += 1
         continue
       }
       result.changedIds.push(update.id)
-      if (update.active === 1) {
+      if (update.status === 'active') {
         result.activated += 1
       } else {
         result.disabled += 1
@@ -239,11 +240,12 @@ export async function syncApiKeyAvailabilityScheduleStatusesAsync(now = new Date
     }
   })
 
+  invalidateChangedApiKeyCaches(result.changedIds)
   return result
 }
 
 function listScheduledApiKeyStatusRows(database: ReturnType<typeof getBusinessDatabase>, dueAt: string): ScheduledApiKeyStatusRow[] {
-  const selectColumns = 'id, availability_schedule_json, availability_schedule_active, availability_schedule_next_check_at'
+  const selectColumns = 'id, status, availability_schedule_json, availability_schedule_next_check_at'
   return database
     .prepare(`
       SELECT ${selectColumns}
@@ -260,7 +262,7 @@ function listScheduledApiKeyStatusRows(database: ReturnType<typeof getBusinessDa
 }
 
 async function listScheduledApiKeyStatusRowsAsync(client: DatabaseClient, dueAt: string): Promise<ScheduledApiKeyStatusRow[]> {
-  const selectColumns = 'id, availability_schedule_json, availability_schedule_active, availability_schedule_next_check_at'
+  const selectColumns = 'id, status, availability_schedule_json, availability_schedule_next_check_at'
   return client.query<ScheduledApiKeyStatusRow>(`
     SELECT ${selectColumns}
     FROM ${apiKeyScheduleStatusTable(client, 'api_keys')}
@@ -288,4 +290,10 @@ function apiKeyScheduleStatusTable(client: DatabaseClient, tableName: string): s
   return client.driver === 'postgres'
     ? client.dialect.qualifyTable(businessSchemaName, tableName)
     : client.dialect.quoteIdentifier(tableName)
+}
+
+function invalidateChangedApiKeyCaches(ids: string[]): void {
+  for (const id of ids) {
+    invalidateGatewayApiKeyCacheById(id)
+  }
 }

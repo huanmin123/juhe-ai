@@ -34,9 +34,9 @@ import { loadSupportedModelsByAccountIds, normalizeAccountSupportedModelsInput, 
 import {
   accountAvailabilityScheduleFromRequest,
   accountAvailabilityScheduleJson,
-  isAccountAvailabilityScheduleAllowed,
   isAccountAvailabilityScheduleInputPresent,
   nextAccountAvailabilityScheduleCheckAt,
+  accountStatusForScheduleMutation,
   parseAccountAvailabilityScheduleJson
 } from './account-availability-schedule.js'
 import { accountCredentialsForList, findAccountRowForAccess, listAccountRowsForAccess, listAccountRowsPageForAccess } from './account-read.repository.js'
@@ -432,8 +432,6 @@ export {
   deleteApiKeyAsync,
   deleteApiKeyWithRelatedCleanup,
   deleteApiKeyWithRelatedCleanupAsync,
-  ensureDefaultApiKeysForSystemAccount,
-  ensureDefaultApiKeysForSystemAccountAsync,
   findApiKeySecret,
   findApiKeySecretAsync,
   findApiKeySummary,
@@ -454,10 +452,6 @@ export {
   createRouteStrategyAsync,
   deleteRouteStrategy,
   deleteRouteStrategyAsync,
-  ensureDefaultRouteStrategyForSystemAccount,
-  ensureDefaultRouteStrategyForSystemAccountAsync,
-  ensureDefaultRouteStrategiesForSystemAccount,
-  ensureDefaultRouteStrategiesForSystemAccountAsync,
   findRouteStrategySummary,
   findRouteStrategySummaryAsync,
   listRouteStrategiesPage,
@@ -1403,7 +1397,6 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     ? nullableServerDateTimeIso(input.accountExpiresAt, '账户套餐到期时间')
     : null
   const availabilitySchedule = accountAvailabilityScheduleFromRequest(input)
-  const hasAvailabilityScheduleActiveInput = hasOwnInput(input, 'availabilityScheduleActive')
   const supportedModelsInput = hasOwnInput(input, 'supportedModels') && input.supportedModels !== undefined
     ? input.supportedModels
     : findProviderDefaultSupportedModels(providerCode)
@@ -1416,7 +1409,11 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   const tagNames = normalizeAccountTagNamesInput(input.tags) ?? []
   const initialStatus = normalizedAccountStatusInput(input.status, 'pending_test')
   const expiredByPackage = isAccountExpired(accountExpiresAt)
-  const nextStatus = expiredByPackage ? 'disabled' : initialStatus
+  const nextStatus = expiredByPackage ? 'disabled' : accountStatusForScheduleMutation({
+    requestedStatus: initialStatus,
+    schedule: availabilitySchedule,
+    now: new Date(nowMs)
+  })
   const initialCooldownUntil = initialCooldownUntilForStatus(initialStatus, nowMs)
   const initialObservationStartedAt = expiredByPackage ? undefined : cooldownRetestObservationStartedAtForStatus(initialStatus, nowMs)
   const groupId = explicitGroupId
@@ -1443,9 +1440,6 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     throw new Error('超级优先和降级备用不能同时开启')
   }
   const createSchedulable = normalizeOptionalBooleanInput(input, 'schedulable', true, '账户是否参与调度')
-  const availabilityScheduleActive = hasAvailabilityScheduleActiveInput
-    ? normalizeAccountAvailabilityScheduleActiveOverride(input.availabilityScheduleActive, availabilitySchedule)
-    : isAccountAvailabilityScheduleAllowed(accountAvailabilityScheduleJson(availabilitySchedule), new Date(nowMs))
   const account: AccountSummary = accountSummaryWithEffectiveAvailability({
     id,
     systemAccountId: includeSystemAccountFields(access) ? systemAccountId : undefined,
@@ -1470,9 +1464,8 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     tags: tagNames.map((name) => ({ id: '', name })),
     lastSuccessfulTestModel: undefined,
     proxyProfileId,
-    schedulable: expiredByPackage || nextStatus !== 'active' || isHardUnavailableAccountStatus(nextStatus) ? false : createSchedulable,
+    schedulable: expiredByPackage || accountStatusForcesSchedulableOff(nextStatus) ? false : createSchedulable,
     availabilitySchedule,
-    availabilityScheduleActive,
     accountExpiresAt: accountExpiresAt ?? undefined,
     cooldownUntil: expiredByPackage ? undefined : initialCooldownUntil,
     lastErrorCode: expiredByPackage ? 'account_expired' : undefined,
@@ -1504,9 +1497,9 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
         INSERT INTO accounts (
           id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
           oauth_access_token_expires_at, oauth_refresh_token_present, proxy_profile_id, concurrency_limit,
-          priority, super_priority_enabled, fallback_enabled, client_compatibility, schedulable, availability_schedule_json, availability_schedule_active, availability_schedule_next_check_at, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
+          priority, super_priority_enabled, fallback_enabled, client_compatibility, schedulable, availability_schedule_json, availability_schedule_next_check_at, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
           cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         account.id,
@@ -1531,7 +1524,6 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
         account.clientCompatibility,
         account.schedulable ? 1 : 0,
         accountAvailabilityScheduleJson(account.availabilitySchedule),
-        account.availabilityScheduleActive ? 1 : 0,
         availabilityScheduleNextCheckAt,
         account.notes ?? null,
         account.accountExpiresAt ?? null,
@@ -1619,7 +1611,6 @@ export async function createAccountAsync(input: Record<string, unknown>, access?
     ? nullableServerDateTimeIso(input.accountExpiresAt, '账户套餐到期时间')
     : null
   const availabilitySchedule = accountAvailabilityScheduleFromRequest(input)
-  const hasAvailabilityScheduleActiveInput = hasOwnInput(input, 'availabilityScheduleActive')
   const supportedModelsInput = hasOwnInput(input, 'supportedModels') && input.supportedModels !== undefined
     ? input.supportedModels
     : await findProviderDefaultSupportedModelsAsync(providerCode)
@@ -1632,7 +1623,11 @@ export async function createAccountAsync(input: Record<string, unknown>, access?
   const tagNames = normalizeAccountTagNamesInput(input.tags) ?? []
   const initialStatus = normalizedAccountStatusInput(input.status, 'pending_test')
   const expiredByPackage = isAccountExpired(accountExpiresAt)
-  const nextStatus = expiredByPackage ? 'disabled' : initialStatus
+  const nextStatus = expiredByPackage ? 'disabled' : accountStatusForScheduleMutation({
+    requestedStatus: initialStatus,
+    schedule: availabilitySchedule,
+    now: new Date(nowMs)
+  })
   const initialCooldownUntil = initialCooldownUntilForStatus(initialStatus, nowMs)
   const initialObservationStartedAt = expiredByPackage ? undefined : cooldownRetestObservationStartedAtForStatus(initialStatus, nowMs)
   const groupId = explicitGroupId
@@ -1660,9 +1655,6 @@ export async function createAccountAsync(input: Record<string, unknown>, access?
     throw new Error('超级优先和降级备用不能同时开启')
   }
   const createSchedulable = normalizeOptionalBooleanInput(input, 'schedulable', true, '账户是否参与调度')
-  const availabilityScheduleActive = hasAvailabilityScheduleActiveInput
-    ? normalizeAccountAvailabilityScheduleActiveOverride(input.availabilityScheduleActive, availabilitySchedule)
-    : isAccountAvailabilityScheduleAllowed(accountAvailabilityScheduleJson(availabilitySchedule), new Date(nowMs))
   const systemAccountName = includeSystemAccountFields(access)
     ? await loadSystemAccountNameForAccountWriteAsync(client, systemAccountId)
     : undefined
@@ -1690,9 +1682,8 @@ export async function createAccountAsync(input: Record<string, unknown>, access?
     tags: tagNames.map((name) => ({ id: '', name })),
     lastSuccessfulTestModel: undefined,
     proxyProfileId,
-    schedulable: expiredByPackage || nextStatus !== 'active' || isHardUnavailableAccountStatus(nextStatus) ? false : createSchedulable,
+    schedulable: expiredByPackage || accountStatusForcesSchedulableOff(nextStatus) ? false : createSchedulable,
     availabilitySchedule,
-    availabilityScheduleActive,
     accountExpiresAt: accountExpiresAt ?? undefined,
     cooldownUntil: expiredByPackage ? undefined : initialCooldownUntil,
     lastErrorCode: expiredByPackage ? 'account_expired' : undefined,
@@ -1722,9 +1713,9 @@ export async function createAccountAsync(input: Record<string, unknown>, access?
         INSERT INTO ${accountWriteTable(tx, 'accounts')} (
           id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
           oauth_access_token_expires_at, oauth_refresh_token_present, proxy_profile_id, concurrency_limit,
-          priority, super_priority_enabled, fallback_enabled, client_compatibility, schedulable, availability_schedule_json, availability_schedule_active, availability_schedule_next_check_at, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
+          priority, super_priority_enabled, fallback_enabled, client_compatibility, schedulable, availability_schedule_json, availability_schedule_next_check_at, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
           cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         account.id,
         systemAccountId,
@@ -1748,7 +1739,6 @@ export async function createAccountAsync(input: Record<string, unknown>, access?
         account.clientCompatibility,
         account.schedulable ? 1 : 0,
         accountAvailabilityScheduleJson(account.availabilitySchedule),
-        account.availabilityScheduleActive ? 1 : 0,
         availabilityScheduleNextCheckAt,
         account.notes ?? null,
         account.accountExpiresAt ?? null,
@@ -1864,7 +1854,6 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     ? normalizeAccountTagNamesInput(input.tags) ?? []
     : (current.tags ?? []).map((tag) => tag.name)
   const hasAvailabilityScheduleInput = isAccountAvailabilityScheduleInputPresent(input)
-  const hasAvailabilityScheduleActiveInput = hasOwnInput(input, 'availabilityScheduleActive')
   const nextAvailabilitySchedule = hasAvailabilityScheduleInput
     ? accountAvailabilityScheduleFromRequest(input)
     : current.availabilitySchedule
@@ -1882,7 +1871,16 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   if (hasStatusInput && requestedStatus === 'active' && (current.status === 'pending_test' || isCoolingAccountStatus(current.status) || current.status === 'error')) {
     throw new Error('待测试、临时不可调用、限流中或异常账户不能通过启用账户恢复，请使用账户测试、恢复正常或恢复异常')
   }
-  const nextStatus = expiredByPackage ? 'disabled' : requestedStatus
+  const updateNowMs = Date.now()
+  const nextStatus = expiredByPackage
+    ? 'disabled'
+    : hasAvailabilityScheduleInput
+      ? accountStatusForScheduleMutation({
+        requestedStatus,
+        schedule: nextAvailabilitySchedule,
+        now: new Date(updateNowMs)
+      })
+      : requestedStatus
   let nextCooldownUntil = current.cooldownUntil
   let nextLastErrorCode = current.lastErrorCode
   let nextLastErrorMessage = current.lastErrorMessage
@@ -1960,7 +1958,6 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   })
 
   const requestedSchedulable = normalizeOptionalBooleanInput(input, 'schedulable', current.schedulable, '账户是否参与调度')
-  const updateNowMs = Date.now()
   const next: AccountSummary = accountSummaryWithEffectiveAvailability({
     ...current,
     name: normalizeOptionalAccountNameInput(input, current.name),
@@ -1978,22 +1975,12 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     proxyProfileId: hasOwnInput(input, 'proxyProfileId')
       ? globalProxyProfileId(normalizeNullableIdInput(input.proxyProfileId, '代理配置'))
       : current.proxyProfileId,
-    schedulable: expiredByPackage || nextStatus !== 'active' || isHardUnavailableAccountStatus(nextStatus)
+    schedulable: expiredByPackage || accountStatusForcesSchedulableOff(nextStatus)
       ? false
       : hasStatusInput
         ? true
         : requestedSchedulable,
     availabilitySchedule: nextAvailabilitySchedule,
-    availabilityScheduleActive: nextAccountAvailabilityScheduleActiveValue({
-      currentActive: current.availabilityScheduleActive === true,
-      hasScheduleInput: hasAvailabilityScheduleInput,
-      hasScheduleActiveInput: hasAvailabilityScheduleActiveInput,
-      hasStatusInput,
-      nextStatus,
-      nextSchedule: nextAvailabilitySchedule,
-      scheduleActiveInput: input.availabilityScheduleActive,
-      now: new Date(updateNowMs)
-    }),
     accountExpiresAt: nextAccountExpiresAt ?? undefined,
     cooldownUntil: nextCooldownUntil,
     lastErrorCode: nextLastErrorCode,
@@ -2024,7 +2011,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
       SET name = ?, notes = ?, status = ?, credentials_encrypted = ?, credential_fingerprint = ?, credential_mask = ?,
             oauth_access_token_expires_at = ?, oauth_refresh_token_present = ?,
             proxy_profile_id = ?, concurrency_limit = ?,
-            priority = ?, super_priority_enabled = ?, fallback_enabled = ?, client_compatibility = ?, schedulable = ?, availability_schedule_json = ?, availability_schedule_active = ?, availability_schedule_next_check_at = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?,
+            priority = ?, super_priority_enabled = ?, fallback_enabled = ?, client_compatibility = ?, schedulable = ?, availability_schedule_json = ?, availability_schedule_next_check_at = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?,
             cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, updated_at = ?
         WHERE id = ? AND system_account_id = ?
       `)
@@ -2045,7 +2032,6 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         next.clientCompatibility,
         next.schedulable ? 1 : 0,
         accountAvailabilityScheduleJson(next.availabilitySchedule),
-        next.availabilityScheduleActive ? 1 : 0,
         availabilityScheduleNextCheckAt,
         next.accountExpiresAt ?? null,
         next.cooldownUntil ?? null,
@@ -2183,7 +2169,6 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
     ? normalizeAccountTagNamesInput(input.tags) ?? []
     : (current.tags ?? []).map((tag) => tag.name)
   const hasAvailabilityScheduleInput = isAccountAvailabilityScheduleInputPresent(input)
-  const hasAvailabilityScheduleActiveInput = hasOwnInput(input, 'availabilityScheduleActive')
   const nextAvailabilitySchedule = hasAvailabilityScheduleInput
     ? accountAvailabilityScheduleFromRequest(input)
     : current.availabilitySchedule
@@ -2201,7 +2186,16 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
   if (hasStatusInput && requestedStatus === 'active' && (current.status === 'pending_test' || isCoolingAccountStatus(current.status) || current.status === 'error')) {
     throw new Error('待测试、临时不可调用、限流中或异常账户不能通过启用账户恢复，请使用账户测试、恢复正常或恢复异常')
   }
-  const nextStatus = expiredByPackage ? 'disabled' : requestedStatus
+  const updateNowMs = Date.now()
+  const nextStatus = expiredByPackage
+    ? 'disabled'
+    : hasAvailabilityScheduleInput
+      ? accountStatusForScheduleMutation({
+        requestedStatus,
+        schedule: nextAvailabilitySchedule,
+        now: new Date(updateNowMs)
+      })
+      : requestedStatus
   let nextCooldownUntil = current.cooldownUntil
   let nextLastErrorCode = current.lastErrorCode
   let nextLastErrorMessage = current.lastErrorMessage
@@ -2279,7 +2273,6 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
   })
 
   const requestedSchedulable = normalizeOptionalBooleanInput(input, 'schedulable', current.schedulable, '账户是否参与调度')
-  const updateNowMs = Date.now()
   const requestedProxyProfileId = hasOwnInput(input, 'proxyProfileId')
     ? normalizeNullableIdInput(input.proxyProfileId, '代理配置')
     : current.proxyProfileId
@@ -2299,22 +2292,12 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
     modelMappings: nextModelMappings,
     tags: hasTagsInput ? nextTagNames.map((name) => ({ id: '', name })) : current.tags ?? [],
     proxyProfileId,
-    schedulable: expiredByPackage || nextStatus !== 'active' || isHardUnavailableAccountStatus(nextStatus)
+    schedulable: expiredByPackage || accountStatusForcesSchedulableOff(nextStatus)
       ? false
       : hasStatusInput
         ? true
         : requestedSchedulable,
     availabilitySchedule: nextAvailabilitySchedule,
-    availabilityScheduleActive: nextAccountAvailabilityScheduleActiveValue({
-      currentActive: current.availabilityScheduleActive === true,
-      hasScheduleInput: hasAvailabilityScheduleInput,
-      hasScheduleActiveInput: hasAvailabilityScheduleActiveInput,
-      hasStatusInput,
-      nextStatus,
-      nextSchedule: nextAvailabilitySchedule,
-      scheduleActiveInput: input.availabilityScheduleActive,
-      now: new Date(updateNowMs)
-    }),
     accountExpiresAt: nextAccountExpiresAt ?? undefined,
     cooldownUntil: nextCooldownUntil,
     lastErrorCode: nextLastErrorCode,
@@ -2343,7 +2326,7 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
         SET name = ?, notes = ?, status = ?, credentials_encrypted = ?, credential_fingerprint = ?, credential_mask = ?,
             oauth_access_token_expires_at = ?, oauth_refresh_token_present = ?,
             proxy_profile_id = ?, concurrency_limit = ?,
-            priority = ?, super_priority_enabled = ?, fallback_enabled = ?, client_compatibility = ?, schedulable = ?, availability_schedule_json = ?, availability_schedule_active = ?, availability_schedule_next_check_at = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?,
+            priority = ?, super_priority_enabled = ?, fallback_enabled = ?, client_compatibility = ?, schedulable = ?, availability_schedule_json = ?, availability_schedule_next_check_at = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?,
             cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, updated_at = ?
         WHERE id = ?
           AND system_account_id = ?
@@ -2365,7 +2348,6 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
         next.clientCompatibility,
         next.schedulable ? 1 : 0,
         accountAvailabilityScheduleJson(next.availabilitySchedule),
-        next.availabilityScheduleActive ? 1 : 0,
         availabilityScheduleNextCheckAt,
         next.accountExpiresAt ?? null,
         next.cooldownUntil ?? null,
@@ -2496,42 +2478,8 @@ async function isAccountNameAvailableAsync(client: DatabaseClient, systemAccount
   return !row?.id
 }
 
-function nextAccountAvailabilityScheduleActiveValue(input: {
-  currentActive: boolean
-  hasScheduleInput: boolean
-  hasScheduleActiveInput: boolean
-  hasStatusInput: boolean
-  nextStatus: AccountStatus
-  nextSchedule: AccountSummary['availabilitySchedule']
-  scheduleActiveInput: unknown
-  now: Date
-}): boolean {
-  if (!input.nextSchedule?.enabled) {
-    return true
-  }
-  if (input.hasScheduleActiveInput) {
-    return normalizeAccountAvailabilityScheduleActiveOverride(input.scheduleActiveInput, input.nextSchedule)
-  }
-  if (input.hasScheduleInput) {
-    return isAccountAvailabilityScheduleAllowed(accountAvailabilityScheduleJson(input.nextSchedule), input.now)
-  }
-  if (input.hasStatusInput && input.nextStatus === 'active') {
-    return true
-  }
-  return input.currentActive
-}
-
-function normalizeAccountAvailabilityScheduleActiveOverride(
-  value: unknown,
-  schedule: AccountSummary['availabilitySchedule']
-): boolean {
-  if (!schedule?.enabled) {
-    throw new Error('只有启用时间计划的账户才可以调整时间计划派生状态')
-  }
-  if (typeof value !== 'boolean') {
-    throw new Error('账户时间计划派生状态必须是布尔值')
-  }
-  return value
+function accountStatusForcesSchedulableOff(status: AccountStatus): boolean {
+  return isHardUnavailableAccountStatus(status) && status !== 'disabled'
 }
 
 export function deleteAccount(id: string, access?: AccessScope): boolean {

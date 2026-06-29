@@ -42,11 +42,8 @@ export function buildApiKeyFilters(scope: { clause: string; params: string[] }, 
     params.push(options.keyword, keywordPrefix)
   }
   if (options.status) {
-    if (options.status === 'active') {
-      clauses.push("api_keys.status = 'active' AND api_keys.availability_schedule_active = 1")
-    } else {
-      clauses.push("(api_keys.status = 'disabled' OR api_keys.availability_schedule_active <> 1)")
-    }
+    clauses.push('api_keys.status = ?')
+    params.push(options.status)
   }
   if (options.routeStrategyId) {
     clauses.push('api_keys.route_strategy_id = ?')

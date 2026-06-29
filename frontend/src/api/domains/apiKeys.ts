@@ -18,7 +18,6 @@ export interface ApiKeyMutationPayload {
   expiresAt?: string | null
   quotaLimits?: ApiKeyQuotaLimits
   availabilitySchedule?: ApiKeyAvailabilitySchedule | null
-  availabilityScheduleActive?: boolean
 }
 
 export const apiKeysApi = {

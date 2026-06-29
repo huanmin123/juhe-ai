@@ -5,6 +5,7 @@ import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
 import type { AccountFormModel } from './accountFormTypes'
 import { buildAccountSavePayload, validateAccountSaveForm } from './accountSavePayload'
+import type { AccountModelSelectOption } from './accountEditFormPayload'
 
 interface AccountDraftTestPayloadInput {
   accountDetail?: AccountSummary
@@ -13,6 +14,10 @@ interface AccountDraftTestPayloadInput {
   errorPolicyRules: AccountErrorPolicyRuleForm[]
   responseInspectionRules: AccountResponseInspectionRuleForm[]
   form: AccountFormModel
+  mappingAnthropicSourceModelOptions?: AccountModelSelectOption[]
+  mappingGeminiSourceModelOptions?: AccountModelSelectOption[]
+  mappingSourceModelOptions?: AccountModelSelectOption[]
+  mappingUpstreamModelOptions?: AccountModelSelectOption[]
   providers?: ProviderDefinition[]
 }
 

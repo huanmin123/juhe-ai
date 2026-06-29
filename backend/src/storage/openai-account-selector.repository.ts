@@ -97,7 +97,7 @@ export function findOpenAIAccountForGroup(
     .prepare(`
       SELECT accounts.id, accounts.system_account_id, accounts.provider_code, accounts.provider_protocol_profile_id, accounts.protocol_code, accounts.protocol_version, accounts.name, accounts.type, accounts.status, accounts.schedulable, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled, accounts.client_compatibility,
         accounts.credentials_encrypted, accounts.proxy_profile_id, accounts.cooldown_until, accounts.last_error_message, accounts.stream_failure_count, accounts.stream_failure_window_started_at,
-        accounts.availability_schedule_active, accounts.account_expires_at, accounts.last_successful_test_model, accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id, accounts.authorization_instance_owner_system_account_id,
+        accounts.account_expires_at, accounts.last_successful_test_model, accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id, accounts.authorization_instance_owner_system_account_id,
         source_accounts.id AS resource_account_id,
         source_accounts.provider_code AS resource_provider_code,
         source_accounts.provider_protocol_profile_id AS resource_provider_protocol_profile_id,
@@ -106,7 +106,6 @@ export function findOpenAIAccountForGroup(
         source_accounts.type AS resource_type,
         source_accounts.status AS resource_status,
         source_accounts.schedulable AS resource_schedulable,
-        source_accounts.availability_schedule_active AS resource_availability_schedule_active,
         source_accounts.account_expires_at AS resource_account_expires_at,
         source_accounts.cooldown_until AS resource_cooldown_until,
         source_accounts.last_error_code AS resource_last_error_code,
@@ -186,7 +185,7 @@ export async function findOpenAIAccountForGroupAsync(
   const row = await client.one<OpenAIAccountRow>(`
     SELECT accounts.id, accounts.system_account_id, accounts.provider_code, accounts.provider_protocol_profile_id, accounts.protocol_code, accounts.protocol_version, accounts.name, accounts.type, accounts.status, accounts.schedulable, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled, accounts.client_compatibility,
       accounts.credentials_encrypted, accounts.proxy_profile_id, accounts.cooldown_until, accounts.last_error_message, accounts.stream_failure_count, accounts.stream_failure_window_started_at,
-      accounts.availability_schedule_active, accounts.account_expires_at, accounts.last_successful_test_model, accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id, accounts.authorization_instance_owner_system_account_id,
+      accounts.account_expires_at, accounts.last_successful_test_model, accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id, accounts.authorization_instance_owner_system_account_id,
       source_accounts.id AS resource_account_id,
       source_accounts.provider_code AS resource_provider_code,
       source_accounts.provider_protocol_profile_id AS resource_provider_protocol_profile_id,
@@ -195,7 +194,6 @@ export async function findOpenAIAccountForGroupAsync(
       source_accounts.type AS resource_type,
       source_accounts.status AS resource_status,
       source_accounts.schedulable AS resource_schedulable,
-      source_accounts.availability_schedule_active AS resource_availability_schedule_active,
       source_accounts.account_expires_at AS resource_account_expires_at,
       source_accounts.cooldown_until AS resource_cooldown_until,
       source_accounts.last_error_code AS resource_last_error_code,
@@ -831,9 +829,6 @@ function isOpenAIPhysicalAccountAvailableForSelection(row: OpenAIAccountRow, now
   if (row.schedulable !== 1) {
     return false
   }
-  if (row.availability_schedule_active !== 1) {
-    return false
-  }
   if (includeUnavailable) {
     return row.status === 'active' || row.status === 'rate_limited' || row.status === 'temporary_unavailable'
   }
@@ -854,9 +849,6 @@ function isOpenAIResourceAccountAvailableForSelection(row: OpenAIAccountRow, now
     return false
   }
   if (row.resource_schedulable !== 1) {
-    return false
-  }
-  if (row.resource_availability_schedule_active !== 1) {
     return false
   }
   if (includeUnavailable) {

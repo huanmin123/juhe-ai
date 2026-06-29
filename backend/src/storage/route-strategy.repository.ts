@@ -31,8 +31,6 @@ import { assertKnownInputKeys, hasOwnInput, normalizeNullableTextInput, normaliz
 
 const businessSchemaName = 'juhe_business'
 const ROUTE_STRATEGY_GROUP_BOUNDARY_ERROR = '策略路由只能绑定自己的分组或有效授权给自己的分组'
-const DEFAULT_ROUTE_STRATEGY_NAME = '默认路由'
-
 const routeStrategyMutationInputKeys = new Set([
   'name',
   'description',
@@ -119,7 +117,6 @@ interface RouteStrategyBindableGroupRow {
 }
 
 export function listRouteStrategiesPage(access?: AccessScope, options?: RouteStrategyListOptions): RouteStrategyListResult {
-  ensureDefaultRouteStrategyForAccess(access)
   const normalized = normalizeRouteStrategyListOptions(options)
   const scope = buildSystemAccountWhereClause(access, 'route_strategies.system_account_id')
   const filters = buildRouteStrategyFilters(scope, normalized)
@@ -147,7 +144,6 @@ export function listRouteStrategiesPage(access?: AccessScope, options?: RouteStr
 export async function listRouteStrategiesPageAsync(access?: AccessScope, options?: RouteStrategyListOptions): Promise<RouteStrategyListResult> {
   const normalized = normalizeRouteStrategyListOptions(options)
   const client = await getRouteStrategyDatabaseClient()
-  await ensureDefaultRouteStrategyForAccessAsync(access, client)
   const scope = buildSystemAccountWhereClause(access, 'route_strategies.system_account_id')
   const filters = buildRouteStrategyFiltersForClient(client, scope, normalized)
   const rows = await client.query<RouteStrategyRow>(`
@@ -171,7 +167,6 @@ export async function listRouteStrategiesPageAsync(access?: AccessScope, options
 }
 
 export function listRouteStrategyOptions(access?: AccessScope, options?: RouteStrategyOptionListOptions): RouteStrategyOptionSummary[] {
-  ensureDefaultRouteStrategyForAccess(access)
   const normalized = normalizeRouteStrategyOptionListOptions(options)
   const scope = buildSystemAccountWhereClause(access, 'route_strategies.system_account_id')
   const filters = buildRouteStrategyOptionFilters(scope, normalized)
@@ -190,7 +185,6 @@ export function listRouteStrategyOptions(access?: AccessScope, options?: RouteSt
 export async function listRouteStrategyOptionsAsync(access?: AccessScope, options?: RouteStrategyOptionListOptions): Promise<RouteStrategyOptionSummary[]> {
   const normalized = normalizeRouteStrategyOptionListOptions(options)
   const client = await getRouteStrategyDatabaseClient()
-  await ensureDefaultRouteStrategyForAccessAsync(access, client)
   const scope = buildSystemAccountWhereClause(access, 'route_strategies.system_account_id')
   const filters = buildRouteStrategyOptionFiltersForClient(client, scope, normalized)
   const rows = await client.query<RouteStrategyRow>(`
@@ -458,104 +452,6 @@ export async function deleteRouteStrategyAsync(id: string, access?: AccessScope)
   })
   if (deleted) notifyGatewayRuntimeCacheInvalidation('route_strategy_deleted')
   return deleted
-}
-
-export function ensureDefaultRouteStrategyForSystemAccount(systemAccountId: string, timestamp = nowIso()): string {
-  const ids = ensureDefaultRouteStrategiesForSystemAccount(systemAccountId, timestamp)
-  if (!ids.length) {
-    throw new Error('创建默认策略路由前必须先创建默认分组')
-  }
-  return ids[0]!
-}
-
-export function ensureDefaultRouteStrategiesForSystemAccount(systemAccountId: string, timestamp = nowIso()): string[] {
-  const database = getBusinessDatabase()
-  const groups = defaultRouteStrategyGroupsForSystemAccount(database, systemAccountId)
-  if (!groups.length) {
-    throw new Error('创建默认策略路由前必须先创建默认分组')
-  }
-  const routeStrategyIds: string[] = []
-  for (const group of groups) {
-    const existing = defaultRouteStrategyIdForGroup(database, systemAccountId, group.id)
-    if (existing) {
-      routeStrategyIds.push(existing)
-      continue
-    }
-    const routeStrategyId = newId('route_strategy')
-    const baseName = defaultRouteStrategyNameForGroup(group.name)
-    const name = nextDefaultRouteStrategyName(database, systemAccountId, baseName)
-    try {
-      database
-        .prepare(`
-          INSERT INTO route_strategies (
-            id, system_account_id, name, description, mode, status, is_default, config_json, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, 'normal', 'active', 1, NULL, ?, ?)
-        `)
-        .run(routeStrategyId, systemAccountId, name, `系统默认普通路由，绑定${group.name ?? '默认分组'}。`, timestamp, timestamp)
-      database
-        .prepare(`
-          INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at, updated_at)
-          VALUES (?, ?, ?, ?, 1, 1, 'active', ?, ?)
-        `)
-        .run(newId('rsg'), routeStrategyId, systemAccountId, group.id, timestamp, timestamp)
-      routeStrategyIds.push(routeStrategyId)
-    } catch (error) {
-      const raced = defaultRouteStrategyIdForGroup(database, systemAccountId, group.id)
-      if (raced && isDuplicateRouteStrategyNameError(error)) {
-        routeStrategyIds.push(raced)
-        continue
-      }
-      throw error
-    }
-  }
-  return routeStrategyIds
-}
-
-export async function ensureDefaultRouteStrategyForSystemAccountAsync(client: DatabaseClient, systemAccountId: string, timestamp = nowIso()): Promise<string> {
-  const ids = await ensureDefaultRouteStrategiesForSystemAccountAsync(client, systemAccountId, timestamp)
-  if (!ids.length) {
-    throw new Error('创建默认策略路由前必须先创建默认分组')
-  }
-  return ids[0]!
-}
-
-export async function ensureDefaultRouteStrategiesForSystemAccountAsync(client: DatabaseClient, systemAccountId: string, timestamp = nowIso()): Promise<string[]> {
-  const groups = await defaultRouteStrategyGroupsForSystemAccountAsync(client, systemAccountId)
-  if (!groups.length) {
-    throw new Error('创建默认策略路由前必须先创建默认分组')
-  }
-  const routeStrategyIds: string[] = []
-  for (const group of groups) {
-    const existing = await defaultRouteStrategyIdForGroupAsync(client, systemAccountId, group.id)
-    if (existing) {
-      routeStrategyIds.push(existing)
-      continue
-    }
-    const routeStrategyId = newId('route_strategy')
-    const baseName = defaultRouteStrategyNameForGroup(group.name)
-    const name = await nextDefaultRouteStrategyNameAsync(client, systemAccountId, baseName)
-    try {
-      await client.execute(`
-        INSERT INTO ${routeStrategyTable(client, 'route_strategies')} (
-          id, system_account_id, name, description, mode, status, is_default, config_json, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, 'normal', 'active', 1, NULL, ?, ?)
-      `, [routeStrategyId, systemAccountId, name, `系统默认普通路由，绑定${group.name ?? '默认分组'}。`, timestamp, timestamp])
-      await client.execute(`
-        INSERT INTO ${routeStrategyTable(client, 'route_strategy_groups')} (
-          id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, 1, 1, 'active', ?, ?)
-      `, [newId('rsg'), routeStrategyId, systemAccountId, group.id, timestamp, timestamp])
-      routeStrategyIds.push(routeStrategyId)
-    } catch (error) {
-      const raced = await defaultRouteStrategyIdForGroupAsync(client, systemAccountId, group.id)
-      if (raced && isDuplicateRouteStrategyNameError(error)) {
-        routeStrategyIds.push(raced)
-        continue
-      }
-      throw error
-    }
-  }
-  return routeStrategyIds
 }
 
 export function assertRouteStrategySelectableForApiKey(systemAccountId: string, routeStrategyId: unknown): string {
@@ -1271,112 +1167,6 @@ async function routeStrategyApiKeyCountAsync(client: DatabaseClient, routeStrate
     WHERE route_strategy_id = ? AND system_account_id = ?
   `, [routeStrategyId, systemAccountId])
   return Number(row?.count ?? 0)
-}
-
-function ensureDefaultRouteStrategyForAccess(access?: AccessScope): void {
-  const systemAccountId = manageableSystemAccountId(access)
-  if (!systemAccountId) return
-  ensureDefaultRouteStrategiesForSystemAccount(systemAccountId)
-}
-
-async function ensureDefaultRouteStrategyForAccessAsync(access: AccessScope | undefined, client: DatabaseClient): Promise<void> {
-  const systemAccountId = manageableSystemAccountId(access)
-  if (!systemAccountId) return
-  await ensureDefaultRouteStrategiesForSystemAccountAsync(client, systemAccountId)
-}
-
-function defaultRouteStrategyIdForGroup(database: DatabaseSync, systemAccountId: string, groupId: string): string | undefined {
-  const row = database
-    .prepare(`
-      SELECT route_strategies.id
-      FROM route_strategies
-      INNER JOIN route_strategy_groups
-        ON route_strategy_groups.route_strategy_id = route_strategies.id
-        AND route_strategy_groups.system_account_id = route_strategies.system_account_id
-      WHERE route_strategies.system_account_id = ?
-        AND route_strategies.is_default = 1
-        AND route_strategy_groups.group_id = ?
-      ORDER BY route_strategies.updated_at DESC, route_strategies.id ASC
-      LIMIT 1
-    `)
-    .get(systemAccountId, groupId) as { id?: string } | undefined
-  return row?.id
-}
-
-async function defaultRouteStrategyIdForGroupAsync(client: DatabaseClient, systemAccountId: string, groupId: string): Promise<string | undefined> {
-  const row = await client.one<{ id?: string }>(`
-    SELECT route_strategies.id
-    FROM ${routeStrategyTable(client, 'route_strategies')}
-    INNER JOIN ${routeStrategyTable(client, 'route_strategy_groups')} route_strategy_groups
-      ON route_strategy_groups.route_strategy_id = route_strategies.id
-      AND route_strategy_groups.system_account_id = route_strategies.system_account_id
-    WHERE route_strategies.system_account_id = ?
-      AND route_strategies.is_default = 1
-      AND route_strategy_groups.group_id = ?
-    ORDER BY route_strategies.updated_at DESC, route_strategies.id ASC
-    LIMIT 1
-  `, [systemAccountId, groupId])
-  return row?.id
-}
-
-function defaultRouteStrategyGroupsForSystemAccount(database: DatabaseSync, systemAccountId: string): RouteStrategyBindableGroupRow[] {
-  return database
-    .prepare(`
-      SELECT id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, enabled, 1 AS can_bind
-      FROM groups
-      WHERE system_account_id = ? AND is_default = 1
-      ORDER BY created_at ASC, id ASC
-    `)
-    .all(systemAccountId) as unknown as RouteStrategyBindableGroupRow[]
-}
-
-async function defaultRouteStrategyGroupsForSystemAccountAsync(client: DatabaseClient, systemAccountId: string): Promise<RouteStrategyBindableGroupRow[]> {
-  return client.query<RouteStrategyBindableGroupRow>(`
-    SELECT id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, enabled, 1 AS can_bind
-    FROM ${routeStrategyTable(client, 'groups')}
-    WHERE system_account_id = ? AND is_default = 1
-    ORDER BY created_at ASC, id ASC
-  `, [systemAccountId])
-}
-
-function nextDefaultRouteStrategyName(database: DatabaseSync, systemAccountId: string, baseName = DEFAULT_ROUTE_STRATEGY_NAME): string {
-  const rows = database
-    .prepare(`
-      SELECT name
-      FROM route_strategies
-      WHERE system_account_id = ? AND (name = ? OR name LIKE ? ESCAPE '\\')
-    `)
-    .all(systemAccountId, baseName, `${baseName} %`) as Array<{ name?: string | null }>
-  return nextDefaultRouteStrategyNameFromExisting(rows.map((row) => row.name), baseName)
-}
-
-async function nextDefaultRouteStrategyNameAsync(client: DatabaseClient, systemAccountId: string, baseName = DEFAULT_ROUTE_STRATEGY_NAME): Promise<string> {
-  const likeOperator = client.driver === 'postgres' ? 'ILIKE' : 'LIKE'
-  const rows = await client.query<{ name?: string | null }>(`
-    SELECT name
-    FROM ${routeStrategyTable(client, 'route_strategies')}
-    WHERE system_account_id = ? AND (name = ? OR name ${likeOperator} ? ESCAPE '\\')
-  `, [systemAccountId, baseName, `${baseName} %`])
-  return nextDefaultRouteStrategyNameFromExisting(rows.map((row) => row.name), baseName)
-}
-
-function nextDefaultRouteStrategyNameFromExisting(names: Array<string | null | undefined>, baseName = DEFAULT_ROUTE_STRATEGY_NAME): string {
-  const existing = new Set(names.map((name) => String(name ?? '').trim().toLowerCase()).filter(Boolean))
-  if (!existing.has(baseName.toLowerCase())) {
-    return baseName
-  }
-  for (let index = 2; index <= 1000; index += 1) {
-    const candidate = `${baseName} ${index}`
-    if (!existing.has(candidate.toLowerCase())) {
-      return candidate
-    }
-  }
-  return `${baseName} ${Date.now()}`
-}
-
-function defaultRouteStrategyNameForGroup(groupName: string | null | undefined): string {
-  const name = String(groupName ?? '').trim()
-  return name ? name.replace(/分组$/, '路由') : DEFAULT_ROUTE_STRATEGY_NAME
 }
 
 async function lockRouteStrategyMutationRowAsync(client: DatabaseClient, routeStrategyId: string, systemAccountId: string): Promise<void> {

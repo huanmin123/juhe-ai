@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path'
 
 import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import { runtimeConfig } from '../../config/runtime.js'
+import { DEFAULT_GPT_GROUP } from '../../storage/schema-defaults.js'
 
 import {
   dueApiKeyAvailabilityScheduleEvent,
@@ -134,7 +135,7 @@ const overlappingSchedule = normalizeApiKeyAvailabilitySchedule({
 assert.equal(
   dueApiKeyAvailabilityScheduleEvent(overlappingSchedule, new Date('2026-06-01T12:00:00.000Z'))?.status,
   'active',
-  '重叠时段中较短窗口结束时仍处于另一个允许窗口内，派生状态不应被错误关闭'
+  '重叠时段中较短窗口结束时仍处于另一个允许窗口内，状态不应被错误关闭'
 )
 
 assert.throws(
@@ -281,7 +282,7 @@ assert.equal(
 
 await assertApiKeyScheduleStatusSyncAndGatewayGuard()
 
-console.log('API Key 时间计划回归通过：日常时段、跨天时段、模式、空值、例外、非法参数、边界同步、人工提前启用/关闭和热链路不解析计划符合预期')
+console.log('API Key 时间计划回归通过：日常时段、跨天时段、模式、空值、例外、非法参数、边界同步、人工启用/停用和热链路不解析计划符合预期')
 
 async function assertApiKeyScheduleStatusSyncAndGatewayGuard(): Promise<void> {
   const tempRoot = resolve(tmpdir(), `juhe-ai-api-key-availability-schedule-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -311,7 +312,8 @@ async function assertApiKeyScheduleStatusSyncAndGatewayGuard(): Promise<void> {
     const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
     const group = repositories.createGroup({
       name: 'API Key 时间计划补偿回归分组',
-      providerCode: 'gpt',
+      providerCode: DEFAULT_GPT_GROUP.providerCode,
+      providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
       enabled: true
     }, access)
     const rangedCrossDayKey = await withMockedNow(Date.parse('2026-06-01T21:59:00.000Z'), () => createApiKeyRecordWithRouteStrategy(repositories, {
@@ -328,7 +330,7 @@ async function assertApiKeyScheduleStatusSyncAndGatewayGuard(): Promise<void> {
         ]
       }
     }, access))
-    assert.equal(repositories.findApiKeySummary(rangedCrossDayKey.id, access)?.availabilityScheduleActive, false, '跨天日期范围开始前 API Key 应初始化为派生停用')
+    assert.equal(repositories.findApiKeySummary(rangedCrossDayKey.id, access)?.status, 'disabled', '跨天日期范围开始前 API Key 应初始化为停用')
     assert.equal(
       await withMockedNow(Date.parse('2026-06-01T21:59:00.000Z'), () => gatewayApiKeyRepository.validateGatewayApiKey(rangedCrossDayKey.key)),
       undefined,
@@ -336,8 +338,8 @@ async function assertApiKeyScheduleStatusSyncAndGatewayGuard(): Promise<void> {
     )
     const rangedCrossDayStartResult = repositories.syncApiKeyAvailabilityScheduleStatuses(new Date('2026-06-01T22:00:00.000Z'))
     gatewayApiKeyRepository.clearGatewayApiKeyValidationCache()
-    assert(rangedCrossDayStartResult.changedIds.includes(rangedCrossDayKey.id), '跨天日期范围开始边界应更新 API Key 派生状态')
-    assert.equal(repositories.findApiKeySummary(rangedCrossDayKey.id, access)?.availabilityScheduleActive, true, '跨天日期范围开始边界后 API Key 应派生可用')
+    assert(rangedCrossDayStartResult.changedIds.includes(rangedCrossDayKey.id), '跨天日期范围开始边界应更新 API Key 状态')
+    assert.equal(repositories.findApiKeySummary(rangedCrossDayKey.id, access)?.status, 'active', '跨天日期范围开始边界后 API Key 应启用')
     assert.equal(
       await withMockedNow(Date.parse('2026-06-02T01:30:00.000Z'), () => gatewayApiKeyRepository.validateGatewayApiKey(rangedCrossDayKey.key)?.id),
       rangedCrossDayKey.id,
@@ -345,8 +347,8 @@ async function assertApiKeyScheduleStatusSyncAndGatewayGuard(): Promise<void> {
     )
     const rangedCrossDayEndResult = repositories.syncApiKeyAvailabilityScheduleStatuses(new Date('2026-06-02T02:00:00.000Z'))
     gatewayApiKeyRepository.clearGatewayApiKeyValidationCache()
-    assert(rangedCrossDayEndResult.changedIds.includes(rangedCrossDayKey.id), '跨天日期范围次日结束边界应更新 API Key 派生状态')
-    assert.equal(repositories.findApiKeySummary(rangedCrossDayKey.id, access)?.availabilityScheduleActive, false, '跨天日期范围次日结束边界后 API Key 应派生停用')
+    assert(rangedCrossDayEndResult.changedIds.includes(rangedCrossDayKey.id), '跨天日期范围次日结束边界应更新 API Key 状态')
+    assert.equal(repositories.findApiKeySummary(rangedCrossDayKey.id, access)?.status, 'disabled', '跨天日期范围次日结束边界后 API Key 应停用')
     assert.equal(
       await withMockedNow(Date.parse('2026-06-02T02:01:00.000Z'), () => gatewayApiKeyRepository.validateGatewayApiKey(rangedCrossDayKey.key)),
       undefined,
@@ -374,8 +376,7 @@ async function assertApiKeyScheduleStatusSyncAndGatewayGuard(): Promise<void> {
     }, access))
 
     const initialSummary = repositories.findApiKeySummary(apiKey.id, access)
-    assert.equal(initialSummary?.status, 'active', '保存计划时不应改写 API Key 手动启停状态')
-    assert.equal(initialSummary?.availabilityScheduleActive, false, '保存计划时应按当前时间初始化计划派生状态')
+    assert.equal(initialSummary?.status, 'disabled', '保存计划时应按当前时间初始化 API Key 状态')
     assert.equal(
       apiKeyNextCheckAt(databaseModule.getBusinessDatabase(), apiKey.id),
       new Date(startBoundaryAt).toISOString(),
@@ -389,10 +390,9 @@ async function assertApiKeyScheduleStatusSyncAndGatewayGuard(): Promise<void> {
 
     const activatedResult = repositories.syncApiKeyAvailabilityScheduleStatuses(new Date(startBoundaryAt))
     gatewayApiKeyRepository.clearGatewayApiKeyValidationCache()
-    assert.equal(activatedResult.activated, 1, '开始边界应把 API Key 计划派生状态标记为可用')
+    assert.equal(activatedResult.activated, 1, '开始边界应把 API Key 状态标记为启用')
     const activeSummary = repositories.findApiKeySummary(apiKey.id, access)
-    assert.equal(activeSummary?.status, 'active', '计划开始边界不应改写 API Key 手动启停状态')
-    assert.equal(activeSummary?.availabilityScheduleActive, true, '计划开始边界后应通过 availabilityScheduleActive 暴露')
+    assert.equal(activeSummary?.status, 'active', '计划开始边界后应通过 status 暴露启用')
     assert.equal(
       apiKeyNextCheckAt(databaseModule.getBusinessDatabase(), apiKey.id),
       new Date(endBoundaryAt).toISOString(),
@@ -408,39 +408,37 @@ async function assertApiKeyScheduleStatusSyncAndGatewayGuard(): Promise<void> {
     const earlyClosedAt = allowedAt + 5 * 60_000
     const earlyCloseSyncAt = allowedAt + 6 * 60_000
     const earlyReopenedAt = allowedAt + 7 * 60_000
-    const manuallyDeactivated = await withMockedNow(earlyClosedAt, () => repositories.updateApiKey(apiKey.id, { availabilityScheduleActive: false }, access))
-    assert.equal(manuallyDeactivated?.status, 'active', '计划内人工提前关闭不应改写 API Key 手动启停状态')
-    assert.equal(manuallyDeactivated?.availabilityScheduleActive, false, '计划内人工提前关闭应立即改写计划派生状态')
+    const manuallyDeactivated = await withMockedNow(earlyClosedAt, () => repositories.updateApiKey(apiKey.id, { status: 'disabled' }, access))
+    assert.equal(manuallyDeactivated?.status, 'disabled', '计划内人工停用应立即改写 API Key 状态')
     assert.equal(
       await withMockedNow(earlyClosedAt, () => gatewayApiKeyRepository.validateGatewayApiKey(apiKey.key)),
       undefined,
-      '计划内人工提前关闭后应立即被网关拒绝'
+      '计划内人工停用后应立即被网关拒绝'
     )
 
     const earlyCloseNonBoundaryResult = repositories.syncApiKeyAvailabilityScheduleStatuses(new Date(earlyCloseSyncAt))
     gatewayApiKeyRepository.clearGatewayApiKeyValidationCache()
-    assert.equal(earlyCloseNonBoundaryResult.activated, 0, '非边界同步不应把人工提前关闭再次打开')
-    assert.equal(repositories.findApiKeySummary(apiKey.id, access)?.availabilityScheduleActive, false, '非边界同步后人工提前关闭状态应保留')
+    assert.equal(earlyCloseNonBoundaryResult.activated, 0, '非边界同步不应把人工停用再次打开')
+    assert.equal(repositories.findApiKeySummary(apiKey.id, access)?.status, 'disabled', '非边界同步后人工停用状态应保留')
     assert.equal(
       await withMockedNow(earlyCloseSyncAt, () => gatewayApiKeyRepository.validateGatewayApiKey(apiKey.key)),
       undefined,
-      '非边界同步后人工提前关闭仍应被网关拒绝'
+      '非边界同步后人工停用仍应被网关拒绝'
     )
 
-    const manuallyReopened = await withMockedNow(earlyReopenedAt, () => repositories.updateApiKey(apiKey.id, { availabilityScheduleActive: true }, access))
-    assert.equal(manuallyReopened?.availabilityScheduleActive, true, '计划内人工提前关闭后应支持再次提前启用')
+    const manuallyReopened = await withMockedNow(earlyReopenedAt, () => repositories.updateApiKey(apiKey.id, { status: 'active' }, access))
+    assert.equal(manuallyReopened?.status, 'active', '计划内人工停用后应支持再次启用')
     assert.equal(
       await withMockedNow(earlyReopenedAt, () => gatewayApiKeyRepository.validateGatewayApiKey(apiKey.key)?.id),
       apiKey.id,
-      '计划内再次提前启用后应通过网关校验'
+      '计划内再次启用后应通过网关校验'
     )
 
     const disabledResult = repositories.syncApiKeyAvailabilityScheduleStatuses(new Date(endBoundaryAt))
     gatewayApiKeyRepository.clearGatewayApiKeyValidationCache()
-    assert.equal(disabledResult.disabled, 1, '结束边界应把 API Key 计划派生状态标记为不可用')
+    assert.equal(disabledResult.disabled, 1, '结束边界应把 API Key 状态标记为停用')
     const inactiveSummary = repositories.findApiKeySummary(apiKey.id, access)
-    assert.equal(inactiveSummary?.status, 'active', '时间计划结束边界不应改写 API Key 手动启停状态')
-    assert.equal(inactiveSummary?.availabilityScheduleActive, false, '时间计划外应通过 availabilityScheduleActive 暴露')
+    assert.equal(inactiveSummary?.status, 'disabled', '时间计划结束边界后应通过 status 暴露停用')
     assert.equal(
       apiKeyNextCheckAt(databaseModule.getBusinessDatabase(), apiKey.id),
       new Date(Date.parse('2026-06-01T14:00:00.000Z')).toISOString(),
@@ -454,31 +452,31 @@ async function assertApiKeyScheduleStatusSyncAndGatewayGuard(): Promise<void> {
       '结束边界后网关应拒绝时段外 API Key'
     )
 
-    const manuallyActivated = await withMockedNow(afterEndAt, () => repositories.updateApiKey(apiKey.id, { availabilityScheduleActive: true }, access))
-    assert.equal(manuallyActivated?.availabilityScheduleActive, true, '时间计划外人工提前启用应立即改写计划派生状态')
+    const manuallyActivated = await withMockedNow(afterEndAt, () => repositories.updateApiKey(apiKey.id, { status: 'active' }, access))
+    assert.equal(manuallyActivated?.status, 'active', '时间计划外人工启用应立即改写状态')
     assert.equal(
       await withMockedNow(afterEndAt, () => gatewayApiKeyRepository.validateGatewayApiKey(apiKey.key)?.id),
       apiKey.id,
-      '时间计划外人工提前启用后应立即通过网关校验'
+      '时间计划外人工启用后应立即通过网关校验'
     )
 
     const nonBoundaryResult = repositories.syncApiKeyAvailabilityScheduleStatuses(new Date(afterEndAt))
     gatewayApiKeyRepository.clearGatewayApiKeyValidationCache()
-    assert.equal(nonBoundaryResult.disabled, 0, '非边界同步不应把人工提前启用再次关闭')
-    assert.equal(repositories.findApiKeySummary(apiKey.id, access)?.availabilityScheduleActive, true, '非边界同步后人工提前启用状态应保留')
+    assert.equal(nonBoundaryResult.disabled, 0, '非边界同步不应把人工启用再次关闭')
+    assert.equal(repositories.findApiKeySummary(apiKey.id, access)?.status, 'active', '非边界同步后人工启用状态应保留')
     assert.equal(
       await withMockedNow(afterEndAt, () => gatewayApiKeyRepository.validateGatewayApiKey(apiKey.key)?.id),
       apiKey.id,
-      '非边界同步后人工提前启用仍应通过网关校验'
+      '非边界同步后人工启用仍应通过网关校验'
     )
 
     const nextDisabledResult = repositories.syncApiKeyAvailabilityScheduleStatuses(new Date(nextEndBoundaryAt))
     gatewayApiKeyRepository.clearGatewayApiKeyValidationCache()
-    assert.equal(nextDisabledResult.disabled, 1, '下一次结束边界应再次关闭提前启用的 API Key')
+    assert.equal(nextDisabledResult.disabled, 1, '下一次结束边界应再次关闭人工启用的 API Key')
     assert.equal(
       await withMockedNow(nextEndBoundaryAt + 60_000, () => gatewayApiKeyRepository.validateGatewayApiKey(apiKey.key)),
       undefined,
-      '下一次结束边界后提前启用的 API Key 应重新被网关拒绝'
+      '下一次结束边界后人工启用的 API Key 应重新被网关拒绝'
     )
 
     databaseModule.getBusinessDatabase().prepare("UPDATE api_keys SET status = 'disabled' WHERE id = ?").run(apiKey.id)
@@ -543,5 +541,3 @@ async function withMockedNow<T>(nowMs: number, operation: () => Promise<T> | T):
     })
   }
 }
-
-

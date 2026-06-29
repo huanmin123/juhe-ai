@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-resource-authorization-expire-clear-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -56,12 +57,14 @@ try {
   const ownerAccountGroup = repositories.createGroup({
     name: '授权有效期账号来源分组',
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, ownerAccess)
 
   const userGroup = repositories.createGroup({
     name: '授权有效期清空个人分组',
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, ownerAccess)
   const userAuthorization = repositories.createResourceAuthorization({
@@ -86,6 +89,7 @@ try {
   const teamGroup = repositories.createGroup({
     name: '授权有效期清空团队分组',
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, ownerAccess)
   const teamAuthorization = repositories.createResourceAuthorization({
@@ -105,6 +109,7 @@ try {
   const expiredRevokeGroup = repositories.createGroup({
     name: '授权到期后回收分组',
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, ownerAccess)
   const expiredRevokeAuthorization = repositories.createResourceAuthorization({
@@ -138,6 +143,7 @@ try {
   }
   const account = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '授权有效期边界账户',
     type: 'api_key',
     credentials: { api_key: 'sk-resource-authorization-expire-boundary', base_url: 'https://api.openai.com/v1' },
@@ -148,6 +154,7 @@ try {
   const granteeQuotaGroup = repositories.createGroup({
     name: '授权额度拦截分组',
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, granteeAccess)
   assert.throws(() => repositories.createResourceAuthorization({
@@ -183,6 +190,7 @@ try {
   assert.equal(quotaBinding?.boundGroupId, granteeQuotaGroup.id, '额度账户应能先绑定到被授权人的分组')
   const migrationSourceAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '授权额度迁移源账户',
     type: 'api_key',
     credentials: { api_key: 'sk-resource-authorization-quota-source', base_url: 'https://api.openai.com/v1' },
@@ -246,6 +254,7 @@ try {
 
   const ownerPausedAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '授权所有者停调账户',
     type: 'api_key',
     credentials: { api_key: 'sk-resource-authorization-owner-paused', base_url: 'https://api.openai.com/v1' },
@@ -291,6 +300,7 @@ try {
 
   const ownerCooldownAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '授权所有者冷却账户',
     type: 'api_key',
     credentials: { api_key: 'sk-resource-authorization-owner-cooldown', base_url: 'https://api.openai.com/v1' },
@@ -320,6 +330,7 @@ try {
 
   const ownerScheduleInactiveAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '授权所有者时段外账户',
     type: 'api_key',
     credentials: { api_key: 'sk-resource-authorization-owner-schedule-inactive', base_url: 'https://api.openai.com/v1' },
@@ -339,8 +350,8 @@ try {
   const ownerScheduleInactiveAuthorizedAccount = repositories.listAccounts(granteeAccess).find((item) => item.id === ownerScheduleInactiveAuthorizedInstance.id)
   assert.equal(ownerScheduleInactiveAuthorizedAccount?.status, 'active', '所有者时段外不应覆盖授权实例状态')
   assert.equal(ownerScheduleInactiveAuthorizedAccount?.schedulable, false, '所有者时段外应阻断被授权实例实际调度')
-  assert.equal(ownerScheduleInactiveAuthorizedAccount?.effectiveAvailability.status, 'source_schedule_inactive', '所有者时段外时授权实例实际状态应标记来源时段外')
-  assert.equal(ownerScheduleInactiveAuthorizedAccount?.authorizationInstanceSourceAccountScheduleActive, false, '授权实例列表应返回来源账户计划当前不可用提示字段')
+  assert.equal(ownerScheduleInactiveAuthorizedAccount?.authorizationInstanceSourceAccountStatus, 'disabled', '所有者时段外应通过来源账户 status=disabled 表达')
+  assert.equal(ownerScheduleInactiveAuthorizedAccount?.effectiveAvailability.status, 'source_disabled', '所有者时段外时授权实例实际状态应标记来源停用')
   const ownerScheduleDisabledStatusIds = repositories.listAccountsPage(ownerAccess, { status: 'disabled', page: 1, pageSize: 50 }).items.map((item) => item.id)
   assert(ownerScheduleDisabledStatusIds.includes(ownerScheduleInactiveAccount.id), '自有账户时段外应归入停用状态筛选')
   const ownerScheduleActiveStatusIds = repositories.listAccountsPage(ownerAccess, { status: 'active', page: 1, pageSize: 50 }).items.map((item) => item.id)
@@ -356,13 +367,14 @@ try {
   assert.equal(repositories.listOpenAIAccountsForGroup(granteeQuotaGroup.id, grantee.id).some((item) => item.id === ownerScheduleInactiveAuthorizedInstance.id), false, '所有者时段外后授权实例不应进入网关候选')
   assert.throws(() => repositories.updateAuthorizedAccountBindingDispatch(ownerScheduleInactiveAuthorizedInstance.id, {
     fallbackEnabled: true
-  }, granteeAccess), /授权方原账户当前不在允许使用时段/, '所有者时段外后不应允许被授权用户开启调度标记')
+  }, granteeAccess), /授权方原账户已停用/, '所有者时段外后不应允许被授权用户开启调度标记')
   const ownerScheduleInactiveTestAccount = repositories.findAccountForTest(ownerScheduleInactiveAuthorizedInstance.id, granteeAccess)
   assert(ownerScheduleInactiveTestAccount, '所有者时段外账户仍应能被解析出来用于测试前置校验')
-  assert.equal(repositories.accountTestUnavailableMessage(ownerScheduleInactiveTestAccount), '授权方原账户当前不在允许使用时段，当前账户不能调用', '测试接口应因所有者时段外拦截被授权账户')
+  assert.equal(repositories.accountTestUnavailableMessage(ownerScheduleInactiveTestAccount), '授权方原账户已停用，当前账户不能调用', '测试接口应因所有者时段外拦截被授权账户')
 
   const ownerDisabledAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '授权所有者停用账户',
     type: 'api_key',
     credentials: { api_key: 'sk-resource-authorization-owner-disabled', base_url: 'https://api.openai.com/v1' },
@@ -383,7 +395,7 @@ try {
   assert.equal(ownerDisabledAuthorizedAccount?.schedulable, false, '所有者停用应阻断被授权实例实际调度')
   assert.equal(ownerDisabledAuthorizedAccount?.effectiveAvailability.status, 'source_disabled', '所有者停用时授权实例实际状态应标记为来源停用')
   assert.equal(ownerDisabledAuthorizedAccount?.authorizationInstanceSourceAccountStatus, 'disabled', '授权实例列表应返回来源账户停用状态供页面提示')
-  assert.equal(ownerDisabledAuthorizedAccount?.authorizationInstanceSourceAccountSchedulable, false, '来源账户停用时应返回来源调度不可用提示字段')
+  assert.equal(ownerDisabledAuthorizedAccount?.authorizationInstanceSourceAccountSchedulable, true, '来源账户停用只由来源 status 表达，不应强制改写来源调度开关')
   const sourceDisabledStatusIds = repositories.listAccountsPage(granteeAccess, { status: 'disabled', page: 1, pageSize: 50 }).items.map((item) => item.id)
   assert(sourceDisabledStatusIds.includes(ownerDisabledAuthorizedInstance.id), '来源停用的授权账户应归入停用状态筛选')
   const sourceDisabledActiveIds = repositories.listAccountsPage(granteeAccess, { status: 'active', page: 1, pageSize: 50 }).items.map((item) => item.id)
@@ -393,6 +405,7 @@ try {
 
   const teamQuotaAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '授权有效期团队额度账户',
     type: 'api_key',
     credentials: { api_key: 'sk-resource-authorization-team-quota', base_url: 'https://api.openai.com/v1' },
@@ -483,4 +496,3 @@ function insertUsageDaily(database: ReturnType<typeof databaseModule.getStatsDat
     ) VALUES (?, ?, ?, ?, ?, ?)
   `).run(systemAccountId, scopeType, scopeId, statDate, totalCost, new Date().toISOString())
 }
-

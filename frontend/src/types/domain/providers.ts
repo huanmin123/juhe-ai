@@ -97,6 +97,7 @@ export interface ProviderModelPricing {
 export interface ProviderModelOption {
   providerCode: ProviderCode
   model: string
+  supportedApiProtocols?: ProviderModelApiProtocol[]
 }
 
 export interface ProviderDefaultTestModelResult {
