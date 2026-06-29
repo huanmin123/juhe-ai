@@ -298,7 +298,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 - `external_integration_source_tokens(token_hash)`：保证来源 token 摘要唯一；来源系统鉴权按 token hash 点查，不扫描表；完整 token 只保存在 `token_secret_encrypted` 密文中，列表只展示前缀和后缀。
 - `external_integration_source_tokens(source_ref_id, status, expires_at)`：管理页面按来源系统读取 token 状态和过期边界。
 - `route_strategies(system_account_id, lower(name))`：保证同一用户下策略路由名称唯一。
-- `route_strategies.is_default = 1` 只保留为历史默认策略路由保护标识；当前启动种子和系统账户创建不再自动生成默认策略路由。用户新增策略路由默认 `is_default = 0`。
+- `route_strategies.is_default = 1` 标识系统默认策略路由；当前启动种子、系统账户创建和带账户作用域的策略路由列表读取会为非混合供应商默认分组补齐默认普通路由。用户新增策略路由默认 `is_default = 0`。
 - `route_strategy_groups(route_strategy_id, group_id)`：保证同一条策略路由不重复绑定同一分组。
 - `route_strategy_groups(route_strategy_id, priority) WHERE status = 'active'`：保证同一条策略路由的 active 分组优先级唯一。
 - `route_strategy_groups(route_strategy_id, status, priority, created_at, id)`：网关按策略路由读取 active 分组候选时固定最多取 20 条窗口，并按路由优先级稳定排序，不能扫描全部绑定或临时排序。
@@ -850,7 +850,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 - 授权实例持久状态以授权实例 `accounts` 行为准；冷却、最近错误和流失败诊断窗口不落在 `group_accounts` 本地绑定字段上，真实网关的调度降级和事前确认运行态只保存在当前 Web 进程内。
 - 来源 AI 账户删除时，来源账户和对应授权实例账户都只做逻辑删除并立即隐藏；对应 `resource_authorization_grants` 和 `resource_authorizations` 必须标记为 `revoked`，历史统计和用量在逻辑删除阶段继续保留原授权 ID；默认授权列表不再把它作为生效授权展示。超过 1 个月后，物理清理任务再删除授权实例、授权记录、绑定关系、历史记录和统计窗口。
 - `api_keys` 不保存主号池、分组绑定或路由规则字段；API Key 的路由事实只来自 `route_strategy_id` 指向的 `route_strategies` 和 `route_strategy_groups`。
-- `route_strategies.is_default` 只保留为历史默认策略路由保护标识；系统账户创建时只同步生成默认内置分组，不再自动创建策略路由。`api_keys.is_default` 只保留为历史默认 API Key 保护标识；当前启动种子、系统账户创建和 API Key 列表读取都不会自动创建默认 API Key。混合供应商路由属于高级路由，必须由用户自己创建策略、绑定分组并配置对应混合供应商账户。
+- `route_strategies.is_default` 标识系统默认策略路由；系统账户创建时会同步生成默认内置分组，并为除“默认混合供应商分组”以外的每个默认分组创建默认普通路由。`api_keys.is_default` 标识系统默认 API Key；启动种子、系统账户创建和带账户作用域的 API Key 列表读取会为每条非混合默认普通路由补齐一个默认 API Key。混合供应商路由属于高级路由，必须由用户自己创建策略、绑定分组并配置对应混合供应商账户。
 - `api_keys.availability_schedule_json` 保存 API Key 时间计划；为空表示不设置计划，API Key 完全按 `api_keys.status` 手动启停。API Key 只有一个可用状态：`api_keys.status`。启用计划后，创建或编辑计划时按当前时间把 `status` 初始化为 `active` 或 `disabled`，并计算下一次计划边界写入 `api_keys.availability_schedule_next_check_at`；background worker 之后只在开始 / 结束边界按分钟事件继续写 `status`。人工启用 / 停用同样只改 `status`，不存在单独的计划派生状态控制；后续仍由下一次计划边界接管。跨天窗口的日期范围和例外日期都按窗口开始日期解释，结束日期当天启动的窗口可延续到次日凌晨；多个窗口重叠时按当前整体允许状态写状态，避免较短窗口结束时错误停用。后台同步只读取 `next_check_at <= now` 或待补偿空检查点的 API Key，每轮最多 500 个，并通过 `availability_schedule_next_check_at + id` 部分索引定位；网关只读取落库后的 `status`，不在请求链路解析计划 JSON。
 - `accounts.availability_schedule_json` 与 API Key 计划使用同一结构；账户计划作用在具体账户行上，授权实例账户按自己的实例行计划参与调度，来源账户计划先写入来源账户 `status`，再作为来源账户可用性的一部分参与授权实例实际可用性判断。AI 账户只有一个可用控制状态 `accounts.status`，人工启用 / 停用和时间计划边界都写同一个字段；数据库不保留独立的计划派生启停列。后台同步只读取 `next_check_at <= now` 或待补偿空检查点的账户，每轮最多 500 个，并通过 `availability_schedule_next_check_at + id` 部分索引定位；`account_schedule_status_events` 记录账户时间计划边界事件，避免同步任务在非边界时覆盖人工启用 / 停用。
 - `route_strategy_groups.route_strategy_id / group_id / priority / status` 保存策略路由到多个可用分组号池的路由绑定；新建和编辑时可以绑定策略所属系统账户自己的分组，也可以绑定有效授权给该系统账户的分组。至少保留一个 `active` 绑定，同一策略下 active 绑定优先级唯一。当前实现允许同一策略绑定不同供应商分组，运行时按请求 `model` 在当前策略绑定范围内解析目标供应商后筛选绑定分组；无法明确解析时继续按有界候选顺序和账号模型过滤处理。

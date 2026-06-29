@@ -4,9 +4,10 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { HYBRID_PROVIDER_CODE } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 import { maxRouteStrategyGroupBindings } from '../../storage/route-strategy-group-binding-limits.js'
-import { DEFAULT_GPT_GROUP } from '../../storage/schema-defaults.js'
+import { DEFAULT_BUILT_IN_GROUPS, DEFAULT_GPT_GROUP } from '../../storage/schema-defaults.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-route-strategy-group-bindings-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -25,9 +26,12 @@ const [databaseModule, repositories] = await Promise.all([
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
+const defaultRouteResourceCount = DEFAULT_BUILT_IN_GROUPS.filter((group) => group.providerCode !== HYBRID_PROVIDER_CODE).length
 
 try {
-  assert.equal(repositories.listRouteStrategyOptions(access, { limit: 20 }).some((strategy) => strategy.isDefault), false, '策略路由列表不应自动补齐默认策略路由')
+  const initialDefaultStrategies = repositories.listRouteStrategyOptions({ ...access, systemAccountFilterId: access.systemAccountId }, { limit: 20 }).filter((strategy) => strategy.isDefault)
+  assert.equal(initialDefaultStrategies.length, defaultRouteResourceCount, '策略路由列表应包含非混合默认分组对应的默认普通路由')
+  assert.equal(initialDefaultStrategies.every((strategy) => strategy.mode === 'normal'), true, '默认策略路由必须都是普通路由')
 
   const database = databaseModule.getBusinessDatabase()
   const defaultGroup = repositories.listGroups(access).find((group) => group.enabled)

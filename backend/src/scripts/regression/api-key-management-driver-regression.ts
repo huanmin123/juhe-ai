@@ -6,7 +6,8 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import type { AccessScope } from '../../storage/access-scope.js'
-import { DEFAULT_GPT_GROUP } from '../../storage/schema-defaults.js'
+import { HYBRID_PROVIDER_CODE } from '../../domain/provider-protocol.js'
+import { DEFAULT_BUILT_IN_GROUPS, DEFAULT_GPT_GROUP } from '../../storage/schema-defaults.js'
 
 const createdApiKeyIds: string[] = []
 const createdGroupIds: string[] = []
@@ -14,6 +15,7 @@ const createdAccountIds: string[] = []
 const adminAccess: AccessScope = { systemAccountId: 'sys_admin', role: 'super_admin' }
 const driverRegressionModel = 'gpt-5-mini'
 const driverRegressionUpstreamModel = 'gpt-5'
+const defaultRouteResourceCount = DEFAULT_BUILT_IN_GROUPS.filter((group) => group.providerCode !== HYBRID_PROVIDER_CODE).length
 
 if (process.env.JUHE_API_KEY_MANAGEMENT_DRIVER_CHILD === 'postgres') {
   const repositories = await import('../../storage/repositories.js')
@@ -78,8 +80,10 @@ try {
 async function assertApiKeyManagementAsync(repositories: typeof import('../../storage/repositories.js')): Promise<void> {
   const { logger } = await import('../../shared/logger.js')
   logger.level = 'silent'
-  const defaultApiKeyPage = await repositories.listApiKeysPageAsync(adminAccess, { page: 1, pageSize: 50 })
-  assert.equal(defaultApiKeyPage.items.some((item) => item.isDefault), false, 'API Key 列表不应自动补齐默认 API Key')
+  const defaultApiKeyPage = await repositories.listApiKeysPageAsync({ ...adminAccess, systemAccountFilterId: adminAccess.systemAccountId }, { page: 1, pageSize: 50 })
+  const defaultApiKeys = defaultApiKeyPage.items.filter((item) => item.isDefault)
+  assert.equal(defaultApiKeys.length, defaultRouteResourceCount, 'API Key 列表应包含非混合默认路由对应的默认 API Key')
+  assert.equal(defaultApiKeys.every((item) => item.routeStrategyMode === 'normal'), true, '默认 API Key 必须绑定默认普通路由')
 
   const suffix = `${Date.now()}${Math.random().toString(16).slice(2, 8)}`
   const group = await repositories.createGroupAsync({

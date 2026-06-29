@@ -5,9 +5,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { HYBRID_PROVIDER_CODE } from '../../domain/provider-protocol.js'
 import { DEFAULT_BUILT_IN_GROUPS } from '../../storage/schema-defaults.js'
 
 const createdSystemAccountIds: string[] = []
+const defaultRouteResourceCount = DEFAULT_BUILT_IN_GROUPS.filter((group) => group.providerCode !== HYBRID_PROVIDER_CODE).length
 
 if (process.env.JUHE_SYSTEM_ACCOUNT_MANAGEMENT_DRIVER_CHILD === 'postgres') {
   const repositories = await import('../../storage/repositories.js')
@@ -90,12 +92,13 @@ async function assertSystemAccountManagementAsync(repositories: typeof import('.
   const defaultGroupCount = await defaultGroupCountForSystemAccount(created.id)
   assert.equal(defaultGroupCount, DEFAULT_BUILT_IN_GROUPS.length, '异步创建系统账户应同步创建全部默认内置分组')
   const createdDefaultRouteStrategyCount = await defaultRouteStrategyCountForSystemAccount(created.id)
-  assert.equal(createdDefaultRouteStrategyCount, 0, '异步创建系统账户不应自动创建默认策略路由')
+  assert.equal(createdDefaultRouteStrategyCount, defaultRouteResourceCount, '异步创建系统账户应为非混合默认分组创建默认普通路由')
   const createdDefaultApiKeyCount = await defaultApiKeyCountForSystemAccount(created.id)
-  assert.equal(createdDefaultApiKeyCount, 0, '异步创建系统账户不应自动创建默认 API Key')
+  assert.equal(createdDefaultApiKeyCount, defaultRouteResourceCount, '异步创建系统账户应为每条默认普通路由创建默认 API Key')
 
   const routeStrategyOptions = await repositories.listRouteStrategyOptionsAsync({ systemAccountId: created.id, role: 'user' }, { limit: DEFAULT_BUILT_IN_GROUPS.length + 5 })
-  assert.equal(routeStrategyOptions.length, 0, '策略路由选项不应自动补齐默认策略路由')
+  assert.equal(routeStrategyOptions.length, defaultRouteResourceCount, '策略路由选项应补齐非混合默认分组对应的默认普通路由')
+  assert.equal(routeStrategyOptions.every((item) => item.isDefault && item.mode === 'normal'), true, '默认策略路由必须都是普通路由')
 
   const page = await repositories.listSystemAccountsPageAsync({ keyword: username, page: 1, pageSize: 20 })
   assert.ok(page.items.some((item) => item.id === created.id), '异步系统账户列表应能按用户名查到新账户')
