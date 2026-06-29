@@ -1,11 +1,5 @@
 <template>
   <section class="form-section" autocomplete="off">
-    <div class="form-section-head">
-      <div>
-        <h4>{{ title }} 配置</h4>
-      </div>
-    </div>
-
     <template v-if="editing">
       <a-form-item label="Access Token">
         <a-textarea
@@ -87,23 +81,6 @@ defineEmits<{
   padding: 0;
   border: 0;
   background: transparent;
-}
-
-.form-section-head {
-  margin-bottom: 8px;
-}
-
-.form-section-head h4 {
-  margin: 0;
-  color: #0f172a;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.form-section-head p {
-  margin: 4px 0 0;
-  color: #64748b;
-  font-size: 12px;
 }
 
 .oauth-actions {

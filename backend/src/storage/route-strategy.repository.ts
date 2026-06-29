@@ -714,6 +714,17 @@ function validateRouteStrategyModeBindings(mode: RouteStrategyMode, bindings: Ro
   if (mode === 'normal' && (bindings.length !== 1 || activeBindings.length !== 1)) {
     throw new Error('普通路由只能绑定一个启用分组')
   }
+  if (mode === 'failover') {
+    if (bindings.length < 2) {
+      throw new Error('故障回退路由需要一个主用分组和至少一个备用分组')
+    }
+    if (bindings[0]?.status !== 'active') {
+      throw new Error('故障回退路由的主用分组必须启用')
+    }
+    if (!bindings.slice(1).some((binding) => binding.status === 'active')) {
+      throw new Error('故障回退路由至少需要一个启用备用分组')
+    }
+  }
 }
 
 function replaceRouteStrategyGroups(database: DatabaseSync, routeStrategyId: string, systemAccountId: string, mode: RouteStrategyMode, bindings: RouteStrategyGroupBindingWrite[], now: string): void {

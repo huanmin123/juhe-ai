@@ -14,11 +14,12 @@ const originalModels = api.providers.models
 const originalModelOptions = api.providers.modelOptions
 const calls: Array<{ code: string; params?: ProviderModelsParams }> = []
 const modelOptionCalls: unknown[] = []
-let latestModels = [providerModel('gpt-cache-old')]
+let latestModels = [providerModel('gpt-cache-old', ['chat_completions'])]
 const latestGlobalModels: ProviderModelOption[] = [
-  { providerCode: 'gpt', model: 'gpt-global-model' },
-  { providerCode: 'anthropic', model: 'claude-global-model' },
-  { providerCode: 'gemini', model: 'gemini-global-model' }
+  { providerCode: 'gpt', model: 'gpt-global-model', supportedApiProtocols: ['chat_completions'] },
+  { providerCode: 'gpt', model: 'gpt-global-model', supportedApiProtocols: ['responses'] },
+  { providerCode: 'anthropic', model: 'claude-global-model', supportedApiProtocols: ['messages'] },
+  { providerCode: 'gemini', model: 'gemini-global-model', supportedApiProtocols: ['generate_content', 'stream_generate_content'] }
 ]
 
 ;(api.providers as unknown as { models: ModelsLoader }).models = async (code, params) => {
@@ -42,9 +43,18 @@ try {
 
   await modelOptions.loadProviderModelOptions('openai')
   assertDeepEqual(optionValues(modelOptions.providerModelOptions.value), ['gpt-cache-old'], '首次加载应读取接口模型目录')
+  assertDeepEqual(
+    protocolsByValue(modelOptions.providerModelOptions.value),
+    { 'gpt-cache-old': ['chat_completions'] },
+    '普通供应商模型选项必须保留协议能力，供账号模型别名右侧按协议过滤'
+  )
   assertEqual(calls.length, 1, '首次加载应请求一次模型目录')
 
-  latestModels = [providerModel('gpt-cache-old'), providerModel('gpt-cache-new')]
+  latestModels = [
+    providerModel('gpt-cache-old', ['chat_completions']),
+    providerModel('gpt-cache-old', ['responses']),
+    providerModel('gpt-cache-new', ['responses'])
+  ]
   await modelOptions.loadProviderModelOptions('openai')
   assertDeepEqual(optionValues(modelOptions.providerModelOptions.value), ['gpt-cache-old'], '未失效时应继续使用缓存模型目录')
   assertEqual(calls.length, 1, '未失效时不应重复请求模型目录')
@@ -57,6 +67,11 @@ try {
   invalidateAccountProviderModelOptionsCache('openai')
   await modelOptions.loadProviderModelOptions('openai')
   assertDeepEqual(optionValues(modelOptions.providerModelOptions.value), ['gpt-cache-old', 'gpt-cache-new'], '当前供应商失效后应重新读取模型目录')
+  assertDeepEqual(
+    protocolsByValue(modelOptions.providerModelOptions.value),
+    { 'gpt-cache-old': ['chat_completions', 'responses'], 'gpt-cache-new': ['responses'] },
+    '重复模型去重时必须合并协议能力'
+  )
   assertEqual(calls.length, 2, '当前供应商失效后应重新请求模型目录')
 
   const scopedModelOptions = useAccountProviderModelOptions({
@@ -81,6 +96,15 @@ try {
     ['gpt-global-model', 'claude-global-model', 'gemini-global-model'],
     '混合供应商应加载全局模型池而不是 hybrid 自身模型目录'
   )
+  assertDeepEqual(
+    protocolsByValue(hybridModelOptions.providerModelOptions.value),
+    {
+      'gpt-global-model': ['chat_completions', 'responses'],
+      'claude-global-model': ['messages'],
+      'gemini-global-model': ['generate_content', 'stream_generate_content']
+    },
+    '混合供应商全局模型池也必须保留并合并协议能力'
+  )
   assertEqual(modelOptionCalls.length, 1, '混合供应商应请求一次全局模型选项接口')
   assertEqual(calls.length, 3, '混合供应商不应请求 /providers/hybrid/models 作为创建页模型候选')
 
@@ -93,6 +117,10 @@ try {
 
 function optionValues(options: Array<{ value: string }>): string[] {
   return options.map((option) => option.value)
+}
+
+function protocolsByValue(options: Array<{ value: string; supportedApiProtocols?: string[] }>): Record<string, string[] | undefined> {
+  return Object.fromEntries(options.map((option) => [option.value, option.supportedApiProtocols]))
 }
 
 function assertEqual<T>(actual: T, expected: T, message: string): void {
@@ -109,7 +137,7 @@ function assertDeepEqual(actual: unknown, expected: unknown, message: string): v
   }
 }
 
-function providerModel(model: string): ProviderModelPricing {
+function providerModel(model: string, supportedApiProtocols: ProviderModelPricing['supportedApiProtocols']): ProviderModelPricing {
   return {
     providerCode: 'openai',
     model,
@@ -117,6 +145,7 @@ function providerModel(model: string): ProviderModelPricing {
     scope: 'personal',
     status: 'active',
     supportsPromptCaching: false,
-    supportsServiceTier: false
+    supportsServiceTier: false,
+    supportedApiProtocols
   }
 }

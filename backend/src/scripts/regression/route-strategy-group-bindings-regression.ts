@@ -137,6 +137,36 @@ try {
     }, access)
   }, /策略路由不能启用已停用分组/, '策略路由不能启用已停用分组')
 
+  assert.throws(() => {
+    repositories.createRouteStrategy({
+      name: '故障回退缺少备用分组回归策略',
+      mode: 'failover',
+      groupBindings: [{ groupId: primaryGroup.id, priority: 1, status: 'active' }]
+    }, access)
+  }, /故障回退路由需要一个主用分组和至少一个备用分组/, '故障回退路由必须配置一个主用和至少一个备用分组')
+
+  assert.throws(() => {
+    repositories.createRouteStrategy({
+      name: '故障回退主用停用回归策略',
+      mode: 'failover',
+      groupBindings: [
+        { groupId: primaryGroup.id, priority: 1, status: 'disabled' },
+        { groupId: fallbackGroup.id, priority: 2, status: 'active' }
+      ]
+    }, access)
+  }, /故障回退路由的主用分组必须启用/, '故障回退路由的主用分组必须保持启用')
+
+  assert.throws(() => {
+    repositories.createRouteStrategy({
+      name: '故障回退无启用备用回归策略',
+      mode: 'failover',
+      groupBindings: [
+        { groupId: primaryGroup.id, priority: 1, status: 'active' },
+        { groupId: fallbackGroup.id, priority: 2, status: 'disabled' }
+      ]
+    }, access)
+  }, /故障回退路由至少需要一个启用备用分组/, '故障回退路由必须至少保留一个启用备用分组')
+
   const failoverStrategy = repositories.createRouteStrategy({
     name: '故障回退路由回归策略',
     mode: 'failover',
@@ -238,7 +268,7 @@ try {
     }, access)
   }, new RegExp(`策略路由最多绑定 ${maxRouteStrategyGroupBindings} 个分组`), '策略路由分组绑定数量必须有固定上限')
 
-  console.log('策略路由分组绑定回归通过：API Key 只绑定策略路由，分组绑定、优先级、删除保护和固定上限均在策略路由层生效')
+  console.log('策略路由分组绑定回归通过：API Key 只绑定策略路由，分组绑定、故障回退主备、删除保护和固定上限均在策略路由层生效')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()

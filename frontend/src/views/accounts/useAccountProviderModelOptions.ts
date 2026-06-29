@@ -55,7 +55,8 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
         : await api.providers.models(code, options.modelScopeParams.value)
       const modelOptions = dedupeModelOptions(models.map((item) => ({
         label: item.model,
-        value: item.model
+        value: item.model,
+        supportedApiProtocols: item.supportedApiProtocols
       })))
       providerModelOptionsCache.set(cacheKey, modelOptions)
       if (options.currentProviderCode() === code) {
@@ -81,11 +82,35 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
     for (const option of options) {
       const model = option.value.trim()
       if (!model) continue
-      if (seen.has(model)) continue
+      if (seen.has(model)) {
+        const existing = output.find((item) => item.value === model)
+        if (existing) {
+          existing.supportedApiProtocols = mergeModelProtocols(existing.supportedApiProtocols, option.supportedApiProtocols)
+        }
+        continue
+      }
       seen.add(model)
-      output.push({ label: model, value: model })
+      output.push({
+        label: model,
+        value: model,
+        supportedApiProtocols: mergeModelProtocols(undefined, option.supportedApiProtocols)
+      })
     }
     return output
+  }
+
+  function mergeModelProtocols(
+    left: AccountModelSelectOption['supportedApiProtocols'],
+    right: AccountModelSelectOption['supportedApiProtocols']
+  ): AccountModelSelectOption['supportedApiProtocols'] {
+    const output = [...(left ?? [])]
+    const seen = new Set(output)
+    for (const protocol of right ?? []) {
+      if (seen.has(protocol)) continue
+      seen.add(protocol)
+      output.push(protocol)
+    }
+    return output.length ? output : undefined
   }
 
   return {

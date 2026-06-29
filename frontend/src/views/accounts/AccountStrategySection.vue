@@ -1,15 +1,5 @@
 <template>
   <section class="form-section">
-    <div class="form-section-head">
-      <div>
-        <h4 class="section-title">
-          <span>请求策略</span>
-          <a-tooltip title="控制这个账号能接哪些模型、协议形态，以及在分组内怎么参与调度。">
-            <QuestionCircleOutlined class="help-icon" />
-          </a-tooltip>
-        </h4>
-      </div>
-    </div>
     <a-form-item label="账号模型别名" :tooltip="modelMappingTooltip">
       <div v-if="form.modelMappings.length" class="model-mapping-list">
         <div v-for="(mapping, index) in form.modelMappings" :key="index" class="model-mapping-row">
@@ -81,14 +71,6 @@
         </div>
       </a-checkbox-group>
     </a-form-item>
-    <div class="strategy-grid">
-      <a-form-item label="并发上限" tooltip="这个账号同一时间最多承接多少个请求。达到上限后，调度会等待或尝试其他可用账号。">
-        <a-input-number v-model:value="form.concurrencyLimit" :disabled="authorizedEditing" :min="1" style="width: 100%" />
-      </a-form-item>
-      <a-form-item label="优先级" tooltip="分组内账号排序使用小值优先；0 会排在 1 前面。授权账号这里表示当前使用方本地分组内的调度优先级。">
-        <a-input-number v-model:value="form.priority" :min="0" style="width: 100%" />
-      </a-form-item>
-    </div>
     <a-form-item class="strategy-proxy-field" label="代理" tooltip="仅影响这个账号访问上游供应商时使用的代理；不使用代理时直接按 Base URL 访问上游。">
       <ProxySelect
         v-model:value="form.proxyProfileId"
@@ -103,7 +85,7 @@
 
 <script setup lang="ts">
 import { computed, watch } from 'vue'
-import { DeleteOutlined, PlusOutlined, QuestionCircleOutlined, SwapRightOutlined } from '@ant-design/icons-vue'
+import { DeleteOutlined, PlusOutlined, SwapRightOutlined } from '@ant-design/icons-vue'
 import ProxySelect from '@/components/ProxySelect.vue'
 import type { SelectOption } from '@/shared/selectLabelCache'
 import {
@@ -291,50 +273,6 @@ function modelMappingProtocolContext() {
   background: transparent;
 }
 
-.form-section-head {
-  margin-bottom: 8px;
-}
-
-.form-section-head h4 {
-  margin: 0;
-  color: #0f172a;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.section-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.help-icon {
-  color: #94a3b8;
-  cursor: help;
-  font-size: 14px;
-}
-
-.help-icon:hover {
-  color: #1677ff;
-}
-
-.form-section-head p {
-  margin: 4px 0 0;
-  color: #64748b;
-  font-size: 12px;
-}
-
-.strategy-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0 16px;
-  min-width: 0;
-}
-
-.strategy-grid :deep(.ant-form-item) {
-  min-width: 0;
-}
-
 .form-help {
   margin-top: 4px;
   color: #64748b;
@@ -426,12 +364,6 @@ function modelMappingProtocolContext() {
 .form-section :deep(.ant-form-item-control-input-content) {
   min-width: 0;
   max-width: 100%;
-}
-
-@media (max-width: 992px) {
-  .strategy-grid {
-    grid-template-columns: 1fr;
-  }
 }
 
 @media (max-width: 720px) {

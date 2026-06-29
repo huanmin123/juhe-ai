@@ -1,10 +1,5 @@
 <template>
   <section class="form-section credential-section" autocomplete="off">
-    <div class="form-section-head">
-      <div>
-        <h4>{{ title }} 配置</h4>
-      </div>
-    </div>
     <a-form-item required>
       <template #label>
         <div class="api-key-label">
@@ -19,8 +14,18 @@
           </a-radio-group>
         </div>
       </template>
-      <div class="api-key-input-list">
+      <div :class="['api-key-input-list', { 'has-runtime': showApiKeyRuntimeDetails }]">
         <div v-for="(_, index) in form.apiKeys" :key="index" class="api-key-input-row">
+          <div v-if="showApiKeyRuntimeDetails" class="api-key-runtime-cell">
+            <a-tooltip v-if="runtimeErrorReasonText(runtimeDetailForIndex(index))" :title="runtimeErrorReasonText(runtimeDetailForIndex(index))" placement="topLeft">
+              <a-tag :color="runtimeStatusColor(runtimeDetailForIndex(index))">
+                {{ runtimeStatusText(runtimeDetailForIndex(index)) }}
+              </a-tag>
+            </a-tooltip>
+            <a-tag v-else :color="runtimeStatusColor(runtimeDetailForIndex(index))">
+              {{ runtimeStatusText(runtimeDetailForIndex(index)) }}
+            </a-tag>
+          </div>
           <div :class="['api-key-credential-controls', { 'has-weight': showWeightInputs }]">
             <a-input-password
               v-model:value="form.apiKeys[index]"
@@ -55,28 +60,6 @@
               </a-button>
             </a-tooltip>
           </div>
-        </div>
-      </div>
-      <div v-if="showApiKeyRuntimeDetails" class="api-key-runtime-panel">
-        <div class="api-key-runtime-title">已保存 Key 状态</div>
-        <div v-for="(detail, index) in apiKeyRuntimeDetailRows" :key="runtimeDetailKey(detail, index)" class="api-key-runtime-row">
-          <span class="api-key-runtime-index">{{ runtimeIndexText(detail, index) }}</span>
-          <a-tag :color="runtimeStatusColor(detail)">
-            {{ runtimeStatusText(detail) }}
-          </a-tag>
-          <span v-if="runtimeKeySuffixText(detail)" class="api-key-runtime-muted">
-            {{ runtimeKeySuffixText(detail) }}
-          </span>
-          <span class="api-key-runtime-muted">权重 {{ runtimeWeightText(detail) }}</span>
-          <span v-if="runtimeFailureText(detail)" class="api-key-runtime-muted">
-            {{ runtimeFailureText(detail) }}
-          </span>
-          <span v-if="runtimeScheduleText(detail)" class="api-key-runtime-muted">
-            {{ runtimeScheduleText(detail) }}
-          </span>
-          <a-tooltip v-if="detail.lastErrorMessage" :title="detail.lastErrorMessage">
-            <span class="api-key-runtime-error">{{ runtimeLastErrorText(detail) }}</span>
-          </a-tooltip>
         </div>
       </div>
     </a-form-item>
@@ -129,10 +112,21 @@ const filledApiKeyCount = computed(() => normalizedAccountApiKeys(props.form).le
 const showApiKeyStrategy = computed(() => filledApiKeyCount.value > 1)
 const showWeightInputs = computed(() => showApiKeyStrategy.value && props.form.apiKeyStrategy === 'weighted_round_robin')
 const showBatchDeleteApiKeys = computed(() => props.form.apiKeys.some((value) => value.trim()))
-const showApiKeyRuntimeDetails = computed(() => props.editing && Boolean(props.apiKeyRuntimeDetails?.length))
+const showApiKeyRuntimeDetails = computed(() => (
+  props.editing
+  && filledApiKeyCount.value > 1
+  && Boolean(props.apiKeyRuntimeDetails?.length)
+))
 const apiKeyRuntimeDetailRows = computed<AccountApiKeyRuntimeDetail[]>(() => {
   if (!showApiKeyRuntimeDetails.value) return []
   return [...(props.apiKeyRuntimeDetails ?? [])].sort((left, right) => left.keyIndex - right.keyIndex)
+})
+const apiKeyRuntimeDetailByIndex = computed(() => {
+  const output = new Map<number, AccountApiKeyRuntimeDetail>()
+  for (const detail of apiKeyRuntimeDetailRows.value) {
+    output.set(detail.keyIndex, detail)
+  }
+  return output
 })
 const baseUrlTooltip = computed(() => (
   isHybridProviderCode(props.form.providerCode)
@@ -201,12 +195,8 @@ function normalizeApiKeyWeight(value: number | null | undefined): number {
   return Math.min(100, Math.max(1, numberValue))
 }
 
-function runtimeDetailKey(detail: AccountApiKeyRuntimeDetail, index: number): string {
-  return detail.keyFingerprintPrefix || `${detail.keyIndex}-${detail.keySuffix ?? index}`
-}
-
-function runtimeIndexText(detail: AccountApiKeyRuntimeDetail, index: number): string {
-  return `已保存 Key ${Number.isInteger(detail.keyIndex) ? detail.keyIndex + 1 : index + 1}`
+function runtimeDetailForIndex(index: number): AccountApiKeyRuntimeDetail | undefined {
+  return apiKeyRuntimeDetailByIndex.value.get(index)
 }
 
 function runtimeStatusText(detail: AccountApiKeyRuntimeDetail | undefined): string {
@@ -230,36 +220,17 @@ function runtimeStatusMeta(status: AccountApiKeyRuntimeStatus | undefined): { la
     case 'disabled':
       return { label: '已停用', color: 'default' }
     default:
-      return { label: '未记录', color: 'default' }
+      return { label: '未保存', color: 'default' }
   }
 }
 
-function runtimeKeySuffixText(detail: AccountApiKeyRuntimeDetail | undefined): string {
-  return detail?.keySuffix ? `尾号 ${detail.keySuffix}` : ''
-}
-
-function runtimeWeightText(detail: AccountApiKeyRuntimeDetail | undefined): string {
-  return String(detail?.weight ?? 1)
-}
-
-function runtimeFailureText(detail: AccountApiKeyRuntimeDetail | undefined): string {
-  if (!detail) return ''
-  if (detail.consecutiveFailures > 0) return `连续失败 ${detail.consecutiveFailures}`
-  if (detail.failureCount > 0) return `累计失败 ${detail.failureCount}`
-  if (detail.successCount > 0) return `成功 ${detail.successCount}`
-  return ''
-}
-
-function runtimeScheduleText(detail: AccountApiKeyRuntimeDetail | undefined): string {
-  if (!detail) return ''
+function runtimeErrorReasonText(detail: AccountApiKeyRuntimeDetail | undefined): string {
+  if (!detail || detail.status === 'active') return ''
+  if (detail.lastErrorMessage?.trim()) return detail.lastErrorMessage.trim()
+  if (detail.lastErrorCode?.trim()) return detail.lastErrorCode.trim()
   if (detail.cooldownUntil) return `冷却至 ${formatDateTime(detail.cooldownUntil)}`
-  if (detail.nextProbeAt) return `探测 ${formatDateTime(detail.nextProbeAt)}`
+  if (detail.nextProbeAt) return `下次探测 ${formatDateTime(detail.nextProbeAt)}`
   return ''
-}
-
-function runtimeLastErrorText(detail: AccountApiKeyRuntimeDetail | undefined): string {
-  if (!detail?.lastErrorMessage) return ''
-  return detail.lastErrorCode ? `最近错误 ${detail.lastErrorCode}` : '最近错误'
 }
 
 function extractOpenAIApiKeys(value: string): string[] {
@@ -290,23 +261,6 @@ function uniqueNonEmptyStrings(values: string[]): string[] {
   padding: 0;
   border: 0;
   background: transparent;
-}
-
-.form-section-head {
-  margin-bottom: 8px;
-}
-
-.form-section-head h4 {
-  margin: 0;
-  color: #0f172a;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.form-section-head p {
-  margin: 4px 0 0;
-  color: #64748b;
-  font-size: 12px;
 }
 
 .credential-section {
@@ -348,6 +302,11 @@ function uniqueNonEmptyStrings(values: string[]): string[] {
   align-items: center;
 }
 
+.api-key-input-list.has-runtime .api-key-input-row {
+  grid-template-columns: 72px minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
 .api-key-credential-controls {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -368,52 +327,22 @@ function uniqueNonEmptyStrings(values: string[]): string[] {
   padding-inline: 8px;
 }
 
-.api-key-runtime-row {
+.api-key-runtime-cell {
   display: flex;
+  box-sizing: border-box;
+  width: 72px;
+  max-width: 72px;
+  height: 32px;
   min-width: 0;
-  flex-wrap: wrap;
-  gap: 6px;
   align-items: center;
-  color: #64748b;
-  font-size: 12px;
-  line-height: 22px;
+  justify-content: flex-start;
 }
 
-.api-key-runtime-panel {
-  display: grid;
-  gap: 6px;
-  margin-top: 10px;
-  padding: 8px 10px;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  background: #f8fafc;
-}
-
-.api-key-runtime-title {
-  color: #475569;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.api-key-runtime-index {
-  color: #334155;
-  font-weight: 600;
-}
-
-.api-key-runtime-row :deep(.ant-tag) {
+.api-key-runtime-cell :deep(.ant-tag) {
   margin-inline-end: 0;
-}
-
-.api-key-runtime-muted {
-  overflow-wrap: anywhere;
-}
-
-.api-key-runtime-error {
-  max-width: 100%;
-  overflow: hidden;
-  color: #b91c1c;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  padding-inline: 6px;
+  font-size: 12px;
+  line-height: 20px;
 }
 
 .api-key-row-actions {
@@ -425,6 +354,15 @@ function uniqueNonEmptyStrings(values: string[]): string[] {
 @media (max-width: 640px) {
   .api-key-input-row {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .api-key-input-list.has-runtime .api-key-input-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .api-key-runtime-cell {
+    width: 100%;
+    max-width: none;
   }
 
   .api-key-credential-controls.has-weight {

@@ -24,9 +24,10 @@ assert(!apiKeysApiSource.includes('hybridRoutingConfig'), 'API Key 请求层不�
 assert(!apiKeysApiSource.includes('explicitHybridRouteRules'), 'API Key 请求层不得继续提交显式跨协议规则')
 
 assert(routeStrategiesViewSource.includes('scoringFallbackMaxLevel'), '混合智能路由配置必须迁移到策略路由页面')
-assert(routeStrategiesViewSource.includes('混合智能路由配置 JSON'), '策略路由页面必须展示混合智能路由配置入口')
+assert(routeStrategiesViewSource.includes('混合智能配置'), '策略路由页面必须展示结构化混合智能路由配置入口')
 assert(routeStrategiesViewSource.includes("form.mode === 'hybrid_smart'"), '策略路由页面必须只在 hybrid_smart 模式下展示混合配置')
-assert(routeStrategiesViewSource.includes('parseHybridRoutingConfigJson'), '策略路由页面必须解析混合智能配置 JSON')
+assert(routeStrategiesViewSource.includes('defaultHybridRoutingForm'), '策略路由页面必须维护结构化混合智能配置默认值')
+assert(routeStrategiesViewSource.includes('buildHybridRoutingConfigPayload'), '策略路由页面必须从结构化表单生成混合智能配置')
 assert(routeStrategiesViewSource.includes('payload.hybridRoutingConfig = hybridRoutingConfig'), '策略路由保存必须把混合配置提交到策略路由接口')
 assert(routeStrategiesViewSource.includes('payload.hybridRoutingConfig = null'), '非混合智能模式必须清空混合配置')
 

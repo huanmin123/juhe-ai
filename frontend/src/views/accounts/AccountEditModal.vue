@@ -67,16 +67,6 @@
       />
 
       <section v-if="authorizedEditing" class="form-section readonly-config-section">
-        <div class="form-section-head">
-          <div>
-            <h4 class="section-title">
-              <span>上游公开配置</span>
-              <a-tooltip title="来源账户的敏感凭据不会展示。">
-                <QuestionCircleOutlined class="help-icon" />
-              </a-tooltip>
-            </h4>
-          </div>
-        </div>
         <a-descriptions bordered size="small" :column="2">
           <a-descriptions-item label="Base URL" :span="2">{{ form.baseUrl || '-' }}</a-descriptions-item>
           <a-descriptions-item label="支持模型" :span="2">
@@ -166,7 +156,6 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { QuestionCircleOutlined } from '@ant-design/icons-vue'
 
 import { formatDateTime } from '@/shared/formatters'
 import type { AccountSummary, AccountTagSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderModelApiProtocol, ProviderProtocolProfileDefinition } from '@/types/domain'
@@ -188,7 +177,6 @@ import {
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
-import { DEFAULT_ACCOUNT_CONCURRENCY_LIMIT } from './accountOptions'
 import type { AccountTypeChoice } from './accountEditFormDisplay'
 
 interface SelectOption<T = string> {
@@ -300,8 +288,6 @@ const advancedConfiguredCount = computed(() => {
       provider: props.selectedProvider,
       protocolProfile: props.selectedProtocolProfile
     })),
-    form.concurrencyLimit !== DEFAULT_ACCOUNT_CONCURRENCY_LIMIT,
-    form.priority !== 0,
     Boolean(form.proxyProfileId),
     Boolean(form.accountExpiresAt),
     form.availabilitySchedule.enabled,
@@ -346,33 +332,6 @@ defineEmits<{
   padding: 0;
   border-bottom: 0;
   background: transparent;
-}
-
-.form-section-head {
-  margin-bottom: 8px;
-}
-
-.form-section-head h4 {
-  margin: 0;
-  color: #0f172a;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.section-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.help-icon {
-  color: #94a3b8;
-  cursor: help;
-  font-size: 14px;
-}
-
-.help-icon:hover {
-  color: #1677ff;
 }
 
 .readonly-config-section {

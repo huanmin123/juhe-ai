@@ -28,6 +28,12 @@
           />
         </div>
       </a-form-item>
+      <a-form-item label="并发上限" tooltip="这个账号同一时间最多承接多少个请求。达到上限后，调度会等待或尝试其他可用账号。">
+        <a-input-number v-model:value="form.concurrencyLimit" :disabled="authorizedEditing" :min="1" style="width: 100%" />
+      </a-form-item>
+      <a-form-item label="优先级" tooltip="分组内账号排序使用小值优先；0 会排在 1 前面。授权账号这里表示当前使用方本地分组内的调度优先级。">
+        <a-input-number v-model:value="form.priority" :min="0" style="width: 100%" />
+      </a-form-item>
       <a-form-item class="tag-form-item" label="账户标签">
         <AccountTagSelect
           v-model:value="form.tags"
@@ -101,23 +107,6 @@ function handleGroupDropdownVisibleChange(open: boolean): void {
   padding: 2px 0 4px;
   border-bottom: 1px solid #eef2f7;
   background: transparent;
-}
-
-.form-section-head {
-  margin-bottom: 10px;
-}
-
-.form-section-head h4 {
-  margin: 0;
-  color: #0f172a;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.form-section-head p {
-  margin: 4px 0 0;
-  color: #64748b;
-  font-size: 12px;
 }
 
 .form-grid {

@@ -770,22 +770,6 @@ onMounted(() => {
   background: #fff;
 }
 
-.form-section-head {
-  margin-bottom: 12px;
-}
-
-.form-section-head h4 {
-  margin: 0;
-  color: #0f172a;
-  font-size: 16px;
-}
-
-.form-section-head p {
-  margin: 4px 0 0;
-  color: #64748b;
-  font-size: 12px;
-}
-
 .form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

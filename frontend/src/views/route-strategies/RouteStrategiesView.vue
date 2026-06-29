@@ -12,6 +12,20 @@
       @search="applyFilters"
     >
       <template #inline-filters>
+        <SystemPrincipalSelect
+          v-if="isManagementView"
+          v-model:value="systemAccountFilter"
+          :accounts="systemAccounts"
+          :active-only="false"
+          :filter-option="false"
+          :loading="systemAccountOptionsLoading"
+          v-model:selected-principal="systemAccountFilterSelection"
+          include-all
+          class="toolbar-select responsive-list-inline-filter"
+          @change="handleSystemAccountFilterChange"
+          @dropdown-visible-change="handleSystemAccountOptionsDropdown"
+          @search="handleSystemAccountOptionsSearch"
+        />
         <a-select
           v-model:value="statusFilter"
           class="toolbar-select responsive-list-inline-filter"
@@ -32,6 +46,21 @@
         </a-button>
       </template>
       <template #filters>
+        <label v-if="isManagementView" class="mobile-filter-field">
+          <span>系统账户</span>
+          <SystemPrincipalSelect
+            v-model:value="systemAccountFilter"
+            :accounts="systemAccounts"
+            :active-only="false"
+            :filter-option="false"
+            :loading="systemAccountOptionsLoading"
+            v-model:selected-principal="systemAccountFilterSelection"
+            include-all
+            @change="handleSystemAccountFilterChange"
+            @dropdown-visible-change="handleSystemAccountOptionsDropdown"
+            @search="handleSystemAccountOptionsSearch"
+          />
+        </label>
         <label class="mobile-filter-field">
           <span>状态</span>
           <a-select v-model:value="statusFilter" :options="statusFilterOptions" />
@@ -150,6 +179,7 @@
     </ResponsiveDataList>
 
     <a-modal v-model:open="modalOpen" :title="editingId ? '编辑策略路由' : '新建策略路由'" width="760px" :confirm-loading="saving" destroy-on-close @ok="saveRouteStrategy">
+      <a-alert v-if="!editingId && isManagementView && targetSystemAccountLabel" class="modal-alert" type="info" show-icon :message="`当前创建目标：${targetSystemAccountLabel}`" />
       <a-form layout="vertical" class="route-strategy-modal-form">
         <a-form-item label="名称" required>
           <a-input v-model:value="form.name" placeholder="请输入策略路由名称" />
@@ -175,17 +205,49 @@
           <div class="route-strategy-binding-header" :style="bindingGridStyle">
             <span v-for="column in bindingColumns" :key="column.key">{{ column.label }}</span>
           </div>
-          <div v-for="(binding, index) in form.groupBindings" :key="binding.key" class="route-strategy-binding-row" :style="bindingGridStyle">
+          <div
+            v-for="(binding, index) in form.groupBindings"
+            :key="binding.key"
+            class="route-strategy-binding-row"
+            :class="{
+              'is-dragging': bindingDragSourceIndex === index,
+              'is-drag-over': bindingDragOverIndex === index
+            }"
+            :style="bindingGridStyle"
+            @dragenter.prevent="handleBindingDragEnter(index)"
+            @dragover="handleBindingDragOver(index, $event)"
+            @drop="handleBindingDrop(index, $event)"
+          >
+            <div v-if="bindingShowsDragHandle" class="route-strategy-binding-drag-cell">
+              <a-tooltip v-if="bindingRowDragEnabled(index)" title="拖动调整顺序">
+                <button
+                  type="button"
+                  class="route-strategy-binding-drag-handle"
+                  :draggable="bindingRowDragEnabled(index)"
+                  :aria-label="`拖动调整第 ${index + 1} 个分组顺序`"
+                  @dragstart="handleBindingDragStart(index, $event)"
+                  @dragend="handleBindingDragEnd"
+                  @keydown.up.prevent="moveBindingForMode(index, index - 1)"
+                  @keydown.down.prevent="moveBindingForMode(index, index + 1)"
+                >
+                  <HolderOutlined />
+                </button>
+              </a-tooltip>
+              <span v-else class="route-strategy-binding-drag-placeholder"></span>
+            </div>
             <a-select
               v-model:value="binding.groupId"
               show-search
               :filter-option="false"
               :loading="groupOptionsLoading"
               :options="groupOptions"
-              placeholder="选择分组"
+              :placeholder="bindingGroupPlaceholder(index)"
               @dropdown-visible-change="handleGroupOptionsDropdown"
               @search="handleGroupOptionsSearch"
             />
+            <div v-if="bindingShowsRole" class="route-strategy-binding-role">
+              <a-tag :color="bindingRoleColor(index)">{{ bindingRoleText(index) }}</a-tag>
+            </div>
             <a-input-number v-if="bindingShowsPriority" v-model:value="binding.priority" :min="1" :max="100000" :placeholder="bindingPriorityPlaceholder" />
             <a-input-number v-if="bindingShowsWeight" v-model:value="binding.weight" :min="1" :max="100" placeholder="权重" />
             <a-select v-model:value="binding.status" :options="statusOptions" />
@@ -196,7 +258,7 @@
         </div>
         <a-button type="dashed" block :disabled="bindingAddDisabled" @click="addBinding">
           <template #icon><PlusOutlined /></template>
-          添加分组
+          {{ bindingAddButtonText }}
         </a-button>
 
         <template v-if="form.mode === 'hybrid_smart'">
@@ -321,7 +383,7 @@
 </template>
 
 <script setup lang="ts">
-import { DeleteOutlined, PlusOutlined } from '@ant-design/icons-vue'
+import { DeleteOutlined, HolderOutlined, PlusOutlined } from '@ant-design/icons-vue'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import type { TablePaginationConfig } from 'ant-design-vue'
 
@@ -330,12 +392,15 @@ import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
+import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { filterModelOption, useProviderModelSelectOptions } from '@/composables/useProviderModelSelectOptions'
+import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useScopedGroupsApi, useScopedRouteStrategiesApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime, formatNumber } from '@/shared/formatters'
+import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import type {
   ApiKeyHybridLevelRoute,
   ApiKeyHybridQualityInspectionFailureAction,
@@ -349,6 +414,7 @@ import type {
   RouteStrategyStatus,
   RouteStrategySummary
 } from '@/types/domain'
+import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 
 interface BindingFormRow {
   key: string
@@ -388,10 +454,30 @@ interface HybridRoutingForm {
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const routeStrategiesApi = useScopedRouteStrategiesApi(isManagementView)
 const groupsApi = useScopedGroupsApi(isManagementView)
-const modelOptionsScopeParams = computed(() => {
-  const systemAccountId = scopedSystemAccountId()
+const keyword = ref('')
+const systemAccountFilter = ref(allSystemAccountsValue)
+const systemAccountFilterSelection = ref<PrincipalSelection | undefined>()
+const statusFilter = ref<RouteStrategyStatus | 'all'>('all')
+const modeFilter = ref<RouteStrategyMode | 'all'>('all')
+const loading = ref(false)
+const saving = ref(false)
+const modalOpen = ref(false)
+const editingId = ref<string>()
+const editingSystemAccountId = ref<string>()
+const bindingDragSourceIndex = ref<number | null>(null)
+const bindingDragOverIndex = ref<number | null>(null)
+const items = ref<RouteStrategySummary[]>([])
+const total = ref(0)
+const page = ref(1)
+const pageSize = ref(20)
+const groupOptionsRaw = ref<GroupOptionSummary[]>([])
+const groupOptionsLoading = ref(false)
+
+const routeStrategyScopeParams = computed(() => {
+  const systemAccountId = scopedSystemAccountId(systemAccountFilter.value)
   return systemAccountId ? { systemAccountId } : undefined
 })
+const modelOptionsScopeParams = computed(() => routeStrategyOperationScopeParams())
 const {
   loading: modelOptionsLoading,
   loadModelOptions,
@@ -400,19 +486,16 @@ const {
   scopeParams: modelOptionsScopeParams,
   onLoadError: (error) => message.warning(extractApiErrorMessage(error, '模型选项加载失败'))
 })
-const keyword = ref('')
-const statusFilter = ref<RouteStrategyStatus | 'all'>('all')
-const modeFilter = ref<RouteStrategyMode | 'all'>('all')
-const loading = ref(false)
-const saving = ref(false)
-const modalOpen = ref(false)
-const editingId = ref<string>()
-const items = ref<RouteStrategySummary[]>([])
-const total = ref(0)
-const page = ref(1)
-const pageSize = ref(20)
-const groupOptionsRaw = ref<GroupOptionSummary[]>([])
-const groupOptionsLoading = ref(false)
+const {
+  handleDropdown: handleSystemAccountOptionsDropdown,
+  handleSearch: handleSystemAccountOptionsSearch,
+  loading: systemAccountOptionsLoading,
+  resetSearch: resetSystemAccountOptionsSearch,
+  systemAccounts
+} = useRemoteSystemAccountOptions({
+  enabled: () => isManagementView.value,
+  selectedIds: () => [systemAccountFilter.value]
+})
 
 const form = reactive({
   name: '',
@@ -487,16 +570,23 @@ const columns = computed<Array<Record<string, unknown>>>(() => {
 
 const activeFilterCount = computed(() => [
   keyword.value.trim(),
+  isManagementView.value && systemAccountFilter.value !== allSystemAccountsValue,
   statusFilter.value !== 'all',
   modeFilter.value !== 'all'
 ].filter(Boolean).length)
 
 const bindingAddDisabled = computed(() => form.mode === 'normal' && form.groupBindings.length >= 1)
-const bindingShowsPriority = computed(() => form.mode === 'failover' || form.mode === 'round_robin' || form.mode === 'hybrid_smart')
+const bindingShowsDragHandle = computed(() => form.mode === 'hybrid_smart' || form.mode === 'failover')
+const bindingShowsRole = computed(() => form.mode === 'failover')
+const bindingOrderUsesPosition = computed(() => form.mode === 'hybrid_smart' || form.mode === 'failover')
+const bindingShowsPriority = computed(() => form.mode === 'round_robin')
 const bindingShowsWeight = computed(() => form.mode === 'weighted')
 const bindingPriorityPlaceholder = computed(() => form.mode === 'round_robin' ? '顺序' : '优先级')
+const bindingAddButtonText = computed(() => form.mode === 'failover' && form.groupBindings.length >= 1 ? '添加备用分组' : '添加分组')
 const bindingColumns = computed(() => [
+  ...(bindingShowsDragHandle.value ? [{ key: 'drag', label: '' }] : []),
   { key: 'group', label: '分组' },
+  ...(bindingShowsRole.value ? [{ key: 'role', label: '主备' }] : []),
   ...(bindingShowsPriority.value ? [{ key: 'priority', label: bindingPriorityPlaceholder.value }] : []),
   ...(bindingShowsWeight.value ? [{ key: 'weight', label: '权重' }] : []),
   { key: 'status', label: '状态' },
@@ -504,6 +594,8 @@ const bindingColumns = computed(() => [
 ])
 const bindingGridStyle = computed(() => {
   const tracks = ['minmax(0, 1fr)']
+  if (bindingShowsDragHandle.value) tracks.unshift('32px')
+  if (bindingShowsRole.value) tracks.push('minmax(64px, 76px)')
   if (bindingShowsPriority.value) tracks.push('minmax(76px, 92px)')
   if (bindingShowsWeight.value) tracks.push('minmax(76px, 92px)')
   tracks.push('minmax(88px, 96px)', '32px')
@@ -523,6 +615,17 @@ const groupOptions = computed(() => groupOptionsRaw.value.map((group) => ({
   value: group.id,
   disabled: group.enabled === false
 })))
+const targetSystemAccountLabel = computed(() => {
+  if (!isManagementView.value) return undefined
+  const systemAccountId = routeStrategyScopeParams.value?.systemAccountId
+  if (!systemAccountId) return '请选择系统账户后再创建'
+  if (systemAccountFilterSelection.value?.kind === 'system_account' && systemAccountFilterSelection.value.id === systemAccountId) {
+    return systemAccountFilterSelection.value.name
+  }
+  return systemAccounts.value.find((account) => account.id === systemAccountId)?.displayName
+    || principalLabelForId('system_account', systemAccountId)
+    || ''
+})
 
 watch(() => form.mode, (mode) => {
   if (mode === 'normal' && form.groupBindings.length > 1) {
@@ -534,10 +637,10 @@ watch(() => form.mode, (mode) => {
     void loadModelOptions()
   }
 })
+watch(systemAccountFilterSelection, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
 
 onMounted(() => {
   void loadRouteStrategies()
-  void loadGroupOptions()
 })
 
 async function loadRouteStrategies() {
@@ -549,7 +652,7 @@ async function loadRouteStrategies() {
       keyword: keyword.value.trim() || undefined,
       mode: modeFilter.value,
       status: statusFilter.value,
-      systemAccountId: scopedSystemAccountId()
+      systemAccountId: routeStrategyScopeParams.value?.systemAccountId
     })
     items.value = result.items
     total.value = result.total
@@ -573,30 +676,57 @@ function applyFilters() {
 }
 
 function refreshRouteStrategies() {
+  resetSystemAccountOptionsSearch()
   void loadRouteStrategies()
 }
 
 function resetFilters() {
   keyword.value = ''
+  systemAccountFilter.value = allSystemAccountsValue
+  systemAccountFilterSelection.value = undefined
   statusFilter.value = 'all'
   modeFilter.value = 'all'
+  groupOptionsRaw.value = []
+  resetSystemAccountOptionsSearch()
+  page.value = 1
+  void loadRouteStrategies()
+}
+
+function handleSystemAccountFilterChange() {
+  if (systemAccountFilter.value === allSystemAccountsValue) {
+    systemAccountFilterSelection.value = undefined
+  }
+  groupOptionsRaw.value = []
+  resetSystemAccountOptionsSearch()
   page.value = 1
   void loadRouteStrategies()
 }
 
 function openCreate() {
+  if (isManagementView.value && !routeStrategyScopeParams.value?.systemAccountId) {
+    message.warning('请先在右侧选择目标系统账户，再创建策略路由')
+    return
+  }
   editingId.value = undefined
+  editingSystemAccountId.value = undefined
   form.name = ''
   form.description = ''
   form.mode = 'normal'
   form.status = 'active'
   form.groupBindings = [createBindingRow()]
   form.hybrid = defaultHybridRoutingForm()
+  groupOptionsRaw.value = []
+  void loadGroupOptions()
   modalOpen.value = true
 }
 
 function openEdit(record: RouteStrategySummary) {
+  if (isManagementView.value && !record.systemAccountId?.trim()) {
+    message.warning('无法确定策略路由归属系统账户，请刷新后重试')
+    return
+  }
   editingId.value = record.id
+  editingSystemAccountId.value = record.systemAccountId
   form.name = record.name
   form.description = record.description ?? ''
   form.mode = record.mode
@@ -607,6 +737,8 @@ function openEdit(record: RouteStrategySummary) {
   form.hybrid = hybridRoutingFormFromConfig(record.hybridRoutingConfig)
   normalizeBindingRowsForMode()
   if (record.mode === 'hybrid_smart') normalizeHybridLevelRouteRanges()
+  groupOptionsRaw.value = []
+  void loadGroupOptions('', record.groupBindings.map((binding) => binding.groupId))
   modalOpen.value = true
   if (record.mode === 'hybrid_smart') void loadModelOptions()
 }
@@ -617,9 +749,9 @@ async function saveRouteStrategy() {
     message.warning('请输入策略路由名称')
     return
   }
-  const groupBindings = form.groupBindings.map((binding) => ({
+  const groupBindings = form.groupBindings.map((binding, index) => ({
     groupId: binding.groupId.trim(),
-    priority: binding.priority,
+    priority: bindingOrderUsesPosition.value ? index + 1 : binding.priority,
     weight: binding.weight,
     status: binding.status
   }))
@@ -644,11 +776,16 @@ async function saveRouteStrategy() {
     } else {
       payload.hybridRoutingConfig = null
     }
+    const operationScopeParams = routeStrategyOperationScopeParams()
+    if (isManagementView.value && !operationScopeParams?.systemAccountId) {
+      message.warning('请先选择目标系统账户')
+      return
+    }
     if (editingId.value) {
-      await routeStrategiesApi.update(editingId.value, payload, { systemAccountId: scopedSystemAccountId() })
+      await routeStrategiesApi.update(editingId.value, payload, operationScopeParams)
       message.success('策略路由已更新')
     } else {
-      await routeStrategiesApi.create(payload, { systemAccountId: scopedSystemAccountId() })
+      await routeStrategiesApi.create(payload, operationScopeParams)
       message.success('策略路由已创建')
     }
     modalOpen.value = false
@@ -666,7 +803,12 @@ async function deleteRouteStrategy(record: RouteStrategySummary) {
     return
   }
   try {
-    await routeStrategiesApi.delete(record.id, { systemAccountId: scopedSystemAccountId() })
+    const operationScopeParams = routeStrategyOperationScopeParams(record)
+    if (isManagementView.value && !operationScopeParams?.systemAccountId) {
+      message.warning('无法确定策略路由归属系统账户，请刷新后重试')
+      return
+    }
+    await routeStrategiesApi.delete(record.id, operationScopeParams)
     message.success('策略路由已删除')
     await loadRouteStrategies()
   } catch (error) {
@@ -686,6 +828,84 @@ function removeBinding(index: number) {
   normalizeBindingRowsForMode()
 }
 
+function moveBinding(fromIndex: number, toIndex: number) {
+  if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0 || fromIndex >= form.groupBindings.length || toIndex >= form.groupBindings.length) return
+  const [binding] = form.groupBindings.splice(fromIndex, 1)
+  if (!binding) return
+  form.groupBindings.splice(toIndex, 0, binding)
+  normalizeBindingRowsForMode()
+}
+
+function moveBindingForMode(fromIndex: number, toIndex: number) {
+  if (!bindingRowDragEnabled(fromIndex)) return
+  const normalizedToIndex = bindingDropTargetIndex(toIndex)
+  moveBinding(fromIndex, normalizedToIndex)
+}
+
+function bindingRowDragEnabled(index: number): boolean {
+  if (form.mode === 'hybrid_smart') return form.groupBindings.length > 1
+  if (form.mode === 'failover') return index > 0 && form.groupBindings.length > 2
+  return false
+}
+
+function bindingDropTargetIndex(index: number): number {
+  const minIndex = form.mode === 'failover' ? 1 : 0
+  return Math.min(form.groupBindings.length - 1, Math.max(minIndex, index))
+}
+
+function handleBindingDragStart(index: number, event: DragEvent) {
+  if (!bindingRowDragEnabled(index)) {
+    event.preventDefault()
+    return
+  }
+  bindingDragSourceIndex.value = index
+  bindingDragOverIndex.value = index
+  event.dataTransfer?.setData('text/plain', String(index))
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move'
+  }
+}
+
+function handleBindingDragEnter(index: number) {
+  if (bindingDragSourceIndex.value === null) return
+  bindingDragOverIndex.value = bindingDropTargetIndex(index)
+}
+
+function handleBindingDragOver(index: number, event: DragEvent) {
+  if (bindingDragSourceIndex.value === null) return
+  event.preventDefault()
+  bindingDragOverIndex.value = bindingDropTargetIndex(index)
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = 'move'
+  }
+}
+
+function handleBindingDrop(index: number, event: DragEvent) {
+  event.preventDefault()
+  const sourceIndex = bindingDragSourceIndex.value
+  handleBindingDragEnd()
+  if (sourceIndex === null) return
+  moveBindingForMode(sourceIndex, index)
+}
+
+function handleBindingDragEnd() {
+  bindingDragSourceIndex.value = null
+  bindingDragOverIndex.value = null
+}
+
+function bindingGroupPlaceholder(index: number): string {
+  if (form.mode !== 'failover') return '选择分组'
+  return index === 0 ? '选择主用分组' : '选择备用分组'
+}
+
+function bindingRoleText(index: number): string {
+  return index === 0 ? '主用' : `备用 ${index}`
+}
+
+function bindingRoleColor(index: number): string {
+  return index === 0 ? 'blue' : 'orange'
+}
+
 function createBindingRow(groupId = '', priority = form.groupBindings.length + 1, weight = 1, status: 'active' | 'disabled' = 'active'): BindingFormRow {
   return {
     key: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -696,14 +916,28 @@ function createBindingRow(groupId = '', priority = form.groupBindings.length + 1
   }
 }
 
-async function loadGroupOptions(keywordInput = '') {
+function routeStrategyOperationScopeParams(record?: Pick<RouteStrategySummary, 'systemAccountId'>): { systemAccountId: string } | undefined {
+  const systemAccountId = record?.systemAccountId?.trim()
+    || editingSystemAccountId.value?.trim()
+    || routeStrategyScopeParams.value?.systemAccountId
+  return systemAccountId ? { systemAccountId } : undefined
+}
+
+async function loadGroupOptions(keywordInput = '', selectedIds?: string[]) {
+  const operationScopeParams = routeStrategyOperationScopeParams()
+  if (isManagementView.value && !operationScopeParams?.systemAccountId) {
+    groupOptionsRaw.value = []
+    groupOptionsLoading.value = false
+    return
+  }
   groupOptionsLoading.value = true
   try {
     groupOptionsRaw.value = await groupsApi.options({
+      ids: selectedIds,
       keyword: keywordInput.trim() || undefined,
       limit: 100,
       manageableOnly: true,
-      systemAccountId: scopedSystemAccountId()
+      systemAccountId: operationScopeParams?.systemAccountId
     })
   } catch (error) {
     message.error(extractApiErrorMessage(error, '分组选项加载失败'))
@@ -737,20 +971,27 @@ function validateGroupBindingsForMode(groupBindings: Array<{ groupId: string; pr
     message.warning('普通路由只能绑定一个启用分组')
     return false
   }
-  if ((form.mode === 'weighted' || form.mode === 'failover' || form.mode === 'round_robin') && activeBindings.length < 2) {
+  if (form.mode === 'failover') {
+    if (groupBindings.length < 2) {
+      message.warning('故障回退路由需要一个主用分组和至少一个备用分组')
+      return false
+    }
+    if (groupBindings[0]?.status !== 'active') {
+      message.warning('故障回退路由的主用分组必须启用')
+      return false
+    }
+    if (!groupBindings.slice(1).some((binding) => binding.status === 'active')) {
+      message.warning('故障回退路由至少需要一个启用备用分组')
+      return false
+    }
+  }
+  if ((form.mode === 'weighted' || form.mode === 'round_robin') && activeBindings.length < 2) {
     message.warning(`${routeStrategyModeText(form.mode)}至少需要两个启用分组`)
     return false
   }
   if (form.mode === 'hybrid_smart' && activeBindings.length < 1) {
     message.warning('混合智能路由至少需要一个启用分组')
     return false
-  }
-  if (form.mode === 'failover') {
-    const priorities = new Set(activeBindings.map((binding) => binding.priority))
-    if (priorities.size !== activeBindings.length) {
-      message.warning('故障回退路由的启用分组优先级不能重复')
-      return false
-    }
   }
   return true
 }
@@ -1005,6 +1246,10 @@ function boundedInteger(value: unknown, min: number, max: number): number {
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
 }
 
+.modal-alert {
+  margin-bottom: 12px;
+}
+
 .toolbar-select {
   min-width: 180px;
 }
@@ -1089,6 +1334,16 @@ function boundedInteger(value: unknown, min: number, max: number): number {
   align-items: center;
 }
 
+.route-strategy-binding-row.is-dragging {
+  opacity: 0.56;
+}
+
+.route-strategy-binding-row.is-drag-over {
+  border-radius: 6px;
+  outline: 1px dashed #1677ff;
+  outline-offset: 3px;
+}
+
 .route-strategy-binding-header {
   color: #64748b;
   font-size: 12px;
@@ -1097,6 +1352,48 @@ function boundedInteger(value: unknown, min: number, max: number): number {
 
 .route-strategy-binding-row > * {
   min-width: 0;
+}
+
+.route-strategy-binding-drag-cell,
+.route-strategy-binding-drag-placeholder {
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+}
+
+.route-strategy-binding-drag-handle {
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #64748b;
+  cursor: grab;
+}
+
+.route-strategy-binding-drag-handle:active {
+  cursor: grabbing;
+}
+
+.route-strategy-binding-drag-handle:hover,
+.route-strategy-binding-drag-handle:focus-visible {
+  background: #f1f5f9;
+  color: #1677ff;
+  outline: none;
+}
+
+.route-strategy-binding-role {
+  display: flex;
+  align-items: center;
+}
+
+.route-strategy-binding-role :deep(.ant-tag) {
+  margin-inline-end: 0;
 }
 
 .route-strategy-binding-row :deep(.ant-input-number) {
