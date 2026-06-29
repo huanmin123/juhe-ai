@@ -42,7 +42,7 @@
 
 - 架构文档：`docs/architecture/架构总览.md`
 - 功能文档：`docs/functions/自定义模型与模型映射设计.md`
-- 功能文档：`docs/functions/APIKey多分组路由设计.md`
+- 功能文档：`docs/functions/策略路由设计.md`
 - 功能文档：`docs/functions/账户模型限制设计.md`
 - 功能文档：`docs/functions/请求处理分层设计.md`
 - 功能文档：`docs/functions/模型价格与用量统计口径.md`

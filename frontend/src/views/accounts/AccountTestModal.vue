@@ -23,7 +23,7 @@
             </div>
             <div v-else class="test-account-meta">
               <a-tag color="processing">{{ batchItems.length }} 个账户</a-tag>
-              <a-tag color="geekblue">{{ batchSelectedCompatibilityText }}</a-tag>
+              <a-tag color="geekblue">{{ fixedOAuthCompatibilityText }}</a-tag>
               <a-tag color="cyan">优先模型 {{ model }}</a-tag>
             </div>
           </div>
@@ -45,15 +45,7 @@
               @update:value="$emit('update:model', String($event))"
             />
           </a-form-item>
-          <a-form-item v-if="showClientCompatibilityControl" class="test-config-field" label="测试请求形态">
-            <a-select
-              :value="clientCompatibility"
-              :disabled="running"
-              :options="clientCompatibilityOptions"
-              @update:value="handleCompatibilityUpdate"
-            />
-          </a-form-item>
-          <a-form-item v-else class="test-config-field" :label="fixedCompatibilityLabel">
+          <a-form-item class="test-config-field" :label="fixedCompatibilityLabel">
             <a-input :value="fixedOAuthCompatibilityText" disabled />
           </a-form-item>
         </div>
@@ -123,7 +115,7 @@
 import { computed } from 'vue'
 
 import type { AccountSummary, AccountTestResult, AccountTestTask } from '@/types/domain'
-import type { AccountBatchTestItem, AccountTestClientCompatibility, AccountTestMode } from './accountTestFlow'
+import type { AccountBatchTestItem, AccountTestMode } from './accountTestFlow'
 import {
   accountTestBatchCounts,
   accountTestBatchItemDurationText as batchItemDurationText,
@@ -134,7 +126,6 @@ import {
   accountTestBatchItemStatusText as batchItemStatusText,
   accountTestBatchOutputLines,
   accountTestBatchResultSnapshot,
-  accountTestBatchSelectedCompatibilityText,
   accountTestBatchStatusColor,
   accountTestBatchStatusText,
   accountTestSingleOutputLines,
@@ -148,7 +139,6 @@ import {
   accountStatusText
 } from './accountFormatters'
 import {
-  canSelectClientCompatibility,
   fixedCompatibilityLabel as providerFixedCompatibilityLabel,
   fixedCompatibilityText as providerFixedCompatibilityText
 } from './accountProviderCapabilities'
@@ -158,7 +148,6 @@ const props = defineProps<{
   accounts: AccountSummary[]
   activeTask?: AccountTestTask
   batchItems: AccountBatchTestItem[]
-  clientCompatibility: AccountTestClientCompatibility
   mode: AccountTestMode
   model: string
   modelOptions: Array<{ label: string; value: string }>
@@ -174,7 +163,6 @@ const emit = defineEmits<{
   (event: 'copy-result', value: string): void
   (event: 'run'): void
   (event: 'stop'): void
-  (event: 'update:clientCompatibility', value: AccountTestClientCompatibility): void
   (event: 'update:model', value: string): void
   (event: 'update:open', value: boolean): void
 }>()
@@ -190,14 +178,8 @@ const batchFailedCount = computed(() => batchCounts.value.failed)
 const batchStoppedCount = computed(() => batchCounts.value.stopped)
 const batchCompletedCount = computed(() => batchCounts.value.completed)
 const testTargetAccounts = computed(() => isBatchMode.value ? props.accounts : props.account ? [props.account] : [])
-const showClientCompatibilityControl = computed(() => testTargetAccounts.value.some(canSelectClientCompatibility))
-const fixedCompatibilityLabel = computed(() => showClientCompatibilityControl.value ? '测试请求形态' : providerFixedCompatibilityLabel(testTargetAccounts.value))
+const fixedCompatibilityLabel = computed(() => providerFixedCompatibilityLabel(testTargetAccounts.value))
 const fixedOAuthCompatibilityText = computed(() => providerFixedCompatibilityText(testTargetAccounts.value))
-const batchSelectedCompatibilityText = computed(() => accountTestBatchSelectedCompatibilityText({
-  clientCompatibility: props.clientCompatibility,
-  fixedOAuthCompatibilityText: fixedOAuthCompatibilityText.value,
-  showClientCompatibilityControl: showClientCompatibilityControl.value
-}))
 const batchStatusColor = computed(() => accountTestBatchStatusColor(batchCounts.value, props.running))
 const batchStatusText = computed(() => accountTestBatchStatusText(batchCounts.value, props.running))
 const showResultJson = computed(() => isBatchMode.value ? batchCompletedCount.value > 0 : Boolean(props.result))
@@ -205,7 +187,6 @@ const resultJson = computed(() => {
   if (isBatchMode.value) {
     return JSON.stringify(accountTestBatchResultSnapshot({
       batchItems: props.batchItems,
-      clientCompatibility: props.clientCompatibility,
       model: props.model
     }), null, 2)
   }
@@ -216,11 +197,6 @@ const runButtonText = computed(() => {
   return props.result ? '重试' : '开始测试'
 })
 const currentProviderName = computed(() => props.account ? providerLabel(props.account) : '')
-const clientCompatibilityOptions: Array<{ label: string; value: AccountTestClientCompatibility }> = [
-  { label: '跟随账号能力', value: 'account_default' },
-  { label: 'OpenAI-compatible 请求', value: 'openai_standard' },
-  { label: 'Codex Responses 请求', value: 'codex_responses' }
-]
 const proxyTagText = computed(() => props.account?.proxyProfileId ? '有代理' : '无代理')
 const proxyTagColor = computed(() => {
   if (props.account?.proxyProfileUnavailable) return 'red'
@@ -232,14 +208,13 @@ const outputLines = computed<AccountTestOutputLine[]>(() => {
       batchItems: props.batchItems,
       counts: batchCounts.value,
       model: props.model,
-      running: props.running,
-      selectedCompatibilityText: batchSelectedCompatibilityText.value
+      running: props.running
     })
   }
   return accountTestSingleOutputLines({
     account: props.account,
     activeTask: props.activeTask,
-    clientCompatibility: props.clientCompatibility,
+    clientCompatibility: 'account_default',
     fixedOAuthCompatibilityText: fixedOAuthCompatibilityText.value,
     model: props.model,
     providerLabel,
@@ -262,13 +237,6 @@ function handleOpenUpdate(value: boolean) {
 
 function providerLabel(account: AccountSummary): string {
   return props.providerName?.(account.providerCode) ?? '未知供应商'
-}
-
-function handleCompatibilityUpdate(value: string): void {
-  if (!showClientCompatibilityControl.value) return
-  if (value === 'codex_responses' || value === 'openai_standard' || value === 'account_default') {
-    emit('update:clientCompatibility', value)
-  }
 }
 
 function batchItemModelText(item: AccountBatchTestItem): string {

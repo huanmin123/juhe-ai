@@ -59,7 +59,7 @@ assertLastCall('accounts.cancelTestSession', ['session_3', scopeParams], '管理
 await cancelAccountTestSession({ isManagementView: false, scopeParams, sessionId: 'session_4' })
 assertLastCall('myAccounts.cancelTestSession', ['session_4'], '个人端取消 session 不应携带管理端 scope')
 
-const testPayload: AccountTestPayload = { model: 'gpt-5.1', prompt: 'ping', clientCompatibility: 'codex_responses' }
+const testPayload: AccountTestPayload = { model: 'gpt-5.1', prompt: 'ping' }
 
 await submitAccountTestTask({
   account: boundAccount,
@@ -227,6 +227,7 @@ function accountFixture(overrides: Partial<AccountSummary> = {}): AccountSummary
 function draftAccountFixture(): AccountDraftTestPayload['account'] {
   return {
     providerCode: 'openai',
+    providerProtocolProfileId: 'profile_openai_openai_v1',
     name: '草稿测试账户',
     type: 'api_key',
     credentials: { api_key: 'sk-test' },

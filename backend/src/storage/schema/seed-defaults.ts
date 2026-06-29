@@ -203,32 +203,21 @@ function seedAdminDefaultRouteStrategiesAndApiKeys(database: DatabaseSync, times
   `)
   for (const group of DEFAULT_BUILT_IN_GROUPS.filter((item) => item.systemAccountId === 'sys_admin')) {
     const routeStrategyName = defaultRouteStrategyNameForGroup(group.name)
-    const existingRouteStrategyId = existingDefaultRouteStrategyIdForGroup(database, group.id)
-    const routeStrategyId = existingRouteStrategyId ?? defaultRouteStrategyIdForGroup(group.id)
-    if (!existingRouteStrategyId) {
-      routeStatement.run(
-        routeStrategyId,
-        routeStrategyName,
-        `系统默认普通路由，绑定${group.name}。`,
-        timestamp,
-        timestamp
-      )
-      routeGroupStatement.run(
-        defaultRouteStrategyGroupBindingIdForGroup(group.id),
-        routeStrategyId,
-        group.id,
-        timestamp,
-        timestamp
-      )
-    } else {
-      database
-        .prepare(`
-          UPDATE route_strategies
-          SET name = ?, description = ?, updated_at = ?
-          WHERE id = ? AND system_account_id = 'sys_admin' AND name = '默认路由'
-        `)
-        .run(routeStrategyName, `系统默认普通路由，绑定${group.name}。`, timestamp, routeStrategyId)
-    }
+    const routeStrategyId = defaultRouteStrategyIdForGroup(group.id)
+    routeStatement.run(
+      routeStrategyId,
+      routeStrategyName,
+      `系统默认普通路由，绑定${group.name}。`,
+      timestamp,
+      timestamp
+    )
+    routeGroupStatement.run(
+      defaultRouteStrategyGroupBindingIdForGroup(group.id),
+      routeStrategyId,
+      group.id,
+      timestamp,
+      timestamp
+    )
     if (existingDefaultApiKeyIdForRouteStrategy(database, routeStrategyId)) {
       continue
     }
@@ -246,24 +235,6 @@ function seedAdminDefaultRouteStrategiesAndApiKeys(database: DatabaseSync, times
       timestamp
     )
   }
-}
-
-function existingDefaultRouteStrategyIdForGroup(database: DatabaseSync, groupId: string): string | undefined {
-  const row = database
-    .prepare(`
-      SELECT route_strategies.id
-      FROM route_strategies
-      INNER JOIN route_strategy_groups
-        ON route_strategy_groups.route_strategy_id = route_strategies.id
-        AND route_strategy_groups.system_account_id = route_strategies.system_account_id
-      WHERE route_strategies.system_account_id = 'sys_admin'
-        AND route_strategies.is_default = 1
-        AND route_strategy_groups.group_id = ?
-      ORDER BY route_strategies.updated_at DESC, route_strategies.id ASC
-      LIMIT 1
-    `)
-    .get(groupId) as { id?: string } | undefined
-  return row?.id
 }
 
 function existingDefaultApiKeyIdForRouteStrategy(database: DatabaseSync, routeStrategyId: string): string | undefined {

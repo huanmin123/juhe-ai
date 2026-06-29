@@ -4,7 +4,7 @@ import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
 import { ProxyProfileUnavailableError, clearAccountFailureStateAsync, createAccountAsync, findAccountForTestAsync, findGroupSummaryAsync, listProvidersAsync, resolveProxyUrlForProfileAsync, updateAccountAsync } from '../../storage/repositories.js'
-import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE, isGptVendorCode, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
+import { GPT_VENDOR_CODE, isGptVendorCode, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
 import type { AccountStatus } from '../../domain/types.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
@@ -46,7 +46,7 @@ const accountModelMappingSchema = z.object({
 const createFromCodeSchema = z.object({
   sessionId: z.string().min(1),
   callbackUrl: z.string().min(1),
-  providerProtocolProfileId: z.string().trim().min(1).optional(),
+  providerProtocolProfileId: z.string().trim().min(1),
   name: z.string().trim().min(1).optional(),
   groupId: z.string().optional(),
   concurrencyLimit: z.number().int().min(1).optional(),
@@ -64,7 +64,7 @@ const createFromCodeSchema = z.object({
 
 const createFromRefreshTokenSchema = z.object({
   refreshToken: z.string().min(1),
-  providerProtocolProfileId: z.string().trim().min(1).optional(),
+  providerProtocolProfileId: z.string().trim().min(1),
   name: z.string().trim().min(1).optional(),
   groupId: z.string().optional(),
   concurrencyLimit: z.number().int().min(1).optional(),
@@ -413,7 +413,7 @@ type OpenAIOAuthProviderProfileResult =
   | { ok: true; profile: OpenAIOAuthProviderProfile }
   | { ok: false; message: string }
 
-async function resolveOpenAIOAuthProviderProfile(providerProtocolProfileId?: string): Promise<OpenAIOAuthProviderProfileResult> {
+async function resolveOpenAIOAuthProviderProfile(providerProtocolProfileId: string): Promise<OpenAIOAuthProviderProfileResult> {
   const provider = (await listProvidersAsync()).find((item) => item.code === GPT_VENDOR_CODE)
   if (!provider) {
     return { ok: false, message: `不支持的供应商：${GPT_VENDOR_CODE}` }
@@ -421,7 +421,7 @@ async function resolveOpenAIOAuthProviderProfile(providerProtocolProfileId?: str
   if (!provider.enabled) {
     return { ok: false, message: `供应商已停用：${GPT_VENDOR_CODE}` }
   }
-  const profileId = providerProtocolProfileId?.trim() || provider.defaultProtocolProfileId || GPT_OPENAI_V1_PROFILE_ID
+  const profileId = providerProtocolProfileId.trim()
   const profile = provider.protocolProfiles.find((item) => item.id === profileId)
   if (!profile || profile.providerCode !== GPT_VENDOR_CODE) {
     return { ok: false, message: `供应商协议档案无效：${profileId}` }

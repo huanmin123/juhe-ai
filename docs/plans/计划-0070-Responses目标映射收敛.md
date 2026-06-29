@@ -58,7 +58,7 @@
 | 前端回归 | 账号保存前协议矩阵 | `pnpm --dir frontend test:account-edit-save-flow` | 前端 helper 和保存校验拒绝 Chat -> Responses | 已通过 | 通过 |
 | 导入协议回归 | 导入协议文档与 Markdown | `pnpm --dir frontend test:account-import-protocol` | 文档不再宣称 Chat -> Responses 可配置 | 已通过 | 通过 |
 | 网关回归 | OpenAI-compatible E2E | `pnpm --dir backend test:openai-compatible-gateway-e2e` | Chat 直连仍成功，Chat -> Responses 映射创建被拒绝 | 已通过 | 通过 |
-| 整体协议 mock | 已有协议桥接主路径 | `pnpm --dir backend test:gemini-gateway-mock-ai`、`pnpm --dir backend test:openai-anthropic-bridge-mock`、`pnpm --dir backend test:anthropic-openai-chat-bridge-mock` | Gemini / Anthropic / Responses->Chat 等允许方向不回归 | 已通过 | 三条命令均通过，并补跑 DeepSeek / GLM / Anthropic gateway mock |
+| 整体协议 mock | 已有协议桥接主路径 | `pnpm --dir backend test:gemini-gateway-mock-ai`、`pnpm --dir backend test:protocol-boundary-openai-anthropic`、`pnpm --dir backend test:anthropic-openai-chat-bridge-mock` | Gemini / Anthropic / Responses->Chat 等允许方向不回归 | 已通过 | 三条命令均通过，并补跑 DeepSeek / GLM / Anthropic gateway mock |
 | 复杂交叉 mock | OpenAI / Anthropic / Gemini 协议互转矩阵 | `pnpm --dir backend test:protocol-cross-matrix-mock-ai` | 允许方向可运行，禁止 Responses 目标方向受控拒绝，不可保真组合 guidance-first 且不上游 | 已通过 | 通过；同时固定 `Responses -> Chat` 非流式下游返回 Responses JSON |
 | 类型检查 | 后端 / 前端 | `pnpm --dir backend typecheck`、`pnpm --dir frontend typecheck` | 删除 bridge 后无类型错误 | 已通过 | 通过 |
 
@@ -86,7 +86,7 @@
 - `pnpm --dir frontend test:account-import-protocol`：通过。
 - `pnpm --dir backend test:openai-compatible-gateway-e2e`：通过。
 - `pnpm --dir backend test:gemini-gateway-mock-ai`：通过。
-- `pnpm --dir backend test:openai-anthropic-bridge-mock`：通过。
+- `pnpm --dir backend test:protocol-boundary-openai-anthropic`：通过。
 - `pnpm --dir backend test:anthropic-openai-chat-bridge-mock`：通过。
 - `pnpm --dir backend test:deepseek-gateway-mock-ai`：通过。
 - `pnpm --dir backend test:glm-gateway-mock-ai`：通过。

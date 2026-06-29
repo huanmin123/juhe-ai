@@ -590,8 +590,7 @@ function multiApiKeyCredentials(suffix: string, strategy: 'round_robin' | 'weigh
         name: 'Mockdata 输出污染切号',
         priority: 10,
         match: {
-          outputTextIncludes: ['Mockdata 广告污染'],
-          accountClientCompatibilities: ['codex_responses']
+          outputTextIncludes: ['Mockdata 广告污染']
         },
         action: 'retry_next_account',
         notes: 'Mockdata 账户级响应检查规则'

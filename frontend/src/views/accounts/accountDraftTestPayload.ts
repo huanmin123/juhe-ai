@@ -19,7 +19,6 @@ interface AccountDraftTestPayloadInput {
 interface AccountDraftTestSummaryInput {
   accountDetail?: AccountSummary
   draftPayload: AccountDraftTestAccountPayload
-  clientCompatibility: AccountFormModel['clientCompatibility']
   protocolProfile?: ProviderProtocolProfileDefinition
   scopeSystemAccountId?: string
 }
@@ -79,7 +78,7 @@ export function buildAccountDraftTestSummary(input: AccountDraftTestSummaryInput
     priority: input.draftPayload.priority,
     superPriorityEnabled: input.accountDetail?.superPriorityEnabled ?? false,
     fallbackEnabled: input.accountDetail?.fallbackEnabled ?? false,
-    clientCompatibility: input.accountDetail?.clientCompatibility ?? input.clientCompatibility,
+    clientCompatibility: input.accountDetail?.clientCompatibility ?? (input.draftPayload.type === 'oauth' ? 'codex_responses' : 'openai_standard'),
     supportedModels: input.draftPayload.supportedModels,
     modelMappings: input.draftPayload.modelMappings,
     proxyProfileId: input.draftPayload.proxyProfileId ?? undefined,

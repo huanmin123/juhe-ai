@@ -17,6 +17,7 @@ import {
   buildGatewayUpstreamUrlsForAccount,
   providerDriverForAccount
 } from '../../modules/providers/drivers/registry.js'
+import { buildOpenAIToAnthropicBridgeBody } from '../../modules/providers/drivers/_shared/openai-anthropic-bridge.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-openai-anthropic-boundary-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -107,6 +108,36 @@ try {
     accountSupportsGatewayRequest(openAIChatRequest, dispatchAccount),
     false,
     '普通 Anthropic 账号不应承接 OpenAI Chat 请求；跨协议应由混合供应商账户处理'
+  )
+
+  await assert.rejects(
+    () => buildOpenAIToAnthropicBridgeBody(gatewayPostRequest('/v1/chat/completions', {
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'ping' }],
+      functions: [{ name: 'legacy_tool' }]
+    }), {}),
+    /legacy functions\/function_call 已移除/,
+    'OpenAI -> Anthropic bridge 不应继续接收 Chat legacy functions'
+  )
+  await assert.rejects(
+    () => buildOpenAIToAnthropicBridgeBody(gatewayPostRequest('/v1/chat/completions', {
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'ping' }],
+      function_call: 'auto'
+    }), {}),
+    /legacy functions\/function_call 已移除/,
+    'OpenAI -> Anthropic bridge 不应继续接收 Chat legacy function_call'
+  )
+  await assert.rejects(
+    () => buildOpenAIToAnthropicBridgeBody(gatewayPostRequest('/v1/chat/completions', {
+      model: 'gpt-5.5',
+      messages: [
+        { role: 'assistant', function_call: { name: 'legacy_tool', arguments: '{}' } },
+        { role: 'function', name: 'legacy_tool', content: '{}' }
+      ]
+    }), {}),
+    /legacy role=function \/ assistant\.function_call 已移除/,
+    'OpenAI -> Anthropic bridge 不应继续接收 Chat legacy function history'
   )
 
   console.log('openai anthropic protocol boundary regression passed')

@@ -1,12 +1,10 @@
 import type {
-  AccountClientCompatibility,
   ResponseInspectionPolicyAction,
   ResponseInspectionPolicyClientProfile
 } from '@/types/domain'
 
 export interface ResponseInspectionMatchFormFields {
   clientProfiles: ResponseInspectionPolicyClientProfile[]
-  accountClientCompatibilities: AccountClientCompatibility[]
   outputTextIncludes: string
   outputTextExcludes: string
   errorCodes: string
@@ -17,7 +15,7 @@ export interface ResponseInspectionMatchFormFields {
   rawTextIncludes: string
 }
 
-export type ResponseInspectionDimensionMatchFieldKey = 'clientProfiles' | 'accountClientCompatibilities'
+export type ResponseInspectionDimensionMatchFieldKey = 'clientProfiles'
 export type ResponseInspectionTextMatchFieldKey = Exclude<keyof ResponseInspectionMatchFormFields, ResponseInspectionDimensionMatchFieldKey>
 export type ResponseInspectionMatchFieldKey = ResponseInspectionTextMatchFieldKey
 
@@ -63,18 +61,8 @@ export const responseInspectionClientProfileOptions: Array<{ label: string; valu
   { label: '通用 Gemini', value: 'generic_gemini' }
 ]
 
-export const responseInspectionAccountCompatibilityOptions: Array<{ label: string; value: AccountClientCompatibility }> = [
-  { label: 'Codex Responses', value: 'codex_responses' },
-  { label: 'OpenAI 标准', value: 'openai_standard' }
-]
-
 export function normalizeResponseInspectionClientProfiles(value: unknown): ResponseInspectionPolicyClientProfile[] {
   const allowed = new Set(responseInspectionClientProfileOptions.map((option) => option.value))
-  return uniqueKnownStrings(value, allowed)
-}
-
-export function normalizeResponseInspectionAccountCompatibilities(value: unknown): AccountClientCompatibility[] {
-  const allowed = new Set(responseInspectionAccountCompatibilityOptions.map((option) => option.value))
   return uniqueKnownStrings(value, allowed)
 }
 
@@ -126,10 +114,6 @@ export function validateResponseInspectionMatchFields(
   if (clientProfiles.length !== form.clientProfiles.length) {
     return `${options.messagePrefix ?? ''}请求客户端包含无效选项`
   }
-  const accountCompatibilities = normalizeResponseInspectionAccountCompatibilities(form.accountClientCompatibilities)
-  if (accountCompatibilities.length !== form.accountClientCompatibilities.length) {
-    return `${options.messagePrefix ?? ''}账号兼容能力包含无效选项`
-  }
   for (const field of responseInspectionMatchFieldEntries(form)) {
     const label = `${options.messagePrefix ?? ''}${field.label}`
     if (hasUnsupportedResponseInspectionListSeparators(field.value)) {
@@ -150,8 +134,6 @@ export function buildResponseInspectionMatchPayload(form: ResponseInspectionMatc
   const payload: ResponseInspectionMatchPayload = {}
   const clientProfiles = normalizeResponseInspectionClientProfiles(form.clientProfiles)
   if (clientProfiles.length > 0) payload.clientProfiles = clientProfiles
-  const accountCompatibilities = normalizeResponseInspectionAccountCompatibilities(form.accountClientCompatibilities)
-  if (accountCompatibilities.length > 0) payload.accountClientCompatibilities = accountCompatibilities
   for (const field of responseInspectionMatchFieldDefinitions) {
     const items = splitResponseInspectionList(form[field.key])
     if (items.length > 0) {

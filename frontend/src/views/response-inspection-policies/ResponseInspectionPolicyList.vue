@@ -33,9 +33,6 @@
       <template v-else-if="column.key === 'clientProfiles'">
         <div class="field-cell">{{ clientProfileText(record.match.clientProfiles) }}</div>
       </template>
-      <template v-else-if="column.key === 'accountClientCompatibilities'">
-        <div class="field-cell">{{ accountCompatibilityText(record.match.accountClientCompatibilities) }}</div>
-      </template>
       <template v-else-if="column.key === 'priority'">
         <span>{{ record.priority }}</span>
       </template>
@@ -89,10 +86,6 @@
             <strong>{{ clientProfileText(record.match.clientProfiles) }}</strong>
           </div>
           <div class="mobile-list-meta-item">
-            <span>账号兼容能力</span>
-            <strong>{{ accountCompatibilityText(record.match.accountClientCompatibilities) }}</strong>
-          </div>
-          <div class="mobile-list-meta-item">
             <span>优先级</span>
             <strong>{{ record.priority }}</strong>
           </div>
@@ -136,7 +129,6 @@ import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import type { ProviderDefinition, ResponseInspectionPolicySummary } from '@/types/domain'
 import {
-  responseInspectionPolicyAccountCompatibilityText as accountCompatibilityText,
   responseInspectionPolicyActionText as actionText,
   responseInspectionPolicyClientProfileText as clientProfileText,
   responseInspectionPolicyProviderText,
@@ -216,7 +208,6 @@ const columns = [
   { title: '协议', key: 'protocol', width: 120 },
   { title: '供应商', key: 'provider', width: 150 },
   { title: '请求客户端', key: 'clientProfiles', width: 150 },
-  { title: '账号兼容能力', key: 'accountClientCompatibilities', width: 170 },
   { title: '优先级', key: 'priority', width: 90 },
   { title: '状态', key: 'status', width: 90 },
   ...matchColumns,

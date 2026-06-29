@@ -34,7 +34,7 @@ try {
   assertSourceGuards()
 
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
-  const group = repositories.createGroup({ name: '额度小时窗口配置分组', providerCode: 'gpt' }, access)
+  const group = repositories.createGroup({ name: '额度小时窗口配置分组', providerCode: 'gpt', providerProtocolProfileId: 'profile_gpt_openai_v1' }, access)
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '额度小时窗口配置 Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],

@@ -361,7 +361,7 @@ DeepSeek 开源模型，例如 `DeepSeek-R1`、`DeepSeek-V3` 以及相关公开�
 - DeepSeek 错误码、错误类型、错误文案和 `finish_reason` 只作为诊断、响应语义检查和账户错误处理策略输入，不写死余额不足、限流或账号坏等分支
 - `insufficient_system_resource` 可作为供应商层响应语义条件观察或重试，但持久账号状态仍必须经运行态屏障、半开探测或事前确认
 - Keep-alive comment / 空行不能触发流式缺终止事件错误，也不能被记录成可见输出
-- DeepSeek OpenAI-compatible 暂不需要请求级兼容恢复策略；Codex bridge 只由 Codex 客户端画像触发，不能用恢复策略把普通 OpenAI Responses 请求改写到 DeepSeek
+- DeepSeek OpenAI-compatible 不提供失败后的请求改写策略；Codex bridge 只由 Codex 客户端画像触发，不能把普通 OpenAI Responses 请求临时改写到 DeepSeek
 
 ### 统计、价格与审计
 
@@ -379,7 +379,7 @@ DeepSeek 开源模型，例如 `DeepSeek-R1`、`DeepSeek-V3` 以及相关公开�
 - 前端供应商、账户类型、分组、模型目录、账号测试、导入预览、公开推送和错误提示都必须使用中文文案
 - DeepSeek 创建页展示 API Key、base URL 和接入类型；不展示 OAuth、Anthropic version、Anthropic beta 或账号级客户端兼容选择
 - Claude Code / Anthropic-compatible 作为下游客户端画像由请求自动识别处理，不作为 DeepSeek 账户表单开关
-- 导入导出协议要支持 `providerCode = deepseek`；省略 `providerProtocolProfileId` 时按 DeepSeek 默认档案 `profile_deepseek_openai_v1` 解析，导出时必须能 round-trip 回实际 `provider_protocol_profile_id`
+- 导入导出协议要支持 `providerCode = deepseek`；必须显式填写 `providerProtocolProfileId = profile_deepseek_openai_v1 | profile_deepseek_anthropic_v1`，导出时必须能 round-trip 回实际 `provider_protocol_profile_id`
 
 ## 易遗漏风险矩阵
 
@@ -410,7 +410,7 @@ DeepSeek 默认只创建一个供应商默认分组：默认 DeepSeek 分组。O
 
 账户只能加入相同 `provider_code` 的分组。
 
-API Key 多分组绑定允许跨供应商；一个本地 API Key 可以同时绑定 DeepSeek、GPT、GLM 和其他供应商分组，但每次请求必须先用入口协议与 `model` 命中目标供应商，再只在该 Key 已绑定的目标供应商分组内调度。
+路由策略多分组绑定允许跨供应商；一个本地 API Key 可以选择同时绑定 DeepSeek、GPT、GLM 和其他供应商分组的路由策略，但每次请求必须先用入口协议与 `model` 命中目标供应商，再只在该策略已绑定的目标供应商分组内调度。
 
 ## 账号测试
 

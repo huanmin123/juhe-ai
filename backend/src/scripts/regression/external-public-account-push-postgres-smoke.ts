@@ -1,6 +1,7 @@
 import { strict as assert } from 'node:assert'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
 import { closeRedisClients } from '../../shared/redis-client.js'
 import { closePostgresPool, getPostgresPool } from '../../storage/postgres-client.js'
 import {
@@ -43,7 +44,8 @@ try {
     targetUsername,
     targetDisplayName,
     targetGroupName: initialGroupName,
-    providerCode: 'gpt',
+    providerCode: GPT_VENDOR_CODE,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: accountName,
     type: 'api_key',
     baseUrl: 'https://api.openai.com/v1',
@@ -85,7 +87,8 @@ try {
   const createdGroup = await addPublicGroup({
     targetUsername,
     name: extraGroupName,
-    providerCode: 'gpt',
+    providerCode: GPT_VENDOR_CODE,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true,
     groupType: 'personal'
   })

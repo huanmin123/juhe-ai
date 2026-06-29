@@ -118,7 +118,7 @@ endpoint + normalizedErrorSignature
 - `endpoint` 用于区分 `/v1/responses`、`/v1/chat/completions`、`/v1/models` 等请求类型。
 - `normalizedErrorSignature` 用于识别同一类错误风暴，只保存用于聚合的类型、错误码和摘要 hash，不把完整请求体或完整上游错误正文复制进熔断运行态；进入日志 / 审计 / 使用记录的字段仍按当前日志口径原文保存。
 
-`groupId` 不参与认证后错误熔断键。同一个 API Key 绑定多个分组时，分组只是路由容器，来源持续制造的本地请求错误应按 API Key 入口止损，不应通过切换分组重置计数。
+`groupId` 不参与认证后错误熔断键。同一个 API Key 所选路由策略绑定多个分组时，分组只是路由容器，来源持续制造的本地请求错误应按 API Key 入口止损，不应通过切换分组重置计数。
 
 缺少 `clientIp` 时，认证前入口保护和认证后错误熔断都不启用。无法定位 API Key 时，只能保留认证前窄作用域保护，不能把未知来源混入认证后网关调度态。
 

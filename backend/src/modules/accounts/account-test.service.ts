@@ -15,7 +15,7 @@ import {
 import type { AccessScope } from '../../storage/access-scope.js'
 import { withRequestAuthContext } from '../auth/request-context.js'
 import { handleOpenAIGatewayRequest } from '../gateway/routes.js'
-import { sanitizeDiagnosticPayload } from '../gateway/audit/payload-sanitizer.js'
+import { sanitizeDiagnosticPayload } from '../gateway/diagnostics/diagnostic-sanitizer.js'
 import type { GatewaySettings } from '../gateway/policy/account-error-policy.service.js'
 import { flushGatewayAccountSideEffects } from '../gateway/runtime/account-side-effects.service.js'
 import type { UpstreamAttempt } from '../gateway/upstream/attempt.js'

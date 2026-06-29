@@ -79,14 +79,14 @@
 | --- | --- | --- | --- | --- | --- |
 | 命令类验证 | 后端类型检查 | `pnpm --dir backend typecheck` | 后端 TypeScript 类型检查通过 | 通过 | 2026-06-24 通过 |
 | 命令类验证 | 前端类型检查 | `pnpm --dir frontend typecheck` | 前端不因共享类型变化回归 | 通过 | 2026-06-24 通过 |
-| Mock 回归 | OpenAI Files API | `pnpm --dir backend test:openai-anthropic-bridge-mock` | 上传、列表、获取、下载、删除均为 OpenAI 兼容形态 | 通过 | 2026-06-24 通过 |
-| Mock 回归 | `file_id` resolver | `pnpm --dir backend test:openai-anthropic-bridge-mock` | Chat file、Responses image/file `file_id` 成功；未知 file_id 本地 404；上游不收到 OpenAI file id | 通过 | 2026-06-24 通过；上传后 Chat document 和 Responses image 均已覆盖 |
-| Mock 回归 | Vector Store / search | `pnpm --dir backend test:openai-anthropic-bridge-mock` | 创建 store、绑定文本文件、轮询到 completed、索引 chunk、搜索 topN 成功 | 通过 | 2026-06-24 通过；覆盖创建、绑定、列表、内容查看、search 和删除 |
-| Mock 回归 | Vector Store 文件生命周期 | `pnpm --dir backend test:openai-anthropic-bridge-mock` | 创建先返回 `in_progress`；成功后为 `completed`；不支持 MIME / 超限文件最终为 `failed` 且带 `last_error`；未就绪 file_search 本地失败 | 通过 | 2026-06-24 通过 |
-| Mock 回归 | Responses `file_search` | `pnpm --dir backend test:openai-anthropic-bridge-mock` | JSON / SSE 返回 `file_search_call`、annotations、可选 results | 通过 | 2026-06-24 通过；覆盖 Responses JSON/SSE 与 Chat file_search 预检索 |
-| Mock 回归 | Files / Vector Store 边界 | `pnpm --dir backend test:openai-anthropic-bridge-mock` | 跨 API Key 不能访问文件 / vector store，未知 vector store 本地失败，不支持 MIME 和文本索引超限落 `failed + last_error` | 通过 | 2026-06-24 通过；边界错误均为 OpenAI 形态且不触发 Anthropic 上游 |
-| 回归场景 | 既有高兼容能力 | `pnpm --dir backend test:openai-anthropic-bridge-mock` | inline 文件、web_search、structured output、thinking 不回归 | 通过 | 2026-06-24 通过 |
-| 真实联调 | 真实 Anthropic 上游 | `pnpm --dir backend test:openai-anthropic-bridge-real` | 核心四入口通过；本地 file_search 真实上游探针通过 | 通过 | 2026-06-24 通过；`responses_file_search_local:passed`，可选 `chat_image_data_url` 仍因请求 abort 失败 |
+| Mock 回归 | OpenAI Files API | `pnpm --dir backend test:protocol-boundary-openai-anthropic` | 上传、列表、获取、下载、删除均为 OpenAI 兼容形态 | 通过 | 2026-06-24 通过 |
+| Mock 回归 | `file_id` resolver | `pnpm --dir backend test:protocol-boundary-openai-anthropic` | Chat file、Responses image/file `file_id` 成功；未知 file_id 本地 404；上游不收到 OpenAI file id | 通过 | 2026-06-24 通过；上传后 Chat document 和 Responses image 均已覆盖 |
+| Mock 回归 | Vector Store / search | `pnpm --dir backend test:protocol-boundary-openai-anthropic` | 创建 store、绑定文本文件、轮询到 completed、索引 chunk、搜索 topN 成功 | 通过 | 2026-06-24 通过；覆盖创建、绑定、列表、内容查看、search 和删除 |
+| Mock 回归 | Vector Store 文件生命周期 | `pnpm --dir backend test:protocol-boundary-openai-anthropic` | 创建先返回 `in_progress`；成功后为 `completed`；不支持 MIME / 超限文件最终为 `failed` 且带 `last_error`；未就绪 file_search 本地失败 | 通过 | 2026-06-24 通过 |
+| Mock 回归 | Responses `file_search` | `pnpm --dir backend test:protocol-boundary-openai-anthropic` | JSON / SSE 返回 `file_search_call`、annotations、可选 results | 通过 | 2026-06-24 通过；覆盖 Responses JSON/SSE 与 Chat file_search 预检索 |
+| Mock 回归 | Files / Vector Store 边界 | `pnpm --dir backend test:protocol-boundary-openai-anthropic` | 跨 API Key 不能访问文件 / vector store，未知 vector store 本地失败，不支持 MIME 和文本索引超限落 `failed + last_error` | 通过 | 2026-06-24 通过；边界错误均为 OpenAI 形态且不触发 Anthropic 上游 |
+| 回归场景 | 既有高兼容能力 | `pnpm --dir backend test:protocol-boundary-openai-anthropic` | inline 文件、web_search、structured output、thinking 不回归 | 通过 | 2026-06-24 通过 |
+| 真实联调 | 真实 Anthropic 上游 | `pnpm --dir backend test:anthropic-real-gateway-e2e` | 核心四入口通过；本地 file_search 真实上游探针通过 | 通过 | 2026-06-24 通过；`responses_file_search_local:passed`，可选 `chat_image_data_url` 仍因请求 abort 失败 |
 | 安全检查 | 凭据与文件内容扫描 | `rg` 固定 key 前缀和测试文件正文特征 | 仓库无真实 key；文档 / 运行模块无文件正文泄露 | 通过 | 2026-06-24 通过；测试样本文本仅存在回归脚本 |
 
 ## 进度记录
@@ -132,8 +132,8 @@
 
 - 类型检查：2026-06-24 执行 `pnpm --dir backend typecheck`，通过。
 - 前端类型检查：2026-06-24 执行 `pnpm --dir frontend typecheck`，通过。
-- Mock 回归：2026-06-24 执行 `pnpm --dir backend test:openai-anthropic-bridge-mock`，通过；覆盖 `/v1/files` 上传 / 列表 / 下载 / 删除、上传后 Chat `file_id`、上传后 Responses 图片 `file_id`、未知 `file_id` 本地 404、`/v1/vector_stores` 创建 / 绑定 / 轮询 / 列表 / 内容查看 / search / 删除、Responses JSON / SSE `file_search_call`、Chat `file_search` 本地预检索，以及跨 API Key、未知 vector store、未就绪 vector store、unsupported MIME failed、文本索引超限 failed 边界。
-- 真实联调：2026-06-24 执行 `pnpm --dir backend test:openai-anthropic-bridge-real`，通过；核心 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、未知 vector store 本地 404 通过，可选 `responses_file_search_local:passed`；可选 `chat_image_data_url` 因请求 abort 失败。
+- Mock 回归：2026-06-24 执行 `pnpm --dir backend test:protocol-boundary-openai-anthropic`，通过；覆盖 `/v1/files` 上传 / 列表 / 下载 / 删除、上传后 Chat `file_id`、上传后 Responses 图片 `file_id`、未知 `file_id` 本地 404、`/v1/vector_stores` 创建 / 绑定 / 轮询 / 列表 / 内容查看 / search / 删除、Responses JSON / SSE `file_search_call`、Chat `file_search` 本地预检索，以及跨 API Key、未知 vector store、未就绪 vector store、unsupported MIME failed、文本索引超限 failed 边界。
+- 真实联调：2026-06-24 执行 `pnpm --dir backend test:anthropic-real-gateway-e2e`，通过；核心 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、未知 vector store 本地 404 通过，可选 `responses_file_search_local:passed`；可选 `chat_image_data_url` 因请求 abort 失败。
 - 凭据检查：2026-06-24 执行固定真实 key 前缀扫描，未命中；测试样本文本未出现在 docs 或运行模块。
 - 未验证项：PDF / Office extractor、embedding / hybrid search、跨进程索引恢复和重试尚未实现。
 
@@ -149,5 +149,5 @@
 - 完成时间：2026-06-24
 - 实际完成内容：已完成 OpenAI 兼容 Files API 首批入口、本地 Files resolver、Chat / Responses `file_id` 图片和文档桥接、Vector Store 基础接口、文本 chunk / keyword retrieval、Responses `file_search_call` 渲染、Chat `message.annotations`、vector store file `in_progress` / `completed` / `failed` 生命周期，以及跨 API Key / 未知资源 / 未就绪索引 / unsupported MIME / 超限文本的本地 OpenAI 形态错误。
 - 主要改动位置：`backend/src/modules/openai-compatible-files/`、`backend/src/modules/openai-compatible-vector-stores/`、`backend/src/storage/openai-compatible-files.repository.ts`、`backend/src/storage/openai-compatible-vector-stores.repository.ts`、`backend/src/modules/providers/drivers/_shared/openai-anthropic-bridge.ts`、`backend/src/modules/providers/drivers/anthropic/driver.ts`、`backend/src/scripts/regression/openai-anthropic-bridge-mock-regression.ts`、`backend/src/scripts/regression/openai-anthropic-bridge-real-e2e.ts`。
-- 验证结果：`pnpm --dir backend typecheck`、`pnpm --dir backend test:openai-anthropic-bridge-mock` 和 `pnpm --dir backend test:openai-anthropic-bridge-real` 已通过；真实联调包含 `responses_file_search_local:passed`；凭据扫描无真实 key 命中，测试样本文本未进入 docs 或运行模块。
+- 验证结果：`pnpm --dir backend typecheck`、`pnpm --dir backend test:protocol-boundary-openai-anthropic` 和 `pnpm --dir backend test:anthropic-real-gateway-e2e` 已通过；真实联调包含 `responses_file_search_local:passed`；凭据扫描无真实 key 命中，测试样本文本未进入 docs 或运行模块。
 - 后续建议：PDF / Office extractor、embedding / hybrid search、跨进程索引恢复、过期清理和容量配额作为后续增强计划处理，不影响首批 OpenAI 客户端 `file_id` / `file_search` 协议闭环。

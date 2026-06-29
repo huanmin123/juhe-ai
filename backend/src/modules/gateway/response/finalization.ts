@@ -304,9 +304,15 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       estimatedOutputTokens: streamUsageFallback.estimatedOutputTokens
     }, '上游流式响应缺少 usage，网关已按可见输出估算 token 成本')
   }
-  await applyResponseInspectionObservationHandling(streamResult, account, settings, auditCapture, accountStateMutationEnabled !== false)
+  await applyResponseInspectionObservationHandling(streamResult, account, settings, auditCapture, accountStateMutationEnabled !== false, usageContext)
   if (streamResult.responseInspection) {
-    await applyResponseInspectionPolicyRuntimeSideEffects(streamResult.responseInspection, account, settings, accountStateMutationEnabled !== false)
+    await applyResponseInspectionPolicyRuntimeSideEffects(
+      streamResult.responseInspection,
+      account,
+      settings,
+      accountStateMutationEnabled !== false,
+      usageContext
+    )
     auditCapture.addGatewayMetadata({
       label: 'response_inspection',
       metadata: responseInspectionAuditMetadata(streamResult.responseInspection)
@@ -526,7 +532,8 @@ async function applyResponseInspectionObservationHandling(
   account: UpstreamAccount,
   settings: GatewaySettings,
   auditCapture: AuditCaptureContext,
-  accountStateMutationEnabled: boolean
+  accountStateMutationEnabled: boolean,
+  usageContext: GatewayUsageContext
 ): Promise<void> {
   await applyResponseInspectionObservationDecisions(
     streamResult.responseInspectionObservations,
@@ -534,7 +541,8 @@ async function applyResponseInspectionObservationHandling(
     account,
     settings,
     auditCapture,
-    accountStateMutationEnabled
+    accountStateMutationEnabled,
+    usageContext
   )
 }
 
@@ -568,7 +576,8 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
     signal,
     sessionAffinityKey,
     accountStateMutationEnabled,
-    markFirstOutput
+    markFirstOutput,
+    clientIpAccountAvoidanceTracker
   } = input
 
   if (signal.aborted) {
@@ -584,12 +593,64 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
   let errorPayload: Record<string, unknown> = {}
   try {
     if (!upstreamResponse.body) {
-      responseBody = Buffer.alloc(0)
-      responseBodyText = ''
-      firstTokenMs = Date.now() - startedAt
-      prepareUpstreamResponseForDownstream(res, upstreamResponse, false)
-      markFirstOutput?.()
-      res.end()
+      const errorMessage = '上游响应体为空'
+      forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
+      auditCapture.completeAttempt(auditAttemptId, {
+        statusCode: upstreamResponse.status,
+        responseHeaders: upstreamResponse.headers,
+        success: false,
+        errorPhase: 'upstream_response',
+        errorCode: 'upstream_empty_body',
+        errorMessage
+      })
+      recordCompletedUpstreamAttempt(req, {
+        ...usageContext,
+        account,
+        statusCode: upstreamResponse.status,
+        success: false,
+        stream: isEffectiveOpenAIStreamRequest(req, account),
+        startedAt,
+        usage: emptyUsage(),
+        requestSnapshot: usageContext.requestSnapshot,
+        responseSnapshot: buildUsageResponseSnapshot({
+          upstreamUrl,
+          statusCode: upstreamResponse.status,
+          headers: upstreamResponse.headers,
+          errorMessage
+        }),
+        errorCode: 'upstream_empty_body',
+        errorMessage
+      })
+      rememberClientIpAccountPendingFailure(clientIpAccountAvoidanceTracker, account, {
+        statusCode: upstreamResponse.status,
+        errorCode: 'upstream_empty_body',
+        errorPhase: 'upstream_response',
+        errorMessage,
+        endpoint: usageContext.endpoint
+      })
+      if (accountStateMutationEnabled !== false) {
+        const localSuppression = suppressGatewayAccountLocally(account, settings, errorMessage)
+        if (usageContext.trafficSource === 'gateway') {
+          recordGatewayAccountFailureForPrecheck(account, settings, {
+            systemAccountId: usageContext.systemAccountId,
+            groupId: usageContext.groupId,
+            apiKeyId: usageContext.apiKeyId,
+            clientIp: usageContext.clientIp,
+            endpoint: usageContext.endpoint,
+            reason: errorMessage,
+            statusCode: upstreamResponse.status,
+            forcePrecheck: localSuppression.action === 'precheck_required'
+          })
+        }
+      }
+      return {
+        alreadyFinalized: false,
+        retryUpstream: true,
+        retryReason: 'upstream_protocol_failure',
+        excludeCurrentAccount: true,
+        message: errorMessage,
+        errorCode: 'upstream_empty_body'
+      }
     } else if (upstreamResponse.ok) {
       const contentType = upstreamResponse.headers.get('content-type') ?? ''
       const inspectJsonResponse = isOpenAIJsonResponseContentType(contentType)

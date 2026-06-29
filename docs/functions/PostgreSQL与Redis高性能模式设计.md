@@ -220,12 +220,12 @@ repository 迁移原则：
 - `pnpm --filter juhe-ai-backend test:group-management-driver` 已覆盖本地 SQLite 和远端 PostgreSQL / Redis URL 下的分组管理读写一致性。
 - `pnpm --filter juhe-ai-backend test:performance-system-api-smoke` 已扩展覆盖 groups GET / POST / PATCH / DELETE 的最小 HTTP 链路。
 
-API Key 管理关键路径已落地到 `backend/src/storage/api-key.repository.ts`、`backend/src/storage/api-key-mappers.ts` 和 `backend/src/storage/api-key-group-bindings.repository.ts`：
+API Key 管理关键路径已落地到 `backend/src/storage/api-key.repository.ts`、`backend/src/storage/api-key-mappers.ts` 和 `backend/src/storage/route-strategy.repository.ts`：
 
 - 新增 API Key 列表、分页、摘要、secret 查询、创建、更新、刷新密钥和删除的 async 双 driver 版本。
 - PostgreSQL 查询通过 `juhe_business` schema 读取 `api_keys`、`route_strategies`、`route_strategy_groups`、`groups`、`system_accounts`、`resource_authorizations`、`group_authorization_settings` 和 `request_quota_hourly_window_configs`。
-- 创建和更新保留分组绑定边界、同账户名称唯一性、启用分组保护、分组优先级唯一性、额度限制、时间计划、密钥加密和网关缓存 / 额度缓存失效语义。
-- 网关 API Key 校验入口已新增 async 双 driver 版本；PG 模式下 `read_gateway_runtime` 能读取有效 API Key、绑定分组、网关设置、分组访问元数据、响应检查策略和最小可调度账号候选。候选账号读取已通过 `juhe_business` / `juhe_stats` schema 覆盖分组绑定、账号状态、授权实例、支持模型、模型映射、API Key 运行态、代理和质量分窗口；完整 `/v1` PG-ready 仍需继续迁移账号管理写路径、usage / stats、授权额度和审计记录链路。
+- 创建和更新保留路由策略绑定边界、同账户名称唯一性、启用策略保护、策略分组优先级唯一性、额度限制、时间计划、密钥加密和网关缓存 / 额度缓存失效语义。
+- 网关 API Key 校验入口已新增 async 双 driver 版本；PG 模式下 `read_gateway_runtime` 能读取有效 API Key、绑定路由策略、网关设置、分组访问元数据、响应检查策略和最小可调度账号候选。候选账号读取已通过 `juhe_business` / `juhe_stats` schema 覆盖策略分组绑定、账号状态、授权实例、支持模型、模型映射、API Key 运行态、代理和质量分窗口；完整 `/v1` PG-ready 仍需继续迁移账号管理写路径、usage / stats、授权额度和审计记录链路。
 - `account_supported_models` 和 `account_model_mappings` 已新增 async replace helper；PG 模式下通过事务先删后写，供账号创建 / 更新迁移复用。`test:api-key-management-driver` 已覆盖创建账号时直接写入最小候选账号模型配置，并从 `read_gateway_runtime` 断言读回。
 - `createAccountAsync` 已新增 PG 最小创建路径：同一事务写入 `accounts`、`group_accounts`、账号名称搜索词、标签绑定、支持模型和模型映射，提交后失效账号 / 分组 / 网关运行态缓存。模型目录读取已新增 async 路径，用于账号创建时校验内置模型和 `custom_provider_models`；`POST /__aisys__/api/accounts` 已切到 async 创建路径并由 `test:performance-system-api-smoke` 覆盖。
 - 自定义模型管理已新增 async PG 路径：`/providers/models/options`、`/providers/:code/models` 列表、创建、更新和删除会通过 async provider、模型目录和 `custom_provider_models` repository 读取 / 写入 PostgreSQL；pricingModel 引用校验、个人模型权限和已绑定账户删除保护保持原语义。`test:model-catalog` 覆盖 SQLite 详细契约，`test:performance-system-api-smoke` 已覆盖 SQLite 与远端 PostgreSQL / Redis 下自定义模型 HTTP 创建、pricingModel 引用、列表、更新和删除。
@@ -242,7 +242,7 @@ API Key 管理关键路径已落地到 `backend/src/storage/api-key.repository.t
 - `createResourceAuthorizationAsync()` 已新增 PG 授权创建路径：`POST /__aisys__/api/authorizations` 会在同一事务内写入 grant、runtime authorization、source、额度窗口配置；授权 AI 账号给个人时会创建或恢复授权实例账号并绑定目标分组。当前 HTTP smoke 覆盖个人账号授权创建 / 回收，团队授权 fanout 逻辑已按同步路径迁移但仍建议补独立团队场景回归。
 - `updateResourceAuthorizationAsync()` 和 `revokeResourceAuthorizationAsync()` 已新增 PG 现有授权管理写路径：`PATCH /__aisys__/api/authorizations/:id` 支持暂停 / 恢复和额度更新，`PATCH /__aisys__/api/authorizations/:id/expire` 支持有效期与额度更新，`DELETE /__aisys__/api/authorizations/:id` 支持回收；PG 事务内会更新 grant、runtime authorization、source、额度窗口配置，并在提交后失效网关运行态、授权额度、API Key 校验和授权读取缓存。
 - 完整账号管理端还需授权实例列表视图、过期物理清理、统计聚合和使用记录读写继续迁移；当前 `authorizations` 路由本身没有独立 `GET /:id` 详情入口。
-- PG 模式下 API Key 摘要会读取真实绑定分组；`usage` 暂时返回空聚合，等待 usage / stats repository 迁移后接入预聚合窗口。
+- PG 模式下 API Key 摘要会读取真实绑定路由策略及其策略分组；`usage` 暂时返回空聚合，等待 usage / stats repository 迁移后接入预聚合窗口。
 - PG 模式下删除 API Key 会删除业务库中的 key 和绑定，并返回 cleanup target；路由暂不投递旧的 dataset / stats 清理目标，等待 dataset / record-maintenance 清理仓储迁移后恢复。
 - PG 模式下 API Key 列表 keyword 搜索使用 `matched_api_key_ids` materialized CTE 先按 `lower(name) COLLATE "C"` 前缀范围命中名称索引，再按原列表排序输出；如果直接在主查询中叠加 keyword 过滤，PostgreSQL 可能优先选择列表排序索引后过滤名称，导致大表搜索退化。
 - PG 模式下 API Key 创建 / 更新混合路由配置会通过 async provider 与模型目录读取校验评分模型、质量评分模型和等级目标模型；`test:performance-system-api-smoke` 已覆盖 SQLite 与远端 PostgreSQL / Redis 下混合路由 API Key 的 HTTP 创建、更新和删除。

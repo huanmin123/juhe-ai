@@ -523,19 +523,20 @@ export async function listPublicWelfareAccountsAsync(input: PublicAccountListInp
 export async function addPublicGroup(input: PublicGroupAddInput): Promise<PublicGroupResponse> {
   const providerCode = requiredProviderCode(input.providerCode)
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    assertProviderEnabled(providerCode)
+    const providerProfile = assertProviderEnabled(providerCode, input.providerProtocolProfileId)
     const targetPasswordHash = await autoCreatedTargetPasswordHash()
     return runInDatabaseTransaction(() => {
       const target = ensureTargetSystemAccount(input, targetPasswordHash)
       assertTargetActive(target.account)
       const access = targetAccess(target.account.id)
-      const existing = resolvePublicGroup(access, { name: input.name, providerCode })
+      const existing = resolvePublicGroup(access, { name: input.name, providerCode, providerProtocolProfileId: providerProfile.id })
       if (existing) {
         return publicGroupResponse('existing', target, sanitizeGroup(existing))
       }
       const group = createGroup({
         name: input.name,
         providerCode,
+        providerProtocolProfileId: providerProfile.id,
         description: input.description,
         enabled: input.enabled,
         groupType: input.groupType ?? 'personal'
@@ -544,18 +545,19 @@ export async function addPublicGroup(input: PublicGroupAddInput): Promise<Public
     }, getBusinessDatabase())
   }
 
-  await assertProviderEnabledAsync(providerCode)
+  const providerProfile = await assertProviderEnabledAsync(providerCode, input.providerProtocolProfileId)
   const targetPasswordHash = await autoCreatedTargetPasswordHash()
   const target = await ensureTargetSystemAccountAsync(input, targetPasswordHash)
   assertTargetActive(target.account)
   const access = targetAccess(target.account.id)
-  const existing = await resolvePublicGroupAsync(access, { name: input.name, providerCode })
+  const existing = await resolvePublicGroupAsync(access, { name: input.name, providerCode, providerProtocolProfileId: providerProfile.id })
   if (existing) {
     return publicGroupResponse('existing', target, sanitizeGroup(existing))
   }
   const group = await createGroupAsync({
     name: input.name,
     providerCode,
+    providerProtocolProfileId: providerProfile.id,
     description: input.description,
     enabled: input.enabled,
     groupType: input.groupType ?? 'personal'
@@ -1107,6 +1109,10 @@ function resolvePublicAccountGroupFilter(
   if (providerProtocolProfileId && providerProtocolProfileId !== account.providerProtocolProfileId) {
     throw new Error('账号不存在')
   }
+  const accountProviderProtocolProfileId = normalizedText(account.providerProtocolProfileId)
+  if (!accountProviderProtocolProfileId) {
+    throw new Error('账号 providerProtocolProfileId 不能为空')
+  }
 
   const groupName = normalizedText(input.targetGroupName)
   if (!groupName) {
@@ -1116,6 +1122,7 @@ function resolvePublicAccountGroupFilter(
   const group = findExistingTargetGroup({
     access,
     providerCode: account.providerCode,
+    providerProtocolProfileId: accountProviderProtocolProfileId,
     groupName
   })
   if (!group) {
@@ -1124,7 +1131,7 @@ function resolvePublicAccountGroupFilter(
   const accountInGroup = findTargetAccountById({
     access,
     providerCode: account.providerCode,
-    providerProtocolProfileId: account.providerProtocolProfileId ?? '',
+    providerProtocolProfileId: accountProviderProtocolProfileId,
     groupId: group.id,
     accountId: account.id
   })
@@ -1147,6 +1154,10 @@ async function resolvePublicAccountGroupFilterAsync(
   if (providerProtocolProfileId && providerProtocolProfileId !== account.providerProtocolProfileId) {
     throw new Error('账号不存在')
   }
+  const accountProviderProtocolProfileId = normalizedText(account.providerProtocolProfileId)
+  if (!accountProviderProtocolProfileId) {
+    throw new Error('账号 providerProtocolProfileId 不能为空')
+  }
 
   const groupName = normalizedText(input.targetGroupName)
   if (!groupName) {
@@ -1156,6 +1167,7 @@ async function resolvePublicAccountGroupFilterAsync(
   const group = await findExistingTargetGroupAsync({
     access,
     providerCode: account.providerCode,
+    providerProtocolProfileId: accountProviderProtocolProfileId,
     groupName
   })
   if (!group) {
@@ -1164,7 +1176,7 @@ async function resolvePublicAccountGroupFilterAsync(
   const accountInGroup = await findTargetAccountByIdAsync({
     access,
     providerCode: account.providerCode,
-    providerProtocolProfileId: account.providerProtocolProfileId ?? '',
+    providerProtocolProfileId: accountProviderProtocolProfileId,
     groupId: group.id,
     accountId: account.id
   })

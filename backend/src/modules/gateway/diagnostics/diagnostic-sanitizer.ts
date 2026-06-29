@@ -2,7 +2,6 @@ const redacted = '[redacted]'
 const maxRecursiveDepth = 8
 const maxObjectKeys = 200
 const maxArrayItems = 100
-const maxJsonBodySanitizeBytes = 4 * 1024 * 1024
 const sensitiveAssignmentKeyPattern = [
   'access[_-]?token',
   'api[_-]?key',
@@ -56,14 +55,6 @@ export function sanitizeDiagnosticPayload<T>(value: T): T {
   return sanitizeValue(value, undefined, 0) as T
 }
 
-export function sanitizeAuditPayloadBody(input: {
-  body: Buffer | string | undefined
-  contentType?: string
-  contentEncoding?: string
-}): { body: Buffer | string | undefined; redacted: boolean; originalSizeBytes?: number } {
-  return { body: input.body, redacted: false }
-}
-
 function sanitizeValue(value: unknown, fieldName: string | undefined, depth: number): unknown {
   if (isSensitiveFieldName(fieldName)) {
     return redacted
@@ -99,33 +90,6 @@ function sanitizeValue(value: unknown, fieldName: string | undefined, depth: num
   return output
 }
 
-function sanitizeJsonText(text: string): string | undefined {
-  try {
-    return JSON.stringify(sanitizeValue(JSON.parse(text) as unknown, undefined, 0))
-  } catch {
-    return undefined
-  }
-}
-
-function sanitizeFormUrlEncodedText(text: string): string | undefined {
-  try {
-    const params = new URLSearchParams(text)
-    let changed = false
-    for (const key of [...params.keys()]) {
-      const values = params.getAll(key)
-      params.delete(key)
-      for (const value of values) {
-        const nextValue = isSensitiveFieldName(key) ? redacted : sanitizeSensitiveString(value)
-        if (nextValue !== value) changed = true
-        params.append(key, nextValue)
-      }
-    }
-    return changed ? params.toString() : undefined
-  } catch {
-    return undefined
-  }
-}
-
 function sanitizeSensitiveString(value: string): string {
   return value
     .replace(/\b([a-z][a-z0-9+.-]*:\/\/)([^/\s?#@]+)@/gi, `$1${redacted}@`)
@@ -144,15 +108,4 @@ function isSensitiveFieldName(name: string | undefined): boolean {
   if (!name) return false
   const normalized = name.trim().toLowerCase().replace(/[^a-z0-9]/g, '')
   return sensitiveFieldNames.has(normalized)
-}
-
-function isPlainTextEncoding(contentEncoding?: string): boolean {
-  const encoding = contentEncoding?.trim().toLowerCase()
-  return !encoding || encoding === 'identity'
-}
-
-function isJsonLikeText(text: string, contentType: string): boolean {
-  if (contentType.includes('json')) return true
-  const firstChar = text.trimStart().charAt(0)
-  return firstChar === '{' || firstChar === '['
 }

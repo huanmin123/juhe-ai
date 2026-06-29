@@ -1,5 +1,3 @@
-import type { AccountClientCompatibility } from './accounts'
-
 export type ResponseInspectionPolicyAction =
   | 'observe'
   | 'drop_event'
@@ -19,7 +17,6 @@ export type ResponseInspectionPolicyClientProfile =
 
 export interface ResponseInspectionPolicyMatch {
   clientProfiles?: ResponseInspectionPolicyClientProfile[]
-  accountClientCompatibilities?: AccountClientCompatibility[]
   outputTextIncludes?: string[]
   outputTextExcludes?: string[]
   errorCodes?: string[]

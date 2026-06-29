@@ -48,7 +48,7 @@ const textKeywordDecision = decideAccountErrorPolicy({
   status: 'active'
 }, 429, new Headers({ 'content-type': 'application/json' }), Buffer.from('{"error":{"message":"retry after 200 seconds"}}'), settings)
 
-assert.equal(textKeywordDecision?.ruleName, '文本 200', '关键词中的普通文本数字 200 应允许参与非 2xx 错误匹配')
+assert.equal(textKeywordDecision, undefined, '运行时不应根据上游状态码或文本关键词直接命中账号错误策略')
 
 const successDecision = decideAccountErrorPolicy({
   id: 'account_error_policy_validation',
@@ -80,7 +80,7 @@ const anthropicErrorTypeAsCodeDecision = decideAccountErrorPolicy({
   status: 'active'
 }, 503, new Headers({ 'content-type': 'application/json' }), Buffer.from('{"type":"error","error":{"type":"overloaded_error","message":"mock overloaded"}}'), settings)
 
-assert.equal(anthropicErrorTypeAsCodeDecision?.ruleName, 'Anthropic overloaded', 'Anthropic 协议应把官方 error.type 暴露给错误策略 code 匹配')
+assert.equal(anthropicErrorTypeAsCodeDecision, undefined, '运行时不应把 Anthropic error.type 当作通用账号错误策略 code 匹配')
 
 console.log('account error policy validation regression passed')
 

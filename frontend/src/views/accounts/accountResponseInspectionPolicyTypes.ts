@@ -1,5 +1,4 @@
 import type {
-  AccountClientCompatibility,
   ResponseInspectionPolicyAction,
   ResponseInspectionPolicyClientProfile
 } from '@/types/domain'
@@ -9,7 +8,6 @@ export interface AccountResponseInspectionRuleForm {
   name: string
   priority: number | null
   clientProfiles: ResponseInspectionPolicyClientProfile[]
-  accountClientCompatibilities: AccountClientCompatibility[]
   outputTextIncludes: string
   outputTextExcludes: string
   errorCodes: string
@@ -28,7 +26,6 @@ export interface AccountResponseInspectionRulePayload {
   priority: number
   match: {
     clientProfiles?: ResponseInspectionPolicyClientProfile[]
-    accountClientCompatibilities?: AccountClientCompatibility[]
     outputTextIncludes?: string[]
     outputTextExcludes?: string[]
     errorCodes?: string[]

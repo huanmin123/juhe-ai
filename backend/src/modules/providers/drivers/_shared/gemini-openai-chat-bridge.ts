@@ -853,7 +853,7 @@ function chatUsageToGeminiUsage(usage: JsonRecord | undefined): JsonRecord | und
 function chatFinishReasonToGeminiFinishReason(finishReason: string | undefined, parts?: JsonRecord[]): string {
   if (finishReason === 'length') return 'MAX_TOKENS'
   if (finishReason === 'content_filter') return 'SAFETY'
-  if (finishReason === 'tool_calls' || finishReason === 'function_call') return 'STOP'
+  if (finishReason === 'tool_calls') return 'STOP'
   if (parts?.some((part) => part.functionCall !== undefined)) return 'STOP'
   return 'STOP'
 }

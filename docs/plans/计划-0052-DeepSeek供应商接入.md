@@ -53,7 +53,7 @@
 - 模型映射：`docs/functions/自定义模型与模型映射设计.md`
 - 价格与 usage：`docs/functions/模型价格与用量统计口径.md`
 - 导入协议：`docs/functions/AI账户导入协议.md`
-- API Key 多分组路由：`docs/functions/APIKey多分组路由设计.md`
+- 策略路由：`docs/functions/策略路由设计.md`
 - 供应商驱动化重构：`docs/plans/计划-0050-供应商驱动化分层重构.md`
 - 模型路由与跨供应商 API Key：`docs/plans/计划-0044-模型路由与跨供应商APIKey.md`
 
@@ -62,7 +62,7 @@
 - 方案原则：DeepSeek 是独立供应商，不复用 GPT 账号类型、OAuth、Codex Responses 兼容策略或官方 Anthropic 账号池。协议层可分别复用 OpenAI v1 Chat Completions 和 Anthropic v1 Messages 适配器，供应商差异落在 DeepSeek driver / adapter。
 - 双档案原则：`profile_deepseek_openai_v1` 对应 `https://api.deepseek.com` 和 Chat JSON/SSE；`profile_deepseek_anthropic_v1` 对应 `https://api.deepseek.com/anthropic` 和 Messages JSON/SSE。协议档案决定 Base URL、endpoint modes、账户测试和调度边界，`client_compatibility` 只描述下游客户端画像。
 - 数据变化：补 DeepSeek Anthropic-compatible protocol profile、默认分组、模型协议标识、Claude 模型别名映射和前端供应商能力配置；如现有表结构已支持，则不新增 schema，只补种子和目录。
-- 接口变化：账户创建 / 编辑 / 导入 / 导出 / 公开推送接受 `providerCode = deepseek`；省略 `providerProtocolProfileId` 时仍解析为默认 `profile_deepseek_openai_v1`，Anthropic-compatible 必须显式传入 `profile_deepseek_anthropic_v1`。
+- 接口变化：账户创建 / 编辑 / 导入 / 导出 / 公开推送接受 `providerCode = deepseek`，并必须显式传入 `providerProtocolProfileId = profile_deepseek_openai_v1 | profile_deepseek_anthropic_v1`。
 - 前端变化：供应商页、账户表单、账户测试、模型检测入口隔离、导入预览、API Key 绑定和使用记录展示支持 DeepSeek 两种接入类型，页面文案保持中文。
 - 后端变化：provider driver registry 已有 DeepSeek driver，后续补 Anthropic-compatible profile 分支；网关上游请求准备和响应解析补 DeepSeek 供应商扩展，模型价格服务按 `providerCode = deepseek` 查找。
 - 数据处理策略：按当前 schema 和当前最优字段设计；不在运行时代码加入旧结构兼容、双读双写或自动迁移。
@@ -82,7 +82,7 @@
 - [x] 错误处理复用现有运行态屏障、切号、半开恢复、后台复测和账户错误策略输入。
 - [x] 使用记录、成本估算、统计聚合和审计摘要支持 DeepSeek 字段，不在请求链路现场聚合明细。
 - [x] 补充 mock upstream、真实上游、类型检查和前端专项回归脚本。
-- [x] 复查修正 DeepSeek V4 官方价格、`openai` 聚合模型目录排除、模型检测入口隔离和导入协议 `connectionType` 口径。
+- [x] 复查修正 DeepSeek V4 官方价格、`openai` 聚合模型目录排除、模型检测入口隔离和导入协议 `providerProtocolProfileId` 口径。
 - [x] 补齐 worker + DB service 测试 harness，让账号测试和冷却恢复回归覆盖真实后台队列状态写入。
 - [!] `deepseek-ai-v4-pro` 真实成功调用待补测：当前用户提供的 `https://vsllm.com` 上游返回当日模型配额 429 / 连接超时。
 - [x] 新增 `DEEPSEEK_ANTHROPIC_V1_PROFILE_ID` 前后端常量、协议档案 seed、默认 DeepSeek Anthropic 分组和前端 fallback provider profile。
@@ -157,7 +157,7 @@
 | 2026-06-20 | 进行中 | AI | 完成后端 DeepSeek provider/profile/default group/driver/credential driver/model pricing/usage 语义接入，前端补供应商能力、导入协议、模型检测边界和展示规则。 |
 | 2026-06-20 | 进行中 | AI | mock AI 回归发现 DeepSeek dispatch account 被 `supportsProfile` 误用账户 `id` 拦截，已改为按 `providerCode + openai/v1` 匹配；同时修正 GLM dispatch profile id 类型收窄。 |
 | 2026-06-20 | 进行中 | AI | 真实 `vsllm.com` 验证发现非流式请求不带 `Content-Length` 会返回 HTTP 200 但 `choices:null`，已在网关上游请求构造中对 Buffer/string body 补准确 `Content-Length`，并加入 DeepSeek mock 断言。 |
-| 2026-06-20 | 进行中 | AI | 复查修正 DeepSeek V4 官方价格、`openai` 聚合模型目录排除、模型检测入口隔离、DeepSeek 导入协议 `connectionType` 口径，并补 worker + DB service 测试 harness 让账号测试 / 冷却恢复回归重新覆盖真实队列。 |
+| 2026-06-20 | 进行中 | AI | 复查修正 DeepSeek V4 官方价格、`openai` 聚合模型目录排除、模型检测入口隔离、DeepSeek 导入协议 `providerProtocolProfileId` 口径，并补 worker + DB service 测试 harness 让账号测试 / 冷却恢复回归重新覆盖真实队列。 |
 | 2026-06-20 | 待验证 | AI | `deepseek-ai-v4-flash` 真实 JSON / SSE 验证通过；`deepseek-ai-v4-pro` 真实 JSON 返回上游 429，当日模型配额超限；SSE 返回上游 500 / `net_exception_connect_timeout`，需要更换 Key、等待额度恢复或上游稳定后补测。 |
 | 2026-06-20 | 进行中 | AI | 根据用户确认重新打开 DeepSeek Anthropic-compatible 方案：新增目标 `profile_deepseek_anthropic_v1`，按独立账户类型和独立 Base URL 设计，客户端兼容只作为档案内画像。 |
 | 2026-06-20 | 进行中 | AI | 使用新 `vsllm.com` Key 做真实验证：直接 OpenAI / Anthropic flash JSON/SSE 通过，Claude Code 直连通过，Count Tokens 404 符合禁用设计；本地 DeepSeek / Anthropic 真实网关 E2E 均暴露完整网关链路问题，不能标记为全链路完成。 |

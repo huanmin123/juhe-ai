@@ -5,6 +5,7 @@ import { createPostgresDatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { cleanupAuditPayloadBlobsBeforeAsync } from './audit-log-payload-blobs.js'
+import { deletePostgresUsageRecordCatalogRowsByUsageIds } from './usage-record-catalog-cleanup.js'
 import {
   cleanupDiscoveredHardCleanupTablesBefore,
   deleteRowsBeforeByRowid,
@@ -661,7 +662,7 @@ async function deletePostgresUsageRecordRows(client: DatabaseClient, ids: string
   if (!usageIds.length) return 0
   let deletedRows = 0
   await client.transaction(async (tx) => {
-    await tx.execute('DELETE FROM juhe_usage.usage_record_shard_entries WHERE usage_id = ANY(?)', [usageIds])
+    await deletePostgresUsageRecordCatalogRowsByUsageIds(tx, usageIds)
     deletedRows = changed(await tx.execute('DELETE FROM juhe_usage.usage_records WHERE id = ANY(?)', [usageIds]))
   })
   return deletedRows

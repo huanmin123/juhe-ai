@@ -89,7 +89,7 @@ Anthropic 账户不展示 Codex Responses 兼容选项。Claude Code 不写入 `
 
 只有满足以下条件时进入 `claude_code` 画像：
 
-- 当前 API Key 绑定分组使用 `protocolCode = anthropic`、`protocolVersion = v1`。
+- 当前 API Key 所选路由策略命中的分组使用 `protocolCode = anthropic`、`protocolVersion = v1`。
 - 请求是 Anthropic native 支持路径，当前主要是 `POST /v1/messages` 或 `/messages`。
 - 满足以下任一识别方式：
   - 请求显式带 `x-juhe-client-profile: claude_code`，大小写和连字符 / 下划线可归一化。

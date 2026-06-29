@@ -6,11 +6,6 @@ import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import { isProtocolProviderCode, isProtocolProviderCodeAsync } from './provider.repository.js'
-import {
-  ACCOUNT_CLIENT_COMPATIBILITIES,
-  type AccountClientCompatibility
-} from '../domain/types.js'
-
 export type ResponseInspectionPolicyScopeType = 'protocol' | 'provider'
 export type ResponseInspectionPolicySource = 'system_default' | 'management' | 'account'
 export type ResponseInspectionPolicyClientProfile =
@@ -35,7 +30,6 @@ export type ResponseInspectionPolicyAccountState = 'none' | 'runtime_avoidance'
 
 export interface ResponseInspectionPolicyMatch {
   clientProfiles?: ResponseInspectionPolicyClientProfile[]
-  accountClientCompatibilities?: AccountClientCompatibility[]
   outputTextIncludes?: string[]
   outputTextExcludes?: string[]
   errorCodes?: string[]
@@ -120,14 +114,12 @@ const inputKeys = new Set([
 
 const clientProfiles = ['codex', 'generic_openai', 'claude_code', 'generic_anthropic', 'generic_gemini', 'gemini_cli'] as const satisfies readonly ResponseInspectionPolicyClientProfile[]
 const clientProfileValues = new Set<ResponseInspectionPolicyClientProfile>(clientProfiles)
-const accountClientCompatibilityValues = new Set<AccountClientCompatibility>(ACCOUNT_CLIENT_COMPATIBILITIES)
 const supportedResponseInspectionProtocolCodes = new Set([OPENAI_PROTOCOL_CODE, ANTHROPIC_PROTOCOL_CODE, GEMINI_PROTOCOL_CODE])
 const codexCompactionContractMismatchErrorCode = 'codex_compaction_contract_mismatch'
 const businessSchemaName = 'juhe_business'
 
 const matchKeys = [
   'clientProfiles',
-  'accountClientCompatibilities',
   'outputTextIncludes',
   'outputTextExcludes',
   'errorCodes',
@@ -221,7 +213,6 @@ const systemDefaultRules: ResponseInspectionPolicySummary[] = [
     protocolCode: OPENAI_PROTOCOL_CODE,
     match: {
       clientProfiles: ['codex'],
-      accountClientCompatibilities: ['codex_responses'],
       errorCodes: [codexCompactionContractMismatchErrorCode]
     },
     action: 'retry_next_account',
@@ -741,16 +732,8 @@ function normalizeMatch(value: unknown): ResponseInspectionPolicyMatch {
   if (normalizedClientProfiles.length > 0) {
     match.clientProfiles = normalizedClientProfiles
   }
-  const normalizedClientCompatibilities = normalizeKnownStringList(
-    record.accountClientCompatibilities,
-    '响应检查策略accountClientCompatibilities',
-    accountClientCompatibilityValues
-  ) as AccountClientCompatibility[]
-  if (normalizedClientCompatibilities.length > 0) {
-    match.accountClientCompatibilities = normalizedClientCompatibilities
-  }
   for (const key of matchKeys) {
-    if (key === 'clientProfiles' || key === 'accountClientCompatibilities') {
+    if (key === 'clientProfiles') {
       continue
     }
     const normalized = normalizeStringList(record[key], `响应检查策略${key}`)

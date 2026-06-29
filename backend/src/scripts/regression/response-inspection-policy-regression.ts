@@ -258,7 +258,6 @@ assert.equal(validateAccountResponseInspectionRules([
     priority: 10,
     match: {
       clientProfiles: ['codex'],
-      accountClientCompatibilities: ['codex_responses'],
       outputTextIncludes: ['污染']
     },
     action: 'retry_next_account'
@@ -435,7 +434,6 @@ assert.equal(validateAccountResponseInspectionRules([
     responsePolicy({
       match: {
         clientProfiles: ['codex'],
-        accountClientCompatibilities: ['codex_responses'],
         errorCodes: ['client_scoped_error']
       }
     })
@@ -451,17 +449,6 @@ assert.equal(validateAccountResponseInspectionRules([
     }
   })
   assert.equal(genericResult.decision, undefined, 'clientProfiles 不匹配时不能命中响应检查策略')
-  const accountCompatibilityResult = inspectResponseSemanticFrames({
-    frames,
-    policies,
-    downstreamWritten: false,
-    transport: 'json',
-    context: {
-      clientProfile: 'codex',
-      accountClientCompatibility: 'openai_standard'
-    }
-  })
-  assert.equal(accountCompatibilityResult.decision, undefined, 'accountClientCompatibilities 不匹配时不能命中响应检查策略')
   const codexResult = inspectResponseSemanticFrames({
     frames,
     policies,
@@ -474,7 +461,68 @@ assert.equal(validateAccountResponseInspectionRules([
   })
   assert.equal(codexResult.decision?.matchedField, 'errorCodes', '客户端维度匹配后仍必须由语义字段触发命中')
   assert.equal(codexResult.decision?.clientProfile, 'codex', '响应检查决策应记录命中时的请求客户端')
-  assert.equal(codexResult.decision?.accountClientCompatibility, 'codex_responses', '响应检查决策应记录命中时的账号兼容能力')
+}
+
+{
+  const frames = extractOpenAIJsonSemanticFrames({
+    error: {
+      code: 'unscoped_upstream_error_code',
+      message: 'unscoped upstream code must not drive routing'
+    }
+  }, 'responses')
+  const result = inspectResponseSemanticFrames({
+    frames,
+    policies: [
+      responsePolicy({
+        match: {
+          errorCodes: ['unscoped_upstream_error_code']
+        }
+      })
+    ],
+    downstreamWritten: false,
+    transport: 'json',
+    context: {
+      clientProfile: 'generic_openai',
+      accountClientCompatibility: 'openai_standard'
+    }
+  })
+  assert.equal(result.decision, undefined, '未绑定客户端画像的响应检查策略不能只靠上游 errorCode 命中')
+}
+
+{
+  const frames = extractOpenAIJsonSemanticFrames({
+    choices: [
+      {
+        message: {
+          role: 'assistant',
+          content: '命中服务端换号检查'
+        }
+      }
+    ]
+  }, 'chat_completions')
+  const result = inspectResponseSemanticFrames({
+    frames,
+    policies: [
+      responsePolicy({
+        retryEnabled: false,
+        match: {
+          outputTextIncludes: ['服务端换号检查']
+        }
+      })
+    ],
+    downstreamWritten: false,
+    transport: 'json',
+    context: {
+      clientProfile: 'generic_openai',
+      accountClientCompatibility: 'openai_standard'
+    }
+  })
+  assert.equal(result.decision?.retryEnabled, false, '策略自身的客户端重试标记应保留原值')
+  assert.equal(shouldRetryResponseInspectionDecisionOnServer(result.decision, {
+    headersSent: false,
+    writableEnded: false,
+    destroyed: false
+  }), true, '下游未提交时，配置化响应检查命中应允许服务端换号，不依赖 retryEnabled')
 }
 
 {

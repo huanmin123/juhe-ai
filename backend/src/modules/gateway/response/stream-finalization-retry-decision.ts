@@ -37,7 +37,6 @@ export function shouldRetryResponseInspectionDecisionOnServer(
   const serverRetryableSystemDefault = isServerRetryableSystemDefaultResponseInspectionDecision(decision)
   return decision !== undefined
     && (decision.reason === 'configured_response_policy' || serverRetryableSystemDefault)
-    && decision.retryEnabled === true
     && (
       decision.policySource !== 'system_default'
       || serverRetryableSystemDefault

@@ -25,7 +25,7 @@ export const deepSeekAccountCredentialDriver: ProviderAccountCredentialDriver = 
       && (
         (
           isOpenAIProtocolProfile(context)
-          && (!context.providerProtocolProfileId || context.providerProtocolProfileId === DEEPSEEK_OPENAI_V1_PROFILE_ID)
+          && context.providerProtocolProfileId === DEEPSEEK_OPENAI_V1_PROFILE_ID
         )
         || (
           isAnthropicProtocolProfile(context)

@@ -88,7 +88,7 @@
 | AI 账户 | `modules/accounts/` | 账号 CRUD、账号测试、凭据展示边界和调度属性 |
 | OpenAI OAuth | `modules/openai-oauth/` | PKCE、refresh token 创建账户和 token 刷新；额度快照由网关响应头被动写入 |
 | 分组 | `modules/groups/` | 分组 CRUD、账号绑定、分组授权 |
-| API Key | `modules/api-keys/` | 本地网关密钥创建、展示、状态和分组绑定 |
+| API Key | `modules/api-keys/` | 本地网关密钥创建、展示、状态和路由策略绑定 |
 | 代理 | `modules/proxies/` | 服务器级代理配置和账号绑定资源 |
 | 账户错误处理策略 | `modules/accounts/account-error-policy-validation.ts`、`modules/gateway/policy/account-error-policy.service.ts` | 账户 `credentials.error_handling_rules` 校验、非 2xx 错误匹配、冷却 / 限流 / 异常目标和切号动作 |
 | 使用记录 | `modules/usage-records/` | 请求事实记录查询和快照展示 |
@@ -114,9 +114,9 @@ flowchart LR
 - 未登录只允许访问登录、公开设置和健康检查等明确入口。
 - `/__aisys__/api/*` 和 `/__aipublic__/*` 由主 Web 进程流式代理到 DB service 内部系统 API；主进程不解析管理 / 公开系统 API JSON body，不直接导入管理路由或 repository。代理层只做流式转发，并保留最大 in-flight 请求数和内部超时，避免慢 DB service 把主进程 socket 无限堆积。
 - 独立 public-api 进程方案已评估但暂不实施，见 [公开接口独立进程设计](../../functions/公开接口独立进程设计.md) 和 `PLAN-0036`；当前仍以上述 DB service 代理描述为准。
-- DB service 内部系统 API 默认先经过 `requireAuth`；供应商、代理、统计和需要管理员权限的接口再叠加 `requireAdmin`。
+- DB service 内部系统 API 默认先经过 `requireAuth`；供应商管理、代理管理 CRUD / 检测、统计和需要管理员权限的接口再叠加 `requireAdmin`，代理 options 作为登录用户可用的全局选择项不叠加管理员权限。
 - 账号测试、模型检测和代理检测都会发起外部网络探测，但账号测试使用后台 worker 的独立任务模型：管理 API 只提交任务和 session，worker 按系统设置 `accountTestTaskConcurrency` 控制全站并发，默认 100，排队时间不计入 60 秒运行超时。模型检测和代理检测继续共享 DB service 诊断任务 in-flight 上限，超过上限直接返回 `503` 和 `Retry-After`，不在 DB service 事件循环内排队等待。
-- 同一 router 如果同时承载管理列表和登录用户可用的轻量辅助接口，不要把 `requireAdmin` 直接挂在整段 mount 上，应把管理员校验下沉到具体管理路由。例如供应商列表需要管理员权限，但供应商模型目录用于普通用户账户表单，必须允许登录用户读取。
+- 同一 router 如果同时承载管理列表和登录用户可用的轻量辅助接口，不要把 `requireAdmin` 直接挂在整段 mount 上，应把管理员校验下沉到具体管理路由。例如供应商列表需要管理员权限，但供应商模型目录用于普通用户账户表单、代理 options 用于普通用户账户代理下拉，必须允许登录用户读取。
 - 新增普通用户可见页面调用的接口时，必须在 `backend/src/scripts/regression/scope-boundary-regression.ts` 补普通用户可访问断言；新增 `my-*` 命名空间下仍属于管理员能力的例外时，也要补普通用户 403 断言，避免前端误暴露后才发现。
 - routes 层负责解析参数、返回统一响应和 HTTP 状态；业务规则和副作用放到 service 或 repository。
 - repository 必须根据当前登录态或显式访问作用域过滤数据，避免普通用户读写其他系统账户资源。
@@ -137,12 +137,12 @@ flowchart LR
 ```
 
 - 网关入口不使用后台登录态，而使用本地 API Key 作为调用方身份。
-- 请求进入上游前的代码必须按 [请求处理分层设计](../../functions/请求处理分层设计.md) 拆分：入口装配、认证前运行态、请求体保护、请求上下文、授权与本地校验、协议与客户端画像、候选账号筛选、调度运行态、派发保护和上游请求准备分别维护；上游返回后的响应转发、流式拦截、usage 解析和账号响应侧副作用不写进请求 preflight。
+- 请求进入上游前的代码必须按 [请求处理分层设计](../../functions/请求处理分层设计.md) 拆分：入口装配、认证前运行态、请求体保护、请求上下文、授权与本地校验、协议与客户端画像、候选账号筛选、调度运行态、派发保护和上游请求准备分别维护；上游返回后的响应转发、响应语义检查、usage 解析和账号响应侧副作用不写进请求 preflight。
 - 本地 API Key 校验先按 `key_hash` 命中进程内短 TTL 缓存；命中会刷新空闲 TTL，但最多 5 分钟必须重新查库。禁用、删除、修改 API Key 会主动清理对应缓存。
-- API Key 可以绑定并访问调用方自己的一个或多个分组，也可以绑定有效授权给调用方的分组；被授权 AI 账户需要先加入调用方自有分组后再参与自有分组调度，授权分组则按有效分组授权直接参与调度。当前 API Key 模型不需要额外授权分组绑定字段。
+- API Key 只绑定一条路由策略；路由策略可以绑定并访问调用方自己的一个或多个分组，也可以绑定有效授权给调用方的分组。被授权 AI 账户需要先加入调用方自有分组后再参与自有分组调度，授权分组则按有效分组授权直接参与调度。当前 API Key 模型不保存分组绑定字段。
 - 账号选择必须过滤停用、异常、冷却中、账号套餐到期、授权失效和分组未绑定的账号。
 - 上游认证由后端替换；客户端提交的上游敏感头不应直接透传。
-- 流式响应需要稳定转发 SSE，并在超时、中断和上游异常时按账户错误处理策略、流式拦截策略或默认冷却规则处理。
+- 流式响应需要稳定转发 SSE，并在超时、中断和上游异常时按账户错误处理策略、响应语义检查策略或默认冷却规则处理。
 - 原始审计日志只允许在网关内维护内存捕获上下文，必须等请求结束、失败或客户端中断后终态入队；网关请求链路不能同步写审计表。
 - SSE 和其他流式响应不能按 chunk 实时写库，必须在流自然结束、失败、超时或客户端断开后，以终态记录进入审计队列。
 - 网关错误保持 OpenAI 兼容结构；网关日志、请求快照、原始审计日志和敏感头处理见 [安全与日志策略](../../functions/安全与日志策略.md) 与 [原始审计日志设计](../../functions/原始审计日志设计.md)。
@@ -150,13 +150,13 @@ flowchart LR
 客户端一次请求从进入网关到返回响应的性能边界：
 
 - 主 Web/网关进程只做内存级保护、运行时快照读取、候选过滤、上游转发、响应透传和异步副作用投递；不得在 server 角色直接同步读取或写入 SQLite。
-- API Key 校验、系统账户状态、分组路由绑定、分组访问元数据、候选账号和网关设置先命中网关运行时缓存；已加载运行态使用短 TTL 软过期和较长内存保留，软过期后当前请求继续使用内存快照并触发后台刷新，返回前必须在内存中过滤已过期的 API Key、分组授权、账号授权和账号。完全冷 miss 只能通过 DB service 读取，不能回退到本进程 repository。同一个无效 Bearer token 的认证失败结果需要短 TTL 负缓存，避免在来源熔断阈值前把重复坏 token 放大成重复 DB service 请求。IP 封禁策略请求路径只读 server 内存快照和来源级短 TTL 决策缓存，不能按单个 IP 查询 DB service。server 到 DB service 的 IPC pending 请求和 HTTP 代理 in-flight 请求必须有上限，达到上限时快速返回本地不可用或繁忙错误，不能让慢 DB service 把 Web 进程 Promise、socket 和 IPC 消息无限堆积。
+- API Key 校验、系统账户状态、路由策略分组绑定、分组访问元数据、候选账号和网关设置先命中网关运行时缓存；已加载运行态使用短 TTL 软过期和较长内存保留，软过期后当前请求继续使用内存快照并触发后台刷新，返回前必须在内存中过滤已过期的 API Key、分组授权、账号授权和账号。完全冷 miss 只能通过 DB service 读取，不能回退到本进程 repository。同一个无效 Bearer token 的认证失败结果需要短 TTL 负缓存，避免在来源熔断阈值前把重复坏 token 放大成重复 DB service 请求。IP 封禁策略请求路径只读 server 内存快照和来源级短 TTL 决策缓存，不能按单个 IP 查询 DB service。server 到 DB service 的 IPC pending 请求和 HTTP 代理 in-flight 请求必须有上限，达到上限时快速返回本地不可用或繁忙错误，不能让慢 DB service 把 Web 进程 Promise、socket 和 IPC 消息无限堆积。
 - API Key 额度和统一授权额度先查本进程短 TTL 决策缓存；决策缓存 miss 只读取 background worker 被动推送到 server 内存的额度快照，worker 负责按分页窗口构建完整快照。请求链路不能主动通过 DB service 查询统计额度窗口，也不能扫描 `usage_records`、usage shard、审计表或授权明细后现场汇总；快照尚未生成或失效时按现有轻微超额口径短时放行，快照生成后不能因为固定容量截断遗漏启用额度的对象。
 - OAuth Access Token 请求前懒刷新是正确性兜底，只允许在命中已选 OAuth 账号且 token 缺失 / 临期时发生；同账号刷新在进程内串行，成功后写入短 TTL 最近刷新缓存，后续同一波请求复用新凭据，不能把每个并发请求都放大成重复的 DB service 重读和写回。OAuth token endpoint 响应体必须有固定字节上限，超限主动中断，不能在刷新路径无界累积 chunk 或拼接完整异常响应。
 - 来源熔断、IP 级账号回避、会话亲和、账号当前并发、高并发分组短队列、本地账号短期屏蔽和上游桶避让都是进程内易失运行态，不落库、不跨分组共享分组级队列，也不能变成阻塞数据库查询。
 - 大 JSON 请求体解析和 OAuth/Codex 请求体归一化可进入 worker thread，避免阻塞事件循环；解析结果只服务本次请求，不写业务库。
-- 使用记录、原始审计、操作日志、运行日志索引和账号状态副作用都必须异步投递到 worker 或 DB service；server 到 ingest / probe / maintenance worker 的 IPC、worker 本地落库队列、运行日志索引队列和账号状态副作用本地队列都必须有数量或字节上限。投递失败或队列满时按各自策略降级、合并或丢弃新副作用，不能反向阻塞已经可返回的网关响应，也不能在 worker / DB service 慢或不可用时无限堆积内存。
-- 真实上游派发开始后，网关可以在已选分组内按账号切换和账户级错误处理策略处理；普通上游失败和已写下游输出后的失败不能因为另一个分组可能可用而跨分组透明重放请求。配置化流式拦截在写下游前命中并耗尽当前号池时，可以按 API Key 绑定优先级尝试后续分组。
+- 使用记录、原始审计、操作日志、运行日志索引和账号状态副作用都必须异步投递到 `ingest-worker`、`stats-worker`、`ops-worker` 或 DB service；server 到 worker / DB service 的 IPC、worker 本地落库队列、运行日志索引队列和账号状态副作用本地队列都必须有数量或字节上限。投递失败或队列满时按各自策略降级、合并或丢弃新副作用，不能反向阻塞已经可返回的网关响应，也不能在 worker / DB service 慢或不可用时无限堆积内存。
+- 真实上游派发开始后，网关可以在已选分组内按账号切换和账户级错误处理策略处理；普通上游失败和已写下游输出后的失败不能因为另一个分组可能可用而跨分组透明重放请求。配置化响应语义检查在写下游前命中并耗尽当前号池时，可以按路由策略绑定优先级尝试后续分组。
 
 ## 6. 数据库设计
 
@@ -184,7 +184,7 @@ flowchart LR
 | 设置 | `global_settings`、`system_settings` | 平台公开设置和全局系统运行策略单例 |
 | 供应商、账号与运维策略 | `providers`、`accounts`、`proxy_profiles` | 上游供应商、AI 账户、代理和账户级错误处理策略 |
 | 团队、授权与分组 | `system_teams`、`system_team_members`、`resource_authorization_grants`、`resource_authorizations`、`resource_authorization_sources`、`groups`、`group_accounts` | 系统团队、团队成员、授权操作、最终用户授权、授权来源、分组和分组账号绑定 |
-| 网关访问 | `api_keys`、`api_key_group_bindings` | 本地网关密钥、分组绑定、状态、过期和额度配置 |
+| 网关访问 | `api_keys`、`route_strategies`、`route_strategy_groups` | 本地网关密钥、路由策略、策略分组绑定、状态、过期和额度配置 |
 | 请求事实 | `usage_records` | 每次网关尝试的请求、响应、用量、错误和授权归属快照 |
 | 原始审计 | `audit_logs`、`audit_log_attempts`、`audit_payload_refs`、`audit_payload_blobs`、`audit_error_groups` | 审计事件、上游尝试、payload 引用、压缩 blob 元数据和重复错误聚合 |
 | 账号快照 | `account_usage_snapshots` | OpenAI OAuth / Codex 等账号额度快照和刷新状态 |
@@ -207,17 +207,18 @@ erDiagram
   groups ||--o{ resource_authorizations : grants
   groups ||--o{ group_accounts : contains
   accounts ||--o{ group_accounts : joins
-  api_keys ||--o{ api_key_group_bindings : binds
-  groups ||--o{ api_key_group_bindings : selected
+  route_strategies ||--o{ api_keys : selected_by
+  route_strategies ||--o{ route_strategy_groups : binds
+  groups ||--o{ route_strategy_groups : selected
   api_keys ||--o{ usage_records : calls
   accounts ||--o{ usage_records : hits
   groups ||--o{ usage_records : scopes
 ```
 
-- `system_account_id` 是业务数据隔离主线；普通用户只访问自己拥有或被授权使用的资源。
+- `system_account_id` 是业务数据隔离主线；普通用户只访问自己拥有或被授权使用的资源。代理 options 是明确例外，登录用户可以读取全部已启用代理选项，不按系统账户隔离。
 - `providers.code` 是供应商稳定标识；`accounts.provider_code` 和 `groups.provider_code` 以它作为逻辑归属。
 - `system_settings` 当前按固定系统设置账户 ID 保存全局运行策略单例，不表达每个系统账户的个人偏好。
-- `groups` 是 API Key 的授权边界；`api_key_group_bindings` 保存 API Key 与分组的绑定和优先级，`group_accounts` 保存分组与账号的多对多关系。
+- `groups` 是策略路由的授权边界；`route_strategy_groups` 保存路由策略与分组的绑定和优先级，`api_keys.route_strategy_id` 保存 API Key 到路由策略的唯一入口，`group_accounts` 保存分组与账号的多对多关系。
 - `resource_authorizations` 统一记录账户 / 分组授权给系统账户 / 团队的使用权，不授予管理权，也不泄露凭据。
 - `usage_records` 冗余账号所有者、分组所有者、统一授权 ID、授权对象类型和访问类型，便于真实资源总量、授权消耗统计和历史追溯。
 
@@ -304,7 +305,7 @@ erDiagram
 - 涉及后端目录、分层、数据库、脚本或接口时，先看本文和 [功能开发指导](../功能开发指导.md)。
 - 涉及数据库表、字段、统计缓存、敏感字段或 schema 演进时，同时看 [SQLite 存储说明](../../functions/SQLite存储说明.md)。
 - 涉及管理 API、网关接口、响应结构、错误语义、分页筛选或权限摘要时，同时看 [接口契约与权限矩阵](../../functions/接口契约与权限矩阵.md)。
-- 涉及敏感字段、凭据展示、请求快照、原始审计日志、日志脱敏、数据保留或备份迁移时，同时看 [安全与日志策略](../../functions/安全与日志策略.md) 与 [原始审计日志设计](../../functions/原始审计日志设计.md)。
+- 涉及敏感字段、凭据展示、请求快照、原始审计日志、日志原文保留、数据保留或备份迁移时，同时看 [安全与日志策略](../../functions/安全与日志策略.md) 与 [原始审计日志设计](../../functions/原始审计日志设计.md)。
 - 涉及 GPT OAuth、OpenAI-compatible API Key 账户、上游请求或账号测试时，同时看 [OpenAI 账号接入](../../functions/OpenAI账号接入.md) 和 [请求处理分层设计](../../functions/请求处理分层设计.md)；涉及智谱 GLM 通用 API 或 GLM Coding Plan 时，同时看 [智谱 GLM 账号接入](../../functions/智谱GLM账号接入.md)。
 - 涉及后台定时任务、worker IPC、队列 flush、统计聚合或批量清理时，同时看 [后台任务使用说明](后台任务使用说明.md)；涉及多 worker 拆分、热点隔离、任务租约或 worker 角色配置时，同时看 [后台 Worker 多角色拆分设计](后台Worker多角色拆分设计.md)。
 - 涉及透传、请求头、SSE、错误切换或网关行为时，同时看 [中转透传机制调研与定位修正](../../functions/中转透传机制调研与定位修正.md)。

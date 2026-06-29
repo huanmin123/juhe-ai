@@ -3,10 +3,7 @@ import { providerDisplayName } from '@/shared/providerDisplay'
 
 import type { AccountBatchTestItem, AccountTestClientCompatibility } from './accountTestFlow'
 import { accountProviderProtocolKind } from './accountProviderCapabilities'
-import {
-  accountClientCompatibilityText,
-  accountTypeText
-} from './accountBasicFormatters'
+import { accountTypeText } from './accountBasicFormatters'
 import {
   formatAccountTestDuration,
   formatErrorPolicyAction,
@@ -49,7 +46,6 @@ interface BatchAccountTestOutputOptions {
   counts: AccountTestBatchCounts
   model: string
   running: boolean
-  selectedCompatibilityText: string
 }
 
 export function accountTestBatchCounts(items: AccountBatchTestItem[]): AccountTestBatchCounts {
@@ -67,17 +63,6 @@ export function accountTestBatchCounts(items: AccountBatchTestItem[]): AccountTe
     success,
     total: items.length
   }
-}
-
-export function accountTestBatchSelectedCompatibilityText(input: {
-  clientCompatibility: AccountTestClientCompatibility
-  fixedOAuthCompatibilityText: string
-  showClientCompatibilityControl: boolean
-}): string {
-  if (!input.showClientCompatibilityControl) return input.fixedOAuthCompatibilityText
-  return input.clientCompatibility === 'account_default'
-    ? '跟随账号能力'
-    : accountClientCompatibilityRequestText(input.clientCompatibility)
 }
 
 export function accountTestBatchStatusColor(counts: AccountTestBatchCounts, running: boolean): string {
@@ -108,7 +93,7 @@ export function accountTestSelectedCompatibilityText(input: {
     return input.fixedOAuthCompatibilityText
   }
   if (input.clientCompatibility === 'account_default') {
-    return `跟随账号能力（${accountClientCompatibilityText(input.account.clientCompatibility)}）`
+    return accountClientCompatibilityRequestText(input.account.type === 'oauth' ? 'codex_responses' : 'openai_standard')
   }
   return accountClientCompatibilityRequestText(input.clientCompatibility)
 }
@@ -223,7 +208,6 @@ export function accountTestBatchOutputLines(options: BatchAccountTestOutputOptio
     { text: `批量测试账号：${options.counts.total} 个`, tone: 'info' },
     { text: '提交策略：每批最多 10 个账户，本批全部结束后再提交下一批', tone: 'muted' },
     { text: `优先测试模型：${options.model}`, tone: 'muted' },
-    { text: `测试请求形态：${options.selectedCompatibilityText}`, tone: 'muted' },
     { text: `单个任务运行上限：${formatAccountTestDuration(diagnosticMaxWaitMs)}，后台未接收前不计时`, tone: 'muted' }
   ]
   if (options.running || options.counts.queued || options.counts.running) {
@@ -329,7 +313,7 @@ function accountTestActualProtocolLine(account: AccountSummary, result: AccountT
     return { text: '实际请求形态：Anthropic API 请求', tone: 'muted' }
   }
   return {
-    text: `实际请求形态：${accountClientCompatibilityRequestText(result.testClientCompatibility ?? result.clientCompatibility ?? account.clientCompatibility)}`,
+    text: `实际请求形态：${accountClientCompatibilityRequestText(result.testClientCompatibility ?? result.clientCompatibility ?? (account.type === 'oauth' ? 'codex_responses' : 'openai_standard'))}`,
     tone: 'muted'
   }
 }
@@ -344,13 +328,11 @@ export function accountTestBatchItemJson(item: AccountBatchTestItem): string {
 
 export function accountTestBatchResultSnapshot(input: {
   batchItems: AccountBatchTestItem[]
-  clientCompatibility: AccountTestClientCompatibility
   model: string
 }) {
   const counts = accountTestBatchCounts(input.batchItems)
   return {
     model: input.model,
-    clientCompatibility: input.clientCompatibility,
     summary: {
       total: counts.total,
       completed: counts.completed,

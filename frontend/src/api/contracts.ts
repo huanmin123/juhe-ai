@@ -1,5 +1,4 @@
 import type {
-  AccountClientCompatibility,
   AnnouncementLevel,
   AnnouncementStatus,
   AuditOutcome,
@@ -142,17 +141,15 @@ export interface AccountOptionParams extends ListParams {
 export interface AccountTestPayload {
   model?: string
   prompt?: string
-  clientCompatibility?: AccountClientCompatibility
   testSessionId?: string
   account?: AccountDraftTestAccountPayload
 }
 
 export interface AccountDraftTestAccountPayload {
   providerCode: string
-  providerProtocolProfileId?: string
+  providerProtocolProfileId: string
   name: string
   type: string
-  clientCompatibility?: AccountClientCompatibility
   credentials: Record<string, unknown>
   concurrencyLimit: number
   priority: number

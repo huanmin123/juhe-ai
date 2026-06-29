@@ -366,8 +366,6 @@ function hasStrictOutputRequirement(req: Request): boolean {
     body.response_format
     || body.tools
     || body.tool_choice
-    || body.functions
-    || body.function_call
   )
 }
 

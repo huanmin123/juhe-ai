@@ -47,11 +47,11 @@ try {
 
   assert.equal(tableCount(databaseModule.getDatasetDatabase(), 'public_api_logs', "id = 'publog_old_non_business_cleanup'"), 0, '旧数据集日志应被硬清理')
   assert.equal(tableCount(databaseModule.getDatasetDatabase(), 'public_api_logs', "id = 'publog_recent_non_business_cleanup'"), 1, 'cutoff 之后的数据集日志应保留')
-  assert.equal(tableCount(databaseModule.getDatasetDatabase(), 'dynamic_dataset_cleanup_rows', "id = 'dynamic_old_non_business_cleanup'"), 0, '旧动态数据集表记录应被硬清理')
+  assert.equal(tableCount(databaseModule.getDatasetDatabase(), 'dynamic_dataset_cleanup_rows', "id = 'dynamic_old_non_business_cleanup'"), 1, '未登记动态数据集表记录不应靠旧字段猜测被硬清理')
   assert.equal(tableCount(databaseModule.getDatasetDatabase(), 'dynamic_dataset_cleanup_rows', "id = 'dynamic_recent_non_business_cleanup'"), 1, 'cutoff 之后的动态数据集表记录应保留')
   assert.equal(tableCount(databaseModule.getStatsDatabase(), 'usage_stats_totals', "scope_id = 'old_non_business_cleanup'"), 0, '旧统计缓存应被硬清理')
   assert.equal(tableCount(databaseModule.getStatsDatabase(), 'usage_stats_totals', "scope_id = 'recent_non_business_cleanup'"), 1, 'cutoff 之后的统计缓存应保留')
-  assert.equal(tableCount(databaseModule.getStatsDatabase(), 'dynamic_stats_cleanup_rows', "id = 'dynamic_old_non_business_cleanup'"), 0, '旧动态统计表记录应被硬清理')
+  assert.equal(tableCount(databaseModule.getStatsDatabase(), 'dynamic_stats_cleanup_rows', "id = 'dynamic_old_non_business_cleanup'"), 1, '未登记动态统计表记录不应靠旧字段猜测被硬清理')
   assert.equal(tableCount(databaseModule.getStatsDatabase(), 'dynamic_stats_cleanup_rows', "id = 'dynamic_recent_non_business_cleanup'"), 1, 'cutoff 之后的动态统计表记录应保留')
   assert.equal(tableCount(databaseModule.getDatasetDatabase(), 'audit_payload_blobs', "id = 'audblob_old_non_business_cleanup'"), 0, '旧审计 blob 元数据应被硬清理')
   assert.equal(existsSync(auditBlobFilePath(oldAuditBlobStorageKey)), false, '旧审计 blob 外部文件应被删除')
@@ -63,7 +63,7 @@ try {
   assert(result.deletedRows >= 4, '硬清理结果应累计删除行数')
   assert(result.deletedFiles >= 2, '硬清理结果应累计删除外部文件数')
 
-  console.log('非业务数据硬清理回归通过：业务库保留，数据集库、usage catalog、统计库、usage shard 和审计 blob 文件按 cutoff 清理')
+  console.log('非业务数据硬清理回归通过：业务库保留，显式登记的数据集库、usage catalog、统计库、usage shard 和审计 blob 文件按 cutoff 清理，未登记动态表不再靠字段猜测清理')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()

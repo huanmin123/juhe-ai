@@ -118,7 +118,7 @@
 - 2026-06-26 执行 `pnpm --dir backend test:gemini-gateway-mock-ai`，通过；覆盖 Gemini native 直连、Gemini->Chat、Responses->Gemini OpenAI Chat、Gemini GenerateContent / StreamGenerateContent -> Anthropic Messages JSON / SSE、工具、图片、usage、finish reason 和 guidance-first。
 - 2026-06-26 执行 `pnpm --dir backend test:account-model-mapping`，通过；覆盖 Gemini native -> Messages 保存、候选窗口、Gemini native -> Responses 拒绝、OpenAI 档案配置 Gemini->Messages 拒绝。
 - 2026-06-26 执行 `pnpm --dir frontend test:account-edit-save-flow`、`pnpm --dir frontend test:account-import-protocol` 和 `pnpm --dir frontend typecheck`，通过。
-- 2026-06-26 执行 `pnpm --dir backend test:anthropic-gateway-mock-ai`、`test:openai-anthropic-bridge-mock`、`test:anthropic-openai-chat-bridge-mock`、`test:anthropic-openai-chat-gateway-mock`，通过；`test:openai-anthropic-bridge-mock` 首次并发执行遇到一次 `ECONNRESET`，单独重跑通过。
+- 2026-06-26 执行 `pnpm --dir backend test:anthropic-gateway-mock-ai`、`test:protocol-boundary-openai-anthropic`、`test:anthropic-openai-chat-bridge-mock`、`test:anthropic-openai-chat-gateway-mock`，通过；`test:protocol-boundary-openai-anthropic` 首次并发执行遇到一次 `ECONNRESET`，单独重跑通过。
 - 2026-06-26 执行 `pnpm --dir backend typecheck`，通过。
 
 ## 风险与注意事项

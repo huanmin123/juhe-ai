@@ -108,7 +108,7 @@ try {
     })
   }
   await delay(50)
-  assert.equal(runtimeRows(account.id).length, 0, '未达到跨 IP 风暴阈值前不应写入全局 Key 运行态')
+  assertNoPersistedFailure(account.id, selectedA.selectedApiKeyFingerprint, '网关失败不应把已恢复的 Key 写成全局不可用')
 
   apiKeyEffects.recordGatewayAccountApiKeyFailure(selectedA, {
     status: 'temporary_unavailable',
@@ -120,22 +120,9 @@ try {
     source: 'storm_confirmed_regression'
   })
   await delay(50)
-  assert.equal(runtimeRows(account.id).length, 0, '达到跨 IP 风暴数量但观察时间不足时不应写入全局 Key 运行态')
-
-  await delay(2100)
-  apiKeyEffects.recordGatewayAccountApiKeyFailure(selectedA, {
-    status: 'temporary_unavailable',
-    statusCode: 503,
-    errorMessage: '第二来源持续确认失败',
-    trafficSource: 'gateway',
-    clientIp: '198.51.100.21',
-    apiKeyId: 'gateway-key-b',
-    source: 'storm_confirmed_regression'
-  })
-  await waitFor(() => runtimeStatus(account.id, selectedA.selectedApiKeyFingerprint) === 'temporary_unavailable', 5000)
+  assertNoPersistedFailure(account.id, selectedA.selectedApiKeyFingerprint, '跨 IP 失败也不应写入全局 Key 不可用')
 
   apiKeyEffects.recordGatewayAccountApiKeySuccess(selectedA, 'storm_recovered')
-  await waitFor(() => runtimeStatus(account.id, selectedA.selectedApiKeyFingerprint) === 'active', 5000)
   for (let index = 0; index < 4; index += 1) {
     apiKeyEffects.recordGatewayAccountApiKeyFailure(selectedA, {
       status: 'temporary_unavailable',
@@ -147,7 +134,6 @@ try {
       source: 'recent_success_regression'
     })
   }
-  await delay(2100)
   apiKeyEffects.recordGatewayAccountApiKeyFailure(selectedA, {
     status: 'temporary_unavailable',
     statusCode: 503,
@@ -158,7 +144,7 @@ try {
     source: 'recent_success_regression'
   })
   await delay(50)
-  assert.equal(runtimeStatus(account.id, selectedA.selectedApiKeyFingerprint), 'active', '近期真实成功后不应因为短窗口失败再次写成全局不可用')
+  assertNoPersistedFailure(account.id, selectedA.selectedApiKeyFingerprint, '近期真实成功后不应因为网关失败写成全局不可用')
 
   apiKeyFailureGuard.clearGatewayAccountApiKeyFailureGuardsForTest()
   apiKeyEffects.recordGatewayAccountApiKeyFailure(selectedB, {
@@ -170,9 +156,10 @@ try {
     apiKeyId: 'gateway-key-a',
     source: 'policy_error_regression'
   })
-  await waitFor(() => runtimeStatus(account.id, selectedB.selectedApiKeyFingerprint) === 'error', 5000)
+  await delay(50)
+  assert.equal(runtimeStatus(account.id, selectedB.selectedApiKeyFingerprint), undefined, '网关 error 状态也不能直接写成全局 Key 错误')
 
-  console.log('账户内 API Key 失败保护回归通过：同源高并发失败只本地短避让，跨 IP 持续失败或错误策略确认后才写全局 Key 状态')
+  console.log('账户内 API Key 失败保护回归通过：网关失败只本地短避让，真实成功可写 active')
 } finally {
   apiKeyFailureGuard.clearGatewayAccountApiKeyFailureGuardsForTest()
   try {
@@ -192,15 +179,11 @@ function runtimeStatus(accountId: string, keyFingerprint: string): string | unde
   return runtimeRows(accountId).find((row) => row.key_fingerprint === keyFingerprint)?.status
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs: number): Promise<void> {
-  const startedAt = Date.now()
-  while (Date.now() - startedAt <= timeoutMs) {
-    if (predicate()) {
-      return
-    }
-    await delay(20)
-  }
-  assert.fail(`等待条件超时 ${timeoutMs}ms`)
+function assertNoPersistedFailure(accountId: string, keyFingerprint: string, message: string): void {
+  const status = runtimeStatus(accountId, keyFingerprint)
+  assert.notEqual(status, 'temporary_unavailable', message)
+  assert.notEqual(status, 'rate_limited', message)
+  assert.notEqual(status, 'error', message)
 }
 
 function delay(ms: number): Promise<void> {

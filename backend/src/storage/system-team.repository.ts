@@ -182,7 +182,7 @@ export async function createSystemTeamAsync(input: Record<string, unknown>, acce
 export function updateSystemTeam(id: string, input: Record<string, unknown>, access?: AccessScope): SystemTeamSummary | undefined {
   assertKnownInputKeys(input, systemTeamInputKeys, '系统团队')
   const database = getBusinessDatabase()
-  const row = database.prepare('SELECT * FROM system_teams WHERE id = ?').get(id) as unknown as SystemTeamRow | undefined
+  const row = findSystemTeamRowForAccess(id, access)
   if (!row) return undefined
   const name = input.name === undefined ? row.name : normalizeSystemTeamName(input.name)
   ensureSystemTeamNameUnique(name, id, database)
@@ -266,7 +266,7 @@ export async function updateSystemTeamAsync(id: string, input: Record<string, un
 
 export function addSystemTeamMembers(teamId: string, input: Record<string, unknown>, access?: AccessScope): SystemTeamSummary | undefined {
   assertKnownInputKeys(input, systemTeamMembersInputKeys, '团队成员')
-  const team = getBusinessDatabase().prepare("SELECT * FROM system_teams WHERE id = ? AND status = 'active'").get(teamId) as unknown as SystemTeamRow | undefined
+  const team = findSystemTeamRowForAccess(teamId, access, { activeOnly: true })
   if (!team) return undefined
   const systemAccountIds = normalizeSystemAccountIds(input.systemAccountIds)
   if (!systemAccountIds.length) throw new Error('请选择团队成员')
@@ -412,7 +412,7 @@ export async function addSystemTeamMembersAsync(teamId: string, input: Record<st
 
 export function removeSystemTeamMember(teamId: string, memberId: string, access?: AccessScope): SystemTeamSummary | undefined {
   const database = getBusinessDatabase()
-  const member = database.prepare("SELECT * FROM system_team_members WHERE id = ? AND team_id = ? AND status = 'active'").get(memberId, teamId) as unknown as SystemTeamMemberRow | undefined
+  const member = findActiveSystemTeamMemberForAccess(teamId, memberId, access)
   if (!member) return undefined
   const now = nowIso()
   const transactionStarted = beginDatabaseTransaction(database)
@@ -455,6 +455,55 @@ export async function removeSystemTeamMemberAsync(teamId: string, memberId: stri
   invalidateAuthorizationRuntimeAfterBusinessWrite('team_members_changed')
   invalidateSystemAccountTeamMembershipLookupCache(removedSystemAccountId)
   return findSystemTeamSummaryAsync(teamId, access)
+}
+
+function findSystemTeamRowForAccess(id: string, access?: AccessScope, options: { activeOnly?: boolean } = {}): SystemTeamRow | undefined {
+  const scopedId = scopedSystemAccountId(access)
+  const activeClause = options.activeOnly ? " AND system_teams.status = 'active'" : ''
+  if (scopedId) {
+    return getBusinessDatabase().prepare(`
+      SELECT DISTINCT system_teams.*
+      FROM system_teams
+      INNER JOIN system_team_members
+        ON system_team_members.team_id = system_teams.id
+      WHERE system_teams.id = ?
+        AND system_team_members.system_account_id = ?
+        AND system_team_members.status = 'active'
+        ${activeClause}
+      LIMIT 1
+    `).get(id, scopedId) as unknown as SystemTeamRow | undefined
+  }
+  return getBusinessDatabase().prepare(`
+    SELECT *
+    FROM system_teams
+    WHERE system_teams.id = ?${activeClause}
+    LIMIT 1
+  `).get(id) as unknown as SystemTeamRow | undefined
+}
+
+function findActiveSystemTeamMemberForAccess(teamId: string, memberId: string, access?: AccessScope): SystemTeamMemberRow | undefined {
+  const scopedId = scopedSystemAccountId(access)
+  const scopedClause = scopedId
+    ? ` AND EXISTS (
+        SELECT 1
+        FROM system_team_members scoped_members
+        WHERE scoped_members.team_id = system_teams.id
+          AND scoped_members.system_account_id = ?
+          AND scoped_members.status = 'active'
+      )`
+    : ''
+  const params = scopedId ? [memberId, teamId, scopedId] : [memberId, teamId]
+  return getBusinessDatabase().prepare(`
+    SELECT system_team_members.*
+    FROM system_team_members
+    INNER JOIN system_teams
+      ON system_teams.id = system_team_members.team_id
+    WHERE system_team_members.id = ?
+      AND system_team_members.team_id = ?
+      AND system_team_members.status = 'active'
+      ${scopedClause}
+    LIMIT 1
+  `).get(...params) as unknown as SystemTeamMemberRow | undefined
 }
 
 function querySystemTeamRows(access: AccessScope | undefined, pagination: { limit: number; offset: number } | undefined, options: Pick<NormalizedSystemTeamListOptions, 'keyword'>): { rows: SystemTeamRow[] } {

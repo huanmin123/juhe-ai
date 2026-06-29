@@ -16,7 +16,7 @@ import {
   upsertProviderDefaultTestModelPreferenceAsync
 } from '../../storage/provider-default-test-model.repository.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
-import { getRequestAuthContext } from '../auth/request-context.js'
+import { getRequestAccessScope, getRequestAuthContext, type RequestAccessScope } from '../auth/request-context.js'
 import {
   findCustomProviderModelAsync,
   customProviderModelBindingsAsync,
@@ -53,8 +53,8 @@ providersRouter.get('/options', async (_req, res, next) => {
 
 providersRouter.get('/models/options', async (req, res, next) => {
   try {
-    const context = getRequestAuthContext()
-    const systemAccountId = context?.systemAccountId
+    const access = getRequestAccessScope(req.query.systemAccountId)
+    const systemAccountId = providerModelRequestSystemAccountId(access)
     const providerCodes = await providerModelOptionProviderCodesAsync(req.query.protocol)
     const providers = (await listProvidersAsync()).filter((provider) => provider.enabled && providerCodes.has(provider.code))
     const catalogs = await Promise.all(providers.map((provider) => listProviderModelCatalogAsync({
@@ -92,7 +92,7 @@ async function providerModelOptionProviderCodesAsync(protocol: unknown): Promise
 
 providersRouter.get('/:code/models', async (req, res, next) => {
   try {
-    const context = getRequestAuthContext()
+    const access = getRequestAccessScope(req.query.systemAccountId)
     const provider = (await listProvidersAsync()).find((item) => item.code === req.params.code)
     if (!provider) {
       res.status(404).json({ message: '供应商不存在' })
@@ -101,7 +101,7 @@ providersRouter.get('/:code/models', async (req, res, next) => {
 
     res.json(ok(await listProviderModelsForRequestAsync({
       providerCode: provider.code,
-      systemAccountId: context?.systemAccountId,
+      systemAccountId: providerModelRequestSystemAccountId(access),
       includeInactive: booleanQueryValue(req.query.includeInactive),
       includeUnpriced: booleanQueryValue(req.query.includeUnpriced)
     })))
@@ -347,6 +347,10 @@ providersRouter.delete('/:code/models/:id', async (req, res, next) => {
     next(error)
   }
 })
+
+function providerModelRequestSystemAccountId(access?: RequestAccessScope): string | undefined {
+  return access?.systemAccountFilterId?.trim() || access?.systemAccountId
+}
 
 async function listProvidersForRequestAsync(systemAccountId?: string): Promise<ProviderDefinition[]> {
   const providers = await listProvidersAsync()

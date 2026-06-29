@@ -69,7 +69,7 @@ OpenAI Chat 两套档案的账户真实能力都只声明 `chat_completions` 端
 - `credentials.supported_endpoint_modes` 省略时，GLM 两种 OpenAI 接入类型都默认 `['chat_json', 'chat_sse']`。
 - `profile_glm_coding_anthropic_v1` 的 `credentials.supported_endpoint_modes` 省略时默认 `['messages_json', 'messages_sse']`，不默认启用 `message_token_counting`。
 - GLM 账号不再保存账户级客户端兼容开关；通用 GLM 和 GLM Coding OpenAI 档案都只保存真实 `chat_json/chat_sse` 上游能力。Codex Responses 客户端画像由网关内部识别；是否把该下游请求转换到 GLM Coding Chat 上游，由混合供应商账户配置决定。
-- 管理 API、导入协议和公开外部账号推送应接收 `connectionType = general_api_key | coding_api_key | coding_anthropic_api_key`，由后端统一解析为 `provider_protocol_profile_id`。如果同时提交 `providerProtocolProfileId`，必须和 `connectionType` 指向同一档案，否则拒绝。
+- 管理 API、导入协议和公开外部账号推送必须直接接收 `providerProtocolProfileId = profile_glm_general_openai_v1 | profile_glm_coding_openai_v1 | profile_glm_coding_anthropic_v1`。旧接入类型别名已从接口契约移除，不能再解析。
 - 已保存 GLM 账户不建议在编辑时切换通用 / Coding OpenAI / Coding Anthropic 接入类型；如果后续允许切换，必须要求账户未绑定分组、无授权实例或完成独立清理计划，不能在已有调度和统计归属上原地改档案。
 - GLM 账户不显示 GPT OAuth 字段，不显示 Refresh Token、Access Token 或 ChatGPT Account ID。
 - 通用 GLM 账户只具备 Chat Completions 请求能力。GLM Coding OpenAI 账户如需作为 Codex Responses 的真实上游，应通过混合供应商账户声明 `responses -> chat_completions`，并在该混合账户内保存真实 GLM Coding 上游配置；这不是 GPT API Key 的原生 Responses 能力，也不开放完整 Responses API。
@@ -199,7 +199,7 @@ GLM 默认只创建一个供应商默认分组：默认 GLM 分组。通用 GLM 
 
 账户加入分组只校验同一 `providerCode=glm`。分组只负责调度、并发、排序和 API Key 号池，不承接通用 / Coding / Anthropic 的协议语义。
 
-API Key 多分组绑定允许跨供应商；一个本地 API Key 可以同时绑定 GPT、GLM、DeepSeek 等供应商分组。请求进入网关后先按模型和账户能力筛选目标供应商，再在目标供应商分组内按账户自身接入类型、endpoint mode、支持模型和模型映射过滤候选账户。跨供应商路由详见 [自定义模型与模型映射设计](自定义模型与模型映射设计.md) 和 [API Key 多分组路由设计](APIKey多分组路由设计.md)。
+API Key 绑定的路由策略允许跨供应商分组；一个本地 API Key 可以通过策略路由同时使用 GPT、GLM、DeepSeek 等供应商分组。请求进入网关后先按模型和账户能力筛选目标供应商，再在目标供应商分组内按账户自身接入类型、endpoint mode、支持模型和模型映射过滤候选账户。跨供应商路由详见 [自定义模型与模型映射设计](自定义模型与模型映射设计.md) 和 [策略路由设计](策略路由设计.md)。
 
 ## 账号测试
 
@@ -222,8 +222,8 @@ GLM 账户测试必须复用真实网关链路：
 | SQLite schema | `provider_protocol_profiles` 必须支持同一 `provider_code + protocol_code + protocol_version` 下多条档案，或新增 `connection_type/profile_kind` 参与业务唯一约束。 | 现有唯一约束如果只按供应商和协议版本，会阻止 `profile_glm_general_openai_v1` 与 `profile_glm_coding_openai_v1` 同时 seed；Anthropic Messages 档案也必须独立保存。 |
 | 供应商档案 | 代码中新增 `glm`、`profile_glm_general_openai_v1`、`profile_glm_coding_openai_v1`、`profile_glm_coding_anthropic_v1`、单个默认 GLM 分组和 profile family，不复用 GPT、通用 OpenAI 或官方 Anthropic 档案。 | 只靠 `base_url` 区分会导致模型目录、价格、账号测试和错误排障混用。 |
 | Driver 注册 | 新增 GLM provider driver、credential driver、model pricing/catalog driver 和前端 provider capability，不只新增数据库 seed。 | 未注册 driver 时会在凭据归一化、上游 URL 构造、模型目录或价格查找处失败。 |
-| 账户创建 | 前端、后端写接口、导入协议和外部推送接口都要显式接收 `connectionType = general_api_key / coding_api_key / coding_anthropic_api_key` 或等价字段，编辑时默认不允许原地切换接入类型。 | 只保存 `accounts.type = api_key` 无法区分通用 API Key、Coding Plan Key 与 Coding Anthropic Key，后续无法判断额度、默认模型和测试入口。 |
-| 导入导出 | GLM 导出必须输出可 round-trip 的 `connectionType`，导入预览、确认导入和导出 JSON 的字段白名单保持一致。 | 如果导出只保留 `providerCode/type/base_url`，重新导入时只能猜档案，容易把 Coding Key 导成通用账号。 |
+| 账户创建 | 前端、后端写接口、导入协议和外部推送接口都要显式接收 `providerProtocolProfileId`，编辑时默认不允许原地切换接入类型。 | 只保存 `accounts.type = api_key` 无法区分通用 API Key、Coding Plan Key 与 Coding Anthropic Key，后续无法判断额度、默认模型和测试入口。 |
+| 导入导出 | GLM 导出必须输出可 round-trip 的 `providerProtocolProfileId`，导入预览、确认导入和导出 JSON 的字段白名单保持一致。 | 如果导出只保留 `providerCode/type/base_url`，重新导入时只能猜档案，容易把 Coding Key 导成通用账号。 |
 | Base URL | 通用档案默认 `https://open.bigmodel.cn/api/paas/v4/`，Coding OpenAI 档案默认 `https://open.bigmodel.cn/api/coding/paas/v4`，Coding Anthropic 档案默认 `https://open.bigmodel.cn/api/anthropic`；路径拼接必须验证不会生成重复 `/v1`、漏掉 `/chat/completions` 或误拼 Anthropic `/messages`。 | OpenAI SDK 的 `base_url` 语义与上游 HTTP API 原始路径容易混淆；复用自动追加 `/v1` 的 helper 会造成 `/v4/v1/chat/completions`。 |
 | Endpoint mode | GLM 两个 OpenAI v1 档案真实能力默认仅 `chat_json/chat_sse`；GLM Coding 只在混合供应商账户命中且请求侧为 Codex / Responses 语义时，通过共享 bridge 承接流式 `/v1/responses`。 | 如果沿用 GPT API Key 默认四项能力，Responses 请求可能被误认为上游原生支持；如果把 bridge 隐藏在普通账号或 profile 里，路由和审计无法判断该请求为什么跨协议。 |
 | 协议转换 | Codex Responses -> Chat Completions 转换必须复用共享 adapter，供应商 driver 只配置启用条件、默认模型、Base URL 和局部差异。 | 如果把转换写死在 GLM，后续 DeepSeek 等供应商会复制协议逻辑，工具调用、reasoning、usage 和错误事件容易分叉。 |
@@ -251,7 +251,7 @@ GLM 账户测试必须复用真实网关链路：
 {
   "name": "智谱 GLM Coding 账号 1",
   "providerCode": "glm",
-  "connectionType": "coding_api_key",
+  "providerProtocolProfileId": "profile_glm_coding_openai_v1",
   "type": "api_key",
   "status": "pending_test",
   "groupName": "默认 GLM 分组",
@@ -263,9 +263,9 @@ GLM 账户测试必须复用真实网关链路：
 }
 ```
 
-`connectionType` 是导入协议层用于 disambiguate 同供应商多 API Key 接入类型的字段。后端落库时仍以 `providerCode + connectionType` 解析 `provider_protocol_profile_id`，再保存 `accounts.type = api_key`。如果实现时不新增 `connectionType` 字段，也必须提供等价字段，不能只靠用户手填 `base_url` 推断档案。
+`providerProtocolProfileId` 是导入协议层用于区分同供应商多 API Key 接入类型的唯一字段。后端落库时以 `providerCode + providerProtocolProfileId` 校验目标档案，再保存 `accounts.type = api_key`；不能只靠用户手填 `base_url` 推断档案。
 
-导出 GLM 账户时也必须写回 `connectionType`，保证“导出 JSON -> 导入预览 -> 确认导入”能还原到原 `provider_protocol_profile_id`。导出不应把 `providerProtocolProfileId` 作为用户必须理解的主字段；如为排障输出该字段，也必须以 `connectionType` 为业务入口，并在导入时校验两者一致。
+导出 GLM 账户时也必须写回 `providerProtocolProfileId`，保证“导出 JSON -> 导入预览 -> 确认导入”能还原到原 `provider_protocol_profile_id`。
 
 ## 实施清单
 
@@ -276,7 +276,7 @@ GLM 账户测试必须复用真实网关链路：
 - [x] 新增单个默认 GLM 分组，账户按接入类型区分协议档案。
 - [x] 新增 GLM provider driver、credential driver、模型价格 / 目录 driver 和前端 provider capability。
 - [x] 前端账户创建在选择 `智谱 GLM` 后展示“通用 GLM API Key”、“GLM Coding Plan Key”和“GLM Coding Anthropic Key”。
-- [x] 后端账户创建、编辑、导入、导出和公开推送接口按 `connectionType` 或等价字段解析 GLM 协议档案，并保证导出导入 round-trip。
+- [x] 后端账户创建、编辑、导入、导出和公开推送接口按 `providerProtocolProfileId` 校验 GLM 协议档案，并保证导出导入 round-trip。
 - [x] GLM 默认 `supported_endpoint_modes` 只启用 Chat JSON/SSE。
 - [x] GLM Coding Anthropic 默认 `supported_endpoint_modes` 只启用 Messages JSON/SSE。
 - [x] 普通 GLM 账号模型别名不承接跨协议桥接；GLM Coding 的 Codex bridge 迁移为混合供应商账户能力。

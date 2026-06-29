@@ -904,7 +904,7 @@ function anthropicContentText(value: unknown): string {
 }
 
 function chatFinishReasonToAnthropicStopReason(finishReason: string | undefined, contentBlocks?: JsonRecord[]): string {
-  if (finishReason === 'tool_calls' || finishReason === 'function_call') return 'tool_use'
+  if (finishReason === 'tool_calls') return 'tool_use'
   if (finishReason === 'length') return 'max_tokens'
   if (finishReason === 'content_filter') return 'refusal'
   if (contentBlocks?.some((block) => block.type === 'tool_use')) return 'tool_use'

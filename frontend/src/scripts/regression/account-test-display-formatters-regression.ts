@@ -8,7 +8,6 @@ import {
   accountTestBatchItemStatusText,
   accountTestBatchOutputLines,
   accountTestBatchResultSnapshot,
-  accountTestBatchSelectedCompatibilityText,
   accountTestBatchStatusColor,
   accountTestBatchStatusText,
   accountTestSingleOutputLines
@@ -157,31 +156,11 @@ assertEqual(batchCounts.failed, 1, '批量计数应包含失败数')
 assertEqual(batchCounts.stopped, 1, '批量计数应包含停止数')
 assertEqual(accountTestBatchStatusColor(batchCounts, false), 'red', '批量状态颜色应优先展示失败')
 assertEqual(accountTestBatchStatusText(batchCounts, false), '成功 1，失败 1', '批量状态文案应展示成功和失败数')
-assertEqual(
-  accountTestBatchSelectedCompatibilityText({
-    clientCompatibility: 'account_default',
-    fixedOAuthCompatibilityText: 'Codex Responses 请求',
-    showClientCompatibilityControl: true
-  }),
-  '跟随账号能力',
-  '可选请求形态时 account_default 应展示跟随账号能力'
-)
-assertEqual(
-  accountTestBatchSelectedCompatibilityText({
-    clientCompatibility: 'openai_standard',
-    fixedOAuthCompatibilityText: 'Codex Responses 请求',
-    showClientCompatibilityControl: false
-  }),
-  'Codex Responses 请求',
-  '全部 OAuth 时应展示固定请求形态'
-)
-
 const batchLines = accountTestBatchOutputLines({
   batchItems,
   counts: batchCounts,
   model: 'gpt-5.1',
-  running: false,
-  selectedCompatibilityText: '跟随账号能力'
+  running: false
 })
 assertLineIncludes(batchLines, '批量测试账号：3 个', '批量输出应展示账户数量')
 assertLineIncludes(batchLines, '测试完成：成功 1 个，失败 1 个，已停止 1 个', '批量输出应展示完成摘要')
@@ -195,7 +174,6 @@ assertEqual(accountTestBatchItemMessage(batchItems[2]!), '已停止测试', '批
 
 const batchSnapshot = accountTestBatchResultSnapshot({
   batchItems,
-  clientCompatibility: 'account_default',
   model: 'gpt-5.1'
 })
 assertEqual(batchSnapshot.summary.completed, 3, '批量快照应展示完成数')

@@ -234,7 +234,6 @@ function hasMeaningfulChoiceDelta(delta: Record<string, unknown>): boolean {
     || hasMeaningfulDelta(delta.reasoning_content)
     || hasMeaningfulDelta(delta.audio)
     || hasMeaningfulDelta(delta.tool_calls)
-    || hasMeaningfulDelta(delta.function_call)
 }
 
 function hasMeaningfulDelta(value: unknown): boolean {

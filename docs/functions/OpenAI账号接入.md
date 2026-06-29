@@ -23,7 +23,7 @@ Anthropic、Gemini、智谱 GLM、DeepSeek 的接入细节分别写在 [Anthropi
 | GPT API Key | 公开 OpenAI-compatible API，默认上游归一到 `/v1/*` | 网关不维护逐路径白名单；客户端访问根路径或 `/v1/*` 时，都会按账户 `base_url` 归一到上游 `/v1` 后透传，例如 `/responses`、`/v1/responses`、`/chat/completions`、`/v1/chat/completions`。`GET /models` / `/v1/models` 由本地模型目录直接返回。 | 账号能力同时覆盖 OpenAI 标准和 Codex Responses；只有请求被识别为 Codex Responses 客户端形态时才改写 `/responses` 请求，普通 OpenAI Responses 请求仍按 raw body 透传。本地过滤危险 header 和本地认证 header；不自动生成 OpenAI 组织、项目或 Beta 配置。某条路径最终能否成功取决于该 API Key 上游 `base_url` 本身是否支持。 |
 | GPT OAuth | ChatGPT / Codex backend 的 `openai_oauth_codex` adapter | 只为 `POST /responses`、`POST /v1/responses`、`POST /responses/compact` 和 `POST /v1/responses/compact` 构造 Codex 上游请求；`GET /models` / `/v1/models` 由本地模型目录返回。 | 账号能力固定为 Codex Responses，不提供用户侧切换；不等价于公开 OpenAI API Key；不承诺 `/chat/completions` 到 Responses 的重型协议翻译，也不承诺公开 Responses API 全字段原样进入 Codex backend。OAuth-only 分组请求不支持的路径时不会落到公开 OpenAI API。 |
 
-混合分组中如果同时存在 API Key 账号和 OAuth 账号，某条路径是否可用取决于调度命中的账号类型：OAuth 账号不支持的路径会跳过该账号，仍可由同分组内可用的 API Key 账号承接；如果当前 API Key 还绑定了后续号池，且当前分组没有任何账号类型能承接该路径，网关应继续尝试下一号池；如果所有号池都没有可用账号，则返回“没有可用的上游账户”一类网关错误，而不是自动协议翻译。多号池混合规则见 [API Key 多分组路由设计](APIKey多分组路由设计.md)。
+混合分组中如果同时存在 API Key 账号和 OAuth 账号，某条路径是否可用取决于调度命中的账号类型：OAuth 账号不支持的路径会跳过该账号，仍可由同分组内可用的 API Key 账号承接；如果当前 API Key 所选路由策略还有后续号池，且当前分组没有任何账号类型能承接该路径，网关应继续尝试下一号池；如果所有号池都没有可用账号，则返回“没有可用的上游账户”一类网关错误，而不是自动协议翻译。多号池混合规则见 [策略路由设计](策略路由设计.md)。
 
 `GET /models` / `GET /v1/models` 始终读取本地供应商模型目录，不请求某个上游账号。默认 OpenAI-compatible 客户端返回标准 `{"object":"list","data":[...]}`；Codex 模型刷新请求会携带 `client_version` query 参数，或带有可识别的 Codex `originator` / User-Agent，此时返回 Codex `{"models":[...]}` 包装和 `ModelInfo` 字段，避免 Codex 客户端初始化阶段把标准 OpenAI 列表解析失败。两种响应使用同一套本地可见模型目录，只改变客户端响应形态。
 
@@ -148,20 +148,20 @@ type GptAccountType = 'api_key' | 'oauth'
 当前关系规则：
 
 - `accounts.system_account_id` 表示当前账户行所属系统账户；账户所有者把 AI 账户授权给其他系统账户后，系统会为被授权人创建独立授权实例账户。
-- `accounts.provider_protocol_profile_id` 和 `groups.provider_protocol_profile_id` 是账户加入分组、授权实例绑定、API Key 号池路由和网关候选过滤的硬边界；本文覆盖值为 `profile_openai_openai_v1` 和 `profile_gpt_openai_v1`，其他当前启用档案以 Anthropic、Gemini、GLM、DeepSeek 专题为准。
+- `accounts.provider_protocol_profile_id` 和 `groups.provider_protocol_profile_id` 是账户加入分组、授权实例绑定、路由策略号池和网关候选过滤的硬边界；本文覆盖值为 `profile_openai_openai_v1` 和 `profile_gpt_openai_v1`，其他当前启用档案以 Anthropic、Gemini、GLM、DeepSeek 专题为准。
 - `group_accounts` 表示某个使用方的本地分组绑定；自有账户绑定自有账户 ID，授权账户绑定被授权人自己的授权实例账户 ID，并记录稳定的 `account_authorization_id`。
 - 一个账户在同一个使用方作用域内同一时间只保留一个有效分组绑定；自有账户在所有者作用域内创建 / 编辑时选择分组，被授权账户在授权创建时必须绑定被授权用户自己的本地分组，后续通过账户编辑弹窗调整分组和分组内优先级。
 - 账户标签按系统账户维度保存，一个账户可以绑定多个标签；新增和编辑弹窗支持从下拉选择已有标签，也支持直接输入新标签。下拉内可删除未绑定任何账户的标签；标签已绑定账户时禁止删除。
-- 被授权用户把授权实例加入自己的同供应商分组后，自己的 API Key 才能通过该分组调度该授权实例；这只是本地调度绑定，不改变授权方原账户的分组绑定。
+- 被授权用户把授权实例加入自己的同供应商分组后，自己的 API Key 所选路由策略才能通过该分组调度该授权实例；这只是本地调度绑定，不改变授权方原账户的分组绑定。
 - 授权实例账户自己的状态、冷却、错误和流失败诊断窗口与授权方原账户隔离；真实网关失败产生的调度降级和事前确认运行态只保存在当前 Web 进程内。当前分组内优先级、超级优先和降级备用来自 `group_accounts.local_priority / local_super_priority_enabled / local_fallback_enabled`，只影响当前使用方当前分组绑定。
 - 授权实例运行时的 OpenAI 凭据、`base_url`、账号类型、支持模型、代理、并发、可用时段和账户追加流式规则从来源账户补齐；父账户 API Key、OAuth token、模型或代理更新后，被授权实例列表、测试和网关缓存都应读取最新来源资源事实。
 - 被授权用户不能编辑来源账户、查看敏感凭据、修改来源账户代理 / 并发 / 模型 / 凭据 / 账户追加流式规则，也不能继续转授权；被授权用户可以在自己的分组内绑定 / 调整授权实例、执行账户测试、停用或恢复自己的授权实例，并调整当前分组内优先级、超级优先和降级备用。被授权用户不想继续使用个人直授权账户时只能归还个人授权，不删除授权实例账户行或授权方原账户；团队来源授权账户不提供个人归还入口。
-- 统一授权管理支持分组授权；分组所有者可以把整个分组授权给系统账户或系统团队使用，授权共享该分组内当前全部可共享账户；有效授权分组可直接作为被授权方新建或编辑 API Key 的号池
-- 被授权用户可以把自己的 API Key 直接绑定到有效授权分组；也可以在分组页查看授权分组信息，并本地调整该授权分组的启用状态、分组类型和高并发调度配置。该本地配置只影响当前被授权人的 API Key 号池和网关调度，不修改授权方原分组。
+- 统一授权管理支持分组授权；分组所有者可以把整个分组授权给系统账户或系统团队使用，授权共享该分组内当前全部可共享账户；有效授权分组可直接作为被授权方路由策略的号池
+- 被授权用户可以把自己的路由策略绑定到有效授权分组；也可以在分组页查看授权分组信息，并本地调整该授权分组的启用状态、分组类型和高并发调度配置。该本地配置只影响当前被授权人的路由策略号池和网关调度，不修改授权方原分组。
 - 授权暂停、过期、回收、归还、额度不可用或被授权人本地停用授权分组时，该号池配置保留但运行态不可用。个人直授权分组可从分组页归还；团队来源授权分组不提供个人归还入口。
 - 分组可以汇总多个 GPT 账户，但只能汇总同一供应商协议档案下的账户；不能只凭 `providerCode` 相同或 `protocolCode` 相同混用账户
-- API Key 可以绑定调用方自己的一个或多个分组，也可以绑定有效授权给调用方的分组；统一授权提供使用权，不提供编辑、删除或转授权权限
-- 请求进入后先按 API Key 号池优先级选择一个可承接分组，再只能使用该分组内调用方有权使用的账户
+- API Key 只选择一条路由策略；路由策略可以绑定调用方自己的一个或多个分组，也可以绑定有效授权给调用方的分组；统一授权提供使用权，不提供编辑、删除或转授权权限
+- 请求进入后先按路由策略号池优先级选择一个可承接分组，再只能使用该分组内调用方有权使用的账户
 
 ## 当前页面入口
 
@@ -170,7 +170,7 @@ type GptAccountType = 'api_key' | 'oauth'
 3. 分组页：维护分组基础信息、查看账户数量与聚合状态、绑定自有或授权账户。
 4. 统一授权页：统一维护账户 / 分组授权、系统账户 / 团队授权对象、授权到期和授权额度。
 5. 团队消耗明细 / 用户消耗明细：按日期范围查看授权团队和最终用户消耗。
-6. API Key 页：创建本地网关密钥并绑定当前系统账户可用的一个或多个分组号池，包含自有分组和有效授权分组；授权账户需要先加入该用户自己的分组后再参与自有分组调度。
+6. API Key 页：创建本地网关密钥并选择当前系统账户可用的路由策略；路由策略绑定一个或多个分组号池，包含自有分组和有效授权分组；授权账户需要先加入该用户自己的分组后再参与自有分组调度。
 7. 代理页：维护代理并给账户选择，支持手动代理检测和出口信息缓存。
 8. 使用记录页、用量统计页、AI 性能监控页、日志和审计页面：查看 OpenAI 网关请求事实、统计缓存、性能趋势和排障链路。
 9. 系统设置页：维护当前白名单内的网关、后台任务、操作日志和数据保留策略。
@@ -220,7 +220,7 @@ type GptAccountType = 'api_key' | 'oauth'
 - API Key 账户使用 `credentials.api_key` 作为上游 Bearer token。
 - OAuth 账户使用 `credentials.access_token` 作为上游 Bearer token。
 - API Key 账户继续按账户 `base_url` 转发，默认指向 `https://api.openai.com/v1`，承接客户端网关 `/*` 和 `/v1/*` 请求；GPT API Key 上游仍归一到 `/v1/*`。
-- OAuth 账户不把 `access_token` 当作官方 OpenAI API Key 打到 `api.openai.com/v1`；真实转发走 ChatGPT / Codex backend 专用链路 `https://chatgpt.com/backend-api/codex`，账号兼容能力固定为 Codex Responses。
+- OAuth 账户不把 `access_token` 当作官方 OpenAI API Key 打到 `api.openai.com/v1`；真实转发走 ChatGPT / Codex backend 专用链路 `https://chatgpt.com/backend-api/codex`，账号协议能力固定为 Codex Responses。
 - OAuth Codex 网关当前支持 Codex 原生 `POST /responses` 和 `POST /responses/compact`，暂不做 `/chat/completions` 到 Responses 的重型协议翻译。
 - `GET /v1/models` 由本地供应商模型目录返回，并叠加调用方可见的内置、全局自定义和个人自定义模型；它不依赖某个上游账号是否可调度，避免 OAuth-only 分组在客户端初始化阶段失败。
 - OAuth Codex 转发会补齐必要 Codex CLI 协议头，并在账号凭据包含 `account_id` 时写入 `chatgpt-account-id`；客户端传入的同名头不会透传，避免跨账号伪造。
@@ -234,7 +234,7 @@ type GptAccountType = 'api_key' | 'oauth'
 - 账户 `account_expires_at` 到期后直接停用、关闭调度，不再参与网关选号；OAuth 额度快照只会在真实请求命中该账号时被动更新。
 - 账户时间计划只作为网关候选过滤条件，不改变手动启用/停用、异常、冷却和到期状态。后台 `account-availability-schedule-status-sync` 维护候选派生字段并在变更后清理 runtime cache；请求热链路不解析计划 JSON，允许一个后台同步周期的切换延迟。
 - 账户页不提供常驻“刷新授权”或“刷新用量”按钮；授权续期由请求前懒刷新和后台 Access Token 预刷新维护，额度快照由真实请求响应头被动维护。
-- OAuth token 刷新和账户测试会优先使用账户绑定的代理；没有绑定代理时默认直连。账户创建、导入和离线修复都不得自动绑定本机固定端口代理，代理必须由用户显式配置。账户测试必须复用本地 OpenAI 网关模型请求链路并写入使用记录，不能在测试服务里单独直连上游；前端测试模型默认来自当前登录用户的供应商默认测试模型偏好，没有个人偏好时使用账户所属供应商的 `default_test_model`，手动测试成功后把本次成功模型写入账户 `last_successful_test_model`。API Key 账户测试会优先复用最近真实请求的 endpoint/stream 形态，但手动测试模型以显式传入值为准，测试请求形态的临时选择只对 API Key 生效；OAuth 账户测试固定使用 Codex Responses。API Key 账户的 Responses 测试按当前契约不发送 `max_output_tokens`；测试输入由后端使用默认探活输入生成。手动账户测试、后台冷却复测和事前确认探针的诊断等待策略固定为 `10s -> 20s -> 30s` 三次真实网关请求尝试，总等待不超过 60 秒；未保存草稿 OAuth 测试如果需要先刷新 Access Token，刷新请求也纳入同一次诊断 attempt 的等待上限。每次尝试仍使用账号自己的凭据、Base URL、代理、账号兼容能力、分组上下文和请求形态，只按测试成功与否决定是否继续，不按上游状态码、错误码或错误文案分类重试。后台账号质量主动探测能力已删除；后台冷却复测固定启用，复用同一网关模型请求链路去恢复冷却到期的 `temporary_unavailable` 和 `rate_limited` 账号；复测模型优先使用账户 `last_successful_test_model`，没有手动成功记录时使用账户归属用户的供应商默认测试模型偏好，再兜底使用供应商 `default_test_model`。账号进入冷却态后先按 3 秒进入快速恢复通道，复测失败后按 `3s -> 6s -> 12s -> 24s -> ...` 翻倍；超过快速阈值后退化为慢速恢复通道，单次等待不超过 `defaultTemporaryUnschedulableMinutes` 表达的最大暂停时间。后台复测成功恢复正常；失败会继续按指数退避，超过 `cooldownAccountRetestMaxBackoffHours` 表达的长期不可用观察阈值后保持原状态并按 `cooldownAccountRetestLongTermIntervalHours` 低频复测，`last_error_code` 记为 `cooldown_retest_long_term_unavailable`。恢复探活使用 `traffic_source = cooldown_retest` 写入使用记录和审计，避免污染业务统计、账户质量和真实请求形态学习；写入账号 `last_error_code/last_error_message` 时使用本次上游真实错误摘要，避免把网关最终兜底 503 覆盖成账号原因；如果响应里带有 Codex 额度头，额度快照来源也记录为 `cooldown_retest`，不伪装成真实网关流量。
+- OAuth token 刷新和账户测试会优先使用账户绑定的代理；没有绑定代理时默认直连。账户创建、导入和离线修复都不得自动绑定本机固定端口代理，代理必须由用户显式配置。账户测试必须复用本地 OpenAI 网关模型请求链路并写入使用记录，不能在测试服务里单独直连上游；前端测试模型默认来自当前登录用户的供应商默认测试模型偏好，没有个人偏好时使用账户所属供应商的 `default_test_model`，手动测试成功后把本次成功模型写入账户 `last_successful_test_model`。API Key 账户测试会优先复用最近真实请求的 endpoint/stream 形态，但手动测试模型以显式传入值为准，测试请求形态的临时选择只对 API Key 生效；OAuth 账户测试固定使用 Codex Responses。API Key 账户的 Responses 测试按当前契约不发送 `max_output_tokens`；测试输入由后端使用默认探活输入生成。手动账户测试、后台冷却复测和事前确认探针的诊断等待策略固定为 `10s -> 20s -> 30s` 三次真实网关请求尝试，总等待不超过 60 秒；未保存草稿 OAuth 测试如果需要先刷新 Access Token，刷新请求也纳入同一次诊断 attempt 的等待上限。每次尝试仍使用账号自己的凭据、Base URL、代理、账号协议能力、分组上下文和请求形态，只按测试成功与否决定是否继续，不按上游状态码、错误码或错误文案分类重试。后台账号质量主动探测能力已删除；后台冷却复测固定启用，复用同一网关模型请求链路去恢复冷却到期的 `temporary_unavailable` 和 `rate_limited` 账号；复测模型优先使用账户 `last_successful_test_model`，没有手动成功记录时使用账户归属用户的供应商默认测试模型偏好，再兜底使用供应商 `default_test_model`。账号进入冷却态后先按 3 秒进入快速恢复通道，复测失败后按 `3s -> 6s -> 12s -> 24s -> ...` 翻倍；超过快速阈值后退化为慢速恢复通道，单次等待不超过 `defaultTemporaryUnschedulableMinutes` 表达的最大暂停时间。后台复测成功恢复正常；失败会继续按指数退避，超过 `cooldownAccountRetestMaxBackoffHours` 表达的长期不可用观察阈值后保持原状态并按 `cooldownAccountRetestLongTermIntervalHours` 低频复测，`last_error_code` 记为 `cooldown_retest_long_term_unavailable`。恢复探活使用 `traffic_source = cooldown_retest` 写入使用记录和审计，避免污染业务统计、账户质量和真实请求形态学习；写入账号 `last_error_code/last_error_message` 时使用本次上游真实错误摘要，避免把网关最终兜底 503 覆盖成账号原因；如果响应里带有 Codex 额度头，额度快照来源也记录为 `cooldown_retest`，不伪装成真实网关流量。
 
 账号质量主动探测指为排序或展示而主动测速；这类能力仍不恢复。频繁失败确认只由真实网关质量样本触发，按账户所属系统账户和绑定分组上下文执行确认探针；确认成功不改状态，确认失败且属于账号故障时才写入 `temporary_unavailable`。该确认探针使用 `traffic_source = cooldown_retest`，不进入业务统计、账号质量统计或真实请求形态学习。
 
@@ -244,7 +244,7 @@ OpenAI 网关使用短期内存会话亲和，只影响账号排序，不绕过�
 
 - 会话标识来源包括请求头或请求体里的 `previous_response_id`、`session_id`、`conversation_id`、`prompt_cache_key`，以及 `metadata.session_id`、`metadata.conversation_id`、`metadata.user_id`。
 - 亲和键按 `system_account_id + api_key_id + session` 隔离，避免不同本地 API Key 或系统账户共享同一个上游会话绑定；`group_id` 不参与亲和键。
-- 手动迁移流量时，会话亲和迁移按源账号、系统账户和可选 API Key 反向索引定位候选绑定，不扫描全部亲和缓存；默认的“不影响原账户”只把已有且当前命中源账号的客户端会话迁到目标账户，不写源账号状态，也不记录整组新请求目标偏向。选择“临时不可调用”或“停用账户”时，才同时按本地系统账户和分组记录短期运行态目标偏向，在源账号仍未回到候选池前，后续请求会优先尝试迁移目标账户。迁移目标偏向是当前作用域内的短期最高排序覆盖，优先于会话亲和、超级优先、主池 / 备用池分层、账号优先级和质量分；但不绕过 API Key / 系统账户 / 分组 / 授权作用域 / 模型 / 状态 / 额度 / 硬并发等候选硬条件。同一 API Key 下不同分组仍共享同一亲和绑定。
+- 手动迁移流量时，会话亲和迁移按源账号、系统账户和可选 API Key 反向索引定位候选绑定，不扫描全部亲和缓存；默认的“不影响原账户”只把已有且当前命中源账号的客户端会话迁到目标账户，不写源账号状态，也不记录整组新请求目标偏向。选择“临时不可调用”或“停用账户”时，才同时按本地系统账户和分组记录短期运行态目标偏向，在源账号仍未回到候选池前，后续请求会优先尝试迁移目标账户。迁移目标偏向是当前作用域内的短期最高排序覆盖，优先于会话亲和、超级优先、主池 / 备用池分层、账号优先级和质量分；但不绕过 API Key / 系统账户 / 分组 / 授权作用域 / 模型 / 状态 / 额度 / 硬并发等候选硬条件。同一 API Key 所选路由策略下不同分组仍共享同一亲和绑定。
 - OAuth Codex adapter 写入上游的 `session_id`、`conversation_id` 和 `prompt_cache_key` 也按同一层本地边界隔离，不把上游账号 ID、账号类型或分组 ID 写进隔离 key；同一个本地 API Key 路由下因失败、冷却或并发切换上游账号时，尽量保留客户端会话和 prompt cache 连续性。
 - 首次成功命中账号后写入短期绑定；同一会话后续请求在同一调度层级内优先尝试同一账号，降低 Codex / Responses 多轮会话被调度到不同 OAuth 账号的概率。
 - 客户可用性优先于粘性：会话亲和不会跨过超级优先、账号优先级和更优质量候选。绑定账号并发满时会先在本请求内做很短的同账号等待和重查，尽量复用上游会话 / 缓存；短等后仍满、账号不可用或请求失败时才让后续候选继续尝试。
@@ -302,7 +302,7 @@ GPT 账户不再分别设计账户授权弹窗和分组授权弹窗，授权关�
 - 授权资源支持 AI 账户和分组。
 - 授权对象支持系统账户和系统团队。
 - 新增授权时选择资源类型、自有资源、授权对象类型、系统账户或团队和备注。
-- 回收授权只把授权状态改成 `revoked`，归还授权只把授权状态改成 `returned`，都不删除历史行；被授权用户已绑定的授权账户分组关系和 API Key 授权分组绑定关系会保留但运行时不可用，重新授权同一用户后可按同一稳定授权 ID 恢复使用。
+- 回收授权只把授权状态改成 `revoked`，归还授权只把授权状态改成 `returned`，都不删除历史行；被授权用户已绑定的授权账户分组关系和路由策略授权分组绑定关系会保留但运行时不可用，重新授权同一用户后可按同一稳定授权 ID 恢复使用。
 - 分组页对授权分组提供本地使用配置编辑和个人直授权归还入口。被授权人只能修改自己的 `enabled`、`groupType` 和 `schedulingPolicy`，不能修改授权方原分组的名称、供应商、说明、默认状态或账户集合；个人直授权分组归还后只隐藏被授权人侧可见资源，不删除授权方原分组。
 - 使用统计按统一授权 ID 聚合展示请求次数、成功次数、错误次数、输入 Token、输出 Token、缓存读取 Token、总 Token、成本、最后使用时间和最近模型；统计 worker 只聚合 `traffic_source = gateway` 的真实网关请求和 `manual_account_test` 的手动账户测试，`cooldown_retest` 后台恢复探活只保留明细和审计，不进入授权消耗统计、业务统计或账户质量统计。未产生 token / cost 的失败记录按 0 token、0 cost 计入对应统计口径的请求和错误次数。
 - 团队授权展开为成员用户授权；统计仍按“资源 × 用户”展示，团队视图只是成员用户用量的筛选汇总。

@@ -7,6 +7,7 @@ import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
+import { deletePostgresUsageRecordCatalogRowsByUsageIds } from './usage-record-catalog-cleanup.js'
 import { deleteUsageRecordShardEntries, getUsageRecordShardDatabase, listUsageRecordShardLocationsForAccount, type UsageRecordShardLocation } from './usage-record-shards.js'
 import { refreshUsageQuotaHourlyWindowsCache, refreshUsageRankSnapshots } from './usage-stats.repository.js'
 import { USAGE_STATS_RECORD_SELECT_COLUMNS, type UsageStatsRecordRow } from './usage-stats-types.js'
@@ -956,19 +957,18 @@ async function deletePostgresAccountUsageDataBatch(
   const accountIds = deletedAccountCleanupAccountIds(input)
   const authorizationIds = uniqueNonEmpty(input.authorizationIds ?? [])
   if (accountIds.length === 0 && authorizationIds.length === 0) return 0
-  const result = await client.execute(`
-    WITH target AS (
-      SELECT id
-      FROM juhe_usage.usage_records
-      WHERE account_id = ANY(?)
-        OR account_authorization_id = ANY(?)
-      ORDER BY created_at ASC, id ASC
-      LIMIT ?
-    )
-    DELETE FROM juhe_usage.usage_records usage_records
-    USING target
-    WHERE usage_records.id = target.id
+  const rows = await client.query<{ id?: string | null }>(`
+    SELECT id
+    FROM juhe_usage.usage_records
+    WHERE account_id = ANY(?)
+      OR account_authorization_id = ANY(?)
+    ORDER BY created_at ASC, id ASC
+    LIMIT ?
   `, [accountIds, authorizationIds, Math.max(1, Math.trunc(limit))])
+  const usageIds = uniqueNonEmpty(rows.map((row) => row.id))
+  if (!usageIds.length) return 0
+  await deletePostgresUsageRecordCatalogRowsByUsageIds(client, usageIds)
+  const result = await client.execute('DELETE FROM juhe_usage.usage_records WHERE id = ANY(?)', [usageIds])
   return changed(result)
 }
 

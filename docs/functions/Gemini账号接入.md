@@ -278,8 +278,8 @@ Gemini native usage 语义不能按 OpenAI `prompt_tokens/completion_tokens` 或
 
 - Gemini 账户只能加入 `providerCode=gemini` 的分组。
 - Gemini OpenAI Chat 账户真实能力仍是 Chat Completions，由账户协议档案和 endpoint mode 过滤。
-- API Key 可以绑定 Gemini、OpenAI、Anthropic、GLM、DeepSeek 等多个供应商分组。
-- Gemini native 请求通过路径协议和路径模型定位 Gemini 供应商，再在当前本地 API Key 已绑定的 Gemini 分组内按账户能力调度。
+- API Key 可以选择绑定 Gemini、OpenAI、Anthropic、GLM、DeepSeek 等多个供应商分组的路由策略。
+- Gemini native 请求通过路径协议和路径模型定位 Gemini 供应商，再在当前本地 API Key 所选路由策略已绑定的 Gemini 分组内按账户能力调度。
 - Gemini native `generateContent` / `streamGenerateContent` 请求默认按 Gemini native 直连调度；如果后续命中混合供应商账户，可由该账户配置进入目标 Chat 或 Anthropic Messages 上游。
 - OpenAI Chat 请求不会因为模型名是 `gemini-*` 就自动进入 Gemini native 账户；如要用 Gemini 官方 OpenAI compatibility，必须命中 Gemini OpenAI Chat 账户。
 - Codex / Responses 请求要用 Gemini Chat 上游时，应通过混合供应商账户声明 `responses -> chat_completions`，API Key 只绑定能调度到该混合账户的策略路由。

@@ -1424,17 +1424,6 @@ function chatToolCallDeltas(delta: JsonRecord): unknown[] {
   if (Array.isArray(delta.tool_calls)) {
     output.push(...delta.tool_calls)
   }
-  if (Array.isArray(delta.function_calls)) {
-    output.push(...delta.function_calls)
-  }
-  const functionCall = objectValue(delta.function_call)
-  if (functionCall) {
-    output.push({
-      index: 0,
-      type: 'function',
-      function: functionCall
-    })
-  }
   return output
 }
 

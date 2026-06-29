@@ -77,7 +77,6 @@ export interface GatewayProtocolDriver {
   endpointModeForRequestShape(input: GatewayProtocolDriverRequestShape): AccountSupportedEndpointMode | undefined
   isNativeRequest?(req: Request): boolean
   isModelsRequest?(req: Request): boolean
-  isEndpointCapabilityFailure?(req: Request, statusCode: number): boolean
   responseEndpointFamilyForRequest(req: Request): ResponseEndpointFamily
   extractJsonSemanticFrames(value: unknown, req: Request): ResponseSemanticFrame[]
   createStreamInspector(): GatewayStreamInspector

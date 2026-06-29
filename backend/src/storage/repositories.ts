@@ -89,7 +89,7 @@ import {
   getAccountUsageStatsOverviewPageFromWindows as buildAccountUsageStatsOverviewPageFromWindows
 } from './account-usage.repository.js'
 import { accountEnabledGroupId } from './account-group-binding-write.repository.js'
-import { updateAccountUsageSnapshotRefreshState, upsertAccountUsageSnapshot } from './account-usage-snapshot.repository.js'
+import { updateAccountUsageSnapshotRefreshState, upsertAccountUsageSnapshot, upsertAccountUsageSnapshotsAsync } from './account-usage-snapshot.repository.js'
 import { createApiKeyRecord, createApiKeyRecordAsync, deleteApiKey, deleteApiKeyAsync, findApiKeySecret, findApiKeySecretAsync, findApiKeySummary, findApiKeySummaryAsync, listApiKeys, listApiKeysAsync, listApiKeysPage, listApiKeysPageAsync, refreshApiKeySecret, refreshApiKeySecretAsync, updateApiKey, updateApiKeyAsync } from './api-key.repository.js'
 import { loadResourceAuthorizationSourcesByAuthorizationIds, loadResourceAuthorizationStatsByResourceIds } from './authorization-read-loaders.js'
 import { decryptJson, encryptJson, maskSecret } from './crypto.js'
@@ -612,6 +612,7 @@ export {
   type AccountUsageSnapshotUpsertInput,
   updateAccountUsageSnapshotRefreshState,
   upsertAccountUsageSnapshot,
+  upsertAccountUsageSnapshotsAsync,
   upsertAccountUsageSnapshots
 } from './account-usage-snapshot.repository.js'
 export {

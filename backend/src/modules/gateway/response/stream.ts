@@ -44,7 +44,7 @@ import type {
   GatewayStreamInspection,
   GatewayStreamInspector
 } from '../protocols/_shared/types.js'
-import { gatewayProtocolDriverForResponseProtocolOrDefault } from '../protocols/registry.js'
+import { requireGatewayProtocolDriverForResponseProtocol } from '../protocols/registry.js'
 import {
   appendStreamPreCommitChunk,
   canKeepStreamPreCommitChunk,
@@ -104,7 +104,7 @@ export async function pipeUpstreamStream(
 ): Promise<StreamPipeResult> {
   const iterator = upstreamBody[Symbol.asyncIterator]()
   const responseProtocol = options.responseProtocol ?? 'openai_v1'
-  const protocolDriver = gatewayProtocolDriverForResponseProtocolOrDefault(responseProtocol)
+  const protocolDriver = requireGatewayProtocolDriverForResponseProtocol(responseProtocol)
   const gatewayErrorProtocol = protocolDriver.clientErrorProtocol
   const inspector = protocolDriver.createStreamInspector()
   const responseInspectionEnabled = options.clientRetryEnabled === true || (options.responseInspectionPolicies?.length ?? 0) > 0

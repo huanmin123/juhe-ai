@@ -62,7 +62,7 @@ systemAccountId + apiKeyId + clientIp + accountId
 - `clientIp` 隔离客户端来源。
 - `accountId` 表示该来源短期内应优先避开的账号。
 
-`groupId` 不参与 IP 级账号回避键。同一个 API Key 绑定多个分组时，分组只是路由容器，来源对某个账号的短期失败经验应跟随账号和 API Key，不应被分组切碎；不同 API Key 仍保持隔离。
+`groupId` 不参与 IP 级账号回避键。同一个 API Key 所选路由策略绑定多个分组时，分组只是路由容器，来源对某个账号的短期失败经验应跟随账号和 API Key，不应被分组切碎；不同 API Key 仍保持隔离。
 
 缺少 `clientIp` 时不启用 IP 级账号回避，避免把未知来源混进同一个全局桶。
 
@@ -99,7 +99,7 @@ flowchart TD
 
 待提交列表只存在于当前请求生命周期中，不立即写入长期或 TTL 回避状态。列表必须按 `accountId` 去重，重复失败只保留同账号最新失败信息；单请求待提交失败上限固定为 `256`，超过上限的新账号失败不再扩容，避免一次异常请求链路在线性增长时阻塞 Node 主线程。
 
-API Key 绑定多个分组并触发 fallback 切组时，待提交列表只能通过有界转移函数传给新分组上下文。转移过程继续按目标 tracker 的 `accountId` 索引去重并受 `256` 上限约束，来源 tracker 转移后立即清空；路由层禁止展开复制待提交数组或使用 `unshift(...pendingFailures)` 头插搬移。
+路由策略绑定多个分组并触发 fallback 切组时，待提交列表只能通过有界转移函数传给新分组上下文。转移过程继续按目标 tracker 的 `accountId` 索引去重并受 `256` 上限约束，来源 tracker 转移后立即清空；路由层禁止展开复制待提交数组或使用 `unshift(...pendingFailures)` 头插搬移。
 
 ### 提交为 IP 级回避
 

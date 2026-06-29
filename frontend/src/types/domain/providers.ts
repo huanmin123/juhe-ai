@@ -105,6 +105,7 @@ export interface ProviderDefaultTestModelResult {
 }
 
 export interface ProviderModelsParams {
+  systemAccountId?: string
   includeInactive?: boolean
   includeUnpriced?: boolean
 }

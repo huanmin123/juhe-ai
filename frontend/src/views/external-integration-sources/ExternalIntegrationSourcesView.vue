@@ -282,8 +282,8 @@ function removeRateLimit(index: number): void {
 
 function sourceActions(record: ExternalIntegrationSourceSummary): RowActionItem[] {
   const statusAction: RowActionItem = record.status === 'active'
-    ? { key: 'disable', label: '停用', icon: 'disable', tone: 'danger' as const }
-    : { key: 'enable', label: '启用', icon: 'enable', tone: 'success' as const }
+    ? { key: 'disable', label: '停用', icon: 'disable', tone: 'danger' as const, confirmTitle: `确认停用来源授权 ${record.name}？停用后该来源的公开接口请求会被拒绝。`, confirmOkText: '停用' }
+    : { key: 'enable', label: '启用', icon: 'enable', tone: 'success' as const, confirmTitle: `确认启用来源授权 ${record.name}？`, confirmOkText: '启用' }
   if (record.isBuiltIn) {
     return [
       statusAction,

@@ -34,10 +34,10 @@ try {
   invalidateAccountProviderModelOptionsCache()
 
   const modelOptions = useAccountProviderModelOptions({
-    createScopeParams: computed(() => undefined),
     currentProviderCode: () => 'openai',
     extractApiErrorMessage: (error, fallback) => error instanceof Error ? error.message : fallback,
-    isManagementView: computed(() => false)
+    isManagementView: computed(() => false),
+    modelScopeParams: computed(() => undefined)
   })
 
   await modelOptions.loadProviderModelOptions('openai')
@@ -59,11 +59,21 @@ try {
   assertDeepEqual(optionValues(modelOptions.providerModelOptions.value), ['gpt-cache-old', 'gpt-cache-new'], '当前供应商失效后应重新读取模型目录')
   assertEqual(calls.length, 2, '当前供应商失效后应重新请求模型目录')
 
+  const scopedModelOptions = useAccountProviderModelOptions({
+    currentProviderCode: () => 'openai',
+    extractApiErrorMessage: (error, fallback) => error instanceof Error ? error.message : fallback,
+    isManagementView: computed(() => true),
+    modelScopeParams: computed(() => ({ systemAccountId: 'sys_user_model_scope' }))
+  })
+  await scopedModelOptions.loadProviderModelOptions('openai')
+  assertEqual(calls.length, 3, '管理视图目标用户模型目录应使用独立缓存并重新请求')
+  assertEqual(calls[2]?.params?.systemAccountId, 'sys_user_model_scope', '非混合供应商模型目录请求必须携带目标系统账户')
+
   const hybridModelOptions = useAccountProviderModelOptions({
-    createScopeParams: computed(() => ({ systemAccountId: 'sys_admin' })),
     currentProviderCode: () => 'hybrid',
     extractApiErrorMessage: (error, fallback) => error instanceof Error ? error.message : fallback,
-    isManagementView: computed(() => true)
+    isManagementView: computed(() => true),
+    modelScopeParams: computed(() => ({ systemAccountId: 'sys_admin' }))
   })
   await hybridModelOptions.loadProviderModelOptions('hybrid')
   assertDeepEqual(
@@ -72,7 +82,7 @@ try {
     '混合供应商应加载全局模型池而不是 hybrid 自身模型目录'
   )
   assertEqual(modelOptionCalls.length, 1, '混合供应商应请求一次全局模型选项接口')
-  assertEqual(calls.length, 2, '混合供应商不应请求 /providers/hybrid/models 作为创建页模型候选')
+  assertEqual(calls.length, 3, '混合供应商不应请求 /providers/hybrid/models 作为创建页模型候选')
 
   console.log('账户模型选项缓存回归通过：自定义模型变更后可按供应商失效并重新拉取模型目录')
 } finally {

@@ -1,6 +1,6 @@
 import type { UpstreamAttempt } from './attempt.js'
 import { gatewayErrorPayload } from '../response/responses.js'
-import { sanitizeDiagnosticPayload } from '../audit/payload-sanitizer.js'
+import { sanitizeDiagnosticPayload } from '../diagnostics/diagnostic-sanitizer.js'
 import { sanitizeUrlCredentialsForLog } from '../../../shared/request-context.js'
 import { parseGatewayProtocolErrorPayload } from '../protocols/registry.js'
 

@@ -98,43 +98,11 @@ const nonBusinessStatsCleanupTables: HardCleanupTableRule[] = [
   { databaseRole: 'stats', tableName: 'table_storage_snapshots', timeColumnName: 'sampled_at', cutoffKey: 'iso' }
 ]
 
-const hardCleanupSpecialTables: Record<HardCleanupDatabaseRole, Set<string>> = {
-  dataset: new Set([
-    'audit_payload_blobs'
-  ]),
-  'usage-catalog': new Set([
-    'usage_record_shards',
-    'usage_record_shard_entries'
-  ]),
-  stats: new Set()
+const nonBusinessCleanupTablesByRole: Record<HardCleanupDatabaseRole, HardCleanupTableRule[]> = {
+  dataset: nonBusinessDatasetCleanupTables,
+  'usage-catalog': nonBusinessUsageCatalogCleanupTables,
+  stats: nonBusinessStatsCleanupTables
 }
-
-const hardCleanupPreferredRuleByTable = new Map(
-  [...nonBusinessDatasetCleanupTables, ...nonBusinessUsageCatalogCleanupTables, ...nonBusinessStatsCleanupTables]
-    .map((rule) => [hardCleanupTableKey(rule.databaseRole, rule.tableName), rule] as const)
-)
-
-const hardCleanupFallbackTimeColumns: Array<{ timeColumnName: string; cutoffKey: HardCleanupCutoffKey }> = [
-  { timeColumnName: 'stat_minute', cutoffKey: 'minute' },
-  { timeColumnName: 'stat_hour', cutoffKey: 'hour' },
-  { timeColumnName: 'stat_date', cutoffKey: 'date' },
-  { timeColumnName: 'stat_week', cutoffKey: 'week' },
-  { timeColumnName: 'stat_month', cutoffKey: 'month' },
-  { timeColumnName: 'end_date', cutoffKey: 'date' },
-  { timeColumnName: 'bucket_date', cutoffKey: 'date' },
-  { timeColumnName: 'sampled_at', cutoffKey: 'iso' },
-  { timeColumnName: 'snapshot_at', cutoffKey: 'iso' },
-  { timeColumnName: 'time', cutoffKey: 'iso' },
-  { timeColumnName: 'last_seen_at', cutoffKey: 'iso' },
-  { timeColumnName: 'last_write_at', cutoffKey: 'iso' },
-  { timeColumnName: 'last_success_at', cutoffKey: 'iso' },
-  { timeColumnName: 'last_attempt_at', cutoffKey: 'iso' },
-  { timeColumnName: 'started_at', cutoffKey: 'iso' },
-  { timeColumnName: 'updated_at', cutoffKey: 'iso' },
-  { timeColumnName: 'created_at', cutoffKey: 'iso' },
-  { timeColumnName: 'indexed_at', cutoffKey: 'iso' },
-  { timeColumnName: 'first_seen_at', cutoffKey: 'iso' }
-]
 
 export function cleanupDiscoveredHardCleanupTablesBefore(
   databaseRole: HardCleanupDatabaseRole,
@@ -143,7 +111,7 @@ export function cleanupDiscoveredHardCleanupTablesBefore(
   addRows: (key: string, count: number) => void
 ): void {
   const database = databaseForHardCleanupRole(databaseRole)
-  for (const rule of discoverHardCleanupTableRules(database, databaseRole)) {
+  for (const rule of nonBusinessCleanupTablesByRole[databaseRole]) {
     const deleted = deleteRowsBeforeByRowid(
       database,
       rule.tableName,
@@ -193,55 +161,6 @@ export function deleteRowsBeforeByRowid(
   return changedRows(result)
 }
 
-function discoverHardCleanupTableRules(database: DatabaseSync, databaseRole: HardCleanupDatabaseRole): HardCleanupTableRule[] {
-  const rows = database.prepare(`
-    SELECT name
-    FROM sqlite_schema
-    WHERE type = 'table'
-      AND name NOT LIKE 'sqlite_%'
-    ORDER BY name ASC
-  `).all() as Array<{ name?: unknown }>
-  const rules: HardCleanupTableRule[] = []
-  for (const row of rows) {
-    const tableName = typeof row.name === 'string' ? row.name.trim() : ''
-    if (!tableName || hardCleanupSpecialTables[databaseRole].has(tableName)) continue
-    const rule = hardCleanupRuleForTable(database, databaseRole, tableName)
-    if (rule) {
-      rules.push(rule)
-    }
-  }
-  return rules
-}
-
-function hardCleanupRuleForTable(
-  database: DatabaseSync,
-  databaseRole: HardCleanupDatabaseRole,
-  tableName: string
-): HardCleanupTableRule | undefined {
-  const columnNames = tableColumnNames(database, tableName)
-  const preferred = hardCleanupPreferredRuleByTable.get(hardCleanupTableKey(databaseRole, tableName))
-  if (preferred && columnNames.has(preferred.timeColumnName)) {
-    return preferred
-  }
-  const fallback = hardCleanupFallbackTimeColumns.find((candidate) => columnNames.has(candidate.timeColumnName))
-  if (!fallback) {
-    return undefined
-  }
-  return {
-    databaseRole,
-    tableName,
-    timeColumnName: fallback.timeColumnName,
-    cutoffKey: fallback.cutoffKey
-  }
-}
-
-function tableColumnNames(database: DatabaseSync, tableName: string): Set<string> {
-  const rows = database
-    .prepare(`PRAGMA table_info(${quoteSqliteIdentifier(tableName)})`)
-    .all() as Array<{ name?: unknown }>
-  return new Set(rows.map((row) => typeof row.name === 'string' ? row.name.trim() : '').filter(Boolean))
-}
-
 function databaseForHardCleanupRole(databaseRole: HardCleanupDatabaseRole): DatabaseSync {
   if (databaseRole === 'dataset') {
     return getDatasetDatabase()
@@ -250,10 +169,6 @@ function databaseForHardCleanupRole(databaseRole: HardCleanupDatabaseRole): Data
     return getUsageCatalogDatabase()
   }
   return getStatsDatabase()
-}
-
-function hardCleanupTableKey(databaseRole: HardCleanupDatabaseRole, tableName: string): string {
-  return `${databaseRole}.${tableName}`
 }
 
 function quoteSqliteIdentifier(value: string): string {

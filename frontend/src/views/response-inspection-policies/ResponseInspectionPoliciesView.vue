@@ -64,7 +64,6 @@ import type {
 import ResponseInspectionPolicyFormModal from './ResponseInspectionPolicyFormModal.vue'
 import ResponseInspectionPolicyGuideModal from './ResponseInspectionPolicyGuideModal.vue'
 import {
-  responseInspectionPolicyAccountCompatibilityText,
   responseInspectionPolicyActionText,
   responseInspectionPolicyClientProfileText,
   responseInspectionPolicyMatchSummary,
@@ -227,7 +226,6 @@ function searchableText(policy: ResponseInspectionPolicySummary): string {
     responseInspectionPolicyProtocolText(policy.protocolCode),
     responseInspectionPolicyProviderText(policy.providerCode, policyProviders.value),
     responseInspectionPolicyClientProfileText(policy.match.clientProfiles),
-    responseInspectionPolicyAccountCompatibilityText(policy.match.accountClientCompatibilities),
     responseInspectionPolicyMatchSummary(policy),
     policy.defaultRule ? '默认' : '自定义',
     String(policy.priority),

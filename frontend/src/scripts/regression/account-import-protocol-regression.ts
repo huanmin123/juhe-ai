@@ -1,11 +1,14 @@
 import {
+  ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
   ANTHROPIC_PROVIDER_CODE,
   DEEPSEEK_ANTHROPIC_V1_PROFILE_ID,
+  DEEPSEEK_OPENAI_V1_PROFILE_ID,
   DEEPSEEK_PROVIDER_CODE,
   GLM_CODING_ANTHROPIC_V1_PROFILE_ID,
   GLM_CODING_OPENAI_V1_PROFILE_ID,
   GLM_GENERAL_OPENAI_V1_PROFILE_ID,
   GLM_PROVIDER_CODE,
+  GPT_OPENAI_V1_PROFILE_ID,
   GPT_VENDOR_CODE,
   HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
   HYBRID_PROVIDER_CODE
@@ -74,15 +77,19 @@ assertDefined(glmCodingAccount, '导入模板应包含 GLM Coding Plan Key 账�
 assertDefined(glmCodingAnthropicAccount, '导入模板应包含 GLM Coding Anthropic Key 账号示例')
 assertDefined(anthropicAccount, '导入模板应包含 Anthropic API Key 账号示例')
 assertDefined(hybridAccount, '导入模板应包含混合供应商账号示例')
+assertTrue(template.accounts?.every((account) => typeof account.providerProtocolProfileId === 'string' && account.providerProtocolProfileId.trim().length > 0) === true, '导入模板每个账号都必须显式填写 providerProtocolProfileId')
 assertEqual(apiKeyAccount.providerCode, GPT_VENDOR_CODE, 'API Key 示例应继续使用 GPT 供应商')
+assertEqual(apiKeyAccount.providerProtocolProfileId, GPT_OPENAI_V1_PROFILE_ID, 'API Key 示例应显式填写 GPT OpenAI v1 profile')
 assertFalse(Object.prototype.hasOwnProperty.call(apiKeyAccount, 'clientCompatibility'), 'API Key 示例不应暴露账号兼容字段')
 assertEqual(oauthAccount.providerCode, GPT_VENDOR_CODE, 'OAuth 示例应继续使用 GPT 供应商')
+assertEqual(oauthAccount.providerProtocolProfileId, GPT_OPENAI_V1_PROFILE_ID, 'OAuth 示例应显式填写 GPT OpenAI v1 profile')
 assertFalse(Object.prototype.hasOwnProperty.call(oauthAccount, 'clientCompatibility'), 'OAuth 示例不应暴露账号兼容字段')
 assertEqual(typeof apiKeyAccount.credentials?.api_key, 'string', 'API Key 示例必须保留 credentials.api_key')
 assertTrue(Array.isArray(apiKeyAccount.credentials?.supported_endpoint_modes), 'API Key 示例应包含 supported_endpoint_modes')
 assertEqual(typeof oauthAccount.credentials?.refresh_token, 'string', 'OAuth 示例必须保留 refresh_token')
 assertTrue(Array.isArray(oauthAccount.credentials?.supported_endpoint_modes), 'OAuth 示例应包含 supported_endpoint_modes')
 assertEqual(typeof deepSeekOpenAIAccount.credentials?.api_key, 'string', 'DeepSeek OpenAI-compatible 示例必须保留 credentials.api_key')
+assertEqual(deepSeekOpenAIAccount.providerProtocolProfileId, DEEPSEEK_OPENAI_V1_PROFILE_ID, 'DeepSeek OpenAI-compatible 示例应显式填写 OpenAI v1 profile')
 assertEqual(deepSeekOpenAIAccount.credentials?.base_url, 'https://api.deepseek.com', 'DeepSeek OpenAI-compatible 示例应使用官方 base URL')
 assertEqual(JSON.stringify(deepSeekOpenAIAccount.credentials?.supported_endpoint_modes), JSON.stringify(['chat_json', 'chat_sse']), 'DeepSeek OpenAI-compatible 示例应只启用 Chat Completions JSON/Streaming')
 assertFalse(Object.prototype.hasOwnProperty.call(deepSeekOpenAIAccount, 'clientCompatibility'), 'DeepSeek OpenAI-compatible 普通示例不应默认暴露客户端兼容字段')
@@ -101,6 +108,7 @@ assertFalse(Object.prototype.hasOwnProperty.call(glmCodingAnthropicAccount, depr
 assertEqual(glmCodingAnthropicAccount.credentials?.base_url, 'https://open.bigmodel.cn/api/anthropic', 'GLM Coding Anthropic 示例应使用 Anthropic-compatible base URL')
 assertEqual(JSON.stringify(glmCodingAnthropicAccount.credentials?.supported_endpoint_modes), JSON.stringify(['messages_json', 'messages_sse']), 'GLM Coding Anthropic 示例应只启用 Messages JSON/Streaming')
 assertEqual(typeof anthropicAccount.credentials?.api_key, 'string', 'Anthropic 示例必须保留 credentials.api_key')
+assertEqual(anthropicAccount.providerProtocolProfileId, ANTHROPIC_ANTHROPIC_V1_PROFILE_ID, 'Anthropic 示例应显式填写 Anthropic v1 profile')
 assertTrue(Array.isArray(anthropicAccount.credentials?.supported_endpoint_modes), 'Anthropic 示例应包含 supported_endpoint_modes')
 assertFalse(Object.prototype.hasOwnProperty.call(anthropicAccount.credentials ?? {}, 'anthropic_version'), 'Anthropic 导入示例不应把 anthropic-version 当作账号凭据')
 assertFalse(Object.prototype.hasOwnProperty.call(anthropicAccount.credentials ?? {}, 'anthropic_beta'), 'Anthropic 导入示例不应把 anthropic-beta 当作账号凭据')
@@ -126,14 +134,14 @@ assertMatch(accountImportProtocolMarkdown, /`deepseek`/, '协议 Markdown 应说
 assertMatch(accountImportProtocolMarkdown, /DeepSeek OpenAI-compatible 默认 Chat Completion \(JSON\/Streaming\)/, '协议 Markdown 应说明 DeepSeek OpenAI-compatible 默认接口能力')
 assertMatch(accountImportProtocolMarkdown, /账号导入不填写 `clientCompatibility`/, '协议 Markdown 应说明账号导入不再填写客户端兼容字段')
 assertFalse(/\| `clientCompatibility` \| 否 \| string \|/.test(accountImportProtocolMarkdown), '协议 Markdown 不应把 clientCompatibility 暴露为导入字段')
-assertMatch(accountImportProtocolMarkdown, /\| `providerProtocolProfileId` \| 否 \| string \|/, '协议 Markdown 应把 providerProtocolProfileId 暴露为导入字段')
+assertMatch(accountImportProtocolMarkdown, /\| `providerProtocolProfileId` \| 是 \| string \|/, '协议 Markdown 应把 providerProtocolProfileId 暴露为必填导入字段')
 assertMatch(accountImportProtocolMarkdown, /\| `tags` \| 否 \| string\[\] \|/, '协议 Markdown 应把 tags 暴露为导入字段')
 assertMatch(accountImportProtocolMarkdown, /`active`、`pending_test` 或 `disabled`/, '协议 Markdown 应说明导入状态支持 pending_test')
 assertMatch(accountImportProtocolMarkdown, /`status: "active"` 会转为 `pending_test`/, '协议 Markdown 应说明 active 导入创建会转为待测试')
 assertMatch(accountImportProtocolMarkdown, /下游客户端画像由网关运行时自动识别/, '协议 Markdown 应说明客户端画像由网关内部识别')
 assertFalse(new RegExp(deprecatedGlmProfileField).test(accountImportProtocolMarkdown), '协议 Markdown 不应再暴露已废弃的 GLM 接入类型字段')
-assertMatch(accountImportProtocolMarkdown, /`providerProtocolProfileId: "profile_glm_coding_anthropic_v1"`/, '协议 Markdown 应说明 GLM Coding Anthropic profile')
-assertMatch(accountImportProtocolMarkdown, /DeepSeek Claude Code 必须显式填写 `providerProtocolProfileId: "profile_deepseek_anthropic_v1"`/, '协议 Markdown 应说明 DeepSeek Claude Code profile')
+assertMatch(accountImportProtocolMarkdown, /"providerProtocolProfileId": "profile_glm_coding_anthropic_v1"/, '协议 Markdown 应说明 GLM Coding Anthropic profile')
+assertMatch(accountImportProtocolMarkdown, /profile_deepseek_anthropic_v1/, '协议 Markdown 应说明 DeepSeek Claude Code profile')
 assertMatch(accountImportProtocolMarkdown, /`modelMappings` 只做账号模型别名/, '协议 Markdown 应说明 modelMappings 只做账号模型别名')
 assertMatch(accountImportProtocolMarkdown, /混合供应商账户的 `modelMappings` 用于声明跨协议入口/, '协议 Markdown 应说明混合供应商账户使用 modelMappings 声明跨协议入口')
 assertMatch(accountImportProtocolMarkdown, /其他跨协议方向不要写入普通账户导入数据/, '协议 Markdown 应说明跨协议方向不写入普通账户导入数据')

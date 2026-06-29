@@ -6,7 +6,6 @@ import type {
 } from '@/types/domain'
 import { responseInspectionActionLabel } from './responseInspectionActionTemplates'
 import {
-  responseInspectionAccountCompatibilityOptions,
   responseInspectionClientProfileOptions,
   responseInspectionListText,
   responseInspectionScopedListSummary
@@ -38,15 +37,10 @@ export function responseInspectionPolicyClientProfileText(values?: ResponseInspe
   return responseInspectionListText(values?.map(responseInspectionPolicyClientProfileLabel))
 }
 
-export function responseInspectionPolicyAccountCompatibilityText(values?: ResponseInspectionPolicySummary['match']['accountClientCompatibilities']): string {
-  return responseInspectionListText(values?.map(responseInspectionPolicyAccountCompatibilityLabel))
-}
-
 export function responseInspectionPolicyMatchSummary(policy: ResponseInspectionPolicySummary): string {
   const match = policy.match
   const parts = [
     responseInspectionScopedListSummary('请求客户端', match.clientProfiles?.map(responseInspectionPolicyClientProfileLabel)),
-    responseInspectionScopedListSummary('账号兼容能力', match.accountClientCompatibilities?.map(responseInspectionPolicyAccountCompatibilityLabel)),
     responseInspectionScopedListSummary('输出包含', match.outputTextIncludes),
     responseInspectionScopedListSummary('输出排除', match.outputTextExcludes),
     responseInspectionScopedListSummary('code', match.errorCodes),
@@ -61,8 +55,4 @@ export function responseInspectionPolicyMatchSummary(policy: ResponseInspectionP
 
 function responseInspectionPolicyClientProfileLabel(value: string): string {
   return responseInspectionClientProfileOptions.find((option) => option.value === value)?.label ?? value
-}
-
-function responseInspectionPolicyAccountCompatibilityLabel(value: string): string {
-  return responseInspectionAccountCompatibilityOptions.find((option) => option.value === value)?.label ?? value
 }

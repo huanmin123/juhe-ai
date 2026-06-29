@@ -69,7 +69,7 @@
 | Mock 回归 | 模型映射保存校验 | `pnpm --dir backend test:account-model-mapping` | `messages -> chat_completions` 可保存；`messages -> responses` 被拒绝 | 已通过 | 2026-06-25 通过；覆盖保存、关系表、候选窗口、导入预览和 Messages source 模型池 |
 | Mock 回归 | 草稿测试快照协议映射 | `pnpm --dir backend test:account-api-key-draft-activation` | 草稿测试任务记录读回后保留 `messages -> chat_completions` 映射 | 已通过 | 2026-06-25 通过 |
 | 前端回归 | 账户保存 / 草稿测试 payload | `pnpm --dir frontend test:account-edit-save-flow` | 保存 payload 与草稿测试 payload 保留 `messages -> chat_completions` 协议维度 | 已通过 | 2026-06-25 通过 |
-| 回归 | OpenAI -> Anthropic bridge | `pnpm --dir backend test:openai-anthropic-bridge-mock` | 既有桥接不回归 | 已通过 | 2026-06-25 通过 |
+| 回归 | OpenAI -> Anthropic bridge | `pnpm --dir backend test:protocol-boundary-openai-anthropic` | 既有桥接不回归 | 已通过 | 2026-06-25 通过 |
 | 回归 | 候选账号模型映射窗口 | `pnpm --dir backend test:gateway-dispatch-candidate-window` | `requestedEndpointFamily=messages` 不破坏候选扫描窗口和映射过滤 | 已通过 | 2026-06-25 通过 |
 | 回归 | Responses -> Chat bridge | `pnpm --dir backend test:deepseek-gateway-mock-ai`、`pnpm --dir backend test:glm-gateway-mock-ai` | GLM / DeepSeek 现有 Codex Responses bridge 不回归 | 已通过 | 2026-06-25 通过 |
 | 回归 | 模型价格目录 | `pnpm --dir backend test:usage-pricing` | GPT / GLM / DeepSeek / OpenAI-compatible 价格和发布日期目录不回归 | 已通过 | 2026-06-25 通过 |
@@ -116,7 +116,7 @@
 - 2026-06-25 执行 `pnpm --dir backend test:gateway-dispatch-candidate-window`，通过；确认候选窗口和模型映射过滤不回归。
 - 2026-06-25 执行 `pnpm --dir backend test:deepseek-gateway-mock-ai`、`pnpm --dir backend test:glm-gateway-mock-ai`，均通过；确认现有 Responses -> Chat bridge 和供应商能力边界不回归。
 - 2026-06-25 执行 `pnpm --dir backend test:usage-pricing`，通过；确认模型价格 / 发布日期目录不回归。
-- 2026-06-25 执行 `pnpm --dir backend typecheck`、`pnpm --dir frontend typecheck`、`pnpm --dir backend test:openai-anthropic-bridge-mock`，均通过。
+- 2026-06-25 执行 `pnpm --dir backend typecheck`、`pnpm --dir frontend typecheck`、`pnpm --dir backend test:protocol-boundary-openai-anthropic`，均通过。
 - 2026-06-25 执行 `git diff --check`，通过；仅有 LF/CRLF 提示，无新增空白错误。
 
 ## 风险与注意事项

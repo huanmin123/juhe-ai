@@ -18,10 +18,10 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 - 输出必须是一个 JSON 对象，不能包在 Markdown 代码块里，不能附带解释文字。
 - 字段名严格使用本协议定义，不要把 `providerCode` 改成 `provider_code`，也不要把 `api_key` 改成 `apiKey`。
 - 顶层 `type` 固定为 `juhe-ai-account-import`，`version` 固定为数字 `1`。
-- `accounts` 至少 1 条；每个账户必须显式填写 `name`、`providerCode`、`type`、`status`、`credentials`，以及 `groupId` 或 `groupName`。
-- 当前 `providerCode` 可填 `openai`、`gpt`、`anthropic`、`glm`、`deepseek`、`gemini` 或 `hybrid`；系统会按供应商自动匹配内部协议配置。`openai` 在供应商层表示通用 OpenAI-compatible 供应商，只支持 `api_key`；`gpt` 表示 GPT 专属供应商，支持 `api_key` 和 `oauth`；`anthropic` 表示官方 Anthropic Claude 供应商，当前只支持 API Key；`glm` 表示智谱 GLM 供应商，支持通用 GLM API Key、GLM Coding Plan Key 和 GLM Coding Anthropic Key；`deepseek` 表示 DeepSeek hosted API 供应商，当前支持 OpenAI-compatible API Key 和 DeepSeek Claude Code API Key；`gemini` 表示 Google Gemini 供应商，支持 Gemini 原生 API Key 和 Gemini OpenAI Chat API Key；`hybrid` 表示混合供应商真实上游账户，用于在 AI 账户层配置跨协议入口和模型映射。
-- `connectionType` 是可选的接入类型标识；当前只有 `glm` 必须显式填写 `general_api_key`、`coding_api_key` 或 `coding_anthropic_api_key`，用于区分通用 GLM API、GLM Coding Plan OpenAI Chat 和 GLM Coding Anthropic；DeepSeek OpenAI-compatible 不使用 `connectionType`，DeepSeek Claude Code 必须显式填写 `providerProtocolProfileId=profile_deepseek_anthropic_v1`。
-- `providerCode = hybrid` 时必须使用 API Key 账户，默认使用 `profile_hybrid_openai_chat_v1` 这个通用混合供应商档案；真实上游目标协议由账户 `modelMappings.upstreamEndpointFamily` 和 `credentials.supported_endpoint_modes` 表达，不再区分多个混合账户类型。
+- `accounts` 至少 1 条；每个账户必须显式填写 `name`、`providerCode`、`providerProtocolProfileId`、`type`、`status`、`credentials`，以及 `groupId` 或 `groupName`。
+- 当前 `providerCode` 可填 `openai`、`gpt`、`anthropic`、`glm`、`deepseek`、`gemini` 或 `hybrid`；系统按 `providerCode + providerProtocolProfileId` 校验内部协议档案。`openai` 在供应商层表示通用 OpenAI-compatible 供应商，只支持 `api_key`；`gpt` 表示 GPT 专属供应商，支持 `api_key` 和 `oauth`；`anthropic` 表示官方 Anthropic Claude 供应商，当前只支持 API Key；`glm` 表示智谱 GLM 供应商，支持通用 GLM API Key、GLM Coding Plan Key 和 GLM Coding Anthropic Key；`deepseek` 表示 DeepSeek hosted API 供应商，当前支持 OpenAI-compatible API Key 和 DeepSeek Claude Code API Key；`gemini` 表示 Google Gemini 供应商，支持 Gemini 原生 API Key 和 Gemini OpenAI Chat API Key；`hybrid` 表示混合供应商真实上游账户，用于在 AI 账户层配置跨协议入口和模型映射。
+- `providerProtocolProfileId` 是协议档案唯一入口；导入协议不接收旧接入类型别名，也不按 `base_url`、供应商默认值或历史字段猜测档案。
+- `providerCode = hybrid` 时必须使用 API Key 账户，按真实上游协议显式填写混合供应商档案；真实上游目标协议由账户 `modelMappings.upstreamEndpointFamily` 和 `credentials.supported_endpoint_modes` 表达，不再区分多个混合账户类型。
 - 账号导入不填写 `clientCompatibility`。下游客户端画像由网关运行时内部识别；Codex Responses 到 Chat、Anthropic Messages 或 Gemini native 等跨协议桥接由混合供应商账户表达真实上游和协议转换能力，不在 API Key 中配置。
 - 不确定是否可立即调度时，`status` 填 `pending_test` 或 `disabled`，不要默认填 `active`；即使导入文件写 `active`，导入落库也会转为 `pending_test`，必须在本系统测试通过后才参与调度。
 - 不要编造缺失的 token、API Key、邮箱、账号 ID、代理密码或模型列表；不确定的信息写入 `notes`。
@@ -51,7 +51,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 - 导出只包含当前用户或管理员目标作用域内有权查看凭据和编辑的自有账户；授权账户实例不导出。
 - 如果账户绑定了可用代理，导出文件会同时写入 `proxies` 并通过账户 `proxyRef` 引用，便于再次导入时自动创建或复用代理。
 - 导出会保留账户标签为 `tags` 字符串数组；再次导入时会在目标系统账户维度自动创建缺失标签并绑定到账户。
-- 导出必须保留足以还原供应商协议档案的事实。`providerCode = glm` 时输出 `connectionType = general_api_key`、`coding_api_key` 或 `coding_anthropic_api_key`；`providerCode = deepseek` 时可省略 `providerProtocolProfileId` 或输出当前默认的 `profile_deepseek_openai_v1`，DeepSeek Claude Code 时必须输出 `profile_deepseek_anthropic_v1`；`providerCode = gemini` 时原生档案可省略或输出 `profile_gemini_native_v1beta`，Gemini OpenAI Chat 必须输出 `profile_gemini_openai_chat_v1beta`。导入不得靠 `credentials.base_url` 猜测档案。
+- 导出必须为每个账户写出当前 `providerProtocolProfileId`，保证重新导入能还原到同一供应商协议档案；导入不得靠 `credentials.base_url`、供应商默认值或历史接入类型字段猜测档案。
 - 账户当前为 `pending_test` 时导出为 `status: "pending_test"`；账户当前为 `active` 且参与调度时导出为 `status: "active"`；其他运行态状态统一导出为 `status: "disabled"`。导入时 `active` 会按安全策略落成 `pending_test`，避免重新导入后直接参与调度。
 - 导出的 JSON 文件可以在“导入账户”弹窗中直接粘贴预览，再确认导入。
 
@@ -78,6 +78,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
       "ref": "openai-key-001",
       "name": "OpenAI 兼容 API Key 账号 1",
       "providerCode": "openai",
+      "providerProtocolProfileId": "profile_openai_openai_v1",
       "type": "api_key",
       "status": "active",
       "groupName": "默认 OpenAI 兼容分组",
@@ -96,6 +97,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
       "ref": "gpt-oauth-001",
       "name": "GPT OAuth 账号 1",
       "providerCode": "gpt",
+      "providerProtocolProfileId": "profile_gpt_openai_v1",
       "type": "oauth",
       "status": "active",
       "groupName": "默认 GPT 分组",
@@ -117,6 +119,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
       "ref": "anthropic-key-001",
       "name": "Anthropic Claude API Key 账号 1",
       "providerCode": "anthropic",
+      "providerProtocolProfileId": "profile_anthropic_anthropic_v1",
       "type": "api_key",
       "status": "active",
       "groupName": "默认 Anthropic 分组",
@@ -134,7 +137,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
       "ref": "glm-coding-001",
       "name": "智谱 GLM Coding 账号 1",
       "providerCode": "glm",
-      "connectionType": "coding_api_key",
+      "providerProtocolProfileId": "profile_glm_coding_openai_v1",
       "type": "api_key",
       "status": "active",
       "groupName": "默认 GLM 分组",
@@ -151,7 +154,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
       "ref": "glm-coding-anthropic-001",
       "name": "智谱 GLM Coding Anthropic 账号 1",
       "providerCode": "glm",
-      "connectionType": "coding_anthropic_api_key",
+      "providerProtocolProfileId": "profile_glm_coding_anthropic_v1",
       "type": "api_key",
       "status": "active",
       "groupName": "默认 GLM 分组",
@@ -244,8 +247,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 | `ref` | 否 | 导入预览和错误定位用，不写入数据库。 |
 | `name` | 是 | 账户名称，同一系统账户下不能重复。 |
 | `providerCode` | 是 | 当前支持 `openai`、`gpt`、`anthropic`、`glm`、`deepseek`、`gemini` 和 `hybrid`。`openai` 表示通用 OpenAI-compatible 供应商，`gpt` 表示 GPT 专属供应商，`anthropic` 表示官方 Anthropic Claude 供应商，`glm` 表示智谱 GLM 供应商，`deepseek` 表示 DeepSeek hosted API 供应商，`gemini` 表示 Google Gemini 供应商，`hybrid` 表示混合供应商真实上游账户。 |
-| `connectionType` | 否 | 同供应商多接入类型标识；当前只有 `glm` 使用，必须填 `general_api_key`、`coding_api_key` 或 `coding_anthropic_api_key`；其他供应商省略。 |
-| `providerProtocolProfileId` | 否 | 显式供应商协议档案。DeepSeek OpenAI-compatible 可省略并默认到 `profile_deepseek_openai_v1`；DeepSeek Claude Code 必须填写 `profile_deepseek_anthropic_v1`；Gemini 原生可省略并默认到 `profile_gemini_native_v1beta`，Gemini OpenAI Chat 必须填写 `profile_gemini_openai_chat_v1beta`；混合供应商省略或使用默认 `profile_hybrid_openai_chat_v1`；GLM 优先使用 `connectionType` 区分通用 API、Coding OpenAI Chat 与 Coding Anthropic。 |
+| `providerProtocolProfileId` | 是 | 显式供应商协议档案。常用值包括 `profile_openai_openai_v1`、`profile_gpt_openai_v1`、`profile_anthropic_anthropic_v1`、`profile_glm_general_openai_v1`、`profile_glm_coding_openai_v1`、`profile_glm_coding_anthropic_v1`、`profile_deepseek_openai_v1`、`profile_deepseek_anthropic_v1`、`profile_gemini_native_v1beta`、`profile_gemini_openai_chat_v1beta` 和混合供应商档案。 |
 | `type` | 是 | `api_key` 或 `oauth`。 |
 | `status` | 是 | `active`、`pending_test` 或 `disabled`；导入创建时 `active` 会转为 `pending_test`。 |
 | `groupId` | 二选一 | 绑定已有分组 ID；优先级高于 `groupName`。 |
@@ -359,17 +361,17 @@ OAuth 账户：
 - `providerCode = anthropic` 时只允许 `type = api_key`，且必须有 `credentials.api_key`。当前导入协议不接受 Anthropic OAuth、Setup Token、Claude Code token、`refresh_token` 或 `access_token`。
 - `providerCode = anthropic` 不接受 `credentials.anthropic_version` 或 `credentials.anthropic_beta`。`anthropic-version` 是客户端请求头，缺省时由网关按协议默认 `2023-06-01` 补齐；`anthropic-beta` 只透传客户端显式 header。
 - `providerCode = glm` 时只允许 `type = api_key`，且必须有 `credentials.api_key`。
-- `providerCode = glm` 时必须填写 `connectionType`；`general_api_key` 对应通用 GLM API，`coding_api_key` 对应 GLM Coding OpenAI Chat，`coding_anthropic_api_key` 对应 GLM Coding Anthropic。预览、确认导入和导出都必须支持该字段，保证 GLM 账户能 round-trip 回原协议档案。
-- `providerCode = glm` 且 `connectionType = coding_api_key` 时，账号只保存真实上游能力 `chat_json`、`chat_sse`；Codex Responses 桥接由混合供应商账户处理。
-- `providerCode = glm` 且 `connectionType = coding_anthropic_api_key` 时，`credentials.supported_endpoint_modes` 只保存 `messages_json`、`messages_sse`。
+- `providerCode = glm` 必须显式填写 `profile_glm_general_openai_v1`、`profile_glm_coding_openai_v1` 或 `profile_glm_coding_anthropic_v1`，分别表示通用 GLM API、GLM Coding OpenAI Chat 和 GLM Coding Anthropic。预览、确认导入和导出都按该字段 round-trip。
+- `providerCode = glm` 且 `providerProtocolProfileId = profile_glm_coding_openai_v1` 时，账号只保存真实上游能力 `chat_json`、`chat_sse`；Codex Responses 桥接由混合供应商账户处理。
+- `providerCode = glm` 且 `providerProtocolProfileId = profile_glm_coding_anthropic_v1` 时，`credentials.supported_endpoint_modes` 只保存 `messages_json`、`messages_sse`。
 - `providerCode = glm` 的通用 GLM API、GLM Coding OpenAI Chat 和 GLM Coding Anthropic 都要求 `credentials.base_url` 显式填写到对应协议档案可接受的根地址，不能依赖后端猜测。
 - NewAPI / OpenAI-compatible 聚合入口如果只给代理根地址，例如 `https://vsllm.com`，优先按通用 `providerCode = openai` 导入，OpenAI-compatible 档案会拼接 `/v1/chat/completions`；如果按 `providerCode = glm` 专用 OpenAI v1 档案导入，`credentials.base_url` 必须填写到该代理的 OpenAI v1 根，例如 `https://vsllm.com/v1`，不能只填站点根地址。
-- `providerCode = deepseek` 时只允许 `type = api_key`，且必须有 `credentials.api_key`。DeepSeek OpenAI-compatible 不使用 `connectionType`；省略 `providerProtocolProfileId` 时解析为 `profile_deepseek_openai_v1`。DeepSeek Claude Code 必须显式填写 `providerProtocolProfileId = profile_deepseek_anthropic_v1`。当前不接受 DeepSeek OAuth、Refresh Token、Setup Token 或 Claude Code token；Anthropic-compatible 只通过 API Key + 协议档案导入。
+- `providerCode = deepseek` 时只允许 `type = api_key`，且必须有 `credentials.api_key`。DeepSeek OpenAI-compatible 必须显式填写 `providerProtocolProfileId = profile_deepseek_openai_v1`；DeepSeek Claude Code 必须显式填写 `providerProtocolProfileId = profile_deepseek_anthropic_v1`。当前不接受 DeepSeek OAuth、Refresh Token、Setup Token 或 Claude Code token；Anthropic-compatible 只通过 API Key + 协议档案导入。
 - `providerCode = deepseek` 且 `providerProtocolProfileId = profile_deepseek_openai_v1` 时，`credentials.base_url` 默认建议填写 `https://api.deepseek.com`；如使用代理地址或专属部署地址，仍必须通过 SSRF 防护和 OpenAI-compatible base URL 校验。
 - `providerCode = deepseek` 且 `providerProtocolProfileId = profile_deepseek_anthropic_v1` 时，`credentials.base_url` 默认建议填写 `https://api.deepseek.com/anthropic`；使用 NewAPI 类代理时可以填写代理根地址，例如 `https://vsllm.com`。
 - `providerCode = deepseek` 且 `providerProtocolProfileId = profile_deepseek_openai_v1` 时，账号只保存真实上游能力 `chat_json`、`chat_sse`；Codex Responses 桥接由混合供应商账户处理。DeepSeek Claude Code 档案不使用这条规则。
 - DeepSeek beta 能力不能只靠导入 `base_url` 猜测启用，必须由后续明确 endpoint mode / 能力开关控制。
-- `providerCode = gemini` 时只允许 `type = api_key`，且必须有 `credentials.api_key`。省略 `providerProtocolProfileId` 时解析为 `profile_gemini_native_v1beta`；如需 OpenAI Chat / Codex Responses 使用 Gemini，必须填写 `providerProtocolProfileId = profile_gemini_openai_chat_v1beta`。Gemini native 下游如需使用 Gemini OpenAI Chat，请使用混合供应商账户，不要写入账户 `modelMappings`。
+- `providerCode = gemini` 时只允许 `type = api_key`，且必须有 `credentials.api_key`。Gemini 原生必须显式填写 `providerProtocolProfileId = profile_gemini_native_v1beta`；如需 OpenAI Chat / Codex Responses 使用 Gemini，必须填写 `providerProtocolProfileId = profile_gemini_openai_chat_v1beta`。Gemini native 下游如需使用 Gemini OpenAI Chat，请使用混合供应商账户，不要写入账户 `modelMappings`。
 - `providerCode = gemini` 且 `providerProtocolProfileId = profile_gemini_native_v1beta` 时，`credentials.base_url` 默认建议填写 `https://generativelanguage.googleapis.com`，`credentials.supported_endpoint_modes` 使用 `generate_content_json`、`generate_content_sse`、`count_tokens`、`embed_content`，不配置 OpenAI / Anthropic 跨协议模型映射。
 - `providerCode = gemini` 且 `providerProtocolProfileId = profile_gemini_openai_chat_v1beta` 时，`credentials.base_url` 默认建议填写 `https://generativelanguage.googleapis.com/v1beta/openai`，`credentials.supported_endpoint_modes` 使用 `chat_json`、`chat_sse`；如需 Codex 使用 Gemini 或 Gemini native 下游使用 Gemini OpenAI Chat，请使用混合供应商账户。该档案不接受 Anthropic Messages 来源的账户模型别名。
 - `providerCode = hybrid` 时只允许 `type = api_key`，且必须有 `credentials.api_key`。混合供应商账户是真实 AI 账户，不能填写目标账户 ID、目标分组 ID 或 API Key 级路由规则。

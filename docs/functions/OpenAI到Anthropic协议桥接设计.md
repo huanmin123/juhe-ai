@@ -40,7 +40,7 @@ v1 必须承接：
 
 - Chat / Responses JSON 和 SSE 四类入口的文本、usage、错误和结束事件外形。
 - system / developer / instructions / name、基础生成控制、metadata / user / safety_identifier。
-- function tools 新版 / legacy 请求、工具历史、工具结果、JSON 回包和 SSE delta。
+- function tools、工具历史、工具结果、JSON 回包和 SSE delta；Chat legacy `functions/function_call` 不再承接。
 - 当前能力矩阵列出的图片、PDF / text 文件、`file_id` resolver、structured output、reasoning summary、`previous_response_id` 和 compact summary。
 
 v1 不强制承接：
@@ -95,14 +95,12 @@ v1 不强制承接：
 | `messages[].role=developer` | 顶层 `system` | 作为系统约束合并，标记来源为 developer |
 | `messages[].name` | 对应消息文本前缀 | Anthropic Messages 无 Chat `name` 顶层字段；非空 `name` 以 `参与者: <name>` 前缀保留在该条 user / assistant 文本内容中，不作为上游字段透传 |
 | `messages[].role=user` | `messages[].role=user` | text / image content block 转换；`image_url.url` 支持普通 URL / 图片 data URL，非图片 MIME 或非法 base64 本地拒绝且不请求 Anthropic |
-| `messages[].role=assistant` | `messages[].role=assistant` | 普通文本转 text block；新版 `tool_calls` 按客户端数组顺序转 tool_use block；旧版 `function_call` 在没有新版 `tool_calls` 时生成带网关合成 id 的 tool_use block；`function.arguments` 为 JSON object 时原样进入 Anthropic `input`，数组 / 标量 JSON 进入 `openai_arguments`，非法 JSON 进入 `openai_arguments_text` |
+| `messages[].role=assistant` | `messages[].role=assistant` | 普通文本转 text block；`tool_calls` 按客户端数组顺序转 tool_use block；`function.arguments` 为 JSON object 时原样进入 Anthropic `input`，数组 / 标量 JSON 进入 `openai_arguments`，非法 JSON 进入 `openai_arguments_text` |
 | `messages[].role=tool` | `messages[].role=user` + `tool_result` | 用 `tool_call_id` 关联 Anthropic `tool_use_id`；多条工具结果按消息顺序保留，不能重排到对应 assistant 后或按 call id 排序 |
-| `messages[].role=function` | `messages[].role=user` + `tool_result` | 旧版 Chat 函数结果按 `name` 匹配最近一个未完成的旧版 `assistant.function_call` 合成 id；缺少 `name`、无匹配调用或重复返回时本地 OpenAI 错误拒绝 |
 | `tools[].type=function` | `tools[]` | 转为 Anthropic tool schema |
-| legacy `functions[]` | `tools[]` | 未提供新版 `tools` 时按 function tool schema 转换；同时存在 `tools` 和 `functions` 时以 `tools` 为准 |
 | `tools[].type=web_search` / 搜索模型 | 不做本地预取模拟 | Anthropic 上游没有在本 bridge 中声明原生等价能力时，返回正常 agent guidance 且不请求上游 |
 | `tool_choice` | `tool_choice` | 支持 `auto`、`none`、`required`、指定 function name |
-| legacy `function_call` | `tool_choice` | 未提供新版 `tool_choice` 时承接 `auto`、`none`、`{ name }`；同时存在新旧字段时以 `tool_choice` 为准 |
+| Chat legacy `functions` / `function_call` / `role=function` / `assistant.function_call` | 本地拒绝 | 这些旧 Chat 函数字段不再做桥接兼容；客户端必须使用 `tools`、`tool_choice`、`assistant.tool_calls` 和 `role=tool` |
 | `max_completion_tokens` / `max_tokens` | `max_tokens` | 优先使用 OpenAI 显式值；缺失时由桥接层补默认上限 |
 | `temperature`、`top_p`、`stop` | 同名或等价字段 | 能等价表达时透传；Anthropic 无等价语义或范围不一致的控制项按能力矩阵本地拒绝 |
 | `metadata` / `user` / `safety_identifier` / `prompt_cache_key` | Anthropic `metadata.user_id` 或网关本地信号 | `safety_identifier` 优先映射为 `metadata.user_id`，缺失时使用 `user`；业务 `metadata` 和 `prompt_cache_key` 不透传到 Anthropic |
@@ -185,10 +183,10 @@ Anthropic JSON 响应要渲染为 OpenAI Chat Completions JSON：
 
 - `content[].type=text` 合并为 `choices[0].message.content`。
 - `content[].type=thinking` 可进入审计和 usage，默认不混入普通 content；如需可见 reasoning，按当前 OpenAI-compatible reasoning 字段策略输出。
-- `content[].type=tool_use` 默认转为 `choices[0].message.tool_calls[]`；如果下游请求使用 legacy `functions[]` / `function_call` 且没有新版 `tools/tool_choice`，JSON 回包恢复为 `choices[0].message.function_call`。
+- `content[].type=tool_use` 转为 `choices[0].message.tool_calls[]`。
 - `stop_reason=end_turn` 映射 `finish_reason=stop`。
 - `stop_reason=max_tokens` 映射 `finish_reason=length`。
-- `stop_reason=tool_use` 默认映射 `finish_reason=tool_calls`；legacy function 回包映射为 `finish_reason=function_call`。
+- `stop_reason=tool_use` 映射 `finish_reason=tool_calls`。
 - Anthropic usage 映射到 Chat `usage`，同时保留 Anthropic cache / thinking 扩展到使用记录。
 
 ### 7.2 Messages SSE 到 Chat SSE
@@ -197,7 +195,7 @@ Anthropic SSE 事件要渲染为 Chat Completions SSE：
 
 - `message_start` 生成首个 `chat.completion.chunk` 角色 delta。
 - `content_block_delta.text_delta` 生成 `delta.content`。
-- `content_block_start/tool_use` 和 `input_json_delta` 默认累积为 Chat `delta.tool_calls` 参数分片；legacy `functions[]` / `function_call` 请求且无新版 `tools/tool_choice` 时，恢复为旧版 Chat `delta.function_call.name` / `delta.function_call.arguments` 单工具流式形态。
+- `content_block_start/tool_use` 和 `input_json_delta` 累积为 Chat `delta.tool_calls` 参数分片。
 - `message_delta.usage` 更新 usage。
 - `message_stop` 输出最终 finish chunk 和 `[DONE]`。
 - `event: error` 在尚未写下游可见事件前允许服务端换号；已写出后按 Chat SSE 错误策略输出或中止。
@@ -295,7 +293,7 @@ Chat 入口示例：
 保存校验：
 
 - `sourceEndpointFamily` 允许 `chat_completions` 或 `responses`。
-- `targetGroupId` 必须是当前 API Key 已绑定且启用的目标分组。
+- `targetGroupId` 必须是当前 API Key 所选路由策略已绑定且启用的目标分组。
 - `upstreamEndpointFamily = messages` 只允许目标分组协议档案为 Anthropic v1 Messages。
 - Anthropic 官方目标分组的 `upstreamModel` 必须来自 Anthropic 模型目录或目标账号支持模型。
 - Anthropic-compatible 第三方目标分组的 `upstreamModel` 必须来自该供应商模型目录或目标账号支持模型。
@@ -364,7 +362,7 @@ mock 回归必须覆盖：
 | 图片 / 文件输入 | Chat image_url、Responses input_image、Chat/Responses inline PDF / text/* 文件、Responses PDF URL、本地 `/v1/files` 上传后的 file_id 转 Anthropic image / document block；图片 file_id 非图片 MIME / 非法 base64、文件非法 base64、不支持 MIME、Chat file_url、Responses 非 PDF URL、Chat / Responses 未知或不支持 MIME 的 file_id 本地失败且不上游 |
 | JSON 输出 | JSON object / JSON schema 的受控支持与不支持错误 |
 | 错误转换 | Anthropic JSON error、SSE `event:error` 和本地桥接错误按下游协议渲染 |
-| 路由 | API Key 绑定多分组时，OpenAI 请求可命中 Anthropic 映射账号 |
+| 路由 | API Key 所选路由策略绑定多分组时，OpenAI 请求可命中 Anthropic 映射账号 |
 | 混合路由 | 混合 API Key 选择 Anthropic 目标模型时可通过桥接承接当前 OpenAI 请求 |
 | Responses 状态 | `previous_response_id` 成功续链、未知 id 受控拒绝、跨分组拒绝 |
 | compact | `/responses/compact` 走本地 Anthropic Messages 摘要，不透传上游 |

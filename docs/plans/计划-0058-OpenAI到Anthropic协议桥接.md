@@ -134,8 +134,8 @@
 ## 验证记录
 
 - 类型检查：已通过 `pnpm --dir backend typecheck`、`pnpm --dir frontend typecheck`。
-- Mock 回归：已通过 `pnpm --dir backend test:openai-anthropic-bridge-mock`、`test:anthropic-gateway-mock-ai`、`test:deepseek-gateway-mock-ai`、`test:glm-gateway-mock-ai`、`test:hybrid-gateway-mock-ai`、`test:codex-client-strategy`。
-- 真实联调：已通过 `pnpm --dir backend test:openai-anthropic-bridge-real`；上游 base URL 为 `https://vsllm.com`，上游模型为 `claude-sonnet-4-6`，下游源模型为 `gpt-5.5`，覆盖 Chat JSON、Chat SSE、Responses JSON、Responses SSE。
+- Mock 回归：已通过 `pnpm --dir backend test:protocol-boundary-openai-anthropic`、`test:anthropic-gateway-mock-ai`、`test:deepseek-gateway-mock-ai`、`test:glm-gateway-mock-ai`、`test:hybrid-gateway-mock-ai`、`test:codex-client-strategy`。
+- 真实联调：已通过 `pnpm --dir backend test:anthropic-real-gateway-e2e`；上游 base URL 为 `https://vsllm.com`，上游模型为 `claude-sonnet-4-6`，下游源模型为 `gpt-5.5`，覆盖 Chat JSON、Chat SSE、Responses JSON、Responses SSE。
 - 凭据检查：真实 API Key 只通过临时环境变量传入；完成后使用固定前缀扫描 `backend`、`frontend`、`docs`、`package.json`、`pnpm-lock.yaml`，未命中。
 - 未验证项：OpenAI hosted tools、MCP、computer、image_generation、code_interpreter、file_search、web_search 不纳入首版；非 2xx JSON 上游错误由既有账号错误与重试策略处理，不作为 bridge 透传断言。
 

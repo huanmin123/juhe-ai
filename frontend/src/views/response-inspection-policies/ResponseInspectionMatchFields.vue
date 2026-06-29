@@ -10,16 +10,6 @@
         allow-clear
       />
     </a-form-item>
-    <a-form-item label="账号兼容能力" tooltip="按账号声明的客户端兼容能力过滤规则适用范围；不选表示不限制。">
-      <a-select
-        v-model:value="form.accountClientCompatibilities"
-        :disabled="disabled"
-        :options="responseInspectionAccountCompatibilityOptions"
-        mode="multiple"
-        placeholder="不限兼容能力"
-        allow-clear
-      />
-    </a-form-item>
     <a-form-item label="输出文本包含" tooltip="匹配模型正常输出文本中的关键词，适合识别广告、污染内容或固定异常提示。">
       <a-textarea v-model:value="form.outputTextIncludes" :disabled="disabled" :rows="1" auto-size placeholder="广告关键词, 异常提示" />
     </a-form-item>
@@ -49,7 +39,6 @@
 
 <script setup lang="ts">
 import {
-  responseInspectionAccountCompatibilityOptions,
   responseInspectionClientProfileOptions,
   type ResponseInspectionMatchFormFields
 } from './responseInspectionPolicyForm'

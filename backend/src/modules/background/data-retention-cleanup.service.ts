@@ -129,11 +129,7 @@ export async function cleanupExpiredRetainedData(): Promise<DataRetentionCleanup
     return emptyCleanupResult()
   }
   if (runtimeConfig.databaseDriver === 'postgres') {
-    logger.info({
-      event: 'data_retention_cleanup_skipped_postgres_mode',
-      workerRole: runtimeConfig.workerRole
-    }, '高性能模式不运行单机数据保留清理 worker；请使用 PG-aware 数据维护任务清理非业务数据')
-    return emptyCleanupResult()
+    throw new Error('高性能模式禁止运行单机数据保留清理 worker；请使用 PostgreSQL 数据维护任务清理非业务数据，禁止静默跳过或回落 SQLite 清理链路')
   }
 
   cleanupRunning = true

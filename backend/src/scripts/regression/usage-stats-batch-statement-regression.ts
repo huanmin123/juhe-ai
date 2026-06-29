@@ -26,12 +26,12 @@ const [databaseModule, repositories, usageStatsRepository] = await Promise.all([
 
 try {
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
-  const group = repositories.createGroup({ name: '统计批量 statement 分组', providerCode: 'gpt' }, access)
+  const group = repositories.createGroup({ name: '统计批量 statement 分组', providerCode: 'gpt', providerProtocolProfileId: 'profile_gpt_openai_v1' }, access)
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '统计批量 statement Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
   }, access)
-  const mixedGroup = repositories.createGroup({ name: '统计账号类型合并分组', providerCode: 'gpt' }, access)
+  const mixedGroup = repositories.createGroup({ name: '统计账号类型合并分组', providerCode: 'gpt', providerProtocolProfileId: 'profile_gpt_openai_v1' }, access)
   const mixedApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '统计账号类型合并 Key',
     groupBindings: [{ groupId: mixedGroup.id, priority: 1, status: 'active' }],

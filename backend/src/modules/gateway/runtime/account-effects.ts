@@ -87,15 +87,14 @@ export function handleStreamFailure(
   const isolateAccountApiKeyFailure = Boolean(account.selectedApiKeyFingerprint)
   if (context.protocolFailureEventReceived) {
     getRequestLogger().info({
-      event: 'gateway_stream_protocol_failure_without_account_suppression',
+      event: 'gateway_stream_protocol_failure_account_side_effects_enabled',
       accountId: account.id,
       accountName: account.name,
       errorCode,
       reason,
       downstreamBytesWritten: context.downstreamBytesWritten,
       outputReceived: context.outputReceived
-    }, '流式响应收到协议失败事件，已按本次失败返回客户端但不隔离账号')
-    return
+    }, '流式响应收到协议失败事件，继续进入账号运行态处理')
   }
   if (usageContext?.trafficSource === 'gateway') {
     if (!shouldApplyGatewayStreamFailureAccountSideEffects(context)) {

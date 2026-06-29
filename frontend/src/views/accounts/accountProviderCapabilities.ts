@@ -99,9 +99,8 @@ export function effectiveAccountTestClientCompatibility(
   if (account.type === 'oauth' && accountProviderProtocolKind(account) === 'openai_v1') {
     return 'codex_responses'
   }
-  return clientCompatibility === 'account_default'
-    ? account.clientCompatibility ?? 'openai_standard'
-    : clientCompatibility
+  if (clientCompatibility !== 'account_default') return clientCompatibility
+  return 'openai_standard'
 }
 
 export function isGatewayTestableAccountProfile(profile?: AccountProviderProfileLike): boolean {
@@ -114,7 +113,6 @@ export function canSelectClientCompatibility(account: AccountProviderProfileLike
     && (
       isGptVendorCode(account.providerCode)
       || profileSupportsCodexResponsesChatBridge(account)
-      || account.clientCompatibility === 'codex_responses'
     )
 }
 
@@ -136,7 +134,6 @@ export function accountClientCompatibilityCapabilities(account: AccountProviderP
   }
   return isGptVendorCode(account.providerCode)
     || profileSupportsCodexResponsesChatBridge(account)
-    || account.clientCompatibility === 'codex_responses'
     ? ['openai_standard', 'codex_responses']
     : ['openai_standard']
 }

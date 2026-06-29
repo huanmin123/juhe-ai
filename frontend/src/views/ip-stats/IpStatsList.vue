@@ -135,8 +135,24 @@
         </div>
         <div class="ip-mobile-actions">
           <a-button size="small" @click="emitDetail(record)">详情</a-button>
-          <a-button v-if="record.status === 'blacklisted'" size="small" @click="emitPolicyAction(record, 'unblock')">解封</a-button>
-          <a-button v-else size="small" danger @click="emitPolicyAction(record, 'blacklist')">封禁</a-button>
+          <a-popconfirm
+            v-if="record.status === 'blacklisted'"
+            title="确认解除这个 IP 的封禁？"
+            ok-text="解封"
+            cancel-text="取消"
+            @confirm="emitPolicyAction(record, 'unblock')"
+          >
+            <a-button size="small">解封</a-button>
+          </a-popconfirm>
+          <a-popconfirm
+            v-else
+            title="确认封禁这个 IP？封禁后该 IP 的公开请求会被拒绝。"
+            ok-text="封禁"
+            cancel-text="取消"
+            @confirm="emitPolicyAction(record, 'blacklist')"
+          >
+            <a-button size="small" danger>封禁</a-button>
+          </a-popconfirm>
         </div>
       </article>
     </template>

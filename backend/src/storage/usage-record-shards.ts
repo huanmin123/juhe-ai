@@ -572,20 +572,11 @@ export function queryUsageRecordShardById<T extends Record<string, unknown>>(
   params: SQLInputValue[] = [],
   createdAt?: string
 ): T | undefined {
-  const directLocation = usageRecordShardLocationForLookup(id, createdAt)
-  if (directLocation) {
-    const row = queryUsageRecordShardAtLocation<T>(directLocation, selectSql, params)
-    if (row) {
-      return row
-    }
-  }
-  const fallbackLocation = directLocation
-    ? findRegisteredUsageRecordShardLocationByKey(directLocation.shardKey)
-    : findUsageRecordShardLocationByUsageId(id)
-  if (!fallbackLocation) {
+  const location = usageRecordShardLocationForLookup(id, createdAt)
+  if (!location) {
     return undefined
   }
-  return queryUsageRecordShardAtLocation<T>(fallbackLocation, selectSql, params)
+  return queryUsageRecordShardAtLocation<T>(location, selectSql, params)
 }
 
 export function updateUsageRecordCacheReadCost(input: {
@@ -596,7 +587,7 @@ export function updateUsageRecordCacheReadCost(input: {
 }): void {
   const location = input.sourceShardKey
     ? findRegisteredUsageRecordShardLocationByKey(input.sourceShardKey)
-    : usageRecordShardLocationForLookup(input.id, input.createdAt) ?? findUsageRecordShardLocationByUsageId(input.id)
+    : usageRecordShardLocationForLookup(input.id, input.createdAt)
   if (!location) {
     return
   }
@@ -1045,13 +1036,6 @@ function usageRecordShardLocationForLookup(id: string, createdAt?: string): Usag
     return undefined
   }
   return usageRecordShardLocationForRecord(id, createdAt)
-}
-
-function findUsageRecordShardLocationByUsageId(id: string): UsageRecordShardLocation | undefined {
-  const row = getUsageCatalogDatabase()
-    .prepare('SELECT shard_key FROM usage_record_shard_entries WHERE usage_id = ? LIMIT 1')
-    .get(id) as { shard_key?: string } | undefined
-  return row?.shard_key ? findRegisteredUsageRecordShardLocationByKey(row.shard_key) : undefined
 }
 
 function findRegisteredUsageRecordShardLocationByKey(shardKey: string): UsageRecordShardLocation | undefined {

@@ -22,36 +22,12 @@ interface LocalApiKeySuppression {
   reason?: string
 }
 
-interface ApiKeyFailureStorm {
-  accountId: string
-  keyFingerprint: string
-  keyIndex?: number
-  status: FailureStatus
-  firstSeenMs: number
-  lastSeenMs: number
-  failureCount: number
-  clientIps: Set<string>
-  apiKeyIds: Set<string>
-  reason?: string
-}
-
 interface ApiKeySuccessObservation {
   accountId: string
   keyFingerprint: string
   firstSeenMs: number
   lastSeenMs: number
   successCount: number
-}
-
-interface ApiKeyFailureStormDecision {
-  trigger: boolean
-  successCount: number
-  failureRatio: number
-  skippedReason?:
-    | 'below_threshold'
-    | 'observation_window'
-    | 'recent_success'
-    | 'failure_ratio'
 }
 
 export interface GatewayAccountApiKeyFailureGuardInput {
@@ -71,8 +47,6 @@ export interface GatewayAccountApiKeyFailureGuardDecision {
     | 'not_selected_api_key'
     | 'non_gateway_traffic'
     | 'gateway_local_only'
-    | 'failure_storm_confirmed'
-    | 'failure_storm_pending'
   failureCount?: number
   distinctClientIpCount?: number
   distinctApiKeyCount?: number
@@ -99,14 +73,8 @@ export interface GatewayAccountApiKeyFailureGuardSnapshotEntry {
 const localSuppressionDelayMs = [3_000, 5_000, 10_000] as const
 const localSuppressionMaxMs = 10 * 60_000
 const failureStormWindowMs = 10_000
-const failureStormThresholdCount = 5
-const failureStormDistinctIpThreshold = 2
-const failureStormMinObservationMs = 2_000
-const failureStormRecentSuccessGraceMs = 5_000
-const failureStormFailureRatioThreshold = 0.9
 
 const localApiKeySuppressions = new Map<string, LocalApiKeySuppression>()
-const apiKeyFailureStorms = new Map<string, ApiKeyFailureStorm>()
 const apiKeySuccessObservations = new Map<string, ApiKeySuccessObservation>()
 
 export function recordGatewayAccountApiKeyFailureGuard(
@@ -126,28 +94,6 @@ export function recordGatewayAccountApiKeyFailureGuard(
 
   rememberLocalApiKeySuppression(target, status, input.errorMessage)
   return { persist: false, reason: 'gateway_local_only' }
-
-  const storm = rememberApiKeyFailureStorm(target, status, input)
-  const decision = shouldPersistApiKeyFailureStorm(target, storm)
-  const metadata = {
-    failureCount: storm.failureCount,
-    distinctClientIpCount: storm.clientIps.size,
-    distinctApiKeyCount: storm.apiKeyIds.size,
-    successCount: decision.successCount,
-    failureRatio: decision.failureRatio
-  }
-  if (decision.trigger) {
-    return {
-      persist: true,
-      reason: 'failure_storm_confirmed',
-      ...metadata
-    }
-  }
-  return {
-    persist: false,
-    reason: 'failure_storm_pending',
-    ...metadata
-  }
 }
 
 export function recordGatewayAccountApiKeyLocalFailureGuard(
@@ -169,8 +115,7 @@ export function clearGatewayAccountApiKeyFailureGuard(account: OpenAIAccountSecr
   }
   const key = runtimeKey(target)
   const clearedLocal = localApiKeySuppressions.delete(key)
-  const clearedStorm = apiKeyFailureStorms.delete(key)
-  return clearedLocal || clearedStorm
+  return clearedLocal
 }
 
 export function recordGatewayAccountApiKeySuccessGuard(account: OpenAIAccountSecret): boolean {
@@ -206,7 +151,6 @@ export function localAccountApiKeyRuntimeStatesForDispatch(accountId: string): A
 
 export function clearGatewayAccountApiKeyFailureGuardsForTest(): void {
   localApiKeySuppressions.clear()
-  apiKeyFailureStorms.clear()
   apiKeySuccessObservations.clear()
 }
 
@@ -214,16 +158,12 @@ export function getGatewayAccountApiKeyFailureGuardSnapshotForTest(): GatewayAcc
   cleanupExpiredApiKeyRuntimeState()
   const now = Date.now()
   const output: GatewayAccountApiKeyFailureGuardSnapshotEntry[] = []
-  for (const [key, suppression] of localApiKeySuppressions.entries()) {
-    const storm = apiKeyFailureStorms.get(key)
+  for (const suppression of localApiKeySuppressions.values()) {
     output.push({
       accountId: suppression.accountId,
       keyFingerprint: suppression.keyFingerprint,
       status: suppression.status,
       localFailureCount: suppression.failureCount,
-      stormFailureCount: storm?.failureCount,
-      distinctClientIpCount: storm?.clientIps.size,
-      distinctApiKeyCount: storm?.apiKeyIds.size,
       suppressed: suppression.suppressUntilMs > now
     })
   }
@@ -254,44 +194,6 @@ function rememberLocalApiKeySuppression(
   })
 }
 
-function rememberApiKeyFailureStorm(
-  target: AccountApiKeyRuntimeTarget,
-  status: FailureStatus,
-  input: GatewayAccountApiKeyFailureGuardInput
-): ApiKeyFailureStorm {
-  cleanupExpiredApiKeyRuntimeState()
-  const now = Date.now()
-  const key = runtimeKey(target)
-  const current = apiKeyFailureStorms.get(key)
-  const storm: ApiKeyFailureStorm = current && now - current.firstSeenMs <= failureStormWindowMs
-    ? current
-    : {
-        accountId: target.accountId,
-        keyFingerprint: target.keyFingerprint,
-        keyIndex: target.keyIndex,
-        status,
-        firstSeenMs: now,
-        lastSeenMs: now,
-        failureCount: 0,
-        clientIps: new Set<string>(),
-        apiKeyIds: new Set<string>()
-      }
-  storm.status = status
-  storm.failureCount += 1
-  storm.lastSeenMs = now
-  storm.reason = input.errorMessage
-  const clientIp = input.clientIp?.trim()
-  if (clientIp) {
-    storm.clientIps.add(clientIp)
-  }
-  const apiKeyId = input.apiKeyId?.trim()
-  if (apiKeyId) {
-    storm.apiKeyIds.add(apiKeyId)
-  }
-  apiKeyFailureStorms.set(key, storm)
-  return storm
-}
-
 function rememberApiKeySuccessObservation(target: AccountApiKeyRuntimeTarget): void {
   cleanupExpiredApiKeyRuntimeState()
   const now = Date.now()
@@ -311,41 +213,11 @@ function rememberApiKeySuccessObservation(target: AccountApiKeyRuntimeTarget): v
   apiKeySuccessObservations.set(key, observation)
 }
 
-function shouldPersistApiKeyFailureStorm(
-  target: AccountApiKeyRuntimeTarget,
-  storm: ApiKeyFailureStorm
-): ApiKeyFailureStormDecision {
-  const now = Date.now()
-  const successObservation = apiKeySuccessObservations.get(runtimeKey(target))
-  const successCount = successObservation?.successCount ?? 0
-  const total = storm.failureCount + successCount
-  const failureRatio = total > 0 ? storm.failureCount / total : 1
-
-  if (storm.failureCount < failureStormThresholdCount || storm.clientIps.size < failureStormDistinctIpThreshold) {
-    return { trigger: false, successCount, failureRatio, skippedReason: 'below_threshold' }
-  }
-  if (now - storm.firstSeenMs < failureStormMinObservationMs) {
-    return { trigger: false, successCount, failureRatio, skippedReason: 'observation_window' }
-  }
-  if (successObservation && now - successObservation.lastSeenMs <= failureStormRecentSuccessGraceMs) {
-    return { trigger: false, successCount, failureRatio, skippedReason: 'recent_success' }
-  }
-  if (failureRatio < failureStormFailureRatioThreshold) {
-    return { trigger: false, successCount, failureRatio, skippedReason: 'failure_ratio' }
-  }
-  return { trigger: true, successCount, failureRatio }
-}
-
 function cleanupExpiredApiKeyRuntimeState(): void {
   const now = Date.now()
   for (const [key, suppression] of localApiKeySuppressions.entries()) {
     if (suppression.suppressUntilMs <= now) {
       localApiKeySuppressions.delete(key)
-    }
-  }
-  for (const [key, storm] of apiKeyFailureStorms.entries()) {
-    if (now - storm.lastSeenMs > failureStormWindowMs) {
-      apiKeyFailureStorms.delete(key)
     }
   }
   for (const [key, observation] of apiKeySuccessObservations.entries()) {

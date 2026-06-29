@@ -23,7 +23,22 @@ assert.doesNotMatch(recordMaintenanceSource, /cleanupProcessedUsageRecordsBefore
 const dataRetentionCleanupSource = source('../../modules/background/data-retention-cleanup.service.ts')
 assert.match(dataRetentionCleanupSource, /cleanupProcessedUsageRecordsBeforeWithResultAsync/, '数据保留 worker usage 清理必须调用 PG-aware 异步入口')
 assert.doesNotMatch(dataRetentionCleanupSource, /cleanupProcessedUsageRecordsBeforeWithResult\(/, '数据保留 worker 不能直接调用同步 SQLite usage 清理入口')
-assert.match(dataRetentionCleanupSource, /data_retention_cleanup_skipped_postgres_mode/, '高性能模式必须跳过单机数据保留 worker，避免误触发 SQLite 清理链路')
+assert.doesNotMatch(dataRetentionCleanupSource, /data_retention_cleanup_skipped_postgres_mode/, '高性能模式数据保留 worker 不能静默跳过')
+assert.match(dataRetentionCleanupSource, /runtimeConfig\.databaseDriver === 'postgres'[\s\S]*throw new Error/, '高性能模式数据保留 worker 不能返回空清理结果，必须 fail-fast')
+
+const dataRetentionHardCleanupSource = source('../../storage/data-retention-hard-cleanup.ts')
+assert.doesNotMatch(dataRetentionHardCleanupSource, /sqlite_schema|discoverHardCleanupTableRules|hardCleanupRuleForTable|hardCleanupPreferredRuleByTable/, '非业务硬清理不能运行时探测 SQLite schema 后只清理已发现表')
+assert.match(dataRetentionHardCleanupSource, /nonBusinessCleanupTablesByRole/, '非业务硬清理必须按当前 schema 固定清单执行')
+
+const backgroundStatsWriterSource = source('../../modules/background/background-stats-writer.ts')
+assert.doesNotMatch(backgroundStatsWriterSource, /skippedPostgres|background_stats_writer_postgres_operation_skipped|高性能模式暂跳过|return \[\]/, 'PG 模式 stats-writer 不能对未实现统计维护操作静默跳过或返回模拟成功结果')
+assert.match(backgroundStatsWriterSource, /case 'refresh_account_quality':[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*throw postgresStatsWriterOperationNotImplemented\(operation\.type\)/, 'PG 模式账户质量刷新未实现时必须 fail-fast')
+assert.match(backgroundStatsWriterSource, /case 'check_usage_stats_consistency':[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*throw postgresStatsWriterOperationNotImplemented\(operation\.type\)/, 'PG 模式统计一致性校验未实现时必须 fail-fast')
+assert.match(backgroundStatsWriterSource, /case 'collect_table_storage_snapshot':[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*throw postgresStatsWriterOperationNotImplemented\(operation\.type\)/, 'PG 模式表容量采样未实现时必须 fail-fast')
+assert.match(backgroundStatsWriterSource, /case 'cleanup_usage_stats_retention':[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*throw postgresStatsWriterOperationNotImplemented\(operation\.type\)/, 'PG 模式统计保留清理未实现时不能回落 SQLite')
+assert.match(backgroundStatsWriterSource, /case 'cleanup_system_metrics_retention':[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*throw postgresStatsWriterOperationNotImplemented\(operation\.type\)/, 'PG 模式系统指标保留清理未实现时不能回落 SQLite')
+assert.match(backgroundStatsWriterSource, /case 'cleanup_table_storage_snapshots_retention':[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*throw postgresStatsWriterOperationNotImplemented\(operation\.type\)/, 'PG 模式表容量快照保留清理未实现时不能回落 SQLite')
+assert.match(backgroundStatsWriterSource, /case 'upsert_account_usage_snapshots':[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*upsertAccountUsageSnapshotsAsync/, 'PG 模式账号用量快照必须写入 PostgreSQL stats 表，不能回落到 SQLite 快照实现')
 
 const sqliteDatabaseSource = source('../../storage/database.ts')
 assert.doesNotMatch(sqliteDatabaseSource, /import\s+\{[^}]*DatabaseSync[^}]*\}\s+from ['"]node:sqlite['"]/, '高性能模式可导入的 database.ts 不能顶层加载 node:sqlite')

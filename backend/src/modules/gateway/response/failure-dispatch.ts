@@ -48,12 +48,6 @@ import {
 } from '../runtime/proxy-health.service.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import {
-  decideGatewayCompatibilityRecovery,
-  recordGatewayCompatibilityRecoveryDecision,
-  type GatewayCompatibilityRecoveryState
-} from '../client-profiles/compatibility-policy.js'
-import {
-  isGatewayProtocolEndpointCapabilityFailure,
   parseGatewayProtocolErrorPayload
 } from '../protocols/registry.js'
 
@@ -84,8 +78,6 @@ interface HandleFailedUpstreamResponseInput {
   clientIpAccountAvoidanceTracker?: ClientIpAccountAvoidanceTracker
   accountStateMutationEnabled?: boolean
   retrySameAccount?: boolean
-  requestBody?: Buffer | string
-  compatibilityRecoveryState?: GatewayCompatibilityRecoveryState
 }
 
 interface HandleUpstreamRequestErrorInput {
@@ -111,7 +103,6 @@ interface HandleUpstreamRequestErrorInput {
 
 type HandleFailedUpstreamResponseResult =
   | { action: 'retry' | 'skip_account'; lastAttempt: UpstreamAttempt; keyScopedFailure?: boolean; pendingApiKeyFailure?: PendingAccountApiKeyFailure }
-  | { action: 'retry_with_body_variant'; lastAttempt: UpstreamAttempt; body: Buffer }
 
 export interface PendingAccountApiKeyFailure {
   account: UpstreamAccount
@@ -225,29 +216,8 @@ export async function handleFailedUpstreamResponse(
   if (!responseBodyRead.truncated) {
     parsedError = parseGatewayProtocolErrorPayload(account, responseBodyText, response.headers)
   }
-  if (!responseBodyRead.truncated && input.compatibilityRecoveryState) {
-    const compatibilityRecovery = await decideGatewayCompatibilityRecovery({
-      req,
-      account,
-      upstreamUrl,
-      body: input.requestBody,
-      responseBodyText,
-      parsedError,
-      recoveryState: input.compatibilityRecoveryState,
-      signal
-    })
-    recordGatewayCompatibilityRecoveryDecision(auditCapture, compatibilityRecovery)
-    if (compatibilityRecovery.action === 'retry_with_body_variant') {
-      return {
-        action: 'retry_with_body_variant',
-        lastAttempt,
-        body: compatibilityRecovery.body
-      }
-    }
-  }
   const parsedErrorMessage = stringValue(parsedError.message)
   const diagnosticErrorMessage = diagnosticResponseBodyText
-  const endpointCapabilityFailure = isEndpointCapabilityFailure(req, account, response.status)
   if (input.retrySameAccount) {
     auditCapture.addGatewayMetadata({
       label: 'same_account_retry_response_failed',
@@ -262,22 +232,9 @@ export async function handleFailedUpstreamResponse(
     return { action: 'retry', lastAttempt }
   }
 
-  if (!endpointCapabilityFailure) {
-    forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
-  }
-  if (endpointCapabilityFailure) {
-    auditCapture.addGatewayMetadata({
-      label: 'endpoint_capability_response_failed',
-      metadata: {
-        accountId: account.id,
-        upstreamUrl: safeUpstreamUrl,
-        statusCode: response.status,
-        endpoint: requestEndpoint(req)
-      }
-    })
-  }
+  forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
 
-  const accountStateMutationEnabled = input.accountStateMutationEnabled !== false && !endpointCapabilityFailure
+  const accountStateMutationEnabled = input.accountStateMutationEnabled !== false
   const isolateAccountApiKeyFailure = Boolean(account.selectedApiKeyFingerprint)
   const responseKeyFailoverEligible = accountStateMutationEnabled
     && isolateAccountApiKeyFailure
@@ -318,16 +275,14 @@ export async function handleFailedUpstreamResponse(
     }
   }
 
-  if (!endpointCapabilityFailure) {
-    rememberClientIpAccountPendingFailure(clientIpAccountAvoidanceTracker, account, {
-      statusCode: response.status,
-      errorCode: stringValue(parsedError.code) || undefined,
-      errorType: stringValue(parsedError.type) || undefined,
-      errorPhase: 'upstream_response',
-      errorMessage: parsedErrorMessage || diagnosticErrorMessage || undefined,
-      endpoint: requestEndpoint(req)
-    })
-  }
+  rememberClientIpAccountPendingFailure(clientIpAccountAvoidanceTracker, account, {
+    statusCode: response.status,
+    errorCode: stringValue(parsedError.code) || undefined,
+    errorType: stringValue(parsedError.type) || undefined,
+    errorPhase: 'upstream_response',
+    errorMessage: parsedErrorMessage || diagnosticErrorMessage || undefined,
+    endpoint: requestEndpoint(req)
+  })
 
   return {
     action: 'skip_account',
@@ -343,14 +298,6 @@ export async function handleFailedUpstreamResponse(
         }
       : undefined
   }
-}
-
-function isEndpointCapabilityFailure(
-  req: Request,
-  account: UpstreamAccount,
-  statusCode: number
-): boolean {
-  return isGatewayProtocolEndpointCapabilityFailure(req, account, statusCode)
 }
 
 export async function handleUpstreamRequestError(

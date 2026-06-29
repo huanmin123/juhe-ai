@@ -28,7 +28,7 @@ export const glmAccountCredentialDriver: ProviderAccountCredentialDriver = {
       && (
         (
           isOpenAIProtocolProfile(context)
-          && (!context.providerProtocolProfileId || glmProfileIds.has(context.providerProtocolProfileId))
+          && Boolean(context.providerProtocolProfileId && glmProfileIds.has(context.providerProtocolProfileId))
         )
         || (
           isAnthropicProtocolProfile(context)

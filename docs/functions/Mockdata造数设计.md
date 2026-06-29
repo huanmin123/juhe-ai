@@ -63,7 +63,7 @@ pnpm mockdata -- --days 31 --daily-requests 120
 | `--days` | `31` | `1` 到 `90` | 生成最近多少天的明细和监控样本 |
 | `--daily-requests` | `120` | `1` 到 `500` | 每天生成多少条使用记录 |
 
-脚本会在业务库所在目录写入 `mockdata-summary.json`，记录本次生成的资源 ID、本地网关 API Key 明文、普通测试用户、分组授权样本、API Key 绑定规则和统计数量。默认本地路径是 `backend/data/mockdata-summary.json`。
+脚本会在业务库所在目录写入 `mockdata-summary.json`，记录本次生成的资源 ID、本地网关 API Key 明文、普通测试用户、分组授权样本、路由策略绑定规则和统计数量。默认本地路径是 `backend/data/mockdata-summary.json`。
 
 ## 4. 数据边界
 
@@ -72,10 +72,10 @@ pnpm mockdata -- --days 31 --daily-requests 120
 - 分组会同时生成个人分组和高并发 AI 分组；高并发分组会带调度策略样本、专用 API Key、专用账户和对应使用记录，用于分组管理页验收。
 - 账号和 API Key 会包含时间计划样本：主力资源保留当前可用计划，备用 / 普通资源保留已结束计划，用于列表“时间计划”列、状态筛选和网关运行态可用性验收。Mockdata 写入后会显式同步账号和 API Key 时间计划状态。
 - 授权样例必须覆盖个人直授权、团队授权、AI 账户授权、分组授权、有效授权、暂停授权、过期授权、回收授权和归还授权；授权调用方至少覆盖研发、测试、运维、财务、观察用户和超级管理员，不能只围绕单一用户或单一团队造数。
-- 授权分组既作为分组列表、我的授权和授权用量统计样本展示，也会作为授权调用方 API Key 的直接号池样本。`mockdata-summary.json` 会通过 `apiKeyBindingRule` 和 `authorizationSamples[].bindableToApiKey` 显式标记有效授权分组可绑定。
-- 授权调用方的 Mock API Key 会混合绑定有效授权分组和该调用方自己的默认分组；admin 也会生成一个绑定有效授权分组的 Mock API Key。授权账户样本仍会放入调用方本地分组，授权分组消耗样本用于验证 API Key 直连授权分组后的统计和审计口径。
+- 授权分组既作为分组列表、我的授权和授权用量统计样本展示，也会作为授权调用方路由策略的号池样本。`mockdata-summary.json` 会通过 `routeStrategyBindingRule` 和 `authorizationSamples[].bindableToRouteStrategy` 显式标记有效授权分组可绑定。
+- 授权调用方的 Mock API Key 会选择混合绑定有效授权分组和该调用方自己默认分组的路由策略；admin 也会生成一个绑定有效授权分组的 Mock 路由策略和 API Key。授权账户样本仍会放入调用方本地分组，授权分组消耗样本用于验证路由策略命中授权分组后的统计和审计口径。
 - AI 账户必须覆盖 API Key、OAuth、Anthropic API Key、`openai_standard`、`codex_responses`、多上游 Key、图像生成、模型映射、标签、账号内 Key 运行态、待测试、停用、限流、临时不可用、错误、账号不可调度和时间计划不生效样本；Anthropic 样本只使用 API Key，不生成 OAuth / Claude Code token。
-- API Key 必须覆盖 `priority_failover`、`round_robin`、`weighted_round_robin` 路由策略，绑定状态必须同时包含 active 和 disabled；额度窗口、过期 Key、停用 Key、时间计划不生效 Key 都需要有样本。
+- API Key 必须覆盖 `priority_failover`、`round_robin`、`weighted_round_robin` 路由策略，路由策略分组绑定状态必须同时包含 active 和 disabled；额度窗口、过期 Key、停用 Key、时间计划不生效 Key 都需要有样本。
 - 自定义模型目录必须覆盖 global / personal 范围，active / draft / disabled 状态，以及文本、图像和音频等不同能力类型；账号模型映射和使用记录需要出现至少一条实际命中样本。
 - 使用记录必须覆盖 gateway、manual_account_test 和 cooldown_retest 来源，OpenAI models、responses、chat completions 和 images 端点，Anthropic messages、models 和 count tokens 端点，成功、失败、图片 token、模型映射命中、缓存读取、流式与非流式样本。
 - 脚本会创建一个 `mockdata_admin` 普通管理员账号，以及若干 `mockdata_*` 普通用户。普通管理员用于管理员模式下验证管理员自有分组、AI 账户、API Key、筛选和创建目标；普通用户用于团队成员、授权调用方、公告已读和操作日志可见性。这些账号都是配套数据。
@@ -107,9 +107,9 @@ pnpm mockdata -- --days 31 --daily-requests 120
 - 使用记录、审计日志、操作日志、运行日志均可按 `mockdata` 或 `造数` 检索。
 - 公开接口日志、外部来源系统、响应检查策略、IP 统计、IP 封禁策略、后台清理目标、用量统计、AI 性能监控、授权用量、API Key 额度窗口、系统指标趋势和表空间监控均有近 31 天数据。
 - AI 账户列表应能看到待测试、停用、限流、临时不可用、错误、不可调度、时间计划不生效、多 Key、图像生成、模型映射和不同客户端兼容能力样本。
-- API Key 列表和详情应能看到优先级故障转移、轮询、加权轮询、绑定禁用、停用、过期、时间计划和额度窗口样本。
+- API Key 列表和详情应能看到优先级故障转移、轮询、加权轮询、路由策略绑定禁用、停用、过期、时间计划和额度窗口样本。
 - 自定义模型目录应能看到全局模型、个人模型、草稿模型、停用模型、图像模型和音频模型样本。
 - 使用记录应能看到 gateway、手动账号测试、冷却重试、图片生成和模型映射命中样本。
 - 模型检测历史会覆盖管理端与用户侧可见路径，包含运行中、已完成、失败和已取消样本，以及可信对比样本，用于模型检测页筛选、列表和详情验收。
-- `backend/data/mockdata-summary.json` 中的 active API Key 可用于本地网关请求验证；其中 `authorizationSamples` 里的 active 分组授权用于验证授权展示、授权统计和 API Key 授权分组绑定。
+- `backend/data/mockdata-summary.json` 中的 active API Key 可用于本地网关请求验证；其中 `authorizationSamples` 里的 active 分组授权用于验证授权展示、授权统计和路由策略授权分组绑定。
 - `pnpm mockdata` 会执行内置覆盖断言；如果数据库缺少关键状态、类型、路由策略、账号内 Key 运行态、自定义模型状态 / 范围、图片 token 或模型映射命中记录，脚本应直接失败，不能生成看似成功但覆盖不完整的数据。

@@ -14,7 +14,7 @@ import {
   type AuthorizedAccountBindingRuntimeTarget
 } from '../../../storage/repositories.js'
 import type { OpenAIGatewayTrafficSource } from '../usage/traffic-source.js'
-import { sanitizeDiagnosticPayload } from '../audit/payload-sanitizer.js'
+import { sanitizeDiagnosticPayload } from '../diagnostics/diagnostic-sanitizer.js'
 import { parseGatewayProtocolErrorPayload } from '../protocols/registry.js'
 
 export type CooldownAccountStatus = 'rate_limited' | 'temporary_unavailable'

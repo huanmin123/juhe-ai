@@ -147,7 +147,7 @@ type AnthropicAccountType = 'api_key'
 - 验证 access token 刷新、setup token 有效期、账号额度、会话限制、RPM 和风控失败是否能稳定归入现有账户错误处理策略。
 - 验证失败场景不能只靠状态码或错误类型判死账号，仍必须走统一确认、半开、冷却复测和并发归零流程。
 
-在新需求完成真实验证并重新设计前，前端不展示 Anthropic OAuth，导入协议不接受 `connectionType = oauth`，数据库和网关代码不新增 Anthropic OAuth 运行路径。
+在新需求完成真实验证并重新设计前，前端不展示 Anthropic OAuth，导入协议只接受官方 API Key 档案，数据库和网关代码不新增 Anthropic OAuth 运行路径。
 
 ## 本地网关入口
 
@@ -169,12 +169,12 @@ type AnthropicAccountType = 'api_key'
 - OpenAI-compatible 客户端继续使用 `Authorization: Bearer <本地 API Key>`。
 - Anthropic SDK / Claude-compatible 客户端通常使用 `x-api-key`，因此本地网关应允许 `x-api-key: <本地 API Key>` 作为本地调用凭据。
 - 如果同时存在 `Authorization` 和 `x-api-key`，后端必须有确定优先级。建议优先读取 `Authorization`，仅当缺失时读取 `x-api-key`。
-- 本地 API Key 通过后，进入 API Key 绑定分组和账户调度；上游请求必须替换为命中账户的 Anthropic API Key，不能把本地 `x-api-key` 透传给上游。
+- 本地 API Key 通过后，进入该 Key 绑定路由策略下的分组和账户调度；上游请求必须替换为命中账户的 Anthropic API Key，不能把本地 `x-api-key` 透传给上游。
 
 模型路由：
 
 - Anthropic native 请求的目标模型来自请求体 `model`。
-- 本地 API Key 可以同时绑定 OpenAI、Anthropic、GLM、DeepSeek 等分组，但每次请求必须先用 `model` 命中目标 `provider_protocol_profile_id`，再只在该 Key 已绑定的目标档案分组内调度。
+- 本地 API Key 选择的路由策略可以同时绑定 OpenAI、Anthropic、GLM、DeepSeek 等分组，但每次请求必须先用 `model` 命中目标 `provider_protocol_profile_id`，再只在该策略绑定的目标档案分组内调度。
 - `GET /v1/models` 的响应形态应按请求协议渲染。Anthropic native 客户端应看到 Anthropic Models API 形态；OpenAI-compatible 客户端继续看到 OpenAI list 形态。
 
 ## 分层落点与兼容边界
@@ -188,7 +188,6 @@ Anthropic 接入必须复用项目现有网关流水线，不能新增一套按�
 | 官方供应商适配层 `adapters/anthropic` | 官方 Anthropic API Key 上游 URL 拼接、`x-api-key` 写入、`anthropic-version` 默认补齐、客户端 `anthropic-beta` 透传和官方直连诊断字段 | 不生成 OpenAI 组织 / 项目 / Beta 头，不把第三方兼容入口归为官方 Anthropic，不实现当前不纳入目标的 OAuth / Setup Token / Claude Code token 账号链路，不把 Anthropic header 做成账号配置 |
 | 第三方兼容供应商适配层 | DeepSeek、GLM、Kimi 等 Anthropic-compatible 入口按各自 `providerCode` 建 adapter，可复用 `protocolCode=anthropic` 的 Messages 协议适配器 | 不共用官方 `anthropic` 账号池、模型目录、价格目录、默认分组和错误策略 |
 | 客户端画像层 | 默认普通 Anthropic native / Anthropic SDK 类客户端语义；显式 `x-juhe-client-profile: claude_code` 或官方 Claude Code 多信号命中时识别为 Claude Code 客户端画像 | 不把单个 User-Agent、模型名或某个错误码临时推断成 Claude Code，不把 Codex 可重试语义扩散给 Anthropic native |
-| 兼容策略与请求恢复层 | 仅在明确发现可恢复的协议状态时，基于请求特征和上游错误信号生成一次受控 body/header 变体重试 | 不修改原始 `req.rawBody`，不写账号状态，不开放用户自定义脚本，不在失败恢复里临时生成 OpenAI -> Anthropic 翻译 |
 | 候选账号筛选层 | 用 `provider_protocol_profile_id`、endpoint mode、模型路由和账户模型限制过滤候选账号 | 因模型或端点不匹配被跳过的账号不算失败，不进入账户错误处理策略 |
 | 调度运行态层 | 复用本地账号短期屏蔽、半开探测、事前确认、IP 级账号回避、上游桶避让和分组 fallback | 不把短 TTL 运行态写成持久健康事实，不按 `authentication_error`、`rate_limit_error` 等类型直接冷却 |
 | 返回侧协议适配层 | 把 Anthropic JSON / SSE 解析为统一响应语义帧，提取可见输出、工具调用、thinking、完成状态、usage 和错误事件；显式 OpenAI -> Anthropic bridge 命中时按下游 OpenAI 协议渲染 | 不决定账号是否永久不可用，不在未命中显式 bridge 时把 Anthropic 事件伪装成 OpenAI chunk |
@@ -198,9 +197,8 @@ Anthropic 接入必须复用项目现有网关流水线，不能新增一套按�
 
 - 官方 Anthropic 直连请求默认 raw passthrough，只做本地认证、路径归一、header 过滤、上游认证替换和 Base URL 拼接。
 - 账户测试由后端生成合法最小 Messages 请求；Anthropic native 真实客户端请求不自动补齐 `max_tokens`、不自动移动 system message。OpenAI Chat / Responses 请求转成 Messages 只允许在显式 bridge 命中时发生。
-- `anthropic-version` 默认值和 `anthropic-beta` 客户端 header 透传属于上游请求准备，不属于失败后的兼容恢复。
+- `anthropic-version` 默认值和 `anthropic-beta` 客户端 header 透传属于上游请求准备，不属于失败后的请求改写。
 - OAuth / Setup Token / Claude Code token 账号链路不进入请求准备、调度和返回侧流程；不能在运行时通过状态码或错误类型临时推断并切到 OAuth 行为。Claude Code 下游客户端画像只通过显式本地 header 或官方 CLI 多信号识别，不改变 Anthropic API Key 上游认证。
-- 如果需要新增兼容恢复，必须先补 [网关兼容策略与请求恢复设计](网关兼容策略与请求恢复设计.md) 对应 Anthropic 场景；策略输出只能是“继续默认失败流程”或“一次受控变体重试”，不能直接改账号健康。
 - Anthropic 官方 OpenAI SDK compatibility 只作为用户迁移线索。本项目让 OpenAI-compatible 客户端调用 Claude 模型时，必须使用显式 OpenAI -> Anthropic adapter 和响应渲染器，不隐藏在官方直连透传链路里。
 
 ## 上游请求边界
@@ -323,9 +321,9 @@ Anthropic 非流式错误结构：
 
 处理要求：
 
-- HTTP 状态码、`error.type`、错误文案和 `request_id` 只作为使用记录、审计、诊断摘要、请求级兼容恢复输入和账户错误处理策略输入。
+- HTTP 状态码、`error.type`、错误文案和 `request_id` 只作为使用记录、审计、诊断摘要和账户错误处理策略输入。
 - 代码不得内置 `authentication_error = 账号异常`、`rate_limit_error = 账号限流`、`overloaded_error = 临时不可调用` 这类固定映射。
-- 上游非 2xx 仍按“显式兼容恢复 -> 同账号原地确认 -> 本地短期屏蔽 -> 切换其他账号 / 其他分组 -> 事前确认 / 半开探测 -> 并发归零后才写持久状态”的统一流程处理。
+- 上游非 2xx 仍按“同账号原地确认 -> 本地短期屏蔽 -> 切换其他账号 / 其他分组 -> 事前确认 / 半开探测 -> 并发归零后才写持久状态”的统一流程处理。
 - 账户错误处理策略可以匹配 Anthropic 的状态码、错误类型、错误码或文案，但命中结果只是待确认目标状态；真实网关流量不能绕过确认直接写 `temporary_unavailable`、`rate_limited` 或 `error`。
 - Anthropic `event: error`、缺少 `message_stop`、上游 EOF 或流式中断按流式失败流水线处理；是否写持久账号状态仍由确认阶段决定。
 - 最终返回给 Anthropic native 客户端的本地错误使用 Anthropic error shape，而不是 OpenAI error shape；所有候选账号耗尽时返回本地统一错误语义，不透传最后一个上游错误体作为权威结论。
@@ -432,7 +430,7 @@ Anthropic 模型目录必须单独维护在 `anthropic` 供应商下。
 - Anthropic 账户只能加入相同 `provider_code` 的分组；`provider_protocol_profile_id` 仍保留账户真实协议档案。
 - Anthropic 官方账户不能加入 DeepSeek Anthropic-compatible、GLM Anthropic-compatible 或其他第三方兼容档案分组。
 - 授权实例账户继承来源账户的官方 Anthropic 资源事实，但被授权侧实例状态、分组绑定、冷却和用量归属仍保持独立。
-- API Key 多分组绑定允许跨供应商协议档案。跨供应商 API Key 必须先按请求 `model` 定位目标档案，再进入该 Key 已绑定的对应档案分组调度。
+- 路由策略多分组绑定允许跨供应商协议档案。跨供应商请求必须先按请求 `model` 定位目标档案，再进入当前 API Key 所选路由策略已绑定的对应档案分组调度。
 - Anthropic native 请求的会话连续性主要来自客户端请求内容和 prompt cache；当前不新增跨请求会话亲和特殊规则。如果 Claude SDK / Claude Code 需要按会话稳定命中同一账号，必须通过新需求复用当前会话亲和机制扩展协议字段来源。
 
 ## 账号测试
@@ -472,7 +470,7 @@ Anthropic 账户测试必须复用真实网关链路。
 {
   "name": "Anthropic Claude 账号 1",
   "providerCode": "anthropic",
-  "connectionType": "api_key",
+  "providerProtocolProfileId": "profile_anthropic_anthropic_v1",
   "type": "api_key",
   "status": "pending_test",
   "groupName": "默认 Anthropic 分组",
@@ -484,7 +482,7 @@ Anthropic 账户测试必须复用真实网关链路。
 }
 ```
 
-`connectionType` 是导入协议层字段，用于和 OAuth、WIF、云平台托管 Claude、第三方兼容入口区分。后端落库时仍以 `providerCode + connectionType` 解析 `provider_protocol_profile_id`，再保存 `accounts.type = api_key`。当前导入协议不接受 `connectionType = oauth`、`type = oauth` 或 `setup_token`。
+`providerProtocolProfileId` 是导入协议层唯一协议档案入口。当前 Anthropic 官方 API Key 账户固定使用 `profile_anthropic_anthropic_v1`；导入协议不接受旧接入类型别名、`type = oauth`、`setup_token`、Claude Code token、WIF 或云平台托管 Claude 字段。
 
 ## 参考实现观察
 
@@ -549,14 +547,13 @@ MCP 是工具 / 上下文协议，不是本项目的上游模型网关协议。�
 - 新增 `profile_anthropic_anthropic_v1`。
 - 新增默认 Anthropic 分组。
 - 前端账户创建在选择 `Anthropic Claude` 后只展示 `Anthropic API Key`。
-- 后端账户创建、编辑、导入和公开推送接口按 `providerCode=anthropic + connectionType=api_key` 解析官方直连档案。
+- 后端账户创建、编辑、导入和公开推送接口按 `providerCode=anthropic + providerProtocolProfileId=profile_anthropic_anthropic_v1` 校验官方直连档案。
 - 网关本地认证支持 Anthropic native 客户端常用的 `x-api-key` 本地 API Key 入口。
 - 新增 Anthropic native 请求适配器，负责路径拼接、请求头过滤、上游认证替换和 raw body 透传；上游认证写 `x-api-key`。
 - 新增 Anthropic native 顶层 `model` 映射，映射只改写请求体 `model`，不改变其他 Anthropic 原生字段。
 - Anthropic 多 API Key 启用 Key 级运行态隔离，单 Key 失败不直接冷却整个账户。
 - 新增 Claude Code 客户端画像识别，显式 `x-juhe-client-profile: claude_code` 或官方 CLI 多信号只影响本地画像和审计，本地画像 header 不透传上游。
 - 新增 Anthropic native 返回适配器，负责 JSON / SSE 响应语义帧抽取、usage 解析、流内错误识别和本地错误渲染。
-- 新增 Anthropic 兼容策略占位，但当前不内置任何按状态码、错误类型或错误文案触发的请求恢复规则。
 - Anthropic 上游失败复用现有同账号确认、本地账号短期屏蔽、半开探测、事前确认、冷却复测和账户错误处理策略，不新增协议专属账号状态机。
 - Anthropic 使用记录明细当前落地 input / output / cache read / cache write / 1h cache / thinking tokens 和 `usage_semantic`；统计预聚合和授权消耗的新增维度需要后续 schema 与 worker 扩展。
 - Anthropic 模型目录和价格目录单独维护，成本估算按 `providerCode=anthropic` 查找。

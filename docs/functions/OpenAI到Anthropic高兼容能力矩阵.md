@@ -32,7 +32,7 @@ v1 不以“Anthropic 等价实现 OpenAI 全部能力”为目标，而以“�
 
 - Chat / Responses 的 JSON 和 SSE 文本主链路、usage、错误形态、流式结束形态稳定。
 - system / developer / instructions / name、基础生成控制、metadata / user / safety_identifier 能按当前矩阵映射或本地忽略。
-- function tools 的新版和 legacy 请求、历史消息、JSON 回包、SSE 增量回包都能按下游协议恢复。
+- function tools、现代工具历史、JSON 回包、SSE 增量回包都能按下游协议恢复；Chat legacy `functions/function_call` 已移除。
 - 支持范围内的图片、PDF / text 文件、`file_id` resolver、structured output、reasoning summary、`previous_response_id` 和 compact summary 可稳定工作。
 - 非法历史、权限越界、状态链损坏、schema 不匹配、文件内容无效和安全边界问题必须本地拒绝且不请求上游。
 
@@ -114,14 +114,14 @@ v2 才推进完整本地运行时、第三方工具长连接、人工审批 UI�
 
 | OpenAI 能力 | Anthropic 承接方式 | 等级 | 长期策略 |
 | --- | --- | --- | --- |
-| Chat `tools[].type=function` | Anthropic client tool `input_schema` | L1 | 已支持；新版 `tools` 优先于旧版 `functions`，补 schema / strict 测试 |
-| Chat legacy `functions[]` / `function_call` | Anthropic client tool / `tool_choice` | L1 | 旧版 OpenAI Chat 字段仍按 function tool 语义承接：未提供新版 `tools` 时，`functions[]` 转 Anthropic tools；未提供新版 `tool_choice` 时，`function_call=auto/none` 或 `{ name }` 转 Anthropic tool_choice；JSON 回包恢复为旧版 `message.function_call` / `finish_reason=function_call`，SSE 回包恢复为 `delta.function_call` 分片 / `finish_reason=function_call`；同时出现新旧字段时以新版字段为准，避免重复工具定义或冲突选择 |
+| Chat `tools[].type=function` | Anthropic client tool `input_schema` | L1 | 已支持；只承接当前 `tools` / `tool_choice` 契约，不再读取旧版 `functions` / `function_call` |
+| Chat legacy `functions[]` / `function_call` | 本地 OpenAI 错误拒绝 | L4 | 已移除旧 Chat 函数字段兼容；客户端必须使用 `tools` / `tool_choice` |
 | Responses `tools[].type=function` | Anthropic client tool `input_schema` | L1 | 已支持；`tool_choice.type=allowed_tools` 的 function 子集通过过滤工具列表承接，`mode=required` 映射为 Anthropic `any` |
 | `parallel_tool_calls=false` | Anthropic `tool_choice.disable_parallel_tool_use=true` | L1 | 仅在存在工具且 Anthropic `tool_choice` 为 `auto` / `any` / 指定 `tool` 时设置；`true` / `null` 视为默认并行策略且不透传；`tool_choice=none` 不附加该字段，因为不会调用工具且 Anthropic 不接受 `none.disable_parallel_tool_use` |
 | Responses `max_tool_calls` | Anthropic Messages 无等价工具调用次数上限 | L4 | `null` 视为未请求且不透传；字段存在且非 `null` 时本地 OpenAI 错误拒绝，不请求 Anthropic；不能忽略后让模型调用超过客户端限制的工具 |
 | Chat `tool_calls` | assistant `tool_use` block | L1 | 已支持；`function.arguments` 为 JSON object 时原样转 Anthropic `input`，为 JSON 非对象（数组 / 标量）或非法 JSON 时包成 `openai_arguments` / `openai_arguments_text`，避免静默丢历史；多个 `tool_calls` 按客户端数组顺序生成 `tool_use`，后续 `role=tool` 按消息顺序生成 `tool_result` 并保持 call id 对齐 |
 | Chat `role=tool` | user `tool_result` block | L1 | 已支持；缺少 `tool_call_id`、缺少匹配 `tool_call_id` 或同一 `tool_call_id` 重复返回时，本地 OpenAI 错误拒绝，不请求 Anthropic |
-| Chat legacy `assistant.function_call` / `role=function` | assistant `tool_use` / user `tool_result` block | L1 | 旧版历史消息已按工具历史承接；`assistant.function_call` 在没有新版 `tool_calls` 时生成带网关合成 id 的 `tool_use`，`role=function` 按 `name` 匹配最近未完成的旧版调用并转 `tool_result`；缺少 `name`、孤儿结果或重复结果本地拒绝，不静默丢历史 |
+| Chat legacy `assistant.function_call` / `role=function` | 本地 OpenAI 错误拒绝 | L4 | 已移除旧 Chat 函数历史兼容；客户端必须使用 `assistant.tool_calls` / `role=tool` |
 | Responses `function_call` | assistant `tool_use` block | L1 | 已支持；`arguments` 为 JSON object 时原样转 Anthropic `input`，为 JSON 非对象（数组 / 标量）或非法 JSON 时包成 `openai_arguments` / `openai_arguments_text`，避免静默丢历史；多个 `function_call` 按 Responses `input` 数组顺序生成 `tool_use` |
 | Responses `function_call_output` | user `tool_result` block | L1 | 已支持；缺少 `call_id`、缺少匹配 `call_id` 或同一 `call_id` 重复返回时，本地 OpenAI 错误拒绝，不请求 Anthropic；多个 `function_call_output` 按 Responses `input` 数组顺序生成 `tool_result` 并保持 call id 对齐 |
 | Chat 搜索模型 / `web_search` / `web_search_preview` | Anthropic 原生 server tool / web search 等价能力 | L2/L4 | 当前 bridge 不做本地预取模拟；没有上游原生等价能力时返回正常 agent guidance，不请求 Anthropic、不伪造 citation 或 hosted item |
@@ -191,7 +191,7 @@ v2 才推进完整本地运行时、第三方工具长连接、人工审批 UI�
 | Anthropic 输出 | Chat JSON / SSE | Responses JSON / SSE | 策略 |
 | --- | --- | --- | --- |
 | text | `message.content` / `delta.content` | `message.output_text` / `response.output_text.delta` | 已支持，补多 block 顺序 |
-| tool_use | 新版 Chat 返回 `tool_calls` / `delta.tool_calls`；legacy `functions/function_call` 返回 `message.function_call` / `delta.function_call` | `function_call` item | 已支持；Chat SSE 工具 index 必须按 OpenAI tool call 序号连续递增，不能直接暴露 Anthropic content block index；legacy Chat 使用旧版单工具流式形态，并在请求侧禁用 Anthropic 并行工具调用；Responses SSE 必须把 Anthropic `input_json_delta.partial_json` 转成 `response.function_call_arguments.delta`，并在工具块结束时输出 `response.function_call_arguments.done` 和最终 `response.output_item.done` |
+| tool_use | Chat 返回 `tool_calls` / `delta.tool_calls` | `function_call` item | 已支持；Chat SSE 工具 index 必须按 OpenAI tool call 序号连续递增，不能直接暴露 Anthropic content block index；Responses SSE 必须把 Anthropic `input_json_delta.partial_json` 转成 `response.function_call_arguments.delta`，并在工具块结束时输出 `response.function_call_arguments.done` 和最终 `response.output_item.done` |
 | thinking | 默认不进 content | `reasoning` item 或审计 summary | 已实现基础映射，必须防止泄露隐藏思考 |
 | web_search result / citation | 不输出本地模拟 citation | 不输出 `web_search_call` | 当前无 Anthropic 原生等价映射；命中 `web_search` 时返回 agent guidance |
 | file_search result / citation | Chat JSON `message.annotations`；Chat SSE 正文保留 `[F1]` / `[F2]` 类引用标记 | Responses `file_search_call` + `file_citation` annotations / include results | 本地预检索模拟覆盖 Responses JSON/SSE 和 Chat JSON；结果来自本地 Vector Store keyword retrieval，不承诺 OpenAI 托管语义完全等价 |

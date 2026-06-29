@@ -4,7 +4,7 @@ import { request as httpsRequest } from 'node:https'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { BoundedBufferCollector } from '../../shared/bounded-buffer.js'
-import { sanitizeDiagnosticPayload } from '../gateway/audit/payload-sanitizer.js'
+import { sanitizeDiagnosticPayload } from '../gateway/diagnostics/diagnostic-sanitizer.js'
 import { HttpsProxyAgent } from 'https-proxy-agent'
 import { SocksProxyAgent } from 'socks-proxy-agent'
 

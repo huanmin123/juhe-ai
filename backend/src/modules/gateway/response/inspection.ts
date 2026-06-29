@@ -68,7 +68,6 @@ export interface ResponseInspectionDecision {
   upstreamErrorMessage?: string
   finishReason?: string
   clientProfile?: ResponseInspectionPolicyClientProfile
-  accountClientCompatibility?: AccountClientCompatibility
   codexCompactionExpected?: boolean
   rewriteErrorCode?: string
   rewriteMessage?: string
@@ -266,7 +265,6 @@ function buildPolicyDecision(
     upstreamErrorMessage: frame.errorMessage,
     finishReason: frame.finishReason ?? frame.status,
     clientProfile: context?.clientProfile,
-    accountClientCompatibility: context?.accountClientCompatibility,
     codexCompactionExpected: context?.codexCompactionExpected,
     rewriteErrorCode: rewriteErrorCode(policy, frame),
     rewriteMessage: frame.errorMessage ?? `响应命中检查策略：${policy.name}`,
@@ -292,13 +290,17 @@ function policyMatchesRuntimeContext(
   match: ResponseInspectionPolicyMatch,
   context: ResponseInspectionRuntimeContext | undefined
 ): boolean {
+  if (usesUpstreamErrorIdentityMatcher(match) && !match.clientProfiles?.length) {
+    return false
+  }
   if (match.clientProfiles?.length) {
     if (!context?.clientProfile || !firstExactMatch(context.clientProfile, match.clientProfiles)) return false
   }
-  if (match.accountClientCompatibilities?.length) {
-    if (!context?.accountClientCompatibility || !firstExactMatch(context.accountClientCompatibility, match.accountClientCompatibilities)) return false
-  }
   return true
+}
+
+function usesUpstreamErrorIdentityMatcher(match: ResponseInspectionPolicyMatch): boolean {
+  return Boolean(match.errorCodes?.length || match.errorTypes?.length)
 }
 
 function configuredPolicyReason(policy: RuntimeResponseInspectionPolicy, frame: ResponseSemanticFrame, downstreamWritten: boolean): ResponseInspectionDecision['reason'] {

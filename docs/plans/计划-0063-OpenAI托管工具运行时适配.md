@@ -65,7 +65,7 @@ OpenAI hosted tools 不能靠字段映射伪造成功。当前统一口径是：
 | 测试类型 | 测试项 | 验证方式 / 命令 | 预期结果 | 状态 |
 | --- | --- | --- | --- | --- |
 | 类型检查 | 后端类型 | `pnpm --dir backend typecheck` | 删除 MCP 模块后无悬空引用 | 已通过 |
-| Mock 回归 | 当前 guidance | `pnpm --dir backend test:openai-anthropic-bridge-mock` | Responses `mcp` 返回正常 guidance，且不请求 Anthropic、不连接远程 MCP | 未通过；脚本初始化阶段被账号模型别名跨协议映射限制拦截，未进入 MCP 断言 |
+| Mock 回归 | 当前 guidance | `pnpm --dir backend test:protocol-boundary-openai-anthropic` | Responses `mcp` 返回正常 guidance，且不请求 Anthropic、不连接远程 MCP | 未通过；脚本初始化阶段被账号模型别名跨协议映射限制拦截，未进入 MCP 断言 |
 | 静态检查 | 模型调用统一入口 | `pnpm --dir backend test:gateway-model-call-unified-entry` | 生产模型调用仍集中在公共网关调度链路；fetch 例外不包含 MCP proxy | 未通过；当前失败点为 explicit hybrid route 账号候选读取和通用 upstream request fetch 静态守卫，不是 MCP proxy |
 | 类型检查 | 前端类型 | `pnpm --dir frontend typecheck` | 删除 MCP 管理页面后无路由 / 类型引用 | 已通过 |
 | Scope 回归 | 权限边界 | `pnpm --dir backend test:scope` | 删除 MCP 管理接口后 scope 回归通过 | 已通过 |
@@ -92,7 +92,7 @@ OpenAI hosted tools 不能靠字段映射伪造成功。当前统一口径是：
 ## 验证记录
 
 - 2026-06-26：`pnpm --dir backend typecheck` 已通过。
-- 待复跑：`pnpm --dir frontend typecheck`、`pnpm --dir backend test:openai-anthropic-bridge-mock`、`pnpm --dir backend test:gateway-model-call-unified-entry`、`pnpm --dir backend test:scope`。
+- 待复跑：`pnpm --dir frontend typecheck`、`pnpm --dir backend test:protocol-boundary-openai-anthropic`、`pnpm --dir backend test:gateway-model-call-unified-entry`、`pnpm --dir backend test:scope`。
 
 ## 风险与注意事项
 

@@ -16,7 +16,6 @@ export function responseInspectionAuditMetadata(decision: ResponseInspectionDeci
     upstreamErrorMessage: decision.upstreamErrorMessage,
     finishReason: decision.finishReason,
     clientProfile: decision.clientProfile,
-    accountClientCompatibility: decision.accountClientCompatibility,
     codexCompactionExpected: decision.codexCompactionExpected,
     rewriteErrorCode: decision.rewriteErrorCode,
     rewriteMessage: decision.rewriteMessage,

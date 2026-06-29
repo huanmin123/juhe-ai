@@ -30,7 +30,7 @@ const [databaseModule, repositories, usageRecordShards] = await Promise.all([
 
 try {
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
-  const group = repositories.createGroup({ name: '使用记录 catalog 窗口回归分组', providerCode: 'gpt', enabled: true }, access)
+  const group = repositories.createGroup({ name: '使用记录 catalog 窗口回归分组', providerCode: 'gpt', providerProtocolProfileId: 'profile_gpt_openai_v1', enabled: true }, access)
   const account = repositories.createAccount({
     providerCode: 'gpt',
     name: '使用记录 catalog 窗口回归账户',

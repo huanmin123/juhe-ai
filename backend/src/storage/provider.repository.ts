@@ -364,8 +364,11 @@ export function requireEnabledProviderProtocolProfile(providerCode: string, prof
   const provider = requireEnabledProvider(providerCode)
   const profileId = typeof profileIdInput === 'string' && profileIdInput.trim()
     ? profileIdInput.trim()
-    : provider.defaultProtocolProfileId
-  const profile = profileId ? findProviderProtocolProfile(profileId) : defaultProviderProtocolProfile(providerCode)
+    : ''
+  if (!profileId) {
+    throw new Error('供应商协议档案不能为空')
+  }
+  const profile = findProviderProtocolProfile(profileId)
   if (!profile || profile.providerCode !== providerCode) {
     throw new Error(`供应商协议档案无效：${profileId || providerCode}`)
   }
@@ -385,8 +388,11 @@ export async function requireEnabledProviderProtocolProfileAsync(providerCode: s
   }
   const profileId = typeof profileIdInput === 'string' && profileIdInput.trim()
     ? profileIdInput.trim()
-    : provider.defaultProtocolProfileId
-  const profile = profileId ? await findProviderProtocolProfileAsync(profileId) : await defaultProviderProtocolProfileAsync(providerCode)
+    : ''
+  if (!profileId) {
+    throw new Error('供应商协议档案不能为空')
+  }
+  const profile = await findProviderProtocolProfileAsync(profileId)
   if (!profile || profile.providerCode !== providerCode) {
     throw new Error(`供应商协议档案无效：${profileId || providerCode}`)
   }

@@ -52,8 +52,7 @@ import {
   sendGatewayErrorResponse
 } from './responses.js'
 import {
-  shouldExcludeCurrentAccountForStreamServerRetry,
-  shouldRetryResponseInspectionDecisionOnServer
+  shouldExcludeCurrentAccountForStreamServerRetry
 } from './stream-finalization-retry-decision.js'
 export async function inspectBufferedGatewayJsonResponse(input: {
   req: Request
@@ -127,12 +126,13 @@ export async function inspectBufferedGatewayJsonResponse(input: {
     input.account,
     input.settings,
     input.auditCapture,
-    input.accountStateMutationEnabled
+    input.accountStateMutationEnabled,
+    input.usageContext
   )
   if (!inspection.decision) return undefined
 
   const decision = inspection.decision
-  await applyResponseInspectionPolicyRuntimeSideEffects(decision, input.account, input.settings, input.accountStateMutationEnabled)
+  await applyResponseInspectionPolicyRuntimeSideEffects(decision, input.account, input.settings, input.accountStateMutationEnabled, input.usageContext)
   input.auditCapture.addGatewayMetadata({
     label: 'response_inspection',
     metadata: responseInspectionAuditMetadata(decision)
@@ -171,7 +171,7 @@ export async function inspectBufferedGatewayJsonResponse(input: {
     errorMessage: message
   })
 
-  if (shouldRetryResponseInspectionDecisionOnServer(decision, input.res)) {
+  if (!input.res.headersSent && !input.res.writableEnded && !input.res.destroyed) {
     input.auditCapture.addGatewayMetadata({
       label: 'response_inspection_server_retry',
       metadata: responseInspectionAuditMetadata(decision)

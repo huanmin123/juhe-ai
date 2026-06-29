@@ -81,7 +81,6 @@ import {
   buildResponseInspectionMatchPayload,
   formatResponseInspectionList,
   hasPositiveResponseInspectionMatcher,
-  normalizeResponseInspectionAccountCompatibilities,
   normalizeResponseInspectionClientProfiles,
   type ResponseInspectionMatchFormFields,
   validateResponseInspectionMatchFields
@@ -97,7 +96,6 @@ interface ResponseInspectionPolicyForm extends ResponseInspectionMatchFormFields
   protocolCode: string
   providerCode: string
   clientProfiles: ResponseInspectionMatchFormFields['clientProfiles']
-  accountClientCompatibilities: ResponseInspectionMatchFormFields['accountClientCompatibilities']
   outputTextIncludes: string
   finishReasons: string
   errorCodes: string
@@ -170,7 +168,6 @@ function defaultForm(): ResponseInspectionPolicyForm {
     protocolCode: 'openai',
     providerCode: '',
     clientProfiles: [],
-    accountClientCompatibilities: [],
     outputTextIncludes: '',
     finishReasons: '',
     errorCodes: '',
@@ -193,7 +190,6 @@ function fillForm(policy: ResponseInspectionPolicySummary): void {
     protocolCode: policy.protocolCode,
     providerCode: policy.providerCode ?? '',
     clientProfiles: normalizeResponseInspectionClientProfiles(policy.match.clientProfiles),
-    accountClientCompatibilities: normalizeResponseInspectionAccountCompatibilities(policy.match.accountClientCompatibilities),
     outputTextIncludes: formatResponseInspectionList(policy.match.outputTextIncludes),
     finishReasons: formatResponseInspectionList(policy.match.finishReasons),
     errorCodes: formatResponseInspectionList(policy.match.errorCodes),

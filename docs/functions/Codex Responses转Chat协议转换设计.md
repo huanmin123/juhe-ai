@@ -103,7 +103,7 @@ Chat-only bridge 只做可验证的协议字段转换，不把 `web_search`、MC
 普通 function call 不依赖 `response.function_call_arguments.delta`。Codex 当前会忽略该事件，并通过最终 `response.output_item.done` 内的 `type=function_call` item 执行工具。因此桥接层对 Chat `delta.tool_calls` 的输出策略是：
 
 - 累积 Chat 工具调用的 `id/name/arguments`。
-- 同时兼容 `delta.tool_calls[]`、旧式 `delta.function_call` 和部分代理可能返回的 `delta.function_calls[]`。
+- 只消费当前 Chat Completions `delta.tool_calls[]`；旧式 `delta.function_call` / `delta.function_calls[]` 不再兼容。
 - 最终发出 `response.output_item.done`，item 为 `type=function_call`。
 - 如果 Chat tool name 命中 custom wrapper，则最终 item 为 `type=custom_tool_call`，并从 wrapper arguments 的 `input` 字段恢复自由文本。
 - 不依赖 `response.function_call_arguments.delta`。

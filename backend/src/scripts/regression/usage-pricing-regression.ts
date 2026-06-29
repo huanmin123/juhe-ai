@@ -1017,7 +1017,7 @@ assert.match(gatewayResponseFinalizationSource, /responseBodyText:\s*responseBod
 assert.match(gatewayResponseFinalizationSource, /errorMessage:\s*'上游响应体为空'/)
 
 const gatewayResponseStreamSource = readSource('modules/gateway/response/stream.ts')
-assert.match(gatewayResponseStreamSource, /gatewayProtocolDriverForResponseProtocolOrDefault/)
+assert.match(gatewayResponseStreamSource, /requireGatewayProtocolDriverForResponseProtocol/)
 assert.doesNotMatch(gatewayResponseStreamSource, /OpenAIStreamInspector/)
 assert.doesNotMatch(gatewayResponseStreamSource, /AnthropicStreamInspector/)
 assert.doesNotMatch(gatewayResponseStreamSource, /extractAnthropicSseSemanticFrames/)

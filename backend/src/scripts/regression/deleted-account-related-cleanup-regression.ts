@@ -59,8 +59,8 @@ try {
   const team = repositories.createSystemTeam({ name: '删除账户清理团队' }, adminAccess)
   assert(repositories.addSystemTeamMembers(team.id, { systemAccountIds: [grantee.id] }, adminAccess), '团队成员应添加成功')
 
-  const ownerGroup = repositories.createGroup({ name: '删除账户归属分组', providerCode: 'gpt' }, ownerAccess)
-  const granteeGroup = repositories.createGroup({ name: '删除账户授权分组', providerCode: 'gpt' }, granteeAccess)
+  const ownerGroup = repositories.createGroup({ name: '删除账户归属分组', providerCode: 'gpt', providerProtocolProfileId: 'profile_gpt_openai_v1' }, ownerAccess)
+  const granteeGroup = repositories.createGroup({ name: '删除账户授权分组', providerCode: 'gpt', providerProtocolProfileId: 'profile_gpt_openai_v1' }, granteeAccess)
   const account = repositories.createAccount({
     providerCode: 'gpt',
     name: '删除关联清理账户',

@@ -34,8 +34,12 @@ export function gatewayProtocolDriverForProfile(profile: ProviderProtocolProfile
   return gatewayProtocolDrivers.find((driver) => driver.supportsProfile(profile))
 }
 
-export function gatewayProtocolDriverForProfileOrDefault(profile: ProviderProtocolProfileDefinition | undefined): GatewayProtocolDriver {
-  return gatewayProtocolDriverForProfile(profile) ?? openAIV1ProtocolDriver
+export function requireGatewayProtocolDriverForProfile(profile: ProviderProtocolProfileDefinition | undefined): GatewayProtocolDriver {
+  const driver = gatewayProtocolDriverForProfile(profile)
+  if (!driver) {
+    throw new Error(`未配置网关协议驱动：${profile?.id ?? 'missing_profile'}`)
+  }
+  return driver
 }
 
 export function gatewayProtocolDriverForRequestOrProfile(
@@ -47,29 +51,25 @@ export function gatewayProtocolDriverForRequestOrProfile(
     return openAIV1ProtocolDriver
   }
   return gatewayProtocolDrivers.find((driver) => driver.isNativeRequest?.(req) === true)
-    ?? gatewayProtocolDriverForProfileOrDefault(profile)
+    ?? requireGatewayProtocolDriverForProfile(profile)
 }
 
-export function gatewayProtocolDriverForResponseProtocolOrDefault(
+export function requireGatewayProtocolDriverForResponseProtocol(
   responseProtocol: ResponseProtocolCode | undefined
 ): GatewayProtocolDriver {
-  return gatewayProtocolDrivers.find((driver) => driver.responseProtocol === responseProtocol) ?? openAIV1ProtocolDriver
+  const driver = gatewayProtocolDrivers.find((item) => item.responseProtocol === responseProtocol)
+  if (!driver) {
+    throw new Error(`未配置响应协议驱动：${responseProtocol ?? 'missing_response_protocol'}`)
+  }
+  return driver
 }
 
 export function isGatewayProtocolModelsRequest(req: Request, profile: ProviderProtocolProfileDefinition | undefined): boolean {
   return gatewayProtocolDriverForProfile(profile)?.isModelsRequest?.(req) === true
 }
 
-export function isGatewayProtocolEndpointCapabilityFailure(
-  req: Request,
-  profile: ProviderProtocolProfileDefinition | undefined,
-  statusCode: number
-): boolean {
-  return gatewayProtocolDriverForProfile(profile)?.isEndpointCapabilityFailure?.(req, statusCode) === true
-}
-
 export function gatewayProtocolResponseProtocolForProfile(profile: ProviderProtocolProfileDefinition | undefined): ResponseProtocolCode {
-  return gatewayProtocolDriverForProfileOrDefault(profile).responseProtocol
+  return requireGatewayProtocolDriverForProfile(profile).responseProtocol
 }
 
 export function gatewayProtocolResponseProtocolForRequest(
@@ -82,7 +82,7 @@ export function gatewayProtocolResponseProtocolForRequest(
 export function gatewayProtocolClientErrorProtocolForProfile(
   profile: ProviderProtocolProfileDefinition | undefined
 ): GatewayProtocolClientErrorProtocol {
-  return gatewayProtocolDriverForProfileOrDefault(profile).clientErrorProtocol
+  return requireGatewayProtocolDriverForProfile(profile).clientErrorProtocol
 }
 
 export function gatewayProtocolClientErrorProtocolForRequest(
@@ -93,7 +93,11 @@ export function gatewayProtocolClientErrorProtocolForRequest(
 }
 
 export function gatewayProtocolClientErrorProtocolForNativeRequest(req: Request): GatewayProtocolClientErrorProtocol {
-  return gatewayProtocolDrivers.find((driver) => driver.isNativeRequest?.(req) === true)?.clientErrorProtocol ?? 'openai'
+  const driver = gatewayProtocolDrivers.find((item) => item.isNativeRequest?.(req) === true)
+  if (!driver) {
+    throw new Error('未识别原生网关请求协议')
+  }
+  return driver.clientErrorProtocol
 }
 
 export function isGatewayProtocolNativeRequest(req: Request, protocolCode: string): boolean {
@@ -106,7 +110,7 @@ export function isGatewayProtocolNativeRequest(req: Request, protocolCode: strin
 export function gatewayProtocolDefaultClientProfileForProfile(
   profile: ProviderProtocolProfileDefinition | undefined
 ): GatewayProtocolDefaultClientProfile {
-  return gatewayProtocolDriverForProfileOrDefault(profile).defaultClientProfile
+  return requireGatewayProtocolDriverForProfile(profile).defaultClientProfile
 }
 
 export function gatewayProtocolDefaultClientProfileForRequest(
@@ -128,7 +132,7 @@ export function extractGatewayProtocolJsonSemanticFrames(
   req: Request,
   profile: ProviderProtocolProfileDefinition | undefined
 ): ResponseSemanticFrame[] {
-  return gatewayProtocolDriverForProfileOrDefault(profile).extractJsonSemanticFrames(value, req)
+  return requireGatewayProtocolDriverForProfile(profile).extractJsonSemanticFrames(value, req)
 }
 
 export function extractGatewayProtocolJsonSemanticFramesForRequest(
@@ -143,7 +147,7 @@ export function parseGatewayProtocolUsageFromJsonBuffer(
   profile: ProviderProtocolProfileDefinition | undefined,
   responseBody: Buffer
 ): ParsedUsage {
-  return gatewayProtocolDriverForProfileOrDefault(profile).parseUsageFromJsonBuffer(responseBody)
+  return requireGatewayProtocolDriverForProfile(profile).parseUsageFromJsonBuffer(responseBody)
 }
 
 export function parseGatewayProtocolUsageFromJsonBufferForRequest(
@@ -158,7 +162,7 @@ export function parseGatewayProtocolUsageFromJsonTextFragment(
   profile: ProviderProtocolProfileDefinition | undefined,
   text?: string
 ): ParsedUsage {
-  return gatewayProtocolDriverForProfileOrDefault(profile).parseUsageFromJsonTextFragment(text)
+  return requireGatewayProtocolDriverForProfile(profile).parseUsageFromJsonTextFragment(text)
 }
 
 export function parseGatewayProtocolUsageFromJsonTextFragmentForRequest(
@@ -174,7 +178,7 @@ export function parseGatewayProtocolErrorPayload(
   text: string,
   headers: Headers
 ): GatewayProtocolErrorPayload {
-  return gatewayProtocolDriverForProfileOrDefault(profile).parseErrorPayload(text, headers)
+  return requireGatewayProtocolDriverForProfile(profile).parseErrorPayload(text, headers)
 }
 
 export function parseGatewayProtocolErrorPayloadForRequest(
@@ -192,7 +196,7 @@ export function applyGatewayProtocolStreamUsageFallback(
   usage: ParsedUsage,
   input: GatewayStreamUsageFallbackInput
 ): GatewayStreamUsageFallbackResult {
-  return gatewayProtocolDriverForProfileOrDefault(profile).applyStreamUsageFallback(req, usage, input)
+  return requireGatewayProtocolDriverForProfile(profile).applyStreamUsageFallback(req, usage, input)
 }
 
 export function applyGatewayProtocolStreamUsageFallbackForRequest(

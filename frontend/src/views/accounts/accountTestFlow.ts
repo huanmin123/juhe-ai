@@ -24,14 +24,11 @@ export interface AccountBatchTestItem {
   finishedAt?: number
 }
 
-export function buildAccountTestPayload(form: AccountTestForm): { model?: string; clientCompatibility?: AccountClientCompatibility } {
-  const payload: { model?: string; clientCompatibility?: AccountClientCompatibility } = {}
+export function buildAccountTestPayload(form: AccountTestForm): { model?: string } {
+  const payload: { model?: string } = {}
   const model = form.model.trim()
   if (model) {
     payload.model = model
-  }
-  if (form.clientCompatibility !== 'account_default') {
-    payload.clientCompatibility = form.clientCompatibility
   }
   return payload
 }
@@ -56,7 +53,7 @@ export function failedAccountTestResult(input: {
   startedAt: number
 }): AccountTestResult {
   const fallbackMessage = extractApiErrorMessage(input.error, '测试失败')
-  const testClientCompatibility = effectiveAccountTestClientCompatibility(input.account, input.clientCompatibility)
+  const testClientCompatibility = effectiveAccountTestClientCompatibility(input.account, 'account_default')
   return {
     accountId: input.account.id,
     accountName: input.account.name,

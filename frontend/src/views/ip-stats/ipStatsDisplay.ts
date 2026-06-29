@@ -27,9 +27,9 @@ export const ipStatsColumns = [
 export function ipRowActions(record: ClientIpStatsRow): RowActionItem[] {
   const detailAction: RowActionItem = { key: 'detail', label: '详情', icon: 'detail' }
   if (record.status === 'blacklisted') {
-    return [detailAction, { key: 'unblock', label: '解封', icon: 'restore', tone: 'success' }]
+    return [detailAction, { key: 'unblock', label: '解封', icon: 'restore', tone: 'success', confirmTitle: '确认解除这个 IP 的封禁？', confirmOkText: '解封' }]
   }
-  return [detailAction, { key: 'blacklist', label: '封禁', icon: 'disable', tone: 'danger' }]
+  return [detailAction, { key: 'blacklist', label: '封禁', icon: 'disable', tone: 'danger', confirmTitle: '确认封禁这个 IP？封禁后该 IP 的公开请求会被拒绝。', confirmOkText: '封禁' }]
 }
 
 export function cacheReadRate(usage?: ClientIpUsageSummary): number {

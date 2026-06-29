@@ -95,6 +95,7 @@ try {
     const group = repositories.createGroup({
       name: 'DeepSeek Mock AI 回归分组',
       providerCode: DEEPSEEK_PROVIDER_CODE,
+      providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
       enabled: true
     }, access)
     const account = repositories.createAccount({
@@ -128,6 +129,7 @@ try {
     const bodyInterruptedGroup = repositories.createGroup({
       name: 'DeepSeek Mock AI JSON 正文中断重试分组',
       providerCode: DEEPSEEK_PROVIDER_CODE,
+      providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
       enabled: true
     }, access)
     repositories.createAccount({
@@ -163,6 +165,7 @@ try {
     const retryGroup = repositories.createGroup({
       name: 'DeepSeek Mock AI 协议失败重试分组',
       providerCode: DEEPSEEK_PROVIDER_CODE,
+      providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
       enabled: true
     }, access)
     repositories.createAccount({
@@ -216,6 +219,7 @@ try {
     const allBadGroup = repositories.createGroup({
       name: 'DeepSeek Mock AI 协议失败耗尽分组',
       providerCode: DEEPSEEK_PROVIDER_CODE,
+      providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
       enabled: true
     }, access)
     for (const item of [
@@ -242,6 +246,7 @@ try {
     const codexBridgeGroup = repositories.createGroup({
       name: 'DeepSeek Codex bridge Mock AI 回归分组',
       providerCode: DEEPSEEK_PROVIDER_CODE,
+      providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
       enabled: true
     }, access)
     const codexBridgeAccount = repositories.createAccount({

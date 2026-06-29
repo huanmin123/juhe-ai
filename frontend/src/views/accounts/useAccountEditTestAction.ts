@@ -83,7 +83,6 @@ export function useAccountEditTestAction(options: UseAccountEditTestActionOption
       const draftAccount = buildAccountDraftTestSummary({
         accountDetail,
         draftPayload,
-        clientCompatibility: options.form.clientCompatibility,
         protocolProfile: toValue(options.selectedProtocolProfile),
         scopeSystemAccountId: draftTestScopeSystemAccountId(accountDetail)
       })

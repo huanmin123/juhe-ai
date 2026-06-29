@@ -237,7 +237,7 @@ Chat-only bridge 的 compact 输出是网关自有 envelope，不是上游原生
 ## 性能边界
 
 - 请求路径不得为了 compact 解析普通大 JSON 的完整深层结构；只在必须改写请求体的模式下进入 worker thread 解析。
-- 不在流式拦截器里缓存完整 SSE 流或跨事件全文；Codex compact 契约检查只允许暂存完成前的有限 SSE 事件窗口，超过上限按不可接受响应处理。
+- 不在响应语义检查路径缓存完整 SSE 流或跨事件全文；Codex compact 契约检查只允许暂存完成前的有限 SSE 事件窗口，超过上限按不可接受响应处理。
 - 不在请求链路扫描审计 payload、使用记录或历史请求来找可压缩上下文。
 - compact 输出如果需要用于审计或排障摘要，必须有字节上限，超过上限只记录截断摘要。
 - Codex V2 `compaction_trigger` 只增加 compact 契约所需的有界完成前暂存，不做全量整流缓存。
@@ -319,7 +319,7 @@ Chat-only bridge 的 compact 输出是网关自有 envelope，不是上游原生
 - `codex_responses` 请求形态：`compaction_trigger` 作为 Responses input item 透传，不被工具归一化或消息转换误删。
 - Codex compact 响应契约：mock 上游返回 2 个非 compaction output item 时，网关不泄露坏 output，并切到下一个 Codex 兼容账号重试。
 - OAuth Codex adapter：默认仍按现有字段边界，不被 API Key 调整影响。
-- 流式拦截：`context_length_exceeded` 仍按现有客户端策略处理，不触发 compact。
+- 流式失败处理：`context_length_exceeded` 仍按现有客户端策略处理，不触发 compact。
 - 性能：大请求体在不需要改写时仍 raw passthrough，不新增主线程完整解析。
 - Chat-only bridge：首轮 `/responses` 成功后生成 `response_id` 状态；第二轮带 `previous_response_id` 时能还原历史并转 Chat。
 - Chat-only bridge：`previous_response_id` 跨 API Key、跨分组、跨供应商或过期时受控失败，且不命中上游。

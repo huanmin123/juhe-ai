@@ -31,7 +31,7 @@
 
 ## 路由原则
 
-运行时必须按“请求协议 + endpoint family + model route + API Key 绑定分组”共同收敛：
+运行时必须按“请求协议 + endpoint family + model route + API Key 所选路由策略分组”共同收敛：
 
 1. 先由路径识别下游协议和 endpoint family。
 2. Gemini native 路径解析为 `protocolCode = gemini`、`endpointFamily = generate_content|stream_generate_content|count_tokens|...` 和路径模型。
@@ -39,7 +39,7 @@
 4. OpenAI Chat / Responses 路径先按 OpenAI 协议解析 source family；命中混合供应商账户中的 `chat_completions|responses -> generate_content` 配置时，才进入 Gemini native 真实上游。
 5. Anthropic Messages 路径先按 Anthropic 协议解析 source family；命中混合供应商账户中的 `messages -> generate_content` 配置时，才进入 Gemini native 真实上游。
 6. 模型名只在已识别协议和显式映射范围内参与路由，不跨协议猜测。
-7. 当前 API Key 没有绑定目标供应商分组或目标映射账号不可用时，返回本地错误，不全局兜底。
+7. 当前 API Key 所选路由策略没有绑定目标供应商分组或目标映射账号不可用时，返回本地错误，不全局兜底。
 
 禁止行为：
 
@@ -205,7 +205,7 @@ Gemini native 本地错误统一渲染为 Google API error shape：
 {
   "error": {
     "code": 400,
-    "message": "模型不可用或当前 API Key 未绑定 Gemini 分组",
+    "message": "模型不可用或当前 API Key 的路由策略未绑定 Gemini 分组",
     "status": "INVALID_ARGUMENT",
     "details": []
   }
@@ -219,7 +219,7 @@ Gemini native 本地错误统一渲染为 Google API error shape：
 | 缺少本地 API Key | `UNAUTHENTICATED` | 401 |
 | 本地 API Key 无效 | `UNAUTHENTICATED` | 401 |
 | 模型不可见 / 不可路由 | `INVALID_ARGUMENT` | 400 |
-| 当前 API Key 未绑定 Gemini 分组 | `FAILED_PRECONDITION` | 400 |
+| 当前 API Key 的路由策略未绑定 Gemini 分组 | `FAILED_PRECONDITION` | 400 |
 | 额度已用完 | `RESOURCE_EXHAUSTED` | 429 |
 | 无可用账号 | `UNAVAILABLE` | 503 |
 | 请求体过大 | `RESOURCE_EXHAUSTED` | 413 |
@@ -291,7 +291,7 @@ endpointFamilies = [chat_completions]
 
 - 本项目启动本地网关。
 - 已创建 Gemini API Key 账户、默认 Gemini 分组和本地 API Key。
-- 本地 API Key 绑定 Gemini 分组。
+- 本地 API Key 绑定的路由策略包含 Gemini 分组。
 - 本机已安装 `gemini` CLI。
 - 用户提供真实 Gemini API Key。
 

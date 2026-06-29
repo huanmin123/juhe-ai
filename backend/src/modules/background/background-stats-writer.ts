@@ -47,6 +47,7 @@ import {
 import {
   listAccountQualityFailurePrecheckCandidates,
   refreshAccountQualityFromUsage,
+  upsertAccountUsageSnapshotsAsync,
   upsertAccountUsageSnapshots,
   type AccountUsageSnapshotUpsertInput,
   type AccountQualityFailurePrecheckCandidate,
@@ -189,6 +190,9 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
     case 'refresh_group_account_stats':
       return { refreshed: await refreshGroupAccountStats() }
     case 'refresh_account_quality':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        throw postgresStatsWriterOperationNotImplemented(operation.type)
+      }
       return refreshAccountQuality(operation.windowMinutes, operation.failureCandidateLimit)
     case 'record_system_metrics_sample':
       if (runtimeConfig.databaseDriver === 'postgres') {
@@ -211,21 +215,40 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
         jobName: operation.jobName
       })
     case 'check_usage_stats_consistency':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        throw postgresStatsWriterOperationNotImplemented(operation.type)
+      }
       return checkUsageStatsConsistency(operation.limit)
     case 'collect_table_storage_snapshot':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        throw postgresStatsWriterOperationNotImplemented(operation.type)
+      }
       return collectTableStorageSnapshot(operation.sampledAt, operation.options)
     case 'record_client_ip_policy_hits':
       return await recordClientIpPolicyHitsAsync(operation.hits)
     case 'list_active_client_ip_policies':
       return await listActiveClientIpPoliciesAsync()
     case 'upsert_account_usage_snapshots':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        await upsertAccountUsageSnapshotsAsync(operation.inputs)
+        return { upsertedCount: operation.inputs.length }
+      }
       upsertAccountUsageSnapshots(operation.inputs)
       return { upsertedCount: operation.inputs.length }
     case 'cleanup_usage_stats_retention':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        throw postgresStatsWriterOperationNotImplemented(operation.type)
+      }
       return cleanupStatsDatabaseAfterDelete(cleanupUsageStatsBucketsBefore(operation.input))
     case 'cleanup_system_metrics_retention':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        throw postgresStatsWriterOperationNotImplemented(operation.type)
+      }
       return cleanupStatsDatabaseAfterDelete(cleanupSystemMetricsBefore(operation.input))
     case 'cleanup_table_storage_snapshots_retention':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        throw postgresStatsWriterOperationNotImplemented(operation.type)
+      }
       return cleanupStatsDatabaseAfterDelete({ deleted: cleanupTableStorageSnapshotsBefore(operation.cutoffIso, operation.limit) })
     case 'cleanup_non_business_stats_data':
       return await cleanupNonBusinessDataBeforeWithResult({
@@ -242,6 +265,10 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
     default:
       return assertNever(operation)
   }
+}
+
+function postgresStatsWriterOperationNotImplemented(operationType: string): Error {
+  return new Error(`高性能模式统计写操作 ${operationType} 尚未实现 PostgreSQL 当前 schema 写入逻辑，禁止静默跳过或回落 SQLite`)
 }
 
 function currentProcessOwnsStatsWriter(): boolean {

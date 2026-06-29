@@ -118,7 +118,7 @@
 
 - `pnpm --dir backend test:gemini-gateway-mock-ai`：通过。
 - `pnpm --dir backend test:account-model-mapping`：通过。
-- `pnpm --dir backend test:openai-anthropic-bridge-mock`：通过。
+- `pnpm --dir backend test:protocol-boundary-openai-anthropic`：通过。
 - `pnpm --dir backend test:anthropic-openai-chat-bridge-mock`：通过。
 - `pnpm --dir backend test:anthropic-gateway-mock-ai`：通过。
 - `pnpm --dir backend test:deepseek-gateway-mock-ai`：通过。

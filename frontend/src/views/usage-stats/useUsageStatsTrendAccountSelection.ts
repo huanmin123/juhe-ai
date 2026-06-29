@@ -2,7 +2,7 @@ import { accountSelectionForId, accountSelectOptionLabel, rememberAccountSelecti
 import type { AccountOptionSummary, AccountUsageStatsOverview, AccountUsageStatsRow } from '@/types/domain'
 import { computed, ref, watch, type Ref } from 'vue'
 
-import { aggregateUsageSummaries, dedupeRowsById, metricText, metricValue, placeholderTrendRow, usageTrendDateKeys } from './usageStatsHelpers'
+import { dedupeRowsById, metricText, metricValue, placeholderTrendRow, usageTrendDateKeys } from './usageStatsHelpers'
 import { chartColors, orderedUsageRows } from './usageTrendChartOptions'
 import type { UsageTrendMetric } from './usageTrendMetrics'
 
@@ -51,9 +51,6 @@ export function useUsageStatsTrendAccountSelection(options: UseUsageStatsTrendAc
   const visibleTrendRows = computed(() => selectedTrendAccountIds.value.length ? selectedTrendRows.value : trendAccountRows.value)
   const hasSelectedTrendAccounts = computed(() => selectedTrendAccountIds.value.length > 0)
   const displayRows = computed(() => hasSelectedTrendAccounts.value ? orderedUsageRows(selectedTrendRows.value) : options.rows.value)
-  const displaySummary = computed(() => hasSelectedTrendAccounts.value
-    ? aggregateUsageSummaries(displayRows.value.map((row) => row.rangeUsage))
-    : options.overview.value?.summary)
   const accountUsageEmptyDescription = computed(() => hasSelectedTrendAccounts.value
     ? '当前已选账户在日期范围内暂无用量。'
     : '当前日期范围暂无账户用量，等待后台聚合后会显示结果。')
@@ -154,7 +151,6 @@ export function useUsageStatsTrendAccountSelection(options: UseUsageStatsTrendAc
     addedTrendAccountIds: options.addedTrendAccountIds,
     addedTrendAccountSelections,
     displayRows,
-    displaySummary,
     hasTrendData,
     hasSelectedTrendAccounts,
     selectedTrendAccountIds,

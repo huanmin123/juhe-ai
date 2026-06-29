@@ -112,7 +112,6 @@ import {
   responseInspectionActionUsesRuntimeAvoidance
 } from '../response-inspection-policies/responseInspectionActionTemplates'
 import {
-  responseInspectionAccountCompatibilityOptions,
   responseInspectionClientProfileOptions,
   responseInspectionFieldSummary
 } from '../response-inspection-policies/responseInspectionPolicyForm'
@@ -182,7 +181,6 @@ function collapseAll(): void {
 function conditionSummary(rule: AccountResponseInspectionRuleForm): string {
   const parts = [
     responseInspectionFieldSummary('请求客户端', rule.clientProfiles.map(clientProfileLabel)),
-    responseInspectionFieldSummary('账号兼容能力', rule.accountClientCompatibilities.map(accountCompatibilityLabel)),
     responseInspectionFieldSummary('输出', rule.outputTextIncludes),
     responseInspectionFieldSummary('排除', rule.outputTextExcludes),
     responseInspectionFieldSummary('code', rule.errorCodes),
@@ -197,10 +195,6 @@ function conditionSummary(rule: AccountResponseInspectionRuleForm): string {
 
 function clientProfileLabel(value: string): string {
   return responseInspectionClientProfileOptions.find((option) => option.value === value)?.label ?? value
-}
-
-function accountCompatibilityLabel(value: string): string {
-  return responseInspectionAccountCompatibilityOptions.find((option) => option.value === value)?.label ?? value
 }
 </script>
 

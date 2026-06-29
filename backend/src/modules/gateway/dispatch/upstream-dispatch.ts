@@ -46,7 +46,6 @@ import { recordFailedUpstreamAttempt, type GatewayUsageContext } from '../usage/
 import { type GatewayUpstreamResponse } from '../upstream/request.js'
 import { OpenAIOAuthCodexAdapterError } from '../adapters/gpt-codex/oauth-adapter.js'
 import type { OpenAIGatewayRequestLane } from '../protocols/openai-v1/request-lane.js'
-import { createGatewayCompatibilityRecoveryState } from '../client-profiles/compatibility-policy.js'
 import { GatewayAgentGuidanceResponse, GatewayLocalProtocolResponse, GatewayRequestValidationError } from '../request/validation-error.js'
 import { recordGatewayAccountApiKeyFailure } from '../runtime/account-api-key-effects.service.js'
 
@@ -111,7 +110,6 @@ export async function fetchFirstAvailableUpstream(
   let dispatchAccounts = orderGatewayAccountsByRuntimeDegradation(
     orderAccountsForRequestLane(accounts, requestLane, groupSchedulingPolicy)
   ).accounts
-  const compatibilityRecoveryState = createGatewayCompatibilityRecoveryState()
 
   while (dispatchAccounts.length > 0) {
     let attemptedAccountCount = 0
@@ -318,7 +316,6 @@ export async function fetchFirstAvailableUpstream(
             continue
           }
           for (const upstreamUrl of upstreamUrls) {
-            let activeBodyVariant = false
             for (let attemptIndex = 0, attemptLimit = maxAttemptCount; attemptIndex < attemptLimit; attemptIndex += 1) {
               const attemptStartedAt = Date.now()
               auditAttemptIndex += 1
@@ -390,25 +387,16 @@ export async function fetchFirstAvailableUpstream(
                   lastAttempt,
                   clientIpAccountAvoidanceTracker,
                   accountStateMutationEnabled,
-                  retrySameAccount: !activeBodyVariant && shouldRetrySameAccountAfterFailure(account, attemptIndex, sameAccountRetryPolicy),
-                  requestBody: body,
-                  compatibilityRecoveryState
+                  retrySameAccount: shouldRetrySameAccountAfterFailure(account, attemptIndex, sameAccountRetryPolicy)
                 })
                 lastAttempt = failedResponseResult.lastAttempt
                 failedAccountIds.add(account.id)
-                if (failedResponseResult.action === 'retry_with_body_variant') {
-                  body = failedResponseResult.body
-                  activeBodyVariant = true
-                  attemptLimit += 1
-                  continue
-                }
                 if (failedResponseResult.action === 'retry') {
                   await waitForSameAccountRetry(account, upstreamUrl, attemptIndex, sameAccountRetryPolicy, auditCapture, signal)
                   continue
                 }
                 if (
-                  !activeBodyVariant
-                  && shouldRetryAnotherAccountApiKey(account, failedResponseResult.keyScopedFailure, accountApiKeyAttemptCount, auditCapture)
+                  shouldRetryAnotherAccountApiKey(account, failedResponseResult.keyScopedFailure, accountApiKeyAttemptCount, auditCapture)
                 ) {
                   if (failedResponseResult.pendingApiKeyFailure) {
                     pendingApiKeyFailures.push(failedResponseResult.pendingApiKeyFailure)
@@ -462,7 +450,7 @@ export async function fetchFirstAvailableUpstream(
                   error,
                   clientIpAccountAvoidanceTracker,
                   accountStateMutationEnabled,
-                  retrySameAccount: !activeBodyVariant && shouldRetrySameAccountAfterFailure(account, attemptIndex, sameAccountRetryPolicy)
+                  retrySameAccount: shouldRetrySameAccountAfterFailure(account, attemptIndex, sameAccountRetryPolicy)
                 })
                 lastAttempt = requestErrorResult.lastAttempt ?? lastAttempt
                 failedAccountIds.add(account.id)
@@ -471,8 +459,7 @@ export async function fetchFirstAvailableUpstream(
                   continue
                 }
                 if (
-                  !activeBodyVariant
-                  && shouldRetryAnotherAccountApiKey(account, requestErrorResult.keyScopedFailure, accountApiKeyAttemptCount, auditCapture)
+                  shouldRetryAnotherAccountApiKey(account, requestErrorResult.keyScopedFailure, accountApiKeyAttemptCount, auditCapture)
                 ) {
                   retryAccountApiKey = true
                   break

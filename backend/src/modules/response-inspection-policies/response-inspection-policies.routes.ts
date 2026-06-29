@@ -18,11 +18,9 @@ export const responseInspectionPoliciesRouter = Router()
 
 const textListSchema = z.array(z.string().trim().min(1).max(200)).max(50).optional()
 const clientProfileListSchema = z.array(z.enum(['codex', 'generic_openai', 'claude_code', 'generic_anthropic', 'generic_gemini', 'gemini_cli'])).max(6).optional()
-const accountClientCompatibilityListSchema = z.array(z.enum(['openai_standard', 'codex_responses'])).max(2).optional()
 
 const matchSchema = z.object({
   clientProfiles: clientProfileListSchema,
-  accountClientCompatibilities: accountClientCompatibilityListSchema,
   outputTextIncludes: textListSchema,
   outputTextExcludes: textListSchema,
   errorCodes: textListSchema,

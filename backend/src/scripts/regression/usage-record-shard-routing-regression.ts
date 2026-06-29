@@ -30,7 +30,7 @@ const [databaseModule, repositories, usageStatsRepository, usageRecordShards] = 
 
 try {
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
-  const group = repositories.createGroup({ name: '分片写入回归分组', providerCode: 'gpt', enabled: true }, access)
+  const group = repositories.createGroup({ name: '分片写入回归分组', providerCode: 'gpt', providerProtocolProfileId: 'profile_gpt_openai_v1', enabled: true }, access)
   const account = repositories.createAccount({
     providerCode: 'gpt',
     name: '分片写入回归账户',

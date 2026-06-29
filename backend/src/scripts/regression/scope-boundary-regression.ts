@@ -7,6 +7,7 @@ import cors from 'cors'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-scope-regression-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'scope-regression.sqlite3')
@@ -157,7 +158,7 @@ interface ApiKeySummary {
   systemAccountId?: string
   name: string
   status?: string
-  groupId?: string
+  routeStrategyId?: string
 }
 
 interface ApiKeyListResult {
@@ -303,6 +304,7 @@ interface SeedState {
   inboundRuntimeAuthorizationId: string
   teamInboundAuthorizationId: string
   userBGroupId: string
+  userBRouteStrategyId: string
   usageToday: string
   usageYesterday: string
 }
@@ -364,6 +366,7 @@ async function main(): Promise<void> {
         ref: 'scope-user-a-import',
         name: '用户 A 导入账户',
         providerCode: 'gpt',
+        providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
         type: 'api_key',
         status: 'disabled',
         groupId: seed.userATargetGroupId,
@@ -412,7 +415,7 @@ async function main(): Promise<void> {
     }
     assert(!authorizedDetailSecretJson.includes('sk-scope-user-b'), '授权实例详情不应泄露来源账户 API Key 明文')
     assert(!Object.prototype.hasOwnProperty.call(authorizedDetailCredentials, 'error_handling_rules'), '授权实例详情不应返回来源账户错误处理策略')
-    assert(!Object.prototype.hasOwnProperty.call(authorizedDetailCredentials, 'stream_intercept_rules'), '授权实例详情不应返回旧账户流式拦截规则')
+    assert(!Object.prototype.hasOwnProperty.call(authorizedDetailCredentials, 'stream_intercept_rules'), '授权实例详情不应返回旧账户 stream_intercept_rules')
     summary.push('我的账户自有作用域检查通过')
 
     const adminMyAccounts = await getAccountItems(baseUrl, `/__aisys__/api/my-accounts?systemAccountId=${seed.userBId}`, seed.adminCookie)
@@ -441,7 +444,8 @@ async function main(): Promise<void> {
 
     const createdGroup = await postEnvelope<GroupSummary>(baseUrl, `/__aisys__/api/groups?systemAccountId=${seed.userBId}`, seed.adminCookie, {
       name: '用户 B 管理代建分组',
-      providerCode: 'gpt'
+      providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
     })
     assert(createdGroup.systemAccountId === seed.userBId, '管理员按用户 B 创建分组没有归属到用户 B')
     const userBGroupPage1 = await getEnvelope<GroupListResult>(baseUrl, `/__aisys__/api/groups?systemAccountId=${seed.userBId}&page=1&pageSize=1`, seed.adminCookie)
@@ -457,7 +461,7 @@ async function main(): Promise<void> {
 
     const createdApiKey = await postEnvelope<ApiKeySummary>(baseUrl, `/__aisys__/api/api-keys?systemAccountId=${seed.userBId}`, seed.adminCookie, {
       name: '用户 B 管理代建 Key',
-      groupBindings: [{ groupId: seed.userBGroupId, priority: 1, status: 'active' }]
+      routeStrategyId: seed.userBRouteStrategyId
     })
     assert(createdApiKey.systemAccountId === seed.userBId, '管理员按用户 B 创建 API Key 没有归属到用户 B')
     summary.push('管理员代建 API Key 归属检查通过')
@@ -468,8 +472,8 @@ async function main(): Promise<void> {
 
     const userBKeyPage = await getEnvelope<ApiKeyListResult>(baseUrl, `/__aisys__/api/api-keys?systemAccountId=${seed.userBId}&keyword=${encodeURIComponent('用户 B')}&page=1&pageSize=1`, seed.adminCookie)
     assert(userBKeyPage.total >= 1 && userBKeyPage.items.length === 1 && userBKeyPage.items[0]?.systemAccountId === seed.userBId, '管理 API Key 分页或关键词筛选异常')
-    const activeUserBKeys = await getEnvelope<ApiKeyListResult>(baseUrl, `/__aisys__/api/api-keys?systemAccountId=${seed.userBId}&status=active&groupId=${seed.userBGroupId}`, seed.adminCookie)
-    assert(activeUserBKeys.items.every((item) => item.status === 'active' && ((item as unknown as { groupBindings: Array<{ groupId: string }> }).groupBindings.some((binding) => binding.groupId === seed.userBGroupId))), '管理 API Key 状态或分组筛选异常')
+    const activeUserBKeys = await getEnvelope<ApiKeyListResult>(baseUrl, `/__aisys__/api/api-keys?systemAccountId=${seed.userBId}&status=active&routeStrategyId=${seed.userBRouteStrategyId}`, seed.adminCookie)
+    assert(activeUserBKeys.items.every((item) => item.status === 'active' && item.routeStrategyId === seed.userBRouteStrategyId), '管理 API Key 状态或策略路由筛选异常')
     summary.push('API Key 分页筛选检查通过')
 
 
@@ -701,14 +705,17 @@ function seedData(): SeedState {
   }, userBAccess)
   const userBGroup = repositories.createGroup({
     name: '用户 B 自建分组',
-    providerCode: 'gpt'
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, userBAccess)
   const userATargetGroup = repositories.createGroup({
     name: '指定授权目标分组',
-    providerCode: 'gpt'
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, userAAccess)
   const userAAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '用户 A 账户',
     type: 'api_key',
     groupId: userATargetGroup.id,
@@ -741,6 +748,7 @@ function seedData(): SeedState {
   }
   const userBAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '用户 B 账户',
     type: 'api_key',
     groupId: userBGroup.id,
@@ -761,6 +769,7 @@ function seedData(): SeedState {
   )
   repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'Scope Extra OAuth',
     type: 'oauth',
     groupId: userBGroup.id,
@@ -863,6 +872,7 @@ function seedData(): SeedState {
     inboundRuntimeAuthorizationId,
     teamInboundAuthorizationId: teamInboundAuthorization.id,
     userBGroupId: userBGroup.id,
+    userBRouteStrategyId: userBApiKey.routeStrategyId,
     usageToday,
     usageYesterday
   }

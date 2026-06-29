@@ -29,14 +29,6 @@ export const responseInspectionPolicyGuideFields = [
     note: '只限制规则适用的客户端范围，不能单独构成命中；Codex 专属错误改写必须用它收窄，Claude Code 不复用 Codex 失败事件。'
   },
   {
-    key: 'accountClientCompatibilities',
-    field: '账号兼容能力',
-    source: '检查当前命中账号的兼容能力',
-    example: 'Codex Responses',
-    required: '否，适用范围',
-    note: '适合把规则限制在 Codex Responses 账号；它是账号维度，不等同于请求客户端。'
-  },
-  {
     key: 'outputTextIncludes',
     field: '输出文本包含',
     source: '检查模型最终答复或流式输出里能被用户看到的文字',

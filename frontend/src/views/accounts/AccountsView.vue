@@ -118,7 +118,6 @@
     <AccountTestModal
       v-if="testModalOpen"
       v-model:open="testModalOpen"
-      v-model:client-compatibility="testForm.clientCompatibility"
       v-model:model="testForm.model"
       :account="testingAccount"
       :accounts="batchTestingAccounts"

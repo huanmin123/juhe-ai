@@ -240,7 +240,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
         account,
         error,
         model: testForm.model,
-        clientCompatibility: testForm.clientCompatibility,
+        clientCompatibility: 'account_default',
         startedAt
       })
       message.error(`${account.name}: 测试失败`)
@@ -363,7 +363,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
         account,
         error,
         model: payload.model ?? '',
-        clientCompatibility: testForm.clientCompatibility,
+        clientCompatibility: 'account_default',
         startedAt: submittedAt
       })
       updateBatchTestItem(index, {
@@ -420,10 +420,10 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     stopAccountTest()
   })
 
-  function buildAccountSpecificTestPayload(account: AccountSummary, clientCompatibility = testForm.clientCompatibility) {
+  function buildAccountSpecificTestPayload(account: AccountSummary) {
     return buildAccountTestPayload({
       ...testForm,
-      clientCompatibility: account.type === 'oauth' ? 'account_default' : clientCompatibility,
+      clientCompatibility: 'account_default',
       model: testForm.model || defaultModelForSelection(account)
     })
   }
@@ -548,7 +548,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     return waitForAccountTestResult({
       account,
       cancelTask: cancelCreatedAccountTestTask,
-      currentClientCompatibility: () => testForm.clientCompatibility,
+      currentClientCompatibility: () => 'account_default',
       currentModel: () => testForm.model,
       fetchTask: fetchAccountTestTask,
       initialTask,

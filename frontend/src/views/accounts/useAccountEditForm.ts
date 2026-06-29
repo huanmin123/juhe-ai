@@ -97,10 +97,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     providerModelsLoading,
     resetProviderModelOptions
   } = useAccountProviderModelOptions({
-    createScopeParams,
     currentProviderCode: () => form.providerCode,
     extractApiErrorMessage: options.extractApiErrorMessage,
-    isManagementView: options.isManagementView
+    isManagementView: options.isManagementView,
+    modelScopeParams: allProviderModelScopeParams
   })
   const {
     loading: allProviderModelsLoading,

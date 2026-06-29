@@ -7,10 +7,10 @@ import type { AccountModelSelectOption } from './accountEditFormPayload'
 import type { AccountScopeParams } from './accountOperationScope'
 
 interface UseAccountProviderModelOptionsOptions {
-  createScopeParams: ComputedRef<AccountScopeParams>
   currentProviderCode: () => string
   extractApiErrorMessage: (error: unknown, fallback: string) => string
   isManagementView: ComputedRef<boolean>
+  modelScopeParams: ComputedRef<AccountScopeParams>
 }
 
 const providerModelOptionsCache = new Map<string, AccountModelSelectOption[]>()
@@ -51,8 +51,8 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
     providerModelsLoading.value = true
     try {
       const models = isHybridProviderCode(code)
-        ? await api.providers.modelOptions(options.createScopeParams.value)
-        : await api.providers.models(code)
+        ? await api.providers.modelOptions(options.modelScopeParams.value)
+        : await api.providers.models(code, options.modelScopeParams.value)
       const modelOptions = dedupeModelOptions(models.map((item) => ({
         label: item.model,
         value: item.model
@@ -72,7 +72,7 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
   }
 
   function providerModelCacheKey(providerCode: string): string {
-    return `${providerCode}:${options.createScopeParams.value?.systemAccountId ?? 'self'}:${options.isManagementView.value ? 'management' : 'self'}`
+    return `${providerCode}:${options.modelScopeParams.value?.systemAccountId ?? 'self'}:${options.isManagementView.value ? 'management' : 'self'}`
   }
 
   function dedupeModelOptions(options: AccountModelSelectOption[]): AccountModelSelectOption[] {
