@@ -9,7 +9,7 @@ import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fi
 import express, { type NextFunction, type Request, type Response as ExpressResponse } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { ANTHROPIC_PROVIDER_CODE } from '../../domain/provider-protocol.js'
+import { ANTHROPIC_ANTHROPIC_V1_PROFILE_ID, ANTHROPIC_PROVIDER_CODE } from '../../domain/provider-protocol.js'
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
 import { logger } from '../../shared/logger.js'
 import {
@@ -124,10 +124,12 @@ try {
   const group = repositories.createGroup({
     name: 'Anthropic 真实模型联调分组',
     providerCode: ANTHROPIC_PROVIDER_CODE,
+    providerProtocolProfileId: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
     enabled: true
   }, access)
   repositories.createAccount({
     providerCode: ANTHROPIC_PROVIDER_CODE,
+    providerProtocolProfileId: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
     name: 'Anthropic 真实模型联调账户',
     type: 'api_key',
     credentials: {

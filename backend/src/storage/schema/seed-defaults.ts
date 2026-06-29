@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import { encryptJson, hashPassword } from '../crypto.js'
+import { createApiKey, encryptJson, hashPassword, hashSecret } from '../crypto.js'
+import { HYBRID_PROVIDER_CODE } from '../../domain/provider-protocol.js'
 import {
   builtInExternalIntegrationTestRateLimits,
   builtInExternalIntegrationTestSourceId,
@@ -167,6 +168,7 @@ export function seedDefaults(database: DatabaseSync): void {
   }
 
   seedAdminDefaultBuiltInGroups(database, now)
+  seedAdminDefaultRouteStrategiesAndApiKeys(database, now)
   seedBuiltInExternalIntegrationTestToken(database, now)
 
   const statement = database.prepare(`
@@ -177,6 +179,113 @@ export function seedDefaults(database: DatabaseSync): void {
   for (const [key, value] of DEFAULT_SYSTEM_SETTINGS) {
     statement.run('sys_admin', key, JSON.stringify(value), now)
   }
+}
+
+function seedAdminDefaultRouteStrategiesAndApiKeys(database: DatabaseSync, timestamp: string): void {
+  const routeStatement = database.prepare(`
+    INSERT OR IGNORE INTO route_strategies (
+      id, system_account_id, name, description, mode, status, is_default, config_json, created_at, updated_at
+    )
+    VALUES (?, 'sys_admin', ?, ?, 'normal', 'active', 1, NULL, ?, ?)
+  `)
+  const routeGroupStatement = database.prepare(`
+    INSERT OR IGNORE INTO route_strategy_groups (
+      id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at, updated_at
+    )
+    VALUES (?, ?, 'sys_admin', ?, 1, 1, 'active', ?, ?)
+  `)
+  const apiKeyStatement = database.prepare(`
+    INSERT OR IGNORE INTO api_keys (
+      id, system_account_id, route_strategy_id, name, description, key_hash, key_prefix, key_suffix,
+      key_secret_encrypted, status, is_default, expires_at, quota_limits_json, availability_schedule_json,
+      availability_schedule_next_check_at, created_at, updated_at
+    )
+    VALUES (?, 'sys_admin', ?, ?, ?, ?, ?, ?, ?, 'active', 1, NULL, NULL, NULL, NULL, ?, ?)
+  `)
+  for (const group of defaultRouteSeedGroups(database)) {
+    const routeStrategyName = defaultRouteStrategyNameForGroup(group.name)
+    const routeStrategyId = defaultRouteStrategyIdForGroup(group.id)
+    routeStatement.run(
+      routeStrategyId,
+      routeStrategyName,
+      `系统默认普通路由，绑定${group.name}。`,
+      timestamp,
+      timestamp
+    )
+    if (!routeStrategyExists(database, routeStrategyId)) {
+      continue
+    }
+    routeGroupStatement.run(
+      defaultRouteStrategyGroupBindingIdForGroup(group.id),
+      routeStrategyId,
+      group.id,
+      timestamp,
+      timestamp
+    )
+    if (existingDefaultApiKeyIdForRouteStrategy(database, routeStrategyId)) {
+      continue
+    }
+    const apiKey = createApiKey()
+    apiKeyStatement.run(
+      defaultApiKeyIdForRouteStrategy(routeStrategyId),
+      routeStrategyId,
+      defaultApiKeyNameForRouteStrategy(routeStrategyName),
+      `系统默认 API Key，绑定${routeStrategyName}。`,
+      hashSecret(apiKey),
+      apiKey.slice(0, 8),
+      apiKey.slice(-8),
+      encryptJson({ key: apiKey }),
+      timestamp,
+      timestamp
+    )
+  }
+}
+
+function defaultRouteSeedGroups(database: DatabaseSync): Array<{ id: string; name: string }> {
+  return database
+    .prepare(`
+      SELECT id, name
+      FROM groups
+      WHERE system_account_id = 'sys_admin'
+        AND is_default = 1
+        AND provider_code <> ?
+      ORDER BY created_at ASC, id ASC
+    `)
+    .all(HYBRID_PROVIDER_CODE) as Array<{ id: string; name: string }>
+}
+
+function routeStrategyExists(database: DatabaseSync, routeStrategyId: string): boolean {
+  const row = database
+    .prepare('SELECT id FROM route_strategies WHERE id = ? LIMIT 1')
+    .get(routeStrategyId) as { id?: string } | undefined
+  return Boolean(row?.id)
+}
+
+function existingDefaultApiKeyIdForRouteStrategy(database: DatabaseSync, routeStrategyId: string): string | undefined {
+  const row = database
+    .prepare('SELECT id FROM api_keys WHERE route_strategy_id = ? AND is_default = 1 LIMIT 1')
+    .get(routeStrategyId) as { id?: string } | undefined
+  return row?.id
+}
+
+function defaultRouteStrategyIdForGroup(groupId: string): string {
+  return groupId.replace(/^grp_/, 'route_strategy_')
+}
+
+function defaultRouteStrategyGroupBindingIdForGroup(groupId: string): string {
+  return groupId.replace(/^grp_/, 'rsg_')
+}
+
+function defaultRouteStrategyNameForGroup(groupName: string): string {
+  return groupName.replace(/分组$/, '路由')
+}
+
+function defaultApiKeyIdForRouteStrategy(routeStrategyId: string): string {
+  return routeStrategyId.replace(/^route_strategy_/, 'key_default_')
+}
+
+function defaultApiKeyNameForRouteStrategy(routeStrategyName: string): string {
+  return routeStrategyName.replace(/路由$/, 'API Key')
 }
 
 function seedAdminDefaultBuiltInGroups(database: DatabaseSync, timestamp: string): void {

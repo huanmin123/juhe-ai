@@ -5,8 +5,10 @@ import { hashPassword, hashPasswordAsync, hashSecret, verifyPassword, verifyPass
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
 import { ensureDefaultBuiltInGroupsForSystemAccount } from './default-group.repository.js'
+import { ensureDefaultApiKeysForSystemAccount, ensureDefaultApiKeysForSystemAccountAsync } from './api-key.repository.js'
 import { clearGatewayApiKeyValidationCache } from './gateway-api-key.repository.js'
 import { getPostgresPool } from './postgres-client.js'
+import { ensureDefaultRouteStrategiesForSystemAccount, ensureDefaultRouteStrategiesForSystemAccountAsync } from './route-strategy.repository.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { DEFAULT_BUILT_IN_GROUPS } from './schema-defaults.js'
@@ -448,9 +450,11 @@ export function createSystemAccountWithPasswordHash(input: {
         INSERT INTO system_accounts (
           id, username, display_name, description, role, status, password_hash, must_change_password, image_generation_enabled, created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `)
+    `)
       .run(summary.id, summary.username, summary.displayName, summary.description ?? null, summary.role, summary.status, passwordHash, summary.mustChangePassword ? 1 : 0, summary.imageGenerationEnabled ? 1 : 0, now, now)
     ensureDefaultBuiltInGroupsForSystemAccount(summary.id, now)
+    ensureDefaultRouteStrategiesForSystemAccount(summary.id, now)
+    ensureDefaultApiKeysForSystemAccount(summary.id, now)
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     rollbackDatabaseTransaction(database, transactionStarted)
@@ -501,6 +505,8 @@ export async function createSystemAccountWithPasswordHashAsync(input: {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [summary.id, summary.username, summary.displayName, summary.description ?? null, summary.role, summary.status, passwordHash, summary.mustChangePassword ? 1 : 0, summary.imageGenerationEnabled ? 1 : 0, now, now])
     await ensureDefaultBuiltInGroupsForSystemAccountAsync(tx, summary.id, now)
+    await ensureDefaultRouteStrategiesForSystemAccountAsync(tx, summary.id, now)
+    await ensureDefaultApiKeysForSystemAccountAsync(tx, summary.id, now)
   })
   invalidateSystemAccountLookupCache(summary.id)
   return summary

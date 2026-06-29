@@ -60,6 +60,7 @@
     "test:glm-real-gateway-e2e": "pnpm --filter juhe-ai-backend test:glm-real-gateway-e2e",
     "test:provider-failure-recovery-matrix": "pnpm --filter juhe-ai-backend test:provider-failure-recovery-matrix",
     "test:openai-compatible-gateway-e2e": "pnpm --filter juhe-ai-backend test:openai-compatible-gateway-e2e",
+    "test:newapi-real-multi-protocol-e2e": "pnpm --filter juhe-ai-backend test:newapi-real-multi-protocol-e2e",
     "test:hybrid-gateway-mock-ai": "pnpm --filter juhe-ai-backend test:hybrid-gateway-mock-ai",
     "test:hybrid-real-gateway-e2e": "pnpm --filter juhe-ai-backend test:hybrid-real-gateway-e2e",
     "test:hybrid-quality-comparison": "pnpm --filter juhe-ai-backend test:hybrid-quality-comparison",

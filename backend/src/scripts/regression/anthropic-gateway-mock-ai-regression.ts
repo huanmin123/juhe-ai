@@ -9,7 +9,13 @@ import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fi
 import express, { type NextFunction, type Request, type Response } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { ANTHROPIC_PROTOCOL_CODE, ANTHROPIC_PROVIDER_CODE, OPENAI_COMPATIBLE_PROVIDER_CODE } from '../../domain/provider-protocol.js'
+import {
+  ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
+  ANTHROPIC_PROTOCOL_CODE,
+  ANTHROPIC_PROVIDER_CODE,
+  OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
+  OPENAI_COMPATIBLE_PROVIDER_CODE
+} from '../../domain/provider-protocol.js'
 import { gatewayClientProfileHeader } from '../../modules/gateway/client-profiles/strategy.js'
 import { inspectAnthropicStreamText } from '../../modules/gateway/protocols/anthropic-v1/stream-inspection.js'
 import {
@@ -58,7 +64,7 @@ const [
   { openAIGatewayRouter },
   { requestContextMiddleware },
   databaseModule,
-  repositories,
+  rawRepositories,
   responseInspectionPolicies,
   gatewayCache,
   accountSideEffects,
@@ -77,6 +83,21 @@ const [
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
+const repositories = {
+  ...rawRepositories,
+  createGroup(
+    input: Parameters<typeof rawRepositories.createGroup>[0],
+    actor: Parameters<typeof rawRepositories.createGroup>[1]
+  ) {
+    return rawRepositories.createGroup(withFixtureProfile(input), actor)
+  },
+  createAccount(
+    input: Parameters<typeof rawRepositories.createAccount>[0],
+    actor: Parameters<typeof rawRepositories.createAccount>[1]
+  ) {
+    return rawRepositories.createAccount(withFixtureProfile(input), actor)
+  }
+}
 const upstreamHits: AnthropicUpstreamHit[] = []
 const gatewayIncomingHits: GatewayIncomingHit[] = []
 let anthropicOverloadedErrorSwitchPolicyCreated = false
@@ -173,6 +194,25 @@ function assertAnthropicSignatureDeltaIsNotOutput(): void {
   const frames = extractAnthropicSseSemanticFrames(parseAnthropicSseEventText(rawEvent), 'messages')
   assert.equal(frames.some((frame) => frame.frameType === 'output_text_delta'), false, 'Anthropic signature_delta 不应生成 output_text_delta 语义帧')
   assert(frames.some((frame) => frame.frameType === 'raw_json_path'), 'Anthropic signature_delta 仍应保留原始语义帧便于审计')
+}
+
+function withFixtureProfile<Input extends { providerCode?: string; providerProtocolProfileId?: string }>(input: Input): Input {
+  if (input.providerProtocolProfileId) {
+    return input
+  }
+  if (input.providerCode === OPENAI_COMPATIBLE_PROVIDER_CODE) {
+    return {
+      ...input,
+      providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID
+    }
+  }
+  if (input.providerCode !== ANTHROPIC_PROVIDER_CODE) {
+    return input
+  }
+  return {
+    ...input,
+    providerProtocolProfileId: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID
+  }
 }
 
 async function assertOfficialClaudeCodeCliMockCapture(baseUrl: string, localApiKey: string): Promise<void> {
@@ -556,6 +596,7 @@ async function assertAnthropicModelNotFoundDoesNotPoisonMessages(baseUrl: string
       base_url: upstreamBaseUrl,
       supported_endpoint_modes: ['messages_json']
     },
+    supportedModels: ['claude-fable-5', 'claude-haiku-4-5'],
     groupId: group.id,
     status: 'active',
     schedulable: true
@@ -582,7 +623,10 @@ async function assertAnthropicModelNotFoundDoesNotPoisonMessages(baseUrl: string
   })
   const invalidText = await invalidResponse.text()
   assert.notEqual(invalidResponse.status, 200, `model_not_found 应作为受控失败返回：${invalidText}`)
-  assert(upstreamHits.some((hit) => hit.path === '/v1/messages' && hit.xApiKey === 'sk-ant-model-not-found'), 'model_not_found 场景应命中 mock 上游')
+  assert(
+    upstreamHits.some((hit) => hit.path === '/v1/messages' && hit.xApiKey === 'sk-ant-model-not-found'),
+    `model_not_found 场景应命中 mock 上游，实际 HTTP ${invalidResponse.status}: ${invalidText}`
+  )
 
   upstreamHits.length = 0
   const messageResult = await postAnthropicMessage(baseUrl, apiKey.key, 'messages should still work after model_not_found')
@@ -1039,7 +1083,7 @@ async function assertOpenAIGroupDoesNotAcceptAnthropicMessages(baseUrl: string, 
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 400, `OpenAI 分组不应承接 Anthropic Messages，实际 HTTP ${response.status}: ${text}`)
+  assert.equal(response.status, 503, `OpenAI 分组不应承接 Anthropic Messages，实际 HTTP ${response.status}: ${text}`)
   assert.match(text, /请求路径|客户端协议|request_capability_mismatch|没有可路由模型|model_not_routable_for_api_key/)
   assert.equal(upstreamHits.length, 0, 'OpenAI 分组被拒绝后不应命中 Anthropic mock 上游')
 }

@@ -1,5 +1,6 @@
 import type { DatabaseClient } from './database-client.js'
-import { encryptJson, hashPassword } from './crypto.js'
+import { createApiKey, encryptJson, hashPassword, hashSecret } from './crypto.js'
+import { HYBRID_PROVIDER_CODE } from '../domain/provider-protocol.js'
 import {
   builtInExternalIntegrationTestRateLimits,
   builtInExternalIntegrationTestSourceId,
@@ -239,6 +240,7 @@ export async function seedPostgresDefaults(client: Pick<DatabaseClient, 'execute
     )
   }
 
+  await seedAdminDefaultRouteStrategiesAndApiKeys(client, query, now)
   await seedBuiltInExternalIntegrationTestToken(client, query, now)
 
   for (const [key, value] of DEFAULT_SYSTEM_SETTINGS) {
@@ -253,6 +255,131 @@ export async function seedPostgresDefaults(client: Pick<DatabaseClient, 'execute
   }
 
   return { statementCount }
+}
+
+async function seedAdminDefaultRouteStrategiesAndApiKeys(
+  client: Pick<DatabaseClient, 'one'>,
+  query: (sql: string, values?: readonly unknown[]) => Promise<void>,
+  timestamp: string
+): Promise<void> {
+  const defaultGroups = DEFAULT_BUILT_IN_GROUPS.filter((group) => group.systemAccountId === 'sys_admin' && group.providerCode !== HYBRID_PROVIDER_CODE)
+  for (const groupSeed of defaultGroups) {
+    const group = await client.one<{ id?: string; name?: string }>(
+      `
+        SELECT id, name
+        FROM ${businessTable('groups')}
+        WHERE system_account_id = $1
+          AND provider_code = $2
+          AND is_default = 1
+        ORDER BY updated_at DESC, id ASC
+        LIMIT 1
+      `,
+      [groupSeed.systemAccountId, groupSeed.providerCode]
+    )
+    if (!group?.id) {
+      continue
+    }
+    const groupName = group.name ?? groupSeed.name
+    const routeStrategyName = defaultRouteStrategyNameForGroup(groupName)
+    const routeStrategyId = defaultRouteStrategyIdForGroup(group.id)
+    await query(
+      `
+        INSERT INTO ${businessTable('route_strategies')} (
+          id, system_account_id, name, description, mode, status, is_default, config_json, created_at, updated_at
+        ) VALUES ($1, 'sys_admin', $2, $3, 'normal', 'active', 1, NULL, $4, $5)
+        ON CONFLICT DO NOTHING
+      `,
+      [
+        routeStrategyId,
+        routeStrategyName,
+        `系统默认普通路由，绑定${groupName}。`,
+        timestamp,
+        timestamp
+      ]
+    )
+    const routeStrategy = await client.one<{ id?: string }>(
+      `
+        SELECT id
+        FROM ${businessTable('route_strategies')}
+        WHERE id = $1
+        LIMIT 1
+      `,
+      [routeStrategyId]
+    )
+    if (!routeStrategy?.id) {
+      continue
+    }
+    await query(
+      `
+        INSERT INTO ${businessTable('route_strategy_groups')} (
+          id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at, updated_at
+        ) VALUES ($1, $2, 'sys_admin', $3, 1, 1, 'active', $4, $5)
+        ON CONFLICT DO NOTHING
+      `,
+      [
+        defaultRouteStrategyGroupBindingIdForGroup(group.id),
+        routeStrategyId,
+        group.id,
+        timestamp,
+        timestamp
+      ]
+    )
+    const existingApiKey = await client.one<{ id?: string }>(
+      `
+        SELECT id
+        FROM ${businessTable('api_keys')}
+        WHERE route_strategy_id = $1 AND is_default = 1
+        LIMIT 1
+      `,
+      [routeStrategyId]
+    )
+    if (existingApiKey?.id) {
+      continue
+    }
+    const apiKey = createApiKey()
+    await query(
+      `
+        INSERT INTO ${businessTable('api_keys')} (
+          id, system_account_id, route_strategy_id, name, description, key_hash, key_prefix, key_suffix,
+          key_secret_encrypted, status, is_default, expires_at, quota_limits_json, availability_schedule_json,
+          availability_schedule_next_check_at, created_at, updated_at
+        ) VALUES ($1, 'sys_admin', $2, $3, $4, $5, $6, $7, $8, 'active', 1, NULL, NULL, NULL, NULL, $9, $10)
+        ON CONFLICT DO NOTHING
+      `,
+      [
+        defaultApiKeyIdForRouteStrategy(routeStrategyId),
+        routeStrategyId,
+        defaultApiKeyNameForRouteStrategy(routeStrategyName),
+        `系统默认 API Key，绑定${routeStrategyName}。`,
+        hashSecret(apiKey),
+        apiKey.slice(0, 8),
+        apiKey.slice(-8),
+        encryptJson({ key: apiKey }),
+        timestamp,
+        timestamp
+      ]
+    )
+  }
+}
+
+function defaultRouteStrategyIdForGroup(groupId: string): string {
+  return groupId.replace(/^grp_/, 'route_strategy_')
+}
+
+function defaultRouteStrategyGroupBindingIdForGroup(groupId: string): string {
+  return groupId.replace(/^grp_/, 'rsg_')
+}
+
+function defaultRouteStrategyNameForGroup(groupName: string): string {
+  return groupName.replace(/分组$/, '路由')
+}
+
+function defaultApiKeyIdForRouteStrategy(routeStrategyId: string): string {
+  return routeStrategyId.replace(/^route_strategy_/, 'key_default_')
+}
+
+function defaultApiKeyNameForRouteStrategy(routeStrategyName: string): string {
+  return routeStrategyName.replace(/路由$/, 'API Key')
 }
 
 async function seedBuiltInExternalIntegrationTestToken(

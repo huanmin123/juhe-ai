@@ -1,4 +1,5 @@
 import type { ApiKeySummary, RequestQuotaLimits } from '../domain/types.js'
+import { HYBRID_PROVIDER_CODE } from '../domain/provider-protocol.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { notifyApiKeyQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { buildSystemAccountScopeClause, buildSystemAccountWhereClause, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, type AccessScope } from './access-scope.js'
@@ -21,7 +22,12 @@ import { pagedTotalUpperBound, takePageRows } from './query-utils.js'
 import { invalidateApiKeyLookupCache, loadSystemAccountNameMapByIds } from './repository-lookups.js'
 import { rememberRequestQuotaHourlyWindowsFromJson } from './request-quota-hourly-windows.repository.js'
 import { emptyRequestQuotaLimits, normalizeRequestQuotaLimits, requestQuotaLimitsJson } from './request-quota-limits.js'
-import { assertRouteStrategySelectableForApiKey, assertRouteStrategySelectableForApiKeyAsync } from './route-strategy.repository.js'
+import {
+  assertRouteStrategySelectableForApiKey,
+  assertRouteStrategySelectableForApiKeyAsync,
+  ensureDefaultRouteStrategiesForSystemAccount,
+  ensureDefaultRouteStrategiesForSystemAccountAsync
+} from './route-strategy.repository.js'
 import { optionalServerDateTimeIso } from './value-utils.js'
 
 const businessSchemaName = 'juhe_business'
@@ -114,6 +120,7 @@ export async function findApiKeySecretAsync(id: string, access?: AccessScope): P
 }
 
 function queryApiKeys(access?: AccessScope, options?: ApiKeyListOptions, paged = false): ApiKeyListResult {
+  ensureDefaultApiKeysForAccess(access)
   const normalized = normalizeApiKeyListOptions(options)
   const scope = buildSystemAccountWhereClause(access, 'api_keys.system_account_id')
   const filters = buildApiKeyFilters(scope, normalized)
@@ -143,6 +150,7 @@ function queryApiKeys(access?: AccessScope, options?: ApiKeyListOptions, paged =
 async function queryApiKeysAsync(access?: AccessScope, options?: ApiKeyListOptions, paged = false): Promise<ApiKeyListResult> {
   const normalized = normalizeApiKeyListOptions(options)
   const client = await getApiKeyDatabaseClient()
+  await ensureDefaultApiKeysForAccessAsync(access, client)
   const scope = buildSystemAccountWhereClause(access, 'api_keys.system_account_id')
   const keywordCte = client.driver === 'postgres' && normalized.keyword
     ? buildPostgresApiKeyKeywordCte(client, access, normalized.keyword)
@@ -726,6 +734,198 @@ export async function deleteApiKeyWithRelatedCleanupAsync(id: string, access?: A
   }
 }
 
+export function ensureDefaultApiKeysForSystemAccount(systemAccountId: string, timestamp = nowIso()): string[] {
+  ensureDefaultRouteStrategiesForSystemAccount(systemAccountId, timestamp)
+  const database = getBusinessDatabase()
+  const routeStrategies = defaultRouteStrategiesForSystemAccount(database, systemAccountId)
+  const apiKeyIds: string[] = []
+  for (const routeStrategy of routeStrategies) {
+    const existing = defaultApiKeyIdForRouteStrategy(database, routeStrategy.id)
+    if (existing) {
+      apiKeyIds.push(existing)
+      continue
+    }
+    const apiKeyId = newId('key')
+    const key = createApiKey()
+    const name = nextDefaultApiKeyName(database, systemAccountId, defaultApiKeyNameForRouteStrategy(routeStrategy.name))
+    try {
+      database.prepare(`
+        INSERT INTO api_keys (
+          id, system_account_id, route_strategy_id, name, description, key_hash, key_prefix, key_suffix,
+          key_secret_encrypted, status, is_default, expires_at, quota_limits_json, availability_schedule_json,
+          availability_schedule_next_check_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 1, NULL, NULL, NULL, NULL, ?, ?)
+      `).run(
+        apiKeyId,
+        systemAccountId,
+        routeStrategy.id,
+        name,
+        `系统默认 API Key，绑定${routeStrategy.name}。`,
+        hashSecret(key),
+        key.slice(0, 8),
+        key.slice(-8),
+        encryptJson({ key }),
+        timestamp,
+        timestamp
+      )
+      apiKeyIds.push(apiKeyId)
+    } catch (error) {
+      const raced = defaultApiKeyIdForRouteStrategy(database, routeStrategy.id)
+      if (raced && (isDuplicateApiKeyNameError(error) || isDuplicateDefaultApiKeyError(error))) {
+        apiKeyIds.push(raced)
+        continue
+      }
+      throw error
+    }
+  }
+  return apiKeyIds
+}
+
+export async function ensureDefaultApiKeysForSystemAccountAsync(client: DatabaseClient, systemAccountId: string, timestamp = nowIso()): Promise<string[]> {
+  await ensureDefaultRouteStrategiesForSystemAccountAsync(client, systemAccountId, timestamp)
+  const routeStrategies = await defaultRouteStrategiesForSystemAccountAsync(client, systemAccountId)
+  const apiKeyIds: string[] = []
+  for (const routeStrategy of routeStrategies) {
+    const existing = await defaultApiKeyIdForRouteStrategyAsync(client, routeStrategy.id)
+    if (existing) {
+      apiKeyIds.push(existing)
+      continue
+    }
+    const apiKeyId = newId('key')
+    const key = createApiKey()
+    const name = await nextDefaultApiKeyNameAsync(client, systemAccountId, defaultApiKeyNameForRouteStrategy(routeStrategy.name))
+    try {
+      await client.execute(`
+        INSERT INTO ${apiKeyTable(client, 'api_keys')} (
+          id, system_account_id, route_strategy_id, name, description, key_hash, key_prefix, key_suffix,
+          key_secret_encrypted, status, is_default, expires_at, quota_limits_json, availability_schedule_json,
+          availability_schedule_next_check_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 1, NULL, NULL, NULL, NULL, ?, ?)
+      `, [
+        apiKeyId,
+        systemAccountId,
+        routeStrategy.id,
+        name,
+        `系统默认 API Key，绑定${routeStrategy.name}。`,
+        hashSecret(key),
+        key.slice(0, 8),
+        key.slice(-8),
+        encryptJson({ key }),
+        timestamp,
+        timestamp
+      ])
+      apiKeyIds.push(apiKeyId)
+    } catch (error) {
+      const raced = await defaultApiKeyIdForRouteStrategyAsync(client, routeStrategy.id)
+      if (raced && (isDuplicateApiKeyNameError(error) || isDuplicateDefaultApiKeyError(error))) {
+        apiKeyIds.push(raced)
+        continue
+      }
+      throw error
+    }
+  }
+  return apiKeyIds
+}
+
+function ensureDefaultApiKeysForAccess(access?: AccessScope): void {
+  const systemAccountId = manageableSystemAccountId(access)
+  if (!systemAccountId) return
+  ensureDefaultApiKeysForSystemAccount(systemAccountId)
+}
+
+async function ensureDefaultApiKeysForAccessAsync(access: AccessScope | undefined, client: DatabaseClient): Promise<void> {
+  const systemAccountId = manageableSystemAccountId(access)
+  if (!systemAccountId) return
+  await ensureDefaultApiKeysForSystemAccountAsync(client, systemAccountId)
+}
+
+function defaultRouteStrategiesForSystemAccount(database: ReturnType<typeof getBusinessDatabase>, systemAccountId: string): Array<{ id: string; name: string }> {
+  return database.prepare(`
+    SELECT route_strategies.id, route_strategies.name
+    FROM route_strategies
+    INNER JOIN route_strategy_groups
+      ON route_strategy_groups.route_strategy_id = route_strategies.id
+      AND route_strategy_groups.system_account_id = route_strategies.system_account_id
+    INNER JOIN groups
+      ON groups.id = route_strategy_groups.group_id
+      AND groups.system_account_id = route_strategy_groups.system_account_id
+    WHERE route_strategies.system_account_id = ?
+      AND route_strategies.is_default = 1
+      AND groups.provider_code <> ?
+    ORDER BY route_strategies.created_at ASC, route_strategies.id ASC
+  `).all(systemAccountId, HYBRID_PROVIDER_CODE) as Array<{ id: string; name: string }>
+}
+
+async function defaultRouteStrategiesForSystemAccountAsync(client: DatabaseClient, systemAccountId: string): Promise<Array<{ id: string; name: string }>> {
+  return client.query<{ id: string; name: string }>(`
+    SELECT route_strategies.id, route_strategies.name
+    FROM ${apiKeyTable(client, 'route_strategies')} route_strategies
+    INNER JOIN ${apiKeyTable(client, 'route_strategy_groups')} route_strategy_groups
+      ON route_strategy_groups.route_strategy_id = route_strategies.id
+      AND route_strategy_groups.system_account_id = route_strategies.system_account_id
+    INNER JOIN ${apiKeyTable(client, 'groups')} groups
+      ON groups.id = route_strategy_groups.group_id
+      AND groups.system_account_id = route_strategy_groups.system_account_id
+    WHERE route_strategies.system_account_id = ?
+      AND route_strategies.is_default = 1
+      AND groups.provider_code <> ?
+    ORDER BY route_strategies.created_at ASC, route_strategies.id ASC
+  `, [systemAccountId, HYBRID_PROVIDER_CODE])
+}
+
+function defaultApiKeyIdForRouteStrategy(database: ReturnType<typeof getBusinessDatabase>, routeStrategyId: string): string | undefined {
+  const row = database
+    .prepare('SELECT id FROM api_keys WHERE route_strategy_id = ? AND is_default = 1 ORDER BY created_at ASC, id ASC LIMIT 1')
+    .get(routeStrategyId) as { id?: string } | undefined
+  return row?.id
+}
+
+async function defaultApiKeyIdForRouteStrategyAsync(client: DatabaseClient, routeStrategyId: string): Promise<string | undefined> {
+  const row = await client.one<{ id?: string }>(`
+    SELECT id
+    FROM ${apiKeyTable(client, 'api_keys')}
+    WHERE route_strategy_id = ? AND is_default = 1
+    ORDER BY created_at ASC, id ASC
+    LIMIT 1
+  `, [routeStrategyId])
+  return row?.id
+}
+
+function nextDefaultApiKeyName(database: ReturnType<typeof getBusinessDatabase>, systemAccountId: string, baseName: string): string {
+  const rows = database
+    .prepare(`
+      SELECT name
+      FROM api_keys
+      WHERE system_account_id = ? AND (name = ? OR name LIKE ? ESCAPE '\\')
+    `)
+    .all(systemAccountId, baseName, `${baseName} %`) as Array<{ name?: string | null }>
+  return nextDefaultApiKeyNameFromExisting(rows.map((row) => row.name), baseName)
+}
+
+async function nextDefaultApiKeyNameAsync(client: DatabaseClient, systemAccountId: string, baseName: string): Promise<string> {
+  const likeOperator = client.driver === 'postgres' ? 'ILIKE' : 'LIKE'
+  const rows = await client.query<{ name?: string | null }>(`
+    SELECT name
+    FROM ${apiKeyTable(client, 'api_keys')}
+    WHERE system_account_id = ? AND (name = ? OR name ${likeOperator} ? ESCAPE '\\')
+  `, [systemAccountId, baseName, `${baseName} %`])
+  return nextDefaultApiKeyNameFromExisting(rows.map((row) => row.name), baseName)
+}
+
+function nextDefaultApiKeyNameFromExisting(names: Array<string | null | undefined>, baseName: string): string {
+  const existing = new Set(names.map((name) => String(name ?? '').trim().toLowerCase()).filter(Boolean))
+  if (!existing.has(baseName.toLowerCase())) return baseName
+  for (let index = 2; index <= 1000; index += 1) {
+    const candidate = `${baseName} ${index}`
+    if (!existing.has(candidate.toLowerCase())) return candidate
+  }
+  return `${baseName} ${Date.now()}`
+}
+
+function defaultApiKeyNameForRouteStrategy(routeStrategyName: string): string {
+  return routeStrategyName.replace(/路由$/, 'API Key')
+}
+
 function assertApiKeyNotDefault(row: Pick<ApiKeyDeleteRow, 'is_default'>): void {
   if (normalizeApiKeyDefaultFlag(row.is_default)) {
     throw new Error('默认 API Key 不允许删除')
@@ -886,4 +1086,9 @@ function apiKeyTable(client: DatabaseClient, tableName: string): string {
 function isDuplicateApiKeyNameError(error: unknown): boolean {
   if (!(error instanceof Error)) return false
   return error.message.includes('idx_api_keys_owner_name_unique_lower')
+}
+
+function isDuplicateDefaultApiKeyError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  return error.message.includes('idx_api_keys_route_default_unique')
 }

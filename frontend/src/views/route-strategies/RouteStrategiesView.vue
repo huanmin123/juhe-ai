@@ -219,20 +219,19 @@
             @drop="handleBindingDrop(index, $event)"
           >
             <div v-if="bindingShowsDragHandle" class="route-strategy-binding-drag-cell">
-              <a-tooltip v-if="bindingRowDragEnabled(index)" title="拖动调整顺序">
-                <button
-                  type="button"
-                  class="route-strategy-binding-drag-handle"
-                  :draggable="bindingRowDragEnabled(index)"
-                  :aria-label="`拖动调整第 ${index + 1} 个分组顺序`"
-                  @dragstart="handleBindingDragStart(index, $event)"
-                  @dragend="handleBindingDragEnd"
-                  @keydown.up.prevent="moveBindingForMode(index, index - 1)"
-                  @keydown.down.prevent="moveBindingForMode(index, index + 1)"
-                >
-                  <HolderOutlined />
-                </button>
-              </a-tooltip>
+              <button
+                v-if="bindingRowDragEnabled(index)"
+                type="button"
+                class="route-strategy-binding-drag-handle"
+                :draggable="bindingRowDragEnabled(index)"
+                :aria-label="`拖动调整第 ${index + 1} 个分组顺序`"
+                @dragstart="handleBindingDragStart(index, $event)"
+                @dragend="handleBindingDragEnd"
+                @keydown.up.prevent="moveBindingForMode(index, index - 1)"
+                @keydown.down.prevent="moveBindingForMode(index, index + 1)"
+              >
+                <HolderOutlined />
+              </button>
               <span v-else class="route-strategy-binding-drag-placeholder"></span>
             </div>
             <a-select
@@ -248,8 +247,14 @@
             <div v-if="bindingShowsRole" class="route-strategy-binding-role">
               <a-tag :color="bindingRoleColor(index)">{{ bindingRoleText(index) }}</a-tag>
             </div>
-            <a-input-number v-if="bindingShowsPriority" v-model:value="binding.priority" :min="1" :max="100000" :placeholder="bindingPriorityPlaceholder" />
-            <a-input-number v-if="bindingShowsWeight" v-model:value="binding.weight" :min="1" :max="100" placeholder="权重" />
+            <a-input-number
+              v-if="bindingShowsWeight"
+              v-model:value="binding.weight"
+              :min="1"
+              :max="bindingWeightMax(index)"
+              placeholder="权重"
+              @change="handleBindingWeightChange(index)"
+            />
             <a-select v-model:value="binding.status" :options="statusOptions" />
             <a-button type="text" danger :disabled="form.groupBindings.length <= 1" @click="removeBinding(index)">
               <template #icon><DeleteOutlined /></template>
@@ -575,19 +580,21 @@ const activeFilterCount = computed(() => [
   modeFilter.value !== 'all'
 ].filter(Boolean).length)
 
-const bindingAddDisabled = computed(() => form.mode === 'normal' && form.groupBindings.length >= 1)
-const bindingShowsDragHandle = computed(() => form.mode === 'hybrid_smart' || form.mode === 'failover')
+const weightedBindingTotal = computed(() => totalBindingWeight(form.groupBindings))
+const bindingAddDisabled = computed(() => {
+  if (form.mode === 'normal' && form.groupBindings.length >= 1) return true
+  if (form.mode === 'weighted' && weightedBindingTotal.value >= 100) return true
+  return false
+})
+const bindingShowsDragHandle = computed(() => form.mode === 'hybrid_smart' || form.mode === 'failover' || form.mode === 'round_robin')
 const bindingShowsRole = computed(() => form.mode === 'failover')
-const bindingOrderUsesPosition = computed(() => form.mode === 'hybrid_smart' || form.mode === 'failover')
-const bindingShowsPriority = computed(() => form.mode === 'round_robin')
+const bindingOrderUsesPosition = computed(() => form.mode === 'hybrid_smart' || form.mode === 'failover' || form.mode === 'round_robin')
 const bindingShowsWeight = computed(() => form.mode === 'weighted')
-const bindingPriorityPlaceholder = computed(() => form.mode === 'round_robin' ? '顺序' : '优先级')
 const bindingAddButtonText = computed(() => form.mode === 'failover' && form.groupBindings.length >= 1 ? '添加备用分组' : '添加分组')
 const bindingColumns = computed(() => [
   ...(bindingShowsDragHandle.value ? [{ key: 'drag', label: '' }] : []),
   { key: 'group', label: '分组' },
   ...(bindingShowsRole.value ? [{ key: 'role', label: '主备' }] : []),
-  ...(bindingShowsPriority.value ? [{ key: 'priority', label: bindingPriorityPlaceholder.value }] : []),
   ...(bindingShowsWeight.value ? [{ key: 'weight', label: '权重' }] : []),
   { key: 'status', label: '状态' },
   { key: 'actions', label: '' }
@@ -596,7 +603,6 @@ const bindingGridStyle = computed(() => {
   const tracks = ['minmax(0, 1fr)']
   if (bindingShowsDragHandle.value) tracks.unshift('32px')
   if (bindingShowsRole.value) tracks.push('minmax(64px, 76px)')
-  if (bindingShowsPriority.value) tracks.push('minmax(76px, 92px)')
   if (bindingShowsWeight.value) tracks.push('minmax(76px, 92px)')
   tracks.push('minmax(88px, 96px)', '32px')
   return { gridTemplateColumns: tracks.join(' ') }
@@ -828,6 +834,19 @@ function removeBinding(index: number) {
   normalizeBindingRowsForMode()
 }
 
+function bindingWeightMax(index: number): number {
+  const otherWeightTotal = form.groupBindings.reduce((sum, binding, bindingIndex) => {
+    return bindingIndex === index ? sum : sum + normalizeBindingWeightValue(binding.weight)
+  }, 0)
+  return Math.max(1, 100 - otherWeightTotal)
+}
+
+function handleBindingWeightChange(index: number) {
+  const binding = form.groupBindings[index]
+  if (!binding || form.mode !== 'weighted') return
+  binding.weight = boundedInteger(binding.weight, 1, bindingWeightMax(index))
+}
+
 function moveBinding(fromIndex: number, toIndex: number) {
   if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0 || fromIndex >= form.groupBindings.length || toIndex >= form.groupBindings.length) return
   const [binding] = form.groupBindings.splice(fromIndex, 1)
@@ -843,7 +862,7 @@ function moveBindingForMode(fromIndex: number, toIndex: number) {
 }
 
 function bindingRowDragEnabled(index: number): boolean {
-  if (form.mode === 'hybrid_smart') return form.groupBindings.length > 1
+  if (form.mode === 'hybrid_smart' || form.mode === 'round_robin') return form.groupBindings.length > 1
   if (form.mode === 'failover') return index > 0 && form.groupBindings.length > 2
   return false
 }
@@ -963,6 +982,7 @@ function normalizeBindingRowsForMode() {
     binding.priority = form.mode === 'normal' || form.mode === 'weighted' ? 1 : index + 1
     binding.weight = form.mode === 'weighted' ? Math.max(1, Math.min(100, Number(binding.weight) || 1)) : 1
   })
+  normalizeWeightedBindingWeightsForTotal()
 }
 
 function validateGroupBindingsForMode(groupBindings: Array<{ groupId: string; priority: number; weight: number; status: 'active' | 'disabled' }>): boolean {
@@ -989,11 +1009,35 @@ function validateGroupBindingsForMode(groupBindings: Array<{ groupId: string; pr
     message.warning(`${routeStrategyModeText(form.mode)}至少需要两个启用分组`)
     return false
   }
+  if (form.mode === 'weighted' && totalBindingWeight(groupBindings) > 100) {
+    message.warning('权重调度路由的分组权重总和不能超过 100')
+    return false
+  }
   if (form.mode === 'hybrid_smart' && activeBindings.length < 1) {
     message.warning('混合智能路由至少需要一个启用分组')
     return false
   }
   return true
+}
+
+function normalizeWeightedBindingWeightsForTotal() {
+  if (form.mode !== 'weighted') return
+  let remainingWeight = 100
+  form.groupBindings.forEach((binding, index) => {
+    const remainingRows = form.groupBindings.length - index - 1
+    const maxWeight = Math.max(1, remainingWeight - remainingRows)
+    binding.weight = boundedInteger(binding.weight, 1, maxWeight)
+    remainingWeight -= binding.weight
+  })
+}
+
+function totalBindingWeight(bindings: Array<{ weight: number }>): number {
+  return bindings.reduce((sum, binding) => sum + normalizeBindingWeightValue(binding.weight), 0)
+}
+
+function normalizeBindingWeightValue(value: unknown): number {
+  const numeric = typeof value === 'number' ? value : Number(value)
+  return Number.isInteger(numeric) && numeric >= 1 ? numeric : 1
 }
 
 function routeStrategyActions(record: RouteStrategySummary): RowActionItem[] {
