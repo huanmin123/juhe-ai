@@ -504,6 +504,29 @@ function authorizedAccountRuntimeBindingExists(target: Required<AuthorizedAccoun
   return Boolean(row?.id)
 }
 
+async function authorizedAccountRuntimeBindingExistsAsync(target: Required<AuthorizedAccountBindingRuntimeTarget>): Promise<boolean> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return authorizedAccountRuntimeBindingExists(target)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const row = await client.one<{ id?: string }>(`
+    SELECT accounts.id
+    FROM ${accountRuntimeMutationTable(client, 'accounts')} accounts
+    INNER JOIN ${accountRuntimeMutationTable(client, 'group_accounts')} group_accounts
+      ON group_accounts.account_id = accounts.id
+      AND group_accounts.system_account_id = ?
+      AND group_accounts.group_id = ?
+      AND group_accounts.enabled = 1
+      AND group_accounts.account_authorization_id = ?
+    WHERE accounts.id = ?
+      AND accounts.system_account_id = ?
+      AND accounts.authorization_instance_authorization_id = ?
+      AND accounts.deleted_at IS NULL
+    LIMIT 1
+  `, [target.systemAccountId, target.groupId, target.accountAuthorizationId, target.accountId, target.systemAccountId, target.accountAuthorizationId])
+  return Boolean(row?.id)
+}
+
 export function getAccountPrecheckMutationState(input: {
   accountId: string
   authorizedBinding?: AuthorizedAccountBindingRuntimeTarget
@@ -552,6 +575,60 @@ export function getAccountPrecheckMutationState(input: {
       updated_at?: string | null
       last_used_at?: string | null
     } | undefined
+  if (!row) {
+    return undefined
+  }
+  return {
+    status: normalizeAccountStatus(row.status),
+    updatedAt: row.updated_at ?? undefined,
+    lastUsedAt: row.last_used_at ?? undefined
+  }
+}
+
+export async function getAccountPrecheckMutationStateAsync(input: {
+  accountId: string
+  authorizedBinding?: AuthorizedAccountBindingRuntimeTarget
+}): Promise<AccountPrecheckMutationState | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return getAccountPrecheckMutationState(input)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const target = input.authorizedBinding
+    ? normalizedAuthorizedAccountBindingRuntimeTarget(input.authorizedBinding)
+    : undefined
+  const row = target
+    ? await client.one<{
+      status?: AccountStatus | null
+      updated_at?: string | null
+      last_used_at?: string | null
+    }>(`
+      SELECT
+        accounts.status,
+        accounts.updated_at,
+        accounts.last_used_at
+      FROM ${accountRuntimeMutationTable(client, 'group_accounts')} group_accounts
+      INNER JOIN ${accountRuntimeMutationTable(client, 'accounts')} accounts ON accounts.id = group_accounts.account_id
+      WHERE group_accounts.account_id = ?
+        AND group_accounts.system_account_id = ?
+        AND group_accounts.group_id = ?
+        AND group_accounts.enabled = 1
+        AND group_accounts.account_authorization_id = ?
+        AND accounts.system_account_id = ?
+        AND accounts.authorization_instance_authorization_id = ?
+        AND accounts.deleted_at IS NULL
+      LIMIT 1
+    `, [target.accountId, target.systemAccountId, target.groupId, target.accountAuthorizationId, target.systemAccountId, target.accountAuthorizationId])
+    : await client.one<{
+      status?: AccountStatus | null
+      updated_at?: string | null
+      last_used_at?: string | null
+    }>(`
+      SELECT status, updated_at, last_used_at
+      FROM ${accountRuntimeMutationTable(client, 'accounts')}
+      WHERE id = ?
+        AND deleted_at IS NULL
+      LIMIT 1
+    `, [input.accountId])
   if (!row) {
     return undefined
   }
@@ -638,7 +715,7 @@ export function markAuthorizedAccountBindingTemporaryUnavailableByContext(
   })
 }
 
-async function markAuthorizedAccountBindingTemporaryUnavailableByContextAsync(
+export async function markAuthorizedAccountBindingTemporaryUnavailableByContextAsync(
   input: AuthorizedAccountBindingRuntimeTarget & { reason: string }
 ): Promise<AccountSummary | undefined> {
   return markAuthorizedAccountBindingCooldownByContextAsync({
@@ -705,7 +782,7 @@ export function markAuthorizedAccountBindingCooldownByContext(
   return findAccountSummary(target.accountId, { systemAccountId: target.systemAccountId, role: 'user' })
 }
 
-async function markAuthorizedAccountBindingCooldownByContextAsync(
+export async function markAuthorizedAccountBindingCooldownByContextAsync(
   input: AuthorizedAccountBindingRuntimeTarget & { cooldownUntil?: string; reason: string; status?: AccountStatus }
 ): Promise<AccountSummary | undefined> {
   const target = normalizedAuthorizedAccountBindingRuntimeTarget(input)
@@ -810,6 +887,56 @@ export function markAuthorizedAccountBindingDisabledByFailure(
   return findAccountSummary(target.accountId, { systemAccountId: target.systemAccountId, role: 'user' })
 }
 
+export async function markAuthorizedAccountBindingDisabledByFailureAsync(
+  input: AuthorizedAccountBindingRuntimeTarget & { reason: string }
+): Promise<AccountSummary | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return markAuthorizedAccountBindingDisabledByFailure(input)
+  }
+  const target = normalizedAuthorizedAccountBindingRuntimeTarget(input)
+  if (!target) {
+    return undefined
+  }
+  const now = nowIso()
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const result = await client.execute(`
+    UPDATE ${accountRuntimeMutationTable(client, 'accounts')} AS accounts
+    SET status = 'error',
+        schedulable = 0,
+        cooldown_until = NULL,
+        last_error_code = 'upstream_failure',
+        last_error_message = ?,
+        cooldown_retest_failure_count = 0,
+        cooldown_retest_observation_started_at = NULL,
+        cooldown_retest_last_at = NULL,
+        cooldown_retest_last_status_code = NULL,
+        stream_failure_count = 0,
+        stream_failure_window_started_at = NULL,
+        updated_at = ?
+    WHERE id = ?
+      AND system_account_id = ?
+      AND authorization_instance_authorization_id = ?
+      AND deleted_at IS NULL
+      AND status <> 'disabled'
+      AND EXISTS (
+        SELECT 1
+        FROM ${accountRuntimeMutationTable(client, 'group_accounts')} group_accounts
+        WHERE group_accounts.account_id = accounts.id
+          AND group_accounts.system_account_id = ?
+          AND group_accounts.group_id = ?
+          AND group_accounts.enabled = 1
+          AND group_accounts.account_authorization_id = ?
+      )
+  `, [input.reason || null, now, target.accountId, target.systemAccountId, target.accountAuthorizationId, target.systemAccountId, target.groupId, target.accountAuthorizationId])
+  if (Number(result.changes ?? 0) <= 0) {
+    return undefined
+  }
+  refreshGroupAccountStatsAfterWrite({ groupIds: [target.groupId], accountIds: [target.accountId], reason: 'authorized_account_exception' })
+  invalidateAccountLookupCache(target.accountId)
+  invalidateGatewayRuntimeAfterBusinessWrite('authorized_account_exception')
+  return findAccountSummaryAsync(target.accountId, { systemAccountId: target.systemAccountId, role: 'user' })
+}
+
 export function clearAuthorizedAccountBindingStreamFailureState(input: AuthorizedAccountBindingRuntimeTarget): boolean {
   const target = normalizedAuthorizedAccountBindingRuntimeTarget(input)
   if (!target) {
@@ -859,6 +986,57 @@ export function clearAuthorizedAccountBindingStreamFailureState(input: Authorize
   return changed
 }
 
+export async function clearAuthorizedAccountBindingStreamFailureStateAsync(input: AuthorizedAccountBindingRuntimeTarget): Promise<boolean> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return clearAuthorizedAccountBindingStreamFailureState(input)
+  }
+  const target = normalizedAuthorizedAccountBindingRuntimeTarget(input)
+  if (!target) {
+    return false
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const result = await client.execute(`
+    UPDATE ${accountRuntimeMutationTable(client, 'accounts')} AS accounts
+    SET stream_failure_count = 0,
+        stream_failure_window_started_at = NULL,
+        last_error_code = CASE
+          WHEN status = 'active' THEN NULL
+          ELSE last_error_code
+        END,
+        last_error_message = CASE
+          WHEN status = 'active' THEN NULL
+          ELSE last_error_message
+        END,
+        updated_at = ?
+    WHERE id = ?
+      AND system_account_id = ?
+      AND authorization_instance_authorization_id = ?
+      AND deleted_at IS NULL
+      AND status NOT IN ('disabled', 'error')
+      AND (
+        stream_failure_count > 0
+        OR stream_failure_window_started_at IS NOT NULL
+        OR (status = 'active' AND last_error_code IS NOT NULL)
+        OR (status = 'active' AND last_error_message IS NOT NULL)
+      )
+      AND EXISTS (
+        SELECT 1
+        FROM ${accountRuntimeMutationTable(client, 'group_accounts')} group_accounts
+        WHERE group_accounts.account_id = accounts.id
+          AND group_accounts.system_account_id = ?
+          AND group_accounts.group_id = ?
+          AND group_accounts.enabled = 1
+          AND group_accounts.account_authorization_id = ?
+      )
+  `, [nowIso(), target.accountId, target.systemAccountId, target.accountAuthorizationId, target.systemAccountId, target.groupId, target.accountAuthorizationId])
+  const changed = Number(result.changes ?? 0) > 0
+  if (changed) {
+    invalidateAccountLookupCache(target.accountId)
+    invalidateGatewayRuntimeAfterBusinessWrite('authorized_account_stream_failure_cleared')
+  }
+  return changed
+}
+
 export function clearAccountStreamFailureState(id: string): boolean {
   const result = getBusinessDatabase()
     .prepare(`
@@ -885,6 +1063,41 @@ export function clearAccountStreamFailureState(id: string): boolean {
         )
     `)
     .run(nowIso(), id)
+  const changed = Number(result.changes ?? 0) > 0
+  if (changed) {
+    invalidateGatewayRuntimeAfterBusinessWrite('account_stream_failure_cleared')
+  }
+  return changed
+}
+
+export async function clearAccountStreamFailureStateAsync(id: string): Promise<boolean> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return clearAccountStreamFailureState(id)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const result = await client.execute(`
+    UPDATE ${accountRuntimeMutationTable(client, 'accounts')}
+    SET stream_failure_count = 0,
+        stream_failure_window_started_at = NULL,
+        last_error_code = CASE
+          WHEN status = 'active' THEN NULL
+          ELSE last_error_code
+        END,
+        last_error_message = CASE
+          WHEN status = 'active' THEN NULL
+          ELSE last_error_message
+        END,
+        updated_at = ?
+    WHERE id = ?
+      AND deleted_at IS NULL
+      AND status NOT IN ('disabled', 'error')
+      AND (
+        stream_failure_count > 0
+        OR stream_failure_window_started_at IS NOT NULL
+        OR (status = 'active' AND last_error_code IS NOT NULL)
+        OR (status = 'active' AND last_error_message IS NOT NULL)
+      )
+  `, [nowIso(), id])
   const changed = Number(result.changes ?? 0) > 0
   if (changed) {
     invalidateGatewayRuntimeAfterBusinessWrite('account_stream_failure_cleared')
@@ -964,7 +1177,7 @@ export function markAccountTemporaryUnavailable(id: string, reason: string): Acc
   return markAccountCooldown(id, undefined, reason, 'temporary_unavailable')
 }
 
-async function markAccountTemporaryUnavailableAsync(id: string, reason: string): Promise<AccountSummary | undefined> {
+export async function markAccountTemporaryUnavailableAsync(id: string, reason: string): Promise<AccountSummary | undefined> {
   return markAccountCooldownAsync(id, undefined, reason, 'temporary_unavailable')
 }
 
@@ -1046,7 +1259,7 @@ export function markAccountCooldown(id: string, until: string | undefined, reaso
   return findInternalAccountSummary(id)
 }
 
-async function markAccountCooldownAsync(id: string, until: string | undefined, reason: string, status: AccountStatus = 'temporary_unavailable'): Promise<AccountSummary | undefined> {
+export async function markAccountCooldownAsync(id: string, until: string | undefined, reason: string, status: AccountStatus = 'temporary_unavailable'): Promise<AccountSummary | undefined> {
   const current = await findAccountSummaryAsync(id, internalAccountReadAccess)
   if (!current) {
     return undefined
@@ -1856,6 +2069,17 @@ export function markAccountDisabledByFailure(id: string, reason: string): Accoun
   return markAccountException(id, 'upstream_failure', reason)
 }
 
+export async function markAccountDisabledByFailureAsync(id: string, reason: string): Promise<AccountSummary | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return markAccountDisabledByFailure(id, reason)
+  }
+  const current = await findInternalAccountSummaryAsync(id)
+  if (!current || current.status === 'error') {
+    return undefined
+  }
+  return await markAccountExceptionAsync(id, 'upstream_failure', reason)
+}
+
 export function recordAccountStreamFailure(input: {
   accountId: string
   thresholdCount: number
@@ -1894,6 +2118,52 @@ export function recordAccountStreamFailure(input: {
   return { count, triggered: false, account: findInternalAccountSummary(input.accountId) }
 }
 
+export async function recordAccountStreamFailureAsync(input: {
+  accountId: string
+  thresholdCount: number
+  thresholdWindowMinutes: number
+  action: 'cooldown' | 'disable' | 'none'
+  reason: string
+}): Promise<{ count: number; triggered: boolean; account?: AccountSummary }> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return recordAccountStreamFailure(input)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const row = await client.one<AccountFailureRow>(`
+    SELECT id, status, stream_failure_count, stream_failure_window_started_at
+    FROM ${accountRuntimeMutationTable(client, 'accounts')}
+    WHERE id = ?
+      AND deleted_at IS NULL
+    LIMIT 1
+  `, [input.accountId])
+  if (!row) {
+    return { count: 0, triggered: false }
+  }
+  if (isHardUnavailableAccountStatus(row.status)) {
+    return { count: Math.max(0, row.stream_failure_count), triggered: false, account: await findInternalAccountSummaryAsync(input.accountId) }
+  }
+
+  const now = new Date()
+  const nowIsoValue = now.toISOString()
+  const thresholdMs = Math.max(1, input.thresholdWindowMinutes) * 60_000
+  const startedAt = row.stream_failure_window_started_at ? new Date(row.stream_failure_window_started_at) : undefined
+  const windowValid = startedAt !== undefined && !Number.isNaN(startedAt.getTime()) && now.getTime() - startedAt.getTime() < thresholdMs
+  const count = windowValid ? Math.max(0, row.stream_failure_count) + 1 : 1
+  const windowStartedAt = windowValid ? row.stream_failure_window_started_at : nowIsoValue
+
+  await client.execute(`
+    UPDATE ${accountRuntimeMutationTable(client, 'accounts')}
+    SET stream_failure_count = ?,
+        stream_failure_window_started_at = ?,
+        last_error_message = ?,
+        updated_at = ?
+    WHERE id = ?
+      AND deleted_at IS NULL
+  `, [count, windowStartedAt, input.reason || null, nowIsoValue, input.accountId])
+
+  return { count, triggered: false, account: await findInternalAccountSummaryAsync(input.accountId) }
+}
+
 export function recordAuthorizedAccountBindingStreamFailure(input: AuthorizedAccountBindingRuntimeTarget & {
   thresholdCount: number
   thresholdWindowMinutes: number
@@ -1915,5 +2185,32 @@ export function recordAuthorizedAccountBindingStreamFailure(input: AuthorizedAcc
     count: result.count,
     triggered: result.triggered,
     account: findAccountSummary(target.accountId, { systemAccountId: target.systemAccountId, role: 'user' }) ?? result.account
+  }
+}
+
+export async function recordAuthorizedAccountBindingStreamFailureAsync(input: AuthorizedAccountBindingRuntimeTarget & {
+  thresholdCount: number
+  thresholdWindowMinutes: number
+  action: 'cooldown' | 'disable' | 'none'
+  reason: string
+}): Promise<{ count: number; triggered: boolean; account?: AccountSummary }> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return recordAuthorizedAccountBindingStreamFailure(input)
+  }
+  const target = normalizedAuthorizedAccountBindingRuntimeTarget(input)
+  if (!target || !await authorizedAccountRuntimeBindingExistsAsync(target)) {
+    return { count: 0, triggered: false }
+  }
+  const result = await recordAccountStreamFailureAsync({
+    accountId: target.accountId,
+    thresholdCount: input.thresholdCount,
+    thresholdWindowMinutes: input.thresholdWindowMinutes,
+    action: input.action,
+    reason: input.reason
+  })
+  return {
+    count: result.count,
+    triggered: result.triggered,
+    account: await findAccountSummaryAsync(target.accountId, { systemAccountId: target.systemAccountId, role: 'user' }) ?? result.account
   }
 }

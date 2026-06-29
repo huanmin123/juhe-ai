@@ -20,6 +20,7 @@ import {
   insertProcessEventLoopSampleAsync,
   insertSystemMetricsSample,
   insertSystemMetricsSampleAsync,
+  refreshDirtyGroupAccountStatsCacheAsync,
   refreshDirtyGroupAccountStatsCacheWithWriter,
   refreshUsageQuotaHourlyWindowsCache,
   refreshUsageQuotaHourlyWindowsCacheAsync,
@@ -318,6 +319,9 @@ function cleanupStatsDatabaseAfterDelete<T extends object>(result: T): T {
 }
 
 async function refreshGroupAccountStats(): Promise<number> {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    return await refreshDirtyGroupAccountStatsCacheAsync()
+  }
   return await refreshDirtyGroupAccountStatsCacheWithWriter({
     async markAllDirty(reason) {
       await requestBackgroundWorkerDbService({ type: 'mark_all_group_account_stats_dirty', reason })

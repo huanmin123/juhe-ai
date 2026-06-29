@@ -1,4 +1,8 @@
+import { runtimeConfig } from '../config/runtime.js'
 import { getDatasetDatabase } from './database.js'
+import type { DatabaseClient } from './database-client.js'
+import { createPostgresDatabaseClient } from './database-client.js'
+import { getPostgresPool } from './postgres-client.js'
 import {
   cleanupUnreferencedAuditPayloadBlobs,
   cleanupUnreferencedAuditPayloadBlobsAsync
@@ -9,13 +13,16 @@ import type { AuditLogSuccessHotRetentionCleanupResult } from './audit-log-types
 type AuditLogFilterValue = string | number
 
 export function cleanupAuditLogsBefore(cutoffCreatedAt: string, limit = 1000): number {
+  assertSqliteAuditLogRetention('cleanupAuditLogsBefore')
   const deleted = deleteAuditLogsByWhere('created_at < ?', [cutoffCreatedAt], limit)
   cleanupUnreferencedAuditPayloadBlobs(limit)
   return deleted
 }
 
 export async function cleanupAuditLogsBeforeAsync(cutoffCreatedAt: string, limit = 1000): Promise<number> {
-  const deleted = deleteAuditLogsByWhere('created_at < ?', [cutoffCreatedAt], limit)
+  const deleted = runtimeConfig.databaseDriver === 'postgres'
+    ? await deleteAuditLogsByWhereAsync('created_at < ?', [cutoffCreatedAt], limit)
+    : deleteAuditLogsByWhere('created_at < ?', [cutoffCreatedAt], limit)
   await cleanupUnreferencedAuditPayloadBlobsAsync(limit)
   return deleted
 }
@@ -27,7 +34,13 @@ export async function cleanupAuditSuccessHotRetentionAsync(input: {
 }): Promise<AuditLogSuccessHotRetentionCleanupResult> {
   const limit = input.limit ?? 1000
   const successSampleBucketThreshold = normalizeSuccessSampleBucketThreshold(input.successSampleBucketThreshold)
-  const deletedLogs = deleteAuditLogsByWhere(
+  const deletedLogs = runtimeConfig.databaseDriver === 'postgres'
+    ? await deleteAuditLogsByWhereAsync(
+      successHotRetentionDeleteWhereClause,
+      [input.successHotCutoffCreatedAt, successSampleBucketThreshold],
+      limit
+    )
+    : deleteAuditLogsByWhere(
     successHotRetentionDeleteWhereClause,
     [input.successHotCutoffCreatedAt, successSampleBucketThreshold],
     limit
@@ -47,6 +60,7 @@ export function cleanupAuditLogsByRetention(input: {
   successSampleBucketThreshold?: number
   limit?: number
 }): number {
+  assertSqliteAuditLogRetention('cleanupAuditLogsByRetention')
   const limit = input.limit ?? 1000
   const successSampleBucketThreshold = normalizeSuccessSampleBucketThreshold(input.successSampleBucketThreshold)
   const deletedLogs = deleteAuditLogsByWhere(
@@ -69,12 +83,20 @@ export async function cleanupAuditLogsByRetentionAsync(input: {
 }): Promise<number> {
   const limit = input.limit ?? 1000
   const successSampleBucketThreshold = normalizeSuccessSampleBucketThreshold(input.successSampleBucketThreshold)
-  const deletedLogs = deleteAuditLogsByWhere(
+  const deletedLogs = runtimeConfig.databaseDriver === 'postgres'
+    ? await deleteAuditLogsByWhereAsync(
+      `((${successHotRetentionDeleteWhereClause}) OR (audit_outcome = 'success' AND created_at < ?) OR (audit_outcome <> 'success' AND created_at < ?))`,
+      [input.successHotCutoffCreatedAt, successSampleBucketThreshold, input.successCutoffCreatedAt, input.failureCutoffCreatedAt],
+      limit
+    )
+    : deleteAuditLogsByWhere(
     `((${successHotRetentionDeleteWhereClause}) OR (audit_outcome = 'success' AND created_at < ?) OR (audit_outcome <> 'success' AND created_at < ?))`,
     [input.successHotCutoffCreatedAt, successSampleBucketThreshold, input.successCutoffCreatedAt, input.failureCutoffCreatedAt],
     limit
   )
-  const deletedGroups = cleanupAuditErrorGroupsBefore(input.errorGroupCutoffUpdatedAt, limit)
+  const deletedGroups = runtimeConfig.databaseDriver === 'postgres'
+    ? await cleanupAuditErrorGroupsBeforeAsync(input.errorGroupCutoffUpdatedAt, limit)
+    : cleanupAuditErrorGroupsBefore(input.errorGroupCutoffUpdatedAt, limit)
   const deletedBlobs = await cleanupUnreferencedAuditPayloadBlobsAsync(limit)
   return deletedLogs + deletedGroups + deletedBlobs
 }
@@ -99,6 +121,27 @@ function deleteAuditLogsByWhere(whereClause: string, params: AuditLogFilterValue
   return Number(result.changes ?? 0)
 }
 
+async function deleteAuditLogsByWhereAsync(whereClause: string, params: AuditLogFilterValue[], limit: number): Promise<number> {
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const rows = await client.query<AuditLogRow>(`
+    SELECT id
+    FROM juhe_dataset.audit_logs
+    WHERE ${whereClause}
+    ORDER BY created_at ASC, id ASC
+    LIMIT ?
+  `, [...params, Math.max(1, Math.trunc(limit))])
+  const ids = rows.map((row) => String(row.id ?? '')).filter(Boolean)
+  if (ids.length === 0) return 0
+
+  let deleted = 0
+  await client.transaction(async (tx) => {
+    await tx.execute('DELETE FROM juhe_dataset.audit_payload_refs WHERE audit_log_id = ANY(?)', [ids])
+    await tx.execute('DELETE FROM juhe_dataset.audit_log_attempts WHERE audit_log_id = ANY(?)', [ids])
+    deleted = Number((await tx.execute('DELETE FROM juhe_dataset.audit_logs WHERE id = ANY(?)', [ids])).changes ?? 0)
+  })
+  return deleted
+}
+
 function cleanupAuditErrorGroupsBefore(cutoffUpdatedAt: string, limit: number): number {
   const database = getDatasetDatabase()
   const unreferencedGroupWhere = `
@@ -117,4 +160,30 @@ function cleanupAuditErrorGroupsBefore(cutoffUpdatedAt: string, limit: number): 
   const placeholders = ids.map(() => '?').join(',')
   const result = database.prepare(`DELETE FROM audit_error_groups WHERE id IN (${placeholders})`).run(...ids)
   return Number(result.changes ?? 0)
+}
+
+async function cleanupAuditErrorGroupsBeforeAsync(cutoffUpdatedAt: string, limit: number): Promise<number> {
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const rows = await client.query<AuditLogRow>(`
+    SELECT id
+    FROM juhe_dataset.audit_error_groups
+    WHERE updated_at < ?
+      AND NOT EXISTS (
+        SELECT 1
+        FROM juhe_dataset.audit_logs
+        WHERE audit_logs.error_group_id = audit_error_groups.id
+      )
+    ORDER BY updated_at ASC, id ASC
+    LIMIT ?
+  `, [cutoffUpdatedAt, Math.max(1, Math.trunc(limit))])
+  const ids = rows.map((row) => String(row.id ?? '')).filter(Boolean)
+  if (ids.length === 0) return 0
+  const result = await client.execute('DELETE FROM juhe_dataset.audit_error_groups WHERE id = ANY(?)', [ids])
+  return Number(result.changes ?? 0)
+}
+
+function assertSqliteAuditLogRetention(operation: string): void {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    throw new Error(`高性能模式禁止调用 SQLite 审计日志保留清理入口：${operation}`)
+  }
 }

@@ -1023,6 +1023,17 @@ function assertPerformanceRuntime(): void {
   if (runtimeConfig.runtimeMode !== 'performance' || runtimeConfig.databaseDriver !== 'postgres') {
     throw new Error('performance gateway persistence readiness 必须在 JUHE_AI_RUNTIME_MODE=performance / JUHE_AI_DATABASE_DRIVER=postgres 下运行')
   }
+  if (
+    runtimeConfig.cacheDriver !== 'redis'
+    || runtimeConfig.runtimeStateDriver !== 'redis'
+    || runtimeConfig.queueDriver !== 'redis_stream'
+    || !runtimeConfig.postgres.url
+    || !runtimeConfig.redis.cacheUrl
+    || !runtimeConfig.redis.stateUrl
+    || !runtimeConfig.redis.queueUrl
+  ) {
+    throw new Error('performance gateway persistence readiness 必须完整配置 PostgreSQL + Redis cache/state/queue')
+  }
 }
 
 function writeReport(report: ReadinessReport): void {

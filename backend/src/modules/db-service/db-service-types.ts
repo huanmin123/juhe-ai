@@ -387,6 +387,14 @@ export type DbServiceOperation =
     requestedEndpointFamily?: GatewayRequestEndpointFamily
   }
   | {
+    type: 'find_openai_account_for_group'
+    groupId: string
+    accountId: string
+    systemAccountId: string
+    includeUnavailable?: boolean
+    ignoreAvailability?: boolean
+  }
+  | {
     type: 'list_recoverable_unavailable_openai_accounts_for_group'
     groupId: string
     systemAccountId: string
@@ -563,12 +571,6 @@ export type DbServiceOperation =
     account: OpenAIAccountSecret
     reason: string
     precheckStartedAt?: string
-    errorPolicyDecision?: {
-      action: 'retry_next' | 'cooldown' | 'disable'
-      ruleName?: string
-      cooldownUntil?: string
-      cooldownStatus?: 'rate_limited' | 'temporary_unavailable'
-    }
   }
   | {
     type: 'mark_account_temporary_unavailable'
@@ -827,6 +829,7 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'resolve_group_usage_access' } ? GroupUsageAccessMetadata | undefined :
   T extends { type: 'list_openai_accounts_for_group' } ? OpenAIAccountSecret[] :
   T extends { type: 'list_openai_accounts_for_group_result' } ? OpenAIAccountsForGroupResult :
+  T extends { type: 'find_openai_account_for_group' } ? OpenAIAccountSecret | undefined :
   T extends { type: 'list_recoverable_unavailable_openai_accounts_for_group' } ? OpenAIAccountSecret[] :
   T extends { type: 'read_gateway_runtime' } ? DbServiceGatewayRuntime :
   T extends { type: 'create_openai_compatible_file' } ? OpenAICompatibleFileRecord :

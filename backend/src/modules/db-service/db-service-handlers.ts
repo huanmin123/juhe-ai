@@ -36,14 +36,19 @@ import {
   cleanupExpiredLogicallyDeletedAccounts,
   cleanupExpiredLogicallyDeletedAccountsAsync,
   clearAccountStreamFailureState,
+  clearAccountStreamFailureStateAsync,
   clearAuthorizedAccountBindingStreamFailureState,
+  clearAuthorizedAccountBindingStreamFailureStateAsync,
   findAccountForTest,
   findAccountForTestAsync,
   findAccountForCooldownRetest,
   findAccountForCooldownRetestAsync,
   findAccountForHealthCheck,
   findAccountForHealthCheckAsync,
+  findOpenAIAccountForGroup,
+  findOpenAIAccountForGroupAsync,
   getAccountPrecheckMutationState,
+  getAccountPrecheckMutationStateAsync,
   listOpenAIAccountsForGroup,
   listOpenAIAccountsForGroupResult,
   listOpenAIAccountsForGroupResultAsync,
@@ -56,15 +61,22 @@ import {
   listPublicGlobalSettingsAsync,
   markAccountException,
   markAccountCooldown,
+  markAccountCooldownAsync,
   markAccountDisabledByFailure,
+  markAccountDisabledByFailureAsync,
   markAccountTestTemporaryUnavailable,
   markAccountTestTemporaryUnavailableAsync,
   markAccountTemporaryUnavailable,
+  markAccountTemporaryUnavailableAsync,
   markAccountExceptionAsync,
   markAuthorizedAccountBindingCooldownByContext,
+  markAuthorizedAccountBindingCooldownByContextAsync,
   markAuthorizedAccountBindingDisabledByFailure,
+  markAuthorizedAccountBindingDisabledByFailureAsync,
   markAuthorizedAccountBindingTemporaryUnavailableByContext,
+  markAuthorizedAccountBindingTemporaryUnavailableByContextAsync,
   recordAccountStreamFailure,
+  recordAccountStreamFailureAsync,
   recordAccountHealthCheckFailure,
   recordAccountHealthCheckFailureAsync,
   recordAccountHealthCheckSuccess,
@@ -74,6 +86,7 @@ import {
   recordAccountSuccessfulTestModel,
   recordAccountSuccessfulTestModelAsync,
   recordAuthorizedAccountBindingStreamFailure,
+  recordAuthorizedAccountBindingStreamFailureAsync,
   resolveGroupUsageAccessMetadata,
   resolveGroupUsageAccessMetadataAsync,
   resolveProxyUrlForProfile,
@@ -101,7 +114,7 @@ import {
   listActiveClientIpPoliciesAsync,
 } from '../../storage/client-ip-stats.repository.js'
 import { listActiveResponseInspectionPoliciesForGateway, listActiveResponseInspectionPoliciesForGatewayAsync } from '../../storage/response-inspection-policy.repository.js'
-import { cleanupExpiredSystemSessions } from '../../storage/data-retention.repository.js'
+import { cleanupExpiredSystemSessions, cleanupExpiredSystemSessionsAsync } from '../../storage/data-retention.repository.js'
 import {
   cleanupExpiredCodexContextStates,
   readCodexContextCompactState,
@@ -118,7 +131,10 @@ import {
 } from '../../storage/codex-context-state-writer-pool.js'
 import {
   deleteGroupAccountStatsDirtyRowsLocal,
+  deleteGroupAccountStatsDirtyRowsAsync,
   markAllGroupAccountStatsDirty,
+  markAllGroupAccountStatsDirtyAsync,
+  updateGroupAccountStatsAllCursorAsync,
   updateGroupAccountStatsAllCursorLocal,
   type GroupAccountStatsDirtyRow
 } from '../../storage/group-account-stats-cache.repository.js'
@@ -137,7 +153,7 @@ import {
   checkGatewayAuthorizationQuotaByIdsExactAsync,
   clearAuthorizationQuotaCache
 } from '../gateway/quota/authorization-quota.service.js'
-import { applyAccountErrorHandling, readGatewaySettingsAsync } from '../gateway/policy/account-error-policy.service.js'
+import { applyAccountErrorHandling, applyAccountErrorHandlingAsync, readGatewaySettingsAsync } from '../gateway/policy/account-error-policy.service.js'
 import { persistOpenAICodexUsageHeaders } from '../gateway/adapters/gpt-codex/usage.service.js'
 import { listProviderModelCatalog, listProviderModelCatalogAsync } from '../model-pricing/model-catalog.service.js'
 import {
@@ -238,6 +254,7 @@ export async function handleDbServiceOperation<T extends DbServiceOperation>(ope
 }
 
 async function handleDbServiceOperationDispatch(operation: DbServiceOperation): Promise<unknown> {
+  const operationType = operation.type
   switch (operation.type) {
     case 'list_public_global_settings':
       if (runtimeConfig.databaseDriver === 'postgres') {
@@ -269,6 +286,14 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
         return await listOpenAIAccountsForGroupResultAsync(operation.groupId, operation.systemAccountId, {
           requestedModel: operation.requestedModel,
           requestedEndpointFamily: operation.requestedEndpointFamily
+        })
+      }
+      return handleDbServiceOperationSync(operation)
+    case 'find_openai_account_for_group':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await findOpenAIAccountForGroupAsync(operation.groupId, operation.accountId, operation.systemAccountId, {
+          includeUnavailable: operation.includeUnavailable,
+          ignoreAvailability: operation.ignoreAvailability
         })
       }
       return handleDbServiceOperationSync(operation)
@@ -562,11 +587,96 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
         return await findOpenAIOAuthAccountForRefreshAsync(operation.accountId)
       }
       return handleDbServiceOperationSync(operation)
+    case 'persist_openai_codex_usage_headers':
+      return handleDbServiceOperationSync(operation)
+    case 'apply_account_error_handling': {
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        const result = await applyAccountErrorHandlingAsync(operation.account, operation.input)
+        if (result.changed) {
+          clearGatewayRuntimeCacheLocal()
+        }
+        return result
+      }
+      return handleDbServiceOperationSync(operation)
+    }
+    case 'record_account_stream_failure': {
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        const authorizedTarget = authorizedBindingRuntimeTarget(operation.input.account)
+        const result = authorizedTarget
+          ? await recordAuthorizedAccountBindingStreamFailureAsync({
+              ...operation.input,
+              ...authorizedTarget
+            })
+          : await recordAccountStreamFailureAsync(operation.input)
+        if (result.triggered) {
+          clearGatewayRuntimeCacheLocal()
+        }
+        return { count: result.count, triggered: result.triggered }
+      }
+      return handleDbServiceOperationSync(operation)
+    }
+    case 'mark_account_precheck_temporary_unavailable': {
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        const authorizedTarget = authorizedBindingRuntimeTarget(operation.account)
+        const staleReason = await precheckTemporaryUnavailableSkipReasonAsync(operation, authorizedTarget)
+        if (staleReason) {
+          return { updated: false, skippedReason: staleReason }
+        }
+        const updated = await applyPrecheckErrorPolicyTargetAsync(operation, authorizedTarget)
+        if (updated) {
+          clearGatewayRuntimeCacheLocal()
+        }
+        return { updated: Boolean(updated) }
+      }
+      return handleDbServiceOperationSync(operation)
+    }
+    case 'mark_account_temporary_unavailable': {
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        const authorizedTarget = authorizedBindingRuntimeTarget(operation.account)
+        const updated = authorizedTarget
+          ? await markAuthorizedAccountBindingTemporaryUnavailableByContextAsync({
+              ...authorizedTarget,
+              reason: operation.reason
+            })
+          : await markAccountTemporaryUnavailableAsync(operation.account.id, operation.reason)
+        if (updated) {
+          clearGatewayRuntimeCacheLocal()
+        }
+        return { updated: Boolean(updated) }
+      }
+      return handleDbServiceOperationSync(operation)
+    }
     case 'list_active_client_ip_policies':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await listActiveClientIpPoliciesAsync()
       }
       return handleDbServiceOperationSync(operation)
+    case 'list_active_response_inspection_policies':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await listActiveResponseInspectionPoliciesForGatewayAsync({
+          protocolCode: operation.protocolCode,
+          providerCode: operation.providerCode
+        })
+      }
+      return handleDbServiceOperationSync(operation)
+    case 'check_api_key_quota':
+      return runtimeConfig.databaseDriver === 'postgres'
+        ? await checkGatewayApiKeyQuotaExactAsync(operation.apiKey)
+        : handleDbServiceOperationSync(operation)
+    case 'check_authorization_quota':
+      return runtimeConfig.databaseDriver === 'postgres'
+        ? await checkGatewayAuthorizationQuotaByIdsExactAsync({
+            groupAuthorizationId: operation.groupAuthorizationId,
+            accountAuthorizationId: operation.accountAuthorizationId
+          })
+        : handleDbServiceOperationSync(operation)
+    case 'check_authorization_quota_batch':
+      return runtimeConfig.databaseDriver === 'postgres'
+        ? await checkGatewayAuthorizationQuotaBatchByIdsExactAsync({
+            groupAuthorizationId: operation.groupAuthorizationId,
+            accounts: operation.accounts
+          })
+        : handleDbServiceOperationSync(operation)
     case 'list_accounts_due_for_health_check':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await listAccountsDueForHealthCheckAsync(operation.input)
@@ -643,6 +753,56 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       }
       return handleDbServiceOperationSync(operation)
     }
+    case 'clear_account_stream_failure_state': {
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        const authorizedTarget = authorizedBindingRuntimeTarget(operation.account)
+        const accountId = operation.account?.id ?? operation.accountId
+        const changed = authorizedTarget
+          ? await clearAuthorizedAccountBindingStreamFailureStateAsync(authorizedTarget)
+          : accountId ? await clearAccountStreamFailureStateAsync(accountId) : false
+        if (changed) {
+          clearGatewayRuntimeCacheLocal()
+        }
+        return { changed }
+      }
+      return handleDbServiceOperationSync(operation)
+    }
+    case 'clear_gateway_runtime_cache':
+      return handleDbServiceOperationSync(operation)
+    case 'mark_all_group_account_stats_dirty':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        await markAllGroupAccountStatsDirtyAsync(operation.reason)
+        return { marked: true }
+      }
+      return handleDbServiceOperationSync(operation)
+    case 'delete_group_account_stats_dirty_rows':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        await deleteGroupAccountStatsDirtyRowsAsync(
+          operation.rows.map((row): GroupAccountStatsDirtyRow => ({
+            groupId: row.groupId,
+            reason: null,
+            updatedAt: row.updatedAt
+          }))
+        )
+        return { deleted: true }
+      }
+      return handleDbServiceOperationSync(operation)
+    case 'update_group_account_stats_all_cursor':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        await updateGroupAccountStatsAllCursorAsync(operation.cursorGroupId)
+        return { updated: true }
+      }
+      return handleDbServiceOperationSync(operation)
+    case 'list_runtime_logs':
+      return await listRuntimeLogsAsync(operation.options)
+    case 'get_runtime_log_detail':
+      return await getRuntimeLogDetailAsync(operation.id)
+    case 'get_runtime_log_facets':
+      return await getRuntimeLogFacetsAsync()
+    case 'record_client_ip_policy_hits':
+      throw new Error('record_client_ip_policy_hits 必须投递 stats-writer，禁止在 DB service 写 stats DB')
+    case 'status':
+      return buildDbServiceRuntimeSnapshot()
     case 'save_codex_context_response_state':
       return await saveCodexContextResponseStateIndexWithWriterPool(operation.input)
     case 'save_codex_context_compact_state':
@@ -676,7 +836,16 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
         return result
       }
       return handleDbServiceOperationSync(operation)
+    case 'cleanup_expired_system_sessions':
+      return {
+        deleted: runtimeConfig.databaseDriver === 'postgres'
+          ? await cleanupExpiredSystemSessionsAsync(operation.expiredBefore, operation.limit)
+          : cleanupExpiredSystemSessions(operation.expiredBefore, operation.limit)
+      }
     default:
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        throw new Error(`PostgreSQL DB service operation 未接入 async driver：${operationType}`)
+      }
       return handleDbServiceOperationSync(operation)
   }
 }
@@ -772,6 +941,11 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       return listOpenAIAccountsForGroupResult(operation.groupId, operation.systemAccountId, {
         requestedModel: operation.requestedModel,
         requestedEndpointFamily: operation.requestedEndpointFamily
+      })
+    case 'find_openai_account_for_group':
+      return findOpenAIAccountForGroup(operation.groupId, operation.accountId, operation.systemAccountId, {
+        includeUnavailable: operation.includeUnavailable,
+        ignoreAvailability: operation.ignoreAvailability
       })
     case 'list_recoverable_unavailable_openai_accounts_for_group':
       return listRecoverableUnavailableOpenAIAccountsForGroup(operation.groupId, operation.systemAccountId, {
@@ -1211,33 +1385,52 @@ function precheckTemporaryUnavailableSkipReason(
   return undefined
 }
 
+async function precheckTemporaryUnavailableSkipReasonAsync(
+  operation: Extract<DbServiceOperation, { type: 'mark_account_precheck_temporary_unavailable' }>,
+  authorizedTarget: ReturnType<typeof authorizedBindingRuntimeTarget>
+): Promise<string | undefined> {
+  const startedAtMs = operation.precheckStartedAt ? Date.parse(operation.precheckStartedAt) : NaN
+  if (!Number.isFinite(startedAtMs)) {
+    return undefined
+  }
+  const state = await getAccountPrecheckMutationStateAsync({
+    accountId: operation.account.id,
+    authorizedBinding: authorizedTarget
+  })
+  if (!state) {
+    return 'account_missing'
+  }
+  if (state.status === 'disabled' || state.status === 'error') {
+    return 'hard_unavailable'
+  }
+  if (state.updatedAt && Date.parse(state.updatedAt) > startedAtMs && state.updatedAt !== state.lastUsedAt) {
+    return 'stale_account_updated'
+  }
+  return undefined
+}
+
 function applyPrecheckErrorPolicyTarget(
   operation: Extract<DbServiceOperation, { type: 'mark_account_precheck_temporary_unavailable' }>,
   authorizedTarget: ReturnType<typeof authorizedBindingRuntimeTarget>
 ): unknown {
-  const decision = operation.errorPolicyDecision
-  if (decision?.action === 'disable') {
-    return authorizedTarget
-      ? markAuthorizedAccountBindingDisabledByFailure({ ...authorizedTarget, reason: operation.reason })
-      : markAccountDisabledByFailure(operation.account.id, operation.reason)
-  }
-  if (decision?.action === 'cooldown' && decision.cooldownStatus === 'rate_limited') {
-    const cooldownUntil = decision.cooldownUntil ?? new Date(Date.now() + 60_000).toISOString()
-    return authorizedTarget
-      ? markAuthorizedAccountBindingCooldownByContext({
-          ...authorizedTarget,
-          cooldownUntil,
-          reason: operation.reason,
-          status: 'rate_limited'
-        })
-      : markAccountCooldown(operation.account.id, cooldownUntil, operation.reason, 'rate_limited')
-  }
   return authorizedTarget
     ? markAuthorizedAccountBindingTemporaryUnavailableByContext({
         ...authorizedTarget,
         reason: operation.reason
       })
     : markAccountTemporaryUnavailable(operation.account.id, operation.reason)
+}
+
+async function applyPrecheckErrorPolicyTargetAsync(
+  operation: Extract<DbServiceOperation, { type: 'mark_account_precheck_temporary_unavailable' }>,
+  authorizedTarget: ReturnType<typeof authorizedBindingRuntimeTarget>
+): Promise<unknown> {
+  return authorizedTarget
+    ? await markAuthorizedAccountBindingTemporaryUnavailableByContextAsync({
+        ...authorizedTarget,
+        reason: operation.reason
+      })
+    : await markAccountTemporaryUnavailableAsync(operation.account.id, operation.reason)
 }
 
 function recoverableUnavailableOpenAIAccounts(

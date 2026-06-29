@@ -1,6 +1,7 @@
 # PostgreSQL 与 Redis 高性能模式设计
 
 > 本文定义 `juhe-ai` 从默认 SQLite + 内存缓存扩展到 PostgreSQL + Redis 高性能模式的长期边界。执行计划见 [PLAN-0066 PostgreSQL 与 Redis 高性能模式](../plans/计划-0066-PostgreSQL与Redis高性能模式.md)。
+> 数据库、缓存、运行态和队列的业务语义适配边界见 [存储适配接口设计](存储适配接口设计.md)。
 
 ## 背景
 
@@ -25,7 +26,7 @@
 - 保持默认单机模式行为不变，现有用户不配置 PostgreSQL / Redis 也能继续运行。
 - 高性能模式使用 PostgreSQL 承接所有事实数据、预聚合统计、日志索引和运行可恢复数据。
 - 高性能模式使用 Redis 承接跨进程短 TTL 缓存、调度运行态、限流、验证码 / 登录失败窗口、缓存版本和必要的原子计数。
-- 数据访问方只依赖统一 repository / cache / runtime state 接口，不在业务代码里散落 `if sqlite / if postgres / if redis`。
+- 数据访问方只依赖统一 Store Port / cache / runtime state / queue 接口，不在业务代码里散落 `if sqlite / if postgres / if redis`。
 - 复用现有 typed command 和队列语义，但 PostgreSQL 模式下消费端可以并发执行，默认最大消费并发为 `100`，并受连接池、队列容量和同键顺序约束保护。
 - 不在代码库里做 SQLite 与 PostgreSQL 数据迁移、旧 PostgreSQL 结构迁移、双读、双写、自动迁移或旧结构兼容；历史数据处理由上线窗口在代码库外单独完成，应用只面向当前 schema。
 

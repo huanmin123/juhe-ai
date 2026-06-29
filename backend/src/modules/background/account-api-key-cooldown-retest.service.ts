@@ -1,9 +1,6 @@
 import { logger } from '../../shared/logger.js'
 import { createRetryQueue } from '../../shared/retry-queue.js'
 import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
-import {
-  findOpenAIAccountForGroup
-} from '../../storage/repositories.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import {
   type AccountApiKeyRuntimeProbeCandidate
@@ -73,7 +70,7 @@ async function runAccountApiKeyCooldownRetestQueueItem(
   if (!systemAccountId) {
     return true
   }
-  const candidateAccount = findOpenAIAccountForGroup(account.boundGroupId, account.id, systemAccountId, { ignoreAvailability: true })
+  const candidateAccount = await loadOpenAIAccountForGroupViaDbService(account.boundGroupId, account.id, systemAccountId)
   if (!candidateAccount || candidateAccount.type !== 'api_key') {
     return true
   }
@@ -92,6 +89,7 @@ async function runAccountApiKeyCooldownRetestQueueItem(
     candidateAccount: fixedKeyCandidate,
     disableAccountStateMutation: true,
     findAccountForTest: loadAccountForTestViaDbService,
+    findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService,
     gatewaySettingsOverride: {
       temporaryUnschedulableRetryAttempts: 0,
       temporaryUnschedulableRetryIntervalSeconds: 0
@@ -148,5 +146,21 @@ async function loadAccountForTestViaDbService(accountId: string, access?: Access
     type: 'find_account_for_test',
     accountId,
     access
+  }, 10_000)
+}
+
+async function loadOpenAIAccountForGroupViaDbService(
+  groupId: string,
+  accountId: string,
+  systemAccountId: string,
+  options: { includeUnavailable?: boolean; ignoreAvailability?: boolean } = { ignoreAvailability: true }
+) {
+  return await requestBackgroundWorkerDbService({
+    type: 'find_openai_account_for_group',
+    groupId,
+    accountId,
+    systemAccountId,
+    includeUnavailable: options.includeUnavailable,
+    ignoreAvailability: options.ignoreAvailability
   }, 10_000)
 }

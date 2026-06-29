@@ -94,6 +94,7 @@ export {
   markGroupAccountStatsDirty,
   markGroupAccountStatsDirtyByAccountIds,
   refreshDirtyGroupAccountStatsCache,
+  refreshDirtyGroupAccountStatsCacheAsync,
   refreshDirtyGroupAccountStatsCacheWithWriter,
   refreshGroupAccountStatsCache
 } from './group-account-stats-cache.repository.js'

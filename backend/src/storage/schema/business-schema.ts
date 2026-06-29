@@ -830,7 +830,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       ON accounts(status, cooldown_until ASC, updated_at ASC, id ASC)
       WHERE deleted_at IS NULL AND cooldown_until IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_accounts_cooldown_retest_pg_due
-      ON accounts(provider_protocol_profile_id, status, cooldown_until ASC, updated_at ASC, id ASC)
+      ON accounts(provider_protocol_profile_id, status, cooldown_until ASC, priority ASC, created_at ASC, id ASC)
       WHERE deleted_at IS NULL AND cooldown_until IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_accounts_deleted_cleanup
       ON accounts(deleted_at ASC, updated_at ASC, id ASC)
@@ -840,7 +840,8 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_account_api_key_runtime_status
       ON account_api_key_runtime_states(account_id, status, cooldown_until);
     CREATE INDEX IF NOT EXISTS idx_account_api_key_runtime_probe
-      ON account_api_key_runtime_states(next_probe_at, status);
+      ON account_api_key_runtime_states(account_id, status, next_probe_at ASC, updated_at ASC, key_index ASC)
+      WHERE next_probe_at IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_account_api_key_runtime_owner
       ON account_api_key_runtime_states(system_account_id, account_id);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_provider_models_personal_unique

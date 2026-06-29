@@ -1,18 +1,21 @@
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { runtimeConfig } from '../../config/runtime.js'
 import { registerDeletedAccountRecordCleanupTarget, type DeletedAccountRecordCleanupTarget } from '../../storage/repositories.js'
 import { enqueueRecordMaintenanceJobWithResult, type RecordMaintenanceEnqueueResult } from '../record-maintenance/record-maintenance-queue.service.js'
 
 export type AccountRelatedCleanupSubmitResult = RecordMaintenanceEnqueueResult
 
 export function submitAccountRelatedCleanup(target: DeletedAccountRecordCleanupTarget): AccountRelatedCleanupSubmitResult {
-  try {
-    registerDeletedAccountRecordCleanupTarget(target)
-  } catch (error) {
-    logger.error(errorLogFields(error, {
-      event: 'account_related_cleanup_target_register_failed',
-      accountId: target.accountId,
-      systemAccountId: target.systemAccountId
-    }), 'AI 账户删除后的关联数据清理目标登记失败，将继续尝试投递 worker')
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    try {
+      registerDeletedAccountRecordCleanupTarget(target)
+    } catch (error) {
+      logger.error(errorLogFields(error, {
+        event: 'account_related_cleanup_target_register_failed',
+        accountId: target.accountId,
+        systemAccountId: target.systemAccountId
+      }), 'AI 账户删除后的关联数据清理目标登记失败，将继续尝试投递 worker')
+    }
   }
 
   const enqueueResult = enqueueRecordMaintenanceJobWithResult({

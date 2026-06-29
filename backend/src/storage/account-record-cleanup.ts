@@ -1,7 +1,11 @@
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite'
 
+import { runtimeConfig } from '../config/runtime.js'
 import { cleanupUnreferencedAuditPayloadBlobs, cleanupUnreferencedAuditPayloadBlobsAsync } from './audit-log-payload-blobs.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatasetDatabase, getStatsDatabase, isSqliteDatabaseLocked, nowIso, rollbackDatabaseTransaction } from './database.js'
+import type { DatabaseClient } from './database-client.js'
+import { createPostgresDatabaseClient } from './database-client.js'
+import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { deleteUsageRecordShardEntries, getUsageRecordShardDatabase, listUsageRecordShardLocationsForAccount, type UsageRecordShardLocation } from './usage-record-shards.js'
 import { refreshUsageQuotaHourlyWindowsCache, refreshUsageRankSnapshots } from './usage-stats.repository.js'
@@ -97,10 +101,12 @@ const deletedAccountRecordCleanupBatchLimit = 100
 const deletedAccountRecordCleanupShardLimit = 16
 
 export function registerDeletedAccountRecordCleanupTarget(input: DeletedAccountRecordCleanupTarget): void {
+  assertSqliteAccountRecordCleanup('registerDeletedAccountRecordCleanupTarget')
   upsertDeletedAccountRecordCleanupTarget(getDatasetDatabase(), input, nowIso())
 }
 
 export function cleanupPendingDeletedAccountRecordTargets(limit = 50): PendingDeletedAccountRecordCleanupSummary {
+  assertSqliteAccountRecordCleanup('cleanupPendingDeletedAccountRecordTargets')
   const targets = listDeletedAccountRecordCleanupTargets(Math.max(1, Math.trunc(limit)))
   const summary: PendingDeletedAccountRecordCleanupSummary = {
     attempted: 0,
@@ -131,7 +137,9 @@ export async function cleanupPendingDeletedAccountRecordTargetsAsync(
   limit = 50,
   statsWriter?: DeletedAccountRecordStatsCleanupWriter
 ): Promise<PendingDeletedAccountRecordCleanupSummary> {
-  const targets = listDeletedAccountRecordCleanupTargets(Math.max(1, Math.trunc(limit)))
+  const targets = runtimeConfig.databaseDriver === 'postgres'
+    ? await listDeletedAccountRecordCleanupTargetsAsync(Math.max(1, Math.trunc(limit)))
+    : listDeletedAccountRecordCleanupTargets(Math.max(1, Math.trunc(limit)))
   const summary: PendingDeletedAccountRecordCleanupSummary = {
     attempted: 0,
     completed: 0,
@@ -151,13 +159,14 @@ export async function cleanupPendingDeletedAccountRecordTargetsAsync(
       }
     } catch (error) {
       summary.failed += 1
-      markDeletedAccountRecordCleanupTargetError(getDatasetDatabase(), target, errorMessage(error), nowIso())
+      await markDeletedAccountRecordCleanupTargetErrorAsync(target, errorMessage(error), nowIso())
     }
   }
   return summary
 }
 
 export function listDeletedAccountRecordCleanupTargets(limit = 50): DeletedAccountRecordCleanupTarget[] {
+  assertSqliteAccountRecordCleanup('listDeletedAccountRecordCleanupTargets')
   const rows = getDatasetDatabase()
     .prepare(`
       SELECT account_id, system_account_id,
@@ -178,7 +187,31 @@ export function listDeletedAccountRecordCleanupTargets(limit = 50): DeletedAccou
     .filter((row) => row.accountId && row.systemAccountId)
 }
 
+export async function listDeletedAccountRecordCleanupTargetsAsync(limit = 50): Promise<DeletedAccountRecordCleanupTarget[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return listDeletedAccountRecordCleanupTargets(limit)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const rows = await client.query<PendingDeletedAccountRecordCleanupTargetRow>(`
+    SELECT account_id, system_account_id,
+      related_account_ids_json, authorization_ids_json, team_scope_ids_json
+    FROM juhe_dataset.account_record_cleanup_targets
+    ORDER BY COALESCE(last_attempt_at, created_at) ASC, created_at ASC, account_id ASC
+    LIMIT ?
+  `, [Math.max(1, Math.trunc(limit))])
+  return rows
+    .map((row) => ({
+      accountId: String(row.account_id ?? ''),
+      systemAccountId: String(row.system_account_id ?? ''),
+      relatedAccountIds: parseStringArrayJson(row.related_account_ids_json),
+      authorizationIds: parseStringArrayJson(row.authorization_ids_json),
+      teamScopeIds: parseStringArrayJson(row.team_scope_ids_json)
+    }))
+    .filter((row) => row.accountId && row.systemAccountId)
+}
+
 export function hasDeletedAccountRelatedRecordData(input: DeletedAccountRecordCleanupTarget): boolean {
+  assertSqliteAccountRecordCleanup('hasDeletedAccountRelatedRecordData')
   if (hasDeletedAccountRecordCleanupTarget(input)) {
     return true
   }
@@ -193,6 +226,7 @@ export function hasDeletedAccountRelatedRecordData(input: DeletedAccountRecordCl
 }
 
 export function cleanupDeletedAccountDetachedStats(input: DeletedAccountDetachedStatsCleanupTarget): void {
+  assertSqliteAccountRecordCleanup('cleanupDeletedAccountDetachedStats')
   const database = getStatsDatabase()
   const transactionStarted = beginDatabaseTransaction(database)
   try {
@@ -209,6 +243,7 @@ export function cleanupDeletedAccountDetachedStats(input: DeletedAccountDetached
 }
 
 export function cleanupDeletedAccountRelatedRecordData(input: DeletedAccountRecordCleanupTarget): DeletedAccountRecordCleanupResult {
+  assertSqliteAccountRecordCleanup('cleanupDeletedAccountRelatedRecordData')
   const cleanup = cleanupDeletedAccountRelatedRecordDataCore(input)
   cleanupAuditPayloadBlobsBestEffort(cleanup.batchLimit)
   return cleanup.result
@@ -293,6 +328,9 @@ async function cleanupDeletedAccountRelatedRecordDataCoreAsync(
   result: DeletedAccountRecordCleanupResult
   batchLimit: number
 }> {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    return cleanupDeletedAccountRelatedRecordDataCorePostgresAsync(input)
+  }
   if (!statsWriter) {
     return cleanupDeletedAccountRelatedRecordDataCore(input)
   }
@@ -369,6 +407,60 @@ async function cleanupDeletedAccountRelatedRecordDataCoreAsync(
     return { result, batchLimit }
   } catch (error) {
     markDeletedAccountRecordCleanupTargetError(database, input, errorMessage(error), nowIso())
+    throw error
+  }
+}
+
+async function cleanupDeletedAccountRelatedRecordDataCorePostgresAsync(
+  input: DeletedAccountRecordCleanupTarget
+): Promise<{
+  result: DeletedAccountRecordCleanupResult
+  batchLimit: number
+}> {
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const updatedAt = nowIso()
+  const batchLimit = deletedAccountRecordCleanupBatchLimit
+  await upsertDeletedAccountRecordCleanupTargetAsync(client, input, updatedAt)
+  try {
+    let deletedRows = 0
+    await client.transaction(async (tx) => {
+      deletedRows += await deletePostgresAccountUsageDataBatch(tx, input, batchLimit)
+      deletedRows += await deletePostgresAccountAuditDataBatch(tx, input, batchLimit)
+      deletedRows += await deletePostgresAccountModelCheckRunsBatch(tx, input, batchLimit)
+    })
+
+    const [hasUsageMore, hasAuditMore, hasModelCheckMore] = await Promise.all([
+      hasPostgresAccountUsageRecords(client, input),
+      hasPostgresAccountAuditData(client, input),
+      hasPostgresAccountModelCheckRuns(client, input)
+    ])
+    let hasMore = hasUsageMore || hasAuditMore || hasModelCheckMore
+    if (!hasMore) {
+      await cleanupDeletedAccountFinalStatsAsync(client, input)
+    }
+    hasMore = hasMore || await hasPostgresDeletedAccountStatsRows(client, input)
+
+    const result: DeletedAccountRecordCleanupResult = {
+      ...input,
+      deletedRows,
+      hasMore,
+      blockedReason: hasMore
+        ? accountCleanupPendingReason({
+          hasAuditMore,
+          hasModelCheckMore,
+          hasMoreCoveredRows: hasUsageMore,
+          hasUncoveredRows: false
+        })
+        : undefined
+    }
+    if (result.hasMore || result.blockedReason) {
+      await markDeletedAccountRecordCleanupTargetDeferredAsync(client, input, result.blockedReason ?? '等待高性能模式后续批次清理', updatedAt)
+    } else {
+      await clearDeletedAccountRecordCleanupTargetAsync(client, input)
+    }
+    return { result, batchLimit }
+  } catch (error) {
+    await markDeletedAccountRecordCleanupTargetErrorAsync(input, errorMessage(error), nowIso())
     throw error
   }
 }
@@ -552,6 +644,86 @@ function clearDeletedAccountRecordCleanupTarget(database: DatabaseSync, input: D
     .run(input.accountId, input.systemAccountId)
 }
 
+async function upsertDeletedAccountRecordCleanupTargetAsync(
+  client: DatabaseClient,
+  input: DeletedAccountRecordCleanupTarget,
+  updatedAt: string
+): Promise<void> {
+  await client.execute(`
+    INSERT INTO juhe_dataset.account_record_cleanup_targets (
+      account_id, system_account_id, related_account_ids_json, authorization_ids_json, team_scope_ids_json, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(account_id) DO UPDATE SET
+      system_account_id = excluded.system_account_id,
+      related_account_ids_json = CASE
+        WHEN excluded.related_account_ids_json <> '[]' THEN excluded.related_account_ids_json
+        ELSE account_record_cleanup_targets.related_account_ids_json
+      END,
+      authorization_ids_json = CASE
+        WHEN excluded.authorization_ids_json <> '[]' THEN excluded.authorization_ids_json
+        ELSE account_record_cleanup_targets.authorization_ids_json
+      END,
+      team_scope_ids_json = CASE
+        WHEN excluded.team_scope_ids_json <> '[]' THEN excluded.team_scope_ids_json
+        ELSE account_record_cleanup_targets.team_scope_ids_json
+      END,
+      updated_at = excluded.updated_at
+  `, [
+    input.accountId,
+    input.systemAccountId,
+    stringArrayJson(input.relatedAccountIds),
+    stringArrayJson(input.authorizationIds),
+    stringArrayJson(input.teamScopeIds),
+    updatedAt,
+    updatedAt
+  ])
+}
+
+async function markDeletedAccountRecordCleanupTargetDeferredAsync(
+  client: DatabaseClient,
+  input: DeletedAccountRecordCleanupTarget,
+  blockedReason: string,
+  updatedAt: string
+): Promise<void> {
+  await client.execute(`
+    UPDATE juhe_dataset.account_record_cleanup_targets
+    SET attempt_count = attempt_count + 1,
+        last_attempt_at = ?,
+        last_blocked_reason = ?,
+        last_error_message = NULL,
+        updated_at = ?
+    WHERE account_id = ? AND system_account_id = ?
+  `, [updatedAt, blockedReason, updatedAt, input.accountId, input.systemAccountId])
+}
+
+async function markDeletedAccountRecordCleanupTargetErrorAsync(
+  input: DeletedAccountRecordCleanupTarget,
+  message: string,
+  updatedAt: string
+): Promise<void> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    markDeletedAccountRecordCleanupTargetError(getDatasetDatabase(), input, message, updatedAt)
+    return
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  await client.execute(`
+    UPDATE juhe_dataset.account_record_cleanup_targets
+    SET attempt_count = attempt_count + 1,
+        last_attempt_at = ?,
+        last_blocked_reason = NULL,
+        last_error_message = ?,
+        updated_at = ?
+    WHERE account_id = ? AND system_account_id = ?
+  `, [updatedAt, message, updatedAt, input.accountId, input.systemAccountId])
+}
+
+async function clearDeletedAccountRecordCleanupTargetAsync(client: DatabaseClient, input: DeletedAccountRecordCleanupTarget): Promise<void> {
+  await client.execute('DELETE FROM juhe_dataset.account_record_cleanup_targets WHERE account_id = ? AND system_account_id = ?', [
+    input.accountId,
+    input.systemAccountId
+  ])
+}
+
 function hasDeletedAccountRecordCleanupTarget(input: DeletedAccountRecordCleanupTarget): boolean {
   const row = getDatasetDatabase()
     .prepare('SELECT account_id FROM account_record_cleanup_targets WHERE account_id = ? AND system_account_id = ? LIMIT 1')
@@ -646,6 +818,7 @@ function accountUsageShardStatsCleanupRow(row: AccountUsageShardRow): UsageStats
 }
 
 export function cleanupDeletedAccountRecordStatsData(input: DeletedAccountRecordStatsCleanupInput): void {
+  assertSqliteAccountRecordCleanup('cleanupDeletedAccountRecordStatsData')
   const database = getStatsDatabase()
   const rows = input.rows.map((row) => ({
     ...row,
@@ -773,6 +946,133 @@ function markAccountUsageCleanupRowsDeleted(
     rollbackDatabaseTransaction(database, transactionStarted)
     throw error
   }
+}
+
+async function deletePostgresAccountUsageDataBatch(
+  client: DatabaseClient,
+  input: DeletedAccountRecordCleanupTarget,
+  limit: number
+): Promise<number> {
+  const accountIds = deletedAccountCleanupAccountIds(input)
+  const authorizationIds = uniqueNonEmpty(input.authorizationIds ?? [])
+  if (accountIds.length === 0 && authorizationIds.length === 0) return 0
+  const result = await client.execute(`
+    WITH target AS (
+      SELECT id
+      FROM juhe_usage.usage_records
+      WHERE account_id = ANY(?)
+        OR account_authorization_id = ANY(?)
+      ORDER BY created_at ASC, id ASC
+      LIMIT ?
+    )
+    DELETE FROM juhe_usage.usage_records usage_records
+    USING target
+    WHERE usage_records.id = target.id
+  `, [accountIds, authorizationIds, Math.max(1, Math.trunc(limit))])
+  return changed(result)
+}
+
+async function hasPostgresAccountUsageRecords(client: DatabaseClient, input: DeletedAccountRecordCleanupTarget): Promise<boolean> {
+  const accountIds = deletedAccountCleanupAccountIds(input)
+  const authorizationIds = uniqueNonEmpty(input.authorizationIds ?? [])
+  if (accountIds.length === 0 && authorizationIds.length === 0) return false
+  const row = await client.one<{ found?: number }>(`
+    SELECT 1 AS found
+    FROM juhe_usage.usage_records
+    WHERE account_id = ANY(?)
+      OR account_authorization_id = ANY(?)
+    LIMIT 1
+  `, [accountIds, authorizationIds])
+  return Boolean(row?.found)
+}
+
+async function hasPostgresAccountAuditData(client: DatabaseClient, input: DeletedAccountRecordCleanupTarget): Promise<boolean> {
+  const accountIds = deletedAccountCleanupAccountIds(input)
+  if (!accountIds.length) return false
+  const row = await client.one<{ found?: number }>(`
+    SELECT 1 AS found
+    FROM juhe_dataset.audit_logs
+    WHERE account_id = ANY(?)
+    UNION ALL
+    SELECT 1 AS found
+    FROM juhe_dataset.audit_error_groups
+    WHERE account_id = ANY(?)
+    LIMIT 1
+  `, [accountIds, accountIds])
+  return Boolean(row?.found)
+}
+
+async function deletePostgresAccountAuditDataBatch(
+  client: DatabaseClient,
+  input: DeletedAccountRecordCleanupTarget,
+  limit: number
+): Promise<number> {
+  const batchLimit = Math.max(1, Math.trunc(limit))
+  const accountIds = deletedAccountCleanupAccountIds(input)
+  if (!accountIds.length) return 0
+  const rows = await client.query<{ id?: string | null }>(`
+    SELECT id
+    FROM juhe_dataset.audit_logs
+    WHERE account_id = ANY(?)
+    ORDER BY created_at ASC, id ASC
+    LIMIT ?
+  `, [accountIds, batchLimit])
+  const auditLogIds = uniqueNonEmpty(rows.map((row) => row.id))
+  let deletedRows = 0
+  if (auditLogIds.length > 0) {
+    deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.audit_payload_refs WHERE audit_log_id = ANY(?)', [auditLogIds]))
+    deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.audit_log_attempts WHERE audit_log_id = ANY(?)', [auditLogIds]))
+    deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.audit_logs WHERE id = ANY(?) AND account_id = ANY(?)', [auditLogIds, accountIds]))
+  }
+
+  const groupRows = await client.query<{ id?: string | null }>(`
+    SELECT id
+    FROM juhe_dataset.audit_error_groups
+    WHERE account_id = ANY(?)
+    ORDER BY updated_at ASC, id ASC
+    LIMIT ?
+  `, [accountIds, batchLimit])
+  const groupIds = uniqueNonEmpty(groupRows.map((row) => row.id))
+  if (groupIds.length > 0) {
+    deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.audit_error_groups WHERE id = ANY(?) AND account_id = ANY(?)', [groupIds, accountIds]))
+  }
+  return deletedRows
+}
+
+async function hasPostgresAccountModelCheckRuns(client: DatabaseClient, input: DeletedAccountRecordCleanupTarget): Promise<boolean> {
+  const accountIds = deletedAccountCleanupAccountIds(input)
+  if (!accountIds.length) return false
+  const row = await client.one<{ found?: number }>(`
+    SELECT 1 AS found
+    FROM juhe_dataset.model_check_runs
+    WHERE account_id = ANY(?)
+      OR (target_type = 'account' AND target_id = ANY(?))
+    LIMIT 1
+  `, [accountIds, accountIds])
+  return Boolean(row?.found)
+}
+
+async function deletePostgresAccountModelCheckRunsBatch(
+  client: DatabaseClient,
+  input: DeletedAccountRecordCleanupTarget,
+  limit: number
+): Promise<number> {
+  const accountIds = deletedAccountCleanupAccountIds(input)
+  if (!accountIds.length) return 0
+  const rows = await client.query<{ id?: string | null }>(`
+    SELECT id
+    FROM juhe_dataset.model_check_runs
+    WHERE account_id = ANY(?)
+      OR (target_type = 'account' AND target_id = ANY(?))
+    ORDER BY created_at ASC, id ASC
+    LIMIT ?
+  `, [accountIds, accountIds, Math.max(1, Math.trunc(limit))])
+  const runIds = uniqueNonEmpty(rows.map((row) => row.id))
+  if (!runIds.length) return 0
+  let deletedRows = 0
+  deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.model_check_items WHERE run_id = ANY(?)', [runIds]))
+  deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.model_check_runs WHERE id = ANY(?)', [runIds]))
+  return deletedRows
 }
 
 function hasAccountAuditData(database: DatabaseSync, input: DeletedAccountRecordCleanupTarget): boolean {
@@ -912,6 +1212,99 @@ function deleteAccountScopeStatsRows(
   }
 }
 
+async function cleanupDeletedAccountFinalStatsAsync(client: DatabaseClient, input: DeletedAccountRecordCleanupTarget): Promise<void> {
+  await client.transaction(async (tx) => {
+    await deletePostgresAccountScopeStatsRows(tx, input, input.authorizationIds ?? [], input.teamScopeIds ?? [])
+    await deletePostgresAccountUsageCleanupDeductions(tx, input)
+  })
+}
+
+async function deletePostgresAccountScopeStatsRows(
+  client: DatabaseClient,
+  input: DeletedAccountRecordCleanupTarget,
+  authorizationIds: string[] = [],
+  teamScopeIds: string[] = []
+): Promise<void> {
+  const accountIds = deletedAccountCleanupAccountIds(input)
+  const normalizedAuthorizationIds = uniqueNonEmpty(authorizationIds)
+  const normalizedTeamScopeIds = uniqueNonEmpty(teamScopeIds)
+  for (const tableName of accountScopeStatsTables) {
+    if (accountIds.length > 0) {
+      await client.execute(`DELETE FROM juhe_stats.${tableName} WHERE scope_type IN ('account', 'caller_account') AND scope_id = ANY(?)`, [accountIds])
+      for (const accountId of accountIds) {
+        await client.execute(`DELETE FROM juhe_stats.${tableName} WHERE scope_type = 'account_authorization_team' AND scope_id LIKE ? ESCAPE '\\'`, [`${escapeLikePrefix(accountId)}:%`])
+      }
+    }
+    for (const chunk of chunkValues(normalizedAuthorizationIds, 900)) {
+      await client.execute(`DELETE FROM juhe_stats.${tableName} WHERE scope_type = 'account_authorization' AND scope_id = ANY(?)`, [chunk])
+    }
+    for (const chunk of chunkValues(normalizedTeamScopeIds, 900)) {
+      await client.execute(`DELETE FROM juhe_stats.${tableName} WHERE scope_type = 'account_authorization_team' AND scope_id = ANY(?)`, [chunk])
+    }
+  }
+  if (accountIds.length > 0) {
+    await client.execute("DELETE FROM juhe_stats.stats_job_state WHERE scope_type IN ('account', 'caller_account') AND scope_id = ANY(?)", [accountIds])
+    for (const accountId of accountIds) {
+      await client.execute("DELETE FROM juhe_stats.stats_job_state WHERE scope_type = 'account_authorization_team' AND scope_id LIKE ? ESCAPE '\\'", [`${escapeLikePrefix(accountId)}:%`])
+    }
+    await client.execute('DELETE FROM juhe_stats.account_quality_scores WHERE account_id = ANY(?)', [accountIds])
+    await client.execute('DELETE FROM juhe_stats.account_quality_dirty_accounts WHERE account_id = ANY(?)', [accountIds])
+    await client.execute('DELETE FROM juhe_stats.account_quality_minute_stats WHERE account_id = ANY(?)', [accountIds])
+    await client.execute('DELETE FROM juhe_stats.account_usage_snapshots WHERE account_id = ANY(?)', [accountIds])
+    await deletePostgresAccountAuthorizationReportRows(client, accountIds)
+  }
+  for (const chunk of chunkValues(normalizedAuthorizationIds, 900)) {
+    await client.execute("DELETE FROM juhe_stats.stats_job_state WHERE scope_type = 'account_authorization' AND scope_id = ANY(?)", [chunk])
+  }
+  for (const chunk of chunkValues(normalizedTeamScopeIds, 900)) {
+    await client.execute("DELETE FROM juhe_stats.stats_job_state WHERE scope_type = 'account_authorization_team' AND scope_id = ANY(?)", [chunk])
+  }
+}
+
+async function hasPostgresDeletedAccountStatsRows(client: DatabaseClient, input: DeletedAccountRecordCleanupTarget): Promise<boolean> {
+  const accountIds = deletedAccountCleanupAccountIds(input)
+  const authorizationIds = uniqueNonEmpty(input.authorizationIds ?? [])
+  const teamScopeIds = uniqueNonEmpty(input.teamScopeIds ?? [])
+  for (const tableName of accountScopeStatsTables) {
+    if (accountIds.length > 0 && await postgresRowsExist(client, `
+      SELECT 1
+      FROM juhe_stats.${tableName}
+      WHERE scope_type IN ('account', 'caller_account')
+        AND scope_id = ANY(?)
+      LIMIT 1
+    `, [accountIds])) {
+      return true
+    }
+    if (authorizationIds.length > 0 && await postgresRowsExist(client, `
+      SELECT 1
+      FROM juhe_stats.${tableName}
+      WHERE scope_type = 'account_authorization'
+        AND scope_id = ANY(?)
+      LIMIT 1
+    `, [authorizationIds])) {
+      return true
+    }
+    if (teamScopeIds.length > 0 && await postgresRowsExist(client, `
+      SELECT 1
+      FROM juhe_stats.${tableName}
+      WHERE scope_type = 'account_authorization_team'
+        AND scope_id = ANY(?)
+      LIMIT 1
+    `, [teamScopeIds])) {
+      return true
+    }
+  }
+  if (accountIds.length > 0 && await postgresRowsExist(client, `
+    SELECT 1
+    FROM juhe_stats.usage_record_cleanup_deductions
+    WHERE account_id = ANY(?)
+    LIMIT 1
+  `, [accountIds])) {
+    return true
+  }
+  return false
+}
+
 function hasDeletedAccountStatsRows(database: DatabaseSync, input: DeletedAccountRecordCleanupTarget): boolean {
   const accountIds = deletedAccountCleanupAccountIds(input)
   for (const accountId of accountIds) {
@@ -993,11 +1386,29 @@ function deleteAccountAuthorizationReportRows(database: DatabaseSync, accountId:
   }
 }
 
+async function deletePostgresAccountAuthorizationReportRows(client: DatabaseClient, accountIds: string[]): Promise<void> {
+  const reportTables = [
+    'authorization_team_usage_summary_daily',
+    'authorization_team_usage_range_windows',
+    'authorization_user_usage_summary_daily',
+    'authorization_user_usage_range_windows'
+  ] as const
+  for (const tableName of reportTables) {
+    await client.execute(`DELETE FROM juhe_stats.${tableName} WHERE resource_filter_type = 'account' AND resource_filter_id = ANY(?)`, [accountIds])
+  }
+}
+
 function deleteAccountUsageCleanupDeductions(database: DatabaseSync, input: DeletedAccountRecordCleanupTarget): void {
   for (const accountId of deletedAccountCleanupAccountIds(input)) {
     database.prepare('DELETE FROM usage_record_cleanup_deductions WHERE account_id = ?')
       .run(accountId)
   }
+}
+
+async function deletePostgresAccountUsageCleanupDeductions(client: DatabaseClient, input: DeletedAccountRecordCleanupTarget): Promise<void> {
+  const accountIds = deletedAccountCleanupAccountIds(input)
+  if (!accountIds.length) return
+  await client.execute('DELETE FROM juhe_stats.usage_record_cleanup_deductions WHERE account_id = ANY(?)', [accountIds])
 }
 
 function refreshDeletedAccountDerivedWindowsIfNeeded(input: DeletedAccountRecordCleanupTarget, shouldRefresh: boolean): string | undefined {
@@ -1032,12 +1443,23 @@ async function cleanupAuditPayloadBlobsBestEffortAsync(limit: number): Promise<v
   }
 }
 
+async function postgresRowsExist(client: DatabaseClient, sql: string, params: unknown[]): Promise<boolean> {
+  const rows = await client.query<{ found?: number }>(sql, params)
+  return rows.length > 0
+}
+
+function assertSqliteAccountRecordCleanup(operation: string): void {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    throw new Error(`高性能模式禁止调用 SQLite AI 账户记录清理入口：${operation}`)
+  }
+}
+
 function changed(result: { changes?: number | bigint }): number {
   return Number(result.changes ?? 0)
 }
 
-function uniqueNonEmpty(values: string[]): string[] {
-  return [...new Set(values.map((value) => value.trim()).filter(Boolean))]
+function uniqueNonEmpty(values: Array<string | null | undefined>): string[] {
+  return [...new Set(values.map((value) => value?.trim()).filter((value): value is string => Boolean(value)))]
 }
 
 function parseStringArrayJson(value: unknown): string[] {

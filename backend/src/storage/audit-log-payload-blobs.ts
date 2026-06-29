@@ -6,9 +6,11 @@ import type { DatabaseSync } from 'node:sqlite'
 import { promisify } from 'node:util'
 import { createGunzip, gzip, gzipSync } from 'node:zlib'
 
-import { backendRoot } from '../config/runtime.js'
+import { backendRoot, runtimeConfig } from '../config/runtime.js'
 import { getDatasetDatabase, newId } from './database.js'
 import type { DatabaseClient } from './database-client.js'
+import { createPostgresDatabaseClient } from './database-client.js'
+import { getPostgresPool } from './postgres-client.js'
 import { optionalString } from './value-utils.js'
 
 export type StoredAuditPayloadCompression = 'none' | 'gzip'
@@ -271,6 +273,7 @@ export function prepareAuditPayloadBlobStatements(database: DatabaseSync): Audit
 }
 
 export function cleanupUnreferencedAuditPayloadBlobs(limit = 1000): number {
+  assertSqliteAuditPayloadBlobCleanup('cleanupUnreferencedAuditPayloadBlobs')
   const database = getDatasetDatabase()
   const rows = listUnreferencedAuditPayloadBlobRows(database, limit)
   if (rows.length === 0) return 0
@@ -285,6 +288,9 @@ export function cleanupUnreferencedAuditPayloadBlobs(limit = 1000): number {
 }
 
 export async function cleanupUnreferencedAuditPayloadBlobsAsync(limit = 1000): Promise<number> {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    return cleanupUnreferencedAuditPayloadBlobsPostgresAsync(limit)
+  }
   const database = getDatasetDatabase()
   const rows = listUnreferencedAuditPayloadBlobRows(database, limit)
   if (rows.length === 0) return 0
@@ -297,6 +303,9 @@ export async function cleanupUnreferencedAuditPayloadBlobsAsync(limit = 1000): P
 }
 
 export async function cleanupAuditPayloadBlobsBeforeAsync(cutoffCreatedAt: string, limit = 1000): Promise<AuditPayloadBlobCleanupResult> {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    return cleanupAuditPayloadBlobsBeforePostgresAsync(cutoffCreatedAt, limit)
+  }
   const database = getDatasetDatabase()
   const rows = listAuditPayloadBlobRowsBefore(database, cutoffCreatedAt, limit)
   if (rows.length === 0) {
@@ -356,6 +365,36 @@ export async function readAuditPayloadBlobWindow(
     nextOffset: truncated ? nextOffset : undefined,
     truncated,
     storageStatus: 'available'
+  }
+}
+
+async function cleanupUnreferencedAuditPayloadBlobsPostgresAsync(limit = 1000): Promise<number> {
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const rows = await listUnreferencedAuditPayloadBlobRowsAsync(client, limit)
+  if (rows.length === 0) return 0
+
+  const ids = rows.map((row) => String(row.id)).filter(Boolean)
+  await deleteBlobFilesAsync(rows.map((row) => optionalString(row.storage_key)))
+  const result = await client.execute('DELETE FROM juhe_dataset.audit_payload_blobs WHERE id = ANY(?)', [ids])
+  return Number(result.changes ?? 0)
+}
+
+async function cleanupAuditPayloadBlobsBeforePostgresAsync(cutoffCreatedAt: string, limit = 1000): Promise<AuditPayloadBlobCleanupResult> {
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const rows = await listAuditPayloadBlobRowsBeforeAsync(client, cutoffCreatedAt, limit)
+  if (rows.length === 0) {
+    return {
+      deletedRows: 0,
+      deletedFiles: 0
+    }
+  }
+
+  const ids = rows.map((row) => String(row.id)).filter(Boolean)
+  const deletedFiles = await deleteBlobFilesAsync(rows.map((row) => optionalString(row.storage_key)))
+  const result = await client.execute('DELETE FROM juhe_dataset.audit_payload_blobs WHERE id = ANY(?)', [ids])
+  return {
+    deletedRows: Number(result.changes ?? 0),
+    deletedFiles
   }
 }
 
@@ -593,6 +632,20 @@ function listUnreferencedAuditPayloadBlobRows(database: DatabaseSync, limit: num
     .all(Math.max(1, Math.trunc(limit))) as AuditPayloadBlobRow[]
 }
 
+async function listUnreferencedAuditPayloadBlobRowsAsync(client: DatabaseClient, limit: number): Promise<AuditPayloadBlobRow[]> {
+  return client.query<AuditPayloadBlobRow>(`
+    SELECT b.id, b.storage_key
+    FROM juhe_dataset.audit_payload_blobs b
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM juhe_dataset.audit_payload_refs r
+      WHERE r.headers_blob_id = b.id OR r.body_blob_id = b.id
+    )
+    ORDER BY b.created_at ASC, b.id ASC
+    LIMIT ?
+  `, [Math.max(1, Math.trunc(limit))])
+}
+
 function listAuditPayloadBlobRowsBefore(database: DatabaseSync, cutoffCreatedAt: string, limit: number): AuditPayloadBlobRow[] {
   return database
     .prepare(`
@@ -603,6 +656,16 @@ function listAuditPayloadBlobRowsBefore(database: DatabaseSync, cutoffCreatedAt:
       LIMIT ?
     `)
     .all(cutoffCreatedAt, Math.max(1, Math.trunc(limit))) as AuditPayloadBlobRow[]
+}
+
+async function listAuditPayloadBlobRowsBeforeAsync(client: DatabaseClient, cutoffCreatedAt: string, limit: number): Promise<AuditPayloadBlobRow[]> {
+  return client.query<AuditPayloadBlobRow>(`
+    SELECT id, storage_key
+    FROM juhe_dataset.audit_payload_blobs
+    WHERE created_at < ?
+    ORDER BY created_at ASC, id ASC
+    LIMIT ?
+  `, [cutoffCreatedAt, Math.max(1, Math.trunc(limit))])
 }
 
 function deleteBlobFile(storageKey: string | undefined): void {
@@ -634,6 +697,12 @@ async function deleteBlobFileAsync(storageKey: string | undefined): Promise<numb
     return 1
   } catch {
     return 0
+  }
+}
+
+function assertSqliteAuditPayloadBlobCleanup(operation: string): void {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    throw new Error(`高性能模式禁止调用 SQLite 审计 payload 清理入口：${operation}`)
   }
 }
 

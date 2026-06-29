@@ -44,6 +44,7 @@
 
 - 架构文档：[整体架构设计](../architecture/架构总览.md)
 - 功能设计：[PostgreSQL 与 Redis 高性能模式设计](../functions/PostgreSQL与Redis高性能模式设计.md)
+- 存储适配：[存储适配接口设计](../functions/存储适配接口设计.md)
 - 现有存储说明：[SQLite 存储说明](../functions/SQLite存储说明.md)
 - 写队列治理：[SQLite 单写者写队列治理设计](../functions/SQLite单写者写队列治理设计.md)
 - 数据集分片：[数据集库分片写入设计](../functions/数据集库分片写入设计.md)

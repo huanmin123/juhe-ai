@@ -1,6 +1,10 @@
 import type { DatabaseSync } from 'node:sqlite'
 
+import { runtimeConfig } from '../config/runtime.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getStatsDatabase, nowIso, rollbackDatabaseTransaction } from './database.js'
+import type { DatabaseClient } from './database-client.js'
+import { createPostgresDatabaseClient } from './database-client.js'
+import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 
 export const GROUP_ACCOUNT_STATS_DIRTY_ALL = '__all__'
@@ -123,6 +127,260 @@ export async function refreshDirtyGroupAccountStatsCacheWithWriter(
   refreshGroupAccountStatsCache(rows.map((row) => row.groupId))
   await writer.deleteRows(rows)
   return rows.length
+}
+
+export async function refreshDirtyGroupAccountStatsCacheAsync(limit = 1000): Promise<number> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return refreshDirtyGroupAccountStatsCache(limit)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const normalizedLimit = Math.max(1, Math.min(groupAccountStatsFullRefreshBatchLimit, Math.trunc(limit)))
+  const allDirtyRows = await loadAllGroupAccountStatsDirtyRowsAsync(client)
+  if (allDirtyRows.length > 0) {
+    return await refreshAllDirtyGroupAccountStatsCacheBatchAsync(client, allDirtyRows[0], normalizedLimit)
+  }
+
+  const rows = await loadGroupAccountStatsDirtyRowsAsync(client, normalizedLimit)
+  if (!rows.length) {
+    const hasStats = await client.one<{ exists?: number }>(`
+      SELECT 1 AS "exists"
+      FROM ${groupAccountStatsCacheTable(client, 'juhe_stats', 'group_account_stats')}
+      LIMIT 1
+    `)
+    if (!hasStats) {
+      await markAllGroupAccountStatsDirtyAsync('initial_cache_build')
+      const initialAllDirtyRows = await loadAllGroupAccountStatsDirtyRowsAsync(client)
+      return initialAllDirtyRows[0]
+        ? await refreshAllDirtyGroupAccountStatsCacheBatchAsync(client, initialAllDirtyRows[0], normalizedLimit)
+        : 0
+    }
+    return 0
+  }
+
+  await refreshGroupAccountStatsCacheAsync(rows.map((row) => row.groupId), client)
+  await deleteGroupAccountStatsDirtyRowsAsync(rows, client)
+  return rows.length
+}
+
+async function refreshAllDirtyGroupAccountStatsCacheBatchAsync(
+  client: DatabaseClient,
+  dirtyRow: GroupAccountStatsDirtyRow,
+  limit: number
+): Promise<number> {
+  const cursorGroupId = groupAccountStatsAllCursor(dirtyRow.reason)
+  const groups = await loadGroupAccountStatsGroupsPageAsync(client, cursorGroupId, limit)
+  if (groups.length === 0) {
+    await deleteGroupAccountStatsDirtyRowsAsync([dirtyRow], client)
+    return 1
+  }
+  await refreshGroupAccountStatsCacheAsync(groups.map((group) => group.id), client)
+  if (groups.length < limit) {
+    await deleteGroupAccountStatsDirtyRowsAsync([dirtyRow], client)
+    return 1
+  }
+  await updateGroupAccountStatsAllCursorAsync(groups[groups.length - 1].id, client)
+  return 1
+}
+
+export async function markAllGroupAccountStatsDirtyAsync(reason = 'write', client?: DatabaseClient): Promise<void> {
+  const databaseClient = client ?? createPostgresDatabaseClient(await getPostgresPool())
+  const updatedAt = nowIso()
+  await databaseClient.execute(`
+    INSERT INTO ${groupAccountStatsCacheTable(databaseClient, 'juhe_business', 'group_account_stats_dirty')} (group_id, reason, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(group_id) DO UPDATE SET
+      reason = excluded.reason,
+      updated_at = excluded.updated_at
+  `, [GROUP_ACCOUNT_STATS_DIRTY_ALL, reason, updatedAt])
+}
+
+async function loadAllGroupAccountStatsDirtyRowsAsync(client: DatabaseClient): Promise<GroupAccountStatsDirtyRow[]> {
+  const row = await client.one<{ group_id: string; reason: string | null; updated_at: string }>(`
+    SELECT group_id, reason, updated_at
+    FROM ${groupAccountStatsCacheTable(client, 'juhe_business', 'group_account_stats_dirty')}
+    WHERE group_id = ?
+    LIMIT 1
+  `, [GROUP_ACCOUNT_STATS_DIRTY_ALL])
+  return row ? [mapGroupAccountStatsDirtyRow(row)] : []
+}
+
+async function loadGroupAccountStatsDirtyRowsAsync(
+  client: DatabaseClient,
+  limit: number
+): Promise<GroupAccountStatsDirtyRow[]> {
+  const normalizedLimit = Math.max(1, Math.trunc(limit))
+  const rows = await client.query<{ group_id: string; reason: string | null; updated_at: string }>(`
+    SELECT group_id, reason, updated_at
+    FROM ${groupAccountStatsCacheTable(client, 'juhe_business', 'group_account_stats_dirty')}
+    WHERE group_id <> ?
+    ORDER BY updated_at ASC, group_id ASC
+    LIMIT ?
+  `, [GROUP_ACCOUNT_STATS_DIRTY_ALL, normalizedLimit])
+  return rows
+    .map((row) => mapGroupAccountStatsDirtyRow(row))
+    .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt) || left.groupId.localeCompare(right.groupId))
+    .slice(0, normalizedLimit)
+}
+
+export async function deleteGroupAccountStatsDirtyRowsAsync(
+  rows: GroupAccountStatsDirtyRow[],
+  client?: DatabaseClient
+): Promise<void> {
+  const databaseClient = client ?? createPostgresDatabaseClient(await getPostgresPool())
+  for (const row of rows) {
+    await databaseClient.execute(`
+      DELETE FROM ${groupAccountStatsCacheTable(databaseClient, 'juhe_business', 'group_account_stats_dirty')}
+      WHERE group_id = ?
+        AND updated_at = ?
+    `, [row.groupId, row.updatedAt])
+  }
+}
+
+export async function updateGroupAccountStatsAllCursorAsync(
+  cursorGroupId: string,
+  client?: DatabaseClient
+): Promise<void> {
+  const databaseClient = client ?? createPostgresDatabaseClient(await getPostgresPool())
+  await databaseClient.execute(`
+    UPDATE ${groupAccountStatsCacheTable(databaseClient, 'juhe_business', 'group_account_stats_dirty')}
+    SET reason = ?,
+        updated_at = ?
+    WHERE group_id = ?
+  `, [`${GROUP_ACCOUNT_STATS_DIRTY_ALL_CURSOR_PREFIX}${cursorGroupId}`, nowIso(), GROUP_ACCOUNT_STATS_DIRTY_ALL])
+}
+
+async function loadGroupAccountStatsGroupsPageAsync(
+  client: DatabaseClient,
+  cursorGroupId: string | undefined,
+  limit: number
+): Promise<Array<{ id: string; system_account_id: string }>> {
+  const cursorClause = cursorGroupId ? 'WHERE id > ?' : ''
+  const params = cursorGroupId ? [cursorGroupId, Math.max(1, Math.trunc(limit))] : [Math.max(1, Math.trunc(limit))]
+  return await client.query<{ id: string; system_account_id: string }>(`
+    SELECT id, system_account_id
+    FROM ${groupAccountStatsCacheTable(client, 'juhe_business', 'groups')}
+    ${cursorClause}
+    ORDER BY id ASC
+    LIMIT ?
+  `, params)
+}
+
+async function refreshGroupAccountStatsCacheAsync(groupIds: Array<string | null | undefined>, client?: DatabaseClient): Promise<void> {
+  const databaseClient = client ?? createPostgresDatabaseClient(await getPostgresPool())
+  const targetGroupIds = uniqueGroupAccountStatsIds(groupIds)
+  if (!targetGroupIds.length) return
+  const updatedAt = nowIso()
+  for (const chunk of chunkValues(targetGroupIds, 500)) {
+    const placeholders = sqlPlaceholders(chunk.length)
+    const rows = await clientGroupAccountStatsRows(databaseClient, placeholders, chunk, updatedAt)
+    await databaseClient.execute(`
+      DELETE FROM ${groupAccountStatsCacheTable(databaseClient, 'juhe_stats', 'group_account_stats')}
+      WHERE group_id IN (${placeholders})
+    `, chunk)
+    for (const row of rows) {
+      await databaseClient.execute(`
+        INSERT INTO ${groupAccountStatsCacheTable(databaseClient, 'juhe_stats', 'group_account_stats')} (
+          system_account_id, group_id, total, available, active, disabled, error,
+          rate_limited, current_concurrency, concurrency_limit, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+      `, [
+        row.system_account_id,
+        row.group_id,
+        Number(row.total ?? 0),
+        Number(row.available ?? 0),
+        Number(row.active ?? 0),
+        Number(row.disabled ?? 0),
+        Number(row.error ?? 0),
+        Number(row.rate_limited ?? 0),
+        Number(row.concurrency_limit ?? 0),
+        updatedAt
+      ])
+    }
+  }
+}
+
+async function clientGroupAccountStatsRows(
+  client: DatabaseClient,
+  placeholders: string,
+  groupIds: string[],
+  updatedAt: string
+): Promise<Array<{
+  group_id: string
+  system_account_id: string
+  total: number
+  available: number
+  active: number
+  disabled: number
+  error: number
+  rate_limited: number
+  concurrency_limit: number
+}>> {
+  return await client.query<{
+    group_id: string
+    system_account_id: string
+    total: number
+    available: number
+    active: number
+    disabled: number
+    error: number
+    rate_limited: number
+    concurrency_limit: number
+  }>(`
+    SELECT
+      groups.id AS group_id,
+      groups.system_account_id,
+      COALESCE(COUNT(accounts.id) FILTER (WHERE ${groupAccountStatsAuthorizedPredicate(updatedAt)}), 0) AS total,
+      COALESCE(COUNT(accounts.id) FILTER (WHERE ${groupAccountStatsAuthorizedPredicate(updatedAt)} AND accounts.status = 'active' AND accounts.schedulable = 1 AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?)), 0) AS available,
+      COALESCE(COUNT(accounts.id) FILTER (WHERE ${groupAccountStatsAuthorizedPredicate(updatedAt)} AND accounts.status = 'active'), 0) AS active,
+      COALESCE(COUNT(accounts.id) FILTER (WHERE ${groupAccountStatsAuthorizedPredicate(updatedAt)} AND accounts.status = 'disabled'), 0) AS disabled,
+      COALESCE(COUNT(accounts.id) FILTER (WHERE ${groupAccountStatsAuthorizedPredicate(updatedAt)} AND accounts.status <> 'active' AND accounts.status <> 'disabled'), 0) AS error,
+      COALESCE(COUNT(accounts.id) FILTER (WHERE ${groupAccountStatsAuthorizedPredicate(updatedAt)} AND accounts.status = 'rate_limited'), 0) AS rate_limited,
+      COALESCE(SUM(accounts.concurrency_limit) FILTER (WHERE ${groupAccountStatsAuthorizedPredicate(updatedAt)}), 0) AS concurrency_limit
+    FROM ${groupAccountStatsCacheTable(client, 'juhe_business', 'groups')} groups
+    LEFT JOIN ${groupAccountStatsCacheTable(client, 'juhe_business', 'group_accounts')} group_accounts
+      ON group_accounts.group_id = groups.id
+      AND group_accounts.enabled = 1
+    LEFT JOIN ${groupAccountStatsCacheTable(client, 'juhe_business', 'accounts')} accounts
+      ON accounts.id = group_accounts.account_id
+      AND accounts.deleted_at IS NULL
+    LEFT JOIN ${groupAccountStatsCacheTable(client, 'juhe_business', 'resource_authorizations')} resource_authorization_rows
+      ON resource_authorization_rows.id = group_accounts.account_authorization_id
+    WHERE groups.id IN (${placeholders})
+    GROUP BY groups.id, groups.system_account_id
+  `, [
+    updatedAt,
+    ...groupAccountStatsAuthorizedPredicateParams(updatedAt),
+    ...groupAccountStatsAuthorizedPredicateParams(updatedAt),
+    ...groupAccountStatsAuthorizedPredicateParams(updatedAt),
+    ...groupAccountStatsAuthorizedPredicateParams(updatedAt),
+    ...groupAccountStatsAuthorizedPredicateParams(updatedAt),
+    ...groupAccountStatsAuthorizedPredicateParams(updatedAt),
+    ...groupAccountStatsAuthorizedPredicateParams(updatedAt),
+    ...groupIds
+  ])
+}
+
+function groupAccountStatsAuthorizedPredicate(_updatedAt: string): string {
+  return `accounts.id IS NOT NULL
+    AND (
+      (
+        group_accounts.account_authorization_id IS NOT NULL
+        AND resource_authorization_rows.status = 'active'
+        AND (resource_authorization_rows.expires_at IS NULL OR resource_authorization_rows.expires_at > ?)
+      )
+      OR (
+        group_accounts.account_authorization_id IS NULL
+        AND accounts.system_account_id = groups.system_account_id
+      )
+    )`
+}
+
+function groupAccountStatsAuthorizedPredicateParams(updatedAt: string): string[] {
+  return [updatedAt]
+}
+
+function groupAccountStatsCacheTable(client: DatabaseClient, schema: 'juhe_business' | 'juhe_stats', tableName: string): string {
+  return client.dialect.qualifyTable(schema, tableName)
 }
 
 export function refreshGroupAccountStatsCache(groupIds?: Array<string | null | undefined>): void {

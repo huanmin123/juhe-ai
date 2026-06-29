@@ -12,27 +12,16 @@ export function submitApiKeyRelatedCleanup(target: DeletedApiKeyRecordCleanupTar
     systemAccountId: target.systemAccountId
   }
 
-  if (runtimeConfig.databaseDriver === 'postgres') {
-    logger.warn({
-      event: 'api_key_related_cleanup_postgres_deferred',
-      apiKeyId: target.apiKeyId,
-      systemAccountId: target.systemAccountId
-    }, 'PostgreSQL 模式暂不投递本地 dataset API Key 关联数据清理任务')
-    return {
-      job,
-      queued: false,
-      droppedReason: 'postgres_record_cleanup_not_supported'
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    try {
+      registerDeletedApiKeyRecordCleanupTarget(target)
+    } catch (error) {
+      logger.error(errorLogFields(error, {
+        event: 'api_key_related_cleanup_target_register_failed',
+        apiKeyId: target.apiKeyId,
+        systemAccountId: target.systemAccountId
+      }), 'API Key 删除后的关联数据清理目标登记失败，将继续尝试投递 worker')
     }
-  }
-
-  try {
-    registerDeletedApiKeyRecordCleanupTarget(target)
-  } catch (error) {
-    logger.error(errorLogFields(error, {
-      event: 'api_key_related_cleanup_target_register_failed',
-      apiKeyId: target.apiKeyId,
-      systemAccountId: target.systemAccountId
-    }), 'API Key 删除后的关联数据清理目标登记失败，将继续尝试投递 worker')
   }
 
   const enqueueResult = enqueueRecordMaintenanceJobWithResult(job)

@@ -153,6 +153,100 @@ export function findOpenAIAccountForGroup(
   })
 }
 
+export async function findOpenAIAccountForGroupAsync(
+  groupId: string,
+  accountId: string,
+  systemAccountId: string,
+  options: { includeUnavailable?: boolean; ignoreAvailability?: boolean } = {}
+): Promise<OpenAIAccountSecret | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return findOpenAIAccountForGroup(groupId, accountId, systemAccountId, options)
+  }
+  const now = nowIso()
+  const client = await getOpenAIAccountSelectorDatabaseClient()
+  const groupAccess = await resolveGroupUsageAccessMetadataAsync(groupId, systemAccountId)
+  if (!groupAccess) {
+    return undefined
+  }
+  const forceAvailability = options.ignoreAvailability === true
+  const groupAccount = await client.one<GroupAccountRow>(`
+    SELECT group_accounts.account_id, group_accounts.system_account_id AS binding_system_account_id, group_accounts.group_id, group_accounts.account_authorization_id,
+      group_accounts.local_priority, group_accounts.local_super_priority_enabled, group_accounts.local_fallback_enabled
+    FROM ${selectorTable(client, 'group_accounts')} group_accounts
+    WHERE group_accounts.group_id = ?
+      AND group_accounts.system_account_id = ?
+      AND group_accounts.account_id = ?
+      AND group_accounts.enabled = 1
+    LIMIT 1
+  `, [groupId, groupAccess.groupOwnerSystemAccountId, accountId])
+  if (!groupAccount) {
+    return undefined
+  }
+
+  const row = await client.one<OpenAIAccountRow>(`
+    SELECT accounts.id, accounts.system_account_id, accounts.provider_code, accounts.provider_protocol_profile_id, accounts.protocol_code, accounts.protocol_version, accounts.name, accounts.type, accounts.status, accounts.schedulable, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled, accounts.client_compatibility,
+      accounts.credentials_encrypted, accounts.proxy_profile_id, accounts.cooldown_until, accounts.last_error_message, accounts.stream_failure_count, accounts.stream_failure_window_started_at,
+      accounts.availability_schedule_active, accounts.account_expires_at, accounts.last_successful_test_model, accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id, accounts.authorization_instance_owner_system_account_id,
+      source_accounts.id AS resource_account_id,
+      source_accounts.provider_code AS resource_provider_code,
+      source_accounts.provider_protocol_profile_id AS resource_provider_protocol_profile_id,
+      source_accounts.protocol_code AS resource_protocol_code,
+      source_accounts.protocol_version AS resource_protocol_version,
+      source_accounts.type AS resource_type,
+      source_accounts.status AS resource_status,
+      source_accounts.schedulable AS resource_schedulable,
+      source_accounts.availability_schedule_active AS resource_availability_schedule_active,
+      source_accounts.account_expires_at AS resource_account_expires_at,
+      source_accounts.cooldown_until AS resource_cooldown_until,
+      source_accounts.last_error_code AS resource_last_error_code,
+      source_accounts.credentials_encrypted AS resource_credentials_encrypted,
+      source_accounts.proxy_profile_id AS resource_proxy_profile_id,
+      source_accounts.concurrency_limit AS resource_concurrency_limit,
+      source_accounts.client_compatibility AS resource_client_compatibility,
+      NULL AS quality_score,
+      NULL AS quality_state,
+      NULL AS quality_ewma_first_token_ms
+    FROM ${selectorTable(client, 'accounts')} accounts
+    LEFT JOIN ${selectorTable(client, 'accounts')} source_accounts ON source_accounts.id = accounts.authorization_instance_source_account_id
+    WHERE accounts.id = ?
+      AND accounts.provider_code = ?
+      AND accounts.deleted_at IS NULL
+      AND (
+        (accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth'))
+        OR (
+          accounts.authorization_instance_authorization_id IS NOT NULL
+          AND source_accounts.deleted_at IS NULL
+          AND source_accounts.provider_code = ?
+          AND source_accounts.type IN ('api_key', 'oauth')
+        )
+      )
+      AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ?)
+    LIMIT 1
+  `, [accountId, groupAccess.providerCode, groupAccess.providerCode, now])
+  if (!row) {
+    return undefined
+  }
+
+  const selectionRow = { ...row, ...groupAccount } as OpenAIGroupAccountSelectionRow
+  const accountAuthorizationsByIdOrResourceId = await loadAccountAuthorizationsForSelectionAsync(client, [selectionRow], groupAccess, systemAccountId)
+  const accountAccess = resolveSchedulableOpenAIAccountAccess(row, groupAccess, systemAccountId, groupAccount, { accountAuthorizationsByIdOrResourceId })
+  if (!accountAccess) {
+    return undefined
+  }
+  if (!forceAvailability && !isOpenAIAccountAvailableForSelection(row, groupAccount, accountAccess, now, options.includeUnavailable === true)) {
+    return undefined
+  }
+  const resourceAccountId = openAIAccountResourceAccountId(row)
+  return openAIAccountSecretFromRow(row, groupAccess, systemAccountId, groupAccount, {
+    accountAuthorizationsByIdOrResourceId,
+    proxyProfilesById: await loadProxyProfilesForSelectionAsync([selectionRow]),
+    supportedModelsByAccountId: await loadSupportedModelsByAccountIdsAsync([resourceAccountId]),
+    modelMappingsByAccountId: await loadModelMappingsByAccountIdsAsync([resourceAccountId]),
+    apiKeyRuntimeStatesByAccountId: await loadAccountApiKeyRuntimeStatesByAccountIdsAsync([resourceAccountId]),
+    accountAccess
+  })
+}
+
 export function resolveGroupUsageAccessMetadata(groupId: string, systemAccountId: string): GroupUsageAccessMetadata | undefined {
   const groupRow = getBusinessDatabase()
     .prepare('SELECT system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, enabled, group_type, scheduling_policy_json FROM groups WHERE id = ?')

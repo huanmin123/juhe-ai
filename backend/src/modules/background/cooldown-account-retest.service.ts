@@ -82,6 +82,7 @@ async function runCooldownAccountRetestQueueItem(
     trafficSource: 'cooldown_retest',
     disableAccountStateMutation: true,
     findAccountForTest: loadAccountForTestViaDbService,
+    findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService,
     gatewaySettingsOverride: {
       temporaryUnschedulableRetryAttempts: 0,
       temporaryUnschedulableRetryIntervalSeconds: 0
@@ -180,6 +181,22 @@ async function loadAccountForTestViaDbService(accountId: string, access?: Access
     type: 'find_account_for_test',
     accountId,
     access
+  }, 10_000)
+}
+
+async function loadOpenAIAccountForGroupViaDbService(
+  groupId: string,
+  accountId: string,
+  systemAccountId: string,
+  options: { includeUnavailable?: boolean; ignoreAvailability?: boolean } = { ignoreAvailability: true }
+) {
+  return await requestBackgroundWorkerDbService({
+    type: 'find_openai_account_for_group',
+    groupId,
+    accountId,
+    systemAccountId,
+    includeUnavailable: options.includeUnavailable,
+    ignoreAvailability: options.ignoreAvailability
   }, 10_000)
 }
 

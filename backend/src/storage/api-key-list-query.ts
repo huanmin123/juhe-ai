@@ -33,7 +33,7 @@ export function buildApiKeyFilters(scope: { clause: string; params: string[] }, 
   const clauses: string[] = []
   const params: ApiKeyFilterValue[] = []
   if (scope.clause) {
-    clauses.push(scope.clause.replace(/^ WHERE /, ''))
+    clauses.push(scope.clause.replace(/^\s*WHERE\s+/i, ''))
     params.push(...scope.params)
   }
   if (options.keyword) {

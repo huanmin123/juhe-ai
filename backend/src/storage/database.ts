@@ -1,6 +1,7 @@
 import { mkdirSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { dirname, normalize, resolve } from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
+import type { DatabaseSync } from 'node:sqlite'
 
 import { defaultDatasetDatabasePath, defaultUsageCatalogDatabasePath, isProductionRuntime, runtimeConfig } from '../config/runtime.js'
 import { errorLogFields, logger } from '../shared/logger.js'
@@ -15,6 +16,8 @@ let statsDatabase: DatabaseSync | undefined
 const codexContextStateShardDatabases = new Map<number, DatabaseSync>()
 type AfterCommitEffect = () => void
 const afterCommitEffectsByDatabase = new WeakMap<DatabaseSync, AfterCommitEffect[]>()
+const require = createRequire(import.meta.url)
+let DatabaseSyncConstructor: typeof import('node:sqlite').DatabaseSync | undefined
 
 export type SqliteMainDatabaseKind = 'business' | 'dataset' | 'usage-catalog' | 'stats' | 'codex-context-state'
 export type SqliteWriterOwner = 'db-service' | 'ingest-worker' | 'stats-writer' | 'usage-shard-writer'
@@ -37,7 +40,7 @@ export function getBusinessDatabase(): DatabaseSync {
   const databasePath = runtimeConfig.databasePath
   mkdirSync(dirname(databasePath), { recursive: true })
 
-  businessDatabase = new DatabaseSync(databasePath)
+  businessDatabase = createSqliteDatabase(databasePath)
   configureDatabase(businessDatabase, 'business')
   if (shouldApplyMainDatabaseSchema('business')) {
     applyBusinessSchema(businessDatabase)
@@ -155,7 +158,7 @@ export function codexContextStateShardPath(shardIndex: number): string {
 
 function openDatasetDatabase(databasePath: string): DatabaseSync {
   mkdirSync(dirname(databasePath), { recursive: true })
-  const database = new DatabaseSync(databasePath)
+  const database = createSqliteDatabase(databasePath)
   configureDatabase(database, 'dataset')
   if (shouldApplyMainDatabaseSchema('dataset')) {
     applyDatasetSchema(database)
@@ -165,7 +168,7 @@ function openDatasetDatabase(databasePath: string): DatabaseSync {
 
 function openUsageCatalogDatabase(databasePath: string): DatabaseSync {
   mkdirSync(dirname(databasePath), { recursive: true })
-  const database = new DatabaseSync(databasePath)
+  const database = createSqliteDatabase(databasePath)
   configureDatabase(database, 'usage-catalog')
   if (shouldApplyMainDatabaseSchema('usage-catalog')) {
     applyUsageCatalogSchema(database)
@@ -175,7 +178,7 @@ function openUsageCatalogDatabase(databasePath: string): DatabaseSync {
 
 function openStatsDatabase(databasePath: string): DatabaseSync {
   mkdirSync(dirname(databasePath), { recursive: true })
-  const database = new DatabaseSync(databasePath)
+  const database = createSqliteDatabase(databasePath)
   configureDatabase(database, 'stats')
   if (shouldApplyMainDatabaseSchema('stats')) {
     applyStatsSchema(database)
@@ -185,12 +188,24 @@ function openStatsDatabase(databasePath: string): DatabaseSync {
 
 function openCodexContextStateDatabase(databasePath: string): DatabaseSync {
   mkdirSync(dirname(databasePath), { recursive: true })
-  const database = new DatabaseSync(databasePath)
+  const database = createSqliteDatabase(databasePath)
   configureDatabase(database, 'codex-context-state')
   if (shouldApplyMainDatabaseSchema('codex-context-state')) {
     applyCodexContextStateSchema(database)
   }
   return database
+}
+
+function createSqliteDatabase(databasePath: string): DatabaseSync {
+  const Constructor = getDatabaseSyncConstructor()
+  return new Constructor(databasePath)
+}
+
+function getDatabaseSyncConstructor(): typeof import('node:sqlite').DatabaseSync {
+  if (!DatabaseSyncConstructor) {
+    DatabaseSyncConstructor = require('node:sqlite').DatabaseSync as typeof import('node:sqlite').DatabaseSync
+  }
+  return DatabaseSyncConstructor
 }
 
 export function beginDatabaseTransaction(target = getBusinessDatabase()): boolean {

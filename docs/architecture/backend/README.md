@@ -19,6 +19,8 @@
   - [../../functions/DeepSeek账号接入.md](../../functions/DeepSeek账号接入.md)
   - [../../functions/Gemini账号接入.md](../../functions/Gemini账号接入.md)
   - [../../functions/SQLite存储说明.md](../../functions/SQLite存储说明.md)
+  - [../../functions/PostgreSQL与Redis高性能模式设计.md](../../functions/PostgreSQL与Redis高性能模式设计.md)
+  - [../../functions/存储适配接口设计.md](../../functions/存储适配接口设计.md)
   - [../../functions/SQLite单写者写队列治理设计.md](../../functions/SQLite单写者写队列治理设计.md)
   - [后台任务使用说明](后台任务使用说明.md)
   - [后台 Worker 多角色拆分设计](后台Worker多角色拆分设计.md)
@@ -34,11 +36,11 @@
 
 ## 3. 技术边界
 
-- 运行时：官方 Node.js LTS，当前支持 `22.x >= 22.13.0` 或 `24.x >= 24.11.0`，且内置 `node:sqlite` 必须可用。
+- 运行时：官方 Node.js LTS，当前支持 `22.x >= 22.13.0` 或 `24.x >= 24.11.0`；standalone 模式需要内置 `node:sqlite` 可用，performance 模式不应在运行路径加载 SQLite。
 - 语言：`TypeScript`，ESM 模块。
 - Web 框架：`Express`。
-- 存储：Node 内置 `node:sqlite`，默认按业务库 `backend/data/juhe-ai.sqlite3`、数据集目录库 `backend/data/juhe-ai-dataset.sqlite3`、使用记录目录库 `backend/data/juhe-ai-usage-catalog.sqlite3`、统计结果库 `backend/data/juhe-ai-stats.sqlite3` 和 usage shard 文件运行。新写入的 `usage_records` 已通过 `JUHE_AI_USAGE_SHARD_ROOT` / `JUHE_AI_USAGE_SHARD_COUNT` 拆到多个本地 SQLite shard 文件；数据集目录库保存审计、操作日志、运行日志索引、模型检测和清理目标，使用记录目录库保存 usage shard 注册表、列表筛选目录和账号 / API Key scope catalog。
-- 写入边界：同一个 SQLite 文件必须只有一个运行时写 owner；业务库写入归 DB service，数据集目录库写入归 ingest / log writer，统计结果库写入归 stats writer，usage shard 按 shard 文件串行写。具体规则见 [SQLite 单写者写队列治理设计](../../functions/SQLite单写者写队列治理设计.md)。
+- 存储：默认 standalone 模式使用 Node 内置 `node:sqlite`，按业务库 `backend/data/juhe-ai.sqlite3`、数据集目录库 `backend/data/juhe-ai-dataset.sqlite3`、使用记录目录库 `backend/data/juhe-ai-usage-catalog.sqlite3`、统计结果库 `backend/data/juhe-ai-stats.sqlite3` 和 usage shard 文件运行；显式 performance 模式使用 PostgreSQL 保存事实域和统计域，使用 Redis 保存可丢弃缓存、短 TTL 运行态和 Redis Streams 队列。业务层必须通过 Store Port 访问存储，不能直接感知 SQLite / PostgreSQL / Redis。
+- 写入边界：standalone 模式下同一个 SQLite 文件必须只有一个运行时写 owner；业务库写入归 DB service，数据集目录库写入归 ingest / log writer，统计结果库写入归 stats writer，usage shard 按 shard 文件串行写。performance 模式下不受 SQLite 文件级写锁限制，但仍必须受 PostgreSQL 连接池、事务范围、热点 key 顺序和 Redis Stream 背压约束。具体规则见 [SQLite 单写者写队列治理设计](../../functions/SQLite单写者写队列治理设计.md)、[PostgreSQL 与 Redis 高性能模式设计](../../functions/PostgreSQL与Redis高性能模式设计.md) 和 [存储适配接口设计](../../functions/存储适配接口设计.md)。
 - 配置：后端进程环境变量优先，`backend/.env` 兜底；相对路径按 `backend/` 目录解析。
 - 网关协议：对外兼容 OpenAI 根路径和 `/v1/*` 入口；`openai` 既可以是 `protocol_code`，也可以是通用 `provider_code`，必须通过字段层级区分。当前供应商协议档案不要在本文硬编码，新增或调整时同步 [核心功能设计](../../functions/核心功能设计.md) 和对应供应商接入文档。
 - 校验：写接口和关键业务入口必须在后端做参数校验；前端表单校验只改善体验。
@@ -53,12 +55,12 @@
 | `backend/src/modules/` | 按业务模块组织 routes 和 service | routes 负责 HTTP 边界，service 负责业务副作用和外部请求 |
 | `backend/src/modules/gateway/` | OpenAI 兼容中转、请求侧入口保护、账号选择、上游请求准备、账户错误处理策略、SSE 透传和用量解析 | 请求进入上游前的新增处理先按 [请求处理分层设计](../../functions/请求处理分层设计.md) 判断落点；不把网关细节泄漏成前端多套复杂选项 |
 | `backend/src/modules/background/` | worker 多角色调度、系统采样、append-only 写入、增量统计、重窗口快照、外部探测、维护清理和 IPC 队列隔离 | 任务注册和执行只允许在对应 worker 进程内发生，不引入重型分布式队列；新增或调整任务先看 [后台任务使用说明](后台任务使用说明.md) |
-| `backend/src/modules/db-service/` | DB service 进程、内部系统 API app、HTTP 代理、IPC 操作和 supervisor | 系统管理 API 与高频 SQLite 读写只在 DB service 或 worker 内执行，主 Web 进程不能回退同步访问 SQLite |
-| `backend/src/storage/` | SQLite 连接、当前 schema、seed、repository、加解密 | 所有数据库读写从这里收口，避免 routes 直接写 SQL |
+| `backend/src/modules/db-service/` | DB service 进程、内部系统 API app、HTTP 代理、IPC 操作和 supervisor | 系统管理 API 与网关关键存储操作通过 Store Port 执行；主 Web 进程不能回退同步访问 SQLite，也不能绕过 performance adapter 直接访问 PostgreSQL |
+| `backend/src/storage/` | Store Port、SQLite / PostgreSQL adapter、memory / Redis cache、schema、seed、repository helper 和加解密 | 所有数据库、缓存、运行态和队列访问从这里收口；routes 和 service 不能直接写 SQL、拼 Redis key 或打开底层连接 |
 | `backend/src/shared/` | 通用响应、跨模块小工具 | 只放稳定复用能力，不堆业务逻辑 |
 | `backend/src/scripts/maintenance/` | 生产或上线可用维护脚本；Mockdata 统一承接可复用本地造数能力 | 发布包统一调用 `backend/dist/scripts/maintenance/*.js`，脚本必须说明会改哪些数据；本地演示、联调、烟测 fallback 和压测夹具等可复用造数都收口到 `mockdata.ts` 入口和 `mockdata/` 业务目录 |
 | `backend/src/scripts/regression/` | 本地回归脚本 | 只通过 `pnpm test:*` 调用，不作为生产运维入口 |
-| `backend/src/scripts/smoke/` | 真实链路烟测脚本 | 用于发布前验证，不承担迁移或维护职责 |
+| `backend/src/scripts/smoke/` | 真实链路烟测脚本 | 用于发布前验证，不承担 schema 迁移或历史结构维护职责 |
 | `backend/src/types/` | 第三方或运行时类型补充 | 只补缺失类型，不放业务模型 |
 
 ### 4.1 模块目录约定
@@ -66,10 +68,18 @@
 - 新模块默认放在 `backend/src/modules/<module-name>/`。
 - 管理 API 路由命名为 `<module-name>.routes.ts`。
 - 有外部请求、调度、副作用或复杂规则时拆出 `<module-name>.service.ts`。
-- 同一业务对象的数据库访问优先复用 `backend/src/storage/repositories.ts`；当文件继续膨胀到难以维护时，再按“大文件重构指南”拆分 repository，不提前拆出多套并行访问层。
+- 同一业务对象的存储访问优先定义业务语义 Store Port，再由 SQLite + memory adapter 和 PostgreSQL + Redis adapter 实现；repository helper 只能作为 adapter 内部实现细节，不再作为新业务的长期边界。
 - 模块不要绕过 `auth.middleware.ts` 和 `request-context.ts` 自行信任前端传入的系统账户归属。
 
-### 4.2 当前模块落点
+### 4.2 存储适配边界
+
+- 后端存储长期边界是 Store Port / Adapter，而不是 routes、service 或 DB service handler 内散落数据库 driver 分支。
+- routes 和 service 只能调用业务语义接口，例如系统账户、AI 账户、API Key、网关运行态、使用记录、审计日志、统计窗口、维护清理、共享缓存、运行态状态和队列 Port。
+- SQLite、PostgreSQL、Redis、Redis Streams、SQL 方言、连接池、事务对象、Redis key 和 Stream consumer group 只允许出现在 adapter 或基础设施层。
+- 新增 DB / cache / queue 能力时，先更新 [存储适配接口设计](../../functions/存储适配接口设计.md)，再实现 standalone adapter 和 performance adapter；不能只补一个 `if postgres` 分支。
+- adapter 内部可以复用已有 repository helper，但不允许新业务绕过 Port 直接新增底层 repository 调用。
+
+### 4.3 当前模块落点
 
 | 模块 | 后端落点 | 说明 |
 | --- | --- | --- |
@@ -118,7 +128,8 @@ flowchart LR
 flowchart LR
   Client["OpenAI 兼容客户端"] --> Gateway["/* / /v1/*"]
   Gateway --> Key["校验本地 API Key"]
-  Key --> Group["按优先级选择绑定分组"]
+  Key --> Strategy["读取 API Key 绑定的路由策略"]
+  Strategy --> Group["按策略路由选择候选分组"]
   Group --> Account["选择可调度账号"]
   Account --> Upstream["OpenAI 上游"]
   Upstream --> Usage["写入使用记录"]
@@ -163,8 +174,7 @@ flowchart LR
 - 新字段必须明确默认值、可空性、展示边界、数据清洗策略和是否需要索引。
 - 当前项目以最新完整模型为准，本地 SQLite 可以备份后直接清洗或重建；源码只保留当前完整 schema、repository 和 API 逻辑。
 - 禁止在后端启动、repository、routes 或前端页面里挂载一次性数据处理、临时同步修复、临时表改名或迁移标记代码。
-- 需要处理当前 schema 之外的本地数据时，使用直接 SQL 或临时离线脚本完成；脚本不得接入正常请求路径或启动路径，完成后不作为长期源码保留。
-- 确需处理用户既有数据时，优先生成一次性离线修复方案，处理完即丢弃，不写进主代码。
+- 需要处理当前 schema 之外的本地数据时，只能在代码库外按当前 schema 离线重建或一次性整理；相关逻辑不得接入正常请求路径或启动路径，也不作为长期源码保留。
 
 ### 6.2 表分区
 
@@ -238,10 +248,9 @@ erDiagram
 
 - 预上线阶段的 `backend/src/storage/schema.ts` 作为 schema 入口，`backend/src/storage/schema/` 下的拆分文件只描述当前完整结构：表、索引、默认约束和外键。
 - 新表和索引可以使用 `CREATE ... IF NOT EXISTS` 保持重复启动安全；schema 文件只描述当前完整结构，启动路径不做字段探测、列补丁或结构升级模拟。
-- 不把升级标记、临时表改名、一次性业务数据同步或长期数据分支写入运行时代码；需要清洗既有数据时，使用直接 SQL、临时离线脚本或重建库处理。
-- 本地库结构变化时，先备份业务库 `backend/data/juhe-ai.sqlite3` 和 `backend/.env`，再按当前 schema 通过直接 SQL、临时离线脚本或重建库处理数据；数据集目录库、使用记录目录库、usage shard 和统计结果库默认不纳入业务备份，真实灾备快照才需要停机一并备份。
+- 不把升级标记、临时表改名、一次性业务数据同步或长期数据分支写入运行时代码；需要处理既有数据时，在代码库外离线重建为当前 schema。
+- 本地库结构变化时，先备份业务库 `backend/data/juhe-ai.sqlite3` 和 `backend/.env`，再按当前 schema 初始化或离线重建；数据集目录库、使用记录目录库、usage shard 和统计结果库默认不纳入业务备份，真实灾备快照才需要停机一并备份。
 - 需要保留少量本地数据时，按当前模型导出、清洗、导入，不在源码里模拟多个数据版本。
-- 确需处理用户既有数据时，优先生成一次性离线修复方案，处理完即丢弃，不写进主代码。
 
 ## 7. 配置设计
 

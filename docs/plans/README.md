@@ -137,6 +137,7 @@ docs/plans/
 
 | 编号 | 标题 | 状态 | 创建时间 | 关联模块 | 文档 |
 | --- | --- | --- | --- | --- | --- |
+| PLAN-0071 | 存储适配接口收敛 | 进行中 | 2026-06-29 | 后端 / 存储 / DB service / 网关 / 缓存 / Redis / PostgreSQL / SQLite / 队列 / 文档 / 验证 | `docs/plans/计划-0071-存储适配接口收敛.md` |
 | PLAN-0070 | Responses 目标映射收敛 | 已完成 | 2026-06-26 | 后端 / 前端 / 网关 / 模型映射 / 协议桥接 / Mock AI / 文档 / 验证 | `docs/plans/计划-0070-Responses目标映射收敛.md` |
 | PLAN-0069 | 协议桥接框架与 Gemini Native 目标桥接 | 已完成 | 2026-06-26 | 后端 / 前端 / 网关 / 供应商驱动 / 模型映射 / 协议桥接框架 / Gemini native / Mock 回归 / 文档 / 验证 | `docs/plans/计划-0069-协议桥接框架与GeminiNative目标桥接.md` |
 | PLAN-0068 | Gemini Native 转 Anthropic Messages 桥接 | 已完成 | 2026-06-26 | 后端 / 前端 / 网关 / 供应商驱动 / 模型映射 / Gemini native / Anthropic Messages / Mock 回归 / 文档 / 验证 | `docs/plans/计划-0068-GeminiNative转AnthropicMessages桥接.md` |

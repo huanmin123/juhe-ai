@@ -51,11 +51,12 @@ docker compose --env-file .env.performance -f compose.performance.yml up -d --bu
 中间件启动后，在项目根目录执行：
 
 ```bash
-pnpm --filter juhe-ai-backend postgres:init-schema-only
 pnpm --filter juhe-ai-backend postgres:init-schema
 ```
 
-如果命令在 Docker 宿主机执行，需要把 `JUHE_AI_POSTGRES_URL`、`JUHE_AI_REDIS_CACHE_URL`、`JUHE_AI_REDIS_STATE_URL` 和显式配置时的 `JUHE_AI_REDIS_QUEUE_URL` 临时改为宿主机发布端口；详细命令见 `docs/deploy/高性能模式部署指南.md`。应用容器内使用 `pgbouncer:5432`、`redis-cache:6379`、`redis-state:6379`，宿主机验证默认使用 PgBouncer `6432`、redis-cache `6379`、redis-state `6380`，不要把 redis-state 的容器内 `6379` 误当宿主机端口。
+空库或可重建测试库只执行 `postgres:init-schema`；`postgres:init-schema-only` 只用于当前版本 DDL 复查，不作为常规初始化或旧库补结构步骤。
+
+如果命令在 Docker 宿主机执行，需要把 `JUHE_AI_POSTGRES_URL`、`JUHE_AI_REDIS_CACHE_URL`、`JUHE_AI_REDIS_STATE_URL` 和必填的 `JUHE_AI_REDIS_QUEUE_URL` 临时改为宿主机发布端口；详细命令见 `docs/deploy/高性能模式部署指南.md`。应用容器内使用 `pgbouncer:5432`、`redis-cache:6379`、`redis-state:6379`，宿主机验证默认使用 PgBouncer `6432`、redis-cache `6379`、redis-state `6380`，不要把 redis-state 的容器内 `6379` 误当宿主机端口。
 
 ## 按需配置
 

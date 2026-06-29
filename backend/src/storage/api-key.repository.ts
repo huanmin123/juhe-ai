@@ -159,7 +159,7 @@ async function queryApiKeysAsync(access?: AccessScope, options?: ApiKeyListOptio
   const filters = buildApiKeyFiltersForClient(client, scope, filterOptions)
   const filterClauses: string[] = []
   if (filters.clause) {
-    filterClauses.push(filters.clause.replace(/^WHERE\s+/i, ''))
+    filterClauses.push(filters.clause.replace(/^\s*WHERE\s+/i, ''))
   }
   if (keywordCte) {
     filterClauses.push('api_keys.id IN (SELECT id FROM matched_api_key_ids)')
@@ -196,7 +196,7 @@ function buildPostgresApiKeyKeywordCte(
   const clauses: string[] = []
   const params: string[] = []
   if (scope.clause) {
-    clauses.push(scope.clause.replace(/^WHERE\s+/i, ''))
+    clauses.push(scope.clause.replace(/^\s*WHERE\s+/i, ''))
     params.push(...scope.params)
   }
   const lowerKeyword = keyword.toLowerCase()
@@ -1036,7 +1036,7 @@ function buildApiKeyFiltersForClient(
   const clauses: string[] = []
   const params: Array<string | number> = []
   if (scope.clause) {
-    clauses.push(scope.clause.replace(/^ WHERE /, ''))
+    clauses.push(scope.clause.replace(/^\s*WHERE\s+/i, ''))
     params.push(...scope.params)
   }
   if (options.keyword) {

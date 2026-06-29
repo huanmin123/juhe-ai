@@ -8,7 +8,7 @@ import { createTraceId, withRequestContext, type RequestContext } from '../../sh
 import {
   findProviderDefaultTestModel,
   findAccountForTest,
-  findOpenAIAccountForGroup,
+  findOpenAIAccountForGroupAsync,
   type RecentOpenAIRequestShape,
   type OpenAIAccountSecret
 } from '../../storage/repositories.js'
@@ -65,6 +65,7 @@ type AccountTestInput = {
   candidateAccount?: OpenAIAccountSecret
   onDiagnosticAttemptProgress?: AccountDiagnosticAttemptProgressHandler
   findAccountForTest?: (accountId: string, access?: AccessScope) => AccountSummary | undefined | Promise<AccountSummary | undefined>
+  findOpenAIAccountForGroup?: (groupId: string, accountId: string, systemAccountId: string, options?: { includeUnavailable?: boolean; ignoreAvailability?: boolean }) => OpenAIAccountSecret | undefined | Promise<OpenAIAccountSecret | undefined>
 }
 
 export async function testOpenAIAccountWithDiagnosticRetries(
@@ -153,11 +154,12 @@ export async function testOpenAIAccount(
   const traceId = createTraceId()
 
   try {
-    const resolved = resolveAccountTestCandidate(account, {
+    const resolved = await resolveAccountTestCandidate(account, {
       groupId: stringValue(input.groupId),
       systemAccountId: stringValue(input.systemAccountId),
       clientCompatibility,
-      candidateAccount: input.candidateAccount
+      candidateAccount: input.candidateAccount,
+      findOpenAIAccountForGroup: input.findOpenAIAccountForGroup
     })
     const model = explicitModel || defaultAccountTestModel(account, input.systemAccountId)
     // Anthropic 账户直接规范化 Anthropic 端点模式；OpenAI 账户规范化 OpenAI 端点模式
@@ -234,7 +236,7 @@ export async function testOpenAIAccount(
 
     const finalAccount = input.candidateAccount
       ? resolved.account
-      : findOpenAIAccountForGroup(resolved.groupId, account.id, resolved.systemAccountId, { ignoreAvailability: true }) ?? resolved.account
+      : await loadOpenAIAccountForGroup(input, resolved.groupId, account.id, resolved.systemAccountId, { ignoreAvailability: true }) ?? resolved.account
     const finalSummary = input.candidateAccount
       ? account
       : await loadAccountForTest(input, account.id, { systemAccountId: resolved.systemAccountId, role: 'user' })
@@ -440,11 +442,11 @@ function accountTestProxyMarker(account: AccountSummary, resolved: OpenAIAccount
   return account.proxyProfileId || resolved.proxyUrl || resolved.proxyProfileUnavailable ? '[configured]' : undefined
 }
 
-function resolveAccountTestCandidate(account: AccountSummary, input: { groupId?: string; systemAccountId?: string; clientCompatibility?: AccountClientCompatibility; candidateAccount?: OpenAIAccountSecret } = {}): {
+async function resolveAccountTestCandidate(account: AccountSummary, input: { groupId?: string; systemAccountId?: string; clientCompatibility?: AccountClientCompatibility; candidateAccount?: OpenAIAccountSecret; findOpenAIAccountForGroup?: AccountTestInput['findOpenAIAccountForGroup'] } = {}): Promise<{
   systemAccountId: string
   groupId: string
   account: OpenAIAccountSecret
-} {
+}> {
   const draftCandidate = input.candidateAccount
   if (draftCandidate) {
     const systemAccountId = input.systemAccountId || draftCandidate.systemAccountId
@@ -474,7 +476,7 @@ function resolveAccountTestCandidate(account: AccountSummary, input: { groupId?:
   if (!groupId) {
     throw new AccountTestConfigurationError('账户未绑定可用分组，无法按客户真实链路测试')
   }
-  const resolvedCandidate = findOpenAIAccountForGroup(groupId, account.id, systemAccountId, { ignoreAvailability: true })
+  const resolvedCandidate = await loadOpenAIAccountForGroup(input, groupId, account.id, systemAccountId, { ignoreAvailability: true })
   if (!resolvedCandidate) {
     throw new AccountTestConfigurationError('账户不在当前分组或凭据不可用，无法执行网关测试')
   }
@@ -492,6 +494,19 @@ function defaultAccountTestModel(account: AccountSummary, requestSystemAccountId
   return findProviderDefaultTestModel(account.providerCode, stringValue(requestSystemAccountId) || accountDefaultPreferenceSystemAccountId(account))
     || account.supportedModels?.map((model) => stringValue(model)).find(Boolean)
     || ''
+}
+
+async function loadOpenAIAccountForGroup(
+  input: Pick<AccountTestInput, 'findOpenAIAccountForGroup'>,
+  groupId: string,
+  accountId: string,
+  systemAccountId: string,
+  options: { includeUnavailable?: boolean; ignoreAvailability?: boolean }
+): Promise<OpenAIAccountSecret | undefined> {
+  const reader = input.findOpenAIAccountForGroup ?? (async (targetGroupId, targetAccountId, targetSystemAccountId, targetOptions) => {
+    return await findOpenAIAccountForGroupAsync(targetGroupId, targetAccountId, targetSystemAccountId, targetOptions)
+  })
+  return await reader(groupId, accountId, systemAccountId, options)
 }
 
 function accountDefaultPreferenceSystemAccountId(account: Pick<AccountSummary, 'systemAccountId' | 'ownerSystemAccountId' | 'bindingSystemAccountId'>): string | undefined {

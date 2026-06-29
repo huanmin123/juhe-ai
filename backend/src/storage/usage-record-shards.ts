@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync } from 'node:fs'
 import { unlink } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { dirname, isAbsolute, join, normalize, relative, resolve } from 'node:path'
-import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
+import type { DatabaseSync, SQLInputValue } from 'node:sqlite'
 
 import { defaultUsageShardRoot, runtimeConfig } from '../config/runtime.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getUsageCatalogDatabase, nowIso, rollbackDatabaseTransaction, sqliteWriterBoundaryStrictModeEnabled, usageCatalogDatabasePath } from './database.js'
@@ -85,6 +86,8 @@ const usageRecordShardSchemaVersion = 3
 const usageRecordShardWindowMaxDays = 31
 const shardDatabases = new Map<string, DatabaseSync>()
 const registeredUsageRecordShardKeys = new Set<string>()
+const require = createRequire(import.meta.url)
+let DatabaseSyncConstructor: typeof import('node:sqlite').DatabaseSync | undefined
 const usageRecordInsertSql = `
   INSERT INTO usage_records (
     id, system_account_id, trace_id, traffic_source, client_ip, api_key_id, group_id, account_id, endpoint, provider_code, provider_protocol_profile_id, usage_semantic, model, upstream_model, pricing_model, model_mapping_applied, model_mapping_source, stream,
@@ -138,7 +141,7 @@ export function getUsageRecordShardDatabase(location: UsageRecordShardLocation, 
     return cached
   }
   mkdirSync(dirname(location.filePath), { recursive: true })
-  const database = new DatabaseSync(location.filePath)
+  const database = createUsageRecordShardDatabase(location.filePath)
   configureUsageRecordShardDatabase(database)
   if (shouldApplyUsageRecordShardSchema()) {
     applyUsageRecordShardSchema(database)
@@ -148,6 +151,18 @@ export function getUsageRecordShardDatabase(location: UsageRecordShardLocation, 
     registerUsageRecordShardLocation(location)
   }
   return database
+}
+
+function createUsageRecordShardDatabase(filePath: string): DatabaseSync {
+  const Constructor = getUsageRecordShardDatabaseSyncConstructor()
+  return new Constructor(filePath)
+}
+
+function getUsageRecordShardDatabaseSyncConstructor(): typeof import('node:sqlite').DatabaseSync {
+  if (!DatabaseSyncConstructor) {
+    DatabaseSyncConstructor = require('node:sqlite').DatabaseSync as typeof import('node:sqlite').DatabaseSync
+  }
+  return DatabaseSyncConstructor
 }
 
 export function currentProcessOwnsUsageShardWriter(): boolean {

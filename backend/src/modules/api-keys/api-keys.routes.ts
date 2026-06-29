@@ -1,7 +1,6 @@
 import { Router } from 'express'
 import { z } from 'zod'
 
-import { runtimeConfig } from '../../config/runtime.js'
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText } from '../../shared/query-values.js'
 import {
@@ -260,7 +259,7 @@ apiKeysRouter.delete('/:id', async (req, res, next) => {
       return {
         result: true,
         afterCommit: () => {
-          if (deleteResult.cleanupTarget && runtimeConfig.databaseDriver !== 'postgres') {
+          if (deleteResult.cleanupTarget) {
             submitApiKeyRelatedCleanup(deleteResult.cleanupTarget)
           }
         },

@@ -10,7 +10,7 @@ import { RedisStreamQueue, type RedisStreamMessage } from '../../shared/redis-st
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import {
   cleanupNonBusinessDataBeforeWithResult,
-  cleanupProcessedUsageRecordsBeforeWithResult,
+  cleanupProcessedUsageRecordsBeforeWithResultAsync,
   type NonBusinessDataHardCleanupResult
 } from '../../storage/data-retention.repository.js'
 import { newId, nowIso, usageCatalogDatabasePath } from '../../storage/database.js'
@@ -538,7 +538,7 @@ export async function runRecordMaintenanceJobOnce(job: RecordMaintenanceJob): Pr
       return result as unknown as Record<string, unknown>
     }
     case 'usage_records_cleanup': {
-      const result = cleanupUsageRecordsBefore({
+      const result = await cleanupUsageRecordsBefore({
         cutoffAt: job.cutoffAt,
         batchSize: job.batchSize,
         maxBatches: job.maxBatches
@@ -661,7 +661,7 @@ async function processAccountUsageSnapshotUpsertJobs(jobs: AccountUsageSnapshotU
   }, '账号用量快照后台批量写入完成')
 }
 
-function cleanupUsageRecordsBefore(input: { cutoffAt: string; batchSize: number; maxBatches: number }): {
+async function cleanupUsageRecordsBefore(input: { cutoffAt: string; batchSize: number; maxBatches: number }): Promise<{
   cutoffAt: string
   deletedRows: number
   batches: number
@@ -669,7 +669,7 @@ function cleanupUsageRecordsBefore(input: { cutoffAt: string; batchSize: number;
   maxBatches: number
   hasMore: boolean
   blockedReason?: string
-} {
+}> {
   let deletedRows = 0
   let batches = 0
   let hasMore = false
@@ -699,7 +699,7 @@ function cleanupUsageRecordsBefore(input: { cutoffAt: string; batchSize: number;
   }
 
   for (let index = 0; index < input.maxBatches; index += 1) {
-    const batch = cleanupProcessedUsageRecordsBeforeWithResult(input.cutoffAt, input.batchSize)
+    const batch = await cleanupProcessedUsageRecordsBeforeWithResultAsync(input.cutoffAt, input.batchSize)
     deletedRows += batch.deletedRows
     hasMore = batch.hasMore
     blockedReason = batch.blockedReason ?? blockedReason

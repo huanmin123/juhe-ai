@@ -98,7 +98,8 @@ for (const token of [
   assert(targetSource.includes(token), `公开推送目标解析必须提供 async helper：${token}`)
 }
 
-assert(apiKeyCleanupSource.includes("runtimeConfig.databaseDriver === 'postgres'"), 'PG 模式 API Key 删除不能尝试登记本地 dataset 清理目标')
-assert(apiKeyCleanupSource.includes('postgres_record_cleanup_not_supported'), 'PG 模式 API Key 删除应返回固定清理跳过原因')
+assert(apiKeyCleanupSource.includes("runtimeConfig.databaseDriver !== 'postgres'"), '仅单机模式 API Key 删除才登记本地 dataset 清理目标')
+assert(!apiKeyCleanupSource.includes('postgres_record_cleanup_not_supported'), 'PG 模式 API Key 删除不能再返回固定清理跳过原因')
+assert(apiKeyCleanupSource.includes('enqueueRecordMaintenanceJobWithResult(job)'), 'PG 模式 API Key 删除仍必须投递记录维护清理任务')
 
 console.log('公开账号推送 async 边界回归通过：公开账号、分组、API Key 与操作日志均固定 async/PG 路径')

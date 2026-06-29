@@ -43,7 +43,8 @@ try {
 
   await runHttpSmoke()
 
-  if (process.env.JUHE_PERFORMANCE_SYSTEM_API_POSTGRES_URL) {
+  const postgresSmokeEnv = performanceSystemApiPostgresSmokeEnv()
+  if (postgresSmokeEnv) {
     const result = spawnSync(process.execPath, [
       '--import',
       'tsx',
@@ -58,10 +59,8 @@ try {
         JUHE_AI_DATABASE_DRIVER: 'postgres',
         JUHE_AI_CACHE_DRIVER: 'redis',
         JUHE_AI_RUNTIME_STATE_DRIVER: 'redis',
-        JUHE_AI_QUEUE_DRIVER: 'memory',
-        JUHE_AI_POSTGRES_URL: process.env.JUHE_PERFORMANCE_SYSTEM_API_POSTGRES_URL,
-        JUHE_AI_REDIS_CACHE_URL: process.env.JUHE_PERFORMANCE_SYSTEM_API_REDIS_CACHE_URL ?? 'redis://:unused@127.0.0.1:6379/0',
-        JUHE_AI_REDIS_STATE_URL: process.env.JUHE_PERFORMANCE_SYSTEM_API_REDIS_STATE_URL ?? 'redis://:unused@127.0.0.1:6380/0'
+        JUHE_AI_QUEUE_DRIVER: 'redis_stream',
+        ...postgresSmokeEnv
       }
     })
     if (result.status !== 0) {
@@ -75,6 +74,26 @@ try {
 } finally {
   await closeSqliteStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function performanceSystemApiPostgresSmokeEnv(): Record<string, string> | undefined {
+  const postgresUrl = process.env.JUHE_PERFORMANCE_SYSTEM_API_POSTGRES_URL?.trim()
+  if (!postgresUrl) {
+    return undefined
+  }
+  const required = {
+    JUHE_AI_POSTGRES_URL: postgresUrl,
+    JUHE_AI_REDIS_CACHE_URL: process.env.JUHE_PERFORMANCE_SYSTEM_API_REDIS_CACHE_URL?.trim(),
+    JUHE_AI_REDIS_STATE_URL: process.env.JUHE_PERFORMANCE_SYSTEM_API_REDIS_STATE_URL?.trim(),
+    JUHE_AI_REDIS_QUEUE_URL: process.env.JUHE_PERFORMANCE_SYSTEM_API_REDIS_QUEUE_URL?.trim()
+  }
+  const missing = Object.entries(required)
+    .filter(([, value]) => !value)
+    .map(([key]) => key)
+  if (missing.length > 0) {
+    throw new Error(`performance-system-api-smoke PostgreSQL 子进程缺少必要环境变量：${missing.join(', ')}`)
+  }
+  return required as Record<string, string>
 }
 
 async function runHttpSmoke(): Promise<void> {

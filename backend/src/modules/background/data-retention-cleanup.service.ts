@@ -7,7 +7,7 @@ import { cleanupOperationLogsBefore } from '../../storage/operation-logs.reposit
 import { cleanupPublicApiLogsBefore } from '../../storage/public-api-logs.repository.js'
 import {
   cleanupModelCheckRunsBefore,
-  cleanupProcessedUsageRecordsBeforeWithResult
+  cleanupProcessedUsageRecordsBeforeWithResultAsync
 } from '../../storage/data-retention.repository.js'
 import { getSettings } from '../../storage/settings.repository.js'
 import { cleanupRuntimeLogFileCursorsBefore, cleanupRuntimeLogIndex, runtimeLogIndexRetentionDays } from '../../storage/runtime-logs.repository.js'
@@ -126,6 +126,13 @@ export async function cleanupExpiredRetainedData(): Promise<DataRetentionCleanup
     return emptyCleanupResult()
   }
   if (cleanupRunning) {
+    return emptyCleanupResult()
+  }
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    logger.info({
+      event: 'data_retention_cleanup_skipped_postgres_mode',
+      workerRole: runtimeConfig.workerRole
+    }, '高性能模式不运行单机数据保留清理 worker；请使用 PG-aware 数据维护任务清理非业务数据')
     return emptyCleanupResult()
   }
 
@@ -296,7 +303,7 @@ async function cleanupProcessedUsageRecordsInBatches(cutoffCreatedAt: string, ba
   let batches = 0
   let blockedReason: string | undefined
   for (let index = 0; index < maxBatches; index += 1) {
-    const batch = cleanupProcessedUsageRecordsBeforeWithResult(cutoffCreatedAt, batchSize)
+    const batch = await cleanupProcessedUsageRecordsBeforeWithResultAsync(cutoffCreatedAt, batchSize)
     deletedRows += batch.deletedRows
     blockedReason = batch.blockedReason ?? blockedReason
     if (batch.deletedRows > 0) {
