@@ -1,5 +1,5 @@
 import { runtimeConfig } from '../../config/runtime.js'
-import type { AccountSummary, AccountTestResult } from '../../domain/types.js'
+import type { AccountSummary, AccountTestApiKeyPoolItemResult, AccountTestResult } from '../../domain/types.js'
 import { logger, errorLogFields } from '../../shared/logger.js'
 import { createRetryQueue } from '../../shared/retry-queue.js'
 import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
@@ -11,7 +11,7 @@ import {
   runtimeOpenAIAccountCredentials,
   type OpenAIAccountSecret
 } from '../../storage/repositories.js'
-import { accountApiKeyEntries, selectAccountRuntimeApiKey } from '../../storage/account-api-key-rotation.js'
+import { accountApiKeyEntries, selectAccountRuntimeApiKey, type AccountApiKeyEntry } from '../../storage/account-api-key-rotation.js'
 import { getSettings } from '../../storage/settings.repository.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import {
@@ -30,6 +30,11 @@ import {
   diagnosticAttemptSignal,
   isDiagnosticTimeoutSignal
 } from './account-diagnostic-retry-policy.js'
+import {
+  accountApiKeyPoolEntriesForCandidate,
+  fixedAccountApiKeyPoolCandidate,
+  isCandidateAccountApiKeyPoolTestable
+} from './account-api-key-pool-runtime.js'
 
 interface AccountTestQueueItem {
   taskId: string
@@ -51,6 +56,7 @@ const manualAccountTestRefillMinBatchSize = 100
 const manualAccountTestRefillMaxBatchSize = 1000
 const manualAccountTestQueuedMaxWaitMs = 10 * 60_000
 const manualAccountTestQueuedSweepBatchSize = 500
+const accountApiKeyPoolTestConcurrency = 5
 const manualAccountTestRetryPolicy = sequenceRetryPolicy('manual_account_test', [], 0)
 const manualAccountTestFailurePrecheckRetryPolicy = sequenceRetryPolicy('manual_account_test_failure_precheck', [], 0)
 const runningAccountTestControllers = new Map<string, AbortController>()
@@ -256,7 +262,10 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
           diagnostics: task.diagnostics,
           signal: controller.signal,
           draftAccount: draft,
-          onDiagnosticAttemptProgress
+          onDiagnosticAttemptProgress,
+          onStatusMessage: (message) => {
+            void updateAccountTestTaskMessageViaDbService(task.id, message)
+          }
         })
         if (controller.signal.aborted || await isAccountTestTaskCancelRequestedViaDbService(task.id)) {
           await markAccountTestTaskCanceledViaDbService(task.id, await accountTestTaskCancelMessageViaDbService(task.id))
@@ -266,12 +275,15 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
         return true
       }
 
-      const result = await runOpenAIDraftAccountTest(draftAccount, draft, {
+      const result = await runOpenAIDraftAccountTestWithApiKeyPool(draftAccount, access, draft, {
         model: task.model,
         clientCompatibility: task.clientCompatibility ?? draft.clientCompatibility,
         diagnostics: task.diagnostics,
         signal: controller.signal,
-        onDiagnosticAttemptProgress
+        onDiagnosticAttemptProgress,
+        onStatusMessage: (message) => {
+          void updateAccountTestTaskMessageViaDbService(task.id, message)
+        }
       })
       if (controller.signal.aborted || await isAccountTestTaskCancelRequestedViaDbService(task.id)) {
         await markAccountTestTaskCanceledViaDbService(task.id, await accountTestTaskCancelMessageViaDbService(task.id))
@@ -301,7 +313,10 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
       clientCompatibility: task.clientCompatibility,
       diagnostics: task.diagnostics,
       signal: controller.signal,
-      onDiagnosticAttemptProgress
+      onDiagnosticAttemptProgress,
+      onStatusMessage: (message) => {
+        void updateAccountTestTaskMessageViaDbService(task.id, message)
+      }
     })
 
     if (controller.signal.aborted || await isAccountTestTaskCancelRequestedViaDbService(task.id)) {
@@ -455,6 +470,25 @@ async function runOpenAIDraftAccountTest(
   return testOpenAIDraftAccountWithDiagnosticRetries(account, draft, input)
 }
 
+async function runOpenAIDraftAccountTestWithApiKeyPool(
+  account: AccountSummary,
+  access: AccessScope,
+  draft: AccountTestDraftSnapshot,
+  input: {
+    model?: string
+    clientCompatibility?: AccountSummary['clientCompatibility']
+    diagnostics: 'full' | 'limited'
+    signal: AbortSignal
+    onDiagnosticAttemptProgress?: (progress: AccountDiagnosticAttemptProgress) => void
+    onStatusMessage?: (message: string) => void
+  }
+): Promise<AccountTestResult> {
+  return await runAccountApiKeyPoolTestIfNeeded(account, access, {
+    ...input,
+    draftAccount: draft
+  }) ?? await runOpenAIDraftAccountTest(account, draft, input)
+}
+
 async function testOpenAIDraftAccountWithDiagnosticRetries(
   account: AccountSummary,
   draft: AccountTestDraftSnapshot,
@@ -527,27 +561,31 @@ async function runOpenAIAccountTestWithSideEffects(
     signal: AbortSignal
     draftAccount?: AccountTestDraftSnapshot
     onDiagnosticAttemptProgress?: (progress: AccountDiagnosticAttemptProgress) => void
+    onStatusMessage?: (message: string) => void
   }
 ): Promise<AccountTestResult> {
   let accountTestStatusChanges: ReturnType<typeof safeChange>[] | undefined
-  let result = input.draftAccount
-    ? await runOpenAIDraftAccountTest(account, input.draftAccount, {
-      model: input.model,
-      clientCompatibility: input.clientCompatibility ?? input.draftAccount.clientCompatibility,
-      diagnostics: input.diagnostics,
-      signal: input.signal,
-      onDiagnosticAttemptProgress: input.onDiagnosticAttemptProgress
-    })
-    : await testOpenAIAccountWithDiagnosticRetries(account, {
-      model: input.model,
-      clientCompatibility: input.clientCompatibility,
-      signal: input.signal,
-      diagnostics: input.diagnostics,
-      systemAccountId: access.systemAccountId,
-      requestShape: await findRecentOpenAIRequestShapeForAccountAsync(account.id, account.boundGroupId),
-      onDiagnosticAttemptProgress: input.onDiagnosticAttemptProgress,
-      findAccountForTest: loadAccountForTestViaDbService
-    })
+  let result = await runAccountApiKeyPoolTestIfNeeded(account, access, input)
+  if (!result) {
+    result = input.draftAccount
+      ? await runOpenAIDraftAccountTest(account, input.draftAccount, {
+        model: input.model,
+        clientCompatibility: input.clientCompatibility ?? input.draftAccount.clientCompatibility,
+        diagnostics: input.diagnostics,
+        signal: input.signal,
+        onDiagnosticAttemptProgress: input.onDiagnosticAttemptProgress
+      })
+      : await testOpenAIAccountWithDiagnosticRetries(account, {
+        model: input.model,
+        clientCompatibility: input.clientCompatibility,
+        signal: input.signal,
+        diagnostics: input.diagnostics,
+        systemAccountId: access.systemAccountId,
+        requestShape: await findRecentOpenAIRequestShapeForAccountAsync(account.id, account.boundGroupId),
+        onDiagnosticAttemptProgress: input.onDiagnosticAttemptProgress,
+        findAccountForTest: loadAccountForTestViaDbService
+      })
+  }
 
   if (input.signal.aborted) {
     return result
@@ -602,6 +640,309 @@ async function runOpenAIAccountTestWithSideEffects(
   }
 
   return result
+}
+
+interface AccountApiKeyPoolEntryTestResult extends AccountTestApiKeyPoolItemResult {
+  entry: AccountApiKeyEntry
+  result: AccountTestResult
+}
+
+async function runAccountApiKeyPoolTestIfNeeded(
+  account: AccountSummary,
+  access: AccessScope,
+  input: {
+    model?: string
+    clientCompatibility?: AccountSummary['clientCompatibility']
+    diagnostics: 'full' | 'limited'
+    signal: AbortSignal
+    draftAccount?: AccountTestDraftSnapshot
+    onStatusMessage?: (message: string) => void
+  }
+): Promise<AccountTestResult | undefined> {
+  if (account.type !== 'api_key') {
+    return undefined
+  }
+  const baseCandidate = input.draftAccount
+    ? await openAIDraftAccountSecret(input.draftAccount, input.signal)
+    : await loadSavedAccountApiKeyPoolCandidate(account, access)
+  if (!baseCandidate) {
+    return undefined
+  }
+  const entries = accountApiKeyPoolEntriesForCandidate(baseCandidate)
+  if (!isCandidateAccountApiKeyPoolTestable(baseCandidate, entries)) {
+    return undefined
+  }
+
+  const startedAt = Date.now()
+  const groupId = baseCandidate.boundGroupId ?? account.boundGroupId
+  const systemAccountId = baseCandidate.systemAccountId || accountTestPrecheckSystemAccountId(account) || access.systemAccountId
+  if (!groupId || !systemAccountId) {
+    return undefined
+  }
+
+  input.onStatusMessage?.(accountApiKeyPoolProgressMessage(0, entries.length, 0, 0))
+  const requestShape = input.draftAccount
+    ? undefined
+    : await findRecentOpenAIRequestShapeForAccountAsync(account.id, account.boundGroupId)
+  const itemResults = await runAccountApiKeyPoolEntryTests(account, baseCandidate, entries, {
+    model: input.model,
+    clientCompatibility: input.clientCompatibility,
+    diagnostics: input.diagnostics,
+    signal: input.signal,
+    groupId,
+    systemAccountId,
+    requestShape,
+    onProgress: input.onStatusMessage
+  })
+  let persistedRuntime = false
+  if (!input.draftAccount && !input.signal.aborted) {
+    try {
+      await persistSavedAccountApiKeyPoolRuntime(baseCandidate, itemResults)
+      persistedRuntime = true
+    } catch (error) {
+      logger.warn(errorLogFields(error, {
+        event: 'account_api_key_pool_test_runtime_persist_failed',
+        accountId: account.id,
+        accountName: account.name
+      }), 'API Key 池测试结果写入运行态失败，本次仅返回测试结论')
+    }
+  }
+  const result = accountApiKeyPoolSummaryResult(account, input.model, itemResults, {
+    total: entries.length,
+    persistedRuntime
+  })
+  return accountTestResultWithTotalDuration(result, startedAt)
+}
+
+async function loadSavedAccountApiKeyPoolCandidate(
+  account: AccountSummary,
+  access: AccessScope
+): Promise<OpenAIAccountSecret | undefined> {
+  if (!account.boundGroupId || account.accessType === 'authorized') {
+    return undefined
+  }
+  const systemAccountId = accountTestPrecheckSystemAccountId(account) ?? access.systemAccountId
+  if (!systemAccountId) {
+    return undefined
+  }
+  return await loadOpenAIAccountForGroupViaDbService(account.boundGroupId, account.id, systemAccountId, { ignoreAvailability: true })
+}
+
+async function runAccountApiKeyPoolEntryTests(
+  account: AccountSummary,
+  baseCandidate: OpenAIAccountSecret,
+  entries: AccountApiKeyEntry[],
+  input: {
+    model?: string
+    clientCompatibility?: AccountSummary['clientCompatibility']
+    diagnostics: 'full' | 'limited'
+    signal: AbortSignal
+    groupId: string
+    systemAccountId: string
+    requestShape?: Awaited<ReturnType<typeof findRecentOpenAIRequestShapeForAccountAsync>>
+    onProgress?: (message: string) => void
+  }
+): Promise<AccountApiKeyPoolEntryTestResult[]> {
+  const results: Array<AccountApiKeyPoolEntryTestResult | undefined> = new Array(entries.length)
+  let nextIndex = 0
+  let completed = 0
+  let successCount = 0
+  let failedCount = 0
+  const workerCount = Math.min(accountApiKeyPoolTestConcurrency, entries.length)
+
+  async function runWorker(): Promise<void> {
+    while (!input.signal.aborted && nextIndex < entries.length) {
+      const index = nextIndex
+      nextIndex += 1
+      const result = await runAccountApiKeyPoolEntryTest(account, baseCandidate, entries[index], input)
+      results[index] = result
+      completed += 1
+      if (result.success) {
+        successCount += 1
+      } else {
+        failedCount += 1
+      }
+      input.onProgress?.(accountApiKeyPoolProgressMessage(completed, entries.length, successCount, failedCount))
+    }
+  }
+
+  await Promise.all(Array.from({ length: workerCount }, runWorker))
+  return results.filter((result): result is AccountApiKeyPoolEntryTestResult => Boolean(result))
+}
+
+async function runAccountApiKeyPoolEntryTest(
+  account: AccountSummary,
+  baseCandidate: OpenAIAccountSecret,
+  entry: AccountApiKeyEntry,
+  input: {
+    model?: string
+    clientCompatibility?: AccountSummary['clientCompatibility']
+    diagnostics: 'full' | 'limited'
+    signal: AbortSignal
+    groupId: string
+    systemAccountId: string
+    requestShape?: Awaited<ReturnType<typeof findRecentOpenAIRequestShapeForAccountAsync>>
+  }
+): Promise<AccountApiKeyPoolEntryTestResult> {
+  const timeoutMs = accountDiagnosticRetryTimeoutMs[0] ?? 10_000
+  const attemptSignal = diagnosticAttemptSignal(input.signal, timeoutMs)
+  const startedAt = Date.now()
+  const fixedCandidate = fixedAccountApiKeyPoolCandidate(baseCandidate, entry, { apiKeyRuntimeStateDisabled: true })
+  try {
+    const result = await testOpenAIAccount(account, {
+      model: input.model,
+      groupId: input.groupId,
+      systemAccountId: input.systemAccountId,
+      clientCompatibility: input.clientCompatibility,
+      diagnostics: input.diagnostics,
+      signal: attemptSignal,
+      requestShape: input.requestShape,
+      candidateAccount: fixedCandidate,
+      disableAccountStateMutation: true,
+      findAccountForTest: loadAccountForTestViaDbService,
+      findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService,
+      gatewaySettingsOverride: diagnosticAccountTestGatewaySettingsOverride(undefined, timeoutMs)
+    })
+    return accountApiKeyPoolEntryTestResult(entry, result)
+  } catch (error) {
+    return {
+      entry,
+      result: failedAccountTestResult(account, error instanceof Error ? error.message : 'API Key 测试失败', input.model, {
+        accountFailureEligible: false,
+        durationMs: Date.now() - startedAt
+      }),
+      keyIndex: entry.index,
+      keySuffix: keySuffixForDisplay(entry.key),
+      success: false,
+      message: error instanceof Error ? error.message : 'API Key 测试失败',
+      durationMs: Date.now() - startedAt
+    }
+  }
+}
+
+function accountApiKeyPoolEntryTestResult(
+  entry: AccountApiKeyEntry,
+  result: AccountTestResult
+): AccountApiKeyPoolEntryTestResult {
+  return {
+    entry,
+    result,
+    keyIndex: entry.index,
+    keySuffix: keySuffixForDisplay(entry.key),
+    success: result.success,
+    statusCode: result.statusCode,
+    errorCode: result.errorCode,
+    message: result.message,
+    durationMs: result.durationMs
+  }
+}
+
+function accountApiKeyPoolSummaryResult(
+  account: AccountSummary,
+  model: string | undefined,
+  itemResults: AccountApiKeyPoolEntryTestResult[],
+  input: {
+    total: number
+    persistedRuntime: boolean
+  }
+): AccountTestResult {
+  const successCount = itemResults.filter((item) => item.success).length
+  const failedCount = itemResults.filter((item) => !item.success).length
+  const success = successCount >= 1
+  const representative = (success
+    ? itemResults.find((item) => item.success)?.result
+    : itemResults.find((item) => !item.success)?.result)
+    ?? failedAccountTestResult(account, 'API Key 池测试未完成', model, { accountFailureEligible: false })
+  const pool = {
+    total: input.total,
+    tested: itemResults.length,
+    successCount,
+    failedCount,
+    requiredSuccessCount: 1,
+    results: itemResults.map(({ entry: _entry, result: _result, ...item }) => item)
+  }
+  return {
+    ...representative,
+    success,
+    errorCode: success ? undefined : representative.errorCode,
+    message: accountApiKeyPoolTestMessage(pool, input.persistedRuntime),
+    accountFailureEligible: false,
+    apiKeyPool: pool
+  }
+}
+
+async function persistSavedAccountApiKeyPoolRuntime(
+  baseCandidate: OpenAIAccountSecret,
+  itemResults: AccountApiKeyPoolEntryTestResult[]
+): Promise<void> {
+  await Promise.all(itemResults.map(async (item) => {
+    const candidate = fixedAccountApiKeyPoolCandidate(baseCandidate, item.entry)
+    if (item.success) {
+      await requestBackgroundWorkerDbService({
+        type: 'record_account_api_key_success',
+        account: candidate
+      })
+      return
+    }
+    await requestBackgroundWorkerDbService({
+      type: 'record_account_api_key_failure',
+      account: candidate,
+      input: {
+        status: 'temporary_unavailable',
+        statusCode: item.statusCode,
+        errorCode: item.errorCode,
+        errorMessage: item.message
+      }
+    })
+  }))
+}
+
+async function loadOpenAIAccountForGroupViaDbService(
+  groupId: string,
+  accountId: string,
+  systemAccountId: string,
+  options: { includeUnavailable?: boolean; ignoreAvailability?: boolean } = { ignoreAvailability: true }
+): Promise<OpenAIAccountSecret | undefined> {
+  return await requestBackgroundWorkerDbService({
+    type: 'find_openai_account_for_group',
+    groupId,
+    accountId,
+    systemAccountId,
+    includeUnavailable: options.includeUnavailable,
+    ignoreAvailability: options.ignoreAvailability
+  }, 10_000)
+}
+
+function accountApiKeyPoolProgressMessage(completed: number, total: number, successCount: number, failedCount: number): string {
+  return `API Key 池测试中：已完成 ${completed}/${total}，可用 ${successCount}，不可用 ${failedCount}`
+}
+
+function accountApiKeyPoolTestMessage(
+  pool: {
+    total: number
+    tested: number
+    successCount: number
+    failedCount: number
+  },
+  persistedRuntime: boolean
+): string {
+  if (pool.successCount >= 1) {
+    if (pool.failedCount > 0) {
+      return persistedRuntime
+        ? `API Key 池测试通过：${pool.successCount}/${pool.total} 个 Key 可用，${pool.failedCount} 个 Key 已进入后台恢复`
+        : `API Key 池测试通过：${pool.successCount}/${pool.total} 个 Key 可用，${pool.failedCount} 个 Key 未通过`
+    }
+    return `API Key 池测试通过：${pool.successCount}/${pool.total} 个 Key 可用`
+  }
+  if (pool.tested < pool.total) {
+    return `API Key 池测试未完成：0/${pool.total} 个 Key 可用`
+  }
+  return `API Key 池测试未通过：0/${pool.total} 个 Key 可用`
+}
+
+function keySuffixForDisplay(key: string): string | undefined {
+  const text = key.trim()
+  return text ? text.slice(-4) : undefined
 }
 
 function enqueueManualAccountTestFailurePrecheck(

@@ -388,6 +388,26 @@ export interface AccountTestResult {
   errorPolicyReason?: string
   clientCompatibility?: AccountClientCompatibility
   testClientCompatibility?: AccountClientCompatibility
+  apiKeyPool?: AccountTestApiKeyPoolResult
+}
+
+export interface AccountTestApiKeyPoolResult {
+  total: number
+  tested: number
+  successCount: number
+  failedCount: number
+  requiredSuccessCount: number
+  results: AccountTestApiKeyPoolItemResult[]
+}
+
+export interface AccountTestApiKeyPoolItemResult {
+  keyIndex: number
+  keySuffix?: string
+  success: boolean
+  statusCode?: number
+  errorCode?: string
+  message: string
+  durationMs?: number
 }
 
 export type AccountTestTaskStatus = 'queued' | 'running' | 'success' | 'failed' | 'canceled'

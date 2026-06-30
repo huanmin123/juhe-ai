@@ -58,6 +58,7 @@ export interface OpenAIAccountSecret {
   apiKeyRuntimeStates?: AccountApiKeyRuntimeSelectionState[]
   selectedApiKeyFingerprint?: string
   selectedApiKeyIndex?: number
+  apiKeyRuntimeStateDisabled?: boolean
   refreshToken?: string
   clientId?: string
   credentialSourceAccountId?: string

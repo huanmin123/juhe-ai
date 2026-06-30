@@ -179,8 +179,8 @@ try {
   const firstFailoverAuthorizations = authorizationsForBatches([firstFailoverBatch])
   assert.deepEqual(
     firstFailoverAuthorizations,
-    ['Bearer sk-gateway-failover-bad', 'Bearer sk-gateway-failover-good'],
-    '多 Key 账户当前 Key 失败后，本次请求应在预算内切到同账户后续 Key'
+    ['Bearer sk-gateway-failover-bad', 'Bearer sk-gateway-failover-rescue'],
+    '多 Key 账户当前 Key 失败后，本次请求不应继续扫同账户后续 Key，应切到后备账户'
   )
   const failoverBadKeyPersistedState = apiKeyRuntimeStateStatus('sk-gateway-failover-bad')
   assert.equal(failoverBadKeyPersistedState, undefined, '网关流量的单账号坏 Key 只进入本地短避让，不应持久写入运行态')
@@ -202,8 +202,8 @@ try {
   const authorizedAuthorizations = authorizationsForBatches([authorizedBatch])
   assert.deepEqual(
     authorizedAuthorizations,
-    ['Bearer sk-gateway-authorized-bad', 'Bearer sk-gateway-authorized-good'],
-    '被授权实例命中来源账户坏 Key 后，本次请求应在预算内切到来源账户后续 Key'
+    ['Bearer sk-gateway-authorized-bad', 'Bearer sk-gateway-authorized-rescue'],
+    '被授权实例命中来源账户坏 Key 后，本次请求不应继续扫来源账户后续 Key，应切到后备账户'
   )
   const authorizedRuntimeTarget = apiKeyRuntimeStateTargetAccountIdOrMissing('sk-gateway-authorized-bad')
   assert.equal(authorizedRuntimeTarget, undefined, '授权实例命中来源账户坏 Key 后，网关流量也只做本地短避让，不应持久写入来源账户 Key 运行态')
@@ -221,18 +221,17 @@ try {
     allBadAuthorizations,
     [
       'Bearer sk-gateway-allbad-a',
-      'Bearer sk-gateway-allbad-c',
       'Bearer sk-gateway-allbad-rescue',
-      'Bearer sk-gateway-allbad-b',
+      'Bearer sk-gateway-allbad-c',
       'Bearer sk-gateway-allbad-rescue',
       'Bearer sk-gateway-allbad-rescue'
     ],
-    '账户内 Key 失败时单请求最多尝试 2 个 Key，剩余坏 Key 只能在后续请求中逐步短避让'
+    '账户内 Key 失败时单请求最多尝试 1 个 Key，连续失败后不应为扫完整个 Key 池而阻塞真实请求'
   )
   assert.equal(
     allBadAuthorizations.indexOf('Bearer sk-gateway-allbad-rescue'),
-    2,
-    '三个坏 Key 场景首个请求应只尝试两个账户内 Key 后切后备账户'
+    1,
+    '三个坏 Key 场景首个请求应只尝试一个账户内 Key 后切后备账户'
   )
   const allBadSourceSummary = repositories.findAccountForTest(allBadScenario.sourceAccountId, access)
   assert.equal(allBadSourceSummary?.apiKeyRuntime?.allUnavailable ?? false, false, '单来源打穿全部 Key 不应写成全局 Key 池不可用')

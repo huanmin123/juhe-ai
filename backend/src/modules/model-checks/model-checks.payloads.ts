@@ -305,6 +305,7 @@ export function createAnthropicMessagesPayload(
   prompt: string,
   options: { maxOutputTokens: number; stream: boolean; temperature?: number }
 ): Record<string, unknown> {
+  void options.temperature
   return {
     model,
     system: 'You are a model capability checker. Follow the requested output exactly.',
@@ -315,8 +316,7 @@ export function createAnthropicMessagesPayload(
       }
     ],
     max_tokens: options.maxOutputTokens,
-    stream: options.stream,
-    temperature: options.temperature ?? 0
+    stream: options.stream
   }
 }
 

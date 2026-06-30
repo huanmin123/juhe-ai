@@ -2,7 +2,8 @@ import { Router } from 'express'
 
 import { type AccountStatus, type AccountSummary } from '../../domain/types.js'
 import { badRequest, ok } from '../../shared/http.js'
-import { ProxyProfileUnavailableError, clearAccountFailureStateAsync, createAccountAsync, findAccountForTestAsync, findGroupSummaryAsync, listProvidersAsync, setAccountGroupAsync, updateAccountAsync } from '../../storage/repositories.js'
+import { errorLogFields, logger } from '../../shared/logger.js'
+import { ProxyProfileUnavailableError, clearAccountFailureStateAsync, createAccountAsync, findAccountForTestAsync, findGroupSummaryAsync, findOpenAIAccountForGroupAsync, listProvidersAsync, setAccountGroupAsync, updateAccountAsync } from '../../storage/repositories.js'
 import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { clearServerAccountRuntimeAvailability } from '../db-service/db-service-ipc.js'
@@ -12,7 +13,12 @@ import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperatio
 import {
   createAccountTestTaskAsync,
   failAccountTestTaskAsync,
+  getAccountTestTaskRecordAsync,
 } from '../../storage/account-test-tasks.repository.js'
+import {
+  recordAccountApiKeyRuntimeFailureAsync,
+  recordAccountApiKeyRuntimeSuccessAsync
+} from '../../storage/account-api-key-runtime-state.repository.js'
 import {
   accountCreateStatusFromActivationTestAsync,
   prepareAccountDraftTestSnapshotAsync
@@ -40,6 +46,11 @@ import { registerAccountGroupBindingRoutes } from './account-group-binding.route
 import { registerAccountDeleteRoutes } from './account-delete.routes.js'
 import { registerAccountDetailRoutes } from './account-detail.routes.js'
 import { registerAccountTestDispatchRoutes } from './account-test-dispatch.routes.js'
+import {
+  accountApiKeyPoolEntriesForCandidate,
+  accountApiKeyPoolEntryForResult,
+  fixedAccountApiKeyPoolCandidate
+} from './account-api-key-pool-runtime.js'
 
 export const accountsRouter = Router()
 
@@ -217,6 +228,7 @@ accountsRouter.post('/', mutationGuard({
         }
       }
     }, req)
+    await applyActivationApiKeyPoolRuntimeSafely(account, parsed.data.activationTestTaskId, requestAccess)
     res.status(201).json(ok(sanitizeAccountResponse(account)))
   } catch (error) {
     if (error instanceof ProxyProfileUnavailableError) {
@@ -227,6 +239,71 @@ accountsRouter.post('/', mutationGuard({
     res.status(message.includes('已存在') ? 409 : 400).json(badRequest(message))
   }
 })
+
+async function applyActivationApiKeyPoolRuntimeSafely(
+  account: AccountSummary,
+  activationTestTaskId: string | undefined,
+  requestAccess: RequestAccessScope | undefined
+): Promise<void> {
+  try {
+    await applyActivationApiKeyPoolRuntime(account, activationTestTaskId, requestAccess)
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'account_activation_api_key_pool_runtime_apply_failed',
+      accountId: account.id,
+      accountName: account.name,
+      activationTestTaskId
+    }), '账户创建后同步 API Key 池测试运行态失败')
+  }
+}
+
+async function applyActivationApiKeyPoolRuntime(
+  account: AccountSummary,
+  activationTestTaskId: string | undefined,
+  requestAccess: RequestAccessScope | undefined
+): Promise<void> {
+  const taskId = typeof activationTestTaskId === 'string' ? activationTestTaskId.trim() : ''
+  if (!taskId || !account.boundGroupId) {
+    return
+  }
+  const task = await getAccountTestTaskRecordAsync(taskId)
+  const pool = task?.result?.apiKeyPool
+  if (task?.status !== 'success' || task.result?.success !== true || !pool?.results.length) {
+    return
+  }
+  const systemAccountId = account.ownerSystemAccountId
+    ?? account.systemAccountId
+    ?? requestAccess?.systemAccountFilterId
+    ?? requestAccess?.systemAccountId
+  if (!systemAccountId) {
+    return
+  }
+  const candidate = await findOpenAIAccountForGroupAsync(account.boundGroupId, account.id, systemAccountId, {
+    ignoreAvailability: true
+  })
+  if (!candidate) {
+    return
+  }
+  const entries = accountApiKeyPoolEntriesForCandidate(candidate)
+  await Promise.all(pool.results.map(async (item) => {
+    const entry = accountApiKeyPoolEntryForResult(entries, item)
+    if (!entry) {
+      return
+    }
+    const fixedCandidate = fixedAccountApiKeyPoolCandidate(candidate, entry)
+    if (item.success) {
+      await recordAccountApiKeyRuntimeSuccessAsync(fixedCandidate)
+      return
+    }
+    await recordAccountApiKeyRuntimeFailureAsync({
+      account: fixedCandidate,
+      status: 'temporary_unavailable',
+      statusCode: item.statusCode,
+      errorCode: item.errorCode,
+      errorMessage: item.message
+    })
+  }))
+}
 
 async function clearAccountGatewayRuntimeAfterRestore(account: AccountSummary, access?: RequestAccessScope): Promise<void> {
   const systemAccountId = account.accessType === 'authorized'

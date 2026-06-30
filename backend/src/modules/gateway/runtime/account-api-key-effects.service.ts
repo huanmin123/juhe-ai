@@ -27,7 +27,7 @@ export function recordGatewayAccountApiKeyFailure(
     source: string
   }
 ): void {
-  if (!account.selectedApiKeyFingerprint) {
+  if (!account.selectedApiKeyFingerprint || account.apiKeyRuntimeStateDisabled) {
     return
   }
   recentAccountApiKeySuccessWrites.delete(accountApiKeyRuntimeCoalesceKey(account))
@@ -75,6 +75,9 @@ export function recordGatewayAccountApiKeyLocalFailure(
     errorMessage?: string
   }
 ): void {
+  if (account.apiKeyRuntimeStateDisabled) {
+    return
+  }
   recordGatewayAccountApiKeyLocalFailureGuard(account, {
     status: input.status,
     errorMessage: input.errorMessage
@@ -82,6 +85,9 @@ export function recordGatewayAccountApiKeyLocalFailure(
 }
 
 export function recordGatewayAccountApiKeySuccess(account: OpenAIAccountSecret, source: string): void {
+  if (account.apiKeyRuntimeStateDisabled) {
+    return
+  }
   const clearedLocalFailure = recordGatewayAccountApiKeySuccessGuard(account)
   if (!account.selectedApiKeyFingerprint) {
     return

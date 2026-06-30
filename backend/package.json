@@ -98,6 +98,7 @@
     "test:hybrid-project-workflow": "tsx src/scripts/regression/hybrid-project-workflow-e2e.ts",
     "test:provider-failure-recovery-matrix": "tsx src/scripts/regression/provider-failure-recovery-matrix-regression.ts",
     "test:account-api-key-gateway-mock-ai": "tsx src/scripts/regression/account-api-key-gateway-mock-ai-regression.ts",
+    "test:account-api-key-pool-test-mock-ai": "tsx src/scripts/regression/account-api-key-pool-test-mock-ai-regression.ts",
     "test:account-api-key-failure-guard": "tsx src/scripts/regression/account-api-key-failure-guard-regression.ts",
     "test:account-api-key-runtime-state-postgres-smoke": "tsx src/scripts/regression/account-api-key-runtime-state-postgres-smoke.ts",
     "test:group-options-lightweight": "tsx src/scripts/regression/group-options-lightweight-regression.ts",

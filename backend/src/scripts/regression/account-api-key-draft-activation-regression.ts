@@ -50,7 +50,8 @@ try {
   const access = { systemAccountId: owner.id, role: 'user' as const }
   const group = repositories.createGroup({
     name: 'API Key 草稿激活分组',
-    providerCode: 'gpt'
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, access)
   assert.equal(group.providerProtocolProfileId, GPT_OPENAI_V1_PROFILE_ID, 'API Key 草稿激活回归需要 GPT OpenAI v1 分组')
   registerDraftModelCatalog(owner.id)

@@ -569,34 +569,42 @@ export function recordAccountApiKeyRuntimeSuccess(account: OpenAIAccountSecret):
   const now = nowIso()
   const result = getBusinessDatabase()
     .prepare(`
-      UPDATE account_api_key_runtime_states
-      SET system_account_id = ?,
-          key_index = ?,
-          status = 'active',
-          consecutive_failures = 0,
-          success_count = success_count + 1,
-          cooldown_until = NULL,
-          next_probe_at = NULL,
-          probe_backoff_seconds = 0,
-          recovery_started_at = NULL,
-          last_attempt_at = ?,
-          last_success_at = ?,
-          last_error_code = NULL,
-          last_error_message = NULL,
-          updated_at = ?
-      WHERE account_id = ?
-        AND key_fingerprint = ?
-        AND status <> 'disabled'
-        AND (
-          status <> 'active'
-          OR consecutive_failures <> 0
-          OR cooldown_until IS NOT NULL
-          OR next_probe_at IS NOT NULL
-          OR last_error_code IS NOT NULL
-          OR last_error_message IS NOT NULL
-        )
+      INSERT INTO account_api_key_runtime_states (
+        id, system_account_id, account_id, key_fingerprint, key_index,
+        status, failure_count, consecutive_failures, success_count,
+        cooldown_until, next_probe_at, probe_backoff_seconds, recovery_started_at,
+        last_attempt_at, last_success_at, last_error_code, last_error_message,
+        created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, 'active', 0, 0, 1, NULL, NULL, 0, NULL, ?, ?, NULL, NULL, ?, ?)
+      ON CONFLICT(account_id, key_fingerprint) DO UPDATE SET
+        system_account_id = excluded.system_account_id,
+        key_index = excluded.key_index,
+        status = 'active',
+        consecutive_failures = 0,
+        success_count = account_api_key_runtime_states.success_count + 1,
+        cooldown_until = NULL,
+        next_probe_at = NULL,
+        probe_backoff_seconds = 0,
+        recovery_started_at = NULL,
+        last_attempt_at = excluded.last_attempt_at,
+        last_success_at = excluded.last_success_at,
+        last_error_code = NULL,
+        last_error_message = NULL,
+        updated_at = excluded.updated_at
+      WHERE account_api_key_runtime_states.status <> 'disabled'
     `)
-    .run(target.systemAccountId, target.keyIndex, now, now, now, target.accountId, target.keyFingerprint)
+    .run(
+      newId('account_api_key_runtime_state'),
+      target.systemAccountId,
+      target.accountId,
+      target.keyFingerprint,
+      target.keyIndex,
+      now,
+      now,
+      now,
+      now
+    )
   const changed = Number(result.changes ?? 0) > 0
   if (changed) {
     markRuntimeStateChanged(target.accountId)
@@ -615,33 +623,41 @@ export async function recordAccountApiKeyRuntimeSuccessAsync(account: OpenAIAcco
   const now = nowIso()
   const client = await getAccountApiKeyRuntimeStateDatabaseClient()
   const result = await client.execute(`
-    UPDATE ${accountApiKeyRuntimeStatesTable(client)}
-    SET system_account_id = ?,
-        key_index = ?,
-        status = 'active',
-        consecutive_failures = 0,
-        success_count = success_count + 1,
-        cooldown_until = NULL,
-        next_probe_at = NULL,
-        probe_backoff_seconds = 0,
-        recovery_started_at = NULL,
-        last_attempt_at = ?,
-        last_success_at = ?,
-        last_error_code = NULL,
-        last_error_message = NULL,
-        updated_at = ?
-    WHERE account_id = ?
-      AND key_fingerprint = ?
-      AND status <> 'disabled'
-      AND (
-        status <> 'active'
-        OR consecutive_failures <> 0
-        OR cooldown_until IS NOT NULL
-        OR next_probe_at IS NOT NULL
-        OR last_error_code IS NOT NULL
-        OR last_error_message IS NOT NULL
-      )
-  `, [target.systemAccountId, target.keyIndex, now, now, now, target.accountId, target.keyFingerprint])
+    INSERT INTO ${accountApiKeyRuntimeStatesTable(client)} AS current_state (
+      id, system_account_id, account_id, key_fingerprint, key_index,
+      status, failure_count, consecutive_failures, success_count,
+      cooldown_until, next_probe_at, probe_backoff_seconds, recovery_started_at,
+      last_attempt_at, last_success_at, last_error_code, last_error_message,
+      created_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, 'active', 0, 0, 1, NULL, NULL, 0, NULL, ?, ?, NULL, NULL, ?, ?)
+    ON CONFLICT (account_id, key_fingerprint) DO UPDATE SET
+      system_account_id = excluded.system_account_id,
+      key_index = excluded.key_index,
+      status = 'active',
+      consecutive_failures = 0,
+      success_count = current_state.success_count + 1,
+      cooldown_until = NULL,
+      next_probe_at = NULL,
+      probe_backoff_seconds = 0,
+      recovery_started_at = NULL,
+      last_attempt_at = excluded.last_attempt_at,
+      last_success_at = excluded.last_success_at,
+      last_error_code = NULL,
+      last_error_message = NULL,
+      updated_at = excluded.updated_at
+    WHERE current_state.status <> 'disabled'
+  `, [
+    newId('account_api_key_runtime_state'),
+    target.systemAccountId,
+    target.accountId,
+    target.keyFingerprint,
+    target.keyIndex,
+    now,
+    now,
+    now,
+    now
+  ])
   const changed = Number(result.changes ?? 0) > 0
   if (changed) {
     await markRuntimeStateChangedAsync(client, target.accountId)
@@ -650,6 +666,7 @@ export async function recordAccountApiKeyRuntimeSuccessAsync(account: OpenAIAcco
 }
 
 function accountApiKeyRuntimeTarget(account: OpenAIAccountSecret): AccountApiKeyRuntimeTarget | undefined {
+  if (account.apiKeyRuntimeStateDisabled) return undefined
   const keyFingerprint = account.selectedApiKeyFingerprint?.trim()
   if (!keyFingerprint) return undefined
   const apiKeys = account.apiKeys ?? []

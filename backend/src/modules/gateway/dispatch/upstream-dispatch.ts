@@ -79,7 +79,7 @@ interface AccountConcurrencyAcquireResult {
 
 const accountConcurrencyRetryBudgetMs = 1200
 const accountConcurrencyRetryPolicy = exponentialRetryPolicy('gateway_account_concurrency_short_wait', 120, 480)
-const maxAccountApiKeyAttemptsPerAccountPerRequest = 2
+const maxAccountApiKeyAttemptsPerAccountPerRequest = 1
 
 export async function fetchFirstAvailableUpstream(
   req: Request,
@@ -623,6 +623,9 @@ function shouldRetryAnotherAccountApiKey(
   auditCapture: AuditCaptureContext
 ): boolean {
   if (!keyScopedFailure || !account.selectedApiKeyFingerprint) {
+    return false
+  }
+  if (account.apiKeyRuntimeStateDisabled) {
     return false
   }
   if ((account.apiKeys?.length ?? 0) <= accountApiKeyAttemptCount) {

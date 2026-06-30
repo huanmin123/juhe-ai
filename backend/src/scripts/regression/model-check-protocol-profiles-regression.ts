@@ -60,6 +60,7 @@ assert.equal(chatRequest.body.max_tokens, 64, 'OpenAI Chat 短探针应保留足
 const anthropicRequest = createModelCheckProbeRequest('anthropic_messages', 'claude-opus-4-8', '只输出 OK', { maxOutputTokens: 16, stream: false })
 assert.equal(anthropicRequest.path, '/v1/messages')
 assert.equal(anthropicRequest.body.model, 'claude-opus-4-8')
+assert.equal(anthropicRequest.body.temperature, undefined, 'Anthropic Messages 探针不应发送通用 temperature 参数')
 
 const geminiRequest = createModelCheckProbeRequest('gemini_native', 'gemini-3.5-flash', '只输出 OK', { maxOutputTokens: 16, stream: false })
 assert.equal(geminiRequest.path, '/v1beta/models/gemini-3.5-flash:generateContent')

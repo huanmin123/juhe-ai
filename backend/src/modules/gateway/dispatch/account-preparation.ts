@@ -18,6 +18,7 @@ import type { ProviderGatewayRequestContext } from '../../providers/drivers/_sha
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import type { UpstreamAttempt } from '../upstream/attempt.js'
 import {
+  accountApiKeyEntries,
   isAccountApiKeyPoolIsolationEnabled,
   selectAccountRuntimeApiKeyEntry
 } from '../../../storage/account-api-key-rotation.js'
@@ -142,6 +143,22 @@ export function selectAccountApiKeyForDispatch(
 
   const accountId = account.credentialSourceAccountId ?? account.id
   const credentials = accountApiKeySelectionCredentials(account)
+  const apiKeyPoolIsolationEnabled = isAccountApiKeyPoolIsolationEnabled({
+    providerCode: account.providerCode,
+    protocolCode: account.protocolCode,
+    protocolVersion: account.protocolVersion,
+    type: account.type,
+    credentials
+  })
+  const fixedFingerprint = account.selectedApiKeyFingerprint?.trim()
+  if (fixedFingerprint && apiKeyPoolIsolationEnabled) {
+    const fixed = accountApiKeyEntries(credentials).find((entry) => entry.fingerprint === fixedFingerprint)
+    if (!fixed) {
+      return undefined
+    }
+    return accountWithSelectedApiKey(account, fixed.key, fixed.fingerprint, fixed.index)
+  }
+
   const selected = selectAccountRuntimeApiKeyEntry({
     accountId,
     credentials,
@@ -151,13 +168,6 @@ export function selectAccountApiKeyForDispatch(
       ...localAccountApiKeyRuntimeStatesForDispatch(accountId)
     ]
   })
-  const apiKeyPoolIsolationEnabled = isAccountApiKeyPoolIsolationEnabled({
-    providerCode: account.providerCode,
-    protocolCode: account.protocolCode,
-    protocolVersion: account.protocolVersion,
-    type: account.type,
-    credentials
-  })
   if (!selected && apiKeyPoolIsolationEnabled) {
     return undefined
   }
@@ -165,14 +175,28 @@ export function selectAccountApiKeyForDispatch(
     return account
   }
 
+  return accountWithSelectedApiKey(
+    account,
+    selected.key,
+    apiKeyPoolIsolationEnabled ? selected.fingerprint : undefined,
+    apiKeyPoolIsolationEnabled ? selected.index : undefined
+  )
+}
+
+function accountWithSelectedApiKey(
+  account: UpstreamAccount,
+  apiKey: string,
+  selectedApiKeyFingerprint?: string,
+  selectedApiKeyIndex?: number
+): UpstreamAccount {
   return {
     ...account,
-    apiKey: selected.key,
-    selectedApiKeyFingerprint: apiKeyPoolIsolationEnabled ? selected.fingerprint : undefined,
-    selectedApiKeyIndex: apiKeyPoolIsolationEnabled ? selected.index : undefined,
+    apiKey,
+    selectedApiKeyFingerprint,
+    selectedApiKeyIndex,
     credentials: {
       ...account.credentials,
-      api_key: selected.key
+      api_key: apiKey
     }
   }
 }
