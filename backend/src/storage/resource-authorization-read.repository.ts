@@ -612,7 +612,7 @@ function resourceAuthorizationGrantSummaries(rows: ResourceAuthorizationGrantRow
   const groupNames = loadGroupNameMap(rows.filter((row) => row.resource_type === 'group').map((row) => row.resource_id))
   const systemAccounts = loadSystemAccountPrincipalMapByIds(rows.flatMap((row) => [row.resource_owner_system_account_id, row.grantee_system_account_id ?? '']))
   const teamNames = loadSystemTeamNameMap(rows.map((row) => row.grantee_team_id ?? ''))
-  const includeUsage = options.includeUsage ?? true
+  const includeUsage = options.includeUsage ?? Boolean(options.usageRange)
   const usage = includeUsage
     ? loadResourceAuthorizationGrantUsageSummaries(rows, options.usageRange ?? todayDateKey(usageStatsTimezone()))
     : new Map<string, AccountUsageSummary>()
@@ -670,7 +670,7 @@ function resourceAuthorizationGrantSummaries(rows: ResourceAuthorizationGrantRow
 
 async function resourceAuthorizationGrantSummariesAsync(rows: ResourceAuthorizationGrantRow[], options: ResourceAuthorizationListOptions = {}): Promise<ResourceAuthorizationSummary[]> {
   const client = await getResourceAuthorizationReadDatabaseClient()
-  const includeUsage = options.includeUsage ?? true
+  const includeUsage = options.includeUsage ?? Boolean(options.usageRange)
   const usageRange = includeUsage
     ? options.usageRange ?? todayDateKey(await usageStatsTimezoneAsync())
     : undefined

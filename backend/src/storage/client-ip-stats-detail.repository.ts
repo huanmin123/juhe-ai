@@ -81,7 +81,9 @@ export function getClientIpStatsDetail(options: ClientIpStatsDetailOptions): Cli
       account_id,
       request_count, success_count, error_count,
       input_tokens, output_tokens, cache_read_tokens,
-      cache_read_cost_usd, total_cost_usd,
+      cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens,
+      cache_write_cost_usd, thinking_tokens, input_image_tokens,
+      output_image_tokens, total_cost_usd,
       duration_ms_sum, duration_ms_count, duration_ms_max,
       average_duration_ms,
       first_token_ms_sum, first_token_ms_count,
@@ -160,7 +162,9 @@ export async function getClientIpStatsDetailAsync(options: ClientIpStatsDetailOp
       account_id,
       request_count, success_count, error_count,
       input_tokens, output_tokens, cache_read_tokens,
-      cache_read_cost_usd, total_cost_usd,
+      cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens,
+      cache_write_cost_usd, thinking_tokens, input_image_tokens,
+      output_image_tokens, total_cost_usd,
       duration_ms_sum, duration_ms_count, duration_ms_max,
       average_duration_ms,
       first_token_ms_sum, first_token_ms_count,
@@ -245,6 +249,12 @@ function usageSummaryFromRow(row: Partial<ClientIpAccountStatsUsageRow> | undefi
     outputTokens,
     cacheReadTokens: Number(row?.cache_read_tokens ?? 0),
     cacheReadCost: Number(row?.cache_read_cost_usd ?? 0),
+    cacheWriteTokens: Number(row?.cache_write_tokens ?? 0),
+    cacheWrite1hTokens: Number(row?.cache_write_1h_tokens ?? 0),
+    cacheWriteCost: Number(row?.cache_write_cost_usd ?? 0),
+    thinkingTokens: Number(row?.thinking_tokens ?? 0),
+    inputImageTokens: Number(row?.input_image_tokens ?? 0),
+    outputImageTokens: Number(row?.output_image_tokens ?? 0),
     totalTokens: inputTokens + outputTokens,
     totalCost: Number(row?.total_cost_usd ?? 0),
     activeDays: Number(row?.active_days ?? 0),
@@ -285,6 +295,12 @@ interface ClientIpAccountStatsUsageRow {
   output_tokens: number
   cache_read_tokens: number
   cache_read_cost_usd: number
+  cache_write_tokens: number
+  cache_write_1h_tokens: number
+  cache_write_cost_usd: number
+  thinking_tokens: number
+  input_image_tokens: number
+  output_image_tokens: number
   total_cost_usd: number
   duration_ms_sum: number
   duration_ms_count: number

@@ -181,29 +181,39 @@
     <a-modal v-model:open="modalOpen" :title="editingId ? '编辑策略路由' : '新建策略路由'" width="760px" :confirm-loading="saving" destroy-on-close @ok="saveRouteStrategy">
       <a-alert v-if="!editingId && isManagementView && targetSystemAccountLabel" class="modal-alert" type="info" show-icon :message="`当前创建目标：${targetSystemAccountLabel}`" />
       <a-form layout="vertical" class="route-strategy-modal-form">
-        <a-form-item label="名称" required>
+        <a-form-item label="名称" required tooltip="用于在 API Key 中识别这套路由策略，建议写清楚业务场景或使用方。">
           <a-input v-model:value="form.name" placeholder="请输入策略路由名称" />
         </a-form-item>
-        <a-form-item label="说明">
+        <a-form-item label="说明" tooltip="补充这套路由策略的用途、适用范围或注意事项，只用于后台识别。">
           <a-textarea v-model:value="form.description" :rows="2" placeholder="可选" />
         </a-form-item>
         <a-row :gutter="12">
           <a-col :span="12">
-            <a-form-item label="路由模式" required>
+            <a-form-item label="路由模式" required tooltip="决定请求如何在绑定分组之间选择：普通、混合智能、权重、故障回退或轮询。">
               <a-select v-model:value="form.mode" :options="modeOptions" />
             </a-form-item>
           </a-col>
           <a-col :span="12">
-            <a-form-item label="状态" required>
+            <a-form-item label="状态" required tooltip="停用后，这套路由策略不会再参与 API Key 请求调度。">
               <a-select v-model:value="form.status" :options="statusOptions" />
             </a-form-item>
           </a-col>
         </a-row>
 
-        <div class="modal-section-title">分组绑定</div>
+        <div class="modal-section-title">
+          <span>分组绑定</span>
+          <a-tooltip :title="bindingSectionTooltip">
+            <InfoCircleOutlined class="route-strategy-field-help-icon" />
+          </a-tooltip>
+        </div>
         <div class="route-strategy-binding-list">
           <div class="route-strategy-binding-header" :style="bindingGridStyle">
-            <span v-for="column in bindingColumns" :key="column.key">{{ column.label }}</span>
+            <span v-for="column in bindingColumns" :key="column.key" class="route-strategy-binding-header-cell">
+              <span>{{ column.label }}</span>
+              <a-tooltip v-if="column.tooltip" :title="column.tooltip">
+                <InfoCircleOutlined class="route-strategy-field-help-icon" />
+              </a-tooltip>
+            </span>
           </div>
           <div
             v-for="(binding, index) in form.groupBindings"
@@ -218,7 +228,7 @@
             @dragover="handleBindingDragOver(index, $event)"
             @drop="handleBindingDrop(index, $event)"
           >
-            <div v-if="bindingShowsDragHandle" class="route-strategy-binding-drag-cell">
+            <div v-if="bindingShowsDragColumn" class="route-strategy-binding-drag-cell">
               <button
                 v-if="bindingRowDragEnabled(index)"
                 type="button"
@@ -256,7 +266,7 @@
               @change="handleBindingWeightChange(index)"
             />
             <a-select v-model:value="binding.status" :options="statusOptions" />
-            <a-button type="text" danger :disabled="form.groupBindings.length <= 1" @click="removeBinding(index)">
+            <a-button type="text" danger :disabled="bindingRemoveDisabled" @click="removeBinding(index)">
               <template #icon><DeleteOutlined /></template>
             </a-button>
           </div>
@@ -267,9 +277,14 @@
         </a-button>
 
         <template v-if="form.mode === 'hybrid_smart'">
-          <div class="modal-section-title">混合智能配置</div>
+          <div class="modal-section-title">
+            <span>混合智能配置</span>
+            <a-tooltip :title="hybridConfigTooltip">
+              <InfoCircleOutlined class="route-strategy-field-help-icon" />
+            </a-tooltip>
+          </div>
           <div class="hybrid-config-grid">
-            <a-form-item label="评分模型" required>
+            <a-form-item label="评分模型" required tooltip="先用这个模型判断请求难度和适合的能力档位，通常选择成本较低且稳定的模型。">
               <a-select
                 v-model:value="form.hybrid.scoringModel"
                 show-search
@@ -281,18 +296,23 @@
                 @dropdown-visible-change="handleModelOptionsDropdown"
               />
             </a-form-item>
-            <a-form-item label="质量偏好">
+            <a-form-item label="质量偏好" tooltip="控制混合智能路由在成本和质量之间的倾向，会影响最终目标模型选择。">
               <a-segmented v-model:value="form.hybrid.qualityPreference" block :options="qualityPreferenceOptions" />
             </a-form-item>
-            <a-form-item label="评分超时">
+            <a-form-item label="评分超时" tooltip="评分请求最长等待时间；超时后按兜底最高等级继续路由。">
               <a-input-number v-model:value="form.hybrid.scoringTimeoutMs" :min="1000" :max="60000" addon-after="ms" />
             </a-form-item>
-            <a-form-item label="评分失败兜底最高等级">
+            <a-form-item label="评分失败兜底最高等级" tooltip="评分模型不可用或超时时允许使用的最高等级，等级越高越可能进入更强模型。">
               <a-input-number v-model:value="form.hybrid.scoringFallbackMaxLevel" :min="2" :max="5" />
             </a-form-item>
           </div>
 
-          <div class="modal-section-title">等级模型</div>
+          <div class="modal-section-title">
+            <span>等级模型</span>
+            <a-tooltip :title="hybridLevelRoutesTooltip">
+              <InfoCircleOutlined class="route-strategy-field-help-icon" />
+            </a-tooltip>
+          </div>
           <div class="hybrid-level-route-list">
             <div class="hybrid-level-route-header">
               <span>等级范围</span>
@@ -331,12 +351,17 @@
             添加等级
           </a-button>
 
-          <div class="modal-section-title">质量检查</div>
-          <a-form-item label="启用质量检查">
+          <div class="modal-section-title">
+            <span>质量检查</span>
+            <a-tooltip :title="qualityInspectionTooltip">
+              <InfoCircleOutlined class="route-strategy-field-help-icon" />
+            </a-tooltip>
+          </div>
+          <a-form-item label="启用质量检查" tooltip="开启后会对命中条件的响应做二次质量判断，可能增加额外模型调用成本。">
             <a-switch v-model:checked="form.hybrid.qualityInspection.enabled" checked-children="启用" un-checked-children="停用" />
           </a-form-item>
           <div class="hybrid-config-grid">
-            <a-form-item label="质量评分模型">
+            <a-form-item label="质量评分模型" tooltip="用于复审响应质量；不选择时默认复用上面的评分模型。">
               <a-select
                 v-model:value="form.hybrid.qualityInspection.scoringModel"
                 show-search
@@ -349,35 +374,40 @@
                 @dropdown-visible-change="handleModelOptionsDropdown"
               />
             </a-form-item>
-            <a-form-item label="触发模式">
+            <a-form-item label="触发模式" tooltip="决定哪些请求或响应需要进入质量检查。">
               <a-select v-model:value="form.hybrid.qualityInspection.triggerMode" :disabled="!form.hybrid.qualityInspection.enabled" :options="qualityInspectionTriggerOptions" />
             </a-form-item>
-            <a-form-item label="最高触发等级">
+            <a-form-item label="最高触发等级" tooltip="评分等级不高于这个值时触发质量检查，适合优先复审低档或中档模型输出。">
               <a-input-number v-model:value="form.hybrid.qualityInspection.maxTriggerLevel" :disabled="!form.hybrid.qualityInspection.enabled" :min="1" :max="10" />
             </a-form-item>
-            <a-form-item label="最多重试">
+            <a-form-item label="最多重试" tooltip="质量检查判定失败后允许额外尝试的次数。">
               <a-input-number v-model:value="form.hybrid.qualityInspection.maxRetries" :disabled="!form.hybrid.qualityInspection.enabled" :min="0" :max="2" />
             </a-form-item>
-            <a-form-item label="失败处理">
+            <a-form-item label="失败处理" tooltip="响应未通过质量检查时的处理方式，例如升级模型、重试或直接返回错误。">
               <a-select v-model:value="form.hybrid.qualityInspection.failureAction" :disabled="!form.hybrid.qualityInspection.enabled" :options="qualityInspectionFailureActionOptions" />
             </a-form-item>
-            <a-form-item label="检查不可用处理">
+            <a-form-item label="检查不可用处理" tooltip="质量检查模型不可用、超时或检查流程异常时如何处理原响应。">
               <a-select v-model:value="form.hybrid.qualityInspection.unavailableAction" :disabled="!form.hybrid.qualityInspection.enabled" :options="qualityInspectionUnavailableActionOptions" />
             </a-form-item>
           </div>
 
-          <div class="modal-section-title">缓存与切换</div>
+          <div class="modal-section-title">
+            <span>缓存与切换</span>
+            <a-tooltip :title="hybridCacheSwitchTooltip">
+              <InfoCircleOutlined class="route-strategy-field-help-icon" />
+            </a-tooltip>
+          </div>
           <div class="hybrid-config-grid">
-            <a-form-item label="评分缓存 TTL">
+            <a-form-item label="评分缓存 TTL" tooltip="同类请求评分结果的缓存时长，用于减少重复评分成本。">
               <a-input-number v-model:value="form.hybrid.scoringCacheTtlSeconds" :min="1" :max="3600" addon-after="秒" />
             </a-form-item>
-            <a-form-item label="模型亲和 TTL">
+            <a-form-item label="模型亲和 TTL" tooltip="同一会话或上下文保持目标模型不频繁切换的时间。">
               <a-input-number v-model:value="form.hybrid.affinityTtlSeconds" :min="1" :max="86400" addon-after="秒" />
             </a-form-item>
-            <a-form-item label="切换等级差">
+            <a-form-item label="切换等级差" tooltip="新评分与当前亲和等级差达到这个值才切换模型，避免小幅波动导致频繁切换。">
               <a-input-number v-model:value="form.hybrid.switchMinLevelDelta" :min="0" :max="9" />
             </a-form-item>
-            <a-form-item label="降级确认次数">
+            <a-form-item label="降级确认次数" tooltip="连续低评分达到这个次数后才降级，避免偶发低分立即切换。">
               <a-input-number v-model:value="form.hybrid.downgradeConsecutiveLowCount" :min="1" :max="20" />
             </a-form-item>
           </div>
@@ -388,7 +418,7 @@
 </template>
 
 <script setup lang="ts">
-import { DeleteOutlined, HolderOutlined, PlusOutlined } from '@ant-design/icons-vue'
+import { DeleteOutlined, HolderOutlined, InfoCircleOutlined, PlusOutlined } from '@ant-design/icons-vue'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import type { TablePaginationConfig } from 'ant-design-vue'
 
@@ -427,6 +457,12 @@ interface BindingFormRow {
   priority: number
   weight: number
   status: 'active' | 'disabled'
+}
+
+interface BindingColumn {
+  key: string
+  label: string
+  tooltip?: string
 }
 
 interface HybridLevelRouteFormRow extends ApiKeyHybridLevelRoute {
@@ -558,6 +594,11 @@ const qualityInspectionUnavailableActionOptions = [
   { label: '返回错误', value: 'return_error' }
 ]
 
+const hybridConfigTooltip = '混合智能路由会先评分请求难度，再按等级模型和质量偏好选择目标模型。'
+const hybridLevelRoutesTooltip = '把评分等级 1-10 映射到目标模型；请求评分落入某个范围后优先使用该目标模型。'
+const qualityInspectionTooltip = '在高风险或指定场景复审上游响应，未通过时按失败处理策略重试、升级或返回错误。'
+const hybridCacheSwitchTooltip = '控制评分缓存、模型亲和和升降级节奏，减少重复评分和频繁切换。'
+
 const columns = computed<Array<Record<string, unknown>>>(() => {
   const baseColumns: Array<Record<string, unknown>> = [
     { title: '名称', key: 'name', width: 260 },
@@ -586,22 +627,36 @@ const bindingAddDisabled = computed(() => {
   if (form.mode === 'weighted' && weightedBindingTotal.value >= 100) return true
   return false
 })
+const bindingRemoveDisabled = computed(() => form.groupBindings.length <= minimumBindingRowsForMode(form.mode))
 const bindingShowsDragHandle = computed(() => form.mode === 'hybrid_smart' || form.mode === 'failover' || form.mode === 'round_robin')
+const bindingShowsDragColumn = computed(() => {
+  if (!bindingShowsDragHandle.value) return false
+  if (form.mode === 'hybrid_smart' || form.mode === 'round_robin') return form.groupBindings.length > 1
+  if (form.mode === 'failover') return form.groupBindings.length > 2
+  return false
+})
 const bindingShowsRole = computed(() => form.mode === 'failover')
 const bindingOrderUsesPosition = computed(() => form.mode === 'hybrid_smart' || form.mode === 'failover' || form.mode === 'round_robin')
 const bindingShowsWeight = computed(() => form.mode === 'weighted')
 const bindingAddButtonText = computed(() => form.mode === 'failover' && form.groupBindings.length >= 1 ? '添加备用分组' : '添加分组')
-const bindingColumns = computed(() => [
-  ...(bindingShowsDragHandle.value ? [{ key: 'drag', label: '' }] : []),
-  { key: 'group', label: '分组' },
-  ...(bindingShowsRole.value ? [{ key: 'role', label: '主备' }] : []),
-  ...(bindingShowsWeight.value ? [{ key: 'weight', label: '权重' }] : []),
-  { key: 'status', label: '状态' },
+const bindingSectionTooltip = computed(() => {
+  if (form.mode === 'normal') return '普通路由只绑定一个分组，请求会直接进入这个分组的账号池。'
+  if (form.mode === 'weighted') return '权重调度按分组权重比例分配流量，所有分组权重总和不能超过 100。'
+  if (form.mode === 'failover') return '故障回退固定第一行为主用分组，后续为备用分组；主用恢复后继续优先使用主用。'
+  if (form.mode === 'round_robin') return '轮询路由按当前分组顺序依次调度，可通过拖拽改变轮询顺序。'
+  return '混合智能路由按评分和目标模型选择分组；分组顺序用于同等条件下的候选顺序。'
+})
+const bindingColumns = computed<BindingColumn[]>(() => [
+  ...(bindingShowsDragColumn.value ? [{ key: 'drag', label: '' }] : []),
+  { key: 'group', label: '分组', tooltip: '选择这套路由策略可以使用的账号分组，实际请求会进入分组内的 AI 账户池。' },
+  ...(bindingShowsRole.value ? [{ key: 'role', label: '主备', tooltip: '第一行固定为主用分组，后续行为备用分组；备用分组可拖拽调整接管顺序。' }] : []),
+  ...(bindingShowsWeight.value ? [{ key: 'weight', label: '权重', tooltip: '权重越高命中比例越高；所有分组权重总和不能超过 100。' }] : []),
+  { key: 'status', label: '状态', tooltip: '停用某一行后，这个分组不会参与当前策略调度。' },
   { key: 'actions', label: '' }
 ])
 const bindingGridStyle = computed(() => {
   const tracks = ['minmax(0, 1fr)']
-  if (bindingShowsDragHandle.value) tracks.unshift('32px')
+  if (bindingShowsDragColumn.value) tracks.unshift('32px')
   if (bindingShowsRole.value) tracks.push('minmax(64px, 76px)')
   if (bindingShowsWeight.value) tracks.push('minmax(76px, 92px)')
   tracks.push('minmax(88px, 96px)', '32px')
@@ -637,6 +692,7 @@ watch(() => form.mode, (mode) => {
   if (mode === 'normal' && form.groupBindings.length > 1) {
     form.groupBindings = [form.groupBindings[0] ?? createBindingRow()]
   }
+  ensureMinimumBindingRowsForMode()
   normalizeBindingRowsForMode()
   if (mode === 'hybrid_smart') {
     normalizeHybridLevelRouteRanges()
@@ -829,7 +885,7 @@ function addBinding() {
 }
 
 function removeBinding(index: number) {
-  if (form.groupBindings.length <= 1) return
+  if (bindingRemoveDisabled.value) return
   form.groupBindings.splice(index, 1)
   normalizeBindingRowsForMode()
 }
@@ -978,11 +1034,22 @@ function handleModelOptionsDropdown(open: boolean) {
 }
 
 function normalizeBindingRowsForMode() {
+  ensureMinimumBindingRowsForMode()
   form.groupBindings.forEach((binding, index) => {
     binding.priority = form.mode === 'normal' || form.mode === 'weighted' ? 1 : index + 1
     binding.weight = form.mode === 'weighted' ? Math.max(1, Math.min(100, Number(binding.weight) || 1)) : 1
   })
   normalizeWeightedBindingWeightsForTotal()
+}
+
+function ensureMinimumBindingRowsForMode() {
+  while (form.groupBindings.length < minimumBindingRowsForMode(form.mode)) {
+    form.groupBindings.push(createBindingRow('', form.groupBindings.length + 1, 1, 'active'))
+  }
+}
+
+function minimumBindingRowsForMode(mode: RouteStrategyMode): number {
+  return mode === 'weighted' || mode === 'round_robin' || mode === 'failover' ? 2 : 1
 }
 
 function validateGroupBindingsForMode(groupBindings: Array<{ groupId: string; priority: number; weight: number; status: 'active' | 'disabled' }>): boolean {
@@ -1358,10 +1425,24 @@ function boundedInteger(value: unknown, min: number, max: number): number {
 }
 
 .modal-section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   margin: 18px 0 10px;
   color: #0f172a;
   font-size: 14px;
   font-weight: 700;
+}
+
+.route-strategy-field-help-icon {
+  flex: none;
+  color: #94a3b8;
+  cursor: help;
+  font-size: 14px;
+}
+
+.route-strategy-field-help-icon:hover {
+  color: #1677ff;
 }
 
 .route-strategy-binding-list {
@@ -1392,6 +1473,19 @@ function boundedInteger(value: unknown, min: number, max: number): number {
   color: #64748b;
   font-size: 12px;
   line-height: 18px;
+}
+
+.route-strategy-binding-header-cell {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+}
+
+.route-strategy-binding-header-cell > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .route-strategy-binding-row > * {

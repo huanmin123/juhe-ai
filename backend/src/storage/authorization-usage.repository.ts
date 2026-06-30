@@ -59,6 +59,12 @@ type UsageReportRow = {
   output_tokens: number
   cache_read_tokens: number
   cache_read_cost_usd: number
+  cache_write_tokens?: number
+  cache_write_1h_tokens?: number
+  cache_write_cost_usd?: number
+  thinking_tokens?: number
+  input_image_tokens?: number
+  output_image_tokens?: number
   total_cost: number
   last_used_at: string | null
 }
@@ -101,6 +107,12 @@ export function getAuthorizationTeamUsageOverview(filters: AuthorizationUsageFil
       report.output_tokens,
       report.cache_read_tokens,
       report.cache_read_cost_usd,
+      report.cache_write_tokens,
+      report.cache_write_1h_tokens,
+      report.cache_write_cost_usd,
+      report.thinking_tokens,
+      report.input_image_tokens,
+      report.output_image_tokens,
       report.total_cost_usd AS total_cost,
       report.last_used_at
     FROM authorization_team_usage_range_windows report
@@ -176,6 +188,12 @@ export async function getAuthorizationTeamUsageOverviewAsync(filters: Authorizat
       report.output_tokens,
       report.cache_read_tokens,
       report.cache_read_cost_usd,
+      report.cache_write_tokens,
+      report.cache_write_1h_tokens,
+      report.cache_write_cost_usd,
+      report.thinking_tokens,
+      report.input_image_tokens,
+      report.output_image_tokens,
       report.total_cost_usd AS total_cost,
       report.last_used_at
     FROM ${statsTable(client, 'authorization_team_usage_range_windows')} report
@@ -248,6 +266,12 @@ export function getAuthorizationUserUsageOverview(filters: AuthorizationUsageFil
       report.output_tokens,
       report.cache_read_tokens,
       report.cache_read_cost_usd,
+      report.cache_write_tokens,
+      report.cache_write_1h_tokens,
+      report.cache_write_cost_usd,
+      report.thinking_tokens,
+      report.input_image_tokens,
+      report.output_image_tokens,
       report.total_cost_usd AS total_cost,
       report.last_used_at
     FROM authorization_user_usage_range_windows report
@@ -332,6 +356,12 @@ export async function getAuthorizationUserUsageOverviewAsync(filters: Authorizat
       report.output_tokens,
       report.cache_read_tokens,
       report.cache_read_cost_usd,
+      report.cache_write_tokens,
+      report.cache_write_1h_tokens,
+      report.cache_write_cost_usd,
+      report.thinking_tokens,
+      report.input_image_tokens,
+      report.output_image_tokens,
       report.total_cost_usd AS total_cost,
       report.last_used_at
     FROM ${statsTable(client, 'authorization_user_usage_range_windows')} report
@@ -444,6 +474,12 @@ function loadAuthorizationTeamUsageSummary(filterKey: ReportFilterKey): AccountU
       output_tokens,
       cache_read_tokens,
       cache_read_cost_usd,
+      cache_write_tokens,
+      cache_write_1h_tokens,
+      cache_write_cost_usd,
+      thinking_tokens,
+      input_image_tokens,
+      output_image_tokens,
       total_cost_usd AS total_cost,
       last_used_at
     FROM authorization_team_usage_range_windows
@@ -473,6 +509,12 @@ async function loadAuthorizationTeamUsageSummaryAsync(client: DatabaseClient, fi
       output_tokens,
       cache_read_tokens,
       cache_read_cost_usd,
+      cache_write_tokens,
+      cache_write_1h_tokens,
+      cache_write_cost_usd,
+      thinking_tokens,
+      input_image_tokens,
+      output_image_tokens,
       total_cost_usd AS total_cost,
       last_used_at
     FROM ${statsTable(client, 'authorization_team_usage_range_windows')}
@@ -502,6 +544,12 @@ function loadAuthorizationUserUsageSummary(filterKey: ReportFilterKey): AccountU
       output_tokens,
       cache_read_tokens,
       cache_read_cost_usd,
+      cache_write_tokens,
+      cache_write_1h_tokens,
+      cache_write_cost_usd,
+      thinking_tokens,
+      input_image_tokens,
+      output_image_tokens,
       total_cost_usd AS total_cost,
       last_used_at
     FROM authorization_user_usage_range_windows
@@ -533,6 +581,12 @@ async function loadAuthorizationUserUsageSummaryAsync(client: DatabaseClient, fi
       output_tokens,
       cache_read_tokens,
       cache_read_cost_usd,
+      cache_write_tokens,
+      cache_write_1h_tokens,
+      cache_write_cost_usd,
+      thinking_tokens,
+      input_image_tokens,
+      output_image_tokens,
       total_cost_usd AS total_cost,
       last_used_at
     FROM ${statsTable(client, 'authorization_user_usage_range_windows')}

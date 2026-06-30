@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 import type { UsageStatsRecordRow } from '../../storage/usage-stats-types.js'
 
@@ -17,6 +18,7 @@ runtimeConfig.secret = 'authorized-account-record-ownership-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'worker'
+runtimeConfig.workerRole = 'ingest-worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
@@ -85,14 +87,22 @@ try {
   const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
   const granteeGroup = repositories.createGroup({
     name: '记录归属被授权人分组',
-    providerCode: 'gpt'
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
+  }, granteeAccess)
+  const granteeTargetGroup = repositories.createGroup({
+    name: '记录归属被授权人重新绑定分组',
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, granteeAccess)
   const ownerSourceGroup = repositories.createGroup({
     name: '记录归属来源分组',
-    providerCode: 'gpt'
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, ownerAccess)
   const ownerAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '记录归属来源账户',
     type: 'api_key',
     credentials: { api_key: 'sk-record-ownership', base_url: 'https://api.openai.com/v1' },
@@ -112,7 +122,7 @@ try {
     baseUrl,
     `/__aisys__/api/my-accounts/${granteeAccount.id}/group`,
     sessionCookie(grantee.id),
-    { groupId: granteeGroup.id }
+    { groupId: granteeTargetGroup.id }
   )
   assert.equal(boundAccount.id, granteeAccount.id, '被授权人应能绑定自己的授权实例到账户池分组')
 
@@ -229,6 +239,12 @@ function usageStatsRecordBase(systemAccountId: string, accountId: string): Usage
     output_tokens: 5,
     cache_read_tokens: 0,
     cache_read_cost_usd: 0,
+    cache_write_tokens: 0,
+    cache_write_1h_tokens: 0,
+    cache_write_cost_usd: 0,
+    thinking_tokens: 0,
+    input_image_tokens: 0,
+    output_image_tokens: 0,
     cost_usd: 0.001,
     error_code: null,
     error_message: null,

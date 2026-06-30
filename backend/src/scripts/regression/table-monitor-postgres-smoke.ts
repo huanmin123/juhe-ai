@@ -4,6 +4,7 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { closeRedisClients } from '../../shared/redis-client.js'
 import { closePostgresPool, getPostgresPool } from '../../storage/postgres-client.js'
 import {
+  collectTableStorageSnapshotAsync,
   getTableStorageOverviewAsync,
   listDatabaseStorageHistoryAsync,
   listTableStorageHistoryAsync
@@ -17,6 +18,8 @@ const middleAt = '2099-01-01T00:05:00.000Z'
 const endAt = '2099-01-01T00:10:00.000Z'
 const targetTableName = `tm_pg_smoke_target_${marker}`
 const otherTableName = `tm_pg_smoke_other_${marker}`
+const sampledTableName = `tm_collect_${Date.now().toString(36)}_${Math.random().toString(16).slice(2, 8)}`
+const sampledAt = '2099-01-01T00:20:00.000Z'
 const databaseSnapshotIds = [
   `db_${marker}_business_old`,
   `db_${marker}_business_new`,
@@ -30,6 +33,7 @@ const tableSnapshotIds = [
 const pool = await getPostgresPool()
 
 try {
+  await createSampledPostgresTable()
   await insertSmokeRows()
 
   const overview = await getTableStorageOverviewAsync({ startAt, endAt, limit: 10 })
@@ -65,6 +69,7 @@ try {
   )
 
   await assertTableMonitorExplainPlans()
+  await assertPostgresCollectorWritesSnapshots()
 
   console.log(JSON.stringify({
     message: '表监控 PG smoke 通过',
@@ -118,6 +123,64 @@ async function insertSmokeRows(): Promise<void> {
     tableSnapshotIds[2],
     otherTableName
   ])
+}
+
+async function createSampledPostgresTable(): Promise<void> {
+  const tableIdentifier = quoteIdentifier(sampledTableName)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS juhe_dataset.${tableIdentifier} (
+      id text PRIMARY KEY,
+      value text NOT NULL,
+      created_at text NOT NULL
+    )
+  `)
+  await pool.query(`CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${sampledTableName}_value_idx`)} ON juhe_dataset.${tableIdentifier}(value)`)
+  await pool.query(`
+    INSERT INTO juhe_dataset.${tableIdentifier} (id, value, created_at)
+    VALUES ($1, 'alpha', $3), ($2, 'beta', $3)
+    ON CONFLICT(id) DO UPDATE SET value = excluded.value, created_at = excluded.created_at
+  `, [`${marker}-1`, `${marker}-2`, startAt])
+  await pool.query(`ANALYZE juhe_dataset.${tableIdentifier}`)
+}
+
+async function assertPostgresCollectorWritesSnapshots(): Promise<void> {
+  await pool.query(`
+    DELETE FROM juhe_stats.table_storage_snapshots
+    WHERE database_role = 'dataset' AND table_name = $1
+  `, [sampledTableName])
+  await pool.query(`
+    DELETE FROM juhe_stats.stats_job_state
+    WHERE scope_type = 'table_monitor' AND scope_id = 'dataset' AND job_name = 'table_storage_snapshots'
+  `)
+  const result = await collectTableStorageSnapshotAsync(sampledAt, {
+    tableScanMode: 'full',
+    maxTablesPerDatabase: 100
+  })
+  assert.equal(result.databaseSnapshots, 4, 'PG 采样应只写入 PostgreSQL 四个逻辑 schema 快照')
+  assert(result.tableSnapshots >= 1, 'PG 采样应写入表级快照')
+
+  const history = await listTableStorageHistoryAsync({
+    databaseRole: 'dataset',
+    tableName: sampledTableName,
+    startAt: sampledAt,
+    endAt: sampledAt,
+    limit: 5
+  })
+  assert.equal(history.length, 1, 'PG 采样应写入临时表历史快照')
+  assert.equal(history[0]?.sampledAt, sampledAt, 'PG 表级快照应使用采样时间')
+  assert((history[0]?.rowCount ?? 0) >= 2, 'PG 表级快照应读取 pg_stat 行数估算')
+  assert((history[0]?.totalBytes ?? 0) > 0, 'PG 表级快照应记录 pg_total_relation_size')
+  assert((history[0]?.indexCount ?? 0) >= 1, 'PG 表级快照应记录索引数量')
+
+  const databaseHistory = await listDatabaseStorageHistoryAsync({
+    startAt: sampledAt,
+    endAt: sampledAt,
+    limit: 10
+  })
+  const datasetSnapshot = databaseHistory.find((row) => row.databaseRole === 'dataset' && row.sampledAt === sampledAt)
+  assert(datasetSnapshot, 'PG 采样应写入 dataset schema 数据库快照')
+  assert.equal(datasetSnapshot?.databasePath, 'postgres:juhe_dataset', 'PG 采样不应暴露 SQLite 文件路径')
+  assert((datasetSnapshot?.fileBytes ?? 0) > 0, 'PG schema 快照应记录 schema 总大小')
 }
 
 async function assertTableMonitorExplainPlans(): Promise<void> {
@@ -211,6 +274,14 @@ async function assertIndexedPlan(label: string, sql: string, params: unknown[], 
 }
 
 async function cleanupSmokeRows(): Promise<void> {
+  await pool.query(`DROP TABLE IF EXISTS juhe_dataset.${quoteIdentifier(sampledTableName)}`)
+  await pool.query('DELETE FROM juhe_stats.table_storage_snapshots WHERE database_role = $1 AND table_name = $2', ['dataset', sampledTableName])
+  await pool.query('DELETE FROM juhe_stats.database_storage_snapshots WHERE sampled_at = $1 AND database_path LIKE $2', [sampledAt, 'postgres:%'])
+  await pool.query("DELETE FROM juhe_stats.stats_job_state WHERE scope_type = 'table_monitor' AND scope_id = 'dataset' AND job_name = 'table_storage_snapshots'")
   await pool.query('DELETE FROM juhe_stats.table_storage_snapshots WHERE id = ANY($1::text[])', [tableSnapshotIds])
   await pool.query('DELETE FROM juhe_stats.database_storage_snapshots WHERE id = ANY($1::text[])', [databaseSnapshotIds])
+}
+
+function quoteIdentifier(identifier: string): string {
+  return `"${identifier.replace(/"/g, '""')}"`
 }

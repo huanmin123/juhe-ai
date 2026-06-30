@@ -37,7 +37,6 @@
 
     <ExternalIntegrationSourceList
       :actions="sourceActions"
-      :built-in-source-short-description="builtInSourceShortDescription"
       :data-source="rows"
       :format-token-preview="formatTokenPreview"
       :loading="loading"
@@ -121,8 +120,7 @@ const sourceSaving = ref(false)
 const editingSourceId = ref<string>()
 const sourceForm = reactive<ExternalSourceForm>(createEmptySourceForm())
 
-const builtInSourceShortDescription = '系统内置联调用来源'
-const builtInSourceDescription = '系统内置联调用来源，已授权全部公开接口；复制完整 Token 调用 /__aipublic__ 接口时只返回 Mock 数据，可用于对接请求头、参数和响应解析。'
+const builtInSourceDescription = '已授权全部公开接口；复制完整 Token 调用 /__aipublic__ 接口时只返回 Mock 数据，可用于对接请求头、参数和响应解析。'
 const {
   createdTokenOpen,
   createdTokenPlain,

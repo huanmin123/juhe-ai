@@ -17,10 +17,8 @@
         <div class="source-name-cell">
           <div class="source-name-line">
             <strong>{{ record.name }}</strong>
-            <a-tag v-if="record.isBuiltIn" color="blue">内置</a-tag>
             <a-tag v-if="record.isBuiltIn" color="orange">Mock 数据</a-tag>
           </div>
-          <span v-if="record.isBuiltIn" class="source-description">{{ builtInSourceShortDescription }}</span>
         </div>
       </template>
       <template v-else-if="column.key === 'status'">
@@ -76,7 +74,6 @@
           <div>
             <div class="mobile-list-card-title">
               {{ record.name }}
-              <a-tag v-if="record.isBuiltIn" color="blue">内置</a-tag>
               <a-tag v-if="record.isBuiltIn" color="orange">Mock 数据</a-tag>
             </div>
           </div>
@@ -137,7 +134,6 @@ export type ExternalSourceRowActionKey =
 
 defineProps<{
   actions: (record: ExternalIntegrationSourceSummary) => RowActionItem[]
-  builtInSourceShortDescription: string
   dataSource: ExternalIntegrationSourceSummary[]
   formatTokenPreview: (token: ExternalIntegrationSourceTokenSummary | undefined) => string
   loading: boolean
@@ -200,16 +196,6 @@ function sourceStatusColor(status: ExternalIntegrationSourceStatus): string {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.source-name-cell span {
-  color: #64748b;
-  font-family: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
-  font-size: 12px;
-}
-
-.source-name-cell .source-description {
-  font-family: inherit;
 }
 
 .scope-tag-line {

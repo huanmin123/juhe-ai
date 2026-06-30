@@ -145,6 +145,12 @@ export function emptyUsageSummary(): AccountUsageSummary {
     outputTokens: 0,
     cacheReadTokens: 0,
     cacheReadCost: 0,
+    cacheWriteTokens: 0,
+    cacheWrite1hTokens: 0,
+    cacheWriteCost: 0,
+    thinkingTokens: 0,
+    inputImageTokens: 0,
+    outputImageTokens: 0,
     totalTokens: 0,
     totalCost: 0
   }
@@ -157,6 +163,12 @@ export function normalizeUsageSummary(usage?: Partial<AccountUsageSummary>): Acc
     outputTokens: usage?.outputTokens ?? 0,
     cacheReadTokens: usage?.cacheReadTokens ?? 0,
     cacheReadCost: usage?.cacheReadCost ?? 0,
+    cacheWriteTokens: usage?.cacheWriteTokens ?? 0,
+    cacheWrite1hTokens: usage?.cacheWrite1hTokens ?? 0,
+    cacheWriteCost: usage?.cacheWriteCost ?? 0,
+    thinkingTokens: usage?.thinkingTokens ?? 0,
+    inputImageTokens: usage?.inputImageTokens ?? 0,
+    outputImageTokens: usage?.outputImageTokens ?? 0,
     totalTokens: usage?.totalTokens ?? 0,
     totalCost: usage?.totalCost ?? 0,
     lastUsedAt: usage?.lastUsedAt
@@ -175,6 +187,12 @@ export function sumUsageSummaries(items: Array<Partial<AccountUsageSummary> | un
       outputTokens: summary.outputTokens + current.outputTokens,
       cacheReadTokens: summary.cacheReadTokens + current.cacheReadTokens,
       cacheReadCost: summary.cacheReadCost + current.cacheReadCost,
+      cacheWriteTokens: summary.cacheWriteTokens + current.cacheWriteTokens,
+      cacheWrite1hTokens: summary.cacheWrite1hTokens + current.cacheWrite1hTokens,
+      cacheWriteCost: summary.cacheWriteCost + current.cacheWriteCost,
+      thinkingTokens: summary.thinkingTokens + current.thinkingTokens,
+      inputImageTokens: summary.inputImageTokens + current.inputImageTokens,
+      outputImageTokens: summary.outputImageTokens + current.outputImageTokens,
       totalTokens: summary.totalTokens + current.totalTokens,
       totalCost: summary.totalCost + current.totalCost,
       lastUsedAt

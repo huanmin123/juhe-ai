@@ -45,6 +45,7 @@ import {
   refreshUsageQuotaHourlyWindowSnapshots
 } from './usage-stats-snapshot-helpers.js'
 import { aggregateUsageStatsRecords, createUsageStatsAggregationContext, extendUsageStatsAggregationContext } from './usage-stats-writers.js'
+import { upsertAuthorizationUsageReportRowsAsync } from './usage-stats-authorization-daily-writer.js'
 import { shouldAggregateUsageStatsRecord, usageStatsAccumulatorFromRecord, usageStatsEntries } from './usage-stats-aggregation.js'
 import { addAggregatedLatencyEntries, type AggregatedLatencyEntry } from './usage-stats-latency-writer.js'
 import { usageErrorTimeBuckets, usageModelTimeBuckets, usageStatsTimeBuckets, type UsageStatsTimeBucketDefinition, type UsageStatsTimeKeys } from './usage-stats-time-buckets.js'
@@ -337,6 +338,9 @@ async function aggregatePostgresUsageStatsRows(client: DatabaseClient, rows: Usa
     }
     addPostgresAggregatedUsageModelEntries(modelEntries, row, timeKeys)
     addPostgresAggregatedAccountQualityEntry(accountQualityEntries, row, timeKeys)
+    if (row.account_authorization_id || row.group_authorization_id) {
+      await upsertAuthorizationUsageReportRowsAsync(client, row, timeKeys.statDate, updatedAt, lookup)
+    }
     if (row.success !== 1) {
       addPostgresAggregatedUsageErrorEntries(errorEntries, row, timeKeys)
     }
@@ -360,16 +364,18 @@ async function aggregatePostgresUsageStatsRows(client: DatabaseClient, rows: Usa
 async function createPostgresUsageStatsAuthorizationLookup(
   client: DatabaseClient,
   rows: UsageStatsRecordRow[]
-): Promise<{ accountAuthorizationInstanceAccountIds: Map<string, string> }> {
+): Promise<{ accountAuthorizationResourceIds: Map<string, string>; accountAuthorizationInstanceAccountIds: Map<string, string> }> {
+  const accountAuthorizationResourceIds = new Map<string, string>()
   const accountAuthorizationInstanceAccountIds = new Map<string, string>()
   const ids = uniqueNonEmptyIds(rows.map((row) => row.account_authorization_id))
   if (ids.length === 0) {
-    return { accountAuthorizationInstanceAccountIds }
+    return { accountAuthorizationResourceIds, accountAuthorizationInstanceAccountIds }
   }
   for (const chunk of chunkValues(ids, 900)) {
-    const lookupRows = await client.query<{ id?: string | null; instance_account_id?: string | null }>(`
+    const lookupRows = await client.query<{ id?: string | null; resource_id?: string | null; instance_account_id?: string | null }>(`
       SELECT
         authorizations.id,
+        authorizations.resource_id,
         instance_accounts.id AS instance_account_id
       FROM juhe_business.resource_authorizations authorizations
       LEFT JOIN juhe_business.accounts instance_accounts
@@ -379,12 +385,15 @@ async function createPostgresUsageStatsAuthorizationLookup(
         AND authorizations.id = ANY(?)
     `, [chunk])
     for (const row of lookupRows) {
+      if (row.id && row.resource_id) {
+        accountAuthorizationResourceIds.set(row.id, row.resource_id)
+      }
       if (row.id && row.instance_account_id) {
         accountAuthorizationInstanceAccountIds.set(row.id, row.instance_account_id)
       }
     }
   }
-  return { accountAuthorizationInstanceAccountIds }
+  return { accountAuthorizationResourceIds, accountAuthorizationInstanceAccountIds }
 }
 
 function addPostgresAggregatedUsageStatsEntry(target: Map<string, PostgresAggregatedUsageStatsEntry>, entry: UsageStatsEntry): void {
@@ -554,6 +563,12 @@ async function upsertPostgresUsageStatsTotals(client: DatabaseClient, entries: P
     'output_tokens',
     'cache_read_tokens',
     'cache_read_cost_usd',
+    'cache_write_tokens',
+    'cache_write_1h_tokens',
+    'cache_write_cost_usd',
+    'thinking_tokens',
+    'input_image_tokens',
+    'output_image_tokens',
     'total_cost_usd',
     'duration_ms_sum',
     'duration_ms_count',
@@ -577,6 +592,12 @@ async function upsertPostgresUsageStatsTotals(client: DatabaseClient, entries: P
         output_tokens = usage_stats_totals.output_tokens + EXCLUDED.output_tokens,
         cache_read_tokens = usage_stats_totals.cache_read_tokens + EXCLUDED.cache_read_tokens,
         cache_read_cost_usd = usage_stats_totals.cache_read_cost_usd + EXCLUDED.cache_read_cost_usd,
+        cache_write_tokens = usage_stats_totals.cache_write_tokens + EXCLUDED.cache_write_tokens,
+        cache_write_1h_tokens = usage_stats_totals.cache_write_1h_tokens + EXCLUDED.cache_write_1h_tokens,
+        cache_write_cost_usd = usage_stats_totals.cache_write_cost_usd + EXCLUDED.cache_write_cost_usd,
+        thinking_tokens = usage_stats_totals.thinking_tokens + EXCLUDED.thinking_tokens,
+        input_image_tokens = usage_stats_totals.input_image_tokens + EXCLUDED.input_image_tokens,
+        output_image_tokens = usage_stats_totals.output_image_tokens + EXCLUDED.output_image_tokens,
         total_cost_usd = usage_stats_totals.total_cost_usd + EXCLUDED.total_cost_usd,
         duration_ms_sum = usage_stats_totals.duration_ms_sum + EXCLUDED.duration_ms_sum,
         duration_ms_count = usage_stats_totals.duration_ms_count + EXCLUDED.duration_ms_count,
@@ -615,6 +636,12 @@ async function upsertPostgresUsageStatsTimeBucket(
     'output_tokens',
     'cache_read_tokens',
     'cache_read_cost_usd',
+    'cache_write_tokens',
+    'cache_write_1h_tokens',
+    'cache_write_cost_usd',
+    'thinking_tokens',
+    'input_image_tokens',
+    'output_image_tokens',
     'total_cost_usd',
     'duration_ms_sum',
     'duration_ms_count',
@@ -638,6 +665,12 @@ async function upsertPostgresUsageStatsTimeBucket(
         output_tokens = ${bucket.tableName}.output_tokens + EXCLUDED.output_tokens,
         cache_read_tokens = ${bucket.tableName}.cache_read_tokens + EXCLUDED.cache_read_tokens,
         cache_read_cost_usd = ${bucket.tableName}.cache_read_cost_usd + EXCLUDED.cache_read_cost_usd,
+        cache_write_tokens = ${bucket.tableName}.cache_write_tokens + EXCLUDED.cache_write_tokens,
+        cache_write_1h_tokens = ${bucket.tableName}.cache_write_1h_tokens + EXCLUDED.cache_write_1h_tokens,
+        cache_write_cost_usd = ${bucket.tableName}.cache_write_cost_usd + EXCLUDED.cache_write_cost_usd,
+        thinking_tokens = ${bucket.tableName}.thinking_tokens + EXCLUDED.thinking_tokens,
+        input_image_tokens = ${bucket.tableName}.input_image_tokens + EXCLUDED.input_image_tokens,
+        output_image_tokens = ${bucket.tableName}.output_image_tokens + EXCLUDED.output_image_tokens,
         total_cost_usd = ${bucket.tableName}.total_cost_usd + EXCLUDED.total_cost_usd,
         duration_ms_sum = ${bucket.tableName}.duration_ms_sum + EXCLUDED.duration_ms_sum,
         duration_ms_count = ${bucket.tableName}.duration_ms_count + EXCLUDED.duration_ms_count,
@@ -711,6 +744,12 @@ async function upsertPostgresUsageModelEntries(client: DatabaseClient, entries: 
       'output_tokens',
       'cache_read_tokens',
       'cache_read_cost_usd',
+      'cache_write_tokens',
+      'cache_write_1h_tokens',
+      'cache_write_cost_usd',
+      'thinking_tokens',
+      'input_image_tokens',
+      'output_image_tokens',
       'total_cost_usd',
       'updated_at'
     ]
@@ -726,6 +765,12 @@ async function upsertPostgresUsageModelEntries(client: DatabaseClient, entries: 
           output_tokens = ${tableName}.output_tokens + EXCLUDED.output_tokens,
           cache_read_tokens = ${tableName}.cache_read_tokens + EXCLUDED.cache_read_tokens,
           cache_read_cost_usd = ${tableName}.cache_read_cost_usd + EXCLUDED.cache_read_cost_usd,
+          cache_write_tokens = ${tableName}.cache_write_tokens + EXCLUDED.cache_write_tokens,
+          cache_write_1h_tokens = ${tableName}.cache_write_1h_tokens + EXCLUDED.cache_write_1h_tokens,
+          cache_write_cost_usd = ${tableName}.cache_write_cost_usd + EXCLUDED.cache_write_cost_usd,
+          thinking_tokens = ${tableName}.thinking_tokens + EXCLUDED.thinking_tokens,
+          input_image_tokens = ${tableName}.input_image_tokens + EXCLUDED.input_image_tokens,
+          output_image_tokens = ${tableName}.output_image_tokens + EXCLUDED.output_image_tokens,
           total_cost_usd = ${tableName}.total_cost_usd + EXCLUDED.total_cost_usd,
           updated_at = EXCLUDED.updated_at
       `, chunk.flatMap((entry) => {
@@ -742,6 +787,12 @@ async function upsertPostgresUsageModelEntries(client: DatabaseClient, entries: 
           stats.outputTokens,
           stats.cacheReadTokens,
           stats.cacheReadCostUsd,
+          stats.cacheWriteTokens,
+          stats.cacheWrite1hTokens,
+          stats.cacheWriteCostUsd,
+          stats.thinkingTokens,
+          stats.inputImageTokens,
+          stats.outputImageTokens,
           stats.totalCostUsd,
           updatedAt
         ]
@@ -920,6 +971,12 @@ function normalizePostgresUsageStatsRecordRow(row: UsageStatsRecordRow): UsageSt
     output_tokens: nullableNumber(row.output_tokens),
     cache_read_tokens: nullableNumber(row.cache_read_tokens),
     cache_read_cost_usd: nullableNumber(row.cache_read_cost_usd),
+    cache_write_tokens: nullableNumber(row.cache_write_tokens),
+    cache_write_1h_tokens: nullableNumber(row.cache_write_1h_tokens),
+    cache_write_cost_usd: nullableNumber(row.cache_write_cost_usd),
+    thinking_tokens: nullableNumber(row.thinking_tokens),
+    input_image_tokens: nullableNumber(row.input_image_tokens),
+    output_image_tokens: nullableNumber(row.output_image_tokens),
     cost_usd: nullableNumber(row.cost_usd)
   }
 }
@@ -1011,6 +1068,12 @@ function mergePostgresUsageStatsAccumulator(target: UsageStatsAccumulator, sourc
   target.outputTokens += source.outputTokens
   target.cacheReadTokens += source.cacheReadTokens
   target.cacheReadCostUsd += source.cacheReadCostUsd
+  target.cacheWriteTokens += source.cacheWriteTokens
+  target.cacheWrite1hTokens += source.cacheWrite1hTokens
+  target.cacheWriteCostUsd += source.cacheWriteCostUsd
+  target.thinkingTokens += source.thinkingTokens
+  target.inputImageTokens += source.inputImageTokens
+  target.outputImageTokens += source.outputImageTokens
   target.totalCostUsd += source.totalCostUsd
   target.durationMsSum += source.durationMsSum
   target.durationMsCount += source.durationMsCount
@@ -1643,12 +1706,31 @@ function refreshAiPerformanceSummaryWindows(
   }
 }
 
+const usageStatsConsistencyMetrics = [
+  'request_count',
+  'success_count',
+  'error_count',
+  'input_tokens',
+  'output_tokens',
+  'cache_read_tokens',
+  'cache_read_cost_usd',
+  'cache_write_tokens',
+  'cache_write_1h_tokens',
+  'cache_write_cost_usd',
+  'thinking_tokens',
+  'input_image_tokens',
+  'output_image_tokens',
+  'total_cost_usd'
+] as const
+
+type UsageStatsConsistencyMetric = typeof usageStatsConsistencyMetrics[number]
+
 export interface UsageStatsConsistencyIssue {
   systemAccountId: string
   scopeType: string
   scopeId: string
   statDate: string
-  metric: 'request_count' | 'success_count' | 'error_count' | 'input_tokens' | 'output_tokens' | 'cache_read_tokens' | 'cache_read_cost_usd' | 'total_cost_usd'
+  metric: UsageStatsConsistencyMetric
   dailyValue: number
   hourlyValue: number
 }
@@ -1657,7 +1739,9 @@ export function checkUsageStatsConsistency(sampleLimit = 20): UsageStatsConsiste
   const database = getStatsDatabase()
   const samples = database.prepare(`
     SELECT system_account_id, scope_type, scope_id, stat_date,
-      request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd
+      request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd,
+      cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens,
+      total_cost_usd
     FROM usage_stats_daily
     WHERE stat_date < ?
     ORDER BY updated_at DESC, stat_date DESC, system_account_id ASC, scope_type ASC, scope_id ASC
@@ -1675,6 +1759,12 @@ export function checkUsageStatsConsistency(sampleLimit = 20): UsageStatsConsiste
         COALESCE(SUM(output_tokens), 0) AS output_tokens,
         COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
         COALESCE(SUM(cache_read_cost_usd), 0) AS cache_read_cost_usd,
+        COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+        COALESCE(SUM(cache_write_1h_tokens), 0) AS cache_write_1h_tokens,
+        COALESCE(SUM(cache_write_cost_usd), 0) AS cache_write_cost_usd,
+        COALESCE(SUM(thinking_tokens), 0) AS thinking_tokens,
+        COALESCE(SUM(input_image_tokens), 0) AS input_image_tokens,
+        COALESCE(SUM(output_image_tokens), 0) AS output_image_tokens,
         COALESCE(SUM(total_cost_usd), 0) AS total_cost_usd
       FROM usage_stats_hourly
       WHERE system_account_id = ?
@@ -1701,7 +1791,9 @@ export function getUsageStatsOverview(access?: AccessScope, range: AccountUsageS
 
   const summaryRow = database.prepare(`
     SELECT ? AS account_id, request_count, success_count, error_count,
-      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd AS total_cost,
+      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd,
+      cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens,
+      total_cost_usd AS total_cost,
       duration_ms_sum, duration_ms_count, first_token_ms_sum, first_token_ms_count, last_used_at
     FROM usage_overview_summary_windows
     WHERE system_account_id = ? AND window_key = ? AND start_date = ? AND end_date = ?
@@ -1709,19 +1801,22 @@ export function getUsageStatsOverview(access?: AccessScope, range: AccountUsageS
 
   const hourlyRows = database.prepare(`
     SELECT bucket_key AS stat_hour, request_count, error_count, input_tokens, output_tokens, cache_read_tokens,
-      cache_read_cost_usd, total_cost_usd AS total_cost, duration_ms_sum, duration_ms_count
+      cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd,
+      thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd AS total_cost, duration_ms_sum, duration_ms_count
     FROM usage_overview_trend_windows
     WHERE system_account_id = ? AND window_key = ? AND start_date = ? AND end_date = ?
     ORDER BY bucket_key ASC
-  `).all(statsScope.systemAccountId, windowKey, range.startDate, range.endDate) as unknown as Array<StatsAggregateMathRow & { stat_hour: string; error_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_read_cost_usd: number; total_cost: number }>
+  `).all(statsScope.systemAccountId, windowKey, range.startDate, range.endDate) as unknown as Array<StatsAggregateMathRow & { stat_hour: string; error_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_read_cost_usd: number; cache_write_tokens?: number; cache_write_1h_tokens?: number; cache_write_cost_usd?: number; thinking_tokens?: number; input_image_tokens?: number; output_image_tokens?: number; total_cost: number }>
 
   const modelRows = database.prepare(`
     SELECT provider_code, model,
-      request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd AS total_cost
+      request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd,
+      cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens,
+      total_cost_usd AS total_cost
     FROM usage_model_rank_windows
     WHERE system_account_id = ? AND window_key = ? AND start_date = ? AND end_date = ?
     ORDER BY rank ASC
-  `).all(statsScope.systemAccountId, windowKey, range.startDate, range.endDate) as unknown as Array<{ provider_code: string; model: string; request_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_read_cost_usd: number; total_cost: number }>
+  `).all(statsScope.systemAccountId, windowKey, range.startDate, range.endDate) as unknown as Array<{ provider_code: string; model: string; request_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_read_cost_usd: number; cache_write_tokens?: number; cache_write_1h_tokens?: number; cache_write_cost_usd?: number; thinking_tokens?: number; input_image_tokens?: number; output_image_tokens?: number; total_cost: number }>
 
   const errorRows = database.prepare(`
     SELECT provider_code, error_code, status_code, error_message, error_count
@@ -1739,6 +1834,13 @@ export function getUsageStatsOverview(access?: AccessScope, range: AccountUsageS
       model: row.model,
       requestCount: Number(row.request_count ?? 0),
       totalTokens: Number(row.input_tokens ?? 0) + Number(row.output_tokens ?? 0),
+      cacheReadTokens: Number(row.cache_read_tokens ?? 0),
+      cacheWriteTokens: Number(row.cache_write_tokens ?? 0),
+      cacheWrite1hTokens: Number(row.cache_write_1h_tokens ?? 0),
+      cacheWriteCost: Number(row.cache_write_cost_usd ?? 0),
+      thinkingTokens: Number(row.thinking_tokens ?? 0),
+      inputImageTokens: Number(row.input_image_tokens ?? 0),
+      outputImageTokens: Number(row.output_image_tokens ?? 0),
       totalCost: Number(row.total_cost ?? 0)
     })),
     errors: errorRows.map((row) => ({
@@ -1762,23 +1864,28 @@ export async function getUsageStatsOverviewAsync(access?: AccessScope, range: Ac
 
   const summaryRow = await client.one<AccountUsageAggregateRow & StatsAggregateMathRow>(`
     SELECT ? AS account_id, request_count, success_count, error_count,
-      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd AS total_cost,
+      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd,
+      cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens,
+      total_cost_usd AS total_cost,
       duration_ms_sum, duration_ms_count, first_token_ms_sum, first_token_ms_count, last_used_at
     FROM juhe_stats.usage_overview_summary_windows
     WHERE system_account_id = ? AND window_key = ? AND start_date = ? AND end_date = ?
   `, [statsScope.scopeId, statsScope.systemAccountId, windowKey, range.startDate, range.endDate])
 
-  const hourlyRows = await client.query<StatsAggregateMathRow & { stat_hour: string; error_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_read_cost_usd: number; total_cost: number }>(`
+  const hourlyRows = await client.query<StatsAggregateMathRow & { stat_hour: string; error_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_read_cost_usd: number; cache_write_tokens?: number; cache_write_1h_tokens?: number; cache_write_cost_usd?: number; thinking_tokens?: number; input_image_tokens?: number; output_image_tokens?: number; total_cost: number }>(`
     SELECT bucket_key AS stat_hour, request_count, error_count, input_tokens, output_tokens, cache_read_tokens,
-      cache_read_cost_usd, total_cost_usd AS total_cost, duration_ms_sum, duration_ms_count
+      cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd,
+      thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd AS total_cost, duration_ms_sum, duration_ms_count
     FROM juhe_stats.usage_overview_trend_windows
     WHERE system_account_id = ? AND window_key = ? AND start_date = ? AND end_date = ?
     ORDER BY bucket_key ASC
   `, [statsScope.systemAccountId, windowKey, range.startDate, range.endDate])
 
-  const modelRows = await client.query<{ provider_code: string; model: string; request_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_read_cost_usd: number; total_cost: number }>(`
+  const modelRows = await client.query<{ provider_code: string; model: string; request_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_read_cost_usd: number; cache_write_tokens?: number; cache_write_1h_tokens?: number; cache_write_cost_usd?: number; thinking_tokens?: number; input_image_tokens?: number; output_image_tokens?: number; total_cost: number }>(`
     SELECT provider_code, model,
-      request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd AS total_cost
+      request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd,
+      cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens,
+      total_cost_usd AS total_cost
     FROM juhe_stats.usage_model_rank_windows
     WHERE system_account_id = ? AND window_key = ? AND start_date = ? AND end_date = ?
     ORDER BY rank ASC
@@ -1800,6 +1907,13 @@ export async function getUsageStatsOverviewAsync(access?: AccessScope, range: Ac
       model: row.model,
       requestCount: Number(row.request_count ?? 0),
       totalTokens: Number(row.input_tokens ?? 0) + Number(row.output_tokens ?? 0),
+      cacheReadTokens: Number(row.cache_read_tokens ?? 0),
+      cacheWriteTokens: Number(row.cache_write_tokens ?? 0),
+      cacheWrite1hTokens: Number(row.cache_write_1h_tokens ?? 0),
+      cacheWriteCost: Number(row.cache_write_cost_usd ?? 0),
+      thinkingTokens: Number(row.thinking_tokens ?? 0),
+      inputImageTokens: Number(row.input_image_tokens ?? 0),
+      outputImageTokens: Number(row.output_image_tokens ?? 0),
       totalCost: Number(row.total_cost ?? 0)
     })),
     errors: errorRows.map((row) => ({
@@ -1822,12 +1936,19 @@ export async function latestUsageStatsLagSecondsForRuntime(): Promise<number | u
 }
 
 function mapUsageTrendRows(
-  rows: Array<StatsAggregateMathRow & { stat_hour: string; error_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_read_cost_usd: number; total_cost: number }>,
+  rows: Array<StatsAggregateMathRow & { stat_hour: string; error_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_read_cost_usd: number; cache_write_tokens?: number; cache_write_1h_tokens?: number; cache_write_cost_usd?: number; thinking_tokens?: number; input_image_tokens?: number; output_image_tokens?: number; total_cost: number }>,
 ): UsageStatsOverview['hourlyTrend'] {
   return rows.map((row) => ({
     statHour: row.stat_hour,
     requestCount: Number(row.request_count ?? 0),
     totalTokens: Number(row.input_tokens ?? 0) + Number(row.output_tokens ?? 0),
+    cacheReadTokens: Number(row.cache_read_tokens ?? 0),
+    cacheWriteTokens: Number(row.cache_write_tokens ?? 0),
+    cacheWrite1hTokens: Number(row.cache_write_1h_tokens ?? 0),
+    cacheWriteCost: Number(row.cache_write_cost_usd ?? 0),
+    thinkingTokens: Number(row.thinking_tokens ?? 0),
+    inputImageTokens: Number(row.input_image_tokens ?? 0),
+    outputImageTokens: Number(row.output_image_tokens ?? 0),
     totalCost: Number(row.total_cost ?? 0),
     averageDurationMs: averageFromSum(row.duration_ms_sum, row.duration_ms_count),
     errorCount: Number(row.error_count ?? 0)
@@ -1904,19 +2025,11 @@ function latestCursor(
   return current
 }
 
-interface ConsistencyStatsRow {
+interface ConsistencyStatsRow extends Record<UsageStatsConsistencyMetric, number> {
   systemAccountId: string
   scopeType: string
   scopeId: string
   statDate: string
-  request_count: number
-  success_count: number
-  error_count: number
-  input_tokens: number
-  output_tokens: number
-  cache_read_tokens: number
-  cache_read_cost_usd: number
-  total_cost_usd: number
 }
 
 function consistencyStatsRow(row: Record<string, unknown>): ConsistencyStatsRow {
@@ -1932,17 +2045,22 @@ function consistencyStatsRow(row: Record<string, unknown>): ConsistencyStatsRow 
     output_tokens: Number(row.output_tokens ?? 0),
     cache_read_tokens: Number(row.cache_read_tokens ?? 0),
     cache_read_cost_usd: Number(row.cache_read_cost_usd ?? 0),
+    cache_write_tokens: Number(row.cache_write_tokens ?? 0),
+    cache_write_1h_tokens: Number(row.cache_write_1h_tokens ?? 0),
+    cache_write_cost_usd: Number(row.cache_write_cost_usd ?? 0),
+    thinking_tokens: Number(row.thinking_tokens ?? 0),
+    input_image_tokens: Number(row.input_image_tokens ?? 0),
+    output_image_tokens: Number(row.output_image_tokens ?? 0),
     total_cost_usd: Number(row.total_cost_usd ?? 0)
   }
 }
 
 function compareConsistencyRows(daily: ConsistencyStatsRow, hourly: ConsistencyStatsRow): UsageStatsConsistencyIssue[] {
-  const metrics: UsageStatsConsistencyIssue['metric'][] = ['request_count', 'success_count', 'error_count', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_read_cost_usd', 'total_cost_usd']
   const issues: UsageStatsConsistencyIssue[] = []
-  for (const metric of metrics) {
+  for (const metric of usageStatsConsistencyMetrics) {
     const dailyValue = daily[metric]
     const hourlyValue = hourly[metric]
-    const tolerance = metric === 'total_cost_usd' || metric === 'cache_read_cost_usd' ? 0.000001 : 0
+    const tolerance = consistencyMetricTolerance(metric)
     if (Math.abs(dailyValue - hourlyValue) <= tolerance) continue
     issues.push({
       systemAccountId: daily.systemAccountId,
@@ -1955,6 +2073,12 @@ function compareConsistencyRows(daily: ConsistencyStatsRow, hourly: ConsistencyS
     })
   }
   return issues
+}
+
+function consistencyMetricTolerance(metric: UsageStatsConsistencyMetric): number {
+  return metric === 'total_cost_usd' || metric === 'cache_read_cost_usd' || metric === 'cache_write_cost_usd'
+    ? 0.000001
+    : 0
 }
 
 function boundedConsistencySampleLimit(value: number): number {

@@ -13,6 +13,12 @@ const usage: AccountUsageSummary = {
   outputTokens: 1300,
   cacheReadTokens: 500,
   cacheReadCost: 0.11,
+  cacheWriteTokens: 0,
+  cacheWrite1hTokens: 0,
+  cacheWriteCost: 0,
+  thinkingTokens: 0,
+  inputImageTokens: 0,
+  outputImageTokens: 0,
   totalTokens: 4500,
   totalCost: 1.234
 }
@@ -94,6 +100,12 @@ function emptyUsage(): AccountUsageSummary {
     outputTokens: 0,
     cacheReadTokens: 0,
     cacheReadCost: 0,
+    cacheWriteTokens: 0,
+    cacheWrite1hTokens: 0,
+    cacheWriteCost: 0,
+    thinkingTokens: 0,
+    inputImageTokens: 0,
+    outputImageTokens: 0,
     totalTokens: 0,
     totalCost: 0
   }

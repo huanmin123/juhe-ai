@@ -72,6 +72,12 @@ export interface PublicClientIpUsageItem {
   outputTokens: number
   cacheReadTokens: number
   cacheRate: number
+  cacheWriteTokens: number
+  cacheWrite1hTokens: number
+  cacheWriteCost: number
+  thinkingTokens: number
+  inputImageTokens: number
+  outputImageTokens: number
   totalTokens: number
   totalCost: number
   cacheReadCost: number
@@ -99,6 +105,12 @@ export interface PublicAccountUsageItem {
   outputTokens: number
   cacheReadTokens: number
   cacheRate: number
+  cacheWriteTokens: number
+  cacheWrite1hTokens: number
+  cacheWriteCost: number
+  thinkingTokens: number
+  inputImageTokens: number
+  outputImageTokens: number
   totalTokens: number
   totalCost: number
   cacheReadCost: number
@@ -184,6 +196,12 @@ interface AccountUsageRangeRow {
   output_tokens: number
   cache_read_tokens: number
   cache_read_cost_usd: number
+  cache_write_tokens: number
+  cache_write_1h_tokens: number
+  cache_write_cost_usd: number
+  thinking_tokens: number
+  input_image_tokens: number
+  output_image_tokens: number
   total_cost_usd: number
   duration_ms_sum: number
   duration_ms_count: number
@@ -216,6 +234,12 @@ const mockRows: Array<{ ip: string; usage: ClientIpUsageSummary }> = [
       outputTokens: 326000,
       cacheReadTokens: 126000,
       cacheReadCost: 0.42,
+      cacheWriteTokens: 0,
+      cacheWrite1hTokens: 0,
+      cacheWriteCost: 0,
+      thinkingTokens: 0,
+      inputImageTokens: 0,
+      outputImageTokens: 0,
       totalTokens: 842000,
       totalCost: 12.36,
       activeDays: 7,
@@ -236,6 +260,12 @@ const mockRows: Array<{ ip: string; usage: ClientIpUsageSummary }> = [
       outputTokens: 214000,
       cacheReadTokens: 68420,
       cacheReadCost: 0.31,
+      cacheWriteTokens: 0,
+      cacheWrite1hTokens: 0,
+      cacheWriteCost: 0,
+      thinkingTokens: 0,
+      inputImageTokens: 0,
+      outputImageTokens: 0,
       totalTokens: 531400,
       totalCost: 8.42,
       activeDays: 6,
@@ -256,6 +286,12 @@ const mockRows: Array<{ ip: string; usage: ClientIpUsageSummary }> = [
       outputTokens: 120600,
       cacheReadTokens: 38200,
       cacheReadCost: 0.18,
+      cacheWriteTokens: 0,
+      cacheWrite1hTokens: 0,
+      cacheWriteCost: 0,
+      thinkingTokens: 0,
+      inputImageTokens: 0,
+      outputImageTokens: 0,
       totalTokens: 304800,
       totalCost: 5.18,
       activeDays: 5,
@@ -736,6 +772,12 @@ function listPublicAccountUsageStats(input: {
       usage_window.output_tokens,
       usage_window.cache_read_tokens,
       usage_window.cache_read_cost_usd,
+      usage_window.cache_write_tokens,
+      usage_window.cache_write_1h_tokens,
+      usage_window.cache_write_cost_usd,
+      usage_window.thinking_tokens,
+      usage_window.input_image_tokens,
+      usage_window.output_image_tokens,
       usage_window.total_cost_usd,
       usage_window.duration_ms_sum,
       usage_window.duration_ms_count,
@@ -837,6 +879,12 @@ async function listPublicAccountUsageStatsAsync(input: {
       usage_window.output_tokens,
       usage_window.cache_read_tokens,
       CAST(usage_window.cache_read_cost_usd AS double precision) AS cache_read_cost_usd,
+      usage_window.cache_write_tokens,
+      usage_window.cache_write_1h_tokens,
+      CAST(usage_window.cache_write_cost_usd AS double precision) AS cache_write_cost_usd,
+      usage_window.thinking_tokens,
+      usage_window.input_image_tokens,
+      usage_window.output_image_tokens,
       CAST(usage_window.total_cost_usd AS double precision) AS total_cost_usd,
       usage_window.duration_ms_sum,
       usage_window.duration_ms_count,
@@ -1145,6 +1193,12 @@ function mapPublicAccountUsageItem(
     outputTokens,
     cacheReadTokens,
     cacheRate: roundRatio(inputTokens > 0 ? cacheReadTokens / inputTokens : 0),
+    cacheWriteTokens: Number(row.cache_write_tokens ?? 0),
+    cacheWrite1hTokens: Number(row.cache_write_1h_tokens ?? 0),
+    cacheWriteCost: Number(row.cache_write_cost_usd ?? 0),
+    thinkingTokens: Number(row.thinking_tokens ?? 0),
+    inputImageTokens: Number(row.input_image_tokens ?? 0),
+    outputImageTokens: Number(row.output_image_tokens ?? 0),
     totalTokens: inputTokens + outputTokens,
     totalCost: Number(row.total_cost_usd ?? 0),
     cacheReadCost: Number(row.cache_read_cost_usd ?? 0),
@@ -1170,6 +1224,12 @@ function mapPublicClientIpUsageItem(ip: string, usage: ClientIpUsageSummary, ran
     outputTokens: usage.outputTokens,
     cacheReadTokens: usage.cacheReadTokens,
     cacheRate: roundRatio(usage.inputTokens > 0 ? usage.cacheReadTokens / usage.inputTokens : 0),
+    cacheWriteTokens: usage.cacheWriteTokens,
+    cacheWrite1hTokens: usage.cacheWrite1hTokens,
+    cacheWriteCost: usage.cacheWriteCost,
+    thinkingTokens: usage.thinkingTokens,
+    inputImageTokens: usage.inputImageTokens,
+    outputImageTokens: usage.outputImageTokens,
     totalTokens: usage.totalTokens,
     totalCost: usage.totalCost,
     cacheReadCost: usage.cacheReadCost,
@@ -1236,6 +1296,12 @@ function mockAccountUsageRow(
     output_tokens: outputTokens,
     cache_read_tokens: cacheReadTokens,
     cache_read_cost_usd: cacheReadTokens / 100000,
+    cache_write_tokens: 0,
+    cache_write_1h_tokens: 0,
+    cache_write_cost_usd: 0,
+    thinking_tokens: 0,
+    input_image_tokens: 0,
+    output_image_tokens: 0,
     total_cost_usd: totalCostUsd,
     duration_ms_sum: requestCount * 3200,
     duration_ms_count: requestCount,

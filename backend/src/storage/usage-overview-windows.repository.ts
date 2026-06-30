@@ -117,7 +117,8 @@ async function refreshUsageOverviewSummaryWindowSnapshotsAsync(client: DatabaseC
   for (const scope of context.overviewScopes) {
     const rows = await client.query<UsageStatsDailyWindowRow>(`
       SELECT stat_date, request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens,
-        cache_read_cost_usd, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
+        cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd,
+        thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
         first_token_ms_sum, first_token_ms_count, first_token_ms_max, last_used_at
       FROM ${statsTable(client, 'usage_stats_daily')}
       WHERE system_account_id = ?
@@ -142,6 +143,12 @@ async function refreshUsageOverviewSummaryWindowSnapshotsAsync(client: DatabaseC
         aggregate.outputTokens,
         aggregate.cacheReadTokens,
         aggregate.cacheReadCostUsd,
+        aggregate.cacheWriteTokens,
+        aggregate.cacheWrite1hTokens,
+        aggregate.cacheWriteCostUsd,
+        aggregate.thinkingTokens,
+        aggregate.inputImageTokens,
+        aggregate.outputImageTokens,
         aggregate.totalCostUsd,
         aggregate.durationMsSum,
         aggregate.durationMsCount,
@@ -154,7 +161,8 @@ async function refreshUsageOverviewSummaryWindowSnapshotsAsync(client: DatabaseC
   }
   await insertRowsAsync(client, 'usage_overview_summary_windows', [
     'system_account_id', 'window_key', 'start_date', 'end_date', 'request_count', 'success_count', 'error_count',
-    'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_read_cost_usd', 'total_cost_usd',
+    'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_read_cost_usd', 'cache_write_tokens', 'cache_write_1h_tokens', 'cache_write_cost_usd',
+    'thinking_tokens', 'input_image_tokens', 'output_image_tokens', 'total_cost_usd',
     'duration_ms_sum', 'duration_ms_count', 'first_token_ms_sum', 'first_token_ms_count',
     'last_used_at', 'updated_at'
   ], insertRows)
@@ -166,7 +174,8 @@ async function refreshUsageOverviewTrendWindowSnapshotsAsync(client: DatabaseCli
   for (const scope of context.overviewScopes) {
     const rows = await client.query<UsageOverviewHourlyWindowRow>(`
       SELECT stat_hour, request_count, error_count, input_tokens, output_tokens, cache_read_tokens,
-        cache_read_cost_usd, total_cost_usd, duration_ms_sum, duration_ms_count
+        cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd,
+        thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, duration_ms_sum, duration_ms_count
       FROM ${statsTable(client, 'usage_stats_hourly')}
       WHERE system_account_id = ?
         AND scope_type = 'system_account'
@@ -191,6 +200,12 @@ async function refreshUsageOverviewTrendWindowSnapshotsAsync(client: DatabaseCli
           bucket.outputTokens,
           bucket.cacheReadTokens,
           bucket.cacheReadCostUsd,
+          bucket.cacheWriteTokens,
+          bucket.cacheWrite1hTokens,
+          bucket.cacheWriteCostUsd,
+          bucket.thinkingTokens,
+          bucket.inputImageTokens,
+          bucket.outputImageTokens,
           bucket.totalCostUsd,
           bucket.durationMsSum,
           bucket.durationMsCount,
@@ -201,7 +216,8 @@ async function refreshUsageOverviewTrendWindowSnapshotsAsync(client: DatabaseCli
   }
   await insertRowsAsync(client, 'usage_overview_trend_windows', [
     'system_account_id', 'window_key', 'start_date', 'end_date', 'bucket_key', 'request_count', 'error_count',
-    'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_read_cost_usd', 'total_cost_usd',
+    'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_read_cost_usd', 'cache_write_tokens', 'cache_write_1h_tokens', 'cache_write_cost_usd',
+    'thinking_tokens', 'input_image_tokens', 'output_image_tokens', 'total_cost_usd',
     'duration_ms_sum', 'duration_ms_count', 'updated_at'
   ], insertRows)
 }
@@ -211,7 +227,8 @@ async function refreshUsageModelRankWindowSnapshotsAsync(client: DatabaseClient,
   const insertRows: unknown[][] = []
   for (const systemAccountId of [...context.uniqueSystemAccountIds, GLOBAL_STATS_SYSTEM_ACCOUNT_ID]) {
     const rows = await client.query<UsageModelWindowRow>(`
-      SELECT stat_date, provider_code, model, request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd
+      SELECT stat_date, provider_code, model, request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd,
+        cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd
       FROM ${statsTable(client, 'usage_model_daily')}
       WHERE system_account_id = ?
         AND stat_date >= ?
@@ -235,6 +252,12 @@ async function refreshUsageModelRankWindowSnapshotsAsync(client: DatabaseClient,
           row.outputTokens,
           row.cacheReadTokens,
           row.cacheReadCostUsd,
+          row.cacheWriteTokens,
+          row.cacheWrite1hTokens,
+          row.cacheWriteCostUsd,
+          row.thinkingTokens,
+          row.inputImageTokens,
+          row.outputImageTokens,
           row.totalCostUsd,
           context.updatedAt
         ])
@@ -243,7 +266,8 @@ async function refreshUsageModelRankWindowSnapshotsAsync(client: DatabaseClient,
   }
   await insertRowsAsync(client, 'usage_model_rank_windows', [
     'system_account_id', 'window_key', 'start_date', 'end_date', 'rank', 'provider_code', 'model',
-    'request_count', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_read_cost_usd', 'total_cost_usd', 'updated_at'
+    'request_count', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_read_cost_usd', 'cache_write_tokens', 'cache_write_1h_tokens', 'cache_write_cost_usd',
+    'thinking_tokens', 'input_image_tokens', 'output_image_tokens', 'total_cost_usd', 'updated_at'
   ], insertRows)
 }
 
@@ -295,7 +319,8 @@ function refreshUsageOverviewSummaryWindows(
 ): void {
   const rows = database.prepare(`
     SELECT stat_date, request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens,
-      cache_read_cost_usd, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
+      cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd,
+      thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
       first_token_ms_sum, first_token_ms_count, first_token_ms_max, last_used_at
     FROM usage_stats_daily
     WHERE system_account_id = ?
@@ -309,10 +334,11 @@ function refreshUsageOverviewSummaryWindows(
   const insert = database.prepare(`
     INSERT INTO usage_overview_summary_windows (
       system_account_id, window_key, start_date, end_date, request_count, success_count, error_count,
-      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd,
+      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd,
+      thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd,
       duration_ms_sum, duration_ms_count, first_token_ms_sum, first_token_ms_count,
       last_used_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
   for (const range of ranges) {
     const aggregate = aggregateUsageRowsForRange(rowsByDate, range)
@@ -328,6 +354,12 @@ function refreshUsageOverviewSummaryWindows(
       aggregate.outputTokens,
       aggregate.cacheReadTokens,
       aggregate.cacheReadCostUsd,
+      aggregate.cacheWriteTokens,
+      aggregate.cacheWrite1hTokens,
+      aggregate.cacheWriteCostUsd,
+      aggregate.thinkingTokens,
+      aggregate.inputImageTokens,
+      aggregate.outputImageTokens,
       aggregate.totalCostUsd,
       aggregate.durationMsSum,
       aggregate.durationMsCount,
@@ -349,7 +381,8 @@ function refreshUsageOverviewTrendWindows(
 ): void {
   const rows = database.prepare(`
     SELECT stat_hour, request_count, error_count, input_tokens, output_tokens, cache_read_tokens,
-      cache_read_cost_usd, total_cost_usd, duration_ms_sum, duration_ms_count
+      cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd,
+      thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, duration_ms_sum, duration_ms_count
     FROM usage_stats_hourly
     WHERE system_account_id = ?
       AND scope_type = 'system_account'
@@ -362,9 +395,10 @@ function refreshUsageOverviewTrendWindows(
   const insert = database.prepare(`
     INSERT INTO usage_overview_trend_windows (
       system_account_id, window_key, start_date, end_date, bucket_key, request_count, error_count,
-      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd,
+      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd,
+      thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd,
       duration_ms_sum, duration_ms_count, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
   for (const range of ranges) {
     const buckets = aggregateUsageTrendBuckets(rowsByDate, range)
@@ -381,6 +415,12 @@ function refreshUsageOverviewTrendWindows(
         bucket.outputTokens,
         bucket.cacheReadTokens,
         bucket.cacheReadCostUsd,
+        bucket.cacheWriteTokens,
+        bucket.cacheWrite1hTokens,
+        bucket.cacheWriteCostUsd,
+        bucket.thinkingTokens,
+        bucket.inputImageTokens,
+        bucket.outputImageTokens,
         bucket.totalCostUsd,
         bucket.durationMsSum,
         bucket.durationMsCount,
@@ -399,7 +439,8 @@ function refreshUsageModelRankWindows(
   updatedAt: string
 ): void {
   const rows = database.prepare(`
-    SELECT stat_date, provider_code, model, request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd
+    SELECT stat_date, provider_code, model, request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd,
+      cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd
     FROM usage_model_daily
     WHERE system_account_id = ?
       AND stat_date >= ?
@@ -410,8 +451,9 @@ function refreshUsageModelRankWindows(
   const insert = database.prepare(`
     INSERT INTO usage_model_rank_windows (
       system_account_id, window_key, start_date, end_date, rank, provider_code, model,
-      request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd,
+      thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
   for (const range of ranges) {
     const rankedRows = aggregateUsageModelRows(rowsByDate, range)
@@ -429,6 +471,12 @@ function refreshUsageModelRankWindows(
         row.outputTokens,
         row.cacheReadTokens,
         row.cacheReadCostUsd,
+        row.cacheWriteTokens,
+        row.cacheWrite1hTokens,
+        row.cacheWriteCostUsd,
+        row.thinkingTokens,
+        row.inputImageTokens,
+        row.outputImageTokens,
         row.totalCostUsd,
         updatedAt
       )

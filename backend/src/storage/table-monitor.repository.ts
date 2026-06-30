@@ -5,7 +5,7 @@ import { runtimeConfig } from '../config/runtime.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, datasetDatabasePath, getBusinessDatabase, getDatasetDatabase, getStatsDatabase, getUsageCatalogDatabase, newId, nowIso, rollbackDatabaseTransaction, statsDatabasePath, usageCatalogDatabasePath } from './database.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
-import { sqlPlaceholders } from './query-utils.js'
+import { chunkValues, sqlPlaceholders } from './query-utils.js'
 
 export type MonitoredDatabaseRole = 'business' | 'dataset' | 'usage-catalog' | 'stats'
 
@@ -73,6 +73,21 @@ interface PreparedTableMonitorTarget {
   cursorTableName?: string
 }
 
+interface PostgresMonitoredSchemaTarget {
+  role: MonitoredDatabaseRole
+  schemaName: 'juhe_business' | 'juhe_dataset' | 'juhe_usage' | 'juhe_stats'
+  databasePath: string
+}
+
+interface PostgresTableStorageCatalogRow {
+  table_name: string
+  row_count: number | string | null
+  table_bytes: number | string | null
+  index_bytes: number | string | null
+  total_bytes: number | string | null
+  index_count: number | string | null
+}
+
 interface TableScanSelection {
   tableNames: string[]
   cursorTableName?: string
@@ -127,6 +142,12 @@ export const tableMonitorSampleRetentionDays = 30
 const defaultTableStorageHistoryLimit = 720
 const monitoredDatabaseRoles: MonitoredDatabaseRole[] = ['business', 'dataset', 'usage-catalog', 'stats']
 const statsSchemaName = 'juhe_stats'
+const postgresMonitoredSchemaTargets: PostgresMonitoredSchemaTarget[] = [
+  { role: 'business', schemaName: 'juhe_business', databasePath: 'postgres:juhe_business' },
+  { role: 'dataset', schemaName: 'juhe_dataset', databasePath: 'postgres:juhe_dataset' },
+  { role: 'usage-catalog', schemaName: 'juhe_usage', databasePath: 'postgres:juhe_usage' },
+  { role: 'stats', schemaName: 'juhe_stats', databasePath: 'postgres:juhe_stats' }
+]
 
 export function collectTableStorageSnapshot(sampledAt = nowIso(), options: CollectTableStorageSnapshotOptions = {}): CollectTableStorageSnapshotResult {
   const tableScanMode = options.tableScanMode ?? 'cursor'
@@ -169,6 +190,38 @@ export function collectTableStorageSnapshot(sampledAt = nowIso(), options: Colle
     rollbackDatabaseTransaction(statsDatabase, transactionStarted)
     throw error
   }
+}
+
+export async function collectTableStorageSnapshotAsync(sampledAt = nowIso(), options: CollectTableStorageSnapshotOptions = {}): Promise<CollectTableStorageSnapshotResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return collectTableStorageSnapshot(sampledAt, options)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const tableScanMode = options.tableScanMode ?? 'cursor'
+  const maxTablesPerDatabase = options.maxTablesPerDatabase ?? 4
+  return await client.transaction(async (tx) => {
+    const blockSize = await postgresBlockSize(tx)
+    let tableSnapshots = 0
+    for (const target of postgresMonitoredSchemaTargets) {
+      const catalogRows = await listPostgresSchemaTables(tx, target.schemaName)
+      const tableNames = catalogRows.map((row) => row.table_name)
+      const tableSelection = await selectPostgresTableScan(tx, target.role, tableNames, tableScanMode, maxTablesPerDatabase)
+      const tableRows = await collectPostgresTargetTableRows(tx, target, sampledAt, tableSelection.tableNames, catalogRows, blockSize)
+      await insertPostgresDatabaseSnapshot(tx, target, sampledAt, catalogRows, blockSize)
+      await insertPostgresTableSnapshots(tx, sampledAt, tableRows)
+      if (tableScanMode === 'cursor') {
+        await recordPostgresTableScanCursor(tx, target.role, tableSelection.cursorTableName, sampledAt)
+      }
+      tableSnapshots += tableRows.length
+    }
+    await cleanupOldPostgresTableStorageSnapshots(tx, sampledAt)
+    return {
+      sampledAt,
+      databaseSnapshots: postgresMonitoredSchemaTargets.length,
+      tableSnapshots,
+      tableScanMode
+    }
+  })
 }
 
 export function getTableStorageOverview(input: { startAt?: string; endAt?: string; limit?: number } = {}): TableStorageOverview {
@@ -378,6 +431,17 @@ export function cleanupTableStorageSnapshotsBefore(cutoffIso: string, limit = 10
     + deleteSnapshotRowsById(database, 'database_storage_snapshots', cutoffIso, limit)
 }
 
+export async function cleanupTableStorageSnapshotsBeforeAsync(cutoffIso: string, limit = 10000): Promise<number> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return cleanupTableStorageSnapshotsBefore(cutoffIso, limit)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  return await client.transaction(async (tx) => (
+    await deletePostgresSnapshotRowsById(tx, 'table_storage_snapshots', cutoffIso, limit)
+    + await deletePostgresSnapshotRowsById(tx, 'database_storage_snapshots', cutoffIso, limit)
+  ))
+}
+
 function monitoredDatabaseTargets(): MonitoredDatabaseTarget[] {
   return [
     { role: 'business', path: runtimeConfig.databasePath, database: getBusinessDatabase() },
@@ -546,6 +610,252 @@ function loadDbstatObjectSizes(database: DatabaseSync, objectNames: string[]): M
   } catch {
     return undefined
   }
+}
+
+async function listPostgresSchemaTables(client: DatabaseClient, schemaName: PostgresMonitoredSchemaTarget['schemaName']): Promise<PostgresTableStorageCatalogRow[]> {
+  return await client.query<PostgresTableStorageCatalogRow>(`
+    SELECT
+      c.relname AS table_name,
+      GREATEST(COALESCE(s.n_live_tup::double precision, c.reltuples, 0), 0)::bigint AS row_count,
+      pg_relation_size(c.oid)::bigint AS table_bytes,
+      pg_indexes_size(c.oid)::bigint AS index_bytes,
+      pg_total_relation_size(c.oid)::bigint AS total_bytes,
+      COALESCE(i.index_count, 0)::integer AS index_count
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    LEFT JOIN pg_stat_all_tables s ON s.relid = c.oid
+    LEFT JOIN (
+      SELECT indrelid, COUNT(*)::integer AS index_count
+      FROM pg_index
+      GROUP BY indrelid
+    ) i ON i.indrelid = c.oid
+    WHERE n.nspname = ?
+      AND c.relkind IN ('r', 'p', 'm')
+    ORDER BY c.relname ASC
+  `, [schemaName])
+}
+
+async function postgresBlockSize(client: DatabaseClient): Promise<number | undefined> {
+  const row = await client.one<{ block_size?: number | string }>("SELECT current_setting('block_size')::integer AS block_size")
+  return optionalNumber(row?.block_size)
+}
+
+async function collectPostgresTargetTableRows(
+  client: DatabaseClient,
+  target: PostgresMonitoredSchemaTarget,
+  sampledAt: string,
+  tableNames: string[],
+  catalogRows: PostgresTableStorageCatalogRow[],
+  blockSize: number | undefined
+): Promise<TableStorageSnapshotSummary[]> {
+  const catalogByTable = new Map(catalogRows.map((row) => [row.table_name, row]))
+  const previous1h = await findPreviousPostgresTableSnapshots(client, target.role, tableNames, sampledAt, 60)
+  const previous24h = await findPreviousPostgresTableSnapshots(client, target.role, tableNames, sampledAt, 24 * 60)
+  return tableNames.map((tableName) => {
+    const row = catalogByTable.get(tableName)
+    const rowCount = optionalNumber(row?.row_count)
+    const tableBytes = optionalNumber(row?.table_bytes)
+    const indexBytes = optionalNumber(row?.index_bytes)
+    const totalBytes = optionalNumber(row?.total_bytes)
+    const pageCount = estimatePageCount(totalBytes, blockSize)
+    const indexCount = optionalNumber(row?.index_count) ?? 0
+    const previousHour = previous1h.get(tableName)
+    const previousDay = previous24h.get(tableName)
+    return {
+      databaseRole: target.role,
+      tableName,
+      sampledAt,
+      rowCount,
+      tableBytes,
+      indexBytes,
+      totalBytes,
+      pageCount,
+      indexCount,
+      growthBytes1h: previousHour && totalBytes !== undefined && previousHour.total_bytes !== null ? totalBytes - previousHour.total_bytes : undefined,
+      growthRows1h: previousHour && rowCount !== undefined && previousHour.row_count !== null ? rowCount - previousHour.row_count : undefined,
+      growthBytes24h: previousDay && totalBytes !== undefined && previousDay.total_bytes !== null ? totalBytes - previousDay.total_bytes : undefined,
+      growthRows24h: previousDay && rowCount !== undefined && previousDay.row_count !== null ? rowCount - previousDay.row_count : undefined
+    }
+  })
+}
+
+async function insertPostgresDatabaseSnapshot(
+  client: DatabaseClient,
+  target: PostgresMonitoredSchemaTarget,
+  sampledAt: string,
+  catalogRows: PostgresTableStorageCatalogRow[],
+  blockSize: number | undefined
+): Promise<void> {
+  const totalBytes = catalogRows.reduce((sum, row) => sum + (optionalNumber(row.total_bytes) ?? 0), 0)
+  const pageCount = estimatePageCount(totalBytes, blockSize)
+  const indexCount = catalogRows.reduce((sum, row) => sum + (optionalNumber(row.index_count) ?? 0), 0)
+  await client.execute(`
+    INSERT INTO ${statsTable(client, 'database_storage_snapshots')} (
+      id, database_role, database_path, sampled_at, file_bytes, wal_bytes, shm_bytes,
+      page_size, page_count, freelist_count, used_bytes, free_bytes, table_count, index_count, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `, [
+    newId('dbsnap'),
+    target.role,
+    target.databasePath,
+    sampledAt,
+    totalBytes,
+    null,
+    null,
+    blockSize ?? null,
+    pageCount ?? null,
+    null,
+    totalBytes,
+    null,
+    catalogRows.length,
+    indexCount,
+    sampledAt
+  ])
+}
+
+async function insertPostgresTableSnapshots(client: DatabaseClient, sampledAt: string, tables: TableStorageSnapshotSummary[]): Promise<void> {
+  const columns = [
+    'id',
+    'database_role',
+    'table_name',
+    'sampled_at',
+    'row_count',
+    'table_bytes',
+    'index_bytes',
+    'total_bytes',
+    'page_count',
+    'index_count',
+    'growth_bytes_1h',
+    'growth_rows_1h',
+    'growth_bytes_24h',
+    'growth_rows_24h',
+    'created_at'
+  ]
+  const rows = tables.map((table) => [
+    newId('tblsnap'),
+    table.databaseRole,
+    table.tableName,
+    sampledAt,
+    table.rowCount ?? null,
+    table.tableBytes ?? null,
+    table.indexBytes ?? null,
+    table.totalBytes ?? null,
+    table.pageCount ?? null,
+    table.indexCount,
+    table.growthBytes1h ?? null,
+    table.growthRows1h ?? null,
+    table.growthBytes24h ?? null,
+    table.growthRows24h ?? null,
+    sampledAt
+  ])
+  for (const chunk of chunkValues(rows, 250)) {
+    if (chunk.length === 0) continue
+    const placeholders = chunk
+      .map((row) => `(${row.map(() => '?').join(', ')})`)
+      .join(', ')
+    await client.execute(`
+      INSERT INTO ${statsTable(client, 'table_storage_snapshots')} (${columns.map((column) => client.dialect.quoteIdentifier(column)).join(', ')})
+      VALUES ${placeholders}
+      ON CONFLICT(database_role, table_name, sampled_at) DO UPDATE SET
+        row_count = excluded.row_count,
+        table_bytes = excluded.table_bytes,
+        index_bytes = excluded.index_bytes,
+        total_bytes = excluded.total_bytes,
+        page_count = excluded.page_count,
+        index_count = excluded.index_count,
+        growth_bytes_1h = excluded.growth_bytes_1h,
+        growth_rows_1h = excluded.growth_rows_1h,
+        growth_bytes_24h = excluded.growth_bytes_24h,
+        growth_rows_24h = excluded.growth_rows_24h,
+        created_at = excluded.created_at
+    `, chunk.flat())
+  }
+}
+
+async function selectPostgresTableScan(
+  client: DatabaseClient,
+  databaseRole: MonitoredDatabaseRole,
+  tables: string[],
+  tableScanMode: 'full' | 'cursor' | 'none',
+  maxTables: number
+): Promise<TableScanSelection> {
+  if (tableScanMode === 'none') {
+    return { tableNames: [] }
+  }
+  if (tableScanMode === 'full') {
+    return { tableNames: tables }
+  }
+  return await selectPostgresCursorTableNames(client, databaseRole, tables, maxTables)
+}
+
+async function selectPostgresCursorTableNames(
+  client: DatabaseClient,
+  databaseRole: MonitoredDatabaseRole,
+  tables: string[],
+  maxTables: number
+): Promise<TableScanSelection> {
+  if (tables.length === 0 || maxTables <= 0) {
+    return { tableNames: [] }
+  }
+  const normalizedMaxTables = Math.min(Math.trunc(maxTables), tables.length)
+  if (normalizedMaxTables >= tables.length) {
+    return { tableNames: tables, cursorTableName: tables.at(-1) }
+  }
+
+  const cursor = await latestPostgresTableScanCursor(client, databaseRole)
+  const cursorIndex = cursor ? tables.indexOf(cursor) : -1
+  const startIndex = cursorIndex >= 0 ? (cursorIndex + 1) % tables.length : 0
+  const selected = Array.from({ length: normalizedMaxTables }, (_value, offset) => tables[(startIndex + offset) % tables.length])
+  return { tableNames: selected, cursorTableName: selected.at(-1) }
+}
+
+async function latestPostgresTableScanCursor(client: DatabaseClient, databaseRole: MonitoredDatabaseRole): Promise<string | undefined> {
+  const row = await client.one<{ cursor_id?: string | null }>(`
+    SELECT cursor_id
+    FROM ${statsTable(client, 'stats_job_state')}
+    WHERE scope_type = 'table_monitor'
+      AND scope_id = ?
+      AND job_name = 'table_storage_snapshots'
+    LIMIT 1
+  `, [databaseRole])
+  return row?.cursor_id || undefined
+}
+
+async function recordPostgresTableScanCursor(client: DatabaseClient, databaseRole: MonitoredDatabaseRole, tableName: string | undefined, sampledAt: string): Promise<void> {
+  if (!tableName) return
+  await client.execute(`
+    INSERT INTO ${statsTable(client, 'stats_job_state')} (
+      scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, lag_seconds, updated_at
+    ) VALUES ('table_monitor', ?, 'table_storage_snapshots', ?, ?, ?, NULL, ?)
+    ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
+      cursor_created_at = excluded.cursor_created_at,
+      cursor_id = excluded.cursor_id,
+      last_success_at = excluded.last_success_at,
+      lag_seconds = NULL,
+      updated_at = excluded.updated_at
+  `, [databaseRole, sampledAt, tableName, sampledAt, sampledAt])
+}
+
+async function findPreviousPostgresTableSnapshots(
+  client: DatabaseClient,
+  databaseRole: MonitoredDatabaseRole,
+  tableNames: string[],
+  sampledAt: string,
+  minutesBack: number
+): Promise<Map<string, LatestTableSnapshotRow>> {
+  if (tableNames.length === 0) {
+    return new Map()
+  }
+  const targetTime = new Date(Date.parse(sampledAt) - minutesBack * 60 * 1000).toISOString()
+  const rows = await client.query<LatestTableSnapshotRow>(`
+    SELECT DISTINCT ON (table_name) ${tableStorageSnapshotSelectColumns()}
+    FROM ${statsTable(client, 'table_storage_snapshots')}
+    WHERE database_role = ?
+      AND table_name = ANY(?::text[])
+      AND sampled_at <= ?
+    ORDER BY table_name ASC, sampled_at DESC, id DESC
+  `, [databaseRole, tableNames, targetTime])
+  return new Map(rows.map((row) => [row.table_name, row]))
 }
 
 function countIndexes(indexesByTable: Map<string, string[]>): number {
@@ -742,6 +1052,13 @@ function estimateDatabaseMainFileBytes(pageSize: number | undefined, pageCount: 
   return pageSize * pageCount
 }
 
+function estimatePageCount(totalBytes: number | undefined, pageSize: number | undefined): number | undefined {
+  if (totalBytes === undefined || pageSize === undefined || pageSize <= 0) {
+    return undefined
+  }
+  return Math.ceil(totalBytes / pageSize)
+}
+
 function normalizeLimit(value: number): number {
   return Number.isFinite(value) ? Math.min(Math.max(Math.trunc(value), 1), 10000) : 200
 }
@@ -777,6 +1094,32 @@ function deleteSnapshotRowsById(
   const placeholders = sqlPlaceholders(ids.length)
   const result = database.prepare(`DELETE FROM ${tableName} WHERE id IN (${placeholders})`).run(...ids)
   return Number(result.changes ?? 0)
+}
+
+async function cleanupOldPostgresTableStorageSnapshots(client: DatabaseClient, sampledAt: string): Promise<void> {
+  const cutoff = new Date(Date.parse(sampledAt) - tableMonitorSampleRetentionDays * 24 * 60 * 60 * 1000).toISOString()
+  await deletePostgresSnapshotRowsById(client, 'table_storage_snapshots', cutoff, 10000)
+  await deletePostgresSnapshotRowsById(client, 'database_storage_snapshots', cutoff, 10000)
+}
+
+async function deletePostgresSnapshotRowsById(
+  client: DatabaseClient,
+  tableName: 'database_storage_snapshots' | 'table_storage_snapshots',
+  cutoffIso: string,
+  limit: number
+): Promise<number> {
+  const result = await client.execute(`
+    WITH expired AS (
+      SELECT id
+      FROM ${statsTable(client, tableName)}
+      WHERE sampled_at < ?
+      ORDER BY sampled_at ASC, id ASC
+      LIMIT ?
+    )
+    DELETE FROM ${statsTable(client, tableName)}
+    WHERE id IN (SELECT id FROM expired)
+  `, [cutoffIso, normalizeLimit(limit)])
+  return result.changes
 }
 
 function databaseSnapshotFromRow(row: LatestDatabaseSnapshotRow): DatabaseStorageSnapshotSummary {

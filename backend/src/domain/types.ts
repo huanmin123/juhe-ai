@@ -240,6 +240,12 @@ export interface AccountUsageSummary {
   outputTokens: number
   cacheReadTokens: number
   cacheReadCost: number
+  cacheWriteTokens: number
+  cacheWrite1hTokens: number
+  cacheWriteCost: number
+  thinkingTokens: number
+  inputImageTokens: number
+  outputImageTokens: number
   totalTokens: number
   totalCost: number
   lastUsedAt?: string
@@ -905,6 +911,13 @@ export interface ResourceAuthorizationUsageDetail {
   inputTokens: number
   outputTokens: number
   cacheReadTokens: number
+  cacheReadCost: number
+  cacheWriteTokens: number
+  cacheWrite1hTokens: number
+  cacheWriteCost: number
+  thinkingTokens: number
+  inputImageTokens: number
+  outputImageTokens: number
   totalTokens: number
   totalCost: number
   lastUsedAt?: string

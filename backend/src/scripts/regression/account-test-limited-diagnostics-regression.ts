@@ -10,6 +10,12 @@ const emptyUsage: AccountUsageSummary = {
   outputTokens: 0,
   cacheReadTokens: 0,
   cacheReadCost: 0,
+  cacheWriteTokens: 0,
+  cacheWrite1hTokens: 0,
+  cacheWriteCost: 0,
+  thinkingTokens: 0,
+  inputImageTokens: 0,
+  outputImageTokens: 0,
   totalTokens: 0,
   totalCost: 0
 }

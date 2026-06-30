@@ -16,7 +16,7 @@ export function refreshUsageScopeRangeWindowSnapshots(database: DatabaseSync, up
     INSERT INTO usage_scope_range_windows (
       system_account_id, scope_type, scope_id, start_date, end_date,
       request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens,
-      cache_read_cost_usd, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
+      cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
       first_token_ms_sum, first_token_ms_count, first_token_ms_max, active_days,
       last_used_at, last_error_at, updated_at
     )
@@ -33,6 +33,12 @@ export function refreshUsageScopeRangeWindowSnapshots(database: DatabaseSync, up
       COALESCE(SUM(output_tokens), 0),
       COALESCE(SUM(cache_read_tokens), 0),
       COALESCE(SUM(cache_read_cost_usd), 0),
+      COALESCE(SUM(cache_write_tokens), 0),
+      COALESCE(SUM(cache_write_1h_tokens), 0),
+      COALESCE(SUM(cache_write_cost_usd), 0),
+      COALESCE(SUM(thinking_tokens), 0),
+      COALESCE(SUM(input_image_tokens), 0),
+      COALESCE(SUM(output_image_tokens), 0),
       COALESCE(SUM(total_cost_usd), 0),
       COALESCE(SUM(duration_ms_sum), 0),
       COALESCE(SUM(duration_ms_count), 0),
@@ -45,6 +51,11 @@ export function refreshUsageScopeRangeWindowSnapshots(database: DatabaseSync, up
           OR input_tokens > 0
           OR output_tokens > 0
           OR cache_read_tokens > 0
+          OR cache_write_tokens > 0
+          OR cache_write_1h_tokens > 0
+          OR thinking_tokens > 0
+          OR input_image_tokens > 0
+          OR output_image_tokens > 0
           OR total_cost_usd > 0
         THEN 1
       END),
@@ -60,6 +71,12 @@ export function refreshUsageScopeRangeWindowSnapshots(database: DatabaseSync, up
       OR COALESCE(SUM(output_tokens), 0) > 0
       OR COALESCE(SUM(cache_read_tokens), 0) > 0
       OR COALESCE(SUM(cache_read_cost_usd), 0) > 0
+      OR COALESCE(SUM(cache_write_tokens), 0) > 0
+      OR COALESCE(SUM(cache_write_1h_tokens), 0) > 0
+      OR COALESCE(SUM(cache_write_cost_usd), 0) > 0
+      OR COALESCE(SUM(thinking_tokens), 0) > 0
+      OR COALESCE(SUM(input_image_tokens), 0) > 0
+      OR COALESCE(SUM(output_image_tokens), 0) > 0
       OR COALESCE(SUM(total_cost_usd), 0) > 0
   `)
   for (let startIndex = 0; startIndex < dates.length; startIndex += 1) {
@@ -85,7 +102,7 @@ export async function refreshUsageScopeRangeWindowSnapshotsAsync(client: Databas
           INSERT INTO ${statsTable(tx, 'usage_scope_range_windows')} (
             system_account_id, scope_type, scope_id, start_date, end_date,
             request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens,
-            cache_read_cost_usd, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
+            cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
             first_token_ms_sum, first_token_ms_count, first_token_ms_max, active_days,
             last_used_at, last_error_at, updated_at
           )
@@ -102,6 +119,12 @@ export async function refreshUsageScopeRangeWindowSnapshotsAsync(client: Databas
             COALESCE(SUM(output_tokens), 0),
             COALESCE(SUM(cache_read_tokens), 0),
             COALESCE(SUM(cache_read_cost_usd), 0),
+            COALESCE(SUM(cache_write_tokens), 0),
+            COALESCE(SUM(cache_write_1h_tokens), 0),
+            COALESCE(SUM(cache_write_cost_usd), 0),
+            COALESCE(SUM(thinking_tokens), 0),
+            COALESCE(SUM(input_image_tokens), 0),
+            COALESCE(SUM(output_image_tokens), 0),
             COALESCE(SUM(total_cost_usd), 0),
             COALESCE(SUM(duration_ms_sum), 0),
             COALESCE(SUM(duration_ms_count), 0),
@@ -114,6 +137,11 @@ export async function refreshUsageScopeRangeWindowSnapshotsAsync(client: Databas
                 OR input_tokens > 0
                 OR output_tokens > 0
                 OR cache_read_tokens > 0
+                OR cache_write_tokens > 0
+                OR cache_write_1h_tokens > 0
+                OR thinking_tokens > 0
+                OR input_image_tokens > 0
+                OR output_image_tokens > 0
                 OR total_cost_usd > 0
               THEN 1
             END),
@@ -129,6 +157,12 @@ export async function refreshUsageScopeRangeWindowSnapshotsAsync(client: Databas
             OR COALESCE(SUM(output_tokens), 0) > 0
             OR COALESCE(SUM(cache_read_tokens), 0) > 0
             OR COALESCE(SUM(cache_read_cost_usd), 0) > 0
+            OR COALESCE(SUM(cache_write_tokens), 0) > 0
+            OR COALESCE(SUM(cache_write_1h_tokens), 0) > 0
+            OR COALESCE(SUM(cache_write_cost_usd), 0) > 0
+            OR COALESCE(SUM(thinking_tokens), 0) > 0
+            OR COALESCE(SUM(input_image_tokens), 0) > 0
+            OR COALESCE(SUM(output_image_tokens), 0) > 0
             OR COALESCE(SUM(total_cost_usd), 0) > 0
         `, [startDate, rangeEndDate, updatedAt, startDate, rangeEndDate])
       })
@@ -147,7 +181,7 @@ export function refreshAuthorizationUsageRangeWindowSnapshots(database: Database
   const insertTeamRange = database.prepare(`
     INSERT INTO authorization_team_usage_range_windows (
       system_account_id, start_date, end_date, team_filter_id, resource_filter_type, resource_filter_id,
-      request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, last_used_at, updated_at
+      request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, last_used_at, updated_at
     )
     SELECT
       system_account_id,
@@ -161,6 +195,12 @@ export function refreshAuthorizationUsageRangeWindowSnapshots(database: Database
       COALESCE(SUM(output_tokens), 0),
       COALESCE(SUM(cache_read_tokens), 0),
       COALESCE(SUM(cache_read_cost_usd), 0),
+      COALESCE(SUM(cache_write_tokens), 0),
+      COALESCE(SUM(cache_write_1h_tokens), 0),
+      COALESCE(SUM(cache_write_cost_usd), 0),
+      COALESCE(SUM(thinking_tokens), 0),
+      COALESCE(SUM(input_image_tokens), 0),
+      COALESCE(SUM(output_image_tokens), 0),
       COALESCE(SUM(total_cost_usd), 0),
       MAX(last_used_at),
       ?
@@ -173,12 +213,18 @@ export function refreshAuthorizationUsageRangeWindowSnapshots(database: Database
       OR COALESCE(SUM(output_tokens), 0) > 0
       OR COALESCE(SUM(cache_read_tokens), 0) > 0
       OR COALESCE(SUM(cache_read_cost_usd), 0) > 0
+      OR COALESCE(SUM(cache_write_tokens), 0) > 0
+      OR COALESCE(SUM(cache_write_1h_tokens), 0) > 0
+      OR COALESCE(SUM(cache_write_cost_usd), 0) > 0
+      OR COALESCE(SUM(thinking_tokens), 0) > 0
+      OR COALESCE(SUM(input_image_tokens), 0) > 0
+      OR COALESCE(SUM(output_image_tokens), 0) > 0
       OR COALESCE(SUM(total_cost_usd), 0) > 0
   `)
   const insertUserRange = database.prepare(`
     INSERT INTO authorization_user_usage_range_windows (
       system_account_id, start_date, end_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id,
-      request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, last_used_at, updated_at
+      request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, last_used_at, updated_at
     )
     SELECT
       system_account_id,
@@ -193,6 +239,12 @@ export function refreshAuthorizationUsageRangeWindowSnapshots(database: Database
       COALESCE(SUM(output_tokens), 0),
       COALESCE(SUM(cache_read_tokens), 0),
       COALESCE(SUM(cache_read_cost_usd), 0),
+      COALESCE(SUM(cache_write_tokens), 0),
+      COALESCE(SUM(cache_write_1h_tokens), 0),
+      COALESCE(SUM(cache_write_cost_usd), 0),
+      COALESCE(SUM(thinking_tokens), 0),
+      COALESCE(SUM(input_image_tokens), 0),
+      COALESCE(SUM(output_image_tokens), 0),
       COALESCE(SUM(total_cost_usd), 0),
       MAX(last_used_at),
       ?
@@ -205,6 +257,12 @@ export function refreshAuthorizationUsageRangeWindowSnapshots(database: Database
       OR COALESCE(SUM(output_tokens), 0) > 0
       OR COALESCE(SUM(cache_read_tokens), 0) > 0
       OR COALESCE(SUM(cache_read_cost_usd), 0) > 0
+      OR COALESCE(SUM(cache_write_tokens), 0) > 0
+      OR COALESCE(SUM(cache_write_1h_tokens), 0) > 0
+      OR COALESCE(SUM(cache_write_cost_usd), 0) > 0
+      OR COALESCE(SUM(thinking_tokens), 0) > 0
+      OR COALESCE(SUM(input_image_tokens), 0) > 0
+      OR COALESCE(SUM(output_image_tokens), 0) > 0
       OR COALESCE(SUM(total_cost_usd), 0) > 0
   `)
   for (let startIndex = 0; startIndex < dates.length; startIndex += 1) {
@@ -231,7 +289,7 @@ export async function refreshAuthorizationUsageRangeWindowSnapshotsAsync(client:
         await tx.execute(`
           INSERT INTO ${statsTable(tx, 'authorization_team_usage_range_windows')} (
             system_account_id, start_date, end_date, team_filter_id, resource_filter_type, resource_filter_id,
-            request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, last_used_at, updated_at
+            request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, last_used_at, updated_at
           )
           SELECT
             system_account_id,
@@ -245,6 +303,12 @@ export async function refreshAuthorizationUsageRangeWindowSnapshotsAsync(client:
             COALESCE(SUM(output_tokens), 0),
             COALESCE(SUM(cache_read_tokens), 0),
             COALESCE(SUM(cache_read_cost_usd), 0),
+            COALESCE(SUM(cache_write_tokens), 0),
+            COALESCE(SUM(cache_write_1h_tokens), 0),
+            COALESCE(SUM(cache_write_cost_usd), 0),
+            COALESCE(SUM(thinking_tokens), 0),
+            COALESCE(SUM(input_image_tokens), 0),
+            COALESCE(SUM(output_image_tokens), 0),
             COALESCE(SUM(total_cost_usd), 0),
             MAX(last_used_at),
             ?
@@ -257,12 +321,18 @@ export async function refreshAuthorizationUsageRangeWindowSnapshotsAsync(client:
             OR COALESCE(SUM(output_tokens), 0) > 0
             OR COALESCE(SUM(cache_read_tokens), 0) > 0
             OR COALESCE(SUM(cache_read_cost_usd), 0) > 0
+            OR COALESCE(SUM(cache_write_tokens), 0) > 0
+            OR COALESCE(SUM(cache_write_1h_tokens), 0) > 0
+            OR COALESCE(SUM(cache_write_cost_usd), 0) > 0
+            OR COALESCE(SUM(thinking_tokens), 0) > 0
+            OR COALESCE(SUM(input_image_tokens), 0) > 0
+            OR COALESCE(SUM(output_image_tokens), 0) > 0
             OR COALESCE(SUM(total_cost_usd), 0) > 0
         `, [startDate, rangeEndDate, updatedAt, startDate, rangeEndDate])
         await tx.execute(`
           INSERT INTO ${statsTable(tx, 'authorization_user_usage_range_windows')} (
             system_account_id, start_date, end_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id,
-            request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, last_used_at, updated_at
+            request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, last_used_at, updated_at
           )
           SELECT
             system_account_id,
@@ -277,6 +347,12 @@ export async function refreshAuthorizationUsageRangeWindowSnapshotsAsync(client:
             COALESCE(SUM(output_tokens), 0),
             COALESCE(SUM(cache_read_tokens), 0),
             COALESCE(SUM(cache_read_cost_usd), 0),
+            COALESCE(SUM(cache_write_tokens), 0),
+            COALESCE(SUM(cache_write_1h_tokens), 0),
+            COALESCE(SUM(cache_write_cost_usd), 0),
+            COALESCE(SUM(thinking_tokens), 0),
+            COALESCE(SUM(input_image_tokens), 0),
+            COALESCE(SUM(output_image_tokens), 0),
             COALESCE(SUM(total_cost_usd), 0),
             MAX(last_used_at),
             ?
@@ -289,6 +365,12 @@ export async function refreshAuthorizationUsageRangeWindowSnapshotsAsync(client:
             OR COALESCE(SUM(output_tokens), 0) > 0
             OR COALESCE(SUM(cache_read_tokens), 0) > 0
             OR COALESCE(SUM(cache_read_cost_usd), 0) > 0
+            OR COALESCE(SUM(cache_write_tokens), 0) > 0
+            OR COALESCE(SUM(cache_write_1h_tokens), 0) > 0
+            OR COALESCE(SUM(cache_write_cost_usd), 0) > 0
+            OR COALESCE(SUM(thinking_tokens), 0) > 0
+            OR COALESCE(SUM(input_image_tokens), 0) > 0
+            OR COALESCE(SUM(output_image_tokens), 0) > 0
             OR COALESCE(SUM(total_cost_usd), 0) > 0
         `, [startDate, rangeEndDate, updatedAt, startDate, rangeEndDate])
       })
@@ -318,7 +400,7 @@ export async function refreshUsageScopeRangeWindowSnapshotsInStages(
       INSERT INTO ${tempTableName} (
         system_account_id, scope_type, scope_id, start_date, end_date,
         request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens,
-        cache_read_cost_usd, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
+        cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
         first_token_ms_sum, first_token_ms_count, first_token_ms_max, active_days,
         last_used_at, last_error_at, updated_at
       )
@@ -335,6 +417,12 @@ export async function refreshUsageScopeRangeWindowSnapshotsInStages(
         COALESCE(SUM(output_tokens), 0),
         COALESCE(SUM(cache_read_tokens), 0),
         COALESCE(SUM(cache_read_cost_usd), 0),
+        COALESCE(SUM(cache_write_tokens), 0),
+        COALESCE(SUM(cache_write_1h_tokens), 0),
+        COALESCE(SUM(cache_write_cost_usd), 0),
+        COALESCE(SUM(thinking_tokens), 0),
+        COALESCE(SUM(input_image_tokens), 0),
+        COALESCE(SUM(output_image_tokens), 0),
         COALESCE(SUM(total_cost_usd), 0),
         COALESCE(SUM(duration_ms_sum), 0),
         COALESCE(SUM(duration_ms_count), 0),
@@ -347,6 +435,11 @@ export async function refreshUsageScopeRangeWindowSnapshotsInStages(
             OR input_tokens > 0
             OR output_tokens > 0
             OR cache_read_tokens > 0
+            OR cache_write_tokens > 0
+            OR cache_write_1h_tokens > 0
+            OR thinking_tokens > 0
+            OR input_image_tokens > 0
+            OR output_image_tokens > 0
             OR total_cost_usd > 0
           THEN 1
         END),
@@ -362,6 +455,12 @@ export async function refreshUsageScopeRangeWindowSnapshotsInStages(
         OR COALESCE(SUM(output_tokens), 0) > 0
         OR COALESCE(SUM(cache_read_tokens), 0) > 0
         OR COALESCE(SUM(cache_read_cost_usd), 0) > 0
+        OR COALESCE(SUM(cache_write_tokens), 0) > 0
+        OR COALESCE(SUM(cache_write_1h_tokens), 0) > 0
+        OR COALESCE(SUM(cache_write_cost_usd), 0) > 0
+        OR COALESCE(SUM(thinking_tokens), 0) > 0
+        OR COALESCE(SUM(input_image_tokens), 0) > 0
+        OR COALESCE(SUM(output_image_tokens), 0) > 0
         OR COALESCE(SUM(total_cost_usd), 0) > 0
     `)
     let processedRanges = 0
@@ -433,7 +532,7 @@ export async function refreshAuthorizationUsageRangeWindowSnapshotsInStages(
     const insertTeamRange = database.prepare(`
       INSERT INTO ${teamTempTableName} (
         system_account_id, start_date, end_date, team_filter_id, resource_filter_type, resource_filter_id,
-        request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, last_used_at, updated_at
+        request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, last_used_at, updated_at
       )
       SELECT
         system_account_id,
@@ -447,6 +546,12 @@ export async function refreshAuthorizationUsageRangeWindowSnapshotsInStages(
         COALESCE(SUM(output_tokens), 0),
         COALESCE(SUM(cache_read_tokens), 0),
         COALESCE(SUM(cache_read_cost_usd), 0),
+        COALESCE(SUM(cache_write_tokens), 0),
+        COALESCE(SUM(cache_write_1h_tokens), 0),
+        COALESCE(SUM(cache_write_cost_usd), 0),
+        COALESCE(SUM(thinking_tokens), 0),
+        COALESCE(SUM(input_image_tokens), 0),
+        COALESCE(SUM(output_image_tokens), 0),
         COALESCE(SUM(total_cost_usd), 0),
         MAX(last_used_at),
         ?
@@ -459,12 +564,18 @@ export async function refreshAuthorizationUsageRangeWindowSnapshotsInStages(
         OR COALESCE(SUM(output_tokens), 0) > 0
         OR COALESCE(SUM(cache_read_tokens), 0) > 0
         OR COALESCE(SUM(cache_read_cost_usd), 0) > 0
+        OR COALESCE(SUM(cache_write_tokens), 0) > 0
+        OR COALESCE(SUM(cache_write_1h_tokens), 0) > 0
+        OR COALESCE(SUM(cache_write_cost_usd), 0) > 0
+        OR COALESCE(SUM(thinking_tokens), 0) > 0
+        OR COALESCE(SUM(input_image_tokens), 0) > 0
+        OR COALESCE(SUM(output_image_tokens), 0) > 0
         OR COALESCE(SUM(total_cost_usd), 0) > 0
     `)
     const insertUserRange = database.prepare(`
       INSERT INTO ${userTempTableName} (
         system_account_id, start_date, end_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id,
-        request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, last_used_at, updated_at
+        request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, last_used_at, updated_at
       )
       SELECT
         system_account_id,
@@ -479,6 +590,12 @@ export async function refreshAuthorizationUsageRangeWindowSnapshotsInStages(
         COALESCE(SUM(output_tokens), 0),
         COALESCE(SUM(cache_read_tokens), 0),
         COALESCE(SUM(cache_read_cost_usd), 0),
+        COALESCE(SUM(cache_write_tokens), 0),
+        COALESCE(SUM(cache_write_1h_tokens), 0),
+        COALESCE(SUM(cache_write_cost_usd), 0),
+        COALESCE(SUM(thinking_tokens), 0),
+        COALESCE(SUM(input_image_tokens), 0),
+        COALESCE(SUM(output_image_tokens), 0),
         COALESCE(SUM(total_cost_usd), 0),
         MAX(last_used_at),
         ?
@@ -491,6 +608,12 @@ export async function refreshAuthorizationUsageRangeWindowSnapshotsInStages(
         OR COALESCE(SUM(output_tokens), 0) > 0
         OR COALESCE(SUM(cache_read_tokens), 0) > 0
         OR COALESCE(SUM(cache_read_cost_usd), 0) > 0
+        OR COALESCE(SUM(cache_write_tokens), 0) > 0
+        OR COALESCE(SUM(cache_write_1h_tokens), 0) > 0
+        OR COALESCE(SUM(cache_write_cost_usd), 0) > 0
+        OR COALESCE(SUM(thinking_tokens), 0) > 0
+        OR COALESCE(SUM(input_image_tokens), 0) > 0
+        OR COALESCE(SUM(output_image_tokens), 0) > 0
         OR COALESCE(SUM(total_cost_usd), 0) > 0
     `)
     let processedRanges = 0
@@ -528,6 +651,12 @@ function prepareUsageScopeRangeWindowRefreshTempTable(database: DatabaseSync, ta
       output_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read_cost_usd REAL NOT NULL DEFAULT 0,
+      cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_write_cost_usd REAL NOT NULL DEFAULT 0,
+      thinking_tokens INTEGER NOT NULL DEFAULT 0,
+      input_image_tokens INTEGER NOT NULL DEFAULT 0,
+      output_image_tokens INTEGER NOT NULL DEFAULT 0,
       total_cost_usd REAL NOT NULL DEFAULT 0,
       duration_ms_sum INTEGER NOT NULL DEFAULT 0,
       duration_ms_count INTEGER NOT NULL DEFAULT 0,
@@ -562,6 +691,12 @@ function prepareAuthorizationUsageRangeWindowRefreshTempTables(database: Databas
       output_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read_cost_usd REAL NOT NULL DEFAULT 0,
+      cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_write_cost_usd REAL NOT NULL DEFAULT 0,
+      thinking_tokens INTEGER NOT NULL DEFAULT 0,
+      input_image_tokens INTEGER NOT NULL DEFAULT 0,
+      output_image_tokens INTEGER NOT NULL DEFAULT 0,
       total_cost_usd REAL NOT NULL DEFAULT 0,
       last_used_at TEXT,
       updated_at TEXT NOT NULL,
@@ -582,6 +717,12 @@ function prepareAuthorizationUsageRangeWindowRefreshTempTables(database: Databas
       output_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read_cost_usd REAL NOT NULL DEFAULT 0,
+      cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_write_cost_usd REAL NOT NULL DEFAULT 0,
+      thinking_tokens INTEGER NOT NULL DEFAULT 0,
+      input_image_tokens INTEGER NOT NULL DEFAULT 0,
+      output_image_tokens INTEGER NOT NULL DEFAULT 0,
       total_cost_usd REAL NOT NULL DEFAULT 0,
       last_used_at TEXT,
       updated_at TEXT NOT NULL,
@@ -621,7 +762,7 @@ async function publishUsageScopeRangeWindowSnapshotEndDate(
       INSERT INTO usage_scope_range_windows (
         system_account_id, scope_type, scope_id, start_date, end_date,
         request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens,
-        cache_read_cost_usd, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
+        cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
         first_token_ms_sum, first_token_ms_count, first_token_ms_max, active_days,
         last_used_at, last_error_at, updated_at
       )
@@ -638,6 +779,12 @@ async function publishUsageScopeRangeWindowSnapshotEndDate(
         output_tokens,
         cache_read_tokens,
         cache_read_cost_usd,
+        cache_write_tokens,
+        cache_write_1h_tokens,
+        cache_write_cost_usd,
+        thinking_tokens,
+        input_image_tokens,
+        output_image_tokens,
         total_cost_usd,
         duration_ms_sum,
         duration_ms_count,
@@ -675,7 +822,7 @@ function publishAuthorizationUsageRangeWindowSnapshots(
     database.prepare(`
       INSERT INTO authorization_team_usage_range_windows (
         system_account_id, start_date, end_date, team_filter_id, resource_filter_type, resource_filter_id,
-        request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, last_used_at, updated_at
+        request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, last_used_at, updated_at
       )
       SELECT
         system_account_id,
@@ -689,6 +836,12 @@ function publishAuthorizationUsageRangeWindowSnapshots(
         output_tokens,
         cache_read_tokens,
         cache_read_cost_usd,
+        cache_write_tokens,
+        cache_write_1h_tokens,
+        cache_write_cost_usd,
+        thinking_tokens,
+        input_image_tokens,
+        output_image_tokens,
         total_cost_usd,
         last_used_at,
         updated_at
@@ -697,7 +850,7 @@ function publishAuthorizationUsageRangeWindowSnapshots(
     database.prepare(`
       INSERT INTO authorization_user_usage_range_windows (
         system_account_id, start_date, end_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id,
-        request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, last_used_at, updated_at
+        request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, last_used_at, updated_at
       )
       SELECT
         system_account_id,
@@ -712,6 +865,12 @@ function publishAuthorizationUsageRangeWindowSnapshots(
         output_tokens,
         cache_read_tokens,
         cache_read_cost_usd,
+        cache_write_tokens,
+        cache_write_1h_tokens,
+        cache_write_cost_usd,
+        thinking_tokens,
+        input_image_tokens,
+        output_image_tokens,
         total_cost_usd,
         last_used_at,
         updated_at

@@ -34,10 +34,10 @@ const backgroundStatsWriterSource = source('../../modules/background/background-
 assert.doesNotMatch(backgroundStatsWriterSource, /skippedPostgres|background_stats_writer_postgres_operation_skipped|高性能模式暂跳过|return \[\]/, 'PG 模式 stats-writer 不能对未实现统计维护操作静默跳过或返回模拟成功结果')
 assert.match(backgroundStatsWriterSource, /case 'refresh_account_quality':[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*throw postgresStatsWriterOperationNotImplemented\(operation\.type\)/, 'PG 模式账户质量刷新未实现时必须 fail-fast')
 assert.match(backgroundStatsWriterSource, /case 'check_usage_stats_consistency':[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*throw postgresStatsWriterOperationNotImplemented\(operation\.type\)/, 'PG 模式统计一致性校验未实现时必须 fail-fast')
-assert.match(backgroundStatsWriterSource, /case 'collect_table_storage_snapshot':[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*throw postgresStatsWriterOperationNotImplemented\(operation\.type\)/, 'PG 模式表容量采样未实现时必须 fail-fast')
+assert.match(backgroundStatsWriterSource, /case 'collect_table_storage_snapshot':[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*collectTableStorageSnapshotAsync\(operation\.sampledAt, operation\.options\)/, 'PG 模式表容量采样必须走 PostgreSQL async 入口，不能回落 SQLite')
 assert.match(backgroundStatsWriterSource, /case 'cleanup_usage_stats_retention':[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*throw postgresStatsWriterOperationNotImplemented\(operation\.type\)/, 'PG 模式统计保留清理未实现时不能回落 SQLite')
 assert.match(backgroundStatsWriterSource, /case 'cleanup_system_metrics_retention':[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*throw postgresStatsWriterOperationNotImplemented\(operation\.type\)/, 'PG 模式系统指标保留清理未实现时不能回落 SQLite')
-assert.match(backgroundStatsWriterSource, /case 'cleanup_table_storage_snapshots_retention':[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*throw postgresStatsWriterOperationNotImplemented\(operation\.type\)/, 'PG 模式表容量快照保留清理未实现时不能回落 SQLite')
+assert.match(backgroundStatsWriterSource, /case 'cleanup_table_storage_snapshots_retention':[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*cleanupTableStorageSnapshotsBeforeAsync\(operation\.cutoffIso, operation\.limit\)/, 'PG 模式表容量快照保留清理必须走 PostgreSQL async 入口，不能回落 SQLite')
 assert.match(backgroundStatsWriterSource, /case 'upsert_account_usage_snapshots':[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*upsertAccountUsageSnapshotsAsync/, 'PG 模式账号用量快照必须写入 PostgreSQL stats 表，不能回落到 SQLite 快照实现')
 
 const sqliteDatabaseSource = source('../../storage/database.ts')

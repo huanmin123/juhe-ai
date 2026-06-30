@@ -278,7 +278,7 @@ function refreshClientIpUsageRangeWindow(database: DatabaseSync, startDate: stri
     database.prepare(`
       INSERT INTO client_ip_usage_range_windows (
         ip_hash, start_date, end_date, request_count, success_count, error_count,
-        input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd,
+        input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd,
         duration_ms_sum, duration_ms_count, duration_ms_max, average_duration_ms,
         first_token_ms_sum, first_token_ms_count, average_first_token_ms,
         active_days, last_used_at, last_error_at, updated_at
@@ -294,6 +294,12 @@ function refreshClientIpUsageRangeWindow(database: DatabaseSync, startDate: stri
         COALESCE(SUM(output_tokens), 0),
         COALESCE(SUM(cache_read_tokens), 0),
         COALESCE(SUM(cache_read_cost_usd), 0),
+        COALESCE(SUM(cache_write_tokens), 0),
+        COALESCE(SUM(cache_write_1h_tokens), 0),
+        COALESCE(SUM(cache_write_cost_usd), 0),
+        COALESCE(SUM(thinking_tokens), 0),
+        COALESCE(SUM(input_image_tokens), 0),
+        COALESCE(SUM(output_image_tokens), 0),
         COALESCE(SUM(total_cost_usd), 0),
         COALESCE(SUM(duration_ms_sum), 0),
         COALESCE(SUM(duration_ms_count), 0),
@@ -315,6 +321,12 @@ function refreshClientIpUsageRangeWindow(database: DatabaseSync, startDate: stri
         OR COALESCE(SUM(output_tokens), 0) > 0
         OR COALESCE(SUM(cache_read_tokens), 0) > 0
         OR COALESCE(SUM(cache_read_cost_usd), 0) > 0
+        OR COALESCE(SUM(cache_write_tokens), 0) > 0
+        OR COALESCE(SUM(cache_write_1h_tokens), 0) > 0
+        OR COALESCE(SUM(cache_write_cost_usd), 0) > 0
+        OR COALESCE(SUM(thinking_tokens), 0) > 0
+        OR COALESCE(SUM(input_image_tokens), 0) > 0
+        OR COALESCE(SUM(output_image_tokens), 0) > 0
         OR COALESCE(SUM(total_cost_usd), 0) > 0
     `).run(startDate, endDate, updatedAt, startDate, endDate)
     markClientIpUsageRangeWindowReady(database, startDate, endDate, updatedAt)
@@ -340,7 +352,7 @@ function refreshClientIpUsageRangeWindowForIps(database: DatabaseSync, startDate
       database.prepare(`
         INSERT INTO client_ip_usage_range_windows (
           ip_hash, start_date, end_date, request_count, success_count, error_count,
-          input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd,
+          input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd,
           duration_ms_sum, duration_ms_count, duration_ms_max, average_duration_ms,
           first_token_ms_sum, first_token_ms_count, average_first_token_ms,
           active_days, last_used_at, last_error_at, updated_at
@@ -356,7 +368,13 @@ function refreshClientIpUsageRangeWindowForIps(database: DatabaseSync, startDate
           COALESCE(SUM(output_tokens), 0),
           COALESCE(SUM(cache_read_tokens), 0),
           COALESCE(SUM(cache_read_cost_usd), 0),
-          COALESCE(SUM(total_cost_usd), 0),
+        COALESCE(SUM(cache_write_tokens), 0),
+        COALESCE(SUM(cache_write_1h_tokens), 0),
+        COALESCE(SUM(cache_write_cost_usd), 0),
+        COALESCE(SUM(thinking_tokens), 0),
+        COALESCE(SUM(input_image_tokens), 0),
+        COALESCE(SUM(output_image_tokens), 0),
+        COALESCE(SUM(total_cost_usd), 0),
           COALESCE(SUM(duration_ms_sum), 0),
           COALESCE(SUM(duration_ms_count), 0),
           COALESCE(MAX(duration_ms_max), 0),
@@ -378,6 +396,12 @@ function refreshClientIpUsageRangeWindowForIps(database: DatabaseSync, startDate
         OR COALESCE(SUM(output_tokens), 0) > 0
         OR COALESCE(SUM(cache_read_tokens), 0) > 0
         OR COALESCE(SUM(cache_read_cost_usd), 0) > 0
+        OR COALESCE(SUM(cache_write_tokens), 0) > 0
+        OR COALESCE(SUM(cache_write_1h_tokens), 0) > 0
+        OR COALESCE(SUM(cache_write_cost_usd), 0) > 0
+        OR COALESCE(SUM(thinking_tokens), 0) > 0
+        OR COALESCE(SUM(input_image_tokens), 0) > 0
+        OR COALESCE(SUM(output_image_tokens), 0) > 0
         OR COALESCE(SUM(total_cost_usd), 0) > 0
       `).run(startDate, endDate, updatedAt, startDate, endDate, ...chunk)
     }
@@ -393,7 +417,7 @@ async function refreshClientIpUsageRangeWindowAsync(client: DatabaseClient, star
   await client.execute(`
     INSERT INTO ${statsTable(client, 'client_ip_usage_range_windows')} (
       ip_hash, start_date, end_date, request_count, success_count, error_count,
-      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd,
+      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd,
       duration_ms_sum, duration_ms_count, duration_ms_max, average_duration_ms,
       first_token_ms_sum, first_token_ms_count, average_first_token_ms,
       active_days, last_used_at, last_error_at, updated_at
@@ -409,7 +433,13 @@ async function refreshClientIpUsageRangeWindowAsync(client: DatabaseClient, star
       COALESCE(SUM(output_tokens), 0),
       COALESCE(SUM(cache_read_tokens), 0),
       COALESCE(SUM(cache_read_cost_usd), 0),
-      COALESCE(SUM(total_cost_usd), 0),
+        COALESCE(SUM(cache_write_tokens), 0),
+        COALESCE(SUM(cache_write_1h_tokens), 0),
+        COALESCE(SUM(cache_write_cost_usd), 0),
+        COALESCE(SUM(thinking_tokens), 0),
+        COALESCE(SUM(input_image_tokens), 0),
+        COALESCE(SUM(output_image_tokens), 0),
+        COALESCE(SUM(total_cost_usd), 0),
       COALESCE(SUM(duration_ms_sum), 0),
       COALESCE(SUM(duration_ms_count), 0),
       COALESCE(MAX(duration_ms_max), 0),
@@ -430,7 +460,13 @@ async function refreshClientIpUsageRangeWindowAsync(client: DatabaseClient, star
       OR COALESCE(SUM(output_tokens), 0) > 0
       OR COALESCE(SUM(cache_read_tokens), 0) > 0
       OR COALESCE(SUM(cache_read_cost_usd), 0) > 0
-      OR COALESCE(SUM(total_cost_usd), 0) > 0
+        OR COALESCE(SUM(cache_write_tokens), 0) > 0
+        OR COALESCE(SUM(cache_write_1h_tokens), 0) > 0
+        OR COALESCE(SUM(cache_write_cost_usd), 0) > 0
+        OR COALESCE(SUM(thinking_tokens), 0) > 0
+        OR COALESCE(SUM(input_image_tokens), 0) > 0
+        OR COALESCE(SUM(output_image_tokens), 0) > 0
+        OR COALESCE(SUM(total_cost_usd), 0) > 0
   `, [startDate, endDate, updatedAt, startDate, endDate])
   await markClientIpUsageRangeWindowReadyAsync(client, startDate, endDate, updatedAt)
 }
@@ -454,7 +490,7 @@ async function refreshClientIpUsageRangeWindowForIpsAsync(
     await client.execute(`
       INSERT INTO ${statsTable(client, 'client_ip_usage_range_windows')} (
         ip_hash, start_date, end_date, request_count, success_count, error_count,
-        input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd,
+        input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd,
         duration_ms_sum, duration_ms_count, duration_ms_max, average_duration_ms,
         first_token_ms_sum, first_token_ms_count, average_first_token_ms,
         active_days, last_used_at, last_error_at, updated_at
@@ -470,6 +506,12 @@ async function refreshClientIpUsageRangeWindowForIpsAsync(
         COALESCE(SUM(output_tokens), 0),
         COALESCE(SUM(cache_read_tokens), 0),
         COALESCE(SUM(cache_read_cost_usd), 0),
+        COALESCE(SUM(cache_write_tokens), 0),
+        COALESCE(SUM(cache_write_1h_tokens), 0),
+        COALESCE(SUM(cache_write_cost_usd), 0),
+        COALESCE(SUM(thinking_tokens), 0),
+        COALESCE(SUM(input_image_tokens), 0),
+        COALESCE(SUM(output_image_tokens), 0),
         COALESCE(SUM(total_cost_usd), 0),
         COALESCE(SUM(duration_ms_sum), 0),
         COALESCE(SUM(duration_ms_count), 0),
@@ -492,6 +534,12 @@ async function refreshClientIpUsageRangeWindowForIpsAsync(
         OR COALESCE(SUM(output_tokens), 0) > 0
         OR COALESCE(SUM(cache_read_tokens), 0) > 0
         OR COALESCE(SUM(cache_read_cost_usd), 0) > 0
+        OR COALESCE(SUM(cache_write_tokens), 0) > 0
+        OR COALESCE(SUM(cache_write_1h_tokens), 0) > 0
+        OR COALESCE(SUM(cache_write_cost_usd), 0) > 0
+        OR COALESCE(SUM(thinking_tokens), 0) > 0
+        OR COALESCE(SUM(input_image_tokens), 0) > 0
+        OR COALESCE(SUM(output_image_tokens), 0) > 0
         OR COALESCE(SUM(total_cost_usd), 0) > 0
     `, [startDate, endDate, updatedAt, startDate, endDate, ...chunk])
   }
@@ -504,7 +552,7 @@ function refreshClientIpAccountUsageRangeWindow(database: DatabaseSync, startDat
     database.prepare(`
       INSERT INTO client_ip_account_usage_range_windows (
         ip_hash, account_id, start_date, end_date, request_count, success_count, error_count,
-        input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd,
+        input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd,
         duration_ms_sum, duration_ms_count, duration_ms_max, average_duration_ms,
         first_token_ms_sum, first_token_ms_count, average_first_token_ms,
         active_days, last_used_at, last_error_at, updated_at
@@ -521,6 +569,12 @@ function refreshClientIpAccountUsageRangeWindow(database: DatabaseSync, startDat
         COALESCE(SUM(output_tokens), 0),
         COALESCE(SUM(cache_read_tokens), 0),
         COALESCE(SUM(cache_read_cost_usd), 0),
+        COALESCE(SUM(cache_write_tokens), 0),
+        COALESCE(SUM(cache_write_1h_tokens), 0),
+        COALESCE(SUM(cache_write_cost_usd), 0),
+        COALESCE(SUM(thinking_tokens), 0),
+        COALESCE(SUM(input_image_tokens), 0),
+        COALESCE(SUM(output_image_tokens), 0),
         COALESCE(SUM(total_cost_usd), 0),
         COALESCE(SUM(duration_ms_sum), 0),
         COALESCE(SUM(duration_ms_count), 0),
@@ -542,6 +596,12 @@ function refreshClientIpAccountUsageRangeWindow(database: DatabaseSync, startDat
         OR COALESCE(SUM(output_tokens), 0) > 0
         OR COALESCE(SUM(cache_read_tokens), 0) > 0
         OR COALESCE(SUM(cache_read_cost_usd), 0) > 0
+        OR COALESCE(SUM(cache_write_tokens), 0) > 0
+        OR COALESCE(SUM(cache_write_1h_tokens), 0) > 0
+        OR COALESCE(SUM(cache_write_cost_usd), 0) > 0
+        OR COALESCE(SUM(thinking_tokens), 0) > 0
+        OR COALESCE(SUM(input_image_tokens), 0) > 0
+        OR COALESCE(SUM(output_image_tokens), 0) > 0
         OR COALESCE(SUM(total_cost_usd), 0) > 0
     `).run(startDate, endDate, updatedAt, startDate, endDate)
     commitDatabaseTransaction(database, transactionStarted)
@@ -566,7 +626,7 @@ function refreshClientIpAccountUsageRangeWindowForIps(database: DatabaseSync, st
       database.prepare(`
         INSERT INTO client_ip_account_usage_range_windows (
           ip_hash, account_id, start_date, end_date, request_count, success_count, error_count,
-          input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd,
+          input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd,
           duration_ms_sum, duration_ms_count, duration_ms_max, average_duration_ms,
           first_token_ms_sum, first_token_ms_count, average_first_token_ms,
           active_days, last_used_at, last_error_at, updated_at
@@ -583,7 +643,13 @@ function refreshClientIpAccountUsageRangeWindowForIps(database: DatabaseSync, st
           COALESCE(SUM(output_tokens), 0),
           COALESCE(SUM(cache_read_tokens), 0),
           COALESCE(SUM(cache_read_cost_usd), 0),
-          COALESCE(SUM(total_cost_usd), 0),
+        COALESCE(SUM(cache_write_tokens), 0),
+        COALESCE(SUM(cache_write_1h_tokens), 0),
+        COALESCE(SUM(cache_write_cost_usd), 0),
+        COALESCE(SUM(thinking_tokens), 0),
+        COALESCE(SUM(input_image_tokens), 0),
+        COALESCE(SUM(output_image_tokens), 0),
+        COALESCE(SUM(total_cost_usd), 0),
           COALESCE(SUM(duration_ms_sum), 0),
           COALESCE(SUM(duration_ms_count), 0),
           COALESCE(MAX(duration_ms_max), 0),
@@ -605,7 +671,13 @@ function refreshClientIpAccountUsageRangeWindowForIps(database: DatabaseSync, st
           OR COALESCE(SUM(output_tokens), 0) > 0
           OR COALESCE(SUM(cache_read_tokens), 0) > 0
           OR COALESCE(SUM(cache_read_cost_usd), 0) > 0
-          OR COALESCE(SUM(total_cost_usd), 0) > 0
+        OR COALESCE(SUM(cache_write_tokens), 0) > 0
+        OR COALESCE(SUM(cache_write_1h_tokens), 0) > 0
+        OR COALESCE(SUM(cache_write_cost_usd), 0) > 0
+        OR COALESCE(SUM(thinking_tokens), 0) > 0
+        OR COALESCE(SUM(input_image_tokens), 0) > 0
+        OR COALESCE(SUM(output_image_tokens), 0) > 0
+        OR COALESCE(SUM(total_cost_usd), 0) > 0
       `).run(startDate, endDate, updatedAt, startDate, endDate, ...chunk)
     }
     commitDatabaseTransaction(database, transactionStarted)
@@ -620,7 +692,7 @@ async function refreshClientIpAccountUsageRangeWindowAsync(client: DatabaseClien
   await client.execute(`
     INSERT INTO ${statsTable(client, 'client_ip_account_usage_range_windows')} (
       ip_hash, account_id, start_date, end_date, request_count, success_count, error_count,
-      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd,
+      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd,
       duration_ms_sum, duration_ms_count, duration_ms_max, average_duration_ms,
       first_token_ms_sum, first_token_ms_count, average_first_token_ms,
       active_days, last_used_at, last_error_at, updated_at
@@ -637,7 +709,13 @@ async function refreshClientIpAccountUsageRangeWindowAsync(client: DatabaseClien
       COALESCE(SUM(output_tokens), 0),
       COALESCE(SUM(cache_read_tokens), 0),
       COALESCE(SUM(cache_read_cost_usd), 0),
-      COALESCE(SUM(total_cost_usd), 0),
+        COALESCE(SUM(cache_write_tokens), 0),
+        COALESCE(SUM(cache_write_1h_tokens), 0),
+        COALESCE(SUM(cache_write_cost_usd), 0),
+        COALESCE(SUM(thinking_tokens), 0),
+        COALESCE(SUM(input_image_tokens), 0),
+        COALESCE(SUM(output_image_tokens), 0),
+        COALESCE(SUM(total_cost_usd), 0),
       COALESCE(SUM(duration_ms_sum), 0),
       COALESCE(SUM(duration_ms_count), 0),
       COALESCE(MAX(duration_ms_max), 0),
@@ -658,7 +736,13 @@ async function refreshClientIpAccountUsageRangeWindowAsync(client: DatabaseClien
       OR COALESCE(SUM(output_tokens), 0) > 0
       OR COALESCE(SUM(cache_read_tokens), 0) > 0
       OR COALESCE(SUM(cache_read_cost_usd), 0) > 0
-      OR COALESCE(SUM(total_cost_usd), 0) > 0
+        OR COALESCE(SUM(cache_write_tokens), 0) > 0
+        OR COALESCE(SUM(cache_write_1h_tokens), 0) > 0
+        OR COALESCE(SUM(cache_write_cost_usd), 0) > 0
+        OR COALESCE(SUM(thinking_tokens), 0) > 0
+        OR COALESCE(SUM(input_image_tokens), 0) > 0
+        OR COALESCE(SUM(output_image_tokens), 0) > 0
+        OR COALESCE(SUM(total_cost_usd), 0) > 0
   `, [startDate, endDate, updatedAt, startDate, endDate])
 }
 
@@ -681,7 +765,7 @@ async function refreshClientIpAccountUsageRangeWindowForIpsAsync(
     await client.execute(`
       INSERT INTO ${statsTable(client, 'client_ip_account_usage_range_windows')} (
         ip_hash, account_id, start_date, end_date, request_count, success_count, error_count,
-        input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd,
+        input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd,
         duration_ms_sum, duration_ms_count, duration_ms_max, average_duration_ms,
         first_token_ms_sum, first_token_ms_count, average_first_token_ms,
         active_days, last_used_at, last_error_at, updated_at
@@ -698,6 +782,12 @@ async function refreshClientIpAccountUsageRangeWindowForIpsAsync(
         COALESCE(SUM(output_tokens), 0),
         COALESCE(SUM(cache_read_tokens), 0),
         COALESCE(SUM(cache_read_cost_usd), 0),
+        COALESCE(SUM(cache_write_tokens), 0),
+        COALESCE(SUM(cache_write_1h_tokens), 0),
+        COALESCE(SUM(cache_write_cost_usd), 0),
+        COALESCE(SUM(thinking_tokens), 0),
+        COALESCE(SUM(input_image_tokens), 0),
+        COALESCE(SUM(output_image_tokens), 0),
         COALESCE(SUM(total_cost_usd), 0),
         COALESCE(SUM(duration_ms_sum), 0),
         COALESCE(SUM(duration_ms_count), 0),
@@ -720,6 +810,12 @@ async function refreshClientIpAccountUsageRangeWindowForIpsAsync(
         OR COALESCE(SUM(output_tokens), 0) > 0
         OR COALESCE(SUM(cache_read_tokens), 0) > 0
         OR COALESCE(SUM(cache_read_cost_usd), 0) > 0
+        OR COALESCE(SUM(cache_write_tokens), 0) > 0
+        OR COALESCE(SUM(cache_write_1h_tokens), 0) > 0
+        OR COALESCE(SUM(cache_write_cost_usd), 0) > 0
+        OR COALESCE(SUM(thinking_tokens), 0) > 0
+        OR COALESCE(SUM(input_image_tokens), 0) > 0
+        OR COALESCE(SUM(output_image_tokens), 0) > 0
         OR COALESCE(SUM(total_cost_usd), 0) > 0
     `, [startDate, endDate, updatedAt, startDate, endDate, ...chunk])
   }

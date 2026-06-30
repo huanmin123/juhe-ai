@@ -6,6 +6,12 @@ export interface AccountUsageSummary {
   outputTokens: number
   cacheReadTokens: number
   cacheReadCost: number
+  cacheWriteTokens: number
+  cacheWrite1hTokens: number
+  cacheWriteCost: number
+  thinkingTokens: number
+  inputImageTokens: number
+  outputImageTokens: number
   totalTokens: number
   totalCost: number
   lastUsedAt?: string
@@ -99,6 +105,13 @@ export interface UsageStatsOverview {
   hourlyTrend: Array<{
     statHour: string
     requestCount: number
+    cacheReadTokens?: number
+    cacheWriteTokens?: number
+    cacheWrite1hTokens?: number
+    cacheWriteCost?: number
+    thinkingTokens?: number
+    inputImageTokens?: number
+    outputImageTokens?: number
     totalTokens: number
     totalCost: number
     averageDurationMs?: number
@@ -109,6 +122,13 @@ export interface UsageStatsOverview {
     providerCode: string
     requestCount: number
     totalTokens: number
+    cacheReadTokens?: number
+    cacheWriteTokens?: number
+    cacheWrite1hTokens?: number
+    cacheWriteCost?: number
+    thinkingTokens?: number
+    inputImageTokens?: number
+    outputImageTokens?: number
     totalCost: number
   }>
   errors: Array<{

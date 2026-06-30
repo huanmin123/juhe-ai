@@ -35,6 +35,12 @@ interface ClientIpAggregate {
   outputTokens: number
   cacheReadTokens: number
   cacheReadCostUsd: number
+  cacheWriteTokens: number
+  cacheWrite1hTokens: number
+  cacheWriteCostUsd: number
+  thinkingTokens: number
+  inputImageTokens: number
+  outputImageTokens: number
   totalCostUsd: number
   durationMsSum: number
   durationMsCount: number
@@ -102,6 +108,12 @@ function buildClientIpAggregates(rows: UsageStatsRecordRow[], timezone = usageSt
         outputTokens: accumulator.outputTokens,
         cacheReadTokens: accumulator.cacheReadTokens,
         cacheReadCostUsd: accumulator.cacheReadCostUsd,
+        cacheWriteTokens: accumulator.cacheWriteTokens,
+        cacheWrite1hTokens: accumulator.cacheWrite1hTokens,
+        cacheWriteCostUsd: accumulator.cacheWriteCostUsd,
+        thinkingTokens: accumulator.thinkingTokens,
+        inputImageTokens: accumulator.inputImageTokens,
+        outputImageTokens: accumulator.outputImageTokens,
         totalCostUsd: accumulator.totalCostUsd,
         durationMsSum: accumulator.durationMsSum,
         durationMsCount: accumulator.durationMsCount,
@@ -132,6 +144,12 @@ function buildClientIpAggregates(rows: UsageStatsRecordRow[], timezone = usageSt
       outputTokens: accumulator.outputTokens,
       cacheReadTokens: accumulator.cacheReadTokens,
       cacheReadCostUsd: accumulator.cacheReadCostUsd,
+      cacheWriteTokens: accumulator.cacheWriteTokens,
+      cacheWrite1hTokens: accumulator.cacheWrite1hTokens,
+      cacheWriteCostUsd: accumulator.cacheWriteCostUsd,
+      thinkingTokens: accumulator.thinkingTokens,
+      inputImageTokens: accumulator.inputImageTokens,
+      outputImageTokens: accumulator.outputImageTokens,
       totalCostUsd: accumulator.totalCostUsd,
       durationMsSum: accumulator.durationMsSum,
       durationMsCount: accumulator.durationMsCount,
@@ -206,10 +224,11 @@ function prepareClientIpAggregateStatements(database: DatabaseSync): ClientIpAgg
     dailyUpsert: database.prepare(`
       INSERT INTO client_ip_stats_daily (
         ip_hash, stat_date, request_count, success_count, error_count,
-        input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd,
+        input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd,
+        cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd,
         duration_ms_sum, duration_ms_count, duration_ms_max, first_token_ms_sum, first_token_ms_count,
         last_used_at, last_error_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(ip_hash, stat_date) DO UPDATE SET
         request_count = request_count + excluded.request_count,
         success_count = success_count + excluded.success_count,
@@ -218,6 +237,12 @@ function prepareClientIpAggregateStatements(database: DatabaseSync): ClientIpAgg
         output_tokens = output_tokens + excluded.output_tokens,
         cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
         cache_read_cost_usd = cache_read_cost_usd + excluded.cache_read_cost_usd,
+        cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
+        cache_write_1h_tokens = cache_write_1h_tokens + excluded.cache_write_1h_tokens,
+        cache_write_cost_usd = cache_write_cost_usd + excluded.cache_write_cost_usd,
+        thinking_tokens = thinking_tokens + excluded.thinking_tokens,
+        input_image_tokens = input_image_tokens + excluded.input_image_tokens,
+        output_image_tokens = output_image_tokens + excluded.output_image_tokens,
         total_cost_usd = total_cost_usd + excluded.total_cost_usd,
         duration_ms_sum = duration_ms_sum + excluded.duration_ms_sum,
         duration_ms_count = duration_ms_count + excluded.duration_ms_count,
@@ -231,10 +256,11 @@ function prepareClientIpAggregateStatements(database: DatabaseSync): ClientIpAgg
     accountDailyUpsert: database.prepare(`
       INSERT INTO client_ip_account_stats_daily (
         ip_hash, account_id, stat_date, request_count, success_count, error_count,
-        input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd,
+        input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd,
+        cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd,
         duration_ms_sum, duration_ms_count, duration_ms_max, first_token_ms_sum, first_token_ms_count,
         last_used_at, last_error_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(ip_hash, account_id, stat_date) DO UPDATE SET
         request_count = request_count + excluded.request_count,
         success_count = success_count + excluded.success_count,
@@ -243,6 +269,12 @@ function prepareClientIpAggregateStatements(database: DatabaseSync): ClientIpAgg
         output_tokens = output_tokens + excluded.output_tokens,
         cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
         cache_read_cost_usd = cache_read_cost_usd + excluded.cache_read_cost_usd,
+        cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
+        cache_write_1h_tokens = cache_write_1h_tokens + excluded.cache_write_1h_tokens,
+        cache_write_cost_usd = cache_write_cost_usd + excluded.cache_write_cost_usd,
+        thinking_tokens = thinking_tokens + excluded.thinking_tokens,
+        input_image_tokens = input_image_tokens + excluded.input_image_tokens,
+        output_image_tokens = output_image_tokens + excluded.output_image_tokens,
         total_cost_usd = total_cost_usd + excluded.total_cost_usd,
         duration_ms_sum = duration_ms_sum + excluded.duration_ms_sum,
         duration_ms_count = duration_ms_count + excluded.duration_ms_count,
@@ -300,6 +332,12 @@ function upsertClientIpDaily(statements: ClientIpAggregateStatements, aggregate:
     aggregate.outputTokens,
     aggregate.cacheReadTokens,
     aggregate.cacheReadCostUsd,
+    aggregate.cacheWriteTokens,
+    aggregate.cacheWrite1hTokens,
+    aggregate.cacheWriteCostUsd,
+    aggregate.thinkingTokens,
+    aggregate.inputImageTokens,
+    aggregate.outputImageTokens,
     aggregate.totalCostUsd,
     aggregate.durationMsSum,
     aggregate.durationMsCount,
@@ -325,6 +363,12 @@ function upsertClientIpAccountDaily(statements: ClientIpAggregateStatements, agg
     aggregate.outputTokens,
     aggregate.cacheReadTokens,
     aggregate.cacheReadCostUsd,
+    aggregate.cacheWriteTokens,
+    aggregate.cacheWrite1hTokens,
+    aggregate.cacheWriteCostUsd,
+    aggregate.thinkingTokens,
+    aggregate.inputImageTokens,
+    aggregate.outputImageTokens,
     aggregate.totalCostUsd,
     aggregate.durationMsSum,
     aggregate.durationMsCount,
@@ -388,6 +432,12 @@ async function upsertClientIpDailyAsync(client: DatabaseClient, aggregates: Clie
     'output_tokens',
     'cache_read_tokens',
     'cache_read_cost_usd',
+    'cache_write_tokens',
+    'cache_write_1h_tokens',
+    'cache_write_cost_usd',
+    'thinking_tokens',
+    'input_image_tokens',
+    'output_image_tokens',
     'total_cost_usd',
     'duration_ms_sum',
     'duration_ms_count',
@@ -410,6 +460,12 @@ async function upsertClientIpDailyAsync(client: DatabaseClient, aggregates: Clie
         output_tokens = client_ip_stats_daily.output_tokens + EXCLUDED.output_tokens,
         cache_read_tokens = client_ip_stats_daily.cache_read_tokens + EXCLUDED.cache_read_tokens,
         cache_read_cost_usd = client_ip_stats_daily.cache_read_cost_usd + EXCLUDED.cache_read_cost_usd,
+        cache_write_tokens = client_ip_stats_daily.cache_write_tokens + EXCLUDED.cache_write_tokens,
+        cache_write_1h_tokens = client_ip_stats_daily.cache_write_1h_tokens + EXCLUDED.cache_write_1h_tokens,
+        cache_write_cost_usd = client_ip_stats_daily.cache_write_cost_usd + EXCLUDED.cache_write_cost_usd,
+        thinking_tokens = client_ip_stats_daily.thinking_tokens + EXCLUDED.thinking_tokens,
+        input_image_tokens = client_ip_stats_daily.input_image_tokens + EXCLUDED.input_image_tokens,
+        output_image_tokens = client_ip_stats_daily.output_image_tokens + EXCLUDED.output_image_tokens,
         total_cost_usd = client_ip_stats_daily.total_cost_usd + EXCLUDED.total_cost_usd,
         duration_ms_sum = client_ip_stats_daily.duration_ms_sum + EXCLUDED.duration_ms_sum,
         duration_ms_count = client_ip_stats_daily.duration_ms_count + EXCLUDED.duration_ms_count,
@@ -436,6 +492,12 @@ async function upsertClientIpAccountDailyAsync(client: DatabaseClient, aggregate
     'output_tokens',
     'cache_read_tokens',
     'cache_read_cost_usd',
+    'cache_write_tokens',
+    'cache_write_1h_tokens',
+    'cache_write_cost_usd',
+    'thinking_tokens',
+    'input_image_tokens',
+    'output_image_tokens',
     'total_cost_usd',
     'duration_ms_sum',
     'duration_ms_count',
@@ -458,6 +520,12 @@ async function upsertClientIpAccountDailyAsync(client: DatabaseClient, aggregate
         output_tokens = client_ip_account_stats_daily.output_tokens + EXCLUDED.output_tokens,
         cache_read_tokens = client_ip_account_stats_daily.cache_read_tokens + EXCLUDED.cache_read_tokens,
         cache_read_cost_usd = client_ip_account_stats_daily.cache_read_cost_usd + EXCLUDED.cache_read_cost_usd,
+        cache_write_tokens = client_ip_account_stats_daily.cache_write_tokens + EXCLUDED.cache_write_tokens,
+        cache_write_1h_tokens = client_ip_account_stats_daily.cache_write_1h_tokens + EXCLUDED.cache_write_1h_tokens,
+        cache_write_cost_usd = client_ip_account_stats_daily.cache_write_cost_usd + EXCLUDED.cache_write_cost_usd,
+        thinking_tokens = client_ip_account_stats_daily.thinking_tokens + EXCLUDED.thinking_tokens,
+        input_image_tokens = client_ip_account_stats_daily.input_image_tokens + EXCLUDED.input_image_tokens,
+        output_image_tokens = client_ip_account_stats_daily.output_image_tokens + EXCLUDED.output_image_tokens,
         total_cost_usd = client_ip_account_stats_daily.total_cost_usd + EXCLUDED.total_cost_usd,
         duration_ms_sum = client_ip_account_stats_daily.duration_ms_sum + EXCLUDED.duration_ms_sum,
         duration_ms_count = client_ip_account_stats_daily.duration_ms_count + EXCLUDED.duration_ms_count,
@@ -504,6 +572,12 @@ function clientIpDailyParams(aggregate: ClientIpAggregate, updatedAt: string): u
     aggregate.outputTokens,
     aggregate.cacheReadTokens,
     aggregate.cacheReadCostUsd,
+    aggregate.cacheWriteTokens,
+    aggregate.cacheWrite1hTokens,
+    aggregate.cacheWriteCostUsd,
+    aggregate.thinkingTokens,
+    aggregate.inputImageTokens,
+    aggregate.outputImageTokens,
     aggregate.totalCostUsd,
     aggregate.durationMsSum,
     aggregate.durationMsCount,
@@ -528,6 +602,12 @@ function clientIpAccountDailyParams(aggregate: ClientIpAggregate, updatedAt: str
     aggregate.outputTokens,
     aggregate.cacheReadTokens,
     aggregate.cacheReadCostUsd,
+    aggregate.cacheWriteTokens,
+    aggregate.cacheWrite1hTokens,
+    aggregate.cacheWriteCostUsd,
+    aggregate.thinkingTokens,
+    aggregate.inputImageTokens,
+    aggregate.outputImageTokens,
     aggregate.totalCostUsd,
     aggregate.durationMsSum,
     aggregate.durationMsCount,
@@ -566,6 +646,12 @@ function addAccumulatorToClientIpAggregate(target: ClientIpAggregate, accumulato
   target.outputTokens += accumulator.outputTokens
   target.cacheReadTokens += accumulator.cacheReadTokens
   target.cacheReadCostUsd += accumulator.cacheReadCostUsd
+  target.cacheWriteTokens += accumulator.cacheWriteTokens
+  target.cacheWrite1hTokens += accumulator.cacheWrite1hTokens
+  target.cacheWriteCostUsd += accumulator.cacheWriteCostUsd
+  target.thinkingTokens += accumulator.thinkingTokens
+  target.inputImageTokens += accumulator.inputImageTokens
+  target.outputImageTokens += accumulator.outputImageTokens
   target.totalCostUsd += accumulator.totalCostUsd
   target.durationMsSum += accumulator.durationMsSum
   target.durationMsCount += accumulator.durationMsCount

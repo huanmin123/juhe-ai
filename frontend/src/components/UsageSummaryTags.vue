@@ -15,6 +15,11 @@ defineProps<{
     requestCount?: number
     totalCost?: number
     totalTokens?: number
+    cacheWriteTokens?: number
+    cacheWrite1hTokens?: number
+    thinkingTokens?: number
+    inputImageTokens?: number
+    outputImageTokens?: number
   }
 }>()
 </script>

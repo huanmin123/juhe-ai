@@ -374,6 +374,7 @@ export interface AuthorizationPrincipalOptionsParams {
 export interface AuthorizationGranteeGroupOptionsParams extends AuthorizationPrincipalOptionsParams {
   granteeSystemAccountId: string
   providerCode?: string
+  providerProtocolProfileId?: string
   preferDefault?: boolean
 }
 

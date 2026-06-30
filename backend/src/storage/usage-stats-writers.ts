@@ -359,6 +359,12 @@ function upsertAggregatedModelEntries(database: DatabaseSync, entries: Map<strin
       stats.outputTokens,
       stats.cacheReadTokens,
       stats.cacheReadCostUsd,
+      stats.cacheWriteTokens,
+      stats.cacheWrite1hTokens,
+      stats.cacheWriteCostUsd,
+      stats.thinkingTokens,
+      stats.inputImageTokens,
+      stats.outputImageTokens,
       stats.totalCostUsd,
       updatedAt
     )
@@ -368,8 +374,9 @@ function upsertAggregatedModelEntries(database: DatabaseSync, entries: Map<strin
 function prepareUsageModelBucketAggregateUpsertStatement(database: DatabaseSync, bucket: UsageStatsTimeBucketDefinition): SqliteStatement {
   return database.prepare(`
     INSERT INTO ${bucket.tableName} (system_account_id, ${bucket.columnName}, provider_code, model, request_count, success_count, error_count,
-      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd,
+      thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(system_account_id, ${bucket.columnName}, provider_code, model) DO UPDATE SET
       request_count = request_count + excluded.request_count,
       success_count = success_count + excluded.success_count,
@@ -378,6 +385,12 @@ function prepareUsageModelBucketAggregateUpsertStatement(database: DatabaseSync,
       output_tokens = output_tokens + excluded.output_tokens,
       cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
       cache_read_cost_usd = cache_read_cost_usd + excluded.cache_read_cost_usd,
+      cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
+      cache_write_1h_tokens = cache_write_1h_tokens + excluded.cache_write_1h_tokens,
+      cache_write_cost_usd = cache_write_cost_usd + excluded.cache_write_cost_usd,
+      thinking_tokens = thinking_tokens + excluded.thinking_tokens,
+      input_image_tokens = input_image_tokens + excluded.input_image_tokens,
+      output_image_tokens = output_image_tokens + excluded.output_image_tokens,
       total_cost_usd = total_cost_usd + excluded.total_cost_usd,
       updated_at = excluded.updated_at
   `)
@@ -462,6 +475,12 @@ function mergeAccumulator(target: UsageStatsAccumulator, source: UsageStatsAccum
   target.outputTokens += source.outputTokens
   target.cacheReadTokens += source.cacheReadTokens
   target.cacheReadCostUsd += source.cacheReadCostUsd
+  target.cacheWriteTokens += source.cacheWriteTokens
+  target.cacheWrite1hTokens += source.cacheWrite1hTokens
+  target.cacheWriteCostUsd += source.cacheWriteCostUsd
+  target.thinkingTokens += source.thinkingTokens
+  target.inputImageTokens += source.inputImageTokens
+  target.outputImageTokens += source.outputImageTokens
   target.totalCostUsd += source.totalCostUsd
   target.durationMsSum += source.durationMsSum
   target.durationMsCount += source.durationMsCount
@@ -527,9 +546,10 @@ function usageStatsUpsertStatementsFor(database: DatabaseSync, context?: UsageSt
 function prepareUsageStatsTotalUpsertStatement(database: DatabaseSync): SqliteStatement {
   return database.prepare(`
     INSERT INTO usage_stats_totals (system_account_id, scope_type, scope_id, request_count, success_count, error_count,
-      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
+      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd,
+      thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
       first_token_ms_sum, first_token_ms_count, first_token_ms_max, last_used_at, last_error_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(system_account_id, scope_type, scope_id) DO UPDATE SET
       request_count = request_count + excluded.request_count,
       success_count = success_count + excluded.success_count,
@@ -538,6 +558,12 @@ function prepareUsageStatsTotalUpsertStatement(database: DatabaseSync): SqliteSt
       output_tokens = output_tokens + excluded.output_tokens,
       cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
       cache_read_cost_usd = cache_read_cost_usd + excluded.cache_read_cost_usd,
+      cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
+      cache_write_1h_tokens = cache_write_1h_tokens + excluded.cache_write_1h_tokens,
+      cache_write_cost_usd = cache_write_cost_usd + excluded.cache_write_cost_usd,
+      thinking_tokens = thinking_tokens + excluded.thinking_tokens,
+      input_image_tokens = input_image_tokens + excluded.input_image_tokens,
+      output_image_tokens = output_image_tokens + excluded.output_image_tokens,
       total_cost_usd = total_cost_usd + excluded.total_cost_usd,
       duration_ms_sum = duration_ms_sum + excluded.duration_ms_sum,
       duration_ms_count = duration_ms_count + excluded.duration_ms_count,
@@ -559,9 +585,10 @@ function prepareUsageStatsTimeBucketUpsertStatement(database: DatabaseSync, buck
   const { tableName, columnName } = bucket
   return database.prepare(`
     INSERT INTO ${tableName} (system_account_id, scope_type, scope_id, ${columnName}, request_count, success_count, error_count,
-      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
+      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd,
+      thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
       first_token_ms_sum, first_token_ms_count, first_token_ms_max, last_used_at, last_error_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(system_account_id, scope_type, scope_id, ${columnName}) DO UPDATE SET
       request_count = request_count + excluded.request_count,
       success_count = success_count + excluded.success_count,
@@ -570,6 +597,12 @@ function prepareUsageStatsTimeBucketUpsertStatement(database: DatabaseSync, buck
       output_tokens = output_tokens + excluded.output_tokens,
       cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
       cache_read_cost_usd = cache_read_cost_usd + excluded.cache_read_cost_usd,
+      cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
+      cache_write_1h_tokens = cache_write_1h_tokens + excluded.cache_write_1h_tokens,
+      cache_write_cost_usd = cache_write_cost_usd + excluded.cache_write_cost_usd,
+      thinking_tokens = thinking_tokens + excluded.thinking_tokens,
+      input_image_tokens = input_image_tokens + excluded.input_image_tokens,
+      output_image_tokens = output_image_tokens + excluded.output_image_tokens,
       total_cost_usd = total_cost_usd + excluded.total_cost_usd,
       duration_ms_sum = duration_ms_sum + excluded.duration_ms_sum,
       duration_ms_count = duration_ms_count + excluded.duration_ms_count,
@@ -597,6 +630,12 @@ function subtractUsageStatsTotal(database: DatabaseSync, systemAccountId: string
         output_tokens = MAX(0, output_tokens - ?),
         cache_read_tokens = MAX(0, cache_read_tokens - ?),
         cache_read_cost_usd = MAX(0, cache_read_cost_usd - ?),
+        cache_write_tokens = MAX(0, cache_write_tokens - ?),
+        cache_write_1h_tokens = MAX(0, cache_write_1h_tokens - ?),
+        cache_write_cost_usd = MAX(0, cache_write_cost_usd - ?),
+        thinking_tokens = MAX(0, thinking_tokens - ?),
+        input_image_tokens = MAX(0, input_image_tokens - ?),
+        output_image_tokens = MAX(0, output_image_tokens - ?),
         total_cost_usd = MAX(0, total_cost_usd - ?),
         duration_ms_sum = MAX(0, duration_ms_sum - ?),
         duration_ms_count = MAX(0, duration_ms_count - ?),
@@ -623,6 +662,12 @@ function subtractUsageStatsTimeBucket(database: DatabaseSync, bucket: UsageStats
         output_tokens = MAX(0, output_tokens - ?),
         cache_read_tokens = MAX(0, cache_read_tokens - ?),
         cache_read_cost_usd = MAX(0, cache_read_cost_usd - ?),
+        cache_write_tokens = MAX(0, cache_write_tokens - ?),
+        cache_write_1h_tokens = MAX(0, cache_write_1h_tokens - ?),
+        cache_write_cost_usd = MAX(0, cache_write_cost_usd - ?),
+        thinking_tokens = MAX(0, thinking_tokens - ?),
+        input_image_tokens = MAX(0, input_image_tokens - ?),
+        output_image_tokens = MAX(0, output_image_tokens - ?),
         total_cost_usd = MAX(0, total_cost_usd - ?),
         duration_ms_sum = MAX(0, duration_ms_sum - ?),
         duration_ms_count = MAX(0, duration_ms_count - ?),
@@ -643,7 +688,9 @@ function deleteEmptyUsageStatsTotal(database: DatabaseSync, systemAccountId: str
     DELETE FROM usage_stats_totals
     WHERE system_account_id = ? AND scope_type = ? AND scope_id = ?
       AND request_count = 0 AND success_count = 0 AND error_count = 0
-      AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND cache_read_cost_usd = 0 AND total_cost_usd = 0
+      AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND cache_read_cost_usd = 0
+      AND cache_write_tokens = 0 AND cache_write_1h_tokens = 0 AND cache_write_cost_usd = 0
+      AND thinking_tokens = 0 AND input_image_tokens = 0 AND output_image_tokens = 0 AND total_cost_usd = 0
   `).run(systemAccountId, scopeType, scopeId)
 }
 
@@ -652,6 +699,8 @@ function deleteEmptyUsageStatsTimeBucket(database: DatabaseSync, bucket: UsageSt
     DELETE FROM ${bucket.tableName}
     WHERE system_account_id = ? AND scope_type = ? AND scope_id = ? AND ${bucket.columnName} = ?
       AND request_count = 0 AND success_count = 0 AND error_count = 0
-      AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND cache_read_cost_usd = 0 AND total_cost_usd = 0
+      AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND cache_read_cost_usd = 0
+      AND cache_write_tokens = 0 AND cache_write_1h_tokens = 0 AND cache_write_cost_usd = 0
+      AND thinking_tokens = 0 AND input_image_tokens = 0 AND output_image_tokens = 0 AND total_cost_usd = 0
   `).run(systemAccountId, scopeType, scopeId, timeValue)
 }

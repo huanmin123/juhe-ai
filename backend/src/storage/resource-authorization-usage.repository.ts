@@ -12,7 +12,7 @@ import { getBusinessDatabase, getStatsDatabase } from './database.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { loadGroupAuthorizationUsageSummaries } from './group-read.repository.js'
 import { getPostgresPool } from './postgres-client.js'
-import { normalizeListPage, pagedTotalUpperBound, takePageRows } from './query-utils.js'
+import { chunkValues, normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { findResourceAuthorizationSummary, findResourceAuthorizationSummaryAsync } from './resource-authorization-read.repository.js'
 import { resourceAuthorizationSelectColumns, usageScope } from './resource-authorization-helpers.js'
 import { expireDueResourceAuthorizations } from './resource-authorization-write-state.repository.js'
@@ -20,12 +20,14 @@ import { loadSystemAccountPrincipalMapByIds, loadSystemAccountPrincipalMapByIdsA
 import type { ResourceAuthorizationRow } from './repository-row-types.js'
 import {
   emptyAccountUsageSummary,
+  addUsageSummaries,
   normalizeAccountUsageStatsRange,
   usageStatsTimezone,
   usageStatsTimezoneAsync,
   usageSummaryFromAggregate
 } from './usage-stats-helpers.js'
 import {
+  loadAuthorizationUsageRangeSummariesForScopes,
   loadAuthorizationUsageRangeSummariesForScopesAsync,
   loadUsageRangeSummaryForScope,
   loadUsageRangeSummaryForScopeAsync,
@@ -250,14 +252,8 @@ function loadResourceAuthorizationGrantUsageDetailForTeam(
   ) as unknown as ResourceAuthorizationRow[]
   const pageRows = takePageRows(rows, pageOptions.pageSize)
   const usageBySystemAccount = buildRuntimeAuthorizationUsageDetails(authorization, pageRows.rows, range)
-  const scopeType = authorization.resourceType === 'account' ? 'account_authorization_team' : 'group_authorization_team'
   const rangeUsage = loadAuthorizationTeamUsageRangeSummary(authorization, teamId, range)
-    ?? loadUsageRangeSummaryForScope({
-      systemAccountId: authorization.resourceOwnerSystemAccountId,
-      scopeType,
-      scopeId: `${authorization.resourceId}:${teamId}`,
-      range
-    })
+    ?? loadAuthorizationTeamUsageFallbackSummary(authorization, teamId, range)
   return {
     usage: rangeUsage,
     usageBySystemAccount: usageBySystemAccount.sort((left, right) => {
@@ -314,14 +310,8 @@ async function loadResourceAuthorizationGrantUsageDetailForTeamAsync(
   ])
   const pageRows = takePageRows(rows, pageOptions.pageSize)
   const usageBySystemAccount = await buildRuntimeAuthorizationUsageDetailsAsync(authorization, pageRows.rows, range)
-  const scopeType = authorization.resourceType === 'account' ? 'account_authorization_team' : 'group_authorization_team'
   const rangeUsage = await loadAuthorizationTeamUsageRangeSummaryAsync(authorization, teamId, range)
-    ?? await loadUsageRangeSummaryForScopeAsync({
-      systemAccountId: authorization.resourceOwnerSystemAccountId,
-      scopeType,
-      scopeId: `${authorization.resourceId}:${teamId}`,
-      range
-    })
+    ?? await loadAuthorizationTeamUsageFallbackSummaryAsync(authorization, teamId, range)
   return {
     usage: rangeUsage,
     usageBySystemAccount: usageBySystemAccount.sort((left, right) => {
@@ -337,6 +327,143 @@ async function loadResourceAuthorizationGrantUsageDetailForTeamAsync(
     usageBySystemAccountPageSize: pageOptions.pageSize,
     usageBySystemAccountHasMore: pageRows.hasMore
   }
+}
+
+function loadAuthorizationTeamUsageFallbackSummary(
+  authorization: ResourceAuthorizationSummary,
+  teamId: string,
+  range: Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>
+): AccountUsageSummary {
+  if (authorization.resourceType === 'group') {
+    return loadUsageRangeSummaryForScope({
+      systemAccountId: authorization.resourceOwnerSystemAccountId,
+      scopeType: 'group_authorization_team',
+      scopeId: `${authorization.resourceId}:${teamId}`,
+      range
+    })
+  }
+  const rows = loadAuthorizationTeamRuntimeRows(authorization, teamId)
+  const scopes = accountAuthorizationTeamUsageScopes(rows, teamId, loadAccountAuthorizationInstanceAccountIds(rows))
+  const summaries = loadAuthorizationUsageRangeSummariesForScopes(scopes, 'account_authorization_team', range)
+  return sumUsageSummariesForScopes(scopes, summaries)
+}
+
+async function loadAuthorizationTeamUsageFallbackSummaryAsync(
+  authorization: ResourceAuthorizationSummary,
+  teamId: string,
+  range: Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>
+): Promise<AccountUsageSummary> {
+  if (authorization.resourceType === 'group') {
+    return loadUsageRangeSummaryForScopeAsync({
+      systemAccountId: authorization.resourceOwnerSystemAccountId,
+      scopeType: 'group_authorization_team',
+      scopeId: `${authorization.resourceId}:${teamId}`,
+      range
+    })
+  }
+  const client = await getResourceAuthorizationUsageBusinessClient()
+  const rows = await loadAuthorizationTeamRuntimeRowsAsync(client, authorization, teamId)
+  const scopes = accountAuthorizationTeamUsageScopes(rows, teamId, await loadAccountAuthorizationInstanceAccountIdsAsync(client, rows))
+  const summaries = await loadAuthorizationUsageRangeSummariesForScopesAsync(scopes, 'account_authorization_team', range)
+  return sumUsageSummariesForScopes(scopes, summaries)
+}
+
+function loadAuthorizationTeamRuntimeRows(authorization: ResourceAuthorizationSummary, teamId: string): ResourceAuthorizationRow[] {
+  return getBusinessDatabase().prepare(`
+    SELECT DISTINCT ra.*
+    FROM resource_authorizations ra
+    INNER JOIN resource_authorization_sources ras
+      ON ras.authorization_id = ra.id
+      AND ras.source_type = 'team'
+      AND ras.source_team_id = ?
+    WHERE ra.resource_type = ?
+      AND ra.resource_id = ?
+      AND ra.resource_owner_system_account_id = ?
+    ORDER BY ra.created_at ASC, ra.id ASC
+  `).all(
+    teamId,
+    authorization.resourceType,
+    authorization.resourceId,
+    authorization.resourceOwnerSystemAccountId
+  ) as unknown as ResourceAuthorizationRow[]
+}
+
+async function loadAuthorizationTeamRuntimeRowsAsync(client: DatabaseClient, authorization: ResourceAuthorizationSummary, teamId: string): Promise<ResourceAuthorizationRow[]> {
+  return client.query<ResourceAuthorizationRow>(`
+    SELECT DISTINCT ${resourceAuthorizationSelectColumns('ra')}
+    FROM ${resourceAuthorizationUsageBusinessTable(client, 'resource_authorizations')} ra
+    INNER JOIN ${resourceAuthorizationUsageBusinessTable(client, 'resource_authorization_sources')} ras
+      ON ras.authorization_id = ra.id
+      AND ras.source_type = 'team'
+      AND ras.source_team_id = ?
+    WHERE ra.resource_type = ?
+      AND ra.resource_id = ?
+      AND ra.resource_owner_system_account_id = ?
+    ORDER BY ra.created_at ASC, ra.id ASC
+  `, [
+    teamId,
+    authorization.resourceType,
+    authorization.resourceId,
+    authorization.resourceOwnerSystemAccountId
+  ])
+}
+
+function loadAccountAuthorizationInstanceAccountIds(rows: ResourceAuthorizationRow[]): Map<string, string> {
+  const result = new Map<string, string>()
+  const ids = [...new Set(rows.map((row) => row.id).filter(Boolean))]
+  if (!ids.length) return result
+  const database = getBusinessDatabase()
+  for (const chunk of chunkValues(ids, 400)) {
+    const lookupRows = database.prepare(`
+      SELECT authorization_instance_authorization_id, id
+      FROM accounts
+      WHERE authorization_instance_authorization_id IN (${sqlPlaceholders(chunk.length)})
+        AND deleted_at IS NULL
+    `).all(...chunk) as unknown as Array<{ authorization_instance_authorization_id?: string | null; id?: string | null }>
+    for (const row of lookupRows) {
+      if (row.authorization_instance_authorization_id && row.id) {
+        result.set(row.authorization_instance_authorization_id, row.id)
+      }
+    }
+  }
+  return result
+}
+
+async function loadAccountAuthorizationInstanceAccountIdsAsync(client: DatabaseClient, rows: ResourceAuthorizationRow[]): Promise<Map<string, string>> {
+  const result = new Map<string, string>()
+  const ids = [...new Set(rows.map((row) => row.id).filter(Boolean))]
+  if (!ids.length) return result
+  for (const chunk of chunkValues(ids, 400)) {
+    const lookupRows = await client.query<{ authorization_instance_authorization_id?: string | null; id?: string | null }>(`
+      SELECT authorization_instance_authorization_id, id
+      FROM ${resourceAuthorizationUsageBusinessTable(client, 'accounts')}
+      WHERE authorization_instance_authorization_id IN (${sqlPlaceholders(chunk.length)})
+        AND deleted_at IS NULL
+    `, chunk)
+    for (const row of lookupRows) {
+      if (row.authorization_instance_authorization_id && row.id) {
+        result.set(row.authorization_instance_authorization_id, row.id)
+      }
+    }
+  }
+  return result
+}
+
+function accountAuthorizationTeamUsageScopes(rows: ResourceAuthorizationRow[], teamId: string, instanceAccountIds: Map<string, string>): UsageSummaryScopeRequest[] {
+  return rows.flatMap((row) => {
+    const systemAccountId = row.grantee_system_account_id
+    const instanceAccountId = instanceAccountIds.get(row.id)
+    if (!systemAccountId || !instanceAccountId) return []
+    return [usageScope(row.id, systemAccountId, `${instanceAccountId}:${teamId}`)]
+  })
+}
+
+function sumUsageSummariesForScopes(scopes: UsageSummaryScopeRequest[], summaries: Map<string, AccountUsageSummary>): AccountUsageSummary {
+  let total: AccountUsageSummary | undefined
+  for (const scope of scopes) {
+    total = addUsageSummaries(total, summaries.get(scope.rowKey))
+  }
+  return total ?? emptyAccountUsageSummary()
 }
 
 function buildRuntimeAuthorizationUsageDetails(
@@ -417,7 +544,8 @@ function loadAuthorizationTeamUsageRangeSummary(
 ): AccountUsageSummary | undefined {
   const row = getStatsDatabase().prepare(`
     SELECT request_count, input_tokens, output_tokens, cache_read_tokens,
-      cache_read_cost_usd, total_cost_usd AS total_cost, last_used_at
+      cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd,
+      thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd AS total_cost, last_used_at
     FROM authorization_team_usage_range_windows
     WHERE system_account_id = ?
       AND start_date = ?
@@ -445,7 +573,8 @@ async function loadAuthorizationTeamUsageRangeSummaryAsync(
   const client = await getResourceAuthorizationUsageStatsClient()
   const row = await client.one<Parameters<typeof usageSummaryFromAggregate>[0]>(`
     SELECT request_count, input_tokens, output_tokens, cache_read_tokens,
-      cache_read_cost_usd, total_cost_usd AS total_cost, last_used_at
+      cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd,
+      thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd AS total_cost, last_used_at
     FROM ${resourceAuthorizationUsageStatsTable(client, 'authorization_team_usage_range_windows')}
     WHERE system_account_id = ?
       AND start_date = ?

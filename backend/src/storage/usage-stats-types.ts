@@ -11,6 +11,12 @@ export interface AccountUsageAggregateRow {
   output_tokens: number
   cache_read_tokens: number
   cache_read_cost_usd: number
+  cache_write_tokens?: number
+  cache_write_1h_tokens?: number
+  cache_write_cost_usd?: number
+  thinking_tokens?: number
+  input_image_tokens?: number
+  output_image_tokens?: number
   total_cost: number
   last_used_at: string | null
 }
@@ -37,6 +43,12 @@ export interface UsageStatsRecordRow {
   output_tokens: number | null
   cache_read_tokens: number | null
   cache_read_cost_usd: number | null
+  cache_write_tokens: number | null
+  cache_write_1h_tokens: number | null
+  cache_write_cost_usd: number | null
+  thinking_tokens: number | null
+  input_image_tokens: number | null
+  output_image_tokens: number | null
   cost_usd: number | null
   error_code: string | null
   error_message: string | null
@@ -76,6 +88,12 @@ export const USAGE_STATS_RECORD_SELECT_COLUMNS = `
   output_tokens,
   cache_read_tokens,
   cache_read_cost_usd,
+  cache_write_tokens,
+  cache_write_1h_tokens,
+  cache_write_cost_usd,
+  thinking_tokens,
+  input_image_tokens,
+  output_image_tokens,
   cost_usd,
   error_code,
   error_message,
@@ -106,6 +124,12 @@ export interface UsageStatsAccumulator {
   outputTokens: number
   cacheReadTokens: number
   cacheReadCostUsd: number
+  cacheWriteTokens: number
+  cacheWrite1hTokens: number
+  cacheWriteCostUsd: number
+  thinkingTokens: number
+  inputImageTokens: number
+  outputImageTokens: number
   totalCostUsd: number
   durationMsSum: number
   durationMsCount: number
@@ -132,6 +156,12 @@ export interface StatsAggregateMathRow {
   output_tokens: number
   cache_read_tokens: number
   cache_read_cost_usd: number
+  cache_write_tokens?: number
+  cache_write_1h_tokens?: number
+  cache_write_cost_usd?: number
+  thinking_tokens?: number
+  input_image_tokens?: number
+  output_image_tokens?: number
   total_cost: number
   duration_ms_sum: number
   duration_ms_count: number
@@ -176,8 +206,8 @@ export interface ProcessEventLoopSampleInput {
 export interface UsageStatsOverview {
   range: AccountUsageStatsRange
   summary: AccountUsageSummary & { successCount: number; errorCount: number; errorRate: number; averageDurationMs?: number; averageFirstTokenMs?: number }
-  hourlyTrend: Array<{ statHour: string; requestCount: number; totalTokens: number; totalCost: number; averageDurationMs?: number; errorCount: number }>
-  modelDistribution: Array<{ model: string; providerCode: string; requestCount: number; totalTokens: number; totalCost: number }>
+  hourlyTrend: Array<{ statHour: string; requestCount: number; totalTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number; cacheWrite1hTokens?: number; cacheWriteCost?: number; thinkingTokens?: number; inputImageTokens?: number; outputImageTokens?: number; totalCost: number; averageDurationMs?: number; errorCount: number }>
+  modelDistribution: Array<{ model: string; providerCode: string; requestCount: number; totalTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number; cacheWrite1hTokens?: number; cacheWriteCost?: number; thinkingTokens?: number; inputImageTokens?: number; outputImageTokens?: number; totalCost: number }>
   errors: Array<{ errorCode: string; providerCode: string; statusCode?: number; errorMessage?: string; errorCount: number }>
   statsLagSeconds?: number
 }

@@ -38,6 +38,7 @@ try {
   }, access)
   const oauthAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: 'profile_gpt_openai_v1',
     name: '统计合并 OAuth 账户',
     type: 'oauth',
     credentials: {
@@ -50,6 +51,7 @@ try {
   }, access)
   const apiKeyAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: 'profile_gpt_openai_v1',
     name: '统计合并 API Key 账户',
     type: 'api_key',
     credentials: {

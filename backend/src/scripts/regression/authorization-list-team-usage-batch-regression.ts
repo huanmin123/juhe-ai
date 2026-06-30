@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import type { AccountUsageStatsRange, ResourceAuthorizationResourceType } from '../../domain/types.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-authorization-team-usage-batch-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -59,7 +60,8 @@ try {
   })
   const group = repositories.createGroup({
     name: '团队授权批量查询分组',
-    providerCode: 'gpt'
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, ownerAccess)
 
   const grantCount = 120
@@ -69,6 +71,7 @@ try {
     assert(team, '团队种子数据不足')
     const account = repositories.createAccount({
       providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: `团队授权批量查询账户 ${index}`,
       type: 'api_key',
       credentials: {

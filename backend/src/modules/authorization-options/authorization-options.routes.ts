@@ -49,6 +49,7 @@ function parseAuthorizationGranteeGroupOptionListOptions(query: Record<string, u
     ...parseAuthorizationOptionListOptions(query),
     granteeSystemAccountId: optionalQueryText(query.granteeSystemAccountId),
     providerCode: optionalQueryText(query.providerCode),
+    providerProtocolProfileId: optionalQueryText(query.providerProtocolProfileId),
     preferDefault: booleanQueryValue(query.preferDefault)
   }
 }

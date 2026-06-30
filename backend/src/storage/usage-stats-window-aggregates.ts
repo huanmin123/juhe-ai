@@ -9,6 +9,12 @@ export interface UsageWindowAggregate {
   outputTokens: number
   cacheReadTokens: number
   cacheReadCostUsd: number
+  cacheWriteTokens: number
+  cacheWrite1hTokens: number
+  cacheWriteCostUsd: number
+  thinkingTokens: number
+  inputImageTokens: number
+  outputImageTokens: number
   totalCostUsd: number
   durationMsSum: number
   durationMsCount: number
@@ -28,6 +34,12 @@ export interface UsageStatsDailyWindowRow {
   output_tokens: number
   cache_read_tokens: number
   cache_read_cost_usd: number
+  cache_write_tokens?: number
+  cache_write_1h_tokens?: number
+  cache_write_cost_usd?: number
+  thinking_tokens?: number
+  input_image_tokens?: number
+  output_image_tokens?: number
   total_cost_usd: number
   duration_ms_sum: number
   duration_ms_count: number
@@ -46,6 +58,12 @@ export interface UsageOverviewHourlyWindowRow {
   output_tokens: number
   cache_read_tokens: number
   cache_read_cost_usd: number
+  cache_write_tokens?: number
+  cache_write_1h_tokens?: number
+  cache_write_cost_usd?: number
+  thinking_tokens?: number
+  input_image_tokens?: number
+  output_image_tokens?: number
   total_cost_usd: number
   duration_ms_sum: number
   duration_ms_count: number
@@ -60,6 +78,12 @@ export interface UsageModelWindowRow {
   output_tokens: number
   cache_read_tokens: number
   cache_read_cost_usd: number
+  cache_write_tokens?: number
+  cache_write_1h_tokens?: number
+  cache_write_cost_usd?: number
+  thinking_tokens?: number
+  input_image_tokens?: number
+  output_image_tokens?: number
   total_cost_usd: number
 }
 
@@ -81,6 +105,12 @@ export interface UsageModelWindowAggregate {
   outputTokens: number
   cacheReadTokens: number
   cacheReadCostUsd: number
+  cacheWriteTokens: number
+  cacheWrite1hTokens: number
+  cacheWriteCostUsd: number
+  thinkingTokens: number
+  inputImageTokens: number
+  outputImageTokens: number
   totalCostUsd: number
 }
 
@@ -127,6 +157,12 @@ export function aggregateUsageModelRows(rowsByDate: Map<string, UsageModelWindow
       outputTokens: 0,
       cacheReadTokens: 0,
       cacheReadCostUsd: 0,
+      cacheWriteTokens: 0,
+      cacheWrite1hTokens: 0,
+      cacheWriteCostUsd: 0,
+      thinkingTokens: 0,
+      inputImageTokens: 0,
+      outputImageTokens: 0,
       totalCostUsd: 0
     }
     bucket.requestCount += Number(row.request_count ?? 0)
@@ -134,6 +170,12 @@ export function aggregateUsageModelRows(rowsByDate: Map<string, UsageModelWindow
     bucket.outputTokens += Number(row.output_tokens ?? 0)
     bucket.cacheReadTokens += Number(row.cache_read_tokens ?? 0)
     bucket.cacheReadCostUsd += Number(row.cache_read_cost_usd ?? 0)
+    bucket.cacheWriteTokens += Number(row.cache_write_tokens ?? 0)
+    bucket.cacheWrite1hTokens += Number(row.cache_write_1h_tokens ?? 0)
+    bucket.cacheWriteCostUsd += Number(row.cache_write_cost_usd ?? 0)
+    bucket.thinkingTokens += Number(row.thinking_tokens ?? 0)
+    bucket.inputImageTokens += Number(row.input_image_tokens ?? 0)
+    bucket.outputImageTokens += Number(row.output_image_tokens ?? 0)
     bucket.totalCostUsd += Number(row.total_cost_usd ?? 0)
     buckets.set(key, bucket)
   }
@@ -180,6 +222,12 @@ function emptyUsageWindowAggregate(): UsageWindowAggregate {
     outputTokens: 0,
     cacheReadTokens: 0,
     cacheReadCostUsd: 0,
+    cacheWriteTokens: 0,
+    cacheWrite1hTokens: 0,
+    cacheWriteCostUsd: 0,
+    thinkingTokens: 0,
+    inputImageTokens: 0,
+    outputImageTokens: 0,
     totalCostUsd: 0,
     durationMsSum: 0,
     durationMsCount: 0,
@@ -198,6 +246,12 @@ function addUsageWindowAggregate(target: UsageWindowAggregate, row: {
   output_tokens: number
   cache_read_tokens: number
   cache_read_cost_usd: number
+  cache_write_tokens?: number
+  cache_write_1h_tokens?: number
+  cache_write_cost_usd?: number
+  thinking_tokens?: number
+  input_image_tokens?: number
+  output_image_tokens?: number
   total_cost_usd: number
   duration_ms_sum: number
   duration_ms_count: number
@@ -214,6 +268,12 @@ function addUsageWindowAggregate(target: UsageWindowAggregate, row: {
   target.outputTokens += Number(row.output_tokens ?? 0)
   target.cacheReadTokens += Number(row.cache_read_tokens ?? 0)
   target.cacheReadCostUsd += Number(row.cache_read_cost_usd ?? 0)
+  target.cacheWriteTokens += Number(row.cache_write_tokens ?? 0)
+  target.cacheWrite1hTokens += Number(row.cache_write_1h_tokens ?? 0)
+  target.cacheWriteCostUsd += Number(row.cache_write_cost_usd ?? 0)
+  target.thinkingTokens += Number(row.thinking_tokens ?? 0)
+  target.inputImageTokens += Number(row.input_image_tokens ?? 0)
+  target.outputImageTokens += Number(row.output_image_tokens ?? 0)
   target.totalCostUsd += Number(row.total_cost_usd ?? 0)
   target.durationMsSum += Number(row.duration_ms_sum ?? 0)
   target.durationMsCount += Number(row.duration_ms_count ?? 0)

@@ -14,8 +14,8 @@ export function buildAccountUsageSummaryCards(options: {
   const summary = options.summary
   return [
     { key: 'requests', label: '范围请求', value: formatInteger(summary?.requestCount), extra: `统计滞后 ${formatSeconds(options.statsLagSeconds)}` },
-    { key: 'tokens', label: 'Token 消耗', value: formatCompactInteger(summary?.totalTokens), extra: `输入 ${formatCompactInteger(summary?.inputTokens)} / 输出 ${formatCompactInteger(summary?.outputTokens)} / 缓存读取 ${formatCompactInteger(summary?.cacheReadTokens)}` },
-    { key: 'cacheRate', label: '缓存率', value: formatPercent(cacheReadRate(summary)), extra: `缓存成本 ${formatCost(summary?.cacheReadCost)}` },
+    { key: 'tokens', label: 'Token 消耗', value: formatCompactInteger(summary?.totalTokens), extra: `输入 ${formatCompactInteger(summary?.inputTokens)} / 输出 ${formatCompactInteger(summary?.outputTokens)} / 缓存读 ${formatCompactInteger(summary?.cacheReadTokens)} / 缓存写 ${formatCompactInteger(summary?.cacheWriteTokens)}` },
+    { key: 'cacheRate', label: '缓存率', value: formatPercent(cacheReadRate(summary)), extra: `写入 1h ${formatCompactInteger(summary?.cacheWrite1hTokens)} / 思考 ${formatCompactInteger(summary?.thinkingTokens)} / 图片 ${formatCompactInteger((summary?.inputImageTokens ?? 0) + (summary?.outputImageTokens ?? 0))}` },
     { key: 'cost', label: '成本', value: formatCost(summary?.totalCost), extra: `最后使用 ${formatDateTime(summary?.lastUsedAt)}` }
   ]
 }
@@ -35,6 +35,12 @@ export function aggregateUsageSummaries(summaries: AccountUsageSummary[]): Accou
     summary.outputTokens += item.outputTokens
     summary.cacheReadTokens += item.cacheReadTokens
     summary.cacheReadCost += item.cacheReadCost
+    summary.cacheWriteTokens += item.cacheWriteTokens
+    summary.cacheWrite1hTokens += item.cacheWrite1hTokens
+    summary.cacheWriteCost += item.cacheWriteCost
+    summary.thinkingTokens += item.thinkingTokens
+    summary.inputImageTokens += item.inputImageTokens
+    summary.outputImageTokens += item.outputImageTokens
     summary.totalCost += item.totalCost
     if (item.lastUsedAt && (!lastUsedAt || item.lastUsedAt > lastUsedAt)) {
       lastUsedAt = item.lastUsedAt
@@ -52,6 +58,12 @@ export function zeroUsageSummary(): AccountUsageSummary {
     outputTokens: 0,
     cacheReadTokens: 0,
     cacheReadCost: 0,
+    cacheWriteTokens: 0,
+    cacheWrite1hTokens: 0,
+    cacheWriteCost: 0,
+    thinkingTokens: 0,
+    inputImageTokens: 0,
+    outputImageTokens: 0,
     totalTokens: 0,
     totalCost: 0
   }

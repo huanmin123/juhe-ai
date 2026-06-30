@@ -24,6 +24,12 @@ interface UsageSummaryAggregateRow {
   output_tokens: number
   cache_read_tokens: number
   cache_read_cost_usd: number
+  cache_write_tokens?: number
+  cache_write_1h_tokens?: number
+  cache_write_cost_usd?: number
+  thinking_tokens?: number
+  input_image_tokens?: number
+  output_image_tokens?: number
   total_cost: number
   last_used_at: string | null
 }
@@ -85,6 +91,12 @@ function loadUsageSummariesForScopeRequests(scopes: UsageSummaryScopeRequest[], 
           output_tokens,
           cache_read_tokens,
           cache_read_cost_usd,
+          cache_write_tokens,
+          cache_write_1h_tokens,
+          cache_write_cost_usd,
+          thinking_tokens,
+          input_image_tokens,
+          output_image_tokens,
           total_cost_usd AS total_cost,
           last_used_at
         FROM ${source.tableName}
@@ -145,6 +157,12 @@ async function loadUsageSummariesForScopeRequestsAsync(scopes: UsageSummaryScope
           output_tokens,
           cache_read_tokens,
           cache_read_cost_usd,
+          cache_write_tokens,
+          cache_write_1h_tokens,
+          cache_write_cost_usd,
+          thinking_tokens,
+          input_image_tokens,
+          output_image_tokens,
           total_cost_usd AS total_cost,
           last_used_at
         FROM ${source.tableName}
@@ -200,6 +218,12 @@ function loadUsageRangeSummariesForScopeRequests(scopes: UsageSummaryScopeReques
           output_tokens,
           cache_read_tokens,
           cache_read_cost_usd,
+          cache_write_tokens,
+          cache_write_1h_tokens,
+          cache_write_cost_usd,
+          thinking_tokens,
+          input_image_tokens,
+          output_image_tokens,
           total_cost_usd AS total_cost,
           last_used_at
         FROM usage_scope_range_windows
@@ -258,6 +282,12 @@ async function loadUsageRangeSummariesForScopeRequestsAsync(scopes: UsageSummary
           output_tokens,
           cache_read_tokens,
           cache_read_cost_usd,
+          cache_write_tokens,
+          cache_write_1h_tokens,
+          cache_write_cost_usd,
+          thinking_tokens,
+          input_image_tokens,
+          output_image_tokens,
           total_cost_usd AS total_cost,
           last_used_at
         FROM ${tableName}

@@ -38,6 +38,12 @@ export function emptyAccountUsageSummary(): AccountUsageSummary {
     outputTokens: 0,
     cacheReadTokens: 0,
     cacheReadCost: 0,
+    cacheWriteTokens: 0,
+    cacheWrite1hTokens: 0,
+    cacheWriteCost: 0,
+    thinkingTokens: 0,
+    inputImageTokens: 0,
+    outputImageTokens: 0,
     totalTokens: 0,
     totalCost: 0
   }
@@ -56,6 +62,12 @@ export function usageSummaryFromAggregate(row: {
   output_tokens: number
   cache_read_tokens: number
   cache_read_cost_usd: number
+  cache_write_tokens?: number
+  cache_write_1h_tokens?: number
+  cache_write_cost_usd?: number
+  thinking_tokens?: number
+  input_image_tokens?: number
+  output_image_tokens?: number
   total_cost: number
   last_used_at: string | null
 }): AccountUsageSummary {
@@ -63,12 +75,24 @@ export function usageSummaryFromAggregate(row: {
   const outputTokens = Number(row.output_tokens ?? 0)
   const cacheReadTokens = Number(row.cache_read_tokens ?? 0)
   const cacheReadCost = requiredAggregateNumber(row.cache_read_cost_usd, 'cache_read_cost_usd')
+  const cacheWriteTokens = Number(row.cache_write_tokens ?? 0)
+  const cacheWrite1hTokens = Number(row.cache_write_1h_tokens ?? 0)
+  const cacheWriteCost = Number(row.cache_write_cost_usd ?? 0)
+  const thinkingTokens = Number(row.thinking_tokens ?? 0)
+  const inputImageTokens = Number(row.input_image_tokens ?? 0)
+  const outputImageTokens = Number(row.output_image_tokens ?? 0)
   return {
     requestCount: Number(row.request_count ?? 0),
     inputTokens,
     outputTokens,
     cacheReadTokens,
     cacheReadCost,
+    cacheWriteTokens,
+    cacheWrite1hTokens,
+    cacheWriteCost,
+    thinkingTokens,
+    inputImageTokens,
+    outputImageTokens,
     totalTokens: inputTokens + outputTokens,
     totalCost: Number(row.total_cost ?? 0),
     lastUsedAt: row.last_used_at ?? undefined
@@ -87,6 +111,12 @@ export function addUsageSummaries(left: AccountUsageSummary | undefined, right: 
     outputTokens: leftUsage.outputTokens + rightUsage.outputTokens,
     cacheReadTokens: leftUsage.cacheReadTokens + rightUsage.cacheReadTokens,
     cacheReadCost: leftUsage.cacheReadCost + rightUsage.cacheReadCost,
+    cacheWriteTokens: leftUsage.cacheWriteTokens + rightUsage.cacheWriteTokens,
+    cacheWrite1hTokens: leftUsage.cacheWrite1hTokens + rightUsage.cacheWrite1hTokens,
+    cacheWriteCost: leftUsage.cacheWriteCost + rightUsage.cacheWriteCost,
+    thinkingTokens: leftUsage.thinkingTokens + rightUsage.thinkingTokens,
+    inputImageTokens: leftUsage.inputImageTokens + rightUsage.inputImageTokens,
+    outputImageTokens: leftUsage.outputImageTokens + rightUsage.outputImageTokens,
     totalTokens: leftUsage.totalTokens + rightUsage.totalTokens,
     totalCost: leftUsage.totalCost + rightUsage.totalCost,
     lastUsedAt

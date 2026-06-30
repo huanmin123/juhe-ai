@@ -121,12 +121,13 @@ authorizationsRouter.get('/', async (req, res, next) => {
   }
   try {
     const { systemAccountId, direction, sourceType, startDate, endDate, page, pageSize, ...filters } = parsed.data
-    const usageRange = await normalizeAuthorizationListUsageRangeAsync({ startDate, endDate })
+    void startDate
+    void endDate
     const sourceTypeFilter = sourceType && sourceType !== 'all' ? { sourceType } : {}
     const routeFilters = req.baseUrl.endsWith('/my-authorizations') && direction && direction !== 'all'
       ? { ...filters, ...sourceTypeFilter, direction }
       : { ...filters, ...sourceTypeFilter }
-    res.json(ok(await listResourceAuthorizationsPageAsync(routeFilters, getRequestAccessScope(systemAccountId), { usageRange, page, pageSize })))
+    res.json(ok(await listResourceAuthorizationsPageAsync(routeFilters, getRequestAccessScope(systemAccountId), { includeUsage: false, page, pageSize })))
   } catch (error) {
     next(error)
   }
@@ -528,14 +529,6 @@ function authorizationGranteeName(authorization: ResourceAuthorizationSummary): 
     return authorization.granteeTeamName ?? '团队'
   }
   return authorization.granteeSystemAccountName ?? '被授权用户'
-}
-
-async function normalizeAuthorizationListUsageRangeAsync(input: { startDate?: string; endDate?: string }) {
-  const timezone = await usageStatsTimezoneAsync()
-  const today = todayDateKey(timezone)
-  const startDate = input.startDate ?? input.endDate ?? today
-  const endDate = input.endDate ?? input.startDate ?? today
-  return normalizeAccountUsageStatsRange({ startDate, endDate }, timezone)
 }
 
 async function normalizeAuthorizationUsageRangeAsync(input: { startDate?: string; endDate?: string }) {

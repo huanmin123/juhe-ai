@@ -148,6 +148,7 @@ export function authorizationGranteeGroupOptionsParams(params: AuthorizationGran
   const output = authorizationPrincipalOptionsParams(params) ?? {}
   output.granteeSystemAccountId = params.granteeSystemAccountId
   if (params.providerCode?.trim()) output.providerCode = params.providerCode.trim()
+  if (params.providerProtocolProfileId?.trim()) output.providerProtocolProfileId = params.providerProtocolProfileId.trim()
   if (typeof params.preferDefault === 'boolean') output.preferDefault = params.preferDefault
   return output
 }

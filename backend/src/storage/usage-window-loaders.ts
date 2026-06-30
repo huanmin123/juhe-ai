@@ -29,6 +29,12 @@ type UsageStatsScopeAggregateRow = {
   output_tokens: number
   cache_read_tokens: number
   cache_read_cost_usd: number
+  cache_write_tokens?: number
+  cache_write_1h_tokens?: number
+  cache_write_cost_usd?: number
+  thinking_tokens?: number
+  input_image_tokens?: number
+  output_image_tokens?: number
   total_cost: number
   last_used_at: string | null
   system_account_id: string
@@ -77,6 +83,12 @@ export function loadUsageDailySeriesForScopeRequests(scopes: UsageStatsScopeRequ
           output_tokens,
           cache_read_tokens,
           cache_read_cost_usd,
+          cache_write_tokens,
+          cache_write_1h_tokens,
+          cache_write_cost_usd,
+          thinking_tokens,
+          input_image_tokens,
+          output_image_tokens,
           total_cost_usd AS total_cost,
           last_used_at
         FROM usage_stats_daily
@@ -98,6 +110,12 @@ export function loadUsageDailySeriesForScopeRequests(scopes: UsageStatsScopeRequ
           output_tokens,
           cache_read_tokens,
           cache_read_cost_usd,
+          cache_write_tokens,
+          cache_write_1h_tokens,
+          cache_write_cost_usd,
+          thinking_tokens,
+          input_image_tokens,
+          output_image_tokens,
           total_cost_usd AS total_cost,
           last_used_at
         FROM usage_scope_range_windows
@@ -174,6 +192,12 @@ export async function loadUsageDailySeriesForScopeRequestsAsync(scopes: UsageSta
           output_tokens,
           cache_read_tokens,
           CAST(cache_read_cost_usd AS double precision) AS cache_read_cost_usd,
+          cache_write_tokens,
+          cache_write_1h_tokens,
+          CAST(cache_write_cost_usd AS double precision) AS cache_write_cost_usd,
+          thinking_tokens,
+          input_image_tokens,
+          output_image_tokens,
           CAST(total_cost_usd AS double precision) AS total_cost,
           last_used_at
         FROM ${usageWindowStatsTable(client, 'usage_stats_daily')}
@@ -195,6 +219,12 @@ export async function loadUsageDailySeriesForScopeRequestsAsync(scopes: UsageSta
           output_tokens,
           cache_read_tokens,
           CAST(cache_read_cost_usd AS double precision) AS cache_read_cost_usd,
+          cache_write_tokens,
+          cache_write_1h_tokens,
+          CAST(cache_write_cost_usd AS double precision) AS cache_write_cost_usd,
+          thinking_tokens,
+          input_image_tokens,
+          output_image_tokens,
           CAST(total_cost_usd AS double precision) AS total_cost,
           last_used_at
         FROM ${usageWindowStatsTable(client, 'usage_scope_range_windows')}
@@ -236,6 +266,12 @@ function emptyUsageDailySeries(dateKeys: string[]): UsageStatsDailySeries {
       output_tokens: 0,
       cache_read_tokens: 0,
       cache_read_cost_usd: 0,
+      cache_write_tokens: 0,
+      cache_write_1h_tokens: 0,
+      cache_write_cost_usd: 0,
+      thinking_tokens: 0,
+      input_image_tokens: 0,
+      output_image_tokens: 0,
       total_cost: 0,
       last_used_at: null
     }),

@@ -12,7 +12,7 @@ import type {
   CollectTableStorageSnapshotOptions,
   CollectTableStorageSnapshotResult
 } from '../../storage/table-monitor.repository.js'
-import { cleanupTableStorageSnapshotsBefore, collectTableStorageSnapshot } from '../../storage/table-monitor.repository.js'
+import { cleanupTableStorageSnapshotsBefore, cleanupTableStorageSnapshotsBeforeAsync, collectTableStorageSnapshot, collectTableStorageSnapshotAsync } from '../../storage/table-monitor.repository.js'
 import {
   aggregateUsageStatsBatchAsync,
   checkUsageStatsConsistency,
@@ -221,7 +221,7 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
       return checkUsageStatsConsistency(operation.limit)
     case 'collect_table_storage_snapshot':
       if (runtimeConfig.databaseDriver === 'postgres') {
-        throw postgresStatsWriterOperationNotImplemented(operation.type)
+        return await collectTableStorageSnapshotAsync(operation.sampledAt, operation.options)
       }
       return collectTableStorageSnapshot(operation.sampledAt, operation.options)
     case 'record_client_ip_policy_hits':
@@ -247,7 +247,7 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
       return cleanupStatsDatabaseAfterDelete(cleanupSystemMetricsBefore(operation.input))
     case 'cleanup_table_storage_snapshots_retention':
       if (runtimeConfig.databaseDriver === 'postgres') {
-        throw postgresStatsWriterOperationNotImplemented(operation.type)
+        return { deleted: await cleanupTableStorageSnapshotsBeforeAsync(operation.cutoffIso, operation.limit) }
       }
       return cleanupStatsDatabaseAfterDelete({ deleted: cleanupTableStorageSnapshotsBefore(operation.cutoffIso, operation.limit) })
     case 'cleanup_non_business_stats_data':

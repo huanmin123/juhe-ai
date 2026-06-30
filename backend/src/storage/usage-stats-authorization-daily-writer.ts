@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
+import type { DatabaseClient } from './database-client.js'
 import { usageStatsAccumulatorFromRecord } from './usage-stats-aggregation.js'
 import { statsParamsTail, statsSubtractParams } from './usage-stats-writer-params.js'
 import {
@@ -38,6 +39,8 @@ interface AuthorizationReportContext {
   accountAuthorizationResourceIds?: Map<string, string>
 }
 
+const statsSchemaName = 'juhe_stats'
+
 export function upsertAuthorizationUsageReportRows(
   database: DatabaseSync,
   row: UsageStatsRecordRow,
@@ -51,6 +54,23 @@ export function upsertAuthorizationUsageReportRows(
     const filters = authorizationReportResourceFilters(reportRow)
     for (const scopedReportRow of reportScopeRows) {
       upsertAuthorizationSummaryRows(database, scopedReportRow, filters, stats, statDate, updatedAt)
+    }
+  }
+}
+
+export async function upsertAuthorizationUsageReportRowsAsync(
+  client: DatabaseClient,
+  row: UsageStatsRecordRow,
+  statDate: string,
+  updatedAt: string,
+  context?: AuthorizationReportContext
+): Promise<void> {
+  const stats = usageStatsAccumulatorFromRecord(row)
+  for (const reportRow of authorizationReportRows(row, context)) {
+    const reportScopeRows = authorizationReportScopeRows(reportRow)
+    const filters = authorizationReportResourceFilters(reportRow)
+    for (const scopedReportRow of reportScopeRows) {
+      await upsertAuthorizationSummaryRowsAsync(client, scopedReportRow, filters, stats, statDate, updatedAt)
     }
   }
 }
@@ -69,6 +89,34 @@ export function subtractAuthorizationUsageReportRows(
     for (const scopedReportRow of reportScopeRows) {
       subtractAuthorizationSummaryRows(database, scopedReportRow, filters, stats, statDate, updatedAt)
     }
+  }
+}
+
+async function upsertAuthorizationSummaryRowsAsync(
+  client: DatabaseClient,
+  row: AuthorizationReportRow,
+  filters: AuthorizationReportResourceFilter[],
+  stats: UsageStatsAccumulator,
+  statDate: string,
+  updatedAt: string
+): Promise<void> {
+  const userSummaryKeys: AuthorizationReportSummaryKey[] = []
+  const teamSummaryKeys: AuthorizationReportSummaryKey[] = []
+  for (const filter of filters) {
+    userSummaryKeys.push({ teamFilterId: '', granteeFilterSystemAccountId: '', ...filter })
+    userSummaryKeys.push({ teamFilterId: '', granteeFilterSystemAccountId: row.granteeSystemAccountId, ...filter })
+    if (row.sourceType === 'team' && row.sourceTeamId) {
+      teamSummaryKeys.push({ teamFilterId: '', ...filter })
+      teamSummaryKeys.push({ teamFilterId: row.sourceTeamId, ...filter })
+      userSummaryKeys.push({ teamFilterId: row.sourceTeamId, granteeFilterSystemAccountId: '', ...filter })
+      userSummaryKeys.push({ teamFilterId: row.sourceTeamId, granteeFilterSystemAccountId: row.granteeSystemAccountId, ...filter })
+    }
+  }
+  for (const key of teamSummaryKeys) {
+    await upsertAuthorizationTeamUsageSummaryRowAsync(client, row.ownerSystemAccountId, statDate, key, stats, updatedAt)
+  }
+  for (const key of userSummaryKeys) {
+    await upsertAuthorizationUserUsageSummaryRowAsync(client, row.ownerSystemAccountId, statDate, key, stats, updatedAt)
   }
 }
 
@@ -182,15 +230,96 @@ function subtractAuthorizationSummaryRows(
   }
 }
 
+async function upsertAuthorizationTeamUsageSummaryRowAsync(client: DatabaseClient, systemAccountId: string, statDate: string, key: AuthorizationReportSummaryKey, stats: UsageStatsAccumulator, updatedAt: string): Promise<void> {
+  await client.execute(`
+    INSERT INTO ${authorizationStatsTable(client, 'authorization_team_usage_summary_daily')} (
+      system_account_id, stat_date, team_filter_id, resource_filter_type, resource_filter_id, row_count,
+      request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd,
+      cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd,
+      duration_ms_sum, duration_ms_count, duration_ms_max, first_token_ms_sum, first_token_ms_count, first_token_ms_max,
+      last_used_at, last_error_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(system_account_id, stat_date, team_filter_id, resource_filter_type, resource_filter_id) DO UPDATE SET
+      request_count = request_count + EXCLUDED.request_count,
+      success_count = success_count + EXCLUDED.success_count,
+      error_count = error_count + EXCLUDED.error_count,
+      input_tokens = input_tokens + EXCLUDED.input_tokens,
+      output_tokens = output_tokens + EXCLUDED.output_tokens,
+      cache_read_tokens = cache_read_tokens + EXCLUDED.cache_read_tokens,
+      cache_read_cost_usd = cache_read_cost_usd + EXCLUDED.cache_read_cost_usd,
+      cache_write_tokens = cache_write_tokens + EXCLUDED.cache_write_tokens,
+      cache_write_1h_tokens = cache_write_1h_tokens + EXCLUDED.cache_write_1h_tokens,
+      cache_write_cost_usd = cache_write_cost_usd + EXCLUDED.cache_write_cost_usd,
+      thinking_tokens = thinking_tokens + EXCLUDED.thinking_tokens,
+      input_image_tokens = input_image_tokens + EXCLUDED.input_image_tokens,
+      output_image_tokens = output_image_tokens + EXCLUDED.output_image_tokens,
+      total_cost_usd = total_cost_usd + EXCLUDED.total_cost_usd,
+      duration_ms_sum = duration_ms_sum + EXCLUDED.duration_ms_sum,
+      duration_ms_count = duration_ms_count + EXCLUDED.duration_ms_count,
+      duration_ms_max = CASE WHEN duration_ms_max > EXCLUDED.duration_ms_max THEN duration_ms_max ELSE EXCLUDED.duration_ms_max END,
+      first_token_ms_sum = first_token_ms_sum + EXCLUDED.first_token_ms_sum,
+      first_token_ms_count = first_token_ms_count + EXCLUDED.first_token_ms_count,
+      first_token_ms_max = CASE WHEN first_token_ms_max > EXCLUDED.first_token_ms_max THEN first_token_ms_max ELSE EXCLUDED.first_token_ms_max END,
+      last_used_at = CASE WHEN EXCLUDED.last_used_at IS NULL THEN last_used_at WHEN last_used_at IS NULL OR EXCLUDED.last_used_at > last_used_at THEN EXCLUDED.last_used_at ELSE last_used_at END,
+      last_error_at = CASE WHEN EXCLUDED.last_error_at IS NULL THEN last_error_at WHEN last_error_at IS NULL OR EXCLUDED.last_error_at > last_error_at THEN EXCLUDED.last_error_at ELSE last_error_at END,
+      updated_at = EXCLUDED.updated_at
+  `, [systemAccountId, statDate, key.teamFilterId ?? '', key.resourceFilterType, key.resourceFilterId, ...statsParamsTail(stats, updatedAt)])
+}
+
+async function upsertAuthorizationUserUsageSummaryRowAsync(client: DatabaseClient, systemAccountId: string, statDate: string, key: AuthorizationReportSummaryKey, stats: UsageStatsAccumulator, updatedAt: string): Promise<void> {
+  await client.execute(`
+    INSERT INTO ${authorizationStatsTable(client, 'authorization_user_usage_summary_daily')} (
+      system_account_id, stat_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id, row_count,
+      request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd,
+      cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd,
+      duration_ms_sum, duration_ms_count, duration_ms_max, first_token_ms_sum, first_token_ms_count, first_token_ms_max,
+      last_used_at, last_error_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(system_account_id, stat_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id) DO UPDATE SET
+      request_count = request_count + EXCLUDED.request_count,
+      success_count = success_count + EXCLUDED.success_count,
+      error_count = error_count + EXCLUDED.error_count,
+      input_tokens = input_tokens + EXCLUDED.input_tokens,
+      output_tokens = output_tokens + EXCLUDED.output_tokens,
+      cache_read_tokens = cache_read_tokens + EXCLUDED.cache_read_tokens,
+      cache_read_cost_usd = cache_read_cost_usd + EXCLUDED.cache_read_cost_usd,
+      cache_write_tokens = cache_write_tokens + EXCLUDED.cache_write_tokens,
+      cache_write_1h_tokens = cache_write_1h_tokens + EXCLUDED.cache_write_1h_tokens,
+      cache_write_cost_usd = cache_write_cost_usd + EXCLUDED.cache_write_cost_usd,
+      thinking_tokens = thinking_tokens + EXCLUDED.thinking_tokens,
+      input_image_tokens = input_image_tokens + EXCLUDED.input_image_tokens,
+      output_image_tokens = output_image_tokens + EXCLUDED.output_image_tokens,
+      total_cost_usd = total_cost_usd + EXCLUDED.total_cost_usd,
+      duration_ms_sum = duration_ms_sum + EXCLUDED.duration_ms_sum,
+      duration_ms_count = duration_ms_count + EXCLUDED.duration_ms_count,
+      duration_ms_max = CASE WHEN duration_ms_max > EXCLUDED.duration_ms_max THEN duration_ms_max ELSE EXCLUDED.duration_ms_max END,
+      first_token_ms_sum = first_token_ms_sum + EXCLUDED.first_token_ms_sum,
+      first_token_ms_count = first_token_ms_count + EXCLUDED.first_token_ms_count,
+      first_token_ms_max = CASE WHEN first_token_ms_max > EXCLUDED.first_token_ms_max THEN first_token_ms_max ELSE EXCLUDED.first_token_ms_max END,
+      last_used_at = CASE WHEN EXCLUDED.last_used_at IS NULL THEN last_used_at WHEN last_used_at IS NULL OR EXCLUDED.last_used_at > last_used_at THEN EXCLUDED.last_used_at ELSE last_used_at END,
+      last_error_at = CASE WHEN EXCLUDED.last_error_at IS NULL THEN last_error_at WHEN last_error_at IS NULL OR EXCLUDED.last_error_at > last_error_at THEN EXCLUDED.last_error_at ELSE last_error_at END,
+      updated_at = EXCLUDED.updated_at
+  `, [systemAccountId, statDate, key.teamFilterId ?? '', key.granteeFilterSystemAccountId ?? '', key.resourceFilterType, key.resourceFilterId, ...statsParamsTail(stats, updatedAt)])
+}
+
+function authorizationStatsTable(client: DatabaseClient, tableName: string): string {
+  return client.driver === 'postgres'
+    ? client.dialect.qualifyTable(statsSchemaName, tableName)
+    : client.dialect.quoteIdentifier(tableName)
+}
+
 function upsertAuthorizationTeamUsageSummaryRow(database: DatabaseSync, systemAccountId: string, statDate: string, key: AuthorizationReportSummaryKey, stats: UsageStatsAccumulator, updatedAt: string): void {
   database.prepare(`
     INSERT INTO authorization_team_usage_summary_daily (
       system_account_id, stat_date, team_filter_id, resource_filter_type, resource_filter_id, row_count,
-      request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd,
+      request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd,
+      cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd,
       duration_ms_sum, duration_ms_count, duration_ms_max, first_token_ms_sum, first_token_ms_count, first_token_ms_max,
       last_used_at, last_error_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(system_account_id, stat_date, team_filter_id, resource_filter_type, resource_filter_id) DO UPDATE SET
       request_count = request_count + excluded.request_count,
       success_count = success_count + excluded.success_count,
@@ -199,6 +328,12 @@ function upsertAuthorizationTeamUsageSummaryRow(database: DatabaseSync, systemAc
       output_tokens = output_tokens + excluded.output_tokens,
       cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
       cache_read_cost_usd = cache_read_cost_usd + excluded.cache_read_cost_usd,
+      cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
+      cache_write_1h_tokens = cache_write_1h_tokens + excluded.cache_write_1h_tokens,
+      cache_write_cost_usd = cache_write_cost_usd + excluded.cache_write_cost_usd,
+      thinking_tokens = thinking_tokens + excluded.thinking_tokens,
+      input_image_tokens = input_image_tokens + excluded.input_image_tokens,
+      output_image_tokens = output_image_tokens + excluded.output_image_tokens,
       total_cost_usd = total_cost_usd + excluded.total_cost_usd,
       duration_ms_sum = duration_ms_sum + excluded.duration_ms_sum,
       duration_ms_count = duration_ms_count + excluded.duration_ms_count,
@@ -222,6 +357,12 @@ function subtractAuthorizationTeamUsageSummaryRow(database: DatabaseSync, system
         output_tokens = MAX(0, output_tokens - ?),
         cache_read_tokens = MAX(0, cache_read_tokens - ?),
         cache_read_cost_usd = MAX(0, cache_read_cost_usd - ?),
+        cache_write_tokens = MAX(0, cache_write_tokens - ?),
+        cache_write_1h_tokens = MAX(0, cache_write_1h_tokens - ?),
+        cache_write_cost_usd = MAX(0, cache_write_cost_usd - ?),
+        thinking_tokens = MAX(0, thinking_tokens - ?),
+        input_image_tokens = MAX(0, input_image_tokens - ?),
+        output_image_tokens = MAX(0, output_image_tokens - ?),
         total_cost_usd = MAX(0, total_cost_usd - ?),
         duration_ms_sum = MAX(0, duration_ms_sum - ?),
         duration_ms_count = MAX(0, duration_ms_count - ?),
@@ -241,11 +382,12 @@ function upsertAuthorizationUserUsageSummaryRow(database: DatabaseSync, systemAc
   database.prepare(`
     INSERT INTO authorization_user_usage_summary_daily (
       system_account_id, stat_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id, row_count,
-      request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd,
+      request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd,
+      cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd,
       duration_ms_sum, duration_ms_count, duration_ms_max, first_token_ms_sum, first_token_ms_count, first_token_ms_max,
       last_used_at, last_error_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(system_account_id, stat_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id) DO UPDATE SET
       request_count = request_count + excluded.request_count,
       success_count = success_count + excluded.success_count,
@@ -254,6 +396,12 @@ function upsertAuthorizationUserUsageSummaryRow(database: DatabaseSync, systemAc
       output_tokens = output_tokens + excluded.output_tokens,
       cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
       cache_read_cost_usd = cache_read_cost_usd + excluded.cache_read_cost_usd,
+      cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
+      cache_write_1h_tokens = cache_write_1h_tokens + excluded.cache_write_1h_tokens,
+      cache_write_cost_usd = cache_write_cost_usd + excluded.cache_write_cost_usd,
+      thinking_tokens = thinking_tokens + excluded.thinking_tokens,
+      input_image_tokens = input_image_tokens + excluded.input_image_tokens,
+      output_image_tokens = output_image_tokens + excluded.output_image_tokens,
       total_cost_usd = total_cost_usd + excluded.total_cost_usd,
       duration_ms_sum = duration_ms_sum + excluded.duration_ms_sum,
       duration_ms_count = duration_ms_count + excluded.duration_ms_count,
@@ -277,6 +425,12 @@ function subtractAuthorizationUserUsageSummaryRow(database: DatabaseSync, system
         output_tokens = MAX(0, output_tokens - ?),
         cache_read_tokens = MAX(0, cache_read_tokens - ?),
         cache_read_cost_usd = MAX(0, cache_read_cost_usd - ?),
+        cache_write_tokens = MAX(0, cache_write_tokens - ?),
+        cache_write_1h_tokens = MAX(0, cache_write_1h_tokens - ?),
+        cache_write_cost_usd = MAX(0, cache_write_cost_usd - ?),
+        thinking_tokens = MAX(0, thinking_tokens - ?),
+        input_image_tokens = MAX(0, input_image_tokens - ?),
+        output_image_tokens = MAX(0, output_image_tokens - ?),
         total_cost_usd = MAX(0, total_cost_usd - ?),
         duration_ms_sum = MAX(0, duration_ms_sum - ?),
         duration_ms_count = MAX(0, duration_ms_count - ?),
@@ -297,7 +451,9 @@ function deleteEmptyAuthorizationTeamUsageSummaryRow(database: DatabaseSync, sys
     DELETE FROM authorization_team_usage_summary_daily
     WHERE system_account_id = ? AND stat_date = ? AND team_filter_id = ? AND resource_filter_type = ? AND resource_filter_id = ?
       AND request_count = 0 AND success_count = 0 AND error_count = 0
-      AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND cache_read_cost_usd = 0 AND total_cost_usd = 0
+      AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND cache_read_cost_usd = 0
+      AND cache_write_tokens = 0 AND cache_write_1h_tokens = 0 AND cache_write_cost_usd = 0
+      AND thinking_tokens = 0 AND input_image_tokens = 0 AND output_image_tokens = 0 AND total_cost_usd = 0
   `).run(systemAccountId, statDate, key.teamFilterId ?? '', key.resourceFilterType, key.resourceFilterId)
 }
 
@@ -306,6 +462,8 @@ function deleteEmptyAuthorizationUserUsageSummaryRow(database: DatabaseSync, sys
     DELETE FROM authorization_user_usage_summary_daily
     WHERE system_account_id = ? AND stat_date = ? AND team_filter_id = ? AND grantee_filter_system_account_id = ? AND resource_filter_type = ? AND resource_filter_id = ?
       AND request_count = 0 AND success_count = 0 AND error_count = 0
-      AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND cache_read_cost_usd = 0 AND total_cost_usd = 0
+      AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND cache_read_cost_usd = 0
+      AND cache_write_tokens = 0 AND cache_write_1h_tokens = 0 AND cache_write_cost_usd = 0
+      AND thinking_tokens = 0 AND input_image_tokens = 0 AND output_image_tokens = 0 AND total_cost_usd = 0
   `).run(systemAccountId, statDate, key.teamFilterId ?? '', key.granteeFilterSystemAccountId ?? '', key.resourceFilterType, key.resourceFilterId)
 }

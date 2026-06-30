@@ -23,6 +23,12 @@ export interface ClientIpUsageSummary {
   outputTokens: number
   cacheReadTokens: number
   cacheReadCost: number
+  cacheWriteTokens: number
+  cacheWrite1hTokens: number
+  cacheWriteCost: number
+  thinkingTokens: number
+  inputImageTokens: number
+  outputImageTokens: number
   totalTokens: number
   totalCost: number
   activeDays: number
@@ -102,7 +108,9 @@ export function listClientIpStats(options: ClientIpStatsListOptions = {}): Clien
       registry.ip_hash, registry.aggregate_ip_key, registry.last_seen_at AS registry_last_seen_at,
       range_stats.request_count, range_stats.success_count, range_stats.error_count,
       range_stats.input_tokens, range_stats.output_tokens, range_stats.cache_read_tokens,
-      range_stats.cache_read_cost_usd, range_stats.total_cost_usd,
+      range_stats.cache_read_cost_usd, range_stats.cache_write_tokens, range_stats.cache_write_1h_tokens,
+      range_stats.cache_write_cost_usd, range_stats.thinking_tokens, range_stats.input_image_tokens,
+      range_stats.output_image_tokens, range_stats.total_cost_usd,
       range_stats.duration_ms_sum, range_stats.duration_ms_count, range_stats.duration_ms_max,
       range_stats.average_duration_ms,
       range_stats.first_token_ms_sum, range_stats.first_token_ms_count,
@@ -159,7 +167,9 @@ export async function listClientIpStatsAsync(options: ClientIpStatsListOptions =
       registry.ip_hash, registry.aggregate_ip_key, registry.last_seen_at AS registry_last_seen_at,
       range_stats.request_count, range_stats.success_count, range_stats.error_count,
       range_stats.input_tokens, range_stats.output_tokens, range_stats.cache_read_tokens,
-      range_stats.cache_read_cost_usd, range_stats.total_cost_usd,
+      range_stats.cache_read_cost_usd, range_stats.cache_write_tokens, range_stats.cache_write_1h_tokens,
+      range_stats.cache_write_cost_usd, range_stats.thinking_tokens, range_stats.input_image_tokens,
+      range_stats.output_image_tokens, range_stats.total_cost_usd,
       range_stats.duration_ms_sum, range_stats.duration_ms_count, range_stats.duration_ms_max,
       range_stats.average_duration_ms,
       range_stats.first_token_ms_sum, range_stats.first_token_ms_count,
@@ -343,6 +353,12 @@ function usageSummaryFromRow(row: Partial<ClientIpStatsUsageRow> | undefined): C
     outputTokens,
     cacheReadTokens: Number(row?.cache_read_tokens ?? 0),
     cacheReadCost: Number(row?.cache_read_cost_usd ?? 0),
+    cacheWriteTokens: Number(row?.cache_write_tokens ?? 0),
+    cacheWrite1hTokens: Number(row?.cache_write_1h_tokens ?? 0),
+    cacheWriteCost: Number(row?.cache_write_cost_usd ?? 0),
+    thinkingTokens: Number(row?.thinking_tokens ?? 0),
+    inputImageTokens: Number(row?.input_image_tokens ?? 0),
+    outputImageTokens: Number(row?.output_image_tokens ?? 0),
     totalTokens: inputTokens + outputTokens,
     totalCost: Number(row?.total_cost_usd ?? 0),
     activeDays: Number(row?.active_days ?? 0),
@@ -377,6 +393,12 @@ interface ClientIpStatsUsageRow {
   output_tokens: number
   cache_read_tokens: number
   cache_read_cost_usd: number
+  cache_write_tokens: number
+  cache_write_1h_tokens: number
+  cache_write_cost_usd: number
+  thinking_tokens: number
+  input_image_tokens: number
+  output_image_tokens: number
   total_cost_usd: number
   duration_ms_sum: number
   duration_ms_count: number

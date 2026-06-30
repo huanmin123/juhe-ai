@@ -86,6 +86,12 @@ interface AccountUsageStatsSourceRow {
   output_tokens: number
   cache_read_tokens: number
   cache_read_cost_usd: number
+  cache_write_tokens?: number
+  cache_write_1h_tokens?: number
+  cache_write_cost_usd?: number
+  thinking_tokens?: number
+  input_image_tokens?: number
+  output_image_tokens?: number
   total_cost: number
   last_used_at: string | null
 }
@@ -119,6 +125,12 @@ export function getAccountUsageStatsOverviewPageFromWindows(input: AccountUsageS
       usage_window.output_tokens,
       usage_window.cache_read_tokens,
       usage_window.cache_read_cost_usd,
+      usage_window.cache_write_tokens,
+      usage_window.cache_write_1h_tokens,
+      usage_window.cache_write_cost_usd,
+      usage_window.thinking_tokens,
+      usage_window.input_image_tokens,
+      usage_window.output_image_tokens,
       usage_window.total_cost_usd AS total_cost,
       usage_window.last_used_at
     FROM usage_scope_range_windows usage_window
@@ -219,6 +231,12 @@ export async function getAccountUsageStatsOverviewPageFromWindowsAsync(input: Ac
       usage_window.output_tokens,
       usage_window.cache_read_tokens,
       CAST(usage_window.cache_read_cost_usd AS double precision) AS cache_read_cost_usd,
+      usage_window.cache_write_tokens,
+      usage_window.cache_write_1h_tokens,
+      CAST(usage_window.cache_write_cost_usd AS double precision) AS cache_write_cost_usd,
+      usage_window.thinking_tokens,
+      usage_window.input_image_tokens,
+      usage_window.output_image_tokens,
       CAST(usage_window.total_cost_usd AS double precision) AS total_cost,
       usage_window.last_used_at
     FROM ${accountUsageStatsTable(client, 'usage_scope_range_windows')} usage_window
@@ -323,6 +341,12 @@ function loadSelectedAccountUsageRows(input: {
       usage_window.output_tokens,
       usage_window.cache_read_tokens,
       usage_window.cache_read_cost_usd,
+      usage_window.cache_write_tokens,
+      usage_window.cache_write_1h_tokens,
+      usage_window.cache_write_cost_usd,
+      usage_window.thinking_tokens,
+      usage_window.input_image_tokens,
+      usage_window.output_image_tokens,
       usage_window.total_cost_usd AS total_cost,
       usage_window.last_used_at
     FROM usage_scope_range_windows usage_window
@@ -359,6 +383,12 @@ async function loadSelectedAccountUsageRowsAsync(input: {
       usage_window.output_tokens,
       usage_window.cache_read_tokens,
       CAST(usage_window.cache_read_cost_usd AS double precision) AS cache_read_cost_usd,
+      usage_window.cache_write_tokens,
+      usage_window.cache_write_1h_tokens,
+      CAST(usage_window.cache_write_cost_usd AS double precision) AS cache_write_cost_usd,
+      usage_window.thinking_tokens,
+      usage_window.input_image_tokens,
+      usage_window.output_image_tokens,
       CAST(usage_window.total_cost_usd AS double precision) AS total_cost,
       usage_window.last_used_at
     FROM ${accountUsageStatsTable(input.client, 'usage_scope_range_windows')} usage_window
@@ -405,7 +435,9 @@ function emptyAccountUsageStatsOverview(input: AccountUsageStatsPageOptions, pag
 function loadAccountUsageOverviewSummary(access: AccessScope | undefined, range: Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>) {
   const scope = accountUsageOverviewSummaryScope(access)
   const row = getStatsDatabase().prepare(`
-    SELECT request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd AS total_cost, last_used_at
+    SELECT request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd,
+      cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens,
+      total_cost_usd AS total_cost, last_used_at
     FROM usage_scope_range_windows
     WHERE system_account_id = ?
       AND scope_type = 'system_account'
@@ -418,6 +450,12 @@ function loadAccountUsageOverviewSummary(access: AccessScope | undefined, range:
     output_tokens: number
     cache_read_tokens: number
     cache_read_cost_usd: number
+    cache_write_tokens?: number
+    cache_write_1h_tokens?: number
+    cache_write_cost_usd?: number
+    thinking_tokens?: number
+    input_image_tokens?: number
+    output_image_tokens?: number
     total_cost: number
     last_used_at: string | null
   } | undefined
@@ -432,6 +470,12 @@ async function loadAccountUsageOverviewSummaryAsync(client: DatabaseClient, acce
     output_tokens: number
     cache_read_tokens: number
     cache_read_cost_usd: number
+    cache_write_tokens?: number
+    cache_write_1h_tokens?: number
+    cache_write_cost_usd?: number
+    thinking_tokens?: number
+    input_image_tokens?: number
+    output_image_tokens?: number
     total_cost: number
     last_used_at: string | null
   }>(`
@@ -441,6 +485,12 @@ async function loadAccountUsageOverviewSummaryAsync(client: DatabaseClient, acce
       output_tokens,
       cache_read_tokens,
       CAST(cache_read_cost_usd AS double precision) AS cache_read_cost_usd,
+      cache_write_tokens,
+      cache_write_1h_tokens,
+      CAST(cache_write_cost_usd AS double precision) AS cache_write_cost_usd,
+      thinking_tokens,
+      input_image_tokens,
+      output_image_tokens,
       CAST(total_cost_usd AS double precision) AS total_cost,
       last_used_at
     FROM ${accountUsageStatsTable(client, 'usage_scope_range_windows')}
