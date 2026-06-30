@@ -76,8 +76,37 @@ export const distributionProbeDefinitions = [
   }
 ] as const
 
+export const longContextProbeDefinitions = [
+  {
+    key: 'context_8k',
+    marker: 'NEEDLE-8000-ORCHID',
+    targetInputTokens: 8_000,
+    markerTokenRatio: 0.62,
+    maxOutputTokens: 40
+  },
+  {
+    key: 'context_20k',
+    marker: 'NEEDLE-20000-LANTERN',
+    targetInputTokens: 20_000,
+    markerTokenRatio: 0.67,
+    maxOutputTokens: 48
+  },
+  {
+    key: 'context_60k',
+    marker: 'NEEDLE-60000-HARBOR',
+    targetInputTokens: 60_000,
+    markerTokenRatio: 0.71,
+    maxOutputTokens: 48
+  }
+] as const
+
 export type BehaviorProbeDefinition = typeof behaviorProbeDefinitions[number]
 export type DistributionProbeDefinition = typeof distributionProbeDefinitions[number]
+export type LongContextProbeDefinition = typeof longContextProbeDefinitions[number]
+
+export function longContextConstraintPassed(definition: LongContextProbeDefinition, text: string): boolean {
+  return text.trim().toUpperCase().includes(definition.marker)
+}
 
 export function distributionConstraintPassed(definition: DistributionProbeDefinition, text: string): boolean {
   const normalized = text.trim()

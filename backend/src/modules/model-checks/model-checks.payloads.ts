@@ -1,5 +1,6 @@
-import type { DistributionProbeDefinition } from './model-checks.probes.js'
+import type { DistributionProbeDefinition, LongContextProbeDefinition } from './model-checks.probes.js'
 import type { ModelCheckProbeProtocol } from './model-checks.profiles.js'
+import { estimateTokenCountFromText } from '../gateway/protocols/openai-v1/stream-events.js'
 
 export interface ModelCheckProbeRequest {
   path: string
@@ -225,19 +226,22 @@ export function createModelCheckToolCallingRequest(protocol: ModelCheckProbeProt
   }
 }
 
-export function createModelCheckLongContextRequest(protocol: ModelCheckProbeProtocol, model: string): ModelCheckProbeRequest {
+export function createModelCheckLongContextRequest(
+  protocol: ModelCheckProbeProtocol,
+  model: string,
+  definition: LongContextProbeDefinition
+): ModelCheckProbeRequest {
   if (protocol === 'openai_responses') {
     return {
       path: '/v1/responses',
       responseProtocol: protocol,
       expectedModel: model,
-      body: createLongContextPayload(model)
+      body: createLongContextPayload(model, definition)
     }
   }
-  const marker = 'NEEDLE-7482-ORCHID'
-  const prompt = longContextPrompt(marker)
+  const prompt = buildLongContextPrompt(definition)
   return createModelCheckProbeRequest(protocol, model, prompt, {
-    maxOutputTokens: 40,
+    maxOutputTokens: definition.maxOutputTokens,
     stream: false,
     temperature: 0
   })
@@ -399,21 +403,46 @@ export function createToolCallingPayload(model: string): Record<string, unknown>
   }
 }
 
-export function createLongContextPayload(model: string): Record<string, unknown> {
-  const marker = 'NEEDLE-7482-ORCHID'
-  return createResponsesPayload(model, longContextPrompt(marker), {
-    maxOutputTokens: 40,
+export function createLongContextPayload(model: string, definition: LongContextProbeDefinition): Record<string, unknown> {
+  return createResponsesPayload(model, buildLongContextPrompt(definition), {
+    maxOutputTokens: definition.maxOutputTokens,
     stream: false
   })
 }
 
-function longContextPrompt(marker: string): string {
-  const filler = Array.from({ length: 240 }, (_, index) => {
-    const ordinal = String(index + 1).padStart(2, '0')
-    return `段落 ${ordinal}: 这是一段用于模型检测的普通上下文，包含编号、中文文本和少量干扰词，但不包含最终答案。`
-  })
-  filler.splice(173, 0, `关键记录: 本次检测的隐藏标记是 ${marker}，只在回答中输出这个标记。`)
-  return `阅读以下上下文，找到隐藏标记。只输出标记本身，不要解释。\n\n${filler.join('\n')}`
+export function buildLongContextPrompt(definition: LongContextProbeDefinition): string {
+  const targetInputTokens = definition.targetInputTokens
+  const markerPlacementTokens = Math.max(512, Math.floor(targetInputTokens * definition.markerTokenRatio))
+  const answerRule = `回答规则：只输出 key 为 ${definition.key} 的隐藏标记本身，不要解释，不要输出其他文字。`
+  const markerLine = `关键记录 ${definition.key}: 本次检测的隐藏标记是 ${definition.marker}，只在回答中输出这个标记。`
+  const lines = [
+    `阅读以下上下文，找到 key 为 ${definition.key} 的隐藏标记。本窗口目标输入长度为 ${targetInputTokens} tokens。`,
+    '每一段都是干扰上下文，只有关键记录行包含最终答案。'
+  ]
+  while (estimatedPromptTokens([...lines, markerLine, answerRule]) < markerPlacementTokens - 128) {
+    lines.push(longContextFillerLine(definition, lines.length, '前置'))
+  }
+  lines.push(markerLine)
+  while (estimatedPromptTokens([...lines, answerRule]) < targetInputTokens - 128) {
+    lines.push(longContextFillerLine(definition, lines.length, '后置'))
+  }
+  lines.push(answerRule)
+  let prompt = lines.join('\n')
+  const deficit = targetInputTokens - estimateTokenCountFromText(prompt)
+  if (deficit > 0) {
+    prompt += '测'.repeat(deficit)
+  }
+  return prompt
+}
+
+function longContextFillerLine(definition: LongContextProbeDefinition, index: number, phase: '前置' | '后置'): string {
+  const ordinal = String(index + 1).padStart(5, '0')
+  const decoy = index % 89 === 17 ? ' 旁注：这一行是干扰记录，不是最终答案。' : ''
+  return `段落 ${definition.key}-${phase}-${ordinal}: 这是一段用于模型检测的普通上下文，包含编号、中文文本、重复业务术语、干扰词和无关约束，但不包含最终答案。${decoy}`
+}
+
+function estimatedPromptTokens(lines: string[]): number {
+  return estimateTokenCountFromText(lines.join('\n'))
 }
 
 function structuredOutputJsonSchema(): Record<string, unknown> {

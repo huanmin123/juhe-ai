@@ -201,7 +201,8 @@ function outputForProbe(body: Record<string, unknown>): string {
   if (text.includes('第一行 ALPHA')) return 'ALPHA\nBETA\nGAMMA'
   if (text.includes('VECTOR')) return 'VECTOR'
   if (text.includes('CROSS-MODEL-OK')) return 'CROSS-MODEL-OK'
-  if (text.includes('NEEDLE-7482-ORCHID')) return 'NEEDLE-7482-ORCHID'
+  const needle = text.match(/NEEDLE-\d+-[A-Z]+/)
+  if (needle) return needle[0]
   if (body.text || text.includes('JSON')) return '{"status":"ok","value":7}'
   return 'OK-MODEL-CHECK'
 }

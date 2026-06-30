@@ -24,8 +24,10 @@ import {
   behaviorConstraintPassed,
   distributionConstraintPassed,
   distributionProbeDefinitions,
+  longContextConstraintPassed,
   type BehaviorProbeDefinition,
-  type DistributionProbeDefinition
+  type DistributionProbeDefinition,
+  type LongContextProbeDefinition
 } from './model-checks.probes.js'
 
 export type GatewayProbeResult = {
@@ -68,6 +70,11 @@ export type DistributionProbePair = {
   sampleIndex: number
   target: GatewayProbeResult
   comparison: GatewayProbeResult
+}
+
+export type LongContextProbeObservation = {
+  definition: LongContextProbeDefinition
+  result: GatewayProbeResult
 }
 
 export type ModelCheckProbePrefix = 'target' | 'trusted_comparison'
@@ -248,22 +255,66 @@ export function evaluateBehaviorProbeSet(observations: BehaviorProbeObservation[
   })
 }
 
-export function evaluateLongContextProbe(result: GatewayProbeResult, model: string, prefix: ModelCheckProbePrefix): ModelCheckItemCreateInput {
-  const marker = 'NEEDLE-7482-ORCHID'
-  const found = (result.outputText ?? '').toUpperCase().includes(marker)
-  const modelEvidence = buildModelMatchEvidence(result.model, model)
-  const score = modelEvidence.modelMismatch
-    ? (result.success ? 2 : 0) + (found ? 1 : 0)
-    : (result.success ? 7 : 0) + (modelEvidence.matchedModel ? 3 : 0) + (found ? 5 : 0)
-  const status = modelEvidence.modelMismatch
-    ? 'failed'
-    : score >= 13 ? 'passed' : score >= 8 ? 'warning' : 'failed'
-  return item(`${prefix}.long_context`, 'long_context', status, score, 15, result, {
-    message: describeModelMismatch(modelEvidence) ?? (found ? '长上下文找针探针通过' : result.success ? '长上下文找针探针未命中隐藏标记' : result.errorMessage ?? `长上下文探针失败，HTTP ${result.statusCode}`),
-    ...modelEvidence,
-    foundNeedle: found,
-    outputPreview: bounded(result.outputText)
+export function evaluateLongContextProbeSet(observations: LongContextProbeObservation[], model: string, prefix: ModelCheckProbePrefix): ModelCheckItemCreateInput {
+  const summaries = observations.map((observation) => {
+    const modelEvidence = buildModelMatchEvidence(observation.result.model, model)
+    return {
+      key: observation.definition.key,
+      targetInputTokens: observation.definition.targetInputTokens,
+      traceId: observation.result.traceId,
+      success: observation.result.success,
+      attemptCount: observation.result.attemptCount ?? 1,
+      matchedModel: modelEvidence.matchedModel,
+      modelMismatch: modelEvidence.modelMismatch,
+      foundNeedle: observation.result.success && longContextConstraintPassed(observation.definition, observation.result.outputText ?? ''),
+      reportedInputTokens: longContextInputTokens(observation.result),
+      outputPreview: bounded(observation.result.outputText),
+      responseModel: modelEvidence.responseModel,
+      httpStatus: observation.result.statusCode,
+      errorMessage: observation.result.errorMessage
+    }
   })
+  const total = Math.max(1, summaries.length)
+  const successRate = ratio(summaries.filter((summary) => summary.success).length, total)
+  const modelMatchRate = ratio(summaries.filter((summary) => summary.matchedModel).length, total)
+  const markerRate = ratio(summaries.filter((summary) => summary.foundNeedle).length, total)
+  const modelMismatch = summaries.some((summary) => summary.modelMismatch)
+  const score = modelMismatch
+    ? Math.round(markerRate * 4)
+    : Math.max(0, Math.min(15, Math.round((successRate * 0.3 + modelMatchRate * 0.2 + markerRate * 0.5) * 15)))
+  const status: ModelCheckItemCreateInput['status'] = modelMismatch
+    ? 'failed'
+    : successRate === 1 && markerRate === 1 ? 'passed' : markerRate > 0 && successRate > 0 ? 'warning' : 'failed'
+  const result = observations[observations.length - 1]?.result ?? emptyProbeResult()
+  return item(`${prefix}.long_context`, 'long_context', status, score, 15, result, {
+    message: modelMismatch
+      ? '长上下文探针返回模型与请求模型不一致'
+      : status === 'passed'
+        ? '多窗口长上下文找针探针通过'
+        : status === 'warning'
+          ? '长上下文探针仅部分窗口通过，目标链路可能按上下文长度降级'
+          : '长上下文探针未通过，目标链路可能在长输入下被降级或上下文能力不足',
+    expectedModel: model,
+    probeCount: summaries.length,
+    targetInputTokens: summaries.map((summary) => ({
+      key: summary.key,
+      targetInputTokens: summary.targetInputTokens,
+      reportedInputTokens: summary.reportedInputTokens
+    })),
+    successRate: roundMetric(successRate),
+    modelMatchRate: roundMetric(modelMatchRate),
+    markerRate: roundMetric(markerRate),
+    modelMismatch,
+    promptKeys: summaries.map((summary) => summary.key),
+    summaries
+  })
+}
+
+function longContextInputTokens(result: GatewayProbeResult): number | undefined {
+  const usage = recordValue(result.usage)
+  return numberValue(usage?.input_tokens)
+    ?? numberValue(usage?.prompt_tokens)
+    ?? numberValue(usage?.promptTokenCount)
 }
 
 export function evaluateStabilityProbe(results: GatewayProbeResult[], model: string, prefix: ModelCheckProbePrefix): ModelCheckItemCreateInput {
@@ -508,6 +559,13 @@ export function summarizeChecks(checks: ModelCheckItemSummary[], options: { trus
   }
   if (targetBasic?.status === 'failed' && recordValue(targetBasic.evidenceSummary)?.success !== true) {
     return { level: 'unavailable', score, maxScore: 100, message: '目标模型链路不可检测或上游不可用' }
+  }
+  const targetLongContext = checks.find((item) => item.itemKey === 'target.long_context')
+  if (targetLongContext?.status === 'failed') {
+    return { level: 'suspicious', score, maxScore: 100, message: '长上下文探针未通过，目标链路可能在长输入下被降级或上下文能力不足' }
+  }
+  if (targetLongContext?.status === 'warning') {
+    return { level: 'uncertain', score, maxScore: 100, message: '长上下文探针仅部分通过，建议重点排查中转是否按上下文长度切换模型' }
   }
   if (score >= 92 && failedCount === 0 && behaviorPassed && longContextPassed && stabilityPassed && trustedComparisonPassed && (options.trustedComparison || crossModelPassed)) {
     return {

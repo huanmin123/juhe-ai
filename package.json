@@ -84,6 +84,7 @@
     "test:model-check-trusted-comparison-success": "pnpm --filter juhe-ai-backend test:model-check-trusted-comparison-success",
     "test:model-check-protocol-profiles": "pnpm --filter juhe-ai-backend test:model-check-protocol-profiles",
     "test:model-check-full-profile": "pnpm --filter juhe-ai-backend test:model-check-full-profile",
+    "test:model-check-long-context-routing": "pnpm --filter juhe-ai-backend test:model-check-long-context-routing",
     "test:model-check-probe-retry": "pnpm --filter juhe-ai-backend test:model-check-probe-retry",
     "test:model-check-unavailable-boundary": "pnpm --filter juhe-ai-backend test:model-check-unavailable-boundary",
     "test:model-check-storage-sanitizer": "pnpm --filter juhe-ai-backend test:model-check-storage-sanitizer",

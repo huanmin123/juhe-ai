@@ -11,16 +11,20 @@ import {
   GLM_PROVIDER_CODE
 } from '../../domain/provider-protocol.js'
 import {
+  buildLongContextPrompt,
+  createModelCheckLongContextRequest,
   createModelCheckProbeRequest,
   createModelCheckStructuredOutputRequest,
   createModelCheckToolCallingRequest
 } from '../../modules/model-checks/model-checks.payloads.js'
+import { longContextProbeDefinitions } from '../../modules/model-checks/model-checks.probes.js'
 import { parseModelCheckProbeResponse } from '../../modules/model-checks/model-checks-response-parsing.js'
 import {
   findModelCheckProfileForAccountModel,
   supportedModels
 } from '../../modules/model-checks/model-checks.profiles.js'
 import { hasFunctionCall } from '../../modules/model-checks/model-checks-parsing.js'
+import { estimateTokenCountFromText } from '../../modules/gateway/protocols/openai-v1/stream-events.js'
 
 assert(supportedModels.includes('claude-opus-4-8'), '应注册 Anthropic 完整模型 ID claude-opus-4-8')
 assert(supportedModels.includes('glm-5.2'), '应注册 GLM 完整模型 ID glm-5.2')
@@ -127,5 +131,17 @@ assert(hasFunctionCall({
 
 const geminiStructuredRequest = createModelCheckStructuredOutputRequest('gemini_native', 'gemini-3.5-flash')
 assert.equal(geminiStructuredRequest.path, '/v1beta/models/gemini-3.5-flash:generateContent')
+
+const longContextTargets = new Map(longContextProbeDefinitions.map((definition) => [
+  definition.key,
+  estimateTokenCountFromText(buildLongContextPrompt(definition))
+]))
+assert.equal(longContextTargets.get('context_8k'), 8_000, '8k 长上下文窗口应按统一估算器生成到 8000 输入 token')
+assert.equal(longContextTargets.get('context_20k'), 20_000, '20k 长上下文窗口应按统一估算器生成到 20000 输入 token')
+assert.equal(longContextTargets.get('context_60k'), 60_000, '60k 长上下文窗口应按统一估算器生成到 60000 输入 token')
+
+const openAiLongContextRequest = createModelCheckLongContextRequest('openai_responses', 'gpt-5.5', longContextProbeDefinitions[2])
+assert.equal(openAiLongContextRequest.path, '/v1/responses')
+assert.equal(openAiLongContextRequest.body.max_output_tokens, 48)
 
 console.log('模型检测多协议 profile 回归通过：完整模型 ID、请求构造和响应解析符合预期')

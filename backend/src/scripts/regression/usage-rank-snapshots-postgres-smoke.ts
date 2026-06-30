@@ -18,7 +18,8 @@ const stageNames: UsageRankSnapshotStageName[] = [
   'caller_account_last7d_request_rank',
   'api_key_current_month_cost_rank',
   'account_authorization_current_month_cost_rank',
-  'group_authorization_current_month_cost_rank'
+  'group_authorization_current_month_cost_rank',
+  'ai_performance_summary_windows'
 ]
 
 try {
@@ -49,6 +50,14 @@ try {
       systemAccountId, `caller_b_${marker}`, today, updatedAt, updatedAt
     ])
     await tx.execute(`
+      INSERT INTO juhe_stats.usage_stats_totals (
+        system_account_id, scope_type, scope_id, request_count, success_count, error_count,
+        input_tokens, output_tokens, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
+        first_token_ms_sum, first_token_ms_count, first_token_ms_max, last_used_at, updated_at
+      ) VALUES
+        (?, 'system_account', ?, 26, 26, 0, 260, 78, 0.026, 2600, 26, 200, 520, 26, 60, ?, ?)
+    `, [systemAccountId, systemAccountId, updatedAt, updatedAt])
+    await tx.execute(`
       INSERT INTO juhe_stats.usage_stats_monthly (
         system_account_id, scope_type, scope_id, stat_month, request_count, success_count, error_count,
         input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd,
@@ -75,13 +84,14 @@ try {
     yieldToEventLoop: async () => {}
   })
   assert.equal(refreshed.skipped, false, '首次 PG usage rank refresh 不应跳过')
-  assert.deepEqual(refreshed.stages.map((stage) => stage.name), stageNames, 'PG usage rank refresh 应执行 5 个 TopN 阶段')
+  assert.deepEqual(refreshed.stages.map((stage) => stage.name), stageNames, 'PG usage rank refresh 应执行 TopN 和 AI 性能窗口阶段')
 
   await assertTopRank('account', 'last7d', 'request_count', `account_a_${marker}`, 19)
   await assertTopRank('caller_account', 'last7d', 'request_count', `caller_a_${marker}`, 23)
   await assertTopRank('api_key', 'current_month', 'total_cost_usd', `api_key_a_${marker}`, 0.531)
   await assertTopRank('account_authorization', 'current_month', 'total_cost_usd', `account_auth_${marker}`, 0.729)
   await assertTopRank('group_authorization', 'current_month', 'total_cost_usd', `group_auth_${marker}`, 0.837)
+  await assertAiPerformanceSummaryWindow(today)
 
   const skipped = await refreshUsageRankSnapshotsInStages({
     stageNames,
@@ -123,10 +133,42 @@ async function assertTopRank(scopeType: string, windowKey: string, metric: strin
   assert.equal(Number(top.metric_value), metricValue, `PG usage rank ${scopeType}/${windowKey}/${metric} metric_value 不正确`)
 }
 
+async function assertAiPerformanceSummaryWindow(today: string): Promise<void> {
+  const pool = await getPostgresPool()
+  const row = await pool.query(`
+    SELECT request_count, duration_ms_sum, duration_ms_count, duration_ms_max,
+      first_token_ms_sum, first_token_ms_count, first_token_ms_max
+    FROM juhe_stats.ai_performance_summary_windows
+    WHERE system_account_id = $1
+      AND window_key = $2
+      AND start_date = $3
+      AND end_date = $3
+  `, [systemAccountId, `${today}:${today}`, today])
+  const summary = row.rows[0] as {
+    request_count: string | number
+    duration_ms_sum: string | number
+    duration_ms_count: string | number
+    duration_ms_max: string | number
+    first_token_ms_sum: string | number
+    first_token_ms_count: string | number
+    first_token_ms_max: string | number
+  } | undefined
+  assert.ok(summary, 'PG AI 性能 summary window 应由用量排行刷新阶段生成')
+  assert.equal(Number(summary.request_count), 26, 'PG AI 性能 summary window 请求数不正确')
+  assert.equal(Number(summary.duration_ms_sum), 2600, 'PG AI 性能 summary window 总耗时累加不正确')
+  assert.equal(Number(summary.duration_ms_count), 26, 'PG AI 性能 summary window 总耗时计数不正确')
+  assert.equal(Number(summary.duration_ms_max), 200, 'PG AI 性能 summary window 最大总耗时不正确')
+  assert.equal(Number(summary.first_token_ms_sum), 520, 'PG AI 性能 summary window 首 token 耗时累加不正确')
+  assert.equal(Number(summary.first_token_ms_count), 26, 'PG AI 性能 summary window 首 token 耗时计数不正确')
+  assert.equal(Number(summary.first_token_ms_max), 60, 'PG AI 性能 summary window 最大首 token 耗时不正确')
+}
+
 async function cleanupSmokeRows(): Promise<void> {
   const pool = await getPostgresPool()
   await pool.query('DELETE FROM juhe_stats.usage_rank_snapshots WHERE system_account_id = $1', [systemAccountId])
   await pool.query('DELETE FROM juhe_stats.usage_stats_daily WHERE system_account_id = $1', [systemAccountId])
   await pool.query('DELETE FROM juhe_stats.usage_stats_monthly WHERE system_account_id = $1', [systemAccountId])
+  await pool.query('DELETE FROM juhe_stats.usage_stats_totals WHERE system_account_id = $1', [systemAccountId])
+  await pool.query('DELETE FROM juhe_stats.ai_performance_summary_windows WHERE system_account_id = $1', [systemAccountId])
   await pool.query('DELETE FROM juhe_stats.stats_job_state WHERE job_name = $1', [jobName])
 }

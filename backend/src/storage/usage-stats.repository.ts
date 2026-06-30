@@ -1306,6 +1306,7 @@ async function refreshUsageRankSnapshotsInStagesPostgres(options: RefreshUsageRa
     'account_authorization_current_month_cost_rank',
     'group_authorization_current_month_cost_rank',
     'usage_overview_windows',
+    'ai_performance_summary_windows',
     'system_metrics_trend_windows',
     'usage_scope_range_windows',
     'authorization_usage_range_windows'
@@ -1372,6 +1373,11 @@ async function refreshUsageRankSnapshotsInStagesPostgres(options: RefreshUsageRa
       case 'usage_overview_windows':
         await client.transaction(async (tx) => {
           await refreshUsageOverviewWindowSnapshotsAsync(tx, context)
+        })
+        break
+      case 'ai_performance_summary_windows':
+        await client.transaction(async (tx) => {
+          await refreshAiPerformanceSummaryWindowSnapshotsAsync(tx, context)
         })
         break
       case 'system_metrics_trend_windows':
@@ -1644,6 +1650,15 @@ function refreshAiPerformanceSummaryWindowSnapshots(database: DatabaseSync, cont
   }
 }
 
+async function refreshAiPerformanceSummaryWindowSnapshotsAsync(client: DatabaseClient, context: UsageRankSnapshotContext): Promise<void> {
+  await client.execute(`DELETE FROM ${statsTable(client, 'ai_performance_summary_windows')}`)
+  const rows: unknown[][] = []
+  for (const systemAccountId of [...context.uniqueSystemAccountIds, GLOBAL_STATS_SYSTEM_ACCOUNT_ID]) {
+    rows.push(...await aiPerformanceSummaryWindowRowsAsync(client, systemAccountId, context.ranges, context.earliestDate, context.todayKey, context.updatedAt))
+  }
+  await insertAiPerformanceSummaryWindowRowsAsync(client, rows)
+}
+
 function defaultUsageSnapshotYield(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve))
 }
@@ -1704,6 +1719,78 @@ function refreshAiPerformanceSummaryWindows(
       updatedAt
     )
   }
+}
+
+async function aiPerformanceSummaryWindowRowsAsync(
+  client: DatabaseClient,
+  systemAccountId: string,
+  ranges: AccountUsageStatsRange[],
+  earliestDate: string,
+  todayKey: string,
+  updatedAt: string
+): Promise<unknown[][]> {
+  const rows = await client.query<UsageStatsDailyWindowRow>(`
+    SELECT stat_date,
+      COALESCE(SUM(request_count), 0) AS request_count,
+      COALESCE(SUM(success_count), 0) AS success_count,
+      COALESCE(SUM(error_count), 0) AS error_count,
+      COALESCE(SUM(input_tokens), 0) AS input_tokens,
+      COALESCE(SUM(output_tokens), 0) AS output_tokens,
+      COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+      COALESCE(SUM(total_cost_usd), 0) AS total_cost_usd,
+      COALESCE(SUM(duration_ms_sum), 0) AS duration_ms_sum,
+      COALESCE(SUM(duration_ms_count), 0) AS duration_ms_count,
+      COALESCE(MAX(duration_ms_max), 0) AS duration_ms_max,
+      COALESCE(SUM(first_token_ms_sum), 0) AS first_token_ms_sum,
+      COALESCE(SUM(first_token_ms_count), 0) AS first_token_ms_count,
+      COALESCE(MAX(first_token_ms_max), 0) AS first_token_ms_max,
+      MAX(last_used_at) AS last_used_at
+    FROM ${statsTable(client, 'usage_stats_daily')}
+    WHERE system_account_id = ?
+      AND scope_type = 'account'
+      AND stat_date >= ?
+      AND stat_date <= ?
+    GROUP BY stat_date
+    ORDER BY stat_date ASC
+  `, [systemAccountId, earliestDate, todayKey])
+  const rowsByDate = rowsByStatDate(rows)
+  return ranges.map((range) => {
+    const aggregate = aggregateUsageRowsForRange(rowsByDate, range)
+    return [
+      systemAccountId,
+      rangeWindowKey(range),
+      range.startDate,
+      range.endDate,
+      aggregate.requestCount,
+      aggregate.durationMsSum,
+      aggregate.durationMsCount,
+      aggregate.durationMsMax,
+      aggregate.firstTokenMsSum,
+      aggregate.firstTokenMsCount,
+      aggregate.firstTokenMsMax,
+      updatedAt
+    ]
+  })
+}
+
+async function insertAiPerformanceSummaryWindowRowsAsync(client: DatabaseClient, rows: unknown[][]): Promise<void> {
+  for (const chunk of chunkValues(rows, 250)) {
+    if (chunk.length === 0) continue
+    const placeholders = chunk
+      .map((row) => `(${row.map(() => '?').join(', ')})`)
+      .join(', ')
+    await client.execute(`
+      INSERT INTO ${statsTable(client, 'ai_performance_summary_windows')} (
+        system_account_id, window_key, start_date, end_date, request_count,
+        duration_ms_sum, duration_ms_count, duration_ms_max, first_token_ms_sum,
+        first_token_ms_count, first_token_ms_max, updated_at
+      ) VALUES ${placeholders}
+    `, chunk.flat())
+  }
+}
+
+function statsTable(client: DatabaseClient, tableName: string): string {
+  return client.dialect.qualifyTable('juhe_stats', tableName)
 }
 
 const usageStatsConsistencyMetrics = [

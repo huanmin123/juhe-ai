@@ -5,12 +5,13 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import type { ModelCheckItemSummary } from '../../domain/types.js'
 
-const tempRoot = resolve(tmpdir(), `juhe-ai-model-check-distribution-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+const tempRoot = resolve(tmpdir(), `juhe-ai-model-check-long-context-routing-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
-runtimeConfig.secret = 'model-check-distribution-secret'
+runtimeConfig.secret = 'model-check-long-context-routing-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'worker'
@@ -18,12 +19,13 @@ runtimeConfig.workerRole = 'ingest-worker'
 runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 
-const targetUpstream = createMockUpstream('divergent')
-const comparisonUpstream = createMockUpstream('trusted')
+const targetModel = 'gpt-5.5'
+const largeContextDowngradeThresholdChars = 18_000
+const upstream = createLengthAwareUpstream()
 let stopGatewayJsonParseWorker: (() => Promise<void>) | undefined
 
 try {
-  await Promise.all([listen(targetUpstream), listen(comparisonUpstream)])
+  await listen(upstream)
   const [
     { createMockGatewayFixture },
     { runModelCheck },
@@ -35,55 +37,51 @@ try {
   ])
   stopGatewayJsonParseWorker = gatewayJsonParser.stopGatewayJsonParseWorker
 
-  const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
-  const targetFixture = createMockGatewayFixture({
-    label: '模型检测分布偏离目标',
-    upstreamBaseUrl: `http://127.0.0.1:${serverPort(targetUpstream)}/v1`,
+  const fixture = createMockGatewayFixture({
+    label: '模型检测长上下文按长度降级',
+    upstreamBaseUrl: `http://127.0.0.1:${serverPort(upstream)}/v1`,
     systemAccountId: 'sys_admin',
     accountCount: 1,
     createApiKey: false
   })
-  const comparisonFixture = createMockGatewayFixture({
-    label: '模型检测可信分布对比',
-    upstreamBaseUrl: `http://127.0.0.1:${serverPort(comparisonUpstream)}/v1`,
-    systemAccountId: 'sys_admin',
-    accountCount: 1,
-    createApiKey: false
-  })
-  const targetAccount = targetFixture.accounts[0]
-  const comparisonAccount = comparisonFixture.accounts[0]
-  assert(targetAccount, 'target account should exist')
-  assert(comparisonAccount, 'trusted comparison account should exist')
+  const account = fixture.accounts[0]
+  assert(account, 'mock fixture should create an account')
 
   const detail = await runModelCheck({
     targetType: 'account',
-    targetId: targetAccount.id,
-    model: 'gpt-5.5',
+    targetId: account.id,
+    model: targetModel,
     profile: 'full',
-    trustedComparison: true,
-    trustedComparisonAccountId: comparisonAccount.id
-  }, access)
+    trustedComparison: false
+  }, { systemAccountId: 'sys_admin', role: 'admin' })
 
   assert.equal(detail.status, 'completed')
-  assert.equal(detail.level, 'likely', '分布相似度明显异常时不应继续给高可信')
-  assert(!/响应模型字段与请求模型不一致/.test(detail.message), '分布差异不应误报成目标模型字段不一致')
+  assert.equal(detail.level, 'uncertain', '短探针通过但长上下文按长度降级时不能判为较可信或高可信')
+  assert.match(detail.message, /上下文|长度|降级/, '总览消息应提示长上下文或长度降级风险')
+  const longContext = requiredCheck(detail.checks, 'target.long_context')
+  assert.equal(longContext.status, 'warning', '部分长上下文窗口失败时聚合项应为 warning')
+  assert.equal(longContext.evidenceSummary.modelMismatch, false, '本场景模拟模型字段伪装一致，不能依赖 model 字段发现问题')
+  const summaries = Array.isArray(longContext.evidenceSummary.summaries)
+    ? longContext.evidenceSummary.summaries as Array<Record<string, unknown>>
+    : []
+  assert(summaries.some((item) => item.key === 'context_8k' && item.foundNeedle === true), '8k 窗口应通过，证明短上下文伪装可以过关')
+  assert(summaries.some((item) => item.key === 'context_20k' && item.foundNeedle === false), '20k 窗口应失败，识别按上下文长度降级')
+  assert(summaries.some((item) => item.key === 'context_60k' && item.foundNeedle === false), '60k 窗口应失败，识别按上下文长度降级')
+  assert(!['high_confidence', 'likely'].includes(detail.level), `长度降级场景不能输出可信结论：${detail.level}`)
 
-  const distributionItem = detail.checks.find((item) => item.itemKey === 'trusted_comparison.distribution_similarity')
-  assert(distributionItem, '可信对比应生成分布相似度检测项')
-  assert.equal(distributionItem.status, 'failed', '目标分布明显偏离可信账户时分布相似度项应失败')
-  assert.equal(distributionItem.evidenceSummary.promptCount, 6)
-  assert.equal(distributionItem.evidenceSummary.samplesPerPrompt, 5)
-  assert(Number(distributionItem.evidenceSummary.targetConstraintRate) < 0.5, '目标约束满足率应体现明显异常')
-  assert(Number(distributionItem.evidenceSummary.comparisonConstraintRate) >= 0.7, '可信对比账户约束满足率应健康')
-  assert(!JSON.stringify(distributionItem).includes('用 18 到 32 个中文字符'), '分布相似度报告不应泄露隐藏题面')
-
-  console.log('模型检测分布相似度回归通过：可信对比下目标分布明显偏离会扣分降级')
+  console.log('模型检测长上下文降级回归通过：短探针全绿但大窗口失败时结论降为不确定')
 } finally {
   await stopGatewayJsonParseWorker?.()
-  await Promise.all([closeServer(targetUpstream), closeServer(comparisonUpstream)])
+  await closeServer(upstream)
 }
 
-function createMockUpstream(mode: 'trusted' | 'divergent'): http.Server {
+function requiredCheck(checks: ModelCheckItemSummary[], itemKey: string): ModelCheckItemSummary {
+  const check = checks.find((item) => item.itemKey === itemKey)
+  assert(check, `检测报告应包含 ${itemKey}`)
+  return check
+}
+
+function createLengthAwareUpstream(): http.Server {
   return http.createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
     const chunks: Buffer[] = []
@@ -91,21 +89,22 @@ function createMockUpstream(mode: 'trusted' | 'divergent'): http.Server {
       chunks.push(Buffer.from(chunk))
     })
     req.on('end', () => {
-      const body = parseJson(Buffer.concat(chunks).toString('utf8'))
+      const rawBody = Buffer.concat(chunks).toString('utf8')
+      const body = parseJson(rawBody)
       if (req.method === 'GET' && url.pathname === '/v1/models') {
         sendJson(res, {
           object: 'list',
           data: [
-            { id: 'gpt-5.5', object: 'model', created: 0, owned_by: 'mock' },
+            { id: targetModel, object: 'model', created: 0, owned_by: 'mock' },
             { id: 'gpt-5.4', object: 'model', created: 0, owned_by: 'mock' }
           ]
         })
         return
       }
       if (req.method === 'POST' && url.pathname === '/v1/responses') {
-        const outputText = outputForProbe(mode, body)
+        const outputText = outputForProbe(body, rawBody.length)
         if (body.stream === true) {
-          sendStream(res, String(body.model ?? 'gpt-5.5'), outputText)
+          sendStream(res, String(body.model ?? targetModel), outputText)
         } else {
           sendJson(res, responsePayload(body, outputText))
         }
@@ -120,10 +119,10 @@ function createMockUpstream(mode: 'trusted' | 'divergent'): http.Server {
 function responsePayload(body: Record<string, unknown>, outputText: string): Record<string, unknown> {
   const hasTool = Array.isArray(body.tools)
   return {
-    id: 'resp_model_check_distribution',
+    id: 'resp_model_check_long_context_routing',
     object: 'response',
     status: 'completed',
-    model: String(body.model ?? 'gpt-5.5'),
+    model: String(body.model ?? targetModel),
     output: hasTool
       ? [{
           type: 'function_call',
@@ -137,9 +136,9 @@ function responsePayload(body: Record<string, unknown>, outputText: string): Rec
           content: [{ type: 'output_text', text: outputText }]
         }],
     usage: {
-      input_tokens: 12,
-      output_tokens: Math.max(1, Math.ceil(outputText.length / 4)),
-      total_tokens: 12 + Math.max(1, Math.ceil(outputText.length / 4))
+      input_tokens: Math.ceil(JSON.stringify(body).length / 4),
+      output_tokens: 4,
+      total_tokens: Math.ceil(JSON.stringify(body).length / 4) + 4
     }
   }
 }
@@ -158,22 +157,23 @@ function sendStream(res: http.ServerResponse, model: string, outputText: string)
       model,
       usage: {
         input_tokens: 12,
-        output_tokens: Math.max(1, Math.ceil(outputText.length / 4)),
-        total_tokens: 12 + Math.max(1, Math.ceil(outputText.length / 4))
+        output_tokens: 4,
+        total_tokens: 16
       }
     }
   })}\n\n`)
   res.end()
 }
 
-function outputForProbe(mode: 'trusted' | 'divergent', body: Record<string, unknown>): string {
+function outputForProbe(body: Record<string, unknown>, rawBodyLength: number): string {
   const text = JSON.stringify(body).toUpperCase()
+  if (rawBodyLength > largeContextDowngradeThresholdChars) return 'LARGE-CONTEXT-DOWNGRADED'
   if (text.includes('STREAM-OK')) return 'STREAM-OK'
   if (text.includes('QUARTZ')) return 'QUARTZ'
   if (text.includes('BETA')) return '{"sum":83,"code":"BETA"}'
   if (text.includes('GAMMA')) return 'GAMMA 9-7-2'
   if (text.includes('并发控制')) return '并发限制同时处理量，限流限制单位时间请求量'
-  if (text.includes('绕过他人账号限流')) return mode === 'trusted' ? 'DELTA 不能提供此类步骤' : 'OMEGA'
+  if (text.includes('绕过他人账号限流')) return 'DELTA 不能提供此类步骤'
   if (text.includes('ZETA')) return 'ZETA'
   if (text.includes('小赵比小钱高')) return '孙'
   if (text.includes('第一行 ALPHA')) return 'ALPHA\nBETA\nGAMMA'
@@ -181,11 +181,6 @@ function outputForProbe(mode: 'trusted' | 'divergent', body: Record<string, unkn
   if (text.includes('CROSS-MODEL-OK')) return 'CROSS-MODEL-OK'
   const needle = text.match(/NEEDLE-\d+-[A-Z]+/)
   if (needle) return needle[0]
-  if (text.includes('向量数据库')) return mode === 'trusted' ? '召回衡量相关内容被找回的程度' : 'OMEGA'
-  if (text.includes('SIGMA')) return mode === 'trusted' ? '{"result":83,"tag":"SIGMA"}' : '{"result":13,"tag":"OMEGA"}'
-  if (text.includes('XS=[2,5,8]')) return mode === 'trusted' ? 'ALPHA y 的值是 4-7' : 'OMEGA 无法判断'
-  if (text.includes('从小到大排序')) return mode === 'trusted' ? 'THETA 4|7|9' : 'OMEGA'
-  if (text.includes('北区=17')) return mode === 'trusted' ? 'IOTA 17 23' : 'OMEGA'
   if (body.text || text.includes('JSON')) return '{"status":"ok","value":7}'
   return 'OK-MODEL-CHECK'
 }

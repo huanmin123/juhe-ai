@@ -127,7 +127,7 @@ export type SupportedModel = string
 
 export const defaultModel = modelCheckProtocolProfiles[0]?.defaultModel ?? 'gpt-5.5'
 export const defaultProfile = 'full'
-export const probeSetVersion = 'multi-provider-model-check-v1-strong-retry'
+export const probeSetVersion = 'multi-provider-model-check-v3-token-target-context'
 export const distributionSampleCount = 5
 export const modelCheckSupportedProtocolLabel = 'OpenAI Responses / OpenAI Chat Completions / Anthropic Messages / Gemini native'
 

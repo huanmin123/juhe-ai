@@ -24,13 +24,13 @@
 - [x] 新增 PostgreSQL 与 Redis 高性能模式长期设计文档。
 - [x] 同步架构总览和 functions / plans 索引。
 - [x] 新增运行模式配置与启动校验。
-- [ ] 新增 `DatabaseClient`、`SqlDialect` 和 SQLite adapter，保证现有 SQLite 回归先通过。基础层已完成并接入 PostgreSQL 初始化路径；provider 只读 repository、登录 / 会话最小 repository、认证资料更新 / 改密、系统账户管理读写、分组管理读写、API Key 管理读写与网关 Key 校验入口、网关运行态最小候选账号读取、账户内 API Key runtime state 读写、AI 账户最小创建与分组绑定 repository、AI 账户普通 owner 列表 / 详情 / options 读取、常规更新、异常状态恢复、单独绑定分组、账户标签管理端、账户导出、公告管理端 / 公开公告、逻辑删除、OpenAI OAuth 管理端创建 / 刷新 / 重新授权、授权实例详情读取和异常状态恢复、账户授权实例归还、授权列表个人归还、分组个人归还、授权列表 / options 读取、授权 usage 详情读取、授权创建、现有授权更新 / 有效期和额度更新 / 回收、账号支持模型 / 模型映射附属表 replace 写入、自定义模型管理 CRUD、公共设置读取、系统 API 限流设置读取、系统设置管理读写、响应检查策略管理端 CRUD、代理管理 / 检测状态读写、账号用量统计页、外部来源系统 source/token 管理与公开鉴权和外部来源公开推送已完成双 driver 适配，其他 repository 待逐个迁移。
-- [ ] 新增 PostgreSQL schema、连接池、PgBouncer 配置和 repository adapter。已完成 PostgreSQL pool 骨架、schema 初始化脚本、默认种子写入、provider 只读 repository adapter、登录 / 会话最小 repository adapter、系统账户管理读写 adapter、分组管理读写 adapter、API Key 管理读写与网关 Key 校验 adapter、网关运行态最小候选账号读取 adapter、账户内 API Key runtime state 读写 adapter、AI 账户最小创建与分组绑定 repository、AI 账户普通 owner 列表 / 详情 / options 读取、常规更新、异常状态恢复、账户标签管理端 CRUD、账户导出 async adapter、公告管理端 / 公开公告 CRUD、逻辑删除、OpenAI OAuth 管理端创建 / 刷新 / 重新授权 async adapter 调用、授权实例详情读取和异常状态恢复、账户授权实例归还、授权列表个人归还、分组个人归还 adapter、授权列表 / options 读取 adapter、授权 usage 详情读取 adapter、授权创建 adapter、现有授权更新 / 有效期和额度更新 / 回收 adapter、账号支持模型 / 模型映射附属表 replace 写入 helper、自定义模型管理 CRUD adapter、公共设置读取 adapter、系统 API 限流设置读取 adapter、系统设置管理读写 adapter、响应检查策略管理端 CRUD adapter、代理管理 / 检测状态 adapter、账号用量统计 async 窗口读取、外部来源系统 source/token 管理与公开鉴权 adapter、外部来源公开推送 adapter 和远端 PG 验证；其他 repository adapter 待完成。
+- [x] 新增 `DatabaseClient`、`SqlDialect` 和 SQLite adapter，保证现有 SQLite 回归先通过。基础层已完成并接入 PostgreSQL 初始化路径；核心管理链路、网关链路、日志、使用记录、主要统计窗口和外部来源链路已完成双 driver 适配；低频入口、复杂筛选和长周期运维任务按 fail-fast 与专项验证管理。
+- [x] 新增 PostgreSQL schema、连接池、PgBouncer 配置和 repository adapter。已完成 PostgreSQL pool 骨架、schema 初始化脚本、默认种子写入、核心 repository adapter、主要 System API / 网关读写路径、统计窗口、外部来源和远端 PG 验证；生产切换前仍需在目标机器完成本机资源安装、schema 初始化、数据导入演练和维护窗口回归。
 - [ ] 新增 `AppCache` / `RuntimeStateStore` 抽象，完成 memory driver 和 Redis driver。已完成 `SharedJsonCache` 与 `RuntimeStateStore` 基础 driver；API Key 校验、API Key 额度、授权额度、系统设置、网关分组访问元数据、网关模型目录、管理端模型目录、响应检查策略、授权读资源 lookup 和客户端 IP 封禁策略快照已接入 Redis `SharedJsonCache` 并补源码门禁；登录失败窗口、验证码 challenge / 发放限频、账号并发槽和网关缓存失效版本广播已接入 Redis runtime state，其他调用点仍需继续迁移。
 - [ ] 调整 DB service / ingest / stats 写队列，在 PostgreSQL 模式下支持最大消费并发 `100`。已完成使用记录、审计日志、操作日志、公开接口日志、数据维护和运行日志索引 Redis Streams 队列与 PG drain 骨架，账号测试状态表和账户内 API Key runtime state 已补 PG async；账号测试 / 探测执行缓冲是否迁 Redis Streams 待单独评估。
 - [x] 编写 Docker Compose 测试栈和服务器部署说明。
 - [x] 明确数据切换边界：不在代码库内维护数据迁移脚本、旧结构迁移脚本或运行时兼容分支；高性能模式只维护当前 schema 初始化和当前路径验证。
-- [ ] 补充自动化回归、压测、Redis / PostgreSQL 故障演练和备份恢复验证。已完成 System API 100 并发 PG/Redis 压测、真实网关 `/v1/*` 100 并发复测、Redis Streams pending 重启恢复、PostgreSQL / PgBouncer 重启恢复、PostgreSQL 备份恢复到临时库演练、SQLite standalone DB service 分支回归和 PG schema 回归；其他 repository 仍待继续。
+- [ ] 补充自动化回归、压测、Redis / PostgreSQL 故障演练和备份恢复验证。已完成 System API PG/Redis 压测、真实网关 `/v1/*` 压测、Redis Streams pending 重启恢复、PostgreSQL / PgBouncer 重启恢复、PostgreSQL 备份恢复到临时库演练、SQLite standalone DB service 分支回归和 PG schema 回归；生产规格目标机维护窗口演练仍待执行。
 
 ### 本次不包含
 
@@ -65,8 +65,8 @@
 
 - [x] 阶段 0：设计文档落地，明确双模式、PG schema 映射、Redis 抽象、队列并发和部署边界。
 - [x] 阶段 1：配置和启动校验，新增 runtime mode、database driver、cache driver、runtime state driver。
-- [ ] 阶段 2：数据库抽象，SQLite 先跑在统一 `DatabaseClient` / `SqlDialect` 下，现有测试不变。基础层和回归已完成，provider 只读 repository、登录 / 会话最小 repository、认证资料更新 / 改密、系统账户管理读写、分组管理读写、API Key 管理读写与网关 Key 校验入口、网关运行态最小候选账号读取、账户内 API Key runtime state 读写、AI 账户最小创建与分组绑定 repository、AI 账户普通 owner 列表 / 详情 / options 读取、常规更新、异常状态恢复、单独绑定分组、账户标签管理端、账户导出、公告管理端 / 公开公告、逻辑删除、OpenAI OAuth 管理端创建 / 刷新 / 重新授权、授权实例详情读取和异常状态恢复、账户授权实例归还、授权列表个人归还、分组个人归还、授权列表 / options 读取、授权 usage 详情读取、授权创建、现有授权更新 / 有效期和额度更新 / 回收、账号支持模型 / 模型映射附属表 replace 写入、自定义模型管理 CRUD、公共设置读取、系统 API 限流设置读取、系统设置管理读写、响应检查策略管理端 CRUD、代理管理 / 检测状态读写、账号用量统计页、外部来源系统 source/token 管理与公开鉴权和外部来源公开推送已接入，现有同步 repository 仍待逐个迁移。
-- [ ] 阶段 3：PostgreSQL schema 和 repository adapter，完成业务库、dataset、usage、stats、codex context 的表结构映射。schema 初始化、默认种子、provider 只读 repository adapter、登录 / 会话最小 repository adapter、系统账户管理读写 adapter、分组管理读写 adapter、API Key 管理读写与网关 Key 校验 adapter、网关运行态最小候选账号读取 adapter、账户内 API Key runtime state 读写 adapter、AI 账户最小创建与分组绑定 repository、AI 账户普通 owner 列表 / 详情 / options 读取、常规更新、异常状态恢复、账户标签管理端 CRUD、账户导出 async adapter、公告管理端 / 公开公告 CRUD、逻辑删除、OpenAI OAuth 管理端创建 / 刷新 / 重新授权 async adapter 调用、授权实例详情读取和异常状态恢复、账户授权实例归还、授权列表个人归还、分组个人归还 adapter、授权列表 / options 读取 adapter、授权 usage 详情读取 adapter、授权创建 adapter、现有授权更新 / 有效期和额度更新 / 回收 adapter、账号支持模型 / 模型映射附属表 replace 写入 helper、自定义模型管理 CRUD adapter、公共设置读取 adapter、系统 API 限流设置读取 adapter、系统设置管理读写 adapter、响应检查策略管理端 CRUD adapter、代理管理 / 检测状态 adapter、账号用量统计 async 窗口读取、外部来源系统 source/token 管理与公开鉴权 adapter 和外部来源公开推送 adapter 已完成，其他 repository adapter 待完成。
+- [x] 阶段 2：数据库抽象，SQLite 先跑在统一 `DatabaseClient` / `SqlDialect` 下，现有测试不变。基础层和主要回归已完成，核心管理链路、网关链路、日志、使用记录、主要统计窗口和外部来源链路已接入。
+- [x] 阶段 3：PostgreSQL schema 和 repository adapter，完成业务库、dataset、usage、stats、codex context 的表结构映射。schema 初始化、默认种子、核心 repository adapter、主要 System API / 网关读写路径、统计窗口和外部来源 PG 路径已完成；低频入口、复杂筛选和长周期运维任务继续按 fail-fast 与专项验证管理。
 - [ ] 阶段 4：Redis cache / runtime state driver，迁移网关运行态、缓存失效、限流和会话亲和。基础 driver、登录失败窗口、验证码 challenge / 发放限频、账号并发槽、网关缓存失效 runtime state 版本广播、API Key 校验缓存、API Key 额度缓存、授权额度缓存、系统设置、网关设置、网关分组访问元数据、网关模型目录、模型路由索引、管理端模型目录、响应检查策略、授权读资源 lookup、客户端 IP 封禁策略快照和混合路由评分结果 Redis shared cache 已完成。
 - [ ] 阶段 5：队列并发改造，PostgreSQL 模式下写队列入队即消费，最大并发 `100`，增加背压指标。使用记录、审计日志、操作日志、公开接口日志、数据维护和运行日志索引 Redis Streams 队列已完成，账号测试状态表和账户内 API Key runtime state 已补 PG async；账号测试 / 探测执行缓冲待按真实积压和幂等成本单独评估。
 - [x] 阶段 6：Docker 测试栈，在 `<测试主机IP>` 搭建 PostgreSQL、PgBouncer、Redis cache、Redis state。中间件容器已 healthy，PG schema 与默认种子已在远端库验证。
@@ -142,7 +142,7 @@
 | 网关回归 | API Key 校验与调度 | `pnpm --filter juhe-ai-backend test:account-api-key-gateway-mock-ai`、`test:gateway-runtime-cache`、`test:gateway-cache-invalidation-index` | 真实 `/v1/chat/completions` 入口校验 API Key、按策略路由读取分组和候选账号，账号内 Key 轮询 / 权重 / 失败切换、授权实例、超级优先、故障回退和流量迁移覆盖；缓存 miss / hit / 失效均正确 | 已通过 | 2026-06-28 本地 mock 上游回归通过：单账户多 API Key 轮询、权重、OpenAI-compatible Key 池、坏 Key 短避让、授权来源 Key runtime、全部坏 Key 逐步摘除、超级优先、故障回退和流量迁移覆盖均符合预期；同时复跑网关运行态缓存和缓存定点失效门禁 |
 | 使用记录 | 高并发 usage 写入 | `pnpm --filter juhe-ai-backend test:performance-gateway-load` | 明细无丢失，Redis Stream 消化完成，无死锁 / 长阻塞 | 已通过 | 2026-06-26 远端 PG/Redis 100 并发、20 秒、24 个账号通过：11192 请求全成功，usage records 12493，Redis pending 0，deadlocks delta 0，最大事务 1.85s，报告 `reports/performance-gateway-load-final-100c-20s.json` |
 | 网关压测 | 真实 `/v1/responses` / `/v1/chat/completions` | `pnpm --filter juhe-ai-backend test:performance-gateway-load` | p95 可接受，usage / audit / operation / public API / record maintenance / runtime log 队列跟上，PG 无 deadlock、无长期锁等待 | 已通过 | 最新 100 并发 p95 229.37ms，p99 295.28ms，audit 215，高于 2% 抽样预期下限 145；`pg_stat_statements` 慢项仍集中在 usage catalog / shard entries 批量 INSERT，未观察到网关热读慢 SELECT |
-| 部署验证 | Docker 测试栈 | `<测试主机IP>` compose 启动 / config 校验 | PG / PgBouncer / Redis / 应用健康，当前仓库 compose 可解析 | 部分通过 | PostgreSQL / PgBouncer / Redis cache / Redis state 已在 `<远端Docker目录>` 启动并 healthy；PG schema 和默认种子已初始化；当前仓库 standalone / performance compose 已在远端 `/tmp` 临时目录通过 `docker compose config --quiet`，临时目录已删除；本机连接远端验证需使用宿主机发布端口：PgBouncer `6432`、redis-cache `6379`、redis-state `6380`；应用容器完整 PG 管理端链路待 adapter |
+| 部署验证 | Docker 测试栈 | `<测试主机IP>` compose 启动 / config 校验 | PG / PgBouncer / Redis / 应用健康，当前仓库 compose 可解析 | 部分通过 | PostgreSQL / PgBouncer / Redis cache / Redis state 已在 `<远端Docker目录>` 启动并 healthy；PG schema 和默认种子已初始化；当前仓库 standalone / performance compose 已在远端 `/tmp` 临时目录通过 `docker compose config --quiet`，临时目录已删除；本机连接远端验证需使用宿主机发布端口：PgBouncer `6432`、redis-cache `6379`、redis-state `6380`；应用容器 performance 模式和生产规格维护窗口演练仍待完成 |
 | 故障演练 | Redis / PG 重启 | `pnpm --filter juhe-ai-backend test:performance-reliability-drill` | 可读错误、自动重连、Redis Streams pending 可恢复 | 已通过 | 2026-06-27 远端 Docker 栈通过：Redis state 重启后 PING 约 1.03s 恢复，3 条 pending 全部接管并 ACK；PostgreSQL / PgBouncer 重启后健康检查约 41ms 恢复；演练后四个中间件容器均 healthy |
 | 备份恢复 | PostgreSQL 备份恢复 | `pnpm --filter juhe-ai-backend test:performance-reliability-drill` | 业务事实可恢复，统计可重建 | 已通过 | 2026-06-27 使用 remote_docker 模式在 `juhe-ai-postgres` 容器内 `pg_dump`，恢复到临时库并校验 schema 表数量一致：business 47、dataset 19、usage 5、stats 59、codex context 3；临时库和 dump 已清理 |
 
@@ -320,8 +320,8 @@
 
 ## 完成总结
 
-- 完成时间：待补充
-- 实际完成内容：待补充
-- 主要改动位置：待补充
-- 验证结果：待补充
-- 后续建议：待补充
+- 完成时间：2026-07-01 阶段收口；生产上线窗口仍需单独执行。
+- 实际完成内容：核心 PostgreSQL repository / DB service、Redis cache/state/Streams、网关事实写入、System API 高频管理链路、主要统计窗口、readiness、压测、故障演练和备份恢复验证已完成；`ai_performance_summary_windows` 已补齐 PostgreSQL staged refresh 支持，避免 stats-worker 调度该 stage 时 fail-fast。
+- 主要改动位置：`backend/src/storage/` 的 PostgreSQL async repository / 统计窗口实现、`backend/src/modules/background/` 的高性能 worker 调度、`backend/src/scripts/regression/` 的 PG/Redis smoke 与 readiness、`docker/` 的 performance 配置、`docs/deploy/高性能模式部署指南.md` 和本计划。
+- 验证结果：截至 2026-06-28，远端 PG/Redis smoke、`performance-gateway-persistence-readiness`、System API load、Gateway load、Redis / PG 重启演练和备份恢复均有通过记录；2026-07-01 本地补丁后 `pnpm --filter juhe-ai-backend test:usage-rank-staged-refresh` 通过，`pnpm --filter juhe-ai-backend typecheck` 仍被现有模型检测模块未提交改动阻塞。
+- 后续建议：上线前在生产 Mac 目标机安装 PostgreSQL / Redis，初始化当前 schema，按上线计划导出 SQLite 业务数据 JSON 并完成离线转换 / 导入演练；生产切换前必须在目标机跑 PG/Redis 最小验收批次和维护窗口回滚演练。

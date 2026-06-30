@@ -41,7 +41,8 @@ import {
 } from './model-checks-parsing.js'
 import {
   behaviorProbeDefinitions,
-  distributionProbeDefinitions
+  distributionProbeDefinitions,
+  longContextProbeDefinitions
 } from './model-checks.probes.js'
 import {
   createModelCheckDistributionProbeRequest,
@@ -58,7 +59,7 @@ import {
   evaluateBehaviorProbeSet,
   evaluateCrossModelComparisonProbe,
   evaluateDistributionSimilarityProbe,
-  evaluateLongContextProbe,
+  evaluateLongContextProbeSet,
   evaluateModelCatalogProbe,
   evaluateProtocolStreamProbe,
   evaluateStabilityProbe,
@@ -70,6 +71,7 @@ import {
   type BehaviorProbeObservation,
   type DistributionProbePair,
   type GatewayProbeResult,
+  type LongContextProbeObservation,
   type ModelCheckProbePrefix,
   type ProbeSuiteResult
 } from './model-checks-evaluation.js'
@@ -551,14 +553,18 @@ async function executeProbeSuite(target: ModelCheckTarget, model: SupportedModel
   const behaviorItem = evaluateBehaviorProbeSet(behaviorObservations, model, prefix)
   pushProbeItem(items, behaviorItem, progress)
 
-  const longContext = await runModelCheckProbeRequest(
-    target,
-    createModelCheckLongContextRequest(profile.protocol, model),
-    `${prefix}.long_context`,
-    signal,
-    progress
-  )
-  pushProbeItem(items, evaluateLongContextProbe(longContext, model, prefix), progress)
+  const longContextObservations: LongContextProbeObservation[] = []
+  for (const definition of longContextProbeDefinitions) {
+    const longContext = await runModelCheckProbeRequest(
+      target,
+      createModelCheckLongContextRequest(profile.protocol, model, definition),
+      `${prefix}.long_context.${definition.key}`,
+      signal,
+      progress
+    )
+    longContextObservations.push({ definition, result: longContext })
+  }
+  pushProbeItem(items, evaluateLongContextProbeSet(longContextObservations, model, prefix), progress)
 
   const stabilityResults: GatewayProbeResult[] = []
   for (let index = 1; index <= 3; index += 1) {
@@ -570,7 +576,7 @@ async function executeProbeSuite(target: ModelCheckTarget, model: SupportedModel
   }
   pushProbeItem(items, evaluateStabilityProbe(stabilityResults, model, prefix), progress)
 
-  return { items, basic, behavior: behaviorObservations[0]?.result, longContext }
+  return { items, basic, behavior: behaviorObservations[0]?.result, longContext: longContextObservations[longContextObservations.length - 1]?.result }
 }
 
 async function executeCrossModelComparison(target: ModelCheckTarget, targetSuite: ProbeSuiteResult, model: SupportedModel, signal?: AbortSignal, progress?: ModelCheckProgressReporter): Promise<ModelCheckItemCreateInput> {

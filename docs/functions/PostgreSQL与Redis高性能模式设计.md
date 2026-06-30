@@ -393,14 +393,12 @@ PostgreSQL 模式下保留 DB service，理由不是规避 SQLite 同步阻塞�
 ## 落地顺序
 
 1. 新增配置模型、运行模式校验和文档。已完成基础配置、`.env` 示例和 fail-fast 校验。
-2. 抽象 `DatabaseClient` / `SqlDialect`，先让 SQLite 在新接口下通过现有回归。基础层已完成并接入 PostgreSQL 初始化脚本；provider 只读 repository、登录 / 会话最小 repository、系统账户管理读写、分组管理读写、API Key 管理读写与网关 Key 校验入口、授权列表 / options / usage 详情读取、公共设置读取、系统 API 限流设置读取和系统设置管理读写已完成，主要写路径和其他 repository 迁移待完成。
-3. 抽象 `AppCache` / `SharedJsonCache` / `RuntimeStateStore`，先让 memory driver 行为不变。已完成基础 driver，仍需迁移全部调用点。
-4. 搭建 `<测试主机IP>` Docker 测试栈：PostgreSQL、PgBouncer、Redis cache、Redis state。
-5. 新增 PostgreSQL schema、schema 初始化脚本和 repository PG adapter。已完成 PostgreSQL pool、schema 映射初始化脚本、默认种子写入、provider 只读 repository adapter、登录 / 会话最小 repository adapter、系统账户管理读写 adapter、分组管理读写 adapter、API Key 管理读写与网关 Key 校验 adapter、授权列表 / options / usage 详情读取 adapter、公共设置读取 adapter、系统 API 限流设置读取 adapter 和系统设置管理读写 adapter；其他 repository adapter 待完成。
-6. 新增 Redis cache / runtime state driver，迁移网关运行态缓存调用点。已完成登录失败窗口、账号并发槽和网关缓存失效版本广播，其他运行态待迁移。
-7. 调整写队列 drain 策略，performance 模式启用最大并发 `100` 和连接池背压。已完成使用记录 Redis Streams 首批队列和 PG 并发 drain 骨架，其他写队列待迁移。
-8. 明确数据切换边界：代码库不提供数据迁移或旧结构迁移实现，只保留当前 schema 初始化与当前路径验证。
-9. 完成压测、故障演练、备份恢复和部署文档。
+2. 抽象 `DatabaseClient` / `SqlDialect`，保持 SQLite 默认路径不变，并接入 PostgreSQL 初始化脚本、schema 映射、默认种子和主要 repository async adapter。
+3. 完成核心管理链路和网关链路的 PostgreSQL adapter：登录 / 会话、系统账户、系统团队、分组、API Key、授权、AI 账户、代理、设置、模型目录、网关 Key 校验、候选账号读取、使用记录、审计 / 操作 / 公开接口 / 运行日志和主要统计读写已纳入 smoke 或 readiness。
+4. 完成 Redis cache / runtime state / Redis Streams 基础 driver 与关键调用点：共享缓存、运行态计数 / 锁、验证码状态、网关缓存失效版本、使用记录、审计日志、操作日志、公开接口日志、运行日志和维护队列均有回归覆盖。
+5. 完成高性能模式测试栈、schema 初始化、远端 PG/Redis smoke、readiness、压测、故障演练和备份恢复验证；生产上线前仍必须在目标机器执行本机安装、配置、数据导出 / 导入演练和维护窗口回归。
+6. 明确数据切换边界：代码库不提供 SQLite -> PostgreSQL 自动迁移、旧 schema 兼容、双读双写或启动期自动迁移；历史数据保留和导入只在上线窗口按当前 schema 离线处理。
+7. 保留 fail-fast 边界：低频管理入口、复杂筛选、长周期运维任务或未验证路径如果尚未覆盖 PostgreSQL，必须显式失败并补专项验证，不能在 performance 模式回退 SQLite。
 
 ## 风险
 
