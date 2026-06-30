@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path'
 
 import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-usage-record-shard-routing-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -30,9 +31,10 @@ const [databaseModule, repositories, usageStatsRepository, usageRecordShards] = 
 
 try {
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
-  const group = repositories.createGroup({ name: '分片写入回归分组', providerCode: 'gpt', providerProtocolProfileId: 'profile_gpt_openai_v1', enabled: true }, access)
+  const group = repositories.createGroup({ name: '分片写入回归分组', providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID, enabled: true }, access)
   const account = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '分片写入回归账户',
     type: 'api_key',
     credentials: {
@@ -99,6 +101,7 @@ try {
 
   const staleShapeAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '过期请求形态窗口回归账户',
     type: 'api_key',
     credentials: {

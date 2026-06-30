@@ -37,6 +37,7 @@ import { useAccountTestModels } from './useAccountTestModels'
 import { waitForAccountTestResult } from './accountTestTaskPolling'
 import { isGatewayTestableAccountProfile } from './accountProviderCapabilities'
 import { hasSingleProviderProfileForAccountSelection } from './accountDerivedState'
+import type { DraftApiKeyTestSnapshot } from './accountDraftApiKeyTestRuntime'
 
 interface UseAccountTestModalOptions {
   accountScopeParams: ComputedRef<{ systemAccountId: string } | undefined>
@@ -44,6 +45,7 @@ interface UseAccountTestModalOptions {
   isManagementView: ComputedRef<boolean>
   loadData: () => Promise<void>
   providers: ComputedRef<ProviderDefinition[]>
+  draftApiKeyTestSnapshot?: { value: DraftApiKeyTestSnapshot | undefined }
   successfulDraftActivationTest?: { value: SuccessfulDraftActivationTest | undefined }
 }
 
@@ -65,6 +67,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   const testResult = ref<AccountTestResult>()
   const draftTestingAccountPayload = ref<AccountDraftTestPayload['account']>()
   const draftTestMode = ref<AccountTestDraftMode>()
+  const draftApiKeyTestSnapshot = options.draftApiKeyTestSnapshot ?? ref<DraftApiKeyTestSnapshot>()
   const successfulDraftActivationTest = options.successfulDraftActivationTest ?? ref<SuccessfulDraftActivationTest>()
   const testForm = reactive<AccountTestForm>({ model: '', clientCompatibility: 'account_default' })
   const testTargetAccountSelection = computed(() => (
@@ -107,6 +110,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     activeSingleTestTask.value = undefined
     draftTestingAccountPayload.value = undefined
     draftTestMode.value = undefined
+    draftApiKeyTestSnapshot.value = undefined
     testResult.value = undefined
     testForm.model = defaultModelForSelection(account)
     testForm.clientCompatibility = 'account_default'
@@ -126,6 +130,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     activeSingleTestTask.value = undefined
     draftTestingAccountPayload.value = draftPayload
     draftTestMode.value = 'create'
+    draftApiKeyTestSnapshot.value = undefined
     successfulDraftActivationTest.value = undefined
     testResult.value = undefined
     testForm.model = defaultModelForSelection(account)
@@ -146,6 +151,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     activeSingleTestTask.value = undefined
     draftTestingAccountPayload.value = draftPayload
     draftTestMode.value = 'saved'
+    draftApiKeyTestSnapshot.value = undefined
     testResult.value = undefined
     testForm.model = defaultModelForSelection(account)
     testForm.clientCompatibility = 'account_default'
@@ -181,6 +187,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     activeSingleTestTask.value = undefined
     draftTestingAccountPayload.value = undefined
     draftTestMode.value = undefined
+    draftApiKeyTestSnapshot.value = undefined
     testResult.value = undefined
     testForm.model = defaultModelForSelection(testableAccounts)
     testForm.clientCompatibility = 'account_default'
@@ -196,6 +203,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     accountTestAbortController = controller
     const startedAt = Date.now()
     const account = testingAccount.value
+    const draftPayload = activeDraftTestPayload(account)
     const activationDraftPayload = activeActivationDraftTestPayload(account)
     try {
       const session = await createAccountTestSession(account)
@@ -218,6 +226,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
         syncDraftActivationTestFromTask(latestTask, activationDraftPayload)
       })
       testResult.value = result
+      syncDraftApiKeyTestSnapshot(draftPayload, result)
       if (result.success) {
         if (activationDraftPayload) {
           successfulDraftActivationTest.value = { taskId: task.id, account: activationDraftPayload }
@@ -236,13 +245,15 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
         return
       }
       console.error(error)
-      testResult.value = failedAccountTestResult({
+      const result = failedAccountTestResult({
         account,
         error,
         model: testForm.model,
         clientCompatibility: 'account_default',
         startedAt
       })
+      testResult.value = result
+      syncDraftApiKeyTestSnapshot(draftPayload, result)
       message.error(`${account.name}: 测试失败`)
       if (activationDraftPayload) {
         successfulDraftActivationTest.value = undefined
@@ -525,6 +536,11 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     }
   }
 
+  function syncDraftApiKeyTestSnapshot(draftPayload: AccountDraftTestPayload['account'] | undefined, result: AccountTestResult): void {
+    if (!draftPayload || draftPayload.type !== 'api_key') return
+    draftApiKeyTestSnapshot.value = { account: draftPayload, result }
+  }
+
   function accountTestTaskScopeParams(account: AccountSummary): ReturnType<typeof accountOperationScopeParams> {
     return draftTestMode.value === 'create' && activeDraftTestPayload(account)
       ? options.accountScopeParams.value
@@ -604,6 +620,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     testResult,
     testRunning,
     testingAccount,
+    draftApiKeyTestSnapshot,
     successfulDraftActivationTest
   }
 }

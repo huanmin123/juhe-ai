@@ -9,7 +9,7 @@ import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fi
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { DEEPSEEK_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
+import { DEEPSEEK_OPENAI_V1_PROFILE_ID, GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-api-key-group-route-cache-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -323,6 +323,7 @@ function seedCrossProviderRoute(upstreamBaseUrl: string): SeededCrossProviderRou
   const gptGroup = repositories.createGroup({
     name: '路由缓存跨供应商 GPT 号池',
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'personal'
   }, access)
   const deepSeekGroup = repositories.createGroup({
@@ -333,6 +334,7 @@ function seedCrossProviderRoute(upstreamBaseUrl: string): SeededCrossProviderRou
   }, access)
   repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '路由缓存跨供应商 GPT 账号',
     type: 'api_key',
     credentials: {
@@ -387,17 +389,20 @@ function seedRoundRobinRoute(upstreamBaseUrl: string): SeededRoundRobinRoute {
   const firstGroup = repositories.createGroup({
     name: '路由缓存轮询 A 号池',
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'personal'
   }, access)
   const secondGroup = repositories.createGroup({
     name: '路由缓存轮询 B 号池',
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'personal'
   }, access)
   const firstUpstreamKey = 'sk-route-cache-round-robin-a'
   const secondUpstreamKey = 'sk-route-cache-round-robin-b'
   repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '路由缓存轮询 A 账号',
     type: 'api_key',
     credentials: {
@@ -411,6 +416,7 @@ function seedRoundRobinRoute(upstreamBaseUrl: string): SeededRoundRobinRoute {
   }, access)
   repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '路由缓存轮询 B 账号',
     type: 'api_key',
     credentials: {
@@ -459,20 +465,24 @@ function seedRoute(upstreamBaseUrl: string): SeededRoute {
   const ownerSourceGroup = repositories.createGroup({
     name: '路由缓存后备授权来源号池',
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'personal'
   }, ownerAccess)
   const primaryGroup = repositories.createGroup({
     name: '路由缓存主 OAuth 号池',
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'personal'
   }, granteeAccess)
   const fallbackGroup = repositories.createGroup({
     name: '路由缓存后备授权号池',
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'personal'
   }, granteeAccess)
   repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '路由缓存主 OAuth 账号',
     type: 'oauth',
     credentials: {
@@ -487,6 +497,7 @@ function seedRoute(upstreamBaseUrl: string): SeededRoute {
   const fallbackUpstreamKey = 'sk-route-cache-fallback'
   const ownerAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '路由缓存后备授权账号',
     type: 'api_key',
     credentials: {

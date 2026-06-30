@@ -144,6 +144,7 @@ export function accountTestSingleOutputLines(options: SingleAccountTestOutputOpt
     lines.push({ text: `request id：${diagnosticParts.requestId}`, tone: 'muted' })
   }
   lines.push(accountTestActualProtocolLine(account, options.result))
+  lines.push(...accountTestApiKeyPoolOutputLines(options.result))
   lines.push({ text: '响应：', tone: 'label' })
   const outputText = formatTestTerminalResult(options.result)
   if (outputText) {
@@ -320,6 +321,42 @@ function accountTestActualProtocolLine(account: AccountSummary, result: AccountT
 
 function accountClientCompatibilityRequestText(value: AccountClientCompatibility): string {
   return value === 'codex_responses' ? 'Codex Responses 请求' : 'OpenAI-compatible 请求'
+}
+
+function accountTestApiKeyPoolOutputLines(result: AccountTestResult): AccountTestOutputLine[] {
+  const pool = result.apiKeyPool
+  if (!pool?.results.length) return []
+  const lines: AccountTestOutputLine[] = [
+    {
+      text: `API Key 池结果：可用 ${pool.successCount}/${pool.total}，已测试 ${pool.tested} 个`,
+      tone: pool.failedCount > 0 ? 'warning' : 'success'
+    }
+  ]
+  for (const item of pool.results) {
+    const statusText = item.success ? '通过' : '失败'
+    const statusCodeText = typeof item.statusCode === 'number' ? `，HTTP ${item.statusCode}` : ''
+    const durationText = item.durationMs !== undefined ? `，耗时 ${formatAccountTestDuration(item.durationMs)}` : ''
+    const errorCodeText = item.errorCode ? `，错误码 ${item.errorCode}` : ''
+    const messageText = item.message ? `，${item.message}` : ''
+    lines.push({
+      text: `API Key ${accountTestApiKeyPreview(item)} 测试结果：${statusText}${statusCodeText}${durationText}${errorCodeText}${messageText}`,
+      tone: item.success ? 'success' : 'error'
+    })
+  }
+  return lines
+}
+
+function accountTestApiKeyPreview(item: NonNullable<AccountTestResult['apiKeyPool']>['results'][number]): string {
+  const prefix = previewPart(item.keyPrefix)
+  const suffix = previewPart(item.keySuffix)
+  if (prefix && suffix) return `${prefix}...${suffix}`
+  if (prefix) return `${prefix}...`
+  if (suffix) return `...${suffix}`
+  return `#${item.keyIndex + 1}`
+}
+
+function previewPart(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
 }
 
 export function accountTestBatchItemJson(item: AccountBatchTestItem): string {

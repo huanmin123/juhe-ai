@@ -159,7 +159,7 @@ try {
   assert.equal(canceledRunning.status, 'canceled', 'session 取消应中断 running 任务')
   assert.equal(canceledQueued.status, 'canceled', 'session 取消应剔除 queued 任务')
   assert.equal(mockState.hitsByKey.get('cancel-queued') ?? 0, 0, '被 session 取消的 queued 任务不应再命中 mock AI')
-  assert((mockState.abortedByKey.get('cancel-running') ?? 0) >= 1, 'running 任务取消应 abort 上游请求')
+  await waitForCondition(5_000, () => (mockState.abortedByKey.get('cancel-running') ?? 0) >= 1, '等待 running 任务取消 abort 上游请求')
 
   const staleSession = await createTestSession(context)
   const staleAccount = await createMockAccount(context, '心跳过期账号', 'sk-stale-session')

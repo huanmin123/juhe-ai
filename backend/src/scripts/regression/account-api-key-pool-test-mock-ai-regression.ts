@@ -116,6 +116,7 @@ try {
   assert.equal(savedFinished.result?.apiKeyPool?.total, 3, '已保存账户测试应返回 Key 池总数')
   assert.equal(savedFinished.result?.apiKeyPool?.successCount, 1, '已保存账户测试应统计 1 个可用 Key')
   assert.equal(savedFinished.result?.apiKeyPool?.failedCount, 2, '已保存账户测试应统计 2 个不可用 Key')
+  assertKeyPoolPreview(savedFinished.result, 1, 'sk-p', 'good', '已保存账户可用 Key 应返回安全预览')
   const savedDetail = await waitForAccountRuntimeDetails(context, savedAccount.id, 3)
   assertKeyRuntime(savedDetail, 'good', 'active', '已保存账户可用 Key 应写入 active 运行态')
   assertKeyRuntime(savedDetail, 'ad-a', 'temporary_unavailable', '已保存账户坏 Key A 应进入后台恢复')
@@ -132,6 +133,7 @@ try {
   assert.equal(draftFinished.status, 'success', '创建草稿 Key 池只要至少一个 Key 可用就应测试成功')
   assert.equal(draftFinished.result?.apiKeyPool?.successCount, 1, '创建草稿测试应统计 1 个可用 Key')
   assert.equal(draftFinished.result?.apiKeyPool?.failedCount, 2, '创建草稿测试应统计 2 个不可用 Key')
+  assertKeyPoolPreview(draftFinished.result, 1, 'sk-p', 'good', '创建草稿可用 Key 应返回安全预览')
 
   const createdAccount = await postEnvelope<AccountSummary>(backendBaseUrl, '/accounts', cookie, {
     ...draftAccount,
@@ -248,6 +250,13 @@ function assertKeyRuntime(account: AccountSummary, suffix: string, status: strin
   const detail = account.apiKeyRuntimeDetails?.find((item) => item.keySuffix === suffix)
   assert(detail, `${message}：缺少尾号 ${suffix} 的 Key 运行态`)
   assert.equal(detail.status, status, message)
+}
+
+function assertKeyPoolPreview(result: AccountTestResult | undefined, keyIndex: number, prefix: string, suffix: string, message: string): void {
+  const detail = result?.apiKeyPool?.results.find((item) => item.keyIndex === keyIndex)
+  assert(detail, `${message}：缺少序号 ${keyIndex} 的 Key 测试结果`)
+  assert.equal(detail.keyPrefix, prefix, `${message}：前缀不匹配`)
+  assert.equal(detail.keySuffix, suffix, `${message}：后缀不匹配`)
 }
 
 function startBackendServer(port: number): ChildProcess {

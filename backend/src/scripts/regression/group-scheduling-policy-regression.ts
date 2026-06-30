@@ -127,6 +127,7 @@ try {
     () => repositories.createGroup({
       name: '高并发调度策略旧字段回归分组',
       providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       groupType: 'high_concurrency',
       schedulingPolicy: {
         defaultSoftConcurrency: 3,
@@ -140,6 +141,7 @@ try {
   const highConcurrencyGroup = repositories.createGroup({
     name: '高并发调度策略回归分组',
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'high_concurrency',
     schedulingPolicy: {
       defaultSoftConcurrency: 3,
@@ -229,6 +231,7 @@ try {
 
   const account = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '高并发绑定单账户排队阈值账户',
     type: 'api_key',
     credentials: {

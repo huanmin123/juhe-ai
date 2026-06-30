@@ -560,7 +560,8 @@ assert.deepEqual(anthropicModelPricingList.slice(0, 25).map((item) => item.model
   'opusplan',
   'sonnet',
   'sonnet[1m]',
-  'haiku'
+  'haiku',
+  'antigravity-claude-opus-4-6-thinking'
 ].slice(0, 25), 'Anthropic 价格目录应按官方当前模型从新到旧排序，隐藏兼容模型排在可见模型后')
 const anthropicPricingById = new Map(anthropicModelPricingList.map((item) => [item.model, item]))
 for (const id of [
@@ -1014,7 +1015,8 @@ assert.doesNotMatch(gatewayResponseFinalizationSource, /applyAnthropicStreamUsag
 assert.match(gatewayResponseFinalizationSource, /gateway_stream_usage_estimated/)
 assert.match(gatewayResponseFinalizationSource, /responseSemanticText\s*=\s*completeBodyText/, '非流式完整 JSON 响应语义文本不能依赖成功审计正文捕获开关')
 assert.match(gatewayResponseFinalizationSource, /responseBodyText:\s*responseBodyText\s*\?\?\s*responseSemanticText/, '非流式 usage fallback 应读取完整检查窗口文本')
-assert.match(gatewayResponseFinalizationSource, /errorMessage:\s*'上游响应体为空'/)
+assert.match(gatewayResponseFinalizationSource, /const errorMessage\s*=\s*'上游响应体为空'/)
+assert.match(gatewayResponseFinalizationSource, /recordCompletedUpstreamAttempt[\s\S]+errorMessage\n\s*\}/)
 
 const gatewayResponseStreamSource = readSource('modules/gateway/response/stream.ts')
 assert.match(gatewayResponseStreamSource, /requireGatewayProtocolDriverForResponseProtocol/)
@@ -1158,7 +1160,7 @@ const accountErrorPolicySource = readSource('modules/gateway/policy/account-erro
 assert.match(accountErrorPolicySource, /parseGatewayProtocolErrorPayload/)
 assert.doesNotMatch(accountErrorPolicySource, /JSON\.parse/)
 assert.match(accountErrorPolicySource, /accountErrorPolicyUpstreamSummary/)
-assert.match(accountErrorPolicySource, /accountErrorPolicyReason\(statusCode,\s*decision,\s*upstreamSummary\)/)
+assert.match(accountErrorPolicySource, /genericUpstreamResponseFailureReason\(statusCode,\s*upstreamSummary\)/)
 
 const backgroundJobsSource = readSource('modules/background/background-jobs.ts')
 const backgroundSettingsNumberSource = sourceBetween(backgroundJobsSource, 'function settingsNumber', 'async function databaseFileBytes')

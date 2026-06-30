@@ -812,6 +812,7 @@ async function runAccountApiKeyPoolEntryTest(
         durationMs: Date.now() - startedAt
       }),
       keyIndex: entry.index,
+      keyPrefix: keyPrefixForDisplay(entry.key),
       keySuffix: keySuffixForDisplay(entry.key),
       success: false,
       message: error instanceof Error ? error.message : 'API Key 测试失败',
@@ -828,6 +829,7 @@ function accountApiKeyPoolEntryTestResult(
     entry,
     result,
     keyIndex: entry.index,
+    keyPrefix: keyPrefixForDisplay(entry.key),
     keySuffix: keySuffixForDisplay(entry.key),
     success: result.success,
     statusCode: result.statusCode,
@@ -938,6 +940,11 @@ function accountApiKeyPoolTestMessage(
     return `API Key 池测试未完成：0/${pool.total} 个 Key 可用`
   }
   return `API Key 池测试未通过：0/${pool.total} 个 Key 可用`
+}
+
+function keyPrefixForDisplay(key: string): string | undefined {
+  const text = key.trim()
+  return text ? text.slice(0, 4) : undefined
 }
 
 function keySuffixForDisplay(key: string): string | undefined {

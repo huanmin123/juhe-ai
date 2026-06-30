@@ -6,11 +6,13 @@ import { join, resolve } from 'node:path'
 
 import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import { backendRoot, runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-usage-stats-rebuild-shard-cursor-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 const databasePath = join(tempRoot, 'business.sqlite3')
 const datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+const usageCatalogDatabasePath = join(tempRoot, 'usage-catalog.sqlite3')
 const statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 const usageShardRoot = join(tempRoot, 'usage-shards')
 
@@ -34,9 +36,10 @@ const [databaseModule, repositories, usageStatsRepository] = await Promise.all([
 
 try {
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
-  const group = repositories.createGroup({ name: '统计重建分片游标回归分组', providerCode: 'gpt', providerProtocolProfileId: 'profile_gpt_openai_v1', enabled: true }, access)
+  const group = repositories.createGroup({ name: '统计重建分片游标回归分组', providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID, enabled: true }, access)
   const account = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '统计重建分片游标回归账户',
     type: 'api_key',
     credentials: {
@@ -78,16 +81,20 @@ try {
     '--import',
     'tsx',
     'src/scripts/maintenance/rebuild-usage-stats.ts',
-    '1000'
+    '1000',
+    '--confirm-offline'
   ], {
     cwd: backendRoot,
     env: {
       ...process.env,
       JUHE_AI_DATABASE_PATH: databasePath,
       JUHE_AI_DATASET_DATABASE_PATH: datasetDatabasePath,
+      JUHE_AI_USAGE_CATALOG_DATABASE_PATH: usageCatalogDatabasePath,
       JUHE_AI_STATS_DATABASE_PATH: statsDatabasePath,
       JUHE_AI_USAGE_SHARD_ROOT: usageShardRoot,
       JUHE_AI_USAGE_SHARD_COUNT: '4',
+      JUHE_AI_PROCESS_ROLE: 'worker',
+      JUHE_AI_WORKER_ROLE: 'stats-worker',
       JUHE_AI_LOG_CONSOLE_ENABLED: 'false',
       JUHE_AI_LOG_FILE_ENABLED: 'false'
     },

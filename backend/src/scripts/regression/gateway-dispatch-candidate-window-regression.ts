@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 import type { EligibleOpenAIGroupAccountSelection, OpenAIGroupAccountSelectionRow } from '../../storage/openai-account-selector.types.js'
 
@@ -37,6 +38,7 @@ try {
   const group = repositories.createGroup({
     name: '调度候选窗口回归分组',
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   const allowedSchedule = {
@@ -57,6 +59,7 @@ try {
   for (let index = 0; index < dispatchCandidateLimit + 64; index += 1) {
     const account = repositories.createAccount({
       providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: `调度窗口普通账号 ${String(index).padStart(3, '0')}`,
       type: 'api_key',
       credentials: {
@@ -74,6 +77,7 @@ try {
 
   const cooledAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '调度窗口冷却中账号',
     type: 'api_key',
     credentials: {
@@ -86,6 +90,7 @@ try {
   }, access)
   const scheduledAllowedAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '调度窗口允许计划账号',
     type: 'api_key',
     credentials: {
@@ -99,6 +104,7 @@ try {
   }, access)
   const scheduledDeniedAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '调度窗口停用计划账号',
     type: 'api_key',
     credentials: {
@@ -177,12 +183,14 @@ try {
     const refillGroup = repositories.createGroup({
       name: '调度候选补齐回归分组',
       providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       enabled: true
     }, access)
     const brokenAccountIds: string[] = []
     for (let index = 0; index < dispatchCandidateLimit; index += 1) {
       const account = repositories.createAccount({
         providerCode: 'gpt',
+        providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
         name: `调度窗口损坏凭据账号 ${String(index).padStart(3, '0')}`,
         type: 'api_key',
         credentials: {
@@ -199,6 +207,7 @@ try {
     for (let index = 0; index < 8; index += 1) {
       const account = repositories.createAccount({
         providerCode: 'gpt',
+        providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
         name: `调度窗口补齐可用账号 ${String(index).padStart(3, '0')}`,
         type: 'api_key',
         credentials: {
@@ -349,11 +358,13 @@ function assertModelAwareCandidateWindowCanPullLateDeterministicAccount(
   const group = repositories.createGroup({
     name: '模型感知候选窗口回归分组',
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   for (let index = 0; index < dispatchCandidateScanLimit + 8; index += 1) {
     repositories.createAccount({
       providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: `模型窗口不匹配账号 ${String(index).padStart(3, '0')}`,
       type: 'api_key',
       credentials: {
@@ -368,6 +379,7 @@ function assertModelAwareCandidateWindowCanPullLateDeterministicAccount(
   }
   const deterministicAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '模型窗口显式命中账号',
     type: 'api_key',
     credentials: {

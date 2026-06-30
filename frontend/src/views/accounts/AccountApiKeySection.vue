@@ -100,6 +100,7 @@ import { normalizedAccountApiKeys } from './accountCredentials'
 
 const props = defineProps<{
   apiKeyRuntimeDetails?: AccountApiKeyRuntimeDetail[]
+  apiKeyTestDetails?: AccountApiKeyRuntimeDetail[]
   baseUrlPlaceholder: string
   editing: boolean
   form: AccountFormModel
@@ -113,13 +114,15 @@ const showApiKeyStrategy = computed(() => filledApiKeyCount.value > 1)
 const showWeightInputs = computed(() => showApiKeyStrategy.value && props.form.apiKeyStrategy === 'weighted_round_robin')
 const showBatchDeleteApiKeys = computed(() => props.form.apiKeys.some((value) => value.trim()))
 const showApiKeyRuntimeDetails = computed(() => (
-  props.editing
-  && filledApiKeyCount.value > 1
-  && Boolean(props.apiKeyRuntimeDetails?.length)
+  filledApiKeyCount.value > 0
+  && (
+    Boolean(props.apiKeyTestDetails?.length)
+    || (props.editing && filledApiKeyCount.value > 1 && Boolean(props.apiKeyRuntimeDetails?.length))
+  )
 ))
 const apiKeyRuntimeDetailRows = computed<AccountApiKeyRuntimeDetail[]>(() => {
   if (!showApiKeyRuntimeDetails.value) return []
-  return [...(props.apiKeyRuntimeDetails ?? [])].sort((left, right) => left.keyIndex - right.keyIndex)
+  return [...(props.apiKeyTestDetails?.length ? props.apiKeyTestDetails : props.apiKeyRuntimeDetails ?? [])].sort((left, right) => left.keyIndex - right.keyIndex)
 })
 const apiKeyRuntimeDetailByIndex = computed(() => {
   const output = new Map<number, AccountApiKeyRuntimeDetail>()

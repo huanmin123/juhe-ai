@@ -141,6 +141,7 @@
       v-model:error-policy-rules="accountErrorPolicyRules"
       v-model:response-inspection-rules="accountResponseInspectionRules"
       :account-type-choices="accountTypeChoices"
+      :api-key-test-details="apiKeyTestDetails"
       :authorized-editing="editingAuthorizedAccount"
       :auth-loading="authLoading"
       :auth-result="authResult"
@@ -271,6 +272,7 @@ import { useAccountReauthorize } from './useAccountReauthorize'
 import { useAccountRemovalActions } from './useAccountRemovalActions'
 import { useAccountSelectionActions } from './useAccountSelectionActions'
 import { useAccountTestModal, type SuccessfulDraftActivationTest } from './useAccountTestModal'
+import type { DraftApiKeyTestSnapshot } from './accountDraftApiKeyTestRuntime'
 import { useAccountTrafficMigration } from './useAccountTrafficMigration'
 
 const AccountImportModal = defineAsyncComponent(() => import('./AccountImportModal.vue'))
@@ -425,6 +427,7 @@ const {
   systemAccounts
 })
 const successfulDraftActivationTest = ref<SuccessfulDraftActivationTest>()
+const draftApiKeyTestSnapshot = ref<DraftApiKeyTestSnapshot>()
 const {
   groups,
   handleDropdown: handleGroupOptionsDropdown,
@@ -440,6 +443,7 @@ const {
 const {
   accountErrorPolicyRules,
   accountResponseInspectionRules,
+  apiKeyTestDetails,
   accountTagOptions,
   accountTagOptionsLoading,
   accountTypeChoices,
@@ -493,6 +497,7 @@ const {
   loadGroupOptions,
   loadData,
   providers,
+  draftApiKeyTestSnapshot,
   systemAccountSelection: computed(() => filters.systemAccount),
   systemAccounts,
   successfulDraftActivationTest
@@ -566,6 +571,7 @@ const {
   isManagementView,
   loadData,
   providers: availableProviders,
+  draftApiKeyTestSnapshot,
   successfulDraftActivationTest
 })
 const accountEditTestButtonDisabled = computed(() => modalConfirmLoading.value || testRunning.value || !hasAccountType.value)

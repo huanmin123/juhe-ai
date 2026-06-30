@@ -43,6 +43,7 @@
       <AccountApiKeySection
         v-if="isApiKeyForm && !authorizedEditing"
         :api-key-runtime-details="accountDetail?.apiKeyRuntimeDetails"
+        :api-key-test-details="apiKeyTestDetails"
         :base-url-placeholder="baseUrlPlaceholder"
         :editing="editing"
         :form="form"
@@ -158,7 +159,7 @@
 import { computed, ref, watch } from 'vue'
 
 import { formatDateTime } from '@/shared/formatters'
-import type { AccountSummary, AccountTagSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderModelApiProtocol, ProviderProtocolProfileDefinition } from '@/types/domain'
+import type { AccountApiKeyRuntimeDetail, AccountSummary, AccountTagSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderModelApiProtocol, ProviderProtocolProfileDefinition } from '@/types/domain'
 import AccountAvailabilityScheduleSection from './AccountAvailabilityScheduleSection.vue'
 import AccountApiKeySection from './AccountApiKeySection.vue'
 import AccountBasicInfoSection from './AccountBasicInfoSection.vue'
@@ -193,6 +194,7 @@ const advancedActiveKeys = ref<string[]>([])
 const props = withDefaults(defineProps<{
   accountTypeChoices: AccountTypeChoice[]
   accountDetail?: AccountSummary
+  apiKeyTestDetails?: AccountApiKeyRuntimeDetail[]
   authorizedEditing: boolean
   authLoading: boolean
   authResult?: OpenAIAuthURLResult

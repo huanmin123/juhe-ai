@@ -402,6 +402,7 @@ export interface AccountTestApiKeyPoolResult {
 
 export interface AccountTestApiKeyPoolItemResult {
   keyIndex: number
+  keyPrefix?: string
   keySuffix?: string
   success: boolean
   statusCode?: number

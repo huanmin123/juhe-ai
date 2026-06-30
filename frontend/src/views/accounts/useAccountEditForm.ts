@@ -1,10 +1,12 @@
 import { message } from '@/lib/antd'
 import { computed, nextTick, reactive, ref, watch, type ComputedRef } from 'vue'
 
+import type { AccountDraftTestAccountPayload } from '@/api/client'
 import { useProviderModelSelectOptions } from '@/composables/useProviderModelSelectOptions'
 import { rememberGroupLabel, type GroupSelection } from '@/shared/groupLabelCache'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import type {
+  AccountApiKeyRuntimeDetail,
   AccountSummary,
   AccountType,
   GroupOptionSummary,
@@ -44,6 +46,11 @@ import type { AccountSavePayload } from './accountSavePayload'
 import {
   accountCreatePayloadWithActivationTest as applyActivationTestToCreatePayload
 } from './accountEditFormPayload'
+import { buildAccountDraftTestPayload } from './accountDraftTestPayload'
+import {
+  draftApiKeyTestRuntimeDetailsForPayload,
+  type DraftApiKeyTestSnapshot
+} from './accountDraftApiKeyTestRuntime'
 import {
   AccountEditFormLoadError,
   buildAccountCloneFormLoad,
@@ -71,6 +78,7 @@ interface UseAccountEditFormOptions {
   loadData: () => Promise<void>
   focusCreatedAccount?: (account: AccountSummary) => void
   providers: ReadonlyValue<ProviderDefinition[]>
+  draftApiKeyTestSnapshot?: { value: DraftApiKeyTestSnapshot | undefined }
   systemAccountSelection?: ReadonlyValue<PrincipalSelection | undefined>
   systemAccounts: ReadonlyValue<SystemAccountPrincipalSummary[]>
   successfulDraftActivationTest?: { value: SuccessfulDraftActivationTest | undefined }
@@ -229,6 +237,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     disabled: saving.value || !hasAccountType.value || (!editingId.value && isOAuthForm.value && !isOpenAIOAuthForm.value)
   }))
   const selectedAccountTypeTitle = computed(() => hasAccountType.value ? selectedAccountTypeChoice.value?.label ?? accountTypeTitle(form.providerCode, form.type) : '')
+  const apiKeyTestDetails = computed<AccountApiKeyRuntimeDetail[] | undefined>(() => {
+    if (!modalOpen.value || !isApiKeyForm.value || editingAuthorizedAccount.value) return undefined
+    return draftApiKeyTestRuntimeDetailsForPayload(options.draftApiKeyTestSnapshot?.value, currentDraftTestPayload())
+  })
 
   function defaultForm(providerCode = '', type: AccountType = '', providerProtocolProfileId = ''): AccountFormModel {
     return defaultAccountForm(providerCode, type, options.providers.value, providerProtocolProfileId)
@@ -315,6 +327,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   function handleModalCancel() {
     modalOpen.value = false
     authResult.value = undefined
+    clearDraftApiKeyTestSnapshot()
   }
 
   function selectProvider(providerCode: string) {
@@ -514,6 +527,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   return {
     accountErrorPolicyRules,
     accountResponseInspectionRules,
+    apiKeyTestDetails,
     accountTagOptions,
     accountTagOptionsLoading,
     accountTypeChoices,
@@ -619,6 +633,33 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   function clearSuccessfulDraftActivationTest(): void {
     if (options.successfulDraftActivationTest) {
       options.successfulDraftActivationTest.value = undefined
+    }
+    clearDraftApiKeyTestSnapshot()
+  }
+
+  function clearDraftApiKeyTestSnapshot(): void {
+    if (options.draftApiKeyTestSnapshot) {
+      options.draftApiKeyTestSnapshot.value = undefined
+    }
+  }
+
+  function currentDraftTestPayload(): AccountDraftTestAccountPayload | undefined {
+    try {
+      return buildAccountDraftTestPayload({
+        accounts: options.accounts.value,
+        accountDetail: editingAccountDetail.value,
+        editingId: editingId.value,
+        form,
+        errorPolicyRules: accountErrorPolicyRules.value,
+        responseInspectionRules: accountResponseInspectionRules.value,
+        mappingAnthropicSourceModelOptions: mappingAnthropicSourceModelOptions.value,
+        mappingGeminiSourceModelOptions: mappingGeminiSourceModelOptions.value,
+        mappingSourceModelOptions: mappingSourceModelOptions.value,
+        mappingUpstreamModelOptions: providerModelOptions.value,
+        providers: availableProviders.value
+      })
+    } catch {
+      return undefined
     }
   }
 }

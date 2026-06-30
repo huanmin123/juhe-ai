@@ -1,4 +1,6 @@
+import type { AccountDraftTestAccountPayload } from '@/api/client'
 import type { AccountSummary, AccountTestResult, AccountTestTask } from '@/types/domain'
+import { draftApiKeyTestRuntimeDetailsForPayload } from '../../views/accounts/accountDraftApiKeyTestRuntime'
 import {
   accountTestBatchCounts,
   accountTestBatchItemJson,
@@ -46,7 +48,35 @@ const successResult = resultFixture(apiKeyAccount, {
   traceId: 'trace_test_display',
   durationMs: 1234,
   firstTokenMs: 320,
-  testClientCompatibility: 'openai_standard'
+  testClientCompatibility: 'openai_standard',
+  apiKeyPool: {
+    total: 2,
+    tested: 2,
+    successCount: 1,
+    failedCount: 1,
+    requiredSuccessCount: 1,
+    results: [
+      {
+        keyIndex: 0,
+        keyPrefix: 'sk-a',
+        keySuffix: 'good',
+        success: true,
+        statusCode: 200,
+        message: 'OpenAI Responses 测试通过',
+        durationMs: 900
+      },
+      {
+        keyIndex: 1,
+        keyPrefix: 'sk-b',
+        keySuffix: 'fail',
+        success: false,
+        statusCode: 401,
+        errorCode: 'invalid_api_key',
+        message: 'invalid api key',
+        durationMs: 120
+      }
+    ]
+  }
 })
 const successLines = accountTestSingleOutputLines({
   account: apiKeyAccount,
@@ -59,11 +89,25 @@ const successLines = accountTestSingleOutputLines({
 })
 assertLineIncludes(successLines, '开始测试账号：API Key 测试账户', '单账号输出应展示账户名')
 assertLineIncludes(successLines, '供应商：OpenAI', '单账号输出应展示供应商')
-assertLineIncludes(successLines, '测试请求形态：跟随账号能力（OpenAI-compatible）', 'API Key 默认请求形态应展示跟随账号能力')
+assertLineIncludes(successLines, '测试请求形态：OpenAI-compatible 请求', 'API Key 默认请求形态应展示当前请求形态')
 assertLineIncludes(successLines, 'traceId：trace_test_display', '成功输出应展示 traceId')
 assertLineIncludes(successLines, '实际请求形态：OpenAI-compatible 请求', '成功输出应展示实际请求形态')
+assertLineIncludes(successLines, 'API Key 池结果：可用 1/2，已测试 2 个', 'Key 池输出应展示汇总')
+assertLineIncludes(successLines, 'API Key sk-a...good 测试结果：通过，HTTP 200，耗时 0.90s', 'Key 池输出应展示成功 Key 的前后缀和结果')
+assertLineIncludes(successLines, 'API Key sk-b...fail 测试结果：失败，HTTP 401，耗时 0.12s，错误码 invalid_api_key，invalid api key', 'Key 池输出应展示失败 Key 的前后缀和结果')
 assertLineIncludes(successLines, 'pong', '成功输出应展示返回内容')
 assertLineIncludes(successLines, '✓ 测试完成！  总耗时：1.2s，首 token：0.32s', '成功输出应展示总耗时和首 token')
+const draftTestPayload = draftApiKeyPayload(['sk-a-draft-good', 'sk-b-draft-fail'])
+const draftRuntimeDetails = draftApiKeyTestRuntimeDetailsForPayload({ account: draftTestPayload, result: successResult }, draftTestPayload)
+assertEqual(draftRuntimeDetails?.length, 2, '草稿 Key 池测试结果应映射到每个输入 Key')
+assertEqual(draftRuntimeDetails?.[0]?.status, 'active', '草稿测试成功 Key 应展示可用状态')
+assertEqual(draftRuntimeDetails?.[1]?.status, 'temporary_unavailable', '草稿测试失败 Key 应展示临时避让状态')
+assertEqual(draftRuntimeDetails?.[1]?.lastErrorMessage, 'invalid api key', '草稿测试失败 Key 应保留 tooltip 错误消息')
+const changedDraftRuntimeDetails = draftApiKeyTestRuntimeDetailsForPayload(
+  { account: draftTestPayload, result: successResult },
+  draftApiKeyPayload(['sk-a-draft-good', 'sk-c-draft-new'])
+)
+assertEqual(changedDraftRuntimeDetails, undefined, '草稿 Key 改动后不应继续展示旧测试状态')
 
 const runningTask = taskFixture(oauthAccount, {
   status: 'running',
@@ -258,6 +302,26 @@ function emptyUsage() {
 function assertLineIncludes(lines: Array<{ text: string }>, expected: string, message: string): void {
   if (!lines.some((line) => line.text.includes(expected))) {
     throw new Error(`${message}，未找到 ${expected}；实际输出：${lines.map((line) => line.text).join(' | ')}`)
+  }
+}
+
+function draftApiKeyPayload(apiKeys: string[]): AccountDraftTestAccountPayload {
+  return {
+    providerCode: 'openai',
+    providerProtocolProfileId: 'profile_openai_openai_v1',
+    name: '草稿 Key 池账户',
+    type: 'api_key',
+    credentials: {
+      api_key: apiKeys[0],
+      api_keys: apiKeys,
+      api_key_strategy: 'round_robin',
+      base_url: 'https://api.test/v1'
+    },
+    concurrencyLimit: 1,
+    priority: 0,
+    supportedModels: ['gpt-5.1'],
+    modelMappings: [],
+    groupId: 'group_test_display'
   }
 }
 
