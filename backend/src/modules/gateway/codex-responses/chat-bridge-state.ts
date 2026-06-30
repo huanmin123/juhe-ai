@@ -7,6 +7,7 @@ import type { Request, Response } from 'express'
 
 import { runtimeConfig } from '../../../config/runtime.js'
 import type { GroupUsageAccessMetadata } from '../../../storage/repositories.js'
+import { OPENAI_RESPONSES_FAMILY } from '../../../domain/provider-protocol.js'
 import type {
   CodexContextCompactStateIndex,
   CodexContextPayloadReference,
@@ -17,8 +18,13 @@ import { errorLogFields, logger } from '../../../shared/logger.js'
 import { getRequestLogger } from '../../../shared/request-context.js'
 import { requestDbService } from '../../db-service/db-service-ipc.js'
 import type { AuditCaptureContext } from '../audit/capture.service.js'
+import {
+  isOpenAIResponsesToChatCompletionsModelMapping,
+  resolveOpenAIAccountModelMapping
+} from '../protocols/openai-v1/model-mapping.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import { splitPathAndQuery } from '../protocols/openai-v1/route-helpers.js'
+import { requestModel, requestStream } from '../request/metadata.js'
 import { parseGatewayJsonBodyInWorker } from '../request/json-parser.js'
 import {
   getGatewayRequestBodyState,
@@ -30,7 +36,6 @@ import { sendGatewayFailureResponse } from '../response/failure-response.js'
 import { gatewayErrorPayload } from '../response/responses.js'
 import type { GatewayFailureUsageContext } from '../usage/records.js'
 import type { ClientCompatibilityCapability } from '../../../domain/types.js'
-import { isCodexResponsesChatBridgeRequest } from '../../providers/drivers/_shared/codex-responses-chat-bridge.js'
 
 type JsonRecord = Record<string, unknown>
 type CodexContextRestoreFailureOutcome = 'not_found' | 'expired' | 'boundary_mismatch' | 'chain_too_deep' | 'chain_broken'
@@ -529,6 +534,7 @@ function isChatOnlyCodexResponsesBridgeStateRequest(
   accounts: readonly UpstreamAccount[]
 ): boolean {
   return isOpenAIResponsesPostRequest(req)
+    && requestStream(req)
     && hasCodexResponsesChatBridgeRuntimeAccount(req, accounts, requestClientCompatibility)
 }
 
@@ -537,11 +543,13 @@ export function hasCodexResponsesChatBridgeRuntimeAccount(
   accounts: readonly UpstreamAccount[],
   requestClientCompatibility: ClientCompatibilityCapability
 ): boolean {
+  const model = requestModel(req)
   return accounts.some((account) => {
-    return isCodexResponsesChatBridgeRequest(req, {
-      enabled: account.clientCompatibility === 'codex_responses',
-      requestClientCompatibility
-    })
+    const explicitMappingBridge = isOpenAIResponsesToChatCompletionsModelMapping(
+      resolveOpenAIAccountModelMapping(account, model, OPENAI_RESPONSES_FAMILY)
+    )
+    return explicitMappingBridge
+      || (account.clientCompatibility === 'codex_responses' && requestClientCompatibility === 'codex_responses')
   })
 }
 

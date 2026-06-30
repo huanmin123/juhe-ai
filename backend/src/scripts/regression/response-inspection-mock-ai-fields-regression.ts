@@ -8,7 +8,11 @@ import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fi
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { OPENAI_COMPATIBLE_PROVIDER_CODE, OPENAI_PROTOCOL_CODE } from '../../domain/provider-protocol.js'
+import {
+  OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
+  OPENAI_COMPATIBLE_PROVIDER_CODE,
+  OPENAI_PROTOCOL_CODE
+} from '../../domain/provider-protocol.js'
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
 import { logger } from '../../shared/logger.js'
 import type { ResponseInspectionPolicyMatch } from '../../storage/response-inspection-policy.repository.js'
@@ -95,13 +99,13 @@ const fieldScenarios: FieldScenario[] = [
     name: 'errorCodes',
     transport: 'json',
     expected: 'retry',
-    buildMatch: (scenarioId) => ({ errorCodes: [markerFor(scenarioId)] })
+    buildMatch: (scenarioId) => ({ clientProfiles: ['generic_openai'], errorCodes: [markerFor(scenarioId)] })
   },
   {
     name: 'errorTypes',
     transport: 'json',
     expected: 'retry',
-    buildMatch: (scenarioId) => ({ errorTypes: [markerFor(scenarioId)] })
+    buildMatch: (scenarioId) => ({ clientProfiles: ['generic_openai'], errorTypes: [markerFor(scenarioId)] })
   },
   {
     name: 'errorMessageIncludes',
@@ -198,10 +202,12 @@ async function runFieldScenario(
   const group = repositories.createGroup({
     name: `mock ai ${scenarioId}`,
     providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+    providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   repositories.createAccount({
     providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+    providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
     name: `mock ai polluted ${scenarioId}`,
     type: 'api_key',
     credentials: {
@@ -227,6 +233,7 @@ async function runFieldScenario(
   }, access)
   repositories.createAccount({
     providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+    providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
     name: `mock ai clean ${scenarioId}`,
     type: 'api_key',
     credentials: {

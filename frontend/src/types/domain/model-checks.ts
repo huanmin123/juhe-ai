@@ -1,5 +1,5 @@
 export type ModelCheckTargetType = 'account'
-export type ModelCheckModel = 'gpt-5.5' | 'gpt-5.4'
+export type ModelCheckModel = string
 export type ModelCheckProfile = 'full'
 export type ModelCheckLevel = 'high_confidence' | 'likely' | 'uncertain' | 'suspicious' | 'unavailable'
 export type ModelCheckStatus = 'running' | 'completed' | 'failed' | 'canceled'

@@ -1,5 +1,5 @@
 import type { ComputedRef } from 'vue'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 
 import { message } from '@/lib/antd'
 import {
@@ -12,7 +12,11 @@ import {
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type { AccountOptionSummary, ModelCheckRunPayload } from '@/types/domain'
-import { canSelectModelCheckAccount } from './modelCheckProviderCapabilities'
+import {
+  canSelectModelCheckAccount,
+  canSelectTrustedModelCheckAccount,
+  type ModelCheckAccountProfile
+} from './modelCheckProviderCapabilities'
 
 type AccountSelectOption = { label: string; value: string }
 type SelectValue = string | string[] | undefined
@@ -41,6 +45,7 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
   const targetOptions = ref<AccountSelectOption[]>([])
   const comparisonOptions = ref<AccountSelectOption[]>([])
   const historyTargetOptions = ref<AccountSelectOption[]>([])
+  const accountProfilesById = ref<Record<string, ModelCheckAccountProfile>>({})
   const targetOptionsCache = createShortLivedQueryCache<AccountSelectOption[]>({ ttlMs: 10_000 })
   const comparisonOptionsCache = createShortLivedQueryCache<AccountSelectOption[]>({ ttlMs: 10_000 })
   const historyTargetOptionsCache = createShortLivedQueryCache<AccountSelectOption[]>({ ttlMs: 10_000 })
@@ -50,6 +55,8 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
   let targetOptionsRequestId = 0
   let comparisonOptionsRequestId = 0
   let historyTargetOptionsRequestId = 0
+  const selectedTargetAccountProfile = computed(() => accountProfilesById.value[input.form.targetId])
+  const selectedComparisonAccountProfile = computed(() => accountProfilesById.value[input.form.trustedComparisonAccountId ?? ''])
 
   async function loadTargetOptions(keyword = '') {
     const normalizedKeyword = keyword.trim()
@@ -71,6 +78,7 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
         schedulable: 'enabled',
         limit: 50
       })
+      rememberAccountProfiles(accounts)
       const nextOptions = accounts
         .filter((account) => canSelectModelCheckAccount(account))
         .map(accountTargetOption)
@@ -91,7 +99,7 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
   async function loadComparisonOptions(keyword = '') {
     const normalizedKeyword = keyword.trim()
     const systemAccountId = input.modelCheckScopeParams.value?.systemAccountId
-    const requestKey = JSON.stringify([systemAccountId ?? 'self', normalizedKeyword, input.form.targetId])
+    const requestKey = JSON.stringify([systemAccountId ?? 'self', normalizedKeyword, input.form.targetId, input.form.model])
     const requestId = ++comparisonOptionsRequestId
     const cachedOptions = comparisonOptionsCache.get(requestKey)
     if (cachedOptions) {
@@ -108,8 +116,13 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
         schedulable: 'enabled',
         limit: 50
       })
+      rememberAccountProfiles(accounts)
       const nextOptions = accounts
-        .filter((account) => canSelectModelCheckAccount(account, { excludedAccountId: input.form.targetId }))
+        .filter((account) => canSelectTrustedModelCheckAccount(account, {
+          excludedAccountId: input.form.targetId,
+          targetAccount: selectedTargetAccountProfile.value,
+          model: input.form.model
+        }))
         .map(accountTargetOption)
       comparisonOptionsCache.set(requestKey, nextOptions)
       if (requestId === comparisonOptionsRequestId) {
@@ -143,6 +156,7 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
         keyword: normalizedKeyword || undefined,
         limit: 50
       })
+      rememberAccountProfiles(accounts)
       const nextOptions = accounts
         .filter((account) => canSelectModelCheckAccount(account))
         .map(accountTargetOption)
@@ -166,6 +180,7 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
     targetOptions.value = []
     comparisonOptions.value = []
     historyTargetOptions.value = []
+    accountProfilesById.value = {}
     targetOptionsLoading.value = false
     comparisonOptionsLoading.value = false
     historyTargetOptionsLoading.value = false
@@ -247,7 +262,34 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
   function accountTargetOption(account: AccountOptionSummary) {
     const label = accountSelectOptionLabel(account)
     rememberAccountLabel(account.id, label)
+    rememberAccountProfile(account)
     return { label, value: account.id }
+  }
+
+  function rememberAccountProfiles(accounts: AccountOptionSummary[]) {
+    if (!accounts.length) return
+    accountProfilesById.value = {
+      ...accountProfilesById.value,
+      ...Object.fromEntries(accounts.map((account) => [account.id, accountProfile(account)]))
+    }
+  }
+
+  function rememberAccountProfile(account: AccountOptionSummary) {
+    accountProfilesById.value = {
+      ...accountProfilesById.value,
+      [account.id]: accountProfile(account)
+    }
+  }
+
+  function accountProfile(account: AccountOptionSummary): ModelCheckAccountProfile {
+    return {
+      id: account.id,
+      name: account.name,
+      providerCode: account.providerCode,
+      providerProtocolProfileId: account.providerProtocolProfileId,
+      protocolCode: account.protocolCode,
+      protocolVersion: account.protocolVersion
+    }
   }
 
   function selectedAccountForId(id: string | undefined, options: AccountSelectOption[]): AccountSelection | undefined {
@@ -264,8 +306,10 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
     historyTargetOptions,
     historyTargetOptionsLoading,
     selectedComparisonAccount,
+    selectedComparisonAccountProfile,
     selectedHistoryTargetAccount,
     selectedTargetAccount,
+    selectedTargetAccountProfile,
     targetOptions,
     targetOptionsLoading,
     handleComparisonDropdownVisibleChange,

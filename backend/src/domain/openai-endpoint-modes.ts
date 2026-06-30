@@ -2,6 +2,7 @@ import type { AccountClientCompatibility, AccountModelMapping, AccountSupportedE
 import {
   DEEPSEEK_OPENAI_V1_PROFILE_ID,
   DEEPSEEK_PROVIDER_CODE,
+  GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
   GEMINI_PROVIDER_CODE,
   GPT_VENDOR_CODE,
   HYBRID_PROVIDER_CODE,
@@ -9,6 +10,7 @@ import {
   GLM_GENERAL_OPENAI_V1_PROFILE_ID,
   GLM_PROVIDER_CODE,
   OPENAI_CHAT_COMPLETIONS_FAMILY,
+  OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
   OPENAI_COMPATIBLE_PROVIDER_CODE,
   OPENAI_RESPONSES_FAMILY,
   normalizeProviderToken
@@ -173,8 +175,11 @@ export function assertOpenAIEndpointModesCompatible(input: {
 export function supportsCodexResponsesChatBridge(input: {
   providerProtocolProfileId?: string
 }): boolean {
-  void input
-  return false
+  return input.providerProtocolProfileId === OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID
+    || input.providerProtocolProfileId === DEEPSEEK_OPENAI_V1_PROFILE_ID
+    || input.providerProtocolProfileId === GLM_GENERAL_OPENAI_V1_PROFILE_ID
+    || input.providerProtocolProfileId === GLM_CODING_OPENAI_V1_PROFILE_ID
+    || input.providerProtocolProfileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID
 }
 
 function openAIEndpointModeLabel(

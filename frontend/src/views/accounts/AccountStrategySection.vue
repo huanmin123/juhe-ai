@@ -16,7 +16,7 @@
               allow-clear
               :disabled="authorizedEditing"
               option-filter-prop="label"
-              :options="mappingSourceModelOptionsFor(mapping.sourceEndpointFamily)"
+              :options="mappingSourceModelOptionsFor(mapping)"
               placeholder="来源模型"
               show-search
             />
@@ -93,12 +93,13 @@ import {
   GEMINI_GENERATE_CONTENT_FAMILY,
   GEMINI_STREAM_GENERATE_CONTENT_FAMILY,
   OPENAI_CHAT_COMPLETIONS_FAMILY,
-  isHybridProviderCode
+  OPENAI_RESPONSES_FAMILY,
+  isHybridProviderCode,
+  isOpenAIProtocolProfile
 } from '@/shared/providerProtocol'
 import type { ProviderProtocolProfileDefinition } from '@/types/domain'
 import type { AccountFormModel } from './accountFormTypes'
 import {
-  accountModelMappingEndpointFamilyProtocol,
   filterAccountModelMappingOptionsByEndpointFamily,
   type AccountModelMappingModelOption
 } from './accountModelMappingModelOptions'
@@ -132,7 +133,7 @@ const isHybridAccount = computed(() => isHybridProviderCode(props.form.providerC
 const modelMappingTooltip = computed(() => (
   isHybridAccount.value
     ? '混合供应商账户在这里配置下游协议和模型到真实上游协议和模型的映射；左侧模型只能选择对应协议支持的模型，右侧上游模型只能选择账户支持模型。'
-    : '只在当前供应商和当前协议内做模型名改写；右侧上游模型只能选择账户支持模型。'
+    : '只在当前供应商和当前协议内做模型名改写；OpenAI v1 可显式配置 Responses 到 Chat Completions；右侧上游模型只能选择账户支持模型。'
 ))
 const endpointModeOptions = computed(() => {
   const allowedModes = new Set(endpointModesForProfile(activeProfile.value))
@@ -182,9 +183,15 @@ watch(() => [
   }
 })
 
-function mappingSourceModelOptionsFor(sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']) {
-  const options = rawMappingSourceModelOptionsFor(sourceEndpointFamily)
-  return filterAccountModelMappingOptionsByEndpointFamily(options, sourceEndpointFamily)
+function mappingSourceModelOptionsFor(mapping: AccountFormModel['modelMappings'][number]) {
+  const options = rawMappingSourceModelOptionsFor(mapping.sourceEndpointFamily)
+  if (isOpenAIResponsesToChatMapping(mapping)) {
+    return options.filter((option) => {
+      const protocols = option.supportedApiProtocols ?? []
+      return protocols.includes(OPENAI_RESPONSES_FAMILY) || protocols.includes(OPENAI_CHAT_COMPLETIONS_FAMILY)
+    })
+  }
+  return filterAccountModelMappingOptionsByEndpointFamily(options, mapping.sourceEndpointFamily)
 }
 
 function rawMappingSourceModelOptionsFor(sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']) {
@@ -198,7 +205,7 @@ function rawMappingSourceModelOptionsFor(sourceEndpointFamily: AccountFormModel[
 function mappingSourceModelAllowed(mapping: AccountFormModel['modelMappings'][number]): boolean {
   const sourceModel = mapping.sourceModel.trim()
   if (!sourceModel) return true
-  const options = mappingSourceModelOptionsFor(mapping.sourceEndpointFamily)
+  const options = mappingSourceModelOptionsFor(mapping)
   if (!options.length) return true
   return options.some((option) => option.value === sourceModel)
 }
@@ -241,6 +248,12 @@ function defaultUpstreamEndpointFamilyForSource(
   sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']
 ): AccountFormModel['modelMappings'][number]['upstreamEndpointFamily'] {
   return defaultAccountModelMappingUpstreamEndpointFamily(sourceEndpointFamily, modelMappingProtocolContext())
+}
+
+function isOpenAIResponsesToChatMapping(mapping: AccountFormModel['modelMappings'][number]): boolean {
+  return mapping.sourceEndpointFamily === OPENAI_RESPONSES_FAMILY
+    && mapping.upstreamEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY
+    && isOpenAIProtocolProfile(props.selectedProtocolProfile)
 }
 
 function addModelMapping(): void {

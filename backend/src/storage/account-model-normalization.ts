@@ -94,7 +94,7 @@ export function normalizeAccountModelMappingsForProvider(
 
   const accountModelPool = upstreamModelPoolForAccount(providerCode, systemAccountId, normalizedProfile)
   const invalidSourceModels = mappings
-    .filter((mapping) => !accountEndpointModelPoolForAccount(providerCode, systemAccountId, normalizedProfile, mapping.sourceEndpointFamily).has(mapping.sourceModel))
+    .filter((mapping) => !sourceModelPoolForAccountMapping(providerCode, systemAccountId, normalizedProfile, mapping).has(mapping.sourceModel))
     .map((mapping) => mapping.sourceModel)
   if (invalidSourceModels.length > 0) {
     throw new Error(`账号模型别名来源模型不在当前供应商的对应协议模型目录中：${invalidSourceModels.slice(0, 5).join('、')}`)
@@ -151,7 +151,7 @@ export async function normalizeAccountModelMappingsForProviderAsync(
   const accountModelPool = await upstreamModelPoolForAccountAsync(providerCode, systemAccountId, normalizedProfile)
   const invalidSourceModels: string[] = []
   for (const mapping of mappings) {
-    const sourceModelPool = await accountEndpointModelPoolForAccountAsync(providerCode, systemAccountId, normalizedProfile, mapping.sourceEndpointFamily)
+    const sourceModelPool = await sourceModelPoolForAccountMappingAsync(providerCode, systemAccountId, normalizedProfile, mapping)
     if (!sourceModelPool.has(mapping.sourceModel)) {
       invalidSourceModels.push(mapping.sourceModel)
     }
@@ -357,6 +357,18 @@ function accountEndpointModelPoolForAccount(
   return models
 }
 
+function sourceModelPoolForAccountMapping(
+  providerCode: string,
+  systemAccountId: string,
+  providerProfile: ProviderProtocolProfileDefinition,
+  mapping: AccountModelMapping
+): Set<string> {
+  if (isOpenAIResponsesToChatCompletionsMapping(mapping) && isOpenAIProtocolProfile(providerProfile)) {
+    return upstreamModelPoolForAccount(providerCode, systemAccountId, providerProfile)
+  }
+  return accountEndpointModelPoolForAccount(providerCode, systemAccountId, providerProfile, mapping.sourceEndpointFamily)
+}
+
 function sourceModelPoolForMapping(sourceEndpointFamily: AccountModelMapping['sourceEndpointFamily'], systemAccountId: string): Set<string> {
   if (sourceEndpointFamily === ANTHROPIC_MESSAGES_FAMILY) {
     return anthropicProtocolModelPool(systemAccountId)
@@ -437,6 +449,23 @@ async function accountEndpointModelPoolForAccountAsync(
     }
   }
   return models
+}
+
+async function sourceModelPoolForAccountMappingAsync(
+  providerCode: string,
+  systemAccountId: string,
+  providerProfile: ProviderProtocolProfileDefinition,
+  mapping: AccountModelMapping
+): Promise<Set<string>> {
+  if (isOpenAIResponsesToChatCompletionsMapping(mapping) && isOpenAIProtocolProfile(providerProfile)) {
+    return upstreamModelPoolForAccountAsync(providerCode, systemAccountId, providerProfile)
+  }
+  return accountEndpointModelPoolForAccountAsync(providerCode, systemAccountId, providerProfile, mapping.sourceEndpointFamily)
+}
+
+function isOpenAIResponsesToChatCompletionsMapping(mapping: AccountModelMapping): boolean {
+  return mapping.sourceEndpointFamily === OPENAI_RESPONSES_FAMILY
+    && mapping.upstreamEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY
 }
 
 async function sourceModelPoolForMappingAsync(sourceEndpointFamily: AccountModelMapping['sourceEndpointFamily'], systemAccountId: string): Promise<Set<string>> {

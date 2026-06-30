@@ -80,15 +80,30 @@ export type ModelCheckSummaryResult = {
 }
 
 export function evaluateModelCatalogProbe(result: GatewayProbeResult, model: string, prefix: ModelCheckProbePrefix): ModelCheckItemCreateInput {
-  const data = Array.isArray(result.json?.data) ? result.json.data : []
-  const listed = data.some((item) => recordValue(item)?.id === model)
+  const listedModels = listedModelIds(result.json)
+  const listed = listedModels.includes(model)
   return item(`${prefix}.model_catalog`, 'model_catalog', listed ? 'passed' : 'warning', listed ? 5 : 2, 5, result, {
     message: listed ? '本地模型目录包含目标模型' : '本地模型目录未确认目标模型；该项只作为低权重证据',
-    listed
+    listed,
+    listedModelCount: listedModels.length
   })
 }
 
 export function evaluateBasicResponsesProbe(result: GatewayProbeResult, model: string, prefix: ModelCheckProbePrefix): ModelCheckItemCreateInput {
+  return evaluateBasicProtocolProbe(result, model, prefix, {
+    itemKey: `${prefix}.responses_basic`,
+    itemType: 'responses_basic',
+    successMessage: 'Responses 非流式调用可用',
+    failurePrefix: 'Responses 非流式调用失败'
+  })
+}
+
+export function evaluateBasicProtocolProbe(result: GatewayProbeResult, model: string, prefix: ModelCheckProbePrefix, options: {
+  itemKey: string
+  itemType: string
+  successMessage: string
+  failurePrefix: string
+}): ModelCheckItemCreateInput {
   const modelEvidence = buildModelMatchEvidence(result.model, model)
   const hasOutput = Boolean(result.outputText)
   const score = modelEvidence.modelMismatch
@@ -97,14 +112,28 @@ export function evaluateBasicResponsesProbe(result: GatewayProbeResult, model: s
   const status = modelEvidence.modelMismatch
     ? 'failed'
     : score >= 18 ? 'passed' : score >= 10 ? 'warning' : 'failed'
-  return item(`${prefix}.responses_basic`, 'responses_basic', status, score, 20, result, {
-    message: describeModelMismatch(modelEvidence) ?? (result.success ? 'Responses 非流式调用可用' : result.errorMessage ?? `Responses 非流式调用失败，HTTP ${result.statusCode}`),
+  return item(options.itemKey, options.itemType, status, score, 20, result, {
+    message: describeModelMismatch(modelEvidence) ?? (result.success ? options.successMessage : result.errorMessage ?? `${options.failurePrefix}，HTTP ${result.statusCode}`),
     ...modelEvidence,
     hasOutput
   })
 }
 
 export function evaluateStreamProbe(result: GatewayProbeResult, model: string, prefix: ModelCheckProbePrefix): ModelCheckItemCreateInput {
+  return evaluateProtocolStreamProbe(result, model, prefix, {
+    itemKey: `${prefix}.responses_stream`,
+    itemType: 'responses_stream',
+    successMessage: 'Responses 流式调用可用',
+    failurePrefix: 'Responses 流式调用失败'
+  })
+}
+
+export function evaluateProtocolStreamProbe(result: GatewayProbeResult, model: string, prefix: ModelCheckProbePrefix, options: {
+  itemKey: string
+  itemType: string
+  successMessage: string
+  failurePrefix: string
+}): ModelCheckItemCreateInput {
   const modelEvidence = buildModelMatchEvidence(result.model ?? modelFromSse(result.bodyText), model)
   const hasOutput = Boolean(result.outputText)
   const score = modelEvidence.modelMismatch
@@ -113,8 +142,8 @@ export function evaluateStreamProbe(result: GatewayProbeResult, model: string, p
   const status = modelEvidence.modelMismatch
     ? 'failed'
     : score >= 13 ? 'passed' : score >= 8 ? 'warning' : 'failed'
-  return item(`${prefix}.responses_stream`, 'responses_stream', status, score, 15, result, {
-    message: describeModelMismatch(modelEvidence) ?? (result.success ? 'Responses 流式调用可用' : result.errorMessage ?? `Responses 流式调用失败，HTTP ${result.statusCode}`),
+  return item(options.itemKey, options.itemType, status, score, 15, result, {
+    message: describeModelMismatch(modelEvidence) ?? (result.success ? options.successMessage : result.errorMessage ?? `${options.failurePrefix}，HTTP ${result.statusCode}`),
     ...modelEvidence,
     hasOutput,
     firstTokenMs: result.firstTokenMs
@@ -156,7 +185,16 @@ export function evaluateToolCallingProbe(result: GatewayProbeResult, model: stri
 
 export function evaluateUsageShapeProbe(results: GatewayProbeResult[], prefix: ModelCheckProbePrefix): ModelCheckItemCreateInput {
   const usage = results.map((result) => result.usage).find(Boolean)
-  const valid = Boolean(usage && (numberValue(usage.input_tokens) !== undefined || numberValue(usage.output_tokens) !== undefined || numberValue(usage.total_tokens) !== undefined))
+  const valid = Boolean(usage && (
+    numberValue(usage.input_tokens) !== undefined
+    || numberValue(usage.output_tokens) !== undefined
+    || numberValue(usage.total_tokens) !== undefined
+    || numberValue(usage.prompt_tokens) !== undefined
+    || numberValue(usage.completion_tokens) !== undefined
+    || numberValue(usage.promptTokenCount) !== undefined
+    || numberValue(usage.candidatesTokenCount) !== undefined
+    || numberValue(usage.totalTokenCount) !== undefined
+  ))
   const base = results.find((result) => result.usage) ?? results[0]
   return item(`${prefix}.usage_shape`, 'usage_shape', valid ? 'passed' : 'warning', valid ? 10 : 4, 10, base, {
     message: valid ? 'usage 字段结构可用' : '未观察到完整 usage 字段；可能由上游实现省略',
@@ -459,7 +497,7 @@ export function summarizeChecks(checks: ModelCheckItemSummary[], options: { trus
   const score = maxScore > 0 ? Math.round((rawScore / maxScore) * 100) : 0
   const failedCount = checks.filter((item) => item.status === 'failed').length
   const modelMismatchCount = checks.filter(hasModelMismatchEvidence).length
-  const targetBasic = checks.find((item) => item.itemKey === 'target.responses_basic')
+  const targetBasic = checks.find((item) => item.itemKey === 'target.responses_basic' || item.itemKey === 'target.protocol_basic')
   const behaviorPassed = checks.some((item) => item.itemType === 'behavior_probe' && item.status === 'passed')
   const longContextPassed = checks.some((item) => item.itemType === 'long_context' && item.status === 'passed')
   const stabilityPassed = checks.some((item) => item.itemType === 'stability' && item.status === 'passed')
@@ -491,6 +529,24 @@ export function summarizeChecks(checks: ModelCheckItemSummary[], options: { trus
     return { level: 'suspicious', score, maxScore: 100, message: '目标模型链路疑似不符，多个关键探针未通过' }
   }
   return { level: 'unavailable', score, maxScore: 100, message: '目标模型链路不可检测或上游不可用' }
+}
+
+function listedModelIds(json: Record<string, unknown> | undefined): string[] {
+  const values: string[] = []
+  const data = Array.isArray(json?.data) ? json.data : []
+  for (const item of data) {
+    const id = textValue(recordValue(item)?.id)
+    if (id) values.push(id)
+  }
+  const models = Array.isArray(json?.models) ? json.models : []
+  for (const item of models) {
+    const record = recordValue(item)
+    const name = textValue(record?.name)
+    const version = textValue(record?.version)
+    if (name) values.push(name.replace(/^models\//, ''))
+    if (version) values.push(version)
+  }
+  return Array.from(new Set(values))
 }
 
 function retryEvidence(result: GatewayProbeResult): Record<string, unknown> {

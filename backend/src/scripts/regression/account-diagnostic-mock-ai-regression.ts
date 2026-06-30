@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path'
 import type { Request } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import type { AccountSummary } from '../../domain/types.js'
 import { logger } from '../../shared/logger.js'
 
@@ -61,7 +62,8 @@ try {
   const access = { systemAccountId: admin.id, role: 'admin' as const }
   const group = repositories.createGroup({
     name: '诊断 mock AI 回归分组',
-    providerCode: 'gpt'
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, access)
 
   const transientAccount = createMockAccount(group.id, upstreamBaseUrl, 'manual-transient', access)
@@ -136,6 +138,7 @@ function createMockAccount(
 ): AccountSummary {
   return repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: `诊断 mock AI ${label}`,
     type: 'api_key',
     groupId,

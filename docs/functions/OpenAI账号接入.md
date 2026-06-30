@@ -67,7 +67,7 @@ type GptAccountType = 'api_key' | 'oauth'
 - Responses
 - Chat
 
-账户级接口能力限制保存于凭据的非敏感字段 `credentials.supported_endpoint_modes`，用于表达当前上游实际支持的 OpenAI v1 请求形态：`chat_json`、`chat_sse`、`responses_json`、`responses_sse`。网关候选账号筛选和账户测试都必须遵守该矩阵；例如只支持 `chat_json/chat_sse` 的通用 OpenAI-compatible 上游不会参与 `/v1/responses` 调度，手动测试也会改用 `/v1/chat/completions`。省略该字段时，通用 `openai` API Key 默认启用 Chat JSON/SSE，GPT API Key 默认四项全开，GPT OAuth 默认 Responses JSON/SSE。Codex Responses 请求必须命中同时具备 `responses_sse` 和 Codex Responses 兼容能力的账号；OAuth 账户只能选择 Responses JSON/SSE，不支持 Chat Completions。
+账户级接口能力限制保存于凭据的非敏感字段 `credentials.supported_endpoint_modes`，用于表达当前上游实际支持的 OpenAI v1 请求形态：`chat_json`、`chat_sse`、`responses_json`、`responses_sse`。网关候选账号筛选和账户测试都必须遵守该矩阵；例如只支持 `chat_json/chat_sse` 的通用 OpenAI-compatible 上游不会按原生 Responses 账号参与 `/v1/responses` 调度，手动测试也会改用 `/v1/chat/completions`。省略该字段时，通用 `openai` API Key 默认启用 Chat JSON/SSE，GPT API Key 默认四项全开，GPT OAuth 默认 Responses JSON/SSE。原生 Codex Responses 请求必须命中具备 `responses_sse` 的账号；OpenAI v1 普通账号如果显式配置 `responses -> chat_completions` 模型别名，则可用真实 `chat_sse` 能力承接流式 Responses / Codex Responses 入站。OAuth 账户只能选择 Responses JSON/SSE，不支持 Chat Completions。
 
 默认测试模型：
 
@@ -128,7 +128,7 @@ type GptAccountType = 'api_key' | 'oauth'
 - API Key 账户允许重复添加相同凭据；同一个固定 API Key 即使指向同一上游域名，也可以创建多个账户。系统只保留凭据指纹用于排查相同 API Key，不承担唯一约束。
 - 列表不展示 API Key，编辑弹窗可查看和修改
 - `base_url` 默认使用 OpenAI 官方地址
-- 高级配置中的“接口能力限制”用于声明该上游支持的 Chat / Responses 与 JSON / SSE 组合；测试和网关调度都会按该配置筛选，不做 Chat 与 Responses 自动互转。
+- 高级配置中的“接口能力限制”用于声明该上游支持的 Chat / Responses 与 JSON / SSE 组合；测试和网关调度都会按该配置筛选，不做未声明的 Chat 与 Responses 自动互转。需要让 Chat-only OpenAI v1 上游承接 Responses 入站时，必须在账号模型别名中显式配置 `responses -> chat_completions`，且账号真实能力仍只保存 `chat_json/chat_sse`。
 - `base_url` 保存时按 OpenAI-compatible 上游根地址校验：必须是完整绝对地址，协议允许 `http` 和 `https`，主机允许域名和公网 IP；默认仍通过 SSRF 防护拒绝本机、内网、链路本地和保留地址，这类地址只有本地 mock / 回归测试才可通过私网上游放行配置使用。禁止用户名密码、查询参数、片段、反斜杠、协议后多余斜杠、路径连续斜杠、`.` / `..` 路径段和编码后的斜杠。可填写服务根地址或 `/v1` 版本根地址，例如 `https://api.openai.com`、`https://api.openai.com/v1`、`http://103.236.84.213:48222/v1`、`https://example.com/openai`、`https://example.com/openai/v1`；不能填写 `/responses`、`/chat/completions` 等具体接口路径。
 - 不提供 `OpenAI-Organization`、`OpenAI-Project` 和 `OpenAI-Beta` 的账号表单配置；组织 / 项目属于 OpenAI 账号上下文，服务端不凭空生成，Beta 由客户端按公开 API 需求显式传入
 - `account_expires_at` 表示本地套餐/账号购买到期时间；未填写则不过期，到期后账户自动改为停用并退出调度

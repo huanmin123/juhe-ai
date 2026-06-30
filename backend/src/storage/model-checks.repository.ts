@@ -38,7 +38,7 @@ export interface ModelCheckRunCreateInput {
   accountId?: string
   groupId?: string
   apiKeyId?: string
-  model: 'gpt-5.5' | 'gpt-5.4'
+  model: string
   profile?: ModelCheckProfile
   trustedComparison: boolean
   trustedComparisonAvailable?: boolean
@@ -81,7 +81,7 @@ export interface ModelCheckRunListOptions {
   pageSize?: number
   targetType?: ModelCheckTargetType
   targetId?: string
-  model?: 'gpt-5.5' | 'gpt-5.4'
+  model?: string
   level?: ModelCheckLevel
   status?: ModelCheckRunStatus
   startAt?: string
@@ -93,7 +93,7 @@ interface NormalizedModelCheckRunListOptions {
   pageSize: number
   targetType?: ModelCheckTargetType
   targetId?: string
-  model?: 'gpt-5.5' | 'gpt-5.4'
+  model?: string
   level?: ModelCheckLevel
   status?: ModelCheckRunStatus
   startAt?: string
@@ -112,7 +112,7 @@ interface ModelCheckRunRow {
   account_id: string | null
   group_id: string | null
   api_key_id: string | null
-  model: 'gpt-5.5' | 'gpt-5.4'
+  model: string
   profile: ModelCheckProfile
   trusted_comparison_enabled: number
   trusted_comparison_available: number
@@ -647,7 +647,7 @@ function normalizeListOptions(options: ModelCheckRunListOptions): NormalizedMode
     pageSize,
     targetType: isTargetType(options.targetType) ? options.targetType : undefined,
     targetId: trimText(options.targetId),
-    model: isSupportedModel(options.model) ? options.model : undefined,
+    model: trimText(options.model),
     level: isLevel(options.level) ? options.level : undefined,
     status: isStatus(options.status) ? options.status : undefined,
     startAt: trimText(options.startAt),
@@ -786,10 +786,6 @@ function boundedInteger(value: unknown, fallback: number, min: number, max: numb
 
 function trimText(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
-}
-
-function isSupportedModel(value: unknown): value is 'gpt-5.5' | 'gpt-5.4' {
-  return value === 'gpt-5.5' || value === 'gpt-5.4'
 }
 
 function isTargetType(value: unknown): value is ModelCheckTargetType {

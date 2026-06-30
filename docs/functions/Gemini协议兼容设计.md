@@ -55,7 +55,7 @@
 
 - 用户创建 Gemini OpenAI Chat 账号，协议档案为 `profile_gemini_openai_chat_v1beta`，Base URL 默认为 `https://generativelanguage.googleapis.com/v1beta/openai`。
 - OpenAI Chat 客户端直连该档案的 Chat Completions。
-- Codex / OpenAI Responses 客户端通过混合供应商账户配置 `sourceEndpointFamily = responses`、`upstreamEndpointFamily = chat_completions`，上游模型选择 Gemini 模型。
+- Codex / OpenAI Responses 客户端通过普通 Gemini OpenAI Chat 账户配置 `sourceEndpointFamily = responses`、`upstreamEndpointFamily = chat_completions`，上游模型选择 Gemini 模型。
 - OpenAI Chat / Responses 客户端通过混合供应商账户配置 `sourceEndpointFamily = chat_completions` 或 `responses`、`upstreamEndpointFamily = generate_content`，上游模型选择 Gemini native 模型。
 - Anthropic Messages 客户端通过混合供应商账户配置 `sourceEndpointFamily = messages`、`upstreamEndpointFamily = generate_content`，上游模型选择 Gemini native 模型。
 - Gemini native 客户端通过混合供应商账户配置 `sourceEndpointFamily = generate_content` 或 `stream_generate_content`、`upstreamEndpointFamily = chat_completions`，上游模型选择 GLM、DeepSeek、OpenAI-compatible、GPT API Key 或 Gemini OpenAI Chat 等真实 Chat 模型。
@@ -72,7 +72,7 @@ Gemini 相关模型映射只允许下面这些生成类方向：
 | 客户端协议 | Gemini 上游档案 | 上游协议 | 是否支持 | 说明 |
 | --- | --- | --- | --- | --- |
 | OpenAI Chat Completions | `profile_gemini_openai_chat_v1beta` | Chat Completions | 支持 | 直连，不需要协议转换 |
-| OpenAI Responses / Codex | `profile_gemini_openai_chat_v1beta` | Chat Completions | 支持 | 必须在混合供应商账户配置 `responses -> chat_completions` |
+| OpenAI Responses / Codex | `profile_gemini_openai_chat_v1beta` | Chat Completions | 支持 | 必须在普通 Gemini OpenAI Chat 账户配置 `responses -> chat_completions` |
 | OpenAI Chat Completions | `profile_gemini_native_v1beta` | Gemini native GenerateContent | 支持范围内 | 必须在混合供应商账户配置 `chat_completions -> generate_content`，响应还原为 Chat Completion JSON / SSE |
 | OpenAI Responses / Codex | `profile_gemini_native_v1beta` | Gemini native GenerateContent | 支持范围内 | 必须在混合供应商账户配置 `responses -> generate_content`，Responses 状态和 hosted tools 不可保真时走 guidance-first |
 | Anthropic Messages | `profile_gemini_native_v1beta` | Gemini native GenerateContent | 支持范围内 | 必须在混合供应商账户配置 `messages -> generate_content`，响应还原为 Anthropic Messages JSON / SSE |
@@ -235,7 +235,7 @@ Gemini 官方 OpenAI compatibility 允许 OpenAI Chat Completions 客户端直�
 
 - 不在 Gemini native adapter 中做无映射的 `messages[] -> contents[]` 自动转换。
 - 只有显式 `generate_content|stream_generate_content -> chat_completions/messages` 桥接实现 `contents[] -> messages[]`，只有显式 `chat_completions|responses|messages -> generate_content` 桥接实现 OpenAI / Anthropic 请求到 Gemini native；两边都不做无映射自动转换。
-- Codex Responses 使用 Gemini 时优先走 Gemini OpenAI Chat compatibility；只有用户显式配置 `responses -> generate_content` 时才进入 Gemini native，且不可保真的 Responses 状态 / hosted tools / compact 走 guidance-first。
+- Codex Responses 使用 Gemini 时优先走普通 Gemini OpenAI Chat 账号的 `responses -> chat_completions` 模型别名；只有用户在混合供应商账户显式配置 `responses -> generate_content` 时才进入 Gemini native，且不可保真的 Responses 状态 / hosted tools / compact 走 guidance-first。
 - 不把 Anthropic Messages 请求桥接到 Gemini OpenAI Chat。
 - 不在显式桥接之外转换工具、usage 或响应形态。
 
@@ -250,7 +250,7 @@ baseUrl = https://generativelanguage.googleapis.com/v1beta/openai
 endpointFamilies = [chat_completions]
 ```
 
-该档案只是 Gemini 供应商下的 OpenAI Chat 直连 surface。OpenAI / Anthropic 到 Gemini native 目标必须通过 混合供应商账户指向 `profile_gemini_native_v1beta` 分组；Gemini native 到 Chat / Messages 的方向也只能通过 混合供应商账户触发。
+该档案只是 Gemini 供应商下的 OpenAI Chat 直连 surface，可通过普通账号模型别名显式承接 OpenAI Responses -> Chat Completions。OpenAI / Anthropic 到 Gemini native 目标必须通过混合供应商账户指向 `profile_gemini_native_v1beta` 分组；Gemini native 到 Chat / Messages 的方向也只能通过混合供应商账户触发。
 
 ## gemini-cli 请求矩阵
 
@@ -316,7 +316,7 @@ endpointFamilies = [chat_completions]
 | CLI 专属可重试错误 | `gemini_cli` + `error.status=UNAVAILABLE` | 写出前请求下一个账号，成功后返回 Gemini native 响应 |
 | OpenAI 路径隔离 | `/v1/chat/completions` 且无 `chat_completions -> generate_content` 映射 | 不进入 Gemini native |
 | Gemini OpenAI Chat | `/v1/chat/completions` | 命中 `/v1beta/openai/chat/completions`，使用账号 Bearer Key |
-| Codex 混合供应商账户路由 | `/v1/responses` + API Key 规则 `responses -> chat_completions` | 命中 Gemini OpenAI Chat，不命中 Gemini native |
+| Codex / Responses 到 Gemini OpenAI Chat | `/v1/responses` + 普通账号模型别名 `responses -> chat_completions` | 命中 Gemini OpenAI Chat，不命中 Gemini native |
 | OpenAI Chat 到 Gemini native | `/v1/chat/completions` + API Key 规则 `chat_completions -> generate_content` | 命中 Gemini native `generateContent` / `streamGenerateContent`，返回 Chat 形态 |
 | OpenAI Responses 到 Gemini native | `/v1/responses` + API Key 规则 `responses -> generate_content` | 命中 Gemini native，返回 Responses 形态；不可保真能力 guidance-first |
 | Anthropic Messages 到 Gemini native | `/v1/messages` + API Key 规则 `messages -> generate_content` | 命中 Gemini native，返回 Anthropic Messages 形态 |

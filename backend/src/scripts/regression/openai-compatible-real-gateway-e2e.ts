@@ -19,6 +19,7 @@ import { logger } from '../../shared/logger.js'
 const realApiKey = requiredEnv('JUHE_REAL_OPENAI_COMPATIBLE_API_KEY', ['JUHE_REAL_HYBRID_API_KEY', 'HYBRID_REAL_API_KEY'])
 const realBaseUrl = envText('JUHE_REAL_OPENAI_COMPATIBLE_BASE_URL', ['JUHE_REAL_HYBRID_BASE_URL', 'HYBRID_REAL_BASE_URL']) || 'https://vsllm.com'
 const chatModel = envText('JUHE_REAL_OPENAI_COMPATIBLE_CHAT_MODEL') || 'gpt-5.4-mini'
+const responsesSourceModel = envText('JUHE_REAL_OPENAI_COMPATIBLE_RESPONSES_SOURCE_MODEL') || `${chatModel}-responses-alias`
 const requestTimeoutMs = positiveIntegerEnv('JUHE_REAL_OPENAI_COMPATIBLE_REQUEST_TIMEOUT_MS') ?? 120_000
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-openai-compatible-real-gateway-e2e-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -82,6 +83,13 @@ try {
         supported_endpoint_modes: ['chat_json', 'chat_sse']
       },
       groupId: group.id,
+      modelMappings: [{
+        sourceModel: responsesSourceModel,
+        sourceEndpointFamily: 'responses',
+        upstreamModel: chatModel,
+        upstreamEndpointFamily: 'chat_completions',
+        enabled: true
+      }],
       status: 'active',
       schedulable: true,
       supportedModels: [chatModel]
@@ -99,14 +107,19 @@ try {
 
     const chatJson = await assertChatJson(baseUrl, apiKey.key)
     const chatSse = await assertChatSse(baseUrl, apiKey.key)
+    const responsesJson = await assertResponsesJson(baseUrl, apiKey.key)
+    const responsesSse = await assertResponsesSse(baseUrl, apiKey.key)
 
     console.log(JSON.stringify({
       ok: true,
       provider: OPENAI_COMPATIBLE_PROVIDER_CODE,
       baseUrl: sanitizeBaseUrl(realBaseUrl),
       chatModel,
+      responsesSourceModel,
       chatJson,
-      chatSse
+      chatSse,
+      responsesJson,
+      responsesSse
     }, null, 2))
   } finally {
     await closeServer(appServer)
@@ -174,6 +187,58 @@ async function assertChatSse(baseUrl: string, localApiKey: string): Promise<Reco
   }
 }
 
+async function assertResponsesJson(baseUrl: string, localApiKey: string): Promise<Record<string, unknown>> {
+  const response = await fetchWithTimeout(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: responsesSourceModel,
+      input: '只输出 responses-ok',
+      stream: false,
+      max_output_tokens: 32
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `通用 OpenAI 兼容 Responses -> Chat JSON 应成功，实际 HTTP ${response.status}: ${sanitizeSecretText(text)}`)
+  const body = parseJsonObject(text)
+  const output = firstResponsesText(body)
+  assert(output.trim(), `通用 OpenAI 兼容 Responses -> Chat JSON 输出为空：${responseSnippet(text)}`)
+  return {
+    status: response.status,
+    responseModel: typeof body.model === 'string' ? body.model : undefined,
+    contentSample: output.trim().slice(0, 80)
+  }
+}
+
+async function assertResponsesSse(baseUrl: string, localApiKey: string): Promise<Record<string, unknown>> {
+  const response = await fetchWithTimeout(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream'
+    },
+    body: JSON.stringify({
+      model: responsesSourceModel,
+      input: '只输出 responses-stream-ok',
+      stream: true,
+      max_output_tokens: 32
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `通用 OpenAI 兼容 Responses -> Chat SSE 应成功，实际 HTTP ${response.status}: ${sanitizeSecretText(text)}`)
+  assert.match(text, /response\.(completed|output_text\.delta)/, `通用 OpenAI 兼容 Responses -> Chat SSE 应包含 Responses 事件：${responseSnippet(text)}`)
+  const output = extractResponsesSseText(text)
+  assert(output.trim(), `通用 OpenAI 兼容 Responses -> Chat SSE 输出为空：${responseSnippet(text)}`)
+  return {
+    status: response.status,
+    contentSample: output.trim().slice(0, 80)
+  }
+}
+
 function registerCustomModels(): void {
   saveCustomProviderModel({
     providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
@@ -182,6 +247,18 @@ function registerCustomModels(): void {
     systemAccountId: access.systemAccountId,
     status: 'active',
     supportedApiProtocols: ['chat_completions'],
+    inputUsdPer1M: 0.002,
+    outputUsdPer1M: 0.002,
+    cachedInputUsdPer1M: 0.0002,
+    actorSystemAccountId: access.systemAccountId
+  })
+  saveCustomProviderModel({
+    providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+    model: responsesSourceModel,
+    scope: 'personal',
+    systemAccountId: access.systemAccountId,
+    status: 'active',
+    supportedApiProtocols: ['responses'],
     inputUsdPer1M: 0.002,
     outputUsdPer1M: 0.002,
     cachedInputUsdPer1M: 0.0002,
@@ -207,6 +284,23 @@ function firstChoiceText(body: Record<string, unknown>): string {
   return typeof reasoningContent === 'string' ? reasoningContent : ''
 }
 
+function firstResponsesText(body: Record<string, unknown>): string {
+  const outputText = body.output_text
+  if (typeof outputText === 'string' && outputText.trim()) return outputText
+  const output = Array.isArray(body.output) ? body.output : []
+  for (const item of output) {
+    if (!item || typeof item !== 'object') continue
+    const content = (item as { content?: unknown }).content
+    if (!Array.isArray(content)) continue
+    for (const part of content) {
+      if (!part || typeof part !== 'object') continue
+      const text = (part as { text?: unknown }).text
+      if (typeof text === 'string' && text.trim()) return text
+    }
+  }
+  return ''
+}
+
 function extractChatSseText(text: string): string {
   const parts: string[] = []
   for (const match of text.matchAll(/^data:\s*(.+)$/gm)) {
@@ -218,6 +312,21 @@ function extractChatSseText(text: string): string {
         if (typeof choice.delta?.reasoning_content === 'string') parts.push(choice.delta.reasoning_content)
         if (typeof choice.delta?.content === 'string') parts.push(choice.delta.content)
       }
+    } catch {
+    }
+  }
+  return parts.join('').trim()
+}
+
+function extractResponsesSseText(text: string): string {
+  const parts: string[] = []
+  for (const match of text.matchAll(/^data:\s*(.+)$/gm)) {
+    const dataText = match[1]?.trim()
+    if (!dataText || dataText === '[DONE]') continue
+    try {
+      const data = JSON.parse(dataText) as { delta?: unknown; text?: unknown; type?: unknown }
+      if (typeof data.delta === 'string') parts.push(data.delta)
+      if (typeof data.text === 'string') parts.push(data.text)
     } catch {
     }
   }

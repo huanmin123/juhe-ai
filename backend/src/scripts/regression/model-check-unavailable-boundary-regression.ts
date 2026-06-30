@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-model-check-unavailable-boundary-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -60,10 +61,12 @@ try {
 
   const temporaryGroup = repositories.createGroup({
     name: '模型检测未绑定分组边界临时分组',
-    providerCode: 'gpt'
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, access)
   const unboundAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '模型检测未绑定分组边界账户',
     type: 'api_key',
     credentials: {

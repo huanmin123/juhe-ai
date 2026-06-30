@@ -8,6 +8,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import type { AccountSummary, AccountTestResult, AccountTestSession } from '../../domain/types.js'
 import { logger } from '../../shared/logger.js'
 
@@ -94,7 +95,8 @@ try {
 
   const group = await postEnvelope<{ id: string; name: string }>(backendBaseUrl, '/groups', cookie, {
     name: `账号测试边界 mock 分组 ${Date.now()}`,
-    providerCode: 'gpt'
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   })
   const context: TestContext = {
     backendBaseUrl,
@@ -111,6 +113,7 @@ try {
 
   const precheckRecoverAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: `失败确认恢复账号 ${Date.now()} ${Math.random().toString(16).slice(2, 6)}`,
     type: 'api_key',
     status: 'active',
@@ -193,6 +196,7 @@ try {
 async function createMockAccount(context: TestContext, name: string, apiKey: string): Promise<AccountSummary> {
   return postEnvelope<AccountSummary>(context.backendBaseUrl, '/accounts', context.cookie, {
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: `${name} ${Date.now()} ${Math.random().toString(16).slice(2, 6)}`,
     type: 'api_key',
     credentials: {

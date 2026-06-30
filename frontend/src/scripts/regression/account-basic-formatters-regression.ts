@@ -31,7 +31,11 @@ import {
   profileSupportsCodexResponsesChatBridge
 } from '../../views/accounts/accountProviderCapabilities'
 import { defaultAccountForm } from '../../views/accounts/accountFormDefaults'
-import { GLM_CODING_OPENAI_V1_PROFILE_ID } from '../../shared/providerProtocol'
+import {
+  GLM_CODING_OPENAI_V1_PROFILE_ID,
+  GLM_GENERAL_OPENAI_V1_PROFILE_ID,
+  OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID
+} from '../../shared/providerProtocol'
 
 const standardAccount = accountFixture({
   name: '标准账户',
@@ -141,6 +145,24 @@ assertEqual(
   }).join(','),
   'chat_json,chat_sse',
   'DeepSeek Codex bridge 账号前端默认仍保存真实 Chat Completions JSON/Streaming 能力'
+)
+assertEqual(
+  profileSupportsCodexResponsesChatBridge({
+    ...deepSeekBridgeProfile,
+    id: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
+    providerCode: 'openai'
+  }),
+  true,
+  '通用 OpenAI-compatible Chat-only 档案应支持显式 Responses 到 Chat bridge'
+)
+assertEqual(
+  profileSupportsCodexResponsesChatBridge({
+    ...deepSeekBridgeProfile,
+    id: GLM_GENERAL_OPENAI_V1_PROFILE_ID,
+    providerCode: 'glm'
+  }),
+  true,
+  'GLM 通用 OpenAI Chat 档案应支持显式 Responses 到 Chat bridge'
 )
 assertEqual(
   defaultAccountForm('glm').providerProtocolProfileId,

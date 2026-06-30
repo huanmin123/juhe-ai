@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-model-check-user-authorized-resource-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -205,10 +206,12 @@ function seedData(upstreamBaseUrl: string): SeedState {
   const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
   const ownerSourceGroup = repositories.createGroup({
     name: '模型检测授权来源分组',
-    providerCode: 'gpt'
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, ownerAccess)
   const ownerAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '模型检测授权账户',
     type: 'api_key',
     credentials: {
@@ -221,7 +224,8 @@ function seedData(upstreamBaseUrl: string): SeedState {
   }, ownerAccess)
   const granteeGroup = repositories.createGroup({
     name: '模型检测授权用户分组',
-    providerCode: 'gpt'
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, granteeAccess)
   repositories.createResourceAuthorization({
     resourceType: 'account',

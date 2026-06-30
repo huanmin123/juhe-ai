@@ -10,6 +10,7 @@ import express from 'express'
 import type { Request } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-codex-turn-switch-e2e-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -23,6 +24,8 @@ runtimeConfig.processRole = 'db-service'
 runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
+
+const codexSwitchTestModel = 'gpt-5.3-codex'
 
 const [
   { openAIGatewayRouter },
@@ -527,12 +530,14 @@ function seedTwoAccountGateway(upstreamBaseUrl: string, label: string, options: 
   const group = repositories.createGroup({
     name: `Codex 切号 e2e 分组-${label}`,
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   const failedUpstreamKey = `sk-codex-switch-${sequence}-failed`
   const freshUpstreamKey = `sk-codex-switch-${sequence}-fresh`
   const failedAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: `A-Codex 切号 e2e 失败账号-${label}`,
     type: 'api_key',
     credentials: {
@@ -542,13 +547,15 @@ function seedTwoAccountGateway(upstreamBaseUrl: string, label: string, options: 
     groupId: group.id,
     status: 'active',
     schedulable: true,
-    priority: 0
+    priority: 0,
+    supportedModels: [codexSwitchTestModel]
   }, access)
   if ((options.freshPriority ?? 10) === 0) {
     waitForClockTick()
   }
   const freshAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: `B-Codex 切号 e2e 备用账号-${label}`,
     type: 'api_key',
     credentials: {
@@ -558,7 +565,8 @@ function seedTwoAccountGateway(upstreamBaseUrl: string, label: string, options: 
     groupId: group.id,
     status: 'active',
     schedulable: true,
-    priority: options.freshPriority ?? 10
+    priority: options.freshPriority ?? 10,
+    supportedModels: [codexSwitchTestModel]
   }, access)
   if ((options.freshPriority ?? 10) === 0) {
     forceGroupAccountOrder(group.id, failedAccount.id, freshAccount.id)
@@ -588,6 +596,7 @@ function seedThreeAccountGateway(upstreamBaseUrl: string, label: string): Seeded
   const group = repositories.createGroup({
     name: `Codex 切号 e2e 分组三账号-${label}`,
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   const failedUpstreamKey = `sk-codex-switch-${sequence}-failed`
@@ -595,6 +604,7 @@ function seedThreeAccountGateway(upstreamBaseUrl: string, label: string): Seeded
   const freshUpstreamKey = `sk-codex-switch-${sequence}-fresh`
   const failedAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: `A-Codex 切号 e2e 死号-${label}`,
     type: 'api_key',
     credentials: {
@@ -604,10 +614,12 @@ function seedThreeAccountGateway(upstreamBaseUrl: string, label: string): Seeded
     groupId: group.id,
     status: 'active',
     schedulable: true,
-    priority: 0
+    priority: 0,
+    supportedModels: [codexSwitchTestModel]
   }, access)
   const latentFailedAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: `B-Codex 切号 e2e 假正常死号-${label}`,
     type: 'api_key',
     credentials: {
@@ -617,10 +629,12 @@ function seedThreeAccountGateway(upstreamBaseUrl: string, label: string): Seeded
     groupId: group.id,
     status: 'active',
     schedulable: true,
-    priority: 5
+    priority: 5,
+    supportedModels: [codexSwitchTestModel]
   }, access)
   const freshAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: `C-Codex 切号 e2e 真可用账号-${label}`,
     type: 'api_key',
     credentials: {
@@ -630,7 +644,8 @@ function seedThreeAccountGateway(upstreamBaseUrl: string, label: string): Seeded
     groupId: group.id,
     status: 'active',
     schedulable: true,
-    priority: 10
+    priority: 10,
+    supportedModels: [codexSwitchTestModel]
   }, access)
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `Codex 切号 e2e Key-三账号-${label}`,
@@ -659,12 +674,14 @@ function seedProbeFailureGateway(upstreamBaseUrl: string, label: string): Seeded
   const group = repositories.createGroup({
     name: `Codex 切号 e2e 全部探针失败分组-${label}`,
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   const failedUpstreamKey = `sk-codex-switch-${sequence}-failed`
   const probeFailedUpstreamKey = `sk-codex-switch-${sequence}-latent-failed`
   const failedAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: `A-Codex 切号 e2e 死号-${label}`,
     type: 'api_key',
     credentials: {
@@ -674,10 +691,12 @@ function seedProbeFailureGateway(upstreamBaseUrl: string, label: string): Seeded
     groupId: group.id,
     status: 'active',
     schedulable: true,
-    priority: 0
+    priority: 0,
+    supportedModels: [codexSwitchTestModel]
   }, access)
   const probeFailedAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: `B-Codex 切号 e2e 探针失败账号-${label}`,
     type: 'api_key',
     credentials: {
@@ -687,7 +706,8 @@ function seedProbeFailureGateway(upstreamBaseUrl: string, label: string): Seeded
     groupId: group.id,
     status: 'active',
     schedulable: true,
-    priority: 10
+    priority: 10,
+    supportedModels: [codexSwitchTestModel]
   }, access)
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `Codex 切号 e2e Key-全部探针失败-${label}`,
@@ -868,7 +888,7 @@ async function requestResponsesRaw(
     method: 'POST',
     headers,
     body: JSON.stringify({
-      model: 'gpt-5.3-codex',
+      model: codexSwitchTestModel,
       input: input.scenario,
       metadata: input.retryTag ? { retry_tag: input.retryTag } : undefined,
       stream: true
@@ -893,7 +913,7 @@ async function requestResponsesStreamAndAbortAfterFirstChunk(
 ): Promise<void> {
   const url = new URL(`${baseUrl}/v1/responses`)
   const body = JSON.stringify({
-    model: 'gpt-5.3-codex',
+    model: codexSwitchTestModel,
     input: input.scenario,
     stream: true
   })
@@ -998,7 +1018,7 @@ async function requestResponsesStreamAndAbortAfterUpstreamRequestStarted(
     method: 'POST',
     headers,
     body: JSON.stringify({
-      model: 'gpt-5.3-codex',
+      model: codexSwitchTestModel,
       input: input.scenario,
       stream: true
     }),

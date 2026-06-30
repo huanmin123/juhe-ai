@@ -26,9 +26,7 @@ import {
   defaultModel,
   defaultProfile,
   distributionSampleCount,
-  modelsPath,
   probeSetVersion,
-  responsesPath,
   supportedModels,
   type SupportedModel
 } from './model-checks.constants.js'
@@ -46,13 +44,15 @@ import {
   distributionProbeDefinitions
 } from './model-checks.probes.js'
 import {
-  createDistributionProbePayload,
-  createLongContextPayload,
-  createResponsesPayload,
-  createStructuredOutputPayload,
-  createToolCallingPayload
+  createModelCheckDistributionProbeRequest,
+  createModelCheckLongContextRequest,
+  createModelCheckProbeRequest,
+  createModelCheckStructuredOutputRequest,
+  createModelCheckToolCallingRequest,
+  type ModelCheckProbeRequest
 } from './model-checks.payloads.js'
 import {
+  evaluateBasicProtocolProbe,
   buildTrustedComparisonItem,
   evaluateBasicResponsesProbe,
   evaluateBehaviorProbeSet,
@@ -60,6 +60,7 @@ import {
   evaluateDistributionSimilarityProbe,
   evaluateLongContextProbe,
   evaluateModelCatalogProbe,
+  evaluateProtocolStreamProbe,
   evaluateStabilityProbe,
   evaluateStreamProbe,
   evaluateStructuredOutputProbe,
@@ -80,6 +81,13 @@ import {
   isModelCheckSupportedProtocolProfile,
   modelCheckSupportedProtocolLabel
 } from './model-checks.provider-capabilities.js'
+import {
+  findModelCheckProfileForAccount,
+  findModelCheckProfileForAccountModel,
+  pairedModelForProfile,
+  sameModelCheckComparisonProfile,
+  type ModelCheckProtocolProfile
+} from './model-checks.profiles.js'
 import { requestDatasetWriter } from '../background/background-dataset-writer.js'
 
 export class ModelCheckRequestError extends Error {
@@ -95,6 +103,8 @@ type ModelCheckTarget = {
   targetName?: string
   targetOwnerSystemAccountId: string
   providerCode: string
+  providerProtocolProfileId?: string
+  modelCheckProfile: ModelCheckProtocolProfile
   identity: OpenAIGatewayRequestIdentity
   candidateAccounts?: OpenAIAccountSecret[]
   accountId?: string
@@ -183,7 +193,7 @@ export function getModelCheckOptions(access?: AccessScope): ModelCheckOptions {
 export async function runModelCheck(input: ModelCheckRunRequest, access?: AccessScope, signal?: AbortSignal, progress?: ModelCheckProgressReporter): Promise<ModelCheckRunDetail> {
   const model = normalizeModel(input.model)
   if (!model) {
-    throw new ModelCheckRequestError(400, '当前模型检测仅支持 gpt-5.5 和 gpt-5.4')
+    throw new ModelCheckRequestError(400, modelCheckUnsupportedModelMessage())
   }
   if (input.profile && input.profile !== defaultProfile) {
     throw new ModelCheckRequestError(400, '当前仅支持完整检测')
@@ -203,7 +213,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
     throw new ModelCheckRequestError(400, '可信对比账户不能和检测目标相同')
   }
   const comparison = trustedComparisonAccountId
-    ? await resolveTrustedComparisonTargetAsync(trustedComparisonAccountId, access)
+    ? await resolveTrustedComparisonTargetAsync(trustedComparisonAccountId, target, model, access)
     : undefined
   emitModelCheckProgress(progress, {
     type: 'run_started',
@@ -243,6 +253,10 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
         targetType: target.targetType,
         targetId: target.targetId,
         targetName: target.targetName,
+        providerCode: target.providerCode,
+        providerProtocolProfileId: target.providerProtocolProfileId,
+        modelCheckProfileId: target.modelCheckProfile.id,
+        modelCheckProtocol: target.modelCheckProfile.protocol,
         model,
         profile: defaultProfile,
         trustedComparison,
@@ -366,20 +380,27 @@ export async function getModelCheckRun(id: string, access?: AccessScope): Promis
   return await getModelCheckRunDetailAsync(id, access)
 }
 
-async function resolveModelCheckTargetAsync(input: ModelCheckRunRequest & { targetId: string }, access?: AccessScope): Promise<ModelCheckTarget> {
+async function resolveModelCheckTargetAsync(input: ModelCheckRunRequest & { targetId: string; model: string }, access?: AccessScope): Promise<ModelCheckTarget> {
   if (input.targetType === 'account') {
-    return await resolveAccountTargetAsync(input.targetId, access)
+    return await resolveAccountTargetAsync(input.targetId, input.model, access)
   }
   throw new ModelCheckRequestError(400, '模型检测目标只能选择 AI 账户')
 }
 
-async function resolveAccountTargetAsync(accountId: string, access?: AccessScope): Promise<ModelCheckTarget> {
+async function resolveAccountTargetAsync(accountId: string, model: string, access?: AccessScope): Promise<ModelCheckTarget> {
   const account = await findAccountForTestAsync(accountId, access)
   if (!account) {
     throw new ModelCheckRequestError(404, '账户不存在或无权检测')
   }
-  if (!isModelCheckSupportedProtocolProfile(account)) {
+  const modelCheckProfile = findModelCheckProfileForAccountModel(account, model)
+  if (!modelCheckProfile) {
+    if (isModelCheckSupportedProtocolProfile(account)) {
+      throw new ModelCheckRequestError(400, `模型 ${model} 不适用于该账户的供应商协议 profile；请选择完整模型 ID：${modelCheckModelsForAccountMessage(account)}`)
+    }
     throw new ModelCheckRequestError(400, modelCheckUnsupportedProtocolMessage())
+  }
+  if (!accountAllowsModel(account, model)) {
+    throw new ModelCheckRequestError(400, `账户模型限制未包含 ${model}，请先在 AI 账户中配置完整模型 ID`)
   }
   if (account.status === 'disabled') {
     throw new ModelCheckRequestError(400, '账户已停用，无法执行模型检测')
@@ -404,6 +425,8 @@ async function resolveAccountTargetAsync(accountId: string, access?: AccessScope
     targetName: account.name,
     targetOwnerSystemAccountId: account.ownerSystemAccountId ?? account.systemAccountId ?? candidate.accountOwnerSystemAccountId,
     providerCode: account.providerCode,
+    providerProtocolProfileId: account.providerProtocolProfileId,
+    modelCheckProfile,
     identity: {
       systemAccountId,
       groupId: account.boundGroupId
@@ -438,14 +461,18 @@ function effectiveAccountTargetSystemAccountId(account: AccountSummary, access?:
   return systemAccountId
 }
 
-async function resolveTrustedComparisonTargetAsync(accountId: string, access?: AccessScope): Promise<ModelCheckTarget> {
+async function resolveTrustedComparisonTargetAsync(accountId: string, target: ModelCheckTarget, model: string, access?: AccessScope): Promise<ModelCheckTarget> {
   try {
-    return await resolveAccountTargetAsync(accountId, access)
+    const comparison = await resolveAccountTargetAsync(accountId, model, access)
+    if (!sameModelCheckComparisonProfile(target, comparison)) {
+      throw new ModelCheckRequestError(400, '可信对比账户必须与检测目标使用相同供应商和相同供应商协议 profile')
+    }
+    return comparison
   } catch (error) {
     if (error instanceof ModelCheckRequestError) {
       const message = error.message
         .replace(/^账户/, '可信对比账户')
-        .replace(modelCheckUnsupportedProtocolMessage(), `可信对比账户必须是 ${modelCheckSupportedProtocolLabel} 协议账户`)
+        .replace(modelCheckUnsupportedProtocolMessage(), `可信对比账户必须是支持模型检测的同供应商同协议 profile 账户`)
       throw new ModelCheckRequestError(error.statusCode, message)
     }
     throw error
@@ -456,104 +483,124 @@ function modelCheckUnsupportedProtocolMessage(): string {
   return `当前仅支持检测 ${modelCheckSupportedProtocolLabel} 协议账户`
 }
 
-async function executeProbeSuite(target: ProbeTarget, model: SupportedModel, prefix: ModelCheckProbePrefix, signal?: AbortSignal, progress?: ModelCheckProgressReporter): Promise<ProbeSuiteResult> {
+function modelCheckUnsupportedModelMessage(): string {
+  return `当前模型检测仅支持完整模型 ID：${supportedModels.join('、')}`
+}
+
+function modelCheckModelsForAccountMessage(account: AccountSummary): string {
+  return findModelCheckProfileForAccount(account)?.models.join('、') || supportedModels.join('、')
+}
+
+function accountAllowsModel(account: AccountSummary, model: string): boolean {
+  const models = account.supportedModels?.map((item) => item.trim()).filter(Boolean) ?? []
+  return models.length === 0 || models.includes(model)
+}
+
+async function executeProbeSuite(target: ModelCheckTarget, model: SupportedModel, prefix: ModelCheckProbePrefix, signal?: AbortSignal, progress?: ModelCheckProgressReporter): Promise<ProbeSuiteResult> {
+  const profile = target.modelCheckProfile
   const items: ModelCheckItemCreateInput[] = []
   const catalog = await runGatewayProbe(target, {
     method: 'GET',
-    path: modelsPath,
-    itemKey: `${prefix}.model_catalog`
+    path: modelCatalogPath(profile),
+    itemKey: `${prefix}.model_catalog`,
+    responseProtocol: profile.protocol
   }, signal, progress)
   pushProbeItem(items, evaluateModelCatalogProbe(catalog, model, prefix), progress)
 
-  const basic = await runGatewayProbe(target, {
-    method: 'POST',
-    path: responsesPath,
-    itemKey: `${prefix}.responses_basic`,
-    body: createResponsesPayload(model, 'Reply with exactly: OK-MODEL-CHECK', { maxOutputTokens: 16, stream: false })
-  }, signal, progress)
-  pushProbeItem(items, evaluateBasicResponsesProbe(basic, model, prefix), progress)
+  const basicRequest = createModelCheckProbeRequest(profile.protocol, model, 'Reply with exactly: OK-MODEL-CHECK', { maxOutputTokens: 16, stream: false })
+  const basic = await runModelCheckProbeRequest(target, basicRequest, basicProbeItemKey(profile, prefix), signal, progress)
+  pushProbeItem(items, evaluateBasicForProfile(profile, basic, model, prefix), progress)
   if (!basic.success) {
     pushProbeItem(items, evaluateUsageShapeProbe([basic], prefix), progress)
     return { items, basic }
   }
 
-  const stream = await runGatewayProbe(target, {
-    method: 'POST',
-    path: responsesPath,
-    itemKey: `${prefix}.responses_stream`,
-    body: createResponsesPayload(model, 'Reply with exactly: STREAM-OK', { maxOutputTokens: 16, stream: true })
-  }, signal, progress)
-  pushProbeItem(items, evaluateStreamProbe(stream, model, prefix), progress)
+  const streamRequest = createModelCheckProbeRequest(profile.protocol, model, 'Reply with exactly: STREAM-OK', { maxOutputTokens: 16, stream: true })
+  const stream = await runModelCheckProbeRequest(target, streamRequest, streamProbeItemKey(profile, prefix), signal, progress)
+  pushProbeItem(items, evaluateStreamForProfile(profile, stream, model, prefix), progress)
 
-  const structured = await runGatewayProbe(target, {
-    method: 'POST',
-    path: responsesPath,
-    itemKey: `${prefix}.structured_output`,
-    body: createStructuredOutputPayload(model)
-  }, signal, progress)
+  const structured = await runModelCheckProbeRequest(
+    target,
+    createModelCheckStructuredOutputRequest(profile.protocol, model),
+    `${prefix}.structured_output`,
+    signal,
+    progress
+  )
   pushProbeItem(items, evaluateStructuredOutputProbe(structured, model, prefix), progress)
 
-  const tool = await runGatewayProbe(target, {
-    method: 'POST',
-    path: responsesPath,
-    itemKey: `${prefix}.tool_calling`,
-    body: createToolCallingPayload(model)
-  }, signal, progress)
+  const tool = await runModelCheckProbeRequest(
+    target,
+    createModelCheckToolCallingRequest(profile.protocol, model),
+    `${prefix}.tool_calling`,
+    signal,
+    progress
+  )
   pushProbeItem(items, evaluateToolCallingProbe(tool, model, prefix), progress)
 
   pushProbeItem(items, evaluateUsageShapeProbe([basic, structured, stream], prefix), progress)
 
   const behaviorObservations: BehaviorProbeObservation[] = []
   for (const definition of behaviorProbeDefinitions) {
-    const result = await runGatewayProbe(target, {
-      method: 'POST',
-      path: responsesPath,
-      itemKey: `${prefix}.behavior.${definition.key}`,
-      body: createResponsesPayload(model, definition.prompt, { maxOutputTokens: definition.maxOutputTokens, stream: false })
-    }, signal, progress)
+    const request = createModelCheckProbeRequest(profile.protocol, model, definition.prompt, {
+      maxOutputTokens: definition.maxOutputTokens,
+      stream: false
+    })
+    const result = await runModelCheckProbeRequest(target, request, `${prefix}.behavior.${definition.key}`, signal, progress)
     behaviorObservations.push({ definition, result })
   }
   const behaviorItem = evaluateBehaviorProbeSet(behaviorObservations, model, prefix)
   pushProbeItem(items, behaviorItem, progress)
 
-  const longContext = await runGatewayProbe(target, {
-    method: 'POST',
-    path: responsesPath,
-    itemKey: `${prefix}.long_context`,
-    body: createLongContextPayload(model)
-  }, signal, progress)
+  const longContext = await runModelCheckProbeRequest(
+    target,
+    createModelCheckLongContextRequest(profile.protocol, model),
+    `${prefix}.long_context`,
+    signal,
+    progress
+  )
   pushProbeItem(items, evaluateLongContextProbe(longContext, model, prefix), progress)
 
   const stabilityResults: GatewayProbeResult[] = []
   for (let index = 1; index <= 3; index += 1) {
-    stabilityResults.push(await runGatewayProbe(target, {
-      method: 'POST',
-      path: responsesPath,
-      itemKey: `${prefix}.stability_${index}`,
-      body: createResponsesPayload(model, 'Reply with exactly one uppercase word: VECTOR', { maxOutputTokens: 16, stream: false })
-    }, signal, progress))
+    const request = createModelCheckProbeRequest(profile.protocol, model, 'Reply with exactly one uppercase word: VECTOR', {
+      maxOutputTokens: 16,
+      stream: false
+    })
+    stabilityResults.push(await runModelCheckProbeRequest(target, request, `${prefix}.stability_${index}`, signal, progress))
   }
   pushProbeItem(items, evaluateStabilityProbe(stabilityResults, model, prefix), progress)
 
   return { items, basic, behavior: behaviorObservations[0]?.result, longContext }
 }
 
-async function executeCrossModelComparison(target: ProbeTarget, targetSuite: ProbeSuiteResult, model: SupportedModel, signal?: AbortSignal, progress?: ModelCheckProgressReporter): Promise<ModelCheckItemCreateInput> {
-  const pairedModel: SupportedModel = model === 'gpt-5.5' ? 'gpt-5.4' : 'gpt-5.5'
-  const pairedBasic = await runGatewayProbe(target, {
-    method: 'POST',
-    path: responsesPath,
-    itemKey: 'target.cross_model',
-    body: createResponsesPayload(pairedModel, 'Reply with exactly: CROSS-MODEL-OK', { maxOutputTokens: 16, stream: false })
-  }, signal, progress)
+async function executeCrossModelComparison(target: ModelCheckTarget, targetSuite: ProbeSuiteResult, model: SupportedModel, signal?: AbortSignal, progress?: ModelCheckProgressReporter): Promise<ModelCheckItemCreateInput> {
+  const pairedModel = pairedModelForProfile(target.modelCheckProfile, model)
+  if (!pairedModel) {
+    return {
+      itemKey: 'target.cross_model',
+      itemType: 'cross_model',
+      status: 'skipped',
+      score: 0,
+      maxScore: 10,
+      evidenceSummary: {
+        message: '当前供应商协议 profile 未配置辅助模型对照',
+        expectedModel: model
+      }
+    }
+  }
+  const request = createModelCheckProbeRequest(target.modelCheckProfile.protocol, pairedModel, 'Reply with exactly: CROSS-MODEL-OK', {
+    maxOutputTokens: 16,
+    stream: false
+  })
+  const pairedBasic = await runModelCheckProbeRequest(target, request, 'target.cross_model', signal, progress)
   const item = evaluateCrossModelComparisonProbe(targetSuite.basic, pairedBasic, model, pairedModel)
   emitModelCheckItemProgress(progress, item)
   return item
 }
 
 async function executeDistributionSimilarityComparison(
-  target: ProbeTarget,
-  comparison: ProbeTarget,
+  target: ModelCheckTarget,
+  comparison: ModelCheckTarget,
   model: SupportedModel,
   signal?: AbortSignal,
   progress?: ModelCheckProgressReporter
@@ -561,25 +608,68 @@ async function executeDistributionSimilarityComparison(
   const pairs: DistributionProbePair[] = []
   for (const definition of distributionProbeDefinitions) {
     for (let sampleIndex = 1; sampleIndex <= distributionSampleCount; sampleIndex += 1) {
-      const body = createDistributionProbePayload(model, definition)
-      const targetResult = await runGatewayProbe(target, {
-        method: 'POST',
-        path: responsesPath,
-        itemKey: `target.distribution.${definition.key}.${sampleIndex}`,
-        body
-      }, signal, progress)
-      const comparisonResult = await runGatewayProbe(comparison, {
-        method: 'POST',
-        path: responsesPath,
-        itemKey: `trusted_comparison.distribution.${definition.key}.${sampleIndex}`,
-        body
-      }, signal, progress)
+      const request = createModelCheckDistributionProbeRequest(target.modelCheckProfile.protocol, model, definition)
+      const targetResult = await runModelCheckProbeRequest(target, request, `target.distribution.${definition.key}.${sampleIndex}`, signal, progress)
+      const comparisonResult = await runModelCheckProbeRequest(comparison, request, `trusted_comparison.distribution.${definition.key}.${sampleIndex}`, signal, progress)
       pairs.push({ definition, sampleIndex, target: targetResult, comparison: comparisonResult })
     }
   }
   const item = evaluateDistributionSimilarityProbe(pairs, model)
   emitModelCheckItemProgress(progress, item)
   return item
+}
+
+function modelCatalogPath(profile: ModelCheckProtocolProfile): string {
+  return profile.protocol === 'gemini_native' ? '/v1beta/models' : '/v1/models'
+}
+
+function basicProbeItemKey(profile: ModelCheckProtocolProfile, prefix: ModelCheckProbePrefix): string {
+  return profile.protocol === 'openai_responses' ? `${prefix}.responses_basic` : `${prefix}.protocol_basic`
+}
+
+function streamProbeItemKey(profile: ModelCheckProtocolProfile, prefix: ModelCheckProbePrefix): string {
+  return profile.protocol === 'openai_responses' ? `${prefix}.responses_stream` : `${prefix}.protocol_stream`
+}
+
+function evaluateBasicForProfile(profile: ModelCheckProtocolProfile, result: GatewayProbeResult, model: string, prefix: ModelCheckProbePrefix): ModelCheckItemCreateInput {
+  if (profile.protocol === 'openai_responses') {
+    return evaluateBasicResponsesProbe(result, model, prefix)
+  }
+  return evaluateBasicProtocolProbe(result, model, prefix, {
+    itemKey: basicProbeItemKey(profile, prefix),
+    itemType: 'protocol_basic',
+    successMessage: `${profile.protocolLabel} 非流式调用可用`,
+    failurePrefix: `${profile.protocolLabel} 非流式调用失败`
+  })
+}
+
+function evaluateStreamForProfile(profile: ModelCheckProtocolProfile, result: GatewayProbeResult, model: string, prefix: ModelCheckProbePrefix): ModelCheckItemCreateInput {
+  if (profile.protocol === 'openai_responses') {
+    return evaluateStreamProbe(result, model, prefix)
+  }
+  return evaluateProtocolStreamProbe(result, model, prefix, {
+    itemKey: streamProbeItemKey(profile, prefix),
+    itemType: 'protocol_stream',
+    successMessage: `${profile.protocolLabel} 流式调用可用`,
+    failurePrefix: `${profile.protocolLabel} 流式调用失败`
+  })
+}
+
+async function runModelCheckProbeRequest(
+  target: ProbeTarget,
+  request: ModelCheckProbeRequest,
+  itemKey: string,
+  signal?: AbortSignal,
+  progress?: ModelCheckProgressReporter
+): Promise<GatewayProbeResult> {
+  return await runGatewayProbe(target, {
+    method: 'POST',
+    path: request.path,
+    itemKey,
+    body: request.body,
+    responseProtocol: request.responseProtocol,
+    expectedModel: request.expectedModel
+  }, signal, progress)
 }
 
 function pushProbeItem(items: ModelCheckItemCreateInput[], item: ModelCheckItemCreateInput, progress?: ModelCheckProgressReporter): void {

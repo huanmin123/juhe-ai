@@ -1,7 +1,7 @@
 # Gemini 账号接入
 
-> 2026-06-27 路由分层更新：本文旧段落里提到的 API Key 显式桥接配置只作为历史背景；当前目标是 API Key 只绑定策略路由，策略路由负责分组和模型调度，Gemini 跨协议转换落到混合供应商账户。
-> 当前代码已移除 API Key / 策略路由层的显式跨协议桥接入口；本文后续如果仍出现“API Key 显式混合路由”，均表示待迁移历史设计，不得作为新增实现、测试断言或页面配置依据。跨协议承接统一迁移到混合供应商账户。
+> 2026-06-27 路由分层更新：本文旧段落里提到的 API Key 显式桥接配置只作为历史背景；当前目标是 API Key 只绑定策略路由，策略路由负责分组和模型调度，Gemini OpenAI Chat 可由普通账号模型别名显式承接 Responses -> Chat，Gemini native 等其他跨协议转换落到混合供应商账户。
+> 当前代码已移除 API Key / 策略路由层的显式跨协议桥接入口；本文后续如果仍出现“API Key 显式混合路由”，均表示待迁移历史设计，不得作为新增实现、测试断言或页面配置依据。除 OpenAI v1 普通账号 `responses -> chat_completions` 外，跨协议承接统一迁移到混合供应商账户。
 
 ## 范围
 
@@ -11,7 +11,7 @@
 
 - Gemini native 客户端：走 `gemini/v1beta` 原生协议档案。
 - OpenAI Chat 客户端：走 Gemini 供应商下的 `profile_gemini_openai_chat_v1beta`，上游为 Gemini 官方 OpenAI compatibility endpoint。
-- Codex / OpenAI Responses 客户端：如果要使用 Gemini OpenAI Chat 或 Gemini native 转换，必须命中混合供应商账户；不允许走 Gemini native 自动转换，也不允许 Anthropic Messages 自动转到 Gemini。
+- Codex / OpenAI Responses 客户端：如果要使用 Gemini OpenAI Chat，可命中显式配置 `responses -> chat_completions` 的普通 Gemini OpenAI Chat 账户；如果要使用 Gemini native 转换，必须命中混合供应商账户。不允许走 Gemini native 自动转换，也不允许 Anthropic Messages 自动转到 Gemini。
 - Gemini CLI / Gemini SDK 如果要调用 GLM、DeepSeek、OpenAI-compatible 或 Gemini OpenAI Chat 的 Chat 模型，或者调用 Claude / Anthropic Messages 模型，必须命中混合供应商账户；不做基于模型名或客户端画像的自动转换。
 
 本次参考：
@@ -38,11 +38,11 @@
 
 - 已完成设计文档、计划文档、后端 Gemini native 协议 / 供应商驱动、Gemini OpenAI Chat 兼容档案、默认种子、模型目录、usage / error / SSE 解析和 mockai 回归。
 - 已完成前端 Gemini fallback provider、协议识别、endpoint mode 默认值与校验。
-- 已完成 Gemini OpenAI Chat mockai 覆盖：OpenAI Chat 直连、普通 Gemini OpenAI Chat 账号不再承接 Codex Responses、Anthropic Messages 映射禁用。
+- 已完成 Gemini OpenAI Chat mockai 覆盖：OpenAI Chat 直连、普通 Gemini OpenAI Chat 账号通过显式 `responses -> chat_completions` 承接 Codex / Responses、Anthropic Messages 映射禁用。
 - 已完成 Gemini native mockai 覆盖：`generateContent` / `streamGenerateContent` 原生直连、普通 Gemini native / OpenAI-compatible / Anthropic 账号不再通过旧显式混合映射承接跨协议请求。
 - 已按 Google 官方 Gemini API Models / Pricing 页面核对内置 Gemini 模型目录；内置目录只收录 Google 官方模型 ID，不收录 `vsllm.com` 等中转商自定义的 `*-antigravity*` 型号。
 - 已安装本机 `gemini` CLI `0.47.0`。
-- 已使用真实 `vsllm.com` 账号执行 Gemini OpenAI Chat E2E，覆盖 `/v1/models`、Chat JSON 和 Chat SSE；旧 Codex Responses `responses -> chat_completions` bridge 不再作为普通 Gemini OpenAI Chat 验收项。
+- 已使用真实 `vsllm.com` 账号执行 Gemini OpenAI Chat E2E，覆盖 `/v1/models`、Chat JSON 和 Chat SSE；Responses -> Chat bridge 通过普通账号显式模型别名验收。
 - 已使用真实 `vsllm.com` 账号执行 `gemini-cli` E2E，CLI 通过本地 `/v1beta` 网关命中 `:streamGenerateContent?alt=sse` 并返回固定标记。
 
 ## 供应商与协议档案
@@ -104,7 +104,7 @@ type GeminiAccountType = 'api_key'
 - Gemini native `credentials.supported_endpoint_modes` 省略时默认 `['generate_content_json', 'generate_content_sse', 'count_tokens']`；Gemini OpenAI Chat 省略时默认 `['chat_json', 'chat_sse']`。模型列表由本地目录响应，不写入账户 endpoint mode。
 - 新建账户默认写入 `pending_test`，测试通过后才允许调度。
 - Gemini native API Key 账户不展示 OpenAI Organization、OpenAI Project、Anthropic Version、Anthropic Beta、Codex Responses、Claude Code 客户端兼容或 GPT OAuth 字段。
-- Gemini OpenAI Chat API Key 账户只保存真实上游能力 `chat_json`、`chat_sse`。如果要承接 Codex / Responses 或 Gemini native 下游，必须通过混合供应商账户表达跨协议转换，不要写入普通账号 `modelMappings`。
+- Gemini OpenAI Chat API Key 账户只保存真实上游能力 `chat_json`、`chat_sse`。如果要承接 Codex / Responses，可在普通账号 `modelMappings` 中显式声明 `responses -> chat_completions`；如果要承接 Gemini native 下游，必须通过混合供应商账户表达跨协议转换。
 - 同一上游 Gemini Key 如需同时给 Gemini native 直连和 OpenAI-compatible 客户端使用，建议创建两个本地账户：一个走 `profile_gemini_native_v1beta`，另一个走 `profile_gemini_openai_chat_v1beta`。跨协议桥接由混合供应商账户决定，不把同一个普通账户同时伪装成 Gemini native 上游和 OpenAI Chat 上游。
 
 当前不纳入目标：
@@ -282,7 +282,7 @@ Gemini native usage 语义不能按 OpenAI `prompt_tokens/completion_tokens` 或
 - Gemini native 请求通过路径协议和路径模型定位 Gemini 供应商，再在当前本地 API Key 所选路由策略已绑定的 Gemini 分组内按账户能力调度。
 - Gemini native `generateContent` / `streamGenerateContent` 请求默认按 Gemini native 直连调度；如果后续命中混合供应商账户，可由该账户配置进入目标 Chat 或 Anthropic Messages 上游。
 - OpenAI Chat 请求不会因为模型名是 `gemini-*` 就自动进入 Gemini native 账户；如要用 Gemini 官方 OpenAI compatibility，必须命中 Gemini OpenAI Chat 账户。
-- Codex / Responses 请求要用 Gemini Chat 上游时，应通过混合供应商账户声明 `responses -> chat_completions`，API Key 只绑定能调度到该混合账户的策略路由。
+- Codex / Responses 请求要用 Gemini Chat 上游时，应通过普通 Gemini OpenAI Chat 账户声明 `responses -> chat_completions`，API Key 只绑定能调度到该账号所在分组的策略路由。
 - Anthropic Messages 请求不允许桥接到 Gemini OpenAI Chat；Gemini native 不允许桥接到 Responses，只允许生成类请求显式桥接到 Chat Completions 或 Anthropic Messages。
 - 模型不匹配、端点不支持、本地认证失败、额度不足和分组无账号都不写 Gemini 账号状态。
 
@@ -344,7 +344,7 @@ Gemini 账户测试必须复用真实网关链路。
 - 新增 Gemini native response semantic：文本、thought、functionCall、functionResponse、inlineData、fileData、finishReason、safetyRatings、promptFeedback、usageMetadata。
 - 新增 Gemini 模型目录和价格目录。
 - 新增 `usage_semantic = gemini`。
-- Gemini OpenAI Chat 档案使用 OpenAI usage semantic；普通 Gemini OpenAI Chat 账号不启用 Responses-to-Chat bridge。Gemini native 到 Chat bridge 仅在后续混合供应商账户命中时生效，并在下游还原 Gemini JSON / SSE。
+- Gemini OpenAI Chat 档案使用 OpenAI usage semantic；普通 Gemini OpenAI Chat 账号可通过显式 `responses -> chat_completions` 模型别名启用 Responses-to-Chat bridge。Gemini native 到 Chat bridge 仅在后续混合供应商账户命中时生效，并在下游还原 Gemini JSON / SSE。
 - mockai 覆盖 JSON、SSE、countTokens、模型列表、Gemini error object、流内坏 chunk、usage。
 - 新增真实 Gemini OpenAI Chat E2E 脚本和真实 `gemini-cli` E2E 脚本，并已用真实 `vsllm.com` 账号执行通过。
 - 更新导入协议、接口契约、SQLite 存储说明、模型目录清洗、模型价格和测试说明。
@@ -364,7 +364,7 @@ Gemini 账户测试必须复用真实网关链路。
 - `GET /v1beta/models` 返回本地 Gemini 模型目录。
 - Function calling、thought、inlineData、fileData、safetyRatings、promptFeedback、usageMetadata 不被 OpenAI / Anthropic 适配器破坏。
 - OpenAI Chat 请求不会自动路由到 Gemini native。
-- Codex / Responses 使用 Gemini 时只能通过混合供应商账户显式映射到 Gemini OpenAI Chat；Anthropic Messages 不允许映射到普通 Gemini OpenAI Chat 账号。
+- Codex / Responses 使用 Gemini OpenAI Chat 时必须通过普通账号显式 `responses -> chat_completions` 模型别名；Anthropic Messages 不允许映射到普通 Gemini OpenAI Chat 账号。
 - `gemini-cli` 通过 `GOOGLE_GEMINI_BASE_URL` 真实调用本项目成功。
 
 ## 官方资料

@@ -30,6 +30,7 @@ type ProtocolConversionRule = {
 
 export const accountModelMappingProtocolRules: readonly ProtocolConversionRule[] = [
   { source: OPENAI_CHAT_COMPLETIONS_FAMILY, upstream: OPENAI_CHAT_COMPLETIONS_FAMILY, upstreamProfile: 'openai' },
+  { source: OPENAI_RESPONSES_FAMILY, upstream: OPENAI_CHAT_COMPLETIONS_FAMILY, upstreamProfile: 'openai' },
   { source: OPENAI_RESPONSES_FAMILY, upstream: OPENAI_RESPONSES_FAMILY, upstreamProfile: 'openai', requiresNativeResponses: true },
   { source: ANTHROPIC_MESSAGES_FAMILY, upstream: ANTHROPIC_MESSAGES_FAMILY, upstreamProfile: 'anthropic' },
   { source: GEMINI_GENERATE_CONTENT_FAMILY, upstream: GEMINI_GENERATE_CONTENT_FAMILY, upstreamProfile: 'gemini' },
@@ -83,8 +84,12 @@ export function assertAccountModelMappingProtocolAllowed(
   if (!openAIProfile && !anthropicProfile && !geminiProfile) {
     throw new Error('当前供应商协议不支持模型映射')
   }
-  if (geminiOpenAIChatProfile && mapping.sourceEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY) {
-    throw new Error('Gemini OpenAI Chat 档案的账号模型别名只能使用 Chat Completions')
+  if (
+    geminiOpenAIChatProfile
+    && mapping.sourceEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY
+    && mapping.sourceEndpointFamily !== OPENAI_RESPONSES_FAMILY
+  ) {
+    throw new Error('Gemini OpenAI Chat 档案的账号模型别名只能使用 Chat Completions 或 Responses 到 Chat bridge')
   }
   if (geminiOpenAIChatProfile && mapping.upstreamEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY) {
     throw new Error('Gemini OpenAI Chat 档案的账号模型别名上游协议只能是 Chat Completions')

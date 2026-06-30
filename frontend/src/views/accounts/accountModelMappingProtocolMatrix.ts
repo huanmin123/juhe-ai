@@ -41,6 +41,7 @@ type ProtocolConversionRule = {
 
 export const accountModelMappingProtocolRules: readonly ProtocolConversionRule[] = [
   { source: OPENAI_CHAT_COMPLETIONS_FAMILY, upstream: OPENAI_CHAT_COMPLETIONS_FAMILY, upstreamProfile: 'openai' },
+  { source: OPENAI_RESPONSES_FAMILY, upstream: OPENAI_CHAT_COMPLETIONS_FAMILY, upstreamProfile: 'openai' },
   { source: OPENAI_RESPONSES_FAMILY, upstream: OPENAI_RESPONSES_FAMILY, upstreamProfile: 'openai', requiresNativeResponses: true },
   { source: ANTHROPIC_MESSAGES_FAMILY, upstream: ANTHROPIC_MESSAGES_FAMILY, upstreamProfile: 'anthropic' },
   { source: GEMINI_GENERATE_CONTENT_FAMILY, upstream: GEMINI_GENERATE_CONTENT_FAMILY, upstreamProfile: 'gemini' },
@@ -92,6 +93,13 @@ export function accountModelMappingProtocolValidationMessage(input: {
 
   if (!openAIProfile && !anthropicProfile && !geminiProfile) {
     return '当前供应商协议不支持模型映射'
+  }
+  if (
+    geminiOpenAIChatProfile
+    && sourceEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY
+    && sourceEndpointFamily !== OPENAI_RESPONSES_FAMILY
+  ) {
+    return 'Gemini OpenAI Chat 账号模型别名只能使用 Chat Completions 或 Responses 到 Chat bridge'
   }
   if (geminiOpenAIChatProfile && upstreamEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY) {
     return 'Gemini OpenAI Chat 账号模型别名只能使用 Chat Completions'
@@ -229,6 +237,6 @@ function preferredUpstreamFamilies(
     return [GEMINI_GENERATE_CONTENT_FAMILY]
   }
   return sourceEndpointFamily === OPENAI_RESPONSES_FAMILY
-    ? [OPENAI_RESPONSES_FAMILY]
+    ? [OPENAI_CHAT_COMPLETIONS_FAMILY, OPENAI_RESPONSES_FAMILY]
     : [OPENAI_CHAT_COMPLETIONS_FAMILY]
 }

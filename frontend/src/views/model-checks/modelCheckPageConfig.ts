@@ -3,7 +3,15 @@ import type { ModelCheckOptions } from '@/types/domain'
 export const modelCheckFallbackOptions: ModelCheckOptions = {
   supportedModels: [
     { value: 'gpt-5.5', label: 'gpt-5.5' },
-    { value: 'gpt-5.4', label: 'gpt-5.4' }
+    { value: 'gpt-5.4', label: 'gpt-5.4' },
+    { value: 'claude-opus-4-8', label: 'claude-opus-4-8' },
+    { value: 'claude-opus-4-7', label: 'claude-opus-4-7' },
+    { value: 'glm-5.2', label: 'glm-5.2' },
+    { value: 'glm-5.1', label: 'glm-5.1' },
+    { value: 'deepseek-v4-flash', label: 'deepseek-v4-flash' },
+    { value: 'deepseek-v4-pro', label: 'deepseek-v4-pro' },
+    { value: 'gemini-3.5-flash', label: 'gemini-3.5-flash' },
+    { value: 'gemini-3.1-pro-preview', label: 'gemini-3.1-pro-preview' }
   ],
   supportedProfiles: [
     { value: 'full', label: '强诊断完整检测', description: '准确优先，不以成本和耗时为约束' }

@@ -237,6 +237,15 @@ const responsesOnly = account('responses-only', ['responses_json', 'responses_ss
 const jsonOnly = account('json-only', ['chat_json', 'responses_json'])
 const codexCapableApiKey = gptApiKeyAccount('gpt-api-key-codex', ['responses_json', 'responses_sse'])
 const deepSeekChatOnlyAccount = deepSeekApiKeyAccount('deepseek-chat-only', ['chat_json', 'chat_sse'], 'codex_responses')
+const deepSeekResponsesToChatMappedAccount = deepSeekApiKeyAccount('deepseek-responses-to-chat', ['chat_json', 'chat_sse'], 'codex_responses', [
+  {
+    sourceModel: 'gpt-5.5',
+    sourceEndpointFamily: 'responses',
+    upstreamModel: 'deepseek-v4-flash',
+    upstreamEndpointFamily: 'chat_completions',
+    enabled: true
+  }
+])
 
 assert.deepEqual(
   filterGatewayAccountsByRequestCapability(request('/v1/chat/completions', true), [chatOnly, responsesOnly, jsonOnly]).accounts.map((item) => item.id),
@@ -282,7 +291,14 @@ assert.deepEqual(
     requestClientCompatibility: 'codex_responses'
   }).accounts.map((item) => item.id),
   [],
-  'Codex Responses 请求不能命中普通 DeepSeek Chat-only 账号'
+  '没有显式 Responses -> Chat 模型映射时，Codex Responses 请求不能命中普通 DeepSeek Chat-only 账号'
+)
+assert.deepEqual(
+  filterGatewayAccountsByRequestCapability(request('/v1/responses', true, 'gpt-5.5'), [responsesOnly, deepSeekResponsesToChatMappedAccount], {
+    requestClientCompatibility: 'codex_responses'
+  }).accounts.map((item) => item.id),
+  ['deepseek-responses-to-chat'],
+  'Codex Responses 请求命中显式 Responses -> Chat 模型映射时应允许 DeepSeek Chat-only 账号承接'
 )
 assert.deepEqual(
   filterGatewayAccountsByRequestCapability(request('/v1/responses', true), [deepSeekChatOnlyAccount], {
@@ -306,12 +322,12 @@ assert.match(accountCredentialDriverRegistrySource, /glmAccountCredentialDriver/
 
 console.log('OpenAI/Anthropic 接口能力矩阵回归通过：默认值、写入校验和候选账号过滤均符合预期')
 
-function request(path: string, stream: boolean): Request {
+function request(path: string, stream: boolean, model = 'gpt-5.5'): Request {
   return {
     method: 'POST',
     path,
     originalUrl: path,
-    body: { stream }
+    body: { model, stream }
   } as Request
 }
 
@@ -339,13 +355,19 @@ function gptApiKeyAccount(id: string, modes: AccountSupportedEndpointMode[]): Up
   } as unknown as UpstreamAccount
 }
 
-function deepSeekApiKeyAccount(id: string, modes: AccountSupportedEndpointMode[], clientCompatibility: 'openai_standard' | 'codex_responses'): UpstreamAccount {
+function deepSeekApiKeyAccount(
+  id: string,
+  modes: AccountSupportedEndpointMode[],
+  clientCompatibility: 'openai_standard' | 'codex_responses',
+  modelMappings: UpstreamAccount['modelMappings'] = []
+): UpstreamAccount {
   return {
     ...account(id, modes),
     providerCode: 'deepseek',
     providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
     baseUrl: 'https://api.deepseek.com',
-    clientCompatibility
+    clientCompatibility,
+    modelMappings
   } as unknown as UpstreamAccount
 }
 

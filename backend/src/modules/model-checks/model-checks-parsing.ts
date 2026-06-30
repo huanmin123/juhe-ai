@@ -11,7 +11,7 @@ import {
   parseOpenAIStreamFailureMessage,
   parseOpenAIUpstreamMessage
 } from '../gateway/protocols/openai-v1/response-parsing.js'
-import { supportedModelSet, type SupportedModel } from './model-checks.constants.js'
+import { normalizeModelCheckModel, type SupportedModel } from './model-checks.profiles.js'
 
 export {
   extractOpenAIResponseOutputText,
@@ -42,9 +42,37 @@ export function parseFirstJsonObject(text?: string): Record<string, unknown> | u
 
 export function hasFunctionCall(payload: Record<string, unknown> | undefined, name: string): boolean {
   const output = Array.isArray(payload?.output) ? payload.output : []
-  return output.some((item) => {
+  if (output.some((item) => {
     const record = recordValue(item)
     return record?.type === 'function_call' && record.name === name
+  })) {
+    return true
+  }
+  const choices = Array.isArray(payload?.choices) ? payload.choices : []
+  if (choices.some((choice) => {
+    const message = recordValue(recordValue(choice)?.message)
+    const toolCalls = Array.isArray(message?.tool_calls) ? message.tool_calls : []
+    return toolCalls.some((toolCall) => {
+      const record = recordValue(toolCall)
+      const fn = recordValue(record?.function)
+      return textValue(fn?.name) === name
+    })
+  })) {
+    return true
+  }
+  const content = Array.isArray(payload?.content) ? payload.content : []
+  if (content.some((item) => {
+    const record = recordValue(item)
+    return record?.type === 'tool_use' && textValue(record.name) === name
+  })) {
+    return true
+  }
+  const candidates = Array.isArray(payload?.candidates) ? payload.candidates : []
+  return candidates.some((candidate) => {
+    const parts = Array.isArray(recordValue(recordValue(candidate)?.content)?.parts)
+      ? recordValue(recordValue(candidate)?.content)?.parts as unknown[]
+      : []
+    return parts.some((part) => textValue(recordValue(recordValue(part)?.functionCall)?.name) === name)
   })
 }
 
@@ -86,9 +114,7 @@ export function modelMatches(actual: unknown, expected: string): boolean {
 }
 
 export function normalizeModel(value: unknown): SupportedModel | undefined {
-  const text = textValue(value)
-  if (!text) return undefined
-  return supportedModelSet.has(text) ? text as SupportedModel : undefined
+  return normalizeModelCheckModel(value)
 }
 
 export function modelCheckLevelValue(value: unknown): 'high_confidence' | 'likely' | 'uncertain' | 'suspicious' | 'unavailable' | undefined {
@@ -121,7 +147,19 @@ export function numberValue(value: unknown): number | undefined {
 export function totalTokens(usage: Record<string, unknown> | undefined): number | undefined {
   return numberValue(usage?.total_tokens)
     ?? numberValue(usage?.totalTokens)
-    ?? sumDefined([numberValue(usage?.input_tokens), numberValue(usage?.output_tokens)])
+    ?? numberValue(usage?.totalTokenCount)
+    ?? sumDefined([
+      numberValue(usage?.input_tokens),
+      numberValue(usage?.output_tokens)
+    ])
+    ?? sumDefined([
+      numberValue(usage?.prompt_tokens),
+      numberValue(usage?.completion_tokens)
+    ])
+    ?? sumDefined([
+      numberValue(usage?.promptTokenCount),
+      numberValue(usage?.candidatesTokenCount)
+    ])
 }
 
 export function sumDefined(values: Array<number | undefined>): number | undefined {

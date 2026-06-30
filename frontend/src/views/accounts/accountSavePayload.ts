@@ -19,6 +19,11 @@ import {
   accountModelMappingEndpointFamilyText,
   accountModelMappingProtocolValidationMessage
 } from './accountModelMappingProtocolMatrix'
+import {
+  OPENAI_CHAT_COMPLETIONS_FAMILY,
+  OPENAI_RESPONSES_FAMILY,
+  isOpenAIProtocolProfile
+} from '@/shared/providerProtocol'
 
 export const ACCOUNT_API_KEY_BATCH_CREATE_LIMIT = 50
 
@@ -337,7 +342,14 @@ function validateAccountModelMappings(
     if (sourceModel === upstreamModel && sourceEndpointFamily === upstreamEndpointFamily) {
       return '模型映射的下游模型和上游模型不能完全相同'
     }
-    if (!modelOptionSupportsProtocol(sourceModel, sourceEndpointFamily, sourceModelOptionsForEndpointFamily(sourceEndpointFamily, options))) {
+    const sourceModelOptions = sourceModelOptionsForEndpointFamily(sourceEndpointFamily, options)
+    const sourceModelProtocolAllowed = isOpenAIResponsesToChatMapping(item, providerProfile)
+      ? (
+          modelOptionSupportsProtocol(sourceModel, OPENAI_RESPONSES_FAMILY, sourceModelOptions)
+          || modelOptionSupportsProtocol(sourceModel, OPENAI_CHAT_COMPLETIONS_FAMILY, sourceModelOptions)
+        )
+      : modelOptionSupportsProtocol(sourceModel, sourceEndpointFamily, sourceModelOptions)
+    if (!sourceModelProtocolAllowed) {
       return `下游模型 ${sourceModel} 不支持 ${accountModelMappingEndpointFamilyText(sourceEndpointFamily)} 协议，请先选择协议支持的模型`
     }
     if (!modelOptionSupportsProtocol(upstreamModel, upstreamEndpointFamily, options.mappingUpstreamModelOptions)) {
@@ -377,4 +389,13 @@ function modelOptionSupportsProtocol(
   const item = options.find((option) => option.value === model)
   if (!item) return true
   return Boolean(item.supportedApiProtocols?.includes(endpointFamily as ProviderModelApiProtocol))
+}
+
+function isOpenAIResponsesToChatMapping(
+  mapping: AccountFormModel['modelMappings'][number],
+  providerProfile?: ProviderDefinition | ProviderDefinition['protocolProfiles'][number]
+): boolean {
+  return mapping.sourceEndpointFamily === OPENAI_RESPONSES_FAMILY
+    && mapping.upstreamEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY
+    && isOpenAIProtocolProfile(providerProfile)
 }

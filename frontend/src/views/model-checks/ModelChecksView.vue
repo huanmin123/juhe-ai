@@ -8,7 +8,7 @@
       :comparison-select-placeholder="comparisonSelectPlaceholder"
       :is-management-view="isManagementView"
       :model="form.model"
-      :model-options="modelOptions"
+      :model-options="runModelOptions"
       :options-loading="optionsLoading"
       :selected-comparison-account="selectedComparisonAccount"
       :selected-target-account="selectedTargetAccount"
@@ -38,7 +38,7 @@
       @target-dropdown-visible-change="handleTargetDropdownVisibleChange"
       @target-search="handleTargetSearch"
       @target-value-update="handleTargetValueUpdate"
-      @update:model="form.model = $event"
+      @update:model="handleModelUpdate"
       @update:selected-comparison-account="selectedComparisonAccount = $event"
       @update:selected-target-account="selectedTargetAccount = $event"
       @update:system-account-filter="systemAccountFilter = $event || allSystemAccountsValue"
@@ -54,7 +54,7 @@
       :loading="runsLoading"
       :mobile-has-more="runsMobileHasMore"
       :mobile-loading-more="runsMobileLoadingMore"
-      :model-options="modelOptions"
+      :model-options="historyModelOptions"
       :runs="runs"
       :selected-history-target-account="selectedHistoryTargetAccount"
       :submitting="submitting"
@@ -132,6 +132,11 @@ import {
   terminalLevelForCheckStatus
 } from './modelCheckFormatters'
 import { modelCheckFallbackOptions, modelCheckPageSize } from './modelCheckPageConfig'
+import {
+  canUseModelCheckModelForAccount,
+  modelCheckModelsForAccount,
+  sameModelCheckAccountProfile
+} from './modelCheckProviderCapabilities'
 import type { ModelCheckTerminalLine } from './ModelCheckTerminal.vue'
 import ModelCheckRunPanel from './ModelCheckRunPanel.vue'
 import ModelCheckRunHistoryList from './ModelCheckRunHistoryList.vue'
@@ -213,7 +218,6 @@ const {
   }
 })
 
-const modelOptions = computed(() => options.value.supportedModels.map((item) => ({ label: item.label, value: item.value })))
 const selectedManagementSystemAccountId = computed(() => isManagementView.value
   ? scopedSystemAccountId(systemAccountFilter.value || allSystemAccountsValue)
   : undefined)
@@ -243,15 +247,17 @@ const {
   historyTargetOptions,
   historyTargetOptionsLoading,
   selectedComparisonAccount,
+  selectedComparisonAccountProfile,
   selectedHistoryTargetAccount,
   selectedTargetAccount,
+  selectedTargetAccountProfile,
   targetOptions,
   targetOptionsLoading,
   handleComparisonDropdownVisibleChange,
   handleComparisonSearch,
   handleHistoryTargetDropdownVisibleChange,
   handleHistoryTargetSearch,
-  handleTargetChange,
+  handleTargetChange: handleTargetAccountChange,
   handleTargetDropdownVisibleChange,
   handleTargetSearch,
   handleTargetValueUpdate,
@@ -265,6 +271,14 @@ const {
   form,
   modelCheckScopeParams,
   knownTargetName
+})
+const historyModelOptions = computed(() => options.value.supportedModels.map((item) => ({ label: item.label, value: item.value })))
+const runModelOptions = computed(() => {
+  const accountModels = modelCheckModelsForAccount(selectedTargetAccountProfile.value)
+  const supportedModels = accountModels.length
+    ? options.value.supportedModels.filter((item) => accountModels.includes(item.value))
+    : options.value.supportedModels
+  return supportedModels.map((item) => ({ label: item.label, value: item.value }))
 })
 const viewportWidth = ref(window.innerWidth)
 const detailDescriptionColumns = computed(() => (viewportWidth.value < 900 ? 1 : 2))
@@ -280,6 +294,7 @@ async function loadOptions() {
     options.value = nextOptions
     form.model = nextOptions.defaultModel
     form.profile = nextOptions.defaultProfile
+    ensureRunModelMatchesTarget()
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '加载模型检测选项失败'))
@@ -288,11 +303,47 @@ async function loadOptions() {
   }
 }
 
+function handleModelUpdate(model: ModelCheckModel) {
+  form.model = model
+  clearIncompatibleComparisonAccount()
+}
+
+function handleTargetChange() {
+  handleTargetAccountChange()
+  ensureRunModelMatchesTarget()
+  clearIncompatibleComparisonAccount()
+}
+
+function ensureRunModelMatchesTarget() {
+  const currentModel = form.model?.trim()
+  const nextModel = runModelOptions.value[0]?.value
+  if (nextModel && !runModelOptions.value.some((item) => item.value === currentModel)) {
+    form.model = nextModel
+  }
+}
+
+function clearIncompatibleComparisonAccount() {
+  if (!form.trustedComparisonAccountId) return
+  const comparisonProfile = selectedComparisonAccountProfile.value
+  if (!comparisonProfile) return
+  const targetProfile = selectedTargetAccountProfile.value
+  const sameProfile = targetProfile ? sameModelCheckAccountProfile(targetProfile, comparisonProfile) : true
+  if (sameProfile && canUseModelCheckModelForAccount(comparisonProfile, form.model)) return
+  form.trustedComparison = false
+  form.trustedComparisonAccountId = undefined
+  selectedComparisonAccount.value = undefined
+}
+
 async function submitRun() {
   const targetId = form.targetId.trim()
   const trustedComparisonAccountId = form.trustedComparisonAccountId?.trim()
   if (!targetId) {
     message.warning('请选择 AI 账户')
+    return
+  }
+  if (selectedTargetAccountProfile.value && !canUseModelCheckModelForAccount(selectedTargetAccountProfile.value, form.model)) {
+    message.warning('请选择该账户支持的完整模型 ID')
+    ensureRunModelMatchesTarget()
     return
   }
   if (trustedComparisonAccountId && trustedComparisonAccountId === targetId) {
@@ -394,6 +445,7 @@ function resetRunForm() {
   resetRunAccountSelection()
   form.model = options.value.defaultModel
   form.profile = options.value.defaultProfile
+  ensureRunModelMatchesTarget()
 }
 
 function resetTerminal() {

@@ -94,6 +94,8 @@ export function checkTitleByType(itemType: string, itemKey: string): string {
     model_catalog: '模型目录',
     responses_basic: 'Responses 非流式',
     responses_stream: 'Responses 流式',
+    protocol_basic: '协议非流式',
+    protocol_stream: '协议流式',
     structured_output: '结构化输出',
     tool_calling: '工具调用',
     usage_shape: 'Usage 字段',

@@ -123,7 +123,7 @@ assertMatch(aiConversionPrompt, /juhe-ai-account-import v1 JSON/, 'AI 提示词�
 assertMatch(aiConversionPrompt, /只输出合法 JSON/, 'AI 提示词应继续禁止输出解释或 Markdown')
 assertMatch(aiConversionPrompt, /不要编造来源数据里不存在的 token/, 'AI 提示词应继续约束 token 不可编造')
 assertMatch(aiConversionPrompt, /pending_test 或 disabled/, 'AI 提示词应允许不确定账户导入为待测试或停用')
-assertMatch(aiConversionPrompt, /只有 providerCode 为 hybrid 的混合供应商账户可以在 modelMappings 中填写跨协议映射/, 'AI 提示词应说明只有混合供应商账户可导入跨协议模型映射')
+assertMatch(aiConversionPrompt, /普通 OpenAI v1 账户可以用 modelMappings 显式填写 Responses -> Chat Completions/, 'AI 提示词应说明普通 OpenAI v1 账户可导入 Responses 到 Chat 映射')
 
 assertMatch(accountImportProtocolMarkdown, /# juhe-ai AI 账户导入协议 v1/, '协议 Markdown 应继续保留标题')
 assertMatch(accountImportProtocolMarkdown, /```json[\s\S]+juhe-ai-account-import[\s\S]+```/, '协议 Markdown 应继续包含 JSON 示例代码块')
@@ -145,7 +145,8 @@ assertMatch(accountImportProtocolMarkdown, /profile_deepseek_anthropic_v1/, '协
 assertMatch(accountImportProtocolMarkdown, /`modelMappings` 只做账号模型别名/, '协议 Markdown 应说明 modelMappings 只做账号模型别名')
 assertMatch(accountImportProtocolMarkdown, /混合供应商账户的 `modelMappings` 用于声明跨协议入口/, '协议 Markdown 应说明混合供应商账户使用 modelMappings 声明跨协议入口')
 assertMatch(accountImportProtocolMarkdown, /其他跨协议方向不要写入普通账户导入数据/, '协议 Markdown 应说明跨协议方向不写入普通账户导入数据')
-assertMatch(accountImportProtocolMarkdown, /需要把 OpenAI Responses 转到 Chat Completions[\s\S]+请使用[\s\S]+混合供应商账户配置/, '协议 Markdown 应说明跨协议桥接归属混合供应商账户')
+assertMatch(accountImportProtocolMarkdown, /OpenAI Responses 可映射到 Responses 或 Chat Completions/, '协议 Markdown 应说明普通 OpenAI v1 账户可声明 Responses 到 Chat 映射')
+assertMatch(accountImportProtocolMarkdown, /左侧 `sourceModel` 是下游 Responses 别名，可选择当前供应商目录内的 Chat-only 模型/, '协议 Markdown 应说明 OpenAI v1 Responses 到 Chat 映射可用 Chat-only 模型作为下游别名')
 assertMatch(accountImportProtocolMarkdown, /两者都必须来自当前账户供应商模型目录/, '协议 Markdown 应说明 source/upstream 均受当前供应商目录约束')
 assertMatch(accountImportProtocolMarkdown, /DeepSeek Claude Code 与 GLM Coding Anthropic 使用 Anthropic v1 Messages 原生协议，`credentials\.supported_endpoint_modes` 填 `messages_json`、`messages_sse`，不要填 `message_token_counting`/, '协议 Markdown 应说明第三方 Anthropic 档案不支持 count_tokens')
 assertMatch(accountImportProtocolMarkdown, /supported_endpoint_modes/, '协议 Markdown 应说明接口能力限制字段')
@@ -155,7 +156,8 @@ assertMatch(formalProtocolMarkdown, /# AI 账户导入协议/, '正式协议文�
 assertMatch(formalProtocolMarkdown, /`modelMappings` 只做账号模型别名/, '正式协议文档应说明 modelMappings 只做账号模型别名')
 assertMatch(formalProtocolMarkdown, /混合供应商账户的 `modelMappings` 用于声明跨协议入口/, '正式协议文档应说明混合供应商账户使用 modelMappings 声明跨协议入口')
 assertMatch(formalProtocolMarkdown, /其他跨协议方向不要写入普通账户导入数据/, '正式协议文档应说明跨协议方向不写入普通账户导入数据')
-assertMatch(formalProtocolMarkdown, /混合供应商账户配置真实上游和协议转换|混合供应商账户配置真实上游和协议转换能力/, '正式协议文档应说明跨协议桥接归属混合供应商账户')
+assertMatch(formalProtocolMarkdown, /OpenAI Responses 可映射到 Responses 或 Chat Completions/, '正式协议文档应说明普通 OpenAI v1 账户可声明 Responses 到 Chat 映射')
+assertMatch(formalProtocolMarkdown, /左侧 `sourceModel` 是下游 Responses 别名，可选择当前供应商目录内的 Chat-only 模型/, '正式协议文档应说明 OpenAI v1 Responses 到 Chat 映射可用 Chat-only 模型作为下游别名')
 
 console.log('账户导入协议回归通过：模板 JSON、AI 提示词和协议 Markdown 保持一致')
 

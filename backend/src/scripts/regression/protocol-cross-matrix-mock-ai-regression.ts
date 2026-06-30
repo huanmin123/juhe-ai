@@ -112,7 +112,7 @@ try {
     const baseUrl = `http://127.0.0.1:${serverAddress(appServer).port}`
 
     await assertOpenAIChatNativePasses(baseUrl, chatRuntime.apiKey)
-    await assertResponsesToOpenAIChatRejected(baseUrl, chatRuntime.apiKey)
+    await assertResponsesToOpenAIChatPasses(baseUrl, chatRuntime.apiKey)
     await assertAnthropicMessagesToOpenAIChatRejected(baseUrl, chatRuntime.apiKey)
     await assertGeminiNativeToOpenAIChatRejected(baseUrl, chatRuntime.apiKey)
     await assertOpenAIChatToAnthropicMessagesRejected(baseUrl, messagesRuntime.apiKey)
@@ -152,17 +152,19 @@ function registerCustomModels(): void {
       actorSystemAccountId: access.systemAccountId
     })
   }
-  saveCustomProviderModel({
-    providerCode: GPT_VENDOR_CODE,
-    model: openAIResponsesSourceModel,
-    scope: 'personal',
-    systemAccountId: access.systemAccountId,
-    status: 'active',
-    supportedApiProtocols: ['responses'],
-    inputUsdPer1M: 1,
-    outputUsdPer1M: 2,
-    actorSystemAccountId: access.systemAccountId
-  })
+  for (const providerCode of [GPT_VENDOR_CODE, OPENAI_COMPATIBLE_PROVIDER_CODE]) {
+    saveCustomProviderModel({
+      providerCode,
+      model: openAIResponsesSourceModel,
+      scope: 'personal',
+      systemAccountId: access.systemAccountId,
+      status: 'active',
+      supportedApiProtocols: ['responses'],
+      inputUsdPer1M: 1,
+      outputUsdPer1M: 2,
+      actorSystemAccountId: access.systemAccountId
+    })
+  }
   saveCustomProviderModel({
     providerCode: ANTHROPIC_PROVIDER_CODE,
     model: anthropicMessagesSourceModel,
@@ -205,13 +207,13 @@ function assertAccountModelMappingsRejectCrossProtocol(upstreamOrigin: string): 
     providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
-  assert.throws(() => repositories.createAccount({
+  const openAIResponsesBridgeAccount = repositories.createAccount({
     providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
     providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
-    name: '协议交叉矩阵错误跨协议映射账号',
+    name: '协议交叉矩阵 OpenAI Responses 到 Chat 映射账号',
     type: 'api_key',
     credentials: {
-      api_key: 'sk-cross-invalid-mapping',
+      api_key: 'sk-cross-openai-responses-to-chat-mapping',
       base_url: `${upstreamOrigin}/openai-compatible`,
       supported_endpoint_modes: ['chat_json', 'chat_sse']
     },
@@ -226,7 +228,12 @@ function assertAccountModelMappingsRejectCrossProtocol(upstreamOrigin: string): 
     }],
     status: 'active',
     schedulable: true
-  }, access), /账号模型别名只支持同协议映射|请改用混合供应商账户/)
+  }, access)
+  assert.equal(
+    openAIResponsesBridgeAccount.modelMappings?.[0]?.upstreamEndpointFamily,
+    'chat_completions',
+    'OpenAI v1 普通账号应允许 Responses -> Chat Completions 显式映射'
+  )
 
   const hybridGroup = repositories.createGroup({
     name: '协议交叉矩阵混合供应商 Responses 上游拒绝分组',
@@ -280,6 +287,12 @@ function createOpenAIChatRuntime(upstreamOrigin: string): CrossRuntime {
     modelMappings: [{
       sourceModel: openAIChatSourceModel,
       sourceEndpointFamily: 'chat_completions',
+      upstreamModel: openAIChatUpstreamModel,
+      upstreamEndpointFamily: 'chat_completions',
+      enabled: true
+    }, {
+      sourceModel: openAIResponsesSourceModel,
+      sourceEndpointFamily: 'responses',
       upstreamModel: openAIChatUpstreamModel,
       upstreamEndpointFamily: 'chat_completions',
       enabled: true
@@ -457,12 +470,23 @@ async function assertOpenAIChatNativePasses(baseUrl: string, localApiKey: string
   assert.equal(hit.body.model, openAIChatUpstreamModel, '同协议模型映射应改写为当前账号上游模型')
 }
 
-async function assertResponsesToOpenAIChatRejected(baseUrl: string, localApiKey: string): Promise<void> {
-  await assertCrossProtocolRejected('Responses -> OpenAI Chat', baseUrl, '/v1/responses', localApiKey, {
+async function assertResponsesToOpenAIChatPasses(baseUrl: string, localApiKey: string): Promise<void> {
+  const start = upstreamHits.length
+  const response = await gatewayFetch(baseUrl, '/v1/responses', localApiKey, {
     model: openAIResponsesSourceModel,
     input: 'ping',
-    stream: false
-  })
+    stream: true
+  }, { accept: 'text/event-stream' })
+  const text = await response.text()
+  assert.equal(response.status, 200, `OpenAI-compatible Responses -> Chat 显式映射应成功，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /response\.completed/, 'Responses -> Chat bridge 应返回 Responses completed 事件')
+  assert.match(text, /cross chat stream ok/, 'Chat SSE 文本应转为 Responses 事件')
+  const hit = onlyNewHit(start)
+  assert.equal(hit.path, '/openai-compatible/v1/chat/completions')
+  assert.equal(hit.authorization, 'Bearer sk-cross-openai-chat-upstream')
+  assert.equal(hit.body.model, openAIChatUpstreamModel, 'Responses -> Chat 显式模型映射应改写为当前账号上游模型')
+  assert.equal(hit.body.stream, true, 'Responses -> Chat bridge 必须使用上游 Chat SSE')
+  assert(Array.isArray(hit.body.messages), 'Responses -> Chat bridge 应把 input 转成 Chat messages')
 }
 
 async function assertAnthropicMessagesToOpenAIChatRejected(baseUrl: string, localApiKey: string): Promise<void> {
@@ -612,6 +636,17 @@ function createCrossProtocolMockUpstream(): http.Server {
         return
       }
       if (req.url?.split('?', 1)[0] === '/openai-compatible/v1/chat/completions') {
+        const requestBody = safeJson(bodyText)
+        if (requestBody.stream === true) {
+          res.writeHead(200, {
+            'content-type': 'text/event-stream; charset=utf-8',
+            'cache-control': 'no-cache'
+          })
+          res.write('data: {"id":"chatcmpl-cross-boundary-stream","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"cross chat stream ok"},"finish_reason":null}]}\n\n')
+          res.write('data: {"id":"chatcmpl-cross-boundary-stream","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":3,"total_tokens":6}}\n\n')
+          res.end('data: [DONE]\n\n')
+          return
+        }
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify({
           id: 'chatcmpl-cross-boundary',

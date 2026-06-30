@@ -1,4 +1,5 @@
 import type { AccountSummary, ApiKeySummary, GroupSummary } from '../../../domain/types.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../../domain/provider-protocol.js'
 import type { AccessScope } from '../../../storage/access-scope.js'
 import * as repositories from '../../../storage/repositories.js'
 
@@ -33,6 +34,7 @@ export function createMockGatewayFixture(options: MockGatewayFixtureOptions): Mo
   const group = repositories.createGroup({
     name: `${nameScope}分组-${runId}`,
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     description: `${options.label}通过 Mockdata 共享夹具生成的临时分组`,
     enabled: true
   }, access)
@@ -41,6 +43,7 @@ export function createMockGatewayFixture(options: MockGatewayFixtureOptions): Mo
   for (let index = 0; index < accountCount; index += 1) {
     accounts.push(repositories.createAccount({
       providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: `${nameScope}账户-${index + 1}-${runId}`,
       type: 'api_key',
       credentials: {

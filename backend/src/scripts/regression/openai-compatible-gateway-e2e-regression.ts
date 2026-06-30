@@ -8,7 +8,10 @@ import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fi
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { OPENAI_COMPATIBLE_PROVIDER_CODE } from '../../domain/provider-protocol.js'
+import {
+  OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
+  OPENAI_COMPATIBLE_PROVIDER_CODE
+} from '../../domain/provider-protocol.js'
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
 import { saveCustomProviderModel } from '../../modules/model-pricing/model-catalog.service.js'
 import { logger } from '../../shared/logger.js'
@@ -52,6 +55,8 @@ let upstreamPath = ''
 let upstreamRequestBody = ''
 const chatToResponsesSourceModel = 'openai-compatible-chat-to-responses-source'
 const chatToResponsesUpstreamModel = 'openai-compatible-responses-upstream'
+const responsesToChatSourceModel = 'openai-compatible-responses-source'
+const responsesToChatUpstreamModel = 'openai-compatible-chat-upstream'
 
 const app = express()
 app.use(requestContextMiddleware)
@@ -72,10 +77,12 @@ try {
     const group = repositories.createGroup({
       name: '通用 OpenAI 兼容网关 E2E 分组',
       providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
       enabled: true
     }, access)
     assert.throws(() => repositories.createAccount({
       providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
       name: '通用 OpenAI 兼容网关非法 Chat 到 Responses 映射账户',
       type: 'api_key',
       credentials: {
@@ -97,16 +104,25 @@ try {
 
     const account = repositories.createAccount({
       providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
       name: '通用 OpenAI 兼容网关 E2E 账户',
       type: 'api_key',
       credentials: {
         api_key: 'sk-openai-compatible-upstream',
         base_url: upstreamBaseUrl,
-        supported_endpoint_modes: ['chat_json', 'chat_sse', 'responses_json', 'responses_sse']
+        supported_endpoint_modes: ['chat_json', 'chat_sse']
       },
       groupId: group.id,
       status: 'active',
-      schedulable: true
+      schedulable: true,
+      supportedModels: ['gpt-5.5', responsesToChatUpstreamModel],
+      modelMappings: [{
+        sourceModel: responsesToChatSourceModel,
+        sourceEndpointFamily: 'responses',
+        upstreamModel: responsesToChatUpstreamModel,
+        upstreamEndpointFamily: 'chat_completions',
+        enabled: true
+      }]
     }, access)
     const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: '通用 OpenAI 兼容网关 E2E Key',
@@ -139,6 +155,31 @@ try {
     assert.equal(upstreamPath, '/v1/chat/completions')
     assert.equal(upstreamAuthorization, 'Bearer sk-openai-compatible-upstream')
     assert.match(upstreamRequestBody, /generic openai provider/)
+
+    const bridgeResponse = await fetch(`${baseUrl}/v1/responses?trace=openai-compatible-responses-to-chat`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${apiKey.key}`,
+        'content-type': 'application/json',
+        accept: 'text/event-stream'
+      },
+      body: JSON.stringify({
+        model: responsesToChatSourceModel,
+        input: 'hello generic openai responses bridge',
+        stream: true
+      })
+    })
+    const bridgeText = await bridgeResponse.text()
+    assert.equal(bridgeResponse.status, 200, `通用 openai 供应商 Responses -> Chat 映射请求应成功，实际 HTTP ${bridgeResponse.status}: ${bridgeText}`)
+    assert.match(bridgeResponse.headers.get('content-type') ?? '', /text\/event-stream/)
+    assert.match(bridgeText, /response\.completed/, 'Responses -> Chat 映射响应应渲染 Responses 完成事件')
+    assert.match(bridgeText, /generic openai provider stream ok/, 'Chat SSE 内容应转成 Responses 文本事件')
+    assert.equal(upstreamHitCount, 2, 'Responses -> Chat bridge 应追加命中一次 mock 上游')
+    assert.equal(upstreamPath, '/v1/chat/completions?trace=openai-compatible-responses-to-chat')
+    const bridgeUpstreamBody = JSON.parse(upstreamRequestBody) as { model?: string; stream?: boolean; messages?: unknown[] }
+    assert.equal(bridgeUpstreamBody.model, responsesToChatUpstreamModel, 'Responses -> Chat 映射必须改写上游 Chat 模型')
+    assert.equal(bridgeUpstreamBody.stream, true, 'Responses -> Chat bridge 必须使用 Chat SSE')
+    assert(Array.isArray(bridgeUpstreamBody.messages), 'Responses -> Chat bridge 必须生成 Chat messages')
 
     const updated = repositories.findAccountSummary(account.id, access)
     assert.equal(updated?.providerCode, OPENAI_COMPATIBLE_PROVIDER_CODE, '命中账号应保持通用 openai providerCode')
@@ -174,6 +215,28 @@ function registerCustomModels(): void {
       actorSystemAccountId: access.systemAccountId
     })
   }
+  saveCustomProviderModel({
+    providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+    model: responsesToChatSourceModel,
+    scope: 'personal',
+    systemAccountId: access.systemAccountId,
+    status: 'active',
+    supportedApiProtocols: ['responses'],
+    inputUsdPer1M: 1,
+    outputUsdPer1M: 2,
+    actorSystemAccountId: access.systemAccountId
+  })
+  saveCustomProviderModel({
+    providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+    model: responsesToChatUpstreamModel,
+    scope: 'personal',
+    systemAccountId: access.systemAccountId,
+    status: 'active',
+    supportedApiProtocols: ['chat_completions'],
+    inputUsdPer1M: 1,
+    outputUsdPer1M: 2,
+    actorSystemAccountId: access.systemAccountId
+  })
 }
 
 function createOpenAICompatibleUpstream(): http.Server {
@@ -223,6 +286,17 @@ function createOpenAICompatibleUpstream(): http.Server {
             total_tokens: 11
           }
         }))
+        return
+      }
+      const requestBody = JSON.parse(upstreamRequestBody) as { stream?: boolean }
+      if (requestBody.stream === true) {
+        res.writeHead(200, {
+          'content-type': 'text/event-stream; charset=utf-8',
+          'cache-control': 'no-cache'
+        })
+        res.write('data: {"id":"chatcmpl-openai-compatible-e2e-stream","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"generic openai provider stream ok"},"finish_reason":null}]}\n\n')
+        res.write('data: {"id":"chatcmpl-openai-compatible-e2e-stream","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}}\n\n')
+        res.end('data: [DONE]\n\n')
         return
       }
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })

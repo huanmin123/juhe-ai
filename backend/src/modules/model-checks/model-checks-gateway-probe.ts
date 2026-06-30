@@ -14,20 +14,17 @@ import {
 } from '../gateway/testing/memory-gateway-http.js'
 import {
   bounded,
-  extractOpenAIResponseOutputText,
-  modelFromSse,
-  parseJsonRecord,
-  parseOpenAIStreamFailureMessage,
   parseUpstreamMessage,
-  recordValue,
-  textValue,
   throwIfAborted,
-  usageFromSse
 } from './model-checks-parsing.js'
 import {
   emptyProbeResult,
   type GatewayProbeResult
 } from './model-checks-evaluation.js'
+import {
+  parseModelCheckProbeResponse
+} from './model-checks-response-parsing.js'
+import type { ModelCheckProbeProtocol } from './model-checks.profiles.js'
 
 const probeMaxAttempts = accountDiagnosticRetryTimeoutMs.length
 
@@ -41,6 +38,8 @@ export type GatewayProbeInput = {
   path: string
   itemKey: string
   body?: Record<string, unknown>
+  responseProtocol?: ModelCheckProbeProtocol
+  expectedModel?: string
 }
 
 type GatewayProbeProgressEvent = {
@@ -187,22 +186,25 @@ async function runGatewayProbeAttempt(
     return result
   }
   const bodyText = response.bodyText()
-  const json = parseJsonRecord(bodyText)
-  const outputText = extractOpenAIResponseOutputText(bodyText)
+  const parsed = parseModelCheckProbeResponse({
+    bodyText,
+    protocol: probe.responseProtocol ?? 'openai_responses',
+    path: probe.path
+  })
   const result = {
     traceId,
     statusCode: response.statusCode,
-    success: response.statusCode >= 200 && response.statusCode < 300 && !parseOpenAIStreamFailureMessage(bodyText),
+    success: response.statusCode >= 200 && response.statusCode < 300 && !parsed.streamFailureMessage,
     durationMs: Date.now() - startedAt,
     firstTokenMs: response.firstTokenMs(),
     bodyText,
     bodyTruncated: response.bodyTruncated(),
     headers: response.headersObject(),
-    json,
-    outputText,
-    model: textValue(json?.model) ?? modelFromSse(bodyText),
-    usage: recordValue(json?.usage) ?? usageFromSse(bodyText),
-    errorMessage: parseUpstreamMessage(bodyText)
+    json: parsed.json,
+    outputText: parsed.outputText,
+    model: parsed.model,
+    usage: parsed.usage,
+    errorMessage: parsed.errorMessage ?? parseUpstreamMessage(bodyText)
   }
   emitGatewayProbeProgress(progress, {
     type: 'probe_completed',

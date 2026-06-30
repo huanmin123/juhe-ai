@@ -14,8 +14,10 @@ import {
   GEMINI_GENERATE_CONTENT_FAMILY,
   GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
   GEMINI_STREAM_GENERATE_CONTENT_FAMILY,
+  GLM_GENERAL_OPENAI_V1_PROFILE_ID,
   GLM_CODING_OPENAI_V1_PROFILE_ID,
   OPENAI_CHAT_COMPLETIONS_FAMILY,
+  OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
   OPENAI_RESPONSES_FAMILY,
   isGptVendorCode,
   isAnthropicProtocolProfile,
@@ -179,7 +181,9 @@ export function defaultEndpointModesForAccount(input: {
 
 export function profileSupportsCodexResponsesChatBridge(profile?: AccountProviderProfileLike): boolean {
   const profileId = profile?.providerProtocolProfileId ?? profile?.id
-  return profileId === GLM_CODING_OPENAI_V1_PROFILE_ID
+  return profileId === OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID
+    || profileId === GLM_GENERAL_OPENAI_V1_PROFILE_ID
+    || profileId === GLM_CODING_OPENAI_V1_PROFILE_ID
     || profileId === DEEPSEEK_OPENAI_V1_PROFILE_ID
     || profileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID
 }

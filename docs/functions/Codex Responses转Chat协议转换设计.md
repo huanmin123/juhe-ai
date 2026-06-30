@@ -1,10 +1,10 @@
 # Codex Responses 转 Chat 协议转换设计
 
-> 2026-06-27 路由分层更新：本文描述的是可复用协议转换能力和历史桥接测试背景，不表示 API Key 或策略路由可以保存显式跨协议规则。当前目标是 API Key 只绑定策略路由，策略路由只负责分组和模型调度；Codex Responses 到 Chat-only 上游这类跨协议承接后续落到混合供应商账户。
+> 2026-06-27 路由分层更新：本文描述的是可复用协议转换能力和历史桥接测试背景，不表示 API Key 或策略路由可以保存显式跨协议规则。当前目标是 API Key 只绑定策略路由，策略路由只负责分组和模型调度；OpenAI v1 普通账号可通过 `modelMappings` 显式声明 `responses -> chat_completions`，其他跨协议承接落到混合供应商账户。
 
 ## 范围
 
-本文记录项目内“Codex 客户端 Responses 请求 -> 上游 OpenAI-compatible Chat Completions”的通用转换层。该能力不是 GLM 专属：GLM Coding Plan 是第一批启用者，后续 DeepSeek、Kimi 或其他只支持 Chat Completions 的 OpenAI-compatible 上游如需承接 Codex 客户端，也应复用同一转换层，再在供应商 driver 内按自身协议细节做少量配置。
+本文记录项目内“Codex / OpenAI Responses 请求 -> 上游 OpenAI-compatible Chat Completions”的通用转换层。该能力不是 GLM 专属：GLM Coding Plan、DeepSeek、Gemini OpenAI Chat、Kimi 或其他只支持 Chat Completions 的 OpenAI-compatible 上游如需承接 Responses 客户端，都应复用同一转换层，再在供应商 driver 内按自身协议细节做少量配置。
 
 OpenAI Chat / Responses 到 Anthropic Messages 是另一条桥接线，不复用本文的 Chat-only 结论；它需要同时覆盖 Chat JSON、Chat SSE、Responses JSON、Responses SSE 四类下游入口，设计见 [OpenAI 到 Anthropic Messages 协议桥接设计](OpenAI到Anthropic协议桥接设计.md)。
 
@@ -13,13 +13,14 @@ OpenAI Chat / Responses 到 Anthropic Messages 是另一条桥接线，不复用
 - 通用转换层：`backend/src/modules/providers/drivers/_shared/codex-responses-chat-bridge.ts`
 - GLM 启用点：`backend/src/modules/providers/drivers/glm/driver.ts`
 - DeepSeek 启用点：`backend/src/modules/providers/drivers/deepseek/driver.ts`
+- 普通账号模型映射判断：`backend/src/modules/gateway/protocols/openai-v1/model-mapping.ts`
 
 ## 设计原则
 
 - 协议转换是共享基础设施，不写死在单个供应商目录下。
 - 供应商 driver 只负责判断是否启用、默认模型、模型映射、上游路径和供应商级细节。
 - 账户能力仍按真实上游能力保存。只支持 Chat 的上游账户不伪装成 `responses_sse`，桥接层只是让特定客户端请求在调度时要求账户具备 `chat_sse`。
-- 当前 bridge 只承接 Codex 客户端的流式 `/v1/responses` 主路径，不实现完整 OpenAI Responses API。
+- 当前 bridge 只承接显式映射命中的流式 `/v1/responses` 主路径，不实现完整 OpenAI Responses API。
 - 原生 Responses / OpenAI OAuth Codex 路径和 Chat-only bridge 是两条不同能力线：前者可以透传 `/responses/compact` 等原生能力，后者必须由网关维护 `previous_response_id` 状态和自有 compact envelope，不能要求 Chat 上游认识 Responses 状态。
 - Anthropic Messages bridge 不属于本文的 `responses -> chat_completions` 范围；它的上游真实 endpoint family 是 `messages`，返回侧必须按下游 Chat / Responses 协议重新渲染。
 
@@ -32,20 +33,20 @@ OpenAI Chat / Responses 到 Anthropic Messages 是另一条桥接线，不复用
 
 ## 启用条件
 
-通用桥接层只有在供应商 driver 显式开启时才生效。当前启用范围：
+通用桥接层只有在供应商 driver 和账号模型映射共同满足条件时才生效。当前启用范围：
 
 - GLM Coding：`profile_glm_coding_openai_v1`。
 - DeepSeek OpenAI v1：`profile_deepseek_openai_v1`。
+- 通用 OpenAI-compatible / Gemini OpenAI Chat 等 OpenAI v1 Chat-only 档案在显式 `responses -> chat_completions` 映射命中时复用同一转换层。
 
 共同启用条件：
 
-- 下游请求侧客户端画像识别为 `codex_responses`，并且命中混合供应商账户的 `responses -> chat_completions` 配置；普通账号自身不再通过 `client_compatibility` 开关或 API Key 字段承接跨协议桥接。
 - 下游请求是 `POST /responses` 或 `POST /v1/responses`。
-- 请求被客户端画像识别为 `codex_responses`。
+- 请求命中普通 OpenAI v1 账号的显式 `responses -> chat_completions` 模型映射；旧 `runtimeSource=explicit_hybrid_route` 注入不再生效。
 - 下游请求是流式请求，即 `stream=true` 且 `Accept: text/event-stream` 语义成立。
 - 账户真实 endpoint mode 支持 `chat_sse`。
 
-通用 GLM API 档案不启用桥接；GLM Coding / DeepSeek 账户保存为 OpenAI 标准时不启用桥接；普通 OpenAI-compatible 客户端发起 `/v1/responses` 也不进入桥接。
+未配置模型映射的通用 GLM / DeepSeek / OpenAI-compatible Chat-only 账号不启用桥接；普通 OpenAI-compatible 客户端发起 `/v1/responses` 时，只有模型映射命中才进入桥接。
 
 ## 请求转换
 
@@ -191,7 +192,7 @@ Chat-only compact 的摘要模型只能在当前请求授权边界内选择：
 
 - 已用 Codex 源码确认：普通 function call 应通过最终 `response.output_item.done` 的 `type=function_call` item 交给 Codex；`response.function_call_arguments.delta` 当前不被普通 function call 路径消费。
 - 已用 Codex 源码确认：Codex input / output item 覆盖 `function_call_output`、`custom_tool_call_output`、`input_image`、`reasoning`、`web_search_call`、`image_generation_call`、`compaction` 等多个形态；Chat bridge 只覆盖其中能无损或低风险映射到 Chat Completions 的子集。
-- 当前 mock AI 覆盖普通 Chat-only 账号拒绝 `/v1/responses`，旧显式混合映射不会把 Responses 改写到 Chat；共享 bridge 的请求 / 响应转换细节保留为混合供应商账户后续复用能力，包括 `stream_options.include_usage`、function tools、历史 `reasoning` / `function_call` 归一化、`previous_response_id`、`/responses/compact`、Chat reasoning/text delta 到 Responses 事件和错误事件转换。
+- 当前 mock AI 覆盖未配置映射的普通 Chat-only 账号拒绝 `/v1/responses`、普通 OpenAI v1 账号显式 `responses -> chat_completions` bridge、旧显式混合映射不会把 Responses 改写到 Chat；共享 bridge 的请求 / 响应转换细节也保留为混合供应商账户复用能力，包括 `stream_options.include_usage`、function tools、历史 `reasoning` / `function_call` 归一化、`previous_response_id`、`/responses/compact`、Chat reasoning/text delta 到 Responses 事件和错误事件转换。
 - DeepSeek mock AI 已覆盖 bridge 的文本、`stream_options.include_usage`、request history `reasoning` -> DeepSeek `reasoning_content`、历史 `function_call/function_call_output` 成组归一化、交错工具输出保留、裸 `message role=tool` / dangling / orphan 工具历史丢弃、auto `web_search` guidance 且不命中上游、`previous_response_id` 成功续链、未知 previous 受控拒绝、`/responses/compact` 走内部 Chat Completions 摘要并返回 `compaction_summary`、compact item 后续回灌、function tool、input_image data URL、usage 映射和 `insufficient_system_resource` finish_reason 转可重试失败。
 - 本地真实 CLI 回归已覆盖 Claude Code、Codex CLI、opencode -> 本地网关 -> 上游 mock 的基础链路。2026-06-24 新增 Codex CLI -> 本地网关 `/v1/responses` -> DeepSeek driver -> vsllm `deepseek-v4-flash` 的真实 marker 链路，Codex 携带 `x-codex-turn-metadata`，下游模型保留为 `gpt-5.3-codex`，上游映射到 Chat Completions 后成功返回并被 Codex 消费。
 - 2026-06-24 真实 Codex CLI 工具链路验证：DeepSeek `deepseek-v4-flash` 编程任务中，Codex 成功识别 bridge 输出的 function call，并进入 `command_execution` 工具调用；最终任务失败是因为模型生成的 PowerShell 写文件命令被本地 Codex policy 拒绝，临时项目测试仍停留在 TODO。这证明协议层工具调用可被 Codex 识别，但不证明该上游模型具备稳定完成 Codex 编程任务的质量。

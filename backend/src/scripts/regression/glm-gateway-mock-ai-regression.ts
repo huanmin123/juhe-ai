@@ -101,6 +101,13 @@ try {
       groupName: 'GLM Mock Coding 分组',
       localApiKeyName: 'GLM Mock Coding Key',
       supportedModels: ['glm-5.2'],
+      modelMappings: [{
+        sourceModel: 'glm-5.2',
+        sourceEndpointFamily: 'responses',
+        upstreamModel: 'glm-5.2',
+        upstreamEndpointFamily: 'chat_completions',
+        enabled: true
+      }],
       providerProtocolProfileId: GLM_CODING_OPENAI_V1_PROFILE_ID,
       upstreamApiKey: 'sk-glm-coding-upstream'
     })
@@ -137,7 +144,7 @@ try {
       expectedAuthorization: 'Bearer sk-glm-coding-upstream',
       expectedContent: 'glm mock sse ok'
     })
-    await assertGlmCodingRejectsResponsesBridge(baseUrl, coding.localApiKey)
+    await assertGlmCodingResponsesBridge(baseUrl, coding.localApiKey)
     await assertGlmCodingRejectsResponsesBridge(baseUrl, codingOpenAIStandard.localApiKey)
     await assertGlmJsonErrorSuppressesAndRecovers(baseUrl, failover.localApiKey, failover.rescueAccountId)
     await assertGlmRejectsResponses(baseUrl, general.localApiKey)
@@ -222,6 +229,13 @@ function createGlmScenario(input: {
   groupName: string
   localApiKeyName: string
   supportedModels?: string[]
+  modelMappings?: Array<{
+    sourceModel: string
+    sourceEndpointFamily: 'responses'
+    upstreamModel: string
+    upstreamEndpointFamily: 'chat_completions'
+    enabled: boolean
+  }>
   providerProtocolProfileId: string
   upstreamApiKey: string
 }): { accountId: string; groupId: string; localApiKey: string } {
@@ -241,6 +255,7 @@ function createGlmScenario(input: {
       base_url: input.baseUrl
     },
     supportedModels: input.supportedModels,
+    modelMappings: input.modelMappings,
     groupId: group.id,
     status: 'active',
     priority: 0,
@@ -522,6 +537,40 @@ async function assertGlmRejectsResponses(baseUrl: string, localApiKey: string): 
   assert.equal(upstreamHits.length, start, 'GLM 拒绝 Responses 时不应命中上游')
 }
 
+async function assertGlmCodingResponsesBridge(baseUrl: string, localApiKey: string): Promise<void> {
+  const start = upstreamHits.length
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream',
+      'x-codex-turn-metadata': JSON.stringify({
+        session_id: 'glm-standard-session',
+        thread_id: 'glm-standard-thread',
+        turn_id: 'glm-standard-turn'
+      })
+    },
+    body: JSON.stringify({
+      model: 'glm-5.2',
+      input: 'responses should reach glm chat bridge',
+      stream: true,
+      store: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `GLM Coding Key 显式 Responses -> Chat 映射应成功，实际返回失败：${text}`)
+  assert.match(response.headers.get('content-type') ?? '', /text\/event-stream/, 'GLM Responses -> Chat bridge 响应应是 SSE')
+  assert.match(text, /response\.completed/, 'GLM Responses -> Chat bridge 应返回 Responses completed 事件')
+  assert.match(text, /glm mock sse ok/, 'GLM Chat SSE 文本应转成 Responses 事件')
+  assert.equal(upstreamHits.length, start + 1, 'GLM Responses -> Chat bridge 应命中一次上游')
+  assert.equal(upstreamHits[start]?.path, '/api/coding/paas/v4/chat/completions')
+  assert.equal(upstreamHits[start]?.authorization, 'Bearer sk-glm-coding-upstream')
+  const upstreamBody = parseJsonObject(upstreamHits[start]?.bodyText ?? '{}')
+  assert.equal(upstreamBody.model, 'glm-5.2')
+  assert.equal(upstreamBody.stream, true, 'GLM Responses -> Chat bridge 必须使用上游 Chat SSE')
+}
+
 async function assertGlmCodingRejectsResponsesBridge(baseUrl: string, localApiKey: string): Promise<void> {
   const start = upstreamHits.length
   const response = await fetch(`${baseUrl}/v1/responses`, {
@@ -538,14 +587,14 @@ async function assertGlmCodingRejectsResponsesBridge(baseUrl: string, localApiKe
     },
     body: JSON.stringify({
       model: 'glm-5.2',
-      input: 'responses should require a hybrid provider account',
+      input: 'responses should require explicit model mapping',
       stream: true,
       store: false
     })
   })
   const text = await response.text()
-  assert.notEqual(response.status, 200, `普通 GLM Coding Key 不应承接 Responses -> Chat 跨协议转换，实际返回成功：${text}`)
-  assert.equal(upstreamHits.length, start, '普通 GLM Coding Key 拒绝 Responses -> Chat 时不应命中上游')
+  assert.notEqual(response.status, 200, `未配置 Responses -> Chat 映射的 GLM Coding Key 不应承接 Responses，实际返回成功：${text}`)
+  assert.equal(upstreamHits.length, start, '未配置 Responses -> Chat 映射时不应命中上游')
 }
 
 function createGlmMockUpstream(): http.Server {

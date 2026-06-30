@@ -8,6 +8,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import type { AccountSummary, AccountTestResult } from '../../domain/types.js'
 import { logger } from '../../shared/logger.js'
 
@@ -102,12 +103,14 @@ try {
 
   const group = await postEnvelope<{ id: string; name: string }>(backendBaseUrl, '/groups', cookie, {
     name: `批量测试 mock AI 分组 ${Date.now()}`,
-    providerCode: 'gpt'
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   })
   const accounts: AccountSummary[] = []
   for (let index = 0; index < batchSize; index += 1) {
     const account = await postEnvelope<AccountSummary>(backendBaseUrl, '/accounts', cookie, {
       providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: `批量测试 mock AI 账户 ${index + 1}`,
       type: 'api_key',
       credentials: {

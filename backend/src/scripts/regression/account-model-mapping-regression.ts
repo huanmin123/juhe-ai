@@ -13,6 +13,8 @@ import {
   GEMINI_PROVIDER_CODE,
   GLM_PROVIDER_CODE,
   GLM_GENERAL_OPENAI_V1_PROFILE_ID,
+  OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
+  OPENAI_COMPATIBLE_PROVIDER_CODE,
   GPT_OPENAI_V1_PROFILE_ID,
   GPT_VENDOR_CODE,
   HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
@@ -218,7 +220,7 @@ try {
     model: upstreamModel,
     scope: 'personal',
     systemAccountId: ownerAccess.systemAccountId,
-    supportedApiProtocols: ['responses'],
+    supportedApiProtocols: ['chat_completions', 'responses'],
     inputUsdPer1M: 3,
     outputUsdPer1M: 9,
     actorSystemAccountId: ownerAccess.systemAccountId
@@ -236,6 +238,36 @@ try {
   assert.deepEqual(anthropicMessagesModel.supportedApiProtocols, ['messages', 'message_token_counting'], 'Anthropic 自定义模型协议白名单应保留 messages 与 message_token_counting')
   saveCustomProviderModel({
     providerCode: GPT_VENDOR_CODE,
+    model: chatCompletionsUpstreamModel,
+    scope: 'personal',
+    systemAccountId: ownerAccess.systemAccountId,
+    supportedApiProtocols: ['chat_completions'],
+    inputUsdPer1M: 1,
+    outputUsdPer1M: 2,
+    actorSystemAccountId: ownerAccess.systemAccountId
+  })
+  saveCustomProviderModel({
+    providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+    model: sourceModel,
+    scope: 'personal',
+    systemAccountId: ownerAccess.systemAccountId,
+    supportedApiProtocols: ['responses'],
+    inputUsdPer1M: 1,
+    outputUsdPer1M: 2,
+    actorSystemAccountId: ownerAccess.systemAccountId
+  })
+  saveCustomProviderModel({
+    providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+    model: upstreamModel,
+    scope: 'personal',
+    systemAccountId: ownerAccess.systemAccountId,
+    supportedApiProtocols: ['chat_completions', 'responses'],
+    inputUsdPer1M: 1,
+    outputUsdPer1M: 2,
+    actorSystemAccountId: ownerAccess.systemAccountId
+  })
+  saveCustomProviderModel({
+    providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
     model: chatCompletionsUpstreamModel,
     scope: 'personal',
     systemAccountId: ownerAccess.systemAccountId,
@@ -476,6 +508,11 @@ function assertNativeResponsesUpstreamRequiresEndpointModes(): void {
     providerCode: GPT_VENDOR_CODE,
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, ownerAccess)
+  const openAICompatibleGroup = repositories.createGroup({
+    name: '账号模型映射 OpenAI-compatible bridge 分组',
+    providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+    providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID
+  }, ownerAccess)
   assert.throws(() => {
     repositories.createAccount({
       providerCode: GPT_VENDOR_CODE,
@@ -533,11 +570,11 @@ function assertNativeResponsesUpstreamRequiresEndpointModes(): void {
     }, ownerAccess)
   }, /账号模型别名只支持同协议映射/, '即使账号真实支持 Responses，也不能配置 Chat Completions 转 Responses')
 
-  assert.throws(() => {
+  assert.doesNotThrow(() => {
     repositories.createAccount({
-      providerCode: GPT_VENDOR_CODE,
-      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-      name: 'Chat-only 账号不能配置 Responses 转 Chat',
+      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
+      name: 'OpenAI-compatible Chat-only 账号可以配置 Responses 转 Chat',
       type: 'api_key',
       credentials: {
         api_key: 'sk-account-model-mapping-chat-only-responses-to-chat',
@@ -548,15 +585,15 @@ function assertNativeResponsesUpstreamRequiresEndpointModes(): void {
       modelMappings: [
         responsesToChatMapping(sourceModel, upstreamModel)
       ],
-      groupId: group.id
+      groupId: openAICompatibleGroup.id
     }, ownerAccess)
-  }, /账号模型别名只支持同协议映射/, 'Chat-only 账号不能配置 Responses 转 Chat Completions bridge')
+  }, '通用 OpenAI-compatible Chat-only 账号应允许显式配置 Responses -> Chat Completions bridge')
 
-  assert.throws(() => {
+  assert.doesNotThrow(() => {
     repositories.createAccount({
-      providerCode: GPT_VENDOR_CODE,
-      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-      name: 'Codex Chat-only 账号不能配置 Responses 转 Chat',
+      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
+      name: 'OpenAI-compatible Chat-only 账号可以配置 Codex Responses 转 Chat',
       type: 'api_key',
       credentials: {
         api_key: 'sk-account-model-mapping-codex-chat-only-responses-to-chat',
@@ -567,9 +604,28 @@ function assertNativeResponsesUpstreamRequiresEndpointModes(): void {
       modelMappings: [
         responsesToChatMapping(sourceModel, chatCompletionsUpstreamModel)
       ],
-      groupId: group.id
+      groupId: openAICompatibleGroup.id
     }, ownerAccess)
-  }, /账号模型别名只支持同协议映射/, 'Codex Responses 兼容账号也不能在账号模型别名里配置 Responses -> Chat Completions')
+  }, 'OpenAI-compatible 账号应允许在账号模型别名里配置 Responses -> Chat Completions')
+
+  assert.doesNotThrow(() => {
+    repositories.createAccount({
+      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
+      name: 'Chat-only 模型可作为 Responses 到 Chat 来源别名',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-account-model-mapping-chat-source-responses-to-chat',
+        base_url: 'https://api.openai.com/v1',
+        supported_endpoint_modes: ['chat_json', 'chat_sse']
+      },
+      supportedModels: [chatCompletionsUpstreamModel],
+      modelMappings: [
+        responsesToChatMapping(chatCompletionsUpstreamModel, chatCompletionsUpstreamModel)
+      ],
+      groupId: openAICompatibleGroup.id
+    }, ownerAccess)
+  }, 'OpenAI v1 Responses -> Chat bridge 的下游别名允许选择当前供应商 Chat-only 模型')
 }
 
 function assertRuntimeIgnoresUnsupportedChatToResponsesMapping(): void {
@@ -583,11 +639,20 @@ function assertRuntimeIgnoresUnsupportedChatToResponsesMapping(): void {
 
 function assertRuntimeIgnoresPersistentCrossProtocolMappings(): void {
   const persistentResponsesToChat = resolveOpenAIAccountModelMapping({
+    providerCode: GPT_VENDOR_CODE,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    protocolCode: 'openai',
+    protocolVersion: 'v1',
     modelMappings: [
       responsesToChatMapping(sourceModel, chatCompletionsUpstreamModel)
     ]
   }, sourceModel, 'responses')
-  assert.equal(persistentResponsesToChat, undefined, '运行时解析器不应执行历史残留的账号级 Responses -> Chat Completions 映射')
+  assert.deepEqual(persistentResponsesToChat, {
+    sourceModel,
+    sourceEndpointFamily: 'responses',
+    upstreamModel: chatCompletionsUpstreamModel,
+    upstreamEndpointFamily: 'chat_completions'
+  }, '运行时解析器应执行 OpenAI v1 账号级 Responses -> Chat Completions 映射')
 
   const persistentMessagesToChat = resolveOpenAIAccountModelMapping({
     modelMappings: [
@@ -743,6 +808,9 @@ function assertProtocolMatrixHelper(): void {
     rule.source === 'responses' && rule.upstream === 'responses'
   )), '后端协议矩阵必须显式包含 Responses 同协议别名')
   assert(accountModelMappingProtocolRules.some((rule) => (
+    rule.source === 'responses' && rule.upstream === 'chat_completions'
+  )), '后端协议矩阵必须显式包含 OpenAI Responses 到 Chat Completions bridge')
+  assert(accountModelMappingProtocolRules.some((rule) => (
     rule.source === 'messages' && rule.upstream === 'messages'
   )), '后端协议矩阵必须显式包含 Anthropic Messages 同协议别名')
   assert(accountModelMappingProtocolRules.some((rule) => (
@@ -755,13 +823,13 @@ function assertProtocolMatrixHelper(): void {
     providerProfile: openAIProfile,
     supportedEndpointModes: ['chat_json', 'chat_sse']
   }), /账号模型别名只支持同协议映射/, '后端矩阵应拒绝无原生 Responses 能力的 Chat -> Responses')
-  assert.throws(() => assertAccountModelMappingProtocolAllowed({
+  assert.doesNotThrow(() => assertAccountModelMappingProtocolAllowed({
     sourceEndpointFamily: 'responses',
     upstreamEndpointFamily: 'chat_completions'
   }, {
     providerProfile: openAIProfile,
-    supportedEndpointModes: ['responses_json']
-  }), /账号模型别名只支持同协议映射/, '后端矩阵应拒绝原生 Responses 能力下的 Responses -> Chat')
+    supportedEndpointModes: ['chat_sse']
+  }), '后端矩阵应允许 OpenAI v1 Responses -> Chat Completions bridge')
   assert.throws(() => assertAccountModelMappingProtocolAllowed({
     sourceEndpointFamily: 'messages',
     upstreamEndpointFamily: 'responses'
@@ -796,7 +864,7 @@ function assertProtocolMatrixHelper(): void {
   }, {
     providerProfile: geminiOpenAIChatProfile,
     supportedEndpointModes: ['chat_json']
-  }), /Gemini OpenAI Chat 档案的账号模型别名只能使用 Chat Completions|账号模型别名只支持同协议映射/, '后端矩阵应拒绝 Gemini OpenAI Chat 作为 Gemini native 右侧目标')
+  }), /Gemini OpenAI Chat 档案的账号模型别名(?:只能使用 Chat Completions|上游协议只能是 Chat Completions)|账号模型别名只支持同协议映射/, '后端矩阵应拒绝 Gemini OpenAI Chat 作为 Gemini native 右侧目标')
   assert.throws(() => assertAccountModelMappingProtocolAllowed({
     sourceEndpointFamily: 'messages',
     upstreamEndpointFamily: 'chat_completions'

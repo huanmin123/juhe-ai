@@ -22,7 +22,7 @@ const modelCheckRunSchema = z.object({
     errorMap: () => ({ message: '模型检测目标只能选择 AI 账户' })
   }),
   targetId: z.string().trim().min(1, '检测目标不能为空'),
-  model: z.enum(['gpt-5.5', 'gpt-5.4'], { invalid_type_error: '当前模型检测仅支持 gpt-5.5 和 gpt-5.4' }),
+  model: z.string({ invalid_type_error: '模型必须使用完整模型 ID' }).trim().min(1, '模型必须使用完整模型 ID'),
   profile: z.enum(['full']).optional(),
   trustedComparison: z.boolean().optional(),
   trustedComparisonAccountId: z.string().trim().optional()

@@ -13,7 +13,8 @@ import {
   GEMINI_STREAM_GENERATE_CONTENT_FAMILY,
   OPENAI_CHAT_COMPLETIONS_FAMILY,
   OPENAI_RESPONSES_FAMILY,
-  isHybridProviderCode
+  isHybridProviderCode,
+  isOpenAIProtocolProfile
 } from '../../../../domain/provider-protocol.js'
 import {
   openAIEndpointFamilyFromPath
@@ -39,6 +40,8 @@ export interface OpenAIModelMappingRuntimeAccount {
   modelMappings?: AccountModelMapping[]
   providerCode?: string
   providerProtocolProfileId?: string
+  protocolCode?: string
+  protocolVersion?: string
 }
 
 export interface ResolvedOpenAIModelMapping {
@@ -173,6 +176,13 @@ function isOpenAIModelMappingRuntimeConversionSupported(
   if (
     source === upstream
     || (source === GEMINI_STREAM_GENERATE_CONTENT_FAMILY && upstream === GEMINI_GENERATE_CONTENT_FAMILY)
+  ) {
+    return true
+  }
+  if (
+    source === OPENAI_RESPONSES_FAMILY
+    && upstream === OPENAI_CHAT_COMPLETIONS_FAMILY
+    && isOpenAIProtocolProfile(account)
   ) {
     return true
   }

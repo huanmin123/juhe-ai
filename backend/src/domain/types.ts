@@ -744,7 +744,7 @@ export interface ModelCheckTrustedComparisonStatus {
 export interface ModelCheckOptions {
   supportedModels: ModelCheckSupportedOption[]
   supportedProfiles: ModelCheckSupportedOption[]
-  defaultModel: 'gpt-5.5'
+  defaultModel: string
   defaultProfile: ModelCheckProfile
   trustedComparison: ModelCheckTrustedComparisonStatus
 }
@@ -752,7 +752,7 @@ export interface ModelCheckOptions {
 export interface ModelCheckRunRequest {
   targetType: ModelCheckTargetType
   targetId: string
-  model: 'gpt-5.5' | 'gpt-5.4'
+  model: string
   profile?: ModelCheckProfile
   trustedComparison?: boolean
   trustedComparisonAccountId?: string
@@ -787,7 +787,7 @@ export interface ModelCheckRunSummary {
   accountId?: string
   groupId?: string
   apiKeyId?: string
-  model: 'gpt-5.5' | 'gpt-5.4'
+  model: string
   profile: ModelCheckProfile
   trustedComparison: boolean
   trustedComparisonAvailable: boolean
