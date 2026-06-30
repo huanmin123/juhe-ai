@@ -10,6 +10,7 @@ import {
   deleteAccountAsync,
   deleteGroupAsync
 } from '../../storage/repositories.js'
+import { defaultProviderProtocolProfileAsync } from '../../storage/provider.repository.js'
 import {
   getAiPerformanceOverviewAsync,
   listAiPerformanceAccountOptionsAsync
@@ -29,9 +30,12 @@ const createdGroupIds: string[] = []
 
 try {
   await seedOwnerSystemAccount()
+  const providerProfile = await defaultProviderProtocolProfileAsync('gpt')
+  assert(providerProfile, 'AI 性能 PG smoke 需要 GPT 默认协议档案')
   const group = await createGroupAsync({
     name: `AI 性能 PG smoke 分组 ${marker}`,
-    providerCode: 'gpt'
+    providerCode: 'gpt',
+    providerProtocolProfileId: providerProfile.id
   }, access)
   createdGroupIds.push(group.id)
 

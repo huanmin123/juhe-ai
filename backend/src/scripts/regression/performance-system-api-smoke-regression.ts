@@ -195,8 +195,15 @@ async function runHttpSmoke(): Promise<void> {
     assert.equal(disabledAccount.status, 'disabled', 'performance smoke 应能更新系统账户')
 
     console.log(`[performance-system-api-smoke:${label}] providers`)
-    const providers = await getEnvelope<Array<{ code: string; enabled: boolean }>>(baseUrl, '/__aisys__/api/providers', cookie)
-    assert.ok(providers.some((provider) => provider.code === 'gpt' && provider.enabled), 'performance smoke 应能读取启用 GPT 供应商')
+    const providers = await getEnvelope<Array<{
+      code: string
+      enabled: boolean
+      protocolProfiles?: Array<{ id: string; enabled: boolean }>
+    }>>(baseUrl, '/__aisys__/api/providers', cookie)
+    const gptProvider = providers.find((provider) => provider.code === 'gpt' && provider.enabled)
+    assert.ok(gptProvider, 'performance smoke 应能读取启用 GPT 供应商')
+    const gptProviderProfileId = gptProvider.protocolProfiles?.find((profile) => profile.enabled)?.id
+    assert.ok(gptProviderProfileId, 'performance smoke 应能读取 GPT 默认协议档案')
 
     console.log(`[performance-system-api-smoke:${label}] providers/options`)
     const providerOptions = await getEnvelope<Array<{ code: string }>>(baseUrl, '/__aisys__/api/providers/options', cookie)
@@ -241,6 +248,7 @@ async function runHttpSmoke(): Promise<void> {
     const createdGroup = await postEnvelope<{ id: string; name: string; groupType: string }>(baseUrl, '/__aisys__/api/groups', {
       name: `烟测分组${groupSuffix}`,
       providerCode: 'gpt',
+      providerProtocolProfileId: gptProviderProfileId,
       description: 'performance smoke group',
       enabled: true,
       groupType: 'high_concurrency',
@@ -300,6 +308,7 @@ async function runHttpSmoke(): Promise<void> {
     }>(baseUrl, '/__aisys__/api/accounts', {
       name: `烟测AI账户${aiAccountSuffix}`,
       providerCode: 'gpt',
+      providerProtocolProfileId: gptProviderProfileId,
       type: 'api_key',
       status: 'temporary_unavailable',
       groupId: createdGroup.id,
