@@ -38,7 +38,6 @@ try {
   const group = repositories.createGroup({
     name: 'Key 失败保护回归分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, access)
   const account = repositories.createAccount({
     providerCode: 'gpt',

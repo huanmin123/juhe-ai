@@ -57,14 +57,12 @@ try {
   const ownerAccountGroup = repositories.createGroup({
     name: '授权有效期账号来源分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, ownerAccess)
 
   const userGroup = repositories.createGroup({
     name: '授权有效期清空个人分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, ownerAccess)
   const userAuthorization = repositories.createResourceAuthorization({
@@ -89,7 +87,6 @@ try {
   const teamGroup = repositories.createGroup({
     name: '授权有效期清空团队分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, ownerAccess)
   const teamAuthorization = repositories.createResourceAuthorization({
@@ -109,7 +106,6 @@ try {
   const expiredRevokeGroup = repositories.createGroup({
     name: '授权到期后回收分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, ownerAccess)
   const expiredRevokeAuthorization = repositories.createResourceAuthorization({
@@ -154,7 +150,6 @@ try {
   const granteeQuotaGroup = repositories.createGroup({
     name: '授权额度拦截分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, granteeAccess)
   assert.throws(() => repositories.createResourceAuthorization({

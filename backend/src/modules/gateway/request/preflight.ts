@@ -11,7 +11,7 @@ import {
   resolveCachedGroupUsageAccessMetadataAsync
 } from '../runtime/runtime-cache.service.js'
 import { type GatewaySettings } from '../policy/account-error-policy.service.js'
-import { type AuditCaptureContext } from '../audit/capture.service.js'
+import { responseHeadersToObject, type AuditCaptureContext } from '../audit/capture.service.js'
 import {
   createClientIpAccountAvoidanceTracker,
   type ClientIpAccountAvoidanceTracker
@@ -23,6 +23,7 @@ import {
   type OpenAIGatewayRequestLane
 } from '../protocols/openai-v1/request-lane.js'
 import {
+  gatewayClientProfileHeader,
   openAIGatewayClientStrategyAuditMetadata,
   resolveOpenAIGatewayClientStrategy,
   type OpenAIGatewayClientStrategyContext
@@ -31,15 +32,23 @@ import {
   inspectClientIpErrorCircuit,
   recordClientIpErrorCircuitSuccess
 } from '../runtime/client-ip-error-circuit.service.js'
-import { finalizeGatewayAuthFailureAudit, sendAnthropicModelsGatewayResponse, sendGeminiModelsGatewayResponse, sendOpenAIModelsGatewayResponse } from '../response/fixed-responses.js'
-import { sendGatewayFailureResponse } from '../response/failure-response.js'
-import { gatewayErrorPayload } from '../response/responses.js'
-import { resolveGatewayRuntimeAsync } from './pre-auth.js'
-import { type UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import {
-  gatewayProtocolResponseProtocolForProfile,
-  isGatewayProtocolModelsRequest
-} from '../protocols/registry.js'
+  finalizeGatewayAuthFailureAudit,
+  sendAnthropicModelsGatewayResponse,
+  sendGeminiModelsGatewayResponse,
+  sendOpenAIModelsGatewayResponse,
+  sendPublicModelsGatewayResponse
+} from '../response/fixed-responses.js'
+import { sendGatewayFailureResponse } from '../response/failure-response.js'
+import { gatewayErrorPayload, sendGatewayJsonError } from '../response/responses.js'
+import { extractGatewayApiKey, resolveGatewayRuntimeAsync, type GatewayRuntimeRequest } from './pre-auth.js'
+import {
+  isOpenAIModelsRequest,
+  type UpstreamAccount
+} from '../protocols/openai-v1/route-helpers.js'
+import { isAnthropicModelsRequest } from '../protocols/anthropic-v1/route-helpers.js'
+import { isGeminiModelsRequest } from '../protocols/gemini-v1beta/route-helpers.js'
+import type { ResponseProtocolCode } from '../protocols/openai-v1/response-semantics.js'
 import {
   resolveOpenAIGatewaySessionAffinityKey
 } from '../runtime/session-affinity.service.js'
@@ -84,6 +93,7 @@ import {
 } from '../runtime/recoverable-unavailable-wait.js'
 import { requestModel } from './metadata.js'
 import { gatewayRequestEndpointFamily, openAIRequestEndpointFamily, resolveOpenAIAccountModelMapping } from '../protocols/openai-v1/model-mapping.js'
+import { consumePublicModelsRateLimit } from '../runtime/public-models-rate-limit.service.js'
 
 export interface OpenAIGatewayRequestIdentity {
   systemAccountId: string
@@ -146,6 +156,21 @@ export async function prepareOpenAIGatewayDispatchContext(
   let runtimeAccountDispatchDiagnostics: OpenAIAccountsForGroupDiagnostics | undefined
   let runtimeResponseInspectionPolicies: ResponseInspectionPolicySummary[] | undefined = options.responseInspectionPolicies
   let selectedHybridRoute: HybridGatewayRuntimeRoute | undefined
+  const initialModelsResponseProtocol = resolveGatewayModelsResponseProtocol(req)
+
+  if (initialModelsResponseProtocol && !options.identity) {
+    const completed = await handleGatewayModelsRequestBeforeRequiredAuth({
+      req,
+      res,
+      auditCapture,
+      protocol: initialModelsResponseProtocol,
+      startedAt,
+      clientIp
+    })
+    if (completed) {
+      return undefined
+    }
+  }
 
   let identity = options.identity ?? await (async () => {
     const runtime = await resolveGatewayRuntimeAsync(req, res)
@@ -255,7 +280,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     groupId,
     endpoint
   })
-  if (!options.identity && trafficSource === 'gateway' && apiKeyRecord && apiKeyRecord.route_strategy_mode !== 'hybrid_smart') {
+  if (!initialModelsResponseProtocol && !options.identity && trafficSource === 'gateway' && apiKeyRecord && apiKeyRecord.route_strategy_mode !== 'hybrid_smart') {
     const previousGroupId = groupId
     const previousBindingCount = apiKeyRecord.group_bindings?.length ?? 0
     const normalRoute = await resolveNormalGatewayModelRoute({
@@ -348,7 +373,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     }
   }
 
-  if (!options.identity && trafficSource === 'gateway' && apiKeyRecord?.route_strategy_mode === 'hybrid_smart') {
+  if (!initialModelsResponseProtocol && !options.identity && trafficSource === 'gateway' && apiKeyRecord?.route_strategy_mode === 'hybrid_smart') {
     const hybridRoute = await resolveHybridGatewayRoute({
       req,
       apiKeyRecord,
@@ -459,10 +484,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     apiKeyId,
     groupId,
     endpoint,
-    providerCode: groupAccess?.providerCode,
-    providerProtocolProfileId: groupAccess?.providerProtocolProfileId,
-    protocolCode: groupAccess?.protocolCode,
-    protocolVersion: groupAccess?.protocolVersion
+    providerCode: groupAccess?.providerCode
   })
   const clientIpAccountAvoidanceTracker = createClientIpAccountAvoidanceTracker({
     systemAccountId,
@@ -537,7 +559,8 @@ export async function prepareOpenAIGatewayDispatchContext(
     return undefined
   }
 
-  if (isGatewayModelsRequest(req, groupAccess)) {
+  const modelsResponseProtocol = resolveGatewayModelsResponseProtocol(req)
+  if (modelsResponseProtocol) {
     recordClientIpErrorCircuitSuccess({
       systemAccountId,
       apiKeyId,
@@ -545,10 +568,9 @@ export async function prepareOpenAIGatewayDispatchContext(
       clientIp: gatewayClientIp,
       endpoint
     })
-    const responseProtocol = gatewayProtocolResponseProtocolForProfile(groupAccess)
-    const sender = responseProtocol === 'anthropic_v1'
+    const sender = modelsResponseProtocol === 'anthropic_v1'
       ? sendAnthropicModelsGatewayResponse
-      : responseProtocol === 'gemini_v1beta'
+      : modelsResponseProtocol === 'gemini_v1beta'
         ? sendGeminiModelsGatewayResponse
         : sendOpenAIModelsGatewayResponse
     await sender({
@@ -556,6 +578,10 @@ export async function prepareOpenAIGatewayDispatchContext(
       res,
       auditCapture,
       usageContext,
+      providerCodes: gatewayModelsProviderCodes({
+        apiKeyRecord,
+        fallbackProviderCode: groupAccess.providerCode
+      }),
       startedAt
     })
     return undefined
@@ -761,8 +787,147 @@ export async function prepareOpenAIGatewayDispatchContext(
   }
 }
 
-function isGatewayModelsRequest(req: Request, groupAccess: GroupUsageAccessMetadata): boolean {
-  return isGatewayProtocolModelsRequest(req, groupAccess)
+async function handleGatewayModelsRequestBeforeRequiredAuth(input: {
+  req: Request
+  res: Response
+  auditCapture: AuditCaptureContext
+  protocol: ResponseProtocolCode
+  startedAt: number
+  clientIp?: string
+}): Promise<boolean> {
+  if (gatewayModelsRequestHasAuthCredential(input.req)) {
+    const runtime = await resolveGatewayRuntimeAsync(input.req as GatewayRuntimeRequest, input.res)
+    if (!runtime?.apiKey) {
+      finalizeGatewayAuthFailureAudit(input.req, input.res, input.auditCapture)
+      return true
+    }
+    const gatewayRequest = input.req as GatewayRuntimeRequest
+    gatewayRequest.gatewayRuntime = runtime
+    return false
+  }
+
+  const rateLimit = consumePublicModelsRateLimit({ clientIp: input.clientIp })
+  if (!rateLimit.allowed) {
+    sendPublicModelsRateLimitedResponse(input, rateLimit.retryAfterSeconds ?? 1)
+    return true
+  }
+
+  await sendPublicModelsGatewayResponse({
+    req: input.req,
+    res: input.res,
+    auditCapture: input.auditCapture,
+    protocol: modelsResponseKind(input.protocol),
+    startedAt: input.startedAt
+  })
+  return true
+}
+
+function gatewayModelsProviderCodes(input: {
+  apiKeyRecord?: GatewayApiKeyRow
+  fallbackProviderCode?: string
+}): string[] {
+  const providerCodes = new Set<string>()
+  const bindings = input.apiKeyRecord?.group_bindings?.filter((binding) => binding.status === 'active') ?? []
+  for (const binding of bindings) {
+    const providerCode = binding.provider_code?.trim()
+    if (providerCode) providerCodes.add(providerCode)
+  }
+  const fallbackProviderCode = input.fallbackProviderCode?.trim()
+  if (!providerCodes.size && fallbackProviderCode) providerCodes.add(fallbackProviderCode)
+  return [...providerCodes]
+}
+
+function gatewayModelsRequestHasAuthCredential(req: Request): boolean {
+  return Boolean(
+    extractGatewayApiKey(req, req.header('authorization'))
+      || nonEmptyHeader(req, 'authorization')
+      || nonEmptyHeader(req, 'x-api-key')
+      || nonEmptyHeader(req, 'x-goog-api-key')
+  )
+}
+
+function nonEmptyHeader(req: Request, name: string): boolean {
+  const value = req.header(name)
+  return typeof value === 'string' && value.trim().length > 0
+}
+
+function sendPublicModelsRateLimitedResponse(
+  input: {
+    req: Request
+    res: Response
+    auditCapture: AuditCaptureContext
+    protocol: ResponseProtocolCode
+    startedAt: number
+  },
+  retryAfterSeconds: number
+): void {
+  if (!input.res.headersSent) {
+    input.res.setHeader('Retry-After', String(retryAfterSeconds))
+  }
+  const responsePayload = gatewayErrorPayload('模型列表请求过于频繁，请稍后重试', 'rate_limit_exceeded', 'public_models_rate_limited')
+  sendGatewayJsonError(input.res, 429, responsePayload, {
+    protocol: modelsResponseKind(input.protocol)
+  })
+  input.auditCapture.finalize({
+    outcome: 'gateway_failed',
+    success: false,
+    statusCode: 429,
+    responseHeaders: responseHeadersToObject(input.res),
+    responseBody: JSON.stringify(responsePayload),
+    responsePartType: 'gateway_error',
+    errorPhase: 'request_validation',
+    errorCode: 'public_models_rate_limited',
+    errorMessage: responsePayload.error.message,
+    firstTokenMs: Date.now() - input.startedAt
+  })
+}
+
+function resolveGatewayModelsResponseProtocol(req: Request): ResponseProtocolCode | undefined {
+  if (isGeminiModelsRequest(req)) {
+    return 'gemini_v1beta'
+  }
+  if (isAnthropicModelsRequest(req) && isExplicitAnthropicModelsClient(req)) {
+    return 'anthropic_v1'
+  }
+  if (isOpenAIModelsRequest(req) || isAnthropicModelsRequest(req)) {
+    return 'openai_v1'
+  }
+  return undefined
+}
+
+function modelsResponseKind(protocol: ResponseProtocolCode): 'openai' | 'anthropic' | 'gemini' {
+  if (protocol === 'anthropic_v1') return 'anthropic'
+  if (protocol === 'gemini_v1beta') return 'gemini'
+  return 'openai'
+}
+
+function isExplicitAnthropicModelsClient(req: Request): boolean {
+  const profile = normalizedHeaderToken(req.header(gatewayClientProfileHeader))
+  if (profile === 'anthropic' || profile === 'generic_anthropic' || profile === 'claude_code') {
+    return true
+  }
+  return Boolean(
+    normalizedHeaderToken(req.header('anthropic-version'))
+      || normalizedHeaderToken(req.header('anthropic-beta'))
+      || normalizedHeaderToken(req.header('x-claude-code-session-id'))
+      || normalizedHeaderToken(req.header('x-claude-code-agent-id'))
+      || claudeCodeUserAgent(req)
+  )
+}
+
+function claudeCodeUserAgent(req: Request): boolean {
+  const userAgent = lowerHeaderToken(req.header('user-agent'))
+  return Boolean(userAgent && (userAgent.startsWith('claude-cli/') || userAgent.includes(' claude-cli/')))
+}
+
+function normalizedHeaderToken(value: unknown): string | undefined {
+  return lowerHeaderToken(value)?.replace(/[-\s]+/g, '_')
+}
+
+function lowerHeaderToken(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim()
+    ? value.trim().toLowerCase()
+    : undefined
 }
 
 interface RecoverableOpenAICandidateState {

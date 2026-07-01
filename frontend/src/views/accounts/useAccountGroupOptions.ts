@@ -16,7 +16,6 @@ import type { GroupOptionSummary } from '@/types/domain'
 
 export interface AccountGroupOptionsScope {
   providerCode?: string
-  providerProtocolProfileId?: string
   systemAccountId?: string
   selectedIds?: Array<string | undefined>
 }
@@ -203,7 +202,6 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
     }
     return {
       providerCode: scope.providerCode?.trim() ?? '',
-      providerProtocolProfileId: scope.providerProtocolProfileId?.trim() ?? '',
       systemAccountId: scope.systemAccountId?.trim() ?? '',
       selectedIds: [...new Set((scope.selectedIds ?? [])
         .map((id) => id?.trim())

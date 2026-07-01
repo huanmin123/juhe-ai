@@ -61,7 +61,6 @@ try {
   const group = repositories.createGroup({
     name: '团队授权批量查询分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, ownerAccess)
 
   const grantCount = 120

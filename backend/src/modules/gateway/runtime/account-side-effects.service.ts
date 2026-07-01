@@ -1,7 +1,7 @@
 import { errorLogFields, logger } from '../../../shared/logger.js'
-import { requestDbService } from '../../db-service/db-service-ipc.js'
 import type { AccountRuntimeAvailability } from '../../db-service/db-service-types.js'
 import { clearGatewayRuntimeCache } from './runtime-cache.service.js'
+import { requestGatewayDbService } from './gateway-db-service-request.js'
 import type { GatewaySettings } from '../policy/account-error-policy.service.js'
 import { exponentialRetryPolicy, retryDueAtMs, waitForRetryDelayMs } from '../../../shared/retry-policy.js'
 import {
@@ -649,7 +649,7 @@ async function drainSideEffectQueue(): Promise<void> {
 }
 
 async function executeAccountSideEffect(operation: AccountSideEffectOperation): Promise<void> {
-  const result = await requestDbService(operation)
+  const result = await requestGatewayDbService(operation)
   if (result.changed) {
     clearGatewayAccountRuntimeAvailabilityLocal(gatewayAccountRuntimeKey(operation.account))
     clearGatewayRuntimeCache()
@@ -836,7 +836,7 @@ async function runGatewayAccountPrecheck(runtimeKey: string): Promise<void> {
       return
     }
     const reason = `事前确认探针连续失败 ${finalState.attemptCount} 次，已标记为临时不可调用；${finalState.reason}`.slice(0, 1000)
-    const markResult = await requestDbService({
+    const markResult = await requestGatewayDbService({
       type: 'mark_account_precheck_temporary_unavailable',
       account: finalState.account,
       reason,
@@ -879,17 +879,17 @@ async function runSingleGatewayAccountPrecheck(state: PrecheckState, timeoutMs: 
   durationMs?: number
   accountFailureEligible?: boolean
 }> {
-  const { preferredSystemAccountTestModel, testOpenAIAccount } = await import('../../accounts/account-test.service.js')
+  const { preferredSystemAccountTestModelAsync, testOpenAIAccount } = await import('../../accounts/account-test.service.js')
   const signal = AbortSignal.timeout(timeoutMs)
   const account = accountSummaryFromGatewayPrecheckAccount(state.account, state)
   return await testOpenAIAccount(account, {
-    model: preferredSystemAccountTestModel(account),
+    model: await preferredSystemAccountTestModelAsync(account),
     diagnostics: 'full',
     groupId: state.groupId,
     trafficSource: 'cooldown_retest',
     signal,
     disableAccountStateMutation: true,
-    findAccountForTest: (accountId, access) => requestDbService({
+    findAccountForTest: (accountId, access) => requestGatewayDbService({
       type: 'find_account_for_test',
       accountId,
       access

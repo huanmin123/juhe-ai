@@ -67,7 +67,6 @@ try {
   const granteeGroup = repositories.createGroup({
     name: '授权副作用被授权分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, granteeAccess)
 
   const cooldownAccount = createAuthorizedAccount('授权副作用临时不可调用账户', 'sk-runtime-side-effect-cooldown', ownerAccess, grantee.id, granteeGroup.id, granteeAccess, [
@@ -167,7 +166,6 @@ function createAuthorizedAccount(
   const ownerSourceGroup = repositories.createGroup({
     name: `${name} 来源分组`,
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, ownerAccess)
   const account = repositories.createAccount({
     providerCode: 'gpt',

@@ -62,7 +62,6 @@ try {
   const temporaryGroup = repositories.createGroup({
     name: '模型检测未绑定分组边界临时分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, access)
   const unboundAccount = repositories.createAccount({
     providerCode: 'gpt',

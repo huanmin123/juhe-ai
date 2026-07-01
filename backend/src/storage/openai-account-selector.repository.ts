@@ -4,7 +4,7 @@ import { normalizeOpenAIAccountClientCompatibility } from '../domain/account-cli
 import { normalizeOpenAIEndpointModesForRuntime } from '../domain/openai-endpoint-modes.js'
 import { normalizeAnthropicEndpointModesForRuntime } from '../domain/anthropic-endpoint-modes.js'
 import { normalizeGeminiEndpointModesForRuntime } from '../domain/gemini-endpoint-modes.js'
-import { isAnthropicProtocolProfile, isGatewaySupportedProtocolProfile, isGeminiProtocolProfile } from '../domain/provider-protocol.js'
+import { isAnthropicProtocolProfile, isGeminiProtocolProfile } from '../domain/provider-protocol.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { loadModelMappingsByAccountIds, loadModelMappingsByAccountIdsAsync, loadModelMappingsForAccount } from './account-model-mappings.repository.js'
 import { loadSupportedModelsByAccountIds, loadSupportedModelsByAccountIdsAsync, loadSupportedModelsForAccount } from './account-supported-models.repository.js'
@@ -247,22 +247,17 @@ export async function findOpenAIAccountForGroupAsync(
 
 export function resolveGroupUsageAccessMetadata(groupId: string, systemAccountId: string): GroupUsageAccessMetadata | undefined {
   const groupRow = getBusinessDatabase()
-    .prepare('SELECT system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, enabled, group_type, scheduling_policy_json FROM groups WHERE id = ?')
-    .get(groupId) as unknown as { system_account_id?: string; provider_code?: ProviderCode; provider_protocol_profile_id?: string; protocol_code?: string; protocol_version?: string; enabled?: number; group_type?: GroupType | null; scheduling_policy_json?: string | null } | undefined
+    .prepare('SELECT system_account_id, provider_code, enabled, group_type, scheduling_policy_json FROM groups WHERE id = ?')
+    .get(groupId) as unknown as { system_account_id?: string; provider_code?: ProviderCode; enabled?: number; group_type?: GroupType | null; scheduling_policy_json?: string | null } | undefined
   const groupOwnerSystemAccountId = groupRow?.system_account_id
   if (!groupOwnerSystemAccountId) return undefined
   const providerCode = groupRow.provider_code
   if (!providerCode) return undefined
-  const providerProtocolProfileId = groupRow.provider_protocol_profile_id?.trim()
-  const protocolCode = groupRow.protocol_code?.trim()
-  const protocolVersion = groupRow.protocol_version?.trim()
-  if (!providerProtocolProfileId || !protocolCode || !protocolVersion) return undefined
-  if (!isGatewaySupportedProtocolProfile({ protocolCode, protocolVersion })) return undefined
   if (groupRow.enabled !== 1) return undefined
   const groupType = normalizeGroupType(groupRow?.group_type)
   const schedulingPolicy = parseGroupSchedulingPolicyJson(groupRow?.scheduling_policy_json ?? null, groupType)
   if (groupOwnerSystemAccountId === systemAccountId) {
-    return { groupOwnerSystemAccountId, providerCode, providerProtocolProfileId, protocolCode, protocolVersion, groupAccessType: 'owner', groupType, schedulingPolicy }
+    return { groupOwnerSystemAccountId, providerCode, groupAccessType: 'owner', groupType, schedulingPolicy }
   }
   const authorization = activeResourceAuthorization('group', groupId, systemAccountId)
   if (!authorization) return undefined
@@ -275,9 +270,6 @@ export function resolveGroupUsageAccessMetadata(groupId: string, systemAccountId
   return {
     groupOwnerSystemAccountId,
     providerCode,
-    providerProtocolProfileId,
-    protocolCode,
-    protocolVersion,
     groupAccessType: 'authorized',
     groupType: localGroupType,
     schedulingPolicy: localSchedulingPolicy,
@@ -297,14 +289,11 @@ export async function resolveGroupUsageAccessMetadataAsync(groupId: string, syst
   const groupRow = await client.one<{
     system_account_id?: string
     provider_code?: ProviderCode
-    provider_protocol_profile_id?: string
-    protocol_code?: string
-    protocol_version?: string
     enabled?: number
     group_type?: GroupType | null
     scheduling_policy_json?: string | null
   }>(`
-    SELECT system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, enabled, group_type, scheduling_policy_json
+    SELECT system_account_id, provider_code, enabled, group_type, scheduling_policy_json
     FROM ${selectorTable(client, 'groups')}
     WHERE id = ?
   `, [groupId])
@@ -312,16 +301,11 @@ export async function resolveGroupUsageAccessMetadataAsync(groupId: string, syst
   if (!groupOwnerSystemAccountId) return undefined
   const providerCode = groupRow.provider_code
   if (!providerCode) return undefined
-  const providerProtocolProfileId = groupRow.provider_protocol_profile_id?.trim()
-  const protocolCode = groupRow.protocol_code?.trim()
-  const protocolVersion = groupRow.protocol_version?.trim()
-  if (!providerProtocolProfileId || !protocolCode || !protocolVersion) return undefined
-  if (!isGatewaySupportedProtocolProfile({ protocolCode, protocolVersion })) return undefined
   if (groupRow.enabled !== 1) return undefined
   const groupType = normalizeGroupType(groupRow?.group_type)
   const schedulingPolicy = parseGroupSchedulingPolicyJson(groupRow?.scheduling_policy_json ?? null, groupType)
   if (groupOwnerSystemAccountId === systemAccountId) {
-    return { groupOwnerSystemAccountId, providerCode, providerProtocolProfileId, protocolCode, protocolVersion, groupAccessType: 'owner', groupType, schedulingPolicy }
+    return { groupOwnerSystemAccountId, providerCode, groupAccessType: 'owner', groupType, schedulingPolicy }
   }
   const authorization = await activeResourceAuthorizationForSelectorAsync(client, 'group', groupId, systemAccountId)
   if (!authorization) return undefined
@@ -337,9 +321,6 @@ export async function resolveGroupUsageAccessMetadataAsync(groupId: string, syst
   return {
     groupOwnerSystemAccountId,
     providerCode,
-    providerProtocolProfileId,
-    protocolCode,
-    protocolVersion,
     groupAccessType: 'authorized',
     groupType: localGroupType,
     schedulingPolicy: localSchedulingPolicy,

@@ -896,14 +896,15 @@ async function upsertPostgresAccountQualityEntries(client: DatabaseClient, entri
     ]))
   }
 
-  for (const chunk of chunkValues(entries, 900)) {
+  const dirtyAccountIds = uniqueNonEmptyIds(entries.map((entry) => entry.accountId))
+  for (const chunk of chunkValues(dirtyAccountIds, 900)) {
     await client.execute(`
       INSERT INTO juhe_stats.account_quality_dirty_accounts (account_id, first_dirty_at, updated_at)
       VALUES ${postgresMultiRowPlaceholders(chunk.length, 3)}
       ON CONFLICT(account_id) DO UPDATE SET
         updated_at = EXCLUDED.updated_at
-    `, chunk.flatMap((entry) => [
-      entry.accountId,
+    `, chunk.flatMap((accountId) => [
+      accountId,
       updatedAt,
       updatedAt
     ]))

@@ -30,7 +30,6 @@ try {
   const group = repositories.createGroup({
     name: 'API Key 列表查询防护分组',
     providerCode: DEFAULT_GPT_GROUP.providerCode,
-    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     enabled: true
   }, access)
   const matchedByName = createApiKeyRecordWithRouteStrategy(repositories, {

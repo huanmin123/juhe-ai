@@ -57,10 +57,7 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
     systemAccountId: input.systemAccountId,
     apiKeyId: input.apiKeyId,
     groupId: input.groupId,
-    providerCode: input.groupAccess.providerCode,
-    providerProtocolProfileId: input.groupAccess.providerProtocolProfileId,
-    protocolCode: input.groupAccess.protocolCode,
-    protocolVersion: input.groupAccess.protocolVersion
+    providerCode: input.groupAccess.providerCode
   }
   const restoreResult = await restoreCodexResponsesChatBridgeInputForCompact({
     previousResponseId,

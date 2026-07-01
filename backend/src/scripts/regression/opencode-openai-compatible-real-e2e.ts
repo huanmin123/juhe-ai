@@ -93,7 +93,6 @@ try {
     const group = repositories.createGroup({
       name: 'opencode OpenAI-compatible 真实网关分组',
       providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
-      providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
       enabled: true
     }, access)
     const account = repositories.createAccount({

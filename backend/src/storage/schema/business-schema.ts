@@ -535,9 +535,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       system_account_id TEXT NOT NULL,
       name TEXT NOT NULL,
       provider_code TEXT NOT NULL,
-      provider_protocol_profile_id TEXT NOT NULL,
-      protocol_code TEXT NOT NULL,
-      protocol_version TEXT NOT NULL,
       description TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
       is_default INTEGER NOT NULL DEFAULT 0,
@@ -545,8 +542,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       scheduling_policy_json TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      FOREIGN KEY (provider_code) REFERENCES providers(code),
-      FOREIGN KEY (provider_protocol_profile_id) REFERENCES provider_protocol_profiles(id)
+      FOREIGN KEY (provider_code) REFERENCES providers(code)
     );
 
     CREATE TABLE IF NOT EXISTS group_authorization_settings (
@@ -758,7 +754,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_accounts_provider_status ON accounts(provider_code, status);
     CREATE INDEX IF NOT EXISTS idx_accounts_protocol_profile_status ON accounts(provider_protocol_profile_id, status);
     CREATE INDEX IF NOT EXISTS idx_groups_provider ON groups(provider_code);
-    CREATE INDEX IF NOT EXISTS idx_groups_protocol_profile ON groups(provider_protocol_profile_id);
     CREATE INDEX IF NOT EXISTS idx_system_sessions_expires_at ON system_sessions(expires_at);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_system_accounts_username_unique_lower ON system_accounts(lower(username));
     CREATE UNIQUE INDEX IF NOT EXISTS idx_system_accounts_display_name_unique_lower ON system_accounts(lower(display_name));
@@ -865,14 +860,11 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_groups_updated ON groups(updated_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_groups_system_account_updated ON groups(system_account_id, updated_at DESC, id DESC);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_provider_name_unique_lower ON groups(system_account_id, provider_code, lower(name));
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_protocol_profile_name_unique_lower ON groups(system_account_id, provider_protocol_profile_id, lower(name));
     CREATE INDEX IF NOT EXISTS idx_groups_name_lookup ON groups(name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_groups_system_account_name_lookup ON groups(system_account_id, name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_groups_provider_name_lookup ON groups(provider_code, name COLLATE NOCASE, id);
-    CREATE INDEX IF NOT EXISTS idx_groups_protocol_profile_name_lookup ON groups(provider_protocol_profile_id, name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_groups_system_account_provider_name_lookup ON groups(system_account_id, provider_code, name COLLATE NOCASE, id);
-    CREATE INDEX IF NOT EXISTS idx_groups_system_account_protocol_profile_name_lookup ON groups(system_account_id, provider_protocol_profile_id, name COLLATE NOCASE, id);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_protocol_profile_default_unique ON groups(system_account_id, provider_protocol_profile_id) WHERE is_default = 1;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_provider_default_unique ON groups(system_account_id, provider_code) WHERE is_default = 1;
     CREATE INDEX IF NOT EXISTS idx_system_teams_status ON system_teams(status, updated_at);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_system_teams_name_unique ON system_teams(name);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_system_teams_name_unique_lower ON system_teams(lower(name));

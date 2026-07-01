@@ -66,13 +66,11 @@ try {
     const generalGroup = repositories.createGroup({
       name: 'GLM 真实上游 E2E 分组',
       providerCode: GLM_PROVIDER_CODE,
-      providerProtocolProfileId: GLM_GENERAL_OPENAI_V1_PROFILE_ID,
       enabled: true
     }, access)
     const codingGroup = repositories.createGroup({
       name: 'GLM Coding 真实上游 E2E 分组',
       providerCode: GLM_PROVIDER_CODE,
-      providerProtocolProfileId: GLM_CODING_OPENAI_V1_PROFILE_ID,
       enabled: true
     }, access)
     repositories.createAccount({

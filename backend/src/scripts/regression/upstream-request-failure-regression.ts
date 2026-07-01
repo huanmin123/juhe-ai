@@ -76,7 +76,7 @@ async function main(): Promise<void> {
     await listen(upstreamServer)
     const upstreamBaseUrl = `http://127.0.0.1:${serverAddress(upstreamServer).port}/v1`
 
-    const group = repositories.createGroup({ name: '上游失败回归分组', providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID, enabled: true }, access)
+    const group = repositories.createGroup({ name: '上游失败回归分组', providerCode: 'gpt', enabled: true }, access)
     const firstAccount = repositories.createAccount({
       providerCode: 'gpt',
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
@@ -121,7 +121,7 @@ async function main(): Promise<void> {
     }, access)
     const apiKey = createRegressionApiKey(group.id, 'sk-request-failure-regression')
     dispatchRaceSecondAccountId = secondAccount.id
-    const fastFailGroup = repositories.createGroup({ name: '本地屏蔽恢复等待回归分组', providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID, enabled: true }, access)
+    const fastFailGroup = repositories.createGroup({ name: '本地屏蔽恢复等待回归分组', providerCode: 'gpt', enabled: true }, access)
     const fastFailAccount = repositories.createAccount({
       providerCode: 'gpt',
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
@@ -137,7 +137,7 @@ async function main(): Promise<void> {
       schedulable: true
     }, access)
     const fastFailApiKey = createRegressionApiKey(fastFailGroup.id, 'sk-request-failure-fast-fail-key')
-    const cooldownRecoverGroup = repositories.createGroup({ name: '本地冷却恢复等待回归分组', providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID, enabled: true }, access)
+    const cooldownRecoverGroup = repositories.createGroup({ name: '本地冷却恢复等待回归分组', providerCode: 'gpt', enabled: true }, access)
     const cooldownRecoverAccount = repositories.createAccount({
       providerCode: 'gpt',
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
@@ -153,7 +153,7 @@ async function main(): Promise<void> {
       schedulable: true
     }, access)
     const cooldownRecoverApiKey = createRegressionApiKey(cooldownRecoverGroup.id, 'sk-request-failure-cooldown-recover-key')
-    const singleFailureGroup = repositories.createGroup({ name: '单账号上游失败写状态回归分组', providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID, enabled: true }, access)
+    const singleFailureGroup = repositories.createGroup({ name: '单账号上游失败写状态回归分组', providerCode: 'gpt', enabled: true }, access)
     const singleFailureAccount = repositories.createAccount({
       providerCode: 'gpt',
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
@@ -174,7 +174,7 @@ async function main(): Promise<void> {
     const closedTransportBaseUrl = `http://127.0.0.1:${serverAddress(closedTransportServer).port}/v1`
     await closeServer(closedTransportServer)
     closedTransportServer = undefined
-    const directTransportFailureGroup = repositories.createGroup({ name: '直连传输失败回归分组', providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID, enabled: true }, access)
+    const directTransportFailureGroup = repositories.createGroup({ name: '直连传输失败回归分组', providerCode: 'gpt', enabled: true }, access)
     const directTransportFailureAccounts: RegressionAccount[] = []
     for (let index = 0; index < 2; index += 1) {
       const account = repositories.createAccount({

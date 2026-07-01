@@ -7,6 +7,7 @@ import { errorLogFields, logger } from '../../shared/logger.js'
 import { createTraceId, withRequestContext, type RequestContext } from '../../shared/request-context.js'
 import {
   findProviderDefaultTestModel,
+  findProviderDefaultTestModelAsync,
   findAccountForTest,
   findOpenAIAccountForGroupAsync,
   type RecentOpenAIRequestShape,
@@ -161,7 +162,7 @@ export async function testOpenAIAccount(
       candidateAccount: input.candidateAccount,
       findOpenAIAccountForGroup: input.findOpenAIAccountForGroup
     })
-    const model = explicitModel || defaultAccountTestModel(account, input.systemAccountId)
+    const model = explicitModel || await defaultAccountTestModelAsync(account, input.systemAccountId)
     // Anthropic 账户直接规范化 Anthropic 端点模式；OpenAI 账户规范化 OpenAI 端点模式
     const gatewaySupportedEndpointModes = anthropicProtocol
       ? normalizeAnthropicEndpointModesForRuntime(account.credentials.supported_endpoint_modes, {
@@ -338,6 +339,13 @@ export function preferredSystemAccountTestModel(account: Pick<AccountSummary, 'p
     || ''
 }
 
+export async function preferredSystemAccountTestModelAsync(account: Pick<AccountSummary, 'providerCode' | 'supportedModels' | 'lastSuccessfulTestModel' | 'systemAccountId' | 'ownerSystemAccountId' | 'bindingSystemAccountId'>): Promise<string> {
+  return stringValue(account.lastSuccessfulTestModel)
+    || await findProviderDefaultTestModelAsync(account.providerCode, accountDefaultPreferenceSystemAccountId(account))
+    || account.supportedModels?.map((model) => stringValue(model)).find(Boolean)
+    || ''
+}
+
 function sanitizeAccountTestResult(result: AccountTestResult): AccountTestResult {
   return sanitizeDiagnosticPayload(result)
 }
@@ -492,6 +500,12 @@ async function resolveAccountTestCandidate(account: AccountSummary, input: { gro
 
 function defaultAccountTestModel(account: AccountSummary, requestSystemAccountId?: string): string {
   return findProviderDefaultTestModel(account.providerCode, stringValue(requestSystemAccountId) || accountDefaultPreferenceSystemAccountId(account))
+    || account.supportedModels?.map((model) => stringValue(model)).find(Boolean)
+    || ''
+}
+
+async function defaultAccountTestModelAsync(account: AccountSummary, requestSystemAccountId?: string): Promise<string> {
+  return await findProviderDefaultTestModelAsync(account.providerCode, stringValue(requestSystemAccountId) || accountDefaultPreferenceSystemAccountId(account))
     || account.supportedModels?.map((model) => stringValue(model)).find(Boolean)
     || ''
 }

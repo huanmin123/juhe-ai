@@ -34,7 +34,6 @@ export function createMockGatewayFixture(options: MockGatewayFixtureOptions): Mo
   const group = repositories.createGroup({
     name: `${nameScope}分组-${runId}`,
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     description: `${options.label}通过 Mockdata 共享夹具生成的临时分组`,
     enabled: true
   }, access)

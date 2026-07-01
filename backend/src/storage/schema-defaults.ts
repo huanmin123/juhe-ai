@@ -40,9 +40,6 @@ export const DEFAULT_GPT_GROUP = {
   systemAccountId: 'sys_admin',
   name: '默认 GPT 分组',
   providerCode: GPT_VENDOR_CODE,
-  providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-  protocolCode: OPENAI_PROTOCOL_CODE,
-  protocolVersion: OPENAI_PROTOCOL_VERSION,
   description: ''
 } as const
 
@@ -51,9 +48,6 @@ export const DEFAULT_OPENAI_COMPATIBLE_GROUP = {
   systemAccountId: 'sys_admin',
   name: '默认 OpenAI 兼容分组',
   providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
-  providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
-  protocolCode: OPENAI_PROTOCOL_CODE,
-  protocolVersion: OPENAI_PROTOCOL_VERSION,
   description: ''
 } as const
 
@@ -62,9 +56,6 @@ export const DEFAULT_ANTHROPIC_GROUP = {
   systemAccountId: 'sys_admin',
   name: '默认 Anthropic 分组',
   providerCode: ANTHROPIC_PROVIDER_CODE,
-  providerProtocolProfileId: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
-  protocolCode: ANTHROPIC_PROTOCOL_CODE,
-  protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
   description: ''
 } as const
 
@@ -73,9 +64,6 @@ export const DEFAULT_GEMINI_GROUP = {
   systemAccountId: 'sys_admin',
   name: '默认 Gemini 分组',
   providerCode: GEMINI_PROVIDER_CODE,
-  providerProtocolProfileId: GEMINI_NATIVE_V1BETA_PROFILE_ID,
-  protocolCode: GEMINI_PROTOCOL_CODE,
-  protocolVersion: GEMINI_PROTOCOL_VERSION,
   description: ''
 } as const
 
@@ -84,9 +72,6 @@ export const DEFAULT_DEEPSEEK_GROUP = {
   systemAccountId: 'sys_admin',
   name: '默认 DeepSeek 分组',
   providerCode: DEEPSEEK_PROVIDER_CODE,
-  providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
-  protocolCode: OPENAI_PROTOCOL_CODE,
-  protocolVersion: OPENAI_PROTOCOL_VERSION,
   description: ''
 } as const
 
@@ -95,9 +80,6 @@ export const DEFAULT_GLM_GROUP = {
   systemAccountId: 'sys_admin',
   name: '默认 GLM 分组',
   providerCode: GLM_PROVIDER_CODE,
-  providerProtocolProfileId: GLM_GENERAL_OPENAI_V1_PROFILE_ID,
-  protocolCode: OPENAI_PROTOCOL_CODE,
-  protocolVersion: OPENAI_PROTOCOL_VERSION,
   description: ''
 } as const
 
@@ -106,9 +88,6 @@ export const DEFAULT_HYBRID_OPENAI_CHAT_GROUP = {
   systemAccountId: 'sys_admin',
   name: '默认混合供应商分组',
   providerCode: HYBRID_PROVIDER_CODE,
-  providerProtocolProfileId: HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
-  protocolCode: OPENAI_PROTOCOL_CODE,
-  protocolVersion: OPENAI_PROTOCOL_VERSION,
   description: '混合供应商账户保存真实上游凭据和 Base URL，允许账户内配置跨协议入口映射'
 } as const
 

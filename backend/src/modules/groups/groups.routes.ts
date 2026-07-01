@@ -15,7 +15,6 @@ export const groupsRouter = Router()
 const groupSchema = z.object({
   name: z.string().trim().min(1),
   providerCode: z.string().trim().min(1),
-  providerProtocolProfileId: z.string().trim().min(1).optional(),
   description: z.string().trim().optional(),
   enabled: z.boolean().optional(),
   groupType: z.enum(['personal', 'high_concurrency']).optional(),
@@ -69,7 +68,6 @@ function parseGroupOptionListOptions(query: Record<string, unknown>) {
     ids,
     keyword: optionalQueryText(query.keyword),
     providerCode: optionalQueryText(query.providerCode),
-    providerProtocolProfileId: optionalQueryText(query.providerProtocolProfileId),
     limit: optionLimitValue(integerQueryValue(query.limit)),
     manageableOnly: booleanQueryValue(query.manageableOnly),
     preferDefault: booleanQueryValue(query.preferDefault)

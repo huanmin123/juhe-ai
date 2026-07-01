@@ -36,6 +36,9 @@ import {
   gatewayProtocolClientErrorProtocolForRequest,
   isGatewayProtocolNativeRequest
 } from '../protocols/registry.js'
+import { isOpenAIModelsRequest } from '../protocols/openai-v1/route-helpers.js'
+import { isAnthropicModelsRequest } from '../protocols/anthropic-v1/route-helpers.js'
+import { isGeminiModelsRequest } from '../protocols/gemini-v1beta/route-helpers.js'
 
 export type GatewayRuntimeRequest = Request & {
   gatewayRuntime?: DbServiceGatewayRuntime
@@ -52,6 +55,10 @@ export async function preResolveGatewayRuntime(
   next: NextFunction
 ): Promise<void> {
   try {
+    if (isGatewayModelsRequest(req)) {
+      next()
+      return
+    }
     const runtime = await resolveGatewayRuntimeAsync(req, res, {
       closeConnectionOnAuthFailure: true,
       inspectClientIpPolicyAfterRuntime: false
@@ -206,7 +213,7 @@ function recordPreAuthFailure(
   return decision
 }
 
-function extractGatewayApiKey(req: Request, authorization?: string): string | undefined {
+export function extractGatewayApiKey(req: Request, authorization?: string): string | undefined {
   return extractBearerToken(authorization)
     ?? headerToken(req, 'x-api-key')
     ?? geminiNativeGatewayApiKey(req)
@@ -233,6 +240,10 @@ function geminiNativeGatewayApiKey(req: Request): string | undefined {
     return undefined
   }
   return headerToken(req, 'x-goog-api-key') ?? queryToken(req, 'key')
+}
+
+function isGatewayModelsRequest(req: Request): boolean {
+  return isOpenAIModelsRequest(req) || isAnthropicModelsRequest(req) || isGeminiModelsRequest(req)
 }
 
 function queryToken(req: Request, name: string): string | undefined {

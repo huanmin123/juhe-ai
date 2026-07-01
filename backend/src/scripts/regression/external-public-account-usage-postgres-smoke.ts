@@ -1,6 +1,7 @@
 import { strict as assert } from 'node:assert'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { getPublicAccountUsageAsync } from '../../modules/external-integrations/external-public-welfare.service.js'
 import { closeRedisClients } from '../../shared/redis-client.js'
 import type { AccessScope } from '../../storage/access-scope.js'
@@ -33,7 +34,7 @@ try {
 
   const matchedAccount = await createAccountAsync({
     providerCode: 'gpt',
-    providerProtocolProfileId: group.providerProtocolProfileId,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: `${keyword} 主账号`,
     type: 'api_key',
     credentials: {
@@ -48,7 +49,7 @@ try {
 
   const topAccount = await createAccountAsync({
     providerCode: 'gpt',
-    providerProtocolProfileId: group.providerProtocolProfileId,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: `公开账号用量 PG smoke Top ${marker}`,
     type: 'api_key',
     credentials: {

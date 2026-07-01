@@ -352,7 +352,7 @@ providersRouter.delete('/:code/models/:id', async (req, res, next) => {
 })
 
 function providerModelRequestSystemAccountId(access?: RequestAccessScope): string | undefined {
-  return access?.systemAccountFilterId?.trim() || access?.systemAccountId
+  return access?.systemAccountId
 }
 
 async function listProvidersForRequestAsync(systemAccountId?: string): Promise<ProviderDefinition[]> {

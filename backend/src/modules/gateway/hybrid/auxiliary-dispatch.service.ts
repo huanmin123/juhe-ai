@@ -118,10 +118,7 @@ export async function dispatchHybridAuxiliaryChatCompletion(input: {
     apiKeyId: usageContext.apiKeyId,
     groupId: usageContext.groupId,
     endpoint,
-    providerCode: selection.groupAccess.providerCode,
-    providerProtocolProfileId: selection.groupAccess.providerProtocolProfileId,
-    protocolCode: selection.groupAccess.protocolCode,
-    protocolVersion: selection.groupAccess.protocolVersion
+    providerCode: selection.groupAccess.providerCode
   })
   const dispatchSignal = hybridAuxiliaryAbortSignal(input.signal, input.timeoutMs)
   const settings = await hybridAuxiliaryGatewaySettings(input.timeoutMs)

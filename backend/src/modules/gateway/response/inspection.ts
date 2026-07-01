@@ -175,7 +175,7 @@ export function matchRuntimeResponseInspectionPolicy(
 ): ResponseInspectionMatchResult | undefined {
   for (const policy of policies) {
     if (!policy.enabled) continue
-    if (!policyMatchesRuntimeContext(policy.match, context)) continue
+    if (!policyMatchesRuntimeContext(policy, context)) continue
     const match = firstPositiveMatch(frame, policy.match)
     if (!match) continue
     if (outputTextExcluded(frame, policy.match)) continue
@@ -287,20 +287,13 @@ function buildPolicyDecision(
 }
 
 function policyMatchesRuntimeContext(
-  match: ResponseInspectionPolicyMatch,
+  policy: RuntimeResponseInspectionPolicy,
   context: ResponseInspectionRuntimeContext | undefined
 ): boolean {
-  if (usesUpstreamErrorIdentityMatcher(match) && !match.clientProfiles?.length) {
-    return false
-  }
-  if (match.clientProfiles?.length) {
-    if (!context?.clientProfile || !firstExactMatch(context.clientProfile, match.clientProfiles)) return false
+  if (policy.match.clientProfiles?.length) {
+    if (!context?.clientProfile || !firstExactMatch(context.clientProfile, policy.match.clientProfiles)) return false
   }
   return true
-}
-
-function usesUpstreamErrorIdentityMatcher(match: ResponseInspectionPolicyMatch): boolean {
-  return Boolean(match.errorCodes?.length || match.errorTypes?.length)
 }
 
 function configuredPolicyReason(policy: RuntimeResponseInspectionPolicy, frame: ResponseSemanticFrame, downstreamWritten: boolean): ResponseInspectionDecision['reason'] {

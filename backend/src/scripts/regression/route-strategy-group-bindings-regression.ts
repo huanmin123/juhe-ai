@@ -53,19 +53,16 @@ try {
   const primaryGroup = repositories.createGroup({
     name: '策略路由回归主分组',
     providerCode: DEFAULT_GPT_GROUP.providerCode,
-    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     enabled: true
   }, access)
   const fallbackGroup = repositories.createGroup({
     name: '策略路由回归后备分组',
     providerCode: DEFAULT_GPT_GROUP.providerCode,
-    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     enabled: true
   }, access)
   const disabledGroup = repositories.createGroup({
     name: '策略路由回归停用分组',
     providerCode: DEFAULT_GPT_GROUP.providerCode,
-    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     enabled: false
   }, access)
 
@@ -230,7 +227,6 @@ try {
   const authorizedSourceGroup = repositories.createGroup({
     name: '策略路由授权来源分组',
     providerCode: DEFAULT_GPT_GROUP.providerCode,
-    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     enabled: true
   }, ownerAccess)
   repositories.createResourceAuthorization({
@@ -257,7 +253,6 @@ try {
   const extraGroups = Array.from({ length: maxRouteStrategyGroupBindings }, (_, index) => repositories.createGroup({
     name: `策略路由绑定上限回归分组 ${index + 1}`,
     providerCode: DEFAULT_GPT_GROUP.providerCode,
-    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     enabled: true
   }, access))
   assert.throws(() => {

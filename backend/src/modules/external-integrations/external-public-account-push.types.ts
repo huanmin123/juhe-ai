@@ -118,7 +118,6 @@ export interface PublicGroupAddInput {
   targetDisplayName?: string
   name: string
   providerCode: string
-  providerProtocolProfileId: string
   description?: string
   enabled?: boolean
   groupType?: 'personal' | 'high_concurrency'
@@ -129,7 +128,6 @@ export interface PublicGroupUpdateInput {
   groupId: string
   name?: string
   providerCode?: string
-  providerProtocolProfileId?: string
   description?: string | null
   enabled?: boolean
   groupType?: 'personal' | 'high_concurrency'
@@ -152,7 +150,6 @@ export interface PublicGroupListInput {
   targetUsername: string
   keyword?: string
   providerCode?: string
-  providerProtocolProfileId?: string
   page?: number
   pageSize?: number
 }
@@ -228,9 +225,6 @@ export interface PublicGroupSummary {
   id: string
   name: string
   providerCode: string
-  providerProtocolProfileId?: string
-  protocolCode?: string
-  protocolVersion?: string
   description?: string
   enabled: boolean
   groupType: string

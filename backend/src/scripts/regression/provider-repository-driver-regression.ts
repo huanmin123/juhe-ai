@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
@@ -26,6 +26,9 @@ if (process.env.JUHE_PROVIDER_REPOSITORY_DRIVER_CHILD === 'postgres') {
 
 const tempRoot = mkdtempSync(join(tmpdir(), 'juhe-provider-driver-'))
 try {
+  assertAccountTestDefaultModelRuntimeBoundary()
+  assertModelCatalogPostgresSyncBoundary()
+
   process.env.JUHE_AI_RUNTIME_MODE = 'standalone'
   process.env.JUHE_AI_DATABASE_DRIVER = 'sqlite'
   process.env.JUHE_AI_CACHE_DRIVER = 'memory'
@@ -72,6 +75,45 @@ try {
 } finally {
   await closeSqliteStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function assertModelCatalogPostgresSyncBoundary(): void {
+  const srcRoot = join(dirname(fileURLToPath(import.meta.url)), '../..')
+  const source = readFileSync(join(srcRoot, 'modules/model-pricing/model-catalog.service.ts'), 'utf8')
+  assert.ok(
+    source.includes('postgresSyncOpenAIProtocolProviderCodes')
+      && source.includes("runtimeConfig.databaseDriver === 'postgres'"),
+    '模型目录同步路径在 PG 模式下必须使用内置 provider code 列表'
+  )
+  assert.doesNotMatch(
+    source,
+    /function modelCatalogSourceProviderCodes\([\s\S]*?listOpenAIProtocolProviderCodes\(\)[\s\S]*?runtimeConfig\.databaseDriver === 'postgres'/,
+    '模型目录同步路径在 PG 模式下不得先调用 provider.repository'
+  )
+}
+
+function assertAccountTestDefaultModelRuntimeBoundary(): void {
+  const srcRoot = join(dirname(fileURLToPath(import.meta.url)), '../..')
+  const accountTestServiceSource = readFileSync(join(srcRoot, 'modules/accounts/account-test.service.ts'), 'utf8')
+  assert.ok(
+    accountTestServiceSource.includes('findProviderDefaultTestModelAsync')
+      && accountTestServiceSource.includes('await defaultAccountTestModelAsync'),
+    '账号测试默认模型应提供 async 读取路径，避免 PG 模式回退 SQLite'
+  )
+
+  for (const relativePath of [
+    'modules/background/cooldown-account-retest.service.ts',
+    'modules/background/account-health-check.service.ts',
+    'modules/background/account-quality-failure-precheck.service.ts',
+    'modules/background/account-api-key-cooldown-retest.service.ts',
+    'modules/accounts/account-test-task-queue.service.ts',
+    'modules/gateway/client-profiles/codex-switch-probe.ts',
+    'modules/gateway/runtime/account-side-effects.service.ts'
+  ]) {
+    const source = readFileSync(join(srcRoot, relativePath), 'utf8')
+    assert.ok(source.includes('preferredSystemAccountTestModelAsync'), `${relativePath} 应使用 async 默认测试模型读取入口`)
+    assert.doesNotMatch(source, /\bpreferredSystemAccountTestModel\(/, `${relativePath} 不得在运行路径调用同步默认测试模型读取入口`)
+  }
 }
 
 async function closeSqliteStorageDatabases(): Promise<void> {

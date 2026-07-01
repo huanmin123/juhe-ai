@@ -298,7 +298,6 @@ function createRealGroupAccount(groupName: string, accountName: string, supporte
   const group = repositories.createGroup({
     name: groupName,
     providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
-    providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   const account = repositories.createAccount({

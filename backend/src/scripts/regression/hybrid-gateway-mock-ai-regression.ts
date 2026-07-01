@@ -520,7 +520,6 @@ function createHybridGroupAccount(input: {
   const group = repositories.createGroup({
     name: input.groupName,
     providerCode: input.providerCode,
-    providerProtocolProfileId: input.providerProtocolProfileId,
     enabled: true
   }, access)
   const account = repositories.createAccount({

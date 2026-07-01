@@ -79,7 +79,7 @@ interface AccountConcurrencyAcquireResult {
 
 const accountConcurrencyRetryBudgetMs = 1200
 const accountConcurrencyRetryPolicy = exponentialRetryPolicy('gateway_account_concurrency_short_wait', 120, 480)
-const maxAccountApiKeyAttemptsPerAccountPerRequest = 1
+const maxAccountApiKeyAttemptsPerAccountPerRequest = 2
 
 export async function fetchFirstAvailableUpstream(
   req: Request,

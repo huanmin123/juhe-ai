@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
+import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
 import { handleDbServiceOperation } from '../../modules/db-service/db-service-handlers.js'
 import * as oauthRefreshService from '../../modules/openai-oauth/openai-oauth-access-token-refresh.service.js'
 import { logger } from '../../shared/logger.js'
@@ -37,8 +37,7 @@ try {
     enabled: true
   }, access)
   createdGroupIds.push(group.id)
-  assert(group.providerProtocolProfileId, 'PG OAuth smoke 分组必须带 providerProtocolProfileId')
-  oauthProfileId = group.providerProtocolProfileId
+  oauthProfileId = GPT_OPENAI_V1_PROFILE_ID
 
   oauthRefreshService.setOpenAIOAuthTokenRefresherForTest(async ({ refreshToken, clientId }) => {
     refreshedByToken.add(refreshToken)

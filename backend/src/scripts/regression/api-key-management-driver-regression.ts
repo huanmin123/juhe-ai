@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import type { AccessScope } from '../../storage/access-scope.js'
-import { HYBRID_PROVIDER_CODE } from '../../domain/provider-protocol.js'
+import { GPT_OPENAI_V1_PROFILE_ID, HYBRID_PROVIDER_CODE } from '../../domain/provider-protocol.js'
 import { DEFAULT_BUILT_IN_GROUPS, DEFAULT_GPT_GROUP } from '../../storage/schema-defaults.js'
 
 const createdApiKeyIds: string[] = []
@@ -89,7 +89,6 @@ async function assertApiKeyManagementAsync(repositories: typeof import('../../st
   const group = await repositories.createGroupAsync({
     name: `APIKey回归分组${suffix}`,
     providerCode: DEFAULT_GPT_GROUP.providerCode,
-    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     enabled: true
   }, adminAccess)
   createdGroupIds.push(group.id)
@@ -111,7 +110,7 @@ async function assertApiKeyManagementAsync(repositories: typeof import('../../st
     }
   }, adminAccess)
   createdApiKeyIds.push(created.id)
-  const accountId = await seedActiveGatewayAccountForGroup(repositories, group.id, group.providerProtocolProfileId, suffix)
+  const accountId = await seedActiveGatewayAccountForGroup(repositories, group.id, GPT_OPENAI_V1_PROFILE_ID, suffix)
   createdAccountIds.push(accountId)
   assert.equal(created.name, name, '异步创建 API Key 应返回名称')
   assert.ok(created.key.startsWith('sk-'), '异步创建 API Key 应返回一次性明文密钥')

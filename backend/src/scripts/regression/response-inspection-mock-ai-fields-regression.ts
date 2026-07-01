@@ -202,7 +202,6 @@ async function runFieldScenario(
   const group = repositories.createGroup({
     name: `mock ai ${scenarioId}`,
     providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
-    providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   repositories.createAccount({

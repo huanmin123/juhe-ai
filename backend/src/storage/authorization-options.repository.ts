@@ -21,7 +21,6 @@ interface AuthorizationPrincipalOptionListOptions {
 interface AuthorizationGranteeGroupOptionListOptions extends AuthorizationPrincipalOptionListOptions {
   granteeSystemAccountId?: string
   providerCode?: string
-  providerProtocolProfileId?: string
   preferDefault?: boolean
 }
 
@@ -152,9 +151,6 @@ function authorizationGranteeGroupSelectColumns(): string {
     'system_account_id',
     'name',
     'provider_code',
-    'provider_protocol_profile_id',
-    'protocol_code',
-    'protocol_version',
     'description',
     'enabled',
     'is_default',
@@ -194,11 +190,6 @@ function buildAuthorizationGranteeGroupFilter(options: AuthorizationGranteeGroup
     clauses.push('groups.provider_code COLLATE NOCASE = ?')
     params.push(providerCode)
   }
-  const providerProtocolProfileId = optionalString(options.providerProtocolProfileId)
-  if (providerProtocolProfileId) {
-    clauses.push('groups.provider_protocol_profile_id = ?')
-    params.push(providerProtocolProfileId)
-  }
   const keyword = optionalString(options.keyword)
   if (keyword) {
     const prefix = `${escapeLikePrefix(keyword)}%`
@@ -226,11 +217,6 @@ function buildAuthorizationGranteeGroupFilterForClient(client: DatabaseClient, o
   if (providerCode) {
     clauses.push(client.driver === 'postgres' ? 'lower(groups.provider_code) = lower(?)' : 'groups.provider_code COLLATE NOCASE = ?')
     params.push(providerCode)
-  }
-  const providerProtocolProfileId = optionalString(options.providerProtocolProfileId)
-  if (providerProtocolProfileId) {
-    clauses.push('groups.provider_protocol_profile_id = ?')
-    params.push(providerProtocolProfileId)
   }
   const keyword = optionalString(options.keyword)
   if (keyword) {

@@ -530,7 +530,6 @@ function seedTwoAccountGateway(upstreamBaseUrl: string, label: string, options: 
   const group = repositories.createGroup({
     name: `Codex 切号 e2e 分组-${label}`,
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   const failedUpstreamKey = `sk-codex-switch-${sequence}-failed`
@@ -596,7 +595,6 @@ function seedThreeAccountGateway(upstreamBaseUrl: string, label: string): Seeded
   const group = repositories.createGroup({
     name: `Codex 切号 e2e 分组三账号-${label}`,
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   const failedUpstreamKey = `sk-codex-switch-${sequence}-failed`
@@ -674,7 +672,6 @@ function seedProbeFailureGateway(upstreamBaseUrl: string, label: string): Seeded
   const group = repositories.createGroup({
     name: `Codex 切号 e2e 全部探针失败分组-${label}`,
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   const failedUpstreamKey = `sk-codex-switch-${sequence}-failed`

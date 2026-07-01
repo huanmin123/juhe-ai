@@ -204,7 +204,6 @@ function assertAccountModelMappingsRejectCrossProtocol(upstreamOrigin: string): 
   const group = repositories.createGroup({
     name: '协议交叉矩阵模型映射拒绝分组',
     providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
-    providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   const openAIResponsesBridgeAccount = repositories.createAccount({
@@ -238,7 +237,6 @@ function assertAccountModelMappingsRejectCrossProtocol(upstreamOrigin: string): 
   const hybridGroup = repositories.createGroup({
     name: '协议交叉矩阵混合供应商 Responses 上游拒绝分组',
     providerCode: HYBRID_PROVIDER_CODE,
-    providerProtocolProfileId: HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
     enabled: true
   }, access)
   assert.throws(() => repositories.createAccount({
@@ -269,7 +267,6 @@ function createOpenAIChatRuntime(upstreamOrigin: string): CrossRuntime {
   const group = repositories.createGroup({
     name: '协议交叉矩阵 OpenAI Chat 分组',
     providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
-    providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   repositories.createAccount({
@@ -307,7 +304,6 @@ function createAnthropicMessagesRuntime(upstreamOrigin: string): CrossRuntime {
   const group = repositories.createGroup({
     name: '协议交叉矩阵 Anthropic Messages 分组',
     providerCode: ANTHROPIC_PROVIDER_CODE,
-    providerProtocolProfileId: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
     enabled: true
   }, access)
   repositories.createAccount({
@@ -332,7 +328,6 @@ function createGeminiNativeRuntime(upstreamOrigin: string): CrossRuntime {
   const group = repositories.createGroup({
     name: '协议交叉矩阵 Gemini native 分组',
     providerCode: GEMINI_PROVIDER_CODE,
-    providerProtocolProfileId: GEMINI_NATIVE_V1BETA_PROFILE_ID,
     enabled: true
   }, access)
   repositories.createAccount({
@@ -357,7 +352,6 @@ function createHybridOpenAIChatRuntime(upstreamOrigin: string): CrossRuntime {
   const group = repositories.createGroup({
     name: '协议交叉矩阵混合供应商 OpenAI Chat 分组',
     providerCode: HYBRID_PROVIDER_CODE,
-    providerProtocolProfileId: HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
     enabled: true
   }, access)
   repositories.createAccount({
@@ -389,7 +383,6 @@ function createHybridOpenAIChatFailoverRuntime(upstreamOrigin: string): CrossRun
   const group = repositories.createGroup({
     name: '协议交叉矩阵混合供应商 OpenAI Chat 切号分组',
     providerCode: HYBRID_PROVIDER_CODE,
-    providerProtocolProfileId: HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
     enabled: true
   }, access)
   for (const account of [

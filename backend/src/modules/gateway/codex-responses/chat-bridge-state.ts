@@ -16,8 +16,8 @@ import type {
 } from '../../../storage/codex-context-state.repository.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import { getRequestLogger } from '../../../shared/request-context.js'
-import { requestDbService } from '../../db-service/db-service-ipc.js'
 import type { AuditCaptureContext } from '../audit/capture.service.js'
+import { requestGatewayDbService } from '../runtime/gateway-db-service-request.js'
 import {
   isOpenAIResponsesToChatCompletionsModelMapping,
   resolveOpenAIAccountModelMapping
@@ -164,7 +164,7 @@ export async function applyCodexResponsesChatBridgeStatePreflight(input: {
   }
 
   const now = new Date()
-  const readResult = await requestDbService({
+  const readResult = await requestGatewayDbService({
     type: 'read_codex_context_response_chain',
     responseId: previousResponseId,
     boundary,
@@ -265,7 +265,7 @@ export function codexResponsesChatBridgeCompletionHandlerForRequest(
         outputItems: completion.outputItems
       }
       const stored = await writeStatePayload(payload)
-      await requestDbService({
+      await requestGatewayDbService({
         type: 'save_codex_context_response_state',
         input: {
           responseId: completion.responseId,
@@ -319,7 +319,7 @@ export async function restoreCodexResponsesChatBridgeInputForCompact(input: {
     }
   }
   const now = new Date()
-  const readResult = await requestDbService({
+  const readResult = await requestGatewayDbService({
     type: 'read_codex_context_response_chain',
     responseId: input.previousResponseId,
     boundary: input.boundary,
@@ -382,7 +382,7 @@ export async function createCodexResponsesChatBridgeCompactSnapshot(input: {
     summary: input.summary
   }
   const stored = await writeCompactSnapshotPayload(payload)
-  await requestDbService({
+  await requestGatewayDbService({
     type: 'save_codex_context_compact_state',
     input: {
       compactId,
@@ -470,7 +470,7 @@ async function readCodexCompactionSnapshotSummary(input: {
   | { outcome: CodexCompactionReferenceFailureOutcome }
 > {
   const now = new Date()
-  const readResult = await requestDbService({
+  const readResult = await requestGatewayDbService({
     type: 'read_codex_context_compact_state',
     compactId: input.compactId,
     boundary: input.boundary,
@@ -563,10 +563,7 @@ function codexContextBoundary(input: {
     systemAccountId: input.systemAccountId,
     apiKeyId: input.apiKeyId,
     groupId: input.groupId,
-    providerCode: input.groupAccess.providerCode,
-    providerProtocolProfileId: input.groupAccess.providerProtocolProfileId,
-    protocolCode: input.groupAccess.protocolCode,
-    protocolVersion: input.groupAccess.protocolVersion
+    providerCode: input.groupAccess.providerCode
   }
 }
 

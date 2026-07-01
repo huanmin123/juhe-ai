@@ -5,11 +5,18 @@ import {
   type ExternalIntegrationSourceAuthContext,
   type ExternalIntegrationRateLimitRule
 } from '../../storage/external-integration-source-types.js'
+import {
+  clearPenaltyWindowRateLimitStore,
+  consumePenaltyWindowRateLimit,
+  createPenaltyWindowRateLimitStore
+} from '../rate-limit/penalty-window-rate-limit.js'
 
-const rateLimitStates = new Map<string, { windowStartedAt: number; count: number }>()
-const rateLimitCleanupThreshold = 1000
-const rateLimitCleanupScanLimit = 256
-const rateLimitStateMaxAgeMs = 86_400_000
+const externalSourceRateLimitStore = createPenaltyWindowRateLimitStore({
+  name: 'external_source_public_api',
+  maxEntries: 20_000,
+  maxIdleMs: 86_400_000,
+  maxPenaltyMs: 15 * 60_000
+})
 
 export function requireExternalIntegrationSource(requiredScope?: string) {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -80,44 +87,20 @@ function consumeExternalSourceRateLimit(context: ExternalIntegrationSourceAuthCo
   if (!context.rateLimits.length) {
     return { allowed: true }
   }
-  const now = Date.now()
-  for (const rule of context.rateLimits) {
-    const windowMs = rule.windowSeconds * 1000
-    const windowStartedAt = Math.floor(now / windowMs) * windowMs
-    const key = `${context.sourceRefId}:${context.tokenId}:${context.tokenPrefix}:${rule.windowSeconds}`
-    const state = rateLimitStates.get(key)
-    if (!state || state.windowStartedAt !== windowStartedAt) {
-      rateLimitStates.set(key, { windowStartedAt, count: 1 })
-      continue
-    }
-    if (state.count >= rule.maxRequests) {
-      return {
+  const decision = consumePenaltyWindowRateLimit({
+    store: externalSourceRateLimitStore,
+    scopeKey: `${context.sourceRefId}:${context.tokenId}:${context.tokenPrefix}`,
+    rules: context.rateLimits
+  })
+  return decision.allowed
+    ? { allowed: true }
+    : {
         allowed: false,
-        rule,
-        retryAfterSeconds: Math.max(1, Math.ceil((windowStartedAt + windowMs - now) / 1000))
+        rule: decision.rule ?? context.rateLimits[0],
+        retryAfterSeconds: decision.retryAfterSeconds ?? 1
       }
-    }
-    state.count += 1
-  }
-  cleanupRateLimitStates(now)
-  return { allowed: true }
 }
 
-function cleanupRateLimitStates(now: number): void {
-  if (rateLimitStates.size < rateLimitCleanupThreshold) {
-    return
-  }
-  let scanned = 0
-  for (const [key, state] of rateLimitStates) {
-    if (now - state.windowStartedAt > rateLimitStateMaxAgeMs) {
-      rateLimitStates.delete(key)
-    } else {
-      rateLimitStates.delete(key)
-      rateLimitStates.set(key, state)
-    }
-    scanned += 1
-    if (scanned >= rateLimitCleanupScanLimit) {
-      break
-    }
-  }
+export function clearExternalSourceRateLimitStateForTest(): void {
+  clearPenaltyWindowRateLimitStore(externalSourceRateLimitStore)
 }

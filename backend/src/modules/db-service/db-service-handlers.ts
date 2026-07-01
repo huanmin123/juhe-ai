@@ -1542,10 +1542,7 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
     if (!hasDispatchableGatewayAccount(accounts) && uniqueCandidateGroupIds.length > 1) {
       continue
     }
-    const responseInspectionPolicies = listActiveResponseInspectionPoliciesForGateway({
-      protocolCode: groupAccess.protocolCode,
-      providerCode: groupAccess.providerCode
-    })
+    const responseInspectionPolicies = listActiveResponseInspectionPoliciesForAccounts(accounts)
     return {
       apiKey: {
         ...apiKey,
@@ -1611,10 +1608,7 @@ async function readGatewayRuntimeAsync(operation: Extract<DbServiceOperation, { 
     if (!hasDispatchableGatewayAccount(accounts) && uniqueCandidateGroupIds.length > 1) {
       continue
     }
-    const responseInspectionPolicies = await listActiveResponseInspectionPoliciesForGatewayAsync({
-      protocolCode: groupAccess.protocolCode,
-      providerCode: groupAccess.providerCode
-    })
+    const responseInspectionPolicies = await listActiveResponseInspectionPoliciesForAccountsAsync(accounts)
     return {
       apiKey: {
         ...apiKey,
@@ -1648,6 +1642,54 @@ function withDbServiceLocalRole<T>(operation: () => T): T {
   } finally {
     runtimeConfig.processRole = previousProcessRole
   }
+}
+
+function listActiveResponseInspectionPoliciesForAccounts(accounts: readonly Pick<OpenAIAccountSecret, 'protocolCode' | 'providerCode'>[]) {
+  const profileKeys = new Set<string>()
+  const policiesById = new Map<string, ReturnType<typeof listActiveResponseInspectionPoliciesForGateway>[number]>()
+  for (const account of accounts) {
+    const protocolCode = account.protocolCode?.trim()
+    if (!protocolCode) {
+      continue
+    }
+    const providerCode = account.providerCode?.trim()
+    const key = `${protocolCode}:${providerCode ?? ''}`
+    if (profileKeys.has(key)) {
+      continue
+    }
+    profileKeys.add(key)
+    for (const policy of listActiveResponseInspectionPoliciesForGateway({ protocolCode, providerCode })) {
+      policiesById.set(policy.id, policy)
+    }
+  }
+  return [...policiesById.values()]
+}
+
+async function listActiveResponseInspectionPoliciesForAccountsAsync(accounts: readonly Pick<OpenAIAccountSecret, 'protocolCode' | 'providerCode'>[]) {
+  const profileKeys = new Set<string>()
+  const profileScopes: Array<{ protocolCode: string; providerCode?: string }> = []
+  const policiesById = new Map<string, Awaited<ReturnType<typeof listActiveResponseInspectionPoliciesForGatewayAsync>>[number]>()
+  for (const account of accounts) {
+    const protocolCode = account.protocolCode?.trim()
+    if (!protocolCode) {
+      continue
+    }
+    const providerCode = account.providerCode?.trim() || undefined
+    const key = `${protocolCode}:${providerCode ?? ''}`
+    if (profileKeys.has(key)) {
+      continue
+    }
+    profileKeys.add(key)
+    profileScopes.push({ protocolCode, providerCode })
+  }
+  const policyGroups = await Promise.all(profileScopes.map((scope) =>
+    listActiveResponseInspectionPoliciesForGatewayAsync(scope)))
+  for (const policies of policyGroups) {
+    for (const policy of policies) {
+      policiesById.set(policy.id, policy)
+    }
+  }
+  return [...policiesById.values()]
 }
 
 function hasDispatchableGatewayAccount(accounts: OpenAIAccountSecret[]): boolean {

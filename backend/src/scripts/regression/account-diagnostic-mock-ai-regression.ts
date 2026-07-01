@@ -63,7 +63,6 @@ try {
   const group = repositories.createGroup({
     name: '诊断 mock AI 回归分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, access)
 
   const transientAccount = createMockAccount(group.id, upstreamBaseUrl, 'manual-transient', access)

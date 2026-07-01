@@ -332,7 +332,6 @@ try {
   const group = repositories.createGroup({
     name: '账号模型映射回归分组',
     providerCode: GPT_VENDOR_CODE,
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, ownerAccess)
   const account = repositories.createAccount({
     providerCode: GPT_VENDOR_CODE,
@@ -506,12 +505,10 @@ function assertNativeResponsesUpstreamRequiresEndpointModes(): void {
   const group = repositories.createGroup({
     name: '账号模型映射 Responses 原生能力约束分组',
     providerCode: GPT_VENDOR_CODE,
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, ownerAccess)
   const openAICompatibleGroup = repositories.createGroup({
     name: '账号模型映射 OpenAI-compatible bridge 分组',
     providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
-    providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID
   }, ownerAccess)
   assert.throws(() => {
     repositories.createAccount({
@@ -696,7 +693,6 @@ function assertCrossProtocolAccountMappingsRejected(groupId: string): void {
   const anthropicGroup = repositories.createGroup({
     name: '账号模型别名拒绝 Gemini 到 Messages 分组',
     providerCode: ANTHROPIC_PROVIDER_CODE,
-    providerProtocolProfileId: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID
   }, ownerAccess)
   assert.throws(() => {
     repositories.createAccount({
@@ -720,7 +716,6 @@ function assertCrossProtocolAccountMappingsRejected(groupId: string): void {
   const geminiGroup = repositories.createGroup({
     name: '账号模型别名拒绝 OpenAI 到 Gemini 分组',
     providerCode: GEMINI_PROVIDER_CODE,
-    providerProtocolProfileId: GEMINI_NATIVE_V1BETA_PROFILE_ID
   }, ownerAccess)
   assert.throws(() => {
     repositories.createAccount({
@@ -746,7 +741,6 @@ function assertHybridProtocolModelPools(): void {
   const group = repositories.createGroup({
     name: '混合供应商协议模型池约束分组',
     providerCode: HYBRID_PROVIDER_CODE,
-    providerProtocolProfileId: HYBRID_OPENAI_CHAT_V1_PROFILE_ID
   }, ownerAccess)
   assert.throws(() => {
     repositories.createAccount({

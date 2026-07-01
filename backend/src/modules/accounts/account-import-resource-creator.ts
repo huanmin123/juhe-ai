@@ -27,7 +27,6 @@ export interface AccountImportResourceAccountPlan {
   source: {
     groupName?: string
     providerCode: string
-    providerProtocolProfileId?: string
     proxyRef?: string
   }
   item: AccountImportItem
@@ -163,7 +162,7 @@ export function createPlannedImportGroups(plan: AccountImportResourceCreatePlan,
       }, access)
       plan.groupIdsByKey.set(key, created.id)
     } catch (error) {
-      const existing = findGroupOptionByName(group.providerCode, group.providerProtocolProfileId, group.name, {
+      const existing = findGroupOptionByName(group.providerCode, group.name, {
         access,
         options: {
           createMissingGroups: true,
@@ -208,7 +207,7 @@ export async function createPlannedImportGroupsAsync(plan: AccountImportResource
       }, access)
       plan.groupIdsByKey.set(key, created.id)
     } catch (error) {
-      const existing = await findGroupOptionByNameAsync(group.providerCode, group.providerProtocolProfileId, group.name, {
+      const existing = await findGroupOptionByNameAsync(group.providerCode, group.name, {
         access,
         options: {
           createMissingGroups: true,

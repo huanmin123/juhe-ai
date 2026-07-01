@@ -41,9 +41,6 @@ export interface GatewayApiKeyGroupBindingRow {
   weight: number
   status: 'active' | 'disabled'
   provider_code: string
-  provider_protocol_profile_id: string
-  protocol_code: string
-  protocol_version: string
   group_enabled: number
 }
 
@@ -359,9 +356,6 @@ export function loadActiveGatewayApiKeyGroupBindings(apiKeyId: string, routeStra
       route_strategy_groups.weight,
       route_strategy_groups.status,
       groups.provider_code,
-      groups.provider_protocol_profile_id,
-      groups.protocol_code,
-      groups.protocol_version,
       groups.enabled AS group_enabled
     FROM route_strategies
     INNER JOIN route_strategy_groups
@@ -418,9 +412,6 @@ export async function loadActiveGatewayApiKeyGroupBindingsAsync(
       route_strategy_groups.weight,
       route_strategy_groups.status,
       groups.provider_code,
-      groups.provider_protocol_profile_id,
-      groups.protocol_code,
-      groups.protocol_version,
       groups.enabled AS group_enabled
     FROM ${gatewayApiKeyTable(activeClient, 'route_strategies')} route_strategies
     INNER JOIN ${gatewayApiKeyTable(activeClient, 'route_strategy_groups')} route_strategy_groups

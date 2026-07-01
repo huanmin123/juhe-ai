@@ -14,7 +14,7 @@ import {
   type OpenAIAccountSecret
 } from '../../../storage/repositories.js'
 import { clearSettingsRepositoryCache } from '../../../storage/settings.repository.js'
-import { clearDbServiceGatewayRuntimeCache, requestDbService } from '../../db-service/db-service-ipc.js'
+import { clearDbServiceGatewayRuntimeCache } from '../../db-service/db-service-ipc.js'
 import type { DbServiceGatewayRuntime } from '../../db-service/db-service-types.js'
 import { readGatewaySettings, type GatewaySettings } from '../policy/account-error-policy.service.js'
 import {
@@ -23,6 +23,7 @@ import {
 } from '../../../storage/response-inspection-policy.repository.js'
 import { listProviderModelCatalog, type ProviderModelCatalogItem } from '../../model-pricing/model-catalog.service.js'
 import { orderGatewayApiKeyGroupBindingsForDispatch } from '../routing/api-key-group-route-selector.service.js'
+import { requestGatewayDbService } from './gateway-db-service-request.js'
 
 const gatewayRuntimeTtlMs = 60_000
 const gatewayRuntimeRetainTtlMs = 10 * 60_000
@@ -174,7 +175,7 @@ export function readCachedGatewaySettings(): GatewaySettings {
 
 export async function readCachedGatewaySettingsAsync(): Promise<GatewaySettings> {
   if (runtimeConfig.runtimeStateDriver === 'redis') await syncGatewayCacheInvalidationsFromRuntimeState()
-  if (runtimeConfig.processRole !== 'server') {
+  if (!shouldUseGatewayRuntimeDbService()) {
     return { ...readCachedGatewaySettings() }
   }
   const cached = gatewaySettingsCache.get('current')
@@ -186,7 +187,7 @@ export async function readCachedGatewaySettingsAsync(): Promise<GatewaySettings>
     gatewaySettingsCache.set('current', cloneGatewaySettings(sharedCached))
     return cloneGatewaySettings(sharedCached)
   }
-  const value = await requestDbService({ type: 'read_gateway_settings' })
+  const value = await requestGatewayDbService({ type: 'read_gateway_settings' })
   await setGatewaySettingsCacheEntryAsync(value)
   return cloneGatewaySettings(value)
 }
@@ -207,7 +208,7 @@ export function resolveCachedGroupUsageAccessMetadata(groupId: string, systemAcc
 
 export async function resolveCachedGroupUsageAccessMetadataAsync(groupId: string, systemAccountId: string): Promise<GroupUsageAccessMetadata | undefined> {
   if (runtimeConfig.runtimeStateDriver === 'redis') await syncGatewayCacheInvalidationsFromRuntimeState()
-  if (runtimeConfig.processRole !== 'server') {
+  if (!shouldUseGatewayRuntimeDbService()) {
     return resolveCachedGroupUsageAccessMetadata(groupId, systemAccountId)
   }
   const cacheKey = gatewayCacheKey(groupId, systemAccountId)
@@ -228,7 +229,7 @@ export async function resolveCachedGroupUsageAccessMetadataAsync(groupId: string
     }
     return groupUsageAccessFromCacheEntry(sharedCached)
   }
-  const value = await requestDbService({
+  const value = await requestGatewayDbService({
     type: 'resolve_group_usage_access',
     groupId,
     systemAccountId
@@ -265,7 +266,7 @@ export async function listCachedOpenAIAccountsForGroupAsync(
   options: CachedOpenAIAccountsForGroupOptions = {}
 ): Promise<OpenAIAccountSecret[]> {
   if (runtimeConfig.runtimeStateDriver === 'redis') await syncGatewayCacheInvalidationsFromRuntimeState()
-  if (runtimeConfig.processRole !== 'server') {
+  if (!shouldUseGatewayRuntimeDbService()) {
     return listCachedOpenAIAccountsForGroup(groupId, systemAccountId, options)
   }
   const cacheKey = gatewayOpenAIAccountsCacheKey(groupId, systemAccountId, options.requestedModel, options.requestedEndpointFamily)
@@ -276,7 +277,7 @@ export async function listCachedOpenAIAccountsForGroupAsync(
     }
     return cloneOpenAIAccountsWithCurrentConcurrency(cached.accounts)
   }
-  const result = await requestDbService({
+  const result = await requestGatewayDbService({
     type: 'list_openai_accounts_for_group_result',
     groupId,
     systemAccountId,
@@ -295,8 +296,8 @@ export async function listFreshOpenAIAccountsForGroupAsync(
   systemAccountId: string,
   options: CachedOpenAIAccountsForGroupOptions = {}
 ): Promise<OpenAIAccountSecret[]> {
-  const result = runtimeConfig.processRole === 'server'
-    ? await requestDbService({
+  const result = shouldUseGatewayRuntimeDbService()
+    ? await requestGatewayDbService({
         type: 'list_openai_accounts_for_group_result',
         groupId,
         systemAccountId,
@@ -315,8 +316,8 @@ export async function listRecoverableUnavailableOpenAIAccountsForGroupAsync(
   systemAccountId: string,
   options: CachedOpenAIAccountsForGroupOptions & { windowMs?: number } = {}
 ): Promise<OpenAIAccountSecret[]> {
-  const accounts = runtimeConfig.processRole === 'server'
-    ? await requestDbService({
+  const accounts = shouldUseGatewayRuntimeDbService()
+    ? await requestGatewayDbService({
         type: 'list_recoverable_unavailable_openai_accounts_for_group',
         groupId,
         systemAccountId,
@@ -339,7 +340,7 @@ export async function listCachedProviderModelCatalogAsync(input: {
   includeUnpriced?: boolean
 }): Promise<ProviderModelCatalogItem[]> {
   if (runtimeConfig.runtimeStateDriver === 'redis') await syncGatewayCacheInvalidationsFromRuntimeState()
-  if (runtimeConfig.processRole !== 'server') {
+  if (!shouldUseGatewayRuntimeDbService()) {
     return listProviderModelCatalog(input)
   }
   const cacheKey = [
@@ -357,7 +358,7 @@ export async function listCachedProviderModelCatalogAsync(input: {
     providerModelCatalogCache.set(cacheKey, sharedCached.map((item) => ({ ...item })))
     return sharedCached.map((item) => ({ ...item }))
   }
-  const value = await requestDbService({
+  const value = await requestGatewayDbService({
     type: 'list_provider_model_catalog',
     providerCode: input.providerCode,
     systemAccountId: input.systemAccountId,
@@ -441,15 +442,47 @@ export async function listCachedActiveResponseInspectionPoliciesAsync(input: {
     }
     return sharedCached.policies.map(cloneResponseInspectionPolicy)
   }
-  const value = runtimeConfig.processRole !== 'server'
-    ? listActiveResponseInspectionPoliciesForGateway(input)
-    : await requestDbService({
+  const value = shouldUseGatewayRuntimeDbService()
+    ? await requestGatewayDbService({
         type: 'list_active_response_inspection_policies',
         protocolCode: input.protocolCode,
         providerCode: input.providerCode
       })
+    : listActiveResponseInspectionPoliciesForGateway(input)
   await setResponseInspectionPolicyCacheEntryAsync(cacheKey, responseInspectionPolicyCacheEntry(value.map(cloneResponseInspectionPolicy)))
   return value.map(cloneResponseInspectionPolicy)
+}
+
+export async function listCachedActiveResponseInspectionPoliciesForAccountsAsync(
+  accounts: readonly Pick<OpenAIAccountSecret, 'protocolCode' | 'providerCode'>[]
+): Promise<ResponseInspectionPolicySummary[]> {
+  const profileKeys = new Set<string>()
+  const profileScopes: Array<{ protocolCode: string; providerCode?: string }> = []
+  const policiesById = new Map<string, ResponseInspectionPolicySummary>()
+  for (const account of accounts) {
+    const protocolCode = account.protocolCode?.trim()
+    if (!protocolCode) {
+      continue
+    }
+    const providerCode = account.providerCode?.trim() || undefined
+    const key = `${protocolCode}:${providerCode ?? ''}`
+    if (profileKeys.has(key)) {
+      continue
+    }
+    profileKeys.add(key)
+    profileScopes.push({
+      protocolCode,
+      providerCode
+    })
+  }
+  const policyGroups = await Promise.all(profileScopes.map((scope) =>
+    listCachedActiveResponseInspectionPoliciesAsync(scope)))
+  for (const policies of policyGroups) {
+    for (const policy of policies) {
+      policiesById.set(policy.id, policy)
+    }
+  }
+  return [...policiesById.values()].map(cloneResponseInspectionPolicy)
 }
 
 export async function readCachedGatewayRuntimeAsync(apiKey: string): Promise<DbServiceGatewayRuntime> {
@@ -602,9 +635,14 @@ function normalizeProviderModelRouteKey(model: string | null | undefined): strin
 }
 
 function assertLocalGatewayDatabaseAccess(operation: string): void {
-  if (runtimeConfig.processRole === 'server') {
-    throw new Error(`server 角色禁止直接同步读取 SQLite：${operation} 必须通过 DB service`)
+  if (shouldUseGatewayRuntimeDbService()) {
+    throw new Error(`${runtimeConfig.processRole} 角色在 ${runtimeConfig.databaseDriver} 模式禁止直接同步读取 SQLite：${operation} 必须通过 DB service`)
   }
+}
+
+function shouldUseGatewayRuntimeDbService(): boolean {
+  if (runtimeConfig.processRole === 'server') return true
+  return runtimeConfig.databaseDriver === 'postgres' && runtimeConfig.processRole !== 'db-service'
 }
 
 async function loadGatewayRuntimeOnce(apiKey: string, cacheKey: string): Promise<DbServiceGatewayRuntime> {
@@ -630,7 +668,7 @@ async function loadGatewayRuntimeAndPopulateCaches(
   cacheKey: string,
   generation: number
 ): Promise<DbServiceGatewayRuntime> {
-  const runtime = await requestDbService({
+  const runtime = await requestGatewayDbService({
     type: 'read_gateway_runtime',
     key: apiKey,
     skipDynamicRouteSelection: true
@@ -673,17 +711,6 @@ function populateGatewayRuntimeCaches(cacheKey: string, runtime: DbServiceGatewa
     openAIAccountsCache.set(gatewayCacheKey(runtime.apiKey.selected_group_id, runtime.apiKey.system_account_id), openAIAccountsCacheEntry(accounts, nowMs), {
       ttlMs: openAIAccountsRetainTtlMs
     })
-  }
-  if (runtime.groupAccess && runtime.responseInspectionPolicies) {
-    responseInspectionPolicyCache.set(
-      responseInspectionPolicyCacheKey(runtime.groupAccess.protocolCode, runtime.groupAccess.providerCode),
-      responseInspectionPolicyCacheEntry(runtime.responseInspectionPolicies.map(cloneResponseInspectionPolicy), nowMs),
-      { ttlMs: responseInspectionPolicyRetainTtlMs }
-    )
-    void setResponseInspectionPolicySharedCacheEntry(
-      responseInspectionPolicyCacheKey(runtime.groupAccess.protocolCode, runtime.groupAccess.providerCode),
-      responseInspectionPolicyCacheEntry(runtime.responseInspectionPolicies.map(cloneResponseInspectionPolicy), nowMs)
-    )
   }
 }
 
@@ -801,10 +828,7 @@ async function routeCachedDynamicGatewayRuntimeForDispatch(runtime: DbServiceGat
     if (!hasDispatchableCachedGatewayAccount(accounts) && uniqueCandidateGroupIds.length > 1) {
       continue
     }
-    const responseInspectionPolicies = await listCachedActiveResponseInspectionPoliciesAsync({
-      protocolCode: groupAccess.protocolCode,
-      providerCode: groupAccess.providerCode
-    })
+    const responseInspectionPolicies = await listCachedActiveResponseInspectionPoliciesForAccountsAsync(accounts)
     return {
       apiKey: {
         ...apiKey,
@@ -989,8 +1013,8 @@ function refreshGroupUsageAccessMetadataInBackground(groupId: string, systemAcco
   if (pendingGroupUsageAccessRefreshes.has(cacheKey)) {
     return
   }
-  const refresh = (runtimeConfig.processRole === 'server'
-    ? requestDbService({ type: 'resolve_group_usage_access', groupId, systemAccountId })
+  const refresh = (shouldUseGatewayRuntimeDbService()
+    ? requestGatewayDbService({ type: 'resolve_group_usage_access', groupId, systemAccountId })
     : Promise.resolve(resolveGroupUsageAccessMetadata(groupId, systemAccountId)))
     .then((value) => {
       const entry = groupUsageAccessCacheEntry(value ? cloneGroupUsageAccessMetadata(value) : false)
@@ -1020,8 +1044,8 @@ function refreshOpenAIAccountsForGroupInBackground(
   if (pendingOpenAIAccountsRefreshes.has(cacheKey)) {
     return
   }
-  const refresh = (runtimeConfig.processRole === 'server'
-    ? requestDbService({ type: 'list_openai_accounts_for_group_result', groupId, systemAccountId, requestedModel, requestedEndpointFamily })
+  const refresh = (shouldUseGatewayRuntimeDbService()
+    ? requestGatewayDbService({ type: 'list_openai_accounts_for_group_result', groupId, systemAccountId, requestedModel, requestedEndpointFamily })
     : Promise.resolve(listOpenAIAccountsForGroupResult(groupId, systemAccountId, { requestedModel, requestedEndpointFamily })))
     .then((result) => {
       openAIAccountsCache.set(cacheKey, openAIAccountsCacheEntry(result.accounts.map(cloneStaticOpenAIAccountSecret)), {
@@ -1137,8 +1161,8 @@ function refreshActiveResponseInspectionPoliciesInBackground(
   if (pendingResponseInspectionPolicyRefreshes.has(cacheKey)) {
     return
   }
-  const refresh = (runtimeConfig.processRole === 'server'
-    ? requestDbService({
+  const refresh = (shouldUseGatewayRuntimeDbService()
+    ? requestGatewayDbService({
         type: 'list_active_response_inspection_policies',
         protocolCode: input.protocolCode,
         providerCode: input.providerCode

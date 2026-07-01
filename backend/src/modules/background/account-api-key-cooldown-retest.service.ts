@@ -5,7 +5,7 @@ import type { AccessScope } from '../../storage/access-scope.js'
 import {
   type AccountApiKeyRuntimeProbeCandidate
 } from '../../storage/account-api-key-runtime-state.repository.js'
-import { preferredSystemAccountTestModel, testOpenAIAccount } from '../accounts/account-test.service.js'
+import { preferredSystemAccountTestModelAsync, testOpenAIAccount } from '../accounts/account-test.service.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
 
 interface AccountApiKeyCooldownRetestQueueItem extends AccountApiKeyRuntimeProbeCandidate {
@@ -81,7 +81,7 @@ async function runAccountApiKeyCooldownRetestQueueItem(
     selectedApiKeyIndex: item.keyIndex
   }
   const result = await testOpenAIAccount(account, {
-    model: preferredSystemAccountTestModel(account),
+    model: await preferredSystemAccountTestModelAsync(account),
     diagnostics: 'limited',
     groupId: account.boundGroupId,
     systemAccountId,

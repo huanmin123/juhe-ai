@@ -7,7 +7,7 @@ import {
   type AccountQualityFailurePrecheckCandidate
 } from '../../storage/repositories.js'
 import type { AccessScope } from '../../storage/access-scope.js'
-import { preferredSystemAccountTestModel, testOpenAIAccountWithDiagnosticRetries } from '../accounts/account-test.service.js'
+import { preferredSystemAccountTestModelAsync, testOpenAIAccountWithDiagnosticRetries } from '../accounts/account-test.service.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
 
 interface AccountQualityFailurePrecheckQueueItem extends AccountQualityFailurePrecheckCandidate {
@@ -74,7 +74,7 @@ async function runAccountQualityFailurePrecheckQueueItem(
 
   const groupId = account.boundGroupId
   const result = await testOpenAIAccountWithDiagnosticRetries(account, {
-    model: preferredSystemAccountTestModel(account),
+    model: await preferredSystemAccountTestModelAsync(account),
     diagnostics: 'full',
     groupId,
     requestShape: await findRecentOpenAIRequestShapeForAccountAsync(account.id, groupId),

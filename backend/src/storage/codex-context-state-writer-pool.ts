@@ -577,9 +577,6 @@ function matchesBoundary(row: CodexContextStateBoundary, boundary: CodexContextS
     && (row.apiKeyId ?? '') === (boundary.apiKeyId ?? '')
     && row.groupId === boundary.groupId
     && row.providerCode === boundary.providerCode
-    && row.providerProtocolProfileId === boundary.providerProtocolProfileId
-    && row.protocolCode === boundary.protocolCode
-    && row.protocolVersion === boundary.protocolVersion
 }
 
 function requiredText(value: unknown, label: string): string {

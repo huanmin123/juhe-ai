@@ -48,7 +48,7 @@ export async function probeCodexSwitchCandidateAccount(
 
   try {
     const accountTestService = await import('../../accounts/account-test.service.js')
-    const model = requestModel(input.req) || accountTestService.preferredSystemAccountTestModel(summary)
+    const model = requestModel(input.req) || await accountTestService.preferredSystemAccountTestModelAsync(summary)
     let lastResult: AccountTestResult | undefined
     for (let attemptIndex = 0; attemptIndex < accountDiagnosticRetryTimeoutMs.length; attemptIndex += 1) {
       const timeoutMs = accountDiagnosticRetryTimeoutMs[attemptIndex] ?? accountDiagnosticRetryTimeoutMs[accountDiagnosticRetryTimeoutMs.length - 1]

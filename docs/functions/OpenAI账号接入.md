@@ -11,7 +11,7 @@ Anthropic、Gemini、智谱 GLM、DeepSeek 的接入细节分别写在 [Anthropi
 
 这里的 `openai` 有两种层级语义：`protocolCode=openai` 表示客户端入口和上游适配遵循 OpenAI-compatible / v1 形态；`providerCode=openai` 表示通用 OpenAI-compatible 供应商。两者同名但字段不同，不能混淆。AI 账户、分组、模型目录和价格目录归属在供应商层；后续如果增加 Qwen 等 OpenAI-compatible 厂商，应新增各自供应商编码并声明 `protocolCode=openai`、`protocolVersion=v1`。Gemini OpenAI Chat、智谱 GLM 和 DeepSeek 虽然都提供 OpenAI-compatible surface，但已按独立专题接入。
 
-本文覆盖的可创建和可调度供应商协议档案只有 `profile_openai_openai_v1` 和 `profile_gpt_openai_v1`。Anthropic、Gemini、GLM、DeepSeek 档案以各自专题为准。账户、分组、账号测试任务、导入协议和公开推送接口都必须带上或由供应商解析出档案；后端会把档案冗余为 `providerProtocolProfileId`、`protocolCode` 和 `protocolVersion` 返回给前端和外部接口。`providerCode` 只说明供应商，不能单独表达上游协议、端点族和客户端策略。
+本文覆盖的可创建和可调度供应商协议档案只有 `profile_openai_openai_v1` 和 `profile_gpt_openai_v1`。Anthropic、Gemini、GLM、DeepSeek 档案以各自专题为准。AI 账户、账号测试任务、导入协议和公开账号推送接口按账户类型带上或由供应商解析出档案；后端会把账户档案冗余为 `providerProtocolProfileId`、`protocolCode` 和 `protocolVersion` 返回给前端和外部接口。分组只绑定 `providerCode`，不定义协议档案、协议版本或跨协议转换语义。
 
 对外中转入口统一使用 OpenAI 兼容协议：客户端 Base URL 可填服务根地址或 `/v1`，例如开发环境 `http://127.0.0.1:3000` 或 `http://127.0.0.1:3000/v1`；API Key 填 `API Key 管理` 或 `我的 API Key` 页面生成的本地网关密钥。后续即使增加其他主流厂商，也先适配为 OpenAI 兼容请求格式。
 
@@ -149,7 +149,7 @@ type GptAccountType = 'api_key' | 'oauth'
 当前关系规则：
 
 - `accounts.system_account_id` 表示当前账户行所属系统账户；账户所有者把 AI 账户授权给其他系统账户后，系统会为被授权人创建独立授权实例账户。
-- `accounts.provider_protocol_profile_id` 和 `groups.provider_protocol_profile_id` 是账户加入分组、授权实例绑定、路由策略号池和网关候选过滤的硬边界；本文覆盖值为 `profile_openai_openai_v1` 和 `profile_gpt_openai_v1`，其他当前启用档案以 Anthropic、Gemini、GLM、DeepSeek 专题为准。
+- `accounts.provider_protocol_profile_id` 是账户自身接入类型、测试、模型映射和网关候选过滤的硬边界；分组只保存 `provider_code`，账户加入分组和授权实例绑定只按供应商一致性校验。本文账户档案覆盖值为 `profile_openai_openai_v1` 和 `profile_gpt_openai_v1`，其他当前启用档案以 Anthropic、Gemini、GLM、DeepSeek 专题为准。
 - `group_accounts` 表示某个使用方的本地分组绑定；自有账户绑定自有账户 ID，授权账户绑定被授权人自己的授权实例账户 ID，并记录稳定的 `account_authorization_id`。
 - 一个账户在同一个使用方作用域内同一时间只保留一个有效分组绑定；自有账户在所有者作用域内创建 / 编辑时选择分组，被授权账户在授权创建时必须绑定被授权用户自己的本地分组，后续通过账户编辑弹窗调整分组和分组内优先级。
 - 账户标签按系统账户维度保存，一个账户可以绑定多个标签；新增和编辑弹窗支持从下拉选择已有标签，也支持直接输入新标签。下拉内可删除未绑定任何账户的标签；标签已绑定账户时禁止删除。
@@ -160,7 +160,7 @@ type GptAccountType = 'api_key' | 'oauth'
 - 统一授权管理支持分组授权；分组所有者可以把整个分组授权给系统账户或系统团队使用，授权共享该分组内当前全部可共享账户；有效授权分组可直接作为被授权方路由策略的号池
 - 被授权用户可以把自己的路由策略绑定到有效授权分组；也可以在分组页查看授权分组信息，并本地调整该授权分组的启用状态、分组类型和高并发调度配置。该本地配置只影响当前被授权人的路由策略号池和网关调度，不修改授权方原分组。
 - 授权暂停、过期、回收、归还、额度不可用或被授权人本地停用授权分组时，该号池配置保留但运行态不可用。个人直授权分组可从分组页归还；团队来源授权分组不提供个人归还入口。
-- 分组可以汇总多个 GPT 账户，但只能汇总同一供应商协议档案下的账户；不能只凭 `providerCode` 相同或 `protocolCode` 相同混用账户
+- 分组可以汇总多个 GPT 账户，但只能汇总同一 `providerCode` 下的账户；账号真实协议档案继续由账户字段和候选过滤控制
 - API Key 只选择一条路由策略；路由策略可以绑定调用方自己的一个或多个分组，也可以绑定有效授权给调用方的分组；统一授权提供使用权，不提供编辑、删除或转授权权限
 - 请求进入后先按路由策略号池优先级选择一个可承接分组，再只能使用该分组内调用方有权使用的账户
 
@@ -179,7 +179,7 @@ type GptAccountType = 'api_key' | 'oauth'
 ## 当前接口入口
 
 - 系统后台 API 统一在 `/__aisys__/api/*` 下，用户侧接口使用 `/__aisys__/api/my-*`，管理侧接口使用 `/__aisys__/api/*` 并按需要求管理员权限。
-- OpenAI 兼容 / GPT 账号接入相关接口包括 `providers`、`accounts` / `my-accounts`、`openai-oauth` / `my-openai-oauth`、`groups` / `my-groups`、`api-keys` / `my-api-keys`、`authorizations` / `my-authorizations`、`system-teams` / `my-teams`、`proxies` 和 `stats` / `my-stats`。账户、分组和测试相关 DTO 需要返回 `providerProtocolProfileId`、`protocolCode` 和 `protocolVersion`，用于前端筛选、表单默认值、分组绑定和运行时诊断。
+- OpenAI 兼容 / GPT 账号接入相关接口包括 `providers`、`accounts` / `my-accounts`、`openai-oauth` / `my-openai-oauth`、`groups` / `my-groups`、`api-keys` / `my-api-keys`、`authorizations` / `my-authorizations`、`system-teams` / `my-teams`、`proxies` 和 `stats` / `my-stats`。账户和测试相关 DTO 返回 `providerProtocolProfileId`、`protocolCode` 和 `protocolVersion`，用于账户类型、表单默认值和运行时诊断；分组 DTO 不返回这些协议档案字段。
 - 授权消耗明细接口固定使用 `startDate=YYYY-MM-DD`、`endDate=YYYY-MM-DD`、`page` 和 `pageSize` 参数读取窗口分页，管理侧为 `/__aisys__/api/authorizations/usage/team-details`、`/__aisys__/api/authorizations/usage/user-details`，用户侧为 `/__aisys__/api/my-authorizations/usage/team-details`、`/__aisys__/api/my-authorizations/usage/user-details`。
 - 客户端网关入口是根路径和 `/v1/*`，不使用后台登录态，只使用本地 API Key。
 

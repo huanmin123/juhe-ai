@@ -1,6 +1,7 @@
 import { strict as assert } from 'node:assert'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { closeRedisClients } from '../../shared/redis-client.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { closePostgresPool, getPostgresPool } from '../../storage/postgres-client.js'
@@ -27,8 +28,7 @@ try {
     enabled: true
   }, access)
   createdGroupIds.push(group.id)
-  const providerProtocolProfileId = group.providerProtocolProfileId
-  assert(providerProtocolProfileId, 'PG smoke 创建分组后应返回供应商协议档案 ID')
+  const providerProtocolProfileId = GPT_OPENAI_V1_PROFILE_ID
 
   const source = await createMigrationAccount('源账号', group.id, providerProtocolProfileId)
   const target = await createMigrationAccount('目标账号', group.id, providerProtocolProfileId)

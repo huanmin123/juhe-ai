@@ -1,7 +1,6 @@
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import type { AccountApiKeyRuntimeStatus } from '../../../storage/account-api-key-rotation.js'
 import type { OpenAIAccountSecret } from '../../../storage/repositories.js'
-import { requestDbService } from '../../db-service/db-service-ipc.js'
 import type { OpenAIGatewayTrafficSource } from '../usage/traffic-source.js'
 import {
   recordGatewayAccountApiKeySuccessGuard,
@@ -9,6 +8,7 @@ import {
   recordGatewayAccountApiKeyLocalFailureGuard
 } from './account-api-key-failure-guard.service.js'
 import { clearGatewayRuntimeCache } from './runtime-cache.service.js'
+import { requestGatewayDbService } from './gateway-db-service-request.js'
 
 const accountApiKeySuccessWriteThrottleMs = 30_000
 const recentAccountApiKeySuccessWrites = new Map<string, number>()
@@ -44,7 +44,7 @@ export function recordGatewayAccountApiKeyFailure(
   if (!guardDecision.persist) {
     return
   }
-  void requestDbService({
+  void requestGatewayDbService({
     type: 'record_account_api_key_failure',
     account,
     input: {
@@ -96,7 +96,7 @@ export function recordGatewayAccountApiKeySuccess(account: OpenAIAccountSecret, 
     return
   }
   rememberAccountApiKeySuccessWrite(account)
-  void requestDbService({
+  void requestGatewayDbService({
     type: 'record_account_api_key_success',
     account
   }).then((result) => {

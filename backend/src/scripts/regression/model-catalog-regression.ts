@@ -845,7 +845,6 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     const userAGroup = repositories.createGroup({
       name: '模型目录绑定回归分组',
       providerCode: 'openai',
-      providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID
     }, userAAccess)
     repositories.createAccount({
       providerCode: 'openai',

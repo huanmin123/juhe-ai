@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path'
 
 import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 import { DEFAULT_GPT_GROUP } from '../../storage/schema-defaults.js'
 
@@ -330,12 +331,11 @@ function seedGatewayRuntime(): {
   const group = repositories.createGroup({
     name: '运行配置缓存混合账号分组',
     providerCode: DEFAULT_GPT_GROUP.providerCode,
-    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     enabled: true
   }, { systemAccountId: 'sys_admin', role: 'admin' })
   const apiKeyAccount = repositories.createAccount({
     providerCode: DEFAULT_GPT_GROUP.providerCode,
-    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '运行配置缓存 API Key 账号',
     type: 'api_key',
     credentials: {
@@ -349,7 +349,7 @@ function seedGatewayRuntime(): {
   }, { systemAccountId: 'sys_admin', role: 'admin' })
   const oauthAccount = repositories.createAccount({
     providerCode: DEFAULT_GPT_GROUP.providerCode,
-    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '运行配置缓存 OAuth 账号',
     type: 'oauth',
     credentials: {
@@ -409,12 +409,11 @@ function seedGatewayRuntime(): {
   const authorizedGroup = repositories.createGroup({
     name: '运行配置缓存临期授权分组',
     providerCode: DEFAULT_GPT_GROUP.providerCode,
-    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     enabled: true
   }, { systemAccountId: 'sys_admin', role: 'admin' })
   repositories.createAccount({
     providerCode: DEFAULT_GPT_GROUP.providerCode,
-    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '运行配置缓存临期授权账号',
     type: 'api_key',
     credentials: {
@@ -436,12 +435,11 @@ function seedGatewayRuntime(): {
   const accountScheduledGroup = repositories.createGroup({
     name: '运行配置缓存账户计划分组',
     providerCode: DEFAULT_GPT_GROUP.providerCode,
-    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     enabled: true
   }, { systemAccountId: 'sys_admin', role: 'admin' })
   withMockedNowSync(Date.parse('2026-05-31T23:59:30.000Z'), () => repositories.createAccount({
     providerCode: DEFAULT_GPT_GROUP.providerCode,
-    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '运行配置缓存账户计划账号',
     type: 'api_key',
     credentials: {
@@ -468,13 +466,12 @@ function seedGatewayRuntime(): {
   const accountExpiringGroup = repositories.createGroup({
     name: '运行配置缓存账户到期分组',
     providerCode: DEFAULT_GPT_GROUP.providerCode,
-    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     enabled: true
   }, { systemAccountId: 'sys_admin', role: 'admin' })
   const accountExpiringExpiresAt = new Date(Date.now() + 30_000).toISOString()
   repositories.createAccount({
     providerCode: DEFAULT_GPT_GROUP.providerCode,
-    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '运行配置缓存临期账户',
     type: 'api_key',
     credentials: {
@@ -494,19 +491,17 @@ function seedGatewayRuntime(): {
   const multiGroupAccountScheduledPrimaryGroup = repositories.createGroup({
     name: '运行配置缓存多分组账户计划主分组',
     providerCode: DEFAULT_GPT_GROUP.providerCode,
-    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     enabled: true
   }, { systemAccountId: 'sys_admin', role: 'admin' })
   const multiGroupAccountScheduledFallbackGroup = repositories.createGroup({
     name: '运行配置缓存多分组账户计划备用分组',
     providerCode: DEFAULT_GPT_GROUP.providerCode,
-    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     enabled: true
   }, { systemAccountId: 'sys_admin', role: 'admin' })
   for (const [index, groupId] of [multiGroupAccountScheduledPrimaryGroup.id, multiGroupAccountScheduledFallbackGroup.id].entries()) {
     withMockedNowSync(Date.parse('2026-06-01T00:03:30.000Z'), () => repositories.createAccount({
       providerCode: DEFAULT_GPT_GROUP.providerCode,
-      providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: `运行配置缓存多分组账户计划账号 ${index + 1}`,
       type: 'api_key',
       credentials: {
@@ -583,7 +578,7 @@ function assertReadGatewayRuntimeDefersPolicyLists(): void {
   const handlersSource = readFileSync(new URL('../../modules/db-service/db-service-handlers.ts', import.meta.url), 'utf8')
   const readRuntimeBody = sourceFunctionBlock(handlersSource, 'function readGatewayRuntime')
   const validateIndex = readRuntimeBody.indexOf('validateGatewayApiKey')
-  const responseInspectionPolicyIndex = readRuntimeBody.indexOf('listActiveResponseInspectionPoliciesForGateway')
+  const responseInspectionPolicyIndex = readRuntimeBody.indexOf('listActiveResponseInspectionPoliciesForAccounts')
   assert(validateIndex >= 0, 'read_gateway_runtime 应先验证 API Key')
   assert(responseInspectionPolicyIndex > validateIndex, 'read_gateway_runtime 不能在验证 API Key 前加载全量响应检查策略')
   assert(!readRuntimeBody.includes('listActiveClientIpPolicies'), 'read_gateway_runtime 不能携带全量 active IP 封禁策略')

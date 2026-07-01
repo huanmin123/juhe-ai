@@ -88,7 +88,6 @@ try {
     targetUsername,
     name: extraGroupName,
     providerCode: GPT_VENDOR_CODE,
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true,
     groupType: 'personal'
   })

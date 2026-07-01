@@ -247,15 +247,14 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
   async function loadCreateTargetGroupOptions(keyword?: string): Promise<void> {
     const granteeSystemAccountId = createForm.granteeType === 'system_account' ? createForm.granteeId : ''
     const providerCode = selectedCreateAccount.value?.providerCode
-    const providerProtocolProfileId = selectedCreateAccount.value?.providerProtocolProfileId
-    if (!createTargetGroupVisible.value || !granteeSystemAccountId || !providerCode || !providerProtocolProfileId) {
+    if (!createTargetGroupVisible.value || !granteeSystemAccountId || !providerCode) {
       createTargetGroupRequestId += 1
       createTargetGroupOptionsLoading.value = false
       createTargetGroups.value = []
       return
     }
     const search = normalizeSearchKeyword(keyword)
-    const requestKey = JSON.stringify(['create-target-group', isManagementView.value ? 'management' : 'self', granteeSystemAccountId, providerCode, providerProtocolProfileId, search ?? '', createForm.targetGroupId ?? ''])
+    const requestKey = JSON.stringify(['create-target-group', isManagementView.value ? 'management' : 'self', granteeSystemAccountId, providerCode, search ?? '', createForm.targetGroupId ?? ''])
     const cachedGroups = authorizationGroupOptionCache.get(requestKey)
     if (cachedGroups) {
       createTargetGroupRequestId += 1
@@ -270,9 +269,9 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
     createTargetGroupOptionsLoading.value = true
     try {
       let nextGroups = isManagementView.value
-        ? await api.authorizationOptions.granteeGroups({ granteeSystemAccountId, providerCode, providerProtocolProfileId, keyword: search, limit: remoteOptionLimit, preferDefault: true })
-        : await api.myAuthorizationOptions.granteeGroups({ granteeSystemAccountId, providerCode, providerProtocolProfileId, keyword: search, limit: remoteOptionLimit, preferDefault: true })
-      nextGroups = await ensureSelectedAuthorizationGranteeGroupOption(nextGroups, createForm.targetGroupId, granteeSystemAccountId, providerCode, providerProtocolProfileId, isManagementView.value)
+        ? await api.authorizationOptions.granteeGroups({ granteeSystemAccountId, providerCode, keyword: search, limit: remoteOptionLimit, preferDefault: true })
+        : await api.myAuthorizationOptions.granteeGroups({ granteeSystemAccountId, providerCode, keyword: search, limit: remoteOptionLimit, preferDefault: true })
+      nextGroups = await ensureSelectedAuthorizationGranteeGroupOption(nextGroups, createForm.targetGroupId, granteeSystemAccountId, providerCode, isManagementView.value)
       if (requestId !== createTargetGroupRequestId) return
       rememberGroupLabels(nextGroups)
       syncCreateTargetGroup(nextGroups)

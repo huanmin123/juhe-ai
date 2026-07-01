@@ -57,6 +57,7 @@ const [
   { requestContextMiddleware },
   databaseModule,
   repositories,
+  catalogService,
   gatewayCache,
   accountSideEffects,
   usageRecordQueue,
@@ -66,6 +67,7 @@ const [
   import('../../shared/request-context.js'),
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
+  import('../../modules/model-pricing/model-catalog.service.js'),
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
@@ -74,6 +76,7 @@ const [
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 const upstreamHits: DeepSeekUpstreamHit[] = []
+const privateDeepSeekModel = 'deepseek-private-models-key-only'
 
 const app = express()
 app.use(requestContextMiddleware)
@@ -91,11 +94,20 @@ try {
     const upstreamBaseUrl = `http://127.0.0.1:${serverAddress(upstreamServer).port}`
 
     assertDeepSeekSeeds()
+    catalogService.saveCustomProviderModel({
+      providerCode: DEEPSEEK_PROVIDER_CODE,
+      model: privateDeepSeekModel,
+      scope: 'personal',
+      systemAccountId: access.systemAccountId,
+      supportedApiProtocols: ['chat_completions'],
+      inputUsdPer1M: 1,
+      outputUsdPer1M: 2,
+      actorSystemAccountId: access.systemAccountId
+    })
 
     const group = repositories.createGroup({
       name: 'DeepSeek Mock AI 回归分组',
       providerCode: DEEPSEEK_PROVIDER_CODE,
-      providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
       enabled: true
     }, access)
     const account = repositories.createAccount({
@@ -129,7 +141,6 @@ try {
     const bodyInterruptedGroup = repositories.createGroup({
       name: 'DeepSeek Mock AI JSON 正文中断重试分组',
       providerCode: DEEPSEEK_PROVIDER_CODE,
-      providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
       enabled: true
     }, access)
     repositories.createAccount({
@@ -165,7 +176,6 @@ try {
     const retryGroup = repositories.createGroup({
       name: 'DeepSeek Mock AI 协议失败重试分组',
       providerCode: DEEPSEEK_PROVIDER_CODE,
-      providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
       enabled: true
     }, access)
     repositories.createAccount({
@@ -219,7 +229,6 @@ try {
     const allBadGroup = repositories.createGroup({
       name: 'DeepSeek Mock AI 协议失败耗尽分组',
       providerCode: DEEPSEEK_PROVIDER_CODE,
-      providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
       enabled: true
     }, access)
     for (const item of [
@@ -246,7 +255,6 @@ try {
     const codexBridgeGroup = repositories.createGroup({
       name: 'DeepSeek Codex bridge Mock AI 回归分组',
       providerCode: DEEPSEEK_PROVIDER_CODE,
-      providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
       enabled: true
     }, access)
     const codexBridgeAccount = repositories.createAccount({
@@ -315,6 +323,8 @@ try {
     const baseUrl = `http://127.0.0.1:${serverAddress(appServer).port}`
 
     await assertDeepSeekModels(baseUrl, apiKey.key)
+    await assertPublicModelsWithoutApiKey(baseUrl)
+    await assertInvalidModelsApiKeyRejected(baseUrl)
     await assertDeepSeekChatJson(baseUrl, apiKey.key)
     await assertDeepSeekChatJsonBufferedBodyInterruptionRetriesNextAccount(baseUrl, bodyInterruptedApiKey.key)
     await assertDeepSeekInvalidChatJsonChoicesRetriesNextAccount(baseUrl, retryApiKey.key)
@@ -361,7 +371,7 @@ function assertDeepSeekSeeds(): void {
   const defaultGroups = repositories.listGroups(access).filter((group) => group.providerCode === DEEPSEEK_PROVIDER_CODE && group.isDefault)
   assert.equal(defaultGroups.length, 1, 'DeepSeek 默认分组应只按供应商创建一个')
   assert.equal(defaultGroups[0]?.name, '默认 DeepSeek 分组', 'DeepSeek 默认分组应使用供应商级名称')
-  assert.equal(defaultGroups[0]?.providerProtocolProfileId, DEEPSEEK_OPENAI_V1_PROFILE_ID, 'DeepSeek 默认分组只保留默认协议档案作为元数据')
+  assert.equal('providerProtocolProfileId' in (defaultGroups[0] ?? {}), false, 'DeepSeek 默认分组不应保留协议档案元数据')
 }
 
 async function assertDeepSeekModels(baseUrl: string, localApiKey: string): Promise<void> {
@@ -376,6 +386,36 @@ async function assertDeepSeekModels(baseUrl: string, localApiKey: string): Promi
   const models = new Set((body.data ?? []).map((item) => item.id))
   assert(models.has('deepseek-ai-v4-flash'), 'DeepSeek 本地模型目录应包含 deepseek-ai-v4-flash')
   assert(models.has('deepseek-ai-v4-pro'), 'DeepSeek 本地模型目录应包含 deepseek-ai-v4-pro')
+  assert(models.has(privateDeepSeekModel), '带有效 API Key 的模型目录应包含当前用户个人自定义模型')
+}
+
+async function assertPublicModelsWithoutApiKey(baseUrl: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/models`)
+  const text = await response.text()
+  assert.equal(response.status, 200, `无 API Key 的公开模型目录不应要求认证，实际 HTTP ${response.status}: ${text}`)
+  const body = JSON.parse(text) as { object?: string; data?: Array<{ id?: string }>; error?: unknown }
+  assert.equal(body.object, 'list', '无 API Key 的公开模型目录应返回 OpenAI 风格 object=list')
+  assert(Array.isArray(body.data), '无 API Key 的公开模型目录应返回 data 数组')
+  assert.equal(body.error, undefined, '无 API Key 的公开模型目录不应返回认证错误')
+  assert.equal((body.data ?? []).some((item) => item.id === privateDeepSeekModel), false, '公开模型目录不应泄露用户个人自定义模型')
+  assert.equal(upstreamHits.length, 0, '公开模型目录不应命中上游 mock')
+}
+
+async function assertInvalidModelsApiKeyRejected(baseUrl: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/models`, {
+    headers: {
+      authorization: 'Bearer invalid-models-key'
+    }
+  })
+  const text = await response.text()
+  assert.equal(response.status, 401, `带无效 API Key 的模型目录应直接认证失败，实际 HTTP ${response.status}: ${text}`)
+  const body = JSON.parse(text) as { object?: string; data?: unknown[]; error?: { type?: string; message?: string } }
+  assert.equal(body.error?.type, 'invalid_request_error', '无效 API Key 不应回退公开模型目录')
+  assert.equal(body.object, undefined, '无效 API Key 不应返回公开模型列表 object=list')
+  assert.equal(body.data, undefined, '无效 API Key 不应返回公开模型列表 data')
+  assert.equal(upstreamHits.length, 0, '无效 API Key 的模型目录不应命中上游 mock')
 }
 
 async function assertDeepSeekChatJson(baseUrl: string, localApiKey: string): Promise<void> {

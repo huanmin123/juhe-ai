@@ -91,11 +91,9 @@ const reauthorizeFromRefreshTokenSchema = z.object({
   refreshToken: z.string().min(1)
 }).strict()
 
-function isOpenAIOAuthGroupSummary(group: Awaited<ReturnType<typeof findGroupSummaryAsync>> | undefined, providerProtocolProfileId: string): boolean {
+function isOpenAIOAuthGroupSummary(group: Awaited<ReturnType<typeof findGroupSummaryAsync>> | undefined): boolean {
   return Boolean(group
-    && isGptVendorCode(group.providerCode)
-    && group.providerProtocolProfileId === providerProtocolProfileId
-    && isOpenAIProtocolProfile(group))
+    && isGptVendorCode(group.providerCode))
 }
 
 openAIOAuthRouter.post('/auth-url', (req, res) => {
@@ -134,7 +132,7 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
     return
   }
   const group = parsed.data.groupId ? await findGroupSummaryAsync(parsed.data.groupId, requestAccess) : undefined
-  if (parsed.data.groupId && !isOpenAIOAuthGroupSummary(group, providerProfile.profile.id)) {
+  if (parsed.data.groupId && !isOpenAIOAuthGroupSummary(group)) {
     res.status(400).json(badRequest('账户分组无效'))
     return
   }
@@ -217,7 +215,7 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
     return
   }
   const group = parsed.data.groupId ? await findGroupSummaryAsync(parsed.data.groupId, requestAccess) : undefined
-  if (parsed.data.groupId && !isOpenAIOAuthGroupSummary(group, providerProfile.profile.id)) {
+  if (parsed.data.groupId && !isOpenAIOAuthGroupSummary(group)) {
     res.status(400).json(badRequest('账户分组无效'))
     return
   }

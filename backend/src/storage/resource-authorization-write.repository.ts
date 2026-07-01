@@ -1103,7 +1103,7 @@ async function bindActiveAccountAuthorizationToGranteeGroupAsync(client: Databas
   if (authorization.resource_type !== 'account') return
   if (authorization.status !== 'active' || isResourceAuthorizationExpired(authorization.expires_at, Date.parse(now))) return
   const instance = await ensureAccountAuthorizationInstanceAsync(client, authorization, now)
-  if (!instance?.id || !instance.provider_code || !instance.provider_protocol_profile_id) return
+  if (!instance?.id || !instance.provider_code) return
   const requestedGroupId = targetGroupId?.trim()
   const existingBinding = await client.one<{ group_id?: string | null }>(`
     SELECT group_id
@@ -1116,7 +1116,7 @@ async function bindActiveAccountAuthorizationToGranteeGroupAsync(client: Databas
     LIMIT 1
   `, [instance.id, authorization.grantee_system_account_id, authorization.id])
   if (existingBinding?.group_id && (!requestedGroupId || existingBinding.group_id === requestedGroupId)) return
-  const bindGroupId = await groupIdForAuthorizationBindingAsync(client, instance.provider_code, instance.provider_protocol_profile_id, authorization.grantee_system_account_id, requestedGroupId)
+  const bindGroupId = await groupIdForAuthorizationBindingAsync(client, instance.provider_code, authorization.grantee_system_account_id, requestedGroupId)
   if (!bindGroupId) return
   if (existingBinding?.group_id && existingBinding.group_id !== bindGroupId) {
     await client.execute(`
@@ -1289,10 +1289,10 @@ async function isAccountNameAvailableAsync(client: DatabaseClient, systemAccount
   return !row?.id
 }
 
-async function groupIdForAuthorizationBindingAsync(client: DatabaseClient, providerCode: string, providerProtocolProfileId: string, systemAccountId: string, targetGroupId?: string): Promise<string> {
+async function groupIdForAuthorizationBindingAsync(client: DatabaseClient, providerCode: string, systemAccountId: string, targetGroupId?: string): Promise<string> {
   if (targetGroupId) {
-    const group = await client.one<{ id?: string; system_account_id?: string | null; provider_code?: string | null; provider_protocol_profile_id?: string | null; enabled?: number | boolean | null }>(`
-      SELECT id, system_account_id, provider_code, provider_protocol_profile_id, enabled
+    const group = await client.one<{ id?: string; system_account_id?: string | null; provider_code?: string | null; enabled?: number | boolean | null }>(`
+      SELECT id, system_account_id, provider_code, enabled
       FROM ${resourceAuthorizationWriteTable(client, 'groups')}
       WHERE id = ?
       LIMIT 1
@@ -1303,29 +1303,25 @@ async function groupIdForAuthorizationBindingAsync(client: DatabaseClient, provi
     if (group.provider_code !== providerCode) {
       throw new Error('目标分组供应商与授权账户不一致')
     }
-    if (group.provider_protocol_profile_id !== providerProtocolProfileId) {
-      throw new Error('目标分组协议 Profile 与授权账户不一致')
-    }
     if (Number(group.enabled) !== 1) {
       throw new Error('目标分组已停用，请选择启用分组')
     }
     return group.id
   }
-  return defaultGroupIdForAuthorizationBindingAsync(client, providerCode, providerProtocolProfileId, systemAccountId)
+  return defaultGroupIdForAuthorizationBindingAsync(client, providerCode, systemAccountId)
 }
 
-async function defaultGroupIdForAuthorizationBindingAsync(client: DatabaseClient, providerCode: string, providerProtocolProfileId: string, systemAccountId: string): Promise<string> {
+async function defaultGroupIdForAuthorizationBindingAsync(client: DatabaseClient, providerCode: string, systemAccountId: string): Promise<string> {
   const existing = await client.one<{ id?: string }>(`
     SELECT id
     FROM ${resourceAuthorizationWriteTable(client, 'groups')}
     WHERE system_account_id = ?
       AND provider_code = ?
-      AND provider_protocol_profile_id = ?
       AND is_default = 1
       AND enabled = 1
     ORDER BY updated_at DESC, id ASC
     LIMIT 1
-  `, [systemAccountId, providerCode, providerProtocolProfileId])
+  `, [systemAccountId, providerCode])
   if (existing?.id) return existing.id
   throw new Error('目标用户缺少启用的默认分组，请按当前数据契约修复目标用户分组后再授权')
 }

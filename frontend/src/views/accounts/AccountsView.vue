@@ -517,7 +517,6 @@ watch(
       : undefined
     setEditGroupOptionScope({
       providerCode: form.providerCode,
-      providerProtocolProfileId: form.providerProtocolProfileId,
       systemAccountId: isManagementView.value
         ? accountOperationSystemAccountId(activeAccount, createScopeParams.value) ?? ''
         : undefined,

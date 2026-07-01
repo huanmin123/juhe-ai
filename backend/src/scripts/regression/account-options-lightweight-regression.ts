@@ -280,8 +280,8 @@ function seedData(): SeedState {
   const groupId = 'grp_account_options_keyword_match'
   database
     .prepare(`
-      INSERT INTO groups (id, system_account_id, name, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, description, enabled, is_default, created_at, updated_at)
-      VALUES (?, ?, ?, 'gpt', 'profile_gpt_openai_v1', 'openai', 'v1', NULL, 1, 0, ?, ?)
+      INSERT INTO groups (id, system_account_id, name, provider_code, description, enabled, is_default, created_at, updated_at)
+      VALUES (?, ?, ?, 'gpt', NULL, 1, 0, ?, ?)
     `)
     .run(groupId, user.id, '账户选项绑定分组', keywordCreatedAt, keywordCreatedAt)
   database
@@ -292,8 +292,8 @@ function seedData(): SeedState {
     .run(user.id, groupId, groupMatchedAccountId, keywordCreatedAt, keywordCreatedAt)
   database
     .prepare(`
-      INSERT INTO groups (id, system_account_id, name, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, description, enabled, is_default, created_at, updated_at)
-      VALUES (?, ?, ?, 'gpt', 'profile_gpt_openai_v1', 'openai', 'v1', NULL, 1, 0, ?, ?)
+      INSERT INTO groups (id, system_account_id, name, provider_code, description, enabled, is_default, created_at, updated_at)
+      VALUES (?, ?, ?, 'gpt', NULL, 1, 0, ?, ?)
     `)
     .run(ownerGroupId, owner.id, '账户选项授权来源分组', keywordCreatedAt, keywordCreatedAt)
   database
@@ -304,8 +304,8 @@ function seedData(): SeedState {
     .run(owner.id, ownerGroupId, authorizedSourceAccountId, keywordCreatedAt, keywordCreatedAt)
   database
     .prepare(`
-      INSERT INTO groups (id, system_account_id, name, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, description, enabled, is_default, created_at, updated_at)
-      VALUES (?, ?, ?, 'gpt', 'profile_gpt_openai_v1', 'openai', 'v1', NULL, 1, 0, ?, ?)
+      INSERT INTO groups (id, system_account_id, name, provider_code, description, enabled, is_default, created_at, updated_at)
+      VALUES (?, ?, ?, 'gpt', NULL, 1, 0, ?, ?)
     `)
     .run(authorizedTargetGroupId, user.id, '账户选项授权目标分组', keywordCreatedAt, keywordCreatedAt)
   database

@@ -179,18 +179,16 @@ const groupAddSchema = z.object({
   targetDisplayName: z.string().trim().min(1).max(80).optional(),
   name: z.string().trim().min(1).max(80),
   providerCode: providerCodeSchema,
-  providerProtocolProfileId: providerProtocolProfileIdSchema,
   description: z.string().trim().max(500).optional(),
   enabled: z.boolean().optional(),
   groupType: z.enum(['personal', 'high_concurrency']).optional()
 }).strict()
-const groupUpdateMutableFields = ['name', 'providerCode', 'providerProtocolProfileId', 'description', 'enabled', 'groupType'] as const
+const groupUpdateMutableFields = ['name', 'providerCode', 'description', 'enabled', 'groupType'] as const
 const groupUpdateSchema = z.object({
   targetUsername: z.string().trim().min(2).max(80).optional(),
   groupId: z.string().trim().min(1).max(120),
   name: z.string().trim().min(1).max(80).optional(),
   providerCode: z.string().trim().min(1).max(60).optional(),
-  providerProtocolProfileId: providerProtocolProfileIdSchema.optional(),
   description: z.string().trim().max(500).nullable().optional(),
   enabled: z.boolean().optional(),
   groupType: z.enum(['personal', 'high_concurrency']).optional()
@@ -205,7 +203,6 @@ const groupDeleteSchema = z.object({
 const groupListQuerySchema = z.object({
   targetUsername: z.string().trim().min(2).max(80),
   providerCode: z.string().trim().min(1).max(60).optional(),
-  providerProtocolProfileId: providerProtocolProfileIdSchema.optional(),
   keyword: z.string().trim().max(80).optional(),
   page: z.coerce.number().int().min(1).optional(),
   pageSize: z.coerce.number().int().min(1).max(100).optional()

@@ -44,7 +44,6 @@ assert.doesNotMatch(accountDraftTestSchemaSource, /clientCompatibility/, '账号
 const group = repositories.createGroup({
   name: '账号客户端画像边界分组',
   providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
-  providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
   enabled: true
 }, access)
 createApiKeyRecordWithRouteStrategy(repositories, {

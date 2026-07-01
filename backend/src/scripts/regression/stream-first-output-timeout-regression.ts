@@ -471,7 +471,7 @@ function createScenarioCredential(upstreamBaseUrl: string, label: string): {
   apiKey: ReturnType<typeof apiKeyRepository.createApiKeyRecord>
 } {
   const access = scenarioCredentialAccess()
-  const group = repositories.createGroup({ name: `流式超时回归分组-${label}`, providerCode: 'gpt', providerProtocolProfileId: 'profile_gpt_openai_v1', enabled: true }, access)
+  const group = repositories.createGroup({ name: `流式超时回归分组-${label}`, providerCode: 'gpt', enabled: true }, access)
   scenarioCredentialIndex += 1
   const account = repositories.createAccount({
     providerCode: 'gpt',
@@ -501,7 +501,7 @@ function createTwoAccountScenarioCredential(upstreamBaseUrl: string, label: stri
   apiKey: ReturnType<typeof apiKeyRepository.createApiKeyRecord>
 } {
   const access = scenarioCredentialAccess()
-  const group = repositories.createGroup({ name: `流式超时回归双账号分组-${label}`, providerCode: 'gpt', providerProtocolProfileId: 'profile_gpt_openai_v1', enabled: true }, access)
+  const group = repositories.createGroup({ name: `流式超时回归双账号分组-${label}`, providerCode: 'gpt', enabled: true }, access)
   scenarioCredentialIndex += 1
   const primaryKey = `sk-stream-timeout-regression-${scenarioCredentialIndex}-primary`
   const backupKey = `sk-stream-timeout-regression-${scenarioCredentialIndex}-backup`
@@ -547,7 +547,7 @@ function createMultiAccountScenarioCredential(upstreamBaseUrl: string, label: st
   apiKey: ReturnType<typeof apiKeyRepository.createApiKeyRecord>
 } {
   const access = scenarioCredentialAccess()
-  const group = repositories.createGroup({ name: `流式超时回归多账号分组-${label}`, providerCode: 'gpt', providerProtocolProfileId: 'profile_gpt_openai_v1', enabled: true }, access)
+  const group = repositories.createGroup({ name: `流式超时回归多账号分组-${label}`, providerCode: 'gpt', enabled: true }, access)
   scenarioCredentialIndex += 1
   const accounts = Array.from({ length: count }, (_, index) => repositories.createAccount({
     providerCode: 'gpt',

@@ -6,7 +6,7 @@ import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import {
   accountTestUnavailableMessage,
   findRecentOpenAIRequestShapeForAccountAsync,
-  getAccountPrecheckMutationState,
+  getAccountPrecheckMutationStateAsync,
   resolveProxyUrlForProfileAsync,
   runtimeOpenAIAccountCredentials,
   type OpenAIAccountSecret
@@ -21,7 +21,7 @@ import { requestBackgroundWorkerDbService, sendAccountRuntimeClearToServer, send
 import { operationMode, recordOperationLogAsync, resolveOperationOwner, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 import { buildOpenAIOAuthCredentials, refreshOpenAIOAuthToken, shouldRefreshOpenAIOAuthCredentials } from '../openai-oauth/openai-oauth.service.js'
 import { isGatewaySupportedProtocolProfile } from '../../domain/provider-protocol.js'
-import { preferredSystemAccountTestModel, testOpenAIAccount, testOpenAIAccountWithDiagnosticRetries } from './account-test.service.js'
+import { preferredSystemAccountTestModel, preferredSystemAccountTestModelAsync, testOpenAIAccount, testOpenAIAccountWithDiagnosticRetries } from './account-test.service.js'
 import {
   type AccountDiagnosticAttemptProgress,
   accountDiagnosticAttemptProgress,
@@ -1004,7 +1004,7 @@ async function runManualAccountTestFailurePrecheckQueueItem(
     }, '账号测试失败事前确认已失效，跳过状态写入')
     return true
   }
-  const skipReason = manualAccountTestFailurePrecheckSkipReason(item, account)
+  const skipReason = await manualAccountTestFailurePrecheckSkipReason(item, account)
   if (skipReason) {
     logger.info({
       event: 'manual_account_test_failure_precheck_skipped',
@@ -1018,7 +1018,7 @@ async function runManualAccountTestFailurePrecheckQueueItem(
   }
 
   const result = await testOpenAIAccountWithDiagnosticRetries(account, {
-    model: item.model || preferredSystemAccountTestModel(account),
+    model: item.model || await preferredSystemAccountTestModelAsync(account),
     clientCompatibility: item.clientCompatibility,
     diagnostics: 'full',
     groupId: account.boundGroupId,
@@ -1075,7 +1075,7 @@ async function runManualAccountTestFailurePrecheckQueueItem(
     }, '账号测试失败事前确认完成前账户已变化，跳过状态写入')
     return true
   }
-  const latestSkipReason = manualAccountTestFailurePrecheckSkipReason(item, latestAccount)
+  const latestSkipReason = await manualAccountTestFailurePrecheckSkipReason(item, latestAccount)
   if (latestSkipReason) {
     logger.info({
       event: 'manual_account_test_failure_precheck_mark_skipped',
@@ -1364,10 +1364,10 @@ function shouldRunAccountTestFailurePrecheck(account: AccountSummary, result: { 
   return true
 }
 
-function manualAccountTestFailurePrecheckSkipReason(
+async function manualAccountTestFailurePrecheckSkipReason(
   item: ManualAccountTestFailurePrecheckQueueItem,
   account: AccountSummary | undefined
-): string | undefined {
+): Promise<string | undefined> {
   if (!account) return 'account_missing'
   if (!shouldRunAccountTestFailurePrecheck(account, {
     success: false,
@@ -1376,7 +1376,7 @@ function manualAccountTestFailurePrecheckSkipReason(
   })) {
     return 'account_not_eligible'
   }
-  const state = getAccountPrecheckMutationState({
+  const state = await getAccountPrecheckMutationStateAsync({
     accountId: account.id,
     authorizedBinding: manualAccountTestFailurePrecheckAuthorizedBinding(account, item.access)
   })

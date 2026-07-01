@@ -22,7 +22,14 @@ import {
   type ProviderModelApiProtocol,
   type ProviderModelPricing
 } from './model-pricing.service.js'
-import { OPENAI_COMPATIBLE_PROVIDER_CODE, normalizeProviderToken } from '../../domain/provider-protocol.js'
+import {
+  DEEPSEEK_PROVIDER_CODE,
+  GEMINI_PROVIDER_CODE,
+  GLM_PROVIDER_CODE,
+  GPT_VENDOR_CODE,
+  OPENAI_COMPATIBLE_PROVIDER_CODE,
+  normalizeProviderToken
+} from '../../domain/provider-protocol.js'
 import { listOpenAIProtocolProviderCodes, listOpenAIProtocolProviderCodesAsync } from '../../storage/provider.repository.js'
 import { createAppCache, createSharedJsonCache } from '../../shared/cache.js'
 import { registerGatewayRuntimeCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
@@ -129,6 +136,14 @@ const providerModelCatalogSharedCache = createSharedJsonCache<ProviderModelCatal
   max: 1000,
   ttlMs: modelCatalogCacheTtlMs
 })
+
+const postgresSyncOpenAIProtocolProviderCodes = [
+  GPT_VENDOR_CODE,
+  DEEPSEEK_PROVIDER_CODE,
+  GLM_PROVIDER_CODE,
+  GEMINI_PROVIDER_CODE,
+  OPENAI_COMPATIBLE_PROVIDER_CODE
+] as const
 
 export function listProviderModelCatalog(options: ModelCatalogListOptions): ProviderModelCatalogItem[] {
   const cacheKey = modelCatalogCacheKey(options)
@@ -570,6 +585,7 @@ function modelCatalogSourceProviderCodes(providerCode: string): string[] {
   const normalizedProviderCode = normalizeProviderToken(providerCode)
   if (!normalizedProviderCode) return []
   if (normalizedProviderCode !== OPENAI_COMPATIBLE_PROVIDER_CODE) return [normalizedProviderCode]
+  if (runtimeConfig.databaseDriver === 'postgres') return [...postgresSyncOpenAIProtocolProviderCodes]
 
   const openAIProtocolProviderCodes = listOpenAIProtocolProviderCodes()
     .map((code) => normalizeProviderToken(code))

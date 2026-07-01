@@ -111,6 +111,15 @@ async function assertGroupManagementAsync(repositories: typeof import('../../sto
     /同一供应商下分组名称已存在/,
     '异步创建分组不能重复同供应商名称'
   )
+  await assert.rejects(
+    () => repositories.createGroupAsync({
+      name: `${name}协议档案禁用`,
+      providerCode: 'gpt',
+      providerProtocolProfileId: 'profile_should_not_be_allowed'
+    }, adminAccess),
+    /分组创建参数包含未知字段/,
+    '异步创建分组不应接受协议档案字段'
+  )
 
   const renamed = await repositories.updateGroupAsync(created.id, {
     name: `${name}改`,

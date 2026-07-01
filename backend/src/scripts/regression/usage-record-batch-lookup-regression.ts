@@ -34,7 +34,6 @@ try {
   const group = repositories.createGroup({
     name: '使用记录批量查询回归分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   const account = repositories.createAccount({

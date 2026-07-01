@@ -92,12 +92,9 @@ export function accountUsageMetadata(account: UpstreamAccount): UsageAccessField
   }
 }
 
-export function groupUsageMetadata(groupAccess: GroupUsageAccessMetadata): Pick<GatewayFailureUsageContext, 'providerCode' | 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion' | 'groupOwnerSystemAccountId' | 'groupAccessType' | 'groupAuthorizationId' | 'groupAuthorizationSourceType' | 'groupAuthorizationSourceTeamId'> {
+export function groupUsageMetadata(groupAccess: GroupUsageAccessMetadata): Pick<GatewayFailureUsageContext, 'providerCode' | 'groupOwnerSystemAccountId' | 'groupAccessType' | 'groupAuthorizationId' | 'groupAuthorizationSourceType' | 'groupAuthorizationSourceTeamId'> {
   return {
     providerCode: groupAccess.providerCode,
-    providerProtocolProfileId: groupAccess.providerProtocolProfileId,
-    protocolCode: groupAccess.protocolCode,
-    protocolVersion: groupAccess.protocolVersion,
     groupOwnerSystemAccountId: groupAccess.groupOwnerSystemAccountId,
     groupAccessType: groupAccess.groupAccessType,
     groupAuthorizationId: groupAccess.groupAuthorizationId,

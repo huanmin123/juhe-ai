@@ -206,7 +206,6 @@ function createSingleAccountScenario(label: string, upstreamApiKey: string, upst
   const group = repositories.createGroup({
     name: `${label}分组`,
     providerCode: GPT_VENDOR_CODE,
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   const account = repositories.createAccount({
@@ -239,13 +238,11 @@ function createFallbackScenario(upstreamBaseUrl: string): { primaryAccountId: st
   const primaryGroup = repositories.createGroup({
     name: '恢复等待后备分组优先主分组',
     providerCode: GPT_VENDOR_CODE,
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   const backupGroup = repositories.createGroup({
     name: '恢复等待后备分组优先备用分组',
     providerCode: GPT_VENDOR_CODE,
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   const primary = repositories.createAccount({
@@ -295,7 +292,6 @@ function createDisabledScenario(upstreamBaseUrl: string): { apiKey: string } {
   const group = repositories.createGroup({
     name: '恢复等待硬不可用分组',
     providerCode: GPT_VENDOR_CODE,
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   repositories.createAccount({

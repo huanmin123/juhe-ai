@@ -14,9 +14,6 @@ export interface CodexContextStateBoundary {
   apiKeyId?: string
   groupId: string
   providerCode: string
-  providerProtocolProfileId: string
-  protocolCode: string
-  protocolVersion: string
 }
 
 export interface CodexContextPayloadReference {
@@ -123,9 +120,6 @@ interface CodexContextResponseStateRow {
   api_key_id?: string | null
   group_id: string
   provider_code: string
-  provider_protocol_profile_id: string
-  protocol_code: string
-  protocol_version: string
   upstream_account_id?: string | null
   model?: string | null
   upstream_model?: string | null
@@ -151,9 +145,6 @@ interface CodexContextCompactStateRow {
   api_key_id?: string | null
   group_id: string
   provider_code: string
-  provider_protocol_profile_id: string
-  protocol_code: string
-  protocol_version: string
   upstream_account_id?: string | null
   model?: string | null
   upstream_model?: string | null
@@ -532,11 +523,11 @@ function touchCodexContextCompact(row: CodexContextCompactStateIndex, now: strin
 function prepareCodexContextSessionUpsertStatement(database: DatabaseSync): StatementSync {
   return database.prepare(`
     INSERT INTO codex_context_sessions (
-      id, system_account_id, api_key_id, group_id, provider_code, provider_protocol_profile_id,
-      protocol_code, protocol_version, source_response_id, latest_response_id, latest_compact_id,
+      id, system_account_id, api_key_id, group_id, provider_code,
+      source_response_id, latest_response_id, latest_compact_id,
       created_at, updated_at, last_used_at, expires_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       source_response_id = COALESCE(codex_context_sessions.source_response_id, excluded.source_response_id),
       latest_response_id = COALESCE(excluded.latest_response_id, codex_context_sessions.latest_response_id),
@@ -554,9 +545,6 @@ function upsertCodexContextSessionRow(statement: StatementSync, input: CodexCont
     input.boundary.apiKeyId ?? null,
     input.boundary.groupId,
     input.boundary.providerCode,
-    input.boundary.providerProtocolProfileId,
-    input.boundary.protocolCode,
-    input.boundary.protocolVersion,
     input.sourceResponseId ?? null,
     input.latestResponseId ?? null,
     input.latestCompactId ?? null,
@@ -571,12 +559,12 @@ function prepareCodexContextResponseStateIndexStatement(database: DatabaseSync):
   return database.prepare(`
     INSERT INTO codex_context_responses (
       response_id, session_id, previous_response_id, system_account_id, api_key_id, group_id,
-      provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+      provider_code,
       upstream_account_id, model, upstream_model, storage_key, storage_offset_bytes, sha256,
       raw_size_bytes, compressed_size_bytes, compression, schema_version,
       created_at, updated_at, last_used_at, expires_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(response_id) DO UPDATE SET
       session_id = excluded.session_id,
       previous_response_id = excluded.previous_response_id,
@@ -605,9 +593,6 @@ function insertCodexContextResponseStateIndexRow(statement: StatementSync, row: 
     row.apiKeyId ?? null,
     row.groupId,
     row.providerCode,
-    row.providerProtocolProfileId,
-    row.protocolCode,
-    row.protocolVersion,
     row.upstreamAccountId ?? null,
     row.model ?? null,
     row.upstreamModel ?? null,
@@ -629,12 +614,12 @@ function prepareCodexContextCompactStateIndexStatement(database: DatabaseSync): 
   return database.prepare(`
     INSERT INTO codex_context_compacts (
       compact_id, session_id, source_response_id, summary_digest, system_account_id, api_key_id, group_id,
-      provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+      provider_code,
       upstream_account_id, model, upstream_model, storage_key, storage_offset_bytes, sha256,
       raw_size_bytes, compressed_size_bytes, compression, schema_version,
       created_at, updated_at, last_used_at, expires_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(compact_id) DO UPDATE SET
       session_id = excluded.session_id,
       source_response_id = excluded.source_response_id,
@@ -665,9 +650,6 @@ function insertCodexContextCompactStateIndexRow(statement: StatementSync, row: C
     row.apiKeyId ?? null,
     row.groupId,
     row.providerCode,
-    row.providerProtocolProfileId,
-    row.protocolCode,
-    row.protocolVersion,
     row.upstreamAccountId ?? null,
     row.model ?? null,
     row.upstreamModel ?? null,
@@ -928,9 +910,6 @@ export function normalizeCodexContextResponseStateIndexInput(input: CodexContext
     apiKeyId: normalizedOptionalText(input.apiKeyId),
     groupId: normalizedRequiredText(input.groupId, 'groupId'),
     providerCode: normalizedRequiredText(input.providerCode, 'providerCode'),
-    providerProtocolProfileId: normalizedRequiredText(input.providerProtocolProfileId, 'providerProtocolProfileId'),
-    protocolCode: normalizedRequiredText(input.protocolCode, 'protocolCode'),
-    protocolVersion: normalizedRequiredText(input.protocolVersion, 'protocolVersion'),
     upstreamAccountId: normalizedOptionalText(input.upstreamAccountId),
     model: normalizedOptionalText(input.model),
     upstreamModel: normalizedOptionalText(input.upstreamModel),
@@ -952,9 +931,6 @@ export function normalizeCodexContextCompactStateIndexInput(input: CodexContextC
     apiKeyId: normalizedOptionalText(input.apiKeyId),
     groupId: normalizedRequiredText(input.groupId, 'groupId'),
     providerCode: normalizedRequiredText(input.providerCode, 'providerCode'),
-    providerProtocolProfileId: normalizedRequiredText(input.providerProtocolProfileId, 'providerProtocolProfileId'),
-    protocolCode: normalizedRequiredText(input.protocolCode, 'protocolCode'),
-    protocolVersion: normalizedRequiredText(input.protocolVersion, 'protocolVersion'),
     upstreamAccountId: normalizedOptionalText(input.upstreamAccountId),
     model: normalizedOptionalText(input.model),
     upstreamModel: normalizedOptionalText(input.upstreamModel),
@@ -987,9 +963,6 @@ function mapResponseStateRow(row: CodexContextResponseStateRow): CodexContextRes
     apiKeyId: normalizedOptionalText(row.api_key_id),
     groupId: String(row.group_id),
     providerCode: String(row.provider_code),
-    providerProtocolProfileId: String(row.provider_protocol_profile_id),
-    protocolCode: String(row.protocol_code),
-    protocolVersion: String(row.protocol_version),
     upstreamAccountId: normalizedOptionalText(row.upstream_account_id),
     model: normalizedOptionalText(row.model),
     upstreamModel: normalizedOptionalText(row.upstream_model),
@@ -1017,9 +990,6 @@ function mapCompactStateRow(row: CodexContextCompactStateRow): CodexContextCompa
     apiKeyId: normalizedOptionalText(row.api_key_id),
     groupId: String(row.group_id),
     providerCode: String(row.provider_code),
-    providerProtocolProfileId: String(row.provider_protocol_profile_id),
-    protocolCode: String(row.protocol_code),
-    protocolVersion: String(row.protocol_version),
     upstreamAccountId: normalizedOptionalText(row.upstream_account_id),
     model: normalizedOptionalText(row.model),
     upstreamModel: normalizedOptionalText(row.upstream_model),
@@ -1042,9 +1012,6 @@ function matchesBoundary(row: CodexContextStateBoundary, boundary: CodexContextS
     && (row.apiKeyId ?? '') === (boundary.apiKeyId ?? '')
     && row.groupId === boundary.groupId
     && row.providerCode === boundary.providerCode
-    && row.providerProtocolProfileId === boundary.providerProtocolProfileId
-    && row.protocolCode === boundary.protocolCode
-    && row.protocolVersion === boundary.protocolVersion
 }
 
 function sessionDatabase(sessionId: string): DatabaseSync {

@@ -4,7 +4,7 @@ import type { GatewayApiKeyRow } from '../../../storage/repositories.js'
 import { checkGatewayAuthorizationQuotaBatchAsync } from '../quota/authorization-quota.service.js'
 import {
   listCachedOpenAIAccountsForGroupAsync,
-  listCachedActiveResponseInspectionPoliciesAsync,
+  listCachedActiveResponseInspectionPoliciesForAccountsAsync,
   resolveCachedGroupUsageAccessMetadataAsync
 } from '../runtime/runtime-cache.service.js'
 import {
@@ -113,10 +113,7 @@ export async function resolveNextApiKeyGroupFallbackCandidate(
       && areGatewayAccountsCapacityBusyForLane(orderedQuotaAllowedAccounts, input.requestLane, groupAccess.schedulingPolicy)) {
       continue
     }
-    const responseInspectionPolicies = await listCachedActiveResponseInspectionPoliciesAsync({
-      protocolCode: groupAccess.protocolCode,
-      providerCode: groupAccess.providerCode
-    })
+    const responseInspectionPolicies = await listCachedActiveResponseInspectionPoliciesForAccountsAsync(orderedQuotaAllowedAccounts)
     return {
       groupId: binding.group_id,
       accounts: orderedQuotaAllowedAccounts,

@@ -7,6 +7,8 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Express } from 'express'
 
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
+
 if (process.env.JUHE_AI_EXTERNAL_SOURCE_AUTH_DEMO_CHILD === '1') {
   await runChild()
   process.exit(0)
@@ -516,6 +518,7 @@ async function runChild(): Promise<void> {
       targetUsername: 'huanmin',
       targetGroupName: '福利',
       providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: '公益站测试账号',
       type: 'api_key',
       baseUrl: 'https://push.example/v1',
@@ -544,6 +547,7 @@ async function runChild(): Promise<void> {
       targetUsername: 'illegal_type_user',
       targetGroupName: '非法类型分组',
       providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: '非法 OAuth 新增账号',
       type: 'oauth',
       baseUrl: 'https://push.example/v1',
@@ -559,6 +563,7 @@ async function runChild(): Promise<void> {
       targetUsername: 'invalid_model_user',
       targetGroupName: '无效模型分组',
       providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: '无效模型新增账号',
       type: 'api_key',
       baseUrl: 'https://push.example/v1',
@@ -579,6 +584,7 @@ async function runChild(): Promise<void> {
       targetUsername: 'huanmin',
       targetGroupName: '福利',
       providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: '旧外部登记字段账号',
       type: 'api_key',
       baseUrl: 'https://push.example/v1',
@@ -594,6 +600,7 @@ async function runChild(): Promise<void> {
       targetUsername: 'client_compatibility_input_user',
       targetGroupName: '客户端兼容字段拒绝分组',
       providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: '客户端兼容字段不应公开写入',
       type: 'api_key',
       baseUrl: 'https://push.example/v1',
@@ -611,6 +618,7 @@ async function runChild(): Promise<void> {
       targetUsername: 'huanmin',
       targetGroupName: '福利',
       providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: '公益站测试账号',
       type: 'api_key',
       baseUrl: 'https://push.example/v1',
@@ -808,6 +816,7 @@ async function runChild(): Promise<void> {
       targetUsername: 'huanmin',
       targetGroupName: '福利',
       providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: '停用用户不应新增的账号',
       type: 'api_key',
       baseUrl: 'https://push.example/v1',
@@ -1228,6 +1237,7 @@ function seedAccountUsageWindow(
   }, { systemAccountId: 'sys_admin', role: 'admin' })
   const account = createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '公益站贡献统计账号',
     type: 'api_key',
     groupId: group.id,

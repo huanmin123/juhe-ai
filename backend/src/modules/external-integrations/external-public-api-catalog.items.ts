@@ -504,7 +504,6 @@ export const externalPublicApiDocItems = [
       { name: 'targetDisplayName', type: 'string', required: false, description: '自动创建目标系统用户时使用的显示名称；未填写时使用 targetUsername。', example: '欢民' },
       { name: 'name', type: 'string', required: true, description: '分组名称。', example: '福利' },
       { name: 'providerCode', type: 'string', required: true, description: '供应商编码。', example: GPT_VENDOR_CODE },
-      { name: 'providerProtocolProfileId', type: 'string', required: true, description: '供应商协议档案。', example: 'profile_gpt_openai_v1' },
       { name: 'description', type: 'string', required: false, description: '分组说明。' },
       { name: 'enabled', type: 'boolean', required: false, description: '是否启用，默认 true。', example: true },
       { name: 'groupType', type: 'string', required: false, description: '分组类型：personal 或 high_concurrency，默认 personal。', example: 'personal' }
@@ -514,7 +513,6 @@ export const externalPublicApiDocItems = [
       targetDisplayName: '欢民',
       name: '福利',
       providerCode: GPT_VENDOR_CODE,
-      providerProtocolProfileId: 'profile_gpt_openai_v1',
       description: '公益站账号分组',
       enabled: true,
       groupType: 'personal'
@@ -526,7 +524,7 @@ export const externalPublicApiDocItems = [
       generatedAt: '2026-05-30T00:00:00.000Z',
       action: 'created',
       target: { username: 'huanmin', displayName: 'huanmin', systemAccountId: 'sysacc_xxx', created: false },
-      group: { id: 'grp_xxx', name: '福利', providerCode: GPT_VENDOR_CODE, providerProtocolProfileId: 'profile_gpt_openai_v1', protocolCode: 'openai', protocolVersion: 'v1', enabled: true, groupType: 'personal', isDefault: false }
+      group: { id: 'grp_xxx', name: '福利', providerCode: GPT_VENDOR_CODE, enabled: true, groupType: 'personal', isDefault: false }
     }
   }
 },

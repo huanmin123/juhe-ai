@@ -778,9 +778,6 @@ function runtimePreparationGroupAccess(): GroupUsageAccessMetadata {
   return {
     groupOwnerSystemAccountId: 'sys_admin',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-    protocolCode: OPENAI_PROTOCOL_CODE,
-    protocolVersion: OPENAI_PROTOCOL_VERSION,
     groupAccessType: 'owner',
     groupType: 'personal'
   }

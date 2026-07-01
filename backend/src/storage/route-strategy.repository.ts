@@ -68,9 +68,6 @@ interface RouteStrategyGroupBindingInput {
 interface RouteStrategyGroupBindingWrite extends RouteStrategyGroupBindingInput {
   groupName?: string
   providerCode: string
-  providerProtocolProfileId: string
-  protocolCode: string
-  protocolVersion: string
   groupEnabled: boolean
 }
 
@@ -96,9 +93,6 @@ interface RouteStrategyGroupBindingRow {
   group_id: string
   group_name: string | null
   provider_code: string | null
-  provider_protocol_profile_id: string | null
-  protocol_code: string | null
-  protocol_version: string | null
   group_enabled: number | null
   priority: number
   weight?: number | null
@@ -109,9 +103,6 @@ interface RouteStrategyBindableGroupRow {
   id: string
   system_account_id: string
   provider_code: string
-  provider_protocol_profile_id: string
-  protocol_code: string
-  protocol_version: string
   name: string | null
   enabled: number
   can_bind: number
@@ -805,9 +796,6 @@ function routeStrategyGroupBindingWriteFromGroup(
     ...binding,
     groupName: group.name ?? undefined,
     providerCode: group.provider_code,
-    providerProtocolProfileId: group.provider_protocol_profile_id,
-    protocolCode: group.protocol_code,
-    protocolVersion: group.protocol_version,
     groupEnabled: Number(group.enabled) !== 0
   }
 }
@@ -859,9 +847,6 @@ function routeStrategyGroupBindingWritesFromSummary(bindings: RouteStrategyGroup
     groupId: binding.groupId,
     groupName: binding.groupName,
     providerCode: binding.providerCode ?? '',
-    providerProtocolProfileId: binding.providerProtocolProfileId ?? '',
-    protocolCode: binding.protocolCode ?? '',
-    protocolVersion: binding.protocolVersion ?? '',
     priority: binding.priority,
     weight: normalizeApiKeyGroupBindingWeight(binding.weight),
     status: binding.status,
@@ -882,9 +867,6 @@ function loadRouteStrategyBindableGroups(groupIds: string[], systemAccountId: st
           groups.id,
           groups.system_account_id,
           groups.provider_code,
-          groups.provider_protocol_profile_id,
-          groups.protocol_code,
-          groups.protocol_version,
           groups.name,
           CASE
             WHEN groups.system_account_id = ? THEN 1
@@ -928,9 +910,6 @@ async function loadRouteStrategyBindableGroupsAsync(groupIds: string[], systemAc
         groups.id,
         groups.system_account_id,
         groups.provider_code,
-        groups.provider_protocol_profile_id,
-        groups.protocol_code,
-        groups.protocol_version,
         groups.name,
         CASE
           WHEN groups.system_account_id = ? THEN 1
@@ -970,9 +949,6 @@ function appendRouteStrategyBindingRows(result: Map<string, RouteStrategyGroupBi
       groupId: row.group_id,
       groupName: row.group_name ?? undefined,
       providerCode: row.provider_code ?? undefined,
-      providerProtocolProfileId: row.provider_protocol_profile_id ?? undefined,
-      protocolCode: row.protocol_code ?? undefined,
-      protocolVersion: row.protocol_version ?? undefined,
       priority: row.priority,
       weight: normalizeApiKeyGroupBindingWeight(row.weight),
       status: row.status,
@@ -996,9 +972,6 @@ function routeStrategyGroupBindingRowsSql(whereClause: string): string {
       route_strategy_groups.status,
       groups.name AS group_name,
       groups.provider_code,
-      groups.provider_protocol_profile_id,
-      groups.protocol_code,
-      groups.protocol_version,
       CASE
         WHEN groups.id IS NULL THEN 0
         WHEN groups.system_account_id = route_strategy_groups.system_account_id THEN groups.enabled
@@ -1038,9 +1011,6 @@ function routeStrategyGroupBindingRowsSqlForClient(client: DatabaseClient, where
       route_strategy_groups.status,
       groups.name AS group_name,
       groups.provider_code,
-      groups.provider_protocol_profile_id,
-      groups.protocol_code,
-      groups.protocol_version,
       CASE
         WHEN groups.id IS NULL THEN 0
         WHEN groups.system_account_id = route_strategy_groups.system_account_id THEN groups.enabled
@@ -1332,7 +1302,7 @@ async function defaultRouteStrategyIdForGroupAsync(client: DatabaseClient, syste
 function defaultRouteStrategyGroupsForSystemAccount(database: DatabaseSync, systemAccountId: string): RouteStrategyBindableGroupRow[] {
   const rows = database
     .prepare(`
-      SELECT id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, enabled, 1 AS can_bind
+      SELECT id, system_account_id, provider_code, name, enabled, 1 AS can_bind
       FROM groups
       WHERE system_account_id = ? AND is_default = 1
       ORDER BY created_at ASC, id ASC
@@ -1343,7 +1313,7 @@ function defaultRouteStrategyGroupsForSystemAccount(database: DatabaseSync, syst
 
 async function defaultRouteStrategyGroupsForSystemAccountAsync(client: DatabaseClient, systemAccountId: string): Promise<RouteStrategyBindableGroupRow[]> {
   const rows = await client.query<RouteStrategyBindableGroupRow>(`
-    SELECT id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, enabled, 1 AS can_bind
+    SELECT id, system_account_id, provider_code, name, enabled, 1 AS can_bind
     FROM ${routeStrategyTable(client, 'groups')}
     WHERE system_account_id = ? AND is_default = 1
     ORDER BY created_at ASC, id ASC

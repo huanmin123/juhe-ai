@@ -164,7 +164,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     return buildTargetSystemAccountLabel(options.systemAccounts.value, systemAccountId, options.systemAccountSelection?.value)
   })
 
-  const groupOptions = computed(() => groupOptionsForProviderWithSelected(options.groups.value, form.providerCode, [form.groupId], form.providerProtocolProfileId))
+  const groupOptions = computed(() => groupOptionsForProviderWithSelected(options.groups.value, form.providerCode, [form.groupId]))
   const availableProviders = computed(() => options.providers.value.length ? options.providers.value : FALLBACK_PROVIDERS)
   const selectedProvider = computed(() => availableProviders.value.find((provider) => provider.code === form.providerCode))
   const selectedProtocolProfile = computed(() => selectedProvider.value
@@ -255,7 +255,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     resetProviderModelOptions()
     resetAnthropicProviderModelOptions()
     resetGeminiProviderModelOptions()
-    ensureDefaultGroupSelected(form.providerCode, form.providerProtocolProfileId)
+    ensureDefaultGroupSelected(form.providerCode)
     accountErrorPolicyRules.value = loadAccountErrorPolicyRules()
     accountResponseInspectionRules.value = loadAccountResponseInspectionRules()
     authResult.value = undefined
@@ -269,22 +269,22 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     return accountEditProviderName(providerCode, availableProviders.value)
   }
 
-  function defaultGroupForProvider(providerCode: string, providerProtocolProfileId?: string) {
-    return selectDefaultGroupForProvider(options.groups.value, providerCode, providerProtocolProfileId)
+  function defaultGroupForProvider(providerCode: string) {
+    return selectDefaultGroupForProvider(options.groups.value, providerCode)
   }
 
-  function ensureDefaultGroupSelected(providerCode = form.providerCode, providerProtocolProfileId = form.providerProtocolProfileId) {
+  function ensureDefaultGroupSelected(providerCode = form.providerCode) {
     if (!providerCode) {
       form.groupId = undefined
       form.group = undefined
       return
     }
     const currentGroup = options.groups.value.find((group) => group.id === form.groupId)
-    if (currentGroup && isManageableGroupForProvider(currentGroup, providerCode, providerProtocolProfileId)) {
+    if (currentGroup && isManageableGroupForProvider(currentGroup, providerCode)) {
       form.group = { id: currentGroup.id, name: currentGroup.name }
       return
     }
-    const nextGroup = defaultGroupForProvider(providerCode, providerProtocolProfileId)
+    const nextGroup = defaultGroupForProvider(providerCode)
     setFormGroup(nextGroup ? { id: nextGroup.id, name: nextGroup.name } : undefined)
   }
 
@@ -333,7 +333,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   function selectProvider(providerCode: string) {
     if (editingId.value || form.providerCode === providerCode) return
     resetForm(providerCode, '')
-    void loadProviderGroupOptions(providerCode, form.providerProtocolProfileId)
+    void loadProviderGroupOptions(providerCode)
     void loadProviderModelOptions(providerCode)
     void loadAllProviderModelOptions()
     void loadAnthropicProviderModelOptions()
@@ -371,12 +371,12 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       accountExpiresAt: form.accountExpiresAt,
       availabilitySchedule: form.availabilitySchedule
     })
-    void loadProviderGroupOptions(providerCode, providerProtocolProfileId)
+    void loadProviderGroupOptions(providerCode)
     void loadProviderModelOptions(providerCode)
     void loadAllProviderModelOptions()
     void loadAnthropicProviderModelOptions()
     void loadGeminiProviderModelOptions()
-    ensureDefaultGroupSelected(providerCode, providerProtocolProfileId)
+    ensureDefaultGroupSelected(providerCode)
     authResult.value = undefined
   }
 
@@ -482,7 +482,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     void loadGeminiProviderModelOptions()
   }
 
-  async function loadProviderGroupOptions(providerCode: string, providerProtocolProfileId = form.providerProtocolProfileId): Promise<void> {
+  async function loadProviderGroupOptions(providerCode: string): Promise<void> {
     await nextTick()
     await options.loadGroupOptions('', false, {
       providerCode,
@@ -492,7 +492,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       useLocalWindow: false
     })
     syncFormGroupFromOptions()
-    ensureDefaultGroupSelected(providerCode, providerProtocolProfileId)
+    ensureDefaultGroupSelected(providerCode)
   }
 
   async function loadAccountDetailForForm(accountId: string, scopeParams: AccountScopeParams | undefined, fallbackMessage: string): Promise<AccountSummary | undefined> {

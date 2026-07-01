@@ -705,12 +705,10 @@ function seedData(): SeedState {
   const userBGroup = repositories.createGroup({
     name: '用户 B 自建分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, userBAccess)
   const userATargetGroup = repositories.createGroup({
     name: '指定授权目标分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, userAAccess)
   const userAAccount = repositories.createAccount({
     providerCode: 'gpt',

@@ -14,7 +14,6 @@ export interface GroupListOptions {
   ids?: string[]
   keyword?: string
   providerCode?: string
-  providerProtocolProfileId?: string
   manageableOnly?: boolean
   preferDefault?: boolean
 }
@@ -35,7 +34,6 @@ interface NormalizedGroupListOptions {
   ids: string[]
   keyword?: string
   providerCode?: string
-  providerProtocolProfileId?: string
   manageableOnly: boolean
   preferDefault: boolean
   page: number
@@ -121,7 +119,6 @@ function normalizeGroupListOptions(options?: GroupListOptions): NormalizedGroupL
     ids: normalizeTextList(options?.ids),
     keyword: normalizeTextFilter(options?.keyword),
     providerCode: normalizeTextFilter(options?.providerCode),
-    providerProtocolProfileId: normalizeTextFilter(options?.providerProtocolProfileId),
     manageableOnly: options?.manageableOnly === true,
     preferDefault: options?.preferDefault === true,
     page,
@@ -133,7 +130,7 @@ function normalizeGroupOptionListOptions(options?: GroupOptionListOptions): Norm
   return normalizeGroupListOptions({ ...options, pageSize: options?.limit })
 }
 
-function queryGroupRowsForAccess(access?: AccessScope, pagination?: { limit: number; offset: number }, options: Pick<NormalizedGroupListOptions, 'ids' | 'keyword' | 'providerCode' | 'providerProtocolProfileId' | 'manageableOnly' | 'preferDefault'> = { ids: [], manageableOnly: false, preferDefault: false }): { rows: GroupListRow[] } {
+function queryGroupRowsForAccess(access?: AccessScope, pagination?: { limit: number; offset: number }, options: Pick<NormalizedGroupListOptions, 'ids' | 'keyword' | 'providerCode' | 'manageableOnly' | 'preferDefault'> = { ids: [], manageableOnly: false, preferDefault: false }): { rows: GroupListRow[] } {
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   const ownerSystemAccountId = manageableSystemAccountId(access)
   const pageClause = pagination ? ' LIMIT ? OFFSET ?' : ''
@@ -184,7 +181,7 @@ function queryGroupRowsForAccess(access?: AccessScope, pagination?: { limit: num
   return { rows }
 }
 
-async function queryGroupRowsForAccessAsync(access?: AccessScope, pagination?: { limit: number; offset: number }, options: Pick<NormalizedGroupListOptions, 'ids' | 'keyword' | 'providerCode' | 'providerProtocolProfileId' | 'manageableOnly' | 'preferDefault'> = { ids: [], manageableOnly: false, preferDefault: false }): Promise<{ rows: GroupListRow[] }> {
+async function queryGroupRowsForAccessAsync(access?: AccessScope, pagination?: { limit: number; offset: number }, options: Pick<NormalizedGroupListOptions, 'ids' | 'keyword' | 'providerCode' | 'manageableOnly' | 'preferDefault'> = { ids: [], manageableOnly: false, preferDefault: false }): Promise<{ rows: GroupListRow[] }> {
   const client = await getGroupReadDatabaseClient()
   const groupsTable = groupTable(client, 'groups')
   const resourceAuthorizationsTable = groupTable(client, 'resource_authorizations')
@@ -353,9 +350,6 @@ function groupRowSelectColumns(alias: string): string {
     'system_account_id',
     'name',
     'provider_code',
-    'provider_protocol_profile_id',
-    'protocol_code',
-    'protocol_version',
     'description',
     'enabled',
     'is_default',
@@ -373,9 +367,6 @@ function authorizedGroupRowSelectColumns(groupAlias: string, settingsAlias: stri
     `${groupAlias}.system_account_id`,
     `${groupAlias}.name`,
     `${groupAlias}.provider_code`,
-    `${groupAlias}.provider_protocol_profile_id`,
-    `${groupAlias}.protocol_code`,
-    `${groupAlias}.protocol_version`,
     `${groupAlias}.description`,
     `CASE WHEN ${groupAlias}.enabled = 1 THEN COALESCE(${settingsAlias}.enabled, 1) ELSE 0 END AS enabled`,
     `${groupAlias}.is_default`,
@@ -392,9 +383,6 @@ function groupListRowOuterSelectColumns(): string {
     'system_account_id',
     'name',
     'provider_code',
-    'provider_protocol_profile_id',
-    'protocol_code',
-    'protocol_version',
     'description',
     'enabled',
     'is_default',
@@ -418,14 +406,13 @@ function groupOrderClause(preferDefault: boolean): string {
 
 function buildGroupFilter(
   alias: string | undefined,
-  options: Pick<NormalizedGroupListOptions, 'ids' | 'keyword' | 'providerCode' | 'providerProtocolProfileId'>,
+  options: Pick<NormalizedGroupListOptions, 'ids' | 'keyword' | 'providerCode'>,
   initialClauses: string[] = [],
   initialParams: string[] = []
 ): { clauses: string[]; params: string[] } {
   const clauses = [...initialClauses]
   const params = [...initialParams]
   const providerCode = options.providerCode?.trim()
-  const providerProtocolProfileId = 'providerProtocolProfileId' in options ? options.providerProtocolProfileId?.trim() : undefined
   const column = (name: string) => alias ? `${alias}.${name}` : name
   if (options.ids.length) {
     clauses.push(`${column('id')} IN (${options.ids.map(() => '?').join(', ')})`)
@@ -434,10 +421,6 @@ function buildGroupFilter(
   if (providerCode) {
     clauses.push(`${column('provider_code')} COLLATE NOCASE = ?`)
     params.push(providerCode)
-  }
-  if (providerProtocolProfileId) {
-    clauses.push(`${column('provider_protocol_profile_id')} COLLATE NOCASE = ?`)
-    params.push(providerProtocolProfileId)
   }
   const text = options.keyword?.trim()
   if (text) {
@@ -456,7 +439,7 @@ function buildGroupFilter(
 function buildGroupFilterForClient(
   client: DatabaseClient,
   alias: string | undefined,
-  options: Pick<NormalizedGroupListOptions, 'ids' | 'keyword' | 'providerCode' | 'providerProtocolProfileId'>,
+  options: Pick<NormalizedGroupListOptions, 'ids' | 'keyword' | 'providerCode'>,
   initialClauses: string[] = [],
   initialParams: string[] = []
 ): { clauses: string[]; params: string[] } {
@@ -466,7 +449,6 @@ function buildGroupFilterForClient(
   const clauses = [...initialClauses]
   const params = [...initialParams]
   const providerCode = options.providerCode?.trim()
-  const providerProtocolProfileId = 'providerProtocolProfileId' in options ? options.providerProtocolProfileId?.trim() : undefined
   const column = (name: string) => alias ? `${alias}.${name}` : name
   const lowerEquals = (name: string) => `lower(${column(name)}) = lower(?)`
   const lowerLike = (name: string) => `lower(${column(name)}) LIKE lower(?) ESCAPE '\\'`
@@ -477,10 +459,6 @@ function buildGroupFilterForClient(
   if (providerCode) {
     clauses.push(lowerEquals('provider_code'))
     params.push(providerCode)
-  }
-  if (providerProtocolProfileId) {
-    clauses.push(lowerEquals('provider_protocol_profile_id'))
-    params.push(providerProtocolProfileId)
   }
   const text = options.keyword?.trim()
   if (text) {

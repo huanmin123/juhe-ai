@@ -66,9 +66,6 @@ export interface RouteStrategyGroupBindingSummary {
   groupId: string
   groupName?: string
   providerCode?: string
-  providerProtocolProfileId?: string
-  protocolCode?: string
-  protocolVersion?: string
   priority: number
   weight: number
   status: RouteStrategyGroupBindingStatus

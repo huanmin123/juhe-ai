@@ -32,13 +32,11 @@ try {
   const matchedGroup = repositories.createGroup({
     name: '账户绑定前缀分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   const middleGroup = repositories.createGroup({
     name: '普通账户绑定前缀分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   const matchedByName = createGuardAccount('账户检索目标', 'sk-account-list-query-guard-name', '普通备注', matchedGroup.id)
@@ -72,7 +70,6 @@ try {
   const granteeTargetGroup = repositories.createGroup({
     name: '账户列表防护被授权目标分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, granteeAccess)
   repositories.createResourceAuthorization({
     resourceType: 'account',
@@ -427,7 +424,6 @@ function assertExpiredAccountCleanupIsBoundedAndIndexed(access: { systemAccountI
 	  const group = repositories.createGroup({
 	    name: '过期账号批量停用防护分组',
 	    providerCode: 'gpt',
-	    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
 	    enabled: true
 	  }, access)
   const accountIds: string[] = []

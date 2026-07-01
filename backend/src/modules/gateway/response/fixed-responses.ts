@@ -11,9 +11,20 @@ import { extractBearerToken } from '../request/metadata.js'
 import type { OpenAIGatewayTrafficSource } from '../usage/traffic-source.js'
 import { enqueueUsageRecord } from '../usage/record-queue.service.js'
 import {
+  ANTHROPIC_PROVIDER_CODE,
+  GEMINI_PROVIDER_CODE,
+  OPENAI_COMPATIBLE_PROVIDER_CODE,
+  normalizeProviderToken
+} from '../../../domain/provider-protocol.js'
+import type { ProviderCode } from '../../../domain/types.js'
+import {
   defaultGatewayUsageProviderCode,
   usageSemanticForProfile
 } from '../../providers/drivers/registry.js'
+import {
+  compareProviderModelCatalogItems,
+  type ProviderModelCatalogItem
+} from '../../model-pricing/model-catalog.service.js'
 
 interface OpenAIModelsResponseUsageContext {
   traceId: string
@@ -39,6 +50,15 @@ interface SendOpenAIModelsGatewayResponseInput {
   res: Response
   auditCapture: AuditCaptureContext
   usageContext: OpenAIModelsResponseUsageContext
+  providerCodes?: string[]
+  startedAt: number
+}
+
+interface SendPublicModelsGatewayResponseInput {
+  req: Request
+  res: Response
+  auditCapture: AuditCaptureContext
+  protocol: 'openai' | 'anthropic' | 'gemini'
   startedAt: number
 }
 
@@ -80,19 +100,28 @@ export async function sendGeminiModelsGatewayResponse(input: SendOpenAIModelsGat
   await sendModelsGatewayResponse(input, 'gemini')
 }
 
-async function sendModelsGatewayResponse(input: SendOpenAIModelsGatewayResponseInput, protocol: 'openai' | 'anthropic' | 'gemini'): Promise<void> {
-  const { req, res, auditCapture, usageContext, startedAt } = input
-  const providerCode = usageContext.providerCode ?? defaultGatewayUsageProviderCode()
-  const catalog = await listCachedProviderModelCatalogAsync({
-    providerCode,
-    systemAccountId: usageContext.systemAccountId
+export async function sendPublicModelsGatewayResponse(input: SendPublicModelsGatewayResponseInput): Promise<void> {
+  const providerCode = publicModelsProviderCode(input.protocol)
+  await sendModelsGatewayResponsePayload({
+    ...input,
+    providerCode
   })
-  const responsePayload = protocol === 'anthropic'
-    ? buildAnthropicModelsResponse(catalog)
-    : protocol === 'gemini'
-      ? buildGeminiModelsResponse(catalog)
-      : buildOpenAIModelsResponse(catalog, req)
-  res.status(200).json(responsePayload)
+}
+
+async function sendModelsGatewayResponse(input: SendOpenAIModelsGatewayResponseInput, protocol: 'openai' | 'anthropic' | 'gemini'): Promise<void> {
+  const { req, res, auditCapture, usageContext, providerCodes, startedAt } = input
+  const normalizedProviderCodes = normalizedProviderCodeList(providerCodes)
+  const providerCode = modelsUsageProviderCode(normalizedProviderCodes, usageContext.providerCode)
+  const responsePayload = await sendModelsGatewayResponsePayload({
+    req,
+    res,
+    auditCapture,
+    startedAt,
+    protocol,
+    providerCode,
+    systemAccountId: usageContext.systemAccountId,
+    providerCodes: normalizedProviderCodes
+  })
   enqueueUsageRecord({
     ...usageContext,
     providerCode,
@@ -108,6 +137,34 @@ async function sendModelsGatewayResponse(input: SendOpenAIModelsGatewayResponseI
     firstTokenMs: Date.now() - startedAt,
     durationMs: Date.now() - startedAt
   })
+}
+
+async function sendModelsGatewayResponsePayload(input: {
+  req: Request
+  res: Response
+  auditCapture: AuditCaptureContext
+  protocol: 'openai' | 'anthropic' | 'gemini'
+  providerCode: string
+  systemAccountId?: string
+  providerCodes?: string[]
+  startedAt: number
+}): Promise<unknown> {
+  const { req, res, auditCapture, protocol, providerCode, systemAccountId, providerCodes, startedAt } = input
+  const catalog = providerCodes?.length
+    ? await listProviderScopedModelCatalog({
+        providerCodes,
+        systemAccountId
+      })
+    : await listCachedProviderModelCatalogAsync({
+        providerCode,
+        systemAccountId
+      })
+  const responsePayload = protocol === 'anthropic'
+    ? buildAnthropicModelsResponse(catalog)
+    : protocol === 'gemini'
+      ? buildGeminiModelsResponse(catalog)
+      : buildOpenAIModelsResponse(catalog, req)
+  res.status(200).json(responsePayload)
   auditCapture.finalize({
     outcome: 'success',
     success: true,
@@ -117,4 +174,60 @@ async function sendModelsGatewayResponse(input: SendOpenAIModelsGatewayResponseI
     responsePartType: 'gateway_response',
     firstTokenMs: Date.now() - startedAt
   })
+  return responsePayload
+}
+
+async function listProviderScopedModelCatalog(input: {
+  providerCodes: string[]
+  systemAccountId?: string
+}): Promise<ProviderModelCatalogItem[]> {
+  const providerCodes = normalizedProviderCodeList(input.providerCodes)
+  if (!providerCodes.length) {
+    return []
+  }
+  const catalogGroups = await Promise.all(providerCodes.map((providerCode) =>
+    listCachedProviderModelCatalogAsync({
+      providerCode,
+      systemAccountId: input.systemAccountId
+    })))
+  return mergeModelCatalogItems(catalogGroups.flat())
+}
+
+function normalizedProviderCodeList(providerCodes: readonly string[] | undefined): string[] {
+  const codes = new Set<string>()
+  for (const item of providerCodes ?? []) {
+    const providerCode = normalizeProviderToken(item)
+    if (providerCode) {
+      codes.add(providerCode)
+    }
+  }
+  return [...codes]
+}
+
+function mergeModelCatalogItems(items: ProviderModelCatalogItem[]): ProviderModelCatalogItem[] {
+  const merged = new Map<string, ProviderModelCatalogItem>()
+  for (const item of items) {
+    const model = item.model.trim()
+    if (!model) continue
+    const previous = merged.get(model)
+    if (!previous || modelCatalogPriority(item) >= modelCatalogPriority(previous)) {
+      merged.set(model, item)
+    }
+  }
+  return [...merged.values()].sort(compareProviderModelCatalogItems)
+}
+
+function modelCatalogPriority(item: ProviderModelCatalogItem): number {
+  if (item.scope === 'personal') return 3
+  return 1
+}
+
+function modelsUsageProviderCode(providerCodes: readonly string[], fallback: string | undefined): string {
+  return providerCodes[0] ?? fallback ?? defaultGatewayUsageProviderCode()
+}
+
+function publicModelsProviderCode(protocol: 'openai' | 'anthropic' | 'gemini'): ProviderCode {
+  if (protocol === 'anthropic') return ANTHROPIC_PROVIDER_CODE
+  if (protocol === 'gemini') return GEMINI_PROVIDER_CODE
+  return OPENAI_COMPATIBLE_PROVIDER_CODE
 }

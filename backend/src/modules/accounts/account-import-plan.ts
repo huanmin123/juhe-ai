@@ -4,7 +4,6 @@ type AccountImportPlanAction = 'create' | 'reuse' | 'skip' | 'failed'
 
 export interface AccountImportGroupCreatePlan {
   providerCode: string
-  providerProtocolProfileId: string
   name: string
 }
 

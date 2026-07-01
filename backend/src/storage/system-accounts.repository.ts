@@ -879,17 +879,14 @@ async function ensureDefaultBuiltInGroupsForSystemAccountAsync(client: DatabaseC
     }
     await client.execute(`
       INSERT INTO ${groupsTable} (
-        id, system_account_id, name, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+        id, system_account_id, name, provider_code,
         description, enabled, is_default, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?)
     `, [
       newId('grp'),
       systemAccountId,
       group.name,
       group.providerCode,
-      group.providerProtocolProfileId,
-      group.protocolCode,
-      group.protocolVersion,
       group.description,
       timestamp,
       timestamp

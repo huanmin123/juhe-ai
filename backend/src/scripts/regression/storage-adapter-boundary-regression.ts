@@ -92,6 +92,7 @@ assert.equal(unclassifiedHits.length, 0, `存在未分类的存储直接调用�
 assertNoRuntimeNodeSqliteValueImports(sourceFiles)
 assertNoUnexpectedRawDriverImports(sourceFiles)
 assertStorageRuntimeSkeletonBoundary()
+assertGatewayRuntimeCachePostgresWorkerBoundary()
 
 const summary: Record<string, unknown> = {
   message: 'storage-adapter-boundary-regression passed',
@@ -285,6 +286,44 @@ function assertStorageRuntimeSkeletonBoundary(): void {
     }
   }
   assert.deepEqual(offenders, [], 'StorageRuntime 骨架只能做装配描述，不能直接打开 SQLite / PostgreSQL / Redis 基础设施')
+}
+
+function assertGatewayRuntimeCachePostgresWorkerBoundary(): void {
+  const source = readFileSync(resolve(srcRoot, 'modules/gateway/runtime/runtime-cache.service.ts'), 'utf8')
+  const gatewayDbServiceRequestSource = readFileSync(resolve(srcRoot, 'modules/gateway/runtime/gateway-db-service-request.ts'), 'utf8')
+  assert.ok(
+    source.includes('function shouldUseGatewayRuntimeDbService()')
+      && source.includes("runtimeConfig.databaseDriver === 'postgres'")
+      && source.includes("runtimeConfig.processRole !== 'db-service'"),
+    'gateway runtime cache 应让 PG worker 通过 DB service 读取运行态缓存底座'
+  )
+  assert.doesNotMatch(
+    source,
+    /runtimeConfig\.processRole !== 'server'[\s\S]{0,120}readCachedGatewaySettings\(\)/,
+    'PG worker 不得在 async 网关设置读取中回退同步 SQLite'
+  )
+  assert.doesNotMatch(
+    source,
+    /runtimeConfig\.processRole !== 'server'[\s\S]{0,160}resolveCachedGroupUsageAccessMetadata\(/,
+    'PG worker 不得在 async 分组访问读取中回退同步 SQLite'
+  )
+  assert.ok(
+    gatewayDbServiceRequestSource.includes('function requestGatewayDbService')
+      && gatewayDbServiceRequestSource.includes("runtimeConfig.processRole === 'worker'")
+      && gatewayDbServiceRequestSource.includes("import('../../background/background-ipc.js')")
+      && gatewayDbServiceRequestSource.includes('requestBackgroundWorkerDbService(operation, options.timeoutMs)'),
+    'gateway 运行态 DB service 副作用在 PG worker 中必须通过 background IPC 转发'
+  )
+  for (const relativePath of [
+    'modules/gateway/runtime/account-api-key-effects.service.ts',
+    'modules/gateway/runtime/account-effects.ts',
+    'modules/gateway/runtime/account-side-effects.service.ts',
+    'modules/gateway/codex-responses/chat-bridge-state.ts'
+  ]) {
+    const sideEffectSource = readFileSync(resolve(srcRoot, relativePath), 'utf8')
+    assert.ok(sideEffectSource.includes('requestGatewayDbService'), `${relativePath} 应使用 worker-safe DB service 请求包装`)
+    assert.doesNotMatch(sideEffectSource, /\brequestDbService\(/, `${relativePath} 不得直接调用 requestDbService`)
+  }
 }
 
 function countBy<T>(items: T[], key: (item: T) => string): Record<string, number> {

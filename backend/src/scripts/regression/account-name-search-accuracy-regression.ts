@@ -56,8 +56,8 @@ try {
   const adminAlphaAccess: AccessScope = { systemAccountId: 'sys_admin', role: 'admin', systemAccountFilterId: alpha.id }
   const adminBetaAccess: AccessScope = { systemAccountId: 'sys_admin', role: 'admin', systemAccountFilterId: beta.id }
 
-  const alphaGroup = repositories.createGroup({ name: '账户名搜索准确性甲分组', providerCode: 'gpt', providerProtocolProfileId: 'profile_gpt_openai_v1' }, alphaAccess)
-  const betaGroup = repositories.createGroup({ name: '账户名搜索准确性乙分组', providerCode: 'gpt', providerProtocolProfileId: 'profile_gpt_openai_v1' }, betaAccess)
+  const alphaGroup = repositories.createGroup({ name: '账户名搜索准确性甲分组', providerCode: 'gpt' }, alphaAccess)
+  const betaGroup = repositories.createGroup({ name: '账户名搜索准确性乙分组', providerCode: 'gpt' }, betaAccess)
 
   createTrackedAccount(alphaAccess, alphaGroup.id, alpha.id, '账户检索目标')
   createTrackedAccount(alphaAccess, alphaGroup.id, alpha.id, '普通账户检索目标')

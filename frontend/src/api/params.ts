@@ -97,14 +97,13 @@ export function groupListParams(params?: GroupListParams, includeSystemAccount =
   return Object.keys(output).length ? output : undefined
 }
 
-export function groupOptionParams(params?: GroupOptionParams | Pick<GroupOptionParams, 'ids' | 'keyword' | 'providerCode' | 'providerProtocolProfileId' | 'limit' | 'manageableOnly' | 'preferDefault'>, includeSystemAccount = true): Record<string, unknown> | undefined {
+export function groupOptionParams(params?: GroupOptionParams | Pick<GroupOptionParams, 'ids' | 'keyword' | 'providerCode' | 'limit' | 'manageableOnly' | 'preferDefault'>, includeSystemAccount = true): Record<string, unknown> | undefined {
   if (!params) return undefined
   const output: Record<string, unknown> = {}
   if (includeSystemAccount && 'systemAccountId' in params && params.systemAccountId) output.systemAccountId = params.systemAccountId
   if ('ids' in params && params.ids?.length) output.ids = params.ids.join(',')
   if (params.keyword?.trim()) output.keyword = params.keyword.trim()
   if (params.providerCode?.trim()) output.providerCode = params.providerCode.trim()
-  if (params.providerProtocolProfileId?.trim()) output.providerProtocolProfileId = params.providerProtocolProfileId.trim()
   if (params.limit) output.limit = params.limit
   if (typeof params.manageableOnly === 'boolean') output.manageableOnly = params.manageableOnly
   if (typeof params.preferDefault === 'boolean') output.preferDefault = params.preferDefault
@@ -148,7 +147,6 @@ export function authorizationGranteeGroupOptionsParams(params: AuthorizationGran
   const output = authorizationPrincipalOptionsParams(params) ?? {}
   output.granteeSystemAccountId = params.granteeSystemAccountId
   if (params.providerCode?.trim()) output.providerCode = params.providerCode.trim()
-  if (params.providerProtocolProfileId?.trim()) output.providerProtocolProfileId = params.providerProtocolProfileId.trim()
   if (typeof params.preferDefault === 'boolean') output.preferDefault = params.preferDefault
   return output
 }

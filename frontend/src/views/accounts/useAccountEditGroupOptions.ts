@@ -14,7 +14,6 @@ export function useAccountEditGroupOptions(config: UseAccountEditGroupOptionsCon
     isManagementView: () => config.isManagementView.value,
     scope: () => ({
       providerCode: optionScope.value.providerCode,
-      providerProtocolProfileId: optionScope.value.providerProtocolProfileId,
       systemAccountId: config.isManagementView.value
         ? optionScope.value.systemAccountId || config.accountScopeParams.value?.systemAccountId
         : undefined,
@@ -24,15 +23,13 @@ export function useAccountEditGroupOptions(config: UseAccountEditGroupOptionsCon
 
   function setEditGroupOptionScope(scope: AccountGroupOptionsScope): void {
     const providerChanged = (optionScope.value.providerCode ?? '') !== (scope.providerCode ?? '')
-    const providerProtocolProfileChanged = (optionScope.value.providerProtocolProfileId ?? '') !== (scope.providerProtocolProfileId ?? '')
     const systemAccountChanged = (optionScope.value.systemAccountId ?? '') !== (scope.systemAccountId ?? '')
     optionScope.value = {
       providerCode: scope.providerCode,
-      providerProtocolProfileId: scope.providerProtocolProfileId,
       systemAccountId: scope.systemAccountId,
       selectedIds: scope.selectedIds
     }
-    if (providerChanged || providerProtocolProfileChanged || systemAccountChanged) {
+    if (providerChanged || systemAccountChanged) {
       groupOptions.resetSearch()
     }
   }

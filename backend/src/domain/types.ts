@@ -867,9 +867,6 @@ export interface GroupSummary {
   systemAccountName?: string
   name: string
   providerCode: ProviderCode
-  providerProtocolProfileId?: string
-  protocolCode?: string
-  protocolVersion?: string
   description?: string
   enabled: boolean
   isDefault: boolean
@@ -905,9 +902,6 @@ export type GroupOptionSummary = Pick<
   | 'ownerSystemAccountName'
   | 'name'
   | 'providerCode'
-  | 'providerProtocolProfileId'
-  | 'protocolCode'
-  | 'protocolVersion'
   | 'enabled'
   | 'isDefault'
   | 'groupType'
@@ -1119,9 +1113,6 @@ export interface RouteStrategyGroupBindingSummary {
   groupId: string
   groupName?: string
   providerCode?: ProviderCode
-  providerProtocolProfileId?: string
-  protocolCode?: string
-  protocolVersion?: string
   priority: number
   weight: number
   status: ApiKeyGroupBindingStatus

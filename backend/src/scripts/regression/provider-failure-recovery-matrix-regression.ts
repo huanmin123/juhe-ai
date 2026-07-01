@@ -192,7 +192,6 @@ function createCaseRuntime(item: MatrixCase, upstreamOrigin: string): CaseRuntim
   const group = repositories.createGroup({
     name: `${item.label} 异常交替矩阵分组`,
     providerCode: item.providerCode,
-    providerProtocolProfileId: item.providerProtocolProfileId,
     enabled: true
   }, access)
   const primary = repositories.createAccount({

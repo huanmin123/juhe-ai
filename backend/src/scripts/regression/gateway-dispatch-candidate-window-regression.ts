@@ -38,7 +38,6 @@ try {
   const group = repositories.createGroup({
     name: '调度候选窗口回归分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   const allowedSchedule = {
@@ -183,7 +182,6 @@ try {
     const refillGroup = repositories.createGroup({
       name: '调度候选补齐回归分组',
       providerCode: 'gpt',
-      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       enabled: true
     }, access)
     const brokenAccountIds: string[] = []
@@ -358,7 +356,6 @@ function assertModelAwareCandidateWindowCanPullLateDeterministicAccount(
   const group = repositories.createGroup({
     name: '模型感知候选窗口回归分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   for (let index = 0; index < dispatchCandidateScanLimit + 8; index += 1) {

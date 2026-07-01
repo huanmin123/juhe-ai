@@ -1,6 +1,7 @@
 import { strict as assert } from 'node:assert'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { handleDbServiceOperation } from '../../modules/db-service/db-service-handlers.js'
 import { closeRedisClients } from '../../shared/redis-client.js'
 import type { AccessScope } from '../../storage/access-scope.js'
@@ -25,7 +26,7 @@ try {
   const account = await createAccountAsync({
     name: `账号探测PG烟测账号${marker}`,
     providerCode: 'gpt',
-    providerProtocolProfileId: group.providerProtocolProfileId,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     type: 'api_key',
     status: 'active',
     groupId: group.id,

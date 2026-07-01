@@ -1,6 +1,5 @@
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import { getRequestLogger } from '../../../shared/request-context.js'
-import { requestDbService } from '../../db-service/db-service-ipc.js'
 import { type GatewaySettings } from '../policy/account-error-policy.service.js'
 import {
   clearGatewayAccountRuntimeAvailability,
@@ -17,6 +16,7 @@ import { recordGatewayUpstreamBucketFailure } from './proxy-health.service.js'
 import type { OpenAIGatewayTrafficSource } from '../usage/traffic-source.js'
 import type { GatewayUsageContext } from '../usage/records.js'
 import { recordGatewayAccountApiKeyFailure } from './account-api-key-effects.service.js'
+import { requestGatewayDbService } from './gateway-db-service-request.js'
 
 export function applyAccountErrorHandlingWithCacheInvalidation(
   account: UpstreamAccount,
@@ -46,7 +46,7 @@ export function markGatewayAccountTemporaryUnavailableWithCacheInvalidation(
   reason: string,
   source: string
 ): Promise<boolean> {
-  return requestDbService({
+  return requestGatewayDbService({
     type: 'mark_account_temporary_unavailable',
     account,
     reason: reason.slice(0, 1000)
@@ -181,7 +181,7 @@ function shouldApplyGatewayStreamFailureAccountSideEffects(context: StreamFailur
 
 export function clearAccountStreamFailureStateWithCacheInvalidation(account: UpstreamAccount | string): void {
   const accountId = typeof account === 'string' ? account : account.id
-  void requestDbService({
+  void requestGatewayDbService({
     type: 'clear_account_stream_failure_state',
     accountId,
     account: typeof account === 'string' ? undefined : account
@@ -200,7 +200,7 @@ export function clearAccountStreamFailureStateWithCacheInvalidation(account: Ups
 export function persistOpenAICodexHeadersIfNeeded(account: UpstreamAccount, headers: Headers, source: string): void {
   if (account.type !== 'oauth') return
   if (!parseOpenAICodexUsageHeaders(headers)) return
-  void requestDbService({
+  void requestGatewayDbService({
     type: 'persist_openai_codex_usage_headers',
     accountId: account.id,
     headers: headersToObject(headers),

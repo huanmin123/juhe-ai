@@ -43,7 +43,6 @@ try {
   const group = repositories.createGroup({
     name: 'OpenAI 到 Anthropic 旧桥接边界分组',
     providerCode: ANTHROPIC_PROVIDER_CODE,
-    providerProtocolProfileId: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
     enabled: true
   }, access)
   const account = repositories.createAccount({

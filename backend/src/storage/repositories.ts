@@ -924,19 +924,16 @@ async function assertAccountNameAvailableAsync(client: DatabaseClient, systemAcc
   }
 }
 
-async function groupOwnerAndProviderForAccountWriteAsync(client: DatabaseClient, groupId: string): Promise<{ systemAccountId: string; providerCode: ProviderCode; providerProtocolProfileId: string; protocolCode: string; protocolVersion: string; name?: string } | undefined> {
-  const row = await client.one<{ system_account_id?: string; provider_code?: ProviderCode; provider_protocol_profile_id?: string; protocol_code?: string; protocol_version?: string; name?: string }>(`
-    SELECT system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name
+async function groupOwnerAndProviderForAccountWriteAsync(client: DatabaseClient, groupId: string): Promise<{ systemAccountId: string; providerCode: ProviderCode; name?: string } | undefined> {
+  const row = await client.one<{ system_account_id?: string; provider_code?: ProviderCode; name?: string }>(`
+    SELECT system_account_id, provider_code, name
     FROM ${accountWriteTable(client, 'groups')}
     WHERE id = ?
   `, [groupId])
-  return row?.system_account_id && row.provider_code && row.provider_protocol_profile_id && row.protocol_code && row.protocol_version
+  return row?.system_account_id && row.provider_code
     ? {
         systemAccountId: row.system_account_id,
         providerCode: row.provider_code,
-        providerProtocolProfileId: row.provider_protocol_profile_id,
-        protocolCode: row.protocol_code,
-        protocolVersion: row.protocol_version,
         name: row.name
       }
     : undefined

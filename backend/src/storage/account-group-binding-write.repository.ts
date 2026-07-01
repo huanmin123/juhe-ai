@@ -96,32 +96,31 @@ async function accountEnabledGroupIdAsync(client: DatabaseClient, accountId: str
   return row?.group_id
 }
 
-async function groupOwnerAndProviderAsync(client: DatabaseClient, groupId: string): Promise<{ systemAccountId: string; providerCode: string; providerProtocolProfileId: string } | undefined> {
-  const row = await client.one<{ system_account_id?: string; provider_code?: string; provider_protocol_profile_id?: string }>(`
-    SELECT system_account_id, provider_code, provider_protocol_profile_id
+async function groupOwnerAndProviderAsync(client: DatabaseClient, groupId: string): Promise<{ systemAccountId: string; providerCode: string } | undefined> {
+  const row = await client.one<{ system_account_id?: string; provider_code?: string }>(`
+    SELECT system_account_id, provider_code
     FROM ${accountGroupBindingTable(client, 'groups')}
     WHERE id = ?
   `, [groupId])
-  return row?.system_account_id && row.provider_code && row.provider_protocol_profile_id
+  return row?.system_account_id && row.provider_code
     ? {
         systemAccountId: row.system_account_id,
-        providerCode: row.provider_code,
-        providerProtocolProfileId: row.provider_protocol_profile_id
+        providerCode: row.provider_code
       }
     : undefined
 }
 
 function validAccountIdsForGroup(providerCode: string, accountIds: string[], systemAccountId: string): string[] {
   const uniqueIds = [...new Set(accountIds)]
-  const accountsById = new Map<string, { provider_code?: string; provider_protocol_profile_id?: string }>()
+  const accountsById = new Map<string, { provider_code?: string }>()
   const database = getBusinessDatabase()
   for (const chunk of chunkValues(uniqueIds, 900)) {
     const rows = database.prepare(`
-      SELECT id, provider_code, provider_protocol_profile_id
+      SELECT id, provider_code
       FROM accounts
       WHERE system_account_id = ?
         AND id IN (${sqlPlaceholders(chunk.length)})
-    `).all(systemAccountId, ...chunk) as Array<{ id?: string; provider_code?: string; provider_protocol_profile_id?: string }>
+    `).all(systemAccountId, ...chunk) as Array<{ id?: string; provider_code?: string }>
     for (const row of rows) {
       if (row.id) {
         accountsById.set(row.id, row)

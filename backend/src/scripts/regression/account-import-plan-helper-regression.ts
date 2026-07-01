@@ -74,7 +74,7 @@ const proxies: AccountImportProxyItem[] = [
 ]
 
 const groupsToCreate = new Map([
-  [accountImportGroupKey('Profile-A', '新分组'), { providerCode: 'gpt', providerProtocolProfileId: 'Profile-A', name: '新分组' }]
+  [accountImportGroupKey('Profile-A', '新分组'), { providerCode: 'gpt', name: '新分组' }]
 ])
 
 assert.deepEqual(buildAccountImportSummary(accounts, proxies, groupsToCreate), {

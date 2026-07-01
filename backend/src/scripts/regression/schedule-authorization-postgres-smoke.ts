@@ -1,6 +1,7 @@
 import { strict as assert } from 'node:assert'
 
 import { DEFAULT_OPENAI_SUPPORTED_MODELS } from '../../storage/schema-defaults.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { closeRedisClients } from '../../shared/redis-client.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { createApiKeyRecordAsync } from '../../storage/api-key.repository.js'
@@ -72,7 +73,7 @@ try {
   const account = await createAccountAsync({
     name: `时间计划授权 PG smoke 账号 ${marker}`,
     providerCode: 'gpt',
-    providerProtocolProfileId: group.providerProtocolProfileId,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     type: 'api_key',
     status: 'active',
     groupId: group.id,

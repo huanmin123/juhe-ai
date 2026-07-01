@@ -14,7 +14,7 @@ import {
   type GatewayModelAccountFilterResult
 } from '../dispatch/model-filter.js'
 import {
-  listCachedActiveResponseInspectionPoliciesAsync,
+  listCachedActiveResponseInspectionPoliciesForAccountsAsync,
   listCachedOpenAIAccountsForGroupAsync,
   resolveCachedGroupUsageAccessMetadataAsync
 } from '../runtime/runtime-cache.service.js'
@@ -72,10 +72,7 @@ export async function selectGatewayModelTargetGroup(input: {
     if (input.acceptCandidate && !input.acceptCandidate(candidate)) {
       continue
     }
-    const responseInspectionPolicies = await listCachedActiveResponseInspectionPoliciesAsync({
-      protocolCode: groupAccess.protocolCode,
-      providerCode: groupAccess.providerCode
-    })
+    const responseInspectionPolicies = await listCachedActiveResponseInspectionPoliciesForAccountsAsync(modelFilter.accounts)
     return {
       ...candidate,
       groupId: binding.group_id,

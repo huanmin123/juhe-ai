@@ -33,7 +33,6 @@ export interface GroupOptionParams extends ListParams {
   ids?: string[]
   keyword?: string
   providerCode?: string
-  providerProtocolProfileId?: string
   limit?: number
   manageableOnly?: boolean
   preferDefault?: boolean
@@ -374,7 +373,6 @@ export interface AuthorizationPrincipalOptionsParams {
 export interface AuthorizationGranteeGroupOptionsParams extends AuthorizationPrincipalOptionsParams {
   granteeSystemAccountId: string
   providerCode?: string
-  providerProtocolProfileId?: string
   preferDefault?: boolean
 }
 

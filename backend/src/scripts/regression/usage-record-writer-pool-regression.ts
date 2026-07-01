@@ -36,7 +36,7 @@ const [databaseModule, repositories, usageRecordShards, usageWriterPool, usageRe
 
 try {
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
-  const group = repositories.createGroup({ name: 'usage writer pool 回归分组', providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID, enabled: true }, access)
+  const group = repositories.createGroup({ name: 'usage writer pool 回归分组', providerCode: 'gpt', enabled: true }, access)
   const account = repositories.createAccount({
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,

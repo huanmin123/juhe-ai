@@ -588,9 +588,6 @@ export interface GroupSummary {
   systemAccountName?: string
   name: string
   providerCode: ProviderCode
-  providerProtocolProfileId?: string
-  protocolCode?: string
-  protocolVersion?: string
   description?: string
   enabled: boolean
   isDefault: boolean
@@ -629,9 +626,6 @@ export type GroupOptionSummary = Pick<
   | 'ownerSystemAccountName'
   | 'name'
   | 'providerCode'
-  | 'providerProtocolProfileId'
-  | 'protocolCode'
-  | 'protocolVersion'
   | 'enabled'
   | 'isDefault'
   | 'groupType'

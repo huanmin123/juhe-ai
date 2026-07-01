@@ -78,7 +78,6 @@ try {
     const group = repositories.createGroup({
       name: 'DeepSeek Real E2E 分组',
       providerCode: DEEPSEEK_PROVIDER_CODE,
-      providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
       enabled: true
     }, access)
     const account = repositories.createAccount({
