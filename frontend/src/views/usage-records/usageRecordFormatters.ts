@@ -25,26 +25,20 @@ export function formatTokens(value?: number): string {
   return new Intl.NumberFormat('zh-CN').format(value ?? 0)
 }
 
-export function formatRecordTokens(record: UsageRecordSummary): string {
-  const parts = [
+export function isAnthropicUsageRecord(record: UsageRecordSummary): boolean {
+  return record.usageSemantic === 'anthropic' || record.providerCode === 'anthropic'
+}
+
+export function usageRecordTokenParts(record: UsageRecordSummary): string[] {
+  return [
     `输入 ${formatTokens(record.inputTokens)}`,
     `输出 ${formatTokens(record.outputTokens)}`,
     `缓存读 ${formatTokens(record.cacheReadTokens)}`
   ]
-  if ((record.cacheWriteTokens ?? 0) > 0) {
-    parts.push(`缓存写 ${formatTokens(record.cacheWriteTokens)}`)
-  }
-  if ((record.cacheWrite1hTokens ?? 0) > 0) {
-    parts.push(`1h ${formatTokens(record.cacheWrite1hTokens)}`)
-  }
-  if ((record.thinkingTokens ?? 0) > 0) {
-    parts.push(`思考 ${formatTokens(record.thinkingTokens)}`)
-  }
-  const imageTokens = (record.inputImageTokens ?? 0) + (record.outputImageTokens ?? 0)
-  if (imageTokens > 0) {
-    parts.push(`图片 ${formatTokens(imageTokens)}`)
-  }
-  return parts.join(' / ')
+}
+
+export function formatRecordTokens(record: UsageRecordSummary): string {
+  return usageRecordTokenParts(record).join(' / ')
 }
 
 export function formatEndpoint(value?: string): string {
@@ -64,8 +58,7 @@ export function formatCacheRate(record: UsageRecordSummary): string {
   const inputTokens = record.inputTokens ?? 0
   const cacheReadTokens = record.cacheReadTokens ?? 0
   const cacheWriteTokens = record.cacheWriteTokens ?? 0
-  const anthropicUsage = record.usageSemantic === 'anthropic' || record.providerCode === 'anthropic'
-  const denominator = anthropicUsage || cacheReadTokens > inputTokens
+  const denominator = isAnthropicUsageRecord(record) || cacheReadTokens > inputTokens
     ? inputTokens + cacheReadTokens + cacheWriteTokens
     : inputTokens
   if (denominator <= 0) return '0.0%'

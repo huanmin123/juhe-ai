@@ -88,6 +88,13 @@ startProcessEventLoopMonitor()
 setRuntimeLogLineSink((line, options) => enqueueRuntimeLogLine(line, options))
 startDbServiceSupervisor({ onReady: startBackgroundWorkerSupervisorAfterDbServiceReady })
 backgroundWorkerStartupFallbackTimer = setTimeout(() => {
+  if (runtimeConfig.runtimeMode === 'performance') {
+    logger.warn({
+      event: 'background_worker_waiting_for_db_service_ready',
+      timeoutMs: backgroundWorkerStartupFallbackMs
+    }, '高性能模式 DB service ready 等待超时，后台 worker 将继续等待 DB service 就绪')
+    return
+  }
   logger.warn({
     event: 'background_worker_start_before_db_service_ready',
     timeoutMs: backgroundWorkerStartupFallbackMs

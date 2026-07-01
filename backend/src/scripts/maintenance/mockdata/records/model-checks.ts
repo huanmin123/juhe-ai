@@ -167,7 +167,6 @@ function buildModelCheckItems(input: {
   maxScore: number
 } {
   const definitions = [
-    ['target.model_catalog', 'model_catalog', 10],
     ['target.responses_basic', 'responses_basic', 15],
     ['target.responses_stream', 'responses_stream', 15],
     ['target.structured_output', 'structured_output', 15],

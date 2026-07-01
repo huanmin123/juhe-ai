@@ -1,4 +1,4 @@
-import { createAppCache, createSharedJsonCache } from '../../../shared/cache.js'
+import { createAppCache, createSharedJsonCache, throwIfRedisCacheIsRequired } from '../../../shared/cache.js'
 import { loadAccountCurrentConcurrencyByIds } from '../../../shared/account-concurrency.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import { registerGatewayRuntimeCacheInvalidator, syncGatewayCacheInvalidationsFromRuntimeState } from '../../../shared/gateway-cache-invalidation.js'
@@ -223,6 +223,9 @@ export async function resolveCachedGroupUsageAccessMetadataAsync(groupId: string
   const cached = groupUsageAccessCache.get(cacheKey)
   if (cached !== undefined) {
     if (!isGatewayRuntimeCacheEntryFresh(cached)) {
+      if (!shouldAllowStaleGatewayRuntimeFallback()) {
+        return await loadGroupUsageAccessMetadataAndPopulateCache(groupId, systemAccountId, cacheKey)
+      }
       refreshGroupUsageAccessMetadataInBackground(groupId, systemAccountId, cacheKey)
     }
     return groupUsageAccessFromCacheEntry(cached)
@@ -233,19 +236,14 @@ export async function resolveCachedGroupUsageAccessMetadataAsync(groupId: string
       ttlMs: groupUsageAccessRetainTtlMs
     })
     if (!isGatewayRuntimeCacheEntryFresh(sharedCached)) {
+      if (!shouldAllowStaleGatewayRuntimeFallback()) {
+        return await loadGroupUsageAccessMetadataAndPopulateCache(groupId, systemAccountId, cacheKey)
+      }
       refreshGroupUsageAccessMetadataInBackground(groupId, systemAccountId, cacheKey)
     }
     return groupUsageAccessFromCacheEntry(sharedCached)
   }
-  const value = useLocalPostgres
-    ? await resolveGroupUsageAccessMetadataAsync(groupId, systemAccountId)
-    : await requestGatewayDbService({
-        type: 'resolve_group_usage_access',
-        groupId,
-        systemAccountId
-      })
-  await setGroupUsageAccessCacheEntryAsync(cacheKey, groupUsageAccessCacheEntry(value ? cloneGroupUsageAccessMetadata(value) : false))
-  return value ? cloneGroupUsageAccessMetadata(value) : undefined
+  return await loadGroupUsageAccessMetadataAndPopulateCache(groupId, systemAccountId, cacheKey)
 }
 
 export function listCachedOpenAIAccountsForGroup(
@@ -284,27 +282,14 @@ export async function listCachedOpenAIAccountsForGroupAsync(
   const cached = openAIAccountsCache.get(cacheKey)
   if (cached) {
     if (!isGatewayRuntimeCacheEntryFresh(cached)) {
+      if (!shouldAllowStaleGatewayRuntimeFallback()) {
+        return await loadOpenAIAccountsForGroupAndPopulateCache(groupId, systemAccountId, cacheKey, options.requestedModel, options.requestedEndpointFamily)
+      }
       refreshOpenAIAccountsForGroupInBackground(groupId, systemAccountId, cacheKey, options.requestedModel, options.requestedEndpointFamily)
     }
     return cloneOpenAIAccountsWithCurrentConcurrency(cached.accounts)
   }
-  const result = useLocalPostgres
-    ? await listOpenAIAccountsForGroupResultAsync(groupId, systemAccountId, {
-        requestedModel: options.requestedModel,
-        requestedEndpointFamily: options.requestedEndpointFamily
-      })
-    : await requestGatewayDbService({
-        type: 'list_openai_accounts_for_group_result',
-        groupId,
-        systemAccountId,
-        requestedModel: options.requestedModel,
-        requestedEndpointFamily: options.requestedEndpointFamily
-      })
-  const accounts = result.accounts.map(cloneStaticOpenAIAccountSecret)
-  openAIAccountsCache.set(cacheKey, openAIAccountsCacheEntry(accounts), {
-    ttlMs: openAIAccountsRetainTtlMs
-  })
-  return cloneOpenAIAccountsWithCurrentConcurrency(result.accounts)
+  return await loadOpenAIAccountsForGroupAndPopulateCache(groupId, systemAccountId, cacheKey, options.requestedModel, options.requestedEndpointFamily)
 }
 
 export async function listFreshOpenAIAccountsForGroupAsync(
@@ -458,6 +443,9 @@ export async function listCachedActiveResponseInspectionPoliciesAsync(input: {
   const cached = responseInspectionPolicyCache.get(cacheKey)
   if (cached) {
     if (!isGatewayRuntimeCacheEntryFresh(cached)) {
+      if (!shouldAllowStaleGatewayRuntimeFallback()) {
+        return await loadActiveResponseInspectionPoliciesAndPopulateCache(input, cacheKey)
+      }
       refreshActiveResponseInspectionPoliciesInBackground(input, cacheKey)
     }
     return cached.policies.map(cloneResponseInspectionPolicy)
@@ -468,21 +456,14 @@ export async function listCachedActiveResponseInspectionPoliciesAsync(input: {
       ttlMs: responseInspectionPolicyRetainTtlMs
     })
     if (!isGatewayRuntimeCacheEntryFresh(sharedCached)) {
+      if (!shouldAllowStaleGatewayRuntimeFallback()) {
+        return await loadActiveResponseInspectionPoliciesAndPopulateCache(input, cacheKey)
+      }
       refreshActiveResponseInspectionPoliciesInBackground(input, cacheKey)
     }
     return sharedCached.policies.map(cloneResponseInspectionPolicy)
   }
-  const value = shouldUseGatewayRuntimeDbService()
-    ? await requestGatewayDbService({
-        type: 'list_active_response_inspection_policies',
-        protocolCode: input.protocolCode,
-        providerCode: input.providerCode
-      })
-    : shouldUseLocalPostgresGatewayRuntimeDataAccess()
-      ? await listActiveResponseInspectionPoliciesForGatewayAsync(input)
-      : listActiveResponseInspectionPoliciesForGateway(input)
-  await setResponseInspectionPolicyCacheEntryAsync(cacheKey, responseInspectionPolicyCacheEntry(value.map(cloneResponseInspectionPolicy)))
-  return value.map(cloneResponseInspectionPolicy)
+  return await loadActiveResponseInspectionPoliciesAndPopulateCache(input, cacheKey)
 }
 
 export async function listCachedActiveResponseInspectionPoliciesForAccountsAsync(
@@ -527,6 +508,13 @@ export async function readCachedGatewayRuntimeAsync(apiKey: string): Promise<DbS
         return await routeCachedDynamicGatewayRuntimeForDispatch(cached.runtime)
       }
       return cloneGatewayRuntimeForDispatch(cached.runtime)
+    }
+    if (!shouldAllowStaleGatewayRuntimeFallback()) {
+      const runtime = await loadGatewayRuntimeOnce(apiKey, cacheKey)
+      if (runtime.apiKey && isDynamicRouteStrategyMode(runtime.apiKey.route_strategy_mode)) {
+        return await routeCachedDynamicGatewayRuntimeForDispatch(runtime)
+      }
+      return runtime.apiKey ? cloneGatewayRuntimeForDispatch(runtime) : cloneStaticGatewayRuntime(runtime)
     }
     refreshGatewayRuntimeInBackground(apiKey, cacheKey)
     const runtime = sanitizedGatewayRuntimeForDispatch(cached.runtime)
@@ -679,6 +667,80 @@ function shouldUseLocalPostgresGatewayRuntimeDataAccess(): boolean {
 function shouldUseGatewayRuntimeDbService(): boolean {
   if (runtimeConfig.processRole === 'server') return true
   return runtimeConfig.databaseDriver === 'postgres' && runtimeConfig.processRole !== 'db-service'
+}
+
+function shouldAllowStaleGatewayRuntimeFallback(): boolean {
+  return runtimeConfig.databaseDriver !== 'postgres'
+}
+
+async function loadGroupUsageAccessMetadataAndPopulateCache(
+  groupId: string,
+  systemAccountId: string,
+  cacheKey: string
+): Promise<GroupUsageAccessMetadata | undefined> {
+  const value = shouldUseGatewayRuntimeDbService()
+    ? await requestGatewayDbService({
+        type: 'resolve_group_usage_access',
+        groupId,
+        systemAccountId
+      })
+    : shouldUseLocalPostgresGatewayRuntimeDataAccess()
+      ? await resolveGroupUsageAccessMetadataAsync(groupId, systemAccountId)
+      : resolveGroupUsageAccessMetadata(groupId, systemAccountId)
+  await setGroupUsageAccessCacheEntryAsync(cacheKey, groupUsageAccessCacheEntry(value ? cloneGroupUsageAccessMetadata(value) : false))
+  return value ? cloneGroupUsageAccessMetadata(value) : undefined
+}
+
+async function loadOpenAIAccountsForGroupAndPopulateCache(
+  groupId: string,
+  systemAccountId: string,
+  cacheKey: string,
+  requestedModel?: string,
+  requestedEndpointFamily?: GatewayRequestEndpointFamily
+): Promise<OpenAIAccountSecret[]> {
+  const result = shouldUseGatewayRuntimeDbService()
+    ? await requestGatewayDbService({
+        type: 'list_openai_accounts_for_group_result',
+        groupId,
+        systemAccountId,
+        requestedModel,
+        requestedEndpointFamily
+      })
+    : shouldUseLocalPostgresGatewayRuntimeDataAccess()
+      ? await listOpenAIAccountsForGroupResultAsync(groupId, systemAccountId, {
+          requestedModel,
+          requestedEndpointFamily
+        })
+      : listOpenAIAccountsForGroupResult(groupId, systemAccountId, {
+          requestedModel,
+          requestedEndpointFamily
+        })
+  const accounts = result.accounts.map(cloneStaticOpenAIAccountSecret)
+  openAIAccountsCache.set(cacheKey, openAIAccountsCacheEntry(accounts), {
+    ttlMs: openAIAccountsRetainTtlMs
+  })
+  return cloneOpenAIAccountsWithCurrentConcurrency(result.accounts)
+}
+
+async function loadActiveResponseInspectionPoliciesAndPopulateCache(
+  input: {
+    protocolCode: string
+    providerCode?: string
+  },
+  cacheKey: string
+): Promise<ResponseInspectionPolicySummary[]> {
+  const value = shouldUseGatewayRuntimeDbService()
+    ? await requestGatewayDbService({
+        type: 'list_active_response_inspection_policies',
+        protocolCode: input.protocolCode,
+        providerCode: input.providerCode
+      })
+    : shouldUseLocalPostgresGatewayRuntimeDataAccess()
+      ? await listActiveResponseInspectionPoliciesForGatewayAsync(input)
+      : listActiveResponseInspectionPoliciesForGateway(input)
+  const policies = value.map(cloneResponseInspectionPolicy)
+  await setResponseInspectionPolicyCacheEntryAsync(cacheKey, responseInspectionPolicyCacheEntry(policies))
+  return policies.map(cloneResponseInspectionPolicy)
 }
 
 async function loadGatewayRuntimeOnce(apiKey: string, cacheKey: string): Promise<DbServiceGatewayRuntime> {
@@ -1143,9 +1205,10 @@ async function getGatewaySettingsSharedCacheEntry(): Promise<GatewaySettings | u
     const cached = await gatewaySettingsSharedCache.get('current')
     return cached ? cloneGatewaySettings(cached) : undefined
   } catch (error) {
+    throwIfRedisCacheIsRequired(error)
     logger.warn(errorLogFields(error, {
       event: 'gateway_settings_shared_cache_read_failed'
-    }), '读取网关设置 Redis 共享缓存失败，继续读取 DB service')
+    }), '读取网关设置 Redis 共享缓存失败')
     return undefined
   }
 }
@@ -1167,6 +1230,7 @@ async function setGatewaySettingsSharedCacheEntry(settings: GatewaySettings): Pr
   try {
     await gatewaySettingsSharedCache.set('current', cloneGatewaySettings(settings), { ttlMs: gatewaySettingsTtlMs })
   } catch (error) {
+    throwIfRedisCacheIsRequired(error)
     logger.warn(errorLogFields(error, {
       event: 'gateway_settings_shared_cache_write_failed'
     }), '写入网关设置 Redis 共享缓存失败')
@@ -1176,6 +1240,7 @@ async function setGatewaySettingsSharedCacheEntry(settings: GatewaySettings): Pr
 function clearGatewaySettingsSharedCache(): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
   void gatewaySettingsSharedCache.clear().catch((error) => {
+    throwIfRedisCacheIsRequired(error)
     logger.warn(errorLogFields(error, {
       event: 'gateway_settings_shared_cache_clear_failed'
     }), '清理网关设置 Redis 共享缓存失败')
@@ -1188,9 +1253,10 @@ async function getGroupUsageAccessSharedCacheEntry(cacheKey: string): Promise<Gr
     const cached = await groupUsageAccessSharedCache.get(cacheKey)
     return cached ? cloneGroupUsageAccessCacheEntry(cached) : undefined
   } catch (error) {
+    throwIfRedisCacheIsRequired(error)
     logger.warn(errorLogFields(error, {
       event: 'gateway_group_usage_access_shared_cache_read_failed'
-    }), '读取网关分组访问 Redis 共享缓存失败，继续读取 DB service')
+    }), '读取网关分组访问 Redis 共享缓存失败')
     return undefined
   }
 }
@@ -1208,6 +1274,7 @@ async function setGroupUsageAccessSharedCacheEntry(cacheKey: string, entry: Grou
       ttlMs: groupUsageAccessRetainTtlMs
     })
   } catch (error) {
+    throwIfRedisCacheIsRequired(error)
     logger.warn(errorLogFields(error, {
       event: 'gateway_group_usage_access_shared_cache_write_failed'
     }), '写入网关分组访问 Redis 共享缓存失败')
@@ -1217,6 +1284,7 @@ async function setGroupUsageAccessSharedCacheEntry(cacheKey: string, entry: Grou
 function clearGroupUsageAccessSharedCache(): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
   void groupUsageAccessSharedCache.clear().catch((error) => {
+    throwIfRedisCacheIsRequired(error)
     logger.warn(errorLogFields(error, {
       event: 'gateway_group_usage_access_shared_cache_clear_failed'
     }), '清理网关分组访问 Redis 共享缓存失败')
@@ -1266,9 +1334,10 @@ async function getProviderModelCatalogSharedCacheEntry(cacheKey: string): Promis
     const cached = await providerModelCatalogSharedCache.get(cacheKey)
     return cached ? cached.map((item) => ({ ...item })) : undefined
   } catch (error) {
+    throwIfRedisCacheIsRequired(error)
     logger.warn(errorLogFields(error, {
       event: 'gateway_provider_model_catalog_shared_cache_read_failed'
-    }), '读取网关模型目录 Redis 共享缓存失败，继续读取 DB service')
+    }), '读取网关模型目录 Redis 共享缓存失败')
     return undefined
   }
 }
@@ -1284,6 +1353,7 @@ async function setProviderModelCatalogSharedCacheEntry(cacheKey: string, value: 
   try {
     await providerModelCatalogSharedCache.set(cacheKey, value.map((item) => ({ ...item })), { ttlMs: providerModelCatalogTtlMs })
   } catch (error) {
+    throwIfRedisCacheIsRequired(error)
     logger.warn(errorLogFields(error, {
       event: 'gateway_provider_model_catalog_shared_cache_write_failed'
     }), '写入网关模型目录 Redis 共享缓存失败')
@@ -1293,6 +1363,7 @@ async function setProviderModelCatalogSharedCacheEntry(cacheKey: string, value: 
 function clearProviderModelCatalogSharedCache(): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
   void providerModelCatalogSharedCache.clear().catch((error) => {
+    throwIfRedisCacheIsRequired(error)
     logger.warn(errorLogFields(error, {
       event: 'gateway_provider_model_catalog_shared_cache_clear_failed'
     }), '清理网关模型目录 Redis 共享缓存失败')
@@ -1305,9 +1376,10 @@ async function getProviderModelRouteIndexSharedCacheEntry(cacheKey: string): Pro
     const cached = await providerModelRouteIndexSharedCache.get(cacheKey)
     return cached ? providerModelRouteIndexCacheEntryFromShared(cached) : undefined
   } catch (error) {
+    throwIfRedisCacheIsRequired(error)
     logger.warn(errorLogFields(error, {
       event: 'gateway_provider_model_route_index_shared_cache_read_failed'
-    }), '读取网关模型路由索引 Redis 共享缓存失败，继续构建本地索引')
+    }), '读取网关模型路由索引 Redis 共享缓存失败')
     return undefined
   }
 }
@@ -1317,6 +1389,7 @@ async function setProviderModelRouteIndexSharedCacheEntry(cacheKey: string, entr
   try {
     await providerModelRouteIndexSharedCache.set(cacheKey, providerModelRouteIndexCacheEntryToShared(entry), { ttlMs: providerModelCatalogTtlMs })
   } catch (error) {
+    throwIfRedisCacheIsRequired(error)
     logger.warn(errorLogFields(error, {
       event: 'gateway_provider_model_route_index_shared_cache_write_failed'
     }), '写入网关模型路由索引 Redis 共享缓存失败')
@@ -1326,6 +1399,7 @@ async function setProviderModelRouteIndexSharedCacheEntry(cacheKey: string, entr
 function clearProviderModelRouteIndexSharedCache(): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
   void providerModelRouteIndexSharedCache.clear().catch((error) => {
+    throwIfRedisCacheIsRequired(error)
     logger.warn(errorLogFields(error, {
       event: 'gateway_provider_model_route_index_shared_cache_clear_failed'
     }), '清理网关模型路由索引 Redis 共享缓存失败')
@@ -1350,9 +1424,10 @@ async function getResponseInspectionPolicySharedCacheEntry(cacheKey: string): Pr
       ? responseInspectionPolicyCacheEntry(cached.policies, Date.now(), cached.revalidateAtMs)
       : undefined
   } catch (error) {
+    throwIfRedisCacheIsRequired(error)
     logger.warn(errorLogFields(error, {
       event: 'gateway_response_inspection_policy_shared_cache_read_failed'
-    }), '读取网关响应检查策略 Redis 共享缓存失败，继续读取 DB service')
+    }), '读取网关响应检查策略 Redis 共享缓存失败')
     return undefined
   }
 }
@@ -1370,6 +1445,7 @@ async function setResponseInspectionPolicySharedCacheEntry(cacheKey: string, ent
       ttlMs: responseInspectionPolicyRetainTtlMs
     })
   } catch (error) {
+    throwIfRedisCacheIsRequired(error)
     logger.warn(errorLogFields(error, {
       event: 'gateway_response_inspection_policy_shared_cache_write_failed'
     }), '写入网关响应检查策略 Redis 共享缓存失败')
@@ -1379,6 +1455,7 @@ async function setResponseInspectionPolicySharedCacheEntry(cacheKey: string, ent
 function clearResponseInspectionPolicySharedCache(): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
   void responseInspectionPolicySharedCache.clear().catch((error) => {
+    throwIfRedisCacheIsRequired(error)
     logger.warn(errorLogFields(error, {
       event: 'gateway_response_inspection_policy_shared_cache_clear_failed'
     }), '清理网关响应检查策略 Redis 共享缓存失败')

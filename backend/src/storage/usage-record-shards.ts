@@ -136,6 +136,7 @@ export function findRegisteredUsageRecordShardLocation(shardKey: string): UsageR
 }
 
 export function getUsageRecordShardDatabase(location: UsageRecordShardLocation, options: { registerLocation?: boolean } = {}): DatabaseSync {
+  assertSqliteUsageRecordShardAccess('getUsageRecordShardDatabase')
   const cached = shardDatabases.get(location.filePath)
   if (cached) {
     return cached
@@ -784,6 +785,7 @@ export function writeUsageRecordShardRows(
   rows: UsageRecordShardWriteRow[],
   options: { registerLocation?: boolean } = {}
 ): UsageRecordShardWriteResult {
+  assertSqliteUsageRecordShardAccess('writeUsageRecordShardRows')
   if (rows.length === 0) {
     return { insertedRows: 0, accountLastUsedAt: [], accountHealthSuccessAt: [] }
   }
@@ -964,6 +966,7 @@ function queryUsageRecordShardAtLocation<T extends Record<string, unknown>>(
 }
 
 function usageRecordShardDatabaseIfOpenOrExists(location: UsageRecordShardLocation): DatabaseSync | undefined {
+  assertSqliteUsageRecordShardAccess('usageRecordShardDatabaseIfOpenOrExists')
   const cached = shardDatabases.get(location.filePath)
   if (cached) {
     return cached
@@ -973,6 +976,12 @@ function usageRecordShardDatabaseIfOpenOrExists(location: UsageRecordShardLocati
     return undefined
   }
   return getUsageRecordShardDatabase(location, { registerLocation: false })
+}
+
+function assertSqliteUsageRecordShardAccess(operation: string): void {
+  if (runtimeConfig.databaseDriver !== 'sqlite') {
+    throw new Error(`PostgreSQL 模式禁止访问 SQLite 使用记录分片：${operation} 必须走 juhe_usage.usage_records`)
+  }
 }
 
 function usageRecordShardLocation(bucketDateKey: string, shardIdInput: number): UsageRecordShardLocation {

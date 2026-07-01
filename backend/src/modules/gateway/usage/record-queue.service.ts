@@ -427,7 +427,13 @@ async function enqueueUsageRecordToRedisStream(input: UsageRecordInput): Promise
   try {
     await usageRecordRedisStreamQueue().enqueue(input)
   } catch (error) {
-    recordUsageRecordDispatchFailure(error, input)
+    logger.error(errorLogFields(error, {
+      event: 'usage_record_redis_stream_enqueue_failed',
+      traceId: input.traceId,
+      apiKeyId: input.apiKeyId,
+      accountId: input.accountId
+    }), '使用记录写入 Redis Stream 失败，高性能模式禁止回退 IPC 或本地队列')
+    throw error
   }
 }
 
@@ -491,7 +497,7 @@ function shouldUseRedisStreamUsageRecordQueue(): boolean {
 }
 
 function shouldEnqueueUsageRecordToRedisStream(): boolean {
-  return shouldUseRedisStreamUsageRecordQueue() && !isUsageRecordIngestWorker()
+  return shouldUseRedisStreamUsageRecordQueue()
 }
 
 function delay(ms: number): Promise<void> {
@@ -920,6 +926,9 @@ function recordUsageRecordLocalDrop(item: QueuedUsageRecord, reason: 'overflow' 
 }
 
 function assertLocalUsageRecordWriteAllowed(operation: string): void {
+  if (shouldUseRedisStreamUsageRecordQueue()) {
+    throw new Error(`Redis Stream queue driver 下禁止写入使用记录本地队列：${operation}`)
+  }
   if (!isLocalUsageRecordWriteAllowed()) {
     throw new Error(`${runtimeConfig.processRole}/${runtimeConfig.workerRole} 角色禁止直接写入使用记录：${operation} 必须投递 ingest-worker`)
   }

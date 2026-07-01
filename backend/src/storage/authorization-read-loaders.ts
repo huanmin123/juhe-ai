@@ -5,7 +5,7 @@ import type {
   ResourceAuthorizationSourceType
 } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
-import { createAppCache, createSharedJsonCache } from '../shared/cache.js'
+import { createAppCache, createSharedJsonCache, throwIfRedisCacheIsRequired } from '../shared/cache.js'
 import { errorLogFields, logger } from '../shared/logger.js'
 import { getBusinessDatabase } from './database.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
@@ -394,11 +394,12 @@ async function getAuthorizationStatsSharedCacheEntry(cacheKey: string): Promise<
     const value = await authorizationStatsSharedCache.get(cacheKey)
     return normalizeAuthorizationStats(value)
   } catch (error) {
+    throwIfRedisCacheIsRequired(error)
     logger.warn({
       event: 'resource_authorization_stats_shared_cache_read_failed',
       cacheKey,
       err: errorLogFields(error)
-    }, '读取授权统计 Redis shared cache 失败，将回退数据库')
+    }, '读取授权统计 Redis shared cache 失败')
     return undefined
   }
 }
@@ -411,6 +412,7 @@ async function setAuthorizationStatsSharedCacheEntryAsync(cacheKey: string, stat
   try {
     await authorizationStatsSharedCache.set(cacheKey, cloneAuthorizationStats(stats))
   } catch (error) {
+    throwIfRedisCacheIsRequired(error)
     logger.warn({
       event: 'resource_authorization_stats_shared_cache_write_failed',
       cacheKey,
@@ -421,6 +423,7 @@ async function setAuthorizationStatsSharedCacheEntryAsync(cacheKey: string, stat
 
 function deleteAuthorizationStatsSharedCacheEntry(cacheKey: string): void {
   void authorizationStatsSharedCache.delete(cacheKey).catch((error) => {
+    throwIfRedisCacheIsRequired(error)
     logger.warn({
       event: 'resource_authorization_stats_shared_cache_delete_failed',
       cacheKey,
@@ -431,6 +434,7 @@ function deleteAuthorizationStatsSharedCacheEntry(cacheKey: string): void {
 
 function clearAuthorizationStatsSharedCache(): void {
   void authorizationStatsSharedCache.clear().catch((error) => {
+    throwIfRedisCacheIsRequired(error)
     logger.warn({
       event: 'resource_authorization_stats_shared_cache_clear_failed',
       err: errorLogFields(error)
@@ -443,11 +447,12 @@ async function getAuthorizationSourcesSharedCacheEntry(authorizationId: string):
     const value = await authorizationSourcesSharedCache.get(authorizationId)
     return Array.isArray(value) ? value.map(cloneAuthorizationSourceSummary).filter((item): item is ResourceAuthorizationSourceSummary => Boolean(item)) : undefined
   } catch (error) {
+    throwIfRedisCacheIsRequired(error)
     logger.warn({
       event: 'resource_authorization_sources_shared_cache_read_failed',
       authorizationId,
       err: errorLogFields(error)
-    }, '读取授权来源 Redis shared cache 失败，将回退数据库')
+    }, '读取授权来源 Redis shared cache 失败')
     return undefined
   }
 }
@@ -460,6 +465,7 @@ async function setAuthorizationSourcesSharedCacheEntryAsync(authorizationId: str
   try {
     await authorizationSourcesSharedCache.set(authorizationId, sources.map((source) => ({ ...source })))
   } catch (error) {
+    throwIfRedisCacheIsRequired(error)
     logger.warn({
       event: 'resource_authorization_sources_shared_cache_write_failed',
       authorizationId,
@@ -470,6 +476,7 @@ async function setAuthorizationSourcesSharedCacheEntryAsync(authorizationId: str
 
 function deleteAuthorizationSourcesSharedCacheEntry(authorizationId: string): void {
   void authorizationSourcesSharedCache.delete(authorizationId).catch((error) => {
+    throwIfRedisCacheIsRequired(error)
     logger.warn({
       event: 'resource_authorization_sources_shared_cache_delete_failed',
       authorizationId,
@@ -480,6 +487,7 @@ function deleteAuthorizationSourcesSharedCacheEntry(authorizationId: string): vo
 
 function clearAuthorizationSourcesSharedCache(): void {
   void authorizationSourcesSharedCache.clear().catch((error) => {
+    throwIfRedisCacheIsRequired(error)
     logger.warn({
       event: 'resource_authorization_sources_shared_cache_clear_failed',
       err: errorLogFields(error)

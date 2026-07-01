@@ -55,7 +55,8 @@ const cleanupPatterns = [
   `juhe-ai:state:auth_login_guard:login:username:${loginFailUser}:*`,
   `juhe-ai:state:auth_captcha:issue:${captchaIp}`,
   `juhe-ai:account-concurrency:${accountId}:*`,
-  `juhe-ai:account-concurrency:${accountId}_parallel:*`
+  `juhe-ai:account-concurrency:${accountId}_parallel:*`,
+  `juhe-ai:account-concurrency:${accountId}_external:*`
 ]
 
 try {
@@ -168,15 +169,26 @@ async function verifyAccountConcurrency(): Promise<void> {
   assert.equal(second.acquired, true)
   assert.equal(third.acquired, false, 'Redis 账号并发 Lua 应拒绝超过总并发上限的占用')
   assert.equal(third.current, 2)
+  assert.equal(accountConcurrency.getAccountCurrentConcurrency(accountId), 2, 'Redis 模式成功占槽后应同步维护 server 本地当前并发')
+  assert.equal(accountConcurrency.snapshotAccountConcurrency()[accountId], 2, 'Redis 模式 server 快照应能展示当前账号并发')
+  assert.equal((await accountConcurrency.loadAccountCurrentConcurrencyByIdsAsync([accountId])).get(accountId), 2, 'Redis 模式批量读取应以 Redis 当前并发为事实来源')
 
   first.release()
   second.release()
   await waitForRedisKeyAbsent(`juhe-ai:account-concurrency:${accountId}:total`)
+  await waitForLocalConcurrency(accountId, 0)
 
   const reacquired = await accountConcurrency.tryAcquireAccountConcurrencyAsync(accountId, 2, { lane: 'text' })
   assert.equal(reacquired.acquired, true, 'Redis 账号并发释放后应允许再次占用')
+  assert.equal(accountConcurrency.snapshotAccountConcurrency()[accountId], 1, 'Redis 模式重新占槽后 server 快照应恢复为 1')
   reacquired.release()
   await waitForRedisKeyAbsent(`juhe-ai:account-concurrency:${accountId}:total`)
+  await waitForLocalConcurrency(accountId, 0)
+
+  const externalAccountId = `${accountId}_external`
+  await stateClient.set(`juhe-ai:account-concurrency:${externalAccountId}:total`, '7')
+  assert.equal(accountConcurrency.snapshotAccountConcurrency()[externalAccountId], undefined, '外部进程写入的 Redis 并发不应出现在本地 in-flight 诊断快照')
+  assert.equal((await accountConcurrency.loadAccountCurrentConcurrencyByIdsAsync([externalAccountId])).get(externalAccountId), 7, 'Redis 模式列表并发批量读取必须能看到其他进程写入的当前并发')
 
   const parallelAccountId = `${accountId}_parallel`
   const parallelSlots = await Promise.all(
@@ -184,15 +196,24 @@ async function verifyAccountConcurrency(): Promise<void> {
   )
   const acquiredSlots = parallelSlots.filter((slot) => slot.acquired)
   assert.equal(acquiredSlots.length, 5, '并发争抢 Redis Lua 时最多只能拿到配置上限数量的槽位')
+  assert.equal(accountConcurrency.getAccountCurrentConcurrency(parallelAccountId), 5, 'Redis 并发争抢成功槽位应同步到 server 本地当前并发')
 
   for (const slot of acquiredSlots) {
     slot.release()
   }
   await waitForRedisKeyAbsent(`juhe-ai:account-concurrency:${parallelAccountId}:total`)
+  await waitForLocalConcurrency(parallelAccountId, 0)
 }
 
 async function waitForRedisKeyAbsent(key: string): Promise<void> {
   await waitFor(async () => (await stateClient.get(key)) === null, `Redis key ${key} 应被释放`)
+}
+
+async function waitForLocalConcurrency(accountId: string, expected: number): Promise<void> {
+  await waitFor(
+    async () => accountConcurrency.getAccountCurrentConcurrency(accountId) === expected,
+    `本地账号并发 ${accountId} 应变为 ${expected}`
+  )
 }
 
 async function waitFor(predicate: () => Promise<boolean>, message: string): Promise<void> {

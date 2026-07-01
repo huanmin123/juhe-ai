@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { dirname, isAbsolute, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { parse } from 'dotenv'
@@ -10,6 +10,7 @@ const verifyCommand = 'pnpm --filter juhe-ai-backend check:runtime'
 const backendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 const localEnvPath = resolve(backendRoot, '.env')
 let cachedLocalEnv: Record<string, string> | undefined
+let cachedLocalEnvOverlay: Record<string, string> | undefined
 const sqliteCapabilityCheckScript = `
 const { DatabaseSync } = await import('node:sqlite')
 const database = new DatabaseSync(':memory:')
@@ -57,7 +58,7 @@ if (!process.release.lts) {
   exitWithRuntimeError('[juhe-ai] 当前 Node.js 不是官方 LTS 发行版，后端已停止启动。')
 }
 
-const runtimeMode = rawConfig('JUHE_AI_RUNTIME_MODE').toLowerCase() || 'standalone'
+const runtimeMode = rawConfig('JUHE_AI_RUNTIME_MODE').toLowerCase() || (hasPerformanceDriverHints() ? 'performance' : 'standalone')
 const databaseDriver = rawConfig('JUHE_AI_DATABASE_DRIVER').toLowerCase()
   || (runtimeMode === 'performance' ? 'postgres' : 'sqlite')
 
@@ -82,7 +83,16 @@ if (checkResult.status !== 0 || checkResult.error) {
 }
 
 function rawConfig(name: string): string {
-  return (process.env[name]?.trim() ?? loadLocalEnv()[name]?.trim() ?? '')
+  return (process.env[name]?.trim() ?? loadLocalEnvOverlay()[name]?.trim() ?? loadLocalEnv()[name]?.trim() ?? '')
+}
+
+function hasPerformanceDriverHints(): boolean {
+  return [
+    'JUHE_AI_POSTGRES_URL',
+    'JUHE_AI_REDIS_CACHE_URL',
+    'JUHE_AI_REDIS_STATE_URL',
+    'JUHE_AI_REDIS_QUEUE_URL'
+  ].some((name) => Boolean(rawConfig(name)))
 }
 
 function loadLocalEnv(): Record<string, string> {
@@ -93,4 +103,21 @@ function loadLocalEnv(): Record<string, string> {
   }
   cachedLocalEnv = parse(readFileSync(localEnvPath))
   return cachedLocalEnv
+}
+
+function loadLocalEnvOverlay(): Record<string, string> {
+  if (cachedLocalEnvOverlay) return cachedLocalEnvOverlay
+  const overlayPath = envFilePathConfig(process.env.JUHE_AI_ENV_FILE ?? loadLocalEnv().JUHE_AI_ENV_FILE)
+  if (!overlayPath || !existsSync(overlayPath)) {
+    cachedLocalEnvOverlay = {}
+    return cachedLocalEnvOverlay
+  }
+  cachedLocalEnvOverlay = parse(readFileSync(overlayPath))
+  return cachedLocalEnvOverlay
+}
+
+function envFilePathConfig(value: string | undefined): string | undefined {
+  const trimmedValue = value?.trim()
+  if (!trimmedValue) return undefined
+  return isAbsolute(trimmedValue) ? trimmedValue : resolve(backendRoot, trimmedValue)
 }

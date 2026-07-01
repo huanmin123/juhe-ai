@@ -1,5 +1,7 @@
 import type { AccountRuntimeAvailability, AccountSummary, GroupSummary } from '../../../domain/types.js'
 import { accountSummaryWithEffectiveAvailability } from '../../../domain/account-effective-availability.js'
+import { runtimeConfig } from '../../../config/runtime.js'
+import { loadAccountCurrentConcurrencyByIdsAsync } from '../../../shared/account-concurrency.js'
 import { requestServerAccountConcurrencySnapshot, requestServerAccountRuntimeSnapshot } from '../../db-service/db-service-ipc.js'
 
 type AccountConcurrencySnapshot = Record<string, number>
@@ -21,6 +23,9 @@ export async function applyServerAccountConcurrencyToAccountList<T extends { ite
         accountRuntimeAvailabilityAvailable: true
       }
     }
+  }
+  if (runtimeConfig.runtimeStateDriver === 'redis') {
+    return await applyRedisAccountRuntimeToAccountList(result)
   }
   const runtime = await loadServerAccountRuntimeSnapshot()
   if (!runtime?.accountConcurrency) {
@@ -48,6 +53,16 @@ export async function applyServerAccountConcurrencyToAccountList<T extends { ite
 }
 
 export async function applyServerAccountRuntimeToAccount(account: AccountSummary): Promise<AccountSummary> {
+  if (runtimeConfig.runtimeStateDriver === 'redis') {
+    const [concurrency, runtime] = await Promise.all([
+      loadRedisAccountConcurrencySnapshot([account.id]),
+      loadServerAccountRuntimeSnapshot()
+    ])
+    const withConcurrency = concurrency
+      ? applyAccountConcurrency(account, concurrency)
+      : markAccountConcurrencyUnavailable(account)
+    return applyAccountRuntimeAvailability(withConcurrency, runtime?.accountRuntimeAvailability)
+  }
   const runtime = await loadServerAccountRuntimeSnapshot()
   if (!runtime?.accountConcurrency && !runtime?.accountRuntimeAvailability) {
     return account
@@ -62,24 +77,19 @@ export async function applyServerAccountConcurrencyToGroups(groups: GroupSummary
   if (!groupsRequireServerConcurrencySnapshot(groups)) {
     return groups
   }
+  if (runtimeConfig.runtimeStateDriver === 'redis') {
+    const accountIds = groups.flatMap((group) => group.accessType === 'authorized' ? [] : group.accountIds)
+    const concurrency = await loadRedisAccountConcurrencySnapshot(accountIds)
+    if (!concurrency) {
+      return groups.map(markGroupConcurrencyUnavailable)
+    }
+    return applyAccountConcurrencyToGroups(groups, concurrency)
+  }
   const concurrency = await loadServerAccountConcurrencySnapshot()
   if (!concurrency) {
     return groups.map(markGroupConcurrencyUnavailable)
   }
-  return groups.map((group) => {
-    if (group.accessType === 'authorized') {
-      return group
-    }
-    const currentConcurrency = sumCurrentConcurrency(group.accountIds, concurrency)
-    return {
-      ...group,
-      accountStats: {
-        ...group.accountStats,
-        currentConcurrency,
-        currentConcurrencyAvailable: true
-      }
-    }
-  })
+  return applyAccountConcurrencyToGroups(groups, concurrency)
 }
 
 export async function applyServerAccountConcurrencyToGroupList<T extends { items: GroupSummary[] }>(
@@ -105,6 +115,38 @@ async function loadServerAccountRuntimeSnapshot(): Promise<{
   accountRuntimeAvailability?: AccountRuntimeAvailabilitySnapshot
 } | undefined> {
   return await requestServerAccountRuntimeSnapshot(80).catch(() => undefined)
+}
+
+async function applyRedisAccountRuntimeToAccountList<T extends { items: AccountSummary[] }>(
+  result: T
+): Promise<T & { runtimeSnapshot: AccountRuntimeSnapshotStatus }> {
+  const [concurrency, runtime] = await Promise.all([
+    loadRedisAccountConcurrencySnapshot(result.items.map((account) => account.id)),
+    loadServerAccountRuntimeSnapshot()
+  ])
+  const runtimeAvailability = runtime?.accountRuntimeAvailability
+  return {
+    ...result,
+    runtimeSnapshot: {
+      accountConcurrencyAvailable: Boolean(concurrency),
+      accountRuntimeAvailabilityAvailable: Boolean(runtimeAvailability)
+    },
+    items: result.items.map((account) => {
+      const withConcurrency = concurrency
+        ? applyAccountConcurrency(account, concurrency)
+        : markAccountConcurrencyUnavailable(account)
+      return applyAccountRuntimeAvailability(withConcurrency, runtimeAvailability)
+    })
+  }
+}
+
+async function loadRedisAccountConcurrencySnapshot(accountIds: string[]): Promise<AccountConcurrencySnapshot | undefined> {
+  try {
+    const concurrencyByAccount = await loadAccountCurrentConcurrencyByIdsAsync(accountIds)
+    return Object.fromEntries(concurrencyByAccount.entries())
+  } catch {
+    return undefined
+  }
 }
 
 function applyAccountConcurrency(account: AccountSummary, concurrency: AccountConcurrencySnapshot): AccountSummary {
@@ -149,6 +191,23 @@ function markGroupConcurrencyUnavailable(group: GroupSummary): GroupSummary {
       currentConcurrencyAvailable: false
     }
   }
+}
+
+function applyAccountConcurrencyToGroups(groups: GroupSummary[], concurrency: AccountConcurrencySnapshot): GroupSummary[] {
+  return groups.map((group) => {
+    if (group.accessType === 'authorized') {
+      return group
+    }
+    const currentConcurrency = sumCurrentConcurrency(group.accountIds, concurrency)
+    return {
+      ...group,
+      accountStats: {
+        ...group.accountStats,
+        currentConcurrency,
+        currentConcurrencyAvailable: true
+      }
+    }
+  })
 }
 
 function accountsRequireServerConcurrencySnapshot(accounts: AccountSummary[]): boolean {

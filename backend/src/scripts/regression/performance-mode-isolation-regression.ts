@@ -6,6 +6,9 @@ function source(path: string): string {
 }
 
 const apiKeyRoutesSource = source('../../modules/api-keys/api-keys.routes.ts')
+const serverSource = source('../../server.ts')
+assert.match(serverSource, /runtimeConfig\.runtimeMode === 'performance'[\s\S]*background_worker_waiting_for_db_service_ready/, '高性能模式 DB service 未 ready 时不能兜底启动后台 worker')
+
 assert.match(apiKeyRoutesSource, /if \(deleteResult\.cleanupTarget\) \{\s*submitApiKeyRelatedCleanup\(deleteResult\.cleanupTarget\)/, '高性能模式删除 API Key 后也必须投递关联记录清理任务')
 assert.doesNotMatch(apiKeyRoutesSource, /cleanupTarget\s*&&\s*runtimeConfig\.databaseDriver\s*!==\s*'postgres'/, 'API Key 删除路由不能在 PostgreSQL 模式跳过清理投递')
 
@@ -47,6 +50,15 @@ assert.match(sqliteDatabaseSource, /require\('node:sqlite'\)/, 'database.ts 必�
 const usageRecordShardSource = source('../../storage/usage-record-shards.ts')
 assert.doesNotMatch(usageRecordShardSource, /import\s+\{[^}]*DatabaseSync[^}]*\}\s+from ['"]node:sqlite['"]/, '高性能模式可导入的 usage shard 模块不能顶层加载 node:sqlite')
 assert.match(usageRecordShardSource, /require\('node:sqlite'\)/, 'usage shard 必须只在实际打开 SQLite 分片库时懒加载 node:sqlite')
+assert.match(usageRecordShardSource, /function assertSqliteUsageRecordShardAccess[\s\S]*runtimeConfig\.databaseDriver !== 'sqlite'[\s\S]*juhe_usage\.usage_records/, '使用记录 SQLite 分片入口必须在 PostgreSQL 模式 fail-fast')
+assert.match(usageRecordShardSource, /export function getUsageRecordShardDatabase[\s\S]*assertSqliteUsageRecordShardAccess\('getUsageRecordShardDatabase'\)/, 'PG 模式不能直接打开 SQLite usage shard')
+assert.match(usageRecordShardSource, /export function writeUsageRecordShardRows[\s\S]*assertSqliteUsageRecordShardAccess\('writeUsageRecordShardRows'\)/, 'PG 模式不能写 SQLite usage shard')
+assert.match(usageRecordShardSource, /function usageRecordShardDatabaseIfOpenOrExists[\s\S]*assertSqliteUsageRecordShardAccess\('usageRecordShardDatabaseIfOpenOrExists'\)/, 'PG 模式不能通过存在性检查打开 SQLite usage shard')
+
+const dbServiceHandlersSource = source('../../modules/db-service/db-service-handlers.ts')
+assert.match(dbServiceHandlersSource, /function assertCodexContextStateSqliteOnlyOperation[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*PostgreSQL 模式暂未接入 Codex context state/, 'Codex context state SQLite shard 操作必须在 PostgreSQL 模式显式 fail-fast')
+assert.match(dbServiceHandlersSource, /case 'save_codex_context_response_state':[\s\S]*assertCodexContextStateSqliteOnlyOperation\(operation\.type\)/, 'PG 模式不能把 Codex context state 写入派发到 SQLite writer pool')
+assert.match(dbServiceHandlersSource, /case 'persist_openai_codex_usage_headers':[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*persistOpenAICodexUsageHeaders/, 'PG 模式 Codex usage headers 必须有显式分支，不能隐式落入同步 handler')
 
 const accountRecordCleanupSource = source('../../storage/account-record-cleanup.ts')
 assert.match(accountRecordCleanupSource, /cleanupDeletedAccountRelatedRecordDataCorePostgresAsync/, 'AI 账户记录清理必须提供 PostgreSQL 实现')

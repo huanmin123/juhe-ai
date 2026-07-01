@@ -35,7 +35,7 @@
 - 不把 PostgreSQL 高性能模式做成默认依赖。
 - 不在首期引入 Kafka、RabbitMQ、BullMQ、ClickHouse 或其他外部队列 / OLAP。
 - 不在首期实现多节点自动故障转移、跨地域复制或自动用户迁移；多节点路由仍按 [分布式部署与用户分片设计](分布式部署与用户分片设计.md) 单独推进。
-- 不把 Redis 作为账务、权限、授权、账号健康、审计或使用记录事实源；Redis Streams 只作为可恢复队列缓冲，消息成功写入事实库后才 ack。
+- 不把 Redis 作为账务、权限、授权、账号健康、审计或使用记录的持久事实库；但在高性能模式下，跨进程短 TTL 缓存、运行态、原子计数和记录型队列的当前事实源必须是 Redis / Redis Streams，不能回退到进程内 memory 或本地 IPC 后继续声明高性能模式可用。Redis Streams 消息成功写入事实库后才 ack。
 - 不为了迁移保留运行时旧 schema 兼容分支；历史数据处理只允许离线脚本或重建流程。
 
 ## 配置模型
@@ -284,7 +284,7 @@ interface RuntimeStateStore {
 
 边界：
 
-- `AppCache` 是进程本地同步缓存，可存放不可序列化对象，例如 HTTP agent、临时近端只读结果和进程内 memoization；高性能模式下仍允许使用，但不能承载跨进程一致性。
+- `AppCache` 是进程本地同步缓存，可存放不可序列化对象，例如 HTTP agent、临时近端只读结果和进程内 memoization；高性能模式下仍允许使用，但不能承载跨进程事实源。需要跨进程一致的缓存必须接入 `SharedJsonCache` / Redis，`AppCache` 只能作为可丢弃本地 L1 或明确的进程内易失优化。
 - `SharedJsonCache` 是跨进程可丢弃 JSON 缓存，`standalone` 使用 memory driver，`performance` 使用 Redis cache driver。
 - `RuntimeStateStore` 是跨进程短 TTL 运行态，`standalone` 使用 memory driver，`performance` 使用 Redis state driver；原子计数和锁必须通过该工具或封装后的专用工具访问。
 
@@ -297,11 +297,11 @@ juhe-ai:{env}:{driver}:{cache-name}:v{version}:{scope}:{key}
 规则：
 
 - `clear()` 不做全库 `SCAN + DEL`，优先递增 domain version，实现常量成本失效。
-- 所有 Redis key 必须有 TTL，确需长期保留的运行态要先证明不是事实数据。
+- 所有 Redis cache / state key 必须有 TTL；确需长期保留的运行态要先证明不是持久业务事实。Redis Streams 使用长度、pending 和 consumer 监控控制容量，不用 TTL 表达消息生命周期。
 - Redis payload 使用 JSON，并带 `schemaVersion`；结构变化时递增 cache domain version。
 - API Key 明文、OAuth token、代理密码、完整请求 / 响应 payload、审计正文和可能造成越权的权限中间结果不得进入通用 Redis cache。
 - 调度运行态、并发占用、IP 级错误熔断、登录失败窗口、验证码挑战、会话亲和和 cache invalidation index 在 performance 模式下进入 Redis state。
-- 当前已落地 `RuntimeStateStore` Redis driver、`SharedJsonCache` Redis driver、登录失败窗口 Redis state、验证码 challenge / 发放限频 Redis state、账号并发槽 Redis 原子获取 / 释放和网关缓存失效 runtime state 版本广播；仍需继续迁移会话亲和、客户端 IP 并发和错误熔断。
+- 当前已落地 `RuntimeStateStore` Redis driver、`SharedJsonCache` Redis driver、登录失败窗口 Redis state、验证码 challenge / 发放限频 Redis state、账号并发槽 Redis 原子获取 / 释放、账号并发列表展示 Redis 批量读取、网关缓存失效 runtime state 版本广播和记录型 Redis Streams 队列；仍需继续评估会话亲和、客户端 IP 并发和错误熔断是否需要跨节点共享，不能在 performance 模式下把跨进程事实绑定到进程内 memory。
 
 ## 队列与消费并发
 
@@ -310,8 +310,8 @@ juhe-ai:{env}:{driver}:{cache-name}:v{version}:{scope}:{key}
 | 队列 / command | SQLite standalone | PostgreSQL performance |
 | --- | --- | --- |
 | DB service 业务写 | 业务库单 owner 串行 | 保持 typed operation，可并发执行，按事务和同 key 顺序约束 |
-| usage records | ingest 内按 shard / 批次串行 | `redis_stream` 模式先写入 Redis Stream `juhe-ai:queue:usage-records`，ingest worker 通过 consumer group `juhe-ai:usage-record-writers` 消费，落库成功后 ack；Redis 入队失败时回退到现有 IPC / 本地队列 |
-| audit / operation / public logs | ingest owner 串行 | 可按表和 trace 分桶并发，保留容量上限和失败重试 |
+| usage records | ingest 内按 shard / 批次串行 | `redis_stream` 模式先写入 Redis Stream `juhe-ai:queue:usage-records`，ingest worker 通过 consumer group `juhe-ai:usage-record-writers` 消费，落库成功后 ack；Redis 入队失败时返回或记录队列基础设施错误，禁止回退到现有 IPC / 本地内存队列 |
+| audit / operation / public logs | ingest owner 串行 | performance 模式先写入对应 Redis Stream，再由 ingest-worker consumer 按表和 trace 分桶消费，落库成功后 ack；Redis 入队失败不回退 IPC / 本地内存队列 |
 | stats aggregation | stats writer 串行短事务 | 可按作用域 / 分区并行读取，写入仍按窗口事务控制，避免同一 summary key 并发 upsert 放大冲突 |
 | record maintenance | 低优先级串行小批 | 低优先级并发小批，受全局并发和连接池限制 |
 

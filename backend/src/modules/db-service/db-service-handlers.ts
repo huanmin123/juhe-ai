@@ -588,6 +588,11 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       }
       return handleDbServiceOperationSync(operation)
     case 'persist_openai_codex_usage_headers':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return {
+          persisted: persistOpenAICodexUsageHeaders(operation.accountId, operation.headers, operation.source)
+        }
+      }
       return handleDbServiceOperationSync(operation)
     case 'apply_account_error_handling': {
       if (runtimeConfig.databaseDriver === 'postgres') {
@@ -804,10 +809,13 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
     case 'status':
       return buildDbServiceRuntimeSnapshot()
     case 'save_codex_context_response_state':
+      assertCodexContextStateSqliteOnlyOperation(operation.type)
       return await saveCodexContextResponseStateIndexWithWriterPool(operation.input)
     case 'save_codex_context_compact_state':
+      assertCodexContextStateSqliteOnlyOperation(operation.type)
       return await saveCodexContextCompactStateIndexWithWriterPool(operation.input)
     case 'read_codex_context_response_chain':
+      assertCodexContextStateSqliteOnlyOperation(operation.type)
       return await readCodexContextResponseStateChainWithWriterPool({
         responseId: operation.responseId,
         boundary: operation.boundary,
@@ -816,6 +824,7 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
         refreshExpiresAt: operation.refreshExpiresAt
       })
     case 'read_codex_context_compact_state':
+      assertCodexContextStateSqliteOnlyOperation(operation.type)
       return await readCodexContextCompactStateWithWriterPool({
         compactId: operation.compactId,
         boundary: operation.boundary,
@@ -823,6 +832,7 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
         refreshExpiresAt: operation.refreshExpiresAt
       })
     case 'cleanup_expired_codex_context_states':
+      assertCodexContextStateSqliteOnlyOperation(operation.type)
       return await cleanupExpiredCodexContextStatesWithWriterPool({
         expiredBefore: operation.expiredBefore,
         limit: operation.limit
@@ -1694,6 +1704,12 @@ async function listActiveResponseInspectionPoliciesForAccountsAsync(accounts: re
 
 function hasDispatchableGatewayAccount(accounts: OpenAIAccountSecret[]): boolean {
   return accounts.some((account) => account.status === 'active' && account.proxyProfileUnavailable !== true)
+}
+
+function assertCodexContextStateSqliteOnlyOperation(operationType: DbServiceOperation['type']): void {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    throw new Error(`PostgreSQL 模式暂未接入 Codex context state 操作：${operationType}`)
+  }
 }
 
 function assertNever(value: never): never {

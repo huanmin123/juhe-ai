@@ -1,11 +1,21 @@
 import { strict as assert } from 'node:assert'
 import { EventEmitter } from 'node:events'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
+
+const runtimeSnapshotSource = readFileSync(new URL('../../modules/gateway/runtime/runtime-snapshot.service.ts', import.meta.url), 'utf8')
+assert(
+  /loadRedisAccountConcurrencySnapshot\(\s*result\.items\.map\(\(account\) => account\.id\)\s*\)/.test(runtimeSnapshotSource),
+  'Redis runtime state 下账户列表当前并发必须按当前页账号 ID 批量读取'
+)
+assert(runtimeSnapshotSource.includes('loadAccountCurrentConcurrencyByIdsAsync(accountIds)'), 'Redis runtime state 下列表并发事实来源必须走账号并发批量读取入口')
+assert(runtimeSnapshotSource.includes('loadRedisAccountConcurrencySnapshot(accountIds)'), 'Redis runtime state 下分组列表当前并发必须从 Redis 批量读取账号并发')
+assert(runtimeSnapshotSource.includes("runtimeConfig.runtimeStateDriver === 'redis'"), '列表运行态快照必须显式区分 Redis runtime state')
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-gateway-concurrency-snapshot-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'gateway-concurrency-snapshot.sqlite3')
@@ -75,6 +85,7 @@ try {
   }, access)
   const accountA = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '实时并发快照账号 A',
     type: 'api_key',
     credentials: {
@@ -88,6 +99,7 @@ try {
   }, access)
   const accountB = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '实时并发快照账号 B',
     type: 'api_key',
     credentials: {

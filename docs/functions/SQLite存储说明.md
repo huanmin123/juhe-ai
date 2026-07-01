@@ -188,6 +188,14 @@ Codex Responses 上下文索引写入仍归 DB service 所有；`JUHE_AI_CODEX_C
 
 standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的进程内 LRU 封装；多实例或跨进程一致性需求出现前，standalone 模式不引入 Redis 等分布式依赖。performance 模式显式引入 Redis 作为跨进程短 TTL 缓存和运行态 state store，具体见 [PostgreSQL 与 Redis 高性能模式设计](PostgreSQL与Redis高性能模式设计.md)。缓存只用于降低请求链路反查成本，standalone 模式事实源仍是 SQLite 表、统计结果库预聚合表或网关运行态事实。
 
+高性能模式下，缓存、运行态和队列的全局边界是 Redis / Redis Streams，而不是进程内 memory：
+
+- `JUHE_AI_RUNTIME_MODE=performance` 必须搭配 `JUHE_AI_CACHE_DRIVER=redis`、`JUHE_AI_RUNTIME_STATE_DRIVER=redis` 和 `JUHE_AI_QUEUE_DRIVER=redis_stream`；不能用 `memory` driver 作为高性能模式兜底。
+- `SharedJsonCache` 在 Redis cache driver 下必须读写 Redis；同文件的 `createAppCache` 只能作为本地 L1，缓存 miss、清理版本、跨进程复用和失效事实必须能回到 Redis、PostgreSQL 或已落表窗口。
+- 登录限流、验证码、账号并发槽、网关缓存失效版本等运行态必须通过 `RuntimeStateStore` 或等价 Redis state 路径保存；进程内 Map / LRU 只能服务 standalone 或单进程内观测，不能决定跨进程是否允许登录、是否占用并发、是否已失效。
+- 使用记录、审计日志、操作日志、公开接口日志、数据维护和运行日志索引这类记录型队列，在 performance 模式必须写入 Redis Streams，由 ingest-worker consumer 成功落库后 ack；入队失败不能回退到本地 memory 队列后继续声明已接收。
+- 新增缓存、运行态或队列实现时，必须同步更新 `pnpm --filter juhe-ai-backend test:performance-redis-boundary` 的分类或断言；未分类的进程内缓存视为潜在跨进程事实源风险。
+
 ## 大文件与频繁读取底线
 
 数据集目录库会持有日志索引、审计 payload 和原始监控采样等持续增长数据，使用记录目录库会持有 usage shard 定位索引，usage shard 会持有使用记录。任何运行路径只要涉及大文件或高频文件读取，都必须按 offset / cursor / stream / 分块窗口推进，不能先全量读入内存再 `split`、过滤、排序或分页。

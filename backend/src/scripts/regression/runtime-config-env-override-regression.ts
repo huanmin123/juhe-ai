@@ -176,6 +176,32 @@ const performanceDefaultResult = spawnRegression({
 
 assertRegressionSuccess(performanceDefaultResult)
 
+const performanceHintDefaultResult = spawnRegression({
+  JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_DEFAULT_CHILD: '1',
+  JUHE_AI_POSTGRES_URL: 'postgres://juhe_ai:secret@127.0.0.1:5432/juhe_ai',
+  JUHE_AI_REDIS_CACHE_URL: 'redis://:cache-secret@127.0.0.1:6379/0',
+  JUHE_AI_REDIS_STATE_URL: 'redis://:state-secret@127.0.0.1:6380/0',
+  JUHE_AI_REDIS_QUEUE_URL: 'redis://:queue-secret@127.0.0.1:6381/0'
+})
+
+assertRegressionSuccess(performanceHintDefaultResult)
+
+assertRegressionFailure(spawnRegression({
+  JUHE_AI_RUNTIME_CONFIG_ENV_OVERRIDE_CHILD: '1',
+  JUHE_AI_POSTGRES_URL: 'postgres://juhe_ai:secret@127.0.0.1:5432/juhe_ai',
+  JUHE_AI_REDIS_CACHE_URL: '',
+  JUHE_AI_REDIS_STATE_URL: '',
+  JUHE_AI_REDIS_QUEUE_URL: ''
+}), /JUHE_AI_REDIS_CACHE_URL/, '配置 PostgreSQL URL 时不能静默默认 standalone / SQLite')
+
+assertRegressionFailure(spawnRegression({
+  JUHE_AI_RUNTIME_CONFIG_ENV_OVERRIDE_CHILD: '1',
+  JUHE_AI_POSTGRES_URL: '',
+  JUHE_AI_REDIS_CACHE_URL: 'redis://:cache-secret@127.0.0.1:6379/0',
+  JUHE_AI_REDIS_STATE_URL: '',
+  JUHE_AI_REDIS_QUEUE_URL: ''
+}), /JUHE_AI_POSTGRES_URL/, '配置 Redis URL 时必须推断高性能模式并 fail-fast，不能静默回退 memory')
+
 assertRegressionFailure(spawnRegression({
   JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_DEFAULT_CHILD: '1',
   JUHE_AI_RUNTIME_MODE: 'performance',
@@ -187,6 +213,45 @@ assertRegressionFailure(spawnRegression({
   JUHE_AI_REDIS_CACHE_URL: 'redis://:cache-secret@127.0.0.1:6379/0',
   JUHE_AI_REDIS_STATE_URL: 'redis://:state-secret@127.0.0.1:6380/0'
 }), /JUHE_AI_REDIS_QUEUE_URL/, '高性能模式必须显式配置 Redis queue URL，不能自动复用 Redis state URL')
+
+assertRegressionFailure(spawnRegression({
+  JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_DEFAULT_CHILD: '1',
+  JUHE_AI_RUNTIME_MODE: 'performance',
+  JUHE_AI_DATABASE_DRIVER: 'postgres',
+  JUHE_AI_CACHE_DRIVER: 'memory',
+  JUHE_AI_RUNTIME_STATE_DRIVER: 'redis',
+  JUHE_AI_QUEUE_DRIVER: 'redis_stream',
+  JUHE_AI_POSTGRES_URL: 'postgres://juhe_ai:secret@127.0.0.1:5432/juhe_ai',
+  JUHE_AI_REDIS_CACHE_URL: 'redis://:cache-secret@127.0.0.1:6379/0',
+  JUHE_AI_REDIS_STATE_URL: 'redis://:state-secret@127.0.0.1:6380/0',
+  JUHE_AI_REDIS_QUEUE_URL: 'redis://:queue-secret@127.0.0.1:6381/0'
+}), /JUHE_AI_CACHE_DRIVER/, '高性能模式缓存 driver 必须强制为 redis，不能使用 memory')
+
+assertRegressionFailure(spawnRegression({
+  JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_DEFAULT_CHILD: '1',
+  JUHE_AI_RUNTIME_MODE: 'performance',
+  JUHE_AI_DATABASE_DRIVER: 'postgres',
+  JUHE_AI_CACHE_DRIVER: 'redis',
+  JUHE_AI_RUNTIME_STATE_DRIVER: 'memory',
+  JUHE_AI_QUEUE_DRIVER: 'redis_stream',
+  JUHE_AI_POSTGRES_URL: 'postgres://juhe_ai:secret@127.0.0.1:5432/juhe_ai',
+  JUHE_AI_REDIS_CACHE_URL: 'redis://:cache-secret@127.0.0.1:6379/0',
+  JUHE_AI_REDIS_STATE_URL: 'redis://:state-secret@127.0.0.1:6380/0',
+  JUHE_AI_REDIS_QUEUE_URL: 'redis://:queue-secret@127.0.0.1:6381/0'
+}), /JUHE_AI_RUNTIME_STATE_DRIVER/, '高性能模式运行态 driver 必须强制为 redis，不能使用 memory')
+
+assertRegressionFailure(spawnRegression({
+  JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_DEFAULT_CHILD: '1',
+  JUHE_AI_RUNTIME_MODE: 'performance',
+  JUHE_AI_DATABASE_DRIVER: 'postgres',
+  JUHE_AI_CACHE_DRIVER: 'redis',
+  JUHE_AI_RUNTIME_STATE_DRIVER: 'redis',
+  JUHE_AI_QUEUE_DRIVER: 'memory',
+  JUHE_AI_POSTGRES_URL: 'postgres://juhe_ai:secret@127.0.0.1:5432/juhe_ai',
+  JUHE_AI_REDIS_CACHE_URL: 'redis://:cache-secret@127.0.0.1:6379/0',
+  JUHE_AI_REDIS_STATE_URL: 'redis://:state-secret@127.0.0.1:6380/0',
+  JUHE_AI_REDIS_QUEUE_URL: 'redis://:queue-secret@127.0.0.1:6381/0'
+}), /JUHE_AI_QUEUE_DRIVER/, '高性能模式队列 driver 必须强制为 redis_stream，不能使用 memory')
 
 assertRegressionFailure(spawnRegression({
   JUHE_AI_RUNTIME_CONFIG_ENV_OVERRIDE_CHILD: '1',

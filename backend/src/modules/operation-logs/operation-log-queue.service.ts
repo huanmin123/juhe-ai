@@ -313,7 +313,14 @@ async function enqueueOperationLogToRedisStream(input: OperationLogInput): Promi
   try {
     await operationLogRedisStreamQueue().enqueue(input)
   } catch (error) {
-    recordOperationLogDispatchFailure(error, input)
+    logger.error(errorLogFields(error, {
+      event: 'operation_log_redis_stream_enqueue_failed',
+      operationLogId: input.id,
+      actorSystemAccountId: input.actorSystemAccountId,
+      module: input.module,
+      action: input.action
+    }), '操作日志写入 Redis Stream 失败，高性能模式禁止回退 IPC 或本地队列')
+    throw error
   }
 }
 
@@ -455,6 +462,9 @@ function recordOperationLogLocalDrop(item: QueuedOperationLog, reason: 'overflow
 }
 
 function assertLocalOperationLogWriteAllowed(operation: string): void {
+  if (shouldUseRedisStreamOperationLogQueue()) {
+    throw new Error(`Redis Stream queue driver 下禁止写入操作日志本地队列：${operation}`)
+  }
   if (!isOperationLogIngestWorker()) {
     throw new Error(`${runtimeConfig.processRole}/${runtimeConfig.workerRole} 角色禁止直接写入操作日志：${operation} 必须投递 ingest-worker`)
   }
@@ -469,7 +479,7 @@ function shouldUseRedisStreamOperationLogQueue(): boolean {
 }
 
 function shouldEnqueueOperationLogToRedisStream(): boolean {
-  return shouldUseRedisStreamOperationLogQueue() && !isOperationLogIngestWorker()
+  return shouldUseRedisStreamOperationLogQueue()
 }
 
 function shouldDispatchOperationLogToIngestWorker(): boolean {

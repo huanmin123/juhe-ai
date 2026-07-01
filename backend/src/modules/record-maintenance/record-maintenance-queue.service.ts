@@ -368,7 +368,12 @@ async function enqueueRecordMaintenanceJobToRedisStream(job: RecordMaintenanceJo
   try {
     await recordMaintenanceRedisStreamQueue().enqueue(job)
   } catch (error) {
-    recordRecordMaintenanceDispatchFailure(error, job)
+    logger.error(errorLogFields(error, {
+      event: 'record_maintenance_redis_stream_enqueue_failed',
+      jobId: job.id,
+      jobType: job.type
+    }), '数据维护任务写入 Redis Stream 失败，高性能模式禁止回退 IPC 或本地队列')
+    throw error
   }
 }
 
@@ -890,8 +895,8 @@ function shouldUseRedisStreamRecordMaintenanceQueue(): boolean {
   return runtimeConfig.queueDriver === 'redis_stream'
 }
 
-function shouldEnqueueRecordMaintenanceJobToRedisStream(job: RecordMaintenanceJob): boolean {
-  return shouldUseRedisStreamRecordMaintenanceQueue() && !canProcessRecordMaintenanceJobLocally(job)
+function shouldEnqueueRecordMaintenanceJobToRedisStream(_job: RecordMaintenanceJob): boolean {
+  return shouldUseRedisStreamRecordMaintenanceQueue()
 }
 
 function delay(ms: number): Promise<void> {
@@ -1000,6 +1005,9 @@ function assertLocalRecordMaintenanceJobsAllowed(operation: string, jobs: Record
 }
 
 function assertLocalRecordMaintenanceJobAllowed(operation: string, job: RecordMaintenanceJob): void {
+  if (shouldUseRedisStreamRecordMaintenanceQueue()) {
+    throw new Error(`Redis Stream queue driver 下禁止写入数据维护本地队列：${operation}`)
+  }
   if (!canProcessRecordMaintenanceJobLocally(job)) {
     throw new Error(`${runtimeConfig.processRole}/${runtimeConfig.workerRole} 角色禁止直接执行数据维护：${operation} 必须投递对应 writer`)
   }

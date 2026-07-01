@@ -91,7 +91,6 @@ export function checkTitle(check: ModelCheckCheckResult): string {
 
 export function checkTitleByType(itemType: string, itemKey: string): string {
   const labels: Record<string, string> = {
-    model_catalog: '模型目录',
     responses_basic: 'Responses 非流式',
     responses_stream: 'Responses 流式',
     protocol_basic: '协议非流式',

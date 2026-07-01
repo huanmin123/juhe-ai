@@ -40,6 +40,7 @@ import {
 } from './modules/record-maintenance/record-maintenance-queue.service.js'
 import { startRuntimeLogFileImport } from './modules/runtime-logs/runtime-log-file-import.service.js'
 import {
+  enqueueRuntimeLogLine,
   enqueueRuntimeLogLineLocal,
   flushRuntimeLogIndexQueueForShutdownAsync,
   getRuntimeLogIndexRuntime,
@@ -104,7 +105,9 @@ if (isIngestWorker()) {
   installAuditLogQueueShutdownHooks()
   installPublicApiLogQueueShutdownHooks()
   installRecordMaintenanceQueueShutdownHooks()
-  setRuntimeLogLineSink((line, options) => enqueueRuntimeLogLineLocal(line, options))
+  setRuntimeLogLineSink(runtimeConfig.queueDriver === 'redis_stream'
+    ? (line, options) => enqueueRuntimeLogLine(line, options)
+    : (line, options) => enqueueRuntimeLogLineLocal(line, options))
   startUsageRecordRedisStreamConsumer()
   startOperationLogRedisStreamConsumer()
   startPublicApiLogRedisStreamConsumer()
@@ -136,6 +139,7 @@ process.on('message', (message: unknown) => {
   if (isStatsWorker() && !isWorkerControlMessage(message)) {
     return
   }
+  assertLocalQueueIpcAllowed(message)
 
   switch (message.type) {
     case 'background_worker_usage_records':
@@ -439,6 +443,21 @@ function isIngestWorkerMessage(message: WorkerIncomingMessage): boolean {
     || message.type === 'background_worker_public_api_logs'
     || message.type === 'background_worker_record_maintenance'
     || message.type === 'background_worker_dataset_write_request'
+    || message.type === 'background_worker_runtime_log_line'
+}
+
+function assertLocalQueueIpcAllowed(message: WorkerIncomingMessage): void {
+  if (runtimeConfig.queueDriver !== 'redis_stream') return
+  if (!isLocalQueueIpcMessage(message)) return
+  throw new Error(`Redis Stream queue driver 下禁止消费后台 IPC 本地队列消息：${message.type}`)
+}
+
+function isLocalQueueIpcMessage(message: WorkerIncomingMessage): boolean {
+  return message.type === 'background_worker_usage_records'
+    || message.type === 'background_worker_audit_logs'
+    || message.type === 'background_worker_operation_logs'
+    || message.type === 'background_worker_public_api_logs'
+    || message.type === 'background_worker_record_maintenance'
     || message.type === 'background_worker_runtime_log_line'
 }
 

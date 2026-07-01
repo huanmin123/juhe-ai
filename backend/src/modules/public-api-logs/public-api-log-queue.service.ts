@@ -301,7 +301,14 @@ async function enqueuePublicApiLogToRedisStream(input: PublicApiLogInput): Promi
   try {
     await publicApiLogRedisStreamQueue().enqueue(input)
   } catch (error) {
-    recordPublicApiLogDispatchFailure(error, input)
+    logger.error(errorLogFields(error, {
+      event: 'public_api_log_redis_stream_enqueue_failed',
+      traceId: input.traceId,
+      method: input.method,
+      path: input.path,
+      statusCode: input.statusCode
+    }), '公开接口日志写入 Redis Stream 失败，高性能模式禁止回退 IPC 或本地队列')
+    throw error
   }
 }
 
@@ -432,6 +439,9 @@ function recordPublicApiLogDispatchFailure(error: unknown, input: PublicApiLogIn
 }
 
 function assertLocalPublicApiLogWriteAllowed(operation: string): void {
+  if (shouldUseRedisStreamPublicApiLogQueue()) {
+    throw new Error(`Redis Stream queue driver 下禁止写入公开接口日志本地队列：${operation}`)
+  }
   if (!isPublicApiLogIngestWorker()) {
     throw new Error(`${operation} 只能在 ingest-worker 本地执行`)
   }
@@ -446,7 +456,7 @@ function shouldUseRedisStreamPublicApiLogQueue(): boolean {
 }
 
 function shouldEnqueuePublicApiLogToRedisStream(): boolean {
-  return shouldUseRedisStreamPublicApiLogQueue() && !isPublicApiLogIngestWorker()
+  return shouldUseRedisStreamPublicApiLogQueue()
 }
 
 function delay(ms: number): Promise<void> {

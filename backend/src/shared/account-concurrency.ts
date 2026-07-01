@@ -68,13 +68,7 @@ export function tryAcquireAccountConcurrency(
     }
   }
 
-  currentConcurrencyByAccountId.set(accountId, current + 1)
-  const slotId = nextSlotId
-  nextSlotId += 1
-  const accountSlots = inFlightSlotsByAccountId.get(accountId) ?? new Map<number, AccountInFlightSlot>()
-  accountSlots.set(slotId, { slotId, startedAtMs: Date.now(), lane })
-  inFlightSlotsByAccountId.set(accountId, accountSlots)
-  incrementAccountConcurrencyLane(accountId, lane)
+  const slotId = acquireLocalAccountConcurrencySlot(accountId, lane)
   let released = false
   return {
     acquired: true,
@@ -118,6 +112,7 @@ export async function tryAcquireAccountConcurrencyAsync(
   }
 
   let released = false
+  const slotId = acquireLocalAccountConcurrencySlot(accountId, lane)
   return {
     acquired: true,
     current,
@@ -125,12 +120,12 @@ export async function tryAcquireAccountConcurrencyAsync(
     lane,
     laneCurrent,
     laneLimit,
-    markFirstOutput: noop,
+    markFirstOutput: () => markAccountConcurrencyFirstOutput(accountId, slotId),
     release: () => {
       if (released) return
       released = true
       void releaseRedisAccountConcurrency(accountId, lane).catch(() => undefined).finally(() => {
-        notifyAccountConcurrencyReleased({ accountId, lane })
+        releaseAccountConcurrency(accountId, slotId)
       })
     }
   }
@@ -147,6 +142,25 @@ export function loadAccountCurrentConcurrencyByIds(accountIds: string[], lane?: 
   const result = new Map<string, number>()
   for (const accountId of new Set(accountIds.filter(Boolean))) {
     result.set(accountId, getAccountCurrentConcurrency(accountId, lane))
+  }
+  return result
+}
+
+export async function loadAccountCurrentConcurrencyByIdsAsync(accountIds: string[], lane?: AccountConcurrencyLane): Promise<Map<string, number>> {
+  const normalizedAccountIds = uniqueAccountIds(accountIds)
+  if (runtimeConfig.runtimeStateDriver === 'memory' || normalizedAccountIds.length === 0) {
+    return loadAccountCurrentConcurrencyByIds(normalizedAccountIds, lane)
+  }
+  const result = new Map<string, number>()
+  const client = await redisStateClient()
+  for (let index = 0; index < normalizedAccountIds.length; index += 500) {
+    const chunk = normalizedAccountIds.slice(index, index + 500)
+    const values = await redisMgetNumbers(client, chunk.map((accountId) => (
+      lane ? redisAccountConcurrencyLaneKey(accountId, lane) : redisAccountConcurrencyKey(accountId)
+    )))
+    chunk.forEach((accountId, valueIndex) => {
+      result.set(accountId, values[valueIndex] ?? 0)
+    })
   }
   return result
 }
@@ -226,6 +240,18 @@ function markAccountConcurrencyFirstOutput(accountId: string, slotId: number): v
   slot.firstOutputAtMs = Date.now()
 }
 
+function acquireLocalAccountConcurrencySlot(accountId: string, lane: AccountConcurrencyLane): number {
+  const current = getAccountCurrentConcurrency(accountId)
+  currentConcurrencyByAccountId.set(accountId, current + 1)
+  const slotId = nextSlotId
+  nextSlotId += 1
+  const accountSlots = inFlightSlotsByAccountId.get(accountId) ?? new Map<number, AccountInFlightSlot>()
+  accountSlots.set(slotId, { slotId, startedAtMs: Date.now(), lane })
+  inFlightSlotsByAccountId.set(accountId, accountSlots)
+  incrementAccountConcurrencyLane(accountId, lane)
+  return slotId
+}
+
 function releaseAccountConcurrency(accountId: string, slotId: number): void {
   const slots = inFlightSlotsByAccountId.get(accountId)
   let releasedLane: AccountConcurrencyLane = 'text'
@@ -300,6 +326,10 @@ function accountLaneKey(accountId: string, lane: AccountConcurrencyLane): string
 }
 
 function noop(): void {}
+
+function uniqueAccountIds(accountIds: string[]): string[] {
+  return [...new Set(accountIds.map((accountId) => accountId.trim()).filter(Boolean))]
+}
 
 async function acquireRedisAccountConcurrency(
   accountId: string,
@@ -387,4 +417,9 @@ function numericRedisArray(value: unknown): number[] {
     const parsed = Number(item)
     return Number.isFinite(parsed) ? parsed : 0
   })
+}
+
+async function redisMgetNumbers(client: RedisCommandClient, keys: string[]): Promise<number[]> {
+  if (keys.length === 0) return []
+  return numericRedisArray(await client.sendCommand(['MGET', ...keys]))
 }

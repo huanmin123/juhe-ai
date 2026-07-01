@@ -20,11 +20,22 @@ const routeStrategyRepositorySource = source('src/storage/route-strategy.reposit
 const publicApiLogCaptureSource = source('src/modules/public-api-logs/public-api-log-capture.middleware.ts')
 const runtimeLogsSource = source('src/storage/runtime-logs.repository.ts')
 const rebuildUsageStatsSource = source('src/scripts/maintenance/rebuild-usage-stats.ts')
+const usageStatsRuntimeHelpersSource = source('src/storage/usage-stats-runtime-helpers.ts')
 
 const watermarkSource = sourceBetween(usageStatsSource, 'function usageRankSnapshotSourceWatermark', 'function usageRankSnapshotRefreshJobState')
 assert.doesNotMatch(watermarkSource, /COUNT\s*\(\s*\*\s*\)/i, '排行快照水位不能为了删除感知对统计表执行 COUNT(*)')
 assert.doesNotMatch(usageStatsSource, /deletionAwareSourceTables/, '排行快照 stage 不应保留基于全表计数的删除感知字段')
 assert.doesNotMatch(usageRangeWindowsSource, /rangeWindowSourceWatermarkRowCount/, '范围窗口刷新不应继续解析旧 rowCount 水位')
+assert.match(
+  rebuildUsageStatsSource,
+  /runtimeConfig\.databaseDriver === 'postgres'[\s\S]*PostgreSQL 高性能模式暂不支持 SQLite 用量统计重建脚本/,
+  'SQLite 用量统计重建脚本在 PostgreSQL 高性能模式必须 fail-fast'
+)
+assert.match(
+  usageStatsRuntimeHelpersSource,
+  /latestUsageStatsLagSeconds\(\)[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*latestUsageStatsLagSecondsForRuntime/,
+  '同步 stats lag helper 在 PostgreSQL 模式必须 fail-fast，避免请求路径回读 SQLite stats DB'
+)
 
 const aggregateUsageStatsSource = sourceBetween(statsWriterSource, 'async function aggregateUsageStats', 'async function aggregateClientIpStats')
 assert.match(

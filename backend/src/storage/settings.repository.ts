@@ -1,6 +1,6 @@
 import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
-import { createAppCache, createSharedJsonCache } from '../shared/cache.js'
+import { createAppCache, createSharedJsonCache, throwIfRedisCacheIsRequired } from '../shared/cache.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { errorLogFields, logger } from '../shared/logger.js'
 import { clearUsageStatsTimezoneCache, normalizeUsageStatsTimezone, usageStatsTimezone } from './usage-stats-helpers.js'
@@ -380,7 +380,8 @@ async function getSettingsSharedCache(
     const value = await cache.get('current')
     return value ? { ...value } : undefined
   } catch (error) {
-    logger.warn(errorLogFields(error, { event }), '读取设置 Redis 共享缓存失败，继续读取数据库')
+    throwIfRedisCacheIsRequired(error)
+    logger.warn(errorLogFields(error, { event }), '读取设置 Redis 共享缓存失败')
     return undefined
   }
 }
@@ -404,6 +405,7 @@ async function setSettingsSharedCache(
   try {
     await cache.set('current', { ...settings }, { ttlMs: settingsCacheTtlMs })
   } catch (error) {
+    throwIfRedisCacheIsRequired(error)
     logger.warn(errorLogFields(error, { event }), '写入设置 Redis 共享缓存失败')
   }
 }
@@ -419,6 +421,7 @@ function clearGlobalSettingsSharedCache(): void {
 function clearSettingsSharedCache(cache: typeof systemSettingsSharedCache, event: string): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
   void cache.clear().catch((error) => {
+    throwIfRedisCacheIsRequired(error)
     logger.warn(errorLogFields(error, { event }), '清理设置 Redis 共享缓存失败')
   })
 }

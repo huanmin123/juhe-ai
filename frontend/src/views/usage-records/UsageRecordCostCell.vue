@@ -17,15 +17,15 @@
             <span>缓存读取成本</span>
             <span class="cost-detail-value">{{ formatCost(costBreakdown.cacheReadCostUsd) }}</span>
           </div>
-          <div v-if="showCacheWriteCost" class="cost-detail-row">
+          <div v-if="showAnthropicCacheWriteCost" class="cost-detail-row">
             <span>缓存写入成本</span>
             <span class="cost-detail-value">{{ formatCost(costBreakdown.cacheWriteCostUsd) }}</span>
           </div>
-          <div v-if="showCacheWrite1hCost" class="cost-detail-row">
+          <div v-if="showAnthropicCacheWrite1hCost" class="cost-detail-row">
             <span>1h 缓存写入成本</span>
             <span class="cost-detail-value">{{ formatCost(costBreakdown.cacheWrite1hCostUsd) }}</span>
           </div>
-          <div v-if="showThinkingTokens" class="cost-detail-row">
+          <div v-if="showAnthropicThinkingTokens" class="cost-detail-row">
             <span>思考 Tokens</span>
             <span class="cost-detail-value">{{ formatTokens(costBreakdown.thinkingTokens) }}</span>
           </div>
@@ -74,11 +74,11 @@
             <span>缓存读取单价</span>
             <span class="cost-detail-value">{{ formatUnitPrice(costBreakdown.cacheReadUsdPer1M) }}</span>
           </div>
-          <div v-if="showCacheWritePrice" class="cost-detail-row">
+          <div v-if="showAnthropicCacheWritePrice" class="cost-detail-row">
             <span>缓存写入单价</span>
             <span class="cost-detail-value">{{ formatUnitPrice(costBreakdown.cacheWriteUsdPer1M) }}</span>
           </div>
-          <div v-if="showCacheWrite1hPrice" class="cost-detail-row">
+          <div v-if="showAnthropicCacheWrite1hPrice" class="cost-detail-row">
             <span>1h 缓存写入单价</span>
             <span class="cost-detail-value">{{ formatUnitPrice(costBreakdown.cacheWrite1hUsdPer1M) }}</span>
           </div>
@@ -114,7 +114,7 @@ import { computed } from 'vue'
 import { InfoCircleOutlined } from '@ant-design/icons-vue'
 
 import type { UsageRecordSummary } from '@/types/domain'
-import { formatCacheRate, formatCost, formatTokens, formatUnitPrice } from './usageRecordFormatters'
+import { formatCacheRate, formatCost, formatTokens, formatUnitPrice, isAnthropicUsageRecord } from './usageRecordFormatters'
 
 const props = defineProps<{
   record: UsageRecordSummary
@@ -126,21 +126,22 @@ const hasOutputImagePrice = computed(() => costBreakdown.value?.outputImageUsdPe
 const hasInputAudioPrice = computed(() => costBreakdown.value?.inputAudioUsdPer1M !== undefined && costBreakdown.value.inputAudioUsdPer1M !== costBreakdown.value.inputUsdPer1M)
 const hasOutputAudioPrice = computed(() => costBreakdown.value?.outputAudioUsdPer1M !== undefined && costBreakdown.value.outputAudioUsdPer1M !== costBreakdown.value.outputUsdPer1M)
 const hasOutputImageUnitPrice = computed(() => costBreakdown.value?.outputUsdPerImage !== undefined)
+const showAnthropicCacheDetails = computed(() => isAnthropicUsageRecord(props.record))
 const showInputImageCost = computed(() => hasInputImagePrice.value && costBreakdown.value?.inputImageCostUsd !== undefined)
 const showOutputImageCost = computed(() => hasOutputImagePrice.value && costBreakdown.value?.outputImageCostUsd !== undefined)
 const showInputAudioCost = computed(() => hasInputAudioPrice.value && costBreakdown.value?.inputAudioCostUsd !== undefined)
 const showOutputAudioCost = computed(() => hasOutputAudioPrice.value && costBreakdown.value?.outputAudioCostUsd !== undefined)
 const showOutputImageUnitCost = computed(() => hasOutputImageUnitPrice.value && costBreakdown.value?.outputImageUnitCostUsd !== undefined)
-const showCacheWriteCost = computed(() => costBreakdown.value?.cacheWriteCostUsd !== undefined)
-const showCacheWrite1hCost = computed(() => costBreakdown.value?.cacheWrite1hCostUsd !== undefined)
-const showThinkingTokens = computed(() => costBreakdown.value?.thinkingTokens !== undefined && costBreakdown.value.thinkingTokens > 0)
+const showAnthropicCacheWriteCost = computed(() => showAnthropicCacheDetails.value && costBreakdown.value?.cacheWriteCostUsd !== undefined)
+const showAnthropicCacheWrite1hCost = computed(() => showAnthropicCacheDetails.value && costBreakdown.value?.cacheWrite1hCostUsd !== undefined)
+const showAnthropicThinkingTokens = computed(() => showAnthropicCacheDetails.value && (costBreakdown.value?.thinkingTokens ?? 0) > 0)
 const showInputImagePrice = computed(() => hasInputImagePrice.value)
 const showOutputImagePrice = computed(() => hasOutputImagePrice.value)
 const showInputAudioPrice = computed(() => hasInputAudioPrice.value)
 const showOutputAudioPrice = computed(() => hasOutputAudioPrice.value)
 const showOutputImageUnitPrice = computed(() => hasOutputImageUnitPrice.value)
-const showCacheWritePrice = computed(() => costBreakdown.value?.cacheWriteUsdPer1M !== undefined)
-const showCacheWrite1hPrice = computed(() => costBreakdown.value?.cacheWrite1hUsdPer1M !== undefined && costBreakdown.value.cacheWrite1hUsdPer1M !== costBreakdown.value.cacheWriteUsdPer1M)
+const showAnthropicCacheWritePrice = computed(() => showAnthropicCacheDetails.value && costBreakdown.value?.cacheWriteUsdPer1M !== undefined)
+const showAnthropicCacheWrite1hPrice = computed(() => showAnthropicCacheDetails.value && costBreakdown.value?.cacheWrite1hUsdPer1M !== undefined && costBreakdown.value.cacheWrite1hUsdPer1M !== costBreakdown.value.cacheWriteUsdPer1M)
 </script>
 
 <style scoped>
