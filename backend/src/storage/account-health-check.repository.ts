@@ -791,11 +791,17 @@ async function healthCheckAccountSummariesAsync(client: DatabaseClient, rows: Ac
 }
 
 export function normalizedHealthCheckSettings(input: Partial<AccountHealthCheckSettings> = {}): AccountHealthCheckSettings {
-  const settings = getSettings()
+  const missingDefaults = input.intervalHours === undefined
+    || input.jitterMinutes === undefined
+    || input.failureThreshold === undefined
+  if (missingDefaults && runtimeConfig.databaseDriver === 'postgres') {
+    throw new Error('PostgreSQL 账号健康检测必须由调用方显式传入系统设置，禁止同步读取本地 settings')
+  }
+  const settings = missingDefaults ? getSettings() : undefined
   return {
-    intervalHours: normalizedIntervalHours(input.intervalHours ?? settings.accountHealthCheckIntervalHours),
-    jitterMinutes: normalizedJitterMinutes(input.jitterMinutes ?? settings.accountHealthCheckJitterMinutes),
-    failureThreshold: normalizedFailureThreshold(input.failureThreshold ?? settings.accountHealthCheckFailureThreshold)
+    intervalHours: normalizedIntervalHours(input.intervalHours ?? settings?.accountHealthCheckIntervalHours),
+    jitterMinutes: normalizedJitterMinutes(input.jitterMinutes ?? settings?.accountHealthCheckJitterMinutes),
+    failureThreshold: normalizedFailureThreshold(input.failureThreshold ?? settings?.accountHealthCheckFailureThreshold)
   }
 }
 
