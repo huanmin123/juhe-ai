@@ -80,11 +80,50 @@ export function clearAllAppCaches(): void {
   }
 }
 
+export function canUseProcessLocalAppCacheAsFactSource(): boolean {
+  return runtimeConfig.cacheDriver !== 'redis'
+}
+
+export function throwIfRedisCacheIsRequired(error: unknown): void {
+  if (runtimeConfig.cacheDriver !== 'redis') return
+  throw error instanceof Error ? error : new Error(String(error))
+}
+
 export function createSharedJsonCache<V extends {}>(options: SharedJsonCacheOptions<V>): SharedJsonCache<V> {
-  if (runtimeConfig.cacheDriver === 'redis') {
-    return new RedisSharedJsonCache(options)
+  return new DriverSharedJsonCache(options)
+}
+
+class DriverSharedJsonCache<V extends {}> implements SharedJsonCache<V> {
+  readonly name: string
+  private readonly memoryCache: MemorySharedJsonCache<V>
+  private redisCache: RedisSharedJsonCache<V> | undefined
+
+  constructor(private readonly options: SharedJsonCacheOptions<V>) {
+    this.name = options.name
+    this.memoryCache = new MemorySharedJsonCache(options)
   }
-  return new MemorySharedJsonCache(options)
+
+  async get(key: string): Promise<V | undefined> {
+    return this.cache().get(key)
+  }
+
+  async set(key: string, value: V, options?: { ttlMs?: number }): Promise<void> {
+    await this.cache().set(key, value, options)
+  }
+
+  async delete(key: string): Promise<void> {
+    await this.cache().delete(key)
+  }
+
+  async clear(): Promise<void> {
+    await this.cache().clear()
+  }
+
+  private cache(): SharedJsonCache<V> {
+    if (runtimeConfig.cacheDriver !== 'redis') return this.memoryCache
+    this.redisCache ??= new RedisSharedJsonCache(this.options)
+    return this.redisCache
+  }
 }
 
 class MemorySharedJsonCache<V extends {}> implements SharedJsonCache<V> {

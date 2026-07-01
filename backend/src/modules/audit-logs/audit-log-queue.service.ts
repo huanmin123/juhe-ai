@@ -542,8 +542,8 @@ async function enqueueAuditLogToRedisStream(input: AuditLogInput): Promise<void>
       traceId: input.traceId,
       auditOutcome: input.auditOutcome,
       success: input.success
-    }), '审计日志写入 Redis Stream 失败，未切换到 IPC 或本地队列，已丢弃本条')
-    recordAuditLogDispatchFailure(input)
+    }), '审计日志写入 Redis Stream 失败，高性能模式禁止回退 IPC 或本地队列')
+    throw error
   }
 }
 
@@ -806,7 +806,7 @@ function shouldUseRedisStreamAuditLogQueue(): boolean {
 }
 
 function shouldEnqueueAuditLogToRedisStream(): boolean {
-  return shouldUseRedisStreamAuditLogQueue() && !isAuditLogIngestWorker()
+  return shouldUseRedisStreamAuditLogQueue()
 }
 
 function delay(ms: number): Promise<void> {
@@ -840,6 +840,9 @@ function normalizeAuditLogInput(input: AuditLogInput): AuditLogInput {
 }
 
 function assertLocalAuditLogWriteAllowed(operation: string): void {
+  if (shouldUseRedisStreamAuditLogQueue()) {
+    throw new Error(`Redis Stream queue driver 下禁止写入审计日志本地队列：${operation}`)
+  }
   if (!isLocalAuditLogWriteAllowed()) {
     throw new Error(`${runtimeConfig.processRole}/${runtimeConfig.workerRole} 角色禁止直接写入审计日志：${operation} 必须投递 ingest-worker`)
   }

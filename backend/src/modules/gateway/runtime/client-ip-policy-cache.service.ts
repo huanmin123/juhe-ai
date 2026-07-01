@@ -1,6 +1,6 @@
 import { runtimeConfig } from '../../../config/runtime.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
-import { createAppCache, createSharedJsonCache } from '../../../shared/cache.js'
+import { createAppCache, createSharedJsonCache, throwIfRedisCacheIsRequired } from '../../../shared/cache.js'
 import {
   listActiveClientIpPoliciesAsync,
   normalizeClientIpForStats,
@@ -215,9 +215,10 @@ async function getActivePolicySnapshotSharedCacheEntry(): Promise<ClientIpPolicy
         .map(cloneActiveClientIpPolicy)
     }
   } catch (error) {
+    throwIfRedisCacheIsRequired(error)
     logger.warn(errorLogFields(error, {
       event: 'client_ip_policy_snapshot_shared_cache_read_failed'
-    }), '读取 IP 封禁策略 Redis shared cache 失败，将回退本地快照重载')
+    }), '读取 IP 封禁策略 Redis shared cache 失败')
     return undefined
   }
 }
@@ -227,6 +228,7 @@ function setActivePolicySnapshotSharedCacheEntry(entry: ClientIpPolicySnapshotCa
     loadedAt: entry.loadedAt,
     policies: entry.policies.map(cloneActiveClientIpPolicy)
   }, { ttlMs: clientIpPolicyCacheTtlMs }).catch((error) => {
+    throwIfRedisCacheIsRequired(error)
     logger.warn(errorLogFields(error, {
       event: 'client_ip_policy_snapshot_shared_cache_write_failed',
       policyCount: entry.policies.length
@@ -236,6 +238,7 @@ function setActivePolicySnapshotSharedCacheEntry(entry: ClientIpPolicySnapshotCa
 
 function clearActivePolicySnapshotSharedCache(): void {
   void activePolicySnapshotSharedCache.clear().catch((error) => {
+    throwIfRedisCacheIsRequired(error)
     logger.warn(errorLogFields(error, {
       event: 'client_ip_policy_snapshot_shared_cache_clear_failed'
     }), '清理 IP 封禁策略 Redis shared cache 失败')

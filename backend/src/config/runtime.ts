@@ -168,7 +168,13 @@ const minimumProductionSecretLength = 32
 const localEnv = loadLocalEnv(localEnvPath)
 const localEnvOverlayPath = envFilePathConfig(process.env.JUHE_AI_ENV_FILE ?? localEnv.JUHE_AI_ENV_FILE)
 const localEnvOverlay = localEnvOverlayPath ? loadLocalEnv(localEnvOverlayPath) : {}
-const configuredRuntimeMode = runtimeModeConfig('JUHE_AI_RUNTIME_MODE', 'standalone')
+const hasPerformanceDriverHints = hasAnyRawConfig([
+  'JUHE_AI_POSTGRES_URL',
+  'JUHE_AI_REDIS_CACHE_URL',
+  'JUHE_AI_REDIS_STATE_URL',
+  'JUHE_AI_REDIS_QUEUE_URL'
+])
+const configuredRuntimeMode = runtimeModeConfig('JUHE_AI_RUNTIME_MODE', hasPerformanceDriverHints ? 'performance' : 'standalone')
 const defaultSystemApiDbServiceMaxInFlight =
   configuredRuntimeMode === 'performance'
     ? defaultPerformanceSystemApiDbServiceMaxInFlight
@@ -342,6 +348,10 @@ function stringConfig(name: string, fallback: string): string {
 
 function rawStringConfig(name: string): string | undefined {
   return process.env[name]?.trim() ?? localEnvOverlay[name]?.trim() ?? localEnv[name]?.trim()
+}
+
+function hasAnyRawConfig(names: string[]): boolean {
+  return names.some((name) => Boolean(rawStringConfig(name)))
 }
 
 function secretConfig(name: string, fallback: string): string {

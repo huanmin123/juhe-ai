@@ -275,7 +275,7 @@
           </div>
 
           <a-alert class="setting-alert section-alert" type="warning" show-icon>
-            <template #message>线上日增几十万记录时，清理应按 SQLite 小批多轮执行；常态保持 1000 行级别单批，积压追赶再临时上调。</template>
+            <template #message>线上日增几十万记录时，清理应按小批多轮执行；常态保持 1000 行级别单批，积压追赶再临时上调。</template>
           </a-alert>
 
           <div class="settings-grid">
@@ -290,7 +290,7 @@
               </a-form-item>
             </div>
             <div class="setting-item">
-              <a-form-item label="单批删除行数" tooltip="默认 1000；单批越大，SQLite 写锁和 WAL 抖动越明显。">
+              <a-form-item label="单批删除行数" tooltip="默认 1000；单批越大，对数据库写入和后台聚合的瞬时压力越明显。">
                 <a-input-number v-model:value="systemForm.dataRetentionCleanupBatchSize" :min="100" :max="5000" style="width: 100%" />
               </a-form-item>
             </div>

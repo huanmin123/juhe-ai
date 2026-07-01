@@ -86,16 +86,6 @@ export type ModelCheckSummaryResult = {
   message: string
 }
 
-export function evaluateModelCatalogProbe(result: GatewayProbeResult, model: string, prefix: ModelCheckProbePrefix): ModelCheckItemCreateInput {
-  const listedModels = listedModelIds(result.json)
-  const listed = listedModels.includes(model)
-  return item(`${prefix}.model_catalog`, 'model_catalog', listed ? 'passed' : 'warning', listed ? 5 : 2, 5, result, {
-    message: listed ? '本地模型目录包含目标模型' : '本地模型目录未确认目标模型；该项只作为低权重证据',
-    listed,
-    listedModelCount: listedModels.length
-  })
-}
-
 export function evaluateBasicResponsesProbe(result: GatewayProbeResult, model: string, prefix: ModelCheckProbePrefix): ModelCheckItemCreateInput {
   return evaluateBasicProtocolProbe(result, model, prefix, {
     itemKey: `${prefix}.responses_basic`,
@@ -587,24 +577,6 @@ export function summarizeChecks(checks: ModelCheckItemSummary[], options: { trus
     return { level: 'suspicious', score, maxScore: 100, message: '目标模型链路疑似不符，多个关键探针未通过' }
   }
   return { level: 'unavailable', score, maxScore: 100, message: '目标模型链路不可检测或上游不可用' }
-}
-
-function listedModelIds(json: Record<string, unknown> | undefined): string[] {
-  const values: string[] = []
-  const data = Array.isArray(json?.data) ? json.data : []
-  for (const item of data) {
-    const id = textValue(recordValue(item)?.id)
-    if (id) values.push(id)
-  }
-  const models = Array.isArray(json?.models) ? json.models : []
-  for (const item of models) {
-    const record = recordValue(item)
-    const name = textValue(record?.name)
-    const version = textValue(record?.version)
-    if (name) values.push(name.replace(/^models\//, ''))
-    if (version) values.push(version)
-  }
-  return Array.from(new Set(values))
 }
 
 function retryEvidence(result: GatewayProbeResult): Record<string, unknown> {

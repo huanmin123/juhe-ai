@@ -527,6 +527,12 @@ function resolveRefreshProxyUrl(account: OpenAIOAuthRefreshAccount, persistMode:
 }
 
 function effectivePersistMode(options: OpenAIOAuthAccountRefreshCallOptions): 'sync' | 'db-service' {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    if (options.persistMode === 'sync') {
+      throw new Error('高性能 PostgreSQL 模式禁止 OpenAI OAuth sync persistMode，必须通过 DB service 持久化')
+    }
+    return 'db-service'
+  }
   return options.persistMode ?? (runtimeConfig.processRole === 'server' || runtimeConfig.processRole === 'worker' ? 'db-service' : 'sync')
 }
 

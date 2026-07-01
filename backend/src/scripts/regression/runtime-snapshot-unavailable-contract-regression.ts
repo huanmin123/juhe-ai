@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-runtime-snapshot-unavailable-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -245,6 +246,7 @@ function seedData(): { accountId: string; adminCookie: string; groupId: string }
   }, access)
   const account = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '运行态快照不可用账号',
     type: 'api_key',
     credentials: {

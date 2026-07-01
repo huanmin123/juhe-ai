@@ -1,4 +1,4 @@
-import { createAppCache, createSharedJsonCache } from '../../../shared/cache.js'
+import { createAppCache, createSharedJsonCache, throwIfRedisCacheIsRequired } from '../../../shared/cache.js'
 import { registerApiKeyQuotaCacheInvalidator, syncGatewayCacheInvalidationsFromRuntimeState } from '../../../shared/gateway-cache-invalidation.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
@@ -275,9 +275,10 @@ async function getApiKeyQuotaSharedCacheEntry(cacheKey: string): Promise<ApiKeyQ
   try {
     return await apiKeyQuotaSharedCache.get(sharedQuotaCacheKey(cacheKey))
   } catch (error) {
+    throwIfRedisCacheIsRequired(error)
     logger.warn(errorLogFields(error, {
       event: 'gateway_api_key_quota_shared_cache_read_failed'
-    }), '读取 API Key 额度 Redis 共享缓存失败，继续使用本地判定')
+    }), '读取 API Key 额度 Redis 共享缓存失败')
     return undefined
   }
 }
@@ -287,6 +288,7 @@ async function setApiKeyQuotaSharedCacheEntry(cacheKey: string, entry: ApiKeyQuo
   try {
     await apiKeyQuotaSharedCache.set(sharedQuotaCacheKey(cacheKey), entry, { ttlMs: API_KEY_QUOTA_CACHE_TTL_MS })
   } catch (error) {
+    throwIfRedisCacheIsRequired(error)
     logger.warn(errorLogFields(error, {
       event: 'gateway_api_key_quota_shared_cache_write_failed'
     }), '写入 API Key 额度 Redis 共享缓存失败')
@@ -296,6 +298,7 @@ async function setApiKeyQuotaSharedCacheEntry(cacheKey: string, entry: ApiKeyQuo
 function clearApiKeyQuotaSharedCache(): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
   void apiKeyQuotaSharedCache.clear().catch((error) => {
+    throwIfRedisCacheIsRequired(error)
     logger.warn(errorLogFields(error, {
       event: 'gateway_api_key_quota_shared_cache_clear_failed'
     }), '清理 API Key 额度 Redis 共享缓存失败')

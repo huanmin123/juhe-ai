@@ -50,7 +50,8 @@ assertFunctionIncludes(gatewayRuntimeCacheSource, 'clearGatewayRuntimeCacheLocal
 
 assert(gatewayRuntimeCacheSource.includes('createSharedJsonCache<GroupUsageAccessCacheEntry>'), '网关分组访问缓存应声明 Redis JSON 共享缓存')
 assertFunctionIncludes(gatewayRuntimeCacheSource, 'resolveCachedGroupUsageAccessMetadataAsync', 'getGroupUsageAccessSharedCacheEntry(cacheKey)', '网关分组访问异步读取应先读取 Redis 共享缓存')
-assertFunctionIncludes(gatewayRuntimeCacheSource, 'resolveCachedGroupUsageAccessMetadataAsync', 'setGroupUsageAccessCacheEntryAsync(cacheKey', '网关分组访问 DB 命中后应写 Redis 共享缓存')
+assertFunctionIncludes(gatewayRuntimeCacheSource, 'resolveCachedGroupUsageAccessMetadataAsync', 'loadGroupUsageAccessMetadataAndPopulateCache(groupId, systemAccountId, cacheKey)', '网关分组访问缓存 miss 后应进入统一加载并写缓存 helper')
+assertFunctionIncludes(gatewayRuntimeCacheSource, 'loadGroupUsageAccessMetadataAndPopulateCache', 'setGroupUsageAccessCacheEntryAsync(cacheKey', '网关分组访问 DB 命中后应写 Redis 共享缓存')
 assertFunctionIncludes(gatewayRuntimeCacheSource, 'refreshGroupUsageAccessMetadataInBackground', 'setGroupUsageAccessSharedCacheEntry(cacheKey, entry)', '网关分组访问后台刷新应同步写 Redis 共享缓存')
 assertFunctionIncludes(gatewayRuntimeCacheSource, 'clearGatewayRuntimeCacheLocal', 'clearGroupUsageAccessSharedCache()', '网关运行态全量失效应清理分组访问 Redis 共享缓存')
 
@@ -59,7 +60,8 @@ assert(gatewayRuntimeCacheSource.includes('createSharedJsonCache<ResponseInspect
 assertFunctionIncludes(gatewayRuntimeCacheSource, 'listCachedProviderModelCatalogAsync', 'getProviderModelCatalogSharedCacheEntry(cacheKey)', '网关模型目录异步读取应先读取 Redis 共享缓存')
 assertFunctionIncludes(gatewayRuntimeCacheSource, 'listCachedProviderModelCatalogAsync', 'setProviderModelCatalogCacheEntryAsync(cacheKey', '网关模型目录 DB 命中后应写 Redis 共享缓存')
 assertFunctionIncludes(gatewayRuntimeCacheSource, 'listCachedActiveResponseInspectionPoliciesAsync', 'getResponseInspectionPolicySharedCacheEntry(cacheKey)', '网关响应检查策略异步读取应先读取 Redis 共享缓存')
-assertFunctionIncludes(gatewayRuntimeCacheSource, 'listCachedActiveResponseInspectionPoliciesAsync', 'setResponseInspectionPolicyCacheEntryAsync(cacheKey', '网关响应检查策略 DB 命中后应写 Redis 共享缓存')
+assertFunctionIncludes(gatewayRuntimeCacheSource, 'listCachedActiveResponseInspectionPoliciesAsync', 'loadActiveResponseInspectionPoliciesAndPopulateCache(input, cacheKey)', '网关响应检查策略缓存 miss 后应进入统一加载并写缓存 helper')
+assertFunctionIncludes(gatewayRuntimeCacheSource, 'loadActiveResponseInspectionPoliciesAndPopulateCache', 'setResponseInspectionPolicyCacheEntryAsync(cacheKey', '网关响应检查策略 DB 命中后应写 Redis 共享缓存')
 assertFunctionIncludes(gatewayRuntimeCacheSource, 'clearGatewayRuntimeCacheLocal', 'clearProviderModelCatalogSharedCache()', '网关运行态全量失效应清理模型目录 Redis 共享缓存')
 assert(gatewayRuntimeCacheSource.includes('createSharedJsonCache<ProviderModelRouteIndexSharedCacheEntry>'), '网关模型路由索引应声明 Redis JSON 共享缓存')
 assertFunctionIncludes(gatewayRuntimeCacheSource, 'resolveCachedProviderModelRouteAsync', 'getProviderModelRouteIndexSharedCacheEntry(cacheKey)', '网关模型路由索引本地 miss 后应读取 Redis 共享缓存')

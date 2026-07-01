@@ -1,4 +1,4 @@
-import { createAppCache, createSharedJsonCache } from '../../../shared/cache.js'
+import { createAppCache, createSharedJsonCache, throwIfRedisCacheIsRequired } from '../../../shared/cache.js'
 import { registerAuthorizationQuotaCacheInvalidator, syncGatewayCacheInvalidationsFromRuntimeState } from '../../../shared/gateway-cache-invalidation.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
@@ -499,9 +499,10 @@ async function getAuthorizationQuotaSharedCacheEntry(cacheKey: string): Promise<
   try {
     return await authorizationQuotaSharedCache.get(sharedQuotaCacheKey(cacheKey))
   } catch (error) {
+    throwIfRedisCacheIsRequired(error)
     logger.warn(errorLogFields(error, {
       event: 'gateway_authorization_quota_shared_cache_read_failed'
-    }), '读取授权额度 Redis 共享缓存失败，继续使用本地判定')
+    }), '读取授权额度 Redis 共享缓存失败')
     return undefined
   }
 }
@@ -511,6 +512,7 @@ async function setAuthorizationQuotaSharedCacheEntry(cacheKey: string, entry: Au
   try {
     await authorizationQuotaSharedCache.set(sharedQuotaCacheKey(cacheKey), entry, { ttlMs: AUTHORIZATION_QUOTA_CACHE_TTL_MS })
   } catch (error) {
+    throwIfRedisCacheIsRequired(error)
     logger.warn(errorLogFields(error, {
       event: 'gateway_authorization_quota_shared_cache_write_failed'
     }), '写入授权额度 Redis 共享缓存失败')
@@ -527,6 +529,7 @@ async function clearAuthorizationQuotaSharedCacheAsync(): Promise<void> {
   try {
     await authorizationQuotaSharedCache.clear()
   } catch (error) {
+    throwIfRedisCacheIsRequired(error)
     logger.warn(errorLogFields(error, {
       event: 'gateway_authorization_quota_shared_cache_clear_failed'
     }), '清理授权额度 Redis 共享缓存失败')

@@ -1,5 +1,5 @@
 import { runtimeConfig } from '../config/runtime.js'
-import { createAppCache, createSharedJsonCache } from '../shared/cache.js'
+import { createAppCache, createSharedJsonCache, throwIfRedisCacheIsRequired } from '../shared/cache.js'
 import { errorLogFields, logger } from '../shared/logger.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getBusinessDatabase, getStatsDatabase } from './database.js'
@@ -223,11 +223,12 @@ async function getGroupAccountIdsSharedCacheEntry(groupId: string): Promise<stri
     const value = await groupAccountIdsSharedCache.get(groupId)
     return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : undefined
   } catch (error) {
+    throwIfRedisCacheIsRequired(error)
     logger.warn({
       event: 'group_account_ids_shared_cache_read_failed',
       groupId,
       err: errorLogFields(error)
-    }, '读取分组账号 ID Redis shared cache 失败，将回退数据库')
+    }, '读取分组账号 ID Redis shared cache 失败')
     return undefined
   }
 }
@@ -240,6 +241,7 @@ async function setGroupAccountIdsSharedCacheEntryAsync(groupId: string, accountI
   try {
     await groupAccountIdsSharedCache.set(groupId, [...accountIds])
   } catch (error) {
+    throwIfRedisCacheIsRequired(error)
     logger.warn({
       event: 'group_account_ids_shared_cache_write_failed',
       groupId,
@@ -250,6 +252,7 @@ async function setGroupAccountIdsSharedCacheEntryAsync(groupId: string, accountI
 
 function deleteGroupAccountIdsSharedCacheEntry(groupId: string): void {
   void groupAccountIdsSharedCache.delete(groupId).catch((error) => {
+    throwIfRedisCacheIsRequired(error)
     logger.warn({
       event: 'group_account_ids_shared_cache_delete_failed',
       groupId,
@@ -260,6 +263,7 @@ function deleteGroupAccountIdsSharedCacheEntry(groupId: string): void {
 
 function clearGroupAccountIdsSharedCache(): void {
   void groupAccountIdsSharedCache.clear().catch((error) => {
+    throwIfRedisCacheIsRequired(error)
     logger.warn({
       event: 'group_account_ids_shared_cache_clear_failed',
       err: errorLogFields(error)

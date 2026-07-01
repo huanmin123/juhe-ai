@@ -1,5 +1,6 @@
 import { aggregateUsageStatsBatch, refreshUsageRankSnapshotsInStages } from '../../storage/usage-stats.repository.js'
 import { datasetDatabasePath, getDatasetDatabase, getStatsDatabase, getUsageCatalogDatabase, nowIso, statsDatabasePath, usageCatalogDatabasePath } from '../../storage/database.js'
+import { runtimeConfig } from '../../config/runtime.js'
 
 interface RebuildUsageStatsOptions {
   batchSize: number
@@ -9,6 +10,9 @@ interface RebuildUsageStatsOptions {
 }
 
 async function main(): Promise<void> {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    throw new Error('PostgreSQL 高性能模式暂不支持 SQLite 用量统计重建脚本，请使用 PostgreSQL 专用离线重建流程')
+  }
   const options = parseOptions(process.argv.slice(2))
   if (!options.confirmOffline && process.env.JUHE_AI_CONFIRM_USAGE_STATS_REBUILD !== '1') {
     throw new Error('重建用量统计必须显式确认停服/离线执行：追加 --confirm-offline，或设置 JUHE_AI_CONFIRM_USAGE_STATS_REBUILD=1')
