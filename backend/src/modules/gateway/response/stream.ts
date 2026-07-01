@@ -93,6 +93,8 @@ const streamProgressLogIntervalMs = 60_000
 const streamBackpressureLogIntervalMs = 30_000
 const maxResponseInspectionObservationCount = 20
 
+class StreamMaxLifetimeExceededError extends Error {}
+
 export async function pipeUpstreamStream(
   upstreamBody: AsyncIterable<Uint8Array>,
   res: Response,
@@ -819,6 +821,30 @@ export async function pipeUpstreamStream(
       parserSkipped: inspection.skipped,
       skipReason: inspection.skipReason
     }, '网关流式转发捕获异常')
+    if (error instanceof StreamMaxLifetimeExceededError && totalResponseBytes > 0) {
+      const errorCode = streamClientFailureCode(
+        inspection.errorCode ?? gatewayStreamFailureCode(rawMessage),
+        inspection.outputReceived,
+        options.clientRetryEnabled === true,
+        totalResponseBytes
+      )
+      handleStreamFailure(rawMessage, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, inspection.failedReceived))
+      streamLogger.warn({
+        event: 'gateway_stream_max_lifetime_interrupted',
+        elapsedMs: Date.now() - startedAt,
+        chunkCount: chunkIndex,
+        totalUpstreamBytes,
+        totalResponseBytes,
+        firstTokenMs,
+        message: rawMessage,
+        errorCode,
+        outputReceived: inspection.outputReceived,
+        sseEventCount: inspection.eventCount,
+        recentSseEventTypes: inspection.recentEventTypes
+      }, '网关流式响应达到最大存活时间，已直接中断下游连接以交由客户端重试')
+      interruptResponse(res)
+      return finishStreamResult(false, rawMessage, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
+    }
     if (inspection.terminalReceived && !inspection.failedReceived) {
       endResponse(res)
       streamLogger.info({
@@ -1048,7 +1074,9 @@ function readNextStreamChunk(
   return readStreamChunkWithTimeout(
     iterator,
     Math.max(0.001, readPlan.timeoutMs / 1000),
-    () => new Error(readPlan.timeoutMessage),
+    () => readPlan.timeoutKind === 'stream_lifetime'
+      ? new StreamMaxLifetimeExceededError(readPlan.timeoutMessage)
+      : new Error(readPlan.timeoutMessage),
     signal
   )
 }

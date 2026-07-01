@@ -22,6 +22,7 @@ export interface SystemForm {
   streamRequestTimeoutSeconds: number
   streamIdleTimeoutSeconds: number
   streamClientTotalWaitTimeoutSeconds: number
+  streamMaxLifetimeSeconds: number
   streamFailureThresholdCount: number
   streamFailureThresholdWindowMinutes: number
   accountTestTaskConcurrency: number
@@ -58,6 +59,7 @@ export const defaultSystemSettings: SystemForm = {
   streamRequestTimeoutSeconds: 120,
   streamIdleTimeoutSeconds: 30,
   streamClientTotalWaitTimeoutSeconds: 270,
+  streamMaxLifetimeSeconds: 1800,
   streamFailureThresholdCount: 3,
   streamFailureThresholdWindowMinutes: 5,
   accountTestTaskConcurrency: 100,
@@ -97,6 +99,7 @@ export function normalizeSystemSettings(settings: SystemSettings | SystemForm): 
     streamRequestTimeoutSeconds: integerValue(settings.streamRequestTimeoutSeconds, '上游首包等待上限', 10, 3600),
     streamIdleTimeoutSeconds: integerValue(settings.streamIdleTimeoutSeconds, '输出停顿上限', 1, 3600),
     streamClientTotalWaitTimeoutSeconds: integerValue(settings.streamClientTotalWaitTimeoutSeconds, '客户端总等待时长', 10, 3600),
+    streamMaxLifetimeSeconds: integerValue(settings.streamMaxLifetimeSeconds, '单条流最大存活时间', 60, 86400),
     streamFailureThresholdCount: integerValue(settings.streamFailureThresholdCount, '流失败诊断计数', 1, 100),
     streamFailureThresholdWindowMinutes: integerValue(settings.streamFailureThresholdWindowMinutes, '流失败诊断窗口', 1, 1440),
     accountTestTaskConcurrency: integerValue(settings.accountTestTaskConcurrency, '账号测试后台并发上限', 1, 1000),

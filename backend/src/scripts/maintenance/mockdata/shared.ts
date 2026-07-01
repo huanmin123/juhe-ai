@@ -34,6 +34,7 @@ export interface MockGroups {
   highConcurrency: GroupSummary
   backup: GroupSummary
   oauth: GroupSummary
+  openaiCompatible: GroupSummary
   experiment: GroupSummary
   empty: GroupSummary
   managerMain: GroupSummary
@@ -54,6 +55,7 @@ export interface MockAccounts {
   proxied: AccountSummary
   normal: AccountSummary
   standardClient: AccountSummary
+  openaiStandard: AccountSummary
   multiKeyPool: AccountSummary
   image: AccountSummary
   burstFast: AccountSummary

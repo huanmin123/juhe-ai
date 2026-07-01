@@ -157,6 +157,25 @@ export function loadGroupAccountStatsByGroupIds(groupIds: string[]): Map<string,
   return new Map(rows.map((row) => [row.group_id, row]))
 }
 
+export async function loadGroupAccountStatsByGroupIdsAsync(groupIds: string[]): Promise<Map<string, GroupAccountStatsRow>> {
+  const ids = uniqueIds(groupIds)
+  if (!ids.length) return new Map()
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return loadGroupAccountStatsByGroupIds(ids)
+  }
+  const rows: GroupAccountStatsRow[] = []
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const tableName = client.dialect.qualifyTable('juhe_stats', 'group_account_stats')
+  for (const chunk of chunkValues(ids, 500)) {
+    rows.push(...await client.query<GroupAccountStatsRow>(`
+      SELECT ${groupAccountStatsSelectColumns()}
+      FROM ${tableName}
+      WHERE group_id IN (${client.dialect.bindPlaceholders(chunk.length)})
+    `, chunk))
+  }
+  return new Map(rows.map((row) => [row.group_id, row]))
+}
+
 function groupAccountStatsSelectColumns(): string {
   return [
     'system_account_id',

@@ -71,6 +71,9 @@ export interface RuntimeConfig {
   oauthProxyUrl?: string
   gateway: {
     bodyInFlightMaxBytes: number
+    upstreamAgentMaxSockets: number
+    upstreamAgentMaxFreeSockets: number
+    upstreamAgentMaxTotalSockets: number
   }
   audit: {
     fullBodyCaptureEnabled: boolean
@@ -270,7 +273,10 @@ export const runtimeConfig: RuntimeConfig = {
   upstreamUrlSecurity: upstreamUrlSecurityConfig(),
   oauthProxyUrl: optionalStringConfig('JUHE_AI_OAUTH_PROXY_URL'),
   gateway: {
-    bodyInFlightMaxBytes: numberConfig('JUHE_AI_GATEWAY_BODY_IN_FLIGHT_MAX_MB', 256, 16, 4096) * 1024 * 1024
+    bodyInFlightMaxBytes: numberConfig('JUHE_AI_GATEWAY_BODY_IN_FLIGHT_MAX_MB', 256, 16, 4096) * 1024 * 1024,
+    upstreamAgentMaxSockets: numberConfig('JUHE_AI_GATEWAY_UPSTREAM_AGENT_MAX_SOCKETS', 2048, 64, 20000),
+    upstreamAgentMaxFreeSockets: numberConfig('JUHE_AI_GATEWAY_UPSTREAM_AGENT_MAX_FREE_SOCKETS', 512, 16, 5000),
+    upstreamAgentMaxTotalSockets: numberConfig('JUHE_AI_GATEWAY_UPSTREAM_AGENT_MAX_TOTAL_SOCKETS', 8192, 64, 50000)
   },
   audit: {
     fullBodyCaptureEnabled: booleanConfig('JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED', true)

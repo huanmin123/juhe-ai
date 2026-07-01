@@ -6,6 +6,7 @@ import { createUsageRecordsBatch, createUsageRecordsBatchAsync, type UsageRecord
 import { generateUsageRecordId } from '../../../storage/usage-record-shards.js'
 import { closeUsageRecordWriterPool, getUsageRecordWriterPoolRuntime, usageRecordWriterPoolEnabled } from '../../../storage/usage-record-writer-pool.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
+import { scheduleProcessFatalError } from '../../../shared/process-fatal.js'
 import { estimateJsonLikeBytes } from '../../../shared/queue-size.js'
 import { RedisStreamQueue, type RedisStreamMessage } from '../../../shared/redis-stream-queue.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../../shared/retry-policy.js'
@@ -62,7 +63,7 @@ interface UsageRecordFlushOptions {
 export function enqueueUsageRecord(input: UsageRecordInput): void {
   const queuedInput = normalizeUsageRecordInput(input)
   if (shouldEnqueueUsageRecordToRedisStream()) {
-    void enqueueUsageRecordToRedisStream(queuedInput)
+    void enqueueUsageRecordToRedisStream(queuedInput).catch(scheduleProcessFatalError)
     return
   }
   if (shouldDispatchUsageRecordToIngestWorker()) {

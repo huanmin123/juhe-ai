@@ -6,6 +6,7 @@ import { getUsageRecordDetailAsync, listUsageRecordsAsync, type UsageRecordListO
 import { dateKey, startOfZonedDateKeyIso, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { buildCatalogCostBreakdown } from '../model-pricing/model-catalog.service.js'
+import type { ProviderCostBreakdown } from '../model-pricing/model-pricing.service.js'
 
 export const usageRecordsRouter = Router()
 
@@ -39,23 +40,43 @@ const usageRecordTrafficSources = new Set<UsageRecordTrafficSource>(['gateway', 
 const usageRecordDefaultLookbackDays = 31
 const dayMs = 24 * 60 * 60 * 1000
 
-function withCostBreakdown(record: UsageRecordSummary) {
+export type UsageRecordResponse = UsageRecordSummary & {
+  costBreakdown?: ProviderCostBreakdown
+}
+
+export function withCostBreakdown(record: UsageRecordSummary): UsageRecordResponse {
+  const costBreakdown = usageRecordCostBreakdown(record)
   return {
     ...record,
-    costBreakdown: buildCatalogCostBreakdown({
-      providerCode: requiredUsageRecordProviderCode(record),
-      systemAccountId: record.systemAccountId,
-      model: record.pricingModel ?? record.upstreamModel ?? record.model,
-      inputTokens: record.inputTokens,
-      outputTokens: record.outputTokens,
-      cacheReadTokens: record.cacheReadTokens,
-      cacheWriteTokens: record.cacheWriteTokens,
-      cacheWrite1hTokens: record.cacheWrite1hTokens,
-      thinkingTokens: record.thinkingTokens,
-      inputImageTokens: record.inputImageTokens,
-      outputImageTokens: record.outputImageTokens,
-      costUsd: record.costUsd
-    })
+    costBreakdown
+  }
+}
+
+function usageRecordCostBreakdown(record: UsageRecordSummary): ProviderCostBreakdown | undefined {
+  if (!record.success) return undefined
+  return buildCatalogCostBreakdown({
+    providerCode: requiredUsageRecordProviderCode(record),
+    systemAccountId: record.systemAccountId,
+    model: record.pricingModel ?? record.upstreamModel ?? record.model,
+    inputTokens: record.inputTokens,
+    outputTokens: record.outputTokens,
+    cacheReadTokens: record.cacheReadTokens,
+    cacheWriteTokens: record.cacheWriteTokens,
+    cacheWrite1hTokens: record.cacheWrite1hTokens,
+    thinkingTokens: record.thinkingTokens,
+    inputImageTokens: record.inputImageTokens,
+    outputImageTokens: record.outputImageTokens,
+    costUsd: record.costUsd
+  }) ?? fallbackUsageRecordCostBreakdown(record)
+}
+
+function fallbackUsageRecordCostBreakdown(record: UsageRecordSummary): ProviderCostBreakdown {
+  return {
+    cacheReadCostUsd: record.cacheReadCostUsd,
+    cacheWriteCostUsd: record.cacheWriteCostUsd,
+    thinkingTokens: record.thinkingTokens,
+    accountChargeUsd: record.costUsd,
+    multiplier: 1
   }
 }
 

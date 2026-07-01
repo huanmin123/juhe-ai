@@ -6,7 +6,13 @@ import { getPostgresPool } from './postgres-client.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { normalizeListPage, pagedTotalUpperBound, takePageRows } from './query-utils.js'
 import type { GroupListRow } from './repository-row-types.js'
-import { loadAuthorizationUsageRangeSummariesForScopes, loadAuthorizationUsageSummariesForScopes, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
+import {
+  loadAuthorizationUsageRangeSummariesForScopes,
+  loadAuthorizationUsageRangeSummariesForScopesAsync,
+  loadAuthorizationUsageSummariesForScopes,
+  loadAuthorizationUsageSummariesForScopesAsync,
+  type UsageSummaryScopeRequest
+} from './usage-summary-loaders.js'
 
 export interface GroupListOptions {
   page?: number
@@ -502,6 +508,17 @@ export function loadGroupAuthorizationUsageSummaries(
     return loadAuthorizationUsageRangeSummariesForScopes(scopes, scopeType, statDateOrRange)
   }
   return loadAuthorizationUsageSummariesForScopes(scopes, scopeType, statDateOrRange)
+}
+
+export async function loadGroupAuthorizationUsageSummariesAsync(
+  scopes: UsageSummaryScopeRequest[],
+  statDateOrRange?: string | Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>,
+  scopeType: 'group_authorization' | 'group_authorization_team' = 'group_authorization'
+): Promise<Map<string, AccountUsageSummary>> {
+  if (statDateOrRange && typeof statDateOrRange !== 'string') {
+    return loadAuthorizationUsageRangeSummariesForScopesAsync(scopes, scopeType, statDateOrRange)
+  }
+  return loadAuthorizationUsageSummariesForScopesAsync(scopes, scopeType, statDateOrRange)
 }
 
 async function getGroupReadDatabaseClient(): Promise<DatabaseClient> {

@@ -343,6 +343,10 @@ export function loadGroupUsageSummariesForScopes(scopes: UsageSummaryScopeReques
   return loadUsageSummariesForScopeRequests(scopes, 'group', statDate)
 }
 
+export async function loadGroupUsageSummariesForScopesAsync(scopes: UsageSummaryScopeRequest[], statDate?: string): Promise<Map<string, AccountUsageSummary>> {
+  return loadUsageSummariesForScopeRequestsAsync(scopes, 'group', statDate)
+}
+
 export function loadApiKeyUsageSummariesForScopes(scopes: UsageSummaryScopeRequest[], statDate?: string): Map<string, AccountUsageSummary> {
   return loadUsageSummariesForScopeRequests(scopes, 'api_key', statDate)
 }

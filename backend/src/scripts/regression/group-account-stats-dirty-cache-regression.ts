@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-group-account-stats-dirty-cache-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -65,6 +66,7 @@ try {
   }, granteeAccess)
   const account = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupId: primaryGroup.id,
     name: '脏缓存账户',
     type: 'api_key',
@@ -82,6 +84,13 @@ try {
   assert.equal(usageStatsRepository.refreshDirtyGroupAccountStatsCache(), 1, 'worker 应按脏分组刷新统计缓存')
   assert.deepEqual(dirtyRows(), [], '脏分组刷新完成后应清空对应队列')
   assert.equal(groupStatsRow(primaryGroup.id)?.total, 1, 'worker 刷新后应写入分组账户统计')
+  const ownerGroupAfterStatsRefresh = repositories.listGroupsPage(ownerAccess, { page: 1, pageSize: 20 }).items.find((group) => group.id === primaryGroup.id)
+  const ownerGroupAfterStatsRefreshAsync = (await repositories.listGroupsPageAsync(ownerAccess, { page: 1, pageSize: 20 })).items.find((group) => group.id === primaryGroup.id)
+  assert.equal(ownerGroupAfterStatsRefresh?.accountStats.total, 1, '同步分组列表应读取预聚合账户总数')
+  assert.equal(ownerGroupAfterStatsRefresh?.accountStats.available, 1, '同步分组列表应读取预聚合可用账户数')
+  assert.equal(ownerGroupAfterStatsRefreshAsync?.accountStats.total, ownerGroupAfterStatsRefresh?.accountStats.total, '异步分组列表应读取同一预聚合账户总数')
+  assert.equal(ownerGroupAfterStatsRefreshAsync?.accountStats.available, ownerGroupAfterStatsRefresh?.accountStats.available, '异步分组列表应读取同一预聚合可用账户数')
+  assert.equal(ownerGroupAfterStatsRefreshAsync?.accountStats.active, ownerGroupAfterStatsRefresh?.accountStats.active, '异步分组列表应读取同一预聚合正常账户数')
 
   const statusLockGroup = repositories.createGroup({
     name: '脏缓存状态写入锁库分组',
@@ -89,6 +98,7 @@ try {
   }, ownerAccess)
   const statusLockAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupId: statusLockGroup.id,
     name: '锁库状态写入账户',
     type: 'api_key',
@@ -113,6 +123,7 @@ try {
   }, ownerAccess)
   const lockExpiredAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupId: lockGroup.id,
     name: '锁库过期账户',
     type: 'api_key',
@@ -142,6 +153,7 @@ try {
 
   repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupId: primaryGroup.id,
     name: '脏缓存新增账户',
     type: 'api_key',
@@ -230,8 +242,14 @@ try {
   assert.equal(authorizedGroup?.accountStats.available, 2, '授权分组列表应展示原分组聚合可用账户数')
   assert.equal(authorizedGroup?.description, '用于验证授权分组摘要展示', '授权分组列表应展示原分组说明')
   assert.deepEqual(authorizedGroup?.accountIds, [], '授权分组列表不应暴露具体账户 ID')
+  const authorizedGroupAsync = (await repositories.listGroupsPageAsync(granteeAccess, { page: 1, pageSize: 20 })).items
+    .find((group) => group.id === primaryGroup.id)
+  assert.equal(authorizedGroupAsync?.accessType, 'authorized', '异步分组列表应能看到授权分组')
+  assert.equal(authorizedGroupAsync?.accountStats.total, authorizedGroup?.accountStats.total, '异步授权分组列表应读取同一预聚合账户总数')
+  assert.equal(authorizedGroupAsync?.accountStats.available, authorizedGroup?.accountStats.available, '异步授权分组列表应读取同一预聚合可用账户数')
+  assert.deepEqual(authorizedGroupAsync?.accountIds, [], '异步授权分组列表不应暴露具体账户 ID')
 
-  console.log('分组账户统计脏缓存回归通过：请求路径只打业务库脏标记，全量影响只写哨兵，统计由 worker 异步刷新，统计库写锁期间业务写入不受影响，缓存缺失或已标脏时列表只读预聚合结果')
+  console.log('分组账户统计脏缓存回归通过：请求路径只打业务库脏标记，全量影响只写哨兵，统计由 worker 异步刷新，统计库写锁期间业务写入不受影响，缓存缺失或已标脏时列表只读预聚合结果，异步分组摘要读取同一统计口径')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()

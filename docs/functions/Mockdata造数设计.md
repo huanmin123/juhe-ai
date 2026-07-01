@@ -65,6 +65,8 @@ pnpm mockdata -- --days 31 --daily-requests 120
 
 脚本会在业务库所在目录写入 `mockdata-summary.json`，记录本次生成的资源 ID、本地网关 API Key 明文、普通测试用户、分组授权样本、路由策略绑定规则和统计数量。默认本地路径是 `backend/data/mockdata-summary.json`。
 
+本地 SQLite 模式下，命令入口会在加载运行配置前关闭本次离线造数进程的 writer strict 限制，使脚本可以一次性清理并重建业务库、数据集库、使用记录分片和统计结果库；生产环境仍不把 Mockdata 作为迁移或线上维护入口。
+
 ## 4. 数据边界
 
 - admin 拥有核心业务资源：AI 账户、分组、代理、账户级错误处理规则、团队、授权、公告和主要 API Key。
@@ -76,7 +78,7 @@ pnpm mockdata -- --days 31 --daily-requests 120
 - 授权调用方的 Mock API Key 会选择混合绑定有效授权分组和该调用方自己默认分组的路由策略；admin 也会生成一个绑定有效授权分组的 Mock 路由策略和 API Key。授权账户样本仍会放入调用方本地分组，授权分组消耗样本用于验证路由策略命中授权分组后的统计和审计口径。
 - AI 账户必须覆盖 API Key、OAuth、Anthropic API Key、`openai_standard`、`codex_responses`、多上游 Key、图像生成、模型映射、标签、账号内 Key 运行态、待测试、停用、限流、临时不可用、错误、账号不可调度和时间计划不生效样本；Anthropic 样本只使用 API Key，不生成 OAuth / Claude Code token。
 - API Key 必须覆盖 `priority_failover`、`round_robin`、`weighted_round_robin` 路由策略，路由策略分组绑定状态必须同时包含 active 和 disabled；额度窗口、过期 Key、停用 Key、时间计划不生效 Key 都需要有样本。
-- 自定义模型目录必须覆盖 global / personal 范围，active / draft / disabled 状态，以及文本、图像和音频等不同能力类型；账号模型映射和使用记录需要出现至少一条实际命中样本。
+- 自定义模型目录必须覆盖当前存储支持的模型范围、active / draft / disabled 状态，以及文本、图像和音频等不同能力类型；账号模型映射和使用记录需要出现至少一条实际命中样本。当前 SQLite 自定义模型表只允许 personal 范围时，Mockdata 覆盖校验不强制要求 global 样本。
 - 使用记录必须覆盖 gateway、manual_account_test 和 cooldown_retest 来源，OpenAI models、responses、chat completions 和 images 端点，Anthropic messages、models 和 count tokens 端点，成功、失败、图片 token、模型映射命中、缓存读取、流式与非流式样本。
 - 脚本会创建一个 `mockdata_admin` 普通管理员账号，以及若干 `mockdata_*` 普通用户。普通管理员用于管理员模式下验证管理员自有分组、AI 账户、API Key、筛选和创建目标；普通用户用于团队成员、授权调用方、公告已读和操作日志可见性。这些账号都是配套数据。
 - 本地网关 Key、上游 API Key、OAuth Token 和代理密码均为模拟值，不会真实请求 OpenAI。

@@ -30,6 +30,7 @@ import {
   openAICodexUserAgent,
   openAICodexVersion
 } from '../adapters/gpt-codex/client-headers.js'
+import { runtimeConfig } from '../../../config/runtime.js'
 
 export interface GatewayUpstreamResponse {
   readonly status: number
@@ -65,9 +66,9 @@ export class UpstreamRequestAbortedError extends Error {
 
 const gatewayUpstreamAgentOptions: http.AgentOptions = {
   keepAlive: true,
-  maxSockets: 512,
-  maxFreeSockets: 128,
-  maxTotalSockets: 2048
+  maxSockets: runtimeConfig.gateway.upstreamAgentMaxSockets,
+  maxFreeSockets: runtimeConfig.gateway.upstreamAgentMaxFreeSockets,
+  maxTotalSockets: runtimeConfig.gateway.upstreamAgentMaxTotalSockets
 }
 const gatewayProxyAgentCacheMaxEntries = 256
 const gatewayProxyAgentCacheTtlMs = 30 * 60 * 1000

@@ -120,6 +120,7 @@ interface SystemSettings {
   streamRequestTimeoutSeconds?: number
   streamIdleTimeoutSeconds?: number
   streamClientTotalWaitTimeoutSeconds?: number
+  streamMaxLifetimeSeconds?: number
   streamFailureThresholdCount?: number
   streamFailureThresholdWindowMinutes?: number
   operationLogEnabled?: boolean
@@ -197,6 +198,7 @@ async function main(): Promise<void> {
     assert(typeof settings.streamRequestTimeoutSeconds === 'number', '系统设置缺少 streamRequestTimeoutSeconds')
     assert(typeof settings.streamIdleTimeoutSeconds === 'number', '系统设置缺少 streamIdleTimeoutSeconds')
     assert(typeof settings.streamClientTotalWaitTimeoutSeconds === 'number', '系统设置缺少 streamClientTotalWaitTimeoutSeconds')
+    assert(typeof settings.streamMaxLifetimeSeconds === 'number', '系统设置缺少 streamMaxLifetimeSeconds')
     assert(typeof settings.streamFailureThresholdCount === 'number', '系统设置缺少 streamFailureThresholdCount')
     assert(typeof settings.streamFailureThresholdWindowMinutes === 'number', '系统设置缺少 streamFailureThresholdWindowMinutes')
     assert(typeof settings.operationLogEnabled === 'boolean', '系统设置缺少 operationLogEnabled')

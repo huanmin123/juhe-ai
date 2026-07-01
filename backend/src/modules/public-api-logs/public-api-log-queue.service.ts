@@ -1,4 +1,5 @@
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { scheduleProcessFatalError } from '../../shared/process-fatal.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
 import { RedisStreamQueue, type RedisStreamMessage } from '../../shared/redis-stream-queue.js'
 import { runtimeConfig } from '../../config/runtime.js'
@@ -36,7 +37,7 @@ let publicApiLogRedisConsumerPromise: Promise<void> | undefined
 
 export function enqueuePublicApiLog(input: PublicApiLogInput): boolean {
   if (shouldEnqueuePublicApiLogToRedisStream()) {
-    void enqueuePublicApiLogToRedisStream(input)
+    void enqueuePublicApiLogToRedisStream(input).catch(scheduleProcessFatalError)
     return true
   }
   if (runtimeConfig.processRole === 'server') {

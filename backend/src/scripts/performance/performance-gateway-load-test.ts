@@ -8,6 +8,7 @@ import { dirname, resolve } from 'node:path'
 import { performance } from 'node:perf_hooks'
 
 import { backendRoot, runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { readAuditLogSettings } from '../../modules/audit-logs/audit-log-settings.js'
 import { logger } from '../../shared/logger.js'
 import { closeStorageDatabases } from '../../storage/database.js'
@@ -29,15 +30,20 @@ interface GatewayLoadConfig {
   warmupSeconds: number
   settleSeconds: number
   concurrency: number
+  requestStartSpreadMs: number
   requestTimeoutMs: number
   sampleIntervalMs: number
   upstreamLatencyMs: number
   upstreamStreamChunks: number
   upstreamStreamChunkIntervalMs: number
+  upstreamStreamTotalMinMs: number
+  upstreamStreamTotalMaxMs: number
   upstreamBodyBytes: number
   upstreamErrorRate: number
   accountCount: number
   accountConcurrencyLimit: number
+  clientIpConcurrencyLimit?: number
+  groupMaxQueueWaitMs: number
   model: string
   promptBytes: number
   enableStatsWorkerObservation: boolean
@@ -61,6 +67,9 @@ interface SeededGateway {
 
 interface LoadStats {
   startedAtMs: number
+  startedRequests: number
+  inFlightRequests: number
+  peakInFlightRequests: number
   latenciesMs: number[]
   totalRequests: number
   successRequests: number
@@ -144,6 +153,9 @@ interface MetricSnapshot {
   elapsedSeconds: number
   requests: {
     total: number
+    started: number
+    inFlight: number
+    peakInFlight: number
     success: number
     failed: number
     qps: number
@@ -151,6 +163,16 @@ interface MetricSnapshot {
     latencyMs: LatencySummary
     statusCounts: Record<string, number>
     errorCounts: Record<string, number>
+  }
+  upstream: {
+    totalRequests: number
+    activeRequests: number
+    peakActiveRequests: number
+    streamRequests: number
+    activeStreamRequests: number
+    peakActiveStreamRequests: number
+    completedStreamRequests: number
+    abortedStreamRequests: number
   }
   storage: StorageSnapshot
   postgres: PostgresSample
@@ -169,6 +191,14 @@ interface LatencySummary {
 
 interface UpstreamRuntime {
   totalRequests: number
+  activeRequests: number
+  peakActiveRequests: number
+  streamRequests: number
+  activeStreamRequests: number
+  peakActiveStreamRequests: number
+  completedStreamRequests: number
+  abortedStreamRequests: number
+  streamDurationsMs: number[]
   pathCounts: Map<string, number>
   connections: ConnectionTracker
 }
@@ -229,6 +259,14 @@ process.exit(exitCode)
 async function runGatewayLoadTest(input: GatewayLoadConfig): Promise<Record<string, unknown> & { pass: boolean; violations: string[] }> {
   const upstreamRuntime: UpstreamRuntime = {
     totalRequests: 0,
+    activeRequests: 0,
+    peakActiveRequests: 0,
+    streamRequests: 0,
+    activeStreamRequests: 0,
+    peakActiveStreamRequests: 0,
+    completedStreamRequests: 0,
+    abortedStreamRequests: 0,
+    streamDurationsMs: [],
     pathCounts: new Map(),
     connections: createConnectionTracker()
   }
@@ -269,6 +307,7 @@ async function runGatewayLoadTest(input: GatewayLoadConfig): Promise<Record<stri
     console.log(`- 后端：${baseUrl}`)
     console.log(`- 模拟上游：${upstreamBaseUrl}`)
     console.log(`- scenarios=${input.scenarios.join(',')} concurrency=${input.concurrency} duration=${input.durationSeconds}s warmup=${input.warmupSeconds}s settle=${input.settleSeconds}s`)
+    console.log(`- upstream stream chunks=${input.upstreamStreamChunks} interval=${input.upstreamStreamChunkIntervalMs}ms randomTotal=${input.upstreamStreamTotalMinMs}-${input.upstreamStreamTotalMaxMs}ms`)
     console.log(`- accounts=${seeded.accountIds.length} queue=${runtimeConfig.queueDriver} cache=${runtimeConfig.cacheDriver} state=${runtimeConfig.runtimeStateDriver}`)
 
     if (input.warmupSeconds > 0) {
@@ -288,6 +327,7 @@ async function runGatewayLoadTest(input: GatewayLoadConfig): Promise<Record<stri
       stats: loadStats,
       samples,
       seeded,
+      upstreamRuntime,
       shouldStop: () => stopSampler,
       intervalMs: input.sampleIntervalMs
     })
@@ -305,7 +345,7 @@ async function runGatewayLoadTest(input: GatewayLoadConfig): Promise<Record<stri
     }
     stopSampler = true
     await sampler
-    samples.push(await collectSnapshot(loadStats, seeded))
+    samples.push(await collectSnapshot(loadStats, seeded, upstreamRuntime))
 
     await stopProcessTree(backendProcess)
     backendProcess = undefined
@@ -367,8 +407,8 @@ async function seedGatewayData(input: GatewayLoadConfig, upstreamBaseUrl: string
     groupType: 'high_concurrency',
     schedulingPolicy: {
       defaultSoftConcurrency: input.accountConcurrencyLimit,
-      maxQueueWaitMs: 30_000,
-      clientIpConcurrencyLimit: input.accountConcurrencyLimit,
+      maxQueueWaitMs: input.groupMaxQueueWaitMs,
+      clientIpConcurrencyLimit: input.clientIpConcurrencyLimit ?? input.accountConcurrencyLimit,
       clientIpConcurrencyOverflowMode: 'queue',
       imageLaneMaxConcurrency: Math.max(1, Math.min(100, Math.ceil(input.accountConcurrencyLimit / 10)))
     }
@@ -377,6 +417,7 @@ async function seedGatewayData(input: GatewayLoadConfig, upstreamBaseUrl: string
   for (let index = 0; index < input.accountCount; index += 1) {
     const account = await createAccountAsync({
       providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: `压测网关账户-${suffix}-${index + 1}`,
       type: 'api_key',
       credentials: {
@@ -511,23 +552,28 @@ async function loadWorker(
     record: boolean
   }
 ): Promise<void> {
+  if (input.config.requestStartSpreadMs > 0) {
+    await sleep(Math.round((workerIndex / Math.max(1, input.config.concurrency)) * input.config.requestStartSpreadMs))
+  }
   let sequence = 0
   while (performance.now() < endAt) {
     sequence += 1
     const scenario = input.config.scenarios[(workerIndex + sequence) % input.config.scenarios.length] ?? 'responses'
     const requestId = `${workerIndex}-${sequence}`
     const started = performance.now()
+    if (input.record) {
+      beginLoadRequest(input.stats)
+    }
     try {
-      const response = await fetchWithTimeout(input.baseUrl, input.apiKey, scenario, input.config, requestId)
-      const text = await response.text()
-      const bytes = Buffer.byteLength(text, 'utf8')
+      const response = await fetchScenarioWithTimeout(input.baseUrl, input.apiKey, scenario, input.config, requestId)
+      const bytes = Buffer.byteLength(response.text, 'utf8')
       if (input.record) {
         const latencyMs = performance.now() - started
         input.stats.latenciesMs.push(latencyMs)
         input.stats.totalRequests += 1
         input.stats.responseBytes += bytes
         increment(input.stats.statusCounts, String(response.status))
-        rememberStatusSample(input.stats.statusSamples, response.status, text)
+        rememberStatusSample(input.stats.statusSamples, response.status, response.text)
         if (response.ok) {
           input.stats.successRequests += 1
         } else {
@@ -542,22 +588,32 @@ async function loadWorker(
         input.stats.failedRequests += 1
         increment(input.stats.errorCounts, formatLoadError(error))
       }
+    } finally {
+      if (input.record) {
+        finishLoadRequest(input.stats)
+      }
     }
   }
 }
 
-async function fetchWithTimeout(
+interface FetchScenarioResult {
+  status: number
+  ok: boolean
+  text: string
+}
+
+async function fetchScenarioWithTimeout(
   baseUrl: string,
   apiKey: string,
   scenario: ScenarioName,
   input: GatewayLoadConfig,
   requestId: string
-): Promise<Response> {
+): Promise<FetchScenarioResult> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(new Error('请求超时')), input.requestTimeoutMs)
   try {
     const request = buildScenarioRequest(scenario, input, requestId)
-    return await fetch(`${baseUrl}${request.path}`, {
+    const response = await fetch(`${baseUrl}${request.path}`, {
       method: request.method,
       headers: {
         authorization: `Bearer ${apiKey}`,
@@ -567,6 +623,11 @@ async function fetchWithTimeout(
       body: request.body,
       signal: controller.signal
     })
+    return {
+      status: response.status,
+      ok: response.ok,
+      text: await response.text()
+    }
   } finally {
     clearTimeout(timeout)
   }
@@ -612,6 +673,9 @@ function createMockOpenAIUpstream(input: GatewayLoadConfig, runtime: UpstreamRun
     recordSocketRequest(runtime.connections, req.socket)
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
     runtime.totalRequests += 1
+    const finishUpstreamRequest = beginUpstreamRequest(runtime)
+    res.once('finish', finishUpstreamRequest)
+    res.once('close', finishUpstreamRequest)
     increment(runtime.pathCounts, `${req.method ?? 'GET'} ${url.pathname}`)
     const chunks: Buffer[] = []
     req.on('data', (chunk: Buffer) => chunks.push(Buffer.from(chunk)))
@@ -628,13 +692,13 @@ function createMockOpenAIUpstream(input: GatewayLoadConfig, runtime: UpstreamRun
           return
         }
         if (url.pathname === '/v1/chat/completions') {
-          sendChatCompletion(res, input, bodyText)
+          sendChatCompletion(res, input, bodyText, runtime)
           return
         }
         if (url.pathname === '/v1/responses') {
           const stream = parseJsonBody(bodyText).stream === true
           if (stream) {
-            sendResponseStream(res, input)
+            sendResponseStream(res, input, runtime)
           } else {
             sendResponseJson(res, input)
           }
@@ -656,9 +720,9 @@ function sendModels(res: http.ServerResponse, input: GatewayLoadConfig): void {
   }))
 }
 
-function sendChatCompletion(res: http.ServerResponse, input: GatewayLoadConfig, bodyText: string): void {
+function sendChatCompletion(res: http.ServerResponse, input: GatewayLoadConfig, bodyText: string, runtime: UpstreamRuntime): void {
   if (parseJsonBody(bodyText).stream === true) {
-    sendChatCompletionStream(res, input)
+    sendChatCompletionStream(res, input, runtime)
     return
   }
   res.writeHead(200, { 'content-type': 'application/json' })
@@ -676,7 +740,11 @@ function sendChatCompletion(res: http.ServerResponse, input: GatewayLoadConfig, 
   }))
 }
 
-function sendChatCompletionStream(res: http.ServerResponse, input: GatewayLoadConfig): void {
+function sendChatCompletionStream(res: http.ServerResponse, input: GatewayLoadConfig, runtime: UpstreamRuntime): void {
+  const streamPlan = createStreamPlan(input)
+  const finishStream = beginUpstreamStream(runtime)
+  res.once('finish', () => finishStream(true))
+  res.once('close', () => finishStream(false))
   res.writeHead(200, {
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-cache',
@@ -684,6 +752,9 @@ function sendChatCompletionStream(res: http.ServerResponse, input: GatewayLoadCo
   })
   let index = 0
   const writeNext = () => {
+    if (res.destroyed || res.writableEnded) {
+      return
+    }
     if (index < input.upstreamStreamChunks) {
       const chunk = {
         id: 'chatcmpl_perf_gateway_stream',
@@ -698,7 +769,7 @@ function sendChatCompletionStream(res: http.ServerResponse, input: GatewayLoadCo
       }
       res.write(`data: ${JSON.stringify(chunk)}\n\n`)
       index += 1
-      setTimeout(writeNext, input.upstreamStreamChunkIntervalMs)
+      setTimeout(writeNext, streamPlan.chunkIntervalMs)
       return
     }
     const completed = {
@@ -736,7 +807,11 @@ function sendResponseJson(res: http.ServerResponse, input: GatewayLoadConfig): v
   }))
 }
 
-function sendResponseStream(res: http.ServerResponse, input: GatewayLoadConfig): void {
+function sendResponseStream(res: http.ServerResponse, input: GatewayLoadConfig, runtime: UpstreamRuntime): void {
+  const streamPlan = createStreamPlan(input)
+  const finishStream = beginUpstreamStream(runtime)
+  res.once('finish', () => finishStream(true))
+  res.once('close', () => finishStream(false))
   res.writeHead(200, {
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-cache',
@@ -744,6 +819,9 @@ function sendResponseStream(res: http.ServerResponse, input: GatewayLoadConfig):
   })
   let index = 0
   const writeNext = () => {
+    if (res.destroyed || res.writableEnded) {
+      return
+    }
     if (index < input.upstreamStreamChunks) {
       const event = {
         type: 'response.output_text.delta',
@@ -751,7 +829,7 @@ function sendResponseStream(res: http.ServerResponse, input: GatewayLoadConfig):
       }
       res.write(`event: response.output_text.delta\ndata: ${JSON.stringify(event)}\n\n`)
       index += 1
-      setTimeout(writeNext, input.upstreamStreamChunkIntervalMs)
+      setTimeout(writeNext, streamPlan.chunkIntervalMs)
       return
     }
     const completed = {
@@ -778,20 +856,71 @@ function sendUpstreamError(res: http.ServerResponse): void {
   }))
 }
 
+function createStreamPlan(input: GatewayLoadConfig): { totalMs: number; chunkIntervalMs: number } {
+  const minMs = Math.max(0, Math.trunc(input.upstreamStreamTotalMinMs))
+  const maxMs = Math.max(0, Math.trunc(input.upstreamStreamTotalMaxMs))
+  if (minMs <= 0 && maxMs <= 0) {
+    return {
+      totalMs: input.upstreamStreamChunks * input.upstreamStreamChunkIntervalMs,
+      chunkIntervalMs: input.upstreamStreamChunkIntervalMs
+    }
+  }
+  const lower = minMs > 0 && maxMs > 0 ? Math.min(minMs, maxMs) : Math.max(minMs, maxMs)
+  const upper = Math.max(minMs, maxMs, lower)
+  const totalMs = lower === upper
+    ? lower
+    : lower + Math.floor(Math.random() * (upper - lower + 1))
+  return {
+    totalMs,
+    chunkIntervalMs: Math.max(0, Math.round(totalMs / Math.max(1, input.upstreamStreamChunks)))
+  }
+}
+
+function beginUpstreamRequest(runtime: UpstreamRuntime): () => void {
+  runtime.activeRequests += 1
+  runtime.peakActiveRequests = Math.max(runtime.peakActiveRequests, runtime.activeRequests)
+  let finished = false
+  return () => {
+    if (finished) return
+    finished = true
+    runtime.activeRequests = Math.max(0, runtime.activeRequests - 1)
+  }
+}
+
+function beginUpstreamStream(runtime: UpstreamRuntime): (completed: boolean) => void {
+  const startedAt = performance.now()
+  runtime.streamRequests += 1
+  runtime.activeStreamRequests += 1
+  runtime.peakActiveStreamRequests = Math.max(runtime.peakActiveStreamRequests, runtime.activeStreamRequests)
+  let finished = false
+  return (completed: boolean) => {
+    if (finished) return
+    finished = true
+    runtime.activeStreamRequests = Math.max(0, runtime.activeStreamRequests - 1)
+    if (completed) {
+      runtime.completedStreamRequests += 1
+    } else {
+      runtime.abortedStreamRequests += 1
+    }
+    runtime.streamDurationsMs.push(performance.now() - startedAt)
+  }
+}
+
 async function sampleLoop(input: {
   stats: LoadStats
   samples: MetricSnapshot[]
   seeded: SeededGateway
+  upstreamRuntime: UpstreamRuntime
   shouldStop: () => boolean
   intervalMs: number
 }): Promise<void> {
   while (!input.shouldStop()) {
-    input.samples.push(await collectSnapshot(input.stats, input.seeded))
+    input.samples.push(await collectSnapshot(input.stats, input.seeded, input.upstreamRuntime))
     await sleep(input.intervalMs)
   }
 }
 
-async function collectSnapshot(stats: LoadStats, seeded: SeededGateway): Promise<MetricSnapshot> {
+async function collectSnapshot(stats: LoadStats, seeded: SeededGateway, upstreamRuntime: UpstreamRuntime): Promise<MetricSnapshot> {
   const elapsedSeconds = Math.max(0.001, (performance.now() - stats.startedAtMs) / 1000)
   const [storage, postgres, redis] = await Promise.all([
     sampleStorage(seeded),
@@ -802,6 +931,9 @@ async function collectSnapshot(stats: LoadStats, seeded: SeededGateway): Promise
     elapsedSeconds: round(elapsedSeconds, 3),
     requests: {
       total: stats.totalRequests,
+      started: stats.startedRequests,
+      inFlight: stats.inFlightRequests,
+      peakInFlight: stats.peakInFlightRequests,
       success: stats.successRequests,
       failed: stats.failedRequests,
       qps: round(stats.totalRequests / elapsedSeconds, 2),
@@ -809,6 +941,16 @@ async function collectSnapshot(stats: LoadStats, seeded: SeededGateway): Promise
       latencyMs: latencySummary(stats.latenciesMs),
       statusCounts: objectFromCounts(stats.statusCounts),
       errorCounts: objectFromCounts(stats.errorCounts)
+    },
+    upstream: {
+      totalRequests: upstreamRuntime.totalRequests,
+      activeRequests: upstreamRuntime.activeRequests,
+      peakActiveRequests: upstreamRuntime.peakActiveRequests,
+      streamRequests: upstreamRuntime.streamRequests,
+      activeStreamRequests: upstreamRuntime.activeStreamRequests,
+      peakActiveStreamRequests: upstreamRuntime.peakActiveStreamRequests,
+      completedStreamRequests: upstreamRuntime.completedStreamRequests,
+      abortedStreamRequests: upstreamRuntime.abortedStreamRequests
     },
     storage,
     postgres,
@@ -1203,9 +1345,12 @@ function buildReport(input: {
       accountCount: input.seeded.accountIds.length
     },
     requests: {
+      started: input.stats.startedRequests,
       total: totalRequests,
       success: input.stats.successRequests,
       failed: input.stats.failedRequests,
+      inFlight: input.stats.inFlightRequests,
+      peakInFlight: input.stats.peakInFlightRequests,
       qps: round(totalRequests / elapsedSeconds, 2),
       successQps: round(input.stats.successRequests / elapsedSeconds, 2),
       errorRate,
@@ -1248,6 +1393,14 @@ function buildReport(input: {
     },
     upstream: {
       totalRequests: input.upstreamRuntime.totalRequests,
+      activeRequests: input.upstreamRuntime.activeRequests,
+      peakActiveRequests: input.upstreamRuntime.peakActiveRequests,
+      streamRequests: input.upstreamRuntime.streamRequests,
+      activeStreamRequests: input.upstreamRuntime.activeStreamRequests,
+      peakActiveStreamRequests: input.upstreamRuntime.peakActiveStreamRequests,
+      completedStreamRequests: input.upstreamRuntime.completedStreamRequests,
+      abortedStreamRequests: input.upstreamRuntime.abortedStreamRequests,
+      streamDurationMs: latencySummary(input.upstreamRuntime.streamDurationsMs),
       pathCounts: objectFromCounts(input.upstreamRuntime.pathCounts),
       connections: connectionStats(input.upstreamRuntime.connections)
     },
@@ -1278,6 +1431,7 @@ function printReport(report: Record<string, unknown> & { pass: boolean; violatio
   const redis = report.redis as Record<string, unknown>
   const redisAfter = redis.after as RedisStreamsSnapshot | undefined
   const redisDelta = redis.delta as RedisStreamsDeltaSnapshot | undefined
+  const upstream = report.upstream as Record<string, unknown> | undefined
   const usageStream = redisAfter?.usageRecords
   const auditStream = redisAfter?.auditLogs
   const operationStream = redisAfter?.operationLogs
@@ -1286,7 +1440,8 @@ function printReport(report: Record<string, unknown> & { pass: boolean; violatio
   const runtimeLogStream = redisAfter?.runtimeLogs
   console.log('\n高性能网关压测汇总')
   console.log(`- pass=${report.pass}`)
-  console.log(`- requests total=${requests.total} success=${requests.success} qps=${requests.successQps} p95=${(requests.latencyMs as LatencySummary).p95}ms errorRate=${requests.errorRate}`)
+  console.log(`- requests started=${requests.started} total=${requests.total} success=${requests.success} inFlight=${requests.inFlight} peakInFlight=${requests.peakInFlight} qps=${requests.successQps} p95=${(requests.latencyMs as LatencySummary).p95}ms errorRate=${requests.errorRate}`)
+  console.log(`- upstream total=${upstream?.totalRequests ?? 0} peakActive=${upstream?.peakActiveRequests ?? 0} stream=${upstream?.streamRequests ?? 0} peakActiveStream=${upstream?.peakActiveStreamRequests ?? 0} completedStream=${upstream?.completedStreamRequests ?? 0} abortedStream=${upstream?.abortedStreamRequests ?? 0}`)
   console.log(`- storage delta=${JSON.stringify((storage.delta as Record<string, unknown>) ?? {})}`)
   console.log(`- postgres deadlocksDelta=${postgres.deadlocksDelta} maxLockWaiters=${postgres.maxLockWaiters} maxXactAge=${postgres.maxXactAgeSeconds}s maxActiveQuery=${postgres.maxActiveQuerySeconds}s`)
   console.log(`- redis usageStream length=${usageStream?.length ?? 0} pending=${usageStream?.pendingCount ?? 0} lag=${usageStream?.lagCount ?? 0}; auditStream length=${auditStream?.length ?? 0} pending=${auditStream?.pendingCount ?? 0} lag=${auditStream?.lagCount ?? 0}; operationStream length=${operationStream?.length ?? 0} pending=${operationStream?.pendingCount ?? 0} lag=${operationStream?.lagCount ?? 0}; publicApiStream length=${publicApiStream?.length ?? 0} pending=${publicApiStream?.pendingCount ?? 0} lag=${publicApiStream?.lagCount ?? 0}; recordMaintenanceStream length=${recordMaintenanceStream?.length ?? 0} pending=${recordMaintenanceStream?.pendingCount ?? 0} lag=${recordMaintenanceStream?.lagCount ?? 0}; runtimeLogStream length=${runtimeLogStream?.length ?? 0} pending=${runtimeLogStream?.pendingCount ?? 0} lag=${runtimeLogStream?.lagCount ?? 0}; totalPending=${redisAfter?.pendingCount ?? 0} totalBacklog=${redisAfter?.backlogCount ?? 0}`)
@@ -1448,15 +1603,20 @@ function loadConfig(): GatewayLoadConfig {
     warmupSeconds: envInteger('JUHE_AI_GATEWAY_LOAD_WARMUP_SECONDS', 5, 0, 600),
     settleSeconds: envInteger('JUHE_AI_GATEWAY_LOAD_SETTLE_SECONDS', 10, 0, 600),
     concurrency: envInteger('JUHE_AI_GATEWAY_LOAD_CONCURRENCY', 64, 1, 2000),
+    requestStartSpreadMs: envInteger('JUHE_AI_GATEWAY_LOAD_REQUEST_START_SPREAD_MS', 0, 0, 600_000),
     requestTimeoutMs: envInteger('JUHE_AI_GATEWAY_LOAD_REQUEST_TIMEOUT_MS', 30_000, 100, 600_000),
     sampleIntervalMs: envInteger('JUHE_AI_GATEWAY_LOAD_SAMPLE_INTERVAL_MS', 1000, 250, 300_000),
     upstreamLatencyMs: envInteger('JUHE_AI_GATEWAY_LOAD_UPSTREAM_LATENCY_MS', 50, 0, 600_000),
     upstreamStreamChunks: envInteger('JUHE_AI_GATEWAY_LOAD_STREAM_CHUNKS', 4, 1, 1000),
     upstreamStreamChunkIntervalMs: envInteger('JUHE_AI_GATEWAY_LOAD_STREAM_CHUNK_INTERVAL_MS', 10, 0, 600_000),
+    upstreamStreamTotalMinMs: envInteger('JUHE_AI_GATEWAY_LOAD_STREAM_TOTAL_MIN_MS', 0, 0, 600_000),
+    upstreamStreamTotalMaxMs: envInteger('JUHE_AI_GATEWAY_LOAD_STREAM_TOTAL_MAX_MS', 0, 0, 600_000),
     upstreamBodyBytes: envInteger('JUHE_AI_GATEWAY_LOAD_UPSTREAM_BODY_BYTES', 512, 0, 2 * 1024 * 1024),
     upstreamErrorRate: envFloat('JUHE_AI_GATEWAY_LOAD_UPSTREAM_ERROR_RATE', 0, 0, 1),
     accountCount: envInteger('JUHE_AI_GATEWAY_LOAD_ACCOUNT_COUNT', 32, 1, 1000),
     accountConcurrencyLimit: envInteger('JUHE_AI_GATEWAY_LOAD_ACCOUNT_CONCURRENCY', 10000, 1, 1000000),
+    clientIpConcurrencyLimit: optionalEnvInteger('JUHE_AI_GATEWAY_LOAD_CLIENT_IP_CONCURRENCY', 0, 1_000_000),
+    groupMaxQueueWaitMs: envInteger('JUHE_AI_GATEWAY_LOAD_GROUP_MAX_QUEUE_WAIT_MS', 30_000, 0, 3_600_000),
     model: envText('JUHE_AI_GATEWAY_LOAD_MODEL', 'gpt-5-mini'),
     promptBytes: envInteger('JUHE_AI_GATEWAY_LOAD_PROMPT_BYTES', 64, 1, 1024 * 1024),
     enableStatsWorkerObservation: envBoolean('JUHE_AI_GATEWAY_LOAD_ENABLE_STATS_WORKER', false),
@@ -1483,6 +1643,9 @@ function scenarioList(value: string): ScenarioName[] {
 function createLoadStats(): LoadStats {
   return {
     startedAtMs: performance.now(),
+    startedRequests: 0,
+    inFlightRequests: 0,
+    peakInFlightRequests: 0,
     latenciesMs: [],
     totalRequests: 0,
     successRequests: 0,
@@ -1492,6 +1655,16 @@ function createLoadStats(): LoadStats {
     statusSamples: new Map(),
     responseBytes: 0
   }
+}
+
+function beginLoadRequest(stats: LoadStats): void {
+  stats.startedRequests += 1
+  stats.inFlightRequests += 1
+  stats.peakInFlightRequests = Math.max(stats.peakInFlightRequests, stats.inFlightRequests)
+}
+
+function finishLoadRequest(stats: LoadStats): void {
+  stats.inFlightRequests = Math.max(0, stats.inFlightRequests - 1)
 }
 
 function promptText(bytes: number, requestId: string): string {
@@ -1593,6 +1766,14 @@ function envText(name: string, fallback: string): string {
 function envInteger(name: string, fallback: number, min: number, max: number): number {
   const value = Number(envText(name, String(fallback)))
   if (!Number.isFinite(value)) return fallback
+  return Math.min(max, Math.max(min, Math.trunc(value)))
+}
+
+function optionalEnvInteger(name: string, min: number, max: number): number | undefined {
+  const raw = process.env[name]?.trim()
+  if (!raw) return undefined
+  const value = Number(raw)
+  if (!Number.isFinite(value)) return undefined
   return Math.min(max, Math.max(min, Math.trunc(value)))
 }
 

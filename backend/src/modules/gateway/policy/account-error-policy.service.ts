@@ -28,6 +28,7 @@ export interface GatewaySettings {
   streamRequestTimeoutSeconds: number
   streamIdleTimeoutSeconds: number
   streamClientTotalWaitTimeoutSeconds: number
+  streamMaxLifetimeSeconds: number
   streamFailureThresholdCount: number
   streamFailureThresholdWindowMinutes: number
 }
@@ -77,6 +78,7 @@ export function readGatewaySettings(): GatewaySettings {
     streamRequestTimeoutSeconds: numberSetting(settings.streamRequestTimeoutSeconds, 'streamRequestTimeoutSeconds', 10, 3600),
     streamIdleTimeoutSeconds: numberSetting(settings.streamIdleTimeoutSeconds, 'streamIdleTimeoutSeconds', 1, 3600),
     streamClientTotalWaitTimeoutSeconds: numberSetting(settings.streamClientTotalWaitTimeoutSeconds, 'streamClientTotalWaitTimeoutSeconds', 10, 3600),
+    streamMaxLifetimeSeconds: numberSetting(settings.streamMaxLifetimeSeconds, 'streamMaxLifetimeSeconds', 60, 86400),
     streamFailureThresholdCount: numberSetting(settings.streamFailureThresholdCount, 'streamFailureThresholdCount', 1, 100),
     streamFailureThresholdWindowMinutes: numberSetting(settings.streamFailureThresholdWindowMinutes, 'streamFailureThresholdWindowMinutes', 1, 1440)
   }
@@ -96,6 +98,7 @@ export async function readGatewaySettingsAsync(): Promise<GatewaySettings> {
     streamRequestTimeoutSeconds: numberSetting(settings.streamRequestTimeoutSeconds, 'streamRequestTimeoutSeconds', 10, 3600),
     streamIdleTimeoutSeconds: numberSetting(settings.streamIdleTimeoutSeconds, 'streamIdleTimeoutSeconds', 1, 3600),
     streamClientTotalWaitTimeoutSeconds: numberSetting(settings.streamClientTotalWaitTimeoutSeconds, 'streamClientTotalWaitTimeoutSeconds', 10, 3600),
+    streamMaxLifetimeSeconds: numberSetting(settings.streamMaxLifetimeSeconds, 'streamMaxLifetimeSeconds', 60, 86400),
     streamFailureThresholdCount: numberSetting(settings.streamFailureThresholdCount, 'streamFailureThresholdCount', 1, 100),
     streamFailureThresholdWindowMinutes: numberSetting(settings.streamFailureThresholdWindowMinutes, 'streamFailureThresholdWindowMinutes', 1, 1440)
   }

@@ -42,6 +42,7 @@ function mockGroupOwnerById(groups: MockGroups, users: MockSystemAccounts): Map<
     [groups.highConcurrency.id, users.admin],
     [groups.backup.id, users.admin],
     [groups.oauth.id, users.admin],
+    [groups.openaiCompatible.id, users.admin],
     [groups.experiment.id, users.admin],
     [groups.empty.id, users.admin],
     [groups.managerMain.id, users.manager],

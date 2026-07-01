@@ -1,5 +1,6 @@
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { scheduleProcessFatalError } from '../../shared/process-fatal.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
 import { RedisStreamQueue, type RedisStreamMessage } from '../../shared/redis-stream-queue.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
@@ -46,7 +47,7 @@ interface OperationLogFlushOptions {
 export function enqueueOperationLog(input: OperationLogInput): void {
   const queuedInput = normalizeOperationLogInput(input)
   if (shouldEnqueueOperationLogToRedisStream()) {
-    void enqueueOperationLogToRedisStream(queuedInput)
+    void enqueueOperationLogToRedisStream(queuedInput).catch(scheduleProcessFatalError)
     return
   }
   if (shouldDispatchOperationLogToIngestWorker()) {

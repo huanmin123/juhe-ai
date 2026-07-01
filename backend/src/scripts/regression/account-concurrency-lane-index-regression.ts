@@ -14,8 +14,10 @@ const asyncAcquireBody = functionBody(source, 'tryAcquireAccountConcurrencyAsync
 assert(source.includes('currentConcurrencyByAccountLaneKey'), '账号并发应维护 lane 级计数索引')
 assert(!laneGetterBody.includes('slots.values()'), '读取账号 lane 并发不应遍历该账号全部 in-flight slot')
 assert(laneGetterBody.includes('currentConcurrencyByAccountLaneKey.get'), '读取账号 lane 并发应直接查询 lane 级计数索引')
-assert(asyncAcquireBody.includes('acquireLocalAccountConcurrencySlot(accountId, lane)'), 'Redis async 占槽成功后也必须维护 server 本地并发快照，供账户和分组列表展示')
+assert(asyncAcquireBody.includes('acquireLocalAccountConcurrencySlot(accountId, lane, redisToken)'), 'Redis async 占槽成功后也必须维护 server 本地并发快照，供账户和分组列表展示')
+assert(asyncAcquireBody.includes('ensureRedisAccountConcurrencySlotRefresh()'), 'Redis async 占槽成功后必须启动活跃槽位续租，避免长请求槽位过租约')
 assert(asyncAcquireBody.includes('releaseAccountConcurrency(accountId, slotId)'), 'Redis async 释放槽后必须同步释放 server 本地并发快照')
+assert.match(asyncAcquireBody, /releaseAccountConcurrency\(accountId, slotId\)[\s\S]*releaseRedisAccountConcurrency\(accountId, redisToken\)/, 'Redis async 释放必须先释放本地槽再异步删 Redis，避免 Redis 命令挂住时继续续租已结束请求')
 
 clearAccountConcurrency()
 

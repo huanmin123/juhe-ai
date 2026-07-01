@@ -4,7 +4,8 @@ export interface StreamReadPlan {
   phase: 'first_chunk' | 'active_stream' | 'no_circuit_breaker'
   timeoutMs?: number
   rawTimeoutMs?: number
-  timeoutKind?: 'first_chunk' | 'upstream_activity'
+  streamLifetimeTimeoutMs?: number
+  timeoutKind?: 'first_chunk' | 'upstream_activity' | 'stream_lifetime'
   timeoutMessage: string
   deadlineExceeded: boolean
 }
@@ -27,16 +28,31 @@ export function buildStreamReadPlan(
     }
   }
 
+  const now = Date.now()
+  const streamMaxLifetimeSeconds = Math.max(60, settings.streamMaxLifetimeSeconds)
+  const streamLifetimeTimeoutMs = streamMaxLifetimeSeconds * 1000 - (now - startedAt)
+
   if (!status.waitingForFirstChunk || status.upstreamChunkReceived) {
     const streamIdleTimeoutSeconds = Math.max(1, settings.streamIdleTimeoutSeconds)
-    const now = Date.now()
     const rawTimeoutMs = streamIdleTimeoutSeconds * 1000 - (now - status.lastUpstreamActivityAt)
+    if (streamLifetimeTimeoutMs <= rawTimeoutMs) {
+      return {
+        phase: 'active_stream',
+        timeoutMs: streamLifetimeTimeoutMs,
+        rawTimeoutMs,
+        streamLifetimeTimeoutMs,
+        timeoutKind: 'stream_lifetime',
+        timeoutMessage: streamMaxLifetimeTimeoutMessage(streamMaxLifetimeSeconds),
+        deadlineExceeded: streamLifetimeTimeoutMs <= 0
+      }
+    }
     // Raw upstream activity is the hard timeout. Incomplete SSE events are diagnostic only:
     // large or fragmented events can stay valid while bytes continue to arrive.
     return {
       phase: 'active_stream',
       timeoutMs: rawTimeoutMs,
       rawTimeoutMs,
+      streamLifetimeTimeoutMs,
       timeoutKind: 'upstream_activity',
       timeoutMessage: streamIdleTimeoutMessage(streamIdleTimeoutSeconds),
       deadlineExceeded: rawTimeoutMs <= 0
@@ -44,13 +60,24 @@ export function buildStreamReadPlan(
   }
 
   const firstChunkTimeoutSeconds = Math.max(1, settings.streamRequestTimeoutSeconds)
-  const timeoutMs = firstChunkTimeoutSeconds * 1000 - (Date.now() - startedAt)
+  const firstChunkTimeoutMs = firstChunkTimeoutSeconds * 1000 - (now - startedAt)
+  if (streamLifetimeTimeoutMs <= firstChunkTimeoutMs) {
+    return {
+      phase: 'first_chunk',
+      timeoutMs: streamLifetimeTimeoutMs,
+      streamLifetimeTimeoutMs,
+      timeoutKind: 'stream_lifetime',
+      timeoutMessage: streamMaxLifetimeTimeoutMessage(streamMaxLifetimeSeconds),
+      deadlineExceeded: streamLifetimeTimeoutMs <= 0
+    }
+  }
   return {
     phase: 'first_chunk',
-    timeoutMs,
+    timeoutMs: firstChunkTimeoutMs,
+    streamLifetimeTimeoutMs,
     timeoutKind: 'first_chunk',
     timeoutMessage: firstChunkTimeoutMessage(firstChunkTimeoutSeconds),
-    deadlineExceeded: timeoutMs <= 0
+    deadlineExceeded: firstChunkTimeoutMs <= 0
   }
 }
 
@@ -60,4 +87,8 @@ export function firstChunkTimeoutMessage(timeoutSeconds: number): string {
 
 export function streamIdleTimeoutMessage(timeoutSeconds: number): string {
   return `上游流式响应 ${timeoutSeconds}s 内未返回任何新数据`
+}
+
+export function streamMaxLifetimeTimeoutMessage(timeoutSeconds: number): string {
+  return `上游流式响应已达到最大存活时间 ${timeoutSeconds}s，已中断当前连接`
 }

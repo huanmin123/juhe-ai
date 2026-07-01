@@ -1099,6 +1099,7 @@ function mergeGatewaySettings(base: GatewaySettings, override?: Partial<GatewayS
     streamRequestTimeoutSeconds: override.streamRequestTimeoutSeconds ?? base.streamRequestTimeoutSeconds,
     streamIdleTimeoutSeconds: override.streamIdleTimeoutSeconds ?? base.streamIdleTimeoutSeconds,
     streamClientTotalWaitTimeoutSeconds: override.streamClientTotalWaitTimeoutSeconds ?? base.streamClientTotalWaitTimeoutSeconds,
+    streamMaxLifetimeSeconds: override.streamMaxLifetimeSeconds ?? base.streamMaxLifetimeSeconds,
     streamFailureThresholdCount: override.streamFailureThresholdCount ?? base.streamFailureThresholdCount,
     streamFailureThresholdWindowMinutes: override.streamFailureThresholdWindowMinutes ?? base.streamFailureThresholdWindowMinutes
   }

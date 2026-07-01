@@ -12,6 +12,29 @@ export function refreshGatewayAccountCurrentConcurrency(accounts: UpstreamAccoun
   }))
 }
 
+export function orderGatewayAccountsByLaneCapacityAvailability(
+  accounts: UpstreamAccount[],
+  requestLane: OpenAIGatewayRequestLane,
+  schedulingPolicy?: GroupSchedulingPolicy
+): UpstreamAccount[] {
+  if (accounts.length < 2) {
+    return accounts
+  }
+  const accountIds = accounts.map((account) => account.id)
+  const currentConcurrency = loadAccountCurrentConcurrencyByIds(accountIds)
+  const imageLaneConcurrency = requestLane === 'image'
+    ? loadAccountCurrentConcurrencyByIds(accountIds, 'image')
+    : undefined
+  return accounts
+    .map((account, index) => ({
+      account,
+      index,
+      busy: isAccountCapacityBusyForLane(account, requestLane, currentConcurrency, imageLaneConcurrency, schedulingPolicy)
+    }))
+    .sort((left, right) => Number(left.busy) - Number(right.busy) || left.index - right.index)
+    .map((item) => item.account)
+}
+
 export function areGatewayAccountsCapacityBusyForLane(
   accounts: UpstreamAccount[],
   requestLane: OpenAIGatewayRequestLane,
@@ -25,21 +48,29 @@ export function areGatewayAccountsCapacityBusyForLane(
   const imageLaneConcurrency = requestLane === 'image'
     ? loadAccountCurrentConcurrencyByIds(accountIds, 'image')
     : undefined
-  return accounts.every((account) => {
-    const hardLimit = accountHardConcurrencyLimit(account)
-    if ((currentConcurrency.get(account.id) ?? 0) >= hardLimit) {
-      return true
-    }
-    if (requestLane !== 'image') {
-      return false
-    }
-    return (imageLaneConcurrency?.get(account.id) ?? 0) >= effectiveImageLaneConcurrencyLimit({
-      accountConcurrencyLimit: hardLimit,
-      policy: schedulingPolicy
-    })
-  })
+  return accounts.every((account) => isAccountCapacityBusyForLane(account, requestLane, currentConcurrency, imageLaneConcurrency, schedulingPolicy))
 }
 
 function accountHardConcurrencyLimit(account: UpstreamAccount): number {
   return Number.isFinite(account.concurrencyLimit) ? Math.max(1, Math.trunc(account.concurrencyLimit)) : 1
+}
+
+function isAccountCapacityBusyForLane(
+  account: UpstreamAccount,
+  requestLane: OpenAIGatewayRequestLane,
+  currentConcurrency: Map<string, number>,
+  imageLaneConcurrency: Map<string, number> | undefined,
+  schedulingPolicy?: GroupSchedulingPolicy
+): boolean {
+  const hardLimit = accountHardConcurrencyLimit(account)
+  if ((currentConcurrency.get(account.id) ?? 0) >= hardLimit) {
+    return true
+  }
+  if (requestLane !== 'image') {
+    return false
+  }
+  return (imageLaneConcurrency?.get(account.id) ?? 0) >= effectiveImageLaneConcurrencyLimit({
+    accountConcurrencyLimit: hardLimit,
+    policy: schedulingPolicy
+  })
 }

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { scheduleProcessFatalError } from '../../shared/process-fatal.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
 import { RedisStreamQueue, type RedisStreamMessage } from '../../shared/redis-stream-queue.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
@@ -82,7 +83,7 @@ export function enqueueRuntimeLogLine(rawLine: string, options: RuntimeLogLineIn
   if (shouldEnqueueRuntimeLogToRedisStream()) {
     const input = runtimeLogInputFromLine(rawLine, options)
     if (!input) return
-    void enqueueRuntimeLogToRedisStream(input, rawLine, options)
+    void enqueueRuntimeLogToRedisStream(input, rawLine, options).catch(scheduleProcessFatalError)
     return
   }
   if (runtimeConfig.processRole === 'db-service') {

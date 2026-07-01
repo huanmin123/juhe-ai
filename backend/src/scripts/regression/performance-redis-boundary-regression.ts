@@ -109,8 +109,14 @@ for (const functionName of [
 
 const accountConcurrencySource = source('shared/account-concurrency.ts')
 assert.match(accountConcurrencySource, /runtimeConfig\.runtimeStateDriver === 'memory'[\s\S]*tryAcquireAccountConcurrency\(accountId, concurrencyLimit, options\)/, '账号并发 memory 分支只能作为 standalone 本地实现')
-assert.match(accountConcurrencySource, /acquireRedisAccountConcurrency\(accountId, limit, lane, laneLimit\)/, '账号并发在 Redis runtime state driver 下必须使用 Redis 原子占用')
+assert.match(accountConcurrencySource, /acquireRedisAccountConcurrency\(accountId, limit, lane, laneLimit, redisToken\)/, '账号并发在 Redis runtime state driver 下必须使用 Redis 原子占用')
 assert.match(accountConcurrencySource, /redisStateClient\(\)/, '账号并发读取在 Redis runtime state driver 下必须读取 Redis state')
+assert.match(accountConcurrencySource, /account-concurrency-v2/, 'Redis 账号并发必须使用带槽位租约的 v2 key，避免旧数字计数脏占用')
+assert.match(accountConcurrencySource, /redisAccountConcurrencySlotLeaseTtlMs\s*=\s*90_000/, 'Redis 账号并发槽必须使用短租约，释放失败或进程退出后应及时过期')
+assert.match(accountConcurrencySource, /function ensureRedisAccountConcurrencySlotRefresh\(\)/, 'Redis 账号并发活跃槽必须由当前进程定期续租')
+assert.match(accountConcurrencySource, /ZREMRANGEBYSCORE/, 'Redis 账号并发读取和占用前必须清理已过租约的槽位')
+assert.doesNotMatch(accountConcurrencySource, /redis\.call\('INCR'/, 'Redis 账号并发不能回退简单 INCR 计数，否则进程崩溃会残留脏并发')
+assert.doesNotMatch(accountConcurrencySource, /redis\.call\('DECR'/, 'Redis 账号并发不能回退简单 DECR 释放，否则无法按请求槽位精确归还')
 
 assertRuntimeStateStoreCallsites()
 assertQueueContracts()
@@ -150,6 +156,7 @@ function assertQueueContracts(): void {
     assert.match(content, /runtimeConfig\.queueDriver === 'redis_stream'/, `${contract.file} 必须在 redis_stream driver 下写 Redis Stream`)
     assert.match(content, new RegExp(contract.startConsumer), `${contract.file} 必须暴露 Redis Stream consumer`)
     assert.match(content, /queue\.ack\(/, `${contract.file} 必须只在成功消费后 ack Redis Stream 消息`)
+    assert.match(content, /catch\(scheduleProcessFatalError\)/, `${contract.file} 同步入口 Redis Stream 入队失败必须进入受控 fail-fast，不能退化为未处理 Promise`)
     assert.doesNotMatch(content, /AfterRedisStreamFailure/, `${contract.file} Redis Stream 入队失败后不能回退到进程内队列作为事实源`)
     assert.doesNotMatch(content, /shouldEnqueue\w+ToRedisStream[\s\S]*&&\s*!is\w+IngestWorker/, `${contract.file} redis_stream driver 下不能因为当前是 ingest-worker 而绕过 Redis Stream`)
     assert.match(content, /Redis Stream queue driver 下禁止写入/, `${contract.file} redis_stream driver 下必须禁止写入本地队列`)
@@ -213,6 +220,41 @@ function listSourceFiles(root: string): string[] {
 
 function source(path: string): string {
   return readFileSync(resolve(srcRoot, path), 'utf8')
+}
+
+function functionBody(sourceText: string, functionName: string): string {
+  const start = sourceText.indexOf(`function ${functionName}`)
+  assert(start >= 0, `缺少函数 ${functionName}`)
+  const parametersStart = sourceText.indexOf('(', start)
+  assert(parametersStart >= 0, `函数 ${functionName} 缺少参数列表`)
+  let parameterDepth = 0
+  let parametersEnd = -1
+  for (let index = parametersStart; index < sourceText.length; index += 1) {
+    const char = sourceText[index]
+    if (char === '(') parameterDepth += 1
+    if (char === ')') {
+      parameterDepth -= 1
+      if (parameterDepth === 0) {
+        parametersEnd = index
+        break
+      }
+    }
+  }
+  assert(parametersEnd >= 0, `函数 ${functionName} 参数列表未闭合`)
+  const openBrace = sourceText.indexOf('{', parametersEnd)
+  assert(openBrace >= 0, `函数 ${functionName} 缺少函数体`)
+  let depth = 0
+  for (let index = openBrace; index < sourceText.length; index += 1) {
+    const char = sourceText[index]
+    if (char === '{') depth += 1
+    if (char === '}') {
+      depth -= 1
+      if (depth === 0) {
+        return sourceText.slice(openBrace, index + 1)
+      }
+    }
+  }
+  throw new Error(`函数 ${functionName} 函数体解析失败`)
 }
 
 function slash(path: string): string {

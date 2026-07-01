@@ -259,6 +259,11 @@
                 <a-input-number v-model:value="systemForm.streamClientTotalWaitTimeoutSeconds" :min="10" :max="3600" style="width: 100%" />
               </a-form-item>
             </div>
+            <div class="setting-item">
+              <a-form-item label="单条流最大存活时间（秒）" tooltip="限制单条 SSE 从进入网关到强制收口的最长时间；即使上游持续发送心跳，到达该时间也会直接中断连接，让客户端重试。默认 1800 秒。">
+                <a-input-number v-model:value="systemForm.streamMaxLifetimeSeconds" :min="60" :max="86400" style="width: 100%" />
+              </a-form-item>
+            </div>
           </div>
         </section>
 

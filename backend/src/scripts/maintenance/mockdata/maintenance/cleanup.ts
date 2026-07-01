@@ -49,9 +49,11 @@ function cleanupBusinessMockdata(database: Database, adminId: string, mockUserId
 
     const mockApiKeyIds = selectIds(database, 'SELECT id FROM api_keys WHERE name LIKE ?', likeName)
     const mockRouteStrategyIds = selectIdsForChunks(database, mockApiKeyIds, 'SELECT route_strategy_id FROM api_keys WHERE id IN ({placeholders})')
+    const mockNamedRouteStrategyIds = selectIds(database, 'SELECT id FROM route_strategies WHERE name LIKE ?', likeName)
+    const allMockRouteStrategyIds = uniqueIds([...mockRouteStrategyIds, ...mockNamedRouteStrategyIds])
     deleteWhereIn(database, 'api_keys', 'id', mockApiKeyIds)
-    deleteWhereIn(database, 'route_strategy_groups', 'route_strategy_id', mockRouteStrategyIds)
-    deleteWhereIn(database, 'route_strategies', 'id', mockRouteStrategyIds)
+    deleteWhereIn(database, 'route_strategy_groups', 'route_strategy_id', allMockRouteStrategyIds)
+    deleteWhereIn(database, 'route_strategies', 'id', allMockRouteStrategyIds)
 
     const mockGroupIds = selectIds(database, 'SELECT id FROM groups WHERE name LIKE ?', likeName)
     const mockAccountIds = selectIds(database, 'SELECT id FROM accounts WHERE name LIKE ?', likeName)
@@ -192,6 +194,10 @@ function selectIdsForChunks(database: Database, ids: string[], sqlTemplate: stri
     }
   }
   return [...output]
+}
+
+function uniqueIds(ids: string[]): string[] {
+  return [...new Set(ids.filter(Boolean))]
 }
 
 function deleteWhereIn(database: Database, tableName: string, columnName: string, ids: string[]): void {

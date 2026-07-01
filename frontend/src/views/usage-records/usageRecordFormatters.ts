@@ -30,11 +30,25 @@ export function isAnthropicUsageRecord(record: UsageRecordSummary): boolean {
 }
 
 export function usageRecordTokenParts(record: UsageRecordSummary): string[] {
-  return [
+  const parts = [
     `输入 ${formatTokens(record.inputTokens)}`,
     `输出 ${formatTokens(record.outputTokens)}`,
     `缓存读 ${formatTokens(record.cacheReadTokens)}`
   ]
+  if ((record.cacheWriteTokens ?? 0) > 0) {
+    parts.push(`缓存写 ${formatTokens(record.cacheWriteTokens)}`)
+  }
+  if ((record.cacheWrite1hTokens ?? 0) > 0) {
+    parts.push(`1h ${formatTokens(record.cacheWrite1hTokens)}`)
+  }
+  if ((record.thinkingTokens ?? 0) > 0) {
+    parts.push(`思考 ${formatTokens(record.thinkingTokens)}`)
+  }
+  const imageTokens = (record.inputImageTokens ?? 0) + (record.outputImageTokens ?? 0)
+  if (imageTokens > 0) {
+    parts.push(`图片 ${formatTokens(imageTokens)}`)
+  }
+  return parts
 }
 
 export function formatRecordTokens(record: UsageRecordSummary): string {

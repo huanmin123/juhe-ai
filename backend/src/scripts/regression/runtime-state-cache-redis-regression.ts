@@ -56,7 +56,12 @@ const cleanupPatterns = [
   `juhe-ai:state:auth_captcha:issue:${captchaIp}`,
   `juhe-ai:account-concurrency:${accountId}:*`,
   `juhe-ai:account-concurrency:${accountId}_parallel:*`,
-  `juhe-ai:account-concurrency:${accountId}_external:*`
+  `juhe-ai:account-concurrency:${accountId}_external:*`,
+  `juhe-ai:account-concurrency:${accountId}_expired:*`,
+  `juhe-ai:account-concurrency-v2:${accountId}:*`,
+  `juhe-ai:account-concurrency-v2:${accountId}_parallel:*`,
+  `juhe-ai:account-concurrency-v2:${accountId}_external:*`,
+  `juhe-ai:account-concurrency-v2:${accountId}_expired:*`
 ]
 
 try {
@@ -175,20 +180,28 @@ async function verifyAccountConcurrency(): Promise<void> {
 
   first.release()
   second.release()
-  await waitForRedisKeyAbsent(`juhe-ai:account-concurrency:${accountId}:total`)
+  await waitForRedisKeyAbsent(`juhe-ai:account-concurrency-v2:${accountId}:total`)
   await waitForLocalConcurrency(accountId, 0)
 
   const reacquired = await accountConcurrency.tryAcquireAccountConcurrencyAsync(accountId, 2, { lane: 'text' })
   assert.equal(reacquired.acquired, true, 'Redis 账号并发释放后应允许再次占用')
   assert.equal(accountConcurrency.snapshotAccountConcurrency()[accountId], 1, 'Redis 模式重新占槽后 server 快照应恢复为 1')
   reacquired.release()
-  await waitForRedisKeyAbsent(`juhe-ai:account-concurrency:${accountId}:total`)
+  await waitForRedisKeyAbsent(`juhe-ai:account-concurrency-v2:${accountId}:total`)
   await waitForLocalConcurrency(accountId, 0)
 
   const externalAccountId = `${accountId}_external`
-  await stateClient.set(`juhe-ai:account-concurrency:${externalAccountId}:total`, '7')
+  const externalExpiresAtMs = Date.now() + 60_000
+  for (let index = 0; index < 7; index += 1) {
+    await addRedisConcurrencySlot(externalAccountId, 'text', `external-owner|${index}`, externalExpiresAtMs)
+  }
   assert.equal(accountConcurrency.snapshotAccountConcurrency()[externalAccountId], undefined, '外部进程写入的 Redis 并发不应出现在本地 in-flight 诊断快照')
   assert.equal((await accountConcurrency.loadAccountCurrentConcurrencyByIdsAsync([externalAccountId])).get(externalAccountId), 7, 'Redis 模式列表并发批量读取必须能看到其他进程写入的当前并发')
+
+  const expiredAccountId = `${accountId}_expired`
+  await addRedisConcurrencySlot(expiredAccountId, 'text', 'dead-owner|expired', Date.now() - 1000)
+  assert.equal((await accountConcurrency.loadAccountCurrentConcurrencyByIdsAsync([expiredAccountId])).get(expiredAccountId), 0, 'Redis 模式批量读取应清理已过租约的死槽')
+  await waitForRedisKeyAbsent(`juhe-ai:account-concurrency-v2:${expiredAccountId}:total`)
 
   const parallelAccountId = `${accountId}_parallel`
   const parallelSlots = await Promise.all(
@@ -201,8 +214,17 @@ async function verifyAccountConcurrency(): Promise<void> {
   for (const slot of acquiredSlots) {
     slot.release()
   }
-  await waitForRedisKeyAbsent(`juhe-ai:account-concurrency:${parallelAccountId}:total`)
+  await waitForRedisKeyAbsent(`juhe-ai:account-concurrency-v2:${parallelAccountId}:total`)
   await waitForLocalConcurrency(parallelAccountId, 0)
+}
+
+async function addRedisConcurrencySlot(accountId: string, lane: 'text' | 'image', token: string, expiresAtMs: number): Promise<void> {
+  const totalKey = `juhe-ai:account-concurrency-v2:${accountId}:total`
+  const laneKey = `juhe-ai:account-concurrency-v2:${accountId}:${lane}`
+  await stateClient.sendCommand(['ZADD', totalKey, String(expiresAtMs), token])
+  await stateClient.sendCommand(['ZADD', laneKey, String(expiresAtMs), token])
+  await stateClient.sendCommand(['PEXPIRE', totalKey, '90000'])
+  await stateClient.sendCommand(['PEXPIRE', laneKey, '90000'])
 }
 
 async function waitForRedisKeyAbsent(key: string): Promise<void> {

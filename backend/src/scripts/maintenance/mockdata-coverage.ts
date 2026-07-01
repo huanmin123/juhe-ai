@@ -72,7 +72,7 @@ function assertBusinessCoverage(database: BusinessDatabase, created: CreatedMock
   assertPresent(
     '自定义模型范围覆盖不完整',
     textValuesForIds(database, 'custom_provider_models', 'id', 'scope', customProviderModelIds),
-    ['global', 'personal']
+    customProviderModelScopeExpectations(database)
   )
   assertMinimum('AI 账户标签样本缺失', scalar(database, 'SELECT COUNT(*) AS value FROM account_tags WHERE name IN (?, ?, ?, ?)', '多Key', '图像生成', '时间计划', '模型映射'), 4)
   assertMinimum('账户模型映射样本缺失', scalar(database, `
@@ -127,6 +127,16 @@ function customProviderModelIdsForCreated(database: BusinessDatabase): string[] 
   return (database.prepare("SELECT id FROM custom_provider_models WHERE model LIKE 'mockdata-%'").all() as Array<{ id?: string }>)
     .map((row) => row.id)
     .filter((id): id is string => Boolean(id))
+}
+
+function customProviderModelScopeExpectations(database: BusinessDatabase): string[] {
+  const table = database
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'custom_provider_models'")
+    .get() as { sql?: string } | undefined
+  if (table?.sql?.includes("CHECK (scope = 'personal')")) {
+    return ['personal']
+  }
+  return ['global', 'personal']
 }
 
 function textValuesForIds(database: BusinessDatabase, tableName: string, idColumn: string, valueColumn: string, ids: string[]): Set<string>

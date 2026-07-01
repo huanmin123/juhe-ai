@@ -23,6 +23,7 @@ import {
 } from '../client-profiles/codex-turn-retry.service.js'
 import {
   areGatewayAccountsCapacityBusyForLane,
+  orderGatewayAccountsByLaneCapacityAvailability,
   refreshGatewayAccountCurrentConcurrency
 } from './capacity.js'
 import { sendGatewayFailureResponse, sendQuotaExceededResponse } from '../response/failure-response.js'
@@ -357,11 +358,13 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
     }
   }
 
-  if (input.dispatchOrderingOptions.groupType !== 'high_concurrency'
-    && areGatewayAccountsCapacityBusyForLane(accounts, input.requestLane, input.groupAccess.schedulingPolicy)) {
-    const fallback = await input.attemptFallback('group_capacity_busy')
-    if (fallback.attempted) {
-      return { outcome: 'fallback', context: fallback.context }
+  if (input.dispatchOrderingOptions.groupType !== 'high_concurrency') {
+    accounts = orderGatewayAccountsByLaneCapacityAvailability(accounts, input.requestLane, input.groupAccess.schedulingPolicy)
+    if (areGatewayAccountsCapacityBusyForLane(accounts, input.requestLane, input.groupAccess.schedulingPolicy)) {
+      const fallback = await input.attemptFallback('group_capacity_busy')
+      if (fallback.attempted) {
+        return { outcome: 'fallback', context: fallback.context }
+      }
     }
   }
 

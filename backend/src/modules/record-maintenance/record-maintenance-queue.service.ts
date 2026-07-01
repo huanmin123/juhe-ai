@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { scheduleProcessFatalError } from '../../shared/process-fatal.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
 import { RedisStreamQueue, type RedisStreamMessage } from '../../shared/redis-stream-queue.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
@@ -135,7 +136,7 @@ export async function enqueueRecordMaintenanceJobAsync(input: RecordMaintenanceJ
 export function enqueueRecordMaintenanceJobWithResult(input: RecordMaintenanceJob): RecordMaintenanceEnqueueResult {
   const job = normalizeRecordMaintenanceJob(input)
   if (shouldEnqueueRecordMaintenanceJobToRedisStream(job)) {
-    void enqueueRecordMaintenanceJobToRedisStream(job)
+    void enqueueRecordMaintenanceJobToRedisStream(job).catch(scheduleProcessFatalError)
     return { job, queued: true }
   }
   if (runtimeConfig.processRole === 'server') {

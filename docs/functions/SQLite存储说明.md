@@ -966,6 +966,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - `streamRequestTimeoutSeconds = 120`：上游首包等待上限；非流式和流式在响应头前、非流式在 `2xx` 响应首字节前超过该时间时按上游请求异常切换后续账号；流式拿到 `2xx + SSE` 后，超过该时间没有收到任何上游 chunk 时补发失败事件并结束本次 SSE。
 - `streamIdleTimeoutSeconds = 30`：流式响应首段内容后，没有任何上游 chunk 的输出停顿上限；只把 raw chunk 完全停顿作为硬超时，持续有 raw chunk 但暂未形成完整 SSE 事件时只记录诊断并继续转发。
 - `streamClientTotalWaitTimeoutSeconds = 270`：同一次客户端连接在服务端隐藏切号 / 重试期间的总等待上限；超过后停止继续隐藏重试并返回失败，避免客户端长期收不到内容后自行断开。
+- `streamMaxLifetimeSeconds = 1800`：单条 SSE 最大存活时间；上游持续发送心跳或 raw chunk 也不能无限占用连接和账号并发，到点后中断当前连接交由客户端重试。
 - `streamFailureThresholdCount = 3`、`streamFailureThresholdWindowMinutes = 5`：历史流失败诊断计数参数；真实网关流式失败不再依赖该阈值或窗口写账号状态。
 - `statsAggregationIntervalSeconds = 60`：统计缓存默认增量汇总间隔。
 - `statsAggregationBatchSize = 2000`、`statsAggregationMaxBatchesPerRun = 5`：统计缓存每轮聚合配置上限；常驻 stats-worker 在线聚合会再把 usage 单批实际处理量限制为 1000 条，并给每轮调度设置 4.5 秒运行预算。增量聚合在批内先按 scope、时间桶、模型、延迟桶和账号质量分钟桶预聚合，再写入 SQLite，避免高并发下对同一批记录逐条重复 upsert。连续批次之间让出事件循环，并在继续下一批前固定等待 25ms；持续写入时统计游标保留 15 秒安全延迟，用来吸收 usage 队列落库和 IPC 传递的短暂延迟，不再要求 usage 队列完全为空，避免高吞吐场景因队列短暂非空而长期饥饿；若 pending usage 中存在超过 15 秒仍未落库的记录，本轮统计会跳过，避免游标越过未落库记录。额度小时窗口随本任务刷新，排行和概览窗口快照由独立 worker 任务刷新。更大的批量只适合作为离线重建或人工追赶历史积压时的独立脚本参数，不能让常驻 worker 长时间占用统计库写事务。

@@ -14,6 +14,7 @@ export interface SystemSettings {
   streamRequestTimeoutSeconds: number
   streamIdleTimeoutSeconds: number
   streamClientTotalWaitTimeoutSeconds: number
+  streamMaxLifetimeSeconds: number
   streamFailureThresholdCount: number
   streamFailureThresholdWindowMinutes: number
   operationLogEnabled: boolean

@@ -41,6 +41,7 @@ const gatewaySettings: GatewaySettings = {
   streamRequestTimeoutSeconds: 120,
   streamIdleTimeoutSeconds: 30,
   streamClientTotalWaitTimeoutSeconds: 270,
+  streamMaxLifetimeSeconds: 1800,
   streamFailureThresholdCount: 1,
   streamFailureThresholdWindowMinutes: 5
 }

@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto'
+
 import { runtimeConfig } from '../config/runtime.js'
 import { getRedisClient, type RedisCommandClient } from './redis-client.js'
 
@@ -6,7 +8,10 @@ const currentConcurrencyByAccountLaneKey = new Map<string, number>()
 const inFlightSlotsByAccountId = new Map<string, Map<number, AccountInFlightSlot>>()
 const releaseListeners = new Set<(event: AccountConcurrencyReleaseEvent) => void>()
 let nextSlotId = 1
-const redisAccountConcurrencyTtlMs = 2 * 60 * 60 * 1000
+const redisAccountConcurrencySlotLeaseTtlMs = 90_000
+const redisAccountConcurrencySlotRefreshIntervalMs = 15_000
+const redisAccountConcurrencyOwnerId = randomUUID()
+let redisAccountConcurrencySlotRefreshTimer: NodeJS.Timeout | undefined
 
 export type AccountConcurrencyLane = 'text' | 'image'
 
@@ -26,6 +31,7 @@ interface AccountInFlightSlot {
   startedAtMs: number
   firstOutputAtMs?: number
   lane: AccountConcurrencyLane
+  redisToken?: string
 }
 
 export interface AccountInFlightStats {
@@ -97,7 +103,8 @@ export async function tryAcquireAccountConcurrencyAsync(
   const limit = normalizeConcurrencyLimit(concurrencyLimit)
   const lane = normalizeConcurrencyLane(options.lane)
   const laneLimit = normalizeLaneLimit(options.laneLimit, limit, lane)
-  const [acquired, current, laneCurrent] = await acquireRedisAccountConcurrency(accountId, limit, lane, laneLimit)
+  const redisToken = redisAccountConcurrencySlotToken()
+  const [acquired, current, laneCurrent] = await acquireRedisAccountConcurrency(accountId, limit, lane, laneLimit, redisToken)
   if (!acquired) {
     return {
       acquired: false,
@@ -112,7 +119,8 @@ export async function tryAcquireAccountConcurrencyAsync(
   }
 
   let released = false
-  const slotId = acquireLocalAccountConcurrencySlot(accountId, lane)
+  const slotId = acquireLocalAccountConcurrencySlot(accountId, lane, redisToken)
+  ensureRedisAccountConcurrencySlotRefresh()
   return {
     acquired: true,
     current,
@@ -124,9 +132,8 @@ export async function tryAcquireAccountConcurrencyAsync(
     release: () => {
       if (released) return
       released = true
-      void releaseRedisAccountConcurrency(accountId, lane).catch(() => undefined).finally(() => {
-        releaseAccountConcurrency(accountId, slotId)
-      })
+      releaseAccountConcurrency(accountId, slotId)
+      void releaseRedisAccountConcurrency(accountId, redisToken).catch(() => undefined)
     }
   }
 }
@@ -153,14 +160,10 @@ export async function loadAccountCurrentConcurrencyByIdsAsync(accountIds: string
   }
   const result = new Map<string, number>()
   const client = await redisStateClient()
-  for (let index = 0; index < normalizedAccountIds.length; index += 500) {
-    const chunk = normalizedAccountIds.slice(index, index + 500)
-    const values = await redisMgetNumbers(client, chunk.map((accountId) => (
-      lane ? redisAccountConcurrencyLaneKey(accountId, lane) : redisAccountConcurrencyKey(accountId)
-    )))
-    chunk.forEach((accountId, valueIndex) => {
-      result.set(accountId, values[valueIndex] ?? 0)
-    })
+  for (let index = 0; index < normalizedAccountIds.length; index += 100) {
+    const chunk = normalizedAccountIds.slice(index, index + 100)
+    const values = await Promise.all(chunk.map((accountId) => loadRedisAccountConcurrencyCount(client, accountId, lane)))
+    chunk.forEach((accountId, valueIndex) => result.set(accountId, values[valueIndex] ?? 0))
   }
   return result
 }
@@ -230,6 +233,7 @@ export function clearAccountConcurrency(): void {
   currentConcurrencyByAccountId.clear()
   currentConcurrencyByAccountLaneKey.clear()
   inFlightSlotsByAccountId.clear()
+  stopRedisAccountConcurrencySlotRefresh()
 }
 
 function markAccountConcurrencyFirstOutput(accountId: string, slotId: number): void {
@@ -240,13 +244,13 @@ function markAccountConcurrencyFirstOutput(accountId: string, slotId: number): v
   slot.firstOutputAtMs = Date.now()
 }
 
-function acquireLocalAccountConcurrencySlot(accountId: string, lane: AccountConcurrencyLane): number {
+function acquireLocalAccountConcurrencySlot(accountId: string, lane: AccountConcurrencyLane, redisToken?: string): number {
   const current = getAccountCurrentConcurrency(accountId)
   currentConcurrencyByAccountId.set(accountId, current + 1)
   const slotId = nextSlotId
   nextSlotId += 1
   const accountSlots = inFlightSlotsByAccountId.get(accountId) ?? new Map<number, AccountInFlightSlot>()
-  accountSlots.set(slotId, { slotId, startedAtMs: Date.now(), lane })
+  accountSlots.set(slotId, { slotId, startedAtMs: Date.now(), lane, redisToken })
   inFlightSlotsByAccountId.set(accountId, accountSlots)
   incrementAccountConcurrencyLane(accountId, lane)
   return slotId
@@ -335,31 +339,116 @@ async function acquireRedisAccountConcurrency(
   accountId: string,
   limit: number,
   lane: AccountConcurrencyLane,
-  laneLimit: number
+  laneLimit: number,
+  redisToken: string
 ): Promise<[boolean, number, number]> {
-  const result = await (await redisStateClient()).eval(redisAcquireAccountConcurrencyScript, {
+  const client = await redisStateClient()
+  const result = await client.eval(redisAcquireAccountConcurrencyScript, {
     keys: [
       redisAccountConcurrencyKey(accountId),
+      redisAccountConcurrencyLaneKey(accountId, 'text'),
+      redisAccountConcurrencyLaneKey(accountId, 'image'),
       redisAccountConcurrencyLaneKey(accountId, lane)
     ],
     arguments: [
       String(limit),
       String(laneLimit),
-      String(redisAccountConcurrencyTtlMs)
+      String(redisAccountConcurrencySlotLeaseTtlMs),
+      String(Date.now()),
+      redisToken
     ]
   })
   const values = numericRedisArray(result)
   return [values[0] === 1, values[1] ?? 0, values[2] ?? 0]
 }
 
-async function releaseRedisAccountConcurrency(accountId: string, lane: AccountConcurrencyLane): Promise<void> {
+async function releaseRedisAccountConcurrency(accountId: string, redisToken: string): Promise<void> {
   await (await redisStateClient()).eval(redisReleaseAccountConcurrencyScript, {
     keys: [
       redisAccountConcurrencyKey(accountId),
-      redisAccountConcurrencyLaneKey(accountId, lane)
+      redisAccountConcurrencyLaneKey(accountId, 'text'),
+      redisAccountConcurrencyLaneKey(accountId, 'image')
     ],
-    arguments: []
+    arguments: [redisToken]
   })
+}
+
+async function loadRedisAccountConcurrencyCount(
+  client: RedisCommandClient,
+  accountId: string,
+  lane?: AccountConcurrencyLane
+): Promise<number> {
+  const result = await client.eval(redisLoadAccountConcurrencyScript, {
+    keys: [
+      redisAccountConcurrencyKey(accountId),
+      redisAccountConcurrencyLaneKey(accountId, 'text'),
+      redisAccountConcurrencyLaneKey(accountId, 'image'),
+      lane ? redisAccountConcurrencyLaneKey(accountId, lane) : redisAccountConcurrencyKey(accountId)
+    ],
+    arguments: [String(Date.now())]
+  })
+  return numericRedisResult(result)
+}
+
+function ensureRedisAccountConcurrencySlotRefresh(): void {
+  if (redisAccountConcurrencySlotRefreshTimer) {
+    return
+  }
+  redisAccountConcurrencySlotRefreshTimer = setInterval(() => {
+    void refreshRedisAccountConcurrencySlots().catch(() => undefined)
+  }, redisAccountConcurrencySlotRefreshIntervalMs)
+  redisAccountConcurrencySlotRefreshTimer.unref?.()
+}
+
+function stopRedisAccountConcurrencySlotRefresh(): void {
+  if (!redisAccountConcurrencySlotRefreshTimer) {
+    return
+  }
+  clearInterval(redisAccountConcurrencySlotRefreshTimer)
+  redisAccountConcurrencySlotRefreshTimer = undefined
+}
+
+async function refreshRedisAccountConcurrencySlots(): Promise<void> {
+  const slots = localRedisAccountConcurrencySlots()
+  if (slots.length === 0) {
+    stopRedisAccountConcurrencySlotRefresh()
+    return
+  }
+  const client = await redisStateClient()
+  const expiresAtMs = Date.now() + redisAccountConcurrencySlotLeaseTtlMs
+  for (let index = 0; index < slots.length; index += 100) {
+    const chunk = slots.slice(index, index + 100)
+    await client.eval(redisRefreshAccountConcurrencySlotsScript, {
+      keys: chunk.flatMap((slot) => [
+        redisAccountConcurrencyKey(slot.accountId),
+        redisAccountConcurrencyLaneKey(slot.accountId, slot.lane)
+      ]),
+      arguments: [
+        String(expiresAtMs),
+        String(redisAccountConcurrencySlotLeaseTtlMs),
+        ...chunk.map((slot) => slot.redisToken)
+      ]
+    })
+  }
+}
+
+function localRedisAccountConcurrencySlots(): Array<{
+  accountId: string
+  lane: AccountConcurrencyLane
+  redisToken: string
+}> {
+  const result: Array<{
+    accountId: string
+    lane: AccountConcurrencyLane
+    redisToken: string
+  }> = []
+  for (const [accountId, slots] of inFlightSlotsByAccountId.entries()) {
+    for (const slot of slots.values()) {
+      if (!slot.redisToken) continue
+      result.push({ accountId, lane: slot.lane, redisToken: slot.redisToken })
+    }
+  }
+  return result
 }
 
 function redisStateClient(): Promise<RedisCommandClient> {
@@ -371,43 +460,101 @@ function redisStateClient(): Promise<RedisCommandClient> {
 }
 
 function redisAccountConcurrencyKey(accountId: string): string {
-  return `juhe-ai:account-concurrency:${accountId}:total`
+  return `juhe-ai:account-concurrency-v2:${accountId}:total`
 }
 
 function redisAccountConcurrencyLaneKey(accountId: string, lane: AccountConcurrencyLane): string {
-  return `juhe-ai:account-concurrency:${accountId}:${lane}`
+  return `juhe-ai:account-concurrency-v2:${accountId}:${lane}`
+}
+
+function redisAccountConcurrencySlotToken(): string {
+  return `${redisAccountConcurrencyOwnerId}|${randomUUID()}`
 }
 
 const redisAcquireAccountConcurrencyScript = `
-local current = tonumber(redis.call('GET', KEYS[1]) or '0') or 0
-local lane_current = tonumber(redis.call('GET', KEYS[2]) or '0') or 0
 local total_limit = tonumber(ARGV[1])
 local lane_limit = tonumber(ARGV[2])
+local slot_ttl_ms = tonumber(ARGV[3])
+local now_ms = tonumber(ARGV[4])
+local slot_token = ARGV[5]
+local expires_at_ms = now_ms + slot_ttl_ms
+
+local function cleanup_expired()
+  redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now_ms)
+  redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now_ms)
+  redis.call('ZREMRANGEBYSCORE', KEYS[3], '-inf', now_ms)
+end
+
+cleanup_expired()
+
+local current = tonumber(redis.call('ZCARD', KEYS[1]) or '0') or 0
+local lane_current = tonumber(redis.call('ZCARD', KEYS[4]) or '0') or 0
 if current >= total_limit or lane_current >= lane_limit then
   return {0, current, lane_current}
 end
-current = redis.call('INCR', KEYS[1])
-lane_current = redis.call('INCR', KEYS[2])
-redis.call('PEXPIRE', KEYS[1], ARGV[3])
-redis.call('PEXPIRE', KEYS[2], ARGV[3])
-return {1, current, lane_current}
+redis.call('ZADD', KEYS[1], expires_at_ms, slot_token)
+redis.call('ZADD', KEYS[4], expires_at_ms, slot_token)
+redis.call('PEXPIRE', KEYS[1], slot_ttl_ms)
+redis.call('PEXPIRE', KEYS[4], slot_ttl_ms)
+return {1, current + 1, lane_current + 1}
 `
 
 const redisReleaseAccountConcurrencyScript = `
-local current = tonumber(redis.call('GET', KEYS[1]) or '0') or 0
-if current <= 1 then
+local slot_token = ARGV[1]
+redis.call('ZREM', KEYS[1], slot_token)
+redis.call('ZREM', KEYS[2], slot_token)
+redis.call('ZREM', KEYS[3], slot_token)
+if redis.call('ZCARD', KEYS[1]) == 0 then
   redis.call('DEL', KEYS[1])
-else
-  redis.call('DECR', KEYS[1])
 end
-local lane_current = tonumber(redis.call('GET', KEYS[2]) or '0') or 0
-if lane_current <= 1 then
+if redis.call('ZCARD', KEYS[2]) == 0 then
   redis.call('DEL', KEYS[2])
-else
-  redis.call('DECR', KEYS[2])
+end
+if redis.call('ZCARD', KEYS[3]) == 0 then
+  redis.call('DEL', KEYS[3])
 end
 return 1
 `
+
+const redisLoadAccountConcurrencyScript = `
+local now_ms = tonumber(ARGV[1])
+
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now_ms)
+redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now_ms)
+redis.call('ZREMRANGEBYSCORE', KEYS[3], '-inf', now_ms)
+
+if redis.call('ZCARD', KEYS[1]) == 0 then
+  redis.call('DEL', KEYS[1])
+end
+if redis.call('ZCARD', KEYS[2]) == 0 then
+  redis.call('DEL', KEYS[2])
+end
+if redis.call('ZCARD', KEYS[3]) == 0 then
+  redis.call('DEL', KEYS[3])
+end
+return redis.call('ZCARD', KEYS[4])
+`
+
+const redisRefreshAccountConcurrencySlotsScript = `
+local expires_at_ms = tonumber(ARGV[1])
+local slot_ttl_ms = tonumber(ARGV[2])
+for arg_index = 3, #ARGV do
+  local key_index = (arg_index - 3) * 2 + 1
+  local slot_token = ARGV[arg_index]
+  redis.call('ZADD', KEYS[key_index], expires_at_ms, slot_token)
+  redis.call('ZADD', KEYS[key_index + 1], expires_at_ms, slot_token)
+  redis.call('PEXPIRE', KEYS[key_index], slot_ttl_ms)
+  redis.call('PEXPIRE', KEYS[key_index + 1], slot_ttl_ms)
+end
+return #ARGV - 2
+`
+
+function numericRedisResult(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'bigint') return Number(value)
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
 
 function numericRedisArray(value: unknown): number[] {
   if (!Array.isArray(value)) return []
@@ -419,7 +566,3 @@ function numericRedisArray(value: unknown): number[] {
   })
 }
 
-async function redisMgetNumbers(client: RedisCommandClient, keys: string[]): Promise<number[]> {
-  if (keys.length === 0) return []
-  return numericRedisArray(await client.sendCommand(['MGET', ...keys]))
-}

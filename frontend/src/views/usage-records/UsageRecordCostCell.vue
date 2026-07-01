@@ -5,15 +5,15 @@
       <template #content>
         <div class="cost-detail-panel">
           <div class="cost-detail-title">成本明细</div>
-          <div class="cost-detail-row">
+          <div v-if="showInputCost" class="cost-detail-row">
             <span>输入成本</span>
             <span class="cost-detail-value">{{ formatCost(costBreakdown.inputCostUsd) }}</span>
           </div>
-          <div class="cost-detail-row">
+          <div v-if="showOutputCost" class="cost-detail-row">
             <span>输出成本</span>
             <span class="cost-detail-value">{{ formatCost(costBreakdown.outputCostUsd) }}</span>
           </div>
-          <div class="cost-detail-row">
+          <div v-if="showCacheReadCost" class="cost-detail-row">
             <span>缓存读取成本</span>
             <span class="cost-detail-value">{{ formatCost(costBreakdown.cacheReadCostUsd) }}</span>
           </div>
@@ -53,7 +53,7 @@
             <span>图片张数成本</span>
             <span class="cost-detail-value">{{ formatCost(costBreakdown.outputImageUnitCostUsd) }}</span>
           </div>
-          <div class="cost-detail-row">
+          <div v-if="showAccountCharge" class="cost-detail-row">
             <span>账户计费</span>
             <span class="cost-detail-value">{{ formatCost(costBreakdown.accountChargeUsd) }}</span>
           </div>
@@ -61,16 +61,16 @@
             <span>倍率</span>
             <span class="cost-detail-value">{{ costBreakdown.multiplier }}x</span>
           </div>
-          <div class="cost-detail-divider"></div>
-          <div class="cost-detail-row">
+          <div v-if="showUnitPriceSection" class="cost-detail-divider"></div>
+          <div v-if="showInputPrice" class="cost-detail-row">
             <span>输入单价</span>
             <span class="cost-detail-value">{{ formatUnitPrice(costBreakdown.inputUsdPer1M) }}</span>
           </div>
-          <div class="cost-detail-row">
+          <div v-if="showOutputPrice" class="cost-detail-row">
             <span>输出单价</span>
             <span class="cost-detail-value">{{ formatUnitPrice(costBreakdown.outputUsdPer1M) }}</span>
           </div>
-          <div class="cost-detail-row">
+          <div v-if="showCacheReadPrice" class="cost-detail-row">
             <span>缓存读取单价</span>
             <span class="cost-detail-value">{{ formatUnitPrice(costBreakdown.cacheReadUsdPer1M) }}</span>
           </div>
@@ -126,6 +126,9 @@ const hasOutputImagePrice = computed(() => costBreakdown.value?.outputImageUsdPe
 const hasInputAudioPrice = computed(() => costBreakdown.value?.inputAudioUsdPer1M !== undefined && costBreakdown.value.inputAudioUsdPer1M !== costBreakdown.value.inputUsdPer1M)
 const hasOutputAudioPrice = computed(() => costBreakdown.value?.outputAudioUsdPer1M !== undefined && costBreakdown.value.outputAudioUsdPer1M !== costBreakdown.value.outputUsdPer1M)
 const hasOutputImageUnitPrice = computed(() => costBreakdown.value?.outputUsdPerImage !== undefined)
+const showInputCost = computed(() => costBreakdown.value?.inputCostUsd !== undefined)
+const showOutputCost = computed(() => costBreakdown.value?.outputCostUsd !== undefined)
+const showCacheReadCost = computed(() => costBreakdown.value?.cacheReadCostUsd !== undefined)
 const showInputImageCost = computed(() => hasInputImagePrice.value && costBreakdown.value?.inputImageCostUsd !== undefined)
 const showOutputImageCost = computed(() => hasOutputImagePrice.value && costBreakdown.value?.outputImageCostUsd !== undefined)
 const showInputAudioCost = computed(() => hasInputAudioPrice.value && costBreakdown.value?.inputAudioCostUsd !== undefined)
@@ -134,6 +137,10 @@ const showOutputImageUnitCost = computed(() => hasOutputImageUnitPrice.value && 
 const showCacheWriteCost = computed(() => costBreakdown.value?.cacheWriteCostUsd !== undefined)
 const showCacheWrite1hCost = computed(() => costBreakdown.value?.cacheWrite1hCostUsd !== undefined)
 const showThinkingTokens = computed(() => (costBreakdown.value?.thinkingTokens ?? 0) > 0)
+const showAccountCharge = computed(() => costBreakdown.value?.accountChargeUsd !== undefined)
+const showInputPrice = computed(() => costBreakdown.value?.inputUsdPer1M !== undefined)
+const showOutputPrice = computed(() => costBreakdown.value?.outputUsdPer1M !== undefined)
+const showCacheReadPrice = computed(() => costBreakdown.value?.cacheReadUsdPer1M !== undefined)
 const showInputImagePrice = computed(() => hasInputImagePrice.value)
 const showOutputImagePrice = computed(() => hasOutputImagePrice.value)
 const showInputAudioPrice = computed(() => hasInputAudioPrice.value)
@@ -141,6 +148,18 @@ const showOutputAudioPrice = computed(() => hasOutputAudioPrice.value)
 const showOutputImageUnitPrice = computed(() => hasOutputImageUnitPrice.value)
 const showCacheWritePrice = computed(() => costBreakdown.value?.cacheWriteUsdPer1M !== undefined)
 const showCacheWrite1hPrice = computed(() => costBreakdown.value?.cacheWrite1hUsdPer1M !== undefined && costBreakdown.value.cacheWrite1hUsdPer1M !== costBreakdown.value.cacheWriteUsdPer1M)
+const showUnitPriceSection = computed(() =>
+  showInputPrice.value
+  || showOutputPrice.value
+  || showCacheReadPrice.value
+  || showCacheWritePrice.value
+  || showCacheWrite1hPrice.value
+  || showInputImagePrice.value
+  || showOutputImagePrice.value
+  || showInputAudioPrice.value
+  || showOutputAudioPrice.value
+  || showOutputImageUnitPrice.value
+)
 </script>
 
 <style scoped>

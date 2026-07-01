@@ -188,6 +188,7 @@
     "test:usage-record-snapshot-sanitize-boundary": "tsx src/scripts/regression/usage-record-snapshot-sanitize-boundary-regression.ts",
     "test:usage-stats-shard-fanout-boundary": "tsx src/scripts/regression/usage-stats-shard-fanout-boundary-regression.ts",
     "test:usage-record-list-catalog-window": "tsx src/scripts/regression/usage-record-list-catalog-window-regression.ts",
+    "test:usage-record-cost-breakdown-response": "tsx src/scripts/regression/usage-record-cost-breakdown-response-regression.ts",
     "test:usage-record-list-query-guard": "tsx src/scripts/regression/usage-record-list-query-guard-regression.ts",
     "test:account-usage-query-guard": "tsx src/scripts/regression/account-usage-query-guard-regression.ts",
     "test:account-usage-postgres-smoke": "tsx src/scripts/regression/account-usage-postgres-smoke.ts",

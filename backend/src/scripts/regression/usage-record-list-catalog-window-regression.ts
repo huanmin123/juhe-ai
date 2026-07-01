@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { SQLInputValue } from 'node:sqlite'
 
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
@@ -33,6 +34,7 @@ try {
   const group = repositories.createGroup({ name: '使用记录 catalog 窗口回归分组', providerCode: 'gpt', enabled: true }, access)
   const account = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '使用记录 catalog 窗口回归账户',
     type: 'api_key',
     credentials: {
@@ -57,6 +59,7 @@ try {
       accountId: account.id,
       endpoint: '/v1/responses',
       providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       model: 'gpt-5.5',
       stream: false,
       statusCode: index % 3 === 0 ? 429 : 200,
