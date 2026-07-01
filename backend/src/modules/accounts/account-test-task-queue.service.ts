@@ -21,7 +21,7 @@ import { requestBackgroundWorkerDbService, sendAccountRuntimeClearToServer, send
 import { operationMode, recordOperationLogAsync, resolveOperationOwner, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 import { buildOpenAIOAuthCredentials, refreshOpenAIOAuthToken, shouldRefreshOpenAIOAuthCredentials } from '../openai-oauth/openai-oauth.service.js'
 import { isGatewaySupportedProtocolProfile } from '../../domain/provider-protocol.js'
-import { preferredSystemAccountTestModel, preferredSystemAccountTestModelAsync, testOpenAIAccount, testOpenAIAccountWithDiagnosticRetries } from './account-test.service.js'
+import { preferredSystemAccountTestModelAsync, testOpenAIAccount, testOpenAIAccountWithDiagnosticRetries } from './account-test.service.js'
 import {
   type AccountDiagnosticAttemptProgress,
   accountDiagnosticAttemptProgress,

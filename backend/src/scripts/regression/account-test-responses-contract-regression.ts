@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-test-responses-contract-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -22,7 +23,7 @@ logger.level = 'silent'
 const seenResponsesPayloads: Record<string, unknown>[] = []
 
 const [
-  { preferredSystemAccountTestModel, testOpenAIAccount },
+  { preferredSystemAccountTestModelAsync, testOpenAIAccount },
   { flushGatewayAccountSideEffects },
   { flushAllUsageRecordQueue, setDbServiceUsageRecordLocalWriteAllowedForTest },
   databaseModule,
@@ -72,6 +73,7 @@ try {
   )
   const oauthAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '测试 OAuth 固定 Codex 账户',
     type: 'oauth',
     groupId: group.id,
@@ -103,6 +105,7 @@ try {
 
   const account = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '测试 Responses 当前契约账户',
     type: 'api_key',
     groupId: group.id,
@@ -110,11 +113,11 @@ try {
   }, access)
   assert.equal(account.clientCompatibility, 'codex_responses', 'GPT API Key 账户创建时默认应使用 Codex Responses 兼容')
 
-  assert.equal(preferredSystemAccountTestModel(account), 'gpt-5.5', '无手动成功测试模型时，系统复测应使用供应商默认测试模型')
+  assert.equal(await preferredSystemAccountTestModelAsync(account), 'gpt-5.5', '无手动成功测试模型时，系统复测应使用供应商默认测试模型')
   repositories.recordAccountSuccessfulTestModel(account.id, 'gpt-5.4', access)
   const accountWithSuccessfulModel = repositories.findAccountSummary(account.id, access)
   assert.equal(accountWithSuccessfulModel?.lastSuccessfulTestModel, 'gpt-5.4', '手动测试成功模型应写入账户')
-  assert.equal(preferredSystemAccountTestModel(accountWithSuccessfulModel!), 'gpt-5.4', '系统复测应优先使用手动测试通过模型')
+  assert.equal(await preferredSystemAccountTestModelAsync(accountWithSuccessfulModel!), 'gpt-5.4', '系统复测应优先使用手动测试通过模型')
 
   const tested = await testOpenAIAccount(account, { model: 'gpt-5.5' })
   await flushGatewayAccountSideEffects()
@@ -131,6 +134,7 @@ try {
 
   const defaultModelAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '测试 Responses 默认模型账户',
     type: 'api_key',
     groupId: group.id,
@@ -157,6 +161,7 @@ try {
   })
   const userDefaultModelAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '测试 Responses 用户默认测试模型账户',
     type: 'api_key',
     groupId: group.id,

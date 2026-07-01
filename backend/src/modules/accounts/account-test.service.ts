@@ -6,9 +6,8 @@ import type { AccountClientCompatibility, AccountSummary, AccountTestResult } fr
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { createTraceId, withRequestContext, type RequestContext } from '../../shared/request-context.js'
 import {
-  findProviderDefaultTestModel,
   findProviderDefaultTestModelAsync,
-  findAccountForTest,
+  findAccountForTestAsync,
   findOpenAIAccountForGroupAsync,
   type RecentOpenAIRequestShape,
   type OpenAIAccountSecret
@@ -328,15 +327,8 @@ async function loadAccountForTest(
   accountId: string,
   access?: AccessScope
 ): Promise<AccountSummary | undefined> {
-  const reader = input.findAccountForTest ?? findAccountForTest
+  const reader = input.findAccountForTest ?? findAccountForTestAsync
   return await reader(accountId, access)
-}
-
-export function preferredSystemAccountTestModel(account: Pick<AccountSummary, 'providerCode' | 'supportedModels' | 'lastSuccessfulTestModel' | 'systemAccountId' | 'ownerSystemAccountId' | 'bindingSystemAccountId'>): string {
-  return stringValue(account.lastSuccessfulTestModel)
-    || findProviderDefaultTestModel(account.providerCode, accountDefaultPreferenceSystemAccountId(account))
-    || account.supportedModels?.map((model) => stringValue(model)).find(Boolean)
-    || ''
 }
 
 export async function preferredSystemAccountTestModelAsync(account: Pick<AccountSummary, 'providerCode' | 'supportedModels' | 'lastSuccessfulTestModel' | 'systemAccountId' | 'ownerSystemAccountId' | 'bindingSystemAccountId'>): Promise<string> {
@@ -496,12 +488,6 @@ async function resolveAccountTestCandidate(account: AccountSummary, input: { gro
       clientCompatibility: input.clientCompatibility
     } : resolvedCandidate
   }
-}
-
-function defaultAccountTestModel(account: AccountSummary, requestSystemAccountId?: string): string {
-  return findProviderDefaultTestModel(account.providerCode, stringValue(requestSystemAccountId) || accountDefaultPreferenceSystemAccountId(account))
-    || account.supportedModels?.map((model) => stringValue(model)).find(Boolean)
-    || ''
 }
 
 async function defaultAccountTestModelAsync(account: AccountSummary, requestSystemAccountId?: string): Promise<string> {
