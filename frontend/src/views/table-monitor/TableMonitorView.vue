@@ -55,7 +55,7 @@
     />
 
     <a-row :gutter="[16, 16]" class="database-summary-grid">
-      <a-col v-for="item in databaseSummaryRows" :key="item.role" :xs="24" :lg="8">
+      <a-col v-for="item in databaseSummaryRows" :key="item.role" :xs="24" :sm="12" :xl="6">
         <a-card class="database-summary-card">
           <div class="database-summary-head">
             <a-tag :color="databaseRoleColor(item.role)">{{ databaseRoleLabel(item.role) }}</a-tag>
@@ -72,7 +72,7 @@
       </a-col>
     </a-row>
 
-    <a-card class="page-card history-card" title="三库增长趋势">
+    <a-card class="page-card history-card" title="四库增长趋势">
       <DeferredRender
         v-if="hasHistoryRows"
         :active="pageActive"
@@ -420,6 +420,10 @@ function resizeHistoryChart() {
   width: 100%;
   border: 1px solid #e8edf5;
   border-radius: 14px;
+}
+
+.database-summary-card :deep(.ant-card-body) {
+  padding: 20px 18px;
 }
 
 .database-summary-head {

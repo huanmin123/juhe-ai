@@ -33,6 +33,7 @@ import { getRequestLogger, requestContextMiddleware, sanitizeUrlForLog } from '.
 import { runtimeConfig } from '../../config/runtime.js'
 import { listPublicGlobalSettingsAsync } from '../../storage/repositories.js'
 import { systemApiAuthenticatedRateLimit, systemApiIpRateLimit } from './system-api-rate-limit.middleware.js'
+import { createHttpCompressionMiddleware } from '../../shared/http-compression.js'
 
 export interface SystemApiAppOptions {
   systemApiPrefix: string
@@ -59,6 +60,7 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   }
 
   app.use(requestContextMiddleware)
+  app.use(createHttpCompressionMiddleware())
   app.use(systemApiPrefix, systemApiIpRateLimit)
   app.use(systemApiPrefix, express.json({ limit: systemApiJsonBodyLimit }), handleJsonBodyError)
   app.use(publicApiPrefix, capturePublicApiLog, express.json({ limit: systemApiJsonBodyLimit }), handleJsonBodyError)

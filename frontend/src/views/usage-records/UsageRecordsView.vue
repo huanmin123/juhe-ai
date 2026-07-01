@@ -89,6 +89,7 @@ import UsageRecordsFilterToolbar from './UsageRecordsFilterToolbar.vue'
 import UsageRecordsTable from './UsageRecordsTable.vue'
 import { usageRecordActiveFilterCount, usageRecordAdvancedFilterCount, usageRecordListParams } from './usageRecordFilters'
 import {
+  defaultUsageRecordTrafficSourceFilter,
   defaultUsageRecordsPageState,
   parseUsageRecordDateRange,
   usageRecordDateRangeParam,
@@ -108,12 +109,14 @@ import { useUsageRecordModelOptions } from './useUsageRecordModelOptions'
 import { useUsageRecordTraceRoute } from './useUsageRecordTraceRoute'
 
 type TraceTarget = 'audit' | 'runtime'
-const pageStateCache = usePageStateCache<UsageRecordsPageState>(undefined, defaultUsageRecordsPageState, { version: 8 })
 const route = useRoute()
+const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
+const defaultPageState = () => defaultUsageRecordsPageState(defaultUsageRecordTrafficSourceFilter(route.meta.viewScope === 'admin'))
+const pageStateCache = usePageStateCache<UsageRecordsPageState>(undefined, defaultPageState, { version: 9 })
 const initialRouteTraceId = trimmedRouteQueryValue(route.query.traceId)
 const cachedInitialPageState = pageStateCache.read()
 const initialPageState = initialRouteTraceId
-  ? { ...defaultUsageRecordsPageState(), traceIdFilter: initialRouteTraceId }
+  ? { ...defaultPageState(), traceIdFilter: initialRouteTraceId }
   : cachedInitialPageState
 
 const accountNameFilter = ref(initialPageState.accountNameFilter)
@@ -127,7 +130,6 @@ const systemAccountFilter = ref(initialPageState.systemAccountFilter)
 const systemAccountFilterSelection = ref<PrincipalSelection | undefined>(initialPageState.systemAccountFilterSelection)
 const traceIdFilter = ref(initialPageState.traceIdFilter ?? '')
 const trafficSourceFilter = ref<UsageRecordTrafficSource | 'all'>(initialPageState.trafficSourceFilter)
-const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const usageRecordsApi = useScopedUsageRecordsApi(isManagementView)
 const groupsApi = useScopedGroupsApi(isManagementView)
 const router = useRouter()
@@ -286,7 +288,7 @@ const traceRoute = useUsageRecordTraceRoute({
 
 function resetFilters(): void {
   traceRoute.clearRouteTraceIdForManualState()
-  const defaults = defaultUsageRecordsPageState()
+  const defaults = defaultPageState()
   accountNameFilter.value = defaults.accountNameFilter
   clientIpFilter.value = defaults.clientIpFilter
   dateRangeFilter.value = parseUsageRecordDateRange(defaults.dateRangeFilter)

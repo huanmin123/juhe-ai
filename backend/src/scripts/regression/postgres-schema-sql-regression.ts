@@ -61,6 +61,8 @@ assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_cli
 assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_provider_default_unique ON groups\(system_account_id, provider_code\) WHERE is_default = 1/, '默认分组应按 provider_code 保持唯一')
 assert.doesNotMatch(sql, /idx_groups_owner_protocol_profile_default_unique|groups\(system_account_id, provider_protocol_profile_id\)/, '默认分组不应再按 provider protocol profile 限制唯一')
 assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_provider_models_personal_unique\s+ON custom_provider_models\(provider_code, system_account_id, model\)\s+WHERE scope = 'personal'/, '自定义模型唯一索引应保留模型 ID 大小写语义')
+assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_provider_models_global_unique\s+ON custom_provider_models\(provider_code, model\)\s+WHERE scope = 'global'/, '全局自定义模型应按 provider + model 保持唯一')
+assert.match(sql, /scope IN \('personal', 'global'\)/, '自定义模型 scope 应支持个人和全局作用域')
 assert.doesNotMatch(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_provider_models_personal_unique_lower[\s\S]+lower\(model\)/, '自定义模型不应再用 lower(model) 限制唯一')
 assert.doesNotMatch(sql, /idx_provider_default_test_models_model\s+ON provider_default_test_models\(provider_code, lower\(model\), system_account_id\)/, '默认测试模型索引不应再折叠模型 ID 大小写')
 assert.doesNotMatch(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_route_strategies_owner_default_unique ON route_strategies\(system_account_id\) WHERE is_default = 1/, '默认策略路由不应再限制为每个系统账户唯一')

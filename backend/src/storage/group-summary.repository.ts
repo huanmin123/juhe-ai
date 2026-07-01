@@ -29,7 +29,7 @@ import type { GroupListRow } from './repository-row-types.js'
 import { parseRequestQuotaLimitsJson } from './request-quota-limits.js'
 import { isResourceAuthorizationExpired, sanitizeAuthorizationSourcesForViewer, usageScope } from './resource-authorization-helpers.js'
 import { authorizedGroupPermissions, hasActiveManualAuthorizationSource, ownerPermissions } from './resource-permissions.js'
-import { emptyAccountUsageSummary, todayDateKey, usageStatsTimezone } from './usage-stats-helpers.js'
+import { emptyAccountUsageSummary, todayDateKey, usageStatsTimezone, usageStatsTimezoneAsync } from './usage-stats-helpers.js'
 import { loadGroupUsageSummariesForScopes, loadGroupUsageSummariesForScopesAsync } from './usage-summary-loaders.js'
 
 export function listGroups(access?: AccessScope): GroupSummary[] {
@@ -228,7 +228,10 @@ function buildGroupSummaries(rows: GroupListRow[], access?: AccessScope): GroupS
 }
 
 async function buildGroupSummariesAsync(rows: GroupListRow[], access?: AccessScope): Promise<GroupSummary[]> {
-  const timezone = usageStatsTimezone()
+  const [timezone, client] = await Promise.all([
+    usageStatsTimezoneAsync(),
+    getGroupSummaryDatabaseClient()
+  ])
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   const groupIds = rows.map((row) => row.id)
   const groupUsageScopes = rows.map((row) => usageScope(row.id, row.system_account_id, row.id))
@@ -247,7 +250,7 @@ async function buildGroupSummariesAsync(rows: GroupListRow[], access?: AccessSco
   ] = await Promise.all([
     loadGroupAccountStatsByGroupIdsAsync(groupIds),
     loadGroupAccountIdsByGroupIdsAsync(groupIds),
-    loadSystemAccountNameMapByIdsAsync(await getGroupSummaryDatabaseClient(), rows.map((row) => row.system_account_id)),
+    loadSystemAccountNameMapByIdsAsync(client, rows.map((row) => row.system_account_id)),
     loadResourceAuthorizationSourcesByAuthorizationIdsAsync(rows.map((row) => row.authorization_id ?? '')),
     loadGroupUsageSummariesForScopesAsync(groupUsageScopes, todayDateKey(timezone)),
     loadGroupUsageSummariesForScopesAsync(groupUsageScopes),

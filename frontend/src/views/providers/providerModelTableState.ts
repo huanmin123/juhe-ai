@@ -3,6 +3,7 @@ import type { ProviderModelPricing } from '@/types/domain'
 import {
   formatApiProtocol,
   formatModelCategory,
+  formatModelScope,
   getModelCategory,
   hasAnyNumber,
   hasDirectModelPrice,
@@ -91,6 +92,6 @@ export function buildPricingTemplateOptions(
     .filter((item) => !item.pricingModel && hasDirectModelPrice(item))
     .map((item) => ({
       value: item.model,
-      label: `${item.model}${item.scope === 'built_in' ? '（内置）' : '（个人）'}`
+      label: `${item.model}（${formatModelScope(item.scope)}）`
     }))
 }

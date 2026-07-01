@@ -118,8 +118,16 @@ export async function clearProviderDefaultTestModelPreferenceIfModelAsync(input:
   const systemAccountId = normalizeText(input.systemAccountId)
   const providerCode = normalizeText(input.providerCode)
   const model = normalizeModel(input.model)
-  if (!systemAccountId || !providerCode || !model) return false
+  if (!providerCode || !model) return false
   const client = await getProviderDefaultTestModelDatabaseClient()
+  if (!systemAccountId) {
+    const result = await client.execute(`
+      DELETE FROM ${providerDefaultTestModelTable(client)}
+      WHERE provider_code = ?
+        AND model = ?
+    `, [providerCode, model])
+    return Number(result.changes ?? 0) > 0
+  }
   const result = await client.execute(`
     DELETE FROM ${providerDefaultTestModelTable(client)}
     WHERE system_account_id = ?

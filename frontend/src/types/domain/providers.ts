@@ -1,6 +1,6 @@
 import type { AccountType, ProviderCode } from './base'
 
-export type ProviderModelScope = 'built_in' | 'personal'
+export type ProviderModelScope = 'built_in' | 'global' | 'personal'
 export type CustomProviderModelScope = Exclude<ProviderModelScope, 'built_in'>
 export type ProviderModelStatus = 'draft' | 'active' | 'disabled'
 export type ProviderModelMode = 'text' | 'image' | 'audio'
@@ -112,6 +112,7 @@ export interface ProviderModelsParams {
 }
 
 export interface ProviderModelUpsertPayload {
+  scope?: CustomProviderModelScope
   model: string
   status?: ProviderModelStatus
   mode?: ProviderModelMode | null

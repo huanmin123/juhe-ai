@@ -3,7 +3,7 @@ import { z } from 'zod'
 
 import { badRequest, ok, sendNotFound } from '../../shared/http.js'
 import { listProvidersAsync } from '../../storage/repositories.js'
-import type { ProviderDefinition } from '../../domain/types.js'
+import { isAdminRole, type ProviderDefinition } from '../../domain/types.js'
 import {
   listAnthropicProtocolProviderCodesAsync,
   listGeminiProtocolProviderCodesAsync,
@@ -35,19 +35,19 @@ interface ProviderModelOption {
   supportedApiProtocols?: ProviderModelApiProtocol[]
 }
 
-providersRouter.get('/', requireAdmin, async (_req, res, next) => {
+providersRouter.get('/', requireAdmin, async (req, res, next) => {
   try {
-    const context = getRequestAuthContext()
-    res.json(ok(await listProvidersForRequestAsync(context?.systemAccountId)))
+    const access = getRequestAccessScope(req.query.systemAccountId)
+    res.json(ok(await listProvidersForRequestAsync(providerModelRequestSystemAccountId(access))))
   } catch (error) {
     next(error)
   }
 })
 
-providersRouter.get('/options', async (_req, res, next) => {
+providersRouter.get('/options', async (req, res, next) => {
   try {
-    const context = getRequestAuthContext()
-    res.json(ok((await listProvidersForRequestAsync(context?.systemAccountId)).filter((provider) => provider.enabled)))
+    const access = getRequestAccessScope(req.query.systemAccountId)
+    res.json(ok((await listProvidersForRequestAsync(providerModelRequestSystemAccountId(access))).filter((provider) => provider.enabled)))
   } catch (error) {
     next(error)
   }
@@ -134,10 +134,16 @@ providersRouter.put('/:code/default-test-model', async (req, res, next) => {
       res.status(400).json(badRequest('默认测试模型参数无效'))
       return
     }
+    const access = getRequestAccessScope(req.query.systemAccountId)
+    const targetSystemAccountId = providerModelRequestSystemAccountId(access)
+    if (!targetSystemAccountId) {
+      res.status(400).json(badRequest('请选择要设置默认测试模型的系统账户'))
+      return
+    }
     const model = parsed.data.model
     const validation = await validateDefaultTestModelSelection({
       providerCode: provider.code,
-      systemAccountId: context.systemAccountId,
+      systemAccountId: targetSystemAccountId,
       model
     })
     if (!validation.success) {
@@ -146,7 +152,7 @@ providersRouter.put('/:code/default-test-model', async (req, res, next) => {
     }
     const saved = await upsertProviderDefaultTestModelPreferenceAsync({
       providerCode: provider.code,
-      systemAccountId: context.systemAccountId,
+      systemAccountId: targetSystemAccountId,
       model: validation.model
     })
     res.json(ok({
@@ -165,6 +171,7 @@ const nullableNumberSchema = z.number().min(0).nullable().optional()
 const nullableModelModeSchema = z.enum(['text', 'image', 'audio']).nullable().optional()
 
 const customModelSchema = z.object({
+  scope: z.enum(['personal', 'global']).optional(),
   model: z.string().trim().min(1),
   status: z.enum(['draft', 'active', 'disabled']).optional(),
   mode: nullableModelModeSchema,
@@ -221,7 +228,19 @@ providersRouter.post('/:code/models', async (req, res, next) => {
       res.status(400).json(badRequest('自定义模型参数无效'))
       return
     }
-    const ownerSystemAccountId = context.systemAccountId
+    const scope = parsed.data.scope ?? 'personal'
+    if (scope === 'global' && !isAdminRole(context.role)) {
+      res.status(403).json({ message: '只有管理员可以创建全局模型' })
+      return
+    }
+    const access = getRequestAccessScope(req.query.systemAccountId)
+    const ownerSystemAccountId = scope === 'global'
+      ? undefined
+      : providerModelRequestSystemAccountId(access)
+    if (scope === 'personal' && !ownerSystemAccountId) {
+      res.status(400).json(badRequest('请选择模型归属的系统账户'))
+      return
+    }
     const validation = await validateCustomModelPricing({
       providerCode: provider.code,
       ownerSystemAccountId,
@@ -234,6 +253,7 @@ providersRouter.post('/:code/models', async (req, res, next) => {
     try {
       const saved = await saveCustomProviderModelAsync({
         ...parsed.data,
+        scope,
         providerCode: provider.code,
         systemAccountId: ownerSystemAccountId,
         actorSystemAccountId: context.systemAccountId
@@ -279,7 +299,7 @@ providersRouter.patch('/:code/models/:id', async (req, res, next) => {
     }
     const validation = await validateCustomModelPricing({
       providerCode: existing.providerCode,
-      ownerSystemAccountId: existing.systemAccountId,
+      ownerSystemAccountId: existing.scope === 'global' ? undefined : existing.systemAccountId,
       input: next
     })
     if (!validation.success) {
@@ -296,7 +316,7 @@ providersRouter.patch('/:code/models/:id', async (req, res, next) => {
       if (saved.status !== 'active') {
         await clearProviderDefaultTestModelPreferenceIfModelAsync({
           providerCode: saved.providerCode,
-          systemAccountId: saved.systemAccountId,
+          systemAccountId: saved.scope === 'global' ? undefined : saved.systemAccountId,
           model: saved.model
         })
       }
@@ -341,7 +361,7 @@ providersRouter.delete('/:code/models/:id', async (req, res, next) => {
     if (deleted) {
       await clearProviderDefaultTestModelPreferenceIfModelAsync({
         providerCode: existing.providerCode,
-        systemAccountId: existing.systemAccountId,
+        systemAccountId: existing.scope === 'global' ? undefined : existing.systemAccountId,
         model: existing.model
       })
     }
@@ -352,7 +372,7 @@ providersRouter.delete('/:code/models/:id', async (req, res, next) => {
 })
 
 function providerModelRequestSystemAccountId(access?: RequestAccessScope): string | undefined {
-  return access?.systemAccountId
+  return access?.systemAccountFilterId ?? access?.systemAccountId
 }
 
 async function listProvidersForRequestAsync(systemAccountId?: string): Promise<ProviderDefinition[]> {
@@ -489,11 +509,12 @@ function booleanQueryValue(value: unknown): boolean | undefined {
 }
 
 function canMutateCustomModel(
-  scope: 'personal',
+  scope: 'global' | 'personal',
   ownerSystemAccountId: string | undefined,
   context: { systemAccountId: string; role: string }
 ): boolean {
-  return scope === 'personal' && ownerSystemAccountId === context.systemAccountId
+  if (scope === 'global') return isAdminRole(context.role)
+  return ownerSystemAccountId === context.systemAccountId || isAdminRole(context.role)
 }
 
 function customModelBoundToAccountMessage(input: {

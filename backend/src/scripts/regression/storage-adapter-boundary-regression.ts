@@ -93,6 +93,7 @@ assertNoRuntimeNodeSqliteValueImports(sourceFiles)
 assertNoUnexpectedRawDriverImports(sourceFiles)
 assertStorageRuntimeSkeletonBoundary()
 assertGatewayRuntimeCachePostgresWorkerBoundary()
+assertGroupSummaryAsyncTimezoneBoundary()
 
 const summary: Record<string, unknown> = {
   message: 'storage-adapter-boundary-regression passed',
@@ -324,6 +325,16 @@ function assertGatewayRuntimeCachePostgresWorkerBoundary(): void {
     assert.ok(sideEffectSource.includes('requestGatewayDbService'), `${relativePath} 应使用 worker-safe DB service 请求包装`)
     assert.doesNotMatch(sideEffectSource, /\brequestDbService\(/, `${relativePath} 不得直接调用 requestDbService`)
   }
+}
+
+function assertGroupSummaryAsyncTimezoneBoundary(): void {
+  const source = readFileSync(resolve(srcRoot, 'storage/group-summary.repository.ts'), 'utf8')
+  const start = source.indexOf('async function buildGroupSummariesAsync')
+  const end = source.indexOf('function canBindAuthorizedGroupRowToApiKey', start)
+  assert.ok(start >= 0 && end > start, '分组汇总必须保留 buildGroupSummariesAsync async 入口')
+  const asyncFunction = source.slice(start, end)
+  assert.match(asyncFunction, /\busageStatsTimezoneAsync\(\)/, 'PG 分组汇总 async 路径必须使用 async 时区配置')
+  assert.doesNotMatch(asyncFunction, /\busageStatsTimezone\(\)/, 'PG 分组汇总 async 路径不能调用同步时区配置，避免回退 SQLite')
 }
 
 function countBy<T>(items: T[], key: (item: T) => string): Record<string, number> {

@@ -64,12 +64,26 @@ export function resolveOpenAIAccountModelMapping(
   if (account?.providerProtocolProfileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID && sourceEndpointFamily === ANTHROPIC_MESSAGES_FAMILY) {
     return undefined
   }
-  const mapping = (account?.modelMappings ?? []).find((item) => (
-    item.enabled !== false
-    && item.sourceModel === model
+  const mappings = account?.modelMappings ?? []
+  const mapping = mappings.find((item) => (
+    item.sourceModel === model
     && item.sourceEndpointFamily === sourceEndpointFamily
   ))
-  if (!mapping || (mapping.upstreamModel === mapping.sourceModel && mapping.upstreamEndpointFamily === mapping.sourceEndpointFamily)) return undefined
+  const exactMapping = resolvedOpenAIAccountModelMapping(mapping, account)
+  if (exactMapping || mapping) return exactMapping
+
+  if (sourceEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY) {
+    return implicitChatCompletionsMappingFromResponsesAlias(mappings, model, account)
+  }
+  return undefined
+}
+
+function resolvedOpenAIAccountModelMapping(
+  mapping: AccountModelMapping | undefined,
+  account: OpenAIModelMappingRuntimeAccount | undefined
+): ResolvedOpenAIModelMapping | undefined {
+  if (!mapping || mapping.enabled === false) return undefined
+  if (mapping.upstreamModel === mapping.sourceModel && mapping.upstreamEndpointFamily === mapping.sourceEndpointFamily) return undefined
   if ((mapping as { runtimeSource?: unknown }).runtimeSource === 'explicit_hybrid_route') return undefined
   if (!isOpenAIModelMappingRuntimeConversionSupported(mapping, account)) return undefined
   return {
@@ -80,6 +94,27 @@ export function resolveOpenAIAccountModelMapping(
     ...(mapping.runtimeSource ? { runtimeSource: mapping.runtimeSource } : {}),
     ...(mapping.runtimeRouteRuleId ? { runtimeRouteRuleId: mapping.runtimeRouteRuleId } : {})
   }
+}
+
+function implicitChatCompletionsMappingFromResponsesAlias(
+  mappings: AccountModelMapping[],
+  model: string,
+  account: OpenAIModelMappingRuntimeAccount | undefined
+): ResolvedOpenAIModelMapping | undefined {
+  const mapping = mappings.find((item) => (
+    item.enabled !== false
+    && item.sourceModel === model
+    && item.sourceEndpointFamily === OPENAI_RESPONSES_FAMILY
+    && item.upstreamEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY
+  ))
+  if (!mapping || mapping.upstreamModel === model) return undefined
+  if ((mapping as { runtimeSource?: unknown }).runtimeSource === 'explicit_hybrid_route') return undefined
+  const chatMapping = {
+    ...mapping,
+    sourceEndpointFamily: OPENAI_CHAT_COMPLETIONS_FAMILY,
+    upstreamEndpointFamily: OPENAI_CHAT_COMPLETIONS_FAMILY
+  } satisfies AccountModelMapping
+  return resolvedOpenAIAccountModelMapping(chatMapping, account)
 }
 
 export function resolveOpenAIRequestModelMapping(

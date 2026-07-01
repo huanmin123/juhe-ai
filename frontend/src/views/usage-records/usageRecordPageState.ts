@@ -28,7 +28,7 @@ export type UsageRecordsPageState = {
 
 export const usageRecordsPageSize = 20
 
-export function defaultUsageRecordsPageState(): UsageRecordsPageState {
+export function defaultUsageRecordsPageState(trafficSourceFilter: UsageRecordTrafficSource | 'all' = 'all'): UsageRecordsPageState {
   return {
     accountNameFilter: '',
     clientIpFilter: '',
@@ -42,8 +42,12 @@ export function defaultUsageRecordsPageState(): UsageRecordsPageState {
     systemAccountFilter: allSystemAccountsValue,
     systemAccountFilterSelection: undefined,
     traceIdFilter: '',
-    trafficSourceFilter: 'all'
+    trafficSourceFilter
   }
+}
+
+export function defaultUsageRecordTrafficSourceFilter(isManagementView: boolean): UsageRecordTrafficSource | 'all' {
+  return isManagementView ? 'all' : 'gateway'
 }
 
 export function parseUsageRecordDateRange(value?: [string, string]): [Dayjs, Dayjs] | undefined {

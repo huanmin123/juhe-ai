@@ -251,6 +251,7 @@
     "test:gateway-api-key-route-query-guard": "tsx src/scripts/regression/gateway-api-key-route-query-guard-regression.ts",
     "test:gateway-storage-cache-invalidation": "tsx src/scripts/regression/gateway-storage-cache-invalidation-regression.ts",
     "test:gateway-models-pre-auth": "tsx src/scripts/regression/gateway-models-pre-auth-regression.ts",
+    "test:http-compression": "tsx src/scripts/regression/http-compression-regression.ts",
     "test:gateway-diagnostic-sanitizer": "tsx src/scripts/regression/gateway-diagnostic-sanitizer-regression.ts",
     "test:gateway-auth-preflight-body": "tsx src/scripts/regression/gateway-auth-preflight-body-regression.ts",
     "test:api-key-image-permission": "tsx src/scripts/regression/api-key-image-permission-regression.ts",
@@ -377,6 +378,7 @@
   "dependencies": {
     "@vscode/ripgrep": "1.18.0",
     "busboy": "^1.6.0",
+    "compression": "^1.8.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
@@ -391,6 +393,7 @@
   },
   "devDependencies": {
     "@types/busboy": "^1.5.4",
+    "@types/compression": "^1.8.1",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/node": "^22.19.0",

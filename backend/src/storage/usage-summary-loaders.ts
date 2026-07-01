@@ -156,14 +156,14 @@ async function loadUsageSummariesForScopeRequestsAsync(scopes: UsageSummaryScope
           input_tokens,
           output_tokens,
           cache_read_tokens,
-          cache_read_cost_usd,
+          CAST(cache_read_cost_usd AS double precision) AS cache_read_cost_usd,
           cache_write_tokens,
           cache_write_1h_tokens,
-          cache_write_cost_usd,
+          CAST(cache_write_cost_usd AS double precision) AS cache_write_cost_usd,
           thinking_tokens,
           input_image_tokens,
           output_image_tokens,
-          total_cost_usd AS total_cost,
+          CAST(total_cost_usd AS double precision) AS total_cost,
           last_used_at
         FROM ${source.tableName}
         WHERE system_account_id = ?
@@ -281,14 +281,14 @@ async function loadUsageRangeSummariesForScopeRequestsAsync(scopes: UsageSummary
           input_tokens,
           output_tokens,
           cache_read_tokens,
-          cache_read_cost_usd,
+          CAST(cache_read_cost_usd AS double precision) AS cache_read_cost_usd,
           cache_write_tokens,
           cache_write_1h_tokens,
-          cache_write_cost_usd,
+          CAST(cache_write_cost_usd AS double precision) AS cache_write_cost_usd,
           thinking_tokens,
           input_image_tokens,
           output_image_tokens,
-          total_cost_usd AS total_cost,
+          CAST(total_cost_usd AS double precision) AS total_cost,
           last_used_at
         FROM ${tableName}
         WHERE system_account_id = ?
@@ -339,6 +339,10 @@ export function loadAccountUsageSummariesForScopes(scopes: UsageSummaryScopeRequ
   return loadUsageSummariesForScopeRequests(scopes, 'account', statDate)
 }
 
+export async function loadAccountUsageSummariesForScopesAsync(scopes: UsageSummaryScopeRequest[], statDate?: string): Promise<Map<string, AccountUsageSummary>> {
+  return loadUsageSummariesForScopeRequestsAsync(scopes, 'account', statDate)
+}
+
 export function loadGroupUsageSummariesForScopes(scopes: UsageSummaryScopeRequest[], statDate?: string): Map<string, AccountUsageSummary> {
   return loadUsageSummariesForScopeRequests(scopes, 'group', statDate)
 }
@@ -349,6 +353,10 @@ export async function loadGroupUsageSummariesForScopesAsync(scopes: UsageSummary
 
 export function loadApiKeyUsageSummariesForScopes(scopes: UsageSummaryScopeRequest[], statDate?: string): Map<string, AccountUsageSummary> {
   return loadUsageSummariesForScopeRequests(scopes, 'api_key', statDate)
+}
+
+export async function loadApiKeyUsageSummariesForScopesAsync(scopes: UsageSummaryScopeRequest[], statDate?: string): Promise<Map<string, AccountUsageSummary>> {
+  return loadUsageSummariesForScopeRequestsAsync(scopes, 'api_key', statDate)
 }
 
 export function loadAuthorizationUsageSummariesForScopes(scopes: UsageSummaryScopeRequest[], scopeType: AuthorizationUsageScopeType, statDate?: string): Map<string, AccountUsageSummary> {

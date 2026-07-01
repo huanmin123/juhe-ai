@@ -1,6 +1,6 @@
 <template>
   <span class="cost-cell-wrap">
-    <span class="cost-cell">{{ formatCost(record.costUsd) }}</span>
+    <span class="cost-cell">{{ formatCost(displayCostUsd) }}</span>
     <a-popover v-if="costBreakdown" trigger="hover" placement="right" overlay-class-name="cost-popover">
       <template #content>
         <div class="cost-detail-panel">
@@ -121,6 +121,7 @@ const props = defineProps<{
 }>()
 
 const costBreakdown = computed(() => props.record.costBreakdown)
+const displayCostUsd = computed(() => props.record.costUsd ?? costBreakdown.value?.accountChargeUsd)
 const hasInputImagePrice = computed(() => costBreakdown.value?.inputImageUsdPer1M !== undefined && costBreakdown.value.inputImageUsdPer1M !== costBreakdown.value.inputUsdPer1M)
 const hasOutputImagePrice = computed(() => costBreakdown.value?.outputImageUsdPer1M !== undefined && costBreakdown.value.outputImageUsdPer1M !== costBreakdown.value.outputUsdPer1M)
 const hasInputAudioPrice = computed(() => costBreakdown.value?.inputAudioUsdPer1M !== undefined && costBreakdown.value.inputAudioUsdPer1M !== costBreakdown.value.inputUsdPer1M)

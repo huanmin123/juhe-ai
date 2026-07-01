@@ -11,6 +11,22 @@
       <div class="model-toolbar">
         <div class="model-toolbar-filters">
           <a-input-search v-model:value="keyword" allow-clear placeholder="搜索模型名称、用途或接口协议" class="model-search" />
+          <SystemPrincipalSelect
+            v-if="isManagementView"
+            :value="systemAccountFilter"
+            :accounts="systemAccounts"
+            :active-only="false"
+            :filter-option="false"
+            :loading="systemAccountsLoading"
+            :selected-principal="systemAccountFilterSelection"
+            class="model-owner-select"
+            placeholder="选择模型归属用户"
+            @update:value="handleSystemAccountUpdate"
+            @update:selected-principal="emit('update:systemAccountFilterSelection', $event)"
+            @change="emit('system-account-change')"
+            @dropdown-visible-change="emit('system-account-dropdown', $event)"
+            @search="emit('system-account-search', $event)"
+          />
         </div>
         <a-space wrap>
           <a-button type="primary" @click="emit('create')">新增模型</a-button>
@@ -140,8 +156,10 @@
 <script setup lang="ts">
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import RowActions from '@/components/RowActions.vue'
+import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import type { RowActionItem } from '@/components/rowActions'
-import type { ProviderModelPricing } from '@/types/domain'
+import type { PrincipalSelection } from '@/shared/principalLabelCache'
+import type { ProviderModelPricing, SystemAccountPrincipalSummary } from '@/types/domain'
 
 import {
   formatApiProtocol,
@@ -163,7 +181,7 @@ const open = defineModel<boolean>('open', { required: true })
 const keyword = defineModel<string>('keyword', { required: true })
 const selectedCategory = defineModel<ModelCategoryKey>('selectedCategory', { required: true })
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   title: string
   loading: boolean
   categoryTabs: Array<{ key: ModelCategoryKey; label: string }>
@@ -172,17 +190,37 @@ const props = defineProps<{
   currentCategoryCount: number
   defaultTestModel?: string
   rowActions: (record: ProviderModelPricing) => RowActionItem[]
-}>()
+  isManagementView?: boolean
+  systemAccounts?: SystemAccountPrincipalSummary[]
+  systemAccountsLoading?: boolean
+  systemAccountFilter?: string
+  systemAccountFilterSelection?: PrincipalSelection
+}>(), {
+  isManagementView: false,
+  systemAccounts: () => [],
+  systemAccountsLoading: false,
+  systemAccountFilter: '',
+  systemAccountFilterSelection: undefined
+})
 
 const emit = defineEmits<{
   cancel: []
   create: []
   'model-action': [key: string, record: ProviderModelPricing]
+  'update:systemAccountFilter': [value: string]
+  'update:systemAccountFilterSelection': [value: PrincipalSelection | undefined]
+  'system-account-change': []
+  'system-account-dropdown': [open: boolean]
+  'system-account-search': [value: string]
 }>()
 
 function isDefaultTestModel(record: ProviderModelPricing): boolean {
   const defaultModel = props.defaultTestModel?.trim()
   return Boolean(defaultModel && record.model.trim() === defaultModel)
+}
+
+function handleSystemAccountUpdate(value: string | string[] | undefined): void {
+  emit('update:systemAccountFilter', typeof value === 'string' ? value : '')
 }
 </script>
 
@@ -244,6 +282,10 @@ function isDefaultTestModel(record: ProviderModelPricing): boolean {
 
 .model-search {
   width: 320px;
+}
+
+.model-owner-select {
+  width: 260px;
 }
 
 .model-table {
@@ -315,6 +357,10 @@ function isDefaultTestModel(record: ProviderModelPricing): boolean {
   }
 
   .model-search {
+    width: 100%;
+  }
+
+  .model-owner-select {
     width: 100%;
   }
 

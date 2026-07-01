@@ -475,7 +475,7 @@ function toCustomCatalogItem(item: CustomProviderModelRecord): ProviderModelCata
     supportsPromptCaching: item.cachedInputUsdPer1M !== undefined,
     supportsServiceTier: false,
     catalogVisible: true,
-    source: 'custom-personal',
+    source: item.scope === 'global' ? 'custom-global' : 'custom-personal',
     scope: item.scope,
     status: item.status,
     systemAccountId: item.systemAccountId,
@@ -546,6 +546,7 @@ function codexContextWindow(item: ProviderModelCatalogItem): number {
 
 function catalogPriority(item: ProviderModelCatalogItem): number {
   if (item.scope === 'personal') return 3
+  if (item.scope === 'global') return 2
   return 1
 }
 

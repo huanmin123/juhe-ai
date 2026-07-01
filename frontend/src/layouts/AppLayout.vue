@@ -77,7 +77,7 @@ import type { MenuProps } from 'ant-design-vue'
 import { message } from '@/lib/antd'
 import type { ItemType } from 'ant-design-vue'
 import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { isNavigationFailure, useRoute, useRouter } from 'vue-router'
 
 import { api } from '@/api/client'
 import { authState, changePassword, logout, updateProfile } from '@/composables/useAuth'
@@ -90,7 +90,7 @@ import {
   syncMenuModeWithUser,
   type AppMenuMode
 } from '@/composables/useMenuMode'
-import { menuRoutes } from '@/router'
+import { menuRoutes, recoverRouteAssetLoadError } from '@/router'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { isAdminRole, systemAccountRoleLabel } from '@/shared/systemAccountRoles'
 import type { PublishedAnnouncementSummary } from '@/types/domain'
@@ -279,7 +279,7 @@ function handleMenuClick(event: { key: string | number }) {
     sidebarOpen.value = false
     return
   }
-  router.push(key)
+  void pushRouteSafely(key)
   sidebarOpen.value = false
 }
 
@@ -387,7 +387,18 @@ async function switchMenuMode() {
   const targetPath = getDefaultPathForMenuMode(savedMode)
   message.success(savedMode === 'admin' ? '已切换到管理模式' : '已切换到用户模式')
   if (route.path !== targetPath) {
-    await router.push(targetPath)
+    await pushRouteSafely(targetPath)
+  }
+}
+
+async function pushRouteSafely(path: string): Promise<void> {
+  try {
+    await router.push(path)
+  } catch (error) {
+    if (recoverRouteAssetLoadError(error, router, path)) return
+    if (!isNavigationFailure(error)) {
+      console.error(error)
+    }
   }
 }
 

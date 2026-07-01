@@ -10,7 +10,7 @@ import { loadSystemAccountNameMapByIds } from './repository-lookups.js'
 import { parseRequestQuotaLimitsJson } from './request-quota-limits.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { emptyAccountUsageSummary } from './usage-stats-helpers.js'
-import { loadApiKeyUsageSummariesForScopes } from './usage-summary-loaders.js'
+import { loadApiKeyUsageSummariesForScopes, loadApiKeyUsageSummariesForScopesAsync } from './usage-summary-loaders.js'
 import { chunkValues } from './query-utils.js'
 
 export interface ApiKeyRow {
@@ -61,14 +61,18 @@ export async function apiKeySummariesFromRowsAsync(
   const includeSecret = options.includeSecret === true
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
   const client = await getApiKeyMapperDatabaseClient()
-  const accountNames = shouldIncludeSystemAccountFields
-    ? await loadSystemAccountNameMapByIdsAsync(client, rows.map((row) => row.system_account_id))
-    : new Map<string, string>()
+  const usageScopes = rows.map((row) => ({ rowKey: row.id, systemAccountId: row.system_account_id, scopeId: row.id }))
+  const [accountNames, usageByApiKey] = await Promise.all([
+    shouldIncludeSystemAccountFields
+      ? loadSystemAccountNameMapByIdsAsync(client, rows.map((row) => row.system_account_id))
+      : Promise.resolve(new Map<string, string>()),
+    loadApiKeyUsageSummariesForScopesAsync(usageScopes)
+  ])
   return rows.map((row) => apiKeySummaryFromRow(row, {
     includeSecret,
     shouldIncludeSystemAccountFields,
     accountNames,
-    usage: emptyAccountUsageSummary()
+    usage: usageByApiKey.get(row.id) ?? emptyAccountUsageSummary()
   }))
 }
 

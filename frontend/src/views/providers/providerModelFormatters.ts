@@ -139,12 +139,14 @@ export function formatModelCategory(item: ProviderModelPricing): string {
 
 export function formatModelScope(scope?: string): string {
   if (scope === 'built_in') return '内置'
+  if (scope === 'global') return '全局'
   if (scope === 'personal') return '个人'
   return '-'
 }
 
 export function modelScopeColor(scope?: string): string {
   if (scope === 'built_in') return 'blue'
+  if (scope === 'global') return 'purple'
   if (scope === 'personal') return 'green'
   return 'default'
 }

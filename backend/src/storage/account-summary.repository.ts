@@ -25,8 +25,8 @@ import { authorizedAccountPermissions, hasActiveManualAuthorizationSource, owner
 import { loadSystemAccountNameMapByIds } from './repository-lookups.js'
 import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from './request-quota-limits.js'
 import type { AccountListRow, ResourceAuthorizationRow } from './repository-row-types.js'
-import { emptyAccountUsageSummary, todayDateKey, usageStatsTimezone } from './usage-stats-helpers.js'
-import { loadAccountUsageSummariesForScopes } from './usage-summary-loaders.js'
+import { emptyAccountUsageSummary, todayDateKey, usageStatsTimezone, usageStatsTimezoneAsync } from './usage-stats-helpers.js'
+import { loadAccountUsageSummariesForScopes, loadAccountUsageSummariesForScopesAsync, loadAuthorizationUsageSummariesForScopesAsync } from './usage-summary-loaders.js'
 import {
   isRequestQuotaExceeded,
   loadRequestQuotaCostsBatch,
@@ -218,7 +218,17 @@ async function authorizedAccountSummaryFromRowAsync(
   const factAccountId = accountResourceFactAccountId(row)
   const includeAccountNames = includeSystemAccountFields(access)
   const displayOwnerSystemAccountId = row.authorization_resource_owner_system_account_id ?? row.authorization_instance_owner_system_account_id ?? row.system_account_id
-  const [supportedModelsByAccount, modelMappingsByAccount, tagsByAccount, accountNames, authorizationQuotaExceededByAuthorization] = await Promise.all([
+  const timezone = await usageStatsTimezoneAsync()
+  const authorizationScopes = row.authorization_id ? [usageScope(row.authorization_id, row.system_account_id, row.authorization_id)] : []
+  const [
+    supportedModelsByAccount,
+    modelMappingsByAccount,
+    tagsByAccount,
+    accountNames,
+    authorizationQuotaExceededByAuthorization,
+    usageByAuthorization,
+    todayUsageByAuthorization
+  ] = await Promise.all([
     factAccountId ? loadSupportedModelsByAccountIdsAsync([factAccountId]) : Promise.resolve(new Map<string, string[]>()),
     factAccountId ? loadModelMappingsByAccountIdsAsync([factAccountId]) : Promise.resolve(new Map()),
     loadAccountTagsByAccountIdsAsync([row.id]),
@@ -226,7 +236,9 @@ async function authorizedAccountSummaryFromRowAsync(
       row.system_account_id,
       displayOwnerSystemAccountId
     ]),
-    loadAuthorizationQuotaExceededByAuthorizationIdAsync(client, [row])
+    loadAuthorizationQuotaExceededByAuthorizationIdAsync(client, [row]),
+    loadAuthorizationUsageSummariesForScopesAsync(authorizationScopes, 'account_authorization'),
+    loadAuthorizationUsageSummariesForScopesAsync(authorizationScopes, 'account_authorization', todayDateKey(timezone))
   ])
   row.supported_models = factAccountId ? supportedModelsByAccount.get(factAccountId) ?? [] : []
   row.model_mappings = factAccountId ? modelMappingsByAccount.get(factAccountId) ?? [] : []
@@ -246,6 +258,12 @@ async function authorizedAccountSummaryFromRowAsync(
   const dispatchPriority = Number(row.bound_group_local_priority ?? row.priority ?? 0)
   const dispatchSuperPriorityEnabled = row.bound_group_local_super_priority_enabled === 1
   const dispatchFallbackEnabled = row.bound_group_local_fallback_enabled === 1
+  const usage = row.authorization_id
+    ? usageByAuthorization.get(row.authorization_id) ?? emptyAccountUsageSummary()
+    : emptyAccountUsageSummary()
+  const todayUsage = row.authorization_id
+    ? todayUsageByAuthorization.get(row.authorization_id) ?? emptyAccountUsageSummary()
+    : emptyAccountUsageSummary()
   return accountSummaryWithEffectiveAvailability({
     id: row.id,
     systemAccountId: includeAccountNames ? row.system_account_id : undefined,
@@ -287,8 +305,9 @@ async function authorizedAccountSummaryFromRowAsync(
     lastHealthCheckErrorMessage: row.last_health_check_error_message ?? undefined,
     streamFailureCount: Math.max(0, Number(row.stream_failure_count ?? 0)),
     streamFailureWindowStartedAt: row.stream_failure_window_started_at ?? undefined,
-    todayUsage: emptyAccountUsageSummary(),
-    usage: emptyAccountUsageSummary(),
+    lastUsedAt: usage.lastUsedAt,
+    todayUsage,
+    usage,
     accessType: 'authorized',
     accountAuthorizationId: row.authorization_id ?? undefined,
     authorizationInstanceSourceAccountId: row.authorization_instance_source_account_id ?? undefined,
@@ -430,11 +449,15 @@ async function ownerAccountSummariesFromRowsAsync(
   const includeCredentials = options.includeCredentials ?? true
   const accountIds = rows.map((row) => row.id)
   const includeAccountNames = includeSystemAccountFields(access)
-  const [supportedModelsByAccount, modelMappingsByAccount, tagsByAccount, accountNames] = await Promise.all([
+  const timezone = await usageStatsTimezoneAsync()
+  const accountUsageScopes = rows.map((row) => usageScope(row.id, row.system_account_id, row.id))
+  const [supportedModelsByAccount, modelMappingsByAccount, tagsByAccount, accountNames, usageByAccount, todayUsageByAccount] = await Promise.all([
     loadSupportedModelsByAccountIdsAsync(accountIds),
     loadModelMappingsByAccountIdsAsync(accountIds),
     loadAccountTagsByAccountIdsAsync(accountIds),
-    loadAccountSummarySystemAccountNamesAsync(client, includeAccountNames ? rows.map((row) => row.system_account_id) : [])
+    loadAccountSummarySystemAccountNamesAsync(client, includeAccountNames ? rows.map((row) => row.system_account_id) : []),
+    loadAccountUsageSummariesForScopesAsync(accountUsageScopes),
+    loadAccountUsageSummariesForScopesAsync(accountUsageScopes, todayDateKey(timezone))
   ])
 
   return rows.map((row) => {
@@ -442,6 +465,8 @@ async function ownerAccountSummariesFromRowsAsync(
     row.model_mappings = modelMappingsByAccount.get(row.id) ?? []
     const groupBinding = accountGroupBindingFromRow(row, row.system_account_id)
     const ownerSystemAccountName = accountNames.get(row.system_account_id)
+    const usage = usageByAccount.get(row.id) ?? emptyAccountUsageSummary()
+    const todayUsage = todayUsageByAccount.get(row.id) ?? emptyAccountUsageSummary()
     return accountSummaryWithEffectiveAvailability({
       id: row.id,
       systemAccountId: includeAccountNames ? row.system_account_id : undefined,
@@ -489,8 +514,8 @@ async function ownerAccountSummariesFromRowsAsync(
       streamFailureCount: Math.max(0, Number(row.stream_failure_count ?? 0)),
       streamFailureWindowStartedAt: row.stream_failure_window_started_at ?? undefined,
       lastUsedAt: row.last_used_at ?? undefined,
-      todayUsage: emptyAccountUsageSummary(),
-      usage: emptyAccountUsageSummary(),
+      todayUsage,
+      usage,
       accessType: 'owner',
       boundGroupId: groupBinding?.groupId,
       boundGroupName: groupBinding?.groupName,

@@ -17,6 +17,7 @@ import {
   deleteGroupAsync,
   listAccountsPageAsync
 } from '../../storage/repositories.js'
+import { todayDateKey, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
 
 assert.equal(runtimeConfig.databaseDriver, 'postgres', 'AI 账户列表 PG smoke 需要 JUHE_AI_DATABASE_DRIVER=postgres')
 
@@ -100,6 +101,7 @@ try {
     groupId: matchedGroup.id,
     status: 'active'
   })
+  await seedAccountListUsage(matchedByName.id)
 
   const keywordResult = await listAccountsPageAsync(access, { keyword, page: 1, pageSize: 50 })
   const keywordIds = keywordResult.items.map((item) => item.id)
@@ -108,6 +110,8 @@ try {
   assert(keywordIds.includes(middleNameOnly.id), 'PG AI 账户列表 keyword 应命中名称中间包含值')
   assert(!keywordIds.includes(notesOnly.id), 'PG AI 账户列表 keyword 不应扫描备注字段命中')
   assert.deepEqual(keywordResult.items.find((item) => item.id === matchedByName.id)?.credentials, {}, 'PG AI 账户列表不应返回完整凭据')
+  assert.equal(keywordResult.items.find((item) => item.id === matchedByName.id)?.usage.requestCount, 9, 'PG AI 账户列表应返回累计账号用量')
+  assert.equal(keywordResult.items.find((item) => item.id === matchedByName.id)?.todayUsage.requestCount, 4, 'PG AI 账户列表应返回当天账号用量')
 
   const wildcardResult = await listAccountsPageAsync(access, { keyword: `percent%literal ${marker}`, page: 1, pageSize: 50 })
   const wildcardIds = wildcardResult.items.map((item) => item.id)
@@ -173,6 +177,26 @@ async function createSmokeAccount(input: {
   const account = await createAccountAsync(createInput, access)
   createdAccountIds.push(account.id)
   return account
+}
+
+async function seedAccountListUsage(accountId: string): Promise<void> {
+  const pool = await getPostgresPool()
+  const updatedAt = new Date().toISOString()
+  const today = todayDateKey(await usageStatsTimezoneAsync())
+  await pool.query(`
+    INSERT INTO juhe_stats.usage_stats_totals (
+      system_account_id, scope_type, scope_id, request_count, success_count, error_count,
+      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd,
+      last_used_at, updated_at
+    ) VALUES ($1, 'account', $2, 9, 8, 1, 90, 45, 6, 0.006, 0.123, $3, $3)
+  `, [access.systemAccountId, accountId, updatedAt])
+  await pool.query(`
+    INSERT INTO juhe_stats.usage_stats_daily (
+      system_account_id, scope_type, scope_id, stat_date, request_count, success_count, error_count,
+      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd,
+      last_used_at, updated_at
+    ) VALUES ($1, 'account', $2, $3, 4, 4, 0, 40, 20, 3, 0.003, 0.056, $4, $4)
+  `, [access.systemAccountId, accountId, today, updatedAt])
 }
 
 async function assertAccountListIndexedPlans(
@@ -447,6 +471,8 @@ async function cleanupSmokeRows(): Promise<void> {
     await deleteGroupAsync(groupId, access).catch(() => undefined)
   }
   const pool = await getPostgresPool()
+  await pool.query("DELETE FROM juhe_stats.usage_stats_totals WHERE scope_type = 'account' AND scope_id = ANY($1::text[])", [createdAccountIds])
+  await pool.query("DELETE FROM juhe_stats.usage_stats_daily WHERE scope_type = 'account' AND scope_id = ANY($1::text[])", [createdAccountIds])
   await pool.query('DELETE FROM juhe_business.account_name_search_terms WHERE account_id = ANY($1::text[])', [plannerAccountIds])
   await pool.query('DELETE FROM juhe_business.account_name_search_documents WHERE account_id = ANY($1::text[])', [plannerAccountIds])
   await pool.query('DELETE FROM juhe_business.accounts WHERE id = ANY($1::text[]) OR position($2 in name) > 0', [plannerAccountIds, `${marker}_planner`])

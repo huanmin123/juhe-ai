@@ -41,6 +41,13 @@ import { gatewayRequestEndpointFamily } from '../protocols/openai-v1/model-mappi
 
 type UpstreamAccount = OpenAIAccountSecret
 
+interface AccountUsageModelAccounting {
+  upstreamModel?: string
+  pricingModel?: string
+  modelMappingApplied: boolean
+  modelMappingSource?: string
+}
+
 export type UsageAccessFields = Pick<OpenAIAccountSecret,
   'accountOwnerSystemAccountId'
   | 'groupOwnerSystemAccountId'
@@ -208,6 +215,7 @@ export function recordCompletedUpstreamAttempt(
   const model = requestModel(req)
   const catalogSystemAccountId = input.account.accountOwnerSystemAccountId || input.systemAccountId
   const modelAccounting = accountUsageModelAccounting(input.account, model, catalogSystemAccountId, gatewayRequestEndpointFamily(req))
+  const costModel = usageCostCatalogModel(modelAccounting, model)
   enqueueUsageRecord({
     traceId: input.traceId,
     trafficSource: input.trafficSource,
@@ -243,20 +251,20 @@ export function recordCompletedUpstreamAttempt(
     cacheReadCostUsd: estimateCatalogCacheReadCostUsd({
       providerCode: input.account.providerCode,
       systemAccountId: catalogSystemAccountId,
-      model: modelAccounting.upstreamModel,
+      model: costModel,
       cacheReadTokens: input.usage.cacheReadTokens
     }),
     cacheWriteCostUsd: estimateCatalogCacheWriteCostUsd({
       providerCode: input.account.providerCode,
       systemAccountId: catalogSystemAccountId,
-      model: modelAccounting.upstreamModel,
+      model: costModel,
       cacheWriteTokens: input.usage.cacheWriteTokens,
       cacheWrite1hTokens: input.usage.cacheWrite1hTokens
     }),
     costUsd: estimateCatalogCostUsd({
       providerCode: input.account.providerCode,
       systemAccountId: catalogSystemAccountId,
-      model: modelAccounting.upstreamModel,
+      model: costModel,
       inputTokens: input.usage.inputTokens,
       outputTokens: input.usage.outputTokens,
       cacheReadTokens: input.usage.cacheReadTokens,
@@ -298,6 +306,7 @@ export function recordHybridScoringAttempt(input: {
 }): void {
   const catalogSystemAccountId = input.account.accountOwnerSystemAccountId || input.systemAccountId
   const modelAccounting = accountUsageModelAccounting(input.account, input.scoringModel, catalogSystemAccountId, 'chat_completions')
+  const costModel = usageCostCatalogModel(modelAccounting, input.scoringModel)
   enqueueUsageRecord({
     traceId: input.traceId,
     trafficSource: input.trafficSource ?? 'hybrid_scoring',
@@ -332,20 +341,20 @@ export function recordHybridScoringAttempt(input: {
     cacheReadCostUsd: estimateCatalogCacheReadCostUsd({
       providerCode: input.account.providerCode,
       systemAccountId: catalogSystemAccountId,
-      model: modelAccounting.upstreamModel,
+      model: costModel,
       cacheReadTokens: input.usage.cacheReadTokens
     }),
     cacheWriteCostUsd: estimateCatalogCacheWriteCostUsd({
       providerCode: input.account.providerCode,
       systemAccountId: catalogSystemAccountId,
-      model: modelAccounting.upstreamModel,
+      model: costModel,
       cacheWriteTokens: input.usage.cacheWriteTokens,
       cacheWrite1hTokens: input.usage.cacheWrite1hTokens
     }),
     costUsd: estimateCatalogCostUsd({
       providerCode: input.account.providerCode,
       systemAccountId: catalogSystemAccountId,
-      model: modelAccounting.upstreamModel,
+      model: costModel,
       inputTokens: input.usage.inputTokens,
       outputTokens: input.usage.outputTokens,
       cacheReadTokens: input.usage.cacheReadTokens,
@@ -501,24 +510,41 @@ function accountUsageModelAccounting(
   requestedModel: string | undefined,
   catalogSystemAccountId: string,
   sourceEndpointFamily: ReturnType<typeof gatewayRequestEndpointFamily>
-): {
-  upstreamModel?: string
-  pricingModel?: string
-  modelMappingApplied: boolean
-  modelMappingSource?: string
-} {
+): AccountUsageModelAccounting {
   const resolved = resolveGatewayUsageModel(account, requestedModel, sourceEndpointFamily)
   const upstreamModel = resolved.upstreamModel ?? requestedModel
   return {
     upstreamModel,
-    pricingModel: resolveCatalogPricingModel({
-      providerCode: account.providerCode,
-      systemAccountId: catalogSystemAccountId,
-      model: upstreamModel
-    }),
+    pricingModel: resolveUsagePricingModel(account, catalogSystemAccountId, upstreamModel, requestedModel),
     modelMappingApplied: resolved.modelMappingApplied,
     modelMappingSource: resolved.modelMappingSource
   }
+}
+
+function resolveUsagePricingModel(
+  account: UpstreamAccount,
+  catalogSystemAccountId: string,
+  upstreamModel: string | undefined,
+  requestedModel: string | undefined
+): string | undefined {
+  const upstreamPricingModel = resolveCatalogPricingModel({
+    providerCode: account.providerCode,
+    systemAccountId: catalogSystemAccountId,
+    model: upstreamModel
+  })
+  if (upstreamPricingModel) return upstreamPricingModel
+
+  const sourceModel = requestedModel?.trim()
+  if (!sourceModel || sourceModel === upstreamModel) return undefined
+  return resolveCatalogPricingModel({
+    providerCode: account.providerCode,
+    systemAccountId: catalogSystemAccountId,
+    model: sourceModel
+  })
+}
+
+function usageCostCatalogModel(modelAccounting: AccountUsageModelAccounting, requestedModel: string | undefined): string | undefined {
+  return modelAccounting.pricingModel ?? modelAccounting.upstreamModel ?? requestedModel
 }
 
 function logGatewayAttemptFailure(

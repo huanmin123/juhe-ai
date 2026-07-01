@@ -21,7 +21,8 @@ const conditionalRuntimeModeDuplicateScheduledJobs = new Set([
   'system-metrics-trend-windows-refresh',
   'usage-overview-windows-refresh',
   'usage-scope-range-windows-refresh',
-  'authorization-usage-range-windows-refresh'
+  'authorization-usage-range-windows-refresh',
+  'table-storage-monitor'
 ])
 
 const registryByName = new Map<string, BackgroundJobRegistryEntry>(backgroundWorkerRegistry.map((job) => [job.jobName, job]))

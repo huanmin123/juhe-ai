@@ -145,9 +145,12 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       updated_at TEXT NOT NULL,
       FOREIGN KEY (provider_code) REFERENCES providers(code),
       FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
-      CHECK (scope = 'personal'),
+      CHECK (scope IN ('personal', 'global')),
       CHECK (status IN ('draft', 'active', 'disabled')),
-      CHECK (system_account_id IS NOT NULL)
+      CHECK (
+        (scope = 'personal' AND system_account_id IS NOT NULL)
+        OR (scope = 'global' AND system_account_id IS NULL)
+      )
     );
 
     CREATE TABLE IF NOT EXISTS provider_default_test_models (
@@ -840,6 +843,9 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_provider_models_personal_unique
       ON custom_provider_models(provider_code, system_account_id, model)
       WHERE scope = 'personal';
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_provider_models_global_unique
+      ON custom_provider_models(provider_code, model)
+      WHERE scope = 'global';
     CREATE INDEX IF NOT EXISTS idx_custom_provider_models_catalog_lookup
       ON custom_provider_models(provider_code, status, scope, system_account_id, model);
     CREATE INDEX IF NOT EXISTS idx_provider_default_test_models_model

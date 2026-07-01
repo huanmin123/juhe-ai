@@ -54,20 +54,43 @@ export function withCostBreakdown(record: UsageRecordSummary): UsageRecordRespon
 
 function usageRecordCostBreakdown(record: UsageRecordSummary): ProviderCostBreakdown | undefined {
   if (!record.success) return undefined
-  return buildCatalogCostBreakdown({
-    providerCode: requiredUsageRecordProviderCode(record),
-    systemAccountId: record.systemAccountId,
-    model: record.pricingModel ?? record.upstreamModel ?? record.model,
-    inputTokens: record.inputTokens,
-    outputTokens: record.outputTokens,
-    cacheReadTokens: record.cacheReadTokens,
-    cacheWriteTokens: record.cacheWriteTokens,
-    cacheWrite1hTokens: record.cacheWrite1hTokens,
-    thinkingTokens: record.thinkingTokens,
-    inputImageTokens: record.inputImageTokens,
-    outputImageTokens: record.outputImageTokens,
-    costUsd: record.costUsd
-  }) ?? fallbackUsageRecordCostBreakdown(record)
+  return usageRecordCatalogCostBreakdown(record) ?? fallbackUsageRecordCostBreakdown(record)
+}
+
+function usageRecordCatalogCostBreakdown(record: UsageRecordSummary): ProviderCostBreakdown | undefined {
+  for (const model of usageRecordPricingCandidateModels(record)) {
+    const breakdown = buildCatalogCostBreakdown({
+      providerCode: requiredUsageRecordProviderCode(record),
+      systemAccountId: record.systemAccountId,
+      model,
+      inputTokens: record.inputTokens,
+      outputTokens: record.outputTokens,
+      cacheReadTokens: record.cacheReadTokens,
+      cacheWriteTokens: record.cacheWriteTokens,
+      cacheWrite1hTokens: record.cacheWrite1hTokens,
+      thinkingTokens: record.thinkingTokens,
+      inputImageTokens: record.inputImageTokens,
+      outputImageTokens: record.outputImageTokens,
+      costUsd: record.costUsd
+    })
+    if (breakdown) return breakdown
+  }
+  return undefined
+}
+
+function usageRecordPricingCandidateModels(record: UsageRecordSummary): string[] {
+  const models = [
+    record.pricingModel,
+    record.upstreamModel,
+    record.model
+  ]
+  const seen = new Set<string>()
+  return models.flatMap((model) => {
+    const normalized = model?.trim()
+    if (!normalized || seen.has(normalized)) return []
+    seen.add(normalized)
+    return [normalized]
+  })
 }
 
 function fallbackUsageRecordCostBreakdown(record: UsageRecordSummary): ProviderCostBreakdown {

@@ -52,6 +52,7 @@ assertRoleBlockContainsOnly('stats-worker', [
   'table-storage-monitor',
   'usage-stats-consistency-check'
 ])
+assertRolePostgresBlockContains('stats-worker', 'table-storage-monitor', 'PG 高性能 stats-worker 必须注册 table-storage-monitor，避免生产表监控无采样数据')
 assertRoleBlockContainsOnly('ops-worker', [
   'proxy-latency-refresh',
   'account-health-check',
@@ -121,6 +122,17 @@ function assertRoleBlockContainsOnly(role: string, jobNames: string[]): void {
   for (const jobName of jobNames) {
     assert.equal(registryByName.get(jobName)?.defaultRole, role, `${jobName} registry defaultRole 必须和 ${role} 实际挂载一致`)
   }
+}
+
+function assertRolePostgresBlockContains(role: string, jobName: string, message: string): void {
+  const block = roleCaseBlock(role)
+  const marker = 'if (isPostgresHighPerformanceMode()) {'
+  const start = block.indexOf(marker)
+  assert(start >= 0, `${role} 必须包含 PostgreSQL 高性能分支`)
+  const end = block.indexOf('\n      }\n', start)
+  assert(end > start, `${role} PostgreSQL 高性能分支必须有明确结束位置`)
+  const postgresBlock = block.slice(start, end)
+  assert(postgresBlock.includes(`backgroundScheduledJobName('${jobName}')`), message)
 }
 
 function roleCaseBlock(role: string): string {
