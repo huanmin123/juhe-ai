@@ -226,7 +226,7 @@ export async function findOpenAIAccountForGroupAsync(
   }
 
   const selectionRow = { ...row, ...groupAccount } as OpenAIGroupAccountSelectionRow
-  const accountAuthorizationsByIdOrResourceId = await loadAccountAuthorizationsForSelectionAsync(client, [selectionRow], groupAccess, systemAccountId)
+  const accountAuthorizationsByIdOrResourceId = await loadAccountAuthorizationsForSelectionAsync(client, [selectionRow], groupAccess, systemAccountId) ?? new Map()
   const accountAccess = resolveSchedulableOpenAIAccountAccess(row, groupAccess, systemAccountId, groupAccount, { accountAuthorizationsByIdOrResourceId })
   if (!accountAccess) {
     return undefined
@@ -487,7 +487,7 @@ export async function listOpenAIAccountsForGroupResultAsync(
       await listGatewayDispatchCandidateRowsAsync(client, groupId, groupAccess, now, candidateWindowOptions)
     )
     : await listGatewayDispatchCandidateRowsAsync(client, groupId, groupAccess, now, candidateWindowOptions)
-  const accountAuthorizationsByIdOrResourceId = await loadAccountAuthorizationsForSelectionAsync(client, groupAccountRows, groupAccess, systemAccountId)
+  const accountAuthorizationsByIdOrResourceId = await loadAccountAuthorizationsForSelectionAsync(client, groupAccountRows, groupAccess, systemAccountId) ?? new Map()
   const eligibleRows = groupAccountRows
     .map((row) => ({
       row,

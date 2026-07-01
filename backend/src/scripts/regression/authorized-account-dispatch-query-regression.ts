@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-authorized-account-dispatch-query-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -90,6 +91,7 @@ try {
   for (let index = 0; index < accountCount; index += 1) {
     const account = repositories.createAccount({
       providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: `授权调度查询账户 ${String(index).padStart(2, '0')}`,
       type: 'api_key',
       status: 'active',
@@ -115,6 +117,7 @@ try {
   }
   const staleAuthorizedAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '授权已失效且凭据损坏账户',
     type: 'api_key',
     status: 'active',
@@ -143,6 +146,7 @@ try {
   }
   const disabledSourceAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '授权父账户停用且凭据损坏账户',
     type: 'api_key',
     status: 'active',
