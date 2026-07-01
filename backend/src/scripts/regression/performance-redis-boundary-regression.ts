@@ -84,6 +84,29 @@ assert.match(redisStreamQueueSource, /redisUrl/, 'Redis Stream 队列必须显�
 assert.match(redisStreamQueueSource, /this\.redisUrl = options\.redisUrl \?\? requiredRedisQueueUrl\(\)/, 'Redis Stream 队列必须从 JUHE_AI_REDIS_QUEUE_URL 解析默认连接')
 assert.match(redisStreamQueueSource, /createDedicatedRedisClient\(this\.redisUrl\)/, 'Redis Stream consumer 必须通过专用 Redis queue URL 建立连接')
 
+const backgroundIpcSource = source('modules/background/background-ipc.ts')
+assert.match(backgroundIpcSource, /function isRedisStreamManagedIngestQueueMessage[\s\S]*background_worker_usage_records[\s\S]*background_worker_runtime_log_line/, 'Redis Stream 管理的记录类消息必须集中识别')
+assert.match(backgroundIpcSource, /function queueWorkerMessage[\s\S]*runtimeConfig\.queueDriver === 'redis_stream'[\s\S]*isRedisStreamManagedIngestQueueMessage/, 'redis_stream driver 下禁止记录类消息进入后台 IPC 本地队列')
+assert.match(backgroundIpcSource, /function requeueIngestWorkerMessageFirst[\s\S]*runtimeConfig\.queueDriver === 'redis_stream'[\s\S]*isRedisStreamManagedIngestQueueMessage/, 'redis_stream driver 下发送失败不能把记录类消息 requeue 回本地 IPC 队列')
+assert.match(backgroundIpcSource, /function sendBackgroundWorkerMessageToParent[\s\S]*runtimeConfig\.queueDriver === 'redis_stream'[\s\S]*isRedisStreamManagedIngestQueueMessage/, 'redis_stream driver 下非 ingest worker 不能把记录类消息发回父进程 IPC')
+
+const dbServiceIpcSource = source('modules/db-service/db-service-ipc.ts')
+assert.match(dbServiceIpcSource, /function rejectRedisStreamLocalQueueForward[\s\S]*runtimeConfig\.queueDriver !== 'redis_stream'[^]*return false[\s\S]*db_service_redis_stream_local_queue_forward_rejected/, 'redis_stream driver 下 DB service 父消息不能转发记录类 IPC 本地队列')
+for (const functionName of [
+  'forwardUsageRecordsToWorker',
+  'forwardAuditLogsToWorker',
+  'forwardOperationLogsToWorker',
+  'forwardPublicApiLogsToWorker',
+  'forwardRuntimeLogLineToWorker',
+  'forwardRecordMaintenanceJobsToWorker'
+]) {
+  assert.match(
+    functionBody(dbServiceIpcSource, functionName),
+    /rejectRedisStreamLocalQueueForward/,
+    `${functionName} 必须在 redis_stream driver 下拒绝本地 IPC 转发`
+  )
+}
+
 const accountConcurrencySource = source('shared/account-concurrency.ts')
 assert.match(accountConcurrencySource, /runtimeConfig\.runtimeStateDriver === 'memory'[\s\S]*tryAcquireAccountConcurrency\(accountId, concurrencyLimit, options\)/, '账号并发 memory 分支只能作为 standalone 本地实现')
 assert.match(accountConcurrencySource, /acquireRedisAccountConcurrency\(accountId, limit, lane, laneLimit\)/, '账号并发在 Redis runtime state driver 下必须使用 Redis 原子占用')

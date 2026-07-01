@@ -1,5 +1,9 @@
 import { runtimeConfig } from '../../../../config/runtime.js'
-import { enqueueRecordMaintenanceJob } from '../../../record-maintenance/record-maintenance-queue.service.js'
+import {
+  enqueueRecordMaintenanceJob,
+  enqueueRecordMaintenanceJobAsync,
+  type RecordMaintenanceJob
+} from '../../../record-maintenance/record-maintenance-queue.service.js'
 
 export interface OpenAICodexUsageSnapshot {
   primaryUsedPercent?: number
@@ -54,19 +58,32 @@ export function parseOpenAICodexUsageHeaders(headers?: HeaderInput): OpenAICodex
 
 export function persistOpenAICodexUsageHeaders(accountId: string, headers?: HeaderInput, source = 'gateway'): boolean {
   assertLocalGatewayDatabaseAccess('persistOpenAICodexUsageHeaders')
+  const job = buildOpenAICodexUsageRecordMaintenanceJob(accountId, headers, source)
+  if (!job) return false
+  enqueueRecordMaintenanceJob(job)
+  return true
+}
+
+export async function persistOpenAICodexUsageHeadersAsync(accountId: string, headers?: HeaderInput, source = 'gateway'): Promise<boolean> {
+  const job = buildOpenAICodexUsageRecordMaintenanceJob(accountId, headers, source)
+  if (!job) return false
+  await enqueueRecordMaintenanceJobAsync(job)
+  return true
+}
+
+function buildOpenAICodexUsageRecordMaintenanceJob(accountId: string, headers?: HeaderInput, source = 'gateway'): RecordMaintenanceJob | undefined {
   const snapshot = parseOpenAICodexUsageHeaders(headers)
-  if (!snapshot) return false
+  if (!snapshot) return undefined
   const payload = buildOpenAICodexUsageSnapshotPayload(snapshot, new Date(), source)
-  if (!hasOwnEnumerableKey(payload)) return false
-  enqueueRecordMaintenanceJob({
+  if (!hasOwnEnumerableKey(payload)) return undefined
+  return {
     type: 'account_usage_snapshot_upsert',
     accountId,
     kind: 'openai_codex',
     source,
     snapshot: payload,
     updatedAt: String(payload.codex_usage_updated_at ?? snapshot.updatedAt)
-  })
-  return true
+  }
 }
 
 function hasOwnEnumerableKey(value: Record<string, unknown>): boolean {

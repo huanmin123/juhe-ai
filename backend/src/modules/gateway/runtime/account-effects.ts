@@ -171,7 +171,7 @@ export function handleStreamFailure(
       errorCode,
       reason,
       downstreamBytesWritten: context.downstreamBytesWritten
-    }, usageContext?.trafficSource === 'gateway' ? '流式失败已进入账号运行态调度降级' : '流式失败已进入账号运行态处理')
+    }, usageContext?.trafficSource === 'gateway' ? '流式失败已进入账号运行态短暂避让' : '流式失败已进入账号运行态处理')
   }
 }
 

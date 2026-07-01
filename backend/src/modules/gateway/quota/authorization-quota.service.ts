@@ -105,9 +105,11 @@ export async function checkGatewayAuthorizationQuotaAsync(input: {
   const cacheKey = runtimeConfig.databaseDriver === 'postgres'
     ? await authorizationQuotaRuntimeCacheKeyAsync(input.groupAccess.groupAuthorizationId, input.account?.accountAuthorizationId, now)
     : authorizationQuotaRuntimeCacheKey(input.groupAccess.groupAuthorizationId, input.account?.accountAuthorizationId, now)
-  const cached = authorizationQuotaCache.get(cacheKey)
-  if (cached) {
-    return cached
+  if (runtimeConfig.cacheDriver !== 'redis') {
+    const cached = authorizationQuotaCache.get(cacheKey)
+    if (cached) {
+      return cached
+    }
   }
   const sharedCached = await getAuthorizationQuotaSharedCacheEntry(cacheKey)
   if (sharedCached) {
@@ -186,10 +188,12 @@ export async function checkGatewayAuthorizationQuotaBatchAsync(input: {
     const cacheKey = runtimeConfig.databaseDriver === 'postgres'
       ? await authorizationQuotaRuntimeCacheKeyAsync(input.groupAccess.groupAuthorizationId, account.accountAuthorizationId, now)
       : authorizationQuotaRuntimeCacheKey(input.groupAccess.groupAuthorizationId, account.accountAuthorizationId, now)
-    const cached = authorizationQuotaCache.get(cacheKey)
-    if (cached) {
-      cachedDecisionsByAccountId.set(account.id, cached)
-      continue
+    if (runtimeConfig.cacheDriver !== 'redis') {
+      const cached = authorizationQuotaCache.get(cacheKey)
+      if (cached) {
+        cachedDecisionsByAccountId.set(account.id, cached)
+        continue
+      }
     }
     missingCacheKeys.set(account.id, cacheKey)
     if (requestedMissingCacheKeys.has(cacheKey)) {
@@ -250,17 +254,18 @@ export async function checkGatewayAuthorizationQuotaBatchAsync(input: {
           }))
         }, { timeoutMs: 1000 })
         const missingDecisionsByCacheKey = new Map<string, AuthorizationQuotaDecision>()
-        missingAccounts.forEach((account, index) => {
+        for (let index = 0; index < missingAccounts.length; index += 1) {
+          const account = missingAccounts[index]!
           const decision = decisions[index] ?? { allowed: true }
           const cacheKey = missingCacheKeys.get(account.id)
           if (cacheKey) {
             missingDecisionsByCacheKey.set(cacheKey, decision)
-            setAuthorizationQuotaCacheEntry(cacheKey, {
+            await setAuthorizationQuotaCacheEntryAsync(cacheKey, {
               ...decision,
               checkedAtMs: Date.now()
             })
           }
-        })
+        }
         for (const [accountId, cacheKey] of missingCacheKeys.entries()) {
           output.set(accountId, missingDecisionsByCacheKey.get(cacheKey) ?? { allowed: true })
         }
@@ -288,7 +293,7 @@ export async function checkGatewayAuthorizationQuotaBatchAsync(input: {
       })
       output.set(account.id, decision)
       if (cacheKey) {
-        setAuthorizationQuotaCacheEntry(cacheKey, {
+        await setAuthorizationQuotaCacheEntryAsync(cacheKey, {
           ...decision,
           checkedAtMs: Date.now()
         })
@@ -304,7 +309,7 @@ export async function checkGatewayAuthorizationQuotaBatchAsync(input: {
           accountAuthorizationQuotaLimited: account?.accountAuthorizationQuotaLimited
         })
         output.set(accountId, decision)
-        setAuthorizationQuotaCacheEntry(cacheKey, {
+        await setAuthorizationQuotaCacheEntryAsync(cacheKey, {
           ...decision,
           checkedAtMs: Date.now()
         })
@@ -337,17 +342,18 @@ export async function checkGatewayAuthorizationQuotaBatchAsync(input: {
     output.set(accountId, decision)
   }
   const missingDecisionsByCacheKey = new Map<string, AuthorizationQuotaDecision>()
-  missingAccounts.forEach((account, index) => {
+  for (let index = 0; index < missingAccounts.length; index += 1) {
+    const account = missingAccounts[index]!
     const decision = decisions[index] ?? { allowed: true }
     const cacheKey = missingCacheKeys.get(account.id)
     if (cacheKey) {
       missingDecisionsByCacheKey.set(cacheKey, decision)
-      setAuthorizationQuotaCacheEntry(cacheKey, {
+      await setAuthorizationQuotaCacheEntryAsync(cacheKey, {
         ...decision,
         checkedAtMs: Date.now()
       })
     }
-  })
+  }
   for (const [accountId, cacheKey] of missingCacheKeys.entries()) {
     output.set(accountId, missingDecisionsByCacheKey.get(cacheKey) ?? { allowed: true })
   }
@@ -454,9 +460,11 @@ export async function checkGatewayAuthorizationQuotaBatchByIdsExactAsync(input: 
 
 function authorizationQuotaDecisionFromChecks(checks: AuthorizationQuotaCheck[]): AuthorizationQuotaDecision {
   const cacheKey = checks.map((check) => check.cacheKey).join('|')
-  const cached = authorizationQuotaCache.get(cacheKey)
-  if (cached) {
-    return cached
+  if (runtimeConfig.cacheDriver !== 'redis') {
+    const cached = authorizationQuotaCache.get(cacheKey)
+    if (cached) {
+      return cached
+    }
   }
   const allowed = checks.every((check) => !check.exceeded)
   const decision: AuthorizationQuotaCacheEntry = {
@@ -464,7 +472,9 @@ function authorizationQuotaDecisionFromChecks(checks: AuthorizationQuotaCheck[])
     message: allowed ? undefined : AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE,
     checkedAtMs: Date.now()
   }
-  setAuthorizationQuotaCacheEntry(cacheKey, decision)
+  if (runtimeConfig.cacheDriver !== 'redis') {
+    setAuthorizationQuotaCacheEntry(cacheKey, decision)
+  }
   return decision
 }
 
@@ -490,8 +500,8 @@ function setAuthorizationQuotaCacheEntry(
 }
 
 async function setAuthorizationQuotaCacheEntryAsync(cacheKey: string, entry: AuthorizationQuotaCacheEntry): Promise<void> {
-  setAuthorizationQuotaCacheEntry(cacheKey, entry, { skipSharedCache: true })
   await setAuthorizationQuotaSharedCacheEntry(cacheKey, entry)
+  setAuthorizationQuotaCacheEntry(cacheKey, entry, { skipSharedCache: true })
 }
 
 async function getAuthorizationQuotaSharedCacheEntry(cacheKey: string): Promise<AuthorizationQuotaCacheEntry | undefined> {

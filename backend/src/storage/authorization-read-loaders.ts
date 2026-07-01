@@ -120,20 +120,24 @@ export async function loadResourceAuthorizationStatsByResourceIdsAsync(resourceT
   const ids = uniqueIds(resourceIds)
   if (!ids.length) return new Map()
   const result = new Map<string, ResourceAuthorizationStats>()
-  const missingLocalIds: string[] = []
-  for (const id of ids) {
-    const cacheKey = resourceAuthorizationStatsCacheKey(resourceType, id)
-    const cached = authorizationStatsCache.get(cacheKey)
-    if (cached !== undefined) {
-      result.set(id, cached)
-    } else {
-      missingLocalIds.push(id)
+  const missingSharedIds: string[] = []
+  if (runtimeConfig.cacheDriver !== 'redis') {
+    for (const id of ids) {
+      const cacheKey = resourceAuthorizationStatsCacheKey(resourceType, id)
+      const cached = authorizationStatsCache.get(cacheKey)
+      if (cached !== undefined) {
+        result.set(id, cached)
+      } else {
+        missingSharedIds.push(id)
+      }
     }
+  } else {
+    missingSharedIds.push(...ids)
   }
-  if (!missingLocalIds.length) return result
+  if (!missingSharedIds.length) return result
 
   const missingDatabaseIds: string[] = []
-  for (const id of missingLocalIds) {
+  for (const id of missingSharedIds) {
     const cacheKey = resourceAuthorizationStatsCacheKey(resourceType, id)
     const sharedCached = await getAuthorizationStatsSharedCacheEntry(cacheKey)
     if (sharedCached !== undefined) {
@@ -149,8 +153,8 @@ export async function loadResourceAuthorizationStatsByResourceIdsAsync(resourceT
   for (const id of missingDatabaseIds) {
     const stats = loaded.get(id) ?? emptyAuthorizationStats
     const cacheKey = resourceAuthorizationStatsCacheKey(resourceType, id)
-    authorizationStatsCache.set(cacheKey, stats)
     await setAuthorizationStatsSharedCacheEntryAsync(cacheKey, stats)
+    authorizationStatsCache.set(cacheKey, stats)
     result.set(id, stats)
   }
   return result
@@ -215,19 +219,23 @@ export async function loadResourceAuthorizationSourcesByAuthorizationIdsAsync(au
   const ids = uniqueIds(authorizationIds)
   if (!ids.length) return new Map()
   const result = new Map<string, ResourceAuthorizationSourceSummary[]>()
-  const missingLocalIds: string[] = []
-  for (const id of ids) {
-    const cached = authorizationSourcesCache.get(id)
-    if (cached !== undefined) {
-      result.set(id, [...cached])
-    } else {
-      missingLocalIds.push(id)
+  const missingSharedIds: string[] = []
+  if (runtimeConfig.cacheDriver !== 'redis') {
+    for (const id of ids) {
+      const cached = authorizationSourcesCache.get(id)
+      if (cached !== undefined) {
+        result.set(id, [...cached])
+      } else {
+        missingSharedIds.push(id)
+      }
     }
+  } else {
+    missingSharedIds.push(...ids)
   }
-  if (!missingLocalIds.length) return result
+  if (!missingSharedIds.length) return result
 
   const missingDatabaseIds: string[] = []
-  for (const id of missingLocalIds) {
+  for (const id of missingSharedIds) {
     const sharedCached = await getAuthorizationSourcesSharedCacheEntry(id)
     if (sharedCached !== undefined) {
       authorizationSourcesCache.set(id, sharedCached)
@@ -241,8 +249,8 @@ export async function loadResourceAuthorizationSourcesByAuthorizationIdsAsync(au
   const loaded = await loadResourceAuthorizationSourcesFromDatabaseAsync(missingDatabaseIds)
   for (const id of missingDatabaseIds) {
     const sources = loaded.get(id) ?? []
-    authorizationSourcesCache.set(id, sources)
     await setAuthorizationSourcesSharedCacheEntryAsync(id, sources)
+    authorizationSourcesCache.set(id, sources)
     result.set(id, [...sources])
   }
   return result

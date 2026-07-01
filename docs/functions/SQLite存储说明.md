@@ -962,7 +962,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - `temporaryUnschedulableRetryIntervalSeconds = 3`：普通上游请求异常或非 `2xx` 响应切号前，同账号原地确认重试之间的等待间隔；冷却恢复复测会显式覆盖为不做同账号重试。
 - `temporaryUnschedulableRetryAttempts = 3`：普通上游请求异常或非 `2xx` 响应切号前，同账号原地确认重试次数；冷却恢复复测会显式覆盖为不做同账号重试。
 - 本地短暂避让不落库、不使用 `defaultTemporaryUnschedulableMinutes`，固定按 `3s -> 5s -> 10s` 进程内阶梯执行；每阶到期后只允许一个真实请求半开探测，半开租约跟随请求并发生命周期释放，固定租约时间只用于无在途并发时回收孤儿租约；三阶半开仍失败后进入事前确认。真实网关流量中的代理 profile 已知不可用也只推进这套运行态阶梯，确认失败且账号并发归零前不写持久临时不可调用。
-- `streamCircuitBreakerEnabled = true`：流式超时检测默认开启；真实网关流式失败先进入运行态调度降级和短暂避让，确认失败且当前账号并发归零后才写持久账号状态。
+- `streamCircuitBreakerEnabled = true`：流式超时检测默认开启；真实网关流式失败先进入短暂避让，同一观察窗口内跨避让轮次重复失败后才激活运行态调度降级，确认失败且当前账号并发归零后才写持久账号状态。
 - `streamRequestTimeoutSeconds = 120`：上游首包等待上限；非流式和流式在响应头前、非流式在 `2xx` 响应首字节前超过该时间时按上游请求异常切换后续账号；流式拿到 `2xx + SSE` 后，超过该时间没有收到任何上游 chunk 时补发失败事件并结束本次 SSE。
 - `streamIdleTimeoutSeconds = 30`：流式响应首段内容后，没有任何上游 chunk 的输出停顿上限；只把 raw chunk 完全停顿作为硬超时，持续有 raw chunk 但暂未形成完整 SSE 事件时只记录诊断并继续转发。
 - `streamClientTotalWaitTimeoutSeconds = 270`：同一次客户端连接在服务端隐藏切号 / 重试期间的总等待上限；超过后停止继续隐藏重试并返回失败，避免客户端长期收不到内容后自行断开。

@@ -94,6 +94,7 @@ export async function syncGatewayCacheInvalidationsFromRuntimeState(options: { f
         logger.warn(errorLogFields(error, {
           event: 'gateway_cache_invalidation_runtime_state_sync_failed'
         }), '同步 Redis runtime state 网关缓存失效版本失败')
+        throw error
       })
       .finally(() => {
         gatewayCacheInvalidationSyncPromise = undefined
@@ -145,6 +146,11 @@ function publishGatewayCacheInvalidationToRuntimeState(
         reason,
         apiKeyId: fields.apiKeyId
       }), '发布 Redis runtime state 网关缓存失效版本失败')
+      if (runtimeConfig.runtimeMode === 'performance') {
+        process.nextTick(() => {
+          throw error instanceof Error ? error : new Error(String(error))
+        })
+      }
     })
 }
 

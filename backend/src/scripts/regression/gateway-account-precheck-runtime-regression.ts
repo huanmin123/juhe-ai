@@ -146,6 +146,7 @@ function testLocalSuppressionStoreBoundary(): void {
   assert.doesNotMatch(sideEffectsSource, /function isLocalSuppressionBlocking/)
   assert.match(storeSource, /const localAccountSuppressions = new Map/)
   assert.match(storeSource, /export function suppressLocalAccountForGatewayFailure/)
+  assert.match(storeSource, /localDegradationActivationFailureThreshold = 2/)
   assert.match(storeSource, /export function filterLocalAccountSuppressions/)
   assert.match(storeSource, /export function snapshotLocalAccountRuntimeAvailability/)
   assert.match(storeSource, /getAccountCurrentConcurrency/)
@@ -156,9 +157,34 @@ function testRuntimeDegradationOrderingAndSuccessRecovery(): void {
   const backup = createRuntimeAccount('runtime-normal-backup')
 
   gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
-  const degraded = gatewaySideEffects.degradeGatewayAccountForRuntimeFailure(primary, '模拟近期上游失败')
-  assert.equal(degraded.status, 'degraded', '运行态失败应先写入调度降级，而不是直接处罚账号')
-  assert.equal(degraded.failureCount, 1, '首次运行态降级应记录失败次数')
+  gatewaySideEffects.suppressGatewayAccountLocally(primary, gatewaySettings, '模拟首轮上游失败')
+  gatewaySideEffects.suppressGatewayAccountLocally(primary, gatewaySettings, '模拟同一避让轮次内的并发残留失败')
+  assert.notEqual(
+    gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[primary.id]?.status,
+    'degraded',
+    '同一短暂避让轮次内的并发失败不应激活调度降级'
+  )
+  assert.equal(
+    gatewaySideEffects.orderGatewayAccountsByRuntimeDegradation([primary, backup]).applied,
+    false,
+    '同一短暂避让轮次内的并发失败不应影响调度排序'
+  )
+
+  gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
+  const observed = gatewaySideEffects.degradeGatewayAccountForRuntimeFailure(primary, '模拟近期上游失败')
+  assert.equal(observed.status, 'normal', '单次运行态失败只应记录观察，不应立即调度降级')
+  assert.equal(observed.failureCount, 1, '首次运行态失败应记录失败次数')
+  assert.equal(
+    gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[primary.id],
+    undefined,
+    '单次运行态失败不应进入前端运行态快照'
+  )
+  const observedOrder = gatewaySideEffects.orderGatewayAccountsByRuntimeDegradation([primary, backup])
+  assert.equal(observedOrder.applied, false, '单次失败未达到门槛时不应影响调度排序')
+
+  const degraded = gatewaySideEffects.degradeGatewayAccountForRuntimeFailure(primary, '模拟近期上游再次失败')
+  assert.equal(degraded.status, 'degraded', '短窗口重复失败才应写入调度降级')
+  assert.equal(degraded.failureCount, 2, '重复失败激活调度降级时应累计失败次数')
   assert.equal(
     gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[primary.id]?.status,
     'degraded',
@@ -175,7 +201,7 @@ function testRuntimeDegradationOrderingAndSuccessRecovery(): void {
   )
   assert.deepEqual(ordered.degradedAccountIds, [primary.id], '降级排序结果应报告被降级账号')
 
-  gatewaySideEffects.degradeGatewayAccountForRuntimeFailure(backup, '模拟备选账号近期失败')
+  activateRuntimeDegradation(backup, '模拟备选账号近期失败')
   const allDegraded = gatewaySideEffects.orderGatewayAccountsByRuntimeDegradation([primary, backup])
   assert.equal(allDegraded.applied, false, '全部账号降级时不应再重排候选')
   assert.equal(allDegraded.bypassedAllDegraded, true, '全部候选均降级时应允许兜底选择')
@@ -196,14 +222,20 @@ function testRuntimeDegradationOrderingAndSuccessRecovery(): void {
   gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
 }
 
+function activateRuntimeDegradation(account: OpenAIAccountSecret, reason: string): void {
+  gatewaySideEffects.degradeGatewayAccountForRuntimeFailure(account, reason)
+  const degraded = gatewaySideEffects.degradeGatewayAccountForRuntimeFailure(account, reason)
+  assert.equal(degraded.status, 'degraded', '短窗口重复失败应激活运行态调度降级')
+}
+
 async function testRuntimeDegradationDispatchPreparationFallback(): Promise<void> {
   const primary = createRuntimeAccount('runtime-degraded-prepare-primary')
   const backup = createRuntimeAccount('runtime-degraded-prepare-backup')
   const metadataLabels: string[] = []
 
   gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
-  gatewaySideEffects.degradeGatewayAccountForRuntimeFailure(primary, '模拟主账号近期失败')
-  gatewaySideEffects.degradeGatewayAccountForRuntimeFailure(backup, '模拟备账号近期失败')
+  activateRuntimeDegradation(primary, '模拟主账号近期失败')
+  activateRuntimeDegradation(backup, '模拟备账号近期失败')
 
   const fallbackReasons: string[] = []
   const readyResult = await dispatchPreparation.prepareOpenAIGatewayDispatchAccounts({

@@ -49,6 +49,11 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
     sql: 'CREATE INDEX IF NOT EXISTS idx_accounts_owner_name_c_lookup ON accounts(system_account_id, (lower(name) COLLATE "C"), id) WHERE deleted_at IS NULL AND authorization_instance_authorization_id IS NULL'
   },
   {
+    schemaName: 'juhe_business',
+    source: 'accounts-pg-prefix-indexes',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_accounts_owner_all_name_c_lookup ON accounts(system_account_id, (lower(name) COLLATE "C"), id) WHERE deleted_at IS NULL'
+  },
+  {
     schemaName: 'juhe_usage',
     source: 'usage-records-pg-indexes',
     sql: "CREATE INDEX IF NOT EXISTS idx_usage_records_recent_openai_account_shape ON usage_records(account_id, created_at DESC, id DESC, provider_code) WHERE api_key_id IS NOT NULL AND traffic_source = 'gateway' AND endpoint IS NOT NULL AND btrim(endpoint) <> ''"

@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path'
 
 import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-usage-record-list-query-guard-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -59,6 +60,7 @@ try {
   }, access)
   const account = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '使用记录查询防护账户',
     type: 'api_key',
     credentials: {
@@ -69,6 +71,7 @@ try {
   }, access)
   const middleNameAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '普通使用记录查询防护账户',
     type: 'api_key',
     credentials: {
@@ -79,6 +82,7 @@ try {
   }, access)
   const otherGroupAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '其他分组账户',
     type: 'api_key',
     credentials: {
@@ -121,6 +125,7 @@ try {
   }, granteeAccess)
   const renamedAuthorizedSourceAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '授权使用记录来源初始名',
     type: 'api_key',
     credentials: {
@@ -159,6 +164,7 @@ try {
   }, ownerAccess)
   const groupAuthorizedSourceAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '分组授权使用记录账户A',
     type: 'api_key',
     credentials: {
@@ -335,7 +341,7 @@ try {
   const accountLookupCalls: Array<{ sql: string; params: unknown[] }> = []
   businessDatabase.prepare = ((sql: string) => {
     const statement = originalBusinessPrepare(sql)
-    if (/^\s*SELECT\s+(?:accounts\.)?id\s+FROM\s+accounts\b/i.test(sql)) {
+    if (/^\s*SELECT\s+(?:accounts|instance_accounts)\.id\s+FROM\s+accounts\b/i.test(sql)) {
       const originalAll = statement.all.bind(statement) as typeof statement.all
       statement.all = ((...params: SQLInputValue[]) => {
         accountLookupCalls.push({ sql, params })
@@ -419,19 +425,43 @@ try {
 
   assert(accountLookupCalls.length >= 2, '回归应捕获账号关键词预解析 SQL')
   const usageRecordsRepositorySource = readFileSync(resolve('src/storage/usage-records.repository.ts'), 'utf8')
-  assert.match(
-    usageRecordsRepositorySource,
-    /const accountNameClause = 'lower\(accounts\.name\) >= \? AND lower\(accounts\.name\) < \?'/,
-    'PG 使用记录账号关键词预解析必须使用 lower(accounts.name) 范围条件'
+  assert(
+    usageRecordsRepositorySource.includes('const accountNameExpression = \'(lower(accounts.name) COLLATE "C")\''),
+    'PG 使用记录账号关键词预解析必须使用 lower(accounts.name) COLLATE "C" 表达式'
+  )
+  assert(
+    usageRecordsRepositorySource.includes('return usageRecordBinaryPrefixUpperBound(value)'),
+    'PG 使用记录账号关键词前缀上界必须使用二进制上界'
   )
   assert.doesNotMatch(
     usageRecordsRepositorySource,
     /accounts\.name = \? OR \(accounts\.name >= \? AND accounts\.name < \?\)/,
     'PG 使用记录账号关键词预解析不能回退大小写敏感的原始 name 范围条件'
   )
+  const businessSchemaSource = readFileSync(resolve('src/storage/schema/business-schema.ts'), 'utf8')
+  assert.match(
+    businessSchemaSource,
+    /idx_accounts_owner_all_name_lower_lookup/,
+    'SQLite 使用记录账号名前缀预解析必须保留未删除账户名称前缀索引'
+  )
+  assert.match(
+    businessSchemaSource,
+    /idx_accounts_authorization_instance_source_owner_lookup/,
+    'SQLite 使用记录来源账户名前缀预解析必须保留授权实例来源索引'
+  )
+  const postgresSchemaSource = readFileSync(resolve('src/storage/postgres-schema.ts'), 'utf8')
+  assert.match(
+    postgresSchemaSource,
+    /idx_accounts_owner_all_name_c_lookup/,
+    'PG 使用记录账号名前缀预解析必须保留 C collation 账户名称索引'
+  )
   for (const call of accountLookupCalls) {
-    assert(/\blower\(accounts\.name\)\s+>=\s+\?/i.test(call.sql), '账号关键词预解析应使用 lower(name) 范围下界')
-    assert(/\blower\(accounts\.name\)\s+<\s+\?/i.test(call.sql), '账号关键词预解析应使用 lower(name) 范围上界')
+    assert(/\blower\((?:accounts|source_accounts)\.name\)\s+>=\s+\?/i.test(call.sql), '账号关键词预解析应使用 lower(name) 范围下界')
+    assert(/\blower\((?:accounts|source_accounts)\.name\)\s+<\s+\?/i.test(call.sql), '账号关键词预解析应使用 lower(name) 范围上界')
+    assert(/\b(?:accounts|source_accounts)\.deleted_at\s+IS\s+NULL/i.test(call.sql), '账号关键词预解析应只匹配未删除账户')
+    if (/\binstance_accounts\b/i.test(call.sql)) {
+      assert(/\binstance_accounts\.deleted_at\s+IS\s+NULL/i.test(call.sql), '授权实例来源名称预解析应只匹配未删除授权实例')
+    }
     assert(!/\bLIKE\s+\?/i.test(call.sql), '账号关键词预解析不应使用 LIKE 扫描账号表')
     assert(!/\bWHERE[\s\S]*\bid\s+(?:=|LIKE)\s+\?/i.test(call.sql), '账号关键词预解析不应把账号 ID 放进名称搜索 WHERE')
     assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '账号关键词预解析不应传入前导通配符参数')
@@ -444,6 +474,27 @@ try {
     assert(!/\bur\.account_id\s+(?:=|LIKE)\s+\?/i.test(call.sql), '使用记录账号名称搜索不应直接按 account_id 精确或前缀匹配')
     assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '使用记录列表不应向大表筛选传入前导通配符参数')
   }
+  assertBusinessQueryPlanUsesAnyIndex(`
+    SELECT accounts.id
+    FROM accounts
+    WHERE accounts.deleted_at IS NULL
+      AND lower(accounts.name) >= ? AND lower(accounts.name) < ?
+      AND accounts.system_account_id = ?
+    ORDER BY lower(accounts.name) ASC, accounts.id ASC
+    LIMIT ?
+  `, ['使用记录查询防护', '使用记录查询防护\uffff', 'sys_admin', 10], ['idx_accounts_owner_all_name_lower_lookup', 'idx_accounts_owner_name_unique_lower'])
+  assertBusinessQueryPlanUsesAnyIndex(`
+    SELECT instance_accounts.id
+    FROM accounts source_accounts
+    CROSS JOIN accounts instance_accounts
+    WHERE source_accounts.deleted_at IS NULL
+      AND instance_accounts.authorization_instance_source_account_id = source_accounts.id
+      AND instance_accounts.deleted_at IS NULL
+      AND lower(source_accounts.name) >= ? AND lower(source_accounts.name) < ?
+      AND instance_accounts.system_account_id = ?
+    ORDER BY lower(source_accounts.name) ASC, instance_accounts.id ASC
+    LIMIT ?
+  `, ['授权使用记录账户A', '授权使用记录账户A\uffff', grantee.id, 10], ['idx_accounts_authorization_instance_source_owner_lookup', 'idx_accounts_authorization_instance_source'])
   assertDatasetQueryPlanUsesIndex(`
     SELECT usage_id
     FROM usage_record_shard_entries ue
@@ -671,6 +722,15 @@ function assertQueryPlanUsesIndex(sql: string, params: SQLInputValue[], indexNam
     .map((row) => String((row as { detail?: unknown }).detail ?? ''))
     .join('\n')
   assert(details.includes(indexName), `查询计划应使用 ${indexName}，实际计划：${details}`)
+}
+
+function assertBusinessQueryPlanUsesAnyIndex(sql: string, params: SQLInputValue[], indexNames: string[]): void {
+  const details = databaseModule.getBusinessDatabase()
+    .prepare(`EXPLAIN QUERY PLAN ${sql}`)
+    .all(...params)
+    .map((row) => String((row as { detail?: unknown }).detail ?? ''))
+    .join('\n')
+  assert(indexNames.some((indexName) => details.includes(indexName)), `业务库查询计划应使用 ${indexNames.join(' / ')}，实际计划：${details}`)
 }
 
 function uniquePrefix(value: string, otherValue: string): string {

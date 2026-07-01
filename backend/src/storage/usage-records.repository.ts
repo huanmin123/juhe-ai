@@ -1,3 +1,5 @@
+import type { SQLInputValue } from 'node:sqlite'
+
 import { buildSystemAccountScopeClause, includeSystemAccountFields, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getUsageCatalogDatabase, mainDatabaseRuntimeInfo, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
@@ -243,19 +245,43 @@ export function getUsageRecordDetail(id: string, access?: AccessScope): UsageRec
   if (!recordId) return undefined
   const scope = buildSystemAccountScopeClause(access, 'ur.system_account_id')
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
-  const row = queryUsageRecordShardById<UsageRecordRow>(recordId, `
+  const detailSql = `
       SELECT
         ur.*
       FROM usage_records ur
       WHERE ur.id = ?
       ${scope.clause}
       LIMIT 1
-    `, [recordId, ...scope.params])
+    `
+  const detailParams = [recordId, ...scope.params]
+  const row = queryUsageRecordShardById<UsageRecordRow>(recordId, detailSql, detailParams)
+    ?? queryUsageRecordShardByCatalogEntry<UsageRecordRow>(recordId, detailSql, detailParams)
   const namedRow = row ? hydrateUsageRecordNames([row])[0] : undefined
   const accountNames = shouldIncludeSystemAccountFields
     ? loadSystemAccountNameMapByIds([optionalString(namedRow?.system_account_id)])
     : new Map<string, string>()
   return namedRow ? usageRecordSummaryFromRow(namedRow, shouldIncludeSystemAccountFields, accountNames, true) : undefined
+}
+
+function queryUsageRecordShardByCatalogEntry<T extends Record<string, unknown>>(
+  id: string,
+  selectSql: string,
+  params: SQLInputValue[]
+): T | undefined {
+  const entry = getUsageCatalogDatabase()
+    .prepare(`
+      SELECT shard_key
+      FROM usage_record_shard_entries
+      WHERE usage_id = ?
+      LIMIT 1
+    `)
+    .get(id) as { shard_key?: string } | undefined
+  if (!entry?.shard_key) return undefined
+  const location = findRegisteredUsageRecordShardLocation(entry.shard_key)
+  if (!location) return undefined
+  return getUsageRecordShardDatabase(location)
+    .prepare(selectSql)
+    .get(...params) as T | undefined
 }
 
 export async function getUsageRecordDetailAsync(id: string, access?: AccessScope): Promise<UsageRecordSummary | undefined> {
@@ -510,7 +536,10 @@ async function createUsageRecordsBatchPostgres(inputs: UsageRecordInput[]): Prom
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const accountLastUsedAt = new Map<string, string>()
   const accountHealthSuccessAt = new Map<string, string>()
-  const writePlan = buildUsageRecordBatchWritePlan(inputs, { accessLookupMode: 'provided' })
+  const writePlan = buildUsageRecordBatchWritePlan(inputs, {
+    accessLookupMode: 'provided',
+    shardLocationMode: 'postgres'
+  })
   if (writePlan.shardEntries.length === 0) return
 
   await client.transaction(async (tx) => {
@@ -539,9 +568,10 @@ interface UsageRecordBatchWritePlan {
 
 function buildUsageRecordBatchWritePlan(
   inputs: UsageRecordInput[],
-  options: { accessLookupMode?: 'database' | 'provided' } = {}
+  options: { accessLookupMode?: 'database' | 'provided'; shardLocationMode?: 'sqlite' | 'postgres' } = {}
 ): UsageRecordBatchWritePlan {
   const providedOnly = options.accessLookupMode === 'provided'
+  const postgresLogicalShardLocations = options.shardLocationMode === 'postgres'
   const accessLookupContext = providedOnly ? undefined : buildUsageAccessLookupContext(inputs)
   const rowsByShard = new Map<string, { location: UsageRecordShardLocation; rows: UsageRecordShardWriteRow[] }>()
   const shardEntries: UsageRecordShardEntryInput[] = []
@@ -616,7 +646,9 @@ function buildUsageRecordBatchWritePlan(
       accountHealthSuccessAt: shouldRecordAccountUsageSideEffects(trafficSource) && input.success ? now : undefined
     }
 
-    const location = usageRecordShardLocationForRecord(id, now)
+    const location = postgresLogicalShardLocations
+      ? usageRecordLogicalShardLocationForPostgres(id, now)
+      : usageRecordShardLocationForRecord(id, now)
     const shardRows = rowsByShard.get(location.shardKey) ?? { location, rows: [] }
     shardRows.rows.push(row)
     rowsByShard.set(location.shardKey, shardRows)
@@ -748,10 +780,45 @@ async function recordPostgresUsageRecordShardEntries(
   await registerPostgresUsageRecordShardLocations(client, uniquePostgresUsageRecordShardLocations([
     ...locations,
     ...uniqueEntries
-      .map((entry) => usageRecordShardLocationForRecord(entry.id, entry.createdAt))
+      .map((entry) => usageRecordLogicalShardLocationForPostgres(entry.id, entry.createdAt))
   ]), timestamp)
   await upsertPostgresUsageRecordShardEntries(client, uniqueEntries, timestamp)
   await upsertPostgresUsageRecordScopeShardCatalog(client, uniqueEntries)
+}
+
+function usageRecordLogicalShardLocationForPostgres(id: string, createdAt?: string): UsageRecordShardLocation {
+  const parsed = /^usage_(\d{8})_s(\d+)_/.exec(id)
+  const bucketDateKey = parsed?.[1] ?? usageRecordBucketDateKey(createdAt)
+  const shardId = parsed?.[2] ? Number(parsed[2]) : usageRecordLogicalShardId(id)
+  const normalizedShardId = Number.isInteger(shardId) ? Math.max(0, Math.trunc(shardId)) : usageRecordLogicalShardId(id)
+  const shardKey = `${bucketDateKey}:s${formatUsageRecordLogicalShardId(normalizedShardId)}`
+  return {
+    shardKey,
+    bucketDate: `${bucketDateKey.slice(0, 4)}-${bucketDateKey.slice(4, 6)}-${bucketDateKey.slice(6, 8)}`,
+    bucketDateKey,
+    shardId: normalizedShardId,
+    filePath: `postgres:juhe_usage.usage_records:${shardKey}`
+  }
+}
+
+function usageRecordBucketDateKey(createdAt?: string): string {
+  const value = createdAt ?? nowIso()
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value)
+  if (match) return `${match[1]}${match[2]}${match[3]}`
+  const fallback = nowIso()
+  return `${fallback.slice(0, 4)}${fallback.slice(5, 7)}${fallback.slice(8, 10)}`
+}
+
+function usageRecordLogicalShardId(value: string): number {
+  let hash = 0
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0
+  }
+  return hash % runtimeConfig.usageShardCount
+}
+
+function formatUsageRecordLogicalShardId(value: number): string {
+  return String(Math.max(0, Math.trunc(value))).padStart(3, '0')
 }
 
 async function registerPostgresUsageRecordShardLocations(
@@ -1033,8 +1100,10 @@ async function postgresAccountIdsForKeyword(client: DatabaseClient, keyword: str
   const normalizedKeyword = normalizeUsageRecordAccountKeyword(keyword)
   const upperBound = usageRecordAccountKeywordUpperBound(normalizedKeyword)
   const ids: string[] = []
-  const accountNameClause = 'lower(accounts.name) >= ? AND lower(accounts.name) < ?'
-  const sourceNameClause = 'lower(source_accounts.name) >= ? AND lower(source_accounts.name) < ?'
+  const accountNameExpression = '(lower(accounts.name) COLLATE "C")'
+  const sourceNameExpression = '(lower(source_accounts.name) COLLATE "C")'
+  const accountNameClause = `${accountNameExpression} >= ? AND ${accountNameExpression} < ?`
+  const sourceNameClause = `${sourceNameExpression} >= ? AND ${sourceNameExpression} < ?`
   const ownerClause = ownerSystemAccountId ? 'AND accounts.system_account_id = ?' : ''
   const ownerParams = ownerSystemAccountId ? [ownerSystemAccountId] : []
 
@@ -1044,7 +1113,7 @@ async function postgresAccountIdsForKeyword(client: DatabaseClient, keyword: str
     WHERE accounts.deleted_at IS NULL
       AND ${accountNameClause}
       ${ownerClause}
-    ORDER BY lower(accounts.name) ASC, accounts.id ASC
+    ORDER BY ${accountNameExpression} ASC, accounts.id ASC
     LIMIT ?
   `, [normalizedKeyword, upperBound, ...ownerParams, usageRecordAccountKeywordMatchLimit]))
 
@@ -1057,7 +1126,7 @@ async function postgresAccountIdsForKeyword(client: DatabaseClient, keyword: str
       AND instance_accounts.deleted_at IS NULL
       AND ${sourceNameClause}
       ${ownerSystemAccountId ? 'AND instance_accounts.system_account_id = ?' : ''}
-    ORDER BY lower(source_accounts.name) ASC, instance_accounts.id ASC
+    ORDER BY ${sourceNameExpression} ASC, instance_accounts.id ASC
     LIMIT ?
   `, [normalizedKeyword, upperBound, ...ownerParams, usageRecordAccountKeywordMatchLimit]))
 
@@ -1071,7 +1140,7 @@ async function postgresAccountIdsForKeyword(client: DatabaseClient, keyword: str
         AND ra.grantee_system_account_id = ?
       WHERE accounts.deleted_at IS NULL
         AND ${accountNameClause}
-      ORDER BY lower(accounts.name) ASC, accounts.id ASC
+      ORDER BY ${accountNameExpression} ASC, accounts.id ASC
       LIMIT ?
     `, [ownerSystemAccountId, normalizedKeyword, upperBound, usageRecordAccountKeywordMatchLimit]))
     appendUsageRecordAccountIds(ids, await client.query<{ id?: string }>(`
@@ -1086,7 +1155,7 @@ async function postgresAccountIdsForKeyword(client: DatabaseClient, keyword: str
         AND ra.grantee_system_account_id = ?
       WHERE accounts.deleted_at IS NULL
         AND ${accountNameClause}
-      ORDER BY lower(accounts.name) ASC, accounts.id ASC
+      ORDER BY ${accountNameExpression} ASC, accounts.id ASC
       LIMIT ?
     `, [ownerSystemAccountId, normalizedKeyword, upperBound, usageRecordAccountKeywordMatchLimit]))
   }
@@ -1112,7 +1181,17 @@ function normalizeUsageRecordAccountKeyword(value: string): string {
 }
 
 function usageRecordAccountKeywordUpperBound(value: string): string {
-  return `${value}\uffff`
+  return usageRecordBinaryPrefixUpperBound(value)
+}
+
+function usageRecordBinaryPrefixUpperBound(value: string): string {
+  const chars = [...value]
+  for (let index = chars.length - 1; index >= 0; index -= 1) {
+    const codePoint = chars[index].codePointAt(0)
+    if (codePoint === undefined || codePoint >= 0x10ffff) continue
+    return `${chars.slice(0, index).join('')}${String.fromCodePoint(codePoint + 1)}`
+  }
+  return `${value}\u{10ffff}`
 }
 
 function listUsageRecordEntries(

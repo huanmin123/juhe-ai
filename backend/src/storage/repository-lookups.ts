@@ -199,8 +199,8 @@ async function loadCachedRowsByIdsAsync<T extends { id: string }>(
     if (!dbMissIds.length) return result
 
     for (const row of await loadMissingRows(dbMissIds)) {
+      await setLookupSharedCacheEntryAsync(sharedCache, row.id, row)
       result.set(row.id, row)
-      setLookupSharedCacheEntry(sharedCache, row.id, row)
     }
     return result
   }
@@ -520,13 +520,20 @@ function lookupTable(client: DatabaseClient, tableName: string): string {
 
 function setLookupSharedCacheEntry<T extends { id: string }>(cache: SharedJsonCache<T>, id: string, value: T): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  void cache.set(id, value, { ttlMs: lookupCacheTtlMs }).catch((error) => {
+  void setLookupSharedCacheEntryAsync(cache, id, value)
+}
+
+async function setLookupSharedCacheEntryAsync<T extends { id: string }>(cache: SharedJsonCache<T>, id: string, value: T): Promise<void> {
+  if (runtimeConfig.cacheDriver !== 'redis') return
+  try {
+    await cache.set(id, value, { ttlMs: lookupCacheTtlMs })
+  } catch (error) {
     throwIfRedisCacheIsRequired(error)
     logger.warn(errorLogFields(error, {
       event: 'repository_lookup_shared_cache_write_failed',
       cacheName: cache.name
     }), '写入资源 lookup Redis 共享缓存失败')
-  })
+  }
 }
 
 function deleteLookupSharedCacheEntry<T extends { id: string }>(cache: SharedJsonCache<T>, id: string): void {

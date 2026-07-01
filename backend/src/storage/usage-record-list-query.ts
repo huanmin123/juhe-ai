@@ -197,7 +197,8 @@ function accountIdsForKeyword(keyword: string, access?: AccessScope): string[] {
     .prepare(`
       SELECT accounts.id
       FROM accounts
-      WHERE lower(accounts.name) >= ? AND lower(accounts.name) < ?${accountOwnerFilterClause(ownerSystemAccountId)}
+      WHERE accounts.deleted_at IS NULL
+        AND lower(accounts.name) >= ? AND lower(accounts.name) < ?${accountOwnerFilterClause(ownerSystemAccountId)}
       ORDER BY lower(accounts.name) ASC, accounts.id ASC
       LIMIT ?
     `)
@@ -206,9 +207,11 @@ function accountIdsForKeyword(keyword: string, access?: AccessScope): string[] {
     .prepare(`
       SELECT instance_accounts.id
       FROM accounts source_accounts
-      INNER JOIN accounts instance_accounts
-        ON instance_accounts.authorization_instance_source_account_id = source_accounts.id
-      WHERE lower(source_accounts.name) >= ? AND lower(source_accounts.name) < ?${accountOwnerFilterClause(ownerSystemAccountId, 'instance_accounts')}
+      CROSS JOIN accounts instance_accounts
+      WHERE source_accounts.deleted_at IS NULL
+        AND instance_accounts.authorization_instance_source_account_id = source_accounts.id
+        AND instance_accounts.deleted_at IS NULL
+        AND lower(source_accounts.name) >= ? AND lower(source_accounts.name) < ?${accountOwnerFilterClause(ownerSystemAccountId, 'instance_accounts')}
       ORDER BY lower(source_accounts.name) ASC, instance_accounts.id ASC
       LIMIT ?
     `)
@@ -222,7 +225,8 @@ function accountIdsForKeyword(keyword: string, access?: AccessScope): string[] {
           ON ra.resource_type = 'account'
           AND ra.resource_id = accounts.id
           AND ra.grantee_system_account_id = ?
-        WHERE lower(accounts.name) >= ? AND lower(accounts.name) < ?
+        WHERE accounts.deleted_at IS NULL
+          AND lower(accounts.name) >= ? AND lower(accounts.name) < ?
         ORDER BY lower(accounts.name) ASC, accounts.id ASC
         LIMIT ?
       `)
@@ -238,7 +242,8 @@ function accountIdsForKeyword(keyword: string, access?: AccessScope): string[] {
           ON ra.resource_type = 'group'
           AND ra.resource_id = ga.group_id
           AND ra.grantee_system_account_id = ?
-        WHERE lower(accounts.name) >= ? AND lower(accounts.name) < ?
+        WHERE accounts.deleted_at IS NULL
+          AND lower(accounts.name) >= ? AND lower(accounts.name) < ?
         ORDER BY lower(accounts.name) ASC, accounts.id ASC
         LIMIT ?
       `)

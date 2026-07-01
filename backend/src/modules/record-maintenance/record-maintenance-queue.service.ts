@@ -123,6 +123,15 @@ export function enqueueRecordMaintenanceJob(input: RecordMaintenanceJob): Record
   return enqueueRecordMaintenanceJobWithResult(input).job
 }
 
+export async function enqueueRecordMaintenanceJobAsync(input: RecordMaintenanceJob): Promise<RecordMaintenanceJob> {
+  const job = normalizeRecordMaintenanceJob(input)
+  if (shouldEnqueueRecordMaintenanceJobToRedisStream(job)) {
+    await enqueueRecordMaintenanceJobToRedisStream(job)
+    return job
+  }
+  return enqueueRecordMaintenanceJobWithResult(job).job
+}
+
 export function enqueueRecordMaintenanceJobWithResult(input: RecordMaintenanceJob): RecordMaintenanceEnqueueResult {
   const job = normalizeRecordMaintenanceJob(input)
   if (shouldEnqueueRecordMaintenanceJobToRedisStream(job)) {

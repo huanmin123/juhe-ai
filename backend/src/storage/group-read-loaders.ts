@@ -92,19 +92,23 @@ export async function loadGroupAccountIdsByGroupIdsAsync(groupIds: string[]): Pr
   const ids = uniqueIds(groupIds)
   if (!ids.length) return new Map()
   const result = new Map<string, string[]>()
-  const missingLocalIds: string[] = []
-  for (const id of ids) {
-    const cached = groupAccountIdsCache.get(id)
-    if (cached !== undefined) {
-      result.set(id, [...cached])
-    } else {
-      missingLocalIds.push(id)
+  const missingSharedIds: string[] = []
+  if (runtimeConfig.cacheDriver !== 'redis') {
+    for (const id of ids) {
+      const cached = groupAccountIdsCache.get(id)
+      if (cached !== undefined) {
+        result.set(id, [...cached])
+      } else {
+        missingSharedIds.push(id)
+      }
     }
+  } else {
+    missingSharedIds.push(...ids)
   }
-  if (!missingLocalIds.length) return result
+  if (!missingSharedIds.length) return result
 
   const missingDatabaseIds: string[] = []
-  for (const id of missingLocalIds) {
+  for (const id of missingSharedIds) {
     const sharedCached = await getGroupAccountIdsSharedCacheEntry(id)
     if (sharedCached !== undefined) {
       groupAccountIdsCache.set(id, sharedCached)
@@ -118,8 +122,8 @@ export async function loadGroupAccountIdsByGroupIdsAsync(groupIds: string[]): Pr
   const loaded = await loadGroupAccountIdsFromDatabaseAsync(missingDatabaseIds)
   for (const id of missingDatabaseIds) {
     const accountIds = loaded.get(id) ?? []
-    groupAccountIdsCache.set(id, accountIds)
     await setGroupAccountIdsSharedCacheEntryAsync(id, accountIds)
+    groupAccountIdsCache.set(id, accountIds)
     result.set(id, [...accountIds])
   }
   return result

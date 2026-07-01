@@ -1,3 +1,4 @@
+import { runtimeConfig } from '../../../../config/runtime.js'
 import { refreshAccountQualityFromUsage } from '../../../../storage/account-quality.repository.js'
 import {
   aggregateClientIpStatsBatch,
@@ -15,6 +16,7 @@ import type { DerivedCacheCounts } from '../shared.js'
 type StatsDatabase = ReturnType<typeof getStatsDatabase>
 
 export function rebuildDerivedCaches(statsDatabase: StatsDatabase): DerivedCacheCounts {
+  assertSqliteMockdataMaintenance('rebuildDerivedCaches')
   resetUsageStatsCache(statsDatabase)
   let totalProcessed = 0
   while (true) {
@@ -38,6 +40,12 @@ export function rebuildDerivedCaches(statsDatabase: StatsDatabase): DerivedCache
     usageRecords: totalProcessed,
     accountQualityAccounts: quality.refreshed,
     clientIpRecords: clientIpProcessed
+  }
+}
+
+function assertSqliteMockdataMaintenance(operation: string): void {
+  if (runtimeConfig.databaseDriver === 'postgres' || runtimeConfig.runtimeMode === 'performance') {
+    throw new Error(`高性能 PG + Redis 模式禁止调用 SQLite mockdata 派生缓存重建入口：${operation}`)
   }
 }
 

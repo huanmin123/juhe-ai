@@ -154,7 +154,10 @@ import {
   clearAuthorizationQuotaCache
 } from '../gateway/quota/authorization-quota.service.js'
 import { applyAccountErrorHandling, applyAccountErrorHandlingAsync, readGatewaySettingsAsync } from '../gateway/policy/account-error-policy.service.js'
-import { persistOpenAICodexUsageHeaders } from '../gateway/adapters/gpt-codex/usage.service.js'
+import {
+  persistOpenAICodexUsageHeaders,
+  persistOpenAICodexUsageHeadersAsync
+} from '../gateway/adapters/gpt-codex/usage.service.js'
 import { listProviderModelCatalog, listProviderModelCatalogAsync } from '../model-pricing/model-catalog.service.js'
 import {
   recordAccountApiKeyRuntimeFailure,
@@ -590,7 +593,7 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
     case 'persist_openai_codex_usage_headers':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return {
-          persisted: persistOpenAICodexUsageHeaders(operation.accountId, operation.headers, operation.source)
+          persisted: await persistOpenAICodexUsageHeadersAsync(operation.accountId, operation.headers, operation.source)
         }
       }
       return handleDbServiceOperationSync(operation)

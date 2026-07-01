@@ -183,9 +183,11 @@ export async function readCachedGatewaySettingsAsync(): Promise<GatewaySettings>
   if (!useLocalPostgres && !shouldUseGatewayRuntimeDbService()) {
     return { ...readCachedGatewaySettings() }
   }
-  const cached = gatewaySettingsCache.get('current')
-  if (cached) {
-    return { ...cached }
+  if (runtimeConfig.cacheDriver !== 'redis') {
+    const cached = gatewaySettingsCache.get('current')
+    if (cached) {
+      return { ...cached }
+    }
   }
   const sharedCached = await getGatewaySettingsSharedCacheEntry()
   if (sharedCached) {
@@ -220,15 +222,17 @@ export async function resolveCachedGroupUsageAccessMetadataAsync(groupId: string
     return resolveCachedGroupUsageAccessMetadata(groupId, systemAccountId)
   }
   const cacheKey = gatewayCacheKey(groupId, systemAccountId)
-  const cached = groupUsageAccessCache.get(cacheKey)
-  if (cached !== undefined) {
-    if (!isGatewayRuntimeCacheEntryFresh(cached)) {
-      if (!shouldAllowStaleGatewayRuntimeFallback()) {
-        return await loadGroupUsageAccessMetadataAndPopulateCache(groupId, systemAccountId, cacheKey)
+  if (runtimeConfig.cacheDriver !== 'redis') {
+    const cached = groupUsageAccessCache.get(cacheKey)
+    if (cached !== undefined) {
+      if (!isGatewayRuntimeCacheEntryFresh(cached)) {
+        if (!shouldAllowStaleGatewayRuntimeFallback()) {
+          return await loadGroupUsageAccessMetadataAndPopulateCache(groupId, systemAccountId, cacheKey)
+        }
+        refreshGroupUsageAccessMetadataInBackground(groupId, systemAccountId, cacheKey)
       }
-      refreshGroupUsageAccessMetadataInBackground(groupId, systemAccountId, cacheKey)
+      return groupUsageAccessFromCacheEntry(cached)
     }
-    return groupUsageAccessFromCacheEntry(cached)
   }
   const sharedCached = await getGroupUsageAccessSharedCacheEntry(cacheKey)
   if (sharedCached !== undefined) {
@@ -362,9 +366,11 @@ export async function listCachedProviderModelCatalogAsync(input: {
     input.includeInactive === true ? 'inactive' : 'active',
     input.includeUnpriced === true ? 'unpriced' : 'priced'
   ].join(':')
-  const cached = providerModelCatalogCache.get(cacheKey)
-  if (cached) {
-    return cached.map((item) => ({ ...item }))
+  if (runtimeConfig.cacheDriver !== 'redis') {
+    const cached = providerModelCatalogCache.get(cacheKey)
+    if (cached) {
+      return cached.map((item) => ({ ...item }))
+    }
   }
   const sharedCached = await getProviderModelCatalogSharedCacheEntry(cacheKey)
   if (sharedCached) {
@@ -401,7 +407,9 @@ export async function resolveCachedProviderModelRouteAsync(input: {
     systemAccountId: input.systemAccountId,
     includeUnpriced: input.includeUnpriced
   })
-  let cached = providerModelRouteIndexCache.get(cacheKey)
+  let cached = runtimeConfig.cacheDriver !== 'redis'
+    ? providerModelRouteIndexCache.get(cacheKey)
+    : undefined
   if (!cached) {
     const sharedCached = await getProviderModelRouteIndexSharedCacheEntry(cacheKey)
     if (sharedCached) {
@@ -415,8 +423,8 @@ export async function resolveCachedProviderModelRouteAsync(input: {
       systemAccountId: input.systemAccountId,
       includeUnpriced: input.includeUnpriced
     }))
-    providerModelRouteIndexCache.set(cacheKey, cloneProviderModelRouteIndexCacheEntry(cached))
     await setProviderModelRouteIndexSharedCacheEntry(cacheKey, cached)
+    providerModelRouteIndexCache.set(cacheKey, cloneProviderModelRouteIndexCacheEntry(cached))
   }
   const matchedProviderCodes = cached.index.get(modelKey) ?? []
   if (matchedProviderCodes.length === 1) {
@@ -440,15 +448,17 @@ export async function listCachedActiveResponseInspectionPoliciesAsync(input: {
 }): Promise<ResponseInspectionPolicySummary[]> {
   if (runtimeConfig.runtimeStateDriver === 'redis') await syncGatewayCacheInvalidationsFromRuntimeState()
   const cacheKey = responseInspectionPolicyCacheKey(input.protocolCode, input.providerCode)
-  const cached = responseInspectionPolicyCache.get(cacheKey)
-  if (cached) {
-    if (!isGatewayRuntimeCacheEntryFresh(cached)) {
-      if (!shouldAllowStaleGatewayRuntimeFallback()) {
-        return await loadActiveResponseInspectionPoliciesAndPopulateCache(input, cacheKey)
+  if (runtimeConfig.cacheDriver !== 'redis') {
+    const cached = responseInspectionPolicyCache.get(cacheKey)
+    if (cached) {
+      if (!isGatewayRuntimeCacheEntryFresh(cached)) {
+        if (!shouldAllowStaleGatewayRuntimeFallback()) {
+          return await loadActiveResponseInspectionPoliciesAndPopulateCache(input, cacheKey)
+        }
+        refreshActiveResponseInspectionPoliciesInBackground(input, cacheKey)
       }
-      refreshActiveResponseInspectionPoliciesInBackground(input, cacheKey)
+      return cached.policies.map(cloneResponseInspectionPolicy)
     }
-    return cached.policies.map(cloneResponseInspectionPolicy)
   }
   const sharedCached = await getResponseInspectionPolicySharedCacheEntry(cacheKey)
   if (sharedCached) {
@@ -1221,8 +1231,8 @@ function setGatewaySettingsCacheEntry(settings: GatewaySettings): void {
 
 async function setGatewaySettingsCacheEntryAsync(settings: GatewaySettings): Promise<void> {
   const cached = cloneGatewaySettings(settings)
-  gatewaySettingsCache.set('current', cached)
   await setGatewaySettingsSharedCacheEntry(cached)
+  gatewaySettingsCache.set('current', cached)
 }
 
 async function setGatewaySettingsSharedCacheEntry(settings: GatewaySettings): Promise<void> {
@@ -1263,8 +1273,8 @@ async function getGroupUsageAccessSharedCacheEntry(cacheKey: string): Promise<Gr
 
 async function setGroupUsageAccessCacheEntryAsync(cacheKey: string, entry: GroupUsageAccessCacheEntry): Promise<void> {
   const cachedEntry = cloneGroupUsageAccessCacheEntry(entry)
-  groupUsageAccessCache.set(cacheKey, cachedEntry, { ttlMs: groupUsageAccessRetainTtlMs })
   await setGroupUsageAccessSharedCacheEntry(cacheKey, cachedEntry)
+  groupUsageAccessCache.set(cacheKey, cachedEntry, { ttlMs: groupUsageAccessRetainTtlMs })
 }
 
 async function setGroupUsageAccessSharedCacheEntry(cacheKey: string, entry: GroupUsageAccessCacheEntry): Promise<void> {
@@ -1310,10 +1320,10 @@ function refreshActiveResponseInspectionPoliciesInBackground(
     : shouldUseLocalPostgresGatewayRuntimeDataAccess()
       ? listActiveResponseInspectionPoliciesForGatewayAsync(input)
       : Promise.resolve(listActiveResponseInspectionPoliciesForGateway(input)))
-    .then((value) => {
+    .then(async (value) => {
       const entry = responseInspectionPolicyCacheEntry(value.map(cloneResponseInspectionPolicy))
+      await setResponseInspectionPolicySharedCacheEntry(cacheKey, entry)
       responseInspectionPolicyCache.set(cacheKey, entry, { ttlMs: responseInspectionPolicyRetainTtlMs })
-      void setResponseInspectionPolicySharedCacheEntry(cacheKey, entry)
     })
     .catch((error) => {
       logger.warn(errorLogFields(error, {
@@ -1344,8 +1354,8 @@ async function getProviderModelCatalogSharedCacheEntry(cacheKey: string): Promis
 
 async function setProviderModelCatalogCacheEntryAsync(cacheKey: string, value: ProviderModelCatalogItem[]): Promise<void> {
   const cached = value.map((item) => ({ ...item }))
-  providerModelCatalogCache.set(cacheKey, cached.map((item) => ({ ...item })))
   await setProviderModelCatalogSharedCacheEntry(cacheKey, cached)
+  providerModelCatalogCache.set(cacheKey, cached.map((item) => ({ ...item })))
 }
 
 async function setProviderModelCatalogSharedCacheEntry(cacheKey: string, value: ProviderModelCatalogItem[]): Promise<void> {
@@ -1434,8 +1444,8 @@ async function getResponseInspectionPolicySharedCacheEntry(cacheKey: string): Pr
 
 async function setResponseInspectionPolicyCacheEntryAsync(cacheKey: string, entry: ResponseInspectionPolicyCacheEntry): Promise<void> {
   const cachedEntry = responseInspectionPolicyCacheEntry(entry.policies, Date.now(), entry.revalidateAtMs)
-  responseInspectionPolicyCache.set(cacheKey, cachedEntry, { ttlMs: responseInspectionPolicyRetainTtlMs })
   await setResponseInspectionPolicySharedCacheEntry(cacheKey, cachedEntry)
+  responseInspectionPolicyCache.set(cacheKey, cachedEntry, { ttlMs: responseInspectionPolicyRetainTtlMs })
 }
 
 async function setResponseInspectionPolicySharedCacheEntry(cacheKey: string, entry: ResponseInspectionPolicyCacheEntry): Promise<void> {

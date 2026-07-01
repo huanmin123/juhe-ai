@@ -150,6 +150,7 @@ interface ConnectionStats {
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-perf-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 const perfListenBacklog = 8192
+assertSqliteStandalonePerformanceScript()
 runtimeConfig.databasePath = join(tempRoot, 'perf.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
 runtimeConfig.usageCatalogDatabasePath = join(tempRoot, 'usage-catalog.sqlite3')
@@ -161,6 +162,18 @@ runtimeConfig.processRole = 'db-service'
 runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
+
+function assertSqliteStandalonePerformanceScript(): void {
+  if (
+    runtimeConfig.runtimeMode !== 'standalone'
+    || runtimeConfig.databaseDriver !== 'sqlite'
+    || runtimeConfig.cacheDriver !== 'memory'
+    || runtimeConfig.runtimeStateDriver !== 'memory'
+    || runtimeConfig.queueDriver !== 'memory'
+  ) {
+    throw new Error('gateway-performance-test 是 SQLite + memory 单机压测脚本；高性能 PG + Redis 压测请使用 performance-gateway-load-test')
+  }
+}
 
 const [
   { handleOpenAIGatewayRequest },

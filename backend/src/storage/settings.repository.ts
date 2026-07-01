@@ -165,6 +165,7 @@ const globalSettingsSharedCache = createSharedJsonCache<Record<string, unknown>>
 })
 
 export function listGlobalSettings(): Record<string, unknown> {
+  assertSyncSettingsReadAllowed('listGlobalSettings')
   const cached = globalSettingsCache.get('current')
   if (cached) {
     return { ...cached }
@@ -180,9 +181,11 @@ export function listGlobalSettings(): Record<string, unknown> {
 }
 
 export async function listGlobalSettingsAsync(): Promise<Record<string, unknown>> {
-  const cached = globalSettingsCache.get('current')
-  if (cached) {
-    return { ...cached }
+  if (runtimeConfig.cacheDriver !== 'redis') {
+    const cached = globalSettingsCache.get('current')
+    if (cached) {
+      return { ...cached }
+    }
   }
   const sharedCached = await getGlobalSettingsSharedCache()
   if (sharedCached) {
@@ -254,6 +257,7 @@ function pickGlobalSettings(input: Record<string, unknown>): Record<string, unkn
 }
 
 export function getSettings(): Record<string, unknown> {
+  assertSyncSettingsReadAllowed('getSettings')
   const cached = systemSettingsCache.get('current')
   if (cached) {
     return { ...cached }
@@ -272,9 +276,11 @@ export function getSettings(): Record<string, unknown> {
 }
 
 export async function getSettingsAsync(): Promise<Record<string, unknown>> {
-  const cached = systemSettingsCache.get('current')
-  if (cached) {
-    return { ...cached }
+  if (runtimeConfig.cacheDriver !== 'redis') {
+    const cached = systemSettingsCache.get('current')
+    if (cached) {
+      return { ...cached }
+    }
   }
   const sharedCached = await getSystemSettingsSharedCache()
   if (sharedCached) {
@@ -387,13 +393,13 @@ async function getSettingsSharedCache(
 }
 
 async function setSystemSettingsCacheAsync(settings: Record<string, unknown>): Promise<void> {
-  systemSettingsCache.set('current', settings)
   await setSettingsSharedCache(systemSettingsSharedCache, settings, 'settings_system_shared_cache_write_failed')
+  systemSettingsCache.set('current', settings)
 }
 
 async function setGlobalSettingsCacheAsync(settings: Record<string, unknown>): Promise<void> {
-  globalSettingsCache.set('current', settings)
   await setSettingsSharedCache(globalSettingsSharedCache, settings, 'settings_global_shared_cache_write_failed')
+  globalSettingsCache.set('current', settings)
 }
 
 async function setSettingsSharedCache(
@@ -424,6 +430,12 @@ function clearSettingsSharedCache(cache: typeof systemSettingsSharedCache, event
     throwIfRedisCacheIsRequired(error)
     logger.warn(errorLogFields(error, { event }), '清理设置 Redis 共享缓存失败')
   })
+}
+
+function assertSyncSettingsReadAllowed(operation: string): void {
+  if (runtimeConfig.databaseDriver === 'postgres' || runtimeConfig.runtimeMode === 'performance') {
+    throw new Error(`高性能模式禁止同步读取本地 settings 缓存或 SQLite：${operation} 必须使用 async PG + Redis 路径`)
+  }
 }
 
 async function getSettingsDatabaseClient(): Promise<DatabaseClient> {

@@ -88,9 +88,11 @@ export async function checkGatewayApiKeyQuotaExactAsync(apiKey: GatewayApiKeyRow
   }
 
   const cacheKey = await apiKeyQuotaCacheKeyAsync(apiKey, now, quotaLimits.hourly?.hours)
-  const cached = apiKeyQuotaCache.get(cacheKey)
-  if (cached) {
-    return cached
+  if (runtimeConfig.cacheDriver !== 'redis') {
+    const cached = apiKeyQuotaCache.get(cacheKey)
+    if (cached) {
+      return cached
+    }
   }
   const sharedCached = await getApiKeyQuotaSharedCacheEntry(cacheKey)
   if (sharedCached) {
@@ -130,9 +132,11 @@ export async function checkGatewayApiKeyQuotaAsync(apiKey: GatewayApiKeyRow): Pr
   const cacheKey = runtimeConfig.databaseDriver === 'postgres'
     ? await apiKeyQuotaCacheKeyAsync(apiKey, now, quotaLimits.hourly?.hours)
     : apiKeyQuotaCacheKey(apiKey, now, quotaLimits.hourly?.hours)
-  const cached = apiKeyQuotaCache.get(cacheKey)
-  if (cached) {
-    return cached
+  if (runtimeConfig.cacheDriver !== 'redis') {
+    const cached = apiKeyQuotaCache.get(cacheKey)
+    if (cached) {
+      return cached
+    }
   }
   const sharedCached = await getApiKeyQuotaSharedCacheEntry(cacheKey)
   if (sharedCached) {
@@ -243,8 +247,8 @@ function setApiKeyQuotaCacheEntry(apiKeyId: string, cacheKey: string, entry: Api
 }
 
 async function setApiKeyQuotaCacheEntryAsync(apiKeyId: string, cacheKey: string, entry: ApiKeyQuotaCacheEntry): Promise<void> {
-  setApiKeyQuotaCacheEntry(apiKeyId, cacheKey, entry, { skipSharedCache: true })
   await setApiKeyQuotaSharedCacheEntry(cacheKey, entry)
+  setApiKeyQuotaCacheEntry(apiKeyId, cacheKey, entry, { skipSharedCache: true })
 }
 
 function addApiKeyQuotaCacheIndex(apiKeyId: string, cacheKey: string): void {

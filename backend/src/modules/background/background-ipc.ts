@@ -384,6 +384,10 @@ function sendBackgroundWorkerMessageToParent(message: BackgroundWorkerMessage): 
   if (runtimeConfig.processRole !== 'worker' || typeof process.send !== 'function') {
     return false
   }
+  if (runtimeConfig.queueDriver === 'redis_stream' && isRedisStreamManagedIngestQueueMessage(message)) {
+    rejectRedisStreamLocalQueueMessage(message, 'sendBackgroundWorkerMessageToParent')
+    return false
+  }
   try {
     process.send(message, (error) => {
       if (error) {
@@ -978,6 +982,10 @@ function rejectPendingBackgroundRequest(
 }
 
 function queueWorkerMessage(inputMessage: BackgroundWorkerMessage): boolean {
+  if (runtimeConfig.queueDriver === 'redis_stream' && isRedisStreamManagedIngestQueueMessage(inputMessage)) {
+    rejectRedisStreamLocalQueueMessage(inputMessage, 'queueWorkerMessage')
+    return false
+  }
   const message = coalesceWorkerMessage(inputMessage)
   if (!message) {
     flushWorkerMessageQueue()
@@ -1401,6 +1409,10 @@ function requeueWorkerMessageFirst(message: BackgroundWorkerMessage): void {
 }
 
 function requeueIngestWorkerMessageFirst(message: BackgroundWorkerMessage): void {
+  if (runtimeConfig.queueDriver === 'redis_stream' && isRedisStreamManagedIngestQueueMessage(message)) {
+    rejectRedisStreamLocalQueueMessage(message, 'requeueIngestWorkerMessageFirst')
+    return
+  }
   const messageBytes = estimateWorkerMessageBytes(message)
   const queueKey = ipcQueueKeyForMessage(message)
   if (message.type === 'background_worker_usage_records') {
@@ -1411,6 +1423,32 @@ function requeueIngestWorkerMessageFirst(message: BackgroundWorkerMessage): void
     ingestRegularWorkerMessageQueueBytes += messageBytes
   }
   addPendingQueueRuntimeMessage('ingest-worker', queueKey, messageBytes)
+}
+
+function isRedisStreamManagedIngestQueueMessage(message: BackgroundWorkerMessage): boolean {
+  switch (message.type) {
+    case 'background_worker_usage_records':
+    case 'background_worker_audit_logs':
+    case 'background_worker_operation_logs':
+    case 'background_worker_public_api_logs':
+    case 'background_worker_record_maintenance':
+    case 'background_worker_runtime_log_line':
+      return true
+    default:
+      return false
+  }
+}
+
+function rejectRedisStreamLocalQueueMessage(message: BackgroundWorkerMessage, operation: string): void {
+  const queueKey = ipcQueueKeyForMessage(message)
+  const queue = ingestPendingQueueRuntime[queueKey]
+  queue.rejectedCount = (queue.rejectedCount ?? 0) + 1
+  logger.error({
+    event: 'redis_stream_local_ipc_queue_rejected',
+    operation,
+    messageType: message.type,
+    queueKey
+  }, 'Redis Stream queue driver 下禁止使用后台 IPC 本地队列，记录类数据必须写入 Redis Stream')
 }
 
 function requeueOpsWorkerMessageFirst(message: BackgroundWorkerMessage): void {

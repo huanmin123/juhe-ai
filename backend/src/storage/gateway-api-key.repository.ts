@@ -145,13 +145,15 @@ export async function validateGatewayApiKeyAsync(key: string): Promise<GatewayAp
   }
   const keyHash = hashSecret(key)
   const now = Date.now()
-  const cached = gatewayApiKeyCache.get(keyHash)
-  if (
-    cached
-    && cached.forceRevalidateAtMs > now
-    && !isGatewayApiKeyRowExpired(cached.row, now)
-  ) {
-    return cloneGatewayApiKeyRow(cached.row)
+  if (runtimeConfig.cacheDriver !== 'redis') {
+    const cached = gatewayApiKeyCache.get(keyHash)
+    if (
+      cached
+      && cached.forceRevalidateAtMs > now
+      && !isGatewayApiKeyRowExpired(cached.row, now)
+    ) {
+      return cloneGatewayApiKeyRow(cached.row)
+    }
   }
   const sharedCached = await getGatewayApiKeySharedCacheEntry(keyHash)
   if (
@@ -322,11 +324,11 @@ async function setGatewayApiKeyCacheEntryAsync(
   entry: GatewayApiKeyCacheEntry,
   options: { ttlMs?: number } = {}
 ): Promise<void> {
+  await setGatewayApiKeySharedCacheEntry(keyHash, entry, options)
   setGatewayApiKeyCacheEntry(keyHash, entry, {
     ...options,
     skipSharedCache: true
   })
-  await setGatewayApiKeySharedCacheEntry(keyHash, entry, options)
 }
 
 function addGatewayApiKeyCacheIndex(apiKeyId: string, keyHash: string): void {

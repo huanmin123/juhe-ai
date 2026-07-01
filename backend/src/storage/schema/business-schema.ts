@@ -767,6 +767,9 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_system_accounts_display_name_lookup ON system_accounts(display_name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_credential_fingerprint ON accounts(credential_fingerprint) WHERE credential_fingerprint IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_owner_name_unique_lower ON accounts(system_account_id, lower(name)) WHERE deleted_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_accounts_owner_all_name_lower_lookup
+      ON accounts(system_account_id, lower(name), id)
+      WHERE deleted_at IS NULL;
     CREATE INDEX IF NOT EXISTS idx_accounts_owner_name_lower_lookup
       ON accounts(system_account_id, lower(name), id)
       WHERE deleted_at IS NULL AND authorization_instance_authorization_id IS NULL;
@@ -993,6 +996,9 @@ function ensureAuthorizationInstanceIndexes(database: DatabaseSync): void {
   database.exec(`
     CREATE INDEX IF NOT EXISTS idx_accounts_authorization_instance_authorization ON accounts(authorization_instance_authorization_id);
     CREATE INDEX IF NOT EXISTS idx_accounts_authorization_instance_source ON accounts(authorization_instance_source_account_id);
+    CREATE INDEX IF NOT EXISTS idx_accounts_authorization_instance_source_owner_lookup
+      ON accounts(authorization_instance_source_account_id, system_account_id, id)
+      WHERE deleted_at IS NULL;
     CREATE INDEX IF NOT EXISTS idx_accounts_deleted_cleanup
       ON accounts(deleted_at ASC, updated_at ASC, id ASC)
       WHERE deleted_at IS NOT NULL;
