@@ -42,6 +42,7 @@ export {
   type ClientIpPolicyHitInput,
   type ClientIpPolicyMutationInput,
   type ClientIpPolicyStatus,
+  type ClientIpPolicyType,
   type ClientIpPolicySummary
 } from './client-ip-policy.repository.js'
 export {

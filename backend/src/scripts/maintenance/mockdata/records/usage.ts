@@ -431,6 +431,20 @@ function appendCoverageUsageRecords(records: UsageRecordSeed[], created: Created
       account: created.accounts.temporary
     },
     {
+      ordinal: nextOrdinal(records.length + 1550, (value) => value % 41 !== 0 && value % 11 !== 0 && value % 3 !== 0),
+      idSuffix: 'coverage_runtime_recovery_probe',
+      scenario: {
+        key: created.apiKeys.testerTeamAuthorized,
+        owner: created.users.tester,
+        group: created.groups.experiment,
+        accounts: [created.accounts.temporary],
+        label: 'tester-runtime-recovery-probe-coverage',
+        clientIpBase: '10.20.13.',
+        trafficSource: 'runtime_recovery_probe'
+      },
+      account: created.accounts.temporary
+    },
+    {
       ordinal: nextOrdinal(records.length + 1600, (value) => value % 41 !== 0 && value % 11 !== 0 && value % 3 !== 0),
       idSuffix: 'coverage_hybrid_scoring',
       scenario: {

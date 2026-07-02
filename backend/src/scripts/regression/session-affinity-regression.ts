@@ -25,6 +25,7 @@ async function main(): Promise<void> {
   testAffinityDoesNotPromoteFallbackOverPrimary()
   testAffinityDoesNotPromoteOverBetterQuality()
   testAffinityPromotesWithinSameAvailabilityBucket()
+  testAffinityFallbackContinuesAfterPromotedAccountWithinSamePriority()
   testAffinityPromotesAcrossAccountTypesWithinSameBucket()
   testAffinityBindingCanSwitchAcrossAccountTypesWithoutNewShard()
   testScopedMigrationOnlyMovesMatchingBindings()
@@ -169,6 +170,27 @@ function testAffinityPromotesWithinSameAvailabilityBucket(): void {
   ]
 
   assert.deepEqual(orderedIds(accounts, sessionKey), ['sticky-good', 'same-quality-a', 'same-quality-b'])
+  forgetOpenAIAccountForSession(sessionKey)
+}
+
+function testAffinityFallbackContinuesAfterPromotedAccountWithinSamePriority(): void {
+  const sessionKey = 'session-affinity-regression:same-priority-ring'
+  rememberOpenAIAccountForSession(sessionKey, 'account-2')
+  const accounts = [
+    createAccount('account-1', { priority: 0, qualityScore: 300 }),
+    createAccount('account-2', { priority: 0, qualityScore: 300 }),
+    createAccount('account-3', { priority: 0, qualityScore: 300 }),
+    createAccount('account-4', { priority: 0, qualityScore: 300 }),
+    createAccount('account-5', { priority: 0, qualityScore: 300 }),
+    createAccount('worse-quality', { priority: 0, qualityScore: 500 }),
+    createAccount('fallback-low', { priority: 10 })
+  ]
+
+  assert.deepEqual(
+    orderedIds(accounts, sessionKey),
+    ['account-2', 'account-3', 'account-4', 'account-5', 'account-1', 'worse-quality', 'fallback-low'],
+    '同优先级同质量层内亲和账号提到队首后，失败兜底应从原位置之后继续，而不是回到原队首或低质量账号'
+  )
   forgetOpenAIAccountForSession(sessionKey)
 }
 

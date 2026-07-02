@@ -141,7 +141,7 @@ function loadCachedRowsByIds<T extends { id: string }>(
   const ids = uniqueIds(values)
   if (!ids.length) return new Map()
   if (!canUseProcessLocalAppCacheAsFactSource()) {
-    return new Map(loadMissingRows(ids).map((row) => [row.id, row]))
+    throw new Error('高性能模式禁止同步资源 lookup 绕过 Redis shared cache，必须使用 async lookup')
   }
 
   const result = new Map<string, T>()
@@ -241,6 +241,9 @@ function invalidateLookupCache<T extends { id: string }>(cache: AppCache<string,
 }
 
 export function loadSystemAccountsByIds(systemAccountIds: Array<string | undefined>): Map<string, SystemAccountSummary> {
+  if (!canUseProcessLocalAppCacheAsFactSource()) {
+    throw new Error('高性能模式禁止同步直读系统账户 lookup，必须使用 async repository lookup')
+  }
   const ids = uniqueIds(systemAccountIds)
   if (!ids.length) return new Map()
   const rows = loadRowsByIds<SystemAccountSummaryRow>(ids, (chunk) => `

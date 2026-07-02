@@ -13,10 +13,11 @@ import {
 } from './api-key-availability-schedule.js'
 import { buildApiKeyFilters, normalizeApiKeyListOptions } from './api-key-list-query.js'
 import { apiKeySummariesFromRows, apiKeySummariesFromRowsAsync, type ApiKeyRow } from './api-key-mappers.js'
+import { registerDeletedApiKeyRecordCleanupTargetInClientAsync } from './api-key-record-cleanup.js'
 import { createApiKey, encryptJson, hashSecret } from './crypto.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
-import { invalidateGatewayApiKeyCacheById } from './gateway-api-key.repository.js'
+import { invalidateGatewayApiKeyCacheById, invalidateGatewayApiKeyCacheByIdAsync } from './gateway-api-key.repository.js'
 import { getPostgresPool } from './postgres-client.js'
 import { pagedTotalUpperBound, takePageRows } from './query-utils.js'
 import { invalidateApiKeyLookupCache, loadSystemAccountNameMapByIds } from './repository-lookups.js'
@@ -616,7 +617,7 @@ export async function updateApiKeyAsync(id: string, input: Record<string, unknow
     }
     throw error
   }
-  invalidateGatewayApiKeyCacheById(id)
+  await invalidateGatewayApiKeyCacheByIdAsync(id)
   invalidateApiKeyLookupCache(id)
   notifyGatewayRuntimeCacheInvalidation('api_key_updated')
   notifyApiKeyQuotaCacheInvalidation(id, 'api_key_updated')
@@ -668,7 +669,7 @@ export async function refreshApiKeySecretAsync(id: string, access?: AccessScope)
     WHERE id = ? AND system_account_id = ?
   `, [hashSecret(key), keyPrefix, keySuffix, encryptJson({ key }), now, id, systemAccountId])
   if (result.changes <= 0) return undefined
-  invalidateGatewayApiKeyCacheById(id)
+  await invalidateGatewayApiKeyCacheByIdAsync(id)
   invalidateApiKeyLookupCache(id)
   notifyGatewayRuntimeCacheInvalidation('api_key_secret_refreshed')
   notifyApiKeyQuotaCacheInvalidation(id, 'api_key_secret_refreshed')
@@ -729,20 +730,36 @@ export async function deleteApiKeyWithRelatedCleanupAsync(id: string, access?: A
   if (!row) return { deleted: false }
   assertApiKeyNotDefault(row)
 
-  const result = await client.execute(`
-    DELETE FROM ${apiKeyTable(client, 'api_keys')}
-    WHERE id = ? AND system_account_id = ?
-  `, [row.id, row.system_account_id])
-  const deleted = result.changes > 0
+  const cleanupTarget = { apiKeyId: row.id, systemAccountId: row.system_account_id }
+  let deleted = false
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    deleted = await client.transaction(async (tx) => {
+      const result = await tx.execute(`
+        DELETE FROM ${apiKeyTable(tx, 'api_keys')}
+        WHERE id = ? AND system_account_id = ?
+      `, [row.id, row.system_account_id])
+      const rowDeleted = result.changes > 0
+      if (rowDeleted) {
+        await registerDeletedApiKeyRecordCleanupTargetInClientAsync(tx, cleanupTarget)
+      }
+      return rowDeleted
+    })
+  } else {
+    const result = await client.execute(`
+      DELETE FROM ${apiKeyTable(client, 'api_keys')}
+      WHERE id = ? AND system_account_id = ?
+    `, [row.id, row.system_account_id])
+    deleted = result.changes > 0
+  }
   if (deleted) {
-    invalidateGatewayApiKeyCacheById(row.id)
+    await invalidateGatewayApiKeyCacheByIdAsync(row.id)
     invalidateApiKeyLookupCache(row.id)
     notifyGatewayRuntimeCacheInvalidation('api_key_deleted')
     notifyApiKeyQuotaCacheInvalidation(row.id, 'api_key_deleted')
   }
   return {
     deleted,
-    cleanupTarget: deleted ? { apiKeyId: row.id, systemAccountId: row.system_account_id } : undefined
+    cleanupTarget: deleted ? cleanupTarget : undefined
   }
 }
 

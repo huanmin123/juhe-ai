@@ -50,7 +50,7 @@ export async function applyOpenAIGatewayImagePermissionPreflight(input: {
   }
 
   const imageEndpointOrModel = isOpenAIGatewayImageEndpointOrModelRequest(input.req)
-  if (!imageEndpointOrModel && rejectOversizedAutoImageGenerationTextDowngrade(input)) {
+  if (!imageEndpointOrModel && await rejectOversizedAutoImageGenerationTextDowngrade(input)) {
     return { outcome: 'completed' }
   }
 
@@ -91,7 +91,7 @@ export async function applyOpenAIGatewayImagePermissionPreflight(input: {
   }
 
   if (downgrade.reason === 'invalid_json') {
-    sendInvalidJsonGatewayResponse({
+    await sendInvalidJsonGatewayResponse({
       req: input.req,
       res: input.res,
       auditCapture: input.auditCapture,
@@ -109,7 +109,7 @@ export async function applyOpenAIGatewayImagePermissionPreflight(input: {
   if (downgrade.reason === 'json_worker_overloaded') {
     const statusCode = 503
     const responsePayload = gatewayErrorPayload('网关请求解析繁忙，请稍后重试', 'server_overloaded', 'server_overloaded')
-    sendGatewayFailureResponse({
+    await sendGatewayFailureResponse({
       req: input.req,
       res: input.res,
       auditCapture: input.auditCapture,
@@ -137,7 +137,7 @@ export async function applyOpenAIGatewayImagePermissionPreflight(input: {
       reason: downgrade.reason
     }
   })
-  sendGatewayFailureResponse({
+  await sendGatewayFailureResponse({
     req: input.req,
     res: input.res,
     auditCapture: input.auditCapture,
@@ -155,7 +155,7 @@ export async function applyOpenAIGatewayImagePermissionPreflight(input: {
   return { outcome: 'completed' }
 }
 
-function rejectOversizedAutoImageGenerationTextDowngrade(input: {
+async function rejectOversizedAutoImageGenerationTextDowngrade(input: {
   req: Request
   res: Response
   auditCapture: AuditCaptureContext
@@ -165,7 +165,7 @@ function rejectOversizedAutoImageGenerationTextDowngrade(input: {
   apiKeyId?: string
   groupId: string
   gatewayTextRawBodyLimitMegabytes?: number
-}): boolean {
+}): Promise<boolean> {
   const state = getGatewayRequestBodyState(input.req)
   const req = input.req as GatewayRawBodyRequest
   const rawBody = req.rawBody
@@ -208,7 +208,7 @@ function rejectOversizedAutoImageGenerationTextDowngrade(input: {
 
   const statusCode = 413
   const responsePayload = gatewayErrorPayload('请求体过大', 'request_too_large', 'request_body_too_large')
-  sendGatewayFailureResponse({
+  await sendGatewayFailureResponse({
     req: input.req,
     res: input.res,
     auditCapture: input.auditCapture,

@@ -4,21 +4,63 @@ import { orderGatewayAccountsByLaneCapacityAvailability } from '../../modules/ga
 import type { UpstreamAccount } from '../../modules/gateway/protocols/openai-v1/route-helpers.js'
 import { clearAccountConcurrency, tryAcquireAccountConcurrency } from '../../shared/account-concurrency.js'
 
+const busyNormalAccount = account('busy-normal', { concurrencyLimit: 1 })
 const busySuperAccount = account('busy-super', { concurrencyLimit: 1, superPriorityEnabled: true })
 const idlePeerAccount = account('idle-peer', { concurrencyLimit: 10 })
 const idleLaterAccount = account('idle-later', { concurrencyLimit: 10 })
+const busyDirectModelAccount = account('busy-direct-model', { concurrencyLimit: 1 })
+const idleUnrestrictedModelAccount = account('idle-unrestricted-model', { concurrencyLimit: 10 })
 
-const heldSlot = tryAcquireAccountConcurrency(busySuperAccount.id, busySuperAccount.concurrencyLimit)
-assert.equal(heldSlot.acquired, true, '回归样本应能占满超级优先账号')
+const heldSlot = tryAcquireAccountConcurrency(busyNormalAccount.id, busyNormalAccount.concurrencyLimit)
+assert.equal(heldSlot.acquired, true, '回归样本应能占满普通账号')
 
 try {
   assert.deepEqual(
-    orderGatewayAccountsByLaneCapacityAvailability([busySuperAccount, idlePeerAccount, idleLaterAccount], 'text').map((item) => item.id),
-    ['idle-peer', 'idle-later', 'busy-super'],
+    orderGatewayAccountsByLaneCapacityAvailability([busyNormalAccount, idlePeerAccount, idleLaterAccount], 'text').map((item) => item.id),
+    ['idle-peer', 'idle-later', 'busy-normal'],
     '非高并发分组调度应把已满载账号排到未满载账号后面，避免每个请求都先短等满载账号'
   )
 } finally {
   heldSlot.release()
+  clearAccountConcurrency()
+}
+
+const heldSuperSlot = tryAcquireAccountConcurrency(busySuperAccount.id, busySuperAccount.concurrencyLimit)
+assert.equal(heldSuperSlot.acquired, true, '回归样本应能占满超级优先账号')
+
+try {
+  assert.deepEqual(
+    orderGatewayAccountsByLaneCapacityAvailability([busySuperAccount, idlePeerAccount], 'text').map((item) => item.id),
+    ['busy-super', 'idle-peer'],
+    '容量避让不能让普通账号越过超级优先账号'
+  )
+} finally {
+  heldSuperSlot.release()
+  clearAccountConcurrency()
+}
+
+const heldDirectModelSlot = tryAcquireAccountConcurrency(busyDirectModelAccount.id, busyDirectModelAccount.concurrencyLimit)
+assert.equal(heldDirectModelSlot.acquired, true, '回归样本应能占满直连模型匹配账号')
+
+try {
+  assert.deepEqual(
+    orderGatewayAccountsByLaneCapacityAvailability(
+      [busyDirectModelAccount, idleUnrestrictedModelAccount],
+      'text',
+      undefined,
+      {
+        requestedModel: 'gpt-4.1',
+        rankByAccountId: new Map([
+          [busyDirectModelAccount.id, 0],
+          [idleUnrestrictedModelAccount.id, 2]
+        ])
+      }
+    ).map((item) => item.id),
+    ['busy-direct-model', 'idle-unrestricted-model'],
+    '容量避让不能让低模型匹配等级账号越过直连匹配账号'
+  )
+} finally {
+  heldDirectModelSlot.release()
   clearAccountConcurrency()
 }
 

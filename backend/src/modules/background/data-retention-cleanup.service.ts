@@ -10,7 +10,11 @@ import {
   cleanupProcessedUsageRecordsBeforeWithResultAsync
 } from '../../storage/data-retention.repository.js'
 import { getSettings } from '../../storage/settings.repository.js'
-import { cleanupRuntimeLogFileCursorsBefore, cleanupRuntimeLogIndex, runtimeLogIndexRetentionDays } from '../../storage/runtime-logs.repository.js'
+import {
+  cleanupRuntimeLogFileCursorsBefore,
+  cleanupRuntimeLogIndex,
+  runtimeLogIndexRetentionDaysFromSettings
+} from '../../storage/runtime-logs.repository.js'
 import { tableMonitorSampleRetentionDays } from '../../storage/table-monitor.repository.js'
 import { checkpointSqliteWal, type SqliteWalCheckpointResult } from '../../storage/sqlite-maintenance.js'
 import { checkpointOpenUsageRecordShardDatabases } from '../../storage/usage-record-shards.js'
@@ -21,7 +25,7 @@ import { requestStatsWriter } from './background-stats-writer.js'
 import { deleteCodexContextStorageKeys } from '../gateway/codex-responses/chat-bridge-state.js'
 
 const dayMs = 24 * 60 * 60 * 1000
-const usageRecordRetentionMaxDays = 7
+const usageRecordRetentionMaxDays = 180
 const accountQualityMinuteRetentionHours = 24
 const statsMinuteRetentionMaxHours = 24 * 14
 const statsHourlyRetentionMaxDays = 180
@@ -33,7 +37,7 @@ const systemMetricsRawRetentionMaxDays = 7
 const statsRetentionMaxDays = 30
 const snapshotRetentionMaxDays = 30
 const operationLogRetentionMaxDays = 3650
-const publicApiLogRetentionDays = 7
+const publicApiLogRetentionMaxDays = 365
 const modelCheckRetentionMaxDays = 365
 const retentionCleanupBatchSizeMax = 5_000
 const retentionCleanupMaxBatchesMax = 100
@@ -46,6 +50,7 @@ interface DataRetentionPolicy {
   auditLogFailureDays: number
   auditErrorGroupDays: number
   operationLogDays: number
+  publicApiLogDays: number
   runtimeLogDays: number
   modelCheckDays: number
   usageRecordDays: number
@@ -146,7 +151,8 @@ export async function cleanupExpiredRetainedData(): Promise<DataRetentionCleanup
       auditLogFailureDays: auditSettings.failureRetentionDays,
       auditErrorGroupDays: auditSettings.errorGroupRetentionDays,
       operationLogDays: settingNumber(settings, 'operationLogRetentionDays', 1, operationLogRetentionMaxDays),
-      runtimeLogDays: runtimeLogIndexRetentionDays,
+      publicApiLogDays: settingNumber(settings, 'publicApiLogRetentionDays', 1, publicApiLogRetentionMaxDays),
+      runtimeLogDays: runtimeLogIndexRetentionDaysFromSettings(settings),
       modelCheckDays: settingNumber(settings, 'modelCheckRetentionDays', 1, modelCheckRetentionMaxDays),
       usageRecordDays: settingNumber(settings, 'usageRecordRetentionDays', 1, usageRecordRetentionMaxDays),
       statsMinuteHours: settingNumber(settings, 'usageStatsMinuteRetentionHours', 1, statsMinuteRetentionMaxHours),
@@ -234,7 +240,11 @@ async function cleanupDatasetAndUsageRetainedData(input: {
   const { now, retention, batchSize, maxBatches } = input
   result.operationLogs = await cleanupInBatches(() => cleanupOperationLogsBefore(cutoffIso(now, retention.operationLogDays), batchSize), batchSize, maxBatches)
   await yieldToEventLoop()
-  result.publicApiLogs = await cleanupInBatches(() => cleanupPublicApiLogsBefore(cutoffIso(now, publicApiLogRetentionDays), batchSize), batchSize, maxBatches)
+  result.publicApiLogs = await cleanupInBatches(
+    () => cleanupPublicApiLogsBefore(cutoffIso(now, retention.publicApiLogDays), batchSize),
+    batchSize,
+    maxBatches
+  )
   await yieldToEventLoop()
   result.auditLogs = await cleanupInBatches(() => cleanupAuditLogsByRetentionAsync({
       successHotCutoffCreatedAt: cutoffHoursIso(now, retention.auditLogSuccessHotHours),

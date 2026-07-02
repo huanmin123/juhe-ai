@@ -287,8 +287,11 @@ export function notifyClientIpPolicyCacheInvalidated(): void {
     void clearServerClientIpPolicyCache()
     return
   }
-  if (runtimeConfig.processRole === 'db-service' && typeof process.send === 'function') {
-    sendDbServiceChildMessage({ type: 'client_ip_policy_cache_invalidate' })
+  if (runtimeConfig.processRole === 'db-service') {
+    void clearServerClientIpPolicyCache()
+    if (typeof process.send === 'function') {
+      sendDbServiceChildMessage({ type: 'client_ip_policy_cache_invalidate' })
+    }
   }
 }
 

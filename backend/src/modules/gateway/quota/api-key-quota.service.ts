@@ -143,6 +143,24 @@ export async function checkGatewayApiKeyQuotaAsync(apiKey: GatewayApiKeyRow): Pr
     setApiKeyQuotaCacheEntry(apiKey.id, cacheKey, sharedCached, { skipSharedCache: true })
     return sharedCached
   }
+  if (runtimeConfig.cacheDriver === 'redis' && runtimeConfig.processRole === 'server') {
+    try {
+      const dbService = await import('../../db-service/db-service-ipc.js')
+      const decision = await dbService.requestDbService({ type: 'check_api_key_quota', apiKey }, { timeoutMs: 1000 })
+      await setApiKeyQuotaCacheEntryAsync(apiKey.id, cacheKey, {
+        ...decision,
+        checkedAtMs: Date.now()
+      })
+      return decision
+    } catch (error) {
+      logger.warn(errorLogFields(error, {
+        event: 'gateway_api_key_quota_redis_exact_check_failed',
+        apiKeyId: apiKey.id,
+        systemAccountId: apiKey.system_account_id
+      }), 'Redis 模式 API Key 配额精确补判失败，按保护策略拒绝请求')
+      return { allowed: false, message: API_KEY_QUOTA_EXCEEDED_MESSAGE }
+    }
+  }
   if (runtimeConfig.processRole === 'server') {
     const costs = readGatewayQuotaCostsSnapshot({
       systemAccountId: apiKey.system_account_id,
@@ -193,6 +211,11 @@ export function clearApiKeyQuotaCache(): void {
 }
 
 export function invalidateApiKeyQuotaCacheById(id: string): void {
+  if (runtimeConfig.cacheDriver === 'redis') {
+    apiKeyQuotaCacheKeysById.clear()
+    clearApiKeyQuotaSharedCache()
+    return
+  }
   const cacheKeys = apiKeyQuotaCacheKeysById.get(id)
   if (!cacheKeys) return
   for (const cacheKey of [...cacheKeys]) {
@@ -235,6 +258,13 @@ function apiKeyIdFromQuotaCacheKey(cacheKey: string): string {
 }
 
 function setApiKeyQuotaCacheEntry(apiKeyId: string, cacheKey: string, entry: ApiKeyQuotaCacheEntry, options: { skipSharedCache?: boolean } = {}): void {
+  if (runtimeConfig.cacheDriver === 'redis') {
+    apiKeyQuotaCacheKeysById.clear()
+    if (!options.skipSharedCache) {
+      void setApiKeyQuotaSharedCacheEntry(cacheKey, entry)
+    }
+    return
+  }
   const previousApiKeyId = apiKeyIdFromQuotaCacheKey(cacheKey)
   if (previousApiKeyId) {
     removeApiKeyQuotaCacheIndex(previousApiKeyId, cacheKey)

@@ -44,8 +44,8 @@ export function refreshClientIpUsageRangeWindows(options: { full?: boolean; dirt
   const transactionStarted = beginDatabaseTransaction(database)
   try {
     for (const window of windows) {
-      refreshClientIpUsageRangeWindowForIps(database, window.startDate, window.endDate, dirtyIpHashes, updatedAt)
-      refreshClientIpAccountUsageRangeWindowForIps(database, window.startDate, window.endDate, dirtyIpHashes, updatedAt)
+      refreshClientIpUsageRangeWindowForIps(database, window.startDate, window.endDate, dirtyIpHashes, updatedAt, false)
+      refreshClientIpAccountUsageRangeWindowForIps(database, window.startDate, window.endDate, dirtyIpHashes, updatedAt, false)
     }
     clearClientIpRangeWindowDirtyIpHashes(database, dirtyIpHashes)
     if (!hasPendingClientIpRangeWindowDirtyIpHashes(database)) {
@@ -337,9 +337,9 @@ function refreshClientIpUsageRangeWindow(database: DatabaseSync, startDate: stri
   }
 }
 
-function refreshClientIpUsageRangeWindowForIps(database: DatabaseSync, startDate: string, endDate: string, ipHashes: string[], updatedAt: string): void {
+function refreshClientIpUsageRangeWindowForIps(database: DatabaseSync, startDate: string, endDate: string, ipHashes: string[], updatedAt: string, useTransaction = true): void {
   if (!ipHashes.length) return
-  const transactionStarted = beginDatabaseTransaction(database)
+  const transactionStarted = useTransaction ? beginDatabaseTransaction(database) : false
   try {
     for (const chunk of chunkValues(ipHashes, clientIpRangeWindowChunkSize)) {
       const placeholders = sqlPlaceholders(chunk.length)
@@ -611,9 +611,9 @@ function refreshClientIpAccountUsageRangeWindow(database: DatabaseSync, startDat
   }
 }
 
-function refreshClientIpAccountUsageRangeWindowForIps(database: DatabaseSync, startDate: string, endDate: string, ipHashes: string[], updatedAt: string): void {
+function refreshClientIpAccountUsageRangeWindowForIps(database: DatabaseSync, startDate: string, endDate: string, ipHashes: string[], updatedAt: string, useTransaction = true): void {
   if (!ipHashes.length) return
-  const transactionStarted = beginDatabaseTransaction(database)
+  const transactionStarted = useTransaction ? beginDatabaseTransaction(database) : false
   try {
     for (const chunk of chunkValues(ipHashes, clientIpRangeWindowChunkSize)) {
       const placeholders = sqlPlaceholders(chunk.length)

@@ -6,7 +6,7 @@ import type { AccessScope } from './access-scope.js'
 import { getBusinessDatabase, nowIso } from './database.js'
 import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient } from './database-client.js'
-import { refreshGroupAccountStatsAfterWrite } from './group-account-stats-write-invalidation.js'
+import { refreshGroupAccountStatsAfterWrite, refreshGroupAccountStatsAfterWriteAsync } from './group-account-stats-write-invalidation.js'
 import { invalidateGroupAccountIdsCache } from './group-read-loaders.js'
 import { findGroupSummary } from './group-summary.repository.js'
 import { getPostgresPool } from './postgres-client.js'
@@ -259,6 +259,7 @@ export async function setAccountGroupAsync(
       now
     ])
   })
+  await refreshGroupAccountStatsAfterWriteAsync({ groupIds: [previousGroupId, groupId], reason: 'group_account_binding' })
   if (previousGroupId && previousGroupId !== groupId) {
     invalidateGroupAccountIdsCache(previousGroupId)
   }

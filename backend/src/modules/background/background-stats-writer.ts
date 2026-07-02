@@ -16,6 +16,7 @@ import { cleanupTableStorageSnapshotsBefore, cleanupTableStorageSnapshotsBeforeA
 import {
   aggregateUsageStatsBatchAsync,
   checkUsageStatsConsistency,
+  checkUsageStatsConsistencyAsync,
   insertProcessEventLoopSample,
   insertProcessEventLoopSampleAsync,
   insertSystemMetricsSample,
@@ -32,9 +33,11 @@ import {
 } from '../../storage/usage-stats.repository.js'
 import {
   cleanupSystemMetricsBefore,
+  cleanupSystemMetricsBeforeAsync,
   cleanupNonBusinessDataBeforeWithResult,
   type NonBusinessDataHardCleanupResult,
-  cleanupUsageStatsBucketsBefore
+  cleanupUsageStatsBucketsBefore,
+  cleanupUsageStatsBucketsBeforeAsync
 } from '../../storage/data-retention.repository.js'
 import {
   cleanupDeletedAccountRecordStatsData,
@@ -46,7 +49,9 @@ import {
 } from '../../storage/api-key-record-cleanup.js'
 import {
   listAccountQualityFailurePrecheckCandidates,
+  listAccountQualityFailurePrecheckCandidatesAsync,
   refreshAccountQualityFromUsage,
+  refreshAccountQualityFromUsageAsync,
   upsertAccountUsageSnapshotsAsync,
   upsertAccountUsageSnapshots,
   type AccountUsageSnapshotUpsertInput,
@@ -191,7 +196,7 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
       return { refreshed: await refreshGroupAccountStats() }
     case 'refresh_account_quality':
       if (runtimeConfig.databaseDriver === 'postgres') {
-        throw postgresStatsWriterOperationNotImplemented(operation.type)
+        return await refreshAccountQualityAsync(operation.windowMinutes, operation.failureCandidateLimit)
       }
       return refreshAccountQuality(operation.windowMinutes, operation.failureCandidateLimit)
     case 'record_system_metrics_sample':
@@ -216,7 +221,7 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
       })
     case 'check_usage_stats_consistency':
       if (runtimeConfig.databaseDriver === 'postgres') {
-        throw postgresStatsWriterOperationNotImplemented(operation.type)
+        return await checkUsageStatsConsistencyAsync(operation.limit)
       }
       return checkUsageStatsConsistency(operation.limit)
     case 'collect_table_storage_snapshot':
@@ -237,12 +242,12 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
       return { upsertedCount: operation.inputs.length }
     case 'cleanup_usage_stats_retention':
       if (runtimeConfig.databaseDriver === 'postgres') {
-        throw postgresStatsWriterOperationNotImplemented(operation.type)
+        return await cleanupUsageStatsBucketsBeforeAsync(operation.input)
       }
       return cleanupStatsDatabaseAfterDelete(cleanupUsageStatsBucketsBefore(operation.input))
     case 'cleanup_system_metrics_retention':
       if (runtimeConfig.databaseDriver === 'postgres') {
-        throw postgresStatsWriterOperationNotImplemented(operation.type)
+        return await cleanupSystemMetricsBeforeAsync(operation.input)
       }
       return cleanupStatsDatabaseAfterDelete(cleanupSystemMetricsBefore(operation.input))
     case 'cleanup_table_storage_snapshots_retention':
@@ -257,9 +262,15 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
         scope: 'stats'
       })
     case 'cleanup_deleted_api_key_record_stats':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        throw postgresStatsWriterOperationNotImplemented(operation.type)
+      }
       cleanupDeletedApiKeyRecordStatsData(operation.input)
       return { cleaned: true }
     case 'cleanup_deleted_account_record_stats':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        throw postgresStatsWriterOperationNotImplemented(operation.type)
+      }
       cleanupDeletedAccountRecordStatsData(operation.input)
       return { cleaned: true }
     default:
@@ -370,6 +381,14 @@ function refreshAccountQuality(windowMinutes: number, failureCandidateLimit: num
   return {
     ...result,
     failureCandidates: listAccountQualityFailurePrecheckCandidates(boundedPositiveInteger(failureCandidateLimit, 1, 100))
+  }
+}
+
+async function refreshAccountQualityAsync(windowMinutes: number, failureCandidateLimit: number): Promise<AccountQualityRealtimeRefreshResult & { failureCandidates: AccountQualityFailurePrecheckCandidate[] }> {
+  const result = await refreshAccountQualityFromUsageAsync(boundedPositiveInteger(windowMinutes, 1, 24 * 60))
+  return {
+    ...result,
+    failureCandidates: await listAccountQualityFailurePrecheckCandidatesAsync(boundedPositiveInteger(failureCandidateLimit, 1, 100))
   }
 }
 

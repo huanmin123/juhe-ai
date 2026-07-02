@@ -269,6 +269,7 @@ async function buildGroupSummariesAsync(rows: GroupListRow[], access?: AccessSco
       : totalUsageByGroup.get(row.id) ?? emptyAccountUsageSummary()
     const accountStats = groupAccountStatsFromRow(groupStatsByGroup.get(row.id), todayUsage, totalUsage)
     if (!isAuthorizedView) {
+      accountStats.total = accountIds.length
       accountStats.currentConcurrency = sumAccountCurrentConcurrency(accountIds, currentConcurrencyByAccount)
     }
     return {

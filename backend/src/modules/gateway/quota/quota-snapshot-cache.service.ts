@@ -1,4 +1,5 @@
 import type { RequestQuotaCosts } from './request-quota-checker.js'
+import { runtimeConfig } from '../../../config/runtime.js'
 import { logger } from '../../../shared/logger.js'
 
 export interface GatewayQuotaDecision {
@@ -42,6 +43,10 @@ const costSnapshot = new Map<string, RequestQuotaCosts>()
 const authorizationSnapshot = new Map<string, GatewayQuotaDecision>()
 
 export function replaceGatewayQuotaSnapshot(snapshot: GatewayQuotaSnapshot): void {
+  if (runtimeConfig.cacheDriver === 'redis') {
+    clearGatewayQuotaSnapshot()
+    return
+  }
   snapshotGeneratedAt = snapshot.generatedAt
   costSnapshotComplete = snapshot.costEntriesComplete ?? true
   authorizationSnapshotComplete = snapshot.authorizationEntriesComplete ?? true
@@ -92,6 +97,7 @@ export function readGatewayQuotaCostsSnapshot(input: {
   scopeId: string
   hourlyWindowHours?: number
 }): RequestQuotaCosts | undefined {
+  if (runtimeConfig.cacheDriver === 'redis') return undefined
   const costs = costSnapshot.get(costSnapshotKey(input))
   return costs ? cloneRequestQuotaCosts(costs) : undefined
 }
@@ -100,6 +106,7 @@ export function readGatewayAuthorizationQuotaSnapshot(
   scopeType: 'account_authorization' | 'group_authorization',
   authorizationId?: string
 ): GatewayQuotaDecision | undefined {
+  if (runtimeConfig.cacheDriver === 'redis') return undefined
   if (!authorizationId) return undefined
   const decision = authorizationSnapshot.get(authorizationSnapshotKey(scopeType, authorizationId))
   return decision ? { ...decision } : undefined
@@ -112,6 +119,14 @@ export function gatewayQuotaSnapshotRuntime(): {
   costEntriesComplete: boolean
   authorizationEntriesComplete: boolean
 } {
+  if (runtimeConfig.cacheDriver === 'redis') {
+    return {
+      costEntryCount: 0,
+      authorizationEntryCount: 0,
+      costEntriesComplete: false,
+      authorizationEntriesComplete: false
+    }
+  }
   return {
     generatedAt: snapshotGeneratedAt,
     costEntryCount: costSnapshot.size,
@@ -122,22 +137,27 @@ export function gatewayQuotaSnapshotRuntime(): {
 }
 
 export function isGatewayQuotaCostSnapshotComplete(): boolean {
+  if (runtimeConfig.cacheDriver === 'redis') return false
   return snapshotGeneratedAt !== undefined && costSnapshotComplete
 }
 
 export function isGatewayAuthorizationSnapshotComplete(): boolean {
+  if (runtimeConfig.cacheDriver === 'redis') return false
   return snapshotGeneratedAt !== undefined && authorizationSnapshotComplete && !authorizationSnapshotInvalidated
 }
 
 export function isGatewayQuotaCostSnapshotIncomplete(): boolean {
+  if (runtimeConfig.cacheDriver === 'redis') return true
   return snapshotGeneratedAt !== undefined && !costSnapshotComplete
 }
 
 export function isGatewayAuthorizationSnapshotIncomplete(): boolean {
+  if (runtimeConfig.cacheDriver === 'redis') return true
   return authorizationSnapshotInvalidated || (snapshotGeneratedAt !== undefined && !authorizationSnapshotComplete)
 }
 
 export function gatewayAuthorizationQuotaSnapshotVersion(): number {
+  if (runtimeConfig.cacheDriver === 'redis') return 0
   return authorizationSnapshotVersion
 }
 

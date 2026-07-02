@@ -1,6 +1,7 @@
 import { nextAccountAvailabilityScheduleCheckAt, parseAccountAvailabilityScheduleJson } from './account-availability-schedule.js'
 import { dueApiKeyAvailabilityScheduleEvent } from './api-key-availability-schedule.js'
 import { runtimeConfig } from '../config/runtime.js'
+import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import {
   beginDatabaseTransaction,
@@ -10,6 +11,7 @@ import {
   rollbackDatabaseTransaction
 } from './database.js'
 import { invalidateGroupAccountIdsCache } from './group-read-loaders.js'
+import { refreshGroupAccountStatsAfterWriteAsync } from './group-account-stats-write-invalidation.js'
 import { getPostgresPool } from './postgres-client.js'
 import { invalidateAccountLookupCache } from './repository-lookups.js'
 
@@ -156,6 +158,7 @@ export function syncAccountAvailabilityScheduleStatuses(now = new Date()): Accou
       invalidateAccountLookupCache(id)
     }
     invalidateGroupAccountIdsCache()
+    notifyGatewayRuntimeCacheInvalidation('account_availability_schedule')
   }
 
   return result
@@ -261,7 +264,9 @@ export async function syncAccountAvailabilityScheduleStatusesAsync(now = new Dat
     for (const id of result.changedIds) {
       invalidateAccountLookupCache(id)
     }
+    await refreshGroupAccountStatsAfterWriteAsync({ accountIds: result.changedIds, reason: 'account_availability_schedule' }, client)
     invalidateGroupAccountIdsCache()
+    notifyGatewayRuntimeCacheInvalidation('account_availability_schedule')
   }
 
   return result

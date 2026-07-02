@@ -4,6 +4,7 @@ import { request as httpsRequest } from 'node:https'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { BoundedBufferCollector } from '../../shared/bounded-buffer.js'
+import { createRuntimeStateStore } from '../../shared/runtime-state-store.js'
 import { sanitizeDiagnosticPayload } from '../gateway/diagnostics/diagnostic-sanitizer.js'
 import { HttpsProxyAgent } from 'https-proxy-agent'
 import { SocksProxyAgent } from 'socks-proxy-agent'
@@ -43,11 +44,9 @@ export interface OpenAITokenInfo {
   planType?: string
 }
 
-const sessions = new Map<string, OAuthSession>()
 const sessionTtlMs = 30 * 60 * 1000
 
-export function generateOpenAIAuthURL(): OpenAIAuthURLResult {
-  cleanupExpiredSessions()
+export async function generateOpenAIAuthURL(): Promise<OpenAIAuthURLResult> {
   const state = randomBytes(32).toString('hex')
   const codeVerifier = randomBytes(64).toString('hex')
   const codeChallenge = createHash('sha256').update(codeVerifier).digest('base64url')
@@ -55,13 +54,13 @@ export function generateOpenAIAuthURL(): OpenAIAuthURLResult {
   const redirectUri = OPENAI_OAUTH_DEFAULT_REDIRECT_URI
   const clientId = OPENAI_OAUTH_CLIENT_ID
 
-  sessions.set(sessionId, {
+  await oauthSessionStore().setJson<OAuthSession>(sessionId, {
     state,
     codeVerifier,
     redirectUri,
     clientId,
     createdAt: Date.now()
-  })
+  }, sessionTtlMs)
 
   const params = new URLSearchParams({
     response_type: 'code',
@@ -87,8 +86,7 @@ export async function exchangeOpenAIAuthCode(input: {
   proxyUrl?: string
   signal?: AbortSignal
 }): Promise<OpenAITokenInfo> {
-  cleanupExpiredSessions()
-  const session = sessions.get(input.sessionId)
+  const session = await oauthSessionStore().getDeleteJson<OAuthSession>(input.sessionId)
   if (!session) {
     throw new Error('OAuth 会话不存在或已过期')
   }
@@ -102,7 +100,6 @@ export async function exchangeOpenAIAuthCode(input: {
     redirect_uri: session.redirectUri,
     code_verifier: session.codeVerifier
   }, input.proxyUrl, input.signal)
-  sessions.delete(input.sessionId)
   return tokenInfo
 }
 
@@ -277,15 +274,10 @@ function decodeJwtClaims(token?: string): Record<string, unknown> | undefined {
   }
 }
 
-function cleanupExpiredSessions(): void {
-  const now = Date.now()
-  for (const [sessionId, session] of sessions.entries()) {
-    if (now - session.createdAt > sessionTtlMs) {
-      sessions.delete(sessionId)
-    }
-  }
-}
-
 function normalizeString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
+}
+
+function oauthSessionStore() {
+  return createRuntimeStateStore('openai-oauth:sessions')
 }

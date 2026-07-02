@@ -1,3 +1,4 @@
+import { runtimeConfig } from '../../../../config/runtime.js'
 import { getBusinessDatabase, getUsageCatalogDatabase } from '../../../../storage/database.js'
 import { cleanupUnreferencedAuditPayloadBlobs } from '../../../../storage/repositories.js'
 import {
@@ -165,6 +166,7 @@ function cleanupStatsMockdata(database: Database, mockAccountIds: string[]): voi
 }
 
 function cleanupUsageRecordShardMockdata(): void {
+  assertSqliteMockdataMaintenance('cleanupUsageRecordShardMockdata')
   const mockUsageIds = selectIds(
     getUsageCatalogDatabase(),
     'SELECT usage_id AS id FROM usage_record_shard_entries WHERE usage_id LIKE ?',
@@ -176,6 +178,12 @@ function cleanupUsageRecordShardMockdata(): void {
       .run(`${idPrefix}%`, `${tracePrefix}%`)
   }
   deleteUsageRecordShardEntries(mockUsageIds)
+}
+
+function assertSqliteMockdataMaintenance(operation: string): void {
+  if (runtimeConfig.databaseDriver === 'postgres' || runtimeConfig.runtimeMode === 'performance') {
+    throw new Error(`高性能 PG + Redis 模式禁止调用 SQLite mockdata usage shard 清理入口：${operation}`)
+  }
 }
 
 function selectIds(database: Database, sql: string, ...params: SqlValue[]): string[] {

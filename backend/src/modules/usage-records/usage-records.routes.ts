@@ -1,5 +1,6 @@
 import { Router } from 'express'
 
+import { runtimeConfig } from '../../config/runtime.js'
 import { ok, sendNotFound } from '../../shared/http.js'
 import { finiteNumberQueryValue, optionalQueryText } from '../../shared/query-values.js'
 import { getUsageRecordDetailAsync, listUsageRecordsAsync, type UsageRecordListOptions, type UsageRecordSortField, type UsageRecordSummary, type UsageRecordTrafficSource } from '../../storage/repositories.js'
@@ -36,7 +37,7 @@ usageRecordsRouter.get('/:id', async (req, res, next) => {
 })
 
 const usageRecordSortFields = new Set<UsageRecordSortField>(['createdAt', 'firstTokenMs', 'durationMs', 'costUsd'])
-const usageRecordTrafficSources = new Set<UsageRecordTrafficSource>(['gateway', 'manual_account_test', 'cooldown_retest', 'hybrid_scoring', 'hybrid_quality_scoring'])
+const usageRecordTrafficSources = new Set<UsageRecordTrafficSource>(['gateway', 'manual_account_test', 'runtime_recovery_probe', 'cooldown_retest', 'hybrid_scoring', 'hybrid_quality_scoring'])
 const usageRecordDefaultLookbackDays = 31
 const dayMs = 24 * 60 * 60 * 1000
 
@@ -53,7 +54,7 @@ export function withCostBreakdown(record: UsageRecordSummary): UsageRecordRespon
 }
 
 function usageRecordCostBreakdown(record: UsageRecordSummary): ProviderCostBreakdown | undefined {
-  if (!record.success) return undefined
+  if (!record.success || runtimeConfig.cacheDriver === 'redis') return undefined
   return usageRecordCatalogCostBreakdown(record) ?? fallbackUsageRecordCostBreakdown(record)
 }
 

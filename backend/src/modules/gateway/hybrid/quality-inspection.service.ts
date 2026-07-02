@@ -120,7 +120,7 @@ export async function inspectHybridGatewayQuality(input: {
     })
     if (dispatch.outcome === 'failed') {
       if (dispatch.shouldRecordUsage && dispatch.account && dispatch.groupId) {
-        recordHybridScoringAttempt({
+        await recordHybridScoringAttempt({
           traceId: input.traceId,
           clientIp: input.clientIp,
           systemAccountId: input.apiKeyRecord.system_account_id,
@@ -153,7 +153,7 @@ export async function inspectHybridGatewayQuality(input: {
       parsed = parseHybridQualityResponse(dispatch.responseBody)
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error)
-      recordHybridScoringAttempt({
+      await recordHybridScoringAttempt({
         traceId: input.traceId,
         clientIp: input.clientIp,
         systemAccountId: input.apiKeyRecord.system_account_id,
@@ -172,7 +172,7 @@ export async function inspectHybridGatewayQuality(input: {
         responseSnapshot: { statusCode: dispatch.statusCode, body: responseBodySnippet(dispatch.responseBody) },
         trafficSource: 'hybrid_quality_scoring'
       })
-      dispatch.finish({ success: false, errorCode: 'hybrid_quality_scoring_failed', errorMessage })
+      await dispatch.finish({ success: false, errorCode: 'hybrid_quality_scoring_failed', errorMessage })
       return qualityInspectionUnavailable(
         'hybrid_quality_scoring_failed',
         errorMessage,
@@ -182,7 +182,7 @@ export async function inspectHybridGatewayQuality(input: {
       )
     }
     const actualAction = resolveHybridQualityAction(parsed, qualityConfig)
-    recordHybridScoringAttempt({
+    await recordHybridScoringAttempt({
       traceId: input.traceId,
       clientIp: input.clientIp,
       systemAccountId: input.apiKeyRecord.system_account_id,
@@ -199,7 +199,7 @@ export async function inspectHybridGatewayQuality(input: {
       responseSnapshot: { statusCode: dispatch.statusCode, parsed },
       trafficSource: 'hybrid_quality_scoring'
     })
-    dispatch.finish({ success: true })
+    await dispatch.finish({ success: true })
     return {
       triggered: true,
       triggerReason: trigger.reason,

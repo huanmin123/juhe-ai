@@ -2,7 +2,8 @@ import type { DatabaseSync } from 'node:sqlite'
 
 import { scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, nowIso, rollbackDatabaseTransaction } from './database.js'
-import type { DatabaseClient } from './database-client.js'
+import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
+import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 
 const accountNameSearchMinTermLength = 1
@@ -170,6 +171,45 @@ export function rebuildAccountNameSearchTerms(database: DatabaseSync): { account
     rollbackDatabaseTransaction(database, transactionStarted)
     throw error
   }
+
+  return { accountCount: rows.length, termCount }
+}
+
+export async function rebuildAccountNameSearchTermsAsync(): Promise<{ accountCount: number; termCount: number }> {
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const rows = await client.query<AccountNameSearchRow>(`
+    SELECT id, system_account_id, name
+    FROM ${accountNameSearchTable(client, 'accounts')}
+    WHERE deleted_at IS NULL
+    ORDER BY system_account_id ASC, id ASC
+  `)
+
+  const now = nowIso()
+  let termCount = 0
+  await client.transaction(async (tx) => {
+    await tx.execute(`DELETE FROM ${accountNameSearchTable(tx, 'account_name_search_terms')}`)
+    await tx.execute(`DELETE FROM ${accountNameSearchTable(tx, 'account_name_search_documents')}`)
+    for (const row of rows) {
+      if (!row.id || !row.system_account_id || typeof row.name !== 'string') continue
+      const normalizedName = normalizeAccountNameSearchText(row.name)
+      if (!normalizedName) continue
+      await tx.execute(`
+        INSERT INTO ${accountNameSearchTable(tx, 'account_name_search_documents')} (
+          account_id, system_account_id, normalized_name, updated_at
+        ) VALUES (?, ?, ?, ?)
+        ON CONFLICT(account_id) DO NOTHING
+      `, [row.id, row.system_account_id, normalizedName, now])
+      for (const term of buildAccountNameSearchTermsFromNormalizedName(normalizedName)) {
+        const result = await tx.execute(`
+          INSERT INTO ${accountNameSearchTable(tx, 'account_name_search_terms')} (
+            account_id, system_account_id, term, created_at
+          ) VALUES (?, ?, ?, ?)
+          ON CONFLICT(account_id, term) DO NOTHING
+        `, [row.id, row.system_account_id, term, now])
+        termCount += result.changes
+      }
+    }
+  })
 
   return { accountCount: rows.length, termCount }
 }

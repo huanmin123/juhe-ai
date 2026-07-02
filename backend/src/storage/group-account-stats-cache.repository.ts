@@ -183,15 +183,47 @@ async function refreshAllDirtyGroupAccountStatsCacheBatchAsync(
 }
 
 export async function markAllGroupAccountStatsDirtyAsync(reason = 'write', client?: DatabaseClient): Promise<void> {
+  await markGroupAccountStatsDirtyAsync(GROUP_ACCOUNT_STATS_DIRTY_ALL, reason, client)
+}
+
+export async function markGroupAccountStatsDirtyAsync(
+  groupIds: Array<string | null | undefined> | string | null | undefined,
+  reason = 'write',
+  client?: DatabaseClient
+): Promise<void> {
+  const ids = uniqueGroupAccountStatsIds(Array.isArray(groupIds) ? groupIds : [groupIds])
+  if (!ids.length) return
   const databaseClient = client ?? createPostgresDatabaseClient(await getPostgresPool())
   const updatedAt = nowIso()
-  await databaseClient.execute(`
-    INSERT INTO ${groupAccountStatsCacheTable(databaseClient, 'juhe_business', 'group_account_stats_dirty')} (group_id, reason, updated_at)
-    VALUES (?, ?, ?)
-    ON CONFLICT(group_id) DO UPDATE SET
-      reason = excluded.reason,
-      updated_at = excluded.updated_at
-  `, [GROUP_ACCOUNT_STATS_DIRTY_ALL, reason, updatedAt])
+  for (const id of ids) {
+    await databaseClient.execute(`
+      INSERT INTO ${groupAccountStatsCacheTable(databaseClient, 'juhe_business', 'group_account_stats_dirty')} (group_id, reason, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(group_id) DO UPDATE SET
+        reason = excluded.reason,
+        updated_at = excluded.updated_at
+    `, [id, reason, updatedAt])
+  }
+}
+
+export async function markGroupAccountStatsDirtyByAccountIdsAsync(
+  accountIds: Array<string | null | undefined>,
+  reason = 'account_write',
+  client?: DatabaseClient
+): Promise<void> {
+  const ids = uniqueGroupAccountStatsIds(accountIds)
+  if (!ids.length) return
+  const databaseClient = client ?? createPostgresDatabaseClient(await getPostgresPool())
+  const groupIds: string[] = []
+  for (const chunk of chunkValues(ids, 900)) {
+    const rows = await databaseClient.query<{ group_id: string }>(`
+      SELECT DISTINCT group_id
+      FROM ${groupAccountStatsCacheTable(databaseClient, 'juhe_business', 'group_accounts')}
+      WHERE account_id IN (${chunk.map(() => '?').join(', ')})
+    `, chunk)
+    groupIds.push(...rows.map((row) => row.group_id))
+  }
+  await markGroupAccountStatsDirtyAsync(groupIds, reason, databaseClient)
 }
 
 async function loadAllGroupAccountStatsDirtyRowsAsync(client: DatabaseClient): Promise<GroupAccountStatsDirtyRow[]> {

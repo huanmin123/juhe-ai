@@ -116,6 +116,33 @@ services:
       timeout: 5s
       retries: 12
 
+  redis-queue:
+    image: ${JUHE_AI_REDIS_IMAGE:-redis:8.2.7-bookworm}
+    container_name: ${JUHE_AI_REDIS_QUEUE_CONTAINER_NAME:-juhe-ai-redis-queue}
+    restart: unless-stopped
+    command:
+      - sh
+      - -c
+      - >
+        exec redis-server
+        --appendonly yes
+        --appendfsync everysec
+        --maxmemory "$${REDIS_QUEUE_MAXMEMORY:-1024mb}"
+        --maxmemory-policy noeviction
+        --requirepass "$${REDIS_QUEUE_PASSWORD}"
+    environment:
+      REDIS_QUEUE_PASSWORD: ${JUHE_AI_REDIS_QUEUE_PASSWORD:?JUHE_AI_REDIS_QUEUE_PASSWORD is required}
+      REDIS_QUEUE_MAXMEMORY: ${JUHE_AI_REDIS_QUEUE_MAXMEMORY:-1024mb}
+    ports:
+      - "${JUHE_AI_MIDDLEWARE_BIND:-127.0.0.1}:${JUHE_AI_REDIS_QUEUE_PORT:-6381}:6379"
+    volumes:
+      - juhe-ai-redis-queue-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_QUEUE_PASSWORD}\" ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
   juhe-ai:
     image: ${JUHE_AI_IMAGE:-juhe-ai:local}
     container_name: ${JUHE_AI_CONTAINER_NAME:-juhe-ai-performance}
@@ -132,6 +159,8 @@ services:
       redis-cache:
         condition: service_healthy
       redis-state:
+        condition: service_healthy
+      redis-queue:
         condition: service_healthy
     ports:
       - "${JUHE_AI_PUBLIC_BIND:-127.0.0.1}:${JUHE_AI_PUBLIC_PORT:-3000}:${JUHE_AI_PORT:-3000}"
@@ -156,8 +185,7 @@ services:
       JUHE_AI_POSTGRES_URL: ${JUHE_AI_POSTGRES_URL:?JUHE_AI_POSTGRES_URL is required}
       JUHE_AI_REDIS_CACHE_URL: ${JUHE_AI_REDIS_CACHE_URL:?JUHE_AI_REDIS_CACHE_URL is required}
       JUHE_AI_REDIS_STATE_URL: ${JUHE_AI_REDIS_STATE_URL:?JUHE_AI_REDIS_STATE_URL is required}
-      JUHE_AI_REDIS_QUEUE_URL: ${JUHE_AI_REDIS_QUEUE_URL:?JUHE_AI_REDIS_QUEUE_URL is required}
-      JUHE_AI_REDIS_STREAM_MAXLEN: ${JUHE_AI_REDIS_STREAM_MAXLEN:-1000000}
+      JUHE_AI_REDIS_QUEUE_URL: ${JUHE_AI_REDIS_QUEUE_URL:-redis://:${JUHE_AI_REDIS_QUEUE_PASSWORD}@redis-queue:6379/0}
       JUHE_AI_REDIS_STREAM_READ_COUNT: ${JUHE_AI_REDIS_STREAM_READ_COUNT:-1000}
       JUHE_AI_REDIS_STREAM_BLOCK_MS: ${JUHE_AI_REDIS_STREAM_BLOCK_MS:-1000}
       JUHE_AI_REDIS_STREAM_CLAIM_IDLE_MS: ${JUHE_AI_REDIS_STREAM_CLAIM_IDLE_MS:-60000}
@@ -188,3 +216,4 @@ volumes:
   juhe-ai-postgres-data:
   juhe-ai-redis-cache-data:
   juhe-ai-redis-state-data:
+  juhe-ai-redis-queue-data:

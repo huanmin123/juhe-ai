@@ -135,9 +135,9 @@ async function deleteAuditLogsByWhereAsync(whereClause: string, params: AuditLog
 
   let deleted = 0
   await client.transaction(async (tx) => {
-    await tx.execute('DELETE FROM juhe_dataset.audit_payload_refs WHERE audit_log_id = ANY(?)', [ids])
-    await tx.execute('DELETE FROM juhe_dataset.audit_log_attempts WHERE audit_log_id = ANY(?)', [ids])
-    deleted = Number((await tx.execute('DELETE FROM juhe_dataset.audit_logs WHERE id = ANY(?)', [ids])).changes ?? 0)
+    await tx.execute('DELETE FROM juhe_dataset.audit_payload_refs WHERE audit_log_id = ANY(?::text[])', [ids])
+    await tx.execute('DELETE FROM juhe_dataset.audit_log_attempts WHERE audit_log_id = ANY(?::text[])', [ids])
+    deleted = Number((await tx.execute('DELETE FROM juhe_dataset.audit_logs WHERE id = ANY(?::text[])', [ids])).changes ?? 0)
   })
   return deleted
 }
@@ -178,7 +178,7 @@ async function cleanupAuditErrorGroupsBeforeAsync(cutoffUpdatedAt: string, limit
   `, [cutoffUpdatedAt, Math.max(1, Math.trunc(limit))])
   const ids = rows.map((row) => String(row.id ?? '')).filter(Boolean)
   if (ids.length === 0) return 0
-  const result = await client.execute('DELETE FROM juhe_dataset.audit_error_groups WHERE id = ANY(?)', [ids])
+  const result = await client.execute('DELETE FROM juhe_dataset.audit_error_groups WHERE id = ANY(?::text[])', [ids])
   return Number(result.changes ?? 0)
 }
 

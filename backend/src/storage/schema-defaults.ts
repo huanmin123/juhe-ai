@@ -523,7 +523,7 @@ export const DEFAULT_PROVIDER_PROTOCOL_PROFILE_SEEDS = [
 ] as const
 
 export const DEFAULT_SYSTEM_SETTINGS = [
-  ['gatewayTextRawBodyLimitMegabytes', 8],
+  ['gatewayTextRawBodyLimitMegabytes', 16],
   ['systemApiRateLimitEnabled', true],
   ['systemApiRateLimitIpReadPerMinute', 600],
   ['systemApiRateLimitIpReadBurstPer10Seconds', 120],
@@ -566,7 +566,9 @@ export const DEFAULT_SYSTEM_SETTINGS = [
   ['oauthAccessTokenRefreshBatchSize', 20],
   ['oauthAccessTokenRefreshRetryBackoffSeconds', 300],
   ['modelCheckRetentionDays', 30],
-  ['usageRecordRetentionDays', 7],
+  ['runtimeLogIndexRetentionDays', 14],
+  ['publicApiLogRetentionDays', 30],
+  ['usageRecordRetentionDays', 30],
   ['usageStatsTimezone', Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'],
   ['usageStatsMinuteRetentionHours', 48],
   ['usageStatsHourlyRetentionDays', 60],

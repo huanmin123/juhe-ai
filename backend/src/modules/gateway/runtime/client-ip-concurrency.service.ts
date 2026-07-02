@@ -1,5 +1,10 @@
+import { randomBytes } from 'node:crypto'
+
 import { DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY, resolveGroupSchedulingPolicy } from '../../../domain/group-scheduling.js'
 import type { GroupSchedulingPolicy } from '../../../domain/types.js'
+import { runtimeConfig } from '../../../config/runtime.js'
+import { errorLogFields, logger } from '../../../shared/logger.js'
+import { getRedisClient, type RedisCommandClient } from '../../../shared/redis-client.js'
 
 export type ClientIpConcurrencyRejectReason =
   | 'limit_reached'
@@ -62,6 +67,7 @@ export interface ClientIpConcurrencyAcquireInput {
 
 const states = new Map<string, ClientIpConcurrencyState>()
 let nextQueueItemId = 1
+const redisClientIpConcurrencyTtlMs = 2 * 60 * 60 * 1000
 
 export function acquireHighConcurrencyClientIpSlot(input: ClientIpConcurrencyAcquireInput): Promise<ClientIpConcurrencyDecision> {
   const policy = resolveGroupSchedulingPolicy('high_concurrency', input.policy) ?? DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY
@@ -87,6 +93,9 @@ export function acquireHighConcurrencyClientIpSlot(input: ClientIpConcurrencyAcq
   }
 
   const key = clientIpConcurrencyKey(input.systemAccountId, input.groupId, input.apiKeyId, clientIp)
+  if (runtimeConfig.runtimeStateDriver === 'redis') {
+    return acquireRedisClientIpSlot(input, policy, key, limit)
+  }
   const state = states.get(key) ?? createState(key)
   state.limit = limit
   states.set(key, state)
@@ -130,6 +139,7 @@ export function acquireHighConcurrencyClientIpSlot(input: ClientIpConcurrencyAcq
 }
 
 export function clientIpConcurrencySnapshot(): Array<{ key: string; current: number; queueSize: number }> {
+  if (runtimeConfig.runtimeStateDriver === 'redis') return []
   return [...states.values()].map((state) => ({
     key: state.key,
     current: state.current,
@@ -138,12 +148,170 @@ export function clientIpConcurrencySnapshot(): Array<{ key: string; current: num
 }
 
 export function clearClientIpConcurrency(): void {
+  if (runtimeConfig.runtimeStateDriver === 'redis') {
+    states.clear()
+    return
+  }
   for (const state of states.values()) {
     for (const item of [...state.items]) {
       completeQueueItem(item, rejectedDecision('aborted', state, 1, Date.now() - item.enqueuedAtMs))
     }
   }
   states.clear()
+}
+
+async function acquireRedisClientIpSlot(
+  input: ClientIpConcurrencyAcquireInput,
+  policy: GroupSchedulingPolicy,
+  key: string,
+  limit: number
+): Promise<ClientIpConcurrencyDecision> {
+  const startedAtMs = Date.now()
+  const firstSlotToken = redisClientIpConcurrencySlotToken()
+  const firstAttempt = await tryAcquireRedisClientIpSlot(key, limit, true, firstSlotToken)
+  if (firstAttempt.acquired) {
+    return redisAcquiredDecision(key, firstSlotToken, firstAttempt.current, limit, 0, false)
+  }
+  if (policy.clientIpConcurrencyOverflowMode !== 'queue') {
+    return redisRejectedDecision('limit_reached', firstAttempt.current, limit, 0)
+  }
+  const maxQueueWaitMs = normalizeNonNegativeInteger(policy.maxQueueWaitMs, DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY.maxQueueWaitMs)
+  if (maxQueueWaitMs <= 0) {
+    return redisRejectedDecision('queue_disabled', firstAttempt.current, limit, 0)
+  }
+  const queueLimit = normalizePositiveInteger(policy.perApiKeyQueueLimit, DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY.perApiKeyQueueLimit)
+  const deadlineAtMs = startedAtMs + maxQueueWaitMs
+  const itemId = `${process.pid}:${startedAtMs}:${randomBytes(8).toString('hex')}`
+  const queuedSlotToken = redisClientIpConcurrencySlotToken()
+  const enqueueResult = await enqueueRedisClientIpQueueItem(key, itemId, deadlineAtMs, queueLimit)
+  if (enqueueResult.status === 'queue_full') {
+    return redisRejectedDecision('queue_full', firstAttempt.current, limit, 0, enqueueResult.queueSize)
+  }
+  let current = firstAttempt.current
+  while (Date.now() < deadlineAtMs) {
+    if (input.signal?.aborted) {
+      const queueSize = await removeRedisClientIpQueueItem(key, itemId, Date.now())
+      return redisRejectedDecision('aborted', current, limit, Date.now() - startedAtMs, queueSize)
+    }
+    const position = await redisClientIpQueuePosition(key, itemId, Date.now())
+    if (!position.present) {
+      return redisRejectedDecision('timeout', current, limit, Date.now() - startedAtMs, position.queueSize)
+    }
+    if (position.rank === 0) {
+      const attempt = await tryAcquireRedisClientIpSlot(key, limit, false, queuedSlotToken)
+      current = attempt.current
+      if (attempt.acquired) {
+        let queueSize: number
+        try {
+          queueSize = await removeRedisClientIpQueueItem(key, itemId, Date.now())
+        } catch (error) {
+          await releaseRedisClientIpSlotWithRetry(key, queuedSlotToken)
+          throw error
+        }
+        return redisAcquiredDecision(key, queuedSlotToken, attempt.current, limit, Date.now() - startedAtMs, true, queueSize + 1)
+      }
+    }
+    await delay(Math.min(100, Math.max(1, deadlineAtMs - Date.now())))
+  }
+  const queueSize = await removeRedisClientIpQueueItem(key, itemId, Date.now())
+  return redisRejectedDecision('timeout', current, limit, Date.now() - startedAtMs, queueSize)
+}
+
+async function tryAcquireRedisClientIpSlot(
+  key: string,
+  limit: number,
+  requireEmptyQueue: boolean,
+  slotToken: string
+): Promise<{ acquired: boolean; current: number }> {
+  const result = await (await redisStateClient()).eval(redisAcquireClientIpConcurrencyScript, {
+    keys: [
+      redisClientIpConcurrencyKey(key),
+      redisClientIpQueueKey(key)
+    ],
+    arguments: [
+      String(limit),
+      String(redisClientIpConcurrencyTtlMs),
+      requireEmptyQueue ? '1' : '0',
+      String(Date.now()),
+      slotToken
+    ]
+  })
+  const values = numericRedisArray(result)
+  return {
+    acquired: values[0] === 1,
+    current: values[1] ?? 0
+  }
+}
+
+function redisAcquiredDecision(
+  key: string,
+  slotToken: string,
+  current: number,
+  limit: number,
+  waitedMs: number,
+  queued: boolean,
+  queueSizeBeforeAcquire = 0
+): ClientIpConcurrencyDecision {
+  let released = false
+  return {
+    enabled: true,
+    acquired: true,
+    current,
+    limit,
+    waitedMs: Math.max(0, Math.trunc(waitedMs)),
+    queued,
+    queueSizeBeforeAcquire,
+    release: () => {
+      if (released) return
+      released = true
+      void releaseRedisClientIpSlotWithRetry(key, slotToken)
+    }
+  }
+}
+
+function redisRejectedDecision(
+  reason: ClientIpConcurrencyRejectReason,
+  current: number,
+  limit: number,
+  waitedMs: number,
+  queueSize = 0
+): ClientIpConcurrencyDecision {
+  return {
+    enabled: true,
+    acquired: false,
+    reason,
+    current,
+    limit,
+    waitedMs: Math.max(0, Math.trunc(waitedMs)),
+    queueSize
+  }
+}
+
+async function releaseRedisClientIpSlot(key: string, slotToken: string): Promise<void> {
+  await (await redisStateClient()).eval(redisReleaseClientIpConcurrencyScript, {
+    keys: [redisClientIpConcurrencyKey(key)],
+    arguments: [slotToken]
+  })
+}
+
+async function releaseRedisClientIpSlotWithRetry(key: string, slotToken: string): Promise<void> {
+  const delays = [0, 250, 1000, 5000]
+  let lastError: unknown
+  for (const delayMs of delays) {
+    if (delayMs > 0) {
+      await delay(delayMs)
+    }
+    try {
+      await releaseRedisClientIpSlot(key, slotToken)
+      return
+    } catch (error) {
+      lastError = error
+    }
+  }
+  logger.error(errorLogFields(lastError, {
+    event: 'redis_client_ip_concurrency_release_failed',
+    key
+  }), 'Redis Client-IP 并发槽释放失败')
 }
 
 function createState(key: string): ClientIpConcurrencyState {
@@ -250,6 +418,82 @@ function clientIpConcurrencyKey(systemAccountId: string, groupId: string, apiKey
   return `${systemAccountId}:${groupId}:${apiKeyId?.trim() || 'internal'}:${clientIp}`
 }
 
+function redisClientIpConcurrencyKey(key: string): string {
+  return `juhe-ai:client-ip-concurrency:${Buffer.from(key).toString('base64url')}`
+}
+
+function redisClientIpQueueKey(key: string): string {
+  return `juhe-ai:client-ip-concurrency-queue:${Buffer.from(key).toString('base64url')}`
+}
+
+function redisClientIpConcurrencySlotToken(): string {
+  return `${process.pid}:${Date.now()}:${randomBytes(8).toString('hex')}`
+}
+
+async function enqueueRedisClientIpQueueItem(
+  key: string,
+  itemId: string,
+  deadlineAtMs: number,
+  queueLimit: number
+): Promise<{ status: 'enqueued' | 'queue_full'; queueSize: number }> {
+  const nowMs = Date.now()
+  const result = await (await redisStateClient()).eval(redisClientIpQueueEnqueueScript, {
+    keys: [redisClientIpQueueKey(key)],
+    arguments: [
+      itemId,
+      String(Math.max(0, Math.trunc(deadlineAtMs))),
+      String(Math.max(0, Math.trunc(nowMs))),
+      String(Math.max(1, Math.trunc(queueLimit))),
+      String(Math.max(1, Math.trunc(deadlineAtMs - nowMs + 60_000)))
+    ]
+  })
+  const values = numericRedisArray(result)
+  return {
+    status: values[0] === 1 ? 'enqueued' : 'queue_full',
+    queueSize: values[1] ?? 0
+  }
+}
+
+async function redisClientIpQueuePosition(
+  key: string,
+  itemId: string,
+  nowMs: number
+): Promise<{ present: boolean; rank: number; queueSize: number }> {
+  const result = await (await redisStateClient()).eval(redisClientIpQueuePositionScript, {
+    keys: [redisClientIpQueueKey(key)],
+    arguments: [
+      itemId,
+      String(Math.max(0, Math.trunc(nowMs)))
+    ]
+  })
+  const values = numericRedisArray(result)
+  return {
+    present: values[0] === 1,
+    rank: values[1] ?? -1,
+    queueSize: values[2] ?? 0
+  }
+}
+
+async function removeRedisClientIpQueueItem(key: string, itemId: string, nowMs: number): Promise<number> {
+  const result = await (await redisStateClient()).eval(redisClientIpQueueRemoveScript, {
+    keys: [redisClientIpQueueKey(key)],
+    arguments: [
+      itemId,
+      String(Math.max(0, Math.trunc(nowMs)))
+    ]
+  })
+  const values = numericRedisArray(result)
+  return values[0] ?? 0
+}
+
+function redisStateClient(): Promise<RedisCommandClient> {
+  const redisUrl = runtimeConfig.redis.stateUrl
+  if (!redisUrl) {
+    throw new Error('JUHE_AI_REDIS_STATE_URL 在 Redis runtime state driver 下必须配置')
+  }
+  return getRedisClient(redisUrl)
+}
+
 function normalizeNonNegativeInteger(value: unknown, fallback: number): number {
   const numeric = typeof value === 'number' ? value : Number(value)
   return Number.isFinite(numeric) ? Math.max(0, Math.trunc(numeric)) : fallback
@@ -261,3 +505,83 @@ function normalizePositiveInteger(value: unknown, fallback: number): number {
 }
 
 function noop(): void {}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)))
+}
+
+function numericRedisArray(value: unknown): number[] {
+  if (!Array.isArray(value)) return []
+  return value.map((item) => {
+    if (typeof item === 'number' && Number.isFinite(item)) return item
+    if (typeof item === 'bigint') return Number(item)
+    const parsed = Number(item)
+    return Number.isFinite(parsed) ? parsed : 0
+  })
+}
+
+const redisAcquireClientIpConcurrencyScript = `
+local limit = tonumber(ARGV[1])
+local slot_ttl_ms = tonumber(ARGV[2])
+local require_empty_queue = ARGV[3] == '1'
+local now_ms = tonumber(ARGV[4])
+local slot_token = ARGV[5]
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now_ms)
+local current = tonumber(redis.call('ZCARD', KEYS[1]) or '0') or 0
+if require_empty_queue then
+  redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now_ms)
+  if redis.call('ZCARD', KEYS[2]) > 0 then
+    return {0, current}
+  end
+end
+if current >= limit then
+  return {0, current}
+end
+redis.call('ZADD', KEYS[1], now_ms + slot_ttl_ms, slot_token)
+redis.call('PEXPIRE', KEYS[1], slot_ttl_ms)
+return {1, current + 1}
+`
+
+const redisReleaseClientIpConcurrencyScript = `
+local slot_token = ARGV[1]
+redis.call('ZREM', KEYS[1], slot_token)
+if redis.call('ZCARD', KEYS[1]) == 0 then
+  redis.call('DEL', KEYS[1])
+end
+return 1
+`
+
+const redisClientIpQueueEnqueueScript = `
+local item_id = ARGV[1]
+local deadline_at_ms = tonumber(ARGV[2])
+local now_ms = tonumber(ARGV[3])
+local queue_limit = tonumber(ARGV[4])
+local ttl_ms = tonumber(ARGV[5])
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now_ms)
+local queue_size = redis.call('ZCARD', KEYS[1])
+if queue_size >= queue_limit then
+  return {0, queue_size}
+end
+redis.call('ZADD', KEYS[1], deadline_at_ms, item_id)
+redis.call('PEXPIRE', KEYS[1], ttl_ms)
+return {1, queue_size + 1}
+`
+
+const redisClientIpQueuePositionScript = `
+local item_id = ARGV[1]
+local now_ms = tonumber(ARGV[2])
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now_ms)
+local rank = redis.call('ZRANK', KEYS[1], item_id)
+if rank == false then
+  return {0, -1, redis.call('ZCARD', KEYS[1])}
+end
+return {1, rank, redis.call('ZCARD', KEYS[1])}
+`
+
+const redisClientIpQueueRemoveScript = `
+local item_id = ARGV[1]
+local now_ms = tonumber(ARGV[2])
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now_ms)
+redis.call('ZREM', KEYS[1], item_id)
+return {redis.call('ZCARD', KEYS[1])}
+`

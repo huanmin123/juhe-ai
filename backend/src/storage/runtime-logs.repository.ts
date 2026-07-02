@@ -3,6 +3,7 @@ import { beginDatabaseTransaction, commitDatabaseTransaction, getDatasetDatabase
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
+import { getSettings, getSettingsAsync } from './settings.repository.js'
 import { optionalString } from './value-utils.js'
 
 export type RuntimeLogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal'
@@ -109,7 +110,8 @@ interface NormalizedRuntimeLogIndexInput {
 const runtimeLogDefaultPageSize = 100
 const runtimeLogMaxPageSize = 100
 const runtimeLogMaxListWindowRows = 1001
-export const runtimeLogIndexRetentionDays = 3
+export const runtimeLogIndexRetentionDays = 14
+export const runtimeLogIndexRetentionMaxDays = 90
 const runtimeLogKeywordDefaultWindowHours = 6
 const runtimeLogFacetBucketKey = 'current'
 const runtimeLogFacetMaxEvents = 80
@@ -310,7 +312,7 @@ export function getRuntimeLogFacets(): RuntimeLogFacets {
     `)
     .all(runtimeLogFacetBucketKey, runtimeLogFacetMaxEvents) as RuntimeLogRow[]
   return {
-    retentionDays: runtimeLogIndexRetentionDays,
+    retentionDays: currentRuntimeLogIndexRetentionDays(),
     earliestIndexedAt: optionalString(range?.earliest_time),
     latestIndexedAt: optionalString(range?.latest_time),
     totalIndexed: Number(range?.total_count ?? 0),
@@ -343,8 +345,9 @@ export async function getRuntimeLogFacetsAsync(): Promise<RuntimeLogFacets> {
       LIMIT ?
     `, [runtimeLogFacetBucketKey, runtimeLogFacetMaxEvents])
   ])
+  const retentionDays = await currentRuntimeLogIndexRetentionDaysAsync()
   return {
-    retentionDays: runtimeLogIndexRetentionDays,
+    retentionDays,
     earliestIndexedAt: optionalString(range?.earliest_time),
     latestIndexedAt: optionalString(range?.latest_time),
     totalIndexed: Number(range?.total_count ?? 0),
@@ -353,7 +356,7 @@ export async function getRuntimeLogFacetsAsync(): Promise<RuntimeLogFacets> {
   }
 }
 
-export function ensureRuntimeLogFacetSnapshots(cutoffIso = retentionCutoffIso()): void {
+export function ensureRuntimeLogFacetSnapshots(cutoffIso = retentionCutoffIso(currentRuntimeLogIndexRetentionDays())): void {
   const database = getDatasetDatabase()
   const summary = database
     .prepare('SELECT bucket_key FROM runtime_log_facet_summary WHERE bucket_key = ? LIMIT 1')
@@ -366,7 +369,7 @@ export function ensureRuntimeLogFacetSnapshots(cutoffIso = retentionCutoffIso())
   if (!hasIndexedLogs?.id) return
 }
 
-export function cleanupRuntimeLogIndex(cutoffIso = retentionCutoffIso(), limit = 10000): number {
+export function cleanupRuntimeLogIndex(cutoffIso = retentionCutoffIso(currentRuntimeLogIndexRetentionDays()), limit = 10000): number {
   const database = getDatasetDatabase()
   const rows = database
     .prepare('SELECT id, time, level, event FROM runtime_logs WHERE time < ? ORDER BY time ASC, id ASC LIMIT ?')
@@ -607,7 +610,7 @@ function normalizeRuntimeLogIndexInput(input: RuntimeLogIndexInput): NormalizedR
 }
 
 function incrementRuntimeLogFacetSnapshots(database: ReturnType<typeof getDatasetDatabase>, rows: RuntimeLogFacetInput[]): void {
-  const cutoff = retentionCutoffIso()
+  const cutoff = retentionCutoffIso(currentRuntimeLogIndexRetentionDays())
   const retainedRows = rows.filter((row) => row.time >= cutoff)
   if (retainedRows.length === 0) return
 
@@ -681,7 +684,7 @@ function incrementRuntimeLogFacetSnapshots(database: ReturnType<typeof getDatase
 }
 
 async function incrementRuntimeLogFacetSnapshotsPostgres(client: DatabaseClient, rows: RuntimeLogFacetInput[]): Promise<void> {
-  const cutoff = retentionCutoffIso()
+  const cutoff = retentionCutoffIso(await currentRuntimeLogIndexRetentionDaysAsync())
   const retainedRows = rows.filter((row) => row.time >= cutoff)
   if (retainedRows.length === 0) return
 
@@ -833,6 +836,30 @@ function normalizeLevel(value: string): string {
   return text || 'info'
 }
 
-function retentionCutoffIso(): string {
-  return new Date(Date.now() - runtimeLogIndexRetentionDays * 24 * 60 * 60 * 1000).toISOString()
+export function runtimeLogIndexRetentionDaysFromSettings(settings: Record<string, unknown>): number {
+  const value = settings.runtimeLogIndexRetentionDays
+  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
+    return runtimeLogIndexRetentionDays
+  }
+  return Math.min(Math.max(1, value), runtimeLogIndexRetentionMaxDays)
+}
+
+function currentRuntimeLogIndexRetentionDays(): number {
+  try {
+    return runtimeLogIndexRetentionDaysFromSettings(getSettings())
+  } catch {
+    return runtimeLogIndexRetentionDays
+  }
+}
+
+async function currentRuntimeLogIndexRetentionDaysAsync(): Promise<number> {
+  try {
+    return runtimeLogIndexRetentionDaysFromSettings(await getSettingsAsync())
+  } catch {
+    return runtimeLogIndexRetentionDays
+  }
+}
+
+function retentionCutoffIso(retentionDays = runtimeLogIndexRetentionDays): string {
+  return new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString()
 }

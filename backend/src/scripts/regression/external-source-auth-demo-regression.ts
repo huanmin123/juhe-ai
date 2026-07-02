@@ -382,7 +382,7 @@ async function runChild(): Promise<void> {
     assert.equal(mockIpUsage.body.data.items.length, 2)
     assert.equal(mockIpUsage.body.data.items[0].dimension, 'client_ip')
     assert.equal(Object.prototype.hasOwnProperty.call(mockIpUsage.body.data.items[0], 'ipHash'), false, '公开 IP 聚合不返回内部 hash')
-    assert.equal(Object.prototype.hasOwnProperty.call(mockIpUsage.body.data.items[0], 'status'), false, '公开 IP 聚合不返回后台封禁状态')
+    assert.equal(Object.prototype.hasOwnProperty.call(mockIpUsage.body.data.items[0], 'status'), false, '公开 IP 聚合不返回后台策略状态')
 
     const ipUsage = await requestJson(baseUrl, '/__aipublic__/ip/usage?range=today&pageSize=5&sortField=requestCount&sortOrder=desc', {
       Authorization: `Bearer ${ipUsageToken}`

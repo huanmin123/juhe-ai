@@ -20,13 +20,13 @@ import type { UpstreamAttempt } from '../upstream/attempt.js'
 import {
   accountApiKeyEntries,
   isAccountApiKeyPoolIsolationEnabled,
-  selectAccountRuntimeApiKeyEntry
+  selectAccountRuntimeApiKeyEntryAsync
 } from '../../../storage/account-api-key-rotation.js'
 import {
   recordFailedUpstreamAttempt,
   type GatewayUsageContext
 } from '../usage/records.js'
-import { recordGatewayProxyFailure } from '../runtime/proxy-health.service.js'
+import { recordGatewayProxyFailureAsync } from '../runtime/proxy-health.service.js'
 import { requestEndpoint } from '../request/metadata.js'
 import { localAccountApiKeyRuntimeStatesForDispatch } from '../runtime/account-api-key-failure-guard.service.js'
 
@@ -70,7 +70,7 @@ export function skipAccountForFailedProxyDispatch(
   }
 }
 
-export function handleUnavailableProxyProfile(
+export async function handleUnavailableProxyProfile(
   req: Request,
   usageContext: GatewayUsageContext,
   account: UpstreamAccount,
@@ -78,7 +78,7 @@ export function handleUnavailableProxyProfile(
   failedProxyDispatchKeys: Map<string, string>,
   accountStateMutationEnabled = true,
   recordPrecheckFailure: GatewayAccountFailurePrecheckRecorder = recordGatewayAccountFailureForPrecheck
-): UpstreamAttempt | undefined {
+): Promise<UpstreamAttempt | undefined> {
   if (!account.proxyProfileUnavailable) {
     return undefined
   }
@@ -95,13 +95,13 @@ export function handleUnavailableProxyProfile(
     upstreamUrl: 'proxy:configured',
     message
   }
-  recordFailedUpstreamAttempt(req, usageContext, account, {
+  await recordFailedUpstreamAttempt(req, usageContext, account, {
     upstreamUrl: 'proxy:configured',
       startedAt: attemptStartedAt,
       errorMessage: message
     })
   if (accountStateMutationEnabled && usageContext.trafficSource !== 'gateway') {
-    applyAccountErrorHandlingWithCacheInvalidation(account, {
+    await applyAccountErrorHandlingWithCacheInvalidation(account, {
       success: false,
       errorMessage: message,
       settings,
@@ -118,10 +118,11 @@ export function handleUnavailableProxyProfile(
         clientIp: usageContext.clientIp,
         endpoint: requestEndpoint(req),
         reason: message,
-        forcePrecheck: localSuppression.action === 'precheck_required'
+        forcePrecheck: localSuppression.action === 'precheck_required',
+        localSuppressionDelayMs: localSuppression.delayMs
       })
     }
-    recordGatewayProxyFailure(account, message)
+    await recordGatewayProxyFailureAsync(account, message)
   }
   rememberFailedProxyForDispatch(failedProxyDispatchKeys, account, message)
   return lastAttempt
@@ -131,12 +132,12 @@ export async function prepareUpstreamAccount(account: UpstreamAccount, signal?: 
   return await prepareGatewayUpstreamAccount(account, signal)
 }
 
-export function selectAccountApiKeyForDispatch(
+export async function selectAccountApiKeyForDispatch(
   account: UpstreamAccount,
   options: {
     excludeFingerprints?: Iterable<string>
   } = {}
-): UpstreamAccount | undefined {
+): Promise<UpstreamAccount | undefined> {
   if (account.type !== 'api_key') {
     return account
   }
@@ -159,7 +160,7 @@ export function selectAccountApiKeyForDispatch(
     return accountWithSelectedApiKey(account, fixed.key, fixed.fingerprint, fixed.index)
   }
 
-  const selected = selectAccountRuntimeApiKeyEntry({
+  const selected = await selectAccountRuntimeApiKeyEntryAsync({
     accountId,
     credentials,
     excludeFingerprints: options.excludeFingerprints,
@@ -223,7 +224,7 @@ export async function buildPreparedUpstreamRequestParts(
           code: error.code
         }
       })
-      recordFailedUpstreamAttempt(req, usageContext, account, {
+      await recordFailedUpstreamAttempt(req, usageContext, account, {
         upstreamUrl: account.type === 'oauth' ? 'openai-oauth-codex:local-validation' : 'gateway:local-validation',
         startedAt: Date.now(),
         statusCode: error.statusCode,

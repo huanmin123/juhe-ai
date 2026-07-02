@@ -42,6 +42,8 @@ export interface SystemSettings {
   oauthAccessTokenRefreshBatchSize: number
   oauthAccessTokenRefreshRetryBackoffSeconds: number
   modelCheckRetentionDays: number
+  runtimeLogIndexRetentionDays: number
+  publicApiLogRetentionDays: number
   usageRecordRetentionDays: number
   usageStatsTimezone: string
   usageStatsMinuteRetentionHours: number

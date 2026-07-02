@@ -71,10 +71,10 @@
         <a-form-item label="IP">
           <a-input :value="policyTarget?.aggregateIpKey" disabled />
         </a-form-item>
-        <a-form-item v-if="policyAction !== 'unblock'" label="封禁原因">
+        <a-form-item v-if="policyAction === 'blacklist' || policyAction === 'allowlist'" :label="policyReasonLabel">
           <a-textarea v-model:value="policyForm.reason" :rows="3" :maxlength="500" show-count />
         </a-form-item>
-        <a-form-item v-if="policyAction !== 'unblock'" label="封禁时长">
+        <a-form-item v-if="policyAction === 'blacklist'" label="封禁时长">
           <a-segmented
             v-model:value="policyForm.durationMode"
             :options="policyDurationOptions"
@@ -82,7 +82,7 @@
             @change="handlePolicyDurationModeChange"
           />
         </a-form-item>
-        <a-form-item v-if="policyAction !== 'unblock' && policyForm.durationMode === 'minutes'" label="分钟数">
+        <a-form-item v-if="policyAction === 'blacklist' && policyForm.durationMode === 'minutes'" label="分钟数">
           <a-input-number
             v-model:value="policyForm.durationValue"
             class="policy-duration-input"
@@ -92,7 +92,7 @@
             addon-after="分钟"
           />
         </a-form-item>
-        <a-form-item v-if="policyAction !== 'unblock' && policyForm.durationMode === 'days'" label="天数">
+        <a-form-item v-if="policyAction === 'blacklist' && policyForm.durationMode === 'days'" label="天数">
           <a-input-number
             v-model:value="policyForm.durationValue"
             class="policy-duration-input"
@@ -109,7 +109,7 @@
       v-model:open="detailDrawerOpen"
       class="ip-detail-drawer"
       :title="detailDrawerTitle"
-      :width="920"
+      :width="1040"
       destroy-on-close
     >
       <a-descriptions v-if="detailTarget" class="ip-detail-summary" size="small" bordered :column="{ xs: 1, sm: 2 }">
@@ -117,7 +117,7 @@
           <span class="mono-cell">{{ detailTarget.aggregateIpKey }}</span>
         </a-descriptions-item>
         <a-descriptions-item label="状态">
-          <a-tag :color="detailTarget.status === 'blacklisted' ? 'red' : 'green'">{{ detailTarget.status === 'blacklisted' ? '已封禁' : '正常' }}</a-tag>
+          <a-tag :color="statusColor(detailTarget.status)">{{ statusText(detailTarget.status) }}</a-tag>
         </a-descriptions-item>
         <a-descriptions-item label="统计范围">{{ currentUsageWindowLabel }}</a-descriptions-item>
         <a-descriptions-item label="最近使用">{{ formatDateTime(detailTarget.lastSeenAt || detailTarget.rangeUsage.lastUsedAt) }}</a-descriptions-item>
@@ -140,7 +140,7 @@
         :loading="detailLoading"
         :pagination="detailTablePagination"
         :pagination-summary="false"
-        :scroll-x="980"
+        :scroll-x="1220"
         size="small"
         :lock-body-scroll="false"
         :mobile-breakpoint="760"
@@ -157,6 +157,12 @@
               </a-tooltip>
               <span v-else class="muted-cell">未匹配到账户名称</span>
             </div>
+          </template>
+          <template v-else-if="column.key === 'accountOwner'">
+            <a-tooltip v-if="record.accountOwnerSystemAccountName" :title="record.accountOwnerSystemAccountName">
+              <span class="name-cell ip-detail-owner-name">{{ record.accountOwnerSystemAccountName }}</span>
+            </a-tooltip>
+            <span v-else class="muted-cell">未匹配到用户</span>
           </template>
           <template v-else-if="column.key === 'requestCount'">
             <span class="number-cell">{{ formatInteger(record.rangeUsage.requestCount) }}</span>
@@ -185,10 +191,15 @@
         <template #card="{ record }">
           <article class="ip-detail-mobile-card">
             <div class="ip-detail-mobile-head">
-              <a-tooltip v-if="record.accountName" :title="record.accountName">
-                <span class="name-cell ip-detail-account-name">{{ record.accountName }}</span>
-              </a-tooltip>
-              <span v-else class="muted-cell">未匹配到账户名称</span>
+              <div class="ip-detail-mobile-title">
+                <a-tooltip v-if="record.accountName" :title="record.accountName">
+                  <span class="name-cell ip-detail-account-name">{{ record.accountName }}</span>
+                </a-tooltip>
+                <span v-else class="muted-cell">未匹配到账户名称</span>
+                <span :class="record.accountOwnerSystemAccountName ? 'ip-detail-owner-text' : 'muted-cell'">
+                  用户：{{ record.accountOwnerSystemAccountName || '未匹配到用户' }}
+                </span>
+              </div>
               <a-tag :color="record.rangeUsage.errorRate > 0.05 ? 'red' : 'green'">
                 {{ formatPercent(record.rangeUsage.errorRate * 100) }}
               </a-tag>
@@ -241,7 +252,7 @@ import type { ClientIpAccountUsageRow, ClientIpStatsRow, ClientIpStatsSortField,
 import { formatCompactInteger, formatCost, formatDuration, formatInteger, formatPercent } from '@/views/stats/statsFormatters'
 
 import IpStatsList from './IpStatsList.vue'
-import type { IpStatsPolicyAction } from './ipStatsDisplay'
+import { statusColor, statusText, type IpStatsPolicyAction } from './ipStatsDisplay'
 
 type TableSortOrder = 'ascend' | 'descend' | null
 type PolicyAction = IpStatsPolicyAction
@@ -257,6 +268,7 @@ const usageWindowOptions = [
 const statusOptions = [
   { label: '全部状态', value: 'all' },
   { label: '正常', value: 'normal' },
+  { label: '白名单', value: 'allowlisted' },
   { label: '已封禁', value: 'blacklisted' }
 ]
 
@@ -268,6 +280,7 @@ const policyDurationOptions = [
 
 const detailColumns = [
   { title: 'AI 账户', key: 'account', width: 180, fixed: 'left', align: 'left' },
+  { title: '用户名称', key: 'accountOwner', width: 150, align: 'left' },
   { title: '请求', key: 'requestCount', width: 100, align: 'left', sorter: true },
   { title: 'Token', key: 'totalTokens', width: 120, align: 'left', sorter: true },
   { title: '成本', key: 'cost', width: 120, align: 'left', sorter: true },
@@ -331,8 +344,11 @@ const detailEmptyDescription = computed(() => detailRangeReady.value ? '当前�
 
 const policyModalTitle = computed(() => {
   if (policyAction.value === 'blacklist') return '封禁 IP'
+  if (policyAction.value === 'allowlist') return '加入白名单'
+  if (policyAction.value === 'unallowlist') return '移出白名单'
   return '解除封禁'
 })
+const policyReasonLabel = computed(() => policyAction.value === 'allowlist' ? '白名单原因' : '封禁原因')
 
 onMounted(() => {
   void loadData()
@@ -457,8 +473,14 @@ async function submitPolicy(): Promise<void> {
       if (!payload) return
       await api.ipStats.blacklist(policyTarget.value.ipHash, payload)
       message.success('已封禁 IP')
+    } else if (policyAction.value === 'allowlist') {
+      await api.ipStats.allowlist(policyTarget.value.ipHash, simplePolicyPayload())
+      message.success('已加入白名单')
+    } else if (policyAction.value === 'unallowlist') {
+      await api.ipStats.unallowlist(policyTarget.value.ipHash, simplePolicyPayload())
+      message.success('已移出白名单')
     } else {
-      await api.ipStats.unblock(policyTarget.value.ipHash, {})
+      await api.ipStats.unblock(policyTarget.value.ipHash, simplePolicyPayload())
       message.success('已解除封禁')
     }
     policyModalOpen.value = false
@@ -471,7 +493,7 @@ async function submitPolicy(): Promise<void> {
 }
 
 function policyPayload(): { reason?: string; durationMinutes?: number; durationDays?: number } | undefined {
-  const reason = policyForm.reason?.trim() || undefined
+  const { reason } = simplePolicyPayload()
   if (policyForm.durationMode === 'permanent') {
     return { reason }
   }
@@ -484,6 +506,10 @@ function policyPayload(): { reason?: string; durationMinutes?: number; durationD
     return { reason, durationMinutes: durationValue }
   }
   return { reason, durationDays: durationValue }
+}
+
+function simplePolicyPayload(): { reason?: string } {
+  return { reason: policyForm.reason?.trim() || undefined }
 }
 
 function handlePolicyDurationModeChange(value: string | number): void {
@@ -606,7 +632,8 @@ function usageWindowDateRange(value: UsageWindow): [Dayjs, Dayjs] {
   gap: 2px;
 }
 
-.ip-detail-account-name {
+.ip-detail-account-name,
+.ip-detail-owner-name {
   display: block;
   max-width: 100%;
   overflow: hidden;
@@ -632,9 +659,18 @@ function usageWindowDateRange(value: UsageWindow): [Dayjs, Dayjs] {
   gap: 12px;
 }
 
-.ip-detail-mobile-head .ip-detail-account-name {
+.ip-detail-mobile-title {
+  display: flex;
   flex: 1;
   min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ip-detail-owner-text {
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 @media (max-width: 768px) {

@@ -41,6 +41,48 @@ const caches = new Set<AppCache<{}, {}>>()
 
 export function createAppCache<K extends {}, V extends {}>(options: AppCacheOptions<K, V>): AppCache<K, V> {
   let store = createStore(options)
+  const dropStoreIfDisabled = () => {
+    if (canUseProcessLocalAppCacheAsFactSource()) return
+    if (store.size > 0) {
+      store = createStore(options)
+      options.onClear?.()
+    }
+  }
+  const cache: AppCache<K, V> = {
+    name: options.name,
+    get: (key) => {
+      dropStoreIfDisabled()
+      return canUseProcessLocalAppCacheAsFactSource() ? store.get(key) : undefined
+    },
+    set: (key, value, setOptions) => {
+      dropStoreIfDisabled()
+      if (!canUseProcessLocalAppCacheAsFactSource()) return
+      store.set(key, value, setOptions?.ttlMs === undefined ? undefined : { ttl: setOptions.ttlMs })
+    },
+    delete: (key) => {
+      dropStoreIfDisabled()
+      if (!canUseProcessLocalAppCacheAsFactSource()) return
+      store.delete(key)
+    },
+    clear: () => {
+      store = createStore(options)
+      options.onClear?.()
+    },
+    values: () => {
+      dropStoreIfDisabled()
+      return canUseProcessLocalAppCacheAsFactSource() ? store.values() : emptyIterator<V>()
+    },
+    entries: () => {
+      dropStoreIfDisabled()
+      return canUseProcessLocalAppCacheAsFactSource() ? store.entries() : emptyIterator<[K, V]>()
+    }
+  }
+  caches.add(cache as AppCache<{}, {}>)
+  return cache
+}
+
+export function createProcessLocalResourceCache<K extends {}, V extends {}>(options: AppCacheOptions<K, V>): AppCache<K, V> {
+  let store = createStore(options)
   const cache: AppCache<K, V> = {
     name: options.name,
     get: (key) => store.get(key),
@@ -59,6 +101,10 @@ export function createAppCache<K extends {}, V extends {}>(options: AppCacheOpti
   }
   caches.add(cache as AppCache<{}, {}>)
   return cache
+}
+
+function emptyIterator<T>(): IterableIterator<T> {
+  return [][Symbol.iterator]() as IterableIterator<T>
 }
 
 function createStore<K extends {}, V extends {}>(options: AppCacheOptions<K, V>): LRUCache<K, V> {

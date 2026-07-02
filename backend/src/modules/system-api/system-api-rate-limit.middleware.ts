@@ -1,8 +1,12 @@
+import { createHash } from 'node:crypto'
 import type { NextFunction, Request, Response } from 'express'
 
+import { runtimeConfig } from '../../config/runtime.js'
+import { getRedisClient, type RedisCommandClient } from '../../shared/redis-client.js'
 import { getRequestAuthContext } from '../auth/request-context.js'
 import { getSettingsAsync } from '../../storage/repositories.js'
 import { getRequestContext, getRequestLogger, sanitizeUrlForLog } from '../../shared/request-context.js'
+import { inspectClientIpPolicy } from '../gateway/runtime/client-ip-policy-cache.service.js'
 
 type MethodClass = 'read' | 'write'
 type LimiterScope = 'ip' | 'user'
@@ -78,10 +82,15 @@ export async function systemApiIpRateLimit(req: Request, res: Response, next: Ne
     return
   }
 
+  if (await isClientIpRateLimitAllowlisted(req)) {
+    next()
+    return
+  }
+
   const methodClass = methodClassFor(req.method)
   const clientIp = clientIpKey(req)
   const key = `${clientIp}:${methodClass}`
-  const decision = checkRateLimit([
+  const decision = await checkRateLimit([
     {
       store: ipMinuteStore,
       key,
@@ -116,6 +125,11 @@ export async function systemApiAuthenticatedRateLimit(req: Request, res: Respons
     return
   }
 
+  if (await isClientIpRateLimitAllowlisted(req)) {
+    next()
+    return
+  }
+
   const authContext = getRequestAuthContext()
   if (!authContext) {
     next()
@@ -124,7 +138,7 @@ export async function systemApiAuthenticatedRateLimit(req: Request, res: Respons
 
   const methodClass = methodClassFor(req.method)
   const limit = methodClass === 'read' ? settings.userReadPerMinute : settings.userWritePerMinute
-  const decision = checkRateLimit([
+  const decision = await checkRateLimit([
     {
       store: userMinuteStore,
       key: `${authContext.systemAccountId}:${methodClass}`,
@@ -171,7 +185,14 @@ async function currentSystemApiRateLimitSettings(): Promise<SystemApiRateLimitSe
   }
 }
 
-function checkRateLimit(buckets: RateLimitBucketInput[], nowMs: number): RateLimitDecision {
+async function checkRateLimit(buckets: RateLimitBucketInput[], nowMs: number): Promise<RateLimitDecision> {
+  if (runtimeConfig.runtimeStateDriver === 'redis') {
+    return checkRedisRateLimit(buckets, nowMs)
+  }
+  return checkMemoryRateLimit(buckets, nowMs)
+}
+
+function checkMemoryRateLimit(buckets: RateLimitBucketInput[], nowMs: number): RateLimitDecision {
   const decisions = buckets.map((bucket) => inspectBucket(bucket, nowMs))
   const blocked = decisions.find((decision) => !decision.allowed)
   if (blocked) {
@@ -187,6 +208,34 @@ function checkRateLimit(buckets: RateLimitBucketInput[], nowMs: number): RateLim
     decision.commit()
   }
   return { allowed: true }
+}
+
+async function checkRedisRateLimit(buckets: RateLimitBucketInput[], nowMs: number): Promise<RateLimitDecision> {
+  if (buckets.length === 0) {
+    return { allowed: true }
+  }
+  const result = await (await redisStateClient()).eval(redisFixedWindowRateLimitScript, {
+    keys: buckets.map((bucket) => redisFixedWindowRateLimitKey(bucket.store.name, bucket.key)),
+    arguments: [
+      String(Math.trunc(nowMs)),
+      String(buckets.length),
+      ...buckets.flatMap((bucket) => [
+        bucket.store.name,
+        String(bucket.store.windowMs),
+        String(bucket.limit)
+      ])
+    ]
+  })
+  const values = redisFixedWindowRateLimitResult(result)
+  if (values.allowed) {
+    return { allowed: true }
+  }
+  return {
+    allowed: false,
+    retryAfterSeconds: values.retryAfterSeconds,
+    bucketName: values.bucketName,
+    limit: values.limit
+  }
 }
 
 function inspectBucket(input: RateLimitBucketInput, nowMs: number): RateLimitBucketDecision {
@@ -307,6 +356,24 @@ function isSystemApiHealthPath(req: Request): boolean {
   return req.path === '/health' || req.originalUrl.endsWith('/__aisys__/api/health')
 }
 
+async function isClientIpRateLimitAllowlisted(req: Request): Promise<boolean> {
+  try {
+    const decision = await inspectClientIpPolicy(clientIpKey(req), { ensureSnapshotLoaded: true })
+    return decision.allowlisted
+  } catch (error) {
+    getRequestLogger().warn({
+      event: 'system_api_rate_limit_allowlist_check_failed',
+      err: error instanceof Error ? error : undefined,
+      errorMessage: error instanceof Error ? undefined : String(error),
+      method: req.method,
+      path: req.path,
+      originalUrl: sanitizeUrlForLog(req.originalUrl),
+      clientIp: clientIpKey(req)
+    }, '后台系统 API 白名单检查失败，本次请求继续执行限流')
+    return false
+  }
+}
+
 function clientIpKey(req: Request): string {
   return getRequestContext()?.clientIp ?? req.ip ?? req.socket.remoteAddress ?? 'unknown'
 }
@@ -327,3 +394,94 @@ function booleanSetting(value: unknown, key: string): boolean {
   }
   return value
 }
+
+function redisStateClient(): Promise<RedisCommandClient> {
+  const redisUrl = runtimeConfig.redis.stateUrl
+  if (!redisUrl) {
+    throw new Error('JUHE_AI_REDIS_STATE_URL 在 Redis runtime state driver 下必须配置')
+  }
+  return getRedisClient(redisUrl)
+}
+
+function redisFixedWindowRateLimitKey(storeName: string, key: string): string {
+  return `juhe-ai:rate-limit:fixed:${redisKeyHash(storeName)}:${redisKeyHash(key)}`
+}
+
+function redisKeyHash(value: string): string {
+  return createHash('sha256').update(value).digest('base64url')
+}
+
+function redisFixedWindowRateLimitResult(value: unknown): {
+  allowed: boolean
+  retryAfterSeconds?: number
+  bucketName?: string
+  limit?: number
+} {
+  if (!Array.isArray(value)) {
+    return { allowed: false, retryAfterSeconds: 1 }
+  }
+  const allowed = numericRedisResult(value[0]) === 1
+  if (allowed) {
+    return { allowed: true }
+  }
+  return {
+    allowed: false,
+    retryAfterSeconds: Math.max(1, numericRedisResult(value[1])),
+    bucketName: typeof value[2] === 'string' ? value[2] : undefined,
+    limit: numericRedisResult(value[3])
+  }
+}
+
+function numericRedisResult(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'bigint') return Number(value)
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+const redisFixedWindowRateLimitScript = `
+local now_ms = tonumber(ARGV[1])
+local bucket_count = tonumber(ARGV[2])
+local pending_counts = {}
+local pending_resets = {}
+
+for index = 1, bucket_count do
+  local offset = 3 + (index - 1) * 3
+  local store_name = ARGV[offset]
+  local window_ms = tonumber(ARGV[offset + 1])
+  local limit = tonumber(ARGV[offset + 2])
+  if limit > 0 then
+    local raw = redis.call('GET', KEYS[index])
+    local count = 0
+    local reset_at_ms = now_ms + window_ms
+    if raw then
+      local separator = string.find(raw, ':')
+      if separator then
+        count = tonumber(string.sub(raw, 1, separator - 1)) or 0
+        reset_at_ms = tonumber(string.sub(raw, separator + 1)) or reset_at_ms
+      end
+    end
+    if reset_at_ms <= now_ms then
+      count = 0
+      reset_at_ms = now_ms + window_ms
+    end
+    if count >= limit then
+      return {0, math.max(1, math.ceil((reset_at_ms - now_ms) / 1000)), store_name, limit}
+    end
+    pending_counts[index] = count + 1
+    pending_resets[index] = reset_at_ms
+  end
+end
+
+for index = 1, bucket_count do
+  local offset = 3 + (index - 1) * 3
+  local limit = tonumber(ARGV[offset + 2])
+  if limit > 0 then
+    local reset_at_ms = pending_resets[index]
+    local ttl_ms = math.max(1, reset_at_ms - now_ms)
+    redis.call('SET', KEYS[index], tostring(pending_counts[index]) .. ':' .. tostring(reset_at_ms), 'PX', ttl_ms)
+  end
+end
+
+return {1, 0, '', 0}
+`

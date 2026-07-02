@@ -86,6 +86,7 @@ interface UseAccountEditFormOptions {
 
 export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const modalOpen = ref(false)
+  const accountEditDetailLoading = ref(false)
   const editingId = ref<string>()
   const editingAccountDetail = ref<AccountSummary>()
   const cloningSourceId = ref<string>()
@@ -234,11 +235,11 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const modalConfirmLoading = computed(() => saving.value)
   const modalOkButtonProps = computed(() => ({
     type: 'primary' as const,
-    disabled: saving.value || !hasAccountType.value || (!editingId.value && isOAuthForm.value && !isOpenAIOAuthForm.value)
+    disabled: accountEditDetailLoading.value || saving.value || !hasAccountType.value || (!editingId.value && isOAuthForm.value && !isOpenAIOAuthForm.value)
   }))
   const selectedAccountTypeTitle = computed(() => hasAccountType.value ? selectedAccountTypeChoice.value?.label ?? accountTypeTitle(form.providerCode, form.type) : '')
   const apiKeyTestDetails = computed<AccountApiKeyRuntimeDetail[] | undefined>(() => {
-    if (!modalOpen.value || !isApiKeyForm.value || editingAuthorizedAccount.value) return undefined
+    if (!modalOpen.value || accountEditDetailLoading.value || !isApiKeyForm.value || editingAuthorizedAccount.value) return undefined
     return draftApiKeyTestRuntimeDetailsForPayload(options.draftApiKeyTestSnapshot?.value, currentDraftTestPayload())
   })
 
@@ -247,6 +248,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   }
 
   function resetForm(providerCode = '', type: AccountType = '') {
+    accountEditDetailLoading.value = false
     cloningSourceId.value = undefined
     editingScheduleFingerprint.value = undefined
     cloningScheduleFingerprint.value = undefined
@@ -325,6 +327,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   )
 
   function handleModalCancel() {
+    nextFormOpenRequestToken()
+    accountEditDetailLoading.value = false
     modalOpen.value = false
     authResult.value = undefined
     clearDraftApiKeyTestSnapshot()
@@ -383,8 +387,34 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   async function openEdit(account: AccountSummary) {
     const requestToken = nextFormOpenRequestToken()
     const editScopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
+    editingId.value = account.id
+    editingAccountDetail.value = account
+    editingScheduleFingerprint.value = undefined
+    cloningSourceId.value = undefined
+    cloningScheduleFingerprint.value = undefined
+    creatingAccountScopeParams.value = undefined
+    accountEditDetailLoading.value = true
+    authResult.value = undefined
+    clearSuccessfulDraftActivationTest()
+    Object.assign(form, {
+      ...defaultForm(account.providerCode, account.type, account.providerProtocolProfileId),
+      name: account.name,
+      concurrencyLimit: account.concurrencyLimit,
+      priority: account.priority,
+      supportedModels: [...(account.supportedModels ?? [])],
+      tags: accountTagNamesForOpening(account),
+      notes: account.notes ?? ''
+    })
+    modalOpen.value = true
     const sourceAccount = await loadAccountDetailForForm(account.id, editScopeParams, '加载账户详情失败')
-    if (!sourceAccount || !isCurrentFormOpenRequest(requestToken)) return
+    if (!isCurrentFormOpenRequest(requestToken)) return
+    if (!sourceAccount) {
+      accountEditDetailLoading.value = false
+      modalOpen.value = false
+      editingId.value = undefined
+      editingAccountDetail.value = undefined
+      return
+    }
     const defaults = defaultForm(sourceAccount.providerCode, sourceAccount.type, sourceAccount.providerProtocolProfileId)
     const selectedGroup = sourceAccount.boundGroupId
       ? groupSelectionForId(sourceAccount.boundGroupId, sourceAccount.boundGroupName)
@@ -400,6 +430,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
         selectedGroup
       })
     } catch (error) {
+      accountEditDetailLoading.value = false
+      modalOpen.value = false
+      editingId.value = undefined
+      editingAccountDetail.value = undefined
       reportAccountFormLoadError(error, '账户数据结构异常，请清理后再编辑')
       return
     }
@@ -414,6 +448,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     accountErrorPolicyRules.value = formLoad.errorPolicyRules
     accountResponseInspectionRules.value = formLoad.responseInspectionRules
     authResult.value = undefined
+    accountEditDetailLoading.value = false
     modalOpen.value = true
     void options.loadGroupOptions('', false, {
       providerCode: sourceAccount.providerCode,
@@ -438,6 +473,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     }
     const sourceAccount = await loadAccountDetailForForm(account.id, cloneScopeParams, '加载克隆账户配置失败')
     if (!sourceAccount || !isCurrentFormOpenRequest(requestToken)) return
+    accountEditDetailLoading.value = false
     editingId.value = undefined
     editingAccountDetail.value = undefined
     editingScheduleFingerprint.value = undefined
@@ -525,6 +561,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   }
 
   return {
+    accountEditDetailLoading,
     accountErrorPolicyRules,
     accountResponseInspectionRules,
     apiKeyTestDetails,
@@ -583,6 +620,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     if (!normalizedName) return form.group?.id === normalizedId ? form.group : undefined
     rememberGroupLabel(normalizedId, normalizedName)
     return { id: normalizedId, name: normalizedName }
+  }
+
+  function accountTagNamesForOpening(account: AccountSummary): string[] {
+    return account.tags?.map((tag) => tag.name).filter((name): name is string => Boolean(name?.trim())) ?? []
   }
 
   function reportAccountFormLoadError(error: unknown, fallbackMessage: string): void {

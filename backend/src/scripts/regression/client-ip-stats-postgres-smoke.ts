@@ -45,6 +45,7 @@ const savedJobStates = await captureClientIpJobStates()
 
 try {
   await setClientIpStatsCursor(cursorBeforeSmoke, '')
+  await seedSmokeAccountRows()
   await createUsageRecordsBatchAsync([
     {
       id: usageIds[0],
@@ -145,6 +146,9 @@ try {
   assert(detail, 'PG IP 详情应返回注册表信息')
   assert.equal(detail.rangeReady, true, 'PG IP 详情窗口应 ready')
   assert.deepEqual(detail.items.map((item) => item.accountId), [accountIds[0]], 'PG IP 详情应按 IP+账号窗口聚合')
+  assert.equal(detail.items[0]?.accountName, `PG IP 详情主账号 ${marker}`, 'PG IP 详情应批量补齐账号名称')
+  assert.equal(detail.items[0]?.accountOwnerSystemAccountId, 'sys_admin', 'PG IP 详情应返回账号所属系统账户 ID')
+  assert.equal(detail.items[0]?.accountOwnerSystemAccountName, '超级管理员', 'PG IP 详情应返回账号所属用户名称')
   assert.equal(detail.items[0]?.rangeUsage.requestCount, 2, 'PG IP 详情应累计账号请求数')
   assert.equal(detail.items[0]?.rangeUsage.errorCount, 1, 'PG IP 详情应累计账号错误数')
 
@@ -315,6 +319,24 @@ async function cleanupSmokeRows(): Promise<void> {
   await pool.query('DELETE FROM juhe_stats.client_ip_range_window_dirty_ips WHERE ip_hash = ANY($1::text[])', [ipHashes])
   await pool.query('DELETE FROM juhe_stats.client_ip_account_range_window_dirty_ips WHERE ip_hash = ANY($1::text[])', [ipHashes])
   await pool.query('DELETE FROM juhe_stats.client_ip_registry WHERE ip_hash = ANY($1::text[])', [ipHashes])
+  await pool.query('DELETE FROM juhe_business.accounts WHERE id = ANY($1::text[])', [accountIds])
+}
+
+async function seedSmokeAccountRows(): Promise<void> {
+  for (const [index, accountId] of accountIds.entries()) {
+    await pool.query(`
+      INSERT INTO juhe_business.accounts (
+        id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+        name, type, status, credentials_encrypted, credential_mask, created_at, updated_at
+      ) VALUES ($1, 'sys_admin', 'gpt', 'profile_gpt_openai_v1', 'openai', 'v1', $2, 'api_key', 'active', $3, 'sk-client-ip-stats', $4, $4)
+      ON CONFLICT (id) DO NOTHING
+    `, [
+      accountId,
+      `${index === 0 ? 'PG IP 详情主账号' : 'PG IP 详情备用账号'} ${marker}`,
+      `client-ip-stats-smoke:${accountId}`,
+      new Date(createdAtBase - 1000).toISOString()
+    ])
+  }
 }
 
 async function readPolicyHitCount(policyId: string): Promise<number> {

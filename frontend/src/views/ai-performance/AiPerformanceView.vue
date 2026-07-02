@@ -288,19 +288,17 @@ function resetFilters() {
   void loadPerformance()
 }
 
-function renderPerformanceCharts() {
-  for (const chart of performanceCharts.value) {
-    renderPerformanceChart(chart.metric, chart.chartRef, chart.hasData)
-  }
+async function renderPerformanceCharts() {
+  await Promise.all(performanceCharts.value.map((chart) => renderPerformanceChart(chart.metric, chart.chartRef, chart.hasData)))
 }
 
-function renderPerformanceChart(metric: AiPerformanceMetric, chartRef: ShallowRef<ECharts | undefined>, hasData: boolean) {
+async function renderPerformanceChart(metric: AiPerformanceMetric, chartRef: ShallowRef<ECharts | undefined>, hasData: boolean) {
   if (!visibleOverview.value || !hasData) {
     disposeChart(chartRef)
     return
   }
-  const chart = ensureChart(metricElementRef(metric), chartRef)
-  if (!chart) return
+  const chart = await ensureChart(metricElementRef(metric), chartRef, () => pageActive.value)
+  if (!chart || !visibleOverview.value || !pageActive.value) return
   chart.setOption(buildAiPerformanceOption(visibleOverview.value, metric, { colorByAccountId: seriesColorByAccountId.value }), { notMerge: true })
 }
 

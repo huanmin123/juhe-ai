@@ -30,6 +30,8 @@ export interface SystemForm {
   accountHealthCheckJitterMinutes: number
   accountHealthCheckBatchSize: number
   accountHealthCheckFailureThreshold: number
+  runtimeLogIndexRetentionDays: number
+  publicApiLogRetentionDays: number
   usageRecordRetentionDays: number
   dataRetentionCleanupIntervalMinutes: number
   dataRetentionCleanupBatchSize: number
@@ -44,7 +46,7 @@ export const defaultGlobalSettings: GlobalForm = {
 }
 
 export const defaultSystemSettings: SystemForm = {
-  gatewayTextRawBodyLimitMegabytes: 8,
+  gatewayTextRawBodyLimitMegabytes: 16,
   systemApiRateLimitEnabled: true,
   systemApiRateLimitIpReadPerMinute: 600,
   systemApiRateLimitIpReadBurstPer10Seconds: 120,
@@ -67,7 +69,9 @@ export const defaultSystemSettings: SystemForm = {
   accountHealthCheckJitterMinutes: 120,
   accountHealthCheckBatchSize: 20,
   accountHealthCheckFailureThreshold: 3,
-  usageRecordRetentionDays: 7,
+  runtimeLogIndexRetentionDays: 14,
+  publicApiLogRetentionDays: 30,
+  usageRecordRetentionDays: 30,
   dataRetentionCleanupIntervalMinutes: 10,
   dataRetentionCleanupBatchSize: 1000,
   dataRetentionCleanupMaxBatchesPerRun: 20,
@@ -107,7 +111,9 @@ export function normalizeSystemSettings(settings: SystemSettings | SystemForm): 
     accountHealthCheckJitterMinutes: integerValue(settings.accountHealthCheckJitterMinutes, '健康检测错峰窗口', 0, 1440),
     accountHealthCheckBatchSize: integerValue(settings.accountHealthCheckBatchSize, '健康检测单轮账号数', 1, 100),
     accountHealthCheckFailureThreshold: integerValue(settings.accountHealthCheckFailureThreshold, '健康检测连续失败阈值', 1, 10),
-    usageRecordRetentionDays: integerValue(settings.usageRecordRetentionDays, '使用记录保留天数', 1, 7),
+    runtimeLogIndexRetentionDays: integerValue(settings.runtimeLogIndexRetentionDays, '运行日志索引保留天数', 1, 90),
+    publicApiLogRetentionDays: integerValue(settings.publicApiLogRetentionDays, '公开接口日志保留天数', 1, 365),
+    usageRecordRetentionDays: integerValue(settings.usageRecordRetentionDays, '使用记录保留天数', 1, 180),
     dataRetentionCleanupIntervalMinutes: integerValue(settings.dataRetentionCleanupIntervalMinutes, '数据保留清理间隔', 5, 1440),
     dataRetentionCleanupBatchSize: integerValue(settings.dataRetentionCleanupBatchSize, '数据保留清理单批行数', 100, 5_000),
     dataRetentionCleanupMaxBatchesPerRun: integerValue(settings.dataRetentionCleanupMaxBatchesPerRun, '数据保留清理单轮批数', 1, 100),

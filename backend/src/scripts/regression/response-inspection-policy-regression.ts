@@ -125,7 +125,7 @@ async function assertMalformedResponsesSseFailsBeforeDownstreamCommit(
     response as never,
     settings,
     Date.now(),
-    () => { failureCalled = true },
+    async () => { failureCalled = true },
     undefined,
     {
       clientRetryEnabled: true,
@@ -1212,7 +1212,7 @@ assert.equal(validateAccountResponseInspectionRules([
     response as never,
     settings,
     Date.now(),
-    () => { failureCalled = true },
+    async () => { failureCalled = true },
     undefined,
     {
       endpointFamily: 'responses',
@@ -1271,7 +1271,7 @@ assert.equal(validateAccountResponseInspectionRules([
     response as never,
     settings,
     Date.now(),
-    () => { failureCalled = true },
+    async () => { failureCalled = true },
     undefined,
     {
       endpointFamily: 'responses'
@@ -1325,7 +1325,7 @@ assert.equal(validateAccountResponseInspectionRules([
     response as never,
     settings,
     Date.now(),
-    () => { failureCalled = true },
+    async () => { failureCalled = true },
     undefined,
     {
       endpointFamily: 'responses'

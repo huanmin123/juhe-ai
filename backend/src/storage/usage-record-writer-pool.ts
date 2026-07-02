@@ -48,7 +48,8 @@ const writerPool = new KeyedChildProcessPool<UsageRecordWriterOperation>({
 })
 
 export function usageRecordWriterPoolEnabled(): boolean {
-  return runtimeConfig.processRole === 'worker'
+  return runtimeConfig.databaseDriver === 'sqlite'
+    && runtimeConfig.processRole === 'worker'
     && runtimeConfig.workerRole === 'ingest-worker'
     && runtimeConfig.usageRecordWriterPoolEnabled
     && usageRecordShardCount() > 1

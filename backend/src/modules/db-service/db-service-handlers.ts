@@ -117,10 +117,15 @@ import { listActiveResponseInspectionPoliciesForGateway, listActiveResponseInspe
 import { cleanupExpiredSystemSessions, cleanupExpiredSystemSessionsAsync } from '../../storage/data-retention.repository.js'
 import {
   cleanupExpiredCodexContextStates,
+  cleanupExpiredCodexContextStatesAsync,
   readCodexContextCompactState,
+  readCodexContextCompactStateAsync,
   readCodexContextResponseStateChain,
+  readCodexContextResponseStateChainAsync,
   saveCodexContextCompactStateIndex,
-  saveCodexContextResponseStateIndex
+  saveCodexContextCompactStateIndexAsync,
+  saveCodexContextResponseStateIndex,
+  saveCodexContextResponseStateIndexAsync
 } from '../../storage/codex-context-state.repository.js'
 import {
   cleanupExpiredCodexContextStatesWithWriterPool,
@@ -144,7 +149,10 @@ import {
 } from '../gateway/runtime/runtime-cache.service.js'
 import { isGptVendorCode, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
 import { isDynamicRouteStrategyMode } from '../../domain/route-strategy.js'
-import { orderGatewayApiKeyGroupBindingsForDispatch } from '../gateway/routing/api-key-group-route-selector.service.js'
+import {
+  orderGatewayApiKeyGroupBindingsForDispatch,
+  orderGatewayApiKeyGroupBindingsForDispatchAsync
+} from '../gateway/routing/api-key-group-route-selector.service.js'
 import { checkGatewayApiKeyQuota, checkGatewayApiKeyQuotaExactAsync, clearApiKeyQuotaCache } from '../gateway/quota/api-key-quota.service.js'
 import {
   checkGatewayAuthorizationQuotaBatchByIds,
@@ -812,13 +820,25 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
     case 'status':
       return buildDbServiceRuntimeSnapshot()
     case 'save_codex_context_response_state':
-      assertCodexContextStateSqliteOnlyOperation(operation.type)
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await saveCodexContextResponseStateIndexAsync(operation.input)
+      }
       return await saveCodexContextResponseStateIndexWithWriterPool(operation.input)
     case 'save_codex_context_compact_state':
-      assertCodexContextStateSqliteOnlyOperation(operation.type)
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await saveCodexContextCompactStateIndexAsync(operation.input)
+      }
       return await saveCodexContextCompactStateIndexWithWriterPool(operation.input)
     case 'read_codex_context_response_chain':
-      assertCodexContextStateSqliteOnlyOperation(operation.type)
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await readCodexContextResponseStateChainAsync({
+          responseId: operation.responseId,
+          boundary: operation.boundary,
+          maxDepth: operation.maxDepth,
+          now: operation.now,
+          refreshExpiresAt: operation.refreshExpiresAt
+        })
+      }
       return await readCodexContextResponseStateChainWithWriterPool({
         responseId: operation.responseId,
         boundary: operation.boundary,
@@ -827,7 +847,14 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
         refreshExpiresAt: operation.refreshExpiresAt
       })
     case 'read_codex_context_compact_state':
-      assertCodexContextStateSqliteOnlyOperation(operation.type)
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await readCodexContextCompactStateAsync({
+          compactId: operation.compactId,
+          boundary: operation.boundary,
+          now: operation.now,
+          refreshExpiresAt: operation.refreshExpiresAt
+        })
+      }
       return await readCodexContextCompactStateWithWriterPool({
         compactId: operation.compactId,
         boundary: operation.boundary,
@@ -835,7 +862,12 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
         refreshExpiresAt: operation.refreshExpiresAt
       })
     case 'cleanup_expired_codex_context_states':
-      assertCodexContextStateSqliteOnlyOperation(operation.type)
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await cleanupExpiredCodexContextStatesAsync({
+          expiredBefore: operation.expiredBefore,
+          limit: operation.limit
+        })
+      }
       return await cleanupExpiredCodexContextStatesWithWriterPool({
         expiredBefore: operation.expiredBefore,
         limit: operation.limit
@@ -1602,7 +1634,7 @@ async function readGatewayRuntimeAsync(operation: Extract<DbServiceOperation, { 
       responseInspectionPolicies: []
     }
   }
-  const orderedBindings = orderGatewayApiKeyGroupBindingsForDispatch(apiKey)
+  const orderedBindings = await orderGatewayApiKeyGroupBindingsForDispatchAsync(apiKey)
   apiKey.selected_group_id = orderedBindings[0]?.group_id ?? apiKey.selected_group_id
   const candidateGroupIds = operation.groupId
     ? orderedBindings.some((binding) => binding.group_id === operation.groupId)
@@ -1707,12 +1739,6 @@ async function listActiveResponseInspectionPoliciesForAccountsAsync(accounts: re
 
 function hasDispatchableGatewayAccount(accounts: OpenAIAccountSecret[]): boolean {
   return accounts.some((account) => account.status === 'active' && account.proxyProfileUnavailable !== true)
-}
-
-function assertCodexContextStateSqliteOnlyOperation(operationType: DbServiceOperation['type']): void {
-  if (runtimeConfig.databaseDriver === 'postgres') {
-    throw new Error(`PostgreSQL 模式暂未接入 Codex context state 操作：${operationType}`)
-  }
 }
 
 function assertNever(value: never): never {

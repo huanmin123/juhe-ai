@@ -923,8 +923,8 @@ async function cleanupReadinessRows(client: DatabaseClient): Promise<void> {
   )
   await decrementRuntimeLogFacetsForCleanup(client, deletedRuntimeLogRows)
   await client.execute('DELETE FROM juhe_business.accounts WHERE id = ?', [readinessTeamInstanceAccountId])
-  await client.execute('DELETE FROM juhe_business.resource_authorization_grants WHERE id = ANY(?)', [[readinessTeamAccountGrantId, readinessTeamGroupGrantId]])
-  await client.execute('DELETE FROM juhe_business.resource_authorizations WHERE id = ANY(?)', [[
+  await client.execute('DELETE FROM juhe_business.resource_authorization_grants WHERE id = ANY(?::text[])', [[readinessTeamAccountGrantId, readinessTeamGroupGrantId]])
+  await client.execute('DELETE FROM juhe_business.resource_authorizations WHERE id = ANY(?::text[])', [[
     readinessAccountAuthorizationId,
     readinessGroupAuthorizationId,
     readinessTeamAccountAuthorizationId,
@@ -941,7 +941,7 @@ async function cleanupReadinessRows(client: DatabaseClient): Promise<void> {
   await client.execute('DELETE FROM juhe_stats.account_quality_dirty_accounts WHERE account_id = ?', [readinessAccountId])
   await client.execute('DELETE FROM juhe_stats.account_quality_dirty_accounts WHERE account_id = ?', [readinessTeamInstanceAccountId])
   for (const tableName of ['usage_stats_totals', 'usage_stats_minute', 'usage_stats_hourly', 'usage_stats_daily', 'usage_stats_weekly', 'usage_stats_monthly']) {
-    await client.execute(`DELETE FROM juhe_stats.${tableName} WHERE scope_id = ANY(?)`, [statsScopeIds])
+    await client.execute(`DELETE FROM juhe_stats.${tableName} WHERE scope_id = ANY(?::text[])`, [statsScopeIds])
   }
   for (const tableName of ['usage_model_minute', 'usage_model_hourly', 'usage_model_daily', 'usage_model_weekly', 'usage_model_monthly']) {
     await client.execute(`DELETE FROM juhe_stats.${tableName} WHERE model = ?`, [readinessModel])
@@ -950,9 +950,9 @@ async function cleanupReadinessRows(client: DatabaseClient): Promise<void> {
     await client.execute(`DELETE FROM juhe_stats.${tableName} WHERE error_code = ?`, [readinessErrorCode])
   }
   for (const tableName of ['usage_latency_minute', 'usage_latency_hourly', 'usage_latency_daily', 'usage_latency_weekly', 'usage_latency_monthly']) {
-    await client.execute(`DELETE FROM juhe_stats.${tableName} WHERE scope_id = ANY(?)`, [statsScopeIds])
+    await client.execute(`DELETE FROM juhe_stats.${tableName} WHERE scope_id = ANY(?::text[])`, [statsScopeIds])
   }
-  await client.execute('DELETE FROM juhe_stats.usage_quota_hourly_windows WHERE scope_id = ANY(?)', [statsScopeIds])
+  await client.execute('DELETE FROM juhe_stats.usage_quota_hourly_windows WHERE scope_id = ANY(?::text[])', [statsScopeIds])
 }
 
 async function decrementRuntimeLogFacetsForCleanup(

@@ -7,12 +7,11 @@ import { authorizationRuntimeBlockingStatus, currentIsoSql, disableExpiredAccoun
 import { runtimeConfig } from '../config/runtime.js'
 import { getBusinessDatabase } from './database.js'
 import type { DatabaseClient } from './database-client.js'
-import { createPostgresDatabaseClient } from './database-client.js'
-import { getPostgresPool } from './postgres-client.js'
 import { escapeLikePrefix, sqlPlaceholders } from './query-utils.js'
 import { ensureRequestQuotaDatabaseAttached, requestQuotaExceededSql, type RequestQuotaSqlExpression } from './request-quota-sql.js'
 import { authorizedAccountPermissions, ownerPermissions } from './resource-permissions.js'
 import { loadSystemAccountNameMapByIds } from './repository-lookups.js'
+import { listAccountsPageAsync } from './account-summary.repository.js'
 
 type AccountOptionFilterValue = string | number
 type AccountOptionFilterExpression = {
@@ -70,10 +69,30 @@ export async function listAccountOptionsAsync(access?: AccessScope, options?: Ac
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listAccountOptions(access, options)
   }
-  const listOptions = normalizeAccountOptionListOptions(options)
-  const client = createPostgresDatabaseClient(await getPostgresPool())
-  const rows = await queryOwnerAccountOptionRowsAsync(client, access, listOptions)
-  return accountOptionSummariesFromOwnerRowsAsync(client, rows, access)
+  const page = await listAccountsPageAsync(access, {
+    ...options,
+    pageSize: options?.limit
+  })
+  return page.items.map((item) => ({
+    id: item.id,
+    systemAccountId: item.systemAccountId,
+    systemAccountName: item.systemAccountName,
+    ownerSystemAccountId: item.ownerSystemAccountId,
+    ownerSystemAccountName: item.ownerSystemAccountName,
+    providerCode: item.providerCode,
+    providerProtocolProfileId: item.providerProtocolProfileId,
+    protocolCode: item.protocolCode,
+    protocolVersion: item.protocolVersion,
+    name: item.name,
+    type: item.type,
+    status: item.status,
+    accessType: item.accessType,
+    accountAuthorizationId: item.accountAuthorizationId,
+    authorizationStatus: item.authorizationStatus,
+    authorizationExpiresAt: item.authorizationExpiresAt,
+    accountExpiresAt: item.accountExpiresAt,
+    permissions: item.permissions
+  }))
 }
 
 function accountOptionSummariesFromRows(rows: AccountOptionRow[], access: AccessScope | undefined, viewerSystemAccountId: string | undefined): AccountOptionSummary[] {

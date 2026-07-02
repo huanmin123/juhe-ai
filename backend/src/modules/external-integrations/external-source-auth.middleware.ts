@@ -7,7 +7,7 @@ import {
 } from '../../storage/external-integration-source-types.js'
 import {
   clearPenaltyWindowRateLimitStore,
-  consumePenaltyWindowRateLimit,
+  consumePenaltyWindowRateLimitAsync,
   createPenaltyWindowRateLimitStore
 } from '../rate-limit/penalty-window-rate-limit.js'
 
@@ -42,7 +42,7 @@ export function requireExternalIntegrationSource(requiredScope?: string) {
         return
       }
 
-      const rateLimit = consumeExternalSourceRateLimit(result.context)
+      const rateLimit = await consumeExternalSourceRateLimit(result.context)
       if (!rateLimit.allowed) {
         res.locals.externalIntegrationSource = result.context
         res.setHeader('Retry-After', String(rateLimit.retryAfterSeconds))
@@ -83,11 +83,11 @@ function parseBearerToken(value: string | undefined): string | undefined {
   return token ? token : undefined
 }
 
-function consumeExternalSourceRateLimit(context: ExternalIntegrationSourceAuthContext): { allowed: true } | { allowed: false; rule: ExternalIntegrationRateLimitRule; retryAfterSeconds: number } {
+async function consumeExternalSourceRateLimit(context: ExternalIntegrationSourceAuthContext): Promise<{ allowed: true } | { allowed: false; rule: ExternalIntegrationRateLimitRule; retryAfterSeconds: number }> {
   if (!context.rateLimits.length) {
     return { allowed: true }
   }
-  const decision = consumePenaltyWindowRateLimit({
+  const decision = await consumePenaltyWindowRateLimitAsync({
     store: externalSourceRateLimitStore,
     scopeKey: `${context.sourceRefId}:${context.tokenId}:${context.tokenPrefix}`,
     rules: context.rateLimits

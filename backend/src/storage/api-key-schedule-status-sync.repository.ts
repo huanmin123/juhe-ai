@@ -12,7 +12,7 @@ import {
   nowIso,
   rollbackDatabaseTransaction
 } from './database.js'
-import { invalidateGatewayApiKeyCacheById } from './gateway-api-key.repository.js'
+import { invalidateGatewayApiKeyCacheById, invalidateGatewayApiKeyCacheByIdAsync } from './gateway-api-key.repository.js'
 import { getPostgresPool } from './postgres-client.js'
 
 interface ScheduledApiKeyStatusRow {
@@ -240,7 +240,7 @@ export async function syncApiKeyAvailabilityScheduleStatusesAsync(now = new Date
     }
   })
 
-  invalidateChangedApiKeyCaches(result.changedIds)
+  await invalidateChangedApiKeyCachesAsync(result.changedIds)
   return result
 }
 
@@ -295,5 +295,11 @@ function apiKeyScheduleStatusTable(client: DatabaseClient, tableName: string): s
 function invalidateChangedApiKeyCaches(ids: string[]): void {
   for (const id of ids) {
     invalidateGatewayApiKeyCacheById(id)
+  }
+}
+
+async function invalidateChangedApiKeyCachesAsync(ids: string[]): Promise<void> {
+  for (const id of ids) {
+    await invalidateGatewayApiKeyCacheByIdAsync(id)
   }
 }

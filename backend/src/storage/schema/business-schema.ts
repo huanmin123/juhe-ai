@@ -1001,6 +1001,9 @@ function ensureResponseInspectionPolicyIndexes(database: DatabaseSync): void {
 function ensureAuthorizationInstanceIndexes(database: DatabaseSync): void {
   database.exec(`
     CREATE INDEX IF NOT EXISTS idx_accounts_authorization_instance_authorization ON accounts(authorization_instance_authorization_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_authorization_instance_active_unique
+      ON accounts(authorization_instance_authorization_id)
+      WHERE authorization_instance_authorization_id IS NOT NULL AND deleted_at IS NULL;
     CREATE INDEX IF NOT EXISTS idx_accounts_authorization_instance_source ON accounts(authorization_instance_source_account_id);
     CREATE INDEX IF NOT EXISTS idx_accounts_authorization_instance_source_owner_lookup
       ON accounts(authorization_instance_source_account_id, system_account_id, id)

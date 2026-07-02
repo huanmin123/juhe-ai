@@ -19,6 +19,8 @@ testProxyBucket()
 testProxyUrlBucketMetadataRedaction()
 testBaseUrlBucket()
 testBaseUrlBucketHalfOpen()
+testPriorityBoundary()
+testModelPriorityBoundary()
 
 clearGatewayProxyHealthForTest()
 
@@ -146,7 +148,58 @@ function testBaseUrlBucketHalfOpen(): void {
   clearGatewayProxyHealthForTest()
 }
 
-function account(id: string, proxyProfileId: string | undefined, baseUrl = 'https://example.invalid/v1', proxyUrl?: string): OpenAIAccountSecret {
+function testPriorityBoundary(): void {
+  clearGatewayProxyHealthForTest()
+  const first = account('account-priority-proxy-1', 'proxy-priority-shared', 'https://priority-shared.example/v1', undefined, { priority: 0 })
+  const second = account('account-priority-proxy-2', 'proxy-priority-shared', 'https://priority-shared.example/v1', undefined, { priority: 0 })
+  const lowPriorityFresh = account('account-priority-proxy-low', 'proxy-priority-other', 'https://priority-other.example/v1', undefined, { priority: 10 })
+
+  recordGatewayProxyFailure(first, 'ECONNRESET')
+  recordGatewayProxyFailure(second, 'ECONNRESET')
+  const order = orderOpenAIAccountsByGatewayProxyHealth([first, second, lowPriorityFresh])
+  assert.equal(order.applied, true, '代理桶避让命中时仍应报告排序规则已参与')
+  assert.deepEqual(
+    order.accounts.map((item) => item.id),
+    [first.id, second.id, lowPriorityFresh.id],
+    '上游桶避让不能让低优先级账号越过高优先级账号'
+  )
+
+  clearGatewayProxyHealthForTest()
+}
+
+function testModelPriorityBoundary(): void {
+  clearGatewayProxyHealthForTest()
+  const first = account('account-model-proxy-1', 'proxy-model-shared', 'https://model-shared.example/v1', undefined, { priority: 0 })
+  const second = account('account-model-proxy-2', 'proxy-model-shared', 'https://model-shared.example/v1', undefined, { priority: 0 })
+  const unrestrictedFresh = account('account-model-proxy-unrestricted', 'proxy-model-other', 'https://model-other.example/v1', undefined, { priority: 0 })
+
+  recordGatewayProxyFailure(first, 'ECONNRESET')
+  recordGatewayProxyFailure(second, 'ECONNRESET')
+  const order = orderOpenAIAccountsByGatewayProxyHealth([first, second, unrestrictedFresh], {
+    requestedModel: 'gpt-4.1',
+    rankByAccountId: new Map([
+      [first.id, 0],
+      [second.id, 0],
+      [unrestrictedFresh.id, 2]
+    ])
+  })
+  assert.equal(order.applied, true, '代理桶避让命中时仍应报告排序规则已参与')
+  assert.deepEqual(
+    order.accounts.map((item) => item.id),
+    [first.id, second.id, unrestrictedFresh.id],
+    '上游桶避让不能让低模型匹配等级账号越过直连匹配账号'
+  )
+
+  clearGatewayProxyHealthForTest()
+}
+
+function account(
+  id: string,
+  proxyProfileId: string | undefined,
+  baseUrl = 'https://example.invalid/v1',
+  proxyUrl?: string,
+  options: { priority?: number } = {}
+): OpenAIAccountSecret {
   return {
     id,
     systemAccountId: 'sys_admin',
@@ -162,7 +215,7 @@ function account(id: string, proxyProfileId: string | undefined, baseUrl = 'http
     baseUrl,
     concurrencyLimit: 20,
     currentConcurrency: 0,
-    priority: 0,
+    priority: options.priority ?? 0,
     superPriorityEnabled: false,
     fallbackEnabled: false,
     clientCompatibility: 'openai_standard',

@@ -177,6 +177,8 @@ function classifyDomain(filePath: string): string {
     ['db-service', /db-service/],
     ['gateway', /gateway|quota|dispatch|runtime-cache|hybrid|session-affinity|client-ip-account-avoidance|client-ip-error-circuit/],
     ['background', /background|worker|dataset-writer|stats-writer|maintenance-jobs|background-jobs/],
+    ['system-api', /system-api/],
+    ['rate-limit', /rate-limit/],
     ['system-account', /system-account|auth|login|captcha|session/],
     ['account', /account(?!-authorization)|openai-oauth|cooldown|health|quality|model-mapping|model-filter|probe/],
     ['api-key', /api-key|apikey/],

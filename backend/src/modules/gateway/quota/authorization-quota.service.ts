@@ -116,6 +116,28 @@ export async function checkGatewayAuthorizationQuotaAsync(input: {
     setAuthorizationQuotaCacheEntry(cacheKey, sharedCached, { skipSharedCache: true })
     return sharedCached
   }
+  if (runtimeConfig.cacheDriver === 'redis' && runtimeConfig.processRole === 'server') {
+    try {
+      const dbService = await import('../../db-service/db-service-ipc.js')
+      const decision = await dbService.requestDbService({
+        type: 'check_authorization_quota',
+        groupAuthorizationId: input.groupAccess.groupAuthorizationId,
+        accountAuthorizationId: input.account?.accountAuthorizationId
+      }, { timeoutMs: 1000 })
+      await setAuthorizationQuotaCacheEntryAsync(cacheKey, {
+        ...decision,
+        checkedAtMs: Date.now()
+      })
+      return decision
+    } catch (error) {
+      logger.warn(errorLogFields(error, {
+        event: 'gateway_authorization_quota_redis_exact_check_failed',
+        groupAuthorizationId: input.groupAccess.groupAuthorizationId,
+        accountAuthorizationId: input.account?.accountAuthorizationId
+      }), 'Redis 模式授权配额精确补判失败，按保护策略拒绝请求')
+      return { allowed: false, message: AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE }
+    }
+  }
   if (runtimeConfig.processRole === 'server') {
     const snapshotInput = {
       groupAuthorizationId: input.groupAccess.groupAuthorizationId,
@@ -241,6 +263,53 @@ export async function checkGatewayAuthorizationQuotaBatchAsync(input: {
     const output = new Map<string, AuthorizationQuotaDecision>()
     for (const [accountId, decision] of cachedDecisionsByAccountId.entries()) {
       output.set(accountId, decision)
+    }
+    if (runtimeConfig.cacheDriver === 'redis') {
+      try {
+        const dbService = await import('../../db-service/db-service-ipc.js')
+        const decisions = await dbService.requestDbService({
+          type: 'check_authorization_quota_batch',
+          groupAuthorizationId: input.groupAccess.groupAuthorizationId,
+          accounts: missingAccounts.map((account) => ({
+            accountId: account.id,
+            accountAuthorizationId: account.accountAuthorizationId
+          }))
+        }, { timeoutMs: 1000 })
+        const missingDecisionsByCacheKey = new Map<string, AuthorizationQuotaDecision>()
+        for (let index = 0; index < missingAccounts.length; index += 1) {
+          const account = missingAccounts[index]!
+          const decision = decisions[index] ?? { allowed: true }
+          const cacheKey = missingCacheKeys.get(account.id)
+          if (cacheKey) {
+            missingDecisionsByCacheKey.set(cacheKey, decision)
+            await setAuthorizationQuotaCacheEntryAsync(cacheKey, {
+              ...decision,
+              checkedAtMs: Date.now()
+            })
+          }
+        }
+        for (const [accountId, cacheKey] of missingCacheKeys.entries()) {
+          output.set(accountId, missingDecisionsByCacheKey.get(cacheKey) ?? { allowed: true })
+        }
+        input.accounts.forEach((account) => {
+          if (!output.has(account.id)) {
+            output.set(account.id, { allowed: true })
+          }
+        })
+        return output
+      } catch (error) {
+        logger.warn(errorLogFields(error, {
+          event: 'gateway_authorization_quota_batch_redis_exact_check_failed',
+          groupAuthorizationId: input.groupAccess.groupAuthorizationId,
+          accountCount: missingAccounts.length
+        }), 'Redis 模式授权配额批量精确补判失败，按保护策略拒绝请求')
+        input.accounts.forEach((account) => {
+          if (!output.has(account.id)) {
+            output.set(account.id, { allowed: false, message: AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE })
+          }
+        })
+        return output
+      }
     }
     if (authorizationQuotaBatchSnapshotNeedsDbFallback(input.groupAccess, missingAccounts)) {
       try {

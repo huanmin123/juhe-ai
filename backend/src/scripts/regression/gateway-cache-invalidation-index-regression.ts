@@ -72,11 +72,12 @@ assertFunctionIncludes(gatewayRuntimeCacheSource, 'clearGatewayRuntimeCacheLocal
 
 assert(clientIpPolicyCacheSource.includes('createSharedJsonCache<ClientIpPolicySnapshotCacheEntry>'), '客户端 IP 封禁策略快照应声明 Redis JSON 共享缓存')
 assertFunctionIncludes(clientIpPolicyCacheSource, 'reloadClientIpPolicyCacheLocal', 'getActivePolicySnapshotSharedCacheEntry()', '客户端 IP 封禁策略快照重载应先读取 Redis 共享缓存')
-assertFunctionIncludes(clientIpPolicyCacheSource, 'replaceClientIpPolicyCacheLocal', 'setActivePolicySnapshotSharedCacheEntry', '客户端 IP 封禁策略快照替换应写入 Redis 共享缓存')
+assertFunctionIncludes(clientIpPolicyCacheSource, 'replaceClientIpPolicyCacheLocal', '高性能模式禁止同步写入 Client-IP 策略 Redis shared cache', '客户端 IP 封禁策略同步替换在高性能模式下必须拒绝写 Redis shared cache')
+assertFunctionIncludes(clientIpPolicyCacheSource, 'loadClientIpPolicySnapshotFromSharedCacheOrDatabase', 'setActivePolicySnapshotSharedCacheEntry(snapshot)', '客户端 IP 封禁策略异步加载后应写入 Redis 共享缓存')
 assertFunctionIncludes(clientIpPolicyCacheSource, 'clearClientIpPolicyCacheLocal', 'clearActivePolicySnapshotSharedCache()', '客户端 IP 封禁策略本地清理应清理 Redis 共享缓存')
-assertFunctionIncludes(clientIpPolicyCacheSource, 'inspectClientIpPolicy', 'activePolicySnapshot.get', '客户端 IP 封禁策略请求路径仍应读取 server 本地快照')
+assertFunctionIncludes(clientIpPolicyCacheSource, 'inspectClientIpPolicy', 'loadClientIpPolicySnapshotFromSharedCacheOrDatabase()', '客户端 IP 封禁策略高性能请求路径应读取 Redis shared snapshot 或 PG')
+assertFunctionIncludes(clientIpPolicyCacheSource, 'inspectClientIpPolicy', 'activePolicySnapshot.get', '客户端 IP 封禁策略单机请求路径仍应读取 server 本地快照')
 assertFunctionExcludes(clientIpPolicyCacheSource, 'inspectClientIpPolicy', 'requestStatsWriter', '客户端 IP 封禁策略请求路径不能按单个 IP 通过 stats-writer 查库')
-assertFunctionExcludes(clientIpPolicyCacheSource, 'inspectClientIpPolicy', 'getActivePolicySnapshotSharedCacheEntry', '客户端 IP 封禁策略请求路径不能每次读 Redis shared cache')
 
 assert(hybridScoringSource.includes('createSharedJsonCache<HybridScoringCacheEntry>'), '混合路由评分结果缓存应声明 Redis JSON 共享缓存')
 assertFunctionIncludes(hybridScoringSource, 'scoreHybridGatewayRequest', 'getHybridScoringSharedCacheEntry(cacheKey)', '混合路由评分本地缓存 miss 后应读取 Redis 共享缓存')
@@ -122,14 +123,7 @@ interface CacheDeclaration {
 }
 
 const localOnlyAppCacheReasons = new Map<string, string>([
-  ['gateway:proxy-agents', 'holds http.Agent socket pools and destroys them on LRU eviction'],
-  ['gateway:codex-turn-retry', 'short-lived per-request retry hint'],
-  ['gateway:hybrid-route-affinity', 'best-effort sticky routing state with per-request session keys'],
   ['gateway:client-ip-policy-by-ip', 'per-node derived lookup over the Redis-backed policy snapshot'],
-  ['gateway:client-ip-pre-auth-circuit', 'short-window defensive circuit state'],
-  ['gateway:client-ip-error-circuit', 'short-window defensive circuit state'],
-  ['gateway:client-ip-account-avoidance', 'short-window client/account avoidance state'],
-  ['gateway:upstream-bucket-health', 'per-node upstream failure bucket state'],
   ['gateway:runtime', 'large gateway runtime snapshot invalidated by runtime-state versioning'],
   ['gateway:openai-accounts', 'contains upstream account secrets and must stay process-local'],
   ['gateway:openai-session-affinity', 'session affinity uses local reverse indexes for migration'],

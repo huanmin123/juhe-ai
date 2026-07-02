@@ -11,18 +11,18 @@ import { sendGatewayFailureResponse, sendQuotaExceededResponse } from '../respon
 import { gatewayErrorPayload } from '../response/responses.js'
 import type { GatewayFailureUsageContext } from '../usage/records.js'
 
-export function rejectUnavailableGatewayApiKey(input: {
+export async function rejectUnavailableGatewayApiKey(input: {
   req: Request
   res: Response
   auditCapture: AuditCaptureContext
   usageContext: GatewayFailureUsageContext
   startedAt: number
   apiKeyUnavailable: boolean
-}): boolean {
+}): Promise<boolean> {
   if (!input.apiKeyUnavailable) return false
   const statusCode = 401
   const responsePayload = gatewayErrorPayload('API Key 不可用或已过期', 'invalid_api_key')
-  sendGatewayFailureResponse({
+  await sendGatewayFailureResponse({
     req: input.req,
     res: input.res,
     auditCapture: input.auditCapture,
@@ -40,18 +40,18 @@ export function rejectUnavailableGatewayApiKey(input: {
   return true
 }
 
-export function rejectMissingGatewayGroupAccess(input: {
+export async function rejectMissingGatewayGroupAccess(input: {
   req: Request
   res: Response
   auditCapture: AuditCaptureContext
   usageContext: GatewayFailureUsageContext
   startedAt: number
   groupAccess?: GroupUsageAccessMetadata
-}): boolean {
+}): Promise<boolean> {
   if (input.groupAccess) return false
   const statusCode = 403
   const responsePayload = gatewayErrorPayload('API Key 绑定的分组授权不可用', 'forbidden')
-  sendGatewayFailureResponse({
+  await sendGatewayFailureResponse({
     req: input.req,
     res: input.res,
     auditCapture: input.auditCapture,
@@ -81,7 +81,7 @@ export async function rejectGatewayApiKeyQuotaIfExceeded(input: {
   if (quotaDecision.allowed) return false
   const statusCode = 429
   const responsePayload = gatewayErrorPayload(quotaDecision.message ?? API_KEY_QUOTA_EXCEEDED_MESSAGE, 'rate_limit_exceeded')
-  sendGatewayFailureResponse({
+  await sendGatewayFailureResponse({
     req: input.req,
     res: input.res,
     auditCapture: input.auditCapture,
@@ -109,7 +109,7 @@ export async function rejectGatewayAuthorizationQuotaIfExceeded(input: {
 }): Promise<boolean> {
   const groupAuthorizationQuotaDecision = await checkGatewayAuthorizationQuotaAsync({ groupAccess: input.groupAccess })
   if (groupAuthorizationQuotaDecision.allowed) return false
-  sendQuotaExceededResponse(
+  await sendQuotaExceededResponse(
     input.req,
     input.res,
     input.auditCapture,

@@ -1,16 +1,9 @@
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
-import type { RouteStrategyMode, RouteStrategyStatus } from '@/types/domain'
+import type { RouteStrategySelection } from '@/shared/routeStrategyLabelCache'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import type { ApiKeyStatusFilter } from './apiKeyTableConfig'
 
-export interface ApiKeyRouteStrategyFilterSelection {
-  id: string
-  name: string
-  mode: RouteStrategyMode
-  status?: RouteStrategyStatus
-  isDefault?: boolean
-  systemAccountName?: string
-}
+export type ApiKeyRouteStrategyFilterSelection = RouteStrategySelection
 
 export interface ApiKeysPageState {
   keywordFilter: string

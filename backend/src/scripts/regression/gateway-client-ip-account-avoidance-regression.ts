@@ -103,6 +103,8 @@ async function main(): Promise<void> {
     await assertClientIpAvoidsStreamFinalFailureAfterClientRetry(baseUrl, seeded, upstreamState)
     assertServiceBypassesWhenAllCandidatesAvoided()
     assertServiceSharesAvoidanceAcrossGroupsForSameApiKey()
+    assertServicePreservesDispatchPriorityBoundary()
+    assertServicePreservesModelPriorityBoundary()
     assertServiceConfirmsFinalFailuresWithoutSuccess()
     assertPendingFailureTrackerIsBoundedAndTransferSafe()
 
@@ -136,9 +138,10 @@ function assertSourceAvoidsPendingFailureArrayRebuilds(): void {
   assert(!routesSource.includes('[...currentPreflight.clientIpAccountAvoidanceTracker.pendingFailures]'), 'fallback 切组不能复制待确认账号失败数组')
   assert(!routesSource.includes('pendingFailures.unshift(...'), 'fallback 切组不能通过 unshift 搬移待确认账号失败数组')
   assert(routesSource.includes('transferClientIpAccountPendingFailures('), 'fallback 切组应使用有界转移函数传递待确认账号失败')
-  assert(routesSource.includes('confirmCurrentClientIpAccountAvoidanceAfterFinalFailure('), '路由最终失败响应应确认 pending 的 IP 级账号回避')
+  assert(routesSource.includes('await confirmCurrentClientIpAccountAvoidanceAfterFinalFailure('), '路由最终失败响应应等待确认 pending 的 IP 级账号回避')
   const finalizationSource = readFileSync(new URL('../../modules/gateway/response/finalization.ts', import.meta.url), 'utf8')
-  assert(finalizationSource.includes('confirmClientIpAccountAvoidanceAfterFinalFailure('), '流式失败已返回客户端时应立即确认 IP 级账号回避，避免客户端重试继续命中同账号')
+  assert(finalizationSource.includes('await confirmClientIpAccountAvoidanceAfterFinalFailureAsync('), '流式失败已返回客户端时应立即确认 IP 级账号回避，避免客户端重试继续命中同账号')
+  assert(finalizationSource.includes('await confirmClientIpAccountAvoidanceAfterSuccessAsync('), '成功响应应等待清理 / 确认 Redis IP 级账号回避状态')
   assert(finalizationSource.includes("errorPhase: 'stream'"), '流式失败应记录为 stream 阶段的 IP 级账号回避样本')
 
   const serviceSource = readFileSync(new URL('../../modules/gateway/runtime/client-ip-account-avoidance.service.ts', import.meta.url), 'utf8')
@@ -146,6 +149,9 @@ function assertSourceAvoidsPendingFailureArrayRebuilds(): void {
   assert(serviceSource.includes('clientIpAccountAvoidanceMaxPendingFailures = 256'), '待确认账号失败应有固定上限')
   assert(serviceSource.includes('clientIpAccountAvoidanceActivationFailureThreshold = 2'), 'IP 级账号回避应先给失败账号一次重试机会，第三次请求才换号')
   assert(serviceSource.includes('confirmClientIpAccountAvoidanceAfterFinalFailure'), 'IP 级账号回避服务应支持最终失败时确认待回避账号')
+  assert(serviceSource.includes("createRuntimeStateStore('gateway-client-ip-account-avoidance')"), 'Redis runtime state 下 IP 级账号回避应写共享运行态')
+  assert(!/withRedisClientIpAccountAvoidanceLock|clientIpAccountAvoidanceLock|acquireLock|releaseLock|运行态锁等待超时/.test(serviceSource), 'Redis IP 级账号回避确认不能在请求路径引入分布式锁等待')
+  assert(/confirmTrackerPendingFailuresAsync[\s\S]*getRedisClientIpAccountAvoidanceEntry[\s\S]*setRedisClientIpAccountAvoidanceEntry/.test(serviceSource), 'Redis IP 级账号回避确认应直接读写共享状态')
 }
 
 async function assertClientIpAvoidsFailedAccountAfterSwitch(
@@ -295,6 +301,70 @@ function assertServiceSharesAvoidanceAcrossGroupsForSameApiKey(): void {
   clientIpAvoidance.clearClientIpAccountAvoidanceForTest()
 }
 
+function assertServicePreservesDispatchPriorityBoundary(): void {
+  clientIpAvoidance.clearClientIpAccountAvoidanceForTest()
+  const scope = {
+    systemAccountId: 'sys_priority_boundary',
+    groupId: 'grp_priority_boundary',
+    apiKeyId: 'key_priority_boundary',
+    clientIp: '203.0.113.59'
+  }
+  const accounts = [
+    createTestAccount('priority-primary', { priority: 0 }),
+    createTestAccount('priority-backup', { priority: 10 })
+  ]
+  const tracker = clientIpAvoidance.createClientIpAccountAvoidanceTracker(scope)
+  rememberPendingFailureTwice(tracker, accounts[0], {
+    errorPhase: 'upstream_response',
+    statusCode: 502,
+    errorCode: 'priority_boundary'
+  })
+  clientIpAvoidance.confirmClientIpAccountAvoidanceAfterSuccess(tracker, accounts[1].id)
+  const ordered = clientIpAvoidance.orderOpenAIAccountsByClientIpAccountAvoidance(accounts, scope)
+  assert.equal(ordered.applied, true, '命中回避状态时仍应报告排序规则已参与')
+  assert.deepEqual(
+    ordered.accounts.map((account) => account.id),
+    [accounts[0].id, accounts[1].id],
+    'IP 级回避不能让低优先级账号越过高优先级账号'
+  )
+  clientIpAvoidance.clearClientIpAccountAvoidanceForTest()
+}
+
+function assertServicePreservesModelPriorityBoundary(): void {
+  clientIpAvoidance.clearClientIpAccountAvoidanceForTest()
+  const scope = {
+    systemAccountId: 'sys_model_priority_boundary',
+    groupId: 'grp_model_priority_boundary',
+    apiKeyId: 'key_model_priority_boundary',
+    clientIp: '203.0.113.60'
+  }
+  const accounts = [
+    createTestAccount('model-direct-avoided', { priority: 0 }),
+    createTestAccount('model-unrestricted-fresh', { priority: 0 })
+  ]
+  const tracker = clientIpAvoidance.createClientIpAccountAvoidanceTracker(scope)
+  rememberPendingFailureTwice(tracker, accounts[0], {
+    errorPhase: 'upstream_response',
+    statusCode: 502,
+    errorCode: 'model_priority_boundary'
+  })
+  clientIpAvoidance.confirmClientIpAccountAvoidanceAfterSuccess(tracker, accounts[1].id)
+  const ordered = clientIpAvoidance.orderOpenAIAccountsByClientIpAccountAvoidance(accounts, scope, {
+    requestedModel: 'gpt-4.1',
+    rankByAccountId: new Map([
+      [accounts[0].id, 0],
+      [accounts[1].id, 2]
+    ])
+  })
+  assert.equal(ordered.applied, true, '命中回避状态时仍应报告排序规则已参与')
+  assert.deepEqual(
+    ordered.accounts.map((account) => account.id),
+    [accounts[0].id, accounts[1].id],
+    'IP 级回避不能让低模型匹配等级账号越过直连匹配账号'
+  )
+  clientIpAvoidance.clearClientIpAccountAvoidanceForTest()
+}
+
 function assertServiceConfirmsFinalFailuresWithoutSuccess(): void {
   clientIpAvoidance.clearClientIpAccountAvoidanceForTest()
   const scope = {
@@ -416,6 +486,7 @@ function seedTwoAccountGateway(upstreamBaseUrl: string): SeededGateway {
   const secondUpstreamKey = 'sk-client-ip-avoidance-second'
   const firstAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '01-IP回避首选账号',
     type: 'api_key',
     credentials: {
@@ -425,10 +496,12 @@ function seedTwoAccountGateway(upstreamBaseUrl: string): SeededGateway {
     groupId: group.id,
     status: 'active',
     schedulable: true,
-    priority: 0
+    priority: 0,
+    supportedModels: ['gpt-4o-mini', 'gpt-5-codex']
   }, access)
   const secondAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '02-IP回避备用账号',
     type: 'api_key',
     credentials: {
@@ -438,7 +511,8 @@ function seedTwoAccountGateway(upstreamBaseUrl: string): SeededGateway {
     groupId: group.id,
     status: 'active',
     schedulable: true,
-    priority: 10
+    priority: 0,
+    supportedModels: ['gpt-4o-mini', 'gpt-5-codex']
   }, access)
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: 'IP 级账号回避回归 Key',
@@ -622,7 +696,10 @@ function parseJsonObject(text: string): Record<string, unknown> {
   }
 }
 
-function createTestAccount(id: string): Parameters<typeof clientIpAvoidance.orderOpenAIAccountsByClientIpAccountAvoidance>[0][number] {
+function createTestAccount(
+  id: string,
+  options: { priority?: number; superPriorityEnabled?: boolean; fallbackEnabled?: boolean } = {}
+): Parameters<typeof clientIpAvoidance.orderOpenAIAccountsByClientIpAccountAvoidance>[0][number] {
   return {
     id,
     providerCode: 'gpt',
@@ -646,9 +723,9 @@ function createTestAccount(id: string): Parameters<typeof clientIpAvoidance.orde
     lastErrorMessage: undefined,
     streamFailureCount: 0,
     streamFailureWindowStartedAt: undefined,
-    priority: 0,
-    superPriorityEnabled: false,
-    fallbackEnabled: false,
+    priority: options.priority ?? 0,
+    superPriorityEnabled: options.superPriorityEnabled ?? false,
+    fallbackEnabled: options.fallbackEnabled ?? false,
     clientCompatibility: 'openai_standard',
     supportedModels: []
   }

@@ -34,7 +34,7 @@ interface SendGatewayFailureResponseInput {
   failureAttribution?: UsageFailureAttribution
 }
 
-export function sendGatewayFailureResponse(input: SendGatewayFailureResponseInput): void {
+export async function sendGatewayFailureResponse(input: SendGatewayFailureResponseInput): Promise<void> {
   const {
     req,
     res,
@@ -51,7 +51,7 @@ export function sendGatewayFailureResponse(input: SendGatewayFailureResponseInpu
   const clientPayload = gatewayErrorPayloadForProtocol(responsePayload, protocol)
 
   if (recordUsage) {
-    recordGatewayFailure(req, usageContext, {
+    await recordGatewayFailure(req, usageContext, {
       statusCode,
       startedAt,
       responsePayload,
@@ -78,17 +78,17 @@ function gatewayErrorProtocolForRequest(req: Request) {
   return gatewayProtocolClientErrorProtocolForRequest(req)
 }
 
-export function sendQuotaExceededResponse(
+export async function sendQuotaExceededResponse(
   req: Request,
   res: Response,
   auditCapture: AuditCaptureContext,
   usageContext: GatewayFailureUsageContext,
   startedAt: number,
   message: string
-): void {
+): Promise<void> {
   const statusCode = 429
   const responsePayload = gatewayErrorPayload(message, 'rate_limit_exceeded')
-  sendGatewayFailureResponse({
+  await sendGatewayFailureResponse({
     req,
     res,
     auditCapture,

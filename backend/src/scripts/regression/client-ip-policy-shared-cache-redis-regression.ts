@@ -55,6 +55,7 @@ try {
   const policy: ActiveClientIpPolicy = {
     id: `policy_shared_cache_${Date.now()}`,
     ipHash: normalizedIp.ipHash,
+    policyType: 'blacklist',
     aggregateIpKey: normalizedIp.aggregateIpKey,
     clientIp: normalizedIp.clientIp,
     reason: 'redis shared cache regression'

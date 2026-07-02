@@ -11,7 +11,7 @@ import { nextDateKey } from './usage-stats-window-helpers.js'
 import { clientIpUsageRangeWindowReady, clientIpUsageRangeWindowReadyAsync } from './client-ip-usage-range-windows.repository.js'
 
 export type ClientIpStatsSortField = 'requestCount' | 'successCount' | 'errorCount' | 'errorRate' | 'totalTokens' | 'totalCost' | 'activeDays' | 'lastUsedAt'
-export type ClientIpPolicyFilter = 'all' | 'normal' | 'blacklisted'
+export type ClientIpPolicyFilter = 'all' | 'normal' | 'blacklisted' | 'allowlisted'
 export type ClientIpLastUsedSortScope = 'range' | 'global'
 
 export interface ClientIpUsageSummary {
@@ -116,12 +116,13 @@ export function listClientIpStats(options: ClientIpStatsListOptions = {}): Clien
       range_stats.first_token_ms_sum, range_stats.first_token_ms_count,
       range_stats.average_first_token_ms,
       range_stats.active_days, range_stats.last_used_at, range_stats.last_error_at,
-      CASE WHEN ${activePolicyExistsSql('registry.ip_hash')} THEN 1 ELSE 0 END AS blacklisted
+      CASE WHEN ${activePolicyExistsSql('registry.ip_hash', 'blacklist')} THEN 1 ELSE 0 END AS blacklisted,
+      CASE WHEN ${activePolicyExistsSql('registry.ip_hash', 'allowlist')} THEN 1 ELSE 0 END AS allowlisted
     FROM ${fromClause}
     ${where.clause}
     ORDER BY ${orderBy}
     LIMIT ? OFFSET ?
-  `).all(policyNow, ...where.params, pageSize + 1, offset) as unknown as ClientIpStatsRangeRow[]
+  `).all(policyNow, policyNow, ...where.params, pageSize + 1, offset) as unknown as ClientIpStatsRangeRow[]
   const pageRows = rows.slice(0, pageSize)
   const hasMore = rows.length > pageSize
   return {
@@ -175,12 +176,13 @@ export async function listClientIpStatsAsync(options: ClientIpStatsListOptions =
       range_stats.first_token_ms_sum, range_stats.first_token_ms_count,
       range_stats.average_first_token_ms,
       range_stats.active_days, range_stats.last_used_at, range_stats.last_error_at,
-      CASE WHEN ${activePolicyExistsSql('registry.ip_hash', statsTable(client, 'client_ip_policies'))} THEN 1 ELSE 0 END AS blacklisted
+      CASE WHEN ${activePolicyExistsSql('registry.ip_hash', 'blacklist', statsTable(client, 'client_ip_policies'))} THEN 1 ELSE 0 END AS blacklisted,
+      CASE WHEN ${activePolicyExistsSql('registry.ip_hash', 'allowlist', statsTable(client, 'client_ip_policies'))} THEN 1 ELSE 0 END AS allowlisted
     FROM ${fromClause}
     ${where.clause}
     ORDER BY ${orderBy}
     LIMIT ? OFFSET ?
-  `, [policyNow, ...where.params, pageSize + 1, offset])
+  `, [policyNow, policyNow, ...where.params, pageSize + 1, offset])
   const pageRows = rows.slice(0, pageSize)
   const hasMore = rows.length > pageSize
   return {
@@ -217,11 +219,15 @@ function buildClientIpRangeWhere(
   }
   const status = options.status ?? 'all'
   if (status === 'blacklisted') {
-    clauses.push(activePolicyExistsSql('registry.ip_hash', policyTableName))
+    clauses.push(activePolicyExistsSql('registry.ip_hash', 'blacklist', policyTableName))
+    params.push(policyNow)
+  } else if (status === 'allowlisted') {
+    clauses.push(activePolicyExistsSql('registry.ip_hash', 'allowlist', policyTableName))
     params.push(policyNow)
   } else if (status === 'normal') {
-    clauses.push(`NOT ${activePolicyExistsSql('registry.ip_hash', policyTableName)}`)
-    params.push(policyNow)
+    clauses.push(`NOT ${activePolicyExistsSql('registry.ip_hash', 'blacklist', policyTableName)}`)
+    clauses.push(`NOT ${activePolicyExistsSql('registry.ip_hash', 'allowlist', policyTableName)}`)
+    params.push(policyNow, policyNow)
   }
   return {
     clause: `WHERE ${clauses.join(' AND ')}`,
@@ -244,11 +250,12 @@ function clientIpLastUsedIsoWindow(range: AccountUsageStatsRange, timezone: stri
   return { startIso, endExclusiveIso }
 }
 
-function activePolicyExistsSql(ipHashExpression: string, policyTableName = 'client_ip_policies'): string {
+function activePolicyExistsSql(ipHashExpression: string, policyType: 'blacklist' | 'allowlist', policyTableName = 'client_ip_policies'): string {
   return `EXISTS (
     SELECT 1
     FROM ${policyTableName} active_policies
     WHERE active_policies.status = 'active'
+      AND active_policies.policy_type = '${policyType}'
       AND active_policies.ip_hash = ${ipHashExpression}
       AND (active_policies.expires_at IS NULL OR active_policies.expires_at > ?)
     LIMIT 1
@@ -320,11 +327,12 @@ function clientIpStatsOrderBy(field: ClientIpStatsSortField | undefined, order: 
 function mapClientIpStatsRangeRow(row: ClientIpStatsRangeRow): ClientIpStatsRow {
   const rangeUsage = usageSummaryFromRow(row)
   const blacklisted = Number(row.blacklisted ?? 0) > 0
+  const allowlisted = Number(row.allowlisted ?? 0) > 0
   return {
     ipHash: row.ip_hash,
     aggregateIpKey: row.aggregate_ip_key,
     lastSeenAt: row.registry_last_seen_at ?? undefined,
-    status: blacklisted ? 'blacklisted' : 'normal',
+    status: blacklisted ? 'blacklisted' : allowlisted ? 'allowlisted' : 'normal',
     rangeUsage
   }
 }
@@ -417,4 +425,5 @@ interface ClientIpStatsRangeRow extends ClientIpStatsUsageRow {
   aggregate_ip_key: string
   registry_last_seen_at: string | null
   blacklisted: number
+  allowlisted: number
 }

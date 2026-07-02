@@ -67,6 +67,7 @@ import {
   evaluateToolCallingProbe,
   evaluateUsageShapeProbe,
   summarizeChecks,
+  summarizeEvidenceCompleteness,
   type BehaviorProbeObservation,
   type DistributionProbePair,
   type GatewayProbeResult,
@@ -308,6 +309,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
       items: itemInputs
     })
     const summary = summarizeChecks(checks, { trustedComparison })
+    const evidenceCompleteness = summarizeEvidenceCompleteness(checks)
     await requestDatasetWriter({
       type: 'finish_model_check_run',
       runId: run.id,
@@ -321,6 +323,9 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
           passedCount: checks.filter((item) => item.status === 'passed').length,
           warningCount: checks.filter((item) => item.status === 'warning').length,
           failedCount: checks.filter((item) => item.status === 'failed').length,
+          skippedCount: checks.filter((item) => item.status === 'skipped').length,
+          requestFailureCount: checks.filter((item) => recordValue(item.evidenceSummary)?.requestFailure === true).length,
+          evidenceCompleteness,
           trustedComparison,
           trustedComparisonAccountId: comparison?.targetId
         }

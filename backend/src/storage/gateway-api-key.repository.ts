@@ -275,7 +275,17 @@ export function clearGatewayApiKeyValidationCache(): void {
   clearGatewayApiKeySharedCache()
 }
 
+export async function clearGatewayApiKeyValidationCacheAsync(): Promise<void> {
+  gatewayApiKeyCache.clear()
+  await clearGatewayApiKeySharedCacheAsync()
+}
+
 export function invalidateGatewayApiKeyCacheById(id: string): void {
+  if (runtimeConfig.cacheDriver === 'redis') {
+    gatewayApiKeyCacheKeysById.clear()
+    clearGatewayApiKeySharedCache()
+    return
+  }
   const keyHashes = gatewayApiKeyCacheKeysById.get(id)
   if (keyHashes) {
     for (const keyHash of [...keyHashes]) {
@@ -284,6 +294,22 @@ export function invalidateGatewayApiKeyCacheById(id: string): void {
     gatewayApiKeyCacheKeysById.delete(id)
   }
   clearGatewayApiKeySharedCache()
+}
+
+export async function invalidateGatewayApiKeyCacheByIdAsync(id: string): Promise<void> {
+  if (runtimeConfig.cacheDriver === 'redis') {
+    gatewayApiKeyCacheKeysById.clear()
+    await clearGatewayApiKeySharedCacheAsync()
+    return
+  }
+  const keyHashes = gatewayApiKeyCacheKeysById.get(id)
+  if (keyHashes) {
+    for (const keyHash of [...keyHashes]) {
+      gatewayApiKeyCache.delete(keyHash)
+    }
+    gatewayApiKeyCacheKeysById.delete(id)
+  }
+  await clearGatewayApiKeySharedCacheAsync()
 }
 
 function isGatewayApiKeyRowExpired(row: GatewayApiKeyRow, now = Date.now()): boolean {
@@ -308,15 +334,19 @@ function setGatewayApiKeyCacheEntry(
   entry: GatewayApiKeyCacheEntry,
   options: { ttlMs?: number; skipSharedCache?: boolean } = {}
 ): void {
+  if (runtimeConfig.cacheDriver === 'redis') {
+    gatewayApiKeyCacheKeysById.clear()
+    if (!options.skipSharedCache) {
+      throw new Error('高性能模式禁止同步写入 API Key Redis 共享缓存，必须使用 setGatewayApiKeyCacheEntryAsync')
+    }
+    return
+  }
   const previous = gatewayApiKeyCache.get(keyHash)
   if (previous) {
     removeGatewayApiKeyCacheIndex(previous.row.id, keyHash)
   }
   gatewayApiKeyCache.set(keyHash, entry, options)
   addGatewayApiKeyCacheIndex(entry.row.id, keyHash)
-  if (!options.skipSharedCache) {
-    void setGatewayApiKeySharedCacheEntry(keyHash, entry, options)
-  }
 }
 
 async function setGatewayApiKeyCacheEntryAsync(
@@ -514,11 +544,21 @@ async function setGatewayApiKeySharedCacheEntry(
 }
 
 function clearGatewayApiKeySharedCache(): void {
-  if (runtimeConfig.cacheDriver !== 'redis') return
-  void gatewayApiKeySharedCache.clear().catch((error) => {
-    throwIfRedisCacheIsRequired(error)
+  void clearGatewayApiKeySharedCacheAsync().catch((error) => {
     logger.warn(errorLogFields(error, {
       event: 'gateway_api_key_validation_shared_cache_clear_failed'
     }), '清理 API Key 校验 Redis 共享缓存失败')
   })
+}
+
+async function clearGatewayApiKeySharedCacheAsync(): Promise<void> {
+  if (runtimeConfig.cacheDriver !== 'redis') return
+  try {
+    await gatewayApiKeySharedCache.clear()
+  } catch (error) {
+    throwIfRedisCacheIsRequired(error)
+    logger.warn(errorLogFields(error, {
+      event: 'gateway_api_key_validation_shared_cache_clear_failed'
+    }), '清理 API Key 校验 Redis 共享缓存失败')
+  }
 }

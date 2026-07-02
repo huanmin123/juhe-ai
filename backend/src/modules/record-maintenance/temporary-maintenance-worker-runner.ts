@@ -3,9 +3,13 @@ import { errorLogFields, installProcessLogHandlers, logger } from '../../shared/
 import { startProcessEventLoopMonitor } from '../../shared/process-event-loop-monitor.js'
 import {
   finishBackgroundTaskRun,
+  finishBackgroundTaskRunAsync,
   getBackgroundTaskRun,
+  getBackgroundTaskRunAsync,
   heartbeatBackgroundTaskRun,
-  tryStartBackgroundTaskRun
+  heartbeatBackgroundTaskRunAsync,
+  tryStartBackgroundTaskRun,
+  tryStartBackgroundTaskRunAsync
 } from '../../storage/repositories.js'
 import { isRecordMaintenanceJob, runRecordMaintenanceJobOnce, type RecordMaintenanceJob } from './record-maintenance-queue.service.js'
 
@@ -20,7 +24,7 @@ export async function runTemporaryMaintenanceWorker(runId: string): Promise<numb
   startProcessEventLoopMonitor()
 
   const ownerId = `temporary-maintenance-worker:${process.pid}:${Date.now()}`
-  const started = tryStartBackgroundTaskRun({
+  const started = await tryStartTemporaryBackgroundTaskRun({
     runId,
     ownerId,
     leaseUntil: leaseUntilIso()
@@ -31,7 +35,7 @@ export async function runTemporaryMaintenanceWorker(runId: string): Promise<numb
       runId,
       ownerId
     }, '临时维护 worker 未获得任务运行权，已退出')
-    finishBackgroundTaskRun({
+    await finishTemporaryBackgroundTaskRun({
       runId,
       status: 'skipped',
       result: { skippedReason: 'lease_or_status_unavailable' },
@@ -42,18 +46,18 @@ export async function runTemporaryMaintenanceWorker(runId: string): Promise<numb
   await warmupTemporaryMaintenanceEventLoopMonitor()
 
   const heartbeatTimer = setInterval(() => {
-    heartbeatBackgroundTaskRun(runId, ownerId, leaseUntilIso())
+    void heartbeatTemporaryBackgroundTaskRun(runId, ownerId, leaseUntilIso())
   }, temporaryMaintenanceHeartbeatMs)
   heartbeatTimer.unref()
 
   try {
-    const run = getBackgroundTaskRun(runId)
+    const run = await getTemporaryBackgroundTaskRun(runId)
     const job = run?.params.job
     if (!isRecordMaintenanceJob(job) || !isTemporaryRecordMaintenanceJob(job)) {
       throw new Error('临时维护任务参数无效或不允许由临时 worker 执行')
     }
     const result = await runRecordMaintenanceJobOnce(job)
-    finishBackgroundTaskRun({
+    await finishTemporaryBackgroundTaskRun({
       runId,
       status: 'completed',
       result: result as Record<string, unknown>,
@@ -68,7 +72,7 @@ export async function runTemporaryMaintenanceWorker(runId: string): Promise<numb
     }, '临时维护 worker 执行完成')
     return 0
   } catch (error) {
-    finishBackgroundTaskRun({
+    await finishTemporaryBackgroundTaskRun({
       runId,
       status: 'failed',
       result: {},
@@ -84,6 +88,30 @@ export async function runTemporaryMaintenanceWorker(runId: string): Promise<numb
   } finally {
     clearInterval(heartbeatTimer)
   }
+}
+
+async function tryStartTemporaryBackgroundTaskRun(input: Parameters<typeof tryStartBackgroundTaskRun>[0]): Promise<boolean> {
+  return runtimeConfig.databaseDriver === 'postgres'
+    ? await tryStartBackgroundTaskRunAsync(input)
+    : tryStartBackgroundTaskRun(input)
+}
+
+async function heartbeatTemporaryBackgroundTaskRun(runId: string, ownerId: string, leaseUntil: string): Promise<boolean> {
+  return runtimeConfig.databaseDriver === 'postgres'
+    ? await heartbeatBackgroundTaskRunAsync(runId, ownerId, leaseUntil)
+    : heartbeatBackgroundTaskRun(runId, ownerId, leaseUntil)
+}
+
+async function finishTemporaryBackgroundTaskRun(input: Parameters<typeof finishBackgroundTaskRun>[0]): Promise<boolean> {
+  return runtimeConfig.databaseDriver === 'postgres'
+    ? await finishBackgroundTaskRunAsync(input)
+    : finishBackgroundTaskRun(input)
+}
+
+async function getTemporaryBackgroundTaskRun(runId: string): Promise<ReturnType<typeof getBackgroundTaskRun>> {
+  return runtimeConfig.databaseDriver === 'postgres'
+    ? await getBackgroundTaskRunAsync(runId)
+    : getBackgroundTaskRun(runId)
 }
 
 function isTemporaryRecordMaintenanceJob(job: RecordMaintenanceJob): job is Extract<RecordMaintenanceJob, { type: 'usage_records_cleanup' | 'non_business_data_cleanup' }> {

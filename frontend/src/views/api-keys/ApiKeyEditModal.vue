@@ -13,13 +13,14 @@
         <a-input v-model:value="form.name" placeholder="请输入 API Key 名称" />
       </a-form-item>
       <a-form-item label="策略路由" required tooltip="API Key 只绑定策略路由；分组、模型和供应商调度规则在策略路由中维护。">
-        <a-select
+        <RouteStrategySelect
           v-model:value="form.routeStrategyId"
-          show-search
+          v-model:selected-strategy="form.routeStrategy"
           :disabled="editingIsDefault"
           :filter-option="false"
           :loading="routeStrategyOptionsLoading"
-          :options="routeStrategyOptions"
+          :route-strategies="routeStrategyOptionsRaw"
+          disable-inactive
           placeholder="选择策略路由"
           @dropdown-visible-change="handleRouteStrategyDropdown"
           @search="handleRouteStrategySearch"
@@ -49,14 +50,16 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { reactive, ref } from 'vue'
 import type { Dayjs } from 'dayjs'
 
 import type { useScopedApiKeysApi, useScopedRouteStrategiesApi } from '@/composables/useScopedDomainApi'
+import RouteStrategySelect from '@/components/RouteStrategySelect.vue'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatServerDateTimeInput, parseStrictDatePickerValue } from '@/shared/formatters'
+import { routeStrategySelectionFromOption, type RouteStrategySelection } from '@/shared/routeStrategyLabelCache'
 import type { ApiKeyAvailabilitySchedule, ApiKeyQuotaLimits, ApiKeySummary, RouteStrategyOptionSummary } from '@/types/domain'
 import RequestQuotaFields from '@/views/shared/RequestQuotaFields.vue'
 import { createQuotaLimitForm, quotaLimitsPayload as buildQuotaLimitsPayload } from '@/views/shared/requestQuotaForm'
@@ -107,18 +110,13 @@ const routeStrategyOptionsLoading = ref(false)
 const form = reactive({
   name: '',
   routeStrategyId: '',
+  routeStrategy: undefined as RouteStrategySelection | undefined,
   status: 'active' as 'active' | 'disabled',
   expiresAt: undefined as Dayjs | undefined,
   description: '',
   quotaLimits: createQuotaLimitForm(),
   availabilitySchedule: createApiKeyTimeScheduleForm()
 })
-
-const routeStrategyOptions = computed(() => routeStrategyOptionsRaw.value.map((strategy) => ({
-  label: `${strategy.name}${strategy.isDefault ? '（默认）' : `（${routeStrategyModeText(strategy.mode)}）`}`,
-  value: strategy.id,
-  disabled: strategy.status !== 'active'
-})))
 
 async function openCreate() {
   if (props.isManagementView && !props.scopeParams?.systemAccountId) {
@@ -131,6 +129,7 @@ async function openCreate() {
   Object.assign(form, {
     name: '',
     routeStrategyId: '',
+    routeStrategy: undefined,
     status: 'active',
     expiresAt: undefined,
     description: '',
@@ -141,8 +140,10 @@ async function openCreate() {
   const defaultStrategy = routeStrategyOptionsRaw.value.find((strategy) => strategy.isDefault && strategy.status === 'active')
   if (defaultStrategy) {
     form.routeStrategyId = defaultStrategy.id
+    form.routeStrategy = routeStrategySelectionFromOption(defaultStrategy)
   } else if (routeStrategyOptionsRaw.value.length === 1) {
     form.routeStrategyId = routeStrategyOptionsRaw.value[0].id
+    form.routeStrategy = routeStrategySelectionFromOption(routeStrategyOptionsRaw.value[0])
   }
   modalOpen.value = true
 }
@@ -170,6 +171,7 @@ async function openEdit(apiKey: ApiKeySummary) {
   Object.assign(form, {
     name: apiKey.name,
     routeStrategyId: apiKey.routeStrategyId,
+    routeStrategy: apiKeyRouteStrategySelection(apiKey),
     status: apiKey.status,
     expiresAt,
     description: apiKey.description ?? '',
@@ -177,6 +179,7 @@ async function openEdit(apiKey: ApiKeySummary) {
     availabilitySchedule
   })
   await loadRouteStrategyOptions('', [apiKey.routeStrategyId])
+  form.routeStrategy = selectedRouteStrategySelection(apiKey.routeStrategyId) ?? form.routeStrategy
   modalOpen.value = true
 }
 
@@ -268,12 +271,24 @@ function handleRouteStrategySearch(value: string) {
   void loadRouteStrategyOptions(value)
 }
 
-function routeStrategyModeText(mode: string | undefined): string {
-  if (mode === 'hybrid_smart') return '混合智能路由'
-  if (mode === 'weighted') return '权重调度路由'
-  if (mode === 'round_robin') return '轮询路由'
-  if (mode === 'failover') return '故障回退路由'
-  return '普通路由'
+function selectedRouteStrategySelection(id: string | undefined): RouteStrategySelection | undefined {
+  const normalizedId = id?.trim()
+  if (!normalizedId) return undefined
+  const strategy = routeStrategyOptionsRaw.value.find((item) => item.id === normalizedId)
+  return strategy ? routeStrategySelectionFromOption(strategy) : undefined
+}
+
+function apiKeyRouteStrategySelection(apiKey: ApiKeySummary): RouteStrategySelection | undefined {
+  const id = apiKey.routeStrategyId.trim()
+  const name = apiKey.routeStrategyName?.trim()
+  if (!id || !name) return undefined
+  return {
+    id,
+    name,
+    mode: apiKey.routeStrategyMode,
+    status: apiKey.routeStrategyStatus,
+    systemAccountName: apiKey.systemAccountName
+  }
 }
 
 defineExpose({ openCreate, openEdit })

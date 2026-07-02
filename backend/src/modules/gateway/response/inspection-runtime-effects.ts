@@ -6,7 +6,7 @@ import {
   suppressGatewayAccountLocally
 } from '../runtime/account-side-effects.service.js'
 import {
-  suppressGatewayUpstreamBucketLocallyForSeconds
+  suppressGatewayUpstreamBucketForSecondsAsync
 } from '../runtime/proxy-health.service.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import type { ResponseInspectionDecision } from './inspection.js'
@@ -31,15 +31,16 @@ export async function applyResponseInspectionPolicyRuntimeSideEffects(
         groupId: usageContext.groupId,
         apiKeyId: usageContext.apiKeyId,
         clientIp: usageContext.clientIp,
-        endpoint: usageContext.endpoint,
-        reason,
-        forcePrecheck: localSuppression.action === 'precheck_required'
-      })
+      endpoint: usageContext.endpoint,
+      reason,
+      forcePrecheck: localSuppression.action === 'precheck_required',
+      localSuppressionDelayMs: localSuppression.delayMs
+    })
     }
   }
   if (decision.accountSwitch === 'avoid_upstream_bucket_ttl') {
     const ttlSeconds = Math.max(1, settings.defaultTemporaryUnschedulableMinutes * 60)
-    suppressGatewayUpstreamBucketLocallyForSeconds(account, ttlSeconds, reason)
+    await suppressGatewayUpstreamBucketForSecondsAsync(account, ttlSeconds, reason)
   }
 }
 

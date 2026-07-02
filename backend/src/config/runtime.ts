@@ -46,7 +46,6 @@ export interface RuntimeConfig {
     queueUrl?: string
   }
   queue: {
-    redisStreamMaxLen: number
     redisStreamReadCount: number
     redisStreamBlockMs: number
     redisStreamClaimIdleMs: number
@@ -247,7 +246,6 @@ export const runtimeConfig: RuntimeConfig = {
     queueUrl: configuredRedisQueueUrl
   },
   queue: {
-    redisStreamMaxLen: numberConfig('JUHE_AI_REDIS_STREAM_MAXLEN', 1_000_000, 1000, 10_000_000),
     redisStreamReadCount: numberConfig('JUHE_AI_REDIS_STREAM_READ_COUNT', 1000, 1, 5000),
     redisStreamBlockMs: numberConfig('JUHE_AI_REDIS_STREAM_BLOCK_MS', 1000, 100, 60000),
     redisStreamClaimIdleMs: numberConfig('JUHE_AI_REDIS_STREAM_CLAIM_IDLE_MS', 60000, 1000, 3600000)

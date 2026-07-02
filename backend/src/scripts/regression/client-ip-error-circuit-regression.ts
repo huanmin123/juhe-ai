@@ -14,9 +14,25 @@ import {
 try {
   clearGatewayClientIpErrorCircuitForTest()
   const circuitSource = readFileSync(new URL('../../modules/gateway/runtime/client-ip-error-circuit.service.ts', import.meta.url), 'utf8')
+  const preAuthSource = readFileSync(new URL('../../modules/gateway/request/pre-auth.ts', import.meta.url), 'utf8')
+  const preflightSource = readFileSync(new URL('../../modules/gateway/request/preflight.ts', import.meta.url), 'utf8')
+  const routesSource = readFileSync(new URL('../../modules/gateway/routes.ts', import.meta.url), 'utf8')
+  const finalizationSource = readFileSync(new URL('../../modules/gateway/response/finalization.ts', import.meta.url), 'utf8')
   assert.equal(circuitSource.includes('[...entry.samples'), false, '认证失败样本维护不能展开复制整个 samples 数组')
   assert.equal(circuitSource.includes('[...existing[1]'), false, '认证后签名样本维护不能展开复制整个 samples 数组')
   assert.equal(circuitSource.includes('sample) => now - sample'), false, '认证失败样本维护不能在热路径 filter 扫描样本数组')
+  assert.match(circuitSource, /createRuntimeStateStore\('gateway-client-ip-error-circuit'\)/, 'Redis runtime state 下 IP 错误熔断应写入共享运行态')
+  assert.match(circuitSource, /runtimeConfig\.runtimeStateDriver === 'redis'/, 'IP 错误熔断应按 runtime state driver 选择 Redis 共享状态')
+  assert.doesNotMatch(circuitSource, /withRuntimeEntryLock|runtimeEntryLock|acquireLock|releaseLock|运行态锁等待超时/, 'Redis IP 错误熔断采样不能在请求路径引入分布式锁等待')
+  assert.match(circuitSource, /async function recordPreAuthEntryAsync[\s\S]*getRuntimeEntry[\s\S]*setRuntimeEntry/, 'Redis 认证前错误熔断应直接读写共享状态')
+  assert.match(circuitSource, /recordClientIpErrorCircuitSampleAsync[\s\S]*getRuntimeEntry[\s\S]*setRuntimeEntry/, 'Redis 认证后错误熔断应直接读写共享状态')
+  assert.match(preAuthSource, /await inspectGatewayPreAuthCircuitAsync/, '认证前熔断检查必须等待 Redis 共享状态')
+  assert.match(preAuthSource, /await recordGatewayPreAuthFailureAsync/, '认证失败采样必须等待 Redis 共享状态')
+  assert.match(preflightSource, /await inspectClientIpErrorCircuitAsync/, '认证后熔断检查必须等待 Redis 共享状态')
+  assert.match(preflightSource, /await recordClientIpErrorCircuitSuccessAsync/, 'models 成功响应恢复必须删除 Redis 共享熔断状态')
+  assert.match(routesSource, /await recordKnownClientIpRequestError/, '网关已知请求错误采样必须等待 Redis 共享状态')
+  assert.match(routesSource, /await recordClientIpErrorCircuitSampleAsync/, '网关已知请求错误应使用 Redis-aware 采样 API')
+  assert.match(finalizationSource, /await recordClientIpErrorCircuitSuccessAsync/, '成功响应最终化必须等待 Redis 共享熔断状态清理')
 
   assert.equal(inspectGatewayPreAuthCircuit({
     clientIp: undefined,

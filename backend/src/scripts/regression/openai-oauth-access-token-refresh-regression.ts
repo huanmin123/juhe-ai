@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
+import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-oauth-token-refresh-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -57,6 +57,7 @@ async function main(): Promise<void> {
     ]
     const apiKeyAccount = repositories.createAccount({
       providerCode: GPT_VENDOR_CODE,
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: 'API Key 不应参与 OAuth 刷新',
       type: 'api_key',
       credentials: { api_key: 'sk-not-oauth', base_url: 'https://api.openai.com/v1' },
@@ -66,6 +67,7 @@ async function main(): Promise<void> {
     }, access)
     const freshOAuthAccount = repositories.createAccount({
       providerCode: GPT_VENDOR_CODE,
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: '未到期 OAuth 账户',
       type: 'oauth',
       credentials: oauthCredentials('fresh-token', new Date(Date.now() + 3600_000).toISOString()),
@@ -194,6 +196,7 @@ function createOAuthAccount(
 ): { id: string; name: string; status: string; schedulable: boolean; originalRefreshToken: string } {
   const account = repositories.createAccount({
     providerCode: GPT_VENDOR_CODE,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name,
     type: 'oauth',
     credentials: oauthCredentials(refreshToken, overrides.expiresAt ?? new Date(Date.now() + 60_000).toISOString(), overrides.accessToken),

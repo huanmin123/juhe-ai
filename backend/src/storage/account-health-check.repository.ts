@@ -2,10 +2,10 @@ import type { AccountSummary } from '../domain/types.js'
 import { GPT_OPENAI_V1_PROFILE_ID } from '../domain/provider-protocol.js'
 import { accountSummaryWithEffectiveAvailability } from '../domain/account-effective-availability.js'
 import { runtimeConfig } from '../config/runtime.js'
-import { loadAccountCurrentConcurrencyByIds } from '../shared/account-concurrency.js'
+import { loadAccountCurrentConcurrencyByIds, loadAccountCurrentConcurrencyByIdsAsync } from '../shared/account-concurrency.js'
 import { parseAccountAvailabilityScheduleJson } from './account-availability-schedule.js'
 import { hydrateAccountRowsWithRuntimeState } from './account-read.repository.js'
-import { disableExpiredAccounts } from './account-runtime-status.js'
+import { disableExpiredAccounts, disableExpiredAccountsAsync } from './account-runtime-status.js'
 import {
   accountGroupBindingFromRow,
   accountGroupBinding,
@@ -75,6 +75,7 @@ export async function listAccountsDueForHealthCheckAsync(options: AccountHealthC
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listAccountsDueForHealthCheck(options)
   }
+  await disableExpiredAccountsAsync()
   const normalizedLimit = normalizedHealthCheckLimit(options.limit)
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const rows = await queryAccountsDueForHealthCheckAsync(client, healthCheckScanLimit(normalizedLimit), undefined)
@@ -91,6 +92,7 @@ export async function findAccountForHealthCheckAsync(accountId: string): Promise
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return findAccountForHealthCheck(accountId)
   }
+  await disableExpiredAccountsAsync()
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const rows = await queryAccountsDueForHealthCheckAsync(client, 1, accountId)
   return (await healthCheckAccountSummariesAsync(client, rows))[0]
@@ -691,16 +693,16 @@ function healthCheckAccountSummaries(rows: AccountListRow[]): AccountSummary[] {
 async function healthCheckAccountSummariesAsync(client: DatabaseClient, rows: AccountListRow[]): Promise<AccountSummary[]> {
   if (!rows.length) return []
   const runtimeAccountIds = [...new Set(rows.map((row) => supportedModelAccountIdForRow(row)).filter(Boolean))]
-  const [accountNames, supportedModelsByAccount, modelMappingsByAccount] = await Promise.all([
+  const [accountNames, supportedModelsByAccount, modelMappingsByAccount, currentConcurrencyByAccount] = await Promise.all([
     loadSystemAccountNameMapByIdsAsync(client, rows.flatMap((row) => [
       row.system_account_id,
       row.authorization_resource_owner_system_account_id ?? '',
       row.authorization_instance_owner_system_account_id ?? ''
     ])),
     loadSupportedModelsByAccountIdsAsync(runtimeAccountIds),
-    loadModelMappingsByAccountIdsAsync(runtimeAccountIds)
+    loadModelMappingsByAccountIdsAsync(runtimeAccountIds),
+    loadAccountCurrentConcurrencyByIdsAsync(rows.map((row) => row.id))
   ])
-  const currentConcurrencyByAccount = loadAccountCurrentConcurrencyByIds(rows.map((row) => row.id))
   return rows.map((row) => {
     const isAuthorizedView = row.access_type === 'authorized'
     const groupBinding = accountGroupBindingFromRow(row, row.system_account_id)

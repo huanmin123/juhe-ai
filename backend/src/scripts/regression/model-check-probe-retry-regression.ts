@@ -93,13 +93,16 @@ try {
   const persistentBasic = requiredCheck(persistentRun.checks, 'target.responses_basic')
   assert.equal(persistentRun.level, 'unavailable', '连续重试仍失败时应落不可检测')
   assert.equal(retryState.persistentBasicAttempts, 3, '持续异常 basic 探针应达到最大尝试次数')
-  assert.equal(persistentBasic.status, 'failed', '持续异常时 basic 探针应失败')
+  assert.equal(persistentBasic.status, 'skipped', '持续异常时 basic 探针应记录为请求失败未计分')
+  assert.equal(persistentBasic.maxScore, 0, '持续异常时 basic 探针不应进入评分分母')
+  assert.equal(persistentBasic.evidenceSummary.requestFailure, true, '持续异常报告应标记请求失败')
+  assert.equal(persistentBasic.evidenceSummary.excludedFromScoring, true, '持续异常报告应标记不参与评分')
   assert.equal(persistentBasic.evidenceSummary.attemptCount, 3, '持续异常报告应记录总尝试次数')
   assert.equal(persistentBasic.evidenceSummary.retryAttemptCount, 2, '持续异常报告应记录重试次数')
   assert.deepEqual(persistentBasic.evidenceSummary.attemptStatusCodes, [503, 503, 503], '持续异常报告应记录全部失败状态码')
   assert(!persistentRun.checks.some((item) => item.itemKey === 'target.behavior_probe'), 'basic 连续失败后不应继续执行重型行为探针')
 
-  console.log('模型检测探针重试回归通过：瞬态异常同账号重试后恢复，持续异常三次后失败')
+  console.log('模型检测探针重试回归通过：瞬态异常同账号重试后恢复，持续异常三次后未计分')
 } finally {
   await stopGatewayJsonParseWorker?.()
   await closeServer(upstream)

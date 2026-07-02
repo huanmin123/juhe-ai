@@ -30,25 +30,11 @@ export function isAnthropicUsageRecord(record: UsageRecordSummary): boolean {
 }
 
 export function usageRecordTokenParts(record: UsageRecordSummary): string[] {
-  const parts = [
+  return [
     `输入 ${formatTokens(record.inputTokens)}`,
     `输出 ${formatTokens(record.outputTokens)}`,
     `缓存读 ${formatTokens(record.cacheReadTokens)}`
   ]
-  if ((record.cacheWriteTokens ?? 0) > 0) {
-    parts.push(`缓存写 ${formatTokens(record.cacheWriteTokens)}`)
-  }
-  if ((record.cacheWrite1hTokens ?? 0) > 0) {
-    parts.push(`1h ${formatTokens(record.cacheWrite1hTokens)}`)
-  }
-  if ((record.thinkingTokens ?? 0) > 0) {
-    parts.push(`思考 ${formatTokens(record.thinkingTokens)}`)
-  }
-  const imageTokens = (record.inputImageTokens ?? 0) + (record.outputImageTokens ?? 0)
-  if (imageTokens > 0) {
-    parts.push(`图片 ${formatTokens(imageTokens)}`)
-  }
-  return parts
 }
 
 export function formatRecordTokens(record: UsageRecordSummary): string {
@@ -101,6 +87,7 @@ export function trafficSourceText(record: UsageRecordSummary): string {
   return {
     gateway: '网关请求',
     manual_account_test: '账号测试',
+    runtime_recovery_probe: '运行态恢复探针',
     cooldown_retest: '恢复探活',
     hybrid_scoring: '混合评分',
     hybrid_quality_scoring: '混合质量评分'
@@ -110,6 +97,7 @@ export function trafficSourceText(record: UsageRecordSummary): string {
 export function trafficSourceColor(record: UsageRecordSummary): string {
   if (record.trafficSource === 'hybrid_quality_scoring') return 'purple'
   if (record.trafficSource === 'hybrid_scoring') return 'blue'
+  if (record.trafficSource === 'runtime_recovery_probe') return 'orange'
   if (record.trafficSource === 'cooldown_retest') return 'gold'
   if (record.trafficSource === 'manual_account_test') return 'cyan'
   return 'default'
