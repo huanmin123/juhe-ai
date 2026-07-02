@@ -4,6 +4,7 @@ import type { GroupUsageAccessMetadata } from '../../../storage/repositories.js'
 import type { ClientCompatibilityCapability, GroupSchedulingPolicy } from '../../../domain/types.js'
 import type { GatewaySettings } from '../policy/account-error-policy.service.js'
 import type { AuditCaptureContext } from '../audit/capture.service.js'
+import type { GatewayAccountModelPriority } from '../dispatch/model-filter.js'
 import { responseHeadersToObject } from '../audit/capture.service.js'
 import type { ClientIpAccountAvoidanceTracker } from '../runtime/client-ip-account-avoidance.service.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
@@ -44,6 +45,7 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
   dispatchAccounts: readonly UpstreamAccount[]
   activeGatewaySettings: GatewaySettings
   clientIpAccountAvoidanceTracker: ClientIpAccountAvoidanceTracker
+  modelPriority: GatewayAccountModelPriority
   requestLane: OpenAIGatewayRequestLane
   groupSchedulingPolicy?: GroupSchedulingPolicy
   signal?: AbortSignal
@@ -88,7 +90,8 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
       input.requestLane,
       input.groupSchedulingPolicy,
       true,
-      input.requestClientCompatibility
+      input.requestClientCompatibility,
+      input.modelPriority
     )
     const readResult = await readUpstreamBodyLimited(upstreamResult.response.body, {
       maxBytes: 1024 * 1024,

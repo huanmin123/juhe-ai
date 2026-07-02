@@ -179,7 +179,8 @@ const writerBatches = [
 let cleanupShardCursor = 0
 
 export function codexContextStateWriterPoolEnabled(): boolean {
-  return runtimeConfig.processRole === 'db-service'
+  return runtimeConfig.databaseDriver === 'sqlite'
+    && runtimeConfig.processRole === 'db-service'
     && runtimeConfig.codexContextStateWriterPoolEnabled
     && codexContextStateShardCount() > 1
 }

@@ -391,6 +391,56 @@ export function upsertExternalIntegrationSource(input: ExternalIntegrationSource
   return { id, name }
 }
 
+export async function upsertExternalIntegrationSourceAsync(input: ExternalIntegrationSourceInput): Promise<{ id: string; name: string }> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return upsertExternalIntegrationSource(input)
+  }
+  assertKnownInputKeys(input, externalIntegrationSourceInputKeys, '来源系统')
+  const name = normalizeNameOrThrow(input.name, '来源系统名称不能为空')
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const existing = await client.one<Pick<ExternalIntegrationSourceRow, 'id' | 'name'>>(`
+    SELECT id, name
+    FROM ${externalIntegrationSourceBusinessTable(client, 'external_integration_sources')}
+    WHERE lower(name) = lower(?)
+    LIMIT 1
+  `, [name])
+  const id = existing?.id ?? newId('extsrc')
+  const now = nowIso()
+  if (existing) {
+    await client.execute(`
+      UPDATE ${externalIntegrationSourceBusinessTable(client, 'external_integration_sources')}
+      SET name = ?, status = ?, scopes_json = ?, rate_limits_json = ?, expires_at = ?, notes = ?, updated_at = ?
+      WHERE id = ?
+    `, [
+      name,
+      normalizeSourceStatusInput(input.status),
+      encodeScopes(input.scopes),
+      encodeRateLimits(input.rateLimits),
+      normalizeNullableIso(input.expiresAt),
+      normalizeNullableText(input.notes),
+      now,
+      id
+    ])
+    return { id, name }
+  }
+  await client.execute(`
+    INSERT INTO ${externalIntegrationSourceBusinessTable(client, 'external_integration_sources')} (
+      id, name, status, scopes_json, rate_limits_json, expires_at, notes, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `, [
+    id,
+    name,
+    normalizeSourceStatusInput(input.status),
+    encodeScopes(input.scopes),
+    encodeRateLimits(input.rateLimits),
+    normalizeNullableIso(input.expiresAt),
+    normalizeNullableText(input.notes),
+    now,
+    now
+  ])
+  return { id, name }
+}
+
 export function updateExternalIntegrationSource(id: string, input: ExternalIntegrationSourceUpdateInput): ExternalIntegrationSourceSummary | undefined {
   assertKnownInputKeys(input, externalIntegrationSourceInputKeys, '来源系统')
   const existing = findSourceRow(id)

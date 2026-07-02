@@ -6,12 +6,18 @@ import type {
   ApiKeyHybridLevelRoute,
   ApiKeyHybridRoutingConfig
 } from '../../../domain/types.js'
-import { createAppCache } from '../../../shared/cache.js'
+import { runtimeConfig } from '../../../config/runtime.js'
+import { createRuntimeStateStore } from '../../../shared/runtime-state-store.js'
 
 interface HybridRouteAffinityBinding {
   route: ApiKeyHybridLevelRoute
   lastLevel: number
   lowCount: number
+}
+
+interface MemoryHybridRouteAffinityEntry {
+  value: HybridRouteAffinityBinding
+  expiresAt: number
 }
 
 export interface HybridRouteAffinityDecision {
@@ -25,12 +31,8 @@ export interface HybridRouteAffinityDecision {
 const hybridRouteAffinityMaxEntries = 10_000
 const hybridRouteAffinityMaxTtlMs = 24 * 60 * 60 * 1000
 
-const hybridRouteAffinityBindings = createAppCache<string, HybridRouteAffinityBinding>({
-  name: 'gateway:hybrid-route-affinity',
-  max: hybridRouteAffinityMaxEntries,
-  ttlMs: hybridRouteAffinityMaxTtlMs,
-  updateAgeOnGet: false
-})
+const hybridRouteAffinityMemoryBindings = new Map<string, MemoryHybridRouteAffinityEntry>()
+const hybridRouteAffinityStateStore = createRuntimeStateStore('gateway-hybrid-route-affinity')
 
 export function applyHybridRouteAffinity(input: {
   req: Request
@@ -44,7 +46,7 @@ export function applyHybridRouteAffinity(input: {
   if (!sessionKey || input.config.cacheAffinityEnabled === false || input.config.affinityTtlSeconds <= 0) {
     return { route: input.route, applied: false }
   }
-  const previous = hybridRouteAffinityBindings.get(sessionKey)
+  const previous = getMemoryHybridRouteAffinityBinding(sessionKey)
   const decision = previous
     ? applyAffinityDecision({
       previous,
@@ -62,7 +64,39 @@ export function applyHybridRouteAffinity(input: {
 }
 
 export function clearHybridRouteAffinityForTest(): void {
-  hybridRouteAffinityBindings.clear()
+  hybridRouteAffinityMemoryBindings.clear()
+}
+
+export async function applyHybridRouteAffinityAsync(input: {
+  req: Request
+  systemAccountId: string
+  apiKeyId?: string
+  config: ApiKeyHybridRoutingConfig
+  level: number
+  route: ApiKeyHybridLevelRoute
+}): Promise<HybridRouteAffinityDecision> {
+  if (runtimeConfig.runtimeStateDriver !== 'redis') {
+    return applyHybridRouteAffinity(input)
+  }
+  const sessionKey = hybridRouteAffinityKey(input.req, input.systemAccountId, input.apiKeyId)
+  if (!sessionKey || input.config.cacheAffinityEnabled === false || input.config.affinityTtlSeconds <= 0) {
+    return { route: input.route, applied: false }
+  }
+  const previous = await hybridRouteAffinityStateStore.getJson<HybridRouteAffinityBinding>(hybridRouteAffinityStateKey(sessionKey))
+  const decision = previous
+    ? applyAffinityDecision({
+      previous,
+      level: input.level,
+      route: input.route,
+      config: input.config
+    })
+    : { route: input.route, applied: false }
+  await rememberHybridRouteAffinityAsync(sessionKey, {
+    route: decision.route,
+    lastLevel: input.level,
+    lowCount: decision.lowCount ?? 0
+  }, input.config.affinityTtlSeconds)
+  return decision
 }
 
 function applyAffinityDecision(input: {
@@ -118,7 +152,46 @@ function rememberHybridRouteAffinity(
   ttlSeconds: number
 ): void {
   const ttlMs = Math.min(hybridRouteAffinityMaxTtlMs, Math.max(1, Math.trunc(ttlSeconds)) * 1000)
-  hybridRouteAffinityBindings.set(key, binding, { ttlMs })
+  setMemoryHybridRouteAffinityBinding(key, binding, ttlMs)
+}
+
+async function rememberHybridRouteAffinityAsync(
+  key: string,
+  binding: HybridRouteAffinityBinding,
+  ttlSeconds: number
+): Promise<void> {
+  const ttlMs = Math.min(hybridRouteAffinityMaxTtlMs, Math.max(1, Math.trunc(ttlSeconds)) * 1000)
+  await hybridRouteAffinityStateStore.setJson(hybridRouteAffinityStateKey(key), binding, ttlMs)
+}
+
+function getMemoryHybridRouteAffinityBinding(key: string): HybridRouteAffinityBinding | undefined {
+  const entry = hybridRouteAffinityMemoryBindings.get(key)
+  if (!entry) {
+    return undefined
+  }
+  if (entry.expiresAt <= Date.now()) {
+    hybridRouteAffinityMemoryBindings.delete(key)
+    return undefined
+  }
+  return entry.value
+}
+
+function setMemoryHybridRouteAffinityBinding(key: string, value: HybridRouteAffinityBinding, ttlMs: number): void {
+  hybridRouteAffinityMemoryBindings.set(key, {
+    value,
+    expiresAt: Date.now() + Math.max(1, Math.trunc(ttlMs))
+  })
+  while (hybridRouteAffinityMemoryBindings.size > hybridRouteAffinityMaxEntries) {
+    const oldestKey = hybridRouteAffinityMemoryBindings.keys().next().value
+    if (typeof oldestKey !== 'string') {
+      return
+    }
+    hybridRouteAffinityMemoryBindings.delete(oldestKey)
+  }
+}
+
+function hybridRouteAffinityStateKey(key: string): string {
+  return `session:${key}`
 }
 
 function hybridRouteAffinityKey(req: Request, systemAccountId: string, apiKeyId?: string): string | undefined {

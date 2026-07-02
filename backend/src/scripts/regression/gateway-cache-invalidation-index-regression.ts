@@ -123,13 +123,7 @@ interface CacheDeclaration {
 }
 
 const localOnlyAppCacheReasons = new Map<string, string>([
-  ['gateway:codex-turn-retry', 'short-lived per-request retry hint'],
-  ['gateway:hybrid-route-affinity', 'best-effort sticky routing state with per-request session keys'],
   ['gateway:client-ip-policy-by-ip', 'per-node derived lookup over the Redis-backed policy snapshot'],
-  ['gateway:client-ip-pre-auth-circuit', 'short-window defensive circuit state'],
-  ['gateway:client-ip-error-circuit', 'short-window defensive circuit state'],
-  ['gateway:client-ip-account-avoidance', 'short-window client/account avoidance state'],
-  ['gateway:upstream-bucket-health', 'per-node upstream failure bucket state'],
   ['gateway:runtime', 'large gateway runtime snapshot invalidated by runtime-state versioning'],
   ['gateway:openai-accounts', 'contains upstream account secrets and must stay process-local'],
   ['gateway:openai-session-affinity', 'session affinity uses local reverse indexes for migration'],

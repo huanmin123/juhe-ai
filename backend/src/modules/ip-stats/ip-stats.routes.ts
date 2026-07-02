@@ -7,6 +7,7 @@ import {
   disableClientIpPoliciesAsync,
   getClientIpStatsDetailAsync,
   listClientIpStatsAsync,
+  type ClientIpPolicyType,
   type ClientIpStatsSortField
 } from '../../storage/client-ip-stats.repository.js'
 import { bodyField, mutationGuard } from '../deduplication/mutation-guard.middleware.js'
@@ -20,7 +21,7 @@ const listQuerySchema = z.object({
   page: z.coerce.number().int().min(1).optional(),
   pageSize: z.coerce.number().int().min(1).max(100).optional(),
   keyword: z.string().trim().optional(),
-  status: z.enum(['all', 'normal', 'blacklisted']).optional(),
+  status: z.enum(['all', 'normal', 'blacklisted', 'allowlisted']).optional(),
   startDate: z.string().trim().optional(),
   endDate: z.string().trim().optional(),
   lastUsedStartDate: z.string().trim().optional(),
@@ -47,6 +48,12 @@ const policyBodySchema = z.object({
   durationMinutes: z.number().int().min(1, '封禁分钟数不能小于 1').max(525600, '封禁分钟数不能超过 525600').optional(),
   durationDays: z.number().int().min(1, '封禁天数不能小于 1').max(3650, '封禁天数不能超过 3650').optional()
 }).strict('IP 策略参数包含未知字段')
+
+const simplePolicyBodySchema = z.object({
+  reason: z.string().trim().max(500, '原因不能超过 500 个字符').optional()
+}).strict('IP 策略参数包含未知字段')
+
+type PolicyDurationResult = { expiresAt?: string; label: string; error?: string }
 
 ipStatsRouter.get('/', async (req, res, next) => {
   const parsed = listQuerySchema.safeParse(req.query)
@@ -102,7 +109,21 @@ ipStatsRouter.post('/:ipHash/blacklist', mutationGuard({
   })
 }), async (req, res, next) => {
   try {
-    await handleCreatePolicy(req, res)
+    await handleCreatePolicy(req, res, 'blacklist')
+  } catch (error) {
+    next(error)
+  }
+})
+
+ipStatsRouter.post('/:ipHash/allowlist', mutationGuard({
+  operationKey: 'client_ip_stats.allowlist',
+  fingerprint: (req) => ({
+    ipHash: req.params.ipHash,
+    reason: bodyField(req, 'reason')
+  })
+}), async (req, res, next) => {
+  try {
+    await handleCreatePolicy(req, res, 'allowlist')
   } catch (error) {
     next(error)
   }
@@ -115,66 +136,41 @@ ipStatsRouter.post('/:ipHash/unblock', mutationGuard({
     reason: bodyField(req, 'reason')
   })
 }), async (req, res, next) => {
-  const params = ipHashParamSchema.safeParse(req.params)
-  if (!params.success) {
-    res.status(400).json(badRequest(firstIssueMessage(params.error, 'IP 标识无效')))
-    return
-  }
-  const body = policyBodySchema.safeParse(req.body ?? {})
-  if (!body.success) {
-    res.status(400).json(badRequest(firstIssueMessage(body.error, '解封参数无效')))
-    return
-  }
-  const actor = getRequestAuthContext()?.systemAccountId
-  if (!actor) {
-    res.status(401).json({ message: '请先登录' })
-    return
-  }
   try {
-    const result = await disableClientIpPoliciesAsync({
-      ipHash: params.data.ipHash,
-      reason: body.data.reason,
-      actorSystemAccountId: actor
-    })
-    notifyClientIpPolicyCacheInvalidated()
-    await recordOperationLogAsync({
-      module: 'client_ip_stats',
-      action: 'unblock',
-      operationKey: 'client_ip_stats.unblock',
-      resourceType: 'client_ip',
-      resourceId: params.data.ipHash,
-      resourceName: params.data.ipHash.slice(0, 12),
-      summary: `解除 IP 封禁：${params.data.ipHash.slice(0, 12)}`,
-      detailLevel: 'full',
-      visibilityScope: 'admin_only',
-      changes: [
-        safeChange('disabledCount', '解除策略数', undefined, result.disabledCount),
-        safeChange('reason', '原因', undefined, body.data.reason)
-      ],
-      metadata: {
-        ipHash: params.data.ipHash,
-        disabledCount: result.disabledCount,
-        reason: body.data.reason
-      }
-    }, req)
-    res.json(ok(result))
+    await handleDisablePolicy(req, res, 'blacklist')
   } catch (error) {
     next(error)
   }
 })
 
-async function handleCreatePolicy(req: Request, res: Response): Promise<void> {
+ipStatsRouter.post('/:ipHash/unallowlist', mutationGuard({
+  operationKey: 'client_ip_stats.unallowlist',
+  fingerprint: (req) => ({
+    ipHash: req.params.ipHash,
+    reason: bodyField(req, 'reason')
+  })
+}), async (req, res, next) => {
+  try {
+    await handleDisablePolicy(req, res, 'allowlist')
+  } catch (error) {
+    next(error)
+  }
+})
+
+async function handleCreatePolicy(req: Request, res: Response, policyType: ClientIpPolicyType): Promise<void> {
   const params = ipHashParamSchema.safeParse(req.params)
   if (!params.success) {
     res.status(400).json(badRequest(firstIssueMessage(params.error, 'IP 标识无效')))
     return
   }
-  const body = policyBodySchema.safeParse(req.body ?? {})
+  const body = (policyType === 'blacklist' ? policyBodySchema : simplePolicyBodySchema).safeParse(req.body ?? {})
   if (!body.success) {
     res.status(400).json(badRequest(firstIssueMessage(body.error, 'IP 策略参数无效')))
     return
   }
-  const duration = resolvePolicyDuration(body.data)
+  const duration: PolicyDurationResult = policyType === 'blacklist'
+    ? resolvePolicyDuration(body.data)
+    : { label: '永久' }
   if (duration.error) {
     res.status(400).json(badRequest(duration.error))
     return
@@ -187,6 +183,7 @@ async function handleCreatePolicy(req: Request, res: Response): Promise<void> {
   try {
     const policy = await createClientIpPolicyAsync({
       ipHash: params.data.ipHash,
+      policyType,
       reason: body.data.reason,
       expiresAt: duration.expiresAt,
       actorSystemAccountId: actor
@@ -194,26 +191,28 @@ async function handleCreatePolicy(req: Request, res: Response): Promise<void> {
     notifyClientIpPolicyCacheInvalidated()
     await recordOperationLogAsync({
       module: 'client_ip_stats',
-      action: 'blacklist',
-      operationKey: 'client_ip_stats.blacklist',
+      action: policyType === 'blacklist' ? 'blacklist' : 'allowlist',
+      operationKey: policyType === 'blacklist' ? 'client_ip_stats.blacklist' : 'client_ip_stats.allowlist',
       resourceType: 'client_ip',
       resourceId: params.data.ipHash,
       resourceName: params.data.ipHash.slice(0, 12),
-      summary: `封禁 IP：${params.data.ipHash.slice(0, 12)}`,
+      summary: `${policyType === 'blacklist' ? '封禁 IP' : '加入 IP 白名单'}：${params.data.ipHash.slice(0, 12)}`,
       detailLevel: 'full',
       visibilityScope: 'admin_only',
       changes: [
         safeChange('reason', '原因', undefined, body.data.reason),
-        safeChange('duration', '封禁时长', undefined, duration.label),
+        safeChange('policyType', '策略类型', undefined, policyType),
+        safeChange('duration', policyType === 'blacklist' ? '封禁时长' : '白名单时长', undefined, duration.label),
         safeChange('expiresAt', '过期时间', undefined, duration.expiresAt)
       ],
       metadata: {
         ipHash: params.data.ipHash,
         policyId: policy.id,
+        policyType,
         reason: body.data.reason,
         durationLabel: duration.label,
-        durationMinutes: body.data.durationMinutes,
-        durationDays: body.data.durationDays,
+        durationMinutes: 'durationMinutes' in body.data ? body.data.durationMinutes : undefined,
+        durationDays: 'durationDays' in body.data ? body.data.durationDays : undefined,
         expiresAt: duration.expiresAt
       }
     }, req)
@@ -223,7 +222,64 @@ async function handleCreatePolicy(req: Request, res: Response): Promise<void> {
   }
 }
 
-function resolvePolicyDuration(input: z.infer<typeof policyBodySchema>): { expiresAt?: string; label: string; error?: string } {
+async function handleDisablePolicy(req: Request, res: Response, policyType: ClientIpPolicyType): Promise<void> {
+  const params = ipHashParamSchema.safeParse(req.params)
+  if (!params.success) {
+    res.status(400).json(badRequest(firstIssueMessage(params.error, 'IP 标识无效')))
+    return
+  }
+  const body = simplePolicyBodySchema.safeParse(req.body ?? {})
+  if (!body.success) {
+    res.status(400).json(badRequest(firstIssueMessage(body.error, 'IP 策略参数无效')))
+    return
+  }
+  const actor = getRequestAuthContext()?.systemAccountId
+  if (!actor) {
+    res.status(401).json({ message: '请先登录' })
+    return
+  }
+  try {
+    const result = await disableClientIpPoliciesAsync({
+      ipHash: params.data.ipHash,
+      policyType,
+      reason: body.data.reason,
+      actorSystemAccountId: actor
+    })
+    notifyClientIpPolicyCacheInvalidated()
+    const action = policyType === 'blacklist' ? 'unblock' : 'unallowlist'
+    await recordOperationLogAsync({
+      module: 'client_ip_stats',
+      action,
+      operationKey: `client_ip_stats.${action}`,
+      resourceType: 'client_ip',
+      resourceId: params.data.ipHash,
+      resourceName: params.data.ipHash.slice(0, 12),
+      summary: `${policyType === 'blacklist' ? '解除 IP 封禁' : '移出 IP 白名单'}：${params.data.ipHash.slice(0, 12)}`,
+      detailLevel: 'full',
+      visibilityScope: 'admin_only',
+      changes: [
+        safeChange('disabledCount', '停用策略数', undefined, result.disabledCount),
+        safeChange('policyType', '策略类型', policyType, undefined),
+        safeChange('reason', '原因', undefined, body.data.reason)
+      ],
+      metadata: {
+        ipHash: params.data.ipHash,
+        policyType,
+        disabledCount: result.disabledCount,
+        reason: body.data.reason
+      }
+    }, req)
+    res.json(ok(result))
+  } catch (error) {
+    nextBadRequest(res, error, 'IP 策略停用失败')
+  }
+}
+
+function nextBadRequest(res: Response, error: unknown, fallbackMessage: string): void {
+  res.status(400).json(badRequest(error instanceof Error ? error.message : fallbackMessage))
+}
+
+function resolvePolicyDuration(input: z.infer<typeof policyBodySchema>): PolicyDurationResult {
   const hasDurationMinutes = input.durationMinutes !== undefined
   const hasDurationDays = input.durationDays !== undefined
   const selectedCount = [hasDurationMinutes, hasDurationDays].filter(Boolean).length

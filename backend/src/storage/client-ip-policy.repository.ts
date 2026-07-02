@@ -16,10 +16,12 @@ import { dateKey, usageStatsTimezone, usageStatsTimezoneAsync } from './usage-st
 import { normalizeIpHash } from './client-ip-normalization.js'
 
 export type ClientIpPolicyStatus = 'active' | 'disabled'
+export type ClientIpPolicyType = 'blacklist' | 'allowlist'
 
 export interface ClientIpPolicySummary {
   id: string
   ipHash: string
+  policyType: ClientIpPolicyType
   status: ClientIpPolicyStatus
   reason?: string
   expiresAt?: string
@@ -34,6 +36,7 @@ export interface ClientIpPolicySummary {
 export interface ActiveClientIpPolicy {
   id: string
   ipHash: string
+  policyType: ClientIpPolicyType
   aggregateIpKey: string
   clientIp: string
   reason?: string
@@ -42,6 +45,7 @@ export interface ActiveClientIpPolicy {
 
 export interface ClientIpPolicyMutationInput {
   ipHash: string
+  policyType?: ClientIpPolicyType
   reason?: string
   expiresAt?: string
   actorSystemAccountId: string
@@ -49,6 +53,7 @@ export interface ClientIpPolicyMutationInput {
 
 export interface ClientIpPolicyDisableInput {
   ipHash: string
+  policyType?: ClientIpPolicyType
   reason?: string
   actorSystemAccountId: string
 }
@@ -67,6 +72,7 @@ export function createClientIpPolicy(input: ClientIpPolicyMutationInput): Client
   if (!ipHash) {
     throw new Error('IP 标识无效')
   }
+  const policyType = normalizeClientIpPolicyType(input.policyType)
   const database = getStatsDatabase()
   const registry = database.prepare('SELECT ip_hash FROM client_ip_registry WHERE ip_hash = ?').get(ipHash) as { ip_hash?: string } | undefined
   if (!registry) {
@@ -85,15 +91,16 @@ export function createClientIpPolicy(input: ClientIpPolicyMutationInput): Client
         updated_at = ?
       WHERE ip_hash = ?
         AND status = 'active'
-    `).run(now, input.actorSystemAccountId, '被新的封禁策略替换', now, ipHash)
+    `).run(now, input.actorSystemAccountId, activePolicyReplacementReason(policyType), now, ipHash)
     database.prepare(`
       INSERT INTO client_ip_policies (
-        id, ip_hash, status, reason, expires_at,
+        id, ip_hash, policy_type, status, reason, expires_at,
         created_by_system_account_id, created_at, updated_at
-      ) VALUES (?, ?, 'active', ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?)
     `).run(
       id,
       ipHash,
+      policyType,
       normalizeOptionalText(input.reason) ?? null,
       normalizeOptionalIso(input.expiresAt) ?? null,
       input.actorSystemAccountId,
@@ -116,6 +123,7 @@ export async function createClientIpPolicyAsync(input: ClientIpPolicyMutationInp
   if (!ipHash) {
     throw new Error('IP 标识无效')
   }
+  const policyType = normalizeClientIpPolicyType(input.policyType)
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const registry = await client.one<{ ip_hash?: string }>(`
     SELECT ip_hash
@@ -138,15 +146,16 @@ export async function createClientIpPolicyAsync(input: ClientIpPolicyMutationInp
         updated_at = ?
       WHERE ip_hash = ?
         AND status = 'active'
-    `, [now, input.actorSystemAccountId, '被新的封禁策略替换', now, ipHash])
+    `, [now, input.actorSystemAccountId, activePolicyReplacementReason(policyType), now, ipHash])
     await tx.execute(`
       INSERT INTO ${statsTable(tx, 'client_ip_policies')} (
-        id, ip_hash, status, reason, expires_at,
+        id, ip_hash, policy_type, status, reason, expires_at,
         created_by_system_account_id, created_at, updated_at
-      ) VALUES (?, ?, 'active', ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?)
     `, [
       id,
       ipHash,
+      policyType,
       normalizeOptionalText(input.reason) ?? null,
       normalizeOptionalIso(input.expiresAt) ?? null,
       input.actorSystemAccountId,
@@ -166,13 +175,15 @@ export function disableClientIpPolicies(input: ClientIpPolicyDisableInput): { di
   if (!ipHash) {
     throw new Error('IP 标识无效')
   }
+  const policyType = input.policyType ? normalizeClientIpPolicyType(input.policyType) : undefined
   const now = nowIso()
   const params: SQLInputValue[] = [
     now,
     input.actorSystemAccountId,
     normalizeOptionalText(input.reason) ?? '管理员解除策略',
     now,
-    ipHash
+    ipHash,
+    ...(policyType ? [policyType] : [])
   ]
   const result = getStatsDatabase().prepare(`
     UPDATE client_ip_policies
@@ -183,6 +194,7 @@ export function disableClientIpPolicies(input: ClientIpPolicyDisableInput): { di
       updated_at = ?
     WHERE ip_hash = ?
       AND status = 'active'
+      ${policyType ? 'AND policy_type = ?' : ''}
   `).run(...params)
   return { disabledCount: Number(result.changes ?? 0) }
 }
@@ -195,6 +207,7 @@ export async function disableClientIpPoliciesAsync(input: ClientIpPolicyDisableI
   if (!ipHash) {
     throw new Error('IP 标识无效')
   }
+  const policyType = input.policyType ? normalizeClientIpPolicyType(input.policyType) : undefined
   const now = nowIso()
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const result = await client.execute(`
@@ -206,12 +219,14 @@ export async function disableClientIpPoliciesAsync(input: ClientIpPolicyDisableI
       updated_at = ?
     WHERE ip_hash = ?
       AND status = 'active'
+      ${policyType ? 'AND policy_type = ?' : ''}
   `, [
     now,
     input.actorSystemAccountId,
     normalizeOptionalText(input.reason) ?? '管理员解除策略',
     now,
-    ipHash
+    ipHash,
+    ...(policyType ? [policyType] : [])
   ])
   return { disabledCount: Number(result.changes ?? 0) }
 }
@@ -220,7 +235,7 @@ export function listActiveClientIpPolicies(): ActiveClientIpPolicy[] {
   const now = nowIso()
   const params: SQLInputValue[] = [now]
   const rows = getStatsDatabase().prepare(`
-    SELECT policies.id, policies.ip_hash, policies.reason, policies.expires_at,
+    SELECT policies.id, policies.ip_hash, policies.policy_type, policies.reason, policies.expires_at,
       registry.aggregate_ip_key, registry.client_ip
     FROM client_ip_policies policies
     INNER JOIN client_ip_registry registry ON registry.ip_hash = policies.ip_hash
@@ -230,6 +245,7 @@ export function listActiveClientIpPolicies(): ActiveClientIpPolicy[] {
   `).all(...params) as unknown as Array<{
     id: string
     ip_hash: string
+    policy_type: string
     reason: string | null
     expires_at: string | null
     aggregate_ip_key: string
@@ -245,7 +261,7 @@ export async function listActiveClientIpPoliciesAsync(): Promise<ActiveClientIpP
   const now = nowIso()
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const rows = await client.query<ActiveClientIpPolicyRow>(`
-    SELECT policies.id, policies.ip_hash, policies.reason, policies.expires_at,
+    SELECT policies.id, policies.ip_hash, policies.policy_type, policies.reason, policies.expires_at,
       registry.aggregate_ip_key, registry.client_ip
     FROM ${statsTable(client, 'client_ip_policies')} policies
     INNER JOIN ${statsTable(client, 'client_ip_registry')} registry ON registry.ip_hash = policies.ip_hash
@@ -263,7 +279,7 @@ export function findActiveClientIpPolicyByHash(inputIpHash: string): ActiveClien
   }
   const now = nowIso()
   const row = getStatsDatabase().prepare(`
-    SELECT policies.id, policies.ip_hash, policies.reason, policies.expires_at,
+    SELECT policies.id, policies.ip_hash, policies.policy_type, policies.reason, policies.expires_at,
       registry.aggregate_ip_key, registry.client_ip
     FROM client_ip_policies policies
     INNER JOIN client_ip_registry registry ON registry.ip_hash = policies.ip_hash
@@ -275,6 +291,7 @@ export function findActiveClientIpPolicyByHash(inputIpHash: string): ActiveClien
   `).get(ipHash, now) as unknown as {
     id: string
     ip_hash: string
+    policy_type: string
     reason: string | null
     expires_at: string | null
     aggregate_ip_key: string
@@ -294,7 +311,7 @@ export async function findActiveClientIpPolicyByHashAsync(inputIpHash: string): 
   const now = nowIso()
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const row = await client.one<ActiveClientIpPolicyRow>(`
-    SELECT policies.id, policies.ip_hash, policies.reason, policies.expires_at,
+    SELECT policies.id, policies.ip_hash, policies.policy_type, policies.reason, policies.expires_at,
       registry.aggregate_ip_key, registry.client_ip
     FROM ${statsTable(client, 'client_ip_policies')} policies
     INNER JOIN ${statsTable(client, 'client_ip_registry')} registry ON registry.ip_hash = policies.ip_hash
@@ -408,6 +425,7 @@ function normalizeClientIpPolicyHitEntries(
 function mapActiveClientIpPolicyRow(row: {
   id: string
   ip_hash: string
+  policy_type: string
   reason: string | null
   expires_at: string | null
   aggregate_ip_key: string
@@ -416,6 +434,7 @@ function mapActiveClientIpPolicyRow(row: {
   return {
     id: row.id,
     ipHash: row.ip_hash,
+    policyType: normalizeClientIpPolicyType(row.policy_type),
     aggregateIpKey: row.aggregate_ip_key,
     clientIp: row.client_ip,
     reason: row.reason ?? undefined,
@@ -435,6 +454,7 @@ function multiRowPlaceholders(rowCount: number, columnCount: number): string {
 interface ActiveClientIpPolicyRow {
   id: string
   ip_hash: string
+  policy_type: string
   reason: string | null
   expires_at: string | null
   aggregate_ip_key: string
@@ -445,6 +465,7 @@ function mapClientIpPolicyRow(row: ClientIpPolicyRow): ClientIpPolicySummary {
   return {
     id: row.id,
     ipHash: row.ip_hash,
+    policyType: normalizeClientIpPolicyType(row.policy_type),
     status: row.status === 'disabled' ? 'disabled' : 'active',
     reason: row.reason ?? undefined,
     expiresAt: row.expires_at ?? undefined,
@@ -462,6 +483,14 @@ function normalizeOptionalText(value?: string | null): string | undefined {
   return text || undefined
 }
 
+function normalizeClientIpPolicyType(value?: string | null): ClientIpPolicyType {
+  return value === 'allowlist' ? 'allowlist' : 'blacklist'
+}
+
+function activePolicyReplacementReason(nextPolicyType: ClientIpPolicyType): string {
+  return nextPolicyType === 'allowlist' ? '被新的白名单策略替换' : '被新的封禁策略替换'
+}
+
 function normalizeOptionalIso(value?: string | null): string | undefined {
   const text = normalizeOptionalText(value)
   if (!text) return undefined
@@ -472,6 +501,7 @@ function normalizeOptionalIso(value?: string | null): string | undefined {
 interface ClientIpPolicyRow {
   id: string
   ip_hash: string
+  policy_type: string
   status: string
   reason: string | null
   expires_at: string | null

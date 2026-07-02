@@ -28,8 +28,13 @@ assert.doesNotMatch(usageStatsSource, /deletionAwareSourceTables/, '排行快照
 assert.doesNotMatch(usageRangeWindowsSource, /rangeWindowSourceWatermarkRowCount/, '范围窗口刷新不应继续解析旧 rowCount 水位')
 assert.match(
   rebuildUsageStatsSource,
-  /runtimeConfig\.databaseDriver === 'postgres'[\s\S]*PostgreSQL 高性能模式暂不支持 SQLite 用量统计重建脚本/,
-  'SQLite 用量统计重建脚本在 PostgreSQL 高性能模式必须 fail-fast'
+  /runtimeConfig\.databaseDriver === 'postgres'[\s\S]*resetUsageStatsCacheAsync\(\)[\s\S]*aggregateUsageStatsBatchAsync\(options\.batchSize\)/,
+  '用量统计重建脚本在 PostgreSQL 模式必须清空 juhe_stats 并从 juhe_usage 异步重建，不能回落 SQLite usage shard'
+)
+assert.match(
+  rebuildUsageStatsSource,
+  /--confirm-offline[\s\S]*PostgreSQL 模式会清空 juhe_stats 派生表，从 juhe_usage\.usage_records 重建统计/,
+  '用量统计重建脚本 help 必须说明 PostgreSQL 离线重建边界'
 )
 assert.match(
   usageStatsRuntimeHelpersSource,

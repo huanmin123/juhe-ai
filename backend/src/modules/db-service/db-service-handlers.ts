@@ -117,10 +117,15 @@ import { listActiveResponseInspectionPoliciesForGateway, listActiveResponseInspe
 import { cleanupExpiredSystemSessions, cleanupExpiredSystemSessionsAsync } from '../../storage/data-retention.repository.js'
 import {
   cleanupExpiredCodexContextStates,
+  cleanupExpiredCodexContextStatesAsync,
   readCodexContextCompactState,
+  readCodexContextCompactStateAsync,
   readCodexContextResponseStateChain,
+  readCodexContextResponseStateChainAsync,
   saveCodexContextCompactStateIndex,
-  saveCodexContextResponseStateIndex
+  saveCodexContextCompactStateIndexAsync,
+  saveCodexContextResponseStateIndex,
+  saveCodexContextResponseStateIndexAsync
 } from '../../storage/codex-context-state.repository.js'
 import {
   cleanupExpiredCodexContextStatesWithWriterPool,
@@ -815,13 +820,25 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
     case 'status':
       return buildDbServiceRuntimeSnapshot()
     case 'save_codex_context_response_state':
-      assertCodexContextStateSqliteOnlyOperation(operation.type)
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await saveCodexContextResponseStateIndexAsync(operation.input)
+      }
       return await saveCodexContextResponseStateIndexWithWriterPool(operation.input)
     case 'save_codex_context_compact_state':
-      assertCodexContextStateSqliteOnlyOperation(operation.type)
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await saveCodexContextCompactStateIndexAsync(operation.input)
+      }
       return await saveCodexContextCompactStateIndexWithWriterPool(operation.input)
     case 'read_codex_context_response_chain':
-      assertCodexContextStateSqliteOnlyOperation(operation.type)
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await readCodexContextResponseStateChainAsync({
+          responseId: operation.responseId,
+          boundary: operation.boundary,
+          maxDepth: operation.maxDepth,
+          now: operation.now,
+          refreshExpiresAt: operation.refreshExpiresAt
+        })
+      }
       return await readCodexContextResponseStateChainWithWriterPool({
         responseId: operation.responseId,
         boundary: operation.boundary,
@@ -830,7 +847,14 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
         refreshExpiresAt: operation.refreshExpiresAt
       })
     case 'read_codex_context_compact_state':
-      assertCodexContextStateSqliteOnlyOperation(operation.type)
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await readCodexContextCompactStateAsync({
+          compactId: operation.compactId,
+          boundary: operation.boundary,
+          now: operation.now,
+          refreshExpiresAt: operation.refreshExpiresAt
+        })
+      }
       return await readCodexContextCompactStateWithWriterPool({
         compactId: operation.compactId,
         boundary: operation.boundary,
@@ -838,7 +862,12 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
         refreshExpiresAt: operation.refreshExpiresAt
       })
     case 'cleanup_expired_codex_context_states':
-      assertCodexContextStateSqliteOnlyOperation(operation.type)
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await cleanupExpiredCodexContextStatesAsync({
+          expiredBefore: operation.expiredBefore,
+          limit: operation.limit
+        })
+      }
       return await cleanupExpiredCodexContextStatesWithWriterPool({
         expiredBefore: operation.expiredBefore,
         limit: operation.limit
@@ -1710,12 +1739,6 @@ async function listActiveResponseInspectionPoliciesForAccountsAsync(accounts: re
 
 function hasDispatchableGatewayAccount(accounts: OpenAIAccountSecret[]): boolean {
   return accounts.some((account) => account.status === 'active' && account.proxyProfileUnavailable !== true)
-}
-
-function assertCodexContextStateSqliteOnlyOperation(operationType: DbServiceOperation['type']): void {
-  if (runtimeConfig.databaseDriver === 'postgres') {
-    throw new Error(`PostgreSQL 模式暂未接入 Codex context state 操作：${operationType}`)
-  }
 }
 
 function assertNever(value: never): never {

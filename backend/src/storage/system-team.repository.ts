@@ -26,7 +26,7 @@ import {
 } from './resource-authorization-write.repository.js'
 import { findSystemAccountById } from './system-accounts.repository.js'
 import { maxSystemTeamListPageSize, maxSystemTeamMemberBatchSize, maxSystemTeamMembersPerTeam } from './system-team-limits.js'
-import { markAllGroupAccountStatsDirty } from './usage-stats.repository.js'
+import { markAllGroupAccountStatsDirty, markAllGroupAccountStatsDirtyAsync } from './usage-stats.repository.js'
 import { optionalString } from './value-utils.js'
 
 export interface SystemTeamListOptions {
@@ -255,7 +255,7 @@ export async function updateSystemTeamAsync(id: string, input: Record<string, un
     }
   })
   if (authorizationChanged) {
-    refreshGroupAccountStatsAfterWrite('team_authorization_changed')
+    await refreshGroupAccountStatsAfterWriteAsync('team_authorization_changed')
     invalidateAuthorizationRuntimeAfterBusinessWrite('team_authorization_changed')
   }
   invalidateSystemTeamLookupCache(id)
@@ -341,6 +341,7 @@ export async function addSystemTeamMembersAsync(teamId: string, input: Record<st
     const team = await findSystemTeamRowForAccessAsync(tx, teamId, access, { activeOnly: true })
     if (!team) return
     teamExists = true
+    await lockSystemTeamRowForUpdateAsync(tx, teamId)
     const existingActiveMemberRows = await tx.query<{ system_account_id?: string }>(`
       SELECT system_account_id
       FROM ${systemTeamTable(tx, 'system_team_members')}
@@ -402,7 +403,7 @@ export async function addSystemTeamMembersAsync(teamId: string, input: Record<st
     }
   })
   if (!teamExists) return undefined
-  refreshGroupAccountStatsAfterWrite('team_members_changed')
+  await refreshGroupAccountStatsAfterWriteAsync('team_members_changed')
   invalidateAuthorizationRuntimeAfterBusinessWrite('team_members_changed')
   for (const systemAccountId of systemAccountIds) {
     invalidateSystemAccountTeamMembershipLookupCache(systemAccountId)
@@ -451,7 +452,7 @@ export async function removeSystemTeamMemberAsync(teamId: string, memberId: stri
     await revokeTeamSourcesForMemberAsync(teamId, member.system_account_id, currentSystemAccountId(access), tx, now)
   })
   if (!removedSystemAccountId) return undefined
-  refreshGroupAccountStatsAfterWrite('team_members_changed')
+  await refreshGroupAccountStatsAfterWriteAsync('team_members_changed')
   invalidateAuthorizationRuntimeAfterBusinessWrite('team_members_changed')
   invalidateSystemAccountTeamMembershipLookupCache(removedSystemAccountId)
   return findSystemTeamSummaryAsync(teamId, access)
@@ -609,6 +610,16 @@ async function findSystemTeamRowForAccessAsync(client: DatabaseClient, id: strin
     WHERE system_teams.id = ?${activeClause}
     LIMIT 1
   `, [id])
+}
+
+async function lockSystemTeamRowForUpdateAsync(client: DatabaseClient, teamId: string): Promise<void> {
+  if (client.driver !== 'postgres') return
+  await client.one<{ id?: string }>(`
+    SELECT id
+    FROM ${systemTeamTable(client, 'system_teams')}
+    WHERE id = ?
+    FOR UPDATE
+  `, [teamId])
 }
 
 async function findActiveSystemTeamMemberForAccessAsync(client: DatabaseClient, teamId: string, memberId: string, access?: AccessScope): Promise<SystemTeamMemberRow | undefined> {
@@ -818,6 +829,14 @@ function assertKnownInputKeys(input: Record<string, unknown>, allowedKeys: Reado
 function refreshGroupAccountStatsAfterWrite(reason: string): void {
   if (runtimeConfig.databaseDriver === 'postgres') return
   markAllGroupAccountStatsDirty(reason)
+}
+
+async function refreshGroupAccountStatsAfterWriteAsync(reason: string): Promise<void> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    refreshGroupAccountStatsAfterWrite(reason)
+    return
+  }
+  await markAllGroupAccountStatsDirtyAsync(reason)
 }
 
 function invalidateAuthorizationRuntimeAfterBusinessWrite(reason: string): void {

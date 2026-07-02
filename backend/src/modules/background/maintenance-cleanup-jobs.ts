@@ -1,3 +1,4 @@
+import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { cleanupPendingDeletedAccountRecordTargetsAsync } from '../../storage/account-record-cleanup.js'
 import { cleanupPendingDeletedApiKeyRecordTargetsAsync } from '../../storage/api-key-record-cleanup.js'
@@ -9,9 +10,11 @@ import { enqueueRecordMaintenanceJobWithResult } from '../record-maintenance/rec
 
 export async function runApiKeyRecordCleanupRetry(): Promise<void> {
   try {
-    const summary = await cleanupPendingDeletedApiKeyRecordTargetsAsync(1, async (input) => {
-      await requestStatsWriter({ type: 'cleanup_deleted_api_key_record_stats', input })
-    })
+    const summary = await cleanupPendingDeletedApiKeyRecordTargetsAsync(1, runtimeConfig.databaseDriver === 'postgres'
+      ? undefined
+      : async (input) => {
+          await requestStatsWriter({ type: 'cleanup_deleted_api_key_record_stats', input })
+        })
     if (summary.attempted > 0) {
       logger.info({
         event: 'background_api_key_record_cleanup_retry_completed',
@@ -26,9 +29,11 @@ export async function runApiKeyRecordCleanupRetry(): Promise<void> {
 
 export async function runAccountRecordCleanupRetry(): Promise<void> {
   try {
-    const summary = await cleanupPendingDeletedAccountRecordTargetsAsync(1, async (input) => {
-      await requestStatsWriter({ type: 'cleanup_deleted_account_record_stats', input })
-    })
+    const summary = await cleanupPendingDeletedAccountRecordTargetsAsync(1, runtimeConfig.databaseDriver === 'postgres'
+      ? undefined
+      : async (input) => {
+          await requestStatsWriter({ type: 'cleanup_deleted_account_record_stats', input })
+        })
     if (summary.attempted > 0) {
       logger.info({
         event: 'background_account_record_cleanup_retry_completed',

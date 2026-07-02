@@ -11,6 +11,7 @@ import { clearGatewayApiKeyValidationCache } from './gateway-api-key.repository.
 import { refreshGroupAccountStatsAfterWrite } from './group-account-stats-write-invalidation.js'
 import { invalidateGroupAccountIdsCache } from './group-read-loaders.js'
 import { getPostgresPool } from './postgres-client.js'
+import { expireDueResourceAuthorizationsAsync } from './resource-authorization-write.repository.js'
 import { resourceAuthorizationSelectColumns } from './resource-authorization-helpers.js'
 import {
   expireDueResourceAuthorizations,
@@ -52,6 +53,7 @@ export async function returnResourceAuthorizationForGranteeAsync(authorizationId
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return returnResourceAuthorizationForGrantee(authorizationId, access)
   }
+  await expireDueResourceAuthorizationsAsync()
   const granteeSystemAccountId = userVisibleSystemAccountId(access)
   if (!granteeSystemAccountId) return undefined
   const client = createPostgresDatabaseClient(await getPostgresPool())
@@ -135,6 +137,7 @@ export async function returnAccountAuthorizationInstanceForGranteeAsync(accountI
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return returnAccountAuthorizationInstanceForGrantee(accountId, access)
   }
+  await expireDueResourceAuthorizationsAsync()
   const granteeSystemAccountId = userVisibleSystemAccountId(access)
   if (!granteeSystemAccountId) return undefined
   const client = createPostgresDatabaseClient(await getPostgresPool())

@@ -9,7 +9,7 @@ import { maxRouteStrategyAvailabilityLossCandidates } from './route-strategy-gro
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
 import { emptyGroupAccountStats } from './group-account-stats.mapper.js'
-import { refreshGroupAccountStatsAfterWrite } from './group-account-stats-write-invalidation.js'
+import { refreshGroupAccountStatsAfterWrite, refreshGroupAccountStatsAfterWriteAsync } from './group-account-stats-write-invalidation.js'
 import { invalidateGroupAccountIdsCache } from './group-read-loaders.js'
 import { findGroupSummary, findGroupSummaryAsync } from './group-summary.repository.js'
 import { getPostgresPool } from './postgres-client.js'
@@ -544,7 +544,7 @@ export async function deleteGroupAsync(id: string, access?: AccessScope): Promis
     deleted = Number(result.changes ?? 0) > 0
   })
   if (deleted) {
-    refreshGroupAccountStatsAfterWriteForCurrentDriver({ groupIds: [id], reason: 'group_deleted' })
+    await refreshGroupAccountStatsAfterWriteAsync({ groupIds: [id], reason: 'group_deleted' })
     invalidateGroupLookupCache(id)
     invalidateGroupAccountIdsCache(id)
     invalidateGatewayRuntimeAfterBusinessWrite('group_deleted')
@@ -795,13 +795,6 @@ function groupWriteTable(client: DatabaseClient, tableName: string): string {
   return client.driver === 'postgres'
     ? client.dialect.qualifyTable('juhe_business', tableName)
     : client.dialect.quoteIdentifier(tableName)
-}
-
-function refreshGroupAccountStatsAfterWriteForCurrentDriver(input: Parameters<typeof refreshGroupAccountStatsAfterWrite>[0]): void {
-  if (runtimeConfig.databaseDriver === 'postgres') {
-    return
-  }
-  refreshGroupAccountStatsAfterWrite(input)
 }
 
 function invalidateGatewayRuntimeAfterBusinessWrite(reason: string): void {

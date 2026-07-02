@@ -5,9 +5,16 @@ export interface GatewayDispatchPriorityAccount {
   fallbackEnabled?: boolean
 }
 
+export interface GatewayDispatchPriorityOrderOptions {
+  modelRankByAccountId?: ReadonlyMap<string, number>
+}
+
+const unknownGatewayDispatchModelRank = 3
+
 export function preserveGatewayAccountDispatchPriorityTiers<T extends GatewayDispatchPriorityAccount>(
   baseAccounts: readonly T[],
-  reorderedAccounts: readonly T[]
+  reorderedAccounts: readonly T[],
+  options: GatewayDispatchPriorityOrderOptions = {}
 ): T[] {
   if (baseAccounts.length < 2 || reorderedAccounts.length < 2) {
     return [...reorderedAccounts]
@@ -16,7 +23,7 @@ export function preserveGatewayAccountDispatchPriorityTiers<T extends GatewayDis
   const baseTierOrder: string[] = []
   const seenBaseTiers = new Set<string>()
   for (const account of baseAccounts) {
-    const tier = gatewayAccountDispatchPriorityTier(account)
+    const tier = gatewayAccountDispatchPriorityTier(account, options)
     if (seenBaseTiers.has(tier)) {
       continue
     }
@@ -27,7 +34,7 @@ export function preserveGatewayAccountDispatchPriorityTiers<T extends GatewayDis
   const reorderedByTier = new Map<string, T[]>()
   const unknownTierAccounts: T[] = []
   for (const account of reorderedAccounts) {
-    const tier = gatewayAccountDispatchPriorityTier(account)
+    const tier = gatewayAccountDispatchPriorityTier(account, options)
     if (!seenBaseTiers.has(tier)) {
       unknownTierAccounts.push(account)
       continue
@@ -51,11 +58,28 @@ export function preserveGatewayAccountDispatchPriorityTiers<T extends GatewayDis
   return output
 }
 
-function gatewayAccountDispatchPriorityTier(account: GatewayDispatchPriorityAccount): string {
+function gatewayAccountDispatchPriorityTier(
+  account: GatewayDispatchPriorityAccount,
+  options: GatewayDispatchPriorityOrderOptions
+): string {
+  const modelRank = gatewayAccountDispatchModelRank(account, options)
   const fallbackRank = account.fallbackEnabled === true ? 1 : 0
   const superRank = account.superPriorityEnabled === true ? 0 : 1
   const priority = typeof account.priority === 'number' && Number.isFinite(account.priority)
     ? Math.trunc(account.priority)
     : 0
-  return `${fallbackRank}:${superRank}:${priority}`
+  return `${modelRank}:${fallbackRank}:${superRank}:${priority}`
+}
+
+function gatewayAccountDispatchModelRank(
+  account: GatewayDispatchPriorityAccount,
+  options: GatewayDispatchPriorityOrderOptions
+): number {
+  if (!options.modelRankByAccountId) {
+    return 0
+  }
+  const rank = options.modelRankByAccountId.get(account.id)
+  return typeof rank === 'number' && Number.isFinite(rank)
+    ? Math.max(0, Math.trunc(rank))
+    : unknownGatewayDispatchModelRank
 }

@@ -1,5 +1,3 @@
-import { randomUUID } from 'node:crypto'
-
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 import type { AccountRuntimeAvailability } from '../../db-service/db-service-types.js'
@@ -8,7 +6,6 @@ import { requestGatewayDbService } from './gateway-db-service-request.js'
 import type { GatewaySettings } from '../policy/account-error-policy.service.js'
 import { exponentialRetryPolicy, retryDueAtMs, waitForRetryDelayMs } from '../../../shared/retry-policy.js'
 import { createRuntimeProbeStateStore } from '../../../shared/runtime-probe-state-store.js'
-import { createRuntimeStateStore } from '../../../shared/runtime-state-store.js'
 import {
   getAccountCurrentConcurrencyAsync,
   getAccountCurrentConcurrency,
@@ -43,6 +40,7 @@ import {
   type GatewayAccountLocalSuppressionResult,
   type LocalAccountSuppression,
   type LocalAccountDegradationOrderResult,
+  type LocalAccountDegradationOrderOptions,
   type LocalAccountSuppressionFilterOptions,
   type LocalAccountSuppressionFilterResult
 } from './account-local-suppression-store.js'
@@ -208,7 +206,6 @@ const recoveryProbeJitterMs = 750
 const distributedRecoveryProbeStateTtlMs = Math.max(localSuppressionMaxMs, precheckSuppressionGuardMs) + 5 * 60_000
 const distributedRecoveryProbeSweepIntervalMs = 1_000
 const distributedRecoveryProbeSweepBatchSize = 25
-const distributedRecoveryProbeLockTtlMs = accountDiagnosticRetryMaxTotalTimeoutMs + 60_000
 const distributedRecoveryProbeDueRetryDelayMs = 250
 const distributedRecoveryProbeSuppressionCacheTtlMs = 1000
 const distributedRecoveryProbeSuppressionNegativeCacheTtlMs = 500
@@ -217,7 +214,6 @@ const sideEffectRetryPolicy = exponentialRetryPolicy('gateway_account_side_effec
 const maxSideEffectQueueLength = 5000
 
 const distributedRecoveryProbeStore = createRuntimeProbeStateStore<DistributedRecoveryProbeState>('gateway-account-recovery')
-const distributedRecoveryProbeBudgetRuntimeStore = createRuntimeStateStore('gateway-account-recovery-probe-budget')
 const sideEffectQueue = new AccountSideEffectQueue()
 const failureStorms = new Map<string, FailureStormEntry>()
 const successObservations = new Map<string, SuccessObservationEntry>()
@@ -607,9 +603,11 @@ async function recordDistributedGatewayAccountFailureForPrecheck(
         distinctApiKeyCount: input.apiKeyId ? 1 : 0,
         precheckRequested: input.forcePrecheck === true
       }
-  await distributedRecoveryProbeStore.set(state, distributedRecoveryProbeStateTtlMs)
-  rememberDistributedRecoveryProbeSuppressionState(runtimeKey, state)
-  scheduleDistributedRecoveryProbeSweep(Math.max(0, state.nextProbeAtMs - now))
+  const persisted = await persistDistributedRecoveryProbeState(state)
+  if (!persisted) {
+    logStaleDistributedRecoveryProbeResult(runtimeKey, generation, 'gateway_account_distributed_recovery_probe_stale_schedule_ignored')
+    return
+  }
   logger.info({
     event: 'gateway_account_distributed_recovery_probe_scheduled',
     accountId: account.id,
@@ -792,12 +790,13 @@ async function runGatewayAccountRecoveryProbe(runtimeKey: string): Promise<void>
 }
 
 async function runDistributedGatewayAccountRecoveryProbe(runtimeKey: string): Promise<void> {
-  const token = randomUUID()
-  const locked = await distributedRecoveryProbeStore.acquireLock(runtimeKey, token, distributedRecoveryProbeLockTtlMs)
-  if (!locked) return
   try {
     const persisted = await distributedRecoveryProbeStore.get(runtimeKey)
-    if (!persisted) return
+    if (!persisted) {
+      await distributedRecoveryProbeStore.delete(runtimeKey)
+      rememberDistributedRecoveryProbeSuppressionState(runtimeKey, undefined)
+      return
+    }
     const now = Date.now()
     if (persisted.nextProbeAtMs > now) {
       scheduleDistributedRecoveryProbeSweep(persisted.nextProbeAtMs - now)
@@ -805,16 +804,19 @@ async function runDistributedGatewayAccountRecoveryProbe(runtimeKey: string): Pr
     }
     const state = await loadDistributedRecoveryProbeStateWithAccount(persisted)
     if (!state) {
-      await distributedRecoveryProbeStore.delete(runtimeKey)
+      await clearDistributedRecoveryProbeStateGeneration(runtimeKey, persisted.generation)
       return
     }
-    const budget = await acquireDistributedRecoveryProbeBudget(state, now)
-    const budgetDelayMs = budget.delayMs
+    const budgetDelayMs = recoveryProbeBudgetWaitMs(state, now)
     if (budgetDelayMs > 0) {
-      await persistDistributedRecoveryProbeState({
+      const delayed = await persistDistributedRecoveryProbeState({
         ...persisted,
         nextProbeAtMs: now + budgetDelayMs
       })
+      if (!delayed) {
+        logStaleDistributedRecoveryProbeResult(runtimeKey, persisted.generation, 'gateway_account_distributed_recovery_probe_stale_budget_delay_ignored')
+        return
+      }
       logger.info({
         event: 'gateway_account_distributed_recovery_probe_budget_delayed',
         accountId: state.account.id,
@@ -838,7 +840,11 @@ async function runDistributedGatewayAccountRecoveryProbe(runtimeKey: string): Pr
         return
       }
       if (result.success || result.accountFailureEligible === false) {
-        await clearDistributedRecoveryProbeState(runtimeKey)
+        const cleared = await clearDistributedRecoveryProbeStateGeneration(runtimeKey, generation)
+        if (!cleared) {
+          logStaleDistributedRecoveryProbeResult(runtimeKey, generation, 'gateway_account_distributed_recovery_probe_stale_success_ignored')
+          return
+        }
         logger.info({
           event: 'gateway_account_distributed_recovery_probe_success',
           accountId: state.account.id,
@@ -866,10 +872,14 @@ async function runDistributedGatewayAccountRecoveryProbe(runtimeKey: string): Pr
       }
 
       const delayMs = recoveryProbeFollowupDelayMs(observedForMs)
-      await persistDistributedRecoveryProbeState({
+      const persistedFailure = await persistDistributedRecoveryProbeState({
         ...failedState,
         nextProbeAtMs: Date.now() + delayMs
       })
+      if (!persistedFailure) {
+        logStaleDistributedRecoveryProbeResult(runtimeKey, generation, 'gateway_account_distributed_recovery_probe_stale_failure_ignored')
+        return
+      }
       logger.warn({
         event: 'gateway_account_distributed_recovery_probe_failed',
         accountId: state.account.id,
@@ -885,7 +895,6 @@ async function runDistributedGatewayAccountRecoveryProbe(runtimeKey: string): Pr
       }, 'Redis 运行态账号恢复探针未通过，已按时间窗口等待下一轮')
     } finally {
       runningRecoveryProbeCount = Math.max(0, runningRecoveryProbeCount - 1)
-      await budget.release?.()
     }
   } catch (error) {
     const latest = await distributedRecoveryProbeStore.get(runtimeKey).catch(() => undefined)
@@ -899,8 +908,6 @@ async function runDistributedGatewayAccountRecoveryProbe(runtimeKey: string): Pr
       event: 'gateway_account_distributed_recovery_probe_exception',
       runtimeKey
     }), 'Redis 运行态账号恢复探针执行异常，已等待下一轮')
-  } finally {
-    await distributedRecoveryProbeStore.releaseLock(runtimeKey, token)
   }
 }
 
@@ -914,10 +921,14 @@ async function promoteDistributedRecoveryProbeToPrecheck(state: DistributedRecov
     reason: `后台恢复探针连续失败，等待事前确认；${state.reason}`.slice(0, 1000),
     nextProbeAtMs: Date.now()
   }
-  await persistDistributedRecoveryProbeState(precheckState)
+  const persisted = await persistDistributedRecoveryProbeState(precheckState)
+  if (!persisted) {
+    logStaleDistributedRecoveryProbeResult(state.runtimeKey, generation, 'gateway_account_distributed_precheck_stale_schedule_ignored')
+    return
+  }
   const loaded = await loadDistributedRecoveryProbeStateWithAccount(precheckState)
   if (!loaded) {
-    await distributedRecoveryProbeStore.delete(state.runtimeKey)
+    await clearDistributedRecoveryProbeStateGeneration(state.runtimeKey, generation)
     return
   }
   logger.warn({
@@ -951,7 +962,11 @@ async function runDistributedGatewayAccountPrecheck(
       attemptCount: attempt + 1,
       nextProbeAtMs: Date.now() + precheckSuppressionMs()
     }
-    await persistDistributedRecoveryProbeState(state)
+    const persistedAttempt = await persistDistributedRecoveryProbeState(state)
+    if (!persistedAttempt) {
+      logStaleDistributedRecoveryProbeResult(state.runtimeKey, generation, 'gateway_account_distributed_precheck_stale_attempt_write_ignored')
+      return
+    }
     const timeoutMs = accountDiagnosticRetryTimeoutMs[attempt] ?? accountDiagnosticRetryTimeoutMs[accountDiagnosticRetryTimeoutMs.length - 1]
     const result = await runSingleGatewayAccountPrecheck(distributedStateWithAccount(state, account), timeoutMs)
     const stateAfterResult = await currentDistributedRecoveryProbeState(state.runtimeKey, generation)
@@ -960,7 +975,11 @@ async function runDistributedGatewayAccountPrecheck(
       return
     }
     if (result.success || result.accountFailureEligible === false) {
-      await clearDistributedRecoveryProbeState(state.runtimeKey)
+      const cleared = await clearDistributedRecoveryProbeStateGeneration(state.runtimeKey, generation)
+      if (!cleared) {
+        logStaleDistributedRecoveryProbeResult(state.runtimeKey, generation, 'gateway_account_distributed_precheck_stale_recovery_ignored')
+        return
+      }
       logger.info({
         event: 'gateway_account_distributed_precheck_recovered',
         accountId: account.id,
@@ -977,7 +996,11 @@ async function runDistributedGatewayAccountPrecheck(
       ...stateAfterResult,
       reason: accountPrecheckFailureReason(result)
     }
-    await persistDistributedRecoveryProbeState(state)
+    const persistedFailure = await persistDistributedRecoveryProbeState(state)
+    if (!persistedFailure) {
+      logStaleDistributedRecoveryProbeResult(state.runtimeKey, generation, 'gateway_account_distributed_precheck_stale_failure_write_ignored')
+      return
+    }
   }
 
   const finalState = await currentDistributedRecoveryProbeState(state.runtimeKey, generation)
@@ -988,11 +1011,15 @@ async function runDistributedGatewayAccountPrecheck(
   const currentConcurrency = await getAccountCurrentConcurrencyAsync(account.id)
   if (currentConcurrency > 0) {
     const reason = `事前确认探针连续失败，等待 ${currentConcurrency} 个在途请求结束后再标记临时不可调用；${finalState.reason}`.slice(0, 1000)
-    await persistDistributedRecoveryProbeState({
+    const persistedDefer = await persistDistributedRecoveryProbeState({
       ...finalState,
       reason,
       nextProbeAtMs: Date.now() + precheckConcurrencyDrainPollMs
     })
+    if (!persistedDefer) {
+      logStaleDistributedRecoveryProbeResult(state.runtimeKey, generation, 'gateway_account_distributed_precheck_stale_mark_defer_ignored')
+      return
+    }
     logger.warn({
       event: 'gateway_account_distributed_precheck_mark_deferred_for_concurrency',
       accountId: account.id,
@@ -1011,7 +1038,7 @@ async function runDistributedGatewayAccountPrecheck(
     reason,
     precheckStartedAt: new Date(finalState.startedAtMs).toISOString()
   })
-  await clearDistributedRecoveryProbeState(finalState.runtimeKey)
+  await clearDistributedRecoveryProbeStateGeneration(finalState.runtimeKey, generation)
   if (markResult.updated) {
     clearGatewayRuntimeCache()
   }
@@ -1178,16 +1205,40 @@ function logStalePrecheckResult(runtimeKey: string, staleGeneration: number, eve
   }, '账号事前确认探针旧 generation 结果已忽略')
 }
 
-async function persistDistributedRecoveryProbeState(state: DistributedRecoveryProbeState): Promise<void> {
-  await distributedRecoveryProbeStore.set(state, distributedRecoveryProbeStateTtlMs)
+async function persistDistributedRecoveryProbeState(state: DistributedRecoveryProbeState): Promise<boolean> {
+  const persisted = await distributedRecoveryProbeStore.set(state, distributedRecoveryProbeStateTtlMs)
+  if (!persisted) {
+    const current = await distributedRecoveryProbeStore.get(state.runtimeKey).catch(() => undefined)
+    rememberDistributedRecoveryProbeSuppressionState(state.runtimeKey, current)
+    if (current) {
+      scheduleDistributedRecoveryProbeSweep(Math.max(0, current.nextProbeAtMs - Date.now()))
+    }
+    return false
+  }
   rememberDistributedRecoveryProbeSuppressionState(state.runtimeKey, state)
   scheduleDistributedRecoveryProbeSweep(Math.max(0, state.nextProbeAtMs - Date.now()))
+  return true
 }
 
 async function clearDistributedRecoveryProbeState(runtimeKey: string): Promise<void> {
   await distributedRecoveryProbeStore.delete(runtimeKey)
   rememberDistributedRecoveryProbeSuppressionState(runtimeKey, undefined)
   clearGatewayRuntimeCache()
+}
+
+async function clearDistributedRecoveryProbeStateGeneration(runtimeKey: string, generation: number): Promise<boolean> {
+  const cleared = await distributedRecoveryProbeStore.deleteGeneration(runtimeKey, generation)
+  if (cleared) {
+    rememberDistributedRecoveryProbeSuppressionState(runtimeKey, undefined)
+    clearGatewayRuntimeCache()
+    return true
+  }
+  const current = await distributedRecoveryProbeStore.get(runtimeKey).catch(() => undefined)
+  rememberDistributedRecoveryProbeSuppressionState(runtimeKey, current)
+  if (current) {
+    scheduleDistributedRecoveryProbeSweep(Math.max(0, current.nextProbeAtMs - Date.now()))
+  }
+  return false
 }
 
 async function currentDistributedRecoveryProbeState(
@@ -1466,9 +1517,10 @@ export function degradeGatewayAccountForRuntimeFailure(
 }
 
 export function orderGatewayAccountsByRuntimeDegradation<T extends SuppressibleGatewayAccount>(
-  accounts: T[]
+  accounts: T[],
+  options: LocalAccountDegradationOrderOptions = {}
 ): LocalAccountDegradationOrderResult<T> {
-  return orderLocalAccountDegradations(accounts)
+  return orderLocalAccountDegradations(accounts, options)
 }
 
 export async function flushGatewayAccountSideEffectsForTest(): Promise<void> {

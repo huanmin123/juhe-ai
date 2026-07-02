@@ -118,9 +118,7 @@ if (isIngestWorker()) {
     startRuntimeLogFileImport()
   }
 } else if (isOpsWorker()) {
-  if (runtimeConfig.databaseDriver === 'sqlite') {
-    startAccountTestTaskQueue()
-  }
+  startAccountTestTaskQueue()
 }
 startBackgroundJobs()
 

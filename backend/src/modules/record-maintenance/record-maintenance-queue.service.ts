@@ -17,6 +17,7 @@ import {
 import { newId, nowIso, usageCatalogDatabasePath } from '../../storage/database.js'
 import {
   createBackgroundTaskRun,
+  createBackgroundTaskRunAsync,
   cleanupDeletedAccountRelatedRecordDataAsync,
   cleanupDeletedApiKeyRelatedRecordDataAsync,
   type AccountUsageSnapshotUpsertInput
@@ -498,13 +499,16 @@ function recordMaintenanceRedisStreamQueue(): RedisStreamQueue<RecordMaintenance
 
 async function processRecordMaintenanceJob(job: RecordMaintenanceJob): Promise<void> {
   if (isTemporaryRecordMaintenanceJob(job)) {
-    const run = createBackgroundTaskRun({
+    const input = {
       jobName: `record-maintenance:${job.type}`,
       jobType: job.type,
       workerRole: 'temporary-maintenance-worker',
       leaseKey: `record-maintenance:${job.type}`,
       params: { job }
-    })
+    }
+    const run = runtimeConfig.databaseDriver === 'postgres'
+      ? await createBackgroundTaskRunAsync(input)
+      : createBackgroundTaskRun(input)
     spawnTemporaryMaintenanceWorker(run.runId, job)
     logger.info({
       event: 'record_maintenance_temporary_worker_submitted',
@@ -523,9 +527,9 @@ export async function runRecordMaintenanceJobOnce(job: RecordMaintenanceJob): Pr
       const result = await cleanupDeletedApiKeyRelatedRecordDataAsync({
         apiKeyId: job.apiKeyId,
         systemAccountId: job.systemAccountId
-      }, async (input) => {
-        await requestStatsWriter({ type: 'cleanup_deleted_api_key_record_stats', input })
-      })
+      }, runtimeConfig.databaseDriver === 'postgres' ? undefined : async (input) => {
+          await requestStatsWriter({ type: 'cleanup_deleted_api_key_record_stats', input })
+        })
       const deferred = result.hasMore || Boolean(result.blockedReason)
       logger.info({
         event: deferred ? 'record_maintenance_api_key_cleanup_deferred' : 'record_maintenance_api_key_cleanup_completed',
@@ -541,9 +545,9 @@ export async function runRecordMaintenanceJobOnce(job: RecordMaintenanceJob): Pr
         relatedAccountIds: job.relatedAccountIds,
         authorizationIds: job.authorizationIds,
         teamScopeIds: job.teamScopeIds
-      }, async (input) => {
-        await requestStatsWriter({ type: 'cleanup_deleted_account_record_stats', input })
-      })
+      }, runtimeConfig.databaseDriver === 'postgres' ? undefined : async (input) => {
+          await requestStatsWriter({ type: 'cleanup_deleted_account_record_stats', input })
+        })
       const deferred = result.hasMore || Boolean(result.blockedReason)
       logger.info({
         event: deferred ? 'record_maintenance_account_cleanup_deferred' : 'record_maintenance_account_cleanup_completed',
@@ -643,8 +647,7 @@ function resolveTemporaryMaintenanceWorkerEntry(): { modulePath: string; execArg
 }
 
 function isTemporaryRecordMaintenanceJob(job: RecordMaintenanceJob): boolean {
-  void job
-  return false
+  return job.type === 'usage_records_cleanup' || job.type === 'non_business_data_cleanup'
 }
 
 type AccountUsageSnapshotUpsertJob = Extract<RecordMaintenanceJob, { type: 'account_usage_snapshot_upsert' }>

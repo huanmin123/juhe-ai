@@ -39,6 +39,7 @@ function policyForIndex(index: number): ActiveClientIpPolicy {
   return {
     id: 'policy_buffer_guard',
     ipHash: `ip_hash_${index}`,
+    policyType: 'blacklist',
     aggregateIpKey: `10.0.${Math.floor(index / 255)}.${index % 255}`,
     clientIp: `10.0.${Math.floor(index / 255)}.${index % 255}`,
     reason: 'buffer guard'

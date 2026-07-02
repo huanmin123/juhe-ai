@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash } from 'node:crypto'
 
 import { runtimeConfig } from '../../../config/runtime.js'
 import { createRuntimeStateStore } from '../../../shared/runtime-state-store.js'
@@ -84,9 +84,6 @@ const clientIpTotalThreshold = 20
 const clientIpInitialBlockMs = 30_000
 const clientIpMaxBlockMs = 10 * 60_000
 const maxSignaturesPerScope = 20
-const runtimeEntryLockTtlMs = 2000
-const runtimeEntryLockAttempts = 20
-const runtimeEntryLockBackoffMs = 5
 
 export function inspectGatewayPreAuthCircuit(input: GatewayPreAuthCircuitInput): GatewayCircuitDecision {
   const specificKey = preAuthSpecificKey(input)
@@ -227,29 +224,27 @@ export async function recordClientIpErrorCircuitSampleAsync(input: GatewayClient
     return { blocked: false }
   }
   const now = Date.now()
-  return withRuntimeEntryLock(key, async () => {
-    const entry = await getRuntimeEntry<ClientIpErrorEntry>(key) ?? {
-      key,
-      samples: [],
-      signatures: [],
-      blockCount: 0
-    }
-    const activeDecision = entryDecision(entry)
-    if (activeDecision.blocked) {
-      return activeDecision
-    }
-    appendSample(entry.samples, now, clientIpTotalWindowMs, clientIpTotalThreshold)
-    const signature = sampleSignature(input)
-    const signatureCount = upsertSignatureSample(entry, signature, now)
-    entry.lastReason = input.reason
+  const entry = await getRuntimeEntry<ClientIpErrorEntry>(key) ?? {
+    key,
+    samples: [],
+    signatures: [],
+    blockCount: 0
+  }
+  const activeDecision = entryDecision(entry)
+  if (activeDecision.blocked) {
+    return activeDecision
+  }
+  appendSample(entry.samples, now, clientIpTotalWindowMs, clientIpTotalThreshold)
+  const signature = sampleSignature(input)
+  const signatureCount = upsertSignatureSample(entry, signature, now)
+  entry.lastReason = input.reason
 
-    const shouldBlock = signatureCount >= clientIpSignatureThreshold || entry.samples.length >= clientIpTotalThreshold
-    if (shouldBlock) {
-      openBlock(entry, now, clientIpInitialBlockMs, clientIpMaxBlockMs)
-    }
-    await setRuntimeEntry(key, entry, clientIpMaxBlockMs + clientIpTotalWindowMs)
-    return entryDecision(entry)
-  })
+  const shouldBlock = signatureCount >= clientIpSignatureThreshold || entry.samples.length >= clientIpTotalThreshold
+  if (shouldBlock) {
+    openBlock(entry, now, clientIpInitialBlockMs, clientIpMaxBlockMs)
+  }
+  await setRuntimeEntry(key, entry, clientIpMaxBlockMs + clientIpTotalWindowMs)
+  return entryDecision(entry)
 }
 
 export function recordClientIpErrorCircuitSuccess(input: GatewayClientIpErrorCircuitInput): boolean {
@@ -378,24 +373,22 @@ async function recordPreAuthEntryAsync(
   threshold: number,
   now: number
 ): Promise<GatewayCircuitDecision> {
-  return withRuntimeEntryLock(key, async () => {
-    const entry = await getRuntimeEntry<PreAuthEntry>(key) ?? {
-      key,
-      samples: [],
-      blockCount: 0
-    }
-    const activeDecision = entryDecision(entry)
-    if (activeDecision.blocked) {
-      return activeDecision
-    }
-    appendSample(entry.samples, now, preAuthWindowMs, threshold)
-    entry.lastReason = reason
-    if (entry.samples.length >= threshold) {
-      openBlock(entry, now, preAuthInitialBlockMs, preAuthMaxBlockMs)
-    }
-    await setRuntimeEntry(key, entry, preAuthMaxBlockMs + preAuthWindowMs)
-    return entryDecision(entry)
-  })
+  const entry = await getRuntimeEntry<PreAuthEntry>(key) ?? {
+    key,
+    samples: [],
+    blockCount: 0
+  }
+  const activeDecision = entryDecision(entry)
+  if (activeDecision.blocked) {
+    return activeDecision
+  }
+  appendSample(entry.samples, now, preAuthWindowMs, threshold)
+  entry.lastReason = reason
+  if (entry.samples.length >= threshold) {
+    openBlock(entry, now, preAuthInitialBlockMs, preAuthMaxBlockMs)
+  }
+  await setRuntimeEntry(key, entry, preAuthMaxBlockMs + preAuthWindowMs)
+  return entryDecision(entry)
 }
 
 function openBlock(entry: { blockCount: number; blockedUntilMs?: number }, now: number, initialBlockMs: number, maxBlockMs: number): void {
@@ -525,36 +518,12 @@ function runtimeEntryKey(key: string): string {
   return `entry:${key}`
 }
 
-function runtimeEntryLockKey(key: string): string {
-  return `lock:${key}`
-}
-
 async function getRuntimeEntry<T extends PreAuthEntry | ClientIpErrorEntry>(key: string): Promise<T | undefined> {
   return clientIpErrorCircuitStateStore.getJson<T>(runtimeEntryKey(key))
 }
 
 async function setRuntimeEntry<T extends PreAuthEntry | ClientIpErrorEntry>(key: string, entry: T, ttlMs: number): Promise<void> {
   await clientIpErrorCircuitStateStore.setJson(runtimeEntryKey(key), entry, ttlMs)
-}
-
-async function withRuntimeEntryLock<T>(key: string, operation: () => Promise<T>): Promise<T> {
-  const token = randomUUID()
-  const lockKey = runtimeEntryLockKey(key)
-  for (let attempt = 0; attempt < runtimeEntryLockAttempts; attempt += 1) {
-    if (await clientIpErrorCircuitStateStore.acquireLock(lockKey, { ttlMs: runtimeEntryLockTtlMs, token })) {
-      try {
-        return await operation()
-      } finally {
-        await clientIpErrorCircuitStateStore.releaseLock(lockKey, token).catch(() => undefined)
-      }
-    }
-    await delay(runtimeEntryLockBackoffMs)
-  }
-  throw new Error('客户端 IP 错误熔断运行态锁等待超时')
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 function normalizeSignaturePart(value: string): string {

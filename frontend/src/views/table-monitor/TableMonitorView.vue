@@ -72,7 +72,7 @@
       </a-col>
     </a-row>
 
-    <a-card class="page-card history-card" title="四库增长趋势">
+    <a-card class="page-card history-card" title="存储增长趋势">
       <DeferredRender
         v-if="hasHistoryRows"
         :active="pageActive"
@@ -309,11 +309,7 @@ async function submitNonBusinessDataCleanup() {
   }
   cleanupSubmitting.value = true
   try {
-    const result = await api.tableMonitor.cleanupNonBusinessData({
-      cutoffAt,
-      batchSize: 10000,
-      maxBatches: 100
-    })
+    const result = await api.tableMonitor.cleanupNonBusinessData({ cutoffAt })
     cleanupResult.value = result
     if (result.queued) {
       message.success('非业务数据清理任务已提交后台')
@@ -363,25 +359,24 @@ function defaultCleanupCutoffAt() {
   return dayjs().subtract(7, 'day').endOf('day')
 }
 
-function renderHistoryChart() {
+async function renderHistoryChart() {
   if (!pageActive.value) return
-  void nextTick(() => {
-    if (!pageActive.value) return
-    if (!hasHistoryRows.value) {
-      disposeChart(historyChart)
-      return
-    }
-    const chart = ensureChartFromElement(historyChartElement.value, historyChart)
-    if (!chart) return
-    chart.setOption(buildTableMonitorHistoryChartOption({
-      rows: databaseHistoryRows.value,
-      roles: databaseSummaryRoles
-    }), { notMerge: true })
-  })
+  await nextTick()
+  if (!pageActive.value) return
+  if (!hasHistoryRows.value) {
+    disposeChart(historyChart)
+    return
+  }
+  const chart = await ensureChartFromElement(historyChartElement.value, historyChart, () => pageActive.value)
+  if (!chart || !pageActive.value) return
+  chart.setOption(buildTableMonitorHistoryChartOption({
+    rows: databaseHistoryRows.value,
+    roles: databaseSummaryRoles
+  }), { notMerge: true })
 }
 
-function renderHistoryCharts() {
-  renderHistoryChart()
+async function renderHistoryCharts() {
+  await renderHistoryChart()
 }
 
 function disposeHistoryCharts() {

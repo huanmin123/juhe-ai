@@ -9,7 +9,7 @@ import {
   clearAccountStreamFailureStateWithCacheInvalidation,
   handleStreamFailure,
 } from '../runtime/account-effects.js'
-import { rememberCodexTurnStreamFailure } from '../client-profiles/codex-turn-retry.service.js'
+import { rememberCodexTurnStreamFailureAsync } from '../client-profiles/codex-turn-retry.service.js'
 import { downstreamConnectionClosedMessage } from './client-abort.js'
 import type { OpenAIGatewayClientStrategyContext } from '../client-profiles/strategy.js'
 import {
@@ -426,7 +426,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       }
     }
     if (shouldRememberCodexTurnStreamFailure(streamResult, clientStrategy)) {
-      const codexTurnFailure = rememberCodexTurnStreamFailure(clientStrategy, account.id, {
+      const codexTurnFailure = await rememberCodexTurnStreamFailureAsync(clientStrategy, account.id, {
         errorCode: streamResult.responseInspection?.upstreamErrorCode ?? streamResult.errorCode,
         message: streamResult.message
       })

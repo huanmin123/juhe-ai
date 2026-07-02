@@ -492,13 +492,13 @@ function providerName(providerCode?: string) {
   return providerDisplayName(providerCode, availableProviders.value)
 }
 
-function renderUsageTrendChart() {
+async function renderUsageTrendChart() {
   if (!overview.value || !hasTrendData.value) {
     disposeChart(trendChart)
     return
   }
-  const chart = ensureChart(trendChartRef, trendChart)
-  if (!chart) return
+  const chart = await ensureChart(trendChartRef, trendChart, () => pageActive.value)
+  if (!chart || !overview.value || !pageActive.value) return
   chart.setOption(buildAccountUsageTrendOption(overview.value, selectedMetric.value, visibleTrendRows.value), { notMerge: true })
 }
 

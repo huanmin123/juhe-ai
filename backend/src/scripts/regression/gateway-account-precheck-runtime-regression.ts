@@ -218,6 +218,23 @@ function testRuntimeDegradationOrderingAndSuccessRecovery(): void {
   )
 
   gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
+  const modelDirectPrimary = createRuntimeAccount('runtime-degraded-model-direct', { priority: 0 })
+  const modelUnrestrictedBackup = createRuntimeAccount('runtime-normal-model-unrestricted', { priority: 0 })
+  activateRuntimeDegradation(modelDirectPrimary, '模拟直连模型匹配账号近期失败')
+  const modelBoundaryOrder = gatewaySideEffects.orderGatewayAccountsByRuntimeDegradation([modelDirectPrimary, modelUnrestrictedBackup], {
+    modelRankByAccountId: new Map([
+      [modelDirectPrimary.id, 0],
+      [modelUnrestrictedBackup.id, 2]
+    ])
+  })
+  assert.equal(modelBoundaryOrder.applied, true, '直连模型匹配账号降级时仍应报告调度降级排序已参与')
+  assert.deepEqual(
+    modelBoundaryOrder.accounts.map((account) => account.id),
+    [modelDirectPrimary.id, modelUnrestrictedBackup.id],
+    '运行态降级不能让低模型匹配等级账号越过直连匹配账号'
+  )
+
+  gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
   activateRuntimeDegradation(primary, '恢复原测试主账号降级状态')
   activateRuntimeDegradation(backup, '模拟备选账号近期失败')
   const allDegraded = gatewaySideEffects.orderGatewayAccountsByRuntimeDegradation([primary, backup])

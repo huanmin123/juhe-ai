@@ -6,7 +6,7 @@ import { loadAccountCurrentConcurrencyByIds, loadAccountCurrentConcurrencyByIdsA
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { parseAccountAvailabilityScheduleJson } from './account-availability-schedule.js'
 import { hydrateAccountRowsWithRuntimeState } from './account-read.repository.js'
-import { disableExpiredAccounts } from './account-runtime-status.js'
+import { disableExpiredAccounts, disableExpiredAccountsAsync } from './account-runtime-status.js'
 import {
   accountGroupBindingFromRow,
   accountGroupBinding,
@@ -25,7 +25,7 @@ import { isCoolingAccountStatus } from './account-status.js'
 import { decryptJson } from './crypto.js'
 import { getBusinessDatabase, nowIso } from './database.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
-import { refreshGroupAccountStatsAfterWrite } from './group-account-stats-write-invalidation.js'
+import { refreshGroupAccountStatsAfterWrite, refreshGroupAccountStatsAfterWriteAsync } from './group-account-stats-write-invalidation.js'
 import { loadModelMappingsByAccountIdsAsync } from './account-model-mappings.repository.js'
 import { loadSupportedModelsByAccountIdsAsync } from './account-supported-models.repository.js'
 import { getPostgresPool } from './postgres-client.js'
@@ -37,7 +37,7 @@ import { invalidateAccountLookupCache, loadSystemAccountNameMapByIds, loadSystem
 import type { AccountListRow } from './repository-row-types.js'
 import { parseRequestQuotaLimitsJson } from './request-quota-limits.js'
 import { DEFAULT_SYSTEM_SETTINGS } from './schema-defaults.js'
-import { getSettings } from './settings.repository.js'
+import { getSettings, getSettingsAsync } from './settings.repository.js'
 import { emptyAccountUsageSummary } from './usage-stats-helpers.js'
 import { optionalString } from './value-utils.js'
 
@@ -90,6 +90,7 @@ export async function findAccountForCooldownRetestAsync(accountId: string): Prom
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return findAccountForCooldownRetest(accountId)
   }
+  await disableExpiredAccountsAsync()
   const client = createPostgresDatabaseClient(await getPostgresPool())
   return (await cooldownRetestDueAccountSummariesAsync(client, await queryAccountsDueForCooldownRetestAsync(client, 1, accountId)))[0]
 }
@@ -104,6 +105,7 @@ export async function listAccountsDueForCooldownRetestAsync(limit = 20): Promise
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listAccountsDueForCooldownRetest(limit)
   }
+  await disableExpiredAccountsAsync()
   const normalizedLimit = normalizedCooldownRetestLimit(limit)
   const client = createPostgresDatabaseClient(await getPostgresPool())
   return (await cooldownRetestDueAccountSummariesAsync(client, await queryAccountsDueForCooldownRetestAsync(client, cooldownRetestScanLimit(normalizedLimit)))).slice(0, normalizedLimit)
@@ -210,7 +212,10 @@ export async function recordCooldownAccountRetestFailureAsync(id: string, input:
   const failureCount = Math.max(0, current.cooldownRetestFailureCount ?? 0) + 1
   const lastStatusCode = typeof input.statusCode === 'number' && Number.isFinite(input.statusCode) ? Math.trunc(input.statusCode) : null
   const observationStartedAt = current.cooldownRetestObservationStartedAt ?? now
-  const recovery = cooldownRetestRecoveryPlan(failureCount, input, nowDate, observationStartedAt)
+  const recovery = cooldownRetestRecoveryPlan(failureCount, {
+    ...input,
+    maxPauseMinutes: input.maxPauseMinutes ?? await defaultTemporaryUnschedulableMinutesAsync()
+  }, nowDate, observationStartedAt)
 
   const cooldownUntil = new Date(nowDate.getTime() + recovery.backoffSeconds * 1000).toISOString()
   const persistedErrorCode = recovery.stage === 'long_term'
@@ -239,7 +244,7 @@ export async function recordCooldownAccountRetestFailureAsync(id: string, input:
   `, [cooldownUntil, persistedErrorCode, cooldownMessage, failureCount, observationStartedAt, now, lastStatusCode, now, id, current.status])
   const changed = Number(result.changes ?? 0) > 0
   if (changed) {
-    refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_cooldown_retest_backoff' })
+    await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [id], reason: 'account_cooldown_retest_backoff' }, client)
     invalidateAccountLookupCache(id)
     invalidateGatewayRuntimeAfterBusinessWrite('account_cooldown_retest_backoff')
   }
@@ -273,6 +278,7 @@ function findAccountCooldownRetestState(accountId: string): AccountSummary | und
 }
 
 async function findAccountCooldownRetestStateAsync(accountId: string): Promise<AccountSummary | undefined> {
+  await disableExpiredAccountsAsync()
   const client = createPostgresDatabaseClient(await getPostgresPool())
   return (await cooldownRetestAccountSummariesAsync(client, await queryAccountCooldownRetestStateAsync(client, accountId)))[0]
 }
@@ -872,6 +878,17 @@ function defaultTemporaryUnschedulableMinutes(): number {
   const value = runtimeConfig.databaseDriver === 'postgres'
     ? defaultSystemSettingsByKey.get('defaultTemporaryUnschedulableMinutes')
     : getSettings().defaultTemporaryUnschedulableMinutes
+  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
+    throw new Error('defaultTemporaryUnschedulableMinutes 必须是整数')
+  }
+  if (value < 1 || value > 1440) {
+    throw new Error('defaultTemporaryUnschedulableMinutes 必须在 1 到 1440 之间')
+  }
+  return value
+}
+
+async function defaultTemporaryUnschedulableMinutesAsync(): Promise<number> {
+  const value = (await getSettingsAsync()).defaultTemporaryUnschedulableMinutes
   if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
     throw new Error('defaultTemporaryUnschedulableMinutes 必须是整数')
   }

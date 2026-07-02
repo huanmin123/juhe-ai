@@ -1,7 +1,7 @@
 import type { AccountStatus } from '../domain/types.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { isCoolingAccountStatus } from './account-status.js'
-import { getSettings } from './settings.repository.js'
+import { getSettings, getSettingsAsync } from './settings.repository.js'
 
 const temporaryUnavailableInitialBackoffSeconds = 3
 
@@ -12,7 +12,15 @@ export function isAccountExpired(accountExpiresAt: string | null | undefined, no
 }
 
 export function defaultTemporaryUnschedulableMinutes(): number {
-  const value = getSettings().defaultTemporaryUnschedulableMinutes
+  return normalizeDefaultTemporaryUnschedulableMinutes(getSettings().defaultTemporaryUnschedulableMinutes)
+}
+
+export async function defaultTemporaryUnschedulableMinutesAsync(): Promise<number> {
+  const settings = await getSettingsAsync()
+  return normalizeDefaultTemporaryUnschedulableMinutes(settings.defaultTemporaryUnschedulableMinutes)
+}
+
+function normalizeDefaultTemporaryUnschedulableMinutes(value: unknown): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
     throw new Error('defaultTemporaryUnschedulableMinutes 必须是整数')
   }
@@ -35,6 +43,17 @@ export function initialCooldownUntilForStatus(status: AccountStatus, nowMs = Dat
   }
   if (status === 'rate_limited') {
     return new Date(nowMs + defaultTemporaryUnschedulableMinutes() * 60_000).toISOString()
+  }
+  return undefined
+}
+
+export async function initialCooldownUntilForStatusAsync(status: AccountStatus, nowMs = Date.now()): Promise<string | undefined> {
+  if (status === 'temporary_unavailable') {
+    return temporaryUnavailableRuntimeState(nowMs).cooldownUntil
+  }
+  if (status === 'rate_limited') {
+    const minutes = await defaultTemporaryUnschedulableMinutesAsync()
+    return new Date(nowMs + minutes * 60_000).toISOString()
   }
   return undefined
 }

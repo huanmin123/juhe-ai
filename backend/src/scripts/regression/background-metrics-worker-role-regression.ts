@@ -53,6 +53,8 @@ assertRoleBlockContainsOnly('stats-worker', [
   'usage-stats-consistency-check'
 ])
 assertRolePostgresBlockContains('stats-worker', 'table-storage-monitor', 'PG 高性能 stats-worker 必须注册 table-storage-monitor，避免生产表监控无采样数据')
+assertRolePostgresBlockContains('stats-worker', 'group-account-stats-refresh', 'PG 高性能 stats-worker 必须注册 group-account-stats-refresh，避免分组账户统计缓存长期不刷新')
+assert(backgroundJobsSource.includes("reason: 'stats_worker_startup_refresh'"), 'PG stats-worker 首次分组统计刷新必须写全量脏标记，修复已有统计缓存缺失或旧 0 值')
 assertRoleBlockContainsOnly('ops-worker', [
   'proxy-latency-refresh',
   'account-health-check',

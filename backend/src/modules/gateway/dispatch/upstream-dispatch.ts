@@ -56,6 +56,7 @@ import { GatewayAgentGuidanceResponse, GatewayLocalProtocolResponse, GatewayRequ
 import { recordGatewayAccountApiKeyFailure } from '../runtime/account-api-key-effects.service.js'
 import { waitForHighConcurrencyGroupCapacity } from '../runtime/high-concurrency-queue.service.js'
 import { preserveGatewayAccountDispatchPriorityTiers } from '../runtime/account-dispatch-priority-order.js'
+import type { GatewayAccountModelPriority } from './model-filter.js'
 
 export interface OpenAIUpstreamDispatchResult {
   account: UpstreamAccount
@@ -106,7 +107,8 @@ export async function fetchFirstAvailableUpstream(
   requestLane: OpenAIGatewayRequestLane = 'text',
   groupSchedulingPolicy?: GroupSchedulingPolicy,
   accountStateMutationEnabled = true,
-  requestClientCompatibility?: ClientCompatibilityCapability
+  requestClientCompatibility?: ClientCompatibilityCapability,
+  modelPriority?: GatewayAccountModelPriority
 ): Promise<OpenAIUpstreamDispatchResult> {
   const sameAccountRetryPolicy = fixedRetryPolicy(
     'gateway_temporary_unschedulable_same_account_retry',
@@ -123,7 +125,8 @@ export async function fetchFirstAvailableUpstream(
   const failedAccountIds = new Set<string>()
   const bypassLocalSuppression = isAccountProbeTrafficSource(usageContext.trafficSource)
   let dispatchAccounts = orderGatewayAccountsByRuntimeDegradation(
-    await orderAccountsForRequestLaneAsync(accounts, requestLane, groupSchedulingPolicy)
+    await orderAccountsForRequestLaneAsync(accounts, requestLane, groupSchedulingPolicy, modelPriority),
+    { modelRankByAccountId: modelPriority?.rankByAccountId }
   ).accounts
 
   while (dispatchAccounts.length > 0) {
@@ -520,7 +523,8 @@ export async function fetchFirstAvailableUpstream(
       if (queueWait.ready) {
         concurrencyRetryWaitBudgetMs = accountConcurrencyRetryBudgetMs
         dispatchAccounts = orderGatewayAccountsByRuntimeDegradation(
-          await orderAccountsForRequestLaneAsync(dispatchAccounts, requestLane, groupSchedulingPolicy)
+          await orderAccountsForRequestLaneAsync(dispatchAccounts, requestLane, groupSchedulingPolicy, modelPriority),
+          { modelRankByAccountId: modelPriority?.rankByAccountId }
         ).accounts
         continue
       }
@@ -555,7 +559,9 @@ export async function fetchFirstAvailableUpstream(
       signal
     })
     if (!wait.state.allSuppressed) {
-      dispatchAccounts = orderGatewayAccountsByRuntimeDegradation(wait.state.accounts).accounts
+      dispatchAccounts = orderGatewayAccountsByRuntimeDegradation(wait.state.accounts, {
+        modelRankByAccountId: modelPriority?.rankByAccountId
+      }).accounts
       continue
     }
 
@@ -795,7 +801,8 @@ async function shouldRetrySameAccountAfterFailure(
 async function orderAccountsForRequestLaneAsync(
   accounts: UpstreamAccount[],
   requestLane: OpenAIGatewayRequestLane,
-  groupSchedulingPolicy?: GroupSchedulingPolicy
+  groupSchedulingPolicy?: GroupSchedulingPolicy,
+  modelPriority?: GatewayAccountModelPriority
 ): Promise<UpstreamAccount[]> {
   if (requestLane !== 'image' || accounts.length < 2) {
     return accounts
@@ -807,7 +814,9 @@ async function orderAccountsForRequestLaneAsync(
     return imageLaneBusyRank(left, currentConcurrency, imageLaneConcurrency, groupSchedulingPolicy)
       - imageLaneBusyRank(right, currentConcurrency, imageLaneConcurrency, groupSchedulingPolicy)
   })
-  return preserveGatewayAccountDispatchPriorityTiers(accounts, orderedAccounts)
+  return preserveGatewayAccountDispatchPriorityTiers(accounts, orderedAccounts, {
+    modelRankByAccountId: modelPriority?.rankByAccountId
+  })
 }
 
 function imageLaneBusyRank(

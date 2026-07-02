@@ -62,6 +62,7 @@ function main(): void {
     printHelp()
     return
   }
+  assertSqliteMockdataCli()
 
   const startedAt = Date.now()
   const businessDatabase = getBusinessDatabase()
@@ -150,8 +151,15 @@ function printHelp(): void {
 说明：
   - 默认清理上一批 Mockdata，仅重建 ${namePrefix} 前缀和 ${idPrefix} ID 前缀的数据。
   - 默认给 admin 用户生成近 31 天业务数据，并重建用量统计、排行、账号质量、运行日志分面和监控窗口。
+  - 仅用于本地 SQLite standalone 模式；PostgreSQL 高性能模式请使用 PG smoke/readiness 脚本或后台接口准备临时数据。
   - 生成的本地网关 Key 会写入 backend/data/mockdata-summary.json。
 `)
+}
+
+function assertSqliteMockdataCli(): void {
+  if (runtimeConfig.databaseDriver === 'postgres' || runtimeConfig.runtimeMode === 'performance') {
+    throw new Error('Mockdata 脚本仅支持本地 SQLite standalone 模式；PostgreSQL 高性能模式请使用 PG smoke/readiness 脚本或后台接口准备临时数据')
+  }
 }
 
 function createBusinessMockdata(admin: SystemAccountSummary, adminAccess: AccessScope): CreatedMockdata {

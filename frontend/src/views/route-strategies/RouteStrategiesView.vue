@@ -244,9 +244,9 @@
               </button>
               <span v-else class="route-strategy-binding-drag-placeholder"></span>
             </div>
-            <a-select
+            <GroupSelect
               v-model:value="binding.groupId"
-              show-search
+              v-model:selected-group="binding.group"
               :filter-option="false"
               :loading="groupOptionsLoading"
               :options="groupOptions"
@@ -426,6 +426,7 @@ import type { RouteStrategyMutationPayload } from '@/api/domains/routeStrategies
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
+import GroupSelect from '@/components/GroupSelect.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { filterModelOption, useProviderModelSelectOptions } from '@/composables/useProviderModelSelectOptions'
@@ -435,6 +436,7 @@ import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime, formatNumber } from '@/shared/formatters'
+import type { GroupSelection } from '@/shared/groupLabelCache'
 import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import type {
   ApiKeyHybridLevelRoute,
@@ -454,6 +456,7 @@ import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 interface BindingFormRow {
   key: string
   groupId: string
+  group?: GroupSelection
   priority: number
   weight: number
   status: 'active' | 'disabled'
@@ -794,7 +797,7 @@ function openEdit(record: RouteStrategySummary) {
   form.mode = record.mode
   form.status = record.status
   form.groupBindings = record.groupBindings.length
-    ? record.groupBindings.map((binding) => createBindingRow(binding.groupId, binding.priority, binding.weight, binding.status))
+    ? record.groupBindings.map((binding) => createBindingRow(binding.groupId, binding.priority, binding.weight, binding.status, binding.groupName))
     : [createBindingRow()]
   form.hybrid = hybridRoutingFormFromConfig(record.hybridRoutingConfig)
   normalizeBindingRowsForMode()
@@ -981,10 +984,17 @@ function bindingRoleColor(index: number): string {
   return index === 0 ? 'blue' : 'orange'
 }
 
-function createBindingRow(groupId = '', priority = form.groupBindings.length + 1, weight = 1, status: 'active' | 'disabled' = 'active'): BindingFormRow {
+function createBindingRow(
+  groupId = '',
+  priority = form.groupBindings.length + 1,
+  weight = 1,
+  status: 'active' | 'disabled' = 'active',
+  groupName?: string
+): BindingFormRow {
   return {
     key: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
     groupId,
+    group: groupId && groupName?.trim() ? { id: groupId, name: groupName.trim() } : undefined,
     priority,
     weight,
     status

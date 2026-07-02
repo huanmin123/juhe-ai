@@ -1793,6 +1793,7 @@ function isActiveClientIpPolicy(value: unknown): value is ActiveClientIpPolicy {
   const record = value as Record<string, unknown>
   return typeof record.id === 'string'
     && typeof record.ipHash === 'string'
+    && (record.policyType === 'blacklist' || record.policyType === 'allowlist')
     && typeof record.aggregateIpKey === 'string'
     && typeof record.clientIp === 'string'
     && (record.reason === undefined || typeof record.reason === 'string')

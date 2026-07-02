@@ -93,8 +93,11 @@ export {
 export {
   GROUP_ACCOUNT_STATS_DIRTY_ALL,
   markAllGroupAccountStatsDirty,
+  markAllGroupAccountStatsDirtyAsync,
   markGroupAccountStatsDirty,
+  markGroupAccountStatsDirtyAsync,
   markGroupAccountStatsDirtyByAccountIds,
+  markGroupAccountStatsDirtyByAccountIdsAsync,
   refreshDirtyGroupAccountStatsCache,
   refreshDirtyGroupAccountStatsCacheAsync,
   refreshDirtyGroupAccountStatsCacheWithWriter,
@@ -383,7 +386,7 @@ async function createPostgresUsageStatsAuthorizationLookup(
         ON instance_accounts.authorization_instance_authorization_id = authorizations.id
         AND instance_accounts.system_account_id = authorizations.grantee_system_account_id
       WHERE authorizations.resource_type = 'account'
-        AND authorizations.id = ANY(?)
+        AND authorizations.id = ANY(?::text[])
     `, [chunk])
     for (const row of lookupRows) {
       if (row.id && row.resource_id) {
@@ -1869,6 +1872,62 @@ export function checkUsageStatsConsistency(sampleLimit = 20): UsageStatsConsiste
       `${daily.statDate}T00`,
       `${nextDateKey(daily.statDate)}T00`
     ) as unknown as Record<string, unknown> | undefined
+    issues.push(...compareConsistencyRows(daily, consistencyStatsRow(hourly ?? {})))
+  }
+  return issues
+}
+
+export async function checkUsageStatsConsistencyAsync(sampleLimit = 20): Promise<UsageStatsConsistencyIssue[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return checkUsageStatsConsistency(sampleLimit)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const timezone = await usageStatsTimezoneAsync()
+  const samples = await client.query<Record<string, unknown>>(`
+    SELECT system_account_id, scope_type, scope_id, stat_date,
+      request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens,
+      CAST(cache_read_cost_usd AS double precision) AS cache_read_cost_usd,
+      cache_write_tokens, cache_write_1h_tokens,
+      CAST(cache_write_cost_usd AS double precision) AS cache_write_cost_usd,
+      thinking_tokens, input_image_tokens, output_image_tokens,
+      CAST(total_cost_usd AS double precision) AS total_cost_usd
+    FROM juhe_stats.usage_stats_daily
+    WHERE stat_date < ?
+    ORDER BY updated_at DESC, stat_date DESC, system_account_id ASC, scope_type ASC, scope_id ASC
+    LIMIT ?
+  `, [dateKey(new Date(), timezone), boundedConsistencySampleLimit(sampleLimit)])
+  const issues: UsageStatsConsistencyIssue[] = []
+  for (const sample of samples) {
+    const daily = consistencyStatsRow(sample)
+    const hourly = await client.one<Record<string, unknown>>(`
+      SELECT
+        COALESCE(SUM(request_count), 0) AS request_count,
+        COALESCE(SUM(success_count), 0) AS success_count,
+        COALESCE(SUM(error_count), 0) AS error_count,
+        COALESCE(SUM(input_tokens), 0) AS input_tokens,
+        COALESCE(SUM(output_tokens), 0) AS output_tokens,
+        COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+        COALESCE(SUM(cache_read_cost_usd), 0)::double precision AS cache_read_cost_usd,
+        COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+        COALESCE(SUM(cache_write_1h_tokens), 0) AS cache_write_1h_tokens,
+        COALESCE(SUM(cache_write_cost_usd), 0)::double precision AS cache_write_cost_usd,
+        COALESCE(SUM(thinking_tokens), 0) AS thinking_tokens,
+        COALESCE(SUM(input_image_tokens), 0) AS input_image_tokens,
+        COALESCE(SUM(output_image_tokens), 0) AS output_image_tokens,
+        COALESCE(SUM(total_cost_usd), 0)::double precision AS total_cost_usd
+      FROM juhe_stats.usage_stats_hourly
+      WHERE system_account_id = ?
+        AND scope_type = ?
+        AND scope_id = ?
+        AND stat_hour >= ?
+        AND stat_hour < ?
+    `, [
+      daily.systemAccountId,
+      daily.scopeType,
+      daily.scopeId,
+      `${daily.statDate}T00`,
+      `${nextDateKey(daily.statDate)}T00`
+    ])
     issues.push(...compareConsistencyRows(daily, consistencyStatsRow(hourly ?? {})))
   }
   return issues

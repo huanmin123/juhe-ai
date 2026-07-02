@@ -8,7 +8,6 @@ export interface RedisStreamQueueOptions<T> {
   streamKey: string
   groupName: string
   consumerName?: string
-  maxLen?: number
   readCount?: number
   blockMs?: number
   claimIdleMs?: number
@@ -36,7 +35,6 @@ export class RedisStreamQueue<T> {
   private readonly streamKey: string
   private readonly groupName: string
   private readonly consumerName: string
-  private readonly maxLen: number
   private readonly readCount: number
   private readonly blockMs: number
   private readonly claimIdleMs: number
@@ -50,7 +48,6 @@ export class RedisStreamQueue<T> {
     this.streamKey = options.streamKey
     this.groupName = options.groupName
     this.consumerName = options.consumerName ?? defaultRedisStreamConsumerName(options.groupName)
-    this.maxLen = options.maxLen ?? runtimeConfig.queue.redisStreamMaxLen
     this.readCount = options.readCount ?? runtimeConfig.queue.redisStreamReadCount
     this.blockMs = options.blockMs ?? runtimeConfig.queue.redisStreamBlockMs
     this.claimIdleMs = options.claimIdleMs ?? runtimeConfig.queue.redisStreamClaimIdleMs
@@ -61,11 +58,7 @@ export class RedisStreamQueue<T> {
 
   async enqueue(payload: T): Promise<string> {
     const client = await getRedisClient(this.redisUrl)
-    const command = ['XADD', this.streamKey]
-    if (this.maxLen > 0) {
-      command.push('MAXLEN', '~', String(this.maxLen))
-    }
-    command.push('*', 'payload', this.encode(payload))
+    const command = ['XADD', this.streamKey, '*', 'payload', this.encode(payload)]
     const id = await client.sendCommand(command)
     return String(id ?? '')
   }

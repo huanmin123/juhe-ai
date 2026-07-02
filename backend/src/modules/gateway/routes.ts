@@ -46,7 +46,7 @@ import {
   handleStreamUpstreamResponse,
   type StreamServerRetryReason
 } from './response/finalization.js'
-import { rememberCodexTurnStreamFailure } from './client-profiles/codex-turn-retry.service.js'
+import { rememberCodexTurnStreamFailureAsync } from './client-profiles/codex-turn-retry.service.js'
 import { sendGatewayFailureResponse } from './response/failure-response.js'
 import { handleUpstreamRequestError } from './response/failure-dispatch.js'
 import { handleGatewayRequestKnownErrorResponse } from './request/error-response.js'
@@ -364,6 +364,7 @@ export async function handleOpenAIGatewayRequest(
         sessionAffinityKey,
         clientStrategy,
         clientIpAccountAvoidanceTracker,
+        modelPriority,
         responseInspectionPolicies,
         codexTurnAccountAvoidanceApplied,
         codexTurnAvoidedAccountIds
@@ -447,7 +448,8 @@ export async function handleOpenAIGatewayRequest(
           currentPreflight.requestLane,
           currentPreflight.groupSchedulingPolicy,
           options.disableAccountStateMutation !== true,
-          currentPreflight.clientStrategy.requestClientCompatibility
+          currentPreflight.clientStrategy.requestClientCompatibility,
+          modelPriority
         )
       } catch (error) {
         if (error instanceof UpstreamAttemptError) {
@@ -814,7 +816,7 @@ export async function handleOpenAIGatewayRequest(
           failedAccountIds: error.failedAccountIds
         }
       })
-      sendPreCommitStreamRetryExhaustedResponse({
+      await sendPreCommitStreamRetryExhaustedResponse({
         req,
         res,
         auditCapture,
@@ -1027,7 +1029,7 @@ async function sendStreamServerRetryExhaustedResponse(input: {
 }): Promise<void> {
   const message = input.message || '服务端流式重试未找到可用账号'
   if (input.retryReason === 'codex_pre_commit_stream_failure') {
-    sendPreCommitStreamRetryExhaustedResponse({
+    await sendPreCommitStreamRetryExhaustedResponse({
       req: input.req,
       res: input.res,
       auditCapture: input.auditCapture,
@@ -1044,7 +1046,7 @@ async function sendStreamServerRetryExhaustedResponse(input: {
   }
   if (input.retryReason === 'pre_commit_stream_failure') {
     if (gatewayProtocolClientErrorProtocolForRequest(input.req) === 'anthropic' || !isOpenAIChatCompletionsRequest(input.req)) {
-      sendPreCommitStreamRetryExhaustedResponse({
+      await sendPreCommitStreamRetryExhaustedResponse({
         req: input.req,
         res: input.res,
         auditCapture: input.auditCapture,
@@ -1156,7 +1158,7 @@ function isOpenAIChatCompletionsRequest(req: Request): boolean {
   return normalizedPath === '/chat/completions'
 }
 
-function sendPreCommitStreamRetryExhaustedResponse(input: {
+async function sendPreCommitStreamRetryExhaustedResponse(input: {
   req: Request
   res: Response
   auditCapture: ReturnType<typeof createAuditCapture>
@@ -1168,7 +1170,7 @@ function sendPreCommitStreamRetryExhaustedResponse(input: {
   uncommittedResponseBody?: Buffer
   accountId?: string
   clientStrategy?: OpenAIGatewayDispatchContext['clientStrategy']
-}): void {
+}): Promise<void> {
   const protocol = gatewayProtocolClientErrorProtocolForRequest(input.req)
   const clientVisibleMessage = clientVisiblePreCommitStreamRetryMessage(input)
   const failureEvent = writeGatewayStreamFailureEvent(input.res, clientVisibleMessage, input.errorCode, protocol)
@@ -1185,7 +1187,7 @@ function sendPreCommitStreamRetryExhaustedResponse(input: {
         : input.errorCode === gatewayStreamClientRetryErrorCode ? 'codex_retryable_sse' : 'openai_stream_failure_sse'
     }
   })
-  rememberCodexTurnFailureWhenClientRetryIsVisible(input)
+  await rememberCodexTurnFailureWhenClientRetryIsVisible(input)
   if (!input.res.headersSent) {
     input.res.status(200)
     input.res.setHeader('content-type', 'text/event-stream; charset=utf-8')
@@ -1233,13 +1235,13 @@ function clientVisiblePreCommitStreamRetryMessage(input: {
   return input.message
 }
 
-function rememberCodexTurnFailureWhenClientRetryIsVisible(input: {
+async function rememberCodexTurnFailureWhenClientRetryIsVisible(input: {
   auditCapture: ReturnType<typeof createAuditCapture>
   clientStrategy?: OpenAIGatewayDispatchContext['clientStrategy']
   accountId?: string
   errorCode?: string
   message: string
-}): void {
+}): Promise<void> {
   if (
     input.errorCode !== gatewayStreamClientRetryErrorCode
     || !input.accountId
@@ -1247,7 +1249,7 @@ function rememberCodexTurnFailureWhenClientRetryIsVisible(input: {
   ) {
     return
   }
-  const codexTurnFailure = rememberCodexTurnStreamFailure(input.clientStrategy, input.accountId, {
+  const codexTurnFailure = await rememberCodexTurnStreamFailureAsync(input.clientStrategy, input.accountId, {
     errorCode: input.errorCode,
     message: input.message
   })

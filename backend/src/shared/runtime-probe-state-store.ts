@@ -3,12 +3,11 @@ import { getRedisClient, type RedisCommandClient } from './redis-client.js'
 
 export interface RuntimeProbeStateStore<TState extends { runtimeKey: string; generation: number; nextProbeAtMs: number }> {
   get(runtimeKey: string): Promise<TState | undefined>
-  set(state: TState, ttlMs: number): Promise<void>
+  set(state: TState, ttlMs: number): Promise<boolean>
   delete(runtimeKey: string): Promise<void>
+  deleteGeneration(runtimeKey: string, generation: number): Promise<boolean>
   listDue(nowMs: number, limit: number): Promise<string[]>
   nextGeneration(runtimeKey: string, ttlMs: number): Promise<number>
-  acquireLock(runtimeKey: string, token: string, ttlMs: number): Promise<boolean>
-  releaseLock(runtimeKey: string, token: string): Promise<void>
 }
 
 interface MemoryProbeEntry<TState> {
@@ -32,23 +31,35 @@ export function createRuntimeProbeStateStore<TState extends { runtimeKey: string
 class MemoryRuntimeProbeStateStore<TState extends { runtimeKey: string; generation: number; nextProbeAtMs: number }>
 implements RuntimeProbeStateStore<TState> {
   private readonly entries = new Map<string, MemoryProbeEntry<TState>>()
-  private readonly locks = new Map<string, { token: string; expiresAtMs: number }>()
   private readonly generations = new Map<string, number>()
 
   async get(runtimeKey: string): Promise<TState | undefined> {
     return this.freshEntry(runtimeKey)?.value
   }
 
-  async set(state: TState, ttlMs: number): Promise<void> {
+  async set(state: TState, ttlMs: number): Promise<boolean> {
+    const current = this.freshEntry(state.runtimeKey)?.value
+    if (current && current.generation > state.generation) {
+      return false
+    }
     this.entries.set(state.runtimeKey, {
       value: state,
       expiresAtMs: Date.now() + normalizedTtlMs(ttlMs)
     })
+    return true
   }
 
   async delete(runtimeKey: string): Promise<void> {
     this.entries.delete(runtimeKey)
-    this.locks.delete(runtimeKey)
+  }
+
+  async deleteGeneration(runtimeKey: string, generation: number): Promise<boolean> {
+    const entry = this.freshEntry(runtimeKey)
+    if (!entry || entry.value.generation !== generation) {
+      return false
+    }
+    await this.delete(runtimeKey)
+    return true
   }
 
   async listDue(nowMs: number, limit: number): Promise<string[]> {
@@ -67,24 +78,6 @@ implements RuntimeProbeStateStore<TState> {
     return next
   }
 
-  async acquireLock(runtimeKey: string, token: string, ttlMs: number): Promise<boolean> {
-    this.clearExpiredLock(runtimeKey)
-    if (this.locks.has(runtimeKey)) return false
-    this.locks.set(runtimeKey, {
-      token,
-      expiresAtMs: Date.now() + normalizedTtlMs(ttlMs)
-    })
-    return true
-  }
-
-  async releaseLock(runtimeKey: string, token: string): Promise<void> {
-    this.clearExpiredLock(runtimeKey)
-    const lock = this.locks.get(runtimeKey)
-    if (lock?.token === token) {
-      this.locks.delete(runtimeKey)
-    }
-  }
-
   private freshEntry(runtimeKey: string): MemoryProbeEntry<TState> | undefined {
     const entry = this.entries.get(runtimeKey)
     if (!entry) return undefined
@@ -94,27 +87,18 @@ implements RuntimeProbeStateStore<TState> {
     }
     return entry
   }
-
-  private clearExpiredLock(runtimeKey: string): void {
-    const lock = this.locks.get(runtimeKey)
-    if (lock && lock.expiresAtMs <= Date.now()) {
-      this.locks.delete(runtimeKey)
-    }
-  }
 }
 
 class RedisRuntimeProbeStateStore<TState extends { runtimeKey: string; generation: number; nextProbeAtMs: number }>
 implements RuntimeProbeStateStore<TState> {
   private readonly statePrefix: string
   private readonly generationPrefix: string
-  private readonly lockPrefix: string
   private readonly dueKey: string
 
   constructor(name: string) {
     const safeName = sanitizeRedisKeyPart(name)
     this.statePrefix = `juhe-ai:probe:${safeName}:state:`
     this.generationPrefix = `juhe-ai:probe:${safeName}:generation:`
-    this.lockPrefix = `juhe-ai:probe:${safeName}:lock:`
     this.dueKey = `juhe-ai:probe:${safeName}:due`
   }
 
@@ -129,23 +113,36 @@ implements RuntimeProbeStateStore<TState> {
     }
   }
 
-  async set(state: TState, ttlMs: number): Promise<void> {
-    await (await this.client()).eval(redisSetProbeStateScript, {
+  async set(state: TState, ttlMs: number): Promise<boolean> {
+    const result = await (await this.client()).eval(redisSetProbeStateScript, {
       keys: [this.stateKey(state.runtimeKey), this.dueKey],
       arguments: [
         JSON.stringify(state),
         String(normalizedTtlMs(ttlMs)),
         String(Math.max(0, Math.trunc(state.nextProbeAtMs))),
-        state.runtimeKey
+        state.runtimeKey,
+        String(Math.max(0, Math.trunc(state.generation)))
       ]
     })
+    return numericRedisResult(result) === 1
   }
 
   async delete(runtimeKey: string): Promise<void> {
     await (await this.client()).eval(redisDeleteProbeStateScript, {
-      keys: [this.stateKey(runtimeKey), this.lockKey(runtimeKey), this.dueKey],
+      keys: [this.stateKey(runtimeKey), this.dueKey],
       arguments: [runtimeKey]
     })
+  }
+
+  async deleteGeneration(runtimeKey: string, generation: number): Promise<boolean> {
+    const result = await (await this.client()).eval(redisDeleteProbeStateGenerationScript, {
+      keys: [this.stateKey(runtimeKey), this.dueKey],
+      arguments: [
+        runtimeKey,
+        String(Math.max(0, Math.trunc(generation)))
+      ]
+    })
+    return numericRedisResult(result) === 1
   }
 
   async listDue(nowMs: number, limit: number): Promise<string[]> {
@@ -164,22 +161,7 @@ implements RuntimeProbeStateStore<TState> {
       keys: [this.generationKey(runtimeKey)],
       arguments: [String(normalizedTtlMs(ttlMs))]
     })
-    return typeof result === 'number' && Number.isFinite(result) ? Math.max(1, Math.trunc(result)) : 1
-  }
-
-  async acquireLock(runtimeKey: string, token: string, ttlMs: number): Promise<boolean> {
-    const result = await (await this.client()).set(this.lockKey(runtimeKey), token, {
-      PX: normalizedTtlMs(ttlMs),
-      NX: true
-    })
-    return result === 'OK'
-  }
-
-  async releaseLock(runtimeKey: string, token: string): Promise<void> {
-    await (await this.client()).eval(redisReleaseProbeLockScript, {
-      keys: [this.lockKey(runtimeKey)],
-      arguments: [token]
-    })
+    return Math.max(1, numericRedisResult(result))
   }
 
   private client(): Promise<RedisCommandClient> {
@@ -197,13 +179,20 @@ implements RuntimeProbeStateStore<TState> {
   private generationKey(runtimeKey: string): string {
     return `${this.generationPrefix}${sanitizeRedisKeyPart(runtimeKey)}`
   }
-
-  private lockKey(runtimeKey: string): string {
-    return `${this.lockPrefix}${sanitizeRedisKeyPart(runtimeKey)}`
-  }
 }
 
 const redisSetProbeStateScript = `
+local current = redis.call('GET', KEYS[1])
+if current then
+  local ok, decoded = pcall(cjson.decode, current)
+  if ok and type(decoded) == 'table' then
+    local current_generation = tonumber(decoded['generation'])
+    local incoming_generation = tonumber(ARGV[5])
+    if current_generation and incoming_generation and current_generation > incoming_generation then
+      return 0
+    end
+  end
+end
 redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
 redis.call('ZADD', KEYS[2], ARGV[3], ARGV[4])
 redis.call('PEXPIRE', KEYS[2], ARGV[2])
@@ -212,9 +201,30 @@ return 1
 
 const redisDeleteProbeStateScript = `
 redis.call('DEL', KEYS[1])
-redis.call('DEL', KEYS[2])
-redis.call('ZREM', KEYS[3], ARGV[1])
+redis.call('ZREM', KEYS[2], ARGV[1])
 return 1
+`
+
+const redisDeleteProbeStateGenerationScript = `
+local current = redis.call('GET', KEYS[1])
+if not current then
+  redis.call('ZREM', KEYS[2], ARGV[1])
+  return 0
+end
+local ok, decoded = pcall(cjson.decode, current)
+if not ok or type(decoded) ~= 'table' then
+  redis.call('DEL', KEYS[1])
+  redis.call('ZREM', KEYS[2], ARGV[1])
+  return 1
+end
+local current_generation = tonumber(decoded['generation'])
+local target_generation = tonumber(ARGV[2])
+if current_generation and target_generation and current_generation == target_generation then
+  redis.call('DEL', KEYS[1])
+  redis.call('ZREM', KEYS[2], ARGV[1])
+  return 1
+end
+return 0
 `
 
 const redisListDueProbeStatesScript = `
@@ -228,13 +238,6 @@ redis.call('PEXPIRE', KEYS[1], ARGV[1])
 return generation
 `
 
-const redisReleaseProbeLockScript = `
-if redis.call('GET', KEYS[1]) == ARGV[1] then
-  return redis.call('DEL', KEYS[1])
-end
-return 0
-`
-
 function normalizedTtlMs(ttlMs: number): number {
   return Number.isFinite(ttlMs) ? Math.max(1, Math.trunc(ttlMs)) : 1
 }
@@ -246,4 +249,14 @@ function sanitizeRedisKeyPart(value: string): string {
 function stringArrayRedisResult(value: unknown): string[] {
   if (!Array.isArray(value)) return []
   return value.flatMap((item) => typeof item === 'string' && item.trim() ? [item] : [])
+}
+
+function numericRedisResult(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return Math.trunc(value)
+  if (typeof value === 'bigint') return Number(value)
+  if (typeof value === 'string') {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? Math.trunc(parsed) : 0
+  }
+  return 0
 }

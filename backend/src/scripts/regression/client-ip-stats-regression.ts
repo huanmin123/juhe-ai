@@ -242,6 +242,7 @@ try {
   for (const column of [
     'id',
     'ip_hash',
+    'policy_type',
     'status',
     'reason',
     'expires_at',
@@ -428,20 +429,57 @@ try {
   assert.equal(clientIpStats.listActiveClientIpPolicies().some((item) => item.id === expiringPolicy.id), false, '封禁策略过期后不应进入运行态列表')
   const blacklistedList = clientIpStats.listClientIpStats({ startDate: today, endDate: today, status: 'blacklisted', pageSize: 10 })
   assert.deepEqual(blacklistedList.items.map((item) => item.ipHash), [], 'IP 列表封禁筛选不应返回已过期封禁 IP')
+
+  const allowlistPolicy = clientIpStats.createClientIpPolicy({
+    ipHash: ipv4Identity.ipHash,
+    policyType: 'allowlist',
+    reason: 'regression allowlist',
+    actorSystemAccountId: 'sys_admin'
+  })
+  assert.equal(allowlistPolicy.policyType, 'allowlist', 'IP 白名单策略应保存 policy_type=allowlist')
+  assert.equal(clientIpStats.listActiveClientIpPolicies().some((item) => item.id === allowlistPolicy.id), true, 'active 白名单策略应进入运行态列表')
+  assert.equal(clientIpStats.listActiveClientIpPolicies().some((item) => item.id === expiringPolicy.id), false, '加入白名单应停用同 IP 旧 active 封禁策略')
+  clientIpPolicyCache.clearClientIpPolicyCacheLocal()
+  clientIpPolicyCache.replaceClientIpPolicyCacheLocal(clientIpStats.listActiveClientIpPolicies())
+  const allowlistDecision = await clientIpPolicyCache.inspectClientIpPolicy(ipv4Identity.clientIp)
+  assert.equal(allowlistDecision.allowlistPolicy?.id, allowlistPolicy.id, '白名单快照加载后应从 server 内存命中策略')
+  assert.equal(allowlistDecision.allowlisted, true, '白名单快照命中后应返回 allowlisted=true')
+  assert.equal(allowlistDecision.blocked, false, '白名单策略不能被网关封禁判断误拦截')
+  const allowlistedList = clientIpStats.listClientIpStats({ startDate: today, endDate: today, status: 'allowlisted', pageSize: 10 })
+  assert.deepEqual(allowlistedList.items.map((item) => item.ipHash), [ipv4Identity.ipHash], 'IP 列表白名单筛选应返回 active 白名单 IP')
+  const normalAfterAllowlist = clientIpStats.listClientIpStats({ startDate: today, endDate: today, status: 'normal', pageSize: 10 })
+  assert.equal(normalAfterAllowlist.items.some((item) => item.ipHash === ipv4Identity.ipHash), false, '白名单 IP 不应出现在正常筛选中')
+
+  const replacementBlacklist = clientIpStats.createClientIpPolicy({
+    ipHash: ipv4Identity.ipHash,
+    policyType: 'blacklist',
+    reason: 'regression replacement blacklist',
+    actorSystemAccountId: 'sys_admin'
+  })
+  assert.equal(clientIpStats.listActiveClientIpPolicies().some((item) => item.id === replacementBlacklist.id), true, '重新封禁应创建新的 active 封禁策略')
+  assert.equal(clientIpStats.listActiveClientIpPolicies().some((item) => item.id === allowlistPolicy.id), false, '封禁同 IP 应停用 active 白名单策略')
+  clientIpPolicyCache.clearClientIpPolicyCacheLocal()
+  clientIpPolicyCache.replaceClientIpPolicyCacheLocal(clientIpStats.listActiveClientIpPolicies())
+  const blacklistDecision = await clientIpPolicyCache.inspectClientIpPolicy(ipv4Identity.clientIp)
+  assert.equal(blacklistDecision.blacklistPolicy?.id, replacementBlacklist.id, '封禁替换白名单后应命中新的封禁策略')
+  assert.equal(blacklistDecision.allowlisted, false, '封禁策略不能继续保留白名单放行状态')
+  assert.equal(clientIpStats.listClientIpStats({ startDate: today, endDate: today, status: 'blacklisted', pageSize: 10 }).items.some((item) => item.ipHash === ipv4Identity.ipHash), true, '封禁筛选应返回重新封禁 IP')
+  assert.deepEqual(clientIpStats.listClientIpStats({ startDate: today, endDate: today, status: 'allowlisted', pageSize: 10 }).items.map((item) => item.ipHash), [], '白名单和已封禁互斥，同一 IP 重新封禁后不应继续出现在白名单筛选中')
   assertClientIpListPolicyQueryPlan(today)
   assertClientIpListSortQueryPlans(today)
   assertClientIpListGlobalLastUsedSortQueryPlan(today)
   assert.equal(
-    clientIpStats.recordClientIpPolicyHits([{ ipHash: ipv4Identity.ipHash, policyId: expiringPolicy.id, hitCount: 3, hitAt: new Date(createdAtBase + 10).toISOString() }]).recorded,
+    clientIpStats.recordClientIpPolicyHits([{ ipHash: ipv4Identity.ipHash, policyId: replacementBlacklist.id, hitCount: 3, hitAt: new Date(createdAtBase + 10).toISOString() }]).recorded,
     1,
     '封禁命中计数应可后台累计'
   )
   assert.equal(clientIpStats.disableClientIpPolicies({
     ipHash: ipv4Identity.ipHash,
+    policyType: 'blacklist',
     reason: 'regression unblock',
     actorSystemAccountId: 'sys_admin'
   }).disabledCount, 1, '解封应停用当前 status=active 的封禁策略')
-  assert.equal(clientIpStats.listActiveClientIpPolicies().some((item) => item.id === expiringPolicy.id), false, '解封后策略不应继续进入运行态列表')
+  assert.equal(clientIpStats.listActiveClientIpPolicies().some((item) => item.id === replacementBlacklist.id), false, '解封后策略不应继续进入运行态列表')
 
   const cursorCount = statsDatabase
     .prepare("SELECT COUNT(*) AS total FROM stats_job_state WHERE job_name = 'client_ip_stats_aggregation' AND scope_type = 'usage_shard' AND cursor_id IS NOT NULL")
@@ -469,6 +507,7 @@ function assertClientIpListPolicyQueryPlan(today: string): void {
         SELECT 1
         FROM client_ip_policies active_policies
         WHERE active_policies.status = 'active'
+          AND active_policies.policy_type = 'blacklist'
           AND active_policies.ip_hash = registry.ip_hash
           AND (active_policies.expires_at IS NULL OR active_policies.expires_at > ?)
         LIMIT 1
@@ -652,6 +691,7 @@ function assertClientIpPolicyLookupQueryPlan(ipHash: string): void {
     INNER JOIN client_ip_registry registry ON registry.ip_hash = policies.ip_hash
     WHERE policies.ip_hash = ?
       AND policies.status = 'active'
+      AND policies.policy_type = 'blacklist'
       AND (policies.expires_at IS NULL OR policies.expires_at > ?)
     ORDER BY policies.created_at DESC, policies.id DESC
     LIMIT 1

@@ -1,24 +1,25 @@
-# IP 统计与封禁设计
+# IP 统计与封禁 / 白名单设计
 
 > 面向 `juhe-ai` 后端、前端系统运维页面和后续 AI 维护者。
-> 当前实现已经落地持久 IP 注册表、IP 统计聚合表、IP 策略表、`/__aisys__/api/ip-stats` 管理接口、系统运维 / IP管理页面、网关封禁缓存，以及受保护的 `/__aipublic__/ip/usage` IP 聚合读取接口。
+> 当前实现已经落地持久 IP 注册表、IP 统计聚合表、IP 策略表、`/__aisys__/api/ip-stats` 管理接口、系统运维 / IP管理页面、网关封禁缓存、后台内部接口白名单放行，以及受保护的 `/__aipublic__/ip/usage` IP 聚合读取接口。
 
 ## 当前状态
 
 - 已实现：`client_ip_registry`、`client_ip_stats_daily`、`client_ip_usage_range_windows`、`client_ip_account_stats_daily`、`client_ip_account_usage_range_windows`、`client_ip_policies`、`client_ip_policy_hits`。
 - 已实现：后台 `client-ip-stats-aggregation` job 按 usage shard 独立游标增量聚合 IP 统计，不在页面或网关请求路径扫描 `usage_records`。
-- 已实现：管理员 `GET /__aisys__/api/ip-stats` 列表、`GET /__aisys__/api/ip-stats/:ipHash/detail` 账号详情、封禁和解封接口。
-- 已实现：系统运维菜单新增 `IP管理` 页面，展示请求、Token、成本、失败率、活跃天数、速度、最近使用、账号详情和策略操作。
+- 已实现：管理员 `GET /__aisys__/api/ip-stats` 列表、`GET /__aisys__/api/ip-stats/:ipHash/detail` 账号详情、封禁 / 解封和加入 / 移出白名单接口。
+- 已实现：系统运维菜单新增 `IP管理` 页面，展示请求、Token、成本、失败率、活跃天数、速度、最近使用、账号详情、封禁状态和白名单状态。
 - 已实现：网关请求入口只读 server 进程内 active IP 封禁快照和来源级短 TTL 决策缓存，命中 active 封禁策略时本地返回 `403 client_ip_blacklisted`；请求路径不按单个 IP 查询 DB service。封禁命中异步批量写入 `client_ip_policy_hits`，命中缓冲最多保留 `5000` 个 distinct `ip_hash + policy_id`，单次 flush 最多投递 `1000` 条，超出窗口的新 distinct 命中丢弃并计数，避免多来源封禁流量在主进程形成无界 Map 或大 IPC；管理端封禁 / 解封会触发 server 重载 active 策略快照，stats-worker 也会周期推送快照。
-- 已实现：受保护外部来源 IP 聚合接口和 IP 消耗排行便利视图，只暴露 IP 聚合事实，不暴露封禁策略、内部账号、API Key、模型或公益站业务关系。
+- 已实现：IP 管理白名单只放行后台管理 / 内部任务接口的 IP 和登录用户限流，不绕过认证、权限、网关 API Key 校验或网关封禁策略。
+- 已实现：受保护外部来源 IP 聚合接口和 IP 消耗排行便利视图，只暴露 IP 聚合事实，不暴露封禁 / 白名单策略、内部账号、API Key、模型或公益站业务关系。
 
 ## 设计目标
 
 - 建立独立的 IP 统计事实层，支撑系统管理员在“系统运维 / IP管理”查看来源 IP 的请求次数、Token、成本、失败情况和活跃情况。
 - 后台 job 按 `usage_records` 分片游标增量处理新记录，不能在页面、接口或普通请求路径按 IP 全量 `GROUP BY usage_records`。
 - 通过 IP 注册表和本进程懒加载分桶 Set 识别当前进程已见过的 IP，避免启动时全量预热造成 worker 长时间阻塞；最终正确性仍由 SQLite 唯一约束兜底。
-- 提供管理员可控的 IP 封禁、临时封禁和解封能力，作为 `juhe-ai` 自身网关运维能力。
-- 给 `juhe-ai-public-welfare` 等允许来源系统读取 IP 聚合数据时，只暴露受保护的 IP 聚合事实，不暴露后台封禁策略、用户映射或公益榜快照。
+- 提供管理员可控的 IP 封禁、临时封禁、解封和后台内部接口白名单能力，作为 `juhe-ai` 自身运维能力。
+- 给 `juhe-ai-public-welfare` 等允许来源系统读取 IP 聚合数据时，只暴露受保护的 IP 聚合事实，不暴露后台封禁 / 白名单策略、用户映射或公益榜快照。
 
 ## 范围边界
 
@@ -29,7 +30,7 @@
 - IP 账号详情：按 `ip_hash + account_id` 预聚合常用日期范围，管理员可以从某个 IP 查看涉及过的 AI 账户列表和每个账户在该 IP 下的使用情况。
 - IP 运维页面：管理员在“系统运维 / IP管理”查看列表、筛选、排序和策略状态。
 - IP 策略：支持封禁、临时封禁、解封和封禁命中记录。
-- 后台 job：负责注册 IP、写入 IP 聚合、刷新范围窗口，并周期推送 active IP 封禁策略快照到 server；管理端封禁 / 解封会触发 server 重载快照。
+- 后台 job：负责注册 IP、写入 IP 聚合、刷新范围窗口，并周期推送 active IP 策略快照到 server；管理端封禁 / 解封、加入 / 移出白名单会触发 server 重载快照。
 
 ### 本期不包含
 
@@ -269,6 +270,7 @@ IP 管理当前只需要 IP 维度行，不需要范围整体总统计。后端�
 client_ip_policies
 - id TEXT PRIMARY KEY
 - ip_hash TEXT NOT NULL
+- policy_type TEXT NOT NULL      -- blacklist | allowlist
 - status TEXT NOT NULL           -- active | disabled
 - reason TEXT
 - expires_at TEXT
@@ -282,9 +284,11 @@ client_ip_policies
 
 规则：
 
-- `status = active` 表示当前处于封禁状态。
-- `expires_at` 为空表示长期生效；非空表示临时封禁。
-- 解封不删除记录，改为 `disabled` 并保留原因。
+- `policy_type = blacklist` 表示封禁策略，命中后网关返回 `403 client_ip_blacklisted` 并记录封禁命中次数。
+- `policy_type = allowlist` 表示白名单策略，只放行后台管理 / 内部任务接口的 IP 和登录用户限流；不绕过认证、权限、网关 API Key 校验或封禁策略。
+- 同一 IP 只能有一条 active 策略；加入白名单会停用旧封禁策略，重新封禁会停用旧白名单策略，保证“白名单”和“已封禁”互斥。
+- `expires_at` 为空表示长期生效；非空表示临时封禁。白名单当前不暴露期限配置。
+- 解封或移出白名单不删除记录，改为 `disabled` 并保留原因。
 
 ### client_ip_policy_hits
 
@@ -446,6 +450,8 @@ GET /__aisys__/api/ip-stats
 GET /__aisys__/api/ip-stats/:ipHash/detail
 POST /__aisys__/api/ip-stats/:ipHash/blacklist
 POST /__aisys__/api/ip-stats/:ipHash/unblock
+POST /__aisys__/api/ip-stats/:ipHash/allowlist
+POST /__aisys__/api/ip-stats/:ipHash/unallowlist
 ```
 
 列表查询参数：
@@ -456,7 +462,7 @@ endDate=YYYY-MM-DD
 page=1
 pageSize=20
 keyword=1.2.3
-status=all | normal | blacklisted
+status=all | normal | blacklisted | allowlisted
 sortField=totalCost | totalTokens | requestCount | errorRate | lastUsedAt
 sortOrder=desc | asc
 ```
@@ -482,7 +488,7 @@ interface ClientIpStatsListItem {
   ipHash: string
   aggregateIpKey: string
   lastSeenAt?: string
-  status: 'normal' | 'blacklisted'
+  status: 'normal' | 'blacklisted' | 'allowlisted'
   rangeUsage: ClientIpUsageSummary
 }
 

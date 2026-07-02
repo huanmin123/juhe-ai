@@ -136,7 +136,6 @@
     />
 
     <AccountEditModal
-      v-if="modalOpen"
       v-model:open="modalOpen"
       v-model:error-policy-rules="accountErrorPolicyRules"
       v-model:response-inspection-rules="accountResponseInspectionRules"
@@ -161,6 +160,7 @@
       :is-management-view="isManagementView"
       :is-o-auth-form="isOAuthForm"
       :is-open-a-i-o-auth-form="isOpenAIOAuthForm"
+      :loading="accountEditDetailLoading"
       :mapping-anthropic-source-model-options="mappingAnthropicSourceModelOptions"
       :mapping-gemini-source-model-options="mappingGeminiSourceModelOptions"
       :mapping-source-model-options="mappingSourceModelOptions"
@@ -443,6 +443,7 @@ const {
 const {
   accountErrorPolicyRules,
   accountResponseInspectionRules,
+  accountEditDetailLoading,
   apiKeyTestDetails,
   accountTagOptions,
   accountTagOptionsLoading,
@@ -573,7 +574,7 @@ const {
   draftApiKeyTestSnapshot,
   successfulDraftActivationTest
 })
-const accountEditTestButtonDisabled = computed(() => modalConfirmLoading.value || testRunning.value || !hasAccountType.value)
+const accountEditTestButtonDisabled = computed(() => accountEditDetailLoading.value || modalConfirmLoading.value || testRunning.value || !hasAccountType.value)
 const {
   testAccountFromEditModal
 } = useAccountEditTestAction({

@@ -8,7 +8,7 @@ import { normalizedDispatchPriority } from './account-write-input.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, nowIso, rollbackDatabaseTransaction } from './database.js'
 import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient } from './database-client.js'
-import { refreshGroupAccountStatsAfterWrite } from './group-account-stats-write-invalidation.js'
+import { refreshGroupAccountStatsAfterWrite, refreshGroupAccountStatsAfterWriteAsync } from './group-account-stats-write-invalidation.js'
 import { getPostgresPool } from './postgres-client.js'
 import { invalidateAccountLookupCache } from './repository-lookups.js'
 import type { AccountFailureRow, AccountRow } from './repository-row-types.js'
@@ -16,7 +16,9 @@ import { accountSystemAccountId, canManageResourceOwner } from './resource-autho
 import {
   cooldownRetestObservationStartedAtForStatus,
   defaultTemporaryUnschedulableMinutes,
+  defaultTemporaryUnschedulableMinutesAsync,
   initialCooldownUntilForStatus,
+  initialCooldownUntilForStatusAsync,
   invalidateGatewayRuntimeAfterBusinessWrite,
   isAccountExpired,
   temporaryUnavailableRuntimeState
@@ -274,6 +276,7 @@ export async function clearAccountFailureStateResultAsync(
     `, ['账户套餐已过期，已自动停用', nowIso(), id, ownerSystemAccountId])
     const changed = Number(result.changes ?? 0) > 0
     if (changed) {
+      await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [id], reason: 'account_expired' }, client)
       invalidateAccountLookupCache(id)
       invalidateGatewayRuntimeAfterBusinessWrite('account_expired')
     }
@@ -322,6 +325,7 @@ export async function clearAccountFailureStateResultAsync(
   ])
   const changed = Number(result.changes ?? 0) > 0
   if (changed) {
+    await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [id], reason: 'account_restored' }, client)
     invalidateAccountLookupCache(id)
     invalidateGatewayRuntimeAfterBusinessWrite('account_restored')
   }
@@ -411,6 +415,7 @@ export async function clearAuthorizedAccountBindingFailureStateByContextAsync(
   ])
   const changed = Number(result.changes ?? 0) > 0
   if (changed) {
+    await refreshGroupAccountStatsAfterWriteAsync({ groupIds: [target.groupId], accountIds: [target.accountId], reason: 'authorized_account_restored' }, client)
     invalidateAccountLookupCache(target.accountId)
     invalidateGatewayRuntimeAfterBusinessWrite('authorized_account_restored')
   }
@@ -833,7 +838,7 @@ export async function markAuthorizedAccountBindingCooldownByContextAsync(
   if (Number(result.changes ?? 0) <= 0) {
     return undefined
   }
-  refreshGroupAccountStatsAfterWrite({ groupIds: [target.groupId], accountIds: [target.accountId], reason: 'authorized_account_cooldown' })
+  await refreshGroupAccountStatsAfterWriteAsync({ groupIds: [target.groupId], accountIds: [target.accountId], reason: 'authorized_account_cooldown' }, client)
   invalidateAccountLookupCache(target.accountId)
   invalidateGatewayRuntimeAfterBusinessWrite('authorized_account_cooldown')
   return findAccountSummaryAsync(target.accountId, { systemAccountId: target.systemAccountId, role: 'user' })
@@ -931,7 +936,7 @@ export async function markAuthorizedAccountBindingDisabledByFailureAsync(
   if (Number(result.changes ?? 0) <= 0) {
     return undefined
   }
-  refreshGroupAccountStatsAfterWrite({ groupIds: [target.groupId], accountIds: [target.accountId], reason: 'authorized_account_exception' })
+  await refreshGroupAccountStatsAfterWriteAsync({ groupIds: [target.groupId], accountIds: [target.accountId], reason: 'authorized_account_exception' }, client)
   invalidateAccountLookupCache(target.accountId)
   invalidateGatewayRuntimeAfterBusinessWrite('authorized_account_exception')
   return findAccountSummaryAsync(target.accountId, { systemAccountId: target.systemAccountId, role: 'user' })
@@ -1289,7 +1294,7 @@ export async function markAccountCooldownAsync(id: string, until: string | undef
         AND deleted_at IS NULL
     `, ['账户套餐已过期，已自动停用', nowIso(), id])
     if (Number(result.changes ?? 0) > 0) {
-      refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_expired' })
+      await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [id], reason: 'account_expired' }, client)
       invalidateAccountLookupCache(id)
       invalidateGatewayRuntimeAfterBusinessWrite('account_expired')
     }
@@ -1302,9 +1307,14 @@ export async function markAccountCooldownAsync(id: string, until: string | undef
   const temporaryState = cooldownStatus === 'temporary_unavailable'
     ? temporaryUnavailableRuntimeState(cooldownNowMs)
     : undefined
+  const defaultCooldownMinutes = cooldownStatus === 'rate_limited'
+    ? await defaultTemporaryUnschedulableMinutesAsync()
+    : undefined
   const cooldownUntil = cooldownStatus === 'temporary_unavailable'
     ? temporaryState!.cooldownUntil
-    : until ?? initialCooldownUntilForStatus(cooldownStatus, cooldownNowMs) ?? new Date(cooldownNowMs + defaultTemporaryUnschedulableMinutes() * 60_000).toISOString()
+    : until
+      ?? await initialCooldownUntilForStatusAsync(cooldownStatus, cooldownNowMs)
+      ?? new Date(cooldownNowMs + (defaultCooldownMinutes ?? 1) * 60_000).toISOString()
   const cooldownObservationStartedAt = temporaryState?.observationStartedAt
     ?? cooldownRetestObservationStartedAtForStatus(cooldownStatus, cooldownNowMs)
 
@@ -1326,7 +1336,7 @@ export async function markAccountCooldownAsync(id: string, until: string | undef
       AND deleted_at IS NULL
   `, [cooldownStatus, cooldownUntil, reason || null, cooldownObservationStartedAt ?? null, cooldownNow, id])
   if (Number(result.changes ?? 0) > 0) {
-    refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_cooldown' })
+    await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [id], reason: 'account_cooldown' }, client)
     invalidateAccountLookupCache(id)
     invalidateGatewayRuntimeAfterBusinessWrite('account_cooldown')
   }
@@ -1546,7 +1556,7 @@ export async function migrateAccountTrafficAsync(input: {
   if (!changed) {
     return undefined
   }
-  refreshGroupAccountStatsAfterWrite({ accountIds: [sourceRow.id], reason: 'traffic_migration' })
+  await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [sourceRow.id], reason: 'traffic_migration' }, client)
   invalidateGatewayRuntimeAfterBusinessWrite('traffic_migration')
 
   const sourceAccount = await findAccountSummaryAsync(input.sourceAccountId, ownerAccess)
@@ -1786,6 +1796,7 @@ export async function updateAuthorizedAccountBindingDispatchAsync(
   if (!changed) {
     return undefined
   }
+  await refreshGroupAccountStatsAfterWriteAsync({ groupIds: [current.boundGroupId], accountIds: [accountId], reason: 'authorized_binding_dispatch' }, client)
   invalidateAccountLookupCache(accountId)
   invalidateGatewayRuntimeAfterBusinessWrite('authorized_binding_dispatch')
   return await findAccountSummaryAsync(accountId, accountAccess)
@@ -1966,7 +1977,7 @@ async function migrateAuthorizedAccountBindingTrafficAsync(input: {
   if (Number(result.changes ?? 0) <= 0) {
     return undefined
   }
-  refreshGroupAccountStatsAfterWrite({ groupIds: [sourceAccount.boundGroupId], accountIds: [sourceAccount.id], reason: 'authorized_binding_migration' })
+  await refreshGroupAccountStatsAfterWriteAsync({ groupIds: [sourceAccount.boundGroupId], accountIds: [sourceAccount.id], reason: 'authorized_binding_migration' }, client)
   invalidateAccountLookupCache(sourceAccount.id)
   invalidateGatewayRuntimeAfterBusinessWrite('authorized_binding_migration')
   const nextSource = await findAccountSummaryAsync(input.sourceAccountId, accountAccess)
@@ -2054,6 +2065,7 @@ export async function markAccountExceptionAsync(
       AND deleted_at IS NULL
   `, [errorCode || null, reason || null, nowIso(), id])
   if (Number(result.changes ?? 0) > 0) {
+    await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [id], reason: 'account_exception' }, client)
     invalidateAccountLookupCache(id)
     invalidateGatewayRuntimeAfterBusinessWrite('account_exception')
   }

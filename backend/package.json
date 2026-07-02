@@ -8,6 +8,7 @@
     "dev": "tsx src/scripts/preflight/check-node-sqlite.ts && tsx watch --exclude \"logs/**\" --exclude \"data/**\" --exclude \"dist/**\" src/server.ts",
     "mockdata": "tsx src/scripts/maintenance/mockdata.ts",
     "test:worker-real-load": "tsx src/scripts/performance/worker-real-load-test.ts",
+    "maintenance:rebuild-usage-stats": "tsx src/scripts/maintenance/rebuild-usage-stats.ts",
     "maintenance:rebuild-account-name-search": "tsx src/scripts/maintenance/rebuild-account-name-search-terms.ts",
     "external-source:demo-token": "tsx src/scripts/maintenance/create-external-source-demo-token.ts",
     "test:smoke": "tsx src/scripts/smoke/smoke-test.ts",

@@ -15,6 +15,7 @@ import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { findResourceAuthorizationSummary, findResourceAuthorizationSummaryAsync } from './resource-authorization-read.repository.js'
 import { resourceAuthorizationSelectColumns, usageScope } from './resource-authorization-helpers.js'
+import { expireDueResourceAuthorizationsAsync } from './resource-authorization-write.repository.js'
 import { expireDueResourceAuthorizations } from './resource-authorization-write-state.repository.js'
 import { loadSystemAccountPrincipalMapByIds, loadSystemAccountPrincipalMapByIdsAsync } from './repository-lookups.js'
 import type { ResourceAuthorizationRow } from './repository-row-types.js'
@@ -67,6 +68,7 @@ export async function getResourceAuthorizationUsageAsync(authorizationId: string
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return getResourceAuthorizationUsage(authorizationId, access, options)
   }
+  await expireDueResourceAuthorizationsAsync()
   const authorization = await findResourceAuthorizationSummaryAsync(authorizationId, access, { includeUsage: false })
   if (!authorization) return undefined
   const range = options.range ?? normalizeAccountUsageStatsRange({}, await usageStatsTimezoneAsync())

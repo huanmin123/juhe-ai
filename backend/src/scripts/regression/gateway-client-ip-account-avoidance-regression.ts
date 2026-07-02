@@ -104,6 +104,7 @@ async function main(): Promise<void> {
     assertServiceBypassesWhenAllCandidatesAvoided()
     assertServiceSharesAvoidanceAcrossGroupsForSameApiKey()
     assertServicePreservesDispatchPriorityBoundary()
+    assertServicePreservesModelPriorityBoundary()
     assertServiceConfirmsFinalFailuresWithoutSuccess()
     assertPendingFailureTrackerIsBoundedAndTransferSafe()
 
@@ -149,7 +150,8 @@ function assertSourceAvoidsPendingFailureArrayRebuilds(): void {
   assert(serviceSource.includes('clientIpAccountAvoidanceActivationFailureThreshold = 2'), 'IP 级账号回避应先给失败账号一次重试机会，第三次请求才换号')
   assert(serviceSource.includes('confirmClientIpAccountAvoidanceAfterFinalFailure'), 'IP 级账号回避服务应支持最终失败时确认待回避账号')
   assert(serviceSource.includes("createRuntimeStateStore('gateway-client-ip-account-avoidance')"), 'Redis runtime state 下 IP 级账号回避应写共享运行态')
-  assert(serviceSource.includes('withRedisClientIpAccountAvoidanceLock'), 'Redis IP 级账号回避确认应加短锁避免计数覆盖')
+  assert(!/withRedisClientIpAccountAvoidanceLock|clientIpAccountAvoidanceLock|acquireLock|releaseLock|运行态锁等待超时/.test(serviceSource), 'Redis IP 级账号回避确认不能在请求路径引入分布式锁等待')
+  assert(/confirmTrackerPendingFailuresAsync[\s\S]*getRedisClientIpAccountAvoidanceEntry[\s\S]*setRedisClientIpAccountAvoidanceEntry/.test(serviceSource), 'Redis IP 级账号回避确认应直接读写共享状态')
 }
 
 async function assertClientIpAvoidsFailedAccountAfterSwitch(
@@ -324,6 +326,41 @@ function assertServicePreservesDispatchPriorityBoundary(): void {
     ordered.accounts.map((account) => account.id),
     [accounts[0].id, accounts[1].id],
     'IP 级回避不能让低优先级账号越过高优先级账号'
+  )
+  clientIpAvoidance.clearClientIpAccountAvoidanceForTest()
+}
+
+function assertServicePreservesModelPriorityBoundary(): void {
+  clientIpAvoidance.clearClientIpAccountAvoidanceForTest()
+  const scope = {
+    systemAccountId: 'sys_model_priority_boundary',
+    groupId: 'grp_model_priority_boundary',
+    apiKeyId: 'key_model_priority_boundary',
+    clientIp: '203.0.113.60'
+  }
+  const accounts = [
+    createTestAccount('model-direct-avoided', { priority: 0 }),
+    createTestAccount('model-unrestricted-fresh', { priority: 0 })
+  ]
+  const tracker = clientIpAvoidance.createClientIpAccountAvoidanceTracker(scope)
+  rememberPendingFailureTwice(tracker, accounts[0], {
+    errorPhase: 'upstream_response',
+    statusCode: 502,
+    errorCode: 'model_priority_boundary'
+  })
+  clientIpAvoidance.confirmClientIpAccountAvoidanceAfterSuccess(tracker, accounts[1].id)
+  const ordered = clientIpAvoidance.orderOpenAIAccountsByClientIpAccountAvoidance(accounts, scope, {
+    requestedModel: 'gpt-4.1',
+    rankByAccountId: new Map([
+      [accounts[0].id, 0],
+      [accounts[1].id, 2]
+    ])
+  })
+  assert.equal(ordered.applied, true, '命中回避状态时仍应报告排序规则已参与')
+  assert.deepEqual(
+    ordered.accounts.map((account) => account.id),
+    [accounts[0].id, accounts[1].id],
+    'IP 级回避不能让低模型匹配等级账号越过直连匹配账号'
   )
   clientIpAvoidance.clearClientIpAccountAvoidanceForTest()
 }

@@ -13,7 +13,7 @@ export type { GatewayImageGenerationToolDowngradeResult } from './image-generati
 
 export const gatewayJsonBodyLargeWarningBytes = 2 * 1024 * 1024
 export const gatewayJsonBodyInlineParseMaxBytes = 256 * 1024
-export const defaultGatewayTextRawBodyLimitMegabytes = 8
+export const defaultGatewayTextRawBodyLimitMegabytes = 16
 export const gatewayTextRawBodyLimitMegabytesMin = 1
 export const gatewayTextRawBodyLimitMegabytesMax = 64
 export const defaultGatewayTextRawBodyLimitBytes = defaultGatewayTextRawBodyLimitMegabytes * 1024 * 1024

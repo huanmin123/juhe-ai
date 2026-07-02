@@ -106,6 +106,15 @@ export function registerDeletedAccountRecordCleanupTarget(input: DeletedAccountR
   upsertDeletedAccountRecordCleanupTarget(getDatasetDatabase(), input, nowIso())
 }
 
+export async function registerDeletedAccountRecordCleanupTargetAsync(input: DeletedAccountRecordCleanupTarget): Promise<void> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    registerDeletedAccountRecordCleanupTarget(input)
+    return
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  await upsertDeletedAccountRecordCleanupTargetAsync(client, input, nowIso())
+}
+
 export function cleanupPendingDeletedAccountRecordTargets(limit = 50): PendingDeletedAccountRecordCleanupSummary {
   assertSqliteAccountRecordCleanup('cleanupPendingDeletedAccountRecordTargets')
   const targets = listDeletedAccountRecordCleanupTargets(Math.max(1, Math.trunc(limit)))
@@ -960,15 +969,15 @@ async function deletePostgresAccountUsageDataBatch(
   const rows = await client.query<{ id?: string | null }>(`
     SELECT id
     FROM juhe_usage.usage_records
-    WHERE account_id = ANY(?)
-      OR account_authorization_id = ANY(?)
+    WHERE account_id = ANY(?::text[])
+      OR account_authorization_id = ANY(?::text[])
     ORDER BY created_at ASC, id ASC
     LIMIT ?
   `, [accountIds, authorizationIds, Math.max(1, Math.trunc(limit))])
   const usageIds = uniqueNonEmpty(rows.map((row) => row.id))
   if (!usageIds.length) return 0
   await deletePostgresUsageRecordCatalogRowsByUsageIds(client, usageIds)
-  const result = await client.execute('DELETE FROM juhe_usage.usage_records WHERE id = ANY(?)', [usageIds])
+  const result = await client.execute('DELETE FROM juhe_usage.usage_records WHERE id = ANY(?::text[])', [usageIds])
   return changed(result)
 }
 
@@ -979,8 +988,8 @@ async function hasPostgresAccountUsageRecords(client: DatabaseClient, input: Del
   const row = await client.one<{ found?: number }>(`
     SELECT 1 AS found
     FROM juhe_usage.usage_records
-    WHERE account_id = ANY(?)
-      OR account_authorization_id = ANY(?)
+    WHERE account_id = ANY(?::text[])
+      OR account_authorization_id = ANY(?::text[])
     LIMIT 1
   `, [accountIds, authorizationIds])
   return Boolean(row?.found)
@@ -992,11 +1001,11 @@ async function hasPostgresAccountAuditData(client: DatabaseClient, input: Delete
   const row = await client.one<{ found?: number }>(`
     SELECT 1 AS found
     FROM juhe_dataset.audit_logs
-    WHERE account_id = ANY(?)
+    WHERE account_id = ANY(?::text[])
     UNION ALL
     SELECT 1 AS found
     FROM juhe_dataset.audit_error_groups
-    WHERE account_id = ANY(?)
+    WHERE account_id = ANY(?::text[])
     LIMIT 1
   `, [accountIds, accountIds])
   return Boolean(row?.found)
@@ -1013,28 +1022,28 @@ async function deletePostgresAccountAuditDataBatch(
   const rows = await client.query<{ id?: string | null }>(`
     SELECT id
     FROM juhe_dataset.audit_logs
-    WHERE account_id = ANY(?)
+    WHERE account_id = ANY(?::text[])
     ORDER BY created_at ASC, id ASC
     LIMIT ?
   `, [accountIds, batchLimit])
   const auditLogIds = uniqueNonEmpty(rows.map((row) => row.id))
   let deletedRows = 0
   if (auditLogIds.length > 0) {
-    deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.audit_payload_refs WHERE audit_log_id = ANY(?)', [auditLogIds]))
-    deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.audit_log_attempts WHERE audit_log_id = ANY(?)', [auditLogIds]))
-    deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.audit_logs WHERE id = ANY(?) AND account_id = ANY(?)', [auditLogIds, accountIds]))
+    deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.audit_payload_refs WHERE audit_log_id = ANY(?::text[])', [auditLogIds]))
+    deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.audit_log_attempts WHERE audit_log_id = ANY(?::text[])', [auditLogIds]))
+    deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.audit_logs WHERE id = ANY(?::text[]) AND account_id = ANY(?::text[])', [auditLogIds, accountIds]))
   }
 
   const groupRows = await client.query<{ id?: string | null }>(`
     SELECT id
     FROM juhe_dataset.audit_error_groups
-    WHERE account_id = ANY(?)
+    WHERE account_id = ANY(?::text[])
     ORDER BY updated_at ASC, id ASC
     LIMIT ?
   `, [accountIds, batchLimit])
   const groupIds = uniqueNonEmpty(groupRows.map((row) => row.id))
   if (groupIds.length > 0) {
-    deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.audit_error_groups WHERE id = ANY(?) AND account_id = ANY(?)', [groupIds, accountIds]))
+    deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.audit_error_groups WHERE id = ANY(?::text[]) AND account_id = ANY(?::text[])', [groupIds, accountIds]))
   }
   return deletedRows
 }
@@ -1045,8 +1054,8 @@ async function hasPostgresAccountModelCheckRuns(client: DatabaseClient, input: D
   const row = await client.one<{ found?: number }>(`
     SELECT 1 AS found
     FROM juhe_dataset.model_check_runs
-    WHERE account_id = ANY(?)
-      OR (target_type = 'account' AND target_id = ANY(?))
+    WHERE account_id = ANY(?::text[])
+      OR (target_type = 'account' AND target_id = ANY(?::text[]))
     LIMIT 1
   `, [accountIds, accountIds])
   return Boolean(row?.found)
@@ -1062,16 +1071,16 @@ async function deletePostgresAccountModelCheckRunsBatch(
   const rows = await client.query<{ id?: string | null }>(`
     SELECT id
     FROM juhe_dataset.model_check_runs
-    WHERE account_id = ANY(?)
-      OR (target_type = 'account' AND target_id = ANY(?))
+    WHERE account_id = ANY(?::text[])
+      OR (target_type = 'account' AND target_id = ANY(?::text[]))
     ORDER BY created_at ASC, id ASC
     LIMIT ?
   `, [accountIds, accountIds, Math.max(1, Math.trunc(limit))])
   const runIds = uniqueNonEmpty(rows.map((row) => row.id))
   if (!runIds.length) return 0
   let deletedRows = 0
-  deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.model_check_items WHERE run_id = ANY(?)', [runIds]))
-  deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.model_check_runs WHERE id = ANY(?)', [runIds]))
+  deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.model_check_items WHERE run_id = ANY(?::text[])', [runIds]))
+  deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.model_check_runs WHERE id = ANY(?::text[])', [runIds]))
   return deletedRows
 }
 
@@ -1230,34 +1239,34 @@ async function deletePostgresAccountScopeStatsRows(
   const normalizedTeamScopeIds = uniqueNonEmpty(teamScopeIds)
   for (const tableName of accountScopeStatsTables) {
     if (accountIds.length > 0) {
-      await client.execute(`DELETE FROM juhe_stats.${tableName} WHERE scope_type IN ('account', 'caller_account') AND scope_id = ANY(?)`, [accountIds])
+      await client.execute(`DELETE FROM juhe_stats.${tableName} WHERE scope_type IN ('account', 'caller_account') AND scope_id = ANY(?::text[])`, [accountIds])
       for (const accountId of accountIds) {
         await client.execute(`DELETE FROM juhe_stats.${tableName} WHERE scope_type = 'account_authorization_team' AND scope_id LIKE ? ESCAPE '\\'`, [`${escapeLikePrefix(accountId)}:%`])
       }
     }
     for (const chunk of chunkValues(normalizedAuthorizationIds, 900)) {
-      await client.execute(`DELETE FROM juhe_stats.${tableName} WHERE scope_type = 'account_authorization' AND scope_id = ANY(?)`, [chunk])
+      await client.execute(`DELETE FROM juhe_stats.${tableName} WHERE scope_type = 'account_authorization' AND scope_id = ANY(?::text[])`, [chunk])
     }
     for (const chunk of chunkValues(normalizedTeamScopeIds, 900)) {
-      await client.execute(`DELETE FROM juhe_stats.${tableName} WHERE scope_type = 'account_authorization_team' AND scope_id = ANY(?)`, [chunk])
+      await client.execute(`DELETE FROM juhe_stats.${tableName} WHERE scope_type = 'account_authorization_team' AND scope_id = ANY(?::text[])`, [chunk])
     }
   }
   if (accountIds.length > 0) {
-    await client.execute("DELETE FROM juhe_stats.stats_job_state WHERE scope_type IN ('account', 'caller_account') AND scope_id = ANY(?)", [accountIds])
+    await client.execute("DELETE FROM juhe_stats.stats_job_state WHERE scope_type IN ('account', 'caller_account') AND scope_id = ANY(?::text[])", [accountIds])
     for (const accountId of accountIds) {
       await client.execute("DELETE FROM juhe_stats.stats_job_state WHERE scope_type = 'account_authorization_team' AND scope_id LIKE ? ESCAPE '\\'", [`${escapeLikePrefix(accountId)}:%`])
     }
-    await client.execute('DELETE FROM juhe_stats.account_quality_scores WHERE account_id = ANY(?)', [accountIds])
-    await client.execute('DELETE FROM juhe_stats.account_quality_dirty_accounts WHERE account_id = ANY(?)', [accountIds])
-    await client.execute('DELETE FROM juhe_stats.account_quality_minute_stats WHERE account_id = ANY(?)', [accountIds])
-    await client.execute('DELETE FROM juhe_stats.account_usage_snapshots WHERE account_id = ANY(?)', [accountIds])
+    await client.execute('DELETE FROM juhe_stats.account_quality_scores WHERE account_id = ANY(?::text[])', [accountIds])
+    await client.execute('DELETE FROM juhe_stats.account_quality_dirty_accounts WHERE account_id = ANY(?::text[])', [accountIds])
+    await client.execute('DELETE FROM juhe_stats.account_quality_minute_stats WHERE account_id = ANY(?::text[])', [accountIds])
+    await client.execute('DELETE FROM juhe_stats.account_usage_snapshots WHERE account_id = ANY(?::text[])', [accountIds])
     await deletePostgresAccountAuthorizationReportRows(client, accountIds)
   }
   for (const chunk of chunkValues(normalizedAuthorizationIds, 900)) {
-    await client.execute("DELETE FROM juhe_stats.stats_job_state WHERE scope_type = 'account_authorization' AND scope_id = ANY(?)", [chunk])
+    await client.execute("DELETE FROM juhe_stats.stats_job_state WHERE scope_type = 'account_authorization' AND scope_id = ANY(?::text[])", [chunk])
   }
   for (const chunk of chunkValues(normalizedTeamScopeIds, 900)) {
-    await client.execute("DELETE FROM juhe_stats.stats_job_state WHERE scope_type = 'account_authorization_team' AND scope_id = ANY(?)", [chunk])
+    await client.execute("DELETE FROM juhe_stats.stats_job_state WHERE scope_type = 'account_authorization_team' AND scope_id = ANY(?::text[])", [chunk])
   }
 }
 
@@ -1270,7 +1279,7 @@ async function hasPostgresDeletedAccountStatsRows(client: DatabaseClient, input:
       SELECT 1
       FROM juhe_stats.${tableName}
       WHERE scope_type IN ('account', 'caller_account')
-        AND scope_id = ANY(?)
+        AND scope_id = ANY(?::text[])
       LIMIT 1
     `, [accountIds])) {
       return true
@@ -1279,7 +1288,7 @@ async function hasPostgresDeletedAccountStatsRows(client: DatabaseClient, input:
       SELECT 1
       FROM juhe_stats.${tableName}
       WHERE scope_type = 'account_authorization'
-        AND scope_id = ANY(?)
+        AND scope_id = ANY(?::text[])
       LIMIT 1
     `, [authorizationIds])) {
       return true
@@ -1288,7 +1297,7 @@ async function hasPostgresDeletedAccountStatsRows(client: DatabaseClient, input:
       SELECT 1
       FROM juhe_stats.${tableName}
       WHERE scope_type = 'account_authorization_team'
-        AND scope_id = ANY(?)
+        AND scope_id = ANY(?::text[])
       LIMIT 1
     `, [teamScopeIds])) {
       return true
@@ -1297,7 +1306,7 @@ async function hasPostgresDeletedAccountStatsRows(client: DatabaseClient, input:
   if (accountIds.length > 0 && await postgresRowsExist(client, `
     SELECT 1
     FROM juhe_stats.usage_record_cleanup_deductions
-    WHERE account_id = ANY(?)
+    WHERE account_id = ANY(?::text[])
     LIMIT 1
   `, [accountIds])) {
     return true
@@ -1394,7 +1403,7 @@ async function deletePostgresAccountAuthorizationReportRows(client: DatabaseClie
     'authorization_user_usage_range_windows'
   ] as const
   for (const tableName of reportTables) {
-    await client.execute(`DELETE FROM juhe_stats.${tableName} WHERE resource_filter_type = 'account' AND resource_filter_id = ANY(?)`, [accountIds])
+    await client.execute(`DELETE FROM juhe_stats.${tableName} WHERE resource_filter_type = 'account' AND resource_filter_id = ANY(?::text[])`, [accountIds])
   }
 }
 
@@ -1408,7 +1417,7 @@ function deleteAccountUsageCleanupDeductions(database: DatabaseSync, input: Dele
 async function deletePostgresAccountUsageCleanupDeductions(client: DatabaseClient, input: DeletedAccountRecordCleanupTarget): Promise<void> {
   const accountIds = deletedAccountCleanupAccountIds(input)
   if (!accountIds.length) return
-  await client.execute('DELETE FROM juhe_stats.usage_record_cleanup_deductions WHERE account_id = ANY(?)', [accountIds])
+  await client.execute('DELETE FROM juhe_stats.usage_record_cleanup_deductions WHERE account_id = ANY(?::text[])', [accountIds])
 }
 
 function refreshDeletedAccountDerivedWindowsIfNeeded(input: DeletedAccountRecordCleanupTarget, shouldRefresh: boolean): string | undefined {

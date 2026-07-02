@@ -22,12 +22,16 @@ const [
   databaseModule,
   { createSystemApiApp },
   repositories,
-  { clearSystemApiRateLimitStateForTest }
+  { clearSystemApiRateLimitStateForTest },
+  clientIpStats,
+  clientIpPolicyCache
 ] = await Promise.all([
   import('../../storage/database.js'),
   import('../../modules/system-api/system-api-app.js'),
   import('../../storage/repositories.js'),
-  import('../../modules/system-api/system-api-rate-limit.middleware.js')
+  import('../../modules/system-api/system-api-rate-limit.middleware.js'),
+  import('../../storage/client-ip-stats.repository.js'),
+  import('../../modules/gateway/runtime/client-ip-policy-cache.service.js')
 ])
 
 async function main(): Promise<void> {
@@ -46,8 +50,9 @@ async function main(): Promise<void> {
     await assertIpReadLimit(baseUrl)
     await assertDisabledLimitPasses(baseUrl)
     await assertAuthenticatedUserLimit(baseUrl, adminCookie)
+    await assertAllowlistedIpBypassesRateLimit(baseUrl, adminCookie)
 
-    console.log('后台系统 API 限流回归通过：限流位于 body parser 前，默认值可配置，IP 与登录用户超限返回 429，健康检查和关闭开关不受影响')
+    console.log('后台系统 API 限流回归通过：限流位于 body parser 前，默认值可配置，IP 与登录用户超限返回 429，健康检查、关闭开关和 IP 白名单不受影响')
   } finally {
     await closeServer(server)
     try {
@@ -152,6 +157,61 @@ async function assertAuthenticatedUserLimit(baseUrl: string, adminCookie: string
   assert(blocked.headers.get('retry-after'), '登录用户读请求超限应返回 Retry-After')
 
   await assertStatus(baseUrl, '/__aisys__/api/settings/public', 200, { clientIp })
+}
+
+async function assertAllowlistedIpBypassesRateLimit(baseUrl: string, adminCookie: string): Promise<void> {
+  repositories.updateSettings({
+    systemApiRateLimitEnabled: true,
+    systemApiRateLimitIpReadPerMinute: 1,
+    systemApiRateLimitIpReadBurstPer10Seconds: 1,
+    systemApiRateLimitIpWritePerMinute: 1,
+    systemApiRateLimitIpWriteBurstPer10Seconds: 1,
+    systemApiRateLimitUserReadPerMinute: 1,
+    systemApiRateLimitUserWritePerMinute: 1
+  })
+  clearSystemApiRateLimitStateForTest()
+
+  const clientIp = '198.51.100.104'
+  seedClientIpRegistry(clientIp)
+  const normalized = clientIpStats.normalizeClientIpForStats(clientIp)
+  assert(normalized, '白名单回归 IP 应可规范化')
+  clientIpStats.createClientIpPolicy({
+    ipHash: normalized.ipHash,
+    policyType: 'allowlist',
+    reason: 'system api rate limit regression',
+    actorSystemAccountId: 'sys_admin'
+  })
+  await clientIpPolicyCache.reloadClientIpPolicyCacheLocal()
+
+  await assertStatus(baseUrl, '/__aisys__/api/settings/public', 200, { clientIp })
+  await assertStatus(baseUrl, '/__aisys__/api/settings/public', 200, { clientIp })
+  await assertStatus(baseUrl, '/__aisys__/api/settings', 200, { clientIp, cookie: adminCookie })
+  await assertStatus(baseUrl, '/__aisys__/api/settings', 200, { clientIp, cookie: adminCookie })
+}
+
+function seedClientIpRegistry(clientIp: string): void {
+  const normalized = clientIpStats.normalizeClientIpForStats(clientIp)
+  assert(normalized, '白名单回归 IP 应可规范化')
+  const now = new Date().toISOString()
+  databaseModule.getStatsDatabase().prepare(`
+    INSERT INTO client_ip_registry (
+      ip_hash, bucket_no, aggregate_ip_key, client_ip, ip_version,
+      first_seen_at, last_seen_at, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(ip_hash) DO UPDATE SET
+      last_seen_at = excluded.last_seen_at,
+      updated_at = excluded.updated_at
+  `).run(
+    normalized.ipHash,
+    normalized.bucketNo,
+    normalized.aggregateIpKey,
+    normalized.clientIp,
+    normalized.ipVersion,
+    now,
+    now,
+    now,
+    now
+  )
 }
 
 async function assertStatus(

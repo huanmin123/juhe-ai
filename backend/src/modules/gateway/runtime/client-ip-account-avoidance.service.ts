@@ -1,10 +1,9 @@
-import { randomUUID } from 'node:crypto'
-
 import { runtimeConfig } from '../../../config/runtime.js'
 import { createRuntimeStateStore } from '../../../shared/runtime-state-store.js'
 import type { GatewaySettings } from '../policy/account-error-policy.service.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import { preserveGatewayAccountDispatchPriorityTiers } from './account-dispatch-priority-order.js'
+import type { GatewayAccountModelPriority } from '../dispatch/model-filter.js'
 
 export interface ClientIpAccountAvoidanceScopeInput {
   systemAccountId: string
@@ -68,10 +67,6 @@ const clientIpAccountAvoidanceMaxPendingFailures = 256
 const clientIpAccountAvoidanceMaxTtlMs = 10 * 60_000
 const clientIpAccountAvoidanceDefaultTtlMs = 5 * 60_000
 const clientIpAccountAvoidanceActivationFailureThreshold = 2
-const clientIpAccountAvoidanceLockTtlMs = 2000
-const clientIpAccountAvoidanceLockAttempts = 20
-const clientIpAccountAvoidanceLockBackoffMs = 5
-
 const clientIpAccountAvoidanceMemoryEntries = new Map<string, MemoryAvoidanceEntry>()
 const clientIpAccountAvoidanceStateStore = createRuntimeStateStore('gateway-client-ip-account-avoidance')
 
@@ -87,7 +82,8 @@ export function createClientIpAccountAvoidanceTracker(
 
 export function orderOpenAIAccountsByClientIpAccountAvoidance(
   accounts: UpstreamAccount[],
-  input: ClientIpAccountAvoidanceScopeInput
+  input: ClientIpAccountAvoidanceScopeInput,
+  modelPriority?: GatewayAccountModelPriority
 ): ClientIpAccountAvoidanceOrderResult {
   const scope = normalizeScope(input)
   if (!scope || accounts.length === 0) {
@@ -129,7 +125,9 @@ export function orderOpenAIAccountsByClientIpAccountAvoidance(
   }
 
   return {
-    accounts: preserveGatewayAccountDispatchPriorityTiers(accounts, [...freshAccounts, ...avoidedAccounts]),
+    accounts: preserveGatewayAccountDispatchPriorityTiers(accounts, [...freshAccounts, ...avoidedAccounts], {
+      modelRankByAccountId: modelPriority?.rankByAccountId
+    }),
     applied: true,
     avoidedAccountIds: avoidedAccounts.map((account) => account.id),
     bypassedAllAvoided: false
@@ -138,10 +136,11 @@ export function orderOpenAIAccountsByClientIpAccountAvoidance(
 
 export async function orderOpenAIAccountsByClientIpAccountAvoidanceAsync(
   accounts: UpstreamAccount[],
-  input: ClientIpAccountAvoidanceScopeInput
+  input: ClientIpAccountAvoidanceScopeInput,
+  modelPriority?: GatewayAccountModelPriority
 ): Promise<ClientIpAccountAvoidanceOrderResult> {
   if (!shouldUseRedisClientIpAccountAvoidanceState()) {
-    return orderOpenAIAccountsByClientIpAccountAvoidance(accounts, input)
+    return orderOpenAIAccountsByClientIpAccountAvoidance(accounts, input, modelPriority)
   }
   const scope = normalizeScope(input)
   if (!scope || accounts.length === 0) {
@@ -185,7 +184,9 @@ export async function orderOpenAIAccountsByClientIpAccountAvoidanceAsync(
   }
 
   return {
-    accounts: preserveGatewayAccountDispatchPriorityTiers(accounts, [...freshAccounts, ...avoidedAccounts]),
+    accounts: preserveGatewayAccountDispatchPriorityTiers(accounts, [...freshAccounts, ...avoidedAccounts], {
+      modelRankByAccountId: modelPriority?.rankByAccountId
+    }),
     applied: true,
     avoidedAccountIds: avoidedAccounts.map((account) => account.id),
     bypassedAllAvoided: false
@@ -365,19 +366,17 @@ async function confirmTrackerPendingFailuresAsync(
       continue
     }
     const key = entryKey(scope, failure.accountId)
-    await withRedisClientIpAccountAvoidanceLock(key, async () => {
-      const current = await getRedisClientIpAccountAvoidanceEntry(key)
-      const entry: ClientIpAccountAvoidanceEntry = {
-        ...failure,
-        entryKey: key,
-        scopeKey: scopeKey(scope),
-        failureCount: (current?.failureCount ?? 0) + 1,
-        firstFailedAtMs: current?.firstFailedAtMs ?? now,
-        lastFailedAtMs: now,
-        avoidUntilMs: now + ttlMs
-      }
-      await setRedisClientIpAccountAvoidanceEntry(key, entry, ttlMs)
-    })
+    const current = await getRedisClientIpAccountAvoidanceEntry(key)
+    const entry: ClientIpAccountAvoidanceEntry = {
+      ...failure,
+      entryKey: key,
+      scopeKey: scopeKey(scope),
+      failureCount: (current?.failureCount ?? 0) + 1,
+      firstFailedAtMs: current?.firstFailedAtMs ?? now,
+      lastFailedAtMs: now,
+      avoidUntilMs: now + ttlMs
+    }
+    await setRedisClientIpAccountAvoidanceEntry(key, entry, ttlMs)
     confirmedAccountIds.push(failure.accountId)
   }
   clearTrackerPendingFailures(tracker)
@@ -534,10 +533,6 @@ function redisClientIpAccountAvoidanceStateKey(key: string): string {
   return `entry:${key}`
 }
 
-function redisClientIpAccountAvoidanceLockKey(key: string): string {
-  return `lock:${key}`
-}
-
 async function getRedisClientIpAccountAvoidanceEntry(key: string): Promise<ClientIpAccountAvoidanceEntry | undefined> {
   return clientIpAccountAvoidanceStateStore.getJson<ClientIpAccountAvoidanceEntry>(redisClientIpAccountAvoidanceStateKey(key))
 }
@@ -548,26 +543,6 @@ async function setRedisClientIpAccountAvoidanceEntry(
   ttlMs: number
 ): Promise<void> {
   await clientIpAccountAvoidanceStateStore.setJson(redisClientIpAccountAvoidanceStateKey(key), entry, ttlMs)
-}
-
-async function withRedisClientIpAccountAvoidanceLock<T>(key: string, operation: () => Promise<T>): Promise<T> {
-  const token = randomUUID()
-  const lockKey = redisClientIpAccountAvoidanceLockKey(key)
-  for (let attempt = 0; attempt < clientIpAccountAvoidanceLockAttempts; attempt += 1) {
-    if (await clientIpAccountAvoidanceStateStore.acquireLock(lockKey, { ttlMs: clientIpAccountAvoidanceLockTtlMs, token })) {
-      try {
-        return await operation()
-      } finally {
-        await clientIpAccountAvoidanceStateStore.releaseLock(lockKey, token).catch(() => undefined)
-      }
-    }
-    await delay(clientIpAccountAvoidanceLockBackoffMs)
-  }
-  throw new Error('客户端 IP 级账号回避运行态锁等待超时')
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 function avoidanceTtlMs(settings?: GatewaySettings): number {

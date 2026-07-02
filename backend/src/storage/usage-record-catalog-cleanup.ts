@@ -20,7 +20,7 @@ export async function deletePostgresUsageRecordCatalogRowsByUsageIds(client: Dat
   const usageIds = uniqueNonEmpty(ids)
   if (!usageIds.length) return
   const scopes = await listPostgresUsageRecordShardEntryScopes(client, usageIds)
-  await client.execute('DELETE FROM juhe_usage.usage_record_shard_entries WHERE usage_id = ANY(?)', [usageIds])
+  await client.execute('DELETE FROM juhe_usage.usage_record_shard_entries WHERE usage_id = ANY(?::text[])', [usageIds])
   await cleanupPostgresUsageRecordScopeShardCatalog(client, scopes)
 }
 
@@ -32,7 +32,7 @@ async function listPostgresUsageRecordShardEntryScopes(client: DatabaseClient, i
   const rows = await client.query<UsageRecordShardEntryScopeRow>(`
     SELECT usage_id, shard_key, system_account_id, api_key_id, account_id
     FROM juhe_usage.usage_record_shard_entries
-    WHERE usage_id = ANY(?)
+    WHERE usage_id = ANY(?::text[])
   `, [ids])
   return rows
     .map((row) => ({

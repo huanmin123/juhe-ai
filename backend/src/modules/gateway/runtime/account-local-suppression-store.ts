@@ -67,6 +67,10 @@ export interface LocalAccountDegradationOrderResult<T> {
   bypassedAllDegraded: boolean
 }
 
+export interface LocalAccountDegradationOrderOptions {
+  modelRankByAccountId?: ReadonlyMap<string, number>
+}
+
 export interface LocalAccountSuppressionFilterOptions {
   acquireHalfOpenLease?: boolean
 }
@@ -329,7 +333,8 @@ export function snapshotLocalAccountRuntimeAvailability(
 }
 
 export function orderLocalAccountDegradations<T extends SuppressibleGatewayAccount>(
-  accounts: T[]
+  accounts: T[],
+  options: LocalAccountDegradationOrderOptions = {}
 ): LocalAccountDegradationOrderResult<T> {
   if (!canUseProcessLocalAccountRuntimeState()) {
     return {
@@ -386,7 +391,9 @@ export function orderLocalAccountDegradations<T extends SuppressibleGatewayAccou
   }
 
   return {
-    accounts: preserveGatewayAccountDispatchPriorityTiers(accounts, [...normalAccounts, ...degradedAccounts]),
+    accounts: preserveGatewayAccountDispatchPriorityTiers(accounts, [...normalAccounts, ...degradedAccounts], {
+      modelRankByAccountId: options.modelRankByAccountId
+    }),
     degradedCount: degradedAccounts.length,
     degradedAccountIds,
     applied: true,

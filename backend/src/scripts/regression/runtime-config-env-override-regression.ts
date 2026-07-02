@@ -53,7 +53,6 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_CHILD === '1') {
   assert.equal(runtimeConfig.postgres.writeMaxConcurrency, 100, 'PostgreSQL 写队列并发应正确读取')
   assert.equal(runtimeConfig.postgres.writeQueueMaxItems, 60000, 'PostgreSQL 写队列容量应正确读取')
   assert.equal(runtimeConfig.systemApi.dbServiceMaxInFlight, 321, 'System API DB service 在途上限应正确读取')
-  assert.equal(runtimeConfig.queue.redisStreamMaxLen, 200000, 'Redis Stream 最大长度应正确读取')
   assert.equal(runtimeConfig.queue.redisStreamReadCount, 500, 'Redis Stream 批量读取数量应正确读取')
 
   process.exit(0)
@@ -64,7 +63,7 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_DEFAULT_CHILD === '1') {
 
   assert.equal(runtimeConfig.runtimeMode, 'performance', '高性能模式应读取为 performance')
   assert.equal(runtimeConfig.systemApi.dbServiceMaxInFlight, 256, 'performance 默认 System API DB service 在途上限应为 256')
-  assert.equal(runtimeConfig.queue.redisStreamMaxLen, 0, 'Redis Stream 默认不应近似裁剪可靠队列消息')
+  assert.equal('redisStreamMaxLen' in runtimeConfig.queue, false, 'Redis Stream 可靠队列不应暴露近似裁剪配置')
 
   process.exit(0)
 }
@@ -156,7 +155,6 @@ const performanceResult = spawnRegression({
   JUHE_AI_DB_WRITE_MAX_CONCURRENCY: '100',
   JUHE_AI_DB_WRITE_QUEUE_MAX_ITEMS: '60000',
   JUHE_AI_SYSTEM_API_DB_SERVICE_MAX_IN_FLIGHT: '321',
-  JUHE_AI_REDIS_STREAM_MAXLEN: '200000',
   JUHE_AI_REDIS_STREAM_READ_COUNT: '500'
 })
 

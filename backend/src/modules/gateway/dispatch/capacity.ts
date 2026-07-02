@@ -4,6 +4,7 @@ import type { GroupSchedulingPolicy } from '../../../domain/types.js'
 import type { OpenAIGatewayRequestLane } from '../protocols/openai-v1/request-lane.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import { preserveGatewayAccountDispatchPriorityTiers } from '../runtime/account-dispatch-priority-order.js'
+import type { GatewayAccountModelPriority } from './model-filter.js'
 
 export function refreshGatewayAccountCurrentConcurrency(accounts: UpstreamAccount[]): UpstreamAccount[] {
   const concurrency = loadAccountCurrentConcurrencyByIds(accounts.map((account) => account.id))
@@ -24,7 +25,8 @@ export async function refreshGatewayAccountCurrentConcurrencyAsync(accounts: Ups
 export function orderGatewayAccountsByLaneCapacityAvailability(
   accounts: UpstreamAccount[],
   requestLane: OpenAIGatewayRequestLane,
-  schedulingPolicy?: GroupSchedulingPolicy
+  schedulingPolicy?: GroupSchedulingPolicy,
+  modelPriority?: GatewayAccountModelPriority
 ): UpstreamAccount[] {
   if (accounts.length < 2) {
     return accounts
@@ -34,13 +36,14 @@ export function orderGatewayAccountsByLaneCapacityAvailability(
   const imageLaneConcurrency = requestLane === 'image'
     ? loadAccountCurrentConcurrencyByIds(accountIds, 'image')
     : undefined
-  return orderAccountsByLaneCapacityBusyState(accounts, requestLane, currentConcurrency, imageLaneConcurrency, schedulingPolicy)
+  return orderAccountsByLaneCapacityBusyState(accounts, requestLane, currentConcurrency, imageLaneConcurrency, schedulingPolicy, modelPriority)
 }
 
 export async function orderGatewayAccountsByLaneCapacityAvailabilityAsync(
   accounts: UpstreamAccount[],
   requestLane: OpenAIGatewayRequestLane,
-  schedulingPolicy?: GroupSchedulingPolicy
+  schedulingPolicy?: GroupSchedulingPolicy,
+  modelPriority?: GatewayAccountModelPriority
 ): Promise<UpstreamAccount[]> {
   if (accounts.length < 2) {
     return accounts
@@ -50,7 +53,7 @@ export async function orderGatewayAccountsByLaneCapacityAvailabilityAsync(
   const imageLaneConcurrency = requestLane === 'image'
     ? await loadAccountCurrentConcurrencyByIdsAsync(accountIds, 'image')
     : undefined
-  return orderAccountsByLaneCapacityBusyState(accounts, requestLane, currentConcurrency, imageLaneConcurrency, schedulingPolicy)
+  return orderAccountsByLaneCapacityBusyState(accounts, requestLane, currentConcurrency, imageLaneConcurrency, schedulingPolicy, modelPriority)
 }
 
 export function areGatewayAccountsCapacityBusyForLane(
@@ -90,7 +93,8 @@ function orderAccountsByLaneCapacityBusyState(
   requestLane: OpenAIGatewayRequestLane,
   currentConcurrency: Map<string, number>,
   imageLaneConcurrency: Map<string, number> | undefined,
-  schedulingPolicy?: GroupSchedulingPolicy
+  schedulingPolicy?: GroupSchedulingPolicy,
+  modelPriority?: GatewayAccountModelPriority
 ): UpstreamAccount[] {
   const orderedAccounts = accounts
     .map((account, index) => ({
@@ -100,7 +104,9 @@ function orderAccountsByLaneCapacityBusyState(
     }))
     .sort((left, right) => Number(left.busy) - Number(right.busy) || left.index - right.index)
     .map((item) => item.account)
-  return preserveGatewayAccountDispatchPriorityTiers(accounts, orderedAccounts)
+  return preserveGatewayAccountDispatchPriorityTiers(accounts, orderedAccounts, {
+    modelRankByAccountId: modelPriority?.rankByAccountId
+  })
 }
 
 function areAccountsCapacityBusyForLane(

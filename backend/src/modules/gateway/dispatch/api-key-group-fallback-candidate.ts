@@ -104,7 +104,9 @@ export async function resolveNextApiKeyGroupFallbackCandidate(
     if (!quotaAllowedAccounts.length) {
       continue
     }
-    const runtimeDegradationOrder = orderGatewayAccountsByRuntimeDegradation(quotaAllowedAccounts)
+    const runtimeDegradationOrder = orderGatewayAccountsByRuntimeDegradation(quotaAllowedAccounts, {
+      modelRankByAccountId: modelFilter.modelPriority.rankByAccountId
+    })
     if (input.reason === 'runtime_degraded' && runtimeDegradationOrder.bypassedAllDegraded) {
       continue
     }

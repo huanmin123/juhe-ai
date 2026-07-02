@@ -29,7 +29,6 @@ process.env.JUHE_AI_LOG_FILE_ENABLED = 'false'
 try {
   const databaseModule = await import('../../storage/database.js')
   const usageRecordShards = await import('../../storage/usage-record-shards.js')
-  const dbServiceHandlers = await import('../../modules/db-service/db-service-handlers.js')
   const openAIOAuthRefresh = await import('../../modules/openai-oauth/openai-oauth-access-token-refresh.service.js')
 
   assert.throws(() => databaseModule.getBusinessDatabase(), /不能回退写入 SQLite/, 'PG 模式不能打开 SQLite business DB')
@@ -49,15 +48,6 @@ try {
     () => usageRecordShards.getUsageRecordShardDatabase(shardLocation),
     /PostgreSQL 模式禁止访问 SQLite 使用记录分片/,
     'PG 模式不能直接打开 usage shard DB'
-  )
-
-  await assert.rejects(
-    () => dbServiceHandlers.handleDbServiceOperation({
-      type: 'save_codex_context_response_state',
-      input: {}
-    } as never),
-    /PostgreSQL 模式暂未接入 Codex context state/,
-    'PG 模式 Codex context state DB service 操作必须显式 fail-fast'
   )
 
   await assert.rejects(
@@ -96,6 +86,10 @@ try {
   assert.doesNotMatch(postgresWriteBody, /usageRecordShardLocationForRecord|getUsageRecordShardDatabase|writeUsageRecordShardRows|recordUsageRecordShardEntries|getUsageCatalogDatabase|getBusinessDatabase/, 'PG 使用记录写入不能调用 SQLite shard/business/catalog 路径')
   assert.doesNotMatch(postgresCatalogBody, /getUsageRecordShardDatabase|writeUsageRecordShardRows|getUsageCatalogDatabase|getBusinessDatabase/, 'PG shard catalog 补齐不能触碰 SQLite shard/business/catalog 路径')
   assert.doesNotMatch(postgresLogicalLocationBody, /join\(|usageRecordShardRoot|usageCatalogDatabasePath/, 'PG 逻辑 shard location 不能拼接本地 SQLite 路径')
+
+  const dbServiceHandlersSource = readFileSync(resolve(backendSrcRoot, 'modules/db-service/db-service-handlers.ts'), 'utf8')
+  assert.match(dbServiceHandlersSource, /case 'save_codex_context_response_state':[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*saveCodexContextResponseStateIndexAsync\(operation\.input\)[\s\S]*saveCodexContextResponseStateIndexWithWriterPool\(operation\.input\)/, 'PG 模式 Codex context state DB service 操作必须走 PG async，不能派发到 SQLite writer pool')
+  assert.doesNotMatch(dbServiceHandlersSource, /PostgreSQL 模式暂未接入 Codex context state/, 'Codex context state 已接入 PG，不能保留暂未接入文案')
 } finally {
   rmSync(tempRoot, { recursive: true, force: true })
 }

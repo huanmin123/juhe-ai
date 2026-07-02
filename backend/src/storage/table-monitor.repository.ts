@@ -7,7 +7,7 @@ import { createPostgresDatabaseClient, type DatabaseClient } from './database-cl
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 
-export type MonitoredDatabaseRole = 'business' | 'dataset' | 'usage-catalog' | 'stats'
+export type MonitoredDatabaseRole = 'business' | 'dataset' | 'usage-catalog' | 'stats' | 'codex-context-state'
 
 export interface TableStorageSnapshotSummary {
   databaseRole: MonitoredDatabaseRole
@@ -75,7 +75,7 @@ interface PreparedTableMonitorTarget {
 
 interface PostgresMonitoredSchemaTarget {
   role: MonitoredDatabaseRole
-  schemaName: 'juhe_business' | 'juhe_dataset' | 'juhe_usage' | 'juhe_stats'
+  schemaName: 'juhe_business' | 'juhe_dataset' | 'juhe_usage' | 'juhe_stats' | 'juhe_codex_context'
   databasePath: string
 }
 
@@ -140,13 +140,14 @@ interface LatestDatabaseSnapshotRow {
 
 export const tableMonitorSampleRetentionDays = 30
 const defaultTableStorageHistoryLimit = 720
-const monitoredDatabaseRoles: MonitoredDatabaseRole[] = ['business', 'dataset', 'usage-catalog', 'stats']
+const monitoredDatabaseRoles: MonitoredDatabaseRole[] = ['business', 'dataset', 'usage-catalog', 'stats', 'codex-context-state']
 const statsSchemaName = 'juhe_stats'
 const postgresMonitoredSchemaTargets: PostgresMonitoredSchemaTarget[] = [
   { role: 'business', schemaName: 'juhe_business', databasePath: 'postgres:juhe_business' },
   { role: 'dataset', schemaName: 'juhe_dataset', databasePath: 'postgres:juhe_dataset' },
   { role: 'usage-catalog', schemaName: 'juhe_usage', databasePath: 'postgres:juhe_usage' },
-  { role: 'stats', schemaName: 'juhe_stats', databasePath: 'postgres:juhe_stats' }
+  { role: 'stats', schemaName: 'juhe_stats', databasePath: 'postgres:juhe_stats' },
+  { role: 'codex-context-state', schemaName: 'juhe_codex_context', databasePath: 'postgres:juhe_codex_context' }
 ]
 
 export function collectTableStorageSnapshot(sampledAt = nowIso(), options: CollectTableStorageSnapshotOptions = {}): CollectTableStorageSnapshotResult {

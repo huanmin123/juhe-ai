@@ -272,6 +272,16 @@ function assertSourceGuards(): void {
   assert.match(source, /GROUP_ACCOUNT_STATS_DIRTY_ALL_CURSOR_PREFIX/, '全量分组统计刷新应使用哨兵游标')
   assert.match(source, /loadGroupAccountStatsGroupsPage/, '全量分组统计刷新应按固定页读取分组')
   assert.match(source, /ORDER BY id ASC\s+LIMIT \?/, '全量分组统计刷新读取分组必须有固定 LIMIT')
+  const invalidationSource = readFileSync(resolve('src/storage/group-account-stats-write-invalidation.ts'), 'utf8')
+  assert.doesNotMatch(invalidationSource, /if \(runtimeConfig\.databaseDriver === 'postgres'\) \{\s*return\s*\}/, 'PG 模式下分组统计标脏不能静默跳过')
+  assert.match(invalidationSource, /markPostgresGroupAccountStatsDirtyInBackground\(input\)/, 'PG 模式下同步标脏入口应转入异步写脏队列')
+  const accountWriteSource = readFileSync(resolve('src/storage/repositories.ts'), 'utf8')
+  assert.match(accountWriteSource, /await refreshGroupAccountStatsAfterWriteAsync\(\{ groupIds: \[groupId\], reason: 'account_created' \}\)/, 'PG 账户创建后必须标记分组账户统计脏队列')
+  assert.match(accountWriteSource, /await refreshGroupAccountStatsAfterWriteAsync\(\{ accountIds: \[id\], reason: 'account_updated' \}\)/, 'PG 账户更新后必须按账户反查标记分组账户统计脏队列')
+  const bindingSource = readFileSync(resolve('src/storage/account-group-binding-write.repository.ts'), 'utf8')
+  assert.match(bindingSource, /await refreshGroupAccountStatsAfterWriteAsync\(\{ groupIds: \[previousGroupId, groupId\], reason: 'group_account_binding' \}\)/, 'PG 账户改绑分组后必须标记新旧分组统计脏队列')
+  const groupWriteSource = readFileSync(resolve('src/storage/group-write.repository.ts'), 'utf8')
+  assert.match(groupWriteSource, /await refreshGroupAccountStatsAfterWriteAsync\(\{ groupIds: \[id\], reason: 'group_deleted' \}\)/, 'PG 分组删除后必须标记统计脏队列以清理旧缓存行')
 }
 
 function accountRow(accountId: string): { status: string } | undefined {

@@ -1,10 +1,9 @@
-import { randomUUID } from 'node:crypto'
-
 import { runtimeConfig } from '../../../config/runtime.js'
 import { createRuntimeStateStore } from '../../../shared/runtime-state-store.js'
 import { getRequestLogger, sanitizeUrlCredentialsForLog } from '../../../shared/request-context.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import { preserveGatewayAccountDispatchPriorityTiers } from './account-dispatch-priority-order.js'
+import type { GatewayAccountModelPriority } from '../dispatch/model-filter.js'
 
 export interface GatewayProxyHealthOrderResult {
   accounts: UpstreamAccount[]
@@ -52,12 +51,12 @@ const upstreamBucketFailureWindowMs = 60_000
 const upstreamBucketFailureAvoidTtlMs = 60_000
 const upstreamBucketHalfOpenLeaseMs = 60_000
 const upstreamBucketFailureDistinctAccountThreshold = 2
-const upstreamBucketFailureLockTtlMs = 2000
-const upstreamBucketFailureLockAttempts = 20
-const upstreamBucketFailureLockBackoffMs = 5
 let gatewayUpstreamBucketHealthNowForTest: number | undefined
 
-export function orderGatewayAccountsByUpstreamBucketHealth(accounts: UpstreamAccount[]): GatewayProxyHealthOrderResult {
+export function orderGatewayAccountsByUpstreamBucketHealth(
+  accounts: UpstreamAccount[],
+  modelPriority?: GatewayAccountModelPriority
+): GatewayProxyHealthOrderResult {
   if (accounts.length === 0) {
     return {
       accounts,
@@ -75,7 +74,9 @@ export function orderGatewayAccountsByUpstreamBucketHealth(accounts: UpstreamAcc
   const specificOrder = orderAccountsByActiveBucketScope(accounts, now, 'specific')
   if (specificOrder.avoidedAccounts.length > 0 && specificOrder.freshAccounts.length > 0) {
     return {
-      accounts: preserveGatewayAccountDispatchPriorityTiers(accounts, orderedAccountsForBucketScope(specificOrder)),
+      accounts: preserveGatewayAccountDispatchPriorityTiers(accounts, orderedAccountsForBucketScope(specificOrder), {
+        modelRankByAccountId: modelPriority?.rankByAccountId
+      }),
       applied: true,
       avoidedBucketKeys: bucketKeysForLog([...specificOrder.avoidedBucketKeys]),
       avoidedProxyKeys: bucketKeysForLog([...specificOrder.avoidedProxyKeys]),
@@ -102,7 +103,9 @@ export function orderGatewayAccountsByUpstreamBucketHealth(accounts: UpstreamAcc
 
   if (providerOrder.avoidedAccounts.length > 0 && providerOrder.freshAccounts.length > 0) {
     return {
-      accounts: preserveGatewayAccountDispatchPriorityTiers(accounts, orderedAccountsForBucketScope(providerOrder)),
+      accounts: preserveGatewayAccountDispatchPriorityTiers(accounts, orderedAccountsForBucketScope(providerOrder), {
+        modelRankByAccountId: modelPriority?.rankByAccountId
+      }),
       applied: true,
       avoidedBucketKeys: bucketKeysForLog([...providerOrder.avoidedBucketKeys]),
       avoidedProxyKeys: bucketKeysForLog([...providerOrder.avoidedProxyKeys]),
@@ -125,13 +128,19 @@ export function orderGatewayAccountsByUpstreamBucketHealth(accounts: UpstreamAcc
   }
 }
 
-export function orderOpenAIAccountsByGatewayProxyHealth(accounts: UpstreamAccount[]): GatewayProxyHealthOrderResult {
-  return orderGatewayAccountsByUpstreamBucketHealth(accounts)
+export function orderOpenAIAccountsByGatewayProxyHealth(
+  accounts: UpstreamAccount[],
+  modelPriority?: GatewayAccountModelPriority
+): GatewayProxyHealthOrderResult {
+  return orderGatewayAccountsByUpstreamBucketHealth(accounts, modelPriority)
 }
 
-export async function orderGatewayAccountsByUpstreamBucketHealthAsync(accounts: UpstreamAccount[]): Promise<GatewayProxyHealthOrderResult> {
+export async function orderGatewayAccountsByUpstreamBucketHealthAsync(
+  accounts: UpstreamAccount[],
+  modelPriority?: GatewayAccountModelPriority
+): Promise<GatewayProxyHealthOrderResult> {
   if (!shouldUseRedisUpstreamBucketHealthState()) {
-    return orderGatewayAccountsByUpstreamBucketHealth(accounts)
+    return orderGatewayAccountsByUpstreamBucketHealth(accounts, modelPriority)
   }
   if (accounts.length === 0) {
     return {
@@ -152,19 +161,23 @@ export async function orderGatewayAccountsByUpstreamBucketHealthAsync(accounts: 
     entries.set(entry.key, entry)
     pendingWrites.push(setRedisBucketFailureEntry(entry.key, entry, ttlMs))
   }
-  const result = orderGatewayAccountsByUpstreamBucketHealthWithEntries(accounts, entries, persistEntry)
+  const result = orderGatewayAccountsByUpstreamBucketHealthWithEntries(accounts, entries, persistEntry, modelPriority)
   await Promise.all(pendingWrites)
   return result
 }
 
-export async function orderOpenAIAccountsByGatewayProxyHealthAsync(accounts: UpstreamAccount[]): Promise<GatewayProxyHealthOrderResult> {
-  return orderGatewayAccountsByUpstreamBucketHealthAsync(accounts)
+export async function orderOpenAIAccountsByGatewayProxyHealthAsync(
+  accounts: UpstreamAccount[],
+  modelPriority?: GatewayAccountModelPriority
+): Promise<GatewayProxyHealthOrderResult> {
+  return orderGatewayAccountsByUpstreamBucketHealthAsync(accounts, modelPriority)
 }
 
 function orderGatewayAccountsByUpstreamBucketHealthWithEntries(
   accounts: UpstreamAccount[],
   entries: Map<string, GatewayUpstreamBucketFailureEntry>,
-  persistEntry: (entry: GatewayUpstreamBucketFailureEntry, ttlMs: number) => void | Promise<void>
+  persistEntry: (entry: GatewayUpstreamBucketFailureEntry, ttlMs: number) => void | Promise<void>,
+  modelPriority?: GatewayAccountModelPriority
 ): GatewayProxyHealthOrderResult {
   if (accounts.length === 0) {
     return {
@@ -183,7 +196,9 @@ function orderGatewayAccountsByUpstreamBucketHealthWithEntries(
   const specificOrder = orderAccountsByActiveBucketScopeWithEntries(accounts, now, 'specific', entries, persistEntry)
   if (specificOrder.avoidedAccounts.length > 0 && specificOrder.freshAccounts.length > 0) {
     return {
-      accounts: preserveGatewayAccountDispatchPriorityTiers(accounts, orderedAccountsForBucketScope(specificOrder)),
+      accounts: preserveGatewayAccountDispatchPriorityTiers(accounts, orderedAccountsForBucketScope(specificOrder), {
+        modelRankByAccountId: modelPriority?.rankByAccountId
+      }),
       applied: true,
       avoidedBucketKeys: bucketKeysForLog([...specificOrder.avoidedBucketKeys]),
       avoidedProxyKeys: bucketKeysForLog([...specificOrder.avoidedProxyKeys]),
@@ -210,7 +225,9 @@ function orderGatewayAccountsByUpstreamBucketHealthWithEntries(
 
   if (providerOrder.avoidedAccounts.length > 0 && providerOrder.freshAccounts.length > 0) {
     return {
-      accounts: preserveGatewayAccountDispatchPriorityTiers(accounts, orderedAccountsForBucketScope(providerOrder)),
+      accounts: preserveGatewayAccountDispatchPriorityTiers(accounts, orderedAccountsForBucketScope(providerOrder), {
+        modelRankByAccountId: modelPriority?.rankByAccountId
+      }),
       applied: true,
       avoidedBucketKeys: bucketKeysForLog([...providerOrder.avoidedBucketKeys]),
       avoidedProxyKeys: bucketKeysForLog([...providerOrder.avoidedProxyKeys]),
@@ -506,7 +523,7 @@ export async function suppressGatewayUpstreamBucketForSecondsAsync(
   const now = gatewayUpstreamBucketHealthNow()
   const ttlMs = Math.max(1, Math.trunc(ttlSeconds)) * 1000
   const avoidUntilMs = now + ttlMs
-  await Promise.all(bucketKeys.map((key) => withRedisBucketEntryLock(key, async () => {
+  await Promise.all(bucketKeys.map(async (key) => {
     const current = await getRedisBucketFailureEntry(key)
     const accountSamples = pruneAccountSamples([...(current?.accountSamples ?? []), [account.id, now]], now)
     await setRedisBucketFailureEntry(key, {
@@ -518,7 +535,7 @@ export async function suppressGatewayUpstreamBucketForSecondsAsync(
       lastFailedAtMs: now,
       avoidUntilMs
     }, ttlMs + upstreamBucketFailureWindowMs)
-  })))
+  }))
   const proxyKey = bucketKeys.find(isProxyBucketKey)
   const safeBucketKeys = bucketKeysForLog(bucketKeys)
   const safeProxyKey = bucketKeyForLog(proxyKey)
@@ -610,41 +627,39 @@ async function recordGatewayUpstreamBucketFailureKeyAsync(
   suspected: boolean
   distinctAccountCount: number
 }> {
-  return withRedisBucketEntryLock(key, async () => {
-    const now = gatewayUpstreamBucketHealthNow()
-    const current = await getRedisBucketFailureEntry(key)
-    const accountSamples = pruneAccountSamples([...(current?.accountSamples ?? []), [account.id, now]], now)
-    const distinctAccountCount = new Set(accountSamples.map(([accountId]) => accountId)).size
-    const halfOpenProbeFailed = isHalfOpenProbeForAccount(current, account.id, now)
-    const suspected = halfOpenProbeFailed || distinctAccountCount >= upstreamBucketFailureDistinctAccountThreshold
-    const entry: GatewayUpstreamBucketFailureEntry = {
-      key,
+  const now = gatewayUpstreamBucketHealthNow()
+  const current = await getRedisBucketFailureEntry(key)
+  const accountSamples = pruneAccountSamples([...(current?.accountSamples ?? []), [account.id, now]], now)
+  const distinctAccountCount = new Set(accountSamples.map(([accountId]) => accountId)).size
+  const halfOpenProbeFailed = isHalfOpenProbeForAccount(current, account.id, now)
+  const suspected = halfOpenProbeFailed || distinctAccountCount >= upstreamBucketFailureDistinctAccountThreshold
+  const entry: GatewayUpstreamBucketFailureEntry = {
+    key,
+    reason,
+    accountSamples,
+    failureCount: (current?.failureCount ?? 0) + 1,
+    firstFailedAtMs: current?.firstFailedAtMs ?? now,
+    lastFailedAtMs: now,
+    avoidUntilMs: suspected ? now + upstreamBucketFailureAvoidTtlMs : current?.avoidUntilMs
+  }
+  await setRedisBucketFailureEntry(key, entry, upstreamBucketFailureAvoidTtlMs + upstreamBucketFailureWindowMs)
+  if (suspected && (!current?.avoidUntilMs || current.avoidUntilMs <= now)) {
+    getRequestLogger().warn({
+      event: 'gateway_upstream_failure_bucket_opened',
+      bucketKey: bucketKeyForLog(key),
+      bucketType: upstreamBucketType(key),
+      accountId: account.id,
+      distinctAccountCount,
       reason,
-      accountSamples,
-      failureCount: (current?.failureCount ?? 0) + 1,
-      firstFailedAtMs: current?.firstFailedAtMs ?? now,
-      lastFailedAtMs: now,
-      avoidUntilMs: suspected ? now + upstreamBucketFailureAvoidTtlMs : current?.avoidUntilMs
-    }
-    await setRedisBucketFailureEntry(key, entry, upstreamBucketFailureAvoidTtlMs + upstreamBucketFailureWindowMs)
-    if (suspected && (!current?.avoidUntilMs || current.avoidUntilMs <= now)) {
-      getRequestLogger().warn({
-        event: 'gateway_upstream_failure_bucket_opened',
-        bucketKey: bucketKeyForLog(key),
-        bucketType: upstreamBucketType(key),
-        accountId: account.id,
-        distinctAccountCount,
-        reason,
-        halfOpenProbeFailed,
-        avoidUntil: new Date(entry.avoidUntilMs ?? now).toISOString()
-      }, '同上游桶多个账号短窗失败，网关已进入上游桶运行态避让')
-    }
-    return {
-      suspected,
-      bucketKey: key,
-      distinctAccountCount
-    }
-  })
+      halfOpenProbeFailed,
+      avoidUntil: new Date(entry.avoidUntilMs ?? now).toISOString()
+    }, '同上游桶多个账号短窗失败，网关已进入上游桶运行态避让')
+  }
+  return {
+    suspected,
+    bucketKey: key,
+    distinctAccountCount
+  }
 }
 
 function isHalfOpenProbeForAccount(
@@ -751,10 +766,6 @@ function redisBucketStateKey(key: string): string {
   return `bucket:${key}`
 }
 
-function redisBucketLockKey(key: string): string {
-  return `bucket-lock:${key}`
-}
-
 async function getRedisBucketFailureEntry(key: string): Promise<GatewayUpstreamBucketFailureEntry | undefined> {
   return upstreamBucketFailureStateStore.getJson<GatewayUpstreamBucketFailureEntry>(redisBucketStateKey(key))
 }
@@ -765,26 +776,6 @@ async function setRedisBucketFailureEntry(
   ttlMs: number
 ): Promise<void> {
   await upstreamBucketFailureStateStore.setJson(redisBucketStateKey(key), entry, ttlMs)
-}
-
-async function withRedisBucketEntryLock<T>(key: string, operation: () => Promise<T>): Promise<T> {
-  const token = randomUUID()
-  const lockKey = redisBucketLockKey(key)
-  for (let attempt = 0; attempt < upstreamBucketFailureLockAttempts; attempt += 1) {
-    if (await upstreamBucketFailureStateStore.acquireLock(lockKey, { ttlMs: upstreamBucketFailureLockTtlMs, token })) {
-      try {
-        return await operation()
-      } finally {
-        await upstreamBucketFailureStateStore.releaseLock(lockKey, token).catch(() => undefined)
-      }
-    }
-    await delay(upstreamBucketFailureLockBackoffMs)
-  }
-  throw new Error('上游桶运行态锁等待超时')
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 export function gatewayProxyKey(account: Pick<UpstreamAccount, 'proxyProfileId' | 'proxyUrl'>): string | undefined {

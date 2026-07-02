@@ -285,8 +285,18 @@
 
           <div class="settings-grid">
             <div class="setting-item">
-              <a-form-item label="使用记录保留天数" tooltip="默认 7 天；清理前会等待统计游标处理完成，避免破坏聚合。">
-                <a-input-number v-model:value="systemForm.usageRecordRetentionDays" :min="1" :max="7" style="width: 100%" />
+              <a-form-item label="使用记录保留天数" tooltip="默认 30 天，最大 180 天；清理前会等待统计游标处理完成，避免破坏聚合。">
+                <a-input-number v-model:value="systemForm.usageRecordRetentionDays" :min="1" :max="180" style="width: 100%" />
+              </a-form-item>
+            </div>
+            <div class="setting-item">
+              <a-form-item label="运行日志索引保留天数" tooltip="默认 14 天，最大 90 天；只影响运行日志索引和文件游标清理，不删除原始日志文件。">
+                <a-input-number v-model:value="systemForm.runtimeLogIndexRetentionDays" :min="1" :max="90" style="width: 100%" />
+              </a-form-item>
+            </div>
+            <div class="setting-item">
+              <a-form-item label="公开接口日志保留天数" tooltip="默认 30 天，最大 365 天；用于公开接口日志表的后台清理。">
+                <a-input-number v-model:value="systemForm.publicApiLogRetentionDays" :min="1" :max="365" style="width: 100%" />
               </a-form-item>
             </div>
             <div class="setting-item">

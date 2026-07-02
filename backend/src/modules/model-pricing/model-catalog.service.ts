@@ -146,8 +146,8 @@ const postgresSyncOpenAIProtocolProviderCodes = [
 ] as const
 
 export function listProviderModelCatalog(options: ModelCatalogListOptions): ProviderModelCatalogItem[] {
-  if (runtimeConfig.cacheDriver === 'redis') {
-    throw new Error('高性能模式禁止同步读取本地模型目录缓存，必须使用 listProviderModelCatalogAsync')
+  if (runtimeConfig.databaseDriver === 'postgres' || runtimeConfig.cacheDriver === 'redis') {
+    throw new Error('高性能模式禁止同步读取模型目录，必须使用 listProviderModelCatalogAsync')
   }
   const cacheKey = modelCatalogCacheKey(options)
   const cached = providerModelCatalogCache.get(cacheKey)
@@ -178,14 +178,15 @@ export async function listProviderModelCatalogAsync(options: ModelCatalogListOpt
 }
 
 function buildProviderModelCatalog(options: ModelCatalogListOptions): ProviderModelCatalogItem[] {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    throw new Error('PostgreSQL 模式禁止同步构建模型目录，必须使用 buildProviderModelCatalogAsync')
+  }
   const sourceProviderCodes = modelCatalogSourceProviderCodes(options.providerCode)
   const builtInSourceProviderCodes = modelCatalogBuiltInSourceProviderCodes(options.providerCode, sourceProviderCodes)
   const builtIn = builtInSourceProviderCodes.flatMap((providerCode) => listProviderModelPricing(providerCode)
     .filter((item) => item.catalogVisible)
     .map(toBuiltInCatalogItem))
-  const custom = runtimeConfig.databaseDriver === 'postgres'
-    ? []
-    : sourceProviderCodes.flatMap((providerCode) => listCustomProviderModelsForCatalog({
+  const custom = sourceProviderCodes.flatMap((providerCode) => listCustomProviderModelsForCatalog({
       providerCode,
       systemAccountId: options.systemAccountId,
       includeInactive: options.includeInactive

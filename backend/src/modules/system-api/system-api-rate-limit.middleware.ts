@@ -6,6 +6,7 @@ import { getRedisClient, type RedisCommandClient } from '../../shared/redis-clie
 import { getRequestAuthContext } from '../auth/request-context.js'
 import { getSettingsAsync } from '../../storage/repositories.js'
 import { getRequestContext, getRequestLogger, sanitizeUrlForLog } from '../../shared/request-context.js'
+import { inspectClientIpPolicy } from '../gateway/runtime/client-ip-policy-cache.service.js'
 
 type MethodClass = 'read' | 'write'
 type LimiterScope = 'ip' | 'user'
@@ -81,6 +82,11 @@ export async function systemApiIpRateLimit(req: Request, res: Response, next: Ne
     return
   }
 
+  if (await isClientIpRateLimitAllowlisted(req)) {
+    next()
+    return
+  }
+
   const methodClass = methodClassFor(req.method)
   const clientIp = clientIpKey(req)
   const key = `${clientIp}:${methodClass}`
@@ -115,6 +121,11 @@ export async function systemApiAuthenticatedRateLimit(req: Request, res: Respons
   }
 
   if (!settings.enabled) {
+    next()
+    return
+  }
+
+  if (await isClientIpRateLimitAllowlisted(req)) {
     next()
     return
   }
@@ -343,6 +354,24 @@ function methodClassFor(method: string): MethodClass {
 
 function isSystemApiHealthPath(req: Request): boolean {
   return req.path === '/health' || req.originalUrl.endsWith('/__aisys__/api/health')
+}
+
+async function isClientIpRateLimitAllowlisted(req: Request): Promise<boolean> {
+  try {
+    const decision = await inspectClientIpPolicy(clientIpKey(req), { ensureSnapshotLoaded: true })
+    return decision.allowlisted
+  } catch (error) {
+    getRequestLogger().warn({
+      event: 'system_api_rate_limit_allowlist_check_failed',
+      err: error instanceof Error ? error : undefined,
+      errorMessage: error instanceof Error ? undefined : String(error),
+      method: req.method,
+      path: req.path,
+      originalUrl: sanitizeUrlForLog(req.originalUrl),
+      clientIp: clientIpKey(req)
+    }, '后台系统 API 白名单检查失败，本次请求继续执行限流')
+    return false
+  }
 }
 
 function clientIpKey(req: Request): string {

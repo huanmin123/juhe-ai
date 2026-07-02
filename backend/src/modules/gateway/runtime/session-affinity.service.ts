@@ -250,12 +250,28 @@ function orderOpenAIPersonalAccountsBySessionAffinity(
   if (targetIndex === boundIndex) {
     return accounts
   }
+  let rotationEndIndex = boundIndex + 1
+  for (; rotationEndIndex < accounts.length; rotationEndIndex += 1) {
+    if (!canSessionAffinityRotateWithinSameTier(boundAccount, accounts[rotationEndIndex], modelPriority)) {
+      break
+    }
+  }
   return [
     ...accounts.slice(0, targetIndex),
     boundAccount,
+    ...accounts.slice(boundIndex + 1, rotationEndIndex),
     ...accounts.slice(targetIndex, boundIndex),
-    ...accounts.slice(boundIndex + 1)
+    ...accounts.slice(rotationEndIndex)
   ]
+}
+
+function canSessionAffinityRotateWithinSameTier(
+  boundAccount: OpenAIAccountSecret,
+  currentAccount: OpenAIAccountSecret,
+  modelPriority?: GatewayAccountModelPriority
+): boolean {
+  return canSessionAffinityPromoteOver(boundAccount, currentAccount, modelPriority)
+    && canSessionAffinityPromoteOver(currentAccount, boundAccount, modelPriority)
 }
 
 function orderOpenAIHighConcurrencyAccounts(

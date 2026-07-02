@@ -940,6 +940,7 @@ export function applyStatsSchema(database: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS client_ip_policies (
           id TEXT PRIMARY KEY,
           ip_hash TEXT NOT NULL,
+          policy_type TEXT NOT NULL,
           status TEXT NOT NULL,
           reason TEXT,
           expires_at TEXT,
@@ -1445,9 +1446,11 @@ export function applyStatsSchema(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_client_ip_account_range_dirty_updated ON client_ip_account_range_window_dirty_ips(updated_at ASC, ip_hash);
 
-    CREATE INDEX IF NOT EXISTS idx_client_ip_policies_active ON client_ip_policies(status, ip_hash, expires_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_client_ip_policies_active_unique ON client_ip_policies(ip_hash) WHERE status = 'active';
 
-    CREATE INDEX IF NOT EXISTS idx_client_ip_policies_ip ON client_ip_policies(ip_hash, status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_client_ip_policies_active ON client_ip_policies(status, policy_type, ip_hash, expires_at);
+
+    CREATE INDEX IF NOT EXISTS idx_client_ip_policies_ip ON client_ip_policies(ip_hash, status, policy_type, created_at DESC);
 
     CREATE INDEX IF NOT EXISTS idx_client_ip_policy_hits_date ON client_ip_policy_hits(stat_date DESC, ip_hash);
 

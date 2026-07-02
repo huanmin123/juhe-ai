@@ -205,7 +205,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 - 审计 payload blob 详情接口只能按 offset / limit 返回有限窗口；未压缩 blob 使用文件 offset 读取，gzip blob 通过解压流跳过到逻辑 offset 后只收集当前窗口，接口返回 `bodyOffset`、`bodyLimit`、`bodyTotalBytes`、`bodyNextOffset` 和 `bodyTruncated`。超过单次最大读取窗口的 payload 默认保持未压缩，避免读取后半段时反复从头解压 gzip。
 - Codex Responses Chat-only bridge 的 `previous_response_id` 状态和 gateway compact snapshot 不把完整上下文写入 SQLite。Codex Responses 上下文索引 shard 只保存 `response_id`、`session_id`、授权边界、`storage_key`、`storage_offset_bytes`、`raw_size_bytes`、`compressed_size_bytes`、`sha256`、`last_used_at`、`expires_at` 等轻量索引；每轮 request input / instructions、output items 和摘要 snapshot 都放在 `backend/data/codex-context/` 下，并按 session/hour 追加到 gzip segment 文件。session 目录名使用可读前缀加 `session_id` hash，不能只靠字符替换或截断。读取时必须按 `storage_key + storage_offset_bytes + compressed_size_bytes + sha256` 做有界文件读取，不能扫描目录、审计 payload、使用记录或运行日志反推上下文。
 - 使用记录、操作日志、原始审计日志、审计错误组和运行日志索引这类高增长列表，默认只读取当前页 `pageSize + 1` 条来判断 `hasMore`，不在请求路径执行全量 `COUNT(*)`；返回的 `total` 只是前端分页器上界值，不代表精确全表总数。
-- 小 `.env` 配置、极小系统状态文件、测试 / 回归脚本、明确有大小上限的网关 raw body 或诊断响应捕获可以作为例外；系统管理 API 和公开系统 API 由 DB service 承载，JSON 请求体硬上限为 `256KB`，超过上限直接返回 413，不能把大体积管理 payload 交给 DB service 事件循环同步解析。`/v1` raw body 当前入口硬上限为 `64mb`，认证预检和可提前识别的图像权限拒绝通过后才读取 body；文本 lane 业务上限默认 `8mb`，由系统设置 `gatewayTextRawBodyLimitMegabytes` 在 `1..64` MB 内调整；图像生成 lane 保留 `64mb` 上限。网关 JSON body 小于等于 `256KB` 时可主线程内联解析；超过 `256KB` 且不超过入口硬上限时进入 worker thread 做顶层元数据扫描，其中超过 `2MB` 会按大 JSON 请求记录预警；只有 OAuth Codex 归一化、禁用图像权限下移除 optional `image_generation` 工具等必须改写请求体的路径才完整解析；使用记录请求快照只保存体积摘要，不能为了快照把完整大请求体再写入明细表，完整原始内容由原始审计按策略捕获；例外不得用于运行日志、审计 payload、使用记录导出或统计明细。
+- 小 `.env` 配置、极小系统状态文件、测试 / 回归脚本、明确有大小上限的网关 raw body 或诊断响应捕获可以作为例外；系统管理 API 和公开系统 API 由 DB service 承载，JSON 请求体硬上限为 `256KB`，超过上限直接返回 413，不能把大体积管理 payload 交给 DB service 事件循环同步解析。`/v1` raw body 当前入口硬上限为 `64mb`，认证预检和可提前识别的图像权限拒绝通过后才读取 body；文本 lane 业务上限默认 `16mb`，由系统设置 `gatewayTextRawBodyLimitMegabytes` 在 `1..64` MB 内调整；图像生成 lane 保留 `64mb` 上限。网关 JSON body 小于等于 `256KB` 时可主线程内联解析；超过 `256KB` 且不超过入口硬上限时进入 worker thread 做顶层元数据扫描，其中超过 `2MB` 会按大 JSON 请求记录预警；只有 OAuth Codex 归一化、禁用图像权限下移除 optional `image_generation` 工具等必须改写请求体的路径才完整解析；使用记录请求快照只保存体积摘要，不能为了快照把完整大请求体再写入明细表，完整原始内容由原始审计按策略捕获；例外不得用于运行日志、审计 payload、使用记录导出或统计明细。
 
 ## 统计缓存与监控存储
 
@@ -236,7 +236,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 - `client_ip_account_stats_daily`：按 `ip_hash + account_id + stat_date` 保存 IP 涉及 AI 账户的自然日统计，只从新使用记录开始写入，不在运行时代码补历史。
 - `client_ip_account_usage_range_windows`：按 `ip_hash + account_id + start_date + end_date` 保存 IP 详情账号使用窗口，系统运维 / IP管理 的“详情”操作只读该窗口并批量补齐当前页账号名称和所属用户名称，不扫描 `usage_records`，也不在请求路径临时 `GROUP BY`。
 - `client_ip_account_range_window_dirty_ips`：记录待刷新 IP+账号范围窗口的 dirty IP，和 `client_ip_range_window_dirty_ips` 同步写入、同步清理，确保详情窗口与 IP 列表窗口一起进入 ready。
-- `client_ip_policies`：保存管理员显式创建的 IP 封禁策略，解封或替换策略只把旧策略改为 `disabled`，不删除历史。
+- `client_ip_policies`：保存管理员显式创建的 IP 策略，`policy_type = blacklist` 表示网关封禁，`policy_type = allowlist` 表示后台管理 / 内部任务接口限流白名单；同一 IP 只能有一条 active 策略，解封、移出白名单或替换策略只把旧策略改为 `disabled`，不删除历史。
 - `client_ip_policy_hits`：按 `ip_hash + stat_date + policy_id` 保存网关封禁命中次数和最近命中时间；网关先写进程内缓冲，再异步批量写库。
 - `usage_model_daily`：按 `system_account_id + stat_date + model` 保存请求数、Token 和成本，用于自然日模型分布。
 - `usage_model_hourly`：按 `system_account_id + stat_hour + model` 保存小时级模型分布，用于统计概览监控窗口。
@@ -365,7 +365,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 - `client_ip_usage_range_windows(end_date)`：数据保留任务按范围窗口结束日期分批清理过期 IP 窗口，避免保留清理退回全表排序。
 - `client_ip_range_window_dirty_ips(updated_at, ip_hash)`：持久记录等待刷新范围窗口的 dirty IP；刷新成功后删除，避免 worker 重启丢失内存 dirty Set 后只能靠全量重建恢复。
 - `stats_job_state(scope_type, scope_id, job_name)`：同时用于 IP 范围窗口 ready/stale 标记；新 IP daily 写入会把当前固定窗口标记为 stale，后台刷新完全部 dirty IP 后再标记 ready，列表不靠窗口表行数判断可读。
-- `client_ip_policies(status, ip_hash, expires_at)`：网关封禁缓存和管理页状态读取 active 封禁策略。
+- `client_ip_policies(status, policy_type, ip_hash, expires_at)`：网关封禁缓存、后台接口白名单判断和管理页状态读取 active IP 策略。
 - `client_ip_policy_hits(stat_date DESC, ip_hash)`：后台记录封禁命中趋势，当前 IP 管理页面不展示该明细。
 - `usage_overview_summary_windows(system_account_id, window_key, start_date, end_date)`：统计概览摘要读取。
 - `usage_overview_trend_windows(system_account_id, window_key, start_date, end_date, bucket_key)`：统计概览趋势读取。
@@ -974,7 +974,9 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - `systemMetricsSampleIntervalSeconds = 30`：系统监控默认采样间隔。
 - `tableMonitorMaxTablesPerRun = 4`：表监控每轮每个库最多刷新多少张表级快照；设置为 `0` 时只采样文件级指标。后台表级采样只读取本轮表和索引大小，并通过 `dbstat` 叶子页 cell 数滚动写入可推导的行数，不执行精确 `COUNT(*)`。
 - `modelCheckRetentionDays = 30`：模型检测历史和诊断明细默认保留 30 天。
-- `usageRecordRetentionDays = 7`：自动保留任务默认保留使用记录 7 天，并等待统计游标已处理；表监控非业务数据硬清理不使用这个保留期设置。
+- `runtimeLogIndexRetentionDays = 14`：普通运行日志索引默认保留 14 天，合法范围 `1..90`，用于运行日志页面检索和 facet 索引清理。
+- `publicApiLogRetentionDays = 30`：公开接口调用日志默认保留 30 天，合法范围 `1..365`。
+- `usageRecordRetentionDays = 30`：自动保留任务默认保留使用记录 30 天，合法范围 `1..180`，并等待统计游标已处理；表监控非业务数据硬清理不使用这个保留期设置。
 - `usageStatsMinuteRetentionHours = 48`：分钟级统计缓存默认保留 48 小时。
 - `usageStatsHourlyRetentionDays = 60`：小时级统计缓存默认保留 60 天，覆盖 AI 性能最近 31 天小时趋势和边界回查。
 - `usageStatsDailyRetentionDays = 400`：日级统计缓存默认保留 400 天，覆盖一年内自然日查询和月表重建。

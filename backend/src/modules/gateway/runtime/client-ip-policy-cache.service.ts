@@ -12,12 +12,15 @@ import { requestStatsWriter } from '../../background/background-stats-writer.js'
 
 export interface ClientIpPolicyDecision {
   blocked: boolean
+  allowlisted: boolean
   normalizedIp?: ReturnType<typeof normalizeClientIpForStats>
   blacklistPolicy?: ActiveClientIpPolicy
+  allowlistPolicy?: ActiveClientIpPolicy
 }
 
 interface InspectClientIpPolicyOptions {
   cacheOnly?: boolean
+  ensureSnapshotLoaded?: boolean
 }
 
 interface ClientIpPolicySnapshotCacheEntry {
@@ -50,7 +53,7 @@ let droppedPolicyHitCount = 0
 export async function inspectClientIpPolicy(clientIp?: string, options: InspectClientIpPolicyOptions = {}): Promise<ClientIpPolicyDecision> {
   const normalizedIp = normalizeClientIpForStats(clientIp)
   if (!normalizedIp) {
-    return { blocked: false }
+    return { blocked: false, allowlisted: false }
   }
   if (runtimeConfig.cacheDriver === 'redis') {
     const snapshot = options.cacheOnly
@@ -63,9 +66,12 @@ export async function inspectClientIpPolicy(clientIp?: string, options: InspectC
   if (cached) {
     return policyDecisionFromCacheEntry(normalizedIp, cached)
   }
+  if (!activePolicySnapshotLoadedAt && options.ensureSnapshotLoaded) {
+    await reloadClientIpPolicyCacheLocal()
+  }
   const snapshotPolicy = activePolicySnapshot.get(normalizedIp.ipHash)
   if (!snapshotPolicy && options.cacheOnly && !activePolicySnapshotLoadedAt) {
-    return { blocked: false, normalizedIp }
+    return { blocked: false, allowlisted: false, normalizedIp }
   }
   const entry = { policy: snapshotPolicy }
   policyCache.set(normalizedIp.ipHash, entry, {
@@ -117,6 +123,7 @@ export async function reloadClientIpPolicyCacheLocal(): Promise<void> {
 }
 
 export async function recordClientIpPolicyHitAsync(policy: ActiveClientIpPolicy): Promise<void> {
+  if (policy.policyType !== 'blacklist') return
   const hit = clientIpPolicyHitInput(policy, 1)
   if (runtimeConfig.cacheDriver === 'redis' || runtimeConfig.runtimeMode === 'performance') {
     await writeClientIpPolicyHits([hit])
@@ -189,10 +196,14 @@ function policyDecisionFromCacheEntry(
   entry: { policy: ActiveClientIpPolicy | undefined }
 ): ClientIpPolicyDecision {
   const policy = entry.policy && isPolicyActiveAt(entry.policy, Date.now()) ? entry.policy : undefined
+  const blacklistPolicy = policy?.policyType === 'blacklist' ? policy : undefined
+  const allowlistPolicy = policy?.policyType === 'allowlist' ? policy : undefined
   return {
-    blocked: Boolean(policy),
+    blocked: Boolean(blacklistPolicy),
+    allowlisted: Boolean(allowlistPolicy),
     normalizedIp,
-    blacklistPolicy: policy
+    blacklistPolicy,
+    allowlistPolicy
   }
 }
 
@@ -214,6 +225,7 @@ function cloneActiveClientIpPolicy(policy: ActiveClientIpPolicy): ActiveClientIp
   return {
     id: policy.id,
     ipHash: policy.ipHash,
+    policyType: policy.policyType,
     aggregateIpKey: policy.aggregateIpKey,
     clientIp: policy.clientIp,
     reason: policy.reason,
@@ -294,6 +306,7 @@ function isActiveClientIpPolicy(value: unknown): value is ActiveClientIpPolicy {
   const record = value as Record<string, unknown>
   return typeof record.id === 'string'
     && typeof record.ipHash === 'string'
+    && (record.policyType === 'blacklist' || record.policyType === 'allowlist')
     && typeof record.aggregateIpKey === 'string'
     && typeof record.clientIp === 'string'
     && (record.reason === undefined || typeof record.reason === 'string')

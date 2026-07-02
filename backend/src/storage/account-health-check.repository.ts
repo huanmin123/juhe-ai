@@ -5,7 +5,7 @@ import { runtimeConfig } from '../config/runtime.js'
 import { loadAccountCurrentConcurrencyByIds, loadAccountCurrentConcurrencyByIdsAsync } from '../shared/account-concurrency.js'
 import { parseAccountAvailabilityScheduleJson } from './account-availability-schedule.js'
 import { hydrateAccountRowsWithRuntimeState } from './account-read.repository.js'
-import { disableExpiredAccounts } from './account-runtime-status.js'
+import { disableExpiredAccounts, disableExpiredAccountsAsync } from './account-runtime-status.js'
 import {
   accountGroupBindingFromRow,
   accountGroupBinding,
@@ -75,6 +75,7 @@ export async function listAccountsDueForHealthCheckAsync(options: AccountHealthC
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listAccountsDueForHealthCheck(options)
   }
+  await disableExpiredAccountsAsync()
   const normalizedLimit = normalizedHealthCheckLimit(options.limit)
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const rows = await queryAccountsDueForHealthCheckAsync(client, healthCheckScanLimit(normalizedLimit), undefined)
@@ -91,6 +92,7 @@ export async function findAccountForHealthCheckAsync(accountId: string): Promise
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return findAccountForHealthCheck(accountId)
   }
+  await disableExpiredAccountsAsync()
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const rows = await queryAccountsDueForHealthCheckAsync(client, 1, accountId)
   return (await healthCheckAccountSummariesAsync(client, rows))[0]

@@ -333,7 +333,7 @@ function canShiftQueuedDbServiceRequest(request: QueuedDbServiceRequest): boolea
 }
 
 function shouldDispatchDbServiceRequestConcurrently(message: DbServiceRequestParentMessage): boolean {
-  if (isCodexContextStateWriterPoolOperation(message.operation)) {
+  if (runtimeConfig.databaseDriver === 'sqlite' && isCodexContextStateWriterPoolOperation(message.operation)) {
     return true
   }
   return runtimeConfig.databaseDriver === 'postgres'

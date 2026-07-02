@@ -13,139 +13,144 @@
     @cancel="$emit('cancel')"
   >
     <a-form layout="vertical" class="account-form">
-      <AccountFormSelector
-        :account-type="form.type"
-        :account-type-choices="accountTypeChoices"
-        :editing="editing"
-        :provider-code="form.providerCode"
-        :providers="providers"
-        :selected-protocol-profile="selectedProtocolProfile"
-        :selected-provider="selectedProvider"
-        @select-provider="$emit('select-provider', $event)"
-        @select-type-choice="$emit('select-type-choice', $event)"
-      />
+      <div v-if="loading" class="account-form-loading">
+        <a-spin tip="正在加载账户配置" />
+      </div>
+      <template v-else>
+        <AccountFormSelector
+          :account-type="form.type"
+          :account-type-choices="accountTypeChoices"
+          :editing="editing"
+          :provider-code="form.providerCode"
+          :providers="providers"
+          :selected-protocol-profile="selectedProtocolProfile"
+          :selected-provider="selectedProvider"
+          @select-provider="$emit('select-provider', $event)"
+          @select-type-choice="$emit('select-type-choice', $event)"
+        />
 
-      <AccountBasicInfoSection
-        v-if="hasAccountType"
-        :editing="editing"
-        :form="form"
-        :group-options="groupOptions"
-        :group-options-loading="groupOptionsLoading"
-        :tag-options="tagOptions"
-        :tag-options-loading="tagOptionsLoading"
-        :deleting-tag-id="deletingTagId"
-        :authorized-editing="authorizedEditing"
-        @delete-tag="$emit('delete-tag', $event)"
-        @group-options-dropdown="$emit('group-options-dropdown', $event)"
-        @group-options-search="$emit('group-options-search', $event)"
-      />
+        <AccountBasicInfoSection
+          v-if="hasAccountType"
+          :editing="editing"
+          :form="form"
+          :group-options="groupOptions"
+          :group-options-loading="groupOptionsLoading"
+          :tag-options="tagOptions"
+          :tag-options-loading="tagOptionsLoading"
+          :deleting-tag-id="deletingTagId"
+          :authorized-editing="authorizedEditing"
+          @delete-tag="$emit('delete-tag', $event)"
+          @group-options-dropdown="$emit('group-options-dropdown', $event)"
+          @group-options-search="$emit('group-options-search', $event)"
+        />
 
-      <AccountApiKeySection
-        v-if="isApiKeyForm && !authorizedEditing"
-        :api-key-runtime-details="accountDetail?.apiKeyRuntimeDetails"
-        :api-key-test-details="apiKeyTestDetails"
-        :base-url-placeholder="baseUrlPlaceholder"
-        :editing="editing"
-        :form="form"
-        :model-options="modelOptions"
-        :models-loading="modelsLoading"
-        :title="credentialTitle"
-      />
+        <AccountApiKeySection
+          v-if="isApiKeyForm && !authorizedEditing"
+          :api-key-runtime-details="accountDetail?.apiKeyRuntimeDetails"
+          :api-key-test-details="apiKeyTestDetails"
+          :base-url-placeholder="baseUrlPlaceholder"
+          :editing="editing"
+          :form="form"
+          :model-options="modelOptions"
+          :models-loading="modelsLoading"
+          :title="credentialTitle"
+        />
 
-      <AccountOAuthSection
-        v-else-if="isOAuthForm && !authorizedEditing"
-        :auth-loading="authLoading"
-        :auth-result="authResult"
-        :editing="editing"
-        :form="form"
-        :is-open-a-i="isOpenAIOAuthForm"
-        :model-options="modelOptions"
-        :models-loading="modelsLoading"
-        :title="credentialTitle"
-        @copy-auth-url="$emit('copy-auth-url', $event)"
-        @generate-auth-url="$emit('generate-auth-url')"
-        @open-auth-url="$emit('open-auth-url')"
-      />
+        <AccountOAuthSection
+          v-else-if="isOAuthForm && !authorizedEditing"
+          :auth-loading="authLoading"
+          :auth-result="authResult"
+          :editing="editing"
+          :form="form"
+          :is-open-a-i="isOpenAIOAuthForm"
+          :model-options="modelOptions"
+          :models-loading="modelsLoading"
+          :title="credentialTitle"
+          @copy-auth-url="$emit('copy-auth-url', $event)"
+          @generate-auth-url="$emit('generate-auth-url')"
+          @open-auth-url="$emit('open-auth-url')"
+        />
 
-      <section v-if="authorizedEditing" class="form-section readonly-config-section">
-        <a-descriptions bordered size="small" :column="2">
-          <a-descriptions-item label="Base URL" :span="2">{{ form.baseUrl || '-' }}</a-descriptions-item>
-          <a-descriptions-item label="支持模型" :span="2">
-            <a-space v-if="form.supportedModels.length" wrap>
-              <a-tag v-for="model in form.supportedModels" :key="model" class="mono-cell">{{ model }}</a-tag>
-            </a-space>
-            <span v-else>-</span>
-          </a-descriptions-item>
-          <a-descriptions-item label="来源账户状态">{{ sourceAccountStatusText }}</a-descriptions-item>
-          <a-descriptions-item label="来源套餐到期">{{ sourceAccountExpiresAtText }}</a-descriptions-item>
-          <a-descriptions-item v-for="item in publicCredentialItems" :key="item.key" :label="item.label">
-            {{ item.value }}
-          </a-descriptions-item>
-          <a-descriptions-item label="模型映射" :span="2">
-            <div v-if="readonlyModelMappings.length" class="readonly-model-mappings">
-              <a-tag v-for="item in readonlyModelMappings" :key="`${item.sourceModel}:${item.sourceEndpointFamily}:${item.upstreamModel}:${item.upstreamEndpointFamily}`">
-                {{ item.sourceModel }} / {{ endpointFamilyText(item.sourceEndpointFamily) }} -> {{ item.upstreamModel }} / {{ endpointFamilyText(item.upstreamEndpointFamily) }}{{ item.enabled === false ? '（停用）' : '' }}
-              </a-tag>
+        <section v-if="authorizedEditing" class="form-section readonly-config-section">
+          <a-descriptions bordered size="small" :column="2">
+            <a-descriptions-item label="Base URL" :span="2">{{ form.baseUrl || '-' }}</a-descriptions-item>
+            <a-descriptions-item label="支持模型" :span="2">
+              <a-space v-if="form.supportedModels.length" wrap>
+                <a-tag v-for="model in form.supportedModels" :key="model" class="mono-cell">{{ model }}</a-tag>
+              </a-space>
+              <span v-else>-</span>
+            </a-descriptions-item>
+            <a-descriptions-item label="来源账户状态">{{ sourceAccountStatusText }}</a-descriptions-item>
+            <a-descriptions-item label="来源套餐到期">{{ sourceAccountExpiresAtText }}</a-descriptions-item>
+            <a-descriptions-item v-for="item in publicCredentialItems" :key="item.key" :label="item.label">
+              {{ item.value }}
+            </a-descriptions-item>
+            <a-descriptions-item label="模型映射" :span="2">
+              <div v-if="readonlyModelMappings.length" class="readonly-model-mappings">
+                <a-tag v-for="item in readonlyModelMappings" :key="`${item.sourceModel}:${item.sourceEndpointFamily}:${item.upstreamModel}:${item.upstreamEndpointFamily}`">
+                  {{ item.sourceModel }} / {{ endpointFamilyText(item.sourceEndpointFamily) }} -> {{ item.upstreamModel }} / {{ endpointFamilyText(item.upstreamEndpointFamily) }}{{ item.enabled === false ? '（停用）' : '' }}
+                </a-tag>
+              </div>
+              <span v-else>-</span>
+            </a-descriptions-item>
+          </a-descriptions>
+        </section>
+
+        <a-collapse
+          v-if="hasAccountType"
+          v-model:activeKey="advancedActiveKeys"
+          class="account-advanced-collapse"
+          expand-icon-position="end"
+        >
+          <a-collapse-panel key="advanced">
+            <template #header>
+              <div class="advanced-header">
+                <span>高级配置</span>
+                <small v-if="advancedConfiguredCount > 0">已配置 {{ advancedConfiguredCount }} 项</small>
+              </div>
+            </template>
+            <div v-if="shouldRenderAdvancedSections" class="advanced-section-stack">
+              <AccountStrategySection
+                :form="form"
+                :is-management-view="isManagementView"
+                :is-o-auth-form="isOAuthForm"
+                :mapping-anthropic-source-model-options="mappingAnthropicSourceModelOptions"
+                :mapping-gemini-source-model-options="mappingGeminiSourceModelOptions"
+                :mapping-source-model-options="mappingSourceModelOptions"
+                :mapping-upstream-model-options="mappingUpstreamModelOptions"
+                :proxy-options="proxyOptions"
+                :selected-protocol-profile="selectedProtocolProfile"
+                :authorized-editing="authorizedEditing"
+              />
+
+              <AccountExtraInfoSection
+                :form="form"
+                :readonly="authorizedEditing"
+              />
+
+              <AccountAvailabilityScheduleSection
+                :form="form"
+                :readonly="authorizedEditing"
+              />
+
+              <AccountErrorPolicyCard
+                v-model:rules="errorPolicyRules"
+                :readonly="authorizedEditing"
+              />
+
+              <AccountResponseInspectionPolicyCard
+                v-model:rules="responseInspectionRules"
+                :readonly="authorizedEditing"
+              />
             </div>
-            <span v-else>-</span>
-          </a-descriptions-item>
-        </a-descriptions>
-      </section>
-
-      <a-collapse
-        v-if="hasAccountType"
-        v-model:activeKey="advancedActiveKeys"
-        class="account-advanced-collapse"
-        expand-icon-position="end"
-      >
-        <a-collapse-panel key="advanced">
-          <template #header>
-            <div class="advanced-header">
-              <span>高级配置</span>
-              <small v-if="advancedConfiguredCount > 0">已配置 {{ advancedConfiguredCount }} 项</small>
-            </div>
-          </template>
-          <div v-if="shouldRenderAdvancedSections" class="advanced-section-stack">
-            <AccountStrategySection
-              :form="form"
-              :is-management-view="isManagementView"
-              :is-o-auth-form="isOAuthForm"
-              :mapping-anthropic-source-model-options="mappingAnthropicSourceModelOptions"
-              :mapping-gemini-source-model-options="mappingGeminiSourceModelOptions"
-              :mapping-source-model-options="mappingSourceModelOptions"
-              :mapping-upstream-model-options="mappingUpstreamModelOptions"
-              :proxy-options="proxyOptions"
-              :selected-protocol-profile="selectedProtocolProfile"
-              :authorized-editing="authorizedEditing"
-            />
-
-            <AccountExtraInfoSection
-              :form="form"
-              :readonly="authorizedEditing"
-            />
-
-            <AccountAvailabilityScheduleSection
-              :form="form"
-              :readonly="authorizedEditing"
-            />
-
-            <AccountErrorPolicyCard
-              v-model:rules="errorPolicyRules"
-              :readonly="authorizedEditing"
-            />
-
-            <AccountResponseInspectionPolicyCard
-              v-model:rules="responseInspectionRules"
-              :readonly="authorizedEditing"
-            />
-          </div>
-        </a-collapse-panel>
-      </a-collapse>
+          </a-collapse-panel>
+        </a-collapse>
+      </template>
     </a-form>
 
     <template #footer>
       <div class="account-modal-footer">
-        <a-button :disabled="testButtonDisabled" :loading="testLoading" @click="$emit('test')">测试</a-button>
+        <a-button :disabled="loading || testButtonDisabled" :loading="testLoading" @click="$emit('test')">测试</a-button>
         <a-space>
           <a-button @click="$emit('cancel')">取消</a-button>
           <a-button v-bind="confirmButtonProps" :loading="confirmLoading" @click="$emit('ok')">确定</a-button>
@@ -213,6 +218,7 @@ const props = withDefaults(defineProps<{
   isManagementView: boolean
   isOAuthForm: boolean
   isOpenAIOAuthForm: boolean
+  loading?: boolean
   mappingAnthropicSourceModelOptions: SelectOption[]
   mappingGeminiSourceModelOptions: SelectOption[]
   mappingSourceModelOptions: SelectOption[]
@@ -227,6 +233,7 @@ const props = withDefaults(defineProps<{
   testLoading?: boolean
   title: string
 }>(), {
+  loading: false,
   testButtonDisabled: false,
   testLoading: false
 })
@@ -279,7 +286,7 @@ function endpointFamilyText(value: AccountFormModel['modelMappings'][number]['so
 }
 const confirmButtonProps = computed(() => ({
   ...props.okButtonProps,
-  disabled: Boolean(props.okButtonProps.disabled) || props.testLoading
+  disabled: Boolean(props.okButtonProps.disabled) || props.loading || props.testLoading
 }))
 const shouldRenderAdvancedSections = computed(() => props.authorizedEditing || advancedActiveKeys.value.includes('advanced'))
 const advancedConfiguredCount = computed(() => {
@@ -364,6 +371,12 @@ defineEmits<{
 .account-form :deep(.ant-form-item-control-input-content) {
   min-width: 0;
   max-width: 100%;
+}
+
+.account-form-loading {
+  display: grid;
+  min-height: 260px;
+  place-items: center;
 }
 
 .account-advanced-collapse :deep(.ant-collapse-item) {

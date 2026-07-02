@@ -71,10 +71,10 @@
         <a-form-item label="IP">
           <a-input :value="policyTarget?.aggregateIpKey" disabled />
         </a-form-item>
-        <a-form-item v-if="policyAction !== 'unblock'" label="封禁原因">
+        <a-form-item v-if="policyAction === 'blacklist' || policyAction === 'allowlist'" :label="policyReasonLabel">
           <a-textarea v-model:value="policyForm.reason" :rows="3" :maxlength="500" show-count />
         </a-form-item>
-        <a-form-item v-if="policyAction !== 'unblock'" label="封禁时长">
+        <a-form-item v-if="policyAction === 'blacklist'" label="封禁时长">
           <a-segmented
             v-model:value="policyForm.durationMode"
             :options="policyDurationOptions"
@@ -82,7 +82,7 @@
             @change="handlePolicyDurationModeChange"
           />
         </a-form-item>
-        <a-form-item v-if="policyAction !== 'unblock' && policyForm.durationMode === 'minutes'" label="分钟数">
+        <a-form-item v-if="policyAction === 'blacklist' && policyForm.durationMode === 'minutes'" label="分钟数">
           <a-input-number
             v-model:value="policyForm.durationValue"
             class="policy-duration-input"
@@ -92,7 +92,7 @@
             addon-after="分钟"
           />
         </a-form-item>
-        <a-form-item v-if="policyAction !== 'unblock' && policyForm.durationMode === 'days'" label="天数">
+        <a-form-item v-if="policyAction === 'blacklist' && policyForm.durationMode === 'days'" label="天数">
           <a-input-number
             v-model:value="policyForm.durationValue"
             class="policy-duration-input"
@@ -117,7 +117,7 @@
           <span class="mono-cell">{{ detailTarget.aggregateIpKey }}</span>
         </a-descriptions-item>
         <a-descriptions-item label="状态">
-          <a-tag :color="detailTarget.status === 'blacklisted' ? 'red' : 'green'">{{ detailTarget.status === 'blacklisted' ? '已封禁' : '正常' }}</a-tag>
+          <a-tag :color="statusColor(detailTarget.status)">{{ statusText(detailTarget.status) }}</a-tag>
         </a-descriptions-item>
         <a-descriptions-item label="统计范围">{{ currentUsageWindowLabel }}</a-descriptions-item>
         <a-descriptions-item label="最近使用">{{ formatDateTime(detailTarget.lastSeenAt || detailTarget.rangeUsage.lastUsedAt) }}</a-descriptions-item>
@@ -252,7 +252,7 @@ import type { ClientIpAccountUsageRow, ClientIpStatsRow, ClientIpStatsSortField,
 import { formatCompactInteger, formatCost, formatDuration, formatInteger, formatPercent } from '@/views/stats/statsFormatters'
 
 import IpStatsList from './IpStatsList.vue'
-import type { IpStatsPolicyAction } from './ipStatsDisplay'
+import { statusColor, statusText, type IpStatsPolicyAction } from './ipStatsDisplay'
 
 type TableSortOrder = 'ascend' | 'descend' | null
 type PolicyAction = IpStatsPolicyAction
@@ -268,6 +268,7 @@ const usageWindowOptions = [
 const statusOptions = [
   { label: '全部状态', value: 'all' },
   { label: '正常', value: 'normal' },
+  { label: '白名单', value: 'allowlisted' },
   { label: '已封禁', value: 'blacklisted' }
 ]
 
@@ -343,8 +344,11 @@ const detailEmptyDescription = computed(() => detailRangeReady.value ? '当前�
 
 const policyModalTitle = computed(() => {
   if (policyAction.value === 'blacklist') return '封禁 IP'
+  if (policyAction.value === 'allowlist') return '加入白名单'
+  if (policyAction.value === 'unallowlist') return '移出白名单'
   return '解除封禁'
 })
+const policyReasonLabel = computed(() => policyAction.value === 'allowlist' ? '白名单原因' : '封禁原因')
 
 onMounted(() => {
   void loadData()
@@ -469,8 +473,14 @@ async function submitPolicy(): Promise<void> {
       if (!payload) return
       await api.ipStats.blacklist(policyTarget.value.ipHash, payload)
       message.success('已封禁 IP')
+    } else if (policyAction.value === 'allowlist') {
+      await api.ipStats.allowlist(policyTarget.value.ipHash, simplePolicyPayload())
+      message.success('已加入白名单')
+    } else if (policyAction.value === 'unallowlist') {
+      await api.ipStats.unallowlist(policyTarget.value.ipHash, simplePolicyPayload())
+      message.success('已移出白名单')
     } else {
-      await api.ipStats.unblock(policyTarget.value.ipHash, {})
+      await api.ipStats.unblock(policyTarget.value.ipHash, simplePolicyPayload())
       message.success('已解除封禁')
     }
     policyModalOpen.value = false
@@ -483,7 +493,7 @@ async function submitPolicy(): Promise<void> {
 }
 
 function policyPayload(): { reason?: string; durationMinutes?: number; durationDays?: number } | undefined {
-  const reason = policyForm.reason?.trim() || undefined
+  const { reason } = simplePolicyPayload()
   if (policyForm.durationMode === 'permanent') {
     return { reason }
   }
@@ -496,6 +506,10 @@ function policyPayload(): { reason?: string; durationMinutes?: number; durationD
     return { reason, durationMinutes: durationValue }
   }
   return { reason, durationDays: durationValue }
+}
+
+function simplePolicyPayload(): { reason?: string } {
+  return { reason: policyForm.reason?.trim() || undefined }
 }
 
 function handlePolicyDurationModeChange(value: string | number): void {

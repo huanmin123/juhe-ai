@@ -4,7 +4,7 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { buildProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 import { datasetDatabasePath, nowIso, statsDatabasePath, usageCatalogDatabasePath } from '../../storage/database.js'
-import { getSettings } from '../../storage/repositories.js'
+import { getSettings, getSettingsAsync } from '../../storage/repositories.js'
 import {
   latestUsageStatsLagSecondsForRuntime,
   usageStatsCursorSafetyDelaySeconds,
@@ -41,6 +41,7 @@ let started = false
 let usageStatsAggregationRunning = false
 let clientIpStatsAggregationRunning = false
 let usageRankSnapshotsRefreshRunning = false
+let groupAccountStatsStartupDirtyMarked = false
 let missingRemoteProcessEventLoopSampleWarningCount = 0
 interface UsageStatsAggregationSafety {
   safeCreatedBefore: string
@@ -68,25 +69,29 @@ const usageScopeRangeWindowStageNames: UsageRankSnapshotStageName[] = ['usage_sc
 const authorizationUsageRangeWindowStageNames: UsageRankSnapshotStageName[] = ['authorization_usage_range_windows']
 const scheduler = new WorkerScheduler()
 const defaultSystemSettingsByKey = new Map<string, unknown>(DEFAULT_SYSTEM_SETTINGS.map(([key, value]) => [key, value]))
+const backgroundJobSettingsSnapshotTtlMs = 60_000
+let backgroundJobSettingsSnapshot: Record<string, unknown> | undefined
+let backgroundJobSettingsSnapshotLoadedAt = 0
+let backgroundJobSettingsRefreshPromise: Promise<void> | undefined
 
 export function startBackgroundJobs(): void {
   if (started) return
   started = true
+  refreshBackgroundJobSettingsSnapshotIfNeeded()
 
   switch (runtimeConfig.workerRole) {
     case 'ingest-worker':
-      if (isPostgresHighPerformanceMode()) {
-        return
-      }
       scheduler.schedule({ name: backgroundScheduledJobName('api-key-record-cleanup-retry'), intervalMs: minuteMs, initialDelayMs: 24 * secondMs, task: runApiKeyRecordCleanupRetry })
       scheduler.schedule({ name: backgroundScheduledJobName('account-record-cleanup-retry'), intervalMs: minuteMs, initialDelayMs: 42 * secondMs, task: runAccountRecordCleanupRetry })
       scheduler.schedule({ name: backgroundScheduledJobName('audit-hot-retention-cleanup'), intervalMs: minuteMs, initialDelayMs: 13 * secondMs, task: runAuditHotRetentionCleanup })
-      scheduler.schedule({
-        name: backgroundScheduledJobName('data-retention-cleanup'),
-        intervalMs: settingsNumber('dataRetentionCleanupIntervalMinutes', 5, 1440) * minuteMs,
-        initialDelayMs: 13 * minuteMs,
-        task: runDataRetentionCleanup
-      })
+      if (!isPostgresHighPerformanceMode()) {
+        scheduler.schedule({
+          name: backgroundScheduledJobName('data-retention-cleanup'),
+          intervalMs: settingsNumber('dataRetentionCleanupIntervalMinutes', 5, 1440) * minuteMs,
+          initialDelayMs: 13 * minuteMs,
+          task: runDataRetentionCleanup
+        })
+      }
       scheduler.schedule({ name: backgroundScheduledJobName('runtime-log-index-maintenance'), intervalMs: 60 * minuteMs, initialDelayMs: 7 * minuteMs, task: runRuntimeLogIndexMaintenance })
       return
     case 'stats-worker':
@@ -94,6 +99,7 @@ export function startBackgroundJobs(): void {
         scheduler.schedule({ name: backgroundScheduledJobName('system-metrics-sample'), intervalMs: settingsNumber('systemMetricsSampleIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 5 * secondMs, task: runSystemMetricsSample })
         scheduler.schedule({ name: backgroundScheduledJobName('usage-stats-aggregation'), intervalMs: settingsNumber('statsAggregationIntervalSeconds', 5, 3600) * secondMs, task: runUsageStatsAggregation })
         scheduler.schedule({ name: backgroundScheduledJobName('client-ip-stats-aggregation'), intervalMs: settingsNumber('statsAggregationIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 8 * secondMs, task: runClientIpStatsAggregation })
+        scheduler.schedule({ name: backgroundScheduledJobName('group-account-stats-refresh'), intervalMs: settingsNumber('groupAccountStatsRefreshIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 16 * secondMs, task: runGroupAccountStatsRefresh })
         scheduler.schedule({ name: backgroundScheduledJobName('usage-rank-snapshots-refresh'), intervalMs: 30 * minuteMs, initialDelayMs: 2 * minuteMs + 30 * secondMs, task: () => runUsageRankSnapshotsRefresh(backgroundScheduledJobName('usage-rank-snapshots-refresh'), usageRankSnapshotCoreStageNames) })
         scheduler.schedule({ name: backgroundScheduledJobName('system-metrics-trend-windows-refresh'), intervalMs: 30 * minuteMs, initialDelayMs: 3 * minuteMs + 20 * secondMs, task: () => runUsageRankSnapshotsRefresh(backgroundScheduledJobName('system-metrics-trend-windows-refresh'), systemMetricsTrendStageNames) })
         scheduler.schedule({ name: backgroundScheduledJobName('usage-overview-windows-refresh'), intervalMs: 30 * minuteMs, initialDelayMs: 4 * minuteMs + 10 * secondMs, task: () => runUsageRankSnapshotsRefresh(backgroundScheduledJobName('usage-overview-windows-refresh'), usageOverviewWindowStageNames) })
@@ -243,6 +249,10 @@ function defaultUsageStatsSafeCreatedBeforeIso(): string {
 
 async function runGroupAccountStatsRefresh(): Promise<void> {
   try {
+    if (!groupAccountStatsStartupDirtyMarked && runtimeConfig.databaseDriver === 'postgres') {
+      await requestBackgroundWorkerDbService({ type: 'mark_all_group_account_stats_dirty', reason: 'stats_worker_startup_refresh' })
+      groupAccountStatsStartupDirtyMarked = true
+    }
     await requestStatsWriter({ type: 'refresh_group_account_stats' })
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_group_account_stats_refresh_failed' }), '分组账户统计刷新失败')
@@ -404,7 +414,7 @@ async function runRuntimeLogIndexMaintenance(): Promise<void> {
 
 function settingsNumber(key: string, min: number, max: number): number {
   const value = runtimeConfig.databaseDriver === 'postgres'
-    ? defaultSystemSettingsByKey.get(key)
+    ? postgresBackgroundJobSettingValue(key)
     : getSettings()[key]
   if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
     throw new Error(`系统设置 ${key} 必须是整数`)
@@ -413,6 +423,28 @@ function settingsNumber(key: string, min: number, max: number): number {
     throw new Error(`系统设置 ${key} 必须在 ${min} 到 ${max} 之间`)
   }
   return value
+}
+
+function postgresBackgroundJobSettingValue(key: string): unknown {
+  refreshBackgroundJobSettingsSnapshotIfNeeded()
+  return backgroundJobSettingsSnapshot?.[key] ?? defaultSystemSettingsByKey.get(key)
+}
+
+function refreshBackgroundJobSettingsSnapshotIfNeeded(): void {
+  if (runtimeConfig.databaseDriver !== 'postgres') return
+  if (backgroundJobSettingsRefreshPromise) return
+  if (backgroundJobSettingsSnapshot && Date.now() - backgroundJobSettingsSnapshotLoadedAt < backgroundJobSettingsSnapshotTtlMs) return
+  backgroundJobSettingsRefreshPromise = getSettingsAsync()
+    .then((settings) => {
+      backgroundJobSettingsSnapshot = settings
+      backgroundJobSettingsSnapshotLoadedAt = Date.now()
+    })
+    .catch((error) => {
+      logger.warn(errorLogFields(error, { event: 'background_job_settings_snapshot_refresh_failed' }), '后台任务系统设置快照刷新失败，将临时使用默认设置')
+    })
+    .finally(() => {
+      backgroundJobSettingsRefreshPromise = undefined
+    })
 }
 
 async function databaseFileBytes(): Promise<number | undefined> {

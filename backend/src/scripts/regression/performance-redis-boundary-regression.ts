@@ -14,8 +14,6 @@ const backendRoot = resolve(scriptDir, '../../..')
 const srcRoot = resolve(backendRoot, 'src')
 
 const localOnlyAppCaches = new Map<string, Set<string>>([
-  ['modules/gateway/client-profiles/codex-turn-retry.service.ts', new Set(['codexTurnRetryCache'])],
-  ['modules/gateway/hybrid/affinity.service.ts', new Set(['hybridRouteAffinityBindings'])],
   ['modules/gateway/runtime/runtime-cache.service.ts', new Set(['gatewayRuntimeCache', 'openAIAccountsCache'])],
   ['modules/gateway/runtime/session-affinity.service.ts', new Set(['sessionAffinityCache', 'trafficMigrationPreferenceCache'])],
   ['modules/gateway/upstream/request.ts', new Set(['proxyAgents'])],
@@ -86,8 +84,11 @@ const runtimeProbeStateSource = source('shared/runtime-probe-state-store.ts')
 assert.match(runtimeProbeStateSource, /export function createRuntimeProbeStateStore[\s\S]*runtimeConfig\.runtimeStateDriver === 'redis'[\s\S]*new RedisRuntimeProbeStateStore/, '探针运行态在 Redis state driver 下必须直接使用 Redis')
 assert.match(runtimeProbeStateSource, /class RedisRuntimeProbeStateStore[\s\S]*runtimeConfig\.redis\.stateUrl/, 'Redis 探针运行态必须使用 JUHE_AI_REDIS_STATE_URL')
 assert.match(runtimeProbeStateSource, /throw new Error\('JUHE_AI_REDIS_STATE_URL 在 Redis runtime state driver 下必须配置'\)/, 'Redis 探针运行态缺少 URL 时必须 fail-fast')
+assert.doesNotMatch(runtimeProbeStateSource, /acquireLock|releaseLock|lockPrefix|redisReleaseProbeLockScript|\bNX\b/, 'Redis 探针运行态不得引入分布式锁，重复执行必须靠 generation 幂等收敛')
 assert.match(runtimeProbeStateSource, /ZADD[\s\S]*ZRANGEBYSCORE/, 'Redis 探针 due index 必须使用跨节点可见的有序索引')
 assert.match(runtimeProbeStateSource, /redisNextProbeGenerationScript[\s\S]*INCR[\s\S]*PEXPIRE/, 'Redis 探针 generation 必须原子递增并带 TTL')
+assert.match(runtimeProbeStateSource, /redisSetProbeStateScript[\s\S]*cjson\.decode[\s\S]*current_generation > incoming_generation[\s\S]*return 0/, 'Redis 探针状态写入必须拒绝旧 generation 覆盖新状态')
+assert.match(runtimeProbeStateSource, /deleteGeneration\(runtimeKey: string, generation: number\)[\s\S]*redisDeleteProbeStateGenerationScript[\s\S]*current_generation == target_generation/, 'Redis 探针状态清理必须支持按 generation 条件删除，避免旧探针误删新状态')
 
 const redisStreamQueueSource = source('shared/redis-stream-queue.ts')
 assert.match(redisStreamQueueSource, /redisUrl/, 'Redis Stream 队列必须显式持有 Redis queue URL')
@@ -138,10 +139,10 @@ assert.match(functionBody(accountConcurrencySource, 'releaseRedisAccountConcurre
 const proxyHealthSource = source('modules/gateway/runtime/proxy-health.service.ts')
 assert.match(proxyHealthSource, /createRuntimeStateStore\('gateway-upstream-bucket-health'\)/, 'Redis runtime state 下上游桶健康必须写共享运行态')
 assert.doesNotMatch(proxyHealthSource, /createAppCache/, '上游桶健康不能依赖 createAppCache 作为 performance 事实源')
-assert.match(proxyHealthSource, /withRedisBucketEntryLock[\s\S]*acquireLock[\s\S]*releaseLock/, 'Redis 上游桶失败采样必须加短锁，避免多进程计数覆盖')
+assert.doesNotMatch(proxyHealthSource, /withRedisBucketEntryLock|upstreamBucketFailureLock|acquireLock|releaseLock|bucket-lock|运行态锁等待超时/, 'Redis 上游桶健康不能在请求路径引入分布式锁等待')
 assert.match(functionBody(proxyHealthSource, 'shouldUseRedisUpstreamBucketHealthState'), /runtimeConfig\.runtimeStateDriver === 'redis'/, 'Redis 上游桶健康必须只在 Redis runtime state driver 下启用共享状态')
 assert.match(functionBody(proxyHealthSource, 'orderGatewayAccountsByUpstreamBucketHealthAsync'), /shouldUseRedisUpstreamBucketHealthState\(\)[\s\S]*loadRedisBucketEntriesForAccounts[\s\S]*Promise\.all\(pendingWrites\)/, 'Redis 上游桶排序必须读取共享状态并等待半开探测写入')
-assert.match(functionBody(proxyHealthSource, 'recordGatewayUpstreamBucketFailureAsync'), /recordGatewayUpstreamBucketFailureKeyAsync/, 'Redis 上游桶失败记录必须使用 async 共享状态路径')
+assert.match(proxyHealthSource, /async function recordGatewayUpstreamBucketFailureKeyAsync[\s\S]*getRedisBucketFailureEntry[\s\S]*setRedisBucketFailureEntry/, 'Redis 上游桶失败记录必须使用无锁共享状态写入')
 assert.match(source('modules/gateway/dispatch/preparation.ts'), /await orderGatewayAccountsByUpstreamBucketHealthAsync/, '调度准备必须等待 Redis 上游桶健康排序')
 assert.match(source('modules/gateway/response/failure-dispatch.ts'), /await recordGatewayUpstreamBucketFailureAsync/, '上游失败处理必须等待 Redis 上游桶失败记录')
 assert.match(source('modules/gateway/response/finalization.ts'), /await recordGatewayUpstreamBucketSuccessAsync/, '上游成功最终化必须等待 Redis 上游桶恢复清理')
@@ -149,12 +150,34 @@ assert.match(source('modules/gateway/response/finalization.ts'), /await recordGa
 const clientIpAccountAvoidanceSource = source('modules/gateway/runtime/client-ip-account-avoidance.service.ts')
 assert.match(clientIpAccountAvoidanceSource, /createRuntimeStateStore\('gateway-client-ip-account-avoidance'\)/, 'Redis runtime state 下 Client-IP 账号回避必须写共享运行态')
 assert.doesNotMatch(clientIpAccountAvoidanceSource, /createAppCache/, 'Client-IP 账号回避不能依赖 createAppCache 作为 performance 事实源')
-assert.match(clientIpAccountAvoidanceSource, /withRedisClientIpAccountAvoidanceLock[\s\S]*acquireLock[\s\S]*releaseLock/, 'Redis Client-IP 账号回避确认必须加短锁，避免多进程计数覆盖')
+assert.doesNotMatch(clientIpAccountAvoidanceSource, /withRedisClientIpAccountAvoidanceLock|clientIpAccountAvoidanceLock|acquireLock|releaseLock|运行态锁等待超时/, 'Redis Client-IP 账号回避不能在请求路径引入分布式锁等待')
 assert.match(functionBody(clientIpAccountAvoidanceSource, 'orderOpenAIAccountsByClientIpAccountAvoidanceAsync'), /shouldUseRedisClientIpAccountAvoidanceState\(\)[\s\S]*getRedisClientIpAccountAvoidanceEntry/, 'Redis Client-IP 账号回避排序必须读取共享状态')
-assert.match(functionBody(clientIpAccountAvoidanceSource, 'confirmTrackerPendingFailuresAsync'), /withRedisClientIpAccountAvoidanceLock[\s\S]*setRedisClientIpAccountAvoidanceEntry/, 'Redis Client-IP 账号回避确认必须写入共享状态')
+assert.match(functionBody(clientIpAccountAvoidanceSource, 'confirmTrackerPendingFailuresAsync'), /getRedisClientIpAccountAvoidanceEntry[\s\S]*setRedisClientIpAccountAvoidanceEntry/, 'Redis Client-IP 账号回避确认必须无锁写入共享状态')
 assert.match(source('modules/gateway/dispatch/preparation.ts'), /await orderOpenAIAccountsByClientIpAccountAvoidanceAsync/, '调度准备必须等待 Redis Client-IP 账号回避排序')
 assert.match(source('modules/gateway/response/finalization.ts'), /await confirmClientIpAccountAvoidanceAfterSuccessAsync/, '成功最终化必须等待 Redis Client-IP 账号回避更新')
 assert.match(source('modules/gateway/routes.ts'), /await confirmCurrentClientIpAccountAvoidanceAfterFinalFailure/, '最终失败响应前必须等待 Redis Client-IP 账号回避确认')
+
+const clientIpErrorCircuitSource = source('modules/gateway/runtime/client-ip-error-circuit.service.ts')
+assert.match(clientIpErrorCircuitSource, /createRuntimeStateStore\('gateway-client-ip-error-circuit'\)/, 'Redis runtime state 下 Client-IP 错误熔断必须写共享运行态')
+assert.doesNotMatch(clientIpErrorCircuitSource, /withRuntimeEntryLock|runtimeEntryLock|acquireLock|releaseLock|运行态锁等待超时/, 'Redis Client-IP 错误熔断不能在请求路径引入分布式锁等待')
+assert.match(functionBody(clientIpErrorCircuitSource, 'recordPreAuthEntryAsync'), /getRuntimeEntry[\s\S]*setRuntimeEntry/, 'Redis Client-IP 认证前错误熔断必须无锁写入共享状态')
+assert.match(functionBody(clientIpErrorCircuitSource, 'recordClientIpErrorCircuitSampleAsync'), /getRuntimeEntry[\s\S]*setRuntimeEntry/, 'Redis Client-IP 请求错误熔断必须无锁写入共享状态')
+
+const codexTurnRetrySource = source('modules/gateway/client-profiles/codex-turn-retry.service.ts')
+assert.match(codexTurnRetrySource, /createRuntimeStateStore\('gateway-codex-turn-retry'\)/, 'Redis runtime state 下 Codex turn retry 必须写共享运行态')
+assert.doesNotMatch(codexTurnRetrySource, /createAppCache/, 'Codex turn retry 不能依赖 createAppCache 作为 performance 事实源')
+assert.doesNotMatch(codexTurnRetrySource, /withRedisCodexTurnRetryLock|codexTurnRetryLock|acquireLock|releaseLock|运行态锁等待超时/, 'Redis Codex turn retry 不能在请求路径引入分布式锁等待')
+assert.match(functionBody(codexTurnRetrySource, 'orderOpenAIAccountsByCodexTurnAvoidanceAsync'), /getRedisCodexTurnRetryState/, 'Redis Codex turn retry 排序必须读取共享状态')
+assert.match(functionBody(codexTurnRetrySource, 'rememberCodexTurnStreamFailureAsync'), /getRedisCodexTurnRetryState[\s\S]*setRedisCodexTurnRetryState/, 'Redis Codex turn retry 失败记录必须无锁写共享状态')
+assert.match(source('modules/gateway/dispatch/preparation.ts'), /await orderOpenAIAccountsByCodexTurnAvoidanceAsync/, '调度准备必须等待 Redis Codex turn retry 排序')
+assert.match(source('modules/gateway/response/finalization.ts'), /await rememberCodexTurnStreamFailureAsync/, '响应最终化必须等待 Redis Codex turn retry 失败记录')
+assert.match(source('modules/gateway/routes.ts'), /await rememberCodexTurnFailureWhenClientRetryIsVisible/, '可见客户端重试响应前必须等待 Redis Codex turn retry 失败记录')
+
+const hybridAffinitySource = source('modules/gateway/hybrid/affinity.service.ts')
+assert.match(hybridAffinitySource, /createRuntimeStateStore\('gateway-hybrid-route-affinity'\)/, 'Redis runtime state 下 hybrid route affinity 必须写共享运行态')
+assert.doesNotMatch(hybridAffinitySource, /createAppCache/, 'hybrid route affinity 不能依赖 createAppCache 作为 performance 事实源')
+assert.match(functionBody(hybridAffinitySource, 'applyHybridRouteAffinityAsync'), /hybridRouteAffinityStateStore\.getJson[\s\S]*rememberHybridRouteAffinityAsync/, 'Redis hybrid route affinity 必须读取并写入共享状态')
+assert.match(source('modules/gateway/hybrid/routing.service.ts'), /await applyHybridRouteAffinityAsync/, 'hybrid routing 必须等待 Redis affinity 状态')
 
 assertNoPerformanceLocalFactQueues()
 assertRedisRuntimeQueuesAndLimits()
@@ -184,6 +207,8 @@ function assertRuntimeStateStoreCallsites(): void {
     [
       'modules/auth/captcha.service.ts:auth_captcha',
       'modules/auth/login-guard.service.ts:auth_login_guard',
+      'modules/gateway/client-profiles/codex-turn-retry.service.ts:gateway-codex-turn-retry',
+      'modules/gateway/hybrid/affinity.service.ts:gateway-hybrid-route-affinity',
       'modules/gateway/runtime/client-ip-account-avoidance.service.ts:gateway-client-ip-account-avoidance',
       'modules/gateway/runtime/client-ip-error-circuit.service.ts:gateway-client-ip-error-circuit',
       'modules/gateway/runtime/proxy-health.service.ts:gateway-upstream-bucket-health',
@@ -328,9 +353,11 @@ function assertStrictRedisCacheBoundaries(): void {
   assert.doesNotMatch(functionBody(accountApiKeyEffectsSource, 'recordGatewayAccountApiKeyLocalFailure'), /recordGatewayAccountApiKeyFailure/, 'Redis runtime state 下账户内 API Key local failure 禁止直接升级为全局持久失败')
 
   const accountSideEffectsSource = source('modules/gateway/runtime/account-side-effects.service.ts')
+  assert.doesNotMatch(accountSideEffectsSource, /gateway-account-recovery-probe-budget|distributedRecoveryProbeBudgetRuntimeStore|acquireDistributedRecoveryProbeBudget|createRuntimeStateStore\('gateway-account-recovery-probe-budget'\)|distributedRecoveryProbeStore\.acquireLock|distributedRecoveryProbeStore\.releaseLock|distributedRecoveryProbeLockTtlMs/, 'Redis 探针不能引入分布式锁或分布式全局/provider/proxy/baseUrl 预算锁，避免高并发恢复被锁残留或跨节点争用限制')
   assert.match(functionBody(accountSideEffectsSource, 'canUseProcessLocalGatewayAccountRuntimeState'), /runtimeConfig\.runtimeStateDriver !== 'redis'[\s\S]*failureStorms\.clear\(\)[\s\S]*successObservations\.clear\(\)[\s\S]*precheckStates\.clear\(\)[\s\S]*recoveryProbeStates\.clear\(\)[\s\S]*return false/, 'Redis runtime state 下账号 failure/precheck/recovery/success 本机运行态必须禁用并清空')
   assert.match(functionBody(accountSideEffectsSource, 'recordGatewayAccountFailureForPrecheckInternal'), /runtimeConfig\.runtimeStateDriver === 'redis'[\s\S]*recordDistributedGatewayAccountFailureForPrecheck[\s\S]*return/, 'Redis runtime state 下账号失败必须写入共享探针状态，不能直接使用本机 failureStorm/precheck Map')
-  assert.match(functionBody(accountSideEffectsSource, 'runDistributedGatewayAccountRecoveryProbe'), /distributedRecoveryProbeStore\.acquireLock[\s\S]*loadDistributedRecoveryProbeStateWithAccount[\s\S]*runSingleGatewayAccountPrecheck[\s\S]*currentDistributedRecoveryProbeState/, 'Redis runtime state 下恢复探针必须加锁、重载账号凭据、使用账号测试健康探针并校验 generation')
+  assert.match(functionBody(accountSideEffectsSource, 'runDistributedGatewayAccountRecoveryProbe'), /loadDistributedRecoveryProbeStateWithAccount[\s\S]*runSingleGatewayAccountPrecheck[\s\S]*currentDistributedRecoveryProbeState/, 'Redis runtime state 下恢复探针必须重载账号凭据、使用账号测试健康探针并校验 generation')
+  assert.match(functionBody(accountSideEffectsSource, 'runDistributedGatewayAccountRecoveryProbe'), /if \(!persisted\) \{[\s\S]*distributedRecoveryProbeStore\.delete\(runtimeKey\)[\s\S]*return[\s\S]*\}/, 'Redis 探针 due 索引命中已过期状态时必须清理 due 成员，避免旧 runtimeKey 反复占用 sweep batch')
   assert.match(functionBody(accountSideEffectsSource, 'loadDistributedRecoveryProbeStateWithAccount'), /type: 'find_openai_account_for_group'[\s\S]*ignoreAvailability: true/, 'Redis 探针执行前必须通过 DB service 重载账号凭据，Redis 状态不得保存凭据')
   assert.doesNotMatch(functionBody(accountSideEffectsSource, 'recordDistributedGatewayAccountFailureForPrecheck'), /\bapiKey:\s*|apiKeys|refreshToken|credentials|accessToken|secretKey/, 'Redis 探针状态不得写入账号凭据字段')
   assert.match(functionBody(accountSideEffectsSource, 'filterGatewayAccountRuntimeSuppressionsAsync'), /runtimeConfig\.runtimeStateDriver !== 'redis'[\s\S]*filterLocallySuppressedGatewayAccounts[\s\S]*filterDistributedRecoveryProbeSuppressions/, 'Redis runtime state 下调度过滤必须读取共享探针运行态')

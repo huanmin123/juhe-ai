@@ -76,6 +76,7 @@ import {
   sendInvalidJsonGatewayResponse
 } from './local-request-errors.js'
 import { filterOpenAIGatewayRequestCandidateAccounts } from '../dispatch/candidate-filter.js'
+import type { GatewayAccountModelPriority } from '../dispatch/model-filter.js'
 import { prepareOpenAIGatewayDispatchAccounts } from '../dispatch/preparation.js'
 import { applyOpenAIGatewayImagePermissionPreflight } from './image-permission-preflight.js'
 import {
@@ -134,6 +135,7 @@ export interface OpenAIGatewayDispatchContext {
   sessionAffinityKey?: string
   clientStrategy: OpenAIGatewayClientStrategyContext
   clientIpAccountAvoidanceTracker: ClientIpAccountAvoidanceTracker
+  modelPriority: GatewayAccountModelPriority
   requestLane: OpenAIGatewayRequestLane
   groupSchedulingPolicy?: GroupSchedulingPolicy
   responseInspectionPolicies: ResponseInspectionPolicySummary[]
@@ -760,6 +762,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     dispatchAccounts: dispatchPreparation.accounts,
     activeGatewaySettings,
     clientIpAccountAvoidanceTracker,
+    modelPriority: candidateFilter.modelPriority,
     requestLane,
     groupSchedulingPolicy: groupAccess.schedulingPolicy,
     signal
@@ -776,6 +779,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     sessionAffinityKey,
     clientStrategy,
     clientIpAccountAvoidanceTracker,
+    modelPriority: candidateFilter.modelPriority,
     requestLane,
     groupSchedulingPolicy: groupAccess.schedulingPolicy,
     responseInspectionPolicies: runtimeResponseInspectionPolicies ?? [],

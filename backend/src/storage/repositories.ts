@@ -97,7 +97,7 @@ import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabas
 import { runtimeConfig } from '../config/runtime.js'
 import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient } from './database-client.js'
-import { refreshGroupAccountStatsAfterWrite } from './group-account-stats-write-invalidation.js'
+import { refreshGroupAccountStatsAfterWrite, refreshGroupAccountStatsAfterWriteAsync } from './group-account-stats-write-invalidation.js'
 import {
   listAccountGroupOptions,
   listAccountGroupOptionsAsync,
@@ -140,6 +140,7 @@ import {
 } from './resource-authorization-helpers.js'
 import { authorizedAccountPermissions, hasActiveManualAuthorizationSource, ownerPermissions } from './resource-permissions.js'
 import { findResourceAuthorizationSummary, findResourceAuthorizationSummaryAsync, listResourceAuthorizationSummaries, listResourceAuthorizationSummariesPage, listResourceAuthorizationSummariesPageAsync, type ResourceAuthorizationListOptions } from './resource-authorization-read.repository.js'
+import { expireDueResourceAuthorizationsAsync } from './resource-authorization-write.repository.js'
 export {
   returnAccountAuthorizationInstanceForGrantee,
   returnAccountAuthorizationInstanceForGranteeAsync,
@@ -395,6 +396,7 @@ export {
   cleanupPendingDeletedAccountRecordTargetsAsync,
   listDeletedAccountRecordCleanupTargets,
   registerDeletedAccountRecordCleanupTarget,
+  registerDeletedAccountRecordCleanupTargetAsync,
   type DeletedAccountDetachedStatsCleanupTarget,
   type DeletedAccountRecordCleanupResult,
   type DeletedAccountRecordCleanupTarget,
@@ -420,6 +422,7 @@ export {
   listDeletedApiKeyRecordCleanupQueueTargets,
   listDeletedApiKeyRecordCleanupTargets,
   registerDeletedApiKeyRecordCleanupTarget,
+  registerDeletedApiKeyRecordCleanupTargetAsync,
   type DeletedApiKeyRecordCleanupQueueSummary,
   type DeletedApiKeyRecordCleanupQueueTarget,
   type DeletedApiKeyRecordCleanupResult,
@@ -781,10 +784,15 @@ export {
 export {
   acquireBackgroundJobLease,
   createBackgroundTaskRun,
+  createBackgroundTaskRunAsync,
   finishBackgroundTaskRun,
+  finishBackgroundTaskRunAsync,
   getBackgroundTaskRun,
+  getBackgroundTaskRunAsync,
   heartbeatBackgroundTaskRun,
+  heartbeatBackgroundTaskRunAsync,
   tryStartBackgroundTaskRun,
+  tryStartBackgroundTaskRunAsync,
   type BackgroundTaskRunSummary
 } from './background-task-runs.repository.js'
 
@@ -806,7 +814,9 @@ export {
 } from './model-checks.repository.js'
 export {
   listAccountQualityFailurePrecheckCandidates,
+  listAccountQualityFailurePrecheckCandidatesAsync,
   refreshAccountQualityFromUsage,
+  refreshAccountQualityFromUsageAsync,
   type AccountQualityFailurePrecheckCandidate,
   type AccountQualityRealtimeRefreshResult
 } from './account-quality.repository.js'
@@ -1782,6 +1792,7 @@ export async function createAccountAsync(input: Record<string, unknown>, access?
     throw error
   }
 
+  await refreshGroupAccountStatsAfterWriteAsync({ groupIds: [groupId], reason: 'account_created' })
   invalidateAccountLookupCache(account.id)
   invalidateGroupAccountIdsCache(groupId)
   invalidateGatewayRuntimeAfterBusinessWrite('account_created')
@@ -2322,6 +2333,7 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
   const availabilityScheduleNextCheckAt = nextAccountAvailabilityScheduleCheckAt(next.availabilitySchedule, new Date(updateNowMs))
   let renamedAuthorizationInstanceIds: string[] = []
   let savedTags = next.tags ?? []
+  let updated = false
   try {
     await client.transaction(async (tx) => {
       const result = await tx.execute(`
@@ -2367,6 +2379,7 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
       if (Number(result.changes ?? 0) <= 0) {
         return
       }
+      updated = true
       if (next.name !== current.name) {
         await replaceAccountNameSearchTermsAsync(tx, id, systemAccountId, next.name, updatedAt)
         renamedAuthorizationInstanceIds = await syncAccountAuthorizationInstanceNamesForSourceAccountAsync(tx, id, next.name, updatedAt)
@@ -2407,6 +2420,9 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
     throw error
   }
 
+  if (updated) {
+    await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [id], reason: 'account_updated' })
+  }
   invalidateAccountLookupCache(id)
   for (const instanceId of renamedAuthorizationInstanceIds) {
     invalidateAccountLookupCache(instanceId)
@@ -2560,6 +2576,7 @@ export async function listResourceAuthorizationsPageAsync(filters: Record<string
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listResourceAuthorizationsPage(filters, access, options)
   }
+  await expireDueResourceAuthorizationsAsync()
   return listResourceAuthorizationSummariesPageAsync(filters, access, options)
 }
 
@@ -2572,5 +2589,6 @@ export async function findResourceAuthorizationAsync(authorizationId: string, ac
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return findResourceAuthorization(authorizationId, access, options)
   }
+  await expireDueResourceAuthorizationsAsync()
   return findResourceAuthorizationSummaryAsync(authorizationId, access, options)
 }

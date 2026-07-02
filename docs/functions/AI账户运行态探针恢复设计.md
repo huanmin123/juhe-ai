@@ -8,7 +8,7 @@
 - 账号恢复、调度降级确认和持久状态确认统一由状态事件触发探针和后台兜底探针完成。
 - 高并发或多 IP 同一时间打出的失败不能把账号快速打死。
 - 每个运行态和持久态都必须有自动恢复出口，避免长期挂死。
-- 高性能模式可能存在多个 Web 节点，跨节点运行态、探针锁和 due 索引必须进入 Redis runtime state，不能回退到进程内 memory。
+- 高性能模式可能存在多个 Web 节点，跨节点运行态、generation 和 due 索引必须进入 Redis runtime state，不能回退到进程内 memory，也不使用 Redis 分布式锁。
 
 ## 总原则
 
@@ -70,7 +70,7 @@
 
 探针按状态存储位置分两层，避免为了恢复 Web 进程内易失状态而引入额外分布式依赖：
 
-- 运行态恢复探针：处理 `failure_observed`、`local_suppressed`、`runtime_degraded` 和 `precheck_pending` 这类短 TTL 运行态。standalone 模式可以保存在 Web 进程内；performance 模式必须保存在 Redis runtime state 并使用分布式锁。
+- 运行态恢复探针：处理 `failure_observed`、`local_suppressed`、`runtime_degraded` 和 `precheck_pending` 这类短 TTL 运行态。standalone 模式可以保存在 Web 进程内；performance 模式必须保存在 Redis runtime state，但不使用 Redis 分布式锁。
 - ops-worker 冷却复测：处理 `accounts.status = temporary_unavailable / rate_limited` 这类持久状态，按冷却时间和退避策略持续复测，直到恢复、进入长期低频复测或用户手动处理。
 - `error` 只在明确硬异常时写入；可自动恢复的后台任务成功后可以清理，不能把普通上游抖动写成长期硬错误。
 
@@ -94,12 +94,11 @@ generation
 
 调度器职责：
 
-- 同一个 `runtimeKey` 同一时间只允许一个探针在途。
+- standalone 模式同一个 `runtimeKey` 尽量只保留一个本地探针；performance 模式允许多个 server 节点短暂重复执行同一个 `runtimeKey` 的探针。
 - 相同或更早 `dueAt` 的新意图合并到同一个任务，失败计数和来源维度取最大值或并集。
-- 探针执行前获取锁；standalone 使用进程内锁，performance 使用 Redis runtime state 锁。
-- 所有探针任务带 `generation`。探针开始时记录 generation，结束回写前必须确认 generation 未变化；如果真实成功、手动恢复或新状态转换已经推进 generation，旧探针结果直接丢弃。
+- 所有探针任务带 `generation`。探针开始时记录 generation，结束回写前必须确认 generation 未变化；如果真实成功、手动恢复或新状态转换已经推进 generation，旧探针结果直接丢弃，旧 generation 也不能覆盖或删除新 generation 状态。
 - 调度时间必须带 jitter，避免大批账号在同一秒同时探测。
-- 有全局并发 / QPS 预算、单账号最小间隔，以及 provider / proxy / baseUrl 维度的预算。预算不足时只推迟 due 时间，不把账号升级为更重状态。
+- 有本机全局并发保护、单账号最小间隔，以及 provider / proxy / baseUrl 维度的本机最小间隔。预算不足时只推迟 due 时间，不把账号升级为更重状态；该预算不进入 Redis 分布式锁。
 - 后台 sweep 周期性读取 due 索引补偿漏调度；performance 模式的 due 索引必须在 Redis 中，不能只存在于某个 Web 进程的 timer。
 - 恢复探针任务本身不携带失败请求的 model、endpoint、stream、payload 或失败形态摘要；失败现场只作为状态判断、日志和后续人工排障信息。
 
@@ -117,22 +116,20 @@ generation
 
 performance 模式默认可能有多个 server 节点，同一账号的运行态必须满足跨节点一致性：
 
-- 状态转换、probe intent、probe generation、due index 和单运行态探针执行锁进入 Redis runtime state；失败窗口和 success observation 可以保留进程内短窗口，用时间窗口、后台探针和真实成功信号兜底。
+- 状态转换、probe intent、probe generation 和 due index 进入 Redis runtime state；失败窗口和 success observation 可以保留进程内短窗口，用时间窗口、后台探针和真实成功信号兜底。
 - 请求调度链路允许短暂不一致，优先性能。读取 Redis 探针状态时使用 server 进程内短 TTL 近端缓存；缓存过期前可能继续避让或短暂误选，但不能写坏持久状态。
 - Redis key 必须有 TTL，不能成为持久事实；Redis 丢失时最多回到保守调度，不能丢账务、授权、审计或使用记录事实。
-- due index 用 Redis sorted set 或等价 runtime state 索引保存 `runtimeKey -> dueAt`，各 Web 节点都可以 sweep；只有拿到锁的节点执行探针。
-- 探针执行锁 TTL 必须覆盖本次探针最大超时，并允许失败后自动释放；释放锁必须校验 token，避免误删其他节点锁。
-- 不使用分布式全局预算锁、provider 锁、proxy 锁或 baseUrl 锁限制探针预算；预算只作为本机保护和 jitter，避免 Redis 锁残留或抖动把恢复并发压低。
+- due index 用 Redis sorted set 或等价 runtime state 索引保存 `runtimeKey -> dueAt`，各 Web 节点都可以 sweep；重复执行由 generation 条件写入和条件删除收敛。
+- 不使用 Redis 分布式锁、分布式全局预算锁、provider 锁、proxy 锁或 baseUrl 锁限制运行态恢复探针；预算只作为本机保护和 jitter，避免 Redis 锁残留或抖动把恢复并发压低。
 - Redis 不可用时，高性能模式不能静默退回进程内 memory 作为跨节点事实源；应记录基础设施错误并走保守调度或 fail-fast。
-- 状态快照展示可以允许短暂延迟，但状态转换和探针结果回写必须通过 generation 防止旧结果覆盖新状态。
+- 状态快照展示可以允许短暂延迟，但状态转换、探针结果回写和探针成功清理必须通过 generation 防止旧结果覆盖或误删新状态。
 
 当前落地边界：
 
 - `RuntimeProbeStateStore` 是运行态探针专用存储。standalone 使用 memory；performance 使用 Redis state URL。
-- Redis 存储拆为 JSON 状态、due sorted set、generation key 和 lock key。写状态时同时写 due 索引；删除状态时同时清理 due 和 lock。
+- Redis 存储拆为 JSON 状态、due sorted set 和 generation key。写状态时同时写 due 索引；删除状态时同时清理 due。
 - generation 使用 Redis `INCR + PEXPIRE` 原子递增；探针执行和事前确认每次回写前都读取当前 generation，旧结果直接丢弃。
-- 探针锁使用 `SET NX PX`，释放时用 Lua 校验 token，避免一个节点误删另一个节点的新锁。
-- server 进程启动后会启动 Redis due sweep，周期读取 due 索引并竞争锁执行；worker 和 DB service 不执行运行态恢复探针。
+- server 进程启动后会启动 Redis due sweep，周期读取 due 索引并执行到期探针；worker 和 DB service 不执行运行态恢复探针。
 - 调度过滤在 Redis runtime state 下读取共享探针状态，但使用 `1s` 正向缓存和 `500ms` 负向缓存降低热路径 Redis 读放大；真实请求成功、手动恢复或持久状态写回会清理共享探针状态和当前进程缓存。
 - Redis 探针状态只保存非敏感元数据：`runtimeKey`、`accountId`、账号展示名、供应商、系统账户 / 分组 ID、设置快照、失败计数、观察时间、下一次探针时间、原因和 generation。
 - Redis 探针状态不保存账号凭据、API Key、OAuth token、代理密码、完整请求 / 响应正文、失败请求 model、endpoint、stream 或用户 payload。执行探针前必须通过 DB service 按 `accountId + groupId + systemAccountId` 重载账号凭据，并允许读取当前不可用账号用于恢复验证。
@@ -170,7 +167,7 @@ performance 模式默认可能有多个 server 节点，同一账号的运行态
 后台主动探针负责所有恢复和重状态确认：
 
 1. 扫描 due 的失败样本、运行态降级、短暂避让、探针确认态和持久冷却态。
-2. 对单个运行态键获取探针租约，避免多 worker 或多进程同时探同一个账号。
+2. 多个 Web 节点可以短暂重复执行同一个运行态键的探针；探针结果回写必须校验 generation，旧探针结果直接丢弃，不能靠 Redis 分布式锁保证唯一执行。
 3. 使用现有账户测试健康探针发起最小请求；模型优先历史测试成功模型，其次供应商默认测试模型，不从失败请求提取 model 或 endpoint。
 4. 运行态恢复探针必须标记 `traffic_source = runtime_recovery_probe`；持久冷却复测继续使用 `traffic_source = cooldown_retest`，两者都不能伪装成真实用户网关流量。
 5. 探针使用记录和审计只保留诊断摘要，不参与业务统计、账号质量统计和真实请求形态学习。
@@ -276,7 +273,7 @@ performance 模式默认可能有多个 server 节点，同一账号的运行态
 - `gateway_account_failure_observed`：真实请求失败已记录为样本。
 - `gateway_account_local_suppressed`：账号进入短暂避让。
 - `gateway_account_recovery_probe_scheduled`：后台探针已调度。
-- `gateway_account_recovery_probe_budget_delayed`：探针因全局、账号、provider、proxy 或 Base URL 预算被推迟。
+- `gateway_account_recovery_probe_budget_delayed`：探针因本机并发保护、单账号最小间隔或本机 provider / proxy / Base URL 最小间隔被推迟。
 - `gateway_account_recovery_probe_stale_result_ignored`：探针结束时 generation 已变化，旧结果已丢弃。
 - `gateway_account_recovery_probe_success`：后台探针成功，运行态已恢复。
 - `gateway_account_recovery_probe_failed`：后台探针失败，等待下一轮。
@@ -296,6 +293,6 @@ performance 模式默认可能有多个 server 节点，同一账号的运行态
 - `temporary_unavailable` 后台复测成功能自动恢复 `active`。
 - 所有用户请求失败路径仍能切号救回当前请求。
 - 旧 generation 探针结果不能覆盖真实成功、手动恢复或更新后的状态。
-- performance / Redis runtime state 下，多节点同时调度同一运行态只能有一个节点执行探针，due sweep 能补偿进程重启后的任务。
+- performance / Redis runtime state 下，多节点同时调度同一运行态允许短暂重复执行；旧 generation 结果不能覆盖或误删新状态，due sweep 能补偿进程重启后的任务。
 - 模型 / endpoint 明确不支持时不进入账号级状态升级；恢复探针不能复用失败请求形态，也不能因此把账号打成不可用。
 - Mock AI 覆盖失败后恢复、失败后持续不可用、高并发失败风暴和授权实例隔离。

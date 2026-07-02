@@ -20,7 +20,7 @@ import {
   type ClientIpConcurrencyDecision
 } from '../runtime/client-ip-concurrency.service.js'
 import {
-  orderOpenAIAccountsByCodexTurnAvoidance
+  orderOpenAIAccountsByCodexTurnAvoidanceAsync
 } from '../client-profiles/codex-turn-retry.service.js'
 import {
   areGatewayAccountsCapacityBusyForLaneAsync,
@@ -148,7 +148,9 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     return { outcome: 'completed' }
   }
 
-  const runtimeDegradationOrder = orderGatewayAccountsByRuntimeDegradation(localSuppressionFilter.accounts)
+  const runtimeDegradationOrder = orderGatewayAccountsByRuntimeDegradation(localSuppressionFilter.accounts, {
+    modelRankByAccountId: input.modelPriority.rankByAccountId
+  })
   if (runtimeDegradationOrder.applied || runtimeDegradationOrder.bypassedAllDegraded) {
     logger.warn({
       event: runtimeDegradationOrder.applied
@@ -182,7 +184,7 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     }
   }
 
-  const proxyHealthOrder = await orderGatewayAccountsByUpstreamBucketHealthAsync(runtimeDegradationOrder.accounts)
+  const proxyHealthOrder = await orderGatewayAccountsByUpstreamBucketHealthAsync(runtimeDegradationOrder.accounts, input.modelPriority)
   if (proxyHealthOrder.applied || proxyHealthOrder.bypassedAllAvoided) {
     logger.warn({
       event: proxyHealthOrder.applied
@@ -220,7 +222,7 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     apiKeyId: input.apiKeyId,
     groupId: input.groupId,
     clientIp: input.clientIp
-  })
+  }, input.modelPriority)
   if (clientIpAccountAvoidance.applied || clientIpAccountAvoidance.bypassedAllAvoided) {
     logger.warn({
       event: clientIpAccountAvoidance.applied
@@ -246,7 +248,11 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     })
   }
 
-  const codexTurnAvoidance = orderOpenAIAccountsByCodexTurnAvoidance(clientIpAccountAvoidance.accounts, input.clientStrategy)
+  const codexTurnAvoidance = await orderOpenAIAccountsByCodexTurnAvoidanceAsync(
+    clientIpAccountAvoidance.accounts,
+    input.clientStrategy,
+    input.modelPriority
+  )
   if (codexTurnAvoidance.applied || codexTurnAvoidance.bypassedAllAvoided) {
     logger.warn({
       event: 'gateway_codex_turn_account_avoidance',
@@ -368,7 +374,12 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
   }
 
   if (input.dispatchOrderingOptions.groupType !== 'high_concurrency') {
-    accounts = await orderGatewayAccountsByLaneCapacityAvailabilityAsync(accounts, input.requestLane, input.groupAccess.schedulingPolicy)
+    accounts = await orderGatewayAccountsByLaneCapacityAvailabilityAsync(
+      accounts,
+      input.requestLane,
+      input.groupAccess.schedulingPolicy,
+      input.dispatchOrderingOptions.modelPriority
+    )
     if (await areGatewayAccountsCapacityBusyForLaneAsync(accounts, input.requestLane, input.groupAccess.schedulingPolicy)) {
       const fallback = await input.attemptFallback('group_capacity_busy')
       if (fallback.attempted) {
