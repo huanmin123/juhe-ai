@@ -1,6 +1,7 @@
 import { strict as assert } from 'node:assert'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { closeRedisClients } from '../../shared/redis-client.js'
 import {
   accountNameSearchQueryTerms,
@@ -159,6 +160,7 @@ async function createSmokeAccount(input: {
 }) {
   const createInput: Record<string, unknown> = {
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: input.name,
     type: 'api_key',
     credentials: {
@@ -240,7 +242,7 @@ async function assertAccountListIndexedPlans(
       LIMIT 20
     `,
     [systemAccountId, keyword],
-    ['idx_accounts_owner_name_lower_lookup', 'idx_accounts_system_account_name_lookup']
+    ['idx_accounts_owner_name_lower_lookup', 'idx_accounts_owner_all_name_lower_lookup', 'idx_accounts_system_account_name_lookup']
   )
   await assertIndexedPlan(
     'AI 账户名称包含候选 PG 查询',

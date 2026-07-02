@@ -19,6 +19,7 @@ import { createUsageRecordsBatchAsync } from '../../storage/usage-records.reposi
 import { dateKey, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
 
 assert.equal(runtimeConfig.databaseDriver, 'postgres', '客户端 IP 统计 PG smoke 需要 JUHE_AI_DATABASE_DRIVER=postgres')
+assertRemotePostgresSmokeAllowed()
 
 const marker = `client_ip_stats_pg_smoke_${Date.now()}_${Math.random().toString(16).slice(2)}`
 const primaryIp = '198.18.203.10'
@@ -384,4 +385,21 @@ interface JobStateRow {
   last_error_message: string | null
   lag_seconds: number | null
   updated_at: string
+}
+
+function assertRemotePostgresSmokeAllowed(): void {
+  if (process.env.JUHE_AI_ALLOW_CLIENT_IP_STATS_POSTGRES_SMOKE === '1') {
+    return
+  }
+  const postgresUrl = runtimeConfig.postgres.url
+  let hostname = ''
+  try {
+    hostname = postgresUrl ? new URL(postgresUrl).hostname.toLowerCase() : ''
+  } catch {
+    hostname = ''
+  }
+  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {
+    return
+  }
+  throw new Error('客户端 IP 统计 PG smoke 会临时改写 juhe_stats.stats_job_state 全局游标并写入 smoke 使用记录；非本机 PostgreSQL 必须先确认是测试实例，并设置 JUHE_AI_ALLOW_CLIENT_IP_STATS_POSTGRES_SMOKE=1')
 }

@@ -68,6 +68,7 @@ export interface ClientIpConcurrencyAcquireInput {
 const states = new Map<string, ClientIpConcurrencyState>()
 let nextQueueItemId = 1
 const redisClientIpConcurrencyTtlMs = 2 * 60 * 60 * 1000
+const redisClientIpConcurrencyRenewIntervalMs = Math.max(60_000, Math.floor(redisClientIpConcurrencyTtlMs / 4))
 
 export function acquireHighConcurrencyClientIpSlot(input: ClientIpConcurrencyAcquireInput): Promise<ClientIpConcurrencyDecision> {
   const policy = resolveGroupSchedulingPolicy('high_concurrency', input.policy) ?? DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY
@@ -253,6 +254,7 @@ function redisAcquiredDecision(
   queueSizeBeforeAcquire = 0
 ): ClientIpConcurrencyDecision {
   let released = false
+  const stopRenewal = startRedisClientIpSlotRenewal(key, slotToken)
   return {
     enabled: true,
     acquired: true,
@@ -264,6 +266,7 @@ function redisAcquiredDecision(
     release: () => {
       if (released) return
       released = true
+      stopRenewal()
       void releaseRedisClientIpSlotWithRetry(key, slotToken)
     }
   }
@@ -292,6 +295,48 @@ async function releaseRedisClientIpSlot(key: string, slotToken: string): Promise
     keys: [redisClientIpConcurrencyKey(key)],
     arguments: [slotToken]
   })
+}
+
+async function renewRedisClientIpSlot(key: string, slotToken: string): Promise<boolean> {
+  const result = await (await redisStateClient()).eval(redisRenewClientIpConcurrencyScript, {
+    keys: [redisClientIpConcurrencyKey(key)],
+    arguments: [
+      String(Date.now()),
+      String(redisClientIpConcurrencyTtlMs),
+      slotToken
+    ]
+  })
+  return numericRedisArray(result)[0] === 1
+}
+
+function startRedisClientIpSlotRenewal(key: string, slotToken: string): () => void {
+  let stopped = false
+  let timer: NodeJS.Timeout | undefined
+  const stop = (): void => {
+    if (stopped) return
+    stopped = true
+    if (timer) {
+      clearInterval(timer)
+    }
+  }
+  timer = setInterval(() => {
+    if (stopped) return
+    void renewRedisClientIpSlot(key, slotToken)
+      .then((renewed) => {
+        if (!renewed && !stopped) {
+          stop()
+        }
+      })
+      .catch((error) => {
+        if (stopped) return
+        logger.warn(errorLogFields(error, {
+          event: 'redis_client_ip_concurrency_renew_failed',
+          key
+        }), 'Redis Client-IP 并发槽续租失败')
+      })
+  }, redisClientIpConcurrencyRenewIntervalMs)
+  timer.unref?.()
+  return stop
 }
 
 async function releaseRedisClientIpSlotWithRetry(key: string, slotToken: string): Promise<void> {
@@ -549,6 +594,18 @@ if redis.call('ZCARD', KEYS[1]) == 0 then
   redis.call('DEL', KEYS[1])
 end
 return 1
+`
+
+const redisRenewClientIpConcurrencyScript = `
+local now_ms = tonumber(ARGV[1])
+local slot_ttl_ms = tonumber(ARGV[2])
+local slot_token = ARGV[3]
+if redis.call('ZSCORE', KEYS[1], slot_token) == false then
+  return {0}
+end
+redis.call('ZADD', KEYS[1], now_ms + slot_ttl_ms, slot_token)
+redis.call('PEXPIRE', KEYS[1], slot_ttl_ms)
+return {1}
 `
 
 const redisClientIpQueueEnqueueScript = `

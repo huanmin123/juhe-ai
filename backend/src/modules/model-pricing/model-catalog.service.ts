@@ -288,12 +288,29 @@ export function estimateCatalogCostUsd(input: CostInput & { systemAccountId?: st
   if (!pricing || !hasAnyCostDimension(input)) {
     return undefined
   }
-  const breakdown = buildCatalogCostBreakdown({ ...input, model: pricing.model })
+  const breakdown = buildCatalogCostBreakdownFromPricing(pricing, { ...input, model: pricing.model })
+  return breakdown?.accountChargeUsd
+}
+
+export async function estimateCatalogCostUsdAsync(input: CostInput & { systemAccountId?: string }): Promise<number | undefined> {
+  const pricing = await resolveCatalogPricingAsync(input)
+  if (!pricing || !hasAnyCostDimension(input)) {
+    return undefined
+  }
+  const breakdown = buildCatalogCostBreakdownFromPricing(pricing, { ...input, model: pricing.model })
   return breakdown?.accountChargeUsd
 }
 
 export function estimateCatalogCacheReadCostUsd(input: CostInput & { systemAccountId?: string }): number | undefined {
   const pricing = resolveCatalogPricing(input)
+  if (!pricing || input.cacheReadTokens === undefined) return undefined
+  const cachedInputPrice = perToken(pricing.cachedInputUsdPer1M) ?? perToken(pricing.inputUsdPer1M)
+  if (cachedInputPrice === undefined) return undefined
+  return roundCost(Math.max(input.cacheReadTokens, 0) * cachedInputPrice)
+}
+
+export async function estimateCatalogCacheReadCostUsdAsync(input: CostInput & { systemAccountId?: string }): Promise<number | undefined> {
+  const pricing = await resolveCatalogPricingAsync(input)
   if (!pricing || input.cacheReadTokens === undefined) return undefined
   const cachedInputPrice = perToken(pricing.cachedInputUsdPer1M) ?? perToken(pricing.inputUsdPer1M)
   if (cachedInputPrice === undefined) return undefined
@@ -315,14 +332,45 @@ export function estimateCatalogCacheWriteCostUsd(input: CostInput & { systemAcco
   )
 }
 
+export async function estimateCatalogCacheWriteCostUsdAsync(input: CostInput & { systemAccountId?: string }): Promise<number | undefined> {
+  const pricing = await resolveCatalogPricingAsync(input)
+  if (!pricing || (input.cacheWriteTokens === undefined && input.cacheWrite1hTokens === undefined)) return undefined
+  const cacheWritePrice = perToken(pricing.cacheWriteUsdPer1M)
+  const cacheWrite1hPrice = perToken(pricing.cacheWrite1hUsdPer1M) ?? cacheWritePrice
+  if (cacheWritePrice === undefined && cacheWrite1hPrice === undefined) return undefined
+  const cacheWriteTokens = Math.max(input.cacheWriteTokens ?? 0, 0)
+  const cacheWrite1hTokens = normalizedCacheWrite1hTokens(input, cacheWriteTokens)
+  const cacheWriteStandardTokens = Math.max(cacheWriteTokens - cacheWrite1hTokens, 0)
+  return roundCost(
+    cacheWriteStandardTokens * (cacheWritePrice ?? 0)
+    + cacheWrite1hTokens * (cacheWrite1hPrice ?? 0)
+  )
+}
+
 export function resolveCatalogPricingModel(input: { providerCode: string; model?: string; systemAccountId?: string }): string | undefined {
   return resolveCatalogPricing(input)?.model
+}
+
+export async function resolveCatalogPricingModelAsync(input: { providerCode: string; model?: string; systemAccountId?: string }): Promise<string | undefined> {
+  return (await resolveCatalogPricingAsync(input))?.model
 }
 
 export function buildCatalogCostBreakdown(input: CostInput & { systemAccountId?: string; costUsd?: number }): ProviderCostBreakdown | undefined {
   const pricing = resolveCatalogPricing(input)
   if (!pricing) return undefined
+  return buildCatalogCostBreakdownFromPricing(pricing, input)
+}
 
+export async function buildCatalogCostBreakdownAsync(input: CostInput & { systemAccountId?: string; costUsd?: number }): Promise<ProviderCostBreakdown | undefined> {
+  const pricing = await resolveCatalogPricingAsync(input)
+  if (!pricing) return undefined
+  return buildCatalogCostBreakdownFromPricing(pricing, input)
+}
+
+function buildCatalogCostBreakdownFromPricing(
+  pricing: ProviderModelCatalogItem,
+  input: CostInput & { systemAccountId?: string; costUsd?: number }
+): ProviderCostBreakdown | undefined {
   const inputPrice = perToken(pricing.inputUsdPer1M)
   const outputPrice = perToken(pricing.outputUsdPer1M)
   const cachedInputPrice = perToken(pricing.cachedInputUsdPer1M) ?? inputPrice
@@ -388,6 +436,18 @@ export function buildCatalogCostBreakdown(input: CostInput & { systemAccountId?:
 function resolveCatalogPricing(input: CostInput & { systemAccountId?: string }): ProviderModelCatalogItem | undefined {
   if (!input.model) return undefined
   const catalog = listProviderModelCatalog({
+    providerCode: input.providerCode,
+    systemAccountId: input.systemAccountId
+  })
+  const item = findCatalogItem(catalog, input.model)
+  if (!item) return undefined
+  if (!item.pricingModel) return item
+  return findCatalogItem(catalog, item.pricingModel)
+}
+
+async function resolveCatalogPricingAsync(input: CostInput & { systemAccountId?: string }): Promise<ProviderModelCatalogItem | undefined> {
+  if (!input.model) return undefined
+  const catalog = await listProviderModelCatalogAsync({
     providerCode: input.providerCode,
     systemAccountId: input.systemAccountId
   })

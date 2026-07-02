@@ -232,7 +232,7 @@ function subtractAuthorizationSummaryRows(
 
 async function upsertAuthorizationTeamUsageSummaryRowAsync(client: DatabaseClient, systemAccountId: string, statDate: string, key: AuthorizationReportSummaryKey, stats: UsageStatsAccumulator, updatedAt: string): Promise<void> {
   await client.execute(`
-    INSERT INTO ${authorizationStatsTable(client, 'authorization_team_usage_summary_daily')} (
+    INSERT INTO ${authorizationStatsTable(client, 'authorization_team_usage_summary_daily')} AS current_row (
       system_account_id, stat_date, team_filter_id, resource_filter_type, resource_filter_id, row_count,
       request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd,
       cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd,
@@ -241,35 +241,35 @@ async function upsertAuthorizationTeamUsageSummaryRowAsync(client: DatabaseClien
     )
     VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(system_account_id, stat_date, team_filter_id, resource_filter_type, resource_filter_id) DO UPDATE SET
-      request_count = request_count + EXCLUDED.request_count,
-      success_count = success_count + EXCLUDED.success_count,
-      error_count = error_count + EXCLUDED.error_count,
-      input_tokens = input_tokens + EXCLUDED.input_tokens,
-      output_tokens = output_tokens + EXCLUDED.output_tokens,
-      cache_read_tokens = cache_read_tokens + EXCLUDED.cache_read_tokens,
-      cache_read_cost_usd = cache_read_cost_usd + EXCLUDED.cache_read_cost_usd,
-      cache_write_tokens = cache_write_tokens + EXCLUDED.cache_write_tokens,
-      cache_write_1h_tokens = cache_write_1h_tokens + EXCLUDED.cache_write_1h_tokens,
-      cache_write_cost_usd = cache_write_cost_usd + EXCLUDED.cache_write_cost_usd,
-      thinking_tokens = thinking_tokens + EXCLUDED.thinking_tokens,
-      input_image_tokens = input_image_tokens + EXCLUDED.input_image_tokens,
-      output_image_tokens = output_image_tokens + EXCLUDED.output_image_tokens,
-      total_cost_usd = total_cost_usd + EXCLUDED.total_cost_usd,
-      duration_ms_sum = duration_ms_sum + EXCLUDED.duration_ms_sum,
-      duration_ms_count = duration_ms_count + EXCLUDED.duration_ms_count,
-      duration_ms_max = CASE WHEN duration_ms_max > EXCLUDED.duration_ms_max THEN duration_ms_max ELSE EXCLUDED.duration_ms_max END,
-      first_token_ms_sum = first_token_ms_sum + EXCLUDED.first_token_ms_sum,
-      first_token_ms_count = first_token_ms_count + EXCLUDED.first_token_ms_count,
-      first_token_ms_max = CASE WHEN first_token_ms_max > EXCLUDED.first_token_ms_max THEN first_token_ms_max ELSE EXCLUDED.first_token_ms_max END,
-      last_used_at = CASE WHEN EXCLUDED.last_used_at IS NULL THEN last_used_at WHEN last_used_at IS NULL OR EXCLUDED.last_used_at > last_used_at THEN EXCLUDED.last_used_at ELSE last_used_at END,
-      last_error_at = CASE WHEN EXCLUDED.last_error_at IS NULL THEN last_error_at WHEN last_error_at IS NULL OR EXCLUDED.last_error_at > last_error_at THEN EXCLUDED.last_error_at ELSE last_error_at END,
+      request_count = current_row.request_count + EXCLUDED.request_count,
+      success_count = current_row.success_count + EXCLUDED.success_count,
+      error_count = current_row.error_count + EXCLUDED.error_count,
+      input_tokens = current_row.input_tokens + EXCLUDED.input_tokens,
+      output_tokens = current_row.output_tokens + EXCLUDED.output_tokens,
+      cache_read_tokens = current_row.cache_read_tokens + EXCLUDED.cache_read_tokens,
+      cache_read_cost_usd = current_row.cache_read_cost_usd + EXCLUDED.cache_read_cost_usd,
+      cache_write_tokens = current_row.cache_write_tokens + EXCLUDED.cache_write_tokens,
+      cache_write_1h_tokens = current_row.cache_write_1h_tokens + EXCLUDED.cache_write_1h_tokens,
+      cache_write_cost_usd = current_row.cache_write_cost_usd + EXCLUDED.cache_write_cost_usd,
+      thinking_tokens = current_row.thinking_tokens + EXCLUDED.thinking_tokens,
+      input_image_tokens = current_row.input_image_tokens + EXCLUDED.input_image_tokens,
+      output_image_tokens = current_row.output_image_tokens + EXCLUDED.output_image_tokens,
+      total_cost_usd = current_row.total_cost_usd + EXCLUDED.total_cost_usd,
+      duration_ms_sum = current_row.duration_ms_sum + EXCLUDED.duration_ms_sum,
+      duration_ms_count = current_row.duration_ms_count + EXCLUDED.duration_ms_count,
+      duration_ms_max = CASE WHEN current_row.duration_ms_max > EXCLUDED.duration_ms_max THEN current_row.duration_ms_max ELSE EXCLUDED.duration_ms_max END,
+      first_token_ms_sum = current_row.first_token_ms_sum + EXCLUDED.first_token_ms_sum,
+      first_token_ms_count = current_row.first_token_ms_count + EXCLUDED.first_token_ms_count,
+      first_token_ms_max = CASE WHEN current_row.first_token_ms_max > EXCLUDED.first_token_ms_max THEN current_row.first_token_ms_max ELSE EXCLUDED.first_token_ms_max END,
+      last_used_at = CASE WHEN EXCLUDED.last_used_at IS NULL THEN current_row.last_used_at WHEN current_row.last_used_at IS NULL OR EXCLUDED.last_used_at > current_row.last_used_at THEN EXCLUDED.last_used_at ELSE current_row.last_used_at END,
+      last_error_at = CASE WHEN EXCLUDED.last_error_at IS NULL THEN current_row.last_error_at WHEN current_row.last_error_at IS NULL OR EXCLUDED.last_error_at > current_row.last_error_at THEN EXCLUDED.last_error_at ELSE current_row.last_error_at END,
       updated_at = EXCLUDED.updated_at
   `, [systemAccountId, statDate, key.teamFilterId ?? '', key.resourceFilterType, key.resourceFilterId, ...statsParamsTail(stats, updatedAt)])
 }
 
 async function upsertAuthorizationUserUsageSummaryRowAsync(client: DatabaseClient, systemAccountId: string, statDate: string, key: AuthorizationReportSummaryKey, stats: UsageStatsAccumulator, updatedAt: string): Promise<void> {
   await client.execute(`
-    INSERT INTO ${authorizationStatsTable(client, 'authorization_user_usage_summary_daily')} (
+    INSERT INTO ${authorizationStatsTable(client, 'authorization_user_usage_summary_daily')} AS current_row (
       system_account_id, stat_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id, row_count,
       request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd,
       cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd,
@@ -278,28 +278,28 @@ async function upsertAuthorizationUserUsageSummaryRowAsync(client: DatabaseClien
     )
     VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(system_account_id, stat_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id) DO UPDATE SET
-      request_count = request_count + EXCLUDED.request_count,
-      success_count = success_count + EXCLUDED.success_count,
-      error_count = error_count + EXCLUDED.error_count,
-      input_tokens = input_tokens + EXCLUDED.input_tokens,
-      output_tokens = output_tokens + EXCLUDED.output_tokens,
-      cache_read_tokens = cache_read_tokens + EXCLUDED.cache_read_tokens,
-      cache_read_cost_usd = cache_read_cost_usd + EXCLUDED.cache_read_cost_usd,
-      cache_write_tokens = cache_write_tokens + EXCLUDED.cache_write_tokens,
-      cache_write_1h_tokens = cache_write_1h_tokens + EXCLUDED.cache_write_1h_tokens,
-      cache_write_cost_usd = cache_write_cost_usd + EXCLUDED.cache_write_cost_usd,
-      thinking_tokens = thinking_tokens + EXCLUDED.thinking_tokens,
-      input_image_tokens = input_image_tokens + EXCLUDED.input_image_tokens,
-      output_image_tokens = output_image_tokens + EXCLUDED.output_image_tokens,
-      total_cost_usd = total_cost_usd + EXCLUDED.total_cost_usd,
-      duration_ms_sum = duration_ms_sum + EXCLUDED.duration_ms_sum,
-      duration_ms_count = duration_ms_count + EXCLUDED.duration_ms_count,
-      duration_ms_max = CASE WHEN duration_ms_max > EXCLUDED.duration_ms_max THEN duration_ms_max ELSE EXCLUDED.duration_ms_max END,
-      first_token_ms_sum = first_token_ms_sum + EXCLUDED.first_token_ms_sum,
-      first_token_ms_count = first_token_ms_count + EXCLUDED.first_token_ms_count,
-      first_token_ms_max = CASE WHEN first_token_ms_max > EXCLUDED.first_token_ms_max THEN first_token_ms_max ELSE EXCLUDED.first_token_ms_max END,
-      last_used_at = CASE WHEN EXCLUDED.last_used_at IS NULL THEN last_used_at WHEN last_used_at IS NULL OR EXCLUDED.last_used_at > last_used_at THEN EXCLUDED.last_used_at ELSE last_used_at END,
-      last_error_at = CASE WHEN EXCLUDED.last_error_at IS NULL THEN last_error_at WHEN last_error_at IS NULL OR EXCLUDED.last_error_at > last_error_at THEN EXCLUDED.last_error_at ELSE last_error_at END,
+      request_count = current_row.request_count + EXCLUDED.request_count,
+      success_count = current_row.success_count + EXCLUDED.success_count,
+      error_count = current_row.error_count + EXCLUDED.error_count,
+      input_tokens = current_row.input_tokens + EXCLUDED.input_tokens,
+      output_tokens = current_row.output_tokens + EXCLUDED.output_tokens,
+      cache_read_tokens = current_row.cache_read_tokens + EXCLUDED.cache_read_tokens,
+      cache_read_cost_usd = current_row.cache_read_cost_usd + EXCLUDED.cache_read_cost_usd,
+      cache_write_tokens = current_row.cache_write_tokens + EXCLUDED.cache_write_tokens,
+      cache_write_1h_tokens = current_row.cache_write_1h_tokens + EXCLUDED.cache_write_1h_tokens,
+      cache_write_cost_usd = current_row.cache_write_cost_usd + EXCLUDED.cache_write_cost_usd,
+      thinking_tokens = current_row.thinking_tokens + EXCLUDED.thinking_tokens,
+      input_image_tokens = current_row.input_image_tokens + EXCLUDED.input_image_tokens,
+      output_image_tokens = current_row.output_image_tokens + EXCLUDED.output_image_tokens,
+      total_cost_usd = current_row.total_cost_usd + EXCLUDED.total_cost_usd,
+      duration_ms_sum = current_row.duration_ms_sum + EXCLUDED.duration_ms_sum,
+      duration_ms_count = current_row.duration_ms_count + EXCLUDED.duration_ms_count,
+      duration_ms_max = CASE WHEN current_row.duration_ms_max > EXCLUDED.duration_ms_max THEN current_row.duration_ms_max ELSE EXCLUDED.duration_ms_max END,
+      first_token_ms_sum = current_row.first_token_ms_sum + EXCLUDED.first_token_ms_sum,
+      first_token_ms_count = current_row.first_token_ms_count + EXCLUDED.first_token_ms_count,
+      first_token_ms_max = CASE WHEN current_row.first_token_ms_max > EXCLUDED.first_token_ms_max THEN current_row.first_token_ms_max ELSE EXCLUDED.first_token_ms_max END,
+      last_used_at = CASE WHEN EXCLUDED.last_used_at IS NULL THEN current_row.last_used_at WHEN current_row.last_used_at IS NULL OR EXCLUDED.last_used_at > current_row.last_used_at THEN EXCLUDED.last_used_at ELSE current_row.last_used_at END,
+      last_error_at = CASE WHEN EXCLUDED.last_error_at IS NULL THEN current_row.last_error_at WHEN current_row.last_error_at IS NULL OR EXCLUDED.last_error_at > current_row.last_error_at THEN EXCLUDED.last_error_at ELSE current_row.last_error_at END,
       updated_at = EXCLUDED.updated_at
   `, [systemAccountId, statDate, key.teamFilterId ?? '', key.granteeFilterSystemAccountId ?? '', key.resourceFilterType, key.resourceFilterId, ...statsParamsTail(stats, updatedAt)])
 }

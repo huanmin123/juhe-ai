@@ -33,6 +33,12 @@ import { errorLogFields, logger } from '../shared/logger.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
+import {
+  estimateCatalogCacheReadCostUsdAsync,
+  estimateCatalogCacheWriteCostUsdAsync,
+  estimateCatalogCostUsdAsync,
+  resolveCatalogPricingModelAsync
+} from '../modules/model-pricing/model-catalog.service.js'
 
 export interface UsageRecordLogSnapshot {
   [key: string]: unknown
@@ -536,7 +542,8 @@ async function createUsageRecordsBatchPostgres(inputs: UsageRecordInput[]): Prom
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const accountLastUsedAt = new Map<string, string>()
   const accountHealthSuccessAt = new Map<string, string>()
-  const writePlan = buildUsageRecordBatchWritePlan(inputs, {
+  const enrichedInputs = await enrichUsageRecordPricingAsync(inputs)
+  const writePlan = buildUsageRecordBatchWritePlan(enrichedInputs, {
     accessLookupMode: 'provided',
     shardLocationMode: 'postgres'
   })
@@ -550,6 +557,144 @@ async function createUsageRecordsBatchPostgres(inputs: UsageRecordInput[]): Prom
     await recordPostgresUsageRecordShardEntries(tx, writePlan.shardEntries, writePlan.locations)
     await flushPostgresUsageRecordBusinessSideEffects(tx, accountLastUsedAt, accountHealthSuccessAt)
   })
+}
+
+async function enrichUsageRecordPricingAsync(inputs: UsageRecordInput[]): Promise<UsageRecordInput[]> {
+  const pricingModelCache = new Map<string, Promise<string | undefined>>()
+  const resolvePricingModel = async (input: { providerCode: string; model?: string; systemAccountId?: string }): Promise<string | undefined> => {
+    const key = [input.providerCode, input.systemAccountId ?? '', input.model ?? ''].join('\u0000')
+    let pending = pricingModelCache.get(key)
+    if (!pending) {
+      pending = resolveCatalogPricingModelAsync(input)
+      pricingModelCache.set(key, pending)
+    }
+    return await pending
+  }
+  const enriched: UsageRecordInput[] = []
+  for (const input of inputs) {
+    enriched.push(await enrichSingleUsageRecordPricingAsync(input, resolvePricingModel))
+  }
+  return enriched
+}
+
+async function enrichSingleUsageRecordPricingAsync(
+  input: UsageRecordInput,
+  resolvePricingModel: (input: { providerCode: string; model?: string; systemAccountId?: string }) => Promise<string | undefined>
+): Promise<UsageRecordInput> {
+  if (!input.providerCode) return input
+  const providerCode = input.providerCode
+  const catalogSystemAccountId = input.accountOwnerSystemAccountId || input.systemAccountId
+  const upstreamModel = normalizeUsageRecordPricingModel(input.upstreamModel)
+  const requestedModel = normalizeUsageRecordPricingModel(input.model)
+  const existingPricingModel = normalizeUsageRecordPricingModel(input.pricingModel)
+
+  try {
+    const pricingModel = existingPricingModel
+      ?? await resolveUsageRecordPricingModelAsync({
+        providerCode,
+        systemAccountId: catalogSystemAccountId,
+        upstreamModel,
+        requestedModel,
+        resolvePricingModel
+      })
+    const costModel = pricingModel ?? upstreamModel ?? requestedModel
+    if (!costModel) {
+      return pricingModel && pricingModel !== input.pricingModel
+        ? { ...input, pricingModel }
+        : input
+    }
+
+    const enriched: UsageRecordInput = pricingModel && pricingModel !== input.pricingModel
+      ? { ...input, pricingModel }
+      : { ...input }
+
+    if (enriched.cacheReadCostUsd === undefined && enriched.cacheReadTokens !== undefined) {
+      enriched.cacheReadCostUsd = await estimateCatalogCacheReadCostUsdAsync({
+        providerCode,
+        systemAccountId: catalogSystemAccountId,
+        model: costModel,
+        cacheReadTokens: enriched.cacheReadTokens
+      })
+    }
+
+    if (
+      enriched.cacheWriteCostUsd === undefined
+      && (enriched.cacheWriteTokens !== undefined || enriched.cacheWrite1hTokens !== undefined)
+    ) {
+      enriched.cacheWriteCostUsd = await estimateCatalogCacheWriteCostUsdAsync({
+        providerCode,
+        systemAccountId: catalogSystemAccountId,
+        model: costModel,
+        cacheWriteTokens: enriched.cacheWriteTokens,
+        cacheWrite1hTokens: enriched.cacheWrite1hTokens
+      })
+    }
+
+    if (enriched.costUsd === undefined && hasUsageRecordCostDimension(enriched)) {
+      enriched.costUsd = await estimateCatalogCostUsdAsync({
+        providerCode,
+        systemAccountId: catalogSystemAccountId,
+        model: costModel,
+        inputTokens: enriched.inputTokens,
+        outputTokens: enriched.outputTokens,
+        cacheReadTokens: enriched.cacheReadTokens,
+        cacheWriteTokens: enriched.cacheWriteTokens,
+        cacheWrite1hTokens: enriched.cacheWrite1hTokens,
+        thinkingTokens: enriched.thinkingTokens,
+        inputImageTokens: enriched.inputImageTokens,
+        outputImageTokens: enriched.outputImageTokens
+      })
+    }
+
+    return enriched
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'usage_record_pricing_enrichment_failed',
+      traceId: input.traceId,
+      providerCode,
+      model: input.model,
+      upstreamModel: input.upstreamModel,
+      trafficSource: input.trafficSource
+    }), '使用记录写入前补算成本失败，保留原始用量记录')
+    return input
+  }
+}
+
+async function resolveUsageRecordPricingModelAsync(input: {
+  providerCode: string
+  systemAccountId?: string
+  upstreamModel?: string
+  requestedModel?: string
+  resolvePricingModel: (input: { providerCode: string; model?: string; systemAccountId?: string }) => Promise<string | undefined>
+}): Promise<string | undefined> {
+  const upstreamPricingModel = await input.resolvePricingModel({
+    providerCode: input.providerCode,
+    systemAccountId: input.systemAccountId,
+    model: input.upstreamModel
+  })
+  if (upstreamPricingModel) return upstreamPricingModel
+
+  if (!input.requestedModel || input.requestedModel === input.upstreamModel) return undefined
+  return await input.resolvePricingModel({
+    providerCode: input.providerCode,
+    systemAccountId: input.systemAccountId,
+    model: input.requestedModel
+  })
+}
+
+function normalizeUsageRecordPricingModel(value: string | undefined): string | undefined {
+  const normalized = value?.trim()
+  return normalized || undefined
+}
+
+function hasUsageRecordCostDimension(input: UsageRecordInput): boolean {
+  return input.inputTokens !== undefined
+    || input.outputTokens !== undefined
+    || input.cacheReadTokens !== undefined
+    || input.cacheWriteTokens !== undefined
+    || input.cacheWrite1hTokens !== undefined
+    || input.inputImageTokens !== undefined
+    || input.outputImageTokens !== undefined
 }
 
 function normalizeUsageRecordBatchWriteError(errors: unknown[]): Error {

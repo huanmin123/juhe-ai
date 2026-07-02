@@ -484,6 +484,20 @@ try {
     outputTokens: 1_000_000
   })
   assert.equal(aliasCost, 12, 'pricingModel 应按目标模型直接价格计费')
+  const aliasCostAsync = await catalogService.estimateCatalogCostUsdAsync({
+    providerCode: 'gpt',
+    systemAccountId: 'sys_admin',
+    model: 'gpt-regression-alias',
+    inputTokens: 1_000_000,
+    outputTokens: 1_000_000
+  })
+  assert.equal(aliasCostAsync, aliasCost, '异步 pricingModel 成本估算应与同步目录一致')
+  const aliasPricingModelAsync = await catalogService.resolveCatalogPricingModelAsync({
+    providerCode: 'gpt',
+    systemAccountId: 'sys_admin',
+    model: 'gpt-regression-alias'
+  })
+  assert.equal(aliasPricingModelAsync, 'gpt-regression-upstream-target', '异步 pricingModel 解析应指向目标计价模型')
   const lowerCaseModelCost = catalogService.estimateCatalogCostUsd({
     providerCode: 'gpt',
     systemAccountId: 'sys_admin',
@@ -527,6 +541,14 @@ try {
   assert.equal(audioBreakdown?.outputAudioCostUsd, 12, '音频输出成本应进入成本拆解')
   assert.equal(audioBreakdown?.inputAudioUsdPer1M, 4, '音频输入单价应进入成本拆解')
   assert.equal(audioBreakdown?.outputAudioUsdPer1M, 12, '音频输出单价应进入成本拆解')
+  const audioBreakdownAsync = await catalogService.buildCatalogCostBreakdownAsync({
+    providerCode: 'gpt',
+    systemAccountId: 'sys_admin',
+    model: 'gpt-regression-audio',
+    inputAudioTokens: 1_000_000,
+    outputAudioTokens: 1_000_000
+  })
+  assert.deepEqual(audioBreakdownAsync, audioBreakdown, '异步成本拆解应与同步目录一致')
   const imageUnitCost = catalogService.estimateCatalogCostUsd({
     providerCode: 'gpt',
     systemAccountId: 'sys_admin',

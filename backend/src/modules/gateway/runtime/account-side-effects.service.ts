@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto'
+
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 import type { AccountRuntimeAvailability } from '../../db-service/db-service-types.js'
@@ -165,6 +167,8 @@ interface DistributedRecoveryProbeState {
   reason: string
   distinctClientIpCount: number
   distinctApiKeyCount: number
+  clientIpMarkers?: string[]
+  apiKeyMarkers?: string[]
   precheckRequested: boolean
 }
 
@@ -214,6 +218,16 @@ const sideEffectRetryPolicy = exponentialRetryPolicy('gateway_account_side_effec
 const maxSideEffectQueueLength = 5000
 
 const distributedRecoveryProbeStore = createRuntimeProbeStateStore<DistributedRecoveryProbeState>('gateway-account-recovery')
+const distributedRecoveryProbeFailureMergeOptions = {
+  incrementFields: ['failureCount'],
+  maxFields: ['lastObservedAtMs', 'attemptCount'],
+  minFields: ['startedAtMs', 'nextProbeAtMs'],
+  booleanOrFields: ['precheckRequested'],
+  unionArrayFields: [
+    { field: 'clientIpMarkers', countField: 'distinctClientIpCount', maxItems: 128 },
+    { field: 'apiKeyMarkers', countField: 'distinctApiKeyCount', maxItems: 128 }
+  ]
+} as const
 const sideEffectQueue = new AccountSideEffectQueue()
 const failureStorms = new Map<string, FailureStormEntry>()
 const successObservations = new Map<string, SuccessObservationEntry>()
@@ -563,48 +577,33 @@ async function recordDistributedGatewayAccountFailureForPrecheck(
   const runtimeKey = gatewayAccountRuntimeKey(account)
   const now = Date.now()
   const delayMs = recoveryProbeDelayMs(input.localSuppressionDelayMs)
-  const current = await distributedRecoveryProbeStore.get(runtimeKey)
   const generation = await distributedRecoveryProbeStore.nextGeneration(runtimeKey, distributedRecoveryProbeStateTtlMs)
   const nextProbeAtMs = now + delayMs
-  const state: DistributedRecoveryProbeState = current
-    ? {
-        ...current,
-        generation,
-        accountId: account.id,
-        accountName: account.name,
-        providerCode: account.providerCode,
-        settings,
-        systemAccountId: input.systemAccountId,
-        groupId: input.groupId,
-        lastObservedAtMs: now,
-        nextProbeAtMs: Math.min(current.nextProbeAtMs, nextProbeAtMs),
-        failureCount: current.failureCount + 1,
-        reason: input.reason,
-        distinctClientIpCount: Math.max(current.distinctClientIpCount, input.clientIp ? 1 : 0),
-        distinctApiKeyCount: Math.max(current.distinctApiKeyCount, input.apiKeyId ? 1 : 0),
-        precheckRequested: current.precheckRequested || input.forcePrecheck === true
-      }
-    : {
-        runtimeKey,
-        generation,
-        accountId: account.id,
-        accountName: account.name,
-        providerCode: account.providerCode,
-        settings,
-        systemAccountId: input.systemAccountId,
-        groupId: input.groupId,
-        startedAtMs: now,
-        lastObservedAtMs: now,
-        nextProbeAtMs,
-        attemptCount: 0,
-        failureCount: 1,
-        reason: input.reason,
-        distinctClientIpCount: input.clientIp ? 1 : 0,
-        distinctApiKeyCount: input.apiKeyId ? 1 : 0,
-        precheckRequested: input.forcePrecheck === true
-      }
-  const persisted = await persistDistributedRecoveryProbeState(state)
-  if (!persisted) {
+  const clientIpMarker = runtimeProbeObservationMarker(input.clientIp)
+  const apiKeyMarker = runtimeProbeObservationMarker(input.apiKeyId)
+  const state: DistributedRecoveryProbeState = {
+    runtimeKey,
+    generation,
+    accountId: account.id,
+    accountName: account.name,
+    providerCode: account.providerCode,
+    settings,
+    systemAccountId: input.systemAccountId,
+    groupId: input.groupId,
+    startedAtMs: now,
+    lastObservedAtMs: now,
+    nextProbeAtMs,
+    attemptCount: 0,
+    failureCount: 1,
+    reason: input.reason,
+    distinctClientIpCount: clientIpMarker ? 1 : 0,
+    distinctApiKeyCount: apiKeyMarker ? 1 : 0,
+    ...(clientIpMarker ? { clientIpMarkers: [clientIpMarker] } : {}),
+    ...(apiKeyMarker ? { apiKeyMarkers: [apiKeyMarker] } : {}),
+    precheckRequested: input.forcePrecheck === true
+  }
+  const merged = await mergeDistributedRecoveryProbeFailureState(state)
+  if (!merged) {
     logStaleDistributedRecoveryProbeResult(runtimeKey, generation, 'gateway_account_distributed_recovery_probe_stale_schedule_ignored')
     return
   }
@@ -613,10 +612,12 @@ async function recordDistributedGatewayAccountFailureForPrecheck(
     accountId: account.id,
     accountName: account.name,
     runtimeKey,
-    generation: state.generation,
-    nextProbeAt: new Date(state.nextProbeAtMs).toISOString(),
-    failureCount: state.failureCount,
-    precheckRequested: state.precheckRequested
+    generation: merged.generation,
+    nextProbeAt: new Date(merged.nextProbeAtMs).toISOString(),
+    failureCount: merged.failureCount,
+    distinctClientIpCount: merged.distinctClientIpCount,
+    distinctApiKeyCount: merged.distinctApiKeyCount,
+    precheckRequested: merged.precheckRequested
   }, 'Redis 运行态账号恢复探针已调度')
 }
 
@@ -1220,6 +1221,25 @@ async function persistDistributedRecoveryProbeState(state: DistributedRecoveryPr
   return true
 }
 
+async function mergeDistributedRecoveryProbeFailureState(state: DistributedRecoveryProbeState): Promise<DistributedRecoveryProbeState | undefined> {
+  const merged = await distributedRecoveryProbeStore.merge(
+    state,
+    distributedRecoveryProbeStateTtlMs,
+    distributedRecoveryProbeFailureMergeOptions
+  )
+  if (!merged) {
+    const current = await distributedRecoveryProbeStore.get(state.runtimeKey).catch(() => undefined)
+    rememberDistributedRecoveryProbeSuppressionState(state.runtimeKey, current)
+    if (current) {
+      scheduleDistributedRecoveryProbeSweep(Math.max(0, current.nextProbeAtMs - Date.now()))
+    }
+    return undefined
+  }
+  rememberDistributedRecoveryProbeSuppressionState(state.runtimeKey, merged)
+  scheduleDistributedRecoveryProbeSweep(Math.max(0, merged.nextProbeAtMs - Date.now()))
+  return merged
+}
+
 async function clearDistributedRecoveryProbeState(runtimeKey: string): Promise<void> {
   await distributedRecoveryProbeStore.delete(runtimeKey)
   rememberDistributedRecoveryProbeSuppressionState(runtimeKey, undefined)
@@ -1281,6 +1301,12 @@ function distributedStateWithAccount(state: DistributedRecoveryProbeState, accou
     running: false,
     precheckRequested: state.precheckRequested
   }
+}
+
+function runtimeProbeObservationMarker(value: string | undefined): string | undefined {
+  const normalized = value?.trim()
+  if (!normalized) return undefined
+  return createHash('sha256').update(normalized).digest('base64url').slice(0, 32)
 }
 
 function logStaleDistributedRecoveryProbeResult(runtimeKey: string, staleGeneration: number, event: string): void {

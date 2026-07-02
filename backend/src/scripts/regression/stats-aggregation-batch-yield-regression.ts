@@ -51,9 +51,10 @@ assert(
   !backgroundJobsSource.includes('pendingUsageQueueBlockReason')
     && backgroundJobsSource.includes('safeCreatedBefore: safety.safeCreatedBefore')
     && backgroundJobsSource.includes('oldestPendingUsageRecordCreatedAt(status)')
-    && backgroundJobsSource.includes('超龄未落库记录')
+    && backgroundJobsSource.includes('oldestRedisStreamUsageRecordCreatedAtForStatsAggregation()')
+    && backgroundJobsSource.includes('usageStatsSafeCreatedBeforeForPendingBacklog')
     && usageStatsRepositorySource.includes('export const usageStatsCursorSafetyDelaySeconds = 15'),
-  'stats 聚合前不应要求队列完全为空，但必须用 15 秒 cursor safety 拦截超龄未落库 usage'
+  'stats 聚合前不应要求队列或 Redis Stream 完全为空，但必须用最早 backlog createdAt 收窄 cursor safety 上界'
 )
 assert(
   usageRecordQueueSource.includes('oldestCreatedAt: oldestUsageRecordCreatedAt()'),
@@ -84,9 +85,9 @@ assert(
   '核心功能设计必须记录持续写入下 stats 聚合用 cursor safety 吸收队列延迟'
 )
 assert(
-  sqliteDoc.includes('若 pending usage 中存在超过 15 秒仍未落库的记录，本轮统计会跳过')
-    && coreDoc.includes('若 pending usage 中存在超过 15 秒仍未落库的记录，stats-worker 会跳过本轮统计'),
-  '功能文档必须记录超龄 pending usage 会跳过本轮统计，避免统计游标越过未落库记录'
+  sqliteDoc.includes('若 pending usage 或 Redis Stream backlog 中存在超过 15 秒仍未落库的记录，本轮统计只会聚合早于该记录的安全窗口')
+    && coreDoc.includes('若 pending usage 或 Redis Stream backlog 中存在超过 15 秒仍未落库的记录，stats-worker 只会聚合早于该记录的安全窗口'),
+  '功能文档必须记录 backlog 会收窄本轮统计安全窗口，避免统计游标越过未落库记录'
 )
 
 console.log('统计聚合批间让出回归通过：usage/client IP 聚合不会同步连续占用 stats-worker，usage 在线聚合有批次硬上限和运行预算')

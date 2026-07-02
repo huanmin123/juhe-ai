@@ -35,7 +35,7 @@ import {
 } from './maintenance-cleanup-jobs.js'
 import { currentCpuPercent, currentMemoryMetrics, currentNetworkMetrics } from './system-metrics-sampler.service.js'
 import { WorkerScheduler } from './worker-scheduler.js'
-import { getUsageRecordRedisStreamRuntime } from '../gateway/usage/record-queue.service.js'
+import { getUsageRecordRedisStreamOldestCreatedAt } from '../gateway/usage/record-queue.service.js'
 
 let started = false
 let usageStatsAggregationRunning = false
@@ -92,14 +92,12 @@ function scheduleBackgroundJobs(): void {
       scheduler.schedule({ name: backgroundScheduledJobName('api-key-record-cleanup-retry'), intervalMs: minuteMs, initialDelayMs: 24 * secondMs, task: runApiKeyRecordCleanupRetry })
       scheduler.schedule({ name: backgroundScheduledJobName('account-record-cleanup-retry'), intervalMs: minuteMs, initialDelayMs: 42 * secondMs, task: runAccountRecordCleanupRetry })
       scheduler.schedule({ name: backgroundScheduledJobName('audit-hot-retention-cleanup'), intervalMs: minuteMs, initialDelayMs: 13 * secondMs, task: runAuditHotRetentionCleanup })
-      if (!isPostgresHighPerformanceMode()) {
-        scheduler.schedule({
-          name: backgroundScheduledJobName('data-retention-cleanup'),
-          intervalMs: settingsNumber('dataRetentionCleanupIntervalMinutes', 5, 1440) * minuteMs,
-          initialDelayMs: 13 * minuteMs,
-          task: runDataRetentionCleanup
-        })
-      }
+      scheduler.schedule({
+        name: backgroundScheduledJobName('data-retention-cleanup'),
+        intervalMs: settingsNumber('dataRetentionCleanupIntervalMinutes', 5, 1440) * minuteMs,
+        initialDelayMs: 13 * minuteMs,
+        task: runDataRetentionCleanup
+      })
       scheduler.schedule({ name: backgroundScheduledJobName('runtime-log-index-maintenance'), intervalMs: 60 * minuteMs, initialDelayMs: 7 * minuteMs, task: runRuntimeLogIndexMaintenance })
       return
     case 'stats-worker':
@@ -220,29 +218,20 @@ async function usageStatsAggregationSafety(): Promise<UsageStatsAggregationSafet
   if (flushFailureCount > 0) {
     throw new Error(`使用记录 ingest 队列已有 ${flushFailureCount} 次写入失败，本轮跳过统计聚合，等待写入队列恢复`)
   }
-  await assertUsageRecordRedisStreamDrainedForStatsAggregation()
-  const stalePendingCreatedAt = oldestPendingUsageRecordCreatedAt(status)
-  if (stalePendingCreatedAt && stalePendingCreatedAt <= defaultSafeCreatedBefore) {
-    throw new Error(`使用记录 ingest 队列存在 createdAt=${stalePendingCreatedAt} 的超龄未落库记录，本轮跳过统计聚合，等待 ${usageStatsCursorSafetyDelaySeconds} 秒安全延迟内的写入队列恢复`)
-  }
+  const oldestPendingCreatedAt = oldestIso(
+    oldestPendingUsageRecordCreatedAt(status),
+    await oldestRedisStreamUsageRecordCreatedAtForStatsAggregation()
+  )
   return {
-    safeCreatedBefore: defaultSafeCreatedBefore
+    safeCreatedBefore: usageStatsSafeCreatedBeforeForPendingBacklog(defaultSafeCreatedBefore, oldestPendingCreatedAt)
   }
 }
 
-async function assertUsageRecordRedisStreamDrainedForStatsAggregation(): Promise<void> {
+async function oldestRedisStreamUsageRecordCreatedAtForStatsAggregation(): Promise<string | undefined> {
   if (runtimeConfig.queueDriver !== 'redis_stream') {
-    return
+    return undefined
   }
-  const runtime = await getUsageRecordRedisStreamRuntime()
-  if (!runtime) {
-    throw new Error('Redis Stream 使用记录队列运行态不可用，本轮跳过统计聚合，避免统计游标越过未落库记录')
-  }
-  const pendingCount = runtime.pendingCount
-  const lag = runtime.lag ?? 0
-  if (pendingCount > 0 || lag > 0) {
-    throw new Error(`Redis Stream 使用记录队列仍有 pending=${pendingCount} lag=${lag} 的未落库消息，本轮跳过统计聚合`)
-  }
+  return await getUsageRecordRedisStreamOldestCreatedAt()
 }
 
 function oldestPendingUsageRecordCreatedAt(status: BackgroundWorkerIngestDrainStatus): string | undefined {
@@ -256,6 +245,17 @@ function oldestIso(left?: string, right?: string): string | undefined {
   if (!left) return right
   if (!right) return left
   return left <= right ? left : right
+}
+
+function usageStatsSafeCreatedBeforeForPendingBacklog(defaultSafeCreatedBefore: string, oldestPendingCreatedAt: string | undefined): string {
+  if (!oldestPendingCreatedAt || oldestPendingCreatedAt > defaultSafeCreatedBefore) {
+    return defaultSafeCreatedBefore
+  }
+  const oldestPendingTime = Date.parse(oldestPendingCreatedAt)
+  if (!Number.isFinite(oldestPendingTime)) {
+    return defaultSafeCreatedBefore
+  }
+  return new Date(Math.max(0, oldestPendingTime - 1)).toISOString()
 }
 
 function defaultUsageStatsSafeCreatedBeforeIso(): string {

@@ -5,6 +5,10 @@ import { closeRedisClients } from '../../shared/redis-client.js'
 import { getUsageRecordDetailAsync, listUsageRecordsAsync } from '../../storage/repositories.js'
 import { closePostgresPool, getPostgresPool } from '../../storage/postgres-client.js'
 import { createUsageRecordsBatchAsync } from '../../storage/usage-records.repository.js'
+import {
+  estimateCatalogCacheReadCostUsdAsync,
+  estimateCatalogCostUsdAsync
+} from '../../modules/model-pricing/model-catalog.service.js'
 
 assert.equal(runtimeConfig.databaseDriver, 'postgres', '使用记录列表 PG smoke 需要 JUHE_AI_DATABASE_DRIVER=postgres')
 
@@ -13,10 +17,12 @@ const createdAtBase = Date.now() - 60_000
 const usageIds = [
   `usage_${marker}_success`,
   `usage_${marker}_failed`,
-  `usage_${marker}_other`
+  `usage_${marker}_other`,
+  `usage_${marker}_priced`
 ]
 const tracePrefix = `trace_${marker}`
 const model = `model-${marker}`
+const pricedModel = 'gpt-5.5'
 const clientIpPrefix = '198.18.204.'
 const primaryClientIp = `${clientIpPrefix}10`
 const pool = await getPostgresPool()
@@ -76,6 +82,24 @@ try {
       inputTokens: 3,
       outputTokens: 4,
       createdAt: new Date(createdAtBase + 2).toISOString()
+    },
+    {
+      id: usageIds[3],
+      traceId: `${tracePrefix}_priced`,
+      trafficSource: 'gateway',
+      systemAccountId: 'sys_admin',
+      clientIp: '198.18.206.1',
+      endpoint: '/v1/responses',
+      providerCode: 'gpt',
+      model: pricedModel,
+      statusCode: 200,
+      success: true,
+      durationMs: 90,
+      firstTokenMs: 24,
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+      cacheReadTokens: 100_000,
+      createdAt: new Date(createdAtBase + 3).toISOString()
     }
   ])
   const writeCounts = await readSmokeWriteCounts()
@@ -87,7 +111,7 @@ try {
     page: 1,
     pageSize: 10
   })
-  assert.deepEqual(traceList.items.map((item) => item.id), [usageIds[2], usageIds[1], usageIds[0]], 'PG 使用记录列表应按 trace 前缀读取 catalog 窗口')
+  assert.deepEqual(traceList.items.map((item) => item.id), [usageIds[3], usageIds[2], usageIds[1], usageIds[0]], 'PG 使用记录列表应按 trace 前缀读取 catalog 窗口')
 
   const failedList = await listUsageRecordsAsync(undefined, {
     model,
@@ -110,6 +134,24 @@ try {
   assert(detail, 'PG 使用记录详情应按 ID 读取')
   assert.equal(detail.traceId, `${tracePrefix}_success`, 'PG 使用记录详情 traceId 应正确')
   assert.equal(detail.inputTokens, 12, 'PG 使用记录详情 token 应正确')
+
+  const pricedDetail = await getUsageRecordDetailAsync(usageIds[3])
+  assert(pricedDetail, 'PG 使用记录详情应读取补价记录')
+  const expectedCost = await estimateCatalogCostUsdAsync({
+    providerCode: 'gpt',
+    model: pricedModel,
+    inputTokens: 1_000_000,
+    outputTokens: 1_000_000,
+    cacheReadTokens: 100_000
+  })
+  const expectedCacheReadCost = await estimateCatalogCacheReadCostUsdAsync({
+    providerCode: 'gpt',
+    model: pricedModel,
+    cacheReadTokens: 100_000
+  })
+  assert.equal(pricedDetail.pricingModel, pricedModel, 'PG 使用记录写入前应异步补齐 pricingModel')
+  assert.equal(pricedDetail.costUsd, expectedCost, 'PG 使用记录写入前应异步补齐 costUsd')
+  assert.equal(pricedDetail.cacheReadCostUsd, expectedCacheReadCost, 'PG 使用记录写入前应异步补齐 cacheReadCostUsd')
 
   await assertUsageRecordExplainPlans(tracePrefix, model, clientIpPrefix)
 

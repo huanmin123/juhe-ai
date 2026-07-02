@@ -119,6 +119,46 @@ export class RedisStreamQueue<T> {
     }
   }
 
+  async inspectBacklogMessages(limit = 2): Promise<Array<RedisStreamMessage<T>>> {
+    await this.ensureGroup()
+    const runtime = await this.inspectRuntime()
+    const client = await getRedisClient(this.redisUrl)
+    const output: Array<RedisStreamMessage<T>> = []
+    const seen = new Set<string>()
+    const addEntries = (entries: Array<RedisStreamMessage<T>>) => {
+      for (const entry of entries) {
+        if (seen.has(entry.id)) continue
+        seen.add(entry.id)
+        output.push(entry)
+      }
+    }
+
+    if (runtime.oldestPendingId) {
+      addEntries(this.parseEntries(await client.sendCommand([
+        'XRANGE',
+        this.streamKey,
+        runtime.oldestPendingId,
+        runtime.oldestPendingId,
+        'COUNT',
+        '1'
+      ])))
+    }
+
+    if ((runtime.lag ?? 0) > 0) {
+      const start = runtime.lastDeliveredId ? `(${runtime.lastDeliveredId}` : '-'
+      addEntries(this.parseEntries(await client.sendCommand([
+        'XRANGE',
+        this.streamKey,
+        start,
+        '+',
+        'COUNT',
+        String(Math.max(1, Math.trunc(limit)))
+      ])))
+    }
+
+    return output
+  }
+
   async closeConsumer(): Promise<void> {
     const promise = this.consumerClientPromise
     this.consumerClientPromise = undefined

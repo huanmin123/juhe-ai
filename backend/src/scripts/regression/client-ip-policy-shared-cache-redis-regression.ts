@@ -5,13 +5,13 @@ import { join, resolve } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import type { ActiveClientIpPolicy } from '../../storage/client-ip-stats.repository.js'
 
 const cacheUrl = optionalEnv('JUHE_CLIENT_IP_POLICY_SHARED_CACHE_REDIS_URL') ?? optionalEnv('JUHE_AI_REDIS_CACHE_URL')
 
 if (!cacheUrl) {
   throw new Error('客户端 IP 封禁策略 Redis shared cache 回归需要配置 JUHE_AI_REDIS_CACHE_URL 或 JUHE_CLIENT_IP_POLICY_SHARED_CACHE_REDIS_URL')
 }
+assertRedisCleanupAllowed(cacheUrl)
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-client-ip-policy-shared-cache-redis-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 mkdirSync(tempRoot, { recursive: true })
@@ -52,16 +52,18 @@ try {
 
   const normalizedIp = clientIpStats.normalizeClientIpForStats('203.0.113.222')
   assert(normalizedIp, '测试 IPv4 应可规范化')
-  const policy: ActiveClientIpPolicy = {
-    id: `policy_shared_cache_${Date.now()}`,
+  const policy = await clientIpStats.createClientIpPolicyAsync({
     ipHash: normalizedIp.ipHash,
     policyType: 'blacklist',
-    aggregateIpKey: normalizedIp.aggregateIpKey,
-    clientIp: normalizedIp.clientIp,
-    reason: 'redis shared cache regression'
-  }
+    reason: 'redis shared cache regression',
+    actorSystemAccountId: 'sys_admin'
+  })
 
-  clientIpPolicyCache.replaceClientIpPolicyCacheLocal([policy])
+  assert.equal(
+    (await clientIpPolicyCache.inspectClientIpPolicy(normalizedIp.clientIp)).blacklistPolicy?.id,
+    policy.id,
+    '首次判定应从数据库回源并写入 Redis shared cache'
+  )
   await waitFor(async () => (await countRedisKeys(cacheKeyPattern)) > 0, 'IP 封禁策略快照应写入 Redis shared cache')
 
   clientIpPolicyCache.replaceClientIpPolicyCacheLocal([], { skipSharedCache: true })
@@ -156,6 +158,22 @@ async function closeRedisClient(client: typeof redisClient): Promise<void> {
 function optionalEnv(name: string): string | undefined {
   const value = process.env[name]?.trim()
   return value ? value : undefined
+}
+
+function assertRedisCleanupAllowed(redisUrl: string): void {
+  if (optionalEnv('JUHE_AI_ALLOW_CLIENT_IP_POLICY_SHARED_CACHE_CLEANUP') === '1') {
+    return
+  }
+  let hostname = ''
+  try {
+    hostname = new URL(redisUrl).hostname.toLowerCase()
+  } catch {
+    hostname = ''
+  }
+  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {
+    return
+  }
+  throw new Error('客户端 IP 封禁策略 Redis shared cache 回归会清理 juhe-ai:cache:gateway:client-ip-policy-snapshot:* 和对应 version key；非本机 Redis 必须先确认是测试实例，并设置 JUHE_AI_ALLOW_CLIENT_IP_POLICY_SHARED_CACHE_CLEANUP=1')
 }
 
 function numericRedisResult(value: unknown): number {

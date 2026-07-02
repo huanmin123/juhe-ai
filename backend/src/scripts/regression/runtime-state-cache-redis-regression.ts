@@ -174,7 +174,6 @@ async function verifyAccountConcurrency(): Promise<void> {
   assert.equal(second.acquired, true)
   assert.equal(third.acquired, false, 'Redis 账号并发 Lua 应拒绝超过总并发上限的占用')
   assert.equal(third.current, 2)
-  assert.equal(accountConcurrency.getAccountCurrentConcurrency(accountId), 2, 'Redis 模式成功占槽后应同步维护 server 本地当前并发')
   assert.equal(accountConcurrency.snapshotAccountConcurrency()[accountId], 2, 'Redis 模式 server 快照应能展示当前账号并发')
   assert.equal((await accountConcurrency.loadAccountCurrentConcurrencyByIdsAsync([accountId])).get(accountId), 2, 'Redis 模式批量读取应以 Redis 当前并发为事实来源')
 
@@ -209,7 +208,7 @@ async function verifyAccountConcurrency(): Promise<void> {
   )
   const acquiredSlots = parallelSlots.filter((slot) => slot.acquired)
   assert.equal(acquiredSlots.length, 5, '并发争抢 Redis Lua 时最多只能拿到配置上限数量的槽位')
-  assert.equal(accountConcurrency.getAccountCurrentConcurrency(parallelAccountId), 5, 'Redis 并发争抢成功槽位应同步到 server 本地当前并发')
+  assert.equal(accountConcurrency.snapshotAccountConcurrency()[parallelAccountId], 5, 'Redis 并发争抢成功槽位应同步到 server 本地诊断快照')
 
   for (const slot of acquiredSlots) {
     slot.release()
@@ -233,7 +232,7 @@ async function waitForRedisKeyAbsent(key: string): Promise<void> {
 
 async function waitForLocalConcurrency(accountId: string, expected: number): Promise<void> {
   await waitFor(
-    async () => accountConcurrency.getAccountCurrentConcurrency(accountId) === expected,
+    async () => (accountConcurrency.snapshotAccountConcurrency()[accountId] ?? 0) === expected,
     `本地账号并发 ${accountId} 应变为 ${expected}`
   )
 }

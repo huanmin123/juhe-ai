@@ -88,6 +88,8 @@ assert.doesNotMatch(runtimeProbeStateSource, /acquireLock|releaseLock|lockPrefix
 assert.match(runtimeProbeStateSource, /ZADD[\s\S]*ZRANGEBYSCORE/, 'Redis 探针 due index 必须使用跨节点可见的有序索引')
 assert.match(runtimeProbeStateSource, /redisNextProbeGenerationScript[\s\S]*INCR[\s\S]*PEXPIRE/, 'Redis 探针 generation 必须原子递增并带 TTL')
 assert.match(runtimeProbeStateSource, /redisSetProbeStateScript[\s\S]*cjson\.decode[\s\S]*current_generation > incoming_generation[\s\S]*return 0/, 'Redis 探针状态写入必须拒绝旧 generation 覆盖新状态')
+assert.match(runtimeProbeStateSource, /merge\(state: TState, ttlMs: number, options: RuntimeProbeStateMergeOptions\)/, 'Redis 探针状态必须支持原子 merge，避免高并发失败观测读改写丢失')
+assert.match(runtimeProbeStateSource, /redisMergeProbeStateScript[\s\S]*incrementFields[\s\S]*unionArrayFields[\s\S]*cjson\.encode\(merged\)/, 'Redis 探针状态 merge 必须在 Lua 内累加计数并合并 distinct 观测集合')
 assert.match(runtimeProbeStateSource, /deleteGeneration\(runtimeKey: string, generation: number\)[\s\S]*redisDeleteProbeStateGenerationScript[\s\S]*current_generation == target_generation/, 'Redis 探针状态清理必须支持按 generation 条件删除，避免旧探针误删新状态')
 
 const redisStreamQueueSource = source('shared/redis-stream-queue.ts')
@@ -356,6 +358,8 @@ function assertStrictRedisCacheBoundaries(): void {
   assert.doesNotMatch(accountSideEffectsSource, /gateway-account-recovery-probe-budget|distributedRecoveryProbeBudgetRuntimeStore|acquireDistributedRecoveryProbeBudget|createRuntimeStateStore\('gateway-account-recovery-probe-budget'\)|distributedRecoveryProbeStore\.acquireLock|distributedRecoveryProbeStore\.releaseLock|distributedRecoveryProbeLockTtlMs/, 'Redis 探针不能引入分布式锁或分布式全局/provider/proxy/baseUrl 预算锁，避免高并发恢复被锁残留或跨节点争用限制')
   assert.match(functionBody(accountSideEffectsSource, 'canUseProcessLocalGatewayAccountRuntimeState'), /runtimeConfig\.runtimeStateDriver !== 'redis'[\s\S]*failureStorms\.clear\(\)[\s\S]*successObservations\.clear\(\)[\s\S]*precheckStates\.clear\(\)[\s\S]*recoveryProbeStates\.clear\(\)[\s\S]*return false/, 'Redis runtime state 下账号 failure/precheck/recovery/success 本机运行态必须禁用并清空')
   assert.match(functionBody(accountSideEffectsSource, 'recordGatewayAccountFailureForPrecheckInternal'), /runtimeConfig\.runtimeStateDriver === 'redis'[\s\S]*recordDistributedGatewayAccountFailureForPrecheck[\s\S]*return/, 'Redis runtime state 下账号失败必须写入共享探针状态，不能直接使用本机 failureStorm/precheck Map')
+  assert.match(accountSideEffectsSource, /distributedRecoveryProbeFailureMergeOptions[\s\S]*incrementFields: \['failureCount'\][\s\S]*clientIpMarkers[\s\S]*apiKeyMarkers/, 'Redis runtime state 下账号失败观测必须原子合并 failureCount 和 distinct Client-IP/API-Key 观测')
+  assert.match(functionBody(accountSideEffectsSource, 'recordDistributedGatewayAccountFailureForPrecheck'), /runtimeProbeObservationMarker[\s\S]*mergeDistributedRecoveryProbeFailureState/, 'Redis runtime state 下账号失败记录必须使用哈希观测标记并通过 merge 写入共享探针状态')
   assert.match(functionBody(accountSideEffectsSource, 'runDistributedGatewayAccountRecoveryProbe'), /loadDistributedRecoveryProbeStateWithAccount[\s\S]*runSingleGatewayAccountPrecheck[\s\S]*currentDistributedRecoveryProbeState/, 'Redis runtime state 下恢复探针必须重载账号凭据、使用账号测试健康探针并校验 generation')
   assert.match(functionBody(accountSideEffectsSource, 'runDistributedGatewayAccountRecoveryProbe'), /if \(!persisted\) \{[\s\S]*distributedRecoveryProbeStore\.delete\(runtimeKey\)[\s\S]*return[\s\S]*\}/, 'Redis 探针 due 索引命中已过期状态时必须清理 due 成员，避免旧 runtimeKey 反复占用 sweep batch')
   assert.match(functionBody(accountSideEffectsSource, 'loadDistributedRecoveryProbeStateWithAccount'), /type: 'find_openai_account_for_group'[\s\S]*ignoreAvailability: true/, 'Redis 探针执行前必须通过 DB service 重载账号凭据，Redis 状态不得保存凭据')
@@ -378,6 +382,10 @@ function assertStrictRedisCacheBoundaries(): void {
   assert.match(functionBody(usageRecordsSource, 'recordCompletedUpstreamAttempt'), /await enqueueUsageRecord/, '高性能成功使用记录必须等待 Redis Stream 接收')
   assert.match(functionBody(usageRecordsSource, 'recordHybridScoringAttempt'), /await enqueueUsageRecord/, '高性能混合评分使用记录必须等待 Redis Stream 接收')
   assert.match(functionBody(usageRecordsSource, 'recordGatewayFailure'), /await enqueueUsageRecord/, '高性能网关失败使用记录必须等待 Redis Stream 接收')
+
+  const usageRecordsRepositorySource = source('storage/usage-records.repository.ts')
+  assert.match(usageRecordsRepositorySource, /estimateCatalogCostUsdAsync/, 'PostgreSQL 使用记录写入必须使用异步模型目录补算成本')
+  assert.match(functionBody(usageRecordsRepositorySource, 'createUsageRecordsBatchPostgres'), /await enrichUsageRecordPricingAsync\(inputs\)[\s\S]*buildUsageRecordBatchWritePlan\(enrichedInputs/, 'PostgreSQL 使用记录写入必须先异步补齐 pricingModel/costUsd，再生成写入计划')
 
   const auditCaptureSource = source('modules/gateway/audit/capture.service.ts')
   assert.match(functionBody(auditCaptureSource, 'auditModelAccounting'), /runtimeConfig\.cacheDriver !== 'redis'[\s\S]*resolveCatalogPricingModel/, '高性能审计尝试记录不能同步读取模型目录解析 pricingModel')
@@ -442,6 +450,11 @@ function assertNoPerformanceLocalFactQueues(): void {
     /usageRecordRedisStreamQueue\(\)\.inspectRuntime\(\)/,
     '使用记录 Redis Stream 必须暴露 lag/pending 运行态'
   )
+  assert.match(
+    functionBody(usageRecordQueueSource, 'getUsageRecordRedisStreamOldestCreatedAt'),
+    /usageRecordRedisStreamQueue\(\)\.inspectBacklogMessages\(2\)[\s\S]*message\.payload\.createdAt/,
+    '使用记录 Redis Stream 必须暴露 backlog 最早业务 createdAt，供 stats 安全游标收窄'
+  )
   const fixedResponsesSource = source('modules/gateway/response/fixed-responses.ts')
   assert.match(
     functionBody(fixedResponsesSource, 'sendModelsGatewayResponse'),
@@ -452,13 +465,13 @@ function assertNoPerformanceLocalFactQueues(): void {
   const backgroundJobsSource = source('modules/background/background-jobs.ts')
   assert.match(
     functionBody(backgroundJobsSource, 'usageStatsAggregationSafety'),
-    /await assertUsageRecordRedisStreamDrainedForStatsAggregation\(\)/,
-    '统计聚合推进 safeCreatedBefore 前必须检查 Redis Stream backlog'
+    /oldestPendingUsageRecordCreatedAt\(status\)[\s\S]*await oldestRedisStreamUsageRecordCreatedAtForStatsAggregation\(\)[\s\S]*usageStatsSafeCreatedBeforeForPendingBacklog/,
+    '统计聚合推进 safeCreatedBefore 前必须用 Redis Stream backlog 最早 createdAt 收窄安全上界'
   )
   assert.match(
-    functionBody(backgroundJobsSource, 'assertUsageRecordRedisStreamDrainedForStatsAggregation'),
-    /runtimeConfig\.queueDriver !== 'redis_stream'[\s\S]*getUsageRecordRedisStreamRuntime\(\)[\s\S]*pendingCount > 0 \|\| lag > 0[\s\S]*throw new Error/,
-    'redis_stream driver 下统计聚合必须等待使用记录 Redis Stream pending/lag 清零'
+    functionBody(backgroundJobsSource, 'usageStatsSafeCreatedBeforeForPendingBacklog'),
+    /oldestPendingCreatedAt > defaultSafeCreatedBefore[\s\S]*oldestPendingTime - 1/,
+    'redis_stream driver 下统计聚合不能因 pending/lag 非零整轮停止，必须把安全上界收窄到最早 backlog 前'
   )
 
   const accountSideEffectsSource = source('modules/gateway/runtime/account-side-effects.service.ts')
@@ -505,6 +518,12 @@ function assertRedisRuntimeQueuesAndLimits(): void {
   assert.match(functionBody(clientIpConcurrencySource, 'acquireRedisClientIpSlot'), /enqueueRedisClientIpQueueItem[\s\S]*redisClientIpQueuePosition[\s\S]*removeRedisClientIpQueueItem/, '高性能 Client-IP 溢出队列必须写入 Redis 队列')
   assert.match(clientIpConcurrencySource, /const redisClientIpQueueEnqueueScript = `[\s\S]*queue_limit[\s\S]*ZADD/, '高性能 Client-IP 队列必须用 Redis ZSET 维护队列上限')
   assert.match(clientIpConcurrencySource, /const redisAcquireClientIpConcurrencyScript = `[\s\S]*ZREMRANGEBYSCORE[\s\S]*ZADD[\s\S]*slot_token/, '高性能 Client-IP 并发必须使用 Redis token lease，禁止简单计数器误释放新请求')
+  assert.match(clientIpConcurrencySource, /const redisClientIpConcurrencyRenewIntervalMs[\s\S]*redisClientIpConcurrencyTtlMs/, 'Redis Client-IP 并发活跃槽必须按 TTL 定期续租，避免长流式请求租约过期')
+  assert.match(functionBody(clientIpConcurrencySource, 'redisAcquiredDecision'), /startRedisClientIpSlotRenewal[\s\S]*stopRenewal\(\)[\s\S]*releaseRedisClientIpSlotWithRetry/, 'Redis Client-IP 并发槽释放前必须停止续租并归还 token')
+  const clientIpSlotRenewalBody = functionBody(clientIpConcurrencySource, 'startRedisClientIpSlotRenewal')
+  assert.match(clientIpSlotRenewalBody, /setInterval[\s\S]*renewRedisClientIpSlot/, 'Redis Client-IP 并发活跃槽必须由当前进程定期续租')
+  assert.match(clientIpSlotRenewalBody, /clearInterval/, 'Redis Client-IP 并发活跃槽续租必须可停止')
+  assert.match(clientIpConcurrencySource, /const redisRenewClientIpConcurrencyScript = `[\s\S]*ZSCORE[\s\S]*ZADD[\s\S]*PEXPIRE/, 'Redis Client-IP 并发续租只能刷新仍存在的 token，禁止复活已释放槽位')
   assert.doesNotMatch(clientIpConcurrencySource, /redis\.call\('INCR'|redis\.call\('DECR'/, 'Redis Client-IP 并发不能使用简单 INCR/DECR 计数器')
   assert.match(clientIpConcurrencySource, /async function tryAcquireRedisClientIpSlot[\s\S]*requireEmptyQueue[\s\S]*redisAcquireClientIpConcurrencyScript/, '高性能 Client-IP 新请求不能绕过 Redis 队列插队抢槽')
   assert.match(functionBody(clientIpConcurrencySource, 'releaseRedisClientIpSlotWithRetry'), /redis_client_ip_concurrency_release_failed/, 'Redis Client-IP 并发释放失败不能吞错，必须重试并记录错误')
