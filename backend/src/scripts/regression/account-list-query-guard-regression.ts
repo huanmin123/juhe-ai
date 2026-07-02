@@ -260,6 +260,7 @@ function createGuardAccount(
 function assertAccountListRouteBoundary(): void {
   const accountsRoutesSource = readFileSync(resolve('src/modules/accounts/accounts.routes.ts'), 'utf8')
   const accountListRoutesSource = readFileSync(resolve('src/modules/accounts/account-list.routes.ts'), 'utf8')
+  const accountListRuntimeStatusFilterSource = readFileSync(resolve('src/modules/accounts/account-list-runtime-status-filter.ts'), 'utf8')
   const accountSummaryRepositorySource = readFileSync(resolve('src/storage/account-summary.repository.ts'), 'utf8')
   const accountOptionsRepositorySource = readFileSync(resolve('src/storage/account-options.repository.ts'), 'utf8')
   const accountReadRepositorySource = readFileSync(resolve('src/storage/account-read.repository.ts'), 'utf8')
@@ -284,6 +285,17 @@ function assertAccountListRouteBoundary(): void {
       && accountListRoutesSource.includes('Server-Timing')
       && accountListRoutesSource.includes('sanitizeAccountListResponse'),
     '账户列表只读子路由应保留并发水合、运行态状态后置归类、Server-Timing 和响应脱敏'
+  )
+  assert.match(
+    accountListRoutesSource,
+    /accountListNeedsRuntimeStatusFilter\(listOptions\)[\s\S]*listAccountsPageWithRuntimeStatusFilter\(requestAccess, listOptions\)[\s\S]*if \(!filteredResult\) \{[\s\S]*listAccountsPageAsync\(requestAccess, listOptions\)/,
+    '账户列表运行态状态过滤应先走单次运行态分页，快照不可用时才回退普通列表，避免 PG 状态过滤重复昂贵查询'
+  )
+  assert(
+    accountListRuntimeStatusFilterSource.includes('export function accountListNeedsRuntimeStatusFilter')
+      && accountListRuntimeStatusFilterSource.includes('export async function listAccountsPageWithRuntimeStatusFilter')
+      && accountListRuntimeStatusFilterSource.includes('if (!serverRuntimeSnapshot?.accountRuntimeAvailability) return undefined'),
+    '运行态状态过滤模块应暴露显式接管入口，并保留快照不可用时回退普通列表的契约'
   )
   assert(
     !accountListRoutesSource.includes('mutationGuard(')

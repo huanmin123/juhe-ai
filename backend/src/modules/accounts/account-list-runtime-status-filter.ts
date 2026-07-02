@@ -12,12 +12,26 @@ export async function applyAccountListRuntimeStatusFilter(
   options: AccountListOptions,
   result: AccountListResult & { runtimeSnapshot?: AccountRuntimeSnapshotStatus }
 ): Promise<AccountListResult & { runtimeSnapshot?: AccountRuntimeSnapshotStatus }> {
+  if (result.runtimeSnapshot?.accountRuntimeAvailabilityAvailable !== true) return result
+  return await listAccountsPageWithRuntimeStatusFilter(access, options) ?? result
+}
+
+export function accountListNeedsRuntimeStatusFilter(options: AccountListOptions): boolean {
   const listOptions = normalizeAccountListOptions(options)
   const statusFilters = accountStatusFilterValues(listOptions.status)
-  if (!statusFilters.some(statusFilterCanBeChangedByRuntime)) return result
-  if (result.runtimeSnapshot?.accountRuntimeAvailabilityAvailable !== true) return result
+  return statusFilters.some(statusFilterCanBeChangedByRuntime)
+}
+
+export async function listAccountsPageWithRuntimeStatusFilter(
+  access: AccessScope | undefined,
+  options: AccountListOptions
+): Promise<(AccountListResult & { runtimeSnapshot: AccountRuntimeSnapshotStatus }) | undefined> {
+  const listOptions = normalizeAccountListOptions(options)
+  const statusFilters = accountStatusFilterValues(listOptions.status)
+  if (!statusFilters.some(statusFilterCanBeChangedByRuntime)) return undefined
   const serverRuntimeSnapshot = await requestServerAccountRuntimeSnapshot(80).catch(() => undefined)
-  const runtimeBlockedAccountCount = runtimeBlockedAccountIds(serverRuntimeSnapshot?.accountRuntimeAvailability).size
+  if (!serverRuntimeSnapshot?.accountRuntimeAvailability) return undefined
+  const runtimeBlockedAccountCount = runtimeBlockedAccountIds(serverRuntimeSnapshot.accountRuntimeAvailability).size
 
   const pageSize = listOptions.pageSize
   const sourcePageSize = Math.max(pageSize, Math.min(500, pageSize * 4))
@@ -61,7 +75,6 @@ export async function applyAccountListRuntimeStatusFilter(
 
   const items = output.slice(0, pageSize)
   return {
-    ...result,
     items,
     total: pagedTotalUpperBound(listOptions.page, pageSize, items.length, hasMore),
     hasMore,

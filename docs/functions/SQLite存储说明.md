@@ -250,7 +250,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 - `process_event_loop_samples`：按采样时间和进程角色保存事件循环额外延迟、RSS、Heap used / total、external 和 array buffers，当前角色为 `server`、`ingest-worker`、`stats-worker`、`ops-worker`、`db-service`，用于区分主 Web 进程、写入 worker、统计 worker、运维 worker 和本地 DB service 哪个进程卡顿或内存爬升。
 - `process_event_loop_hourly`：按 `stat_hour + process_role` 汇总事件循环延迟有效样本数、平均值、最大值，以及进程 RSS / Heap 的平均值和峰值，作为长期粗粒度排障缓存。
 - `process_event_loop_trend_windows`：统计概览范围窗口缓存；管理侧事件循环趋势和进程内存占用趋势均读取该窗口，不在接口请求时扫描 `process_event_loop_samples`。
-- `database_storage_snapshots`：按采样时间保存业务库、数据集目录库、使用记录目录库和统计结果库文件大小、WAL / SHM、页大小、总页数、空闲页和表数量；这是 10 分钟常规采样的主指标。usage shard 文件集合观测仍是表监控后续增强项。
+- `database_storage_snapshots`：standalone 按采样时间保存业务库、数据集目录库、使用记录目录库和统计结果库文件大小、WAL / SHM、页大小、总页数、空闲页和表数量；performance 使用同一张统计表保存 PostgreSQL schema relation size 快照，并额外覆盖 `juhe_codex_context`。这是 10 分钟常规采样的主指标。usage shard 文件集合观测仍是表监控后续增强项。
 - `table_storage_snapshots`：按采样时间保存表级可选行数、表大小、索引大小、总大小和 1 小时 / 24 小时增长；表级数据按游标轮转分批刷新，不要求所有表在同一采样时间都有新快照。后台常规采样通过 `dbstat` 叶子页 cell 数滚动写入可推导的行数，不提供精确 `COUNT(*)` 采样分支；SQLite `dbstat` 不可用或表类型不适合推导时，表大小、索引大小、总大小、页数和行数保持为空，不写入伪造的 0。
 - 表监控文件级采样由后台 worker 每 10 分钟执行一次；表级采样默认每轮每个库最多刷新 4 张表，历史默认保留最近一月。
 - `stats_job_state`：记录后台任务的作用域、游标、上次成功时间、上次错误和滞后秒数；业务统计作用域为 `system_account`，主机监控作用域为 `global`。IP 范围窗口额外使用 `scope_type = client_ip_range_window` 记录窗口刷新 ready/stale 标记，只表达窗口是否完成刷新，不保存数量或范围总量。任务尚未写入状态或滞后无法判断时，`lag_seconds` 保持为空，不按 0 处理。
@@ -513,10 +513,10 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 统一清理规则：
 
 - 表数据长期保留期统一由 `data-retention-cleanup` 默认每 10 分钟在独立 background worker 进程内执行；原始审计普通成功请求的 1 小时热窗口后置采样裁剪由 `audit-hot-retention-cleanup` 每分钟分批执行，避免排障窗口结束后未采样成功日志继续堆积；表监控页面额外提供 `usage_records` 按截止时间手动清理入口，用于容量异常时提前释放可复用页。
-- 清理任务按 SQLite 友好的小批次删除，默认每类表每轮最多处理 `dataRetentionCleanupBatchSize = 1000` 条、最多 `dataRetentionCleanupMaxBatchesPerRun = 20` 批，即默认每类数据每轮最多 2 万行。运行时允许调到 `5000 * 100` 的硬上限，但这只用于追赶历史积压；常态应维持 1000 行级别单批，避免长事务、写锁占用和 WAL 抖动。每批之间会让出事件循环，并在继续下一批前固定等待 25ms，给其他 SQLite writer 留出写入间隙。保留清理按表独立推进，前序表已经清完后，如果后续表失败，下一轮从失败表继续。清理实际删除数据后会执行轻量 WAL checkpoint，避免 WAL 长期膨胀；在线任务不自动 `VACUUM`。
+- 清理任务按小批次删除，默认每类表每轮最多处理 `dataRetentionCleanupBatchSize = 1000` 条、最多 `dataRetentionCleanupMaxBatchesPerRun = 20` 批，即默认每类数据每轮最多 2 万行。运行时允许调到 `5000 * 100` 的硬上限，但这只用于追赶历史积压；常态应维持 1000 行级别单批，避免长事务、写锁占用和 WAL 抖动。SQLite 每批之间会让出事件循环，并在继续下一批前固定等待 25ms，给其他 writer 留出写入间隙；PostgreSQL 使用 async repository 按 ctid / 主键窗口分批删除，避免单事务长时间持锁。保留清理按表独立推进，前序表已经清完后，如果后续表失败，下一轮从失败表继续。SQLite 清理实际删除数据后会执行轻量 WAL checkpoint，避免 WAL 长期膨胀；在线任务不自动 `VACUUM`。
 - 手动清理 `usage_records` 同样按批次执行，截止时间不能晚于当前时间 24 小时前，并且必须受统计聚合游标和必要回填游标保护。提交前先按 `created_at < cutoffAt` 与统计安全游标交集做有限预检查；没有可安全清理记录、统计游标尚未建立或 worker 投递不可用时返回 `queued = false` 和原因；预检查通过后才返回 `queued = true` 并交给 worker 分批清理。
 - 统计聚合、系统指标采样、审计日志落库和运行日志索引队列只负责写入或聚合，不再在各自流程里顺手删除历史表数据。
-- 如果统计缓存损坏或统计口径升级，可以停服务后在发布包根目录运行 `node backend/dist/scripts/maintenance/rebuild-usage-stats.js --confirm-offline`，从 usage shard 文件中尚未清理的 `usage_records` 重新构建缓存。该命令会清空并重建当前 `backend/.env` 指向统计结果库里的统计缓存，默认每批 2000 条、最多 1000 批，批间让出事件循环；可用 `--batch-size=数量`、`--max-batches=数量` 控制单轮吞吐，达到上限后可再次离线执行。脚本必须显式传 `--confirm-offline` 或设置 `JUHE_AI_CONFIRM_USAGE_STATS_REBUILD=1`，避免在线误执行。如果 usage shard 为空或历史 `usage_records` 已丢弃，历史统计明确放弃，后续从新请求重新累计。执行前必须确认业务库路径无误，避免误操作业务数据。
+- 如果统计缓存损坏或统计口径升级，可以停服务后在发布包根目录运行 `node backend/dist/scripts/maintenance/rebuild-usage-stats.js --confirm-offline`，standalone 从 usage shard 文件中尚未清理的 `usage_records` 重新构建缓存，performance 从 `juhe_usage.usage_records` 重建 `juhe_stats` 缓存。该命令会清空并重建当前 `backend/.env` 指向统计结果库 / PostgreSQL `juhe_stats` 里的统计缓存，默认每批 2000 条、最多 1000 批，批间让出事件循环；可用 `--batch-size=数量`、`--max-batches=数量` 控制单轮吞吐，达到上限后可再次离线执行。脚本必须显式传 `--confirm-offline` 或设置 `JUHE_AI_CONFIRM_USAGE_STATS_REBUILD=1`，避免在线误执行。如果 usage shard / `juhe_usage.usage_records` 为空或历史 `usage_records` 已丢弃，历史统计明确放弃，后续从新请求重新累计。执行前必须确认业务库路径或 PostgreSQL 连接无误，避免误操作业务数据。
 
 ## 操作日志存储
 

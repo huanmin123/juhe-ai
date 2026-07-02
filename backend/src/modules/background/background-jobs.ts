@@ -77,8 +77,16 @@ let backgroundJobSettingsRefreshPromise: Promise<void> | undefined
 export function startBackgroundJobs(): void {
   if (started) return
   started = true
-  refreshBackgroundJobSettingsSnapshotIfNeeded()
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    void refreshBackgroundJobSettingsSnapshotIfNeeded()
+      .then(scheduleBackgroundJobs)
+      .catch(handleBackgroundJobsStartError)
+    return
+  }
+  scheduleBackgroundJobs()
+}
 
+function scheduleBackgroundJobs(): void {
   switch (runtimeConfig.workerRole) {
     case 'ingest-worker':
       scheduler.schedule({ name: backgroundScheduledJobName('api-key-record-cleanup-retry'), intervalMs: minuteMs, initialDelayMs: 24 * secondMs, task: runApiKeyRecordCleanupRetry })
@@ -105,7 +113,9 @@ export function startBackgroundJobs(): void {
         scheduler.schedule({ name: backgroundScheduledJobName('usage-overview-windows-refresh'), intervalMs: 30 * minuteMs, initialDelayMs: 4 * minuteMs + 10 * secondMs, task: () => runUsageRankSnapshotsRefresh(backgroundScheduledJobName('usage-overview-windows-refresh'), usageOverviewWindowStageNames) })
         scheduler.schedule({ name: backgroundScheduledJobName('usage-scope-range-windows-refresh'), intervalMs: 30 * minuteMs, initialDelayMs: 5 * minuteMs, task: () => runUsageRankSnapshotsRefresh(backgroundScheduledJobName('usage-scope-range-windows-refresh'), usageScopeRangeWindowStageNames) })
         scheduler.schedule({ name: backgroundScheduledJobName('authorization-usage-range-windows-refresh'), intervalMs: 30 * minuteMs, initialDelayMs: 5 * minuteMs + 50 * secondMs, task: () => runUsageRankSnapshotsRefresh(backgroundScheduledJobName('authorization-usage-range-windows-refresh'), authorizationUsageRangeWindowStageNames) })
+        scheduler.schedule({ name: backgroundScheduledJobName('account-quality-refresh'), intervalMs: settingsNumber('accountQualityRefreshIntervalSeconds', 60, 3600) * secondMs, initialDelayMs: 75 * secondMs, task: () => runAccountQualityRefresh({ settingsNumber, ensureUsageRecordsIngestedBeforeStatsAggregation: ensureUsageRecordsSafeForStatsAggregation, yieldToEventLoop }) })
         scheduler.schedule({ name: backgroundScheduledJobName('table-storage-monitor'), intervalMs: 10 * minuteMs, initialDelayMs: 3 * minuteMs, task: runTableStorageMonitor })
+        scheduler.schedule({ name: backgroundScheduledJobName('usage-stats-consistency-check'), intervalMs: 60 * minuteMs, initialDelayMs: 11 * minuteMs, task: runUsageStatsConsistencyCheck })
         return
       }
       scheduler.schedule({ name: backgroundScheduledJobName('system-metrics-sample'), intervalMs: settingsNumber('systemMetricsSampleIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 5 * secondMs, task: runSystemMetricsSample })
@@ -135,6 +145,12 @@ export function startBackgroundJobs(): void {
     default:
       return
   }
+}
+
+function handleBackgroundJobsStartError(error: unknown): void {
+  started = false
+  logger.error(errorLogFields(error, { event: 'background_jobs_start_failed' }), '后台任务启动失败')
+  setImmediate(() => { throw error })
 }
 
 function isPostgresHighPerformanceMode(): boolean {
@@ -426,14 +442,14 @@ function settingsNumber(key: string, min: number, max: number): number {
 }
 
 function postgresBackgroundJobSettingValue(key: string): unknown {
-  refreshBackgroundJobSettingsSnapshotIfNeeded()
+  void refreshBackgroundJobSettingsSnapshotIfNeeded()
   return backgroundJobSettingsSnapshot?.[key] ?? defaultSystemSettingsByKey.get(key)
 }
 
-function refreshBackgroundJobSettingsSnapshotIfNeeded(): void {
-  if (runtimeConfig.databaseDriver !== 'postgres') return
-  if (backgroundJobSettingsRefreshPromise) return
-  if (backgroundJobSettingsSnapshot && Date.now() - backgroundJobSettingsSnapshotLoadedAt < backgroundJobSettingsSnapshotTtlMs) return
+function refreshBackgroundJobSettingsSnapshotIfNeeded(): Promise<void> {
+  if (runtimeConfig.databaseDriver !== 'postgres') return Promise.resolve()
+  if (backgroundJobSettingsRefreshPromise) return backgroundJobSettingsRefreshPromise
+  if (backgroundJobSettingsSnapshot && Date.now() - backgroundJobSettingsSnapshotLoadedAt < backgroundJobSettingsSnapshotTtlMs) return Promise.resolve()
   backgroundJobSettingsRefreshPromise = getSettingsAsync()
     .then((settings) => {
       backgroundJobSettingsSnapshot = settings
@@ -445,6 +461,7 @@ function refreshBackgroundJobSettingsSnapshotIfNeeded(): void {
     .finally(() => {
       backgroundJobSettingsRefreshPromise = undefined
     })
+  return backgroundJobSettingsRefreshPromise
 }
 
 async function databaseFileBytes(): Promise<number | undefined> {

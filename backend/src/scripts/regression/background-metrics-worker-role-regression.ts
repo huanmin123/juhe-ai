@@ -54,6 +54,10 @@ assertRoleBlockContainsOnly('stats-worker', [
 ])
 assertRolePostgresBlockContains('stats-worker', 'table-storage-monitor', 'PG 高性能 stats-worker 必须注册 table-storage-monitor，避免生产表监控无采样数据')
 assertRolePostgresBlockContains('stats-worker', 'group-account-stats-refresh', 'PG 高性能 stats-worker 必须注册 group-account-stats-refresh，避免分组账户统计缓存长期不刷新')
+assertRolePostgresBlockContains('stats-worker', 'account-quality-refresh', 'PG 高性能 stats-worker 必须注册 account-quality-refresh，避免账户质量分长期不刷新')
+assertRolePostgresBlockContains('stats-worker', 'usage-stats-consistency-check', 'PG 高性能 stats-worker 必须注册 usage-stats-consistency-check，避免统计一致性漂移无人检测')
+assert.match(backgroundJobsSource, /runtimeConfig\.databaseDriver === 'postgres'[\s\S]*refreshBackgroundJobSettingsSnapshotIfNeeded\(\)[\s\S]*\.then\(scheduleBackgroundJobs\)/, 'PG 后台定时任务必须等待系统设置快照加载后再注册 interval')
+assert.match(backgroundJobsSource, /function refreshBackgroundJobSettingsSnapshotIfNeeded\(\): Promise<void>/, 'PG 后台任务系统设置快照刷新必须返回 Promise，避免启动时异步未完成就注册默认 interval')
 assert(backgroundJobsSource.includes("reason: 'stats_worker_startup_refresh'"), 'PG stats-worker 首次分组统计刷新必须写全量脏标记，修复已有统计缓存缺失或旧 0 值')
 assertRoleBlockContainsOnly('ops-worker', [
   'proxy-latency-refresh',

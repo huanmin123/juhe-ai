@@ -119,6 +119,7 @@ PostgreSQL 模式不再模拟多个 SQLite 文件，而是把当前事实域映�
 | `juhe_codex_context` | Codex context state shard | Responses session / response / compact 索引 |
 
 表名可以保留当前语义，代码通过 repository / dialect 选择 schema，不把 schema 名写进业务服务层。
+表监控在 PostgreSQL 模式下按这 5 个 schema 采样 relation size、估算行数和 1 小时 / 24 小时增长，结果统一写入 `juhe_stats.database_storage_snapshots` 与 `juhe_stats.table_storage_snapshots`，不回读 SQLite 文件路径。
 
 当前已新增 `backend/src/storage/postgres-schema.ts`，从现有 SQLite schema DDL 收集建表 / 建索引语句并映射为 PostgreSQL SQL：移除 `PRAGMA`，把 `COLLATE NOCASE` 映射为 `lower(...)` 表达式索引，把 SQLite JSON object check 映射为 `jsonb_typeof(...::jsonb)`，并按外键依赖重新排序 `CREATE TABLE`，避免 PostgreSQL 的前向外键引用失败。`postgres:init-schema` 默认执行 schema 初始化并写入默认种子数据，`postgres:init-schema-only` 只执行 DDL。`<测试主机IP>` 最新完整初始化已验证 5 个 schema、617 条 schema 语句、132 条默认种子语句可以成功执行。
 
