@@ -103,23 +103,37 @@ export function replaceClientIpPolicyCacheLocal(policies: ActiveClientIpPolicy[]
   activePolicySnapshotLoadedAt = new Date().toISOString()
 }
 
-export async function reloadClientIpPolicyCacheLocal(): Promise<void> {
+export async function reloadClientIpPolicyCacheLocal(options: { bypassSharedCache?: boolean } = {}): Promise<void> {
   if (runtimeConfig.cacheDriver === 'redis') {
     activePolicySnapshot.clear()
     activePolicySnapshotLoadedAt = undefined
+    if (options.bypassSharedCache) {
+      await loadClientIpPolicySnapshotFromDatabase()
+      return
+    }
     await loadClientIpPolicySnapshotFromSharedCacheOrDatabase()
     return
   }
-  const sharedSnapshot = await getActivePolicySnapshotSharedCacheEntry()
+  const sharedSnapshot = options.bypassSharedCache ? undefined : await getActivePolicySnapshotSharedCacheEntry()
   if (sharedSnapshot) {
     replaceClientIpPolicyCacheLocal(sharedSnapshot.policies, { skipSharedCache: true })
     activePolicySnapshotLoadedAt = sharedSnapshot.loadedAt
     return
   }
-  const policies = shouldUseStatsWriterBridge()
-    ? await requestStatsWriter({ type: 'list_active_client_ip_policies' }, 1000)
-    : await listActiveClientIpPoliciesAsync()
-  replaceClientIpPolicyCacheLocal(policies)
+  const snapshot = await loadClientIpPolicySnapshotFromDatabase()
+  replaceClientIpPolicyCacheLocal(snapshot.policies, { skipSharedCache: true })
+  activePolicySnapshotLoadedAt = snapshot.loadedAt
+}
+
+export async function replaceClientIpPolicySharedSnapshotAsync(policies: ActiveClientIpPolicy[]): Promise<void> {
+  policyCache.clear()
+  activePolicySnapshot.clear()
+  if (runtimeConfig.cacheDriver !== 'redis') {
+    replaceClientIpPolicyCacheLocal(policies)
+    return
+  }
+  activePolicySnapshotLoadedAt = undefined
+  await setActivePolicySnapshotSharedCacheEntry(snapshotCacheEntryFromPolicies(policies))
 }
 
 export async function recordClientIpPolicyHitAsync(policy: ActiveClientIpPolicy): Promise<void> {
@@ -179,11 +193,11 @@ function scheduleClientIpPolicyHitFlush(delayMs: number): void {
   policyHitFlushTimer.unref?.()
 }
 
-export function clearClientIpPolicyCacheLocal(): void {
+export async function clearClientIpPolicyCacheLocal(): Promise<void> {
   policyCache.clear()
   activePolicySnapshot.clear()
   activePolicySnapshotLoadedAt = undefined
-  clearActivePolicySnapshotSharedCache()
+  await clearActivePolicySnapshotSharedCache()
 }
 
 function isPolicyActiveAt(policy: ActiveClientIpPolicy, nowMs: number): boolean {
@@ -281,24 +295,34 @@ async function loadClientIpPolicySnapshotFromSharedCacheOrDatabase(): Promise<Cl
   if (sharedSnapshot) {
     return sharedSnapshot
   }
+  return await loadClientIpPolicySnapshotFromDatabase()
+}
+
+async function loadClientIpPolicySnapshotFromDatabase(): Promise<ClientIpPolicySnapshotCacheEntry> {
   const policies = shouldUseStatsWriterBridge()
     ? await requestStatsWriter({ type: 'list_active_client_ip_policies' }, 1000)
     : await listActiveClientIpPoliciesAsync()
-  const snapshot = {
-    loadedAt: new Date().toISOString(),
-    policies: policies.map(cloneActiveClientIpPolicy)
-  }
+  const snapshot = snapshotCacheEntryFromPolicies(policies)
   await setActivePolicySnapshotSharedCacheEntry(snapshot)
   return snapshot
 }
 
-function clearActivePolicySnapshotSharedCache(): void {
-  void activePolicySnapshotSharedCache.clear().catch((error) => {
+function snapshotCacheEntryFromPolicies(policies: ActiveClientIpPolicy[]): ClientIpPolicySnapshotCacheEntry {
+  return {
+    loadedAt: new Date().toISOString(),
+    policies: policies.map(cloneActiveClientIpPolicy)
+  }
+}
+
+async function clearActivePolicySnapshotSharedCache(): Promise<void> {
+  try {
+    await activePolicySnapshotSharedCache.clear()
+  } catch (error) {
     throwIfRedisCacheIsRequired(error)
     logger.warn(errorLogFields(error, {
       event: 'client_ip_policy_snapshot_shared_cache_clear_failed'
     }), '清理 IP 封禁策略 Redis shared cache 失败')
-  })
+  }
 }
 
 function isActiveClientIpPolicy(value: unknown): value is ActiveClientIpPolicy {

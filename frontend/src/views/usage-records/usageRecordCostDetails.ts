@@ -22,12 +22,20 @@ export function usageRecordCostTokenRows(record: UsageRecordSummary): UsageRecor
   const thinkingTokens = positiveNumber(record.costBreakdown?.thinkingTokens ?? record.thinkingTokens)
   const inputImageTokens = positiveNumber(record.inputImageTokens)
   const outputImageTokens = positiveNumber(record.outputImageTokens)
+  const inputAudioTokens = positiveNumber(record.inputAudioTokens)
+  const outputAudioTokens = positiveNumber(record.outputAudioTokens)
+  const outputImageCount = positiveNumber(record.outputImageCount)
 
   pushTokenRow(rows, 'cacheWriteTokens', cacheWriteTokenLabel(family), cacheWriteStandardTokens)
   pushTokenRow(rows, 'cacheWrite1hTokens', '1h 缓存写入 Tokens', cacheWrite1hTokens)
   pushTokenRow(rows, 'thinkingTokens', thinkingTokenLabel(family), thinkingTokens)
   pushTokenRow(rows, 'inputImageTokens', '图片输入 Tokens', inputImageTokens)
   pushTokenRow(rows, 'outputImageTokens', '图片输出 Tokens', outputImageTokens)
+  pushTokenRow(rows, 'inputAudioTokens', '音频输入 Tokens', inputAudioTokens)
+  pushTokenRow(rows, 'outputAudioTokens', '音频输出 Tokens', outputAudioTokens)
+  if (outputImageCount > 0) {
+    rows.push({ key: 'outputImageCount', label: '输出图片张数', value: `${formatTokens(outputImageCount)} 张` })
+  }
   return rows
 }
 
@@ -47,9 +55,9 @@ export function usageRecordCostAmountRows(record: UsageRecordSummary): UsageReco
   pushCostRow(rows, 'cacheWrite1hCostUsd', '1h 缓存写入成本', costBreakdown.cacheWrite1hCostUsd, activeDimension(cacheWrite1hTokens, costBreakdown.cacheWrite1hCostUsd))
   pushCostRow(rows, 'inputImageCostUsd', '图片输入成本', costBreakdown.inputImageCostUsd, activeDimension(record.inputImageTokens, costBreakdown.inputImageCostUsd))
   pushCostRow(rows, 'outputImageCostUsd', '图片输出成本', costBreakdown.outputImageCostUsd, activeDimension(record.outputImageTokens, costBreakdown.outputImageCostUsd))
-  pushCostRow(rows, 'inputAudioCostUsd', '音频输入成本', costBreakdown.inputAudioCostUsd, positiveNumber(costBreakdown.inputAudioCostUsd) > 0)
-  pushCostRow(rows, 'outputAudioCostUsd', '音频输出成本', costBreakdown.outputAudioCostUsd, positiveNumber(costBreakdown.outputAudioCostUsd) > 0)
-  pushCostRow(rows, 'outputImageUnitCostUsd', '图片张数成本', costBreakdown.outputImageUnitCostUsd, positiveNumber(costBreakdown.outputImageUnitCostUsd) > 0)
+  pushCostRow(rows, 'inputAudioCostUsd', '音频输入成本', costBreakdown.inputAudioCostUsd, activeDimension(record.inputAudioTokens, costBreakdown.inputAudioCostUsd))
+  pushCostRow(rows, 'outputAudioCostUsd', '音频输出成本', costBreakdown.outputAudioCostUsd, activeDimension(record.outputAudioTokens, costBreakdown.outputAudioCostUsd))
+  pushCostRow(rows, 'outputImageUnitCostUsd', '图片张数成本', costBreakdown.outputImageUnitCostUsd, activeDimension(record.outputImageCount, costBreakdown.outputImageUnitCostUsd))
 
   if (shouldShowCacheRate(record)) {
     rows.push({ key: 'cacheRate', label: '缓存率', value: formatCacheRate(record) })
@@ -86,9 +94,9 @@ export function usageRecordCostPriceRows(record: UsageRecordSummary): UsageRecor
   )
   pushUnitPriceRow(rows, 'inputImageUsdPer1M', '图片输入单价', costBreakdown.inputImageUsdPer1M, activeDimension(record.inputImageTokens, costBreakdown.inputImageCostUsd))
   pushUnitPriceRow(rows, 'outputImageUsdPer1M', '图片输出单价', costBreakdown.outputImageUsdPer1M, activeDimension(record.outputImageTokens, costBreakdown.outputImageCostUsd))
-  pushUnitPriceRow(rows, 'inputAudioUsdPer1M', '音频输入单价', costBreakdown.inputAudioUsdPer1M, positiveNumber(costBreakdown.inputAudioCostUsd) > 0)
-  pushUnitPriceRow(rows, 'outputAudioUsdPer1M', '音频输出单价', costBreakdown.outputAudioUsdPer1M, positiveNumber(costBreakdown.outputAudioCostUsd) > 0)
-  if (isFiniteNumber(costBreakdown.outputUsdPerImage) && positiveNumber(costBreakdown.outputImageUnitCostUsd) > 0) {
+  pushUnitPriceRow(rows, 'inputAudioUsdPer1M', '音频输入单价', costBreakdown.inputAudioUsdPer1M, activeDimension(record.inputAudioTokens, costBreakdown.inputAudioCostUsd))
+  pushUnitPriceRow(rows, 'outputAudioUsdPer1M', '音频输出单价', costBreakdown.outputAudioUsdPer1M, activeDimension(record.outputAudioTokens, costBreakdown.outputAudioCostUsd))
+  if (isFiniteNumber(costBreakdown.outputUsdPerImage) && activeDimension(record.outputImageCount, costBreakdown.outputImageUnitCostUsd)) {
     rows.push({ key: 'outputUsdPerImage', label: '每张图片单价', value: formatCost(costBreakdown.outputUsdPerImage) })
   }
   return rows

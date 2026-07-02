@@ -47,7 +47,7 @@ assertIncludes(credentialsSource, 'if (apiKeys.length > 1)', 'API Key 保存 pay
 assertIncludes(savePayloadSource, "if (form.type === 'api_key' && apiKeyCount === 0) return '请填写 API Key'", 'API Key 编辑和创建都必须至少保留一个 Key')
 assertNotIncludes(savePayloadSource, "!editingId && form.type === 'api_key' && apiKeyCount", 'API Key 数量校验不应只限制创建态')
 assertIncludes(editModalSource, 'const confirmButtonProps = computed(() => ({', '账户弹窗应统一计算确定按钮状态')
-assertIncludes(editModalSource, 'disabled: Boolean(props.okButtonProps.disabled) || props.testLoading', '账户测试运行期间不应允许保存成未激活账户')
+assertIncludes(editModalSource, 'disabled: Boolean(props.okButtonProps.disabled) || props.loading || props.testLoading', '账户测试运行期间不应允许保存成未激活账户')
 assertIncludes(editModalSource, 'v-bind="confirmButtonProps"', '账户弹窗确定按钮应使用测试运行保护后的按钮属性')
 assertIncludes(testModalSource, 'syncDraftActivationTestFromTask(latestTask, activationDraftPayload)', '草稿测试任务轮询拿到成功结果时应立即记录可激活任务')
 assertIncludes(testModalSource, "successfulDraftActivationTest.value = { taskId: task.id, account: activationDraftPayload }", '成功草稿测试应绑定测试任务与创建表单快照')
@@ -245,7 +245,7 @@ function assertModelMappingProtocolValidation(): void {
       enabled: true
     }]
   }) ?? '', /账号模型别名只支持同协议映射/, '前端保存前应拒绝 Chat Completions -> Responses')
-  assert.match(validateForm({
+  assert.equal(validateForm({
     ...baseForm,
     supportedEndpointModes: ['chat_json', 'chat_sse'],
     modelMappings: [{
@@ -255,7 +255,7 @@ function assertModelMappingProtocolValidation(): void {
       upstreamEndpointFamily: 'chat_completions',
       enabled: true
     }]
-  }) ?? '', /账号模型别名只支持同协议映射/, '前端保存前应拒绝 Chat-only 上游承接 Responses -> Chat Completions')
+  }), undefined, '前端保存前应允许普通 OpenAI v1 账号显式配置 Responses -> Chat Completions')
   assert.match(validateForm({
     ...baseForm,
     providerCode: 'anthropic',
@@ -384,7 +384,7 @@ function assertModelMappingProtocolMatrixHelper(): void {
     sourceEndpointFamily: 'responses',
     upstreamEndpointFamily: 'chat_completions',
     context: { providerProfile: gptProfile, supportedEndpointModes: ['chat_json', 'chat_sse'] }
-  }), false, '矩阵 helper 应拒绝 Responses -> Chat Completions')
+  }), true, '矩阵 helper 应允许普通 OpenAI v1 Responses -> Chat Completions 显式映射')
   assert.equal(isAccountModelMappingProtocolAllowed({
     sourceEndpointFamily: 'chat_completions',
     upstreamEndpointFamily: 'responses',

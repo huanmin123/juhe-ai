@@ -17,6 +17,7 @@ const queue = new RedisStreamQueue<TestPayload>({
 const parser = queue as unknown as {
   parseStreamReadResult(result: unknown): Array<RedisStreamMessage<TestPayload>>
   parseAutoClaimResult(result: unknown): Array<RedisStreamMessage<TestPayload>>
+  parsePendingMessageInspection(result: unknown): { ids: string[]; entries: Array<RedisStreamMessage<TestPayload>> }
 }
 
 const readMessages = parser.parseStreamReadResult([
@@ -63,6 +64,24 @@ assert.deepEqual(objectClaimedMessages, [
   { id: '1730000000001-1', payload: { id: 'object-c', value: 30 } }
 ], 'XAUTOCLAIM object result should parse node-redis pending payloads')
 
+const pendingInspection = parser.parsePendingMessageInspection([
+  '1730000000002-0',
+  [
+    ['1730000000002-0', ['payload', JSON.stringify({ id: 'pending-a', value: 100 })]]
+  ],
+  '1730000000002-1',
+  [
+    ['1730000000002-1', ['payload', JSON.stringify({ id: 'pending-b', value: 101 })]]
+  ]
+])
+assert.deepEqual(pendingInspection, {
+  ids: ['1730000000002-0', '1730000000002-1'],
+  entries: [
+    { id: '1730000000002-0', payload: { id: 'pending-a', value: 100 } },
+    { id: '1730000000002-1', payload: { id: 'pending-b', value: 101 } }
+  ]
+}, 'Lua XPENDING/XRANGE inspection result should parse pending ids and payloads')
+
 const runtimeSource = readFileSync(new URL('../../config/runtime.ts', import.meta.url), 'utf8')
 assert.match(runtimeSource, /export type QueueDriver = 'memory' \| 'redis_stream'/, 'runtime config should expose queue driver')
 assert.match(runtimeSource, /JUHE_AI_QUEUE_DRIVER/, 'runtime config should read JUHE_AI_QUEUE_DRIVER')
@@ -75,6 +94,8 @@ assert.match(redisStreamQueueSource, /readNewUnsafe[\s\S]*recreateGroupAfterNoGr
 assert.match(redisStreamQueueSource, /claimPendingUnsafe[\s\S]*recreateGroupAfterNoGroup[\s\S]*claimPendingUnsafe/, 'XAUTOCLAIM should retry once after recreating a missing group')
 assert.match(redisStreamQueueSource, /parseEntries[\s\S]*try[\s\S]*this\.decode\(payload\)[\s\S]*catch[\s\S]*ackPoisonMessage/, 'Redis Stream parser should skip and ack poison messages instead of throwing forever')
 assert.match(redisStreamQueueSource, /redis_stream_message_decode_failed[\s\S]*redis_stream_poison_message_ack_failed/, 'Redis Stream poison message path should log decode and ack failures')
+assert.match(redisStreamQueueSource, /const redisInspectPendingMessagesScript = `[\s\S]*XPENDING[\s\S]*XRANGE/, 'Redis Stream backlog inspection should fetch pending ids and payloads in one Lua call')
+assert.match(redisStreamQueueSource, /async inspectBacklog\(limit = 256\)[\s\S]*pendingTruncated[\s\S]*undeliveredTruncated/, 'Redis Stream backlog inspection should expose truncation flags for stats safety windows')
 assert.match(redisStreamQueueSource, /const command = \['XADD', this\.streamKey, '\*', 'payload', this\.encode\(payload\)\]/, 'Redis Stream enqueue should build XADD command explicitly')
 assert.doesNotMatch(redisStreamQueueSource, /MAXLEN|redisStreamMaxLen|maxLen/, 'Redis Stream reliable queue must not expose trimming controls')
 

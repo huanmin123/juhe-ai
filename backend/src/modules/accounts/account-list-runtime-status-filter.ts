@@ -89,11 +89,8 @@ function statusFilterCanBeChangedByRuntime(status: string): boolean {
 }
 
 function runtimeStatusFilterSourceStatus(statusFilters: string[]): string | undefined {
-  const statuses = new Set<string>()
-  if (statusFilters.includes('active')) {
-    statuses.add('active')
-  }
-  if (statusFilters.includes('temporary_unavailable')) {
+  const statuses = new Set(statusFilters)
+  if (statusFilters.includes('active') || statusFilters.includes('temporary_unavailable')) {
     statuses.add('active')
     statuses.add('temporary_unavailable')
   }

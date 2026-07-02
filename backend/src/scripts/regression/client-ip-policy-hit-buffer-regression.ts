@@ -48,10 +48,13 @@ function policyForIndex(index: number): ActiveClientIpPolicy {
 
 function assertClientIpPolicyHitBufferSourceGuards(): void {
   const source = readFileSync(new URL('../../modules/gateway/runtime/client-ip-policy-cache.service.ts', import.meta.url), 'utf8')
+  const preAuthSource = readFileSync(new URL('../../modules/gateway/request/pre-auth.ts', import.meta.url), 'utf8')
   assert(source.includes('activePolicySnapshot'), 'IP 封禁策略请求路径必须基于 server 内存快照')
   assert(!source.includes("type: 'find_active_client_ip_policy'"), 'IP 封禁策略请求路径不能按单个 IP 查 DB service')
   assert(source.includes("runtimeConfig.cacheDriver === 'redis' || runtimeConfig.runtimeMode === 'performance'"), '高性能模式 IP 封禁命中必须绕过 server 命中缓冲')
   assert(source.includes('await writeClientIpPolicyHits([hit])'), '高性能模式 IP 封禁命中必须直接投递 stats writer/PG')
+  assert.match(preAuthSource, /try\s*\{[\s\S]*await recordClientIpPolicyHitAsync[\s\S]*\}\s*catch/, 'IP 封禁命中统计失败必须降级处理，不能影响封禁响应')
+  assert.match(preAuthSource, /gateway_client_ip_blacklist_hit_record_failed[\s\S]*sendClientIpBlacklistResponse/, 'IP 封禁命中统计失败后仍必须继续返回封禁响应')
   assert(source.includes('clientIpPolicyHitMaxPendingEntries'), 'IP 封禁命中缓冲必须声明固定 distinct key 上限')
   assert(source.includes('pendingPolicyHits.size >= clientIpPolicyHitMaxPendingEntries'), '新增 distinct 命中入队前必须检查缓冲上限')
   assert(source.includes('clientIpPolicyHitFlushBatchSize'), 'IP 封禁命中 flush 必须声明固定批量')

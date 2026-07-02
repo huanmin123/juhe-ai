@@ -6,7 +6,7 @@ import { finiteNumberQueryValue, optionalQueryText } from '../../shared/query-va
 import { getUsageRecordDetailAsync, listUsageRecordsAsync, type UsageRecordListOptions, type UsageRecordSortField, type UsageRecordSummary, type UsageRecordTrafficSource } from '../../storage/repositories.js'
 import { dateKey, startOfZonedDateKeyIso, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
-import { buildCatalogCostBreakdown } from '../model-pricing/model-catalog.service.js'
+import { buildCatalogCostBreakdown, buildCatalogCostBreakdownAsync } from '../model-pricing/model-catalog.service.js'
 import type { ProviderCostBreakdown } from '../model-pricing/model-pricing.service.js'
 
 export const usageRecordsRouter = Router()
@@ -16,7 +16,7 @@ usageRecordsRouter.get('/', async (req, res, next) => {
     const result = await listUsageRecordsAsync(getRequestAccessScope(req.query.systemAccountId), await parseListOptionsAsync(req.query))
     res.json(ok({
       ...result,
-      items: result.items.map(withCostBreakdown)
+      items: await Promise.all(result.items.map(withCostBreakdownAsync))
     }))
   } catch (error) {
     next(error)
@@ -30,7 +30,7 @@ usageRecordsRouter.get('/:id', async (req, res, next) => {
       sendNotFound(res, '使用记录不存在')
       return
     }
-    res.json(ok(withCostBreakdown(record)))
+    res.json(ok(await withCostBreakdownAsync(record)))
   } catch (error) {
     next(error)
   }
@@ -53,15 +53,32 @@ export function withCostBreakdown(record: UsageRecordSummary): UsageRecordRespon
   }
 }
 
+export async function withCostBreakdownAsync(record: UsageRecordSummary): Promise<UsageRecordResponse> {
+  const costBreakdown = await usageRecordCostBreakdownAsync(record)
+  return {
+    ...record,
+    costBreakdown
+  }
+}
+
 function usageRecordCostBreakdown(record: UsageRecordSummary): ProviderCostBreakdown | undefined {
-  if (!record.success || runtimeConfig.cacheDriver === 'redis') return undefined
+  if (!record.success || runtimeConfig.databaseDriver === 'postgres' || runtimeConfig.cacheDriver === 'redis') return undefined
   return usageRecordCatalogCostBreakdown(record) ?? fallbackUsageRecordCostBreakdown(record)
 }
 
+async function usageRecordCostBreakdownAsync(record: UsageRecordSummary): Promise<ProviderCostBreakdown | undefined> {
+  if (!record.success) return undefined
+  if (runtimeConfig.databaseDriver !== 'postgres' && runtimeConfig.cacheDriver !== 'redis') {
+    return usageRecordCostBreakdown(record)
+  }
+  return await usageRecordCatalogCostBreakdownAsync(record) ?? fallbackUsageRecordCostBreakdown(record)
+}
+
 function usageRecordCatalogCostBreakdown(record: UsageRecordSummary): ProviderCostBreakdown | undefined {
+  if (!record.providerCode) return undefined
   for (const model of usageRecordPricingCandidateModels(record)) {
     const breakdown = buildCatalogCostBreakdown({
-      providerCode: requiredUsageRecordProviderCode(record),
+      providerCode: record.providerCode,
       systemAccountId: record.systemAccountId,
       model,
       inputTokens: record.inputTokens,
@@ -72,6 +89,34 @@ function usageRecordCatalogCostBreakdown(record: UsageRecordSummary): ProviderCo
       thinkingTokens: record.thinkingTokens,
       inputImageTokens: record.inputImageTokens,
       outputImageTokens: record.outputImageTokens,
+      inputAudioTokens: record.inputAudioTokens,
+      outputAudioTokens: record.outputAudioTokens,
+      outputImageCount: record.outputImageCount,
+      costUsd: record.costUsd
+    })
+    if (breakdown) return breakdown
+  }
+  return undefined
+}
+
+async function usageRecordCatalogCostBreakdownAsync(record: UsageRecordSummary): Promise<ProviderCostBreakdown | undefined> {
+  if (!record.providerCode) return undefined
+  for (const model of usageRecordPricingCandidateModels(record)) {
+    const breakdown = await buildCatalogCostBreakdownAsync({
+      providerCode: record.providerCode,
+      systemAccountId: record.systemAccountId,
+      model,
+      inputTokens: record.inputTokens,
+      outputTokens: record.outputTokens,
+      cacheReadTokens: record.cacheReadTokens,
+      cacheWriteTokens: record.cacheWriteTokens,
+      cacheWrite1hTokens: record.cacheWrite1hTokens,
+      thinkingTokens: record.thinkingTokens,
+      inputImageTokens: record.inputImageTokens,
+      outputImageTokens: record.outputImageTokens,
+      inputAudioTokens: record.inputAudioTokens,
+      outputAudioTokens: record.outputAudioTokens,
+      outputImageCount: record.outputImageCount,
       costUsd: record.costUsd
     })
     if (breakdown) return breakdown
@@ -102,13 +147,6 @@ function fallbackUsageRecordCostBreakdown(record: UsageRecordSummary): ProviderC
     accountChargeUsd: record.costUsd,
     multiplier: 1
   }
-}
-
-function requiredUsageRecordProviderCode(record: UsageRecordSummary): string {
-  if (!record.providerCode) {
-    throw new Error(`使用记录缺少供应商编码：${record.id}`)
-  }
-  return record.providerCode
 }
 
 async function parseListOptionsAsync(query: Record<string, unknown>): Promise<UsageRecordListOptions> {

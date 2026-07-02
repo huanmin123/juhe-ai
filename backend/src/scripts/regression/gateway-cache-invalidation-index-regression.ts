@@ -72,8 +72,11 @@ assertFunctionIncludes(gatewayRuntimeCacheSource, 'clearGatewayRuntimeCacheLocal
 
 assert(clientIpPolicyCacheSource.includes('createSharedJsonCache<ClientIpPolicySnapshotCacheEntry>'), '客户端 IP 封禁策略快照应声明 Redis JSON 共享缓存')
 assertFunctionIncludes(clientIpPolicyCacheSource, 'reloadClientIpPolicyCacheLocal', 'getActivePolicySnapshotSharedCacheEntry()', '客户端 IP 封禁策略快照重载应先读取 Redis 共享缓存')
+assertFunctionIncludes(clientIpPolicyCacheSource, 'reloadClientIpPolicyCacheLocal', 'bypassSharedCache', '客户端 IP 封禁策略失效重载必须支持绕过旧 Redis shared cache')
+assertFunctionIncludes(clientIpPolicyCacheSource, 'reloadClientIpPolicyCacheLocal', 'loadClientIpPolicySnapshotFromDatabase()', '客户端 IP 封禁策略绕过 shared cache 时必须回源当前数据库快照')
 assertFunctionIncludes(clientIpPolicyCacheSource, 'replaceClientIpPolicyCacheLocal', '高性能模式禁止同步写入 Client-IP 策略 Redis shared cache', '客户端 IP 封禁策略同步替换在高性能模式下必须拒绝写 Redis shared cache')
-assertFunctionIncludes(clientIpPolicyCacheSource, 'loadClientIpPolicySnapshotFromSharedCacheOrDatabase', 'setActivePolicySnapshotSharedCacheEntry(snapshot)', '客户端 IP 封禁策略异步加载后应写入 Redis 共享缓存')
+assertFunctionIncludes(clientIpPolicyCacheSource, 'loadClientIpPolicySnapshotFromDatabase', 'setActivePolicySnapshotSharedCacheEntry(snapshot)', '客户端 IP 封禁策略数据库回源后应写入 Redis 共享缓存')
+assertFunctionIncludes(clientIpPolicyCacheSource, 'replaceClientIpPolicySharedSnapshotAsync', 'setActivePolicySnapshotSharedCacheEntry', 'stats-worker 推送的客户端 IP 封禁策略快照应写入 Redis 共享缓存')
 assertFunctionIncludes(clientIpPolicyCacheSource, 'clearClientIpPolicyCacheLocal', 'clearActivePolicySnapshotSharedCache()', '客户端 IP 封禁策略本地清理应清理 Redis 共享缓存')
 assertFunctionIncludes(clientIpPolicyCacheSource, 'inspectClientIpPolicy', 'loadClientIpPolicySnapshotFromSharedCacheOrDatabase()', '客户端 IP 封禁策略高性能请求路径应读取 Redis shared snapshot 或 PG')
 assertFunctionIncludes(clientIpPolicyCacheSource, 'inspectClientIpPolicy', 'activePolicySnapshot.get', '客户端 IP 封禁策略单机请求路径仍应读取 server 本地快照')

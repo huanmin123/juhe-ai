@@ -2090,8 +2090,6 @@ function canUseProcessLocalGatewayAccountRuntimeState(): boolean {
   successObservations.clear()
   precheckStates.clear()
   recoveryProbeStates.clear()
-  recoveryProbeLastStartedAtByScope.clear()
-  runningRecoveryProbeCount = 0
   return false
 }
 

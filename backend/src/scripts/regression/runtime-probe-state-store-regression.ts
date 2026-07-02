@@ -102,13 +102,20 @@ assert.equal(mergedSecond?.lastObservedAtMs, now + 2_000, 'merge 应保留更新
 assert.equal(mergedSecond?.precheckRequested, true, 'merge 应保留任一来源的 precheck 请求')
 assert.deepEqual(mergedSecond?.clientIpMarkers, ['ip-a', 'ip-b'], 'merge 应合并并去重观测集合')
 assert.equal(mergedSecond?.distinctClientIpCount, 2, 'merge 应按观测集合更新 distinct 计数')
-assert.equal(await store.merge({
+const mergedLateOlderGeneration = await store.merge({
   runtimeKey: 'acct_merge',
   generation: mergeGeneration1,
   nextProbeAtMs: now,
   accountId: 'acct_merge',
-  failureCount: 1
-}, 60_000, mergeOptions), undefined, '旧 generation merge 不能覆盖新状态')
+  failureCount: 1,
+  precheckRequested: true,
+  clientIpMarkers: ['ip-late'],
+  distinctClientIpCount: 1
+}, 60_000, mergeOptions)
+assert.equal(mergedLateOlderGeneration?.generation, mergeGeneration2, '旧 generation merge 应保留当前较新 generation')
+assert.equal(mergedLateOlderGeneration?.failureCount, 3, '旧 generation 迟到观测仍应累加失败次数')
+assert.equal(mergedLateOlderGeneration?.precheckRequested, true, '旧 generation 迟到观测仍应合并 OR 字段')
+assert.deepEqual(mergedLateOlderGeneration?.clientIpMarkers, ['ip-a', 'ip-b', 'ip-late'], '旧 generation 迟到观测仍应合并 distinct marker')
 const mergedThird = await store.merge({
   runtimeKey: 'acct_merge',
   generation: mergeGeneration3,
@@ -118,7 +125,7 @@ const mergedThird = await store.merge({
   clientIpMarkers: ['ip-c'],
   distinctClientIpCount: 1
 }, 60_000, mergeOptions)
-assert.equal(mergedThird?.failureCount, 3, '后续新 generation merge 应继续累加失败次数')
-assert.equal(mergedThird?.distinctClientIpCount, 3, '后续新 generation merge 应继续累计 distinct 观测')
+assert.equal(mergedThird?.failureCount, 4, '后续新 generation merge 应继续累加失败次数')
+assert.equal(mergedThird?.distinctClientIpCount, 4, '后续新 generation merge 应继续累计 distinct 观测')
 
 console.log('runtime-probe-state-store-regression passed')

@@ -66,9 +66,6 @@ implements RuntimeProbeStateStore<TState> {
 
   async merge(state: TState, ttlMs: number, options: RuntimeProbeStateMergeOptions): Promise<TState | undefined> {
     const current = this.freshEntry(state.runtimeKey)?.value
-    if (current && current.generation > state.generation) {
-      return undefined
-    }
     const merged = mergeProbeStateValues(current, state, options)
     this.entries.set(state.runtimeKey, {
       value: merged,
@@ -266,14 +263,9 @@ local current = redis.call('GET', KEYS[1])
 local decoded = nil
 if current then
   local ok, current_decoded = pcall(cjson.decode, current)
-  if ok and type(current_decoded) == 'table' then
-    decoded = current_decoded
-    local current_generation = tonumber(decoded['generation'])
-    local incoming_generation = tonumber(ARGV[5])
-    if current_generation and incoming_generation and current_generation > incoming_generation then
-      return ''
+    if ok and type(current_decoded) == 'table' then
+      decoded = current_decoded
     end
-  end
 end
 if not decoded then
   decoded = {}
@@ -292,6 +284,16 @@ for key, value in pairs(base) do
 end
 for key, value in pairs(incoming) do
   merged[key] = value
+end
+
+local current_generation = tonumber(base['generation'])
+local incoming_generation = tonumber(incoming['generation'])
+if current_generation and incoming_generation then
+  if current_generation > incoming_generation then
+    merged['generation'] = current_generation
+  else
+    merged['generation'] = incoming_generation
+  end
 end
 
 if type(options['incrementFields']) == 'table' then
@@ -375,7 +377,8 @@ end
 
 local encoded = cjson.encode(merged)
 redis.call('SET', KEYS[1], encoded, 'PX', ARGV[2])
-redis.call('ZADD', KEYS[2], ARGV[3], ARGV[4])
+local merged_next_probe_at = tonumber(merged['nextProbeAtMs']) or tonumber(ARGV[3]) or 0
+redis.call('ZADD', KEYS[2], merged_next_probe_at, ARGV[4])
 redis.call('PEXPIRE', KEYS[2], ARGV[2])
 return encoded
 `
@@ -453,6 +456,11 @@ function mergeProbeStateValues<TState extends { runtimeKey: string; generation: 
   } as Record<string, unknown>
   const currentRecord = current as Record<string, unknown> | undefined
   const incomingRecord = incoming as Record<string, unknown>
+  const currentGeneration = finiteNumber(currentRecord?.generation)
+  const incomingGeneration = finiteNumber(incomingRecord.generation)
+  if (currentGeneration !== undefined && incomingGeneration !== undefined) {
+    merged.generation = Math.max(currentGeneration, incomingGeneration)
+  }
   for (const field of options.incrementFields ?? []) {
     merged[field] = numberValue(currentRecord?.[field]) + numberValue(incomingRecord[field])
   }

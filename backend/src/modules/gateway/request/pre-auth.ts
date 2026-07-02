@@ -39,6 +39,7 @@ import {
 import { isOpenAIModelsRequest } from '../protocols/openai-v1/route-helpers.js'
 import { isAnthropicModelsRequest } from '../protocols/anthropic-v1/route-helpers.js'
 import { isGeminiModelsRequest } from '../protocols/gemini-v1beta/route-helpers.js'
+import { errorLogFields } from '../../../shared/logger.js'
 
 export type GatewayRuntimeRequest = Request & {
   gatewayRuntime?: DbServiceGatewayRuntime
@@ -177,7 +178,15 @@ async function rejectCachedClientIpBlacklist(
     ipHash: ipPolicyDecision.blacklistPolicy.ipHash,
     endpoint: `${req.method.toUpperCase()} ${sanitizeUrlForLog(req.originalUrl)}`
   }, '网关来源 IP 命中管理员封禁')
-  await recordClientIpPolicyHitAsync(ipPolicyDecision.blacklistPolicy)
+  try {
+    await recordClientIpPolicyHitAsync(ipPolicyDecision.blacklistPolicy)
+  } catch (error) {
+    getRequestLogger().warn(errorLogFields(error, {
+      event: 'gateway_client_ip_blacklist_hit_record_failed',
+      policyId: ipPolicyDecision.blacklistPolicy.id,
+      ipHash: ipPolicyDecision.blacklistPolicy.ipHash
+    }), '记录 IP 封禁命中失败，已继续返回封禁响应')
+  }
   prepareEarlyAuthFailureResponse(res, options)
   sendClientIpBlacklistResponse(req, res, {
     reason: ipPolicyDecision.blacklistPolicy.reason,

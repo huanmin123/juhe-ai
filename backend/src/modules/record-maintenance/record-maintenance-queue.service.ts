@@ -1,4 +1,4 @@
-import { fork } from 'node:child_process'
+import { fork, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -22,8 +22,9 @@ import {
   cleanupDeletedApiKeyRelatedRecordDataAsync,
   type AccountUsageSnapshotUpsertInput
 } from '../../storage/repositories.js'
-import { sendRecordMaintenanceJobsToWorker } from '../background/background-ipc.js'
-import { requestStatsWriter } from '../background/background-stats-writer.js'
+import { requestBackgroundWorkerDbService, sendRecordMaintenanceJobsToWorker } from '../background/background-ipc.js'
+import { requestStatsWriter, type BackgroundStatsWriteOperation } from '../background/background-stats-writer.js'
+import type { BackgroundWorkerMessage } from '../background/background-ipc.types.js'
 
 const currentModulePath = fileURLToPath(import.meta.url)
 const sourceRoot = resolve(dirname(currentModulePath), '../..')
@@ -509,13 +510,13 @@ async function processRecordMaintenanceJob(job: RecordMaintenanceJob): Promise<v
     const run = runtimeConfig.databaseDriver === 'postgres'
       ? await createBackgroundTaskRunAsync(input)
       : createBackgroundTaskRun(input)
-    spawnTemporaryMaintenanceWorker(run.runId, job)
+    await spawnTemporaryMaintenanceWorker(run.runId, job)
     logger.info({
-      event: 'record_maintenance_temporary_worker_submitted',
+      event: 'record_maintenance_temporary_worker_completed',
       jobType: job.type,
       jobId: job.id,
       runId: run.runId
-    }, '数据维护任务已提交临时 worker')
+    }, '数据维护任务临时 worker 已执行完成')
     return
   }
   await runRecordMaintenanceJobOnce(job)
@@ -590,7 +591,7 @@ export async function runRecordMaintenanceJobOnce(job: RecordMaintenanceJob): Pr
   }
 }
 
-function spawnTemporaryMaintenanceWorker(runId: string, job: RecordMaintenanceJob): void {
+function spawnTemporaryMaintenanceWorker(runId: string, job: RecordMaintenanceJob): Promise<void> {
   const entry = resolveTemporaryMaintenanceWorkerEntry()
   const child = fork(entry.modulePath, [runId], {
     cwd: backendRoot,
@@ -610,25 +611,179 @@ function spawnTemporaryMaintenanceWorker(runId: string, job: RecordMaintenanceJo
   })
   child.stdout?.on('data', (chunk: Buffer) => process.stdout.write(chunk))
   child.stderr?.on('data', (chunk: Buffer) => process.stderr.write(chunk))
-  child.once('error', (error) => {
-    logger.error(errorLogFields(error, {
-      event: 'temporary_maintenance_worker_spawn_failed',
-      runId,
-      jobType: job.type,
-      jobId: job.id
-    }), '临时维护 worker 启动失败')
+  child.on('message', (message: unknown) => {
+    void handleTemporaryMaintenanceWorkerMessage(child, message, runId, job)
   })
-  child.once('exit', (code, signal) => {
-    logger.info({
-      event: 'temporary_maintenance_worker_exited',
+  return new Promise((resolvePromise, rejectPromise) => {
+    let settled = false
+    const settle = (error?: Error): void => {
+      if (settled) return
+      settled = true
+      if (error) rejectPromise(error)
+      else resolvePromise()
+    }
+    child.once('error', (error) => {
+      logger.error(errorLogFields(error, {
+        event: 'temporary_maintenance_worker_spawn_failed',
+        runId,
+        jobType: job.type,
+        jobId: job.id
+      }), '临时维护 worker 启动失败')
+      settle(error instanceof Error ? error : new Error(String(error)))
+    })
+    child.once('exit', (code, signal) => {
+      logger.info({
+        event: 'temporary_maintenance_worker_exited',
+        runId,
+        jobType: job.type,
+        jobId: job.id,
+        pid: child.pid,
+        code,
+        signal
+      }, '临时维护 worker 已退出')
+      if (code === 0) {
+        settle()
+        return
+      }
+      settle(new Error(`临时维护 worker 执行失败：runId=${runId}, code=${code ?? 'null'}, signal=${signal ?? 'null'}`))
+    })
+  })
+}
+
+async function handleTemporaryMaintenanceWorkerMessage(
+  child: ChildProcess,
+  message: unknown,
+  runId: string,
+  job: RecordMaintenanceJob
+): Promise<void> {
+  if (typeof message !== 'object' || message === null || Array.isArray(message)) {
+    return
+  }
+  const record = message as Partial<BackgroundWorkerMessage> & Record<string, unknown>
+  if (record.type === 'background_worker_stats_write_request' && typeof record.requestId === 'string' && isIpcOperation(record.operation)) {
+    await respondToTemporaryMaintenanceStatsWriteRequest(child, record.requestId, record.operation as BackgroundStatsWriteOperation, runId, job)
+    return
+  }
+  if (record.type === 'background_worker_db_service_request' && typeof record.requestId === 'string' && isIpcOperation(record.operation)) {
+    await respondToTemporaryMaintenanceDbServiceRequest(child, record.requestId, record.operation as Parameters<typeof requestBackgroundWorkerDbService>[0], runId, job)
+  }
+}
+
+async function respondToTemporaryMaintenanceStatsWriteRequest(
+  child: ChildProcess,
+  requestId: string,
+  operation: BackgroundStatsWriteOperation,
+  runId: string,
+  job: RecordMaintenanceJob
+): Promise<void> {
+  try {
+    const result = await requestStatsWriter(operation)
+    sendTemporaryMaintenanceWorkerMessage(child, {
+      type: 'background_worker_stats_write_response',
+      requestId,
+      ok: true,
+      result
+    } as BackgroundWorkerMessage, runId, job, operation.type)
+  } catch (error) {
+    logger.error(errorLogFields(error, {
+      event: 'temporary_maintenance_worker_stats_write_failed',
       runId,
       jobType: job.type,
       jobId: job.id,
-      pid: child.pid,
-      code,
-      signal
-    }, '临时维护 worker 已退出')
-  })
+      operationType: operation.type
+    }), '临时维护 worker stats-writer 请求失败')
+    sendTemporaryMaintenanceWorkerMessage(child, {
+      type: 'background_worker_stats_write_response',
+      requestId,
+      ok: false,
+      errorMessage: error instanceof Error ? error.message : String(error)
+    }, runId, job, operation.type)
+  }
+}
+
+async function respondToTemporaryMaintenanceDbServiceRequest(
+  child: ChildProcess,
+  requestId: string,
+  operation: Parameters<typeof requestBackgroundWorkerDbService>[0],
+  runId: string,
+  job: RecordMaintenanceJob
+): Promise<void> {
+  try {
+    const result = await requestBackgroundWorkerDbService(operation)
+    if (result === undefined) {
+      throw new Error(`DB service 不可用，无法执行临时维护操作：${operation.type}`)
+    }
+    sendTemporaryMaintenanceWorkerMessage(child, {
+      type: 'background_worker_db_service_response',
+      requestId,
+      ok: true,
+      result
+    }, runId, job, operation.type)
+  } catch (error) {
+    logger.error(errorLogFields(error, {
+      event: 'temporary_maintenance_worker_db_service_failed',
+      runId,
+      jobType: job.type,
+      jobId: job.id,
+      operationType: operation.type
+    }), '临时维护 worker DB service 请求失败')
+    sendTemporaryMaintenanceWorkerMessage(child, {
+      type: 'background_worker_db_service_response',
+      requestId,
+      ok: false,
+      errorMessage: error instanceof Error ? error.message : String(error)
+    }, runId, job, operation.type)
+  }
+}
+
+function sendTemporaryMaintenanceWorkerMessage(
+  child: ChildProcess,
+  message: BackgroundWorkerMessage,
+  runId: string,
+  job: RecordMaintenanceJob,
+  operationType: string
+): void {
+  if (!child.connected) {
+    logger.warn({
+      event: 'temporary_maintenance_worker_ipc_disconnected',
+      runId,
+      jobType: job.type,
+      jobId: job.id,
+      operationType,
+      responseType: message.type
+    }, '临时维护 worker IPC 已断开，无法返回请求结果')
+    return
+  }
+  try {
+    child.send(message, (error) => {
+      if (error) {
+        logger.warn(errorLogFields(error, {
+          event: 'temporary_maintenance_worker_ipc_send_failed',
+          runId,
+          jobType: job.type,
+          jobId: job.id,
+          operationType,
+          responseType: message.type
+        }), '临时维护 worker IPC 响应发送失败')
+      }
+    })
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'temporary_maintenance_worker_ipc_send_failed',
+      runId,
+      jobType: job.type,
+      jobId: job.id,
+      operationType,
+      responseType: message.type
+    }), '临时维护 worker IPC 响应发送失败')
+  }
+}
+
+function isIpcOperation(value: unknown): value is { type: string } & Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false
+  }
+  return typeof (value as Record<string, unknown>).type === 'string'
 }
 
 function resolveTemporaryMaintenanceWorkerEntry(): { modulePath: string; execArgv: string[] } {

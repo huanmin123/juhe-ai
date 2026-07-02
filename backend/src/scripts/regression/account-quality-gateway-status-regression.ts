@@ -8,7 +8,10 @@ import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fi
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { OPENAI_COMPATIBLE_PROVIDER_CODE } from '../../domain/provider-protocol.js'
+import {
+  OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
+  OPENAI_COMPATIBLE_PROVIDER_CODE
+} from '../../domain/provider-protocol.js'
 import { clearAccountConcurrency, tryAcquireAccountConcurrency } from '../../shared/account-concurrency.js'
 import { logger } from '../../shared/logger.js'
 
@@ -90,6 +93,7 @@ try {
     }, access)
     const account = repositories.createAccount({
       providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
       name: '状态质量 mock AI 账户',
       type: 'api_key',
       credentials: {
@@ -148,6 +152,7 @@ try {
     }, access)
     const capacityAccount = repositories.createAccount({
       providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
       name: '状态质量本地容量失败 mock AI 账户',
       type: 'api_key',
       credentials: {
@@ -211,6 +216,7 @@ try {
     }, access)
     const abortAccount = repositories.createAccount({
       providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
       name: '状态质量客户端断开 mock AI 账户',
       type: 'api_key',
       credentials: {
@@ -259,6 +265,7 @@ try {
     }, access)
     const failureAccount = repositories.createAccount({
       providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
       name: '状态质量确认失败 mock AI 账户',
       type: 'api_key',
       credentials: {

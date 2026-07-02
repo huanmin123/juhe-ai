@@ -18,7 +18,10 @@ const richRecord = usageRecordFixture({
   cacheWrite1hTokens: 30,
   thinkingTokens: 40,
   inputImageTokens: 7,
-  outputImageTokens: 2
+  outputImageTokens: 2,
+  inputAudioTokens: 11,
+  outputAudioTokens: 13,
+  outputImageCount: 3
 })
 
 assertArrayEqual(usageRecordTokenParts(richRecord), [
@@ -40,7 +43,10 @@ assertArrayEqual(usageRecordTokenParts(usageRecordFixture({
   cacheWrite1hTokens: 0,
   thinkingTokens: 0,
   inputImageTokens: 0,
-  outputImageTokens: 0
+  outputImageTokens: 0,
+  inputAudioTokens: 0,
+  outputAudioTokens: 0,
+  outputImageCount: 0
 })), [
   '输入 1',
   '输出 2',
@@ -58,17 +64,26 @@ const anthropicCostRecord = usageRecordFixture({
   thinkingTokens: 40,
   inputImageTokens: 7,
   outputImageTokens: 2,
+  inputAudioTokens: 11,
+  outputAudioTokens: 13,
+  outputImageCount: 3,
   costBreakdown: {
     inputCostUsd: 0.003,
     outputCostUsd: 0.00375,
     cacheReadCostUsd: 0.0000375,
     cacheWriteCostUsd: 0.0001125,
     cacheWrite1hCostUsd: 0.00018,
+    inputAudioCostUsd: 0.000044,
+    outputAudioCostUsd: 0.000156,
+    outputImageUnitCostUsd: 0.12,
     inputUsdPer1M: 3,
     outputUsdPer1M: 15,
     cacheReadUsdPer1M: 0.3,
     cacheWriteUsdPer1M: 3.75,
     cacheWrite1hUsdPer1M: 6,
+    inputAudioUsdPer1M: 4,
+    outputAudioUsdPer1M: 12,
+    outputUsdPerImage: 0.04,
     thinkingTokens: 40,
     accountChargeUsd: 0.00708,
     multiplier: 1
@@ -80,17 +95,26 @@ assertArrayEqual(rowTexts(usageRecordCostTokenRows(anthropicCostRecord)), [
   '1h 缓存写入 Tokens 30',
   '思考 Tokens 40',
   '图片输入 Tokens 7',
-  '图片输出 Tokens 2'
-], 'Anthropic 成本明细应拆出 5m、1h、思考和图片 Token')
+  '图片输出 Tokens 2',
+  '音频输入 Tokens 11',
+  '音频输出 Tokens 13',
+  '输出图片张数 3 张'
+], 'Anthropic 成本明细应拆出 5m、1h、思考、图片和音频用量')
 assertArrayIncludes(rowTexts(usageRecordCostAmountRows(anthropicCostRecord)), [
   '5m 缓存写入成本 $0.000112',
   '1h 缓存写入成本 $0.000180',
+  '音频输入成本 $0.000044',
+  '音频输出成本 $0.000156',
+  '图片张数成本 $0.120000',
   '合计成本 $0.007080'
-], 'Anthropic 成本明细应展示缓存写入成本和合计成本')
+], 'Anthropic 成本明细应展示缓存写入、音频、按张图片和合计成本')
 assertArrayIncludes(rowTexts(usageRecordCostPriceRows(anthropicCostRecord)), [
   '5m 缓存写入单价 $3.7500 / 1M Token',
-  '1h 缓存写入单价 $6.0000 / 1M Token'
-], 'Anthropic 成本明细应展示缓存写入单价')
+  '1h 缓存写入单价 $6.0000 / 1M Token',
+  '音频输入单价 $4.0000 / 1M Token',
+  '音频输出单价 $12.0000 / 1M Token',
+  '每张图片单价 $0.040000'
+], 'Anthropic 成本明细应展示缓存写入、音频和按张图片单价')
 
 const openAICostRecord = usageRecordFixture({
   providerCode: 'openai',

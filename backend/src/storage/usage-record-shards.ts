@@ -82,7 +82,7 @@ interface UsageRecordShardEntryScope {
   accountId?: string | null
 }
 
-const usageRecordShardSchemaVersion = 3
+const usageRecordShardSchemaVersion = 4
 const usageRecordShardWindowMaxDays = 31
 const shardDatabases = new Map<string, DatabaseSync>()
 const registeredUsageRecordShardKeys = new Set<string>()
@@ -91,13 +91,13 @@ let DatabaseSyncConstructor: typeof import('node:sqlite').DatabaseSync | undefin
 const usageRecordInsertSql = `
   INSERT INTO usage_records (
     id, system_account_id, trace_id, traffic_source, client_ip, api_key_id, group_id, account_id, endpoint, provider_code, provider_protocol_profile_id, usage_semantic, model, upstream_model, pricing_model, model_mapping_applied, model_mapping_source, stream,
-    status_code, success, failure_attribution, first_token_ms, duration_ms, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, cost_usd, error_code, error_message,
+    status_code, success, failure_attribution, first_token_ms, duration_ms, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, input_audio_tokens, output_audio_tokens, output_image_count, cost_usd, error_code, error_message,
     request_snapshot_json, response_snapshot_json,
     account_owner_system_account_id, group_owner_system_account_id, account_access_type, group_access_type,
     account_authorization_id, account_authorization_source_type, account_authorization_source_team_id,
     group_authorization_id, group_authorization_source_type, group_authorization_source_team_id,
     created_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   ON CONFLICT(id) DO NOTHING
 `
 
@@ -221,6 +221,9 @@ export function applyUsageRecordShardBaseSchema(database: UsageRecordShardSchema
       thinking_tokens INTEGER,
       input_image_tokens INTEGER,
       output_image_tokens INTEGER,
+      input_audio_tokens INTEGER,
+      output_audio_tokens INTEGER,
+      output_image_count INTEGER,
       cost_usd REAL,
       error_code TEXT,
       error_message TEXT,

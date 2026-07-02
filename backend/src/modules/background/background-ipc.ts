@@ -1749,7 +1749,7 @@ async function replaceServerGatewayQuotaSnapshot(snapshot: GatewayQuotaSnapshot)
 
 async function replaceServerClientIpPolicySnapshot(policies: ActiveClientIpPolicy[]): Promise<void> {
   const policyCache = await import('../gateway/runtime/client-ip-policy-cache.service.js')
-  policyCache.replaceClientIpPolicyCacheLocal(policies)
+  await policyCache.replaceClientIpPolicySharedSnapshotAsync(policies)
 }
 
 function isAccountRuntimeClearTarget(value: unknown): value is AccountRuntimeAvailabilityClearTarget {

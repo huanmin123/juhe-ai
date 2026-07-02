@@ -19,6 +19,16 @@ assert(successResponse.costBreakdown, '成功使用记录即使模型目录无�
 assert.equal(successResponse.costBreakdown?.accountChargeUsd, 0, '基础成本明细应保留记录自身成本')
 assert.equal(successResponse.costBreakdown?.cacheReadCostUsd, 0, '基础成本明细应保留缓存读取成本')
 
+const missingProviderResponse = withCostBreakdown(usageRecordFixture({
+  id: 'usage_record_cost_breakdown_missing_provider',
+  success: true,
+  model: 'legacy-model-without-provider-code',
+  inputTokens: 1,
+  outputTokens: 2,
+  costUsd: 0.123
+}))
+assert.equal(missingProviderResponse.costBreakdown?.accountChargeUsd, 0.123, '缺少供应商编码的历史记录应回退基础成本明细，不能让列表 / 详情 500')
+
 const mappedAliasResponse = withCostBreakdown(usageRecordFixture({
   id: 'usage_record_cost_breakdown_mapped_alias',
   success: true,

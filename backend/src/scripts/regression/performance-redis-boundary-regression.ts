@@ -81,6 +81,7 @@ assert.match(runtimeStateSource, /eval\(incrWithMaxScript/, '运行态计数必�
 assert.match(runtimeStateSource, /eval\(releaseLockScript/, '运行态锁释放必须使用 Redis Lua 校验 token')
 
 const runtimeProbeStateSource = source('shared/runtime-probe-state-store.ts')
+const redisMergeProbeStateScriptSource = templateLiteralBody(runtimeProbeStateSource, 'redisMergeProbeStateScript')
 assert.match(runtimeProbeStateSource, /export function createRuntimeProbeStateStore[\s\S]*runtimeConfig\.runtimeStateDriver === 'redis'[\s\S]*new RedisRuntimeProbeStateStore/, '探针运行态在 Redis state driver 下必须直接使用 Redis')
 assert.match(runtimeProbeStateSource, /class RedisRuntimeProbeStateStore[\s\S]*runtimeConfig\.redis\.stateUrl/, 'Redis 探针运行态必须使用 JUHE_AI_REDIS_STATE_URL')
 assert.match(runtimeProbeStateSource, /throw new Error\('JUHE_AI_REDIS_STATE_URL 在 Redis runtime state driver 下必须配置'\)/, 'Redis 探针运行态缺少 URL 时必须 fail-fast')
@@ -90,6 +91,9 @@ assert.match(runtimeProbeStateSource, /redisNextProbeGenerationScript[\s\S]*INCR
 assert.match(runtimeProbeStateSource, /redisSetProbeStateScript[\s\S]*cjson\.decode[\s\S]*current_generation > incoming_generation[\s\S]*return 0/, 'Redis 探针状态写入必须拒绝旧 generation 覆盖新状态')
 assert.match(runtimeProbeStateSource, /merge\(state: TState, ttlMs: number, options: RuntimeProbeStateMergeOptions\)/, 'Redis 探针状态必须支持原子 merge，避免高并发失败观测读改写丢失')
 assert.match(runtimeProbeStateSource, /redisMergeProbeStateScript[\s\S]*incrementFields[\s\S]*unionArrayFields[\s\S]*cjson\.encode\(merged\)/, 'Redis 探针状态 merge 必须在 Lua 内累加计数并合并 distinct 观测集合')
+assert.doesNotMatch(redisMergeProbeStateScriptSource, /current_generation > incoming_generation[\s\S]*return ''/, 'Redis 探针状态 merge 不能因旧 generation 直接丢弃失败观测')
+assert.match(redisMergeProbeStateScriptSource, /merged\['generation'\] = current_generation[\s\S]*merged\['generation'\] = incoming_generation/, 'Redis 探针状态 merge 必须保留新旧状态中的最大 generation')
+assert.match(redisMergeProbeStateScriptSource, /merged_next_probe_at[\s\S]*ZADD[\s\S]*merged_next_probe_at/, 'Redis 探针状态 merge 后 due index 分数必须使用合并后的 nextProbeAtMs')
 assert.match(runtimeProbeStateSource, /deleteGeneration\(runtimeKey: string, generation: number\)[\s\S]*redisDeleteProbeStateGenerationScript[\s\S]*current_generation == target_generation/, 'Redis 探针状态清理必须支持按 generation 条件删除，避免旧探针误删新状态')
 
 const redisStreamQueueSource = source('shared/redis-stream-queue.ts')
@@ -98,6 +102,8 @@ assert.match(redisStreamQueueSource, /this\.redisUrl = options\.redisUrl \?\? re
 assert.match(redisStreamQueueSource, /createDedicatedRedisClient\(this\.redisUrl\)/, 'Redis Stream consumer 必须通过专用 Redis queue URL 建立连接')
 assert.match(redisStreamQueueSource, /'XGROUP',\s*'CREATE',\s*this\.streamKey,\s*this\.groupName,\s*'0',\s*'MKSTREAM'/, 'Redis Stream consumer group 首次创建必须从 0 消费已有消息，不能用 $ 跳过 backlog')
 assert.match(redisStreamQueueSource, /async inspectRuntime\(\): Promise<RedisStreamQueueRuntime>[\s\S]*XINFO[\s\S]*XPENDING/, 'Redis Stream 队列必须暴露只读运行态供统计水位检查使用')
+assert.match(redisStreamQueueSource, /const redisInspectPendingMessagesScript = `[\s\S]*XPENDING[\s\S]*XRANGE/, 'Redis Stream backlog pending 消息检查必须用 Lua 一次取回 pending id 和 payload，避免按消息多次往返')
+assert.match(redisStreamQueueSource, /async inspectBacklog\(limit = 256\)[\s\S]*inspectPendingMessages[\s\S]*remainingLimit[\s\S]*runtime\.lag !== undefined[\s\S]*remainingLimit === 0/, 'Redis Stream backlog 检查在 lag 缺失时必须按扫描窗口保守标记截断')
 
 const backgroundIpcSource = source('modules/background/background-ipc.ts')
 assert.match(backgroundIpcSource, /function isRedisStreamManagedIngestQueueMessage[\s\S]*background_worker_usage_records[\s\S]*background_worker_runtime_log_line/, 'Redis Stream 管理的记录类消息必须集中识别')
@@ -322,6 +328,9 @@ function assertStrictRedisCacheBoundaries(): void {
   const clientIpPolicySource = source('modules/gateway/runtime/client-ip-policy-cache.service.ts')
   assert.match(functionBody(clientIpPolicySource, 'inspectClientIpPolicy'), /runtimeConfig\.cacheDriver === 'redis'[\s\S]*loadClientIpPolicySnapshotFromSharedCacheOrDatabase[\s\S]*return policyDecisionFromCacheEntry[\s\S]*policyCache\.get/, 'Redis cache driver 下 IP 封禁判定必须只读 Redis shared snapshot，不得落本地 policyCache')
   assert.match(functionBody(clientIpPolicySource, 'replaceClientIpPolicyCacheLocal'), /runtimeConfig\.cacheDriver === 'redis'[\s\S]*activePolicySnapshotLoadedAt = undefined[\s\S]*高性能模式禁止同步写入 Client-IP 策略 Redis shared cache[\s\S]*return[\s\S]*activePolicySnapshot\.set/, 'Redis cache driver 下 IP 封禁策略同步替换必须拒绝 fire-and-forget Redis 写入，且不能写本地 activePolicySnapshot')
+  assert.match(functionBody(clientIpPolicySource, 'reloadClientIpPolicyCacheLocal'), /bypassSharedCache[\s\S]*loadClientIpPolicySnapshotFromDatabase/, 'Redis cache driver 下 IP 封禁策略失效重载必须能绕过旧 shared snapshot 回源数据库')
+  assert.match(clientIpPolicySource, /export async function replaceClientIpPolicySharedSnapshotAsync[\s\S]*setActivePolicySnapshotSharedCacheEntry/, 'stats-worker 策略快照更新必须异步写入 Redis shared cache')
+  assert.match(functionBody(clientIpPolicySource, 'clearActivePolicySnapshotSharedCache'), /await activePolicySnapshotSharedCache\.clear/, 'Client-IP 策略 shared cache 清理必须等待 Redis 删除完成')
 
   const routeSelectorSource = source('modules/gateway/routing/api-key-group-route-selector.service.ts')
   assert.match(functionBody(routeSelectorSource, 'orderGatewayApiKeyGroupBindingsForDispatchAsync'), /runtimeConfig\.runtimeStateDriver !== 'redis'[\s\S]*orderGatewayApiKeyGroupBindingsForDispatch[\s\S]*nextRedisRouteCounterIndex/, '高性能动态路由必须通过 Redis 计数器共享状态')
@@ -357,6 +366,7 @@ function assertStrictRedisCacheBoundaries(): void {
   const accountSideEffectsSource = source('modules/gateway/runtime/account-side-effects.service.ts')
   assert.doesNotMatch(accountSideEffectsSource, /gateway-account-recovery-probe-budget|distributedRecoveryProbeBudgetRuntimeStore|acquireDistributedRecoveryProbeBudget|createRuntimeStateStore\('gateway-account-recovery-probe-budget'\)|distributedRecoveryProbeStore\.acquireLock|distributedRecoveryProbeStore\.releaseLock|distributedRecoveryProbeLockTtlMs/, 'Redis 探针不能引入分布式锁或分布式全局/provider/proxy/baseUrl 预算锁，避免高并发恢复被锁残留或跨节点争用限制')
   assert.match(functionBody(accountSideEffectsSource, 'canUseProcessLocalGatewayAccountRuntimeState'), /runtimeConfig\.runtimeStateDriver !== 'redis'[\s\S]*failureStorms\.clear\(\)[\s\S]*successObservations\.clear\(\)[\s\S]*precheckStates\.clear\(\)[\s\S]*recoveryProbeStates\.clear\(\)[\s\S]*return false/, 'Redis runtime state 下账号 failure/precheck/recovery/success 本机运行态必须禁用并清空')
+  assert.doesNotMatch(functionBody(accountSideEffectsSource, 'canUseProcessLocalGatewayAccountRuntimeState'), /recoveryProbeLastStartedAtByScope\.clear\(\)|runningRecoveryProbeCount = 0/, 'Redis runtime state 下读取管理快照不能清空本进程正在执行的恢复探针预算')
   assert.match(functionBody(accountSideEffectsSource, 'recordGatewayAccountFailureForPrecheckInternal'), /runtimeConfig\.runtimeStateDriver === 'redis'[\s\S]*recordDistributedGatewayAccountFailureForPrecheck[\s\S]*return/, 'Redis runtime state 下账号失败必须写入共享探针状态，不能直接使用本机 failureStorm/precheck Map')
   assert.match(accountSideEffectsSource, /distributedRecoveryProbeFailureMergeOptions[\s\S]*incrementFields: \['failureCount'\][\s\S]*clientIpMarkers[\s\S]*apiKeyMarkers/, 'Redis runtime state 下账号失败观测必须原子合并 failureCount 和 distinct Client-IP/API-Key 观测')
   assert.match(functionBody(accountSideEffectsSource, 'recordDistributedGatewayAccountFailureForPrecheck'), /runtimeProbeObservationMarker[\s\S]*mergeDistributedRecoveryProbeFailureState/, 'Redis runtime state 下账号失败记录必须使用哈希观测标记并通过 merge 写入共享探针状态')
@@ -452,8 +462,8 @@ function assertNoPerformanceLocalFactQueues(): void {
   )
   assert.match(
     functionBody(usageRecordQueueSource, 'getUsageRecordRedisStreamOldestCreatedAt'),
-    /usageRecordRedisStreamQueue\(\)\.inspectBacklogMessages\(2\)[\s\S]*message\.payload\.createdAt/,
-    '使用记录 Redis Stream 必须暴露 backlog 最早业务 createdAt，供 stats 安全游标收窄'
+    /usageRecordRedisStreamQueue\(\)\.inspectBacklog\(512\)[\s\S]*pendingTruncated[\s\S]*normalizeUsageRecordCreatedAtForBacklog\(message\.payload\.createdAt\)/,
+    '使用记录 Redis Stream 必须扫描 backlog 业务 createdAt，并在扫描截断时使用保守安全边界'
   )
   const fixedResponsesSource = source('modules/gateway/response/fixed-responses.ts')
   assert.match(
@@ -470,7 +480,7 @@ function assertNoPerformanceLocalFactQueues(): void {
   )
   assert.match(
     functionBody(backgroundJobsSource, 'usageStatsSafeCreatedBeforeForPendingBacklog'),
-    /oldestPendingCreatedAt > defaultSafeCreatedBefore[\s\S]*oldestPendingTime - 1/,
+    /normalizeIsoTime\(oldestPendingCreatedAt\)[\s\S]*normalizedOldestPendingCreatedAt > defaultSafeCreatedBefore[\s\S]*oldestPendingTime - 1/,
     'redis_stream driver 下统计聚合不能因 pending/lag 非零整轮停止，必须把安全上界收窄到最早 backlog 前'
   )
 
@@ -524,6 +534,7 @@ function assertRedisRuntimeQueuesAndLimits(): void {
   assert.match(clientIpSlotRenewalBody, /setInterval[\s\S]*renewRedisClientIpSlot/, 'Redis Client-IP 并发活跃槽必须由当前进程定期续租')
   assert.match(clientIpSlotRenewalBody, /clearInterval/, 'Redis Client-IP 并发活跃槽续租必须可停止')
   assert.match(clientIpConcurrencySource, /const redisRenewClientIpConcurrencyScript = `[\s\S]*ZSCORE[\s\S]*ZADD[\s\S]*PEXPIRE/, 'Redis Client-IP 并发续租只能刷新仍存在的 token，禁止复活已释放槽位')
+  assert.match(clientIpConcurrencySource, /const redisRenewClientIpConcurrencyScript = `[\s\S]*current_score <= now_ms[\s\S]*ZREM[\s\S]*return \{0\}/, 'Redis Client-IP 并发续租发现已过期 token 必须删除并返回失败，禁止复活过期租约')
   assert.doesNotMatch(clientIpConcurrencySource, /redis\.call\('INCR'|redis\.call\('DECR'/, 'Redis Client-IP 并发不能使用简单 INCR/DECR 计数器')
   assert.match(clientIpConcurrencySource, /async function tryAcquireRedisClientIpSlot[\s\S]*requireEmptyQueue[\s\S]*redisAcquireClientIpConcurrencyScript/, '高性能 Client-IP 新请求不能绕过 Redis 队列插队抢槽')
   assert.match(functionBody(clientIpConcurrencySource, 'releaseRedisClientIpSlotWithRetry'), /redis_client_ip_concurrency_release_failed/, 'Redis Client-IP 并发释放失败不能吞错，必须重试并记录错误')
@@ -630,6 +641,13 @@ function functionBody(sourceText: string, functionName: string): string {
     }
   }
   throw new Error(`函数 ${functionName} 函数体解析失败`)
+}
+
+function templateLiteralBody(sourceText: string, constName: string): string {
+  const pattern = new RegExp(`const ${constName} = \`([\\s\\S]*?)\\r?\\n\``)
+  const match = pattern.exec(sourceText)
+  assert(match, `缺少模板字符串常量 ${constName}`)
+  return match[1]
 }
 
 function slash(path: string): string {

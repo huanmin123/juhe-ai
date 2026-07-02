@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 import { submitAccountTestAndWait } from '../shared/account-test-task-client.js'
 import { installWorkerParentIpcHarness } from '../shared/worker-parent-ipc-harness.js'
@@ -126,6 +127,7 @@ try {
   }, ownerAccess)
   const ownerAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '授权测试本地恢复账户',
     type: 'api_key',
     status: 'active',
@@ -201,6 +203,7 @@ try {
 
   const failingOwnerAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '授权测试本地失败账户',
     type: 'api_key',
     status: 'active',
@@ -284,6 +287,7 @@ try {
 
   const errorOwnerAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '授权测试本地异常账户',
     type: 'api_key',
     status: 'active',

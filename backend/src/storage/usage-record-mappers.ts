@@ -50,6 +50,9 @@ export function usageRecordSummaryFromRow(
   const thinkingTokens = numberValue(row.thinking_tokens)
   const inputImageTokens = numberValue(row.input_image_tokens)
   const outputImageTokens = numberValue(row.output_image_tokens)
+  const inputAudioTokens = numberValue(row.input_audio_tokens)
+  const outputAudioTokens = numberValue(row.output_audio_tokens)
+  const outputImageCount = numberValue(row.output_image_count)
   const model = optionalString(row.model)
   const stream = row.stream === 1
   const statusCode = numberValue(row.status_code)
@@ -92,6 +95,9 @@ export function usageRecordSummaryFromRow(
     thinkingTokens,
     inputImageTokens,
     outputImageTokens,
+    inputAudioTokens,
+    outputAudioTokens,
+    outputImageCount,
     costUsd: numberValue(row.cost_usd),
     errorCode: optionalString(row.error_code),
     errorMessage: optionalString(row.error_message),

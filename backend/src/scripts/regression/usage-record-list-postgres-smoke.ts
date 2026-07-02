@@ -7,8 +7,11 @@ import { closePostgresPool, getPostgresPool } from '../../storage/postgres-clien
 import { createUsageRecordsBatchAsync } from '../../storage/usage-records.repository.js'
 import {
   estimateCatalogCacheReadCostUsdAsync,
-  estimateCatalogCostUsdAsync
+  estimateCatalogCostUsdAsync,
+  removeCustomProviderModelAsync,
+  saveCustomProviderModelAsync
 } from '../../modules/model-pricing/model-catalog.service.js'
+import { withCostBreakdownAsync } from '../../modules/usage-records/usage-records.routes.js'
 
 assert.equal(runtimeConfig.databaseDriver, 'postgres', '使用记录列表 PG smoke 需要 JUHE_AI_DATABASE_DRIVER=postgres')
 
@@ -18,16 +21,32 @@ const usageIds = [
   `usage_${marker}_success`,
   `usage_${marker}_failed`,
   `usage_${marker}_other`,
-  `usage_${marker}_priced`
+  `usage_${marker}_priced`,
+  `usage_${marker}_audio_image`
 ]
 const tracePrefix = `trace_${marker}`
 const model = `model-${marker}`
 const pricedModel = 'gpt-5.5'
+const audioImagePricingModelId = `custom_model_${marker}`
+const audioImagePricingModel = `gpt-regression-audio-image-${marker}`
 const clientIpPrefix = '198.18.204.'
 const primaryClientIp = `${clientIpPrefix}10`
 const pool = await getPostgresPool()
+const smokeAccess = { systemAccountId: 'sys_admin', role: 'admin' as const }
 
 try {
+  await saveCustomProviderModelAsync({
+    id: audioImagePricingModelId,
+    providerCode: 'gpt',
+    model: audioImagePricingModel,
+    scope: 'personal',
+    systemAccountId: 'sys_admin',
+    supportedApiProtocols: ['responses'],
+    audioInputUsdPer1M: 4,
+    audioOutputUsdPer1M: 12,
+    outputUsdPerImage: 0.04,
+    actorSystemAccountId: 'sys_admin'
+  })
   await createUsageRecordsBatchAsync([
     {
       id: usageIds[0],
@@ -100,6 +119,24 @@ try {
       outputTokens: 1_000_000,
       cacheReadTokens: 100_000,
       createdAt: new Date(createdAtBase + 3).toISOString()
+    },
+    {
+      id: usageIds[4],
+      traceId: `${tracePrefix}_audio_image`,
+      trafficSource: 'gateway',
+      systemAccountId: 'sys_admin',
+      clientIp: '198.18.206.2',
+      endpoint: '/v1/responses',
+      providerCode: 'gpt',
+      model: audioImagePricingModel,
+      statusCode: 200,
+      success: true,
+      durationMs: 95,
+      firstTokenMs: 26,
+      inputAudioTokens: 1_000_000,
+      outputAudioTokens: 1_000_000,
+      outputImageCount: 2,
+      createdAt: new Date(createdAtBase + 4).toISOString()
     }
   ])
   const writeCounts = await readSmokeWriteCounts()
@@ -111,7 +148,7 @@ try {
     page: 1,
     pageSize: 10
   })
-  assert.deepEqual(traceList.items.map((item) => item.id), [usageIds[3], usageIds[2], usageIds[1], usageIds[0]], 'PG 使用记录列表应按 trace 前缀读取 catalog 窗口')
+  assert.deepEqual(traceList.items.map((item) => item.id), [usageIds[4], usageIds[3], usageIds[2], usageIds[1], usageIds[0]], 'PG 使用记录列表应按 trace 前缀读取 catalog 窗口')
 
   const failedList = await listUsageRecordsAsync(undefined, {
     model,
@@ -130,12 +167,12 @@ try {
   })
   assert.deepEqual(clientIpList.items.map((item) => item.id), [usageIds[1], usageIds[0]], 'PG 使用记录列表应支持客户端 IP 前缀筛选')
 
-  const detail = await getUsageRecordDetailAsync(usageIds[0])
+  const detail = await getUsageRecordDetailAsync(usageIds[0], smokeAccess)
   assert(detail, 'PG 使用记录详情应按 ID 读取')
   assert.equal(detail.traceId, `${tracePrefix}_success`, 'PG 使用记录详情 traceId 应正确')
   assert.equal(detail.inputTokens, 12, 'PG 使用记录详情 token 应正确')
 
-  const pricedDetail = await getUsageRecordDetailAsync(usageIds[3])
+  const pricedDetail = await getUsageRecordDetailAsync(usageIds[3], smokeAccess)
   assert(pricedDetail, 'PG 使用记录详情应读取补价记录')
   const expectedCost = await estimateCatalogCostUsdAsync({
     providerCode: 'gpt',
@@ -152,6 +189,28 @@ try {
   assert.equal(pricedDetail.pricingModel, pricedModel, 'PG 使用记录写入前应异步补齐 pricingModel')
   assert.equal(pricedDetail.costUsd, expectedCost, 'PG 使用记录写入前应异步补齐 costUsd')
   assert.equal(pricedDetail.cacheReadCostUsd, expectedCacheReadCost, 'PG 使用记录写入前应异步补齐 cacheReadCostUsd')
+
+  const audioImageDetail = await getUsageRecordDetailAsync(usageIds[4], smokeAccess)
+  assert(audioImageDetail, 'PG 使用记录详情应读取音频/按张图片补价记录')
+  const expectedAudioImageCost = await estimateCatalogCostUsdAsync({
+    providerCode: 'gpt',
+    systemAccountId: 'sys_admin',
+    model: audioImagePricingModel,
+    inputAudioTokens: 1_000_000,
+    outputAudioTokens: 1_000_000,
+    outputImageCount: 2
+  })
+  assert.equal(expectedAudioImageCost, 16.08, '测试自定义模型应能异步计算音频/按张图片成本')
+  assert.equal(audioImageDetail.pricingModel, audioImagePricingModel, 'PG 使用记录写入前应保留音频/按张图片计价模型')
+  assert.equal(audioImageDetail.inputAudioTokens, 1_000_000, 'PG 使用记录详情应保留输入音频 Tokens')
+  assert.equal(audioImageDetail.outputAudioTokens, 1_000_000, 'PG 使用记录详情应保留输出音频 Tokens')
+  assert.equal(audioImageDetail.outputImageCount, 2, 'PG 使用记录详情应保留输出图片张数')
+  assert.equal(audioImageDetail.costUsd, expectedAudioImageCost, 'PG 使用记录写入前应异步补齐音频/按张图片 costUsd')
+  const audioImageResponse = await withCostBreakdownAsync(audioImageDetail)
+  assert.equal(audioImageResponse.costBreakdown?.inputAudioCostUsd, 4, '使用记录响应成本拆解应包含输入音频成本')
+  assert.equal(audioImageResponse.costBreakdown?.outputAudioCostUsd, 12, '使用记录响应成本拆解应包含输出音频成本')
+  assert.equal(audioImageResponse.costBreakdown?.outputImageUnitCostUsd, 0.08, '使用记录响应成本拆解应包含按张图片成本')
+  assert.equal(audioImageResponse.costBreakdown?.outputUsdPerImage, 0.04, '使用记录响应成本拆解应包含每张图片单价')
 
   await assertUsageRecordExplainPlans(tracePrefix, model, clientIpPrefix)
 
@@ -267,6 +326,7 @@ function usageRecordTextPrefixUpperBound(value: string): string {
 }
 
 async function cleanupSmokeRows(): Promise<void> {
+  await removeCustomProviderModelAsync(audioImagePricingModelId).catch(() => false)
   await pool.query('DELETE FROM juhe_usage.usage_record_shard_entries WHERE usage_id = ANY($1::text[])', [usageIds])
   await pool.query('DELETE FROM juhe_usage.usage_records WHERE id = ANY($1::text[])', [usageIds])
 }

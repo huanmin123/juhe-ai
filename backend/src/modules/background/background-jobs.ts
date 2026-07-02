@@ -242,20 +242,30 @@ function oldestPendingUsageRecordCreatedAt(status: BackgroundWorkerIngestDrainSt
 }
 
 function oldestIso(left?: string, right?: string): string | undefined {
-  if (!left) return right
-  if (!right) return left
-  return left <= right ? left : right
+  const normalizedLeft = normalizeIsoTime(left)
+  const normalizedRight = normalizeIsoTime(right)
+  if (!normalizedLeft) return normalizedRight
+  if (!normalizedRight) return normalizedLeft
+  return Date.parse(normalizedLeft) <= Date.parse(normalizedRight) ? normalizedLeft : normalizedRight
 }
 
 function usageStatsSafeCreatedBeforeForPendingBacklog(defaultSafeCreatedBefore: string, oldestPendingCreatedAt: string | undefined): string {
-  if (!oldestPendingCreatedAt || oldestPendingCreatedAt > defaultSafeCreatedBefore) {
+  const normalizedOldestPendingCreatedAt = normalizeIsoTime(oldestPendingCreatedAt)
+  if (!normalizedOldestPendingCreatedAt || normalizedOldestPendingCreatedAt > defaultSafeCreatedBefore) {
     return defaultSafeCreatedBefore
   }
-  const oldestPendingTime = Date.parse(oldestPendingCreatedAt)
+  const oldestPendingTime = Date.parse(normalizedOldestPendingCreatedAt)
   if (!Number.isFinite(oldestPendingTime)) {
     return defaultSafeCreatedBefore
   }
   return new Date(Math.max(0, oldestPendingTime - 1)).toISOString()
+}
+
+function normalizeIsoTime(value: string | undefined): string | undefined {
+  const trimmed = value?.trim()
+  if (!trimmed) return undefined
+  const time = Date.parse(trimmed)
+  return Number.isFinite(time) ? new Date(time).toISOString() : undefined
 }
 
 function defaultUsageStatsSafeCreatedBeforeIso(): string {

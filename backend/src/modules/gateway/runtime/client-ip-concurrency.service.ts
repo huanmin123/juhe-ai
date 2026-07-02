@@ -600,7 +600,12 @@ const redisRenewClientIpConcurrencyScript = `
 local now_ms = tonumber(ARGV[1])
 local slot_ttl_ms = tonumber(ARGV[2])
 local slot_token = ARGV[3]
-if redis.call('ZSCORE', KEYS[1], slot_token) == false then
+local current_score = tonumber(redis.call('ZSCORE', KEYS[1], slot_token))
+if not current_score then
+  return {0}
+end
+if current_score <= now_ms then
+  redis.call('ZREM', KEYS[1], slot_token)
   return {0}
 end
 redis.call('ZADD', KEYS[1], now_ms + slot_ttl_ms, slot_token)

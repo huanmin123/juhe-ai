@@ -373,12 +373,21 @@ export async function getUsageRecordRedisStreamOldestCreatedAt(): Promise<string
   if (!shouldUseRedisStreamUsageRecordQueue()) {
     return undefined
   }
-  const messages = await usageRecordRedisStreamQueue().inspectBacklogMessages(2)
+  const inspection = await usageRecordRedisStreamQueue().inspectBacklog(512)
+  if (inspection.pendingTruncated || inspection.undeliveredTruncated) {
+    logger.warn({
+      event: 'usage_record_redis_stream_backlog_inspection_truncated',
+      pendingCount: inspection.runtime.pendingCount,
+      lag: inspection.runtime.lag,
+      scannedMessages: inspection.messages.length
+    }, 'Redis Stream 使用记录 backlog 超过统计保护扫描上限，本轮统计使用保守安全边界')
+    return '1970-01-01T00:00:00.000Z'
+  }
   let oldest: string | undefined
-  for (const message of messages) {
-    const createdAt = message.payload.createdAt?.trim()
+  for (const message of inspection.messages) {
+    const createdAt = normalizeUsageRecordCreatedAtForBacklog(message.payload.createdAt)
     if (!createdAt) continue
-    if (!oldest || createdAt < oldest) {
+    if (!oldest || Date.parse(createdAt) < Date.parse(oldest)) {
       oldest = createdAt
     }
   }
@@ -489,8 +498,8 @@ async function flushUsageRecordRedisStreamMessages(messages: Array<RedisStreamMe
   if (messages.length === 0) return
   const queue = usageRecordRedisStreamQueue()
   const startedAt = Date.now()
-  const inputs = messages.map((message) => normalizeUsageRecordInput(message.payload))
   try {
+    const inputs = messages.map((message) => normalizeUsageRecordInput(message.payload))
     await createUsageRecordsBatchAsync(inputs)
     recordUsageRecordFlushDuration(Date.now() - startedAt)
     flushFailureCount = 0
@@ -533,7 +542,7 @@ function delay(ms: number): Promise<void> {
 }
 
 function normalizeUsageRecordInput(input: UsageRecordInput): UsageRecordInput {
-  const createdAt = input.createdAt ?? nowIso()
+  const createdAt = normalizeUsageRecordCreatedAt(input.createdAt)
   return {
     ...input,
     id: input.id ?? generateUsageRecordId(createdAt, randomUUID()),
@@ -543,6 +552,18 @@ function normalizeUsageRecordInput(input: UsageRecordInput): UsageRecordInput {
     responseSnapshot: sanitizeUsageRecordSnapshot(input.responseSnapshot),
     createdAt
   }
+}
+
+function normalizeUsageRecordCreatedAt(value: unknown): string {
+  return normalizeUsageRecordCreatedAtForBacklog(value) ?? nowIso()
+}
+
+function normalizeUsageRecordCreatedAtForBacklog(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  if (!trimmed) return undefined
+  const time = Date.parse(trimmed)
+  return Number.isFinite(time) ? new Date(time).toISOString() : undefined
 }
 
 export function pendingUsageRecordCount(): number {

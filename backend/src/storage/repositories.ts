@@ -1991,7 +1991,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
       : current.proxyProfileId,
     schedulable: expiredByPackage || accountStatusForcesSchedulableOff(nextStatus)
       ? false
-      : hasStatusInput
+      : hasStatusInput && nextStatus !== 'disabled'
         ? true
         : requestedSchedulable,
     availabilitySchedule: nextAvailabilitySchedule,
@@ -2308,7 +2308,7 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
     proxyProfileId,
     schedulable: expiredByPackage || accountStatusForcesSchedulableOff(nextStatus)
       ? false
-      : hasStatusInput
+      : hasStatusInput && nextStatus !== 'disabled'
         ? true
         : requestedSchedulable,
     availabilitySchedule: nextAvailabilitySchedule,

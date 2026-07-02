@@ -250,6 +250,9 @@ export async function recordCompletedUpstreamAttempt(
     thinkingTokens: input.usage.thinkingTokens,
     inputImageTokens: input.usage.inputImageTokens,
     outputImageTokens: input.usage.outputImageTokens,
+    inputAudioTokens: input.usage.inputAudioTokens,
+    outputAudioTokens: input.usage.outputAudioTokens,
+    outputImageCount: input.usage.outputImageCount,
     cacheReadCostUsd: estimateGatewayCatalogCacheReadCostUsd({
       providerCode: input.account.providerCode,
       systemAccountId: catalogSystemAccountId,
@@ -340,6 +343,9 @@ export async function recordHybridScoringAttempt(input: {
     thinkingTokens: input.usage.thinkingTokens,
     inputImageTokens: input.usage.inputImageTokens,
     outputImageTokens: input.usage.outputImageTokens,
+    inputAudioTokens: input.usage.inputAudioTokens,
+    outputAudioTokens: input.usage.outputAudioTokens,
+    outputImageCount: input.usage.outputImageCount,
     cacheReadCostUsd: estimateGatewayCatalogCacheReadCostUsd({
       providerCode: input.account.providerCode,
       systemAccountId: catalogSystemAccountId,

@@ -69,6 +69,9 @@ export interface UsageRecordSummary {
   thinkingTokens?: number
   inputImageTokens?: number
   outputImageTokens?: number
+  inputAudioTokens?: number
+  outputAudioTokens?: number
+  outputImageCount?: number
   costUsd?: number
   costBreakdown?: UsageRecordCostBreakdown
   errorCode?: string

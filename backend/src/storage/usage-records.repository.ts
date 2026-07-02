@@ -82,6 +82,9 @@ export interface UsageRecordSummary {
   thinkingTokens?: number
   inputImageTokens?: number
   outputImageTokens?: number
+  inputAudioTokens?: number
+  outputAudioTokens?: number
+  outputImageCount?: number
   costUsd?: number
   errorCode?: string
   errorMessage?: string
@@ -171,6 +174,9 @@ export interface UsageRecordInput {
   thinkingTokens?: number
   inputImageTokens?: number
   outputImageTokens?: number
+  inputAudioTokens?: number
+  outputAudioTokens?: number
+  outputImageCount?: number
   costUsd?: number
   errorCode?: string
   errorMessage?: string
@@ -642,7 +648,10 @@ async function enrichSingleUsageRecordPricingAsync(
         cacheWrite1hTokens: enriched.cacheWrite1hTokens,
         thinkingTokens: enriched.thinkingTokens,
         inputImageTokens: enriched.inputImageTokens,
-        outputImageTokens: enriched.outputImageTokens
+        outputImageTokens: enriched.outputImageTokens,
+        inputAudioTokens: enriched.inputAudioTokens,
+        outputAudioTokens: enriched.outputAudioTokens,
+        outputImageCount: enriched.outputImageCount
       })
     }
 
@@ -695,6 +704,9 @@ function hasUsageRecordCostDimension(input: UsageRecordInput): boolean {
     || input.cacheWrite1hTokens !== undefined
     || input.inputImageTokens !== undefined
     || input.outputImageTokens !== undefined
+    || input.inputAudioTokens !== undefined
+    || input.outputAudioTokens !== undefined
+    || input.outputImageCount !== undefined
 }
 
 function normalizeUsageRecordBatchWriteError(errors: unknown[]): Error {
@@ -769,6 +781,9 @@ function buildUsageRecordBatchWritePlan(
         input.thinkingTokens ?? null,
         input.inputImageTokens ?? null,
         input.outputImageTokens ?? null,
+        input.inputAudioTokens ?? null,
+        input.outputAudioTokens ?? null,
+        input.outputImageCount ?? null,
         input.costUsd ?? null,
         input.errorCode ?? null,
         input.errorMessage ?? null,
@@ -886,6 +901,9 @@ const postgresUsageRecordColumns = [
   'thinking_tokens',
   'input_image_tokens',
   'output_image_tokens',
+  'input_audio_tokens',
+  'output_audio_tokens',
+  'output_image_count',
   'cost_usd',
   'error_code',
   'error_message',
@@ -1418,6 +1436,9 @@ function loadUsageRecordRowsByEntries(entries: UsageRecordEntryRow[]): UsageReco
             ur.thinking_tokens,
             ur.input_image_tokens,
             ur.output_image_tokens,
+            ur.input_audio_tokens,
+            ur.output_audio_tokens,
+            ur.output_image_count,
             ur.cost_usd,
             ur.error_code,
             ur.error_message,
@@ -1473,6 +1494,9 @@ async function loadUsageRecordRowsByEntriesAsync(client: DatabaseClient, entries
         ur.thinking_tokens,
         ur.input_image_tokens,
         ur.output_image_tokens,
+        ur.input_audio_tokens,
+        ur.output_audio_tokens,
+        ur.output_image_count,
         ur.cost_usd,
         ur.error_code,
         ur.error_message,
@@ -1534,6 +1558,9 @@ function listUsageRecordRowsFromShards(
           ur.thinking_tokens,
           ur.input_image_tokens,
           ur.output_image_tokens,
+          ur.input_audio_tokens,
+          ur.output_audio_tokens,
+          ur.output_image_count,
           ur.cost_usd,
           ur.error_code,
           ur.error_message,
