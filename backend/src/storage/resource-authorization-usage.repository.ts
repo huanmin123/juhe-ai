@@ -573,8 +573,8 @@ async function loadAuthorizationTeamUsageRangeSummaryAsync(
   const client = await getResourceAuthorizationUsageStatsClient()
   const row = await client.one<Parameters<typeof usageSummaryFromAggregate>[0]>(`
     SELECT request_count, input_tokens, output_tokens, cache_read_tokens,
-      cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd,
-      thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd AS total_cost, last_used_at
+      CAST(cache_read_cost_usd AS double precision) AS cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, CAST(cache_write_cost_usd AS double precision) AS cache_write_cost_usd,
+      thinking_tokens, input_image_tokens, output_image_tokens, CAST(total_cost_usd AS double precision) AS total_cost, last_used_at
     FROM ${resourceAuthorizationUsageStatsTable(client, 'authorization_team_usage_range_windows')}
     WHERE system_account_id = ?
       AND start_date = ?

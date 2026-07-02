@@ -92,9 +92,9 @@ try {
   assert.equal(refreshed.stages.length, 1, 'PG overview window refresh 应只执行一个阶段')
 
   const overview = await getUsageStatsOverviewAsync(access, range)
-  assert.equal(overview.summary.requestCount, 7, 'PG overview summary request_count 应来自窗口表')
-  assert.equal(overview.summary.successCount, 6, 'PG overview summary success_count 应来自窗口表')
-  assert.equal(overview.summary.errorCount, 1, 'PG overview summary error_count 应来自窗口表')
+  assert.equal(overview.summary.requestCount, 7, 'PG overview summary request_count 应来自日聚合表')
+  assert.equal(overview.summary.successCount, 6, 'PG overview summary success_count 应来自日聚合表')
+  assert.equal(overview.summary.errorCount, 1, 'PG overview summary error_count 应来自日聚合表')
   assert.equal(overview.hourlyTrend.length, 1, 'PG overview trend 应返回一个小时桶')
   assert.equal(overview.hourlyTrend[0]?.requestCount, 7, 'PG overview trend request_count 应来自窗口表')
   assert.equal(overview.modelDistribution[0]?.model, 'gpt-5.5-smoke', 'PG overview model rank 应来自窗口表')
@@ -108,10 +108,39 @@ try {
   })
   assert.equal(skipped.skipped, true, 'PG overview window refresh 源水位不变时应跳过')
 
+  const fresherUpdatedAt = new Date(Date.now() + 1000).toISOString()
+  await client.execute(`
+    UPDATE juhe_stats.usage_stats_daily
+    SET request_count = 9,
+      success_count = 8,
+      error_count = 1,
+      input_tokens = 90,
+      output_tokens = 45,
+      cache_read_tokens = 8,
+      total_cost_usd = 0.456,
+      duration_ms_sum = 900,
+      duration_ms_count = 9,
+      first_token_ms_sum = 270,
+      first_token_ms_count = 9,
+      updated_at = ?
+    WHERE system_account_id = ?
+      AND scope_type = 'system_account'
+      AND scope_id = ?
+      AND stat_date = ?
+  `, [fresherUpdatedAt, systemAccountId, systemAccountId, today])
+
+  const freshSummaryOverview = await getUsageStatsOverviewAsync(access, range)
+  assert.equal(freshSummaryOverview.summary.requestCount, 9, 'PG overview summary 应读取最新日聚合，不等待 30 分钟窗口刷新')
+  assert.equal(freshSummaryOverview.summary.inputTokens, 90, 'PG overview summary inputTokens 应读取最新日聚合')
+  assert.equal(freshSummaryOverview.summary.outputTokens, 45, 'PG overview summary outputTokens 应读取最新日聚合')
+  assert.equal(freshSummaryOverview.summary.cacheReadTokens, 8, 'PG overview summary cacheReadTokens 应读取最新日聚合')
+  assert.equal(freshSummaryOverview.summary.totalCost, 0.456, 'PG overview summary totalCost 应读取最新日聚合')
+  assert.equal(freshSummaryOverview.hourlyTrend[0]?.requestCount, 7, 'PG overview trend 仍来自窗口表')
+
   console.log(JSON.stringify({
     message: '用量概览 PG smoke 通过',
     windowKey,
-    requestCount: overview.summary.requestCount,
+    requestCount: freshSummaryOverview.summary.requestCount,
     trendBuckets: overview.hourlyTrend.length,
     modelRanks: overview.modelDistribution.length,
     errorRanks: overview.errors.length,

@@ -984,7 +984,7 @@ async function loadResourceAuthorizationGrantTeamReportUsageSummariesAsync(
           VALUES ${values}
         )
         SELECT requested.grant_id, report.request_count, report.input_tokens, report.output_tokens, report.cache_read_tokens,
-          report.cache_read_cost_usd, report.total_cost_usd AS total_cost, report.last_used_at
+          CAST(report.cache_read_cost_usd AS double precision) AS cache_read_cost_usd, CAST(report.total_cost_usd AS double precision) AS total_cost, report.last_used_at
         FROM requested
         INNER JOIN ${resourceAuthorizationStatsTable(client, 'authorization_team_usage_range_windows')} report
           ON report.system_account_id = requested.system_account_id
@@ -999,7 +999,7 @@ async function loadResourceAuthorizationGrantTeamReportUsageSummariesAsync(
           VALUES ${values}
         )
         SELECT requested.grant_id, report.request_count, report.input_tokens, report.output_tokens, report.cache_read_tokens,
-          report.cache_read_cost_usd, report.total_cost_usd AS total_cost, report.last_used_at
+          CAST(report.cache_read_cost_usd AS double precision) AS cache_read_cost_usd, CAST(report.total_cost_usd AS double precision) AS total_cost, report.last_used_at
         FROM requested
         INNER JOIN ${resourceAuthorizationStatsTable(client, 'authorization_team_usage_summary_daily')} report
           ON report.system_account_id = requested.system_account_id

@@ -187,14 +187,14 @@ export async function getAuthorizationTeamUsageOverviewAsync(filters: Authorizat
       report.input_tokens,
       report.output_tokens,
       report.cache_read_tokens,
-      report.cache_read_cost_usd,
+      CAST(report.cache_read_cost_usd AS double precision) AS cache_read_cost_usd,
       report.cache_write_tokens,
       report.cache_write_1h_tokens,
-      report.cache_write_cost_usd,
+      CAST(report.cache_write_cost_usd AS double precision) AS cache_write_cost_usd,
       report.thinking_tokens,
       report.input_image_tokens,
       report.output_image_tokens,
-      report.total_cost_usd AS total_cost,
+      CAST(report.total_cost_usd AS double precision) AS total_cost,
       report.last_used_at
     FROM ${statsTable(client, 'authorization_team_usage_range_windows')} report
     WHERE report.system_account_id = ?
@@ -355,14 +355,14 @@ export async function getAuthorizationUserUsageOverviewAsync(filters: Authorizat
       report.input_tokens,
       report.output_tokens,
       report.cache_read_tokens,
-      report.cache_read_cost_usd,
+      CAST(report.cache_read_cost_usd AS double precision) AS cache_read_cost_usd,
       report.cache_write_tokens,
       report.cache_write_1h_tokens,
-      report.cache_write_cost_usd,
+      CAST(report.cache_write_cost_usd AS double precision) AS cache_write_cost_usd,
       report.thinking_tokens,
       report.input_image_tokens,
       report.output_image_tokens,
-      report.total_cost_usd AS total_cost,
+      CAST(report.total_cost_usd AS double precision) AS total_cost,
       report.last_used_at
     FROM ${statsTable(client, 'authorization_user_usage_range_windows')} report
     WHERE report.system_account_id = ?
@@ -508,14 +508,14 @@ async function loadAuthorizationTeamUsageSummaryAsync(client: DatabaseClient, fi
       input_tokens,
       output_tokens,
       cache_read_tokens,
-      cache_read_cost_usd,
+      CAST(cache_read_cost_usd AS double precision) AS cache_read_cost_usd,
       cache_write_tokens,
       cache_write_1h_tokens,
-      cache_write_cost_usd,
+      CAST(cache_write_cost_usd AS double precision) AS cache_write_cost_usd,
       thinking_tokens,
       input_image_tokens,
       output_image_tokens,
-      total_cost_usd AS total_cost,
+      CAST(total_cost_usd AS double precision) AS total_cost,
       last_used_at
     FROM ${statsTable(client, 'authorization_team_usage_range_windows')}
     WHERE system_account_id = ?
@@ -580,14 +580,14 @@ async function loadAuthorizationUserUsageSummaryAsync(client: DatabaseClient, fi
       input_tokens,
       output_tokens,
       cache_read_tokens,
-      cache_read_cost_usd,
+      CAST(cache_read_cost_usd AS double precision) AS cache_read_cost_usd,
       cache_write_tokens,
       cache_write_1h_tokens,
-      cache_write_cost_usd,
+      CAST(cache_write_cost_usd AS double precision) AS cache_write_cost_usd,
       thinking_tokens,
       input_image_tokens,
       output_image_tokens,
-      total_cost_usd AS total_cost,
+      CAST(total_cost_usd AS double precision) AS total_cost,
       last_used_at
     FROM ${statsTable(client, 'authorization_user_usage_range_windows')}
     WHERE system_account_id = ?

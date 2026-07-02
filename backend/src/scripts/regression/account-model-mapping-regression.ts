@@ -418,7 +418,6 @@ try {
   assertCrossProtocolAccountMappingsRejected(group.id)
   await assertInvalidMappingBodyRejected()
   await assertInvalidMappingBodyDoesNotSwitchAccount(group.id)
-  await assertImplicitChatMappingRewritesGatewayRequest(group.id)
   await assertUsageRecordFields(runtimeAccount, group.id)
   await assertAuditLogFields(runtimeAccount, group.id)
 
@@ -653,7 +652,7 @@ function assertRuntimeIgnoresPersistentCrossProtocolMappings(): void {
     upstreamEndpointFamily: 'chat_completions'
   }, '运行时解析器应执行 OpenAI v1 账号级 Responses -> Chat Completions 映射')
 
-  const implicitChatMapping = resolveOpenAIAccountModelMapping({
+  const chatRequestWithoutExactMapping = resolveOpenAIAccountModelMapping({
     providerCode: GPT_VENDOR_CODE,
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     protocolCode: 'openai',
@@ -662,12 +661,7 @@ function assertRuntimeIgnoresPersistentCrossProtocolMappings(): void {
       responsesToChatMapping(sourceModel, chatCompletionsUpstreamModel)
     ]
   }, sourceModel, 'chat_completions')
-  assert.deepEqual(implicitChatMapping, {
-    sourceModel,
-    sourceEndpointFamily: 'chat_completions',
-    upstreamModel: chatCompletionsUpstreamModel,
-    upstreamEndpointFamily: 'chat_completions'
-  }, 'Chat Completions 请求没有显式 Chat 映射时应复用同模型 Responses -> Chat 映射的上游模型')
+  assert.equal(chatRequestWithoutExactMapping, undefined, '运行时解析器没有当前请求协议精确映射时不应复用其它协议映射')
 
   const disabledExplicitChatMapping = resolveOpenAIAccountModelMapping({
     providerCode: GPT_VENDOR_CODE,
@@ -685,7 +679,7 @@ function assertRuntimeIgnoresPersistentCrossProtocolMappings(): void {
       responsesToChatMapping(sourceModel, chatCompletionsUpstreamModel)
     ]
   }, sourceModel, 'chat_completions')
-  assert.equal(disabledExplicitChatMapping, undefined, '显式停用 Chat 映射时不应再复用 Responses -> Chat 映射兜底')
+  assert.equal(disabledExplicitChatMapping, undefined, '显式停用当前协议映射时不应命中模型映射')
 
   const persistentMessagesToChat = resolveOpenAIAccountModelMapping({
     modelMappings: [
@@ -1180,130 +1174,6 @@ async function assertInvalidMappingBodyDoesNotSwitchAccount(groupId: string): Pr
     assert.equal(response.statusCode, 400, '非法 JSON 命中模型映射时应直接返回请求级 400')
     assert.match(response.bodyText(), /invalid_request_error|合法 JSON|有效的 JSON 对象/, '响应体应保留请求级非法 JSON 错误语义')
     assert.equal(upstreamHitCount, 0, '非法 JSON 不应切到后备账户或发起任何上游请求')
-  } finally {
-    await closeServer(server)
-  }
-}
-
-async function assertImplicitChatMappingRewritesGatewayRequest(groupId: string): Promise<void> {
-  let upstreamHitCount = 0
-  let upstreamRequestPath = ''
-  let upstreamRequestBody: Record<string, unknown> | undefined
-  const server = http.createServer((req, res) => {
-    upstreamHitCount += 1
-    upstreamRequestPath = req.url ?? ''
-    const chunks: Buffer[] = []
-    req.on('data', (chunk: Buffer) => chunks.push(chunk))
-    req.on('end', () => {
-      upstreamRequestBody = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({
-        id: 'chatcmpl_account_model_mapping_implicit_chat',
-        object: 'chat.completion',
-        choices: [
-          { index: 0, message: { role: 'assistant', content: 'OK' }, finish_reason: 'stop' }
-        ],
-        usage: { prompt_tokens: 1_000_000, completion_tokens: 1_000_000, total_tokens: 2_000_000 }
-      }))
-    })
-  })
-  server.listen(0, '127.0.0.1')
-  await onceListening(server)
-  const address = server.address()
-  assert(address && typeof address !== 'string', '隐式 Chat 映射 mock 上游地址应可用')
-  try {
-    const account = repositories.createAccount({
-      providerCode: GPT_VENDOR_CODE,
-      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-      name: '账号模型映射隐式 Chat 回归账户',
-      type: 'api_key',
-      credentials: {
-        api_key: 'sk-account-model-mapping-implicit-chat',
-        base_url: `http://127.0.0.1:${address.port}/v1`,
-        supported_endpoint_modes: ['chat_json', 'chat_sse', 'responses_json', 'responses_sse']
-      },
-      status: 'active',
-      supportedModels: [chatCompletionsUpstreamModel],
-      modelMappings: [
-        responsesToChatMapping(sourceModel, chatCompletionsUpstreamModel)
-      ],
-      groupId
-    }, ownerAccess)
-    const runtimeAccount = repositories.listOpenAIAccountsForGroup(groupId, ownerAccess.systemAccountId)
-      .find((item) => item.id === account.id)
-    assert(runtimeAccount, '运行时账号快照应包含隐式 Chat 映射账户')
-
-    const traceId = 'trace-account-model-mapping-implicit-chat-regression'
-    const rawBody = Buffer.from(JSON.stringify({
-      model: sourceModel,
-      stream: false,
-      messages: [
-        { role: 'user', content: 'ping' }
-      ]
-    }), 'utf8')
-    const request = new MemoryGatewayRequest({
-      method: 'POST',
-      originalUrl: '/v1/chat/completions',
-      path: '/v1/chat/completions',
-      headers: {
-        accept: 'application/json',
-        'content-type': 'application/json',
-        'content-length': String(rawBody.length)
-      },
-      rawBody,
-      ip: '127.0.0.1'
-    } as ConstructorParameters<typeof MemoryGatewayRequest>[0]).asRequest() as Request & GatewayRawBodyRequest
-    request.gatewayRequestBody = createGatewayRequestBodyState({
-      rawBody,
-      contentType: 'application/json',
-      jsonParseStatus: 'parsed',
-      parsedBody: JSON.parse(rawBody.toString('utf8')) as Record<string, unknown>,
-      model: sourceModel,
-      stream: false
-    })
-    const startedAt = Date.now()
-    const response = new MemoryGatewayResponse(startedAt)
-    const context: RequestContext = {
-      traceId,
-      startedAt,
-      method: request.method,
-      path: request.path,
-      originalUrl: request.originalUrl,
-      clientIp: request.ip,
-      systemAccountId: ownerAccess.systemAccountId,
-      groupId,
-      logger
-    }
-    await withRequestContext(context, () => withRequestAuthContext(undefined, () => handleOpenAIGatewayRequest(
-      request,
-      response.asResponse(),
-      {
-        identity: {
-          systemAccountId: ownerAccess.systemAccountId,
-          groupId
-        },
-        candidateAccounts: [runtimeAccount],
-        disableSessionAffinity: true,
-        disableAccountStateMutation: true,
-        exposeUpstreamDiagnostics: true
-      }
-    )))
-
-    assert.equal(response.statusCode, 200, 'Chat 请求复用 Responses -> Chat 映射时网关应正常返回上游结果')
-    assert.equal(upstreamHitCount, 1, 'Chat 请求复用 Responses -> Chat 映射时应只调用一次上游')
-    assert.equal(upstreamRequestPath, '/v1/chat/completions', '隐式 Chat 映射不应改变 Chat Completions 上游路径')
-    assert.equal(upstreamRequestBody?.model, chatCompletionsUpstreamModel, '隐式 Chat 映射应把上游请求体 model 改写为 Responses -> Chat 的上游模型')
-
-    flushAllUsageRecordQueue()
-    const record = repositories.listUsageRecords(undefined, { page: 1, pageSize: 50 })
-      .items
-      .find((item) => item.traceId === traceId)
-    assert(record, '隐式 Chat 映射调用应写入使用记录')
-    assert.equal(record.model, sourceModel, '隐式 Chat 映射使用记录 model 应保留下游模型')
-    assert.equal(record.upstreamModel, chatCompletionsUpstreamModel, '隐式 Chat 映射使用记录 upstreamModel 应记录实际上游模型')
-    assert.equal(record.pricingModel, chatCompletionsUpstreamModel, '隐式 Chat 映射使用记录 pricingModel 应记录实际计价模型')
-    assert.equal(record.modelMappingApplied, true, '隐式 Chat 映射使用记录应标记命中模型映射')
-    assert.equal(record.costUsd, 3, '隐式 Chat 映射使用记录应按实际计价模型计算成本')
   } finally {
     await closeServer(server)
   }

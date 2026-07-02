@@ -51,6 +51,7 @@ import { addAggregatedLatencyEntries, type AggregatedLatencyEntry } from './usag
 import { usageErrorTimeBuckets, usageModelTimeBuckets, usageStatsTimeBuckets, type UsageStatsTimeBucketDefinition, type UsageStatsTimeKeys } from './usage-stats-time-buckets.js'
 import {
   aggregateUsageRowsForRange,
+  type UsageWindowAggregate,
   type UsageStatsDailyWindowRow
 } from './usage-stats-window-aggregates.js'
 import {
@@ -1877,15 +1878,7 @@ export function getUsageStatsOverview(access?: AccessScope, range: AccountUsageS
   const statsScope = usageOverviewStatsScope(access)
   const windowKey = rangeWindowKey(range)
 
-  const summaryRow = database.prepare(`
-    SELECT ? AS account_id, request_count, success_count, error_count,
-      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd,
-      cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens,
-      total_cost_usd AS total_cost,
-      duration_ms_sum, duration_ms_count, first_token_ms_sum, first_token_ms_count, last_used_at
-    FROM usage_overview_summary_windows
-    WHERE system_account_id = ? AND window_key = ? AND start_date = ? AND end_date = ?
-  `).get(statsScope.scopeId, statsScope.systemAccountId, windowKey, range.startDate, range.endDate) as unknown as AccountUsageAggregateRow & StatsAggregateMathRow | undefined
+  const summaryRow = loadUsageOverviewSummaryRow(database, statsScope, range)
 
   const hourlyRows = database.prepare(`
     SELECT bucket_key AS stat_hour, request_count, error_count, input_tokens, output_tokens, cache_read_tokens,
@@ -1950,20 +1943,12 @@ export async function getUsageStatsOverviewAsync(access?: AccessScope, range: Ac
   const statsScope = usageOverviewStatsScope(access)
   const windowKey = rangeWindowKey(range)
 
-  const summaryRow = await client.one<AccountUsageAggregateRow & StatsAggregateMathRow>(`
-    SELECT ? AS account_id, request_count, success_count, error_count,
-      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd,
-      cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens,
-      total_cost_usd AS total_cost,
-      duration_ms_sum, duration_ms_count, first_token_ms_sum, first_token_ms_count, last_used_at
-    FROM juhe_stats.usage_overview_summary_windows
-    WHERE system_account_id = ? AND window_key = ? AND start_date = ? AND end_date = ?
-  `, [statsScope.scopeId, statsScope.systemAccountId, windowKey, range.startDate, range.endDate])
+  const summaryRow = await loadUsageOverviewSummaryRowAsync(client, statsScope, range)
 
   const hourlyRows = await client.query<StatsAggregateMathRow & { stat_hour: string; error_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_read_cost_usd: number; cache_write_tokens?: number; cache_write_1h_tokens?: number; cache_write_cost_usd?: number; thinking_tokens?: number; input_image_tokens?: number; output_image_tokens?: number; total_cost: number }>(`
     SELECT bucket_key AS stat_hour, request_count, error_count, input_tokens, output_tokens, cache_read_tokens,
-      cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd,
-      thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd AS total_cost, duration_ms_sum, duration_ms_count
+      CAST(cache_read_cost_usd AS double precision) AS cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, CAST(cache_write_cost_usd AS double precision) AS cache_write_cost_usd,
+      thinking_tokens, input_image_tokens, output_image_tokens, CAST(total_cost_usd AS double precision) AS total_cost, duration_ms_sum, duration_ms_count
     FROM juhe_stats.usage_overview_trend_windows
     WHERE system_account_id = ? AND window_key = ? AND start_date = ? AND end_date = ?
     ORDER BY bucket_key ASC
@@ -1971,9 +1956,9 @@ export async function getUsageStatsOverviewAsync(access?: AccessScope, range: Ac
 
   const modelRows = await client.query<{ provider_code: string; model: string; request_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_read_cost_usd: number; cache_write_tokens?: number; cache_write_1h_tokens?: number; cache_write_cost_usd?: number; thinking_tokens?: number; input_image_tokens?: number; output_image_tokens?: number; total_cost: number }>(`
     SELECT provider_code, model,
-      request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd,
-      cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens,
-      total_cost_usd AS total_cost
+      request_count, input_tokens, output_tokens, cache_read_tokens, CAST(cache_read_cost_usd AS double precision) AS cache_read_cost_usd,
+      cache_write_tokens, cache_write_1h_tokens, CAST(cache_write_cost_usd AS double precision) AS cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens,
+      CAST(total_cost_usd AS double precision) AS total_cost
     FROM juhe_stats.usage_model_rank_windows
     WHERE system_account_id = ? AND window_key = ? AND start_date = ? AND end_date = ?
     ORDER BY rank ASC
@@ -2021,6 +2006,77 @@ export async function latestUsageStatsLagSecondsForRuntime(): Promise<number | u
   }
   const client = createPostgresDatabaseClient(await getPostgresPool())
   return latestUsageStatsLagSecondsFromClientAsync(client)
+}
+
+function loadUsageOverviewSummaryRow(
+  database: DatabaseSync,
+  statsScope: { systemAccountId: string; scopeId: string },
+  range: Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>
+): AccountUsageAggregateRow & StatsAggregateMathRow {
+  const rows = database.prepare(`
+    SELECT stat_date, request_count, success_count, error_count,
+      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd,
+      cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens,
+      total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
+      first_token_ms_sum, first_token_ms_count, first_token_ms_max, last_used_at
+    FROM usage_stats_daily
+    WHERE system_account_id = ?
+      AND scope_type = 'system_account'
+      AND scope_id = ?
+      AND stat_date >= ?
+      AND stat_date <= ?
+    ORDER BY stat_date ASC
+  `).all(statsScope.systemAccountId, statsScope.scopeId, range.startDate, range.endDate) as unknown as UsageStatsDailyWindowRow[]
+  return usageOverviewSummaryRowFromAggregate(statsScope.scopeId, aggregateUsageRowsForRange(rowsByStatDate(rows), range))
+}
+
+async function loadUsageOverviewSummaryRowAsync(
+  client: DatabaseClient,
+  statsScope: { systemAccountId: string; scopeId: string },
+  range: Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>
+): Promise<AccountUsageAggregateRow & StatsAggregateMathRow> {
+  const rows = await client.query<UsageStatsDailyWindowRow>(`
+    SELECT stat_date, request_count, success_count, error_count,
+      input_tokens, output_tokens, cache_read_tokens, CAST(cache_read_cost_usd AS double precision) AS cache_read_cost_usd,
+      cache_write_tokens, cache_write_1h_tokens, CAST(cache_write_cost_usd AS double precision) AS cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens,
+      CAST(total_cost_usd AS double precision) AS total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
+      first_token_ms_sum, first_token_ms_count, first_token_ms_max, last_used_at
+    FROM juhe_stats.usage_stats_daily
+    WHERE system_account_id = ?
+      AND scope_type = 'system_account'
+      AND scope_id = ?
+      AND stat_date >= ?
+      AND stat_date <= ?
+    ORDER BY stat_date ASC
+  `, [statsScope.systemAccountId, statsScope.scopeId, range.startDate, range.endDate])
+  return usageOverviewSummaryRowFromAggregate(statsScope.scopeId, aggregateUsageRowsForRange(rowsByStatDate(rows), range))
+}
+
+function usageOverviewSummaryRowFromAggregate(accountId: string, aggregate: UsageWindowAggregate): AccountUsageAggregateRow & StatsAggregateMathRow {
+  return {
+    account_id: accountId,
+    request_count: aggregate.requestCount,
+    success_count: aggregate.successCount,
+    error_count: aggregate.errorCount,
+    input_tokens: aggregate.inputTokens,
+    output_tokens: aggregate.outputTokens,
+    cache_read_tokens: aggregate.cacheReadTokens,
+    cache_read_cost_usd: aggregate.cacheReadCostUsd,
+    cache_write_tokens: aggregate.cacheWriteTokens,
+    cache_write_1h_tokens: aggregate.cacheWrite1hTokens,
+    cache_write_cost_usd: aggregate.cacheWriteCostUsd,
+    thinking_tokens: aggregate.thinkingTokens,
+    input_image_tokens: aggregate.inputImageTokens,
+    output_image_tokens: aggregate.outputImageTokens,
+    total_cost: aggregate.totalCostUsd,
+    duration_ms_sum: aggregate.durationMsSum,
+    duration_ms_count: aggregate.durationMsCount,
+    duration_ms_max: aggregate.durationMsMax,
+    first_token_ms_sum: aggregate.firstTokenMsSum,
+    first_token_ms_count: aggregate.firstTokenMsCount,
+    first_token_ms_max: aggregate.firstTokenMsMax,
+    last_used_at: aggregate.lastUsedAt ?? null
+  }
 }
 
 function mapUsageTrendRows(
