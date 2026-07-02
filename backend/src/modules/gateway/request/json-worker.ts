@@ -1,8 +1,10 @@
 import { parentPort } from 'node:worker_threads'
 
 import type { OpenAIOAuthCodexNormalizeInput } from '../adapters/gpt-codex/oauth-normalizer.js'
-import { OpenAIOAuthCodexAdapterError } from '../adapters/gpt-codex/oauth-errors.js'
-import { extractGatewayJsonBodyMetadata } from './json-metadata-scanner.js'
+
+const {
+  extractGatewayJsonBodyMetadata
+} = await import(resolveJsonMetadataScannerModuleUrl()) as typeof import('./json-metadata-scanner.js')
 
 type GatewayJsonWorkerJobType =
   | 'extract_json_body_metadata'
@@ -63,8 +65,14 @@ function resolveNormalizerModuleUrl(): string {
     : new URL('../adapters/gpt-codex/oauth-normalizer.js', import.meta.url).href
 }
 
+function resolveJsonMetadataScannerModuleUrl(): string {
+  return import.meta.url.endsWith('.ts')
+    ? new URL('./json-metadata-scanner.ts', import.meta.url).href
+    : new URL('./json-metadata-scanner.js', import.meta.url).href
+}
+
 function workerErrorResponse(id: number, error: unknown): Record<string, unknown> {
-  if (error instanceof OpenAIOAuthCodexAdapterError) {
+  if (isOpenAIOAuthCodexAdapterErrorLike(error)) {
     return {
       id,
       ok: false,
@@ -79,4 +87,16 @@ function workerErrorResponse(id: number, error: unknown): Record<string, unknown
     ok: false,
     errorMessage: error instanceof Error ? error.message : String(error)
   }
+}
+
+function isOpenAIOAuthCodexAdapterErrorLike(error: unknown): error is {
+  message: string
+  code: string
+  statusCode: number
+  type: string
+} {
+  return error instanceof Error
+    && typeof (error as { code?: unknown }).code === 'string'
+    && typeof (error as { statusCode?: unknown }).statusCode === 'number'
+    && typeof (error as { type?: unknown }).type === 'string'
 }

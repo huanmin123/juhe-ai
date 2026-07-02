@@ -828,7 +828,7 @@ export async function pipeUpstreamStream(
         options.clientRetryEnabled === true,
         totalResponseBytes
       )
-      handleStreamFailure(rawMessage, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, inspection.failedReceived))
+      await handleStreamFailure(rawMessage, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, inspection.failedReceived))
       streamLogger.warn({
         event: 'gateway_stream_max_lifetime_interrupted',
         elapsedMs: Date.now() - startedAt,

@@ -107,10 +107,10 @@ try {
 async function cleanupSmokeRows(taskIdsToDelete: string[], sessionIdsToDelete: string[]): Promise<void> {
   const pool = await getPostgresPool()
   if (taskIdsToDelete.length > 0) {
-    await pool.query('DELETE FROM juhe_business.account_test_session_tasks WHERE task_id = ANY($1)', [taskIdsToDelete])
-    await pool.query('DELETE FROM juhe_business.account_test_tasks WHERE id = ANY($1)', [taskIdsToDelete])
+    await pool.query('DELETE FROM juhe_business.account_test_session_tasks WHERE task_id = ANY($1::text[])', [taskIdsToDelete])
+    await pool.query('DELETE FROM juhe_business.account_test_tasks WHERE id = ANY($1::text[])', [taskIdsToDelete])
   }
   if (sessionIdsToDelete.length > 0) {
-    await pool.query('DELETE FROM juhe_business.account_test_sessions WHERE id = ANY($1)', [sessionIdsToDelete])
+    await pool.query('DELETE FROM juhe_business.account_test_sessions WHERE id = ANY($1::text[])', [sessionIdsToDelete])
   }
 }

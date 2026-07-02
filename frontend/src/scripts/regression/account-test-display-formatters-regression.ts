@@ -108,6 +108,12 @@ const changedDraftRuntimeDetails = draftApiKeyTestRuntimeDetailsForPayload(
   draftApiKeyPayload(['sk-a-draft-good', 'sk-c-draft-new'])
 )
 assertEqual(changedDraftRuntimeDetails, undefined, '草稿 Key 改动后不应继续展示旧测试状态')
+const singleDraftTestPayload = draftApiKeyPayload(['sk-single-draft'])
+const singleDraftRuntimeDetails = draftApiKeyTestRuntimeDetailsForPayload(
+  { account: singleDraftTestPayload, result: resultFixture(apiKeyAccount, { success: false, message: '单 Key 测试失败' }) },
+  singleDraftTestPayload
+)
+assertEqual(singleDraftRuntimeDetails, undefined, '单个 API Key 草稿测试不应展示 Key 池逐项状态')
 
 const runningTask = taskFixture(oauthAccount, {
   status: 'running',

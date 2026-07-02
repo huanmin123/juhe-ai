@@ -36,6 +36,7 @@ export async function recordGatewayAccountApiKeyFailure(
   } else {
     recentAccountApiKeySuccessWrites.clear()
   }
+  const observedAt = new Date().toISOString()
   const guardDecision = recordGatewayAccountApiKeyFailureGuard(account, {
     status: input.status,
     statusCode: input.statusCode,
@@ -58,7 +59,8 @@ export async function recordGatewayAccountApiKeyFailure(
         statusCode: input.statusCode,
         errorCode: input.errorCode,
         errorMessage: input.errorMessage,
-        cooldownUntil: input.cooldownUntil
+        cooldownUntil: input.cooldownUntil,
+        observedAt
       }
     })
     if (result.changed) {
@@ -116,9 +118,11 @@ export function recordGatewayAccountApiKeySuccess(account: OpenAIAccountSecret, 
   } else {
     recentAccountApiKeySuccessWrites.clear()
   }
+  const observedAt = new Date().toISOString()
   void requestGatewayDbService({
     type: 'record_account_api_key_success',
-    account
+    account,
+    observedAt
   }).then((result) => {
     if (result.changed) {
       clearGatewayRuntimeCache()

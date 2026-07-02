@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto'
+
 import { runtimeConfig } from '../../../config/runtime.js'
 import { createRuntimeStateStore } from '../../../shared/runtime-state-store.js'
 import { getRequestLogger, sanitizeUrlCredentialsForLog } from '../../../shared/request-context.js'
@@ -783,9 +785,13 @@ export function gatewayProxyKey(account: Pick<UpstreamAccount, 'proxyProfileId' 
     return `proxy:profile:${account.proxyProfileId}`
   }
   if (account.proxyUrl) {
-    return `proxy:url:${account.proxyUrl}`
+    return `proxy:url:${proxyUrlKeyHash(account.proxyUrl)}`
   }
   return undefined
+}
+
+function proxyUrlKeyHash(value: string): string {
+  return createHash('sha256').update(value).digest('base64url')
 }
 
 export function gatewayUpstreamBucketKeys(

@@ -535,7 +535,7 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
     }
     case 'record_account_api_key_success': {
       if (runtimeConfig.databaseDriver === 'postgres') {
-        const result = await recordAccountApiKeyRuntimeSuccessAsync(operation.account)
+        const result = await recordAccountApiKeyRuntimeSuccessAsync(operation.account, { observedAt: operation.observedAt })
         if (result.changed) {
           clearGatewayRuntimeCacheLocal()
         }
@@ -1122,7 +1122,7 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       return result
     }
     case 'record_account_api_key_success': {
-      const result = recordAccountApiKeyRuntimeSuccess(operation.account)
+      const result = recordAccountApiKeyRuntimeSuccess(operation.account, { observedAt: operation.observedAt })
       if (result.changed) {
         clearGatewayRuntimeCacheLocal()
       }

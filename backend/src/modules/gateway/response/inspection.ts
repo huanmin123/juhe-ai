@@ -290,10 +290,16 @@ function policyMatchesRuntimeContext(
   policy: RuntimeResponseInspectionPolicy,
   context: ResponseInspectionRuntimeContext | undefined
 ): boolean {
-  if (policy.match.clientProfiles?.length) {
+  const hasClientProfileMatcher = Boolean(policy.match.clientProfiles?.length)
+  if (hasClientProfileMatcher) {
     if (!context?.clientProfile || !firstExactMatch(context.clientProfile, policy.match.clientProfiles)) return false
   }
+  if (!hasClientProfileMatcher && hasErrorIdentityMatcher(policy.match)) return false
   return true
+}
+
+function hasErrorIdentityMatcher(match: ResponseInspectionPolicyMatch): boolean {
+  return Boolean(match.errorCodes?.length || match.errorTypes?.length)
 }
 
 function configuredPolicyReason(policy: RuntimeResponseInspectionPolicy, frame: ResponseSemanticFrame, downstreamWritten: boolean): ResponseInspectionDecision['reason'] {

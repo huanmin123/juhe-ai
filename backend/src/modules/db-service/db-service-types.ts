@@ -538,18 +538,20 @@ export type DbServiceOperation =
   | {
     type: 'record_account_api_key_failure'
     account: OpenAIAccountSecret
-    input: {
-      status?: Exclude<AccountApiKeyRuntimeStatus, 'active' | 'disabled'>
-      statusCode?: number
-      errorCode?: string
-      errorMessage?: string
-      cooldownUntil?: string
+      input: {
+        status?: Exclude<AccountApiKeyRuntimeStatus, 'active' | 'disabled'>
+        statusCode?: number
+        errorCode?: string
+        errorMessage?: string
+        cooldownUntil?: string
+        observedAt?: string
+      }
     }
-  }
-  | {
-    type: 'record_account_api_key_success'
-    account: OpenAIAccountSecret
-  }
+    | {
+      type: 'record_account_api_key_success'
+      account: OpenAIAccountSecret
+      observedAt?: string
+    }
   | {
     type: 'record_account_stream_failure'
     input: {

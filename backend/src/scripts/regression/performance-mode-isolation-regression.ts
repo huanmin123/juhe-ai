@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
 function source(path: string): string {
   return readFileSync(new URL(path, import.meta.url), 'utf8')
@@ -28,6 +29,10 @@ assert.match(dataRetentionCleanupSource, /cleanupProcessedUsageRecordsBeforeWith
 assert.doesNotMatch(dataRetentionCleanupSource, /cleanupProcessedUsageRecordsBeforeWithResult\(/, '数据保留 worker 不能直接调用同步 SQLite usage 清理入口')
 assert.doesNotMatch(dataRetentionCleanupSource, /data_retention_cleanup_skipped_postgres_mode/, '高性能模式数据保留 worker 不能静默跳过')
 assert.match(dataRetentionCleanupSource, /runtimeConfig\.databaseDriver === 'postgres'[\s\S]*throw new Error/, '高性能模式数据保留 worker 不能返回空清理结果，必须 fail-fast')
+const maintenanceCleanupJobsSource = source('../../modules/background/maintenance-cleanup-jobs.ts')
+assert.match(maintenanceCleanupJobsSource, /runDataRetentionCleanup\(\)[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*enqueuePostgresDataRetentionMaintenanceJobs/, 'PG 高性能 data-retention 定时入口必须投递 record-maintenance 任务，不能直接跑单机清理链路')
+assert.match(maintenanceCleanupJobsSource, /enqueuePostgresDataRetentionMaintenanceJobs[\s\S]*getSettingsAsync[\s\S]*enqueueRecordMaintenanceJobAsync\(\{[\s\S]*type: 'usage_records_cleanup'[\s\S]*enqueueRecordMaintenanceJobAsync\(\{[\s\S]*type: 'non_business_data_cleanup'/, 'PG 高性能 data-retention 必须按系统设置投递 usage 和非业务数据维护任务')
+assert.doesNotMatch(source('../../modules/background/background-jobs.ts'), /if \(!isPostgresHighPerformanceMode\(\)\) \{[\s\S]*backgroundScheduledJobName\('data-retention-cleanup'\)/, 'PG 高性能 ingest-worker 不能跳过 data-retention-cleanup 调度')
 
 const dataRetentionHardCleanupSource = source('../../storage/data-retention-hard-cleanup.ts')
 assert.doesNotMatch(dataRetentionHardCleanupSource, /sqlite_schema|discoverHardCleanupTableRules|hardCleanupRuleForTable|hardCleanupPreferredRuleByTable/, '非业务硬清理不能运行时探测 SQLite schema 后只清理已发现表')
@@ -103,7 +108,7 @@ function sourceFiles(root: URL): string[] {
   for (const entry of readdirSync(root)) {
     if (entry === 'dist' || entry === 'node_modules') continue
     const entryUrl = new URL(`${entry}`, root)
-    const fullPath = entryUrl.pathname
+    const fullPath = fileURLToPath(entryUrl)
     const stat = statSync(fullPath)
     if (stat.isDirectory()) {
       paths.push(...sourceFiles(new URL(`${entry}/`, root)))

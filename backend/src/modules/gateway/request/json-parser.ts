@@ -177,7 +177,7 @@ export function isGatewayJsonWorkerQueueFullError(error: unknown): error is Gate
 }
 
 function shouldRunGatewayJsonWorkerInlineForTypeScriptRuntime(): boolean {
-  return currentModulePath.endsWith('.ts')
+  return false
 }
 
 function parseGatewayJsonBodyInline(rawBody: Buffer, signal?: AbortSignal): Promise<unknown> {

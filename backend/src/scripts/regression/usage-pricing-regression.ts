@@ -1016,7 +1016,7 @@ assert.match(gatewayResponseFinalizationSource, /gateway_stream_usage_estimated/
 assert.match(gatewayResponseFinalizationSource, /responseSemanticText\s*=\s*completeBodyText/, '非流式完整 JSON 响应语义文本不能依赖成功审计正文捕获开关')
 assert.match(gatewayResponseFinalizationSource, /responseBodyText:\s*responseBodyText\s*\?\?\s*responseSemanticText/, '非流式 usage fallback 应读取完整检查窗口文本')
 assert.match(gatewayResponseFinalizationSource, /const errorMessage\s*=\s*'上游响应体为空'/)
-assert.match(gatewayResponseFinalizationSource, /recordCompletedUpstreamAttempt[\s\S]+errorMessage\n\s*\}/)
+assert.match(gatewayResponseFinalizationSource, /recordCompletedUpstreamAttempt[\s\S]+errorMessage\r?\n\s*\}/)
 
 const gatewayResponseStreamSource = readSource('modules/gateway/response/stream.ts')
 assert.match(gatewayResponseStreamSource, /requireGatewayProtocolDriverForResponseProtocol/)
@@ -1181,7 +1181,8 @@ assert.match(backgroundJobsSource, /safeCreatedBefore: safety\.safeCreatedBefore
 assert.match(backgroundJobsSource, /requestIngestWorkerDrainStatus\(1000\)/)
 assert.match(backgroundJobsSource, /defaultUsageStatsSafeCreatedBeforeIso\(\)/)
 assert.match(backgroundJobsSource, /使用记录 ingest 队列已有/)
-assert.match(backgroundJobsSource, /超龄未落库记录/)
+assert.match(backgroundJobsSource, /usageStatsSafeCreatedBeforeForPendingBacklog/)
+assert.match(backgroundJobsSource, /oldestRedisStreamUsageRecordCreatedAtForStatsAggregation/)
 assert.match(backgroundJobsSource, /settingsNumber\('cooldownAccountRetestIntervalSeconds', 1, 3600\)/)
 assert.doesNotMatch(backgroundSettingsNumberSource, /typeof value === 'string' \? Number\(value\)/)
 

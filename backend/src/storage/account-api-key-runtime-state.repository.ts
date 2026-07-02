@@ -19,6 +19,7 @@ export interface AccountApiKeyRuntimeFailureInput {
   errorCode?: string
   errorMessage?: string
   cooldownUntil?: string
+  observedAt?: string
 }
 
 export interface AccountApiKeyRuntimeWriteResult {
@@ -397,6 +398,7 @@ export function recordAccountApiKeyRuntimeFailure(input: AccountApiKeyRuntimeFai
   }
 
   const now = nowIso()
+  const observedAt = normalizeObservedAt(input.observedAt, now)
   const nextBackoffSeconds = nextProbeBackoffSeconds(existing?.probe_backoff_seconds)
   const status = normalizeFailureStatus(input.status)
   const nextProbeAt = input.cooldownUntil && status === 'rate_limited'
@@ -426,6 +428,7 @@ export function recordAccountApiKeyRuntimeFailure(input: AccountApiKeyRuntimeFai
           WHERE account_id = ?
             AND key_fingerprint = ?
             AND status <> 'disabled'
+            AND (last_attempt_at IS NULL OR last_attempt_at <= ?)
         `)
         .run(
           target.systemAccountId,
@@ -435,13 +438,14 @@ export function recordAccountApiKeyRuntimeFailure(input: AccountApiKeyRuntimeFai
           nextProbeAt,
           nextBackoffSeconds,
           now,
-          now,
-          now,
+          observedAt,
+          observedAt,
           errorCode,
           errorMessage,
           now,
           target.accountId,
-          target.keyFingerprint
+          target.keyFingerprint,
+          observedAt
         )
     : database
         .prepare(`
@@ -465,8 +469,8 @@ export function recordAccountApiKeyRuntimeFailure(input: AccountApiKeyRuntimeFai
           nextProbeAt,
           nextBackoffSeconds,
           now,
-          now,
-          now,
+          observedAt,
+          observedAt,
           errorCode,
           errorMessage,
           now,
@@ -501,6 +505,7 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
   }
 
   const now = nowIso()
+  const observedAt = normalizeObservedAt(input.observedAt, now)
   const nextBackoffSeconds = nextProbeBackoffSeconds(existing?.probe_backoff_seconds)
   const status = normalizeFailureStatus(input.status)
   const nextProbeAt = input.cooldownUntil && status === 'rate_limited'
@@ -535,6 +540,7 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
       last_error_message = excluded.last_error_message,
       updated_at = excluded.updated_at
     WHERE current_state.status <> 'disabled'
+      AND (current_state.last_attempt_at IS NULL OR current_state.last_attempt_at <= excluded.last_attempt_at)
   `, [
     newId('account_api_key_runtime_state'),
     target.systemAccountId,
@@ -546,8 +552,8 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
     nextProbeAt,
     nextBackoffSeconds,
     now,
-    now,
-    now,
+    observedAt,
+    observedAt,
     errorCode,
     errorMessage,
     now,
@@ -561,12 +567,13 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
   return { changed }
 }
 
-export function recordAccountApiKeyRuntimeSuccess(account: OpenAIAccountSecret): AccountApiKeyRuntimeWriteResult {
+export function recordAccountApiKeyRuntimeSuccess(account: OpenAIAccountSecret, input: { observedAt?: string } = {}): AccountApiKeyRuntimeWriteResult {
   const target = accountApiKeyRuntimeTarget(account)
   if (!target) {
     return { changed: false, skippedReason: 'not_api_key_pool_account' }
   }
   const now = nowIso()
+  const observedAt = normalizeObservedAt(input.observedAt, now)
   const result = getBusinessDatabase()
     .prepare(`
       INSERT INTO account_api_key_runtime_states (
@@ -593,6 +600,7 @@ export function recordAccountApiKeyRuntimeSuccess(account: OpenAIAccountSecret):
         last_error_message = NULL,
         updated_at = excluded.updated_at
       WHERE account_api_key_runtime_states.status <> 'disabled'
+        AND (account_api_key_runtime_states.last_attempt_at IS NULL OR account_api_key_runtime_states.last_attempt_at <= excluded.last_attempt_at)
     `)
     .run(
       newId('account_api_key_runtime_state'),
@@ -600,8 +608,8 @@ export function recordAccountApiKeyRuntimeSuccess(account: OpenAIAccountSecret):
       target.accountId,
       target.keyFingerprint,
       target.keyIndex,
-      now,
-      now,
+      observedAt,
+      observedAt,
       now,
       now
     )
@@ -612,15 +620,16 @@ export function recordAccountApiKeyRuntimeSuccess(account: OpenAIAccountSecret):
   return { changed }
 }
 
-export async function recordAccountApiKeyRuntimeSuccessAsync(account: OpenAIAccountSecret): Promise<AccountApiKeyRuntimeWriteResult> {
+export async function recordAccountApiKeyRuntimeSuccessAsync(account: OpenAIAccountSecret, input: { observedAt?: string } = {}): Promise<AccountApiKeyRuntimeWriteResult> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return recordAccountApiKeyRuntimeSuccess(account)
+    return recordAccountApiKeyRuntimeSuccess(account, input)
   }
   const target = accountApiKeyRuntimeTarget(account)
   if (!target) {
     return { changed: false, skippedReason: 'not_api_key_pool_account' }
   }
   const now = nowIso()
+  const observedAt = normalizeObservedAt(input.observedAt, now)
   const client = await getAccountApiKeyRuntimeStateDatabaseClient()
   const result = await client.execute(`
     INSERT INTO ${accountApiKeyRuntimeStatesTable(client)} AS current_state (
@@ -647,14 +656,15 @@ export async function recordAccountApiKeyRuntimeSuccessAsync(account: OpenAIAcco
       last_error_message = NULL,
       updated_at = excluded.updated_at
     WHERE current_state.status <> 'disabled'
+      AND (current_state.last_attempt_at IS NULL OR current_state.last_attempt_at <= excluded.last_attempt_at)
   `, [
     newId('account_api_key_runtime_state'),
     target.systemAccountId,
     target.accountId,
     target.keyFingerprint,
     target.keyIndex,
-    now,
-    now,
+    observedAt,
+    observedAt,
     now,
     now
   ])
@@ -663,6 +673,12 @@ export async function recordAccountApiKeyRuntimeSuccessAsync(account: OpenAIAcco
     await markRuntimeStateChangedAsync(client, target.accountId)
   }
   return { changed }
+}
+
+function normalizeObservedAt(value: string | undefined, fallback: string): string {
+  if (!value) return fallback
+  const time = Date.parse(value)
+  return Number.isFinite(time) ? new Date(time).toISOString() : fallback
 }
 
 function accountApiKeyRuntimeTarget(account: OpenAIAccountSecret): AccountApiKeyRuntimeTarget | undefined {

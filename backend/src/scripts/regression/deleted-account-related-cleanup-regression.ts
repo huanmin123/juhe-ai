@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-deleted-account-related-cleanup-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -63,6 +64,7 @@ try {
   const granteeGroup = repositories.createGroup({ name: '删除账户授权分组', providerCode: 'gpt' }, granteeAccess)
   const account = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '删除关联清理账户',
     type: 'api_key',
     credentials: {
@@ -95,6 +97,7 @@ try {
   seedDetachedAccountStats(authorizedInstance.id, grantee.id)
 
   assert.equal(usageStatsRepository.aggregateUsageStatsBatch(10), 2, '账户删除前的使用记录应先完成统计聚合')
+  seedClientIpStatsCursorsForAccountIds([account.id, authorizedInstance.id])
   usageStatsRepository.refreshUsageQuotaHourlyWindowsCache()
   usageStatsRepository.refreshUsageRankSnapshots()
   const statDate = usageStatsHelpers.dateKey(new Date(createdAt), usageStatsHelpers.usageStatsTimezone())
@@ -118,6 +121,7 @@ try {
 
   const directReturnAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '被授权人归还账户来源',
     type: 'api_key',
     credentials: {
@@ -258,6 +262,7 @@ try {
 
   const legacyDeletedSource = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '旧版本父账户已删授权实例',
     type: 'api_key',
     credentials: {
@@ -384,6 +389,40 @@ function seedAuthorizedUsageRecord(id: string, accountId: string, ownerSystemAcc
     costUsd: 0.12,
     createdAt
   }])
+}
+
+function seedClientIpStatsCursorsForAccountIds(accountIds: string[]): void {
+  if (!accountIds.length) return
+  const placeholders = accountIds.map(() => '?').join(', ')
+  const rows = databaseModule.getUsageCatalogDatabase()
+    .prepare(`
+      SELECT shard_key AS shardKey, usage_id AS usageId, created_at AS createdAt
+      FROM usage_record_shard_entries
+      WHERE account_id IN (${placeholders})
+      ORDER BY shard_key ASC, created_at DESC, usage_id DESC
+    `)
+    .all(...accountIds) as Array<{ shardKey?: string | null; usageId?: string | null; createdAt?: string | null }>
+  const latestByShard = new Map<string, { usageId: string; createdAt: string }>()
+  for (const row of rows) {
+    const shardKey = row.shardKey?.trim()
+    const usageId = row.usageId?.trim()
+    const createdAtValue = row.createdAt?.trim()
+    if (!shardKey || !usageId || !createdAtValue || latestByShard.has(shardKey)) continue
+    latestByShard.set(shardKey, { usageId, createdAt: createdAtValue })
+  }
+  const statement = databaseModule.getStatsDatabase().prepare(`
+    INSERT INTO stats_job_state (
+      scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, updated_at
+    ) VALUES ('usage_shard', ?, 'client_ip_stats_aggregation', ?, ?, ?, ?)
+    ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
+      cursor_created_at = excluded.cursor_created_at,
+      cursor_id = excluded.cursor_id,
+      last_success_at = excluded.last_success_at,
+      updated_at = excluded.updated_at
+  `)
+  for (const [shardKey, cursor] of latestByShard.entries()) {
+    statement.run(shardKey, cursor.createdAt, cursor.usageId, cursor.createdAt, cursor.createdAt)
+  }
 }
 
 function seedAuditData(accountId: string, suffix: string): void {

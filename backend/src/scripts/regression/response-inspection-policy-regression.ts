@@ -1377,7 +1377,8 @@ await assertMalformedResponsesSseFailsBeforeDownstreamCommit('未闭合 data 直
   assert(!routeSource.includes('recordOperationLog({'), '响应检查策略管理端不得重新调用同步操作日志入口')
   assert(schemaSource.includes("CHECK (action IN ('observe', 'drop_event', 'retry_no_avoidance', 'retry_next_account', 'avoid_account_ttl', 'avoid_upstream_bucket_ttl'))"), '响应检查策略动作必须有数据库 CHECK 约束')
   assert(schemaSource.includes('json_valid(match_json)'), '响应检查策略 match_json 必须有 JSON 有效性约束')
-  assert(fallbackCandidateSource.includes('listCachedActiveResponseInspectionPoliciesAsync'), 'API Key 分组 fallback 候选必须按目标分组协议和供应商加载响应检查策略')
+  assert(fallbackCandidateSource.includes('listCachedActiveResponseInspectionPoliciesForAccountsAsync'), 'API Key 分组 fallback 候选必须按目标候选账号集合的协议和供应商加载响应检查策略')
+  assert(fallbackCandidateSource.includes('orderedQuotaAllowedAccounts'), 'API Key 分组 fallback 响应检查策略必须基于目标候选分组完成过滤和排序后的账号集合加载')
   assert(gatewayPreflightSource.includes('responseInspectionPolicies: candidate.responseInspectionPolicies'), 'fallback dispatch context 必须使用目标候选分组的响应检查策略')
   assert(!gatewayPreflightSource.includes('responseInspectionPolicies: input.responseInspectionPolicies'), 'fallback dispatch context 不得沿用原分组传入的响应检查策略')
 }

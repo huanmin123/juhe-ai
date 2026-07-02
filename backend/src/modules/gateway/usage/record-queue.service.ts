@@ -369,6 +369,22 @@ export async function getUsageRecordRedisStreamRuntime(): Promise<RedisStreamQue
   return await usageRecordRedisStreamQueue().inspectRuntime()
 }
 
+export async function getUsageRecordRedisStreamOldestCreatedAt(): Promise<string | undefined> {
+  if (!shouldUseRedisStreamUsageRecordQueue()) {
+    return undefined
+  }
+  const messages = await usageRecordRedisStreamQueue().inspectBacklogMessages(2)
+  let oldest: string | undefined
+  for (const message of messages) {
+    const createdAt = message.payload.createdAt?.trim()
+    if (!createdAt) continue
+    if (!oldest || createdAt < oldest) {
+      oldest = createdAt
+    }
+  }
+  return oldest
+}
+
 export function installUsageRecordQueueShutdownHooks(): void {
   if (shutdownHooksInstalled) {
     return
@@ -487,6 +503,7 @@ async function flushUsageRecordRedisStreamMessages(messages: Array<RedisStreamMe
       firstMessageId: messages[0]?.id,
       flushFailureCount
     }), 'Redis Stream 使用记录落库失败，消息保持 pending 等待重投')
+    await delay(usageRecordRedisConsumerErrorRetryMs)
   }
 }
 

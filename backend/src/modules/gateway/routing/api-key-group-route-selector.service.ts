@@ -161,7 +161,7 @@ async function nextRedisRouteCounterIndex(key: string, modulo: number): Promise<
   if (modulo <= 0) return 0
   const runtimeStateUrl = runtimeConfig.redis.stateUrl
   if (!runtimeStateUrl) {
-    throw new Error('高性能模式动态路由需要 JUHE_AI_REDIS_RUNTIME_STATE_URL')
+    throw new Error('高性能模式动态路由需要 JUHE_AI_REDIS_STATE_URL')
   }
   const result = await (await getRedisClient(runtimeStateUrl)).eval(`
     local value = redis.call('INCR', KEYS[1])

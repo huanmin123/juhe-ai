@@ -14,7 +14,7 @@ import {
 import { writeClientIpStatsAggregatesFromUsageRows, writeClientIpStatsAggregatesFromUsageRowsAsync } from './client-ip-stats-writer.js'
 
 const clientIpStatsJobName = 'client_ip_stats_aggregation'
-const cursorSafetyDelaySeconds = 5
+const cursorSafetyDelaySeconds = 15
 const clientIpStatsMaxShardsPerBatch = 16
 let clientIpStatsShardScanOffset = 0
 

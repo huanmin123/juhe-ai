@@ -16,12 +16,13 @@ const accountApiKeyId = `api_key_for_${accountId}`
 const relatedAccountId = `account_related_${marker}`
 const authorizationId = `auth_${marker}`
 const teamScopeId = `${accountId}:team_${marker}`
-const now = new Date().toISOString()
+let now = new Date().toISOString()
 
 const pool = await getPostgresPool()
 const client = createPostgresDatabaseClient(pool)
 
 try {
+  now = await cleanupEligibleUsageCreatedAt()
   await seedApiKeyRows()
   const apiKeyCleanup = await cleanupDeletedApiKeyRelatedRecordDataAsync({ apiKeyId, systemAccountId })
   assert.equal(apiKeyCleanup.hasMore, false, 'API Key PG 清理不应遗留后续批次')
@@ -54,6 +55,7 @@ try {
 
   console.log(JSON.stringify({
     message: 'PG 记录清理 smoke 通过',
+    usageCreatedAt: now,
     apiKeyDeletedRows: apiKeyCleanup.deletedRows,
     accountDeletedRows: accountCleanup.deletedRows
   }))
@@ -146,7 +148,7 @@ async function seedUsageCatalogRows(input: {
     ON CONFLICT(shard_key) DO UPDATE SET
       last_write_at = EXCLUDED.last_write_at,
       updated_at = EXCLUDED.updated_at
-  `, [input.shardKey, now.slice(0, 10), `/tmp/${input.shardKey}.sqlite`, now, now, now, now])
+  `, [input.shardKey, now.slice(0, 10), `postgres:${input.shardKey}`, now, now, now, now])
   await client.execute(`
     INSERT INTO juhe_usage.usage_record_shard_entries (
       usage_id, shard_key, system_account_id, trace_id, api_key_id, account_id, group_id, model,
@@ -183,6 +185,29 @@ async function seedUsageCatalogRows(input: {
 async function countRows(tableName: string, whereClause: string, params: unknown[]): Promise<number> {
   const row = await client.one<{ count?: string | number }>(`SELECT COUNT(*) AS count FROM ${tableName} WHERE ${whereClause}`, params)
   return Number(row?.count ?? 0)
+}
+
+async function cleanupEligibleUsageCreatedAt(): Promise<string> {
+  const rows = await client.query<{ job_name?: string | null; cursor_created_at?: string | null }>(`
+    SELECT job_name, cursor_created_at
+    FROM juhe_stats.stats_job_state
+    WHERE scope_type = 'global'
+      AND scope_id = ''
+      AND job_name = ANY(?::text[])
+      AND cursor_created_at IS NOT NULL
+      AND cursor_id IS NOT NULL
+    ORDER BY cursor_created_at ASC
+  `, [['usage_stats_aggregation', 'client_ip_stats_aggregation']])
+  const jobNames = new Set(rows.map((row) => String(row.job_name ?? '').trim()).filter(Boolean))
+  if (!jobNames.has('usage_stats_aggregation') || !jobNames.has('client_ip_stats_aggregation')) {
+    throw new Error('PG 记录清理 smoke 需要 usage_stats_aggregation 和 client_ip_stats_aggregation 全局游标')
+  }
+  const cursorCreatedAt = rows[0]?.cursor_created_at?.trim()
+  const cursorTime = Date.parse(cursorCreatedAt ?? '')
+  if (!Number.isFinite(cursorTime)) {
+    throw new Error('PG 记录清理 smoke 未读到有效 usage 清理游标时间')
+  }
+  return new Date(Math.max(0, cursorTime - 1000)).toISOString()
 }
 
 async function cleanupSmokeRows(): Promise<void> {

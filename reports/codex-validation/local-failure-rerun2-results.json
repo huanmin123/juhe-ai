@@ -1,0 +1,22 @@
+[
+  {
+    "test": "test:usage-pricing",
+    "exitCode": 0,
+    "log": "F:\\sub2api-lite\\reports\\codex-validation\\test_usage-pricing.rerun2.log"
+  },
+  {
+    "test": "test:response-inspection-policy",
+    "exitCode": 0,
+    "log": "F:\\sub2api-lite\\reports\\codex-validation\\test_response-inspection-policy.rerun2.log"
+  },
+  {
+    "test": "test:openai-oauth-codex-adapter",
+    "exitCode": 0,
+    "log": "F:\\sub2api-lite\\reports\\codex-validation\\test_openai-oauth-codex-adapter.rerun2.log"
+  },
+  {
+    "test": "test:record-maintenance-queue",
+    "exitCode": 1,
+    "log": "F:\\sub2api-lite\\reports\\codex-validation\\test_record-maintenance-queue.rerun2.log"
+  }
+]

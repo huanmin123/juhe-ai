@@ -43,7 +43,7 @@ assertIncludes(editFormSource, 'function openAuthUrl()', '账户编辑表单应�
 
 assertNotIncludes(apiKeySectionSource, 'v-if="editing"', 'API Key 编辑态不应降级为单输入框')
 assertIncludes(apiKeySectionSource, 'const showApiKeyStrategy = computed(() => filledApiKeyCount.value > 1)', 'API Key 策略切换应按有效 Key 数量展示')
-assertIncludes(credentialsSource, 'api_keys: apiKeys.length ? apiKeys : undefined', 'API Key 保存 payload 应显式携带当前 Key 数组，支持多 Key 编辑成单 Key')
+assertIncludes(credentialsSource, 'if (apiKeys.length > 1)', 'API Key 保存 payload 只有多 Key 才应携带 Key 数组')
 assertIncludes(savePayloadSource, "if (form.type === 'api_key' && apiKeyCount === 0) return '请填写 API Key'", 'API Key 编辑和创建都必须至少保留一个 Key')
 assertNotIncludes(savePayloadSource, "!editingId && form.type === 'api_key' && apiKeyCount", 'API Key 数量校验不应只限制创建态')
 assertIncludes(editModalSource, 'const confirmButtonProps = computed(() => ({', '账户弹窗应统一计算确定按钮状态')

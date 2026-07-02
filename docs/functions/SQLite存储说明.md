@@ -969,7 +969,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - `streamMaxLifetimeSeconds = 1800`：单条 SSE 最大存活时间；上游持续发送心跳或 raw chunk 也不能无限占用连接和账号并发，到点后中断当前连接交由客户端重试。
 - `streamFailureThresholdCount = 3`、`streamFailureThresholdWindowMinutes = 5`：历史流失败诊断计数参数；真实网关流式失败不再依赖该阈值或窗口写账号状态。
 - `statsAggregationIntervalSeconds = 60`：统计缓存默认增量汇总间隔。
-- `statsAggregationBatchSize = 2000`、`statsAggregationMaxBatchesPerRun = 5`：统计缓存每轮聚合配置上限；常驻 stats-worker 在线聚合会再把 usage 单批实际处理量限制为 1000 条，并给每轮调度设置 4.5 秒运行预算。增量聚合在批内先按 scope、时间桶、模型、延迟桶和账号质量分钟桶预聚合，再写入 SQLite，避免高并发下对同一批记录逐条重复 upsert。连续批次之间让出事件循环，并在继续下一批前固定等待 25ms；持续写入时统计游标保留 15 秒安全延迟，用来吸收 usage 队列落库和 IPC 传递的短暂延迟，不再要求 usage 队列完全为空，避免高吞吐场景因队列短暂非空而长期饥饿；若 pending usage 中存在超过 15 秒仍未落库的记录，本轮统计会跳过，避免游标越过未落库记录。额度小时窗口随本任务刷新，排行和概览窗口快照由独立 worker 任务刷新。更大的批量只适合作为离线重建或人工追赶历史积压时的独立脚本参数，不能让常驻 worker 长时间占用统计库写事务。
+- `statsAggregationBatchSize = 2000`、`statsAggregationMaxBatchesPerRun = 5`：统计缓存每轮聚合配置上限；常驻 stats-worker 在线聚合会再把 usage 单批实际处理量限制为 1000 条，并给每轮调度设置 4.5 秒运行预算。增量聚合在批内先按 scope、时间桶、模型、延迟桶和账号质量分钟桶预聚合，再写入 SQLite，避免高并发下对同一批记录逐条重复 upsert。连续批次之间让出事件循环，并在继续下一批前固定等待 25ms；持续写入时统计游标保留 15 秒安全延迟，用来吸收 usage 队列落库和 IPC / Redis Stream 传递的短暂延迟，不再要求 usage 队列或 Redis Stream backlog 完全为空，避免高吞吐场景因队列短暂非空而长期饥饿；若 pending usage 或 Redis Stream backlog 中存在超过 15 秒仍未落库的记录，本轮统计只会聚合早于该记录的安全窗口，避免游标越过未落库记录。额度小时窗口随本任务刷新，排行和概览窗口快照由独立 worker 任务刷新。更大的批量只适合作为离线重建或人工追赶历史积压时的独立脚本参数，不能让常驻 worker 长时间占用统计库写事务。
 - `groupAccountStatsRefreshIntervalSeconds = 60`：分组账户统计缓存默认刷新间隔。
 - `systemMetricsSampleIntervalSeconds = 30`：系统监控默认采样间隔。
 - `tableMonitorMaxTablesPerRun = 4`：表监控每轮每个库最多刷新多少张表级快照；设置为 `0` 时只采样文件级指标。后台表级采样只读取本轮表和索引大小，并通过 `dbstat` 叶子页 cell 数滚动写入可推导的行数，不执行精确 `COUNT(*)`。
@@ -1010,7 +1010,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - 重复错误按短时间窗口聚合展示，但每次 occurrence 仍由 `audit_logs` 事件追溯。
 - 问题列表 / 审计事件列表不新增 payload 字节列；`raw_payload_bytes` 和 `compressed_payload_bytes` 只用于后端报表、容量分析和内部接口字段。
 - 审计队列固定每 `5` 秒批量落库一次，单批最多 `200` 条客户端请求。
-- 待写队列不设固定请求数或字节数上限，由机器资源决定承载能力；队列异常不能阻塞网关请求。
+- 待写队列有固定请求数和字节数上限，默认 `queueMaxItems=50000`、`queueMaxBytes=256MB`；队列满载时按审计策略丢弃低价值成功样本，队列异常不能阻塞网关请求。
 - 单个请求活跃捕获上限为 `64MB`，超过后丢弃整条审计记录。
 - 默认固定保留：成功样本 `7` 天，失败 / 异常事件 `30` 天，失败 / 异常正文随事件引用分层清理，错误聚合组 `30` 天；具体以 [审计日志保全策略设计](审计日志保全策略设计.md) 为准。
 

@@ -647,7 +647,7 @@ function resolveTemporaryMaintenanceWorkerEntry(): { modulePath: string; execArg
 }
 
 function isTemporaryRecordMaintenanceJob(job: RecordMaintenanceJob): boolean {
-  return job.type === 'usage_records_cleanup' || job.type === 'non_business_data_cleanup'
+  return job.type === 'non_business_data_cleanup'
 }
 
 type AccountUsageSnapshotUpsertJob = Extract<RecordMaintenanceJob, { type: 'account_usage_snapshot_upsert' }>

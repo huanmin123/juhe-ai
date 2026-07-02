@@ -704,7 +704,9 @@ export async function handleOpenAIGatewayRequest(
           const policyRequestedAccountExclusion = handledResponse.excludeCurrentAccount
             || (handledResponse.responseInspection && shouldExcludeCurrentAccountForStreamRetry(handledResponse.responseInspection))
             || false
-          streamServerRetryExcludedAccountIds.add(account.id)
+          if (policyRequestedAccountExclusion) {
+            streamServerRetryExcludedAccountIds.add(account.id)
+          }
           auditCapture.addGatewayMetadata({
             label: 'stream_server_retry_dispatch',
             metadata: {
@@ -717,7 +719,7 @@ export async function handleOpenAIGatewayRequest(
               accountId: account.id,
               excludedAccountIds: [...streamServerRetryExcludedAccountIds],
               excludeCurrentAccount: handledResponse.excludeCurrentAccount,
-              currentRequestAccountExcluded: true,
+              currentRequestAccountExcluded: policyRequestedAccountExclusion,
               policyRequestedAccountExclusion,
               policyId: handledResponse.responseInspection?.policyId,
               policyName: handledResponse.responseInspection?.policyName,

@@ -229,6 +229,7 @@ const systemDefaultRules: ResponseInspectionPolicySummary[] = [
     protocolCode: OPENAI_PROTOCOL_CODE,
     providerCode: GPT_VENDOR_CODE,
     match: {
+      clientProfiles: ['codex'],
       errorCodes: ['cyber_policy']
     },
     action: 'retry_no_avoidance',

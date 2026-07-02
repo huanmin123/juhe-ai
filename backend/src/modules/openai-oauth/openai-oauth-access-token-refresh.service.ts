@@ -756,7 +756,7 @@ function refreshCandidateFetchLimit(batchSize: number): number {
   if (runtimeConfig.runtimeStateDriver !== 'redis') {
     return batchSize + refreshFailureStateByAccountId.size
   }
-  return Math.min(200, Math.max(batchSize, batchSize * 4))
+  return 500
 }
 
 function redisStateClient(): Promise<RedisCommandClient> {

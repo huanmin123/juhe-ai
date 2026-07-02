@@ -121,7 +121,7 @@ PostgreSQL 模式不再模拟多个 SQLite 文件，而是把当前事实域映�
 表名可以保留当前语义，代码通过 repository / dialect 选择 schema，不把 schema 名写进业务服务层。
 表监控在 PostgreSQL 模式下按这 5 个 schema 采样 relation size、估算行数和 1 小时 / 24 小时增长，结果统一写入 `juhe_stats.database_storage_snapshots` 与 `juhe_stats.table_storage_snapshots`，不回读 SQLite 文件路径。
 
-当前已新增 `backend/src/storage/postgres-schema.ts`，从现有 SQLite schema DDL 收集建表 / 建索引语句并映射为 PostgreSQL SQL：移除 `PRAGMA`，把 `COLLATE NOCASE` 映射为 `lower(...)` 表达式索引，把 SQLite JSON object check 映射为 `jsonb_typeof(...::jsonb)`，并按外键依赖重新排序 `CREATE TABLE`，避免 PostgreSQL 的前向外键引用失败。`postgres:init-schema` 默认执行 schema 初始化并写入默认种子数据，`postgres:init-schema-only` 只执行 DDL。`<测试主机IP>` 最新完整初始化已验证 5 个 schema、617 条 schema 语句、132 条默认种子语句可以成功执行。
+当前已新增 `backend/src/storage/postgres-schema.ts`，从现有 SQLite schema DDL 收集建表 / 建索引语句并映射为 PostgreSQL SQL：移除 `PRAGMA`，把 `COLLATE NOCASE` 映射为 `lower(...)` 表达式索引，把 SQLite JSON object check 映射为 `jsonb_typeof(...::jsonb)`，并按外键依赖重新排序 `CREATE TABLE`，避免 PostgreSQL 的前向外键引用失败。`postgres:init-schema` 默认执行 schema 初始化并写入默认种子数据，`postgres:init-schema-only` 只执行 DDL。当前版本完整初始化应以 `test:postgres-schema-sql` / `test:postgres-seed-defaults` 的实际输出为准；最近本地校验口径为 5 个 schema、594 条 schema 语句。
 
 ### usage_records 目标形态
 
@@ -244,7 +244,7 @@ API Key 管理关键路径已落地到 `backend/src/storage/api-key.repository.t
 - `updateResourceAuthorizationAsync()` 和 `revokeResourceAuthorizationAsync()` 已新增 PG 现有授权管理写路径：`PATCH /__aisys__/api/authorizations/:id` 支持暂停 / 恢复和额度更新，`PATCH /__aisys__/api/authorizations/:id/expire` 支持有效期与额度更新，`DELETE /__aisys__/api/authorizations/:id` 支持回收；PG 事务内会更新 grant、runtime authorization、source、额度窗口配置，并在提交后失效网关运行态、授权额度、API Key 校验和授权读取缓存。
 - 完整账号管理端还需授权实例列表视图、过期物理清理、统计聚合和使用记录读写继续迁移；当前 `authorizations` 路由本身没有独立 `GET /:id` 详情入口。
 - PG 模式下 API Key 摘要会读取真实绑定路由策略及其策略分组；`usage` 暂时返回空聚合，等待 usage / stats repository 迁移后接入预聚合窗口。
-- PG 模式下删除 API Key 会删除业务库中的 key 和绑定，并返回 cleanup target；路由暂不投递旧的 dataset / stats 清理目标，等待 dataset / record-maintenance 清理仓储迁移后恢复。
+- PG 模式下删除 API Key 会删除业务库中的 key 和绑定，并投递关联记录清理目标；record-maintenance 通过 PostgreSQL usage / dataset / stats 清理实现推进，不再因 PostgreSQL driver 跳过历史数据清理。
 - PG 模式下 API Key 列表 keyword 搜索使用 `matched_api_key_ids` materialized CTE 先按 `lower(name) COLLATE "C"` 前缀范围命中名称索引，再按原列表排序输出；如果直接在主查询中叠加 keyword 过滤，PostgreSQL 可能优先选择列表排序索引后过滤名称，导致大表搜索退化。
 - PG 模式下 API Key 创建 / 更新混合路由配置会通过 async provider 与模型目录读取校验评分模型、质量评分模型和等级目标模型；`test:performance-system-api-smoke` 已覆盖 SQLite 与远端 PostgreSQL / Redis 下混合路由 API Key 的 HTTP 创建、更新和删除。
 - `backend/src/modules/api-keys/api-keys.routes.ts` 的列表、secret、创建、更新、刷新密钥和删除已切到 async repository。
@@ -360,6 +360,7 @@ PostgreSQL 模式下保留 DB service，理由不是规避 SQLite 同步阻塞�
 - DB service 承接系统管理 API、登录态校验、网关关键读写和业务 typed operation。
 - 常驻后台进程收敛为 ingest-worker、stats-worker、ops-worker 三类；写入 PostgreSQL 时按 typed operation、队列优先级和连接池背压并发消费。
 - 高性能模式下 ops-worker 已恢复 API Key / 账户时间计划同步、资源授权过期扫描、过期逻辑删除账户清理、账号健康检测、账号冷却复测、账户内 API Key 冷却复测、代理延迟刷新和 OpenAI OAuth access token 自动刷新；这些任务的候选读取和状态写回必须走 PG async repository / DB service 分支。
+- 高性能模式下 ingest-worker 仍注册 `data-retention-cleanup`，但 PG 分支只按系统设置投递 `usage_records_cleanup` 和 `non_business_data_cleanup` 到 record-maintenance；底层单机数据保留清理服务在 PG 下保持 fail-fast，避免回落 SQLite 清理链路。
 - ops-worker 的账号健康检测和冷却复测执行队列仍是本地短窗口 retry queue，只保存 accountId 等小对象；候选、取消、状态和结果事实以 PostgreSQL 为准。没有真实积压、重启恢复延迟或多 worker 抢占证据前，不把该执行缓冲强行迁入 Redis Streams。
 - OpenAI OAuth access token 自动刷新已恢复 PG 调度；OAuth token、refresh token 和代理 URL 不进入 Redis shared cache。远端 smoke 使用测试替身 token endpoint 验证 PG 候选、写回、连续失败异常标记和错误脱敏，真实上游 refresh token 仍按真实账号和生产网络单独验证。代理延迟刷新已恢复 PG 调度，但代理 URL 只在探测进程内即时使用，不作为共享缓存内容。
 - 已退役的 `metrics-worker`、`snapshot-worker`、`probe-worker` 和 `maintenance-worker` 不再作为独立 worker role 出现在调度分支中。

@@ -15,6 +15,7 @@ export function draftApiKeyTestRuntimeDetailsForPayload(
   if (!sameDraftApiKeyTestTarget(snapshot.account, currentPayload)) return undefined
 
   const keys = draftPayloadApiKeys(currentPayload)
+  if (keys.length <= 1) return undefined
   const weights = draftPayloadApiKeyWeights(currentPayload, keys.length)
   const poolItems = snapshot.result.apiKeyPool?.results
   if (poolItems?.length) {

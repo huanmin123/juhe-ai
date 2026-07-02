@@ -100,6 +100,7 @@ const accountScopeStatsTables = [
 
 const deletedAccountRecordCleanupBatchLimit = 100
 const deletedAccountRecordCleanupShardLimit = 16
+const usageRecordCleanupRequiredCursorJobNames = ['usage_stats_aggregation', 'client_ip_stats_aggregation'] as const
 
 export function registerDeletedAccountRecordCleanupTarget(input: DeletedAccountRecordCleanupTarget): void {
   assertSqliteAccountRecordCleanup('registerDeletedAccountRecordCleanupTarget')
@@ -807,9 +808,27 @@ function selectAccountUsageRowsCoveredByShardCursors(
 }
 
 function usageStatsShardCursor(database: DatabaseSync, shardKey: string): { cursorCreatedAt: string; cursorId: string } | undefined {
-  const row = database
-    .prepare("SELECT cursor_created_at, cursor_id FROM stats_job_state WHERE scope_type = 'usage_shard' AND scope_id = ? AND job_name = 'usage_stats_aggregation'")
-    .get(shardKey) as unknown as { cursor_created_at?: string | null; cursor_id?: string | null } | undefined
+  const rows = database
+    .prepare(`
+      SELECT job_name, cursor_created_at, cursor_id
+      FROM stats_job_state
+      WHERE scope_type = 'usage_shard'
+        AND scope_id = ?
+        AND job_name IN (${sqlPlaceholders(usageRecordCleanupRequiredCursorJobNames.length)})
+        AND cursor_created_at IS NOT NULL
+        AND cursor_id IS NOT NULL
+      ORDER BY cursor_created_at ASC, cursor_id ASC
+    `)
+    .all(shardKey, ...usageRecordCleanupRequiredCursorJobNames) as unknown as Array<{
+      job_name?: string | null
+      cursor_created_at?: string | null
+      cursor_id?: string | null
+    }>
+  const jobNames = new Set(rows.map((row) => row.job_name?.trim()).filter(Boolean))
+  if (usageRecordCleanupRequiredCursorJobNames.some((jobName) => !jobNames.has(jobName))) {
+    return undefined
+  }
+  const row = rows[0]
   const cursorCreatedAt = row?.cursor_created_at?.trim()
   const cursorId = row?.cursor_id?.trim()
   return cursorCreatedAt && cursorId ? { cursorCreatedAt, cursorId } : undefined
@@ -963,22 +982,45 @@ async function deletePostgresAccountUsageDataBatch(
   input: DeletedAccountRecordCleanupTarget,
   limit: number
 ): Promise<number> {
+  const cursor = await postgresUsageRecordCleanupFloorCursor(client)
+  if (!cursor) return 0
   const accountIds = deletedAccountCleanupAccountIds(input)
   const authorizationIds = uniqueNonEmpty(input.authorizationIds ?? [])
   if (accountIds.length === 0 && authorizationIds.length === 0) return 0
   const rows = await client.query<{ id?: string | null }>(`
     SELECT id
     FROM juhe_usage.usage_records
-    WHERE account_id = ANY(?::text[])
-      OR account_authorization_id = ANY(?::text[])
+    WHERE (account_id = ANY(?::text[]) OR account_authorization_id = ANY(?::text[]))
+      AND (created_at < ? OR (created_at = ? AND id <= ?))
     ORDER BY created_at ASC, id ASC
     LIMIT ?
-  `, [accountIds, authorizationIds, Math.max(1, Math.trunc(limit))])
+  `, [accountIds, authorizationIds, cursor.cursorCreatedAt, cursor.cursorCreatedAt, cursor.cursorId, Math.max(1, Math.trunc(limit))])
   const usageIds = uniqueNonEmpty(rows.map((row) => row.id))
   if (!usageIds.length) return 0
   await deletePostgresUsageRecordCatalogRowsByUsageIds(client, usageIds)
   const result = await client.execute('DELETE FROM juhe_usage.usage_records WHERE id = ANY(?::text[])', [usageIds])
   return changed(result)
+}
+
+async function postgresUsageRecordCleanupFloorCursor(client: DatabaseClient): Promise<{ cursorCreatedAt: string; cursorId: string } | undefined> {
+  const rows = await client.query<{ job_name?: string | null; cursor_created_at?: string | null; cursor_id?: string | null }>(`
+    SELECT job_name, cursor_created_at, cursor_id
+    FROM juhe_stats.stats_job_state
+    WHERE scope_type = 'global'
+      AND scope_id = ''
+      AND job_name = ANY(?::text[])
+      AND cursor_created_at IS NOT NULL
+      AND cursor_id IS NOT NULL
+    ORDER BY cursor_created_at ASC, cursor_id ASC
+  `, [[...usageRecordCleanupRequiredCursorJobNames]])
+  const jobNames = new Set(rows.map((row) => String(row.job_name ?? '').trim()).filter(Boolean))
+  if (usageRecordCleanupRequiredCursorJobNames.some((jobName) => !jobNames.has(jobName))) {
+    return undefined
+  }
+  const row = rows[0]
+  const cursorCreatedAt = row?.cursor_created_at?.trim()
+  const cursorId = row?.cursor_id?.trim()
+  return cursorCreatedAt && cursorId ? { cursorCreatedAt, cursorId } : undefined
 }
 
 async function hasPostgresAccountUsageRecords(client: DatabaseClient, input: DeletedAccountRecordCleanupTarget): Promise<boolean> {

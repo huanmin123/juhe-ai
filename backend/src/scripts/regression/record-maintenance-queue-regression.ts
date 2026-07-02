@@ -361,7 +361,7 @@ function seedUsageRecord(id: string, createdAt: string): void {
 
 function seedUsageStatsCleanupCursors(cursorCreatedAt: string, cursorId: string): void {
   const database = databaseModule.getStatsDatabase()
-  const location = usageRecordShards.usageRecordShardLocationForRecord(cursorId, cursorCreatedAt)
+  const shardKey = usageRecordShardKey(cursorId)
   const statement = database.prepare(`
     INSERT INTO stats_job_state (
       scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, updated_at
@@ -373,8 +373,18 @@ function seedUsageStatsCleanupCursors(cursorCreatedAt: string, cursorId: string)
       updated_at = excluded.updated_at
   `)
   for (const jobName of ['usage_stats_aggregation', 'client_ip_stats_aggregation']) {
-    statement.run(location.shardKey, jobName, cursorCreatedAt, cursorId, cursorCreatedAt, cursorCreatedAt)
+    statement.run(shardKey, jobName, cursorCreatedAt, cursorId, cursorCreatedAt, cursorCreatedAt)
   }
+}
+
+function usageRecordShardKey(id: string): string {
+  const row = databaseModule.getUsageCatalogDatabase().prepare(`
+    SELECT shard_key AS shardKey
+    FROM usage_record_shard_entries
+    WHERE usage_id = ?
+  `).get(id) as { shardKey?: string } | undefined
+  assert.ok(row?.shardKey, '测试使用记录应登记分片目录')
+  return row.shardKey
 }
 
 function usageRecordCount(id: string): number {

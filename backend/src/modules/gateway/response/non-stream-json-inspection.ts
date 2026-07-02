@@ -171,7 +171,7 @@ export async function inspectBufferedGatewayJsonResponse(input: {
     errorMessage: message
   })
 
-  const shouldRetryOnServer = decision.accountSwitch !== 'none'
+  const shouldRetryOnServer = decision.retryEnabled
   if (shouldRetryOnServer && !input.res.headersSent && !input.res.writableEnded && !input.res.destroyed) {
     input.auditCapture.addGatewayMetadata({
       label: 'response_inspection_server_retry',

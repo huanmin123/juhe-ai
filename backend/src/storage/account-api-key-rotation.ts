@@ -245,7 +245,7 @@ async function nextRedisAccountApiKeyRotationIndex(
   if (modulo <= 0) return 0
   const runtimeStateUrl = runtimeConfig.redis.stateUrl
   if (!runtimeStateUrl) {
-    throw new Error('高性能模式账户 API Key 轮换需要 JUHE_AI_REDIS_RUNTIME_STATE_URL')
+    throw new Error('高性能模式账户 API Key 轮换需要 JUHE_AI_REDIS_STATE_URL')
   }
   const result = await (await getRedisClient(runtimeStateUrl)).eval(`
     local value = redis.call('INCR', KEYS[1])

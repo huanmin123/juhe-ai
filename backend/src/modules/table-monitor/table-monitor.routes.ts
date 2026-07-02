@@ -36,7 +36,7 @@ const databaseHistoryQuerySchema = z.object({
 
 const nonBusinessDataCleanupSchema = z.object({
   cutoffAt: z.string().trim().min(1, '请选择清理截止时间'),
-  batchSize: z.number().int().min(100).max(5000).optional(),
+  batchSize: z.number().int().min(100).max(10000).optional(),
   maxBatches: z.number().int().min(1).max(100).optional()
 }).strict()
 

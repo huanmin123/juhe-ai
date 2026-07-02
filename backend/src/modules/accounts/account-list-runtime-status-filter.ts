@@ -49,7 +49,7 @@ export async function listAccountsPageWithRuntimeStatusFilter(
   while (!hasMore && sourcePage <= maxSourcePages) {
     const candidatePage = await listAccountsPageAsync(access, {
       ...listOptions,
-      status: undefined,
+      status: runtimeStatusFilterSourceStatus(statusFilters),
       page: sourcePage,
       pageSize: sourcePageSize
     })
@@ -86,6 +86,18 @@ export async function listAccountsPageWithRuntimeStatusFilter(
 
 function statusFilterCanBeChangedByRuntime(status: string): boolean {
   return status === 'active' || status === 'temporary_unavailable'
+}
+
+function runtimeStatusFilterSourceStatus(statusFilters: string[]): string | undefined {
+  const statuses = new Set<string>()
+  if (statusFilters.includes('active')) {
+    statuses.add('active')
+  }
+  if (statusFilters.includes('temporary_unavailable')) {
+    statuses.add('active')
+    statuses.add('temporary_unavailable')
+  }
+  return statuses.size > 0 ? [...statuses].join(',') : undefined
 }
 
 function runtimeBlockedAccountIds(runtimeAvailability: Record<string, { status?: string }> | undefined): Set<string> {
