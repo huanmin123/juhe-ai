@@ -72,8 +72,8 @@ function assertRepositoryLookupRedisBoundary(): void {
     '同步 lookup helper 在 Redis driver 下必须跳过进程内 LRU'
   )
   assert(
-    syncBody.includes('return new Map(loadMissingRows(ids).map((row) => [row.id, row]))'),
-    '同步 lookup helper 在 Redis driver 下应直接按 ID 查库，不回填本地 LRU'
+    syncBody.includes('高性能模式禁止同步资源 lookup 绕过 Redis shared cache'),
+    '同步 lookup helper 在 Redis driver 下必须 fail-fast，不能绕过 Redis shared cache 直查 DB'
   )
 
   const redisBranchIndex = asyncBody.indexOf("if (runtimeConfig.cacheDriver === 'redis')")

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 import type { AccountQualityRealtimeRefreshResult } from '../../storage/account-quality.repository.js'
 import { minuteKey, usageStatsTimezone } from '../../storage/usage-stats-helpers.js'
@@ -38,6 +39,7 @@ try {
   }, access)
   const account = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '质量刷新回归账户',
     type: 'api_key',
     credentials: {
@@ -49,6 +51,7 @@ try {
   }, access)
   const staleAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '质量刷新无新样本账户',
     type: 'api_key',
     credentials: {
@@ -60,6 +63,7 @@ try {
   }, access)
   const failureCandidateAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '质量刷新频繁失败候选账户',
     type: 'api_key',
     credentials: {
@@ -71,6 +75,7 @@ try {
   }, access)
   const batchAccounts = Array.from({ length: 5 }, (_, index) => repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: `质量刷新批量账户 ${index}`,
     type: 'api_key',
     credentials: {
@@ -240,6 +245,7 @@ function assertSourceGuards(): void {
   const schemaSource = readFileSync(resolve('src/storage/schema/stats-schema.ts'), 'utf8')
   const accountQualityWriterSource = readFileSync(resolve('src/storage/usage-stats-account-quality-writer.ts'), 'utf8')
   const failurePrecheckSource = readFileSync(resolve('src/modules/background/account-quality-failure-precheck.service.ts'), 'utf8')
+  const gatewayAccountSideEffectsSource = readFileSync(resolve('src/modules/gateway/runtime/account-side-effects.service.ts'), 'utf8')
   assert.doesNotMatch(source, /SELECT id, system_account_id, provider_code FROM accounts'\)\s*\.all\(\)/, '账号质量刷新不应一次性加载全部账号元数据')
   assert.doesNotMatch(source, /SELECT \$\{accountQualitySelectColumns\(\)\} FROM account_quality_scores`\)\s*\.all\(\)/, '账号质量刷新不应一次性加载全部质量缓存')
   assert.doesNotMatch(source, /FROM account_quality_minute_stats quality_stats\s+WHERE quality_stats\.stat_minute >= \?\s+GROUP BY quality_stats\.account_id/i, '账号质量刷新不应按近窗口全量 GROUP BY 所有样本账号')
@@ -250,9 +256,15 @@ function assertSourceGuards(): void {
   assert.match(schemaSource, /CREATE TABLE IF NOT EXISTS account_quality_dirty_accounts/, '统计库应保存账号质量 dirty 游标表')
   assert.match(schemaSource, /idx_account_quality_dirty_accounts_updated/, '账号质量 dirty 表应有更新时间窗口索引')
   assert.match(accountQualityWriterSource, /markAccountQualityDirty/, '用量统计写入账号质量分钟桶时应同步打 dirty 标记')
-  assert.match(failurePrecheckSource, /findAccountForTest\(item\.accountId,\s*accountAccess\)/, '频繁失败确认应按质量样本所属系统账户上下文读取账户')
+  assert.match(failurePrecheckSource, /loadAccountForTestViaDbService\(item\.accountId,\s*accountAccess\)/, '频繁失败确认应按质量样本所属系统账户上下文读取账户')
   assert.match(failurePrecheckSource, /requestBackgroundWorkerDbService\(\{\s*type:\s*'mark_account_test_temporary_unavailable'/, '频繁失败确认落库应通过 DB service 复用账户测试临时不可调用语义')
-  assert.match(failurePrecheckSource, /trafficSource:\s*'cooldown_retest'/, '频繁失败确认探针不应写入普通网关质量样本')
+  assert.match(failurePrecheckSource, /model:\s*await preferredSystemAccountTestModelAsync\(account\)/, '频繁失败确认只能使用账户测试健康模型，不能复用失败请求模型')
+  assert.match(failurePrecheckSource, /trafficSource:\s*'runtime_recovery_probe'/, '频繁失败运行态确认探针应使用独立来源，避免和持久冷却复测混用')
+  assert.doesNotMatch(failurePrecheckSource, /requestShape|findRecentOpenAIRequestShapeForAccountAsync/, '频繁失败确认探针不能复用最近失败请求形态')
+  assert.match(gatewayAccountSideEffectsSource, /model:\s*await preferredSystemAccountTestModelAsync\(account\)/, '运行态恢复探针只能使用账户测试健康模型，不能复用失败请求模型')
+  assert.match(gatewayAccountSideEffectsSource, /trafficSource:\s*'runtime_recovery_probe'/, '运行态恢复探针应使用独立来源，避免和持久冷却复测混用')
+  assert.match(gatewayAccountSideEffectsSource, /generation:\s*number/, '运行态恢复和事前确认状态必须带 generation，避免旧探针结果覆盖新状态')
+  assert.doesNotMatch(gatewayAccountSideEffectsSource, /requestShape:/, '运行态恢复探针不能传入失败请求形态')
   assert.match(source, /loadQualityAccountMetadataByIds/, '账号质量刷新应按样本或固定候选账号批量补业务元数据')
   assert.match(source, /ORDER BY updated_at ASC, account_id ASC\s+LIMIT \?/, '账号质量缓存清理和 stale 推进必须按固定批次')
   assert.match(source, /temp_refreshed_quality_accounts/, '账号质量 stale 推进应避开本轮已刷新账号')

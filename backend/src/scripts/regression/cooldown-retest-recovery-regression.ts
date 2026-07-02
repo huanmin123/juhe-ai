@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { installWorkerParentIpcHarness } from '../shared/worker-parent-ipc-harness.js'
@@ -55,6 +56,7 @@ try {
   assert.equal(workerGroupAccess?.groupOwnerSystemAccountId, access.systemAccountId, 'worker 角色应能本地读取分组访问元数据，不能误走 DB service IPC')
   const account = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '冷却复测观察窗口回归',
     type: 'api_key',
     credentials: {
@@ -106,6 +108,7 @@ try {
 
   const freshAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '冷却复测未超观察窗口回归',
     type: 'api_key',
     credentials: {
@@ -149,6 +152,7 @@ try {
 
   const disabledCleanupAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '停用清理过期失败原因回归',
     type: 'api_key',
     credentials: {
@@ -167,6 +171,7 @@ try {
 
   const rateLimitedAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '限流后台复测回归',
     type: 'api_key',
     credentials: {
@@ -196,6 +201,7 @@ try {
 
   const probeAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '后台探针通过恢复回归',
     type: 'api_key',
     credentials: {
@@ -251,6 +257,7 @@ try {
   }, granteeAccess)
   const sourceAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '冷却复测授权来源账户',
     type: 'api_key',
     credentials: {
@@ -341,6 +348,7 @@ try {
   }, quotaGranteeAccess)
   const quotaSourceAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '冷却复测额度来源账户',
     type: 'api_key',
     credentials: {
@@ -380,6 +388,7 @@ try {
     .run(new Date(Date.now() - 10_000).toISOString(), quotaLimitedInstance.id)
   const scanWindowOwnerAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '冷却复测扫描窗口普通账户',
     type: 'api_key',
     credentials: {

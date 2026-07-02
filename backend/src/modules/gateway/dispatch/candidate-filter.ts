@@ -82,7 +82,7 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
     const statusCode = 503
     const message = requestCapabilityMismatchMessage(reason)
     const responsePayload = gatewayErrorPayload(message, 'service_unavailable', reason)
-    sendGatewayFailureResponse({
+    await sendGatewayFailureResponse({
       req: input.req,
       res: input.res,
       auditCapture: input.auditCapture,
@@ -153,7 +153,7 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
     const statusCode = 503
     const message = gatewayModelFilterFailureMessage(modelFilter)
     const responsePayload = gatewayErrorPayload(message, 'service_unavailable', modelFilter.reason ?? 'unsupported_model')
-    sendGatewayFailureResponse({
+    await sendGatewayFailureResponse({
       req: input.req,
       res: input.res,
       auditCapture: input.auditCapture,

@@ -21,7 +21,7 @@ import { gatewayRequestEndpointFamily } from '../protocols/openai-v1/model-mappi
 import type { ClientCompatibilityCapability } from '../../../domain/types.js'
 import type { OpenAIGatewayRequestLane } from '../protocols/openai-v1/request-lane.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
-import { areGatewayAccountsCapacityBusyForLane } from './capacity.js'
+import { areGatewayAccountsCapacityBusyForLaneAsync } from './capacity.js'
 import type { ResponseInspectionPolicySummary } from '../../../storage/response-inspection-policy.repository.js'
 
 export interface ApiKeyGroupFallbackCandidateInput {
@@ -110,7 +110,7 @@ export async function resolveNextApiKeyGroupFallbackCandidate(
     }
     const orderedQuotaAllowedAccounts = runtimeDegradationOrder.accounts
     if ((input.reason === 'high_concurrency_group_busy' || input.reason === 'group_capacity_busy')
-      && areGatewayAccountsCapacityBusyForLane(orderedQuotaAllowedAccounts, input.requestLane, groupAccess.schedulingPolicy)) {
+      && await areGatewayAccountsCapacityBusyForLaneAsync(orderedQuotaAllowedAccounts, input.requestLane, groupAccess.schedulingPolicy)) {
       continue
     }
     const responseInspectionPolicies = await listCachedActiveResponseInspectionPoliciesForAccountsAsync(orderedQuotaAllowedAccounts)

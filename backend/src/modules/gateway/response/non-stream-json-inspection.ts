@@ -150,7 +150,7 @@ export async function inspectBufferedGatewayJsonResponse(input: {
     errorCode,
     errorMessage: message
   })
-  recordCompletedUpstreamAttempt(input.req, {
+  await recordCompletedUpstreamAttempt(input.req, {
     ...input.usageContext,
     account: input.account,
     statusCode: input.upstreamResponse.status,
@@ -282,7 +282,7 @@ async function finalizeBufferedJsonProtocolFailure(
     errorCode: failure.errorCode,
     errorMessage: failure.message
   })
-  recordCompletedUpstreamAttempt(input.req, {
+  await recordCompletedUpstreamAttempt(input.req, {
     ...input.usageContext,
     account: input.account,
     statusCode: input.upstreamResponse.status,
@@ -312,7 +312,8 @@ async function finalizeBufferedJsonProtocolFailure(
       endpoint: requestEndpoint(input.req),
       reason: failure.message,
       statusCode: input.upstreamResponse.status,
-      forcePrecheck: localSuppression.action === 'precheck_required'
+      forcePrecheck: localSuppression.action === 'precheck_required',
+      localSuppressionDelayMs: localSuppression.delayMs
     })
     input.auditCapture.addGatewayMetadata({
       label: 'upstream_protocol_runtime_avoidance',

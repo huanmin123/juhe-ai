@@ -35,6 +35,7 @@ import {
 } from './maintenance-cleanup-jobs.js'
 import { currentCpuPercent, currentMemoryMetrics, currentNetworkMetrics } from './system-metrics-sampler.service.js'
 import { WorkerScheduler } from './worker-scheduler.js'
+import { getUsageRecordRedisStreamRuntime } from '../gateway/usage/record-queue.service.js'
 
 let started = false
 let usageStatsAggregationRunning = false
@@ -197,12 +198,28 @@ async function usageStatsAggregationSafety(): Promise<UsageStatsAggregationSafet
   if (flushFailureCount > 0) {
     throw new Error(`使用记录 ingest 队列已有 ${flushFailureCount} 次写入失败，本轮跳过统计聚合，等待写入队列恢复`)
   }
+  await assertUsageRecordRedisStreamDrainedForStatsAggregation()
   const stalePendingCreatedAt = oldestPendingUsageRecordCreatedAt(status)
   if (stalePendingCreatedAt && stalePendingCreatedAt <= defaultSafeCreatedBefore) {
     throw new Error(`使用记录 ingest 队列存在 createdAt=${stalePendingCreatedAt} 的超龄未落库记录，本轮跳过统计聚合，等待 ${usageStatsCursorSafetyDelaySeconds} 秒安全延迟内的写入队列恢复`)
   }
   return {
     safeCreatedBefore: defaultSafeCreatedBefore
+  }
+}
+
+async function assertUsageRecordRedisStreamDrainedForStatsAggregation(): Promise<void> {
+  if (runtimeConfig.queueDriver !== 'redis_stream') {
+    return
+  }
+  const runtime = await getUsageRecordRedisStreamRuntime()
+  if (!runtime) {
+    throw new Error('Redis Stream 使用记录队列运行态不可用，本轮跳过统计聚合，避免统计游标越过未落库记录')
+  }
+  const pendingCount = runtime.pendingCount
+  const lag = runtime.lag ?? 0
+  if (pendingCount > 0 || lag > 0) {
+    throw new Error(`Redis Stream 使用记录队列仍有 pending=${pendingCount} lag=${lag} 的未落库消息，本轮跳过统计聚合`)
   }
 }
 

@@ -146,6 +146,9 @@ const postgresSyncOpenAIProtocolProviderCodes = [
 ] as const
 
 export function listProviderModelCatalog(options: ModelCatalogListOptions): ProviderModelCatalogItem[] {
+  if (runtimeConfig.cacheDriver === 'redis') {
+    throw new Error('高性能模式禁止同步读取本地模型目录缓存，必须使用 listProviderModelCatalogAsync')
+  }
   const cacheKey = modelCatalogCacheKey(options)
   const cached = providerModelCatalogCache.get(cacheKey)
   if (cached) {
@@ -158,9 +161,11 @@ export function listProviderModelCatalog(options: ModelCatalogListOptions): Prov
 
 export async function listProviderModelCatalogAsync(options: ModelCatalogListOptions): Promise<ProviderModelCatalogItem[]> {
   const cacheKey = modelCatalogCacheKey(options)
-  const cached = providerModelCatalogCache.get(cacheKey)
-  if (cached) {
-    return cloneProviderModelCatalogItems(cached)
+  if (runtimeConfig.cacheDriver !== 'redis') {
+    const cached = providerModelCatalogCache.get(cacheKey)
+    if (cached) {
+      return cloneProviderModelCatalogItems(cached)
+    }
   }
   const sharedCached = await getProviderModelCatalogSharedCacheEntry(cacheKey)
   if (sharedCached) {
@@ -700,8 +705,8 @@ async function getProviderModelCatalogSharedCacheEntry(cacheKey: string): Promis
 
 async function setProviderModelCatalogCacheEntryAsync(cacheKey: string, value: ProviderModelCatalogItem[]): Promise<void> {
   const cached = cloneProviderModelCatalogItems(value)
-  providerModelCatalogCache.set(cacheKey, cloneProviderModelCatalogItems(cached))
   await setProviderModelCatalogSharedCacheEntry(cacheKey, cached)
+  providerModelCatalogCache.set(cacheKey, cloneProviderModelCatalogItems(cached))
 }
 
 async function setProviderModelCatalogSharedCacheEntry(cacheKey: string, value: ProviderModelCatalogItem[]): Promise<void> {

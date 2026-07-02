@@ -29,8 +29,9 @@ import {
   type OpenAIGatewayClientStrategyContext
 } from '../client-profiles/strategy.js'
 import {
-  inspectClientIpErrorCircuit,
-  recordClientIpErrorCircuitSuccess
+  type GatewayCircuitDecision,
+  inspectClientIpErrorCircuitAsync,
+  recordClientIpErrorCircuitSuccessAsync
 } from '../runtime/client-ip-error-circuit.service.js'
 import {
   finalizeGatewayAuthFailureAudit,
@@ -227,14 +228,14 @@ export async function prepareOpenAIGatewayDispatchContext(
     endpoint,
     requestSnapshot
   })
-  const clientIpErrorCircuit = inspectClientIpErrorCircuit({
+  const clientIpErrorCircuit = await inspectClientIpErrorCircuitAsync({
     systemAccountId,
     apiKeyId,
     groupId,
     clientIp: gatewayClientIp,
     endpoint
   })
-  if (sendClientIpErrorCircuitGatewayResponse({
+  if (await sendClientIpErrorCircuitGatewayResponse({
     req,
     res,
     auditCapture,
@@ -248,7 +249,7 @@ export async function prepareOpenAIGatewayDispatchContext(
   })) {
     return undefined
   }
-  if (rejectUnavailableGatewayApiKey({
+  if (await rejectUnavailableGatewayApiKey({
     req,
     res,
     auditCapture,
@@ -260,7 +261,7 @@ export async function prepareOpenAIGatewayDispatchContext(
   }
   const initialBodyState = getGatewayRequestBodyState(req)
   if (initialBodyState?.jsonParseStatus === 'invalid_json') {
-    sendInvalidJsonGatewayResponse({
+    await sendInvalidJsonGatewayResponse({
       req,
       res,
       auditCapture,
@@ -321,14 +322,14 @@ export async function prepareOpenAIGatewayDispatchContext(
         groupId,
         trafficSource
       })
-      const targetClientIpErrorCircuit = inspectClientIpErrorCircuit({
+      const targetClientIpErrorCircuit = await inspectClientIpErrorCircuitAsync({
         systemAccountId,
         apiKeyId,
         groupId,
         clientIp: gatewayClientIp,
         endpoint
       })
-      if (sendClientIpErrorCircuitGatewayResponse({
+      if (await sendClientIpErrorCircuitGatewayResponse({
         req,
         res,
         auditCapture,
@@ -354,7 +355,7 @@ export async function prepareOpenAIGatewayDispatchContext(
         }
       })
       const responsePayload = gatewayErrorPayload(normalRoute.message, normalRoute.type, normalRoute.code)
-      sendGatewayFailureResponse({
+      await sendGatewayFailureResponse({
         req,
         res,
         auditCapture,
@@ -404,7 +405,7 @@ export async function prepareOpenAIGatewayDispatchContext(
         statusCode === 503 ? 'service_unavailable' : 'upstream_response_error',
         hybridRoute.reason
       )
-      sendGatewayFailureResponse({
+      await sendGatewayFailureResponse({
         req,
         res,
         auditCapture,
@@ -451,14 +452,14 @@ export async function prepareOpenAIGatewayDispatchContext(
         groupId,
         trafficSource
       })
-      const targetClientIpErrorCircuit = inspectClientIpErrorCircuit({
+      const targetClientIpErrorCircuit = await inspectClientIpErrorCircuitAsync({
         systemAccountId,
         apiKeyId,
         groupId,
         clientIp: gatewayClientIp,
         endpoint
       })
-      if (sendClientIpErrorCircuitGatewayResponse({
+      if (await sendClientIpErrorCircuitGatewayResponse({
         req,
         res,
         auditCapture,
@@ -499,7 +500,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     })
   }
   if (!groupAccess) {
-    rejectMissingGatewayGroupAccess({
+    await rejectMissingGatewayGroupAccess({
       req,
       res,
       auditCapture,
@@ -522,7 +523,7 @@ export async function prepareOpenAIGatewayDispatchContext(
 
   const bodyState = getGatewayRequestBodyState(req)
   if (bodyState?.jsonParseStatus === 'invalid_json') {
-    sendInvalidJsonGatewayResponse({
+    await sendInvalidJsonGatewayResponse({
       req,
       res,
       auditCapture,
@@ -561,7 +562,7 @@ export async function prepareOpenAIGatewayDispatchContext(
 
   const modelsResponseProtocol = resolveGatewayModelsResponseProtocol(req)
   if (modelsResponseProtocol) {
-    recordClientIpErrorCircuitSuccess({
+    await recordClientIpErrorCircuitSuccessAsync({
       systemAccountId,
       apiKeyId,
       groupId,
@@ -806,7 +807,7 @@ async function handleGatewayModelsRequestBeforeRequiredAuth(input: {
     return false
   }
 
-  const rateLimit = consumePublicModelsRateLimit({ clientIp: input.clientIp })
+  const rateLimit = await consumePublicModelsRateLimit({ clientIp: input.clientIp })
   if (!rateLimit.allowed) {
     sendPublicModelsRateLimitedResponse(input, rateLimit.retryAfterSeconds ?? 1)
     return true
@@ -1105,18 +1106,18 @@ function mergeGatewaySettings(base: GatewaySettings, override?: Partial<GatewayS
   }
 }
 
-function sendClientIpErrorCircuitGatewayResponse(input: {
+async function sendClientIpErrorCircuitGatewayResponse(input: {
   req: Request
   res: Response
   auditCapture: AuditCaptureContext
   usageContext: GatewayFailureUsageContext
   startedAt: number
-  circuit: ReturnType<typeof inspectClientIpErrorCircuit>
+  circuit: GatewayCircuitDecision
   systemAccountId: string
   apiKeyId?: string
   groupId: string
   clientIp?: string
-}): boolean {
+}): Promise<boolean> {
   if (!input.circuit.blocked) {
     return false
   }
@@ -1144,7 +1145,7 @@ function sendClientIpErrorCircuitGatewayResponse(input: {
       failureCount: input.circuit.failureCount
     }
   })
-  sendGatewayFailureResponse({
+  await sendGatewayFailureResponse({
     req: input.req,
     res: input.res,
     auditCapture: input.auditCapture,

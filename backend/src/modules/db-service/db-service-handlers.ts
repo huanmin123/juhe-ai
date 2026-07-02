@@ -144,7 +144,10 @@ import {
 } from '../gateway/runtime/runtime-cache.service.js'
 import { isGptVendorCode, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
 import { isDynamicRouteStrategyMode } from '../../domain/route-strategy.js'
-import { orderGatewayApiKeyGroupBindingsForDispatch } from '../gateway/routing/api-key-group-route-selector.service.js'
+import {
+  orderGatewayApiKeyGroupBindingsForDispatch,
+  orderGatewayApiKeyGroupBindingsForDispatchAsync
+} from '../gateway/routing/api-key-group-route-selector.service.js'
 import { checkGatewayApiKeyQuota, checkGatewayApiKeyQuotaExactAsync, clearApiKeyQuotaCache } from '../gateway/quota/api-key-quota.service.js'
 import {
   checkGatewayAuthorizationQuotaBatchByIds,
@@ -1602,7 +1605,7 @@ async function readGatewayRuntimeAsync(operation: Extract<DbServiceOperation, { 
       responseInspectionPolicies: []
     }
   }
-  const orderedBindings = orderGatewayApiKeyGroupBindingsForDispatch(apiKey)
+  const orderedBindings = await orderGatewayApiKeyGroupBindingsForDispatchAsync(apiKey)
   apiKey.selected_group_id = orderedBindings[0]?.group_id ?? apiKey.selected_group_id
   const candidateGroupIds = operation.groupId
     ? orderedBindings.some((binding) => binding.group_id === operation.groupId)

@@ -1,6 +1,8 @@
 import { parentPort } from 'node:worker_threads'
 
 import type { OpenAIOAuthCodexNormalizeInput } from '../adapters/gpt-codex/oauth-normalizer.js'
+import { OpenAIOAuthCodexAdapterError } from '../adapters/gpt-codex/oauth-errors.js'
+import { extractGatewayJsonBodyMetadata } from './json-metadata-scanner.js'
 
 type GatewayJsonWorkerJobType =
   | 'extract_json_body_metadata'
@@ -18,15 +20,8 @@ if (!parentPort) {
   throw new Error('网关 JSON worker 缺少 parentPort')
 }
 const workerPort = parentPort
-const {
-  OpenAIOAuthCodexAdapterError,
-  normalizeOpenAIOAuthCodexRawBody
-} = await import(resolveNormalizerModuleUrl()) as typeof import('../adapters/gpt-codex/oauth-normalizer.js')
-const {
-  extractGatewayJsonBodyMetadata
-} = await import(resolveJsonMetadataScannerModuleUrl()) as typeof import('./json-metadata-scanner.js')
 
-workerPort.on('message', (message: GatewayJsonWorkerRequest) => {
+workerPort.on('message', async (message: GatewayJsonWorkerRequest) => {
   const id = message.id
   try {
     const rawBody = Buffer.from(message.rawBody.buffer, message.rawBody.byteOffset, message.rawBody.byteLength)
@@ -42,6 +37,9 @@ workerPort.on('message', (message: GatewayJsonWorkerRequest) => {
       if (!message.normalizeInput) {
         throw new Error('OpenAI OAuth Codex 归一化参数缺失')
       }
+      const {
+        normalizeOpenAIOAuthCodexRawBody
+      } = await import(resolveNormalizerModuleUrl()) as typeof import('../adapters/gpt-codex/oauth-normalizer.js')
       workerPort.postMessage({
         id,
         ok: true,
@@ -63,12 +61,6 @@ function resolveNormalizerModuleUrl(): string {
   return import.meta.url.endsWith('.ts')
     ? new URL('../adapters/gpt-codex/oauth-normalizer.ts', import.meta.url).href
     : new URL('../adapters/gpt-codex/oauth-normalizer.js', import.meta.url).href
-}
-
-function resolveJsonMetadataScannerModuleUrl(): string {
-  return import.meta.url.endsWith('.ts')
-    ? new URL('./json-metadata-scanner.ts', import.meta.url).href
-    : new URL('./json-metadata-scanner.js', import.meta.url).href
 }
 
 function workerErrorResponse(id: number, error: unknown): Record<string, unknown> {

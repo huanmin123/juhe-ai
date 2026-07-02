@@ -2,9 +2,6 @@ import type { AccountSummary } from '../../domain/types.js'
 import { logger } from '../../shared/logger.js'
 import { createRetryQueue } from '../../shared/retry-queue.js'
 import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
-import {
-  findRecentOpenAIRequestShapeForAccountAsync
-} from '../../storage/repositories.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { preferredSystemAccountTestModelAsync, testOpenAIAccountWithDiagnosticRetries } from '../accounts/account-test.service.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
@@ -78,7 +75,6 @@ async function runCooldownAccountRetestQueueItem(
     model: await preferredSystemAccountTestModelAsync(account),
     diagnostics: 'full',
     groupId,
-    requestShape: await findRecentOpenAIRequestShapeForAccountAsync(account.id, groupId),
     trafficSource: 'cooldown_retest',
     disableAccountStateMutation: true,
     findAccountForTest: loadAccountForTestViaDbService,

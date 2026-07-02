@@ -14,7 +14,7 @@ import type { Request } from 'express'
 
 import { createProxyAgent } from '../../openai-oauth/openai-oauth.service.js'
 import { prepareSafeUpstreamRequestUrl } from '../../../shared/upstream-url-policy.js'
-import { createAppCache } from '../../../shared/cache.js'
+import { createProcessLocalResourceCache } from '../../../shared/cache.js'
 import type { GatewaySettings } from '../policy/account-error-policy.service.js'
 import {
   isOpenAIOAuthCodexCompactRequest
@@ -74,7 +74,7 @@ const gatewayProxyAgentCacheMaxEntries = 256
 const gatewayProxyAgentCacheTtlMs = 30 * 60 * 1000
 let directHttpAgent: http.Agent | undefined
 let directHttpsAgent: https.Agent | undefined
-const proxyAgents = createAppCache<string, http.Agent>({
+const proxyAgents = createProcessLocalResourceCache<string, http.Agent>({
   name: 'gateway:proxy-agents',
   max: gatewayProxyAgentCacheMaxEntries,
   ttlMs: gatewayProxyAgentCacheTtlMs,

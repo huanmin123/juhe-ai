@@ -230,6 +230,7 @@ const trafficSourceOptions = [
   { label: '全部来源', value: 'all' },
   { label: '网关请求', value: 'gateway' },
   { label: '账号测试', value: 'manual_account_test' },
+  { label: '运行态恢复探针', value: 'runtime_recovery_probe' },
   { label: '恢复探活', value: 'cooldown_retest' },
   { label: '混合评分', value: 'hybrid_scoring' },
   { label: '混合质量评分', value: 'hybrid_quality_scoring' }
@@ -475,4 +476,3 @@ onBeforeUnmount(() => {
 
 onMounted(loadData)
 </script>
-

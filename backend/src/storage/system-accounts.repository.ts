@@ -6,7 +6,7 @@ import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabas
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
 import { ensureDefaultBuiltInGroupsForSystemAccount } from './default-group.repository.js'
 import { ensureDefaultApiKeysForSystemAccount, ensureDefaultApiKeysForSystemAccountAsync } from './api-key.repository.js'
-import { clearGatewayApiKeyValidationCache } from './gateway-api-key.repository.js'
+import { clearGatewayApiKeyValidationCache, clearGatewayApiKeyValidationCacheAsync } from './gateway-api-key.repository.js'
 import { getPostgresPool } from './postgres-client.js'
 import { ensureDefaultRouteStrategiesForSystemAccount, ensureDefaultRouteStrategiesForSystemAccountAsync } from './route-strategy.repository.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
@@ -656,7 +656,7 @@ export async function updateSystemAccountWithPasswordHashAsync(id: string, input
   }
   invalidateSystemAccountLookupCache(id)
   if (current && (updated.status !== current.status || updated.imageGenerationEnabled !== current.imageGenerationEnabled)) {
-    clearGatewayApiKeyValidationCache()
+    await clearGatewayApiKeyValidationCacheAsync()
     notifyGatewayRuntimeCacheInvalidation(updated.status !== current.status ? 'system_account_status_changed' : 'system_account_image_generation_changed')
   }
   return updated

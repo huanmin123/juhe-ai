@@ -116,7 +116,7 @@ export async function scoreHybridGatewayRequest(input: {
     })
     if (dispatch.outcome === 'failed') {
       if (dispatch.shouldRecordUsage && dispatch.account && dispatch.groupId) {
-        recordHybridScoringAttempt({
+        await recordHybridScoringAttempt({
           traceId: input.traceId,
           clientIp: input.clientIp,
           systemAccountId: input.apiKeyRecord.system_account_id,
@@ -142,7 +142,7 @@ export async function scoreHybridGatewayRequest(input: {
       parsed = parseHybridScoringResponse(dispatch.responseBody)
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error)
-      recordHybridScoringAttempt({
+      await recordHybridScoringAttempt({
         traceId: input.traceId,
         clientIp: input.clientIp,
         systemAccountId: input.apiKeyRecord.system_account_id,
@@ -160,7 +160,7 @@ export async function scoreHybridGatewayRequest(input: {
         requestSnapshot: { model: input.config.scoringModel, contextBytes: Buffer.byteLength(context, 'utf8') },
         responseSnapshot: { statusCode: dispatch.statusCode, body: responseBodySnippet(dispatch.responseBody) }
       })
-      dispatch.finish({ success: false, errorCode: 'hybrid_scoring_failed', errorMessage })
+      await dispatch.finish({ success: false, errorCode: 'hybrid_scoring_failed', errorMessage })
       return failedScoringResult(input.config, 'hybrid_scoring_failed', errorMessage, dispatch.account.id, dispatch.statusCode)
     }
     const scoringResult: HybridScoringResult = {
@@ -175,7 +175,7 @@ export async function scoreHybridGatewayRequest(input: {
       statusCode: dispatch.statusCode
     }
     await rememberHybridScoringCacheResult(cacheKey, scoringResult, input.config.scoringCacheTtlSeconds)
-    recordHybridScoringAttempt({
+    await recordHybridScoringAttempt({
       traceId: input.traceId,
       clientIp: input.clientIp,
       systemAccountId: input.apiKeyRecord.system_account_id,
@@ -191,7 +191,7 @@ export async function scoreHybridGatewayRequest(input: {
       requestSnapshot: { model: input.config.scoringModel, contextBytes: Buffer.byteLength(context, 'utf8') },
       responseSnapshot: { statusCode: dispatch.statusCode, parsed }
     })
-    dispatch.finish({ success: true })
+    await dispatch.finish({ success: true })
     return scoringResult
   } catch (error) {
     return failedScoringResult(

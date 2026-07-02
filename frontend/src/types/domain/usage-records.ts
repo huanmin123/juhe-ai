@@ -28,7 +28,7 @@ export interface UsageRecordCostBreakdown {
   multiplier: 1
 }
 
-export type UsageRecordTrafficSource = 'gateway' | 'manual_account_test' | 'cooldown_retest' | 'hybrid_scoring' | 'hybrid_quality_scoring'
+export type UsageRecordTrafficSource = 'gateway' | 'manual_account_test' | 'runtime_recovery_probe' | 'cooldown_retest' | 'hybrid_scoring' | 'hybrid_quality_scoring'
 export type UsageFailureAttribution = 'account_upstream' | 'account_dependency' | 'gateway_capacity' | 'gateway_policy' | 'client_lifecycle'
 
 export interface UsageRecordSummary {

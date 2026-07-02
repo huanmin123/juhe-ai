@@ -105,6 +105,7 @@ function usageRecordTrafficSource(value: unknown): UsageRecordSummary['trafficSo
   if (
     value === 'gateway'
     || value === 'manual_account_test'
+    || value === 'runtime_recovery_probe'
     || value === 'cooldown_retest'
     || value === 'hybrid_scoring'
     || value === 'hybrid_quality_scoring'

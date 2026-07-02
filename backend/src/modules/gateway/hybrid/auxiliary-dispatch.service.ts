@@ -14,7 +14,7 @@ import { groupUsageMetadata, type GatewayFailureUsageContext } from '../usage/re
 import type { OpenAIGatewayTrafficSource } from '../usage/traffic-source.js'
 import { buildUsageRequestSnapshot } from '../usage/snapshots.js'
 import { emptyUsage, type ParsedUsage } from '../usage/types.js'
-import { orderGatewayApiKeyGroupBindingsForDispatch } from '../routing/api-key-group-route-selector.service.js'
+import { orderGatewayApiKeyGroupBindingsForDispatchAsync } from '../routing/api-key-group-route-selector.service.js'
 import { selectGatewayModelTargetGroup } from '../routing/model-target-group-selector.js'
 import { readUpstreamBodyLimited } from '../upstream/body.js'
 import { parseOpenAIUsageFromJsonBuffer } from '../protocols/openai-v1/usage.js'
@@ -31,7 +31,7 @@ export type HybridAuxiliaryDispatchResult =
     responseBodyText: string
     responseBodyTruncated: boolean
     usage: ParsedUsage
-    finish: (input: HybridAuxiliaryDispatchFinishInput) => void
+    finish: (input: HybridAuxiliaryDispatchFinishInput) => Promise<void>
   }
   | {
     outcome: 'failed'
@@ -71,7 +71,7 @@ export async function dispatchHybridAuxiliaryChatCompletion(input: {
   const selection = await selectGatewayModelTargetGroup({
     req: input.req,
     apiKeyRecord: input.apiKeyRecord,
-    bindings: orderGatewayApiKeyGroupBindingsForDispatch(input.apiKeyRecord),
+    bindings: await orderGatewayApiKeyGroupBindingsForDispatchAsync(input.apiKeyRecord),
     targetModel: input.targetModel,
     requestClientCompatibility: input.requestClientCompatibility ?? 'openai_standard'
   })
@@ -197,7 +197,7 @@ export async function dispatchHybridAuxiliaryChatCompletion(input: {
           firstTokenMs: body.firstByteMs,
           confirmSameAccountApiKeyFailures: dispatch.confirmSameAccountApiKeyFailures
         })
-        finish({ success: false, errorCode: input.dispatchErrorCode, errorMessage: input.responseTooLargeMessage })
+        await finish({ success: false, errorCode: input.dispatchErrorCode, errorMessage: input.responseTooLargeMessage })
         return {
           outcome: 'failed',
           errorCode: input.dispatchErrorCode,
@@ -298,10 +298,10 @@ function createFinish(input: {
   headers: Headers
   body: Buffer
   firstTokenMs?: number
-  confirmSameAccountApiKeyFailures: () => void
-}): (finish: HybridAuxiliaryDispatchFinishInput) => void {
+  confirmSameAccountApiKeyFailures: () => Promise<void>
+}): (finish: HybridAuxiliaryDispatchFinishInput) => Promise<void> {
   let finished = false
-  return (finish) => {
+  return async (finish) => {
     if (finished) return
     finished = true
     input.auditCapture.completeAttempt(input.auditAttemptId, {
@@ -314,7 +314,7 @@ function createFinish(input: {
       errorMessage: finish.errorMessage
     })
     if (finish.success) {
-      input.confirmSameAccountApiKeyFailures()
+      await input.confirmSameAccountApiKeyFailures()
     }
     input.auditCapture.finalize({
       outcome: finish.success ? 'success' : 'upstream_failed',

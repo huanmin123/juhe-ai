@@ -65,7 +65,7 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
     currentInput: body.input
   })
   if (restoreResult.outcome !== 'found' && restoreResult.outcome !== 'no_previous') {
-    sendCompactFailure(input, restoreFailureForCompact(restoreResult.outcome))
+    await sendCompactFailure(input, restoreFailureForCompact(restoreResult.outcome))
     return 'completed'
   }
 
@@ -98,7 +98,7 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
     })
     const summary = extractChatCompletionSummary(readResult.bodyText)
     if (!summary) {
-      sendCompactFailure(input, {
+      await sendCompactFailure(input, {
         statusCode: 502,
         type: 'bad_gateway',
         code: 'codex_bridge_compact_summary_empty',
@@ -148,7 +148,7 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
     return 'completed'
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    sendCompactFailure(input, {
+    await sendCompactFailure(input, {
       statusCode: 502,
       type: 'bad_gateway',
       code: 'codex_bridge_compact_summary_failed',
@@ -330,15 +330,15 @@ function restoreFailureForCompact(outcome: string): {
   }
 }
 
-function sendCompactFailure(input: {
+async function sendCompactFailure(input: {
   req: Request
   res: Response
   auditCapture: AuditCaptureContext
   usageContext: GatewayFailureUsageContext
   startedAt: number
-}, failure: { statusCode: number; type: string; code: string; message: string }): void {
+}, failure: { statusCode: number; type: string; code: string; message: string }): Promise<void> {
   const responsePayload = gatewayErrorPayload(failure.message, failure.type, failure.code)
-  sendGatewayFailureResponse({
+  await sendGatewayFailureResponse({
     req: input.req,
     res: input.res,
     auditCapture: input.auditCapture,

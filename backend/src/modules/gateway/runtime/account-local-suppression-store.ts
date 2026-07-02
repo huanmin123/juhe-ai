@@ -1,4 +1,5 @@
 import type { AccountRuntimeAvailability } from '../../db-service/db-service-types.js'
+import { runtimeConfig } from '../../../config/runtime.js'
 import { getAccountCurrentConcurrency } from '../../../shared/account-concurrency.js'
 import { logger } from '../../../shared/logger.js'
 import {
@@ -6,6 +7,7 @@ import {
   runtimeAccountIdFromKey,
   type SuppressibleGatewayAccount
 } from './account-runtime-keys.js'
+import { preserveGatewayAccountDispatchPriorityTiers } from './account-dispatch-priority-order.js'
 
 export interface LocalAccountSuppression {
   accountId: string
@@ -33,7 +35,7 @@ interface LocalAccountDegradation {
 
 export interface GatewayAccountLocalSuppressionResult {
   runtimeKey: string
-  action: 'suppressed' | 'precheck_required'
+  action: 'suppressed' | 'precheck_required' | 'redis_managed'
   reason: string
   localFailureCount: number
   delayMs?: number
@@ -74,6 +76,8 @@ type PrecheckRuntimeBlockingPredicate = (runtimeKey: string) => boolean
 export const localSuppressionMaxMs = 10 * 60_000
 export const localDegradationWindowMs = 5 * 60_000
 export const localDegradationActivationFailureThreshold = 2
+export const localDegradationMinObservationMs = 60_000
+export const localSuppressionPrecheckMinObservationMs = 60_000
 
 const localSuppressionDelayMs = [3_000, 5_000, 10_000] as const
 const localSuppressionHalfOpenLeaseMs = 180_000
@@ -84,6 +88,14 @@ const localAccountDegradations = new Map<string, LocalAccountDegradation>()
 let localHalfOpenLeaseSequence = 0
 
 export function degradeLocalAccountForGatewayFailure(runtimeKey: string, accountId: string, reason: string): AccountRuntimeAvailability {
+  if (!canUseProcessLocalAccountRuntimeState()) {
+    return {
+      status: 'normal',
+      reason,
+      since: new Date().toISOString(),
+      failureCount: 0
+    }
+  }
   const now = Date.now()
   cleanupExpiredLocalDegradations(now)
   const currentSuppression = localAccountSuppressions.get(runtimeKey)
@@ -132,6 +144,14 @@ export function degradeLocalAccountForGatewayFailure(runtimeKey: string, account
 }
 
 export function suppressLocalAccountForGatewayFailure(runtimeKey: string, accountId: string, reason: string): GatewayAccountLocalSuppressionResult {
+  if (!canUseProcessLocalAccountRuntimeState()) {
+    return {
+      runtimeKey,
+      action: 'redis_managed',
+      reason,
+      localFailureCount: 0
+    }
+  }
   const now = Date.now()
   const current = localAccountSuppressions.get(runtimeKey)
   const currentFailureCount = current?.localFailureCount ?? 0
@@ -141,15 +161,41 @@ export function suppressLocalAccountForGatewayFailure(runtimeKey: string, accoun
   const localFailureCount = shouldAdvanceFailureCount ? currentFailureCount + 1 : Math.max(1, currentFailureCount)
   if (localFailureCount > localSuppressionDelayMs.length) {
     const fallbackDelayMs = localSuppressionDelayMs[localSuppressionDelayMs.length - 1]
+    const observedForMs = current ? now - current.sinceMs : 0
+    if (observedForMs < localSuppressionPrecheckMinObservationMs) {
+      suppressLocalAccount(runtimeKey, fallbackDelayMs, reason, 'local_suppressed', {
+        accountId,
+        localFailureCount
+      })
+      logger.warn({
+        event: 'gateway_account_local_suppression_precheck_delayed',
+        accountId,
+        runtimeKey,
+        localFailureCount,
+        observedForMs,
+        minObservationMs: localSuppressionPrecheckMinObservationMs,
+        reason
+      }, '账号短暂避让半开探测失败，但未达到事前确认最小观察时间')
+      return {
+        runtimeKey,
+        action: 'suppressed',
+        reason,
+        localFailureCount,
+        delayMs: fallbackDelayMs,
+        until: new Date(Date.now() + fallbackDelayMs).toISOString()
+      }
+    }
     suppressLocalAccount(runtimeKey, fallbackDelayMs, reason, 'local_suppressed', {
       accountId,
-      localFailureCount: localSuppressionDelayMs.length
+      localFailureCount
     })
     logger.warn({
       event: 'gateway_account_local_suppression_precheck_required',
       accountId,
       runtimeKey,
       localFailureCount,
+      observedForMs,
+      minObservationMs: localSuppressionPrecheckMinObservationMs,
       reason
     }, '账号短暂避让半开探测连续失败，要求进入事前确认')
     return {
@@ -180,8 +226,9 @@ export function suppressLocalAccount(
   durationMs: number,
   reason: string,
   status: AccountRuntimeAvailability['status'] = 'local_suppressed',
-  metadata: Partial<Pick<LocalAccountSuppression, 'accountId' | 'failureCount' | 'distinctClientIpCount' | 'distinctApiKeyCount' | 'precheckAttemptCount' | 'localFailureCount' | 'halfOpenLeaseUntilMs' | 'halfOpenLeaseId'>> = {}
+  metadata: Partial<Pick<LocalAccountSuppression, 'accountId' | 'sinceMs' | 'failureCount' | 'distinctClientIpCount' | 'distinctApiKeyCount' | 'precheckAttemptCount' | 'localFailureCount' | 'halfOpenLeaseUntilMs' | 'halfOpenLeaseId'>> = {}
 ): void {
+  if (!canUseProcessLocalAccountRuntimeState()) return
   const untilMs = Date.now() + durationMs
   const current = localAccountSuppressions.get(runtimeKey)
   const accountId = metadata.accountId ?? current?.accountId ?? runtimeAccountIdFromKey(runtimeKey)
@@ -204,7 +251,7 @@ export function suppressLocalAccount(
     accountId,
     untilMs,
     reason,
-    sinceMs: current?.sinceMs ?? Date.now(),
+    sinceMs: metadata.sinceMs ?? current?.sinceMs ?? Date.now(),
     status,
     localFailureCount: current?.localFailureCount,
     halfOpenLeaseUntilMs: metadata.halfOpenLeaseUntilMs,
@@ -225,6 +272,7 @@ export function suppressLocalAccount(
 export function releaseLocalAccountHalfOpenLease(
   lease: Pick<GatewayAccountHalfOpenLease, 'runtimeKey' | 'accountId' | 'leaseId'>
 ): boolean {
+  if (!canUseProcessLocalAccountRuntimeState()) return false
   const current = localAccountSuppressions.get(lease.runtimeKey)
   if (!current || current.status !== 'half_open' || current.halfOpenLeaseId !== lease.leaseId) {
     return false
@@ -250,6 +298,7 @@ export function releaseLocalAccountHalfOpenLease(
 export function snapshotLocalAccountRuntimeAvailability(
   isPrecheckRuntimeBlocking: PrecheckRuntimeBlockingPredicate
 ): Record<string, AccountRuntimeAvailability> {
+  if (!canUseProcessLocalAccountRuntimeState()) return {}
   cleanupExpiredLocalSuppressions(isPrecheckRuntimeBlocking)
   const now = Date.now()
   cleanupExpiredLocalDegradations(now)
@@ -282,6 +331,15 @@ export function snapshotLocalAccountRuntimeAvailability(
 export function orderLocalAccountDegradations<T extends SuppressibleGatewayAccount>(
   accounts: T[]
 ): LocalAccountDegradationOrderResult<T> {
+  if (!canUseProcessLocalAccountRuntimeState()) {
+    return {
+      accounts,
+      degradedCount: 0,
+      degradedAccountIds: [],
+      applied: false,
+      bypassedAllDegraded: false
+    }
+  }
   if (accounts.length === 0) {
     return {
       accounts,
@@ -328,7 +386,7 @@ export function orderLocalAccountDegradations<T extends SuppressibleGatewayAccou
   }
 
   return {
-    accounts: [...normalAccounts, ...degradedAccounts],
+    accounts: preserveGatewayAccountDispatchPriorityTiers(accounts, [...normalAccounts, ...degradedAccounts]),
     degradedCount: degradedAccounts.length,
     degradedAccountIds,
     applied: true,
@@ -341,6 +399,15 @@ export function filterLocalAccountSuppressions<T extends SuppressibleGatewayAcco
   isPrecheckRuntimeBlocking: PrecheckRuntimeBlockingPredicate,
   options: LocalAccountSuppressionFilterOptions = {}
 ): LocalAccountSuppressionFilterResult<T> {
+  if (!canUseProcessLocalAccountRuntimeState()) {
+    return {
+      accounts,
+      suppressedCount: 0,
+      allSuppressed: false,
+      suppressedAccountIds: [],
+      acquiredHalfOpenLeases: []
+    }
+  }
   cleanupExpiredLocalSuppressions(isPrecheckRuntimeBlocking)
   const now = Date.now()
   const filtered: T[] = []
@@ -378,11 +445,68 @@ export function filterLocalAccountSuppressions<T extends SuppressibleGatewayAcco
 }
 
 export function clearLocalAccountSuppression(runtimeKey: string): boolean {
+  if (!canUseProcessLocalAccountRuntimeState()) return false
   return localAccountSuppressions.delete(runtimeKey)
 }
 
 export function clearLocalAccountDegradation(runtimeKey: string): boolean {
+  if (!canUseProcessLocalAccountRuntimeState()) return false
   return localAccountDegradations.delete(runtimeKey)
+}
+
+export function ageLocalAccountDegradationForTest(runtimeKey: string, ageMs: number): void {
+  if (!canUseProcessLocalAccountRuntimeState()) return
+  const current = localAccountDegradations.get(runtimeKey)
+  if (!current) {
+    return
+  }
+  const firstFailureMs = Date.now() - Math.max(0, Math.trunc(ageMs))
+  localAccountDegradations.set(runtimeKey, {
+    ...current,
+    sinceMs: Math.min(current.sinceMs, firstFailureMs),
+    firstFailureMs
+  })
+}
+
+export function activateLocalAccountRuntimeDegradation(
+  runtimeKey: string,
+  accountId: string,
+  reason: string,
+  input: { sinceMs?: number; failureCount?: number } = {}
+): AccountRuntimeAvailability {
+  if (!canUseProcessLocalAccountRuntimeState()) {
+    return {
+      status: 'normal',
+      reason,
+      since: new Date().toISOString(),
+      failureCount: 0
+    }
+  }
+  const now = Date.now()
+  const sinceMs = input.sinceMs ?? now - localDegradationMinObservationMs
+  const failureCount = Math.max(
+    localDegradationActivationFailureThreshold,
+    Math.trunc(input.failureCount ?? localDegradationActivationFailureThreshold)
+  )
+  const degradation: LocalAccountDegradation = {
+    accountId,
+    reason,
+    sinceMs,
+    firstFailureMs: Math.min(sinceMs, now - localDegradationMinObservationMs),
+    lastFailureMs: now,
+    failureCount
+  }
+  localAccountDegradations.set(runtimeKey, degradation)
+  logger.warn({
+    event: 'gateway_account_runtime_degraded',
+    accountId,
+    runtimeKey,
+    failureCount,
+    activationFailureThreshold: localDegradationActivationFailureThreshold,
+    observationWindowSeconds: Math.trunc(localDegradationWindowMs / 1000),
+    reason
+  }, '后台探针确认账号近期不稳，已进入运行态调度降级')
+  return localAccountDegradationAvailability(degradation)
 }
 
 export function clearLocalAccountSuppressionsForTest(): void {
@@ -391,6 +515,7 @@ export function clearLocalAccountSuppressionsForTest(): void {
 }
 
 export function cleanupExpiredLocalSuppressions(isPrecheckRuntimeBlocking: PrecheckRuntimeBlockingPredicate): void {
+  if (!canUseProcessLocalAccountRuntimeState()) return
   const now = Date.now()
   for (const [accountId, suppression] of localAccountSuppressions) {
     if (isPrecheckRuntimeBlocking(accountId)) {
@@ -407,6 +532,7 @@ export function cleanupExpiredLocalSuppressions(isPrecheckRuntimeBlocking: Prech
 }
 
 export function countVisibleLocalSuppressions(isPrecheckRuntimeBlocking: PrecheckRuntimeBlockingPredicate): number {
+  if (!canUseProcessLocalAccountRuntimeState()) return 0
   const now = Date.now()
   let count = 0
   for (const [runtimeKey, suppression] of localAccountSuppressions) {
@@ -418,6 +544,7 @@ export function countVisibleLocalSuppressions(isPrecheckRuntimeBlocking: Prechec
 }
 
 export function countLocalAccountDegradations(): number {
+  if (!canUseProcessLocalAccountRuntimeState()) return 0
   cleanupExpiredLocalDegradations()
   let count = 0
   for (const degradation of localAccountDegradations.values()) {
@@ -507,6 +634,13 @@ function minRetryAtMs(current: number | undefined, candidate: number): number {
   return current === undefined ? candidate : Math.min(current, candidate)
 }
 
+function canUseProcessLocalAccountRuntimeState(): boolean {
+  if (runtimeConfig.runtimeStateDriver !== 'redis') return true
+  localAccountSuppressions.clear()
+  localAccountDegradations.clear()
+  return false
+}
+
 function localAccountDegradationAvailability(degradation: LocalAccountDegradation): AccountRuntimeAvailability {
   return {
     status: 'degraded',
@@ -536,6 +670,7 @@ function localAccountDegradationObservationAvailability(degradation: LocalAccoun
 
 function isLocalAccountDegradationActive(degradation: LocalAccountDegradation): boolean {
   return degradation.failureCount >= localDegradationActivationFailureThreshold
+    && degradation.lastFailureMs - degradation.firstFailureMs >= localDegradationMinObservationMs
 }
 
 function cleanupExpiredLocalDegradations(now = Date.now()): void {

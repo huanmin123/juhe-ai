@@ -33,7 +33,7 @@ import {
   recordFailedUpstreamAttempt,
   type GatewayUsageContext
 } from '../usage/records.js'
-import { isCooldownRetestTrafficSource } from '../usage/traffic-source.js'
+import { isAccountProbeTrafficSource } from '../usage/traffic-source.js'
 import {
   rememberFailedProxyForDispatch,
   shouldRecordAbortedUpstreamAttempt,
@@ -44,7 +44,7 @@ import {
 } from '../runtime/client-ip-account-avoidance.service.js'
 import {
   gatewayProxyKey,
-  recordGatewayUpstreamBucketFailure
+  recordGatewayUpstreamBucketFailureAsync
 } from '../runtime/proxy-health.service.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import {
@@ -191,7 +191,7 @@ export async function handleFailedUpstreamResponse(
     errorPhase: 'upstream_response',
     errorMessage: diagnosticResponseBodyText
   })
-  recordFailedUpstreamAttempt(req, usageContext, account, {
+  await recordFailedUpstreamAttempt(req, usageContext, account, {
     upstreamUrl,
     startedAt: attemptStartedAt,
     statusCode: response.status,
@@ -238,19 +238,19 @@ export async function handleFailedUpstreamResponse(
   const isolateAccountApiKeyFailure = Boolean(account.selectedApiKeyFingerprint)
   const responseKeyFailoverEligible = accountStateMutationEnabled
     && isolateAccountApiKeyFailure
-    && !isCooldownRetestTrafficSource(usageContext.trafficSource)
+    && !isAccountProbeTrafficSource(usageContext.trafficSource)
     && isRealUpstreamUrl(upstreamUrl)
   const apiKeyFailureStatus = 'temporary_unavailable'
   if (responseKeyFailoverEligible) {
-    recordGatewayAccountApiKeyLocalFailure(account, {
+    await recordGatewayAccountApiKeyLocalFailure(account, {
       status: apiKeyFailureStatus,
       errorMessage: parsedErrorMessage || diagnosticErrorMessage || undefined
     })
   }
   if (accountStateMutationEnabled && usageContext.trafficSource === 'gateway') {
-    recordGatewayUpstreamBucketFailure(account, '上游响应失败')
+    await recordGatewayUpstreamBucketFailureAsync(account, '上游响应失败')
   }
-  if (accountStateMutationEnabled && !isCooldownRetestTrafficSource(usageContext.trafficSource) && !isolateAccountApiKeyFailure) {
+  if (accountStateMutationEnabled && !isAccountProbeTrafficSource(usageContext.trafficSource) && !isolateAccountApiKeyFailure) {
     const reason = responseBodyRead.truncated
       ? `上游账号返回非成功状态：HTTP ${response.status}`
       : parsedErrorMessage || diagnosticErrorMessage || `上游账号返回非成功状态：HTTP ${response.status}`
@@ -268,10 +268,11 @@ export async function handleFailedUpstreamResponse(
         endpoint: requestEndpoint(req),
         reason,
         statusCode: response.status,
-        forcePrecheck: localSuppression.action === 'precheck_required'
+        forcePrecheck: localSuppression.action === 'precheck_required',
+        localSuppressionDelayMs: localSuppression.delayMs
       })
     } else {
-      applyAccountErrorHandlingWithCacheInvalidation(account, failureInput)
+      await applyAccountErrorHandlingWithCacheInvalidation(account, failureInput)
     }
   }
 
@@ -328,7 +329,7 @@ export async function handleUpstreamRequestError(
       const statusCode = lastAttempt?.accountId === account.id && lastAttempt.upstreamUrl === upstreamUrl
         ? lastAttempt.status
         : undefined
-      recordFailedUpstreamAttempt(req, usageContext, account, {
+      await recordFailedUpstreamAttempt(req, usageContext, account, {
         upstreamUrl,
         startedAt: attemptStartedAt,
         statusCode,
@@ -385,7 +386,7 @@ export async function handleUpstreamRequestError(
     errorPhase: 'upstream_request',
     errorMessage: message
   })
-  recordFailedUpstreamAttempt(req, usageContext, account, {
+  await recordFailedUpstreamAttempt(req, usageContext, account, {
     upstreamUrl: safeUpstreamUrl,
     startedAt: attemptStartedAt,
     errorMessage: message
@@ -415,11 +416,11 @@ export async function handleUpstreamRequestError(
   const accountStateMutationEnabled = input.accountStateMutationEnabled !== false
   const isolateAccountApiKeyFailure = Boolean(account.selectedApiKeyFingerprint)
   if (accountStateMutationEnabled && usageContext.trafficSource === 'gateway' && isRealUpstreamUrl(upstreamUrl)) {
-    recordGatewayUpstreamBucketFailure(account, '上游请求异常', {
+    await recordGatewayUpstreamBucketFailureAsync(account, '上游请求异常', {
       bucketScope: gatewayProxyKey(account) ? 'proxy' : 'upstream'
     })
   }
-  if (accountStateMutationEnabled && !isCooldownRetestTrafficSource(usageContext.trafficSource) && !isolateAccountApiKeyFailure) {
+  if (accountStateMutationEnabled && !isAccountProbeTrafficSource(usageContext.trafficSource) && !isolateAccountApiKeyFailure) {
     const reason = `上游账号请求异常：${message}`
     const localSuppression = suppressGatewayAccountLocally(account, settings, reason)
     if (usageContext.trafficSource === 'gateway' && shouldRecordPrecheckForRequestFailure(upstreamUrl)) {
@@ -430,10 +431,11 @@ export async function handleUpstreamRequestError(
         clientIp: usageContext.clientIp,
         endpoint: requestEndpoint(req),
         reason,
-        forcePrecheck: localSuppression.action === 'precheck_required'
+        forcePrecheck: localSuppression.action === 'precheck_required',
+        localSuppressionDelayMs: localSuppression.delayMs
       })
     } else {
-      applyAccountErrorHandlingWithCacheInvalidation(account, {
+      await applyAccountErrorHandlingWithCacheInvalidation(account, {
         success: false,
         errorMessage: message,
         settings,
@@ -480,7 +482,7 @@ function logGatewayFailureWarning(
     ...fields,
     trafficSource: usageContext?.trafficSource
   }
-  if (isCooldownRetestTrafficSource(usageContext?.trafficSource)) {
+  if (isAccountProbeTrafficSource(usageContext?.trafficSource)) {
     logger.debug(enrichedFields, message)
     return
   }

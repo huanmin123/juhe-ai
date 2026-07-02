@@ -100,7 +100,7 @@ export async function pipeUpstreamStream(
   res: Response,
   settings: GatewaySettings,
   startedAt: number,
-  handleStreamFailure: (reason: string, errorCode: string | undefined, context: StreamFailureContext) => void,
+  handleStreamFailure: (reason: string, errorCode: string | undefined, context: StreamFailureContext) => Promise<void>,
   signal?: AbortSignal,
   options: StreamPipeOptions = {}
 ): Promise<StreamPipeResult> {
@@ -292,7 +292,7 @@ export async function pipeUpstreamStream(
         options.clientRetryEnabled === true,
         totalResponseBytes
       )
-      handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, finalInspection.outputReceived, finalInspection.failedReceived))
+      await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, finalInspection.outputReceived, finalInspection.failedReceived))
       endResponse(res)
       if (closeIteratorAfterEnd) {
         void closeAsyncIterator(iterator)
@@ -467,7 +467,7 @@ export async function pipeUpstreamStream(
             options.clientRetryEnabled === true,
             totalResponseBytes
           )
-          handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, latestInspection.outputReceived, latestInspection.failedReceived))
+          await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, latestInspection.outputReceived, latestInspection.failedReceived))
           await closeAsyncIterator(iterator)
           streamLogger.warn({
             event: 'gateway_stream_failure_before_downstream_commit',
@@ -674,7 +674,7 @@ export async function pipeUpstreamStream(
             options.clientRetryEnabled === true,
             totalResponseBytes
           )
-          handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, latestInspection.outputReceived, latestInspection.failedReceived))
+          await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, latestInspection.outputReceived, latestInspection.failedReceived))
           streamLogger.warn({
             event: 'gateway_stream_failure_before_downstream_commit',
             message,
@@ -861,7 +861,7 @@ export async function pipeUpstreamStream(
       options.clientRetryEnabled === true,
       totalResponseBytes
     )
-    handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, inspection.failedReceived))
+    await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, inspection.failedReceived))
     if (shouldFailBeforeDownstreamCommit()) {
       streamLogger.warn({
         event: 'gateway_stream_failure_before_downstream_commit',
@@ -928,7 +928,7 @@ export async function pipeUpstreamStream(
       totalResponseBytes
     )
     if (!success) {
-      handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, inspection.failedReceived))
+      await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, inspection.failedReceived))
     }
     streamLogger.warn({
       event: 'gateway_stream_completed_with_parser_skipped',
@@ -952,7 +952,7 @@ export async function pipeUpstreamStream(
       options.clientRetryEnabled === true,
       totalResponseBytes
     )
-    handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, false))
+    await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, false))
     streamLogger.warn({
       event: 'gateway_stream_missing_terminal',
       elapsedMs: Date.now() - startedAt,
@@ -1016,7 +1016,7 @@ export async function pipeUpstreamStream(
       options.clientRetryEnabled === true,
       totalResponseBytes
     )
-    handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, inspection.failedReceived))
+    await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, inspection.failedReceived))
     streamLogger.warn({
       event: 'gateway_stream_finished_failed',
       completed,

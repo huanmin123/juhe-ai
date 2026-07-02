@@ -28,6 +28,10 @@
         @user-menu-click="handleUserMenuClick"
       />
       <a-layout-content class="content">
+        <div v-if="routeSwitching" class="route-switch-indicator" role="status" aria-live="polite">
+          <a-spin size="small" />
+          <span>正在打开页面</span>
+        </div>
         <div v-if="mustChangePassword" class="password-lock-state">
           <a-result status="warning" title="请先修改初始密码" sub-title="完成后将自动进入控制台。" />
         </div>
@@ -119,10 +123,14 @@ const announcements = ref<PublishedAnnouncementSummary[]>([])
 let announcementsRefreshTimer: number | undefined
 let announcementsRefreshRunning = false
 let announcementsRequestId = 0
+const pendingRoutePath = ref<string>()
+const routePrefetches = new Map<string, Promise<unknown>>()
 
-const selectedKeys = computed(() => [route.path])
+const selectedKeys = computed(() => [pendingRoutePath.value || route.path])
+const routeSwitching = computed(() => Boolean(pendingRoutePath.value && pendingRoutePath.value !== route.path))
 const openMenuKeys = computed(() => {
-  const currentRoute = visibleMenuRoutes.value.find((item) => item.path === route.path)
+  const currentPath = pendingRoutePath.value || route.path
+  const currentRoute = visibleMenuRoutes.value.find((item) => item.path === currentPath)
   return currentRoute?.meta?.menuGroup ? [`group:${currentRoute.meta.menuGroup}`] : []
 })
 const currentUser = authState.currentUser
@@ -236,7 +244,11 @@ function routeToMenuItem(item: typeof menuRoutes[number]): ItemType {
   const iconComponent = menuIconMap[item.path as keyof typeof menuIconMap]
   return {
     key: item.path,
-    label: item.meta?.title ?? '',
+    label: h('span', {
+      class: 'menu-item-label',
+      onFocus: () => prefetchRouteComponent(item.path),
+      onPointerenter: () => prefetchRouteComponent(item.path)
+    }, item.meta?.title ?? ''),
     ...(iconComponent ? { icon: () => h(iconComponent) } : {})
   }
 }
@@ -281,6 +293,21 @@ function handleMenuClick(event: { key: string | number }) {
   }
   void pushRouteSafely(key)
   sidebarOpen.value = false
+}
+
+function prefetchRouteComponent(path: string): void {
+  if (routePrefetches.has(path)) return
+  const targetRoute = menuRoutes.find((item) => item.path === path)
+  const component = targetRoute?.component
+  if (typeof component !== 'function') return
+
+  const prefetch = Promise.resolve()
+    .then(() => (component as () => Promise<unknown>)())
+    .catch((error) => {
+      routePrefetches.delete(path)
+      console.debug('页面预加载失败，将在正式打开时重试。', error)
+    })
+  routePrefetches.set(path, prefetch)
 }
 
 async function handleUserMenuClick(event: Parameters<NonNullable<MenuProps['onClick']>>[0]) {
@@ -392,12 +419,18 @@ async function switchMenuMode() {
 }
 
 async function pushRouteSafely(path: string): Promise<void> {
+  if (path === route.path) return
+  pendingRoutePath.value = path
   try {
     await router.push(path)
   } catch (error) {
     if (recoverRouteAssetLoadError(error, router, path)) return
     if (!isNavigationFailure(error)) {
       console.error(error)
+    }
+  } finally {
+    if (pendingRoutePath.value === path) {
+      pendingRoutePath.value = undefined
     }
   }
 }
@@ -620,10 +653,30 @@ watch(
 }
 
 .content {
+  position: relative;
   padding: 26px 24px 36px;
   background:
     radial-gradient(circle at 20% 0%, rgba(22, 119, 255, 0.06), transparent 28%),
     #f5f7fb;
+}
+
+.route-switch-indicator {
+  position: sticky;
+  top: 12px;
+  z-index: 6;
+  width: max-content;
+  max-width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: -10px 0 12px auto;
+  padding: 8px 12px;
+  border: 1px solid #dbeafe;
+  border-radius: 8px;
+  color: #1d4ed8;
+  background: rgba(239, 246, 255, 0.96);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
+  font-size: 13px;
 }
 
 .password-lock-state {

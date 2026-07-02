@@ -1,5 +1,6 @@
 import { createAppCache } from '../../../shared/cache.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
+import { preserveGatewayAccountDispatchPriorityTiers } from '../runtime/account-dispatch-priority-order.js'
 import type { OpenAIGatewayClientStrategyContext } from './strategy.js'
 
 export interface CodexTurnAccountAvoidanceResult {
@@ -74,7 +75,7 @@ export function orderOpenAIAccountsByCodexTurnAvoidance(
   }
 
   return {
-    accounts: [...freshAccounts, ...failedAccounts],
+    accounts: preserveGatewayAccountDispatchPriorityTiers(accounts, [...freshAccounts, ...failedAccounts]),
     applied: true,
     thresholdReached: true,
     failureCount: state.failureCount,

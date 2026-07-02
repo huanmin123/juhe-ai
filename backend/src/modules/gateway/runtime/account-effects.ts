@@ -12,13 +12,13 @@ import { parseOpenAICodexUsageHeaders } from '../adapters/gpt-codex/usage.servic
 import { type UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import { type StreamFailureContext } from '../response/stream.js'
 import { headersToObject } from '../upstream/headers.js'
-import { recordGatewayUpstreamBucketFailure } from './proxy-health.service.js'
+import { recordGatewayUpstreamBucketFailureAsync } from './proxy-health.service.js'
 import type { OpenAIGatewayTrafficSource } from '../usage/traffic-source.js'
 import type { GatewayUsageContext } from '../usage/records.js'
 import { recordGatewayAccountApiKeyFailure } from './account-api-key-effects.service.js'
 import { requestGatewayDbService } from './gateway-db-service-request.js'
 
-export function applyAccountErrorHandlingWithCacheInvalidation(
+export async function applyAccountErrorHandlingWithCacheInvalidation(
   account: UpstreamAccount,
   input: {
     success: boolean
@@ -29,12 +29,12 @@ export function applyAccountErrorHandlingWithCacheInvalidation(
     settings?: GatewaySettings
     trafficSource?: OpenAIGatewayTrafficSource
   }
-): void {
+): Promise<void> {
   const normalizedInput = {
     ...input,
     headers: input.headers instanceof Headers ? headersToObject(input.headers) : input.headers
   }
-  enqueueGatewayAccountErrorHandlingSideEffect({
+  await enqueueGatewayAccountErrorHandlingSideEffect({
     type: 'apply_account_error_handling',
     account,
     input: normalizedInput
@@ -69,7 +69,7 @@ export function markGatewayAccountTemporaryUnavailableWithCacheInvalidation(
   })
 }
 
-export function handleStreamFailure(
+export async function handleStreamFailure(
   account: UpstreamAccount,
   reason: string,
   settings: GatewaySettings,
@@ -77,12 +77,12 @@ export function handleStreamFailure(
   context: StreamFailureContext,
   usageContext?: GatewayUsageContext,
   accountStateMutationEnabled = true
-): void {
+): Promise<void> {
   if (!accountStateMutationEnabled) {
     return
   }
 
-  recordGatewayUpstreamBucketFailure(account, '流式响应失败')
+  await recordGatewayUpstreamBucketFailureAsync(account, '流式响应失败')
   const reasonWithCode = errorCode ? `${errorCode}；${reason}` : reason
   const isolateAccountApiKeyFailure = Boolean(account.selectedApiKeyFingerprint)
   if (context.protocolFailureEventReceived) {
@@ -107,7 +107,8 @@ export function handleStreamFailure(
         clientIp: usageContext.clientIp,
         endpoint: usageContext.endpoint,
         reason: runtimeReason,
-        forcePrecheck: localSuppression.action === 'precheck_required'
+        forcePrecheck: localSuppression.action === 'precheck_required',
+        localSuppressionDelayMs: localSuppression.delayMs
       })
       getRequestLogger().info({
         event: 'gateway_stream_failure_pre_output_runtime_avoidance',
@@ -122,7 +123,7 @@ export function handleStreamFailure(
       }, '流式失败未产生可见模型输出，已进入本地短期避让但不累计持久流失败')
       return
     }
-    recordGatewayAccountApiKeyFailure(account, {
+    await recordGatewayAccountApiKeyFailure(account, {
       status: 'temporary_unavailable',
       errorCode,
       errorMessage: reasonWithCode,
@@ -143,10 +144,11 @@ export function handleStreamFailure(
       clientIp: usageContext.clientIp,
       endpoint: usageContext.endpoint,
       reason: runtimeReason,
-      forcePrecheck: localSuppression.action === 'precheck_required'
+      forcePrecheck: localSuppression.action === 'precheck_required',
+      localSuppressionDelayMs: localSuppression.delayMs
     })
   } else {
-    recordGatewayAccountApiKeyFailure(account, {
+    await recordGatewayAccountApiKeyFailure(account, {
       status: 'temporary_unavailable',
       errorCode,
       errorMessage: reasonWithCode,
@@ -156,7 +158,7 @@ export function handleStreamFailure(
     if (isolateAccountApiKeyFailure) {
       return
     }
-    applyAccountErrorHandlingWithCacheInvalidation(account, {
+    await applyAccountErrorHandlingWithCacheInvalidation(account, {
       success: false,
       errorMessage: reasonWithCode,
       settings,

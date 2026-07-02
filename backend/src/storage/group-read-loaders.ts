@@ -37,6 +37,7 @@ const groupAccountIdsSharedCache = createSharedJsonCache<string[]>({
 })
 
 export function loadGroupAccountIdsByGroupIds(groupIds: string[]): Map<string, string[]> {
+  assertSyncGroupReadLoaderAllowed('loadGroupAccountIdsByGroupIds')
   const ids = uniqueIds(groupIds)
   if (!ids.length) return new Map()
   const result = new Map<string, string[]>()
@@ -86,6 +87,11 @@ export function loadGroupAccountIdsByGroupIds(groupIds: string[]): Map<string, s
     result.set(id, [...accountIds])
   }
   return result
+}
+
+function assertSyncGroupReadLoaderAllowed(operation: string): void {
+  if (runtimeConfig.cacheDriver !== 'redis') return
+  throw new Error(`高性能模式禁止同步读取本地分组 loader：${operation} 必须使用 Redis async loader`)
 }
 
 export async function loadGroupAccountIdsByGroupIdsAsync(groupIds: string[]): Promise<Map<string, string[]>> {
@@ -141,6 +147,7 @@ export function invalidateGroupAccountIdsCache(groupId?: string): void {
 }
 
 export function loadGroupAccountStatsByGroupIds(groupIds: string[]): Map<string, GroupAccountStatsRow> {
+  assertSyncGroupReadLoaderAllowed('loadGroupAccountStatsByGroupIds')
   const ids = uniqueIds(groupIds)
   if (!ids.length) return new Map()
   const rows: GroupAccountStatsRow[] = []

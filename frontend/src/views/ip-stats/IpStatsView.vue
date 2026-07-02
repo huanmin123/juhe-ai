@@ -109,7 +109,7 @@
       v-model:open="detailDrawerOpen"
       class="ip-detail-drawer"
       :title="detailDrawerTitle"
-      :width="920"
+      :width="1040"
       destroy-on-close
     >
       <a-descriptions v-if="detailTarget" class="ip-detail-summary" size="small" bordered :column="{ xs: 1, sm: 2 }">
@@ -140,7 +140,7 @@
         :loading="detailLoading"
         :pagination="detailTablePagination"
         :pagination-summary="false"
-        :scroll-x="980"
+        :scroll-x="1220"
         size="small"
         :lock-body-scroll="false"
         :mobile-breakpoint="760"
@@ -157,6 +157,12 @@
               </a-tooltip>
               <span v-else class="muted-cell">未匹配到账户名称</span>
             </div>
+          </template>
+          <template v-else-if="column.key === 'accountOwner'">
+            <a-tooltip v-if="record.accountOwnerSystemAccountName" :title="record.accountOwnerSystemAccountName">
+              <span class="name-cell ip-detail-owner-name">{{ record.accountOwnerSystemAccountName }}</span>
+            </a-tooltip>
+            <span v-else class="muted-cell">未匹配到用户</span>
           </template>
           <template v-else-if="column.key === 'requestCount'">
             <span class="number-cell">{{ formatInteger(record.rangeUsage.requestCount) }}</span>
@@ -185,10 +191,15 @@
         <template #card="{ record }">
           <article class="ip-detail-mobile-card">
             <div class="ip-detail-mobile-head">
-              <a-tooltip v-if="record.accountName" :title="record.accountName">
-                <span class="name-cell ip-detail-account-name">{{ record.accountName }}</span>
-              </a-tooltip>
-              <span v-else class="muted-cell">未匹配到账户名称</span>
+              <div class="ip-detail-mobile-title">
+                <a-tooltip v-if="record.accountName" :title="record.accountName">
+                  <span class="name-cell ip-detail-account-name">{{ record.accountName }}</span>
+                </a-tooltip>
+                <span v-else class="muted-cell">未匹配到账户名称</span>
+                <span :class="record.accountOwnerSystemAccountName ? 'ip-detail-owner-text' : 'muted-cell'">
+                  用户：{{ record.accountOwnerSystemAccountName || '未匹配到用户' }}
+                </span>
+              </div>
               <a-tag :color="record.rangeUsage.errorRate > 0.05 ? 'red' : 'green'">
                 {{ formatPercent(record.rangeUsage.errorRate * 100) }}
               </a-tag>
@@ -268,6 +279,7 @@ const policyDurationOptions = [
 
 const detailColumns = [
   { title: 'AI 账户', key: 'account', width: 180, fixed: 'left', align: 'left' },
+  { title: '用户名称', key: 'accountOwner', width: 150, align: 'left' },
   { title: '请求', key: 'requestCount', width: 100, align: 'left', sorter: true },
   { title: 'Token', key: 'totalTokens', width: 120, align: 'left', sorter: true },
   { title: '成本', key: 'cost', width: 120, align: 'left', sorter: true },
@@ -606,7 +618,8 @@ function usageWindowDateRange(value: UsageWindow): [Dayjs, Dayjs] {
   gap: 2px;
 }
 
-.ip-detail-account-name {
+.ip-detail-account-name,
+.ip-detail-owner-name {
   display: block;
   max-width: 100%;
   overflow: hidden;
@@ -632,9 +645,18 @@ function usageWindowDateRange(value: UsageWindow): [Dayjs, Dayjs] {
   gap: 12px;
 }
 
-.ip-detail-mobile-head .ip-detail-account-name {
+.ip-detail-mobile-title {
+  display: flex;
   flex: 1;
   min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ip-detail-owner-text {
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 @media (max-width: 768px) {

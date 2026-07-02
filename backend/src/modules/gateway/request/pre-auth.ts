@@ -27,8 +27,8 @@ import {
 import { resolveOpenAIGatewayRequestLane } from '../protocols/openai-v1/request-lane.js'
 import { GEMINI_PROTOCOL_CODE } from '../../../domain/provider-protocol.js'
 import {
-  inspectGatewayPreAuthCircuit,
-  recordGatewayPreAuthFailure,
+  inspectGatewayPreAuthCircuitAsync,
+  recordGatewayPreAuthFailureAsync,
   type GatewayCircuitDecision,
   type GatewayPreAuthFailureReason
 } from '../runtime/client-ip-error-circuit.service.js'
@@ -95,7 +95,7 @@ export async function resolveGatewayRuntimeAsync(
   if (await rejectCachedClientIpBlacklist(req, res, clientIp, options, { cacheOnly: true })) {
     return undefined
   }
-  const preAuthDecision = inspectGatewayPreAuthCircuit({ clientIp, authorization: gatewayAuthSource })
+  const preAuthDecision = await inspectGatewayPreAuthCircuitAsync({ clientIp, authorization: gatewayAuthSource })
   if (preAuthDecision.blocked) {
     getRequestLogger().warn({
       event: 'gateway_pre_auth_error_circuit_blocked',
@@ -110,7 +110,7 @@ export async function resolveGatewayRuntimeAsync(
   }
   const gatewayApiKey = extractGatewayApiKey(req, authorization)
   if (!gatewayApiKey) {
-    const failureDecision = recordPreAuthFailure(req, res, 'missing_bearer_token', options)
+    const failureDecision = await recordPreAuthFailure(req, res, 'missing_bearer_token', options)
     if (failureDecision.blocked) {
       return undefined
     }
@@ -128,7 +128,7 @@ export async function resolveGatewayRuntimeAsync(
 
   const runtime = await readCachedGatewayRuntimeAsync(gatewayApiKey)
   if (!runtime.apiKey) {
-    const failureDecision = recordPreAuthFailure(req, res, 'invalid_api_key', options)
+    const failureDecision = await recordPreAuthFailure(req, res, 'invalid_api_key', options)
     if (failureDecision.blocked) {
       return undefined
     }
@@ -177,7 +177,7 @@ async function rejectCachedClientIpBlacklist(
     ipHash: ipPolicyDecision.blacklistPolicy.ipHash,
     endpoint: `${req.method.toUpperCase()} ${sanitizeUrlForLog(req.originalUrl)}`
   }, '网关来源 IP 命中管理员封禁')
-  recordClientIpPolicyHitAsync(ipPolicyDecision.blacklistPolicy)
+  await recordClientIpPolicyHitAsync(ipPolicyDecision.blacklistPolicy)
   prepareEarlyAuthFailureResponse(res, options)
   sendClientIpBlacklistResponse(req, res, {
     reason: ipPolicyDecision.blacklistPolicy.reason,
@@ -187,13 +187,13 @@ async function rejectCachedClientIpBlacklist(
   return true
 }
 
-function recordPreAuthFailure(
+async function recordPreAuthFailure(
   req: Request,
   res: Response,
   reason: GatewayPreAuthFailureReason,
   options: ResolveGatewayRuntimeOptions
-): GatewayCircuitDecision {
-  const decision = recordGatewayPreAuthFailure({
+): Promise<GatewayCircuitDecision> {
+  const decision = await recordGatewayPreAuthFailureAsync({
     clientIp: extractClientIp(req),
     authorization: gatewayPreAuthSource(req, req.header('authorization')),
     reason

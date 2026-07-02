@@ -3,7 +3,7 @@ import { normalizeOpenAIAccountClientCompatibility } from '../domain/account-cli
 import { isGptVendorCode } from '../domain/provider-protocol.js'
 import { accountSummaryWithEffectiveAvailability } from '../domain/account-effective-availability.js'
 import { runtimeConfig } from '../config/runtime.js'
-import { loadAccountCurrentConcurrencyByIds } from '../shared/account-concurrency.js'
+import { loadAccountCurrentConcurrencyByIds, loadAccountCurrentConcurrencyByIdsAsync } from '../shared/account-concurrency.js'
 import { canAccessAll, manageableSystemAccountId, userVisibleSystemAccountId, includeSystemAccountFields, type AccessScope } from './access-scope.js'
 import { accountCredentialsForList, findAccountRowForAccess, hydrateAccountRowsWithRuntimeState, listAccountRowsForAccess, listAccountRowsPageForAccess, loadAccountAuthorizationUsageSummaries } from './account-read.repository.js'
 import { accountStatusFilterValues, normalizeAccountListOptions, type AccountListOptions, type NormalizedAccountListOptions } from './account-list-options.js'
@@ -227,7 +227,8 @@ async function authorizedAccountSummaryFromRowAsync(
     accountNames,
     authorizationQuotaExceededByAuthorization,
     usageByAuthorization,
-    todayUsageByAuthorization
+    todayUsageByAuthorization,
+    currentConcurrencyByAccount
   ] = await Promise.all([
     factAccountId ? loadSupportedModelsByAccountIdsAsync([factAccountId]) : Promise.resolve(new Map<string, string[]>()),
     factAccountId ? loadModelMappingsByAccountIdsAsync([factAccountId]) : Promise.resolve(new Map()),
@@ -238,7 +239,8 @@ async function authorizedAccountSummaryFromRowAsync(
     ]),
     loadAuthorizationQuotaExceededByAuthorizationIdAsync(client, [row]),
     loadAuthorizationUsageSummariesForScopesAsync(authorizationScopes, 'account_authorization'),
-    loadAuthorizationUsageSummariesForScopesAsync(authorizationScopes, 'account_authorization', todayDateKey(timezone))
+    loadAuthorizationUsageSummariesForScopesAsync(authorizationScopes, 'account_authorization', todayDateKey(timezone)),
+    loadAccountCurrentConcurrencyByIdsAsync([row.id])
   ])
   row.supported_models = factAccountId ? supportedModelsByAccount.get(factAccountId) ?? [] : []
   row.model_mappings = factAccountId ? modelMappingsByAccount.get(factAccountId) ?? [] : []
@@ -279,7 +281,7 @@ async function authorizedAccountSummaryFromRowAsync(
     credentials: accountCredentialsForList(row, true),
     status: effectiveAuthorizedStatus,
     concurrencyLimit: accountResourceConcurrencyLimit(row),
-    currentConcurrency: loadAccountCurrentConcurrencyByIds([row.id]).get(row.id) ?? 0,
+    currentConcurrency: currentConcurrencyByAccount.get(row.id) ?? 0,
     priority: dispatchPriority,
     superPriorityEnabled: dispatchSuperPriorityEnabled,
     fallbackEnabled: dispatchFallbackEnabled,
@@ -451,13 +453,14 @@ async function ownerAccountSummariesFromRowsAsync(
   const includeAccountNames = includeSystemAccountFields(access)
   const timezone = await usageStatsTimezoneAsync()
   const accountUsageScopes = rows.map((row) => usageScope(row.id, row.system_account_id, row.id))
-  const [supportedModelsByAccount, modelMappingsByAccount, tagsByAccount, accountNames, usageByAccount, todayUsageByAccount] = await Promise.all([
+  const [supportedModelsByAccount, modelMappingsByAccount, tagsByAccount, accountNames, usageByAccount, todayUsageByAccount, currentConcurrencyByAccount] = await Promise.all([
     loadSupportedModelsByAccountIdsAsync(accountIds),
     loadModelMappingsByAccountIdsAsync(accountIds),
     loadAccountTagsByAccountIdsAsync(accountIds),
     loadAccountSummarySystemAccountNamesAsync(client, includeAccountNames ? rows.map((row) => row.system_account_id) : []),
     loadAccountUsageSummariesForScopesAsync(accountUsageScopes),
-    loadAccountUsageSummariesForScopesAsync(accountUsageScopes, todayDateKey(timezone))
+    loadAccountUsageSummariesForScopesAsync(accountUsageScopes, todayDateKey(timezone)),
+    loadAccountCurrentConcurrencyByIdsAsync(accountIds)
   ])
 
   return rows.map((row) => {
@@ -483,7 +486,7 @@ async function ownerAccountSummariesFromRowsAsync(
       credentials: accountCredentialsForList(row, includeCredentials),
       status: row.status,
       concurrencyLimit: Number(row.concurrency_limit),
-      currentConcurrency: 0,
+      currentConcurrency: currentConcurrencyByAccount.get(row.id) ?? 0,
       priority: Number(row.priority ?? 0),
       superPriorityEnabled: row.super_priority_enabled === 1,
       fallbackEnabled: row.fallback_enabled === 1,

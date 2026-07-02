@@ -96,13 +96,13 @@ function isOpenAIOAuthGroupSummary(group: Awaited<ReturnType<typeof findGroupSum
     && isGptVendorCode(group.providerCode))
 }
 
-openAIOAuthRouter.post('/auth-url', (req, res) => {
+openAIOAuthRouter.post('/auth-url', async (req, res) => {
   const parsed = authUrlSchema.safeParse(req.body ?? {})
   if (!parsed.success) {
     res.status(400).json(badRequest('OpenAI 授权链接参数无效'))
     return
   }
-  res.json(ok(generateOpenAIAuthURL()))
+  res.json(ok(await generateOpenAIAuthURL()))
 })
 
 openAIOAuthRouter.post('/create-from-code', mutationGuard({

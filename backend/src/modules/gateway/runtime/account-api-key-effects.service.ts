@@ -1,4 +1,5 @@
 import { errorLogFields, logger } from '../../../shared/logger.js'
+import { runtimeConfig } from '../../../config/runtime.js'
 import type { AccountApiKeyRuntimeStatus } from '../../../storage/account-api-key-rotation.js'
 import type { OpenAIAccountSecret } from '../../../storage/repositories.js'
 import type { OpenAIGatewayTrafficSource } from '../usage/traffic-source.js'
@@ -13,7 +14,7 @@ import { requestGatewayDbService } from './gateway-db-service-request.js'
 const accountApiKeySuccessWriteThrottleMs = 30_000
 const recentAccountApiKeySuccessWrites = new Map<string, number>()
 
-export function recordGatewayAccountApiKeyFailure(
+export async function recordGatewayAccountApiKeyFailure(
   account: OpenAIAccountSecret,
   input: {
     status?: Exclude<AccountApiKeyRuntimeStatus, 'active' | 'disabled'>
@@ -26,11 +27,15 @@ export function recordGatewayAccountApiKeyFailure(
     apiKeyId?: string
     source: string
   }
-): void {
+): Promise<void> {
   if (!account.selectedApiKeyFingerprint || account.apiKeyRuntimeStateDisabled) {
     return
   }
-  recentAccountApiKeySuccessWrites.delete(accountApiKeyRuntimeCoalesceKey(account))
+  if (runtimeConfig.runtimeStateDriver !== 'redis') {
+    recentAccountApiKeySuccessWrites.delete(accountApiKeyRuntimeCoalesceKey(account))
+  } else {
+    recentAccountApiKeySuccessWrites.clear()
+  }
   const guardDecision = recordGatewayAccountApiKeyFailureGuard(account, {
     status: input.status,
     statusCode: input.statusCode,
@@ -44,38 +49,45 @@ export function recordGatewayAccountApiKeyFailure(
   if (!guardDecision.persist) {
     return
   }
-  void requestGatewayDbService({
-    type: 'record_account_api_key_failure',
-    account,
-    input: {
-      status: input.status,
-      statusCode: input.statusCode,
-      errorCode: input.errorCode,
-      errorMessage: input.errorMessage,
-      cooldownUntil: input.cooldownUntil
-    }
-  }).then((result) => {
+  try {
+    const result = await requestGatewayDbService({
+      type: 'record_account_api_key_failure',
+      account,
+      input: {
+        status: input.status,
+        statusCode: input.statusCode,
+        errorCode: input.errorCode,
+        errorMessage: input.errorMessage,
+        cooldownUntil: input.cooldownUntil
+      }
+    })
     if (result.changed) {
       clearGatewayRuntimeCache()
     }
-  }).catch((error) => {
+  } catch (error) {
     logger.warn(errorLogFields(error, {
       event: 'gateway_account_api_key_failure_side_effect_failed',
       accountId: account.id,
       selectedApiKeyFingerprint: account.selectedApiKeyFingerprint,
       source: input.source
     }), '账户内 API Key 失败运行态写入失败')
-  })
+    if (runtimeConfig.runtimeStateDriver === 'redis') {
+      throw error
+    }
+  }
 }
 
-export function recordGatewayAccountApiKeyLocalFailure(
+export async function recordGatewayAccountApiKeyLocalFailure(
   account: OpenAIAccountSecret,
   input: {
     status?: Exclude<AccountApiKeyRuntimeStatus, 'active' | 'disabled'>
     errorMessage?: string
   }
-): void {
+): Promise<void> {
   if (account.apiKeyRuntimeStateDisabled) {
+    return
+  }
+  if (runtimeConfig.runtimeStateDriver === 'redis' && account.selectedApiKeyFingerprint) {
     return
   }
   recordGatewayAccountApiKeyLocalFailureGuard(account, {
@@ -92,10 +104,18 @@ export function recordGatewayAccountApiKeySuccess(account: OpenAIAccountSecret, 
   if (!account.selectedApiKeyFingerprint) {
     return
   }
-  if (!clearedLocalFailure && shouldSkipRecentAccountApiKeySuccessWrite(account)) {
+  if (
+    runtimeConfig.runtimeStateDriver !== 'redis'
+    && !clearedLocalFailure
+    && shouldSkipRecentAccountApiKeySuccessWrite(account)
+  ) {
     return
   }
-  rememberAccountApiKeySuccessWrite(account)
+  if (runtimeConfig.runtimeStateDriver !== 'redis') {
+    rememberAccountApiKeySuccessWrite(account)
+  } else {
+    recentAccountApiKeySuccessWrites.clear()
+  }
   void requestGatewayDbService({
     type: 'record_account_api_key_success',
     account

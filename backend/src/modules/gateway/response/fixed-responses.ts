@@ -122,7 +122,7 @@ async function sendModelsGatewayResponse(input: SendOpenAIModelsGatewayResponseI
     systemAccountId: usageContext.systemAccountId,
     providerCodes: normalizedProviderCodes
   })
-  enqueueUsageRecord({
+  await enqueueUsageRecord({
     ...usageContext,
     providerCode,
     usageSemantic: usageSemanticForProfile({

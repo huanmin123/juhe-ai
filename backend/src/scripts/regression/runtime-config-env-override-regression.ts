@@ -64,6 +64,7 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_DEFAULT_CHILD === '1') {
 
   assert.equal(runtimeConfig.runtimeMode, 'performance', '高性能模式应读取为 performance')
   assert.equal(runtimeConfig.systemApi.dbServiceMaxInFlight, 256, 'performance 默认 System API DB service 在途上限应为 256')
+  assert.equal(runtimeConfig.queue.redisStreamMaxLen, 0, 'Redis Stream 默认不应近似裁剪可靠队列消息')
 
   process.exit(0)
 }

@@ -62,7 +62,7 @@ export async function captureGatewayRawBody(
         jsonParseStatus: isJson ? 'deferred_large_json' : 'not_json',
         jsonParseWarningBytes: gatewayJsonBodyLargeWarningBytes
       }
-      rejectGatewayRawBodyTooLarge(req, res, rawBody, gatewayRawBodyHardLimitBytes, 'gateway')
+      await rejectGatewayRawBodyTooLarge(req, res, rawBody, gatewayRawBodyHardLimitBytes, 'gateway')
       return
     }
 
@@ -74,7 +74,7 @@ export async function captureGatewayRawBody(
         jsonParseStatus: isJson ? 'deferred_large_json' : 'not_json',
         jsonParseWarningBytes: gatewayJsonBodyLargeWarningBytes
       }
-      rejectGatewayRawBodyInFlightLimit(req, res, rawBody)
+      await rejectGatewayRawBodyInFlightLimit(req, res, rawBody)
       return
     }
 
@@ -86,7 +86,7 @@ export async function captureGatewayRawBody(
     } else if (!isJson) {
       req.gatewayRequestBody = createGatewayRequestBodyState({ rawBody, contentType, jsonParseStatus: 'not_json' })
       req.body = undefined
-      if (rejectGatewayRawBodyByRequestLane(req, res, rawBody)) {
+      if (await rejectGatewayRawBodyByRequestLane(req, res, rawBody)) {
         return
       }
     } else {
@@ -127,7 +127,7 @@ export async function captureGatewayRawBody(
           imageGenerationForced: metadata.imageGenerationForced
         })
         req.body = undefined
-        if (rejectGatewayRawBodyByRequestLane(req, res, rawBody)) {
+        if (await rejectGatewayRawBodyByRequestLane(req, res, rawBody)) {
           return
         }
       } else {
@@ -139,7 +139,7 @@ export async function captureGatewayRawBody(
           req.gatewayRequestBody = createGatewayRequestBodyState({ rawBody, contentType, jsonParseStatus: 'invalid_json' })
           req.body = undefined
         }
-        if (rejectGatewayRawBodyByRequestLane(req, res, rawBody)) {
+        if (await rejectGatewayRawBodyByRequestLane(req, res, rawBody)) {
           return
         }
       }
@@ -159,11 +159,11 @@ export async function captureGatewayRawBody(
   }
 }
 
-export function rejectGatewayRawBodyByContentLength(
+export async function rejectGatewayRawBodyByContentLength(
   req: GatewayRawBodyRequest,
   res: Response,
   next: NextFunction
-): void {
+): Promise<void> {
   const contentLength = requestContentLengthBytes(req)
   if (contentLength === undefined) {
     next()
@@ -187,7 +187,7 @@ export function rejectGatewayRawBodyByContentLength(
     rawBodyLimitBytes: requestLimit.limitBytes,
     rawBodyLimitScope: requestLimit.scope
   }, '网关请求体 Content-Length 超过当前请求类型上限，已在读取 body 前拒绝')
-  recordGatewayBodyRejection(req, {
+  await recordGatewayBodyRejection(req, {
     statusCode: 413,
     responsePayload: gatewayErrorPayload('请求体过大', 'request_too_large'),
     rawBodyBytes: contentLength,
@@ -205,16 +205,16 @@ export function rejectGatewayRawBodyByContentLength(
   }
 }
 
-function rejectGatewayRawBodyByRequestLane(
+async function rejectGatewayRawBodyByRequestLane(
   req: GatewayRawBodyRequest,
   res: Response,
   rawBody: Buffer
-): boolean {
+): Promise<boolean> {
   const requestLimit = resolveGatewayRawBodyRequestLimit(req)
   if (rawBody.length <= requestLimit.limitBytes) {
     return false
   }
-  rejectGatewayRawBodyTooLarge(req, res, rawBody, requestLimit.limitBytes, requestLimit.scope)
+  await rejectGatewayRawBodyTooLarge(req, res, rawBody, requestLimit.limitBytes, requestLimit.scope)
   return true
 }
 
@@ -256,13 +256,13 @@ function requestContentLengthBytes(req: GatewayRawBodyRequest): number | undefin
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined
 }
 
-function rejectGatewayRawBodyTooLarge(
+async function rejectGatewayRawBodyTooLarge(
   req: GatewayRawBodyRequest,
   res: Response,
   rawBody: Buffer,
   limitBytes: number,
   limitScope: GatewayRawBodyLimitScope
-): void {
+): Promise<void> {
   getRequestLogger().warn({
     event: limitScope === 'gateway' ? 'gateway_raw_body_hard_limit_rejected' : 'gateway_raw_body_request_limit_rejected',
     method: req.method,
@@ -280,7 +280,7 @@ function rejectGatewayRawBodyTooLarge(
   req.rawBody = undefined
   req.body = undefined
   releaseGatewayRequestBodyInFlightBytes(req)
-  recordGatewayBodyRejection(req, {
+  await recordGatewayBodyRejection(req, {
     statusCode: 413,
     responsePayload: gatewayErrorPayload('请求体过大', 'request_too_large'),
     rawBodyBytes: rawBody.length,
@@ -298,11 +298,11 @@ function rejectGatewayRawBodyTooLarge(
   }
 }
 
-function rejectGatewayRawBodyInFlightLimit(
+async function rejectGatewayRawBodyInFlightLimit(
   req: GatewayRawBodyRequest,
   res: Response,
   rawBody: Buffer
-): void {
+): Promise<void> {
   const state = getGatewayRequestBodyInFlightState(runtimeConfig.gateway.bodyInFlightMaxBytes)
   getRequestLogger().warn({
     event: 'gateway_raw_body_in_flight_limit_rejected',
@@ -317,7 +317,7 @@ function rejectGatewayRawBodyInFlightLimit(
   }, '网关请求体在途总量超过上限，已拒绝以保护主进程')
   req.rawBody = undefined
   req.body = undefined
-  recordGatewayBodyRejection(req, {
+  await recordGatewayBodyRejection(req, {
     statusCode: 503,
     responsePayload: gatewayErrorPayload('网关请求体在途总量过高，请稍后重试', 'server_overloaded', 'gateway_body_in_flight_limit_exceeded'),
     rawBodyBytes: rawBody.length,
@@ -360,7 +360,7 @@ async function extractLargeJsonBodyMetadata(
         originalUrl: sanitizeUrlForLog(req.originalUrl),
         rawBodyBytes: rawBody.length
       }, '网关大 JSON 请求体元数据 worker 队列已满，拒绝本次请求以保护主进程')
-      recordGatewayBodyRejection(req, {
+      await recordGatewayBodyRejection(req, {
         statusCode: 503,
         responsePayload: gatewayErrorPayload('网关请求解析繁忙，请稍后重试', 'server_overloaded'),
         rawBodyBytes: rawBody.length,
@@ -386,7 +386,7 @@ async function extractLargeJsonBodyMetadata(
       rawBodyBytes: rawBody.length,
       errorMessage: error instanceof Error ? error.message : String(error)
     }, '网关大 JSON 请求体元数据 worker 扫描失败，拒绝本次请求以保护主进程')
-    recordGatewayBodyRejection(req, {
+    await recordGatewayBodyRejection(req, {
       statusCode: 503,
       responsePayload: gatewayErrorPayload('网关请求解析繁忙，请稍后重试', 'server_overloaded'),
       rawBodyBytes: rawBody.length,
@@ -428,7 +428,7 @@ function removeListener(target: unknown, event: string, listener: () => void): v
   }
 }
 
-export function recordGatewayBodyRejection(req: GatewayRawBodyRequest, input: GatewayBodyRejectionInput): void {
+export async function recordGatewayBodyRejection(req: GatewayRawBodyRequest, input: GatewayBodyRejectionInput): Promise<void> {
   try {
     const context = getRequestContext()
     const traceId = getTraceId() ?? createTraceId()
@@ -465,7 +465,7 @@ export function recordGatewayBodyRejection(req: GatewayRawBodyRequest, input: Ga
     if (!apiKey) {
       return
     }
-    recordGatewayFailure(req, buildGatewayUsageContext({
+    await recordGatewayFailure(req, buildGatewayUsageContext({
       traceId,
       clientIp,
       identity: {

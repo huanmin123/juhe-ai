@@ -54,7 +54,7 @@ function assertBoundedGatewayUpstreamAgentCache(): void {
   assert.match(source, /maxTotalSockets:\s*runtimeConfig\.gateway\.upstreamAgentMaxTotalSockets/, '网关上游 agent maxTotalSockets 应读取运行时配置')
   assert(runtimeConfig.gateway.upstreamAgentMaxSockets >= 2048, '默认单上游 socket 上限应足以承接高并发慢 SSE')
   assert(runtimeConfig.gateway.upstreamAgentMaxTotalSockets >= 8192, '默认总 socket 上限应足以承接多上游高并发慢 SSE')
-  assert.match(source, /createAppCache<string,\s*http\.Agent>/, '代理 agent 缓存应使用有上限的 LRU cache')
+  assert.match(source, /createProcessLocalResourceCache<string,\s*http\.Agent>/, '代理 agent 缓存应使用有上限且不受 Redis cache driver 禁用的本地资源 LRU cache')
   assert.match(source, /max:\s*gatewayProxyAgentCacheMaxEntries/, '代理 agent 缓存应配置最大条目数')
   assert.match(source, /ttlMs:\s*gatewayProxyAgentCacheTtlMs/, '代理 agent 缓存应配置 TTL')
   assert.match(source, /dispose:\s*\(agent\)\s*=>\s*{\s*agent\.destroy\(\)/s, '代理 agent 被驱逐时应销毁连接池')

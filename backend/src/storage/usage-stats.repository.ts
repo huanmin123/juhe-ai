@@ -999,7 +999,8 @@ function applyPostgresEstimatedCacheReadCost(row: UsageStatsRecordRow): void {
 
 function shouldRecordPostgresAccountQualityStats(row: UsageStatsRecordRow): boolean {
   if (
-    row.traffic_source === 'cooldown_retest'
+    row.traffic_source === 'runtime_recovery_probe'
+    || row.traffic_source === 'cooldown_retest'
     || row.traffic_source === 'hybrid_scoring'
     || row.traffic_source === 'hybrid_quality_scoring'
   ) {

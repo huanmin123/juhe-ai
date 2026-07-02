@@ -1,3 +1,4 @@
+import { runtimeConfig } from '../../../config/runtime.js'
 import type { AccountApiKeyRuntimeSelectionState, AccountApiKeyRuntimeStatus } from '../../../storage/account-api-key-rotation.js'
 import type { OpenAIAccountSecret } from '../../../storage/openai-account-selector.types.js'
 import type { OpenAIGatewayTrafficSource } from '../usage/traffic-source.js'
@@ -47,6 +48,7 @@ export interface GatewayAccountApiKeyFailureGuardDecision {
     | 'not_selected_api_key'
     | 'non_gateway_traffic'
     | 'gateway_local_only'
+    | 'redis_runtime_state'
   failureCount?: number
   distinctClientIpCount?: number
   distinctApiKeyCount?: number
@@ -56,7 +58,7 @@ export interface GatewayAccountApiKeyFailureGuardDecision {
 
 export interface GatewayAccountApiKeyLocalFailureGuardDecision {
   suppressed: boolean
-  reason: 'not_selected_api_key' | 'suppressed'
+  reason: 'not_selected_api_key' | 'suppressed' | 'redis_runtime_state'
 }
 
 export interface GatewayAccountApiKeyFailureGuardSnapshotEntry {
@@ -85,6 +87,9 @@ export function recordGatewayAccountApiKeyFailureGuard(
   if (!target) {
     return { persist: false, reason: 'not_selected_api_key' }
   }
+  if (!canUseProcessLocalApiKeyRuntimeState()) {
+    return { persist: true, reason: 'redis_runtime_state' }
+  }
 
   const status = normalizeFailureStatus(input.status)
   if (input.trafficSource !== 'gateway') {
@@ -104,6 +109,9 @@ export function recordGatewayAccountApiKeyLocalFailureGuard(
   if (!target) {
     return { suppressed: false, reason: 'not_selected_api_key' }
   }
+  if (!canUseProcessLocalApiKeyRuntimeState()) {
+    return { suppressed: false, reason: 'redis_runtime_state' }
+  }
   rememberLocalApiKeySuppression(target, normalizeFailureStatus(input.status), input.errorMessage)
   return { suppressed: true, reason: 'suppressed' }
 }
@@ -113,6 +121,7 @@ export function clearGatewayAccountApiKeyFailureGuard(account: OpenAIAccountSecr
   if (!target) {
     return false
   }
+  if (!canUseProcessLocalApiKeyRuntimeState()) return false
   const key = runtimeKey(target)
   const clearedLocal = localApiKeySuppressions.delete(key)
   return clearedLocal
@@ -123,6 +132,7 @@ export function recordGatewayAccountApiKeySuccessGuard(account: OpenAIAccountSec
   if (!target) {
     return false
   }
+  if (!canUseProcessLocalApiKeyRuntimeState()) return false
   rememberApiKeySuccessObservation(target)
   return clearGatewayAccountApiKeyFailureGuard(account)
 }
@@ -132,6 +142,7 @@ export function localAccountApiKeyRuntimeStatesForDispatch(accountId: string): A
   if (!normalizedAccountId) {
     return []
   }
+  if (!canUseProcessLocalApiKeyRuntimeState()) return []
   cleanupExpiredApiKeyRuntimeState()
   const now = Date.now()
   const states: AccountApiKeyRuntimeSelectionState[] = []
@@ -155,6 +166,7 @@ export function clearGatewayAccountApiKeyFailureGuardsForTest(): void {
 }
 
 export function getGatewayAccountApiKeyFailureGuardSnapshotForTest(): GatewayAccountApiKeyFailureGuardSnapshotEntry[] {
+  if (!canUseProcessLocalApiKeyRuntimeState()) return []
   cleanupExpiredApiKeyRuntimeState()
   const now = Date.now()
   const output: GatewayAccountApiKeyFailureGuardSnapshotEntry[] = []
@@ -175,6 +187,7 @@ function rememberLocalApiKeySuppression(
   status: FailureStatus,
   reason?: string
 ): void {
+  if (!canUseProcessLocalApiKeyRuntimeState()) return
   const now = Date.now()
   const key = runtimeKey(target)
   const current = localApiKeySuppressions.get(key)
@@ -195,6 +208,7 @@ function rememberLocalApiKeySuppression(
 }
 
 function rememberApiKeySuccessObservation(target: AccountApiKeyRuntimeTarget): void {
+  if (!canUseProcessLocalApiKeyRuntimeState()) return
   cleanupExpiredApiKeyRuntimeState()
   const now = Date.now()
   const key = runtimeKey(target)
@@ -214,6 +228,7 @@ function rememberApiKeySuccessObservation(target: AccountApiKeyRuntimeTarget): v
 }
 
 function cleanupExpiredApiKeyRuntimeState(): void {
+  if (!canUseProcessLocalApiKeyRuntimeState()) return
   const now = Date.now()
   for (const [key, suppression] of localApiKeySuppressions.entries()) {
     if (suppression.suppressUntilMs <= now) {
@@ -245,6 +260,13 @@ function accountApiKeyRuntimeTarget(account: OpenAIAccountSecret): AccountApiKey
 
 function runtimeKey(target: AccountApiKeyRuntimeTarget): string {
   return `${target.accountId}:${target.keyFingerprint}`
+}
+
+function canUseProcessLocalApiKeyRuntimeState(): boolean {
+  if (runtimeConfig.runtimeStateDriver !== 'redis') return true
+  localApiKeySuppressions.clear()
+  apiKeySuccessObservations.clear()
+  return false
 }
 
 function normalizeFailureStatus(status: GatewayAccountApiKeyFailureGuardInput['status']): FailureStatus {

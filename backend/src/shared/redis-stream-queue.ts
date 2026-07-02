@@ -1,6 +1,7 @@
 import { hostname } from 'node:os'
 
 import { runtimeConfig } from '../config/runtime.js'
+import { errorLogFields, logger } from './logger.js'
 import { createDedicatedRedisClient, getRedisClient, type RedisCommandClient } from './redis-client.js'
 
 export interface RedisStreamQueueOptions<T> {
@@ -19,6 +20,16 @@ export interface RedisStreamQueueOptions<T> {
 export interface RedisStreamMessage<T> {
   id: string
   payload: T
+}
+
+export interface RedisStreamQueueRuntime {
+  pendingCount: number
+  lag?: number
+  consumers?: number
+  lastDeliveredId?: string
+  entriesRead?: number
+  oldestPendingId?: string
+  newestPendingId?: string
 }
 
 export class RedisStreamQueue<T> {
@@ -50,16 +61,12 @@ export class RedisStreamQueue<T> {
 
   async enqueue(payload: T): Promise<string> {
     const client = await getRedisClient(this.redisUrl)
-    const id = await client.sendCommand([
-      'XADD',
-      this.streamKey,
-      'MAXLEN',
-      '~',
-      String(this.maxLen),
-      '*',
-      'payload',
-      this.encode(payload)
-    ])
+    const command = ['XADD', this.streamKey]
+    if (this.maxLen > 0) {
+      command.push('MAXLEN', '~', String(this.maxLen))
+    }
+    command.push('*', 'payload', this.encode(payload))
+    const id = await client.sendCommand(command)
     return String(id ?? '')
   }
 
@@ -103,6 +110,22 @@ export class RedisStreamQueue<T> {
     return Number(result ?? 0)
   }
 
+  async inspectRuntime(): Promise<RedisStreamQueueRuntime> {
+    await this.ensureGroup()
+    const client = await getRedisClient(this.redisUrl)
+    const [groupsResult, pendingResult] = await Promise.all([
+      client.sendCommand(['XINFO', 'GROUPS', this.streamKey]),
+      client.sendCommand(['XPENDING', this.streamKey, this.groupName])
+    ])
+    const groupRuntime = parseGroupRuntime(groupsResult, this.groupName)
+    const pendingRuntime = parsePendingRuntime(pendingResult)
+    return {
+      ...groupRuntime,
+      ...pendingRuntime,
+      pendingCount: pendingRuntime.pendingCount ?? groupRuntime.pendingCount ?? 0
+    }
+  }
+
   async closeConsumer(): Promise<void> {
     const promise = this.consumerClientPromise
     this.consumerClientPromise = undefined
@@ -130,7 +153,7 @@ export class RedisStreamQueue<T> {
   private async ensureGroupUnsafe(): Promise<void> {
     const client = await getRedisClient(this.redisUrl)
     try {
-      await client.sendCommand(['XGROUP', 'CREATE', this.streamKey, this.groupName, '$', 'MKSTREAM'])
+      await client.sendCommand(['XGROUP', 'CREATE', this.streamKey, this.groupName, '0', 'MKSTREAM'])
     } catch (error) {
       if (!isRedisBusyGroupError(error)) {
         throw error
@@ -215,13 +238,99 @@ export class RedisStreamQueue<T> {
       const id = String(entry[0] ?? '')
       const payload = fieldValue(entry[1], 'payload')
       if (!id || payload === undefined) continue
-      output.push({
-        id,
-        payload: this.decode(payload)
-      })
+      try {
+        output.push({
+          id,
+          payload: this.decode(payload)
+        })
+      } catch (error) {
+        this.ackPoisonMessage(id, error)
+      }
     }
     return output
   }
+
+  private ackPoisonMessage(id: string, error: unknown): void {
+    logger.error(errorLogFields(error, {
+      event: 'redis_stream_message_decode_failed',
+      streamKey: this.streamKey,
+      groupName: this.groupName,
+      messageId: id
+    }), 'Redis Stream 消息解码失败，已跳过坏消息并尝试 ack')
+    void this.ack([id]).catch((ackError) => {
+      logger.error(errorLogFields(ackError, {
+        event: 'redis_stream_poison_message_ack_failed',
+        streamKey: this.streamKey,
+        groupName: this.groupName,
+        messageId: id
+      }), 'Redis Stream 坏消息 ack 失败，后续消费将再次尝试')
+    })
+  }
+}
+
+function parseGroupRuntime(result: unknown, groupName: string): Partial<RedisStreamQueueRuntime> {
+  const groups = Array.isArray(result) ? result : []
+  for (const group of groups) {
+    const fields = fieldMap(group)
+    if (String(fields.get('name') ?? '') !== groupName) continue
+    return {
+      pendingCount: numberField(fields.get('pending')) ?? 0,
+      lag: numberField(fields.get('lag')),
+      consumers: numberField(fields.get('consumers')),
+      lastDeliveredId: stringField(fields.get('last-delivered-id')),
+      entriesRead: numberField(fields.get('entries-read'))
+    }
+  }
+  return { pendingCount: 0, lag: 0 }
+}
+
+function parsePendingRuntime(result: unknown): Partial<RedisStreamQueueRuntime> {
+  if (Array.isArray(result)) {
+    return {
+      pendingCount: numberField(result[0]) ?? 0,
+      oldestPendingId: stringField(result[1]),
+      newestPendingId: stringField(result[2])
+    }
+  }
+  if (result && typeof result === 'object') {
+    const fields = new Map(Object.entries(result as Record<string, unknown>))
+    return {
+      pendingCount: numberField(fields.get('pending')) ?? numberField(fields.get('count')) ?? 0,
+      oldestPendingId: stringField(fields.get('firstId')) ?? stringField(fields.get('smallestId')) ?? stringField(fields.get('start')),
+      newestPendingId: stringField(fields.get('lastId')) ?? stringField(fields.get('greatestId')) ?? stringField(fields.get('end'))
+    }
+  }
+  return { pendingCount: 0 }
+}
+
+function fieldMap(fields: unknown): Map<string, unknown> {
+  if (Array.isArray(fields)) {
+    const output = new Map<string, unknown>()
+    for (let index = 0; index < fields.length; index += 2) {
+      output.set(String(fields[index] ?? ''), fields[index + 1])
+    }
+    return output
+  }
+  if (fields && typeof fields === 'object') {
+    return new Map(Object.entries(fields as Record<string, unknown>))
+  }
+  return new Map()
+}
+
+function numberField(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return Math.max(0, Math.trunc(value))
+  if (typeof value === 'bigint') return Number(value)
+  if (typeof value === 'string' && value.trim()) {
+    const numeric = Number(value)
+    return Number.isFinite(numeric) ? Math.max(0, Math.trunc(numeric)) : undefined
+  }
+  return undefined
+}
+
+function stringField(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  return trimmed && trimmed !== 'null' ? trimmed : undefined
 }
 
 function requiredRedisQueueUrl(): string {

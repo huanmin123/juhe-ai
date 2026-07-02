@@ -8,7 +8,7 @@ import { closeUsageRecordWriterPool, getUsageRecordWriterPoolRuntime, usageRecor
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import { scheduleProcessFatalError } from '../../../shared/process-fatal.js'
 import { estimateJsonLikeBytes } from '../../../shared/queue-size.js'
-import { RedisStreamQueue, type RedisStreamMessage } from '../../../shared/redis-stream-queue.js'
+import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime } from '../../../shared/redis-stream-queue.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../../shared/retry-policy.js'
 import { sendUsageRecordsToWorker } from '../../background/background-ipc.js'
 import { sanitizeHeaderRecord } from '../upstream/headers.js'
@@ -60,10 +60,10 @@ interface UsageRecordFlushOptions {
   maxBatches?: number
 }
 
-export function enqueueUsageRecord(input: UsageRecordInput): void {
+export async function enqueueUsageRecord(input: UsageRecordInput): Promise<void> {
   const queuedInput = normalizeUsageRecordInput(input)
   if (shouldEnqueueUsageRecordToRedisStream()) {
-    void enqueueUsageRecordToRedisStream(queuedInput).catch(scheduleProcessFatalError)
+    await enqueueUsageRecordToRedisStream(queuedInput).catch(scheduleProcessFatalError)
     return
   }
   if (shouldDispatchUsageRecordToIngestWorker()) {
@@ -360,6 +360,13 @@ export function getUsageRecordQueueRuntime(): {
     writerPoolMaxQueueWaitMs: writerPoolRuntime.maxQueueWaitMs,
     writerPoolMaxRunMs: writerPoolRuntime.maxRunMs
   }
+}
+
+export async function getUsageRecordRedisStreamRuntime(): Promise<RedisStreamQueueRuntime | undefined> {
+  if (!shouldUseRedisStreamUsageRecordQueue()) {
+    return undefined
+  }
+  return await usageRecordRedisStreamQueue().inspectRuntime()
 }
 
 export function installUsageRecordQueueShutdownHooks(): void {

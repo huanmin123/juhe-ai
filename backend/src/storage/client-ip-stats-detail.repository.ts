@@ -7,12 +7,19 @@ import { normalizeIpHash } from './client-ip-normalization.js'
 import { clientIpUsageRangeWindowReady, clientIpUsageRangeWindowReadyAsync } from './client-ip-usage-range-windows.repository.js'
 import type { ClientIpStatsSortField, ClientIpUsageSummary } from './client-ip-stats-list.repository.js'
 import { pagedTotalUpperBound } from './query-utils.js'
-import { loadAccountLookupMap, loadAccountLookupMapAsync } from './repository-lookups.js'
+import {
+  loadAccountLookupMap,
+  loadAccountLookupMapAsync,
+  loadSystemAccountNameMapByIds,
+  loadSystemAccountNameMapByIdsAsync
+} from './repository-lookups.js'
 import { normalizeAccountUsageStatsRange, usageStatsTimezone, usageStatsTimezoneAsync } from './usage-stats-helpers.js'
 
 export interface ClientIpAccountUsageRow {
   accountId: string
   accountName?: string
+  accountOwnerSystemAccountId?: string
+  accountOwnerSystemAccountName?: string
   rangeUsage: ClientIpUsageSummary
 }
 
@@ -99,6 +106,7 @@ export function getClientIpStatsDetail(options: ClientIpStatsDetailOptions): Cli
   const pageRows = rows.slice(0, pageSize)
   const hasMore = rows.length > pageSize
   const accounts = loadAccountLookupMap(pageRows.map((row) => row.account_id))
+  const accountOwnerNames = loadSystemAccountNameMapByIds([...accounts.values()].map((account) => account.systemAccountId))
   return {
     ipHash: registry.ip_hash,
     aggregateIpKey: registry.aggregate_ip_key,
@@ -108,6 +116,8 @@ export function getClientIpStatsDetail(options: ClientIpStatsDetailOptions): Cli
       return {
         accountId: row.account_id,
         accountName: account?.name,
+        accountOwnerSystemAccountId: account?.systemAccountId,
+        accountOwnerSystemAccountName: account ? accountOwnerNames.get(account.systemAccountId) : undefined,
         rangeUsage: usageSummaryFromRow(row)
       }
     }),
@@ -180,6 +190,7 @@ export async function getClientIpStatsDetailAsync(options: ClientIpStatsDetailOp
   const pageRows = rows.slice(0, pageSize)
   const hasMore = rows.length > pageSize
   const accounts = await loadAccountLookupMapAsync(client, pageRows.map((row) => row.account_id))
+  const accountOwnerNames = await loadSystemAccountNameMapByIdsAsync(client, [...accounts.values()].map((account) => account.systemAccountId))
   return {
     ipHash: registry.ip_hash,
     aggregateIpKey: registry.aggregate_ip_key,
@@ -189,6 +200,8 @@ export async function getClientIpStatsDetailAsync(options: ClientIpStatsDetailOp
       return {
         accountId: row.account_id,
         accountName: account?.name,
+        accountOwnerSystemAccountId: account?.systemAccountId,
+        accountOwnerSystemAccountName: account ? accountOwnerNames.get(account.systemAccountId) : undefined,
         rangeUsage: usageSummaryFromRow(row)
       }
     }),

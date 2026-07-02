@@ -144,7 +144,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, shallowRef, watch } from 'vue'
+import { computed, defineAsyncComponent, ref, shallowRef, watch } from 'vue'
 import { message } from '@/lib/antd'
 import { ReloadOutlined } from '@ant-design/icons-vue'
 import type { Dayjs } from 'dayjs'
@@ -159,15 +159,15 @@ import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDa
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import type { SystemMetricsOverview, UsageStatsOverview } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
-import StatsBackgroundJobsCard from './StatsBackgroundJobsCard.vue'
 import StatsChartCard from './StatsChartCard.vue'
-import StatsProcessEventLoopTable from './StatsProcessEventLoopTable.vue'
 import StatsSummaryCards from './StatsSummaryCards.vue'
 import { buildErrorOption, buildModelDistributionOption, buildProcessEventLoopOption, buildProcessMemoryOption, buildSystemMetricsOption, buildUsageTrendOption } from './statsChartOptions'
 import { formatCompactInteger, formatCost, formatDurationSeconds, formatInteger, formatPercent, formatSeconds } from './statsFormatters'
 import { buildProcessEventLoopRows, hasProcessEventLoopRowSample } from './statsProcessEventLoop'
 
 const MAX_RANGE_DAYS = 31
+const StatsBackgroundJobsCard = defineAsyncComponent(() => import('./StatsBackgroundJobsCard.vue'))
+const StatsProcessEventLoopTable = defineAsyncComponent(() => import('./StatsProcessEventLoopTable.vue'))
 type StatsPageState = {
   range?: {
     startDate: string
@@ -424,77 +424,79 @@ function resetFilters() {
   void loadData()
 }
 
-function renderStatsCharts() {
-  renderUsageTrendChart()
-  renderModelDistributionChart()
-  renderErrorChart()
-  renderSystemMetricsChart()
-  renderProcessEventLoopChart()
-  renderProcessMemoryChart()
+async function renderStatsCharts() {
+  await Promise.all([
+    renderUsageTrendChart(),
+    renderModelDistributionChart(),
+    renderErrorChart(),
+    renderSystemMetricsChart(),
+    renderProcessEventLoopChart(),
+    renderProcessMemoryChart()
+  ])
 }
 
-function renderUsageTrendChart() {
+async function renderUsageTrendChart() {
   if (!hasUsageTrend.value) {
     disposeChart(usageTrendChart)
     return
   }
-  const chart = ensureChart(usageTrendChartRef, usageTrendChart)
-  if (!chart || !usageOverview.value) return
+  const chart = await ensureChart(usageTrendChartRef, usageTrendChart, () => pageActive.value)
+  if (!chart || !usageOverview.value || !pageActive.value) return
 
   chart.setOption(buildUsageTrendOption(usageOverview.value.hourlyTrend), { notMerge: true })
 }
 
-function renderModelDistributionChart() {
+async function renderModelDistributionChart() {
   if (!hasModelDistribution.value) {
     disposeChart(modelDistributionChart)
     return
   }
-  const chart = ensureChart(modelDistributionChartRef, modelDistributionChart)
-  if (!chart || !usageOverview.value) return
+  const chart = await ensureChart(modelDistributionChartRef, modelDistributionChart, () => pageActive.value)
+  if (!chart || !usageOverview.value || !pageActive.value) return
 
   chart.setOption(buildModelDistributionOption(usageOverview.value.modelDistribution), { notMerge: true })
 }
 
-function renderErrorChart() {
+async function renderErrorChart() {
   if (!hasErrors.value) {
     disposeChart(errorChart)
     return
   }
-  const chart = ensureChart(errorChartRef, errorChart)
-  if (!chart || !usageOverview.value) return
+  const chart = await ensureChart(errorChartRef, errorChart, () => pageActive.value)
+  if (!chart || !usageOverview.value || !pageActive.value) return
 
   chart.setOption(buildErrorOption(usageOverview.value.errors), { notMerge: true })
 }
 
-function renderSystemMetricsChart() {
+async function renderSystemMetricsChart() {
   if (!showAdminDetailCharts.value || !hasSystemTrend.value) {
     disposeChart(systemMetricsChart)
     return
   }
-  const chart = ensureChart(systemMetricsChartRef, systemMetricsChart)
-  if (!chart || !systemMetrics.value) return
+  const chart = await ensureChart(systemMetricsChartRef, systemMetricsChart, () => pageActive.value)
+  if (!chart || !systemMetrics.value || !pageActive.value) return
 
   chart.setOption(buildSystemMetricsOption(systemMetrics.value.hourlyTrend), { notMerge: true })
 }
 
-function renderProcessEventLoopChart() {
+async function renderProcessEventLoopChart() {
   if (!showAdminDetailCharts.value || !hasProcessEventLoopTrend.value) {
     disposeChart(processEventLoopChart)
     return
   }
-  const chart = ensureChart(processEventLoopChartRef, processEventLoopChart)
-  if (!chart || !systemMetrics.value) return
+  const chart = await ensureChart(processEventLoopChartRef, processEventLoopChart, () => pageActive.value)
+  if (!chart || !systemMetrics.value || !pageActive.value) return
 
   chart.setOption(buildProcessEventLoopOption(systemMetrics.value.processEventLoopTrend), { notMerge: true })
 }
 
-function renderProcessMemoryChart() {
+async function renderProcessMemoryChart() {
   if (!showAdminDetailCharts.value || !hasProcessMemoryTrend.value) {
     disposeChart(processMemoryChart)
     return
   }
-  const chart = ensureChart(processMemoryChartRef, processMemoryChart)
-  if (!chart || !systemMetrics.value) return
+  const chart = await ensureChart(processMemoryChartRef, processMemoryChart, () => pageActive.value)
+  if (!chart || !systemMetrics.value || !pageActive.value) return
 
   chart.setOption(buildProcessMemoryOption(systemMetrics.value.processEventLoopTrend), { notMerge: true })
 }
@@ -686,5 +688,4 @@ watch(() => backgroundJobRows.value.length, (total) => {
 
 }
 </style>
-
 

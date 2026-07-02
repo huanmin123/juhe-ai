@@ -50,6 +50,8 @@ export interface ClientIpStatsListResult {
 export interface ClientIpAccountUsageRow {
   accountId: string
   accountName?: string
+  accountOwnerSystemAccountId?: string
+  accountOwnerSystemAccountName?: string
   rangeUsage: ClientIpUsageSummary
 }
 

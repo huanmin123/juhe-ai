@@ -12,21 +12,21 @@ import {
   parseGatewayJsonBodyInWorker
 } from '../../request/json-parser.js'
 import {
-  OpenAIOAuthCodexAdapterError,
   normalizeOpenAIOAuthCodexParsedBody,
   type NormalizedCodexBody,
   type OpenAIOAuthCodexAccount,
   type OpenAIOAuthCodexIdentity,
   type OpenAIOAuthCodexSessionResolution
 } from './oauth-normalizer.js'
+import { OpenAIOAuthCodexAdapterError } from './oauth-errors.js'
 import { getRequestLogger, sanitizeUrlForLog } from '../../../../shared/request-context.js'
 
 export {
-  OpenAIOAuthCodexAdapterError,
   isolateOpenAIOAuthCodexSessionId,
   type OpenAIOAuthCodexAccount,
   type OpenAIOAuthCodexIdentity
 } from './oauth-normalizer.js'
+export { OpenAIOAuthCodexAdapterError } from './oauth-errors.js'
 
 export interface OpenAIOAuthCodexRequestParts {
   headers: Headers

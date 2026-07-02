@@ -10,6 +10,7 @@ import express, { type NextFunction, type Request, type Response as ExpressRespo
 import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-stream-first-output-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'stream-first-output.sqlite3')
@@ -475,6 +476,7 @@ function createScenarioCredential(upstreamBaseUrl: string, label: string): {
   scenarioCredentialIndex += 1
   const account = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: `流式超时回归账户-${label}`,
     type: 'api_key',
     credentials: {
@@ -507,6 +509,7 @@ function createTwoAccountScenarioCredential(upstreamBaseUrl: string, label: stri
   const backupKey = `sk-stream-timeout-regression-${scenarioCredentialIndex}-backup`
   const primaryAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: `流式超时回归主账户-${label}`,
     type: 'api_key',
     credentials: {
@@ -521,6 +524,7 @@ function createTwoAccountScenarioCredential(upstreamBaseUrl: string, label: stri
   }, access)
   const backupAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: `流式超时回归备用账户-${label}`,
     type: 'api_key',
     credentials: {
@@ -551,6 +555,7 @@ function createMultiAccountScenarioCredential(upstreamBaseUrl: string, label: st
   scenarioCredentialIndex += 1
   const accounts = Array.from({ length: count }, (_, index) => repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: `流式超时回归多账号-${label}-${index + 1}`,
     type: 'api_key',
     credentials: {

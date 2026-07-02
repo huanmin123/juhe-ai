@@ -1,6 +1,6 @@
 import {
   clearPenaltyWindowRateLimitStore,
-  consumePenaltyWindowRateLimit,
+  consumePenaltyWindowRateLimitAsync,
   createPenaltyWindowRateLimitStore
 } from '../../rate-limit/penalty-window-rate-limit.js'
 
@@ -23,8 +23,8 @@ const publicModelsRateLimitStore = createPenaltyWindowRateLimitStore({
   maxPenaltyMs: 15 * 60_000
 })
 
-export function consumePublicModelsRateLimit(input: { clientIp?: string }): PublicModelsRateLimitDecision {
-  const decision = consumePenaltyWindowRateLimit({
+export async function consumePublicModelsRateLimit(input: { clientIp?: string }): Promise<PublicModelsRateLimitDecision> {
+  const decision = await consumePenaltyWindowRateLimitAsync({
     store: publicModelsRateLimitStore,
     scopeKey: publicModelsRateLimitKey(input.clientIp),
     rules: [publicModelsRateLimitRule]

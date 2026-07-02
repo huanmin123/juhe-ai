@@ -69,7 +69,7 @@ JUHE_AI_POSTGRES_URL=postgres://juhe_ai:<密码URL编码>@pgbouncer:5432/juhe_ai
 JUHE_AI_REDIS_CACHE_URL=redis://:<缓存密码URL编码>@redis-cache:6379/0
 JUHE_AI_REDIS_STATE_URL=redis://:<运行态密码URL编码>@redis-state:6379/0
 JUHE_AI_REDIS_QUEUE_URL=redis://:<运行态密码URL编码>@redis-state:6379/0
-JUHE_AI_REDIS_STREAM_MAXLEN=1000000
+JUHE_AI_REDIS_STREAM_MAXLEN=0
 JUHE_AI_REDIS_STREAM_READ_COUNT=1000
 JUHE_AI_REDIS_STREAM_BLOCK_MS=1000
 JUHE_AI_REDIS_STREAM_CLAIM_IDLE_MS=60000
@@ -98,7 +98,7 @@ JUHE_AI_DB_WRITE_QUEUE_MAX_ITEMS=50000
 | `postgres` | 主事实库 | 使用 PostgreSQL 18 当前稳定版本线；PostgreSQL 19 仍处 beta 阶段，不作为生产默认。 |
 | `pgbouncer` | 连接池网关 | 应用进程和 worker 连接 PgBouncer，避免多进程各自连接池把 PostgreSQL 连接打爆。 |
 | `redis-cache` | 可丢弃缓存 | `maxmemory-policy=allkeys-lru` 或 `volatile-lru`，只放可重建缓存。 |
-| `redis-state` | 运行态、原子计数和默认 Redis Streams 队列 | `maxmemory-policy=noeviction`，所有 key 必须有 TTL 或容量上限；Stream 使用 `MAXLEN ~` 控制长度，开启 AOF everysec。 |
+| `redis-state` | 运行态、原子计数和默认 Redis Streams 队列 | `maxmemory-policy=noeviction`；运行态 key 必须有 TTL 或容量上限；Stream 可靠入库队列默认不自动裁剪，开启 AOF everysec 并按 backlog 监控扩容。 |
 | `juhe-ai` | 后端服务 | 按现有 server / DB service / worker 拓扑启动，连接 PostgreSQL 和 Redis。 |
 
 版本参考：
@@ -301,7 +301,23 @@ juhe-ai:{env}:{driver}:{cache-name}:v{version}:{scope}:{key}
 - Redis payload 使用 JSON，并带 `schemaVersion`；结构变化时递增 cache domain version。
 - API Key 明文、OAuth token、代理密码、完整请求 / 响应 payload、审计正文和可能造成越权的权限中间结果不得进入通用 Redis cache。
 - 调度运行态、并发占用、IP 级错误熔断、登录失败窗口、验证码挑战、会话亲和和 cache invalidation index 在 performance 模式下进入 Redis state。
-- 当前已落地 `RuntimeStateStore` Redis driver、`SharedJsonCache` Redis driver、登录失败窗口 Redis state、验证码 challenge / 发放限频 Redis state、账号并发槽 Redis 原子获取 / 释放、账号并发列表展示 Redis 批量读取、网关缓存失效 runtime state 版本广播和记录型 Redis Streams 队列；仍需继续评估会话亲和、客户端 IP 并发和错误熔断是否需要跨节点共享，不能在 performance 模式下把跨进程事实绑定到进程内 memory。
+- 当前已落地 `RuntimeStateStore` Redis driver、`RuntimeProbeStateStore` Redis driver、`SharedJsonCache` Redis driver、登录失败窗口 Redis state、验证码 challenge / 发放限频 Redis state、账号并发槽 Redis 原子获取 / 释放、账号并发列表展示 Redis 批量读取、网关缓存失效 runtime state 版本广播、AI 账户运行态探针 due / generation / lock 和记录型 Redis Streams 队列；不能在 performance 模式下把跨进程事实绑定到进程内 memory。
+
+### AI 账户运行态探针
+
+AI 账户运行态探针在 performance 模式下必须按多节点设计运行：
+
+- `failure_observed`、`local_suppressed`、`runtime_degraded`、`precheck_pending` 这类短 TTL 调度态可以存放在 Redis runtime state，但不能作为账务、授权、审计或账号健康持久事实。
+- 状态事件只提交 probe intent；探针调度器负责去重、预算、jitter、generation 和 due 索引。
+- 请求调度链路允许短暂不一致，优先使用 server 进程内短 TTL 近端缓存读取 Redis 探针状态，避免高并发下每次请求按候选账号数量访问 Redis。
+- due 索引必须跨节点可见，使用 Redis sorted set 或等价 Redis runtime state 结构保存 `runtimeKey -> dueAt`。任意 server 节点都可以 sweep due 任务，但只有拿到 Redis lock 的节点可以执行。
+- 探针执行锁只用于同一个 `runtimeKey` 的探针单飞，必须带 token 和 TTL，释放时校验 token；节点崩溃后 TTL 到期自动释放。该锁不参与用户请求调度，也不限制账号业务并发。
+- 不使用 Redis 分布式全局预算锁、provider 锁、proxy 锁或 baseUrl 锁限制恢复探针预算；预算只做本机保护和 jitter，避免 Redis 锁残留导致恢复并发被误限制。
+- 探针结果回写前必须校验 generation，避免旧探针覆盖真实成功、手动恢复或后续状态转换。
+- Redis 探针状态只保存非敏感运行态元数据和 due 信息，不保存账号凭据、API Key、OAuth token、代理密码、失败请求 payload、失败请求 model 或 endpoint；执行探针前通过 DB service 重载账号凭据。
+- server 进程负责 sweep Redis due 索引并竞争锁执行运行态恢复探针；worker 和 DB service 不执行该类短 TTL 运行态探针。持久冷却复测仍由 ops-worker 负责。
+- `runtime_recovery_probe` 只表示本地 / Redis 运行态恢复探针；持久 `temporary_unavailable / rate_limited` 冷却复测继续使用 `cooldown_retest`。两类探针都不写账号质量分钟样本，不学习真实请求形态，不保存完整请求 / 响应正文。
+- Redis state 不可用时，高性能模式不能静默退回进程内 memory；应记录基础设施错误并保守跳过探针或快速失败。
 
 ## 队列与消费并发
 
@@ -320,7 +336,7 @@ juhe-ai:{env}:{driver}:{cache-name}:v{version}:{scope}:{key}
 - `JUHE_AI_DB_WRITE_MAX_CONCURRENCY=100` 是后台写入队列总并发上限，不等于 PostgreSQL 连接池必须开到 100。
 - 实际执行受 `JUHE_AI_DB_POOL_MAX`、PgBouncer 池大小、命令优先级、同资源互斥和队列容量共同限制。
 - Redis Streams 只提供 at-least-once 投递，不提供 exactly-once；消费端写库必须保持幂等，失败消息留在 pending，超过 `JUHE_AI_REDIS_STREAM_CLAIM_IDLE_MS` 后由消费者重新 claim。
-- `JUHE_AI_REDIS_STREAM_MAXLEN` 控制 Stream 近似最大长度，避免 Redis state 被持续写满；生产监控必须包含 stream length、pending 数量、consumer idle 和落库失败次数。压测报告中判断本轮是否制造积压时必须使用当前测试窗口的 positive pending / backlog delta，历史遗留 pending / lag 只能作为单独清理项记录，不能直接判定当前压测失败。
+- `JUHE_AI_REDIS_STREAM_MAXLEN=0` 表示可靠队列不发送 `MAXLEN`，避免消费滞后时 Redis 近似裁剪未落库消息；只有在明确接受容量优先和消息截断风险时才配置为正数。生产监控必须包含 stream length、pending 数量、consumer idle 和落库失败次数。压测报告中判断本轮是否制造积压时必须使用当前测试窗口的 positive pending / backlog delta，历史遗留 pending / lag 只能作为单独清理项记录，不能直接判定当前压测失败。
 - 入队后立即调度 drain，不再等待固定 SQLite flush 周期；但允许 0 到 10ms 的微批窗口合并当前事件循环内已经排队的同类写入。
 - 同一个业务资源的状态覆盖类 command 仍可合并；事实明细 append-only 不做 last-write-wins。
 - 失败重试必须指数退避并有最大重试 / dead-letter 指标，不能无限占用并发槽。

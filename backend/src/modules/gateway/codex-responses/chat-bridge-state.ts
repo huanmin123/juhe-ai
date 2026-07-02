@@ -138,7 +138,7 @@ export async function applyCodexResponsesChatBridgeStatePreflight(input: {
     signal: input.signal
   })
   if (compactReferenceResult.outcome !== 'resolved') {
-    sendCodexBridgeStateFailure(input, compactReferenceFailure(compactReferenceResult.outcome))
+    await sendCodexBridgeStateFailure(input, compactReferenceFailure(compactReferenceResult.outcome))
     return 'completed'
   }
   if (compactReferenceResult.changed) {
@@ -181,7 +181,7 @@ export async function applyCodexResponsesChatBridgeStatePreflight(input: {
         reason: readResult.outcome
       }
     })
-    sendCodexBridgeStateFailure(input, stateRestoreFailure(readResult.outcome))
+    await sendCodexBridgeStateFailure(input, stateRestoreFailure(readResult.outcome))
     return 'completed'
   }
 
@@ -205,7 +205,7 @@ export async function applyCodexResponsesChatBridgeStatePreflight(input: {
         reason: 'payload_unavailable'
       }
     })
-    sendCodexBridgeStateFailure(input, {
+    await sendCodexBridgeStateFailure(input, {
       statusCode: 404,
       type: 'invalid_request_error',
       code: 'codex_bridge_previous_response_state_unavailable',
@@ -786,15 +786,15 @@ function assertRestoredInputSize(input: unknown): void {
   }
 }
 
-function sendCodexBridgeStateFailure(input: {
+async function sendCodexBridgeStateFailure(input: {
   req: Request
   res: Response
   auditCapture: AuditCaptureContext
   usageContext: GatewayFailureUsageContext
   startedAt: number
-}, failure: { statusCode: number; type: string; code: string; message: string }): void {
+}, failure: { statusCode: number; type: string; code: string; message: string }): Promise<void> {
   const responsePayload = gatewayErrorPayload(failure.message, failure.type, failure.code)
-  sendGatewayFailureResponse({
+  await sendGatewayFailureResponse({
     req: input.req,
     res: input.res,
     auditCapture: input.auditCapture,

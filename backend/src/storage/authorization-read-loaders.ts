@@ -69,6 +69,7 @@ const emptyAuthorizationStats: ResourceAuthorizationStats = {
 }
 
 export function loadResourceAuthorizationStatsByResourceIds(resourceType: ResourceAuthorizationResourceType, resourceIds: string[]): Map<string, ResourceAuthorizationStats> {
+  assertSyncAuthorizationReadLoaderAllowed('loadResourceAuthorizationStatsByResourceIds')
   const ids = uniqueIds(resourceIds)
   if (!ids.length) return new Map()
   const result = new Map<string, ResourceAuthorizationStats>()
@@ -161,6 +162,7 @@ export async function loadResourceAuthorizationStatsByResourceIdsAsync(resourceT
 }
 
 export function loadResourceAuthorizationSourcesByAuthorizationIds(authorizationIds: string[]): Map<string, ResourceAuthorizationSourceSummary[]> {
+  assertSyncAuthorizationReadLoaderAllowed('loadResourceAuthorizationSourcesByAuthorizationIds')
   const ids = uniqueIds(authorizationIds)
   if (!ids.length) return new Map()
   const result = new Map<string, ResourceAuthorizationSourceSummary[]>()
@@ -213,6 +215,11 @@ export function loadResourceAuthorizationSourcesByAuthorizationIds(authorization
     result.set(id, [...sources])
   }
   return result
+}
+
+function assertSyncAuthorizationReadLoaderAllowed(operation: string): void {
+  if (runtimeConfig.cacheDriver !== 'redis') return
+  throw new Error(`高性能模式禁止同步读取本地授权 loader：${operation} 必须使用 Redis async loader`)
 }
 
 export async function loadResourceAuthorizationSourcesByAuthorizationIdsAsync(authorizationIds: string[]): Promise<Map<string, ResourceAuthorizationSourceSummary[]>> {

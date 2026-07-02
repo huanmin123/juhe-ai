@@ -1,10 +1,16 @@
+import { randomUUID } from 'node:crypto'
+
 import { errorLogFields, logger } from '../../../shared/logger.js'
+import { runtimeConfig } from '../../../config/runtime.js'
 import type { AccountRuntimeAvailability } from '../../db-service/db-service-types.js'
 import { clearGatewayRuntimeCache } from './runtime-cache.service.js'
 import { requestGatewayDbService } from './gateway-db-service-request.js'
 import type { GatewaySettings } from '../policy/account-error-policy.service.js'
 import { exponentialRetryPolicy, retryDueAtMs, waitForRetryDelayMs } from '../../../shared/retry-policy.js'
+import { createRuntimeProbeStateStore } from '../../../shared/runtime-probe-state-store.js'
+import { createRuntimeStateStore } from '../../../shared/runtime-state-store.js'
 import {
+  getAccountCurrentConcurrencyAsync,
   getAccountCurrentConcurrency,
   subscribeAccountConcurrencyRelease
 } from '../../../shared/account-concurrency.js'
@@ -16,6 +22,7 @@ import {
 } from '../../accounts/account-diagnostic-retry-policy.js'
 import { accountSummaryFromGatewayPrecheckAccount } from './account-precheck-summary.mapper.js'
 import {
+  activateLocalAccountRuntimeDegradation,
   clearLocalAccountSuppression,
   clearLocalAccountDegradation,
   clearLocalAccountSuppressionsForTest,
@@ -23,7 +30,9 @@ import {
   countLocalAccountDegradations,
   countVisibleLocalSuppressions,
   degradeLocalAccountForGatewayFailure,
+  ageLocalAccountDegradationForTest,
   filterLocalAccountSuppressions,
+  localDegradationMinObservationMs,
   localSuppressionMaxMs,
   orderLocalAccountDegradations,
   releaseLocalAccountHalfOpenLease,
@@ -78,6 +87,7 @@ export interface GatewayAccountFailurePrecheckInput {
   reason: string
   statusCode?: number
   forcePrecheck?: boolean
+  localSuppressionDelayMs?: number
 }
 
 interface FailureStormEntry {
@@ -106,6 +116,7 @@ interface FailureStormPrecheckDecision {
 }
 
 interface PrecheckState {
+  generation: number
   account: OpenAIAccountSecret
   settings?: GatewaySettings
   systemAccountId: string
@@ -119,6 +130,44 @@ interface PrecheckState {
   distinctApiKeyCount: number
   running: boolean
   waitingForConcurrencyDrain?: boolean
+}
+
+interface RecoveryProbeState {
+  generation: number
+  account: OpenAIAccountSecret
+  settings?: GatewaySettings
+  systemAccountId: string
+  groupId: string
+  startedAtMs: number
+  lastObservedAtMs: number
+  nextProbeAtMs: number
+  attemptCount: number
+  failureCount: number
+  reason: string
+  distinctClientIpCount: number
+  distinctApiKeyCount: number
+  running: boolean
+  precheckRequested: boolean
+}
+
+interface DistributedRecoveryProbeState {
+  runtimeKey: string
+  generation: number
+  accountId: string
+  accountName?: string
+  providerCode?: string
+  settings?: GatewaySettings
+  systemAccountId: string
+  groupId: string
+  startedAtMs: number
+  lastObservedAtMs: number
+  nextProbeAtMs: number
+  attemptCount: number
+  failureCount: number
+  reason: string
+  distinctClientIpCount: number
+  distinctApiKeyCount: number
+  precheckRequested: boolean
 }
 
 export interface GatewayAccountSideEffectState {
@@ -139,27 +188,54 @@ export interface GatewayAccountSideEffectState {
 }
 
 const sideEffectRetentionMs = 10 * 60_000
-const failureStormWindowMs = 10_000
+const failureStormWindowMs = 5 * 60_000
 const failureStormThresholdCount = 5
 const failureStormDistinctIpThreshold = 2
-const failureStormMinObservationMs = 2_000
+const failureStormMinObservationMs = 60_000
 const failureStormRecentSuccessGraceMs = 5_000
 const failureStormFailureRatioThreshold = 0.9
 const precheckMinIntervalMs = 60_000
 const precheckMaxAttempts = accountDiagnosticRetryTimeoutMs.length
 const precheckSuppressionGuardMs = accountDiagnosticRetryMaxTotalTimeoutMs + 15_000
 const precheckConcurrencyDrainPollMs = 1_000
+const recoveryProbeRetryDelayMs = 10_000
+const recoveryProbePrecheckFailureThreshold = 2
+const recoveryProbeMaxConcurrentRuns = 4
+const recoveryProbeAccountMinIntervalMs = 3_000
+const recoveryProbeScopeMinIntervalMs = 1_000
+const recoveryProbeBudgetDelayMs = 1_000
+const recoveryProbeJitterMs = 750
+const distributedRecoveryProbeStateTtlMs = Math.max(localSuppressionMaxMs, precheckSuppressionGuardMs) + 5 * 60_000
+const distributedRecoveryProbeSweepIntervalMs = 1_000
+const distributedRecoveryProbeSweepBatchSize = 25
+const distributedRecoveryProbeLockTtlMs = accountDiagnosticRetryMaxTotalTimeoutMs + 60_000
+const distributedRecoveryProbeDueRetryDelayMs = 250
+const distributedRecoveryProbeSuppressionCacheTtlMs = 1000
+const distributedRecoveryProbeSuppressionNegativeCacheTtlMs = 500
+const distributedRecoveryProbeSuppressionCacheMaxEntries = 5000
 const sideEffectRetryPolicy = exponentialRetryPolicy('gateway_account_side_effect_write', 500, 30_000)
 const maxSideEffectQueueLength = 5000
 
+const distributedRecoveryProbeStore = createRuntimeProbeStateStore<DistributedRecoveryProbeState>('gateway-account-recovery')
+const distributedRecoveryProbeBudgetRuntimeStore = createRuntimeStateStore('gateway-account-recovery-probe-budget')
 const sideEffectQueue = new AccountSideEffectQueue()
 const failureStorms = new Map<string, FailureStormEntry>()
 const successObservations = new Map<string, SuccessObservationEntry>()
 const precheckStates = new Map<string, PrecheckState>()
+const recoveryProbeStates = new Map<string, RecoveryProbeState>()
+const recoveryProbeTimers = new Map<string, NodeJS.Timeout>()
+const precheckRunTimers = new Map<string, NodeJS.Timeout>()
 const precheckConcurrencyDrainWaits = new Map<string, { unsubscribe: () => void; timer: NodeJS.Timeout }>()
+const runtimeProbeGenerationCounters = new Map<string, number>()
+const recoveryProbeLastStartedAtByScope = new Map<string, number>()
+const distributedRecoveryProbeSuppressionCache = new Map<string, { state?: DistributedRecoveryProbeState; expiresAtMs: number }>()
 let processingSideEffects = false
 let drainTimer: NodeJS.Timeout | undefined
 let drainTimerDueAtMs: number | undefined
+let distributedRecoveryProbeSweepTimer: NodeJS.Timeout | undefined
+let distributedRecoveryProbeSweepDueAtMs: number | undefined
+let distributedRecoveryProbeSweepRunning = false
+let runningRecoveryProbeCount = 0
 let enqueuedCount = 0
 let completedCount = 0
 let coalescedCount = 0
@@ -169,7 +245,27 @@ let failedAttemptCount = 0
 let droppedCount = 0
 let expiredCount = 0
 
-export function enqueueGatewayAccountErrorHandlingSideEffect(operation: AccountErrorHandlingOperation): void {
+export async function enqueueGatewayAccountErrorHandlingSideEffect(operation: AccountErrorHandlingOperation): Promise<void> {
+  if (runtimeConfig.runtimeStateDriver === 'redis') {
+    if (shouldSkipHealthySuccessfulAccountSideEffect(operation)) {
+      skippedHealthySuccessCount += 1
+      return
+    }
+    enqueuedCount += 1
+    try {
+      await executeAccountSideEffect(operation)
+      completedCount += 1
+    } catch (error) {
+      failedAttemptCount += 1
+      logger.error(errorLogFields(error, {
+        event: 'gateway_account_side_effect_direct_write_failed',
+        operationType: operation.type,
+        accountId: operationAccountId(operation)
+      }), '高性能模式账号副作用直接写入 DB service 失败，禁止回退本机队列')
+      throw error
+    }
+    return
+  }
   if (operation.input.success) {
     const runtimeKey = accountErrorHandlingOperationRuntimeKey(operation)
     recordGatewayAccountSuccessObservation(runtimeKey)
@@ -196,7 +292,6 @@ export function suppressGatewayAccountLocally(
 ): GatewayAccountLocalSuppressionResult {
   const runtimeKey = gatewayAccountRuntimeKey(account)
   const accountId = gatewayAccountId(account)
-  degradeLocalAccountForGatewayFailure(runtimeKey, accountId, reason)
   return suppressLocalAccountForGatewayFailure(runtimeKey, accountId, reason)
 }
 
@@ -238,9 +333,11 @@ export async function completeGatewayAccountPrecheckForTest(
   settings: GatewaySettings | undefined,
   input: GatewayAccountFailurePrecheckInput
 ): Promise<void> {
+  if (!canUseProcessLocalGatewayAccountRuntimeState()) return
   const runtimeKey = gatewayAccountRuntimeKey(account)
   const now = Date.now()
   precheckStates.set(runtimeKey, {
+    generation: nextRuntimeProbeGeneration(runtimeKey),
     account,
     settings,
     systemAccountId: input.systemAccountId,
@@ -262,6 +359,20 @@ function recordGatewayAccountFailureForPrecheckInternal(
   input: GatewayAccountFailurePrecheckInput,
   runPrecheck: boolean
 ): void {
+  if (runtimeConfig.runtimeStateDriver === 'redis') {
+    if (runPrecheck) {
+      void recordDistributedGatewayAccountFailureForPrecheck(account, settings, input).catch((error) => {
+        logger.error(errorLogFields(error, {
+          event: 'gateway_account_distributed_recovery_probe_schedule_failed',
+          accountId: account.id,
+          accountName: account.name,
+          runtimeKey: gatewayAccountRuntimeKey(account)
+        }), 'Redis 运行态恢复探针调度失败，高性能模式禁止回退进程内状态')
+      })
+    }
+    return
+  }
+  if (!canUseProcessLocalGatewayAccountRuntimeState()) return
   cleanupExpiredFailureStorms()
   cleanupExpiredLocalSuppressions(isPrecheckRuntimeBlocking)
   const runtimeKey = gatewayAccountRuntimeKey(account)
@@ -283,6 +394,20 @@ function recordGatewayAccountFailureForPrecheckInternal(
   failureStorms.set(runtimeKey, entry)
 
   const forcePrecheck = input.forcePrecheck === true
+  if (runPrecheck) {
+    scheduleGatewayAccountRecoveryProbe(runtimeKey, {
+      account,
+      settings,
+      systemAccountId: input.systemAccountId,
+      groupId: input.groupId,
+      reason: input.reason,
+      failureCount: entry.failureCount,
+      distinctClientIpCount: entry.clientIps.size,
+      distinctApiKeyCount: entry.apiKeyIds.size,
+      precheckRequested: forcePrecheck,
+      delayMs: input.localSuppressionDelayMs
+    })
+  }
   const precheckDecision = shouldTriggerFailureStormPrecheck(runtimeKey, entry, forcePrecheck, now)
   if (!precheckDecision.trigger) {
     return
@@ -290,6 +415,7 @@ function recordGatewayAccountFailureForPrecheckInternal(
 
   const existingPrecheck = precheckStates.get(runtimeKey)
   if (existingPrecheck && now - existingPrecheck.startedAtMs < precheckMinIntervalMs) {
+    clearGatewayAccountRecoveryProbe(runtimeKey)
     suppressLocalAccount(runtimeKey, precheckSuppressionMs(), existingPrecheck.reason, 'precheck_pending', {
       accountId: account.id,
       failureCount: entry.failureCount,
@@ -302,6 +428,7 @@ function recordGatewayAccountFailureForPrecheckInternal(
 
   const reason = `${forcePrecheck ? '短暂避让半开探测连续失败' : '多来源短窗口失败'}，等待事前确认；${input.reason}`.slice(0, 1000)
   const state: PrecheckState = {
+    generation: nextRuntimeProbeGeneration(runtimeKey),
     account,
     settings,
     systemAccountId: input.systemAccountId,
@@ -314,6 +441,7 @@ function recordGatewayAccountFailureForPrecheckInternal(
     distinctApiKeyCount: entry.apiKeyIds.size,
     running: false
   }
+  clearGatewayAccountRecoveryProbe(runtimeKey)
   precheckStates.set(runtimeKey, state)
   suppressLocalAccount(runtimeKey, precheckSuppressionMs(), reason, 'precheck_pending', {
     accountId: account.id,
@@ -340,11 +468,812 @@ function recordGatewayAccountFailureForPrecheckInternal(
     statusCode: input.statusCode
   }, '网关检测到账号多来源短窗口失败，已进入运行态待确认')
   if (runPrecheck) {
-    void runGatewayAccountPrecheck(runtimeKey)
+    scheduleGatewayAccountPrecheckRun(runtimeKey, 0)
   }
 }
 
+function scheduleGatewayAccountRecoveryProbe(
+  runtimeKey: string,
+  input: {
+    account: OpenAIAccountSecret
+    settings?: GatewaySettings
+    systemAccountId: string
+    groupId: string
+    reason: string
+    failureCount: number
+    distinctClientIpCount: number
+    distinctApiKeyCount: number
+    precheckRequested: boolean
+    delayMs?: number
+  }
+): void {
+  if (!canUseProcessLocalGatewayAccountRuntimeState()) return
+  if (precheckStates.has(runtimeKey)) {
+    return
+  }
+  const now = Date.now()
+  const delayMs = recoveryProbeDelayMs(input.delayMs)
+  const nextProbeAtMs = now + delayMs
+  const current = recoveryProbeStates.get(runtimeKey)
+  const generation = nextRuntimeProbeGeneration(runtimeKey)
+  const state: RecoveryProbeState = current
+    ? {
+        ...current,
+        generation,
+        account: input.account,
+        settings: input.settings,
+        systemAccountId: input.systemAccountId,
+        groupId: input.groupId,
+        lastObservedAtMs: now,
+        nextProbeAtMs: Math.min(current.nextProbeAtMs, nextProbeAtMs),
+        failureCount: Math.max(current.failureCount, input.failureCount),
+        reason: input.reason,
+        distinctClientIpCount: Math.max(current.distinctClientIpCount, input.distinctClientIpCount),
+        distinctApiKeyCount: Math.max(current.distinctApiKeyCount, input.distinctApiKeyCount),
+        precheckRequested: current.precheckRequested || input.precheckRequested
+      }
+    : {
+        generation,
+        account: input.account,
+        settings: input.settings,
+        systemAccountId: input.systemAccountId,
+        groupId: input.groupId,
+        startedAtMs: now,
+        lastObservedAtMs: now,
+        nextProbeAtMs,
+        attemptCount: 0,
+        failureCount: input.failureCount,
+        reason: input.reason,
+        distinctClientIpCount: input.distinctClientIpCount,
+        distinctApiKeyCount: input.distinctApiKeyCount,
+        running: false,
+        precheckRequested: input.precheckRequested
+      }
+  recoveryProbeStates.set(runtimeKey, state)
+  scheduleRecoveryProbeTimer(runtimeKey, Math.max(0, state.nextProbeAtMs - now))
+  logger.info({
+    event: 'gateway_account_recovery_probe_scheduled',
+    accountId: input.account.id,
+    accountName: input.account.name,
+    runtimeKey,
+    generation: state.generation,
+    nextProbeAt: new Date(state.nextProbeAtMs).toISOString(),
+    failureCount: state.failureCount,
+    distinctClientIpCount: state.distinctClientIpCount,
+    distinctApiKeyCount: state.distinctApiKeyCount,
+    precheckRequested: state.precheckRequested
+  }, '账号运行态后台恢复探针已调度')
+}
+
+function scheduleRecoveryProbeTimer(runtimeKey: string, delayMs: number): void {
+  const existing = recoveryProbeTimers.get(runtimeKey)
+  if (existing) {
+    clearTimeout(existing)
+  }
+  const timer = setTimeout(() => {
+    recoveryProbeTimers.delete(runtimeKey)
+    void runGatewayAccountRecoveryProbe(runtimeKey)
+  }, Math.max(0, delayMs))
+  timer.unref()
+  recoveryProbeTimers.set(runtimeKey, timer)
+}
+
+async function recordDistributedGatewayAccountFailureForPrecheck(
+  account: OpenAIAccountSecret,
+  settings: GatewaySettings | undefined,
+  input: GatewayAccountFailurePrecheckInput
+): Promise<void> {
+  ensureDistributedRecoveryProbeSweeper()
+  const runtimeKey = gatewayAccountRuntimeKey(account)
+  const now = Date.now()
+  const delayMs = recoveryProbeDelayMs(input.localSuppressionDelayMs)
+  const current = await distributedRecoveryProbeStore.get(runtimeKey)
+  const generation = await distributedRecoveryProbeStore.nextGeneration(runtimeKey, distributedRecoveryProbeStateTtlMs)
+  const nextProbeAtMs = now + delayMs
+  const state: DistributedRecoveryProbeState = current
+    ? {
+        ...current,
+        generation,
+        accountId: account.id,
+        accountName: account.name,
+        providerCode: account.providerCode,
+        settings,
+        systemAccountId: input.systemAccountId,
+        groupId: input.groupId,
+        lastObservedAtMs: now,
+        nextProbeAtMs: Math.min(current.nextProbeAtMs, nextProbeAtMs),
+        failureCount: current.failureCount + 1,
+        reason: input.reason,
+        distinctClientIpCount: Math.max(current.distinctClientIpCount, input.clientIp ? 1 : 0),
+        distinctApiKeyCount: Math.max(current.distinctApiKeyCount, input.apiKeyId ? 1 : 0),
+        precheckRequested: current.precheckRequested || input.forcePrecheck === true
+      }
+    : {
+        runtimeKey,
+        generation,
+        accountId: account.id,
+        accountName: account.name,
+        providerCode: account.providerCode,
+        settings,
+        systemAccountId: input.systemAccountId,
+        groupId: input.groupId,
+        startedAtMs: now,
+        lastObservedAtMs: now,
+        nextProbeAtMs,
+        attemptCount: 0,
+        failureCount: 1,
+        reason: input.reason,
+        distinctClientIpCount: input.clientIp ? 1 : 0,
+        distinctApiKeyCount: input.apiKeyId ? 1 : 0,
+        precheckRequested: input.forcePrecheck === true
+      }
+  await distributedRecoveryProbeStore.set(state, distributedRecoveryProbeStateTtlMs)
+  rememberDistributedRecoveryProbeSuppressionState(runtimeKey, state)
+  scheduleDistributedRecoveryProbeSweep(Math.max(0, state.nextProbeAtMs - now))
+  logger.info({
+    event: 'gateway_account_distributed_recovery_probe_scheduled',
+    accountId: account.id,
+    accountName: account.name,
+    runtimeKey,
+    generation: state.generation,
+    nextProbeAt: new Date(state.nextProbeAtMs).toISOString(),
+    failureCount: state.failureCount,
+    precheckRequested: state.precheckRequested
+  }, 'Redis 运行态账号恢复探针已调度')
+}
+
+function ensureDistributedRecoveryProbeSweeper(): void {
+  if (runtimeConfig.runtimeStateDriver !== 'redis' || runtimeConfig.processRole !== 'server') return
+  scheduleDistributedRecoveryProbeSweep(distributedRecoveryProbeSweepIntervalMs)
+}
+
+function scheduleDistributedRecoveryProbeSweep(delayMs: number): void {
+  if (runtimeConfig.runtimeStateDriver !== 'redis' || runtimeConfig.processRole !== 'server') return
+  const dueAtMs = Date.now() + Math.max(0, delayMs)
+  if (distributedRecoveryProbeSweepTimer) {
+    if (distributedRecoveryProbeSweepDueAtMs !== undefined && distributedRecoveryProbeSweepDueAtMs <= dueAtMs) {
+      return
+    }
+    clearTimeout(distributedRecoveryProbeSweepTimer)
+  }
+  distributedRecoveryProbeSweepDueAtMs = dueAtMs
+  distributedRecoveryProbeSweepTimer = setTimeout(() => {
+    distributedRecoveryProbeSweepTimer = undefined
+    distributedRecoveryProbeSweepDueAtMs = undefined
+    void runDistributedRecoveryProbeSweep()
+  }, Math.max(0, delayMs))
+  distributedRecoveryProbeSweepTimer.unref()
+}
+
+async function runDistributedRecoveryProbeSweep(): Promise<void> {
+  if (runtimeConfig.runtimeStateDriver !== 'redis' || runtimeConfig.processRole !== 'server') return
+  if (distributedRecoveryProbeSweepRunning) {
+    scheduleDistributedRecoveryProbeSweep(distributedRecoveryProbeSweepIntervalMs)
+    return
+  }
+  distributedRecoveryProbeSweepRunning = true
+  try {
+    const runtimeKeys = await distributedRecoveryProbeStore.listDue(Date.now(), distributedRecoveryProbeSweepBatchSize)
+    await Promise.all(runtimeKeys.map((runtimeKey) => runDistributedGatewayAccountRecoveryProbe(runtimeKey)))
+  } catch (error) {
+    logger.error(errorLogFields(error, {
+      event: 'gateway_account_distributed_recovery_probe_sweep_failed'
+    }), 'Redis 运行态账号恢复探针 sweep 失败')
+  } finally {
+    distributedRecoveryProbeSweepRunning = false
+    scheduleDistributedRecoveryProbeSweep(distributedRecoveryProbeSweepIntervalMs)
+  }
+}
+
+async function runGatewayAccountRecoveryProbe(runtimeKey: string): Promise<void> {
+  if (!canUseProcessLocalGatewayAccountRuntimeState()) return
+  const state = recoveryProbeStates.get(runtimeKey)
+  if (!state || state.running) {
+    return
+  }
+  if (precheckStates.has(runtimeKey)) {
+    clearGatewayAccountRecoveryProbe(runtimeKey)
+    return
+  }
+  const now = Date.now()
+  if (state.nextProbeAtMs > now) {
+    scheduleRecoveryProbeTimer(runtimeKey, state.nextProbeAtMs - now)
+    return
+  }
+  const budgetDelayMs = recoveryProbeBudgetWaitMs(state, now)
+  if (budgetDelayMs > 0) {
+    state.nextProbeAtMs = now + budgetDelayMs
+    recoveryProbeStates.set(runtimeKey, state)
+    scheduleRecoveryProbeTimer(runtimeKey, budgetDelayMs)
+    logger.info({
+      event: 'gateway_account_recovery_probe_budget_delayed',
+      accountId: state.account.id,
+      accountName: state.account.name,
+      runtimeKey,
+      generation: state.generation,
+      runningRecoveryProbeCount,
+      nextProbeAt: new Date(state.nextProbeAtMs).toISOString()
+    }, '账号运行态恢复探针触发过密，已按预算延后')
+    return
+  }
+  const generation = state.generation
+  state.running = true
+  runningRecoveryProbeCount += 1
+  markRecoveryProbeStarted(state, now)
+  try {
+    const timeoutMs = accountDiagnosticRetryTimeoutMs[0] ?? 10_000
+    const result = await runSingleGatewayAccountPrecheck(state, timeoutMs)
+    const latest = currentRecoveryProbeState(runtimeKey, generation)
+    if (!latest) {
+      rescheduleLatestRecoveryProbeAfterStaleResult(runtimeKey, generation, 'gateway_account_recovery_probe_stale_result_ignored')
+      return
+    }
+    if (result.success || result.accountFailureEligible === false) {
+      clearGatewayAccountRuntimeAvailabilityLocal(runtimeKey)
+      logger.info({
+        event: 'gateway_account_recovery_probe_success',
+        accountId: latest.account.id,
+        accountName: latest.account.name,
+        runtimeKey,
+        generation,
+        statusCode: result.statusCode,
+        durationMs: result.durationMs,
+        attemptCount: latest.attemptCount + 1
+      }, '账号运行态后台恢复探针通过，已清理本地运行态')
+      return
+    }
+
+    latest.running = false
+    latest.attemptCount += 1
+    latest.reason = accountPrecheckFailureReason(result)
+    const observedForMs = Date.now() - latest.startedAtMs
+    const shouldEnterPrecheck = observedForMs >= localDegradationMinObservationMs
+      && (latest.precheckRequested || latest.attemptCount >= recoveryProbePrecheckFailureThreshold)
+    if (observedForMs >= localDegradationMinObservationMs) {
+      activateLocalAccountRuntimeDegradation(runtimeKey, latest.account.id, latest.reason, {
+        sinceMs: latest.startedAtMs,
+        failureCount: latest.failureCount
+      })
+    }
+    if (shouldEnterPrecheck) {
+      promoteRecoveryProbeToPrecheck(runtimeKey, latest)
+      return
+    }
+
+    const delayMs = recoveryProbeFollowupDelayMs(observedForMs)
+    latest.nextProbeAtMs = Date.now() + delayMs
+    recoveryProbeStates.set(runtimeKey, latest)
+    suppressLocalAccount(runtimeKey, delayMs, latest.reason, 'local_suppressed', {
+      accountId: latest.account.id,
+      sinceMs: latest.startedAtMs,
+      failureCount: latest.failureCount,
+      distinctClientIpCount: latest.distinctClientIpCount,
+      distinctApiKeyCount: latest.distinctApiKeyCount,
+      precheckAttemptCount: latest.attemptCount
+    })
+    scheduleRecoveryProbeTimer(runtimeKey, delayMs)
+    logger.warn({
+      event: 'gateway_account_recovery_probe_failed',
+      accountId: latest.account.id,
+      accountName: latest.account.name,
+      runtimeKey,
+      generation,
+      statusCode: result.statusCode,
+      errorCode: result.errorCode,
+      durationMs: result.durationMs,
+      attemptCount: latest.attemptCount,
+      observedForMs,
+      nextProbeAt: new Date(latest.nextProbeAtMs).toISOString()
+    }, '账号运行态后台恢复探针未通过，已按时间窗口等待下一轮')
+  } catch (error) {
+    const latest = currentRecoveryProbeState(runtimeKey, generation)
+    if (!latest) {
+      rescheduleLatestRecoveryProbeAfterStaleResult(runtimeKey, generation, 'gateway_account_recovery_probe_stale_exception_ignored')
+      logger.warn(errorLogFields(error, {
+        event: 'gateway_account_recovery_probe_stale_exception_ignored',
+        runtimeKey,
+        generation
+      }), '账号运行态恢复探针旧 generation 执行异常，已忽略状态写入')
+      return
+    }
+    if (latest) {
+      latest.running = false
+      latest.nextProbeAtMs = Date.now() + recoveryProbeRetryDelayMs
+      scheduleRecoveryProbeTimer(runtimeKey, recoveryProbeRetryDelayMs)
+    }
+    logger.warn(errorLogFields(error, {
+      event: 'gateway_account_recovery_probe_exception',
+      runtimeKey,
+      generation
+    }), '账号运行态后台恢复探针执行异常，已等待下一轮')
+  } finally {
+    runningRecoveryProbeCount = Math.max(0, runningRecoveryProbeCount - 1)
+  }
+}
+
+async function runDistributedGatewayAccountRecoveryProbe(runtimeKey: string): Promise<void> {
+  const token = randomUUID()
+  const locked = await distributedRecoveryProbeStore.acquireLock(runtimeKey, token, distributedRecoveryProbeLockTtlMs)
+  if (!locked) return
+  try {
+    const persisted = await distributedRecoveryProbeStore.get(runtimeKey)
+    if (!persisted) return
+    const now = Date.now()
+    if (persisted.nextProbeAtMs > now) {
+      scheduleDistributedRecoveryProbeSweep(persisted.nextProbeAtMs - now)
+      return
+    }
+    const state = await loadDistributedRecoveryProbeStateWithAccount(persisted)
+    if (!state) {
+      await distributedRecoveryProbeStore.delete(runtimeKey)
+      return
+    }
+    const budget = await acquireDistributedRecoveryProbeBudget(state, now)
+    const budgetDelayMs = budget.delayMs
+    if (budgetDelayMs > 0) {
+      await persistDistributedRecoveryProbeState({
+        ...persisted,
+        nextProbeAtMs: now + budgetDelayMs
+      })
+      logger.info({
+        event: 'gateway_account_distributed_recovery_probe_budget_delayed',
+        accountId: state.account.id,
+        accountName: state.account.name,
+        runtimeKey,
+        generation: persisted.generation,
+        nextProbeAt: new Date(now + budgetDelayMs).toISOString()
+      }, 'Redis 运行态账号恢复探针触发过密，已按预算延后')
+      return
+    }
+
+    const generation = persisted.generation
+    runningRecoveryProbeCount += 1
+    markRecoveryProbeStarted(state, now)
+    try {
+      const timeoutMs = accountDiagnosticRetryTimeoutMs[0] ?? 10_000
+      const result = await runSingleGatewayAccountPrecheck(state, timeoutMs)
+      const latest = await currentDistributedRecoveryProbeState(runtimeKey, generation)
+      if (!latest) {
+        logStaleDistributedRecoveryProbeResult(runtimeKey, generation, 'gateway_account_distributed_recovery_probe_stale_result_ignored')
+        return
+      }
+      if (result.success || result.accountFailureEligible === false) {
+        await clearDistributedRecoveryProbeState(runtimeKey)
+        logger.info({
+          event: 'gateway_account_distributed_recovery_probe_success',
+          accountId: state.account.id,
+          accountName: state.account.name,
+          runtimeKey,
+          generation,
+          statusCode: result.statusCode,
+          durationMs: result.durationMs,
+          attemptCount: latest.attemptCount + 1
+        }, 'Redis 运行态账号恢复探针通过，已清理共享运行态')
+        return
+      }
+
+      const failedState: DistributedRecoveryProbeState = {
+        ...latest,
+        attemptCount: latest.attemptCount + 1,
+        reason: accountPrecheckFailureReason(result)
+      }
+      const observedForMs = Date.now() - failedState.startedAtMs
+      const shouldEnterPrecheck = observedForMs >= localDegradationMinObservationMs
+        && (failedState.precheckRequested || failedState.attemptCount >= recoveryProbePrecheckFailureThreshold)
+      if (shouldEnterPrecheck) {
+        await promoteDistributedRecoveryProbeToPrecheck(failedState)
+        return
+      }
+
+      const delayMs = recoveryProbeFollowupDelayMs(observedForMs)
+      await persistDistributedRecoveryProbeState({
+        ...failedState,
+        nextProbeAtMs: Date.now() + delayMs
+      })
+      logger.warn({
+        event: 'gateway_account_distributed_recovery_probe_failed',
+        accountId: state.account.id,
+        accountName: state.account.name,
+        runtimeKey,
+        generation,
+        statusCode: result.statusCode,
+        errorCode: result.errorCode,
+        durationMs: result.durationMs,
+        attemptCount: failedState.attemptCount,
+        observedForMs,
+        nextProbeAt: new Date(Date.now() + delayMs).toISOString()
+      }, 'Redis 运行态账号恢复探针未通过，已按时间窗口等待下一轮')
+    } finally {
+      runningRecoveryProbeCount = Math.max(0, runningRecoveryProbeCount - 1)
+      await budget.release?.()
+    }
+  } catch (error) {
+    const latest = await distributedRecoveryProbeStore.get(runtimeKey).catch(() => undefined)
+    if (latest) {
+      await persistDistributedRecoveryProbeState({
+        ...latest,
+        nextProbeAtMs: Date.now() + recoveryProbeRetryDelayMs
+      }).catch(() => undefined)
+    }
+    logger.warn(errorLogFields(error, {
+      event: 'gateway_account_distributed_recovery_probe_exception',
+      runtimeKey
+    }), 'Redis 运行态账号恢复探针执行异常，已等待下一轮')
+  } finally {
+    await distributedRecoveryProbeStore.releaseLock(runtimeKey, token)
+  }
+}
+
+async function promoteDistributedRecoveryProbeToPrecheck(state: DistributedRecoveryProbeState): Promise<void> {
+  const generation = await distributedRecoveryProbeStore.nextGeneration(state.runtimeKey, distributedRecoveryProbeStateTtlMs)
+  const precheckState: DistributedRecoveryProbeState = {
+    ...state,
+    generation,
+    attemptCount: 0,
+    precheckRequested: true,
+    reason: `后台恢复探针连续失败，等待事前确认；${state.reason}`.slice(0, 1000),
+    nextProbeAtMs: Date.now()
+  }
+  await persistDistributedRecoveryProbeState(precheckState)
+  const loaded = await loadDistributedRecoveryProbeStateWithAccount(precheckState)
+  if (!loaded) {
+    await distributedRecoveryProbeStore.delete(state.runtimeKey)
+    return
+  }
+  logger.warn({
+    event: 'gateway_account_distributed_precheck_scheduled',
+    accountId: loaded.account.id,
+    accountName: loaded.account.name,
+    runtimeKey: state.runtimeKey,
+    generation,
+    failureCount: state.failureCount,
+    distinctClientIpCount: state.distinctClientIpCount,
+    distinctApiKeyCount: state.distinctApiKeyCount,
+    source: 'recovery_probe'
+  }, 'Redis 运行态账号恢复探针持续失败，已进入共享运行态事前确认')
+  await runDistributedGatewayAccountPrecheck(precheckState, loaded.account)
+}
+
+async function runDistributedGatewayAccountPrecheck(
+  initialState: DistributedRecoveryProbeState,
+  account: OpenAIAccountSecret
+): Promise<void> {
+  let state = initialState
+  const generation = state.generation
+  for (let attempt = state.attemptCount; attempt < precheckMaxAttempts; attempt += 1) {
+    const latest = await currentDistributedRecoveryProbeState(state.runtimeKey, generation)
+    if (!latest) {
+      logStaleDistributedRecoveryProbeResult(state.runtimeKey, generation, 'gateway_account_distributed_precheck_stale_attempt_ignored')
+      return
+    }
+    state = {
+      ...latest,
+      attemptCount: attempt + 1,
+      nextProbeAtMs: Date.now() + precheckSuppressionMs()
+    }
+    await persistDistributedRecoveryProbeState(state)
+    const timeoutMs = accountDiagnosticRetryTimeoutMs[attempt] ?? accountDiagnosticRetryTimeoutMs[accountDiagnosticRetryTimeoutMs.length - 1]
+    const result = await runSingleGatewayAccountPrecheck(distributedStateWithAccount(state, account), timeoutMs)
+    const stateAfterResult = await currentDistributedRecoveryProbeState(state.runtimeKey, generation)
+    if (!stateAfterResult) {
+      logStaleDistributedRecoveryProbeResult(state.runtimeKey, generation, 'gateway_account_distributed_precheck_stale_result_ignored')
+      return
+    }
+    if (result.success || result.accountFailureEligible === false) {
+      await clearDistributedRecoveryProbeState(state.runtimeKey)
+      logger.info({
+        event: 'gateway_account_distributed_precheck_recovered',
+        accountId: account.id,
+        accountName: account.name,
+        runtimeKey: state.runtimeKey,
+        generation,
+        attemptCount: stateAfterResult.attemptCount,
+        statusCode: result.statusCode,
+        durationMs: result.durationMs
+      }, 'Redis 运行态账号事前确认探针通过，已清理共享运行态')
+      return
+    }
+    state = {
+      ...stateAfterResult,
+      reason: accountPrecheckFailureReason(result)
+    }
+    await persistDistributedRecoveryProbeState(state)
+  }
+
+  const finalState = await currentDistributedRecoveryProbeState(state.runtimeKey, generation)
+  if (!finalState) {
+    logStaleDistributedRecoveryProbeResult(state.runtimeKey, generation, 'gateway_account_distributed_precheck_stale_final_ignored')
+    return
+  }
+  const currentConcurrency = await getAccountCurrentConcurrencyAsync(account.id)
+  if (currentConcurrency > 0) {
+    const reason = `事前确认探针连续失败，等待 ${currentConcurrency} 个在途请求结束后再标记临时不可调用；${finalState.reason}`.slice(0, 1000)
+    await persistDistributedRecoveryProbeState({
+      ...finalState,
+      reason,
+      nextProbeAtMs: Date.now() + precheckConcurrencyDrainPollMs
+    })
+    logger.warn({
+      event: 'gateway_account_distributed_precheck_mark_deferred_for_concurrency',
+      accountId: account.id,
+      accountName: account.name,
+      runtimeKey: finalState.runtimeKey,
+      generation,
+      currentConcurrency
+    }, 'Redis 运行态账号事前确认探针连续失败，但仍有在途并发，已延后写入临时不可调用')
+    return
+  }
+
+  const reason = `事前确认探针连续失败 ${finalState.attemptCount} 次，已标记为临时不可调用；${finalState.reason}`.slice(0, 1000)
+  const markResult = await requestGatewayDbService({
+    type: 'mark_account_precheck_temporary_unavailable',
+    account,
+    reason,
+    precheckStartedAt: new Date(finalState.startedAtMs).toISOString()
+  })
+  await clearDistributedRecoveryProbeState(finalState.runtimeKey)
+  if (markResult.updated) {
+    clearGatewayRuntimeCache()
+  }
+  logger.warn({
+    event: 'gateway_account_distributed_precheck_failed_marked',
+    accountId: account.id,
+    accountName: account.name,
+    runtimeKey: finalState.runtimeKey,
+    generation,
+    updated: markResult.updated,
+    skippedReason: markResult.skippedReason,
+    attemptCount: finalState.attemptCount
+  }, 'Redis 运行态账号事前确认探针连续失败，已写入临时不可调用')
+}
+
+function promoteRecoveryProbeToPrecheck(runtimeKey: string, state: RecoveryProbeState): void {
+  const reason = `后台恢复探针连续失败，等待事前确认；${state.reason}`.slice(0, 1000)
+  const generation = nextRuntimeProbeGeneration(runtimeKey)
+  clearGatewayAccountRecoveryProbe(runtimeKey)
+  precheckStates.set(runtimeKey, {
+    generation,
+    account: state.account,
+    settings: state.settings,
+    systemAccountId: state.systemAccountId,
+    groupId: state.groupId,
+    startedAtMs: state.startedAtMs,
+    attemptCount: 0,
+    failureCount: state.failureCount,
+    reason,
+    distinctClientIpCount: state.distinctClientIpCount,
+    distinctApiKeyCount: state.distinctApiKeyCount,
+    running: false
+  })
+  suppressLocalAccount(runtimeKey, precheckSuppressionMs(), reason, 'precheck_pending', {
+    accountId: state.account.id,
+    sinceMs: state.startedAtMs,
+    failureCount: state.failureCount,
+    distinctClientIpCount: state.distinctClientIpCount,
+    distinctApiKeyCount: state.distinctApiKeyCount,
+    precheckAttemptCount: 0
+  })
+  logger.warn({
+    event: 'gateway_account_precheck_scheduled',
+    accountId: state.account.id,
+    accountName: state.account.name,
+    runtimeKey,
+    generation,
+    failureCount: state.failureCount,
+    distinctClientIpCount: state.distinctClientIpCount,
+    distinctApiKeyCount: state.distinctApiKeyCount,
+    source: 'recovery_probe'
+  }, '账号后台恢复探针持续失败，已进入运行态待确认')
+  scheduleGatewayAccountPrecheckRun(runtimeKey, 0)
+}
+
+function recoveryProbeDelayMs(delayMs: number | undefined): number {
+  if (typeof delayMs === 'number' && Number.isFinite(delayMs)) {
+    return Math.max(1000, Math.min(Math.trunc(delayMs), recoveryProbeRetryDelayMs))
+  }
+  return 3000
+}
+
+function recoveryProbeFollowupDelayMs(observedForMs: number): number {
+  if (observedForMs < localDegradationMinObservationMs) {
+    return Math.max(1000, Math.min(recoveryProbeRetryDelayMs, localDegradationMinObservationMs - observedForMs))
+  }
+  return recoveryProbeRetryDelayMs
+}
+
+function nextRuntimeProbeGeneration(runtimeKey: string): number {
+  const next = (runtimeProbeGenerationCounters.get(runtimeKey) ?? 0) + 1
+  runtimeProbeGenerationCounters.set(runtimeKey, next)
+  return next
+}
+
+function currentRecoveryProbeState(runtimeKey: string, generation: number): RecoveryProbeState | undefined {
+  const state = recoveryProbeStates.get(runtimeKey)
+  return state?.generation === generation ? state : undefined
+}
+
+function currentPrecheckState(runtimeKey: string, generation: number): PrecheckState | undefined {
+  const state = precheckStates.get(runtimeKey)
+  return state?.generation === generation ? state : undefined
+}
+
+function recoveryProbeBudgetWaitMs(state: RecoveryProbeState, now: number): number {
+  let waitMs = runningRecoveryProbeCount >= recoveryProbeMaxConcurrentRuns ? recoveryProbeBudgetDelayMs : 0
+  for (const scope of recoveryProbeBudgetScopes(state.account)) {
+    const lastStartedAtMs = recoveryProbeLastStartedAtByScope.get(scope.key)
+    if (lastStartedAtMs === undefined) continue
+    waitMs = Math.max(waitMs, lastStartedAtMs + scope.minIntervalMs - now)
+  }
+  if (waitMs <= 0) return 0
+  return Math.ceil(waitMs) + randomRecoveryProbeJitterMs()
+}
+
+function markRecoveryProbeStarted(state: RecoveryProbeState, now: number): void {
+  cleanupRecoveryProbeBudgetScopes(now)
+  for (const scope of recoveryProbeBudgetScopes(state.account)) {
+    recoveryProbeLastStartedAtByScope.set(scope.key, now)
+  }
+}
+
+function recoveryProbeBudgetScopes(account: OpenAIAccountSecret): Array<{ key: string; minIntervalMs: number }> {
+  const scopes = [
+    { key: `account:${account.id}`, minIntervalMs: recoveryProbeAccountMinIntervalMs },
+    { key: `provider:${account.providerCode}`, minIntervalMs: recoveryProbeScopeMinIntervalMs },
+    { key: `base_url:${normalizedRecoveryProbeBaseUrlScope(account.baseUrl)}`, minIntervalMs: recoveryProbeScopeMinIntervalMs }
+  ]
+  const proxyScope = account.proxyProfileId || account.proxyUrl
+  if (proxyScope) {
+    scopes.push({ key: `proxy:${proxyScope}`, minIntervalMs: recoveryProbeScopeMinIntervalMs })
+  }
+  return scopes
+}
+
+function cleanupRecoveryProbeBudgetScopes(now: number): void {
+  const maxAgeMs = Math.max(recoveryProbeAccountMinIntervalMs, recoveryProbeScopeMinIntervalMs) * 10
+  for (const [key, lastStartedAtMs] of recoveryProbeLastStartedAtByScope) {
+    if (now - lastStartedAtMs > maxAgeMs) {
+      recoveryProbeLastStartedAtByScope.delete(key)
+    }
+  }
+}
+
+function normalizedRecoveryProbeBaseUrlScope(value: string): string {
+  try {
+    const url = new URL(value)
+    return `${url.protocol}//${url.host}`.toLowerCase()
+  } catch {
+    return value.trim().toLowerCase() || 'unknown'
+  }
+}
+
+function randomRecoveryProbeJitterMs(): number {
+  return Math.floor(Math.random() * recoveryProbeJitterMs)
+}
+
+function rescheduleLatestRecoveryProbeAfterStaleResult(runtimeKey: string, staleGeneration: number, event: string): void {
+  const latest = recoveryProbeStates.get(runtimeKey)
+  if (!latest || latest.generation === staleGeneration) {
+    return
+  }
+  latest.running = false
+  scheduleRecoveryProbeTimer(runtimeKey, Math.max(0, latest.nextProbeAtMs - Date.now()))
+  logger.info({
+    event,
+    runtimeKey,
+    staleGeneration,
+    latestGeneration: latest.generation,
+    accountId: latest.account.id,
+    accountName: latest.account.name,
+    nextProbeAt: new Date(latest.nextProbeAtMs).toISOString()
+  }, '账号运行态恢复探针旧 generation 结果已忽略，并唤醒最新探针')
+}
+
+function logStalePrecheckResult(runtimeKey: string, staleGeneration: number, event: string): void {
+  const latest = precheckStates.get(runtimeKey)
+  logger.info({
+    event,
+    runtimeKey,
+    staleGeneration,
+    latestGeneration: latest?.generation
+  }, '账号事前确认探针旧 generation 结果已忽略')
+}
+
+async function persistDistributedRecoveryProbeState(state: DistributedRecoveryProbeState): Promise<void> {
+  await distributedRecoveryProbeStore.set(state, distributedRecoveryProbeStateTtlMs)
+  rememberDistributedRecoveryProbeSuppressionState(state.runtimeKey, state)
+  scheduleDistributedRecoveryProbeSweep(Math.max(0, state.nextProbeAtMs - Date.now()))
+}
+
+async function clearDistributedRecoveryProbeState(runtimeKey: string): Promise<void> {
+  await distributedRecoveryProbeStore.delete(runtimeKey)
+  rememberDistributedRecoveryProbeSuppressionState(runtimeKey, undefined)
+  clearGatewayRuntimeCache()
+}
+
+async function currentDistributedRecoveryProbeState(
+  runtimeKey: string,
+  generation: number
+): Promise<DistributedRecoveryProbeState | undefined> {
+  const state = await distributedRecoveryProbeStore.get(runtimeKey)
+  return state?.generation === generation ? state : undefined
+}
+
+async function loadDistributedRecoveryProbeStateWithAccount(
+  state: DistributedRecoveryProbeState
+): Promise<RecoveryProbeState | undefined> {
+  const account = await requestGatewayDbService({
+    type: 'find_openai_account_for_group',
+    groupId: state.groupId,
+    accountId: state.accountId,
+    systemAccountId: state.systemAccountId,
+    includeUnavailable: true,
+    ignoreAvailability: true
+  }, { timeoutMs: 10_000 })
+  return account ? distributedStateWithAccount(state, account) : undefined
+}
+
+function distributedStateWithAccount(state: DistributedRecoveryProbeState, account: OpenAIAccountSecret): RecoveryProbeState {
+  return {
+    generation: state.generation,
+    account,
+    settings: state.settings,
+    systemAccountId: state.systemAccountId,
+    groupId: state.groupId,
+    startedAtMs: state.startedAtMs,
+    lastObservedAtMs: state.lastObservedAtMs,
+    nextProbeAtMs: state.nextProbeAtMs,
+    attemptCount: state.attemptCount,
+    failureCount: state.failureCount,
+    reason: state.reason,
+    distinctClientIpCount: state.distinctClientIpCount,
+    distinctApiKeyCount: state.distinctApiKeyCount,
+    running: false,
+    precheckRequested: state.precheckRequested
+  }
+}
+
+function logStaleDistributedRecoveryProbeResult(runtimeKey: string, staleGeneration: number, event: string): void {
+  logger.info({
+    event,
+    runtimeKey,
+    staleGeneration
+  }, 'Redis 运行态账号探针旧 generation 结果已忽略')
+}
+
+function clearGatewayAccountRecoveryProbe(runtimeKey: string): boolean {
+  const timer = recoveryProbeTimers.get(runtimeKey)
+  if (timer) {
+    clearTimeout(timer)
+    recoveryProbeTimers.delete(runtimeKey)
+  }
+  return recoveryProbeStates.delete(runtimeKey)
+}
+
+function scheduleGatewayAccountPrecheckRun(runtimeKey: string, delayMs: number): void {
+  const existing = precheckRunTimers.get(runtimeKey)
+  if (existing) {
+    clearTimeout(existing)
+  }
+  const timer = setTimeout(() => {
+    precheckRunTimers.delete(runtimeKey)
+    void runGatewayAccountPrecheck(runtimeKey)
+  }, Math.max(0, delayMs))
+  timer.unref()
+  precheckRunTimers.set(runtimeKey, timer)
+}
+
+function clearGatewayAccountPrecheckRunTimer(runtimeKey: string): boolean {
+  const timer = precheckRunTimers.get(runtimeKey)
+  if (!timer) {
+    return false
+  }
+  clearTimeout(timer)
+  precheckRunTimers.delete(runtimeKey)
+  return true
+}
+
 function recordGatewayAccountSuccessObservation(runtimeKey: string): void {
+  if (!canUseProcessLocalGatewayAccountRuntimeState()) return
   cleanupExpiredFailureStorms()
   const now = Date.now()
   const current = successObservations.get(runtimeKey)
@@ -372,7 +1301,9 @@ function shouldTriggerFailureStormPrecheck(
   const failureRatio = total > 0 ? entry.failureCount / total : 1
 
   if (forcePrecheck) {
-    return { trigger: true, successCount, failureRatio }
+    return now - entry.firstSeenMs >= failureStormMinObservationMs
+      ? { trigger: true, successCount, failureRatio }
+      : { trigger: false, successCount, failureRatio, skippedReason: 'observation_window' }
   }
   if (entry.failureCount < failureStormThresholdCount || entry.clientIps.size < failureStormDistinctIpThreshold) {
     return { trigger: false, successCount, failureRatio, skippedReason: 'below_threshold' }
@@ -390,6 +1321,7 @@ function shouldTriggerFailureStormPrecheck(
 }
 
 export function snapshotGatewayAccountRuntimeAvailability(): Record<string, AccountRuntimeAvailability> {
+  if (!canUseProcessLocalGatewayAccountRuntimeState()) return {}
   cleanupExpiredFailureStorms()
   const snapshot = snapshotLocalAccountRuntimeAvailability(isPrecheckRuntimeBlocking)
   for (const [runtimeKey, state] of precheckStates) {
@@ -415,8 +1347,98 @@ export function filterLocallySuppressedGatewayAccounts<T extends SuppressibleGat
   return filterLocalAccountSuppressions(accounts, isPrecheckRuntimeBlocking, options)
 }
 
+export async function filterGatewayAccountRuntimeSuppressionsAsync<T extends SuppressibleGatewayAccount>(
+  accounts: T[],
+  options: LocalAccountSuppressionFilterOptions = {}
+): Promise<LocalAccountSuppressionFilterResult<T>> {
+  if (runtimeConfig.runtimeStateDriver !== 'redis') {
+    return filterLocallySuppressedGatewayAccounts(accounts, options)
+  }
+  return await filterDistributedRecoveryProbeSuppressions(accounts)
+}
+
+async function filterDistributedRecoveryProbeSuppressions<T extends SuppressibleGatewayAccount>(
+  accounts: T[]
+): Promise<LocalAccountSuppressionFilterResult<T>> {
+  const now = Date.now()
+  const states = await Promise.all(accounts.map(async (account) => {
+    const runtimeKey = gatewayAccountRuntimeKey(account)
+    const cached = cachedDistributedRecoveryProbeSuppressionState(runtimeKey, now)
+    const state = cached.hit ? cached.state : await loadDistributedRecoveryProbeSuppressionState(runtimeKey, now)
+    return { account, runtimeKey, state }
+  }))
+  const suppressed = states.filter((item) => item.state)
+  const suppressedRuntimeKeys = new Set(suppressed.map((item) => item.runtimeKey))
+  const visibleAccounts = states
+    .filter((item) => !suppressedRuntimeKeys.has(item.runtimeKey))
+    .map((item) => item.account)
+  const nextRetryAtMs = suppressed
+    .map((item) => item.state?.nextProbeAtMs ?? now + distributedRecoveryProbeDueRetryDelayMs)
+    .reduce<number | undefined>((earliest, value) => {
+      const retryAtMs = value <= now ? now + distributedRecoveryProbeDueRetryDelayMs : value
+      return earliest === undefined ? retryAtMs : Math.min(earliest, retryAtMs)
+    }, undefined)
+  return {
+    accounts: visibleAccounts,
+    suppressedCount: suppressed.length,
+    allSuppressed: accounts.length > 0 && visibleAccounts.length === 0,
+    suppressedAccountIds: suppressed.map((item) => item.account.id),
+    acquiredHalfOpenLeases: [],
+    nextRetryAtMs,
+    nextRetryAfterMs: nextRetryAtMs === undefined ? undefined : Math.max(0, nextRetryAtMs - now)
+  }
+}
+
+function cachedDistributedRecoveryProbeSuppressionState(
+  runtimeKey: string,
+  now: number
+): { hit: boolean; state?: DistributedRecoveryProbeState } {
+  const entry = distributedRecoveryProbeSuppressionCache.get(runtimeKey)
+  if (!entry) return { hit: false }
+  if (entry.expiresAtMs <= now) {
+    distributedRecoveryProbeSuppressionCache.delete(runtimeKey)
+    return { hit: false }
+  }
+  return { hit: true, state: entry.state }
+}
+
+async function loadDistributedRecoveryProbeSuppressionState(
+  runtimeKey: string,
+  now: number
+): Promise<DistributedRecoveryProbeState | undefined> {
+  const state = await distributedRecoveryProbeStore.get(runtimeKey)
+  rememberDistributedRecoveryProbeSuppressionState(runtimeKey, state, now)
+  return state
+}
+
+function rememberDistributedRecoveryProbeSuppressionState(
+  runtimeKey: string,
+  state: DistributedRecoveryProbeState | undefined,
+  now = Date.now()
+): void {
+  if (runtimeConfig.runtimeStateDriver !== 'redis') return
+  const ttlMs = state ? distributedRecoveryProbeSuppressionCacheTtlMs : distributedRecoveryProbeSuppressionNegativeCacheTtlMs
+  distributedRecoveryProbeSuppressionCache.set(runtimeKey, {
+    state,
+    expiresAtMs: now + ttlMs
+  })
+  evictDistributedRecoveryProbeSuppressionCacheIfNeeded(now)
+}
+
+function evictDistributedRecoveryProbeSuppressionCacheIfNeeded(now: number): void {
+  if (distributedRecoveryProbeSuppressionCache.size <= distributedRecoveryProbeSuppressionCacheMaxEntries) return
+  for (const [runtimeKey, entry] of distributedRecoveryProbeSuppressionCache) {
+    if (entry.expiresAtMs <= now || distributedRecoveryProbeSuppressionCache.size > distributedRecoveryProbeSuppressionCacheMaxEntries) {
+      distributedRecoveryProbeSuppressionCache.delete(runtimeKey)
+    }
+    if (distributedRecoveryProbeSuppressionCache.size <= distributedRecoveryProbeSuppressionCacheMaxEntries) return
+  }
+}
+
 export function getGatewayAccountSideEffectState(): GatewayAccountSideEffectState {
-  cleanupExpiredLocalSuppressions(isPrecheckRuntimeBlocking)
+  if (canUseProcessLocalGatewayAccountRuntimeState()) {
+    cleanupExpiredLocalSuppressions(isPrecheckRuntimeBlocking)
+  }
   const nextAttemptAtMs = sideEffectQueue.peek()?.nextAttemptAtMs
   return {
     queueLength: sideEffectQueue.length,
@@ -431,7 +1453,7 @@ export function getGatewayAccountSideEffectState(): GatewayAccountSideEffectStat
     expiredCount,
     localSuppressedAccountCount: countVisibleLocalSuppressions(isPrecheckRuntimeBlocking),
     degradedAccountCount: countLocalAccountDegradations(),
-    precheckPendingAccountCount: precheckStates.size,
+    precheckPendingAccountCount: runtimeConfig.runtimeStateDriver === 'redis' ? 0 : precheckStates.size,
     nextAttemptAt: nextAttemptAtMs === undefined ? undefined : new Date(nextAttemptAtMs).toISOString()
   }
 }
@@ -467,7 +1489,7 @@ export function suppressGatewayAccountLocallyForTest(
   durationMs: number,
   reason = '测试本地屏蔽',
   status: AccountRuntimeAvailability['status'] = 'local_suppressed',
-  metadata: Partial<Pick<LocalAccountSuppression, 'localFailureCount' | 'halfOpenLeaseUntilMs' | 'halfOpenLeaseId'>> = {}
+  metadata: Partial<Pick<LocalAccountSuppression, 'sinceMs' | 'localFailureCount' | 'halfOpenLeaseUntilMs' | 'halfOpenLeaseId'>> = {}
 ): void {
   suppressLocalAccount(accountId, Math.max(0, Math.trunc(durationMs)), reason, status, {
     accountId,
@@ -475,12 +1497,67 @@ export function suppressGatewayAccountLocallyForTest(
   })
 }
 
+export function ageGatewayAccountRuntimeDegradationForTest(
+  account: SuppressibleGatewayAccount | string,
+  ageMs: number
+): void {
+  ageLocalAccountDegradationForTest(gatewayAccountRuntimeKey(account), ageMs)
+}
+
+export function activateGatewayAccountRuntimeDegradationForTest(
+  account: SuppressibleGatewayAccount | string,
+  reason = '测试激活运行态调度降级'
+): AccountRuntimeAvailability {
+  const runtimeKey = gatewayAccountRuntimeKey(account)
+  return activateLocalAccountRuntimeDegradation(runtimeKey, gatewayAccountId(account), reason, {
+    sinceMs: Date.now() - localDegradationMinObservationMs
+  })
+}
+
+export function ageGatewayAccountFailureStormForTest(
+  account: SuppressibleGatewayAccount | string,
+  ageMs: number
+): void {
+  const runtimeKey = gatewayAccountRuntimeKey(account)
+  const agedFirstSeenMs = Date.now() - Math.max(0, Math.trunc(ageMs))
+  const failure = failureStorms.get(runtimeKey)
+  if (failure) {
+    failure.firstSeenMs = Math.min(failure.firstSeenMs, agedFirstSeenMs)
+    failureStorms.set(runtimeKey, failure)
+  }
+  const recovery = recoveryProbeStates.get(runtimeKey)
+  if (recovery) {
+    recovery.startedAtMs = Math.min(recovery.startedAtMs, agedFirstSeenMs)
+    recovery.nextProbeAtMs = Date.now()
+    recoveryProbeStates.set(runtimeKey, recovery)
+  }
+}
+
+export async function flushGatewayAccountRecoveryProbesForTest(): Promise<void> {
+  for (const timer of recoveryProbeTimers.values()) {
+    clearTimeout(timer)
+  }
+  recoveryProbeTimers.clear()
+  for (const state of recoveryProbeStates.values()) {
+    state.nextProbeAtMs = Date.now()
+  }
+  const runtimeKeys = [...recoveryProbeStates.keys()]
+  for (const runtimeKey of runtimeKeys) {
+    await runGatewayAccountRecoveryProbe(runtimeKey)
+  }
+}
+
 export function clearGatewayLocalAccountSuppressionsForTest(): void {
   clearAllPrecheckConcurrencyDrainWaits()
+  clearAllGatewayAccountRecoveryProbes()
+  clearAllGatewayAccountPrecheckRunTimers()
   clearLocalAccountSuppressionsForTest()
   failureStorms.clear()
   successObservations.clear()
   precheckStates.clear()
+  runtimeProbeGenerationCounters.clear()
+  recoveryProbeLastStartedAtByScope.clear()
+  runningRecoveryProbeCount = 0
 }
 
 export function clearGatewayAccountRuntimeAvailability(
@@ -488,7 +1565,15 @@ export function clearGatewayAccountRuntimeAvailability(
 ): GatewayAccountRuntimeClearResult {
   const clearedKeys: string[] = []
   for (const runtimeKey of gatewayAccountRuntimeClearKeys(account)) {
-    if (clearGatewayAccountRuntimeAvailabilityLocal(runtimeKey)) {
+    if (runtimeConfig.runtimeStateDriver === 'redis') {
+      void clearDistributedRecoveryProbeState(runtimeKey).catch((error) => {
+        logger.error(errorLogFields(error, {
+          event: 'gateway_account_distributed_runtime_availability_clear_failed',
+          runtimeKey
+        }), 'Redis 运行态账号恢复状态清理失败')
+      })
+      clearedKeys.push(runtimeKey)
+    } else if (clearGatewayAccountRuntimeAvailabilityLocal(runtimeKey)) {
       clearedKeys.push(runtimeKey)
     }
   }
@@ -506,6 +1591,9 @@ export function clearGatewayAccountRuntimeAvailability(
 }
 
 export async function flushGatewayAccountSideEffects(): Promise<void> {
+  if (runtimeConfig.runtimeStateDriver === 'redis') {
+    return
+  }
   if (drainTimer) {
     clearTimeout(drainTimer)
     drainTimer = undefined
@@ -650,11 +1738,12 @@ async function drainSideEffectQueue(): Promise<void> {
 
 async function executeAccountSideEffect(operation: AccountSideEffectOperation): Promise<void> {
   const result = await requestGatewayDbService(operation)
+  const runtimeKey = gatewayAccountRuntimeKey(operation.account)
   if (result.changed) {
-    clearGatewayAccountRuntimeAvailabilityLocal(gatewayAccountRuntimeKey(operation.account))
+    await clearGatewayAccountRuntimeAvailabilityForRuntimeKey(runtimeKey)
     clearGatewayRuntimeCache()
   } else if (operation.input.success && result.accountStatus === 'active') {
-    clearGatewayAccountRuntimeAvailabilityLocal(gatewayAccountRuntimeKey(operation.account))
+    await clearGatewayAccountRuntimeAvailabilityForRuntimeKey(runtimeKey)
   }
 }
 
@@ -677,8 +1766,11 @@ function dropExpiredSideEffects(now: number): void {
 }
 
 function clearGatewayAccountRuntimeAvailabilityLocal(accountId: string): boolean {
+  if (!canUseProcessLocalGatewayAccountRuntimeState()) return false
   let cleared = false
   clearPrecheckConcurrencyDrainWait(accountId)
+  cleared = clearGatewayAccountRecoveryProbe(accountId) || cleared
+  cleared = clearGatewayAccountPrecheckRunTimer(accountId) || cleared
   cleared = clearLocalAccountSuppression(accountId) || cleared
   cleared = clearLocalAccountDegradation(accountId) || cleared
   cleared = failureStorms.delete(accountId) || cleared
@@ -686,7 +1778,16 @@ function clearGatewayAccountRuntimeAvailabilityLocal(accountId: string): boolean
   return cleared
 }
 
+async function clearGatewayAccountRuntimeAvailabilityForRuntimeKey(runtimeKey: string): Promise<boolean> {
+  if (runtimeConfig.runtimeStateDriver === 'redis') {
+    await clearDistributedRecoveryProbeState(runtimeKey)
+    return true
+  }
+  return clearGatewayAccountRuntimeAvailabilityLocal(runtimeKey)
+}
+
 function cleanupExpiredFailureStorms(): void {
+  if (!canUseProcessLocalGatewayAccountRuntimeState()) return
   const now = Date.now()
   for (const [runtimeKey, entry] of failureStorms) {
     if (now - entry.lastSeenMs > failureStormWindowMs) {
@@ -701,6 +1802,7 @@ function cleanupExpiredFailureStorms(): void {
 }
 
 function isPrecheckRuntimeBlocking(runtimeKey: string): boolean {
+  if (!canUseProcessLocalGatewayAccountRuntimeState()) return false
   return precheckStates.has(runtimeKey)
 }
 
@@ -732,7 +1834,25 @@ function clearAllPrecheckConcurrencyDrainWaits(): void {
   }
 }
 
+function clearAllGatewayAccountRecoveryProbes(): void {
+  for (const runtimeKey of recoveryProbeStates.keys()) {
+    clearGatewayAccountRecoveryProbe(runtimeKey)
+  }
+  for (const [runtimeKey, timer] of recoveryProbeTimers) {
+    clearTimeout(timer)
+    recoveryProbeTimers.delete(runtimeKey)
+  }
+}
+
+function clearAllGatewayAccountPrecheckRunTimers(): void {
+  for (const [runtimeKey, timer] of precheckRunTimers) {
+    clearTimeout(timer)
+    precheckRunTimers.delete(runtimeKey)
+  }
+}
+
 function deferPrecheckMarkUntilConcurrencyDrained(runtimeKey: string, state: PrecheckState): boolean {
+  if (!canUseProcessLocalGatewayAccountRuntimeState()) return false
   const currentConcurrency = getAccountCurrentConcurrency(state.account.id)
   if (currentConcurrency <= 0) {
     return false
@@ -790,15 +1910,18 @@ function schedulePrecheckAfterConcurrencyDrain(runtimeKey: string, accountId: st
 }
 
 async function runGatewayAccountPrecheck(runtimeKey: string): Promise<void> {
+  if (!canUseProcessLocalGatewayAccountRuntimeState()) return
   const state = precheckStates.get(runtimeKey)
   if (!state || state.running) {
     return
   }
+  const generation = state.generation
   state.running = true
   try {
     for (let attempt = state.attemptCount; attempt < precheckMaxAttempts; attempt += 1) {
-      const latestState = precheckStates.get(runtimeKey)
+      const latestState = currentPrecheckState(runtimeKey, generation)
       if (!latestState) {
+        logStalePrecheckResult(runtimeKey, generation, 'gateway_account_precheck_stale_attempt_ignored')
         return
       }
       latestState.attemptCount = attempt + 1
@@ -812,24 +1935,31 @@ async function runGatewayAccountPrecheck(runtimeKey: string): Promise<void> {
       })
       const timeoutMs = accountDiagnosticRetryTimeoutMs[attempt] ?? accountDiagnosticRetryTimeoutMs[accountDiagnosticRetryTimeoutMs.length - 1]
       const result = await runSingleGatewayAccountPrecheck(latestState, timeoutMs)
+      const stateAfterResult = currentPrecheckState(runtimeKey, generation)
+      if (!stateAfterResult) {
+        logStalePrecheckResult(runtimeKey, generation, 'gateway_account_precheck_stale_result_ignored')
+        return
+      }
       if (result.success || result.accountFailureEligible === false) {
         clearGatewayAccountRuntimeAvailabilityLocal(runtimeKey)
         logger.info({
           event: 'gateway_account_precheck_recovered',
-          accountId: latestState.account.id,
-          accountName: latestState.account.name,
+          accountId: stateAfterResult.account.id,
+          accountName: stateAfterResult.account.name,
           runtimeKey,
-          attemptCount: latestState.attemptCount,
+          generation,
+          attemptCount: stateAfterResult.attemptCount,
           statusCode: result.statusCode,
           durationMs: result.durationMs
         }, '账号事前确认探针通过，已清理运行态短避让')
         return
       }
-      latestState.reason = accountPrecheckFailureReason(result)
+      stateAfterResult.reason = accountPrecheckFailureReason(result)
     }
 
-    const finalState = precheckStates.get(runtimeKey)
+    const finalState = currentPrecheckState(runtimeKey, generation)
     if (!finalState) {
+      logStalePrecheckResult(runtimeKey, generation, 'gateway_account_precheck_stale_final_ignored')
       return
     }
     if (deferPrecheckMarkUntilConcurrencyDrained(runtimeKey, finalState)) {
@@ -855,20 +1985,36 @@ async function runGatewayAccountPrecheck(runtimeKey: string): Promise<void> {
       accountId: finalState.account.id,
       accountName: finalState.account.name,
       runtimeKey,
+      generation,
       updated: markResult.updated,
       skippedReason: markResult.skippedReason,
       attemptCount: finalState.attemptCount
     }, '账号事前确认探针连续失败，已写入临时不可调用')
   } catch (error) {
-    const stateAfterError = precheckStates.get(runtimeKey)
+    const stateAfterError = currentPrecheckState(runtimeKey, generation)
     if (stateAfterError) {
       stateAfterError.running = false
     }
     logger.warn(errorLogFields(error, {
       event: 'gateway_account_precheck_exception',
-      runtimeKey
+      runtimeKey,
+      generation
     }), '账号事前确认探针执行失败，保留运行态等待下一轮触发')
   }
+}
+
+function canUseProcessLocalGatewayAccountRuntimeState(): boolean {
+  if (runtimeConfig.runtimeStateDriver !== 'redis') return true
+  clearAllPrecheckConcurrencyDrainWaits()
+  clearAllGatewayAccountRecoveryProbes()
+  clearAllGatewayAccountPrecheckRunTimers()
+  failureStorms.clear()
+  successObservations.clear()
+  precheckStates.clear()
+  recoveryProbeStates.clear()
+  recoveryProbeLastStartedAtByScope.clear()
+  runningRecoveryProbeCount = 0
+  return false
 }
 
 async function runSingleGatewayAccountPrecheck(state: PrecheckState, timeoutMs: number): Promise<{
@@ -886,7 +2032,7 @@ async function runSingleGatewayAccountPrecheck(state: PrecheckState, timeoutMs: 
     model: await preferredSystemAccountTestModelAsync(account),
     diagnostics: 'full',
     groupId: state.groupId,
-    trafficSource: 'cooldown_retest',
+    trafficSource: 'runtime_recovery_probe',
     signal,
     disableAccountStateMutation: true,
     findAccountForTest: (accountId, access) => requestGatewayDbService({
@@ -911,3 +2057,5 @@ function accountPrecheckFailureReason(result: { statusCode?: number; errorCode?:
   }
   return parts.join('；').slice(0, 1000)
 }
+
+ensureDistributedRecoveryProbeSweeper()

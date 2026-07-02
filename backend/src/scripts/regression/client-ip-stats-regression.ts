@@ -20,12 +20,13 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories, clientIpStats, usageStatsHelpers, clientIpPolicyCache] = await Promise.all([
+const [databaseModule, repositories, clientIpStats, usageStatsHelpers, clientIpPolicyCache, crypto] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../storage/client-ip-stats.repository.js'),
   import('../../storage/usage-stats-helpers.js'),
-  import('../../modules/gateway/runtime/client-ip-policy-cache.service.js')
+  import('../../modules/gateway/runtime/client-ip-policy-cache.service.js'),
+  import('../../storage/crypto.js')
 ])
 
 try {
@@ -39,6 +40,21 @@ try {
   const emptyWindowAfterBuild = clientIpStats.listClientIpStats({ startDate: today, endDate: today, pageSize: 10 })
   assert.equal(emptyWindowAfterBuild.rangeReady, true, '空 IP 窗口完成刷新后应返回 ready 空列表')
   assert.equal(emptyWindowAfterBuild.items.length, 0, '空 IP 窗口不应伪造任何汇总行')
+
+  const accountCreatedAt = new Date(createdAtBase - 1000).toISOString()
+  const accountInsert = databaseModule.getBusinessDatabase().prepare(`
+    INSERT INTO accounts (
+      id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+      name, type, status, credentials_encrypted, credential_mask, created_at, updated_at
+    ) VALUES (?, 'sys_admin', 'gpt', 'profile_gpt_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', ?, 'sk-client-ip-stats', ?, ?)
+  `)
+  for (const account of [
+    { id: 'acct_client_ip_primary', name: 'IP详情主账号' },
+    { id: 'acct_client_ip_secondary', name: 'IP详情次账号' },
+    { id: 'acct_client_ip_fallback', name: 'IP详情新增账号' }
+  ]) {
+    accountInsert.run(account.id, account.name, crypto.encryptJson({ api_key: `sk-${account.id}` }), accountCreatedAt, accountCreatedAt)
+  }
 
   repositories.createUsageRecordsBatch([
     {
@@ -348,6 +364,11 @@ try {
   assert.equal(refreshedDetail.rangeReady, true, '账号详情窗口刷新后应标记可用')
   assert.equal(refreshedDetail.pageUpperBound, 2, 'IP 详情分页上界应按账号窗口页计算')
   assert.deepEqual(refreshedDetail.items.map((item) => item.accountId), ['acct_client_ip_primary', 'acct_client_ip_fallback'], 'IP 详情应按请求数展示涉及账号')
+  assert.equal(refreshedDetail.items[0]?.accountName, 'IP详情主账号', 'IP 详情应批量补齐账号名称')
+  assert.equal(refreshedDetail.items[0]?.accountOwnerSystemAccountId, 'sys_admin', 'IP 详情应返回账号所属系统账户 ID')
+  assert.equal(refreshedDetail.items[0]?.accountOwnerSystemAccountName, '超级管理员', 'IP 详情应返回账号所属用户名称')
+  assert.equal(refreshedDetail.items[1]?.accountName, 'IP详情新增账号', 'IP 详情应补齐后续账号名称')
+  assert.equal(refreshedDetail.items[1]?.accountOwnerSystemAccountName, '超级管理员', 'IP 详情应补齐后续账号所属用户名称')
   assert.equal(refreshedDetail.items[0]?.rangeUsage.requestCount, 2, '主账号在该 IP 下的请求数应来自 IP+账号窗口')
   assert.equal(refreshedDetail.items[0]?.rangeUsage.errorCount, 1, '主账号在该 IP 下的失败数应来自 IP+账号窗口')
   assert.equal(refreshedDetail.items[0]?.rangeUsage.inputTokens, 140, '主账号在该 IP 下的输入 token 应来自 IP+账号窗口')

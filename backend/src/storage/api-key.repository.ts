@@ -16,7 +16,7 @@ import { apiKeySummariesFromRows, apiKeySummariesFromRowsAsync, type ApiKeyRow }
 import { createApiKey, encryptJson, hashSecret } from './crypto.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
-import { invalidateGatewayApiKeyCacheById } from './gateway-api-key.repository.js'
+import { invalidateGatewayApiKeyCacheById, invalidateGatewayApiKeyCacheByIdAsync } from './gateway-api-key.repository.js'
 import { getPostgresPool } from './postgres-client.js'
 import { pagedTotalUpperBound, takePageRows } from './query-utils.js'
 import { invalidateApiKeyLookupCache, loadSystemAccountNameMapByIds } from './repository-lookups.js'
@@ -616,7 +616,7 @@ export async function updateApiKeyAsync(id: string, input: Record<string, unknow
     }
     throw error
   }
-  invalidateGatewayApiKeyCacheById(id)
+  await invalidateGatewayApiKeyCacheByIdAsync(id)
   invalidateApiKeyLookupCache(id)
   notifyGatewayRuntimeCacheInvalidation('api_key_updated')
   notifyApiKeyQuotaCacheInvalidation(id, 'api_key_updated')
@@ -668,7 +668,7 @@ export async function refreshApiKeySecretAsync(id: string, access?: AccessScope)
     WHERE id = ? AND system_account_id = ?
   `, [hashSecret(key), keyPrefix, keySuffix, encryptJson({ key }), now, id, systemAccountId])
   if (result.changes <= 0) return undefined
-  invalidateGatewayApiKeyCacheById(id)
+  await invalidateGatewayApiKeyCacheByIdAsync(id)
   invalidateApiKeyLookupCache(id)
   notifyGatewayRuntimeCacheInvalidation('api_key_secret_refreshed')
   notifyApiKeyQuotaCacheInvalidation(id, 'api_key_secret_refreshed')
@@ -735,7 +735,7 @@ export async function deleteApiKeyWithRelatedCleanupAsync(id: string, access?: A
   `, [row.id, row.system_account_id])
   const deleted = result.changes > 0
   if (deleted) {
-    invalidateGatewayApiKeyCacheById(row.id)
+    await invalidateGatewayApiKeyCacheByIdAsync(row.id)
     invalidateApiKeyLookupCache(row.id)
     notifyGatewayRuntimeCacheInvalidation('api_key_deleted')
     notifyApiKeyQuotaCacheInvalidation(row.id, 'api_key_deleted')

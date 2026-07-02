@@ -84,7 +84,7 @@ export interface UsageRecordSummary {
   createdAt: string
 }
 
-export type UsageRecordTrafficSource = 'gateway' | 'manual_account_test' | 'cooldown_retest' | 'hybrid_scoring' | 'hybrid_quality_scoring'
+export type UsageRecordTrafficSource = 'gateway' | 'manual_account_test' | 'runtime_recovery_probe' | 'cooldown_retest' | 'hybrid_scoring' | 'hybrid_quality_scoring'
 export type UsageFailureAttribution = 'account_upstream' | 'account_dependency' | 'gateway_capacity' | 'gateway_policy' | 'client_lifecycle'
 export type UsageRecordSortField = 'createdAt' | 'firstTokenMs' | 'durationMs' | 'costUsd'
 export type UsageRecordSortDirection = 'asc' | 'desc'
@@ -1468,6 +1468,7 @@ function normalizeUsageRecordTrafficSource(value: unknown): UsageRecordTrafficSo
   if (
     value === 'gateway'
     || value === 'manual_account_test'
+    || value === 'runtime_recovery_probe'
     || value === 'cooldown_retest'
     || value === 'hybrid_scoring'
     || value === 'hybrid_quality_scoring'
@@ -1501,7 +1502,8 @@ function normalizeUsageFailureAttribution(value: unknown): UsageFailureAttributi
 }
 
 function shouldRecordAccountUsageSideEffects(trafficSource: UsageRecordTrafficSource): boolean {
-  return trafficSource !== 'cooldown_retest'
+  return trafficSource !== 'runtime_recovery_probe'
+    && trafficSource !== 'cooldown_retest'
     && trafficSource !== 'hybrid_scoring'
     && trafficSource !== 'hybrid_quality_scoring'
 }

@@ -66,9 +66,9 @@ import type { UpstreamAttempt } from './upstream/attempt.js'
 import type { ResponseInspectionDecision } from './response/inspection.js'
 import type { GatewaySettings } from './policy/account-error-policy.service.js'
 import { OpenAIOAuthCodexAdapterError } from './adapters/gpt-codex/oauth-adapter.js'
-import { recordClientIpErrorCircuitSample } from './runtime/client-ip-error-circuit.service.js'
+import { recordClientIpErrorCircuitSampleAsync } from './runtime/client-ip-error-circuit.service.js'
 import {
-  confirmClientIpAccountAvoidanceAfterFinalFailure,
+  confirmClientIpAccountAvoidanceAfterFinalFailureAsync,
   transferClientIpAccountPendingFailures
 } from './runtime/client-ip-account-avoidance.service.js'
 import {
@@ -77,6 +77,7 @@ import {
 } from './usage/records.js'
 import { isGatewayForcedDownstreamClose } from './upstream/body.js'
 import {
+  isAccountProbeTrafficSource,
   normalizeOpenAIGatewayTrafficSource,
   type OpenAIGatewayTrafficSource
 } from './usage/traffic-source.js'
@@ -153,7 +154,7 @@ export async function handleOpenAIGatewayRequest(
     clientIp,
     startedAtMs: startedAt,
     trafficSource,
-    captureMode: options.auditCaptureMode ?? (trafficSource === 'cooldown_retest' ? 'metadata_only' : 'default')
+    captureMode: options.auditCaptureMode ?? (isAccountProbeTrafficSource(trafficSource) ? 'metadata_only' : 'default')
   })
   let activeDownstreamSessionAffinity: { key: string; accountId: string } | undefined
   const clearActiveDownstreamSessionAffinity = () => {
@@ -420,7 +421,7 @@ export async function handleOpenAIGatewayRequest(
           if (fallbackSwitch === 'switched') {
             continue
           }
-          sendCodexSwitchProbeFailedResponse({
+          await sendCodexSwitchProbeFailedResponse({
             req,
             res,
             auditCapture,
@@ -678,7 +679,7 @@ export async function handleOpenAIGatewayRequest(
               'upstream_response_error',
               handledResponse.errorCode ?? 'hybrid_quality_failed'
             )
-            sendGatewayFailureResponse({
+            await sendGatewayFailureResponse({
               req,
               res,
               auditCapture,
@@ -735,8 +736,8 @@ export async function handleOpenAIGatewayRequest(
               continue
             }
             const totalWaitTimedOut = streamClientTotalWaitTimedOut(activeGatewaySettings, startedAt)
-            confirmCurrentClientIpAccountAvoidanceAfterFinalFailure(currentPreflight, auditCapture, totalWaitTimedOut ? 'stream_client_total_wait_timeout' : 'stream_server_retry_exhausted')
-            sendStreamServerRetryExhaustedResponse({
+            await confirmCurrentClientIpAccountAvoidanceAfterFinalFailure(currentPreflight, auditCapture, totalWaitTimedOut ? 'stream_client_total_wait_timeout' : 'stream_server_retry_exhausted')
+            await sendStreamServerRetryExhaustedResponse({
               req,
               res,
               auditCapture,
@@ -754,7 +755,7 @@ export async function handleOpenAIGatewayRequest(
           }
           continue
         }
-        finalizeHandledUpstreamResponse({
+        await finalizeHandledUpstreamResponse({
           req,
           res,
           account,
@@ -770,7 +771,7 @@ export async function handleOpenAIGatewayRequest(
           clientIpAccountAvoidanceTracker,
           accountStateMutationEnabled: options.disableAccountStateMutation !== true
         })
-        confirmSameAccountApiKeyFailures()
+        await confirmSameAccountApiKeyFailures()
         return
       } finally {
         releaseConcurrency()
@@ -783,7 +784,7 @@ export async function handleOpenAIGatewayRequest(
       }
     }
     const gatewayUsageContext = currentPreflight.usageContext
-    recordKnownClientIpRequestError(error, gatewayUsageContext, auditCapture)
+    await recordKnownClientIpRequestError(error, gatewayUsageContext, auditCapture)
     if (handleGatewayRequestKnownErrorResponse({
       req,
       res,
@@ -804,7 +805,7 @@ export async function handleOpenAIGatewayRequest(
     }), '网关请求处理出现未预期异常')
     notifyUpstreamAttemptDiagnostic(options, lastAttempt)
     if (shouldSendCodexDispatchExhaustedStreamRetry(currentPreflight, error, res)) {
-      confirmCurrentClientIpAccountAvoidanceAfterFinalFailure(currentPreflight, auditCapture, 'codex_dispatch_exhausted_retryable_sse')
+      await confirmCurrentClientIpAccountAvoidanceAfterFinalFailure(currentPreflight, auditCapture, 'codex_dispatch_exhausted_retryable_sse')
       auditCapture.addGatewayMetadata({
         label: 'codex_dispatch_exhausted_retryable_sse',
         metadata: {
@@ -832,8 +833,8 @@ export async function handleOpenAIGatewayRequest(
       : undefined
     const statusCode = diagnosticError?.statusCode ?? 503
     const responsePayload = diagnosticError?.payload ?? gatewayErrorPayload('没有可用的上游账户', 'service_unavailable')
-    confirmCurrentClientIpAccountAvoidanceAfterFinalFailure(currentPreflight, auditCapture, 'gateway_failure_response')
-    sendGatewayFailureResponse({
+    await confirmCurrentClientIpAccountAvoidanceAfterFinalFailure(currentPreflight, auditCapture, 'gateway_failure_response')
+    await sendGatewayFailureResponse({
       req,
       res,
       auditCapture,
@@ -873,12 +874,12 @@ function notifyUpstreamAttemptDiagnostic(
   }
 }
 
-function confirmCurrentClientIpAccountAvoidanceAfterFinalFailure(
+async function confirmCurrentClientIpAccountAvoidanceAfterFinalFailure(
   preflight: OpenAIGatewayDispatchContext,
   auditCapture: ReturnType<typeof createAuditCapture>,
   reason: string
-): void {
-  const result = confirmClientIpAccountAvoidanceAfterFinalFailure(
+): Promise<void> {
+  const result = await confirmClientIpAccountAvoidanceAfterFinalFailureAsync(
     preflight.clientIpAccountAvoidanceTracker,
     preflight.activeGatewaySettings
   )
@@ -1010,7 +1011,7 @@ function shouldExcludeCurrentAccountForStreamRetry(decision: ResponseInspectionD
     || decision.accountState === 'runtime_avoidance'
 }
 
-function sendStreamServerRetryExhaustedResponse(input: {
+async function sendStreamServerRetryExhaustedResponse(input: {
   req: Request
   res: Response
   auditCapture: ReturnType<typeof createAuditCapture>
@@ -1023,7 +1024,7 @@ function sendStreamServerRetryExhaustedResponse(input: {
   uncommittedResponseBody?: Buffer
   accountId?: string
   clientStrategy?: OpenAIGatewayDispatchContext['clientStrategy']
-}): void {
+}): Promise<void> {
   const message = input.message || '服务端流式重试未找到可用账号'
   if (input.retryReason === 'codex_pre_commit_stream_failure') {
     sendPreCommitStreamRetryExhaustedResponse({
@@ -1067,7 +1068,7 @@ function sendStreamServerRetryExhaustedResponse(input: {
         responseMode: 'pre_commit_http_error'
       }
     })
-    sendGatewayFailureResponse({
+    await sendGatewayFailureResponse({
       req: input.req,
       res: input.res,
       auditCapture: input.auditCapture,
@@ -1096,7 +1097,7 @@ function sendStreamServerRetryExhaustedResponse(input: {
         responseMode: 'protocol_failure_http_error'
       }
     })
-    sendGatewayFailureResponse({
+    await sendGatewayFailureResponse({
       req: input.req,
       res: input.res,
       auditCapture: input.auditCapture,
@@ -1128,7 +1129,7 @@ function sendStreamServerRetryExhaustedResponse(input: {
       matchedValue: input.decision?.matchedValue
     }
   })
-  sendGatewayFailureResponse({
+  await sendGatewayFailureResponse({
     req: input.req,
     res: input.res,
     auditCapture: input.auditCapture,
@@ -1264,18 +1265,18 @@ function rememberCodexTurnFailureWhenClientRetryIsVisible(input: {
   })
 }
 
-function sendCodexSwitchProbeFailedResponse(input: {
+async function sendCodexSwitchProbeFailedResponse(input: {
   req: Request
   res: Response
   auditCapture: ReturnType<typeof createAuditCapture>
   usageContext: GatewayFailureUsageContext
   startedAt: number
   probes: CodexSwitchProbeResult[]
-}): void {
+}): Promise<void> {
   const diagnosticMessage = codexSwitchProbeFailedMessage(input.probes)
   const message = gatewayStreamClientRetryMessage
   const failureEvent = writeGatewayStreamFailureEvent(input.res, message, gatewayStreamClientRetryErrorCode)
-  recordGatewayFailure(input.req, input.usageContext, {
+  await recordGatewayFailure(input.req, input.usageContext, {
     statusCode: 200,
     startedAt: input.startedAt,
     responsePayload: gatewayErrorPayload(message, 'server_error', gatewayStreamClientRetryErrorCode),
@@ -1341,16 +1342,16 @@ function truncateProbeMessage(message: string): string {
   return message.length > 300 ? `${message.slice(0, 300)}...` : message
 }
 
-function recordKnownClientIpRequestError(
+async function recordKnownClientIpRequestError(
   error: unknown,
   usageContext: GatewayFailureUsageContext,
   auditCapture: ReturnType<typeof createAuditCapture>
-): void {
+): Promise<void> {
   const sample = clientIpRequestErrorSample(error)
   if (!sample) {
     return
   }
-  const result = recordClientIpErrorCircuitSample({
+  const result = await recordClientIpErrorCircuitSampleAsync({
     systemAccountId: usageContext.systemAccountId,
     apiKeyId: usageContext.apiKeyId,
     groupId: usageContext.groupId,
