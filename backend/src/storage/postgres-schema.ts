@@ -82,6 +82,11 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
     schemaName: 'juhe_usage',
     source: 'usage-catalog-pg-prefix-indexes',
     sql: 'CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_client_ip_c_created_sort ON usage_record_shard_entries(system_account_id, (client_ip COLLATE "C"), created_at DESC, usage_id DESC)'
+  },
+  {
+    schemaName: 'juhe_usage',
+    source: 'usage-catalog-pg-list-indexes',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_traffic_created_sort ON usage_record_shard_entries(system_account_id, traffic_source, created_at DESC, usage_id DESC) INCLUDE (account_id, shard_key)'
   }
 ]
 

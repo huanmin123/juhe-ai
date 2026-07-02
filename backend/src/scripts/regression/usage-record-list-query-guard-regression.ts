@@ -438,6 +438,9 @@ try {
     /accounts\.name = \? OR \(accounts\.name >= \? AND accounts\.name < \?\)/,
     'PG 使用记录账号关键词预解析不能回退大小写敏感的原始 name 范围条件'
   )
+  const postgresListRowsFunction = usageRecordsRepositorySource.match(/async function loadUsageRecordRowsByEntriesAsync[\s\S]*?\n}\n\nfunction listUsageRecordRowsFromShards/)?.[0] ?? ''
+  assert.doesNotMatch(postgresListRowsFunction, /SELECT\s+ur\.\*/i, 'PG 使用记录列表回表不应 SELECT ur.* 拉取详情快照大字段')
+  assert.doesNotMatch(postgresListRowsFunction, /request_snapshot_json|response_snapshot_json/i, 'PG 使用记录列表不应读取请求或响应快照字段')
   const businessSchemaSource = readFileSync(resolve('src/storage/schema/business-schema.ts'), 'utf8')
   assert.match(
     businessSchemaSource,

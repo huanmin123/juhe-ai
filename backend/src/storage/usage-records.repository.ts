@@ -1294,7 +1294,44 @@ async function loadUsageRecordRowsByEntriesAsync(client: DatabaseClient, entries
   const rowsById = new Map<string, UsageRecordRow>()
   for (const chunk of chunkValues(entries.map((entry) => entry.usage_id), 900)) {
     const rows = await client.query<UsageRecordRow>(`
-      SELECT ur.*
+      SELECT
+        ur.id,
+        ur.system_account_id,
+        ur.trace_id,
+        ur.traffic_source,
+        ur.client_ip,
+        ur.api_key_id,
+        ur.group_id,
+        ur.account_id,
+        ur.endpoint,
+        ur.provider_code,
+        ur.provider_protocol_profile_id,
+        ur.usage_semantic,
+        ur.model,
+        ur.upstream_model,
+        ur.pricing_model,
+        ur.model_mapping_applied,
+        ur.model_mapping_source,
+        ur.stream,
+        ur.status_code,
+        ur.success,
+        ur.failure_attribution,
+        ur.first_token_ms,
+        ur.duration_ms,
+        ur.input_tokens,
+        ur.output_tokens,
+        ur.cache_read_tokens,
+        ur.cache_read_cost_usd,
+        ur.cache_write_tokens,
+        ur.cache_write_1h_tokens,
+        ur.cache_write_cost_usd,
+        ur.thinking_tokens,
+        ur.input_image_tokens,
+        ur.output_image_tokens,
+        ur.cost_usd,
+        ur.error_code,
+        ur.error_message,
+        ur.created_at
       FROM juhe_usage.usage_records ur
       WHERE ur.id IN (${sqlPlaceholders(chunk.length)})
     `, chunk)
