@@ -56,7 +56,7 @@
 ## 方案概述
 
 - 模式：`standalone = SQLite + memory`，`performance = PostgreSQL + Redis`，默认仍为 `standalone`。
-- 数据库：通过 `DatabaseClient` 和 `SqlDialect` 抽象 SQLite / PostgreSQL 差异；PostgreSQL 按 `juhe_business`、`juhe_dataset`、`juhe_usage`、`juhe_stats`、`juhe_codex_context` schema 承接当前多库职责。
+- 数据库：通过 `DatabaseClient` 和 `SqlDialect` 抽象 SQLite / PostgreSQL 差异；PostgreSQL 按 `juhe_business`、`juhe_dataset`、`juhe_usage`、`juhe_stats`、`juhe_codex_context`（Responses 桥接状态索引）schema 承接当前多库职责。
 - 缓存：通过 `AppCache` 承接可丢弃缓存，通过 `RuntimeStateStore` 承接原子计数、锁、并发占用、限流和短 TTL 调度态。
 - 队列：typed command 不推翻；SQLite 模式继续按 owner 串行，PostgreSQL 模式入队即触发 drain，默认最大消费并发 `100`，并受连接池和同 key 顺序限制；`redis_stream` 先覆盖使用记录、审计日志、操作日志、公开接口日志、数据维护和运行日志索引队列，其他队列按同一边界后续评估。
 - 部署：测试主机 `<测试主机IP>` 使用 Docker Compose；生产同构，至少包含 PostgreSQL、PgBouncer、Redis cache、Redis state 和应用服务。
@@ -66,7 +66,7 @@
 - [x] 阶段 0：设计文档落地，明确双模式、PG schema 映射、Redis 抽象、队列并发和部署边界。
 - [x] 阶段 1：配置和启动校验，新增 runtime mode、database driver、cache driver、runtime state driver。
 - [x] 阶段 2：数据库抽象，SQLite 先跑在统一 `DatabaseClient` / `SqlDialect` 下，现有测试不变。基础层和主要回归已完成，核心管理链路、网关链路、日志、使用记录、主要统计窗口和外部来源链路已接入。
-- [x] 阶段 3：PostgreSQL schema 和 repository adapter，完成业务库、dataset、usage、stats、codex context 的表结构映射。schema 初始化、默认种子、核心 repository adapter、主要 System API / 网关读写路径、统计窗口和外部来源 PG 路径已完成；低频入口、复杂筛选和长周期运维任务继续按 fail-fast 与专项验证管理。
+- [x] 阶段 3：PostgreSQL schema 和 repository adapter，完成业务库、dataset、usage、stats、Responses 桥接状态索引的表结构映射。schema 初始化、默认种子、核心 repository adapter、主要 System API / 网关读写路径、统计窗口和外部来源 PG 路径已完成；低频入口、复杂筛选和长周期运维任务继续按 fail-fast 与专项验证管理。
 - [ ] 阶段 4：Redis cache / runtime state driver，迁移网关运行态、缓存失效、限流和会话亲和。基础 driver、登录失败窗口、验证码 challenge / 发放限频、账号并发槽、网关缓存失效 runtime state 版本广播、API Key 校验缓存、API Key 额度缓存、授权额度缓存、系统设置、网关设置、网关分组访问元数据、网关模型目录、模型路由索引、管理端模型目录、响应检查策略、授权读资源 lookup、客户端 IP 封禁策略快照和混合路由评分结果 Redis shared cache 已完成。
 - [ ] 阶段 5：队列并发改造，PostgreSQL 模式下写队列入队即消费，最大并发 `100`，增加背压指标。使用记录、审计日志、操作日志、公开接口日志、数据维护和运行日志索引 Redis Streams 队列已完成，账号测试状态表和账户内 API Key runtime state 已补 PG async；账号测试 / 探测执行缓冲待按真实积压和幂等成本单独评估。
 - [x] 阶段 6：Docker 测试栈，在 `<测试主机IP>` 搭建 PostgreSQL、PgBouncer、Redis cache、Redis state。中间件容器已 healthy，PG schema 与默认种子已在远端库验证。
@@ -144,7 +144,7 @@
 | 网关压测 | 真实 `/v1/responses` / `/v1/chat/completions` | `pnpm --filter juhe-ai-backend test:performance-gateway-load` | p95 可接受，usage / audit / operation / public API / record maintenance / runtime log 队列跟上，PG 无 deadlock、无长期锁等待 | 已通过 | 最新 100 并发 p95 229.37ms，p99 295.28ms，audit 215，高于 2% 抽样预期下限 145；`pg_stat_statements` 慢项仍集中在 usage catalog / shard entries 批量 INSERT，未观察到网关热读慢 SELECT |
 | 部署验证 | Docker 测试栈 | `<测试主机IP>` compose 启动 / config 校验 | PG / PgBouncer / Redis / 应用健康，当前仓库 compose 可解析 | 部分通过 | PostgreSQL / PgBouncer / Redis cache / Redis state 已在 `<远端Docker目录>` 启动并 healthy；PG schema 和默认种子已初始化；当前仓库 standalone / performance compose 已在远端 `/tmp` 临时目录通过 `docker compose config --quiet`，临时目录已删除；本机连接远端验证需使用宿主机发布端口：PgBouncer `6432`、redis-cache `6379`、redis-state `6380`；应用容器 performance 模式和生产规格维护窗口演练仍待完成 |
 | 故障演练 | Redis / PG 重启 | `pnpm --filter juhe-ai-backend test:performance-reliability-drill` | 可读错误、自动重连、Redis Streams pending 可恢复 | 已通过 | 2026-06-27 远端 Docker 栈通过：Redis state 重启后 PING 约 1.03s 恢复，3 条 pending 全部接管并 ACK；PostgreSQL / PgBouncer 重启后健康检查约 41ms 恢复；演练后四个中间件容器均 healthy |
-| 备份恢复 | PostgreSQL 备份恢复 | `pnpm --filter juhe-ai-backend test:performance-reliability-drill` | 业务事实可恢复，统计可重建 | 已通过 | 2026-06-27 使用 remote_docker 模式在 `juhe-ai-postgres` 容器内 `pg_dump`，恢复到临时库并校验 schema 表数量一致：business 47、dataset 19、usage 5、stats 59、codex context 3；临时库和 dump 已清理 |
+| 备份恢复 | PostgreSQL 备份恢复 | `pnpm --filter juhe-ai-backend test:performance-reliability-drill` | 业务事实可恢复，统计可重建 | 已通过 | 2026-06-27 使用 remote_docker 模式在 `juhe-ai-postgres` 容器内 `pg_dump`，恢复到临时库并校验 schema 表数量一致：business 47、dataset 19、usage 5、stats 59、Responses 桥接状态索引 3；临时库和 dump 已清理 |
 
 ## 决策记录
 

@@ -35,7 +35,7 @@ try {
   assert.throws(() => databaseModule.getDatasetDatabase(), /不能回退写入 SQLite/, 'PG 模式不能打开 SQLite dataset DB')
   assert.throws(() => databaseModule.getUsageCatalogDatabase(), /不能回退写入 SQLite/, 'PG 模式不能打开 SQLite usage catalog DB')
   assert.throws(() => databaseModule.getStatsDatabase(), /不能回退写入 SQLite/, 'PG 模式不能打开 SQLite stats DB')
-  assert.throws(() => databaseModule.getCodexContextStateShardDatabase(0), /不能回退写入 SQLite/, 'PG 模式不能打开 Codex context SQLite shard DB')
+  assert.throws(() => databaseModule.getCodexContextStateShardDatabase(0), /不能回退写入 SQLite/, 'PG 模式不能打开 Responses 桥接状态 SQLite shard DB')
 
   const shardLocation = {
     shardKey: '20260101:s000',
@@ -88,8 +88,8 @@ try {
   assert.doesNotMatch(postgresLogicalLocationBody, /join\(|usageRecordShardRoot|usageCatalogDatabasePath/, 'PG 逻辑 shard location 不能拼接本地 SQLite 路径')
 
   const dbServiceHandlersSource = readFileSync(resolve(backendSrcRoot, 'modules/db-service/db-service-handlers.ts'), 'utf8')
-  assert.match(dbServiceHandlersSource, /case 'save_codex_context_response_state':[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*saveCodexContextResponseStateIndexAsync\(operation\.input\)[\s\S]*saveCodexContextResponseStateIndexWithWriterPool\(operation\.input\)/, 'PG 模式 Codex context state DB service 操作必须走 PG async，不能派发到 SQLite writer pool')
-  assert.doesNotMatch(dbServiceHandlersSource, /PostgreSQL 模式暂未接入 Codex context state/, 'Codex context state 已接入 PG，不能保留暂未接入文案')
+  assert.match(dbServiceHandlersSource, /case 'save_codex_context_response_state':[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*saveCodexContextResponseStateIndexAsync\(operation\.input\)[\s\S]*saveCodexContextResponseStateIndexWithWriterPool\(operation\.input\)/, 'PG 模式 Responses 桥接状态 DB service 操作必须走 PG async，不能派发到 SQLite writer pool')
+  assert.doesNotMatch(dbServiceHandlersSource, /PostgreSQL 模式暂未接入 Codex context state/, 'Responses 桥接状态已接入 PG，不能保留暂未接入文案')
 } finally {
   rmSync(tempRoot, { recursive: true, force: true })
 }

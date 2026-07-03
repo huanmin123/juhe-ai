@@ -14,6 +14,7 @@ const systemMetricsSource = readSource('../../storage/system-metrics.repository.
 const statsRoutesSource = readSource('../../modules/stats/stats.routes.ts')
 const dbServiceIpcSource = readSource('../../modules/db-service/db-service-ipc.ts')
 const frontendBackgroundJobsSource = readSource('../../../../frontend/src/views/stats/StatsBackgroundJobsCard.vue')
+const frontendSystemMetricsSource = readSource('../../../../frontend/src/views/stats/SystemMetricsStatsView.vue')
 
 const registryByName = new Map<string, typeof backgroundWorkerRegistry[number]>(backgroundWorkerRegistry.map((job) => [job.jobName, job]))
 const expectedSupervisedRoles = ['ingest-worker', 'stats-worker', 'ops-worker'] as const
@@ -93,6 +94,9 @@ assert(dbServiceIpcSource.includes('recordMaintenanceQueue: { ...ingestWorkerSna
 assert(dbServiceIpcSource.includes('recordMaintenanceQueue: { ...statsWorkerSnapshot.recordMaintenanceQueue }'), 'DB service runtime snapshot 必须转发 stats-worker 数据维护本地队列')
 assert(frontendBackgroundJobsSource.includes('const queue = row.retryQueue'), '前端后台任务表必须展示任意任务行携带的 retryQueue')
 assert(frontendBackgroundJobsSource.includes('const queue = row.localQueue'), '前端后台任务表必须展示任意任务行携带的 localQueue')
+assert(frontendSystemMetricsSource.includes('<a-col :xs="24">\n        <StatsChartCard\n          :title="`进程事件循环延迟'), '系统指标页进程事件循环延迟必须独占整行展示')
+assert(frontendSystemMetricsSource.includes('<a-col :xs="24">\n        <StatsBackgroundJobsCard'), '系统指标页后台任务运行状态必须独占整行展示')
+assert(!frontendSystemMetricsSource.includes(':xl="14"') && !frontendSystemMetricsSource.includes(':xl="10"'), '系统指标页不能把进程事件循环延迟和后台任务运行状态用大屏分栏挤在同一行')
 
 assert(processMonitorSource.includes("'ops-worker'"), '事件循环采样必须识别 ops-worker')
 assert(!processMonitorSource.includes("'probe-worker'"), '事件循环采样不应保留 probe-worker')

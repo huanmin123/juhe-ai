@@ -883,13 +883,13 @@ function segmentStorageKey(sessionId: string, date: Date): string {
 function resolveStoragePath(storageKey: string): string {
   const normalizedKey = storageKey.replace(/\\/g, '/').replace(/^\/+/, '')
   if (normalizedKey.includes('..')) {
-    throw new Error('Codex context storage key 非法')
+    throw new Error('Responses 桥接状态 storage key 非法')
   }
   const root = resolve(runtimeConfig.codexContextRoot)
   const target = resolve(root, normalizedKey)
   const rel = relative(root, target)
   if (!rel || rel.startsWith('..') || rel.startsWith(`..${sep}`) || resolve(root, rel) !== target) {
-    throw new Error('Codex context storage key 超出数据目录')
+    throw new Error('Responses 桥接状态 storage key 超出数据目录')
   }
   return target
 }

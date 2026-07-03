@@ -43,7 +43,7 @@
     </a-row>
 
     <a-row :gutter="[16, 16]" class="system-metrics-section">
-      <a-col :xs="24" :xl="14">
+      <a-col :xs="24">
         <StatsChartCard
           :title="`进程事件循环延迟（${currentWindowLabel}）`"
           :loading="initialLoading"
@@ -55,7 +55,10 @@
           <StatsProcessEventLoopTable :rows="processEventLoopRows" />
         </StatsChartCard>
       </a-col>
-      <a-col :xs="24" :xl="10">
+    </a-row>
+
+    <a-row :gutter="[16, 16]" class="system-metrics-section">
+      <a-col :xs="24">
         <StatsBackgroundJobsCard
           :empty-description="backgroundJobEmptyDescription"
           :has-data="hasBackgroundJobs"

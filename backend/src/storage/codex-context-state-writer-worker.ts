@@ -123,5 +123,5 @@ function sendResponse(message: CodexContextStateWriterWorkerResponse): void {
 }
 
 function assertNever(value: never): never {
-  throw new Error(`未知 Codex context state writer 操作：${JSON.stringify(value)}`)
+  throw new Error(`未知 Responses bridge state writer 操作：${JSON.stringify(value)}`)
 }

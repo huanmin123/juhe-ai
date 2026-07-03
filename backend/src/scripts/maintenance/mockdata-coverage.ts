@@ -1,6 +1,6 @@
 import type { SQLInputValue } from 'node:sqlite'
 
-import { getBusinessDatabase } from '../../storage/database.js'
+import { getBusinessDatabase, getDatasetDatabase, getStatsDatabase, getUsageCatalogDatabase } from '../../storage/database.js'
 import {
   listUsageRecordShardLocations,
   getUsageRecordShardDatabase
@@ -14,6 +14,7 @@ export function assertMockdataCoverage(created: CreatedMockdata): void {
   assertBusinessCoverage(database, created)
   assertUsageCoverage()
   assertCreatedShape(created)
+  assertApplicationTablesHaveRows()
 }
 
 function assertBusinessCoverage(database: BusinessDatabase, created: CreatedMockdata): void {
@@ -112,6 +113,20 @@ function assertCreatedShape(created: CreatedMockdata): void {
   assertMinimum('Mockdata API Key 对象数量不足', Object.keys(created.apiKeys).length, 18)
 }
 
+function assertApplicationTablesHaveRows(): void {
+  const emptyTables: string[] = []
+  collectEmptyTables(emptyTables, 'business', getBusinessDatabase())
+  collectEmptyTables(emptyTables, 'dataset', getDatasetDatabase())
+  collectEmptyTables(emptyTables, 'usage-catalog', getUsageCatalogDatabase())
+  collectEmptyTables(emptyTables, 'stats', getStatsDatabase())
+  for (const location of listUsageRecordShardLocations()) {
+    collectEmptyTables(emptyTables, `usage-shard:${location.shardKey}`, getUsageRecordShardDatabase(location))
+  }
+  if (emptyTables.length) {
+    throw new Error(`Mockdata 应用表覆盖不完整，空表：${emptyTables.join('、')}`)
+  }
+}
+
 function accountStatuses(database: BusinessDatabase, accountIds: string[]): Set<string> {
   return new Set((database.prepare(`
     SELECT DISTINCT CASE
@@ -173,6 +188,24 @@ function assertMinimum(label: string, actual: number, minimum: number): void {
   if (actual < minimum) {
     throw new Error(`${label}，期望至少 ${minimum}，实际 ${actual}`)
   }
+}
+
+function collectEmptyTables(emptyTables: string[], databaseRole: string, database: BusinessDatabase): void {
+  const tables = database
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name ASC")
+    .all() as Array<{ name?: string }>
+  for (const table of tables) {
+    const tableName = table.name
+    if (!tableName) continue
+    const row = database.prepare(`SELECT COUNT(*) AS value FROM ${quoteIdentifier(tableName)}`).get() as { value?: number } | undefined
+    if (Number(row?.value ?? 0) === 0) {
+      emptyTables.push(`${databaseRole}.${tableName}`)
+    }
+  }
+}
+
+function quoteIdentifier(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`
 }
 
 function placeholders(ids: unknown[]): string {

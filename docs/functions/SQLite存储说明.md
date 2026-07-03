@@ -6,7 +6,7 @@
 
 ## 默认位置
 
-后端运行时按业务库、数据集目录库、使用记录目录库、统计结果库和 Codex Responses 上下文索引库分片组织 SQLite。使用记录明细由使用记录目录库和 usage shard 文件共同组成；未配置这些路径时，直接使用各自默认位置：
+后端运行时按业务库、数据集目录库、使用记录目录库、统计结果库和 Responses 桥接状态索引库分片组织 SQLite。使用记录明细由使用记录目录库和 usage shard 文件共同组成；未配置这些路径时，直接使用各自默认位置：
 
 ```text
 业务库：backend/data/juhe-ai.sqlite3
@@ -14,8 +14,8 @@
 使用记录目录库：backend/data/juhe-ai-usage-catalog.sqlite3
 统计结果库：backend/data/juhe-ai-stats.sqlite3
 使用记录分片：backend/data/usage-shards/
-Codex Responses 上下文索引库分片：backend/data/codex-context/state-shards/state-000.sqlite3 ...
-Codex Responses 上下文文件：backend/data/codex-context/
+Responses 桥接状态索引库分片：backend/data/codex-context/state-shards/state-000.sqlite3 ...
+Responses 桥接状态 payload 文件：backend/data/codex-context/
 ```
 
 如需调整位置，编辑项目内本地配置文件 `backend/.env`，不设置系统环境变量：
@@ -38,7 +38,7 @@ JUHE_AI_USAGE_RECORD_WRITER_POOL_SIZE=0
 JUHE_AI_USAGE_RECORD_WRITER_QUEUE_MAX_ITEMS=5000
 ```
 
-相对路径按 `backend/` 目录解析。为了保持可移植部署，推荐使用 `./data/juhe-ai.sqlite3`、`./data/juhe-ai-dataset.sqlite3`、`./data/juhe-ai-usage-catalog.sqlite3`、`./data/juhe-ai-stats.sqlite3`、`./data/usage-shards` 和 `./data/codex-context` 这类项目内相对路径。业务库、数据集目录库、使用记录目录库、统计结果库、usage shard 文件和 Codex 上下文索引 shard 文件必须互不相同，usage shard 根目录、Codex 上下文目录和 Codex state shard 根目录也必须与这些文件路径区分；如果确实要把数据放到项目外，也可以填写当前操作系统支持的绝对路径。
+相对路径按 `backend/` 目录解析。为了保持可移植部署，推荐使用 `./data/juhe-ai.sqlite3`、`./data/juhe-ai-dataset.sqlite3`、`./data/juhe-ai-usage-catalog.sqlite3`、`./data/juhe-ai-stats.sqlite3`、`./data/usage-shards` 和 `./data/codex-context` 这类项目内相对路径。业务库、数据集目录库、使用记录目录库、统计结果库、usage shard 文件和 Responses 桥接状态索引 shard 文件必须互不相同，usage shard 根目录、Responses 桥接状态 payload 目录和状态索引 shard 根目录也必须与这些文件路径区分；如果确实要把数据放到项目外，也可以填写当前操作系统支持的绝对路径。
 
 搬到其他电脑或服务器时，保留 `backend/.env` 和当前数据目录即可带走配置与数据；如果本地库结构和当前 schema 不一致，按当前 schema 离线修复或重建，不在运行时代码里放结构适配分支。
 
@@ -79,15 +79,15 @@ JUHE_AI_USAGE_RECORD_WRITER_QUEUE_MAX_ITEMS=5000
 - `process_event_loop_samples`、`process_event_loop_hourly`、`process_event_loop_trend_windows`
 - `database_storage_snapshots`、`table_storage_snapshots`
 
-Codex Responses 上下文索引库分片保存 Chat-only bridge 的可丢弃运行态关系索引，不属于业务库。SQLite 单个数据库文件同一时间只有一个写事务，WAL 只能改善读写并发，不能把单文件变成多写者；因此 context state 按 `session_id`、`response_id` 或 `compact_id` 的稳定 hash 路由到多个 `state-XXX.sqlite3` 文件，避免所有 Codex 续链状态挤在一个 SQLite 写锁上：
+Responses 桥接状态索引库分片保存 Chat-only bridge 的可丢弃运行态关系索引，不属于业务库。SQLite 单个数据库文件同一时间只有一个写事务，WAL 只能改善读写并发，不能把单文件变成多写者；因此 bridge state 按 `session_id`、`response_id` 或 `compact_id` 的稳定 hash 路由到多个 `state-XXX.sqlite3` 文件，避免所有 Responses 续链状态挤在一个 SQLite 写锁上：
 
 - `codex_context_sessions`、`codex_context_responses`、`codex_context_compacts`
 - 只保存 `response_id`、`session_id`、API Key / 分组 / 供应商档案边界、`storage_key`、`storage_offset_bytes`、`raw_size_bytes`、`compressed_size_bytes`、`sha256`、`last_used_at` 和 `expires_at`
 - 不保存完整用户上下文、完整工具参数、完整模型输出或大段 compact payload
 
-Codex Responses 上下文索引写入仍归 DB service 所有；`JUHE_AI_CODEX_CONTEXT_STATE_WRITER_POOL_ENABLED` 启用后，DB service 内部通过可复用 keyed child process writer pool 按目标 shard 分发 response / compact / touch 操作，每个 shard 始终只进入一个 writer 队列，同一 SQLite shard 不允许多 writer 并发写。`save response` 和 `save compact` 先在 DB service 内按 shard 做短窗口批量合并，再分别等待 session shard 与 response / compact shard 批量写入完成后才向调用方确认，保证刚返回给 Codex 客户端的 `response_id` / compact envelope 立刻可读。`last_used_at` / `expires_at` touch 不阻塞 response chain restore 结果返回，会按 session / response shard 做 best-effort 合并刷新，失败只记录运行日志。过期清理是跨 shard 操作，但不再一次扫描全部 session shard；writer pool 维护 cleanup cursor，每次只选择一个 session shard 做小步清理，并在删除后全 shard 检查 `storage_key` 是否仍被活跃 response / compact 引用，避免误删共享 segment 文件，减少全局屏障持续时间。
+Responses 桥接状态索引写入仍归 DB service 所有；`JUHE_AI_CODEX_CONTEXT_STATE_WRITER_POOL_ENABLED` 启用后，DB service 内部通过可复用 keyed child process writer pool 按目标 shard 分发 response / compact / touch 操作，每个 shard 始终只进入一个 writer 队列，同一 SQLite shard 不允许多 writer 并发写。`save response` 和 `save compact` 先在 DB service 内按 shard 做短窗口批量合并，再分别等待 session shard 与 response / compact shard 批量写入完成后才向调用方确认，保证刚返回给 Codex 客户端的 `response_id` / compact envelope 立刻可读。`last_used_at` / `expires_at` touch 不阻塞 response chain restore 结果返回，会按 session / response shard 做 best-effort 合并刷新，失败只记录运行日志。过期清理是跨 shard 操作，但不再一次扫描全部 session shard；writer pool 维护 cleanup cursor，每次只选择一个 session shard 做小步清理，并在删除后全 shard 检查 `storage_key` 是否仍被活跃 response / compact 引用，避免误删共享 segment 文件，减少全局屏障持续时间。
 
-运行时代码不通过 `ATTACH` 跨库查询，也不读取当前 schema 之外的表结构。业务库是恢复的硬边界，必须保留；数据集目录库、使用记录目录库、usage shard、统计结果库和 Codex Responses 上下文索引 shard 都可以丢弃、清空或重建。需要拆分、清理或取证本地保留数据时，只能使用停机后的显式离线脚本；不关心既有统计、排障明细或 Codex 续链状态时，可以直接新建空数据集目录库、使用记录目录库、usage shard 目录、统计结果库和 Codex 上下文目录。
+运行时代码不通过 `ATTACH` 跨库查询，也不读取当前 schema 之外的表结构。业务库是恢复的硬边界，必须保留；数据集目录库、使用记录目录库、usage shard、统计结果库和 Responses 桥接状态索引 shard 都可以丢弃、清空或重建。需要拆分、清理或取证本地保留数据时，只能使用停机后的显式离线脚本；不关心既有统计、排障明细或 Responses 续链状态时，可以直接新建空数据集目录库、使用记录目录库、usage shard 目录、统计结果库和 Responses 桥接状态目录。
 
 ## 统计数据集与结果库拆分方案
 
@@ -128,10 +128,10 @@ Codex Responses 上下文索引写入仍归 DB service 所有；`JUHE_AI_CODEX_C
 - 每个 SQLite 连接必须设置短暂写锁等待时间，避免 DB service、background worker 和管理面低频写操作短事务重叠时立即返回 `database is locked`；该设置只用于吸收短冲突，不能替代文件级单写者治理。
 - 通过 `backend/src/storage/repositories.ts` 统一访问数据
 - 系统管理 API、登录态校验、管理面 CRUD、客户请求链路中的高频 SQLite 读写、公开设置读取、运行日志索引查询、账号错误状态副作用、OAuth Access Token 刷新持久化和 OAuth Codex 额度快照写入，都通过独立本地 DB service 进程完成；主 Web 进程只代理 `/__aisys__/api/*`，不解析管理 API JSON body，不直接导入管理路由或 repository。DB service 不改变 SQLite 单写者模型，DB service 不可用时请求返回可读错误，不能回退到主 Web 进程本地同步执行。
-- 运行时写入必须遵循 [SQLite 单写者写队列治理设计](SQLite单写者写队列治理设计.md)：业务库写入归 DB service，Codex Responses 上下文索引 shard 写入归 DB service 并按目标 shard 短事务提交，数据集目录库和使用记录目录库写入归 ingest / log writer，统计结果库写入归 stats writer，usage shard 按单 shard writer 串行写。多 worker 可以并行生产 command，但不能并行写同一个 SQLite 文件。
+- 运行时写入必须遵循 [SQLite 单写者写队列治理设计](SQLite单写者写队列治理设计.md)：业务库写入归 DB service，Responses 桥接状态索引 shard 写入归 DB service 并按目标 shard 短事务提交，数据集目录库和使用记录目录库写入归 ingest / log writer，统计结果库写入归 stats writer，usage shard 按单 shard writer 串行写。多 worker 可以并行生产 command，但不能并行写同一个 SQLite 文件。
 - 写队列必须暴露可观测指标：DB service runtime 包含按优先级拆分的排队数量、最老等待时间、最近 / 最大排队等待、最近 / 最大执行耗时和慢操作计数；background worker role state 包含 pending 写请求数量和最老等待时间；usage 队列包含最老本地等待、最近 / 最大 flush 耗时、慢 flush 计数，以及可选 usage writer pool 的 worker 数、排队数、活跃任务、失败 / 拒绝数和最大等待 / 执行耗时。排查 `database is locked`、worker 堵塞或请求延迟时先看这些指标，不直接扩大 shard 数或 writer 数。
 - IP 封禁命中计数只在 server 进程内做短暂有界聚合后投递 DB service：待写 distinct `ip_hash + policy_id` 最多 `5000` 个，单次 flush 最多 `1000` 条，满载时丢弃新的 distinct 命中并计数，不能让恶意多来源封禁流量形成无界 Map 或一次大 IPC。
-- 业务库通过 `JUHE_AI_DATABASE_PATH` 打开；数据集目录库通过 `JUHE_AI_DATASET_DATABASE_PATH` 打开；使用记录目录库通过 `JUHE_AI_USAGE_CATALOG_DATABASE_PATH` 打开；统计结果库通过 `JUHE_AI_STATS_DATABASE_PATH` 打开；Codex Responses 上下文索引库通过 `JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT` 和 `JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT` 打开多个 shard。所有 SQLite 入口都使用 WAL，并且业务库、数据集目录库、使用记录目录库、统计结果库、usage shard 文件和 Codex context state shard 文件必须互不相同。
+- 业务库通过 `JUHE_AI_DATABASE_PATH` 打开；数据集目录库通过 `JUHE_AI_DATASET_DATABASE_PATH` 打开；使用记录目录库通过 `JUHE_AI_USAGE_CATALOG_DATABASE_PATH` 打开；统计结果库通过 `JUHE_AI_STATS_DATABASE_PATH` 打开；Responses 桥接状态索引库通过 `JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT` 和 `JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT` 打开多个 shard。所有 SQLite 入口都使用 WAL，并且业务库、数据集目录库、使用记录目录库、统计结果库、usage shard 文件和 Responses 桥接状态索引 shard 文件必须互不相同。
 - 使用记录按每次上游尝试写入 usage shard；`usage_records.client_ip` 只保存规范化 IPv4，非 IPv4 来源写空。server 角色只把使用记录投递给 ingest-worker IPC 队列，不在 worker 未就绪时回落到主进程本地队列或同步写库。失败记录保存 `request_snapshot_json` / `response_snapshot_json`，用于前端查看请求与返回日志
 - 操作日志使用独立表保存已成功提交的业务状态变更，用于追溯系统账户对资源的增删改、启停、绑定、授权和配置变更；查询请求不写操作日志。
 - 公开接口日志使用 `public_api_logs` 保存 `/__aipublic__` 外部来源系统调用元数据、状态码、耗时、客户端 IP、trace ID、有限请求 / 响应快照和错误摘要；请求 / 响应快照先按深度、字段数量和字节预算克隆，再按 32KB 上限保存或截断，不能为了估算大小先把完整大对象 `JSON.stringify` 到内存。公开接口日志最大保留 7 天，由后台数据保留任务分批清理。
@@ -203,7 +203,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 - 运行日志索引通过 `runtime_log_file_cursors` 保存文件 offset、行号和文件标识；worker 重启后从游标继续，首次遇到已有当前日志文件时默认从文件末尾开始，避免导入历史大文件。
 - 按行读取只在完整换行结束后推进 offset；末尾半行保留到下一轮，轮转、截断或文件标识变化时重置游标。
 - 审计 payload blob 详情接口只能按 offset / limit 返回有限窗口；未压缩 blob 使用文件 offset 读取，gzip blob 通过解压流跳过到逻辑 offset 后只收集当前窗口，接口返回 `bodyOffset`、`bodyLimit`、`bodyTotalBytes`、`bodyNextOffset` 和 `bodyTruncated`。超过单次最大读取窗口的 payload 默认保持未压缩，避免读取后半段时反复从头解压 gzip。
-- Codex Responses Chat-only bridge 的 `previous_response_id` 状态和 gateway compact snapshot 不把完整上下文写入 SQLite。Codex Responses 上下文索引 shard 只保存 `response_id`、`session_id`、授权边界、`storage_key`、`storage_offset_bytes`、`raw_size_bytes`、`compressed_size_bytes`、`sha256`、`last_used_at`、`expires_at` 等轻量索引；每轮 request input / instructions、output items 和摘要 snapshot 都放在 `backend/data/codex-context/` 下，并按 session/hour 追加到 gzip segment 文件。session 目录名使用可读前缀加 `session_id` hash，不能只靠字符替换或截断。读取时必须按 `storage_key + storage_offset_bytes + compressed_size_bytes + sha256` 做有界文件读取，不能扫描目录、审计 payload、使用记录或运行日志反推上下文。
+- Responses Chat-only bridge 的 `previous_response_id` 状态和 gateway compact snapshot 不把完整上下文写入 SQLite。Responses 桥接状态索引 shard 只保存 `response_id`、`session_id`、授权边界、`storage_key`、`storage_offset_bytes`、`raw_size_bytes`、`compressed_size_bytes`、`sha256`、`last_used_at`、`expires_at` 等轻量索引；每轮 request input / instructions、output items 和摘要 snapshot 都放在 `backend/data/codex-context/` 下，并按 session/hour 追加到 gzip segment 文件。session 目录名使用可读前缀加 `session_id` hash，不能只靠字符替换或截断。读取时必须按 `storage_key + storage_offset_bytes + compressed_size_bytes + sha256` 做有界文件读取，不能扫描目录、审计 payload、使用记录或运行日志反推上下文。
 - 使用记录、操作日志、原始审计日志、审计错误组和运行日志索引这类高增长列表，默认只读取当前页 `pageSize + 1` 条来判断 `hasMore`，不在请求路径执行全量 `COUNT(*)`；返回的 `total` 只是前端分页器上界值，不代表精确全表总数。
 - 小 `.env` 配置、极小系统状态文件、测试 / 回归脚本、明确有大小上限的网关 raw body 或诊断响应捕获可以作为例外；系统管理 API 和公开系统 API 由 DB service 承载，JSON 请求体硬上限为 `256KB`，超过上限直接返回 413，不能把大体积管理 payload 交给 DB service 事件循环同步解析。`/v1` raw body 当前入口硬上限为 `64mb`，认证预检和可提前识别的图像权限拒绝通过后才读取 body；文本 lane 业务上限默认 `16mb`，由系统设置 `gatewayTextRawBodyLimitMegabytes` 在 `1..64` MB 内调整；图像生成 lane 保留 `64mb` 上限。网关 JSON body 小于等于 `256KB` 时可主线程内联解析；超过 `256KB` 且不超过入口硬上限时进入 worker thread 做顶层元数据扫描，其中超过 `2MB` 会按大 JSON 请求记录预警；只有 OAuth Codex 归一化、禁用图像权限下移除 optional `image_generation` 工具等必须改写请求体的路径才完整解析；使用记录请求快照只保存体积摘要，不能为了快照把完整大请求体再写入明细表，完整原始内容由原始审计按策略捕获；例外不得用于运行日志、审计 payload、使用记录导出或统计明细。
 
@@ -250,7 +250,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 - `process_event_loop_samples`：按采样时间和进程角色保存事件循环额外延迟、RSS、Heap used / total、external 和 array buffers，当前角色为 `server`、`ingest-worker`、`stats-worker`、`ops-worker`、`db-service`，用于区分主 Web 进程、写入 worker、统计 worker、运维 worker 和本地 DB service 哪个进程卡顿或内存爬升。
 - `process_event_loop_hourly`：按 `stat_hour + process_role` 汇总事件循环延迟有效样本数、平均值、最大值，以及进程 RSS / Heap 的平均值和峰值，作为长期粗粒度排障缓存。
 - `process_event_loop_trend_windows`：统计概览范围窗口缓存；管理侧事件循环趋势和进程内存占用趋势均读取该窗口，不在接口请求时扫描 `process_event_loop_samples`。
-- `database_storage_snapshots`：standalone 按采样时间保存业务库、数据集目录库、使用记录目录库和统计结果库文件大小、WAL / SHM、页大小、总页数、空闲页和表数量；performance 使用同一张统计表保存 PostgreSQL schema relation size 快照，并额外覆盖 `juhe_codex_context`。这是 10 分钟常规采样的主指标。usage shard 文件集合观测仍是表监控后续增强项。
+- `database_storage_snapshots`：standalone 按采样时间保存业务库、数据集目录库、使用记录目录库和统计结果库文件大小、WAL / SHM、页大小、总页数、空闲页和表数量；performance 使用同一张统计表保存 PostgreSQL schema relation size 快照，并额外覆盖 `juhe_codex_context`（Responses 桥接状态索引）。这是 10 分钟常规采样的主指标。usage shard 文件集合观测仍是表监控后续增强项。
 - `table_storage_snapshots`：按采样时间保存表级可选行数、表大小、索引大小、总大小和 1 小时 / 24 小时增长；表级数据按游标轮转分批刷新，不要求所有表在同一采样时间都有新快照。后台常规采样通过 `dbstat` 叶子页 cell 数滚动写入可推导的行数，不提供精确 `COUNT(*)` 采样分支；SQLite `dbstat` 不可用或表类型不适合推导时，表大小、索引大小、总大小、页数和行数保持为空，不写入伪造的 0。
 - 表监控文件级采样由后台 worker 每 10 分钟执行一次；表级采样默认每轮每个库最多刷新 4 张表，历史默认保留最近一月。
 - `stats_job_state`：记录后台任务的作用域、游标、上次成功时间、上次错误和滞后秒数；业务统计作用域为 `system_account`，主机监控作用域为 `global`。IP 范围窗口额外使用 `scope_type = client_ip_range_window` 记录窗口刷新 ready/stale 标记，只表达窗口是否完成刷新，不保存数量或范围总量。任务尚未写入状态或滞后无法判断时，`lag_seconds` 保持为空，不按 0 处理。
@@ -479,7 +479,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 | `audit_logs`、`audit_log_attempts` | 原始审计事件和上游尝试 | 成功请求热窗口默认 1 小时，成功长期样本默认 7 天，失败 / 异常事件默认 30 天 | 是，`audit-hot-retention-cleanup` 每分钟裁剪热窗口；`data-retention-cleanup` 按清理间隔清理长期过期数据 | 完全成功请求先全量热保留，超过热窗口后删除未命中 10% 长期采样的成功记录 |
 | `audit_payload_refs`、`audit_payload_blobs` | 原始审计 payload 引用和压缩 blob 元数据 | 成功样本正文默认 7 天，失败 / 异常正文默认 30 天 | 是，`data-retention-cleanup` 按清理间隔由 ingest-worker 清理 | 先删除过期引用，再删除无引用 blob 和本地 blob 文件 |
 | `audit_error_groups` | 重复错误聚合 | 默认 30 天 | 是，`data-retention-cleanup` 按清理间隔由 ingest-worker 清理 | 只做展示和排障聚合，不替代事件记录 |
-| `codex_context_sessions`、`codex_context_responses`、`codex_context_compacts` | Codex Responses Chat-only bridge 状态索引 | 固定 7 天未使用即清理 | 是，`data-retention-cleanup` 按清理间隔通过 DB service 清理过期关系，并且只删除没有任何剩余 response / compact 引用的 `backend/data/codex-context/` segment 文件 | 位于 `JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT` 下的多个 shard，不属于业务库。SQLite 只保存关系和文件引用；当前已落地 `previous_response_id` response 状态索引和 `juhecmp.v2.<compact_id>.<digest>` compact snapshot 索引。过期后旧 `previous_response_id` 或 compact snapshot 必须返回状态不存在 |
+| `codex_context_sessions`、`codex_context_responses`、`codex_context_compacts` | Responses Chat-only bridge 状态索引 | 固定 7 天未使用即清理 | 是，`data-retention-cleanup` 按清理间隔通过 DB service 清理过期关系，并且只删除没有任何剩余 response / compact 引用的 `backend/data/codex-context/` segment 文件 | 位于 `JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT` 下的多个 shard，不属于业务库。SQLite 只保存关系和文件引用；当前已落地 `previous_response_id` response 状态索引和 `juhecmp.v2.<compact_id>.<digest>` compact snapshot 索引。过期后旧 `previous_response_id` 或 compact snapshot 必须返回状态不存在 |
 | `usage_record_shards`、`usage_record_shard_entries`、`usage_record_account_shards`、`usage_record_api_key_shards` | usage shard 全局目录和 scope catalog | 跟随 `usage_records` 和物理 shard 文件 | 是，`data-retention-cleanup` 按清理间隔由 ingest-worker 清理；表监控硬清理会按截止时间清理目录和空 shard 文件 | 只保存定位关系、筛选字段和 shard 文件引用，不保存完整使用记录正文；目录库按批删除，避免大事务拖住 usage catalog 写锁 |
 | `usage_records` | 网关请求事实明细 | 默认 7 天，最多 7 天 | 是，`data-retention-cleanup` 按清理间隔由 ingest-worker 清理 | 自动保留任务必须按统计聚合 / 回填游标保护，只删除已确认进入缓存的旧明细；表监控的非业务数据硬清理是管理员显式操作，不走这个安全保留口径 |
 | `account_quality_minute_stats` | 账号质量分钟桶 | 默认 24 小时 | 是，`data-retention-cleanup` 按清理间隔投递 stats-writer 清理；账号质量刷新任务也会兜底清理 | 只保存真实网关请求短窗口质量样本，不回扫 `usage_records` |

@@ -14,7 +14,7 @@ export function buildAccountUsageSummaryCards(options: {
   const summary = options.summary
   return [
     { key: 'requests', label: '范围请求', value: formatInteger(summary?.requestCount), extra: `统计滞后 ${formatSeconds(options.statsLagSeconds)}` },
-    { key: 'tokens', label: 'Token 消耗', value: formatCompactInteger(summary?.totalTokens), extra: `输入 ${formatCompactInteger(summary?.inputTokens)} / 输出 ${formatCompactInteger(summary?.outputTokens)} / 缓存读 ${formatCompactInteger(summary?.cacheReadTokens)} / 缓存写 ${formatCompactInteger(summary?.cacheWriteTokens)}` },
+    { key: 'tokens', label: 'Token 消耗', value: formatCompactInteger(summary?.totalTokens), extra: `输入 ${formatCompactInteger(summary?.inputTokens)} / 输出 ${formatCompactInteger(summary?.outputTokens)} / 缓存读 ${formatCompactInteger(summary?.cacheReadTokens)}` },
     { key: 'cacheRate', label: '缓存率', value: formatPercent(cacheReadRate(summary)), extra: `写入 1h ${formatCompactInteger(summary?.cacheWrite1hTokens)} / 思考 ${formatCompactInteger(summary?.thinkingTokens)} / 图片 ${formatCompactInteger((summary?.inputImageTokens ?? 0) + (summary?.outputImageTokens ?? 0))}` },
     { key: 'cost', label: '成本', value: formatCost(summary?.totalCost), extra: `最后使用 ${formatDateTime(summary?.lastUsedAt)}` }
   ]

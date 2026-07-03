@@ -4,7 +4,7 @@ import { serverDateTimeTimestamp } from '@/shared/formatters'
 import type { DatabaseStorageSnapshotSummary, MonitoredDatabaseRole, TableStorageSnapshotSummary } from '@/types/domain'
 
 export const tableMonitorColumns = [
-  { title: '库', key: 'databaseRole', width: 92, fixed: 'left' },
+  { title: '库', key: 'databaseRole', width: 168, fixed: 'left' },
   { title: '表名', key: 'tableName', width: 240, fixed: 'left' },
   { title: '行数', key: 'rowCount', align: 'right', width: 120 },
   { title: '表大小', key: 'tableBytes', align: 'right', width: 120 },
@@ -27,7 +27,17 @@ export function databaseRoleLabel(role: MonitoredDatabaseRole) {
     dataset: '数据集目录库',
     'usage-catalog': '使用记录目录库',
     stats: '统计结果库',
-    'codex-context-state': 'Codex 上下文库'
+    'codex-context-state': 'Responses 状态库'
+  }[role]
+}
+
+export function databaseRoleDetailLabel(role: MonitoredDatabaseRole) {
+  return {
+    business: '业务库',
+    dataset: '数据集目录库',
+    'usage-catalog': '使用记录目录库',
+    stats: '统计结果库',
+    'codex-context-state': 'Responses 桥接状态索引库'
   }[role]
 }
 

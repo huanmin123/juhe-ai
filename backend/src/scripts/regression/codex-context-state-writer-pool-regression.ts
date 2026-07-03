@@ -43,7 +43,7 @@ const sharedStorageKey = 'sessions/shared/segments/2026062200.json.gz'
 
 try {
   await runRegression()
-  console.log('Codex context state writer pool 回归通过：并发 shard 写入、read-after-write、compact 边界、cleanup 屏障和 shared storageKey 保护正常')
+  console.log('Responses bridge state writer pool 回归通过：并发 shard 写入、read-after-write、compact 边界、cleanup 屏障和 shared storageKey 保护正常')
 } finally {
   await writerPool.closeCodexContextStateWriterPool()
   databaseModule.closeStorageDatabases()

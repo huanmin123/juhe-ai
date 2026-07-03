@@ -283,7 +283,7 @@ function assertDistinctStoragePaths(): void {
     { role: '使用记录目录库', path: usageCatalogDatabasePath() },
     { role: '统计结果库', path: statsDatabasePath() },
     ...codexContextStateShardIndexes().map((shardIndex) => ({
-      role: `Codex Responses 上下文索引库分片 ${shardIndex}`,
+      role: `Responses 桥接状态索引库分片 ${shardIndex}`,
       path: codexContextStateShardPath(shardIndex)
     }))
   ]
@@ -380,7 +380,7 @@ function normalizeCodexContextStateShardIndex(shardIndex: number): number {
   const count = codexContextStateShardCount()
   const integer = Math.trunc(Number(shardIndex))
   if (!Number.isFinite(integer) || integer < 0 || integer >= count) {
-    throw new Error(`Codex Responses 上下文索引库分片编号必须在 0 到 ${count - 1} 之间`)
+    throw new Error(`Responses 桥接状态索引库分片编号必须在 0 到 ${count - 1} 之间`)
   }
   return integer
 }

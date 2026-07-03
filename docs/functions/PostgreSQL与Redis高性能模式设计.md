@@ -116,7 +116,7 @@ PostgreSQL 模式不再模拟多个 SQLite 文件，而是把当前事实域映�
 | `juhe_dataset` | 数据集目录库 | 审计元数据、操作日志、公开接口日志、运行日志索引、模型检测、记录清理目标 |
 | `juhe_usage` | 使用记录目录库 + usage shard | `usage_records`、使用记录列表索引、账号 / API Key scope catalog |
 | `juhe_stats` | 统计结果库 | 用量桶、额度窗口、范围窗口、排行、账号质量、系统监控、表监控、`stats_job_state` |
-| `juhe_codex_context` | Codex context state shard | Responses session / response / compact 索引 |
+| `juhe_codex_context` | Responses 桥接状态索引 | Responses session / response / compact 索引 |
 
 表名可以保留当前语义，代码通过 repository / dialect 选择 schema，不把 schema 名写进业务服务层。
 表监控在 PostgreSQL 模式下按这 5 个 schema 采样 relation size、估算行数和 1 小时 / 24 小时增长，结果统一写入 `juhe_stats.database_storage_snapshots` 与 `juhe_stats.table_storage_snapshots`，不回读 SQLite 文件路径。

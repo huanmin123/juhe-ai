@@ -45,6 +45,11 @@ import { createClientIpPolicyMockdata } from './observability/client-ip-policy.j
 import { cleanupMockdata } from './maintenance/cleanup.js'
 import { rebuildDerivedCaches } from './maintenance/derived-cache.js'
 import {
+  createBusinessTableCoverageMockdata,
+  createDatasetTableCoverageMockdata,
+  createStatsTableCoverageMockdata
+} from './maintenance/table-coverage.js'
+import {
   createAuditMockdata,
   createOperationMockdata,
   createPublicApiLogMockdata,
@@ -82,12 +87,14 @@ function main(): void {
   const publicApiLogs = createPublicApiLogMockdata(created, options)
   createOperationMockdata(created, usageRecords)
   createRuntimeLogMockdata(usageRecords)
+  createDatasetTableCoverageMockdata()
   const modelCheckCounts = createModelCheckMockdata(created, options)
   const cleanupCounts = createRecordCleanupMockdata()
   createMonitoringMockdata(options)
 
   const derivedCounts = rebuildDerivedCaches(statsDatabase)
   const clientIpPolicyCounts = createClientIpPolicyMockdata(created)
+  createStatsTableCoverageMockdata(created, usageRecords)
   createStorageMockdata(created, options)
   updateApiKeyLastUsedAt(usageRecords)
   assertMockdataCoverage(created)
@@ -179,6 +186,17 @@ function createBusinessMockdata(admin: SystemAccountSummary, adminAccess: Access
   createAnnouncements(admin.id, users)
   seedOauthUsageSnapshots(accounts)
   tuneGroupAccountBindings(groups, accounts)
+  createBusinessTableCoverageMockdata({
+    users,
+    groups,
+    accounts,
+    apiKeys,
+    teams,
+    authorizations,
+    externalSources,
+    responseInspectionPolicies,
+    customProviderModels
+  })
 
   return {
     users,

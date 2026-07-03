@@ -167,7 +167,7 @@ try {
   })
   assert.equal(expiredRead.outcome, 'not_found', '过期 session 清理后旧 response id 应不可恢复')
 
-  console.log('Codex context state sharding 回归通过：response/compact 索引按 shard 分布、链路可恢复、TTL 清理按 session 删除且 segment key 去重')
+  console.log('Responses bridge state sharding 回归通过：response/compact 索引按 shard 分布、链路可恢复、TTL 清理按 session 删除且 segment key 去重')
 } finally {
   databaseModule.closeStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })

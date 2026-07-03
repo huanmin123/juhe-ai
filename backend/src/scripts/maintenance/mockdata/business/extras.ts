@@ -15,8 +15,7 @@ export function createCustomProviderModels(adminId: string, users: MockSystemAcc
     {
       providerCode: GPT_VENDOR_CODE,
       model: 'mockdata-global-long-context',
-      scope: 'personal' as const,
-      systemAccountId: adminId,
+      scope: 'global' as const,
       status: 'active' as const,
       mode: 'text',
       supportedApiProtocols: ['responses', 'chat_completions'],
@@ -26,15 +25,14 @@ export function createCustomProviderModels(adminId: string, users: MockSystemAcc
       inputUsdPer1M: 0.2,
       outputUsdPer1M: 0.8,
       cachedInputUsdPer1M: 0.05,
-      capabilityNotes: 'Mockdata 管理员个人长上下文模型，用于模型目录、账户支持模型和映射目标展示',
-      notes: 'Mockdata 管理员个人模型样本',
+      capabilityNotes: 'Mockdata 全局长上下文模型，用于模型目录、账户支持模型和映射目标展示',
+      notes: 'Mockdata 全局模型样本',
       actorSystemAccountId: adminId
     },
     {
       providerCode: GPT_VENDOR_CODE,
       model: 'mockdata-global-image',
-      scope: 'personal' as const,
-      systemAccountId: adminId,
+      scope: 'global' as const,
       status: 'active' as const,
       mode: 'image_generation',
       supportedApiProtocols: ['images', 'responses'],
@@ -44,8 +42,8 @@ export function createCustomProviderModels(adminId: string, users: MockSystemAcc
       imageInputUsdPer1M: 5,
       imageOutputUsdPer1M: 40,
       outputUsdPerImage: 0.02,
-      capabilityNotes: 'Mockdata 图像模型，用于图片用量与图像权限验收',
-      notes: 'Mockdata 图像模型样本',
+      capabilityNotes: 'Mockdata 全局图像模型，用于图片用量与图像权限验收',
+      notes: 'Mockdata 全局图像模型样本',
       actorSystemAccountId: adminId
     },
     {

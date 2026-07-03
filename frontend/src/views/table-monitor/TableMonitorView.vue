@@ -54,23 +54,27 @@
       @submit="submitNonBusinessDataCleanup"
     />
 
-    <a-row :gutter="[16, 16]" class="database-summary-grid">
-      <a-col v-for="item in databaseSummaryRows" :key="item.role" :xs="24" :sm="12" :xl="6">
-        <a-card class="database-summary-card">
-          <div class="database-summary-head">
-            <a-tag :color="databaseRoleColor(item.role)">{{ databaseRoleLabel(item.role) }}</a-tag>
+    <div class="database-summary-grid">
+      <a-card v-for="item in databaseSummaryRows" :key="item.role" class="database-summary-card">
+        <div class="database-summary-head">
+          <a-tooltip :title="databaseRoleDetailLabel(item.role)">
+            <a-tag :color="databaseRoleColor(item.role)" class="database-role-tag">
+              {{ databaseRoleLabel(item.role) }}
+            </a-tag>
+          </a-tooltip>
+          <a-tooltip :title="item.database?.databasePath ?? '等待采样后显示数据库路径'">
             <span class="database-path">{{ item.database?.databasePath ?? '等待采样后显示数据库路径' }}</span>
-          </div>
-          <div class="database-summary-value">{{ formatBytes(totalDatabaseBytes(item.database)) }}</div>
-          <div class="database-summary-meta">
-            <span>主库 {{ formatBytes(item.database?.fileBytes) }}</span>
-            <span>WAL {{ formatBytes(item.database?.walBytes) }}</span>
-            <span>空闲 {{ formatBytes(item.database?.freeBytes) }}</span>
-            <span>表 {{ formatInteger(item.database?.tableCount) }}</span>
-          </div>
-        </a-card>
-      </a-col>
-    </a-row>
+          </a-tooltip>
+        </div>
+        <div class="database-summary-value">{{ formatBytes(totalDatabaseBytes(item.database)) }}</div>
+        <div class="database-summary-meta">
+          <span>主库 {{ formatBytes(item.database?.fileBytes) }}</span>
+          <span>WAL {{ formatBytes(item.database?.walBytes) }}</span>
+          <span>空闲 {{ formatBytes(item.database?.freeBytes) }}</span>
+          <span>表 {{ formatInteger(item.database?.tableCount) }}</span>
+        </div>
+      </a-card>
+    </div>
 
     <a-card class="page-card history-card" title="存储增长趋势">
       <DeferredRender
@@ -202,6 +206,7 @@ import TableMonitorCleanupModal from './TableMonitorCleanupModal.vue'
 import {
   buildTableMonitorHistoryChartOption,
   databaseRoleColor,
+  databaseRoleDetailLabel,
   databaseRoleLabel,
   formatBytes,
   formatGrowthBytes,
@@ -407,14 +412,16 @@ function resizeHistoryChart() {
   width: 100%;
 }
 
-.database-summary-grid :deep(.ant-col) {
-  display: flex;
+.database-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 16px;
 }
 
 .database-summary-card {
   width: 100%;
   border: 1px solid #e8edf5;
-  border-radius: 14px;
+  border-radius: 8px;
 }
 
 .database-summary-card :deep(.ant-card-body) {
@@ -428,8 +435,13 @@ function resizeHistoryChart() {
   min-width: 0;
 }
 
+.database-role-tag {
+  flex: 0 0 auto;
+}
+
 .database-path {
   min-width: 0;
+  cursor: default;
   overflow: hidden;
   color: #64748b;
   font-family: Consolas, 'Courier New', monospace;
@@ -509,6 +521,18 @@ function resizeHistoryChart() {
   height: 340px;
 }
 
+@media (max-width: 1280px) {
+  .database-summary-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 900px) {
+  .database-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 768px) {
   .table-history-range {
     width: 100%;
@@ -516,6 +540,12 @@ function resizeHistoryChart() {
 
   .history-chart {
     height: 300px;
+  }
+}
+
+@media (max-width: 560px) {
+  .database-summary-grid {
+    grid-template-columns: 1fr;
   }
 }
 </style>

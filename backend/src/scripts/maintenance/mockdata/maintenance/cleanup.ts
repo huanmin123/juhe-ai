@@ -43,6 +43,15 @@ function cleanupBusinessMockdata(database: Database, adminId: string, mockUserId
     const mockCustomProviderModelIds = selectIds(database, 'SELECT id FROM custom_provider_models WHERE model LIKE ?', 'mockdata-%')
     deleteWhereIn(database, 'custom_provider_models', 'id', mockCustomProviderModelIds)
 
+    const mockAccountTestTaskIds = selectIds(database, 'SELECT id FROM account_test_tasks WHERE id LIKE ? OR account_name LIKE ? OR status_message LIKE ?', `${idPrefix}%`, likeName, `${namePrefix}%`)
+    const mockAccountTestSessionIds = selectIdsForChunks(database, mockAccountTestTaskIds, 'SELECT session_id AS id FROM account_test_session_tasks WHERE task_id IN ({placeholders})')
+    deleteWhereIn(database, 'account_test_session_tasks', 'task_id', mockAccountTestTaskIds)
+    deleteWhereIn(database, 'account_test_tasks', 'id', mockAccountTestTaskIds)
+    deleteWhereIn(database, 'account_test_sessions', 'id', mockAccountTestSessionIds)
+
+    database.prepare('DELETE FROM account_schedule_status_events WHERE event_key LIKE ?').run(`${idPrefix}%`)
+    database.prepare('DELETE FROM api_key_schedule_status_events WHERE event_key LIKE ?').run(`${idPrefix}%`)
+
     const mockRuntimeAuthorizationIds = selectIds(database, 'SELECT id FROM resource_authorizations WHERE created_by = ? AND remark LIKE ?', adminId, likeName)
     deleteWhereIn(database, 'resource_authorization_sources', 'authorization_id', mockRuntimeAuthorizationIds)
     const mockGrantIds = selectIds(database, 'SELECT id FROM resource_authorization_grants WHERE created_by = ? AND remark LIKE ?', adminId, likeName)
@@ -83,6 +92,7 @@ function cleanupBusinessMockdata(database: Database, adminId: string, mockUserId
     deleteWhereIn(database, 'proxy_profiles', 'id', mockProxyIds)
 
     deleteWhereIn(database, 'system_sessions', 'system_account_id', mockUserIds)
+    database.prepare('DELETE FROM system_sessions WHERE id LIKE ?').run(`${idPrefix}%`)
     deleteWhereIn(database, 'system_accounts', 'id', mockUserIds)
     database.exec('COMMIT')
   } catch (error) {
@@ -133,6 +143,7 @@ function cleanupDatasetMockdata(database: Database, mockAccountIds: string[], mo
 
     const runtimeIds = selectIds(database, 'SELECT id FROM runtime_logs WHERE id LIKE ? OR trace_id LIKE ?', `${idPrefix}%`, `${tracePrefix}%`)
     deleteWhereIn(database, 'runtime_logs', 'id', runtimeIds)
+    database.prepare('DELETE FROM runtime_log_file_cursors WHERE log_file LIKE ? OR file_identity LIKE ?').run(`${idPrefix}%`, `${tracePrefix}%`)
 
     const modelCheckRunIds = selectIds(database, 'SELECT id FROM model_check_runs WHERE id LIKE ? OR trace_id LIKE ?', `${idPrefix}%`, `${tracePrefix}%`)
     deleteWhereIn(database, 'model_check_items', 'run_id', modelCheckRunIds)
@@ -154,6 +165,28 @@ function cleanupStatsMockdata(database: Database, mockAccountIds: string[]): voi
     deleteWhereIn(database, 'client_ip_policy_hits', 'policy_id', mockClientIpPolicyIds)
     deleteWhereIn(database, 'client_ip_policies', 'id', mockClientIpPolicyIds)
     deleteWhereIn(database, 'account_usage_snapshots', 'account_id', mockAccountIds)
+    deleteWhereIn(database, 'account_quality_dirty_accounts', 'account_id', mockAccountIds)
+    database.prepare(`
+      DELETE FROM client_ip_range_window_dirty_ips
+      WHERE ip_hash IN (
+        SELECT ip_hash FROM client_ip_registry
+        WHERE client_ip LIKE '10.10.%'
+           OR client_ip LIKE '10.20.%'
+      )
+         OR ip_hash LIKE ?
+    `).run(`${idPrefix}%`)
+    database.prepare(`
+      DELETE FROM client_ip_account_range_window_dirty_ips
+      WHERE ip_hash IN (
+        SELECT ip_hash FROM client_ip_registry
+        WHERE client_ip LIKE '10.10.%'
+           OR client_ip LIKE '10.20.%'
+      )
+         OR ip_hash LIKE ?
+    `).run(`${idPrefix}%`)
+    database.prepare('DELETE FROM usage_record_cleanup_deductions WHERE usage_id LIKE ? OR record_json LIKE ?').run(`${idPrefix}%`, `%${namePrefix}%`)
+    database.prepare('DELETE FROM background_job_leases WHERE lease_key LIKE ? OR owner_id LIKE ? OR run_id LIKE ?').run(`${idPrefix}%`, `${idPrefix}%`, `${idPrefix}%`)
+    database.prepare('DELETE FROM background_task_runs WHERE run_id LIKE ? OR lease_key LIKE ? OR owner_id LIKE ? OR params_json LIKE ? OR result_json LIKE ?').run(`${idPrefix}%`, `${idPrefix}%`, `${idPrefix}%`, `%${idPrefix}%`, `%${idPrefix}%`)
     database.prepare('DELETE FROM system_metrics_samples WHERE id LIKE ?').run(`${idPrefix}%`)
     database.prepare('DELETE FROM process_event_loop_samples WHERE id LIKE ?').run(`${idPrefix}%`)
     database.prepare('DELETE FROM database_storage_snapshots WHERE id LIKE ?').run(`${idPrefix}%`)

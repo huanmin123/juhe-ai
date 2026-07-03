@@ -61,7 +61,7 @@ import type { AiPerformanceOverview } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import StatsChartCard from '@/views/stats/StatsChartCard.vue'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
-import { formatDuration, formatInteger, formatSeconds } from '@/views/stats/statsFormatters'
+import { formatDuration, formatInteger } from '@/views/stats/statsFormatters'
 import { buildAiPerformanceOption, type AiPerformanceMetric } from './aiPerformanceChartOptions'
 import AiPerformanceFilterToolbar from './AiPerformanceFilterToolbar.vue'
 import { useAiPerformanceAccountSelection } from './useAiPerformanceAccountSelection'
@@ -161,8 +161,8 @@ const hasAverageFirstTokenData = computed(() => hasMetricData('averageFirstToken
 const hasMaxFirstTokenData = computed(() => hasMetricData('maxFirstTokenMs'))
 const hasAverageDurationData = computed(() => hasMetricData('averageDurationMs'))
 const hasMaxDurationData = computed(() => hasMetricData('maxDurationMs'))
-const firstTokenEmptyDescription = computed(() => hasAccounts.value ? `${currentWindowLabel.value}暂无首 token 样本` : '最近 7 天暂无活跃 AI 账户')
-const durationEmptyDescription = computed(() => hasAccounts.value ? `${currentWindowLabel.value}暂无总耗时样本` : '最近 7 天暂无活跃 AI 账户')
+const firstTokenEmptyDescription = computed(() => hasAccounts.value ? `${currentWindowLabel.value}暂无首 token 数据` : '最近 7 天暂无活跃 AI 账户')
+const durationEmptyDescription = computed(() => hasAccounts.value ? `${currentWindowLabel.value}暂无总耗时数据` : '最近 7 天暂无活跃 AI 账户')
 
 const performanceCharts = computed(() => [
   {
@@ -206,11 +206,11 @@ const performanceCharts = computed(() => [
 const summaryCards = computed(() => {
   const summary = overview.value?.summary
   return [
-    { key: 'requests', label: '范围请求', value: formatInteger(summary?.requestCount), extra: `统计滞后 ${formatSeconds(overview.value?.statsLagSeconds)}` },
-    { key: 'firstToken', label: '平均首 token', value: formatDuration(summary?.averageFirstTokenMs), extra: `样本 ${formatInteger(summary?.firstTokenCount)}` },
-    { key: 'maxFirstToken', label: '最大首 token', value: formatDuration(summary?.maxFirstTokenMs), extra: `样本 ${formatInteger(summary?.firstTokenCount)}` },
-    { key: 'duration', label: '平均总耗时', value: formatDuration(summary?.averageDurationMs), extra: `样本 ${formatInteger(summary?.durationCount)}` },
-    { key: 'maxDuration', label: '最大总耗时', value: formatDuration(summary?.maxDurationMs), extra: `样本 ${formatInteger(summary?.durationCount)}` }
+    { key: 'requests', label: '范围请求', value: formatInteger(summary?.requestCount) },
+    { key: 'firstToken', label: '平均首 token', value: formatDuration(summary?.averageFirstTokenMs) },
+    { key: 'maxFirstToken', label: '最大首 token', value: formatDuration(summary?.maxFirstTokenMs) },
+    { key: 'duration', label: '平均总耗时', value: formatDuration(summary?.averageDurationMs) },
+    { key: 'maxDuration', label: '最大总耗时', value: formatDuration(summary?.maxDurationMs) }
   ]
 })
 

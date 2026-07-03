@@ -63,13 +63,13 @@ assert.match(usageRecordShardSource, /export function writeUsageRecordShardRows[
 assert.match(usageRecordShardSource, /function usageRecordShardDatabaseIfOpenOrExists[\s\S]*assertSqliteUsageRecordShardAccess\('usageRecordShardDatabaseIfOpenOrExists'\)/, 'PG 模式不能通过存在性检查打开 SQLite usage shard')
 
 const dbServiceHandlersSource = source('../../modules/db-service/db-service-handlers.ts')
-assert.doesNotMatch(dbServiceHandlersSource, /assertCodexContextStateSqliteOnlyOperation|PostgreSQL 模式暂未接入 Codex context state/, 'Codex context state 已接入 PostgreSQL，不能保留旧 fail-fast 断言或文案')
-assert.match(dbServiceHandlersSource, /case 'save_codex_context_response_state':[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*saveCodexContextResponseStateIndexAsync\(operation\.input\)[\s\S]*saveCodexContextResponseStateIndexWithWriterPool\(operation\.input\)/, 'PG 模式 Codex context response state 必须走 PostgreSQL async 入口，SQLite 才能走 writer pool')
-assert.match(dbServiceHandlersSource, /case 'cleanup_expired_codex_context_states':[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*cleanupExpiredCodexContextStatesAsync\(\{[\s\S]*expiredBefore: operation\.expiredBefore[\s\S]*limit: operation\.limit[\s\S]*cleanupExpiredCodexContextStatesWithWriterPool\(\{[\s\S]*expiredBefore: operation\.expiredBefore[\s\S]*limit: operation\.limit/, 'PG 模式 Codex context cleanup 必须走 PostgreSQL async 入口，SQLite 才能走 writer pool')
+assert.doesNotMatch(dbServiceHandlersSource, /assertCodexContextStateSqliteOnlyOperation|PostgreSQL 模式暂未接入 Codex context state/, 'Responses 桥接状态索引已接入 PostgreSQL，不能保留旧 fail-fast 断言或文案')
+assert.match(dbServiceHandlersSource, /case 'save_codex_context_response_state':[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*saveCodexContextResponseStateIndexAsync\(operation\.input\)[\s\S]*saveCodexContextResponseStateIndexWithWriterPool\(operation\.input\)/, 'PG 模式 Responses 桥接 response 状态必须走 PostgreSQL async 入口，SQLite 才能走 writer pool')
+assert.match(dbServiceHandlersSource, /case 'cleanup_expired_codex_context_states':[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*cleanupExpiredCodexContextStatesAsync\(\{[\s\S]*expiredBefore: operation\.expiredBefore[\s\S]*limit: operation\.limit[\s\S]*cleanupExpiredCodexContextStatesWithWriterPool\(\{[\s\S]*expiredBefore: operation\.expiredBefore[\s\S]*limit: operation\.limit/, 'PG 模式 Responses 桥接状态清理必须走 PostgreSQL async 入口，SQLite 才能走 writer pool')
 assert.match(dbServiceHandlersSource, /case 'persist_openai_codex_usage_headers':[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*persistOpenAICodexUsageHeaders/, 'PG 模式 Codex usage headers 必须有显式分支，不能隐式落入同步 handler')
 
 const codexWriterPoolSource = source('../../storage/codex-context-state-writer-pool.ts')
-assert.match(codexWriterPoolSource, /codexContextStateWriterPoolEnabled\(\)[\s\S]*runtimeConfig\.databaseDriver === 'sqlite'/, 'Codex context SQLite writer pool 只能在 SQLite 模式启用')
+assert.match(codexWriterPoolSource, /codexContextStateWriterPoolEnabled\(\)[\s\S]*runtimeConfig\.databaseDriver === 'sqlite'/, 'Responses 桥接状态 SQLite writer pool 只能在 SQLite 模式启用')
 
 const usageRecordWriterPoolSource = source('../../storage/usage-record-writer-pool.ts')
 assert.match(usageRecordWriterPoolSource, /usageRecordWriterPoolEnabled\(\)[\s\S]*runtimeConfig\.databaseDriver === 'sqlite'/, 'usage record SQLite writer pool 只能在 SQLite 模式启用')

@@ -10,7 +10,7 @@ assert.ok(statements.length > 100, 'PostgreSQL schema 应从现有 SQLite DDL �
 assert.deepEqual(
   [...schemaNames].sort(),
   ['juhe_business', 'juhe_codex_context', 'juhe_dataset', 'juhe_stats', 'juhe_usage'].sort(),
-  'PostgreSQL schema 应覆盖现有业务、数据集、使用记录、统计和 Codex context 存储边界'
+  'PostgreSQL schema 应覆盖现有业务、数据集、使用记录、统计和 Responses 桥接状态索引存储边界'
 )
 assert.equal(
   statements.some((statement) => statement.schemaName === 'juhe_usage' && statement.source === 'usage-catalog'),
@@ -41,7 +41,7 @@ assert.match(sql, /usage_records[\s\S]+input_audio_tokens integer[\s\S]+output_a
 assert.match(sql, /CREATE TABLE IF NOT EXISTS usage_stats_totals/, '应包含统计库 schema')
 assert.match(sql, /usage_stats_totals[\s\S]+request_count bigint NOT NULL DEFAULT 0[\s\S]+input_tokens bigint NOT NULL DEFAULT 0[\s\S]+duration_ms_sum bigint NOT NULL DEFAULT 0/, 'PG 统计累计字段必须使用 bigint，避免生产聚合溢出')
 assert.match(sql, /usage_scope_range_windows[\s\S]+request_count bigint NOT NULL DEFAULT 0[\s\S]+first_token_ms_sum bigint NOT NULL DEFAULT 0/, 'PG 范围窗口累计字段必须使用 bigint')
-assert.match(sql, /CREATE TABLE IF NOT EXISTS codex_context_sessions/, '应包含 Codex context schema')
+assert.match(sql, /CREATE TABLE IF NOT EXISTS codex_context_sessions/, '应包含 Responses 桥接状态索引 schema')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS route_strategies/, '应包含策略路由表 schema')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS route_strategy_groups/, '应包含策略路由分组绑定表 schema')
 assert.match(sql, /route_strategy_id text NOT NULL/, 'api_keys 建表语句应强制绑定 route_strategy_id')
