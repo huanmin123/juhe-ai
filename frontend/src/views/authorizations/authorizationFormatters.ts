@@ -2,6 +2,7 @@ import {
   formatCompactUsageAmount,
   formatDateTime,
   formatNumber,
+  formatRequestCountTag,
   formatServerDateTimeInput,
   formatUsd,
   parseStrictDatePickerValue,
@@ -127,7 +128,7 @@ export function usageSummaryText(usage?: {
   totalTokens?: number
   totalCost?: number
 }): string {
-  return `${formatNumber(usage?.requestCount)}req / ${formatUsageAmount(usage?.totalTokens)} / ${formatCost(usage?.totalCost)}`
+  return `${formatRequestCountTag(usage?.requestCount)} / ${formatUsageAmount(usage?.totalTokens)} / ${formatCost(usage?.totalCost)}`
 }
 
 export function formatUsageAmount(value?: number): string {

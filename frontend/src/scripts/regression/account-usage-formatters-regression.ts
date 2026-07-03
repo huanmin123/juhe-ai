@@ -1,4 +1,5 @@
 import type { AccountSummary, AccountUsageSummary } from '@/types/domain'
+import { formatRequestCountTag } from '@/shared/formatters'
 import {
   formatAccountUsageSummary,
   formatCost,
@@ -22,7 +23,8 @@ const usage: AccountUsageSummary = {
   totalTokens: 4500,
   totalCost: 1.234
 }
-assertEqual(formatAccountUsageSummary(usage), '1,200req / 4.5K / $1.23', '账户用量摘要应保持原格式')
+assertEqual(formatRequestCountTag(usage.requestCount), '1200req', '请求数标签不应使用千分位分隔')
+assertEqual(formatAccountUsageSummary(usage), '1200req / 4.5K / $1.23', '账户用量摘要里的请求数不应使用千分位分隔')
 assertEqual(formatUsageAmount(1_500_000), '1.5M', 'Token 数应按紧凑格式展示')
 assertEqual(formatCost(0.126), '$0.13', '成本应保留两位小数')
 

@@ -1,6 +1,6 @@
 import {
   formatCompactUsageAmount,
-  formatNumber,
+  formatRequestCountTag,
   formatUsd,
   serverDateTimeTimestamp
 } from '@/shared/formatters'
@@ -18,7 +18,7 @@ export interface OAuthUsageBar {
 }
 
 export function formatAccountUsageSummary(usage: AccountUsageSummary): string {
-  return `${formatNumber(usage.requestCount)}req / ${formatUsageAmount(usage.totalTokens)} / ${formatCost(usage.totalCost)}`
+  return `${formatRequestCountTag(usage.requestCount)} / ${formatUsageAmount(usage.totalTokens)} / ${formatCost(usage.totalCost)}`
 }
 
 export function formatUsageAmount(value?: number): string {

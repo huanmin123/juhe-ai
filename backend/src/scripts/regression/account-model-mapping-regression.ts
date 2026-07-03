@@ -23,6 +23,10 @@ import {
 import type { AccountModelMapping } from '../../domain/types.js'
 import {
   buildOpenAIModelMappedJsonBody,
+  gatewayRequestEndpointFamily,
+  openAIModelMappedUpstreamPathAndQuery,
+  resolveOpenAIRequestModelMapping,
+  setGatewayModelMappingSourceEndpointFamilyOverride,
   resolveOpenAIAccountModelMapping
 } from '../../modules/gateway/protocols/openai-v1/model-mapping.js'
 import { recordCompletedUpstreamAttempt } from '../../modules/gateway/usage/records.js'
@@ -415,6 +419,7 @@ try {
   assertNativeResponsesUpstreamRequiresEndpointModes()
   assertRuntimeIgnoresUnsupportedChatToResponsesMapping()
   assertRuntimeIgnoresPersistentCrossProtocolMappings()
+  await assertCompactSyntheticChatUsesResponsesModelMapping()
   assertCrossProtocolAccountMappingsRejected(group.id)
   await assertInvalidMappingBodyRejected()
   await assertInvalidMappingBodyDoesNotSwitchAccount(group.id)
@@ -699,6 +704,52 @@ function assertRuntimeIgnoresPersistentCrossProtocolMappings(): void {
   } as unknown as { modelMappings: AccountModelMapping[] }
   const explicitRouteMapping = resolveOpenAIAccountModelMapping(explicitRouteAccount, sourceModel, 'responses')
   assert.equal(explicitRouteMapping, undefined, '运行时解析器不应继续放行旧显式混合路由标记注入的 Responses -> Chat Completions 映射')
+}
+
+async function assertCompactSyntheticChatUsesResponsesModelMapping(): Promise<void> {
+  const account = {
+    providerCode: GPT_VENDOR_CODE,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    protocolCode: 'openai',
+    protocolVersion: 'v1',
+    modelMappings: [
+      responsesMapping(sourceModel, upstreamModel)
+    ]
+  }
+  const req = jsonRequestAtPath('/v1/chat/completions', {
+    model: sourceModel,
+    messages: [{ role: 'user', content: 'compact summary' }],
+    stream: false
+  })
+
+  assert.equal(gatewayRequestEndpointFamily(req), 'chat_completions', '普通 Chat 请求应保持 Chat Completions 源协议')
+  assert.equal(
+    resolveOpenAIRequestModelMapping(req, account),
+    undefined,
+    '普通 Chat 请求不应自动复用 Responses 模型别名'
+  )
+
+  setGatewayModelMappingSourceEndpointFamilyOverride(req, 'responses')
+  assert.equal(gatewayRequestEndpointFamily(req), 'responses', '内部 compact 摘要请求应允许按 Responses 源协议解析模型别名')
+  const mapping = resolveOpenAIRequestModelMapping(req, account)
+  assert.deepEqual(mapping, {
+    sourceModel,
+    sourceEndpointFamily: 'responses',
+    upstreamModel,
+    upstreamEndpointFamily: 'responses'
+  }, '内部 compact 摘要请求应命中原始 Responses 模型别名')
+  assert(mapping, '内部 compact 摘要请求应返回模型映射')
+  assert.equal(
+    openAIModelMappedUpstreamPathAndQuery(req, mapping),
+    '/v1/chat/completions',
+    '内部 compact 摘要请求即使命中 Responses 同协议别名，也必须继续转发 Chat Completions 路径'
+  )
+  const mappedBody = JSON.parse((await buildOpenAIModelMappedJsonBody(req, mapping.upstreamModel)).toString('utf8')) as {
+    model?: string
+    messages?: unknown[]
+  }
+  assert.equal(mappedBody.model, upstreamModel, '内部 compact 摘要请求应把上游 Chat body 的 model 改写为映射目标')
+  assert(Array.isArray(mappedBody.messages), '内部 compact 摘要请求改写模型时不应丢失 Chat messages')
 }
 
 function assertCrossProtocolAccountMappingsRejected(groupId: string): void {
@@ -1053,12 +1104,16 @@ function loadStoredMappings(accountId: string): AccountModelMapping[] {
 }
 
 function jsonRequest(body: Record<string, unknown>): Request {
+  return jsonRequestAtPath('/v1/responses', body)
+}
+
+function jsonRequestAtPath(path: string, body: Record<string, unknown>): Request {
   const rawBody = Buffer.from(JSON.stringify(body), 'utf8')
   const headers: Record<string, string> = { 'content-type': 'application/json' }
   return {
     method: 'POST',
-    path: '/v1/responses',
-    originalUrl: '/v1/responses',
+    path,
+    originalUrl: path,
     headers,
     header(name: string) {
       const value = headers[name.toLowerCase()]
@@ -1251,6 +1306,38 @@ async function assertUsageRecordFields(
   assert.equal(record.modelMappingApplied, true, '使用记录应标记命中模型映射')
   assert.equal(record.modelMappingSource, 'account', '使用记录映射来源应固定为 account')
   assert.equal(record.costUsd, 12, '授权调用应按资源账号所有者个人映射目标模型计价')
+
+  const compactTraceId = 'trace-account-model-mapping-compact-summary-regression'
+  const compactSummaryReq = jsonRequestAtPath('/v1/chat/completions', {
+    model: sourceModel,
+    messages: [{ role: 'user', content: 'compact usage' }],
+    stream: false
+  })
+  setGatewayModelMappingSourceEndpointFamilyOverride(compactSummaryReq, 'responses')
+  recordCompletedUpstreamAttempt(compactSummaryReq, {
+    traceId: compactTraceId,
+    trafficSource: 'gateway',
+    systemAccountId: 'sys_mapping_grantee',
+    groupId,
+    account,
+    endpoint: 'POST /v1/chat/completions',
+    statusCode: 200,
+    success: true,
+    stream: false,
+    startedAt: Date.now(),
+    usage: {
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000
+    }
+  })
+  flushAllUsageRecordQueue()
+  const compactRecord = repositories.listUsageRecords(undefined, { page: 1, pageSize: 20 })
+    .items
+    .find((item) => item.traceId === compactTraceId)
+  assert(compactRecord, '内部 compact 摘要请求应写入使用记录')
+  assert.equal(compactRecord.model, sourceModel, '内部 compact 摘要请求使用记录 model 应保留下游 Responses 模型')
+  assert.equal(compactRecord.upstreamModel, upstreamModel, '内部 compact 摘要请求使用记录 upstreamModel 应记录模型映射目标')
+  assert.equal(compactRecord.modelMappingApplied, true, '内部 compact 摘要请求使用记录应标记命中模型映射')
 
   const unpricedTraceId = 'trace-account-model-mapping-unpriced-upstream-regression'
   recordCompletedUpstreamAttempt(jsonRequest({ model: sourceModel, input: 'usage', stream: false }), {

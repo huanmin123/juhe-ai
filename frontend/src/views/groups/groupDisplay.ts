@@ -1,4 +1,4 @@
-import { formatCompactUsageAmount, formatDateTime, formatNumber, formatUsd, serverDateTimeTimestamp } from '@/shared/formatters'
+import { formatCompactUsageAmount, formatDateTime, formatNumber, formatRequestCountTag, formatUsd, serverDateTimeTimestamp } from '@/shared/formatters'
 import type { AccountUsageSummary, GroupAccountStats, GroupSummary } from '@/types/domain'
 import { systemAccountDisplayText } from '@/utils/systemAccountFilter'
 import { hasQuotaLimits } from '../shared/requestQuotaForm'
@@ -83,7 +83,7 @@ export function groupInfoIconClass(group: GroupSummary): string {
 }
 
 export function formatUsageSummary(usage: AccountUsageSummary): string {
-  return `${formatNumber(usage.requestCount)}req/${formatUsageAmount(usage.totalTokens)}/${formatCost(usage.totalCost)}`
+  return `${formatRequestCountTag(usage.requestCount)}/${formatUsageAmount(usage.totalTokens)}/${formatCost(usage.totalCost)}`
 }
 
 function normalizedNumber(value: unknown): number {

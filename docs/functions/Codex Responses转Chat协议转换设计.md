@@ -184,6 +184,7 @@ Chat-only compact 的摘要模型只能在当前请求授权边界内选择：
 - 当前请求命中的当前供应商和 provider profile。
 - 同一套候选账号筛选、账号冷却、切号、统计、审计和错误处理。
 - 通用摘要请求固定使用 Chat Completions endpoint family；上游不能收到 `/responses/compact`。
+- 内部摘要请求的模型别名按原始 Responses compact 请求的 `Responses` 源协议匹配；命中后只改写 Chat Completions 请求体里的 `model` 和统计 / 审计上游模型口径，不把上游路径改成 `/responses`。
 - 内部摘要请求必须设置 `disableCompact = true`，避免递归 compact。
 
 摘要模型可以是供应商非 Responses 的专用 compact endpoint、专用摘要模型或普通 Chat 模型。当前实现使用普通非流式 Chat Completions，并校验返回摘要必须是非空文本。客户端只看到 Codex 可识别的 `compaction_summary` item；后续请求带回该 item 时，网关按 compact id 读取 snapshot 并恢复为 Chat summary。

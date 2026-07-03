@@ -34,7 +34,7 @@ export function handleGatewayRequestKnownErrorResponse(input: HandleGatewayReque
     return true
   }
 
-  if (error instanceof GatewayAgentGuidanceResponse) {
+  if (error instanceof GatewayAgentGuidanceResponse && !error.accountScoped) {
     const responseBody = sendAgentGuidanceResponse(res, error)
     auditCapture.finalize({
       outcome: 'success',

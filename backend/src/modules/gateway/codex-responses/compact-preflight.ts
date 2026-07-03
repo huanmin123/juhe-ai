@@ -2,6 +2,7 @@ import type { Request, Response } from 'express'
 
 import type { GroupUsageAccessMetadata } from '../../../storage/repositories.js'
 import type { ClientCompatibilityCapability, GroupSchedulingPolicy } from '../../../domain/types.js'
+import { OPENAI_RESPONSES_FAMILY } from '../../../domain/provider-protocol.js'
 import type { GatewaySettings } from '../policy/account-error-policy.service.js'
 import type { AuditCaptureContext } from '../audit/capture.service.js'
 import type { GatewayAccountModelPriority } from '../dispatch/model-filter.js'
@@ -17,6 +18,7 @@ import {
   getGatewayRequestBodyState,
   type GatewayRawBodyRequest
 } from '../request/body.js'
+import { setGatewayModelMappingSourceEndpointFamilyOverride } from '../protocols/openai-v1/model-mapping.js'
 import { gatewayErrorPayload } from '../response/responses.js'
 import { sendGatewayFailureResponse } from '../response/failure-response.js'
 import type { GatewayFailureUsageContext } from '../usage/records.js'
@@ -256,6 +258,7 @@ function buildSyntheticChatCompletionsRequest(sourceReq: Request, body: JsonReco
   synthetic.gatewayParsedJsonBodyAvailable = true
   synthetic.gatewayParsedJsonBody = body
   synthetic.gatewayUpstreamBodyCache = undefined
+  setGatewayModelMappingSourceEndpointFamilyOverride(synthetic, OPENAI_RESPONSES_FAMILY)
   synthetic.gatewayRequestBody = createGatewayRequestBodyState({
     rawBody,
     contentType: 'application/json',

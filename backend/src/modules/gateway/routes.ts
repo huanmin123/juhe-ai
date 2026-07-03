@@ -202,7 +202,6 @@ export async function handleOpenAIGatewayRequest(
   let streamServerRetryExcludedAccountIds = new Set<string>()
   let streamServerRetryCount = 0
   let fallbackSwitchCount = 0
-  let lastExhaustedAgentGuidance: UpstreamAttemptError['agentGuidanceResponse']
   const exhaustedAccountIds = new Set<string>()
   const nonStreamResponseStartedFailedAccountIds = new Set<string>()
   const switchToFallbackGroup = async (
@@ -381,9 +380,6 @@ export async function handleOpenAIGatewayRequest(
         if (fallbackSwitch === 'switched') {
           continue
         }
-        if (lastExhaustedAgentGuidance) {
-          throw lastExhaustedAgentGuidance
-        }
         throw new UpstreamAttemptError('没有可用的上游账户')
       }
       if (codexTurnAccountAvoidanceApplied) {
@@ -453,7 +449,6 @@ export async function handleOpenAIGatewayRequest(
         )
       } catch (error) {
         if (error instanceof UpstreamAttemptError) {
-          lastExhaustedAgentGuidance = error.agentGuidanceResponse
           for (const accountId of nonStreamResponseStartedFailedAccountIds) {
             exhaustedAccountIds.add(accountId)
           }
@@ -475,9 +470,6 @@ export async function handleOpenAIGatewayRequest(
           }
           if (fallbackSwitch === 'switched') {
             continue
-          }
-          if (error.agentGuidanceResponse) {
-            throw error.agentGuidanceResponse
           }
         }
         throw error
@@ -727,6 +719,40 @@ export async function handleOpenAIGatewayRequest(
               errorCode: handledResponse.errorCode
             }
           })
+          if (
+            handledResponse.retryReason === 'response_inspection'
+            && handledResponse.responseInspection
+            && !policyRequestedAccountExclusion
+          ) {
+            await confirmCurrentClientIpAccountAvoidanceAfterFinalFailure(currentPreflight, auditCapture, 'response_inspection_no_dispatch_change')
+            auditCapture.addGatewayMetadata({
+              label: 'response_inspection_server_retry_stopped',
+              metadata: {
+                reason: 'no_dispatch_change',
+                accountId: account.id,
+                policyId: handledResponse.responseInspection.policyId,
+                policyName: handledResponse.responseInspection.policyName,
+                accountSwitch: handledResponse.responseInspection.accountSwitch,
+                retryEnabled: handledResponse.responseInspection.retryEnabled,
+                errorCode: handledResponse.errorCode
+              }
+            })
+            await sendStreamServerRetryExhaustedResponse({
+              req,
+              res,
+              auditCapture,
+              usageContext: gatewayUsageContext,
+              startedAt,
+              retryReason: handledResponse.retryReason,
+              decision: handledResponse.responseInspection,
+              message: handledResponse.message,
+              errorCode: handledResponse.errorCode,
+              uncommittedResponseBody: handledResponse.uncommittedResponseBody,
+              accountId: account.id,
+              clientStrategy
+            })
+            return
+          }
           if (streamRetryDispatchAccounts(accounts, streamServerRetryExcludedAccountIds).length === 0) {
             for (const accountId of streamServerRetryExcludedAccountIds) {
               exhaustedAccountIds.add(accountId)

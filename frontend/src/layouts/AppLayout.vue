@@ -150,6 +150,19 @@ const pendingRoutePath = ref<string>()
 const routePrefetches = new Map<string, Promise<unknown>>()
 let routeNavigationSeq = 0
 
+interface AnnouncementLoadOptions {
+  notifyError?: boolean
+}
+
+interface AnnouncementLoadResult {
+  items: PublishedAnnouncementSummary[]
+  loaded: boolean
+}
+
+interface AnnouncementMarkReadOptions {
+  notifyError?: boolean
+}
+
 const selectedKeys = computed(() => [pendingRoutePath.value || route.path])
 const routeSwitching = computed(() => Boolean(pendingRoutePath.value && pendingRoutePath.value !== route.path))
 const pendingMenuRoute = computed(() => pendingRoutePath.value ? menuRoutes.find((item) => item.path === pendingRoutePath.value) : undefined)
@@ -367,38 +380,45 @@ async function openAnnouncements() {
     return
   }
   announcementModalOpen.value = true
-  const visibleAnnouncements = await loadAnnouncements()
-  await markAnnouncementsViewed(visibleAnnouncements)
-}
-
-async function refreshAnnouncementsInModal() {
-  const visibleAnnouncements = await loadAnnouncements()
-  if (announcementModalOpen.value) {
-    await markAnnouncementsViewed(visibleAnnouncements)
+  const result = await loadAnnouncements({ notifyError: true })
+  if (result.loaded) {
+    await markAnnouncementsViewed(result.items, { notifyError: true })
   }
 }
 
-async function loadAnnouncements(): Promise<PublishedAnnouncementSummary[]> {
+async function refreshAnnouncementsInModal() {
+  const result = await loadAnnouncements()
+  if (announcementModalOpen.value && result.loaded) {
+    await markAnnouncementsViewed(result.items)
+  }
+}
+
+async function loadAnnouncements(options: AnnouncementLoadOptions = {}): Promise<AnnouncementLoadResult> {
   const requestUserKey = currentAnnouncementUserKey()
   if (!requestUserKey || mustChangePassword.value) {
     announcementsRequestId += 1
     announcements.value = []
     announcementsLoading.value = false
-    return []
+    return { items: [], loaded: false }
   }
   const requestId = ++announcementsRequestId
   announcementsLoading.value = true
   try {
     const nextAnnouncements = await api.announcements.publicList({ limit: 30 })
     if (requestId !== announcementsRequestId || requestUserKey !== currentAnnouncementUserKey()) {
-      return announcements.value
+      return { items: announcements.value, loaded: false }
     }
     announcements.value = nextAnnouncements
-    return nextAnnouncements
+    return { items: nextAnnouncements, loaded: true }
   } catch (error) {
+    if (requestId !== announcementsRequestId || requestUserKey !== currentAnnouncementUserKey()) {
+      return { items: announcements.value, loaded: false }
+    }
     console.error(error)
-    message.error('加载公告失败')
-    return announcements.value
+    if (options.notifyError) {
+      message.error(extractApiErrorMessage(error, '加载公告失败'))
+    }
+    return { items: announcements.value, loaded: false }
   } finally {
     if (requestId === announcementsRequestId) {
       announcementsLoading.value = false
@@ -411,7 +431,7 @@ function currentAnnouncementUserKey(): string {
   return user?.id || user?.username || ''
 }
 
-async function markAnnouncementsViewed(visibleAnnouncements = announcements.value) {
+async function markAnnouncementsViewed(visibleAnnouncements = announcements.value, options: AnnouncementMarkReadOptions = {}) {
   const requestUserKey = currentAnnouncementUserKey()
   if (!requestUserKey) return
   const unreadIds = visibleAnnouncements.filter((announcement) => !announcement.readAt).map((announcement) => announcement.id)
@@ -424,8 +444,11 @@ async function markAnnouncementsViewed(visibleAnnouncements = announcements.valu
       ? { ...announcement, readAt: result.readAt }
       : announcement)
   } catch (error) {
+    if (requestUserKey !== currentAnnouncementUserKey()) return
     console.error(error)
-    message.error('记录公告已读失败')
+    if (options.notifyError) {
+      message.error(extractApiErrorMessage(error, '记录公告已读失败'))
+    }
   }
 }
 
@@ -589,9 +612,6 @@ async function refreshAnnouncementsSafely() {
 onMounted(() => {
   updateViewport()
   loadAppBrandSettings().catch((error) => {
-    console.error(error)
-  })
-  loadAnnouncements().catch((error) => {
     console.error(error)
   })
   announcementsRefreshTimer = window.setInterval(() => {

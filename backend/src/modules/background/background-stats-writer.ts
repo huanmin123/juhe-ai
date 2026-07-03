@@ -3,7 +3,9 @@ import { errorLogFields, logger } from '../../shared/logger.js'
 import type { ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 import type { ClientIpPolicyHitInput } from '../../storage/client-ip-stats.repository.js'
 import {
+  createClientIpPolicyAsync,
   aggregateClientIpStatsBatchAsync,
+  disableClientIpPoliciesAsync,
   listActiveClientIpPoliciesAsync,
   recordClientIpPolicyHitsAsync,
   refreshClientIpUsageRangeWindowsAsync
@@ -119,6 +121,14 @@ export type BackgroundStatsWriteOperation =
     hits: ClientIpPolicyHitInput[]
   }
   | {
+    type: 'create_client_ip_policy'
+    input: import('../../storage/client-ip-stats.repository.js').ClientIpPolicyMutationInput
+  }
+  | {
+    type: 'disable_client_ip_policies'
+    input: import('../../storage/client-ip-stats.repository.js').ClientIpPolicyDisableInput
+  }
+  | {
     type: 'list_active_client_ip_policies'
   }
   | {
@@ -162,6 +172,8 @@ export type BackgroundStatsWriteOperationResult<T extends BackgroundStatsWriteOp
   T extends { type: 'check_usage_stats_consistency' } ? ReturnType<typeof checkUsageStatsConsistency> :
   T extends { type: 'collect_table_storage_snapshot' } ? CollectTableStorageSnapshotResult :
   T extends { type: 'record_client_ip_policy_hits' } ? { recorded: number } :
+  T extends { type: 'create_client_ip_policy' } ? import('../../storage/client-ip-stats.repository.js').ClientIpPolicySummary :
+  T extends { type: 'disable_client_ip_policies' } ? { disabledCount: number } :
   T extends { type: 'list_active_client_ip_policies' } ? ActiveClientIpPolicy[] :
   T extends { type: 'upsert_account_usage_snapshots' } ? { upsertedCount: number } :
   T extends { type: 'cleanup_usage_stats_retention' } ? ReturnType<typeof cleanupUsageStatsBucketsBefore> :
@@ -231,6 +243,10 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
       return collectTableStorageSnapshot(operation.sampledAt, operation.options)
     case 'record_client_ip_policy_hits':
       return await recordClientIpPolicyHitsAsync(operation.hits)
+    case 'create_client_ip_policy':
+      return await createClientIpPolicyAsync(operation.input)
+    case 'disable_client_ip_policies':
+      return await disableClientIpPoliciesAsync(operation.input)
     case 'list_active_client_ip_policies':
       return await listActiveClientIpPoliciesAsync()
     case 'upsert_account_usage_snapshots':

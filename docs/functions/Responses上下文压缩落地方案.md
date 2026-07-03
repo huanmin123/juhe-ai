@@ -203,6 +203,7 @@ Chat-only bridge 的 compact 输出是网关自有 envelope，不是上游原生
 - 摘要兜底必须限定在当前供应商和当前 provider profile 可接受范围内，不跨供应商寻找便宜模型。
 - Chat-only bridge 的通用摘要路径固定使用 Chat Completions endpoint family，即 OpenAI-compatible 语义下的 `/v1/chat/completions`；不能在 Responses -> Chat 转换后再向 Chat 上游发送 `/v1/responses/compact`。
 - 内部摘要请求走正常候选账号筛选、账号可用性、冷却、切号、统计、审计和错误处理，但候选账号必须支持 Chat Completions 摘要请求。
+- 内部摘要请求的模型别名按原始 Responses compact 请求的 `Responses` 源协议匹配；命中后只改写 Chat Completions 请求体里的 `model` 和统计 / 审计上游模型口径，不把上游路径改成 `/responses`。
 - 当前内部摘要请求通过合成的非流式 `/v1/chat/completions` 请求进入同分组同供应商调度；后续应补充 `purpose = codex_compaction_summary`、`disableCompact = true` 等内部元数据，避免递归 compact。
 - 如果供应商明确提供非 Responses 的 Chat 专用 compact endpoint，可以作为供应商特化摘要入口；否则使用当前分组、当前供应商内配置的 Chat Completions 摘要模型。无论哪种方式，都不能使用上游 `/responses/compact` 作为 Chat-only 摘要兜底。
 - 允许摘要模型是专用压缩模型，也允许是普通 Chat 模型。当前实现先校验摘要为非空文本；后续 snapshot 版本再提升为固定 schema 校验。

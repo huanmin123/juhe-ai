@@ -3,13 +3,12 @@ import { z } from 'zod'
 
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
 import {
-  createClientIpPolicyAsync,
-  disableClientIpPoliciesAsync,
   getClientIpStatsDetailAsync,
   listClientIpStatsAsync,
   type ClientIpPolicyType,
   type ClientIpStatsSortField
 } from '../../storage/client-ip-stats.repository.js'
+import { requestStatsWriter } from '../background/background-stats-writer.js'
 import { bodyField, mutationGuard } from '../deduplication/mutation-guard.middleware.js'
 import { notifyClientIpPolicyCacheInvalidated } from '../db-service/db-service-ipc.js'
 import { getRequestAuthContext } from '../auth/request-context.js'
@@ -181,12 +180,15 @@ async function handleCreatePolicy(req: Request, res: Response, policyType: Clien
     return
   }
   try {
-    const policy = await createClientIpPolicyAsync({
-      ipHash: params.data.ipHash,
-      policyType,
-      reason: body.data.reason,
-      expiresAt: duration.expiresAt,
-      actorSystemAccountId: actor
+    const policy = await requestStatsWriter({
+      type: 'create_client_ip_policy',
+      input: {
+        ipHash: params.data.ipHash,
+        policyType,
+        reason: body.data.reason,
+        expiresAt: duration.expiresAt,
+        actorSystemAccountId: actor
+      }
     })
     notifyClientIpPolicyCacheInvalidated()
     await recordOperationLogAsync({
@@ -239,11 +241,14 @@ async function handleDisablePolicy(req: Request, res: Response, policyType: Clie
     return
   }
   try {
-    const result = await disableClientIpPoliciesAsync({
-      ipHash: params.data.ipHash,
-      policyType,
-      reason: body.data.reason,
-      actorSystemAccountId: actor
+    const result = await requestStatsWriter({
+      type: 'disable_client_ip_policies',
+      input: {
+        ipHash: params.data.ipHash,
+        policyType,
+        reason: body.data.reason,
+        actorSystemAccountId: actor
+      }
     })
     notifyClientIpPolicyCacheInvalidated()
     const action = policyType === 'blacklist' ? 'unblock' : 'unallowlist'
