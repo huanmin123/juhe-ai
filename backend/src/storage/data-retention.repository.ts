@@ -10,6 +10,7 @@ import {
   cleanupDiscoveredHardCleanupTablesBefore,
   deleteRowsBeforeByRowid,
   hardCleanupCutoffs,
+  hardCleanupCutoffsAsync,
   type HardCleanupCutoffKey,
   type HardCleanupDatabaseRole
 } from './data-retention-hard-cleanup.js'
@@ -421,7 +422,7 @@ async function cleanupNonBusinessDataBeforeWithResultPostgres(input: {
 }): Promise<NonBusinessDataHardCleanupResult> {
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const batchLimit = positiveLimit(input.limit)
-  const cutoffs = hardCleanupCutoffs(input.cutoffAt)
+  const cutoffs = await hardCleanupCutoffsAsync(input.cutoffAt)
   const scope = input.scope ?? 'all'
   const tableRows: Record<string, number> = {}
   const fileDeletes: Record<string, number> = {}

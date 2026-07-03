@@ -39,6 +39,8 @@ assert.match(sql, /CREATE TABLE IF NOT EXISTS usage_records/, '应包含使用�
 assert.match(sql, /usage_records[\s\S]+failure_attribution text/, '使用记录主表建表语句应直接包含失败归因字段')
 assert.match(sql, /usage_records[\s\S]+input_audio_tokens integer[\s\S]+output_audio_tokens integer[\s\S]+output_image_count integer/, '使用记录主表建表语句应包含音频 token 和输出图片数量字段')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS usage_stats_totals/, '应包含统计库 schema')
+assert.match(sql, /usage_stats_totals[\s\S]+request_count bigint NOT NULL DEFAULT 0[\s\S]+input_tokens bigint NOT NULL DEFAULT 0[\s\S]+duration_ms_sum bigint NOT NULL DEFAULT 0/, 'PG 统计累计字段必须使用 bigint，避免生产聚合溢出')
+assert.match(sql, /usage_scope_range_windows[\s\S]+request_count bigint NOT NULL DEFAULT 0[\s\S]+first_token_ms_sum bigint NOT NULL DEFAULT 0/, 'PG 范围窗口累计字段必须使用 bigint')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS codex_context_sessions/, '应包含 Codex context schema')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS route_strategies/, '应包含策略路由表 schema')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS route_strategy_groups/, '应包含策略路由分组绑定表 schema')

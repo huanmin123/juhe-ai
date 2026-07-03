@@ -90,12 +90,44 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
   }
 ]
 
+const postgresBigintColumnNames = new Set([
+  'request_count',
+  'success_count',
+  'error_count',
+  'input_tokens',
+  'output_tokens',
+  'cache_read_tokens',
+  'cache_write_tokens',
+  'cache_write_1h_tokens',
+  'thinking_tokens',
+  'input_image_tokens',
+  'output_image_tokens',
+  'duration_ms_sum',
+  'duration_ms_count',
+  'duration_ms_max',
+  'first_token_ms_sum',
+  'first_token_ms_count',
+  'first_token_ms_max',
+  'sample_count',
+  'event_loop_lag_ms_count',
+  'network_rx_bytes_per_sec_count',
+  'network_tx_bytes_per_sec_count',
+  'hit_count',
+  'row_count',
+  'page_count',
+  'freelist_count',
+  'table_count',
+  'index_count',
+  'growth_rows_1h',
+  'growth_rows_24h'
+])
+
 export function collectPostgresSchemaStatements(): PostgresSchemaStatement[] {
   const statements: PostgresSchemaStatement[] = []
   for (const definition of schemaSourceDefinitions) {
     const rawStatements = collectSqlStatements(definition.apply)
     for (const rawStatement of rawStatements) {
-      const normalized = transformSqliteStatementToPostgres(rawStatement)
+      const normalized = transformSqliteStatementToPostgres(rawStatement, definition.schemaName)
       if (!normalized) continue
       statements.push({
         schemaName: definition.schemaName,
@@ -244,7 +276,7 @@ function splitSqlStatements(sql: string): string[] {
   return statements
 }
 
-function transformSqliteStatementToPostgres(sql: string): string | undefined {
+function transformSqliteStatementToPostgres(sql: string, schemaName: PostgresSchemaName): string | undefined {
   const trimmed = sql.trim()
   if (trimmed.length === 0) {
     return undefined
@@ -264,6 +296,13 @@ function transformSqliteStatementToPostgres(sql: string): string | undefined {
   transformed = transformed.replace(/\bBLOB\b/gi, 'bytea')
   transformed = transformed.replace(/\bREAL\b/gi, 'double precision')
   transformed = transformed.replace(/\bINTEGER\b/gi, 'integer')
+  if (schemaName === 'juhe_stats') {
+    transformed = transformed.replace(/^(\s*)([A-Za-z_][A-Za-z0-9_]*)(\s+)integer\b/gim, (match, indent: string, columnName: string, spacing: string) => {
+      return postgresBigintColumnNames.has(columnName.toLowerCase())
+        ? `${indent}${columnName}${spacing}bigint`
+        : match
+    })
+  }
   transformed = transformed.replace(/\bTEXT\b/gi, 'text')
   transformed = transformed.replace(/[ \t]+\n/g, '\n')
   transformed = transformed.replace(/\n{3,}/g, '\n\n')

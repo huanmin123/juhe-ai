@@ -37,6 +37,8 @@ assert.doesNotMatch(source('../../modules/background/background-jobs.ts'), /if \
 const dataRetentionHardCleanupSource = source('../../storage/data-retention-hard-cleanup.ts')
 assert.doesNotMatch(dataRetentionHardCleanupSource, /sqlite_schema|discoverHardCleanupTableRules|hardCleanupRuleForTable|hardCleanupPreferredRuleByTable/, '非业务硬清理不能运行时探测 SQLite schema 后只清理已发现表')
 assert.match(dataRetentionHardCleanupSource, /nonBusinessCleanupTablesByRole/, '非业务硬清理必须按当前 schema 固定清单执行')
+assert.match(dataRetentionHardCleanupSource, /hardCleanupCutoffsAsync[\s\S]*usageStatsTimezoneAsync/, 'PG 非业务硬清理 cutoff 必须通过异步统计时区读取，不能打开 SQLite business DB')
+assert.match(source('../../storage/data-retention.repository.ts'), /cleanupNonBusinessDataBeforeWithResultPostgres[\s\S]*await hardCleanupCutoffsAsync\(input\.cutoffAt\)/, 'PG 非业务硬清理必须使用 hardCleanupCutoffsAsync')
 
 const backgroundStatsWriterSource = source('../../modules/background/background-stats-writer.ts')
 assert.doesNotMatch(backgroundStatsWriterSource, /skippedPostgres|background_stats_writer_postgres_operation_skipped|高性能模式暂跳过|return \[\]/, 'PG 模式 stats-writer 不能对未实现统计维护操作静默跳过或返回模拟成功结果')

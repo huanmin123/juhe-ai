@@ -1,7 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import { getDatasetDatabase, getStatsDatabase, getUsageCatalogDatabase } from './database.js'
-import { dateKey, hourKey, minuteKey, monthKey, usageStatsTimezone, weekKey } from './usage-stats-helpers.js'
+import { dateKey, hourKey, minuteKey, monthKey, usageStatsTimezone, usageStatsTimezoneAsync, weekKey } from './usage-stats-helpers.js'
 
 export type HardCleanupCutoffKey = 'iso' | 'minute' | 'hour' | 'date' | 'week' | 'month'
 export type HardCleanupDatabaseRole = 'dataset' | 'usage-catalog' | 'stats'
@@ -123,12 +123,11 @@ export function cleanupDiscoveredHardCleanupTablesBefore(
   }
 }
 
-export function hardCleanupCutoffs(cutoffAt: string): HardCleanupCutoffs {
+export function hardCleanupCutoffs(cutoffAt: string, timezone = usageStatsTimezone()): HardCleanupCutoffs {
   const cutoffDate = new Date(cutoffAt)
   if (!Number.isFinite(cutoffDate.getTime())) {
     throw new Error('非业务数据清理截止时间无效')
   }
-  const timezone = usageStatsTimezone()
   return {
     iso: cutoffDate.toISOString(),
     minute: minuteKey(cutoffDate, timezone),
@@ -137,6 +136,10 @@ export function hardCleanupCutoffs(cutoffAt: string): HardCleanupCutoffs {
     week: weekKey(cutoffDate, timezone),
     month: monthKey(cutoffDate, timezone)
   }
+}
+
+export async function hardCleanupCutoffsAsync(cutoffAt: string): Promise<HardCleanupCutoffs> {
+  return hardCleanupCutoffs(cutoffAt, await usageStatsTimezoneAsync())
 }
 
 export function deleteRowsBeforeByRowid(
