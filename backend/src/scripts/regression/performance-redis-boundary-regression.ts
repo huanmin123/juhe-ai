@@ -110,6 +110,7 @@ assert.match(backgroundIpcSource, /function isRedisStreamManagedIngestQueueMessa
 assert.match(backgroundIpcSource, /function queueWorkerMessage[\s\S]*runtimeConfig\.queueDriver === 'redis_stream'[\s\S]*isRedisStreamManagedIngestQueueMessage/, 'redis_stream driver 下禁止记录类消息进入后台 IPC 本地队列')
 assert.match(backgroundIpcSource, /function requeueIngestWorkerMessageFirst[\s\S]*runtimeConfig\.queueDriver === 'redis_stream'[\s\S]*isRedisStreamManagedIngestQueueMessage/, 'redis_stream driver 下发送失败不能把记录类消息 requeue 回本地 IPC 队列')
 assert.match(backgroundIpcSource, /function sendBackgroundWorkerMessageToParent[\s\S]*runtimeConfig\.queueDriver === 'redis_stream'[\s\S]*isRedisStreamManagedIngestQueueMessage/, 'redis_stream driver 下非 ingest worker 不能把记录类消息发回父进程 IPC')
+assert.match(backgroundIpcSource, /function rejectRedisStreamLocalQueueMessage[\s\S]*workerMessageTargetRole\(message\)[\s\S]*pendingQueueRuntimeForTarget\(targetRole\)/, 'Redis Stream 本地 IPC 拒绝计数必须按消息目标角色归属，不能固定写入 ingest worker 队列')
 
 const dbServiceIpcSource = source('modules/db-service/db-service-ipc.ts')
 assert.match(dbServiceIpcSource, /function rejectRedisStreamLocalQueueForward[\s\S]*runtimeConfig\.queueDriver !== 'redis_stream'[^]*return false[\s\S]*db_service_redis_stream_local_queue_forward_rejected/, 'redis_stream driver 下 DB service 父消息不能转发记录类 IPC 本地队列')

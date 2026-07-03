@@ -1441,12 +1441,14 @@ function isRedisStreamManagedIngestQueueMessage(message: BackgroundWorkerMessage
 
 function rejectRedisStreamLocalQueueMessage(message: BackgroundWorkerMessage, operation: string): void {
   const queueKey = ipcQueueKeyForMessage(message)
-  const queue = ingestPendingQueueRuntime[queueKey]
+  const targetRole = workerMessageTargetRole(message)
+  const queue = pendingQueueRuntimeForTarget(targetRole)[queueKey]
   queue.rejectedCount = (queue.rejectedCount ?? 0) + 1
   logger.error({
     event: 'redis_stream_local_ipc_queue_rejected',
     operation,
     messageType: message.type,
+    targetRole,
     queueKey
   }, 'Redis Stream queue driver 下禁止使用后台 IPC 本地队列，记录类数据必须写入 Redis Stream')
 }
