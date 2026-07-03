@@ -35,6 +35,7 @@
           :form="form"
           :group-options="groupOptions"
           :group-options-loading="groupOptionsLoading"
+          :show-meta-fields="!isApiKeyForm"
           :tag-options="tagOptions"
           :tag-options-loading="tagOptionsLoading"
           :deleting-tag-id="deletingTagId"
@@ -49,11 +50,15 @@
           :api-key-runtime-details="accountDetail?.apiKeyRuntimeDetails"
           :api-key-test-details="apiKeyTestDetails"
           :base-url-placeholder="baseUrlPlaceholder"
+          :deleting-tag-id="deletingTagId"
           :editing="editing"
           :form="form"
           :model-options="modelOptions"
           :models-loading="modelsLoading"
+          :tag-options="tagOptions"
+          :tag-options-loading="tagOptionsLoading"
           :title="credentialTitle"
+          @delete-tag="$emit('delete-tag', $event)"
         />
 
         <AccountOAuthSection
@@ -94,6 +99,16 @@
               <span v-else>-</span>
             </a-descriptions-item>
           </a-descriptions>
+          <div v-if="isApiKeyForm" class="readonly-meta-fields">
+            <AccountMetaFields
+              :deleting-tag-id="deletingTagId"
+              :form="form"
+              readonly
+              :tag-options="tagOptions"
+              :tag-options-loading="tagOptionsLoading"
+              @delete-tag="$emit('delete-tag', $event)"
+            />
+          </div>
         </section>
 
         <a-collapse
@@ -171,6 +186,7 @@ import AccountBasicInfoSection from './AccountBasicInfoSection.vue'
 import AccountErrorPolicyCard from './AccountErrorPolicyCard.vue'
 import AccountExtraInfoSection from './AccountExtraInfoSection.vue'
 import AccountFormSelector from './AccountFormSelector.vue'
+import AccountMetaFields from './AccountMetaFields.vue'
 import AccountOAuthSection from './AccountOAuthSection.vue'
 import AccountResponseInspectionPolicyCard from './AccountResponseInspectionPolicyCard.vue'
 import AccountStrategySection from './AccountStrategySection.vue'

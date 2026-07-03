@@ -329,7 +329,6 @@ function snapshotPageState(): StatsPageState {
 }
 
 function selectedRangeParams(): { startDate?: string; endDate?: string } {
-  if (!dateRangeExplicit.value) return {}
   const [startDate, endDate] = selectedRange.value
   return { startDate, endDate }
 }

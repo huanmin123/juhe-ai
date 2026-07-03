@@ -34,18 +34,15 @@
       <a-form-item label="优先级" tooltip="分组内账号排序使用小值优先；0 会排在 1 前面。授权账号这里表示当前使用方本地分组内的调度优先级。">
         <a-input-number v-model:value="form.priority" :min="0" style="width: 100%" />
       </a-form-item>
-      <a-form-item class="tag-form-item" label="账户标签">
-        <AccountTagSelect
-          v-model:value="form.tags"
-          :deleting-tag-id="deletingTagId"
-          :loading="tagOptionsLoading"
-          :options="tagOptions"
-          @delete="$emit('delete-tag', $event)"
-        />
-      </a-form-item>
-      <a-form-item class="notes-form-item" label="说明">
-        <a-textarea v-model:value="form.notes" :rows="2" :disabled="authorizedEditing" placeholder="可填写来源、用途或额度说明" />
-      </a-form-item>
+      <AccountMetaFields
+        v-if="showMetaFields"
+        :deleting-tag-id="deletingTagId"
+        :form="form"
+        :readonly="authorizedEditing"
+        :tag-options="tagOptions"
+        :tag-options-loading="tagOptionsLoading"
+        @delete-tag="$emit('delete-tag', $event)"
+      />
     </div>
   </section>
 </template>
@@ -54,8 +51,8 @@
 import { ref, watch } from 'vue'
 import GroupSelect from '@/components/GroupSelect.vue'
 import type { AccountTagSummary } from '@/types/domain'
-import AccountTagSelect from './AccountTagSelect.vue'
 import type { AccountFormModel } from './accountFormTypes'
+import AccountMetaFields from './AccountMetaFields.vue'
 
 const maxAccountNameLength = 128
 
@@ -65,6 +62,7 @@ const props = defineProps<{
   form: AccountFormModel
   groupOptionsLoading: boolean
   groupOptions: Array<{ label: string; value: string }>
+  showMetaFields?: boolean
   tagOptionsLoading: boolean
   tagOptions: AccountTagSummary[]
   deletingTagId?: string
@@ -119,14 +117,6 @@ function handleGroupDropdownVisibleChange(open: boolean): void {
   margin-top: 4px;
   color: #64748b;
   font-size: 12px;
-}
-
-.tag-form-item {
-  grid-column: 1 / -1;
-}
-
-.notes-form-item {
-  grid-column: 1 / -1;
 }
 
 @media (max-width: 992px) {

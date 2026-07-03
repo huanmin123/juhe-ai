@@ -73,6 +73,13 @@
         :placeholder="baseUrlPlaceholder"
       />
     </a-form-item>
+    <AccountMetaFields
+      :deleting-tag-id="deletingTagId"
+      :form="form"
+      :tag-options="tagOptions"
+      :tag-options-loading="tagOptionsLoading"
+      @delete-tag="$emit('delete-tag', $event)"
+    />
     <a-form-item label="支持模型" required tooltip="声明这个 Base URL 实际支持的上游模型；账户必须至少选择一个模型，模型映射右侧只能从这里选择。">
       <a-select
         v-model:value="form.supportedModels"
@@ -94,19 +101,27 @@ import { computed, watch } from 'vue'
 
 import { formatDateTime } from '@/shared/formatters'
 import { isHybridProviderCode } from '@/shared/providerProtocol'
-import type { AccountApiKeyRuntimeDetail, AccountApiKeyRuntimeStatus } from '@/types/domain'
+import type { AccountApiKeyRuntimeDetail, AccountApiKeyRuntimeStatus, AccountTagSummary } from '@/types/domain'
 import type { AccountFormModel } from './accountFormTypes'
 import { normalizedAccountApiKeys } from './accountCredentials'
+import AccountMetaFields from './AccountMetaFields.vue'
 
 const props = defineProps<{
   apiKeyRuntimeDetails?: AccountApiKeyRuntimeDetail[]
   apiKeyTestDetails?: AccountApiKeyRuntimeDetail[]
   baseUrlPlaceholder: string
+  deletingTagId?: string
   editing: boolean
   form: AccountFormModel
   modelOptions: Array<{ label: string; value: string }>
   modelsLoading: boolean
+  tagOptions: AccountTagSummary[]
+  tagOptionsLoading: boolean
   title: string
+}>()
+
+defineEmits<{
+  (event: 'delete-tag', tagId: string): void
 }>()
 
 const filledApiKeyCount = computed(() => normalizedAccountApiKeys(props.form).length)

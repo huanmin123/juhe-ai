@@ -14,7 +14,7 @@ import {
   getUsageStatsOverviewAsync,
   listAiPerformanceAccountOptionsAsync,
 } from '../../storage/usage-stats.repository.js'
-import { normalizeAccountUsageStatsRange, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
+import { dateKey, normalizeAccountUsageStatsRange, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
 import { fixedUsageStatsDefaultRange } from '../../storage/usage-stats-window-helpers.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
@@ -79,7 +79,7 @@ statsRouter.get('/usage-overview', async (req, res, next) => {
     return
   }
   try {
-    res.json(ok(await getUsageStatsOverviewAsync(getRequestAccessScope(req.query.systemAccountId), await normalizeStatsDateRangeAsync(parsed.data))))
+    res.json(ok(await getUsageStatsOverviewAsync(getRequestAccessScope(req.query.systemAccountId), await normalizeUsageOverviewDateRangeAsync(parsed.data))))
   } catch (error) {
     next(error)
   }
@@ -344,5 +344,13 @@ async function normalizeStatsDateRangeAsync(input: { startDate?: string; endDate
   const defaultRange = defaultAccountUsageDateRange(timezone)
   const startDate = input.startDate ?? input.endDate ?? defaultRange.startDate
   const endDate = input.endDate ?? input.startDate ?? defaultRange.endDate
+  return normalizeAccountUsageStatsRange({ startDate, endDate }, timezone)
+}
+
+async function normalizeUsageOverviewDateRangeAsync(input: { startDate?: string; endDate?: string }) {
+  const timezone = await usageStatsTimezoneAsync()
+  const today = dateKey(new Date(), timezone)
+  const startDate = input.startDate ?? input.endDate ?? today
+  const endDate = input.endDate ?? input.startDate ?? today
   return normalizeAccountUsageStatsRange({ startDate, endDate }, timezone)
 }
