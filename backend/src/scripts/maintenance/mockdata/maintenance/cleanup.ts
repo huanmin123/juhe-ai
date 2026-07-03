@@ -1,5 +1,10 @@
 import { runtimeConfig } from '../../../../config/runtime.js'
-import { getBusinessDatabase, getUsageCatalogDatabase } from '../../../../storage/database.js'
+import {
+  codexContextStateShardIndexes,
+  getBusinessDatabase,
+  getCodexContextStateShardDatabase,
+  getUsageCatalogDatabase
+} from '../../../../storage/database.js'
 import { cleanupUnreferencedAuditPayloadBlobs } from '../../../../storage/repositories.js'
 import {
   deleteUsageRecordShardEntries,
@@ -22,6 +27,7 @@ export function cleanupMockdata(businessDatabase: Database, datasetDatabase: Dat
   const mockApiKeyIds = selectIds(businessDatabase, 'SELECT id FROM api_keys WHERE name LIKE ?', `${namePrefix}%`)
   cleanupDatasetMockdata(datasetDatabase, mockAccountIds, mockApiKeyIds)
   cleanupStatsMockdata(statsDatabase, mockAccountIds)
+  cleanupCodexContextStateMockdata()
   cleanupBusinessMockdata(businessDatabase, adminId, mockUserIds)
 }
 
@@ -211,6 +217,41 @@ function cleanupUsageRecordShardMockdata(): void {
       .run(`${idPrefix}%`, `${tracePrefix}%`)
   }
   deleteUsageRecordShardEntries(mockUsageIds)
+}
+
+function cleanupCodexContextStateMockdata(): void {
+  assertSqliteMockdataMaintenance('cleanupCodexContextStateMockdata')
+  for (const shardIndex of codexContextStateShardIndexes()) {
+    const database = getCodexContextStateShardDatabase(shardIndex)
+    database.exec('BEGIN')
+    try {
+      database.prepare(`
+        DELETE FROM codex_context_compacts
+        WHERE compact_id LIKE ?
+           OR session_id LIKE ?
+           OR source_response_id LIKE ?
+           OR storage_key LIKE ?
+      `).run(`${idPrefix}%`, `${idPrefix}%`, `${idPrefix}%`, `${idPrefix}%`)
+      database.prepare(`
+        DELETE FROM codex_context_responses
+        WHERE response_id LIKE ?
+           OR session_id LIKE ?
+           OR previous_response_id LIKE ?
+           OR storage_key LIKE ?
+      `).run(`${idPrefix}%`, `${idPrefix}%`, `${idPrefix}%`, `${idPrefix}%`)
+      database.prepare(`
+        DELETE FROM codex_context_sessions
+        WHERE id LIKE ?
+           OR source_response_id LIKE ?
+           OR latest_response_id LIKE ?
+           OR latest_compact_id LIKE ?
+      `).run(`${idPrefix}%`, `${idPrefix}%`, `${idPrefix}%`, `${idPrefix}%`)
+      database.exec('COMMIT')
+    } catch (error) {
+      database.exec('ROLLBACK')
+      throw error
+    }
+  }
 }
 
 function assertSqliteMockdataMaintenance(operation: string): void {

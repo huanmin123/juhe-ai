@@ -59,6 +59,19 @@
 
     <a-row :gutter="[16, 16]" class="system-metrics-section">
       <a-col :xs="24">
+        <StatsChartCard
+          :title="`进程 RSS 峰值趋势（${currentWindowLabel}）`"
+          :loading="initialLoading"
+          :has-data="hasProcessMemoryTrend"
+          :empty-description="processMemoryTrendEmptyDescription"
+        >
+          <div ref="processMemoryChartRef" class="chart-panel chart-panel-large" />
+        </StatsChartCard>
+      </a-col>
+    </a-row>
+
+    <a-row :gutter="[16, 16]" class="system-metrics-section">
+      <a-col :xs="24">
         <StatsBackgroundJobsCard
           :empty-description="backgroundJobEmptyDescription"
           :has-data="hasBackgroundJobs"
@@ -74,14 +87,16 @@
 
     <a-row :gutter="[16, 16]" class="system-metrics-section">
       <a-col :xs="24">
-        <StatsChartCard
-          :title="`进程 RSS 峰值趋势（${currentWindowLabel}）`"
+        <StatsBackgroundQueuesCard
+          :empty-description="backgroundQueueEmptyDescription"
+          :has-data="hasBackgroundQueues"
           :loading="initialLoading"
-          :has-data="hasProcessMemoryTrend"
-          :empty-description="processMemoryTrendEmptyDescription"
-        >
-          <div ref="processMemoryChartRef" class="chart-panel chart-panel-large" />
-        </StatsChartCard>
+          :pagination="backgroundQueuePagination"
+          :rows="backgroundQueueRows"
+          :runtime-alert-description="systemRuntimeAlertDescription"
+          :runtime-alert-visible="systemRuntimeAlertVisible"
+          @change="handleBackgroundQueueTableChange"
+        />
       </a-col>
     </a-row>
   </div>
@@ -100,8 +115,8 @@ import { useUsageStatsWindow } from '@/composables/useUsageStatsWindow'
 import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys, todayDateRange } from '@/shared/dateRange'
 import type { SystemMetricsOverview } from '@/types/domain'
 import StatsChartCard from './StatsChartCard.vue'
+import { buildBackgroundQueueRows } from './statsBackgroundQueues'
 import { buildProcessEventLoopOption, buildProcessMemoryOption, buildSystemMetricsOption } from './statsChartOptions'
-import { formatInteger } from './statsFormatters'
 import { buildProcessEventLoopRows, hasProcessEventLoopRowSample } from './statsProcessEventLoop'
 
 const MAX_RANGE_DAYS = 31
@@ -112,6 +127,7 @@ const quickRangeOptions: Array<{ label: string; value: QuickRange }> = [
   { label: '近1月', value: 'recent1m' }
 ]
 const StatsBackgroundJobsCard = defineAsyncComponent(() => import('./StatsBackgroundJobsCard.vue'))
+const StatsBackgroundQueuesCard = defineAsyncComponent(() => import('./StatsBackgroundQueuesCard.vue'))
 const StatsProcessEventLoopTable = defineAsyncComponent(() => import('./StatsProcessEventLoopTable.vue'))
 
 type SystemMetricsPageState = {
@@ -141,6 +157,8 @@ const processEventLoopChart = shallowRef<ECharts>()
 const processMemoryChart = shallowRef<ECharts>()
 const backgroundJobPageSize = 10
 const backgroundJobPage = ref(1)
+const backgroundQueuePageSize = 10
+const backgroundQueuePage = ref(1)
 let requestSeq = 0
 
 const { pageActive, requestRender: renderCharts } = useEchartsPageLifecycle({
@@ -175,7 +193,8 @@ const processEventLoopTrendEmptyDescription = computed(() => `${currentWindowLab
 const processMemoryTrendEmptyDescription = computed(() => `${currentWindowLabel.value}暂无进程内存趋势，等待后台窗口缓存刷新`)
 const backgroundJobsAvailable = computed(() => systemMetrics.value?.backgroundJobsAvailable === true)
 const backgroundJobRows = computed(() => {
-  return [...(systemMetrics.value?.backgroundJobs ?? [])].sort((left, right) => {
+  return (systemMetrics.value?.backgroundJobs ?? []).filter(isBackgroundTaskRow).sort((left, right) => {
+    if (left.failureCount !== right.failureCount) return right.failureCount - left.failureCount
     const leftDuration = left.maxDurationMs ?? -1
     const rightDuration = right.maxDurationMs ?? -1
     if (leftDuration !== rightDuration) return rightDuration - leftDuration
@@ -190,6 +209,15 @@ const backgroundJobPagination = computed(() => ({
 }))
 const hasBackgroundJobs = computed(() => backgroundJobsAvailable.value && backgroundJobRows.value.length > 0)
 const backgroundJobEmptyDescription = computed(() => backgroundJobsAvailable.value ? '暂无后台任务' : '暂时无法获取后台 worker 任务状态')
+const backgroundQueueRows = computed(() => buildBackgroundQueueRows(systemMetrics.value))
+const backgroundQueuePagination = computed(() => ({
+  current: backgroundQueuePage.value,
+  pageSize: backgroundQueuePageSize,
+  total: backgroundQueueRows.value.length,
+  showSizeChanger: false
+}))
+const hasBackgroundQueues = computed(() => backgroundJobsAvailable.value && backgroundQueueRows.value.length > 0)
+const backgroundQueueEmptyDescription = computed(() => backgroundJobsAvailable.value ? '暂无后台队列' : '暂时无法获取后台 worker 队列状态')
 const systemRuntimeAlertVisible = computed(() => Boolean(systemMetrics.value && (
   !systemMetrics.value.runtimeSnapshotAvailable
   || systemMetrics.value.ingestWorkerSnapshotAvailable === false
@@ -281,6 +309,13 @@ function handleBackgroundJobTableChange(paginationInfo: unknown) {
   backgroundJobPage.value = Number.isFinite(current) && current > 0 ? Math.trunc(current) : 1
 }
 
+function handleBackgroundQueueTableChange(paginationInfo: unknown) {
+  if (!paginationInfo || typeof paginationInfo !== 'object') return
+  const next = paginationInfo as { current?: unknown }
+  const current = Number(next.current)
+  backgroundQueuePage.value = Number.isFinite(current) && current > 0 ? Math.trunc(current) : 1
+}
+
 async function renderSystemCharts() {
   await Promise.all([
     renderSystemMetricsChart(),
@@ -335,6 +370,10 @@ function selectedRangeParams(): { startDate?: string; endDate?: string } {
   return { startDate, endDate }
 }
 
+function isBackgroundTaskRow(row: NonNullable<SystemMetricsOverview['backgroundJobs']>[number]): boolean {
+  return row.intervalMs > 0 && !row.name.endsWith('-queue')
+}
+
 function disabledDate(current: Dayjs) {
   return isRecentWindowDateDisabled(current, calendarRange.value, usageStatsWindowMaxDays.value, usageStatsWindowEndDate.value)
 }
@@ -371,6 +410,12 @@ watch(() => backgroundJobRows.value.length, (total) => {
   const maxPage = Math.max(1, Math.ceil(total / backgroundJobPageSize))
   if (backgroundJobPage.value > maxPage) {
     backgroundJobPage.value = maxPage
+  }
+})
+watch(() => backgroundQueueRows.value.length, (total) => {
+  const maxPage = Math.max(1, Math.ceil(total / backgroundQueuePageSize))
+  if (backgroundQueuePage.value > maxPage) {
+    backgroundQueuePage.value = maxPage
   }
 })
 </script>

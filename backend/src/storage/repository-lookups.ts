@@ -4,11 +4,9 @@ import {
   canUseProcessLocalAppCacheAsFactSource,
   createAppCache,
   createSharedJsonCache,
-  throwIfRedisCacheIsRequired,
   type AppCache,
   type SharedJsonCache
 } from '../shared/cache.js'
-import { errorLogFields, logger } from '../shared/logger.js'
 import { getBusinessDatabase } from './database.js'
 import type { DatabaseClient } from './database-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
@@ -176,18 +174,9 @@ async function loadCachedRowsByIdsAsync<T extends { id: string }>(
   if (runtimeConfig.cacheDriver === 'redis') {
     const result = new Map<string, T>()
     const dbMissIds: string[] = []
-    const sharedResults = await Promise.all(ids.map(async (id) => {
-      try {
-        return [id, await sharedCache.get(id)] as const
-      } catch (error) {
-        throwIfRedisCacheIsRequired(error)
-        logger.warn(errorLogFields(error, {
-          event: 'repository_lookup_shared_cache_read_failed',
-          cacheName: sharedCache.name
-        }), '读取资源 lookup Redis 共享缓存失败')
-        return [id, undefined] as const
-      }
-    }))
+    const sharedResults = await Promise.all(ids.map(async (id) =>
+      [id, await sharedCache.get(id)] as const
+    ))
     for (const [id, cached] of sharedResults) {
       if (cached !== undefined) {
         result.set(id, cached)
@@ -528,35 +517,15 @@ function setLookupSharedCacheEntry<T extends { id: string }>(cache: SharedJsonCa
 
 async function setLookupSharedCacheEntryAsync<T extends { id: string }>(cache: SharedJsonCache<T>, id: string, value: T): Promise<void> {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  try {
-    await cache.set(id, value, { ttlMs: lookupCacheTtlMs })
-  } catch (error) {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'repository_lookup_shared_cache_write_failed',
-      cacheName: cache.name
-    }), '写入资源 lookup Redis 共享缓存失败')
-  }
+  await cache.set(id, value, { ttlMs: lookupCacheTtlMs })
 }
 
 function deleteLookupSharedCacheEntry<T extends { id: string }>(cache: SharedJsonCache<T>, id: string): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  void cache.delete(id).catch((error) => {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'repository_lookup_shared_cache_delete_failed',
-      cacheName: cache.name
-    }), '删除资源 lookup Redis 共享缓存失败')
-  })
+  void cache.delete(id)
 }
 
 function clearLookupSharedCache<T extends { id: string }>(cache: SharedJsonCache<T>): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  void cache.clear().catch((error) => {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'repository_lookup_shared_cache_clear_failed',
-      cacheName: cache.name
-    }), '清理资源 lookup Redis 共享缓存失败')
-  })
+  void cache.clear()
 }

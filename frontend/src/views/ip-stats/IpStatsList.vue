@@ -8,7 +8,7 @@
     :loading="loading"
     :pagination="tablePagination"
     :pagination-summary="false"
-    :scroll-x="1770"
+    :scroll-x="1790"
     @change="emitTableChange"
   >
     <template #emptyText>
@@ -97,7 +97,7 @@
             <strong>{{ formatCompactInteger(record.rangeUsage.cacheReadTokens) }}</strong>
           </div>
           <div class="mobile-list-meta-item">
-            <span>缓存率</span>
+            <span>缓存读占比</span>
             <strong>{{ formatPercent(cacheReadRate(record.rangeUsage)) }}</strong>
           </div>
           <div class="mobile-list-meta-item">

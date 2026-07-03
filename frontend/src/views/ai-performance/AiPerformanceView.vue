@@ -206,11 +206,11 @@ const performanceCharts = computed(() => [
 const summaryCards = computed(() => {
   const summary = overview.value?.summary
   return [
-    { key: 'requests', label: '范围请求', value: formatInteger(summary?.requestCount) },
-    { key: 'firstToken', label: '平均首 token', value: formatDuration(summary?.averageFirstTokenMs) },
-    { key: 'maxFirstToken', label: '最大首 token', value: formatDuration(summary?.maxFirstTokenMs) },
-    { key: 'duration', label: '平均总耗时', value: formatDuration(summary?.averageDurationMs) },
-    { key: 'maxDuration', label: '最大总耗时', value: formatDuration(summary?.maxDurationMs) }
+    { key: 'requests', label: '范围请求', value: formatInteger(summary?.requestCount), extra: `监控账户 ${formatInteger(visibleAccounts.value.length)} / ${currentWindowLabel.value}` },
+    { key: 'firstToken', label: '平均首 token', value: formatDuration(summary?.averageFirstTokenMs), extra: `最大首 token ${formatDuration(summary?.maxFirstTokenMs)}` },
+    { key: 'maxFirstToken', label: '最大首 token', value: formatDuration(summary?.maxFirstTokenMs), extra: `平均首 token ${formatDuration(summary?.averageFirstTokenMs)}` },
+    { key: 'duration', label: '平均总耗时', value: formatDuration(summary?.averageDurationMs), extra: `最大总耗时 ${formatDuration(summary?.maxDurationMs)}` },
+    { key: 'maxDuration', label: '最大总耗时', value: formatDuration(summary?.maxDurationMs), extra: `平均总耗时 ${formatDuration(summary?.averageDurationMs)}` }
   ]
 })
 

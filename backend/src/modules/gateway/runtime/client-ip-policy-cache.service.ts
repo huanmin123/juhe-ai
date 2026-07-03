@@ -1,6 +1,6 @@
 import { runtimeConfig } from '../../../config/runtime.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
-import { createAppCache, createSharedJsonCache, throwIfRedisCacheIsRequired } from '../../../shared/cache.js'
+import { createAppCache, createSharedJsonCache } from '../../../shared/cache.js'
 import {
   listActiveClientIpPoliciesAsync,
   normalizeClientIpForStats,
@@ -257,37 +257,21 @@ function clientIpPolicyHitInput(policy: ActiveClientIpPolicy, hitCount: number):
 }
 
 async function getActivePolicySnapshotSharedCacheEntry(): Promise<ClientIpPolicySnapshotCacheEntry | undefined> {
-  try {
-    const cached = await activePolicySnapshotSharedCache.get(activePolicySnapshotSharedCacheKey)
-    if (!cached || !Array.isArray(cached.policies)) return undefined
-    return {
-      loadedAt: typeof cached.loadedAt === 'string' ? cached.loadedAt : new Date().toISOString(),
-      policies: cached.policies
-        .filter(isActiveClientIpPolicy)
-        .map(cloneActiveClientIpPolicy)
-    }
-  } catch (error) {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'client_ip_policy_snapshot_shared_cache_read_failed'
-    }), '读取 IP 封禁策略 Redis shared cache 失败')
-    return undefined
+  const cached = await activePolicySnapshotSharedCache.get(activePolicySnapshotSharedCacheKey)
+  if (!cached || !Array.isArray(cached.policies)) return undefined
+  return {
+    loadedAt: typeof cached.loadedAt === 'string' ? cached.loadedAt : new Date().toISOString(),
+    policies: cached.policies
+      .filter(isActiveClientIpPolicy)
+      .map(cloneActiveClientIpPolicy)
   }
 }
 
 async function setActivePolicySnapshotSharedCacheEntry(entry: ClientIpPolicySnapshotCacheEntry): Promise<void> {
-  try {
-    await activePolicySnapshotSharedCache.set(activePolicySnapshotSharedCacheKey, {
-      loadedAt: entry.loadedAt,
-      policies: entry.policies.map(cloneActiveClientIpPolicy)
-    }, { ttlMs: clientIpPolicyCacheTtlMs })
-  } catch (error) {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'client_ip_policy_snapshot_shared_cache_write_failed',
-      policyCount: entry.policies.length
-    }), '写入 IP 封禁策略 Redis shared cache 失败')
-  }
+  await activePolicySnapshotSharedCache.set(activePolicySnapshotSharedCacheKey, {
+    loadedAt: entry.loadedAt,
+    policies: entry.policies.map(cloneActiveClientIpPolicy)
+  }, { ttlMs: clientIpPolicyCacheTtlMs })
 }
 
 async function loadClientIpPolicySnapshotFromSharedCacheOrDatabase(): Promise<ClientIpPolicySnapshotCacheEntry> {
@@ -315,14 +299,7 @@ function snapshotCacheEntryFromPolicies(policies: ActiveClientIpPolicy[]): Clien
 }
 
 async function clearActivePolicySnapshotSharedCache(): Promise<void> {
-  try {
-    await activePolicySnapshotSharedCache.clear()
-  } catch (error) {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'client_ip_policy_snapshot_shared_cache_clear_failed'
-    }), '清理 IP 封禁策略 Redis shared cache 失败')
-  }
+  await activePolicySnapshotSharedCache.clear()
 }
 
 function isActiveClientIpPolicy(value: unknown): value is ActiveClientIpPolicy {

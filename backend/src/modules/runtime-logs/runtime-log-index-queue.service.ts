@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { runtimeConfig } from '../../config/runtime.js'
 import { scheduleProcessFatalError } from '../../shared/process-fatal.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
-import { RedisStreamQueue, type RedisStreamMessage } from '../../shared/redis-stream-queue.js'
+import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime } from '../../shared/redis-stream-queue.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import { nowIso } from '../../storage/database.js'
 import {
@@ -536,6 +536,11 @@ function runtimeLogRedisStreamQueue(): RedisStreamQueue<RuntimeLogIndexInput> {
     })
   }
   return runtimeLogRedisStreamQueueInstance
+}
+
+export async function getRuntimeLogRedisStreamRuntime(): Promise<RedisStreamQueueRuntime | undefined> {
+  if (!shouldUseRedisStreamRuntimeLogQueue()) return undefined
+  return await runtimeLogRedisStreamQueue().inspectRuntime()
 }
 
 function sendRuntimeLogLineFromDbServiceToServer(rawLine: string, options: RuntimeLogLineIndexOptions): void {

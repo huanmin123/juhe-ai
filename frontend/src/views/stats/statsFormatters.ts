@@ -25,10 +25,6 @@ export function formatDurationSeconds(value?: number) {
   return formatMillisecondsAsSeconds(value)
 }
 
-export function formatSeconds(value?: number) {
-  return value === undefined ? '未知' : `${Math.round(value)} 秒`
-}
-
 export function bytesPerSecondToMbps(value?: number) {
   return value === undefined ? null : (value * 8) / 1_000_000
 }

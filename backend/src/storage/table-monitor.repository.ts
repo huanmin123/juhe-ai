@@ -2,7 +2,23 @@ import { basename } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 
 import { runtimeConfig } from '../config/runtime.js'
-import { beginDatabaseTransaction, commitDatabaseTransaction, datasetDatabasePath, getBusinessDatabase, getDatasetDatabase, getStatsDatabase, getUsageCatalogDatabase, newId, nowIso, rollbackDatabaseTransaction, statsDatabasePath, usageCatalogDatabasePath } from './database.js'
+import {
+  beginDatabaseTransaction,
+  codexContextStateShardIndexes,
+  codexContextStateShardRootPath,
+  commitDatabaseTransaction,
+  datasetDatabasePath,
+  getBusinessDatabase,
+  getCodexContextStateShardDatabase,
+  getDatasetDatabase,
+  getStatsDatabase,
+  getUsageCatalogDatabase,
+  newId,
+  nowIso,
+  rollbackDatabaseTransaction,
+  statsDatabasePath,
+  usageCatalogDatabasePath
+} from './database.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
@@ -63,6 +79,7 @@ interface MonitoredDatabaseTarget {
   role: MonitoredDatabaseRole
   path: string
   database: DatabaseSync
+  aggregateDatabases?: DatabaseSync[]
 }
 
 interface PreparedTableMonitorTarget {
@@ -155,7 +172,9 @@ export function collectTableStorageSnapshot(sampledAt = nowIso(), options: Colle
   const targets = monitoredDatabaseTargets()
   const preparedTargets: PreparedTableMonitorTarget[] = targets.map((target) => {
     const tables = listTargetTables(target.database)
-    const indexesByTable = listIndexesByTable(target.database)
+    const indexesByTable = target.aggregateDatabases?.length
+      ? listAggregateIndexesByTable(target.aggregateDatabases, tables)
+      : listIndexesByTable(target.database)
     const tableSelection = selectTableScan(getStatsDatabase(), target.role, tables, tableScanMode, options.maxTablesPerDatabase ?? 4)
     const tableRows = collectTargetTableRows(target, sampledAt, tableSelection.tableNames, indexesByTable)
     return {
@@ -444,11 +463,21 @@ export async function cleanupTableStorageSnapshotsBeforeAsync(cutoffIso: string,
 }
 
 function monitoredDatabaseTargets(): MonitoredDatabaseTarget[] {
+  const codexContextStateShardDatabases = codexContextStateShardIndexes().map((shardIndex) => getCodexContextStateShardDatabase(shardIndex))
+  const codexContextStatePrimaryDatabase = codexContextStateShardDatabases[0]
   return [
     { role: 'business', path: runtimeConfig.databasePath, database: getBusinessDatabase() },
     { role: 'dataset', path: datasetDatabasePath(), database: getDatasetDatabase() },
     { role: 'usage-catalog', path: usageCatalogDatabasePath(), database: getUsageCatalogDatabase() },
-    { role: 'stats', path: statsDatabasePath(), database: getStatsDatabase() }
+    { role: 'stats', path: statsDatabasePath(), database: getStatsDatabase() },
+    ...(codexContextStatePrimaryDatabase
+      ? [{
+          role: 'codex-context-state' as const,
+          path: codexContextStateShardRootPath(),
+          database: codexContextStatePrimaryDatabase,
+          aggregateDatabases: codexContextStateShardDatabases
+        }]
+      : [])
   ]
 }
 
@@ -458,6 +487,9 @@ function collectTargetTableRows(
   tableNames: string[],
   indexesByTable: Map<string, string[]>
 ): TableStorageSnapshotSummary[] {
+  if (target.aggregateDatabases?.length) {
+    return collectAggregateTargetTableRows(target, sampledAt, tableNames)
+  }
   const objectNames = new Set<string>()
   for (const tableName of tableNames) {
     objectNames.add(tableName)
@@ -497,10 +529,63 @@ function collectTargetTableRows(
   })
 }
 
+function collectAggregateTargetTableRows(
+  target: MonitoredDatabaseTarget,
+  sampledAt: string,
+  tableNames: string[]
+): TableStorageSnapshotSummary[] {
+  const databases = target.aggregateDatabases?.length ? target.aggregateDatabases : [target.database]
+  return tableNames.map((tableName) => {
+    let rowCount = 0
+    let tableBytes = 0
+    let indexBytes = 0
+    let pageCount = 0
+    let indexCount = 0
+    let hasDbstat = true
+    for (const database of databases) {
+      rowCount += tableRowCount(database, tableName)
+      const indexNames = listIndexesByTable(database).get(tableName) ?? []
+      indexCount += indexNames.length
+      const dbstatSizes = loadDbstatObjectSizes(database, [tableName, ...indexNames])
+      if (!dbstatSizes) {
+        hasDbstat = false
+        continue
+      }
+      const tableSize = dbstatSizes.get(tableName)
+      tableBytes += Number(tableSize?.bytes ?? 0)
+      pageCount += Number(tableSize?.page_count ?? 0)
+      for (const indexName of indexNames) {
+        const indexSize = dbstatSizes.get(indexName)
+        indexBytes += Number(indexSize?.bytes ?? 0)
+        pageCount += Number(indexSize?.page_count ?? 0)
+      }
+    }
+    const totalBytes = hasDbstat ? tableBytes + indexBytes : undefined
+    const previous1h = findPreviousTableSnapshot(target.role, tableName, sampledAt, 60)
+    const previous24h = findPreviousTableSnapshot(target.role, tableName, sampledAt, 24 * 60)
+    return {
+      databaseRole: target.role,
+      tableName,
+      sampledAt,
+      rowCount,
+      tableBytes: hasDbstat ? tableBytes : undefined,
+      indexBytes: hasDbstat ? indexBytes : undefined,
+      totalBytes,
+      pageCount: hasDbstat ? pageCount : undefined,
+      indexCount,
+      growthBytes1h: previous1h && totalBytes !== undefined && previous1h.total_bytes !== null ? totalBytes - previous1h.total_bytes : undefined,
+      growthRows1h: previous1h && previous1h.row_count !== null ? rowCount - previous1h.row_count : undefined,
+      growthBytes24h: previous24h && totalBytes !== undefined && previous24h.total_bytes !== null ? totalBytes - previous24h.total_bytes : undefined,
+      growthRows24h: previous24h && previous24h.row_count !== null ? rowCount - previous24h.row_count : undefined
+    }
+  })
+}
+
 function insertDatabaseSnapshot(database: DatabaseSync, target: MonitoredDatabaseTarget, sampledAt: string, tableCount: number, indexCount: number): void {
-  const pageSize = pragmaNumber(target.database, 'page_size')
-  const pageCount = pragmaNumber(target.database, 'page_count')
-  const freelistCount = pragmaNumber(target.database, 'freelist_count')
+  const storageStats = databaseStorageStats(target)
+  const pageSize = storageStats.pageSize
+  const pageCount = storageStats.pageCount
+  const freelistCount = storageStats.freelistCount
   const fileBytes = estimateDatabaseMainFileBytes(pageSize, pageCount)
   const freeBytes = pageSize !== undefined && freelistCount !== undefined ? pageSize * freelistCount : undefined
   const usedBytes = pageSize !== undefined && pageCount !== undefined && freelistCount !== undefined ? pageSize * Math.max(0, pageCount - freelistCount) : undefined
@@ -526,6 +611,25 @@ function insertDatabaseSnapshot(database: DatabaseSync, target: MonitoredDatabas
     indexCount,
     sampledAt
   )
+}
+
+function databaseStorageStats(target: MonitoredDatabaseTarget): { pageSize?: number; pageCount?: number; freelistCount?: number } {
+  const databases = target.aggregateDatabases?.length ? target.aggregateDatabases : [target.database]
+  if (databases.length === 1) {
+    return {
+      pageSize: pragmaNumber(databases[0], 'page_size'),
+      pageCount: pragmaNumber(databases[0], 'page_count'),
+      freelistCount: pragmaNumber(databases[0], 'freelist_count')
+    }
+  }
+  const pageSize = pragmaNumber(databases[0], 'page_size')
+  let pageCount = 0
+  let freelistCount = 0
+  for (const database of databases) {
+    pageCount += pragmaNumber(database, 'page_count') ?? 0
+    freelistCount += pragmaNumber(database, 'freelist_count') ?? 0
+  }
+  return { pageSize, pageCount, freelistCount }
 }
 
 function insertTableSnapshots(database: DatabaseSync, target: MonitoredDatabaseTarget, sampledAt: string, tables: TableStorageSnapshotSummary[]): void {
@@ -586,6 +690,30 @@ function listIndexesByTable(database: DatabaseSync): Map<string, string[]> {
     result.set(row.tbl_name, [...(result.get(row.tbl_name) ?? []), row.name])
   }
   return result
+}
+
+function listAggregateIndexesByTable(databases: DatabaseSync[], tableNames: string[]): Map<string, string[]> {
+  const result = new Map<string, string[]>()
+  for (const [databaseIndex, database] of databases.entries()) {
+    const indexesByTable = listIndexesByTable(database)
+    for (const tableName of tableNames) {
+      const aggregateIndexes = result.get(tableName) ?? []
+      for (const indexName of indexesByTable.get(tableName) ?? []) {
+        aggregateIndexes.push(`${databaseIndex}:${indexName}`)
+      }
+      result.set(tableName, aggregateIndexes)
+    }
+  }
+  return result
+}
+
+function tableRowCount(database: DatabaseSync, tableName: string): number {
+  const row = database.prepare(`SELECT COUNT(*) AS total FROM ${quoteIdentifier(tableName)}`).get() as { total?: number } | undefined
+  return Number(row?.total ?? 0)
+}
+
+function quoteIdentifier(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`
 }
 
 function loadDbstatObjectSizes(database: DatabaseSync, objectNames: string[]): Map<string, ObjectSizeRow> | undefined {

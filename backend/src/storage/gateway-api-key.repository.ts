@@ -1,6 +1,5 @@
-import { createAppCache, createSharedJsonCache, throwIfRedisCacheIsRequired } from '../shared/cache.js'
+import { createAppCache, createSharedJsonCache } from '../shared/cache.js'
 import { syncGatewayCacheInvalidationsFromRuntimeState } from '../shared/gateway-cache-invalidation.js'
-import { errorLogFields, logger } from '../shared/logger.js'
 import { maxRouteStrategyGroupBindings } from './route-strategy-group-binding-limits.js'
 import {
   normalizeApiKeyGroupBindingWeight
@@ -507,21 +506,13 @@ function cloneGatewayApiKeyRow(row: GatewayApiKeyRow): GatewayApiKeyRow {
 
 async function getGatewayApiKeySharedCacheEntry(keyHash: string): Promise<GatewayApiKeyCacheEntry | undefined> {
   if (runtimeConfig.cacheDriver !== 'redis') return undefined
-  try {
-    const entry = await gatewayApiKeySharedCache.get(keyHash)
-    return entry
-      ? {
-          row: cloneGatewayApiKeyRow(entry.row),
-          forceRevalidateAtMs: entry.forceRevalidateAtMs
-        }
-      : undefined
-  } catch (error) {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_api_key_validation_shared_cache_read_failed'
-    }), '读取 API Key 校验 Redis 共享缓存失败')
-    return undefined
-  }
+  const entry = await gatewayApiKeySharedCache.get(keyHash)
+  return entry
+    ? {
+        row: cloneGatewayApiKeyRow(entry.row),
+        forceRevalidateAtMs: entry.forceRevalidateAtMs
+      }
+    : undefined
 }
 
 async function setGatewayApiKeySharedCacheEntry(
@@ -530,35 +521,17 @@ async function setGatewayApiKeySharedCacheEntry(
   options: { ttlMs?: number } = {}
 ): Promise<void> {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  try {
-    await gatewayApiKeySharedCache.set(keyHash, {
-      row: cloneGatewayApiKeyRow(entry.row),
-      forceRevalidateAtMs: entry.forceRevalidateAtMs
-    }, { ttlMs: options.ttlMs ?? GATEWAY_API_KEY_CACHE_TTL_MS })
-  } catch (error) {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_api_key_validation_shared_cache_write_failed'
-    }), '写入 API Key 校验 Redis 共享缓存失败')
-  }
+  await gatewayApiKeySharedCache.set(keyHash, {
+    row: cloneGatewayApiKeyRow(entry.row),
+    forceRevalidateAtMs: entry.forceRevalidateAtMs
+  }, { ttlMs: options.ttlMs ?? GATEWAY_API_KEY_CACHE_TTL_MS })
 }
 
 function clearGatewayApiKeySharedCache(): void {
-  void clearGatewayApiKeySharedCacheAsync().catch((error) => {
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_api_key_validation_shared_cache_clear_failed'
-    }), '清理 API Key 校验 Redis 共享缓存失败')
-  })
+  void clearGatewayApiKeySharedCacheAsync()
 }
 
 async function clearGatewayApiKeySharedCacheAsync(): Promise<void> {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  try {
-    await gatewayApiKeySharedCache.clear()
-  } catch (error) {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_api_key_validation_shared_cache_clear_failed'
-    }), '清理 API Key 校验 Redis 共享缓存失败')
-  }
+  await gatewayApiKeySharedCache.clear()
 }

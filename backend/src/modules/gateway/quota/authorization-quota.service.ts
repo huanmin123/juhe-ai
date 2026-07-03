@@ -1,4 +1,4 @@
-import { createAppCache, createSharedJsonCache, throwIfRedisCacheIsRequired } from '../../../shared/cache.js'
+import { createAppCache, createSharedJsonCache } from '../../../shared/cache.js'
 import { registerAuthorizationQuotaCacheInvalidator, syncGatewayCacheInvalidationsFromRuntimeState } from '../../../shared/gateway-cache-invalidation.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
@@ -575,27 +575,12 @@ async function setAuthorizationQuotaCacheEntryAsync(cacheKey: string, entry: Aut
 
 async function getAuthorizationQuotaSharedCacheEntry(cacheKey: string): Promise<AuthorizationQuotaCacheEntry | undefined> {
   if (runtimeConfig.cacheDriver !== 'redis') return undefined
-  try {
-    return await authorizationQuotaSharedCache.get(sharedQuotaCacheKey(cacheKey))
-  } catch (error) {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_authorization_quota_shared_cache_read_failed'
-    }), '读取授权额度 Redis 共享缓存失败')
-    return undefined
-  }
+  return await authorizationQuotaSharedCache.get(sharedQuotaCacheKey(cacheKey))
 }
 
 async function setAuthorizationQuotaSharedCacheEntry(cacheKey: string, entry: AuthorizationQuotaCacheEntry): Promise<void> {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  try {
-    await authorizationQuotaSharedCache.set(sharedQuotaCacheKey(cacheKey), entry, { ttlMs: AUTHORIZATION_QUOTA_CACHE_TTL_MS })
-  } catch (error) {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_authorization_quota_shared_cache_write_failed'
-    }), '写入授权额度 Redis 共享缓存失败')
-  }
+  await authorizationQuotaSharedCache.set(sharedQuotaCacheKey(cacheKey), entry, { ttlMs: AUTHORIZATION_QUOTA_CACHE_TTL_MS })
 }
 
 function clearAuthorizationQuotaSharedCache(): void {
@@ -605,14 +590,7 @@ function clearAuthorizationQuotaSharedCache(): void {
 
 async function clearAuthorizationQuotaSharedCacheAsync(): Promise<void> {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  try {
-    await authorizationQuotaSharedCache.clear()
-  } catch (error) {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_authorization_quota_shared_cache_clear_failed'
-    }), '清理授权额度 Redis 共享缓存失败')
-  }
+  await authorizationQuotaSharedCache.clear()
 }
 
 function sharedQuotaCacheKey(cacheKey: string): string {

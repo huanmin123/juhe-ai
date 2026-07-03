@@ -130,11 +130,6 @@ export function canUseProcessLocalAppCacheAsFactSource(): boolean {
   return runtimeConfig.cacheDriver !== 'redis'
 }
 
-export function throwIfRedisCacheIsRequired(error: unknown): void {
-  if (runtimeConfig.cacheDriver !== 'redis') return
-  throw error instanceof Error ? error : new Error(String(error))
-}
-
 export function createSharedJsonCache<V extends {}>(options: SharedJsonCacheOptions<V>): SharedJsonCache<V> {
   return new DriverSharedJsonCache(options)
 }

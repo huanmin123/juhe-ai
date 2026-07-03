@@ -28,6 +28,7 @@ import type {
   CodexContextResponseStateIndexInput,
   CodexContextStateBoundary
 } from '../../storage/codex-context-state.repository.js'
+import type { CodexContextStateWriterPoolRuntime } from '../../storage/codex-context-state-writer-pool.js'
 import type {
   OpenAICompatibleFileCreateInput,
   OpenAICompatibleFileListOptions,
@@ -124,6 +125,7 @@ export interface DbServiceRuntimeSnapshot {
   failedRequestCount: number
   lastRequestAt?: string
   lastError?: string
+  codexContextStateWriterPool?: CodexContextStateWriterPoolRuntime
 }
 
 export interface DbServiceServerRuntimeSnapshot {
@@ -305,7 +307,14 @@ export interface DbServiceServerRuntimeSnapshot {
     unavailableCircuitOpenUntil?: string
     httpHost?: string
     httpPort?: number
+    codexContextStateWriterPool?: CodexContextStateWriterPoolRuntime
   }
+  highConcurrencyQueues?: Array<{
+    groupKey: string
+    lane: string
+    queueSize: number
+    perApiKeyQueueSize: Record<string, number>
+  }>
   gatewayAccountSideEffects?: Record<string, unknown>
   activeAuditCaptureCount?: number
 }

@@ -31,7 +31,7 @@ import {
   normalizeProviderToken
 } from '../../domain/provider-protocol.js'
 import { listOpenAIProtocolProviderCodes, listOpenAIProtocolProviderCodesAsync } from '../../storage/provider.repository.js'
-import { createAppCache, createSharedJsonCache, throwIfRedisCacheIsRequired } from '../../shared/cache.js'
+import { createAppCache, createSharedJsonCache } from '../../shared/cache.js'
 import { registerGatewayRuntimeCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
 import { modelPricingProviderDriverForProvider } from './provider-driver.registry.js'
 import { runtimeConfig } from '../../config/runtime.js'
@@ -752,16 +752,8 @@ function sumCostParts(...parts: Array<number | undefined>): number | undefined {
 
 async function getProviderModelCatalogSharedCacheEntry(cacheKey: string): Promise<ProviderModelCatalogItem[] | undefined> {
   if (runtimeConfig.cacheDriver !== 'redis') return undefined
-  try {
-    const cached = await providerModelCatalogSharedCache.get(cacheKey)
-    return cached ? cloneProviderModelCatalogItems(cached) : undefined
-  } catch (error) {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'model_catalog_shared_cache_read_failed'
-    }), '读取模型目录 Redis 共享缓存失败')
-    return undefined
-  }
+  const cached = await providerModelCatalogSharedCache.get(cacheKey)
+  return cached ? cloneProviderModelCatalogItems(cached) : undefined
 }
 
 async function setProviderModelCatalogCacheEntryAsync(cacheKey: string, value: ProviderModelCatalogItem[]): Promise<void> {
@@ -772,24 +764,12 @@ async function setProviderModelCatalogCacheEntryAsync(cacheKey: string, value: P
 
 async function setProviderModelCatalogSharedCacheEntry(cacheKey: string, value: ProviderModelCatalogItem[]): Promise<void> {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  try {
-    await providerModelCatalogSharedCache.set(cacheKey, cloneProviderModelCatalogItems(value), { ttlMs: modelCatalogCacheTtlMs })
-  } catch (error) {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'model_catalog_shared_cache_write_failed'
-    }), '写入模型目录 Redis 共享缓存失败')
-  }
+  await providerModelCatalogSharedCache.set(cacheKey, cloneProviderModelCatalogItems(value), { ttlMs: modelCatalogCacheTtlMs })
 }
 
 function clearProviderModelCatalogSharedCache(): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  void providerModelCatalogSharedCache.clear().catch((error) => {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'model_catalog_shared_cache_clear_failed'
-    }), '清理模型目录 Redis 共享缓存失败')
-  })
+  void providerModelCatalogSharedCache.clear()
 }
 
 function clearProviderModelCatalogCaches(): void {

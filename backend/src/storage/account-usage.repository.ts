@@ -12,7 +12,6 @@ import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
-import { latestUsageStatsLagSeconds, latestUsageStatsLagSecondsForRuntime } from './usage-stats.repository.js'
 import { emptyAccountUsageSummary, usageSummaryFromAggregate } from './usage-stats-helpers.js'
 import { GLOBAL_STATS_SCOPE_ID, GLOBAL_STATS_SYSTEM_ACCOUNT_ID } from './usage-stats-types.js'
 import { loadUsageDailySeriesForScopeRequests, loadUsageDailySeriesForScopeRequestsAsync, type UsageStatsDailySeries } from './usage-window-loaders.js'
@@ -61,8 +60,7 @@ export function getAccountUsageStatsOverview(input: {
     total: input.total ?? input.accounts.length,
     hasMore: false,
     page: input.page ?? 1,
-    pageSize: input.pageSize ?? input.accounts.length,
-    statsLagSeconds: latestUsageStatsLagSeconds()
+    pageSize: input.pageSize ?? input.accounts.length
   }
 }
 
@@ -208,8 +206,7 @@ export function getAccountUsageStatsOverviewPageFromWindows(input: AccountUsageS
     total: Math.max(pagedTotalUpperBound(page, pageSize, pageRows.rows.length, pageRows.hasMore), (page - 1) * pageSize + overviewRows.length),
     hasMore: pageRows.hasMore,
     page,
-    pageSize,
-    statsLagSeconds: latestUsageStatsLagSeconds()
+    pageSize
   }
 }
 
@@ -280,10 +277,9 @@ export async function getAccountUsageStatsOverviewPageFromWindowsAsync(input: Ac
     scopeType: usageScope.scopeType,
     scopeId: row.scope_id
   }))
-  const [dailySeriesByRowKey, summary, statsLagSeconds] = await Promise.all([
+  const [dailySeriesByRowKey, summary] = await Promise.all([
     loadUsageDailySeriesForScopeRequestsAsync(scopes, input.range),
-    loadAccountUsageOverviewSummaryAsync(client, input.access, input.range),
-    latestUsageStatsLagSecondsForRuntime()
+    loadAccountUsageOverviewSummaryAsync(client, input.access, input.range)
   ])
   const overviewRows = sourceRows.flatMap((row): AccountUsageStatsRow[] => {
     const metadata = metadataById.get(row.scope_id)
@@ -318,8 +314,7 @@ export async function getAccountUsageStatsOverviewPageFromWindowsAsync(input: Ac
     total: Math.max(pagedTotalUpperBound(page, pageSize, pageRows.rows.length, pageRows.hasMore), (page - 1) * pageSize + overviewRows.length),
     hasMore: pageRows.hasMore,
     page,
-    pageSize,
-    statsLagSeconds
+    pageSize
   }
 }
 
@@ -427,8 +422,7 @@ function emptyAccountUsageStatsOverview(input: AccountUsageStatsPageOptions, pag
     total: 0,
     hasMore: false,
     page,
-    pageSize,
-    statsLagSeconds: latestUsageStatsLagSeconds()
+    pageSize
   }
 }
 

@@ -13,7 +13,7 @@ import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { averageFromSum, hourKey, usageStatsTimezone, usageStatsTimezoneAsync } from './usage-stats-helpers.js'
-import { latestUsageStatsLagSeconds, normalizeDefaultUsageStatsRange } from './usage-stats-runtime-helpers.js'
+import { normalizeDefaultUsageStatsRange } from './usage-stats-runtime-helpers.js'
 import {
   GLOBAL_STATS_SYSTEM_ACCOUNT_ID
 } from './usage-stats-types.js'
@@ -71,10 +71,8 @@ export function getAiPerformanceOverview(access?: AccessScope, range: AccountUsa
       return {
         statHour,
         requestCount,
-        firstTokenCount,
         averageFirstTokenMs: averageFromSum(row?.first_token_ms_sum, row?.first_token_ms_count),
         maxFirstTokenMs: maxFromCountedMetric(row?.first_token_ms_max, firstTokenCount),
-        durationCount,
         averageDurationMs: averageFromSum(row?.duration_ms_sum, row?.duration_ms_count),
         maxDurationMs: maxFromCountedMetric(row?.duration_ms_max, durationCount)
       }
@@ -89,14 +87,11 @@ export function getAiPerformanceOverview(access?: AccessScope, range: AccountUsa
     hourlySeries,
     summary: {
       requestCount: Number(summaryRow?.request_count ?? 0),
-      firstTokenCount: Number(summaryRow?.first_token_ms_count ?? 0),
       averageFirstTokenMs: averageFromSum(summaryRow?.first_token_ms_sum, summaryRow?.first_token_ms_count),
       maxFirstTokenMs: maxFromCountedMetric(summaryRow?.first_token_ms_max, Number(summaryRow?.first_token_ms_count ?? 0)),
-      durationCount: Number(summaryRow?.duration_ms_count ?? 0),
       averageDurationMs: averageFromSum(summaryRow?.duration_ms_sum, summaryRow?.duration_ms_count),
       maxDurationMs: maxFromCountedMetric(summaryRow?.duration_ms_max, Number(summaryRow?.duration_ms_count ?? 0))
-    },
-    statsLagSeconds: latestUsageStatsLagSeconds()
+    }
   }
 }
 
@@ -124,12 +119,11 @@ export async function getAiPerformanceOverviewAsync(access?: AccessScope, range?
   const selectedIds = new Set(selectedRows.map((row) => row.id))
   const orderedRows = dedupeAiPerformanceAccountRows([...defaultRows, ...selectedRows])
   const accounts = orderedRows.map((row) => mapAiPerformanceAccount(row, defaultIds, selectedIds))
-  const [hourlyRows, summaryRow, statsLagSeconds] = await Promise.all([
+  const [hourlyRows, summaryRow] = await Promise.all([
     accounts.length
       ? loadAiPerformanceHourlyRowsAsync(client, scope, accounts.map((account) => account.id), windowSinceHour, windowEndHour)
       : Promise.resolve([]),
-    loadAiPerformanceSummaryRowAsync(client, scope.systemAccountId, normalizedRange),
-    latestUsageStatsLagSecondsAsync(client)
+    loadAiPerformanceSummaryRowAsync(client, scope.systemAccountId, normalizedRange)
   ])
   const hourlyRowsByAccountHour = new Map(hourlyRows.map((row) => [`${row.scope_id}\n${row.stat_hour}`, row]))
   const hourlySeries = accounts.map((account) => ({
@@ -145,10 +139,8 @@ export async function getAiPerformanceOverviewAsync(access?: AccessScope, range?
       return {
         statHour,
         requestCount,
-        firstTokenCount,
         averageFirstTokenMs: averageFromSum(row?.first_token_ms_sum, row?.first_token_ms_count),
         maxFirstTokenMs: maxFromCountedMetric(row?.first_token_ms_max, firstTokenCount),
-        durationCount,
         averageDurationMs: averageFromSum(row?.duration_ms_sum, row?.duration_ms_count),
         maxDurationMs: maxFromCountedMetric(row?.duration_ms_max, durationCount)
       }
@@ -163,14 +155,11 @@ export async function getAiPerformanceOverviewAsync(access?: AccessScope, range?
     hourlySeries,
     summary: {
       requestCount: Number(summaryRow?.request_count ?? 0),
-      firstTokenCount: Number(summaryRow?.first_token_ms_count ?? 0),
       averageFirstTokenMs: averageFromSum(summaryRow?.first_token_ms_sum, summaryRow?.first_token_ms_count),
       maxFirstTokenMs: maxFromCountedMetric(summaryRow?.first_token_ms_max, Number(summaryRow?.first_token_ms_count ?? 0)),
-      durationCount: Number(summaryRow?.duration_ms_count ?? 0),
       averageDurationMs: averageFromSum(summaryRow?.duration_ms_sum, summaryRow?.duration_ms_count),
       maxDurationMs: maxFromCountedMetric(summaryRow?.duration_ms_max, Number(summaryRow?.duration_ms_count ?? 0))
-    },
-    statsLagSeconds
+    }
   }
 }
 
@@ -901,28 +890,6 @@ function aiPerformanceVisibleAccountFilterForClient(client: DatabaseClient, scop
   }
 }
 
-async function latestUsageStatsLagSecondsAsync(client: DatabaseClient): Promise<number | undefined> {
-  const shardRow = await client.one<{ lag_seconds?: number | string | null }>(`
-    SELECT MAX(lag_seconds) AS lag_seconds
-    FROM ${statsTable(client, 'stats_job_state')}
-    WHERE scope_type = 'usage_shard'
-      AND job_name = 'usage_stats_aggregation'
-  `)
-  const shardLag = numberOrUndefined(shardRow?.lag_seconds)
-  if (shardLag !== undefined) {
-    return shardLag
-  }
-  const row = await client.one<{ lag_seconds?: number | string | null }>(`
-    SELECT lag_seconds
-    FROM ${statsTable(client, 'stats_job_state')}
-    WHERE scope_type = 'global'
-      AND scope_id = ''
-      AND job_name = 'usage_stats_aggregation'
-    LIMIT 1
-  `)
-  return numberOrUndefined(row?.lag_seconds)
-}
-
 function statsTable(client: DatabaseClient, tableName: string): string {
   return client.dialect.qualifyTable('juhe_stats', tableName)
 }
@@ -952,9 +919,4 @@ function boundedAccountOptionLimit(value?: number): number {
 function maxFromCountedMetric(value: unknown, count: number): number | undefined {
   const number = Number(value ?? 0)
   return count > 0 && Number.isFinite(number) ? Math.max(0, Math.round(number)) : undefined
-}
-
-function numberOrUndefined(value: unknown): number | undefined {
-  const number = Number(value)
-  return Number.isFinite(number) ? number : undefined
 }

@@ -38,7 +38,7 @@
       </template>
       <template v-else-if="column.key === 'status'">
         <a-tag :color="record.latestSampleAvailable ? 'success' : 'warning'">
-          {{ record.latestSampleAvailable ? '正常' : '缺样本' }}
+          {{ record.latestSampleAvailable ? '正常' : '数据缺失' }}
         </a-tag>
       </template>
     </template>
@@ -47,7 +47,7 @@
         <div class="process-event-loop-card-head">
           <strong>{{ processRoleLabel(record.processRole) }}</strong>
           <a-tag :color="record.latestSampleAvailable ? 'success' : 'warning'">
-            {{ record.latestSampleAvailable ? '正常' : '缺样本' }}
+            {{ record.latestSampleAvailable ? '正常' : '数据缺失' }}
           </a-tag>
         </div>
         <div class="mobile-list-meta-grid">

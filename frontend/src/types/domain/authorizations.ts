@@ -214,5 +214,4 @@ export interface AccountUsageStatsOverview {
   hasMore: boolean
   page: number
   pageSize: number
-  statsLagSeconds?: number
 }

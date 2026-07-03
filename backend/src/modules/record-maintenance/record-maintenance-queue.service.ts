@@ -7,7 +7,7 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { scheduleProcessFatalError } from '../../shared/process-fatal.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
-import { RedisStreamQueue, type RedisStreamMessage } from '../../shared/redis-stream-queue.js'
+import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime } from '../../shared/redis-stream-queue.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import {
   cleanupNonBusinessDataBeforeWithResult,
@@ -496,6 +496,11 @@ function recordMaintenanceRedisStreamQueue(): RedisStreamQueue<RecordMaintenance
     })
   }
   return recordMaintenanceRedisStreamQueueInstance
+}
+
+export async function getRecordMaintenanceRedisStreamRuntime(): Promise<RedisStreamQueueRuntime | undefined> {
+  if (!shouldUseRedisStreamRecordMaintenanceQueue()) return undefined
+  return await recordMaintenanceRedisStreamQueue().inspectRuntime()
 }
 
 async function processRecordMaintenanceJob(job: RecordMaintenanceJob): Promise<void> {

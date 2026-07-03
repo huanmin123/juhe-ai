@@ -67,10 +67,8 @@ export interface AiPerformanceAccountOption {
 export interface AiPerformancePoint {
   statHour: string
   requestCount: number
-  firstTokenCount: number
   averageFirstTokenMs?: number
   maxFirstTokenMs?: number
-  durationCount: number
   averageDurationMs?: number
   maxDurationMs?: number
 }
@@ -91,14 +89,11 @@ export interface AiPerformanceOverview {
   hourlySeries: AiPerformanceAccountSeries[]
   summary: {
     requestCount: number
-    firstTokenCount: number
     averageFirstTokenMs?: number
     maxFirstTokenMs?: number
-    durationCount: number
     averageDurationMs?: number
     maxDurationMs?: number
   }
-  statsLagSeconds?: number
 }
 
 export interface UsageStatsOverview {
@@ -146,7 +141,6 @@ export interface UsageStatsOverview {
     errorMessage?: string
     errorCount: number
   }>
-  statsLagSeconds?: number
 }
 
 export interface SystemMetricsOverview {

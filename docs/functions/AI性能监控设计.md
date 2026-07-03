@@ -72,9 +72,9 @@
 空值规则：
 
 - 某账户某小时没有请求时，对应点返回 `null` 或省略平均值，图上不应伪造成 `0s`。
-- 某账户某小时有请求但没有首 token 样本时，首 token 图返回空值；总耗时图仍可展示。
-- 前端折线应跨过空小时保持连续，但空小时不显示采样点，tooltip 仍按无样本处理。
-- tooltip 需要展示完整小时 `YYYY-MM-DD HH:00`、账户名称、样本数和当前指标值，不受底部时间线压缩规则影响。
+- 某账户某小时有请求但没有首 token 数据时，首 token 图返回空值；总耗时图仍可展示。
+- 前端折线应跨过空小时保持连续，但空小时不显示采样点，tooltip 按暂无数据处理。
+- tooltip 需要展示完整小时 `YYYY-MM-DD HH:00`、账户名称、请求数和当前指标值，不受底部时间线压缩规则影响。
 
 ## 默认账户池
 
@@ -158,14 +158,11 @@ interface AiPerformanceOverview {
   hourlySeries: AiPerformanceAccountSeries[]
   summary: {
     requestCount: number
-    firstTokenCount: number
     averageFirstTokenMs?: number
     maxFirstTokenMs?: number
-    durationCount: number
     averageDurationMs?: number
     maxDurationMs?: number
   }
-  statsLagSeconds?: number
 }
 
 interface AiPerformanceAccount {
@@ -197,10 +194,8 @@ interface AiPerformanceAccountSeries {
   points: Array<{
     statHour: string
     requestCount: number
-    firstTokenCount: number
     averageFirstTokenMs?: number
     maxFirstTokenMs?: number
-    durationCount: number
     averageDurationMs?: number
     maxDurationMs?: number
   }>
@@ -213,7 +208,7 @@ interface AiPerformanceAccountSeries {
 - `selectedAccounts` 沿用接口字段名，表示本次请求里合法且可见的搜索追加账户，不表示前端点击筛选状态。
 - `accounts` 是当前账户列表集合，等于默认账户与搜索追加账户去重后的结果。
 - `hourlySeries` 必须按 `accounts` 顺序返回，便于前端颜色和图例稳定。
-- 后端需要补齐窗口内小时桶；没有样本的小时返回 `requestCount = 0`，平均耗时为空。
+- 后端需要补齐窗口内小时桶；没有数据的小时返回 `requestCount = 0`，平均耗时为空。
 
 ## 查询策略
 
@@ -248,7 +243,7 @@ LIMIT 10
 | --- | --- | --- |
 | 账户过多导致图表不可读 | 图例拥挤、渲染变慢 | 默认只显示最近 7 天活跃前 10；搜索追加最多 20 个，用户可点击账户列表只看部分账户 |
 | 前端请求实时汇总明细 | SQLite 高峰期被页面查询拖慢 | 接口禁止 `SUM usage_records`；趋势只读小时缓存，摘要只读窗口快照 |
-| 统计缓存滞后 | 图表不是实时最新 | 返回并展示可选的 `statsLagSeconds`，沿用现有统计 worker 滞后语义；任务尚未写入状态或滞后无法判断时可缺省，前端展示为“未知”而不是 0 秒 |
+| 统计缓存滞后 | 图表不是实时最新 | AI 性能接口只返回当前窗口快照，不再返回面向内部诊断的统计滞后字段；需要排障时查看后台任务和系统运维监控 |
 | 搜索追加账户过多 | 返回体和 ECharts series 过大 | 后端限制 `accountIds` 数量，前端限制添加数量并给中文提示 |
 | 账户归属校验缺失 | 越权查看他人账号趋势 | 用户侧 AI 账户性能按当前登录用户的 `caller_account` 口径读取，只能读取当前用户自有账户、账号授权实例和授权分组内可见来源账户；授权分组来源账户只展示当前用户自己的调用数据，不展示资源归属人的自用数据。管理侧由管理员权限和 `systemAccountId` 筛选决定范围 |
 | 账户选项复用账户列表 | 可能暴露凭据字段且大用户预加载不完整 | 账户搜索添加使用轻量选项接口，只返回展示字段；前端远程搜索，不全量预加载 |
@@ -276,4 +271,4 @@ LIMIT 10
 - 搜索添加多个账户后，这些账户进入筛选区下方账户列表；未点选时图表展示当前列表全部账户，点选后图表只展示点选账户；刷新或重新进入后恢复默认前 10。
 - 接口只读取 `usage_stats_hourly` 和账户 / 系统账户元数据，不实时扫描 `usage_records`。
 - 最近 31 天内的日期范围都按小时返回数据，底部时间线按日期范围自动压缩，并正确处理空小时。
-- 统计滞后、空态、无权限和参数非法都返回或展示中文提示。
+- 空态、无权限和参数非法都返回或展示中文提示。

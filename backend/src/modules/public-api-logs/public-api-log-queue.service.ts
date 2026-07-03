@@ -1,7 +1,7 @@
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { scheduleProcessFatalError } from '../../shared/process-fatal.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
-import { RedisStreamQueue, type RedisStreamMessage } from '../../shared/redis-stream-queue.js'
+import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime } from '../../shared/redis-stream-queue.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { createPublicApiLogsBatch, createPublicApiLogsBatchAsync, type PublicApiLogInput } from '../../storage/public-api-logs.repository.js'
 import { sendPublicApiLogsToWorker } from '../background/background-ipc.js'
@@ -364,6 +364,11 @@ function publicApiLogRedisStreamQueue(): RedisStreamQueue<PublicApiLogInput> {
     })
   }
   return publicApiLogRedisStreamQueueInstance
+}
+
+export async function getPublicApiLogRedisStreamRuntime(): Promise<RedisStreamQueueRuntime | undefined> {
+  if (!shouldUseRedisStreamPublicApiLogQueue()) return undefined
+  return await publicApiLogRedisStreamQueue().inspectRuntime()
 }
 
 async function flushPublicApiLogQueueBatchAsync(): Promise<boolean> {

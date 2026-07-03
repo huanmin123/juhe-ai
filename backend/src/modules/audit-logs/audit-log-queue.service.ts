@@ -6,7 +6,7 @@ import type { AuditLogInput, AuditLogPayloadInput } from '../../storage/audit-lo
 import { createAuditLogsBatch, createAuditLogsBatchAsync } from '../../storage/repositories.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { scheduleProcessFatalError } from '../../shared/process-fatal.js'
-import { RedisStreamQueue, type RedisStreamMessage } from '../../shared/redis-stream-queue.js'
+import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime } from '../../shared/redis-stream-queue.js'
 import { sanitizeUrlForLog } from '../../shared/request-context.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import { sendAuditLogsToWorker } from '../background/background-ipc.js'
@@ -617,6 +617,11 @@ function auditLogRedisStreamQueue(consumerIndex?: number): RedisStreamQueue<Audi
     })
   }
   return auditLogRedisStreamQueueInstance
+}
+
+export async function getAuditLogRedisStreamRuntime(): Promise<RedisStreamQueueRuntime | undefined> {
+  if (!shouldUseRedisStreamAuditLogQueue()) return undefined
+  return await auditLogRedisStreamQueue().inspectRuntime()
 }
 
 function auditLogRedisConsumerConcurrency(): number {

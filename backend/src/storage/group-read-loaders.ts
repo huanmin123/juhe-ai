@@ -1,6 +1,5 @@
 import { runtimeConfig } from '../config/runtime.js'
-import { createAppCache, createSharedJsonCache, throwIfRedisCacheIsRequired } from '../shared/cache.js'
-import { errorLogFields, logger } from '../shared/logger.js'
+import { createAppCache, createSharedJsonCache } from '../shared/cache.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getBusinessDatabase, getStatsDatabase } from './database.js'
 import { getPostgresPool } from './postgres-client.js'
@@ -249,18 +248,8 @@ function groupReadLoaderTable(client: DatabaseClient, tableName: string): string
 }
 
 async function getGroupAccountIdsSharedCacheEntry(groupId: string): Promise<string[] | undefined> {
-  try {
-    const value = await groupAccountIdsSharedCache.get(groupId)
-    return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : undefined
-  } catch (error) {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn({
-      event: 'group_account_ids_shared_cache_read_failed',
-      groupId,
-      err: errorLogFields(error)
-    }, '读取分组账号 ID Redis shared cache 失败')
-    return undefined
-  }
+  const value = await groupAccountIdsSharedCache.get(groupId)
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : undefined
 }
 
 function setGroupAccountIdsSharedCacheEntry(groupId: string, accountIds: string[]): void {
@@ -268,35 +257,13 @@ function setGroupAccountIdsSharedCacheEntry(groupId: string, accountIds: string[
 }
 
 async function setGroupAccountIdsSharedCacheEntryAsync(groupId: string, accountIds: string[]): Promise<void> {
-  try {
-    await groupAccountIdsSharedCache.set(groupId, [...accountIds])
-  } catch (error) {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn({
-      event: 'group_account_ids_shared_cache_write_failed',
-      groupId,
-      err: errorLogFields(error)
-    }, '写入分组账号 ID Redis shared cache 失败')
-  }
+  await groupAccountIdsSharedCache.set(groupId, [...accountIds])
 }
 
 function deleteGroupAccountIdsSharedCacheEntry(groupId: string): void {
-  void groupAccountIdsSharedCache.delete(groupId).catch((error) => {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn({
-      event: 'group_account_ids_shared_cache_delete_failed',
-      groupId,
-      err: errorLogFields(error)
-    }, '删除分组账号 ID Redis shared cache 失败')
-  })
+  void groupAccountIdsSharedCache.delete(groupId)
 }
 
 function clearGroupAccountIdsSharedCache(): void {
-  void groupAccountIdsSharedCache.clear().catch((error) => {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn({
-      event: 'group_account_ids_shared_cache_clear_failed',
-      err: errorLogFields(error)
-    }, '清理分组账号 ID Redis shared cache 失败')
-  })
+  void groupAccountIdsSharedCache.clear()
 }

@@ -1,4 +1,4 @@
-import { createAppCache, createSharedJsonCache, throwIfRedisCacheIsRequired } from '../../../shared/cache.js'
+import { createAppCache, createSharedJsonCache } from '../../../shared/cache.js'
 import { loadAccountCurrentConcurrencyByIds, loadAccountCurrentConcurrencyByIdsAsync } from '../../../shared/account-concurrency.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import { registerGatewayRuntimeCacheInvalidator, syncGatewayCacheInvalidationsFromRuntimeState } from '../../../shared/gateway-cache-invalidation.js'
@@ -1224,16 +1224,8 @@ function refreshOpenAIAccountsForGroupInBackground(
 
 async function getGatewaySettingsSharedCacheEntry(): Promise<GatewaySettings | undefined> {
   if (runtimeConfig.cacheDriver !== 'redis') return undefined
-  try {
-    const cached = await gatewaySettingsSharedCache.get('current')
-    return cached ? cloneGatewaySettings(cached) : undefined
-  } catch (error) {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_settings_shared_cache_read_failed'
-    }), '读取网关设置 Redis 共享缓存失败')
-    return undefined
-  }
+  const cached = await gatewaySettingsSharedCache.get('current')
+  return cached ? cloneGatewaySettings(cached) : undefined
 }
 
 async function setGatewaySettingsCacheEntryAsync(settings: GatewaySettings): Promise<void> {
@@ -1244,38 +1236,18 @@ async function setGatewaySettingsCacheEntryAsync(settings: GatewaySettings): Pro
 
 async function setGatewaySettingsSharedCacheEntry(settings: GatewaySettings): Promise<void> {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  try {
-    await gatewaySettingsSharedCache.set('current', cloneGatewaySettings(settings), { ttlMs: gatewaySettingsTtlMs })
-  } catch (error) {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_settings_shared_cache_write_failed'
-    }), '写入网关设置 Redis 共享缓存失败')
-  }
+  await gatewaySettingsSharedCache.set('current', cloneGatewaySettings(settings), { ttlMs: gatewaySettingsTtlMs })
 }
 
 function clearGatewaySettingsSharedCache(): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  void gatewaySettingsSharedCache.clear().catch((error) => {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_settings_shared_cache_clear_failed'
-    }), '清理网关设置 Redis 共享缓存失败')
-  })
+  void gatewaySettingsSharedCache.clear()
 }
 
 async function getGroupUsageAccessSharedCacheEntry(cacheKey: string): Promise<GroupUsageAccessCacheEntry | undefined> {
   if (runtimeConfig.cacheDriver !== 'redis') return undefined
-  try {
-    const cached = await groupUsageAccessSharedCache.get(cacheKey)
-    return cached ? cloneGroupUsageAccessCacheEntry(cached) : undefined
-  } catch (error) {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_group_usage_access_shared_cache_read_failed'
-    }), '读取网关分组访问 Redis 共享缓存失败')
-    return undefined
-  }
+  const cached = await groupUsageAccessSharedCache.get(cacheKey)
+  return cached ? cloneGroupUsageAccessCacheEntry(cached) : undefined
 }
 
 async function setGroupUsageAccessCacheEntryAsync(cacheKey: string, entry: GroupUsageAccessCacheEntry): Promise<void> {
@@ -1286,26 +1258,14 @@ async function setGroupUsageAccessCacheEntryAsync(cacheKey: string, entry: Group
 
 async function setGroupUsageAccessSharedCacheEntry(cacheKey: string, entry: GroupUsageAccessCacheEntry): Promise<void> {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  try {
-    await groupUsageAccessSharedCache.set(cacheKey, cloneGroupUsageAccessCacheEntry(entry), {
-      ttlMs: groupUsageAccessRetainTtlMs
-    })
-  } catch (error) {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_group_usage_access_shared_cache_write_failed'
-    }), '写入网关分组访问 Redis 共享缓存失败')
-  }
+  await groupUsageAccessSharedCache.set(cacheKey, cloneGroupUsageAccessCacheEntry(entry), {
+    ttlMs: groupUsageAccessRetainTtlMs
+  })
 }
 
 function clearGroupUsageAccessSharedCache(): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  void groupUsageAccessSharedCache.clear().catch((error) => {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_group_usage_access_shared_cache_clear_failed'
-    }), '清理网关分组访问 Redis 共享缓存失败')
-  })
+  void groupUsageAccessSharedCache.clear()
 }
 
 function refreshActiveResponseInspectionPoliciesInBackground(
@@ -1347,16 +1307,8 @@ function refreshActiveResponseInspectionPoliciesInBackground(
 
 async function getProviderModelCatalogSharedCacheEntry(cacheKey: string): Promise<ProviderModelCatalogItem[] | undefined> {
   if (runtimeConfig.cacheDriver !== 'redis') return undefined
-  try {
-    const cached = await providerModelCatalogSharedCache.get(cacheKey)
-    return cached ? cached.map((item) => ({ ...item })) : undefined
-  } catch (error) {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_provider_model_catalog_shared_cache_read_failed'
-    }), '读取网关模型目录 Redis 共享缓存失败')
-    return undefined
-  }
+  const cached = await providerModelCatalogSharedCache.get(cacheKey)
+  return cached ? cached.map((item) => ({ ...item })) : undefined
 }
 
 async function setProviderModelCatalogCacheEntryAsync(cacheKey: string, value: ProviderModelCatalogItem[]): Promise<void> {
@@ -1367,60 +1319,28 @@ async function setProviderModelCatalogCacheEntryAsync(cacheKey: string, value: P
 
 async function setProviderModelCatalogSharedCacheEntry(cacheKey: string, value: ProviderModelCatalogItem[]): Promise<void> {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  try {
-    await providerModelCatalogSharedCache.set(cacheKey, value.map((item) => ({ ...item })), { ttlMs: providerModelCatalogTtlMs })
-  } catch (error) {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_provider_model_catalog_shared_cache_write_failed'
-    }), '写入网关模型目录 Redis 共享缓存失败')
-  }
+  await providerModelCatalogSharedCache.set(cacheKey, value.map((item) => ({ ...item })), { ttlMs: providerModelCatalogTtlMs })
 }
 
 function clearProviderModelCatalogSharedCache(): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  void providerModelCatalogSharedCache.clear().catch((error) => {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_provider_model_catalog_shared_cache_clear_failed'
-    }), '清理网关模型目录 Redis 共享缓存失败')
-  })
+  void providerModelCatalogSharedCache.clear()
 }
 
 async function getProviderModelRouteIndexSharedCacheEntry(cacheKey: string): Promise<ProviderModelRouteIndexCacheEntry | undefined> {
   if (runtimeConfig.cacheDriver !== 'redis') return undefined
-  try {
-    const cached = await providerModelRouteIndexSharedCache.get(cacheKey)
-    return cached ? providerModelRouteIndexCacheEntryFromShared(cached) : undefined
-  } catch (error) {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_provider_model_route_index_shared_cache_read_failed'
-    }), '读取网关模型路由索引 Redis 共享缓存失败')
-    return undefined
-  }
+  const cached = await providerModelRouteIndexSharedCache.get(cacheKey)
+  return cached ? providerModelRouteIndexCacheEntryFromShared(cached) : undefined
 }
 
 async function setProviderModelRouteIndexSharedCacheEntry(cacheKey: string, entry: ProviderModelRouteIndexCacheEntry): Promise<void> {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  try {
-    await providerModelRouteIndexSharedCache.set(cacheKey, providerModelRouteIndexCacheEntryToShared(entry), { ttlMs: providerModelCatalogTtlMs })
-  } catch (error) {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_provider_model_route_index_shared_cache_write_failed'
-    }), '写入网关模型路由索引 Redis 共享缓存失败')
-  }
+  await providerModelRouteIndexSharedCache.set(cacheKey, providerModelRouteIndexCacheEntryToShared(entry), { ttlMs: providerModelCatalogTtlMs })
 }
 
 function clearProviderModelRouteIndexSharedCache(): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  void providerModelRouteIndexSharedCache.clear().catch((error) => {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_provider_model_route_index_shared_cache_clear_failed'
-    }), '清理网关模型路由索引 Redis 共享缓存失败')
-  })
+  void providerModelRouteIndexSharedCache.clear()
 }
 
 function providerModelRouteIndexCacheEntryFromShared(entry: ProviderModelRouteIndexSharedCacheEntry): ProviderModelRouteIndexCacheEntry {
@@ -1435,18 +1355,10 @@ function providerModelRouteIndexCacheEntryToShared(entry: ProviderModelRouteInde
 
 async function getResponseInspectionPolicySharedCacheEntry(cacheKey: string): Promise<ResponseInspectionPolicyCacheEntry | undefined> {
   if (runtimeConfig.cacheDriver !== 'redis') return undefined
-  try {
-    const cached = await responseInspectionPolicySharedCache.get(cacheKey)
-    return cached
-      ? responseInspectionPolicyCacheEntry(cached.policies, Date.now(), cached.revalidateAtMs)
-      : undefined
-  } catch (error) {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_response_inspection_policy_shared_cache_read_failed'
-    }), '读取网关响应检查策略 Redis 共享缓存失败')
-    return undefined
-  }
+  const cached = await responseInspectionPolicySharedCache.get(cacheKey)
+  return cached
+    ? responseInspectionPolicyCacheEntry(cached.policies, Date.now(), cached.revalidateAtMs)
+    : undefined
 }
 
 async function setResponseInspectionPolicyCacheEntryAsync(cacheKey: string, entry: ResponseInspectionPolicyCacheEntry): Promise<void> {
@@ -1457,26 +1369,14 @@ async function setResponseInspectionPolicyCacheEntryAsync(cacheKey: string, entr
 
 async function setResponseInspectionPolicySharedCacheEntry(cacheKey: string, entry: ResponseInspectionPolicyCacheEntry): Promise<void> {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  try {
-    await responseInspectionPolicySharedCache.set(cacheKey, responseInspectionPolicyCacheEntry(entry.policies, Date.now(), entry.revalidateAtMs), {
-      ttlMs: responseInspectionPolicyRetainTtlMs
-    })
-  } catch (error) {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_response_inspection_policy_shared_cache_write_failed'
-    }), '写入网关响应检查策略 Redis 共享缓存失败')
-  }
+  await responseInspectionPolicySharedCache.set(cacheKey, responseInspectionPolicyCacheEntry(entry.policies, Date.now(), entry.revalidateAtMs), {
+    ttlMs: responseInspectionPolicyRetainTtlMs
+  })
 }
 
 function clearResponseInspectionPolicySharedCache(): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  void responseInspectionPolicySharedCache.clear().catch((error) => {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_response_inspection_policy_shared_cache_clear_failed'
-    }), '清理网关响应检查策略 Redis 共享缓存失败')
-  })
+  void responseInspectionPolicySharedCache.clear()
 }
 
 registerGatewayRuntimeCacheInvalidator(clearGatewayRuntimeCache)

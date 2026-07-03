@@ -40,9 +40,15 @@ defineProps<{
 }
 
 .metric-card {
+  width: 100%;
+  height: 100%;
   border: 1px solid #e8edf5;
   border-radius: 16px;
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
+}
+
+.metric-card :deep(.ant-card-body) {
+  min-height: 128px;
 }
 
 .compact-card :deep(.ant-card-body) {

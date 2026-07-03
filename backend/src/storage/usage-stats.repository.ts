@@ -1990,8 +1990,7 @@ export function getUsageStatsOverview(access?: AccessScope, range: AccountUsageS
       statusCode: row.status_code || undefined,
       errorMessage: row.error_message ?? undefined,
       errorCount: Number(row.error_count ?? 0)
-    })),
-    statsLagSeconds: latestUsageStatsLagSeconds()
+    }))
   }
 }
 
@@ -2055,8 +2054,7 @@ export async function getUsageStatsOverviewAsync(access?: AccessScope, range: Ac
       statusCode: row.status_code || undefined,
       errorMessage: row.error_message ?? undefined,
       errorCount: Number(row.error_count ?? 0)
-    })),
-    statsLagSeconds: await latestUsageStatsLagSecondsFromClientAsync(client)
+    }))
   }
 }
 

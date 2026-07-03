@@ -1,4 +1,4 @@
-import { createAppCache, createSharedJsonCache, throwIfRedisCacheIsRequired } from '../../../shared/cache.js'
+import { createAppCache, createSharedJsonCache } from '../../../shared/cache.js'
 import { registerApiKeyQuotaCacheInvalidator, syncGatewayCacheInvalidationsFromRuntimeState } from '../../../shared/gateway-cache-invalidation.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
@@ -306,37 +306,17 @@ registerApiKeyQuotaCacheInvalidator((apiKeyId) => {
 
 async function getApiKeyQuotaSharedCacheEntry(cacheKey: string): Promise<ApiKeyQuotaCacheEntry | undefined> {
   if (runtimeConfig.cacheDriver !== 'redis') return undefined
-  try {
-    return await apiKeyQuotaSharedCache.get(sharedQuotaCacheKey(cacheKey))
-  } catch (error) {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_api_key_quota_shared_cache_read_failed'
-    }), '读取 API Key 额度 Redis 共享缓存失败')
-    return undefined
-  }
+  return await apiKeyQuotaSharedCache.get(sharedQuotaCacheKey(cacheKey))
 }
 
 async function setApiKeyQuotaSharedCacheEntry(cacheKey: string, entry: ApiKeyQuotaCacheEntry): Promise<void> {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  try {
-    await apiKeyQuotaSharedCache.set(sharedQuotaCacheKey(cacheKey), entry, { ttlMs: API_KEY_QUOTA_CACHE_TTL_MS })
-  } catch (error) {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_api_key_quota_shared_cache_write_failed'
-    }), '写入 API Key 额度 Redis 共享缓存失败')
-  }
+  await apiKeyQuotaSharedCache.set(sharedQuotaCacheKey(cacheKey), entry, { ttlMs: API_KEY_QUOTA_CACHE_TTL_MS })
 }
 
 function clearApiKeyQuotaSharedCache(): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  void apiKeyQuotaSharedCache.clear().catch((error) => {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_api_key_quota_shared_cache_clear_failed'
-    }), '清理 API Key 额度 Redis 共享缓存失败')
-  })
+  void apiKeyQuotaSharedCache.clear()
 }
 
 function sharedQuotaCacheKey(cacheKey: string): string {

@@ -12,7 +12,7 @@ export const ipStatsColumns = [
   { title: '输入 Token', key: 'inputTokens', width: 120, align: 'left' },
   { title: '输出 Token', key: 'outputTokens', width: 120, align: 'left' },
   { title: '缓存 Token', key: 'cacheReadTokens', width: 120, align: 'left' },
-  { title: '缓存率', key: 'cacheRate', width: 100, align: 'left' },
+  { title: '缓存读占比', key: 'cacheRate', width: 120, align: 'left' },
   { title: '缓存成本', key: 'cacheCost', width: 120, align: 'left' },
   { title: '成本', key: 'cost', width: 130, align: 'left', sorter: true },
   { title: '失败率', key: 'errorRate', width: 110, align: 'left', sorter: true },
@@ -40,9 +40,15 @@ export function ipRowActions(record: ClientIpStatsRow): RowActionItem[] {
 }
 
 export function cacheReadRate(usage?: ClientIpUsageSummary): number {
-  const inputTokens = usage?.inputTokens ?? 0
-  if (inputTokens <= 0) return 0
-  return ((usage?.cacheReadTokens ?? 0) / inputTokens) * 100
+  const inputTokens = positiveUsageNumber(usage?.inputTokens)
+  const cacheReadTokens = positiveUsageNumber(usage?.cacheReadTokens)
+  if (cacheReadTokens <= 0) return 0
+  const cacheWriteTokens = positiveUsageNumber(usage?.cacheWriteTokens)
+  const denominator = inputTokens <= 0 || cacheReadTokens > inputTokens
+    ? inputTokens + cacheReadTokens + cacheWriteTokens
+    : inputTokens
+  if (denominator <= 0) return 0
+  return (cacheReadTokens / denominator) * 100
 }
 
 export function clientIpLastUsedAt(record: ClientIpStatsRow): string | undefined {
@@ -61,4 +67,9 @@ export function statusColor(status: ClientIpStatus): string {
   if (status === 'allowlisted') return 'blue'
   if (status === 'normal') return 'green'
   return 'default'
+}
+
+function positiveUsageNumber(value?: number): number {
+  const numericValue = Number(value ?? 0)
+  return Number.isFinite(numericValue) ? Math.max(numericValue, 0) : 0
 }

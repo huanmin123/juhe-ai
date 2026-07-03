@@ -129,6 +129,7 @@ import {
 } from '../../storage/codex-context-state.repository.js'
 import {
   cleanupExpiredCodexContextStatesWithWriterPool,
+  getCodexContextStateWriterPoolRuntime,
   readCodexContextCompactStateWithWriterPool,
   readCodexContextResponseStateChainWithWriterPool,
   saveCodexContextCompactStateIndexWithWriterPool,
@@ -942,7 +943,8 @@ export function buildDbServiceRuntimeSnapshot(pid = process.pid): DbServiceRunti
     handledRequestCount,
     failedRequestCount,
     lastRequestAt,
-    lastError
+    lastError,
+    codexContextStateWriterPool: getCodexContextStateWriterPoolRuntime()
   }
 }
 

@@ -77,13 +77,16 @@ function assertRepositoryLookupRedisBoundary(): void {
   )
 
   const redisBranchIndex = asyncBody.indexOf("if (runtimeConfig.cacheDriver === 'redis')")
-  const sharedReadIndex = asyncBody.indexOf('const sharedResults = await Promise.all(ids.map(async (id) => {')
+  const sharedReadIndex = asyncBody.indexOf('const sharedResults = await Promise.all(ids.map(async (id) =>')
+  const sharedWriteIndex = asyncBody.indexOf('await setLookupSharedCacheEntryAsync(sharedCache, row.id, row)')
   const localReadIndex = asyncBody.indexOf('const localMissIds: string[] = []')
   assert(redisBranchIndex >= 0, '异步 lookup helper 必须有 Redis driver 分支')
   assert(sharedReadIndex > redisBranchIndex, '异步 lookup Redis 分支应读取 Redis shared cache')
+  assert(sharedWriteIndex > sharedReadIndex, '异步 lookup Redis miss 回源后必须等待 Redis shared cache 写入')
   assert(localReadIndex > sharedReadIndex, '异步 lookup Redis 分支必须早于本地 LRU 读取')
   assert(!asyncBody.includes('localMissIds.map(async (id) => {'), '异步 lookup 不能在本地 LRU miss 后才读取 Redis shared cache')
   assert(!asyncBody.includes('cache.set(id, cached)'), 'Redis shared cache 命中不能再回填本地 LRU 作为后续事实来源')
+  assert(!repositoryLookupSource.includes('repository_lookup_shared_cache_read_failed'), 'Redis shared cache 失败必须抛错，不能日志吞掉后回退')
 }
 
 function readSource(relativePath: string): string {

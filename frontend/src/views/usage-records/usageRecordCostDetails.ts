@@ -60,7 +60,7 @@ export function usageRecordCostAmountRows(record: UsageRecordSummary): UsageReco
   pushCostRow(rows, 'outputImageUnitCostUsd', '图片张数成本', costBreakdown.outputImageUnitCostUsd, activeDimension(record.outputImageCount, costBreakdown.outputImageUnitCostUsd))
 
   if (shouldShowCacheRate(record)) {
-    rows.push({ key: 'cacheRate', label: '缓存率', value: formatCacheRate(record) })
+    rows.push({ key: 'cacheRate', label: '缓存读占比', value: formatCacheRate(record) })
   }
   if (isFiniteNumber(costBreakdown.accountChargeUsd)) {
     rows.push({ key: 'accountChargeUsd', label: '合计成本', value: formatCost(costBreakdown.accountChargeUsd) })

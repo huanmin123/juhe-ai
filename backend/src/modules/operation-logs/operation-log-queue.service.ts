@@ -2,7 +2,7 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { scheduleProcessFatalError } from '../../shared/process-fatal.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
-import { RedisStreamQueue, type RedisStreamMessage } from '../../shared/redis-stream-queue.js'
+import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime } from '../../shared/redis-stream-queue.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import { newId, nowIso } from '../../storage/database.js'
 import { createOperationLogsBatch, createOperationLogsBatchAsync, type OperationLogInput } from '../../storage/repositories.js'
@@ -377,6 +377,11 @@ function operationLogRedisStreamQueue(): RedisStreamQueue<OperationLogInput> {
     })
   }
   return operationLogRedisStreamQueueInstance
+}
+
+export async function getOperationLogRedisStreamRuntime(): Promise<RedisStreamQueueRuntime | undefined> {
+  if (!shouldUseRedisStreamOperationLogQueue()) return undefined
+  return await operationLogRedisStreamQueue().inspectRuntime()
 }
 
 export function clearOperationLogQueueForTest(): void {

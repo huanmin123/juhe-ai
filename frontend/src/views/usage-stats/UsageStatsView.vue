@@ -323,8 +323,7 @@ const displaySummary = computed(() => hasSelectedTrendAccounts.value
 const summaryCardsLoading = computed(() => initialLoading.value)
 const summaryCards = computed(() => {
   return buildAccountUsageSummaryCards({
-    summary: displaySummary.value,
-    statsLagSeconds: overview.value?.statsLagSeconds
+    summary: displaySummary.value
   })
 })
 

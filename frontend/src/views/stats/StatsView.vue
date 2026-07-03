@@ -114,7 +114,7 @@ import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import StatsChartCard from './StatsChartCard.vue'
 import StatsSummaryCards from './StatsSummaryCards.vue'
 import { buildErrorOption, buildModelDistributionOption, buildUsageTrendOption } from './statsChartOptions'
-import { formatCompactInteger, formatCost, formatDurationSeconds, formatInteger, formatPercent, formatSeconds } from './statsFormatters'
+import { formatCompactInteger, formatCost, formatDurationSeconds, formatInteger, formatPercent } from './statsFormatters'
 
 const MAX_RANGE_DAYS = 31
 type QuickRange = 'today' | 'recent7d' | 'recent1m'
@@ -204,9 +204,22 @@ const summaryCards = computed(() => {
     { key: 'requests', label: '范围请求', value: formatInteger(summary?.requestCount), extra: `成功 ${formatInteger(summary?.successCount)} / 失败 ${formatInteger(summary?.errorCount)} / 失败率 ${formatPercent((summary?.errorRate ?? 0) * 100)}` },
     { key: 'firstToken', label: '平均首 Token', value: formatDurationSeconds(summary?.averageFirstTokenMs), extra: `平均总耗时 ${formatDurationSeconds(summary?.averageDurationMs)}` },
     { key: 'tokens', label: 'Token 消耗', value: formatCompactInteger(summary?.totalTokens), extra: `输入 ${formatCompactInteger(summary?.inputTokens)} / 输出 ${formatCompactInteger(summary?.outputTokens)} / 缓存读 ${formatCompactInteger(summary?.cacheReadTokens)}` },
-    { key: 'cost', label: '成本', value: formatCost(summary?.totalCost), extra: `统计滞后 ${formatSeconds(usageOverview.value?.statsLagSeconds)}` }
+    { key: 'cost', label: '成本', value: formatCost(summary?.totalCost), extra: buildCostExtra(summary) }
   ]
 })
+
+function buildCostExtra(summary?: UsageStatsOverview['summary']) {
+  const totalCost = summary?.totalCost ?? 0
+  const requestCount = summary?.requestCount ?? 0
+  const totalTokens = summary?.totalTokens ?? 0
+  const averageRequestCost = requestCount > 0 ? totalCost / requestCount : undefined
+  const costPerMillionTokens = totalTokens > 0 ? (totalCost / totalTokens) * 1_000_000 : undefined
+  return `均次 ${formatOptionalCost(averageRequestCost)} / 每 1M Token ${formatOptionalCost(costPerMillionTokens)}`
+}
+
+function formatOptionalCost(value?: number) {
+  return typeof value === 'number' && Number.isFinite(value) ? formatCost(value) : '-'
+}
 
 async function loadData() {
   const requestSeq = ++statsRequestSeq

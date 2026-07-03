@@ -944,12 +944,14 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
     backgroundIpc,
     gatewaySideEffects,
     auditCapture,
-    accountConcurrency
+    accountConcurrency,
+    highConcurrencyQueue
   ] = await Promise.all([
     import('../background/background-ipc.js'),
     import('../gateway/runtime/account-side-effects.service.js'),
     import('../gateway/audit/capture.service.js'),
-    import('../../shared/account-concurrency.js')
+    import('../../shared/account-concurrency.js'),
+    import('../gateway/runtime/high-concurrency-queue.service.js')
   ])
   const [
     ingestWorkerSnapshot,
@@ -1090,8 +1092,10 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
       failedServerRuntimeRequestCount: dbServiceState.failedServerRuntimeRequestCount,
       unavailableCircuitOpenUntil: dbServiceState.unavailableCircuitOpenUntil,
       httpHost: dbServiceState.httpHost,
-      httpPort: dbServiceState.httpPort
+      httpPort: dbServiceState.httpPort,
+      codexContextStateWriterPool: dbServiceState.lastSnapshot?.codexContextStateWriterPool
     },
+    highConcurrencyQueues: highConcurrencyQueue.highConcurrencyGroupQueueSnapshot(),
     gatewayAccountSideEffects: { ...gatewaySideEffects.getGatewayAccountSideEffectState() },
     activeAuditCaptureCount: auditCapture.getActiveAuditCaptureCount()
   }

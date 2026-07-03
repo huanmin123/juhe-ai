@@ -799,9 +799,14 @@ export async function markAuthorizedAccountBindingCooldownByContextAsync(
   const temporaryState = cooldownStatus === 'temporary_unavailable'
     ? temporaryUnavailableRuntimeState(cooldownNowMs)
     : undefined
-  const cooldownUntil = cooldownStatus === 'temporary_unavailable'
-    ? temporaryState!.cooldownUntil
-    : input.cooldownUntil ?? initialCooldownUntilForStatus(cooldownStatus, cooldownNowMs) ?? new Date(cooldownNowMs + defaultTemporaryUnschedulableMinutes() * 60_000).toISOString()
+  let cooldownUntil: string
+  if (cooldownStatus === 'temporary_unavailable') {
+    cooldownUntil = temporaryState!.cooldownUntil
+  } else {
+    cooldownUntil = input.cooldownUntil
+      ?? await initialCooldownUntilForStatusAsync(cooldownStatus, cooldownNowMs)
+      ?? new Date(cooldownNowMs + (await defaultTemporaryUnschedulableMinutesAsync()) * 60_000).toISOString()
+  }
   const observationStartedAt = temporaryState?.observationStartedAt
     ?? cooldownRetestObservationStartedAtForStatus(cooldownStatus, cooldownNowMs)
   const now = nowIso()

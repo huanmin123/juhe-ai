@@ -10,7 +10,14 @@ import {
   markAccountTestTaskRunning
 } from '../../../../storage/account-test-tasks.repository.js'
 import { hashSecret } from '../../../../storage/crypto.js'
-import { getBusinessDatabase, getDatasetDatabase, getStatsDatabase, nowIso } from '../../../../storage/database.js'
+import {
+  codexContextStateShardIndexes,
+  getBusinessDatabase,
+  getCodexContextStateShardDatabase,
+  getDatasetDatabase,
+  getStatsDatabase,
+  nowIso
+} from '../../../../storage/database.js'
 import { createOpenAICompatibleFile } from '../../../../storage/openai-compatible-files.repository.js'
 import {
   createOpenAICompatibleVectorStore,
@@ -21,6 +28,7 @@ import {
   idPrefix,
   minuteMs,
   namePrefix,
+  providerCode,
   tracePrefix,
   type CreatedMockdata,
   type UsageRecordSeed
@@ -37,6 +45,7 @@ export function createBusinessTableCoverageMockdata(created: CreatedMockdata): v
   createGroupAuthorizationSettingsCoverage(created)
   createOpenAICompatibleStorageCoverage(created)
   createAvailabilityScheduleEventCoverage(created)
+  createCodexContextStateCoverage(created)
 }
 
 export function createDatasetTableCoverageMockdata(): void {
@@ -288,6 +297,159 @@ function createAvailabilityScheduleEventCoverage(created: CreatedMockdata): void
     created.apiKeys.adminScheduled.status,
     now
   )
+}
+
+function createCodexContextStateCoverage(created: CreatedMockdata): void {
+  const now = nowIso()
+  const expiresAt = new Date(Date.now() + 7 * dayMs).toISOString()
+  for (const shardIndex of codexContextStateShardIndexes()) {
+    const database = getCodexContextStateShardDatabase(shardIndex)
+    const shardKey = String(shardIndex).padStart(3, '0')
+    const sessionId = `${idPrefix}codex_context_session_${shardKey}`
+    const responseId = `${idPrefix}codex_context_response_${shardKey}`
+    const compactId = `${idPrefix}codex_context_compact_${shardKey}`
+    const responseStorageKey = `${idPrefix}codex-context/state-${shardKey}/response.json.gz`
+    const compactStorageKey = `${idPrefix}codex-context/state-${shardKey}/compact.json.gz`
+    const rawResponseBytes = 6400 + shardIndex * 137
+    const compressedResponseBytes = 1900 + shardIndex * 41
+    const rawCompactBytes = 1800 + shardIndex * 53
+    const compressedCompactBytes = 720 + shardIndex * 19
+    database.exec('BEGIN')
+    try {
+      database.prepare(`
+        INSERT INTO codex_context_sessions (
+          id, system_account_id, api_key_id, group_id, provider_code,
+          source_response_id, latest_response_id, latest_compact_id,
+          created_at, updated_at, last_used_at, expires_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          system_account_id = excluded.system_account_id,
+          api_key_id = excluded.api_key_id,
+          group_id = excluded.group_id,
+          provider_code = excluded.provider_code,
+          source_response_id = excluded.source_response_id,
+          latest_response_id = excluded.latest_response_id,
+          latest_compact_id = excluded.latest_compact_id,
+          updated_at = excluded.updated_at,
+          last_used_at = excluded.last_used_at,
+          expires_at = excluded.expires_at
+      `).run(
+        sessionId,
+        created.users.admin.id,
+        created.apiKeys.adminMain.id,
+        created.groups.main.id,
+        providerCode,
+        responseId,
+        responseId,
+        compactId,
+        now,
+        now,
+        now,
+        expiresAt
+      )
+      database.prepare(`
+        INSERT INTO codex_context_responses (
+          response_id, session_id, previous_response_id, system_account_id, api_key_id,
+          group_id, provider_code, upstream_account_id, model, upstream_model,
+          storage_key, storage_offset_bytes, sha256, raw_size_bytes, compressed_size_bytes,
+          compression, schema_version, created_at, updated_at, last_used_at, expires_at
+        ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'gzip', 1, ?, ?, ?, ?)
+        ON CONFLICT(response_id) DO UPDATE SET
+          session_id = excluded.session_id,
+          previous_response_id = excluded.previous_response_id,
+          system_account_id = excluded.system_account_id,
+          api_key_id = excluded.api_key_id,
+          group_id = excluded.group_id,
+          provider_code = excluded.provider_code,
+          upstream_account_id = excluded.upstream_account_id,
+          model = excluded.model,
+          upstream_model = excluded.upstream_model,
+          storage_key = excluded.storage_key,
+          storage_offset_bytes = excluded.storage_offset_bytes,
+          sha256 = excluded.sha256,
+          raw_size_bytes = excluded.raw_size_bytes,
+          compressed_size_bytes = excluded.compressed_size_bytes,
+          compression = excluded.compression,
+          schema_version = excluded.schema_version,
+          updated_at = excluded.updated_at,
+          last_used_at = excluded.last_used_at,
+          expires_at = excluded.expires_at
+      `).run(
+        responseId,
+        sessionId,
+        created.users.admin.id,
+        created.apiKeys.adminMain.id,
+        created.groups.main.id,
+        providerCode,
+        created.accounts.primary.id,
+        'gpt-5.4-mini',
+        'gpt-5.4-mini',
+        responseStorageKey,
+        0,
+        sha256(`${responseId}:${responseStorageKey}`),
+        rawResponseBytes,
+        compressedResponseBytes,
+        now,
+        now,
+        now,
+        expiresAt
+      )
+      database.prepare(`
+        INSERT INTO codex_context_compacts (
+          compact_id, session_id, source_response_id, summary_digest, system_account_id, api_key_id,
+          group_id, provider_code, upstream_account_id, model, upstream_model,
+          storage_key, storage_offset_bytes, sha256, raw_size_bytes, compressed_size_bytes,
+          compression, schema_version, created_at, updated_at, last_used_at, expires_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'gzip', 1, ?, ?, ?, ?)
+        ON CONFLICT(compact_id) DO UPDATE SET
+          session_id = excluded.session_id,
+          source_response_id = excluded.source_response_id,
+          summary_digest = excluded.summary_digest,
+          system_account_id = excluded.system_account_id,
+          api_key_id = excluded.api_key_id,
+          group_id = excluded.group_id,
+          provider_code = excluded.provider_code,
+          upstream_account_id = excluded.upstream_account_id,
+          model = excluded.model,
+          upstream_model = excluded.upstream_model,
+          storage_key = excluded.storage_key,
+          storage_offset_bytes = excluded.storage_offset_bytes,
+          sha256 = excluded.sha256,
+          raw_size_bytes = excluded.raw_size_bytes,
+          compressed_size_bytes = excluded.compressed_size_bytes,
+          compression = excluded.compression,
+          schema_version = excluded.schema_version,
+          updated_at = excluded.updated_at,
+          last_used_at = excluded.last_used_at,
+          expires_at = excluded.expires_at
+      `).run(
+        compactId,
+        sessionId,
+        responseId,
+        `Mockdata Responses 状态分片 ${shardKey} 摘要，关联主 API Key、主分组和主 AI 账户。`,
+        created.users.admin.id,
+        created.apiKeys.adminMain.id,
+        created.groups.main.id,
+        providerCode,
+        created.accounts.primary.id,
+        'gpt-5.4-mini',
+        'gpt-5.4-mini',
+        compactStorageKey,
+        compressedResponseBytes,
+        sha256(`${compactId}:${compactStorageKey}`),
+        rawCompactBytes,
+        compressedCompactBytes,
+        now,
+        now,
+        now,
+        expiresAt
+      )
+      database.exec('COMMIT')
+    } catch (error) {
+      database.exec('ROLLBACK')
+      throw error
+    }
+  }
 }
 
 function createBackgroundJobCoverage(database: StatsDatabase, now: string): void {

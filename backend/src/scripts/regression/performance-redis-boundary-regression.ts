@@ -267,6 +267,14 @@ function assertAppCacheClassification(): void {
 }
 
 function assertStrictRedisCacheBoundaries(): void {
+  const productionSource = listSourceFiles(srcRoot)
+    .filter((filePath) => !slash(relative(srcRoot, filePath)).startsWith('scripts/'))
+    .map((filePath) => readFileSync(filePath, 'utf8'))
+    .join('\n')
+  assert.doesNotMatch(productionSource, /throwIfRedisCacheIsRequired/, '生产代码不能保留 Redis shared cache fail-open helper')
+  assert.doesNotMatch(productionSource, /shared_cache_(read|write|clear)_failed/, 'Redis shared cache 读写清理失败不能被日志吞掉后当 cache miss')
+  assert.doesNotMatch(productionSource, /(读取|写入|清理)[^\n]*Redis[^\n]*(共享缓存|shared cache)[^\n]*失败/, 'Redis shared cache 失败必须直接抛错，不能 warn 后回退其他事实源')
+
   const invalidationSource = source('shared/gateway-cache-invalidation.ts')
   assert.match(
     functionBody(invalidationSource, 'syncGatewayCacheInvalidationsFromRuntimeState'),

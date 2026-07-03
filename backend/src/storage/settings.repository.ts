@@ -1,6 +1,6 @@
 import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
-import { createAppCache, createSharedJsonCache, throwIfRedisCacheIsRequired } from '../shared/cache.js'
+import { createAppCache, createSharedJsonCache } from '../shared/cache.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { errorLogFields, logger } from '../shared/logger.js'
 import { clearUsageStatsTimezoneCache, normalizeUsageStatsTimezone, usageStatsTimezone } from './usage-stats-helpers.js'
@@ -376,66 +376,48 @@ function clearGlobalSettingsCache(): void {
 }
 
 async function getSystemSettingsSharedCache(): Promise<Record<string, unknown> | undefined> {
-  return getSettingsSharedCache(systemSettingsSharedCache, 'settings_system_shared_cache_read_failed')
+  return getSettingsSharedCache(systemSettingsSharedCache)
 }
 
 async function getGlobalSettingsSharedCache(): Promise<Record<string, unknown> | undefined> {
-  return getSettingsSharedCache(globalSettingsSharedCache, 'settings_global_shared_cache_read_failed')
+  return getSettingsSharedCache(globalSettingsSharedCache)
 }
 
-async function getSettingsSharedCache(
-  cache: typeof systemSettingsSharedCache,
-  event: string
-): Promise<Record<string, unknown> | undefined> {
+async function getSettingsSharedCache(cache: typeof systemSettingsSharedCache): Promise<Record<string, unknown> | undefined> {
   if (runtimeConfig.cacheDriver !== 'redis') return undefined
-  try {
-    const value = await cache.get('current')
-    return value ? { ...value } : undefined
-  } catch (error) {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, { event }), '读取设置 Redis 共享缓存失败')
-    return undefined
-  }
+  const value = await cache.get('current')
+  return value ? { ...value } : undefined
 }
 
 async function setSystemSettingsCacheAsync(settings: Record<string, unknown>): Promise<void> {
-  await setSettingsSharedCache(systemSettingsSharedCache, settings, 'settings_system_shared_cache_write_failed')
+  await setSettingsSharedCache(systemSettingsSharedCache, settings)
   systemSettingsCache.set('current', settings)
 }
 
 async function setGlobalSettingsCacheAsync(settings: Record<string, unknown>): Promise<void> {
-  await setSettingsSharedCache(globalSettingsSharedCache, settings, 'settings_global_shared_cache_write_failed')
+  await setSettingsSharedCache(globalSettingsSharedCache, settings)
   globalSettingsCache.set('current', settings)
 }
 
 async function setSettingsSharedCache(
   cache: typeof systemSettingsSharedCache,
-  settings: Record<string, unknown>,
-  event: string
+  settings: Record<string, unknown>
 ): Promise<void> {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  try {
-    await cache.set('current', { ...settings }, { ttlMs: settingsCacheTtlMs })
-  } catch (error) {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, { event }), '写入设置 Redis 共享缓存失败')
-  }
+  await cache.set('current', { ...settings }, { ttlMs: settingsCacheTtlMs })
 }
 
 function clearSystemSettingsSharedCache(): void {
-  clearSettingsSharedCache(systemSettingsSharedCache, 'settings_system_shared_cache_clear_failed')
+  clearSettingsSharedCache(systemSettingsSharedCache)
 }
 
 function clearGlobalSettingsSharedCache(): void {
-  clearSettingsSharedCache(globalSettingsSharedCache, 'settings_global_shared_cache_clear_failed')
+  clearSettingsSharedCache(globalSettingsSharedCache)
 }
 
-function clearSettingsSharedCache(cache: typeof systemSettingsSharedCache, event: string): void {
+function clearSettingsSharedCache(cache: typeof systemSettingsSharedCache): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  void cache.clear().catch((error) => {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, { event }), '清理设置 Redis 共享缓存失败')
-  })
+  void cache.clear()
 }
 
 function assertSyncSettingsReadAllowed(operation: string): void {

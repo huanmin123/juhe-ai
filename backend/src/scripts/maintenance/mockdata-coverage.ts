@@ -1,6 +1,13 @@
 import type { SQLInputValue } from 'node:sqlite'
 
-import { getBusinessDatabase, getDatasetDatabase, getStatsDatabase, getUsageCatalogDatabase } from '../../storage/database.js'
+import {
+  codexContextStateShardIndexes,
+  getBusinessDatabase,
+  getCodexContextStateShardDatabase,
+  getDatasetDatabase,
+  getStatsDatabase,
+  getUsageCatalogDatabase
+} from '../../storage/database.js'
 import {
   listUsageRecordShardLocations,
   getUsageRecordShardDatabase
@@ -119,6 +126,9 @@ function assertApplicationTablesHaveRows(): void {
   collectEmptyTables(emptyTables, 'dataset', getDatasetDatabase())
   collectEmptyTables(emptyTables, 'usage-catalog', getUsageCatalogDatabase())
   collectEmptyTables(emptyTables, 'stats', getStatsDatabase())
+  for (const shardIndex of codexContextStateShardIndexes()) {
+    collectEmptyTables(emptyTables, `codex-context-state:${String(shardIndex).padStart(3, '0')}`, getCodexContextStateShardDatabase(shardIndex))
+  }
   for (const location of listUsageRecordShardLocations()) {
     collectEmptyTables(emptyTables, `usage-shard:${location.shardKey}`, getUsageRecordShardDatabase(location))
   }

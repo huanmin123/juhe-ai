@@ -7,7 +7,7 @@ import {
 } from '../../../domain/api-key-hybrid-routing.js'
 import type { ApiKeyHybridRoutingConfig } from '../../../domain/types.js'
 import { runtimeConfig } from '../../../config/runtime.js'
-import { createAppCache, createSharedJsonCache, throwIfRedisCacheIsRequired } from '../../../shared/cache.js'
+import { createAppCache, createSharedJsonCache } from '../../../shared/cache.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import type { GatewayApiKeyRow } from '../../../storage/repositories.js'
 import {
@@ -514,15 +514,7 @@ function hybridScoringCacheHitResult(entry: HybridScoringCacheEntry): HybridScor
 
 async function getHybridScoringSharedCacheEntry(cacheKey: string): Promise<HybridScoringCacheEntry | undefined> {
   if (runtimeConfig.cacheDriver !== 'redis') return undefined
-  try {
-    return await hybridScoringSharedCache.get(cacheKey)
-  } catch (error) {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_hybrid_scoring_shared_cache_read_failed'
-    }), '读取混合路由评分 Redis 共享缓存失败')
-    return undefined
-  }
+  return await hybridScoringSharedCache.get(cacheKey)
 }
 
 async function setHybridScoringSharedCacheEntry(
@@ -531,24 +523,12 @@ async function setHybridScoringSharedCacheEntry(
   ttlMs: number
 ): Promise<void> {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  try {
-    await hybridScoringSharedCache.set(cacheKey, entry, { ttlMs })
-  } catch (error) {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_hybrid_scoring_shared_cache_write_failed'
-    }), '写入混合路由评分 Redis 共享缓存失败')
-  }
+  await hybridScoringSharedCache.set(cacheKey, entry, { ttlMs })
 }
 
 function clearHybridScoringSharedCache(): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  void hybridScoringSharedCache.clear().catch((error) => {
-    throwIfRedisCacheIsRequired(error)
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_hybrid_scoring_shared_cache_clear_failed'
-    }), '清理混合路由评分 Redis 共享缓存失败')
-  })
+  void hybridScoringSharedCache.clear()
 }
 
 function parseHybridScoringResponse(body: Buffer): { level: number; confidence?: number; factors?: string[]; reason?: string } {

@@ -16,10 +16,19 @@ import {
 } from '../../storage/usage-stats.repository.js'
 import { dateKey, normalizeAccountUsageStatsRange, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
 import { fixedUsageStatsDefaultRange } from '../../storage/usage-stats-window-helpers.js'
+import type { RedisStreamQueueRuntime } from '../../shared/redis-stream-queue.js'
+import { getAuditLogRedisStreamRuntime } from '../audit-logs/audit-log-queue.service.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
+import { buildBackgroundQueueHealthSnapshot, type BackgroundQueueHealthItem } from '../background/background-queue-health.service.js'
 import { requestServerRuntimeSnapshot } from '../db-service/db-service-ipc.js'
-import type { DbServiceRuntimeQueueSnapshot } from '../db-service/db-service-types.js'
+import type { DbServiceRuntimeQueueSnapshot, DbServiceServerRuntimeSnapshot } from '../db-service/db-service-types.js'
+import { getUsageRecordRedisStreamRuntime } from '../gateway/usage/record-queue.service.js'
+import { getOperationLogRedisStreamRuntime } from '../operation-logs/operation-log-queue.service.js'
+import { getPublicApiLogRedisStreamRuntime } from '../public-api-logs/public-api-log-queue.service.js'
+import { getRecordMaintenanceRedisStreamRuntime } from '../record-maintenance/record-maintenance-queue.service.js'
+import { getRuntimeLogRedisStreamRuntime } from '../runtime-logs/runtime-log-index-queue.service.js'
+import { loadMockBackgroundRuntimeSnapshot } from './mock-background-runtime.js'
 
 export const statsRouter = Router()
 
@@ -59,6 +68,14 @@ interface BackgroundRetryQueueSnapshot {
 
 interface BackgroundLocalQueueSnapshot extends DbServiceRuntimeQueueSnapshot {
   name: string
+  queueType?: string
+  nextRunAt?: string
+  runningCount?: number
+  consumers?: number
+  rejectedCount?: number
+  expiredCount?: number
+  timedOutCount?: number
+  failedCount?: number
 }
 
 interface BackgroundJobRuntimeRow extends BackgroundScheduledJobSnapshot {
@@ -205,24 +222,219 @@ function retryQueueBackgroundJobRow(
 function localQueueBackgroundJobRow(
   name: string,
   workerRole: string | undefined,
-  queue: DbServiceRuntimeQueueSnapshot | undefined
+  queue: (DbServiceRuntimeQueueSnapshot & Record<string, unknown>) | undefined,
+  options: { queueType?: string; runningCount?: number; nextRunAt?: string; lastError?: string } = {}
 ): BackgroundJobRuntimeRow | undefined {
   if (!queue) return undefined
   const queueLength = numberValue(queue.queueLength)
   const flushFailureCount = numberValue(queue.flushFailureCount)
   const completedCount = numberValue(queue.completedCount)
+  const runningCount = numberValue(options.runningCount)
   return emptyBackgroundJobRow({
     name,
     workerRole,
-    running: queueLength > 0,
+    running: queueLength > 0 || runningCount > 0,
     lastSuccessAt: queue.flushLastSuccessAt,
     lastFinishedAt: queue.flushLastSuccessAt,
-    lastError: typeof queue.flushLastError === 'string' ? queue.flushLastError : undefined,
+    lastError: options.lastError ?? (typeof queue.flushLastError === 'string' ? queue.flushLastError : undefined),
     runCount: completedCount + flushFailureCount,
     successCount: completedCount,
     failureCount: flushFailureCount,
-    localQueue: { ...queue, name }
+    localQueue: {
+      ...queue,
+      name,
+      queueType: options.queueType,
+      runningCount,
+      consumers: numberValue(queue.consumers),
+      nextRunAt: options.nextRunAt
+    }
   })
+}
+
+async function backgroundQueueRuntimeRows(runtime: DbServiceServerRuntimeSnapshot | undefined): Promise<BackgroundJobRuntimeRow[]> {
+  if (!runtime) return []
+  return [
+    ...queueHealthRuntimeRows(runtime),
+    ...await redisStreamRuntimeQueueRows(),
+    ...dbServiceRuntimeQueueRows(runtime),
+    ...gatewayAccountSideEffectQueueRows(runtime),
+    ...highConcurrencyRuntimeQueueRows(runtime)
+  ]
+}
+
+async function redisStreamRuntimeQueueRows(): Promise<BackgroundJobRuntimeRow[]> {
+  const runtimes = await Promise.all([
+    redisStreamRuntime('Redis Stream 使用记录', getUsageRecordRedisStreamRuntime),
+    redisStreamRuntime('Redis Stream 审计日志', getAuditLogRedisStreamRuntime),
+    redisStreamRuntime('Redis Stream 操作日志', getOperationLogRedisStreamRuntime),
+    redisStreamRuntime('Redis Stream 公开接口日志', getPublicApiLogRedisStreamRuntime),
+    redisStreamRuntime('Redis Stream 数据维护', getRecordMaintenanceRedisStreamRuntime),
+    redisStreamRuntime('Redis Stream 运行日志索引', getRuntimeLogRedisStreamRuntime)
+  ])
+  return runtimes.filter((row): row is BackgroundJobRuntimeRow => Boolean(row))
+}
+
+async function redisStreamRuntime(
+  name: string,
+  loadRuntime: () => Promise<RedisStreamQueueRuntime | undefined>
+): Promise<BackgroundJobRuntimeRow | undefined> {
+  const runtime = await loadRuntime().catch(() => undefined)
+  if (!runtime) return undefined
+  const pendingCount = numberValue(runtime.pendingCount)
+  const lag = numberValue(runtime.lag)
+  return localQueueBackgroundJobRow(name, 'ingest-worker', {
+    queueLength: pendingCount + lag,
+    pendingCount,
+    redisLag: lag,
+    consumers: numberValue(runtime.consumers),
+    lastDeliveredId: runtime.lastDeliveredId,
+    entriesRead: runtime.entriesRead,
+    oldestPendingId: runtime.oldestPendingId,
+    newestPendingId: runtime.newestPendingId
+  }, { queueType: 'redis' })
+}
+
+function queueHealthRuntimeRows(runtime: DbServiceServerRuntimeSnapshot): BackgroundJobRuntimeRow[] {
+  const queueHealth = buildBackgroundQueueHealthSnapshot(runtime)
+  return [...queueHealth.workerQueues, ...queueHealth.serverIpcQueues]
+    .map(queueHealthRuntimeRow)
+    .filter((row): row is BackgroundJobRuntimeRow => Boolean(row))
+}
+
+function queueHealthRuntimeRow(item: BackgroundQueueHealthItem): BackgroundJobRuntimeRow | undefined {
+  if (item.status === 'unavailable' && item.queueLength === null && item.queueBytes === null) return undefined
+  return localQueueBackgroundJobRow(item.label, workerRoleFromQueueHealthItem(item), {
+    queueLength: item.queueLength ?? undefined,
+    queueBytes: item.queueBytes ?? undefined,
+    droppedCount: item.droppedCount ?? undefined,
+    droppedSuccessCount: item.droppedSuccessCount ?? undefined,
+    droppedFailureCount: item.droppedFailureCount ?? undefined,
+    droppedOverflowCount: item.droppedOverflowCount ?? undefined,
+    droppedOversizeCount: item.droppedOversizeCount ?? undefined,
+    rejectedCount: item.rejectedCount ?? undefined,
+    flushFailureCount: item.flushFailureCount ?? undefined,
+    flushLastError: item.flushLastError,
+    oldestQueuedMs: item.oldestQueuedMs ?? undefined,
+    lastFlushMs: item.lastFlushMs ?? undefined,
+    maxFlushMs: item.maxFlushMs ?? undefined,
+    slowFlushCount: item.slowFlushCount ?? undefined,
+    lastSlowFlushAt: item.lastSlowFlushAt,
+    writerPoolEnabled: item.writerPoolEnabled ?? undefined,
+    writerPoolWorkerCount: item.writerPoolWorkerCount ?? undefined,
+    writerPoolQueueLength: item.writerPoolQueueLength ?? undefined,
+    writerPoolActiveJobs: item.writerPoolActiveJobs ?? undefined,
+    writerPoolHandledJobs: item.writerPoolHandledJobs ?? undefined,
+    writerPoolFailedJobs: item.writerPoolFailedJobs ?? undefined,
+    writerPoolRejectedJobs: item.writerPoolRejectedJobs ?? undefined,
+    writerPoolOldestQueuedMs: item.writerPoolOldestQueuedMs ?? undefined,
+    writerPoolMaxQueueWaitMs: item.writerPoolMaxQueueWaitMs ?? undefined,
+    writerPoolMaxRunMs: item.writerPoolMaxRunMs ?? undefined,
+    pendingWriteRequestCount: item.pendingWriteRequestCount ?? undefined,
+    pendingWriteOldestQueuedMs: item.oldestPendingWriteMs ?? undefined
+  }, { queueType: item.source === 'server_ipc' ? 'ipc' : 'local' })
+}
+
+function workerRoleFromQueueHealthItem(item: BackgroundQueueHealthItem): string {
+  if (item.source === 'server_ipc') return 'server'
+  if (item.key.includes('Stats') || item.label.includes('stats')) return 'stats-worker'
+  return 'ingest-worker'
+}
+
+function dbServiceRuntimeQueueRows(runtime: DbServiceServerRuntimeSnapshot): BackgroundJobRuntimeRow[] {
+  const dbService = runtime.dbService
+  if (!dbService) return []
+  const codexWriterPool = dbService.codexContextStateWriterPool
+  return [
+    localQueueBackgroundJobRow('DB service 请求队列', 'db-service', {
+      queueLength: dbService.queuedRequestCount,
+      queueBytes: dbService.queuedRequestBytes,
+      oldestQueuedMs: dbService.oldestQueuedMs,
+      rejectedCount: dbService.queueRejectedCount,
+      expiredCount: dbService.queueExpiredCount,
+      runningCount: dbService.activeConcurrentRequestCount,
+      maxActiveConcurrentRequestCount: dbService.maxActiveConcurrentRequestCount,
+      lastFlushMs: dbService.lastExecMs,
+      maxFlushMs: dbService.maxExecMs,
+      slowFlushCount: dbService.slowOpCount,
+      lastSlowFlushAt: dbService.lastSlowOpAt,
+      lastSlowOpType: dbService.lastSlowOpType,
+      queueHighCount: dbService.queuedHighRequestCount,
+      queueNormalCount: dbService.queuedNormalRequestCount,
+      queueLowCount: dbService.queuedLowRequestCount
+    }, {
+      queueType: 'request',
+      runningCount: dbService.activeConcurrentRequestCount
+    }),
+    localQueueBackgroundJobRow('DB service dataset-writer pending', 'db-service', {
+      queueLength: dbService.pendingDatasetWriteRequestCount,
+      oldestQueuedMs: dbService.oldestDatasetWriteRequestMs,
+      rejectedCount: dbService.rejectedDatasetWriteRequestCount,
+      timedOutCount: dbService.timedOutDatasetWriteRequestCount
+    }, { queueType: 'request' }),
+    localQueueBackgroundJobRow('DB service 事件循环采样 pending', 'db-service', {
+      queueLength: dbService.pendingProcessEventLoopRequestCount,
+      timedOutCount: dbService.timedOutProcessEventLoopRequestCount,
+      failedCount: dbService.failedProcessEventLoopRequestCount
+    }, { queueType: 'request' }),
+    localQueueBackgroundJobRow('DB service server runtime snapshot pending', 'db-service', {
+      queueLength: dbService.pendingServerRuntimeRequestCount,
+      timedOutCount: dbService.timedOutServerRuntimeRequestCount,
+      failedCount: dbService.failedServerRuntimeRequestCount
+    }, { queueType: 'request' }),
+    localQueueBackgroundJobRow('DB service Codex 状态写入池', 'db-service', codexWriterPool
+      ? {
+        queueLength: codexWriterPool.batchItemCount,
+        completedCount: codexWriterPool.handledJobs,
+        rejectedCount: codexWriterPool.rejectedJobs,
+        failedCount: codexWriterPool.failedBatches,
+        writerPoolEnabled: codexWriterPool.enabled,
+        writerPoolWorkerCount: codexWriterPool.workerCount,
+        writerPoolQueueLength: codexWriterPool.queueLength,
+        writerPoolActiveJobs: codexWriterPool.activeJobs,
+        writerPoolHandledJobs: codexWriterPool.handledJobs,
+        writerPoolFailedJobs: codexWriterPool.failedJobs,
+        writerPoolRejectedJobs: codexWriterPool.rejectedJobs,
+        writerPoolOldestQueuedMs: codexWriterPool.oldestQueuedMs,
+        writerPoolMaxQueueWaitMs: codexWriterPool.maxQueueWaitMs,
+        writerPoolMaxRunMs: codexWriterPool.maxRunMs,
+        batchKeyCount: codexWriterPool.batchKeyCount,
+        flushedBatches: codexWriterPool.flushedBatches,
+        flushedBatchItems: codexWriterPool.flushedBatchItems
+      }
+      : undefined, { queueType: 'writer' })
+  ].filter((row): row is BackgroundJobRuntimeRow => Boolean(row))
+}
+
+function gatewayAccountSideEffectQueueRows(runtime: DbServiceServerRuntimeSnapshot): BackgroundJobRuntimeRow[] {
+  const state = runtime.gatewayAccountSideEffects
+  if (!state) return []
+  return [
+    localQueueBackgroundJobRow('网关账号副作用队列', 'server', {
+      queueLength: numberValue(state.queueLength),
+      completedCount: numberValue(state.completedCount),
+      droppedCount: numberValue(state.droppedCount) + numberValue(state.expiredCount),
+      failedCount: numberValue(state.failedAttemptCount),
+      coalescedCount: numberValue(state.coalescedCount),
+      canceledBySuccessCount: numberValue(state.canceledBySuccessCount),
+      skippedHealthySuccessCount: numberValue(state.skippedHealthySuccessCount),
+      precheckPendingAccountCount: numberValue(state.precheckPendingAccountCount),
+      degradedAccountCount: numberValue(state.degradedAccountCount),
+      localSuppressedAccountCount: numberValue(state.localSuppressedAccountCount)
+    }, {
+      queueType: 'gateway',
+      runningCount: state.processing === true ? 1 : 0,
+      nextRunAt: typeof state.nextAttemptAt === 'string' ? state.nextAttemptAt : undefined
+    })
+  ].filter((row): row is BackgroundJobRuntimeRow => Boolean(row))
+}
+
+function highConcurrencyRuntimeQueueRows(runtime: DbServiceServerRuntimeSnapshot): BackgroundJobRuntimeRow[] {
+  return (runtime.highConcurrencyQueues ?? [])
+    .map((queue) => localQueueBackgroundJobRow(`高并发短队列 ${queue.lane} ${queue.groupKey}`, 'server', {
+      queueLength: queue.queueSize,
+      perApiKeyQueueSize: queue.perApiKeyQueueSize
+    }, { queueType: 'concurrency' }))
+    .filter((row): row is BackgroundJobRuntimeRow => Boolean(row))
 }
 
 function emptyBackgroundJobRow(input: {
@@ -259,6 +471,27 @@ function numberValue(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }
 
+function runtimeHasQueueSources(runtime: DbServiceServerRuntimeSnapshot | undefined): boolean {
+  return Boolean(
+    runtime?.ingestWorker?.snapshot?.usageRecordQueue
+    || runtime?.ingestWorker?.snapshot?.auditLogQueue
+    || runtime?.ingestWorker?.snapshot?.operationLogQueue
+    || runtime?.ingestWorker?.snapshot?.publicApiLogQueue
+    || runtime?.ingestWorker?.snapshot?.recordMaintenanceQueue
+    || runtime?.ingestWorker?.snapshot?.runtimeLogIndexQueue
+    || runtime?.statsWorker?.snapshot?.recordMaintenanceQueue
+    || runtime?.statsWorker?.snapshot?.accountQualityFailurePrecheckQueue
+    || runtime?.opsWorker?.snapshot?.accountHealthCheckQueue
+    || runtime?.opsWorker?.snapshot?.cooldownAccountRetestQueue
+    || runtime?.opsWorker?.snapshot?.accountApiKeyCooldownRetestQueue
+    || runtime?.opsWorker?.snapshot?.manualAccountTestQueue
+    || runtime?.opsWorker?.snapshot?.accountQualityFailurePrecheckQueue
+    || runtime?.dbService
+    || runtime?.ingestWorker?.pendingQueues
+    || runtime?.opsWorker?.pendingQueues
+  )
+}
+
 statsRouter.get('/system-metrics', requireAdmin, async (req, res, next) => {
   const parsed = usageOverviewQuerySchema.safeParse(req.query)
   if (!parsed.success) {
@@ -267,7 +500,10 @@ statsRouter.get('/system-metrics', requireAdmin, async (req, res, next) => {
   }
   try {
     const overview = await getSystemMetricsOverviewAsync(await normalizeStatsDateRangeAsync(parsed.data))
-    const runtime = await requestServerRuntimeSnapshot(1000).catch(() => undefined)
+    const liveRuntime = await requestServerRuntimeSnapshot(1000).catch(() => undefined)
+    const runtime = runtimeHasQueueSources(liveRuntime)
+      ? liveRuntime
+      : loadMockBackgroundRuntimeSnapshot() ?? liveRuntime
     const ingestWorkerSnapshot = runtime?.ingestWorker?.snapshot
     const statsWorkerSnapshot = runtime?.statsWorker?.snapshot
     const opsWorkerSnapshot = runtime?.opsWorker?.snapshot
@@ -279,9 +515,7 @@ statsRouter.get('/system-metrics', requireAdmin, async (req, res, next) => {
         'account-quality-failure-precheck-queue',
         accountQualityFailurePrecheckSnapshot ? (opsWorkerSnapshot?.workerRole ?? statsWorkerSnapshot?.workerRole) : undefined,
         accountQualityFailurePrecheckSnapshot
-      ),
-      localQueueBackgroundJobRow('record-maintenance-ingest-queue', ingestWorkerSnapshot?.workerRole, ingestWorkerSnapshot?.recordMaintenanceQueue),
-      localQueueBackgroundJobRow('record-maintenance-stats-queue', statsWorkerSnapshot?.workerRole, statsWorkerSnapshot?.recordMaintenanceQueue)
+      )
     ].filter((row): row is BackgroundJobRuntimeRow => Boolean(row))
     const backgroundJobGroups = [
       backgroundJobsFromSnapshot(ingestWorkerSnapshot),
@@ -299,6 +533,7 @@ statsRouter.get('/system-metrics', requireAdmin, async (req, res, next) => {
         }
         return roleAwareJob
       }),
+      await backgroundQueueRuntimeRows(runtime),
       backgroundQueueRows.length > 0 ? backgroundQueueRows : undefined
     ]
     const backgroundJobs = backgroundJobGroups.some(Array.isArray)
