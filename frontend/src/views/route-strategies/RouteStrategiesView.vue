@@ -430,6 +430,7 @@ import GroupSelect from '@/components/GroupSelect.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { filterModelOption, useProviderModelSelectOptions } from '@/composables/useProviderModelSelectOptions'
+import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useScopedGroupsApi, useScopedRouteStrategiesApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
@@ -472,6 +473,18 @@ interface HybridLevelRouteFormRow extends ApiKeyHybridLevelRoute {
   key: string
 }
 
+interface RouteStrategiesPageState {
+  keyword: string
+  modeFilter: RouteStrategyMode | 'all'
+  pagination: {
+    current: number
+    pageSize: number
+  }
+  statusFilter: RouteStrategyStatus | 'all'
+  systemAccountFilter: string
+  systemAccountFilterSelection?: PrincipalSelection
+}
+
 interface HybridQualityInspectionForm {
   enabled: boolean
   scoringModel: string
@@ -495,14 +508,20 @@ interface HybridRoutingForm {
   qualityInspection: HybridQualityInspectionForm
 }
 
+const routeStrategiesPageSize = 20
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const routeStrategiesApi = useScopedRouteStrategiesApi(isManagementView)
 const groupsApi = useScopedGroupsApi(isManagementView)
-const keyword = ref('')
-const systemAccountFilter = ref(allSystemAccountsValue)
-const systemAccountFilterSelection = ref<PrincipalSelection | undefined>()
-const statusFilter = ref<RouteStrategyStatus | 'all'>('all')
-const modeFilter = ref<RouteStrategyMode | 'all'>('all')
+const pageStateCache = usePageStateCache<RouteStrategiesPageState>(undefined, defaultRouteStrategiesPageState, {
+  sanitize: sanitizeRouteStrategiesPageState,
+  version: 2
+})
+const initialPageState = pageStateCache.read()
+const keyword = ref(initialPageState.keyword)
+const systemAccountFilter = ref(initialPageState.systemAccountFilter)
+const systemAccountFilterSelection = ref<PrincipalSelection | undefined>(initialPageState.systemAccountFilterSelection)
+const statusFilter = ref<RouteStrategyStatus | 'all'>(initialPageState.statusFilter)
+const modeFilter = ref<RouteStrategyMode | 'all'>(initialPageState.modeFilter)
 const loading = ref(false)
 const saving = ref(false)
 const modalOpen = ref(false)
@@ -512,8 +531,8 @@ const bindingDragSourceIndex = ref<number | null>(null)
 const bindingDragOverIndex = ref<number | null>(null)
 const items = ref<RouteStrategySummary[]>([])
 const total = ref(0)
-const page = ref(1)
-const pageSize = ref(20)
+const page = ref(initialPageState.pagination.current)
+const pageSize = ref(initialPageState.pagination.pageSize)
 const groupOptionsRaw = ref<GroupOptionSummary[]>([])
 const groupOptionsLoading = ref(false)
 
@@ -702,6 +721,7 @@ watch(() => form.mode, (mode) => {
     void loadModelOptions()
   }
 })
+watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 watch(systemAccountFilterSelection, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
 
 onMounted(() => {
@@ -746,14 +766,17 @@ function refreshRouteStrategies() {
 }
 
 function resetFilters() {
-  keyword.value = ''
-  systemAccountFilter.value = allSystemAccountsValue
-  systemAccountFilterSelection.value = undefined
-  statusFilter.value = 'all'
-  modeFilter.value = 'all'
+  const defaults = defaultRouteStrategiesPageState()
+  keyword.value = defaults.keyword
+  systemAccountFilter.value = defaults.systemAccountFilter
+  systemAccountFilterSelection.value = defaults.systemAccountFilterSelection
+  statusFilter.value = defaults.statusFilter
+  modeFilter.value = defaults.modeFilter
   groupOptionsRaw.value = []
   resetSystemAccountOptionsSearch()
-  page.value = 1
+  page.value = defaults.pagination.current
+  pageSize.value = defaults.pagination.pageSize
+  pageStateCache.clear()
   void loadRouteStrategies()
 }
 
@@ -765,6 +788,79 @@ function handleSystemAccountFilterChange() {
   resetSystemAccountOptionsSearch()
   page.value = 1
   void loadRouteStrategies()
+}
+
+function defaultRouteStrategiesPageState(): RouteStrategiesPageState {
+  return {
+    keyword: '',
+    modeFilter: 'all',
+    pagination: { current: 1, pageSize: routeStrategiesPageSize },
+    statusFilter: 'all',
+    systemAccountFilter: allSystemAccountsValue,
+    systemAccountFilterSelection: undefined
+  }
+}
+
+function sanitizeRouteStrategiesPageState(value: unknown, fallback: RouteStrategiesPageState): RouteStrategiesPageState {
+  if (!value || typeof value !== 'object') return fallback
+  const source = value as Partial<RouteStrategiesPageState>
+  const pagination = source.pagination && typeof source.pagination === 'object'
+    ? source.pagination as Partial<RouteStrategiesPageState['pagination']>
+    : {}
+  return {
+    keyword: typeof source.keyword === 'string' ? source.keyword : fallback.keyword,
+    modeFilter: isRouteStrategyModeFilter(source.modeFilter) ? source.modeFilter : fallback.modeFilter,
+    pagination: {
+      current: sanitizePositiveInteger(pagination.current, fallback.pagination.current),
+      pageSize: sanitizePositiveInteger(pagination.pageSize, fallback.pagination.pageSize, 200)
+    },
+    statusFilter: isRouteStrategyStatusFilter(source.statusFilter) ? source.statusFilter : fallback.statusFilter,
+    systemAccountFilter: typeof source.systemAccountFilter === 'string' && source.systemAccountFilter.trim()
+      ? source.systemAccountFilter
+      : fallback.systemAccountFilter,
+    systemAccountFilterSelection: sanitizeSystemAccountSelection(source.systemAccountFilterSelection)
+  }
+}
+
+function isRouteStrategyModeFilter(value: unknown): value is RouteStrategyMode | 'all' {
+  return value === 'all'
+    || value === 'normal'
+    || value === 'hybrid_smart'
+    || value === 'weighted'
+    || value === 'failover'
+    || value === 'round_robin'
+}
+
+function isRouteStrategyStatusFilter(value: unknown): value is RouteStrategyStatus | 'all' {
+  return value === 'all' || value === 'active' || value === 'disabled'
+}
+
+function sanitizePositiveInteger(value: unknown, fallback: number, max = Number.MAX_SAFE_INTEGER): number {
+  const numeric = Number(value)
+  return Number.isInteger(numeric) && numeric > 0 && numeric <= max ? numeric : fallback
+}
+
+function sanitizeSystemAccountSelection(value: unknown): PrincipalSelection | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const selection = value as Partial<PrincipalSelection>
+  const id = typeof selection.id === 'string' ? selection.id.trim() : ''
+  const name = typeof selection.name === 'string' ? selection.name.trim() : ''
+  if (!id || !name || selection.kind !== 'system_account') return undefined
+  return { id, name, kind: 'system_account' }
+}
+
+function snapshotPageState(): RouteStrategiesPageState {
+  return {
+    keyword: keyword.value,
+    modeFilter: modeFilter.value,
+    pagination: {
+      current: page.value,
+      pageSize: pageSize.value
+    },
+    statusFilter: statusFilter.value,
+    systemAccountFilter: systemAccountFilter.value,
+    systemAccountFilterSelection: systemAccountFilterSelection.value
+  }
 }
 
 function openCreate() {
@@ -1408,9 +1504,14 @@ function boundedInteger(value: unknown, min: number, max: number): number {
 .route-strategy-name-text {
   overflow: hidden;
   color: #0f172a;
-  font-weight: 600;
+  font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.mobile-list-card-title,
+.mobile-list-card-name-row {
+  font-weight: 400;
 }
 
 .route-strategy-description {
