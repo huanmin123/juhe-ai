@@ -245,6 +245,7 @@ import dayjs from 'dayjs'
 import { api, type ClientIpStatsDetailParams, type ClientIpStatsListParams, type SortDirection } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
+import { useUsageStatsWindow } from '@/composables/useUsageStatsWindow'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime } from '@/shared/formatters'
@@ -257,13 +258,15 @@ import { statusColor, statusText, type IpStatsPolicyAction } from './ipStatsDisp
 type TableSortOrder = 'ascend' | 'descend' | null
 type PolicyAction = IpStatsPolicyAction
 type PolicyDurationMode = 'permanent' | 'minutes' | 'days'
-type UsageWindow = 'today' | 'recent7d' | 'recent31d'
+type UsageWindow = 'today' | 'recent7d' | 'recent1m'
 
 const usageWindowOptions = [
   { label: '今天', value: 'today' },
   { label: '近 7 天', value: 'recent7d' },
-  { label: '近 31 天', value: 'recent31d' }
+  { label: '近1月', value: 'recent1m' }
 ]
+
+const { usageStatsWindowEndDate, loadUsageStatsWindow } = useUsageStatsWindow()
 
 const statusOptions = [
   { label: '全部状态', value: 'all' },
@@ -357,6 +360,7 @@ onMounted(() => {
 async function loadData(): Promise<void> {
   loading.value = true
   try {
+    await loadUsageStatsWindow()
     const result = await api.ipStats.list(buildListParams())
     rows.value = result.items
     pagination.current = result.page
@@ -575,9 +579,9 @@ function formatDateKey(value: Dayjs): string {
 }
 
 function usageWindowDateRange(value: UsageWindow): [Dayjs, Dayjs] {
-  const today = dayjs().startOf('day')
+  const today = (usageStatsWindowEndDate.value?.isValid() ? usageStatsWindowEndDate.value : dayjs()).startOf('day')
   if (value === 'today') return [today, today]
-  if (value === 'recent31d') return [today.subtract(30, 'day'), today]
+  if (value === 'recent1m') return [today.subtract(30, 'day'), today]
   return [today.subtract(6, 'day'), today]
 }
 </script>

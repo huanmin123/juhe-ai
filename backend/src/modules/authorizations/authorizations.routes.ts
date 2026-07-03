@@ -14,7 +14,8 @@ import {
 } from '../../storage/repositories.js'
 import { getBusinessDatabase } from '../../storage/database.js'
 import { optionalServerDateTimeIso } from '../../storage/value-utils.js'
-import { normalizeAccountUsageStatsRange, todayDateKey, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
+import { normalizeAccountUsageStatsRange, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
+import { fixedUsageStatsDefaultRange } from '../../storage/usage-stats-window-helpers.js'
 import { getRequestAccessScope, getRequestAuthContext } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField, textValue } from '../deduplication/mutation-guard.middleware.js'
@@ -533,9 +534,9 @@ function authorizationGranteeName(authorization: ResourceAuthorizationSummary): 
 
 async function normalizeAuthorizationUsageRangeAsync(input: { startDate?: string; endDate?: string }) {
   const timezone = await usageStatsTimezoneAsync()
-  const today = todayDateKey(timezone)
-  const startDate = input.startDate ?? input.endDate ?? today
-  const endDate = input.endDate ?? input.startDate ?? today
+  const defaultRange = fixedUsageStatsDefaultRange(timezone)
+  const startDate = input.startDate ?? input.endDate ?? defaultRange.startDate
+  const endDate = input.endDate ?? input.startDate ?? defaultRange.endDate
   return normalizeAccountUsageStatsRange({
     startDate,
     endDate

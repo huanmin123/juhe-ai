@@ -61,6 +61,6 @@ export function responseUsageStatsDateRange(value?: { startDate?: string; endDat
   return [start.startOf('day'), end.startOf('day')]
 }
 
-export function isUsageStatsDateDisabled(current: Dayjs, calendarRange: readonly [Dayjs | null, Dayjs | null]): boolean {
-  return isRecentWindowDateDisabled(current, calendarRange, maxUsageStatsRangeDays)
+export function isUsageStatsDateDisabled(current: Dayjs, calendarRange: readonly [Dayjs | null, Dayjs | null], referenceEndDate?: Dayjs, maxRangeDays = maxUsageStatsRangeDays): boolean {
+  return isRecentWindowDateDisabled(current, calendarRange, maxRangeDays, referenceEndDate)
 }

@@ -83,9 +83,9 @@ export function normalizeDayjsDateRange(value?: [Dayjs, Dayjs]): [Dayjs, Dayjs] 
   return start.isAfter(end, 'day') ? [end.startOf('day'), start.startOf('day')] : [start.startOf('day'), end.startOf('day')]
 }
 
-export function isRecentWindowDateDisabled(current: Dayjs | null | undefined, calendarRange: readonly [Dayjs | null, Dayjs | null], maxDays: number): boolean {
+export function isRecentWindowDateDisabled(current: Dayjs | null | undefined, calendarRange: readonly [Dayjs | null, Dayjs | null], maxDays: number, referenceEndDate?: Dayjs): boolean {
   if (!current) return false
-  const today = dayjs().startOf('day')
+  const today = (referenceEndDate?.isValid() ? referenceEndDate : dayjs()).startOf('day')
   if (current.isAfter(today, 'day')) return true
   if (current.isBefore(today.subtract(maxDays - 1, 'day'), 'day')) return true
   const anchor = calendarRange[0] ?? calendarRange[1]

@@ -14,8 +14,8 @@ import {
   getUsageStatsOverviewAsync,
   listAiPerformanceAccountOptionsAsync,
 } from '../../storage/usage-stats.repository.js'
-import { normalizeAccountUsageStatsRange, todayDateKey, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
-import { fixedUsageStatsDateKeys } from '../../storage/usage-stats-window-helpers.js'
+import { normalizeAccountUsageStatsRange, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
+import { fixedUsageStatsDefaultRange } from '../../storage/usage-stats-window-helpers.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { requestServerRuntimeSnapshot } from '../db-service/db-service-ipc.js'
@@ -85,6 +85,22 @@ statsRouter.get('/usage-overview', async (req, res, next) => {
   }
 })
 
+statsRouter.get('/usage-window', async (_req, res, next) => {
+  try {
+    const timezone = await usageStatsTimezoneAsync()
+    const range = fixedUsageStatsDefaultRange(timezone)
+    res.json(ok({
+      timezone,
+      startDate: range.startDate,
+      endDate: range.endDate,
+      days: range.days,
+      maxDays: range.maxDays
+    }))
+  } catch (error) {
+    next(error)
+  }
+})
+
 statsRouter.get('/ai-performance', async (req, res, next) => {
   const parsed = usageOverviewQuerySchema.safeParse(req.query)
   if (!parsed.success) {
@@ -143,12 +159,8 @@ function parseAccountUsageOptions(query: Record<string, unknown>, timezone: stri
 }
 
 function defaultAccountUsageDateRange(timezone: string): { startDate: string; endDate: string } {
-  const dateKeys = fixedUsageStatsDateKeys(timezone)
-  const today = todayDateKey(timezone)
-  return {
-    startDate: dateKeys[0] ?? today,
-    endDate: dateKeys[dateKeys.length - 1] ?? today
-  }
+  const range = fixedUsageStatsDefaultRange(timezone)
+  return { startDate: range.startDate, endDate: range.endDate }
 }
 
 function schedulableQueryValue(value: unknown): AccountListSchedulableFilter | undefined {
@@ -329,8 +341,8 @@ statsRouter.get('/system-metrics', requireAdmin, async (req, res, next) => {
 
 async function normalizeStatsDateRangeAsync(input: { startDate?: string; endDate?: string }) {
   const timezone = await usageStatsTimezoneAsync()
-  const today = todayDateKey(timezone)
-  const startDate = input.startDate ?? input.endDate ?? today
-  const endDate = input.endDate ?? input.startDate ?? today
+  const defaultRange = defaultAccountUsageDateRange(timezone)
+  const startDate = input.startDate ?? input.endDate ?? defaultRange.startDate
+  const endDate = input.endDate ?? input.startDate ?? defaultRange.endDate
   return normalizeAccountUsageStatsRange({ startDate, endDate }, timezone)
 }

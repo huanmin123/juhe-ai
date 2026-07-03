@@ -53,6 +53,7 @@ import { api } from '@/api/client'
 import { disposeChart, ensureChart, resizeEcharts, useEchartsPageLifecycle, type ECharts } from '@/composables/useEcharts'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
+import { useUsageStatsWindow } from '@/composables/useUsageStatsWindow'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys } from '@/shared/dateRange'
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
@@ -80,6 +81,7 @@ const selectedSystemAccount = ref<PrincipalSelection | undefined>()
 const loading = ref(false)
 let performanceRequestSeq = 0
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
+const { usageStatsWindowEndDate, usageStatsWindowMaxDays, loadUsageStatsWindow } = useUsageStatsWindow()
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
   handleSearch: handleSystemAccountOptionsSearch,
@@ -224,9 +226,10 @@ async function loadPerformance() {
       systemAccountId,
       accountIds: addedAccountIds.value
     }
-    const performanceOverview = isManagementView.value
-      ? await api.stats.aiPerformance(performanceParams)
-      : await api.myStats.aiPerformance(performanceParams)
+    const [performanceOverview] = await Promise.all([
+      isManagementView.value ? api.stats.aiPerformance(performanceParams) : api.myStats.aiPerformance(performanceParams),
+      loadUsageStatsWindow()
+    ])
     if (requestSeq !== performanceRequestSeq) return
     overview.value = performanceOverview
     syncDateRangeFromResponse(performanceOverview.range)
@@ -346,7 +349,7 @@ function metricElementRef(metric: AiPerformanceMetric): Ref<HTMLDivElement | und
 }
 
 function disabledDate(current: Dayjs) {
-  return isRecentWindowDateDisabled(current, calendarRange.value, MAX_RANGE_DAYS)
+  return isRecentWindowDateDisabled(current, calendarRange.value, usageStatsWindowMaxDays.value, usageStatsWindowEndDate.value)
 }
 
 function parseDateRange(value?: { startDate?: string; endDate?: string }): [Dayjs, Dayjs] {

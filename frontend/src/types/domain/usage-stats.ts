@@ -24,6 +24,14 @@ export interface AccountUsageStatsRange {
   maxDays: number
 }
 
+export interface UsageStatsWindow {
+  timezone: string
+  startDate: string
+  endDate: string
+  days: number
+  maxDays: number
+}
+
 export interface AccountUsageDailyPoint extends AccountUsageSummary {
   statDate: string
 }
