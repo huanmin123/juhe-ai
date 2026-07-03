@@ -422,6 +422,19 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/system-metrics-stats',
+    component: () => import('@/views/stats/SystemMetricsStatsView.vue'),
+    meta: {
+      title: '系统指标统计',
+      description: '查看系统性能、网络吞吐、进程事件循环延迟、后台任务运行状态和进程 RSS 峰值趋势。',
+      menuGroup: 'system-operations',
+      menuGroupTitle: '系统运维',
+      viewScope: 'admin',
+      roles: managementRoles,
+      heavy: true
+    }
+  },
+  {
     path: '/ip-stats',
     component: () => import('@/views/ip-stats/IpStatsView.vue'),
     meta: {

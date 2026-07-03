@@ -245,6 +245,7 @@ const menuIconMap = {
   '/audit-logs': FileSearchOutlined,
   '/runtime-logs': SearchOutlined,
   '/table-monitor': DatabaseOutlined,
+  '/system-metrics-stats': BarChartOutlined,
   '/ip-stats': GlobalOutlined,
   '/response-inspection-policies': FilterOutlined,
   '/external-integration-sources': LinkOutlined,
