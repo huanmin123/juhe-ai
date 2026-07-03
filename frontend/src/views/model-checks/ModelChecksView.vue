@@ -96,20 +96,23 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onDeactivated, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue'
 import { message } from '@/lib/antd'
 
+import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useScopedAccountsApi, useScopedModelChecksApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import {
   accountLabelForId,
-  rememberAccountLabel
+  rememberAccountLabel,
+  type AccountSelection
 } from '@/shared/accountLabelCache'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { loadEntityDetailCached } from '@/shared/entityDetailCache'
 import { formatNumber } from '@/shared/formatters'
+import { sanitizePaginationState, stringOrFallback, stringUnionOrFallback, type PagePaginationState } from '@/shared/pageStateSanitizers'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import type {
   ModelCheckLevel,
@@ -143,11 +146,29 @@ import ModelCheckRunHistoryList from './ModelCheckRunHistoryList.vue'
 import ModelCheckRunDetailDrawer from './ModelCheckRunDetailDrawer.vue'
 import { useModelCheckAccountOptions } from './useModelCheckAccountOptions'
 
+interface ModelChecksPageState {
+  filters: {
+    targetId?: string
+    model?: ModelCheckModel
+    level?: ModelCheckLevel
+    status?: ModelCheckStatus
+  }
+  historyTargetAccount?: AccountSelection
+  pagination: PagePaginationState
+  systemAccountFilter: string
+  systemAccountFilterSelection?: PrincipalSelection
+}
+
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const modelChecksApi = useScopedModelChecksApi(isManagementView)
 const accountsApi = useScopedAccountsApi(isManagementView)
-const systemAccountFilter = ref<string>(allSystemAccountsValue)
-const systemAccountFilterSelection = ref<PrincipalSelection>()
+const pageStateCache = usePageStateCache<ModelChecksPageState>(undefined, defaultModelChecksPageState, {
+  sanitize: sanitizeModelChecksPageState,
+  version: 1
+})
+const initialPageState = pageStateCache.read()
+const systemAccountFilter = ref<string>(initialPageState.systemAccountFilter)
+const systemAccountFilterSelection = ref<PrincipalSelection | undefined>(initialPageState.systemAccountFilterSelection)
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
   handleSearch: handleSystemAccountOptionsSearch,
@@ -188,12 +209,13 @@ const filters = reactive<{
   model?: ModelCheckModel
   level?: ModelCheckLevel
   status?: ModelCheckStatus
-}>({})
+}>({ ...initialPageState.filters })
 const {
   items: runs,
   loading: runsLoading,
   mobileHasMore: runsMobileHasMore,
   mobileLoadingMore: runsMobileLoadingMore,
+  pagination: runsPagination,
   tablePagination: runsTablePagination,
   handleTableChange: handleRunsTableChange,
   loadData: loadRuns,
@@ -202,6 +224,7 @@ const {
   resetPagination: resetRunsPagination
 } = useResponsivePagedList<ModelCheckRunSummary>({
   pageSize: modelCheckPageSize,
+  initialPagination: initialPageState.pagination,
   showTotal: (total, range, context) => context?.hasMore
     ? `已加载到第 ${formatNumber(range?.[1] ?? Math.max(0, total - 1))} 条检测记录，还有更多`
     : `共 ${formatNumber(total)} 条检测记录`,
@@ -272,6 +295,7 @@ const {
   modelCheckScopeParams,
   knownTargetName
 })
+selectedHistoryTargetAccount.value = initialPageState.historyTargetAccount
 const historyModelOptions = computed(() => options.value.supportedModels.map((item) => ({ label: item.label, value: item.value })))
 const runModelOptions = computed(() => {
   const accountModels = modelCheckModelsForAccount(selectedTargetAccountProfile.value)
@@ -437,6 +461,7 @@ function handleSystemAccountFilterChange() {
 function resetModelCheckScopedState() {
   resetAccountOptionsState()
   filters.targetId = undefined
+  selectedHistoryTargetAccount.value = undefined
   currentRun.value = undefined
   detailOpen.value = false
 }
@@ -469,6 +494,78 @@ function clearTerminal() {
   terminalLines.value = []
   terminalVisible.value = false
 }
+
+function defaultModelChecksPageState(): ModelChecksPageState {
+  return {
+    filters: {},
+    historyTargetAccount: undefined,
+    pagination: { current: 1, pageSize: modelCheckPageSize },
+    systemAccountFilter: allSystemAccountsValue,
+    systemAccountFilterSelection: undefined
+  }
+}
+
+function sanitizeModelChecksPageState(value: unknown, fallback: ModelChecksPageState): ModelChecksPageState {
+  const source = value && typeof value === 'object' ? value as Partial<ModelChecksPageState> : {}
+  const sourceFilters = source.filters && typeof source.filters === 'object'
+    ? source.filters as Partial<ModelChecksPageState['filters']>
+    : {}
+  return {
+    filters: {
+      targetId: optionalString(sourceFilters.targetId),
+      model: optionalString(sourceFilters.model),
+      level: optionalUnion(sourceFilters.level, ['high_confidence', 'likely', 'uncertain', 'suspicious', 'unavailable']),
+      status: optionalUnion(sourceFilters.status, ['running', 'completed', 'failed', 'canceled'])
+    },
+    historyTargetAccount: sanitizeAccountSelection(source.historyTargetAccount),
+    pagination: sanitizePaginationState(source.pagination, fallback.pagination),
+    systemAccountFilter: stringOrFallback(source.systemAccountFilter, fallback.systemAccountFilter) || fallback.systemAccountFilter,
+    systemAccountFilterSelection: sanitizeSystemAccountSelection(source.systemAccountFilterSelection)
+  }
+}
+
+function optionalString(value: unknown): string | undefined {
+  const normalized = stringOrFallback(value).trim()
+  return normalized || undefined
+}
+
+function optionalUnion<T extends string>(value: unknown, allowed: readonly T[]): T | undefined {
+  return typeof value === 'string' && (allowed as readonly string[]).includes(value) ? value as T : undefined
+}
+
+function sanitizeSystemAccountSelection(value: unknown): PrincipalSelection | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const selection = value as Partial<PrincipalSelection>
+  const id = stringOrFallback(selection.id).trim()
+  const name = stringOrFallback(selection.name).trim()
+  if (!id || !name || selection.kind !== 'system_account') return undefined
+  return { id, name, kind: 'system_account' }
+}
+
+function sanitizeAccountSelection(value: unknown): AccountSelection | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const selection = value as Partial<AccountSelection>
+  const id = stringOrFallback(selection.id).trim()
+  const name = stringOrFallback(selection.name).trim()
+  if (!id || !name) return undefined
+  const accessType = optionalUnion(selection.accessType, ['owner', 'authorized'])
+  const ownerSystemAccountName = optionalString(selection.ownerSystemAccountName)
+  return ownerSystemAccountName
+    ? { id, name, accessType, ownerSystemAccountName }
+    : { id, name, accessType }
+}
+
+function snapshotPageState(): ModelChecksPageState {
+  return {
+    filters: { ...filters },
+    historyTargetAccount: selectedHistoryTargetAccount.value,
+    pagination: { current: runsPagination.current, pageSize: runsPagination.pageSize },
+    systemAccountFilter: systemAccountFilter.value,
+    systemAccountFilterSelection: systemAccountFilterSelection.value
+  }
+}
+
+watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 
 function appendTerminalLine(level: ModelCheckTerminalLine['level'], text: string) {
   terminalLines.value.push({

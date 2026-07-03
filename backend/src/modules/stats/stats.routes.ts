@@ -471,25 +471,112 @@ function numberValue(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }
 
-function runtimeHasQueueSources(runtime: DbServiceServerRuntimeSnapshot | undefined): boolean {
-  return Boolean(
-    runtime?.ingestWorker?.snapshot?.usageRecordQueue
-    || runtime?.ingestWorker?.snapshot?.auditLogQueue
-    || runtime?.ingestWorker?.snapshot?.operationLogQueue
-    || runtime?.ingestWorker?.snapshot?.publicApiLogQueue
-    || runtime?.ingestWorker?.snapshot?.recordMaintenanceQueue
-    || runtime?.ingestWorker?.snapshot?.runtimeLogIndexQueue
-    || runtime?.statsWorker?.snapshot?.recordMaintenanceQueue
-    || runtime?.statsWorker?.snapshot?.accountQualityFailurePrecheckQueue
-    || runtime?.opsWorker?.snapshot?.accountHealthCheckQueue
-    || runtime?.opsWorker?.snapshot?.cooldownAccountRetestQueue
-    || runtime?.opsWorker?.snapshot?.accountApiKeyCooldownRetestQueue
-    || runtime?.opsWorker?.snapshot?.manualAccountTestQueue
-    || runtime?.opsWorker?.snapshot?.accountQualityFailurePrecheckQueue
-    || runtime?.dbService
-    || runtime?.ingestWorker?.pendingQueues
-    || runtime?.opsWorker?.pendingQueues
-  )
+function runtimeHasQueueMetrics(runtime: DbServiceServerRuntimeSnapshot | undefined): boolean {
+  if (!runtime) return false
+  return [
+    runtime.ingestWorker?.snapshot?.usageRecordQueue,
+    runtime.ingestWorker?.snapshot?.auditLogQueue,
+    runtime.ingestWorker?.snapshot?.operationLogQueue,
+    runtime.ingestWorker?.snapshot?.publicApiLogQueue,
+    runtime.ingestWorker?.snapshot?.recordMaintenanceQueue,
+    runtime.ingestWorker?.snapshot?.runtimeLogIndexQueue,
+    runtime.statsWorker?.snapshot?.recordMaintenanceQueue,
+    ...(runtime.ingestWorker?.pendingQueues ? Object.values(runtime.ingestWorker.pendingQueues) : []),
+    ...(runtime.opsWorker?.pendingQueues ? Object.values(runtime.opsWorker.pendingQueues) : [])
+  ].some(queueSnapshotHasMetrics)
+    || retryQueueHasMetrics(runtime.statsWorker?.snapshot?.accountQualityFailurePrecheckQueue)
+    || retryQueueHasMetrics(runtime.opsWorker?.snapshot?.accountHealthCheckQueue)
+    || retryQueueHasMetrics(runtime.opsWorker?.snapshot?.cooldownAccountRetestQueue)
+    || retryQueueHasMetrics(runtime.opsWorker?.snapshot?.accountApiKeyCooldownRetestQueue)
+    || retryQueueHasMetrics(runtime.opsWorker?.snapshot?.manualAccountTestQueue)
+    || retryQueueHasMetrics(runtime.opsWorker?.snapshot?.accountQualityFailurePrecheckQueue)
+    || dbServiceQueueHasMetrics(runtime.dbService)
+    || (runtime.highConcurrencyQueues ?? []).some((queue) => numberValue(queue.queueSize) > 0)
+    || gatewaySideEffectQueueHasMetrics(runtime.gatewayAccountSideEffects)
+}
+
+function queueSnapshotHasMetrics(queue: DbServiceRuntimeQueueSnapshot | undefined): boolean {
+  if (!queue) return false
+  return [
+    queue.queueLength,
+    queue.queueBytes,
+    queue.completedCount,
+    queue.droppedCount,
+    queue.droppedSuccessCount,
+    queue.droppedFailureCount,
+    queue.droppedOverflowCount,
+    queue.droppedOversizeCount,
+    queue.retainedOverflowWarningCount,
+    queue.flushFailureCount,
+    queue.oldestQueuedMs,
+    queue.lastFlushMs,
+    queue.maxFlushMs,
+    queue.slowFlushCount,
+    queue.writerPoolQueueLength,
+    queue.writerPoolActiveJobs,
+    queue.writerPoolHandledJobs,
+    queue.writerPoolFailedJobs,
+    queue.writerPoolRejectedJobs,
+    queue.writerPoolOldestQueuedMs,
+    queue.writerPoolMaxQueueWaitMs,
+    queue.writerPoolMaxRunMs
+  ].some((value) => numberValue(value) > 0)
+}
+
+function retryQueueHasMetrics(queue: BackgroundRetryQueueSnapshot | undefined): boolean {
+  return Boolean(queue && (
+    numberValue(queue.pendingCount) > 0
+    || numberValue(queue.runningCount) > 0
+  ))
+}
+
+function dbServiceQueueHasMetrics(dbService: DbServiceServerRuntimeSnapshot['dbService']): boolean {
+  if (!dbService) return false
+  return [
+    dbService.pendingRequestCount,
+    dbService.pendingDatasetWriteRequestCount,
+    dbService.oldestDatasetWriteRequestMs,
+    dbService.timedOutDatasetWriteRequestCount,
+    dbService.rejectedDatasetWriteRequestCount,
+    dbService.timedOutRequestCount,
+    dbService.rejectedRequestCount,
+    dbService.failedRequestCount,
+    dbService.queuedRequestCount,
+    dbService.queuedRequestBytes,
+    dbService.queuedHighRequestCount,
+    dbService.queuedNormalRequestCount,
+    dbService.queuedLowRequestCount,
+    dbService.oldestQueuedMs,
+    dbService.lastQueueWaitMs,
+    dbService.maxQueueWaitMs,
+    dbService.queueRejectedCount,
+    dbService.queueExpiredCount,
+    dbService.activeConcurrentRequestCount,
+    dbService.maxActiveConcurrentRequestCount,
+    dbService.lastExecMs,
+    dbService.maxExecMs,
+    dbService.slowOpCount,
+    dbService.pendingProcessEventLoopRequestCount,
+    dbService.timedOutProcessEventLoopRequestCount,
+    dbService.failedProcessEventLoopRequestCount,
+    dbService.pendingServerRuntimeRequestCount,
+    dbService.timedOutServerRuntimeRequestCount,
+    dbService.failedServerRuntimeRequestCount
+  ].some((value) => numberValue(value) > 0)
+}
+
+function gatewaySideEffectQueueHasMetrics(state: DbServiceServerRuntimeSnapshot['gatewayAccountSideEffects']): boolean {
+  if (!state) return false
+  return [
+    state.queueLength,
+    state.completedCount,
+    state.droppedCount,
+    state.expiredCount,
+    state.failedAttemptCount,
+    state.precheckPendingAccountCount,
+    state.degradedAccountCount,
+    state.localSuppressedAccountCount
+  ].some((value) => numberValue(value) > 0) || state.processing === true
 }
 
 statsRouter.get('/system-metrics', requireAdmin, async (req, res, next) => {
@@ -501,7 +588,7 @@ statsRouter.get('/system-metrics', requireAdmin, async (req, res, next) => {
   try {
     const overview = await getSystemMetricsOverviewAsync(await normalizeStatsDateRangeAsync(parsed.data))
     const liveRuntime = await requestServerRuntimeSnapshot(1000).catch(() => undefined)
-    const runtime = runtimeHasQueueSources(liveRuntime)
+    const runtime = runtimeHasQueueMetrics(liveRuntime)
       ? liveRuntime
       : loadMockBackgroundRuntimeSnapshot() ?? liveRuntime
     const ingestWorkerSnapshot = runtime?.ingestWorker?.snapshot

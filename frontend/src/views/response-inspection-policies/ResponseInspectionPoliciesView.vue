@@ -51,11 +51,13 @@
 <script setup lang="ts">
 import { QuestionCircleOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 
 import { api, type ResponseInspectionPolicyPayload } from '@/api/client'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
+import { usePageStateCache } from '@/composables/usePageStateCache'
 import { extractApiErrorMessage } from '@/shared/apiError'
+import { stringOrFallback } from '@/shared/pageStateSanitizers'
 import { isAnthropicProtocolProfile, isOpenAIProtocolProfile, preferredDefaultProviderCode } from '@/shared/providerProtocol'
 import type {
   ProviderDefinition,
@@ -75,9 +77,18 @@ import ResponseInspectionPolicyList from './ResponseInspectionPolicyList.vue'
 
 type PolicyModalMode = 'create' | 'edit' | 'view'
 
+interface ResponseInspectionPoliciesPageState {
+  keyword: string
+}
+
+const pageStateCache = usePageStateCache<ResponseInspectionPoliciesPageState>(undefined, defaultResponseInspectionPoliciesPageState, {
+  sanitize: sanitizeResponseInspectionPoliciesPageState,
+  version: 1
+})
+const initialPageState = pageStateCache.read()
 const loading = ref(false)
 const saving = ref(false)
-const keyword = ref('')
+const keyword = ref(initialPageState.keyword)
 const providers = ref<ProviderDefinition[]>([])
 const defaultRules = ref<ResponseInspectionPolicySummary[]>([])
 const policies = ref<ResponseInspectionPolicySummary[]>([])
@@ -207,7 +218,25 @@ function applySearch(): void {
 
 function resetSearch(): void {
   keyword.value = ''
+  pageStateCache.clear()
 }
+
+function defaultResponseInspectionPoliciesPageState(): ResponseInspectionPoliciesPageState {
+  return { keyword: '' }
+}
+
+function sanitizeResponseInspectionPoliciesPageState(value: unknown, fallback: ResponseInspectionPoliciesPageState): ResponseInspectionPoliciesPageState {
+  const source = value && typeof value === 'object' ? value as Partial<ResponseInspectionPoliciesPageState> : {}
+  return {
+    keyword: stringOrFallback(source.keyword, fallback.keyword)
+  }
+}
+
+function snapshotPageState(): ResponseInspectionPoliciesPageState {
+  return { keyword: keyword.value }
+}
+
+watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 
 function nextPriority(): number {
   const used = new Set(policies.value

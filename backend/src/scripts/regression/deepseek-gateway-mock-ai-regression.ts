@@ -333,7 +333,7 @@ try {
     await assertDeepSeekChatSsePreCommitFailureUsesHttpError(baseUrl, apiKey.key)
     await assertDeepSeekRejectsResponses(baseUrl, apiKey.key)
     await assertDeepSeekCodexResponsesBridge(baseUrl, codexBridgeApiKey.key)
-    await assertDeepSeekCodexResponsesBridgeRejectsUnsupportedHostedTool(baseUrl, codexBridgeApiKey.key)
+    await assertDeepSeekCodexResponsesBridgeContinuesWithUnsupportedHostedToolGuidance(baseUrl, codexBridgeApiKey.key)
     await assertDeepSeekCodexResponsesBridgeRestoresPreviousResponseId(baseUrl, codexBridgeApiKey.key)
     await assertDeepSeekCodexResponsesBridgeRejectsUnknownPreviousResponseId(baseUrl, codexBridgeApiKey.key)
     await assertDeepSeekCodexResponsesBridgeGatewaySummaryCompact(baseUrl, codexBridgeApiKey.key)
@@ -774,7 +774,7 @@ async function assertDeepSeekCodexResponsesBridge(baseUrl: string, localApiKey: 
   assert.doesNotMatch(JSON.stringify(body.messages), /不能代执行以下 Responses 原生托管工具/, 'DeepSeek Codex bridge 不应注入 hosted tool 降级 system prompt')
 }
 
-async function assertDeepSeekCodexResponsesBridgeRejectsUnsupportedHostedTool(baseUrl: string, localApiKey: string): Promise<void> {
+async function assertDeepSeekCodexResponsesBridgeContinuesWithUnsupportedHostedToolGuidance(baseUrl: string, localApiKey: string): Promise<void> {
   const start = upstreamHits.length
   const response = await fetch(`${baseUrl}/v1/responses`, {
     method: 'POST',
@@ -803,12 +803,14 @@ async function assertDeepSeekCodexResponsesBridgeRejectsUnsupportedHostedTool(ba
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 200, `auto web_search 应返回正常 guidance，实际 HTTP ${response.status}: ${text}`)
-  assert.match(text, /event: response\.completed/, 'auto 原生托管工具 guidance 应正常完成 Responses SSE')
-  assert.match(text, /能力未执行：web_search/, 'auto guidance 应说明未执行 web_search')
-  assert.match(text, /建议下一步/, 'auto guidance 应给出下一步建议')
-  assert.doesNotMatch(text, /response\.failed|unsupported_codex_native_tool/, 'auto guidance 不应返回失败事件或旧错误码')
-  assert.equal(upstreamHits.length, start, 'auto web_search guidance 不应命中 DeepSeek Chat 上游')
+  assert.equal(response.status, 200, `auto web_search 应继续走 Chat bridge，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /event: response\.completed/, 'auto 原生托管工具不可用时仍应正常完成 Responses SSE')
+  assert.doesNotMatch(text, /能力未执行：web_search|建议下一步|unsupported_codex_native_tool/, 'auto 托管工具 guidance 不应作为用户可见输出返回')
+  assert.equal(upstreamHits.length, start + 1, 'auto web_search 应命中 DeepSeek Chat 上游继续生成')
+  const hit = upstreamHits[start]
+  const body = JSON.parse(hit?.bodyText ?? '{}') as { messages?: Array<{ role?: string; content?: string }> }
+  assert(Array.isArray(body.messages), 'auto web_search bridge 应构造 Chat messages')
+  assert(body.messages.some((message) => message.role === 'system' && String(message.content ?? '').includes('不能代执行以下 Responses 原生托管工具：web_search')), 'auto web_search guidance 应作为 system message 给上游模型')
 
   const mixedResponse = await fetch(`${baseUrl}/v1/responses`, {
     method: 'POST',
@@ -837,12 +839,14 @@ async function assertDeepSeekCodexResponsesBridgeRejectsUnsupportedHostedTool(ba
     })
   })
   const mixedText = await mixedResponse.text()
-  assert.equal(mixedResponse.status, 200, `混合 auto hosted tools 应返回正常 guidance，实际 HTTP ${mixedResponse.status}: ${mixedText}`)
+  assert.equal(mixedResponse.status, 200, `混合 auto hosted tools 应继续走 Chat bridge，实际 HTTP ${mixedResponse.status}: ${mixedText}`)
   assert.match(mixedText, /event: response\.completed/, '混合 auto guidance 应正常完成 Responses SSE')
-  assert.match(mixedText, /tool_search/, '混合 auto guidance 应包含 tool_search')
-  assert.match(mixedText, /web_search/, '混合 auto guidance 应包含 web_search')
-  assert.doesNotMatch(mixedText, /response\.failed|unsupported_codex_native_tool/, '混合 auto guidance 不应返回失败事件或旧错误码')
-  assert.equal(upstreamHits.length, start, '混合 auto guidance 不应命中 DeepSeek Chat 上游')
+  assert.doesNotMatch(mixedText, /能力未执行：|建议下一步|unsupported_codex_native_tool/, '混合 auto guidance 不应作为用户可见输出返回')
+  assert.equal(upstreamHits.length, start + 2, '混合 auto guidance 应命中 DeepSeek Chat 上游继续生成')
+  const mixedHit = upstreamHits[start + 1]
+  const mixedBody = JSON.parse(mixedHit?.bodyText ?? '{}') as { messages?: Array<{ role?: string; content?: string }>; tools?: unknown[] }
+  assert(Array.isArray(mixedBody.tools), '混合 auto 应继续透传可桥接 function/custom tools')
+  assert(mixedBody.messages?.some((message) => message.role === 'system' && String(message.content ?? '').includes('tool_search') && String(message.content ?? '').includes('web_search')), '混合 auto guidance 应作为 system message 告知不可用工具')
 }
 
 async function assertDeepSeekCodexResponsesBridgeRestoresPreviousResponseId(baseUrl: string, localApiKey: string): Promise<void> {

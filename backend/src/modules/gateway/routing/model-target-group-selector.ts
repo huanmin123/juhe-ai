@@ -54,7 +54,8 @@ export async function selectGatewayModelTargetGroup(input: {
       continue
     }
     const capabilityFilter = filterGatewayAccountsByRequestCapability(input.req, accounts, {
-      requestClientCompatibility: input.requestClientCompatibility
+      requestClientCompatibility: input.requestClientCompatibility,
+      requestModelOverride: input.targetModel
     })
     if (!capabilityFilter.accounts.length) {
       continue

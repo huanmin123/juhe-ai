@@ -51,12 +51,15 @@ import dayjs, { type Dayjs } from 'dayjs'
 
 import { api } from '@/api/client'
 import { disposeChart, ensureChart, resizeEcharts, useEchartsPageLifecycle, type ECharts } from '@/composables/useEcharts'
+import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useUsageStatsWindow } from '@/composables/useUsageStatsWindow'
 import { extractApiErrorMessage } from '@/shared/apiError'
+import type { AccountSelection } from '@/shared/accountLabelCache'
 import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys } from '@/shared/dateRange'
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
+import { stringOrFallback } from '@/shared/pageStateSanitizers'
 import type { AiPerformanceOverview } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import StatsChartCard from '@/views/stats/StatsChartCard.vue'
@@ -73,11 +76,28 @@ const defaultDateRange = (): [Dayjs, Dayjs] => {
   return [today.subtract(DEFAULT_RANGE_DAYS - 1, 'day'), today]
 }
 
-const dateRange = ref<[Dayjs, Dayjs]>(defaultDateRange())
+interface AiPerformancePageState {
+  activeAccountIds: string[]
+  addedAccountIds: string[]
+  addedAccountSelections: AccountSelection[]
+  dateRange: [string, string]
+  selectedSystemAccount?: PrincipalSelection
+  selectedSystemAccountId: string
+}
+
+const pageStateCache = usePageStateCache<AiPerformancePageState>(undefined, defaultAiPerformancePageState, {
+  sanitize: sanitizeAiPerformancePageState,
+  version: 1
+})
+const initialPageState = pageStateCache.read()
+const dateRange = ref<[Dayjs, Dayjs]>(parseDateRange({
+  startDate: initialPageState.dateRange[0],
+  endDate: initialPageState.dateRange[1]
+}))
 const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
 const overview = ref<AiPerformanceOverview>()
-const selectedSystemAccountId = ref(allSystemAccountsValue)
-const selectedSystemAccount = ref<PrincipalSelection | undefined>()
+const selectedSystemAccountId = ref(initialPageState.selectedSystemAccountId)
+const selectedSystemAccount = ref<PrincipalSelection | undefined>(initialPageState.selectedSystemAccount)
 const loading = ref(false)
 let performanceRequestSeq = 0
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
@@ -135,6 +155,7 @@ const {
   accountsLoading,
   accountFilterItems,
   accountPickerHiddenValues,
+  activeAccountIds,
   addedAccountIds,
   addedAccountSelections,
   clearAccountState,
@@ -150,6 +171,9 @@ const {
   visibleHourlySeries,
   visibleOverview
 } = accountSelection
+activeAccountIds.value = [...initialPageState.activeAccountIds]
+addedAccountIds.value = [...initialPageState.addedAccountIds]
+addedAccountSelections.value = [...initialPageState.addedAccountSelections]
 
 const hasOverview = computed(() => Boolean(overview.value))
 const initialLoading = computed(() => loading.value && !hasOverview.value)
@@ -288,7 +312,81 @@ function resetFilters() {
   selectedSystemAccount.value = undefined
   resetSystemAccountOptionsSearch()
   clearAccountState()
+  pageStateCache.clear()
   void loadPerformance()
+}
+
+function defaultAiPerformancePageState(): AiPerformancePageState {
+  const range = defaultDateRange()
+  return {
+    activeAccountIds: [],
+    addedAccountIds: [],
+    addedAccountSelections: [],
+    dateRange: [formatDateKey(range[0]), formatDateKey(range[1])],
+    selectedSystemAccount: undefined,
+    selectedSystemAccountId: allSystemAccountsValue
+  }
+}
+
+function sanitizeAiPerformancePageState(value: unknown, fallback: AiPerformancePageState): AiPerformancePageState {
+  const source = value && typeof value === 'object' ? value as Partial<AiPerformancePageState> : {}
+  return {
+    activeAccountIds: sanitizeStringArray(source.activeAccountIds),
+    addedAccountIds: sanitizeStringArray(source.addedAccountIds),
+    addedAccountSelections: Array.isArray(source.addedAccountSelections)
+      ? source.addedAccountSelections.map(sanitizeAccountSelection).filter((selection): selection is AccountSelection => Boolean(selection))
+      : [],
+    dateRange: sanitizeDateRange(source.dateRange) ?? fallback.dateRange,
+    selectedSystemAccount: sanitizeSystemAccountSelection(source.selectedSystemAccount),
+    selectedSystemAccountId: stringOrFallback(source.selectedSystemAccountId, fallback.selectedSystemAccountId) || fallback.selectedSystemAccountId
+  }
+}
+
+function sanitizeStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string' && Boolean(item.trim())).map((item) => item.trim())
+    : []
+}
+
+function sanitizeDateRange(value: unknown): [string, string] | undefined {
+  if (!Array.isArray(value) || value.length !== 2) return undefined
+  const [startDate, endDate] = value
+  if (typeof startDate !== 'string' || typeof endDate !== 'string') return undefined
+  const parsed = parseDateRange({ startDate, endDate })
+  return [formatDateKey(parsed[0]), formatDateKey(parsed[1])]
+}
+
+function sanitizeSystemAccountSelection(value: unknown): PrincipalSelection | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const selection = value as Partial<PrincipalSelection>
+  const id = stringOrFallback(selection.id).trim()
+  const name = stringOrFallback(selection.name).trim()
+  if (!id || !name || selection.kind !== 'system_account') return undefined
+  return { id, name, kind: 'system_account' }
+}
+
+function sanitizeAccountSelection(value: unknown): AccountSelection | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const selection = value as Partial<AccountSelection>
+  const id = stringOrFallback(selection.id).trim()
+  const name = stringOrFallback(selection.name).trim()
+  if (!id || !name) return undefined
+  const accessType = selection.accessType === 'owner' || selection.accessType === 'authorized' ? selection.accessType : undefined
+  const ownerSystemAccountName = stringOrFallback(selection.ownerSystemAccountName).trim() || undefined
+  return ownerSystemAccountName
+    ? { id, name, accessType, ownerSystemAccountName }
+    : { id, name, accessType }
+}
+
+function snapshotPageState(): AiPerformancePageState {
+  return {
+    activeAccountIds: [...activeAccountIds.value],
+    addedAccountIds: [...addedAccountIds.value],
+    addedAccountSelections: [...addedAccountSelections.value],
+    dateRange: [...displayRange.value],
+    selectedSystemAccount: selectedSystemAccount.value,
+    selectedSystemAccountId: selectedSystemAccountId.value
+  }
 }
 
 async function renderPerformanceCharts() {
@@ -368,6 +466,7 @@ function normalizedDateRange(value: [Dayjs, Dayjs]): [string, string] {
 }
 
 watch(selectedSystemAccount, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
+watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 </script>
 
 <style scoped>

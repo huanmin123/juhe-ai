@@ -56,7 +56,7 @@
       :table-pagination="tablePagination"
       @change="handleTableChange"
       @detail="openDetailDrawer"
-      @policy-action="openPolicyModal"
+      @policy-action="handlePolicyAction"
     />
 
     <a-modal
@@ -71,7 +71,7 @@
         <a-form-item label="IP">
           <a-input :value="policyTarget?.aggregateIpKey" disabled />
         </a-form-item>
-        <a-form-item v-if="policyAction === 'blacklist' || policyAction === 'allowlist'" :label="policyReasonLabel">
+        <a-form-item v-if="policyAction === 'blacklist'" :label="policyReasonLabel">
           <a-textarea v-model:value="policyForm.reason" :rows="3" :maxlength="500" show-count />
         </a-form-item>
         <a-form-item v-if="policyAction === 'blacklist'" label="封禁时长">
@@ -238,17 +238,19 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
 
 import { api, type ClientIpStatsDetailParams, type ClientIpStatsListParams, type SortDirection } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
+import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useUsageStatsWindow } from '@/composables/useUsageStatsWindow'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime } from '@/shared/formatters'
+import { sanitizePaginationState, stringOrFallback, stringUnionOrFallback, type PagePaginationState } from '@/shared/pageStateSanitizers'
 import type { ClientIpAccountUsageRow, ClientIpStatsRow, ClientIpStatsSortField, ClientIpStatus } from '@/types/domain'
 import { formatCompactInteger, formatCost, formatDuration, formatInteger, formatPercent } from '@/views/stats/statsFormatters'
 
@@ -259,6 +261,17 @@ type TableSortOrder = 'ascend' | 'descend' | null
 type PolicyAction = IpStatsPolicyAction
 type PolicyDurationMode = 'permanent' | 'minutes' | 'days'
 type UsageWindow = 'today' | 'recent7d' | 'recent1m'
+
+interface IpStatsPageState {
+  keyword: string
+  pagination: PagePaginationState
+  sortState: {
+    field: ClientIpStatsSortField
+    order: TableSortOrder
+  }
+  statusFilter: ClientIpStatus
+  usageWindow: UsageWindow
+}
 
 const usageWindowOptions = [
   { label: '今天', value: 'today' },
@@ -293,15 +306,21 @@ const detailColumns = [
   { title: '最后使用', key: 'lastUsedAt', width: 180, align: 'left', sorter: true }
 ]
 
+const ipStatsPageSize = 20
+const pageStateCache = usePageStateCache<IpStatsPageState>(undefined, defaultIpStatsPageState, {
+  sanitize: sanitizeIpStatsPageState,
+  version: 1
+})
+const initialPageState = pageStateCache.read()
 const loading = ref(false)
-const keyword = ref('')
-const statusFilter = ref<ClientIpStatus>('all')
-const usageWindow = ref<UsageWindow>('recent7d')
+const keyword = ref(initialPageState.keyword)
+const statusFilter = ref<ClientIpStatus>(initialPageState.statusFilter)
+const usageWindow = ref<UsageWindow>(initialPageState.usageWindow)
 const rows = ref<ClientIpStatsRow[]>([])
 const paginationUpperBound = ref(0)
 const rangeReady = ref(true)
-const pagination = reactive({ current: 1, pageSize: 20 })
-const sortState = ref<{ field: ClientIpStatsSortField; order: TableSortOrder }>({ field: 'requestCount', order: 'descend' })
+const pagination = reactive({ ...initialPageState.pagination })
+const sortState = ref<{ field: ClientIpStatsSortField; order: TableSortOrder }>({ ...initialPageState.sortState })
 const policyModalOpen = ref(false)
 const policySubmitting = ref(false)
 const policyTarget = ref<ClientIpStatsRow>()
@@ -345,13 +364,8 @@ const emptyDescription = computed(() => rangeReady.value ? '当前筛选下没�
 const detailDrawerTitle = computed(() => detailTarget.value ? `IP 详情：${detailTarget.value.aggregateIpKey}` : 'IP 详情')
 const detailEmptyDescription = computed(() => detailRangeReady.value ? '当前统计范围内没有关联账号。' : `${currentUsageWindowLabel.value}用量窗口尚未完成预聚合，请稍后刷新。`)
 
-const policyModalTitle = computed(() => {
-  if (policyAction.value === 'blacklist') return '封禁 IP'
-  if (policyAction.value === 'allowlist') return '加入白名单'
-  if (policyAction.value === 'unallowlist') return '移出白名单'
-  return '解除封禁'
-})
-const policyReasonLabel = computed(() => policyAction.value === 'allowlist' ? '白名单原因' : '封禁原因')
+const policyModalTitle = computed(() => '封禁 IP')
+const policyReasonLabel = computed(() => '封禁原因')
 
 onMounted(() => {
   void loadData()
@@ -394,13 +408,57 @@ function applyFilters(): void {
 }
 
 function resetFilters(): void {
-  keyword.value = ''
-  usageWindow.value = 'recent7d'
-  statusFilter.value = 'all'
-  pagination.current = 1
-  sortState.value = { field: 'requestCount', order: 'descend' }
+  const defaults = defaultIpStatsPageState()
+  keyword.value = defaults.keyword
+  usageWindow.value = defaults.usageWindow
+  statusFilter.value = defaults.statusFilter
+  pagination.current = defaults.pagination.current
+  pagination.pageSize = defaults.pagination.pageSize
+  sortState.value = { ...defaults.sortState }
+  pageStateCache.clear()
   void loadData()
 }
+
+function defaultIpStatsPageState(): IpStatsPageState {
+  return {
+    keyword: '',
+    pagination: { current: 1, pageSize: ipStatsPageSize },
+    sortState: { field: 'requestCount', order: 'descend' },
+    statusFilter: 'all',
+    usageWindow: 'recent7d'
+  }
+}
+
+function sanitizeIpStatsPageState(value: unknown, fallback: IpStatsPageState): IpStatsPageState {
+  const source = value && typeof value === 'object' ? value as Partial<IpStatsPageState> : {}
+  const sourceSortState = source.sortState && typeof source.sortState === 'object'
+    ? source.sortState as Partial<IpStatsPageState['sortState']>
+    : {}
+  return {
+    keyword: stringOrFallback(source.keyword, fallback.keyword),
+    pagination: sanitizePaginationState(source.pagination, fallback.pagination),
+    sortState: {
+      field: stringUnionOrFallback(sourceSortState.field, ['requestCount', 'successCount', 'errorCount', 'errorRate', 'totalTokens', 'totalCost', 'activeDays', 'lastUsedAt'], fallback.sortState.field),
+      order: sourceSortState.order === 'ascend' || sourceSortState.order === 'descend' || sourceSortState.order === null
+        ? sourceSortState.order
+        : fallback.sortState.order
+    },
+    statusFilter: stringUnionOrFallback(source.statusFilter, ['all', 'normal', 'blacklisted', 'allowlisted'], fallback.statusFilter),
+    usageWindow: stringUnionOrFallback(source.usageWindow, ['today', 'recent7d', 'recent1m'], fallback.usageWindow)
+  }
+}
+
+function snapshotPageState(): IpStatsPageState {
+  return {
+    keyword: keyword.value,
+    pagination: { current: pagination.current, pageSize: pagination.pageSize },
+    sortState: { ...sortState.value },
+    statusFilter: statusFilter.value,
+    usageWindow: usageWindow.value
+  }
+}
+
+watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 
 async function handleTableChange(paginationInfo: unknown, _filters: unknown, sorter: unknown): Promise<void> {
   updatePaginationFromTable(paginationInfo)
@@ -459,6 +517,14 @@ async function handleDetailTableChange(paginationInfo: unknown, _filters: unknow
   await loadDetailData()
 }
 
+function handlePolicyAction(record: ClientIpStatsRow, action: PolicyAction): void {
+  if (action === 'blacklist') {
+    openPolicyModal(record, action)
+    return
+  }
+  void submitPolicyAction(record, action)
+}
+
 function openPolicyModal(record: ClientIpStatsRow, action: PolicyAction): void {
   policyTarget.value = record
   policyAction.value = action
@@ -470,24 +536,30 @@ function openPolicyModal(record: ClientIpStatsRow, action: PolicyAction): void {
 
 async function submitPolicy(): Promise<void> {
   if (!policyTarget.value) return
+  await submitPolicyAction(policyTarget.value, policyAction.value, true)
+}
+
+async function submitPolicyAction(record: ClientIpStatsRow, action: PolicyAction, closeModal = false): Promise<void> {
   policySubmitting.value = true
   try {
-    if (policyAction.value === 'blacklist') {
+    if (action === 'blacklist') {
       const payload = policyPayload()
       if (!payload) return
-      await api.ipStats.blacklist(policyTarget.value.ipHash, payload)
+      await api.ipStats.blacklist(record.ipHash, payload)
       message.success('已封禁 IP')
-    } else if (policyAction.value === 'allowlist') {
-      await api.ipStats.allowlist(policyTarget.value.ipHash, simplePolicyPayload())
+    } else if (action === 'allowlist') {
+      await api.ipStats.allowlist(record.ipHash, {})
       message.success('已加入白名单')
-    } else if (policyAction.value === 'unallowlist') {
-      await api.ipStats.unallowlist(policyTarget.value.ipHash, simplePolicyPayload())
+    } else if (action === 'unallowlist') {
+      await api.ipStats.unallowlist(record.ipHash, {})
       message.success('已移出白名单')
     } else {
-      await api.ipStats.unblock(policyTarget.value.ipHash, simplePolicyPayload())
+      await api.ipStats.unblock(record.ipHash, {})
       message.success('已解除封禁')
     }
-    policyModalOpen.value = false
+    if (closeModal) {
+      policyModalOpen.value = false
+    }
     await loadData()
   } catch (error) {
     message.error(extractApiErrorMessage(error, '提交 IP 策略失败'))
@@ -497,7 +569,7 @@ async function submitPolicy(): Promise<void> {
 }
 
 function policyPayload(): { reason?: string; durationMinutes?: number; durationDays?: number } | undefined {
-  const { reason } = simplePolicyPayload()
+  const reason = policyForm.reason?.trim() || undefined
   if (policyForm.durationMode === 'permanent') {
     return { reason }
   }
@@ -510,10 +582,6 @@ function policyPayload(): { reason?: string; durationMinutes?: number; durationD
     return { reason, durationMinutes: durationValue }
   }
   return { reason, durationDays: durationValue }
-}
-
-function simplePolicyPayload(): { reason?: string } {
-  return { reason: policyForm.reason?.trim() || undefined }
 }
 
 function handlePolicyDurationModeChange(value: string | number): void {
@@ -588,7 +656,9 @@ function usageWindowDateRange(value: UsageWindow): [Dayjs, Dayjs] {
 
 <style scoped>
 .ip-stats-usage-window {
-  min-width: 236px;
+  width: max-content;
+  max-width: 100%;
+  flex: none;
 }
 
 .ip-stats-status {

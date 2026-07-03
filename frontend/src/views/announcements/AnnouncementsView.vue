@@ -94,18 +94,20 @@
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
-import { onMounted, reactive, ref } from 'vue'
+import { onMounted, reactive, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
+import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { invalidateEntityDetailCache, loadEntityDetailCached } from '@/shared/entityDetailCache'
 import { formatDateTime } from '@/shared/formatters'
+import { sanitizePaginationState, type PagePaginationState } from '@/shared/pageStateSanitizers'
 import type { AnnouncementLevel, AnnouncementStatus, AnnouncementSummary } from '@/types/domain'
 import {
   announcementLevelColor,
@@ -114,17 +116,27 @@ import {
   announcementStatusText
 } from './announcementFormatters'
 
+interface AnnouncementsPageState {
+  pagination: PagePaginationState
+}
+
 const { submitAction, submittingRef } = useSubmitAction('announcements')
 const announcementSaving = submittingRef('announcements.save')
 const modalOpen = ref(false)
 const detailLoading = ref(false)
 const editingId = ref<string>()
 const pageSize = 50
+const pageStateCache = usePageStateCache<AnnouncementsPageState>(undefined, defaultAnnouncementsPageState, {
+  sanitize: sanitizeAnnouncementsPageState,
+  version: 1
+})
+const initialPageState = pageStateCache.read()
 const {
   items: announcements,
   loading,
   mobileHasMore,
   mobileLoadingMore,
+  pagination,
   tablePagination,
   handleTableChange,
   loadData,
@@ -132,6 +144,7 @@ const {
   refreshMobile: refreshMobileAnnouncements
 } = useResponsivePagedList<AnnouncementSummary>({
   pageSize,
+  initialPagination: initialPageState.pagination,
   showTotal: (total, range, context) => context?.hasMore
     ? `已加载到第 ${range?.[1] ?? total - 1} 条公告，还有更多`
     : `共 ${total} 条公告`,
@@ -224,6 +237,27 @@ function rowActions(record: AnnouncementSummary): RowActionItem[] {
     }
   ]
 }
+
+function defaultAnnouncementsPageState(): AnnouncementsPageState {
+  return {
+    pagination: { current: 1, pageSize }
+  }
+}
+
+function sanitizeAnnouncementsPageState(value: unknown, fallback: AnnouncementsPageState): AnnouncementsPageState {
+  const source = value && typeof value === 'object' ? value as Partial<AnnouncementsPageState> : {}
+  return {
+    pagination: sanitizePaginationState(source.pagination, fallback.pagination)
+  }
+}
+
+function snapshotPageState(): AnnouncementsPageState {
+  return {
+    pagination: { current: pagination.current, pageSize: pagination.pageSize }
+  }
+}
+
+watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 
 function openCreate() {
   editingId.value = undefined

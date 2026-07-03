@@ -76,14 +76,16 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { BookOutlined } from '@ant-design/icons-vue'
 
 import { api, type ExternalIntegrationSourceListParams } from '@/api/client'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import type { RowActionItem } from '@/components/rowActions'
+import { usePageStateCache } from '@/composables/usePageStateCache'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
+import { sanitizePaginationState, stringOrFallback, stringUnionOrFallback, type PagePaginationState } from '@/shared/pageStateSanitizers'
 import type {
   ExternalIntegrationScopeOption,
   ExternalIntegrationSourceStatus,
@@ -103,13 +105,24 @@ import {
 } from './externalSourceFormModel'
 import { useExternalSourceTokenActions } from './useExternalSourceTokenActions'
 
+interface ExternalIntegrationSourcesPageState {
+  keyword: string
+  pagination: PagePaginationState
+  statusFilter: ExternalIntegrationSourceStatus | 'all'
+}
+
 const pageSize = 20
+const pageStateCache = usePageStateCache<ExternalIntegrationSourcesPageState>(undefined, defaultExternalSourcesPageState, {
+  sanitize: sanitizeExternalSourcesPageState,
+  version: 1
+})
+const initialPageState = pageStateCache.read()
 const loading = ref(false)
-const keyword = ref('')
-const statusFilter = ref<ExternalIntegrationSourceStatus | 'all'>('all')
+const keyword = ref(initialPageState.keyword)
+const statusFilter = ref<ExternalIntegrationSourceStatus | 'all'>(initialPageState.statusFilter)
 const rows = ref<ExternalIntegrationSourceSummary[]>([])
 const paginationUpperBound = ref(0)
-const pagination = reactive({ current: 1, pageSize })
+const pagination = reactive({ ...initialPageState.pagination })
 const scopeOptions = ref<ExternalIntegrationScopeOption[]>([])
 
 const apiDocsOpen = ref(false)
@@ -211,9 +224,13 @@ function applyFilters(): void {
 }
 
 function resetFilters(): void {
-  keyword.value = ''
-  statusFilter.value = 'all'
-  applyFilters()
+  const defaults = defaultExternalSourcesPageState()
+  keyword.value = defaults.keyword
+  statusFilter.value = defaults.statusFilter
+  pagination.current = defaults.pagination.current
+  pagination.pageSize = defaults.pagination.pageSize
+  pageStateCache.clear()
+  void loadData()
 }
 
 function handleTableChange(nextPagination: unknown): void {
@@ -222,6 +239,33 @@ function handleTableChange(nextPagination: unknown): void {
   pagination.pageSize = paginationInfo.pageSize ?? pageSize
   void loadData()
 }
+
+function defaultExternalSourcesPageState(): ExternalIntegrationSourcesPageState {
+  return {
+    keyword: '',
+    pagination: { current: 1, pageSize },
+    statusFilter: 'all'
+  }
+}
+
+function sanitizeExternalSourcesPageState(value: unknown, fallback: ExternalIntegrationSourcesPageState): ExternalIntegrationSourcesPageState {
+  const source = value && typeof value === 'object' ? value as Partial<ExternalIntegrationSourcesPageState> : {}
+  return {
+    keyword: stringOrFallback(source.keyword, fallback.keyword),
+    pagination: sanitizePaginationState(source.pagination, fallback.pagination),
+    statusFilter: stringUnionOrFallback(source.statusFilter, ['all', 'active', 'disabled'], fallback.statusFilter)
+  }
+}
+
+function snapshotPageState(): ExternalIntegrationSourcesPageState {
+  return {
+    keyword: keyword.value,
+    pagination: { current: pagination.current, pageSize: pagination.pageSize },
+    statusFilter: statusFilter.value
+  }
+}
+
+watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 
 function openCreateSource(): void {
   editingSourceId.value = undefined

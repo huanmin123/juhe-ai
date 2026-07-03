@@ -187,7 +187,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, ref, shallowRef } from 'vue'
+import { computed, nextTick, ref, shallowRef, watch } from 'vue'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
 import { DeleteOutlined } from '@ant-design/icons-vue'
@@ -198,8 +198,10 @@ import DeferredRender from '@/components/DeferredRender.vue'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import { disposeChart, ensureChartFromElement, resizeEcharts, useEchartsPageLifecycle, type ECharts } from '@/composables/useEcharts'
+import { usePageStateCache } from '@/composables/usePageStateCache'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime, formatServerDateTimeInput } from '@/shared/formatters'
+import { stringOrFallback } from '@/shared/pageStateSanitizers'
 import type { DatabaseStorageSnapshotSummary, NonBusinessDataCleanupResult, TableStorageOverview } from '@/types/domain'
 
 import TableMonitorCleanupModal from './TableMonitorCleanupModal.vue'
@@ -220,11 +222,21 @@ import {
   totalDatabaseBytes
 } from './tableMonitorDisplay'
 
+interface TableMonitorPageState {
+  historyRange: [string, string] | null
+  keyword: string
+}
+
 const columns = tableMonitorColumns
+const pageStateCache = usePageStateCache<TableMonitorPageState>(undefined, defaultTableMonitorPageState, {
+  sanitize: sanitizeTableMonitorPageState,
+  version: 1
+})
+const initialPageState = pageStateCache.read()
 
 const loading = ref(false)
-const keyword = ref('')
-const historyRange = ref<[Dayjs, Dayjs] | undefined>(defaultHistoryRange())
+const keyword = ref(initialPageState.keyword)
+const historyRange = ref<[Dayjs, Dayjs] | undefined>(parseCachedHistoryRange(initialPageState.historyRange))
 const overview = ref<TableStorageOverview>()
 const cleanupModalOpen = ref(false)
 const cleanupSubmitting = ref(false)
@@ -339,8 +351,10 @@ function handleFilterChange() {
 }
 
 function resetFilters() {
-  keyword.value = ''
-  historyRange.value = defaultHistoryRange()
+  const defaults = defaultTableMonitorPageState()
+  keyword.value = defaults.keyword
+  historyRange.value = parseCachedHistoryRange(defaults.historyRange)
+  pageStateCache.clear()
   void loadData()
 }
 
@@ -354,6 +368,54 @@ function historyRangeParams() {
 function defaultHistoryRange(): [Dayjs, Dayjs] {
   return [dayjs().subtract(1, 'month').startOf('day'), dayjs().endOf('day')]
 }
+
+function defaultTableMonitorPageState(): TableMonitorPageState {
+  const range = defaultHistoryRange()
+  return {
+    historyRange: [formatDayKey(range[0]), formatDayKey(range[1])],
+    keyword: ''
+  }
+}
+
+function sanitizeTableMonitorPageState(value: unknown, fallback: TableMonitorPageState): TableMonitorPageState {
+  const source = value && typeof value === 'object' ? value as Partial<TableMonitorPageState> : {}
+  return {
+    historyRange: source.historyRange === null ? null : sanitizeCachedHistoryRange(source.historyRange) ?? fallback.historyRange,
+    keyword: stringOrFallback(source.keyword, fallback.keyword)
+  }
+}
+
+function sanitizeCachedHistoryRange(value: unknown): [string, string] | undefined {
+  if (!Array.isArray(value) || value.length !== 2) return undefined
+  const [start, end] = value
+  if (typeof start !== 'string' || typeof end !== 'string') return undefined
+  const startDate = dayjs(start, 'YYYY-MM-DD', true)
+  const endDate = dayjs(end, 'YYYY-MM-DD', true)
+  if (!startDate.isValid() || !endDate.isValid() || startDate.isAfter(endDate, 'day')) return undefined
+  return [formatDayKey(startDate), formatDayKey(endDate)]
+}
+
+function parseCachedHistoryRange(value: [string, string] | null): [Dayjs, Dayjs] | undefined {
+  if (!value) return undefined
+  const start = dayjs(value[0], 'YYYY-MM-DD', true)
+  const end = dayjs(value[1], 'YYYY-MM-DD', true)
+  return start.isValid() && end.isValid() && !start.isAfter(end, 'day')
+    ? [start.startOf('day'), end.startOf('day')]
+    : defaultHistoryRange()
+}
+
+function formatDayKey(value: Dayjs): string {
+  return value.format('YYYY-MM-DD')
+}
+
+function snapshotPageState(): TableMonitorPageState {
+  return {
+    historyRange: historyRange.value ? [formatDayKey(historyRange.value[0]), formatDayKey(historyRange.value[1])] : null,
+    keyword: keyword.value
+  }
+}
+
+watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 
 function isDefaultHistoryRange(value: [Dayjs, Dayjs]) {
   const defaults = defaultHistoryRange()

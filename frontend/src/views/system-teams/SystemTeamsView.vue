@@ -142,7 +142,7 @@
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
@@ -150,6 +150,7 @@ import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import type { RowActionItem } from '@/components/rowActions'
+import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useScopedSystemTeamsApi } from '@/composables/useScopedDomainApi'
@@ -157,15 +158,26 @@ import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime, formatNumber } from '@/shared/formatters'
+import { sanitizePaginationState, stringOrFallback, type PagePaginationState } from '@/shared/pageStateSanitizers'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import type { SystemTeamMemberSummary, SystemTeamSummary } from '@/types/domain'
 
+interface SystemTeamsPageState {
+  keyword: string
+  pagination: PagePaginationState
+}
+
 const pageSize = 20
+const pageStateCache = usePageStateCache<SystemTeamsPageState>(undefined, defaultSystemTeamsPageState, {
+  sanitize: sanitizeSystemTeamsPageState,
+  version: 1
+})
+const initialPageState = pageStateCache.read()
 const { submitAction, submittingRef } = useSubmitAction('system-teams')
 const teamSaving = submittingRef('system_teams.save')
 const memberSaving = submittingRef('system_teams.add_members')
 
-const keyword = ref('')
+const keyword = ref(initialPageState.keyword)
 const { isManagementView } = useScopedMenuView()
 const systemTeamsApi = useScopedSystemTeamsApi(isManagementView)
 const {
@@ -202,6 +214,7 @@ const {
   loading,
   mobileHasMore,
   mobileLoadingMore,
+  pagination,
   tablePagination,
   handleTableChange,
   loadData,
@@ -210,6 +223,7 @@ const {
   resetPagination
 } = useResponsivePagedList<SystemTeamSummary>({
   pageSize,
+  initialPagination: initialPageState.pagination,
   showTotal: (total, range, context) => context?.hasMore
     ? `已加载到第 ${formatNumber(range?.[1] ?? total - 1)} 个授权团队，还有更多`
     : `共 ${formatNumber(total)} 个授权团队`,
@@ -289,6 +303,7 @@ function searchTeams() {
 
 function resetSearch() {
   keyword.value = ''
+  pageStateCache.clear()
   searchTeams()
 }
 
@@ -420,6 +435,30 @@ function ensureManagementAction(): boolean {
   message.warning('当前是只读视图，不能维护授权团队')
   return false
 }
+
+function defaultSystemTeamsPageState(): SystemTeamsPageState {
+  return {
+    keyword: '',
+    pagination: { current: 1, pageSize }
+  }
+}
+
+function sanitizeSystemTeamsPageState(value: unknown, fallback: SystemTeamsPageState): SystemTeamsPageState {
+  const source = value && typeof value === 'object' ? value as Partial<SystemTeamsPageState> : {}
+  return {
+    keyword: stringOrFallback(source.keyword, fallback.keyword),
+    pagination: sanitizePaginationState(source.pagination, fallback.pagination)
+  }
+}
+
+function snapshotPageState(): SystemTeamsPageState {
+  return {
+    keyword: keyword.value,
+    pagination: { current: pagination.current, pageSize: pagination.pageSize }
+  }
+}
+
+watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 
 onMounted(loadData)
 </script>

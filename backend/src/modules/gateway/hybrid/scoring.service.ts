@@ -47,6 +47,7 @@ interface HybridScoringCacheEntry {
 const hybridScoringContextMaxBytes = 128 * 1024
 const hybridScoringRawBodyParseMaxBytes = hybridScoringContextMaxBytes
 const hybridScoringResponseMaxBytes = 2 * 1024 * 1024
+const hybridScoringMaxTokens = 240
 const hybridScoringCacheMaxEntries = 10_000
 const hybridScoringCacheMaxTtlMs = 60 * 60 * 1000
 
@@ -249,7 +250,7 @@ function buildHybridScoringRequestBody(
     model,
     stream: false,
     temperature: 0,
-    max_tokens: 240,
+    max_tokens: hybridScoringMaxTokens,
     messages: [
       {
         role: 'system',
@@ -533,9 +534,16 @@ function clearHybridScoringSharedCache(): void {
 
 function parseHybridScoringResponse(body: Buffer): { level: number; confidence?: number; factors?: string[]; reason?: string } {
   const response = JSON.parse(body.toString('utf8')) as {
-    choices?: Array<{ message?: { content?: unknown } }>
+    choices?: Array<{
+      finish_reason?: unknown
+      message?: {
+        content?: unknown
+        reasoning_content?: unknown
+      }
+    }>
   }
-  const content = response.choices?.[0]?.message?.content
+  const choice = response.choices?.[0]
+  const content = choice?.message?.content
   const text = typeof content === 'string'
     ? content
     : Array.isArray(content)
@@ -543,6 +551,12 @@ function parseHybridScoringResponse(body: Buffer): { level: number; confidence?:
       : ''
   const jsonText = extractJsonObjectText(text)
   if (!jsonText) {
+    if (typeof choice?.message?.reasoning_content === 'string' && choice.message.reasoning_content.trim()) {
+      if (choice.finish_reason === 'length') {
+        throw new Error('评分模型只返回思考内容且达到输出上限，未产生 JSON')
+      }
+      throw new Error('评分模型只返回思考内容，未产生 JSON')
+    }
     throw new Error('评分模型未返回 JSON')
   }
   const parsed = JSON.parse(jsonText) as Record<string, unknown>

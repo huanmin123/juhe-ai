@@ -287,9 +287,11 @@ import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
+import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteAuthorizationPrincipalOptions } from '@/composables/useRemoteAuthorizationPrincipalOptions'
 import { useResponsivePagedList, type ResponsivePagedListLoadOptions } from '@/composables/useResponsivePagedList'
 import { isDateKey } from '@/shared/dateRange'
+import { sanitizePaginationState, type PagePaginationState } from '@/shared/pageStateSanitizers'
 import type { AuthorizationUserUsageOverview, AuthorizationUserUsageRow, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
 import { formatDateTime } from './authorizationFormatters'
@@ -317,14 +319,29 @@ import {
   isAuthorizationUserUsageRoutePath
 } from './authorizationUserUsageRouteFilters'
 
+interface AuthorizationUserUsagePageState {
+  dateRange: {
+    explicit: boolean
+    startDate?: string
+    endDate?: string
+  }
+  filters: AuthorizationUserUsageFilters
+  pagination: PagePaginationState
+}
+
 const route = useRoute()
 const authorizationUsagePageSize = 20
+const pageStateCache = usePageStateCache<AuthorizationUserUsagePageState>(undefined, defaultAuthorizationUserUsagePageState, {
+  sanitize: sanitizeAuthorizationUserUsagePageState,
+  version: 1
+})
+const initialPageState = pageStateCache.read()
 const overview = ref<AuthorizationUserUsageOverview>()
 let optionsLoaded = false
 let optionsLoading: Promise<void> | undefined
 let usageRequestSeq = 0
 
-const filters = reactive<AuthorizationUserUsageFilters>(defaultAuthorizationUserUsageFilters())
+const filters = reactive<AuthorizationUserUsageFilters>({ ...defaultAuthorizationUserUsageFilters(), ...initialPageState.filters })
 const {
   isManagementView,
   selectedResourceOwnerSystemAccountId,
@@ -391,11 +408,18 @@ const {
   setExplicitDateRange,
   syncDateRangeFromResponse
 } = useAuthorizationUsageDateRange({ onChange: reloadFromFirstPage })
+if (initialPageState.dateRange.explicit) {
+  setExplicitDateRange({
+    startDate: initialPageState.dateRange.startDate,
+    endDate: initialPageState.dateRange.endDate
+  })
+}
 const {
   items: userRows,
   loading,
   mobileHasMore,
   mobileLoadingMore,
+  pagination,
   tablePagination,
   handleTableChange,
   loadData,
@@ -404,6 +428,7 @@ const {
   resetPagination
 } = useResponsivePagedList<AuthorizationUserUsageRow, { forceOptions?: boolean }>({
   pageSize: authorizationUsagePageSize,
+  initialPagination: initialPageState.pagination,
   showTotal: createAuthorizationUsageShowTotal('用户消耗'),
   fetchPage: fetchUserUsagePage,
   onError: (error) => {
@@ -545,7 +570,49 @@ function resetFilters() {
   resetResourceOwnerUserOptionsSearch()
   resetResourceOptionsSearch()
   resetDateRange()
+  pageStateCache.clear()
   reloadFromFirstPage({ forceOptions: true })
+}
+
+function defaultAuthorizationUserUsagePageState(): AuthorizationUserUsagePageState {
+  return {
+    dateRange: { explicit: false },
+    filters: defaultAuthorizationUserUsageFilters(),
+    pagination: { current: 1, pageSize: authorizationUsagePageSize }
+  }
+}
+
+function sanitizeAuthorizationUserUsagePageState(value: unknown, fallback: AuthorizationUserUsagePageState): AuthorizationUserUsagePageState {
+  const source = value && typeof value === 'object' ? value as Partial<AuthorizationUserUsagePageState> : {}
+  const dateRange = source.dateRange && typeof source.dateRange === 'object'
+    ? source.dateRange as Partial<AuthorizationUserUsagePageState['dateRange']>
+    : {}
+  return {
+    dateRange: {
+      explicit: dateRange.explicit === true,
+      startDate: typeof dateRange.startDate === 'string' ? dateRange.startDate : undefined,
+      endDate: typeof dateRange.endDate === 'string' ? dateRange.endDate : undefined
+    },
+    filters: { ...fallback.filters, ...(source.filters && typeof source.filters === 'object' ? source.filters : {}) },
+    pagination: sanitizePaginationState(source.pagination, fallback.pagination)
+  }
+}
+
+function snapshotPageState(): AuthorizationUserUsagePageState {
+  const [startDate, endDate] = displayRange.value
+  return {
+    dateRange: {
+      explicit: dateRangeExplicit.value,
+      startDate: dateRangeExplicit.value ? startDate : undefined,
+      endDate: dateRangeExplicit.value ? endDate : undefined
+    },
+    filters: { ...filters },
+    pagination: { current: pagination.current, pageSize: pagination.pageSize }
+  }
+}
+
+function shouldWritePageState(): boolean {
+  return !hasAuthorizationUserUsageRouteFilters(route.query)
 }
 
 function applyRouteFilters() {
@@ -585,6 +652,12 @@ watch(() => route.fullPath, () => {
   applyRouteFilters()
   reloadFromFirstPage()
 })
+
+watch(snapshotPageState, () => {
+  if (shouldWritePageState()) {
+    pageStateCache.scheduleWrite(snapshotPageState)
+  }
+}, { deep: true })
 </script>
 
 <style scoped src="./authorization-usage.css"></style>
