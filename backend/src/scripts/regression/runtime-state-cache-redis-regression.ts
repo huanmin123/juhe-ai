@@ -175,11 +175,32 @@ async function verifyAccountConcurrency(): Promise<void> {
   assert.equal(third.acquired, false, 'Redis 账号并发 Lua 应拒绝超过总并发上限的占用')
   assert.equal(third.current, 2)
   assert.equal(accountConcurrency.snapshotAccountConcurrency()[accountId], 2, 'Redis 模式 server 快照应能展示当前账号并发')
+  assert.equal((await accountConcurrency.loadAccountCurrentConcurrencyByIdsAsync([])).size, 0, 'Redis 模式批量读取空账号列表应直接返回空结果，不能回退同步本机并发读取')
   assert.equal((await accountConcurrency.loadAccountCurrentConcurrencyByIdsAsync([accountId])).get(accountId), 2, 'Redis 模式批量读取应以 Redis 当前并发为事实来源')
+  await sleep(5)
+
+  const inFlightStats = (await accountConcurrency.loadAccountInFlightStatsByIdsAsync([accountId], {
+    slowRequestThresholdMs: 1,
+    firstOutputSlowThresholdMs: 1
+  })).get(accountId)
+  assert.equal(inFlightStats?.currentConcurrency, 2, 'Redis 模式 in-flight 统计应返回当前并发')
+  assert.equal(inFlightStats?.slowInFlightCount, 2, 'Redis 模式 in-flight 统计应基于 Redis 槽元数据返回慢请求数')
+  assert.equal(inFlightStats?.firstOutputSlowCount, 2, 'Redis 模式 in-flight 统计应基于 Redis 槽元数据返回首包慢请求数')
+  assert.ok((inFlightStats?.oldestInFlightMs ?? 0) > 0, 'Redis 模式 in-flight 统计应返回最老在途耗时')
+
+  first.markFirstOutput()
+  await waitFor(async () => {
+    const stats = (await accountConcurrency.loadAccountInFlightStatsByIdsAsync([accountId], {
+      slowRequestThresholdMs: 1,
+      firstOutputSlowThresholdMs: 1
+    })).get(accountId)
+    return stats?.currentConcurrency === 2 && stats.firstOutputSlowCount === 1
+  }, 'Redis 模式首包标记后 in-flight 首包慢请求数应下降')
 
   first.release()
   second.release()
   await waitForRedisKeyAbsent(`juhe-ai:account-concurrency-v2:${accountId}:total`)
+  await waitForRedisKeyAbsent(`juhe-ai:account-concurrency-v2:${accountId}:metadata`)
   await waitForLocalConcurrency(accountId, 0)
 
   const reacquired = await accountConcurrency.tryAcquireAccountConcurrencyAsync(accountId, 2, { lane: 'text' })
@@ -196,6 +217,10 @@ async function verifyAccountConcurrency(): Promise<void> {
   }
   assert.equal(accountConcurrency.snapshotAccountConcurrency()[externalAccountId], undefined, '外部进程写入的 Redis 并发不应出现在本地 in-flight 诊断快照')
   assert.equal((await accountConcurrency.loadAccountCurrentConcurrencyByIdsAsync([externalAccountId])).get(externalAccountId), 7, 'Redis 模式列表并发批量读取必须能看到其他进程写入的当前并发')
+  assert.equal((await accountConcurrency.loadAccountInFlightStatsByIdsAsync([externalAccountId], {
+    slowRequestThresholdMs: 1,
+    firstOutputSlowThresholdMs: 1
+  })).get(externalAccountId)?.currentConcurrency, 7, 'Redis 模式 in-flight 统计应保留无元数据外部槽的当前并发')
 
   const expiredAccountId = `${accountId}_expired`
   await addRedisConcurrencySlot(expiredAccountId, 'text', 'dead-owner|expired', Date.now() - 1000)
@@ -220,14 +245,16 @@ async function verifyAccountConcurrency(): Promise<void> {
 async function addRedisConcurrencySlot(accountId: string, lane: 'text' | 'image', token: string, expiresAtMs: number): Promise<void> {
   const totalKey = `juhe-ai:account-concurrency-v2:${accountId}:total`
   const laneKey = `juhe-ai:account-concurrency-v2:${accountId}:${lane}`
+  const metadataKey = `juhe-ai:account-concurrency-v2:${accountId}:metadata`
   await stateClient.sendCommand(['ZADD', totalKey, String(expiresAtMs), token])
   await stateClient.sendCommand(['ZADD', laneKey, String(expiresAtMs), token])
   await stateClient.sendCommand(['PEXPIRE', totalKey, '90000'])
   await stateClient.sendCommand(['PEXPIRE', laneKey, '90000'])
+  await stateClient.sendCommand(['PEXPIRE', metadataKey, '90000'])
 }
 
 async function waitForRedisKeyAbsent(key: string): Promise<void> {
-  await waitFor(async () => (await stateClient.get(key)) === null, `Redis key ${key} 应被释放`)
+  await waitFor(async () => Number(await stateClient.sendCommand(['EXISTS', key])) === 0, `Redis key ${key} 应被释放`)
 }
 
 async function waitForLocalConcurrency(accountId: string, expected: number): Promise<void> {
