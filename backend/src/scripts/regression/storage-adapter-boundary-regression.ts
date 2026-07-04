@@ -314,7 +314,7 @@ function assertGatewayRuntimeCachePostgresWorkerBoundary(): void {
     gatewayDbServiceRequestSource.includes('function requestGatewayDbService')
       && gatewayDbServiceRequestSource.includes("runtimeConfig.processRole === 'worker'")
       && gatewayDbServiceRequestSource.includes("import('../../background/background-ipc.js')")
-      && gatewayDbServiceRequestSource.includes('requestBackgroundWorkerDbService(operation, options.timeoutMs)'),
+      && gatewayDbServiceRequestSource.includes('requestBackgroundWorkerDbService(operation, options)'),
     'gateway 运行态 DB service 副作用在 PG worker 中必须通过 background IPC 转发'
   )
   for (const relativePath of [

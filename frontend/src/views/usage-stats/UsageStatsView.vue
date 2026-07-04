@@ -222,7 +222,7 @@ const {
     const [usageOverview] = await Promise.all([
       isManagementView.value ? api.stats.accountUsage(accountUsageParams(systemAccountId, pageState)) : api.myStats.accountUsage(accountUsageParams(undefined, pageState)),
       loadUsageStatsOptions(options.forceOptions === true),
-      loadUsageStatsWindow()
+      loadUsageStatsWindow({ force: true })
     ])
     overview.value = usageOverview
     syncDateRangeFromResponse(usageOverview.range)
@@ -378,7 +378,7 @@ async function refreshMobileRows() {
 function accountUsageParams(systemAccountId: string | undefined, pageState: AccountUsagePageState) {
   return buildAccountUsageStatsParams({
     systemAccountId,
-    dateRange: selectedRange.value,
+    dateRange: dateRangeExplicit.value ? selectedRange.value : undefined,
     accountIds: addedTrendAccountIds.value,
     pageState
   })

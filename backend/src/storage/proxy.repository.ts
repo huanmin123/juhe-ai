@@ -8,6 +8,7 @@ import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-i
 import { chunkValues, normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { optionalString } from './value-utils.js'
 import { currentSystemAccountId, type AccessScope } from './access-scope.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
 const proxyTypeValues = ['http', 'https', 'socks5', 'socks5h'] as const
 const proxyTestStatusValues = ['unknown', 'passed', 'warning', 'failed'] as const
@@ -102,35 +103,64 @@ export class ProxyProfileUnavailableError extends Error {
 }
 
 export function listProxies(): ProxyProfileSummary[] {
+  return listProxiesReadOnly()
+}
+
+export function listProxiesReadOnly(): ProxyProfileSummary[] {
   return queryProxies().items
 }
 
 export async function listProxiesAsync(): Promise<ProxyProfileSummary[]> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return listProxies()
+    if (sqliteReadWorkerPoolEnabled()) {
+      return requestSqliteReadWorker({
+        type: 'list_proxies_read_only'
+      })
+    }
+    return listProxiesReadOnly()
   }
   return (await queryProxiesAsync()).items
 }
 
 export function listProxiesPage(options: ProxyProfileListOptions = {}): ProxyProfileListResult {
+  return listProxiesPageReadOnly(options)
+}
+
+export function listProxiesPageReadOnly(options: ProxyProfileListOptions = {}): ProxyProfileListResult {
   return queryProxies(options, true)
 }
 
 export async function listProxiesPageAsync(options: ProxyProfileListOptions = {}): Promise<ProxyProfileListResult> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return listProxiesPage(options)
+    if (sqliteReadWorkerPoolEnabled()) {
+      return requestSqliteReadWorker({
+        type: 'list_proxies_page_read_only',
+        options
+      })
+    }
+    return listProxiesPageReadOnly(options)
   }
   return await queryProxiesAsync(options, true)
 }
 
 export function findProxy(id: string): ProxyProfileSummary | undefined {
+  return findProxyReadOnly(id)
+}
+
+export function findProxyReadOnly(id: string): ProxyProfileSummary | undefined {
   const row = getBusinessDatabase().prepare(`SELECT ${proxySummarySelectColumns()} FROM proxy_profiles WHERE id = ?`).get(id) as unknown as ProxyRow | undefined
   return row ? proxySummaryFromRow(row) : undefined
 }
 
 export async function findProxyAsync(id: string): Promise<ProxyProfileSummary | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return findProxy(id)
+    if (sqliteReadWorkerPoolEnabled()) {
+      return requestSqliteReadWorker({
+        type: 'find_proxy_read_only',
+        id
+      })
+    }
+    return findProxyReadOnly(id)
   }
   const client = await getProxyDatabaseClient()
   const row = await client.one<ProxyRow>(`SELECT ${proxySummarySelectColumns()} FROM ${proxyProfilesTable(client)} WHERE id = ?`, [id])
@@ -138,6 +168,10 @@ export async function findProxyAsync(id: string): Promise<ProxyProfileSummary | 
 }
 
 export function listProxyOptions(options: ProxyProfileOptionListOptions = {}): ProxyProfileOptionSummary[] {
+  return listProxyOptionsReadOnly(options)
+}
+
+export function listProxyOptionsReadOnly(options: ProxyProfileOptionListOptions = {}): ProxyProfileOptionSummary[] {
   const keywordFilter = buildProxyKeywordFilter(options.keyword)
   const safeLimit = typeof options.limit === 'number' && Number.isInteger(options.limit)
     ? Math.min(50, Math.max(1, options.limit))
@@ -155,7 +189,13 @@ export function listProxyOptions(options: ProxyProfileOptionListOptions = {}): P
 
 export async function listProxyOptionsAsync(options: ProxyProfileOptionListOptions = {}): Promise<ProxyProfileOptionSummary[]> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return listProxyOptions(options)
+    if (sqliteReadWorkerPoolEnabled()) {
+      return requestSqliteReadWorker({
+        type: 'list_proxy_options_read_only',
+        options
+      })
+    }
+    return listProxyOptionsReadOnly(options)
   }
   const client = await getProxyDatabaseClient()
   const keywordFilter = buildProxyKeywordFilterAsync(options.keyword)

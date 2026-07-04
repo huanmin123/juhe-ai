@@ -139,11 +139,12 @@ type SystemMetricsPageState = {
 
 const defaultDateRange = todayDateRange
 const defaultSystemMetricsPageState = (): SystemMetricsPageState => ({})
-const pageStateCache = usePageStateCache<SystemMetricsPageState>('system-metrics-stats', defaultSystemMetricsPageState, { version: 1 })
+const pageStateCache = usePageStateCache<SystemMetricsPageState>('system-metrics-stats', defaultSystemMetricsPageState, { version: 2 })
 const initialPageState = pageStateCache.read()
 
 const loading = ref(false)
 const dateRange = ref<[Dayjs, Dayjs]>(parseDateRange(initialPageState.range))
+const dateRangeExplicit = ref(Boolean(initialPageState.range?.startDate || initialPageState.range?.endDate))
 const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
 const systemMetrics = ref<SystemMetricsOverview>()
 const { usageStatsWindowEndDate, usageStatsWindowMaxDays, loadUsageStatsWindow } = useUsageStatsWindow()
@@ -243,11 +244,9 @@ async function loadData() {
   const currentRequestSeq = ++requestSeq
   loading.value = true
   try {
+    await loadUsageStatsWindow({ force: true })
     const rangeParams = selectedRangeParams()
-    const [metrics] = await Promise.all([
-      api.stats.systemMetrics(rangeParams),
-      loadUsageStatsWindow()
-    ])
+    const metrics = await api.stats.systemMetrics(rangeParams)
     if (currentRequestSeq !== requestSeq) return
     systemMetrics.value = metrics
   } catch (error) {
@@ -267,6 +266,7 @@ function handleDateRangeChange() {
     startDate: formatDateKey(dateRange.value[0]),
     endDate: formatDateKey(dateRange.value[1])
   })
+  dateRangeExplicit.value = true
   void loadData()
 }
 
@@ -280,19 +280,22 @@ function handleDateRangeOpenChange(open: boolean) {
   }
 }
 
-function handleQuickRangeChange(value: string | number) {
+async function handleQuickRangeChange(value: string | number) {
+  await loadUsageStatsWindow({ force: true })
   const range = quickRangeDateRange(value as QuickRange)
   if (!range) return
   dateRange.value = parseDateRange({
     startDate: formatDateKey(range[0]),
     endDate: formatDateKey(range[1])
   })
+  dateRangeExplicit.value = true
   void loadData()
 }
 
 function resetFilters() {
   const defaults = defaultSystemMetricsPageState()
   dateRange.value = parseDateRange(defaults.range)
+  dateRangeExplicit.value = false
   calendarRange.value = [null, null]
   pageStateCache.clear()
   void loadData()
@@ -361,6 +364,13 @@ function disposeCharts() {
 }
 
 function selectedRangeParams(): { startDate?: string; endDate?: string } {
+  if (!dateRangeExplicit.value) {
+    const end = statsWindowEndDate()
+    if (end) {
+      const date = formatDateKey(end)
+      return { startDate: date, endDate: date }
+    }
+  }
   const [startDate, endDate] = selectedRange.value
   return { startDate, endDate }
 }
@@ -396,7 +406,7 @@ function normalizedDateRange(value: [Dayjs, Dayjs]): [string, string] {
 function snapshotPageState(): SystemMetricsPageState {
   const [startDate, endDate] = selectedRange.value
   return {
-    range: { startDate, endDate }
+    range: dateRangeExplicit.value ? { startDate, endDate } : undefined
   }
 }
 

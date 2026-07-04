@@ -353,7 +353,7 @@ async function orderOpenAIHighConcurrencyAccountsAsync(
   const policy = resolveGroupSchedulingPolicy('high_concurrency', policyInput) ?? DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY
   if (policy.fastFirstEnabled === false) {
     return trafficMigrationTargetAccountId
-      ? orderOpenAIHighConcurrencyHardBusyLast(accounts)
+      ? await orderOpenAIHighConcurrencyHardBusyLastAsync(accounts)
       : orderOpenAIPersonalAccountsBySessionAffinity(accounts, sessionAffinityKey, modelPriority)
   }
   const binding = sessionAffinityKey ? sessionAffinityCache.get(sessionAffinityKey) : undefined

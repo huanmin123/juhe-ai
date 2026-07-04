@@ -3,14 +3,19 @@ import { readFileSync } from 'node:fs'
 
 const routesSource = readFileSync(new URL('../../modules/external-integrations/external-integrations.routes.ts', import.meta.url), 'utf8')
 const serviceSource = readFileSync(new URL('../../modules/external-integrations/external-public-account-push.service.ts', import.meta.url), 'utf8')
+const routeStrategyServiceSource = readFileSync(new URL('../../modules/external-integrations/external-public-route-strategy.service.ts', import.meta.url), 'utf8')
 const targetSource = readFileSync(new URL('../../modules/external-integrations/external-public-account-push.target.ts', import.meta.url), 'utf8')
 const apiKeyCleanupSource = readFileSync(new URL('../../modules/api-keys/api-key-cleanup.service.ts', import.meta.url), 'utf8')
 
 const requiredRouteTokens = [
   'createOperationLogAsync',
   'listPublicGroupsAsync',
+  'listPublicRouteStrategiesAsync',
   'listPublicApiKeysAsync',
   'listPublicWelfareAccountsAsync',
+  'addPublicRouteStrategyAsync',
+  'updatePublicRouteStrategyAsync',
+  'deletePublicRouteStrategyAsync',
   'addPublicApiKeyAsync',
   'updatePublicApiKeyAsync',
   'deletePublicApiKeyAsync',
@@ -28,8 +33,12 @@ for (const token of requiredRouteTokens) {
 
 for (const token of [
   'listPublicGroups',
+  'listPublicRouteStrategies',
   'listPublicApiKeys',
   'listPublicWelfareAccounts',
+  'addPublicRouteStrategy',
+  'updatePublicRouteStrategy',
+  'deletePublicRouteStrategy',
   'addPublicApiKey',
   'updatePublicApiKey',
   'deletePublicApiKey',
@@ -86,6 +95,22 @@ for (const token of requiredServiceTokens) {
 }
 
 for (const token of [
+  'export async function listPublicRouteStrategiesAsync',
+  'export async function addPublicRouteStrategyAsync',
+  'export async function updatePublicRouteStrategyAsync',
+  'export async function deletePublicRouteStrategyAsync',
+  'createRouteStrategyAsync',
+  'updateRouteStrategyAsync',
+  'deleteRouteStrategyAsync',
+  'findRouteStrategySummaryAsync',
+  'listRouteStrategiesPageAsync',
+  'requirePublicTargetAsync',
+  'resolvePublicOwnedResourceTargetAsync'
+]) {
+  assert(routeStrategyServiceSource.includes(token), `公开路由策略服务必须固定 async/PG 路径：${token}`)
+}
+
+for (const token of [
   'ensureTargetSystemAccountAsync',
   'ensureTargetGroupAsync',
   'findPublicTargetAsync',
@@ -102,4 +127,4 @@ assert(apiKeyCleanupSource.includes("runtimeConfig.databaseDriver !== 'postgres'
 assert(!apiKeyCleanupSource.includes('postgres_record_cleanup_not_supported'), 'PG 模式 API Key 删除不能再返回固定清理跳过原因')
 assert(apiKeyCleanupSource.includes('enqueueRecordMaintenanceJobWithResult(job)'), 'PG 模式 API Key 删除仍必须投递记录维护清理任务')
 
-console.log('公开账号推送 async 边界回归通过：公开账号、分组、API Key 与操作日志均固定 async/PG 路径')
+console.log('公开账号推送 async 边界回归通过：公开账号、分组、路由策略、API Key 与操作日志均固定 async/PG 路径')

@@ -815,8 +815,8 @@ export interface ModelCheckRunSummary {
   startedAt: string
   finishedAt?: string
   durationMs?: number
-  requestSummary: Record<string, unknown>
-  resultSummary: Record<string, unknown>
+  requestSummary?: Record<string, unknown>
+  resultSummary?: Record<string, unknown>
   errorCode?: string
   errorMessage?: string
   createdAt: string
@@ -824,6 +824,8 @@ export interface ModelCheckRunSummary {
 }
 
 export interface ModelCheckRunDetail extends ModelCheckRunSummary {
+  requestSummary: Record<string, unknown>
+  resultSummary: Record<string, unknown>
   checks: ModelCheckItemSummary[]
 }
 
@@ -1112,6 +1114,8 @@ export interface RouteStrategyGroupBindingSummary {
   groupEnabled: boolean
 }
 
+export type RouteStrategyGroupBindingPreview = Pick<RouteStrategyGroupBindingSummary, 'id' | 'groupId' | 'groupName' | 'providerCode' | 'status' | 'groupEnabled'>
+
 export type RouteStrategyStatus = 'active' | 'disabled'
 
 export interface RouteStrategySummary {
@@ -1130,6 +1134,22 @@ export interface RouteStrategySummary {
   updatedAt: string
 }
 
+export interface RouteStrategyListItem {
+  id: string
+  systemAccountId?: string
+  systemAccountName?: string
+  name: string
+  description?: string
+  mode: RouteStrategyMode
+  status: RouteStrategyStatus
+  isDefault: boolean
+  groupBindingPreview: RouteStrategyGroupBindingPreview[]
+  bindingCount: number
+  apiKeyCount?: number
+  createdAt: string
+  updatedAt: string
+}
+
 export interface RouteStrategyOptionSummary {
   id: string
   systemAccountId?: string
@@ -1138,6 +1158,14 @@ export interface RouteStrategyOptionSummary {
   mode: RouteStrategyMode
   status: RouteStrategyStatus
   isDefault: boolean
+}
+
+export interface RouteStrategyListItemResult {
+  items: RouteStrategyListItem[]
+  total: number
+  hasMore: boolean
+  page: number
+  pageSize: number
 }
 
 export interface RouteStrategyListResult {
@@ -1219,7 +1247,7 @@ export interface ApiKeySummary {
   description?: string
   keyPrefix: string
   keySuffix: string
-  key: string
+  key?: string
   status: 'active' | 'disabled'
   isDefault?: boolean
   routeStrategyId: string

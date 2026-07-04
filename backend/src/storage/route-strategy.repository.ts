@@ -11,6 +11,8 @@ import {
 import type {
   RouteStrategyGroupBindingSummary,
   ApiKeyHybridRoutingConfig,
+  RouteStrategyListItem,
+  RouteStrategyListItemResult,
   RouteStrategyListResult,
   RouteStrategyMode,
   RouteStrategyOptionSummary,
@@ -28,6 +30,7 @@ import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { loadSystemAccountNameMapByIds, loadSystemAccountNameMapByIdsAsync } from './repository-lookups.js'
 import { assertKnownInputKeys, hasOwnInput, normalizeNullableTextInput, normalizeOptionalRequiredTextInput, requiredTextInput } from './repository-input-normalization.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
 const businessSchemaName = 'juhe_business'
 const ROUTE_STRATEGY_GROUP_BOUNDARY_ERROR = '策略路由只能绑定自己的分组或有效授权给自己的分组'
@@ -81,6 +84,7 @@ interface RouteStrategyRow {
   status: RouteStrategyStatus | string
   is_default?: number | boolean | string | null
   config_json: string | null
+  binding_count?: number | string | null
   api_key_count?: number | string | null
   created_at: string
   updated_at: string
@@ -110,6 +114,40 @@ interface RouteStrategyBindableGroupRow {
 
 export function listRouteStrategiesPage(access?: AccessScope, options?: RouteStrategyListOptions): RouteStrategyListResult {
   ensureDefaultRouteStrategyForAccess(access)
+  return listRouteStrategiesPageReadOnly(access, options)
+}
+
+export function listRouteStrategyListItemsPage(access?: AccessScope, options?: RouteStrategyListOptions): RouteStrategyListItemResult {
+  ensureDefaultRouteStrategyForAccess(access)
+  return listRouteStrategyListItemsPageReadOnly(access, options)
+}
+
+export function listRouteStrategyListItemsPageReadOnly(access?: AccessScope, options?: RouteStrategyListOptions): RouteStrategyListItemResult {
+  const normalized = normalizeRouteStrategyListOptions(options)
+  const scope = buildSystemAccountWhereClause(access, 'route_strategies.system_account_id')
+  const filters = buildRouteStrategyFilters(scope, normalized)
+  const rows = getBusinessDatabase()
+    .prepare(`
+      SELECT ${routeStrategyListItemColumns()}
+      FROM route_strategies
+      LEFT JOIN system_accounts ON system_accounts.id = route_strategies.system_account_id
+      ${filters.clause}
+      ORDER BY route_strategies.updated_at DESC, route_strategies.created_at DESC, route_strategies.id DESC
+      LIMIT ? OFFSET ?
+    `)
+    .all(...filters.params, normalized.pageSize + 1, (normalized.page - 1) * normalized.pageSize) as unknown as RouteStrategyRow[]
+  const pageRows = takePageRows(rows, normalized.pageSize)
+  const items = routeStrategyListItemsFromRows(pageRows.rows, access)
+  return {
+    items,
+    total: pagedTotalUpperBound(normalized.page, normalized.pageSize, items.length, pageRows.hasMore),
+    hasMore: pageRows.hasMore,
+    page: normalized.page,
+    pageSize: normalized.pageSize
+  }
+}
+
+export function listRouteStrategiesPageReadOnly(access?: AccessScope, options?: RouteStrategyListOptions): RouteStrategyListResult {
   const normalized = normalizeRouteStrategyListOptions(options)
   const scope = buildSystemAccountWhereClause(access, 'route_strategies.system_account_id')
   const filters = buildRouteStrategyFilters(scope, normalized)
@@ -135,6 +173,16 @@ export function listRouteStrategiesPage(access?: AccessScope, options?: RouteStr
 }
 
 export async function listRouteStrategiesPageAsync(access?: AccessScope, options?: RouteStrategyListOptions): Promise<RouteStrategyListResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    if (sqliteReadWorkerPoolEnabled()) {
+      return requestSqliteReadWorker({
+        type: 'list_route_strategies_page_read_only',
+        access,
+        options
+      })
+    }
+    return listRouteStrategiesPageReadOnly(access, options)
+  }
   const normalized = normalizeRouteStrategyListOptions(options)
   const client = await getRouteStrategyDatabaseClient()
   await ensureDefaultRouteStrategyForAccessAsync(access, client)
@@ -162,6 +210,46 @@ export async function listRouteStrategiesPageAsync(access?: AccessScope, options
 
 export function listRouteStrategyOptions(access?: AccessScope, options?: RouteStrategyOptionListOptions): RouteStrategyOptionSummary[] {
   ensureDefaultRouteStrategyForAccess(access)
+  return listRouteStrategyOptionsReadOnly(access, options)
+}
+
+export async function listRouteStrategyListItemsPageAsync(access?: AccessScope, options?: RouteStrategyListOptions): Promise<RouteStrategyListItemResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    if (sqliteReadWorkerPoolEnabled()) {
+      return requestSqliteReadWorker({
+        type: 'list_route_strategy_list_items_page_read_only',
+        access,
+        options
+      })
+    }
+    return listRouteStrategyListItemsPageReadOnly(access, options)
+  }
+  const normalized = normalizeRouteStrategyListOptions(options)
+  const client = await getRouteStrategyDatabaseClient()
+  await ensureDefaultRouteStrategyForAccessAsync(access, client)
+  const scope = buildSystemAccountWhereClause(access, 'route_strategies.system_account_id')
+  const filters = buildRouteStrategyFiltersForClient(client, scope, normalized)
+  const rows = await client.query<RouteStrategyRow>(`
+    SELECT ${routeStrategyListItemColumnsForClient(client)}
+    FROM ${routeStrategyTable(client, 'route_strategies')} route_strategies
+    LEFT JOIN ${routeStrategyTable(client, 'system_accounts')} system_accounts
+      ON system_accounts.id = route_strategies.system_account_id
+    ${filters.clause}
+    ORDER BY route_strategies.updated_at DESC, route_strategies.created_at DESC, route_strategies.id DESC
+    LIMIT ? OFFSET ?
+  `, [...filters.params, normalized.pageSize + 1, (normalized.page - 1) * normalized.pageSize])
+  const pageRows = takePageRows(rows, normalized.pageSize)
+  const items = await routeStrategyListItemsFromRowsAsync(pageRows.rows, access, client)
+  return {
+    items,
+    total: pagedTotalUpperBound(normalized.page, normalized.pageSize, items.length, pageRows.hasMore),
+    hasMore: pageRows.hasMore,
+    page: normalized.page,
+    pageSize: normalized.pageSize
+  }
+}
+
+export function listRouteStrategyOptionsReadOnly(access?: AccessScope, options?: RouteStrategyOptionListOptions): RouteStrategyOptionSummary[] {
   const normalized = normalizeRouteStrategyOptionListOptions(options)
   const scope = buildSystemAccountWhereClause(access, 'route_strategies.system_account_id')
   const filters = buildRouteStrategyOptionFilters(scope, normalized)
@@ -178,6 +266,16 @@ export function listRouteStrategyOptions(access?: AccessScope, options?: RouteSt
 }
 
 export async function listRouteStrategyOptionsAsync(access?: AccessScope, options?: RouteStrategyOptionListOptions): Promise<RouteStrategyOptionSummary[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    if (sqliteReadWorkerPoolEnabled()) {
+      return requestSqliteReadWorker({
+        type: 'list_route_strategy_options_read_only',
+        access,
+        options
+      })
+    }
+    return listRouteStrategyOptionsReadOnly(access, options)
+  }
   const normalized = normalizeRouteStrategyOptionListOptions(options)
   const client = await getRouteStrategyDatabaseClient()
   await ensureDefaultRouteStrategyForAccessAsync(access, client)
@@ -194,6 +292,10 @@ export async function listRouteStrategyOptionsAsync(access?: AccessScope, option
 }
 
 export function findRouteStrategySummary(id: string, access?: AccessScope): RouteStrategySummary | undefined {
+  return findRouteStrategySummaryReadOnly(id, access)
+}
+
+export function findRouteStrategySummaryReadOnly(id: string, access?: AccessScope): RouteStrategySummary | undefined {
   const scope = buildSystemAccountScopeClause(access, 'route_strategies.system_account_id')
   const row = getBusinessDatabase()
     .prepare(`
@@ -207,6 +309,16 @@ export function findRouteStrategySummary(id: string, access?: AccessScope): Rout
 }
 
 export async function findRouteStrategySummaryAsync(id: string, access?: AccessScope): Promise<RouteStrategySummary | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    if (sqliteReadWorkerPoolEnabled()) {
+      return requestSqliteReadWorker({
+        type: 'find_route_strategy_summary_read_only',
+        id,
+        access
+      })
+    }
+    return findRouteStrategySummaryReadOnly(id, access)
+  }
   const client = await getRouteStrategyDatabaseClient()
   const scope = buildSystemAccountScopeClause(access, 'route_strategies.system_account_id')
   const row = await client.one<RouteStrategyRow>(`
@@ -610,6 +722,64 @@ export async function loadRouteStrategyGroupBindingSummariesByRouteStrategyIdsAs
   return result
 }
 
+function loadRouteStrategyGroupBindingPreviewSummariesByRouteStrategyIds(routeStrategyIds: string[], limit = 3): Map<string, RouteStrategyGroupBindingSummary[]> {
+  const ids = [...new Set(routeStrategyIds.filter(Boolean))]
+  const result = new Map<string, RouteStrategyGroupBindingSummary[]>()
+  if (!ids.length) return result
+  const database = getBusinessDatabase()
+  const now = nowIso()
+  for (const chunk of chunkValues(ids, 500)) {
+    const rows = database
+      .prepare(routeStrategyGroupBindingRowsSql(`route_strategy_groups.id IN (
+        SELECT ranked.id
+        FROM (
+          SELECT ranked_groups.id,
+            ROW_NUMBER() OVER (
+              PARTITION BY ranked_groups.route_strategy_id
+              ORDER BY CASE WHEN ranked_groups.status = 'active' THEN 0 ELSE 1 END ASC,
+                ranked_groups.priority ASC,
+                ranked_groups.created_at ASC,
+                ranked_groups.id ASC
+            ) AS row_number
+          FROM route_strategy_groups ranked_groups
+          WHERE ranked_groups.route_strategy_id IN (${sqlPlaceholders(chunk.length)})
+        ) ranked
+        WHERE ranked.row_number <= ?
+      )`))
+      .all(now, ...chunk, limit) as unknown as RouteStrategyGroupBindingRow[]
+    appendRouteStrategyBindingRows(result, rows)
+  }
+  return result
+}
+
+async function loadRouteStrategyGroupBindingPreviewSummariesByRouteStrategyIdsAsync(routeStrategyIds: string[], limit = 3): Promise<Map<string, RouteStrategyGroupBindingSummary[]>> {
+  const ids = [...new Set(routeStrategyIds.filter(Boolean))]
+  const result = new Map<string, RouteStrategyGroupBindingSummary[]>()
+  if (!ids.length) return result
+  const client = await getRouteStrategyDatabaseClient()
+  const now = nowIso()
+  for (const chunk of chunkValues(ids, 500)) {
+    const rows = await client.query<RouteStrategyGroupBindingRow>(routeStrategyGroupBindingRowsSqlForClient(client, `route_strategy_groups.id IN (
+      SELECT ranked.id
+      FROM (
+        SELECT ranked_groups.id,
+          ROW_NUMBER() OVER (
+            PARTITION BY ranked_groups.route_strategy_id
+            ORDER BY CASE WHEN ranked_groups.status = 'active' THEN 0 ELSE 1 END ASC,
+              ranked_groups.priority ASC,
+              ranked_groups.created_at ASC,
+              ranked_groups.id ASC
+          ) AS row_number
+        FROM ${routeStrategyTable(client, 'route_strategy_groups')} ranked_groups
+        WHERE ranked_groups.route_strategy_id IN (${client.dialect.bindPlaceholders(chunk.length)})
+      ) ranked
+      WHERE ranked.row_number <= ?
+    )`), [now, ...chunk, limit])
+    appendRouteStrategyBindingRows(result, rows)
+  }
+  return result
+}
+
 function routeStrategySummariesFromRows(rows: RouteStrategyRow[], access?: AccessScope): RouteStrategySummary[] {
   const includeOwner = includeSystemAccountFields(access)
   const accountNames = includeOwner ? loadSystemAccountNameMapByIds(rows.map((row) => row.system_account_id)) : new Map<string, string>()
@@ -623,6 +793,21 @@ async function routeStrategySummariesFromRowsAsync(rows: RouteStrategyRow[], acc
   const accountNames = includeOwner ? await loadSystemAccountNameMapByIdsAsync(lookupClient!, rows.map((row) => row.system_account_id)) : new Map<string, string>()
   const bindingsByStrategyId = await loadRouteStrategyGroupBindingSummariesByRouteStrategyIdsAsync(rows.map((row) => row.id))
   return rows.map((row) => routeStrategySummaryFromRow(row, bindingsByStrategyId.get(row.id) ?? [], includeOwner, accountNames))
+}
+
+function routeStrategyListItemsFromRows(rows: RouteStrategyRow[], access?: AccessScope): RouteStrategyListItem[] {
+  const includeOwner = includeSystemAccountFields(access)
+  const accountNames = includeOwner ? loadSystemAccountNameMapByIds(rows.map((row) => row.system_account_id)) : new Map<string, string>()
+  const bindingsByStrategyId = loadRouteStrategyGroupBindingPreviewSummariesByRouteStrategyIds(rows.map((row) => row.id))
+  return rows.map((row) => routeStrategyListItemFromRow(row, bindingsByStrategyId.get(row.id) ?? [], includeOwner, accountNames))
+}
+
+async function routeStrategyListItemsFromRowsAsync(rows: RouteStrategyRow[], access?: AccessScope, client?: DatabaseClient): Promise<RouteStrategyListItem[]> {
+  const includeOwner = includeSystemAccountFields(access)
+  const lookupClient = includeOwner ? (client ?? await getRouteStrategyDatabaseClient()) : undefined
+  const accountNames = includeOwner ? await loadSystemAccountNameMapByIdsAsync(lookupClient!, rows.map((row) => row.system_account_id)) : new Map<string, string>()
+  const bindingsByStrategyId = await loadRouteStrategyGroupBindingPreviewSummariesByRouteStrategyIdsAsync(rows.map((row) => row.id))
+  return rows.map((row) => routeStrategyListItemFromRow(row, bindingsByStrategyId.get(row.id) ?? [], includeOwner, accountNames))
 }
 
 function routeStrategySummaryFromRow(
@@ -645,6 +830,36 @@ function routeStrategySummaryFromRow(
     isDefault: normalizeRouteStrategyDefaultFlag(row.is_default),
     hybridRoutingConfig: mode === 'hybrid_smart' ? config.hybridRoutingConfig : undefined,
     groupBindings,
+    apiKeyCount: Number(row.api_key_count ?? 0),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  }
+}
+
+function routeStrategyListItemFromRow(
+  row: RouteStrategyRow,
+  groupBindings: RouteStrategyGroupBindingSummary[],
+  includeOwner: boolean,
+  accountNames: Map<string, string>
+): RouteStrategyListItem {
+  return {
+    id: row.id,
+    systemAccountId: includeOwner ? row.system_account_id : undefined,
+    systemAccountName: includeOwner ? (row.system_account_name ?? accountNames.get(row.system_account_id)) : undefined,
+    name: row.name,
+    description: row.description ?? undefined,
+    mode: normalizeRouteStrategyMode(row.mode),
+    status: normalizeRouteStrategyStatus(row.status, 'active'),
+    isDefault: normalizeRouteStrategyDefaultFlag(row.is_default),
+    groupBindingPreview: groupBindings.slice(0, 3).map((binding) => ({
+      id: binding.id,
+      groupId: binding.groupId,
+      groupName: binding.groupName,
+      providerCode: binding.providerCode,
+      status: binding.status,
+      groupEnabled: binding.groupEnabled
+    })),
+    bindingCount: Number(row.binding_count ?? groupBindings.length),
     apiKeyCount: Number(row.api_key_count ?? 0),
     createdAt: row.created_at,
     updatedAt: row.updated_at
@@ -1051,6 +1266,23 @@ function routeStrategyListColumns(): string {
   ].join(', ')
 }
 
+function routeStrategyListItemColumns(): string {
+  return [
+    'route_strategies.id',
+    'route_strategies.system_account_id',
+    'system_accounts.display_name AS system_account_name',
+    'route_strategies.name',
+    'route_strategies.description',
+    'route_strategies.mode',
+    'route_strategies.status',
+    'route_strategies.is_default',
+    '(SELECT COUNT(1) FROM route_strategy_groups WHERE route_strategy_groups.route_strategy_id = route_strategies.id AND route_strategy_groups.system_account_id = route_strategies.system_account_id) AS binding_count',
+    '(SELECT COUNT(1) FROM api_keys WHERE api_keys.route_strategy_id = route_strategies.id AND api_keys.system_account_id = route_strategies.system_account_id) AS api_key_count',
+    'route_strategies.created_at',
+    'route_strategies.updated_at'
+  ].join(', ')
+}
+
 function routeStrategyListColumnsForClient(client: DatabaseClient): string {
   return [
     'route_strategies.id',
@@ -1062,6 +1294,23 @@ function routeStrategyListColumnsForClient(client: DatabaseClient): string {
     'route_strategies.status',
     'route_strategies.is_default',
     'route_strategies.config_json',
+    `(SELECT COUNT(1) FROM ${routeStrategyTable(client, 'api_keys')} api_keys WHERE api_keys.route_strategy_id = route_strategies.id AND api_keys.system_account_id = route_strategies.system_account_id) AS api_key_count`,
+    'route_strategies.created_at',
+    'route_strategies.updated_at'
+  ].join(', ')
+}
+
+function routeStrategyListItemColumnsForClient(client: DatabaseClient): string {
+  return [
+    'route_strategies.id',
+    'route_strategies.system_account_id',
+    'system_accounts.display_name AS system_account_name',
+    'route_strategies.name',
+    'route_strategies.description',
+    'route_strategies.mode',
+    'route_strategies.status',
+    'route_strategies.is_default',
+    `(SELECT COUNT(1) FROM ${routeStrategyTable(client, 'route_strategy_groups')} route_strategy_groups WHERE route_strategy_groups.route_strategy_id = route_strategies.id AND route_strategy_groups.system_account_id = route_strategies.system_account_id) AS binding_count`,
     `(SELECT COUNT(1) FROM ${routeStrategyTable(client, 'api_keys')} api_keys WHERE api_keys.route_strategy_id = route_strategies.id AND api_keys.system_account_id = route_strategies.system_account_id) AS api_key_count`,
     'route_strategies.created_at',
     'route_strategies.updated_at'

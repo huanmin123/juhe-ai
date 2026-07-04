@@ -30,10 +30,14 @@ import { tableMonitorRouter } from '../table-monitor/table-monitor.routes.js'
 import { usageRecordsRouter } from '../usage-records/usage-records.routes.js'
 import { ok } from '../../shared/http.js'
 import { getRequestLogger, requestContextMiddleware, sanitizeUrlForLog } from '../../shared/request-context.js'
-import { runtimeConfig } from '../../config/runtime.js'
 import { listPublicGlobalSettingsAsync } from '../../storage/repositories.js'
 import { systemApiAuthenticatedRateLimit, systemApiIpRateLimit } from './system-api-rate-limit.middleware.js'
 import { createHttpCompressionMiddleware } from '../../shared/http-compression.js'
+import {
+  systemApiDbAccessModeMiddleware,
+  systemApiDbServiceAdmissionControl,
+  systemApiDbServiceMaxInFlight
+} from './system-api-db-access.js'
 
 export interface SystemApiAppOptions {
   systemApiPrefix: string
@@ -48,8 +52,7 @@ type BodyParserError = Error & {
 }
 
 export const systemApiJsonBodyLimit = '256kb'
-export const systemApiDbServiceMaxInFlight = runtimeConfig.systemApi.dbServiceMaxInFlight
-let systemApiDbServiceInFlight = 0
+export { systemApiDbServiceAdmissionControl, systemApiDbServiceMaxInFlight }
 
 export function createSystemApiApp(options: SystemApiAppOptions): express.Express {
   const app = express()
@@ -63,13 +66,14 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(createHttpCompressionMiddleware())
   app.use(systemApiPrefix, systemApiIpRateLimit)
   app.use(systemApiPrefix, express.json({ limit: systemApiJsonBodyLimit }), handleJsonBodyError)
+  app.use(systemApiPrefix, systemApiDbAccessModeMiddleware(systemApiPrefix))
   app.use(publicApiPrefix, capturePublicApiLog, express.json({ limit: systemApiJsonBodyLimit }), handleJsonBodyError)
 
   app.get(`${systemApiPrefix}/health`, (_req, res) => {
     res.json({ status: 'ok', service: 'juhe-ai-db-service' })
   })
 
-  app.use(`${systemApiPrefix}/auth`, authRouter)
+  app.use(`${systemApiPrefix}/auth`, systemApiDbServiceAdmissionControl, authRouter)
   app.get(`${systemApiPrefix}/settings/public`, async (_req, res, next) => {
     try {
       res.json(ok(await listPublicGlobalSettingsAsync()))
@@ -130,37 +134,6 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(handleSystemApiError)
 
   return app
-}
-
-export function systemApiDbServiceAdmissionControl(req: Request, res: Response, next: NextFunction): void {
-  if (systemApiDbServiceInFlight >= systemApiDbServiceMaxInFlight) {
-    getRequestLogger().warn({
-      event: 'system_api_db_service_in_flight_rejected',
-      method: req.method,
-      path: req.path,
-      originalUrl: sanitizeUrlForLog(req.originalUrl),
-      inFlight: systemApiDbServiceInFlight,
-      maxInFlight: systemApiDbServiceMaxInFlight
-    }, 'DB service 系统 API 在途请求过多，已拒绝本次管理端请求')
-    res.setHeader('Retry-After', '1')
-    res.status(503).json({
-      message: '系统管理接口繁忙，请稍后重试',
-      code: 'system_api_busy'
-    })
-    return
-  }
-  systemApiDbServiceInFlight += 1
-  let released = false
-  const release = () => {
-    if (released) return
-    released = true
-    systemApiDbServiceInFlight = Math.max(0, systemApiDbServiceInFlight - 1)
-    res.off('finish', release)
-    res.off('close', release)
-  }
-  res.once('finish', release)
-  res.once('close', release)
-  next()
 }
 
 function handleJsonBodyError(error: BodyParserError, req: Request, res: Response, next: NextFunction): void {

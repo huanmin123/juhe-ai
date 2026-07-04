@@ -128,13 +128,14 @@ Responses 桥接状态索引写入仍归 DB service 所有；`JUHE_AI_CODEX_CONT
 - 每个 SQLite 连接必须设置短暂写锁等待时间，避免 DB service、background worker 和管理面低频写操作短事务重叠时立即返回 `database is locked`；该设置只用于吸收短冲突，不能替代文件级单写者治理。
 - 通过 `backend/src/storage/repositories.ts` 统一访问数据
 - 系统管理 API、登录态校验、管理面 CRUD、客户请求链路中的高频 SQLite 读写、公开设置读取、运行日志索引查询、账号错误状态副作用、OAuth Access Token 刷新持久化和 OAuth Codex 额度快照写入，都通过独立本地 DB service 进程完成；主 Web 进程只代理 `/__aisys__/api/*`，不解析管理 API JSON body，不直接导入管理路由或 repository。DB service 不改变 SQLite 单写者模型，DB service 不可用时请求返回可读错误，不能回退到主 Web 进程本地同步执行。
+- SQLite standalone 模式下，DB service 对 typed operation 显式区分 `read`、`write`、`maintenance` 和 `runtime`：写入与维护任务继续走受控写队列；管理端主读、公开全局设置、供应商模型目录、运行日志索引、OpenAI-compatible files / vector stores 的 list / get / search / chunks 等确认安全的仓储纯读进入 query-only read worker 子进程。read worker 使用只读 SQLite handle 和 `PRAGMA query_only=ON`，把 SQLite busy wait 留在子进程内，不能在 DB service 主事件循环同步等待写锁；读失败必须返回真实错误，不能用空列表、空统计或缺字段伪装成功。gateway runtime / cache / quota / health / cooldown / account-test、Codex context writer pool 等有 owner 或副作用语义的路径不放入 query-only read worker。
 - 运行时写入必须遵循 [SQLite 单写者写队列治理设计](SQLite单写者写队列治理设计.md)：业务库写入归 DB service，Responses 桥接状态索引 shard 写入归 DB service 并按目标 shard 短事务提交，数据集目录库和使用记录目录库写入归 ingest / log writer，统计结果库写入归 stats writer，usage shard 按单 shard writer 串行写。多 worker 可以并行生产 command，但不能并行写同一个 SQLite 文件。
 - 写队列必须暴露可观测指标：DB service runtime 包含按优先级拆分的排队数量、最老等待时间、最近 / 最大排队等待、最近 / 最大执行耗时和慢操作计数；background worker role state 包含 pending 写请求数量和最老等待时间；usage 队列包含最老本地等待、最近 / 最大 flush 耗时、慢 flush 计数，以及可选 usage writer pool 的 worker 数、排队数、活跃任务、失败 / 拒绝数和最大等待 / 执行耗时。排查 `database is locked`、worker 堵塞或请求延迟时先看这些指标，不直接扩大 shard 数或 writer 数。
 - IP 封禁命中计数只在 server 进程内做短暂有界聚合后投递 DB service：待写 distinct `ip_hash + policy_id` 最多 `5000` 个，单次 flush 最多 `1000` 条，满载时丢弃新的 distinct 命中并计数，不能让恶意多来源封禁流量形成无界 Map 或一次大 IPC。
 - 业务库通过 `JUHE_AI_DATABASE_PATH` 打开；数据集目录库通过 `JUHE_AI_DATASET_DATABASE_PATH` 打开；使用记录目录库通过 `JUHE_AI_USAGE_CATALOG_DATABASE_PATH` 打开；统计结果库通过 `JUHE_AI_STATS_DATABASE_PATH` 打开；Responses 桥接状态索引库通过 `JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT` 和 `JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT` 打开多个 shard。所有 SQLite 入口都使用 WAL，并且业务库、数据集目录库、使用记录目录库、统计结果库、usage shard 文件和 Responses 桥接状态索引 shard 文件必须互不相同。
 - 使用记录按每次上游尝试写入 usage shard；`usage_records.client_ip` 只保存规范化 IPv4，非 IPv4 来源写空。server 角色只把使用记录投递给 ingest-worker IPC 队列，不在 worker 未就绪时回落到主进程本地队列或同步写库。失败记录保存 `request_snapshot_json` / `response_snapshot_json`，用于前端查看请求与返回日志
 - 操作日志使用独立表保存已成功提交的业务状态变更，用于追溯系统账户对资源的增删改、启停、绑定、授权和配置变更；查询请求不写操作日志。
-- 公开接口日志使用 `public_api_logs` 保存 `/__aipublic__` 外部来源系统调用元数据、状态码、耗时、客户端 IP、trace ID、有限请求 / 响应快照和错误摘要；请求 / 响应快照先按深度、字段数量和字节预算克隆，再按 32KB 上限保存或截断，不能为了估算大小先把完整大对象 `JSON.stringify` 到内存。公开接口日志最大保留 7 天，由后台数据保留任务分批清理。
+- 公开接口日志使用 `public_api_logs` 保存 `/__aipublic__` 外部来源系统调用元数据、状态码、耗时、客户端 IP、trace ID、有限请求 / 响应快照和错误摘要；请求 / 响应快照先按深度、字段数量和字节预算克隆，再按 32KB 上限保存或截断，不能为了估算大小先把完整大对象 `JSON.stringify` 到内存。公开接口日志保留期由 `publicApiLogRetentionDays` 控制，默认 30 天、合法范围 `1..365`，由后台数据保留任务分批清理。
 - 管理端写操作需要按 [幂等与唯一约束设计](幂等与唯一约束设计.md) 接入防重复提交和业务唯一约束：前端重复点击或网络重试不应创建多条业务数据，重复提交拦截不写第二条操作日志；防重复提交缓存属于进程内易失状态，过期维护固定小批量轮转，容量淘汰不全量展开排序。
 - 原始审计日志使用独立表保存最近 1 小时完全成功请求热窗口、超过热窗口后的 10% 稳定成功样本，以及失败、异常、客户端中断、流式中断和重试后成功链路；请求 / 响应正文按 [审计日志保全策略设计](审计日志保全策略设计.md) 压缩、去重并通过 payload 引用保存，server 角色只能终态投递 ingest-worker IPC 队列，后台批量写库，不能同步写审计表，也不能在 worker 未就绪时本地落库。
 - 普通运行日志仍以 JSON Lines 写入日志文件并滚动清理；最近 3 天的索引查询只使用数据集目录库表 `runtime_logs`，ingest-worker 通过 `runtime_log_file_cursors` 记录当前日志文件读取游标，只追新增内容，不在启动时全量扫描当前日志文件；管理后台索引查询和 facets 读取经 DB service 完成，不在主进程同步读取 SQLite 索引。运行日志不再维护额外搜索影子表，关键字只在 `runtime_logs.message` 列做普通模糊匹配；keyword 查询没有显式时间范围时默认加最近 6 小时窗口，完整日志正文搜索交给 `grep 模式`。运行日志索引队列在 80% 高水位后对 `trace` / `debug` / `info` 做采样丢弃，`warn` / `error` / `fatal` 仍保留到硬上限，避免低优先级运行日志拖垮 dataset writer。
@@ -229,10 +230,10 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 - `usage_error_rank_windows`：按 `system_account_id + window_key + start_date + end_date + rank` 保存统计概览错误 TopN，接口只按范围窗口读取排名行。
 - `ai_performance_summary_windows`：按 `system_account_id + window_key + start_date + end_date` 保存 AI 性能监控摘要，前端账户筛选只影响图表显隐，不重新计算摘要。
 - `usage_quota_hourly_windows`：按 `system_account_id + scope_type + scope_id + window_hours` 保存 n 小时额度成本，随 `statsAggregationIntervalSeconds` 刷新，网关额度判断不再 `SUM usage_stats_hourly`。
-- `usage_scope_range_windows`：按 `system_account_id + scope_type + scope_id + start_date + end_date` 保存最近 31 天范围内的范围总量，并包含成功数、错误数、耗时、首 token、活跃天数和最后错误时间等账号维度范围指标。用量统计、授权详情和公开账号用量接口只按范围 key 直读；账号用量页关键词先在业务库用账号 ID、名称、供应商、类型的索引范围查询解析为账号 ID，再用 `scope_id` 命中窗口表，不能在统计结果窗口查询中拼业务字段多列 `LIKE`，也不能在请求链路临时 `GROUP BY usage_stats_daily`。
+- `usage_scope_range_windows`：按 `system_account_id + scope_type + scope_id + start_date + end_date` 保存最近 31 天范围内的范围总量，并包含成功数、错误数、耗时、首 token、活跃天数和最后错误时间等账号维度范围指标。用量统计和授权详情接口只按范围 key 直读；账号用量页关键词先在业务库用账号 ID、名称、供应商、类型的索引范围查询解析为账号 ID，再用 `scope_id` 命中窗口表，不能在统计结果窗口查询中拼业务字段多列 `LIKE`，也不能在请求链路临时 `GROUP BY usage_stats_daily`。
 - `client_ip_registry`：按 `ip_hash` 保存来源 IPv4 注册事实，包括 `aggregate_ip_key`、最近样本 IP、IP 版本、首次出现、最近出现和分桶号；当前 IP 管理只写入 IPv4，`aggregate_ip_key` 与规范化 IPv4 一致。该表只由后台 IP 统计 job 注册和更新，页面不从 `usage_records` 扫描 IP；管理页最后使用日期筛选和“最后使用”列以 `last_seen_at` 为准。
 - `client_ip_stats_daily`：按 `ip_hash + stat_date` 保存 IP 自然日请求数、成功数、失败数、Token、缓存成本、总成本、首 token / 总耗时样本和、总耗时最大值和最近使用 / 最近错误时间。
-- `client_ip_usage_range_windows`：按 `ip_hash + start_date + end_date` 保存最近 31 天内 IP 范围窗口，系统运维 / IP管理 列表和 `/__aipublic__/ip/usage` 外部来源接口只读该窗口，不在请求路径聚合明细、重建窗口或计算范围总统计。IP 速度展示只读取窗口内已落表的平均首 token、平均总耗时和最大总耗时字段，不新增实时明细扫描。
+- `client_ip_usage_range_windows`：按 `ip_hash + start_date + end_date` 保存最近 31 天内 IP 范围窗口，系统运维 / IP管理列表只读该窗口，不在请求路径聚合明细、重建窗口或计算范围总统计。IP 速度展示只读取窗口内已落表的平均首 token、平均总耗时和最大总耗时字段，不新增实时明细扫描。
 - `client_ip_account_stats_daily`：按 `ip_hash + account_id + stat_date` 保存 IP 涉及 AI 账户的自然日统计，只从新使用记录开始写入，不在运行时代码补历史。
 - `client_ip_account_usage_range_windows`：按 `ip_hash + account_id + start_date + end_date` 保存 IP 详情账号使用窗口，系统运维 / IP管理 的“详情”操作只读该窗口并批量补齐当前页账号名称和所属用户名称，不扫描 `usage_records`，也不在请求路径临时 `GROUP BY`。
 - `client_ip_account_range_window_dirty_ips`：记录待刷新 IP+账号范围窗口的 dirty IP，和 `client_ip_range_window_dirty_ips` 同步写入、同步清理，确保详情窗口与 IP 列表窗口一起进入 ready。
@@ -361,7 +362,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 - `client_ip_registry(aggregate_ip_key)`：IP 运维关键词按聚合 IP key 定位。
 - `client_ip_registry(client_ip)`：IP 运维关键词按最近样本明文 IP 定位。
 - `client_ip_stats_daily(stat_date, ip_hash)`：IP 范围窗口按日期读取 daily 桶。
-- `client_ip_usage_range_windows(start_date, end_date, total_cost_usd/request_count/active_days/last_used_at, ip_hash)`：IP 运维列表按范围窗口成本、请求数和活跃天数排序，公开 IP 用量接口按范围窗口最近使用排序；管理页全局最近使用排序走 `client_ip_registry(last_seen_at DESC, ip_hash)`。总 Token 和失败率排序使用表达式索引。平均首 token、平均总耗时和最大总耗时只展示不排序，避免新增高基数排序压力。
+- `client_ip_usage_range_windows(start_date, end_date, total_cost_usd/request_count/active_days/last_used_at, ip_hash)`：IP 运维列表按范围窗口成本、请求数和活跃天数排序；管理页全局最近使用排序走 `client_ip_registry(last_seen_at DESC, ip_hash)`。总 Token 和失败率排序使用表达式索引。平均首 token、平均总耗时和最大总耗时只展示不排序，避免新增高基数排序压力。
 - `client_ip_usage_range_windows(end_date)`：数据保留任务按范围窗口结束日期分批清理过期 IP 窗口，避免保留清理退回全表排序。
 - `client_ip_range_window_dirty_ips(updated_at, ip_hash)`：持久记录等待刷新范围窗口的 dirty IP；刷新成功后删除，避免 worker 重启丢失内存 dirty Set 后只能靠全量重建恢复。
 - `stats_job_state(scope_type, scope_id, job_name)`：同时用于 IP 范围窗口 ready/stale 标记；新 IP daily 写入会把当前固定窗口标记为 stale，后台刷新完全部 dirty IP 后再标记 ready，列表不靠窗口表行数判断可读。
@@ -376,7 +377,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 - `usage_scope_range_windows(system_account_id, scope_type, scope_id, start_date, end_date)`：最近 31 天范围总量按具体 scope 读取。
 - `usage_scope_range_windows(system_account_id, scope_type, start_date, end_date, scope_id)`：账号用量列表按系统账户、作用域类型和日期范围分页读取。
 - `usage_scope_range_windows(system_account_id, scope_type, start_date, end_date, request_count, total_cost_usd, input_tokens + output_tokens, last_used_at, scope_id)`：管理侧账号用量默认排序读取。
-- `usage_scope_range_windows(system_account_id, scope_type, start_date, end_date, request_count / success_count / error_count / error_rate / total_tokens / total_cost_usd / active_days / last_used_at, scope_id)`：公开账号用量按指标排行读取，接口只能使用窗口表索引分页，不能回扫日表聚合后排序。
+- `usage_scope_range_windows(system_account_id, scope_type, start_date, end_date, request_count / success_count / error_count / error_rate / total_tokens / total_cost_usd / active_days / last_used_at, scope_id)`：账号用量统计按指标排行读取，接口只能使用窗口表索引分页，不能回扫日表聚合后排序。
 - `system_metrics_trend_windows(window_key, start_date, end_date, bucket_key)`：系统性能 / 网络吞吐趋势读取。
 - `process_event_loop_trend_windows(window_key, start_date, end_date, bucket_key, process_role)`：主进程、后台 worker 和 DB service 的事件循环延迟、RSS 和 Heap 趋势读取。
 - `usage_model_daily(system_account_id, stat_date, model)`：模型分布读取。

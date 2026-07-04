@@ -71,8 +71,10 @@ import { useAiPerformanceAccountSelection } from './useAiPerformanceAccountSelec
 
 const MAX_RANGE_DAYS = 31
 const DEFAULT_RANGE_DAYS = 3
+const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
+const { usageStatsWindowEndDate, usageStatsWindowMaxDays, loadUsageStatsWindow } = useUsageStatsWindow()
 const defaultDateRange = (): [Dayjs, Dayjs] => {
-  const today = dayjs().startOf('day')
+  const today = (usageStatsWindowEndDate.value?.isValid() ? usageStatsWindowEndDate.value : dayjs()).startOf('day')
   return [today.subtract(DEFAULT_RANGE_DAYS - 1, 'day'), today]
 }
 
@@ -80,28 +82,29 @@ interface AiPerformancePageState {
   activeAccountIds: string[]
   addedAccountIds: string[]
   addedAccountSelections: AccountSelection[]
-  dateRange: [string, string]
+  dateRange?: [string, string]
   selectedSystemAccount?: PrincipalSelection
   selectedSystemAccountId: string
 }
 
 const pageStateCache = usePageStateCache<AiPerformancePageState>(undefined, defaultAiPerformancePageState, {
   sanitize: sanitizeAiPerformancePageState,
-  version: 1
+  version: 2
 })
 const initialPageState = pageStateCache.read()
-const dateRange = ref<[Dayjs, Dayjs]>(parseDateRange({
-  startDate: initialPageState.dateRange[0],
-  endDate: initialPageState.dateRange[1]
-}))
+const dateRange = ref<[Dayjs, Dayjs]>(parseDateRange(initialPageState.dateRange
+  ? {
+      startDate: initialPageState.dateRange[0],
+      endDate: initialPageState.dateRange[1]
+    }
+  : undefined))
+const dateRangeExplicit = ref(Boolean(initialPageState.dateRange))
 const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
 const overview = ref<AiPerformanceOverview>()
 const selectedSystemAccountId = ref(initialPageState.selectedSystemAccountId)
 const selectedSystemAccount = ref<PrincipalSelection | undefined>(initialPageState.selectedSystemAccount)
 const loading = ref(false)
 let performanceRequestSeq = 0
-const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
-const { usageStatsWindowEndDate, usageStatsWindowMaxDays, loadUsageStatsWindow } = useUsageStatsWindow()
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
   handleSearch: handleSystemAccountOptionsSearch,
@@ -243,6 +246,7 @@ async function loadPerformance() {
   loading.value = true
   try {
     if (requestSeq !== performanceRequestSeq) return
+    await loadUsageStatsWindow({ force: true })
     const systemAccountId = selectedPerformanceSystemAccountId()
     const rangeParams = selectedRangeParams()
     const performanceParams = {
@@ -251,8 +255,7 @@ async function loadPerformance() {
       accountIds: addedAccountIds.value
     }
     const [performanceOverview] = await Promise.all([
-      isManagementView.value ? api.stats.aiPerformance(performanceParams) : api.myStats.aiPerformance(performanceParams),
-      loadUsageStatsWindow()
+      isManagementView.value ? api.stats.aiPerformance(performanceParams) : api.myStats.aiPerformance(performanceParams)
     ])
     if (requestSeq !== performanceRequestSeq) return
     overview.value = performanceOverview
@@ -275,10 +278,18 @@ function handleDateRangeChange() {
     startDate: formatDateKey(dateRange.value[0]),
     endDate: formatDateKey(dateRange.value[1])
   })
+  dateRangeExplicit.value = true
   void loadPerformance()
 }
 
 function selectedRangeParams(): { startDate?: string; endDate?: string } {
+  if (!dateRangeExplicit.value) {
+    const [startDate, endDate] = defaultDateRange()
+    return {
+      startDate: formatDateKey(startDate),
+      endDate: formatDateKey(endDate)
+    }
+  }
   const [startDate, endDate] = selectedRange.value
   return { startDate, endDate }
 }
@@ -307,6 +318,7 @@ function handleDateRangeOpenChange(open: boolean) {
 
 function resetFilters() {
   dateRange.value = parseDateRange()
+  dateRangeExplicit.value = false
   calendarRange.value = [null, null]
   selectedSystemAccountId.value = allSystemAccountsValue
   selectedSystemAccount.value = undefined
@@ -317,12 +329,11 @@ function resetFilters() {
 }
 
 function defaultAiPerformancePageState(): AiPerformancePageState {
-  const range = defaultDateRange()
   return {
     activeAccountIds: [],
     addedAccountIds: [],
     addedAccountSelections: [],
-    dateRange: [formatDateKey(range[0]), formatDateKey(range[1])],
+    dateRange: undefined,
     selectedSystemAccount: undefined,
     selectedSystemAccountId: allSystemAccountsValue
   }
@@ -336,7 +347,7 @@ function sanitizeAiPerformancePageState(value: unknown, fallback: AiPerformanceP
     addedAccountSelections: Array.isArray(source.addedAccountSelections)
       ? source.addedAccountSelections.map(sanitizeAccountSelection).filter((selection): selection is AccountSelection => Boolean(selection))
       : [],
-    dateRange: sanitizeDateRange(source.dateRange) ?? fallback.dateRange,
+    dateRange: sanitizeDateRange(source.dateRange),
     selectedSystemAccount: sanitizeSystemAccountSelection(source.selectedSystemAccount),
     selectedSystemAccountId: stringOrFallback(source.selectedSystemAccountId, fallback.selectedSystemAccountId) || fallback.selectedSystemAccountId
   }
@@ -383,7 +394,7 @@ function snapshotPageState(): AiPerformancePageState {
     activeAccountIds: [...activeAccountIds.value],
     addedAccountIds: [...addedAccountIds.value],
     addedAccountSelections: [...addedAccountSelections.value],
-    dateRange: [...displayRange.value],
+    dateRange: dateRangeExplicit.value ? [displayRange.value[0], displayRange.value[1]] : undefined,
     selectedSystemAccount: selectedSystemAccount.value,
     selectedSystemAccountId: selectedSystemAccountId.value
   }

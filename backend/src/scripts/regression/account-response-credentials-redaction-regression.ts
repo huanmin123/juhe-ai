@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-response-redaction-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -37,7 +38,10 @@ interface ApiEnvelope<T> {
 
 interface AccountResponse {
   id: string
-  credentials: Record<string, unknown>
+  credentials?: Record<string, unknown>
+  supportedModels?: string[]
+  modelMappings?: unknown[]
+  apiKeyRuntimeDetails?: unknown[]
 }
 
 interface AccountListResponse {
@@ -81,8 +85,22 @@ try {
 
   const accountList = await getEnvelope<AccountListResponse>(baseUrl, '/__aisys__/api/accounts?page=1&pageSize=20', seed.adminCookie)
   assertNoCredentialLeak(accountList, '账户列表响应')
+  for (const account of accountList.items) {
+    assert.equal(Object.prototype.hasOwnProperty.call(account, 'credentials'), false, '账户列表响应不应返回 credentials 字段')
+    assert.equal(Object.prototype.hasOwnProperty.call(account, 'supportedModels'), false, '账户列表响应不应返回 supportedModels 字段')
+    assert.equal(Object.prototype.hasOwnProperty.call(account, 'modelMappings'), false, '账户列表响应不应返回 modelMappings 字段')
+    assert.equal(Object.prototype.hasOwnProperty.call(account, 'apiKeyRuntimeDetails'), false, '账户列表响应不应返回 API Key 运行明细')
+  }
 
-  const detail = await getEnvelope<AccountResponse>(baseUrl, `/__aisys__/api/accounts/${seed.apiKeyAccountId}`, seed.adminCookie)
+  const basicDetail = await getEnvelope<AccountResponse>(baseUrl, `/__aisys__/api/accounts/${seed.apiKeyAccountId}`, seed.adminCookie)
+  assert.equal(Object.prototype.hasOwnProperty.call(basicDetail, 'credentials'), false, '账户基础详情不应返回 credentials 字段')
+  assert.equal(Object.prototype.hasOwnProperty.call(basicDetail, 'supportedModels'), false, '账户基础详情不应返回 supportedModels 字段')
+  assert.equal(Object.prototype.hasOwnProperty.call(basicDetail, 'modelMappings'), false, '账户基础详情不应返回 modelMappings 字段')
+  assert.equal(Object.prototype.hasOwnProperty.call(basicDetail, 'apiKeyRuntimeDetails'), false, '账户基础详情不应返回 API Key 运行明细')
+  assertNoCredentialLeak(basicDetail, '账户基础详情响应')
+
+  const detail = await getEnvelope<AccountResponse>(baseUrl, `/__aisys__/api/accounts/${seed.apiKeyAccountId}/advanced`, seed.adminCookie)
+  assert(detail.credentials, '账户高级详情应返回编辑凭据')
   assert.equal(detail.credentials.base_url, 'https://api.openai.com/v1', '详情响应应保留前端编辑需要的 Base URL')
   assert.deepEqual(detail.credentials.error_handling_rules, [{
     enabled: true,
@@ -102,11 +120,13 @@ try {
   }], '详情响应应返回账户级响应检查策略供编辑弹窗维护')
   assert.equal(detail.credentials.api_key, 'sk-redaction-existing-api-key', '详情响应应返回完整 API Key 供编辑弹窗查看')
 
-  const multiKeyDetail = await getEnvelope<AccountResponse>(baseUrl, `/__aisys__/api/accounts/${seed.multiApiKeyAccountId}`, seed.adminCookie)
+  const multiKeyDetail = await getEnvelope<AccountResponse>(baseUrl, `/__aisys__/api/accounts/${seed.multiApiKeyAccountId}/advanced`, seed.adminCookie)
+  assert(multiKeyDetail.credentials, '账户高级详情应返回多 API Key 凭据')
   assert.deepEqual(multiKeyDetail.credentials.api_keys, ['sk-redaction-multi-a', 'sk-redaction-multi-b'], '详情响应应返回完整多 API Key 列表供编辑弹窗查看')
 
   const created = await postEnvelope<AccountResponse>(baseUrl, '/__aisys__/api/accounts', seed.adminCookie, {
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '响应脱敏新建账号',
     type: 'api_key',
     credentials: {
@@ -115,6 +135,8 @@ try {
     },
     groupId: seed.groupAId
   })
+  assert(created.credentials, '账户创建响应应返回公开凭据字段')
+  assert(created.credentials, '创建响应应返回编辑凭据')
   assert.equal(created.credentials.base_url, 'https://api.openai.com/v1', '创建响应应保留 Base URL')
   assertNoCredentialLeak(created, '账户创建响应')
 
@@ -171,6 +193,8 @@ try {
     }
   })
   const refreshedOAuth = await postEnvelope<AccountResponse>(baseUrl, `/__aisys__/api/openai-oauth/accounts/${seed.oauthAccountId}/refresh-token`, seed.adminCookie, {})
+  assert(refreshedOAuth.credentials, 'OAuth 刷新响应应返回公开凭据字段')
+  assert(refreshedOAuth.credentials, 'OAuth 刷新响应应返回编辑凭据')
   assert.equal(refreshedOAuth.credentials.expires_at, '2027-01-02T00:00:00.000Z', 'OAuth 刷新响应应保留前端需要展示的过期时间')
   assert.equal(refreshedOAuth.credentials.base_url, 'https://api.openai.com/v1', 'OAuth 刷新响应应保留 Base URL')
   assertNoCredentialLeak(refreshedOAuth, 'OAuth 刷新响应')
@@ -197,8 +221,9 @@ try {
     databaseModule.closeStorageDatabases()
   } catch {
   }
-  rmSync(tempRoot, { recursive: true, force: true })
+  await removeTempRoot()
 }
+process.exit(0)
 
 function seedData(): {
   adminCookie: string
@@ -223,6 +248,7 @@ function seedData(): {
   }, access)
   const apiKeyAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '响应脱敏 API Key 账号',
     type: 'api_key',
     credentials: {
@@ -250,6 +276,7 @@ function seedData(): {
   }, access)
   const oauthAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '响应脱敏 OAuth 账号',
     type: 'oauth',
     credentials: {
@@ -269,6 +296,7 @@ function seedData(): {
   }, access)
   const multiApiKeyAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '响应脱敏多 API Key 账号',
     type: 'api_key',
     credentials: {
@@ -283,6 +311,7 @@ function seedData(): {
   }, access)
   const targetAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '响应脱敏迁移目标账号',
     type: 'api_key',
     credentials: {
@@ -392,4 +421,19 @@ function serverAddress(listeningServer: http.Server): { port: number } {
   const address = listeningServer.address()
   assert(address && typeof address !== 'string', '测试服务器应监听 TCP 地址')
   return { port: address.port }
+}
+
+async function removeTempRoot(): Promise<void> {
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    try {
+      rmSync(tempRoot, { recursive: true, force: true })
+      return
+    } catch (error) {
+      if (!(error instanceof Error) || !/EBUSY|EPERM/.test(error.message)) {
+        throw error
+      }
+      if (attempt === 5) return
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+  }
 }

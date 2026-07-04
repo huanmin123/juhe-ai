@@ -10,6 +10,7 @@ import type { PublicApiLogInput } from '../../storage/public-api-logs.repository
 import type { GatewayQuotaSnapshot } from '../gateway/quota/quota-snapshot-cache.service.js'
 import type { RecordMaintenanceJob } from '../record-maintenance/record-maintenance-queue.service.js'
 import type { RuntimeLogLineIndexOptions } from '../runtime-logs/runtime-log-index-queue.service.js'
+import { dbServiceOperationAccessMode } from '../db-service/db-service-operation-access-mode.js'
 import type { AccountRuntimeAvailabilityClearTarget } from '../db-service/db-service-types.js'
 import { auditWorkerMessageMaxBytes, trimAuditLogsForWorkerIpc } from './background-ipc-audit-trim.js'
 import { estimateWorkerMessageBytes, regularWorkerMessageMaxBytes, usageRecordWorkerMessageMaxBytes } from './background-ipc-message-size.js'
@@ -21,6 +22,7 @@ import {
   type IpcQueueKey
 } from './background-ipc-queue-runtime.js'
 import type {
+  BackgroundWorkerDbServiceRequestOptions,
   BackgroundWorkerIngestDrainStatus,
   BackgroundWorkerIpcQueuesRuntime,
   BackgroundWorkerMessage,
@@ -661,7 +663,12 @@ function handleWorkerMessage(message: unknown, role: BackgroundWorkerProcessRole
       break
     case 'background_worker_db_service_request':
       if (runtimeConfig.processRole === 'server' && typeof record.requestId === 'string' && record.operation) {
-        void respondToDbServiceRequest(record.requestId, record.operation, child)
+        void respondToDbServiceRequest(
+          record.requestId,
+          record.operation,
+          child,
+          isBackgroundWorkerDbServiceRequestOptions(record.options) ? record.options : undefined
+        )
       }
       break
     case 'background_worker_dataset_write_request':
@@ -1861,14 +1868,19 @@ async function dbServiceProcessEventLoopSample(): Promise<ProcessEventLoopSample
   }
 }
 
-async function respondToDbServiceRequest(requestId: string, operation: import('../db-service/db-service-types.js').DbServiceOperation, targetChild: ChildProcess | undefined): Promise<void> {
+async function respondToDbServiceRequest(
+  requestId: string,
+  operation: import('../db-service/db-service-types.js').DbServiceOperation,
+  targetChild: ChildProcess | undefined,
+  options: BackgroundWorkerDbServiceRequestOptions | undefined
+): Promise<void> {
   const child = targetChild
   if (!child || !child.connected) {
     return
   }
   try {
     const { requestDbService } = await import('../db-service/db-service-ipc.js')
-    const result = await requestDbService(operation)
+    const result = await requestDbService(operation, backgroundDbServiceRequestOptionsForOperation(operation, options))
     child.send({
       type: 'background_worker_db_service_response',
       requestId,
@@ -1992,11 +2004,13 @@ const pendingBackgroundDbServiceRequests = new Map<string, PendingDbServiceReque
 
 export async function requestBackgroundWorkerDbService<T extends import('../db-service/db-service-types.js').DbServiceOperation>(
   operation: T,
-  timeoutMs = 5000
+  inputOptions: number | BackgroundWorkerDbServiceRequestOptions = {}
 ): Promise<import('../db-service/db-service-types.js').DbServiceOperationResult<T> | undefined> {
+  const options = normalizeBackgroundWorkerDbServiceRequestOptions(inputOptions)
+  const timeoutMs = options.timeoutMs ?? 5000
   if (runtimeConfig.processRole === 'server' || runtimeConfig.processRole === 'db-service') {
     const { requestDbService } = await import('../db-service/db-service-ipc.js')
-    return await requestDbService(operation, { timeoutMs })
+    return await requestDbService(operation, backgroundDbServiceRequestOptionsForOperation(operation, options))
   }
   if (runtimeConfig.processRole !== 'worker' || typeof process.send !== 'function') {
     return undefined
@@ -2022,12 +2036,48 @@ export async function requestBackgroundWorkerDbService<T extends import('../db-s
     sendToParentOrServer({
       type: 'background_worker_db_service_request',
       requestId,
-      operation
+      operation,
+      options
     }, (error) => {
       finishBackgroundDbServiceRequest(requestId, undefined)
       markParentIpcBroken(error)
     })
   })
+}
+
+function normalizeBackgroundWorkerDbServiceRequestOptions(
+  input: number | BackgroundWorkerDbServiceRequestOptions
+): BackgroundWorkerDbServiceRequestOptions {
+  if (typeof input === 'number') {
+    return { timeoutMs: input }
+  }
+  return { ...input }
+}
+
+function backgroundDbServiceRequestOptionsForOperation(
+  operation: import('../db-service/db-service-types.js').DbServiceOperation,
+  options: BackgroundWorkerDbServiceRequestOptions | undefined
+): BackgroundWorkerDbServiceRequestOptions {
+  return {
+    ...options,
+    priority: options?.priority ?? backgroundDbServiceRequestPriorityForOperation(operation)
+  }
+}
+
+function backgroundDbServiceRequestPriorityForOperation(
+  operation: import('../db-service/db-service-types.js').DbServiceOperation
+): BackgroundWorkerDbServiceRequestOptions['priority'] {
+  const accessMode = dbServiceOperationAccessMode(operation)
+  return accessMode === 'write' || accessMode === 'maintenance' ? 'low' : undefined
+}
+
+function isBackgroundWorkerDbServiceRequestOptions(value: unknown): value is BackgroundWorkerDbServiceRequestOptions {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false
+  }
+  const record = value as Record<string, unknown>
+  return (record.timeoutMs === undefined || typeof record.timeoutMs === 'number')
+    && (record.priority === undefined || record.priority === 'high' || record.priority === 'normal' || record.priority === 'low')
 }
 
 function finishBackgroundDbServiceRequest(requestId: string, response: { ok: true; result: unknown } | { ok: false; errorMessage: string } | undefined): void {

@@ -58,6 +58,7 @@ app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRa
 let scenarioCredentialIndex = 0
 let scenarioCredentialOwnerAccess: { systemAccountId: string; role: 'user' } | undefined
 const regressionSupportedModels = ['gpt-4o-mini']
+const upstreamScenarioHits: Array<{ scenario: string; accountRole: 'primary' | 'backup' | 'single' | 'multi'; authorization: string }> = []
 
 function codexStreamHeaders(apiKey: string, turnId: string): Record<string, string> {
   return {
@@ -147,6 +148,7 @@ async function main(): Promise<void> {
     const jsonResponseForStreamCredential = createScenarioCredential(upstreamBaseUrl, 'stream 请求返回 JSON')
     const noFirstChunkServerRetryCredential = createTwoAccountScenarioCredential(upstreamBaseUrl, '首段等待服务端切号')
     const missingTerminalServerRetryCredential = createTwoAccountScenarioCredential(upstreamBaseUrl, '缺终止服务端切号')
+    const heartbeatOnlyServerRetryCredential = createTwoAccountScenarioCredential(upstreamBaseUrl, '心跳无有效输出服务端切号')
     const failedEventServerRetryCredential = createTwoAccountScenarioCredential(upstreamBaseUrl, '失败事件服务端切号')
     const preCommitFuzzServerRetryCredential = createTwoAccountScenarioCredential(upstreamBaseUrl, '预提交失败 fuzz 服务端切号')
     const fourAccountServerRetryCredential = createMultiAccountScenarioCredential(upstreamBaseUrl, '超过三账号隐藏重试', 4)
@@ -306,6 +308,22 @@ async function main(): Promise<void> {
     assert(!heartbeatThenCompletedResult.streamText.includes('response.failed'), `上游持续心跳时不应触发失败事件：${heartbeatThenCompletedResult.streamText}`)
     assert(heartbeatThenCompletedResult.durationMs < 5000, `持续心跳后完成没有及时结束，耗时 ${heartbeatThenCompletedResult.durationMs}ms`)
 
+    const heartbeatOnlyServerRetryResult = await requestHeartbeatOnlyServerRetry(baseUrl, heartbeatOnlyServerRetryCredential.apiKey.key)
+    assert.deepEqual(
+      upstreamScenarioHits
+        .filter((hit) => hit.scenario === 'server-retry-heartbeat-only-then-success')
+        .map((hit) => hit.accountRole),
+      ['primary', 'backup'],
+      '心跳-only 服务端切号应先命中主账号，再隐藏切到备用账号'
+    )
+    assert(heartbeatOnlyServerRetryResult.durationMs >= 9000 && heartbeatOnlyServerRetryResult.durationMs < 15000, `心跳-only 服务端切号应按 10s 左右有效输出超时后救回，耗时 ${heartbeatOnlyServerRetryResult.durationMs}ms`)
+    assert(heartbeatOnlyServerRetryResult.streamText.includes('resp_heartbeat_only_backup'), `心跳-only 后应切备用账号完成：${heartbeatOnlyServerRetryResult.streamText}`)
+    assert(heartbeatOnlyServerRetryResult.streamText.includes('response.completed'), `心跳-only 服务端切号后应完成：${heartbeatOnlyServerRetryResult.streamText}`)
+    assert(!heartbeatOnlyServerRetryResult.streamText.includes('response.failed'), `心跳-only 服务端切号成功时客户端不应看到中间失败：${heartbeatOnlyServerRetryResult.streamText}`)
+    usageRecordQueue.flushAllUsageRecordQueue()
+    assertFailedUsageRecordExists(heartbeatOnlyServerRetryCredential.primaryAccount.id)
+    assertSuccessfulUsageRecord(heartbeatOnlyServerRetryCredential.backupAccount.id, { inputTokens: 2, outputTokens: 1 })
+
     await requestAndCloseAfterTerminal(baseUrl, clientCloseAfterTerminalCredential.apiKey.key)
     await waitForSuccessfulUsageRecord(clientCloseAfterTerminalCredential.account.id)
     auditLogQueue.flushAllAuditLogQueue()
@@ -449,7 +467,7 @@ async function main(): Promise<void> {
     assert(jsonResponseForStreamResult.text.includes('json response ok'), `stream:true 的明确 JSON 响应应原样返回：${jsonResponseForStreamResult.text}`)
     assert(!jsonResponseForStreamResult.text.includes('response.failed'), `stream:true 的明确 JSON 响应不应被 SSE 解析器追加失败事件：${jsonResponseForStreamResult.text}`)
 
-    console.log('流式超时回归通过：Codex 首段等待、首段后无新数据、碎片化 SSE 有原始字节时不误熔断、解析跳过后原样转发、图像大事件继续完成且审计不落正文、Image API 大图终止事件和无收尾边界识别、缺少终止事件未输出不计数、输出前流失败服务端优先切号、心跳刷新空闲计时、容量错误/slow_down 专属兜底、未知 error 事件兜底、context_length_exceeded/cyber_policy 可重试改写、普通客户端不伪造专用可重试码、输出后真实网关流量不直接写账号流失败计数、output item 输出判定、顶层 code/message 非失败、stream:true 明确 JSON 响应和 EOF 尾包场景符合预期')
+    console.log('流式超时回归通过：Codex 首段等待、首段后无新数据、碎片化 SSE 有原始字节时不误熔断、解析跳过后原样转发、图像大事件继续完成且审计不落正文、Image API 大图终止事件和无收尾边界识别、缺少终止事件未输出不计数、输出前流失败服务端优先切号、心跳刷新空闲计时、心跳-only 无有效输出触发服务端切号、容量错误/slow_down 专属兜底、未知 error 事件兜底、context_length_exceeded/cyber_policy 可重试改写、普通客户端不伪造专用可重试码、输出后真实网关流量不直接写账号流失败计数、output item 输出判定、顶层 code/message 非失败、stream:true 明确 JSON 响应和 EOF 尾包场景符合预期')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -610,6 +628,17 @@ function createStreamTimeoutRegressionUpstream(): http.Server {
       } catch {
       }
       const upstreamAuthorization = String(req.headers.authorization ?? '')
+      upstreamScenarioHits.push({
+        scenario,
+        accountRole: upstreamAuthorization.includes('-primary')
+          ? 'primary'
+          : upstreamAuthorization.includes('-backup')
+            ? 'backup'
+            : upstreamAuthorization.includes('-multi-')
+              ? 'multi'
+              : 'single',
+        authorization: upstreamAuthorization
+      })
 
       if (scenario === 'json-response-for-stream-request') {
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
@@ -695,6 +724,25 @@ function createStreamTimeoutRegressionUpstream(): http.Server {
           return
         }
         sendFuzzBackupSuccess(res, scenario)
+        return
+      }
+      if (scenario === 'server-retry-heartbeat-only-then-success') {
+        if (upstreamAuthorization.includes('-primary')) {
+          const interval = setInterval(() => {
+            res.write(': keep-alive\n\n')
+          }, 100)
+          res.on('close', () => {
+            clearInterval(interval)
+          })
+          return
+        }
+        res.write('event: response.created\n')
+        res.write('data: {"type":"response.created","response":{"id":"resp_heartbeat_only_backup","status":"in_progress"}}\n\n')
+        res.write('event: response.output_text.delta\n')
+        res.write('data: {"type":"response.output_text.delta","delta":"ok"}\n\n')
+        res.write('event: response.completed\n')
+        res.write('data: {"type":"response.completed","response":{"id":"resp_heartbeat_only_backup","status":"completed","usage":{"input_tokens":2,"output_tokens":1}}}\n\n')
+        res.end()
         return
       }
       if (scenario === 'no-first-chunk') {
@@ -1154,6 +1202,36 @@ async function requestHeartbeatThenCompleted(baseUrl: string, apiKey: string): P
   })
   if (response.status !== 200) {
     throw new Error(`心跳刷新场景状态码异常：${response.status} ${await response.text()}`)
+  }
+  assert(response.headers.get('content-type')?.includes('text/event-stream'), '网关应保持 SSE content-type')
+  const streamText = await response.text()
+  return {
+    streamText,
+    durationMs: Date.now() - startedAt
+  }
+}
+
+async function requestHeartbeatOnlyServerRetry(baseUrl: string, apiKey: string): Promise<{ streamText: string; durationMs: number }> {
+  settingsRepository.updateSettings({
+    streamCircuitBreakerEnabled: true,
+    streamRequestTimeoutSeconds: 10,
+    streamIdleTimeoutSeconds: 1,
+    temporaryUnschedulableRetryAttempts: 0
+  })
+  gatewayCache.clearGatewayRuntimeCache()
+
+  const startedAt = Date.now()
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: codexStreamHeaders(apiKey, 'server-retry-heartbeat-only-then-success'),
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      input: 'server-retry-heartbeat-only-then-success',
+      stream: true
+    })
+  })
+  if (response.status !== 200) {
+    throw new Error(`心跳-only 服务端切号场景状态码异常：${response.status} ${await response.text()}`)
   }
   assert(response.headers.get('content-type')?.includes('text/event-stream'), '网关应保持 SSE content-type')
   const streamText = await response.text()

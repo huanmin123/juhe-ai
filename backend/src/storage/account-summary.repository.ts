@@ -8,13 +8,13 @@ import { canAccessAll, manageableSystemAccountId, userVisibleSystemAccountId, in
 import { accountCredentialsForList, findAccountRowForAccess, hydrateAccountRowsWithRuntimeState, listAccountRowsForAccess, listAccountRowsPageForAccess, loadAccountAuthorizationUsageSummaries } from './account-read.repository.js'
 import { accountStatusFilterValues, normalizeAccountListOptions, type AccountListOptions, type NormalizedAccountListOptions } from './account-list-options.js'
 import { parseAccountAvailabilityScheduleJson } from './account-availability-schedule.js'
-import { authorizationRuntimeBlockingStatus, disableExpiredAccounts } from './account-runtime-status.js'
+import { authorizationRuntimeBlockingStatus } from './account-runtime-status.js'
 import { accountNameSearchQueryTerms, normalizeAccountNameSearchText } from './account-name-search.repository.js'
 import { loadAccountTagsByAccountIds, loadAccountTagsByAccountIdsAsync } from './account-tags.repository.js'
 import { loadModelMappingsByAccountIdsAsync } from './account-model-mappings.repository.js'
 import { loadSupportedModelsByAccountIdsAsync } from './account-supported-models.repository.js'
 import { loadResourceAuthorizationSourcesByAuthorizationIds, loadResourceAuthorizationStatsByResourceIds } from './authorization-read-loaders.js'
-import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
+import { getBusinessDatabase, getStatsDatabase, isSqliteDatabaseLocked, nowIso, runWithSqliteBusyTimeout } from './database.js'
 import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient } from './database-client.js'
 import { loadOpenAICodexUsageSnapshotsByAccountIds } from './oauth-usage-loaders.js'
@@ -33,10 +33,12 @@ import {
   loadRequestQuotaCostsBatchAsync,
   requestQuotaCostKey,
   requestQuotaCostKeyAsync,
-  type RequestQuotaCostInput
+  type RequestQuotaCostInput,
+  type RequestQuotaCosts
 } from '../modules/gateway/quota/request-quota-checker.js'
 import { optionalString } from './value-utils.js'
 import { loadAccountApiKeyRuntimeDetailsByAccountIds, loadAccountApiKeyRuntimeSummariesByAccountIds } from './account-api-key-runtime-state.repository.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
 export interface AccountListResult {
   items: AccountSummary[]
@@ -51,18 +53,21 @@ interface AccountSummaryBuildOptions {
 }
 
 const businessSchemaName = 'juhe_business'
+const accountListStatsBusyTimeoutMs = 60
 
 export function listAccounts(access?: AccessScope, options?: AccountListOptions): AccountSummary[] {
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
-  disableExpiredAccounts(access)
   const listOptions = normalizeAccountListOptions(options)
   const rows = hydrateAccountRowsWithRuntimeState(listAccountRowsForAccess(access, listOptions), { includeCredentials: true })
   return accountSummariesFromRows(rows, access, viewerSystemAccountId)
 }
 
 export function listAccountsPage(access?: AccessScope, options?: AccountListOptions): AccountListResult {
+  return listAccountsPageReadOnly(access, options)
+}
+
+export function listAccountsPageReadOnly(access?: AccessScope, options?: AccountListOptions): AccountListResult {
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
-  disableExpiredAccounts(access)
   const listOptions = normalizeAccountListOptions(options)
   const databasePage = listAccountRowsPageForAccess(access, listOptions, { includeCredentials: false })
   const page = {
@@ -81,7 +86,14 @@ export function listAccountsPage(access?: AccessScope, options?: AccountListOpti
 
 export async function listAccountsPageAsync(access?: AccessScope, options?: AccountListOptions): Promise<AccountListResult> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return listAccountsPage(access, options)
+    if (sqliteReadWorkerPoolEnabled()) {
+      return await requestSqliteReadWorker({
+        type: 'list_accounts_page_read_only',
+        access,
+        options
+      })
+    }
+    return listAccountsPageReadOnly(access, options)
   }
   const listOptions = normalizeAccountListOptions(options)
   const client = createPostgresDatabaseClient(await getPostgresPool())
@@ -198,7 +210,6 @@ function accountSummaryCoolingForSchedulableFilter(summary: AccountSummary, effe
 
 export function findAccountSummary(accountId: string, access?: AccessScope): AccountSummary | undefined {
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
-  disableExpiredAccounts(access)
   const listOptions = normalizeAccountListOptions({ page: 1, pageSize: 1 })
   const row = findAccountRowForAccess(access, accountId, listOptions)
   if (!row) return undefined
@@ -1199,17 +1210,17 @@ function accountSummariesFromRows(
   const currentConcurrencyByAccount = loadAccountCurrentConcurrencyByIds(accountIds)
   const tagsByAccount = loadAccountTagsByAccountIds(accountIds)
   const accountUsageScopes = rows.map((row) => usageScope(row.id, row.system_account_id, row.id))
-  const usageByAccount = loadAccountUsageSummariesForScopes(accountUsageScopes)
-  const todayUsageByAccount = loadAccountUsageSummariesForScopes(accountUsageScopes, todayDateKey(timezone))
+  const usageByAccount = loadAccountListStatsMap('account_usage_total', () => loadAccountUsageSummariesForScopes(accountUsageScopes))
+  const todayUsageByAccount = loadAccountListStatsMap('account_usage_today', () => loadAccountUsageSummariesForScopes(accountUsageScopes, todayDateKey(timezone)))
   const authorizationStatsByAccount = loadResourceAuthorizationStatsByResourceIds('account', accountIds)
   const authorizationScopes = rows
     .filter((row) => row.authorization_id)
     .map((row) => usageScope(row.authorization_id ?? '', row.system_account_id, row.authorization_id ?? ''))
-  const usageByAuthorization = loadAccountAuthorizationUsageSummaries(authorizationScopes)
-  const todayUsageByAuthorization = loadAccountAuthorizationUsageSummaries(authorizationScopes, todayDateKey(timezone))
+  const usageByAuthorization = loadAccountListStatsMap('account_authorization_usage_total', () => loadAccountAuthorizationUsageSummaries(authorizationScopes))
+  const todayUsageByAuthorization = loadAccountListStatsMap('account_authorization_usage_today', () => loadAccountAuthorizationUsageSummaries(authorizationScopes, todayDateKey(timezone)))
   const quotaExceededByAuthorization = loadAuthorizationQuotaExceededByAuthorizationId(rows)
   const sourcesByAuthorization = loadResourceAuthorizationSourcesByAuthorizationIds(rows.map((row) => row.authorization_id ?? ''))
-  const oauthUsageByAccount = loadOpenAICodexUsageSnapshotsByAccountIds(rows.map((row) => accountResourceFactAccountId(row)))
+  const oauthUsageByAccount = loadAccountListStatsMap('account_oauth_usage_snapshot', () => loadOpenAICodexUsageSnapshotsByAccountIds(rows.map((row) => accountResourceFactAccountId(row))))
   const apiKeyRuntimeByAccount = loadAccountApiKeyRuntimeSummariesByAccountIds(accountIds)
   const ownerAccountIds = includeCredentials
     ? rows.filter((row) => (row.access_type ?? 'owner') !== 'authorized').map((row) => row.id)
@@ -1349,6 +1360,45 @@ function accountSummariesFromRows(
       authorizationTeamCount: isAuthorizedView ? 0 : authorizationStats.authorizationTeamCount
     })
   })
+}
+
+function loadAccountListStatsMap<T>(
+  lookupName: string,
+  loader: () => Map<string, T>
+): Map<string, T> {
+  try {
+    return runWithSqliteBusyTimeout(getStatsDatabase(), accountListStatsBusyTimeoutMs, loader)
+  } catch (error) {
+    if (!isSqliteDatabaseLocked(error)) {
+      throw error
+    }
+    throw accountListStatsBusyError(lookupName, error)
+  }
+}
+
+function loadAccountListQuotaCosts(
+  checks: RequestQuotaCostInput[]
+): Map<string, RequestQuotaCosts> {
+  try {
+    const statsDatabase = getStatsDatabase()
+    return runWithSqliteBusyTimeout(
+      statsDatabase,
+      accountListStatsBusyTimeoutMs,
+      () => loadRequestQuotaCostsBatch(statsDatabase, checks)
+    )
+  } catch (error) {
+    if (!isSqliteDatabaseLocked(error)) {
+      throw error
+    }
+    throw accountListStatsBusyError('authorization_quota_costs', error)
+  }
+}
+
+function accountListStatsBusyError(lookupName: string, cause: unknown): Error {
+  const error = new Error(`AI 账户列表统计装饰读取遇到 SQLite 忙锁：${lookupName}，已等待 ${accountListStatsBusyTimeoutMs}ms，未返回伪造空统计`)
+  ;(error as Error & { code?: string; cause?: unknown }).code = 'SQLITE_BUSY'
+  ;(error as Error & { code?: string; cause?: unknown }).cause = cause
+  return error
 }
 
 export function accountGroupBinding(accountId: string, systemAccountId: string): { groupId: string; groupName: string; groupBindStatus: AccountGroupBindStatus } | undefined {
@@ -1507,7 +1557,7 @@ export function loadAuthorizationQuotaExceededByAuthorizationId(rows: AccountLis
     })
   }
   if (!checks.length) return output
-  const costsByKey = loadRequestQuotaCostsBatch(getStatsDatabase(), checks.map((check) => check.input))
+  const costsByKey = loadAccountListQuotaCosts(checks.map((check) => check.input))
   for (const check of checks) {
     const costs = costsByKey.get(requestQuotaCostKey(check.input))
     if (costs && isRequestQuotaExceeded(check.limits, costs)) {

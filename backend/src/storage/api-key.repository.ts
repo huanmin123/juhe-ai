@@ -29,6 +29,7 @@ import {
   ensureDefaultRouteStrategiesForSystemAccount,
   ensureDefaultRouteStrategiesForSystemAccountAsync
 } from './route-strategy.repository.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import { optionalServerDateTimeIso } from './value-utils.js'
 
 const businessSchemaName = 'juhe_business'
@@ -64,12 +65,30 @@ type ApiKeyDeleteRow = {
   is_default?: number | string | boolean | null
 }
 
+interface QueryApiKeysOptions {
+  ensureDefaults?: boolean
+}
+
 export function listApiKeys(access?: AccessScope, options?: ApiKeyListOptions): ApiKeySummary[] {
   return queryApiKeys(access, options).items
 }
 
 export async function listApiKeysAsync(access?: AccessScope, options?: ApiKeyListOptions): Promise<ApiKeySummary[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    if (sqliteReadWorkerPoolEnabled()) {
+      return requestSqliteReadWorker({
+        type: 'list_api_keys_read_only',
+        access,
+        options
+      })
+    }
+    return listApiKeysReadOnly(access, options)
+  }
   return (await queryApiKeysAsync(access, options)).items
+}
+
+export function listApiKeysReadOnly(access?: AccessScope, options?: ApiKeyListOptions): ApiKeySummary[] {
+  return queryApiKeys(access, options, false, { ensureDefaults: false }).items
 }
 
 export function listApiKeysPage(access?: AccessScope, options?: ApiKeyListOptions): ApiKeyListResult {
@@ -77,10 +96,28 @@ export function listApiKeysPage(access?: AccessScope, options?: ApiKeyListOption
 }
 
 export async function listApiKeysPageAsync(access?: AccessScope, options?: ApiKeyListOptions): Promise<ApiKeyListResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    if (sqliteReadWorkerPoolEnabled()) {
+      return requestSqliteReadWorker({
+        type: 'list_api_keys_page_read_only',
+        access,
+        options
+      })
+    }
+    return listApiKeysPageReadOnly(access, options)
+  }
   return queryApiKeysAsync(access, options, true)
 }
 
+export function listApiKeysPageReadOnly(access?: AccessScope, options?: ApiKeyListOptions): ApiKeyListResult {
+  return queryApiKeys(access, options, true, { ensureDefaults: false })
+}
+
 export function findApiKeySummary(id: string, access?: AccessScope): ApiKeySummary | undefined {
+  return findApiKeySummaryReadOnly(id, access)
+}
+
+export function findApiKeySummaryReadOnly(id: string, access?: AccessScope): ApiKeySummary | undefined {
   const scope = buildSystemAccountScopeClause(access, 'api_keys.system_account_id')
   const row = getBusinessDatabase()
     .prepare(`SELECT ${apiKeyListColumns()} FROM api_keys ${apiKeyListJoins()} WHERE api_keys.id = ?${scope.clause}`)
@@ -89,6 +126,16 @@ export function findApiKeySummary(id: string, access?: AccessScope): ApiKeySumma
 }
 
 export async function findApiKeySummaryAsync(id: string, access?: AccessScope): Promise<ApiKeySummary | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    if (sqliteReadWorkerPoolEnabled()) {
+      return requestSqliteReadWorker({
+        type: 'find_api_key_summary_read_only',
+        id,
+        access
+      })
+    }
+    return findApiKeySummaryReadOnly(id, access)
+  }
   const client = await getApiKeyDatabaseClient()
   const scope = buildSystemAccountScopeClause(access, 'api_keys.system_account_id')
   const row = await client.one<ApiKeyRow>(`
@@ -101,6 +148,10 @@ export async function findApiKeySummaryAsync(id: string, access?: AccessScope): 
 }
 
 export function findApiKeySecret(id: string, access?: AccessScope): ApiKeySummary | undefined {
+  return findApiKeySecretReadOnly(id, access)
+}
+
+export function findApiKeySecretReadOnly(id: string, access?: AccessScope): ApiKeySummary | undefined {
   const scope = buildSystemAccountScopeClause(access, 'api_keys.system_account_id')
   const row = getBusinessDatabase()
     .prepare(`SELECT ${apiKeyListColumns({ includeSecret: true })} FROM api_keys ${apiKeyListJoins()} WHERE api_keys.id = ?${scope.clause}`)
@@ -109,6 +160,16 @@ export function findApiKeySecret(id: string, access?: AccessScope): ApiKeySummar
 }
 
 export async function findApiKeySecretAsync(id: string, access?: AccessScope): Promise<ApiKeySummary | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    if (sqliteReadWorkerPoolEnabled()) {
+      return requestSqliteReadWorker({
+        type: 'find_api_key_secret_read_only',
+        id,
+        access
+      })
+    }
+    return findApiKeySecretReadOnly(id, access)
+  }
   const client = await getApiKeyDatabaseClient()
   const scope = buildSystemAccountScopeClause(access, 'api_keys.system_account_id')
   const row = await client.one<ApiKeyRow>(`
@@ -120,8 +181,10 @@ export async function findApiKeySecretAsync(id: string, access?: AccessScope): P
   return row ? (await apiKeySummariesFromRowsAsync([row], access, { includeSecret: true }))[0] : undefined
 }
 
-function queryApiKeys(access?: AccessScope, options?: ApiKeyListOptions, paged = false): ApiKeyListResult {
-  ensureDefaultApiKeysForAccess(access)
+function queryApiKeys(access?: AccessScope, options?: ApiKeyListOptions, paged = false, queryOptions: QueryApiKeysOptions = {}): ApiKeyListResult {
+  if (queryOptions.ensureDefaults !== false) {
+    ensureDefaultApiKeysForAccess(access)
+  }
   const normalized = normalizeApiKeyListOptions(options)
   const scope = buildSystemAccountWhereClause(access, 'api_keys.system_account_id')
   const filters = buildApiKeyFilters(scope, normalized)
@@ -1085,6 +1148,7 @@ function isDuplicateApiKeyNameError(error: unknown): boolean {
   if (!(error instanceof Error)) return false
   return error.message.includes('idx_api_keys_owner_name_unique')
     || error.message.includes('idx_api_keys_owner_name_unique_lower')
+    || error.message.includes('UNIQUE constraint failed: api_keys.system_account_id, api_keys.name')
 }
 
 function isDuplicateDefaultApiKeyError(error: unknown): boolean {

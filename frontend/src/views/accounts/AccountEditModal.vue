@@ -46,7 +46,7 @@
         />
 
         <AccountApiKeySection
-          v-if="isApiKeyForm && !authorizedEditing"
+          v-if="isApiKeyForm && !authorizedEditing && !editing"
           :api-key-runtime-details="accountDetail?.apiKeyRuntimeDetails"
           :api-key-test-details="apiKeyTestDetails"
           :base-url-placeholder="baseUrlPlaceholder"
@@ -62,7 +62,7 @@
         />
 
         <AccountOAuthSection
-          v-else-if="isOAuthForm && !authorizedEditing"
+          v-else-if="isOAuthForm && !authorizedEditing && !editing"
           :auth-loading="authLoading"
           :auth-result="authResult"
           :editing="editing"
@@ -124,7 +124,44 @@
                 <small v-if="advancedConfiguredCount > 0">已配置 {{ advancedConfiguredCount }} 项</small>
               </div>
             </template>
-            <div v-if="shouldRenderAdvancedSections" class="advanced-section-stack">
+            <div v-if="advancedLoading" class="advanced-loading">
+              <a-spin tip="正在加载高级配置" />
+            </div>
+            <div v-else-if="advancedPending" class="advanced-loading">
+              <a-button type="primary" @click="emit('advanced-open')">加载高级配置</a-button>
+            </div>
+            <div v-else-if="shouldRenderAdvancedSections" class="advanced-section-stack">
+              <AccountApiKeySection
+                v-if="isApiKeyForm && !authorizedEditing && editing"
+                :api-key-runtime-details="accountDetail?.apiKeyRuntimeDetails"
+                :api-key-test-details="apiKeyTestDetails"
+                :base-url-placeholder="baseUrlPlaceholder"
+                :deleting-tag-id="deletingTagId"
+                :editing="editing"
+                :form="form"
+                :model-options="modelOptions"
+                :models-loading="modelsLoading"
+                :tag-options="tagOptions"
+                :tag-options-loading="tagOptionsLoading"
+                :title="credentialTitle"
+                @delete-tag="$emit('delete-tag', $event)"
+              />
+
+              <AccountOAuthSection
+                v-else-if="isOAuthForm && !authorizedEditing && editing"
+                :auth-loading="authLoading"
+                :auth-result="authResult"
+                :editing="editing"
+                :form="form"
+                :is-open-a-i="isOpenAIOAuthForm"
+                :model-options="modelOptions"
+                :models-loading="modelsLoading"
+                :title="credentialTitle"
+                @copy-auth-url="$emit('copy-auth-url', $event)"
+                @generate-auth-url="$emit('generate-auth-url')"
+                @open-auth-url="$emit('open-auth-url')"
+              />
+
               <AccountStrategySection
                 :form="form"
                 :is-management-view="isManagementView"
@@ -215,6 +252,8 @@ const advancedActiveKeys = ref<string[]>([])
 const props = withDefaults(defineProps<{
   accountTypeChoices: AccountTypeChoice[]
   accountDetail?: AccountSummary
+  advancedLoaded?: boolean
+  advancedLoading?: boolean
   apiKeyTestDetails?: AccountApiKeyRuntimeDetail[]
   authorizedEditing: boolean
   authLoading: boolean
@@ -249,6 +288,8 @@ const props = withDefaults(defineProps<{
   testLoading?: boolean
   title: string
 }>(), {
+  advancedLoaded: false,
+  advancedLoading: false,
   loading: false,
   testButtonDisabled: false,
   testLoading: false
@@ -304,7 +345,8 @@ const confirmButtonProps = computed(() => ({
   ...props.okButtonProps,
   disabled: Boolean(props.okButtonProps.disabled) || props.loading || props.testLoading
 }))
-const shouldRenderAdvancedSections = computed(() => props.authorizedEditing || advancedActiveKeys.value.includes('advanced'))
+const advancedPending = computed(() => props.editing && !props.authorizedEditing && !props.advancedLoaded)
+const shouldRenderAdvancedSections = computed(() => (props.authorizedEditing || !advancedPending.value) && advancedActiveKeys.value.includes('advanced'))
 const advancedConfiguredCount = computed(() => {
   const form = props.form
   const checks = [
@@ -324,6 +366,9 @@ const advancedConfiguredCount = computed(() => {
 watch(open, (next) => {
   if (next) advancedActiveKeys.value = props.authorizedEditing ? ['advanced'] : []
 })
+watch(advancedActiveKeys, (keys) => {
+  if (keys.includes('advanced')) emit('advanced-open')
+})
 
 function credentialItem(key: string, label: string, value: unknown): { key: string; label: string; value: string } | undefined {
   if (typeof value !== 'string') return undefined
@@ -336,7 +381,8 @@ function formatCredentialDate(value: unknown): string | undefined {
   return formatDateTime(value)
 }
 
-defineEmits<{
+const emit = defineEmits<{
+  (event: 'advanced-open'): void
   (event: 'cancel'): void
   (event: 'copy-auth-url', value: string): void
   (event: 'delete-tag', tagId: string): void
@@ -392,6 +438,12 @@ defineEmits<{
 .account-form-loading {
   display: grid;
   min-height: 260px;
+  place-items: center;
+}
+
+.advanced-loading {
+  display: grid;
+  min-height: 180px;
   place-items: center;
 }
 

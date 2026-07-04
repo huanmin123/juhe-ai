@@ -151,6 +151,8 @@
       :credential-title="selectedAccountTypeTitle"
       :editing="Boolean(editingId)"
       :account-detail="editingAccountDetail"
+      :advanced-loaded="accountAdvancedDetailLoaded"
+      :advanced-loading="accountAdvancedDetailLoading"
       :form="form"
       :group-options="groupOptions"
       :group-options-loading="groupOptionsLoading"
@@ -182,6 +184,7 @@
       @generate-auth-url="generateOAuthUrl"
       @group-options-dropdown="handleGroupOptionsDropdown"
       @group-options-search="handleGroupOptionsSearch"
+      @advanced-open="loadAdvancedAccountDetail"
       @ok="saveAccount"
       @open-auth-url="openAuthUrl"
       @select-provider="selectProvider"
@@ -445,6 +448,8 @@ const {
 const {
   accountErrorPolicyRules,
   accountResponseInspectionRules,
+  accountAdvancedDetailLoaded,
+  accountAdvancedDetailLoading,
   accountEditDetailLoading,
   apiKeyTestDetails,
   accountTagOptions,
@@ -479,6 +484,7 @@ const {
   openClone,
   openCreate,
   openEdit,
+  loadAdvancedAccountDetail,
   providerName,
   providerModelOptions,
   strategyModelsLoading,
@@ -577,7 +583,7 @@ const {
   draftApiKeyTestSnapshot,
   successfulDraftActivationTest
 })
-const accountEditTestButtonDisabled = computed(() => accountEditDetailLoading.value || modalConfirmLoading.value || testRunning.value || !hasAccountType.value)
+const accountEditTestButtonDisabled = computed(() => accountEditDetailLoading.value || accountAdvancedDetailLoading.value || (Boolean(editingId.value) && !editingAuthorizedAccount.value && !accountAdvancedDetailLoaded.value) || modalConfirmLoading.value || testRunning.value || !hasAccountType.value)
 const {
   testAccountFromEditModal
 } = useAccountEditTestAction({

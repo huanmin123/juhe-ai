@@ -31,11 +31,11 @@ export function accountUsageStatsTableColumns(isManagementView: boolean): Array<
 
 export function accountUsageStatsParams(input: {
   systemAccountId: string | undefined
-  dateRange: readonly [string, string]
+  dateRange?: readonly [string, string]
   accountIds: string[]
   pageState: AccountUsagePageState
 }) {
-  const [startDate, endDate] = input.dateRange
+  const [startDate, endDate] = input.dateRange ?? []
   return {
     systemAccountId: input.systemAccountId,
     accountIds: input.accountIds,

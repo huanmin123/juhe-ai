@@ -1045,6 +1045,8 @@ async function runDistributedGatewayAccountPrecheck(
     account,
     reason,
     precheckStartedAt: new Date(finalState.startedAtMs).toISOString()
+  }, {
+    priority: 'low'
   })
   await clearDistributedRecoveryProbeStateGeneration(finalState.runtimeKey, generation)
   if (markResult.updated) {
@@ -1823,7 +1825,7 @@ async function drainSideEffectQueue(): Promise<void> {
 }
 
 async function executeAccountSideEffect(operation: AccountSideEffectOperation): Promise<void> {
-  const result = await requestGatewayDbService(operation)
+  const result = await requestGatewayDbService(operation, { priority: 'low' })
   const runtimeKey = gatewayAccountRuntimeKey(operation.account)
   if (result.changed) {
     await clearGatewayAccountRuntimeAvailabilityForRuntimeKey(runtimeKey)
@@ -2065,6 +2067,8 @@ async function runGatewayAccountPrecheck(runtimeKey: string): Promise<void> {
       account: finalState.account,
       reason,
       precheckStartedAt: new Date(finalState.startedAtMs).toISOString()
+    }, {
+      priority: 'low'
     })
     if (markResult.updated) {
       clearGatewayAccountRuntimeAvailabilityLocal(runtimeKey)

@@ -491,6 +491,34 @@ assert.equal(validateAccountResponseInspectionRules([
 }
 
 {
+  const frames = extractAnthropicJsonSemanticFrames({
+    type: 'error',
+    error: {
+      type: 'overloaded_error',
+      message: 'overloaded error type should drive provider routing'
+    }
+  }, 'messages')
+  const result = inspectResponseSemanticFrames({
+    frames,
+    policies: [
+      responsePolicy({
+        protocolCode: ANTHROPIC_PROTOCOL_CODE,
+        providerCode: ANTHROPIC_PROVIDER_CODE,
+        match: {
+          errorTypes: ['overloaded_error']
+        }
+      })
+    ],
+    downstreamWritten: false,
+    transport: 'json',
+    context: {
+      clientProfile: 'generic_anthropic'
+    }
+  })
+  assert.equal(result.decision?.matchedField, 'errorTypes', '未绑定客户端画像的响应检查策略应允许按协议 errorType 命中')
+}
+
+{
   const frames = extractOpenAIJsonSemanticFrames({
     choices: [
       {

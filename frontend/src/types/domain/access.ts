@@ -72,6 +72,8 @@ export interface RouteStrategyGroupBindingSummary {
   groupEnabled: boolean
 }
 
+export type RouteStrategyGroupBindingPreview = Pick<RouteStrategyGroupBindingSummary, 'id' | 'groupId' | 'groupName' | 'providerCode' | 'status' | 'groupEnabled'>
+
 export type RouteStrategyMode = 'normal' | 'round_robin' | 'weighted' | 'failover' | 'hybrid_smart'
 export type RouteStrategyStatus = 'active' | 'disabled'
 
@@ -91,6 +93,22 @@ export interface RouteStrategySummary {
   updatedAt: string
 }
 
+export interface RouteStrategyListItem {
+  id: string
+  systemAccountId?: string
+  systemAccountName?: string
+  name: string
+  description?: string
+  mode: RouteStrategyMode
+  status: RouteStrategyStatus
+  isDefault: boolean
+  groupBindingPreview: RouteStrategyGroupBindingPreview[]
+  bindingCount: number
+  apiKeyCount?: number
+  createdAt: string
+  updatedAt: string
+}
+
 export interface RouteStrategyOptionSummary {
   id: string
   systemAccountId?: string
@@ -102,7 +120,7 @@ export interface RouteStrategyOptionSummary {
 }
 
 export interface RouteStrategyListResult {
-  items: RouteStrategySummary[]
+  items: RouteStrategyListItem[]
   total: number
   hasMore?: boolean
   page: number
@@ -147,7 +165,7 @@ export interface ApiKeySummary {
   description?: string
   keyPrefix: string
   keySuffix: string
-  key: string
+  key?: string
   status: 'active' | 'disabled'
   isDefault?: boolean
   routeStrategyId: string
@@ -168,7 +186,9 @@ export interface ApiKeyListResult {
   pageSize: number
 }
 
-export interface CreatedApiKey extends ApiKeySummary {}
+export interface CreatedApiKey extends ApiKeySummary {
+  key: string
+}
 
 export interface ApiKeySecretResult {
   key: string

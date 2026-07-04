@@ -52,9 +52,9 @@ runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 
 const dbServiceSource = readFileSync(new URL('../../db-service.ts', import.meta.url), 'utf8')
-assert.match(dbServiceSource, /postgresConcurrentDbServiceOperationTypes/, 'PG 高性能模式应定义 DB service 并发读操作白名单')
-assert.match(dbServiceSource, /'read_gateway_runtime'/, '网关 runtime 冷加载在 PG 模式下应允许并发执行，避免热路径排队超时')
-assert.match(dbServiceSource, /runtimeConfig\.databaseDriver === 'postgres'[\s\S]*postgresConcurrentDbServiceOperationTypes\.has/, 'DB service 并发白名单只能在 PostgreSQL driver 下启用')
+assert.ok(!dbServiceSource.includes('postgresConcurrentDbServiceOperationTypes'), 'PG 高性能模式不应继续维护 DB service 并发读操作白名单')
+assert.match(dbServiceSource, /function shouldQueueDbServiceRequest[\s\S]+runtimeConfig\.databaseDriver === 'postgres'[\s\S]+return false/, 'PG 模式不应进入 SQLite 式全局请求队列')
+assert.match(dbServiceSource, /dbServiceOperationAccessMode/, 'DB service 并发与入队调度必须基于 operation access mode')
 
 const handlers = await import('../../modules/db-service/db-service-handlers.js')
 

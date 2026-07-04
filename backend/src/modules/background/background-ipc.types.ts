@@ -2,7 +2,7 @@ import type { ProcessEventLoopSample } from '../../shared/process-event-loop-mon
 import type { AuditLogInput, OperationLogInput, UsageRecordInput } from '../../storage/repositories.js'
 import type { ActiveClientIpPolicy } from '../../storage/client-ip-stats.repository.js'
 import type { PublicApiLogInput } from '../../storage/public-api-logs.repository.js'
-import type { AccountRuntimeAvailabilityClearTarget, DbServiceOperation } from '../db-service/db-service-types.js'
+import type { AccountRuntimeAvailabilityClearTarget, DbServiceOperation, DbServiceRequestPriority } from '../db-service/db-service-types.js'
 import type {
   BackgroundDatasetWriteOperation,
   BackgroundDatasetWriteOperationResult
@@ -128,6 +128,11 @@ export interface BackgroundWorkerIngestDrainStatus {
   pendingQueues: BackgroundWorkerIpcQueuesRuntime
 }
 
+export interface BackgroundWorkerDbServiceRequestOptions {
+  timeoutMs?: number
+  priority?: DbServiceRequestPriority
+}
+
 export type BackgroundWorkerMessage =
   | { type: 'background_worker_ready'; pid: number; workerRole?: BackgroundWorkerProcessRole }
   | { type: 'background_worker_usage_records'; items: UsageRecordInput[] }
@@ -142,7 +147,7 @@ export type BackgroundWorkerMessage =
   | { type: 'background_worker_status_response'; requestId: string; snapshot: BackgroundWorkerRuntimeSnapshot }
   | { type: 'background_worker_ingest_status_request'; requestId: string }
   | { type: 'background_worker_ingest_status_response'; requestId: string; status?: BackgroundWorkerIngestDrainStatus }
-  | { type: 'background_worker_db_service_request'; requestId: string; operation: DbServiceOperation }
+  | { type: 'background_worker_db_service_request'; requestId: string; operation: DbServiceOperation; options?: BackgroundWorkerDbServiceRequestOptions }
   | { type: 'background_worker_db_service_response'; requestId: string; ok: true; result: unknown }
   | { type: 'background_worker_db_service_response'; requestId: string; ok: false; errorMessage: string }
   | { type: 'background_worker_dataset_write_request'; requestId: string; operation: BackgroundDatasetWriteOperation }

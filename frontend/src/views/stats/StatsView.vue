@@ -229,7 +229,7 @@ async function loadData() {
     const rangeParams = selectedRangeParams()
     const [overview] = await Promise.all([
       isManagementView.value ? api.stats.usageOverview({ ...rangeParams, systemAccountId }) : api.myStats.usageOverview(rangeParams),
-      loadUsageStatsWindow()
+      loadUsageStatsWindow({ force: true })
     ])
     if (requestSeq !== statsRequestSeq) return
     usageOverview.value = overview
@@ -342,11 +342,13 @@ function snapshotPageState(): StatsPageState {
 }
 
 function selectedRangeParams(): { startDate?: string; endDate?: string } {
+  if (!dateRangeExplicit.value) return {}
   const [startDate, endDate] = selectedRange.value
   return { startDate, endDate }
 }
 
-function handleQuickRangeChange(value: string | number) {
+async function handleQuickRangeChange(value: string | number) {
+  await loadUsageStatsWindow({ force: true })
   const range = quickRangeDateRange(value as QuickRange)
   if (!range) return
   dateRange.value = parseDateRange({

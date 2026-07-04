@@ -14,6 +14,7 @@ import { runtimeConfig } from '../config/runtime.js'
 import { DEFAULT_BUILT_IN_GROUPS } from './schema-defaults.js'
 import { normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { invalidateSystemAccountLookupCache } from './repository-lookups.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import { systemAccountPrincipalSummaryFromRow, systemAccountSummaryFromRow, type SystemAccountRow } from './system-account-mappers.js'
 import { optionalString } from './value-utils.js'
 
@@ -71,6 +72,10 @@ export async function listSystemAccountsAsync(): Promise<SystemAccountSummary[]>
 }
 
 export function listSystemAccountsPage(options: SystemAccountListOptions = {}): SystemAccountListResult {
+  return listSystemAccountsPageReadOnly(options)
+}
+
+export function listSystemAccountsPageReadOnly(options: SystemAccountListOptions = {}): SystemAccountListResult {
   const normalized = normalizeSystemAccountListOptions(options)
   const keywordFilter = buildSystemAccountListKeywordFilter(normalized.keyword)
   const rows = getBusinessDatabase()
@@ -94,6 +99,15 @@ export function listSystemAccountsPage(options: SystemAccountListOptions = {}): 
 }
 
 export async function listSystemAccountsPageAsync(options: SystemAccountListOptions = {}): Promise<SystemAccountListResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    if (sqliteReadWorkerPoolEnabled()) {
+      return requestSqliteReadWorker({
+        type: 'list_system_accounts_page_read_only',
+        options
+      })
+    }
+    return listSystemAccountsPageReadOnly(options)
+  }
   const normalized = normalizeSystemAccountListOptions(options)
   const client = await getSystemAccountDatabaseClient()
   const keywordFilter = buildSystemAccountListKeywordFilterForClient(client, normalized.keyword)
@@ -116,6 +130,10 @@ export async function listSystemAccountsPageAsync(options: SystemAccountListOpti
 }
 
 export function listSystemAccountOptions(options: SystemAccountOptionListOptions = {}): SystemAccountPrincipalSummary[] {
+  return listSystemAccountOptionsReadOnly(options)
+}
+
+export function listSystemAccountOptionsReadOnly(options: SystemAccountOptionListOptions = {}): SystemAccountPrincipalSummary[] {
   const optionFilter = buildSystemAccountOptionFilter(options)
   const limitClause = systemAccountOptionLimitClause(options.limit)
   const rows = getBusinessDatabase()
@@ -131,6 +149,15 @@ export function listSystemAccountOptions(options: SystemAccountOptionListOptions
 }
 
 export async function listSystemAccountOptionsAsync(options: SystemAccountOptionListOptions = {}): Promise<SystemAccountPrincipalSummary[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    if (sqliteReadWorkerPoolEnabled()) {
+      return requestSqliteReadWorker({
+        type: 'list_system_account_options_read_only',
+        options
+      })
+    }
+    return listSystemAccountOptionsReadOnly(options)
+  }
   const client = await getSystemAccountDatabaseClient()
   const optionFilter = buildSystemAccountOptionFilterForClient(client, options)
   const limitClause = systemAccountOptionLimitClause(options.limit)

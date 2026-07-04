@@ -7,6 +7,7 @@ import { clearUsageStatsTimezoneCache, normalizeUsageStatsTimezone, usageStatsTi
 import { getPostgresPool } from './postgres-client.js'
 import { sqlPlaceholders } from './query-utils.js'
 import { runtimeConfig } from '../config/runtime.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
 interface GlobalSettingRow {
   key: string
@@ -186,6 +187,10 @@ export function listGlobalSettings(): Record<string, unknown> {
   return { ...settings }
 }
 
+export function listGlobalSettingsReadOnly(): Record<string, unknown> {
+  return listGlobalSettings()
+}
+
 export async function listGlobalSettingsAsync(): Promise<Record<string, unknown>> {
   if (runtimeConfig.cacheDriver !== 'redis') {
     const cached = globalSettingsCache.get('current')
@@ -198,7 +203,9 @@ export async function listGlobalSettingsAsync(): Promise<Record<string, unknown>
     globalSettingsCache.set('current', sharedCached)
     return { ...sharedCached }
   }
-  const settings = await loadGlobalSettingsFromDatabaseAsync()
+  const settings = sqliteReadWorkerPoolEnabled()
+    ? await requestSqliteReadWorker({ type: 'list_global_settings_read_only' })
+    : await loadGlobalSettingsFromDatabaseAsync()
   await setGlobalSettingsCacheAsync(settings)
   return { ...settings }
 }
@@ -281,6 +288,10 @@ export function getSettings(): Record<string, unknown> {
   return { ...settings }
 }
 
+export function getSettingsReadOnly(): Record<string, unknown> {
+  return getSettings()
+}
+
 export async function getSettingsAsync(): Promise<Record<string, unknown>> {
   if (runtimeConfig.cacheDriver !== 'redis') {
     const cached = systemSettingsCache.get('current')
@@ -293,7 +304,9 @@ export async function getSettingsAsync(): Promise<Record<string, unknown>> {
     systemSettingsCache.set('current', sharedCached)
     return { ...sharedCached }
   }
-  const settings = await loadSystemSettingsFromDatabaseAsync()
+  const settings = sqliteReadWorkerPoolEnabled()
+    ? await requestSqliteReadWorker({ type: 'get_settings_read_only' })
+    : await loadSystemSettingsFromDatabaseAsync()
   await setSystemSettingsCacheAsync(settings)
   return { ...settings }
 }

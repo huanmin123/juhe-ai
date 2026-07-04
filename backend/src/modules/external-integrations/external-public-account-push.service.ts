@@ -531,13 +531,14 @@ export async function addPublicGroup(input: PublicGroupAddInput): Promise<Public
       if (existing) {
         return publicGroupResponse('existing', target, sanitizeGroup(existing))
       }
-      const group = createGroup({
+      const groupInput: Record<string, unknown> = {
         name: input.name,
         providerCode,
         description: input.description,
-        enabled: input.enabled,
         groupType: input.groupType ?? 'personal'
-      }, access)
+      }
+      if (input.enabled !== undefined) groupInput.enabled = input.enabled
+      const group = createGroup(groupInput, access)
       return publicGroupResponse('created', target, sanitizeGroup(group))
     }, getBusinessDatabase())
   }
@@ -551,13 +552,14 @@ export async function addPublicGroup(input: PublicGroupAddInput): Promise<Public
   if (existing) {
     return publicGroupResponse('existing', target, sanitizeGroup(existing))
   }
-  const group = await createGroupAsync({
+  const groupInput: Record<string, unknown> = {
     name: input.name,
     providerCode,
     description: input.description,
-    enabled: input.enabled,
     groupType: input.groupType ?? 'personal'
-  }, access)
+  }
+  if (input.enabled !== undefined) groupInput.enabled = input.enabled
+  const group = await createGroupAsync(groupInput, access)
   return publicGroupResponse('created', target, sanitizeGroup(group))
 }
 

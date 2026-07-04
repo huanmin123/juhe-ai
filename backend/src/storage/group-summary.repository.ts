@@ -29,18 +29,36 @@ import type { GroupListRow } from './repository-row-types.js'
 import { parseRequestQuotaLimitsJson } from './request-quota-limits.js'
 import { isResourceAuthorizationExpired, sanitizeAuthorizationSourcesForViewer, usageScope } from './resource-authorization-helpers.js'
 import { authorizedGroupPermissions, hasActiveManualAuthorizationSource, ownerPermissions } from './resource-permissions.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import { emptyAccountUsageSummary, todayDateKey, usageStatsTimezone, usageStatsTimezoneAsync } from './usage-stats-helpers.js'
 import { loadGroupUsageSummariesForScopes, loadGroupUsageSummariesForScopesAsync } from './usage-summary-loaders.js'
 
 export function listGroups(access?: AccessScope): GroupSummary[] {
+  return listGroupsReadOnly(access)
+}
+
+export function listGroupsReadOnly(access?: AccessScope): GroupSummary[] {
   return buildGroupSummaries(listGroupRowsForAccess(access), access)
 }
 
 export async function listGroupsAsync(access?: AccessScope): Promise<GroupSummary[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    if (sqliteReadWorkerPoolEnabled()) {
+      return requestSqliteReadWorker({
+        type: 'list_groups_read_only',
+        access
+      })
+    }
+    return listGroupsReadOnly(access)
+  }
   return buildGroupSummariesAsync(await listGroupRowsForAccessAsync(access), access)
 }
 
 export function listGroupsPage(access?: AccessScope, options?: GroupListOptions): GroupListResult {
+  return listGroupsPageReadOnly(access, options)
+}
+
+export function listGroupsPageReadOnly(access?: AccessScope, options?: GroupListOptions): GroupListResult {
   const page = listGroupRowsPageForAccess(access, options)
   return {
     items: buildGroupSummaries(page.rows, access),
@@ -52,6 +70,16 @@ export function listGroupsPage(access?: AccessScope, options?: GroupListOptions)
 }
 
 export async function listGroupsPageAsync(access?: AccessScope, options?: GroupListOptions): Promise<GroupListResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    if (sqliteReadWorkerPoolEnabled()) {
+      return requestSqliteReadWorker({
+        type: 'list_groups_page_read_only',
+        access,
+        options
+      })
+    }
+    return listGroupsPageReadOnly(access, options)
+  }
   const page = await listGroupRowsPageForAccessAsync(access, options)
   return {
     items: await buildGroupSummariesAsync(page.rows, access),
@@ -63,14 +91,32 @@ export async function listGroupsPageAsync(access?: AccessScope, options?: GroupL
 }
 
 export function listGroupOptions(access?: AccessScope, options?: GroupOptionListOptions): GroupOptionSummary[] {
+  return listGroupOptionsReadOnly(access, options)
+}
+
+export function listGroupOptionsReadOnly(access?: AccessScope, options?: GroupOptionListOptions): GroupOptionSummary[] {
   return buildGroupOptionSummaries(listGroupOptionRowsForAccess(access, options), access)
 }
 
 export async function listGroupOptionsAsync(access?: AccessScope, options?: GroupOptionListOptions): Promise<GroupOptionSummary[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    if (sqliteReadWorkerPoolEnabled()) {
+      return requestSqliteReadWorker({
+        type: 'list_group_options_read_only',
+        access,
+        options
+      })
+    }
+    return listGroupOptionsReadOnly(access, options)
+  }
   return buildGroupOptionSummariesAsync(await listGroupOptionRowsForAccessAsync(access, options), access)
 }
 
 export function listAccountGroupOptions(access?: AccessScope, options?: GroupOptionListOptions): AccountGroupOptionSummary[] {
+  return listAccountGroupOptionsReadOnly(access, options)
+}
+
+export function listAccountGroupOptionsReadOnly(access?: AccessScope, options?: GroupOptionListOptions): AccountGroupOptionSummary[] {
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   const rows = listGroupOptionRowsForAccess(access, options)
   const accountIdsByGroup = loadGroupAccountIdsByGroupIds(rows.map((row) => row.id))
@@ -85,6 +131,16 @@ export function listAccountGroupOptions(access?: AccessScope, options?: GroupOpt
 }
 
 export async function listAccountGroupOptionsAsync(access?: AccessScope, options?: GroupOptionListOptions): Promise<AccountGroupOptionSummary[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    if (sqliteReadWorkerPoolEnabled()) {
+      return requestSqliteReadWorker({
+        type: 'list_account_group_options_read_only',
+        access,
+        options
+      })
+    }
+    return listAccountGroupOptionsReadOnly(access, options)
+  }
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   const rows = await listGroupOptionRowsForAccessAsync(access, options)
   const accountIdsByGroup = await loadGroupAccountIdsByGroupIdsAsync(rows.map((row) => row.id))
@@ -100,11 +156,25 @@ export async function listAccountGroupOptionsAsync(access?: AccessScope, options
 }
 
 export function findGroupSummary(id: string, access?: AccessScope): GroupSummary | undefined {
+  return findGroupSummaryReadOnly(id, access)
+}
+
+export function findGroupSummaryReadOnly(id: string, access?: AccessScope): GroupSummary | undefined {
   const row = findGroupRowForAccess(access, id)
   return row ? buildGroupSummaries([row], access)[0] : undefined
 }
 
 export async function findGroupSummaryAsync(id: string, access?: AccessScope): Promise<GroupSummary | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    if (sqliteReadWorkerPoolEnabled()) {
+      return requestSqliteReadWorker({
+        type: 'find_group_summary_read_only',
+        id,
+        access
+      })
+    }
+    return findGroupSummaryReadOnly(id, access)
+  }
   const row = await findGroupRowForAccessAsync(access, id)
   return row ? (await buildGroupSummariesAsync([row], access))[0] : undefined
 }

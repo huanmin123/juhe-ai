@@ -50,6 +50,8 @@ export function markGatewayAccountTemporaryUnavailableWithCacheInvalidation(
     type: 'mark_account_temporary_unavailable',
     account,
     reason: reason.slice(0, 1000)
+  }, {
+    priority: 'low'
   }).then((result) => {
     if (!result.updated) {
       return false
@@ -187,6 +189,8 @@ export function clearAccountStreamFailureStateWithCacheInvalidation(account: Ups
     type: 'clear_account_stream_failure_state',
     accountId,
     account: typeof account === 'string' ? undefined : account
+  }, {
+    priority: 'low'
   }).then((result) => {
     if (result.changed) {
       clearGatewayRuntimeCache()
@@ -207,6 +211,8 @@ export function persistOpenAICodexHeadersIfNeeded(account: UpstreamAccount, head
     accountId: account.id,
     headers: headersToObject(headers),
     source
+  }, {
+    priority: 'low'
   }).catch((error) => {
     logger.warn(errorLogFields(error, {
       event: 'gateway_codex_usage_snapshot_side_effect_failed',

@@ -135,6 +135,7 @@ import {
   saveCodexContextCompactStateIndexWithWriterPool,
   saveCodexContextResponseStateIndexWithWriterPool
 } from '../../storage/codex-context-state-writer-pool.js'
+import { getSqliteReadWorkerPoolRuntime, requestSqliteReadWorker } from '../../storage/sqlite-read-worker-pool.js'
 import {
   deleteGroupAccountStatsDirtyRowsLocal,
   deleteGroupAccountStatsDirtyRowsAsync,
@@ -272,7 +273,7 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await listPublicGlobalSettingsAsync()
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({ type: 'list_global_settings_read_only' })
     case 'validate_gateway_api_key':
       return await validateGatewayApiKeyAsync(operation.key)
     case 'read_gateway_settings':
@@ -329,7 +330,10 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await listOpenAICompatibleFilesAsync(operation.options)
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({
+        type: 'list_openai_compatible_files_read_only',
+        options: operation.options
+      })
     case 'get_openai_compatible_file':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await findOpenAICompatibleFileAsync({
@@ -338,7 +342,12 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
           apiKeyId: operation.apiKeyId
         })
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({
+        type: 'get_openai_compatible_file_read_only',
+        fileId: operation.fileId,
+        systemAccountId: operation.systemAccountId,
+        apiKeyId: operation.apiKeyId
+      })
     case 'delete_openai_compatible_file':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await deleteOpenAICompatibleFileAsync({
@@ -357,7 +366,10 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await listOpenAICompatibleVectorStoresAsync(operation.options)
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({
+        type: 'list_openai_compatible_vector_stores_read_only',
+        options: operation.options
+      })
     case 'get_openai_compatible_vector_store':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await findOpenAICompatibleVectorStoreAsync({
@@ -366,7 +378,12 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
           apiKeyId: operation.apiKeyId
         })
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({
+        type: 'get_openai_compatible_vector_store_read_only',
+        vectorStoreId: operation.vectorStoreId,
+        systemAccountId: operation.systemAccountId,
+        apiKeyId: operation.apiKeyId
+      })
     case 'delete_openai_compatible_vector_store':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await deleteOpenAICompatibleVectorStoreAsync({
@@ -385,7 +402,10 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await listOpenAICompatibleVectorStoreFilesAsync(operation.options)
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({
+        type: 'list_openai_compatible_vector_store_files_read_only',
+        options: operation.options
+      })
     case 'get_openai_compatible_vector_store_file':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await findOpenAICompatibleVectorStoreFileAsync({
@@ -395,7 +415,13 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
           apiKeyId: operation.apiKeyId
         })
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({
+        type: 'get_openai_compatible_vector_store_file_read_only',
+        vectorStoreId: operation.vectorStoreId,
+        fileId: operation.fileId,
+        systemAccountId: operation.systemAccountId,
+        apiKeyId: operation.apiKeyId
+      })
     case 'delete_openai_compatible_vector_store_file':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await deleteOpenAICompatibleVectorStoreFileAsync({
@@ -410,7 +436,10 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await searchOpenAICompatibleVectorStoreAsync(operation.options)
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({
+        type: 'search_openai_compatible_vector_store_read_only',
+        options: operation.options
+      })
     case 'list_openai_compatible_vector_store_file_chunks':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await listOpenAICompatibleVectorStoreFileChunksAsync({
@@ -421,7 +450,14 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
           limit: operation.limit
         })
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({
+        type: 'list_openai_compatible_vector_store_file_chunks_read_only',
+        vectorStoreId: operation.vectorStoreId,
+        fileId: operation.fileId,
+        systemAccountId: operation.systemAccountId,
+        apiKeyId: operation.apiKeyId,
+        limit: operation.limit
+      })
     case 'list_provider_model_catalog':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await listProviderModelCatalogAsync({
@@ -431,7 +467,15 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
           includeUnpriced: operation.includeUnpriced
         })
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({
+        type: 'list_provider_model_catalog_read_only',
+        options: {
+          providerCode: operation.providerCode,
+          systemAccountId: operation.systemAccountId,
+          includeInactive: operation.includeInactive,
+          includeUnpriced: operation.includeUnpriced
+        }
+      })
     case 'find_account_for_test':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await findAccountForTestAsync(operation.accountId, operation.access)
@@ -944,7 +988,8 @@ export function buildDbServiceRuntimeSnapshot(pid = process.pid): DbServiceRunti
     failedRequestCount,
     lastRequestAt,
     lastError,
-    codexContextStateWriterPool: getCodexContextStateWriterPoolRuntime()
+    codexContextStateWriterPool: getCodexContextStateWriterPoolRuntime(),
+    sqliteReadWorkerPool: getSqliteReadWorkerPoolRuntime()
   }
 }
 

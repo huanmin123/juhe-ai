@@ -1362,27 +1362,38 @@ const externalPublicApiCatalogSource = [
 ].join('\n')
 assert.match(externalPublicApiCatalogSource, /id: 'api-key-delete'[\s\S]+routeStrategyId:\s*'rts_xxx'/)
 assert.doesNotMatch(externalPublicApiCatalogSource, /groupRouteStrategy:\s*'priority_failover'/)
-assert.doesNotMatch(externalPublicApiCatalogSource, /groupBindings: \[\{[^}]*groupId: 'grp_xxx'/)
 assert.doesNotMatch(externalPublicApiCatalogSource, /apiKey:\s*\{[^\n]*groupId:\s*'grp_xxx'/)
 assert.doesNotMatch(externalPublicApiCatalogSource, /新的主绑定分组 ID/)
 assert.doesNotMatch(externalPublicApiCatalogSource, /绑定分组 ID；与 groupName/)
+assert.doesNotMatch(externalPublicApiCatalogSource, /status:\s*'mock'/, '公开接口接入文档不应把已落地接口标记为 Mock 数据')
 const externalPublicAccountUpdateCatalogSource = sourceBetween(externalPublicApiCatalogSource, "id: 'account-update'", "id: 'account-delete'")
 assert.match(externalPublicAccountUpdateCatalogSource, /name: 'accountId'[\s\S]+required: true/)
 assert.match(externalPublicAccountUpdateCatalogSource, /name: 'providerCode'[\s\S]+required: false/)
+assert.match(externalPublicAccountUpdateCatalogSource, /name: 'providerProtocolProfileId'[\s\S]+required: false/)
 assert.match(externalPublicAccountUpdateCatalogSource, /name: 'type'[\s\S]+required: false/)
 assert.doesNotMatch(externalPublicAccountUpdateCatalogSource, /targetDisplayName/, '账号修改公开文档不应再保留无实际语义的兼容字段')
 assert.match(externalPublicAccountUpdateCatalogSource, /accountId:\s*'acc_xxx'/)
 assert.match(externalPublicAccountUpdateCatalogSource, /apiKey:\s*'sk-\.\.\.'/)
 assert.match(externalPublicAccountUpdateCatalogSource, /status:\s*'disabled'/)
-const externalPublicApiKeyListCatalogSource = sourceBetween(externalPublicApiCatalogSource, "id: 'api-key-list'", "id: 'account-list'")
+const externalPublicApiKeyListCatalogSource = sourceBetween(externalPublicApiCatalogSource, "id: 'api-key-list'", "id: 'api-key-add'")
 assert.doesNotMatch(externalPublicApiKeyListCatalogSource, /name: 'groupId'/, 'API Key 列表公开文档不应再保留按分组筛选的旧契约')
+assert.doesNotMatch(externalPublicApiKeyListCatalogSource, /groupBindings: \[\{[^}]*groupId: 'grp_xxx'/, 'API Key 列表公开文档不应返回策略内分组绑定')
+const externalPublicRouteStrategyListCatalogSource = sourceBetween(externalPublicApiCatalogSource, "id: 'route-strategy-list'", "id: 'route-strategy-add'")
+assert.match(externalPublicRouteStrategyListCatalogSource, /path: '\/__aipublic__\/route-strategy\/list'/)
+assert.match(externalPublicApiCatalogSource, /const routeStrategy[\s\S]+groupBindings/, '路由策略公开文档示例应包含分组绑定摘要')
+const externalPublicRouteStrategyUpdateCatalogSource = sourceBetween(externalPublicApiCatalogSource, "id: 'route-strategy-update'", "id: 'route-strategy-delete'")
+assert.match(externalPublicRouteStrategyUpdateCatalogSource, /routeStrategyId:\s*'rts_xxx'/)
+assert.match(externalPublicRouteStrategyUpdateCatalogSource, /mode:\s*'round_robin'/)
+const externalPublicAccountListCatalogSource = sourceBetween(externalPublicApiCatalogSource, "id: 'account-list'", "id: 'account-add'")
+assert.match(externalPublicAccountListCatalogSource, /name: 'providerProtocolProfileId'[\s\S]+required: false/, '账号列表公开文档必须暴露实际支持的协议档案筛选字段')
+assert.match(externalPublicApiCatalogSource, /const account[\s\S]+providerProtocolProfileId:\s*'profile_gpt_openai_v1'/, '账号列表公开文档示例必须返回协议档案字段')
 const externalPublicGroupUpdateCatalogSource = sourceBetween(externalPublicApiCatalogSource, "id: 'group-update'", "id: 'group-delete'")
 assert.match(externalPublicGroupUpdateCatalogSource, /name: 'targetUsername'[\s\S]+required: false/)
 assert.match(externalPublicGroupUpdateCatalogSource, /groupId:\s*'grp_xxx'[\s\S]+name:\s*'福利-主池'/)
 const externalPublicApiKeyUpdateCatalogSource = sourceBetween(externalPublicApiCatalogSource, "id: 'api-key-update'", "id: 'api-key-delete'")
 assert.match(externalPublicApiKeyUpdateCatalogSource, /name: 'targetUsername'[\s\S]+required: false/)
 assert.match(externalPublicApiKeyUpdateCatalogSource, /apiKeyId:\s*'key_xxx'[\s\S]+status:\s*'disabled'/)
-const externalPublicAccountDeleteCatalogSource = sourceBetween(externalPublicApiCatalogSource, "id: 'account-delete'", "case 'source-auth-demo'")
+const externalPublicAccountDeleteCatalogSource = sourceBetween(externalPublicApiCatalogSource, "id: 'account-delete'", "] satisfies ExternalPublicApiDocItemSeed[]")
 assert.match(externalPublicAccountDeleteCatalogSource, /name: 'accountId'[\s\S]+required: true/)
 assert.match(externalPublicAccountDeleteCatalogSource, /name: 'targetUsername'[\s\S]+required: false/)
 assert.match(externalPublicAccountDeleteCatalogSource, /name: 'providerCode'[\s\S]+required: false/)
@@ -1390,20 +1401,19 @@ assert.doesNotMatch(externalPublicApiCatalogSource, /externalId/)
 
 const externalPublicApiCatalog = getExternalPublicApiCatalog()
 assert.deepEqual(externalPublicApiCatalog.items.map((item) => item.id), [
-  'source-auth-demo',
-  'ip-usage',
-  'consumption-ranking',
-  'account-usage',
-  'access-info',
-  'group-list',
   'api-key-list',
-  'account-list',
-  'group-add',
-  'group-update',
-  'group-delete',
   'api-key-add',
   'api-key-update',
   'api-key-delete',
+  'route-strategy-list',
+  'route-strategy-add',
+  'route-strategy-update',
+  'route-strategy-delete',
+  'group-list',
+  'group-add',
+  'group-update',
+  'group-delete',
+  'account-list',
   'account-add',
   'account-update',
   'account-delete'
@@ -1411,6 +1421,7 @@ assert.deepEqual(externalPublicApiCatalog.items.map((item) => item.id), [
 const externalIntegrationScopeValues = new Set<string>(externalIntegrationScopeOptions.map((item) => item.value))
 for (const item of externalPublicApiCatalog.items) {
   const scope = item.scope
+  assert.equal(item.status, 'available', `public API catalog item ${item.id} should be marked available`)
   if (typeof scope !== 'string') {
     throw new Error(`public API catalog item ${item.id} should expose a scope`)
   }

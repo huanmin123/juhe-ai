@@ -7,7 +7,7 @@ import {
   createRouteStrategyAsync,
   deleteRouteStrategyAsync,
   findRouteStrategySummaryAsync,
-  listRouteStrategiesPageAsync,
+  listRouteStrategyListItemsPageAsync,
   listRouteStrategyOptionsAsync,
   updateRouteStrategyAsync,
   type RouteStrategyListOptions
@@ -76,7 +76,7 @@ const routeStrategyUpdateSchema = routeStrategyMutationSchema.partial().refine((
 
 routeStrategiesRouter.get('/', async (req, res, next) => {
   try {
-    res.json(ok(await listRouteStrategiesPageAsync(getRequestAccessScope(req.query.systemAccountId), parseRouteStrategyListOptions(req.query))))
+    res.json(ok(await listRouteStrategyListItemsPageAsync(getRequestAccessScope(req.query.systemAccountId), parseRouteStrategyListOptions(req.query))))
   } catch (error) {
     next(error)
   }

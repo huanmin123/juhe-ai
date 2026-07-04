@@ -62,6 +62,8 @@ export interface RuntimeConfig {
   codexContextStateWriterPoolEnabled: boolean
   codexContextStateWriterPoolSize: number
   codexContextStateWriterQueueMaxItems: number
+  sqliteReadWorkerPoolSize: number
+  sqliteReadWorkerQueueMaxItems: number
   usageRecordWriterPoolEnabled: boolean
   usageRecordWriterPoolSize: number
   usageRecordWriterQueueMaxItems: number
@@ -262,6 +264,8 @@ export const runtimeConfig: RuntimeConfig = {
   codexContextStateWriterPoolEnabled: booleanConfig('JUHE_AI_CODEX_CONTEXT_STATE_WRITER_POOL_ENABLED', !isScriptEntryRuntime()),
   codexContextStateWriterPoolSize: numberConfig('JUHE_AI_CODEX_CONTEXT_STATE_WRITER_POOL_SIZE', 0, 0, 64),
   codexContextStateWriterQueueMaxItems: numberConfig('JUHE_AI_CODEX_CONTEXT_STATE_WRITER_QUEUE_MAX_ITEMS', 5000, 1, 100000),
+  sqliteReadWorkerPoolSize: numberConfig('JUHE_AI_SQLITE_READ_WORKER_POOL_SIZE', 0, 0, 64),
+  sqliteReadWorkerQueueMaxItems: numberConfig('JUHE_AI_SQLITE_READ_WORKER_QUEUE_MAX_ITEMS', 1000, 1, 100000),
   usageRecordWriterPoolEnabled: booleanConfig('JUHE_AI_USAGE_RECORD_WRITER_POOL_ENABLED', false),
   usageRecordWriterPoolSize: numberConfig('JUHE_AI_USAGE_RECORD_WRITER_POOL_SIZE', 0, 0, 64),
   usageRecordWriterQueueMaxItems: numberConfig('JUHE_AI_USAGE_RECORD_WRITER_QUEUE_MAX_ITEMS', 5000, 1, 100000),

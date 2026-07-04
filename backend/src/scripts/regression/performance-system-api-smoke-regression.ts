@@ -96,6 +96,70 @@ function performanceSystemApiPostgresSmokeEnv(): Record<string, string> | undefi
   return required as Record<string, string>
 }
 
+async function getEnvelopeWithHeaders<T>(baseUrl: string, path: string, cookie?: string): Promise<{ data: T; headers: Headers }> {
+  const response = await fetch(`${baseUrl}${path}`, {
+    ...(cookie ? { headers: { cookie } } : {}),
+    signal: AbortSignal.timeout(10_000)
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `${path} 应返回 HTTP 200，实际 HTTP ${response.status}: ${text}`)
+  return {
+    data: (JSON.parse(text) as ApiEnvelope<T>).data,
+    headers: response.headers
+  }
+}
+
+async function postCreatedEnvelopeWithHeaders<T = unknown>(
+  baseUrl: string,
+  path: string,
+  body: Record<string, unknown>,
+  cookie: string
+): Promise<{ data: T; headers: Headers }> {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: 'POST',
+    headers: {
+      cookie,
+      'content-type': 'application/json'
+    },
+    signal: AbortSignal.timeout(10_000),
+    body: JSON.stringify(body)
+  })
+  const text = await response.text()
+  assert.equal(response.status, 201, `${path} POST 应返回 HTTP 201，实际 HTTP ${response.status}: ${text}`)
+  return {
+    data: (JSON.parse(text) as ApiEnvelope<T>).data,
+    headers: response.headers
+  }
+}
+
+async function postOkEnvelopeWithHeaders<T = unknown>(
+  baseUrl: string,
+  path: string,
+  body: Record<string, unknown>,
+  cookie: string
+): Promise<{ data: T; headers: Headers }> {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: 'POST',
+    headers: {
+      cookie,
+      'content-type': 'application/json'
+    },
+    signal: AbortSignal.timeout(10_000),
+    body: JSON.stringify(body)
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `${path} POST 应返回 HTTP 200，实际 HTTP ${response.status}: ${text}`)
+  return {
+    data: (JSON.parse(text) as ApiEnvelope<T>).data,
+    headers: response.headers
+  }
+}
+
+function assertNoStoreResponseHeaders(headers: Headers, label: string): void {
+  assert.equal(headers.get('cache-control'), 'no-store', `${label} 应设置 Cache-Control: no-store`)
+  assert.equal(headers.get('pragma'), 'no-cache', `${label} 应设置 Pragma: no-cache`)
+}
+
 async function runHttpSmoke(): Promise<void> {
   const [
     { createSystemApiApp },
@@ -248,7 +312,6 @@ async function runHttpSmoke(): Promise<void> {
     const createdGroup = await postEnvelope<{ id: string; name: string; groupType: string }>(baseUrl, '/__aisys__/api/groups', {
       name: `烟测分组${groupSuffix}`,
       providerCode: 'gpt',
-      providerProtocolProfileId: gptProviderProfileId,
       description: 'performance smoke group',
       enabled: true,
       groupType: 'high_concurrency',
@@ -331,7 +394,7 @@ async function runHttpSmoke(): Promise<void> {
     assert.equal(createdAiAccount.boundGroupId, createdGroup.id, 'performance smoke AI 账户应绑定目标分组')
     assert.deepEqual(createdAiAccount.supportedModels, [smokeModel], 'performance smoke AI 账户应保存支持模型')
     assert.equal(createdAiAccount.modelMappings?.[0]?.sourceModel, smokeFallbackModel, 'performance smoke AI 账户应保存同协议模型别名映射')
-    const aiAccountDetail = await getEnvelope<{
+    const aiAccountBasicDetail = await getEnvelope<{
       id: string
       status: string
       boundGroupId?: string
@@ -339,6 +402,20 @@ async function runHttpSmoke(): Promise<void> {
       supportedModels?: string[]
       modelMappings?: Array<{ sourceModel: string; upstreamModel: string }>
     }>(baseUrl, `/__aisys__/api/accounts/${createdAiAccount.id}`, cookie)
+    assert.equal(aiAccountBasicDetail.id, createdAiAccount.id, 'performance smoke 应能读取新建 AI 账户基础详情')
+    assert.equal(aiAccountBasicDetail.status, 'temporary_unavailable', 'performance smoke AI 账户基础详情应保留状态')
+    assert.equal(aiAccountBasicDetail.boundGroupId, createdGroup.id, 'performance smoke AI 账户基础详情应保留分组绑定')
+    assert.equal(Object.prototype.hasOwnProperty.call(aiAccountBasicDetail, 'credentials'), false, 'performance smoke AI 账户基础详情不应返回凭据')
+    assert.equal(Object.prototype.hasOwnProperty.call(aiAccountBasicDetail, 'supportedModels'), false, 'performance smoke AI 账户基础详情不应返回支持模型')
+    assert.equal(Object.prototype.hasOwnProperty.call(aiAccountBasicDetail, 'modelMappings'), false, 'performance smoke AI 账户基础详情不应返回模型映射')
+    const aiAccountDetail = await getEnvelope<{
+      id: string
+      status: string
+      boundGroupId?: string
+      credentials?: Record<string, unknown>
+      supportedModels?: string[]
+      modelMappings?: Array<{ sourceModel: string; upstreamModel: string }>
+    }>(baseUrl, `/__aisys__/api/accounts/${createdAiAccount.id}/advanced`, cookie)
     assert.equal(aiAccountDetail.id, createdAiAccount.id, 'performance smoke 应能读取新建 AI 账户详情')
     assert.equal(aiAccountDetail.status, 'temporary_unavailable', 'performance smoke AI 账户详情应保留状态')
     assert.equal(aiAccountDetail.boundGroupId, createdGroup.id, 'performance smoke AI 账户详情应保留分组绑定')
@@ -389,7 +466,7 @@ async function runHttpSmoke(): Promise<void> {
     const listedAiAccount = aiAccounts.items.find((item) => item.id === createdAiAccount.id)
     assert.ok(listedAiAccount, 'performance smoke 应能在 AI 账户列表查回新建账户')
     assert.equal(listedAiAccount.boundGroupId, createdGroup.id, 'performance smoke AI 账户列表应保留分组绑定')
-    assert.deepEqual(listedAiAccount.supportedModels, [smokeModel], 'performance smoke AI 账户列表应返回支持模型')
+    assert.equal(Object.prototype.hasOwnProperty.call(listedAiAccount, 'supportedModels'), false, 'performance smoke AI 账户列表不应返回编辑专用支持模型')
     const aiAccountOptions = await getEnvelope<Array<{ id: string; providerCode: string }>>(
       baseUrl,
       `/__aisys__/api/accounts/options?keyword=${encodeURIComponent(updatedAiAccount.name)}&groupId=${encodeURIComponent(createdGroup.id)}&limit=20`,
@@ -511,18 +588,22 @@ async function runHttpSmoke(): Promise<void> {
     }, cookie)
     createdRouteStrategyIds.push(createdRouteStrategy.id)
     assert.equal(createdRouteStrategy.groupBindings[0]?.groupId, createdGroup.id, 'performance smoke 策略路由应绑定目标分组')
-    const createdApiKey = await postEnvelope<{ id: string; name: string; key: string; routeStrategyId: string }>(baseUrl, '/__aisys__/api/api-keys', {
+    const createdApiKeyResponse = await postCreatedEnvelopeWithHeaders<{ id: string; name: string; key: string; routeStrategyId: string }>(baseUrl, '/__aisys__/api/api-keys', {
       name: `烟测APIKey${apiKeySuffix}`,
       description: 'performance smoke api key',
       routeStrategyId: createdRouteStrategy.id,
       status: 'active'
     }, cookie)
+    assertNoStoreResponseHeaders(createdApiKeyResponse.headers, 'API Key 创建响应')
+    const createdApiKey = createdApiKeyResponse.data
     createdApiKeyIds.push(createdApiKey.id)
     assert.ok(createdApiKey.key.startsWith('sk-'), 'performance smoke 应能创建 API Key 并返回一次性明文')
     assert.equal(createdApiKey.routeStrategyId, createdRouteStrategy.id, 'performance smoke API Key 应绑定目标策略路由')
     const apiKeys = await getEnvelope<{ items: Array<{ id: string; name: string }> }>(baseUrl, `/__aisys__/api/api-keys?keyword=${encodeURIComponent(`烟测APIKey${apiKeySuffix}`)}&page=1&pageSize=20`, cookie)
     assert.ok(apiKeys.items.some((item) => item.id === createdApiKey.id), 'performance smoke 应能读取 API Key 列表')
-    const secret = await getEnvelope<{ key: string }>(baseUrl, `/__aisys__/api/api-keys/${createdApiKey.id}/secret`, cookie)
+    const secretResponse = await getEnvelopeWithHeaders<{ key: string }>(baseUrl, `/__aisys__/api/api-keys/${createdApiKey.id}/secret`, cookie)
+    assertNoStoreResponseHeaders(secretResponse.headers, 'API Key secret 响应')
+    const secret = secretResponse.data
     assert.equal(secret.key, createdApiKey.key, 'performance smoke 应能读取 API Key 完整密钥')
     const updatedRouteStrategy = await patchEnvelope<{ id: string; groupBindings: Array<{ weight: number }> }>(baseUrl, `/__aisys__/api/route-strategies/${createdRouteStrategy.id}`, {
       groupBindings: [{ groupId: createdGroup.id, priority: 1, weight: 20, status: 'active' }]
@@ -532,7 +613,9 @@ async function runHttpSmoke(): Promise<void> {
       status: 'disabled'
     }, cookie)
     assert.equal(updatedApiKey.status, 'disabled', 'performance smoke 应能更新 API Key')
-    const refreshedApiKey = await postOkEnvelope<{ id: string; key: string }>(baseUrl, `/__aisys__/api/api-keys/${createdApiKey.id}/refresh-key`, {}, cookie)
+    const refreshedApiKeyResponse = await postOkEnvelopeWithHeaders<{ id: string; key: string }>(baseUrl, `/__aisys__/api/api-keys/${createdApiKey.id}/refresh-key`, {}, cookie)
+    assertNoStoreResponseHeaders(refreshedApiKeyResponse.headers, 'API Key 刷新响应')
+    const refreshedApiKey = refreshedApiKeyResponse.data
     assert.ok(refreshedApiKey.key.startsWith('sk-'), 'performance smoke 应能刷新 API Key 密钥')
     assert.notEqual(refreshedApiKey.key, createdApiKey.key, 'performance smoke 刷新 API Key 应返回新密钥')
     await deleteNoContent(baseUrl, `/__aisys__/api/api-keys/${createdApiKey.id}`, cookie)
@@ -636,13 +719,7 @@ interface ApiEnvelope<T> {
 }
 
 async function getEnvelope<T>(baseUrl: string, path: string, cookie?: string): Promise<T> {
-  const response = await fetch(`${baseUrl}${path}`, {
-    ...(cookie ? { headers: { cookie } } : {}),
-    signal: AbortSignal.timeout(10_000)
-  })
-  const text = await response.text()
-  assert.equal(response.status, 200, `${path} 应返回 HTTP 200，实际 HTTP ${response.status}: ${text}`)
-  return (JSON.parse(text) as ApiEnvelope<T>).data
+  return (await getEnvelopeWithHeaders<T>(baseUrl, path, cookie)).data
 }
 
 async function patchEnvelope<T = unknown>(baseUrl: string, path: string, body: Record<string, unknown>, cookie: string): Promise<T> {
@@ -661,33 +738,11 @@ async function patchEnvelope<T = unknown>(baseUrl: string, path: string, body: R
 }
 
 async function postEnvelope<T = unknown>(baseUrl: string, path: string, body: Record<string, unknown>, cookie: string): Promise<T> {
-  const response = await fetch(`${baseUrl}${path}`, {
-    method: 'POST',
-    headers: {
-      cookie,
-      'content-type': 'application/json'
-    },
-    signal: AbortSignal.timeout(10_000),
-    body: JSON.stringify(body)
-  })
-  const text = await response.text()
-  assert.equal(response.status, 201, `${path} POST 应返回 HTTP 201，实际 HTTP ${response.status}: ${text}`)
-  return (JSON.parse(text) as ApiEnvelope<T>).data
+  return (await postCreatedEnvelopeWithHeaders<T>(baseUrl, path, body, cookie)).data
 }
 
 async function postOkEnvelope<T = unknown>(baseUrl: string, path: string, body: Record<string, unknown>, cookie: string): Promise<T> {
-  const response = await fetch(`${baseUrl}${path}`, {
-    method: 'POST',
-    headers: {
-      cookie,
-      'content-type': 'application/json'
-    },
-    signal: AbortSignal.timeout(10_000),
-    body: JSON.stringify(body)
-  })
-  const text = await response.text()
-  assert.equal(response.status, 200, `${path} POST 应返回 HTTP 200，实际 HTTP ${response.status}: ${text}`)
-  return (JSON.parse(text) as ApiEnvelope<T>).data
+  return (await postOkEnvelopeWithHeaders<T>(baseUrl, path, body, cookie)).data
 }
 
 async function deleteNoContent(baseUrl: string, path: string, cookie: string): Promise<void> {
@@ -853,7 +908,7 @@ async function seedAuthorizationUsageDetail(accountId: string, granteeSystemAcco
     LIMIT 1
   `, [accountId, granteeSystemAccountId])
   assert.equal(selectedRuntimeAuthorization?.id, authorizationId, 'performance smoke 授权 usage 夹具应能按详情查询条件命中运行态授权')
-  const seededWindow = await statsClient.one<{ request_count: number }>(`
+  const seededWindow = await statsClient.one<{ request_count: number | string }>(`
     SELECT request_count
     FROM ${statsTable(statsClient, 'usage_scope_range_windows')}
     WHERE system_account_id = ?
@@ -863,7 +918,7 @@ async function seedAuthorizationUsageDetail(accountId: string, granteeSystemAcco
       AND end_date = ?
     LIMIT 1
   `, [granteeSystemAccountId, authorizationId, usageDate, usageDate])
-  assert.equal(seededWindow?.request_count, 17, 'performance smoke 授权 usage 夹具应写入统计范围窗口')
+  assert.equal(Number(seededWindow?.request_count ?? 0), 17, 'performance smoke 授权 usage 夹具应写入统计范围窗口')
 
   return {
     authorizationId,

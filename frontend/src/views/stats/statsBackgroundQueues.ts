@@ -51,11 +51,16 @@ export function backgroundQueueProblemCount(row: BackgroundQueueRow): number {
     + numberValue(row.droppedCount)
     + numberValue(row.rejectedCount)
     + numberValue(row.expiredCount)
-    + numberValue(row.timedOutCount)
-    + numberValue(row.failedCount)
+    + (isDiagnosticRequestQueue(row) ? 0 : numberValue(row.timedOutCount) + numberValue(row.failedCount))
     + numberValue(row.writerPoolFailedJobs)
     + numberValue(row.writerPoolRejectedJobs)
     + (row.lastError ? 1 : 0)
+}
+
+export function backgroundQueueDiagnosticCount(row: BackgroundQueueRow): number {
+  return isDiagnosticRequestQueue(row)
+    ? numberValue(row.timedOutCount) + numberValue(row.failedCount)
+    : 0
 }
 
 function backgroundQueueRowsFromRuntimeRow(row: BackgroundRuntimeRow): BackgroundQueueRow[] {
@@ -124,6 +129,15 @@ function localQueueType(value: unknown): BackgroundQueueType {
     || value === 'writer'
     ? value
     : 'local'
+}
+
+function isDiagnosticRequestQueue(row: BackgroundQueueRow): boolean {
+  return row.queueType === 'request'
+    && row.workerRole === 'db-service'
+    && (
+      row.name === 'DB service 事件循环采样 pending'
+      || row.name === 'DB service server runtime snapshot pending'
+    )
 }
 
 function stringValue(value: unknown): string | undefined {

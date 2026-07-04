@@ -62,6 +62,8 @@ export async function recordGatewayAccountApiKeyFailure(
         cooldownUntil: input.cooldownUntil,
         observedAt
       }
+    }, {
+      priority: 'low'
     })
     if (result.changed) {
       clearGatewayRuntimeCache()
@@ -123,6 +125,8 @@ export function recordGatewayAccountApiKeySuccess(account: OpenAIAccountSecret, 
     type: 'record_account_api_key_success',
     account,
     observedAt
+  }, {
+    priority: 'low'
   }).then((result) => {
     if (result.changed) {
       clearGatewayRuntimeCache()

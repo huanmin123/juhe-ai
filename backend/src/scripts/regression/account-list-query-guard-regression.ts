@@ -441,17 +441,17 @@ function assertExpiredAccountCleanupIsBoundedAndIndexed(access: { systemAccountI
   assertAccountExpirySweepQueryPlan()
   assertAccountExpirySweepQueryPlan(access.systemAccountId)
 
-	  const group = repositories.createGroup({
-	    name: '过期账号批量停用防护分组',
-	    providerCode: 'gpt',
-	    enabled: true
-	  }, access)
+  const group = repositories.createGroup({
+    name: '过期账号读路径防写分组',
+    providerCode: 'gpt',
+    enabled: true
+  }, access)
   const accountIds: string[] = []
   for (let index = 0; index < maxAccountExpirySweepBatchSize + 1; index += 1) {
-	    const account = repositories.createAccount({
-	      providerCode: 'gpt',
-	      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-	      name: `过期账号批量停用防护 ${String(index).padStart(2, '0')}`,
+    const account = repositories.createAccount({
+      providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+      name: `过期账号读路径防写 ${String(index).padStart(2, '0')}`,
       type: 'api_key',
       credentials: {
         api_key: `sk-account-expiry-batch-guard-${index}`,
@@ -486,17 +486,15 @@ function assertExpiredAccountCleanupIsBoundedAndIndexed(access: { systemAccountI
   }) as typeof database.prepare
   try {
     repositories.listAccountsPage(access, { page: 1, pageSize: 20 })
+    repositories.listAccountOptions(access, { limit: 20 })
+    repositories.findAccountSummary(accountIds[0] ?? '', access)
   } finally {
     database.prepare = originalPrepare
   }
 
-  assert(capturedUpdates.length >= 1, '过期账号清理回归应捕获 accounts 更新 SQL')
-  for (const sql of capturedUpdates) {
-    assert(/\bWHERE\s+id\s+IN\s*\(/i.test(sql), `账户读取请求路径只能按已选 ID 小批量更新过期账号，实际 SQL：${sql}`)
-    assert(!/\bWHERE\s+account_expires_at\s+IS\s+NOT\s+NULL\b/i.test(sql), `账户读取请求路径不应直接执行按到期条件无界 UPDATE，实际 SQL：${sql}`)
-  }
-  assert.equal(expiredDisabledCount(accountIds), maxAccountExpirySweepBatchSize, '单次账户读取请求只应清理固定批量过期账号')
-  assert.equal(expiredPendingCount(accountIds), 1, '超过批量窗口的过期账号应留给后续请求或后台轮次继续处理')
+  assert.equal(capturedUpdates.length, 0, `账户读取请求路径不应更新 accounts；过期账号停用必须交给后台 sweep，实际 SQL：${capturedUpdates.join('\n')}`)
+  assert.equal(expiredDisabledCount(accountIds), 0, '账户读取请求不应停用过期账号')
+  assert.equal(expiredPendingCount(accountIds), maxAccountExpirySweepBatchSize + 1, '过期账号应保留给后台 sweep 处理，列表只计算展示态')
 }
 
 function assertAccountExpirySweepQueryPlan(systemAccountId?: string): void {

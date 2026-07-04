@@ -139,19 +139,19 @@ export function createAuditMockdata(records: UsageRecordSeed[]): void {
 
 export function createPublicApiLogMockdata(created: CreatedMockdata, options: MockdataOptions): number {
   const endpoints = [
-    { method: 'GET', path: '/__aipublic__/ip/usage', query: 'range=last_7_days&page=1&pageSize=20', scope: 'ip_usage' },
-    { method: 'GET', path: '/__aipublic__/account/usage', query: 'range=last_30_days&page=1&pageSize=20', scope: 'account_usage' },
-    { method: 'GET', path: '/__aipublic__/consumption/ranking', query: 'range=last_7_days&metric=cost', scope: 'ranking' },
-    { method: 'GET', path: '/__aipublic__/access/info', query: '', scope: 'access_info' },
-    { method: 'GET', path: '/__aipublic__/group/list', query: `targetUsername=${created.users.admin.username}&providerCode=gpt`, scope: 'group_list' },
     { method: 'GET', path: '/__aipublic__/api-key/list', query: `targetUsername=${created.users.admin.username}`, scope: 'api_key_list' },
+    { method: 'GET', path: '/__aipublic__/route-strategy/list', query: `targetUsername=${created.users.admin.username}&mode=all`, scope: 'route_strategy_list' },
+    { method: 'GET', path: '/__aipublic__/group/list', query: `targetUsername=${created.users.admin.username}&providerCode=gpt`, scope: 'group_list' },
     { method: 'GET', path: '/__aipublic__/account/list', query: `targetUsername=${created.users.admin.username}&providerCode=gpt`, scope: 'account_list' },
-    { method: 'POST', path: '/__aipublic__/group/add', query: '', scope: 'group_write' },
-    { method: 'POST', path: '/__aipublic__/group/update', query: '', scope: 'group_write' },
-    { method: 'POST', path: '/__aipublic__/group/del', query: '', scope: 'group_write' },
     { method: 'POST', path: '/__aipublic__/api-key/add', query: '', scope: 'api_key_write' },
     { method: 'POST', path: '/__aipublic__/api-key/update', query: '', scope: 'api_key_write' },
     { method: 'POST', path: '/__aipublic__/api-key/del', query: '', scope: 'api_key_write' },
+    { method: 'POST', path: '/__aipublic__/route-strategy/add', query: '', scope: 'route_strategy_write' },
+    { method: 'POST', path: '/__aipublic__/route-strategy/update', query: '', scope: 'route_strategy_write' },
+    { method: 'POST', path: '/__aipublic__/route-strategy/del', query: '', scope: 'route_strategy_write' },
+    { method: 'POST', path: '/__aipublic__/group/add', query: '', scope: 'group_write' },
+    { method: 'POST', path: '/__aipublic__/group/update', query: '', scope: 'group_write' },
+    { method: 'POST', path: '/__aipublic__/group/del', query: '', scope: 'group_write' },
     { method: 'POST', path: '/__aipublic__/account/add', query: '', scope: 'account_write' },
     { method: 'POST', path: '/__aipublic__/account/update', query: '', scope: 'account_write' },
     { method: 'POST', path: '/__aipublic__/account/del', query: '', scope: 'account_write' }
@@ -161,7 +161,7 @@ export function createPublicApiLogMockdata(created: CreatedMockdata, options: Mo
   const endAt = Date.now() - 20 * minuteMs
   const startAt = endAt - (options.days - 1) * dayMs
   const builtInTestSource = findExternalIntegrationSource(builtInExternalIntegrationTestSourceId)
-  const builtInTestToken = builtInTestSource?.tokens.find((token) => token.id === builtInExternalIntegrationTestTokenId)
+  const builtInTestToken = builtInTestSource?.tokens?.find((token) => token.id === builtInExternalIntegrationTestTokenId)
   for (let index = 0; index < total; index += 1) {
     const dayIndex = Math.floor(index / perDay)
     const indexInDay = index % perDay

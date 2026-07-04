@@ -304,7 +304,7 @@ try {
   assert.deepEqual(
     rangeLastUsedSortList.items.map((item) => item.ipHash),
     [secondaryIpv4Identity.ipHash, ipv4Identity.ipHash],
-    '默认 lastUsedAt 排序应保持窗口内最近使用语义，避免影响公开 IP 用量接口'
+    '默认 lastUsedAt 排序应保持窗口内最近使用语义，避免影响后台 IP 管理排序'
   )
   const globalLastUsedSortList = clientIpStats.listClientIpStats({
     startDate: today,

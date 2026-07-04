@@ -39,8 +39,19 @@ export function sanitizeAccountCredentialCarrierResponse<T extends { credentials
 export function sanitizeAccountListResponse<T extends { items: AccountSummary[] }>(result: T): T {
   return {
     ...result,
-    items: result.items.map(sanitizeAccountResponse)
+    items: result.items.map(sanitizeAccountBasicDetailResponse)
   }
+}
+
+export function sanitizeAccountBasicDetailResponse<T extends AccountSummary>(account: T): T {
+  const {
+    credentials: _credentials,
+    supportedModels: _supportedModels,
+    modelMappings: _modelMappings,
+    apiKeyRuntimeDetails: _apiKeyRuntimeDetails,
+    ...item
+  } = account
+  return item as T
 }
 
 export function sanitizeAccountTrafficMigrationResponse<T extends { sourceAccount: AccountSummary; targetAccount: AccountSummary }>(result: T): T {

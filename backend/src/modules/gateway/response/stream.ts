@@ -138,6 +138,9 @@ export async function pipeUpstreamStream(
   let lastSseEventActivityAt: number | undefined
   let lastSseEventCount = 0
   let upstreamChunkReceived = false
+  let semanticResultReceived = false
+  let pendingProtocolEvent = false
+  let streamParserSkipped = false
   let chunkIndex = 0
   let totalUpstreamBytes = 0
   let totalResponseBytes = 0
@@ -200,6 +203,11 @@ export async function pipeUpstreamStream(
         responseInspectionObservationOmittedCount += 1
       }
     }
+  }
+  const updateStreamInspectionProgress = (inspection: GatewayStreamInspection) => {
+    semanticResultReceived = semanticResultReceived || streamSemanticResultReceived(inspection)
+    pendingProtocolEvent = inspection.pendingEvent
+    streamParserSkipped = inspection.skipped
   }
   const closeIterator = () => {
     clientClosed = true
@@ -356,7 +364,10 @@ export async function pipeUpstreamStream(
         waitingForFirstChunk,
         lastUpstreamActivityAt,
         lastSseEventActivityAt,
-        upstreamChunkReceived
+        upstreamChunkReceived,
+        semanticResultReceived,
+        pendingProtocolEvent,
+        parserSkipped: streamParserSkipped
       }, signal)
       const readWaitMs = Date.now() - readStartedAt
 
@@ -438,6 +449,7 @@ export async function pipeUpstreamStream(
         latestInspection = inspector.pushChunk(outbound, {
           lightweightImageStream: bodyCaptureOmitted || latestInspection.imageOutputReceived
         })
+        updateStreamInspectionProgress(latestInspection)
         omitBodyCaptureIfImageStream(latestInspection)
         if (latestInspection.skipped && !parserSkipLogged) {
           parserSkipLogged = true
@@ -532,6 +544,8 @@ export async function pipeUpstreamStream(
           failedReceived: latestInspection.failedReceived,
           outputReceived: latestInspection.outputReceived,
           outputEventCount: latestInspection.outputEventCount,
+          semanticResultReceived,
+          pendingProtocolEvent,
           parserSkipped: latestInspection.skipped,
           skipReason: latestInspection.skipReason
         }, '网关流式响应进度摘要')
@@ -646,6 +660,7 @@ export async function pipeUpstreamStream(
         latestInspection = inspector.pushChunk(outbound, {
           lightweightImageStream: bodyCaptureOmitted || latestInspection.imageOutputReceived
         })
+        updateStreamInspectionProgress(latestInspection)
         omitBodyCaptureIfImageStream(latestInspection, { eofPendingFlush: true })
         if (latestInspection.skipped && !parserSkipLogged) {
           parserSkipLogged = true
@@ -1059,6 +1074,9 @@ function readNextStreamChunk(
     lastUpstreamActivityAt: number
     lastSseEventActivityAt?: number
     upstreamChunkReceived: boolean
+    semanticResultReceived: boolean
+    pendingProtocolEvent: boolean
+    parserSkipped: boolean
   },
   signal?: AbortSignal
 ): Promise<IteratorResult<Uint8Array>> {
@@ -1079,6 +1097,13 @@ function readNextStreamChunk(
       : new Error(readPlan.timeoutMessage),
     signal
   )
+}
+
+function streamSemanticResultReceived(inspection: GatewayStreamInspection): boolean {
+  return inspection.outputReceived
+    || inspection.imageOutputReceived
+    || inspection.terminalReceived
+    || inspection.failedReceived
 }
 
 async function drainIteratorAfterTerminalForInspection(

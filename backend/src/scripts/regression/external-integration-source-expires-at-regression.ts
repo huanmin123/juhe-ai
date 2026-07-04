@@ -25,7 +25,7 @@ try {
   const source = externalSources.createExternalIntegrationSource({
     name: '外部来源过期时间契约',
     status: 'active',
-    scopes: [externalSources.externalIntegrationIpUsageReadScope],
+    scopes: [externalSources.externalIntegrationGroupListReadScope],
     expiresAt: '2026-06-01T00:00:00Z'
   })
   assert.equal(source.expiresAt, '2026-06-01T00:00:00.000Z', '标准过期时间应按 ISO 入库')
@@ -66,7 +66,7 @@ try {
   assert.throws(() => externalSources.updateExternalIntegrationSourceToken(source.id, token.id, {
     expiresAt: '2026-02-31T00:00:00'
   }), /过期时间无效/, '来源系统 token expiresAt 不应被 Date 自动修正')
-  assert.equal(externalSources.findExternalIntegrationSource(source.id)?.tokens.find((item) => item.id === token.id)?.expiresAt, '2026-06-01T01:00:00.000Z', '非法更新 token expiresAt 不应改变原值')
+  assert.equal(externalSources.findExternalIntegrationSource(source.id)?.tokens?.find((item) => item.id === token.id)?.expiresAt, '2026-06-01T01:00:00.000Z', '非法更新 token expiresAt 不应改变原值')
 
   const clearedToken = externalSources.updateExternalIntegrationSourceToken(source.id, token.id, { expiresAt: null })
   assert.equal(clearedToken?.expiresAt, undefined, '来源系统 token expiresAt 必须用 null 显式清空')

@@ -294,12 +294,8 @@ function policyMatchesRuntimeContext(
   if (hasClientProfileMatcher) {
     if (!context?.clientProfile || !firstExactMatch(context.clientProfile, policy.match.clientProfiles)) return false
   }
-  if (!hasClientProfileMatcher && hasErrorIdentityMatcher(policy.match)) return false
+  if (!hasClientProfileMatcher && policy.match.errorCodes?.length) return false
   return true
-}
-
-function hasErrorIdentityMatcher(match: ResponseInspectionPolicyMatch): boolean {
-  return Boolean(match.errorCodes?.length || match.errorTypes?.length)
 }
 
 function configuredPolicyReason(policy: RuntimeResponseInspectionPolicy, frame: ResponseSemanticFrame, downstreamWritten: boolean): ResponseInspectionDecision['reason'] {

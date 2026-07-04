@@ -217,7 +217,7 @@ function buildPublicApiLog(index: number) {
   return {
     traceId: `trace-worker-local-public-api-${index}`,
     method: 'GET',
-    path: '/__aipublic__/demo/source-auth',
+    path: '/__aipublic__/group/list',
     statusCode: 200,
     success: true,
     durationMs: 1,

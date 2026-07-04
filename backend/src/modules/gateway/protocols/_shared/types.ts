@@ -48,6 +48,7 @@ export interface GatewayStreamInspection {
   eventTypeCounts: Record<string, number>
   lastEventType?: string
   recentEventTypes: string[]
+  pendingEvent: boolean
   skipped: boolean
   skipReason?: string
   errorCode?: string

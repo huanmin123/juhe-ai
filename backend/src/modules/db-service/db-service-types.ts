@@ -29,6 +29,7 @@ import type {
   CodexContextStateBoundary
 } from '../../storage/codex-context-state.repository.js'
 import type { CodexContextStateWriterPoolRuntime } from '../../storage/codex-context-state-writer-pool.js'
+import type { SqliteReadWorkerPoolRuntime } from '../../storage/sqlite-read-worker-pool.js'
 import type {
   OpenAICompatibleFileCreateInput,
   OpenAICompatibleFileListOptions,
@@ -48,6 +49,8 @@ import type {
   OpenAICompatibleVectorStoreSearchOptions,
   OpenAICompatibleVectorStoreSearchResult
 } from '../../storage/openai-compatible-vector-stores.repository.js'
+
+export type DbServiceRequestPriority = 'high' | 'normal' | 'low'
 
 export type AccountRuntimeAvailabilityStatus = 'normal' | 'degraded' | 'local_suppressed' | 'half_open' | 'precheck_pending' | 'precheck_failed'
 
@@ -126,6 +129,7 @@ export interface DbServiceRuntimeSnapshot {
   lastRequestAt?: string
   lastError?: string
   codexContextStateWriterPool?: CodexContextStateWriterPoolRuntime
+  sqliteReadWorkerPool?: SqliteReadWorkerPoolRuntime
 }
 
 export interface DbServiceServerRuntimeSnapshot {
@@ -308,6 +312,7 @@ export interface DbServiceServerRuntimeSnapshot {
     httpHost?: string
     httpPort?: number
     codexContextStateWriterPool?: CodexContextStateWriterPoolRuntime
+    sqliteReadWorkerPool?: SqliteReadWorkerPoolRuntime
   }
   highConcurrencyQueues?: Array<{
     groupKey: string
@@ -920,6 +925,7 @@ export type DbServiceParentMessage =
     type: 'db_service_request'
     requestId: string
     operation: DbServiceOperation
+    priority?: DbServiceRequestPriority
     deadlineAtMs?: number
   }
   | {

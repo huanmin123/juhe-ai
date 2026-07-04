@@ -37,6 +37,6 @@ export function invalidateAccountDetailForAccount(input: {
 export async function loadAccountDetailCached(input: AccountDetailLoadInput): Promise<AccountSummary> {
   const cacheKey = resolveAccountDetailCacheKey(input.isManagementView, input.accountId, input.scopeParams)
   return accountDetailCache.load(cacheKey, () => input.isManagementView
-    ? api.accounts.detail(input.accountId, input.scopeParams)
-    : api.myAccounts.detail(input.accountId), input.force)
+    ? api.accounts.advancedDetail(input.accountId, input.scopeParams)
+    : api.myAccounts.advancedDetail(input.accountId), input.force)
 }

@@ -105,7 +105,7 @@ assert(frontendSystemMetricsSource.includes('filter(isBackgroundTaskRow)') && fr
 assert(!frontendBackgroundJobsSource.includes('队列：') && !frontendBackgroundJobsSource.includes('队列状态') && !frontendBackgroundJobsSource.includes('backgroundJobQueueSummary'), '前端后台任务表不能展示队列摘要，避免把队列误认为任务')
 assert(frontendSystemMetricsSource.includes('<StatsBackgroundQueuesCard') && frontendSystemMetricsSource.includes('buildBackgroundQueueRows(systemMetrics.value)'), '系统指标页必须把后台队列拆到独立列表')
 assert(frontendBackgroundQueuesHelperSource.includes('.flatMap(backgroundQueueRowsFromRuntimeRow)') && frontendBackgroundQueuesHelperSource.includes('row.retryQueue') && frontendBackgroundQueuesHelperSource.includes('row.localQueue'), '后台队列列表必须从 retryQueue 和 localQueue 独立构建')
-for (const columnTitle of ['积压', '活跃', '大小', '已完成', '丢弃', '写入失败', '拒超', '最老等待', '时间', 'Redis Stream']) {
+for (const columnTitle of ['积压', '活跃', '大小', '已完成', '丢弃', '写入失败', '拒绝/超时/失败', '最老等待', '时间', 'Redis Stream']) {
   assert(frontendBackgroundQueuesSource.includes(columnTitle), `后台队列列表必须包含 ${columnTitle} 列`)
 }
 assert(frontendSystemMetricsSource.includes('<a-col :xs="24">\n        <StatsChartCard\n          :title="`进程事件循环延迟'), '系统指标页进程事件循环延迟必须独占整行展示')

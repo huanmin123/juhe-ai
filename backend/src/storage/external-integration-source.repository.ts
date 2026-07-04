@@ -4,7 +4,7 @@ import { runtimeConfig } from '../config/runtime.js'
 import { getBusinessDatabase, newId, nowIso, runInDatabaseTransaction } from './database.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { isBuiltInExternalIntegrationTestSourceId } from './external-integration-source-constants.js'
-import { mapSourceSummary } from './external-integration-source-mappers.js'
+import { mapSourceListItem, mapSourceSummary } from './external-integration-source-mappers.js'
 import {
   encodeRateLimits,
   encodeScopes,
@@ -16,6 +16,8 @@ import {
 import {
   createExternalIntegrationSourceToken,
   createExternalIntegrationSourceTokenInClientAsync,
+  loadExternalIntegrationSourcePrimaryTokensBySourceIds,
+  loadExternalIntegrationSourcePrimaryTokensBySourceIdsAsync,
   loadExternalIntegrationSourceTokensBySourceIds,
   loadExternalIntegrationSourceTokensBySourceIdsAsync,
   syncExternalIntegrationSourceTokenState,
@@ -42,24 +44,23 @@ import { normalizeListPage } from './query-utils.js'
 export {
   builtInExternalIntegrationTestSourceId,
   builtInExternalIntegrationTestTokenId,
-  externalIntegrationAccessInfoReadScope,
   externalIntegrationAccountAddWriteScope,
   externalIntegrationAccountDeleteWriteScope,
   externalIntegrationAccountListReadScope,
   externalIntegrationAccountUpdateWriteScope,
-  externalIntegrationAccountUsageReadScope,
   externalIntegrationApiKeyAddWriteScope,
   externalIntegrationApiKeyDeleteWriteScope,
   externalIntegrationApiKeyListReadScope,
   externalIntegrationApiKeyUpdateWriteScope,
-  externalIntegrationConsumptionRankingReadScope,
   externalIntegrationGroupAddWriteScope,
   externalIntegrationGroupDeleteWriteScope,
   externalIntegrationGroupListReadScope,
   externalIntegrationGroupUpdateWriteScope,
-  externalIntegrationIpUsageReadScope,
-  externalIntegrationScopeOptions,
-  externalIntegrationSourceAuthDemoScope
+  externalIntegrationRouteStrategyAddWriteScope,
+  externalIntegrationRouteStrategyDeleteWriteScope,
+  externalIntegrationRouteStrategyListReadScope,
+  externalIntegrationRouteStrategyUpdateWriteScope,
+  externalIntegrationScopeOptions
 } from './external-integration-source-constants.js'
 
 export { validateExternalIntegrationSourceToken, validateExternalIntegrationSourceTokenAsync } from './external-integration-source-auth.repository.js'
@@ -120,8 +121,17 @@ export function listExternalIntegrationSources(options: ExternalIntegrationSourc
   const rows = getBusinessDatabase().prepare(`
     SELECT
       sources.*,
-      0 AS token_count,
-      0 AS active_token_count
+      (
+        SELECT COUNT(*)
+        FROM external_integration_source_tokens AS tokens
+        WHERE tokens.source_ref_id = sources.id
+      ) AS token_count,
+      (
+        SELECT COUNT(*)
+        FROM external_integration_source_tokens AS tokens
+        WHERE tokens.source_ref_id = sources.id
+          AND tokens.status = 'active'
+      ) AS active_token_count
     FROM external_integration_sources AS sources
     ${whereSql}
     ORDER BY sources.updated_at DESC, sources.id DESC
@@ -129,16 +139,9 @@ export function listExternalIntegrationSources(options: ExternalIntegrationSourc
   `).all(...params, pageSize + 1, offset) as unknown as ExternalIntegrationSourceListRow[]
 
   const pageRows = rows.slice(0, pageSize)
-  const tokensBySourceId = loadExternalIntegrationSourceTokensBySourceIds(pageRows.map((row) => row.id))
+  const primaryTokensBySourceId = loadExternalIntegrationSourcePrimaryTokensBySourceIds(pageRows.map((row) => row.id))
   return {
-    items: pageRows.map((row) => {
-      const tokens = tokensBySourceId.get(row.id) ?? []
-      return mapSourceSummary({
-        ...row,
-        token_count: tokens.length,
-        active_token_count: tokens.filter((token) => token.status === 'active').length
-      }, tokens)
-    }),
+    items: pageRows.map((row) => mapSourceListItem(row, primaryTokensBySourceId.get(row.id))),
     page,
     pageSize,
     pageUpperBound: offset + pageRows.length + (rows.length > pageSize ? 1 : 0),
@@ -169,8 +172,17 @@ export async function listExternalIntegrationSourcesAsync(options: ExternalInteg
   const rows = await client.query<ExternalIntegrationSourceListRow>(`
     SELECT
       sources.*,
-      0 AS token_count,
-      0 AS active_token_count
+      (
+        SELECT COUNT(*)
+        FROM ${externalIntegrationSourceBusinessTable(client, 'external_integration_source_tokens')} AS tokens
+        WHERE tokens.source_ref_id = sources.id
+      ) AS token_count,
+      (
+        SELECT COUNT(*)
+        FROM ${externalIntegrationSourceBusinessTable(client, 'external_integration_source_tokens')} AS tokens
+        WHERE tokens.source_ref_id = sources.id
+          AND tokens.status = 'active'
+      ) AS active_token_count
     FROM ${externalIntegrationSourceBusinessTable(client, 'external_integration_sources')} AS sources
     ${whereSql}
     ORDER BY sources.updated_at DESC, sources.id DESC
@@ -178,16 +190,9 @@ export async function listExternalIntegrationSourcesAsync(options: ExternalInteg
   `, [...params, pageSize + 1, offset])
 
   const pageRows = rows.slice(0, pageSize)
-  const tokensBySourceId = await loadExternalIntegrationSourceTokensBySourceIdsAsync(pageRows.map((row) => row.id), client)
+  const primaryTokensBySourceId = await loadExternalIntegrationSourcePrimaryTokensBySourceIdsAsync(pageRows.map((row) => row.id), client)
   return {
-    items: pageRows.map((row) => {
-      const tokens = tokensBySourceId.get(row.id) ?? []
-      return mapSourceSummary({
-        ...row,
-        token_count: tokens.length,
-        active_token_count: tokens.filter((token) => token.status === 'active').length
-      }, tokens)
-    }),
+    items: pageRows.map((row) => mapSourceListItem(row, primaryTokensBySourceId.get(row.id))),
     page,
     pageSize,
     pageUpperBound: offset + pageRows.length + (rows.length > pageSize ? 1 : 0),

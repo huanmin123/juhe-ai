@@ -62,7 +62,7 @@
           {{ formatOptionalNumber(record.flushFailureCount) }}
         </template>
         <template v-else-if="column.key === 'rejectedTimedOutCount'">
-          {{ formatRejectedTimedOut(record) }}
+          {{ formatRejectedTimedOutFailed(record) }}
         </template>
         <template v-else-if="column.key === 'oldestQueuedMs'">
           {{ formatQueueWait(record) }}
@@ -119,8 +119,8 @@
               <strong>{{ formatOptionalNumber(record.flushFailureCount) }}</strong>
             </div>
             <div class="mobile-list-meta-item">
-              <span>拒超</span>
-              <strong>{{ formatRejectedTimedOut(record) }}</strong>
+              <span>拒绝/超时/失败</span>
+              <strong>{{ formatRejectedTimedOutFailed(record) }}</strong>
             </div>
             <div class="mobile-list-meta-item">
               <span>最老等待</span>
@@ -148,7 +148,7 @@ import { formatDateTime } from '@/shared/formatters'
 import StatsChartCard from './StatsChartCard.vue'
 import { processRoleLabel } from './statsChartOptions'
 import { formatBytesMiB, formatDuration, formatInteger } from './statsFormatters'
-import { backgroundQueueBacklog, backgroundQueueProblemCount, type BackgroundQueueRow } from './statsBackgroundQueues'
+import { backgroundQueueBacklog, backgroundQueueDiagnosticCount, backgroundQueueProblemCount, type BackgroundQueueRow } from './statsBackgroundQueues'
 
 defineProps<{
   emptyDescription: string
@@ -175,7 +175,7 @@ const backgroundQueueColumns = [
   { title: '已完成', key: 'completedCount', width: 96, align: 'right', sorter: sortBackgroundQueueNumber('completedCount') },
   { title: '丢弃', key: 'droppedCount', width: 84, align: 'right', sorter: sortBackgroundQueueNumber('droppedCount') },
   { title: '写入失败', key: 'flushFailureCount', width: 108, align: 'right', sorter: sortBackgroundQueueProblemCount },
-  { title: '拒超', key: 'rejectedTimedOutCount', width: 86, align: 'right', sorter: sortBackgroundQueueProblemCount },
+  { title: '拒绝/超时/失败', key: 'rejectedTimedOutCount', width: 132, align: 'right', sorter: sortBackgroundQueueProblemCount },
   { title: '最老等待', key: 'oldestQueuedMs', width: 110, align: 'right', sorter: sortBackgroundQueueWait },
   { title: '时间', key: 'nextOrSuccessAt', width: 168 },
   { title: '最近错误', key: 'lastError', ellipsis: true }
@@ -199,6 +199,7 @@ function queueTypeLabel(type: BackgroundQueueRow['queueType']): string {
 function queueStatusText(row: BackgroundQueueRow): string {
   if (row.lastError || numberValue(row.flushFailureCount) > 0) return '异常'
   if (backgroundQueueProblemCount(row) > 0) return '异常'
+  if (backgroundQueueDiagnosticCount(row) > 0) return '曾失败'
   if (queueRunningCount(row) > 0) return '运行中'
   if (backgroundQueueBacklog(row) > 0) return row.queueType === 'retry' ? '待执行' : '积压'
   return '空闲'
@@ -206,6 +207,7 @@ function queueStatusText(row: BackgroundQueueRow): string {
 
 function queueStatusColor(row: BackgroundQueueRow): string {
   if (row.lastError || backgroundQueueProblemCount(row) > 0) return 'error'
+  if (backgroundQueueDiagnosticCount(row) > 0) return 'warning'
   if (queueRunningCount(row) > 0) return 'processing'
   if (backgroundQueueBacklog(row) > 0) return 'warning'
   return 'success'
@@ -227,10 +229,11 @@ function formatQueueRunningCount(row: BackgroundQueueRow): string {
   return formatInteger(queueRunningDisplayCount(row))
 }
 
-function formatRejectedTimedOut(row: BackgroundQueueRow): string {
+function formatRejectedTimedOutFailed(row: BackgroundQueueRow): string {
   const rejected = numberValue(row.rejectedCount) + numberValue(row.expiredCount)
-  const timedOut = numberValue(row.timedOutCount) + numberValue(row.failedCount)
-  return `${formatInteger(rejected)} / ${formatInteger(timedOut)}`
+  const timedOut = numberValue(row.timedOutCount)
+  const failed = numberValue(row.failedCount)
+  return `${formatInteger(rejected)} / ${formatInteger(timedOut)} / ${formatInteger(failed)}`
 }
 
 function formatQueueWait(row: BackgroundQueueRow): string {

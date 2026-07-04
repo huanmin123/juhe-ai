@@ -87,7 +87,7 @@ function apiKeySummaryFromRow(
 ): ApiKeySummary {
   const availabilitySchedule = parseApiKeyAvailabilityScheduleJson(row.availability_schedule_json)
   const routeStrategyMode = row.route_strategy_mode ? normalizeRouteStrategyMode(row.route_strategy_mode) : undefined
-  return {
+  const summary: ApiKeySummary = {
     id: row.id,
     systemAccountId: options.shouldIncludeSystemAccountFields ? row.system_account_id : undefined,
     systemAccountName: options.shouldIncludeSystemAccountFields
@@ -97,7 +97,6 @@ function apiKeySummaryFromRow(
     description: row.description ?? undefined,
     keyPrefix: row.key_prefix,
     keySuffix: row.key_suffix,
-    key: options.includeSecret ? decryptApiKeySecret(row.key_secret_encrypted) : '',
     status: row.status,
     isDefault: normalizeApiKeyDefaultFlag(row.is_default),
     routeStrategyId: row.route_strategy_id,
@@ -109,6 +108,10 @@ function apiKeySummaryFromRow(
     availabilitySchedule,
     usage: options.usage
   }
+  if (options.includeSecret) {
+    summary.key = decryptApiKeySecret(row.key_secret_encrypted)
+  }
+  return summary
 }
 
 function normalizeRouteStrategyStatus(value: unknown): ApiKeySummary['routeStrategyStatus'] {

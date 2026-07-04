@@ -118,7 +118,7 @@
               {{ routeStrategyGroupLabel(binding) }}
             </a-tag>
             <a-tag v-if="hiddenGroupBindingCount(record) > 0" color="default">+{{ hiddenGroupBindingCount(record) }}</a-tag>
-            <span v-if="!record.groupBindings.length" class="muted-cell">未绑定</span>
+            <span v-if="!record.bindingCount" class="muted-cell">未绑定</span>
           </div>
         </template>
         <template v-else-if="column.key === 'apiKeyCount'">
@@ -447,7 +447,9 @@ import type {
   ApiKeyHybridQualityPreference,
   ApiKeyHybridRoutingConfig,
   GroupOptionSummary,
+  RouteStrategyGroupBindingPreview,
   RouteStrategyGroupBindingSummary,
+  RouteStrategyListItem,
   RouteStrategyMode,
   RouteStrategyStatus,
   RouteStrategySummary
@@ -527,9 +529,10 @@ const saving = ref(false)
 const modalOpen = ref(false)
 const editingId = ref<string>()
 const editingSystemAccountId = ref<string>()
+let editDetailRequestToken = 0
 const bindingDragSourceIndex = ref<number | null>(null)
 const bindingDragOverIndex = ref<number | null>(null)
-const items = ref<RouteStrategySummary[]>([])
+const items = ref<RouteStrategyListItem[]>([])
 const total = ref(0)
 const page = ref(initialPageState.pagination.current)
 const pageSize = ref(initialPageState.pagination.pageSize)
@@ -864,6 +867,7 @@ function snapshotPageState(): RouteStrategiesPageState {
 }
 
 function openCreate() {
+  editDetailRequestToken += 1
   if (isManagementView.value && !routeStrategyScopeParams.value?.systemAccountId) {
     message.warning('请先在右侧选择目标系统账户，再创建策略路由')
     return
@@ -881,13 +885,27 @@ function openCreate() {
   modalOpen.value = true
 }
 
-function openEdit(record: RouteStrategySummary) {
+async function openEdit(record: RouteStrategyListItem) {
   if (isManagementView.value && !record.systemAccountId?.trim()) {
     message.warning('无法确定策略路由归属系统账户，请刷新后重试')
     return
   }
+  const operationScopeParams = routeStrategyOperationScopeParams(record)
+  const requestToken = editDetailRequestToken + 1
+  editDetailRequestToken = requestToken
+  try {
+    const detail = await routeStrategiesApi.detail(record.id, operationScopeParams)
+    if (requestToken !== editDetailRequestToken) return
+    fillEditForm(detail, record.systemAccountId)
+  } catch (error) {
+    if (requestToken !== editDetailRequestToken) return
+    message.error(extractApiErrorMessage(error, '策略路由详情加载失败'))
+  }
+}
+
+function fillEditForm(record: RouteStrategySummary, fallbackSystemAccountId?: string) {
   editingId.value = record.id
-  editingSystemAccountId.value = record.systemAccountId
+  editingSystemAccountId.value = record.systemAccountId ?? fallbackSystemAccountId
   form.name = record.name
   form.description = record.description ?? ''
   form.mode = record.mode
@@ -958,7 +976,7 @@ async function saveRouteStrategy() {
   }
 }
 
-async function deleteRouteStrategy(record: RouteStrategySummary) {
+async function deleteRouteStrategy(record: RouteStrategyListItem) {
   if (record.isDefault) {
     message.warning('默认路由不能删除')
     return
@@ -1097,7 +1115,7 @@ function createBindingRow(
   }
 }
 
-function routeStrategyOperationScopeParams(record?: Pick<RouteStrategySummary, 'systemAccountId'>): { systemAccountId: string } | undefined {
+function routeStrategyOperationScopeParams(record?: Pick<RouteStrategyListItem | RouteStrategySummary, 'systemAccountId'>): { systemAccountId: string } | undefined {
   const systemAccountId = record?.systemAccountId?.trim()
     || editingSystemAccountId.value?.trim()
     || routeStrategyScopeParams.value?.systemAccountId
@@ -1213,7 +1231,7 @@ function normalizeBindingWeightValue(value: unknown): number {
   return Number.isInteger(numeric) && numeric >= 1 ? numeric : 1
 }
 
-function routeStrategyActions(record: RouteStrategySummary): RowActionItem[] {
+function routeStrategyActions(record: RouteStrategyListItem): RowActionItem[] {
   const actions: RowActionItem[] = [
     { key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' }
   ]
@@ -1230,9 +1248,9 @@ function routeStrategyActions(record: RouteStrategySummary): RowActionItem[] {
   return actions
 }
 
-function handleRouteStrategyAction(key: string, record: RouteStrategySummary) {
+function handleRouteStrategyAction(key: string, record: RouteStrategyListItem) {
   if (key === 'edit') {
-    openEdit(record)
+    void openEdit(record)
     return
   }
   if (key === 'delete') {
@@ -1240,30 +1258,30 @@ function handleRouteStrategyAction(key: string, record: RouteStrategySummary) {
   }
 }
 
-function visibleGroupBindings(record: RouteStrategySummary): RouteStrategyGroupBindingSummary[] {
-  return record.groupBindings.slice(0, 3)
+function visibleGroupBindings(record: RouteStrategyListItem): RouteStrategyGroupBindingPreview[] {
+  return record.groupBindingPreview
 }
 
-function hiddenGroupBindingCount(record: RouteStrategySummary): number {
-  return Math.max(0, record.groupBindings.length - 3)
+function hiddenGroupBindingCount(record: RouteStrategyListItem): number {
+  return Math.max(0, record.bindingCount - record.groupBindingPreview.length)
 }
 
-function routeStrategyGroupSummary(record: RouteStrategySummary): string {
-  if (!record.groupBindings.length) return '未绑定'
+function routeStrategyGroupSummary(record: RouteStrategyListItem): string {
+  if (!record.bindingCount) return '未绑定'
   const visibleNames = visibleGroupBindings(record).map(routeStrategyGroupLabel).join('、')
   const hiddenCount = hiddenGroupBindingCount(record)
-  return hiddenCount > 0 ? `${visibleNames} 等 ${record.groupBindings.length} 个分组` : visibleNames
+  return hiddenCount > 0 ? `${visibleNames} 等 ${record.bindingCount} 个分组` : visibleNames
 }
 
-function routeStrategyGroupLabel(binding: RouteStrategyGroupBindingSummary): string {
+function routeStrategyGroupLabel(binding: RouteStrategyGroupBindingPreview | RouteStrategyGroupBindingSummary): string {
   return binding.groupName || binding.groupId
 }
 
-function routeStrategyGroupTagColor(binding: RouteStrategyGroupBindingSummary): string {
+function routeStrategyGroupTagColor(binding: RouteStrategyGroupBindingPreview | RouteStrategyGroupBindingSummary): string {
   return binding.status === 'active' && binding.groupEnabled ? 'blue' : 'default'
 }
 
-function routeStrategySystemAccountText(record: RouteStrategySummary): string {
+function routeStrategySystemAccountText(record: RouteStrategyListItem | RouteStrategySummary): string {
   return record.systemAccountName || record.systemAccountId || '-'
 }
 

@@ -9,7 +9,7 @@ import type {
   ExternalIntegrationSourceSummary
 } from '@/types/domain'
 
-const sourceAuthDemoScope = 'external_integrations:source_auth_demo:read'
+const defaultPublicScope = 'juhe_ai_public:group_list:read'
 
 export interface ExternalSourceForm {
   name: string
@@ -74,8 +74,8 @@ export function formatRateLimits(rules: ExternalIntegrationRateLimitRule[]): str
 }
 
 function defaultCreateSourceScopes(scopeOptions: ExternalIntegrationScopeOption[]): string[] {
-  return scopeOptions.some((item) => item.value === sourceAuthDemoScope)
-    ? [sourceAuthDemoScope]
+  return scopeOptions.some((item) => item.value === defaultPublicScope)
+    ? [defaultPublicScope]
     : []
 }
 

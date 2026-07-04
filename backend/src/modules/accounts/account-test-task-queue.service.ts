@@ -10,7 +10,7 @@ import {
   runtimeOpenAIAccountCredentials,
   type OpenAIAccountSecret
 } from '../../storage/repositories.js'
-import { accountApiKeyEntries, selectAccountRuntimeApiKey, type AccountApiKeyEntry } from '../../storage/account-api-key-rotation.js'
+import { accountApiKeyEntries, selectAccountRuntimeApiKeyEntryAsync, type AccountApiKeyEntry } from '../../storage/account-api-key-rotation.js'
 import { getSettings } from '../../storage/settings.repository.js'
 import { DEFAULT_SYSTEM_SETTINGS } from '../../storage/schema-defaults.js'
 import type { AccessScope } from '../../storage/access-scope.js'
@@ -1153,12 +1153,19 @@ async function openAIDraftAccountSecret(draft: AccountTestDraftSnapshot, signal:
       ...refreshedCredentials
     }
   }
+  const selectedApiKeyEntry = draft.type === 'api_key'
+    ? await selectAccountRuntimeApiKeyEntryAsync({ accountId: draft.id, credentials })
+    : undefined
   const apiKey = draft.type === 'oauth'
     ? stringCredential(credentials.access_token)
-    : selectAccountRuntimeApiKey({ accountId: draft.id, credentials })
+    : selectedApiKeyEntry?.key
   if (!apiKey) {
     throw new DraftAccountConfigurationError(draft.type === 'oauth' ? 'OAuth 草稿缺少 Access Token' : '账户草稿缺少 API Key')
   }
+  const runtimeCredentials = runtimeOpenAIAccountCredentials({
+    ...credentials,
+    ...(draft.type === 'api_key' ? { api_key: apiKey } : {})
+  })
   const baseUrl = stringCredential(credentials.base_url) || 'https://api.openai.com/v1'
   return {
     id: draft.id,
@@ -1185,6 +1192,8 @@ async function openAIDraftAccountSecret(draft: AccountTestDraftSnapshot, signal:
     baseUrl,
     apiKey,
     apiKeys: draft.type === 'api_key' ? accountApiKeyEntries(credentials).map((entry) => entry.key) : undefined,
+    selectedApiKeyFingerprint: selectedApiKeyEntry?.fingerprint,
+    selectedApiKeyIndex: selectedApiKeyEntry?.index,
     refreshToken: stringCredential(credentials.refresh_token) || undefined,
     clientId: stringCredential(credentials.client_id) || undefined,
     proxyProfileId: draft.proxyProfileId,
@@ -1194,7 +1203,7 @@ async function openAIDraftAccountSecret(draft: AccountTestDraftSnapshot, signal:
     streamFailureCount: 0,
     accountExpiresAt: draft.accountExpiresAt,
     expiresAt: stringCredential(credentials.expires_at) || undefined,
-    credentials: runtimeOpenAIAccountCredentials(credentials)
+    credentials: runtimeCredentials
   }
 }
 

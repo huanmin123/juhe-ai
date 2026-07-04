@@ -7,6 +7,9 @@ import {
   type ParsedUsage
 } from '../../usage/types.js'
 import {
+  hasPendingSseProtocolEvent
+} from '../_shared/sse-pending-event.js'
+import {
   getGatewayRequestBodyState,
   type GatewayRawBodyRequest
 } from '../../request/body.js'
@@ -32,6 +35,7 @@ export interface GeminiStreamInspection {
   eventTypeCounts: Record<string, number>
   lastEventType?: string
   recentEventTypes: string[]
+  pendingEvent: boolean
   skipped: boolean
   skipReason?: string
   errorCode?: string
@@ -116,6 +120,7 @@ export class GeminiStreamInspector {
     eventCount: 0,
     eventTypeCounts: {},
     recentEventTypes: [],
+    pendingEvent: false,
     skipped: false,
     usage: emptyUsage()
   }
@@ -163,6 +168,13 @@ export class GeminiStreamInspector {
       ...this.inspection,
       eventTypeCounts: { ...this.inspection.eventTypeCounts },
       recentEventTypes: [...this.inspection.recentEventTypes],
+      pendingEvent: hasPendingSseProtocolEvent({
+        skipped: this.inspection.skipped,
+        eventName: this.eventName,
+        dataLineCount: this.dataLines.length,
+        dataBytes: this.dataBytes,
+        pendingLine: this.pendingLine
+      }),
       usage: { ...this.inspection.usage }
     }
   }

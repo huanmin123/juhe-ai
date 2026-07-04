@@ -14,6 +14,7 @@ import type {
   DbServiceOperation,
   DbServiceOperationResult,
   DbServiceParentMessage,
+  DbServiceRequestPriority,
   DbServiceRuntimeQueueSnapshot,
   DbServiceRuntimeSnapshot,
   DbServiceServerRuntimeSnapshot,
@@ -36,6 +37,11 @@ class DbServiceRequestTimedOutError extends Error {
 }
 
 class DbServiceRequestQueueFullError extends Error {
+}
+
+export interface RequestDbServiceOptions {
+  timeoutMs?: number
+  priority?: DbServiceRequestPriority
 }
 
 interface DbServiceState {
@@ -145,7 +151,7 @@ export function attachDbServiceProcess(child: ChildProcess, options: { onReady?:
 
 export async function requestDbService<T extends DbServiceOperation>(
   operation: T,
-  options: { timeoutMs?: number } = {}
+  options: RequestDbServiceOptions = {}
 ): Promise<DbServiceOperationResult<T>> {
   if (runtimeConfig.processRole === 'db-service') {
     return await runLocalDbServiceOperation(operation)
@@ -172,11 +178,14 @@ export async function requestDbService<T extends DbServiceOperation>(
   }
   const requestId = randomUUID()
   const timeoutMs = options.timeoutMs ?? requestTimeoutMs
-  const message: DbServiceParentMessage = {
+  const message: Extract<DbServiceParentMessage, { type: 'db_service_request' }> = {
     type: 'db_service_request',
     requestId,
     operation,
     deadlineAtMs: Date.now() + timeoutMs
+  }
+  if (options.priority) {
+    message.priority = options.priority
   }
   try {
     return await new Promise<DbServiceOperationResult<T>>((resolve, reject) => {
@@ -1093,7 +1102,8 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
       unavailableCircuitOpenUntil: dbServiceState.unavailableCircuitOpenUntil,
       httpHost: dbServiceState.httpHost,
       httpPort: dbServiceState.httpPort,
-      codexContextStateWriterPool: dbServiceState.lastSnapshot?.codexContextStateWriterPool
+      codexContextStateWriterPool: dbServiceState.lastSnapshot?.codexContextStateWriterPool,
+      sqliteReadWorkerPool: dbServiceState.lastSnapshot?.sqliteReadWorkerPool
     },
     highConcurrencyQueues: highConcurrencyQueue.highConcurrencyGroupQueueSnapshot(),
     gatewayAccountSideEffects: { ...gatewaySideEffects.getGatewayAccountSideEffectState() },

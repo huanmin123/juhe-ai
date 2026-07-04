@@ -19,7 +19,7 @@
           <a-input v-model:value="sourceRefIdModel" allow-clear placeholder="extsrc_xxx" @press-enter="emit('search')" />
         </a-form-item>
         <a-form-item label="接口路径">
-          <a-input v-model:value="pathModel" allow-clear placeholder="/__aipublic__/access/info" @press-enter="emit('search')" />
+          <a-input v-model:value="pathModel" allow-clear placeholder="/__aipublic__/api-key/list" @press-enter="emit('search')" />
         </a-form-item>
         <a-form-item label="状态码">
           <a-input v-model:value="statusCodeModel" allow-clear placeholder="200 / 401 / 500" @press-enter="emit('search')" />
@@ -48,7 +48,7 @@
           <a-input v-model:value="sourceRefIdModel" allow-clear placeholder="extsrc_xxx" />
         </a-form-item>
         <a-form-item label="接口路径">
-          <a-input v-model:value="pathModel" allow-clear placeholder="/__aipublic__/access/info" />
+          <a-input v-model:value="pathModel" allow-clear placeholder="/__aipublic__/api-key/list" />
         </a-form-item>
         <a-form-item label="状态码">
           <a-input v-model:value="statusCodeModel" allow-clear placeholder="200 / 401 / 500" />

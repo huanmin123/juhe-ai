@@ -16,6 +16,7 @@ import { createPostgresDatabaseClient, createSqliteDatabaseClient, type Database
 import { getPostgresPool } from './postgres-client.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { parseJsonArray } from './value-utils.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import {
   findProviderDefaultTestModelPreference,
   findProviderDefaultTestModelPreferenceAsync
@@ -57,6 +58,10 @@ const maxProviderProtocolProfiles = 200
 const businessSchemaName = 'juhe_business'
 
 export function listProviders(): ProviderDefinition[] {
+  return listProvidersReadOnly()
+}
+
+export function listProvidersReadOnly(): ProviderDefinition[] {
   const rows = getBusinessDatabase()
     .prepare(`
       SELECT id, code, name, parent_code, description, enabled, default_supported_models_json
@@ -80,6 +85,14 @@ export function listProviders(): ProviderDefinition[] {
 }
 
 export async function listProvidersAsync(): Promise<ProviderDefinition[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    if (sqliteReadWorkerPoolEnabled()) {
+      return requestSqliteReadWorker({
+        type: 'list_providers_read_only'
+      })
+    }
+    return listProvidersReadOnly()
+  }
   const client = await getProviderDatabaseClient()
   const rows = await client.query<ProviderRow>(`
     SELECT id, code, name, parent_code, description, enabled, default_supported_models_json

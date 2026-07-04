@@ -37,6 +37,7 @@ type ReadonlyValue<T> = {
 
 interface UseAccountEditSaveFlowOptions {
   accountCreatePayloadWithActivationTest: (payload: AccountSavePayload) => AccountSavePayload & { status?: 'active'; activationTestTaskId?: string }
+  accountAdvancedDetailLoaded: ReadonlyValue<boolean>
   accountErrorPolicyRules: Ref<AccountErrorPolicyRuleForm[]>
   accountResponseInspectionRules: Ref<AccountResponseInspectionRuleForm[]>
   accounts: ReadonlyValue<AccountSummary[]>
@@ -67,6 +68,11 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
   const saveAccount = submitAction('accounts.save', async () => {
     if (options.editingAuthorizedAccount.value) {
       await saveAuthorizedAccountEdit()
+      return
+    }
+
+    if (options.editingId.value && !options.accountAdvancedDetailLoaded.value) {
+      await saveBasicAccountEdit()
       return
     }
 
@@ -184,6 +190,51 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
     } catch (error) {
       console.error(error)
       message.error(options.extractApiErrorMessage(error, '保存授权账户失败'))
+    }
+  }
+
+  async function saveBasicAccountEdit(): Promise<void> {
+    if (!options.editingId.value) return
+    if (!options.form.name.trim()) {
+      message.warning('请填写账户名称')
+      return
+    }
+    if (!options.form.groupId) {
+      message.warning('请选择加入分组')
+      return
+    }
+    const concurrencyLimit = Number(options.form.concurrencyLimit)
+    if (!Number.isFinite(concurrencyLimit) || concurrencyLimit < 1) {
+      message.warning('并发上限必须是大于 0 的整数')
+      return
+    }
+    const priority = Number(options.form.priority)
+    if (!Number.isFinite(priority) || priority < 0) {
+      message.warning('优先级必须是大于等于 0 的整数')
+      return
+    }
+    const payload = {
+      name: options.form.name.trim(),
+      concurrencyLimit: Math.trunc(concurrencyLimit),
+      priority: Math.trunc(priority),
+      groupId: options.form.groupId,
+      tags: normalizeFormTagNames(options.form.tags),
+      notes: options.form.notes
+    }
+    try {
+      if (options.isManagementView.value) {
+        await api.accounts.update(options.editingId.value, payload, options.editingAccountScopeParams())
+      } else {
+        await api.myAccounts.update(options.editingId.value, payload)
+      }
+      invalidateAccountDetailOptions(options.editingId.value, options.editingAccountScopeParams())
+      invalidateAccountTagOptions(options.editingAccountScopeParams())
+      message.success('账户基础信息已更新')
+      options.modalOpen.value = false
+      await options.loadData()
+    } catch (error) {
+      console.error(error)
+      message.error(options.extractApiErrorMessage(error, '保存账户失败'))
     }
   }
 

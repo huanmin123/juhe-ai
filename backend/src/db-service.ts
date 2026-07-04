@@ -1,6 +1,7 @@
 import type { Server } from 'node:http'
 
 import { runtimeConfig } from './config/runtime.js'
+import { dbServiceOperationAccessMode, shouldQueueDbServiceOperationForDriver } from './modules/db-service/db-service-operation-access-mode.js'
 import { dbServiceOperationPriority, type DbServiceOperationPriority } from './modules/db-service/db-service-request-priority.js'
 import { handleDbServiceParentRuntimeMessage } from './modules/db-service/db-service-ipc.js'
 import {
@@ -9,7 +10,7 @@ import {
   setDbServiceQueueRuntimeProvider,
   type DbServiceQueueRuntimeMetrics
 } from './modules/db-service/db-service-handlers.js'
-import type { DbServiceOperation, DbServiceParentMessage } from './modules/db-service/db-service-types.js'
+import type { DbServiceParentMessage } from './modules/db-service/db-service-types.js'
 import { enqueueRuntimeLogLine } from './modules/runtime-logs/runtime-log-index-queue.service.js'
 import { setRuntimeLogLineSink } from './modules/runtime-logs/runtime-log-stream.js'
 import { createSystemApiApp } from './modules/system-api/system-api-app.js'
@@ -46,24 +47,6 @@ const dbServiceRequestQueueMaxBytes = 128 * 1024 * 1024
 const dbServiceHighDispatchesBeforeNormal = 8
 const dbServiceHighDispatchesBeforeLow = 16
 const dbServiceConcurrentRequestMaxActive = 8
-const postgresConcurrentDbServiceOperationTypes = new Set<DbServiceOperation['type']>([
-  'list_public_global_settings',
-  'validate_gateway_api_key',
-  'read_gateway_settings',
-  'resolve_group_usage_access',
-  'list_openai_accounts_for_group',
-  'list_openai_accounts_for_group_result',
-  'list_recoverable_unavailable_openai_accounts_for_group',
-  'read_gateway_runtime',
-  'list_provider_model_catalog',
-  'check_api_key_quota',
-  'check_authorization_quota',
-  'check_authorization_quota_batch',
-  'find_openai_oauth_account_for_refresh',
-  'list_active_client_ip_policies',
-  'list_active_response_inspection_policies',
-  'status'
-])
 let queuedDbServiceRequestBytes = 0
 let dbServiceRequestQueueDraining = false
 let dbServiceRequestQueueDrainScheduled = false
@@ -125,11 +108,37 @@ async function handleParentMessage(message: unknown): Promise<void> {
     return
   }
 
-  enqueueDbServiceRequest(message)
+  if (isDbServiceRequestMessageExpired(message)) {
+    queueExpiredCount += 1
+    rejectDbServiceRequest(message, '本地数据库服务请求已过期，请稍后重试')
+    return
+  }
+
+  if (shouldQueueDbServiceRequest(message)) {
+    enqueueDbServiceRequest(message)
+    return
+  }
+
+  dispatchDbServiceRequestImmediately(message)
+}
+
+function shouldQueueDbServiceRequest(message: DbServiceRequestParentMessage): boolean {
+  return shouldQueueDbServiceOperationForDriver(message.operation, runtimeConfig.databaseDriver)
+}
+
+function dispatchDbServiceRequestImmediately(message: DbServiceRequestParentMessage): void {
+  activeConcurrentRequestCount += 1
+  maxActiveConcurrentRequestCount = Math.max(maxActiveConcurrentRequestCount, activeConcurrentRequestCount)
+  void respondToDbServiceRequest(message).finally(() => {
+    activeConcurrentRequestCount = Math.max(0, activeConcurrentRequestCount - 1)
+    if (hasDispatchableDbServiceRequests()) {
+      scheduleDbServiceRequestQueueDrain()
+    }
+  })
 }
 
 function enqueueDbServiceRequest(message: DbServiceRequestParentMessage): void {
-  const priority = dbServiceOperationPriority(message.operation)
+  const priority = dbServiceRequestPriorityForMessage(message)
   const estimatedBytes = estimateDbServiceQueuedRequestBytes(message)
   purgeExpiredDbServiceRequests()
   if (!canQueueDbServiceRequest(estimatedBytes)) {
@@ -156,6 +165,17 @@ function enqueueDbServiceRequest(message: DbServiceRequestParentMessage): void {
   queuedDbServiceRequestBytes += estimatedBytes
   scheduleDbServiceRequestQueueDrain()
   scheduleDbServiceRequestQueueExpirySweep()
+}
+
+function dbServiceRequestPriorityForMessage(message: DbServiceRequestParentMessage): DbServiceOperationPriority {
+  return normalizeDbServiceRequestPriority(message.priority) ?? dbServiceOperationPriority(message.operation)
+}
+
+function normalizeDbServiceRequestPriority(value: unknown): DbServiceOperationPriority | undefined {
+  if (value === 'high' || value === 'normal' || value === 'low') {
+    return value
+  }
+  return undefined
 }
 
 function scheduleDbServiceRequestQueueDrain(): void {
@@ -339,8 +359,10 @@ function shouldDispatchDbServiceRequestConcurrently(message: DbServiceRequestPar
   if (runtimeConfig.databaseDriver === 'sqlite' && isCodexContextStateWriterPoolOperation(message.operation)) {
     return true
   }
+  const accessMode = dbServiceOperationAccessMode(message.operation)
   return runtimeConfig.databaseDriver === 'postgres'
-    && postgresConcurrentDbServiceOperationTypes.has(message.operation.type)
+    || accessMode === 'read'
+    || accessMode === 'runtime'
 }
 
 async function yieldDbServiceRequestQueue(): Promise<void> {
@@ -476,7 +498,11 @@ function shiftDbServiceRequestFromQueueAt(priority: DbServiceOperationPriority, 
 }
 
 function isQueuedDbServiceRequestExpired(request: QueuedDbServiceRequest): boolean {
-  const deadlineAtMs = request.message.deadlineAtMs
+  return isDbServiceRequestMessageExpired(request.message)
+}
+
+function isDbServiceRequestMessageExpired(message: DbServiceRequestParentMessage): boolean {
+  const deadlineAtMs = message.deadlineAtMs
   return typeof deadlineAtMs === 'number' && Number.isFinite(deadlineAtMs) && deadlineAtMs <= Date.now()
 }
 

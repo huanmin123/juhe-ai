@@ -28,6 +28,7 @@ export function mockPublicWelfareAccountPush(input: PublicAccountPushInput | Pub
   const targetDisplayName = 'targetDisplayName' in input ? normalizedText(input.targetDisplayName) : ''
   const groupName = normalizedText(input.targetGroupName) || '福利'
   const providerCode = normalizedText(input.providerCode) || 'gpt'
+  const providerProtocolProfileId = normalizedText(input.providerProtocolProfileId) || 'profile_gpt_openai_v1'
   const accountName = normalizedText(input.name) || '公益站测试账号'
   return {
     source: 'mock',
@@ -46,6 +47,9 @@ export function mockPublicWelfareAccountPush(input: PublicAccountPushInput | Pub
       id: 'mock_account_public_welfare',
       name: accountName,
       providerCode,
+      providerProtocolProfileId,
+      protocolCode: 'openai',
+      protocolVersion: 'v1',
       type: 'api_key',
       clientCompatibility: 'openai_standard',
       status: input.status === 'disabled' ? 'disabled' : 'active',
@@ -61,6 +65,7 @@ export function mockPublicWelfareAccountList(input: PublicAccountListInput): Pub
   const username = normalizedText(input.targetUsername) || 'huanmin'
   const groupName = normalizedText(input.targetGroupName) || '福利'
   const providerCode = normalizedText(input.providerCode) || 'mock_provider'
+  const providerProtocolProfileId = normalizedText(input.providerProtocolProfileId) || 'profile_gpt_openai_v1'
   return {
     source: 'mock',
     generatedAt: new Date().toISOString(),
@@ -79,6 +84,9 @@ export function mockPublicWelfareAccountList(input: PublicAccountListInput): Pub
         id: 'mock_account_public_welfare',
         name: normalizedText(input.keyword) || '公益站测试账号',
         providerCode,
+        providerProtocolProfileId,
+        protocolCode: 'openai',
+        protocolVersion: 'v1',
         type: 'api_key',
         clientCompatibility: 'openai_standard',
         status: 'active',
@@ -98,6 +106,7 @@ export function mockPublicWelfareAccountDelete(input: PublicAccountDeleteInput):
   const username = normalizedText(input.targetUsername) || 'huanmin'
   const groupName = normalizedText(input.targetGroupName) || '福利'
   const providerCode = normalizedText(input.providerCode) || 'gpt'
+  const providerProtocolProfileId = normalizedText(input.providerProtocolProfileId) || 'profile_gpt_openai_v1'
   const accountId = normalizedText(input.accountId) || 'mock_account_public_welfare'
   return {
     source: 'mock',
@@ -116,6 +125,9 @@ export function mockPublicWelfareAccountDelete(input: PublicAccountDeleteInput):
       id: accountId,
       name: accountId,
       providerCode,
+      providerProtocolProfileId,
+      protocolCode: 'openai',
+      protocolVersion: 'v1',
       type: 'api_key',
       clientCompatibility: 'openai_standard',
       status: 'disabled',

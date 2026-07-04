@@ -374,7 +374,7 @@ onMounted(() => {
 async function loadData(): Promise<void> {
   loading.value = true
   try {
-    await loadUsageStatsWindow()
+    await loadUsageStatsWindow({ force: true })
     const result = await api.ipStats.list(buildListParams())
     rows.value = result.items
     pagination.current = result.page

@@ -133,7 +133,7 @@ const sourceSaving = ref(false)
 const editingSourceId = ref<string>()
 const sourceForm = reactive<ExternalSourceForm>(createEmptySourceForm())
 
-const builtInSourceDescription = '已授权全部公开接口；复制完整 Token 调用 /__aipublic__ 接口时只返回 Mock 数据，可用于对接请求头、参数和响应解析。'
+const builtInSourceDescription = '已授权全部公开资源维护接口；复制完整 Token 调用 /__aipublic__ 接口时只返回 Mock 数据，可用于对接请求头、参数和响应解析。'
 const {
   createdTokenOpen,
   createdTokenPlain,
@@ -183,9 +183,10 @@ async function loadScopes(): Promise<void> {
     scopeOptions.value = await api.externalIntegrationSources.scopes()
   } catch {
     scopeOptions.value = [
-      { value: 'external_integrations:source_auth_demo:read', label: 'GET 来源鉴权 Demo' },
-      { value: 'juhe_ai_public:ip_usage:read', label: 'GET IP 维度消费聚合' },
-      { value: 'juhe_ai_public:account_usage:read', label: 'GET 账号维度实际消耗聚合' }
+      { value: 'juhe_ai_public:api_key_list:read', label: 'GET API Key 列表' },
+      { value: 'juhe_ai_public:route_strategy_list:read', label: 'GET 路由策略列表' },
+      { value: 'juhe_ai_public:group_list:read', label: 'GET 分组列表' },
+      { value: 'juhe_ai_public:account_list:read', label: 'GET 账号列表' }
     ]
   }
 }
@@ -274,10 +275,17 @@ function openCreateSource(): void {
   sourceModalOpen.value = true
 }
 
-function openEditSource(record: ExternalIntegrationSourceSummary): void {
+async function openEditSource(record: ExternalIntegrationSourceSummary): Promise<void> {
+  let detail: ExternalIntegrationSourceSummary
+  try {
+    detail = await api.externalIntegrationSources.detail(record.id)
+  } catch (error) {
+    message.error(extractApiErrorMessage(error, '加载来源授权详情失败'))
+    return
+  }
   let nextForm: ExternalSourceForm
   try {
-    nextForm = createSourceFormFromRecord(record)
+    nextForm = createSourceFormFromRecord(detail)
   } catch (error) {
     message.error(extractApiErrorMessage(error, '来源授权数据异常，请清理后再编辑'))
     return
@@ -360,7 +368,7 @@ function sourceActions(record: ExternalIntegrationSourceSummary): RowActionItem[
 
 function handleSourceAction(key: string, record: ExternalIntegrationSourceSummary): void {
   if (key === 'edit') {
-    openEditSource(record)
+    void openEditSource(record)
     return
   }
   if (key === 'enable' || key === 'disable') {
