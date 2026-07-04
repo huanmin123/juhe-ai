@@ -39,7 +39,8 @@ export interface ExternalIntegrationSourceSummary {
   updatedAt: string
   tokenCount: number
   activeTokenCount: number
-  tokens: ExternalIntegrationSourceTokenSummary[]
+  tokens?: ExternalIntegrationSourceTokenSummary[]
+  primaryToken?: ExternalIntegrationSourceTokenSummary
   isBuiltIn: boolean
 }
 

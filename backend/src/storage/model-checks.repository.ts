@@ -480,7 +480,7 @@ export function listModelCheckRuns(access?: AccessScope, options: ModelCheckRunL
   const filters = buildModelCheckRunFilters(access, normalized)
   const rows = getDatasetDatabase()
     .prepare(`
-      SELECT *
+      SELECT ${modelCheckRunListSelectColumns('mcr')}
       FROM model_check_runs mcr
       ${filters.clause}
       ORDER BY mcr.created_at DESC, mcr.id DESC
@@ -489,7 +489,7 @@ export function listModelCheckRuns(access?: AccessScope, options: ModelCheckRunL
     .all(...filters.params, normalized.pageSize + 1, (normalized.page - 1) * normalized.pageSize) as unknown as ModelCheckRunRow[]
   const pageRows = takePageRows(rows, normalized.pageSize)
   const accountNames = loadModelCheckTargetNameMap(pageRows.rows)
-  const items = pageRows.rows.map((row) => modelCheckRunFromRow(row, includeSystemAccountFields(access), accountNames))
+  const items = pageRows.rows.map((row) => modelCheckRunFromRow(row, includeSystemAccountFields(access), accountNames, { includeSummaries: false }))
   return {
     items,
     total: pagedTotalUpperBound(normalized.page, normalized.pageSize, items.length, pageRows.hasMore),
@@ -520,8 +520,11 @@ export function getModelCheckRunDetail(runId: string, access?: AccessScope): Mod
       ORDER BY created_at ASC, id ASC
     `)
     .all(runId) as unknown as ModelCheckItemRow[]
+  const run = modelCheckRunFromRow(row, includeSystemAccountFields(access), accountNames)
   return {
-    ...modelCheckRunFromRow(row, includeSystemAccountFields(access), accountNames),
+    ...run,
+    requestSummary: run.requestSummary ?? {},
+    resultSummary: run.resultSummary ?? {},
     checks: checks.map(modelCheckItemFromRow)
   }
 }
@@ -547,8 +550,11 @@ export async function getModelCheckRunDetailAsync(runId: string, access?: Access
     WHERE run_id = ?
     ORDER BY created_at ASC, id ASC
   `, [runId])
+  const run = modelCheckRunFromRow(row, includeSystemAccountFields(access), accountNames)
   return {
-    ...modelCheckRunFromRow(row, includeSystemAccountFields(access), accountNames),
+    ...run,
+    requestSummary: run.requestSummary ?? {},
+    resultSummary: run.resultSummary ?? {},
     checks: checks.map(modelCheckItemFromRow)
   }
 }
@@ -561,7 +567,7 @@ export async function listModelCheckRunsAsync(access?: AccessScope, options: Mod
   const normalized = normalizeListOptions(options)
   const filters = buildModelCheckRunFilters(access, normalized)
   const rows = await client.query<ModelCheckRunRow>(`
-    SELECT *
+    SELECT ${modelCheckRunListSelectColumns('mcr')}
     FROM ${modelCheckTable(client, 'model_check_runs')} mcr
     ${filters.clause}
     ORDER BY mcr.created_at DESC, mcr.id DESC
@@ -569,7 +575,7 @@ export async function listModelCheckRunsAsync(access?: AccessScope, options: Mod
   `, [...filters.params, normalized.pageSize + 1, (normalized.page - 1) * normalized.pageSize])
   const pageRows = takePageRows(rows, normalized.pageSize)
   const accountNames = await loadModelCheckTargetNameMapAsync(client, pageRows.rows)
-  const items = pageRows.rows.map((row) => modelCheckRunFromRow(row, includeSystemAccountFields(access), accountNames))
+  const items = pageRows.rows.map((row) => modelCheckRunFromRow(row, includeSystemAccountFields(access), accountNames, { includeSummaries: false }))
   return {
     items,
     total: pagedTotalUpperBound(normalized.page, normalized.pageSize, items.length, pageRows.hasMore),
@@ -673,7 +679,50 @@ function modelCheckTable(client: DatabaseClient, tableName: string): string {
     : client.dialect.quoteIdentifier(tableName)
 }
 
-function modelCheckRunFromRow(row: ModelCheckRunRow, showSystemAccountFields: boolean, accountNames: Map<string, string> = new Map()): ModelCheckRunSummary {
+function modelCheckRunListSelectColumns(alias: string): string {
+  const prefix = `${alias}.`
+  return [
+    'id',
+    'system_account_id',
+    'actor_system_account_id',
+    'provider_code',
+    'target_type',
+    'target_id',
+    'target_name',
+    'target_owner_system_account_id',
+    'account_id',
+    'group_id',
+    'api_key_id',
+    'model',
+    'profile',
+    'trusted_comparison_enabled',
+    'trusted_comparison_available',
+    'level',
+    'score',
+    'max_score',
+    'status',
+    'message',
+    'trace_id',
+    'probe_set_version',
+    'started_at',
+    'finished_at',
+    'duration_ms',
+    'error_code',
+    'error_message',
+    'created_at',
+    'updated_at'
+  ].map((column) => `${prefix}${column}`).concat([
+    "'{}' AS request_summary_json",
+    "'{}' AS result_summary_json"
+  ]).join(', ')
+}
+
+function modelCheckRunFromRow(
+  row: ModelCheckRunRow,
+  showSystemAccountFields: boolean,
+  accountNames: Map<string, string> = new Map(),
+  options: { includeSummaries?: boolean } = { includeSummaries: true }
+): ModelCheckRunSummary {
   const targetName = row.target_name?.trim() || accountNames.get(row.account_id ?? row.target_id)
   return {
     id: row.id,
@@ -701,8 +750,10 @@ function modelCheckRunFromRow(row: ModelCheckRunRow, showSystemAccountFields: bo
     startedAt: row.started_at,
     finishedAt: row.finished_at ?? undefined,
     durationMs: typeof row.duration_ms === 'number' ? row.duration_ms : undefined,
-    requestSummary: parseJsonRecord(row.request_summary_json),
-    resultSummary: parseJsonRecord(row.result_summary_json),
+    ...(options.includeSummaries === false ? {} : {
+      requestSummary: parseJsonRecord(row.request_summary_json),
+      resultSummary: parseJsonRecord(row.result_summary_json)
+    }),
     errorCode: row.error_code ?? undefined,
     errorMessage: row.error_message ?? undefined,
     createdAt: row.created_at,

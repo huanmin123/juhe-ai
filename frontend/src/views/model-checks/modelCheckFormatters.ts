@@ -86,7 +86,7 @@ export function formatModelCheckDuration(value?: number): string {
 }
 
 export function evidenceCompletenessText(run: Pick<ModelCheckRunSummary, 'resultSummary'>): string {
-  const summary = recordValue(run.resultSummary.evidenceCompleteness)
+  const summary = recordValue(run.resultSummary?.evidenceCompleteness)
   const score = numberValue(summary?.evidenceCompletenessScore)
   const scored = numberValue(summary?.scoredEvidenceProbeCount)
   const total = numberValue(summary?.evidenceProbeCount)

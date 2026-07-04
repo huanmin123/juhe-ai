@@ -60,6 +60,9 @@ export function useScopedGroupsApi(isManagementView: Ref<boolean>) {
     listPage: (params?: GroupListParams) => isManagementView.value
       ? api.groups.listPage(params)
       : api.myGroups.listPage(params),
+    detail: (id: string, params?: GroupMutationScopeParams) => isManagementView.value
+      ? api.groups.detail(id, params)
+      : api.myGroups.detail(id),
     options: (params?: GroupOptionParams) => isManagementView.value
       ? api.groups.options(params)
       : api.myGroups.options(params),
@@ -144,6 +147,9 @@ export function useScopedSystemTeamsApi(isManagementView: Ref<boolean>) {
   return {
     list: (params?: SystemTeamListParams) => isManagementView.value
       ? api.systemTeams.list(params)
-      : api.myTeams.list(params)
+      : api.myTeams.list(params),
+    detail: (id: string, params?: SystemTeamListParams) => isManagementView.value
+      ? api.systemTeams.detail(id, params)
+      : api.myTeams.detail(id)
   }
 }

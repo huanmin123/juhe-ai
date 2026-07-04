@@ -55,9 +55,9 @@ export function granteeSourceLabel(item: ResourceAuthorizationSummary): string |
   if (item.effectiveSourceType === 'team') {
     return '团队'
   }
-  const activeSources = item.authorizationSources?.filter((source) => source.status === 'active') ?? []
-  const manual = activeSources.some((source) => source.sourceType === 'manual')
-  const team = activeSources.find((source) => source.sourceType === 'team')
+  const sourceSummary = authorizationSourceSummary(item)
+  const manual = sourceSummary.hasManual
+  const team = sourceSummary.hasTeam
   if (manual && team) return '个人+团队'
   if (manual) return '个人'
   if (team) return '团队'
@@ -78,7 +78,7 @@ export function granteeTargetName(item: ResourceAuthorizationSummary): string {
       ?? '团队'
   }
   if (item.effectiveSourceType === 'team') {
-    const teamSource = item.authorizationSources?.find((source) => source.sourceType === 'team' && source.status === 'active')
+    const teamSource = authorizationSourceSummary(item).teamSources[0]
     return item.effectiveSourceTeamName
       ?? teamSource?.sourceTeamName
       ?? item.granteeSystemAccountName
@@ -104,16 +104,16 @@ export function authorizationDirectionColor(item: ResourceAuthorizationSummary, 
 
 export function hasManualSource(item: ResourceAuthorizationSummary): boolean {
   if (item.granteeType === 'team') return false
-  return item.authorizationSources?.some((source) => source.sourceType === 'manual' && source.status === 'active') ?? false
+  return authorizationSourceSummary(item).hasManual
 }
 
 export function canRevokeAuthorization(item: ResourceAuthorizationSummary): boolean {
   return item.status !== 'revoked' && item.status !== 'returned'
 }
 
-export function activeTeamSources(item: ResourceAuthorizationSummary): AuthorizationSourceSummary[] {
+export function activeTeamSources(item: ResourceAuthorizationSummary): Array<Pick<AuthorizationSourceSummary, 'sourceTeamId' | 'sourceTeamName'>> {
   if (item.granteeType === 'team') return []
-  return item.authorizationSources?.filter((source) => source.sourceType === 'team' && source.status === 'active' && source.sourceTeamId) ?? []
+  return authorizationSourceSummary(item).teamSources
 }
 
 export function authorizationRevokeActionCount(item: ResourceAuthorizationSummary): number {
@@ -202,3 +202,19 @@ export function sumUsageSummaries(items: Array<Partial<AccountUsageSummary> | un
 }
 
 export { formatDateTime, formatNumber, formatServerDateTimeInput, parseStrictDatePickerValue }
+
+function authorizationSourceSummary(item: ResourceAuthorizationSummary) {
+  if (item.sourceSummary) return item.sourceSummary
+  const activeSources = item.authorizationSources?.filter((source) => source.status === 'active') ?? []
+  return {
+    activeSourceCount: activeSources.length,
+    hasManual: activeSources.some((source) => source.sourceType === 'manual'),
+    hasTeam: activeSources.some((source) => source.sourceType === 'team'),
+    teamSources: activeSources
+      .filter((source) => source.sourceType === 'team' && Boolean(source.sourceTeamId))
+      .map((source) => ({
+        sourceTeamId: source.sourceTeamId!,
+        sourceTeamName: source.sourceTeamName
+      }))
+  }
+}

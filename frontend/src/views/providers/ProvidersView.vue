@@ -90,6 +90,7 @@
       :current-category-count="currentCategoryModels.length"
       :default-test-model="activeProviderDefaultTestModel"
       :is-management-view="isManagementView"
+      :load-error="modelLoadError"
       :loading="modelLoading"
       :models="filteredModels"
       :row-actions="modelRowActions"
@@ -260,6 +261,7 @@ const customModelSaving = ref(false)
 const providers = ref<ProviderDefinition[]>([])
 const providerModels = ref<ProviderModelPricing[]>([])
 const modelKeyword = ref('')
+const modelLoadError = ref('')
 const selectedModelCategory = ref<ModelCategoryKey>('text')
 const modelModalOpen = ref(false)
 const customModelModalOpen = ref(false)
@@ -376,6 +378,7 @@ function handleProviderAction(key: string, provider: ProviderDefinition) {
 function resetModelModal() {
   activeProvider.value = null
   modelKeyword.value = ''
+  modelLoadError.value = ''
   selectedModelCategory.value = 'text'
   providerModels.value = []
   resetCustomModelForm()
@@ -449,6 +452,7 @@ async function reloadActiveProviderModels() {
   if (!provider) return
   ensureModelSystemAccountFilter()
   modelLoading.value = true
+  modelLoadError.value = ''
   try {
     if (isManagementView.value) {
       const scopedProviders = await api.providers.list(modelProviderQueryParams())
@@ -461,8 +465,8 @@ async function reloadActiveProviderModels() {
     selectedModelCategory.value = findFirstModelCategory(providerModels.value)
   } catch (error) {
     console.error(error)
-    providerModels.value = []
-    message.error('加载模型价格失败')
+    modelLoadError.value = extractModelErrorMessage(error, '加载模型价格失败')
+    message.error(modelLoadError.value)
   } finally {
     modelLoading.value = false
   }

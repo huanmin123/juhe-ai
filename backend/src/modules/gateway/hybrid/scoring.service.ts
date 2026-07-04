@@ -37,7 +37,7 @@ export interface HybridScoringResult {
   statusCode?: number
 }
 
-interface HybridScoringCacheEntry {
+export interface HybridScoringCacheEntry {
   level: number
   confidence?: number
   factors?: string[]
@@ -215,6 +215,24 @@ export function clearHybridScoringCacheForTest(options: { clearShared?: boolean 
 export async function clearHybridScoringSharedCacheForTest(): Promise<void> {
   if (runtimeConfig.cacheDriver !== 'redis') return
   await hybridScoringSharedCache.clear()
+}
+
+export async function setHybridScoringSharedCacheEntryForTest(
+  cacheKey: string,
+  entry: HybridScoringCacheEntry,
+  ttlMs = 300_000
+): Promise<void> {
+  if (runtimeConfig.cacheDriver !== 'redis') {
+    throw new Error('混合路由评分 shared cache 测试必须启用 Redis cache driver')
+  }
+  await setHybridScoringSharedCacheEntry(cacheKey, entry, ttlMs)
+}
+
+export async function getHybridScoringSharedCacheEntryForTest(cacheKey: string): Promise<HybridScoringCacheEntry | undefined> {
+  if (runtimeConfig.cacheDriver !== 'redis') {
+    throw new Error('混合路由评分 shared cache 测试必须启用 Redis cache driver')
+  }
+  return await getHybridScoringSharedCacheEntry(cacheKey)
 }
 
 async function parseHybridRequestBody(req: Request, timeoutMs: number, signal?: AbortSignal): Promise<Record<string, unknown> | undefined> {

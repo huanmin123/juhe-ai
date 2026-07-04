@@ -241,7 +241,7 @@ function providerName(providerCode?: string) {
 
 function handleGroupAction(key: string, group: GroupSummary) {
   if (key === 'edit') {
-    openEdit(group)
+    void openEdit(group)
     return
   }
   if (key === 'return-authorization') {
@@ -314,19 +314,27 @@ function openCreate() {
   modalOpen.value = true
 }
 
-function openEdit(group: GroupSummary) {
+async function openEdit(group: GroupSummary) {
   if (!canEditGroup(group)) {
     message.warning(group.isDefault ? '默认分组不允许编辑' : '当前分组不能编辑')
     return
   }
+  void loadGroupOptions()
+  let detail: GroupSummary
   try {
-    applyGroupToForm(group)
+    detail = await groupsApi.detail(group.id, groupOperationScopeParams(group))
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '加载分组详情失败'))
+    return
+  }
+  try {
+    applyGroupToForm(detail)
   } catch (error) {
     message.error(extractApiErrorMessage(error, '分组调度策略数据异常，请清理后再编辑'))
     return
   }
   editingId.value = group.id
-  void loadGroupOptions()
   modalOpen.value = true
 }
 

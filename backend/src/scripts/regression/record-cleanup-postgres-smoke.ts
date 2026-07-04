@@ -16,7 +16,9 @@ const accountApiKeyId = `api_key_for_${accountId}`
 const relatedAccountId = `account_related_${marker}`
 const authorizationId = `auth_${marker}`
 const teamScopeId = `${accountId}:team_${marker}`
+const cleanupCursorJobNames = ['usage_stats_aggregation', 'client_ip_stats_aggregation'] as const
 let now = new Date().toISOString()
+let originalCleanupCursorRows: StatsJobStateRow[] | undefined
 
 const pool = await getPostgresPool()
 const client = createPostgresDatabaseClient(pool)
@@ -61,7 +63,20 @@ try {
   }))
 } finally {
   await cleanupSmokeRows().catch(() => undefined)
+  await restoreCleanupCursorRows().catch(() => undefined)
   await closePostgresPool()
+}
+
+interface StatsJobStateRow {
+  scope_type: string
+  scope_id: string
+  job_name: string
+  cursor_created_at?: string | null
+  cursor_id?: string | null
+  last_success_at?: string | null
+  last_error_message?: string | null
+  lag_seconds?: string | number | null
+  updated_at: string
 }
 
 async function seedApiKeyRows(): Promise<void> {
@@ -188,6 +203,40 @@ async function countRows(tableName: string, whereClause: string, params: unknown
 }
 
 async function cleanupEligibleUsageCreatedAt(): Promise<string> {
+  if (!originalCleanupCursorRows) {
+    originalCleanupCursorRows = await client.query<StatsJobStateRow>(`
+      SELECT scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at,
+        last_error_message, lag_seconds, updated_at
+      FROM juhe_stats.stats_job_state
+      WHERE scope_type = 'global'
+        AND scope_id = ''
+        AND job_name = ANY(?::text[])
+    `, [[...cleanupCursorJobNames]])
+  }
+
+  const existingUsableJobs = new Set(originalCleanupCursorRows
+    .filter((row) => Number.isFinite(Date.parse(String(row.cursor_created_at ?? ''))) && String(row.cursor_id ?? '').trim())
+    .map((row) => row.job_name))
+  const cursorNow = new Date().toISOString()
+  for (const jobName of cleanupCursorJobNames) {
+    if (existingUsableJobs.has(jobName)) {
+      continue
+    }
+    await client.execute(`
+      INSERT INTO juhe_stats.stats_job_state (
+        scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at,
+        last_error_message, lag_seconds, updated_at
+      ) VALUES ('global', '', ?, ?, ?, ?, NULL, 0, ?)
+      ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
+        cursor_created_at = EXCLUDED.cursor_created_at,
+        cursor_id = EXCLUDED.cursor_id,
+        last_success_at = EXCLUDED.last_success_at,
+        last_error_message = NULL,
+        lag_seconds = 0,
+        updated_at = EXCLUDED.updated_at
+    `, [jobName, cursorNow, `${marker}_${jobName}_cursor`, cursorNow, cursorNow])
+  }
+
   const rows = await client.query<{ job_name?: string | null; cursor_created_at?: string | null }>(`
     SELECT job_name, cursor_created_at
     FROM juhe_stats.stats_job_state
@@ -197,7 +246,7 @@ async function cleanupEligibleUsageCreatedAt(): Promise<string> {
       AND cursor_created_at IS NOT NULL
       AND cursor_id IS NOT NULL
     ORDER BY cursor_created_at ASC
-  `, [['usage_stats_aggregation', 'client_ip_stats_aggregation']])
+  `, [[...cleanupCursorJobNames]])
   const jobNames = new Set(rows.map((row) => String(row.job_name ?? '').trim()).filter(Boolean))
   if (!jobNames.has('usage_stats_aggregation') || !jobNames.has('client_ip_stats_aggregation')) {
     throw new Error('PG 记录清理 smoke 需要 usage_stats_aggregation 和 client_ip_stats_aggregation 全局游标')
@@ -208,6 +257,43 @@ async function cleanupEligibleUsageCreatedAt(): Promise<string> {
     throw new Error('PG 记录清理 smoke 未读到有效 usage 清理游标时间')
   }
   return new Date(Math.max(0, cursorTime - 1000)).toISOString()
+}
+
+async function restoreCleanupCursorRows(): Promise<void> {
+  if (!originalCleanupCursorRows) {
+    return
+  }
+  await client.execute(`
+    DELETE FROM juhe_stats.stats_job_state
+    WHERE scope_type = 'global'
+      AND scope_id = ''
+      AND job_name = ANY(?::text[])
+  `, [[...cleanupCursorJobNames]])
+  for (const row of originalCleanupCursorRows) {
+    await client.execute(`
+      INSERT INTO juhe_stats.stats_job_state (
+        scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at,
+        last_error_message, lag_seconds, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
+        cursor_created_at = EXCLUDED.cursor_created_at,
+        cursor_id = EXCLUDED.cursor_id,
+        last_success_at = EXCLUDED.last_success_at,
+        last_error_message = EXCLUDED.last_error_message,
+        lag_seconds = EXCLUDED.lag_seconds,
+        updated_at = EXCLUDED.updated_at
+    `, [
+      row.scope_type,
+      row.scope_id,
+      row.job_name,
+      row.cursor_created_at ?? null,
+      row.cursor_id ?? null,
+      row.last_success_at ?? null,
+      row.last_error_message ?? null,
+      row.lag_seconds ?? null,
+      row.updated_at
+    ])
+  }
 }
 
 async function cleanupSmokeRows(): Promise<void> {

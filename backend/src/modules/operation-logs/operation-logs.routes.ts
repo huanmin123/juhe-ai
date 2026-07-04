@@ -9,6 +9,7 @@ import {
   listOperationLogsForViewerAsync,
   type OperationLogListOptions
 } from '../../storage/repositories.js'
+import type { OperationLogListResult, OperationLogSummary } from '../../storage/operation-log-types.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAuthContext } from '../auth/request-context.js'
 
@@ -23,7 +24,7 @@ myOperationLogsRouter.get('/', async (req, res, next) => {
       return
     }
     const result = await listOperationLogsForViewerAsync(context.systemAccountId, parseOperationLogListOptions(req.query, false))
-    res.json(ok(result))
+    res.json(ok(toOperationLogListResponse(result)))
   } catch (error) {
     next(error)
   }
@@ -50,7 +51,7 @@ myOperationLogsRouter.get('/:id', async (req, res, next) => {
 operationLogsRouter.get('/', requireAdmin, async (req, res, next) => {
   try {
     const result = await listOperationLogsAsync(parseOperationLogListOptions(req.query, true))
-    res.json(ok(result))
+    res.json(ok(toOperationLogListResponse(result)))
   } catch (error) {
     next(error)
   }
@@ -102,4 +103,13 @@ function dateTimeQueryValue(value: unknown): string | undefined {
   if (!text) return undefined
   const time = Date.parse(text)
   return Number.isNaN(time) ? undefined : new Date(time).toISOString()
+}
+
+type OperationLogListItem = Omit<OperationLogSummary, 'changes' | 'metadata' | 'userAgent'>
+
+function toOperationLogListResponse(result: OperationLogListResult): Omit<OperationLogListResult, 'items'> & { items: OperationLogListItem[] } {
+  return {
+    ...result,
+    items: result.items.map(({ changes, metadata, userAgent, ...item }) => item)
+  }
 }

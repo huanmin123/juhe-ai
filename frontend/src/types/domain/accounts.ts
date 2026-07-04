@@ -592,7 +592,8 @@ export interface GroupSummary {
   isDefault: boolean
   groupType: GroupType
   schedulingPolicy?: GroupSchedulingPolicy
-  accountIds: string[]
+  accountIds?: string[]
+  accountCount?: number
   accountStats: GroupAccountStats
   accessType?: ResourceAccessType
   groupAuthorizationId?: string
@@ -602,6 +603,12 @@ export interface GroupSummary {
   authorizationExpiresAt?: string
   authorizationLimits?: RequestQuotaLimits
   authorizationSources?: AuthorizationSourceSummary[]
+  authorizationSourceSummary?: {
+    activeSourceCount: number
+    hasManual: boolean
+    hasTeam: boolean
+    teamNames: string[]
+  }
   permissions?: ResourcePermissions
 }
 

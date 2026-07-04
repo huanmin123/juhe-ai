@@ -231,18 +231,20 @@ async function assertAccountListIndexedPlans(
     ['idx_accounts_owner_list_order']
   )
   await assertIndexedPlan(
-    'AI 账户名称精确 PG 查询',
+    'AI 账户名称前缀 PG 查询',
     `
       SELECT accounts.id
       FROM juhe_business.accounts accounts
       WHERE accounts.system_account_id = $1
         AND accounts.deleted_at IS NULL
         AND accounts.authorization_instance_authorization_id IS NULL
-        AND lower(accounts.name) = lower($2)
+        AND accounts.name COLLATE "C" >= $2
+        AND accounts.name COLLATE "C" < $3
+      ORDER BY accounts.name COLLATE "C" ASC, accounts.id ASC
       LIMIT 20
     `,
-    [systemAccountId, keyword],
-    ['idx_accounts_owner_name_lower_lookup', 'idx_accounts_owner_all_name_lower_lookup', 'idx_accounts_system_account_name_lookup']
+    [systemAccountId, normalizedKeyword, accountNamePrefixUpperBoundForTest(normalizedKeyword)],
+    ['idx_accounts_owner_name_c_lookup', 'idx_accounts_owner_all_name_c_lookup']
   )
   await assertIndexedPlan(
     'AI 账户名称包含候选 PG 查询',
@@ -283,7 +285,7 @@ async function assertAccountListIndexedPlans(
       LIMIT 50
     `,
     [systemAccountId, groupId],
-    ['idx_group_accounts_owner_group_enabled', 'idx_group_accounts_group_enabled']
+    ['idx_group_accounts_owner_group_enabled', 'idx_group_accounts_group_enabled', 'idx_group_accounts_scope_enabled_updated']
   )
   await assertIndexedPlan(
     'AI 账户标签筛选 PG 查询',
@@ -463,6 +465,17 @@ async function assertIndexedPlan(label: string, sql: string, params: unknown[], 
   } finally {
     connection.release()
   }
+}
+
+function accountNamePrefixUpperBoundForTest(value: string): string {
+  const chars = [...value]
+  for (let index = chars.length - 1; index >= 0; index -= 1) {
+    const codePoint = chars[index]?.codePointAt(0)
+    if (codePoint !== undefined && codePoint < 0x10ffff) {
+      return `${chars.slice(0, index).join('')}${String.fromCodePoint(codePoint + 1)}`
+    }
+  }
+  return `${value}\uffff`
 }
 
 async function cleanupSmokeRows(): Promise<void> {

@@ -93,7 +93,7 @@ try {
   assert(keywordIds.includes(matchedByName.id), `PG API Key 列表 keyword 应命中名称精确值：${keywordDiagnostics()}`)
   assert(keywordIds.includes(matchedByNamePrefix.id), `PG API Key 列表 keyword 应命中名称前缀值：${keywordDiagnostics()}`)
   assert(!keywordIds.includes(middleNameOnly.id), 'PG API Key 列表 keyword 不应命中名称中间包含值')
-  assert.equal(keywordResult.items.find((item) => item.id === matchedByName.id)?.key, '', 'PG API Key 列表不应返回完整密钥')
+  assert.equal(Object.prototype.hasOwnProperty.call(keywordResult.items.find((item) => item.id === matchedByName.id) ?? {}, 'key'), false, 'PG API Key 列表不应返回完整密钥字段')
   assert.equal(keywordResult.items.find((item) => item.id === matchedByName.id)?.usage.requestCount, 12, 'PG API Key 列表应返回累计用量')
 
   const wildcardResult = await listApiKeysPageAsync(access, { keyword: `percent%literal ${marker}`, page: 1, pageSize: 20 })
@@ -122,7 +122,6 @@ try {
 }
 
 async function assertApiKeyListIndexedPlans(systemAccountId: string, routeStrategyId: string, keywordValue: string): Promise<void> {
-  const lowerKeyword = keywordValue.toLowerCase()
   await assertIndexedPlan(
     'API Key 默认列表排序 PG 查询',
     `
@@ -145,9 +144,9 @@ async function assertApiKeyListIndexedPlans(systemAccountId: string, routeStrate
         SELECT keyword_api_keys.id
         FROM juhe_business.api_keys keyword_api_keys
         WHERE keyword_api_keys.system_account_id = $1
-          AND lower(keyword_api_keys.name) COLLATE "C" >= $2
-          AND lower(keyword_api_keys.name) COLLATE "C" < $3
-          AND starts_with(lower(keyword_api_keys.name), $2)
+          AND keyword_api_keys.name COLLATE "C" >= $2
+          AND keyword_api_keys.name COLLATE "C" < $3
+          AND starts_with(keyword_api_keys.name, $2)
       )
       SELECT api_keys.id
       FROM matched_api_key_ids
@@ -155,7 +154,7 @@ async function assertApiKeyListIndexedPlans(systemAccountId: string, routeStrate
       ORDER BY api_keys.is_default DESC, api_keys.updated_at DESC, api_keys.created_at DESC, api_keys.id DESC
       LIMIT 20
     `,
-    [systemAccountId, lowerKeyword, apiKeyTextPrefixUpperBound(lowerKeyword)],
+    [systemAccountId, keywordValue, apiKeyTextPrefixUpperBound(keywordValue)],
     ['idx_api_keys_system_account_name_c_lookup']
   )
   await assertIndexedPlan(
@@ -164,13 +163,13 @@ async function assertApiKeyListIndexedPlans(systemAccountId: string, routeStrate
       SELECT api_keys.id
       FROM juhe_business.api_keys api_keys
       WHERE api_keys.system_account_id = $1
-        AND lower(api_keys.name) COLLATE "C" >= $2
-        AND lower(api_keys.name) COLLATE "C" < $3
-        AND starts_with(lower(api_keys.name), $2)
-      ORDER BY lower(api_keys.name) COLLATE "C" ASC, api_keys.id ASC
+        AND api_keys.name COLLATE "C" >= $2
+        AND api_keys.name COLLATE "C" < $3
+        AND starts_with(api_keys.name, $2)
+      ORDER BY api_keys.name COLLATE "C" ASC, api_keys.id ASC
       LIMIT 20
     `,
-    [systemAccountId, lowerKeyword, apiKeyTextPrefixUpperBound(lowerKeyword)],
+    [systemAccountId, keywordValue, apiKeyTextPrefixUpperBound(keywordValue)],
     ['idx_api_keys_system_account_name_c_lookup']
   )
   await assertIndexedPlan(

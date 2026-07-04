@@ -60,6 +60,24 @@ myTeamsRouter.get('/', async (req, res, next) => {
   }
 })
 
+myTeamsRouter.get('/:id', async (req, res, next) => {
+  const paramsParsed = parseOrBadRequest(teamIdParamsSchema, req.params, '团队 ID 不合法')
+  if (!paramsParsed.success) {
+    sendBadRequest(res, paramsParsed.message)
+    return
+  }
+  try {
+    const team = await findSystemTeamSummaryAsync(paramsParsed.data.id, currentUserTeamScope())
+    if (!team) {
+      sendNotFound(res, '团队不存在')
+      return
+    }
+    res.json(ok(team))
+  } catch (error) {
+    next(error)
+  }
+})
+
 systemTeamsRouter.get('/', requireAdmin, async (req, res, next) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
@@ -68,6 +86,29 @@ systemTeamsRouter.get('/', requireAdmin, async (req, res, next) => {
   }
   try {
     res.json(ok(await listSystemTeamsPageAsync(getRequestAccessScope(scopeQuery.data.systemAccountId), parseSystemTeamListOptions(req.query))))
+  } catch (error) {
+    next(error)
+  }
+})
+
+systemTeamsRouter.get('/:id', requireAdmin, async (req, res, next) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    sendBadRequest(res, scopeQuery.message)
+    return
+  }
+  const paramsParsed = parseOrBadRequest(teamIdParamsSchema, req.params, '团队 ID 不合法')
+  if (!paramsParsed.success) {
+    sendBadRequest(res, paramsParsed.message)
+    return
+  }
+  try {
+    const team = await findSystemTeamSummaryAsync(paramsParsed.data.id, getRequestAccessScope(scopeQuery.data.systemAccountId))
+    if (!team) {
+      sendNotFound(res, '团队不存在')
+      return
+    }
+    res.json(ok(team))
   } catch (error) {
     next(error)
   }

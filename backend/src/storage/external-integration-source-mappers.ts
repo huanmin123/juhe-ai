@@ -34,6 +34,25 @@ export function mapSourceSummary(row: ExternalIntegrationSourceListRow, tokens: 
   }
 }
 
+export function mapSourceListItem(row: ExternalIntegrationSourceListRow, primaryToken?: ExternalIntegrationSourceTokenSummary): ExternalIntegrationSourceSummary {
+  return {
+    id: row.id,
+    name: row.name,
+    status: normalizeSourceStatus(row.status),
+    scopes: decodeScopes(row.scopes_json),
+    rateLimits: decodeRateLimits(row.rate_limits_json),
+    expiresAt: row.expires_at ?? undefined,
+    notes: row.notes ?? undefined,
+    lastUsedAt: row.last_used_at ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    tokenCount: Number(row.token_count ?? 0),
+    activeTokenCount: Number(row.active_token_count ?? 0),
+    primaryToken,
+    isBuiltIn: isBuiltInExternalIntegrationTestSourceId(row.id)
+  }
+}
+
 export function mapTokenSummary(row: ExternalIntegrationSourceTokenListRow): ExternalIntegrationSourceTokenSummary {
   return {
     id: row.id,

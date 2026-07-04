@@ -156,7 +156,7 @@ async function assertPostgresCollectorWritesSnapshots(): Promise<void> {
     tableScanMode: 'full',
     maxTablesPerDatabase: 100
   })
-  assert.equal(result.databaseSnapshots, 4, 'PG 采样应只写入 PostgreSQL 四个逻辑 schema 快照')
+  assert.equal(result.databaseSnapshots, 5, 'PG 采样应只写入 PostgreSQL 五个逻辑 schema 快照')
   assert(result.tableSnapshots >= 1, 'PG 采样应写入表级快照')
 
   const history = await listTableStorageHistoryAsync({
@@ -231,7 +231,7 @@ async function assertTableMonitorExplainPlans(): Promise<void> {
       LIMIT 10
     `,
     ['business', targetTableName, startAt, endAt],
-    ['idx_table_storage_snapshots_latest', 'idx_table_storage_snapshots_latest_id', 'table_storage_snapshots_database_role_table_name_sampled_at_key']
+    ['idx_table_storage_snapshots_latest', 'idx_table_storage_snapshots_latest_id', 'idx_table_storage_snapshots_time', 'table_storage_snapshots_database_role_table_name_sampled_at_key']
   )
   await assertIndexedPlan(
     '表监控数据库历史 PG 查询',

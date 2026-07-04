@@ -53,9 +53,11 @@ try {
         JUHE_AI_DATABASE_DRIVER: 'postgres',
         JUHE_AI_CACHE_DRIVER: 'redis',
         JUHE_AI_RUNTIME_STATE_DRIVER: 'redis',
+        JUHE_AI_QUEUE_DRIVER: 'redis_stream',
         JUHE_AI_POSTGRES_URL: process.env.JUHE_SETTINGS_MANAGEMENT_POSTGRES_URL,
         JUHE_AI_REDIS_CACHE_URL: process.env.JUHE_SETTINGS_MANAGEMENT_REDIS_CACHE_URL ?? 'redis://:unused@127.0.0.1:6379/0',
-        JUHE_AI_REDIS_STATE_URL: process.env.JUHE_SETTINGS_MANAGEMENT_REDIS_STATE_URL ?? 'redis://:unused@127.0.0.1:6380/0'
+        JUHE_AI_REDIS_STATE_URL: process.env.JUHE_SETTINGS_MANAGEMENT_REDIS_STATE_URL ?? 'redis://:unused@127.0.0.1:6380/0',
+        JUHE_AI_REDIS_QUEUE_URL: process.env.JUHE_SETTINGS_MANAGEMENT_REDIS_QUEUE_URL ?? process.env.JUHE_SETTINGS_MANAGEMENT_REDIS_STATE_URL ?? 'redis://:unused@127.0.0.1:6380/0'
       }
     })
     if (result.status !== 0) {

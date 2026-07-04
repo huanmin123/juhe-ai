@@ -122,7 +122,7 @@ function maskSecretPreview(value: string | undefined, prefix?: string, suffix?: 
 }
 
 function primaryToken(record: ExternalIntegrationSourceSummary): ExternalIntegrationSourceTokenSummary | undefined {
-  return record.tokens[0]
+  return record.primaryToken ?? record.tokens?.[0]
 }
 
 function tokenCopyKey(record: ExternalIntegrationSourceSummary): string {

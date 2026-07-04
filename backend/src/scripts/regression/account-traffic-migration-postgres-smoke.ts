@@ -96,7 +96,7 @@ async function assertTrafficMigrationIndexedPlans(accountId: string, systemAccou
       LIMIT 1
     `,
     [accountId],
-    ['accounts_pkey', 'idx_accounts_health_check_due', 'idx_accounts_deleted_cleanup']
+    ['accounts_pkey', 'idx_accounts_health_check_due', 'idx_accounts_deleted_cleanup', 'idx_accounts_owner_all_name_c_lookup']
   )
   await assertIndexedPlan(
     '账户流量迁移同组绑定读取 PG 查询',

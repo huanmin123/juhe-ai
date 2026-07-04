@@ -50,7 +50,7 @@
         :lock-body-scroll="false"
       >
         <template #emptyText>
-          <a-empty class="page-empty-card" description="这个供应商暂未配置模型价格。" />
+          <a-empty class="page-empty-card" :description="loadError || '这个供应商暂未配置模型价格。'" />
         </template>
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'model'">
@@ -189,6 +189,7 @@ const props = withDefaults(defineProps<{
   models: ProviderModelPricing[]
   currentCategoryCount: number
   defaultTestModel?: string
+  loadError?: string
   rowActions: (record: ProviderModelPricing) => RowActionItem[]
   isManagementView?: boolean
   systemAccounts?: SystemAccountPrincipalSummary[]
@@ -200,7 +201,8 @@ const props = withDefaults(defineProps<{
   systemAccounts: () => [],
   systemAccountsLoading: false,
   systemAccountFilter: '',
-  systemAccountFilterSelection: undefined
+  systemAccountFilterSelection: undefined,
+  loadError: ''
 })
 
 const emit = defineEmits<{

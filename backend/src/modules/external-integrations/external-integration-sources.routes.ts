@@ -1,4 +1,4 @@
-import { Router, type Request } from 'express'
+import { Router, type Request, type Response } from 'express'
 import { z } from 'zod'
 
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
@@ -111,6 +111,7 @@ externalIntegrationSourcesRouter.post('/built-in-test-token/reset', mutationGuar
         safeChange('tokenPreview', 'Token 标识', undefined, `${token.tokenPrefix}...${token.tokenSuffix}`)
       ]
     })
+    setSecretResponseHeaders(res)
     res.json(ok({
       token,
       source
@@ -147,9 +148,28 @@ externalIntegrationSourcesRouter.post('/', mutationGuard({
         safeChange('rateLimits', '限频规则', undefined, formatRateLimits(source.rateLimits))
       ]
     })
+    setSecretResponseHeaders(res)
     res.status(201).json(ok(created))
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '来源系统创建失败'))
+  }
+})
+
+externalIntegrationSourcesRouter.get('/:id', async (req, res, next) => {
+  const params = idParamSchema.safeParse(req.params)
+  if (!params.success) {
+    res.status(400).json(badRequest(firstIssueMessage(params.error, '来源系统不存在')))
+    return
+  }
+  try {
+    const source = await findExternalIntegrationSourceAsync(params.data.id)
+    if (!source) {
+      res.status(404).json({ message: '来源系统不存在' })
+      return
+    }
+    res.json(ok(source))
+  } catch (error) {
+    next(error)
   }
 })
 
@@ -272,6 +292,7 @@ externalIntegrationSourcesRouter.post('/:id/tokens', mutationGuard({
         safeChange('expiresAt', '到期时间', undefined, token.expiresAt)
       ]
     })
+    setSecretResponseHeaders(res)
     res.status(201).json(ok({
       token,
       source
@@ -293,6 +314,7 @@ externalIntegrationSourcesRouter.get('/:id/tokens/:tokenId/secret', async (req, 
       res.status(404).json({ message: 'Token 不存在' })
       return
     }
+    setSecretResponseHeaders(res)
     res.json(ok(token))
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '读取 Token 失败'))
@@ -376,4 +398,9 @@ function formatRateLimits(rules: Array<{ windowSeconds: number; maxRequests: num
   return rules.length
     ? rules.map((rule) => `${rule.windowSeconds}s/${rule.maxRequests}次`).join(', ')
     : '不限制'
+}
+
+function setSecretResponseHeaders(res: Response): void {
+  res.setHeader('Cache-Control', 'no-store')
+  res.setHeader('Pragma', 'no-cache')
 }

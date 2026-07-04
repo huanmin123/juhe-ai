@@ -41,14 +41,19 @@ interface NormalizedSystemTeamListOptions {
   keyword?: string
 }
 
+interface SystemTeamMemberCounts {
+  memberCount: number
+  activeMemberCount: number
+}
+
 const systemTeamInputKeys = new Set(['name', 'description', 'status'])
 const systemTeamMembersInputKeys = new Set(['systemAccountIds'])
 const businessSchemaName = 'juhe_business'
 
 export function listSystemTeams(access?: AccessScope): SystemTeamSummary[] {
   const rows = querySystemTeamRows(access, undefined, normalizeSystemTeamListOptions()).rows
-  const members = listSystemTeamMembersForTeamIds(rows.map((row) => row.id), true)
-  return rows.map((row) => systemTeamSummaryFromRow(row, members.get(row.id) ?? []))
+  const memberCounts = listSystemTeamMemberCountsForTeamIds(rows.map((row) => row.id))
+  return rows.map((row) => systemTeamListItemFromRow(row, memberCounts.get(row.id)))
 }
 
 export function listSystemTeamsPage(access?: AccessScope, options: SystemTeamListOptions = {}): SystemTeamListResult {
@@ -58,8 +63,8 @@ export function listSystemTeamsPage(access?: AccessScope, options: SystemTeamLis
     offset: (listOptions.page - 1) * listOptions.pageSize
   }, listOptions).rows
   const pageRows = takePageRows(rows, listOptions.pageSize)
-  const members = listSystemTeamMembersForTeamIds(pageRows.rows.map((row) => row.id), true)
-  const items = pageRows.rows.map((row) => systemTeamSummaryFromRow(row, members.get(row.id) ?? []))
+  const memberCounts = listSystemTeamMemberCountsForTeamIds(pageRows.rows.map((row) => row.id))
+  const items = pageRows.rows.map((row) => systemTeamListItemFromRow(row, memberCounts.get(row.id)))
   return {
     items,
     total: pagedTotalUpperBound(listOptions.page, listOptions.pageSize, items.length, pageRows.hasMore),
@@ -75,8 +80,8 @@ export async function listSystemTeamsAsync(access?: AccessScope): Promise<System
   }
   const client = await getSystemTeamDatabaseClient()
   const rows = (await querySystemTeamRowsAsync(client, access, undefined, normalizeSystemTeamListOptions())).rows
-  const members = await listSystemTeamMembersForTeamIdsAsync(client, rows.map((row) => row.id), true)
-  return rows.map((row) => systemTeamSummaryFromRow(row, members.get(row.id) ?? []))
+  const memberCounts = await listSystemTeamMemberCountsForTeamIdsAsync(client, rows.map((row) => row.id))
+  return rows.map((row) => systemTeamListItemFromRow(row, memberCounts.get(row.id)))
 }
 
 export async function listSystemTeamsPageAsync(access?: AccessScope, options: SystemTeamListOptions = {}): Promise<SystemTeamListResult> {
@@ -90,8 +95,8 @@ export async function listSystemTeamsPageAsync(access?: AccessScope, options: Sy
     offset: (listOptions.page - 1) * listOptions.pageSize
   }, listOptions)).rows
   const pageRows = takePageRows(rows, listOptions.pageSize)
-  const members = await listSystemTeamMembersForTeamIdsAsync(client, pageRows.rows.map((row) => row.id), true)
-  const items = pageRows.rows.map((row) => systemTeamSummaryFromRow(row, members.get(row.id) ?? []))
+  const memberCounts = await listSystemTeamMemberCountsForTeamIdsAsync(client, pageRows.rows.map((row) => row.id))
+  const items = pageRows.rows.map((row) => systemTeamListItemFromRow(row, memberCounts.get(row.id)))
   return {
     items,
     total: pagedTotalUpperBound(listOptions.page, listOptions.pageSize, items.length, pageRows.hasMore),
@@ -671,6 +676,59 @@ function normalizeSystemTeamListOptions(options: SystemTeamListOptions = {}): No
 
 function systemTeamSummaryFromRow(row: SystemTeamRow, members: SystemTeamMemberSummary[]): SystemTeamSummary {
   return { id: row.id, name: row.name, description: row.description ?? undefined, status: row.status, memberCount: members.length, activeMemberCount: members.filter((member) => member.status === 'active').length, members, createdBy: row.created_by, createdAt: row.created_at, updatedAt: row.updated_at }
+}
+
+function systemTeamListItemFromRow(row: SystemTeamRow, counts?: SystemTeamMemberCounts): SystemTeamSummary {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description ?? undefined,
+    status: row.status,
+    memberCount: counts?.memberCount ?? 0,
+    activeMemberCount: counts?.activeMemberCount ?? 0,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  }
+}
+
+function listSystemTeamMemberCountsForTeamIds(teamIds: string[]): Map<string, SystemTeamMemberCounts> {
+  const ids = [...new Set(teamIds)].filter(Boolean)
+  if (!ids.length) return new Map()
+  const rows: Array<{ team_id: string; active_member_count: number }> = []
+  const database = getBusinessDatabase()
+  for (const chunk of chunkValues(ids, 900)) {
+    rows.push(...database.prepare(`
+      SELECT team_id,
+        SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active_member_count
+      FROM system_team_members
+      WHERE team_id IN (${sqlPlaceholders(chunk.length)})
+      GROUP BY team_id
+    `).all(...chunk) as unknown as Array<{ team_id: string; active_member_count: number }>)
+  }
+  return new Map(rows.map((row) => {
+    const activeMemberCount = Number(row.active_member_count) || 0
+    return [row.team_id, { memberCount: activeMemberCount, activeMemberCount }]
+  }))
+}
+
+async function listSystemTeamMemberCountsForTeamIdsAsync(client: DatabaseClient, teamIds: string[]): Promise<Map<string, SystemTeamMemberCounts>> {
+  const ids = [...new Set(teamIds)].filter(Boolean)
+  if (!ids.length) return new Map()
+  const rows: Array<{ team_id: string; active_member_count: number }> = []
+  for (const chunk of chunkValues(ids, 900)) {
+    rows.push(...await client.query<{ team_id: string; active_member_count: number }>(`
+      SELECT team_id,
+        SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active_member_count
+      FROM ${systemTeamTable(client, 'system_team_members')}
+      WHERE team_id IN (${sqlPlaceholders(chunk.length)})
+      GROUP BY team_id
+    `, chunk))
+  }
+  return new Map(rows.map((row) => {
+    const activeMemberCount = Number(row.active_member_count) || 0
+    return [row.team_id, { memberCount: activeMemberCount, activeMemberCount }]
+  }))
 }
 
 function listSystemTeamMembersForTeamIds(teamIds: string[], activeOnly = false): Map<string, SystemTeamMemberSummary[]> {

@@ -8,9 +8,11 @@ export interface RuntimeLogSummary {
   event?: string
   message?: string
   errorMessage?: string
-  rawJson: string
+  rawJson?: string
   createdAt: string
 }
+
+export type RuntimeLogDetail = RuntimeLogSummary & { rawJson: string }
 
 export interface RuntimeLogSearchResult {
   items: RuntimeLogSummary[]

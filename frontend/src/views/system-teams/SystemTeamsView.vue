@@ -20,7 +20,7 @@
           <a-tag :color="record.status === 'active' ? 'green' : 'default'">{{ record.status === 'active' ? '启用' : '停用' }}</a-tag>
         </template>
         <template v-else-if="column.key === 'memberCount'">
-          {{ record.members?.length ?? record.memberCount ?? 0 }}
+          {{ record.activeMemberCount ?? record.memberCount ?? 0 }}
         </template>
         <template v-else-if="column.key === 'description'">
           <span>{{ record.description || '-' }}</span>
@@ -44,7 +44,7 @@
           <div class="mobile-list-meta-grid">
             <div class="mobile-list-meta-item">
               <span>成员数</span>
-              <strong>{{ record.members?.length ?? record.memberCount ?? 0 }}</strong>
+              <strong>{{ record.activeMemberCount ?? record.memberCount ?? 0 }}</strong>
             </div>
             <div class="mobile-list-meta-item">
               <span>创建时间</span>
@@ -107,6 +107,7 @@
           :columns="memberColumns"
           :data-source="activeTeamMembers"
           row-key="id"
+          :loading="memberDetailLoading"
           :pagination="false"
           :table-scroll-enabled="false"
           :lock-body-scroll="false"
@@ -195,8 +196,10 @@ const {
 
 const teamModalOpen = ref(false)
 const memberModalOpen = ref(false)
+const memberDetailLoading = ref(false)
 const editingTeamId = ref<string>()
 const selectedTeamId = ref<string>()
+const selectedTeamDetail = ref<SystemTeamSummary>()
 
 const teamForm = reactive({
   name: '',
@@ -261,7 +264,7 @@ const memberColumns = computed(() => {
   return baseColumns
 })
 
-const selectedTeam = computed(() => teams.value.find((team) => team.id === selectedTeamId.value))
+const selectedTeam = computed(() => selectedTeamDetail.value ?? teams.value.find((team) => team.id === selectedTeamId.value))
 const activeTeamMembers = computed(() => selectedTeam.value ? activeMembers(selectedTeam.value) : [])
 const usedMemberIds = computed(() => activeTeamMembers.value.map((item) => item.systemAccountId))
 const emptyTeamDescription = computed(() => isManagementView.value ? '还没有授权团队，先创建一个授权团队并添加成员。' : '你还没有加入任何授权团队。')
@@ -362,13 +365,20 @@ const saveTeam = submitAction('system_teams.save', async () => {
   }
 })
 
-function openMemberModal(team: SystemTeamSummary) {
+async function openMemberModal(team: SystemTeamSummary) {
   selectedTeamId.value = team.id
+  selectedTeamDetail.value = undefined
   memberForm.systemAccountIds = []
   memberForm.systemAccounts = []
   resetMemberOptionSearch()
-  memberModalOpen.value = true
-  void loadMemberOptions()
+  try {
+    await loadSelectedTeamDetail(team.id)
+    memberModalOpen.value = true
+    void loadMemberOptions()
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '加载团队成员失败'))
+  }
 }
 
 function handleTeamAction(key: string, team: SystemTeamSummary) {
@@ -378,7 +388,7 @@ function handleTeamAction(key: string, team: SystemTeamSummary) {
     return
   }
   if (key === 'members') {
-    openMemberModal(team)
+    void openMemberModal(team)
   }
 }
 
@@ -396,15 +406,19 @@ const addMembers = submitAction('system_teams.add_members', async () => {
     message.warning('请先选择成员')
     return
   }
+  const teamId = selectedTeam.value.id
   try {
-    await api.systemTeams.addMembers(selectedTeam.value.id, {
+    await api.systemTeams.addMembers(teamId, {
       systemAccountIds: memberForm.systemAccountIds
     })
     memberForm.systemAccountIds = []
     memberForm.systemAccounts = []
     message.success('成员已添加')
-    await loadData()
-    await loadMemberOptions()
+    await Promise.all([
+      loadData(),
+      loadSelectedTeamDetail(teamId),
+      loadMemberOptions()
+    ])
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '添加成员失败'))
@@ -414,14 +428,27 @@ const addMembers = submitAction('system_teams.add_members', async () => {
 async function removeMember(memberId: string) {
   if (!ensureManagementAction()) return
   if (!selectedTeam.value) return
+  const teamId = selectedTeam.value.id
   try {
-    await api.systemTeams.removeMember(selectedTeam.value.id, memberId)
+    await api.systemTeams.removeMember(teamId, memberId)
     message.success('成员已移除')
-    await loadData()
-    await loadMemberOptions()
+    await Promise.all([
+      loadData(),
+      loadSelectedTeamDetail(teamId),
+      loadMemberOptions()
+    ])
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '移除成员失败'))
+  }
+}
+
+async function loadSelectedTeamDetail(teamId: string): Promise<void> {
+  memberDetailLoading.value = true
+  try {
+    selectedTeamDetail.value = await systemTeamsApi.detail(teamId)
+  } finally {
+    memberDetailLoading.value = false
   }
 }
 

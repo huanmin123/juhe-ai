@@ -34,12 +34,12 @@
       <div class="raw-block-toolbar">
         <strong>原始内容</strong>
         <a-tooltip title="复制原始内容">
-          <a-button size="small" :disabled="!log.rawJson" @click="emit('copy-text', prettyRawJson(log.rawJson), '原始内容已复制')">
+          <a-button size="small" :disabled="!log.rawJson" @click="emit('copy-text', prettyRawJson(log.rawJson ?? ''), '原始内容已复制')">
             <template #icon><CopyOutlined /></template>
           </a-button>
         </a-tooltip>
       </div>
-      <pre class="raw-block">{{ prettyRawJson(log.rawJson) }}</pre>
+      <pre class="raw-block">{{ prettyRawJson(log.rawJson ?? '') }}</pre>
     </template>
   </a-drawer>
 

@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert'
 import http from 'node:http'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { captchaAnswerForTest } from '../../modules/auth/captcha.service.js'
 import { createSystemApiApp } from '../../modules/system-api/system-api-app.js'
 import { closeRedisClients } from '../../shared/redis-client.js'
@@ -43,6 +44,7 @@ const importPayload = {
       {
         name: accountName,
         providerCode: 'gpt',
+        providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
         type: 'api_key',
         status: 'active',
         groupName,

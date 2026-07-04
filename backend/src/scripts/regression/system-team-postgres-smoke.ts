@@ -119,7 +119,6 @@ async function assertRuntimeAuthorization(resourceId: string, granteeSystemAccou
 }
 
 async function assertSystemTeamIndexedPlans(keywordValue: string, teamId: string): Promise<void> {
-  const lowerKeyword = keywordValue.toLowerCase()
   await assertIndexedPlan(
     '系统团队列表排序 PG 查询',
     `
@@ -136,14 +135,14 @@ async function assertSystemTeamIndexedPlans(keywordValue: string, teamId: string
     `
       SELECT id
       FROM juhe_business.system_teams
-      WHERE lower(name) >= $1
-        AND lower(name) < $2
-        AND starts_with(lower(name), $1)
-      ORDER BY lower(name) ASC, id ASC
+      WHERE name COLLATE "C" >= $1
+        AND name COLLATE "C" < $2
+        AND starts_with(name, $1)
+      ORDER BY name COLLATE "C" ASC, id ASC
       LIMIT 10
     `,
-    [lowerKeyword, systemTeamTextPrefixUpperBound(lowerKeyword)],
-    ['idx_system_teams_name_lookup']
+    [keywordValue, systemTeamTextPrefixUpperBound(keywordValue)],
+    ['idx_system_teams_name_c_lookup']
   )
   await assertIndexedPlan(
     '系统团队成员窗口 PG 查询',

@@ -737,6 +737,7 @@ function isDuplicateGroupNameError(error: unknown): boolean {
   if (!(error instanceof Error)) return false
   return error.message.includes('idx_groups_owner_provider_name_unique')
     || error.message.includes('idx_groups_owner_provider_name_unique_lower')
+    || error.message.includes('UNIQUE constraint failed: groups.system_account_id, groups.provider_code, groups.name')
 }
 
 function writeSystemAccountId(access?: AccessScope): string {
