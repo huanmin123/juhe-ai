@@ -270,6 +270,7 @@ async function cleanupSmokeRows(): Promise<void> {
     )
   }
   if (createdApiKeyIds.length > 0) {
+    await pool.query('DELETE FROM juhe_business.api_key_schedule_status_events WHERE api_key_id = ANY($1::text[])', [createdApiKeyIds])
     await pool.query('DELETE FROM juhe_business.api_keys WHERE id = ANY($1::text[])', [createdApiKeyIds])
   }
   if (createdRouteStrategyIds.length > 0) {
@@ -277,6 +278,7 @@ async function cleanupSmokeRows(): Promise<void> {
     await pool.query('DELETE FROM juhe_business.route_strategies WHERE id = ANY($1::text[])', [createdRouteStrategyIds])
   }
   if (createdAccountIds.length > 0) {
+    await pool.query('DELETE FROM juhe_business.account_schedule_status_events WHERE account_id = ANY($1::text[])', [createdAccountIds])
     await pool.query('DELETE FROM juhe_business.account_supported_models WHERE account_id = ANY($1::text[])', [createdAccountIds])
     await pool.query('DELETE FROM juhe_business.account_model_mappings WHERE account_id = ANY($1::text[])', [createdAccountIds])
     await pool.query('DELETE FROM juhe_business.account_tag_bindings WHERE account_id = ANY($1::text[])', [createdAccountIds])

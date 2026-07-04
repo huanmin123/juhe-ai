@@ -141,7 +141,17 @@ export async function grepAuditHotSearchFiles(options: AuditHotSearchOptions): P
   }
 
   try {
-    const files = await listHotSearchFiles(timeRange.startMs, timeRange.endMs)
+    let files: HotSearchFile[]
+    try {
+      files = await listHotSearchFiles(timeRange.startMs, timeRange.endMs)
+    } catch (error) {
+      logger.warn(errorLogFields(error, { event: 'audit_hot_search_file_list_failed' }), '审计内容热搜文件列表读取失败')
+      return unavailableHotSearchResult(
+        baseResult(),
+        startedAt,
+        '审计内容搜索文件读取失败，审计内容搜索暂不可用。'
+      )
+    }
     if (!files.length) {
       return {
         ...baseResult(),
@@ -423,10 +433,17 @@ async function listHotSearchFiles(startMs: number, endMs: number): Promise<HotSe
       } catch {
       }
     }
-  } catch {
-    return []
+  } catch (error) {
+    if (isMissingHotSearchDirectoryError(error)) {
+      return []
+    }
+    throw error
   }
   return files.sort((left, right) => right.bucketStartMs - left.bucketStartMs || right.mtimeMs - left.mtimeMs)
+}
+
+function isMissingHotSearchDirectoryError(error: unknown): boolean {
+  return Boolean(error && typeof error === 'object' && (error as { code?: unknown }).code === 'ENOENT')
 }
 
 async function resolveRgExecutable(): Promise<string | undefined> {

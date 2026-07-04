@@ -83,6 +83,9 @@ try {
   if (!drained.foundPgRow) {
     throw new Error('runtime log smoke message was not written to PostgreSQL runtime_logs')
   }
+  if (!drained.foundStreamEntry) {
+    throw new Error('runtime log stream did not expose the smoke message before draining')
+  }
   if (drained.snapshot.pending !== 0 || drained.snapshot.lag !== 0) {
     throw new Error(`runtime log stream not drained: pending=${drained.snapshot.pending} lag=${drained.snapshot.lag}`)
   }
@@ -114,7 +117,7 @@ async function waitForSmokeMessageDrained(): Promise<{ foundStreamEntry: boolean
   for (let attempt = 0; attempt < 80; attempt += 1) {
     const recent = await recentStreamEntries()
     foundStreamEntry = foundStreamEntry || recent.some((entry) => entry.payload.id === expectedRuntimeLogId)
-    const logs = await listRuntimeLogsAsync({ traceId, pageSize: 5 }).catch(() => ({ items: [] }))
+    const logs = await listRuntimeLogsAsync({ traceId, pageSize: 5 })
     foundPgRow = logs.items.some((item) => item.id === expectedRuntimeLogId)
     lastSnapshot = await sampleStream()
     if (foundPgRow && lastSnapshot.pending === 0 && lastSnapshot.lag === 0) {
@@ -136,19 +139,35 @@ async function cleanupSmokeMessage(): Promise<number> {
 }
 
 async function recentStreamEntries(): Promise<StreamEntry[]> {
-  const value = await client?.sendCommand(['XREVRANGE', streamKey, '+', '-', 'COUNT', '1000']).catch(() => [])
+  const value = await client?.sendCommand(['XREVRANGE', streamKey, '+', '-', 'COUNT', '1000'])
   return parseStreamEntries(value)
 }
 
 async function sampleStream(): Promise<StreamSnapshot> {
-  const length = Number(await client?.sendCommand(['XLEN', streamKey]).catch(() => 0) ?? 0)
-  const pendingRaw = await client?.sendCommand(['XPENDING', streamKey, groupName]).catch(() => [0])
-  const groupsRaw = await client?.sendCommand(['XINFO', 'GROUPS', streamKey]).catch(() => [])
+  const length = Number(await client?.sendCommand(['XLEN', streamKey]) ?? 0)
+  const pendingRaw = await sendStreamStateCommand(['XPENDING', streamKey, groupName], [0])
+  const groupsRaw = await sendStreamStateCommand(['XINFO', 'GROUPS', streamKey], [])
   return {
     length,
     pending: parsePendingCount(pendingRaw),
     lag: parseGroupLag(groupsRaw)
   }
+}
+
+async function sendStreamStateCommand(command: string[], noGroupFallback: unknown): Promise<unknown> {
+  try {
+    return await client?.sendCommand(command)
+  } catch (error) {
+    if (isMissingStreamGroupError(error)) {
+      return noGroupFallback
+    }
+    throw error
+  }
+}
+
+function isMissingStreamGroupError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+  return /\bNOGROUP\b/i.test(message) || /no such key/i.test(message)
 }
 
 function parseStreamEntries(value: unknown): StreamEntry[] {

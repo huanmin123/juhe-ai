@@ -12,6 +12,7 @@ import { DEFAULT_BUILT_IN_GROUPS, DEFAULT_GPT_GROUP } from '../../storage/schema
 const createdApiKeyIds: string[] = []
 const createdGroupIds: string[] = []
 const createdAccountIds: string[] = []
+const createdRouteStrategyIds: string[] = []
 const adminAccess: AccessScope = { systemAccountId: 'sys_admin', role: 'super_admin' }
 const driverRegressionModel = 'gpt-5-mini'
 const driverRegressionUpstreamModel = 'gpt-5'
@@ -102,6 +103,7 @@ async function assertApiKeyManagementAsync(repositories: typeof import('../../st
     status: 'active',
     groupBindings: [{ groupId: group.id, priority: 1, weight: 10, status: 'active' }]
   }, adminAccess)
+  createdRouteStrategyIds.push(routeStrategy.id)
   const created = await repositories.createApiKeyRecordAsync({
     name,
     description: 'API Key 管理PG回归',
@@ -175,6 +177,9 @@ async function assertApiKeyManagementAsync(repositories: typeof import('../../st
   createdApiKeyIds.splice(createdApiKeyIds.indexOf(created.id), 1)
   assert.equal(deleted.deleted, true, '异步删除 API Key 应返回 deleted=true')
   assert.equal((await repositories.findApiKeySummaryAsync(created.id, adminAccess)), undefined, '删除后异步摘要应不可见')
+  const routeDeleted = await repositories.deleteRouteStrategyAsync(routeStrategy.id, adminAccess)
+  createdRouteStrategyIds.splice(createdRouteStrategyIds.indexOf(routeStrategy.id), 1)
+  assert.equal(routeDeleted, true, '异步删除 API Key 后应清理测试策略路由')
 }
 
 async function cleanupCreatedRows(): Promise<void> {
@@ -200,6 +205,10 @@ async function cleanupCreatedRows(): Promise<void> {
         await client.execute('DELETE FROM "juhe_business"."route_strategies" WHERE id = ?', [routeRow.route_strategy_id])
       }
     }
+    for (const id of createdRouteStrategyIds.splice(0)) {
+      await client.execute('DELETE FROM "juhe_business"."route_strategy_groups" WHERE route_strategy_id = ?', [id])
+      await client.execute('DELETE FROM "juhe_business"."route_strategies" WHERE id = ?', [id])
+    }
     for (const id of createdGroupIds.splice(0)) {
       await client.execute('DELETE FROM "juhe_business"."route_strategy_groups" WHERE group_id = ?', [id])
       await client.execute('DELETE FROM "juhe_business"."groups" WHERE id = ?', [id])
@@ -224,6 +233,10 @@ async function cleanupCreatedRows(): Promise<void> {
       database.prepare('DELETE FROM route_strategy_groups WHERE route_strategy_id = ?').run(routeRow.route_strategy_id)
       database.prepare('DELETE FROM route_strategies WHERE id = ?').run(routeRow.route_strategy_id)
     }
+  }
+  for (const id of createdRouteStrategyIds.splice(0)) {
+    database.prepare('DELETE FROM route_strategy_groups WHERE route_strategy_id = ?').run(id)
+    database.prepare('DELETE FROM route_strategies WHERE id = ?').run(id)
   }
   for (const id of createdGroupIds.splice(0)) {
     database.prepare('DELETE FROM route_strategy_groups WHERE group_id = ?').run(id)
