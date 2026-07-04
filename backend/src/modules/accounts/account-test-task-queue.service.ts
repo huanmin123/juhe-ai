@@ -12,6 +12,7 @@ import {
 } from '../../storage/repositories.js'
 import { accountApiKeyEntries, selectAccountRuntimeApiKey, type AccountApiKeyEntry } from '../../storage/account-api-key-rotation.js'
 import { getSettings } from '../../storage/settings.repository.js'
+import { DEFAULT_SYSTEM_SETTINGS } from '../../storage/schema-defaults.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import {
   type AccountTestDraftSnapshot,
@@ -51,6 +52,7 @@ interface ManualAccountTestFailurePrecheckQueueItem {
 
 const unsupportedGatewayProtocolTestMessage = '当前仅支持测试 OpenAI、Anthropic 或 Gemini 协议账户'
 const defaultManualAccountTestConcurrency = 100
+const defaultSystemSettingsByKey = new Map<string, unknown>(DEFAULT_SYSTEM_SETTINGS.map(([key, value]) => [key, value]))
 const manualAccountTestRefillMinBatchSize = 100
 const manualAccountTestRefillMaxBatchSize = 1000
 const manualAccountTestQueuedMaxWaitMs = 10 * 60_000
@@ -60,6 +62,7 @@ const manualAccountTestRetryPolicy = sequenceRetryPolicy('manual_account_test', 
 const manualAccountTestFailurePrecheckRetryPolicy = sequenceRetryPolicy('manual_account_test_failure_precheck', [], 0)
 const runningAccountTestControllers = new Map<string, AbortController>()
 let accountTestSessionStaleSweepTimer: NodeJS.Timeout | undefined
+let sqliteSettingsTableMissingWarningLogged = false
 
 const manualAccountTestQueue = createRetryQueue<AccountTestQueueItem>({
   name: 'manual-account-test',
@@ -177,15 +180,36 @@ function accountTestTaskConcurrency(): number {
   if (runtimeConfig.databaseDriver === 'postgres') {
     return defaultManualAccountTestConcurrency
   }
-  const value = getSettings().accountTestTaskConcurrency
+  const value = accountTestTaskConcurrencySettingValue()
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return defaultManualAccountTestConcurrency
   }
   return Math.min(1000, Math.max(1, Math.trunc(value)))
 }
 
+function accountTestTaskConcurrencySettingValue(): unknown {
+  try {
+    return getSettings().accountTestTaskConcurrency
+  } catch (error) {
+    if (!isMissingSystemSettingsTableError(error)) {
+      throw error
+    }
+    if (!sqliteSettingsTableMissingWarningLogged) {
+      sqliteSettingsTableMissingWarningLogged = true
+      logger.warn(errorLogFields(error, {
+        event: 'manual_account_test_settings_table_missing_default'
+      }), '账号测试队列启动时系统设置表尚未初始化，将临时使用默认并发')
+    }
+    return defaultSystemSettingsByKey.get('accountTestTaskConcurrency')
+  }
+}
+
 function manualAccountTestRefillBatchSize(): number {
   return Math.min(manualAccountTestRefillMaxBatchSize, Math.max(manualAccountTestRefillMinBatchSize, accountTestTaskConcurrency() * 2))
+}
+
+function isMissingSystemSettingsTableError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes('no such table: system_settings')
 }
 
 function startAccountTestSessionStaleSweep(): void {

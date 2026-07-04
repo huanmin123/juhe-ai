@@ -82,6 +82,7 @@ const backgroundJobSettingsSnapshotTtlMs = 60_000
 let backgroundJobSettingsSnapshot: Record<string, unknown> | undefined
 let backgroundJobSettingsSnapshotLoadedAt = 0
 let backgroundJobSettingsRefreshPromise: Promise<void> | undefined
+let sqliteSettingsTableMissingWarningLogged = false
 
 export function startBackgroundJobs(): void {
   if (started) return
@@ -536,7 +537,7 @@ async function runRuntimeLogIndexMaintenance(): Promise<void> {
 function settingsNumber(key: string, min: number, max: number): number {
   const value = runtimeConfig.databaseDriver === 'postgres'
     ? postgresBackgroundJobSettingValue(key)
-    : getSettings()[key]
+    : sqliteBackgroundJobSettingValue(key)
   if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
     throw new Error(`系统设置 ${key} 必须是整数`)
   }
@@ -546,9 +547,30 @@ function settingsNumber(key: string, min: number, max: number): number {
   return value
 }
 
+function sqliteBackgroundJobSettingValue(key: string): unknown {
+  try {
+    return getSettings()[key]
+  } catch (error) {
+    if (!isMissingSystemSettingsTableError(error)) {
+      throw error
+    }
+    if (!sqliteSettingsTableMissingWarningLogged) {
+      sqliteSettingsTableMissingWarningLogged = true
+      logger.warn(errorLogFields(error, {
+        event: 'background_job_settings_table_missing_default'
+      }), '后台任务启动时系统设置表尚未初始化，将临时使用默认设置')
+    }
+    return defaultSystemSettingsByKey.get(key)
+  }
+}
+
 function postgresBackgroundJobSettingValue(key: string): unknown {
   void refreshBackgroundJobSettingsSnapshotIfNeeded()
   return backgroundJobSettingsSnapshot?.[key] ?? defaultSystemSettingsByKey.get(key)
+}
+
+function isMissingSystemSettingsTableError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes('no such table: system_settings')
 }
 
 function refreshBackgroundJobSettingsSnapshotIfNeeded(): Promise<void> {

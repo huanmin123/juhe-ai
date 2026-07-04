@@ -14,7 +14,7 @@ import { enqueueRuntimeLogLine } from './modules/runtime-logs/runtime-log-index-
 import { setRuntimeLogLineSink } from './modules/runtime-logs/runtime-log-stream.js'
 import { createSystemApiApp } from './modules/system-api/system-api-app.js'
 import { isCodexContextStateWriterPoolOperation } from './storage/codex-context-state-writer-pool.js'
-import { datasetDatabasePath, statsDatabasePath, usageCatalogDatabasePath } from './storage/database.js'
+import { datasetDatabasePath, getBusinessDatabase, statsDatabasePath, usageCatalogDatabasePath } from './storage/database.js'
 import { errorLogFields, installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
 import { startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
 
@@ -85,6 +85,9 @@ async function startDbService(): Promise<void> {
     ? (line, options) => enqueueRuntimeLogLine(line, options)
     : () => {})
   setDbServiceQueueRuntimeProvider(buildDbServiceQueueRuntimeMetrics)
+  if (runtimeConfig.databaseDriver === 'sqlite') {
+    getBusinessDatabase()
+  }
 
   const httpEndpoint = await startDbServiceHttpServer()
   setDbServiceHttpEndpoint({ host: httpEndpoint.host, port: httpEndpoint.port })
