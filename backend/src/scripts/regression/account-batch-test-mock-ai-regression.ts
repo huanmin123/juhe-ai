@@ -74,7 +74,14 @@ let mockUpstream: http.Server | undefined
 let backendProcess: ChildProcess | undefined
 
 try {
-  repositories.updateSettings({ systemApiRateLimitEnabled: false })
+  repositories.updateSettings({
+    systemApiRateLimitIpReadPerMinute: 1_000_000,
+    systemApiRateLimitIpReadBurstPer10Seconds: 1_000_000,
+    systemApiRateLimitIpWritePerMinute: 1_000_000,
+    systemApiRateLimitIpWriteBurstPer10Seconds: 1_000_000,
+    systemApiRateLimitUserReadPerMinute: 1_000_000,
+    systemApiRateLimitUserWritePerMinute: 1_000_000
+  })
   mockUpstream = createMockAIUpstream()
   mockUpstream.listen(0, '127.0.0.1')
   await onceListening(mockUpstream)
@@ -92,7 +99,14 @@ try {
   })
   const session = repositories.createSession(admin.id, 1)
   const cookie = `juhe_ai_session=${session.token}`
-  repositories.updateSettings({ systemApiRateLimitEnabled: false })
+  repositories.updateSettings({
+    systemApiRateLimitIpReadPerMinute: 1_000_000,
+    systemApiRateLimitIpReadBurstPer10Seconds: 1_000_000,
+    systemApiRateLimitIpWritePerMinute: 1_000_000,
+    systemApiRateLimitIpWriteBurstPer10Seconds: 1_000_000,
+    systemApiRateLimitUserReadPerMinute: 1_000_000,
+    systemApiRateLimitUserWritePerMinute: 1_000_000
+  })
   prepareMainDatabaseSchemasForChildServer()
 
   backendProcess = startBackendServer(backendPort)

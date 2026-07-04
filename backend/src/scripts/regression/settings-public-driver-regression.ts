@@ -80,14 +80,15 @@ async function assertSettingsPublicAsync(repositories: typeof import('../../stor
 
   const systemSettings = await repositories.getSettingsAsync()
   if (isPostgres) {
-    assert.equal(typeof systemSettings.systemApiRateLimitEnabled, 'boolean', 'PostgreSQL 系统 API 限流开关应可读取')
     assert.equal(typeof systemSettings.systemApiRateLimitIpReadPerMinute, 'number', 'PostgreSQL 系统 API IP 读限流应可读取')
     assert.equal(typeof systemSettings.systemApiRateLimitUserWritePerMinute, 'number', 'PostgreSQL 系统 API 用户写限流应可读取')
   } else {
-    assert.equal(systemSettings.systemApiRateLimitEnabled, true, '系统 API 限流默认应启用')
     assert.equal(systemSettings.systemApiRateLimitIpReadPerMinute, 600, '系统 API IP 读限流默认值应可读取')
     assert.equal(systemSettings.systemApiRateLimitUserWritePerMinute, 120, '系统 API 用户写限流默认值应可读取')
   }
+  assert.equal(Object.prototype.hasOwnProperty.call(systemSettings, 'systemApiRateLimitEnabled'), false, '系统 API 限流开关不应暴露为系统设置')
+  assert.equal(Object.prototype.hasOwnProperty.call(systemSettings, 'streamCircuitBreakerEnabled'), false, '流式熔断开关不应暴露为系统设置')
+  assert.equal(Object.prototype.hasOwnProperty.call(systemSettings, 'operationLogEnabled'), false, '操作日志开关不应暴露为系统设置')
   assert.equal(Object.prototype.hasOwnProperty.call(systemSettings, 'rogue_settings_key_0'), false, '系统设置 async 读取不能暴露未知字段')
 }
 

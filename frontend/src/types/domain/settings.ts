@@ -1,6 +1,5 @@
 export interface SystemSettings {
   gatewayTextRawBodyLimitMegabytes: number
-  systemApiRateLimitEnabled: boolean
   systemApiRateLimitIpReadPerMinute: number
   systemApiRateLimitIpReadBurstPer10Seconds: number
   systemApiRateLimitIpWritePerMinute: number
@@ -10,14 +9,12 @@ export interface SystemSettings {
   defaultTemporaryUnschedulableMinutes: number
   temporaryUnschedulableRetryIntervalSeconds: number
   temporaryUnschedulableRetryAttempts: number
-  streamCircuitBreakerEnabled: boolean
   streamRequestTimeoutSeconds: number
   streamIdleTimeoutSeconds: number
   streamClientTotalWaitTimeoutSeconds: number
   streamMaxLifetimeSeconds: number
   streamFailureThresholdCount: number
   streamFailureThresholdWindowMinutes: number
-  operationLogEnabled: boolean
   operationLogRetentionDays: number
   operationLogMaxChangesPerRecord: number
   statsAggregationIntervalSeconds: number
@@ -54,9 +51,6 @@ export interface SystemSettings {
   usageRankSnapshotRetentionDays: number
   systemMetricsRetentionDays: number
   systemMetricsHourlyRetentionDays: number
-  dataRetentionCleanupIntervalMinutes: number
-  dataRetentionCleanupBatchSize: number
-  dataRetentionCleanupMaxBatchesPerRun: number
 }
 
 export type SystemSettingsPatch = Partial<SystemSettings>

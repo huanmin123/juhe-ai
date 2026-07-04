@@ -77,6 +77,25 @@ export function checkGatewayApiKeyQuota(apiKey: GatewayApiKeyRow, now = new Date
   return decision
 }
 
+export function checkGatewayApiKeyQuotaReadOnly(apiKey: GatewayApiKeyRow, now = new Date()): ApiKeyQuotaDecision {
+  const quotaLimits = parseRequestQuotaLimitsJson(apiKey.quota_limits_json)
+  if (!hasEnabledRequestQuotaLimit(quotaLimits)) {
+    return { allowed: true }
+  }
+  const quotaCosts = loadRequestQuotaCosts(getStatsDatabase(), {
+    systemAccountId: apiKey.system_account_id,
+    scopeType: 'api_key',
+    scopeId: apiKey.id,
+    now,
+    hourlyWindowHours: quotaLimits.hourly?.hours
+  })
+  const allowed = !isRequestQuotaExceeded(quotaLimits, quotaCosts)
+  return {
+    allowed,
+    message: allowed ? undefined : API_KEY_QUOTA_EXCEEDED_MESSAGE
+  }
+}
+
 export async function checkGatewayApiKeyQuotaExactAsync(apiKey: GatewayApiKeyRow, now = new Date()): Promise<ApiKeyQuotaDecision> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return checkGatewayApiKeyQuota(apiKey, now)

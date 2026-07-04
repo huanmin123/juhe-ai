@@ -514,7 +514,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 统一清理规则：
 
 - 表数据长期保留期统一由 `data-retention-cleanup` 默认每 10 分钟在独立 background worker 进程内执行；原始审计普通成功请求的 1 小时热窗口后置采样裁剪由 `audit-hot-retention-cleanup` 每分钟分批执行，避免排障窗口结束后未采样成功日志继续堆积；表监控页面额外提供 `usage_records` 按截止时间手动清理入口，用于容量异常时提前释放可复用页。
-- 清理任务按小批次删除，默认每类表每轮最多处理 `dataRetentionCleanupBatchSize = 1000` 条、最多 `dataRetentionCleanupMaxBatchesPerRun = 20` 批，即默认每类数据每轮最多 2 万行。运行时允许调到 `5000 * 100` 的硬上限，但这只用于追赶历史积压；常态应维持 1000 行级别单批，避免长事务、写锁占用和 WAL 抖动。SQLite 每批之间会让出事件循环，并在继续下一批前固定等待 25ms，给其他 writer 留出写入间隙；PostgreSQL 使用 async repository 按 ctid / 主键窗口分批删除，避免单事务长时间持锁。原始审计成功热保留清理每分钟运行，但单轮带固定 5 秒预算，预算耗尽后停止本轮并留给下一轮继续，避免热窗口清理在积压时长时间占用 ingest worker。保留清理按表独立推进，前序表已经清完后，如果后续表失败，下一轮从失败表继续。SQLite 清理实际删除数据后会执行轻量 WAL checkpoint，避免 WAL 长期膨胀；在线任务不自动 `VACUUM`。
+- 清理任务按内部常量小批次删除，固定每类表每轮最多处理 1000 条、最多 20 批，即每类数据每轮最多 2 万行；这些吞吐参数不属于系统设置，不允许用户在线调整。SQLite 每批之间会让出事件循环，并在继续下一批前固定等待 25ms，给其他 writer 留出写入间隙；PostgreSQL 使用 async repository 按 ctid / 主键窗口分批删除，避免单事务长时间持锁。原始审计成功热保留清理每分钟运行，但单轮带固定 5 秒预算，预算耗尽后停止本轮并留给下一轮继续，避免热窗口清理在积压时长时间占用 ingest worker。保留清理按表独立推进，前序表已经清完后，如果后续表失败，下一轮从失败表继续。SQLite 清理实际删除数据后会执行轻量 WAL checkpoint，避免 WAL 长期膨胀；在线任务不自动 `VACUUM`。
 - 手动清理 `usage_records` 同样按批次执行，截止时间不能晚于当前时间 24 小时前，并且必须受统计聚合游标和必要回填游标保护。提交前先按 `created_at < cutoffAt` 与统计安全游标交集做有限预检查；没有可安全清理记录、统计游标尚未建立或 worker 投递不可用时返回 `queued = false` 和原因；预检查通过后才返回 `queued = true` 并交给 worker 分批清理。
 - 统计聚合、系统指标采样、审计日志落库和运行日志索引队列只负责写入或聚合，不再在各自流程里顺手删除历史表数据。
 - 如果统计缓存损坏或统计口径升级，可以停服务后在发布包根目录运行 `node backend/dist/scripts/maintenance/rebuild-usage-stats.js --confirm-offline`，standalone 从 usage shard 文件中尚未清理的 `usage_records` 重新构建缓存，performance 从 `juhe_usage.usage_records` 重建 `juhe_stats` 缓存。该命令会清空并重建当前 `backend/.env` 指向统计结果库 / PostgreSQL `juhe_stats` 里的统计缓存，默认每批 2000 条、最多 1000 批，批间让出事件循环；可用 `--batch-size=数量`、`--max-batches=数量` 控制单轮吞吐，达到上限后可再次离线执行。脚本必须显式传 `--confirm-offline` 或设置 `JUHE_AI_CONFIRM_USAGE_STATS_REBUILD=1`，避免在线误执行。如果 usage shard / `juhe_usage.usage_records` 为空或历史 `usage_records` 已丢弃，历史统计明确放弃，后续从新请求重新累计。执行前必须确认业务库路径或 PostgreSQL 连接无误，避免误操作业务数据。
@@ -955,7 +955,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 
 系统设置默认写入：
 
-- `systemApiRateLimitEnabled = true`：后台管理 API 粗限流默认开启；只作用于 `/__aisys__/api`，健康检查不参与。
+- 后台管理 API 粗限流固定启用，不写入系统设置；只作用于 `/__aisys__/api`，健康检查不参与。
 - `systemApiRateLimitIpReadPerMinute = 600`、`systemApiRateLimitIpReadBurstPer10Seconds = 120`：同一客户端 IP 后台读请求的分钟上限和 10 秒突发上限。
 - `systemApiRateLimitIpWritePerMinute = 180`、`systemApiRateLimitIpWriteBurstPer10Seconds = 40`：同一客户端 IP 后台写请求的分钟上限和 10 秒突发上限。
 - `systemApiRateLimitUserReadPerMinute = 300`、`systemApiRateLimitUserWritePerMinute = 120`：同一登录系统账户后台读 / 写请求每分钟上限。
@@ -963,7 +963,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - `temporaryUnschedulableRetryIntervalSeconds = 3`：普通上游请求异常或非 `2xx` 响应切号前，同账号原地确认重试之间的等待间隔；冷却恢复复测会显式覆盖为不做同账号重试。
 - `temporaryUnschedulableRetryAttempts = 3`：普通上游请求异常或非 `2xx` 响应切号前，同账号原地确认重试次数；冷却恢复复测会显式覆盖为不做同账号重试。
 - 本地短暂避让不落库、不使用 `defaultTemporaryUnschedulableMinutes`，固定按 `3s -> 5s -> 10s` 进程内阶梯执行；每阶到期后优先由 Web 进程内后台探针验证恢复，真实请求半开只作为兜底，半开租约跟随请求并发生命周期释放，固定租约时间只用于无在途并发时回收孤儿租约；持续失败后由后台探针按时间窗口进入事前确认。真实网关流量中的代理 profile 已知不可用也只推进这套运行态流程，确认失败且账号并发归零前不写持久临时不可调用。
-- `streamCircuitBreakerEnabled = true`：流式超时检测默认开启；真实网关流式失败先进入短暂避让和后台探针，确认失败且当前账号并发归零后才写持久账号状态。
+- 流式超时检测固定启用，不写入系统设置；真实网关流式失败先进入短暂避让和后台探针，确认失败且当前账号并发归零后才写持久账号状态。
 - `streamRequestTimeoutSeconds = 120`：上游首包等待上限；非流式和流式在响应头前、非流式在 `2xx` 响应首字节前超过该时间时按上游请求异常切换后续账号；流式拿到 `2xx + SSE` 后，超过该时间没有收到任何上游 chunk 时补发失败事件并结束本次 SSE。
 - `streamIdleTimeoutSeconds = 30`：流式响应首段内容后，没有任何上游 chunk 的输出停顿上限；只把 raw chunk 完全停顿作为硬超时，持续有 raw chunk 但暂未形成完整 SSE 事件时只记录诊断并继续转发。
 - `streamClientTotalWaitTimeoutSeconds = 270`：同一次客户端连接在服务端隐藏切号 / 重试期间的总等待上限；超过后停止继续隐藏重试并返回失败，避免客户端长期收不到内容后自行断开。
@@ -985,9 +985,9 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - `usageStatsMonthlyRetentionMonths = 24`：月级统计缓存默认保留 24 个月。
 - `usageRankSnapshotRetentionDays = 30`：常用 TopN 排行快照默认保留 30 天。
 - `systemMetricsRetentionDays = 7`、`systemMetricsHourlyRetentionDays = 30`：系统监控原始采样默认保留 7 天，小时汇总默认保留 30 天。
-- `dataRetentionCleanupIntervalMinutes = 10`、`dataRetentionCleanupBatchSize = 1000`、`dataRetentionCleanupMaxBatchesPerRun = 20`：统一表数据清理任务默认每 10 分钟执行一次，每类数据每轮最多处理 2 万行；合法范围分别是 `5..1440` 分钟、`100..5000` 行 / 批、`1..100` 批 / 轮。线上日增几十万记录时优先保持小批多轮，默认配置按每天约 288 万行 / 类的理论清理能力持续追平。
+- 数据保留清理内部常量：统一表数据清理任务固定每 10 分钟执行一次，单批 1000 行，单轮最多 20 批，每类数据每轮最多处理 2 万行；这些值不写入系统设置，线上通过小批多轮持续追平。
 - OAuth 额度快照不再有后台主动刷新默认项；快照只由真实网关响应头和账户测试副作用被动更新。
-- `operationLogEnabled = true`：默认启用操作日志。
+- 操作日志固定启用，不写入系统设置。
 - `operationLogRetentionDays = 365`：操作日志默认保留 365 天。
 - `operationLogMaxChangesPerRecord = 100`：单条操作日志最多保存 100 个字段差异，超过后折叠摘要。
 - `accountQualityRefreshIntervalSeconds = 600`：账号质量缓存默认每 10 分钟刷新一次。

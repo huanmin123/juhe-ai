@@ -98,7 +98,10 @@ try {
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: 'SQLite read worker API Key',
     routeStrategyId: routeStrategy.id,
-    status: 'active'
+    status: 'active',
+    quotaLimits: {
+      total: { enabled: true, limit: 100 }
+    }
   }, access)
   const compatibleFile = openAICompatibleFiles.createOpenAICompatibleFile({
     id: 'file_sqlite_read_worker',
@@ -288,6 +291,9 @@ try {
   assert((await repositories.getRuntimeLogFacetsAsync()).totalIndexed >= 1, '运行日志 facets async 读应由 read worker 返回真实数据')
 
   const dbServiceReadHandledJobsBefore = readWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs
+  assert.equal(typeof (await dbServiceHandlers.handleDbServiceOperation({
+    type: 'read_gateway_settings'
+  })).streamRequestTimeoutSeconds, 'number', 'DB service gateway settings 读应经 read worker 返回真实数据')
   assert.equal((await dbServiceHandlers.handleDbServiceOperation({
     type: 'validate_gateway_api_key',
     key: apiKey.key
@@ -337,6 +343,15 @@ try {
     protocolCode: 'openai',
     providerCode: 'gpt'
   })).some((item) => item.defaultRule), 'DB service active 响应检查策略应经 read worker 返回默认策略')
+  const gatewayApiKeyForQuota = await dbServiceHandlers.handleDbServiceOperation({
+    type: 'validate_gateway_api_key',
+    key: apiKey.key
+  })
+  assert(gatewayApiKeyForQuota, 'API Key quota 测试需要有效网关 API Key')
+  assert.deepEqual(await dbServiceHandlers.handleDbServiceOperation({
+    type: 'check_api_key_quota',
+    apiKey: gatewayApiKeyForQuota
+  }), { allowed: true }, 'DB service API Key quota 精确读应经 read worker 返回允许结果')
   assert.deepEqual(await dbServiceHandlers.handleDbServiceOperation({
     type: 'check_authorization_quota',
     groupAuthorizationId: undefined,
@@ -358,6 +373,20 @@ try {
     includeUnpriced: true
   })
   assert(providerModelCatalog.length > 0, '供应商模型目录应经 DB service read worker 返回真实数据')
+  const previousCacheDriver = runtimeConfig.cacheDriver
+  runtimeConfig.cacheDriver = 'redis'
+  try {
+    const redisModeProviderModelCatalog = await dbServiceHandlers.handleDbServiceOperation({
+      type: 'list_provider_model_catalog',
+      providerCode: 'gpt',
+      systemAccountId: 'sys_admin',
+      includeInactive: false,
+      includeUnpriced: true
+    })
+    assert(redisModeProviderModelCatalog.length > 0, 'SQLite + Redis cache driver 下 read worker 模型目录不应触发同步 cache guard')
+  } finally {
+    runtimeConfig.cacheDriver = previousCacheDriver
+  }
   const compatibleFiles = await dbServiceHandlers.handleDbServiceOperation({
     type: 'list_openai_compatible_files',
     options: {
@@ -427,13 +456,13 @@ try {
   assert(chunkResults.some((item) => item.fileId === compatibleFile.id && item.contentPreview.includes('needle')), 'OpenAI-compatible vector store chunks 应经 read worker 返回真实 chunk')
   const dbServiceReadHandledJobsDelta = readWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs - dbServiceReadHandledJobsBefore
   assert(
-    dbServiceReadHandledJobsDelta >= 19,
+    dbServiceReadHandledJobsDelta >= 22,
     `DB service 剩余纯读应批量进入 read worker，实际新增 ${dbServiceReadHandledJobsDelta}`
   )
 
   const poolRuntime = readWorkerPool.getSqliteReadWorkerPoolRuntime()
   assert(poolRuntime.workerCount > 0, 'read worker pool 应创建子进程')
-  assert(poolRuntime.handledJobs >= 60, '管理端 SQLite async 读应批量由 read worker 处理')
+  assert(poolRuntime.handledJobs >= 63, '管理端 SQLite async 读应批量由 read worker 处理')
 
   console.log('SQLite read worker 回归通过：管理端账号/分组/API Key/策略/代理/系统账户/供应商/设置/模型目录/运行日志/网关运行时/OpenAI-compatible files/vector stores 读进入 query-only 子进程，返回真实数据且不触发隐藏写')
 } finally {

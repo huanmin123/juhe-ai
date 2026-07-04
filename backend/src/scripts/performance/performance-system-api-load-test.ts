@@ -169,7 +169,14 @@ async function runLoadTest(input: LoadConfig): Promise<LoadReport> {
     const baseUrl = `http://127.0.0.1:${serverAddress(server).port}`
     const cookie = await login(baseUrl)
     settingsSnapshot = await getEnvelope<Record<string, unknown>>(baseUrl, '/__aisys__/api/settings', cookie, input.requestTimeoutMs)
-    await patchEnvelope(baseUrl, '/__aisys__/api/settings', { systemApiRateLimitEnabled: false }, cookie, input.requestTimeoutMs)
+    await patchEnvelope(baseUrl, '/__aisys__/api/settings', {
+      systemApiRateLimitIpReadPerMinute: 1_000_000,
+      systemApiRateLimitIpReadBurstPer10Seconds: 1_000_000,
+      systemApiRateLimitIpWritePerMinute: 1_000_000,
+      systemApiRateLimitIpWriteBurstPer10Seconds: 1_000_000,
+      systemApiRateLimitUserReadPerMinute: 1_000_000,
+      systemApiRateLimitUserWritePerMinute: 1_000_000
+    }, cookie, input.requestTimeoutMs)
     await cleanupStaleLoadFixtures()
     fixture = await createFixture(baseUrl, cookie, input)
     await warmup(baseUrl, cookie, fixture, input)
@@ -416,7 +423,12 @@ async function restoreSettings(server: http.Server, settingsSnapshot: Record<str
   const baseUrl = `http://127.0.0.1:${address.port}`
   const cookie = await login(baseUrl)
   await patchEnvelope(baseUrl, '/__aisys__/api/settings', {
-    systemApiRateLimitEnabled: settingsSnapshot.systemApiRateLimitEnabled
+    systemApiRateLimitIpReadPerMinute: settingsSnapshot.systemApiRateLimitIpReadPerMinute,
+    systemApiRateLimitIpReadBurstPer10Seconds: settingsSnapshot.systemApiRateLimitIpReadBurstPer10Seconds,
+    systemApiRateLimitIpWritePerMinute: settingsSnapshot.systemApiRateLimitIpWritePerMinute,
+    systemApiRateLimitIpWriteBurstPer10Seconds: settingsSnapshot.systemApiRateLimitIpWriteBurstPer10Seconds,
+    systemApiRateLimitUserReadPerMinute: settingsSnapshot.systemApiRateLimitUserReadPerMinute,
+    systemApiRateLimitUserWritePerMinute: settingsSnapshot.systemApiRateLimitUserWritePerMinute
   }, cookie, config.requestTimeoutMs)
 }
 

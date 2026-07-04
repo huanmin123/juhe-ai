@@ -524,7 +524,6 @@ export const DEFAULT_PROVIDER_PROTOCOL_PROFILE_SEEDS = [
 
 export const DEFAULT_SYSTEM_SETTINGS = [
   ['gatewayTextRawBodyLimitMegabytes', 16],
-  ['systemApiRateLimitEnabled', true],
   ['systemApiRateLimitIpReadPerMinute', 600],
   ['systemApiRateLimitIpReadBurstPer10Seconds', 120],
   ['systemApiRateLimitIpWritePerMinute', 180],
@@ -534,14 +533,12 @@ export const DEFAULT_SYSTEM_SETTINGS = [
   ['defaultTemporaryUnschedulableMinutes', 2],
   ['temporaryUnschedulableRetryIntervalSeconds', 3],
   ['temporaryUnschedulableRetryAttempts', 3],
-  ['streamCircuitBreakerEnabled', true],
   ['streamRequestTimeoutSeconds', 120],
   ['streamIdleTimeoutSeconds', 30],
   ['streamClientTotalWaitTimeoutSeconds', 270],
   ['streamMaxLifetimeSeconds', 1800],
   ['streamFailureThresholdCount', 3],
   ['streamFailureThresholdWindowMinutes', 5],
-  ['operationLogEnabled', true],
   ['operationLogRetentionDays', 365],
   ['operationLogMaxChangesPerRecord', 100],
   ['statsAggregationIntervalSeconds', 60],
@@ -577,8 +574,5 @@ export const DEFAULT_SYSTEM_SETTINGS = [
   ['usageStatsMonthlyRetentionMonths', 24],
   ['usageRankSnapshotRetentionDays', 30],
   ['systemMetricsRetentionDays', 7],
-  ['systemMetricsHourlyRetentionDays', 30],
-  ['dataRetentionCleanupIntervalMinutes', 10],
-  ['dataRetentionCleanupBatchSize', 1000],
-  ['dataRetentionCleanupMaxBatchesPerRun', 20]
+  ['systemMetricsHourlyRetentionDays', 30]
 ] as const

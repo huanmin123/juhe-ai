@@ -12,7 +12,6 @@ type MethodClass = 'read' | 'write'
 type LimiterScope = 'ip' | 'user'
 
 interface SystemApiRateLimitSettings {
-  enabled: boolean
   ipReadPerMinute: number
   ipReadBurstPer10Seconds: number
   ipWritePerMinute: number
@@ -77,11 +76,6 @@ export async function systemApiIpRateLimit(req: Request, res: Response, next: Ne
     return
   }
 
-  if (!settings.enabled) {
-    next()
-    return
-  }
-
   if (await isClientIpRateLimitAllowlisted(req)) {
     next()
     return
@@ -117,11 +111,6 @@ export async function systemApiAuthenticatedRateLimit(req: Request, res: Respons
     settings = await currentSystemApiRateLimitSettings()
   } catch (error) {
     next(error)
-    return
-  }
-
-  if (!settings.enabled) {
-    next()
     return
   }
 
@@ -175,7 +164,6 @@ function createStore(name: string, windowMs: number): RateLimitStore {
 async function currentSystemApiRateLimitSettings(): Promise<SystemApiRateLimitSettings> {
   const settings = await getSettingsAsync()
   return {
-    enabled: booleanSetting(settings.systemApiRateLimitEnabled, 'systemApiRateLimitEnabled'),
     ipReadPerMinute: integerSetting(settings.systemApiRateLimitIpReadPerMinute, 'systemApiRateLimitIpReadPerMinute'),
     ipReadBurstPer10Seconds: integerSetting(settings.systemApiRateLimitIpReadBurstPer10Seconds, 'systemApiRateLimitIpReadBurstPer10Seconds'),
     ipWritePerMinute: integerSetting(settings.systemApiRateLimitIpWritePerMinute, 'systemApiRateLimitIpWritePerMinute'),
@@ -384,13 +372,6 @@ function integerSetting(value: unknown, key: string): number {
   }
   if (value < 0 || value > 1_000_000) {
     throw new Error(`${key} 必须在 0 到 1000000 之间`)
-  }
-  return value
-}
-
-function booleanSetting(value: unknown, key: string): boolean {
-  if (typeof value !== 'boolean') {
-    throw new Error(`${key} 必须是布尔值`)
   }
   return value
 }

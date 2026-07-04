@@ -2125,7 +2125,10 @@ async function runSingleGatewayAccountPrecheck(state: PrecheckState, timeoutMs: 
 }> {
   const { preferredSystemAccountTestModelAsync, testOpenAIAccount } = await import('../../accounts/account-test.service.js')
   const signal = AbortSignal.timeout(timeoutMs)
-  const account = accountSummaryFromGatewayPrecheckAccount(state.account, state)
+  const account = accountSummaryFromGatewayPrecheckAccount(state.account, {
+    groupId: state.groupId,
+    systemAccountId: state.systemAccountId
+  })
   return await testOpenAIAccount(account, {
     model: await preferredSystemAccountTestModelAsync(account),
     diagnostics: 'full',
@@ -2133,6 +2136,7 @@ async function runSingleGatewayAccountPrecheck(state: PrecheckState, timeoutMs: 
     trafficSource: 'runtime_recovery_probe',
     signal,
     disableAccountStateMutation: true,
+    candidateAccount: state.account,
     findAccountForTest: (accountId, access) => requestGatewayDbService({
       type: 'find_account_for_test',
       accountId,

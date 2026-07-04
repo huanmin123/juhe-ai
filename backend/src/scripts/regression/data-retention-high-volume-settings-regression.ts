@@ -24,42 +24,28 @@ const [databaseModule, settingsRepository] = await Promise.all([
 
 try {
   const settings = settingsRepository.getSettings()
-  assert.equal(settings.dataRetentionCleanupIntervalMinutes, 10, '数据保留清理默认应每 10 分钟运行')
-  assert.equal(settings.dataRetentionCleanupBatchSize, 1000, '数据保留清理默认单批应为 1000 行')
-  assert.equal(settings.dataRetentionCleanupMaxBatchesPerRun, 20, '数据保留清理默认单轮应为 20 批')
-  assert.equal(
-    Number(settings.dataRetentionCleanupBatchSize) * Number(settings.dataRetentionCleanupMaxBatchesPerRun),
-    20_000,
-    '数据保留清理默认单轮每类数据处理能力应为 2 万行，靠周期持续追平'
-  )
-
-  const updated = settingsRepository.updateSettings({
-    dataRetentionCleanupIntervalMinutes: 5,
-    dataRetentionCleanupBatchSize: 5_000,
-    dataRetentionCleanupMaxBatchesPerRun: 100
-  })
-  assert.equal(updated.dataRetentionCleanupIntervalMinutes, 5, '清理间隔应允许调到 5 分钟')
-  assert.equal(updated.dataRetentionCleanupBatchSize, 5_000, '单批行数应允许调到 5000')
-  assert.equal(updated.dataRetentionCleanupMaxBatchesPerRun, 100, '单轮批数应允许调到 100')
+  assert.equal(Object.prototype.hasOwnProperty.call(settings, 'dataRetentionCleanupIntervalMinutes'), false, '清理间隔不应暴露为系统设置')
+  assert.equal(Object.prototype.hasOwnProperty.call(settings, 'dataRetentionCleanupBatchSize'), false, '单批删除行数不应暴露为系统设置')
+  assert.equal(Object.prototype.hasOwnProperty.call(settings, 'dataRetentionCleanupMaxBatchesPerRun'), false, '单轮最大批数不应暴露为系统设置')
 
   assert.throws(
-    () => settingsRepository.updateSettings({ dataRetentionCleanupIntervalMinutes: 4 }),
-    /dataRetentionCleanupIntervalMinutes 必须在 5 到 1440 之间/,
-    '清理间隔不能低于 5 分钟，避免维护任务过于激进'
+    () => settingsRepository.updateSettings({ dataRetentionCleanupIntervalMinutes: 5 }),
+    /未知系统设置字段：dataRetentionCleanupIntervalMinutes/,
+    '清理间隔属于内部常量，不能通过系统设置修改'
   )
   assert.throws(
-    () => settingsRepository.updateSettings({ dataRetentionCleanupBatchSize: 5_001 }),
-    /dataRetentionCleanupBatchSize 必须在 100 到 5000 之间/,
-    '单批行数必须按 SQLite 写锁压力限制在 5000 以内'
+    () => settingsRepository.updateSettings({ dataRetentionCleanupBatchSize: 5_000 }),
+    /未知系统设置字段：dataRetentionCleanupBatchSize/,
+    '单批删除行数属于内部常量，不能通过系统设置修改'
   )
   assert.throws(
-    () => settingsRepository.updateSettings({ dataRetentionCleanupMaxBatchesPerRun: 101 }),
-    /dataRetentionCleanupMaxBatchesPerRun 必须在 1 到 100 之间/,
-    '单轮批数仍必须有上限'
+    () => settingsRepository.updateSettings({ dataRetentionCleanupMaxBatchesPerRun: 100 }),
+    /未知系统设置字段：dataRetentionCleanupMaxBatchesPerRun/,
+    '单轮最大批数属于内部常量，不能通过系统设置修改'
   )
 
   assertSourceGuards()
-  console.log('高流量数据保留清理设置回归通过：默认 10 分钟一轮、1000 行/批、2 万行/类/轮，按 SQLite 小批多轮维护')
+  console.log('数据保留清理内部常量回归通过：10 分钟一轮、1000 行/批、20 批/轮，不再暴露为系统设置')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()
@@ -72,20 +58,28 @@ try {
 function assertSourceGuards(): void {
   const backgroundJobsSource = readFileSync(resolve('src/modules/background/background-jobs.ts'), 'utf8')
   assert(
-    backgroundJobsSource.includes("settingsNumber('dataRetentionCleanupIntervalMinutes', 5, 1440) * minuteMs"),
-    'data-retention-cleanup 调度必须读取 dataRetentionCleanupIntervalMinutes'
+    backgroundJobsSource.includes('DATA_RETENTION_CLEANUP_INTERVAL_MINUTES * minuteMs'),
+    'data-retention-cleanup 调度必须使用内部清理间隔常量'
   )
+  assert(!backgroundJobsSource.includes('dataRetentionCleanupIntervalMinutes'), 'data-retention-cleanup 调度不能读取系统设置里的清理间隔')
   assert(
     !backgroundJobsSource.includes("backgroundScheduledJobName('data-retention-cleanup'), intervalMs: dailyIntervalMs"),
     'data-retention-cleanup 不能退回固定 dailyIntervalMs'
   )
 
   const cleanupSource = readFileSync(resolve('src/modules/background/data-retention-cleanup.service.ts'), 'utf8')
-  assert(cleanupSource.includes('retentionCleanupBatchSizeMax = 5_000'), '清理服务单批上限必须控制在 5000 以内')
-  assert(cleanupSource.includes('retentionCleanupMaxBatchesMax = 100'), '清理服务运行时批数上限必须控制在 100 以内')
-  assert(cleanupSource.includes('retentionCleanupBatchPauseMs = 25'), '清理服务连续批次之间必须保留 SQLite 写入间隙')
+  assert(cleanupSource.includes('DATA_RETENTION_CLEANUP_BATCH_SIZE'), '清理服务必须使用内部单批行数常量')
+  assert(cleanupSource.includes('DATA_RETENTION_CLEANUP_MAX_BATCHES_PER_RUN'), '清理服务必须使用内部单轮批数常量')
+  assert(!cleanupSource.includes('dataRetentionCleanupBatchSize'), '清理服务不能读取系统设置里的单批删除行数')
+  assert(!cleanupSource.includes('dataRetentionCleanupMaxBatchesPerRun'), '清理服务不能读取系统设置里的单轮最大批数')
+  assert(cleanupSource.includes('DATA_RETENTION_CLEANUP_BATCH_PAUSE_MS'), '清理服务连续批次之间必须保留 SQLite 写入间隙')
   assert(cleanupSource.includes('pauseBetweenCleanupBatches()'), '清理服务必须在继续下一批前节流')
   assert(cleanupSource.includes('checkpointDatasetAndUsageDatabases()'), '清理删除数据后必须维护 dataset / usage shard WAL')
+
+  const constantsSource = readFileSync(resolve('src/modules/background/data-retention-cleanup.constants.ts'), 'utf8')
+  assert(constantsSource.includes('DATA_RETENTION_CLEANUP_INTERVAL_MINUTES = 10'), '内部清理间隔必须固定为 10 分钟')
+  assert(constantsSource.includes('DATA_RETENTION_CLEANUP_BATCH_SIZE = 1000'), '内部单批删除行数必须固定为 1000')
+  assert(constantsSource.includes('DATA_RETENTION_CLEANUP_MAX_BATCHES_PER_RUN = 20'), '内部单轮最大批数必须固定为 20')
 
   const statsWriterSource = readFileSync(resolve('src/modules/background/background-stats-writer.ts'), 'utf8')
   assert(statsWriterSource.includes('cleanupStatsDatabaseAfterDelete'), 'stats-writer 清理统计数据后必须维护 stats WAL')

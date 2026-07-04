@@ -63,6 +63,7 @@ export class KeyedChildProcessPool<Operation> {
   private maxRunMs = 0
   private exclusiveBarrier: Promise<unknown> = Promise.resolve()
   private idleWaiters: Array<() => void> = []
+  private poolGeneration = 0
 
   constructor(private readonly options: KeyedChildProcessPoolOptions<Operation>) {}
 
@@ -83,6 +84,7 @@ export class KeyedChildProcessPool<Operation> {
   }
 
   async close(): Promise<void> {
+    this.poolGeneration += 1
     const closing = this.slots
     this.slots = []
     this.exclusiveBarrier = Promise.resolve()
@@ -297,15 +299,22 @@ export class KeyedChildProcessPool<Operation> {
   }
 
   private restartSlotWorker(slot: KeyedChildProcessPoolSlot<Operation>): void {
+    const generation = this.poolGeneration
     const worker = slot.worker
     if (worker) {
       slot.worker = undefined
       this.restartedWorkers += 1
       void stopWriterChild(worker).finally(() => {
+        if (this.poolGeneration !== generation || !this.slots.includes(slot)) {
+          return
+        }
         this.ensureSlotWorker(slot)
         this.pumpSlot(slot)
         this.notifyIdle()
       })
+      return
+    }
+    if (!this.slots.includes(slot)) {
       return
     }
     this.ensureSlotWorker(slot)

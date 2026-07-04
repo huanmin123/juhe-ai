@@ -111,43 +111,42 @@
             <div>
               <h3 class="section-title">
                 <span>后台接口限流</span>
-                <a-tooltip title="保护 /__aisys__/api 后台接口，避免同一来源或同一登录用户在短时间内压垮 DB service；健康检查不受影响。">
+                <a-tooltip title="保护 /__aisys__/api 后台接口，避免同一来源或同一登录用户在短时间内压垮 DB service；健康检查不受影响，限流固定启用。">
                   <QuestionCircleOutlined class="help-icon" />
                 </a-tooltip>
               </h3>
             </div>
-            <a-switch v-model:checked="systemForm.systemApiRateLimitEnabled" checked-children="启用" un-checked-children="关闭" />
           </div>
 
           <div class="settings-grid">
             <div class="setting-item">
               <a-form-item label="IP 读请求每分钟" tooltip="默认 600；适用于 GET、HEAD 和 OPTIONS。">
-                <a-input-number v-model:value="systemForm.systemApiRateLimitIpReadPerMinute" :disabled="!systemForm.systemApiRateLimitEnabled" :min="0" :max="1000000" style="width: 100%" />
+                <a-input-number v-model:value="systemForm.systemApiRateLimitIpReadPerMinute" :min="0" :max="1000000" style="width: 100%" />
               </a-form-item>
             </div>
             <div class="setting-item">
               <a-form-item label="IP 读请求 10 秒突发" tooltip="默认 120；用于拦截短时间刷新列表和探测接口。">
-                <a-input-number v-model:value="systemForm.systemApiRateLimitIpReadBurstPer10Seconds" :disabled="!systemForm.systemApiRateLimitEnabled" :min="0" :max="1000000" style="width: 100%" />
+                <a-input-number v-model:value="systemForm.systemApiRateLimitIpReadBurstPer10Seconds" :min="0" :max="1000000" style="width: 100%" />
               </a-form-item>
             </div>
             <div class="setting-item">
               <a-form-item label="IP 写请求每分钟" tooltip="默认 180；适用于 POST、PATCH、PUT 和 DELETE。">
-                <a-input-number v-model:value="systemForm.systemApiRateLimitIpWritePerMinute" :disabled="!systemForm.systemApiRateLimitEnabled" :min="0" :max="1000000" style="width: 100%" />
+                <a-input-number v-model:value="systemForm.systemApiRateLimitIpWritePerMinute" :min="0" :max="1000000" style="width: 100%" />
               </a-form-item>
             </div>
             <div class="setting-item">
               <a-form-item label="IP 写请求 10 秒突发" tooltip="默认 40；优先挡住批量提交和暴力探测。">
-                <a-input-number v-model:value="systemForm.systemApiRateLimitIpWriteBurstPer10Seconds" :disabled="!systemForm.systemApiRateLimitEnabled" :min="0" :max="1000000" style="width: 100%" />
+                <a-input-number v-model:value="systemForm.systemApiRateLimitIpWriteBurstPer10Seconds" :min="0" :max="1000000" style="width: 100%" />
               </a-form-item>
             </div>
             <div class="setting-item">
               <a-form-item label="登录用户读请求每分钟" tooltip="默认 300；同一登录账号的后台读请求保护。">
-                <a-input-number v-model:value="systemForm.systemApiRateLimitUserReadPerMinute" :disabled="!systemForm.systemApiRateLimitEnabled" :min="0" :max="1000000" style="width: 100%" />
+                <a-input-number v-model:value="systemForm.systemApiRateLimitUserReadPerMinute" :min="0" :max="1000000" style="width: 100%" />
               </a-form-item>
             </div>
             <div class="setting-item">
               <a-form-item label="登录用户写请求每分钟" tooltip="默认 120；对保存、删除、批量操作等写请求再加一层限制。">
-                <a-input-number v-model:value="systemForm.systemApiRateLimitUserWritePerMinute" :disabled="!systemForm.systemApiRateLimitEnabled" :min="0" :max="1000000" style="width: 100%" />
+                <a-input-number v-model:value="systemForm.systemApiRateLimitUserWritePerMinute" :min="0" :max="1000000" style="width: 100%" />
               </a-form-item>
             </div>
           </div>
@@ -235,12 +234,11 @@
             <div>
               <h3 class="section-title">
                 <span>首包等待与流式中断</span>
-                <a-tooltip title="首包等待适用于非流式和流式请求；流式输出停顿和失败计数只作用于 SSE 响应。">
+                <a-tooltip title="首包等待适用于非流式和流式请求；流式输出停顿和失败计数只作用于 SSE 响应，并固定启用。">
                   <QuestionCircleOutlined class="help-icon" />
                 </a-tooltip>
               </h3>
             </div>
-            <a-switch v-model:checked="systemForm.streamCircuitBreakerEnabled" checked-children="启用" un-checked-children="关闭" />
           </div>
 
           <div class="settings-grid">
@@ -272,7 +270,7 @@
             <div>
               <h3 class="section-title">
                 <span>数据保留与清理</span>
-                <a-tooltip title="控制 usage、日志索引和统计缓存的保留清理吞吐，适配高流量部署。">
+                <a-tooltip title="配置 usage、日志索引和统计缓存的保留期；清理间隔与批量吞吐由后台内部常量控制。">
                   <QuestionCircleOutlined class="help-icon" />
                 </a-tooltip>
               </h3>
@@ -280,7 +278,7 @@
           </div>
 
           <a-alert class="setting-alert section-alert" type="warning" show-icon>
-            <template #message>线上日增几十万记录时，清理应按小批多轮执行；常态保持 1000 行级别单批，积压追赶再临时上调。</template>
+            <template #message>清理任务固定按 10 分钟一轮、1000 行/批、20 批/轮的小批多轮策略执行，页面只开放保留期配置。</template>
           </a-alert>
 
           <div class="settings-grid">
@@ -297,21 +295,6 @@
             <div class="setting-item">
               <a-form-item label="公开接口日志保留天数" tooltip="默认 30 天，最大 365 天；用于公开接口日志表的后台清理。">
                 <a-input-number v-model:value="systemForm.publicApiLogRetentionDays" :min="1" :max="365" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="清理间隔（分钟）" tooltip="默认 10 分钟；修改后重启后台 worker 生效。">
-                <a-input-number v-model:value="systemForm.dataRetentionCleanupIntervalMinutes" :min="5" :max="1440" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="单批删除行数" tooltip="默认 1000；单批越大，对数据库写入和后台聚合的瞬时压力越明显。">
-                <a-input-number v-model:value="systemForm.dataRetentionCleanupBatchSize" :min="100" :max="5000" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="单轮最大批数" tooltip="默认 20；默认每类每轮最多 2 万行，靠周期持续追平。">
-                <a-input-number v-model:value="systemForm.dataRetentionCleanupMaxBatchesPerRun" :min="1" :max="100" style="width: 100%" />
               </a-form-item>
             </div>
           </div>

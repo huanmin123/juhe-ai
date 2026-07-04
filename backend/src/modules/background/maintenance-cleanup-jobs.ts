@@ -7,12 +7,14 @@ import { requestBackgroundWorkerDbService } from './background-ipc.js'
 import { requestStatsWriter } from './background-stats-writer.js'
 import { cleanupExpiredAuditHotRetentionData } from './audit-hot-retention-cleanup.service.js'
 import { cleanupExpiredRetainedData } from './data-retention-cleanup.service.js'
+import {
+  DATA_RETENTION_CLEANUP_BATCH_SIZE,
+  DATA_RETENTION_CLEANUP_MAX_BATCHES_PER_RUN
+} from './data-retention-cleanup.constants.js'
 import { enqueueRecordMaintenanceJobAsync, enqueueRecordMaintenanceJobWithResult } from '../record-maintenance/record-maintenance-queue.service.js'
 
 const dayMs = 24 * 60 * 60 * 1000
 const usageRecordRetentionMaxDays = 180
-const retentionCleanupBatchSizeMax = 5_000
-const retentionCleanupMaxBatchesMax = 100
 let postgresDataRetentionDispatchRunning = false
 
 export async function runApiKeyRecordCleanupRetry(): Promise<void> {
@@ -67,8 +69,8 @@ async function enqueuePostgresDataRetentionMaintenanceJobs(): Promise<void> {
   postgresDataRetentionDispatchRunning = true
   try {
     const settings = await getSettingsAsync()
-    const batchSize = settingNumber(settings, 'dataRetentionCleanupBatchSize', 100, retentionCleanupBatchSizeMax)
-    const maxBatches = settingNumber(settings, 'dataRetentionCleanupMaxBatchesPerRun', 1, retentionCleanupMaxBatchesMax)
+    const batchSize = DATA_RETENTION_CLEANUP_BATCH_SIZE
+    const maxBatches = DATA_RETENTION_CLEANUP_MAX_BATCHES_PER_RUN
     const usageRecordRetentionDays = settingNumber(settings, 'usageRecordRetentionDays', 1, usageRecordRetentionMaxDays)
     const cutoffAt = new Date(Date.now() - usageRecordRetentionDays * dayMs).toISOString()
     await enqueueRecordMaintenanceJobAsync({

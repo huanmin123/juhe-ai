@@ -50,7 +50,14 @@ try {
   closeSqliteReadWorkerPool = readWorkerPool.closeSqliteReadWorkerPool
 
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
-  repositories.updateSettings({ systemApiRateLimitEnabled: false })
+  repositories.updateSettings({
+    systemApiRateLimitIpReadPerMinute: 1_000_000,
+    systemApiRateLimitIpReadBurstPer10Seconds: 1_000_000,
+    systemApiRateLimitIpWritePerMinute: 1_000_000,
+    systemApiRateLimitIpWriteBurstPer10Seconds: 1_000_000,
+    systemApiRateLimitUserReadPerMinute: 1_000_000,
+    systemApiRateLimitUserWritePerMinute: 1_000_000
+  })
   const group = repositories.createGroup({
     name: '读突发回归分组',
     providerCode: 'gpt',

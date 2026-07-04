@@ -160,6 +160,10 @@ export function listProviderModelCatalog(options: ModelCatalogListOptions): Prov
   return cloneProviderModelCatalogItems(catalog)
 }
 
+export function listProviderModelCatalogReadOnly(options: ModelCatalogListOptions): ProviderModelCatalogItem[] {
+  return cloneProviderModelCatalogItems(buildProviderModelCatalog(options))
+}
+
 export async function listProviderModelCatalogAsync(options: ModelCatalogListOptions): Promise<ProviderModelCatalogItem[]> {
   if (sqliteReadWorkerPoolEnabled()) {
     return requestSqliteReadWorker({

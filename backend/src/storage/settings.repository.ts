@@ -20,7 +20,6 @@ const settingsCacheTtlMs = 60_000
 const businessSchemaName = 'juhe_business'
 export const systemSettingKeys = [
   'gatewayTextRawBodyLimitMegabytes',
-  'systemApiRateLimitEnabled',
   'systemApiRateLimitIpReadPerMinute',
   'systemApiRateLimitIpReadBurstPer10Seconds',
   'systemApiRateLimitIpWritePerMinute',
@@ -30,14 +29,12 @@ export const systemSettingKeys = [
   'defaultTemporaryUnschedulableMinutes',
   'temporaryUnschedulableRetryIntervalSeconds',
   'temporaryUnschedulableRetryAttempts',
-  'streamCircuitBreakerEnabled',
   'streamRequestTimeoutSeconds',
   'streamIdleTimeoutSeconds',
   'streamClientTotalWaitTimeoutSeconds',
   'streamMaxLifetimeSeconds',
   'streamFailureThresholdCount',
   'streamFailureThresholdWindowMinutes',
-  'operationLogEnabled',
   'operationLogRetentionDays',
   'operationLogMaxChangesPerRecord',
   'statsAggregationIntervalSeconds',
@@ -73,10 +70,7 @@ export const systemSettingKeys = [
   'usageStatsMonthlyRetentionMonths',
   'usageRankSnapshotRetentionDays',
   'systemMetricsRetentionDays',
-  'systemMetricsHourlyRetentionDays',
-  'dataRetentionCleanupIntervalMinutes',
-  'dataRetentionCleanupBatchSize',
-  'dataRetentionCleanupMaxBatchesPerRun'
+  'systemMetricsHourlyRetentionDays'
 ] as const
 
 const SYSTEM_SETTING_KEYS = new Set<string>(systemSettingKeys)
@@ -88,7 +82,6 @@ const globalSettingKeys = ['appName', 'appIcon'] as const
 const GLOBAL_SETTING_KEYS = new Set<string>(globalSettingKeys)
 const SYSTEM_SETTING_VALIDATORS: Record<SystemSettingKey, SettingValidator> = {
   gatewayTextRawBodyLimitMegabytes: integerSetting(1, 64),
-  systemApiRateLimitEnabled: booleanSetting,
   systemApiRateLimitIpReadPerMinute: integerSetting(0, 1_000_000),
   systemApiRateLimitIpReadBurstPer10Seconds: integerSetting(0, 1_000_000),
   systemApiRateLimitIpWritePerMinute: integerSetting(0, 1_000_000),
@@ -98,14 +91,12 @@ const SYSTEM_SETTING_VALIDATORS: Record<SystemSettingKey, SettingValidator> = {
   defaultTemporaryUnschedulableMinutes: integerSetting(1, 1440),
   temporaryUnschedulableRetryIntervalSeconds: integerSetting(0, 3600),
   temporaryUnschedulableRetryAttempts: integerSetting(0, 10),
-  streamCircuitBreakerEnabled: booleanSetting,
   streamRequestTimeoutSeconds: integerSetting(10, 3600),
   streamIdleTimeoutSeconds: integerSetting(1, 3600),
   streamClientTotalWaitTimeoutSeconds: integerSetting(10, 3600),
   streamMaxLifetimeSeconds: integerSetting(60, 86400),
   streamFailureThresholdCount: integerSetting(1, 100),
   streamFailureThresholdWindowMinutes: integerSetting(1, 1440),
-  operationLogEnabled: booleanSetting,
   operationLogRetentionDays: integerSetting(1, 3650),
   operationLogMaxChangesPerRecord: integerSetting(1, 500),
   statsAggregationIntervalSeconds: integerSetting(5, 3600),
@@ -141,10 +132,7 @@ const SYSTEM_SETTING_VALIDATORS: Record<SystemSettingKey, SettingValidator> = {
   usageStatsMonthlyRetentionMonths: integerSetting(1, 60),
   usageRankSnapshotRetentionDays: integerSetting(1, 365),
   systemMetricsRetentionDays: integerSetting(1, 7),
-  systemMetricsHourlyRetentionDays: integerSetting(1, 30),
-  dataRetentionCleanupIntervalMinutes: integerSetting(5, 1440),
-  dataRetentionCleanupBatchSize: integerSetting(100, 5_000),
-  dataRetentionCleanupMaxBatchesPerRun: integerSetting(1, 100)
+  systemMetricsHourlyRetentionDays: integerSetting(1, 30)
 }
 const GLOBAL_SETTING_VALIDATORS: Record<GlobalSettingKey, SettingValidator> = {
   appName: nonEmptyStringSetting,
@@ -188,7 +176,13 @@ export function listGlobalSettings(): Record<string, unknown> {
 }
 
 export function listGlobalSettingsReadOnly(): Record<string, unknown> {
-  return listGlobalSettings()
+  const rows = getBusinessDatabase().prepare("SELECT key, value_json, updated_at FROM global_settings WHERE key IN ('appName', 'appIcon') ORDER BY key ASC").all() as unknown as Array<GlobalSettingRow>
+  const settings: Record<string, unknown> = {}
+  for (const row of rows) {
+    settings[row.key] = normalizeGlobalSetting(row.key, JSON.parse(row.value_json) as unknown)
+  }
+  assertAllSettingsPresent(settings, globalSettingKeys, '全局设置')
+  return { ...settings }
 }
 
 export async function listGlobalSettingsAsync(): Promise<Record<string, unknown>> {
@@ -289,7 +283,16 @@ export function getSettings(): Record<string, unknown> {
 }
 
 export function getSettingsReadOnly(): Record<string, unknown> {
-  return getSettings()
+  const systemAccountId = SYSTEM_SETTINGS_ACCOUNT_ID
+  const rows = getBusinessDatabase()
+    .prepare(`SELECT key, value_json FROM system_settings WHERE system_account_id = ? AND key IN (${sqlPlaceholders(systemSettingKeys.length)}) ORDER BY key ASC`)
+    .all(systemAccountId, ...systemSettingKeys) as Array<{ key: string; value_json: string }>
+  const settings: Record<string, unknown> = {}
+  for (const row of rows) {
+    settings[row.key] = normalizeSystemSetting(row.key, JSON.parse(row.value_json) as unknown)
+  }
+  assertAllSettingsPresent(settings, systemSettingKeys, '系统设置')
+  return { ...settings }
 }
 
 export async function getSettingsAsync(): Promise<Record<string, unknown>> {
@@ -556,13 +559,6 @@ function integerSetting(min: number, max: number): SettingValidator {
     }
     return value
   }
-}
-
-function booleanSetting(value: unknown, key: string): boolean {
-  if (typeof value !== 'boolean') {
-    throw new Error(`${key} 必须是布尔值`)
-  }
-  return value
 }
 
 function nonEmptyStringSetting(value: unknown, key: string): string {

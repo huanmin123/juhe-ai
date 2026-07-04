@@ -38,6 +38,7 @@ import {
 import { currentCpuPercent, currentMemoryMetrics, currentNetworkMetrics } from './system-metrics-sampler.service.js'
 import { WorkerScheduler } from './worker-scheduler.js'
 import { getUsageRecordRedisStreamOldestCreatedAt } from '../gateway/usage/record-queue.service.js'
+import { DATA_RETENTION_CLEANUP_INTERVAL_MINUTES } from './data-retention-cleanup.constants.js'
 
 let started = false
 let usageStatsAggregationRunning = false
@@ -105,7 +106,7 @@ function scheduleBackgroundJobs(): void {
       scheduler.schedule({ name: backgroundScheduledJobName('audit-hot-retention-cleanup'), intervalMs: minuteMs, initialDelayMs: 13 * secondMs, task: runAuditHotRetentionCleanup })
       scheduler.schedule({
         name: backgroundScheduledJobName('data-retention-cleanup'),
-        intervalMs: settingsNumber('dataRetentionCleanupIntervalMinutes', 5, 1440) * minuteMs,
+        intervalMs: DATA_RETENTION_CLEANUP_INTERVAL_MINUTES * minuteMs,
         initialDelayMs: 13 * minuteMs,
         task: runDataRetentionCleanup
       })

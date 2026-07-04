@@ -53,6 +53,34 @@ class FakeWorker extends EventEmitter {
   }
 }
 
+class SlowExitWorker extends EventEmitter {
+  connected = true
+  killed = false
+  exitCode: number | null = null
+
+  send(_message: WorkerMessage, callback?: (error?: Error | null) => void): boolean {
+    callback?.(null)
+    return true
+  }
+
+  disconnect(): void {
+    this.connected = false
+  }
+
+  kill(): boolean {
+    this.killed = true
+    this.connected = false
+    this.releaseExit()
+    return true
+  }
+
+  releaseExit(): void {
+    if (this.exitCode !== null) return
+    this.exitCode = 0
+    this.emit('exit', 0)
+  }
+}
+
 const workers: FakeWorker[] = []
 const pool = new KeyedChildProcessPool<TestOperation>({
   name: 'watchdog-test',
@@ -112,6 +140,28 @@ try {
   } finally {
     await spreadPool.close()
   }
+
+  const slowWorkers: SlowExitWorker[] = []
+  const closeRacePool = new KeyedChildProcessPool<TestOperation>({
+    name: 'close-race-test',
+    createWorker: () => {
+      const worker = new SlowExitWorker()
+      slowWorkers.push(worker)
+      return worker as unknown as ChildProcess
+    },
+    targetSize: () => 1,
+    queueMaxItems: () => 10,
+    shardIndexForOperation: () => 0,
+    operationType: (operation) => operation.id,
+    runTimeoutMs: () => 10
+  })
+  const closeRaceFirst = closeRacePool.request({ id: 'close-race-stall' })
+  await assert.rejects(closeRaceFirst, /close-race-test writer 操作超时 10ms/, 'close race 首个任务应先触发 watchdog 超时')
+  assert.equal(slowWorkers.length, 1, 'close race 超时前只应创建首个 worker')
+  await closeRacePool.close()
+  slowWorkers[0]?.releaseExit()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(slowWorkers.length, 1, 'close 之后 pending restart finally 不应创建孤儿 worker')
 
   console.log('keyed child process pool watchdog 回归通过：active job 超时后释放槽位、重启 worker 并继续处理队列')
 } finally {

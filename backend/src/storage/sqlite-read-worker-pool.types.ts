@@ -117,8 +117,10 @@ import type { UsageRecordListOptions, UsageRecordListResult, UsageRecordSummary 
 import type { ResponseInspectionPolicyListResult, ResponseInspectionPolicySummary } from './response-inspection-policy.repository.js'
 import type { ModelCatalogListOptions, ProviderModelCatalogItem } from '../modules/model-pricing/model-catalog.service.js'
 import type { AuthorizationQuotaDecision } from '../modules/gateway/quota/authorization-quota.service.js'
+import type { ApiKeyQuotaDecision } from '../modules/gateway/quota/api-key-quota.service.js'
 import type { DbServiceGatewayRuntime } from '../modules/db-service/db-service-types.js'
 import type { GatewayApiKeyRow } from './gateway-api-key.repository.js'
+import type { GatewaySettings } from '../modules/gateway/policy/account-error-policy.service.js'
 import type {
   OpenAICompatibleFileListOptions,
   OpenAICompatibleFileListResult,
@@ -172,6 +174,14 @@ export type SqliteReadWorkerOperation =
     type: 'list_account_test_tasks_read_only'
     ids: string[]
     access?: AccessScope
+  }
+  | {
+    type: 'is_account_test_task_cancel_requested_read_only'
+    id: string
+  }
+  | {
+    type: 'read_account_test_task_cancel_message_read_only'
+    id: string
   }
   | {
     type: 'list_resource_authorizations_page_read_only'
@@ -459,6 +469,10 @@ export type SqliteReadWorkerOperation =
     accountAuthorizationId?: string
   }
   | {
+    type: 'check_api_key_quota_read_only'
+    apiKey: GatewayApiKeyRow
+  }
+  | {
     type: 'check_authorization_quota_batch_read_only'
     groupAuthorizationId?: string
     accounts: Array<{
@@ -611,6 +625,9 @@ export type SqliteReadWorkerOperation =
     type: 'get_settings_read_only'
   }
   | {
+    type: 'read_gateway_settings_read_only'
+  }
+  | {
     type: 'list_runtime_logs_read_only'
     options?: RuntimeLogListOptions
   }
@@ -677,6 +694,8 @@ export type SqliteReadWorkerOperationResult<T extends SqliteReadWorkerOperation>
   T extends { type: 'get_account_test_session_read_only' } ? AccountTestSession | undefined :
   T extends { type: 'get_account_test_task_read_only' } ? AccountTestTask | undefined :
   T extends { type: 'list_account_test_tasks_read_only' } ? AccountTestTask[] :
+  T extends { type: 'is_account_test_task_cancel_requested_read_only' } ? boolean :
+  T extends { type: 'read_account_test_task_cancel_message_read_only' } ? string :
   T extends { type: 'list_resource_authorizations_page_read_only' } ? ResourceAuthorizationListResult :
   T extends { type: 'find_resource_authorization_read_only' } ? ResourceAuthorizationSummary | undefined :
   T extends { type: 'get_resource_authorization_usage_read_only' } ? ResourceAuthorizationSummary | undefined :
@@ -734,6 +753,7 @@ export type SqliteReadWorkerOperationResult<T extends SqliteReadWorkerOperation>
   T extends { type: 'list_active_client_ip_policies_read_only' } ? ActiveClientIpPolicy[] :
   T extends { type: 'find_active_client_ip_policy_by_hash_read_only' } ? ActiveClientIpPolicy | undefined :
   T extends { type: 'check_authorization_quota_read_only' } ? AuthorizationQuotaDecision :
+  T extends { type: 'check_api_key_quota_read_only' } ? ApiKeyQuotaDecision :
   T extends { type: 'check_authorization_quota_batch_read_only' } ? AuthorizationQuotaDecision[] :
   T extends { type: 'list_groups_read_only' } ? GroupSummary[] :
   T extends { type: 'list_groups_page_read_only' } ? GroupListResult :
@@ -768,6 +788,7 @@ export type SqliteReadWorkerOperationResult<T extends SqliteReadWorkerOperation>
   T extends { type: 'list_provider_default_test_model_preferences_read_only' } ? ProviderDefaultTestModelPreferenceEntries :
   T extends { type: 'list_global_settings_read_only' } ? Record<string, unknown> :
   T extends { type: 'get_settings_read_only' } ? Record<string, unknown> :
+  T extends { type: 'read_gateway_settings_read_only' } ? GatewaySettings :
   T extends { type: 'list_runtime_logs_read_only' } ? RuntimeLogListResult :
   T extends { type: 'get_runtime_log_detail_read_only' } ? RuntimeLogDetail | undefined :
   T extends { type: 'get_runtime_log_facets_read_only' } ? RuntimeLogFacets :

@@ -280,7 +280,7 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await readGatewaySettingsAsync()
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({ type: 'read_gateway_settings_read_only' })
     case 'resolve_group_usage_access':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await resolveGroupUsageAccessMetadataAsync(operation.groupId, operation.systemAccountId)
@@ -591,12 +591,22 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       if (runtimeConfig.databaseDriver === 'postgres') {
         return { canceled: await isAccountTestTaskCancelRequestedAsync(operation.taskId) }
       }
-      return handleDbServiceOperationSync(operation)
+      return {
+        canceled: await requestSqliteReadWorker({
+          type: 'is_account_test_task_cancel_requested_read_only',
+          id: operation.taskId
+        })
+      }
     case 'read_account_test_task_cancel_message':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return { message: await accountTestTaskCancelMessageAsync(operation.taskId) }
       }
-      return handleDbServiceOperationSync(operation)
+      return {
+        message: await requestSqliteReadWorker({
+          type: 'read_account_test_task_cancel_message_read_only',
+          id: operation.taskId
+        })
+      }
     case 'record_account_successful_test_model': {
       if (runtimeConfig.databaseDriver === 'postgres') {
         const updated = await recordAccountSuccessfulTestModelAsync(operation.accountId, operation.model, operation.access ?? internalDbServiceAccountAccess)
@@ -776,7 +786,10 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
     case 'check_api_key_quota':
       return runtimeConfig.databaseDriver === 'postgres'
         ? await checkGatewayApiKeyQuotaExactAsync(operation.apiKey)
-        : handleDbServiceOperationSync(operation)
+        : await requestSqliteReadWorker({
+            type: 'check_api_key_quota_read_only',
+            apiKey: operation.apiKey
+          })
     case 'check_authorization_quota':
       return runtimeConfig.databaseDriver === 'postgres'
         ? await checkGatewayAuthorizationQuotaByIdsExactAsync({

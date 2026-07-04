@@ -23,6 +23,11 @@ import { readAuditLogSettings } from '../audit-logs/audit-log-settings.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
 import { requestStatsWriter } from './background-stats-writer.js'
 import { deleteCodexContextStorageKeys } from '../gateway/codex-responses/chat-bridge-state.js'
+import {
+  DATA_RETENTION_CLEANUP_BATCH_PAUSE_MS,
+  DATA_RETENTION_CLEANUP_BATCH_SIZE,
+  DATA_RETENTION_CLEANUP_MAX_BATCHES_PER_RUN
+} from './data-retention-cleanup.constants.js'
 
 const dayMs = 24 * 60 * 60 * 1000
 const usageRecordRetentionMaxDays = 180
@@ -39,9 +44,6 @@ const snapshotRetentionMaxDays = 30
 const operationLogRetentionMaxDays = 3650
 const publicApiLogRetentionMaxDays = 365
 const modelCheckRetentionMaxDays = 365
-const retentionCleanupBatchSizeMax = 5_000
-const retentionCleanupMaxBatchesMax = 100
-const retentionCleanupBatchPauseMs = 25
 let cleanupRunning = false
 
 interface DataRetentionPolicy {
@@ -141,8 +143,8 @@ export async function cleanupExpiredRetainedData(): Promise<DataRetentionCleanup
   try {
     const settings = getSettings()
     const timezone = usageStatsTimezone()
-    const batchSize = settingNumber(settings, 'dataRetentionCleanupBatchSize', 100, retentionCleanupBatchSizeMax)
-    const maxBatches = settingNumber(settings, 'dataRetentionCleanupMaxBatchesPerRun', 1, retentionCleanupMaxBatchesMax)
+    const batchSize = DATA_RETENTION_CLEANUP_BATCH_SIZE
+    const maxBatches = DATA_RETENTION_CLEANUP_MAX_BATCHES_PER_RUN
     const now = Date.now()
     const auditSettings = readAuditLogSettings()
     const retention: DataRetentionPolicy = {
@@ -558,5 +560,5 @@ function yieldToEventLoop(): Promise<void> {
 }
 
 function pauseBetweenCleanupBatches(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, retentionCleanupBatchPauseMs))
+  return new Promise((resolve) => setTimeout(resolve, DATA_RETENTION_CLEANUP_BATCH_PAUSE_MS))
 }

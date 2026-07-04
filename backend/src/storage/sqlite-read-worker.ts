@@ -5,14 +5,21 @@ import {
   checkGatewayAuthorizationQuotaBatchByIds,
   checkGatewayAuthorizationQuotaByIds
 } from '../modules/gateway/quota/authorization-quota.service.js'
-import { readGatewaySettings } from '../modules/gateway/policy/account-error-policy.service.js'
+import { checkGatewayApiKeyQuotaReadOnly } from '../modules/gateway/quota/api-key-quota.service.js'
+import { readGatewaySettingsReadOnly } from '../modules/gateway/policy/account-error-policy.service.js'
 import { orderGatewayApiKeyGroupBindingsForDispatch } from '../modules/gateway/routing/api-key-group-route-selector.service.js'
-import { listProviderModelCatalog } from '../modules/model-pricing/model-catalog.service.js'
+import { listProviderModelCatalogReadOnly } from '../modules/model-pricing/model-catalog.service.js'
 import { logger } from '../shared/logger.js'
 import { findAccountSummary, listAccountsPageReadOnly } from './account-summary.repository.js'
 import { listAccountOptions } from './account-options.repository.js'
 import { listAccountTags } from './account-tags.repository.js'
-import { getAccountTestSession, getAccountTestTask, listAccountTestTasks } from './account-test-tasks.repository.js'
+import {
+  accountTestTaskCancelMessage,
+  getAccountTestSession,
+  getAccountTestTask,
+  isAccountTestTaskCancelRequested,
+  listAccountTestTasks
+} from './account-test-tasks.repository.js'
 import { findAnnouncement, listAnnouncementsPage, listPublicAnnouncements } from './announcements.repository.js'
 import {
   findApiKeySecretReadOnly,
@@ -181,6 +188,10 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
       return getAccountTestTask(operation.id, operation.access)
     case 'list_account_test_tasks_read_only':
       return listAccountTestTasks(operation.ids, operation.access)
+    case 'is_account_test_task_cancel_requested_read_only':
+      return isAccountTestTaskCancelRequested(operation.id)
+    case 'read_account_test_task_cancel_message_read_only':
+      return accountTestTaskCancelMessage(operation.id)
     case 'list_resource_authorizations_page_read_only':
       return listResourceAuthorizationSummariesPage(operation.filters ?? {}, operation.access, operation.options)
     case 'find_resource_authorization_read_only':
@@ -306,6 +317,8 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
         groupAuthorizationId: operation.groupAuthorizationId,
         accountAuthorizationId: operation.accountAuthorizationId
       })
+    case 'check_api_key_quota_read_only':
+      return checkGatewayApiKeyQuotaReadOnly(operation.apiKey)
     case 'check_authorization_quota_batch_read_only':
       return checkGatewayAuthorizationQuotaBatchByIds({
         groupAuthorizationId: operation.groupAuthorizationId,
@@ -377,6 +390,8 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
       return listGlobalSettingsReadOnly()
     case 'get_settings_read_only':
       return getSettingsReadOnly()
+    case 'read_gateway_settings_read_only':
+      return readGatewaySettingsReadOnly()
     case 'list_runtime_logs_read_only':
       return listRuntimeLogsReadOnly(operation.options)
     case 'get_runtime_log_detail_read_only':
@@ -384,7 +399,7 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
     case 'get_runtime_log_facets_read_only':
       return getRuntimeLogFacetsReadOnly()
     case 'list_provider_model_catalog_read_only':
-      return listProviderModelCatalog(operation.options)
+      return listProviderModelCatalogReadOnly(operation.options)
     case 'list_openai_compatible_files_read_only':
       return listOpenAICompatibleFiles(operation.options)
     case 'get_openai_compatible_file_read_only':
@@ -427,7 +442,7 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
 function readGatewayRuntimeStaticReadOnly(
   operation: Extract<SqliteReadWorkerOperation, { type: 'read_gateway_runtime_static_read_only' }>
 ) {
-  const settings = readGatewaySettings()
+  const settings = readGatewaySettingsReadOnly()
   const apiKey = loadGatewayApiKeyForValidationReadOnly(operation.key)
   if (!apiKey) {
     return {

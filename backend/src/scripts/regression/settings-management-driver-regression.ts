@@ -89,7 +89,9 @@ async function assertSettingsManagementAsync(repositories: typeof import('../../
 
     const updatedSystem = await repositories.updateSettingsAsync({ systemApiRateLimitIpReadPerMinute: nextReadLimit })
     assert.equal(updatedSystem.systemApiRateLimitIpReadPerMinute, nextReadLimit, '系统设置 async 更新后应返回新限流值')
-    assert.equal(updatedSystem.systemApiRateLimitEnabled, originalSystem.systemApiRateLimitEnabled, '系统设置 async 局部更新不应覆盖未提交字段')
+    assert.equal(Object.prototype.hasOwnProperty.call(updatedSystem, 'systemApiRateLimitEnabled'), false, '系统 API 限流开关不应暴露为系统设置')
+    assert.equal(Object.prototype.hasOwnProperty.call(updatedSystem, 'streamCircuitBreakerEnabled'), false, '流式熔断开关不应暴露为系统设置')
+    assert.equal(Object.prototype.hasOwnProperty.call(updatedSystem, 'operationLogEnabled'), false, '操作日志开关不应暴露为系统设置')
     const reloadedSystem = await repositories.getSettingsAsync()
     assert.equal(reloadedSystem.systemApiRateLimitIpReadPerMinute, nextReadLimit, '系统设置 async 更新后缓存应失效并可重新读取')
 
@@ -97,6 +99,11 @@ async function assertSettingsManagementAsync(repositories: typeof import('../../
       () => repositories.updateSettingsAsync({ rogue_settings_key_0: true }),
       /未知系统设置字段/,
       '系统设置 async 更新不能接受未知字段'
+    )
+    await assert.rejects(
+      () => repositories.updateSettingsAsync({ systemApiRateLimitEnabled: false }),
+      /未知系统设置字段/,
+      '系统设置 async 更新不能关闭系统 API 限流'
     )
     await assert.rejects(
       () => repositories.updateGlobalSettingsAsync({ legacyBrandName: '旧字段' }),

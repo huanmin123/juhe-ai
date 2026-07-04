@@ -76,6 +76,11 @@ function assertAccessModeMetadata(): void {
     'GET /api-keys 是管理列表纯读'
   )
   assert.equal(
+    resolveSystemApiDbAccessMode(requestFor('GET', '/__aisys__/api/api-keys/key_1/secret'), '/__aisys__/api'),
+    'readWithSideEffect',
+    'GET /api-keys/:id/secret 会记录查看密钥操作日志，不能标记为纯 read'
+  )
+  assert.equal(
     resolveSystemApiDbAccessMode(requestFor('GET', '/__aisys__/api/groups'), '/__aisys__/api'),
     'read',
     'GET /groups 是管理列表纯读'
@@ -130,6 +135,13 @@ function assertSqliteAdmissionByAccessMode(): void {
   assert.equal(writeResult.nextCalled, false, 'write 路由应受 SQLite 写 admission 控制')
   assert.equal(writeResult.response.statusCode, 503, 'SQLite 写 admission 满载时 write 路由应返回 503')
   assert.equal(writeResult.response.body?.code, 'system_api_busy', 'SQLite 写 admission 满载应返回稳定错误码')
+
+  clearSystemApiDbAccessAdmissionStateForTest()
+  setSystemApiDbAccessAdmissionStateForTest({ writeInFlight: systemApiDbServiceMaxInFlight })
+  const secretRevealResult = runAdmission('GET', '/__aisys__/api/api-keys/key_1/secret')
+  assert.equal(secretRevealResult.nextCalled, false, 'GET /api-keys/:id/secret 带操作日志副作用，应受 SQLite 写 admission 控制')
+  assert.equal(secretRevealResult.response.statusCode, 503, 'SQLite 写 admission 满载时 secret reveal 应返回 503')
+  assert.equal(secretRevealResult.response.body?.code, 'system_api_busy', 'secret reveal 满载应返回稳定错误码')
 
   clearSystemApiDbAccessAdmissionStateForTest()
   setSystemApiDbAccessAdmissionStateForTest({ writeInFlight: systemApiDbServiceMaxInFlight })

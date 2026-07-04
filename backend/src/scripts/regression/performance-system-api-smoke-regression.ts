@@ -230,7 +230,7 @@ async function runHttpSmoke(): Promise<void> {
     await patchEnvelope(baseUrl, '/__aisys__/api/settings/global', { appName: globalSettings.appName, appIcon: globalSettings.appIcon }, cookie)
 
     console.log(`[performance-system-api-smoke:${label}] settings`)
-    const systemSettings = await getEnvelope<{ systemApiRateLimitIpReadPerMinute: number; systemApiRateLimitEnabled: boolean }>(baseUrl, '/__aisys__/api/settings', cookie)
+    const systemSettings = await getEnvelope<{ systemApiRateLimitIpReadPerMinute: number }>(baseUrl, '/__aisys__/api/settings', cookie)
     const nextReadLimit = systemSettings.systemApiRateLimitIpReadPerMinute + 1
     const updatedSystemSettings = await patchEnvelope<{ systemApiRateLimitIpReadPerMinute: number }>(baseUrl, '/__aisys__/api/settings', { systemApiRateLimitIpReadPerMinute: nextReadLimit }, cookie)
     assert.equal(updatedSystemSettings.systemApiRateLimitIpReadPerMinute, nextReadLimit, 'performance smoke 应能更新系统设置')

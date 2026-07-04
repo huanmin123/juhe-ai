@@ -24,14 +24,16 @@ const [
   repositories,
   { clearSystemApiRateLimitStateForTest },
   clientIpStats,
-  clientIpPolicyCache
+  clientIpPolicyCache,
+  readWorkerPool
 ] = await Promise.all([
   import('../../storage/database.js'),
   import('../../modules/system-api/system-api-app.js'),
   import('../../storage/repositories.js'),
   import('../../modules/system-api/system-api-rate-limit.middleware.js'),
   import('../../storage/client-ip-stats.repository.js'),
-  import('../../modules/gateway/runtime/client-ip-policy-cache.service.js')
+  import('../../modules/gateway/runtime/client-ip-policy-cache.service.js'),
+  import('../../storage/sqlite-read-worker-pool.js')
 ])
 
 async function main(): Promise<void> {
@@ -48,14 +50,15 @@ async function main(): Promise<void> {
     const adminCookie = createAdminCookie()
 
     await assertIpReadLimit(baseUrl)
-    await assertDisabledLimitPasses(baseUrl)
+    await assertRateLimitCannotBeDisabled()
     await assertAuthenticatedUserLimit(baseUrl, adminCookie)
     await assertAllowlistedIpBypassesRateLimit(baseUrl, adminCookie)
 
-    console.log('后台系统 API 限流回归通过：限流位于 body parser 前，默认值可配置，IP 与登录用户超限返回 429，健康检查、关闭开关和 IP 白名单不受影响')
+    console.log('后台系统 API 限流回归通过：限流位于 body parser 前，阈值可配置且固定启用，IP 与登录用户超限返回 429，健康检查和 IP 白名单不受影响')
   } finally {
     await closeServer(server)
     try {
+      await readWorkerPool.closeSqliteReadWorkerPool()
       databaseModule.closeStorageDatabases()
     } catch {
     }
@@ -78,7 +81,7 @@ function assertSystemApiRateLimitSourceOrder(): void {
 
 function assertDefaultSettings(): void {
   const settings = repositories.getSettings()
-  assert.equal(settings.systemApiRateLimitEnabled, true, '后台接口限流默认应开启')
+  assert.equal(Object.prototype.hasOwnProperty.call(settings, 'systemApiRateLimitEnabled'), false, '后台接口限流开关不应暴露为系统设置')
   assert.equal(settings.systemApiRateLimitIpReadPerMinute, 600, 'IP 读请求每分钟默认值应为 600')
   assert.equal(settings.systemApiRateLimitIpReadBurstPer10Seconds, 120, 'IP 读请求突发默认值应为 120')
   assert.equal(settings.systemApiRateLimitIpWritePerMinute, 180, 'IP 写请求每分钟默认值应为 180')
@@ -100,7 +103,6 @@ function createAdminCookie(): string {
 
 async function assertIpReadLimit(baseUrl: string): Promise<void> {
   repositories.updateSettings({
-    systemApiRateLimitEnabled: true,
     systemApiRateLimitIpReadPerMinute: 2,
     systemApiRateLimitIpReadBurstPer10Seconds: 0,
     systemApiRateLimitIpWritePerMinute: 1000,
@@ -120,27 +122,16 @@ async function assertIpReadLimit(baseUrl: string): Promise<void> {
   await assertStatus(baseUrl, '/__aisys__/api/health', 200, { clientIp })
 }
 
-async function assertDisabledLimitPasses(baseUrl: string): Promise<void> {
-  repositories.updateSettings({
-    systemApiRateLimitEnabled: false,
-    systemApiRateLimitIpReadPerMinute: 1,
-    systemApiRateLimitIpReadBurstPer10Seconds: 1,
-    systemApiRateLimitIpWritePerMinute: 1,
-    systemApiRateLimitIpWriteBurstPer10Seconds: 1,
-    systemApiRateLimitUserReadPerMinute: 1,
-    systemApiRateLimitUserWritePerMinute: 1
-  })
-  clearSystemApiRateLimitStateForTest()
-
-  const clientIp = '198.51.100.102'
-  await assertStatus(baseUrl, '/__aisys__/api/settings/public', 200, { clientIp })
-  await assertStatus(baseUrl, '/__aisys__/api/settings/public', 200, { clientIp })
-  await assertStatus(baseUrl, '/__aisys__/api/settings/public', 200, { clientIp })
+async function assertRateLimitCannotBeDisabled(): Promise<void> {
+  assert.throws(
+    () => repositories.updateSettings({ systemApiRateLimitEnabled: false }),
+    /未知系统设置字段：systemApiRateLimitEnabled/,
+    '后台接口限流属于固定启用能力，不能通过系统设置关闭'
+  )
 }
 
 async function assertAuthenticatedUserLimit(baseUrl: string, adminCookie: string): Promise<void> {
   repositories.updateSettings({
-    systemApiRateLimitEnabled: true,
     systemApiRateLimitIpReadPerMinute: 1000,
     systemApiRateLimitIpReadBurstPer10Seconds: 1000,
     systemApiRateLimitIpWritePerMinute: 1000,
@@ -161,7 +152,6 @@ async function assertAuthenticatedUserLimit(baseUrl: string, adminCookie: string
 
 async function assertAllowlistedIpBypassesRateLimit(baseUrl: string, adminCookie: string): Promise<void> {
   repositories.updateSettings({
-    systemApiRateLimitEnabled: true,
     systemApiRateLimitIpReadPerMinute: 1,
     systemApiRateLimitIpReadBurstPer10Seconds: 1,
     systemApiRateLimitIpWritePerMinute: 1,

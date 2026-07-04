@@ -5,14 +5,17 @@ import {
   clearAccountFailureStateResultAsync,
   clearAuthorizedAccountBindingFailureStateByContext,
   clearAuthorizedAccountBindingFailureStateByContextAsync,
-  getSettings,
-  getSettingsAsync,
   markAccountTemporaryUnavailable,
   markAccountTemporaryUnavailableAsync,
   markAuthorizedAccountBindingTemporaryUnavailableByContext,
   markAuthorizedAccountBindingTemporaryUnavailableByContextAsync,
   type AuthorizedAccountBindingRuntimeTarget
 } from '../../../storage/repositories.js'
+import {
+  getSettings,
+  getSettingsAsync,
+  getSettingsReadOnly
+} from '../../../storage/settings.repository.js'
 import type { OpenAIGatewayTrafficSource } from '../usage/traffic-source.js'
 import { sanitizeDiagnosticPayload } from '../diagnostics/diagnostic-sanitizer.js'
 import { parseGatewayProtocolErrorPayload } from '../protocols/registry.js'
@@ -69,12 +72,20 @@ export interface AccountErrorHandlingResult {
 export function readGatewaySettings(): GatewaySettings {
   assertLocalGatewayDatabaseAccess('readGatewaySettings')
   const settings = getSettings()
+  return gatewaySettingsFromRawSettings(settings)
+}
+
+export function readGatewaySettingsReadOnly(): GatewaySettings {
+  return gatewaySettingsFromRawSettings(getSettingsReadOnly())
+}
+
+function gatewaySettingsFromRawSettings(settings: Record<string, unknown>): GatewaySettings {
   return {
     gatewayTextRawBodyLimitMegabytes: numberSetting(settings.gatewayTextRawBodyLimitMegabytes, 'gatewayTextRawBodyLimitMegabytes', 1, 64),
     defaultTemporaryUnschedulableMinutes: numberSetting(settings.defaultTemporaryUnschedulableMinutes, 'defaultTemporaryUnschedulableMinutes', 1, 1440),
     temporaryUnschedulableRetryIntervalSeconds: numberSetting(settings.temporaryUnschedulableRetryIntervalSeconds, 'temporaryUnschedulableRetryIntervalSeconds', 0, 3600),
     temporaryUnschedulableRetryAttempts: numberSetting(settings.temporaryUnschedulableRetryAttempts, 'temporaryUnschedulableRetryAttempts', 0, 10),
-    streamCircuitBreakerEnabled: booleanSetting(settings.streamCircuitBreakerEnabled, 'streamCircuitBreakerEnabled'),
+    streamCircuitBreakerEnabled: true,
     streamRequestTimeoutSeconds: numberSetting(settings.streamRequestTimeoutSeconds, 'streamRequestTimeoutSeconds', 10, 3600),
     streamIdleTimeoutSeconds: numberSetting(settings.streamIdleTimeoutSeconds, 'streamIdleTimeoutSeconds', 1, 3600),
     streamClientTotalWaitTimeoutSeconds: numberSetting(settings.streamClientTotalWaitTimeoutSeconds, 'streamClientTotalWaitTimeoutSeconds', 10, 3600),
@@ -94,7 +105,7 @@ export async function readGatewaySettingsAsync(): Promise<GatewaySettings> {
     defaultTemporaryUnschedulableMinutes: numberSetting(settings.defaultTemporaryUnschedulableMinutes, 'defaultTemporaryUnschedulableMinutes', 1, 1440),
     temporaryUnschedulableRetryIntervalSeconds: numberSetting(settings.temporaryUnschedulableRetryIntervalSeconds, 'temporaryUnschedulableRetryIntervalSeconds', 0, 3600),
     temporaryUnschedulableRetryAttempts: numberSetting(settings.temporaryUnschedulableRetryAttempts, 'temporaryUnschedulableRetryAttempts', 0, 10),
-    streamCircuitBreakerEnabled: booleanSetting(settings.streamCircuitBreakerEnabled, 'streamCircuitBreakerEnabled'),
+    streamCircuitBreakerEnabled: true,
     streamRequestTimeoutSeconds: numberSetting(settings.streamRequestTimeoutSeconds, 'streamRequestTimeoutSeconds', 10, 3600),
     streamIdleTimeoutSeconds: numberSetting(settings.streamIdleTimeoutSeconds, 'streamIdleTimeoutSeconds', 1, 3600),
     streamClientTotalWaitTimeoutSeconds: numberSetting(settings.streamClientTotalWaitTimeoutSeconds, 'streamClientTotalWaitTimeoutSeconds', 10, 3600),
@@ -344,13 +355,6 @@ function normalizeHeadersInput(headers?: Headers | Record<string, string | strin
     output.set(name, Array.isArray(value) ? value.join(', ') : value)
   }
   return output
-}
-
-function booleanSetting(value: unknown, key: string): boolean {
-  if (typeof value !== 'boolean') {
-    throw new Error(`系统设置 ${key} 必须是布尔值`)
-  }
-  return value
 }
 
 function numberSetting(value: unknown, key: string, min: number, max: number): number {

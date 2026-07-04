@@ -73,8 +73,7 @@ settingsRouter.patch('/', requireAdmin, async (req, res) => {
           summary: '更新系统运行设置',
           visibilityScope: 'all_users',
           detailLevel: 'summary',
-          changes: diffSafeFields(before, settings, Object.fromEntries(Object.keys(body).map((key) => [key, key]))),
-          force: Object.prototype.hasOwnProperty.call(body, 'operationLogEnabled')
+          changes: diffSafeFields(before, settings, Object.fromEntries(Object.keys(body).map((key) => [key, key])))
         }
       }
     }, req)

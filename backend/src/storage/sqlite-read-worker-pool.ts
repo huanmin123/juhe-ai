@@ -115,7 +115,7 @@ function readWorkerEnv(): NodeJS.ProcessEnv {
     JUHE_AI_PROCESS_ROLE: 'worker',
     JUHE_AI_WORKER_ROLE: 'ops-worker',
     JUHE_AI_DATABASE_DRIVER: 'sqlite',
-    JUHE_AI_CACHE_DRIVER: runtimeConfig.cacheDriver,
+    JUHE_AI_CACHE_DRIVER: 'memory',
     JUHE_AI_RUNTIME_STATE_DRIVER: runtimeConfig.runtimeStateDriver,
     JUHE_AI_QUEUE_DRIVER: runtimeConfig.queueDriver,
     JUHE_AI_DATABASE_PATH: runtimeConfig.databasePath,

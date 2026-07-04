@@ -116,14 +116,12 @@ interface SystemSettings {
   defaultTemporaryUnschedulableMinutes?: number
   temporaryUnschedulableRetryIntervalSeconds?: number
   temporaryUnschedulableRetryAttempts?: number
-  streamCircuitBreakerEnabled?: boolean
   streamRequestTimeoutSeconds?: number
   streamIdleTimeoutSeconds?: number
   streamClientTotalWaitTimeoutSeconds?: number
   streamMaxLifetimeSeconds?: number
   streamFailureThresholdCount?: number
   streamFailureThresholdWindowMinutes?: number
-  operationLogEnabled?: boolean
   operationLogRetentionDays?: number
   operationLogMaxChangesPerRecord?: number
   statsAggregationIntervalSeconds?: number
@@ -149,9 +147,6 @@ interface SystemSettings {
   usageStatsHourlyRetentionDays?: number
   systemMetricsRetentionDays?: number
   systemMetricsHourlyRetentionDays?: number
-  dataRetentionCleanupIntervalMinutes?: number
-  dataRetentionCleanupBatchSize?: number
-  dataRetentionCleanupMaxBatchesPerRun?: number
 }
 
 interface ResponsePayload {
@@ -194,14 +189,12 @@ async function main(): Promise<void> {
     assert(typeof settings.defaultTemporaryUnschedulableMinutes === 'number', '系统设置缺少 defaultTemporaryUnschedulableMinutes')
     assert(typeof settings.temporaryUnschedulableRetryIntervalSeconds === 'number', '系统设置缺少 temporaryUnschedulableRetryIntervalSeconds')
     assert(typeof settings.temporaryUnschedulableRetryAttempts === 'number', '系统设置缺少 temporaryUnschedulableRetryAttempts')
-    assert(typeof settings.streamCircuitBreakerEnabled === 'boolean', '系统设置缺少 streamCircuitBreakerEnabled')
     assert(typeof settings.streamRequestTimeoutSeconds === 'number', '系统设置缺少 streamRequestTimeoutSeconds')
     assert(typeof settings.streamIdleTimeoutSeconds === 'number', '系统设置缺少 streamIdleTimeoutSeconds')
     assert(typeof settings.streamClientTotalWaitTimeoutSeconds === 'number', '系统设置缺少 streamClientTotalWaitTimeoutSeconds')
     assert(typeof settings.streamMaxLifetimeSeconds === 'number', '系统设置缺少 streamMaxLifetimeSeconds')
     assert(typeof settings.streamFailureThresholdCount === 'number', '系统设置缺少 streamFailureThresholdCount')
     assert(typeof settings.streamFailureThresholdWindowMinutes === 'number', '系统设置缺少 streamFailureThresholdWindowMinutes')
-    assert(typeof settings.operationLogEnabled === 'boolean', '系统设置缺少 operationLogEnabled')
     assert(typeof settings.operationLogRetentionDays === 'number', '系统设置缺少 operationLogRetentionDays')
     assert(typeof settings.operationLogMaxChangesPerRecord === 'number', '系统设置缺少 operationLogMaxChangesPerRecord')
     assert(typeof settings.statsAggregationIntervalSeconds === 'number', '系统设置缺少 statsAggregationIntervalSeconds')
@@ -227,9 +220,6 @@ async function main(): Promise<void> {
     assert(typeof settings.usageStatsHourlyRetentionDays === 'number', '系统设置缺少 usageStatsHourlyRetentionDays')
     assert(typeof settings.systemMetricsRetentionDays === 'number', '系统设置缺少 systemMetricsRetentionDays')
     assert(typeof settings.systemMetricsHourlyRetentionDays === 'number', '系统设置缺少 systemMetricsHourlyRetentionDays')
-    assert(typeof settings.dataRetentionCleanupIntervalMinutes === 'number', '系统设置缺少 dataRetentionCleanupIntervalMinutes')
-    assert(typeof settings.dataRetentionCleanupBatchSize === 'number', '系统设置缺少 dataRetentionCleanupBatchSize')
-    assert(typeof settings.dataRetentionCleanupMaxBatchesPerRun === 'number', '系统设置缺少 dataRetentionCleanupMaxBatchesPerRun')
     assertExactSettingKeys(settings)
     summary.push('系统设置检查通过')
 

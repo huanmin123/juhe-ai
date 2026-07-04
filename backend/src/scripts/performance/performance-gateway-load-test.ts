@@ -491,7 +491,12 @@ async function seedGatewayData(input: GatewayLoadConfig, upstreamBaseUrl: string
 
 async function applyLoadTestSettings(input: GatewayLoadConfig): Promise<void> {
   await updateSettingsAsync({
-    systemApiRateLimitEnabled: false,
+    systemApiRateLimitIpReadPerMinute: 1_000_000,
+    systemApiRateLimitIpReadBurstPer10Seconds: 1_000_000,
+    systemApiRateLimitIpWritePerMinute: 1_000_000,
+    systemApiRateLimitIpWriteBurstPer10Seconds: 1_000_000,
+    systemApiRateLimitUserReadPerMinute: 1_000_000,
+    systemApiRateLimitUserWritePerMinute: 1_000_000,
     statsAggregationIntervalSeconds: input.enableStatsWorkerObservation ? 5 : 3600,
     statsAggregationBatchSize: input.enableStatsWorkerObservation ? 5000 : 1000,
     statsAggregationMaxBatchesPerRun: input.enableStatsWorkerObservation ? 20 : 1,
@@ -505,7 +510,12 @@ async function applyLoadTestSettings(input: GatewayLoadConfig): Promise<void> {
 
 async function restoreLoadTestSettings(snapshot: Record<string, unknown>): Promise<void> {
   const keys = [
-    'systemApiRateLimitEnabled',
+    'systemApiRateLimitIpReadPerMinute',
+    'systemApiRateLimitIpReadBurstPer10Seconds',
+    'systemApiRateLimitIpWritePerMinute',
+    'systemApiRateLimitIpWriteBurstPer10Seconds',
+    'systemApiRateLimitUserReadPerMinute',
+    'systemApiRateLimitUserWritePerMinute',
     'statsAggregationIntervalSeconds',
     'statsAggregationBatchSize',
     'statsAggregationMaxBatchesPerRun',
