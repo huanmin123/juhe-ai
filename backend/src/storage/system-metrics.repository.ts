@@ -7,6 +7,7 @@ import { beginDatabaseTransaction, commitDatabaseTransaction, getStatsDatabase, 
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues } from './query-utils.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import { hourKey, usageStatsTimezone, usageStatsTimezoneAsync } from './usage-stats-helpers.js'
 import { mapProcessEventLoopHourly, mapSystemMetricsHourly, mapSystemMetricsLatest } from './usage-stats-mappers.js'
 import { aggregateSystemMetricsRows, nullableNumber } from './usage-stats-metric-aggregates.js'
@@ -295,6 +296,12 @@ export function getSystemMetricsOverview(range: AccountUsageStatsRange = normali
 }
 
 export async function getSystemMetricsOverviewAsync(range: AccountUsageStatsRange = normalizeDefaultUsageStatsRange()): Promise<SystemMetricsOverview> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'get_system_metrics_overview_read_only',
+      range
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return getSystemMetricsOverview(range)
   }

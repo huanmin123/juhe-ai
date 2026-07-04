@@ -22,8 +22,18 @@ const originalDatabaseDriver = runtimeConfig.databaseDriver
 function assertAccessModeMetadata(): void {
   assert.equal(
     resolveSystemApiDbAccessMode(requestFor('GET', '/__aisys__/api/auth/me'), '/__aisys__/api'),
-    'readWithSideEffect',
-    'GET /auth/me 仍会 touch session，必须标记为 readWithSideEffect'
+    'read',
+    'GET /auth/me 是当前用户资料读取，不能被 session touch 或写 admission 污染'
+  )
+  assert.equal(
+    resolveSystemApiDbAccessMode(requestFor('HEAD', '/__aisys__/api/accounts'), '/__aisys__/api'),
+    'read',
+    'HEAD /accounts 应按 GET 规则识别为纯读'
+  )
+  assert.equal(
+    resolveSystemApiDbAccessMode(requestFor('HEAD', '/__aisys__/api/auth/me'), '/__aisys__/api'),
+    'read',
+    'HEAD /auth/me 应按 GET 规则识别为纯读'
   )
   assert.equal(
     resolveSystemApiDbAccessMode(requestFor('POST', '/__aisys__/api/accounts/import/preview'), '/__aisys__/api'),
@@ -90,9 +100,13 @@ function assertAccessModeMetadata(): void {
   setSystemApiDbAccessMode(readResponse as unknown as Response, 'read')
   assert.equal(shouldTouchSessionForSystemApiRequest(readResponse as unknown as Response), false, '显式 read 请求不能被 requireAuth 重新 touch 成写请求')
 
+  const authMeResponse = new FakeResponse()
+  setSystemApiDbAccessMode(authMeResponse as unknown as Response, 'read')
+  assert.equal(shouldTouchSessionForSystemApiRequest(authMeResponse as unknown as Response), false, 'auth/me 当前用户资料读取不能 touch session')
+
   const sideEffectResponse = new FakeResponse()
   setSystemApiDbAccessMode(sideEffectResponse as unknown as Response, 'readWithSideEffect')
-  assert.equal(shouldTouchSessionForSystemApiRequest(sideEffectResponse as unknown as Response), true, 'readWithSideEffect 请求必须保留 session touch')
+  assert.equal(shouldTouchSessionForSystemApiRequest(sideEffectResponse as unknown as Response), true, '未拆副作用的 readWithSideEffect 请求必须保留 session touch')
 }
 
 function assertSqliteAdmissionByAccessMode(): void {
@@ -119,9 +133,9 @@ function assertSqliteAdmissionByAccessMode(): void {
 
   clearSystemApiDbAccessAdmissionStateForTest()
   setSystemApiDbAccessAdmissionStateForTest({ writeInFlight: systemApiDbServiceMaxInFlight })
-  const sideEffectResult = runAdmission('GET', '/__aisys__/api/auth/me')
-  assert.equal(sideEffectResult.nextCalled, false, 'readWithSideEffect 路由应受 SQLite 写 admission 控制')
-  assert.equal(sideEffectResult.response.statusCode, 503, 'SQLite 写 admission 满载时 readWithSideEffect 路由应返回 503')
+  const authMeResult = runAdmission('GET', '/__aisys__/api/auth/me')
+  assert.equal(authMeResult.nextCalled, true, 'GET /auth/me 纯读不应受 SQLite 写 admission 控制')
+  assert.equal(authMeResult.response.statusCode, undefined, 'GET /auth/me 纯读不应返回 busy 响应')
 
   clearSystemApiDbAccessAdmissionStateForTest()
   setSystemApiDbAccessAdmissionStateForTest({ writeInFlight: systemApiDbServiceMaxInFlight })

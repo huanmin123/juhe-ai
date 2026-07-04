@@ -19,6 +19,7 @@ import { expireDueResourceAuthorizationsAsync } from './resource-authorization-w
 import { expireDueResourceAuthorizations } from './resource-authorization-write-state.repository.js'
 import { loadSystemAccountPrincipalMapByIds, loadSystemAccountPrincipalMapByIdsAsync } from './repository-lookups.js'
 import type { ResourceAuthorizationRow } from './repository-row-types.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import {
   emptyAccountUsageSummary,
   addUsageSummaries,
@@ -47,6 +48,10 @@ export interface ResourceAuthorizationUsageOptions {
 
 export function getResourceAuthorizationUsage(authorizationId: string, access?: AccessScope, options: ResourceAuthorizationUsageOptions = {}): ResourceAuthorizationSummary | undefined {
   expireDueResourceAuthorizations()
+  return getResourceAuthorizationUsageReadOnly(authorizationId, access, options)
+}
+
+export function getResourceAuthorizationUsageReadOnly(authorizationId: string, access?: AccessScope, options: ResourceAuthorizationUsageOptions = {}): ResourceAuthorizationSummary | undefined {
   const authorization = findResourceAuthorizationSummary(authorizationId, access, { includeUsage: false })
   if (!authorization) return undefined
   const range = options.range ?? normalizeAccountUsageStatsRange({}, usageStatsTimezone())
@@ -65,6 +70,14 @@ export function getResourceAuthorizationUsage(authorizationId: string, access?: 
 }
 
 export async function getResourceAuthorizationUsageAsync(authorizationId: string, access?: AccessScope, options: ResourceAuthorizationUsageOptions = {}): Promise<ResourceAuthorizationSummary | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'get_resource_authorization_usage_read_only',
+      id: authorizationId,
+      access,
+      options
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return getResourceAuthorizationUsage(authorizationId, access, options)
   }

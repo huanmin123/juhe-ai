@@ -59,6 +59,7 @@ import {
   UpstreamRequestAbortedError,
   type GatewayUpstreamResponse
 } from '../upstream/request.js'
+import { isGatewayFirstByteTimeoutError } from '../upstream/first-byte-timeout.js'
 import {
   buildUsageResponseSnapshot,
   type UsageRequestSnapshot
@@ -130,6 +131,7 @@ interface HandleUpstreamResponseInput {
   usageContext: GatewayUsageContext
   startedAt: number
   signal: AbortSignal
+  firstByteTimeoutMs?: number
   sessionAffinityKey?: string
   clientStrategy?: OpenAIGatewayClientStrategyContext
   responseInspectionPolicies?: ResponseInspectionPolicySummary[]
@@ -246,6 +248,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
         retryBeforeDownstreamWriteUntilOutput: true,
         onFirstOutput: markFirstOutput,
         captureSuccessPayloads: auditCapture.shouldCaptureSuccessPayloads(),
+        firstByteTimeoutMs: input.firstByteTimeoutMs,
         responseInspectionPolicies: resolveRuntimeResponseInspectionPolicies({
           account,
           managementPolicies: input.responseInspectionPolicies
@@ -364,6 +367,26 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       errorMessage: streamResult.message,
       endpoint: usageContext.endpoint
     })
+    if (input.firstByteTimeoutMs !== undefined && isFirstByteTimeoutStreamResult(streamResult)) {
+      auditCapture.addGatewayMetadata({
+        label: 'normal_route_speed_first_first_byte_timeout',
+        metadata: {
+          accountId: account.id,
+          accountName: account.name,
+          timeoutMs: input.firstByteTimeoutMs,
+          message: streamResult.message
+        }
+      })
+      return {
+        alreadyFinalized: false,
+        retryUpstream: true,
+        retryReason: 'speed_first_first_byte_timeout',
+        excludeCurrentAccount: true,
+        message: streamResult.message,
+        errorCode: streamResult.errorCode,
+        uncommittedResponseBody: streamResult.uncommittedResponseBody
+      }
+    }
     if (shouldRetryResponseInspectionOnServer(streamResult, res)) {
       auditCapture.addGatewayMetadata({
         label: 'response_inspection_server_retry',
@@ -662,7 +685,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
           inspectBytes: nonStreamResponseInspectionMaxBytes,
           captureBody: auditCapture.shouldCaptureSuccessPayloads(),
           signal,
-          firstByteTimeoutMs: upstreamRequestTimeoutMs(req, input.settings, account),
+          firstByteTimeoutMs: input.firstByteTimeoutMs ?? upstreamRequestTimeoutMs(req, input.settings, account),
           prepareDownstream: () => prepareUpstreamResponseForDownstream(res, upstreamResponse, false),
           onFirstByte: () => {
             firstTokenMs = Date.now() - startedAt
@@ -742,7 +765,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
           startedAt,
           captureBody: auditCapture.shouldCaptureSuccessPayloads(),
           signal,
-          firstByteTimeoutMs: upstreamRequestTimeoutMs(req, input.settings, account),
+          firstByteTimeoutMs: input.firstByteTimeoutMs ?? upstreamRequestTimeoutMs(req, input.settings, account),
           prepareDownstream: () => prepareUpstreamResponseForDownstream(res, upstreamResponse, false),
           onFirstByte: () => {
             firstTokenMs = Date.now() - startedAt
@@ -786,6 +809,53 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
       res.send(readResult.body)
     }
   } catch (error) {
+    if (input.firstByteTimeoutMs !== undefined && isGatewayFirstByteTimeoutError(error) && !res.headersSent && !res.writableEnded && !res.destroyed) {
+      const errorMessage = error.message
+      forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
+      auditCapture.completeAttempt(auditAttemptId, {
+        statusCode: upstreamResponse.status,
+        responseHeaders: upstreamResponse.headers,
+        success: false,
+        errorPhase: 'upstream_response',
+        errorCode: error.code,
+        errorMessage
+      })
+      await recordCompletedUpstreamAttempt(req, {
+        ...usageContext,
+        account,
+        statusCode: upstreamResponse.status,
+        success: false,
+        stream: isEffectiveOpenAIStreamRequest(req, account),
+        startedAt,
+        usage: emptyUsage(),
+        errorCode: error.code,
+        errorMessage,
+        requestSnapshot: usageContext.requestSnapshot,
+        responseSnapshot: buildUsageResponseSnapshot({
+          upstreamUrl,
+          statusCode: upstreamResponse.status,
+          headers: upstreamResponse.headers,
+          errorMessage
+        })
+      })
+      auditCapture.addGatewayMetadata({
+        label: 'normal_route_speed_first_first_byte_timeout',
+        metadata: {
+          accountId: account.id,
+          accountName: account.name,
+          timeoutMs: input.firstByteTimeoutMs,
+          message: errorMessage
+        }
+      })
+      return {
+        alreadyFinalized: false,
+        retryUpstream: true,
+        retryReason: 'speed_first_first_byte_timeout',
+        excludeCurrentAccount: true,
+        message: errorMessage,
+        errorCode: error.code
+      }
+    }
     if (isUpstreamRequestAbortedError(error) || signal.aborted) {
       await recordClientAbortedUpstreamAttempt(req, {
         ...usageContext,
@@ -962,6 +1032,13 @@ function shouldBufferNonStreamJsonResponse(input: HandleUpstreamResponseInput): 
     || input.clientStrategy?.codexCompactionExpected === true
     || (input.hybridRoute && !input.hybridRoute.scoringFallbackApplied)
   )
+}
+
+function isFirstByteTimeoutStreamResult(streamResult: { errorCode?: string; firstTokenMs?: number; downstreamBytesWritten: number; outputReceived: boolean }): boolean {
+  return streamResult.errorCode === 'first_byte_timeout'
+    && streamResult.firstTokenMs === undefined
+    && streamResult.downstreamBytesWritten === 0
+    && !streamResult.outputReceived
 }
 
 function nonStreamImageResponseBodyOmission(bodyText: string | undefined, capturedBytes: number | undefined): StreamBodyOmissionSummary | undefined {

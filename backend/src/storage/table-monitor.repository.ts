@@ -22,6 +22,7 @@ import {
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
 export type MonitoredDatabaseRole = 'business' | 'dataset' | 'usage-catalog' | 'stats' | 'codex-context-state'
 
@@ -290,6 +291,12 @@ export function getTableStorageOverview(input: { startAt?: string; endAt?: strin
 }
 
 export async function getTableStorageOverviewAsync(input: { startAt?: string; endAt?: string; limit?: number } = {}): Promise<TableStorageOverview> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'get_table_storage_overview_read_only',
+      input
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return getTableStorageOverview(input)
   }
@@ -369,6 +376,12 @@ export async function listTableStorageHistoryAsync(input: {
   endAt?: string
   limit?: number
 }): Promise<TableStorageSnapshotSummary[]> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_table_storage_history_read_only',
+      input
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listTableStorageHistory(input)
   }
@@ -424,6 +437,12 @@ export async function listDatabaseStorageHistoryAsync(input: {
   endAt?: string
   limit?: number
 } = {}): Promise<DatabaseStorageSnapshotSummary[]> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_database_storage_history_read_only',
+      input
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listDatabaseStorageHistory(input)
   }

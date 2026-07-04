@@ -36,6 +36,7 @@ import { registerGatewayRuntimeCacheInvalidator } from '../../shared/gateway-cac
 import { modelPricingProviderDriverForProvider } from './provider-driver.registry.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from '../../storage/sqlite-read-worker-pool.js'
 
 export type ModelCatalogScope = 'built_in' | CustomProviderModelScope
 
@@ -160,6 +161,12 @@ export function listProviderModelCatalog(options: ModelCatalogListOptions): Prov
 }
 
 export async function listProviderModelCatalogAsync(options: ModelCatalogListOptions): Promise<ProviderModelCatalogItem[]> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_provider_model_catalog_read_only',
+      options
+    })
+  }
   const cacheKey = modelCatalogCacheKey(options)
   if (runtimeConfig.cacheDriver !== 'redis') {
     const cached = providerModelCatalogCache.get(cacheKey)

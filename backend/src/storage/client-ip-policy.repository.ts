@@ -12,6 +12,7 @@ import {
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues } from './query-utils.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import { dateKey, usageStatsTimezone, usageStatsTimezoneAsync } from './usage-stats-helpers.js'
 import { normalizeIpHash } from './client-ip-normalization.js'
 
@@ -255,6 +256,11 @@ export function listActiveClientIpPolicies(): ActiveClientIpPolicy[] {
 }
 
 export async function listActiveClientIpPoliciesAsync(): Promise<ActiveClientIpPolicy[]> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_active_client_ip_policies_read_only'
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listActiveClientIpPolicies()
   }
@@ -301,6 +307,12 @@ export function findActiveClientIpPolicyByHash(inputIpHash: string): ActiveClien
 }
 
 export async function findActiveClientIpPolicyByHashAsync(inputIpHash: string): Promise<ActiveClientIpPolicy | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'find_active_client_ip_policy_by_hash_read_only',
+      ipHash: inputIpHash
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return findActiveClientIpPolicyByHash(inputIpHash)
   }

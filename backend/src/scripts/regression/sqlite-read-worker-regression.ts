@@ -33,16 +33,24 @@ const [
   repositories,
   readWorkerPool,
   providerDefaultTestModels,
+  providerRepository,
+  accountTestTasks,
+  modelCatalogService,
   openAICompatibleFiles,
   openAICompatibleVectorStores,
+  clientIpStats,
   dbServiceHandlers
 ] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../storage/sqlite-read-worker-pool.js'),
   import('../../storage/provider-default-test-model.repository.js'),
+  import('../../storage/provider.repository.js'),
+  import('../../storage/account-test-tasks.repository.js'),
+  import('../../modules/model-pricing/model-catalog.service.js'),
   import('../../storage/openai-compatible-files.repository.js'),
   import('../../storage/openai-compatible-vector-stores.repository.js'),
+  import('../../storage/client-ip-stats.repository.js'),
   import('../../modules/db-service/db-service-handlers.js')
 ])
 
@@ -133,6 +141,34 @@ try {
     port: 7890,
     enabled: true
   }, access)
+  const clientIpIdentity = clientIpStats.normalizeClientIpForStats('203.0.113.88')
+  assert(clientIpIdentity, 'IP 策略测试应能生成 IPv4 identity')
+  const nowForClientIp = new Date().toISOString()
+  databaseModule.getStatsDatabase()
+    .prepare(`
+      INSERT INTO client_ip_registry (
+        ip_hash, bucket_no, aggregate_ip_key, client_ip, ip_version,
+        first_seen_at, last_seen_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    .run(
+      clientIpIdentity.ipHash,
+      clientIpIdentity.bucketNo,
+      clientIpIdentity.aggregateIpKey,
+      clientIpIdentity.clientIp,
+      clientIpIdentity.ipVersion,
+      nowForClientIp,
+      nowForClientIp,
+      nowForClientIp,
+      nowForClientIp
+    )
+  const clientIpPolicy = clientIpStats.createClientIpPolicy({
+    ipHash: clientIpIdentity.ipHash,
+    reason: 'sqlite read worker regression',
+    actorSystemAccountId: 'sys_admin'
+  })
+  repositories.updateAccountTags(account.id, ['SQLite read worker 标签'], access)
+  const session = repositories.createSession('sys_admin')
   const runtimeLogId = 'rtlog_sqlite_read_worker'
   repositories.createRuntimeLogsBatch([{
     id: runtimeLogId,
@@ -186,6 +222,31 @@ try {
   const accountGroupOptions = await repositories.listAccountGroupOptionsAsync(userAccess, { limit: 20 })
   assert(accountGroupOptions.some((item) => item.id === group.id && item.accountIds.includes(account.id)), '账户分组选项应保留真实 accountIds')
   assert.equal((await repositories.findGroupSummaryAsync(group.id, userAccess))?.id, group.id, '分组详情 async 读应由 read worker 返回真实数据')
+  const sessionReadHandledJobsBefore = readWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs
+  const sessionRead = await repositories.findSessionByTokenAsync(session.token)
+  assert.equal(sessionRead?.sessionId, session.sessionId, '管理端鉴权 session 读取应由 read worker 返回真实数据')
+  assert(
+    readWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs >= sessionReadHandledJobsBefore + 1,
+    'SQLite DB service 下 findSessionByTokenAsync 必须进入 read worker，避免每个 GET 鉴权读卡住主连接'
+  )
+  const tagReadHandledJobsBefore = readWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs
+  const tags = await repositories.listAccountTagsAsync(userAccess)
+  assert(tags.some((item) => item.name === 'SQLite read worker 标签'), '账户标签列表 async 读应由 read worker 返回真实数据')
+  assert(
+    readWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs >= tagReadHandledJobsBefore + 1,
+    'SQLite DB service 下 listAccountTagsAsync 必须进入 read worker，避免首屏标签查询卡住主连接'
+  )
+  assert.equal((await repositories.findAccountSummaryAsync(account.id, userAccess))?.id, account.id, '账户详情 async 读应由 read worker 返回真实数据')
+  const accountForTestReadHandledJobsBefore = readWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs
+  assert.equal((await repositories.findAccountForTestAsync(account.id, userAccess))?.id, account.id, '账户高级详情凭据 async 读应由 read worker 返回真实数据')
+  assert(
+    readWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs >= accountForTestReadHandledJobsBefore + 1,
+    'SQLite DB service 下 findAccountForTestAsync 必须进入 read worker，避免高级详情同步读凭据'
+  )
+  assert((await repositories.listAccountOptionsAsync(userAccess, { keyword: 'SQLite read worker', limit: 20 })).some((item) => item.id === account.id), '账户 options async 读应由 read worker 返回真实数据')
+  assert.equal(await accountTestTasks.getAccountTestSessionAsync('missing_session', userAccess), undefined, '账户测试会话 async 读应由 read worker 返回真实空结果')
+  assert.equal(await accountTestTasks.getAccountTestTaskAsync('missing_task', userAccess), undefined, '账户测试任务 async 读应由 read worker 返回真实空结果')
+  assert.deepEqual(await accountTestTasks.listAccountTestTasksAsync([], userAccess), [], '账户测试任务批量 async 读应由 read worker 返回真实空列表')
 
   const apiKeysPage = await repositories.listApiKeysPageAsync(userAccess, { page: 1, pageSize: 20 })
   assert(apiKeysPage.items.some((item) => item.id === apiKey.id), 'API Key 列表 async 读应由 read worker 返回真实数据')
@@ -208,8 +269,18 @@ try {
   const systemAccountsPage = await repositories.listSystemAccountsPageAsync({ page: 1, pageSize: 20 })
   assert(systemAccountsPage.items.some((item) => item.id === 'sys_admin'), '系统账户列表 async 读应由 read worker 返回真实数据')
   assert((await repositories.listSystemAccountOptionsAsync({ limit: 20 })).some((item) => item.id === 'sys_admin'), '系统账户选项 async 读应由 read worker 返回真实数据')
+  assert.equal((await repositories.findSystemAccountByIdAsync('sys_admin'))?.id, 'sys_admin', '系统账户 ID async 读应由 read worker 返回真实数据')
+  assert.equal((await repositories.findSystemAccountByUsernameAsync('admin'))?.id, 'sys_admin', '系统账户用户名 async 读应由 read worker 返回真实数据')
   assert((await repositories.listProvidersAsync()).some((item) => item.code === 'gpt'), '供应商列表 async 读应由 read worker 返回真实数据')
+  assert((await providerRepository.listOpenAIProtocolProviderCodesAsync()).includes('gpt'), 'OpenAI 协议供应商 async 读应由 read worker 返回真实数据')
+  assert((await providerRepository.listOpenAIProtocolProfileIdsAsync()).includes(GPT_OPENAI_V1_PROFILE_ID), 'OpenAI 协议档案 async 读应由 read worker 返回真实数据')
+  assert.equal(await providerRepository.isOpenAIProtocolProviderCodeAsync('gpt'), true, '供应商协议判定 async 读应由 read worker 返回真实数据')
+  assert.equal(typeof await providerRepository.findProviderDefaultTestModelAsync('gpt', 'sys_admin'), 'string', '供应商默认测试模型 async 读应由 read worker 返回真实数据')
+  assert((await providerRepository.findProviderDefaultSupportedModelsAsync('gpt')).length > 0, '供应商默认模型池 async 读应由 read worker 返回真实数据')
+  assert.equal((await providerRepository.findProviderProtocolProfileAsync(GPT_OPENAI_V1_PROFILE_ID))?.id, GPT_OPENAI_V1_PROFILE_ID, '供应商协议档案详情 async 读应由 read worker 返回真实数据')
+  assert.equal((await providerRepository.defaultProviderProtocolProfileAsync('gpt'))?.id, GPT_OPENAI_V1_PROFILE_ID, '供应商默认协议档案 async 读应由 read worker 返回真实数据')
   assert.equal((await providerDefaultTestModels.listProviderDefaultTestModelPreferencesAsync('sys_admin', ['gpt'])).size, 0, '供应商默认测试模型偏好 async 读应支持 read worker 空结果')
+  assert((await modelCatalogService.listProviderModelCatalogAsync({ providerCode: 'gpt', systemAccountId: 'sys_admin', includeUnpriced: true })).length > 0, '供应商模型目录 async 读应由 read worker 返回真实数据')
   assert.equal(typeof (await repositories.listGlobalSettingsAsync()).appName, 'string', '全局设置 async 读应由 read worker 返回真实数据')
   assert.equal(typeof (await repositories.getSettingsAsync()).defaultTemporaryUnschedulableMinutes, 'number', '系统设置 async 读应由 read worker 返回真实数据')
   assert((await repositories.listRuntimeLogsAsync({ keyword: 'needle', pageSize: 10 })).items.some((item) => item.id === runtimeLogId), '运行日志列表 async 读应由 read worker 返回真实关键词结果')
@@ -217,6 +288,65 @@ try {
   assert((await repositories.getRuntimeLogFacetsAsync()).totalIndexed >= 1, '运行日志 facets async 读应由 read worker 返回真实数据')
 
   const dbServiceReadHandledJobsBefore = readWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs
+  assert.equal((await dbServiceHandlers.handleDbServiceOperation({
+    type: 'validate_gateway_api_key',
+    key: apiKey.key
+  }))?.id, apiKey.id, 'DB service API Key 校验 cache miss 应经 read worker 返回真实数据')
+  const runtime = await dbServiceHandlers.handleDbServiceOperation({
+    type: 'read_gateway_runtime',
+    key: apiKey.key,
+    skipDynamicRouteSelection: true
+  })
+  assert.equal(runtime.apiKey?.id, apiKey.id, 'DB service gateway runtime 静态读应经 read worker 返回真实 API Key')
+  assert(runtime.accounts.some((item) => item.id === account.id), 'DB service gateway runtime 静态读应经 read worker 返回真实候选账号')
+  assert.equal((await dbServiceHandlers.handleDbServiceOperation({
+    type: 'resolve_group_usage_access',
+    groupId: group.id,
+    systemAccountId: 'sys_admin'
+  }))?.providerCode, 'gpt', 'DB service 分组访问元数据应经 read worker 返回真实数据')
+  assert((await dbServiceHandlers.handleDbServiceOperation({
+    type: 'list_openai_accounts_for_group',
+    groupId: group.id,
+    systemAccountId: 'sys_admin'
+  })).some((item) => item.id === account.id), 'DB service 分组账号候选应经 read worker 返回真实数据')
+  assert((await dbServiceHandlers.handleDbServiceOperation({
+    type: 'list_openai_accounts_for_group_result',
+    groupId: group.id,
+    systemAccountId: 'sys_admin'
+  })).accounts.some((item) => item.id === account.id), 'DB service 分组账号候选结果应经 read worker 返回真实数据')
+  assert.equal((await dbServiceHandlers.handleDbServiceOperation({
+    type: 'find_openai_account_for_group',
+    groupId: group.id,
+    accountId: account.id,
+    systemAccountId: 'sys_admin',
+    ignoreAvailability: true
+  }))?.id, account.id, 'DB service 分组单账号查询应经 read worker 返回真实数据')
+  assert.equal((await dbServiceHandlers.handleDbServiceOperation({
+    type: 'find_account_for_test',
+    accountId: account.id,
+    access
+  }))?.id, account.id, 'DB service 账号测试详情应经 read worker 返回真实数据')
+  assert.equal(await dbServiceHandlers.handleDbServiceOperation({
+    type: 'find_openai_oauth_account_for_refresh',
+    accountId: account.id
+  }), undefined, 'DB service OAuth refresh 账号查询应经 read worker 返回真实空结果')
+  assert((await dbServiceHandlers.handleDbServiceOperation({ type: 'list_active_client_ip_policies' })).some((item) => item.id === clientIpPolicy.id), 'DB service active IP 策略应经 read worker 返回真实列表')
+  assert.equal((await clientIpStats.findActiveClientIpPolicyByHashAsync(clientIpIdentity.ipHash))?.id, clientIpPolicy.id, 'IP 策略 hash 精确 async 读应由 read worker 返回真实数据')
+  assert((await dbServiceHandlers.handleDbServiceOperation({
+    type: 'list_active_response_inspection_policies',
+    protocolCode: 'openai',
+    providerCode: 'gpt'
+  })).some((item) => item.defaultRule), 'DB service active 响应检查策略应经 read worker 返回默认策略')
+  assert.deepEqual(await dbServiceHandlers.handleDbServiceOperation({
+    type: 'check_authorization_quota',
+    groupAuthorizationId: undefined,
+    accountAuthorizationId: undefined
+  }), { allowed: true }, 'DB service 授权 quota 单项读应经 read worker 返回允许结果')
+  assert.deepEqual(await dbServiceHandlers.handleDbServiceOperation({
+    type: 'check_authorization_quota_batch',
+    groupAuthorizationId: undefined,
+    accounts: [{ accountId: account.id }]
+  }), [{ allowed: true }], 'DB service 授权 quota 批量读应经 read worker 返回允许结果')
   assert.equal(typeof (await dbServiceHandlers.handleDbServiceOperation({
     type: 'list_public_global_settings'
   })).appName, 'string', '公开全局设置应经 DB service read worker 返回真实数据')
@@ -295,16 +425,17 @@ try {
     limit: 5
   })
   assert(chunkResults.some((item) => item.fileId === compatibleFile.id && item.contentPreview.includes('needle')), 'OpenAI-compatible vector store chunks 应经 read worker 返回真实 chunk')
+  const dbServiceReadHandledJobsDelta = readWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs - dbServiceReadHandledJobsBefore
   assert(
-    readWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs >= dbServiceReadHandledJobsBefore + 10,
-    'DB service 剩余纯读应全部进入 read worker'
+    dbServiceReadHandledJobsDelta >= 19,
+    `DB service 剩余纯读应批量进入 read worker，实际新增 ${dbServiceReadHandledJobsDelta}`
   )
 
   const poolRuntime = readWorkerPool.getSqliteReadWorkerPoolRuntime()
   assert(poolRuntime.workerCount > 0, 'read worker pool 应创建子进程')
-  assert(poolRuntime.handledJobs >= 33, '管理端 SQLite async 读应批量由 read worker 处理')
+  assert(poolRuntime.handledJobs >= 60, '管理端 SQLite async 读应批量由 read worker 处理')
 
-  console.log('SQLite read worker 回归通过：管理端账号/分组/API Key/策略/代理/系统账户/供应商/设置/模型目录/运行日志/OpenAI-compatible files/vector stores 读进入 query-only 子进程，返回真实数据且不触发隐藏写')
+  console.log('SQLite read worker 回归通过：管理端账号/分组/API Key/策略/代理/系统账户/供应商/设置/模型目录/运行日志/网关运行时/OpenAI-compatible files/vector stores 读进入 query-only 子进程，返回真实数据且不触发隐藏写')
 } finally {
   await readWorkerPool.closeSqliteReadWorkerPool().catch(() => undefined)
   try {

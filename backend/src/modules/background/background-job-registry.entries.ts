@@ -292,6 +292,19 @@ export const backgroundScheduledJobs = [
     writes: ['business:account_api_key_runtime_states', 'usage-shards:usage_records', 'dataset:audit_logs']
   }),
   scheduled({
+    jobName: 'normal-route-speed-first-recovery-probe',
+    category: 'scheduled',
+    kind: 'probe',
+    lifecycle: 'persistent',
+    defaultRole: 'ops-worker',
+    hotspot: true,
+    singleOwner: false,
+    shardable: true,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: true,
+    writes: ['runtime-state:gateway-normal-route-latency-degradation', 'usage-shards:usage_records', 'dataset:audit_logs']
+  }),
+  scheduled({
     jobName: 'runtime-log-index-maintenance',
     category: 'scheduled',
     kind: 'log',

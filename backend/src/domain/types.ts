@@ -1046,6 +1046,7 @@ export type ApiKeyGroupBindingStatus = 'active' | 'disabled'
 export type RouteStrategyMode = 'normal' | 'hybrid_smart' | 'weighted' | 'failover' | 'round_robin'
 export type ApiKeyClientProfile = 'auto' | 'generic_openai' | 'codex' | 'generic_anthropic' | 'claude_code' | 'generic_gemini' | 'gemini_cli'
 export type ApiKeyExplicitHybridRouteAdapterMode = 'direct' | 'bridge'
+export type RouteStrategyNormalSchedulingPreference = 'cost_first' | 'speed_first'
 export type ApiKeyHybridQualityPreference = 'cost_first' | 'balanced' | 'quality_first'
 export type ApiKeyHybridQualityInspectionTriggerMode = 'quality_first_only' | 'risk_based' | 'always_for_hybrid'
 export type ApiKeyHybridQualityInspectionFailureAction = 'repair_then_upgrade' | 'upgrade_next_level' | 'retry_same_model' | 'return_error'
@@ -1114,6 +1115,22 @@ export interface RouteStrategyGroupBindingSummary {
   groupEnabled: boolean
 }
 
+export interface RouteStrategySpeedFirstConfig {
+  firstByteThresholdMs: number
+  slowTriggerCount: number
+  slowWindowSeconds: number
+  recoverySuccessCount: number
+  probeIntervalSeconds: number
+  degradedTtlSeconds: number
+  retryOnFirstByteTimeout: boolean
+  maxFirstByteRetriesPerRequest: number
+}
+
+export interface RouteStrategyNormalRoutingConfig {
+  schedulingPreference: RouteStrategyNormalSchedulingPreference
+  speedFirstConfig?: RouteStrategySpeedFirstConfig
+}
+
 export type RouteStrategyGroupBindingPreview = Pick<RouteStrategyGroupBindingSummary, 'id' | 'groupId' | 'groupName' | 'providerCode' | 'status' | 'groupEnabled'>
 
 export type RouteStrategyStatus = 'active' | 'disabled'
@@ -1127,6 +1144,7 @@ export interface RouteStrategySummary {
   mode: RouteStrategyMode
   status: RouteStrategyStatus
   isDefault: boolean
+  normalRoutingConfig?: RouteStrategyNormalRoutingConfig
   hybridRoutingConfig?: ApiKeyHybridRoutingConfig
   groupBindings: RouteStrategyGroupBindingSummary[]
   apiKeyCount?: number

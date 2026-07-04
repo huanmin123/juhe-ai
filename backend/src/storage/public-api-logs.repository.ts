@@ -10,6 +10,7 @@ import { runtimeConfig } from '../config/runtime.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import { optionalString, optionalServerDateTimeIso } from './value-utils.js'
 
 export type PublicApiLogCaptureStatus = 'complete' | 'truncated' | 'empty' | 'dropped'
@@ -361,6 +362,12 @@ export function listPublicApiLogs(options: PublicApiLogListOptions = {}): Public
 }
 
 export async function listPublicApiLogsAsync(options: PublicApiLogListOptions = {}): Promise<PublicApiLogListResult> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_public_api_logs_read_only',
+      options
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listPublicApiLogs(options)
   }
@@ -396,6 +403,12 @@ export function getPublicApiLogDetail(id: string): PublicApiLogDetail | undefine
 }
 
 export async function getPublicApiLogDetailAsync(id: string): Promise<PublicApiLogDetail | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'get_public_api_log_detail_read_only',
+      id
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return getPublicApiLogDetail(id)
   }

@@ -61,6 +61,7 @@ import { getCooldownAccountRetestQueueSnapshot } from './modules/background/cool
 import { getAccountApiKeyCooldownRetestQueueSnapshot } from './modules/background/account-api-key-cooldown-retest.service.js'
 import { getAccountHealthCheckQueueSnapshot } from './modules/background/account-health-check.service.js'
 import { getAccountQualityFailurePrecheckQueueSnapshot } from './modules/background/account-quality-failure-precheck.service.js'
+import { getNormalRouteSpeedFirstRecoveryProbeQueueSnapshot } from './modules/background/normal-route-speed-first-recovery-probe.service.js'
 import { handleStatsWriteOperation, type BackgroundStatsWriteOperation } from './modules/background/background-stats-writer.js'
 import { handleDatasetWriteOperation, type BackgroundDatasetWriteOperation } from './modules/background/background-dataset-writer.js'
 import {
@@ -257,6 +258,7 @@ function buildRuntimeSnapshot(): BackgroundWorkerRuntimeSnapshot {
     accountHealthCheckQueue: getAccountHealthCheckQueueSnapshot(),
     cooldownAccountRetestQueue: getCooldownAccountRetestQueueSnapshot(),
     accountApiKeyCooldownRetestQueue: getAccountApiKeyCooldownRetestQueueSnapshot(),
+    normalRouteSpeedFirstRecoveryProbeQueue: getNormalRouteSpeedFirstRecoveryProbeQueueSnapshot(),
     accountQualityFailurePrecheckQueue: getAccountQualityFailurePrecheckQueueSnapshot(),
     manualAccountTestQueue: getManualAccountTestQueueSnapshot()
   }

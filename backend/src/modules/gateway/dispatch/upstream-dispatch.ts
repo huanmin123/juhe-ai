@@ -68,6 +68,7 @@ export interface OpenAIUpstreamDispatchResult {
   response: GatewayUpstreamResponse
   upstreamUrl: string
   auditAttemptId: string
+  attemptStartedAt: number
   releaseConcurrency: () => void
   markFirstOutput: () => void
   confirmSameAccountApiKeyFailures: () => Promise<void>
@@ -388,6 +389,7 @@ export async function fetchFirstAvailableUpstream(
                     response,
                     upstreamUrl,
                     auditAttemptId,
+                    attemptStartedAt,
                     releaseConcurrency: releaseAccountDispatchSlot(concurrencySlot.release, halfOpenLease),
                     markFirstOutput: concurrencySlot.markFirstOutput,
                     confirmSameAccountApiKeyFailures: () => recordConfirmedSameAccountApiKeyFailures(pendingApiKeyFailures, account, usageContext)
@@ -796,7 +798,7 @@ async function shouldRetrySameAccountAfterFailure(
   attemptIndex: number,
   sameAccountRetryPolicy: RetryPolicy
 ): Promise<boolean> {
-  if (account.selectedApiKeyFingerprint) {
+  if (account.selectedApiKeyFingerprint && (account.apiKeys?.length ?? 0) > 1) {
     return false
   }
   if (!shouldRetryPolicyAttempt(attemptIndex, sameAccountRetryPolicy)) {

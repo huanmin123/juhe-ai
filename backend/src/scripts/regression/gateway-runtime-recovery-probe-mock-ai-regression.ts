@@ -3,6 +3,7 @@ import { mkdirSync, rmSync } from 'node:fs'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 
 import express from 'express'
 
@@ -32,6 +33,7 @@ runtimeConfig.secret = 'gateway-runtime-recovery-probe-mock-ai-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'db-service'
+runtimeConfig.runtimeStateDriver = 'memory'
 runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
@@ -40,6 +42,7 @@ const [
   { openAIGatewayRouter },
   { requestContextMiddleware },
   databaseModule,
+  readWorkerPool,
   repositories,
   gatewayCache,
   accountSideEffects,
@@ -49,6 +52,7 @@ const [
   import('../../modules/gateway/routes.js'),
   import('../../shared/request-context.js'),
   import('../../storage/database.js'),
+  import('../../storage/sqlite-read-worker-pool.js'),
   import('../../storage/repositories.js'),
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
@@ -90,8 +94,9 @@ try {
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
   usageRecordQueue.clearUsageRecordQueueForTest()
   auditLogQueue.clearAuditLogQueueForTest()
+  await readWorkerPool.closeSqliteReadWorkerPool().catch(() => undefined)
   databaseModule.closeStorageDatabases()
-  rmSync(tempRoot, { recursive: true, force: true })
+  await removeTempRoot()
 }
 
 async function assertUserFailureOnlySchedulesBackgroundRecovery(baseUrl: string, scenario: GatewayScenario): Promise<void> {
@@ -103,6 +108,10 @@ async function assertUserFailureOnlySchedulesBackgroundRecovery(baseUrl: string,
   const runtime = accountSideEffects.snapshotGatewayAccountRuntimeAvailability()[scenario.accountId]
   assert.notEqual(runtime?.status, 'degraded', '用户请求失败不应直接激活账号调度降级')
   assert.notEqual(runtime?.status, 'precheck_pending', '用户请求失败不应绕过观察窗口直接进入事前确认')
+  assert(
+    accountSideEffects.getGatewayAccountSideEffectState().recoveryProbePendingAccountCount >= 1,
+    '用户请求失败后应调度后台恢复探针'
+  )
 }
 
 async function assertBackgroundProbeRecoversWithoutUserTraffic(baseUrl: string, scenario: GatewayScenario): Promise<void> {
@@ -113,7 +122,7 @@ async function assertBackgroundProbeRecoversWithoutUserTraffic(baseUrl: string, 
   const probeHits = upstreamHits.slice(recoveredHitStart)
   assert(
     probeHits.some((hit) => hit.authorization === 'Bearer sk-runtime-recovery-probe' && hit.path === '/v1/responses'),
-    '后台恢复探针应在无用户请求时命中 Mock AI responses 探针链路'
+    `后台恢复探针应在无用户请求时命中 Mock AI responses 探针链路，实际命中：${JSON.stringify(probeHits)}`
   )
   assert.equal(
     accountSideEffects.snapshotGatewayAccountRuntimeAvailability()[scenario.accountId],
@@ -280,4 +289,19 @@ function closeServer(server: http.Server | undefined): Promise<void> {
       else resolvePromise()
     })
   })
+}
+
+async function removeTempRoot(): Promise<void> {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      rmSync(tempRoot, { recursive: true, force: true })
+      return
+    } catch (error) {
+      if (!(error instanceof Error) || !/EBUSY|EPERM/.test(error.message)) {
+        throw error
+      }
+      if (attempt === 4) return
+      await delay(250)
+    }
+  }
 }

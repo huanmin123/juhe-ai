@@ -33,6 +33,10 @@ import { resolveLocalSuppressionFilter } from '../runtime/local-suppression-pref
 import {
   orderGatewayAccountsByUpstreamBucketHealthAsync
 } from '../runtime/proxy-health.service.js'
+import {
+  normalRouteLatencyDegradationScope,
+  orderGatewayAccountsByNormalRouteLatencyDegradationAsync
+} from '../runtime/normal-route-latency-degradation.service.js'
 import type { OpenAIGatewayRequestLane } from '../protocols/openai-v1/request-lane.js'
 import { gatewayErrorPayload } from '../response/responses.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
@@ -52,6 +56,7 @@ import {
   gatewayAccountConcurrencyLimitsByAccountId
 } from './account-concurrency-identity.js'
 import type { GatewayAccountModelPriority } from './model-filter.js'
+import type { RouteStrategySpeedFirstConfig } from '../../../domain/types.js'
 
 export interface DispatchPreparationFallbackResult {
   attempted: boolean
@@ -82,6 +87,8 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
   systemAccountId: string
   apiKeyId?: string
   groupId: string
+  routeStrategyId?: string
+  normalRouteSpeedFirstConfig?: RouteStrategySpeedFirstConfig
   clientIp?: string
   clientStrategy: OpenAIGatewayClientStrategyContext
   requestLane: OpenAIGatewayRequestLane
@@ -188,7 +195,42 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     }
   }
 
-  const proxyHealthOrder = await orderGatewayAccountsByUpstreamBucketHealthAsync(runtimeDegradationOrder.accounts, input.modelPriority)
+  const latencyDegradationOrder = await orderGatewayAccountsByNormalRouteLatencyDegradationAsync(
+    runtimeDegradationOrder.accounts,
+    normalRouteLatencyDegradationScope({
+      systemAccountId: input.systemAccountId,
+      routeStrategyId: input.routeStrategyId,
+      groupId: input.groupId
+    }),
+    input.normalRouteSpeedFirstConfig,
+    input.modelPriority
+  )
+  if (latencyDegradationOrder.applied || latencyDegradationOrder.bypassedAllDegraded) {
+    logger.warn({
+      event: latencyDegradationOrder.applied
+        ? 'gateway_normal_route_latency_degradation_order_applied'
+        : 'gateway_normal_route_latency_degradation_bypassed',
+      applied: latencyDegradationOrder.applied,
+      degradedAccountIds: latencyDegradationOrder.degradedAccountIds,
+      bypassedAllDegraded: latencyDegradationOrder.bypassedAllDegraded,
+      groupId: input.groupId,
+      routeStrategyId: input.routeStrategyId,
+      systemAccountId: input.systemAccountId,
+      apiKeyId: input.apiKeyId
+    }, latencyDegradationOrder.applied
+      ? '普通路由速度优先已将首字慢速账号排到候选末尾'
+      : '普通路由速度优先无未降级候选，保持原候选顺序')
+    input.auditCapture.addGatewayMetadata({
+      label: 'normal_route_latency_degradation',
+      metadata: {
+        applied: latencyDegradationOrder.applied,
+        degradedAccountIds: latencyDegradationOrder.degradedAccountIds,
+        bypassedAllDegraded: latencyDegradationOrder.bypassedAllDegraded
+      }
+    })
+  }
+
+  const proxyHealthOrder = await orderGatewayAccountsByUpstreamBucketHealthAsync(latencyDegradationOrder.accounts, input.modelPriority)
   if (proxyHealthOrder.applied || proxyHealthOrder.bypassedAllAvoided) {
     logger.warn({
       event: proxyHealthOrder.applied

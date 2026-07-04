@@ -138,7 +138,7 @@ export async function listGeminiProtocolProviderCodesAsync(): Promise<ProviderCo
   return await listProtocolProviderCodesAsync(GEMINI_PROTOCOL_CODE, GEMINI_PROTOCOL_VERSION)
 }
 
-function listProtocolProviderCodes(protocolCode: string, protocolVersion: string): ProviderCode[] {
+export function listProtocolProviderCodes(protocolCode: string, protocolVersion: string): ProviderCode[] {
   const rows = getBusinessDatabase()
     .prepare(`
       SELECT code
@@ -156,6 +156,13 @@ function listProtocolProviderCodes(protocolCode: string, protocolVersion: string
 }
 
 async function listProtocolProviderCodesAsync(protocolCode: string, protocolVersion: string): Promise<ProviderCode[]> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_protocol_provider_codes_read_only',
+      protocolCode,
+      protocolVersion
+    })
+  }
   const client = await getProviderDatabaseClient()
   const profilesTable = providerTable(client, 'provider_protocol_profiles')
   const providersTable = providerTable(client, 'providers')
@@ -192,6 +199,11 @@ export function listOpenAIProtocolProfileIds(): string[] {
 }
 
 export async function listOpenAIProtocolProfileIdsAsync(): Promise<string[]> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_openai_protocol_profile_ids_read_only'
+    })
+  }
   const client = await getProviderDatabaseClient()
   const profilesTable = providerTable(client, 'provider_protocol_profiles')
   const providersTable = providerTable(client, 'providers')
@@ -247,6 +259,14 @@ export function isProtocolProviderCode(providerCode: string, protocolCode: strin
 }
 
 export async function isProtocolProviderCodeAsync(providerCode: string, protocolCode: string, protocolVersion?: string): Promise<boolean> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'is_protocol_provider_code_read_only',
+      providerCode,
+      protocolCode,
+      protocolVersion
+    })
+  }
   const code = providerCode.trim()
   if (!code) return false
   const normalizedProtocolCode = protocolCode.trim()
@@ -298,6 +318,13 @@ export function findProviderDefaultTestModel(providerCode: string, systemAccount
 }
 
 export async function findProviderDefaultTestModelAsync(providerCode: string, systemAccountId?: string): Promise<string | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'find_provider_default_test_model_read_only',
+      providerCode,
+      systemAccountId
+    })
+  }
   const code = providerCode.trim()
   if (!code) return undefined
   const preference = await findProviderDefaultTestModelPreferenceAsync(code, systemAccountId)
@@ -336,6 +363,12 @@ export function findProviderDefaultSupportedModels(providerCode: string): string
 }
 
 export async function findProviderDefaultSupportedModelsAsync(providerCode: string): Promise<string[]> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'find_provider_default_supported_models_read_only',
+      providerCode
+    })
+  }
   const code = providerCode.trim()
   if (!code) return []
   const client = await getProviderDatabaseClient()
@@ -356,6 +389,12 @@ export function findProviderProtocolProfile(profileId: string): ProviderProtocol
 }
 
 export async function findProviderProtocolProfileAsync(profileId: string): Promise<ProviderProtocolProfileDefinition | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'find_provider_protocol_profile_read_only',
+      profileId
+    })
+  }
   const id = profileId.trim()
   if (!id) return undefined
   return (await listProviderProtocolProfilesAsync()).find((profile) => profile.id === id)
@@ -368,6 +407,12 @@ export function defaultProviderProtocolProfile(providerCode: string): ProviderPr
 }
 
 export async function defaultProviderProtocolProfileAsync(providerCode: string): Promise<ProviderProtocolProfileDefinition | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'default_provider_protocol_profile_read_only',
+      providerCode
+    })
+  }
   const code = providerCode.trim()
   if (!code) return undefined
   return preferredDefaultProtocolProfile((await listProviderProtocolProfilesAsync([code])).filter((profile) => profile.providerCode === code))

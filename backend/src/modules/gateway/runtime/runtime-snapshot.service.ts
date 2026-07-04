@@ -6,10 +6,33 @@ import { requestServerAccountConcurrencySnapshot, requestServerAccountRuntimeSna
 
 type AccountConcurrencySnapshot = Record<string, number>
 type AccountRuntimeAvailabilitySnapshot = Record<string, AccountRuntimeAvailability>
+type AccountRuntimeSnapshot = {
+  accountConcurrency?: AccountConcurrencySnapshot
+  accountRuntimeAvailability?: AccountRuntimeAvailabilitySnapshot
+}
+
+interface RuntimeSnapshotCache<T> {
+  value?: T
+  updatedAtMs: number
+  refreshStartedAtMs: number
+  refresh?: Promise<T | undefined>
+}
 
 export interface AccountRuntimeSnapshotStatus {
   accountConcurrencyAvailable: boolean
   accountRuntimeAvailabilityAvailable: boolean
+}
+
+const serverRuntimeSnapshotCacheTtlMs = 300
+const serverRuntimeSnapshotMaxStaleMs = 5_000
+const serverRuntimeSnapshotRefreshMinIntervalMs = 100
+const accountConcurrencySnapshotCache: RuntimeSnapshotCache<AccountConcurrencySnapshot> = {
+  updatedAtMs: 0,
+  refreshStartedAtMs: 0
+}
+const accountRuntimeSnapshotCache: RuntimeSnapshotCache<AccountRuntimeSnapshot> = {
+  updatedAtMs: 0,
+  refreshStartedAtMs: 0
 }
 
 export async function applyServerAccountConcurrencyToAccountList<T extends { items: AccountSummary[] }>(
@@ -107,14 +130,65 @@ export async function applyServerAccountConcurrencyToGroupList<T extends { items
 }
 
 async function loadServerAccountConcurrencySnapshot(): Promise<AccountConcurrencySnapshot | undefined> {
-  return await requestServerAccountConcurrencySnapshot(80).catch(() => undefined)
+  return await loadCachedServerRuntimeSnapshot(accountConcurrencySnapshotCache, () => requestServerAccountConcurrencySnapshot(80))
 }
 
-async function loadServerAccountRuntimeSnapshot(): Promise<{
-  accountConcurrency?: AccountConcurrencySnapshot
-  accountRuntimeAvailability?: AccountRuntimeAvailabilitySnapshot
-} | undefined> {
-  return await requestServerAccountRuntimeSnapshot(80).catch(() => undefined)
+async function loadServerAccountRuntimeSnapshot(): Promise<AccountRuntimeSnapshot | undefined> {
+  return await loadCachedServerRuntimeSnapshot(accountRuntimeSnapshotCache, () => requestServerAccountRuntimeSnapshot(80))
+}
+
+async function loadCachedServerRuntimeSnapshot<T>(
+  cache: RuntimeSnapshotCache<T>,
+  loader: () => Promise<T | undefined>
+): Promise<T | undefined> {
+  if (runtimeConfig.processRole !== 'db-service') {
+    return undefined
+  }
+  const now = Date.now()
+  if (cache.value && now - cache.updatedAtMs <= serverRuntimeSnapshotCacheTtlMs) {
+    return cache.value
+  }
+  if (cache.value && now - cache.updatedAtMs <= serverRuntimeSnapshotMaxStaleMs) {
+    scheduleServerRuntimeSnapshotRefresh(cache, loader, now)
+    return cache.value
+  }
+  if (cache.refresh) {
+    return await cache.refresh
+  }
+  cache.refresh = refreshServerRuntimeSnapshotCache(cache, loader, now)
+    .finally(() => {
+      cache.refresh = undefined
+    })
+  return await cache.refresh
+}
+
+function scheduleServerRuntimeSnapshotRefresh<T>(
+  cache: RuntimeSnapshotCache<T>,
+  loader: () => Promise<T | undefined>,
+  now = Date.now()
+): void {
+  if (cache.refresh || now - cache.refreshStartedAtMs < serverRuntimeSnapshotRefreshMinIntervalMs) {
+    return
+  }
+  cache.refresh = refreshServerRuntimeSnapshotCache(cache, loader, now)
+    .catch(() => undefined)
+    .finally(() => {
+      cache.refresh = undefined
+    })
+}
+
+async function refreshServerRuntimeSnapshotCache<T>(
+  cache: RuntimeSnapshotCache<T>,
+  loader: () => Promise<T | undefined>,
+  now = Date.now()
+): Promise<T | undefined> {
+  cache.refreshStartedAtMs = now
+  const value = await loader().catch(() => undefined)
+  if (value !== undefined) {
+    cache.value = value
+    cache.updatedAtMs = Date.now()
+  }
+  return value ?? cache.value
 }
 
 async function applyRedisAccountRuntimeToAccountList<T extends { items: AccountSummary[] }>(

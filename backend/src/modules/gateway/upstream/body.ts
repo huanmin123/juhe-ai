@@ -7,6 +7,7 @@ import {
   readStreamChunkWithTimeout,
   UpstreamRequestAbortedError
 } from './request.js'
+import { GatewayFirstByteTimeoutError } from './first-byte-timeout.js'
 
 export interface NonStreamPipeResult {
   firstByteMs?: number
@@ -95,7 +96,7 @@ export async function pipeNonStreamUpstreamResponse(
         ? await readStreamChunkWithTimeout(
           iterator,
           Math.max(0.001, input.firstByteTimeoutMs / 1000),
-          () => new Error(`上游非流式响应 ${Math.ceil((input.firstByteTimeoutMs ?? 0) / 1000)}s 后仍未返回首个字节`),
+          () => new GatewayFirstByteTimeoutError(`上游非流式响应 ${Math.ceil((input.firstByteTimeoutMs ?? 0) / 1000)}s 后仍未返回首个字节`, input.firstByteTimeoutMs ?? 0),
           input.signal
         )
         : await readStreamChunkWithAbort(iterator, input.signal)
@@ -199,7 +200,7 @@ export async function pipeNonStreamUpstreamResponseForInspection(
         ? await readStreamChunkWithTimeout(
           iterator,
           Math.max(0.001, input.firstByteTimeoutMs / 1000),
-          () => new Error(`上游非流式响应 ${Math.ceil((input.firstByteTimeoutMs ?? 0) / 1000)}s 后仍未返回首个字节`),
+          () => new GatewayFirstByteTimeoutError(`上游非流式响应 ${Math.ceil((input.firstByteTimeoutMs ?? 0) / 1000)}s 后仍未返回首个字节`, input.firstByteTimeoutMs ?? 0),
           input.signal
         )
         : await readStreamChunkWithAbort(iterator, input.signal)

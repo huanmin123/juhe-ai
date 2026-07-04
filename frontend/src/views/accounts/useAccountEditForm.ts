@@ -40,8 +40,9 @@ import type { AccountFormModel } from './accountFormTypes'
 import { FALLBACK_PROVIDERS } from './accountOptions'
 import { canCreateOAuthAccount } from './accountProviderCapabilities'
 import { authUrl } from './accountOAuthPayload'
-import { loadAccountDetailCached } from './accountDetailCache'
+import { loadAccountDetailCached, type AccountDetailLevel } from './accountDetailCache'
 import { accountOperationScopeParams, type AccountScopeParams } from './accountOperationScope'
+import { normalizedAccountApiKeys } from './accountCredentials'
 import type { AccountSavePayload } from './accountSavePayload'
 import {
   accountCreatePayloadWithActivationTest as applyActivationTestToCreatePayload
@@ -433,31 +434,26 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       return
     }
 
-    const selectedGroup = account.boundGroupId
-      ? groupSelectionForId(account.boundGroupId, account.boundGroupName)
-      : undefined
-    Object.assign(form, {
-      ...defaultForm(account.providerCode, account.type, account.providerProtocolProfileId),
-      name: account.name,
-      groupId: selectedGroup?.id ?? account.boundGroupId,
-      group: selectedGroup,
-      concurrencyLimit: account.concurrencyLimit,
-      priority: account.priority,
-      tags: accountTagNamesForOpening(account),
-      notes: account.notes ?? ''
-    })
-    accountErrorPolicyRules.value = loadAccountErrorPolicyRules()
-    accountResponseInspectionRules.value = loadAccountResponseInspectionRules()
+    accountEditDetailLoading.value = true
     modalOpen.value = true
-    void options.loadAccountOptions(editScopeParams?.systemAccountId)
-    void options.loadGroupOptions('', false, {
-      providerCode: account.providerCode,
-      systemAccountId: editScopeParams?.systemAccountId,
-      selectedIds: [form.groupId]
-    }, {
-      useLocalWindow: false
-    })
-    void loadAccountTagOptions(editScopeParams)
+    const sourceAccount = await loadAccountDetailForForm(account.id, editScopeParams, '加载账户基础配置失败', 'edit-basic')
+    if (!isCurrentFormOpenRequest(requestToken)) return
+    if (!sourceAccount) {
+      accountEditDetailLoading.value = false
+      modalOpen.value = false
+      editingId.value = undefined
+      editingAccountDetail.value = undefined
+      return
+    }
+    if (!applyLoadedAccountDetailToEditForm(sourceAccount, editScopeParams, '账户基础配置结构异常，请清理后再编辑')) {
+      accountEditDetailLoading.value = false
+      modalOpen.value = false
+      editingId.value = undefined
+      editingAccountDetail.value = undefined
+      return
+    }
+    accountAdvancedDetailLoaded.value = false
+    accountEditDetailLoading.value = false
   }
 
   async function loadAdvancedAccountDetail() {
@@ -483,6 +479,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     errorMessage: string,
     preserveBasicFields = false
   ): boolean {
+    const preserveTypedApiKeys = form.type === 'api_key' && normalizedAccountApiKeys(form).length > 0
+    const preserveTypedOAuthTokens = form.type === 'oauth' && Boolean(form.accessToken.trim() || form.refreshToken.trim())
     const preservedBasic = preserveBasicFields
       ? {
           name: form.name,
@@ -491,7 +489,23 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
           concurrencyLimit: form.concurrencyLimit,
           priority: form.priority,
           tags: [...form.tags],
-          notes: form.notes
+          notes: form.notes,
+          baseUrl: form.baseUrl,
+          supportedModels: [...form.supportedModels],
+          ...(preserveTypedApiKeys
+            ? {
+                apiKey: form.apiKey,
+                apiKeys: [...form.apiKeys],
+                apiKeyStrategy: form.apiKeyStrategy,
+                apiKeyWeights: [...form.apiKeyWeights]
+              }
+            : {}),
+          ...(preserveTypedOAuthTokens
+            ? {
+                accessToken: form.accessToken,
+                refreshToken: form.refreshToken
+              }
+            : {})
         }
       : undefined
     const defaults = defaultForm(sourceAccount.providerCode, sourceAccount.type, sourceAccount.providerProtocolProfileId)
@@ -608,11 +622,17 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     ensureDefaultGroupSelected(providerCode)
   }
 
-  async function loadAccountDetailForForm(accountId: string, scopeParams: AccountScopeParams | undefined, fallbackMessage: string): Promise<AccountSummary | undefined> {
+  async function loadAccountDetailForForm(
+    accountId: string,
+    scopeParams: AccountScopeParams | undefined,
+    fallbackMessage: string,
+    level: AccountDetailLevel = 'advanced'
+  ): Promise<AccountSummary | undefined> {
     try {
       return await loadAccountDetailCached({
         accountId,
         isManagementView: options.isManagementView.value,
+        level,
         scopeParams
       })
     } catch (error) {
@@ -700,10 +720,6 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     if (!normalizedName) return form.group?.id === normalizedId ? form.group : undefined
     rememberGroupLabel(normalizedId, normalizedName)
     return { id: normalizedId, name: normalizedName }
-  }
-
-  function accountTagNamesForOpening(account: AccountSummary): string[] {
-    return account.tags?.map((tag) => tag.name).filter((name): name is string => Boolean(name?.trim())) ?? []
   }
 
   function reportAccountFormLoadError(error: unknown, fallbackMessage: string): void {

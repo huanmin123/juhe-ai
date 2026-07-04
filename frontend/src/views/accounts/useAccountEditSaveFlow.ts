@@ -11,12 +11,18 @@ import { isAuthorizedAccount } from './accountFormatters'
 import { buildOAuthCreatePayload } from './accountOAuthPayload'
 import type { AccountScopeParams } from './accountOperationScope'
 import {
+  ACCOUNT_API_KEY_BATCH_CREATE_LIMIT,
   buildAccountSavePayload,
   buildAccountUpdatePayload,
   buildOAuthCreateCommonPayload,
   validateAccountSaveForm,
   type AccountSavePayload
 } from './accountSavePayload'
+import { validateOpenAICompatibleBaseUrl } from './accountBaseUrlValidation'
+import {
+  normalizedAccountApiKeys,
+  normalizedAccountApiKeyWeights
+} from './accountCredentials'
 import {
   normalizeFormTagNames,
   sameTagNames,
@@ -26,10 +32,7 @@ import {
   invalidateAccountTagOptionsCache,
   resolveAccountTagOptionsScopeKey
 } from './accountTagOptionsCache'
-import {
-  invalidateAccountDetailCache,
-  resolveAccountDetailCacheKey
-} from './accountDetailCache'
+import { invalidateAccountDetailForAccount } from './accountDetailCache'
 
 type ReadonlyValue<T> = {
   readonly value: T
@@ -213,13 +216,30 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       message.warning('优先级必须是大于等于 0 的整数')
       return
     }
-    const payload = {
+    const credentialValidationMessage = validateBasicEditCredentialFields(options.form)
+    if (credentialValidationMessage) {
+      message.warning(credentialValidationMessage)
+      return
+    }
+    const tagValidationMessage = validateBasicEditTags(options.form.tags)
+    if (tagValidationMessage) {
+      message.warning(tagValidationMessage)
+      return
+    }
+    const supportedModels = normalizeBasicEditSupportedModels(options.form.supportedModels)
+    if (!supportedModels.length) {
+      message.warning('请选择支持模型')
+      return
+    }
+    const payload: AccountBasicEditPayload = {
       name: options.form.name.trim(),
       concurrencyLimit: Math.trunc(concurrencyLimit),
       priority: Math.trunc(priority),
       groupId: options.form.groupId,
       tags: normalizeFormTagNames(options.form.tags),
-      notes: options.form.notes
+      notes: options.form.notes,
+      supportedModels,
+      credentials: buildBasicEditCredentialsPatch(options.form)
     }
     try {
       if (options.isManagementView.value) {
@@ -284,7 +304,11 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
 
   function invalidateAccountDetailOptions(accountId: string | undefined, scopeParams: AccountScopeParams | undefined): void {
     if (!accountId) return
-    invalidateAccountDetailCache(resolveAccountDetailCacheKey(options.isManagementView.value, accountId, scopeParams))
+    invalidateAccountDetailForAccount({
+      accountId,
+      isManagementView: options.isManagementView.value,
+      scopeParams
+    })
   }
 
   return {
@@ -294,4 +318,71 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
     saveAccount,
     saving
   }
+}
+
+type AccountBasicEditPayload = {
+  name: string
+  concurrencyLimit: number
+  priority: number
+  groupId: string
+  tags: string[]
+  notes: string
+  supportedModels: string[]
+  credentials: Record<string, unknown>
+}
+
+function validateBasicEditCredentialFields(form: AccountFormModel): string | undefined {
+  if (form.type === 'api_key') {
+    if (!form.baseUrl.trim()) return '请填写 Base URL'
+    const baseUrlValidation = validateOpenAICompatibleBaseUrl(form.baseUrl)
+    if (baseUrlValidation) return baseUrlValidation
+    const apiKeyCount = normalizedAccountApiKeys(form).length
+    if (apiKeyCount > ACCOUNT_API_KEY_BATCH_CREATE_LIMIT) return `单个账户最多配置 ${ACCOUNT_API_KEY_BATCH_CREATE_LIMIT} 个 API Key`
+  }
+  return undefined
+}
+
+function validateBasicEditTags(value: string[]): string | undefined {
+  const normalized = normalizeFormTagNames(value)
+  if (normalized.length > 24) return '单个账户最多配置 24 个标签'
+  if (normalized.some((item) => item.length > 40)) return '账户标签不能超过 40 个字符'
+  return undefined
+}
+
+function normalizeBasicEditSupportedModels(value: string[]): string[] {
+  const output: string[] = []
+  const seen = new Set<string>()
+  for (const item of value ?? []) {
+    const model = item.trim()
+    if (!model || seen.has(model)) continue
+    seen.add(model)
+    output.push(model)
+  }
+  return output
+}
+
+function buildBasicEditCredentialsPatch(form: AccountFormModel): Record<string, unknown> {
+  const credentials: Record<string, unknown> = {
+    supported_endpoint_modes: [...form.supportedEndpointModes]
+  }
+  if (form.type === 'api_key') {
+    credentials.base_url = form.baseUrl.trim()
+    const apiKeys = normalizedAccountApiKeys(form)
+    if (apiKeys.length > 0) {
+      credentials.api_key = apiKeys[0]
+    }
+    if (apiKeys.length > 1) {
+      credentials.api_keys = apiKeys
+      credentials.api_key_strategy = form.apiKeyStrategy === 'weighted_round_robin'
+        ? 'weighted_round_robin'
+        : 'round_robin'
+      if (credentials.api_key_strategy === 'weighted_round_robin') {
+        credentials.api_key_weights = normalizedAccountApiKeyWeights(form, apiKeys.length)
+      }
+    }
+  } else if (form.type === 'oauth') {
+    if (form.accessToken.trim()) credentials.access_token = form.accessToken.trim()
+    if (form.refreshToken.trim()) credentials.refresh_token = form.refreshToken.trim()
+  }
+  return credentials
 }

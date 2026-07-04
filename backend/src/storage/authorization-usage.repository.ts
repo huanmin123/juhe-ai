@@ -29,15 +29,16 @@ import {
   loadSystemTeamLookupMap,
   loadSystemTeamLookupMapAsync
 } from './repository-lookups.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
-interface AuthorizationUsageFilters {
+export interface AuthorizationUsageFilters {
   resourceType?: ResourceAuthorizationResourceType
   resourceId?: string
   teamId?: string
   granteeSystemAccountId?: string
 }
 
-interface AuthorizationUsagePageOptions {
+export interface AuthorizationUsagePageOptions {
   page?: number
   pageSize?: number
 }
@@ -167,6 +168,15 @@ export function getAuthorizationTeamUsageOverview(filters: AuthorizationUsageFil
 }
 
 export async function getAuthorizationTeamUsageOverviewAsync(filters: AuthorizationUsageFilters, access: AccessScope | undefined, range: AccountUsageStatsRange, options: AuthorizationUsagePageOptions = {}): Promise<AuthorizationTeamUsageOverview> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'get_authorization_team_usage_overview_read_only',
+      filters,
+      access,
+      range,
+      options
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return getAuthorizationTeamUsageOverview(filters, access, range, options)
   }
@@ -334,6 +344,15 @@ export function getAuthorizationUserUsageOverview(filters: AuthorizationUsageFil
 }
 
 export async function getAuthorizationUserUsageOverviewAsync(filters: AuthorizationUsageFilters, access: AccessScope | undefined, range: AccountUsageStatsRange, options: AuthorizationUsagePageOptions = {}): Promise<AuthorizationUserUsageOverview> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'get_authorization_user_usage_overview_read_only',
+      filters,
+      access,
+      range,
+      options
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return getAuthorizationUserUsageOverview(filters, access, range, options)
   }

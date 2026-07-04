@@ -101,6 +101,7 @@ export interface BackgroundWorkerRuntimeSnapshot {
   accountHealthCheckQueue?: BackgroundWorkerRetryQueueRuntime
   cooldownAccountRetestQueue?: BackgroundWorkerRetryQueueRuntime
   accountApiKeyCooldownRetestQueue?: BackgroundWorkerRetryQueueRuntime
+  normalRouteSpeedFirstRecoveryProbeQueue?: BackgroundWorkerRetryQueueRuntime
   accountQualityFailurePrecheckQueue?: BackgroundWorkerRetryQueueRuntime
   manualAccountTestQueue?: BackgroundWorkerRetryQueueRuntime
 }

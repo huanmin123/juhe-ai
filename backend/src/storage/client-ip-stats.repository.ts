@@ -10,6 +10,7 @@ import {
   type ClientIpStatsDetailOptions,
   type ClientIpStatsDetailResult
 } from './client-ip-stats-detail.repository.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
 export { normalizeClientIpForStats, type NormalizedClientIp } from './client-ip-normalization.js'
 export type {
@@ -64,6 +65,12 @@ export function listClientIpStats(options: ClientIpStatsListOptions = {}): Clien
 }
 
 export async function listClientIpStatsAsync(options: ClientIpStatsListOptions = {}): Promise<ClientIpStatsListResult> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_client_ip_stats_read_only',
+      options
+    })
+  }
   return await listClientIpStatsFromWindowAsync(options)
 }
 
@@ -72,5 +79,11 @@ export function getClientIpStatsDetail(options: ClientIpStatsDetailOptions): Cli
 }
 
 export async function getClientIpStatsDetailAsync(options: ClientIpStatsDetailOptions): Promise<ClientIpStatsDetailResult | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'get_client_ip_stats_detail_read_only',
+      options
+    })
+  }
   return await getClientIpStatsDetailFromWindowAsync(options)
 }

@@ -99,6 +99,15 @@ try {
   assert.equal(Object.prototype.hasOwnProperty.call(basicDetail, 'apiKeyRuntimeDetails'), false, '账户基础详情不应返回 API Key 运行明细')
   assertNoCredentialLeak(basicDetail, '账户基础详情响应')
 
+  const editBasicDetail = await getEnvelope<AccountResponse>(baseUrl, `/__aisys__/api/accounts/${seed.apiKeyAccountId}/edit-basic`, seed.adminCookie)
+  assert(editBasicDetail.credentials, '账户编辑首屏详情应返回基础凭据字段')
+  assert.equal(editBasicDetail.credentials.base_url, 'https://api.openai.com/v1', '账户编辑首屏详情应返回 Base URL')
+  assert(Array.isArray(editBasicDetail.credentials.supported_endpoint_modes), '账户编辑首屏详情应返回接口能力')
+  assert(Array.isArray(editBasicDetail.supportedModels) && editBasicDetail.supportedModels.length > 0, '账户编辑首屏详情应返回支持模型')
+  assert.equal(Object.prototype.hasOwnProperty.call(editBasicDetail, 'modelMappings'), false, '账户编辑首屏详情不应返回模型映射')
+  assert.equal(Object.prototype.hasOwnProperty.call(editBasicDetail, 'apiKeyRuntimeDetails'), false, '账户编辑首屏详情不应返回 API Key 运行明细')
+  assertNoCredentialLeak(editBasicDetail, '账户编辑首屏详情响应')
+
   const detail = await getEnvelope<AccountResponse>(baseUrl, `/__aisys__/api/accounts/${seed.apiKeyAccountId}/advanced`, seed.adminCookie)
   assert(detail.credentials, '账户高级详情应返回编辑凭据')
   assert.equal(detail.credentials.base_url, 'https://api.openai.com/v1', '详情响应应保留前端编辑需要的 Base URL')

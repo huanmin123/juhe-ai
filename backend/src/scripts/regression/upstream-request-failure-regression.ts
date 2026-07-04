@@ -3,6 +3,7 @@ import { mkdirSync, rmSync } from 'node:fs'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 
 import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express from 'express'
@@ -28,6 +29,7 @@ const [
   { openAIGatewayRouter },
   { requestContextMiddleware },
   databaseModule,
+  readWorkerPool,
   repositories,
   settingsRepository,
   gatewayCache,
@@ -40,6 +42,7 @@ const [
   import('../../modules/gateway/routes.js'),
   import('../../shared/request-context.js'),
   import('../../storage/database.js'),
+  import('../../storage/sqlite-read-worker-pool.js'),
   import('../../storage/repositories.js'),
   import('../../storage/settings.repository.js'),
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
@@ -340,6 +343,11 @@ async function main(): Promise<void> {
       temporaryUnschedulableRetryIntervalSeconds: 0
     })
     gatewayCache.clearGatewayRuntimeCache()
+    assert.equal(
+      (await gatewayCache.readCachedGatewaySettingsAsync()).temporaryUnschedulableRetryAttempts,
+      2,
+      '测试更新后的网关临时不可调度重试次数应立即生效'
+    )
     currentScenario = 'same_account_retry_success'
     const sameAccountRetryResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
@@ -575,11 +583,12 @@ async function main(): Promise<void> {
     await closeServer(upstreamServer)
     await closeServer(closedTransportServer)
     try {
+      await readWorkerPool.closeSqliteReadWorkerPool().catch(() => undefined)
       databaseModule.getBusinessDatabase().close()
       databaseModule.closeStorageDatabases()
     } catch {
     }
-    rmSync(tempRoot, { recursive: true, force: true })
+    await removeTempRoot()
   }
 }
 
@@ -984,6 +993,21 @@ async function closeServer(server: http.Server | undefined): Promise<void> {
   await new Promise<void>((resolvePromise, rejectPromise) => {
     server.close((error) => error ? rejectPromise(error) : resolvePromise())
   })
+}
+
+async function removeTempRoot(): Promise<void> {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      rmSync(tempRoot, { recursive: true, force: true })
+      return
+    } catch (error) {
+      if (!(error instanceof Error) || !/EBUSY|EPERM/.test(error.message)) {
+        throw error
+      }
+      if (attempt === 4) return
+      await delay(250)
+    }
+  }
 }
 
 await main()

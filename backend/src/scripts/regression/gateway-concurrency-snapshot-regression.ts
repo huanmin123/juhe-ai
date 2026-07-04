@@ -191,8 +191,8 @@ try {
     assert(targetGroup, '测试分组应存在')
     assert.equal(targetGroup.accountStats.currentConcurrency, 7, '分组列表应汇总 server 当前并发')
     assert.equal(targetGroup.accountStats.currentConcurrencyAvailable, true, '分组列表应标记 server 并发快照可用')
-    assert.equal(requestedScopes.length, 3, '管理账户列表、授权账户列表和分组列表应各请求一次 server 并发快照')
-    assert.deepEqual(requestedScopes, ['account_runtime', 'account_runtime', 'account_concurrency'], '系统 API 应按账户运行态和分组并发分别请求轻量快照')
+    assert.equal(requestedScopes.length, 2, '账户列表连续读取应复用短 TTL server 运行态快照，分组列表单独读取并发快照')
+    assert.deepEqual(requestedScopes, ['account_runtime', 'account_concurrency'], '系统 API 应按账户运行态和分组并发分别请求轻量快照')
   } finally {
     runtimeConfig.processRole = previousProcessRole
     ;(process as typeof process & { send?: (message: unknown) => boolean }).send = previousSend

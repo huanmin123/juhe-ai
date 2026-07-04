@@ -235,7 +235,7 @@ export async function handleFailedUpstreamResponse(
   forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
 
   const accountStateMutationEnabled = input.accountStateMutationEnabled !== false
-  const isolateAccountApiKeyFailure = Boolean(account.selectedApiKeyFingerprint)
+  const isolateAccountApiKeyFailure = hasAlternativeAccountApiKeys(account)
   const responseKeyFailoverEligible = accountStateMutationEnabled
     && isolateAccountApiKeyFailure
     && !isAccountProbeTrafficSource(usageContext.trafficSource)
@@ -414,7 +414,7 @@ export async function handleUpstreamRequestError(
   }
   forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
   const accountStateMutationEnabled = input.accountStateMutationEnabled !== false
-  const isolateAccountApiKeyFailure = Boolean(account.selectedApiKeyFingerprint)
+  const isolateAccountApiKeyFailure = hasAlternativeAccountApiKeys(account)
   if (accountStateMutationEnabled && usageContext.trafficSource === 'gateway' && isRealUpstreamUrl(upstreamUrl)) {
     await recordGatewayUpstreamBucketFailureAsync(account, '上游请求异常', {
       bucketScope: gatewayProxyKey(account) ? 'proxy' : 'upstream'
@@ -487,6 +487,10 @@ function logGatewayFailureWarning(
     return
   }
   logger.warn(enrichedFields, message)
+}
+
+function hasAlternativeAccountApiKeys(account: UpstreamAccount): boolean {
+  return Boolean(account.selectedApiKeyFingerprint) && (account.apiKeys?.length ?? 0) > 1
 }
 
 function objectStringProperty(value: unknown, key: string): string | undefined {

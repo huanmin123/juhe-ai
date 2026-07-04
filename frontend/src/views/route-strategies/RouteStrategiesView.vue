@@ -200,6 +200,60 @@
           </a-col>
         </a-row>
 
+        <template v-if="form.mode === 'normal'">
+          <div class="modal-section-title">
+            <span>普通路由调度</span>
+            <a-tooltip :title="normalRoutingConfigTooltip">
+              <InfoCircleOutlined class="route-strategy-field-help-icon" />
+            </a-tooltip>
+          </div>
+          <div class="hybrid-config-grid">
+            <a-form-item label="调度偏好" tooltip="成本优先保持当前账号缓存和会话粘黏；速度优先在首字慢速时优先切换到更快账号。">
+              <a-segmented v-model:value="form.normal.schedulingPreference" block :options="normalSchedulingPreferenceOptions" />
+            </a-form-item>
+            <a-form-item
+              v-if="form.normal.schedulingPreference === 'speed_first'"
+              label="当前请求切号"
+              tooltip="首字等待超过阈值时，当前请求允许立即换号重试；原账号进入短期速度降级。"
+            >
+              <a-switch
+                v-model:checked="form.normal.speedFirstConfig.retryOnFirstByteTimeout"
+                checked-children="启用"
+                un-checked-children="停用"
+              />
+            </a-form-item>
+          </div>
+          <div v-if="form.normal.schedulingPreference === 'speed_first'" class="hybrid-config-grid">
+            <a-form-item label="首字等待阈值" required tooltip="等待上游首字的最长时间，低于 10 秒容易误判网络抖动。">
+              <a-input-number v-model:value="form.normal.speedFirstConfig.firstByteThresholdMs" :min="10000" :max="60000" addon-after="ms" />
+            </a-form-item>
+            <a-form-item label="慢速触发次数" required tooltip="窗口期内达到这个慢速次数后，账号进入速度降级。">
+              <a-input-number v-model:value="form.normal.speedFirstConfig.slowTriggerCount" :min="2" :max="10" addon-after="次" />
+            </a-form-item>
+            <a-form-item label="慢速窗口期" required tooltip="统计连续慢速触发的时间窗口。">
+              <a-input-number v-model:value="form.normal.speedFirstConfig.slowWindowSeconds" :min="60" :max="600" addon-after="秒" />
+            </a-form-item>
+            <a-form-item label="恢复成功次数" required tooltip="后台探针连续满足首字阈值达到该次数后，账号恢复正常调度。">
+              <a-input-number v-model:value="form.normal.speedFirstConfig.recoverySuccessCount" :min="3" :max="10" addon-after="次" />
+            </a-form-item>
+            <a-form-item label="探针间隔" required tooltip="账号速度降级后，后台探针的最小执行间隔。">
+              <a-input-number v-model:value="form.normal.speedFirstConfig.probeIntervalSeconds" :min="10" :max="300" addon-after="秒" />
+            </a-form-item>
+            <a-form-item label="降级保留时间" required tooltip="速度降级状态的短期保留时间；到期未再次触发则允许恢复候选。">
+              <a-input-number v-model:value="form.normal.speedFirstConfig.degradedTtlSeconds" :min="60" :max="3600" addon-after="秒" />
+            </a-form-item>
+            <a-form-item label="单请求切号次数" required tooltip="同一个请求因首字超时最多切换账号的次数。">
+              <a-input-number
+                v-model:value="form.normal.speedFirstConfig.maxFirstByteRetriesPerRequest"
+                :disabled="!form.normal.speedFirstConfig.retryOnFirstByteTimeout"
+                :min="1"
+                :max="3"
+                addon-after="次"
+              />
+            </a-form-item>
+          </div>
+        </template>
+
         <div class="modal-section-title">
           <span>分组绑定</span>
           <a-tooltip :title="bindingSectionTooltip">
@@ -447,6 +501,9 @@ import type {
   ApiKeyHybridQualityPreference,
   ApiKeyHybridRoutingConfig,
   GroupOptionSummary,
+  RouteStrategyNormalRoutingConfig,
+  RouteStrategyNormalSchedulingPreference,
+  RouteStrategySpeedFirstConfig,
   RouteStrategyGroupBindingPreview,
   RouteStrategyGroupBindingSummary,
   RouteStrategyListItem,
@@ -510,6 +567,11 @@ interface HybridRoutingForm {
   qualityInspection: HybridQualityInspectionForm
 }
 
+interface NormalRoutingForm {
+  schedulingPreference: RouteStrategyNormalSchedulingPreference
+  speedFirstConfig: RouteStrategySpeedFirstConfig
+}
+
 const routeStrategiesPageSize = 20
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const routeStrategiesApi = useScopedRouteStrategiesApi(isManagementView)
@@ -569,6 +631,7 @@ const form = reactive({
   mode: 'normal' as RouteStrategyMode,
   status: 'active' as RouteStrategyStatus,
   groupBindings: [] as BindingFormRow[],
+  normal: defaultNormalRoutingForm(),
   hybrid: defaultHybridRoutingForm()
 })
 
@@ -593,6 +656,11 @@ const statusFilterOptions = [
 const modeFilterOptions = [
   { label: '全部模式', value: 'all' },
   ...modeOptions
+]
+
+const normalSchedulingPreferenceOptions = [
+  { label: '成本优先', value: 'cost_first' },
+  { label: '速度优先', value: 'speed_first' }
 ]
 
 const qualityPreferenceOptions = [
@@ -620,6 +688,7 @@ const qualityInspectionUnavailableActionOptions = [
 ]
 
 const hybridConfigTooltip = '混合智能路由会先评分请求难度，再按等级模型和质量偏好选择目标模型。'
+const normalRoutingConfigTooltip = '成本优先尽量保持会话粘黏和账号缓存；速度优先在首字慢速连续触发后临时降级当前账号，并按配置探针恢复。'
 const hybridLevelRoutesTooltip = '把评分等级 1-10 映射到目标模型；请求评分落入某个范围后优先使用该目标模型。'
 const qualityInspectionTooltip = '在高风险或指定场景复审上游响应，未通过时按失败处理策略重试、升级或返回错误。'
 const hybridCacheSwitchTooltip = '控制评分缓存、模型亲和和升降级节奏，减少重复评分和频繁切换。'
@@ -879,6 +948,7 @@ function openCreate() {
   form.mode = 'normal'
   form.status = 'active'
   form.groupBindings = [createBindingRow()]
+  form.normal = defaultNormalRoutingForm()
   form.hybrid = defaultHybridRoutingForm()
   groupOptionsRaw.value = []
   void loadGroupOptions()
@@ -913,6 +983,7 @@ function fillEditForm(record: RouteStrategySummary, fallbackSystemAccountId?: st
   form.groupBindings = record.groupBindings.length
     ? record.groupBindings.map((binding) => createBindingRow(binding.groupId, binding.priority, binding.weight, binding.status, binding.groupName))
     : [createBindingRow()]
+  form.normal = normalRoutingFormFromConfig(record.normalRoutingConfig)
   form.hybrid = hybridRoutingFormFromConfig(record.hybridRoutingConfig)
   normalizeBindingRowsForMode()
   if (record.mode === 'hybrid_smart') normalizeHybridLevelRouteRanges()
@@ -952,7 +1023,12 @@ async function saveRouteStrategy() {
       const hybridRoutingConfig = buildHybridRoutingConfigPayload()
       if (hybridRoutingConfig === false) return
       payload.hybridRoutingConfig = hybridRoutingConfig
+      payload.normalRoutingConfig = null
+    } else if (form.mode === 'normal') {
+      payload.normalRoutingConfig = buildNormalRoutingConfigPayload()
+      payload.hybridRoutingConfig = null
     } else {
+      payload.normalRoutingConfig = null
       payload.hybridRoutingConfig = null
     }
     const operationScopeParams = routeStrategyOperationScopeParams()
@@ -1303,6 +1379,58 @@ function routeStrategyStatusText(status: RouteStrategyStatus): string {
 
 function routeStrategyStatusColor(status: RouteStrategyStatus): string {
   return status === 'active' ? 'green' : 'default'
+}
+
+function defaultNormalRoutingForm(): NormalRoutingForm {
+  return {
+    schedulingPreference: 'cost_first',
+    speedFirstConfig: defaultSpeedFirstConfigForm()
+  }
+}
+
+function defaultSpeedFirstConfigForm(): RouteStrategySpeedFirstConfig {
+  return {
+    firstByteThresholdMs: 30000,
+    slowTriggerCount: 3,
+    slowWindowSeconds: 120,
+    recoverySuccessCount: 3,
+    probeIntervalSeconds: 30,
+    degradedTtlSeconds: 300,
+    retryOnFirstByteTimeout: true,
+    maxFirstByteRetriesPerRequest: 1
+  }
+}
+
+function normalRoutingFormFromConfig(config?: RouteStrategyNormalRoutingConfig): NormalRoutingForm {
+  const fallback = defaultNormalRoutingForm()
+  if (!config) return fallback
+  return {
+    schedulingPreference: config.schedulingPreference ?? fallback.schedulingPreference,
+    speedFirstConfig: {
+      ...fallback.speedFirstConfig,
+      ...(config.speedFirstConfig ?? {})
+    }
+  }
+}
+
+function buildNormalRoutingConfigPayload(): RouteStrategyNormalRoutingConfig {
+  if (form.normal.schedulingPreference !== 'speed_first') {
+    return { schedulingPreference: 'cost_first' }
+  }
+  const speedFirstConfig = form.normal.speedFirstConfig
+  return {
+    schedulingPreference: 'speed_first',
+    speedFirstConfig: {
+      firstByteThresholdMs: boundedInteger(speedFirstConfig.firstByteThresholdMs, 10000, 60000),
+      slowTriggerCount: boundedInteger(speedFirstConfig.slowTriggerCount, 2, 10),
+      slowWindowSeconds: boundedInteger(speedFirstConfig.slowWindowSeconds, 60, 600),
+      recoverySuccessCount: boundedInteger(speedFirstConfig.recoverySuccessCount, 3, 10),
+      probeIntervalSeconds: boundedInteger(speedFirstConfig.probeIntervalSeconds, 10, 300),
+      degradedTtlSeconds: boundedInteger(speedFirstConfig.degradedTtlSeconds, 60, 3600),
+      retryOnFirstByteTimeout: Boolean(speedFirstConfig.retryOnFirstByteTimeout),
+      maxFirstByteRetriesPerRequest: boundedInteger(speedFirstConfig.maxFirstByteRetriesPerRequest, 1, 3)
+    }
+  }
 }
 
 function defaultHybridRoutingForm(): HybridRoutingForm {

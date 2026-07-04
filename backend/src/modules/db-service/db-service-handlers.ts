@@ -285,7 +285,11 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await resolveGroupUsageAccessMetadataAsync(operation.groupId, operation.systemAccountId)
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({
+        type: 'resolve_group_usage_access_read_only',
+        groupId: operation.groupId,
+        systemAccountId: operation.systemAccountId
+      })
     case 'list_openai_accounts_for_group':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return (await listOpenAIAccountsForGroupResultAsync(operation.groupId, operation.systemAccountId, {
@@ -293,7 +297,15 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
           requestedEndpointFamily: operation.requestedEndpointFamily
         })).accounts
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({
+        type: 'list_openai_accounts_for_group_read_only',
+        groupId: operation.groupId,
+        systemAccountId: operation.systemAccountId,
+        options: {
+          requestedModel: operation.requestedModel,
+          requestedEndpointFamily: operation.requestedEndpointFamily
+        }
+      })
     case 'list_openai_accounts_for_group_result':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await listOpenAIAccountsForGroupResultAsync(operation.groupId, operation.systemAccountId, {
@@ -301,7 +313,15 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
           requestedEndpointFamily: operation.requestedEndpointFamily
         })
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({
+        type: 'list_openai_accounts_for_group_result_read_only',
+        groupId: operation.groupId,
+        systemAccountId: operation.systemAccountId,
+        options: {
+          requestedModel: operation.requestedModel,
+          requestedEndpointFamily: operation.requestedEndpointFamily
+        }
+      })
     case 'find_openai_account_for_group':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await findOpenAIAccountForGroupAsync(operation.groupId, operation.accountId, operation.systemAccountId, {
@@ -309,7 +329,16 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
           ignoreAvailability: operation.ignoreAvailability
         })
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({
+        type: 'find_openai_account_for_group_read_only',
+        groupId: operation.groupId,
+        accountId: operation.accountId,
+        systemAccountId: operation.systemAccountId,
+        options: {
+          includeUnavailable: operation.includeUnavailable,
+          ignoreAvailability: operation.ignoreAvailability
+        }
+      })
     case 'list_recoverable_unavailable_openai_accounts_for_group':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return recoverableUnavailableOpenAIAccounts(await listOpenAIAccountsForGroupResultAsync(operation.groupId, operation.systemAccountId, {
@@ -318,7 +347,16 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
           includeUnavailable: true
         }), operation.windowMs)
       }
-      return handleDbServiceOperationSync(operation)
+      return recoverableUnavailableOpenAIAccounts(await requestSqliteReadWorker({
+        type: 'list_openai_accounts_for_group_result_read_only',
+        groupId: operation.groupId,
+        systemAccountId: operation.systemAccountId,
+        options: {
+          requestedModel: operation.requestedModel,
+          requestedEndpointFamily: operation.requestedEndpointFamily,
+          includeUnavailable: true
+        }
+      }), operation.windowMs)
     case 'read_gateway_runtime':
       return await readGatewayRuntimeAsync(operation)
     case 'create_openai_compatible_file':
@@ -480,7 +518,11 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await findAccountForTestAsync(operation.accountId, operation.access)
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({
+        type: 'find_account_for_test_read_only',
+        accountId: operation.accountId,
+        access: operation.access
+      })
     case 'mark_account_test_temporary_unavailable': {
       if (runtimeConfig.databaseDriver === 'postgres') {
         const account = await findAccountForTestAsync(operation.accountId, operation.access ?? internalDbServiceAccountAccess)
@@ -642,7 +684,10 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await findOpenAIOAuthAccountForRefreshAsync(operation.accountId)
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({
+        type: 'find_openai_oauth_account_for_refresh_read_only',
+        accountId: operation.accountId
+      })
     case 'persist_openai_codex_usage_headers':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return {
@@ -711,7 +756,9 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await listActiveClientIpPoliciesAsync()
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({
+        type: 'list_active_client_ip_policies_read_only'
+      })
     case 'list_active_response_inspection_policies':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await listActiveResponseInspectionPoliciesForGatewayAsync({
@@ -719,7 +766,13 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
           providerCode: operation.providerCode
         })
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({
+        type: 'list_active_response_inspection_policies_read_only',
+        input: {
+          protocolCode: operation.protocolCode,
+          providerCode: operation.providerCode
+        }
+      })
     case 'check_api_key_quota':
       return runtimeConfig.databaseDriver === 'postgres'
         ? await checkGatewayApiKeyQuotaExactAsync(operation.apiKey)
@@ -730,14 +783,22 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
             groupAuthorizationId: operation.groupAuthorizationId,
             accountAuthorizationId: operation.accountAuthorizationId
           })
-        : handleDbServiceOperationSync(operation)
+        : await requestSqliteReadWorker({
+            type: 'check_authorization_quota_read_only',
+            groupAuthorizationId: operation.groupAuthorizationId,
+            accountAuthorizationId: operation.accountAuthorizationId
+          })
     case 'check_authorization_quota_batch':
       return runtimeConfig.databaseDriver === 'postgres'
         ? await checkGatewayAuthorizationQuotaBatchByIdsExactAsync({
             groupAuthorizationId: operation.groupAuthorizationId,
             accounts: operation.accounts
           })
-        : handleDbServiceOperationSync(operation)
+        : await requestSqliteReadWorker({
+            type: 'check_authorization_quota_batch_read_only',
+            groupAuthorizationId: operation.groupAuthorizationId,
+            accounts: operation.accounts
+          })
     case 'list_accounts_due_for_health_check':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await listAccountsDueForHealthCheckAsync(operation.input)
@@ -1659,6 +1720,19 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
 
 async function readGatewayRuntimeAsync(operation: Extract<DbServiceOperation, { type: 'read_gateway_runtime' }>): Promise<DbServiceGatewayRuntime> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
+    if (operation.skipDynamicRouteSelection === true) {
+      const runtime = await requestSqliteReadWorker({
+        type: 'read_gateway_runtime_static_read_only',
+        key: operation.key,
+        groupId: operation.groupId,
+        systemAccountId: operation.systemAccountId,
+        skipDynamicRouteSelection: operation.skipDynamicRouteSelection
+      })
+      return {
+        ...runtime,
+        settings: readCachedGatewaySettings()
+      }
+    }
     return withDbServiceLocalRole(() => readGatewayRuntime(operation))
   }
   const settings = await readGatewaySettingsAsync()

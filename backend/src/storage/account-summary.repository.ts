@@ -218,6 +218,13 @@ export function findAccountSummary(accountId: string, access?: AccessScope): Acc
 }
 
 export async function findAccountSummaryAsync(accountId: string, access?: AccessScope): Promise<AccountSummary | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'find_account_summary_read_only',
+      accountId,
+      access
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return findAccountSummary(accountId, access)
   }

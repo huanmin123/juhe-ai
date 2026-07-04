@@ -13,6 +13,7 @@ import { authorizedAccountPermissions, ownerPermissions } from './resource-permi
 import { loadSystemAccountNameMapByIds } from './repository-lookups.js'
 import { getPostgresPool } from './postgres-client.js'
 import { listAccountsPageAsync } from './account-summary.repository.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
 type AccountOptionFilterValue = string | number
 type AccountOptionFilterExpression = {
@@ -66,6 +67,13 @@ export function listAccountOptions(access?: AccessScope, options?: AccountOption
 }
 
 export async function listAccountOptionsAsync(access?: AccessScope, options?: AccountOptionListOptions): Promise<AccountOptionSummary[]> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_account_options_read_only',
+      access,
+      options
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listAccountOptions(access, options)
   }

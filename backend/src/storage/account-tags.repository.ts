@@ -8,6 +8,7 @@ import { createPostgresDatabaseClient } from './database-client.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
 export type { AccountTagSummary } from '../domain/types.js'
 
@@ -64,6 +65,12 @@ export function listAccountTags(access?: AccessScope): AccountTagSummary[] {
 
 export async function listAccountTagsAsync(access?: AccessScope): Promise<AccountTagSummary[]> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
+    if (sqliteReadWorkerPoolEnabled()) {
+      return await requestSqliteReadWorker({
+        type: 'list_account_tags_read_only',
+        access
+      })
+    }
     return listAccountTags(access)
   }
   const systemAccountId = accountTagOwnerSystemAccountId(access)

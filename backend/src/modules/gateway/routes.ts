@@ -65,6 +65,7 @@ import {
 import type { UpstreamAttempt } from './upstream/attempt.js'
 import type { ResponseInspectionDecision } from './response/inspection.js'
 import type { GatewaySettings } from './policy/account-error-policy.service.js'
+import type { RouteStrategySpeedFirstConfig } from '../../domain/types.js'
 import { OpenAIOAuthCodexAdapterError } from './adapters/gpt-codex/oauth-adapter.js'
 import { recordClientIpErrorCircuitSampleAsync } from './runtime/client-ip-error-circuit.service.js'
 import {
@@ -84,6 +85,11 @@ import {
 import { resolveOpenAIGatewayRequestLane } from './protocols/openai-v1/request-lane.js'
 import { forgetOpenAIAccountForSession } from './runtime/session-affinity.service.js'
 import { gatewayProtocolClientErrorProtocolForRequest } from './protocols/registry.js'
+import {
+  normalRouteLatencyDegradationScope,
+  recordNormalRouteFirstByteSlowAsync,
+  recordNormalRouteFirstByteSuccessAsync
+} from './runtime/normal-route-latency-degradation.service.js'
 
 export const openAIGatewayRouter = Router()
 
@@ -201,6 +207,7 @@ export async function handleOpenAIGatewayRequest(
   let releaseClientIpSlot = attachClientIpSlotRelease(res, currentPreflight)
   let streamServerRetryExcludedAccountIds = new Set<string>()
   let streamServerRetryCount = 0
+  let speedFirstByteRetryCount = 0
   let fallbackSwitchCount = 0
   const exhaustedAccountIds = new Set<string>()
   const nonStreamResponseStartedFailedAccountIds = new Set<string>()
@@ -268,6 +275,7 @@ export async function handleOpenAIGatewayRequest(
     releaseClientIpSlot = attachClientIpSlotRelease(res, currentPreflight)
     streamServerRetryExcludedAccountIds = new Set<string>()
     streamServerRetryCount = 0
+    speedFirstByteRetryCount = 0
     return 'switched'
   }
   const switchToHybridQualityUpgrade = async (
@@ -351,6 +359,7 @@ export async function handleOpenAIGatewayRequest(
     releaseClientIpSlot = attachClientIpSlotRelease(res, currentPreflight)
     streamServerRetryExcludedAccountIds = new Set<string>()
     streamServerRetryCount = 0
+    speedFirstByteRetryCount = 0
     return 'switched'
   }
 
@@ -365,6 +374,8 @@ export async function handleOpenAIGatewayRequest(
         clientIpAccountAvoidanceTracker,
         modelPriority,
         responseInspectionPolicies,
+        apiKeyRecord,
+        normalRouteSpeedFirstConfig,
         codexTurnAccountAvoidanceApplied,
         codexTurnAvoidedAccountIds
       } = currentPreflight
@@ -474,13 +485,19 @@ export async function handleOpenAIGatewayRequest(
         }
         throw error
       }
-      const { account, response: upstreamResponse, upstreamUrl, auditAttemptId, releaseConcurrency, markFirstOutput, confirmSameAccountApiKeyFailures } = upstreamResult
+      const { account, response: upstreamResponse, upstreamUrl, auditAttemptId, attemptStartedAt, releaseConcurrency, markFirstOutput, confirmSameAccountApiKeyFailures } = upstreamResult
+      const speedFirstByteTimeoutMs = normalRouteSpeedFirstByteTimeoutMs({
+        config: normalRouteSpeedFirstConfig,
+        accounts,
+        excludedAccountIds: streamServerRetryExcludedAccountIds,
+        currentAccountId: account.id,
+        retryCount: speedFirstByteRetryCount
+      })
 
       try {
         activeDownstreamSessionAffinity = sessionAffinityKey
           ? { key: sessionAffinityKey, accountId: account.id }
           : undefined
-        const responseHandlingStartedAt = Date.now()
         const contentType = upstreamResponse.headers.get('content-type') ?? ''
         const shouldHandleAsStream = shouldHandleOpenAIUpstreamResponseAsStream({
           contentType,
@@ -500,8 +517,9 @@ export async function handleOpenAIGatewayRequest(
             auditCapture,
             settings: activeGatewaySettings,
             usageContext: gatewayUsageContext,
-            startedAt,
+            startedAt: attemptStartedAt,
             signal: abortController.signal,
+            firstByteTimeoutMs: speedFirstByteTimeoutMs,
             sessionAffinityKey,
             clientStrategy,
             responseInspectionPolicies,
@@ -523,8 +541,9 @@ export async function handleOpenAIGatewayRequest(
               auditCapture,
               settings: activeGatewaySettings,
               usageContext: gatewayUsageContext,
-              startedAt,
+              startedAt: attemptStartedAt,
               signal: abortController.signal,
+              firstByteTimeoutMs: speedFirstByteTimeoutMs,
               sessionAffinityKey,
               responseInspectionPolicies,
               hybridRoute: currentPreflight.hybridRoute,
@@ -544,7 +563,7 @@ export async function handleOpenAIGatewayRequest(
               auditAttemptId,
               account,
               upstreamUrl,
-              attemptStartedAt: responseHandlingStartedAt,
+              attemptStartedAt,
               attemptIndex: 0,
               auditAttemptIndex: 0,
               settings: activeGatewaySettings,
@@ -578,6 +597,80 @@ export async function handleOpenAIGatewayRequest(
           return
         }
         if (handledResponse.retryUpstream) {
+          if (handledResponse.retryReason === 'speed_first_first_byte_timeout') {
+            const latencyScope = normalRouteLatencyDegradationScope({
+              systemAccountId: gatewayUsageContext.systemAccountId,
+              routeStrategyId: apiKeyRecord?.route_strategy_id,
+              groupId: gatewayUsageContext.groupId
+            })
+            const slowResult = await recordNormalRouteFirstByteSlowAsync(
+              account,
+              latencyScope,
+              normalRouteSpeedFirstConfig,
+              handledResponse.message
+            )
+            speedFirstByteRetryCount += 1
+            streamServerRetryExcludedAccountIds.add(account.id)
+            const remainingCandidateCount = streamRetryDispatchAccounts(accounts, streamServerRetryExcludedAccountIds).length
+            const maxRetries = normalRouteSpeedFirstConfig?.maxFirstByteRetriesPerRequest ?? 1
+            const totalWaitTimedOut = streamClientTotalWaitTimedOut(activeGatewaySettings, startedAt)
+            const retryAllowed = speedFirstByteRetryCount <= maxRetries
+              && remainingCandidateCount > 0
+              && !totalWaitTimedOut
+            auditCapture.addGatewayMetadata({
+              label: 'normal_route_speed_first_retry_dispatch',
+              metadata: {
+                retryCount: speedFirstByteRetryCount,
+                maxRetries,
+                retryAllowed,
+                retryBlockedReason: retryAllowed
+                  ? undefined
+                  : totalWaitTimedOut
+                    ? 'client_total_wait_timeout'
+                    : remainingCandidateCount <= 0
+                      ? 'no_remaining_candidate'
+                      : 'max_retry_exceeded',
+                accountId: account.id,
+                remainingCandidateCount,
+                excludedAccountIds: [...streamServerRetryExcludedAccountIds],
+                thresholdMs: normalRouteSpeedFirstConfig?.firstByteThresholdMs,
+                slowCount: slowResult?.slowCount,
+                degraded: slowResult?.degraded,
+                degradedUntil: slowResult?.degradedUntil,
+                nextProbeAt: slowResult?.nextProbeAt,
+                errorCode: handledResponse.errorCode
+              }
+            })
+            if (retryAllowed) {
+              continue
+            }
+            if (remainingCandidateCount <= 0) {
+              for (const accountId of streamServerRetryExcludedAccountIds) {
+                exhaustedAccountIds.add(accountId)
+              }
+              const fallbackSwitch = await switchToFallbackGroup('normal_route_speed_first_exhausted', { allowCandidateWrap: true })
+              if (fallbackSwitch !== 'none') {
+                if (fallbackSwitch === 'completed') {
+                  return
+                }
+                continue
+              }
+            }
+            await sendStreamServerRetryExhaustedResponse({
+              req,
+              res,
+              auditCapture,
+              usageContext: gatewayUsageContext,
+              startedAt,
+              retryReason: handledResponse.retryReason,
+              message: totalWaitTimedOut ? streamClientTotalWaitTimeoutMessage(activeGatewaySettings) : handledResponse.message,
+              errorCode: handledResponse.errorCode,
+              uncommittedResponseBody: handledResponse.uncommittedResponseBody,
+              accountId: account.id,
+              clientStrategy
+            })
+            return
+          }
           if (handledResponse.retryReason === 'hybrid_quality') {
             const hybridRoute = currentPreflight.hybridRoute
             const qualityConfig = hybridRoute?.config.qualityInspection
@@ -785,6 +878,53 @@ export async function handleOpenAIGatewayRequest(
           }
           continue
         }
+        if (normalRouteSpeedFirstConfig && handledResponse.firstTokenMs !== undefined) {
+          const latencyScope = normalRouteLatencyDegradationScope({
+            systemAccountId: gatewayUsageContext.systemAccountId,
+            routeStrategyId: apiKeyRecord?.route_strategy_id,
+            groupId: gatewayUsageContext.groupId
+          })
+          if (handledResponse.firstTokenMs > normalRouteSpeedFirstConfig.firstByteThresholdMs) {
+            const slowResult = await recordNormalRouteFirstByteSlowAsync(
+              account,
+              latencyScope,
+              normalRouteSpeedFirstConfig,
+              `普通路由速度优先首字耗时 ${handledResponse.firstTokenMs}ms 超过阈值 ${normalRouteSpeedFirstConfig.firstByteThresholdMs}ms`
+            )
+            auditCapture.addGatewayMetadata({
+              label: 'normal_route_speed_first_slow_observed',
+              metadata: {
+                accountId: account.id,
+                firstTokenMs: handledResponse.firstTokenMs,
+                thresholdMs: normalRouteSpeedFirstConfig.firstByteThresholdMs,
+                slowCount: slowResult?.slowCount,
+                degraded: slowResult?.degraded,
+                degradedUntil: slowResult?.degradedUntil,
+                nextProbeAt: slowResult?.nextProbeAt
+              }
+            })
+          } else if (upstreamResponse.ok) {
+            const recoveryResult = await recordNormalRouteFirstByteSuccessAsync(
+              account,
+              latencyScope,
+              normalRouteSpeedFirstConfig,
+              handledResponse.firstTokenMs
+            )
+            if (recoveryResult) {
+              auditCapture.addGatewayMetadata({
+                label: 'normal_route_speed_first_recovery_observed',
+                metadata: {
+                  accountId: account.id,
+                  firstTokenMs: handledResponse.firstTokenMs,
+                  thresholdMs: normalRouteSpeedFirstConfig.firstByteThresholdMs,
+                  cleared: recoveryResult.cleared,
+                  recoverySuccessCount: recoveryResult.recoverySuccessCount,
+                  requiredRecoverySuccessCount: recoveryResult.requiredRecoverySuccessCount
+                }
+              })
+            }
+          }
+        }
         await finalizeHandledUpstreamResponse({
           req,
           res,
@@ -965,6 +1105,22 @@ function streamRetryDispatchAccounts(accounts: UpstreamAccount[], excludedAccoun
     return accounts
   }
   return accounts.filter((account) => !excludedAccountIds.has(account.id))
+}
+
+function normalRouteSpeedFirstByteTimeoutMs(input: {
+  config?: RouteStrategySpeedFirstConfig
+  accounts: UpstreamAccount[]
+  excludedAccountIds: Set<string>
+  currentAccountId: string
+  retryCount: number
+}): number | undefined {
+  if (input.config?.retryOnFirstByteTimeout !== true) return undefined
+  if (input.retryCount >= input.config.maxFirstByteRetriesPerRequest) return undefined
+  const nextExcludedAccountIds = new Set(input.excludedAccountIds)
+  nextExcludedAccountIds.add(input.currentAccountId)
+  return streamRetryDispatchAccounts(input.accounts, nextExcludedAccountIds).length > 0
+    ? input.config.firstByteThresholdMs
+    : undefined
 }
 
 function streamClientTotalWaitTimedOut(settings: GatewaySettings, startedAt: number): boolean {

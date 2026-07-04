@@ -46,7 +46,7 @@
         />
 
         <AccountApiKeySection
-          v-if="isApiKeyForm && !authorizedEditing && !editing"
+          v-if="isApiKeyForm && !authorizedEditing"
           :api-key-runtime-details="accountDetail?.apiKeyRuntimeDetails"
           :api-key-test-details="apiKeyTestDetails"
           :base-url-placeholder="baseUrlPlaceholder"
@@ -62,7 +62,7 @@
         />
 
         <AccountOAuthSection
-          v-else-if="isOAuthForm && !authorizedEditing && !editing"
+          v-else-if="isOAuthForm && !authorizedEditing"
           :auth-loading="authLoading"
           :auth-result="authResult"
           :editing="editing"
@@ -131,37 +131,6 @@
               <a-button type="primary" @click="emit('advanced-open')">加载高级配置</a-button>
             </div>
             <div v-else-if="shouldRenderAdvancedSections" class="advanced-section-stack">
-              <AccountApiKeySection
-                v-if="isApiKeyForm && !authorizedEditing && editing"
-                :api-key-runtime-details="accountDetail?.apiKeyRuntimeDetails"
-                :api-key-test-details="apiKeyTestDetails"
-                :base-url-placeholder="baseUrlPlaceholder"
-                :deleting-tag-id="deletingTagId"
-                :editing="editing"
-                :form="form"
-                :model-options="modelOptions"
-                :models-loading="modelsLoading"
-                :tag-options="tagOptions"
-                :tag-options-loading="tagOptionsLoading"
-                :title="credentialTitle"
-                @delete-tag="$emit('delete-tag', $event)"
-              />
-
-              <AccountOAuthSection
-                v-else-if="isOAuthForm && !authorizedEditing && editing"
-                :auth-loading="authLoading"
-                :auth-result="authResult"
-                :editing="editing"
-                :form="form"
-                :is-open-a-i="isOpenAIOAuthForm"
-                :model-options="modelOptions"
-                :models-loading="modelsLoading"
-                :title="credentialTitle"
-                @copy-auth-url="$emit('copy-auth-url', $event)"
-                @generate-auth-url="$emit('generate-auth-url')"
-                @open-auth-url="$emit('open-auth-url')"
-              />
-
               <AccountStrategySection
                 :form="form"
                 :is-management-view="isManagementView"

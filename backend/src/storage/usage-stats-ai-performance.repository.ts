@@ -12,6 +12,7 @@ import { createPostgresDatabaseClient, type DatabaseClient } from './database-cl
 import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import { averageFromSum, hourKey, usageStatsTimezone, usageStatsTimezoneAsync } from './usage-stats-helpers.js'
 import { normalizeDefaultUsageStatsRange } from './usage-stats-runtime-helpers.js'
 import {
@@ -96,6 +97,14 @@ export function getAiPerformanceOverview(access?: AccessScope, range: AccountUsa
 }
 
 export async function getAiPerformanceOverviewAsync(access?: AccessScope, range?: AccountUsageStatsRange, accountIds: string[] = []): Promise<AiPerformanceOverview> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'get_ai_performance_overview_read_only',
+      access,
+      range,
+      accountIds
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return getAiPerformanceOverview(access, range, accountIds)
   }
@@ -199,6 +208,13 @@ export async function listAiPerformanceAccountOptionsAsync(
   access?: AccessScope,
   options: { keyword?: string; accountIds?: string[]; limit?: number } = {}
 ): Promise<AiPerformanceAccountOption[]> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_ai_performance_account_options_read_only',
+      access,
+      options
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listAiPerformanceAccountOptions(access, options)
   }

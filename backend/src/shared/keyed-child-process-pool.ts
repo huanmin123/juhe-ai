@@ -31,6 +31,7 @@ export interface KeyedChildProcessPoolOptions<Operation> {
   shardIndexForOperation: (operation: Operation) => number
   operationType?: (operation: Operation) => string
   runTimeoutMs?: () => number
+  slotSelection?: 'keyed' | 'least-loaded'
 }
 
 interface KeyedChildProcessPoolJob<Operation> {
@@ -360,6 +361,14 @@ export class KeyedChildProcessPool<Operation> {
   }
 
   private slotForOperation(operation: Operation): KeyedChildProcessPoolSlot<Operation> {
+    if (this.options.slotSelection === 'least-loaded') {
+      const slot = this.leastLoadedSlot()
+      if (!slot) {
+        const operationType = this.options.operationType?.(operation)
+        throw new Error(`${this.options.name} writer pool 未初始化${operationType ? `：${operationType}` : ''}`)
+      }
+      return slot
+    }
     const shardIndex = this.options.shardIndexForOperation(operation)
     const slot = this.slots[shardIndex % Math.max(1, this.slots.length)]
     if (!slot) {
@@ -367,6 +376,15 @@ export class KeyedChildProcessPool<Operation> {
       throw new Error(`${this.options.name} writer pool 未初始化${operationType ? `：${operationType}` : ''}`)
     }
     return slot
+  }
+
+  private leastLoadedSlot(): KeyedChildProcessPoolSlot<Operation> | undefined {
+    return this.slots.reduce<KeyedChildProcessPoolSlot<Operation> | undefined>((selected, slot) => {
+      if (!selected) return slot
+      const slotLoad = slot.queue.length + (slot.active ? 1 : 0)
+      const selectedLoad = selected.queue.length + (selected.active ? 1 : 0)
+      return slotLoad < selectedLoad ? slot : selected
+    }, undefined)
   }
 }
 

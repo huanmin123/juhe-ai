@@ -19,6 +19,7 @@ export interface RequestQuotaLimits {
 }
 
 export type RouteStrategyGroupBindingStatus = 'active' | 'disabled'
+export type RouteStrategyNormalSchedulingPreference = 'cost_first' | 'speed_first'
 export type ApiKeyHybridQualityPreference = 'cost_first' | 'balanced' | 'quality_first'
 export type ApiKeyHybridQualityInspectionTriggerMode = 'quality_first_only' | 'risk_based' | 'always_for_hybrid'
 export type ApiKeyHybridQualityInspectionFailureAction = 'repair_then_upgrade' | 'upgrade_next_level' | 'retry_same_model' | 'return_error'
@@ -72,6 +73,22 @@ export interface RouteStrategyGroupBindingSummary {
   groupEnabled: boolean
 }
 
+export interface RouteStrategySpeedFirstConfig {
+  firstByteThresholdMs: number
+  slowTriggerCount: number
+  slowWindowSeconds: number
+  recoverySuccessCount: number
+  probeIntervalSeconds: number
+  degradedTtlSeconds: number
+  retryOnFirstByteTimeout: boolean
+  maxFirstByteRetriesPerRequest: number
+}
+
+export interface RouteStrategyNormalRoutingConfig {
+  schedulingPreference: RouteStrategyNormalSchedulingPreference
+  speedFirstConfig?: RouteStrategySpeedFirstConfig
+}
+
 export type RouteStrategyGroupBindingPreview = Pick<RouteStrategyGroupBindingSummary, 'id' | 'groupId' | 'groupName' | 'providerCode' | 'status' | 'groupEnabled'>
 
 export type RouteStrategyMode = 'normal' | 'round_robin' | 'weighted' | 'failover' | 'hybrid_smart'
@@ -86,6 +103,7 @@ export interface RouteStrategySummary {
   mode: RouteStrategyMode
   status: RouteStrategyStatus
   isDefault: boolean
+  normalRoutingConfig?: RouteStrategyNormalRoutingConfig
   hybridRoutingConfig?: ApiKeyHybridRoutingConfig
   groupBindings: RouteStrategyGroupBindingSummary[]
   apiKeyCount?: number

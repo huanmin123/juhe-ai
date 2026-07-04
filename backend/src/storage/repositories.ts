@@ -96,6 +96,7 @@ import { createApiKeyRecord, createApiKeyRecordAsync, deleteApiKey, deleteApiKey
 import { loadResourceAuthorizationSourcesByAuthorizationIds, loadResourceAuthorizationStatsByResourceIds } from './authorization-read-loaders.js'
 import { decryptJson, encryptJson, maskSecret } from './crypto.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import { runtimeConfig } from '../config/runtime.js'
 import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient } from './database-client.js'
@@ -1019,6 +1020,13 @@ export function getAccountUsageStatsOverviewPage(access?: AccessScope, options?:
 }
 
 export async function getAccountUsageStatsOverviewPageAsync(access?: AccessScope, options?: AccountListOptions & { range?: AccountUsageStatsRange; accountIds?: string[] }): Promise<AccountUsageStatsOverview> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'get_account_usage_stats_overview_page_read_only',
+      access,
+      options
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return getAccountUsageStatsOverviewPage(access, options)
   }
@@ -1136,6 +1144,13 @@ export function findAccountForTest(accountId: string, access?: AccessScope): Acc
 }
 
 export async function findAccountForTestAsync(accountId: string, access?: AccessScope): Promise<AccountSummary | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'find_account_for_test_read_only',
+      accountId,
+      access
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return findAccountForTest(accountId, access)
   }
@@ -2537,6 +2552,14 @@ export function listResourceAuthorizationsPage(filters: Record<string, unknown> 
 }
 
 export async function listResourceAuthorizationsPageAsync(filters: Record<string, unknown> = {}, access?: AccessScope, options: ResourceAuthorizationListOptions = {}): Promise<ResourceAuthorizationListResult> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_resource_authorizations_page_read_only',
+      filters,
+      access,
+      options
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listResourceAuthorizationsPage(filters, access, options)
   }
@@ -2550,6 +2573,14 @@ export function findResourceAuthorization(authorizationId: string, access?: Acce
 }
 
 export async function findResourceAuthorizationAsync(authorizationId: string, access?: AccessScope, options: ResourceAuthorizationListOptions = {}): Promise<ResourceAuthorizationSummary | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'find_resource_authorization_read_only',
+      id: authorizationId,
+      access,
+      options
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return findResourceAuthorization(authorizationId, access, options)
   }

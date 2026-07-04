@@ -4,6 +4,8 @@ import { normalizeApiKeyGroupBindingWeight } from '../domain/api-key-routing.js'
 import { normalizeHybridRoutingConfig } from '../domain/api-key-hybrid-routing.js'
 import { isHybridProviderCode } from '../domain/provider-protocol.js'
 import {
+  defaultNormalRoutingConfig,
+  normalizeNormalRoutingConfig,
   normalizeRouteStrategyMode,
   parseRouteStrategyRuntimeConfigJson,
   routeStrategyConfigJson
@@ -11,6 +13,7 @@ import {
 import type {
   RouteStrategyGroupBindingSummary,
   ApiKeyHybridRoutingConfig,
+  RouteStrategyNormalRoutingConfig,
   RouteStrategyListItem,
   RouteStrategyListItemResult,
   RouteStrategyListResult,
@@ -41,6 +44,7 @@ const routeStrategyMutationInputKeys = new Set([
   'mode',
   'status',
   'groupBindings',
+  'normalRoutingConfig',
   'hybridRoutingConfig'
 ])
 
@@ -422,8 +426,12 @@ export function updateRouteStrategy(id: string, input: Record<string, unknown>, 
   const mode = hasOwnInput(input, 'mode') ? normalizeRouteStrategyMode(input.mode) : current.mode
   const hasGroupBindingsInput = hasOwnInput(input, 'groupBindings')
   const bindingInputs = hasGroupBindingsInput ? routeStrategyGroupBindingInputsFromRequest(input) : undefined
+  const hasNormalRoutingConfigInput = hasOwnInput(input, 'normalRoutingConfig')
   const hasHybridRoutingConfigInput = hasOwnInput(input, 'hybridRoutingConfig')
   const config = normalizeRouteStrategyConfigForWrite({
+    normalRoutingConfig: mode === 'normal'
+      ? (hasNormalRoutingConfigInput ? input.normalRoutingConfig : current.normalRoutingConfig)
+      : (hasNormalRoutingConfigInput ? input.normalRoutingConfig : undefined),
     hybridRoutingConfig: mode === 'hybrid_smart'
       ? (hasHybridRoutingConfigInput ? input.hybridRoutingConfig : current.hybridRoutingConfig)
       : (hasHybridRoutingConfigInput ? input.hybridRoutingConfig : undefined)
@@ -474,8 +482,12 @@ export async function updateRouteStrategyAsync(id: string, input: Record<string,
   const mode = hasOwnInput(input, 'mode') ? normalizeRouteStrategyMode(input.mode) : current.mode
   const hasGroupBindingsInput = hasOwnInput(input, 'groupBindings')
   const bindingInputs = hasGroupBindingsInput ? routeStrategyGroupBindingInputsFromRequest(input) : undefined
+  const hasNormalRoutingConfigInput = hasOwnInput(input, 'normalRoutingConfig')
   const hasHybridRoutingConfigInput = hasOwnInput(input, 'hybridRoutingConfig')
   const config = normalizeRouteStrategyConfigForWrite({
+    normalRoutingConfig: mode === 'normal'
+      ? (hasNormalRoutingConfigInput ? input.normalRoutingConfig : current.normalRoutingConfig)
+      : (hasNormalRoutingConfigInput ? input.normalRoutingConfig : undefined),
     hybridRoutingConfig: mode === 'hybrid_smart'
       ? (hasHybridRoutingConfigInput ? input.hybridRoutingConfig : current.hybridRoutingConfig)
       : (hasHybridRoutingConfigInput ? input.hybridRoutingConfig : undefined)
@@ -828,6 +840,7 @@ function routeStrategySummaryFromRow(
     mode,
     status,
     isDefault: normalizeRouteStrategyDefaultFlag(row.is_default),
+    normalRoutingConfig: mode === 'normal' ? config.normalRoutingConfig ?? defaultNormalRoutingConfig() : undefined,
     hybridRoutingConfig: mode === 'hybrid_smart' ? config.hybridRoutingConfig : undefined,
     groupBindings,
     apiKeyCount: Number(row.api_key_count ?? 0),
@@ -896,18 +909,29 @@ async function routeStrategyOptionsFromRowsAsync(rows: RouteStrategyRow[], acces
 }
 
 function normalizeRouteStrategyConfigForWrite(
-  input: Partial<Record<'hybridRoutingConfig', unknown>>,
+  input: Partial<Record<'normalRoutingConfig' | 'hybridRoutingConfig', unknown>>,
   mode: RouteStrategyMode
-): { hybridRoutingConfig?: ApiKeyHybridRoutingConfig } {
-  if (mode !== 'hybrid_smart') {
+): { normalRoutingConfig?: RouteStrategyNormalRoutingConfig; hybridRoutingConfig?: ApiKeyHybridRoutingConfig } {
+  if (mode === 'normal') {
     if (input.hybridRoutingConfig !== undefined && input.hybridRoutingConfig !== null) {
-      throw new Error('只有混合智能路由可以配置混合评分规则')
+      throw new Error('普通路由不能配置混合评分规则')
     }
-    return {}
+    return {
+      normalRoutingConfig: normalizeNormalRoutingConfig(input.normalRoutingConfig)
+    }
   }
-  return {
-    hybridRoutingConfig: normalizeHybridRoutingConfig(input.hybridRoutingConfig)
+  if (input.normalRoutingConfig !== undefined && input.normalRoutingConfig !== null) {
+    throw new Error('只有普通路由可以配置调度偏好')
   }
+  if (mode === 'hybrid_smart') {
+    return {
+      hybridRoutingConfig: normalizeHybridRoutingConfig(input.hybridRoutingConfig)
+    }
+  }
+  if (input.hybridRoutingConfig !== undefined && input.hybridRoutingConfig !== null) {
+    throw new Error('只有混合智能路由可以配置混合评分规则')
+  }
+  return {}
 }
 
 function routeStrategyGroupBindingInputsFromRequest(input: Record<string, unknown>): RouteStrategyGroupBindingInput[] {

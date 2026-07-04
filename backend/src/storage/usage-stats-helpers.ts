@@ -3,6 +3,7 @@ import { runtimeConfig } from '../config/runtime.js'
 import { getBusinessDatabase } from './database.js'
 import { createPostgresDatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
 const hourMs = 60 * 60 * 1000
 const dayMs = 24 * hourMs
@@ -259,6 +260,15 @@ export function usageStatsTimezone(): string {
 }
 
 export async function usageStatsTimezoneAsync(): Promise<string> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    const nowMs = Date.now()
+    if (cachedUsageStatsTimezone && cachedUsageStatsTimezone.expiresAtMs > nowMs) {
+      return cachedUsageStatsTimezone.value
+    }
+    return cacheUsageStatsTimezone(await requestSqliteReadWorker({
+      type: 'get_usage_stats_timezone_read_only'
+    }), nowMs)
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return usageStatsTimezone()
   }

@@ -302,7 +302,7 @@ async function finalizeBufferedJsonProtocolFailure(
     }),
     errorMessage: failure.message
   })
-  if (input.accountStateMutationEnabled && input.usageContext.trafficSource === 'gateway' && !input.account.selectedApiKeyFingerprint) {
+  if (input.accountStateMutationEnabled && input.usageContext.trafficSource === 'gateway' && !hasAlternativeAccountApiKeys(input.account)) {
     const localSuppression = suppressGatewayAccountLocally(input.account, input.settings, failure.message)
     recordGatewayAccountFailureForPrecheck(input.account, input.settings, {
       systemAccountId: input.usageContext.systemAccountId,
@@ -359,6 +359,10 @@ async function finalizeBufferedJsonProtocolFailure(
     firstTokenMs: input.firstTokenMs
   })
   return { alreadyFinalized: true }
+}
+
+function hasAlternativeAccountApiKeys(account: UpstreamAccount): boolean {
+  return Boolean(account.selectedApiKeyFingerprint) && (account.apiKeys?.length ?? 0) > 1
 }
 
 function plainObject(value: unknown): Record<string, unknown> | undefined {

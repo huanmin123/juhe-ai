@@ -40,6 +40,7 @@ import {
 } from './external-integration-source-write-helpers.js'
 import { getPostgresPool } from './postgres-client.js'
 import { normalizeListPage } from './query-utils.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
 export {
   builtInExternalIntegrationTestSourceId,
@@ -150,6 +151,12 @@ export function listExternalIntegrationSources(options: ExternalIntegrationSourc
 }
 
 export async function listExternalIntegrationSourcesAsync(options: ExternalIntegrationSourceListOptions = {}): Promise<ExternalIntegrationSourceListResult> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_external_integration_sources_read_only',
+      options
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listExternalIntegrationSources(options)
   }
@@ -216,6 +223,12 @@ export function findExternalIntegrationSource(id: string): ExternalIntegrationSo
 }
 
 export async function findExternalIntegrationSourceAsync(id: string): Promise<ExternalIntegrationSourceSummary | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'find_external_integration_source_read_only',
+      id
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return findExternalIntegrationSource(id)
   }

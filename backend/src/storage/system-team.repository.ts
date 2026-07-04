@@ -24,6 +24,7 @@ import {
   revokeAllTeamSourcesAsync,
   revokeTeamSourcesForMemberAsync
 } from './resource-authorization-write.repository.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import { findSystemAccountById } from './system-accounts.repository.js'
 import { maxSystemTeamListPageSize, maxSystemTeamMemberBatchSize, maxSystemTeamMembersPerTeam } from './system-team-limits.js'
 import { markAllGroupAccountStatsDirty, markAllGroupAccountStatsDirtyAsync } from './usage-stats.repository.js'
@@ -75,6 +76,12 @@ export function listSystemTeamsPage(access?: AccessScope, options: SystemTeamLis
 }
 
 export async function listSystemTeamsAsync(access?: AccessScope): Promise<SystemTeamSummary[]> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_system_teams_read_only',
+      access
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listSystemTeams(access)
   }
@@ -85,6 +92,13 @@ export async function listSystemTeamsAsync(access?: AccessScope): Promise<System
 }
 
 export async function listSystemTeamsPageAsync(access?: AccessScope, options: SystemTeamListOptions = {}): Promise<SystemTeamListResult> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_system_teams_page_read_only',
+      access,
+      options
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listSystemTeamsPage(access, options)
   }
@@ -127,6 +141,13 @@ export function findSystemTeamSummary(id: string, access?: AccessScope): SystemT
 }
 
 export async function findSystemTeamSummaryAsync(id: string, access?: AccessScope): Promise<SystemTeamSummary | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'find_system_team_summary_read_only',
+      id,
+      access
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return findSystemTeamSummary(id, access)
   }

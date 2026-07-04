@@ -17,6 +17,7 @@ import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import type { AccessScope } from './access-scope.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
 export type AccountTestTaskDiagnostics = 'full' | 'limited'
 
@@ -573,6 +574,13 @@ export async function createAccountTestSessionAsync(access: AccessScope): Promis
 }
 
 export async function getAccountTestSessionAsync(id: string, access?: AccessScope): Promise<AccountTestSession | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'get_account_test_session_read_only',
+      id,
+      access
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return getAccountTestSession(id, access)
   }
@@ -700,6 +708,13 @@ export async function createAccountTestTaskAsync(input: CreateAccountTestTaskInp
 }
 
 export async function getAccountTestTaskAsync(id: string, access?: AccessScope): Promise<AccountTestTask | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'get_account_test_task_read_only',
+      id,
+      access
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return getAccountTestTask(id, access)
   }
@@ -712,6 +727,13 @@ export async function getAccountTestTaskAsync(id: string, access?: AccessScope):
 }
 
 export async function listAccountTestTasksAsync(ids: string[], access?: AccessScope): Promise<AccountTestTask[]> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_account_test_tasks_read_only',
+      ids,
+      access
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listAccountTestTasks(ids, access)
   }

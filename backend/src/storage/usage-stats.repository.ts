@@ -10,6 +10,7 @@ import { beginDatabaseTransaction, beginImmediateDatabaseTransaction, commitData
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import { defaultRequestQuotaHourlyWindowHours, maxRequestQuotaHourlyWindowHours } from './request-quota-limits.js'
 import {
   refreshSystemMetricsTrendWindowSnapshotsStage,
@@ -2141,6 +2142,13 @@ export function getUsageStatsOverview(access?: AccessScope, range: AccountUsageS
 }
 
 export async function getUsageStatsOverviewAsync(access?: AccessScope, range: AccountUsageStatsRange = normalizeDefaultUsageStatsRange()): Promise<UsageStatsOverview> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'get_usage_stats_overview_read_only',
+      access,
+      range
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return getUsageStatsOverview(access, range)
   }

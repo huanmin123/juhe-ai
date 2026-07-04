@@ -12,6 +12,7 @@ import {
   readStreamChunkWithAbort,
   readStreamChunkWithTimeout
 } from '../upstream/request.js'
+import { GatewayFirstByteTimeoutError, isGatewayFirstByteTimeoutError } from '../upstream/first-byte-timeout.js'
 import {
   gatewayStreamFailureCode,
   type GatewayErrorProtocol,
@@ -81,6 +82,7 @@ export interface StreamPipeOptions {
   responseInspectionContext?: ResponseInspectionRuntimeContext
   responseProtocol?: ResponseProtocolCode
   endpointFamily?: ResponseEndpointFamily
+  firstByteTimeoutMs?: number
   prepareDownstream?: () => void
   transformUpstreamChunk?: (chunk: Buffer) => Buffer[]
   flushTransformedUpstreamChunks?: () => Buffer[]
@@ -368,7 +370,7 @@ export async function pipeUpstreamStream(
         semanticResultReceived,
         pendingProtocolEvent,
         parserSkipped: streamParserSkipped
-      }, signal)
+      }, signal, options.firstByteTimeoutMs)
       const readWaitMs = Date.now() - readStartedAt
 
       if (result.done) {
@@ -871,7 +873,7 @@ export async function pipeUpstreamStream(
     }
     const message = inspection.errorMessage ?? rawMessage
     const errorCode = streamClientFailureCode(
-      inspection.errorCode ?? gatewayStreamFailureCode(message),
+      inspection.errorCode ?? (isGatewayFirstByteTimeoutError(error) ? 'first_byte_timeout' : gatewayStreamFailureCode(message)),
       inspection.outputReceived,
       options.clientRetryEnabled === true,
       totalResponseBytes
@@ -1078,23 +1080,38 @@ function readNextStreamChunk(
     pendingProtocolEvent: boolean
     parserSkipped: boolean
   },
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  firstByteTimeoutMs?: number
 ): Promise<IteratorResult<Uint8Array>> {
-  if (!settings.streamCircuitBreakerEnabled) {
+  const firstByteDeadlineMs = status.waitingForFirstChunk && firstByteTimeoutMs !== undefined
+    ? firstByteTimeoutMs - (Date.now() - startedAt)
+    : undefined
+  if (!settings.streamCircuitBreakerEnabled && firstByteDeadlineMs === undefined) {
     return readStreamChunkWithAbort(iterator, signal)
   }
-  const readPlan = buildStreamReadPlan(settings, startedAt, status)
-  if (readPlan.timeoutMs === undefined) {
+  const readPlan = settings.streamCircuitBreakerEnabled
+    ? buildStreamReadPlan(settings, startedAt, status)
+    : undefined
+  const planTimeoutMs = readPlan?.timeoutMs
+  const timeoutMs = firstByteDeadlineMs === undefined
+    ? planTimeoutMs
+    : planTimeoutMs === undefined
+      ? firstByteDeadlineMs
+      : Math.min(firstByteDeadlineMs, planTimeoutMs)
+  if (timeoutMs === undefined) {
     return readStreamChunkWithAbort(iterator, signal)
   }
+  const firstByteDeadlineSelected = firstByteDeadlineMs !== undefined && firstByteDeadlineMs <= (planTimeoutMs ?? firstByteDeadlineMs)
   // If downstream writes delayed the next read, upstream bytes may already be buffered locally.
   // Give iterator.next() one tick before declaring the stream idle.
   return readStreamChunkWithTimeout(
     iterator,
-    Math.max(0.001, readPlan.timeoutMs / 1000),
-    () => readPlan.timeoutKind === 'stream_lifetime'
-      ? new StreamMaxLifetimeExceededError(readPlan.timeoutMessage)
-      : new Error(readPlan.timeoutMessage),
+    Math.max(0.001, timeoutMs / 1000),
+    () => firstByteDeadlineSelected
+      ? new GatewayFirstByteTimeoutError(`上游流式响应 ${Math.ceil((firstByteTimeoutMs ?? 0) / 1000)}s 后仍未返回首个字节`, firstByteTimeoutMs ?? 0)
+      : readPlan?.timeoutKind === 'stream_lifetime'
+        ? new StreamMaxLifetimeExceededError(readPlan.timeoutMessage)
+        : new Error(readPlan?.timeoutMessage ?? '上游流式响应读取超时'),
     signal
   )
 }

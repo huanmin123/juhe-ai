@@ -187,6 +187,7 @@ export interface GatewayAccountSideEffectState {
   localSuppressedAccountCount: number
   degradedAccountCount: number
   precheckPendingAccountCount: number
+  recoveryProbePendingAccountCount: number
   nextAttemptAt?: string
 }
 
@@ -1541,6 +1542,7 @@ export function getGatewayAccountSideEffectState(): GatewayAccountSideEffectStat
     localSuppressedAccountCount: countVisibleLocalSuppressions(isPrecheckRuntimeBlocking),
     degradedAccountCount: countLocalAccountDegradations(),
     precheckPendingAccountCount: runtimeConfig.runtimeStateDriver === 'redis' ? 0 : precheckStates.size,
+    recoveryProbePendingAccountCount: runtimeConfig.runtimeStateDriver === 'redis' ? 0 : recoveryProbeStates.size,
     nextAttemptAt: nextAttemptAtMs === undefined ? undefined : new Date(nextAttemptAtMs).toISOString()
   }
 }

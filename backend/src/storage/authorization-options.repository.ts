@@ -8,17 +8,18 @@ import { getPostgresPool } from './postgres-client.js'
 import { sqlPlaceholders } from './query-utils.js'
 import type { GroupListRow, SystemTeamRow } from './repository-row-types.js'
 import { authorizedPermissions } from './resource-permissions.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import { systemAccountPrincipalSummaryFromRow, type SystemAccountRow } from './system-account-mappers.js'
 import { findSystemAccountById } from './system-accounts.repository.js'
 import { optionalString } from './value-utils.js'
 
-interface AuthorizationPrincipalOptionListOptions {
+export interface AuthorizationPrincipalOptionListOptions {
   ids?: string[]
   keyword?: string
   limit?: number
 }
 
-interface AuthorizationGranteeGroupOptionListOptions extends AuthorizationPrincipalOptionListOptions {
+export interface AuthorizationGranteeGroupOptionListOptions extends AuthorizationPrincipalOptionListOptions {
   granteeSystemAccountId?: string
   providerCode?: string
   preferDefault?: boolean
@@ -42,6 +43,13 @@ export function listAuthorizationGranteeAccounts(access?: AccessScope, options: 
 }
 
 export async function listAuthorizationGranteeAccountsAsync(access?: AccessScope, options: AuthorizationPrincipalOptionListOptions = {}): Promise<SystemAccountPrincipalSummary[]> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_authorization_grantee_accounts_read_only',
+      access,
+      options
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listAuthorizationGranteeAccounts(access, options)
   }
@@ -75,6 +83,13 @@ export function listAuthorizationGranteeTeams(access?: AccessScope, options: Aut
 }
 
 export async function listAuthorizationGranteeTeamsAsync(access?: AccessScope, options: AuthorizationPrincipalOptionListOptions = {}): Promise<SystemTeamPrincipalSummary[]> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_authorization_grantee_teams_read_only',
+      access,
+      options
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listAuthorizationGranteeTeams(access, options)
   }
@@ -116,6 +131,13 @@ export function listAuthorizationGranteeGroups(access?: AccessScope, options: Au
 }
 
 export async function listAuthorizationGranteeGroupsAsync(access?: AccessScope, options: AuthorizationGranteeGroupOptionListOptions = {}): Promise<GroupOptionSummary[]> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_authorization_grantee_groups_read_only',
+      access,
+      options
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listAuthorizationGranteeGroups(access, options)
   }

@@ -36,6 +36,7 @@ import {
   estimateCatalogCostUsdAsync,
   resolveCatalogPricingModelAsync
 } from '../modules/model-pricing/model-catalog.service.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
 export interface UsageRecordLogSnapshot {
   [key: string]: unknown
@@ -209,6 +210,13 @@ export function listUsageRecords(access?: AccessScope, options?: UsageRecordList
 }
 
 export async function listUsageRecordsAsync(access?: AccessScope, options?: UsageRecordListOptions): Promise<UsageRecordListResult> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_usage_records_read_only',
+      access,
+      options
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listUsageRecords(access, options)
   }
@@ -287,6 +295,13 @@ function queryUsageRecordShardByCatalogEntry<T extends Record<string, unknown>>(
 }
 
 export async function getUsageRecordDetailAsync(id: string, access?: AccessScope): Promise<UsageRecordSummary | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'get_usage_record_detail_read_only',
+      id,
+      access
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return getUsageRecordDetail(id, access)
   }

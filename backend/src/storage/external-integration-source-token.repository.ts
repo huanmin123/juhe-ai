@@ -35,6 +35,7 @@ import {
   normalizeNameOrThrow
 } from './external-integration-source-write-helpers.js'
 import { getPostgresPool } from './postgres-client.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
 const externalIntegrationSourceTokenInputKeys = new Set(['sourceRefId', 'name', 'token', 'status', 'scopes', 'expiresAt'])
 const externalIntegrationSourceTokenUpdateInputKeys = new Set(['name', 'status', 'scopes', 'expiresAt'])
@@ -236,6 +237,13 @@ export function findExternalIntegrationSourceTokenSecret(sourceRefId: string, to
 }
 
 export async function findExternalIntegrationSourceTokenSecretAsync(sourceRefId: string, tokenId: string): Promise<ExternalIntegrationSourceTokenSecret | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'find_external_integration_source_token_secret_read_only',
+      sourceRefId,
+      tokenId
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return findExternalIntegrationSourceTokenSecret(sourceRefId, tokenId)
   }

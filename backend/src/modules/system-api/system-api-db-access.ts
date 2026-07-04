@@ -23,7 +23,7 @@ interface SystemApiDbAccessRouteRule {
 const explicitSystemApiDbAccessRules: readonly SystemApiDbAccessRouteRule[] = [
   { methods: ['GET'], pattern: /^\/health\/?$/, mode: 'noDb' },
   { methods: ['GET'], pattern: /^\/settings\/public\/?$/, mode: 'read' },
-  { methods: ['GET'], pattern: /^\/auth\/me\/?$/, mode: 'readWithSideEffect' },
+  { methods: ['GET'], pattern: /^\/auth\/me\/?$/, mode: 'read' },
   { methods: ['GET'], pattern: /^\/auth\/captcha\/?$/, mode: 'write' },
   { methods: ['POST'], pattern: /^\/auth\/login\/?$/, mode: 'write' },
   { methods: ['POST'], pattern: /^\/auth\/logout\/?$/, mode: 'write' },
@@ -72,8 +72,9 @@ export function systemApiDbAccessModeMiddleware(systemApiPrefix: string): Reques
 
 export function resolveSystemApiDbAccessMode(req: Pick<Request, 'method' | 'path' | 'originalUrl'>, systemApiPrefix = ''): SystemApiDbAccessMode {
   const method = req.method.toUpperCase()
+  const ruleMethod = method === 'HEAD' ? 'GET' : method
   const path = normalizeSystemApiPath(req.path || pathFromOriginalUrl(req.originalUrl), systemApiPrefix)
-  const rule = explicitSystemApiDbAccessRules.find((item) => item.methods.includes(method) && item.pattern.test(path))
+  const rule = explicitSystemApiDbAccessRules.find((item) => item.methods.includes(ruleMethod) && item.pattern.test(path))
   if (rule) return rule.mode
 
   // requireAuth touches the session by default, so unmarked authenticated GET routes are not pure reads.

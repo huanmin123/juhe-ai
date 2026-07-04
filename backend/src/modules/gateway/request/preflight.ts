@@ -59,7 +59,7 @@ import {
   type GatewayFailureUsageContext
 } from '../usage/records.js'
 import type { OpenAIGatewayTrafficSource } from '../usage/traffic-source.js'
-import type { ClientCompatibilityCapability, GroupSchedulingPolicy } from '../../../domain/types.js'
+import type { ClientCompatibilityCapability, GroupSchedulingPolicy, RouteStrategySpeedFirstConfig } from '../../../domain/types.js'
 import type { ResponseInspectionPolicySummary } from '../../../storage/response-inspection-policy.repository.js'
 import {
   ANTHROPIC_MESSAGES_FAMILY,
@@ -138,6 +138,7 @@ export interface OpenAIGatewayDispatchContext {
   modelPriority: GatewayAccountModelPriority
   requestLane: OpenAIGatewayRequestLane
   groupSchedulingPolicy?: GroupSchedulingPolicy
+  normalRouteSpeedFirstConfig?: RouteStrategySpeedFirstConfig
   responseInspectionPolicies: ResponseInspectionPolicySummary[]
   apiKeyRecord?: GatewayApiKeyRow
   groupFallbackApiKeyRecord?: GatewayApiKeyRow
@@ -716,6 +717,8 @@ export async function prepareOpenAIGatewayDispatchContext(
     systemAccountId,
     apiKeyId,
     groupId,
+    routeStrategyId: apiKeyRecord?.route_strategy_id,
+    normalRouteSpeedFirstConfig: normalRouteSpeedFirstConfigForApiKey(apiKeyRecord),
     clientIp: gatewayClientIp,
     clientStrategy,
     requestLane,
@@ -782,6 +785,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     modelPriority: candidateFilter.modelPriority,
     requestLane,
     groupSchedulingPolicy: groupAccess.schedulingPolicy,
+    normalRouteSpeedFirstConfig: normalRouteSpeedFirstConfigForApiKey(apiKeyRecord),
     responseInspectionPolicies: runtimeResponseInspectionPolicies ?? [],
     apiKeyRecord,
     groupFallbackApiKeyRecord,
@@ -790,6 +794,13 @@ export async function prepareOpenAIGatewayDispatchContext(
     codexTurnAvoidedAccountIds: dispatchPreparation.codexTurnAvoidedAccountIds,
     releaseClientIpConcurrency: dispatchPreparation.releaseClientIpConcurrency
   }
+}
+
+function normalRouteSpeedFirstConfigForApiKey(apiKeyRecord: GatewayApiKeyRow | undefined): RouteStrategySpeedFirstConfig | undefined {
+  if (apiKeyRecord?.route_strategy_mode !== 'normal') return undefined
+  const normalConfig = apiKeyRecord.normal_routing_config
+  if (normalConfig?.schedulingPreference !== 'speed_first') return undefined
+  return normalConfig.speedFirstConfig
 }
 
 async function handleGatewayModelsRequestBeforeRequiredAuth(input: {

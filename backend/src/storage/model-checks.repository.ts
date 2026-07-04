@@ -17,6 +17,7 @@ import { createPostgresDatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import { pagedTotalUpperBound, takePageRows } from './query-utils.js'
 import { loadAccountNameMap, loadAccountNameMapAsync } from './repository-lookups.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
 const defaultModelCheckPageSize = 20
 const maxModelCheckPageSize = 100
@@ -530,6 +531,13 @@ export function getModelCheckRunDetail(runId: string, access?: AccessScope): Mod
 }
 
 export async function getModelCheckRunDetailAsync(runId: string, access?: AccessScope): Promise<ModelCheckRunDetail | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'get_model_check_run_detail_read_only',
+      runId,
+      access
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return getModelCheckRunDetail(runId, access)
   }
@@ -560,6 +568,13 @@ export async function getModelCheckRunDetailAsync(runId: string, access?: Access
 }
 
 export async function listModelCheckRunsAsync(access?: AccessScope, options: ModelCheckRunListOptions = {}): Promise<ModelCheckRunListResult> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_model_check_runs_read_only',
+      access,
+      options
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listModelCheckRuns(access, options)
   }

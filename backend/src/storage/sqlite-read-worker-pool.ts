@@ -42,7 +42,8 @@ const readWorkerPool = new KeyedChildProcessPool<SqliteReadWorkerOperation>({
   targetSize: targetReadWorkerPoolSize,
   queueMaxItems: () => runtimeConfig.sqliteReadWorkerQueueMaxItems,
   shardIndexForOperation,
-  operationType: (operation) => operation.type
+  operationType: (operation) => operation.type,
+  slotSelection: 'least-loaded'
 })
 
 export function sqliteReadWorkerPoolEnabled(): boolean {
