@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-ai-performance-account-options-query-guard-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -52,6 +53,7 @@ try {
   }, adminAccess)
   const matchedAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'perfneedle 主账号',
     type: 'api_key',
     credentials: {
@@ -67,6 +69,7 @@ try {
   }, granteeAccess)
   const authorizedSourceAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '性能授权来源账号',
     type: 'api_key',
     credentials: {
@@ -91,6 +94,7 @@ try {
   }, ownerAccess)
   const otherOwnerAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'otherneedle 主账号',
     type: 'api_key',
     credentials: {
@@ -101,6 +105,7 @@ try {
   }, ownerAccess)
   const adminAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '管理员普通账号',
     type: 'api_key',
     credentials: {
@@ -111,6 +116,7 @@ try {
   }, adminAccess)
   const wildcardAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'perf%literal 主账号',
     type: 'api_key',
     credentials: {
@@ -121,6 +127,7 @@ try {
   }, ownerAccess)
   const wildcardNeighborAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'perfXliteral 主账号',
     type: 'api_key',
     credentials: {
@@ -198,6 +205,7 @@ try {
   }, ownerAccess)
   const groupAuthorizedAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'perfgroupauth 分组来源账号',
     type: 'api_key',
     credentials: {
@@ -257,7 +265,7 @@ try {
   }
   assertBusinessIndexExists('idx_accounts_name_lookup')
   assertBusinessIndexExists('idx_accounts_system_account_name_lookup')
-  assertBusinessIndexExists('idx_accounts_name_lower_lookup')
+  assertBusinessIndexExists('idx_accounts_owner_all_name_lookup')
   const aiPerformanceRepositorySource = readFileSync(new URL('../../storage/usage-stats-ai-performance.repository.ts', import.meta.url), 'utf8')
   const asyncAccountOptionSnippet = aiPerformanceRepositorySource.slice(
     aiPerformanceRepositorySource.indexOf('async function loadAiPerformanceAccountOptionRowsAsync'),
@@ -265,8 +273,13 @@ try {
   )
   assert.match(
     asyncAccountOptionSnippet,
-    /LOWER\(accounts\.name\) COLLATE "C" >= \? AND LOWER\(accounts\.name\) COLLATE "C" < \? AND starts_with\(LOWER\(accounts\.name\), \?\)/,
-    'PG AI 性能账号选项名称搜索必须使用 C collation lower(name) 范围 + starts_with 条件'
+    /accounts\.name COLLATE "C" >= \? AND accounts\.name COLLATE "C" < \? AND starts_with\(accounts\.name, \?\)/,
+    'PG AI 性能账号选项名称搜索必须使用大小写敏感 C collation 范围 + starts_with 条件'
+  )
+  assert.doesNotMatch(
+    asyncAccountOptionSnippet,
+    /LOWER\(accounts\.name\)/,
+    'PG AI 性能账号选项名称搜索不能折叠大小写'
   )
   assert.match(
     asyncAccountOptionSnippet,
@@ -285,7 +298,7 @@ try {
   )
   assert.match(
     asyncAccountOptionSnippet,
-    /ORDER BY LOWER\(accounts\.name\) COLLATE "C" ASC, accounts\.id ASC/,
+    /ORDER BY accounts\.name COLLATE "C" ASC, accounts\.id ASC/,
     'PG AI 性能账号选项名称搜索排序必须使用 C collation，避免受默认排序规则影响'
   )
   const postgresSchemaSource = readFileSync(new URL('../../storage/postgres-schema.ts', import.meta.url), 'utf8')

@@ -47,6 +47,7 @@ const stateClient = await createDedicatedRedisClient(stateUrl)
 const startedAt = Date.now()
 const cleanupPatterns = [
   `juhe-ai:cache:${cacheName}:*`,
+  `juhe-ai:cache-index:${cacheName}:*`,
   `juhe-ai:cache-version:${cacheName}`,
   `juhe-ai:state:${stateName}:*`,
   `juhe-ai:state:auth_login_guard:login:ip:${loginIp}:*`,
@@ -98,6 +99,13 @@ async function verifySharedJsonCache(): Promise<void> {
   await cache.set('b', { value: 2 })
   await cache.clear()
   assert.equal(await cache.get('b'), undefined, 'Redis cache clear 后应切换命名空间版本')
+
+  await cache.set('max-a', { value: 10 }, { ttlMs: 1000 })
+  await cache.set('max-b', { value: 11 }, { ttlMs: 1000 })
+  await cache.set('max-c', { value: 12 }, { ttlMs: 1000 })
+  assert.equal(await cache.get('max-a'), undefined, 'Redis shared cache 应按 max 淘汰最旧条目')
+  assert.deepEqual(await cache.get('max-b'), { value: 11 }, 'Redis shared cache max 淘汰后应保留较新的条目')
+  assert.deepEqual(await cache.get('max-c'), { value: 12 }, 'Redis shared cache max 淘汰后应保留最新条目')
 
   await cache.set('ttl', { value: 3 }, { ttlMs: 5 })
   await waitFor(async () => (await cache.get('ttl')) === undefined, 'Redis cache TTL 应按毫秒过期')

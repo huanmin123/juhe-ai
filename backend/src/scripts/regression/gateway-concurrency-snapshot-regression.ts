@@ -10,12 +10,13 @@ import { logger } from '../../shared/logger.js'
 
 const runtimeSnapshotSource = readFileSync(new URL('../../modules/gateway/runtime/runtime-snapshot.service.ts', import.meta.url), 'utf8')
 assert(
-  /loadRedisAccountConcurrencySnapshot\(\s*result\.items\.map\(\(account\) => account\.id\)\s*\)/.test(runtimeSnapshotSource),
-  'Redis runtime state 下账户列表当前并发必须按当前页账号 ID 批量读取'
+  /loadRedisAccountConcurrencySnapshot\(\s*accountConcurrencySnapshotIds\(result\.items\)\s*\)/.test(runtimeSnapshotSource),
+  'Redis runtime state 下账户列表当前并发必须按当前页账号的并发事实 ID 批量读取'
 )
 assert(runtimeSnapshotSource.includes('loadAccountCurrentConcurrencyByIdsAsync(accountIds)'), 'Redis runtime state 下列表并发事实来源必须走账号并发批量读取入口')
 assert(runtimeSnapshotSource.includes('loadRedisAccountConcurrencySnapshot(accountIds)'), 'Redis runtime state 下分组列表当前并发必须从 Redis 批量读取账号并发')
 assert(runtimeSnapshotSource.includes("runtimeConfig.runtimeStateDriver === 'redis'"), '列表运行态快照必须显式区分 Redis runtime state')
+assert(runtimeSnapshotSource.includes('account.authorizationInstanceSourceAccountId || account.id'), '授权实例当前并发必须读取来源账号并发槽')
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-gateway-concurrency-snapshot-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'gateway-concurrency-snapshot.sqlite3')
@@ -126,7 +127,7 @@ try {
   assert(authorizedAccountA?.id, '被授权用户应看到授权实例账户')
 
   serverConcurrency = {
-    [accountA.id]: 2,
+    [accountA.id]: 6,
     [accountB.id]: 1,
     [authorizedAccountA.id]: 4
   }
@@ -166,7 +167,7 @@ try {
     const accountPage = repositories.listAccountsPage(access, { page: 1, pageSize: 20 })
     const accountPageWithRuntime = await runtimeSnapshot.applyServerAccountConcurrencyToAccountList(accountPage)
     const accountAWithRuntime = findAccount(accountPageWithRuntime.items, accountA.id)
-    assert.equal(accountAWithRuntime.currentConcurrency, 2, '账户列表应合并 server 当前并发 A')
+    assert.equal(accountAWithRuntime.currentConcurrency, 6, '账户列表应合并 server 当前并发 A')
     assert.equal(accountAWithRuntime.currentConcurrencyAvailable, true, '账户列表应标记 server 并发快照可用')
     assert.equal(accountAWithRuntime.runtimeAvailability?.status, 'precheck_pending', '账户列表应合并 server 事前确认运行态')
     assert.equal(accountAWithRuntime.effectiveAvailability?.status, 'runtime_precheck_pending', '账户列表应把事前确认合成为实际不可用状态')
@@ -179,7 +180,7 @@ try {
     const authorizedAccount = findAccount(authorizedAccountPageWithRuntime.items, authorizedAccountA.id)
     assert.equal(authorizedAccount.accessType, 'authorized', '被授权用户账户列表应返回授权账户视角')
     assert.equal(authorizedAccount.concurrencyLimit, 10, '授权账户应展示来源账号并发上限')
-    assert.equal(authorizedAccount.currentConcurrency, 4, '授权实例账户应按自己的账户 ID 合并 server 当前并发')
+    assert.equal(authorizedAccount.currentConcurrency, 6, '授权实例账户应按来源账户 ID 合并 server 当前并发')
     assert.equal(authorizedAccount.currentConcurrencyAvailable, true, '授权账户应标记 server 并发快照可用')
     assert.equal(authorizedAccount.runtimeAvailability?.status, 'precheck_pending', '授权账户列表应按绑定维度合并 server 事前确认运行态')
     assert.equal(authorizedAccount.effectiveAvailability?.status, 'runtime_precheck_pending', '授权账户列表应把绑定维度事前确认合成为实际不可用状态')
@@ -188,7 +189,7 @@ try {
     const groups = await runtimeSnapshot.applyServerAccountConcurrencyToGroups(repositories.listGroups(access))
     const targetGroup = groups.find((item) => item.id === group.id)
     assert(targetGroup, '测试分组应存在')
-    assert.equal(targetGroup.accountStats.currentConcurrency, 3, '分组列表应汇总 server 当前并发')
+    assert.equal(targetGroup.accountStats.currentConcurrency, 7, '分组列表应汇总 server 当前并发')
     assert.equal(targetGroup.accountStats.currentConcurrencyAvailable, true, '分组列表应标记 server 并发快照可用')
     assert.equal(requestedScopes.length, 3, '管理账户列表、授权账户列表和分组列表应各请求一次 server 并发快照')
     assert.deepEqual(requestedScopes, ['account_runtime', 'account_runtime', 'account_concurrency'], '系统 API 应按账户运行态和分组并发分别请求轻量快照')

@@ -64,6 +64,7 @@ import {
   shouldCoalesceQueuedAccountErrorHandlingSideEffect,
   shouldSkipHealthySuccessfulAccountSideEffect
 } from './account-side-effect-policy.js'
+import { gatewayAccountConcurrencyAccountId } from '../dispatch/account-concurrency-identity.js'
 
 export type { GatewayAccountRuntimeClearTarget, SuppressibleGatewayAccount } from './account-runtime-keys.js'
 export type {
@@ -302,7 +303,7 @@ export function suppressGatewayAccountLocally(
 ): GatewayAccountLocalSuppressionResult {
   const runtimeKey = gatewayAccountRuntimeKey(account)
   const accountId = gatewayAccountId(account)
-  return suppressLocalAccountForGatewayFailure(runtimeKey, accountId, reason)
+  return suppressLocalAccountForGatewayFailure(runtimeKey, accountId, reason, gatewayRuntimeConcurrencyAccountId(account))
 }
 
 export function suppressGatewayAccountLocallyForSeconds(
@@ -312,7 +313,8 @@ export function suppressGatewayAccountLocallyForSeconds(
 ): void {
   const value = typeof seconds === 'number' && Number.isFinite(seconds) ? Math.max(1, Math.trunc(seconds)) : 60
   suppressLocalAccount(gatewayAccountRuntimeKey(account), Math.min(value * 1000, localSuppressionMaxMs), reason, 'local_suppressed', {
-    accountId: gatewayAccountId(account)
+    accountId: gatewayAccountId(account),
+    accountConcurrencyAccountId: gatewayRuntimeConcurrencyAccountId(account)
   })
 }
 
@@ -428,6 +430,7 @@ function recordGatewayAccountFailureForPrecheckInternal(
     clearGatewayAccountRecoveryProbe(runtimeKey)
     suppressLocalAccount(runtimeKey, precheckSuppressionMs(), existingPrecheck.reason, 'precheck_pending', {
       accountId: account.id,
+      accountConcurrencyAccountId: gatewayAccountConcurrencyAccountId(account),
       failureCount: entry.failureCount,
       distinctClientIpCount: entry.clientIps.size,
       distinctApiKeyCount: entry.apiKeyIds.size,
@@ -455,6 +458,7 @@ function recordGatewayAccountFailureForPrecheckInternal(
   precheckStates.set(runtimeKey, state)
   suppressLocalAccount(runtimeKey, precheckSuppressionMs(), reason, 'precheck_pending', {
     accountId: account.id,
+    accountConcurrencyAccountId: gatewayAccountConcurrencyAccountId(account),
     failureCount: entry.failureCount,
     distinctClientIpCount: entry.clientIps.size,
     distinctApiKeyCount: entry.apiKeyIds.size,
@@ -744,6 +748,7 @@ async function runGatewayAccountRecoveryProbe(runtimeKey: string): Promise<void>
     recoveryProbeStates.set(runtimeKey, latest)
     suppressLocalAccount(runtimeKey, delayMs, latest.reason, 'local_suppressed', {
       accountId: latest.account.id,
+      accountConcurrencyAccountId: gatewayAccountConcurrencyAccountId(latest.account),
       sinceMs: latest.startedAtMs,
       failureCount: latest.failureCount,
       distinctClientIpCount: latest.distinctClientIpCount,
@@ -1009,7 +1014,8 @@ async function runDistributedGatewayAccountPrecheck(
     logStaleDistributedRecoveryProbeResult(state.runtimeKey, generation, 'gateway_account_distributed_precheck_stale_final_ignored')
     return
   }
-  const currentConcurrency = await getAccountCurrentConcurrencyAsync(account.id)
+  const accountConcurrencyAccountId = gatewayAccountConcurrencyAccountId(account)
+  const currentConcurrency = await getAccountCurrentConcurrencyAsync(accountConcurrencyAccountId)
   if (currentConcurrency > 0) {
     const reason = `事前确认探针连续失败，等待 ${currentConcurrency} 个在途请求结束后再标记临时不可调用；${finalState.reason}`.slice(0, 1000)
     const persistedDefer = await persistDistributedRecoveryProbeState({
@@ -1024,6 +1030,7 @@ async function runDistributedGatewayAccountPrecheck(
     logger.warn({
       event: 'gateway_account_distributed_precheck_mark_deferred_for_concurrency',
       accountId: account.id,
+      accountConcurrencyAccountId,
       accountName: account.name,
       runtimeKey: finalState.runtimeKey,
       generation,
@@ -1075,6 +1082,7 @@ function promoteRecoveryProbeToPrecheck(runtimeKey: string, state: RecoveryProbe
   })
   suppressLocalAccount(runtimeKey, precheckSuppressionMs(), reason, 'precheck_pending', {
     accountId: state.account.id,
+    accountConcurrencyAccountId: gatewayAccountConcurrencyAccountId(state.account),
     sinceMs: state.startedAtMs,
     failureCount: state.failureCount,
     distinctClientIpCount: state.distinctClientIpCount,
@@ -1892,6 +1900,10 @@ function operationAccountId(operation: AccountSideEffectOperation): string {
   return operation.account.id
 }
 
+function gatewayRuntimeConcurrencyAccountId(account: SuppressibleGatewayAccount | string): string {
+  return typeof account === 'string' ? account : gatewayAccountConcurrencyAccountId(account)
+}
+
 function delay(ms: number): Promise<void> {
   return waitForRetryDelayMs(ms)
 }
@@ -1931,7 +1943,8 @@ function clearAllGatewayAccountPrecheckRunTimers(): void {
 
 function deferPrecheckMarkUntilConcurrencyDrained(runtimeKey: string, state: PrecheckState): boolean {
   if (!canUseProcessLocalGatewayAccountRuntimeState()) return false
-  const currentConcurrency = getAccountCurrentConcurrency(state.account.id)
+  const accountConcurrencyAccountId = gatewayAccountConcurrencyAccountId(state.account)
+  const currentConcurrency = getAccountCurrentConcurrency(accountConcurrencyAccountId)
   if (currentConcurrency <= 0) {
     return false
   }
@@ -1941,15 +1954,17 @@ function deferPrecheckMarkUntilConcurrencyDrained(runtimeKey: string, state: Pre
   state.waitingForConcurrencyDrain = true
   suppressLocalAccount(runtimeKey, precheckSuppressionMs(), reason, 'precheck_pending', {
     accountId: state.account.id,
+    accountConcurrencyAccountId,
     failureCount: state.failureCount,
     distinctClientIpCount: state.distinctClientIpCount,
     distinctApiKeyCount: state.distinctApiKeyCount,
     precheckAttemptCount: state.attemptCount
   })
-  schedulePrecheckAfterConcurrencyDrain(runtimeKey, state.account.id)
+  schedulePrecheckAfterConcurrencyDrain(runtimeKey, accountConcurrencyAccountId)
   logger.warn({
     event: 'gateway_account_precheck_mark_deferred_for_concurrency',
     accountId: state.account.id,
+    accountConcurrencyAccountId,
     accountName: state.account.name,
     runtimeKey,
     currentConcurrency
@@ -1957,7 +1972,7 @@ function deferPrecheckMarkUntilConcurrencyDrained(runtimeKey: string, state: Pre
   return true
 }
 
-function schedulePrecheckAfterConcurrencyDrain(runtimeKey: string, accountId: string): void {
+function schedulePrecheckAfterConcurrencyDrain(runtimeKey: string, accountConcurrencyAccountId: string): void {
   if (precheckConcurrencyDrainWaits.has(runtimeKey)) {
     return
   }
@@ -1968,7 +1983,7 @@ function schedulePrecheckAfterConcurrencyDrain(runtimeKey: string, accountId: st
       clearPrecheckConcurrencyDrainWait(runtimeKey)
       return
     }
-    if (getAccountCurrentConcurrency(accountId) > 0) {
+    if (getAccountCurrentConcurrency(accountConcurrencyAccountId) > 0) {
       return
     }
     clearPrecheckConcurrencyDrainWait(runtimeKey)
@@ -1977,7 +1992,7 @@ function schedulePrecheckAfterConcurrencyDrain(runtimeKey: string, accountId: st
   }
 
   const unsubscribe = subscribeAccountConcurrencyRelease((event) => {
-    if (event.accountId === accountId) {
+    if (event.accountId === accountConcurrencyAccountId) {
       tryResume()
     }
   })
@@ -2006,6 +2021,7 @@ async function runGatewayAccountPrecheck(runtimeKey: string): Promise<void> {
       latestState.lastAttemptAtMs = Date.now()
       suppressLocalAccount(runtimeKey, precheckSuppressionMs(), latestState.reason, 'precheck_pending', {
         accountId: latestState.account.id,
+        accountConcurrencyAccountId: gatewayAccountConcurrencyAccountId(latestState.account),
         failureCount: latestState.failureCount,
         distinctClientIpCount: latestState.distinctClientIpCount,
         distinctApiKeyCount: latestState.distinctApiKeyCount,

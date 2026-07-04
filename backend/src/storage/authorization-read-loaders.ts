@@ -5,7 +5,7 @@ import type {
   ResourceAuthorizationSourceType
 } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
-import { createAppCache, createSharedJsonCache } from '../shared/cache.js'
+import { clearSharedJsonCacheInBackground, createAppCache, createSharedJsonCache } from '../shared/cache.js'
 import { getBusinessDatabase } from './database.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
@@ -421,7 +421,11 @@ function deleteAuthorizationStatsSharedCacheEntry(cacheKey: string): void {
 }
 
 function clearAuthorizationStatsSharedCache(): void {
-  void authorizationStatsSharedCache.clear()
+  clearSharedJsonCacheInBackground(
+    authorizationStatsSharedCache,
+    'authorization_stats_shared_cache_clear_failed',
+    '授权统计 Redis shared cache 清理失败'
+  )
 }
 
 async function getAuthorizationSourcesSharedCacheEntry(authorizationId: string): Promise<ResourceAuthorizationSourceSummary[] | undefined> {
@@ -442,7 +446,11 @@ function deleteAuthorizationSourcesSharedCacheEntry(authorizationId: string): vo
 }
 
 function clearAuthorizationSourcesSharedCache(): void {
-  void authorizationSourcesSharedCache.clear()
+  clearSharedJsonCacheInBackground(
+    authorizationSourcesSharedCache,
+    'authorization_sources_shared_cache_clear_failed',
+    '授权来源 Redis shared cache 清理失败'
+  )
 }
 
 function normalizeAuthorizationStats(value: ResourceAuthorizationStats | undefined): ResourceAuthorizationStats | undefined {

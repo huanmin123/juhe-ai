@@ -399,11 +399,11 @@ function resourceAuthorizationGrantOperationFilterForClient(
 function resourceAuthorizationKeywordFilter(value: unknown): { clause: string; params: string[] } {
   const keyword = optionalString(value)?.trim()
   if (!keyword) return { clause: '', params: [] }
-  const prefix = `${escapeLikePrefix(keyword)}%`
+  const upperBound = textPrefixUpperBound(keyword)
   let matchCount = 0
   const matchText = (expression: string) => {
     matchCount += 1
-    return `(${expression} COLLATE NOCASE = ? OR ${expression} LIKE ? ESCAPE '\\')`
+    return `(${expression} >= ? AND ${expression} < ?)`
   }
   const clause = `(
     ${matchText('rag.id')}
@@ -472,18 +472,18 @@ function resourceAuthorizationKeywordFilter(value: unknown): { clause: string; p
   )`
   return {
     clause,
-    params: Array.from({ length: matchCount }, () => [keyword, prefix]).flat()
+    params: Array.from({ length: matchCount }, () => [keyword, upperBound]).flat()
   }
 }
 
 function resourceAuthorizationKeywordFilterForClient(value: unknown, tables: ResourceAuthorizationReadTables): { clause: string; params: string[] } {
   const keyword = optionalString(value)?.trim()
   if (!keyword) return { clause: '', params: [] }
-  const [lowerPrefix, lowerUpperBound] = lowerPrefixBounds(keyword)
+  const upperBound = textPrefixUpperBound(keyword)
   let matchCount = 0
   const matchText = (expression: string) => {
     matchCount += 1
-    return `(lower(${expression}) = lower(?) OR (lower(${expression}) >= ? AND lower(${expression}) < ? AND starts_with(lower(${expression}), ?)))`
+    return `(${expression} COLLATE "C" >= ? AND ${expression} COLLATE "C" < ? AND starts_with(${expression}, ?))`
   }
   const clause = `(
     ${matchText('rag.id')}
@@ -552,24 +552,18 @@ function resourceAuthorizationKeywordFilterForClient(value: unknown, tables: Res
   )`
   return {
     clause,
-    params: Array.from({ length: matchCount }, () => [keyword, lowerPrefix, lowerUpperBound, lowerPrefix]).flat()
+    params: Array.from({ length: matchCount }, () => [keyword, upperBound, keyword]).flat()
   }
 }
 
-function escapeLikePrefix(value: string): string {
-  return value.replace(/[\\%_]/g, (char) => `\\${char}`)
-}
-
-function lowerPrefixBounds(value: string): [string, string] {
-  const lowerValue = value.toLowerCase()
-  if (!lowerValue) return ['', '\uffff']
-  const chars = [...lowerValue]
+function textPrefixUpperBound(value: string): string {
+  const chars = [...value]
   for (let index = chars.length - 1; index >= 0; index -= 1) {
     const codePoint = chars[index].codePointAt(0)
     if (codePoint === undefined || codePoint >= 0x10ffff) continue
-    return [lowerValue, `${chars.slice(0, index).join('')}${String.fromCodePoint(codePoint + 1)}`]
+    return `${chars.slice(0, index).join('')}${String.fromCodePoint(codePoint + 1)}`
   }
-  return [lowerValue, `${lowerValue}\uffff`]
+  return `${value}\u{10ffff}`
 }
 
 function resourceAuthorizationGrantSelectColumns(alias: string): string {

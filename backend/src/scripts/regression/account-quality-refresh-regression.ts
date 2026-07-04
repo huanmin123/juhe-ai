@@ -260,7 +260,7 @@ function assertSourceGuards(): void {
   assert.match(failurePrecheckSource, /requestBackgroundWorkerDbService\(\{\s*type:\s*'mark_account_test_temporary_unavailable'/, '频繁失败确认落库应通过 DB service 复用账户测试临时不可调用语义')
   assert.match(failurePrecheckSource, /model:\s*await preferredSystemAccountTestModelAsync\(account\)/, '频繁失败确认只能使用账户测试健康模型，不能复用失败请求模型')
   assert.match(failurePrecheckSource, /trafficSource:\s*'runtime_recovery_probe'/, '频繁失败运行态确认探针应使用独立来源，避免和持久冷却复测混用')
-  assert.doesNotMatch(failurePrecheckSource, /requestShape|findRecentOpenAIRequestShapeForAccountAsync/, '频繁失败确认探针不能复用最近失败请求形态')
+  assert.doesNotMatch(failurePrecheckSource, /requestShape/, '频繁失败确认探针不能复用失败请求形态')
   assert.match(gatewayAccountSideEffectsSource, /model:\s*await preferredSystemAccountTestModelAsync\(account\)/, '运行态恢复探针只能使用账户测试健康模型，不能复用失败请求模型')
   assert.match(gatewayAccountSideEffectsSource, /trafficSource:\s*'runtime_recovery_probe'/, '运行态恢复探针应使用独立来源，避免和持久冷却复测混用')
   assert.match(gatewayAccountSideEffectsSource, /generation:\s*number/, '运行态恢复和事前确认状态必须带 generation，避免旧探针结果覆盖新状态')

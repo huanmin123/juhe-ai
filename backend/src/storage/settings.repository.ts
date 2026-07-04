@@ -1,6 +1,6 @@
 import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
-import { createAppCache, createSharedJsonCache } from '../shared/cache.js'
+import { clearSharedJsonCacheInBackground, createAppCache, createSharedJsonCache } from '../shared/cache.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { errorLogFields, logger } from '../shared/logger.js'
 import { clearUsageStatsTimezoneCache, normalizeUsageStatsTimezone, usageStatsTimezone } from './usage-stats-helpers.js'
@@ -417,7 +417,11 @@ function clearGlobalSettingsSharedCache(): void {
 
 function clearSettingsSharedCache(cache: typeof systemSettingsSharedCache): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  void cache.clear()
+  clearSharedJsonCacheInBackground(
+    cache,
+    'settings_shared_cache_clear_failed',
+    '系统设置 Redis shared cache 清理失败'
+  )
 }
 
 function assertSyncSettingsReadAllowed(operation: string): void {

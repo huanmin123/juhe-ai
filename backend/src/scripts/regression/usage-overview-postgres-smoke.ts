@@ -10,7 +10,7 @@ import {
   refreshUsageRankSnapshotsInStages
 } from '../../storage/usage-stats.repository.js'
 import { dateKey, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
-import { rangeWindowKey } from '../../storage/usage-stats-window-helpers.js'
+import { fixedUsageStatsDateKeys, rangeWindowKey } from '../../storage/usage-stats-window-helpers.js'
 
 assert.equal(runtimeConfig.databaseDriver, 'postgres', '用量概览 PG smoke 需要 JUHE_AI_DATABASE_DRIVER=postgres')
 
@@ -28,7 +28,11 @@ const access: AccessScope = {
 try {
   const timezone = await usageStatsTimezoneAsync()
   const today = dateKey(new Date(), timezone)
+  const fixedDates = fixedUsageStatsDateKeys(timezone, today)
+  const yesterday = fixedDates[fixedDates.length - 2]
+  assert.ok(yesterday, 'PG overview smoke 需要至少两个固定日期')
   const statHour = `${today}T00`
+  const yesterdayStatHour = `${yesterday}T00`
   const range = {
     startDate: today,
     endDate: today,
@@ -60,6 +64,15 @@ try {
       ) VALUES (?, 'system_account', ?, ?, 7, 6, 1, 70, 30, 5, 0.001, 0.123, 700, 7, 180, 210, 7, 40, ?, ?)
     `, [systemAccountId, systemAccountId, today, updatedAt, updatedAt])
     await tx.execute(`
+      INSERT INTO juhe_stats.usage_stats_daily (
+        system_account_id, scope_type, scope_id, stat_date, request_count, success_count, error_count,
+        input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd,
+        duration_ms_sum, duration_ms_count, duration_ms_max,
+        first_token_ms_sum, first_token_ms_count, first_token_ms_max,
+        last_used_at, updated_at
+      ) VALUES (?, 'system_account', ?, ?, 3, 3, 0, 30, 15, 2, 0.001, 0.111, 300, 3, 120, 90, 3, 40, ?, ?)
+    `, [systemAccountId, systemAccountId, yesterday, updatedAt, updatedAt])
+    await tx.execute(`
       INSERT INTO juhe_stats.usage_stats_hourly (
         system_account_id, scope_type, scope_id, stat_hour, request_count, success_count, error_count,
         input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd,
@@ -69,17 +82,38 @@ try {
       ) VALUES (?, 'system_account', ?, ?, 7, 6, 1, 70, 30, 5, 0.001, 0.123, 700, 7, 180, 210, 7, 40, ?, ?)
     `, [systemAccountId, systemAccountId, statHour, updatedAt, updatedAt])
     await tx.execute(`
+      INSERT INTO juhe_stats.usage_stats_hourly (
+        system_account_id, scope_type, scope_id, stat_hour, request_count, success_count, error_count,
+        input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd,
+        duration_ms_sum, duration_ms_count, duration_ms_max,
+        first_token_ms_sum, first_token_ms_count, first_token_ms_max,
+        last_used_at, updated_at
+      ) VALUES (?, 'system_account', ?, ?, 3, 3, 0, 30, 15, 2, 0.001, 0.111, 300, 3, 120, 90, 3, 40, ?, ?)
+    `, [systemAccountId, systemAccountId, yesterdayStatHour, updatedAt, updatedAt])
+    await tx.execute(`
       INSERT INTO juhe_stats.usage_model_daily (
         system_account_id, stat_date, provider_code, model, request_count, success_count, error_count,
         input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, updated_at
       ) VALUES (?, ?, 'gpt', 'gpt-5.5-smoke', 7, 6, 1, 70, 30, 5, 0.001, 0.123, ?)
     `, [systemAccountId, today, updatedAt])
     await tx.execute(`
+      INSERT INTO juhe_stats.usage_model_daily (
+        system_account_id, stat_date, provider_code, model, request_count, success_count, error_count,
+        input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, updated_at
+      ) VALUES (?, ?, 'gpt', 'gpt-5.5-smoke', 3, 3, 0, 30, 15, 2, 0.001, 0.111, ?)
+    `, [systemAccountId, yesterday, updatedAt])
+    await tx.execute(`
       INSERT INTO juhe_stats.usage_error_daily (
         system_account_id, stat_date, error_group, provider_code, error_code, status_code,
         error_message, request_count, error_count, updated_at
       ) VALUES (?, ?, 'upstream', 'gpt', 'smoke_error', 502, 'overview smoke error', 1, 1, ?)
     `, [systemAccountId, today, updatedAt])
+    await tx.execute(`
+      INSERT INTO juhe_stats.usage_error_daily (
+        system_account_id, stat_date, error_group, provider_code, error_code, status_code,
+        error_message, request_count, error_count, updated_at
+      ) VALUES (?, ?, 'upstream', 'gpt', 'smoke_error', 502, 'overview smoke error', 1, 1, ?)
+    `, [systemAccountId, yesterday, updatedAt])
   })
 
   const refreshed = await refreshUsageRankSnapshotsInStages({
@@ -99,6 +133,9 @@ try {
   assert.equal(overview.hourlyTrend[0]?.requestCount, 7, 'PG overview trend request_count 应来自窗口表')
   assert.equal(overview.modelDistribution[0]?.model, 'gpt-5.5-smoke', 'PG overview model rank 应来自窗口表')
   assert.equal(overview.errors[0]?.errorCode, 'smoke_error', 'PG overview error rank 应来自窗口表')
+
+  const sentinelUpdatedAt = '1999-12-31T00:00:00.000Z'
+  await markOverviewWindowUpdatedAt(client, yesterday, sentinelUpdatedAt)
 
   const skipped = await refreshUsageRankSnapshotsInStages({
     stageNames: ['usage_overview_windows'],
@@ -137,6 +174,25 @@ try {
   assert.equal(freshSummaryOverview.summary.totalCost, 0.456, 'PG overview summary totalCost 应读取最新日聚合')
   assert.equal(freshSummaryOverview.hourlyTrend[0]?.requestCount, 7, 'PG overview trend 仍来自窗口表')
 
+  const incremental = await refreshUsageRankSnapshotsInStages({
+    stageNames: ['usage_overview_windows'],
+    skipIfUnchanged: true,
+    jobName,
+    yieldToEventLoop: async () => {}
+  })
+  assert.equal(incremental.skipped, false, 'PG overview 今日源水位变化后应刷新窗口')
+  const todaySummaryWindow = await client.one<{ request_count: string | number }>(`
+    SELECT request_count
+    FROM juhe_stats.usage_overview_summary_windows
+    WHERE system_account_id = ?
+      AND window_key = ?
+  `, [systemAccountId, windowKey])
+  assert.equal(Number(todaySummaryWindow?.request_count ?? 0), 9, 'PG overview 今日 summary 窗口应刷新为最新请求数')
+  assert.equal(await overviewUpdatedAt(client, 'usage_overview_summary_windows', yesterday), sentinelUpdatedAt, 'PG overview 仅今日变更时不应重写昨日 summary 窗口')
+  assert.equal(await overviewUpdatedAt(client, 'usage_overview_trend_windows', yesterday), sentinelUpdatedAt, 'PG overview 仅今日变更时不应重写昨日 trend 窗口')
+  assert.equal(await overviewUpdatedAt(client, 'usage_model_rank_windows', yesterday), sentinelUpdatedAt, 'PG overview 仅今日变更时不应重写昨日 model rank 窗口')
+  assert.equal(await overviewUpdatedAt(client, 'usage_error_rank_windows', yesterday), sentinelUpdatedAt, 'PG overview 仅今日变更时不应重写昨日 error rank 窗口')
+
   console.log(JSON.stringify({
     message: '用量概览 PG smoke 通过',
     windowKey,
@@ -164,4 +220,27 @@ async function cleanupSmokeRows(): Promise<void> {
   await pool.query('DELETE FROM juhe_stats.usage_model_daily WHERE system_account_id = $1', [systemAccountId])
   await pool.query('DELETE FROM juhe_stats.usage_error_daily WHERE system_account_id = $1', [systemAccountId])
   await pool.query('DELETE FROM juhe_stats.stats_job_state WHERE job_name = $1', [jobName])
+}
+
+async function markOverviewWindowUpdatedAt(client: ReturnType<typeof createPostgresDatabaseClient>, statDate: string, updatedAt: string): Promise<void> {
+  const windowKey = rangeWindowKey({ startDate: statDate, endDate: statDate })
+  for (const tableName of ['usage_overview_summary_windows', 'usage_overview_trend_windows', 'usage_model_rank_windows', 'usage_error_rank_windows']) {
+    await client.execute(`
+      UPDATE juhe_stats.${tableName}
+      SET updated_at = ?
+      WHERE system_account_id = ?
+        AND window_key = ?
+    `, [updatedAt, systemAccountId, windowKey])
+  }
+}
+
+async function overviewUpdatedAt(client: ReturnType<typeof createPostgresDatabaseClient>, tableName: string, statDate: string): Promise<string | undefined> {
+  const row = await client.one<{ updated_at?: string }>(`
+    SELECT updated_at
+    FROM juhe_stats.${tableName}
+    WHERE system_account_id = ?
+      AND window_key = ?
+    LIMIT 1
+  `, [systemAccountId, rangeWindowKey({ startDate: statDate, endDate: statDate })])
+  return row?.updated_at
 }

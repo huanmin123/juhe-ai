@@ -22,6 +22,7 @@ export interface RedisStreamMessage<T> {
 }
 
 export interface RedisStreamQueueRuntime {
+  streamLength: number
   pendingCount: number
   lag?: number
   consumers?: number
@@ -106,22 +107,27 @@ export class RedisStreamQueue<T> {
     const normalizedIds = ids.map((id) => id.trim()).filter(Boolean)
     if (!normalizedIds.length) return 0
     const client = await getRedisClient(this.redisUrl)
-    const result = await client.sendCommand(['XACK', this.streamKey, this.groupName, ...normalizedIds])
+    const result = await client.eval(redisAckAndDeleteMessagesScript, {
+      keys: [this.streamKey],
+      arguments: [this.groupName, ...normalizedIds]
+    })
     return Number(result ?? 0)
   }
 
   async inspectRuntime(): Promise<RedisStreamQueueRuntime> {
     await this.ensureGroup()
     const client = await getRedisClient(this.redisUrl)
-    const [groupsResult, pendingResult] = await Promise.all([
+    const [groupsResult, pendingResult, streamLengthResult] = await Promise.all([
       client.sendCommand(['XINFO', 'GROUPS', this.streamKey]),
-      client.sendCommand(['XPENDING', this.streamKey, this.groupName])
+      client.sendCommand(['XPENDING', this.streamKey, this.groupName]),
+      client.sendCommand(['XLEN', this.streamKey])
     ])
     const groupRuntime = parseGroupRuntime(groupsResult, this.groupName)
     const pendingRuntime = parsePendingRuntime(pendingResult)
     return {
       ...groupRuntime,
       ...pendingRuntime,
+      streamLength: numberField(streamLengthResult) ?? 0,
       pendingCount: pendingRuntime.pendingCount ?? groupRuntime.pendingCount ?? 0
     }
   }
@@ -384,6 +390,20 @@ for _, item in ipairs(pending) do
   output[#output + 1] = redis.call('XRANGE', KEYS[1], id, id, 'COUNT', 1)
 end
 return output
+`
+
+const redisAckAndDeleteMessagesScript = `
+local group_name = ARGV[1]
+local acked = 0
+for index = 2, #ARGV do
+  local id = ARGV[index]
+  local result = redis.call('XACK', KEYS[1], group_name, id)
+  if result > 0 then
+    acked = acked + result
+    redis.call('XDEL', KEYS[1], id)
+  end
+end
+return acked
 `
 
 function fieldAlias(fields: Map<string, unknown>, ...names: string[]): unknown {

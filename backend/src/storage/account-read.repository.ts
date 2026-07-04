@@ -769,10 +769,6 @@ function accountBindingSubquery(): string {
   return `group_accounts`
 }
 
-function escapeLikePrefix(value: string): string {
-  return value.replace(/[\\%_]/g, (char) => `\\${char}`)
-}
-
 function buildAccountListFilters(options: AccountRowQueryOptions, containsSubquery?: AccountNameContainsSubquery): { clause: string; params: AccountFilterValue[] } {
   const clauses: string[] = []
   const params: AccountFilterValue[] = []
@@ -786,14 +782,13 @@ function buildAccountListFilters(options: AccountRowQueryOptions, containsSubque
   }
   const keyword = options.keyword?.trim()
   if (keyword) {
-    const keywordPrefix = `${escapeLikePrefix(keyword)}%`
+    const keywordUpperBound = accountTextPrefixUpperBound(keyword)
     const keywordClauses = [
-      'account_rows.name COLLATE NOCASE = ?',
-      "account_rows.name LIKE ? ESCAPE '\\'"
+      '(account_rows.name >= ? AND account_rows.name < ?)'
     ]
     const keywordParams: AccountFilterValue[] = [
       keyword,
-      keywordPrefix
+      keywordUpperBound
     ]
     if (containsSubquery) {
       keywordClauses.push(`account_rows.id IN (${containsSubquery.sql})`)
@@ -868,4 +863,15 @@ function buildAccountListFilters(options: AccountRowQueryOptions, containsSubque
     clause: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '',
     params
   }
+}
+
+function accountTextPrefixUpperBound(value: string): string {
+  const chars = [...value]
+  for (let index = chars.length - 1; index >= 0; index -= 1) {
+    const codePoint = chars[index]?.codePointAt(0)
+    if (codePoint !== undefined && codePoint < 0x10ffff) {
+      return `${chars.slice(0, index).join('')}${String.fromCodePoint(codePoint + 1)}`
+    }
+  }
+  return `${value}\uffff`
 }

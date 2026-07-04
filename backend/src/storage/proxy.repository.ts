@@ -239,31 +239,29 @@ function normalizeProxyListOptions(options: ProxyProfileListOptions): Required<P
 function buildProxyKeywordFilter(keyword?: string): { clause: string; params: string[] } {
   const text = optionalString(keyword)
   if (!text) return { clause: '', params: [] }
-  const prefix = `${escapeLikePrefix(text)}%`
   return {
-    clause: `(
-      name COLLATE NOCASE = ?
-      OR name LIKE ? ESCAPE '\\'
-    )`,
-    params: [text, prefix]
+    clause: '(name >= ? AND name < ?)',
+    params: [text, textPrefixUpperBound(text)]
   }
 }
 
 function buildProxyKeywordFilterAsync(keyword?: string): { clause: string; params: string[] } {
   const text = optionalString(keyword)
   if (!text) return { clause: '', params: [] }
-  const prefix = `${escapeLikePrefix(text)}%`
   return {
-    clause: `(
-      lower(name) = lower(?)
-      OR lower(name) LIKE lower(?) ESCAPE '\\'
-    )`,
-    params: [text, prefix]
+    clause: '(name COLLATE "C" >= ? AND name COLLATE "C" < ? AND starts_with(name, ?))',
+    params: [text, textPrefixUpperBound(text), text]
   }
 }
 
-function escapeLikePrefix(value: string): string {
-  return value.replace(/[\\%_]/g, (char) => `\\${char}`)
+function textPrefixUpperBound(value: string): string {
+  const chars = [...value]
+  for (let index = chars.length - 1; index >= 0; index -= 1) {
+    const codePoint = chars[index].codePointAt(0)
+    if (codePoint === undefined || codePoint >= 0x10ffff) continue
+    return `${chars.slice(0, index).join('')}${String.fromCodePoint(codePoint + 1)}`
+  }
+  return `${value}\u{10ffff}`
 }
 
 function proxySummaryFromRow(row: ProxyRow): ProxyProfileSummary {
@@ -345,7 +343,6 @@ export function createProxy(input: Record<string, unknown>, access: AccessScope)
     outboundRegion: undefined,
     lastTestMessage: undefined
   }
-  assertProxyNameAvailable(proxy.name)
   try {
     getBusinessDatabase()
       .prepare(`
@@ -387,7 +384,6 @@ export async function createProxyAsync(input: Record<string, unknown>, access: A
     outboundRegion: undefined,
     lastTestMessage: undefined
   }
-  await assertProxyNameAvailableAsync(proxy.name)
   const client = await getProxyDatabaseClient()
   try {
     await client.execute(`
@@ -435,7 +431,6 @@ export function updateProxy(id: string, input: Record<string, unknown>): ProxyPr
   const nextPasswordEncrypted = shouldUpdatePassword
     ? encryptJson({ password: nextPassword })
     : currentSecret?.password_encrypted ?? null
-  assertProxyNameAvailable(next.name, id)
   try {
     getBusinessDatabase()
       .prepare(`
@@ -505,7 +500,6 @@ export async function updateProxyAsync(id: string, input: Record<string, unknown
   const nextPasswordEncrypted = shouldUpdatePassword
     ? encryptJson({ password: nextPassword })
     : currentSecret?.password_encrypted ?? null
-  await assertProxyNameAvailableAsync(next.name, id)
   try {
     await client.execute(`
       UPDATE ${proxyProfilesTable(client)}
@@ -967,37 +961,8 @@ function assertKnownInputKeys(input: Record<string, unknown>, allowedKeys: Reado
   }
 }
 
-function assertProxyNameAvailable(name: string, excludeId?: string): void {
-  const params: string[] = [name]
-  const excludeClause = excludeId ? ' AND id <> ?' : ''
-  if (excludeId) {
-    params.push(excludeId)
-  }
-  const row = getBusinessDatabase()
-    .prepare(`SELECT id FROM proxy_profiles WHERE lower(name) = lower(?)${excludeClause} LIMIT 1`)
-    .get(...params) as { id?: string } | undefined
-  if (row?.id) {
-    throw new Error(`代理名称已存在：${name}`)
-  }
-}
-
-async function assertProxyNameAvailableAsync(name: string, excludeId?: string): Promise<void> {
-  const params: string[] = [name]
-  const excludeClause = excludeId ? ' AND id <> ?' : ''
-  if (excludeId) {
-    params.push(excludeId)
-  }
-  const client = await getProxyDatabaseClient()
-  const row = await client.one<{ id?: string }>(
-    `SELECT id FROM ${proxyProfilesTable(client)} WHERE lower(name) = lower(?)${excludeClause} LIMIT 1`,
-    params
-  )
-  if (row?.id) {
-    throw new Error(`代理名称已存在：${name}`)
-  }
-}
-
 function isDuplicateProxyNameError(error: unknown): boolean {
   if (!(error instanceof Error)) return false
-  return error.message.includes('idx_proxy_profiles_name_unique_lower')
+  return error.message.includes('idx_proxy_profiles_name_unique')
+    || error.message.includes('idx_proxy_profiles_name_unique_lower')
 }

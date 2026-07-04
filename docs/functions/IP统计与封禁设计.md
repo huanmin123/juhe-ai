@@ -9,7 +9,7 @@
 - 已实现：后台 `client-ip-stats-aggregation` job 按 usage shard 独立游标增量聚合 IP 统计，不在页面或网关请求路径扫描 `usage_records`。
 - 已实现：管理员 `GET /__aisys__/api/ip-stats` 列表、`GET /__aisys__/api/ip-stats/:ipHash/detail` 账号详情、封禁 / 解封和加入 / 移出白名单接口。
 - 已实现：系统运维菜单新增 `IP管理` 页面，展示请求、Token、成本、失败率、活跃天数、速度、最近使用、账号详情、封禁状态和白名单状态。
-- 已实现：网关请求入口只读 server 进程内 active IP 封禁快照和来源级短 TTL 决策缓存，命中 active 封禁策略时本地返回 `403 client_ip_blacklisted`；请求路径不按单个 IP 查询 DB service。封禁命中异步批量写入 `client_ip_policy_hits`，命中缓冲最多保留 `5000` 个 distinct `ip_hash + policy_id`，单次 flush 最多投递 `1000` 条，超出窗口的新 distinct 命中丢弃并计数，避免多来源封禁流量在主进程形成无界 Map 或大 IPC；管理端封禁 / 解封会触发 server 重载 active 策略快照，stats-worker 也会周期推送快照。
+- 已实现：网关请求入口按当前部署模式读取 active IP 封禁策略，standalone 模式只读 server 进程内快照，高性能 Redis cache driver 下按单个 `ip_hash` 读取 Redis shared cache，miss 后通过 stats-worker/PG 索引精确回源；请求路径不加载全量 active 策略。命中 active 封禁策略时本地返回 `403 client_ip_blacklisted`。封禁命中异步批量写入 `client_ip_policy_hits`，命中缓冲最多保留 `5000` 个 distinct `ip_hash + policy_id`，单次 flush 最多投递 `1000` 条，超出窗口的新 distinct 命中丢弃并计数，避免多来源封禁流量在主进程形成无界 Map 或大 IPC；管理端封禁 / 解封会触发 server 清理策略缓存。
 - 已实现：IP 管理白名单只放行后台管理 / 内部任务接口的 IP 和登录用户限流，不绕过认证、权限、网关 API Key 校验或网关封禁策略。
 - 已实现：受保护外部来源 IP 聚合接口和 IP 消耗排行便利视图，只暴露 IP 聚合事实，不暴露封禁 / 白名单策略、内部账号、API Key、模型或公益站业务关系。
 
@@ -30,7 +30,7 @@
 - IP 账号详情：按 `ip_hash + account_id` 预聚合常用日期范围，管理员可以从某个 IP 查看涉及过的 AI 账户列表和每个账户在该 IP 下的使用情况。
 - IP 运维页面：管理员在“系统运维 / IP管理”查看列表、筛选、排序和策略状态。
 - IP 策略：支持封禁、临时封禁、解封和封禁命中记录。
-- 后台 job：负责注册 IP、写入 IP 聚合、刷新范围窗口，并周期推送 active IP 策略快照到 server；管理端封禁 / 解封、加入 / 移出白名单会触发 server 重载快照。
+- 后台 job：负责注册 IP、写入 IP 聚合、刷新范围窗口；管理端封禁 / 解封、加入 / 移出白名单会触发 server 清理策略缓存。后台 IP 聚合不能周期性全量推送 active IP 策略快照。
 
 ### 本期不包含
 
@@ -48,7 +48,7 @@
 - 首期只为 IP 写 `daily` 和范围窗口，避免把 IP 维度直接接入全套 `minute / hourly / weekly / monthly / totals` 造成写放大。
 - 统计 scope 使用 `ip_hash`，列表接口再关联 IP 注册表返回可展示 IP。
 - 当前 IP 管理只识别 IPv4；非 IPv4 来源不进入 IP 注册、统计和封禁策略。
-- IP 封禁是网关运行前置判断，请求路径只读 server 内存中的 active 策略快照和来源级运行态缓存；禁止在请求链路按当前 `ip_hash` 查询 DB service，也禁止把策略数组塞进 API Key runtime 响应。
+- IP 封禁是网关运行前置判断；standalone 请求路径只读 server 内存中的 active 策略快照和来源级运行态缓存，高性能 Redis cache driver 下按当前 `ip_hash` 读取单 IP shared cache，cache miss 只能走 `ip_hash` 索引回源，禁止加载全量 active 策略，也禁止把策略数组塞进 API Key runtime 响应。
 
 ## 数据流
 
@@ -70,9 +70,8 @@
 ```text
 管理员封禁 / 解封
   -> 写 client_ip_policies 和操作日志
-  -> 通知网关进程重载 active 策略快照
-  -> stats-worker 周期推送 active 策略快照兜底
-  -> 网关请求进入时只读 server 内存快照和来源级短 TTL 决策缓存
+  -> 通知网关进程清理策略缓存
+  -> 网关请求进入时按部署模式读取 server 内存快照或单 IP Redis shared cache
   -> 命中 active 封禁策略返回本地拒绝
   -> 异步记录封禁命中计数
 ```
@@ -380,10 +379,10 @@ else:
 
 职责：
 
-- 以 `ip_hash` 为键保存 server 进程内 active 策略快照和来源级短 TTL 决策，缓存上限固定；active 策略快照由管理变更和 stats-worker 后台刷新，不随 API Key runtime IPC 放大。
+- standalone 模式以 `ip_hash` 为键保存 server 进程内 active 策略快照和来源级短 TTL 决策；高性能 Redis cache driver 下以 `ip_hash` 为键保存单 IP shared cache，缓存上限固定，cache miss 只能按 `ip_hash` 索引回源，不随 API Key runtime IPC 放大。
 - 封禁命中写入采用 server 内短暂聚合缓冲：最多保留 `5000` 个 distinct `ip_hash + policy_id`，单次 flush 最多 `1000` 条；满载时丢弃新的 distinct 命中而不是继续扩大内存或一次性发送大 IPC。
-- 网关认证前和认证后都只读本地内存快照；未加载快照时不在请求上等待 DB。
-- 管理员创建、解封或更新策略后主动重载 server 进程 active 策略快照；stats-worker 周期推送快照兜底处理策略过期。
+- 网关认证前和认证后都不能加载全量 active 策略；standalone 未加载快照时不在请求上等待 DB，高性能 Redis cache driver 下只允许当前 `ip_hash` 精确回源。
+- 管理员创建、解封或更新策略后主动清理 server 进程策略缓存；过期策略由 TTL、运行态 active 判断和后台清理共同收敛。
 - 过期策略可由定时 job 标记为 disabled，也可以运行态读取时自然忽略，再由清理 job 归档。
 
 ## 管理端页面

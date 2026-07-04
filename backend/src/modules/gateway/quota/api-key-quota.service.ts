@@ -1,4 +1,4 @@
-import { createAppCache, createSharedJsonCache } from '../../../shared/cache.js'
+import { clearSharedJsonCacheInBackground, createAppCache, createSharedJsonCache } from '../../../shared/cache.js'
 import { registerApiKeyQuotaCacheInvalidator, syncGatewayCacheInvalidationsFromRuntimeState } from '../../../shared/gateway-cache-invalidation.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
@@ -316,7 +316,11 @@ async function setApiKeyQuotaSharedCacheEntry(cacheKey: string, entry: ApiKeyQuo
 
 function clearApiKeyQuotaSharedCache(): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  void apiKeyQuotaSharedCache.clear()
+  clearSharedJsonCacheInBackground(
+    apiKeyQuotaSharedCache,
+    'api_key_quota_shared_cache_clear_failed',
+    'API Key 额度 Redis shared cache 清理失败'
+  )
 }
 
 function sharedQuotaCacheKey(cacheKey: string): string {

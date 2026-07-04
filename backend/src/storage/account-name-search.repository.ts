@@ -108,7 +108,7 @@ export function accountNameContainsAccountIdSubquery(
 
   const systemAccountId = scopedSystemAccountId(access)
   const systemAccountClause = systemAccountId ? 'AND search.system_account_id = ?' : ''
-  const keywordContains = `%${escapeAccountNameSearchLike(normalizeAccountNameSearchText(keyword))}%`
+  const keywordContains = normalizeAccountNameSearchText(keyword)
   const params: AccountNameSearchValue[] = systemAccountId
     ? [...terms, systemAccountId, keywordContains, terms.length]
     : [...terms, keywordContains, terms.length]
@@ -121,7 +121,7 @@ export function accountNameContainsAccountIdSubquery(
       INNER JOIN accounts ON accounts.id = search.account_id
       WHERE search.term IN (${sqlPlaceholders(terms.length)})
         ${systemAccountClause}
-        AND documents.normalized_name LIKE ? ESCAPE '\\'
+        AND instr(documents.normalized_name, ?) > 0
         AND accounts.deleted_at IS NULL
       GROUP BY search.account_id
       HAVING COUNT(DISTINCT search.term) = ?
@@ -262,7 +262,7 @@ function addAccountNameSearchGrams(
 
 export function normalizeAccountNameSearchText(value: unknown): string {
   return typeof value === 'string'
-    ? value.normalize('NFKC').toLowerCase().trim()
+    ? value.normalize('NFKC').trim()
     : ''
 }
 

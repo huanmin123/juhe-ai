@@ -2,6 +2,7 @@ import type { SystemAccountSummary, SystemTeamStatus } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
 import {
   canUseProcessLocalAppCacheAsFactSource,
+  clearSharedJsonCacheInBackground,
   createAppCache,
   createSharedJsonCache,
   type AppCache,
@@ -430,7 +431,7 @@ export function loadActiveSystemAccountTeamNameMapByIds(systemAccountIds: Array<
           INNER JOIN system_teams teams ON teams.id = members.team_id
           WHERE members.status = 'active'
             AND members.system_account_id IN (${sqlPlaceholders(chunk.length)})
-          ORDER BY teams.name COLLATE NOCASE ASC, teams.id ASC
+          ORDER BY teams.name ASC, teams.id ASC
         `)
         .all(...chunk) as unknown as Array<{ system_account_id: string; name: string }>)
     }
@@ -527,5 +528,9 @@ function deleteLookupSharedCacheEntry<T extends { id: string }>(cache: SharedJso
 
 function clearLookupSharedCache<T extends { id: string }>(cache: SharedJsonCache<T>): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  void cache.clear()
+  clearSharedJsonCacheInBackground(
+    cache,
+    'repository_lookup_shared_cache_clear_failed',
+    '资源查找 Redis shared cache 清理失败'
+  )
 }

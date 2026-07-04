@@ -49,8 +49,13 @@ function policyForIndex(index: number): ActiveClientIpPolicy {
 function assertClientIpPolicyHitBufferSourceGuards(): void {
   const source = readFileSync(new URL('../../modules/gateway/runtime/client-ip-policy-cache.service.ts', import.meta.url), 'utf8')
   const preAuthSource = readFileSync(new URL('../../modules/gateway/request/pre-auth.ts', import.meta.url), 'utf8')
-  assert(source.includes('activePolicySnapshot'), 'IP 封禁策略请求路径必须基于 server 内存快照')
-  assert(!source.includes("type: 'find_active_client_ip_policy'"), 'IP 封禁策略请求路径不能按单个 IP 查 DB service')
+  const inspectSource = source.slice(
+    source.indexOf('export async function inspectClientIpPolicy'),
+    source.indexOf('export function primeClientIpPolicyCacheLocal')
+  )
+  assert(source.includes('activePolicySnapshot'), 'IP 封禁策略单机请求路径必须基于 server 内存快照')
+  assert(source.includes("type: 'find_active_client_ip_policy_by_hash'"), '高性能 IP 封禁策略请求路径必须按单个 IP hash 走索引查询，不能全量扫描策略快照')
+  assert(!inspectSource.includes('loadClientIpPolicySnapshotFromSharedCacheOrDatabase'), '高性能 IP 封禁策略请求路径不能读取全量 active 策略快照')
   assert(source.includes("runtimeConfig.cacheDriver === 'redis' || runtimeConfig.runtimeMode === 'performance'"), '高性能模式 IP 封禁命中必须绕过 server 命中缓冲')
   assert(source.includes('await writeClientIpPolicyHits([hit])'), '高性能模式 IP 封禁命中必须直接投递 stats writer/PG')
   assert.match(preAuthSource, /try\s*\{[\s\S]*await recordClientIpPolicyHitAsync[\s\S]*\}\s*catch/, 'IP 封禁命中统计失败必须降级处理，不能影响封禁响应')

@@ -426,8 +426,8 @@ try {
   assert(accountLookupCalls.length >= 2, '回归应捕获账号关键词预解析 SQL')
   const usageRecordsRepositorySource = readFileSync(resolve('src/storage/usage-records.repository.ts'), 'utf8')
   assert(
-    usageRecordsRepositorySource.includes('const accountNameExpression = \'(lower(accounts.name) COLLATE "C")\''),
-    'PG 使用记录账号关键词预解析必须使用 lower(accounts.name) COLLATE "C" 表达式'
+    usageRecordsRepositorySource.includes('const accountNameExpression = \'(accounts.name COLLATE "C")\''),
+    'PG 使用记录账号关键词预解析必须使用 accounts.name COLLATE "C" 表达式'
   )
   assert(
     usageRecordsRepositorySource.includes('return usageRecordBinaryPrefixUpperBound(value)'),
@@ -435,8 +435,8 @@ try {
   )
   assert.doesNotMatch(
     usageRecordsRepositorySource,
-    /accounts\.name = \? OR \(accounts\.name >= \? AND accounts\.name < \?\)/,
-    'PG 使用记录账号关键词预解析不能回退大小写敏感的原始 name 范围条件'
+    /lower\(accounts\.name\)/,
+    'PG 使用记录账号关键词预解析不能折叠账号名称大小写'
   )
   const postgresListRowsFunction = usageRecordsRepositorySource.match(/async function loadUsageRecordRowsByEntriesAsync[\s\S]*?\n}\n\nfunction listUsageRecordRowsFromShards/)?.[0] ?? ''
   assert.doesNotMatch(postgresListRowsFunction, /SELECT\s+ur\.\*/i, 'PG 使用记录列表回表不应 SELECT ur.* 拉取详情快照大字段')
@@ -444,7 +444,7 @@ try {
   const businessSchemaSource = readFileSync(resolve('src/storage/schema/business-schema.ts'), 'utf8')
   assert.match(
     businessSchemaSource,
-    /idx_accounts_owner_all_name_lower_lookup/,
+    /idx_accounts_owner_all_name_lookup/,
     'SQLite 使用记录账号名前缀预解析必须保留未删除账户名称前缀索引'
   )
   assert.match(
@@ -459,8 +459,9 @@ try {
     'PG 使用记录账号名前缀预解析必须保留 C collation 账户名称索引'
   )
   for (const call of accountLookupCalls) {
-    assert(/\blower\((?:accounts|source_accounts)\.name\)\s+>=\s+\?/i.test(call.sql), '账号关键词预解析应使用 lower(name) 范围下界')
-    assert(/\blower\((?:accounts|source_accounts)\.name\)\s+<\s+\?/i.test(call.sql), '账号关键词预解析应使用 lower(name) 范围上界')
+    assert(/\b(?:accounts|source_accounts)\.name\s+>=\s+\?/i.test(call.sql), '账号关键词预解析应使用大小写敏感 name 范围下界')
+    assert(/\b(?:accounts|source_accounts)\.name\s+<\s+\?/i.test(call.sql), '账号关键词预解析应使用大小写敏感 name 范围上界')
+    assert(!/\blower\((?:accounts|source_accounts)\.name\)/i.test(call.sql), '账号关键词预解析不应折叠名称大小写')
     assert(/\b(?:accounts|source_accounts)\.deleted_at\s+IS\s+NULL/i.test(call.sql), '账号关键词预解析应只匹配未删除账户')
     if (/\binstance_accounts\b/i.test(call.sql)) {
       assert(/\binstance_accounts\.deleted_at\s+IS\s+NULL/i.test(call.sql), '授权实例来源名称预解析应只匹配未删除授权实例')
@@ -481,11 +482,11 @@ try {
     SELECT accounts.id
     FROM accounts
     WHERE accounts.deleted_at IS NULL
-      AND lower(accounts.name) >= ? AND lower(accounts.name) < ?
+      AND accounts.name >= ? AND accounts.name < ?
       AND accounts.system_account_id = ?
-    ORDER BY lower(accounts.name) ASC, accounts.id ASC
+    ORDER BY accounts.name ASC, accounts.id ASC
     LIMIT ?
-  `, ['使用记录查询防护', '使用记录查询防护\uffff', 'sys_admin', 10], ['idx_accounts_owner_all_name_lower_lookup', 'idx_accounts_owner_name_unique_lower'])
+  `, ['使用记录查询防护', '使用记录查询防护\uffff', 'sys_admin', 10], ['idx_accounts_owner_all_name_lookup', 'idx_accounts_owner_name_unique'])
   assertBusinessQueryPlanUsesAnyIndex(`
     SELECT instance_accounts.id
     FROM accounts source_accounts
@@ -493,9 +494,9 @@ try {
     WHERE source_accounts.deleted_at IS NULL
       AND instance_accounts.authorization_instance_source_account_id = source_accounts.id
       AND instance_accounts.deleted_at IS NULL
-      AND lower(source_accounts.name) >= ? AND lower(source_accounts.name) < ?
+      AND source_accounts.name >= ? AND source_accounts.name < ?
       AND instance_accounts.system_account_id = ?
-    ORDER BY lower(source_accounts.name) ASC, instance_accounts.id ASC
+    ORDER BY source_accounts.name ASC, instance_accounts.id ASC
     LIMIT ?
   `, ['授权使用记录账户A', '授权使用记录账户A\uffff', grantee.id, 10], ['idx_accounts_authorization_instance_source_owner_lookup', 'idx_accounts_authorization_instance_source'])
   assertDatasetQueryPlanUsesIndex(`
@@ -554,85 +555,6 @@ try {
     ORDER BY ur.created_at DESC, ur.id DESC
     LIMIT ?
   `, ['sys_admin', '127.0.0.', '127.0.0.\uffff', 10], 'idx_usage_records_system_account_client_ip_created_sort')
-
-  const recentShapeCompactCreatedAt = new Date(Date.now() - 60_000).toISOString()
-  const recentShapeMiddleEndpointCreatedAt = new Date(Date.now() - 30_000).toISOString()
-  repositories.createUsageRecordsBatch([
-    {
-      id: usageRecordShards.generateUsageRecordId(recentShapeCompactCreatedAt, 'recent-shape-compact'),
-      traceId: 'trace-usage-recent-shape-compact',
-      trafficSource: 'gateway',
-      apiKeyId: apiKey.id,
-      groupId: group.id,
-      accountId: account.id,
-      endpoint: 'POST /v1/responses/compact',
-      providerCode: 'gpt',
-      model: 'gpt-5.5',
-      stream: true,
-      statusCode: 200,
-      success: true,
-      createdAt: recentShapeCompactCreatedAt
-    },
-    {
-      id: usageRecordShards.generateUsageRecordId(recentShapeMiddleEndpointCreatedAt, 'recent-shape-middle-endpoint'),
-      traceId: 'trace-usage-recent-shape-middle-endpoint',
-      trafficSource: 'gateway',
-      apiKeyId: apiKey.id,
-      groupId: group.id,
-      accountId: account.id,
-      endpoint: 'POST /proxy/v1/responses',
-      providerCode: 'gpt',
-      model: 'gpt-5.5',
-      stream: true,
-      statusCode: 200,
-      success: true,
-      createdAt: recentShapeMiddleEndpointCreatedAt
-    }
-  ])
-
-  const recentShapeCalls: Array<{ sql: string; params: unknown[] }> = []
-  const recentShapeShardPrepareRestorers: Array<() => void> = []
-  datasetDatabase.prepare = ((sql: string) => {
-    const statement = originalPrepare(sql)
-    if (/\bSELECT\s+id,\s+endpoint,\s+model,\s+stream,\s+created_at\b/i.test(sql) && /\bFROM\s+usage_records\b/i.test(sql)) {
-      const originalGet = statement.get.bind(statement) as typeof statement.get
-      statement.get = ((...params: SQLInputValue[]) => {
-        recentShapeCalls.push({ sql, params })
-        return originalGet(...params)
-      }) as typeof statement.get
-    }
-    return statement
-  }) as typeof datasetDatabase.prepare
-  for (const location of usageRecordShards.listUsageRecordShardLocations()) {
-    const shardDatabase = usageRecordShards.getUsageRecordShardDatabase(location)
-    const originalShardPrepare = shardDatabase.prepare.bind(shardDatabase) as typeof shardDatabase.prepare
-    recentShapeShardPrepareRestorers.push(() => {
-      shardDatabase.prepare = originalShardPrepare
-    })
-    shardDatabase.prepare = ((sql: string) => {
-      const statement = originalShardPrepare(sql)
-      if (/\bSELECT\s+id,\s+endpoint,\s+model,\s+stream,\s+created_at\b/i.test(sql) && /\bFROM\s+usage_records\b/i.test(sql)) {
-        const originalGet = statement.get.bind(statement) as typeof statement.get
-        statement.get = ((...params: SQLInputValue[]) => {
-          recentShapeCalls.push({ sql, params })
-          return originalGet(...params)
-        }) as typeof statement.get
-      }
-      return statement
-    }) as typeof shardDatabase.prepare
-  }
-  try {
-    const shape = repositories.findRecentOpenAIRequestShapeForAccount(account.id, group.id)
-    assert.equal(shape?.endpoint, 'POST /v1/responses/compact', '最近 OpenAI 请求形态应按 endpoint 精确或子路径前缀识别，不应命中中间包含路径')
-  } finally {
-    datasetDatabase.prepare = originalPrepare
-    for (const restore of recentShapeShardPrepareRestorers) restore()
-  }
-  assert(recentShapeCalls.length >= 1, '回归应捕获最近请求形态 SQL')
-  for (const call of recentShapeCalls) {
-    assert(!/\bLOWER\s*\(\s*endpoint\s*\)\s+LIKE\s+'%/i.test(call.sql), '最近请求形态不应使用 endpoint 前导通配符 LIKE')
-    assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '最近请求形态不应传入前导通配符参数')
-  }
 
   const admin = repositories.listSystemAccounts().find((systemAccount) => systemAccount.username === 'admin')
   assert(admin, '使用记录路由回归需要默认管理员')
@@ -698,7 +620,7 @@ try {
     await closeServer(routeServer)
   }
 
-  console.log('使用记录列表查询防护回归通过：model 精确匹配，clientIp 前缀范围匹配，accountKeyword 和最近请求形态都不再对 usage_records 做前导通配符扫描')
+  console.log('使用记录列表查询防护回归通过：model 精确匹配，clientIp 前缀范围匹配，accountKeyword 不对 usage_records 做前导通配符扫描')
 } finally {
   try {
     databaseModule.closeStorageDatabases()

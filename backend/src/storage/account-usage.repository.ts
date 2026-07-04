@@ -667,14 +667,11 @@ function loadAccountUsageKeywordAccountIds(input: {
   const clauses: string[] = []
   const params: string[] = []
   const viewerSystemAccountId = scopedSystemAccountId(input.access) ?? currentSystemAccountId(input.access)
-  const prefixKeyword = `${escapeLikePrefix(keyword)}%`
+  const keywordUpperBound = accountUsageKeywordUpperBound(keyword)
   clauses.push(`(
-    accounts.name COLLATE NOCASE = ?
-    OR accounts.name LIKE ? ESCAPE '\\'
-    OR accounts.provider_code COLLATE NOCASE = ?
-    OR accounts.provider_code LIKE ? ESCAPE '\\'
-    OR accounts.type COLLATE NOCASE = ?
-    OR accounts.type LIKE ? ESCAPE '\\'
+    (accounts.name >= ? AND accounts.name < ?)
+    OR (accounts.provider_code >= ? AND accounts.provider_code < ?)
+    OR (accounts.type >= ? AND accounts.type < ?)
     OR EXISTS (
       SELECT 1
       FROM group_accounts
@@ -682,19 +679,19 @@ function loadAccountUsageKeywordAccountIds(input: {
       WHERE group_accounts.account_id = accounts.id
         AND group_accounts.system_account_id = ?
         AND group_accounts.enabled = 1
-        AND (groups.name COLLATE NOCASE = ? OR groups.name LIKE ? ESCAPE '\\')
+        AND (groups.name >= ? AND groups.name < ?)
     )
   )`)
   params.push(
     keyword,
-    prefixKeyword,
+    keywordUpperBound,
     keyword,
-    prefixKeyword,
+    keywordUpperBound,
     keyword,
-    prefixKeyword,
+    keywordUpperBound,
     viewerSystemAccountId,
     keyword,
-    prefixKeyword
+    keywordUpperBound
   )
   if (input.type) {
     clauses.push('accounts.type = ?')
@@ -732,13 +729,13 @@ function loadAccountUsageKeywordAccountIds(input: {
       SELECT accounts.id
       FROM accounts
       WHERE ${clauses.join(' AND ')}
-      ORDER BY accounts.name COLLATE NOCASE ASC, accounts.id ASC
+      ORDER BY accounts.name ASC, accounts.id ASC
       LIMIT ?
     `)
     .all(...params, accountUsageSelectedAccountLimit) as unknown as Array<{ id?: string }>)
   appendAccountUsageAccountIds(ids, loadAccountUsageAuthorizedInstanceIdsForSourceKeyword(database, {
     keyword,
-    prefixKeyword,
+    keywordUpperBound,
     scopeType: input.scopeType,
     type: input.type,
     viewerSystemAccountId
@@ -746,7 +743,7 @@ function loadAccountUsageKeywordAccountIds(input: {
   if (input.scopeType === 'caller_account') {
     appendAccountUsageAccountIds(ids, loadAccountUsageGroupAuthorizedAccountIdsForKeyword(database, {
       keyword,
-      prefixKeyword,
+      keywordUpperBound,
       type: input.type,
       viewerSystemAccountId
     }))
@@ -766,12 +763,12 @@ async function loadAccountUsageKeywordAccountIdsAsync(client: DatabaseClient, in
   const clauses: string[] = []
   const params: string[] = []
   const viewerSystemAccountId = scopedSystemAccountId(input.access) ?? currentSystemAccountId(input.access)
-  const keywordLower = normalizeAccountUsageKeyword(keyword)
-  const keywordUpperBound = accountUsageKeywordUpperBound(keywordLower)
+  const keywordPrefix = normalizeAccountUsageKeyword(keyword)
+  const keywordUpperBound = accountUsageKeywordUpperBound(keywordPrefix)
   clauses.push(`(
-    (LOWER(accounts.name) >= ? AND LOWER(accounts.name) < ? AND starts_with(LOWER(accounts.name), ?))
-    OR (LOWER(accounts.provider_code) >= ? AND LOWER(accounts.provider_code) < ? AND starts_with(LOWER(accounts.provider_code), ?))
-    OR (LOWER(accounts.type) >= ? AND LOWER(accounts.type) < ? AND starts_with(LOWER(accounts.type), ?))
+    (accounts.name COLLATE "C" >= ? AND accounts.name COLLATE "C" < ? AND starts_with(accounts.name, ?))
+    OR (accounts.provider_code COLLATE "C" >= ? AND accounts.provider_code COLLATE "C" < ? AND starts_with(accounts.provider_code, ?))
+    OR (accounts.type COLLATE "C" >= ? AND accounts.type COLLATE "C" < ? AND starts_with(accounts.type, ?))
     OR EXISTS (
       SELECT 1
       FROM ${accountUsageBusinessTable(client, 'group_accounts')} group_accounts
@@ -780,23 +777,23 @@ async function loadAccountUsageKeywordAccountIdsAsync(client: DatabaseClient, in
       WHERE group_accounts.account_id = accounts.id
         AND group_accounts.system_account_id = ?
         AND group_accounts.enabled = 1
-        AND LOWER(groups.name) >= ? AND LOWER(groups.name) < ? AND starts_with(LOWER(groups.name), ?)
+        AND groups.name COLLATE "C" >= ? AND groups.name COLLATE "C" < ? AND starts_with(groups.name, ?)
     )
   )`)
   params.push(
-    keywordLower,
+    keywordPrefix,
     keywordUpperBound,
-    keywordLower,
-    keywordLower,
+    keywordPrefix,
+    keywordPrefix,
     keywordUpperBound,
-    keywordLower,
-    keywordLower,
+    keywordPrefix,
+    keywordPrefix,
     keywordUpperBound,
-    keywordLower,
+    keywordPrefix,
     viewerSystemAccountId,
-    keywordLower,
+    keywordPrefix,
     keywordUpperBound,
-    keywordLower
+    keywordPrefix
   )
   if (input.type) {
     clauses.push('accounts.type = ?')
@@ -833,11 +830,11 @@ async function loadAccountUsageKeywordAccountIdsAsync(client: DatabaseClient, in
     SELECT accounts.id
     FROM ${accountUsageBusinessTable(client, 'accounts')} accounts
     WHERE ${clauses.join(' AND ')}
-    ORDER BY LOWER(accounts.name) ASC, accounts.id ASC
+    ORDER BY accounts.name COLLATE "C" ASC, accounts.id ASC
     LIMIT ?
   `, [...params, accountUsageSelectedAccountLimit]))
   appendAccountUsageAccountIds(ids, await loadAccountUsageAuthorizedInstanceIdsForSourceKeywordAsync(client, {
-    keywordLower,
+    keywordPrefix,
     keywordUpperBound,
     scopeType: input.scopeType,
     type: input.type,
@@ -845,7 +842,7 @@ async function loadAccountUsageKeywordAccountIdsAsync(client: DatabaseClient, in
   }))
   if (input.scopeType === 'caller_account') {
     appendAccountUsageAccountIds(ids, await loadAccountUsageGroupAuthorizedAccountIdsForKeywordAsync(client, {
-      keywordLower,
+      keywordPrefix,
       keywordUpperBound,
       type: input.type,
       viewerSystemAccountId
@@ -858,14 +855,14 @@ function loadAccountUsageAuthorizedInstanceIdsForSourceKeyword(
   database: ReturnType<typeof getBusinessDatabase>,
   input: {
     keyword: string
-    prefixKeyword: string
+    keywordUpperBound: string
     scopeType: AccountUsageScopeType
     type?: string
     viewerSystemAccountId: string
   }
 ): Array<{ id?: string }> {
-  const clauses = ["source_accounts.name COLLATE NOCASE = ? OR source_accounts.name LIKE ? ESCAPE '\\'"]
-  const params: string[] = [input.keyword, input.prefixKeyword]
+  const clauses = ['source_accounts.name >= ? AND source_accounts.name < ?']
+  const params: string[] = [input.keyword, input.keywordUpperBound]
   if (input.scopeType === 'caller_account') {
     clauses.push('instance_accounts.system_account_id = ?')
     params.push(input.viewerSystemAccountId)
@@ -881,7 +878,7 @@ function loadAccountUsageAuthorizedInstanceIdsForSourceKeyword(
       INNER JOIN accounts instance_accounts
         ON instance_accounts.authorization_instance_source_account_id = source_accounts.id
       WHERE ${clauses.map((clause) => `(${clause})`).join(' AND ')}
-      ORDER BY source_accounts.name COLLATE NOCASE ASC, instance_accounts.id ASC
+      ORDER BY source_accounts.name ASC, instance_accounts.id ASC
       LIMIT ?
     `)
     .all(...params, accountUsageSelectedAccountLimit) as unknown as Array<{ id?: string }>
@@ -890,15 +887,15 @@ function loadAccountUsageAuthorizedInstanceIdsForSourceKeyword(
 async function loadAccountUsageAuthorizedInstanceIdsForSourceKeywordAsync(
   client: DatabaseClient,
   input: {
-    keywordLower: string
+    keywordPrefix: string
     keywordUpperBound: string
     scopeType: AccountUsageScopeType
     type?: string
     viewerSystemAccountId: string
   }
 ): Promise<Array<{ id?: string }>> {
-  const clauses = ['LOWER(source_accounts.name) >= ? AND LOWER(source_accounts.name) < ? AND starts_with(LOWER(source_accounts.name), ?)']
-  const params: string[] = [input.keywordLower, input.keywordUpperBound, input.keywordLower]
+  const clauses = ['source_accounts.name COLLATE "C" >= ? AND source_accounts.name COLLATE "C" < ? AND starts_with(source_accounts.name, ?)']
+  const params: string[] = [input.keywordPrefix, input.keywordUpperBound, input.keywordPrefix]
   if (input.scopeType === 'caller_account') {
     clauses.push('instance_accounts.system_account_id = ?')
     params.push(input.viewerSystemAccountId)
@@ -913,7 +910,7 @@ async function loadAccountUsageAuthorizedInstanceIdsForSourceKeywordAsync(
     INNER JOIN ${accountUsageBusinessTable(client, 'accounts')} instance_accounts
       ON instance_accounts.authorization_instance_source_account_id = source_accounts.id
     WHERE ${clauses.map((clause) => `(${clause})`).join(' AND ')}
-    ORDER BY LOWER(source_accounts.name) ASC, instance_accounts.id ASC
+    ORDER BY source_accounts.name COLLATE "C" ASC, instance_accounts.id ASC
     LIMIT ?
   `, [...params, accountUsageSelectedAccountLimit])
 }
@@ -922,13 +919,13 @@ function loadAccountUsageGroupAuthorizedAccountIdsForKeyword(
   database: ReturnType<typeof getBusinessDatabase>,
   input: {
     keyword: string
-    prefixKeyword: string
+    keywordUpperBound: string
     type?: string
     viewerSystemAccountId: string
   }
 ): Array<{ id?: string }> {
-  const clauses = ["accounts.name COLLATE NOCASE = ? OR accounts.name LIKE ? ESCAPE '\\'"]
-  const params: string[] = [input.viewerSystemAccountId, nowIso(), input.keyword, input.prefixKeyword]
+  const clauses = ['accounts.name >= ? AND accounts.name < ?']
+  const params: string[] = [input.viewerSystemAccountId, nowIso(), input.keyword, input.keywordUpperBound]
   if (input.type) {
     clauses.push('accounts.type = ?')
     params.push(input.type)
@@ -947,7 +944,7 @@ function loadAccountUsageGroupAuthorizedAccountIdsForKeyword(
         AND group_authorization.status = 'active'
         AND (group_authorization.expires_at IS NULL OR group_authorization.expires_at > ?)
       WHERE ${clauses.map((clause) => `(${clause})`).join(' AND ')}
-      ORDER BY accounts.name COLLATE NOCASE ASC, accounts.id ASC
+      ORDER BY accounts.name ASC, accounts.id ASC
       LIMIT ?
     `)
     .all(...params, accountUsageSelectedAccountLimit) as unknown as Array<{ id?: string }>
@@ -956,14 +953,14 @@ function loadAccountUsageGroupAuthorizedAccountIdsForKeyword(
 async function loadAccountUsageGroupAuthorizedAccountIdsForKeywordAsync(
   client: DatabaseClient,
   input: {
-    keywordLower: string
+    keywordPrefix: string
     keywordUpperBound: string
     type?: string
     viewerSystemAccountId: string
   }
 ): Promise<Array<{ id?: string }>> {
-  const clauses = ['LOWER(accounts.name) >= ? AND LOWER(accounts.name) < ? AND starts_with(LOWER(accounts.name), ?)']
-  const params: string[] = [input.viewerSystemAccountId, nowIso(), input.keywordLower, input.keywordUpperBound, input.keywordLower]
+  const clauses = ['accounts.name COLLATE "C" >= ? AND accounts.name COLLATE "C" < ? AND starts_with(accounts.name, ?)']
+  const params: string[] = [input.viewerSystemAccountId, nowIso(), input.keywordPrefix, input.keywordUpperBound, input.keywordPrefix]
   if (input.type) {
     clauses.push('accounts.type = ?')
     params.push(input.type)
@@ -981,7 +978,7 @@ async function loadAccountUsageGroupAuthorizedAccountIdsForKeywordAsync(
       AND group_authorization.status = 'active'
       AND (group_authorization.expires_at IS NULL OR group_authorization.expires_at > ?)
     WHERE ${clauses.map((clause) => `(${clause})`).join(' AND ')}
-    ORDER BY LOWER(accounts.name) ASC, accounts.id ASC
+    ORDER BY accounts.name COLLATE "C" ASC, accounts.id ASC
     LIMIT ?
   `, [...params, accountUsageSelectedAccountLimit])
 }
@@ -995,12 +992,8 @@ function appendAccountUsageAccountIds(target: string[], rows: Array<{ id?: strin
   }
 }
 
-function escapeLikePrefix(value: string): string {
-  return value.replace(/[\\%_]/g, (char) => `\\${char}`)
-}
-
 function normalizeAccountUsageKeyword(value: string): string {
-  return value.normalize('NFKC').toLowerCase().trim()
+  return value.normalize('NFKC').trim()
 }
 
 function accountUsageKeywordUpperBound(value: string): string {

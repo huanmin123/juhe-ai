@@ -112,7 +112,7 @@ import { api } from '@/api/client'
 import { disposeChart, ensureChart, resizeEcharts, useEchartsPageLifecycle, type ECharts } from '@/composables/useEcharts'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useUsageStatsWindow } from '@/composables/useUsageStatsWindow'
-import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys, todayDateRange } from '@/shared/dateRange'
+import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateRangeKeys, todayDateRange } from '@/shared/dateRange'
 import type { SystemMetricsOverview } from '@/types/domain'
 import StatsChartCard from './StatsChartCard.vue'
 import { buildBackgroundQueueRows } from './statsBackgroundQueues'
@@ -144,7 +144,6 @@ const initialPageState = pageStateCache.read()
 
 const loading = ref(false)
 const dateRange = ref<[Dayjs, Dayjs]>(parseDateRange(initialPageState.range))
-const dateRangeExplicit = ref(Boolean(initialPageState.range?.startDate || initialPageState.range?.endDate))
 const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
 const systemMetrics = ref<SystemMetricsOverview>()
 const { usageStatsWindowEndDate, usageStatsWindowMaxDays, loadUsageStatsWindow } = useUsageStatsWindow()
@@ -268,7 +267,6 @@ function handleDateRangeChange() {
     startDate: formatDateKey(dateRange.value[0]),
     endDate: formatDateKey(dateRange.value[1])
   })
-  dateRangeExplicit.value = true
   void loadData()
 }
 
@@ -289,14 +287,12 @@ function handleQuickRangeChange(value: string | number) {
     startDate: formatDateKey(range[0]),
     endDate: formatDateKey(range[1])
   })
-  dateRangeExplicit.value = true
   void loadData()
 }
 
 function resetFilters() {
   const defaults = defaultSystemMetricsPageState()
   dateRange.value = parseDateRange(defaults.range)
-  dateRangeExplicit.value = false
   calendarRange.value = [null, null]
   pageStateCache.clear()
   void loadData()
@@ -365,7 +361,6 @@ function disposeCharts() {
 }
 
 function selectedRangeParams(): { startDate?: string; endDate?: string } {
-  if (!dateRangeExplicit.value) return {}
   const [startDate, endDate] = selectedRange.value
   return { startDate, endDate }
 }
@@ -401,7 +396,7 @@ function normalizedDateRange(value: [Dayjs, Dayjs]): [string, string] {
 function snapshotPageState(): SystemMetricsPageState {
   const [startDate, endDate] = selectedRange.value
   return {
-    range: dateRangeExplicit.value ? { startDate, endDate } : undefined
+    range: { startDate, endDate }
   }
 }
 

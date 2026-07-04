@@ -622,13 +622,10 @@ export {
   createUsageRecord,
   createUsageRecordsBatchAsync,
   createUsageRecordsBatch,
-  findRecentOpenAIRequestShapeForAccountAsync,
-  findRecentOpenAIRequestShapeForAccount,
   getUsageRecordDetail,
   getUsageRecordDetailAsync,
   listUsageRecords,
   listUsageRecordsAsync,
-  type RecentOpenAIRequestShape,
   type UsageRecordInput,
   type UsageFailureAttribution,
   type UsageRecordListResult,
@@ -899,39 +896,10 @@ function runDelete(sql: string, id: string): boolean {
 
 function isDuplicateAccountNameError(error: unknown): boolean {
   if (!(error instanceof Error)) return false
-  return error.message.includes('idx_accounts_owner_name_unique_lower')
+  return error.message.includes('idx_accounts_owner_name_unique')
+    || error.message.includes('idx_accounts_owner_name_unique_lower')
+    || error.message.includes('accounts.system_account_id, accounts.name')
     || error.message.includes('accounts.system_account_id, lower(name)')
-}
-
-function assertAccountNameAvailable(systemAccountId: string, name: string, excludeId?: string): void {
-  const params: string[] = [systemAccountId, name]
-  const excludeClause = excludeId ? ' AND id <> ?' : ''
-  if (excludeId) {
-    params.push(excludeId)
-  }
-  const row = getBusinessDatabase()
-    .prepare(`SELECT id FROM accounts WHERE system_account_id = ? AND lower(name) = lower(?) AND deleted_at IS NULL${excludeClause} LIMIT 1`)
-    .get(...params) as { id?: string } | undefined
-  if (row?.id) {
-    throw new Error(`同一用户下账户名称已存在：${name}`)
-  }
-}
-
-async function assertAccountNameAvailableAsync(client: DatabaseClient, systemAccountId: string, name: string, excludeId?: string): Promise<void> {
-  const params: string[] = [systemAccountId, name]
-  const excludeClause = excludeId ? ' AND id <> ?' : ''
-  if (excludeId) {
-    params.push(excludeId)
-  }
-  const row = await client.one<{ id?: string }>(`
-    SELECT id
-    FROM ${accountWriteTable(client, 'accounts')}
-    WHERE system_account_id = ? AND lower(name) = lower(?) AND deleted_at IS NULL${excludeClause}
-    LIMIT 1
-  `, params)
-  if (row?.id) {
-    throw new Error(`同一用户下账户名称已存在：${name}`)
-  }
 }
 
 async function groupOwnerAndProviderForAccountWriteAsync(client: DatabaseClient, groupId: string): Promise<{ systemAccountId: string; providerCode: ProviderCode; name?: string } | undefined> {
@@ -1500,7 +1468,6 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   })
 
   const database = getBusinessDatabase()
-  assertAccountNameAvailable(systemAccountId, account.name)
   const transactionStarted = beginDatabaseTransaction(database)
   const availabilityScheduleNextCheckAt = nextAccountAvailabilityScheduleCheckAt(account.availabilitySchedule, new Date(nowMs))
   let savedTags = account.tags ?? []
@@ -1717,7 +1684,6 @@ export async function createAccountAsync(input: Record<string, unknown>, access?
     groupBindStatus: 'bound'
   })
 
-  await assertAccountNameAvailableAsync(client, systemAccountId, account.name)
   const availabilityScheduleNextCheckAt = nextAccountAvailabilityScheduleCheckAt(account.availabilitySchedule, new Date(nowMs))
   let savedTags = account.tags ?? []
   try {
@@ -2009,9 +1975,6 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
 
   const supportedModelsChanged = hasSupportedModelsInput && !unorderedStringListEquals(current.supportedModels, nextSupportedModels)
   const modelMappingsChanged = hasModelMappingsInput && !accountModelMappingsEqual(current.modelMappings, nextModelMappings)
-  if (next.name !== current.name) {
-    assertAccountNameAvailable(systemAccountId, next.name, id)
-  }
   const database = getBusinessDatabase()
   const updatedAt = nowIso()
   const availabilityScheduleNextCheckAt = nextAccountAvailabilityScheduleCheckAt(next.availabilitySchedule, new Date(updateNowMs))
@@ -2326,9 +2289,6 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
 
   const supportedModelsChanged = hasSupportedModelsInput && !unorderedStringListEquals(current.supportedModels, nextSupportedModels)
   const modelMappingsChanged = hasModelMappingsInput && !accountModelMappingsEqual(current.modelMappings, nextModelMappings)
-  if (next.name !== current.name) {
-    await assertAccountNameAvailableAsync(client, systemAccountId, next.name, id)
-  }
   const updatedAt = nowIso()
   const availabilityScheduleNextCheckAt = nextAccountAvailabilityScheduleCheckAt(next.availabilitySchedule, new Date(updateNowMs))
   let renamedAuthorizationInstanceIds: string[] = []
@@ -2490,7 +2450,7 @@ async function isAccountNameAvailableAsync(client: DatabaseClient, systemAccount
     SELECT id
     FROM ${accountWriteTable(client, 'accounts')}
     WHERE system_account_id = ?
-      AND lower(name) = lower(?)
+      AND name = ?
       AND deleted_at IS NULL${exceptClause}
     LIMIT 1
   `, params)

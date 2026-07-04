@@ -136,12 +136,18 @@ export function createSystemTeam(input: Record<string, unknown>, access?: Access
   assertKnownInputKeys(input, systemTeamInputKeys, '系统团队')
   const name = normalizeSystemTeamName(input.name)
   const database = getBusinessDatabase()
-  ensureSystemTeamNameUnique(name, undefined, database)
   const now = nowIso()
   const id = newId('team')
-  database
-    .prepare('INSERT INTO system_teams (id, name, description, status, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .run(id, name, normalizeSystemTeamDescription(input.description), normalizeSystemTeamStatus(input.status, 'active'), currentSystemAccountId(access), now, now)
+  try {
+    database
+      .prepare('INSERT INTO system_teams (id, name, description, status, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(id, name, normalizeSystemTeamDescription(input.description), normalizeSystemTeamStatus(input.status, 'active'), currentSystemAccountId(access), now, now)
+  } catch (error) {
+    if (isDuplicateSystemTeamNameError(error)) {
+      throw new Error('团队名称已存在')
+    }
+    throw error
+  }
   const created = findSystemTeamSummary(id, access)
   if (!created) throw new Error('创建团队失败')
   invalidateSystemTeamLookupCache(id)
@@ -157,22 +163,28 @@ export async function createSystemTeamAsync(input: Record<string, unknown>, acce
   const client = await getSystemTeamDatabaseClient()
   const now = nowIso()
   const id = newId('team')
-  await client.transaction(async (tx) => {
-    await ensureSystemTeamNameUniqueAsync(tx, name)
-    await tx.execute(`
-      INSERT INTO ${systemTeamTable(tx, 'system_teams')} (
-        id, name, description, status, created_by, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
-    `, [
-      id,
-      name,
-      normalizeSystemTeamDescription(input.description),
-      normalizeSystemTeamStatus(input.status, 'active'),
-      currentSystemAccountId(access),
-      now,
-      now
-    ])
-  })
+  try {
+    await client.transaction(async (tx) => {
+      await tx.execute(`
+        INSERT INTO ${systemTeamTable(tx, 'system_teams')} (
+          id, name, description, status, created_by, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `, [
+        id,
+        name,
+        normalizeSystemTeamDescription(input.description),
+        normalizeSystemTeamStatus(input.status, 'active'),
+        currentSystemAccountId(access),
+        now,
+        now
+      ])
+    })
+  } catch (error) {
+    if (isDuplicateSystemTeamNameError(error)) {
+      throw new Error('团队名称已存在')
+    }
+    throw error
+  }
   const created = await findSystemTeamSummaryAsync(id, access)
   if (!created) throw new Error('创建团队失败')
   invalidateSystemTeamLookupCache(id)
@@ -185,7 +197,6 @@ export function updateSystemTeam(id: string, input: Record<string, unknown>, acc
   const row = findSystemTeamRowForAccess(id, access)
   if (!row) return undefined
   const name = input.name === undefined ? row.name : normalizeSystemTeamName(input.name)
-  ensureSystemTeamNameUnique(name, id, database)
   const status = normalizeSystemTeamStatus(input.status, row.status)
   const now = nowIso()
   let authorizationChanged = false
@@ -205,6 +216,9 @@ export function updateSystemTeam(id: string, input: Record<string, unknown>, acc
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     rollbackDatabaseTransaction(database, transactionStarted)
+    if (isDuplicateSystemTeamNameError(error)) {
+      throw new Error('团队名称已存在')
+    }
     throw error
   }
   if (authorizationChanged) {
@@ -228,23 +242,29 @@ export async function updateSystemTeamAsync(id: string, input: Record<string, un
     const row = await findSystemTeamRowForAccessAsync(tx, id, access)
     if (!row) return
     const name = input.name === undefined ? row.name : normalizeSystemTeamName(input.name)
-    await ensureSystemTeamNameUniqueAsync(tx, name, id)
     const status = normalizeSystemTeamStatus(input.status, row.status)
     const now = nowIso()
-    await tx.execute(`
-      UPDATE ${systemTeamTable(tx, 'system_teams')}
-      SET name = ?,
-          description = ?,
-          status = ?,
-          updated_at = ?
-      WHERE id = ?
-    `, [
-      name,
-      input.description === undefined ? row.description : normalizeSystemTeamDescription(input.description),
-      status,
-      now,
-      id
-    ])
+    try {
+      await tx.execute(`
+        UPDATE ${systemTeamTable(tx, 'system_teams')}
+        SET name = ?,
+            description = ?,
+            status = ?,
+            updated_at = ?
+        WHERE id = ?
+      `, [
+        name,
+        input.description === undefined ? row.description : normalizeSystemTeamDescription(input.description),
+        status,
+        now,
+        id
+      ])
+    } catch (error) {
+      if (isDuplicateSystemTeamNameError(error)) {
+        throw new Error('团队名称已存在')
+      }
+      throw error
+    }
     if (row.status !== 'disabled' && status === 'disabled') {
       await revokeAllTeamSourcesAsync(id, currentSystemAccountId(access), tx, now, 'team_disabled')
       authorizationChanged = true
@@ -523,12 +543,8 @@ function querySystemTeamRows(access: AccessScope | undefined, pagination: { limi
   }
   const keyword = options.keyword?.trim()
   if (keyword) {
-    const prefix = `${escapeLikePrefix(keyword)}%`
-    clauses.push(`(
-      system_teams.name COLLATE NOCASE = ?
-      OR system_teams.name LIKE ? ESCAPE '\\'
-    )`)
-    params.push(keyword, prefix)
+    clauses.push('(system_teams.name >= ? AND system_teams.name < ?)')
+    params.push(keyword, systemTeamTextPrefixUpperBound(keyword))
   }
   const whereClause = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : ''
   const pageClause = pagination ? ' LIMIT ? OFFSET ?' : ''
@@ -556,23 +572,15 @@ async function querySystemTeamRowsAsync(client: DatabaseClient, access: AccessSc
   const keyword = options.keyword?.trim()
   if (keyword) {
     if (client.driver === 'postgres') {
-      const lowerKeyword = keyword.toLowerCase()
       clauses.push(`(
-        lower(system_teams.name) = ?
-        OR (
-          lower(system_teams.name) >= ?
-          AND lower(system_teams.name) < ?
-          AND starts_with(lower(system_teams.name), ?)
-        )
+        system_teams.name COLLATE "C" >= ?
+        AND system_teams.name COLLATE "C" < ?
+        AND starts_with(system_teams.name, ?)
       )`)
-      params.push(lowerKeyword, lowerKeyword, systemTeamTextPrefixUpperBound(lowerKeyword), lowerKeyword)
+      params.push(keyword, systemTeamTextPrefixUpperBound(keyword), keyword)
     } else {
-      const prefix = `${escapeLikePrefix(keyword)}%`
-      clauses.push(`(
-        system_teams.name COLLATE NOCASE = ?
-        OR system_teams.name LIKE ? ESCAPE '\\'
-      )`)
-      params.push(keyword, prefix)
+      clauses.push('(system_teams.name >= ? AND system_teams.name < ?)')
+      params.push(keyword, systemTeamTextPrefixUpperBound(keyword))
     }
   }
   const whereClause = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : ''
@@ -745,24 +753,6 @@ function systemTeamMemberSelectColumns(alias: string): string {
   ].map((column) => `${alias}.${column}`).join(', ')
 }
 
-function ensureSystemTeamNameUnique(name: string, excludeId?: string, database = getBusinessDatabase()): void {
-  const row = database
-    .prepare('SELECT id FROM system_teams WHERE lower(name) = lower(?) AND id <> ? LIMIT 1')
-    .get(name, excludeId ?? '') as unknown as { id?: string } | undefined
-  if (row?.id) throw new Error('团队名称已存在')
-}
-
-async function ensureSystemTeamNameUniqueAsync(client: DatabaseClient, name: string, excludeId?: string): Promise<void> {
-  const row = await client.one<{ id?: string }>(`
-    SELECT id
-    FROM ${systemTeamTable(client, 'system_teams')}
-    WHERE lower(name) = lower(?)
-      AND id <> ?
-    LIMIT 1
-  `, [name, excludeId ?? ''])
-  if (row?.id) throw new Error('团队名称已存在')
-}
-
 function normalizeSystemTeamName(value: unknown): string {
   if (typeof value !== 'string') {
     throw new Error('团队名称不能为空')
@@ -844,18 +834,20 @@ function invalidateAuthorizationRuntimeAfterBusinessWrite(reason: string): void 
   notifyAuthorizationQuotaCacheInvalidation(reason)
 }
 
-function escapeLikePrefix(value: string): string {
-  return value.replace(/[\\%_]/g, (char) => `\\${char}`)
+function systemTeamTextPrefixUpperBound(value: string): string {
+  const chars = [...value]
+  for (let index = chars.length - 1; index >= 0; index -= 1) {
+    const codePoint = chars[index].codePointAt(0)
+    if (codePoint === undefined || codePoint >= 0x10ffff) continue
+    return `${chars.slice(0, index).join('')}${String.fromCodePoint(codePoint + 1)}`
+  }
+  return `${value}\u{10ffff}`
 }
 
-function systemTeamTextPrefixUpperBound(value: string): string {
-  for (let index = value.length - 1; index >= 0; index -= 1) {
-    const code = value.charCodeAt(index)
-    if (code < 0xffff) {
-      return `${value.slice(0, index)}${String.fromCharCode(code + 1)}`
-    }
-  }
-  return `${value}\uffff`
+function isDuplicateSystemTeamNameError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  return error.message.includes('idx_system_teams_name_unique')
+    || error.message.includes('idx_system_teams_name_unique_lower')
 }
 
 async function getSystemTeamDatabaseClient(): Promise<DatabaseClient> {

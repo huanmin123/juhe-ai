@@ -1,5 +1,9 @@
-import { createAppCache, createSharedJsonCache } from '../../../shared/cache.js'
+import { clearSharedJsonCacheInBackground, createAppCache, createSharedJsonCache } from '../../../shared/cache.js'
 import { loadAccountCurrentConcurrencyByIds, loadAccountCurrentConcurrencyByIdsAsync } from '../../../shared/account-concurrency.js'
+import {
+  gatewayAccountConcurrencyAccountId,
+  gatewayAccountConcurrencyAccountIds
+} from '../dispatch/account-concurrency-identity.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import { registerGatewayRuntimeCacheInvalidator, syncGatewayCacheInvalidationsFromRuntimeState } from '../../../shared/gateway-cache-invalidation.js'
 import { runtimeConfig } from '../../../config/runtime.js'
@@ -514,10 +518,11 @@ export async function readCachedGatewayRuntimeAsync(apiKey: string): Promise<DbS
   const cached = gatewayRuntimeCache.get(cacheKey)
   if (cached !== undefined) {
     if (isGatewayRuntimeCacheEntryFresh(cached)) {
-      if (isDynamicRouteStrategyMode(cached.runtime.apiKey?.route_strategy_mode)) {
-        return await routeCachedDynamicGatewayRuntimeForDispatch(cached.runtime)
+      const runtime = sanitizedGatewayRuntimeForDispatch(cached.runtime)
+      if (runtime.apiKey && isDynamicRouteStrategyMode(runtime.apiKey.route_strategy_mode)) {
+        return await routeCachedDynamicGatewayRuntimeForDispatch(runtime)
       }
-      return await cloneGatewayRuntimeForDispatchAsync(cached.runtime)
+      return runtime.apiKey ? await cloneGatewayRuntimeForDispatchAsync(runtime) : cloneStaticGatewayRuntime(runtime)
     }
     if (!shouldAllowStaleGatewayRuntimeFallback()) {
       const runtime = await loadGatewayRuntimeOnce(apiKey, cacheKey)
@@ -835,7 +840,7 @@ function cloneStaticOpenAIAccountSecret(account: OpenAIAccountSecret): OpenAIAcc
 }
 
 function cloneOpenAIAccountsWithCurrentConcurrency(accounts: OpenAIAccountSecret[]): OpenAIAccountSecret[] {
-  const concurrency = loadAccountCurrentConcurrencyByIds(accounts.map((account) => account.id))
+  const concurrency = loadAccountCurrentConcurrencyByIds(gatewayAccountConcurrencyAccountIds(accounts))
   const output: OpenAIAccountSecret[] = []
   for (const account of accounts) {
     const cloned = cloneOpenAIAccountSecretForDispatch(account)
@@ -844,14 +849,14 @@ function cloneOpenAIAccountsWithCurrentConcurrency(accounts: OpenAIAccountSecret
     }
     output.push({
       ...cloned,
-      currentConcurrency: concurrency.get(account.id) ?? 0
+      currentConcurrency: concurrency.get(gatewayAccountConcurrencyAccountId(account)) ?? 0
     })
   }
   return output
 }
 
 async function cloneOpenAIAccountsWithCurrentConcurrencyAsync(accounts: OpenAIAccountSecret[]): Promise<OpenAIAccountSecret[]> {
-  const concurrency = await loadAccountCurrentConcurrencyByIdsAsync(accounts.map((account) => account.id))
+  const concurrency = await loadAccountCurrentConcurrencyByIdsAsync(gatewayAccountConcurrencyAccountIds(accounts))
   const output: OpenAIAccountSecret[] = []
   for (const account of accounts) {
     const cloned = cloneOpenAIAccountSecretForDispatch(account)
@@ -860,7 +865,7 @@ async function cloneOpenAIAccountsWithCurrentConcurrencyAsync(accounts: OpenAIAc
     }
     output.push({
       ...cloned,
-      currentConcurrency: concurrency.get(account.id) ?? 0
+      currentConcurrency: concurrency.get(gatewayAccountConcurrencyAccountId(account)) ?? 0
     })
   }
   return output
@@ -1241,7 +1246,11 @@ async function setGatewaySettingsSharedCacheEntry(settings: GatewaySettings): Pr
 
 function clearGatewaySettingsSharedCache(): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  void gatewaySettingsSharedCache.clear()
+  clearSharedJsonCacheInBackground(
+    gatewaySettingsSharedCache,
+    'gateway_settings_shared_cache_clear_failed',
+    '网关设置 Redis shared cache 清理失败'
+  )
 }
 
 async function getGroupUsageAccessSharedCacheEntry(cacheKey: string): Promise<GroupUsageAccessCacheEntry | undefined> {
@@ -1265,7 +1274,11 @@ async function setGroupUsageAccessSharedCacheEntry(cacheKey: string, entry: Grou
 
 function clearGroupUsageAccessSharedCache(): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  void groupUsageAccessSharedCache.clear()
+  clearSharedJsonCacheInBackground(
+    groupUsageAccessSharedCache,
+    'gateway_group_usage_access_shared_cache_clear_failed',
+    '网关分组访问 Redis shared cache 清理失败'
+  )
 }
 
 function refreshActiveResponseInspectionPoliciesInBackground(
@@ -1324,7 +1337,11 @@ async function setProviderModelCatalogSharedCacheEntry(cacheKey: string, value: 
 
 function clearProviderModelCatalogSharedCache(): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  void providerModelCatalogSharedCache.clear()
+  clearSharedJsonCacheInBackground(
+    providerModelCatalogSharedCache,
+    'gateway_provider_model_catalog_shared_cache_clear_failed',
+    '网关模型目录 Redis shared cache 清理失败'
+  )
 }
 
 async function getProviderModelRouteIndexSharedCacheEntry(cacheKey: string): Promise<ProviderModelRouteIndexCacheEntry | undefined> {
@@ -1340,7 +1357,11 @@ async function setProviderModelRouteIndexSharedCacheEntry(cacheKey: string, entr
 
 function clearProviderModelRouteIndexSharedCache(): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  void providerModelRouteIndexSharedCache.clear()
+  clearSharedJsonCacheInBackground(
+    providerModelRouteIndexSharedCache,
+    'gateway_provider_model_route_index_shared_cache_clear_failed',
+    '网关模型路由索引 Redis shared cache 清理失败'
+  )
 }
 
 function providerModelRouteIndexCacheEntryFromShared(entry: ProviderModelRouteIndexSharedCacheEntry): ProviderModelRouteIndexCacheEntry {
@@ -1376,7 +1397,11 @@ async function setResponseInspectionPolicySharedCacheEntry(cacheKey: string, ent
 
 function clearResponseInspectionPolicySharedCache(): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  void responseInspectionPolicySharedCache.clear()
+  clearSharedJsonCacheInBackground(
+    responseInspectionPolicySharedCache,
+    'gateway_response_inspection_policy_shared_cache_clear_failed',
+    '网关响应检查策略 Redis shared cache 清理失败'
+  )
 }
 
 registerGatewayRuntimeCacheInvalidator(clearGatewayRuntimeCache)

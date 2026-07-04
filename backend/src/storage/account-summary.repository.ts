@@ -9,7 +9,7 @@ import { accountCredentialsForList, findAccountRowForAccess, hydrateAccountRowsW
 import { accountStatusFilterValues, normalizeAccountListOptions, type AccountListOptions, type NormalizedAccountListOptions } from './account-list-options.js'
 import { parseAccountAvailabilityScheduleJson } from './account-availability-schedule.js'
 import { authorizationRuntimeBlockingStatus, disableExpiredAccounts } from './account-runtime-status.js'
-import { accountNameSearchQueryTerms, escapeAccountNameSearchLike, normalizeAccountNameSearchText } from './account-name-search.repository.js'
+import { accountNameSearchQueryTerms, normalizeAccountNameSearchText } from './account-name-search.repository.js'
 import { loadAccountTagsByAccountIds, loadAccountTagsByAccountIdsAsync } from './account-tags.repository.js'
 import { loadModelMappingsByAccountIdsAsync } from './account-model-mappings.repository.js'
 import { loadSupportedModelsByAccountIdsAsync } from './account-supported-models.repository.js'
@@ -808,11 +808,11 @@ function ownerAccountListFilters(
   }
   const keyword = options.keyword?.trim()
   if (keyword) {
-    const normalizedKeywordPrefix = normalizeAccountNameSearchText(keyword)
+    const keywordPrefix = normalizeAccountNameSearchText(keyword)
     const keywordClauses = [
-      '(lower(accounts.name) >= ? AND lower(accounts.name) < ?)'
+      '(accounts.name COLLATE "C" >= ? AND accounts.name COLLATE "C" < ?)'
     ]
-    const keywordParams: unknown[] = [normalizedKeywordPrefix, accountNamePrefixUpperBound(normalizedKeywordPrefix)]
+    const keywordParams: unknown[] = [keywordPrefix, accountNamePrefixUpperBound(keywordPrefix)]
     const containsSubquery = ownerAccountNameContainsSubquery(client, keyword, ownerSystemAccountId ?? undefined)
     if (containsSubquery) {
       keywordClauses.push(`accounts.id IN (${containsSubquery.sql})`)
@@ -905,11 +905,11 @@ function accountListFilters(
   }
   const keyword = options.keyword?.trim()
   if (keyword) {
-    const normalizedKeywordPrefix = normalizeAccountNameSearchText(keyword)
+    const keywordPrefix = normalizeAccountNameSearchText(keyword)
     const keywordClauses = [
-      '(lower(account_rows.name) >= ? AND lower(account_rows.name) < ?)'
+      '(account_rows.name COLLATE "C" >= ? AND account_rows.name COLLATE "C" < ?)'
     ]
-    const keywordParams: unknown[] = [normalizedKeywordPrefix, accountNamePrefixUpperBound(normalizedKeywordPrefix)]
+    const keywordParams: unknown[] = [keywordPrefix, accountNamePrefixUpperBound(keywordPrefix)]
     const containsSubquery = ownerAccountNameContainsSubquery(client, keyword, viewerSystemAccountId)
     if (containsSubquery) {
       keywordClauses.push(`account_rows.id IN (${containsSubquery.sql})`)
@@ -982,10 +982,10 @@ function accountListSortColumn(field: NormalizedAccountListOptions['sorts'][numb
   if (field === 'superPriority') return "CASE WHEN account_rows.access_type = 'authorized' THEN COALESCE(group_bindings.local_super_priority_enabled, account_rows.super_priority_enabled) ELSE account_rows.super_priority_enabled END"
   if (field === 'fallback') return "CASE WHEN account_rows.access_type = 'authorized' THEN COALESCE(group_bindings.local_fallback_enabled, account_rows.fallback_enabled) ELSE account_rows.fallback_enabled END"
   if (field === 'qualityScore') return 'NULL'
-  if (field === 'name') return 'lower(account_rows.name)'
-  if (field === 'type') return 'lower(COALESCE(account_rows.source_type, account_rows.type))'
-  if (field === 'providerCode') return 'lower(COALESCE(account_rows.source_provider_code, account_rows.provider_code))'
-  if (field === 'systemAccount') return 'lower(COALESCE(system_accounts.display_name, system_accounts.username, account_rows.system_account_id))'
+  if (field === 'name') return 'account_rows.name COLLATE "C"'
+  if (field === 'type') return 'COALESCE(account_rows.source_type, account_rows.type) COLLATE "C"'
+  if (field === 'providerCode') return 'COALESCE(account_rows.source_provider_code, account_rows.provider_code) COLLATE "C"'
+  if (field === 'systemAccount') return 'COALESCE(system_accounts.display_name, system_accounts.username, account_rows.system_account_id) COLLATE "C"'
   if (field === 'concurrency') return 'COALESCE(account_rows.source_concurrency_limit, account_rows.concurrency_limit)'
   if (field === 'status') return accountListEffectiveStatusSql()
   if (field === 'accountExpiresAt') return 'COALESCE(account_rows.authorization_expires_at, account_rows.source_account_expires_at, account_rows.account_expires_at)'
@@ -1100,10 +1100,13 @@ function ownerAccountNameContainsSubquery(
   const terms = accountNameSearchQueryTerms(keyword)
   if (!terms.length) return undefined
   const systemAccountClause = ownerSystemAccountId ? 'search.system_account_id = ? AND' : ''
-  const keywordContains = `%${escapeAccountNameSearchLike(normalizeAccountNameSearchText(keyword))}%`
+  const keywordContains = normalizeAccountNameSearchText(keyword)
   const params: unknown[] = ownerSystemAccountId
     ? [ownerSystemAccountId, ...terms, keywordContains, terms.length]
     : [...terms, keywordContains, terms.length]
+  const containsExpression = client.driver === 'postgres'
+    ? 'position(? in documents.normalized_name) > 0'
+    : 'instr(documents.normalized_name, ?) > 0'
   return {
     sql: `
       WITH candidate_terms AS MATERIALIZED (
@@ -1115,7 +1118,7 @@ function ownerAccountNameContainsSubquery(
       FROM candidate_terms
       INNER JOIN ${accountSummaryTable(client, 'account_name_search_documents')} documents
         ON documents.account_id = candidate_terms.account_id
-      WHERE documents.normalized_name LIKE ? ESCAPE '\\'
+      WHERE ${containsExpression}
       GROUP BY candidate_terms.account_id
       HAVING COUNT(DISTINCT candidate_terms.term) = ?
     `,
@@ -1140,10 +1143,10 @@ function ownerAccountListSortColumn(field: NormalizedAccountListOptions['sorts']
   if (field === 'superPriority') return 'accounts.super_priority_enabled'
   if (field === 'fallback') return 'accounts.fallback_enabled'
   if (field === 'qualityScore') return 'NULL'
-  if (field === 'name') return 'lower(accounts.name)'
-  if (field === 'type') return 'lower(accounts.type)'
-  if (field === 'providerCode') return 'lower(accounts.provider_code)'
-  if (field === 'systemAccount') return 'lower(COALESCE(system_accounts.display_name, system_accounts.username, accounts.system_account_id))'
+  if (field === 'name') return 'accounts.name COLLATE "C"'
+  if (field === 'type') return 'accounts.type COLLATE "C"'
+  if (field === 'providerCode') return 'accounts.provider_code COLLATE "C"'
+  if (field === 'systemAccount') return 'COALESCE(system_accounts.display_name, system_accounts.username, accounts.system_account_id) COLLATE "C"'
   if (field === 'concurrency') return 'accounts.concurrency_limit'
   if (field === 'status') return ownerAccountEffectiveStatusSql()
   if (field === 'accountExpiresAt') return 'accounts.account_expires_at'

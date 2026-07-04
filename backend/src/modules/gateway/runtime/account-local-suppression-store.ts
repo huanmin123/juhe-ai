@@ -8,9 +8,11 @@ import {
   type SuppressibleGatewayAccount
 } from './account-runtime-keys.js'
 import { preserveGatewayAccountDispatchPriorityTiers } from './account-dispatch-priority-order.js'
+import { gatewayAccountConcurrencyAccountId } from '../dispatch/account-concurrency-identity.js'
 
 export interface LocalAccountSuppression {
   accountId: string
+  accountConcurrencyAccountId?: string
   untilMs: number
   reason: string
   sinceMs: number
@@ -147,7 +149,12 @@ export function degradeLocalAccountForGatewayFailure(runtimeKey: string, account
   return localAccountDegradationAvailability(degradation)
 }
 
-export function suppressLocalAccountForGatewayFailure(runtimeKey: string, accountId: string, reason: string): GatewayAccountLocalSuppressionResult {
+export function suppressLocalAccountForGatewayFailure(
+  runtimeKey: string,
+  accountId: string,
+  reason: string,
+  accountConcurrencyAccountId = accountId
+): GatewayAccountLocalSuppressionResult {
   if (!canUseProcessLocalAccountRuntimeState()) {
     return {
       runtimeKey,
@@ -169,6 +176,7 @@ export function suppressLocalAccountForGatewayFailure(runtimeKey: string, accoun
     if (observedForMs < localSuppressionPrecheckMinObservationMs) {
       suppressLocalAccount(runtimeKey, fallbackDelayMs, reason, 'local_suppressed', {
         accountId,
+        accountConcurrencyAccountId,
         localFailureCount
       })
       logger.warn({
@@ -191,6 +199,7 @@ export function suppressLocalAccountForGatewayFailure(runtimeKey: string, accoun
     }
     suppressLocalAccount(runtimeKey, fallbackDelayMs, reason, 'local_suppressed', {
       accountId,
+      accountConcurrencyAccountId,
       localFailureCount
     })
     logger.warn({
@@ -213,6 +222,7 @@ export function suppressLocalAccountForGatewayFailure(runtimeKey: string, accoun
   const delayMs = localSuppressionDelayMs[localFailureCount - 1]
   suppressLocalAccount(runtimeKey, delayMs, reason, 'local_suppressed', {
     accountId,
+    accountConcurrencyAccountId,
     localFailureCount
   })
   return {
@@ -230,12 +240,13 @@ export function suppressLocalAccount(
   durationMs: number,
   reason: string,
   status: AccountRuntimeAvailability['status'] = 'local_suppressed',
-  metadata: Partial<Pick<LocalAccountSuppression, 'accountId' | 'sinceMs' | 'failureCount' | 'distinctClientIpCount' | 'distinctApiKeyCount' | 'precheckAttemptCount' | 'localFailureCount' | 'halfOpenLeaseUntilMs' | 'halfOpenLeaseId'>> = {}
+  metadata: Partial<Pick<LocalAccountSuppression, 'accountId' | 'accountConcurrencyAccountId' | 'sinceMs' | 'failureCount' | 'distinctClientIpCount' | 'distinctApiKeyCount' | 'precheckAttemptCount' | 'localFailureCount' | 'halfOpenLeaseUntilMs' | 'halfOpenLeaseId'>> = {}
 ): void {
   if (!canUseProcessLocalAccountRuntimeState()) return
   const untilMs = Date.now() + durationMs
   const current = localAccountSuppressions.get(runtimeKey)
   const accountId = metadata.accountId ?? current?.accountId ?? runtimeAccountIdFromKey(runtimeKey)
+  const accountConcurrencyAccountId = metadata.accountConcurrencyAccountId ?? current?.accountConcurrencyAccountId ?? accountId
   const shouldPreserveLongerUntil = current
     && current.untilMs >= untilMs
     && !(current.status === 'half_open' && status === 'local_suppressed')
@@ -243,6 +254,7 @@ export function suppressLocalAccount(
     localAccountSuppressions.set(runtimeKey, {
       ...current,
       accountId,
+      accountConcurrencyAccountId,
       status,
       reason,
       halfOpenLeaseUntilMs: metadata.halfOpenLeaseUntilMs,
@@ -253,6 +265,7 @@ export function suppressLocalAccount(
   }
   localAccountSuppressions.set(runtimeKey, {
     accountId,
+    accountConcurrencyAccountId,
     untilMs,
     reason,
     sinceMs: metadata.sinceMs ?? current?.sinceMs ?? Date.now(),
@@ -528,7 +541,7 @@ export function cleanupExpiredLocalSuppressions(isPrecheckRuntimeBlocking: Prech
     if (isPrecheckRuntimeBlocking(accountId)) {
       continue
     }
-    if (suppression.status === 'half_open' && getAccountCurrentConcurrency(suppression.accountId) > 0) {
+    if (suppression.status === 'half_open' && getAccountCurrentConcurrency(localSuppressionConcurrencyAccountId(suppression)) > 0) {
       continue
     }
     const retainUntilMs = Math.max(suppression.untilMs, suppression.halfOpenLeaseUntilMs ?? 0) + localSuppressionIdleRetentionMs
@@ -574,7 +587,7 @@ function isLocalSuppressionVisible(
 function isLocalSuppressionBlocking(suppression: LocalAccountSuppression, now: number): boolean {
   if (suppression.status === 'half_open') {
     return (suppression.halfOpenLeaseUntilMs ?? suppression.untilMs) > now
-      || getAccountCurrentConcurrency(suppression.accountId) > 0
+      || getAccountCurrentConcurrency(localSuppressionConcurrencyAccountId(suppression)) > 0
   }
   if (suppression.status === 'precheck_pending' || suppression.status === 'precheck_failed') {
     return suppression.untilMs > now
@@ -588,7 +601,7 @@ function canAcquireLocalHalfOpenLease(suppression: LocalAccountSuppression, now:
   }
   if (suppression.status === 'half_open') {
     return (suppression.halfOpenLeaseUntilMs ?? suppression.untilMs) <= now
-      && getAccountCurrentConcurrency(suppression.accountId) <= 0
+      && getAccountCurrentConcurrency(localSuppressionConcurrencyAccountId(suppression)) <= 0
   }
   return false
 }
@@ -605,6 +618,7 @@ function acquireLocalHalfOpenLease(
   localAccountSuppressions.set(runtimeKey, {
     ...suppression,
     accountId: account.id,
+    accountConcurrencyAccountId: gatewayAccountConcurrencyAccountId(account),
     status: 'half_open',
     untilMs: leaseUntilMs,
     halfOpenLeaseUntilMs: leaseUntilMs,
@@ -632,9 +646,13 @@ function localSuppressionVisibleUntilMs(suppression: LocalAccountSuppression, no
     return suppression.untilMs
   }
   const leaseUntilMs = suppression.halfOpenLeaseUntilMs ?? suppression.untilMs
-  return getAccountCurrentConcurrency(suppression.accountId) > 0
+  return getAccountCurrentConcurrency(localSuppressionConcurrencyAccountId(suppression)) > 0
     ? Math.max(leaseUntilMs, now + 1000)
     : leaseUntilMs
+}
+
+function localSuppressionConcurrencyAccountId(suppression: LocalAccountSuppression): string {
+  return suppression.accountConcurrencyAccountId || suppression.accountId
 }
 
 function minRetryAtMs(current: number | undefined, candidate: number): number {

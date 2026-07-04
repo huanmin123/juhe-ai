@@ -56,6 +56,11 @@ import { GatewayAgentGuidanceResponse, GatewayLocalProtocolResponse, GatewayRequ
 import { recordGatewayAccountApiKeyFailure } from '../runtime/account-api-key-effects.service.js'
 import { waitForHighConcurrencyGroupCapacity } from '../runtime/high-concurrency-queue.service.js'
 import { preserveGatewayAccountDispatchPriorityTiers } from '../runtime/account-dispatch-priority-order.js'
+import {
+  gatewayAccountConcurrencyAccountId,
+  gatewayAccountConcurrencyAccountIds,
+  gatewayAccountConcurrencyLimitsByAccountId
+} from './account-concurrency-identity.js'
 import type { GatewayAccountModelPriority } from './model-filter.js'
 
 export interface OpenAIUpstreamDispatchResult {
@@ -179,10 +184,11 @@ export async function fetchFirstAvailableUpstream(
         failedAccountIds.add(originalAccount.id)
         continue
       }
+      const concurrencyAccountId = gatewayAccountConcurrencyAccountId(originalAccount)
       let concurrencyAcquire: AccountConcurrencyAcquireResult
       try {
         concurrencyAcquire = await acquireAccountConcurrencyWithShortRetry(
-          originalAccount.id,
+          concurrencyAccountId,
           originalAccount.concurrencyLimit,
           concurrencyRetryWaitBudgetMs,
           signal,
@@ -212,6 +218,7 @@ export async function fetchFirstAvailableUpstream(
         getRequestLogger().info({
           event: 'gateway_account_concurrency_acquired_after_wait',
           accountId: originalAccount.id,
+          accountConcurrencyAccountId: concurrencyAccountId,
           accountName: originalAccount.name,
           retryCount: concurrencyAcquire.retryCount,
           waitedMs: concurrencyAcquire.waitedMs,
@@ -503,8 +510,8 @@ export async function fetchFirstAvailableUpstream(
         systemAccountId: usageContext.systemAccountId,
         groupId: usageContext.groupId,
         apiKeyId: usageContext.apiKeyId,
-        accountIds: dispatchAccounts.map((account) => account.id),
-        accountConcurrencyLimits: Object.fromEntries(dispatchAccounts.map((account) => [account.id, account.concurrencyLimit])),
+        accountIds: gatewayAccountConcurrencyAccountIds(dispatchAccounts),
+        accountConcurrencyLimits: gatewayAccountConcurrencyLimitsByAccountId(dispatchAccounts),
         lane: requestLane,
         policy: groupSchedulingPolicy,
         signal
@@ -807,7 +814,7 @@ async function orderAccountsForRequestLaneAsync(
   if (requestLane !== 'image' || accounts.length < 2) {
     return accounts
   }
-  const accountIds = accounts.map((account) => account.id)
+  const accountIds = gatewayAccountConcurrencyAccountIds(accounts)
   const currentConcurrency = await loadAccountCurrentConcurrencyByIdsAsync(accountIds)
   const imageLaneConcurrency = await loadAccountCurrentConcurrencyByIdsAsync(accountIds, 'image')
   const orderedAccounts = [...accounts].sort((left, right) => {
@@ -826,14 +833,15 @@ function imageLaneBusyRank(
   groupSchedulingPolicy?: GroupSchedulingPolicy
 ): number {
   const hardLimit = Number.isFinite(account.concurrencyLimit) ? Math.max(1, Math.trunc(account.concurrencyLimit)) : 1
-  if ((currentConcurrency.get(account.id) ?? 0) >= hardLimit) {
+  const concurrencyAccountId = gatewayAccountConcurrencyAccountId(account)
+  if ((currentConcurrency.get(concurrencyAccountId) ?? 0) >= hardLimit) {
     return 2
   }
   const laneLimit = effectiveImageLaneConcurrencyLimit({
     accountConcurrencyLimit: hardLimit,
     policy: groupSchedulingPolicy
   })
-  return (imageLaneConcurrency.get(account.id) ?? 0) >= laneLimit ? 1 : 0
+  return (imageLaneConcurrency.get(concurrencyAccountId) ?? 0) >= laneLimit ? 1 : 0
 }
 
 function accountConcurrencyLaneAcquireOptions(

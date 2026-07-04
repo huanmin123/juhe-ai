@@ -540,9 +540,9 @@ function loadAiPerformanceAccountOptionRows(
     SELECT accounts.id
     FROM accounts
     WHERE accounts.deleted_at IS NULL
-      AND lower(accounts.name) >= ? AND lower(accounts.name) < ?
+      AND accounts.name >= ? AND accounts.name < ?
       ${visibleFilter.sql}
-    ORDER BY accounts.name COLLATE NOCASE ASC, accounts.id ASC
+    ORDER BY accounts.name ASC, accounts.id ASC
     LIMIT ?
   `).all(keywordPrefix.start, keywordPrefix.end, ...visibleFilter.params, options.limit) as unknown as Array<{ id: string }>
   const sourceInstanceParams = scope.systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? [] : [scope.systemAccountId]
@@ -553,9 +553,9 @@ function loadAiPerformanceAccountOptionRows(
       ON instance_accounts.authorization_instance_source_account_id = source_accounts.id
     WHERE source_accounts.deleted_at IS NULL
       AND instance_accounts.deleted_at IS NULL
-      AND lower(source_accounts.name) >= ? AND lower(source_accounts.name) < ?
+      AND source_accounts.name >= ? AND source_accounts.name < ?
       ${scope.systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? '' : 'AND instance_accounts.system_account_id = ?'}
-    ORDER BY source_accounts.name COLLATE NOCASE ASC, instance_accounts.id ASC
+    ORDER BY source_accounts.name ASC, instance_accounts.id ASC
     LIMIT ?
   `).all(keywordPrefix.start, keywordPrefix.end, ...sourceInstanceParams, options.limit) as unknown as Array<{ id: string }>
   const accountIds = uniqueNonEmpty([
@@ -585,8 +585,8 @@ async function loadAiPerformanceAccountOptionRowsAsync(
       SELECT accounts.id
       FROM ${accountsTable} accounts
       WHERE accounts.deleted_at IS NULL
-        AND LOWER(accounts.name) COLLATE "C" >= ? AND LOWER(accounts.name) COLLATE "C" < ? AND starts_with(LOWER(accounts.name), ?)
-      ORDER BY LOWER(accounts.name) COLLATE "C" ASC, accounts.id ASC
+        AND accounts.name COLLATE "C" >= ? AND accounts.name COLLATE "C" < ? AND starts_with(accounts.name, ?)
+      ORDER BY accounts.name COLLATE "C" ASC, accounts.id ASC
       LIMIT ?
     `, [keywordPrefix.start, keywordPrefix.end, keywordPrefix.start, options.limit])
     : uniqueNonEmpty([
@@ -596,8 +596,8 @@ async function loadAiPerformanceAccountOptionRowsAsync(
         WHERE accounts.system_account_id = ?
           AND accounts.deleted_at IS NULL
           AND accounts.authorization_instance_authorization_id IS NULL
-          AND LOWER(accounts.name) COLLATE "C" >= ? AND LOWER(accounts.name) COLLATE "C" < ? AND starts_with(LOWER(accounts.name), ?)
-        ORDER BY LOWER(accounts.name) COLLATE "C" ASC, accounts.id ASC
+          AND accounts.name COLLATE "C" >= ? AND accounts.name COLLATE "C" < ? AND starts_with(accounts.name, ?)
+        ORDER BY accounts.name COLLATE "C" ASC, accounts.id ASC
         LIMIT ?
       `, [scope.systemAccountId, keywordPrefix.start, keywordPrefix.end, keywordPrefix.start, options.limit])).map((row) => row.id),
       ...(await client.query<{ id: string }>(`
@@ -606,15 +606,15 @@ async function loadAiPerformanceAccountOptionRowsAsync(
         WHERE accounts.system_account_id = ?
           AND accounts.deleted_at IS NULL
           AND accounts.authorization_instance_authorization_id IS NOT NULL
-          AND LOWER(accounts.name) COLLATE "C" >= ? AND LOWER(accounts.name) COLLATE "C" < ? AND starts_with(LOWER(accounts.name), ?)
-        ORDER BY LOWER(accounts.name) COLLATE "C" ASC, accounts.id ASC
+          AND accounts.name COLLATE "C" >= ? AND accounts.name COLLATE "C" < ? AND starts_with(accounts.name, ?)
+        ORDER BY accounts.name COLLATE "C" ASC, accounts.id ASC
         LIMIT ?
       `, [scope.systemAccountId, keywordPrefix.start, keywordPrefix.end, keywordPrefix.start, options.limit])).map((row) => row.id),
       ...(await client.query<{ id: string }>(`
         SELECT accounts.id
         FROM ${accountsTable} accounts
         WHERE accounts.deleted_at IS NULL
-          AND LOWER(accounts.name) COLLATE "C" >= ? AND LOWER(accounts.name) COLLATE "C" < ? AND starts_with(LOWER(accounts.name), ?)
+          AND accounts.name COLLATE "C" >= ? AND accounts.name COLLATE "C" < ? AND starts_with(accounts.name, ?)
           AND EXISTS (
             SELECT 1
             FROM ${businessTable(client, 'group_accounts')} visible_group_accounts
@@ -627,7 +627,7 @@ async function loadAiPerformanceAccountOptionRowsAsync(
             WHERE visible_group_accounts.account_id = accounts.id
               AND visible_group_accounts.enabled = 1
           )
-        ORDER BY LOWER(accounts.name) COLLATE "C" ASC, accounts.id ASC
+        ORDER BY accounts.name COLLATE "C" ASC, accounts.id ASC
         LIMIT ?
       `, [keywordPrefix.start, keywordPrefix.end, keywordPrefix.start, scope.systemAccountId, nowIso(), options.limit])).map((row) => row.id)
     ]).slice(0, options.limit).map((id) => ({ id }))
@@ -639,9 +639,9 @@ async function loadAiPerformanceAccountOptionRowsAsync(
       ON instance_accounts.authorization_instance_source_account_id = source_accounts.id
     WHERE source_accounts.deleted_at IS NULL
       AND instance_accounts.deleted_at IS NULL
-      AND LOWER(source_accounts.name) COLLATE "C" >= ? AND LOWER(source_accounts.name) COLLATE "C" < ? AND starts_with(LOWER(source_accounts.name), ?)
+      AND source_accounts.name COLLATE "C" >= ? AND source_accounts.name COLLATE "C" < ? AND starts_with(source_accounts.name, ?)
       ${scope.systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? '' : 'AND instance_accounts.system_account_id = ?'}
-    ORDER BY LOWER(source_accounts.name) COLLATE "C" ASC, instance_accounts.id ASC
+    ORDER BY source_accounts.name COLLATE "C" ASC, instance_accounts.id ASC
     LIMIT ?
   `, [keywordPrefix.start, keywordPrefix.end, keywordPrefix.start, ...sourceInstanceParams, options.limit])
   const accountIds = uniqueNonEmpty([
@@ -654,7 +654,7 @@ async function loadAiPerformanceAccountOptionRowsAsync(
 }
 
 function normalizeAccountNamePrefix(value: string): { start: string; end: string } {
-  const start = value.normalize('NFKC').toLowerCase().trim()
+  const start = value.normalize('NFKC').trim()
   return { start, end: accountNamePrefixUpperBound(start) }
 }
 

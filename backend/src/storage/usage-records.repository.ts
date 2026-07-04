@@ -11,7 +11,6 @@ import {
   generateUsageRecordId,
   getUsageRecordShardDatabase,
   findRegisteredUsageRecordShardLocation,
-  listRecentUsageRecordShardLocations,
   listUsageRecordShardLocations,
   queryUsageRecordShardById,
   recordUsageRecordShardEntries,
@@ -26,8 +25,6 @@ import {
 import { writeUsageRecordShardRowsWithWriterPool } from './usage-record-writer-pool.js'
 import { optionalString } from './value-utils.js'
 import type { ResourceAuthorizationSourceType } from '../domain/types.js'
-import { GPT_VENDOR_CODE } from '../domain/provider-protocol.js'
-import { listOpenAIProtocolProviderCodes, listOpenAIProtocolProviderCodesAsync } from './provider.repository.js'
 import { recordAccountHealthSuccessSignals } from './account-health-check.repository.js'
 import { errorLogFields, logger } from '../shared/logger.js'
 import { runtimeConfig } from '../config/runtime.js'
@@ -121,13 +118,6 @@ export interface UsageRecordListResult {
   hasMore: boolean
   page: number
   pageSize: number
-}
-
-export interface RecentOpenAIRequestShape {
-  endpoint: string
-  model?: string
-  stream: boolean
-  createdAt: string
 }
 
 export interface UsageRecordInput {
@@ -318,158 +308,6 @@ export async function getUsageRecordDetailAsync(id: string, access?: AccessScope
     : new Map<string, string>()
   return namedRow ? usageRecordSummaryFromRow(namedRow, shouldIncludeSystemAccountFields, accountNames, true) : undefined
 }
-
-export function findRecentOpenAIRequestShapeForAccount(accountId: string, groupId?: string): RecentOpenAIRequestShape | undefined {
-  const normalizedAccountId = accountId.trim()
-  const normalizedGroupId = groupId?.trim()
-  if (!normalizedAccountId) return undefined
-  const accountShape = findRecentOpenAIRequestShape({ accountId: normalizedAccountId, groupId: normalizedGroupId })
-  return accountShape ?? (normalizedGroupId ? findRecentOpenAIRequestShape({ groupId: normalizedGroupId }) : undefined)
-}
-
-export async function findRecentOpenAIRequestShapeForAccountAsync(accountId: string, groupId?: string): Promise<RecentOpenAIRequestShape | undefined> {
-  if (runtimeConfig.databaseDriver !== 'postgres') {
-    return findRecentOpenAIRequestShapeForAccount(accountId, groupId)
-  }
-  const normalizedAccountId = accountId.trim()
-  const normalizedGroupId = groupId?.trim()
-  if (!normalizedAccountId) return undefined
-  const client = createPostgresDatabaseClient(await getPostgresPool())
-  const accountShape = await findRecentOpenAIRequestShapeAsync(client, { accountId: normalizedAccountId, groupId: normalizedGroupId })
-  return accountShape ?? (normalizedGroupId ? await findRecentOpenAIRequestShapeAsync(client, { groupId: normalizedGroupId }) : undefined)
-}
-
-function findRecentOpenAIRequestShape(input: { accountId?: string; groupId?: string }): RecentOpenAIRequestShape | undefined {
-  const clauses: string[] = []
-  const params: string[] = []
-  if (input.accountId) {
-    clauses.push('account_id = ?')
-    params.push(input.accountId)
-  }
-  if (input.groupId) {
-    clauses.push('group_id = ?')
-    params.push(input.groupId)
-  }
-  if (clauses.length === 0) return undefined
-  const providerCodes = openAIProtocolProviderCodesForRecentRequestShape()
-  if (!providerCodes.length) return undefined
-  const endpointFilter = recentOpenAIEndpointFilter()
-  let currentBucketDateKey = ''
-  let currentRows: RecentOpenAIRequestShapeRow[] = []
-  for (const location of listRecentUsageRecordShardLocations(recentOpenAIRequestShapeLookbackDays)) {
-    if (currentBucketDateKey && location.bucketDateKey !== currentBucketDateKey) {
-      const shape = recentOpenAIRequestShapeFromRows(currentRows)
-      if (shape) return shape
-      currentRows = []
-    }
-    currentBucketDateKey = location.bucketDateKey
-    const row = getUsageRecordShardDatabase(location)
-      .prepare(`
-      SELECT id, endpoint, model, stream, created_at
-      FROM usage_records
-      WHERE ${clauses.join(' AND ')}
-        AND api_key_id IS NOT NULL
-        AND traffic_source = 'gateway'
-        AND provider_code IN (${sqlPlaceholders(providerCodes.length)})
-        AND endpoint IS NOT NULL
-        AND TRIM(endpoint) <> ''
-        AND (${endpointFilter.clause})
-      ORDER BY created_at DESC, id DESC
-      LIMIT 1
-    `)
-      .get(...params, ...providerCodes, ...endpointFilter.params) as unknown as RecentOpenAIRequestShapeRow | undefined
-    if (row) {
-      currentRows.push(row)
-    }
-  }
-  return recentOpenAIRequestShapeFromRows(currentRows)
-}
-
-async function findRecentOpenAIRequestShapeAsync(
-  client: DatabaseClient,
-  input: { accountId?: string; groupId?: string }
-): Promise<RecentOpenAIRequestShape | undefined> {
-  const clauses: string[] = []
-  const params: string[] = []
-  if (input.accountId) {
-    clauses.push('account_id = ?')
-    params.push(input.accountId)
-  }
-  if (input.groupId) {
-    clauses.push('group_id = ?')
-    params.push(input.groupId)
-  }
-  if (clauses.length === 0) return undefined
-  const providerCodes = await openAIProtocolProviderCodesForRecentRequestShapeAsync()
-  if (!providerCodes.length) return undefined
-  const endpointFilter = recentOpenAIEndpointFilter()
-  const rows = await client.query<RecentOpenAIRequestShapeRow>(`
-    SELECT id, endpoint, model, stream, created_at
-    FROM ${client.dialect.qualifyTable('juhe_usage', 'usage_records')}
-    WHERE ${clauses.join(' AND ')}
-      AND api_key_id IS NOT NULL
-      AND traffic_source = 'gateway'
-      AND provider_code IN (${providerCodes.map(() => '?').join(', ')})
-      AND endpoint IS NOT NULL
-      AND TRIM(endpoint) <> ''
-      AND (${endpointFilter.clause})
-    ORDER BY created_at DESC, id DESC
-    LIMIT 1
-  `, [...params, ...providerCodes, ...endpointFilter.params])
-  return recentOpenAIRequestShapeFromRows(rows)
-}
-
-function openAIProtocolProviderCodesForRecentRequestShape(): string[] {
-  const codes = listOpenAIProtocolProviderCodes()
-  return codes.length ? codes : [GPT_VENDOR_CODE]
-}
-
-async function openAIProtocolProviderCodesForRecentRequestShapeAsync(): Promise<string[]> {
-  const codes = await listOpenAIProtocolProviderCodesAsync()
-  return codes.length ? codes : [GPT_VENDOR_CODE]
-}
-
-function recentOpenAIRequestShapeFromRows(rows: RecentOpenAIRequestShapeRow[]): RecentOpenAIRequestShape | undefined {
-  rows.sort((left, right) => {
-    const byCreatedAt = String(right.created_at ?? '').localeCompare(String(left.created_at ?? ''))
-    return byCreatedAt || String(right.id ?? '').localeCompare(String(left.id ?? ''))
-  })
-  const row = rows[0]
-  const endpoint = optionalString(row?.endpoint)
-  const createdAt = optionalString(row?.created_at)
-  if (!endpoint || !createdAt) return undefined
-  return {
-    endpoint,
-    model: optionalString(row?.model),
-    stream: row?.stream === 1 || row?.stream === true,
-    createdAt
-  }
-}
-
-interface RecentOpenAIRequestShapeRow {
-  id?: string | null
-  endpoint?: string | null
-  model?: string | null
-  stream?: number | boolean | null
-  created_at?: string | null
-}
-
-function recentOpenAIEndpointFilter(): { clause: string; params: string[] } {
-  const endpoints = ['/v1/responses', '/v1/chat/completions']
-  const prefixes = endpoints.flatMap((endpoint) => [`post ${endpoint}`, endpoint])
-  return {
-    clause: prefixes.map(() => `
-      ${recentOpenAIEndpointExpression} = ?
-      OR (${recentOpenAIEndpointExpression} >= ? AND ${recentOpenAIEndpointExpression} < ?)
-    `).join(' OR '),
-    params: prefixes.flatMap((prefix) => {
-      const childPrefix = `${prefix}/`
-      return [prefix, childPrefix, `${childPrefix}\uffff`]
-    })
-  }
-}
-
-const recentOpenAIEndpointExpression = 'LOWER(TRIM(endpoint))'
 
 export function createUsageRecord(input: UsageRecordInput): void {
   createUsageRecordsBatch([input])
@@ -1263,8 +1101,8 @@ async function postgresAccountIdsForKeyword(client: DatabaseClient, keyword: str
   const normalizedKeyword = normalizeUsageRecordAccountKeyword(keyword)
   const upperBound = usageRecordAccountKeywordUpperBound(normalizedKeyword)
   const ids: string[] = []
-  const accountNameExpression = '(lower(accounts.name) COLLATE "C")'
-  const sourceNameExpression = '(lower(source_accounts.name) COLLATE "C")'
+  const accountNameExpression = '(accounts.name COLLATE "C")'
+  const sourceNameExpression = '(source_accounts.name COLLATE "C")'
   const accountNameClause = `${accountNameExpression} >= ? AND ${accountNameExpression} < ?`
   const sourceNameClause = `${sourceNameExpression} >= ? AND ${sourceNameExpression} < ?`
   const ownerClause = ownerSystemAccountId ? 'AND accounts.system_account_id = ?' : ''
@@ -1340,7 +1178,7 @@ function usageRecordTextPrefixUpperBound(value: string): string {
 }
 
 function normalizeUsageRecordAccountKeyword(value: string): string {
-  return value.normalize('NFKC').toLowerCase().trim()
+  return value.normalize('NFKC').trim()
 }
 
 function usageRecordAccountKeywordUpperBound(value: string): string {
@@ -1670,8 +1508,6 @@ function updateAccountLastUsedAt(accountLastUsedAt: Map<string, string>, databas
     throw error
   }
 }
-
-const recentOpenAIRequestShapeLookbackDays = 7
 
 function normalizeUsageRecordTrafficSource(value: unknown): UsageRecordTrafficSource {
   if (

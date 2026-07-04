@@ -170,7 +170,7 @@ export function listRouteStrategyOptions(access?: AccessScope, options?: RouteSt
       SELECT route_strategies.id, route_strategies.system_account_id, route_strategies.name, route_strategies.mode, route_strategies.status, route_strategies.is_default
       FROM route_strategies
       ${filters.clause}
-      ORDER BY route_strategies.is_default DESC, route_strategies.updated_at DESC, route_strategies.name COLLATE NOCASE ASC, route_strategies.id ASC
+      ORDER BY route_strategies.is_default DESC, route_strategies.updated_at DESC, route_strategies.name ASC, route_strategies.id ASC
       LIMIT ?
     `)
     .all(...filters.params, normalized.limit) as unknown as RouteStrategyRow[]
@@ -237,7 +237,6 @@ export function createRouteStrategy(input: Record<string, unknown>, access?: Acc
     createdAt: now,
     updatedAt: now
   }
-  assertRouteStrategyNameAvailable(systemAccountId, record.name)
   const database = getBusinessDatabase()
   const transactionStarted = beginDatabaseTransaction(database)
   try {
@@ -286,7 +285,6 @@ export async function createRouteStrategyAsync(input: Record<string, unknown>, a
   try {
     await client.transaction(async (tx) => {
       const bindings = await normalizeRouteStrategyGroupBindingsAsync(bindingInputs, systemAccountId, tx, true)
-      await assertRouteStrategyNameAvailableAsync(tx, systemAccountId, record.name)
       await tx.execute(`
         INSERT INTO ${routeStrategyTable(tx, 'route_strategies')} (id, system_account_id, name, description, mode, status, config_json, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -325,7 +323,6 @@ export function updateRouteStrategy(id: string, input: Record<string, unknown>, 
     status: hasOwnInput(input, 'status') ? normalizeRouteStrategyStatus(input.status, current.status) : current.status,
     configJson: routeStrategyConfigJson(config)
   }
-  assertRouteStrategyNameAvailable(systemAccountId, next.name, id)
   const now = nowIso()
   const database = getBusinessDatabase()
   const transactionStarted = beginDatabaseTransaction(database)
@@ -385,7 +382,6 @@ export async function updateRouteStrategyAsync(id: string, input: Record<string,
       const bindings = bindingInputs
         ? await normalizeRouteStrategyGroupBindingsAsync(bindingInputs, ownerSystemAccountId, tx, true)
         : routeStrategyGroupBindingWritesFromSummary(current.groupBindings)
-      await assertRouteStrategyNameAvailableAsync(tx, ownerSystemAccountId, next.name, id)
       await tx.execute(`
         UPDATE ${routeStrategyTable(tx, 'route_strategies')}
         SET name = ?, description = ?, mode = ?, status = ?, config_json = ?, updated_at = ?
@@ -1103,9 +1099,8 @@ function buildRouteStrategyFilters(scope: { clause: string; params: string[] }, 
     params.push(...scope.params)
   }
   if (options.keyword) {
-    const keywordPrefix = `${escapeLikePrefix(options.keyword)}%`
-    clauses.push("(route_strategies.name COLLATE NOCASE = ? OR route_strategies.name LIKE ? ESCAPE '\\')")
-    params.push(options.keyword, keywordPrefix)
+    clauses.push('(route_strategies.name >= ? AND route_strategies.name < ?)')
+    params.push(options.keyword, textPrefixUpperBound(options.keyword))
   }
   if (options.mode) {
     clauses.push('route_strategies.mode = ?')
@@ -1120,11 +1115,25 @@ function buildRouteStrategyFilters(scope: { clause: string; params: string[] }, 
 
 function buildRouteStrategyFiltersForClient(client: DatabaseClient, scope: { clause: string; params: string[] }, options: ReturnType<typeof normalizeRouteStrategyListOptions>): { clause: string; params: Array<string | number> } {
   if (client.driver === 'sqlite') return buildRouteStrategyFilters(scope, options)
-  const filters = buildRouteStrategyFilters(scope, options)
-  return {
-    clause: filters.clause.replace('COLLATE NOCASE = ?', '= ?').replace('route_strategies.name LIKE ?', 'route_strategies.name ILIKE ?'),
-    params: filters.params
+  const clauses: string[] = []
+  const params: Array<string | number> = []
+  if (scope.clause) {
+    clauses.push(scope.clause.replace(/^ WHERE /, ''))
+    params.push(...scope.params)
   }
+  if (options.keyword) {
+    clauses.push('(route_strategies.name COLLATE "C" >= ? AND route_strategies.name COLLATE "C" < ?)')
+    params.push(options.keyword, textPrefixUpperBound(options.keyword))
+  }
+  if (options.mode) {
+    clauses.push('route_strategies.mode = ?')
+    params.push(options.mode)
+  }
+  if (options.status) {
+    clauses.push('route_strategies.status = ?')
+    params.push(options.status)
+  }
+  return { clause: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '', params }
 }
 
 function buildRouteStrategyOptionFilters(scope: { clause: string; params: string[] }, options: ReturnType<typeof normalizeRouteStrategyOptionListOptions>): { clause: string; params: Array<string | number> } {
@@ -1139,9 +1148,8 @@ function buildRouteStrategyOptionFilters(scope: { clause: string; params: string
     params.push(...options.ids)
   }
   if (options.keyword) {
-    const keywordPrefix = `${escapeLikePrefix(options.keyword)}%`
-    clauses.push("(route_strategies.name COLLATE NOCASE = ? OR route_strategies.name LIKE ? ESCAPE '\\')")
-    params.push(options.keyword, keywordPrefix)
+    clauses.push('(route_strategies.name >= ? AND route_strategies.name < ?)')
+    params.push(options.keyword, textPrefixUpperBound(options.keyword))
   }
   if (options.activeOnly) {
     clauses.push("route_strategies.status = 'active'")
@@ -1151,13 +1159,24 @@ function buildRouteStrategyOptionFilters(scope: { clause: string; params: string
 
 function buildRouteStrategyOptionFiltersForClient(client: DatabaseClient, scope: { clause: string; params: string[] }, options: ReturnType<typeof normalizeRouteStrategyOptionListOptions>): { clause: string; params: Array<string | number> } {
   if (client.driver === 'sqlite') return buildRouteStrategyOptionFilters(scope, options)
-  const filters = buildRouteStrategyOptionFilters(scope, options)
-  return {
-    clause: filters.clause
-      .replace('COLLATE NOCASE = ?', '= ?')
-      .replace('route_strategies.name LIKE ?', 'route_strategies.name ILIKE ?'),
-    params: filters.params
+  const clauses: string[] = []
+  const params: Array<string | number> = []
+  if (scope.clause) {
+    clauses.push(scope.clause.replace(/^ WHERE /, ''))
+    params.push(...scope.params)
   }
+  if (options.ids?.length) {
+    clauses.push(`route_strategies.id IN (${sqlPlaceholders(options.ids.length)})`)
+    params.push(...options.ids)
+  }
+  if (options.keyword) {
+    clauses.push('(route_strategies.name COLLATE "C" >= ? AND route_strategies.name COLLATE "C" < ?)')
+    params.push(options.keyword, textPrefixUpperBound(options.keyword))
+  }
+  if (options.activeOnly) {
+    clauses.push("route_strategies.status = 'active'")
+  }
+  return { clause: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '', params }
 }
 
 function normalizeRouteStrategyListMode(value: unknown): RouteStrategyMode | undefined {
@@ -1333,23 +1352,22 @@ function nextDefaultRouteStrategyName(database: DatabaseSync, systemAccountId: s
 }
 
 async function nextDefaultRouteStrategyNameAsync(client: DatabaseClient, systemAccountId: string, baseName = DEFAULT_ROUTE_STRATEGY_NAME): Promise<string> {
-  const likeOperator = client.driver === 'postgres' ? 'ILIKE' : 'LIKE'
   const rows = await client.query<{ name?: string | null }>(`
     SELECT name
     FROM ${routeStrategyTable(client, 'route_strategies')}
-    WHERE system_account_id = ? AND (name = ? OR name ${likeOperator} ? ESCAPE '\\')
+    WHERE system_account_id = ? AND (name = ? OR name LIKE ? ESCAPE '\\')
   `, [systemAccountId, baseName, `${baseName} %`])
   return nextDefaultRouteStrategyNameFromExisting(rows.map((row) => row.name), baseName)
 }
 
 function nextDefaultRouteStrategyNameFromExisting(names: Array<string | null | undefined>, baseName = DEFAULT_ROUTE_STRATEGY_NAME): string {
-  const existing = new Set(names.map((name) => String(name ?? '').trim().toLowerCase()).filter(Boolean))
-  if (!existing.has(baseName.toLowerCase())) {
+  const existing = new Set(names.map((name) => String(name ?? '').trim()).filter(Boolean))
+  if (!existing.has(baseName)) {
     return baseName
   }
   for (let index = 2; index <= 1000; index += 1) {
     const candidate = `${baseName} ${index}`
-    if (!existing.has(candidate.toLowerCase())) {
+    if (!existing.has(candidate)) {
       return candidate
     }
   }
@@ -1371,26 +1389,6 @@ async function lockRouteStrategyMutationRowAsync(client: DatabaseClient, routeSt
   `, [routeStrategyId, systemAccountId])
 }
 
-function assertRouteStrategyNameAvailable(systemAccountId: string, name: string, excludeId?: string): void {
-  const params: string[] = [systemAccountId, name]
-  const excludeClause = excludeId ? ' AND id <> ?' : ''
-  if (excludeId) params.push(excludeId)
-  const row = getBusinessDatabase()
-    .prepare(`SELECT id FROM route_strategies WHERE system_account_id = ? AND lower(name) = lower(?)${excludeClause} LIMIT 1`)
-    .get(...params) as { id?: string } | undefined
-  if (row?.id) throw new Error(`策略路由名称已存在：${name}`)
-}
-
-async function assertRouteStrategyNameAvailableAsync(client: DatabaseClient, systemAccountId: string, name: string, excludeId?: string): Promise<void> {
-  const row = await client.one<{ id?: string }>(`
-    SELECT id
-    FROM ${routeStrategyTable(client, 'route_strategies')}
-    WHERE system_account_id = ? AND lower(name) = lower(?) AND id <> ?
-    LIMIT 1
-  `, [systemAccountId, name, excludeId ?? ''])
-  if (row?.id) throw new Error(`策略路由名称已存在：${name}`)
-}
-
 async function getRouteStrategyDatabaseClient(): Promise<DatabaseClient> {
   if (runtimeConfig.databaseDriver === 'postgres') {
     return createPostgresDatabaseClient(await getPostgresPool())
@@ -1408,11 +1406,19 @@ function textFilter(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }
 
-function escapeLikePrefix(value: string): string {
-  return value.replace(/[\\%_]/g, (char) => `\\${char}`)
+function textPrefixUpperBound(value: string): string {
+  const chars = [...value]
+  for (let index = chars.length - 1; index >= 0; index -= 1) {
+    const codePoint = chars[index]?.codePointAt(0)
+    if (codePoint !== undefined && codePoint < 0x10ffff) {
+      return `${chars.slice(0, index).join('')}${String.fromCodePoint(codePoint + 1)}`
+    }
+  }
+  return `${value}\uffff`
 }
 
 function isDuplicateRouteStrategyNameError(error: unknown): boolean {
   if (!(error instanceof Error)) return false
-  return error.message.includes('idx_route_strategies_owner_name_unique_lower')
+  return error.message.includes('idx_route_strategies_owner_name_unique')
+    || error.message.includes('idx_route_strategies_owner_name_unique_lower')
 }

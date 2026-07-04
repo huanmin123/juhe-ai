@@ -31,27 +31,27 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
   {
     schemaName: 'juhe_business',
     source: 'api-keys-pg-prefix-indexes',
-    sql: 'CREATE INDEX IF NOT EXISTS idx_api_keys_name_c_lookup ON api_keys((lower(name) COLLATE "C"), id)'
+    sql: 'CREATE INDEX IF NOT EXISTS idx_api_keys_name_c_lookup ON api_keys((name COLLATE "C"), id)'
   },
   {
     schemaName: 'juhe_business',
     source: 'api-keys-pg-prefix-indexes',
-    sql: 'CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_name_c_lookup ON api_keys(system_account_id, (lower(name) COLLATE "C"), id)'
+    sql: 'CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_name_c_lookup ON api_keys(system_account_id, (name COLLATE "C"), id)'
   },
   {
     schemaName: 'juhe_business',
     source: 'accounts-pg-prefix-indexes',
-    sql: 'CREATE INDEX IF NOT EXISTS idx_accounts_name_c_lookup ON accounts((lower(name) COLLATE "C"), id) WHERE deleted_at IS NULL'
+    sql: 'CREATE INDEX IF NOT EXISTS idx_accounts_name_c_lookup ON accounts((name COLLATE "C"), id) WHERE deleted_at IS NULL'
   },
   {
     schemaName: 'juhe_business',
     source: 'accounts-pg-prefix-indexes',
-    sql: 'CREATE INDEX IF NOT EXISTS idx_accounts_owner_name_c_lookup ON accounts(system_account_id, (lower(name) COLLATE "C"), id) WHERE deleted_at IS NULL AND authorization_instance_authorization_id IS NULL'
+    sql: 'CREATE INDEX IF NOT EXISTS idx_accounts_owner_name_c_lookup ON accounts(system_account_id, (name COLLATE "C"), id) WHERE deleted_at IS NULL AND authorization_instance_authorization_id IS NULL'
   },
   {
     schemaName: 'juhe_business',
     source: 'accounts-pg-prefix-indexes',
-    sql: 'CREATE INDEX IF NOT EXISTS idx_accounts_owner_all_name_c_lookup ON accounts(system_account_id, (lower(name) COLLATE "C"), id) WHERE deleted_at IS NULL'
+    sql: 'CREATE INDEX IF NOT EXISTS idx_accounts_owner_all_name_c_lookup ON accounts(system_account_id, (name COLLATE "C"), id) WHERE deleted_at IS NULL'
   },
   {
     schemaName: 'juhe_usage',

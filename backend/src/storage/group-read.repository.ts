@@ -425,19 +425,17 @@ function buildGroupFilter(
     params.push(...options.ids)
   }
   if (providerCode) {
-    clauses.push(`${column('provider_code')} COLLATE NOCASE = ?`)
+    clauses.push(`${column('provider_code')} = ?`)
     params.push(providerCode)
   }
   const text = options.keyword?.trim()
   if (text) {
-    const prefix = `${escapeLikePrefix(text)}%`
+    const upperBound = textPrefixUpperBound(text)
     clauses.push(`(
-      ${column('name')} COLLATE NOCASE = ?
-      OR ${column('name')} LIKE ? ESCAPE '\\'
-      OR ${column('provider_code')} COLLATE NOCASE = ?
-      OR ${column('provider_code')} LIKE ? ESCAPE '\\'
+      (${column('name')} >= ? AND ${column('name')} < ?)
+      OR (${column('provider_code')} >= ? AND ${column('provider_code')} < ?)
     )`)
-    params.push(text, prefix, text, prefix)
+    params.push(text, upperBound, text, upperBound)
   }
   return { clauses, params }
 }
@@ -456,26 +454,23 @@ function buildGroupFilterForClient(
   const params = [...initialParams]
   const providerCode = options.providerCode?.trim()
   const column = (name: string) => alias ? `${alias}.${name}` : name
-  const lowerEquals = (name: string) => `lower(${column(name)}) = lower(?)`
-  const lowerLike = (name: string) => `lower(${column(name)}) LIKE lower(?) ESCAPE '\\'`
+  const cRange = (name: string) => `(${column(name)} COLLATE "C" >= ? AND ${column(name)} COLLATE "C" < ?)`
   if (options.ids.length) {
     clauses.push(`${column('id')} IN (${options.ids.map(() => '?').join(', ')})`)
     params.push(...options.ids)
   }
   if (providerCode) {
-    clauses.push(lowerEquals('provider_code'))
+    clauses.push(`${column('provider_code')} = ?`)
     params.push(providerCode)
   }
   const text = options.keyword?.trim()
   if (text) {
-    const prefix = `${escapeLikePrefix(text)}%`
+    const upperBound = textPrefixUpperBound(text)
     clauses.push(`(
-      ${lowerEquals('name')}
-      OR ${lowerLike('name')}
-      OR ${lowerEquals('provider_code')}
-      OR ${lowerLike('provider_code')}
+      ${cRange('name')}
+      OR ${cRange('provider_code')}
     )`)
-    params.push(text, prefix, text, prefix)
+    params.push(text, upperBound, text, upperBound)
   }
   return { clauses, params }
 }
@@ -495,8 +490,15 @@ function normalizeTextList(values?: string[]): string[] {
     .slice(0, 500)
 }
 
-function escapeLikePrefix(value: string): string {
-  return value.replace(/[\\%_]/g, (char) => `\\${char}`)
+function textPrefixUpperBound(value: string): string {
+  const chars = [...value]
+  for (let index = chars.length - 1; index >= 0; index -= 1) {
+    const codePoint = chars[index]?.codePointAt(0)
+    if (codePoint !== undefined && codePoint < 0x10ffff) {
+      return `${chars.slice(0, index).join('')}${String.fromCodePoint(codePoint + 1)}`
+    }
+  }
+  return `${value}\uffff`
 }
 
 export function loadGroupAuthorizationUsageSummaries(

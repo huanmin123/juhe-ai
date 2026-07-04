@@ -1,8 +1,9 @@
-import type { AccountClientCompatibility, AccountSummary, AccountTestResult, AccountTestTask } from '@/types/domain'
+import type { AccountSummary, AccountTestResult, AccountTestTask } from '@/types/domain'
 import { providerDisplayName } from '@/shared/providerDisplay'
 
-import type { AccountBatchTestItem, AccountTestClientCompatibility } from './accountTestFlow'
+import type { AccountBatchTestItem, AccountTestEndpointMode } from './accountTestFlow'
 import { accountProviderProtocolKind } from './accountProviderCapabilities'
+import { accountEndpointModeLabel, accountTestEndpointModesForAccount } from './accountEndpointModes'
 import { accountTypeText } from './accountBasicFormatters'
 import {
   formatAccountTestDuration,
@@ -33,8 +34,8 @@ interface AccountTestBatchCounts {
 interface SingleAccountTestOutputOptions {
   account?: AccountSummary
   activeTask?: AccountTestTask
-  clientCompatibility: AccountTestClientCompatibility
-  fixedOAuthCompatibilityText: string
+  testEndpointMode: AccountTestEndpointMode
+  selectedEndpointModeText: string
   model: string
   providerLabel: (account: AccountSummary) => string
   result?: AccountTestResult
@@ -81,37 +82,32 @@ export function accountTestBatchStatusText(counts: AccountTestBatchCounts, runni
   return '全部通过'
 }
 
-export function accountTestSelectedCompatibilityText(input: {
+export function accountTestSelectedEndpointModeText(input: {
   account: AccountSummary
-  clientCompatibility: AccountTestClientCompatibility
-  fixedOAuthCompatibilityText: string
+  testEndpointMode: AccountTestEndpointMode
+  selectedEndpointModeText: string
 }): string {
-  if (accountProviderProtocolKind(input.account) === 'anthropic_v1') {
-    return 'Anthropic API'
+  if (input.testEndpointMode !== 'account_default') {
+    return accountEndpointModeLabel(input.testEndpointMode, input.account)
   }
-  if (input.account.type === 'oauth') {
-    return input.fixedOAuthCompatibilityText
-  }
-  if (input.clientCompatibility === 'account_default') {
-    return accountClientCompatibilityRequestText(input.account.type === 'oauth' ? 'codex_responses' : 'openai_standard')
-  }
-  return accountClientCompatibilityRequestText(input.clientCompatibility)
+  return input.selectedEndpointModeText
+    || accountEndpointModeLabel(accountTestEndpointModesForAccount(input.account)[0] ?? 'chat_sse', input.account)
 }
 
 export function accountTestSingleOutputLines(options: SingleAccountTestOutputOptions): AccountTestOutputLine[] {
   const account = options.account
   if (!account || (!options.running && !options.result)) return []
-  const selectedCompatibilityText = accountTestSelectedCompatibilityText({
+  const selectedEndpointModeText = accountTestSelectedEndpointModeText({
     account,
-    clientCompatibility: options.clientCompatibility,
-    fixedOAuthCompatibilityText: options.fixedOAuthCompatibilityText
+    testEndpointMode: options.testEndpointMode,
+    selectedEndpointModeText: options.selectedEndpointModeText
   })
   const lines: AccountTestOutputLine[] = [
     { text: `开始测试账号：${account.name}`, tone: 'info' },
     { text: `供应商：${options.providerLabel(account)}`, tone: 'muted' },
     { text: `账号类型：${accountTypeText(account.type)}`, tone: 'muted' },
     {
-      text: `测试请求形态：${selectedCompatibilityText}`,
+      text: `测试请求形态：${selectedEndpointModeText}`,
       tone: 'muted'
     }
   ]
@@ -310,17 +306,18 @@ export function accountTestBatchItemMessage(item: AccountBatchTestItem): string 
 }
 
 function accountTestActualProtocolLine(account: AccountSummary, result: AccountTestResult): AccountTestOutputLine {
-  if (accountProviderProtocolKind(account) === 'anthropic_v1') {
-    return { text: '实际请求形态：Anthropic API 请求', tone: 'muted' }
-  }
+  const endpointMode = result.testEndpointMode ?? accountTestEndpointModesForAccount(account)[0]
   return {
-    text: `实际请求形态：${accountClientCompatibilityRequestText(result.testClientCompatibility ?? result.clientCompatibility ?? (account.type === 'oauth' ? 'codex_responses' : 'openai_standard'))}`,
+    text: `实际请求形态：${endpointMode ? accountEndpointModeLabel(endpointMode, account) : fallbackProtocolText(account)}`,
     tone: 'muted'
   }
 }
 
-function accountClientCompatibilityRequestText(value: AccountClientCompatibility): string {
-  return value === 'codex_responses' ? 'Codex Responses 请求' : 'OpenAI-compatible 请求'
+function fallbackProtocolText(account: AccountSummary): string {
+  const protocolKind = accountProviderProtocolKind(account)
+  if (protocolKind === 'anthropic_v1') return 'Messages API'
+  if (protocolKind === 'gemini_v1beta') return 'generateContent'
+  return 'OpenAI API'
 }
 
 function accountTestApiKeyPoolOutputLines(result: AccountTestResult): AccountTestOutputLine[] {

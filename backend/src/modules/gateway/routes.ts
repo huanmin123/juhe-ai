@@ -985,6 +985,7 @@ function shouldSendCodexDispatchExhaustedStreamRetry(
   res: Response
 ): error is UpstreamAttemptError {
   return error instanceof UpstreamAttemptError
+    && !error.agentGuidanceResponse
     && preflight.clientStrategy.allowCodexStreamClientRetry
     && preflight.clientStrategy.downstreamProtocol === 'responses_sse'
     && !res.headersSent

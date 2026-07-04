@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 import { GLOBAL_STATS_SYSTEM_ACCOUNT_ID } from '../../storage/usage-stats-types.js'
 
@@ -46,6 +47,7 @@ try {
   }, access)
   const matchedAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'keywordneedle 账号用量账户',
     type: 'api_key',
     credentials: {
@@ -56,6 +58,7 @@ try {
   }, access)
   const otherAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '普通 keywordneedle 账号用量账户',
     type: 'api_key',
     credentials: {
@@ -66,6 +69,7 @@ try {
   }, access)
   const selectedAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'selected-account 账号用量账户',
     type: 'api_key',
     credentials: {
@@ -76,6 +80,7 @@ try {
   }, access)
   const notesOnlyAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '备注字段账号用量账户',
     type: 'api_key',
     credentials: {
@@ -111,6 +116,7 @@ try {
   }, granteeAccess)
   const authorizedSourceAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '授权用量来源初始名',
     type: 'api_key',
     credentials: {
@@ -140,6 +146,7 @@ try {
   }, ownerAccess)
   const groupAuthorizedAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '授权用量分组账户A',
     type: 'api_key',
     credentials: {
@@ -298,8 +305,13 @@ try {
   )
   assert.match(
     accountUsageAsyncKeywordSnippet,
-    /LOWER\(accounts\.name\) >= \? AND LOWER\(accounts\.name\) < \? AND starts_with\(LOWER\(accounts\.name\), \?\)/,
-    'PG 账号用量关键词预解析账号名必须使用 lower(name) 范围 + starts_with 条件'
+    /accounts\.name COLLATE "C" >= \? AND accounts\.name COLLATE "C" < \? AND starts_with\(accounts\.name, \?\)/,
+    'PG 账号用量关键词预解析账号名必须使用大小写敏感 C collation 范围 + starts_with 条件'
+  )
+  assert.doesNotMatch(
+    accountUsageAsyncKeywordSnippet,
+    /LOWER\(accounts\.name\)/,
+    'PG 账号用量关键词预解析不能折叠账号名称大小写'
   )
   assert.doesNotMatch(
     accountUsageAsyncKeywordSnippet,
@@ -310,7 +322,7 @@ try {
     assert(!/\bCOALESCE\s*\(/i.test(call.sql), '账号用量关键词预解析不应通过 COALESCE 做包含扫描')
     assert(!/\baccounts\.id\s*(?:=|LIKE)\s*\?/i.test(call.sql), '账号用量关键词预解析不应按账号 ID 搜索')
     assert(!/\baccounts\.notes\s+(?:COLLATE|LIKE)\b/i.test(call.sql), '账号用量关键词预解析不应把备注字段放进通用关键词 WHERE')
-    assert(/\bESCAPE\s+'\\'/i.test(call.sql), '账号用量关键词预解析前缀搜索应显式转义 LIKE 通配符')
+    assert(!/\bLIKE\s+\?/i.test(call.sql), '账号用量关键词预解析不应使用 LIKE，避免大小写折叠或通配符语义')
     assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '账号用量关键词预解析不应接收前导通配符参数')
     assert.equal(call.params[call.params.length - 1], 50, '账号用量关键词预解析最多只取 50 个候选账号')
   }

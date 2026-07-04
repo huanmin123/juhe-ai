@@ -246,13 +246,13 @@ export function findGroupOptionByName(providerCode: string, name: string, contex
   if (context.groupLookup.has(key)) {
     return context.groupLookup.get(key)
   }
-  const normalized = name.trim().toLowerCase()
+  const normalized = name.trim()
   const group = listGroupOptions(context.access, {
     providerCode,
     keyword: name,
     manageableOnly: true,
     limit: 50
-  }).find((item) => item.providerCode === providerCode && item.name.trim().toLowerCase() === normalized)
+  }).find((item) => item.providerCode === providerCode && item.name.trim() === normalized)
   context.groupLookup.set(key, group)
   return group
 }
@@ -262,44 +262,46 @@ export async function findGroupOptionByNameAsync(providerCode: string, name: str
   if (context.groupLookup.has(key)) {
     return context.groupLookup.get(key)
   }
-  const normalized = name.trim().toLowerCase()
+  const normalized = name.trim()
   const group = (await listGroupOptionsAsync(context.access, {
     providerCode,
     keyword: name,
     manageableOnly: true,
     limit: 50
-  })).find((item) => item.providerCode === providerCode && item.name.trim().toLowerCase() === normalized)
+  })).find((item) => item.providerCode === providerCode && item.name.trim() === normalized)
   context.groupLookup.set(key, group)
   return group
 }
 
 export function findProxyOptionByName(name: string, context: AccountImportResourceContext): ProxyProfileOptionSummary | undefined {
-  const key = name.trim().toLowerCase()
+  const key = name.trim()
   if (context.proxyLookup.has(key)) {
     return context.proxyLookup.get(key)
   }
-  const proxy = listProxyOptions({ keyword: name, limit: 50 }).find((item) => item.name.trim().toLowerCase() === key)
+  const proxy = listProxyOptions({ keyword: name, limit: 50 }).find((item) => item.name.trim() === key)
   context.proxyLookup.set(key, proxy)
   return proxy
 }
 
 export async function findProxyOptionByNameAsync(name: string, context: AccountImportResourceContext): Promise<ProxyProfileOptionSummary | undefined> {
-  const key = name.trim().toLowerCase()
+  const key = name.trim()
   if (context.proxyLookup.has(key)) {
     return context.proxyLookup.get(key)
   }
-  const proxy = (await listProxyOptionsAsync({ keyword: name, limit: 50 })).find((item) => item.name.trim().toLowerCase() === key)
+  const proxy = (await listProxyOptionsAsync({ keyword: name, limit: 50 })).find((item) => item.name.trim() === key)
   context.proxyLookup.set(key, proxy)
   return proxy
 }
 
 export function findProxyByName(name: string): ProxyProfileSummary | undefined {
-  const option = listProxyOptions({ keyword: name, limit: 50 }).find((item) => item.name.trim().toLowerCase() === name.trim().toLowerCase())
+  const key = name.trim()
+  const option = listProxyOptions({ keyword: name, limit: 50 }).find((item) => item.name.trim() === key)
   return option ? findProxy(option.id) : undefined
 }
 
 export async function findProxyByNameAsync(name: string): Promise<ProxyProfileSummary | undefined> {
-  const option = (await listProxyOptionsAsync({ keyword: name, limit: 50 })).find((item) => item.name.trim().toLowerCase() === name.trim().toLowerCase())
+  const key = name.trim()
+  const option = (await listProxyOptionsAsync({ keyword: name, limit: 50 })).find((item) => item.name.trim() === key)
   return option ? await findProxyAsync(option.id) : undefined
 }
 

@@ -1203,7 +1203,7 @@ assert.match(cooldownAccountRetestSource, /model:\s*await preferredSystemAccount
 assert.match(cooldownAccountRetestSource, /trafficSource:\s*'cooldown_retest'/)
 assert.match(cooldownAccountRetestSource, /temporaryUnschedulableRetryAttempts:\s*0/)
 assert.match(cooldownAccountRetestSource, /testOpenAIAccountWithDiagnosticRetries/)
-assert.doesNotMatch(cooldownAccountRetestSource, /requestShape|findRecentOpenAIRequestShapeForAccount/, '冷却复测只能使用账户测试健康探针，不能复用失败请求形态')
+assert.doesNotMatch(cooldownAccountRetestSource, /requestShape/, '冷却复测只能使用账户测试健康探针，不能复用失败请求形态')
 assert.match(cooldownAccountRetestSource, /account\.boundGroupId/)
 assert.doesNotMatch(cooldownAccountRetestSource, /waitForRetryDelay/)
 
@@ -1211,7 +1211,7 @@ const accountHealthCheckSource = readSource('modules/background/account-health-c
 assert.match(accountHealthCheckSource, /diagnostics:\s*'limited'/)
 assert.match(accountHealthCheckSource, /model:\s*await preferredSystemAccountTestModelAsync\(account\)/)
 assert.match(accountHealthCheckSource, /trafficSource:\s*'cooldown_retest'/)
-assert.doesNotMatch(accountHealthCheckSource, /requestShape|findRecentOpenAIRequestShapeForAccount/, '账号健康检查只能使用账户测试健康探针，不能复用失败请求形态')
+assert.doesNotMatch(accountHealthCheckSource, /requestShape/, '账号健康检查只能使用账户测试健康探针，不能复用失败请求形态')
 
 const gatewayAccountSideEffectsSource = readSource('modules/gateway/runtime/account-side-effects.service.ts')
 assert.match(gatewayAccountSideEffectsSource, /runSingleGatewayAccountPrecheck/)
@@ -1236,7 +1236,7 @@ assert.doesNotMatch(codexSwitchProbeSource, /8_000|codexSwitchProbeTimeoutMs|tes
 
 const usageRecordsRepositorySource = readSource('storage/usage-records.repository.ts')
 assert.match(usageRecordsRepositorySource, /traffic_source/)
-assert.match(usageRecordsRepositorySource, /traffic_source = 'gateway'/)
+assert.doesNotMatch(usageRecordsRepositorySource, /requestShape|RequestShape/, '使用记录仓储不应保留请求形态查询入口')
 assert.doesNotMatch(usageRecordsRepositorySource, /COALESCE\(traffic_source, 'gateway'\)/)
 
 const usageRecordListQuerySource = readSource('storage/usage-record-list-query.ts')

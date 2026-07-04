@@ -368,10 +368,12 @@ function uniqueAuthorizedAccountInstanceName(database: DatabaseSync, sourceName:
 }
 
 function isAccountNameAvailable(database: DatabaseSync, systemAccountId: string, name: string, exceptAccountId?: string): boolean {
+  const params = exceptAccountId ? [systemAccountId, name, exceptAccountId] : [systemAccountId, name]
+  const exceptClause = exceptAccountId ? ' AND id <> ?' : ''
   const row = database
-    .prepare('SELECT id FROM accounts WHERE system_account_id = ? AND lower(name) = lower(?) AND deleted_at IS NULL LIMIT 1')
-    .get(systemAccountId, name) as unknown as { id?: string } | undefined
-  return !row?.id || row.id === exceptAccountId
+    .prepare(`SELECT id FROM accounts WHERE system_account_id = ? AND name = ? AND deleted_at IS NULL${exceptClause} LIMIT 1`)
+    .get(...params) as unknown as { id?: string } | undefined
+  return !row?.id
 }
 
 function groupIdForAuthorizationBinding(database: DatabaseSync, providerCode: string, systemAccountId: string, targetGroupId?: string): string {

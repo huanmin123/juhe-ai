@@ -6,6 +6,7 @@ import {
   createClientIpPolicyAsync,
   aggregateClientIpStatsBatchAsync,
   disableClientIpPoliciesAsync,
+  findActiveClientIpPolicyByHashAsync,
   listActiveClientIpPoliciesAsync,
   recordClientIpPolicyHitsAsync,
   refreshClientIpUsageRangeWindowsAsync
@@ -25,6 +26,7 @@ import {
   insertSystemMetricsSampleAsync,
   refreshDirtyGroupAccountStatsCacheAsync,
   refreshDirtyGroupAccountStatsCacheWithWriter,
+  refreshHotUsageWindowSnapshots,
   refreshUsageQuotaHourlyWindowsCache,
   refreshUsageQuotaHourlyWindowsCacheAsync,
   refreshUsageRankSnapshotsInStages,
@@ -64,7 +66,6 @@ import type { ActiveClientIpPolicy } from '../../storage/client-ip-stats.reposit
 import {
   requestBackgroundWorkerDbService,
   requestBackgroundWorkerStatsWrite,
-  sendClientIpPolicySnapshotToServer,
   sendGatewayQuotaSnapshotToServer
 } from './background-ipc.js'
 import { buildGatewayQuotaSnapshot, buildGatewayQuotaSnapshotAsync } from '../../storage/gateway-quota-snapshot.repository.js'
@@ -108,6 +109,10 @@ export type BackgroundStatsWriteOperation =
     stageNames: UsageRankSnapshotStageName[]
   }
   | {
+    type: 'refresh_hot_usage_windows'
+    jobName: string
+  }
+  | {
     type: 'check_usage_stats_consistency'
     limit: number
   }
@@ -130,6 +135,10 @@ export type BackgroundStatsWriteOperation =
   }
   | {
     type: 'list_active_client_ip_policies'
+  }
+  | {
+    type: 'find_active_client_ip_policy_by_hash'
+    ipHash: string
   }
   | {
     type: 'upsert_account_usage_snapshots'
@@ -164,17 +173,19 @@ export type BackgroundStatsWriteOperation =
 
 export type BackgroundStatsWriteOperationResult<T extends BackgroundStatsWriteOperation = BackgroundStatsWriteOperation> =
   T extends { type: 'aggregate_usage_stats' } ? { processed: number; quotaSnapshotSent: boolean; stoppedByTimeBudget: boolean; effectiveBatchSize: number } :
-  T extends { type: 'aggregate_client_ip_stats' } ? { processed: number; policies: ActiveClientIpPolicy[] } :
+  T extends { type: 'aggregate_client_ip_stats' } ? { processed: number } :
   T extends { type: 'refresh_group_account_stats' } ? { refreshed: true } :
   T extends { type: 'refresh_account_quality' } ? AccountQualityRealtimeRefreshResult & { failureCandidates: AccountQualityFailurePrecheckCandidate[] } :
   T extends { type: 'record_system_metrics_sample' } ? { recorded: true } :
   T extends { type: 'refresh_usage_rank_snapshots' } ? UsageRankSnapshotRefreshResult :
+  T extends { type: 'refresh_hot_usage_windows' } ? UsageRankSnapshotRefreshResult :
   T extends { type: 'check_usage_stats_consistency' } ? ReturnType<typeof checkUsageStatsConsistency> :
   T extends { type: 'collect_table_storage_snapshot' } ? CollectTableStorageSnapshotResult :
   T extends { type: 'record_client_ip_policy_hits' } ? { recorded: number } :
   T extends { type: 'create_client_ip_policy' } ? import('../../storage/client-ip-stats.repository.js').ClientIpPolicySummary :
   T extends { type: 'disable_client_ip_policies' } ? { disabledCount: number } :
   T extends { type: 'list_active_client_ip_policies' } ? ActiveClientIpPolicy[] :
+  T extends { type: 'find_active_client_ip_policy_by_hash' } ? ActiveClientIpPolicy | undefined :
   T extends { type: 'upsert_account_usage_snapshots' } ? { upsertedCount: number } :
   T extends { type: 'cleanup_usage_stats_retention' } ? ReturnType<typeof cleanupUsageStatsBucketsBefore> :
   T extends { type: 'cleanup_system_metrics_retention' } ? ReturnType<typeof cleanupSystemMetricsBefore> :
@@ -231,6 +242,12 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
         skipIfUnchanged: true,
         jobName: operation.jobName
       })
+    case 'refresh_hot_usage_windows':
+      return await refreshHotUsageWindowSnapshots({
+        yieldToEventLoop,
+        skipIfUnchanged: true,
+        jobName: operation.jobName
+      })
     case 'check_usage_stats_consistency':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await checkUsageStatsConsistencyAsync(operation.limit)
@@ -249,6 +266,8 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
       return await disableClientIpPoliciesAsync(operation.input)
     case 'list_active_client_ip_policies':
       return await listActiveClientIpPoliciesAsync()
+    case 'find_active_client_ip_policy_by_hash':
+      return await findActiveClientIpPolicyByHashAsync(operation.ipHash)
     case 'upsert_account_usage_snapshots':
       if (runtimeConfig.databaseDriver === 'postgres') {
         await upsertAccountUsageSnapshotsAsync(operation.inputs)
@@ -340,7 +359,7 @@ async function aggregateUsageStats(batchSize: number, maxBatches: number, maxRun
   return { processed, quotaSnapshotSent: false, stoppedByTimeBudget, effectiveBatchSize: normalizedBatchSize }
 }
 
-async function aggregateClientIpStats(batchSize: number, maxBatches: number, maxRunMs: number): Promise<{ processed: number; policies: ActiveClientIpPolicy[] }> {
+async function aggregateClientIpStats(batchSize: number, maxBatches: number, maxRunMs: number): Promise<{ processed: number }> {
   const startedAtMs = Date.now()
   let processed = 0
   const normalizedBatchSize = boundedPositiveInteger(batchSize, 1, 10000)
@@ -354,9 +373,7 @@ async function aggregateClientIpStats(batchSize: number, maxBatches: number, max
     await pauseBetweenStatsAggregationBatches()
   }
   await refreshClientIpUsageRangeWindowsAsync()
-  const policies = await listActiveClientIpPoliciesAsync()
-  sendClientIpPolicySnapshotToServer(policies)
-  return { processed, policies }
+  return { processed }
 }
 
 function cleanupStatsDatabaseAfterDelete<T extends object>(result: T): T {

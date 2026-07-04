@@ -55,7 +55,7 @@ export async function applyServerAccountConcurrencyToAccountList<T extends { ite
 export async function applyServerAccountRuntimeToAccount(account: AccountSummary): Promise<AccountSummary> {
   if (runtimeConfig.runtimeStateDriver === 'redis') {
     const [concurrency, runtime] = await Promise.all([
-      loadRedisAccountConcurrencySnapshot([account.id]),
+      loadRedisAccountConcurrencySnapshot([accountConcurrencySnapshotId(account)]),
       loadServerAccountRuntimeSnapshot()
     ])
     const withConcurrency = concurrency
@@ -121,7 +121,7 @@ async function applyRedisAccountRuntimeToAccountList<T extends { items: AccountS
   result: T
 ): Promise<T & { runtimeSnapshot: AccountRuntimeSnapshotStatus }> {
   const [concurrency, runtime] = await Promise.all([
-    loadRedisAccountConcurrencySnapshot(result.items.map((account) => account.id)),
+    loadRedisAccountConcurrencySnapshot(accountConcurrencySnapshotIds(result.items)),
     loadServerAccountRuntimeSnapshot()
   ])
   const runtimeAvailability = runtime?.accountRuntimeAvailability
@@ -152,9 +152,27 @@ async function loadRedisAccountConcurrencySnapshot(accountIds: string[]): Promis
 function applyAccountConcurrency(account: AccountSummary, concurrency: AccountConcurrencySnapshot): AccountSummary {
   return {
     ...account,
-    currentConcurrency: concurrency[account.id] ?? 0,
+    currentConcurrency: concurrency[accountConcurrencySnapshotId(account)] ?? 0,
     currentConcurrencyAvailable: true
   }
+}
+
+function accountConcurrencySnapshotIds(accounts: AccountSummary[]): string[] {
+  const result: string[] = []
+  const seen = new Set<string>()
+  for (const account of accounts) {
+    const accountId = accountConcurrencySnapshotId(account)
+    if (!accountId || seen.has(accountId)) {
+      continue
+    }
+    seen.add(accountId)
+    result.push(accountId)
+  }
+  return result
+}
+
+function accountConcurrencySnapshotId(account: AccountSummary): string {
+  return account.authorizationInstanceSourceAccountId || account.id
 }
 
 function applyAccountRuntimeAvailability(

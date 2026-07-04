@@ -648,10 +648,19 @@ local slot_token = ARGV[5]
 local started_at_ms = tonumber(ARGV[6])
 local expires_at_ms = now_ms + slot_ttl_ms
 
+local function hdel_expired(metadata_key, expired)
+  local index = 1
+  while index <= #expired do
+    local last = math.min(index + 199, #expired)
+    redis.call('HDEL', metadata_key, unpack(expired, index, last))
+    index = last + 1
+  end
+end
+
 local function cleanup_expired()
   local expired = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', now_ms)
   if #expired > 0 then
-    redis.call('HDEL', KEYS[5], unpack(expired))
+    hdel_expired(KEYS[5], expired)
   end
   redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now_ms)
   redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now_ms)
@@ -698,9 +707,18 @@ return 1
 const redisLoadAccountConcurrencyScript = `
 local now_ms = tonumber(ARGV[1])
 
+local function hdel_expired(metadata_key, expired)
+  local index = 1
+  while index <= #expired do
+    local last = math.min(index + 199, #expired)
+    redis.call('HDEL', metadata_key, unpack(expired, index, last))
+    index = last + 1
+  end
+end
+
 local expired = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', now_ms)
 if #expired > 0 then
-  redis.call('HDEL', KEYS[5], unpack(expired))
+  hdel_expired(KEYS[5], expired)
 end
 redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now_ms)
 redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now_ms)
@@ -747,9 +765,18 @@ local now_ms = tonumber(ARGV[1])
 local slow_threshold_ms = tonumber(ARGV[2])
 local first_output_slow_threshold_ms = tonumber(ARGV[3])
 
+local function hdel_expired(metadata_key, expired)
+  local index = 1
+  while index <= #expired do
+    local last = math.min(index + 199, #expired)
+    redis.call('HDEL', metadata_key, unpack(expired, index, last))
+    index = last + 1
+  end
+end
+
 local expired = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', now_ms)
 if #expired > 0 then
-  redis.call('HDEL', KEYS[4], unpack(expired))
+  hdel_expired(KEYS[4], expired)
 end
 redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now_ms)
 redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now_ms)

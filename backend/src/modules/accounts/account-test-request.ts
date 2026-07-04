@@ -4,17 +4,13 @@ import {
   defaultAnthropicEndpointModes,
   isAnthropicEndpointMode
 } from '../../domain/anthropic-endpoint-modes.js'
-import {
-  defaultOpenAIEndpointModes,
-  openAIEndpointModeForRequestShape
-} from '../../domain/openai-endpoint-modes.js'
-import type { RecentOpenAIRequestShape } from '../../storage/repositories.js'
 
 export const accountTestDefaultPrompt = '只输出 OK'
 const defaultOpenAITestInstructions = 'You are ChatGPT, a helpful assistant.'
 const gatewayTestPath = '/v1/responses'
 const gatewayChatCompletionsPath = '/v1/chat/completions'
 const gatewayAnthropicMessagesPath = '/v1/messages'
+const gatewayGeminiVersionPrefix = '/v1beta'
 export const accountTestModelsPath = '/v1/models'
 
 export type AccountTestRequestInput = {
@@ -23,9 +19,7 @@ export type AccountTestRequestInput = {
   prompt: string
   isOAuth: boolean
   clientCompatibility: AccountClientCompatibility
-  providerProtocolProfileId?: string
-  supportedEndpointModes?: AccountSupportedEndpointMode[]
-  requestShape?: RecentOpenAIRequestShape
+  testEndpointMode: AccountSupportedEndpointMode
 }
 
 export type AccountTestRequest = {
@@ -35,13 +29,7 @@ export type AccountTestRequest = {
 }
 
 export function createOpenAITestRequest(input: AccountTestRequestInput): AccountTestRequest {
-  const mode = testEndpointModeFromRecentShape(
-    input.requestShape,
-    input.isOAuth,
-    input.clientCompatibility,
-    input.supportedEndpointModes,
-    input.providerProtocolProfileId
-  )
+  const mode = input.testEndpointMode
   const path = testPathFromEndpointMode(mode)
   const stream = mode === 'chat_sse' || mode === 'responses_sse'
   const model = stringValue(input.explicitModel) || input.fallbackModel
@@ -59,10 +47,12 @@ export function createAnthropicTestRequest(input: {
   fallbackModel: string
   prompt: string
   supportedEndpointModes?: AccountSupportedEndpointMode[]
+  testEndpointMode?: AccountSupportedEndpointMode
 }): AccountTestRequest {
   const supportedModes = input.supportedEndpointModes?.filter(isAnthropicEndpointMode)
   const modes = supportedModes?.length ? supportedModes : defaultAnthropicEndpointModes()
-  const stream = !modes.includes('messages_json') && modes.includes('messages_sse')
+  const mode = input.testEndpointMode ?? preferredAnthropicTestEndpointMode(modes)
+  const stream = mode === 'messages_sse'
   const model = stringValue(input.explicitModel) || input.fallbackModel
   return {
     path: gatewayAnthropicMessagesPath,
@@ -81,54 +71,41 @@ export function createAnthropicTestRequest(input: {
   }
 }
 
-export function testPathFromRecentShape(
-  shape: RecentOpenAIRequestShape | undefined,
-  isOAuth: boolean,
-  clientCompatibility: AccountClientCompatibility,
-  supportedEndpointModes?: AccountSupportedEndpointMode[],
-  providerProtocolProfileId?: string
-): string {
-  return testPathFromEndpointMode(testEndpointModeFromRecentShape(shape, isOAuth, clientCompatibility, supportedEndpointModes, providerProtocolProfileId))
+export function createGeminiTestRequest(input: {
+  explicitModel?: string
+  fallbackModel: string
+  prompt: string
+  testEndpointMode: AccountSupportedEndpointMode
+}): AccountTestRequest {
+  const model = stringValue(input.explicitModel) || input.fallbackModel
+  const stream = input.testEndpointMode === 'generate_content_sse'
+  const method = stream ? 'streamGenerateContent' : 'generateContent'
+  return {
+    path: `${gatewayGeminiVersionPrefix}/${geminiModelPath(model)}:${method}${stream ? '?alt=sse' : ''}`,
+    body: createGeminiGenerateContentTestPayload(input.prompt),
+    model
+  }
 }
 
-export function testEndpointModeFromRecentShape(
-  shape: RecentOpenAIRequestShape | undefined,
-  isOAuth: boolean,
-  clientCompatibility: AccountClientCompatibility,
-  supportedEndpointModes?: AccountSupportedEndpointMode[],
-  providerProtocolProfileId?: string
-): AccountSupportedEndpointMode {
-  const supportedModes = supportedEndpointModes?.length
-    ? supportedEndpointModes
-    : defaultOpenAIEndpointModes({
-      accountType: isOAuth ? 'oauth' : 'api_key',
-      providerProtocolProfileId,
-      clientCompatibility
-    })
-  const preferredModes: AccountSupportedEndpointMode[] = []
-  if (isOAuth || clientCompatibility === 'codex_responses') {
-    preferredModes.push('responses_sse')
+export function testPathFromEndpointMode(mode: AccountSupportedEndpointMode, model = 'test-model'): string {
+  if (mode === 'chat_json' || mode === 'chat_sse') {
+    return gatewayChatCompletionsPath
   }
-  const recentMode = openAIEndpointModeForRequestShape({
-    endpoint: shape?.endpoint,
-    stream: shape?.stream ?? true
-  })
-  if (recentMode) {
-    preferredModes.push(recentMode)
+  if (mode === 'messages_json' || mode === 'messages_sse') {
+    return gatewayAnthropicMessagesPath
   }
-  preferredModes.push('responses_sse', 'responses_json', 'chat_sse', 'chat_json')
-  for (const mode of preferredModes) {
-    if (supportedModes.includes(mode)) {
-      return mode
-    }
+  if (mode === 'generate_content_json') {
+    return `${gatewayGeminiVersionPrefix}/${geminiModelPath(model)}:generateContent`
   }
-  return supportedModes[0] ?? 'responses_sse'
+  if (mode === 'generate_content_sse') {
+    return `${gatewayGeminiVersionPrefix}/${geminiModelPath(model)}:streamGenerateContent?alt=sse`
+  }
+  return gatewayTestPath
 }
 
-function testPathFromEndpointMode(mode: AccountSupportedEndpointMode): string {
-  return mode === 'chat_json' || mode === 'chat_sse'
-    ? gatewayChatCompletionsPath
-    : gatewayTestPath
+function preferredAnthropicTestEndpointMode(modes: AccountSupportedEndpointMode[]): AccountSupportedEndpointMode {
+  if (modes.includes('messages_sse')) return 'messages_sse'
+  return 'messages_json'
 }
 
 export function createOpenAIResponsesTestPayload(model: string, prompt: string, isOAuth: boolean, clientCompatibility: AccountClientCompatibility, stream: boolean): Record<string, unknown> {
@@ -152,7 +129,7 @@ export function createOpenAIResponsesTestPayload(model: string, prompt: string, 
     payload.max_output_tokens = 1
     payload.store = false
   }
-  if (clientCompatibility === 'codex_responses') {
+  if (clientCompatibility === 'codex_responses' && stream) {
     payload.stream = true
     payload.store = false
     payload.include = ['reasoning.encrypted_content']
@@ -172,6 +149,29 @@ export function createOpenAIChatCompletionsTestPayload(model: string, prompt: st
     max_tokens: 1,
     stream
   }
+}
+
+export function createGeminiGenerateContentTestPayload(prompt: string): Record<string, unknown> {
+  return {
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          {
+            text: prompt
+          }
+        ]
+      }
+    ],
+    generationConfig: {
+      maxOutputTokens: 1
+    }
+  }
+}
+
+function geminiModelPath(model: string): string {
+  const normalized = stringValue(model).replace(/^models\//i, '') || 'gemini-pro'
+  return `models/${encodeURIComponent(normalized)}`
 }
 
 function stringValue(value: unknown): string {

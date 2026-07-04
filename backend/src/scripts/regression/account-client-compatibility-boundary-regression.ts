@@ -38,8 +38,10 @@ const accountDraftTestSchemaSource = sourceBetween(schemasSource, 'export const 
 assert.doesNotMatch(accountCreateSchemaSource, /clientCompatibility/, '账号创建接口不得暴露客户端画像字段')
 assert.doesNotMatch(accountUpdateSchemaSource, /clientCompatibility/, '账号更新接口不得暴露客户端画像字段')
 assert.doesNotMatch(accountDraftTestAccountSchemaSource, /clientCompatibility/, '账号草稿测试账号片段不得暴露客户端画像字段')
-assert.doesNotMatch(accountTestSchemaSource, /clientCompatibility/, '账号测试接口不得暴露客户端画像字段')
-assert.doesNotMatch(accountDraftTestSchemaSource, /clientCompatibility/, '账号草稿测试接口不得暴露客户端画像字段')
+assert.doesNotMatch(accountTestSchemaSource, /clientCompatibility/, '账号测试接口不得再把客户端画像作为测试请求形态')
+assert.doesNotMatch(accountDraftTestSchemaSource, /clientCompatibility/, '账号草稿测试接口不得再把客户端画像作为测试请求形态')
+assert.match(accountTestSchemaSource, /testEndpointMode:\s*accountTestEndpointModeSchema\.optional\(\)/, '账号测试接口应允许提交本次测试 endpoint mode')
+assert.match(accountDraftTestSchemaSource, /testEndpointMode:\s*accountTestEndpointModeSchema\.optional\(\)/, '账号草稿测试接口应允许提交本次测试 endpoint mode')
 
 const group = repositories.createGroup({
   name: '账号客户端画像边界分组',
@@ -87,7 +89,7 @@ assert.throws(() => {
   }, access)
 }, /未知字段|clientCompatibility/, '账号更新仓储入口不得接收 clientCompatibility')
 
-console.log('账号客户端画像边界回归通过：创建/更新/测试接口均不暴露 clientCompatibility，仓储按内部规则派生')
+console.log('账号客户端画像边界回归通过：创建/更新不暴露 clientCompatibility，测试接口仅接收 testEndpointMode，仓储按内部规则派生账户画像')
 try {
   rmSync(tempRoot, { recursive: true, force: true })
 } catch {

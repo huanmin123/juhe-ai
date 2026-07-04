@@ -70,6 +70,7 @@ assert.match(cacheSource, /export function createSharedJsonCache[\s\S]*new Drive
 assert.match(cacheSource, /private cache\(\): SharedJsonCache<V> \{[\s\S]*runtimeConfig\.cacheDriver !== 'redis'[\s\S]*return this\.memoryCache[\s\S]*new RedisSharedJsonCache/, 'SharedJsonCache 在 Redis cache driver 下必须直接使用 Redis')
 assert.match(cacheSource, /class RedisSharedJsonCache[\s\S]*runtimeConfig\.redis\.cacheUrl/, 'Redis shared cache 必须使用 JUHE_AI_REDIS_CACHE_URL')
 assert.match(cacheSource, /throw new Error\('JUHE_AI_REDIS_CACHE_URL 在 Redis cache driver 下必须配置'\)/, 'Redis shared cache 缺少 URL 时必须 fail-fast')
+assert.match(cacheSource, /indexKeyPrefix[\s\S]*ZADD[\s\S]*ZCARD[\s\S]*ZRANGE[\s\S]*ZREM/, 'Redis shared cache 必须维护索引并按 options.max 淘汰，避免高基数 key 无上限增长')
 assertStrictRedisCacheBoundaries()
 assertPostgresAsyncRuntimeFactReads()
 
@@ -101,7 +102,9 @@ assert.match(redisStreamQueueSource, /redisUrl/, 'Redis Stream 队列必须显�
 assert.match(redisStreamQueueSource, /this\.redisUrl = options\.redisUrl \?\? requiredRedisQueueUrl\(\)/, 'Redis Stream 队列必须从 JUHE_AI_REDIS_QUEUE_URL 解析默认连接')
 assert.match(redisStreamQueueSource, /createDedicatedRedisClient\(this\.redisUrl\)/, 'Redis Stream consumer 必须通过专用 Redis queue URL 建立连接')
 assert.match(redisStreamQueueSource, /'XGROUP',\s*'CREATE',\s*this\.streamKey,\s*this\.groupName,\s*'0',\s*'MKSTREAM'/, 'Redis Stream consumer group 首次创建必须从 0 消费已有消息，不能用 $ 跳过 backlog')
-assert.match(redisStreamQueueSource, /async inspectRuntime\(\): Promise<RedisStreamQueueRuntime>[\s\S]*XINFO[\s\S]*XPENDING/, 'Redis Stream 队列必须暴露只读运行态供统计水位检查使用')
+assert.match(redisStreamQueueSource, /async inspectRuntime\(\): Promise<RedisStreamQueueRuntime>[\s\S]*XINFO[\s\S]*XPENDING[\s\S]*XLEN/, 'Redis Stream 队列必须暴露只读运行态供统计水位检查使用')
+assert.match(redisStreamQueueSource, /async ack\(ids: string\[\]\): Promise<number>[\s\S]*redisAckAndDeleteMessagesScript/, 'Redis Stream 消息确认和删除必须走同一个 Lua 脚本，避免部分 ack 时误删')
+assert.match(redisStreamQueueSource, /const redisAckAndDeleteMessagesScript = `[\s\S]*XACK[\s\S]*if result > 0 then[\s\S]*XDEL/, 'Redis Stream 消息成功确认后必须只删除已 ack 条目，避免 stream 长期增长')
 assert.match(redisStreamQueueSource, /const redisInspectPendingMessagesScript = `[\s\S]*XPENDING[\s\S]*XRANGE/, 'Redis Stream backlog pending 消息检查必须用 Lua 一次取回 pending id 和 payload，避免按消息多次往返')
 assert.match(redisStreamQueueSource, /async inspectBacklog\(limit = 256\)[\s\S]*inspectPendingMessages[\s\S]*remainingLimit[\s\S]*runtime\.lag !== undefined[\s\S]*remainingLimit === 0/, 'Redis Stream backlog 检查在 lag 缺失时必须按扫描窗口保守标记截断')
 
@@ -136,6 +139,7 @@ assert.match(accountConcurrencySource, /account-concurrency-v2/, 'Redis 账号�
 assert.match(accountConcurrencySource, /redisAccountConcurrencySlotLeaseTtlMs\s*=\s*90_000/, 'Redis 账号并发槽必须使用短租约，释放失败或进程退出后应及时过期')
 assert.match(accountConcurrencySource, /function ensureRedisAccountConcurrencySlotRefresh\(\)/, 'Redis 账号并发活跃槽必须由当前进程定期续租')
 assert.match(accountConcurrencySource, /ZREMRANGEBYSCORE/, 'Redis 账号并发读取和占用前必须清理已过租约的槽位')
+assert.match(accountConcurrencySource, /function hdel_expired[\s\S]*unpack\(expired, index, last\)/, 'Redis 账号并发清理过期槽位时 HDEL 必须分批，避免大量过期 token 触发 Lua 参数上限')
 assert.match(accountConcurrencySource, /redisRefreshAccountConcurrencySlotsScript[\s\S]*ZSCORE/, 'Redis 账号并发续租只能刷新仍存在的 token，禁止复活已过期租约')
 assert.match(functionBody(accountConcurrencySource, 'refreshRedisAccountConcurrencySlots'), /detachExpiredRedisAccountConcurrencySlot/, 'Redis 账号并发续租发现过期 token 后必须从本机刷新集合摘除')
 assert.doesNotMatch(accountConcurrencySource, /redis\.call\('INCR'/, 'Redis 账号并发不能回退简单 INCR 计数，否则进程崩溃会残留脏并发')
@@ -272,8 +276,10 @@ function assertStrictRedisCacheBoundaries(): void {
     .map((filePath) => readFileSync(filePath, 'utf8'))
     .join('\n')
   assert.doesNotMatch(productionSource, /throwIfRedisCacheIsRequired/, '生产代码不能保留 Redis shared cache fail-open helper')
-  assert.doesNotMatch(productionSource, /shared_cache_(read|write|clear)_failed/, 'Redis shared cache 读写清理失败不能被日志吞掉后当 cache miss')
-  assert.doesNotMatch(productionSource, /(读取|写入|清理)[^\n]*Redis[^\n]*(共享缓存|shared cache)[^\n]*失败/, 'Redis shared cache 失败必须直接抛错，不能 warn 后回退其他事实源')
+  assert.doesNotMatch(productionSource, /shared_cache_(read|write)_failed/, 'Redis shared cache 读写失败不能被日志吞掉后当 cache miss')
+  assert.doesNotMatch(productionSource, /(读取|写入)[^\n]*Redis[^\n]*(共享缓存|shared cache)[^\n]*失败/, 'Redis shared cache 读写失败必须直接抛错，不能 warn 后回退其他事实源')
+  assert.doesNotMatch(productionSource, /void \w+SharedCache\.clear\(\)/, 'Redis shared cache 清理不能裸 fire-and-forget，必须使用受控后台清理 helper')
+  assert.match(source('shared/cache.ts'), /export function clearSharedJsonCacheInBackground[\s\S]*cache\.clear\(\)\.catch[\s\S]*logger\.warn/, '同步失效入口的 Redis shared cache 清理必须捕获并记录失败，避免未处理 Promise')
 
   const invalidationSource = source('shared/gateway-cache-invalidation.ts')
   assert.match(
@@ -334,11 +340,14 @@ function assertStrictRedisCacheBoundaries(): void {
   assert.match(functionBody(modelCatalogSource, 'setProviderModelCatalogCacheEntryAsync'), /await setProviderModelCatalogSharedCacheEntry[\s\S]*providerModelCatalogCache\.set/, '模型目录 PG 回源后必须先写 Redis shared cache')
 
   const clientIpPolicySource = source('modules/gateway/runtime/client-ip-policy-cache.service.ts')
-  assert.match(functionBody(clientIpPolicySource, 'inspectClientIpPolicy'), /runtimeConfig\.cacheDriver === 'redis'[\s\S]*loadClientIpPolicySnapshotFromSharedCacheOrDatabase[\s\S]*return policyDecisionFromCacheEntry[\s\S]*policyCache\.get/, 'Redis cache driver 下 IP 封禁判定必须只读 Redis shared snapshot，不得落本地 policyCache')
+  const backgroundStatsWriterSource = source('modules/background/background-stats-writer.ts')
+  assert.doesNotMatch(functionBody(backgroundStatsWriterSource, 'aggregateClientIpStats'), /listActiveClientIpPoliciesAsync|sendClientIpPolicySnapshotToServer/, 'Client-IP 统计聚合不能全量读取并推送 active 策略快照')
+  assert.match(functionBody(clientIpPolicySource, 'inspectClientIpPolicy'), /runtimeConfig\.cacheDriver === 'redis'[\s\S]*getClientIpPolicyByIpSharedCacheEntry[\s\S]*loadClientIpPolicyByHashFromSharedCacheOrDatabase[\s\S]*return policyDecisionFromCacheEntry[\s\S]*policyCache\.get/, 'Redis cache driver 下 IP 封禁判定必须按 IP 读取 Redis shared cache 或索引查询，不得落本地 policyCache')
   assert.match(functionBody(clientIpPolicySource, 'replaceClientIpPolicyCacheLocal'), /runtimeConfig\.cacheDriver === 'redis'[\s\S]*activePolicySnapshotLoadedAt = undefined[\s\S]*高性能模式禁止同步写入 Client-IP 策略 Redis shared cache[\s\S]*return[\s\S]*activePolicySnapshot\.set/, 'Redis cache driver 下 IP 封禁策略同步替换必须拒绝 fire-and-forget Redis 写入，且不能写本地 activePolicySnapshot')
-  assert.match(functionBody(clientIpPolicySource, 'reloadClientIpPolicyCacheLocal'), /bypassSharedCache[\s\S]*loadClientIpPolicySnapshotFromDatabase/, 'Redis cache driver 下 IP 封禁策略失效重载必须能绕过旧 shared snapshot 回源数据库')
-  assert.match(clientIpPolicySource, /export async function replaceClientIpPolicySharedSnapshotAsync[\s\S]*setActivePolicySnapshotSharedCacheEntry/, 'stats-worker 策略快照更新必须异步写入 Redis shared cache')
-  assert.match(functionBody(clientIpPolicySource, 'clearActivePolicySnapshotSharedCache'), /await activePolicySnapshotSharedCache\.clear/, 'Client-IP 策略 shared cache 清理必须等待 Redis 删除完成')
+  assert.match(functionBody(clientIpPolicySource, 'reloadClientIpPolicyCacheLocal'), /bypassSharedCache[\s\S]*clearActivePolicySnapshotSharedCache[\s\S]*clearPolicyByIpSharedCache/, 'Redis cache driver 下 IP 封禁策略失效重载必须清理旧 full snapshot 和单 IP shared cache')
+  assert.match(clientIpPolicySource, /export async function replaceClientIpPolicySharedSnapshotAsync[\s\S]*setClientIpPolicyByIpSharedCacheEntry/, '显式策略快照更新必须异步写入 Redis 单 IP shared cache')
+  assert.match(functionBody(clientIpPolicySource, 'loadClientIpPolicyByHashFromDatabase'), /find_active_client_ip_policy_by_hash/, 'Redis cache miss 下 IP 封禁只能按 ip_hash 走索引查询，不能全量扫描 active 策略')
+  assert.match(functionBody(clientIpPolicySource, 'clearPolicyByIpSharedCache'), /await policyByIpSharedCache\.clear/, 'Client-IP 单 IP shared cache 清理必须等待 Redis 删除完成')
 
   const routeSelectorSource = source('modules/gateway/routing/api-key-group-route-selector.service.ts')
   assert.match(functionBody(routeSelectorSource, 'orderGatewayApiKeyGroupBindingsForDispatchAsync'), /runtimeConfig\.runtimeStateDriver !== 'redis'[\s\S]*orderGatewayApiKeyGroupBindingsForDispatch[\s\S]*nextRedisRouteCounterIndex/, '高性能动态路由必须通过 Redis 计数器共享状态')

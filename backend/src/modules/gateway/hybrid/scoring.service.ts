@@ -7,7 +7,7 @@ import {
 } from '../../../domain/api-key-hybrid-routing.js'
 import type { ApiKeyHybridRoutingConfig } from '../../../domain/types.js'
 import { runtimeConfig } from '../../../config/runtime.js'
-import { createAppCache, createSharedJsonCache } from '../../../shared/cache.js'
+import { clearSharedJsonCacheInBackground, createAppCache, createSharedJsonCache } from '../../../shared/cache.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import type { GatewayApiKeyRow } from '../../../storage/repositories.js'
 import {
@@ -529,7 +529,11 @@ async function setHybridScoringSharedCacheEntry(
 
 function clearHybridScoringSharedCache(): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  void hybridScoringSharedCache.clear()
+  clearSharedJsonCacheInBackground(
+    hybridScoringSharedCache,
+    'hybrid_scoring_shared_cache_clear_failed',
+    '混合评分 Redis shared cache 清理失败'
+  )
 }
 
 function parseHybridScoringResponse(body: Buffer): { level: number; confidence?: number; factors?: string[]; reason?: string } {

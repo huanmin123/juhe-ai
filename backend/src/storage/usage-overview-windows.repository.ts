@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import type { AccountUsageStatsRange } from '../domain/types.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, rollbackDatabaseTransaction } from './database.js'
 import type { DatabaseClient } from './database-client.js'
 import { chunkValues } from './query-utils.js'
 import {
@@ -35,11 +36,21 @@ export interface UsageOverviewWindowRefreshContext {
   uniqueSystemAccountIds: string[]
 }
 
-export function refreshUsageOverviewWindowSnapshots(database: DatabaseSync, context: UsageOverviewWindowRefreshContext): void {
-  refreshUsageOverviewSummaryWindowSnapshots(database, context)
-  refreshUsageOverviewTrendWindowSnapshots(database, context)
-  refreshUsageModelRankWindowSnapshots(database, context)
-  refreshUsageErrorRankWindowSnapshots(database, context)
+interface UsageOverviewWindowRefreshOptions {
+  endDate?: string
+  minEndDate?: string
+}
+
+interface UsageOverviewIncrementalWindowRefresh {
+  context: UsageOverviewWindowRefreshContext
+  options: UsageOverviewWindowRefreshOptions
+}
+
+export function refreshUsageOverviewWindowSnapshots(database: DatabaseSync, context: UsageOverviewWindowRefreshContext, options: UsageOverviewWindowRefreshOptions = {}): void {
+  refreshUsageOverviewSummaryWindowSnapshots(database, context, options)
+  refreshUsageOverviewTrendWindowSnapshots(database, context, options)
+  refreshUsageModelRankWindowSnapshots(database, context, options)
+  refreshUsageErrorRankWindowSnapshots(database, context, options)
 }
 
 export function usageOverviewSnapshotScopes(database: DatabaseSync): Array<{ systemAccountId: string; scopeId: string }> {
@@ -76,43 +87,288 @@ export async function usageOverviewSnapshotScopesAsync(client: DatabaseClient): 
   return scopes
 }
 
-export async function refreshUsageOverviewWindowSnapshotsAsync(client: DatabaseClient, context: UsageOverviewWindowRefreshContext): Promise<void> {
-  await refreshUsageOverviewSummaryWindowSnapshotsAsync(client, context)
-  await refreshUsageOverviewTrendWindowSnapshotsAsync(client, context)
-  await refreshUsageModelRankWindowSnapshotsAsync(client, context)
-  await refreshUsageErrorRankWindowSnapshotsAsync(client, context)
+export async function refreshUsageOverviewWindowSnapshotsAsync(client: DatabaseClient, context: UsageOverviewWindowRefreshContext, options: UsageOverviewWindowRefreshOptions = {}): Promise<void> {
+  await refreshUsageOverviewSummaryWindowSnapshotsAsync(client, context, options)
+  await refreshUsageOverviewTrendWindowSnapshotsAsync(client, context, options)
+  await refreshUsageModelRankWindowSnapshotsAsync(client, context, options)
+  await refreshUsageErrorRankWindowSnapshotsAsync(client, context, options)
 }
 
-function refreshUsageOverviewSummaryWindowSnapshots(database: DatabaseSync, context: UsageOverviewWindowRefreshContext): void {
-  database.prepare('DELETE FROM usage_overview_summary_windows').run()
+export async function refreshUsageOverviewWindowSnapshotsInStages(
+  database: DatabaseSync,
+  context: UsageOverviewWindowRefreshContext,
+  yieldToEventLoop: () => Promise<void>,
+  previousSourceWatermark?: string,
+  sourceWatermark?: string
+): Promise<void> {
+  const refresh = usageOverviewIncrementalWindowRefresh(database, context, previousSourceWatermark, sourceWatermark)
+  if (!refresh) return
+  const transactionStarted = beginDatabaseTransaction(database)
+  try {
+    refreshUsageOverviewWindowSnapshots(database, refresh.context, refresh.options)
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
+  await yieldToEventLoop()
+}
+
+export async function refreshUsageOverviewWindowSnapshotsIncrementalAsync(
+  client: DatabaseClient,
+  context: UsageOverviewWindowRefreshContext,
+  previousSourceWatermark?: string,
+  sourceWatermark?: string
+): Promise<void> {
+  const refresh = await usageOverviewIncrementalWindowRefreshAsync(client, context, previousSourceWatermark, sourceWatermark)
+  if (!refresh) return
+  await refreshUsageOverviewWindowSnapshotsAsync(client, refresh.context, refresh.options)
+}
+
+export function refreshUsageOverviewTodayWindowSnapshots(database: DatabaseSync, context: UsageOverviewWindowRefreshContext): void {
+  const todayContext = usageOverviewTodayWindowRefreshContext(context)
+  if (!todayContext) return
+  refreshUsageOverviewSummaryWindowSnapshots(database, todayContext, { endDate: todayContext.todayKey })
+  refreshUsageOverviewTrendWindowSnapshots(database, todayContext, { endDate: todayContext.todayKey })
+  refreshUsageModelRankWindowSnapshots(database, todayContext, { endDate: todayContext.todayKey })
+  refreshUsageErrorRankWindowSnapshots(database, todayContext, { endDate: todayContext.todayKey })
+}
+
+export async function refreshUsageOverviewTodayWindowSnapshotsAsync(client: DatabaseClient, context: UsageOverviewWindowRefreshContext): Promise<void> {
+  const todayContext = usageOverviewTodayWindowRefreshContext(context)
+  if (!todayContext) return
+  await refreshUsageOverviewSummaryWindowSnapshotsAsync(client, todayContext, { endDate: todayContext.todayKey })
+  await refreshUsageOverviewTrendWindowSnapshotsAsync(client, todayContext, { endDate: todayContext.todayKey })
+  await refreshUsageModelRankWindowSnapshotsAsync(client, todayContext, { endDate: todayContext.todayKey })
+  await refreshUsageErrorRankWindowSnapshotsAsync(client, todayContext, { endDate: todayContext.todayKey })
+}
+
+function usageOverviewTodayWindowRefreshContext(context: UsageOverviewWindowRefreshContext): UsageOverviewWindowRefreshContext | undefined {
+  const ranges = context.ranges.filter((range) => range.endDate === context.todayKey)
+  if (!ranges.length) return undefined
+  return {
+    ...context,
+    ranges,
+    earliestDate: ranges[0]?.startDate ?? context.todayKey
+  }
+}
+
+function usageOverviewIncrementalWindowRefresh(
+  database: DatabaseSync,
+  context: UsageOverviewWindowRefreshContext,
+  previousSourceWatermark?: string,
+  sourceWatermark?: string
+): UsageOverviewIncrementalWindowRefresh | undefined {
+  const changedDate = usageOverviewChangedDate(database, context, previousSourceWatermark, sourceWatermark)
+  return usageOverviewRefreshForChangedDate(context, changedDate)
+}
+
+async function usageOverviewIncrementalWindowRefreshAsync(
+  client: DatabaseClient,
+  context: UsageOverviewWindowRefreshContext,
+  previousSourceWatermark?: string,
+  sourceWatermark?: string
+): Promise<UsageOverviewIncrementalWindowRefresh | undefined> {
+  const changedDate = await usageOverviewChangedDateAsync(client, context, previousSourceWatermark, sourceWatermark)
+  return usageOverviewRefreshForChangedDate(context, changedDate)
+}
+
+function usageOverviewRefreshForChangedDate(
+  context: UsageOverviewWindowRefreshContext,
+  changedDate: string | null | undefined
+): UsageOverviewIncrementalWindowRefresh | undefined {
+  if (changedDate === undefined) return undefined
+  if (changedDate === null) {
+    return { context, options: {} }
+  }
+  const minEndDate = context.ranges.find((range) => range.endDate >= changedDate)?.endDate
+  if (!minEndDate) return undefined
+  const ranges = context.ranges.filter((range) => range.endDate >= minEndDate)
+  if (!ranges.length) return undefined
+  return {
+    context: {
+      ...context,
+      ranges,
+      earliestDate: ranges.reduce((earliest, range) => range.startDate < earliest ? range.startDate : earliest, ranges[0]?.startDate ?? context.earliestDate)
+    },
+    options: { minEndDate }
+  }
+}
+
+function usageOverviewChangedDate(
+  database: DatabaseSync,
+  context: UsageOverviewWindowRefreshContext,
+  previousSourceWatermark?: string,
+  sourceWatermark?: string
+): string | null | undefined {
+  if (!previousSourceWatermark) return null
+  const previousUpdatedAt = overviewWindowSourceWatermarkUpdatedAt(previousSourceWatermark)
+  const sourceUpdatedAt = overviewWindowSourceWatermarkUpdatedAt(sourceWatermark)
+  if (!previousUpdatedAt) return null
+  if (sourceUpdatedAt && sourceUpdatedAt < previousUpdatedAt) return null
+  const row = database.prepare(`
+    SELECT MIN(stat_date) AS stat_date
+    FROM (
+      SELECT stat_date
+      FROM usage_stats_daily
+      WHERE updated_at > ?
+        AND stat_date >= ?
+        AND stat_date <= ?
+      UNION ALL
+      SELECT substr(stat_hour, 1, 10) AS stat_date
+      FROM usage_stats_hourly
+      WHERE updated_at > ?
+        AND stat_hour >= ?
+        AND stat_hour <= ?
+      UNION ALL
+      SELECT stat_date
+      FROM usage_model_daily
+      WHERE updated_at > ?
+        AND stat_date >= ?
+        AND stat_date <= ?
+      UNION ALL
+      SELECT stat_date
+      FROM usage_error_daily
+      WHERE updated_at > ?
+        AND stat_date >= ?
+        AND stat_date <= ?
+    ) changed_dates
+  `).get(
+    previousUpdatedAt,
+    context.earliestDate,
+    context.todayKey,
+    previousUpdatedAt,
+    `${context.earliestDate}T00`,
+    `${context.todayKey}T23`,
+    previousUpdatedAt,
+    context.earliestDate,
+    context.todayKey,
+    previousUpdatedAt,
+    context.earliestDate,
+    context.todayKey
+  ) as { stat_date?: string | null } | undefined
+  const changedDate = row?.stat_date
+  if (!changedDate && sourceWatermark !== previousSourceWatermark) return null
+  return changedDate ?? undefined
+}
+
+async function usageOverviewChangedDateAsync(
+  client: DatabaseClient,
+  context: UsageOverviewWindowRefreshContext,
+  previousSourceWatermark?: string,
+  sourceWatermark?: string
+): Promise<string | null | undefined> {
+  if (!previousSourceWatermark) return null
+  const previousUpdatedAt = overviewWindowSourceWatermarkUpdatedAt(previousSourceWatermark)
+  const sourceUpdatedAt = overviewWindowSourceWatermarkUpdatedAt(sourceWatermark)
+  if (!previousUpdatedAt) return null
+  if (sourceUpdatedAt && sourceUpdatedAt < previousUpdatedAt) return null
+  const row = await client.one<{ stat_date?: string | null }>(`
+    SELECT MIN(stat_date) AS stat_date
+    FROM (
+      SELECT stat_date
+      FROM ${statsTable(client, 'usage_stats_daily')}
+      WHERE updated_at > ?
+        AND stat_date >= ?
+        AND stat_date <= ?
+      UNION ALL
+      SELECT substr(stat_hour, 1, 10) AS stat_date
+      FROM ${statsTable(client, 'usage_stats_hourly')}
+      WHERE updated_at > ?
+        AND stat_hour >= ?
+        AND stat_hour <= ?
+      UNION ALL
+      SELECT stat_date
+      FROM ${statsTable(client, 'usage_model_daily')}
+      WHERE updated_at > ?
+        AND stat_date >= ?
+        AND stat_date <= ?
+      UNION ALL
+      SELECT stat_date
+      FROM ${statsTable(client, 'usage_error_daily')}
+      WHERE updated_at > ?
+        AND stat_date >= ?
+        AND stat_date <= ?
+    ) changed_dates
+  `, [
+    previousUpdatedAt,
+    context.earliestDate,
+    context.todayKey,
+    previousUpdatedAt,
+    `${context.earliestDate}T00`,
+    `${context.todayKey}T23`,
+    previousUpdatedAt,
+    context.earliestDate,
+    context.todayKey,
+    previousUpdatedAt,
+    context.earliestDate,
+    context.todayKey
+  ])
+  const changedDate = row?.stat_date
+  if (!changedDate && sourceWatermark !== previousSourceWatermark) return null
+  return changedDate ?? undefined
+}
+
+function overviewWindowSourceWatermarkUpdatedAt(watermark?: string): string | undefined {
+  if (!watermark) return undefined
+  const [updatedAt] = watermark.split('|', 1)
+  return updatedAt || undefined
+}
+
+function refreshUsageOverviewSummaryWindowSnapshots(database: DatabaseSync, context: UsageOverviewWindowRefreshContext, options: UsageOverviewWindowRefreshOptions = {}): void {
+  deleteUsageOverviewWindowRows(database, 'usage_overview_summary_windows', options)
   for (const scope of context.overviewScopes) {
     refreshUsageOverviewSummaryWindows(database, scope, context.ranges, context.earliestDate, context.todayKey, context.updatedAt)
   }
 }
 
-function refreshUsageOverviewTrendWindowSnapshots(database: DatabaseSync, context: UsageOverviewWindowRefreshContext): void {
-  database.prepare('DELETE FROM usage_overview_trend_windows').run()
+function refreshUsageOverviewTrendWindowSnapshots(database: DatabaseSync, context: UsageOverviewWindowRefreshContext, options: UsageOverviewWindowRefreshOptions = {}): void {
+  deleteUsageOverviewWindowRows(database, 'usage_overview_trend_windows', options)
   for (const scope of context.overviewScopes) {
     refreshUsageOverviewTrendWindows(database, scope, context.ranges, context.earliestDate, context.todayKey, context.updatedAt)
   }
 }
 
-function refreshUsageModelRankWindowSnapshots(database: DatabaseSync, context: UsageOverviewWindowRefreshContext): void {
-  database.prepare('DELETE FROM usage_model_rank_windows').run()
+function refreshUsageModelRankWindowSnapshots(database: DatabaseSync, context: UsageOverviewWindowRefreshContext, options: UsageOverviewWindowRefreshOptions = {}): void {
+  deleteUsageOverviewWindowRows(database, 'usage_model_rank_windows', options)
   for (const systemAccountId of [...context.uniqueSystemAccountIds, GLOBAL_STATS_SYSTEM_ACCOUNT_ID]) {
     refreshUsageModelRankWindows(database, systemAccountId, context.ranges, context.earliestDate, context.todayKey, context.updatedAt)
   }
 }
 
-function refreshUsageErrorRankWindowSnapshots(database: DatabaseSync, context: UsageOverviewWindowRefreshContext): void {
-  database.prepare('DELETE FROM usage_error_rank_windows').run()
+function refreshUsageErrorRankWindowSnapshots(database: DatabaseSync, context: UsageOverviewWindowRefreshContext, options: UsageOverviewWindowRefreshOptions = {}): void {
+  deleteUsageOverviewWindowRows(database, 'usage_error_rank_windows', options)
   for (const systemAccountId of [...context.uniqueSystemAccountIds, GLOBAL_STATS_SYSTEM_ACCOUNT_ID]) {
     refreshUsageErrorRankWindows(database, systemAccountId, context.ranges, context.earliestDate, context.todayKey, context.updatedAt)
   }
 }
 
-async function refreshUsageOverviewSummaryWindowSnapshotsAsync(client: DatabaseClient, context: UsageOverviewWindowRefreshContext): Promise<void> {
-  await client.execute(`DELETE FROM ${statsTable(client, 'usage_overview_summary_windows')}`)
+function deleteUsageOverviewWindowRows(database: DatabaseSync, tableName: string, options: UsageOverviewWindowRefreshOptions): void {
+  if (options.endDate) {
+    database.prepare(`DELETE FROM ${tableName} WHERE end_date = ?`).run(options.endDate)
+    return
+  }
+  if (options.minEndDate) {
+    database.prepare(`DELETE FROM ${tableName} WHERE end_date >= ?`).run(options.minEndDate)
+    return
+  }
+  database.prepare(`DELETE FROM ${tableName}`).run()
+}
+
+async function deleteUsageOverviewWindowRowsAsync(client: DatabaseClient, tableName: string, options: UsageOverviewWindowRefreshOptions): Promise<void> {
+  if (options.endDate) {
+    await client.execute(`DELETE FROM ${statsTable(client, tableName)} WHERE end_date = ?`, [options.endDate])
+    return
+  }
+  if (options.minEndDate) {
+    await client.execute(`DELETE FROM ${statsTable(client, tableName)} WHERE end_date >= ?`, [options.minEndDate])
+    return
+  }
+  await client.execute(`DELETE FROM ${statsTable(client, tableName)}`)
+}
+
+async function refreshUsageOverviewSummaryWindowSnapshotsAsync(client: DatabaseClient, context: UsageOverviewWindowRefreshContext, options: UsageOverviewWindowRefreshOptions = {}): Promise<void> {
+  await deleteUsageOverviewWindowRowsAsync(client, 'usage_overview_summary_windows', options)
   const insertRows: unknown[][] = []
   for (const scope of context.overviewScopes) {
     const rows = await client.query<UsageStatsDailyWindowRow>(`
@@ -168,8 +424,8 @@ async function refreshUsageOverviewSummaryWindowSnapshotsAsync(client: DatabaseC
   ], insertRows)
 }
 
-async function refreshUsageOverviewTrendWindowSnapshotsAsync(client: DatabaseClient, context: UsageOverviewWindowRefreshContext): Promise<void> {
-  await client.execute(`DELETE FROM ${statsTable(client, 'usage_overview_trend_windows')}`)
+async function refreshUsageOverviewTrendWindowSnapshotsAsync(client: DatabaseClient, context: UsageOverviewWindowRefreshContext, options: UsageOverviewWindowRefreshOptions = {}): Promise<void> {
+  await deleteUsageOverviewWindowRowsAsync(client, 'usage_overview_trend_windows', options)
   const insertRows: unknown[][] = []
   for (const scope of context.overviewScopes) {
     const rows = await client.query<UsageOverviewHourlyWindowRow>(`
@@ -222,8 +478,8 @@ async function refreshUsageOverviewTrendWindowSnapshotsAsync(client: DatabaseCli
   ], insertRows)
 }
 
-async function refreshUsageModelRankWindowSnapshotsAsync(client: DatabaseClient, context: UsageOverviewWindowRefreshContext): Promise<void> {
-  await client.execute(`DELETE FROM ${statsTable(client, 'usage_model_rank_windows')}`)
+async function refreshUsageModelRankWindowSnapshotsAsync(client: DatabaseClient, context: UsageOverviewWindowRefreshContext, options: UsageOverviewWindowRefreshOptions = {}): Promise<void> {
+  await deleteUsageOverviewWindowRowsAsync(client, 'usage_model_rank_windows', options)
   const insertRows: unknown[][] = []
   for (const systemAccountId of [...context.uniqueSystemAccountIds, GLOBAL_STATS_SYSTEM_ACCOUNT_ID]) {
     const rows = await client.query<UsageModelWindowRow>(`
@@ -271,8 +527,8 @@ async function refreshUsageModelRankWindowSnapshotsAsync(client: DatabaseClient,
   ], insertRows)
 }
 
-async function refreshUsageErrorRankWindowSnapshotsAsync(client: DatabaseClient, context: UsageOverviewWindowRefreshContext): Promise<void> {
-  await client.execute(`DELETE FROM ${statsTable(client, 'usage_error_rank_windows')}`)
+async function refreshUsageErrorRankWindowSnapshotsAsync(client: DatabaseClient, context: UsageOverviewWindowRefreshContext, options: UsageOverviewWindowRefreshOptions = {}): Promise<void> {
+  await deleteUsageOverviewWindowRowsAsync(client, 'usage_error_rank_windows', options)
   const insertRows: unknown[][] = []
   for (const systemAccountId of [...context.uniqueSystemAccountIds, GLOBAL_STATS_SYSTEM_ACCOUNT_ID]) {
     const rows = await client.query<UsageErrorWindowRow>(`

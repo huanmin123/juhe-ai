@@ -40,6 +40,20 @@ assert(
   'usage 统计聚合结果必须暴露时间预算截断和实际批次，便于压测与运行观测'
 )
 assert(
+  backgroundJobsSource.includes('const usageStatsOnlineFreshnessMaxIntervalSeconds = 60')
+    && backgroundJobsSource.includes('function usageStatsOnlineAggregationIntervalSeconds(): number')
+    && backgroundJobsSource.includes("settingsNumber('statsAggregationIntervalSeconds', 5, 3600)")
+    && backgroundJobsSource.includes('usageStatsOnlineFreshnessMaxIntervalSeconds'),
+  'usage 在线统计聚合必须有 60 秒新鲜度上限，不能因系统设置误配 3600 秒造成新日空窗'
+)
+assert(
+  backgroundJobsSource.includes("type: 'refresh_hot_usage_windows'")
+    && backgroundJobsSource.includes("jobName: usageHotWindowRefreshJobName")
+    && backgroundJobsSource.includes("reason !== 'date_changed'")
+    && backgroundJobsSource.includes('usageHotWindowRefreshMinIntervalMs'),
+  'usage 聚合后必须通过防抖热窗口刷新发布今日概览和范围窗口'
+)
+assert(
   usageStatsRepositorySource.includes('aggregateUsageStatsRecords(database, rows, updatedAt, aggregationContext)')
     && usageStatsWritersSource.includes('export function aggregateUsageStatsRecords')
     && usageStatsWritersSource.includes('addAggregatedUsageStatsEntry')

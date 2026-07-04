@@ -10,6 +10,7 @@ import {
   usageStatsCursorSafetyDelaySeconds,
   type UsageRankSnapshotStageName
 } from '../../storage/usage-stats.repository.js'
+import { dateKey, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
 import { refreshDueOpenAIOAuthAccessTokens } from '../openai-oauth/openai-oauth-access-token-refresh.service.js'
 import { proxyLatencyRefreshBatchSize, proxyLatencyRefreshIntervalSeconds, refreshProxyLatencyBatch } from '../proxies/proxy-test.service.js'
 import { clearGatewayRuntimeCache } from '../gateway/runtime/runtime-cache.service.js'
@@ -43,6 +44,10 @@ let clientIpStatsAggregationRunning = false
 let usageRankSnapshotsRefreshRunning = false
 let groupAccountStatsStartupDirtyMarked = false
 let missingRemoteProcessEventLoopSampleWarningCount = 0
+let usageHotWindowRefreshPending = false
+let usageHotWindowRefreshDrainScheduled = false
+let lastUsageHotWindowRefreshStartedAtMs = 0
+let lastUsageHotWindowDateKey: string | undefined
 interface UsageStatsAggregationSafety {
   safeCreatedBefore: string
 }
@@ -54,6 +59,10 @@ const clientIpStatsAggregationBatchSizeCap = 1000
 const clientIpStatsAggregationMaxBatchesCap = 10
 const clientIpStatsAggregationMaxRunMs = 5000
 const usageStatsAggregationMaxRunMs = 4500
+const usageStatsOnlineFreshnessMaxIntervalSeconds = 60
+const usageHotWindowRefreshMinIntervalMs = 60 * secondMs
+const usageHotWindowRefreshTimeoutMs = 30_000
+const usageHotWindowRefreshJobName = 'usage_hot_window_refresh'
 const usageRankSnapshotSlowStageMs = 1000
 const usageRankSnapshotCoreStageNames: UsageRankSnapshotStageName[] = [
   'account_last7d_request_rank',
@@ -103,7 +112,7 @@ function scheduleBackgroundJobs(): void {
     case 'stats-worker':
       if (isPostgresHighPerformanceMode()) {
         scheduler.schedule({ name: backgroundScheduledJobName('system-metrics-sample'), intervalMs: settingsNumber('systemMetricsSampleIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 5 * secondMs, task: runSystemMetricsSample })
-        scheduler.schedule({ name: backgroundScheduledJobName('usage-stats-aggregation'), intervalMs: settingsNumber('statsAggregationIntervalSeconds', 5, 3600) * secondMs, task: runUsageStatsAggregation })
+        scheduler.schedule({ name: backgroundScheduledJobName('usage-stats-aggregation'), intervalMs: usageStatsOnlineAggregationIntervalSeconds() * secondMs, task: runUsageStatsAggregation })
         scheduler.schedule({ name: backgroundScheduledJobName('client-ip-stats-aggregation'), intervalMs: settingsNumber('statsAggregationIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 8 * secondMs, task: runClientIpStatsAggregation })
         scheduler.schedule({ name: backgroundScheduledJobName('group-account-stats-refresh'), intervalMs: settingsNumber('groupAccountStatsRefreshIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 16 * secondMs, task: runGroupAccountStatsRefresh })
         scheduler.schedule({ name: backgroundScheduledJobName('usage-rank-snapshots-refresh'), intervalMs: 30 * minuteMs, initialDelayMs: 2 * minuteMs + 30 * secondMs, task: () => runUsageRankSnapshotsRefresh(backgroundScheduledJobName('usage-rank-snapshots-refresh'), usageRankSnapshotCoreStageNames) })
@@ -117,7 +126,7 @@ function scheduleBackgroundJobs(): void {
         return
       }
       scheduler.schedule({ name: backgroundScheduledJobName('system-metrics-sample'), intervalMs: settingsNumber('systemMetricsSampleIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 5 * secondMs, task: runSystemMetricsSample })
-      scheduler.schedule({ name: backgroundScheduledJobName('usage-stats-aggregation'), intervalMs: settingsNumber('statsAggregationIntervalSeconds', 5, 3600) * secondMs, task: runUsageStatsAggregation })
+      scheduler.schedule({ name: backgroundScheduledJobName('usage-stats-aggregation'), intervalMs: usageStatsOnlineAggregationIntervalSeconds() * secondMs, task: runUsageStatsAggregation })
       scheduler.schedule({ name: backgroundScheduledJobName('client-ip-stats-aggregation'), intervalMs: settingsNumber('statsAggregationIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 8 * secondMs, task: runClientIpStatsAggregation })
       scheduler.schedule({ name: backgroundScheduledJobName('group-account-stats-refresh'), intervalMs: settingsNumber('groupAccountStatsRefreshIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 16 * secondMs, task: runGroupAccountStatsRefresh })
       scheduler.schedule({ name: backgroundScheduledJobName('usage-rank-snapshots-refresh'), intervalMs: 30 * minuteMs, initialDelayMs: 2 * minuteMs + 30 * secondMs, task: () => runUsageRankSnapshotsRefresh(backgroundScheduledJobName('usage-rank-snapshots-refresh'), usageRankSnapshotCoreStageNames) })
@@ -155,6 +164,13 @@ function isPostgresHighPerformanceMode(): boolean {
   return runtimeConfig.databaseDriver === 'postgres'
 }
 
+function usageStatsOnlineAggregationIntervalSeconds(): number {
+  return Math.min(
+    settingsNumber('statsAggregationIntervalSeconds', 5, 3600),
+    usageStatsOnlineFreshnessMaxIntervalSeconds
+  )
+}
+
 export function getBackgroundJobRuntimeSnapshots() {
   return scheduler.snapshots()
 }
@@ -167,19 +183,98 @@ async function runUsageStatsAggregation(): Promise<void> {
     await yieldToEventLoop()
     const batchSize = settingsNumber('statsAggregationBatchSize', 100, 10000)
     const maxBatches = settingsNumber('statsAggregationMaxBatchesPerRun', 1, 100)
-    await requestStatsWriter({
+    const result = await requestStatsWriter({
       type: 'aggregate_usage_stats',
       batchSize,
       maxBatches,
       maxRunMs: usageStatsAggregationMaxRunMs,
       safeCreatedBefore: safety.safeCreatedBefore
     }, Math.max(10_000, usageStatsAggregationMaxRunMs + 5_000))
+    await refreshHotUsageWindowsAfterAggregation(result.processed)
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_usage_stats_aggregation_failed' }), '用量统计聚合失败')
     throw error
   } finally {
     usageStatsAggregationRunning = false
   }
+}
+
+async function refreshHotUsageWindowsAfterAggregation(processed: number): Promise<void> {
+  const todayKey = dateKey(new Date(), await usageStatsTimezoneAsync())
+  const dateChanged = lastUsageHotWindowDateKey !== todayKey
+  lastUsageHotWindowDateKey = todayKey
+  if (processed <= 0 && !dateChanged && !usageHotWindowRefreshPending) {
+    return
+  }
+  await runUsageHotWindowRefresh(dateChanged ? 'date_changed' : processed > 0 ? 'usage_stats_processed' : 'pending_retry')
+}
+
+async function runUsageHotWindowRefresh(reason: 'usage_stats_processed' | 'date_changed' | 'pending_retry'): Promise<void> {
+  const now = Date.now()
+  if (reason !== 'date_changed' && now - lastUsageHotWindowRefreshStartedAtMs < usageHotWindowRefreshMinIntervalMs) {
+    usageHotWindowRefreshPending = true
+    return
+  }
+  if (usageRankSnapshotsRefreshRunning) {
+    usageHotWindowRefreshPending = true
+    logger.debug({
+      event: 'background_usage_hot_window_refresh_busy',
+      reason
+    }, '热用量窗口刷新等待已有窗口刷新结束')
+    return
+  }
+
+  usageHotWindowRefreshPending = false
+  usageRankSnapshotsRefreshRunning = true
+  lastUsageHotWindowRefreshStartedAtMs = now
+  try {
+    const result = await requestStatsWriter({
+      type: 'refresh_hot_usage_windows',
+      jobName: usageHotWindowRefreshJobName
+    }, usageHotWindowRefreshTimeoutMs)
+    if (result.skipped) {
+      logger.debug({
+        event: 'background_usage_hot_window_refresh_skipped',
+        reason,
+        sourceWatermark: result.sourceWatermark,
+        refreshDate: result.refreshDate,
+        durationMs: result.durationMs
+      }, '热用量窗口刷新无新增聚合数据，跳过本轮')
+      return
+    }
+    const slowStages = result.stages.filter((stage) => stage.durationMs >= usageRankSnapshotSlowStageMs)
+    if (slowStages.length > 0) {
+      logger.warn({
+        event: 'background_usage_hot_window_refresh_slow_stages',
+        reason,
+        durationMs: result.durationMs,
+        slowStageCount: slowStages.length,
+        slowStages
+      }, '热用量窗口刷新存在耗时偏高阶段')
+    }
+    logger.info({
+      event: 'background_usage_hot_window_refresh_completed',
+      reason,
+      durationMs: result.durationMs,
+      stageCount: result.stages.length,
+      sourceWatermark: result.sourceWatermark,
+      refreshDate: result.refreshDate
+    }, '热用量窗口刷新完成')
+  } catch (error) {
+    logger.error(errorLogFields(error, { event: 'background_usage_hot_window_refresh_failed', reason }), '热用量窗口刷新失败')
+  } finally {
+    usageRankSnapshotsRefreshRunning = false
+    schedulePendingUsageHotWindowRefreshDrain()
+  }
+}
+
+function schedulePendingUsageHotWindowRefreshDrain(): void {
+  if (!usageHotWindowRefreshPending || usageHotWindowRefreshDrainScheduled) return
+  usageHotWindowRefreshDrainScheduled = true
+  setImmediate(() => {
+    usageHotWindowRefreshDrainScheduled = false
+    void runUsageHotWindowRefresh('pending_retry')
+  })
 }
 
 async function runClientIpStatsAggregation(): Promise<void> {
@@ -565,6 +660,7 @@ async function runUsageRankSnapshotsRefresh(jobName: string, stageNames: UsageRa
     throw error
   } finally {
     usageRankSnapshotsRefreshRunning = false
+    schedulePendingUsageHotWindowRefreshDrain()
   }
 }
 

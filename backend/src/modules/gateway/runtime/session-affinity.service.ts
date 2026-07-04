@@ -5,6 +5,7 @@ import { runtimeConfig } from '../../../config/runtime.js'
 import { createAppCache } from '../../../shared/cache.js'
 import {
   getAccountCurrentConcurrency,
+  loadAccountCurrentConcurrencyByIds,
   loadAccountCurrentConcurrencyByIdsAsync,
   loadAccountInFlightStatsByIds,
   loadAccountInFlightStatsByIdsAsync
@@ -17,6 +18,10 @@ import {
   compareGatewayAccountModelPriority,
   type GatewayAccountModelPriority
 } from '../dispatch/model-filter.js'
+import {
+  gatewayAccountConcurrencyAccountId,
+  gatewayAccountConcurrencyAccountIds
+} from '../dispatch/account-concurrency-identity.js'
 
 interface SessionBinding {
   accountId: string
@@ -185,7 +190,7 @@ export function areOpenAIHighConcurrencyAccountsBusyForLane(
       accountConcurrencyLimit: hardLimit,
       policy: options.schedulingPolicy
     })
-    return getAccountCurrentConcurrency(account.id, 'image') >= imageLaneLimit
+    return getAccountCurrentConcurrency(gatewayAccountConcurrencyAccountId(account), 'image') >= imageLaneLimit
   })
 }
 
@@ -199,13 +204,15 @@ export async function areOpenAIHighConcurrencyAccountsBusyForLaneAsync(
   if (options.groupType !== 'high_concurrency' || accounts.length === 0) {
     return false
   }
-  const totalConcurrency = await loadAccountCurrentConcurrencyByIdsAsync(accounts.map((account) => account.id))
+  const accountIds = gatewayAccountConcurrencyAccountIds(accounts)
+  const totalConcurrency = await loadAccountCurrentConcurrencyByIdsAsync(accountIds)
   const imageLaneConcurrency = options.requestLane === 'image'
-    ? await loadAccountCurrentConcurrencyByIdsAsync(accounts.map((account) => account.id), 'image')
+    ? await loadAccountCurrentConcurrencyByIdsAsync(accountIds, 'image')
     : undefined
   return accounts.every((account) => {
     const hardLimit = accountHardConcurrencyLimit(account)
-    const currentConcurrency = accountCurrentConcurrency(account, totalConcurrency.get(account.id))
+    const concurrencyAccountId = gatewayAccountConcurrencyAccountId(account)
+    const currentConcurrency = accountCurrentConcurrency(account, totalConcurrency.get(concurrencyAccountId))
     if (currentConcurrency >= hardLimit) {
       return true
     }
@@ -216,7 +223,7 @@ export async function areOpenAIHighConcurrencyAccountsBusyForLaneAsync(
       accountConcurrencyLimit: hardLimit,
       policy: options.schedulingPolicy
     })
-    return (imageLaneConcurrency?.get(account.id) ?? 0) >= imageLaneLimit
+    return (imageLaneConcurrency?.get(concurrencyAccountId) ?? 0) >= imageLaneLimit
   })
 }
 
@@ -291,12 +298,12 @@ function orderOpenAIHighConcurrencyAccounts(
       : orderOpenAIPersonalAccountsBySessionAffinity(accounts, sessionAffinityKey, modelPriority)
   }
   const binding = sessionAffinityKey ? sessionAffinityCache.get(sessionAffinityKey) : undefined
-  const inFlightStats = loadAccountInFlightStatsByIds(accounts.map((account) => account.id), {
+  const inFlightStats = loadAccountInFlightStatsByIds(gatewayAccountConcurrencyAccountIds(accounts), {
     slowRequestThresholdMs: policy.slowRequestThresholdMs ?? DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY.slowRequestThresholdMs,
     firstOutputSlowThresholdMs: policy.firstOutputSlowThresholdMs ?? DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY.firstOutputSlowThresholdMs
   })
   const candidates = accounts.map((account, index) => {
-    const runtimeStats = inFlightStats.get(account.id)
+    const runtimeStats = inFlightStats.get(gatewayAccountConcurrencyAccountId(account))
     const currentConcurrency = accountCurrentConcurrency(account, runtimeStats?.currentConcurrency)
     const hardLimit = accountHardConcurrencyLimit(account)
     const softLimit = effectiveSoftConcurrencyLimit({
@@ -350,12 +357,12 @@ async function orderOpenAIHighConcurrencyAccountsAsync(
       : orderOpenAIPersonalAccountsBySessionAffinity(accounts, sessionAffinityKey, modelPriority)
   }
   const binding = sessionAffinityKey ? sessionAffinityCache.get(sessionAffinityKey) : undefined
-  const inFlightStats = await loadAccountInFlightStatsByIdsAsync(accounts.map((account) => account.id), {
+  const inFlightStats = await loadAccountInFlightStatsByIdsAsync(gatewayAccountConcurrencyAccountIds(accounts), {
     slowRequestThresholdMs: policy.slowRequestThresholdMs ?? DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY.slowRequestThresholdMs,
     firstOutputSlowThresholdMs: policy.firstOutputSlowThresholdMs ?? DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY.firstOutputSlowThresholdMs
   })
   const candidates = accounts.map((account, index) => {
-    const runtimeStats = inFlightStats.get(account.id)
+    const runtimeStats = inFlightStats.get(gatewayAccountConcurrencyAccountId(account))
     const currentConcurrency = accountCurrentConcurrency(account, runtimeStats?.currentConcurrency)
     const hardLimit = accountHardConcurrencyLimit(account)
     const softLimit = effectiveSoftConcurrencyLimit({
@@ -393,10 +400,11 @@ function orderOpenAIHighConcurrencyHardBusyLast(accounts: OpenAIAccountSecret[])
   if (accounts.length < 2) {
     return accounts
   }
+  const currentConcurrencyByAccount = loadAccountCurrentConcurrencyByIds(gatewayAccountConcurrencyAccountIds(accounts))
   const available: OpenAIAccountSecret[] = []
   const hardBusy: OpenAIAccountSecret[] = []
   for (const account of accounts) {
-    if (accountCurrentConcurrency(account) >= accountHardConcurrencyLimit(account)) {
+    if (accountCurrentConcurrency(account, currentConcurrencyByAccount.get(gatewayAccountConcurrencyAccountId(account))) >= accountHardConcurrencyLimit(account)) {
       hardBusy.push(account)
     } else {
       available.push(account)
@@ -414,11 +422,11 @@ async function orderOpenAIHighConcurrencyHardBusyLastAsync(accounts: OpenAIAccou
   if (accounts.length < 2) {
     return accounts
   }
-  const currentConcurrencyByAccount = await loadAccountCurrentConcurrencyByIdsAsync(accounts.map((account) => account.id))
+  const currentConcurrencyByAccount = await loadAccountCurrentConcurrencyByIdsAsync(gatewayAccountConcurrencyAccountIds(accounts))
   const available: OpenAIAccountSecret[] = []
   const hardBusy: OpenAIAccountSecret[] = []
   for (const account of accounts) {
-    if (accountCurrentConcurrency(account, currentConcurrencyByAccount.get(account.id)) >= accountHardConcurrencyLimit(account)) {
+    if (accountCurrentConcurrency(account, currentConcurrencyByAccount.get(gatewayAccountConcurrencyAccountId(account))) >= accountHardConcurrencyLimit(account)) {
       hardBusy.push(account)
     } else {
       available.push(account)

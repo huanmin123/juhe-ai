@@ -198,7 +198,7 @@ export function optionalAccountTagsField(record: Record<string, unknown>, key: s
       messages.push(`${label}单个标签不能超过 40 个字符`)
       return undefined
     }
-    const tagKey = tagName.toLocaleLowerCase()
+    const tagKey = tagName
     if (seen.has(tagKey)) continue
     seen.add(tagKey)
     items.push(tagName)

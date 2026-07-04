@@ -55,7 +55,7 @@
 - AI 账户时间计划：由 `account-availability-schedule-status-sync` 写入 `accounts.status`；网关候选 SQL 只读落库后的单一状态，不在请求链路解析时间计划。状态变化后由后台任务清理 runtime cache，允许一个同步周期延迟。账户计划只自动切换 `active/disabled`，不能恢复 `pending_test`、`error`、`rate_limited` 或 `temporary_unavailable`。
 - 账户到期时间：网关候选 SQL 对账户自身和授权来源账户都带 `account_expires_at > now` 硬过滤；已加载账号快照软过期后仍会在返回前按 `accountExpiresAt` / token `expiresAt` 内存过滤，避免到期后被缓存续命。
 - 资源授权到期：分组授权、账户授权和批量授权读取均带 `expires_at > now` 条件；已加载分组访问元数据和账号候选软过期后仍会在返回前按授权到期时间内存过滤。
-- IP 封禁策略到期：网关请求路径只读 server 内存 active policy 快照；命中来源级缓存或快照后仍会按 `expiresAt` 本地判断，TTL 截到策略过期点，stats-worker 周期推送快照兜底清出过期策略。
+- IP 封禁策略到期：standalone 网关请求路径只读 server 内存 active policy 快照，高性能 Redis cache driver 下按单 IP shared cache 读取；命中来源级缓存或单 IP 条目后仍会按 `expiresAt` 本地判断，TTL 截到策略过期点，管理变更和缓存重载负责清理旧条目。
 - 手动账户测试、模型检测和冷却复测会显式传 `ignoreAvailability: true`，属于诊断 / 恢复路径，不是普通 API Key 网关请求入口。
 
 ## 验证记录

@@ -1,11 +1,8 @@
 import type { Request } from 'express'
 
 import type { AccountSummary, AccountTestResult, AccountUsageSummary } from '../../../domain/types.js'
-import type { RecentOpenAIRequestShape } from '../../../storage/repositories.js'
 import {
-  requestEndpoint,
-  requestModel,
-  requestStream
+  requestModel
 } from '../request/metadata.js'
 import {
   accountDiagnosticRetryTimeoutMs,
@@ -55,7 +52,6 @@ export async function probeCodexSwitchCandidateAccount(
       const attemptSignal = diagnosticAttemptSignal(input.signal, timeoutMs)
       const result = await accountTestService.testOpenAIAccount(summary, {
         model,
-        requestShape: currentRequestShape(input.req, model),
         groupId: input.groupId,
         systemAccountId: input.systemAccountId,
         signal: attemptSignal,
@@ -66,7 +62,6 @@ export async function probeCodexSwitchCandidateAccount(
           codexSwitchProbeGatewayTimeoutMs(timeoutMs)
         ),
         disableAccountStateMutation: true,
-        clientCompatibility: account.clientCompatibility,
         candidateAccount: account
       })
       lastResult = result
@@ -116,20 +111,6 @@ function codexSwitchProbeResultFromAccountTest(
     traceId: result.traceId,
     model: result.model
   }
-}
-
-function currentRequestShape(req: Request, model?: string): RecentOpenAIRequestShape {
-  return {
-    endpoint: requestEndpoint(req),
-    model,
-    stream: requestStream(req) || requestAcceptsEventStream(req),
-    createdAt: new Date().toISOString()
-  }
-}
-
-function requestAcceptsEventStream(req: Request): boolean {
-  const accept = req.header('accept')
-  return typeof accept === 'string' && accept.toLowerCase().includes('text/event-stream')
 }
 
 function accountSummaryFromUpstreamAccount(account: UpstreamAccount): AccountSummary {

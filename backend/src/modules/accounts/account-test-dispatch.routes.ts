@@ -37,7 +37,7 @@ export function registerAccountTestDispatchRoutes(router: Router): void {
       return
     }
     if (!isGatewaySupportedProtocolProfile(account)) {
-      res.status(400).json({ message: '当前仅支持测试 OpenAI 或 Anthropic 协议账户' })
+      res.status(400).json({ message: '当前仅支持测试 OpenAI、Anthropic 或 Gemini 协议账户' })
       return
     }
     const unavailableMessage = accountTestUnavailableMessage(account)
@@ -59,7 +59,7 @@ export function registerAccountTestDispatchRoutes(router: Router): void {
         diagnostics,
         sessionId: testSessionId,
         model: testOptions.model,
-        clientCompatibility: draftAccount?.clientCompatibility,
+        testEndpointMode: testOptions.testEndpointMode,
         draftAccount
       })
       if (!dispatchAccountTestTasks([task.id])) {

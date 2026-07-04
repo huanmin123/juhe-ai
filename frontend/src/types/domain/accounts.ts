@@ -386,8 +386,7 @@ export interface AccountTestResult {
   accountFailureEligible?: boolean
   errorPolicyAction?: 'none' | 'retry_next' | 'cooldown' | 'disable'
   errorPolicyReason?: string
-  clientCompatibility?: AccountClientCompatibility
-  testClientCompatibility?: AccountClientCompatibility
+  testEndpointMode?: AccountSupportedEndpointMode
   apiKeyPool?: AccountTestApiKeyPoolResult
 }
 
@@ -438,7 +437,7 @@ export interface AccountTestTask {
   status: AccountTestTaskStatus
   message?: string
   model?: string
-  clientCompatibility?: AccountClientCompatibility
+  testEndpointMode?: AccountSupportedEndpointMode
   result?: AccountTestResult
   cancelRequested?: boolean
   createdAt: string

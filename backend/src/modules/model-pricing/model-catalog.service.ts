@@ -31,7 +31,7 @@ import {
   normalizeProviderToken
 } from '../../domain/provider-protocol.js'
 import { listOpenAIProtocolProviderCodes, listOpenAIProtocolProviderCodesAsync } from '../../storage/provider.repository.js'
-import { createAppCache, createSharedJsonCache } from '../../shared/cache.js'
+import { clearSharedJsonCacheInBackground, createAppCache, createSharedJsonCache } from '../../shared/cache.js'
 import { registerGatewayRuntimeCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
 import { modelPricingProviderDriverForProvider } from './provider-driver.registry.js'
 import { runtimeConfig } from '../../config/runtime.js'
@@ -769,7 +769,11 @@ async function setProviderModelCatalogSharedCacheEntry(cacheKey: string, value: 
 
 function clearProviderModelCatalogSharedCache(): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  void providerModelCatalogSharedCache.clear()
+  clearSharedJsonCacheInBackground(
+    providerModelCatalogSharedCache,
+    'provider_model_catalog_shared_cache_clear_failed',
+    '供应商模型目录 Redis shared cache 清理失败'
+  )
 }
 
 function clearProviderModelCatalogCaches(): void {

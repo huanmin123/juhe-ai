@@ -123,12 +123,14 @@
       :accounts="batchTestingAccounts"
       :active-task="activeSingleTestTask"
       :batch-items="batchTestItems"
+      :draft-account="draftTestingAccountPayload"
       :mode="testMode"
       :model-options="testModelOptions"
       :models-loading="testModelsLoading"
       :provider-name="providerName"
       :result="testResult"
       :running="testRunning"
+      v-model:test-endpoint-mode="testForm.testEndpointMode"
       @close="closeTestModal"
       @copy-result="copyText"
       @run="runAccountTest"
@@ -564,6 +566,7 @@ const {
   testModelsLoading,
   testResult,
   testRunning,
+  draftTestingAccountPayload,
   testingAccount
 } = useAccountTestModal({
   accountScopeParams,

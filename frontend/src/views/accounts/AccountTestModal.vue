@@ -23,7 +23,7 @@
             </div>
             <div v-else class="test-account-meta">
               <a-tag color="processing">{{ batchItems.length }} 个账户</a-tag>
-              <a-tag color="geekblue">{{ fixedOAuthCompatibilityText }}</a-tag>
+              <a-tag color="geekblue">{{ selectedEndpointModeText }}</a-tag>
               <a-tag color="cyan">优先模型 {{ model }}</a-tag>
             </div>
           </div>
@@ -45,8 +45,16 @@
               @update:value="$emit('update:model', String($event))"
             />
           </a-form-item>
-          <a-form-item class="test-config-field" :label="fixedCompatibilityLabel">
-            <a-input :value="fixedOAuthCompatibilityText" disabled />
+          <a-form-item class="test-config-field" label="测试请求形态">
+            <a-segmented
+              v-if="canSelectEndpointMode"
+              :value="displayTestEndpointMode"
+              :disabled="running"
+              :options="testEndpointModeOptions"
+              block
+              @update:value="handleTestEndpointModeUpdate"
+            />
+            <a-input v-else :value="selectedEndpointModeText" disabled />
           </a-form-item>
         </div>
       </a-form>
@@ -114,8 +122,9 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
-import type { AccountSummary, AccountTestResult, AccountTestTask } from '@/types/domain'
-import type { AccountBatchTestItem, AccountTestMode } from './accountTestFlow'
+import type { AccountDraftTestPayload } from '@/api/client'
+import type { AccountSummary, AccountSupportedEndpointMode, AccountTestResult, AccountTestTask } from '@/types/domain'
+import type { AccountBatchTestItem, AccountTestEndpointMode, AccountTestMode } from './accountTestFlow'
 import {
   accountTestBatchCounts,
   accountTestBatchItemDurationText as batchItemDurationText,
@@ -139,15 +148,16 @@ import {
   accountStatusText
 } from './accountFormatters'
 import {
-  fixedCompatibilityLabel as providerFixedCompatibilityLabel,
-  fixedCompatibilityText as providerFixedCompatibilityText
-} from './accountProviderCapabilities'
+  accountEndpointModeLabel,
+  accountTestEndpointModesForAccount
+} from './accountEndpointModes'
 
 const props = defineProps<{
   account?: AccountSummary
   accounts: AccountSummary[]
   activeTask?: AccountTestTask
   batchItems: AccountBatchTestItem[]
+  draftAccount?: AccountDraftTestPayload['account']
   mode: AccountTestMode
   model: string
   modelOptions: Array<{ label: string; value: string }>
@@ -156,6 +166,7 @@ const props = defineProps<{
   providerName?: (providerCode?: string) => string
   result?: AccountTestResult
   running: boolean
+  testEndpointMode: AccountTestEndpointMode
 }>()
 
 const emit = defineEmits<{
@@ -165,6 +176,7 @@ const emit = defineEmits<{
   (event: 'stop'): void
   (event: 'update:model', value: string): void
   (event: 'update:open', value: boolean): void
+  (event: 'update:testEndpointMode', value: AccountTestEndpointMode): void
 }>()
 
 const isBatchMode = computed(() => props.mode === 'batch')
@@ -178,8 +190,20 @@ const batchFailedCount = computed(() => batchCounts.value.failed)
 const batchStoppedCount = computed(() => batchCounts.value.stopped)
 const batchCompletedCount = computed(() => batchCounts.value.completed)
 const testTargetAccounts = computed(() => isBatchMode.value ? props.accounts : props.account ? [props.account] : [])
-const fixedCompatibilityLabel = computed(() => providerFixedCompatibilityLabel(testTargetAccounts.value))
-const fixedOAuthCompatibilityText = computed(() => providerFixedCompatibilityText(testTargetAccounts.value))
+const testEndpointModeOptions = computed(() => accountTestEndpointModeOptions(
+  testTargetAccounts.value,
+  isBatchMode.value ? undefined : props.draftAccount
+))
+const canSelectEndpointMode = computed(() => testEndpointModeOptions.value.length > 1)
+const displayTestEndpointMode = computed<AccountTestEndpointMode>(() => {
+  if (props.testEndpointMode !== 'account_default') return props.testEndpointMode
+  return testEndpointModeOptions.value[0]?.value ?? 'account_default'
+})
+const selectedEndpointModeText = computed(() => {
+  const selected = displayTestEndpointMode.value
+  const option = testEndpointModeOptions.value.find((item) => item.value === selected)
+  return option?.label ?? testEndpointModeOptions.value[0]?.label ?? '无可测试请求形态'
+})
 const batchStatusColor = computed(() => accountTestBatchStatusColor(batchCounts.value, props.running))
 const batchStatusText = computed(() => accountTestBatchStatusText(batchCounts.value, props.running))
 const showResultJson = computed(() => isBatchMode.value ? batchCompletedCount.value > 0 : Boolean(props.result))
@@ -214,8 +238,8 @@ const outputLines = computed<AccountTestOutputLine[]>(() => {
   return accountTestSingleOutputLines({
     account: props.account,
     activeTask: props.activeTask,
-    clientCompatibility: 'account_default',
-    fixedOAuthCompatibilityText: fixedOAuthCompatibilityText.value,
+    testEndpointMode: props.testEndpointMode,
+    selectedEndpointModeText: selectedEndpointModeText.value,
     model: props.model,
     providerLabel,
     result: props.result,
@@ -235,12 +259,36 @@ function handleOpenUpdate(value: boolean) {
   emit('update:open', value)
 }
 
+function handleTestEndpointModeUpdate(value: string | number): void {
+  const option = testEndpointModeOptions.value.find((item) => item.value === value)
+  if (option) {
+    emit('update:testEndpointMode', option.value)
+  }
+}
+
 function providerLabel(account: AccountSummary): string {
   return props.providerName?.(account.providerCode) ?? '未知供应商'
 }
 
 function batchItemModelText(item: AccountBatchTestItem): string {
   return accountTestBatchItemModelText(item, props.model)
+}
+
+function accountTestEndpointModeOptions(
+  accounts: AccountSummary[],
+  draftAccount?: AccountDraftTestPayload['account']
+): Array<{ label: string; value: AccountSupportedEndpointMode }> {
+  if (!accounts.length) return []
+  const firstAccount = accounts[0]
+  const firstModes = accountTestEndpointModesForAccount(firstAccount, accounts.length === 1 ? draftAccount : undefined)
+  let shared = new Set<AccountSupportedEndpointMode>(firstModes)
+  for (const account of accounts.slice(1)) {
+    const accountValues = new Set(accountTestEndpointModesForAccount(account))
+    shared = new Set(firstModes.filter((value) => shared.has(value) && accountValues.has(value)))
+  }
+  return firstModes
+    .filter((value) => shared.has(value))
+    .map((value) => ({ label: accountEndpointModeLabel(value, firstAccount), value }))
 }
 </script>
 

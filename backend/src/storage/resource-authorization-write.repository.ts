@@ -376,7 +376,6 @@ export async function expireDueResourceAuthorizationsAsync(limit = maxAuthorizat
 }
 
 function findResourceAuthorizationAfterWrite(authorizationId: string, access?: AccessScope): ResourceAuthorizationSummary | undefined {
-  expireDueResourceAuthorizations()
   return findResourceAuthorizationSummary(authorizationId, access)
 }
 
@@ -384,7 +383,6 @@ async function findResourceAuthorizationAfterWriteAsync(authorizationId: string,
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return findResourceAuthorizationAfterWrite(authorizationId, access)
   }
-  await expireDueResourceAuthorizationsAsync()
   return findResourceAuthorizationSummaryAsync(authorizationId, access, { includeUsage: false })
 }
 
@@ -1331,7 +1329,7 @@ async function isAccountNameAvailableAsync(client: DatabaseClient, systemAccount
     SELECT id
     FROM ${resourceAuthorizationWriteTable(client, 'accounts')}
     WHERE system_account_id = ?
-      AND lower(name) = lower(?)
+      AND name = ?
       AND deleted_at IS NULL${exceptClause}
     LIMIT 1
   `, params)

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 
-import type { AccountSummary } from '../../../../domain/types.js'
+import type { AccountSummary, AccountTestResult } from '../../../../domain/types.js'
 import {
   cancelAccountTestSession,
   completeAccountTestTask,
@@ -623,7 +623,7 @@ function accountTestResult(
   message: string,
   statusCode = success ? 200 : 503,
   errorCode?: string
-) {
+): AccountTestResult {
   return {
     accountId: account.id,
     accountName: account.name,
@@ -642,8 +642,7 @@ function accountTestResult(
     responseBody: success ? { id: `${idPrefix}account_test_response`, status: 'completed' } : { error: { code: errorCode, message } },
     durationMs: success ? 860 : 2400,
     firstTokenMs: success ? 320 : undefined,
-    clientCompatibility: account.clientCompatibility,
-    testClientCompatibility: account.clientCompatibility
+    testEndpointMode: account.type === 'oauth' ? 'responses_sse' : 'chat_sse'
   }
 }
 

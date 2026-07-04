@@ -200,11 +200,10 @@ function buildPostgresApiKeyKeywordCte(
     clauses.push(scope.clause.replace(/^\s*WHERE\s+/i, ''))
     params.push(...scope.params)
   }
-  const lowerKeyword = keyword.toLowerCase()
-  clauses.push(`lower(keyword_api_keys.name) COLLATE "C" >= ?
-    AND lower(keyword_api_keys.name) COLLATE "C" < ?
-    AND starts_with(lower(keyword_api_keys.name), ?)`)
-  params.push(lowerKeyword, apiKeyTextPrefixUpperBound(lowerKeyword), lowerKeyword)
+  clauses.push(`keyword_api_keys.name COLLATE "C" >= ?
+    AND keyword_api_keys.name COLLATE "C" < ?
+    AND starts_with(keyword_api_keys.name, ?)`)
+  params.push(keyword, apiKeyTextPrefixUpperBound(keyword), keyword)
   return {
     sql: `WITH matched_api_key_ids AS MATERIALIZED (
       SELECT keyword_api_keys.id
@@ -310,7 +309,6 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
   const database = getBusinessDatabase()
   const transactionStarted = beginDatabaseTransaction(database)
   try {
-    assertApiKeyNameAvailable(systemAccountId, name)
     routeStrategyId = assertRouteStrategySelectableForApiKey(systemAccountId, routeStrategyId)
     const quotaLimitsJson = requestQuotaLimitsJson(record.quotaLimits)
     const availabilityScheduleNextCheckAt = nextApiKeyAvailabilityScheduleCheckAt(record.availabilitySchedule, nowDate)
@@ -371,7 +369,6 @@ export async function createApiKeyRecordAsync(input: Record<string, unknown>, ac
   const systemAccountId = manageableSystemAccountId(access) ?? currentSystemAccountId(access)
   const name = normalizedApiKeyName(input.name)
   const client = await getApiKeyDatabaseClient()
-  await assertApiKeyNameAvailableAsync(client, systemAccountId, name)
   let routeStrategyId = await assertRouteStrategySelectableForApiKeyAsync(systemAccountId, input.routeStrategyId)
   const quotaLimits = normalizeRequestQuotaLimits(input.quotaLimits)
   const availabilitySchedule = apiKeyAvailabilityScheduleFromRequest(input)
@@ -498,7 +495,6 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
   const now = nowDate.toISOString()
   const transactionStarted = beginDatabaseTransaction(database)
   try {
-    assertApiKeyNameAvailable(systemAccountId, next.name, id)
     nextRouteStrategyId = assertRouteStrategySelectableForApiKey(systemAccountId, nextRouteStrategyId)
     const quotaLimitsJson = requestQuotaLimitsJson(next.quotaLimits)
     const availabilityScheduleNextCheckAt = nextApiKeyAvailabilityScheduleCheckAt(next.availabilitySchedule, nowDate)
@@ -585,7 +581,6 @@ export async function updateApiKeyAsync(id: string, input: Record<string, unknow
   try {
     await client.transaction(async (tx) => {
       nextRouteStrategyId = await assertRouteStrategySelectableForApiKeyAsync(systemAccountId, nextRouteStrategyId, tx, true)
-      await assertApiKeyNameAvailableAsync(tx, systemAccountId, next.name, id)
       const nowDate = mutationNow
       const now = nowDate.toISOString()
       const quotaLimitsJson = requestQuotaLimitsJson(next.quotaLimits)
@@ -932,21 +927,20 @@ function nextDefaultApiKeyName(database: ReturnType<typeof getBusinessDatabase>,
 }
 
 async function nextDefaultApiKeyNameAsync(client: DatabaseClient, systemAccountId: string, baseName: string): Promise<string> {
-  const likeOperator = client.driver === 'postgres' ? 'ILIKE' : 'LIKE'
   const rows = await client.query<{ name?: string | null }>(`
     SELECT name
     FROM ${apiKeyTable(client, 'api_keys')}
-    WHERE system_account_id = ? AND (name = ? OR name ${likeOperator} ? ESCAPE '\\')
+    WHERE system_account_id = ? AND (name = ? OR name LIKE ? ESCAPE '\\')
   `, [systemAccountId, baseName, `${baseName} %`])
   return nextDefaultApiKeyNameFromExisting(rows.map((row) => row.name), baseName)
 }
 
 function nextDefaultApiKeyNameFromExisting(names: Array<string | null | undefined>, baseName: string): string {
-  const existing = new Set(names.map((name) => String(name ?? '').trim().toLowerCase()).filter(Boolean))
-  if (!existing.has(baseName.toLowerCase())) return baseName
+  const existing = new Set(names.map((name) => String(name ?? '').trim()).filter(Boolean))
+  if (!existing.has(baseName)) return baseName
   for (let index = 2; index <= 1000; index += 1) {
     const candidate = `${baseName} ${index}`
-    if (!existing.has(candidate.toLowerCase())) return candidate
+    if (!existing.has(candidate)) return candidate
   }
   return `${baseName} ${Date.now()}`
 }
@@ -1010,18 +1004,6 @@ function assertKnownInputKeys(input: Record<string, unknown>, allowedKeys: Reado
   }
 }
 
-function assertApiKeyNameAvailable(systemAccountId: string, name: string, excludeId?: string): void {
-  const params: string[] = [systemAccountId, name]
-  const excludeClause = excludeId ? ' AND id <> ?' : ''
-  if (excludeId) params.push(excludeId)
-  const row = getBusinessDatabase()
-    .prepare(`SELECT id FROM api_keys WHERE system_account_id = ? AND lower(name) = lower(?)${excludeClause} LIMIT 1`)
-    .get(...params) as { id?: string } | undefined
-  if (row?.id) {
-    throw new Error(`API Key 名称已存在：${name}`)
-  }
-}
-
 function buildApiKeyFiltersForClient(
   client: DatabaseClient,
   scope: { clause: string; params: string[] },
@@ -1035,13 +1017,12 @@ function buildApiKeyFiltersForClient(
     params.push(...scope.params)
   }
   if (options.keyword) {
-    const lowerKeyword = options.keyword.toLowerCase()
     clauses.push(`(
-      lower(api_keys.name) COLLATE "C" >= ?
-      AND lower(api_keys.name) COLLATE "C" < ?
-      AND starts_with(lower(api_keys.name), ?)
+      api_keys.name COLLATE "C" >= ?
+      AND api_keys.name COLLATE "C" < ?
+      AND starts_with(api_keys.name, ?)
     )`)
-    params.push(lowerKeyword, apiKeyTextPrefixUpperBound(lowerKeyword), lowerKeyword)
+    params.push(options.keyword, apiKeyTextPrefixUpperBound(options.keyword), options.keyword)
   }
   if (options.status) {
     clauses.push('api_keys.status = ?')
@@ -1087,18 +1068,6 @@ async function rememberRequestQuotaHourlyWindowsFromLimitsAsync(client: Database
   `, [hours, timestamp, timestamp])
 }
 
-async function assertApiKeyNameAvailableAsync(client: DatabaseClient, systemAccountId: string, name: string, excludeId?: string): Promise<void> {
-  const row = await client.one<{ id?: string }>(`
-    SELECT id
-    FROM ${apiKeyTable(client, 'api_keys')}
-    WHERE system_account_id = ? AND lower(name) = lower(?) AND id <> ?
-    LIMIT 1
-  `, [systemAccountId, name, excludeId ?? ''])
-  if (row?.id) {
-    throw new Error(`API Key 名称已存在：${name}`)
-  }
-}
-
 async function getApiKeyDatabaseClient(): Promise<DatabaseClient> {
   if (runtimeConfig.databaseDriver === 'postgres') {
     return createPostgresDatabaseClient(await getPostgresPool())
@@ -1114,7 +1083,8 @@ function apiKeyTable(client: DatabaseClient, tableName: string): string {
 
 function isDuplicateApiKeyNameError(error: unknown): boolean {
   if (!(error instanceof Error)) return false
-  return error.message.includes('idx_api_keys_owner_name_unique_lower')
+  return error.message.includes('idx_api_keys_owner_name_unique')
+    || error.message.includes('idx_api_keys_owner_name_unique_lower')
 }
 
 function isDuplicateDefaultApiKeyError(error: unknown): boolean {

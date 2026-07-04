@@ -92,9 +92,9 @@ const emit = defineEmits<{
 }>()
 
 function filterOption(input: string, option?: { label?: string | number }) {
-  const keyword = input.trim().toLowerCase()
+  const keyword = input.trim()
   if (!keyword) return true
-  const label = String(option?.label ?? '').toLowerCase()
+  const label = String(option?.label ?? '')
   return label === keyword || label.startsWith(keyword)
 }
 

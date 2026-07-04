@@ -6,6 +6,7 @@ export type SuppressibleGatewayAccount = {
   groupOwnerSystemAccountId?: string
   boundGroupId?: string
   accountAuthorizationId?: string
+  credentialSourceAccountId?: string
 }
 
 export interface GatewayAccountRuntimeClearTarget {

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { ChildProcess } from 'node:child_process'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { logger } from '../../shared/logger.js'
+import { errorLogFields, logger } from '../../shared/logger.js'
 import { buildProcessEventLoopSample, type ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 import type { ActiveClientIpPolicy } from '../../storage/client-ip-stats.repository.js'
 import type { AuditLogInput, OperationLogInput, UsageRecordInput } from '../../storage/repositories.js'
@@ -708,7 +708,12 @@ function handleWorkerMessage(message: unknown, role: BackgroundWorkerProcessRole
       break
     case 'client_ip_policy_snapshot_update':
       if (runtimeConfig.processRole === 'server' && isActiveClientIpPolicyArray(record.policies)) {
-        void replaceServerClientIpPolicySnapshot(record.policies)
+        void replaceServerClientIpPolicySnapshot(record.policies).catch((error) => {
+          logger.warn(errorLogFields(error, {
+            event: 'client_ip_policy_snapshot_update_failed',
+            policyCount: record.policies?.length
+          }), '客户端 IP 策略 IPC 处理失败')
+        })
       }
       break
     default:

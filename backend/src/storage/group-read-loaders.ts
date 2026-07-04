@@ -1,5 +1,5 @@
 import { runtimeConfig } from '../config/runtime.js'
-import { createAppCache, createSharedJsonCache } from '../shared/cache.js'
+import { clearSharedJsonCacheInBackground, createAppCache, createSharedJsonCache } from '../shared/cache.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getBusinessDatabase, getStatsDatabase } from './database.js'
 import { getPostgresPool } from './postgres-client.js'
@@ -265,5 +265,9 @@ function deleteGroupAccountIdsSharedCacheEntry(groupId: string): void {
 }
 
 function clearGroupAccountIdsSharedCache(): void {
-  void groupAccountIdsSharedCache.clear()
+  clearSharedJsonCacheInBackground(
+    groupAccountIdsSharedCache,
+    'group_account_ids_shared_cache_clear_failed',
+    '分组账号 ID Redis shared cache 清理失败'
+  )
 }

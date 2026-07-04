@@ -257,7 +257,7 @@ function normalizeAccountTags(value: AccountFormModel['tags']): string[] {
   for (const item of value ?? []) {
     const name = item.replace(/\s+/g, ' ').trim()
     if (!name) continue
-    const key = name.toLocaleLowerCase()
+    const key = name
     if (seen.has(key)) continue
     seen.add(key)
     output.push(name)

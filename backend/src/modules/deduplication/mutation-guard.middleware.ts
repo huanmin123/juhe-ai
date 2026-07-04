@@ -87,7 +87,7 @@ export function queryField(req: Request, name: string): unknown {
 }
 
 export function normalizedText(value: unknown): string {
-  return typeof value === 'string' ? value.trim().toLowerCase() : ''
+  return typeof value === 'string' ? value.trim() : ''
 }
 
 export function textValue(value: unknown): string {

@@ -724,10 +724,13 @@ function assertGatewayPolicyLookupDoesNotRideRuntimeSnapshot(): void {
     'export async function inspectClientIpPolicy',
     'export function primeClientIpPolicyCacheLocal'
   )
-  assert(inspectSource.includes('activePolicySnapshot.get'), '网关 IP 封禁请求路径应只读 server 内存快照')
+  assert(inspectSource.includes('activePolicySnapshot.get'), '网关 IP 封禁单机请求路径应只读 server 内存快照')
+  assert(inspectSource.includes('loadClientIpPolicyByHashFromSharedCacheOrDatabase'), '网关 IP 封禁 Redis 请求路径应按单个 IP hash 读取 shared cache 或索引查询')
+  assert(inspectSource.includes('getClientIpPolicyByIpSharedCacheEntry'), '网关 IP 封禁 cacheOnly 路径应只读单 IP Redis shared cache')
+  assert(!inspectSource.includes('loadClientIpPolicySnapshotFromSharedCacheOrDatabase'), '网关 IP 封禁 Redis 请求路径不能加载全量 active 策略快照')
   assert(!inspectSource.includes('requestDbService'), '网关 IP 封禁请求路径不能请求 DB service')
-  assert(!cacheSource.includes("type: 'find_active_client_ip_policy'"), '网关 IP 封禁请求路径不能按单个 IP 查库')
-  assert(cacheSource.includes("type: 'list_active_client_ip_policies'"), 'active IP 封禁策略只能通过快照重载进入 server 内存')
+  assert(cacheSource.includes("type: 'find_active_client_ip_policy_by_hash'"), 'Redis cache miss 下 IP 封禁应通过 stats writer 按 ip_hash 索引查询')
+  assert(cacheSource.includes('findActiveClientIpPolicyByHashAsync'), 'IP 封禁单 IP 回源必须使用 repository 索引查询 helper')
 }
 
 function sourceFunctionBlock(source: string, marker: string): string {

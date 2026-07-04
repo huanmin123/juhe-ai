@@ -176,8 +176,8 @@ try {
 
   assert(capturedCalls.length >= 5, '回归应捕获 AI 账户列表 SQL')
   assert(
-    capturedCalls.some((call) => call.params.some((param) => typeof param === 'string' && param.startsWith('%') && param.endsWith('%'))),
-    'AI 账户列表名称搜索应传入包含匹配参数'
+    capturedCalls.some((call) => /\binstr\s*\(\s*documents\.normalized_name\s*,\s*\?\s*\)\s*>\s*0/i.test(call.sql)),
+    'AI 账户列表名称包含匹配应使用搜索文档字面包含确认'
   )
   for (const call of capturedCalls) {
     assert(!/\bCOALESCE\s*\(\s*account_rows\.notes\b/i.test(call.sql), 'AI 账户列表搜索不应通过 COALESCE 扫描备注字段')
@@ -187,12 +187,10 @@ try {
     assert(!/\baccount_rows\.id\s+(?:=|LIKE)\s+\?/i.test(call.sql), 'AI 账户列表名称搜索不应把账户 ID 放进通用关键词 WHERE')
     assert(!/\baccount_rows\.provider_code\s+(?:COLLATE|LIKE)\b/i.test(call.sql), 'AI 账户列表名称搜索不应把供应商编码放进通用关键词 WHERE')
     assert(!/\baccount_rows\.type\s+(?:COLLATE|LIKE)\b/i.test(call.sql), 'AI 账户列表名称搜索不应把账户类型放进通用关键词 WHERE')
-    if (/\bLIKE\s+\?/i.test(call.sql)) {
-      assert(/\bESCAPE\s+'\\'/i.test(call.sql), 'AI 账户列表前缀搜索应显式转义 LIKE 通配符')
-    }
-    if (call.params.some((param) => typeof param === 'string' && param.startsWith('%'))) {
+    assert(!/\bLIKE\s+\?/i.test(call.sql), 'AI 账户列表名称搜索不应使用 LIKE，避免大小写折叠或通配符语义')
+    if (/\binstr\s*\(\s*documents\.normalized_name\s*,\s*\?\s*\)\s*>\s*0/i.test(call.sql)) {
       assert(
-        /\bdocuments\.normalized_name\s+LIKE\s+\?\s+ESCAPE\s+'\\'/i.test(call.sql),
+        /\binstr\s*\(\s*documents\.normalized_name\s*,\s*\?\s*\)\s*>\s*0/i.test(call.sql),
         'AI 账户列表包含匹配只能落到账户名称规范化搜索文档'
       )
       assert(
@@ -310,12 +308,12 @@ function assertAccountListRouteBoundary(): void {
   )
   assert.match(
     accountSummaryRepositorySource,
-    /lower\(accounts\.name\) >= \?[\s\S]+lower\(accounts\.name\) < \?/,
-    'PG 自有账户列表名称前缀搜索必须使用 lower(name) 范围条件，避免 LIKE 扫描'
+    /accounts\.name COLLATE "C" >= \?[\s\S]+accounts\.name COLLATE "C" < \?/,
+    'PG 自有账户列表名称前缀搜索必须使用大小写敏感 C collation 范围条件，避免 LIKE 扫描'
   )
   assert.match(
     accountSummaryRepositorySource,
-    /accountNamePrefixUpperBound\(normalizedKeywordPrefix\)/,
+    /accountNamePrefixUpperBound\(keywordPrefix\)/,
     'PG 自有账户列表名称前缀搜索必须使用代码点上界，避免固定 \\uffff 在 PG 排序规则下失效'
   )
   assert.doesNotMatch(
@@ -328,14 +326,19 @@ function assertAccountListRouteBoundary(): void {
     /lower\(accounts\.name\)\s+LIKE\s+lower\(\?\)/,
     'PG 自有账户列表名称前缀搜索不能回退 lower(name) LIKE lower(?)'
   )
-  assert.match(
-    accountOptionsRepositorySource,
-    /lower\(accounts\.name\) >= \?[\s\S]+lower\(accounts\.name\) < \?/,
-    'PG 账户 options 名称前缀搜索必须使用 lower(name) 范围条件，避免 LIKE 扫描'
+  assert.doesNotMatch(
+    accountSummaryRepositorySource,
+    /lower\(accounts\.name\)\s+>=\s+\?/,
+    'PG 自有账户列表名称前缀搜索不能折叠账户名称大小写'
   )
   assert.match(
     accountOptionsRepositorySource,
-    /accountOptionNamePrefixUpperBound\(normalizedKeywordPrefix\)/,
+    /accounts\.name COLLATE "C" >= \?[\s\S]+accounts\.name COLLATE "C" < \?/,
+    'PG 账户 options 名称前缀搜索必须使用大小写敏感 C collation 范围条件，避免 LIKE 扫描'
+  )
+  assert.match(
+    accountOptionsRepositorySource,
+    /accountOptionNamePrefixUpperBound\(keywordPrefix\)/,
     'PG 账户 options 名称前缀搜索必须使用代码点上界，避免固定 \\uffff 在 PG 排序规则下失效'
   )
   assert.doesNotMatch(
@@ -347,6 +350,11 @@ function assertAccountListRouteBoundary(): void {
     accountOptionsRepositorySource,
     /lower\(accounts\.name\)\s+LIKE\s+lower\(\?\)/,
     'PG 账户 options 名称前缀搜索不能回退 lower(name) LIKE lower(?)'
+  )
+  assert.doesNotMatch(
+    accountOptionsRepositorySource,
+    /lower\(accounts\.name\)\s+>=\s+\?/,
+    'PG 账户 options 名称前缀搜索不能折叠账户名称大小写'
   )
   assert(
     accountReadRepositorySource.includes('accountApiKeyPoolAllUnavailableSql')
@@ -392,11 +400,11 @@ function assertAccountNameSearchCandidateQueryPlan(accountId: string): void {
     INNER JOIN account_name_search_documents documents ON documents.account_id = search.account_id
     INNER JOIN accounts ON accounts.id = search.account_id
     WHERE search.term IN (?)
-      AND documents.normalized_name LIKE ? ESCAPE '\\'
+      AND instr(documents.normalized_name, ?) > 0
       AND accounts.deleted_at IS NULL
     GROUP BY search.account_id
     HAVING COUNT(DISTINCT search.term) = ?
-  `, [termRow.term, `%${termRow.term}%`, 1])
+  `, [termRow.term, termRow.term, 1])
   assert(details.includes('idx_account_name_search_terms_term_owner'), `AI 账户名称包含候选查询必须走词项索引，实际计划：${details}`)
   assert(!details.includes('SCAN accounts'), `AI 账户名称包含候选查询不能扫描 accounts 主表，实际计划：${details}`)
 }

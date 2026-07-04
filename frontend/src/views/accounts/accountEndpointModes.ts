@@ -12,6 +12,7 @@ import {
   type AccountProviderProfileLike,
   allAccountEndpointModes,
   anthropicAccountEndpointModes,
+  accountProviderProtocolKind,
   defaultEndpointModesForAccount,
   geminiAccountEndpointModes,
   openAIEndpointModes,
@@ -20,6 +21,18 @@ import {
 import { FALLBACK_PROVIDERS } from './accountOptions'
 
 export type AccountEndpointModeLabelContext = AccountProviderProfileLike | ProviderProtocolProfileDefinition | ProviderDefinition | undefined
+export type AccountTestEndpointModeSource = AccountProviderProfileLike & {
+  credentials?: Record<string, unknown>
+}
+export type AccountTestEndpointModeDraftSource = {
+  providerCode?: string
+  providerProtocolProfileId?: string
+  protocolCode?: string
+  protocolVersion?: string
+  type?: unknown
+  credentials?: Record<string, unknown>
+  clientCompatibility?: AccountClientCompatibility
+}
 
 export const accountEndpointModeOptions: Array<{ label: string; value: AccountSupportedEndpointMode }> = [
   { label: 'Chat Completions (JSON)', value: 'chat_json' },
@@ -158,6 +171,52 @@ export function accountEndpointModeLabel(mode: AccountSupportedEndpointMode, con
   }
 }
 
+export function accountTestEndpointModesForAccount(
+  account?: AccountTestEndpointModeSource,
+  draftAccount?: AccountTestEndpointModeDraftSource
+): AccountSupportedEndpointMode[] {
+  if (!account && !draftAccount) return []
+  const source = {
+    ...(account ?? {}),
+    ...(draftAccount ?? {}),
+    type: normalizedAccountType(draftAccount?.type ?? account?.type),
+    credentials: draftAccount?.credentials ?? account?.credentials
+  }
+  const type = normalizedAccountType(source.type)
+  const fallback = defaultAccountEndpointModes(
+    source.providerCode ?? source.code ?? '',
+    type,
+    source.clientCompatibility,
+    { protocolProfile: source }
+  )
+  const supportedModes = normalizeAccountEndpointModes(source.credentials?.supported_endpoint_modes, fallback)
+  const supportedSet = new Set(supportedModes)
+  return accountTestEndpointModeOrder(source).filter((mode) => supportedSet.has(mode))
+}
+
+export function defaultAccountTestEndpointModeForSelection(
+  selection?: AccountTestEndpointModeSource | AccountTestEndpointModeSource[],
+  draftAccount?: AccountTestEndpointModeDraftSource
+): AccountSupportedEndpointMode | undefined {
+  const accounts = Array.isArray(selection) ? selection : selection ? [selection] : []
+  if (!accounts.length) return undefined
+  const firstModes = accountTestEndpointModesForAccount(accounts[0], draftAccount)
+  if (accounts.length === 1) return firstModes[0]
+  const shared = accounts.slice(1).reduce((current, account) => {
+    const modes = new Set(accountTestEndpointModesForAccount(account))
+    return current.filter((mode) => modes.has(mode))
+  }, firstModes)
+  return shared[0]
+}
+
+export function accountTestEndpointModeOrder(account?: AccountProviderProfileLike): AccountSupportedEndpointMode[] {
+  const protocolKind = accountProviderProtocolKind(account)
+  if (protocolKind === 'anthropic_v1') return ['messages_sse', 'messages_json']
+  if (protocolKind === 'gemini_v1beta') return ['generate_content_sse', 'generate_content_json']
+  if (account?.type === 'oauth') return ['responses_sse', 'responses_json']
+  return ['chat_sse', 'responses_sse', 'chat_json', 'responses_json']
+}
+
 function chatCapabilityName(context?: AccountEndpointModeLabelContext): string {
   const providerCode = normalizeProviderToken(contextProviderCode(context))
   const profileId = contextProfileId(context)
@@ -186,6 +245,10 @@ function contextProfileId(context?: AccountEndpointModeLabelContext): string | u
   if ('providerProtocolProfileId' in context) return context.providerProtocolProfileId
   if ('id' in context) return context.id
   return undefined
+}
+
+function normalizedAccountType(value: unknown): AccountType {
+  return value === 'oauth' ? 'oauth' : 'api_key'
 }
 
 function stableEndpointModeKey(value: AccountSupportedEndpointMode[]): string {

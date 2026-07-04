@@ -4,21 +4,25 @@ import type { GroupSchedulingPolicy } from '../../../domain/types.js'
 import type { OpenAIGatewayRequestLane } from '../protocols/openai-v1/request-lane.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import { preserveGatewayAccountDispatchPriorityTiers } from '../runtime/account-dispatch-priority-order.js'
+import {
+  gatewayAccountConcurrencyAccountId,
+  gatewayAccountConcurrencyAccountIds
+} from './account-concurrency-identity.js'
 import type { GatewayAccountModelPriority } from './model-filter.js'
 
 export function refreshGatewayAccountCurrentConcurrency(accounts: UpstreamAccount[]): UpstreamAccount[] {
-  const concurrency = loadAccountCurrentConcurrencyByIds(accounts.map((account) => account.id))
+  const concurrency = loadAccountCurrentConcurrencyByIds(gatewayAccountConcurrencyAccountIds(accounts))
   return accounts.map((account) => ({
     ...account,
-    currentConcurrency: concurrency.get(account.id) ?? 0
+    currentConcurrency: concurrency.get(gatewayAccountConcurrencyAccountId(account)) ?? 0
   }))
 }
 
 export async function refreshGatewayAccountCurrentConcurrencyAsync(accounts: UpstreamAccount[]): Promise<UpstreamAccount[]> {
-  const concurrency = await loadAccountCurrentConcurrencyByIdsAsync(accounts.map((account) => account.id))
+  const concurrency = await loadAccountCurrentConcurrencyByIdsAsync(gatewayAccountConcurrencyAccountIds(accounts))
   return accounts.map((account) => ({
     ...account,
-    currentConcurrency: concurrency.get(account.id) ?? 0
+    currentConcurrency: concurrency.get(gatewayAccountConcurrencyAccountId(account)) ?? 0
   }))
 }
 
@@ -31,7 +35,7 @@ export function orderGatewayAccountsByLaneCapacityAvailability(
   if (accounts.length < 2) {
     return accounts
   }
-  const accountIds = accounts.map((account) => account.id)
+  const accountIds = gatewayAccountConcurrencyAccountIds(accounts)
   const currentConcurrency = loadAccountCurrentConcurrencyByIds(accountIds)
   const imageLaneConcurrency = requestLane === 'image'
     ? loadAccountCurrentConcurrencyByIds(accountIds, 'image')
@@ -48,7 +52,7 @@ export async function orderGatewayAccountsByLaneCapacityAvailabilityAsync(
   if (accounts.length < 2) {
     return accounts
   }
-  const accountIds = accounts.map((account) => account.id)
+  const accountIds = gatewayAccountConcurrencyAccountIds(accounts)
   const currentConcurrency = await loadAccountCurrentConcurrencyByIdsAsync(accountIds)
   const imageLaneConcurrency = requestLane === 'image'
     ? await loadAccountCurrentConcurrencyByIdsAsync(accountIds, 'image')
@@ -64,7 +68,7 @@ export function areGatewayAccountsCapacityBusyForLane(
   if (accounts.length === 0) {
     return false
   }
-  const accountIds = accounts.map((account) => account.id)
+  const accountIds = gatewayAccountConcurrencyAccountIds(accounts)
   const currentConcurrency = loadAccountCurrentConcurrencyByIds(accountIds)
   const imageLaneConcurrency = requestLane === 'image'
     ? loadAccountCurrentConcurrencyByIds(accountIds, 'image')
@@ -80,7 +84,7 @@ export async function areGatewayAccountsCapacityBusyForLaneAsync(
   if (accounts.length === 0) {
     return false
   }
-  const accountIds = accounts.map((account) => account.id)
+  const accountIds = gatewayAccountConcurrencyAccountIds(accounts)
   const currentConcurrency = await loadAccountCurrentConcurrencyByIdsAsync(accountIds)
   const imageLaneConcurrency = requestLane === 'image'
     ? await loadAccountCurrentConcurrencyByIdsAsync(accountIds, 'image')
@@ -131,13 +135,14 @@ function isAccountCapacityBusyForLane(
   schedulingPolicy?: GroupSchedulingPolicy
 ): boolean {
   const hardLimit = accountHardConcurrencyLimit(account)
-  if ((currentConcurrency.get(account.id) ?? 0) >= hardLimit) {
+  const concurrencyAccountId = gatewayAccountConcurrencyAccountId(account)
+  if ((currentConcurrency.get(concurrencyAccountId) ?? 0) >= hardLimit) {
     return true
   }
   if (requestLane !== 'image') {
     return false
   }
-  return (imageLaneConcurrency?.get(account.id) ?? 0) >= effectiveImageLaneConcurrencyLimit({
+  return (imageLaneConcurrency?.get(concurrencyAccountId) ?? 0) >= effectiveImageLaneConcurrencyLimit({
     accountConcurrencyLimit: hardLimit,
     policy: schedulingPolicy
   })

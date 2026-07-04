@@ -56,7 +56,7 @@ export function listAccountTags(access?: AccessScope): AccountTagSummary[] {
         AND visible_authorizations.status IN ('active', 'paused', 'expired')
       WHERE account_tags.system_account_id = ?
       GROUP BY account_tags.id
-      ORDER BY account_tags.name COLLATE NOCASE ASC, account_tags.id ASC
+      ORDER BY account_tags.name ASC, account_tags.id ASC
     `)
     .all(systemAccountId) as unknown as AccountTagRow[]
   return rows.map(accountTagSummaryFromRow)
@@ -91,7 +91,7 @@ export async function listAccountTagsAsync(access?: AccessScope): Promise<Accoun
       AND visible_authorizations.status IN ('active', 'paused', 'expired')
     WHERE account_tags.system_account_id = ?
     GROUP BY account_tags.id, account_tags.system_account_id, account_tags.name, account_tags.created_at, account_tags.updated_at
-    ORDER BY lower(account_tags.name) ASC, account_tags.id ASC
+    ORDER BY account_tags.name ASC, account_tags.id ASC
   `, [systemAccountId])
   return rows.map(accountTagSummaryFromRow)
 }
@@ -280,7 +280,7 @@ export function loadAccountTagsByAccountIds(accountIds: string[]): Map<string, A
         FROM account_tag_bindings
         INNER JOIN account_tags ON account_tags.id = account_tag_bindings.tag_id
         WHERE account_tag_bindings.account_id IN (${sqlPlaceholders(chunk.length)})
-        ORDER BY account_tags.name COLLATE NOCASE ASC, account_tags.id ASC
+        ORDER BY account_tags.name ASC, account_tags.id ASC
       `)
       .all(...chunk) as unknown as Array<AccountTagRow & { account_id: string }>)
   }
@@ -308,7 +308,7 @@ export async function loadAccountTagsByAccountIdsAsync(accountIds: string[]): Pr
       INNER JOIN ${accountTagsTable(client, 'account_tags')} account_tags
         ON account_tags.id = account_tag_bindings.tag_id
       WHERE account_tag_bindings.account_id IN (${chunk.map(() => '?').join(', ')})
-      ORDER BY lower(account_tags.name) ASC, account_tags.id ASC
+      ORDER BY account_tags.name ASC, account_tags.id ASC
     `, chunk))
   }
   for (const row of rows) {
@@ -330,7 +330,7 @@ export function normalizeAccountTagNamesInput(value: unknown): string[] | undefi
     }
     const name = normalizeTagName(item)
     if (!name) continue
-    const key = name.toLocaleLowerCase()
+    const key = name
     if (seen.has(key)) continue
     if (output.length >= maxTagsPerAccount) {
       throw new Error(`单个账户最多配置 ${maxTagsPerAccount} 个标签`)
@@ -342,18 +342,6 @@ export function normalizeAccountTagNamesInput(value: unknown): string[] | undefi
 }
 
 function upsertAccountTag(database: DatabaseSync, systemAccountId: string, name: string, now: string): AccountTagSummary {
-  const existing = database
-    .prepare('SELECT id, system_account_id, name, created_at, updated_at FROM account_tags WHERE system_account_id = ? AND lower(name) = lower(?) LIMIT 1')
-    .get(systemAccountId, name) as unknown as AccountTagRow | undefined
-  if (existing) {
-    if (existing.name !== name) {
-      database
-        .prepare('UPDATE account_tags SET name = ?, updated_at = ? WHERE id = ?')
-        .run(name, now, existing.id)
-      return accountTagSummaryFromRow({ ...existing, name, updated_at: now })
-    }
-    return accountTagSummaryFromRow(existing)
-  }
   const row: AccountTagRow = {
     id: newId('acctag'),
     system_account_id: systemAccountId,
@@ -363,28 +351,21 @@ function upsertAccountTag(database: DatabaseSync, systemAccountId: string, name:
   }
   database
     .prepare(`
-      INSERT INTO account_tags (
+      INSERT OR IGNORE INTO account_tags (
         id, system_account_id, name, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?)
     `)
     .run(row.id, row.system_account_id, row.name, row.created_at, row.updated_at)
-  return accountTagSummaryFromRow(row)
+  const saved = database
+    .prepare('SELECT id, system_account_id, name, created_at, updated_at FROM account_tags WHERE system_account_id = ? AND name = ? LIMIT 1')
+    .get(systemAccountId, name) as unknown as AccountTagRow | undefined
+  if (!saved) {
+    throw new Error(`标签创建失败：${name}`)
+  }
+  return accountTagSummaryFromRow(saved)
 }
 
 async function upsertAccountTagAsync(client: DatabaseClient, systemAccountId: string, name: string, now: string): Promise<AccountTagSummary> {
-  const existing = await client.one<AccountTagRow>(`
-    SELECT id, system_account_id, name, created_at, updated_at
-    FROM ${accountTagsTable(client, 'account_tags')}
-    WHERE system_account_id = ? AND lower(name) = lower(?)
-    LIMIT 1
-  `, [systemAccountId, name])
-  if (existing) {
-    if (existing.name !== name) {
-      await client.execute(`UPDATE ${accountTagsTable(client, 'account_tags')} SET name = ?, updated_at = ? WHERE id = ?`, [name, now, existing.id])
-      return accountTagSummaryFromRow({ ...existing, name, updated_at: now })
-    }
-    return accountTagSummaryFromRow(existing)
-  }
   const row: AccountTagRow = {
     id: newId('acctag'),
     system_account_id: systemAccountId,
@@ -396,8 +377,18 @@ async function upsertAccountTagAsync(client: DatabaseClient, systemAccountId: st
     INSERT INTO ${accountTagsTable(client, 'account_tags')} (
       id, system_account_id, name, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT (system_account_id, name) DO NOTHING
   `, [row.id, row.system_account_id, row.name, row.created_at, row.updated_at])
-  return accountTagSummaryFromRow(row)
+  const saved = await client.one<AccountTagRow>(`
+    SELECT id, system_account_id, name, created_at, updated_at
+    FROM ${accountTagsTable(client, 'account_tags')}
+    WHERE system_account_id = ? AND name = ?
+    LIMIT 1
+  `, [systemAccountId, name])
+  if (!saved) {
+    throw new Error(`标签创建失败：${name}`)
+  }
+  return accountTagSummaryFromRow(saved)
 }
 
 function accountTagOwnerSystemAccountId(access?: AccessScope): string {

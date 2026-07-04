@@ -2,12 +2,12 @@ import type { AccountOptionSummary, AccountStatus, AuthorizationStatus } from '.
 import { canAccessAll, includeSystemAccountFields, manageableSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
 import { accountStatusFilterValues, normalizeAccountOptionListOptions, type AccountOptionListOptions } from './account-list-options.js'
 import { accountApiKeyPoolAllUnavailableSql, ensureAccountDerivedStatusSqlFunctions } from './account-derived-status-sql.js'
-import { accountNameSearchQueryTerms, escapeAccountNameSearchLike, normalizeAccountNameSearchText } from './account-name-search.repository.js'
+import { accountNameSearchQueryTerms, normalizeAccountNameSearchText } from './account-name-search.repository.js'
 import { authorizationRuntimeBlockingStatus, currentIsoSql, disableExpiredAccounts } from './account-runtime-status.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { getBusinessDatabase } from './database.js'
 import type { DatabaseClient } from './database-client.js'
-import { escapeLikePrefix, sqlPlaceholders } from './query-utils.js'
+import { sqlPlaceholders } from './query-utils.js'
 import { ensureRequestQuotaDatabaseAttached, requestQuotaExceededSql, type RequestQuotaSqlExpression } from './request-quota-sql.js'
 import { authorizedAccountPermissions, ownerPermissions } from './resource-permissions.js'
 import { loadSystemAccountNameMapByIds } from './repository-lookups.js'
@@ -243,11 +243,11 @@ function buildOwnerAccountOptionFilters(
   }
   const keyword = options.keyword?.trim()
   if (keyword) {
-    const normalizedKeywordPrefix = normalizeAccountNameSearchText(keyword)
+    const keywordPrefix = normalizeAccountNameSearchText(keyword)
     const keywordClauses = [
-      '(lower(accounts.name) >= ? AND lower(accounts.name) < ?)'
+      '(accounts.name COLLATE "C" >= ? AND accounts.name COLLATE "C" < ?)'
     ]
-    const keywordParams: unknown[] = [normalizedKeywordPrefix, accountOptionNamePrefixUpperBound(normalizedKeywordPrefix)]
+    const keywordParams: unknown[] = [keywordPrefix, accountOptionNamePrefixUpperBound(keywordPrefix)]
     const containsSubquery = ownerAccountOptionNameContainsSubquery(client, keyword, ownerSystemAccountId)
     if (containsSubquery) {
       keywordClauses.push(`accounts.id IN (${containsSubquery.sql})`)
@@ -336,10 +336,13 @@ function ownerAccountOptionNameContainsSubquery(
   const terms = accountNameSearchQueryTerms(keyword)
   if (!terms.length) return undefined
   const systemAccountClause = ownerSystemAccountId ? 'search.system_account_id = ? AND' : ''
-  const keywordContains = `%${escapeAccountNameSearchLike(normalizeAccountNameSearchText(keyword))}%`
+  const keywordContains = normalizeAccountNameSearchText(keyword)
   const params: unknown[] = ownerSystemAccountId
     ? [ownerSystemAccountId, ...terms, keywordContains, terms.length]
     : [...terms, keywordContains, terms.length]
+  const containsExpression = client.driver === 'postgres'
+    ? 'position(? in documents.normalized_name) > 0'
+    : 'instr(documents.normalized_name, ?) > 0'
   return {
     sql: `
       WITH candidate_terms AS MATERIALIZED (
@@ -351,7 +354,7 @@ function ownerAccountOptionNameContainsSubquery(
       FROM candidate_terms
       INNER JOIN ${accountOptionTable(client, 'account_name_search_documents')} documents
         ON documents.account_id = candidate_terms.account_id
-      WHERE documents.normalized_name LIKE ? ESCAPE '\\'
+      WHERE ${containsExpression}
       GROUP BY candidate_terms.account_id
       HAVING COUNT(DISTINCT candidate_terms.term) = ?
     `,
@@ -612,14 +615,13 @@ function buildAccountOptionFilters(
   }
   const keyword = options.keyword?.trim()
   if (keyword) {
-    const keywordPrefix = `${escapeLikePrefix(keyword)}%`
     clauses.push(`(
-      accounts.name COLLATE NOCASE = ?
-      OR accounts.name LIKE ? ESCAPE '\\'
+      accounts.name >= ?
+      AND accounts.name < ?
     )`)
     params.push(
       keyword,
-      keywordPrefix
+      accountOptionNamePrefixUpperBound(keyword)
     )
   }
   const groupId = options.groupId?.trim()

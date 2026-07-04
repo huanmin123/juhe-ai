@@ -1,6 +1,7 @@
 import type {
   AnnouncementLevel,
   AnnouncementStatus,
+  AccountSupportedEndpointMode,
   AuditOutcome,
   AuditTrafficSource,
   AuthorizationResourceType,
@@ -139,6 +140,7 @@ export interface AccountOptionParams extends ListParams {
 
 export interface AccountTestPayload {
   model?: string
+  testEndpointMode?: AccountSupportedEndpointMode
   prompt?: string
   testSessionId?: string
   account?: AccountDraftTestAccountPayload

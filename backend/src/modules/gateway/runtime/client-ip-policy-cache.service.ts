@@ -2,6 +2,7 @@ import { runtimeConfig } from '../../../config/runtime.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import { createAppCache, createSharedJsonCache } from '../../../shared/cache.js'
 import {
+  findActiveClientIpPolicyByHashAsync,
   listActiveClientIpPoliciesAsync,
   normalizeClientIpForStats,
   recordClientIpPolicyHitsAsync,
@@ -28,6 +29,11 @@ interface ClientIpPolicySnapshotCacheEntry {
   policies: ActiveClientIpPolicy[]
 }
 
+interface ClientIpPolicyByIpCacheEntry {
+  loadedAt: string
+  policy?: ActiveClientIpPolicy
+}
+
 const clientIpPolicyCacheTtlMs = 30_000
 const clientIpPolicyCacheMaxEntries = 5_000
 const clientIpPolicyHitFlushDelayMs = 1000
@@ -44,6 +50,11 @@ const activePolicySnapshotSharedCache = createSharedJsonCache<ClientIpPolicySnap
   max: 1,
   ttlMs: clientIpPolicyCacheTtlMs
 })
+const policyByIpSharedCache = createSharedJsonCache<ClientIpPolicyByIpCacheEntry>({
+  name: 'gateway:client-ip-policy-by-ip',
+  max: clientIpPolicyCacheMaxEntries,
+  ttlMs: clientIpPolicyCacheTtlMs
+})
 const activePolicySnapshot = new Map<string, ActiveClientIpPolicy>()
 const pendingPolicyHits = new Map<string, ClientIpPolicyHitInput>()
 let activePolicySnapshotLoadedAt: string | undefined
@@ -56,11 +67,10 @@ export async function inspectClientIpPolicy(clientIp?: string, options: InspectC
     return { blocked: false, allowlisted: false }
   }
   if (runtimeConfig.cacheDriver === 'redis') {
-    const snapshot = options.cacheOnly
-      ? await getActivePolicySnapshotSharedCacheEntry()
-      : await loadClientIpPolicySnapshotFromSharedCacheOrDatabase()
-    const policy = snapshot?.policies.find((item) => item.ipHash === normalizedIp.ipHash)
-    return policyDecisionFromCacheEntry(normalizedIp, { policy })
+    const entry = options.cacheOnly
+      ? await getClientIpPolicyByIpSharedCacheEntry(normalizedIp.ipHash)
+      : await loadClientIpPolicyByHashFromSharedCacheOrDatabase(normalizedIp.ipHash)
+    return policyDecisionFromCacheEntry(normalizedIp, { policy: entry?.policy })
   }
   const cached = policyCache.get(normalizedIp.ipHash)
   if (cached) {
@@ -108,10 +118,11 @@ export async function reloadClientIpPolicyCacheLocal(options: { bypassSharedCach
     activePolicySnapshot.clear()
     activePolicySnapshotLoadedAt = undefined
     if (options.bypassSharedCache) {
-      await loadClientIpPolicySnapshotFromDatabase()
+      await clearActivePolicySnapshotSharedCache()
+      await clearPolicyByIpSharedCache()
       return
     }
-    await loadClientIpPolicySnapshotFromSharedCacheOrDatabase()
+    await clearPolicyByIpSharedCache()
     return
   }
   const sharedSnapshot = options.bypassSharedCache ? undefined : await getActivePolicySnapshotSharedCacheEntry()
@@ -133,7 +144,12 @@ export async function replaceClientIpPolicySharedSnapshotAsync(policies: ActiveC
     return
   }
   activePolicySnapshotLoadedAt = undefined
-  await setActivePolicySnapshotSharedCacheEntry(snapshotCacheEntryFromPolicies(policies))
+  await clearActivePolicySnapshotSharedCache()
+  await clearPolicyByIpSharedCache()
+  const loadedAt = new Date().toISOString()
+  for (const policy of policies) {
+    await setClientIpPolicyByIpSharedCacheEntry(policy.ipHash, policy, loadedAt)
+  }
 }
 
 export async function recordClientIpPolicyHitAsync(policy: ActiveClientIpPolicy): Promise<void> {
@@ -198,6 +214,7 @@ export async function clearClientIpPolicyCacheLocal(): Promise<void> {
   activePolicySnapshot.clear()
   activePolicySnapshotLoadedAt = undefined
   await clearActivePolicySnapshotSharedCache()
+  await clearPolicyByIpSharedCache()
 }
 
 function isPolicyActiveAt(policy: ActiveClientIpPolicy, nowMs: number): boolean {
@@ -291,6 +308,49 @@ async function loadClientIpPolicySnapshotFromDatabase(): Promise<ClientIpPolicyS
   return snapshot
 }
 
+async function getClientIpPolicyByIpSharedCacheEntry(ipHash: string): Promise<ClientIpPolicyByIpCacheEntry | undefined> {
+  const cached = await policyByIpSharedCache.get(ipHash)
+  if (!cached) return undefined
+  const policy = cached.policy && isActiveClientIpPolicy(cached.policy)
+    ? cloneActiveClientIpPolicy(cached.policy)
+    : undefined
+  return {
+    loadedAt: typeof cached.loadedAt === 'string' ? cached.loadedAt : new Date().toISOString(),
+    ...(policy ? { policy } : {})
+  }
+}
+
+async function setClientIpPolicyByIpSharedCacheEntry(
+  ipHash: string,
+  policy: ActiveClientIpPolicy | undefined,
+  loadedAt = new Date().toISOString()
+): Promise<void> {
+  await policyByIpSharedCache.set(ipHash, {
+    loadedAt,
+    ...(policy ? { policy: cloneActiveClientIpPolicy(policy) } : {})
+  }, { ttlMs: clientIpPolicyTtlMs(policy) })
+}
+
+async function loadClientIpPolicyByHashFromSharedCacheOrDatabase(ipHash: string): Promise<ClientIpPolicyByIpCacheEntry> {
+  const sharedEntry = await getClientIpPolicyByIpSharedCacheEntry(ipHash)
+  if (sharedEntry) {
+    return sharedEntry
+  }
+  const policy = await loadClientIpPolicyByHashFromDatabase(ipHash)
+  const loadedAt = new Date().toISOString()
+  await setClientIpPolicyByIpSharedCacheEntry(ipHash, policy, loadedAt)
+  return {
+    loadedAt,
+    ...(policy ? { policy } : {})
+  }
+}
+
+async function loadClientIpPolicyByHashFromDatabase(ipHash: string): Promise<ActiveClientIpPolicy | undefined> {
+  return shouldUseStatsWriterBridge()
+    ? await requestStatsWriter({ type: 'find_active_client_ip_policy_by_hash', ipHash }, 1000)
+    : await findActiveClientIpPolicyByHashAsync(ipHash)
+}
+
 function snapshotCacheEntryFromPolicies(policies: ActiveClientIpPolicy[]): ClientIpPolicySnapshotCacheEntry {
   return {
     loadedAt: new Date().toISOString(),
@@ -300,6 +360,10 @@ function snapshotCacheEntryFromPolicies(policies: ActiveClientIpPolicy[]): Clien
 
 async function clearActivePolicySnapshotSharedCache(): Promise<void> {
   await activePolicySnapshotSharedCache.clear()
+}
+
+async function clearPolicyByIpSharedCache(): Promise<void> {
+  await policyByIpSharedCache.clear()
 }
 
 function isActiveClientIpPolicy(value: unknown): value is ActiveClientIpPolicy {

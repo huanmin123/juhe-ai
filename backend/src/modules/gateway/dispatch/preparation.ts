@@ -47,6 +47,10 @@ import type { OpenAIGatewayClientStrategyContext } from '../client-profiles/stra
 import type { GatewayFailureUsageContext } from '../usage/records.js'
 import { isAccountProbeTrafficSource } from '../usage/traffic-source.js'
 import type { OpenAIGatewayDispatchContext } from '../request/preflight.js'
+import {
+  gatewayAccountConcurrencyAccountIds,
+  gatewayAccountConcurrencyLimitsByAccountId
+} from './account-concurrency-identity.js'
 import type { GatewayAccountModelPriority } from './model-filter.js'
 
 export interface DispatchPreparationFallbackResult {
@@ -440,8 +444,8 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
       systemAccountId: input.systemAccountId,
       groupId: input.groupId,
       apiKeyId: input.apiKeyId,
-      accountIds: accounts.map((account) => account.id),
-      accountConcurrencyLimits: Object.fromEntries(accounts.map((account) => [account.id, account.concurrencyLimit])),
+      accountIds: gatewayAccountConcurrencyAccountIds(accounts),
+      accountConcurrencyLimits: gatewayAccountConcurrencyLimitsByAccountId(accounts),
       lane: input.requestLane,
       policy: input.groupAccess.schedulingPolicy,
       signal: input.signal

@@ -48,7 +48,7 @@ const successResult = resultFixture(apiKeyAccount, {
   traceId: 'trace_test_display',
   durationMs: 1234,
   firstTokenMs: 320,
-  testClientCompatibility: 'openai_standard',
+  testEndpointMode: 'chat_sse',
   apiKeyPool: {
     total: 2,
     tested: 2,
@@ -80,8 +80,8 @@ const successResult = resultFixture(apiKeyAccount, {
 })
 const successLines = accountTestSingleOutputLines({
   account: apiKeyAccount,
-  clientCompatibility: 'account_default',
-  fixedOAuthCompatibilityText: 'Codex Responses 请求',
+  testEndpointMode: 'account_default',
+  selectedEndpointModeText: 'Chat Completions (Streaming)',
   model: 'gpt-5.1',
   providerLabel: () => 'OpenAI',
   result: successResult,
@@ -89,9 +89,9 @@ const successLines = accountTestSingleOutputLines({
 })
 assertLineIncludes(successLines, '开始测试账号：API Key 测试账户', '单账号输出应展示账户名')
 assertLineIncludes(successLines, '供应商：OpenAI', '单账号输出应展示供应商')
-assertLineIncludes(successLines, '测试请求形态：OpenAI-compatible 请求', 'API Key 默认请求形态应展示当前请求形态')
+assertLineIncludes(successLines, '测试请求形态：Chat Completions (Streaming)', 'API Key 默认请求形态应展示当前 endpoint mode')
 assertLineIncludes(successLines, 'traceId：trace_test_display', '成功输出应展示 traceId')
-assertLineIncludes(successLines, '实际请求形态：OpenAI-compatible 请求', '成功输出应展示实际请求形态')
+assertLineIncludes(successLines, '实际请求形态：Chat Completions (Streaming)', '成功输出应展示实际请求形态')
 assertLineIncludes(successLines, 'API Key 池结果：可用 1/2，已测试 2 个', 'Key 池输出应展示汇总')
 assertLineIncludes(successLines, 'API Key sk-a...good 测试结果：通过，HTTP 200，耗时 0.90s', 'Key 池输出应展示成功 Key 的前后缀和结果')
 assertLineIncludes(successLines, 'API Key sk-b...fail 测试结果：失败，HTTP 401，耗时 0.12s，错误码 invalid_api_key，invalid api key', 'Key 池输出应展示失败 Key 的前后缀和结果')
@@ -123,32 +123,32 @@ const runningTask = taskFixture(oauthAccount, {
 const runningLines = accountTestSingleOutputLines({
   account: oauthAccount,
   activeTask: runningTask,
-  clientCompatibility: 'codex_responses',
-  fixedOAuthCompatibilityText: 'Codex Responses 请求',
+  testEndpointMode: 'responses_sse',
+  selectedEndpointModeText: 'Responses API (Streaming)',
   model: 'gpt-5.1',
   providerLabel: () => 'OpenAI',
   running: true
 })
-assertLineIncludes(runningLines, '测试请求形态：Codex Responses 请求', 'OAuth 账户应展示固定请求形态')
+assertLineIncludes(runningLines, '测试请求形态：Responses API (Streaming)', 'OAuth 账户应展示固定 endpoint mode')
 assertLineIncludes(runningLines, '后台任务：task_account_test_display_oauth（测试中）', '运行输出应展示后台任务状态')
 assertLineIncludes(runningLines, '当前窗口估计：第 1/3 次', '运行输出应展示当前等待窗口')
 assertLineIncludes(runningLines, 'OAuth Token 刷新也包含在当前等待窗口内', 'OAuth 运行输出应展示 token 刷新提示')
 
 const anthropicRunningLines = accountTestSingleOutputLines({
   account: anthropicAccount,
-  clientCompatibility: 'account_default',
-  fixedOAuthCompatibilityText: 'Anthropic API 请求',
+  testEndpointMode: 'account_default',
+  selectedEndpointModeText: 'Messages API (Streaming)',
   model: 'claude-opus-4-8',
   providerLabel: () => 'Anthropic',
   running: true
 })
-assertLineIncludes(anthropicRunningLines, '测试请求形态：Anthropic API', 'Anthropic 运行输出不应展示 OpenAI 客户端兼容能力')
+assertLineIncludes(anthropicRunningLines, '测试请求形态：Messages API (Streaming)', 'Anthropic 运行输出应展示 Messages endpoint mode')
 assertLineExcludes(anthropicRunningLines, '测试请求形态：跟随账号能力（OpenAI-compatible）', 'Anthropic 运行输出不得回落到 OpenAI-compatible 文案')
 
 const anthropicSuccessLines = accountTestSingleOutputLines({
   account: anthropicAccount,
-  clientCompatibility: 'account_default',
-  fixedOAuthCompatibilityText: 'Anthropic API 请求',
+  testEndpointMode: 'account_default',
+  selectedEndpointModeText: 'Messages API (Streaming)',
   model: 'claude-opus-4-8',
   providerLabel: () => 'Anthropic',
   result: resultFixture(anthropicAccount, {
@@ -157,11 +157,11 @@ const anthropicSuccessLines = accountTestSingleOutputLines({
     message: '测试成功',
     model: 'claude-opus-4-8',
     outputText: 'pong',
-    testClientCompatibility: 'openai_standard'
+    testEndpointMode: 'messages_sse'
   }),
   running: false
 })
-assertLineIncludes(anthropicSuccessLines, '实际请求形态：Anthropic API 请求', 'Anthropic 成功输出应展示实际请求形态')
+assertLineIncludes(anthropicSuccessLines, '实际请求形态：Messages API (Streaming)', 'Anthropic 成功输出应展示实际请求形态')
 assertLineExcludes(anthropicSuccessLines, '实际请求形态：OpenAI-compatible 请求', 'Anthropic 成功输出不得展示 OpenAI-compatible 实际请求形态')
 
 const failedAccount = accountFixture({
@@ -174,7 +174,7 @@ const failedResult = resultFixture(failedAccount, {
   message: '上游 500',
   responseText: 'upstream failed',
   durationMs: 600,
-  testClientCompatibility: 'codex_responses'
+  testEndpointMode: 'responses_sse'
 })
 const batchItems: AccountBatchTestItem[] = [
   {

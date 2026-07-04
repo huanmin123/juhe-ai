@@ -115,7 +115,7 @@
               <strong>{{ formatOptionalNumber(record.droppedCount) }}</strong>
             </div>
             <div class="mobile-list-meta-item">
-              <span>Flush 失败</span>
+              <span>写入失败</span>
               <strong>{{ formatOptionalNumber(record.flushFailureCount) }}</strong>
             </div>
             <div class="mobile-list-meta-item">
@@ -174,7 +174,7 @@ const backgroundQueueColumns = [
   { title: '大小', key: 'queueBytes', width: 96, align: 'right', sorter: sortBackgroundQueueNumber('queueBytes') },
   { title: '已完成', key: 'completedCount', width: 96, align: 'right', sorter: sortBackgroundQueueNumber('completedCount') },
   { title: '丢弃', key: 'droppedCount', width: 84, align: 'right', sorter: sortBackgroundQueueNumber('droppedCount') },
-  { title: 'Flush 失败', key: 'flushFailureCount', width: 108, align: 'right', sorter: sortBackgroundQueueProblemCount },
+  { title: '写入失败', key: 'flushFailureCount', width: 108, align: 'right', sorter: sortBackgroundQueueProblemCount },
   { title: '拒超', key: 'rejectedTimedOutCount', width: 86, align: 'right', sorter: sortBackgroundQueueProblemCount },
   { title: '最老等待', key: 'oldestQueuedMs', width: 110, align: 'right', sorter: sortBackgroundQueueWait },
   { title: '时间', key: 'nextOrSuccessAt', width: 168 },

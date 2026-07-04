@@ -67,8 +67,8 @@ export interface ClientIpConcurrencyAcquireInput {
 
 const states = new Map<string, ClientIpConcurrencyState>()
 let nextQueueItemId = 1
-const redisClientIpConcurrencyTtlMs = 2 * 60 * 60 * 1000
-const redisClientIpConcurrencyRenewIntervalMs = Math.max(60_000, Math.floor(redisClientIpConcurrencyTtlMs / 4))
+const redisClientIpConcurrencyTtlMs = 180_000
+const redisClientIpConcurrencyRenewIntervalMs = 30_000
 
 export function acquireHighConcurrencyClientIpSlot(input: ClientIpConcurrencyAcquireInput): Promise<ClientIpConcurrencyDecision> {
   const policy = resolveGroupSchedulingPolicy('high_concurrency', input.policy) ?? DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY

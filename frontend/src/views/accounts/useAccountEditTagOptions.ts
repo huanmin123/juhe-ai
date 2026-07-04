@@ -78,7 +78,7 @@ export function useAccountEditTagOptions(options: UseAccountTagOptionsOptions) {
       } else {
         await api.myAccounts.deleteTag(tagId)
       }
-      options.form.tags = options.form.tags.filter((name) => name.trim().toLocaleLowerCase() !== tag.name.toLocaleLowerCase())
+      options.form.tags = options.form.tags.filter((name) => name.trim() !== tag.name)
       accountTagOptions.value = accountTagOptions.value.filter((item) => item.id !== tagId)
       if (loadedScopeKey.value) {
         writeAccountTagOptionsCache(loadedScopeKey.value, accountTagOptions.value)

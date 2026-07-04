@@ -96,6 +96,7 @@ assert(dbServiceIpcSource.includes('recordMaintenanceQueue: { ...statsWorkerSnap
 assert(dbServiceIpcSource.includes("import('../gateway/runtime/high-concurrency-queue.service.js')") && dbServiceIpcSource.includes('highConcurrencyQueues: highConcurrencyQueue.highConcurrencyGroupQueueSnapshot()'), 'server runtime snapshot 必须暴露高并发短队列')
 assert(dbServiceHandlersSource.includes('getCodexContextStateWriterPoolRuntime()') && dbServiceIpcSource.includes('codexContextStateWriterPool: dbServiceState.lastSnapshot?.codexContextStateWriterPool'), 'DB service runtime snapshot 必须暴露 Codex 状态写入池队列')
 assert(statsRoutesSource.includes('buildBackgroundQueueHealthSnapshot(runtime)') && statsRoutesSource.includes('queueHealth.workerQueues') && statsRoutesSource.includes('queueHealth.serverIpcQueues'), '系统指标接口必须复用后台队列健康快照接入 worker 本地队列和 IPC 队列')
+assert(!statsRoutesSource.includes('loadMockBackgroundRuntimeSnapshot'), '系统指标接口不能在 runtime snapshot 不可用时回退 mock 运行态，避免误导运维排障')
 assert(statsRoutesSource.includes('redisStreamRuntimeQueueRows()') && statsRoutesSource.includes('Redis Stream 使用记录') && statsRoutesSource.includes('getAuditLogRedisStreamRuntime') && statsRoutesSource.includes('getRuntimeLogRedisStreamRuntime'), '系统指标接口必须接入高性能模式 Redis Stream 队列')
 assert(statsRoutesSource.includes('dbServiceRuntimeQueueRows(runtime)') && statsRoutesSource.includes('DB service 请求队列') && statsRoutesSource.includes('DB service dataset-writer pending') && statsRoutesSource.includes('DB service Codex 状态写入池'), '系统指标接口必须接入 DB service 请求队列和写入池队列')
 assert(statsRoutesSource.includes('gatewayAccountSideEffectQueueRows(runtime)') && statsRoutesSource.includes('网关账号副作用队列'), '系统指标接口必须接入网关账号副作用队列')
@@ -104,7 +105,7 @@ assert(frontendSystemMetricsSource.includes('filter(isBackgroundTaskRow)') && fr
 assert(!frontendBackgroundJobsSource.includes('队列：') && !frontendBackgroundJobsSource.includes('队列状态') && !frontendBackgroundJobsSource.includes('backgroundJobQueueSummary'), '前端后台任务表不能展示队列摘要，避免把队列误认为任务')
 assert(frontendSystemMetricsSource.includes('<StatsBackgroundQueuesCard') && frontendSystemMetricsSource.includes('buildBackgroundQueueRows(systemMetrics.value)'), '系统指标页必须把后台队列拆到独立列表')
 assert(frontendBackgroundQueuesHelperSource.includes('.flatMap(backgroundQueueRowsFromRuntimeRow)') && frontendBackgroundQueuesHelperSource.includes('row.retryQueue') && frontendBackgroundQueuesHelperSource.includes('row.localQueue'), '后台队列列表必须从 retryQueue 和 localQueue 独立构建')
-for (const columnTitle of ['积压', '活跃', '大小', '已完成', '丢弃', 'Flush 失败', '拒超', '最老等待', '时间', 'Redis Stream']) {
+for (const columnTitle of ['积压', '活跃', '大小', '已完成', '丢弃', '写入失败', '拒超', '最老等待', '时间', 'Redis Stream']) {
   assert(frontendBackgroundQueuesSource.includes(columnTitle), `后台队列列表必须包含 ${columnTitle} 列`)
 }
 assert(frontendSystemMetricsSource.includes('<a-col :xs="24">\n        <StatsChartCard\n          :title="`进程事件循环延迟'), '系统指标页进程事件循环延迟必须独占整行展示')

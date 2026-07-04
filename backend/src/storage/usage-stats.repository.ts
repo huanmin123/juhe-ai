@@ -19,6 +19,10 @@ import { getUsageRecordShardDatabase, listUsageRecordShardLocationsPage, type Us
 import { averageFromSum, dateKey, hourKey, minuteKey, monthKey, usageStatsTimezone, usageStatsTimezoneAsync, weekKey } from './usage-stats-helpers.js'
 import { emptyStatsAggregateMathRow, usageSummaryWithMath } from './usage-stats-mappers.js'
 import {
+  refreshUsageOverviewTodayWindowSnapshots,
+  refreshUsageOverviewTodayWindowSnapshotsAsync,
+  refreshUsageOverviewWindowSnapshotsInStages,
+  refreshUsageOverviewWindowSnapshotsIncrementalAsync,
   refreshUsageOverviewWindowSnapshots,
   refreshUsageOverviewWindowSnapshotsAsync,
   usageOverviewSnapshotScopes,
@@ -28,6 +32,8 @@ import {
   refreshAuthorizationUsageRangeWindowSnapshots,
   refreshAuthorizationUsageRangeWindowSnapshotsAsync,
   refreshAuthorizationUsageRangeWindowSnapshotsInStages,
+  refreshUsageScopeRangeTodayWindowSnapshotsAsync,
+  refreshUsageScopeRangeTodayWindowSnapshotsInStages,
   refreshUsageScopeRangeWindowSnapshotsAsync,
   refreshUsageScopeRangeWindowSnapshots,
   refreshUsageScopeRangeWindowSnapshotsInStages
@@ -1147,6 +1153,8 @@ export type UsageRankSnapshotStageName =
   | 'usage_scope_range_windows'
   | 'authorization_usage_range_windows'
 
+const hotUsageWindowStageNames = ['usage_overview_windows', 'usage_scope_range_windows'] as const satisfies readonly UsageRankSnapshotStageName[]
+
 type UsageRankSnapshotSourceTable =
   | 'usage_stats_totals'
   | 'usage_stats_daily'
@@ -1242,6 +1250,143 @@ export async function refreshUsageQuotaHourlyWindowsCacheAsync(): Promise<void> 
       `, [hours, updatedAt, hourKey(new Date(Date.now() - hours * HOUR_MS), timezone)])
     }
   })
+}
+
+export async function refreshHotUsageWindowSnapshots(options: Omit<RefreshUsageRankSnapshotsInStagesOptions, 'stageNames'> = {}): Promise<UsageRankSnapshotRefreshResult> {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    return refreshHotUsageWindowSnapshotsPostgres(options)
+  }
+  const database = getStatsDatabase()
+  const context = createUsageRankSnapshotContext(database)
+  const stages = selectUsageRankSnapshotStages(hotUsageWindowStageNames)
+  const yieldToEventLoop = options.yieldToEventLoop ?? defaultUsageSnapshotYield
+  const jobName = options.jobName ?? 'usage_hot_window_refresh'
+  const startedAt = Date.now()
+  const sourceWatermark = options.skipIfUnchanged ? usageRankSnapshotSourceWatermark(database, stages) : undefined
+  const previousState = options.skipIfUnchanged && sourceWatermark !== undefined
+    ? usageRankSnapshotRefreshJobState(database, jobName)
+    : undefined
+  if (previousState && previousState.cursor_created_at === sourceWatermark && previousState.cursor_id === context.todayKey) {
+    return {
+      durationMs: Date.now() - startedAt,
+      stages: [],
+      skipped: true,
+      skipReason: 'source_watermark_unchanged',
+      sourceWatermark,
+      refreshDate: context.todayKey,
+      jobName
+    }
+  }
+
+  const stageRuntimes: UsageRankSnapshotStageRuntime[] = []
+  for (let index = 0; index < stages.length; index += 1) {
+    const stage = stages[index]
+    const stageStartedAt = Date.now()
+    switch (stage.name) {
+      case 'usage_overview_windows': {
+        const transactionStarted = beginDatabaseTransaction(database)
+        try {
+          refreshUsageOverviewTodayWindowSnapshots(database, context)
+          commitDatabaseTransaction(database, transactionStarted)
+        } catch (error) {
+          rollbackDatabaseTransaction(database, transactionStarted)
+          throw error
+        }
+        break
+      }
+      case 'usage_scope_range_windows':
+        await refreshUsageScopeRangeTodayWindowSnapshotsInStages(database, context.updatedAt, context.timezone, yieldToEventLoop)
+        break
+      default:
+        throw new Error(`热用量窗口刷新不支持阶段: ${stage.name}`)
+    }
+    stageRuntimes.push({
+      name: stage.name,
+      durationMs: Date.now() - stageStartedAt
+    })
+    if (index < stages.length - 1) {
+      await yieldToEventLoop()
+    }
+  }
+  if (options.skipIfUnchanged && sourceWatermark !== undefined) {
+    updateUsageRankSnapshotRefreshJobState(database, jobName, {
+      sourceWatermark,
+      refreshDate: context.todayKey,
+      lastSuccessAt: nowIso()
+    })
+  }
+  return {
+    durationMs: Date.now() - startedAt,
+    stages: stageRuntimes,
+    skipped: false,
+    sourceWatermark,
+    refreshDate: context.todayKey,
+    jobName
+  }
+}
+
+async function refreshHotUsageWindowSnapshotsPostgres(options: Omit<RefreshUsageRankSnapshotsInStagesOptions, 'stageNames'> = {}): Promise<UsageRankSnapshotRefreshResult> {
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const stages = selectUsageRankSnapshotStages(hotUsageWindowStageNames)
+  const yieldToEventLoop = options.yieldToEventLoop ?? defaultUsageSnapshotYield
+  const jobName = options.jobName ?? 'usage_hot_window_refresh'
+  const startedAt = Date.now()
+  const sourceWatermark = options.skipIfUnchanged ? await usageRankSnapshotSourceWatermarkAsync(client, stages) : undefined
+  const previousState = options.skipIfUnchanged && sourceWatermark !== undefined
+    ? await usageRankSnapshotRefreshJobStateAsync(client, jobName)
+    : undefined
+  const context = await createUsageRankSnapshotContextAsync(client)
+  if (previousState && previousState.cursor_created_at === sourceWatermark && previousState.cursor_id === context.todayKey) {
+    return {
+      durationMs: Date.now() - startedAt,
+      stages: [],
+      skipped: true,
+      skipReason: 'source_watermark_unchanged',
+      sourceWatermark,
+      refreshDate: context.todayKey,
+      jobName
+    }
+  }
+
+  const stageRuntimes: UsageRankSnapshotStageRuntime[] = []
+  for (let index = 0; index < stages.length; index += 1) {
+    const stage = stages[index]
+    const stageStartedAt = Date.now()
+    switch (stage.name) {
+      case 'usage_overview_windows':
+        await client.transaction(async (tx) => {
+          await refreshUsageOverviewTodayWindowSnapshotsAsync(tx, context)
+        })
+        break
+      case 'usage_scope_range_windows':
+        await refreshUsageScopeRangeTodayWindowSnapshotsAsync(client, context.updatedAt, context.timezone, yieldToEventLoop)
+        break
+      default:
+        throw new Error(`热用量窗口刷新不支持阶段: ${stage.name}`)
+    }
+    stageRuntimes.push({
+      name: stage.name,
+      durationMs: Date.now() - stageStartedAt
+    })
+    if (index < stages.length - 1) {
+      await yieldToEventLoop()
+    }
+  }
+  if (options.skipIfUnchanged && sourceWatermark !== undefined) {
+    await updateUsageRankSnapshotRefreshJobStateAsync(client, jobName, {
+      sourceWatermark,
+      refreshDate: context.todayKey,
+      lastSuccessAt: nowIso()
+    })
+  }
+  return {
+    durationMs: Date.now() - startedAt,
+    stages: stageRuntimes,
+    skipped: false,
+    sourceWatermark,
+    refreshDate: context.todayKey,
+    jobName
+  }
 }
 
 export async function refreshUsageRankSnapshotsInStages(options: RefreshUsageRankSnapshotsInStagesOptions = {}): Promise<UsageRankSnapshotRefreshResult> {
@@ -1378,7 +1523,7 @@ async function refreshUsageRankSnapshotsInStagesPostgres(options: RefreshUsageRa
         break
       case 'usage_overview_windows':
         await client.transaction(async (tx) => {
-          await refreshUsageOverviewWindowSnapshotsAsync(tx, context)
+          await refreshUsageOverviewWindowSnapshotsIncrementalAsync(tx, context, context.previousSourceWatermark, context.sourceWatermark)
         })
         break
       case 'ai_performance_summary_windows':
@@ -1392,7 +1537,7 @@ async function refreshUsageRankSnapshotsInStagesPostgres(options: RefreshUsageRa
         })
         break
       case 'usage_scope_range_windows':
-        await refreshUsageScopeRangeWindowSnapshotsAsync(client, context.updatedAt, context.timezone, yieldToEventLoop)
+        await refreshUsageScopeRangeWindowSnapshotsAsync(client, context.updatedAt, context.timezone, yieldToEventLoop, context.previousSourceWatermark, context.sourceWatermark)
         break
       case 'authorization_usage_range_windows':
         await refreshAuthorizationUsageRangeWindowSnapshotsAsync(client, context.updatedAt, context.timezone, yieldToEventLoop)
@@ -1622,7 +1767,8 @@ function usageRankSnapshotStages(): UsageRankSnapshotStage[] {
     {
       name: 'usage_overview_windows',
       sourceTables: ['usage_stats_totals', 'usage_stats_daily', 'usage_stats_hourly', 'usage_model_daily', 'usage_error_daily'],
-      run: refreshUsageOverviewWindowSnapshots
+      run: refreshUsageOverviewWindowSnapshots,
+      runInBackground: (database, context, options) => refreshUsageOverviewWindowSnapshotsInStages(database, context, options.yieldToEventLoop, context.previousSourceWatermark, context.sourceWatermark)
     },
     {
       name: 'ai_performance_summary_windows',

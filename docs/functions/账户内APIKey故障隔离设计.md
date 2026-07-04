@@ -194,7 +194,7 @@ account-api-key-cooldown-retest
 - 全局并发和单账户并发都必须有限制，例如全局 5、单账户 1，避免 100 个 Key 同时探测压垮上游。
 - 手动停用、账户到期、账户删除、Base URL 不合法、代理不可用、授权来源不可用时不探测 Key。
 - `pending_test` 账户不进入自动恢复；待测试仍由手动账户测试或创建时成功测试决定。
-- 探测使用 `traffic_source = cooldown_retest`，不进入业务用量统计、账户质量统计或真实请求形态学习。
+- 探测使用 `traffic_source = cooldown_retest`，不进入业务用量统计或账户质量统计。
 - 探测记录可以在使用记录和审计里带 `key_fingerprint`，但不写明文 Key。
 
 ## 显式账户测试

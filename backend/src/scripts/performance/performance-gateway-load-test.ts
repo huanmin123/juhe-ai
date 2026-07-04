@@ -48,6 +48,7 @@ interface GatewayLoadConfig {
   promptBytes: number
   enableStatsWorkerObservation: boolean
   cleanup: boolean
+  assertAccountConcurrency: boolean
   maxAllowedErrorRate: number
   maxAllowedP95Ms: number
   maxAllowedDeadlocks: number
@@ -125,6 +126,13 @@ interface RedisStreamsSnapshot {
   error?: string
 }
 
+interface AccountConcurrencySnapshot {
+  sampledAt: string
+  total: number
+  byAccount: Record<string, number>
+  error?: string
+}
+
 interface RedisStreamDeltaSnapshot {
   pendingDelta: number
   backlogDelta: number
@@ -177,6 +185,7 @@ interface MetricSnapshot {
   storage: StorageSnapshot
   postgres: PostgresSample
   redis: RedisStreamsSnapshot
+  accountConcurrency: AccountConcurrencySnapshot
 }
 
 interface LatencySummary {
@@ -232,6 +241,21 @@ const recordMaintenanceRedisStreamKey = 'juhe-ai:queue:record-maintenance'
 const recordMaintenanceRedisStreamGroup = 'juhe-ai:record-maintenance-writers'
 const runtimeLogRedisStreamKey = 'juhe-ai:queue:runtime-log-index'
 const runtimeLogRedisStreamGroup = 'juhe-ai:runtime-log-index-writers'
+const redisAccountConcurrencySampleScript = `
+local now_ms = tonumber(ARGV[1])
+local expired = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', now_ms)
+if #expired > 0 then
+  redis.call('HDEL', KEYS[2], unpack(expired))
+end
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now_ms)
+if redis.call('ZCARD', KEYS[1]) == 0 then
+  redis.call('DEL', KEYS[1])
+end
+if redis.call('HLEN', KEYS[2]) == 0 then
+  redis.call('DEL', KEYS[2])
+end
+return redis.call('ZCARD', KEYS[1])
+`
 const childOutput: ProcessOutput = { stdout: '', stderr: '' }
 
 logger.level = 'silent'
@@ -922,10 +946,11 @@ async function sampleLoop(input: {
 
 async function collectSnapshot(stats: LoadStats, seeded: SeededGateway, upstreamRuntime: UpstreamRuntime): Promise<MetricSnapshot> {
   const elapsedSeconds = Math.max(0.001, (performance.now() - stats.startedAtMs) / 1000)
-  const [storage, postgres, redis] = await Promise.all([
+  const [storage, postgres, redis, accountConcurrency] = await Promise.all([
     sampleStorage(seeded),
     samplePostgres(),
-    sampleRedisStreams()
+    sampleRedisStreams(),
+    sampleAccountConcurrency(seeded)
   ])
   return {
     elapsedSeconds: round(elapsedSeconds, 3),
@@ -954,7 +979,8 @@ async function collectSnapshot(stats: LoadStats, seeded: SeededGateway, upstream
     },
     storage,
     postgres,
-    redis
+    redis,
+    accountConcurrency
   }
 }
 
@@ -1094,6 +1120,57 @@ async function sampleRedisStreams(): Promise<RedisStreamsSnapshot> {
       // destroy() can throw after a clean quit().
     }
   }
+}
+
+async function sampleAccountConcurrency(seeded: SeededGateway): Promise<AccountConcurrencySnapshot> {
+  const url = runtimeConfig.redis.stateUrl
+  const empty = {
+    sampledAt: new Date().toISOString(),
+    total: 0,
+    byAccount: {}
+  }
+  if (!url) {
+    return { ...empty, error: 'JUHE_AI_REDIS_STATE_URL 未配置' }
+  }
+  let client: RedisSampleClient | undefined
+  try {
+    client = await createRedisSampleClient(url)
+    const entries = await Promise.all(seeded.accountIds.map(async (accountId) => {
+      const value = await sampleRedisAccountConcurrency(client!, accountId)
+      return [accountId, value] as const
+    }))
+    const byAccount = Object.fromEntries(entries)
+    return {
+      sampledAt: new Date().toISOString(),
+      total: entries.reduce((total, [, value]) => total + value, 0),
+      byAccount
+    }
+  } catch (error) {
+    return {
+      ...empty,
+      error: error instanceof Error ? error.message : String(error)
+    }
+  } finally {
+    await client?.quit?.().catch(() => undefined)
+    try {
+      client?.destroy?.()
+    } catch {
+      // destroy() can throw after a clean quit().
+    }
+  }
+}
+
+async function sampleRedisAccountConcurrency(client: RedisSampleClient, accountId: string): Promise<number> {
+  const now = Date.now()
+  const result = await client.sendCommand([
+    'EVAL',
+    redisAccountConcurrencySampleScript,
+    '2',
+    `juhe-ai:account-concurrency-v2:${accountId}:total`,
+    `juhe-ai:account-concurrency-v2:${accountId}:metadata`,
+    String(now)
+  ])
+  return numberValue(result)
 }
 
 async function sampleRedisStream(client: RedisSampleClient, streamKey: string, groupName: string): Promise<RedisStreamSnapshot> {
@@ -1298,6 +1375,9 @@ function buildReport(input: {
   const usageRecordsDelta = input.storageAfter.usageRecords - input.storageBefore.usageRecords
   const auditLogsDelta = input.storageAfter.auditLogs - input.storageBefore.auditLogs
   const redisDelta = redisStreamsDelta(input.redisBefore, input.redisAfter)
+  const accountConcurrencySamples = input.samples.map((sample) => sample.accountConcurrency)
+  const maxAccountConcurrencyTotal = Math.max(0, ...accountConcurrencySamples.map((sample) => sample.total))
+  const accountConcurrencyCapacity = input.seeded.accountIds.length * input.input.accountConcurrencyLimit
   const violations: string[] = []
 
   if (errorRate > input.input.maxAllowedErrorRate) {
@@ -1321,6 +1401,23 @@ function buildReport(input: {
   const expectedAuditLogs = expectedAuditLogMinimum(input.stats.successRequests)
   if (input.stats.successRequests > 0 && auditLogsDelta < expectedAuditLogs) {
     violations.push(`审计日志消化不足：auditLogsDelta=${auditLogsDelta}, expectedMinimum=${expectedAuditLogs}, successRequests=${input.stats.successRequests}`)
+  }
+  if (input.input.assertAccountConcurrency) {
+    const accountConcurrencyError = accountConcurrencySamples.find((sample) => sample.error)
+    if (accountConcurrencyError) {
+      violations.push(`Redis 账号并发槽采样失败：${accountConcurrencyError.error}`)
+    }
+    if (maxAccountConcurrencyTotal > accountConcurrencyCapacity) {
+      violations.push(`Redis 账号并发槽峰值 ${maxAccountConcurrencyTotal} 超过配置总槽位 ${accountConcurrencyCapacity}`)
+    }
+    const activeStreamMismatch = input.samples.find((sample) => (
+      !sample.accountConcurrency.error
+      && sample.upstream.activeStreamRequests > 0
+      && sample.accountConcurrency.total + 1 < sample.upstream.activeStreamRequests
+    ))
+    if (activeStreamMismatch) {
+      violations.push(`账号并发读数低于上游活跃流：elapsed=${activeStreamMismatch.elapsedSeconds}s redisSlots=${activeStreamMismatch.accountConcurrency.total}, upstreamActiveStream=${activeStreamMismatch.upstream.activeStreamRequests}`)
+    }
   }
 
   return {
@@ -1389,7 +1486,12 @@ function buildReport(input: {
     redis: {
       before: input.redisBefore,
       after: input.redisAfter,
-      delta: redisDelta
+      delta: redisDelta,
+      accountConcurrency: {
+        maxTotal: maxAccountConcurrencyTotal,
+        capacity: accountConcurrencyCapacity,
+        assertEnabled: input.input.assertAccountConcurrency
+      }
     },
     upstream: {
       totalRequests: input.upstreamRuntime.totalRequests,
@@ -1431,6 +1533,7 @@ function printReport(report: Record<string, unknown> & { pass: boolean; violatio
   const redis = report.redis as Record<string, unknown>
   const redisAfter = redis.after as RedisStreamsSnapshot | undefined
   const redisDelta = redis.delta as RedisStreamsDeltaSnapshot | undefined
+  const redisAccountConcurrency = redis.accountConcurrency as Record<string, unknown> | undefined
   const upstream = report.upstream as Record<string, unknown> | undefined
   const usageStream = redisAfter?.usageRecords
   const auditStream = redisAfter?.auditLogs
@@ -1446,6 +1549,7 @@ function printReport(report: Record<string, unknown> & { pass: boolean; violatio
   console.log(`- postgres deadlocksDelta=${postgres.deadlocksDelta} maxLockWaiters=${postgres.maxLockWaiters} maxXactAge=${postgres.maxXactAgeSeconds}s maxActiveQuery=${postgres.maxActiveQuerySeconds}s`)
   console.log(`- redis usageStream length=${usageStream?.length ?? 0} pending=${usageStream?.pendingCount ?? 0} lag=${usageStream?.lagCount ?? 0}; auditStream length=${auditStream?.length ?? 0} pending=${auditStream?.pendingCount ?? 0} lag=${auditStream?.lagCount ?? 0}; operationStream length=${operationStream?.length ?? 0} pending=${operationStream?.pendingCount ?? 0} lag=${operationStream?.lagCount ?? 0}; publicApiStream length=${publicApiStream?.length ?? 0} pending=${publicApiStream?.pendingCount ?? 0} lag=${publicApiStream?.lagCount ?? 0}; recordMaintenanceStream length=${recordMaintenanceStream?.length ?? 0} pending=${recordMaintenanceStream?.pendingCount ?? 0} lag=${recordMaintenanceStream?.lagCount ?? 0}; runtimeLogStream length=${runtimeLogStream?.length ?? 0} pending=${runtimeLogStream?.pendingCount ?? 0} lag=${runtimeLogStream?.lagCount ?? 0}; totalPending=${redisAfter?.pendingCount ?? 0} totalBacklog=${redisAfter?.backlogCount ?? 0}`)
   console.log(`- redis delta positivePending=${redisDelta?.positivePendingDelta ?? 0} positiveBacklog=${redisDelta?.positiveBacklogDelta ?? 0} netBacklogDelta=${redisDelta?.backlogDelta ?? 0}`)
+  console.log(`- accountConcurrency maxRedisSlots=${redisAccountConcurrency?.maxTotal ?? 0}/${redisAccountConcurrency?.capacity ?? 0} assert=${redisAccountConcurrency?.assertEnabled === true}`)
   if (report.violations.length > 0) {
     console.log(`- violations=${report.violations.join('；')}`)
   }
@@ -1621,6 +1725,7 @@ function loadConfig(): GatewayLoadConfig {
     promptBytes: envInteger('JUHE_AI_GATEWAY_LOAD_PROMPT_BYTES', 64, 1, 1024 * 1024),
     enableStatsWorkerObservation: envBoolean('JUHE_AI_GATEWAY_LOAD_ENABLE_STATS_WORKER', false),
     cleanup: envBoolean('JUHE_AI_GATEWAY_LOAD_CLEANUP', true),
+    assertAccountConcurrency: envBoolean('JUHE_AI_GATEWAY_LOAD_ASSERT_ACCOUNT_CONCURRENCY', false),
     maxAllowedErrorRate: envFloat('JUHE_AI_GATEWAY_LOAD_MAX_ERROR_RATE', 0.01, 0, 1),
     maxAllowedP95Ms: envInteger('JUHE_AI_GATEWAY_LOAD_MAX_P95_MS', 3000, 1, 600_000),
     maxAllowedDeadlocks: envInteger('JUHE_AI_GATEWAY_LOAD_MAX_DEADLOCKS', 0, 0, 1000),

@@ -35,6 +35,13 @@ export const OPENAI_RESPONSES_ENDPOINT_MODES: readonly AccountSupportedEndpointM
 
 const openAIEndpointModeSet = new Set<string>(OPENAI_ENDPOINT_MODE_VALUES)
 
+export interface OpenAIRequestShape {
+  endpoint: string
+  model?: string
+  stream: boolean
+  createdAt: string
+}
+
 export interface OpenAIEndpointModeDefaultContext {
   providerCode?: string
   providerProtocolProfileId?: string

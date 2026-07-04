@@ -182,6 +182,10 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
       res.status(400).json(badRequest(error.message))
       return
     }
+    if (isOAuthBusinessConflictError(error)) {
+      res.status(409).json(badRequest(oauthErrorMessage(error, 'OpenAI 授权码交换失败')))
+      return
+    }
     res.status(502).json({ message: oauthErrorMessage(error, 'OpenAI 授权码交换失败') })
   }
 })
@@ -272,6 +276,10 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
   } catch (error) {
     if (error instanceof ProxyProfileUnavailableError) {
       res.status(400).json(badRequest(error.message))
+      return
+    }
+    if (isOAuthBusinessConflictError(error)) {
+      res.status(409).json(badRequest(oauthErrorMessage(error, 'OpenAI 刷新令牌授权失败')))
       return
     }
     res.status(502).json({ message: oauthErrorMessage(error, 'OpenAI 刷新令牌授权失败') })
@@ -554,11 +562,19 @@ function handleOAuthAccountUpdateError(error: unknown, res: Response, fallbackMe
     res.status(400).json(badRequest(error.message))
     return
   }
+  if (isOAuthBusinessConflictError(error)) {
+    res.status(409).json(badRequest(oauthErrorMessage(error, fallbackMessage)))
+    return
+  }
   res.status(502).json({ message: oauthErrorMessage(error, fallbackMessage) })
 }
 
 function oauthErrorMessage(error: unknown, fallbackMessage: string): string {
   return sanitizeOpenAIOAuthErrorMessage(error instanceof Error ? error.message : fallbackMessage)
+}
+
+function isOAuthBusinessConflictError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes('已存在')
 }
 
 function buildOAuthCreateLog(

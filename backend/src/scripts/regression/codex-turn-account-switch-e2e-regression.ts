@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import { createHash } from 'node:crypto'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -26,6 +26,8 @@ mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
 const codexSwitchTestModel = 'gpt-5.3-codex'
+
+assertCodexAccountScopedGuidanceIsNotClientRetryable()
 
 const [
   { openAIGatewayRouter },
@@ -1263,6 +1265,22 @@ function forceGroupAccountOrder(groupId: string, primaryAccountId: string, stick
   const statement = databaseModule.getBusinessDatabase().prepare('UPDATE group_accounts SET created_at = ? WHERE group_id = ? AND account_id = ?')
   statement.run('2000-01-01T00:00:00.000Z', groupId, primaryAccountId)
   statement.run('2000-01-01T00:00:01.000Z', groupId, stickyAccountId)
+}
+
+function assertCodexAccountScopedGuidanceIsNotClientRetryable(): void {
+  const routesSource = readFileSync(new URL('../../modules/gateway/routes.ts', import.meta.url), 'utf8')
+  const retryPredicate = sourceFunctionBlock(routesSource, 'function shouldSendCodexDispatchExhaustedStreamRetry')
+  assert(
+    retryPredicate.includes('!error.agentGuidanceResponse'),
+    'Codex account-scoped agent guidance 不能进入 upstream_retryable_error SSE 分支，否则客户端会反复重试同一路径'
+  )
+}
+
+function sourceFunctionBlock(source: string, marker: string): string {
+  const start = source.indexOf(marker)
+  assert(start >= 0, `未找到源码片段：${marker}`)
+  const nextFunction = source.indexOf('\nfunction ', start + marker.length)
+  return source.slice(start, nextFunction === -1 ? undefined : nextFunction)
 }
 
 main().catch((error) => {
