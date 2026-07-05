@@ -27,7 +27,6 @@ import {
   parseModelCheckProbeResponse
 } from './model-checks-response-parsing.js'
 import type { ModelCheckProbeProtocol } from './model-checks.profiles.js'
-import { acquireModelCheckProbeSlot } from './model-checks-probe-scheduler.js'
 
 const probeMaxAttempts = accountDiagnosticRetryTimeoutMs.length
 
@@ -96,149 +95,144 @@ async function runGatewayProbeAttempt(
   timeoutMs: number
 ): Promise<GatewayProbeResult> {
   throwIfAborted(signal)
-  const releaseProbeSlot = await acquireModelCheckProbeSlot(signal)
+  const attemptMessage = attempt > 1 ? `（第 ${attempt}/${probeMaxAttempts} 次重试）` : ''
+  emitGatewayProbeProgress(progress, {
+    type: 'probe_started',
+    message: `开始执行探针 ${probe.itemKey}${attemptMessage}`,
+    itemKey: probe.itemKey,
+    method: probe.method,
+    path: probe.path
+  })
+  const startedAt = Date.now()
+  const traceId = createTraceId()
+  let lastUpstreamAttempt: UpstreamAttempt | undefined
+  const attemptSignal = diagnosticAttemptSignal(signal, timeoutMs)
+  const request = createMemoryGatewayRequest({
+    method: probe.method,
+    path: probe.path,
+    body: probe.body,
+    signal: attemptSignal
+  })
+  const response = new MemoryGatewayResponse(startedAt)
+  const context: RequestContext = {
+    traceId,
+    startedAt,
+    method: request.method,
+    path: request.path,
+    originalUrl: request.originalUrl,
+    clientIp: request.ip,
+    systemAccountId: target.identity.systemAccountId,
+    apiKeyId: target.identity.apiKeyId,
+    groupId: target.identity.groupId,
+    logger: logger.child({ source: 'model_check', traceId, itemKey: probe.itemKey })
+  }
   try {
-    const attemptMessage = attempt > 1 ? `（第 ${attempt}/${probeMaxAttempts} 次重试）` : ''
-    emitGatewayProbeProgress(progress, {
-      type: 'probe_started',
-      message: `开始执行探针 ${probe.itemKey}${attemptMessage}`,
-      itemKey: probe.itemKey,
-      method: probe.method,
-      path: probe.path
-    })
-    const startedAt = Date.now()
-    const traceId = createTraceId()
-    let lastUpstreamAttempt: UpstreamAttempt | undefined
-    const attemptSignal = diagnosticAttemptSignal(signal, timeoutMs)
-    const request = createMemoryGatewayRequest({
-      method: probe.method,
-      path: probe.path,
-      body: probe.body,
-      signal: attemptSignal
-    })
-    const response = new MemoryGatewayResponse(startedAt)
-    const context: RequestContext = {
-      traceId,
-      startedAt,
-      method: request.method,
-      path: request.path,
-      originalUrl: request.originalUrl,
-      clientIp: request.ip,
-      systemAccountId: target.identity.systemAccountId,
-      apiKeyId: target.identity.apiKeyId,
-      groupId: target.identity.groupId,
-      logger: logger.child({ source: 'model_check', traceId, itemKey: probe.itemKey })
-    }
-    try {
-      await withRequestContext(context, () => handleOpenAIGatewayRequest(request, response.asResponse(), {
-        identity: target.identity,
-        candidateAccounts: target.candidateAccounts,
-        disableSessionAffinity: true,
-        exposeUpstreamDiagnostics: false,
-        disableAccountStateMutation: true,
-        settingsOverride: diagnosticAccountTestGatewaySettingsOverride(undefined, timeoutMs),
-        onUpstreamAttemptDiagnostic: (attemptDiagnostic) => {
-          lastUpstreamAttempt = attemptDiagnostic
-        }
-      }))
-    } catch (error) {
-      if (signal?.aborted) throw error
-      const responseBodyText = response.bodyText()
-      const hasGatewayResponse = response.statusCode !== 200 || Boolean(responseBodyText)
-      const responseErrorMessage = hasGatewayResponse ? parseUpstreamMessage(responseBodyText) : undefined
-      const statusCode = attemptSignal.aborted
-        ? 0
-        : probeErrorStatusCode(error) || (hasGatewayResponse ? response.statusCode : 0)
-      const message = attemptSignal.aborted
-        ? probeAbortMessage(attemptSignal)
-        : responseErrorMessage ?? probeErrorMessage(error)
-      const result: GatewayProbeResult = {
-        traceId,
-        statusCode,
-        success: false,
-        durationMs: Date.now() - startedAt,
-        bodyText: responseBodyText || message,
-        bodyTruncated: hasGatewayResponse ? response.bodyTruncated() : false,
-        headers: hasGatewayResponse ? response.headersObject() : {},
-        errorMessage: message,
-        upstreamStatusCode: upstreamAttemptStatusCode(lastUpstreamAttempt),
-        retryAfterMs: upstreamAttemptRetryAfterMs(lastUpstreamAttempt),
-        rateLimited: isRateLimitedProbeFailureEvidence(statusCode, responseBodyText, lastUpstreamAttempt)
+    await withRequestContext(context, () => handleOpenAIGatewayRequest(request, response.asResponse(), {
+      identity: target.identity,
+      candidateAccounts: target.candidateAccounts,
+      disableSessionAffinity: true,
+      exposeUpstreamDiagnostics: false,
+      disableAccountStateMutation: true,
+      settingsOverride: diagnosticAccountTestGatewaySettingsOverride(undefined, timeoutMs),
+      onUpstreamAttemptDiagnostic: (attemptDiagnostic) => {
+        lastUpstreamAttempt = attemptDiagnostic
       }
-      emitGatewayProbeProgress(progress, {
-        type: 'probe_completed',
-        message: `${result.errorMessage ?? `探针执行异常，HTTP ${result.statusCode}`}${attemptMessage}`,
-        itemKey: probe.itemKey,
-        traceId: result.traceId,
-        statusCode: result.statusCode,
-        success: result.success,
-        durationMs: result.durationMs
-      })
-      return result
-    }
-    throwIfAborted(signal)
-    if (attemptSignal.aborted) {
-      const message = probeAbortMessage(attemptSignal)
-      const result: GatewayProbeResult = {
-        traceId,
-        statusCode: 0,
-        success: false,
-        durationMs: Date.now() - startedAt,
-        bodyText: message,
-        bodyTruncated: false,
-        headers: {},
-        errorMessage: message
-      }
-      emitGatewayProbeProgress(progress, {
-        type: 'probe_completed',
-        message: `${message}${attemptMessage}`,
-        itemKey: probe.itemKey,
-        traceId: result.traceId,
-        statusCode: result.statusCode,
-        success: result.success,
-        durationMs: result.durationMs
-      })
-      return result
-    }
-    const bodyText = response.bodyText()
-    const parsed = parseModelCheckProbeResponse({
-      bodyText,
-      protocol: probe.responseProtocol ?? 'openai_responses',
-      path: probe.path
-    })
+    }))
+  } catch (error) {
+    if (signal?.aborted) throw error
+    const responseBodyText = response.bodyText()
+    const hasGatewayResponse = response.statusCode !== 200 || Boolean(responseBodyText)
+    const responseErrorMessage = hasGatewayResponse ? parseUpstreamMessage(responseBodyText) : undefined
+    const statusCode = attemptSignal.aborted
+      ? 0
+      : probeErrorStatusCode(error) || (hasGatewayResponse ? response.statusCode : 0)
+    const message = attemptSignal.aborted
+      ? probeAbortMessage(attemptSignal)
+      : responseErrorMessage ?? probeErrorMessage(error)
     const result: GatewayProbeResult = {
       traceId,
-      statusCode: response.statusCode,
-      success: response.statusCode >= 200 && response.statusCode < 300 && !parsed.streamFailureMessage,
+      statusCode,
+      success: false,
       durationMs: Date.now() - startedAt,
-      firstTokenMs: response.firstTokenMs(),
-      bodyText,
-      bodyTruncated: response.bodyTruncated(),
-      headers: response.headersObject(),
-      json: parsed.json,
-      outputText: parsed.outputText,
-      model: parsed.model,
-      usage: parsed.usage,
-      errorMessage: parsed.errorMessage ?? parseUpstreamMessage(bodyText),
+      bodyText: responseBodyText || message,
+      bodyTruncated: hasGatewayResponse ? response.bodyTruncated() : false,
+      headers: hasGatewayResponse ? response.headersObject() : {},
+      errorMessage: message,
       upstreamStatusCode: upstreamAttemptStatusCode(lastUpstreamAttempt),
       retryAfterMs: upstreamAttemptRetryAfterMs(lastUpstreamAttempt),
-      rateLimited: isRateLimitedProbeFailureEvidence(response.statusCode, bodyText, lastUpstreamAttempt)
+      rateLimited: isRateLimitedProbeFailureEvidence(statusCode, responseBodyText, lastUpstreamAttempt)
     }
     emitGatewayProbeProgress(progress, {
       type: 'probe_completed',
-      message: result.success ? `探针响应完成${attemptMessage}` : `${result.errorMessage ?? `探针响应异常，HTTP ${result.statusCode}`}${attemptMessage}`,
+      message: `${result.errorMessage ?? `探针执行异常，HTTP ${result.statusCode}`}${attemptMessage}`,
       itemKey: probe.itemKey,
       traceId: result.traceId,
       statusCode: result.statusCode,
       success: result.success,
-      durationMs: result.durationMs,
-      responseModel: result.model,
-      outputPreview: bounded(result.outputText)
+      durationMs: result.durationMs
     })
     return result
-  } finally {
-    releaseProbeSlot()
   }
+  throwIfAborted(signal)
+  if (attemptSignal.aborted) {
+    const message = probeAbortMessage(attemptSignal)
+    const result: GatewayProbeResult = {
+      traceId,
+      statusCode: 0,
+      success: false,
+      durationMs: Date.now() - startedAt,
+      bodyText: message,
+      bodyTruncated: false,
+      headers: {},
+      errorMessage: message
+    }
+    emitGatewayProbeProgress(progress, {
+      type: 'probe_completed',
+      message: `${message}${attemptMessage}`,
+      itemKey: probe.itemKey,
+      traceId: result.traceId,
+      statusCode: result.statusCode,
+      success: result.success,
+      durationMs: result.durationMs
+    })
+    return result
+  }
+  const bodyText = response.bodyText()
+  const parsed = parseModelCheckProbeResponse({
+    bodyText,
+    protocol: probe.responseProtocol ?? 'openai_responses',
+    path: probe.path
+  })
+  const result: GatewayProbeResult = {
+    traceId,
+    statusCode: response.statusCode,
+    success: response.statusCode >= 200 && response.statusCode < 300 && !parsed.streamFailureMessage,
+    durationMs: Date.now() - startedAt,
+    firstTokenMs: response.firstTokenMs(),
+    bodyText,
+    bodyTruncated: response.bodyTruncated(),
+    headers: response.headersObject(),
+    json: parsed.json,
+    outputText: parsed.outputText,
+    model: parsed.model,
+    usage: parsed.usage,
+    errorMessage: parsed.errorMessage ?? parseUpstreamMessage(bodyText),
+    upstreamStatusCode: upstreamAttemptStatusCode(lastUpstreamAttempt),
+    retryAfterMs: upstreamAttemptRetryAfterMs(lastUpstreamAttempt),
+    rateLimited: isRateLimitedProbeFailureEvidence(response.statusCode, bodyText, lastUpstreamAttempt)
+  }
+  emitGatewayProbeProgress(progress, {
+    type: 'probe_completed',
+    message: result.success ? `探针响应完成${attemptMessage}` : `${result.errorMessage ?? `探针响应异常，HTTP ${result.statusCode}`}${attemptMessage}`,
+    itemKey: probe.itemKey,
+    traceId: result.traceId,
+    statusCode: result.statusCode,
+    success: result.success,
+    durationMs: result.durationMs,
+    responseModel: result.model,
+    outputPreview: bounded(result.outputText)
+  })
+  return result
 }
 
 function isRetryableProbeFailure(result: GatewayProbeResult): boolean {
