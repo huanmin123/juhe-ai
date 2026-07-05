@@ -116,6 +116,7 @@ const [
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 const mockHits: MockHit[] = []
 const scenarioResults: ScenarioResult[] = []
+const executedRuntimeLabels = new Set<string>()
 const upstreamDiagnostics: UpstreamDiagnostic[] = []
 
 const app = express()
@@ -255,36 +256,39 @@ try {
   await listen(appServer)
   const gatewayBaseUrl = `http://127.0.0.1:${serverAddress(appServer).port}`
 
-  await runScenario('openai-chat-json-failover', () => assertOpenAIChatJson(gatewayBaseUrl, openAIChatRuntime.apiKey))
-  await runScenario('openai-chat-sse', () => assertOpenAIChatSse(gatewayBaseUrl, openAIChatRuntime.apiKey))
-  await runScenario('openai-responses-json-failover', () => assertOpenAIResponsesJson(gatewayBaseUrl, openAIResponsesRuntime.apiKey))
-  await runScenario('openai-responses-sse', () => assertOpenAIResponsesSse(gatewayBaseUrl, openAIResponsesRuntime.apiKey))
-  await runScenario('anthropic-messages-json-failover', () => assertAnthropicMessagesJson(gatewayBaseUrl, anthropicRuntime.apiKey))
-  await runScenario('anthropic-messages-sse', () => assertAnthropicMessagesSse(gatewayBaseUrl, anthropicRuntime.apiKey))
-  await runScenario('gemini-generate-content-json-failover', () => assertGeminiGenerateContentJson(gatewayBaseUrl, geminiRuntime.apiKey))
-  await runScenario('gemini-stream-generate-content', () => assertGeminiStreamGenerateContent(gatewayBaseUrl, geminiRuntime.apiKey))
-  await runScenario('hybrid-messages-to-chat-json-failover', () => assertHybridMessagesToChatJson(gatewayBaseUrl, hybridMessagesRuntime.apiKey))
-  await runScenario('hybrid-messages-to-chat-sse', () => assertHybridMessagesToChatSse(gatewayBaseUrl, hybridMessagesRuntime.apiKey))
-  await runScenario('hybrid-gemini-to-chat-json-failover', () => assertHybridGeminiToChatJson(gatewayBaseUrl, hybridGeminiRuntime.apiKey))
+  await runScenario('openai-chat-json-failover', openAIChatRuntime, () => assertOpenAIChatJson(gatewayBaseUrl, openAIChatRuntime.apiKey))
+  await runScenario('openai-chat-sse', openAIChatRuntime, () => assertOpenAIChatSse(gatewayBaseUrl, openAIChatRuntime.apiKey))
+  await runScenario('openai-responses-json-failover', openAIResponsesRuntime, () => assertOpenAIResponsesJson(gatewayBaseUrl, openAIResponsesRuntime.apiKey))
+  await runScenario('openai-responses-sse', openAIResponsesRuntime, () => assertOpenAIResponsesSse(gatewayBaseUrl, openAIResponsesRuntime.apiKey))
+  await runScenario('anthropic-messages-json-failover', anthropicRuntime, () => assertAnthropicMessagesJson(gatewayBaseUrl, anthropicRuntime.apiKey))
+  await runScenario('anthropic-messages-sse', anthropicRuntime, () => assertAnthropicMessagesSse(gatewayBaseUrl, anthropicRuntime.apiKey))
+  await runScenario('gemini-generate-content-json-failover', geminiRuntime, () => assertGeminiGenerateContentJson(gatewayBaseUrl, geminiRuntime.apiKey))
+  await runScenario('gemini-stream-generate-content', geminiRuntime, () => assertGeminiStreamGenerateContent(gatewayBaseUrl, geminiRuntime.apiKey))
+  await runScenario('hybrid-messages-to-chat-json-failover', hybridMessagesRuntime, () => assertHybridMessagesToChatJson(gatewayBaseUrl, hybridMessagesRuntime.apiKey))
+  await runScenario('hybrid-messages-to-chat-sse', hybridMessagesRuntime, () => assertHybridMessagesToChatSse(gatewayBaseUrl, hybridMessagesRuntime.apiKey))
+  await runScenario('hybrid-gemini-to-chat-json-failover', hybridGeminiRuntime, () => assertHybridGeminiToChatJson(gatewayBaseUrl, hybridGeminiRuntime.apiKey))
 
   usageRecordQueue.flushAllUsageRecordQueue()
   auditLogQueue.flushAllAuditLogQueue()
   await accountSideEffects.flushGatewayAccountSideEffectsForTest()
-  if (!scenarioFilter) {
-    const runtimes = [
-      openAIChatRuntime,
-      openAIResponsesRuntime,
-      anthropicRuntime,
-      geminiRuntime,
-      hybridMessagesRuntime,
-      hybridGeminiRuntime
-    ]
-    if (!skipBadAccount) {
-      assertBadMockDisruptionRecorded(runtimes)
-    }
-    for (const runtime of runtimes) {
-      assertRuntimeRecoveredThroughRealAccount(runtime)
-    }
+  const runtimes = [
+    openAIChatRuntime,
+    openAIResponsesRuntime,
+    anthropicRuntime,
+    geminiRuntime,
+    hybridMessagesRuntime,
+    hybridGeminiRuntime
+  ]
+  assert(scenarioResults.length > 0, scenarioFilter ? `场景过滤器未匹配任何真实请求场景：${scenarioFilter}` : '真实账户脚本至少应执行一个场景')
+  const verificationRuntimes = scenarioFilter
+    ? runtimes.filter((runtime) => executedRuntimeLabels.has(runtime.label))
+    : runtimes
+  const executedFailoverScenario = scenarioResults.some((result) => result.name.includes('failover'))
+  if (!skipBadAccount && (!scenarioFilter || executedFailoverScenario)) {
+    assertBadMockDisruptionRecorded(verificationRuntimes)
+  }
+  for (const runtime of verificationRuntimes) {
+    assertRuntimeRecoveredThroughRealAccount(runtime)
   }
 
   console.log(JSON.stringify({
@@ -476,12 +480,13 @@ function registerModels(): void {
   }
 }
 
-async function runScenario(name: string, fn: () => Promise<{ outputSample?: string; status: number }>): Promise<void> {
+async function runScenario(name: string, runtime: RuntimeInfo, fn: () => Promise<{ outputSample?: string; status: number }>): Promise<void> {
   if (scenarioFilter && !name.includes(scenarioFilter)) {
     return
   }
   const startedAt = Date.now()
   const result = await fn()
+  executedRuntimeLabels.add(runtime.label)
   scenarioResults.push({
     durationMs: Date.now() - startedAt,
     name,

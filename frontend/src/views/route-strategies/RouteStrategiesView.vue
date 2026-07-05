@@ -103,7 +103,7 @@
           <span :class="record.systemAccountName ? 'name-cell' : 'muted-cell'">{{ routeStrategySystemAccountText(record) }}</span>
         </template>
         <template v-else-if="column.key === 'mode'">
-          <a-tag :color="routeStrategyModeColor(record.mode)">{{ routeStrategyModeText(record.mode) }}</a-tag>
+          <a-tag :color="routeStrategyModeColor(record.mode)">{{ routeStrategyModeDisplayText(record) }}</a-tag>
         </template>
         <template v-else-if="column.key === 'status'">
           <a-tag :color="routeStrategyStatusColor(record.status)">{{ routeStrategyStatusText(record.status) }}</a-tag>
@@ -141,7 +141,7 @@
               </div>
             </div>
             <div class="mobile-list-card-tags">
-              <a-tag :color="routeStrategyModeColor(record.mode)">{{ routeStrategyModeText(record.mode) }}</a-tag>
+              <a-tag :color="routeStrategyModeColor(record.mode)">{{ routeStrategyModeDisplayText(record) }}</a-tag>
               <a-tag :color="routeStrategyStatusColor(record.status)">{{ routeStrategyStatusText(record.status) }}</a-tag>
             </div>
           </div>
@@ -1363,6 +1363,13 @@ function routeStrategySystemAccountText(record: RouteStrategyListItem | RouteStr
 
 function routeStrategyModeText(mode: RouteStrategyMode): string {
   return modeOptions.find((item) => item.value === mode)?.label ?? mode
+}
+
+function routeStrategyModeDisplayText(record: RouteStrategyListItem | RouteStrategySummary): string {
+  const base = routeStrategyModeText(record.mode)
+  if (record.mode !== 'normal') return base
+  const preference = record.normalRoutingConfig?.schedulingPreference ?? 'cost_first'
+  return `${base} / ${preference === 'speed_first' ? '速度优先' : '成本优先'}`
 }
 
 function routeStrategyModeColor(mode: RouteStrategyMode): string {

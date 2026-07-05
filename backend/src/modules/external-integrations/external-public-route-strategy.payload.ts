@@ -13,6 +13,9 @@ export function publicRouteStrategyPayload(
   if ('mode' in input && input.mode !== undefined) payload.mode = input.mode
   if ('status' in input && input.status !== undefined) payload.status = input.status
   if ('groupBindings' in input && input.groupBindings !== undefined) payload.groupBindings = input.groupBindings
+  if ('normalRoutingConfig' in input && input.normalRoutingConfig !== undefined) {
+    payload.normalRoutingConfig = input.normalRoutingConfig
+  }
   if ('hybridRoutingConfig' in input && input.hybridRoutingConfig !== undefined) {
     payload.hybridRoutingConfig = input.hybridRoutingConfig
   }

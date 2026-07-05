@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { performance } from 'node:perf_hooks'
+import { setTimeout as delay } from 'node:timers/promises'
 
 const tempRoot = mkdtempSync(join(tmpdir(), 'juhe-system-api-read-burst-'))
 
@@ -180,7 +181,19 @@ try {
   }
   await closeSqliteReadWorkerPool?.().catch(() => undefined)
   closeStorageDatabases?.()
-  rmSync(tempRoot, { recursive: true, force: true })
+  await removeTempRoot()
+}
+
+async function removeTempRoot(): Promise<void> {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      rmSync(tempRoot, { recursive: true, force: true })
+      return
+    } catch (error) {
+      if (attempt === 4) throw error
+      await delay(100 * (attempt + 1))
+    }
+  }
 }
 
 async function login(baseUrl: string, captchaAnswerForTest: (captchaId: string) => string | undefined): Promise<string> {

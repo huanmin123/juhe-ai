@@ -205,7 +205,13 @@ export async function pipeUpstreamStream(
       }
     }
   }
+  const markFirstSemanticOutput = (inspection: GatewayStreamInspection) => {
+    if (firstTokenMs !== undefined || !streamOutputReceived(inspection)) return
+    firstTokenMs = Date.now() - startedAt
+    options.onFirstOutput?.()
+  }
   const updateStreamInspectionProgress = (inspection: GatewayStreamInspection) => {
+    markFirstSemanticOutput(inspection)
     semanticResultReceived = semanticResultReceived || streamSemanticResultReceived(inspection)
     pendingProtocolEvent = inspection.pendingEvent
     streamParserSkipped = inspection.skipped
@@ -288,6 +294,7 @@ export async function pipeUpstreamStream(
       finalInspection = await drainIteratorAfterTerminalForInspection(iterator, inspector, {
         lightweightImageStream: bodyCaptureOmitted || finalInspection.imageOutputReceived
       })
+      updateStreamInspectionProgress(finalInspection)
       omitBodyCaptureIfImageStream(finalInspection, { eofPendingFlush: true })
     } else {
       res.off('close', closeIterator)
@@ -367,7 +374,8 @@ export async function pipeUpstreamStream(
         upstreamChunkReceived,
         semanticResultReceived,
         pendingProtocolEvent,
-        parserSkipped: streamParserSkipped
+        parserSkipped: streamParserSkipped,
+        waitingForFirstOutput: options.firstByteTimeoutMs !== undefined && firstTokenMs === undefined
       }, signal, options.firstByteTimeoutMs)
       const readWaitMs = Date.now() - readStartedAt
 
@@ -382,10 +390,6 @@ export async function pipeUpstreamStream(
       upstreamChunkReceived = true
       waitingForFirstChunk = false
       lastUpstreamActivityAt = Date.now()
-      if (firstTokenMs === undefined) {
-        firstTokenMs = lastUpstreamActivityAt - startedAt
-        options.onFirstOutput?.()
-      }
       if (!bodyCaptureOmitted) {
         upstreamCapture.push(buffer)
       }
@@ -393,8 +397,8 @@ export async function pipeUpstreamStream(
       const interceptResult = interceptor
         ? pushResponseInspectionChunks(interceptor, transformedChunks)
         : passThroughResponseInspectionChunks(transformedChunks)
+      pendingProtocolEvent = interceptResult.pendingEvent === true
       if (interceptResult.pendingEvent === true) {
-        pendingProtocolEvent = true
         lastSseEventActivityAt = lastUpstreamActivityAt
       }
       if (interceptResult.parserSkipped && !responseInspectionParserSkipLogged) {
@@ -1025,8 +1029,6 @@ export async function pipeUpstreamStream(
     return finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
   }
 
-  endResponse(res)
-
   if (!completed || inspection.failedReceived) {
     const message = inspection.errorMessage ?? '上游流式响应失败'
     const errorCode = streamClientFailureCode(
@@ -1036,6 +1038,33 @@ export async function pipeUpstreamStream(
       totalResponseBytes
     )
     await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, inspection.failedReceived))
+    if (shouldFailBeforeDownstreamCommit()) {
+      streamLogger.warn({
+        event: 'gateway_stream_finished_failed_before_downstream_commit',
+        completed,
+        errorCode,
+        totalUpstreamBytes,
+        totalResponseBytes,
+        sseEventCount: inspection.eventCount,
+        recentSseEventTypes: inspection.recentEventTypes
+      }, '网关在 EOF pending 收尾后识别到失败，交由上层决定是否服务端换号重试')
+      return finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
+    }
+    if (shouldInterruptCommittedGenericStream(options.clientRetryEnabled === true, totalResponseBytes)) {
+      streamLogger.warn({
+        event: 'gateway_stream_finished_failed_committed_generic_interrupted',
+        completed,
+        errorCode,
+        totalUpstreamBytes,
+        totalResponseBytes,
+        sseEventCount: inspection.eventCount,
+        recentSseEventTypes: inspection.recentEventTypes
+      }, '普通客户端已收到部分流式响应且 EOF pending 收尾后识别到失败，网关直接中断连接以交由客户端重试')
+      interruptResponse(res)
+      return finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
+    }
+    await flushPreCommitChunks()
+    endResponse(res)
     streamLogger.warn({
       event: 'gateway_stream_finished_failed',
       completed,
@@ -1052,6 +1081,9 @@ export async function pipeUpstreamStream(
     }, '网关流式响应以失败结束')
     return finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
   }
+
+  await flushPreCommitChunks()
+  endResponse(res)
 
   streamLogger.info({
     event: 'gateway_stream_finished_success',
@@ -1081,11 +1113,12 @@ function readNextStreamChunk(
     semanticResultReceived: boolean
     pendingProtocolEvent: boolean
     parserSkipped: boolean
+    waitingForFirstOutput: boolean
   },
   signal?: AbortSignal,
   firstByteTimeoutMs?: number
 ): Promise<IteratorResult<Uint8Array>> {
-  const firstByteDeadlineMs = status.waitingForFirstChunk && firstByteTimeoutMs !== undefined
+  const firstByteDeadlineMs = status.waitingForFirstOutput && !status.parserSkipped && firstByteTimeoutMs !== undefined
     ? firstByteTimeoutMs - (Date.now() - startedAt)
     : undefined
   const readPlan = buildStreamReadPlan(settings, startedAt, status)
@@ -1100,12 +1133,16 @@ function readNextStreamChunk(
     iterator,
     Math.max(0.001, timeoutMs / 1000),
     () => firstByteDeadlineSelected
-      ? new GatewayFirstByteTimeoutError(`上游流式响应 ${Math.ceil((firstByteTimeoutMs ?? 0) / 1000)}s 后仍未返回首个字节`, firstByteTimeoutMs ?? 0)
+      ? new GatewayFirstByteTimeoutError(`上游流式响应 ${Math.ceil((firstByteTimeoutMs ?? 0) / 1000)}s 后仍未返回首个有效输出`, firstByteTimeoutMs ?? 0)
       : readPlan.timeoutKind === 'stream_lifetime'
         ? new StreamMaxLifetimeExceededError(readPlan.timeoutMessage)
         : new Error(readPlan.timeoutMessage),
     signal
   )
+}
+
+function streamOutputReceived(inspection: GatewayStreamInspection): boolean {
+  return inspection.outputReceived || inspection.imageOutputReceived
 }
 
 function streamSemanticResultReceived(inspection: GatewayStreamInspection): boolean {

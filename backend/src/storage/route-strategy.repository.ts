@@ -855,15 +855,18 @@ function routeStrategyListItemFromRow(
   includeOwner: boolean,
   accountNames: Map<string, string>
 ): RouteStrategyListItem {
+  const mode = normalizeRouteStrategyMode(row.mode)
+  const config = parseRouteStrategyRuntimeConfigJson(row.config_json)
   return {
     id: row.id,
     systemAccountId: includeOwner ? row.system_account_id : undefined,
     systemAccountName: includeOwner ? (row.system_account_name ?? accountNames.get(row.system_account_id)) : undefined,
     name: row.name,
     description: row.description ?? undefined,
-    mode: normalizeRouteStrategyMode(row.mode),
+    mode,
     status: normalizeRouteStrategyStatus(row.status, 'active'),
     isDefault: normalizeRouteStrategyDefaultFlag(row.is_default),
+    normalRoutingConfig: mode === 'normal' ? config.normalRoutingConfig ?? defaultNormalRoutingConfig() : undefined,
     groupBindingPreview: groupBindings.slice(0, 3).map((binding) => ({
       id: binding.id,
       groupId: binding.groupId,

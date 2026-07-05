@@ -45,6 +45,7 @@ import {
 import { type UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import {
   pipeUpstreamStream,
+  type StreamFailureContext,
   type StreamBodyOmissionSummary
 } from './stream.js'
 import {
@@ -235,13 +236,25 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
   }
 
   let streamResult: Awaited<ReturnType<typeof pipeUpstreamStream>>
+  const shouldMutateAccountForStreamFailure = (
+    errorCode: string | undefined,
+    context: StreamFailureContext
+  ): boolean => {
+    if (accountStateMutationEnabled === false) return false
+    return !(
+      input.firstByteTimeoutMs !== undefined
+      && errorCode === 'first_byte_timeout'
+      && context.downstreamBytesWritten === 0
+      && !context.outputReceived
+    )
+  }
   try {
     streamResult = await pipeUpstreamStream(
       upstreamResponse.body,
       res,
       settings,
       startedAt,
-      (message, errorCode, context) => handleStreamFailure(account, message, settings, errorCode, context, usageContext, accountStateMutationEnabled !== false),
+      (message, errorCode, context) => handleStreamFailure(account, message, settings, errorCode, context, usageContext, shouldMutateAccountForStreamFailure(errorCode, context)),
       signal,
       {
         clientRetryEnabled: clientStrategy?.allowCodexStreamClientRetry === true,

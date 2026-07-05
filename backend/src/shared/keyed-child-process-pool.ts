@@ -47,6 +47,7 @@ interface KeyedChildProcessPoolJob<Operation> {
 interface KeyedChildProcessPoolSlot<Operation> {
   index: number
   worker?: ChildProcess
+  stopping?: Promise<void>
   queue: Array<KeyedChildProcessPoolJob<Operation>>
   active?: KeyedChildProcessPoolJob<Operation>
 }
@@ -90,6 +91,7 @@ export class KeyedChildProcessPool<Operation> {
     this.exclusiveBarrier = Promise.resolve()
     await Promise.allSettled(closing.map(async (slot) => {
       this.failSlotJobs(slot, new Error(`${this.options.name} writer pool 已关闭`))
+      await slot.stopping
       if (slot.worker) {
         await stopWriterChild(slot.worker)
       }
@@ -150,7 +152,9 @@ export class KeyedChildProcessPool<Operation> {
       })
     }
     for (const slot of this.slots) {
-      this.ensureSlotWorker(slot)
+      if (!slot.stopping) {
+        this.ensureSlotWorker(slot)
+      }
     }
   }
 
@@ -188,7 +192,7 @@ export class KeyedChildProcessPool<Operation> {
   }
 
   private pumpSlot(slot: KeyedChildProcessPoolSlot<Operation>): void {
-    if (slot.active || slot.queue.length === 0) {
+    if (slot.active || slot.stopping || slot.queue.length === 0) {
       return
     }
     const job = slot.queue.shift()
@@ -305,7 +309,10 @@ export class KeyedChildProcessPool<Operation> {
     if (worker) {
       slot.worker = undefined
       this.restartedWorkers += 1
-      void stopWriterChild(worker).finally(() => {
+      const stopping = stopWriterChild(worker).finally(() => {
+        if (slot.stopping === stopping) {
+          slot.stopping = undefined
+        }
         if (this.poolGeneration !== generation || !this.slots.includes(slot)) {
           return
         }
@@ -313,6 +320,11 @@ export class KeyedChildProcessPool<Operation> {
         this.pumpSlot(slot)
         this.notifyIdle()
       })
+      slot.stopping = stopping
+      void stopping
+      return
+    }
+    if (slot.stopping) {
       return
     }
     if (!this.slots.includes(slot)) {

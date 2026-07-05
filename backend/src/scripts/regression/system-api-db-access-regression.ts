@@ -100,6 +100,21 @@ function assertAccessModeMetadata(): void {
     'longRead',
     'GET /audit-logs/search-hot 必须走 longRead 并发边界'
   )
+  assert.equal(
+    resolveSystemApiDbAccessMode(requestFor('GET', '/__aipublic__/account/list'), '/__aipublic__'),
+    'read',
+    '公开账号列表是纯读，不能占用 SQLite 写 admission'
+  )
+  assert.equal(
+    resolveSystemApiDbAccessMode(requestFor('GET', '/__aipublic__/group/list'), '/__aipublic__'),
+    'read',
+    '公开分组列表是纯读，不能占用 SQLite 写 admission'
+  )
+  assert.equal(
+    resolveSystemApiDbAccessMode(requestFor('POST', '/__aipublic__/account/add'), '/__aipublic__'),
+    'write',
+    '公开账号新增必须按 SQLite 写请求纳入 admission'
+  )
 
   const readResponse = new FakeResponse()
   setSystemApiDbAccessMode(readResponse as unknown as Response, 'read')
@@ -151,6 +166,19 @@ function assertSqliteAdmissionByAccessMode(): void {
 
   clearSystemApiDbAccessAdmissionStateForTest()
   setSystemApiDbAccessAdmissionStateForTest({ writeInFlight: systemApiDbServiceMaxInFlight })
+  const publicReadResult = runAdmission('GET', '/__aipublic__/account/list', '/__aipublic__')
+  assert.equal(publicReadResult.nextCalled, true, '公开账号列表纯读不应被 SQLite 写 admission 拦截')
+  assert.equal(publicReadResult.response.statusCode, undefined, '公开账号列表纯读不应返回 busy 响应')
+
+  clearSystemApiDbAccessAdmissionStateForTest()
+  setSystemApiDbAccessAdmissionStateForTest({ writeInFlight: systemApiDbServiceMaxInFlight })
+  const publicWriteResult = runAdmission('POST', '/__aipublic__/account/add', '/__aipublic__')
+  assert.equal(publicWriteResult.nextCalled, false, '公开账号新增写入应受 SQLite 写 admission 控制')
+  assert.equal(publicWriteResult.response.statusCode, 503, '公开账号新增写 admission 满载时应返回 503')
+  assert.equal(publicWriteResult.response.body?.code, 'system_api_busy', '公开写 admission 满载应返回稳定错误码')
+
+  clearSystemApiDbAccessAdmissionStateForTest()
+  setSystemApiDbAccessAdmissionStateForTest({ writeInFlight: systemApiDbServiceMaxInFlight })
   const longReadResult = runAdmission('GET', '/__aisys__/api/runtime-logs/grep')
   assert.equal(longReadResult.nextCalled, true, 'longRead 不应被 SQLite 写 admission 拦截')
   assert.equal(longReadResult.response.timeoutMs, 120_000, 'longRead 应设置独立 deadline')
@@ -173,10 +201,10 @@ function assertPostgresSkipsSqliteWriteAdmission(): void {
   assert.equal(writeResult.response.statusCode, undefined, 'PostgreSQL 模式不应因为 SQLite 写 admission 返回 busy')
 }
 
-function runAdmission(method: string, path: string): { nextCalled: boolean; response: FakeResponse } {
+function runAdmission(method: string, path: string, prefix = '/__aisys__/api'): { nextCalled: boolean; response: FakeResponse } {
   const req = requestFor(method, path)
   const response = new FakeResponse()
-  setSystemApiDbAccessMode(response as unknown as Response, resolveSystemApiDbAccessMode(req, '/__aisys__/api'))
+  setSystemApiDbAccessMode(response as unknown as Response, resolveSystemApiDbAccessMode(req, prefix))
   let nextCalled = false
   systemApiDbServiceAdmissionControl(req as Request, response as unknown as Response, () => {
     nextCalled = true
@@ -227,7 +255,7 @@ try {
   assertAccessModeMetadata()
   assertSqliteAdmissionByAccessMode()
   assertPostgresSkipsSqliteWriteAdmission()
-  console.log('System API DB access 回归通过：读路由不受写 admission 拦截，readWithSideEffect/write/longRead 元数据可识别，导入预览为读，导出不是纯读，PG 不套 SQLite 写 admission')
+  console.log('System/Public API DB access 回归通过：读路由不受写 admission 拦截，readWithSideEffect/write/longRead 元数据可识别，导入预览和公开列表为读，写请求受 SQLite admission，PG 不套 SQLite 写 admission')
 } finally {
   runtimeConfig.databaseDriver = originalDatabaseDriver
   clearSystemApiDbAccessAdmissionStateForTest()

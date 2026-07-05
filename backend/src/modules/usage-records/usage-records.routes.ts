@@ -68,9 +68,6 @@ function usageRecordCostBreakdown(record: UsageRecordSummary): ProviderCostBreak
 
 async function usageRecordCostBreakdownAsync(record: UsageRecordSummary): Promise<ProviderCostBreakdown | undefined> {
   if (!record.success) return undefined
-  if (runtimeConfig.databaseDriver !== 'postgres' && runtimeConfig.cacheDriver !== 'redis') {
-    return usageRecordCostBreakdown(record)
-  }
   return await usageRecordCatalogCostBreakdownAsync(record) ?? fallbackUsageRecordCostBreakdown(record)
 }
 

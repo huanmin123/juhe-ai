@@ -170,6 +170,10 @@ const pendingOpenAIAccountsRefreshes = new Map<string, Promise<void>>()
 const pendingResponseInspectionPolicyRefreshes = new Map<string, Promise<void>>()
 let gatewayRuntimeCacheGeneration = 0
 
+function isGatewayRuntimeCacheGenerationCurrent(generation: number): boolean {
+  return generation === gatewayRuntimeCacheGeneration
+}
+
 export function readCachedGatewaySettings(): GatewaySettings {
   assertLocalGatewayDatabaseAccess('readCachedGatewaySettings')
   const cached = gatewaySettingsCache.get('current')
@@ -360,6 +364,7 @@ export async function listCachedProviderModelCatalogAsync(input: {
   includeUnpriced?: boolean
 }): Promise<ProviderModelCatalogItem[]> {
   if (runtimeConfig.runtimeStateDriver === 'redis') await syncGatewayCacheInvalidationsFromRuntimeState()
+  const generation = gatewayRuntimeCacheGeneration
   const useLocalPostgres = shouldUseLocalPostgresGatewayRuntimeDataAccess()
   if (!useLocalPostgres && !shouldUseGatewayRuntimeDbService()) {
     return listProviderModelCatalog(input)
@@ -378,7 +383,9 @@ export async function listCachedProviderModelCatalogAsync(input: {
   }
   const sharedCached = await getProviderModelCatalogSharedCacheEntry(cacheKey)
   if (sharedCached) {
-    providerModelCatalogCache.set(cacheKey, sharedCached.map((item) => ({ ...item })))
+    if (isGatewayRuntimeCacheGenerationCurrent(generation)) {
+      providerModelCatalogCache.set(cacheKey, sharedCached.map((item) => ({ ...item })))
+    }
     return sharedCached.map((item) => ({ ...item }))
   }
   const value = useLocalPostgres
@@ -390,7 +397,9 @@ export async function listCachedProviderModelCatalogAsync(input: {
         includeInactive: input.includeInactive,
         includeUnpriced: input.includeUnpriced
       })
-  await setProviderModelCatalogCacheEntryAsync(cacheKey, value.map((item) => ({ ...item })))
+  if (isGatewayRuntimeCacheGenerationCurrent(generation)) {
+    await setProviderModelCatalogCacheEntryAsync(cacheKey, value.map((item) => ({ ...item })))
+  }
   return value.map((item) => ({ ...item }))
 }
 
@@ -401,6 +410,7 @@ export async function resolveCachedProviderModelRouteAsync(input: {
   includeUnpriced?: boolean
 }): Promise<ProviderModelRouteResolution> {
   if (runtimeConfig.runtimeStateDriver === 'redis') await syncGatewayCacheInvalidationsFromRuntimeState()
+  const generation = gatewayRuntimeCacheGeneration
   const modelKey = normalizeProviderModelRouteKey(input.model)
   const providerCodes = normalizedProviderRouteCodes(input.providerCodes)
   if (!modelKey || !providerCodes.length) {
@@ -418,7 +428,9 @@ export async function resolveCachedProviderModelRouteAsync(input: {
     const sharedCached = await getProviderModelRouteIndexSharedCacheEntry(cacheKey)
     if (sharedCached) {
       cached = sharedCached
-      providerModelRouteIndexCache.set(cacheKey, cloneProviderModelRouteIndexCacheEntry(sharedCached))
+      if (isGatewayRuntimeCacheGenerationCurrent(generation)) {
+        providerModelRouteIndexCache.set(cacheKey, cloneProviderModelRouteIndexCacheEntry(sharedCached))
+      }
     }
   }
   if (!cached) {
@@ -427,8 +439,10 @@ export async function resolveCachedProviderModelRouteAsync(input: {
       systemAccountId: input.systemAccountId,
       includeUnpriced: input.includeUnpriced
     }))
-    await setProviderModelRouteIndexSharedCacheEntry(cacheKey, cached)
-    providerModelRouteIndexCache.set(cacheKey, cloneProviderModelRouteIndexCacheEntry(cached))
+    if (isGatewayRuntimeCacheGenerationCurrent(generation)) {
+      await setProviderModelRouteIndexSharedCacheEntry(cacheKey, cached)
+      providerModelRouteIndexCache.set(cacheKey, cloneProviderModelRouteIndexCacheEntry(cached))
+    }
   }
   const matchedProviderCodes = cached.index.get(modelKey) ?? []
   if (matchedProviderCodes.length === 1) {
@@ -693,6 +707,7 @@ async function loadGroupUsageAccessMetadataAndPopulateCache(
   systemAccountId: string,
   cacheKey: string
 ): Promise<GroupUsageAccessMetadata | undefined> {
+  const generation = gatewayRuntimeCacheGeneration
   const value = shouldUseGatewayRuntimeDbService()
     ? await requestGatewayDbService({
         type: 'resolve_group_usage_access',
@@ -702,7 +717,9 @@ async function loadGroupUsageAccessMetadataAndPopulateCache(
     : shouldUseLocalPostgresGatewayRuntimeDataAccess()
       ? await resolveGroupUsageAccessMetadataAsync(groupId, systemAccountId)
       : resolveGroupUsageAccessMetadata(groupId, systemAccountId)
-  await setGroupUsageAccessCacheEntryAsync(cacheKey, groupUsageAccessCacheEntry(value ? cloneGroupUsageAccessMetadata(value) : false))
+  if (isGatewayRuntimeCacheGenerationCurrent(generation)) {
+    await setGroupUsageAccessCacheEntryAsync(cacheKey, groupUsageAccessCacheEntry(value ? cloneGroupUsageAccessMetadata(value) : false))
+  }
   return value ? cloneGroupUsageAccessMetadata(value) : undefined
 }
 
@@ -713,6 +730,7 @@ async function loadOpenAIAccountsForGroupAndPopulateCache(
   requestedModel?: string,
   requestedEndpointFamily?: GatewayRequestEndpointFamily
 ): Promise<OpenAIAccountSecret[]> {
+  const generation = gatewayRuntimeCacheGeneration
   const result = shouldUseGatewayRuntimeDbService()
     ? await requestGatewayDbService({
         type: 'list_openai_accounts_for_group_result',
@@ -731,9 +749,11 @@ async function loadOpenAIAccountsForGroupAndPopulateCache(
           requestedEndpointFamily
         })
   const accounts = result.accounts.map(cloneStaticOpenAIAccountSecret)
-  openAIAccountsCache.set(cacheKey, openAIAccountsCacheEntry(accounts), {
-    ttlMs: openAIAccountsRetainTtlMs
-  })
+  if (isGatewayRuntimeCacheGenerationCurrent(generation)) {
+    openAIAccountsCache.set(cacheKey, openAIAccountsCacheEntry(accounts), {
+      ttlMs: openAIAccountsRetainTtlMs
+    })
+  }
   return await cloneOpenAIAccountsWithCurrentConcurrencyAsync(result.accounts)
 }
 
@@ -744,6 +764,7 @@ async function loadActiveResponseInspectionPoliciesAndPopulateCache(
   },
   cacheKey: string
 ): Promise<ResponseInspectionPolicySummary[]> {
+  const generation = gatewayRuntimeCacheGeneration
   const value = shouldUseGatewayRuntimeDbService()
     ? await requestGatewayDbService({
         type: 'list_active_response_inspection_policies',
@@ -754,7 +775,9 @@ async function loadActiveResponseInspectionPoliciesAndPopulateCache(
       ? await listActiveResponseInspectionPoliciesForGatewayAsync(input)
       : listActiveResponseInspectionPoliciesForGateway(input)
   const policies = value.map(cloneResponseInspectionPolicy)
-  await setResponseInspectionPolicyCacheEntryAsync(cacheKey, responseInspectionPolicyCacheEntry(policies))
+  if (isGatewayRuntimeCacheGenerationCurrent(generation)) {
+    await setResponseInspectionPolicyCacheEntryAsync(cacheKey, responseInspectionPolicyCacheEntry(policies))
+  }
   return policies.map(cloneResponseInspectionPolicy)
 }
 
@@ -1174,12 +1197,14 @@ function refreshGroupUsageAccessMetadataInBackground(groupId: string, systemAcco
   if (pendingGroupUsageAccessRefreshes.has(cacheKey)) {
     return
   }
+  const generation = gatewayRuntimeCacheGeneration
   const refresh = (shouldUseGatewayRuntimeDbService()
     ? requestGatewayDbService({ type: 'resolve_group_usage_access', groupId, systemAccountId })
     : shouldUseLocalPostgresGatewayRuntimeDataAccess()
       ? resolveGroupUsageAccessMetadataAsync(groupId, systemAccountId)
       : Promise.resolve(resolveGroupUsageAccessMetadata(groupId, systemAccountId)))
     .then(async (value) => {
+      if (!isGatewayRuntimeCacheGenerationCurrent(generation)) return
       const entry = groupUsageAccessCacheEntry(value ? cloneGroupUsageAccessMetadata(value) : false)
       groupUsageAccessCache.set(cacheKey, entry, { ttlMs: groupUsageAccessRetainTtlMs })
       await setGroupUsageAccessSharedCacheEntry(cacheKey, entry)
@@ -1207,12 +1232,14 @@ function refreshOpenAIAccountsForGroupInBackground(
   if (pendingOpenAIAccountsRefreshes.has(cacheKey)) {
     return
   }
+  const generation = gatewayRuntimeCacheGeneration
   const refresh = (shouldUseGatewayRuntimeDbService()
     ? requestGatewayDbService({ type: 'list_openai_accounts_for_group_result', groupId, systemAccountId, requestedModel, requestedEndpointFamily })
     : shouldUseLocalPostgresGatewayRuntimeDataAccess()
       ? listOpenAIAccountsForGroupResultAsync(groupId, systemAccountId, { requestedModel, requestedEndpointFamily })
       : Promise.resolve(listOpenAIAccountsForGroupResult(groupId, systemAccountId, { requestedModel, requestedEndpointFamily })))
     .then((result) => {
+      if (!isGatewayRuntimeCacheGenerationCurrent(generation)) return
       openAIAccountsCache.set(cacheKey, openAIAccountsCacheEntry(result.accounts.map(cloneStaticOpenAIAccountSecret)), {
         ttlMs: openAIAccountsRetainTtlMs
       })
@@ -1294,6 +1321,7 @@ function refreshActiveResponseInspectionPoliciesInBackground(
   if (pendingResponseInspectionPolicyRefreshes.has(cacheKey)) {
     return
   }
+  const generation = gatewayRuntimeCacheGeneration
   const refresh = (shouldUseGatewayRuntimeDbService()
     ? requestGatewayDbService({
         type: 'list_active_response_inspection_policies',
@@ -1304,6 +1332,7 @@ function refreshActiveResponseInspectionPoliciesInBackground(
       ? listActiveResponseInspectionPoliciesForGatewayAsync(input)
       : Promise.resolve(listActiveResponseInspectionPoliciesForGateway(input)))
     .then(async (value) => {
+      if (!isGatewayRuntimeCacheGenerationCurrent(generation)) return
       const entry = responseInspectionPolicyCacheEntry(value.map(cloneResponseInspectionPolicy))
       await setResponseInspectionPolicySharedCacheEntry(cacheKey, entry)
       responseInspectionPolicyCache.set(cacheKey, entry, { ttlMs: responseInspectionPolicyRetainTtlMs })

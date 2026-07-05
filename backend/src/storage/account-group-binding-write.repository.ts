@@ -1,6 +1,7 @@
 import type { AccountSummary, GroupSummary } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
+import { clearNormalRouteLatencyDegradationForAccountBindingAsync } from '../modules/gateway/runtime/normal-route-latency-degradation.service.js'
 import { findAccountSummary, findAccountSummaryAsync } from './account-summary.repository.js'
 import type { AccessScope } from './access-scope.js'
 import { getBusinessDatabase, nowIso } from './database.js'
@@ -198,6 +199,7 @@ export function setAccountGroup(
   }
   invalidateGroupAccountIdsCache(groupId)
   notifyGatewayRuntimeCacheInvalidation('group_account_binding')
+  clearNormalRouteLatencyBindingState(group.systemAccountId, accountId, [previousGroupId, groupId])
 
   return findAccountSummary(accountId, { systemAccountId: group.systemAccountId, role: 'user' })
 }
@@ -265,6 +267,7 @@ export async function setAccountGroupAsync(
   }
   invalidateGroupAccountIdsCache(groupId)
   notifyGatewayRuntimeCacheInvalidation('group_account_binding')
+  await clearNormalRouteLatencyBindingStateAsync(group.systemAccountId, accountId, [previousGroupId, groupId])
 
   return await findAccountSummaryAsync(accountId, { systemAccountId: group.systemAccountId, role: 'user' })
 }
@@ -331,5 +334,30 @@ export function addAccountToGroup(groupId: string, accountId: string): GroupSumm
   }
   invalidateGroupAccountIdsCache(groupId)
   notifyGatewayRuntimeCacheInvalidation('group_account_binding')
+  clearNormalRouteLatencyBindingState(current.systemAccountId, accountId, [previousGroupId, groupId])
   return findGroupSummary(groupId)
+}
+
+function clearNormalRouteLatencyBindingState(
+  systemAccountId: string,
+  accountId: string,
+  groupIds: Array<string | null | undefined>
+): void {
+  void clearNormalRouteLatencyBindingStateAsync(systemAccountId, accountId, groupIds)
+}
+
+async function clearNormalRouteLatencyBindingStateAsync(
+  systemAccountId: string,
+  accountId: string,
+  groupIds: Array<string | null | undefined>
+): Promise<void> {
+  try {
+    await clearNormalRouteLatencyDegradationForAccountBindingAsync({
+      systemAccountId,
+      accountId,
+      groupIds
+    })
+  } catch {
+    // 运行态清理失败不能阻断账号分组绑定写入。
+  }
 }

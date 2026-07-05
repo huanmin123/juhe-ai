@@ -259,6 +259,7 @@ function buildGroupSummaries(rows: GroupListRow[], access?: AccessScope): GroupS
   const accountNames = loadSystemAccountNameMapByIds(rows.map((row) => row.system_account_id))
   return rows.map((row) => {
     const isAuthorizedView = row.access_type === 'authorized'
+    const accountIds = isAuthorizedView ? [] : accountIdsByGroup.get(row.id) ?? []
     const todayUsage = isAuthorizedView && row.authorization_id
       ? todayUsageByAuthorization.get(row.authorization_id) ?? emptyAccountUsageSummary()
       : todayUsageByGroup.get(row.id) ?? emptyAccountUsageSummary()
@@ -267,7 +268,8 @@ function buildGroupSummaries(rows: GroupListRow[], access?: AccessScope): GroupS
       : totalUsageByGroup.get(row.id) ?? emptyAccountUsageSummary()
     const accountStats = groupAccountStatsFromRow(groupStatsByGroup.get(row.id), todayUsage, totalUsage)
     if (!isAuthorizedView) {
-      accountStats.currentConcurrency = sumAccountCurrentConcurrency(accountIdsByGroup.get(row.id) ?? [], currentConcurrencyByAccount)
+      accountStats.total = accountIds.length
+      accountStats.currentConcurrency = sumAccountCurrentConcurrency(accountIds, currentConcurrencyByAccount)
     }
     return {
       id: row.id,
@@ -282,7 +284,7 @@ function buildGroupSummaries(rows: GroupListRow[], access?: AccessScope): GroupS
       isDefault: isAuthorizedView ? false : row.is_default === 1,
       groupType: groupTypeFromRow(row),
       schedulingPolicy: groupSchedulingPolicyFromRow(row),
-      accountIds: isAuthorizedView ? [] : accountIdsByGroup.get(row.id) ?? [],
+      accountIds,
       accountStats,
       accessType: row.access_type ?? 'owner',
       groupAuthorizationId: row.authorization_id ?? undefined,

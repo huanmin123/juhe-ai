@@ -72,7 +72,7 @@ export async function preResolveGatewayRuntime(
       sendEarlyImageGenerationDisabledResponse(req, res)
       return
     }
-    if (await rejectCachedClientIpBlacklist(req, res, extractClientIp(req), { closeConnectionOnAuthFailure: true }, { cacheOnly: false })) {
+    if (await rejectCachedClientIpBlacklist(req, res, extractClientIp(req), { closeConnectionOnAuthFailure: true }, { cacheOnly: true })) {
       return
     }
     req.gatewayRuntime = runtime
@@ -144,7 +144,7 @@ export async function resolveGatewayRuntimeAsync(
     })
     return undefined
   }
-  if (options.inspectClientIpPolicyAfterRuntime !== false && await rejectCachedClientIpBlacklist(req, res, clientIp, options, { cacheOnly: false })) {
+  if (options.inspectClientIpPolicyAfterRuntime !== false && await rejectCachedClientIpBlacklist(req, res, clientIp, options, { cacheOnly: true })) {
     return undefined
   }
 
@@ -172,26 +172,25 @@ async function rejectCachedClientIpBlacklist(
   if (!ipPolicyDecision.blocked || !ipPolicyDecision.blacklistPolicy) {
     return false
   }
+  const blacklistPolicy = ipPolicyDecision.blacklistPolicy
   getRequestLogger().warn({
     event: 'gateway_client_ip_blacklist_blocked',
-    policyId: ipPolicyDecision.blacklistPolicy.id,
-    ipHash: ipPolicyDecision.blacklistPolicy.ipHash,
+    policyId: blacklistPolicy.id,
+    ipHash: blacklistPolicy.ipHash,
     endpoint: `${req.method.toUpperCase()} ${sanitizeUrlForLog(req.originalUrl)}`
   }, '网关来源 IP 命中管理员封禁')
-  try {
-    await recordClientIpPolicyHitAsync(ipPolicyDecision.blacklistPolicy)
-  } catch (error) {
+  recordClientIpPolicyHitAsync(blacklistPolicy).catch((error) => {
     getRequestLogger().warn(errorLogFields(error, {
       event: 'gateway_client_ip_blacklist_hit_record_failed',
-      policyId: ipPolicyDecision.blacklistPolicy.id,
-      ipHash: ipPolicyDecision.blacklistPolicy.ipHash
+      policyId: blacklistPolicy.id,
+      ipHash: blacklistPolicy.ipHash
     }), '记录 IP 封禁命中失败，已继续返回封禁响应')
-  }
+  })
   prepareEarlyAuthFailureResponse(res, options)
   sendClientIpBlacklistResponse(req, res, {
-    reason: ipPolicyDecision.blacklistPolicy.reason,
-    clientIp: ipPolicyDecision.normalizedIp?.clientIp ?? ipPolicyDecision.blacklistPolicy.clientIp,
-    aggregateIpKey: ipPolicyDecision.normalizedIp?.aggregateIpKey ?? ipPolicyDecision.blacklistPolicy.aggregateIpKey
+    reason: blacklistPolicy.reason,
+    clientIp: ipPolicyDecision.normalizedIp?.clientIp ?? blacklistPolicy.clientIp,
+    aggregateIpKey: ipPolicyDecision.normalizedIp?.aggregateIpKey ?? blacklistPolicy.aggregateIpKey
   })
   return true
 }

@@ -852,6 +852,47 @@ assert.equal(validateAccountResponseInspectionRules([
 {
   const policies = resolveRuntimeResponseInspectionPolicies({
     account: {
+      id: 'acct_codex_compaction_eof_before_completed',
+      protocolCode: OPENAI_PROTOCOL_CODE,
+      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      clientCompatibility: 'codex_responses',
+      credentials: {}
+    } as never,
+    managementPolicies: listResponseInspectionPolicyDefaultRules()
+  })
+  const buffer = new OpenAIResponseInspectionBuffer({
+    clientRetryEnabled: true,
+    endpointFamily: 'responses',
+    policies,
+    context: {
+      clientProfile: 'codex',
+      accountClientCompatibility: 'codex_responses',
+      codexCompactionExpected: true
+    }
+  })
+  const outputItem = sseEvent('response.output_item.done', {
+    output_index: 0,
+    item: {
+      id: 'item_compaction_eof_before_completed',
+      type: 'compaction',
+      status: 'completed',
+      encrypted_content: 'mock-encrypted-context'
+    }
+  })
+  const first = buffer.pushChunk(outputItem)
+  assert.equal(first.chunks.length, 0, 'compact EOF 前不能提前释放暂存 output item')
+  assert.equal(first.pendingEvent, true, 'compact 暂存事件必须标记为 pending')
+  const completed = buffer.flushPendingOnEof()
+  const responseBody = Buffer.concat(completed.chunks).toString('utf8')
+  assert.equal(completed.pendingEvent, false, 'compact EOF 失败收尾后不应继续保留 pending 状态')
+  assert.equal(completed.intercepted?.policyId, 'default_codex_compaction_contract', 'compact EOF 前缺少 response.completed 必须按契约错误拦截')
+  assert(responseBody.includes('upstream_retryable_error'), `compact EOF 契约错误应改写为客户端可重试失败：${responseBody}`)
+  assert(!responseBody.includes('mock-encrypted-context'), `compact EOF 缺少 completed 时不得释放暂存 output：${responseBody}`)
+}
+
+{
+  const policies = resolveRuntimeResponseInspectionPolicies({
+    account: {
       id: 'acct_codex_compaction_malformed_shape',
       protocolCode: OPENAI_PROTOCOL_CODE,
       providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,

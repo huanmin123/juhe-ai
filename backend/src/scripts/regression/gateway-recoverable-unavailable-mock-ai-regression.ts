@@ -61,6 +61,7 @@ const [
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 const upstreamHits: MockUpstreamHit[] = []
+let rateLimitedCooldownClearTimer: ReturnType<typeof setTimeout> | undefined
 
 const app = express()
 app.use(requestContextMiddleware)
@@ -98,6 +99,10 @@ try {
     await closeServer(upstreamServer)
   }
 } finally {
+  if (rateLimitedCooldownClearTimer) {
+    clearTimeout(rateLimitedCooldownClearTimer)
+    rateLimitedCooldownClearTimer = undefined
+  }
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
   usageRecordQueue.clearUsageRecordQueueForTest()
   auditLogQueue.clearAuditLogQueueForTest()
@@ -129,10 +134,12 @@ async function assertRateLimitedCooldownWaitsAndRecovers(baseUrl: string, scenar
     'rate_limited'
   )
   gatewayCache.clearGatewayRuntimeCache()
-  setTimeout(() => {
+  rateLimitedCooldownClearTimer = setTimeout(() => {
+    rateLimitedCooldownClearTimer = undefined
     repositories.clearAccountFailureState(scenario.accountId, access)
     gatewayCache.clearGatewayRuntimeCache()
-  }, 500).unref()
+  }, 500)
+  rateLimitedCooldownClearTimer.unref()
   const startedAt = Date.now()
   const response = await postChat(baseUrl, scenario.apiKey, 'rate limited cooldown should wait and recover')
   const elapsedMs = Date.now() - startedAt

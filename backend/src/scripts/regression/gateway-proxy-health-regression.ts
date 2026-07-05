@@ -77,9 +77,10 @@ function testProxyUrlBucketMetadataRedaction(): void {
     avoidedProxyKeys: order.avoidedProxyKeys,
     halfOpenBucketKeys: order.halfOpenBucketKeys
   })
-  assert(serialized.includes('proxy-user'), '代理 URL 桶元数据应保留代理用户名')
-  assert(serialized.includes('proxy-pass'), '代理 URL 桶元数据应保留代理密码')
-  assert(serialized.includes('proxy:url:http://proxy-user:proxy-pass@127.0.0.1:18080'), '代理 URL 桶元数据应保留代理 URL 原文')
+  assert(decision.proxyKey?.startsWith('proxy:url:'), '代理 URL 桶元数据应保留代理 URL 桶类型')
+  assert(!serialized.includes('proxy-user'), '代理 URL 桶元数据不应泄露代理用户名')
+  assert(!serialized.includes('proxy-pass'), '代理 URL 桶元数据不应泄露代理密码')
+  assert(!serialized.includes(proxyUrl), '代理 URL 桶元数据不应保留代理 URL 原文')
 
   clearGatewayProxyHealthForTest()
 }

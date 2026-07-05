@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { createRuntimeStateStore } from '../../../shared/runtime-state-store.js'
 import type { RouteStrategySpeedFirstConfig } from '../../../domain/types.js'
 import { preserveGatewayAccountDispatchPriorityTiers } from './account-dispatch-priority-order.js'
-import { gatewayAccountRuntimeKey, type SuppressibleGatewayAccount } from './account-runtime-keys.js'
+import { gatewayAccountRuntimeKey, runtimeAccountIdFromKey, type SuppressibleGatewayAccount } from './account-runtime-keys.js'
 import type { GatewayAccountModelPriority } from '../dispatch/model-filter.js'
 
 export interface NormalRouteLatencyDegradationScope {
@@ -307,6 +307,37 @@ export async function clearNormalRouteLatencyDegradationForRouteStrategyAsync(ro
   for (const key of keys) {
     const state = await loadLatencyState(key)
     if (!state || state.scope.routeStrategyId === normalizedRouteStrategyId) {
+      keysToClear.push(key)
+    }
+  }
+  await Promise.all(keysToClear.map((key) => latencyStateStore.delete(key)))
+  await removeLatencyStateIndexKeys(keysToClear)
+  return keysToClear.length
+}
+
+export async function clearNormalRouteLatencyDegradationForAccountBindingAsync(input: {
+  systemAccountId: string
+  accountId: string
+  groupIds: Array<string | null | undefined>
+}): Promise<number> {
+  const systemAccountId = input.systemAccountId.trim()
+  const accountId = input.accountId.trim()
+  const groupIds = new Set(input.groupIds.map((groupId) => groupId?.trim()).filter((groupId): groupId is string => Boolean(groupId)))
+  if (!systemAccountId || !accountId || groupIds.size === 0) return 0
+  const keys = await loadLatencyStateIndexKeys()
+  if (keys.length === 0) return 0
+  const keysToClear: string[] = []
+  for (const key of keys) {
+    const state = await loadLatencyState(key)
+    if (!state) {
+      keysToClear.push(key)
+      continue
+    }
+    if (
+      state.scope.systemAccountId === systemAccountId
+      && groupIds.has(state.scope.groupId)
+      && (state.accountId === accountId || runtimeAccountIdFromKey(state.runtimeKey) === accountId)
+    ) {
       keysToClear.push(key)
     }
   }

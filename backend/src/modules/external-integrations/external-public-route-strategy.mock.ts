@@ -15,7 +15,8 @@ export function mockPublicRouteStrategyAdd(input: PublicRouteStrategyAddInput): 
     name: normalizedText(input.name) || '公开接口策略路由',
     mode: input.mode ?? 'normal',
     status: input.status ?? 'active',
-    groupBindings: input.groupBindings
+    groupBindings: input.groupBindings,
+    normalRoutingConfig: input.normalRoutingConfig
   }))
 }
 
@@ -25,7 +26,8 @@ export function mockPublicRouteStrategyUpdate(input: PublicRouteStrategyUpdateIn
     name: normalizedText(input.name) || '公开接口策略路由',
     mode: input.mode ?? 'normal',
     status: input.status ?? 'active',
-    groupBindings: input.groupBindings
+    groupBindings: input.groupBindings,
+    normalRoutingConfig: input.normalRoutingConfig
   }))
 }
 
@@ -90,6 +92,7 @@ function mockRouteStrategySummary(input: {
   mode: PublicRouteStrategySummary['mode']
   status: PublicRouteStrategySummary['status']
   groupBindings?: PublicRouteStrategyGroupBindingInput[]
+  normalRoutingConfig?: PublicRouteStrategySummary['normalRoutingConfig'] | null
 }): PublicRouteStrategySummary {
   const now = new Date().toISOString()
   const bindings = input.groupBindings?.length
@@ -101,6 +104,9 @@ function mockRouteStrategySummary(input: {
     mode: input.mode,
     status: input.status,
     isDefault: false,
+    normalRoutingConfig: input.mode === 'normal'
+      ? input.normalRoutingConfig ?? { schedulingPreference: 'cost_first' }
+      : undefined,
     groupBindings: bindings.map((binding, index) => ({
       id: `mock_route_strategy_group_${index + 1}`,
       groupId: normalizedText(binding.groupId) || 'mock_group_public',

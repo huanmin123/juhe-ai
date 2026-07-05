@@ -1,6 +1,7 @@
 import type {
   ApiKeyHybridRoutingConfig,
   RouteStrategyMode,
+  RouteStrategyNormalRoutingConfig,
   RouteStrategyStatus
 } from '../../domain/types.js'
 
@@ -18,6 +19,7 @@ export interface PublicRouteStrategyAddInput {
   mode?: RouteStrategyMode
   status?: RouteStrategyStatus
   groupBindings: PublicRouteStrategyGroupBindingInput[]
+  normalRoutingConfig?: RouteStrategyNormalRoutingConfig | null
   hybridRoutingConfig?: Record<string, unknown> | null
 }
 
@@ -29,6 +31,7 @@ export interface PublicRouteStrategyUpdateInput {
   mode?: RouteStrategyMode
   status?: RouteStrategyStatus
   groupBindings?: PublicRouteStrategyGroupBindingInput[]
+  normalRoutingConfig?: RouteStrategyNormalRoutingConfig | null
   hybridRoutingConfig?: Record<string, unknown> | null
 }
 
@@ -64,6 +67,7 @@ export interface PublicRouteStrategySummary {
   mode: RouteStrategyMode
   status: RouteStrategyStatus
   isDefault: boolean
+  normalRoutingConfig?: RouteStrategyNormalRoutingConfig
   hybridRoutingConfig?: ApiKeyHybridRoutingConfig
   groupBindings: PublicRouteStrategyGroupBindingSummary[]
   apiKeyCount?: number

@@ -191,6 +191,12 @@ assert.doesNotMatch(hybridAffinitySource, /createAppCache/, 'hybrid route affini
 assert.match(functionBody(hybridAffinitySource, 'applyHybridRouteAffinityAsync'), /hybridRouteAffinityStateStore\.getJson[\s\S]*rememberHybridRouteAffinityAsync/, 'Redis hybrid route affinity 必须读取并写入共享状态')
 assert.match(source('modules/gateway/hybrid/routing.service.ts'), /await applyHybridRouteAffinityAsync/, 'hybrid routing 必须等待 Redis affinity 状态')
 
+const normalRouteLatencySource = source('modules/gateway/runtime/normal-route-latency-degradation.service.ts')
+assert.match(normalRouteLatencySource, /createRuntimeStateStore\('gateway-normal-route-latency-degradation'\)/, 'Redis runtime state 下普通路由速度优先降级必须写共享运行态')
+assert.doesNotMatch(normalRouteLatencySource, /createAppCache/, '普通路由速度优先降级不能依赖 createAppCache 作为 performance 事实源')
+assert.match(functionBody(normalRouteLatencySource, 'orderGatewayAccountsByNormalRouteLatencyDegradationAsync'), /await loadLatencyState/, '普通路由速度优先排序必须读取共享降级状态')
+assert.match(source('modules/gateway/dispatch/preparation.ts'), /await orderGatewayAccountsByNormalRouteLatencyDegradationAsync/, '调度准备必须等待普通路由速度优先降级状态')
+
 assertNoPerformanceLocalFactQueues()
 assertRedisRuntimeQueuesAndLimits()
 assertOAuthAndRateLimitRedisBoundaries()
@@ -223,6 +229,7 @@ function assertRuntimeStateStoreCallsites(): void {
       'modules/gateway/hybrid/affinity.service.ts:gateway-hybrid-route-affinity',
       'modules/gateway/runtime/client-ip-account-avoidance.service.ts:gateway-client-ip-account-avoidance',
       'modules/gateway/runtime/client-ip-error-circuit.service.ts:gateway-client-ip-error-circuit',
+      'modules/gateway/runtime/normal-route-latency-degradation.service.ts:gateway-normal-route-latency-degradation',
       'modules/gateway/runtime/proxy-health.service.ts:gateway-upstream-bucket-health',
       'modules/openai-oauth/openai-oauth.service.ts:openai-oauth:sessions',
       'modules/openai-oauth/openai-oauth-access-token-refresh.service.ts:openai-oauth:refresh-locks',

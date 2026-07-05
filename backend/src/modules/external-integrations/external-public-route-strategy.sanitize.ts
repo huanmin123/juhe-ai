@@ -69,6 +69,7 @@ export function sanitizeRouteStrategy(routeStrategy: RouteStrategySummary): Publ
     mode: routeStrategy.mode,
     status: routeStrategy.status,
     isDefault: routeStrategy.isDefault,
+    normalRoutingConfig: routeStrategy.normalRoutingConfig,
     hybridRoutingConfig: routeStrategy.hybridRoutingConfig,
     groupBindings: routeStrategy.groupBindings.map((binding) => ({
       id: binding.id,

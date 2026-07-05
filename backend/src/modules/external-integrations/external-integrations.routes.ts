@@ -1,6 +1,7 @@
 import { Router, type Request } from 'express'
 import { z } from 'zod'
 
+import { normalizeNormalRoutingConfig } from '../../domain/route-strategy.js'
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import type { ExternalIntegrationSourceAuthContext } from '../../storage/external-integration-source-types.js'
@@ -185,6 +186,20 @@ const routeStrategyGroupBindingSchema = z.object({
   status: routeStrategyStatusSchema.optional()
 }).strict()
 const routeStrategyHybridRoutingConfigSchema = z.record(z.string(), z.unknown()).nullable()
+const routeStrategySpeedFirstConfigSchema = z.object({
+  firstByteThresholdMs: z.number().int().min(10000).max(60000).optional(),
+  slowTriggerCount: z.number().int().min(2).max(10).optional(),
+  slowWindowSeconds: z.number().int().min(60).max(600).optional(),
+  recoverySuccessCount: z.number().int().min(3).max(10).optional(),
+  probeIntervalSeconds: z.number().int().min(10).max(300).optional(),
+  degradedTtlSeconds: z.number().int().min(60).max(3600).optional(),
+  retryOnFirstByteTimeout: z.boolean().optional(),
+  maxFirstByteRetriesPerRequest: z.number().int().min(1).max(3).optional()
+}).strict()
+const routeStrategyNormalRoutingConfigSchema = z.object({
+  schedulingPreference: z.enum(['cost_first', 'speed_first']).optional(),
+  speedFirstConfig: routeStrategySpeedFirstConfigSchema.optional()
+}).strict().transform((value) => normalizeNormalRoutingConfig(value)).nullable()
 const routeStrategyAddSchema = z.object({
   targetUsername: z.string().trim().min(2).max(80),
   name: z.string().trim().min(1).max(120),
@@ -192,6 +207,7 @@ const routeStrategyAddSchema = z.object({
   mode: routeStrategyModeSchema.optional(),
   status: routeStrategyStatusSchema.optional(),
   groupBindings: z.array(routeStrategyGroupBindingSchema).min(1).max(20),
+  normalRoutingConfig: routeStrategyNormalRoutingConfigSchema.optional(),
   hybridRoutingConfig: routeStrategyHybridRoutingConfigSchema.optional()
 }).strict()
 const routeStrategyUpdateMutableFields = [
@@ -200,6 +216,7 @@ const routeStrategyUpdateMutableFields = [
   'mode',
   'status',
   'groupBindings',
+  'normalRoutingConfig',
   'hybridRoutingConfig'
 ] as const
 const routeStrategyUpdateSchema = z.object({
@@ -210,6 +227,7 @@ const routeStrategyUpdateSchema = z.object({
   mode: routeStrategyModeSchema.optional(),
   status: routeStrategyStatusSchema.optional(),
   groupBindings: z.array(routeStrategyGroupBindingSchema).min(1).max(20).optional(),
+  normalRoutingConfig: routeStrategyNormalRoutingConfigSchema.optional(),
   hybridRoutingConfig: routeStrategyHybridRoutingConfigSchema.optional()
 }).strict().refine(
   (value) => routeStrategyUpdateMutableFields.some((field) => Object.prototype.hasOwnProperty.call(value, field)),

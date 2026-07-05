@@ -59,6 +59,10 @@ const explicitSystemApiDbAccessRules: readonly SystemApiDbAccessRouteRule[] = [
   { methods: ['GET'], pattern: /^\/system-accounts(?:\/.*)?$/, mode: 'read' },
   { methods: ['GET'], pattern: /^\/my-teams(?:\/.*)?$/, mode: 'read' },
   { methods: ['GET'], pattern: /^\/system-teams(?:\/.*)?$/, mode: 'read' },
+  { methods: ['GET'], pattern: /^\/group\/list\/?$/, mode: 'read' },
+  { methods: ['GET'], pattern: /^\/route-strategy\/list\/?$/, mode: 'read' },
+  { methods: ['GET'], pattern: /^\/api-key\/list\/?$/, mode: 'read' },
+  { methods: ['GET'], pattern: /^\/account\/list\/?$/, mode: 'read' },
   { methods: ['POST'], pattern: /^\/(?:my-)?accounts\/import\/preview\/?$/, mode: 'read' },
   { methods: ['POST'], pattern: /^\/(?:my-)?accounts\/import\/confirm\/?$/, mode: 'write' },
   { methods: ['POST'], pattern: /^\/(?:my-)?accounts\/export\/?$/, mode: 'write' }

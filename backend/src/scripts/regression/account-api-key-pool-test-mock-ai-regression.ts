@@ -50,6 +50,8 @@ interface TestContext {
   mockBaseUrl: string
 }
 
+type AccountTestEndpointMode = 'chat_sse' | 'responses_sse'
+
 const mockState = {
   hitsByKey: new Map<string, number>()
 }
@@ -128,6 +130,20 @@ try {
   assertKeyRuntime(savedDetail, 'ad-a', 'temporary_unavailable', '已保存账户坏 Key A 应进入后台恢复')
   assertKeyRuntime(savedDetail, 'ad-b', 'temporary_unavailable', '已保存账户坏 Key B 应进入后台恢复')
 
+  const responsesAccount = await postEnvelope<AccountSummary>(backendBaseUrl, '/accounts', cookie, accountPayload({
+    name: '已保存 Key 池 Responses 批测账户',
+    apiKeys: ['sk-pool-responses-bad', 'sk-pool-responses-good'],
+    groupId: group.id,
+    mockBaseUrl
+  }))
+  const responsesTask = await submitAccountTest(context, responsesAccount.id, 'responses_sse')
+  const responsesFinished = await waitForTask(context, responsesTask.id)
+  assert.equal(responsesFinished.status, 'success', 'Responses SSE Key 池账户只要至少一个 Key 可用就应测试成功')
+  assert.equal(responsesFinished.result?.testEndpointMode, 'responses_sse', 'Responses SSE Key 池测试应记录实际测试接口形态')
+  assert.equal(responsesFinished.result?.apiKeyPool?.successCount, 1, 'Responses SSE 测试应统计 1 个可用 Key')
+  assert.equal(responsesFinished.result?.apiKeyPool?.failedCount, 1, 'Responses SSE 测试应统计 1 个不可用 Key')
+  assertKeyPoolPreview(responsesFinished.result, 1, 'sk-p', 'good', 'Responses SSE 可用 Key 应返回安全预览')
+
   const draftAccount = accountPayload({
     name: '创建 Key 池批测账户',
     apiKeys: ['sk-pool-create-bad-a', 'sk-pool-create-good', 'sk-pool-create-bad-b'],
@@ -154,6 +170,8 @@ try {
   assert.equal(mockState.hitsByKey.get('pool-saved-bad-a'), 1, '已保存账户坏 Key A 应被测试一次')
   assert.equal(mockState.hitsByKey.get('pool-saved-good'), 1, '已保存账户好 Key 应被测试一次')
   assert.equal(mockState.hitsByKey.get('pool-saved-bad-b'), 1, '已保存账户坏 Key B 应被测试一次')
+  assert.equal(mockState.hitsByKey.get('pool-responses-bad'), 1, 'Responses SSE 坏 Key 应被测试一次')
+  assert.equal(mockState.hitsByKey.get('pool-responses-good'), 1, 'Responses SSE 好 Key 应被测试一次')
   assert.equal(mockState.hitsByKey.get('pool-create-bad-a'), 1, '创建草稿坏 Key A 应被测试一次')
   assert.equal(mockState.hitsByKey.get('pool-create-good'), 1, '创建草稿好 Key 应被测试一次')
   assert.equal(mockState.hitsByKey.get('pool-create-bad-b'), 1, '创建草稿坏 Key B 应被测试一次')
@@ -163,6 +181,7 @@ try {
     backendBaseUrl,
     mockBaseUrl,
     saved: savedFinished.result?.apiKeyPool,
+    responses: responsesFinished.result?.apiKeyPool,
     created: draftFinished.result?.apiKeyPool
   }, null, 2))
 } finally {
@@ -199,16 +218,18 @@ function accountPayload(input: {
   }
 }
 
-async function submitAccountTest(context: TestContext, accountId: string): Promise<AccountTestTask> {
+async function submitAccountTest(context: TestContext, accountId: string, testEndpointMode?: AccountTestEndpointMode): Promise<AccountTestTask> {
   return await postEnvelope<AccountTestTask>(context.backendBaseUrl, `/accounts/${accountId}/test`, context.cookie, {
-    model: 'gpt-5.5'
+    model: 'gpt-5.5',
+    ...(testEndpointMode ? { testEndpointMode } : {})
   })
 }
 
-async function submitDraftAccountTest(context: TestContext, account: ReturnType<typeof accountPayload>): Promise<AccountTestTask> {
+async function submitDraftAccountTest(context: TestContext, account: ReturnType<typeof accountPayload>, testEndpointMode?: AccountTestEndpointMode): Promise<AccountTestTask> {
   return await postEnvelope<AccountTestTask>(context.backendBaseUrl, '/accounts/test-draft', context.cookie, {
     account,
-    model: 'gpt-5.5'
+    model: 'gpt-5.5',
+    ...(testEndpointMode ? { testEndpointMode } : {})
   })
 }
 

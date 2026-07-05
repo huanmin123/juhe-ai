@@ -41,9 +41,11 @@ class FakeDbServiceChild extends EventEmitter {
   readonly pid = 424242
   readonly connected = true
   sentOperationCount = 0
+  private operationQueue = Promise.resolve()
 
   send(message: unknown, callback?: (error?: Error | null) => void): boolean {
-    void this.handleMessage(message, callback)
+    const operation = this.operationQueue.then(() => this.handleMessage(message, callback))
+    this.operationQueue = operation.catch(() => undefined)
     return true
   }
 

@@ -29,8 +29,10 @@ export async function listAccountsPageWithRuntimeStatusFilter(
   const listOptions = normalizeAccountListOptions(options)
   const statusFilters = accountStatusFilterValues(listOptions.status)
   if (!statusFilters.some(statusFilterCanBeChangedByRuntime)) return undefined
-  const serverRuntimeSnapshot = await requestServerAccountRuntimeSnapshot(80).catch(() => undefined)
-  if (!serverRuntimeSnapshot?.accountRuntimeAvailability) return undefined
+  const serverRuntimeSnapshot = await requestServerAccountRuntimeSnapshot(80)
+  if (!serverRuntimeSnapshot?.accountRuntimeAvailability) {
+    throw new Error('运行态账号状态筛选暂不可用，请稍后重试')
+  }
   const runtimeBlockedAccountCount = runtimeBlockedAccountIds(serverRuntimeSnapshot.accountRuntimeAvailability).size
 
   const pageSize = listOptions.pageSize

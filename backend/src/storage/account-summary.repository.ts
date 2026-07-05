@@ -38,7 +38,12 @@ import {
   type RequestQuotaCosts
 } from '../modules/gateway/quota/request-quota-checker.js'
 import { optionalString } from './value-utils.js'
-import { loadAccountApiKeyRuntimeDetailsByAccountIds, loadAccountApiKeyRuntimeSummariesByAccountIds } from './account-api-key-runtime-state.repository.js'
+import {
+  loadAccountApiKeyRuntimeDetailsByAccountIds,
+  loadAccountApiKeyRuntimeDetailsByAccountIdsAsync,
+  loadAccountApiKeyRuntimeSummariesByAccountIds,
+  loadAccountApiKeyRuntimeSummariesByAccountIdsAsync
+} from './account-api-key-runtime-state.repository.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
 export interface AccountListResult {
@@ -728,14 +733,29 @@ async function ownerAccountSummariesFromRowsAsync(
   const includeAccountNames = includeSystemAccountFields(access)
   const timezone = await usageStatsTimezoneAsync()
   const accountUsageScopes = rows.map((row) => usageScope(row.id, row.system_account_id, row.id))
-  const [supportedModelsByAccount, modelMappingsByAccount, tagsByAccount, accountNames, usageByAccount, todayUsageByAccount, currentConcurrencyByAccount] = await Promise.all([
+  const ownerAccountIds = includeCredentials
+    ? rows.filter((row) => (row.access_type ?? 'owner') !== 'authorized').map((row) => row.id)
+    : []
+  const [
+    supportedModelsByAccount,
+    modelMappingsByAccount,
+    tagsByAccount,
+    accountNames,
+    usageByAccount,
+    todayUsageByAccount,
+    currentConcurrencyByAccount,
+    apiKeyRuntimeByAccount,
+    apiKeyRuntimeDetailsByAccount
+  ] = await Promise.all([
     loadSupportedModelsByAccountIdsAsync(accountIds),
     loadModelMappingsByAccountIdsAsync(accountIds),
     loadAccountTagsByAccountIdsAsync(accountIds),
     loadAccountSummarySystemAccountNamesAsync(client, includeAccountNames ? rows.map((row) => row.system_account_id) : []),
     loadAccountUsageSummariesForScopesAsync(accountUsageScopes),
     loadAccountUsageSummariesForScopesAsync(accountUsageScopes, todayDateKey(timezone)),
-    loadAccountCurrentConcurrencyByIdsAsync(accountIds)
+    loadAccountCurrentConcurrencyByIdsAsync(accountIds),
+    loadAccountApiKeyRuntimeSummariesByAccountIdsAsync(accountIds),
+    loadAccountApiKeyRuntimeDetailsByAccountIdsAsync(ownerAccountIds)
   ])
 
   return rows.map((row) => {
@@ -789,6 +809,8 @@ async function ownerAccountSummariesFromRowsAsync(
       lastHealthCheckStatusCode: optionalNumber(row.last_health_check_status_code),
       lastHealthCheckErrorCode: row.last_health_check_error_code ?? undefined,
       lastHealthCheckErrorMessage: row.last_health_check_error_message ?? undefined,
+      apiKeyRuntime: apiKeyRuntimeByAccount.get(row.id),
+      apiKeyRuntimeDetails: apiKeyRuntimeDetailsByAccount.get(row.id),
       streamFailureCount: Math.max(0, Number(row.stream_failure_count ?? 0)),
       streamFailureWindowStartedAt: row.stream_failure_window_started_at ?? undefined,
       lastUsedAt: row.last_used_at ?? undefined,

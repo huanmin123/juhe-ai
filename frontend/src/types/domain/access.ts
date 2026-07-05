@@ -120,6 +120,7 @@ export interface RouteStrategyListItem {
   mode: RouteStrategyMode
   status: RouteStrategyStatus
   isDefault: boolean
+  normalRoutingConfig?: RouteStrategyNormalRoutingConfig
   groupBindingPreview: RouteStrategyGroupBindingPreview[]
   bindingCount: number
   apiKeyCount?: number

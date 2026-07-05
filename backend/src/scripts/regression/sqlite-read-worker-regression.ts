@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert'
 import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
@@ -485,7 +486,19 @@ try {
     databaseModule.closeStorageDatabases()
   } catch {
   }
-  rmSync(tempRoot, { recursive: true, force: true })
+  await removeTempRoot()
+}
+
+async function removeTempRoot(): Promise<void> {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      rmSync(tempRoot, { recursive: true, force: true })
+      return
+    } catch (error) {
+      if (attempt === 4) throw error
+      await delay(100 * (attempt + 1))
+    }
+  }
 }
 
 function seedAccountUsage(accountId: string): void {

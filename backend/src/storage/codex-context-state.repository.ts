@@ -280,7 +280,6 @@ export function readCodexContextResponseStateChain(input: {
     }
   }
   const orderedRows = rows.reverse()
-  touchCodexContextResponseChain(orderedRows, now, input.refreshExpiresAt ?? now)
   return {
     outcome: 'found',
     sessionId: orderedRows[0]?.sessionId ?? responseId,
@@ -306,7 +305,6 @@ export function readCodexContextCompactState(input: {
   if (!matchesBoundary(mapped, input.boundary)) {
     return { outcome: 'boundary_mismatch', compactId, sessionId: mapped.sessionId }
   }
-  touchCodexContextCompact(mapped, now, input.refreshExpiresAt ?? now)
   return { outcome: 'found', compact: mapped }
 }
 
@@ -664,20 +662,6 @@ function upsertCodexContextSessionBatch(inputs: CodexContextSessionUpsertInput[]
       }
     }, database)
   }
-}
-
-function touchCodexContextResponseChain(rows: CodexContextResponseStateIndex[], now: string, refreshExpiresAt: string): void {
-  if (rows.length === 0) return
-  const sessionId = rows[0]?.sessionId
-  if (sessionId) {
-    touchCodexContextSessionState(sessionId, now, refreshExpiresAt)
-  }
-  touchCodexContextResponseStateRows(rows.map((row) => row.responseId), now, refreshExpiresAt)
-}
-
-function touchCodexContextCompact(row: CodexContextCompactStateIndex, now: string, refreshExpiresAt: string): void {
-  touchCodexContextCompactStateRow(row.compactId, now, refreshExpiresAt)
-  touchCodexContextSessionState(row.sessionId, now, refreshExpiresAt)
 }
 
 async function touchCodexContextResponseChainAsync(client: DatabaseClient, rows: CodexContextResponseStateIndex[], now: string, refreshExpiresAt: string): Promise<void> {
