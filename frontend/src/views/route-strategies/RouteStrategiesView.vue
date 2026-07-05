@@ -213,8 +213,8 @@
             </a-form-item>
           </div>
           <div v-if="form.normal.schedulingPreference === 'speed_first'" class="hybrid-config-grid">
-            <a-form-item label="首字观察阈值" required tooltip="超过阈值先记录慢样本；达到触发次数确认慢后，才会在安全窗口切换账号。">
-              <a-input-number v-model:value="form.normal.speedFirstConfig.firstByteThresholdMs" :min="10000" :max="60000" addon-after="ms" />
+            <a-form-item label="首字观察阈值" required tooltip="按秒配置；超过阈值先记录慢样本，达到触发次数确认慢后，才会在安全窗口切换账号。">
+              <a-input-number v-model:value="form.normal.speedFirstConfig.firstByteThresholdSeconds" :min="10" :max="60" :precision="0" addon-after="秒" />
             </a-form-item>
             <a-form-item label="慢速触发次数" required tooltip="窗口期内达到这个慢速次数后，账号进入速度降级。">
               <a-input-number v-model:value="form.normal.speedFirstConfig.slowTriggerCount" :min="2" :max="10" addon-after="次" />
@@ -557,7 +557,11 @@ interface HybridRoutingForm {
 
 interface NormalRoutingForm {
   schedulingPreference: RouteStrategyNormalSchedulingPreference
-  speedFirstConfig: RouteStrategySpeedFirstConfig
+  speedFirstConfig: SpeedFirstConfigForm
+}
+
+interface SpeedFirstConfigForm extends Omit<RouteStrategySpeedFirstConfig, 'firstByteThresholdMs'> {
+  firstByteThresholdSeconds: number
 }
 
 const routeStrategiesPageSize = 20
@@ -1383,9 +1387,9 @@ function defaultNormalRoutingForm(): NormalRoutingForm {
   }
 }
 
-function defaultSpeedFirstConfigForm(): RouteStrategySpeedFirstConfig {
+function defaultSpeedFirstConfigForm(): SpeedFirstConfigForm {
   return {
-    firstByteThresholdMs: 30000,
+    firstByteThresholdSeconds: 30,
     slowTriggerCount: 3,
     slowWindowSeconds: 120,
     recoverySuccessCount: 3,
@@ -1398,12 +1402,23 @@ function defaultSpeedFirstConfigForm(): RouteStrategySpeedFirstConfig {
 function normalRoutingFormFromConfig(config?: RouteStrategyNormalRoutingConfig): NormalRoutingForm {
   const fallback = defaultNormalRoutingForm()
   if (!config) return fallback
+  const speedFirstConfig = speedFirstConfigFormFromConfig(config.speedFirstConfig)
   return {
     schedulingPreference: config.schedulingPreference ?? fallback.schedulingPreference,
-    speedFirstConfig: {
-      ...fallback.speedFirstConfig,
-      ...(config.speedFirstConfig ?? {})
-    }
+    speedFirstConfig
+  }
+}
+
+function speedFirstConfigFormFromConfig(config?: RouteStrategySpeedFirstConfig): SpeedFirstConfigForm {
+  const fallback = defaultSpeedFirstConfigForm()
+  return {
+    firstByteThresholdSeconds: millisecondsToSeconds(config?.firstByteThresholdMs, fallback.firstByteThresholdSeconds),
+    slowTriggerCount: config?.slowTriggerCount ?? fallback.slowTriggerCount,
+    slowWindowSeconds: config?.slowWindowSeconds ?? fallback.slowWindowSeconds,
+    recoverySuccessCount: config?.recoverySuccessCount ?? fallback.recoverySuccessCount,
+    probeIntervalSeconds: config?.probeIntervalSeconds ?? fallback.probeIntervalSeconds,
+    degradedTtlSeconds: config?.degradedTtlSeconds ?? fallback.degradedTtlSeconds,
+    maxFirstByteRetriesPerRequest: config?.maxFirstByteRetriesPerRequest ?? fallback.maxFirstByteRetriesPerRequest
   }
 }
 
@@ -1415,7 +1430,7 @@ function buildNormalRoutingConfigPayload(): RouteStrategyNormalRoutingConfig {
   return {
     schedulingPreference: 'speed_first',
     speedFirstConfig: {
-      firstByteThresholdMs: boundedInteger(speedFirstConfig.firstByteThresholdMs, 10000, 60000),
+      firstByteThresholdMs: secondsToMilliseconds(speedFirstConfig.firstByteThresholdSeconds),
       slowTriggerCount: boundedInteger(speedFirstConfig.slowTriggerCount, 2, 10),
       slowWindowSeconds: boundedInteger(speedFirstConfig.slowWindowSeconds, 60, 600),
       recoverySuccessCount: boundedInteger(speedFirstConfig.recoverySuccessCount, 3, 10),
@@ -1424,6 +1439,16 @@ function buildNormalRoutingConfigPayload(): RouteStrategyNormalRoutingConfig {
       maxFirstByteRetriesPerRequest: boundedInteger(speedFirstConfig.maxFirstByteRetriesPerRequest, 1, 3)
     }
   }
+}
+
+function millisecondsToSeconds(value: unknown, fallback: number): number {
+  const numeric = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(numeric) || numeric <= 0) return fallback
+  return boundedInteger(Math.ceil(numeric / 1000), 10, 60)
+}
+
+function secondsToMilliseconds(value: unknown): number {
+  return boundedInteger(value, 10, 60) * 1000
 }
 
 function defaultHybridRoutingForm(): HybridRoutingForm {
