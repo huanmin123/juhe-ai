@@ -27,7 +27,7 @@
 | --- | --- | --- | --- | --- |
 | `normal` | 无运行态 / `accounts.status = active` | 正常调度 | 账号创建、测试成功、探针恢复、运行态清理 | 无需恢复 |
 | `failure_observed` | Web 进程运行态样本 | 不影响排序 | 真实请求命中上游后失败 | 成功信号清理；观察窗口过期清理；后台探针成功清理 |
-| `latency_degraded` | Web / Redis 短 TTL 运行态 | 速度优先普通路由下普通候选优先，首字慢账号兜底 | 普通路由速度优先下首字慢样本达到阈值 | 后台探针连续达标清理；真实请求首字连续达标清理；TTL 过期清理 |
+| `latency_degraded` | Web / Redis 短 TTL 运行态 | 速度优先普通路由下未降级硬可承接候选优先，首字慢账号兜底；有效期内可临时覆盖账户偏好 | 普通路由速度优先下首字慢样本达到阈值 | 后台探针连续达标清理；真实请求首字连续达标清理；TTL 过期清理 |
 | `local_suppressed` | Web 进程短 TTL 运行态 | 暂不选中该账号 | 真实请求失败后立即止血 | TTL 到期由后台探针验证；探针成功清理；窗口过期且无新失败清理 |
 | `runtime_degraded` | Web 进程运行态快照 | 普通候选优先，降级账号兜底 | 后台探针确认近期不稳 | 后台探针连续成功清理；真实完整成功可清理；观察窗口无新失败清理；手动恢复清理 |
 | `precheck_pending` | Web 进程运行态快照 / 后台探针队列 | 暂不作为普通候选 | 达到确认条件后由后台探针接管 | 探针成功清理；探针失败且并发归零后写持久态；探针异常按退避重试 |
@@ -35,7 +35,7 @@
 | `rate_limited` | `accounts.status` / `cooldown_until` | 不参与调度 | 账户错误策略或探针确认限流 | 后台慢速复测成功恢复；手动测试成功恢复；手动恢复清理 |
 | `error` | `accounts.status = error` | 不参与调度 | 明确硬异常，例如凭据无效、OAuth 刷新连续失败 | 可自动恢复的异常由对应后台任务恢复；不可自动恢复的异常需要用户修配置或手动恢复 |
 
-`failure_observed` 是内部观察态，不作为前端状态标签展示；`latency_degraded` 只表示当前普通路由速度优先偏好下近期首字慢，不表示账号不可用，也不能升级为持久账号状态。账户页只展示会影响调度或需要排障的 `latency_degraded`、`runtime_degraded`、`local_suppressed`、`precheck_pending`、`precheck_failed` 和持久状态。
+`failure_observed` 是内部观察态，不作为前端状态标签展示；`latency_degraded` 只表示当前普通路由速度优先偏好下近期首字慢，不表示账号不可用，也不能升级为持久账号状态。它是路由策略目标对账户偏好的短 TTL 覆盖层，不改写超级优先、账号优先级、备用层、会话亲和或质量排序；恢复清理后，后续请求必须重新回到账户配置排序。账户页只展示会影响调度或需要排障的 `latency_degraded`、`runtime_degraded`、`local_suppressed`、`precheck_pending`、`precheck_failed` 和持久状态。
 
 ## 失败采样规则
 
@@ -75,7 +75,10 @@
 - 采样来源是已经真实进入上游账号调用链路的首字等待。流式请求按首个可见语义输出计算，SSE comment、空心跳和未完成语义事件不算达标；非流式请求按上游 `2xx` 后首个 body 字节计算。
 - 采样键必须带当前调用方和路由上下文，建议为 `systemAccountId + routeStrategyId + groupId + accountRuntimeKey`。不同路由策略的速度偏好不能互相污染。
 - 窗口内连续慢样本达到策略配置后进入 `latency_degraded`。快样本只清理首字慢连续计数，不清理普通失败样本。
-- `latency_degraded` 账号仍可兜底调度；所有候选都处于 `latency_degraded` 时应旁路该排序，避免保护机制筛空号池。
+- `latency_degraded` 有效期内，速度优先可以把未降级且硬可承接的同分组账号排到前面，即使被后置账号拥有超级优先、更高账号优先级、主池身份或会话亲和。
+- `latency_degraded` 只覆盖账户偏好，不覆盖硬约束；候选仍必须满足账户状态、授权、时间计划、模型能力、协议能力、额度、账号硬并发、分组队列和本地不可调度过滤。
+- `latency_degraded` 账号仍可兜底调度；所有硬可承接候选都处于 `latency_degraded` 时应旁路该排序，保留原账户顺序，避免保护机制筛空号池。
+- 后台探针或真实请求连续首字达标清理 `latency_degraded` 后，后续选号立即回到账户配置排序，避免恢复账号饿死或替补账号被长期耗尽额度。
 - 首字慢不是账号故障。只有真实上游错误、响应中断、探针确认失败或账户错误处理策略命中，才进入 `failure_observed`、`local_suppressed`、`runtime_degraded` 或持久冷却链路。
 
 ## 后台探针分层
@@ -306,7 +309,8 @@ performance 模式默认可能有多个 server 节点，同一账号的运行态
 
 - 单账号高并发多 IP 同一波失败只进入短暂避让，不进入 `runtime_degraded` 或持久状态。
 - 普通路由速度优先下，首字慢只进入 `latency_degraded`，不写账号 `temporary_unavailable`、`rate_limited`、`error` 或健康检测失败次数。
-- `latency_degraded` 账号在同普通路由分组内后置，全部候选都速度降级时旁路排序并保留原候选顺序。
+- `latency_degraded` 账号在同普通路由分组内后置，未降级硬可承接账号可临时越过账户超级优先、账号优先级、备用层和会话亲和；全部候选都速度降级时旁路排序并保留原候选顺序。
+- `latency_degraded` 恢复清理后，后续请求重新按账户配置排序，已恢复的主账号不会因为之前切到替补账号而长期饿死。
 - 首字超阈值且下游尚未写出可见内容时，可按策略限制切换同分组后续账号；下游已写出可见内容后不得透明切号。
 - 关闭速度优先或修改路由策略后，对应 `latency_degraded` 运行态必须清理。
 - 后台探针成功能清理 `failure_observed`、`latency_degraded`、`local_suppressed`、`runtime_degraded` 和 `precheck_pending`。

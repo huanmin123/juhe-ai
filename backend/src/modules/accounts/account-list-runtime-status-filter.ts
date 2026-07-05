@@ -4,8 +4,12 @@ import type { AccessScope } from '../../storage/access-scope.js'
 import { accountStatusFilterValues, normalizeAccountListOptions, type AccountListOptions } from '../../storage/account-list-options.js'
 import { pagedTotalUpperBound } from '../../storage/query-utils.js'
 import { listAccountsPageAsync, type AccountListResult } from '../../storage/repositories.js'
-import { requestServerAccountRuntimeSnapshot } from '../db-service/db-service-ipc.js'
-import { applyServerAccountConcurrencyToAccountList, type AccountRuntimeSnapshotStatus } from '../gateway/runtime/runtime-snapshot.service.js'
+import {
+  applyServerAccountConcurrencyToAccountList,
+  peekServerAccountRuntimeAvailabilitySnapshot,
+  type AccountRuntimeAvailabilitySnapshot,
+  type AccountRuntimeSnapshotStatus
+} from '../gateway/runtime/runtime-snapshot.service.js'
 
 export async function applyAccountListRuntimeStatusFilter(
   access: AccessScope | undefined,
@@ -29,12 +33,13 @@ export async function listAccountsPageWithRuntimeStatusFilter(
   const listOptions = normalizeAccountListOptions(options)
   const statusFilters = accountStatusFilterValues(listOptions.status)
   if (!statusFilters.some(statusFilterCanBeChangedByRuntime)) return undefined
-  const serverRuntimeSnapshot = await requestServerAccountRuntimeSnapshot(80)
-  if (!serverRuntimeSnapshot?.accountRuntimeAvailability) return undefined
-  const runtimeBlockedAccountCount = runtimeBlockedAccountIds(serverRuntimeSnapshot.accountRuntimeAvailability).size
+  const runtimeAvailability = peekServerAccountRuntimeAvailabilitySnapshot()
+  if (!runtimeAvailability) return undefined
+  const runtimeBlockedAccountCount = runtimeBlockedAccountIds(runtimeAvailability).size
+  if (runtimeBlockedAccountCount === 0) return undefined
 
   const pageSize = listOptions.pageSize
-  const sourcePageSize = Math.max(pageSize, Math.min(500, pageSize * 4))
+  const sourcePageSize = Math.min(500, Math.max(pageSize, pageSize + runtimeBlockedAccountCount + 1))
   const skipTarget = (listOptions.page - 1) * pageSize
   const maxSourcePages = Math.max(1, Math.ceil((skipTarget + pageSize + runtimeBlockedAccountCount + 1) / sourcePageSize) + 1)
   const output: AccountSummary[] = []
@@ -97,7 +102,7 @@ function runtimeStatusFilterSourceStatus(statusFilters: string[]): string | unde
   return statuses.size > 0 ? [...statuses].join(',') : undefined
 }
 
-function runtimeBlockedAccountIds(runtimeAvailability: Record<string, { status?: string }> | undefined): Set<string> {
+function runtimeBlockedAccountIds(runtimeAvailability: AccountRuntimeAvailabilitySnapshot | undefined): Set<string> {
   const output = new Set<string>()
   if (!runtimeAvailability) return output
   for (const [runtimeKey, runtime] of Object.entries(runtimeAvailability)) {

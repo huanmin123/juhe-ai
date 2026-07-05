@@ -75,6 +75,7 @@ const auditPayloadDefaultReadLimitBytes = 256 * 1024
 const auditPayloadMaxReadLimitBytes = 1024 * 1024
 const auditBlobCompressionMaxBytes = auditPayloadMaxReadLimitBytes
 const auditBlobCleanupDeleteConcurrency = 64
+const postgresAuditPayloadBlobMetadataDeleteSubBatchLimit = 100
 const gzipAsync = promisify(gzip)
 
 export function prepareAuditPayloadBlob(
@@ -369,6 +370,7 @@ export async function readAuditPayloadBlobWindow(
   blobId: string | undefined,
   options: { offset?: number; limit?: number }
 ): Promise<AuditPayloadBlobWindow> {
+  assertAuditPayloadBlobSqliteOnly('readAuditPayloadBlobWindow')
   const offset = normalizePayloadReadOffset(options.offset)
   const limit = normalizePayloadReadLimit(options.limit)
   if (!blobId) {
@@ -398,6 +400,12 @@ export async function readAuditPayloadBlobWindow(
   }
 }
 
+function assertAuditPayloadBlobSqliteOnly(operation: string): void {
+  if (runtimeConfig.databaseDriver !== 'sqlite') {
+    throw new Error(`${operation} 仅支持 SQLite 本地读取；PostgreSQL 模式必须使用对应的 WithClient async driver 路径`)
+  }
+}
+
 async function cleanupUnreferencedAuditPayloadBlobsPostgresAsync(limit = 1000): Promise<number> {
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const rows = await listUnreferencedAuditPayloadBlobRowsAsync(client, limit)
@@ -405,8 +413,7 @@ async function cleanupUnreferencedAuditPayloadBlobsPostgresAsync(limit = 1000): 
 
   const ids = rows.map((row) => String(row.id)).filter(Boolean)
   await deleteBlobFilesAsync(rows.map((row) => optionalString(row.storage_key)))
-  const result = await client.execute('DELETE FROM juhe_dataset.audit_payload_blobs WHERE id = ANY(?::text[])', [ids])
-  return Number(result.changes ?? 0)
+  return deleteAuditPayloadBlobMetadataRowsPostgresAsync(client, ids)
 }
 
 async function cleanupUnreferencedAuditPayloadBlobsByIdsPostgresAsync(blobIds: string[], limit = 1000): Promise<number> {
@@ -416,8 +423,7 @@ async function cleanupUnreferencedAuditPayloadBlobsByIdsPostgresAsync(blobIds: s
 
   const ids = rows.map((row) => String(row.id)).filter(Boolean)
   await deleteBlobFilesAsync(rows.map((row) => optionalString(row.storage_key)))
-  const result = await client.execute('DELETE FROM juhe_dataset.audit_payload_blobs WHERE id = ANY(?::text[])', [ids])
-  return Number(result.changes ?? 0)
+  return deleteAuditPayloadBlobMetadataRowsPostgresAsync(client, ids)
 }
 
 async function cleanupAuditPayloadBlobsBeforePostgresAsync(cutoffCreatedAt: string, limit = 1000): Promise<AuditPayloadBlobCleanupResult> {
@@ -432,11 +438,20 @@ async function cleanupAuditPayloadBlobsBeforePostgresAsync(cutoffCreatedAt: stri
 
   const ids = rows.map((row) => String(row.id)).filter(Boolean)
   const deletedFiles = await deleteBlobFilesAsync(rows.map((row) => optionalString(row.storage_key)))
-  const result = await client.execute('DELETE FROM juhe_dataset.audit_payload_blobs WHERE id = ANY(?::text[])', [ids])
+  const deletedRows = await deleteAuditPayloadBlobMetadataRowsPostgresAsync(client, ids)
   return {
-    deletedRows: Number(result.changes ?? 0),
+    deletedRows,
     deletedFiles
   }
+}
+
+async function deleteAuditPayloadBlobMetadataRowsPostgresAsync(client: DatabaseClient, blobIds: string[]): Promise<number> {
+  let deleted = 0
+  for (const chunk of chunkAuditPayloadBlobIds(blobIds, postgresAuditPayloadBlobMetadataDeleteSubBatchLimit)) {
+    deleted += Number((await client.execute('DELETE FROM juhe_dataset.audit_payload_blobs WHERE id = ANY(?::text[])', [chunk])).changes ?? 0)
+    await yieldToEventLoop()
+  }
+  return deleted
 }
 
 export async function readAuditPayloadBlobWindowWithClient(
@@ -826,6 +841,20 @@ function normalizePayloadReadLimit(value: unknown): number {
 
 function uniqueAuditPayloadBlobIds(blobIds: string[]): string[] {
   return [...new Set(blobIds.map((id) => id.trim()).filter(Boolean))]
+}
+
+function chunkAuditPayloadBlobIds(blobIds: string[], size: number): string[][] {
+  const ids = uniqueAuditPayloadBlobIds(blobIds)
+  const chunkSize = Math.max(1, Math.trunc(size))
+  const chunks: string[][] = []
+  for (let offset = 0; offset < ids.length; offset += chunkSize) {
+    chunks.push(ids.slice(offset, offset + chunkSize))
+  }
+  return chunks
+}
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve))
 }
 
 function emptyPayloadBlobWindow(

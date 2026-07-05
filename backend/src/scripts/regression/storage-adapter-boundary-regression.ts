@@ -35,6 +35,11 @@ const inventoryPatterns: InventoryPattern[] = [
     pattern: /\bcreateSqliteDatabaseClient\s*\(/
   },
   {
+    id: 'sqlite_transaction',
+    description: 'SQLite synchronous transaction helper',
+    pattern: /\brunInDatabaseTransaction\s*\(/
+  },
+  {
     id: 'postgres_pool_or_client',
     description: 'PostgreSQL pool/client adapter access',
     pattern: /\b(?:getPostgresPool|createPostgresDatabaseClient)\s*\(/
@@ -91,9 +96,12 @@ for (const requiredFile of requiredFiles) {
 assert.equal(unclassifiedHits.length, 0, `存在未分类的存储直接调用点：${JSON.stringify(unclassifiedHits.slice(0, 10), null, 2)}`)
 assertNoRuntimeNodeSqliteValueImports(sourceFiles)
 assertNoUnexpectedRawDriverImports(sourceFiles)
+assertNoUnexpectedRuntimeSqliteDirectAccess(hits)
+assertNoHttpRouteSqliteSyncImports(sourceFiles)
 assertStorageRuntimeSkeletonBoundary()
 assertGatewayRuntimeCachePostgresWorkerBoundary()
 assertGroupSummaryAsyncTimezoneBoundary()
+assertSqliteOnlyAsyncHelperGuards()
 
 const summary: Record<string, unknown> = {
   message: 'storage-adapter-boundary-regression passed',
@@ -250,6 +258,59 @@ function assertNoUnexpectedRawDriverImports(files: string[]): void {
   assert.deepEqual(offenders, [], '运行态源码不能绕过 shared/redis-client.ts 或 storage/postgres-client.ts 直接加载 pg / redis 驱动')
 }
 
+function assertNoUnexpectedRuntimeSqliteDirectAccess(inventoryHits: InventoryHit[]): void {
+  const allowed: Record<string, RegExp[]> = {
+    'db-service.ts': [/\bgetBusinessDatabase\(\)/],
+    'worker.ts': [/\bgetDatasetDatabase\(\)/, /\bgetUsageCatalogDatabase\(\)/],
+    'modules/external-integrations/external-public-account-push.service.ts': [/\bgetBusinessDatabase\(\)/, /\brunInDatabaseTransaction\s*\(/],
+    'modules/operation-logs/operation-log.service.ts': [/\brunInDatabaseTransaction\s*\(/],
+    'modules/background/background-stats-writer.ts': [/\bgetStatsDatabase\(\)/],
+    'modules/background/data-retention-cleanup.service.ts': [/\bgetDatasetDatabase\(\)/],
+    'modules/stats/mock-background-runtime.ts': [/\bget(?:Business|Dataset|Stats)Database\(\)/],
+    'modules/gateway/quota/api-key-quota.service.ts': [/\bgetStatsDatabase\(\)/],
+    'modules/gateway/quota/authorization-quota.service.ts': [/\bget(?:Business|Stats)Database\(\)/]
+  }
+  const runtimeAreas = new Set(['entrypoint', 'db-service', 'modules', 'gateway', 'background'])
+  const offenders = inventoryHits
+    .filter((hit) => runtimeAreas.has(hit.area))
+    .filter((hit) => hit.patternId === 'sqlite_handle' || hit.patternId === 'sqlite_client' || hit.patternId === 'sqlite_transaction')
+    .filter((hit) => !(allowed[hit.file] ?? []).some((pattern) => pattern.test(hit.text)))
+    .map(({ file, line, patternId, text }) => ({ file, line, patternId, text }))
+  assert.deepEqual(
+    offenders,
+    [],
+    '运行态非 storage 基础设施不得新增 SQLite getter/client 直连；确需 SQLite-only 分支必须在此回归中显式分类'
+  )
+}
+
+function assertNoHttpRouteSqliteSyncImports(files: string[]): void {
+  const forbiddenImportNames = [
+    'getBusinessDatabase',
+    'getDatasetDatabase',
+    'getUsageCatalogDatabase',
+    'getStatsDatabase',
+    'getCodexContextStateShardDatabase',
+    'runInDatabaseTransaction'
+  ]
+  const offenders: Array<{ file: string; line: number; text: string }> = []
+  for (const filePath of files) {
+    const relativePath = slash(relative(srcRoot, filePath))
+    if (!relativePath.startsWith('modules/') || !relativePath.endsWith('.routes.ts')) continue
+    const source = readFileSync(filePath, 'utf8')
+    for (const match of source.matchAll(/import\s*\{([\s\S]*?)\}\s*from ['"][^'"]*storage\/database\.js['"]/g)) {
+      const importedNames = match[1]
+      const forbidden = forbiddenImportNames.filter((name) => new RegExp(`\\b${name}\\b`).test(importedNames))
+      if (!forbidden.length) continue
+      offenders.push({
+        file: relativePath,
+        line: lineNumberAt(source, match.index ?? 0),
+        text: forbidden.join(', ')
+      })
+    }
+  }
+  assert.deepEqual(offenders, [], 'HTTP routes 不得直接导入 SQLite getter 或同步事务 helper；PG 路径必须走 async repository / DB service')
+}
+
 function assertStorageRuntimeSkeletonBoundary(): void {
   const runtimeFiles = requiredFiles
     .filter((filePath) => filePath.startsWith('backend/src/storage/runtime/'))
@@ -339,6 +400,53 @@ function assertGroupSummaryAsyncTimezoneBoundary(): void {
   assert.doesNotMatch(asyncFunction, /\busageStatsTimezone\(\)/, 'PG 分组汇总 async 路径不能调用同步时区配置，避免回退 SQLite')
 }
 
+function assertSqliteOnlyAsyncHelperGuards(): void {
+  const guardedHelpers: Array<[string, string, string]> = [
+    ['storage/audit-log-read.repository.ts', 'getAuditLogPayloadReadOnly', 'getAuditLogPayload 的 async driver 路径'],
+    ['storage/audit-log-payload-blobs.ts', 'readAuditPayloadBlobWindow', 'WithClient async driver 路径'],
+    ['storage/group-account-stats-cache.repository.ts', 'refreshDirtyGroupAccountStatsCacheWithWriter', 'refreshDirtyGroupAccountStatsCacheAsync'],
+    ['storage/external-integration-source-auth.repository.ts', 'flushExternalIntegrationSourceLastUsedTouchesForTest', 'PostgreSQL 测试必须使用 async driver']
+  ]
+  for (const [relativePath, functionName, messageToken] of guardedHelpers) {
+    const source = readFileSync(resolve(srcRoot, relativePath), 'utf8')
+    const body = functionBody(source, functionName)
+    assert.ok(
+      /runtimeConfig\.databaseDriver !== 'sqlite'/.test(body) || /\bassert\w*SqliteOnly\(/.test(body),
+      `${relativePath}:${functionName} 必须显式拒绝 PG 误用`
+    )
+    assert.match(source, /runtimeConfig\.databaseDriver !== 'sqlite'/, `${relativePath}:${functionName} 必须保留 SQLite-only driver guard`)
+    assert.ok(source.includes(messageToken), `${relativePath}:${functionName} PG guard 错误信息必须指出正确 async 路径`)
+  }
+}
+
+function functionBody(sourceText: string, functionName: string): string {
+  const start = sourceText.indexOf(`function ${functionName}`)
+  assert.ok(start >= 0, `缺少函数 ${functionName}`)
+  const openBrace = functionBodyOpenBrace(sourceText, start)
+  assert.ok(openBrace >= 0, `函数 ${functionName} 缺少函数体`)
+  let depth = 0
+  for (let index = openBrace; index < sourceText.length; index += 1) {
+    const char = sourceText[index]
+    if (char === '{') depth += 1
+    if (char === '}') {
+      depth -= 1
+      if (depth === 0) return sourceText.slice(openBrace, index + 1)
+    }
+  }
+  throw new Error(`函数 ${functionName} 函数体解析失败`)
+}
+
+function functionBodyOpenBrace(sourceText: string, start: number): number {
+  let parenDepth = 0
+  for (let index = start; index < sourceText.length; index += 1) {
+    const char = sourceText[index]
+    if (char === '(') parenDepth += 1
+    if (char === ')') parenDepth = Math.max(0, parenDepth - 1)
+    if (char === '{' && parenDepth === 0) return index
+  }
+  return -1
+}
+
 function countBy<T>(items: T[], key: (item: T) => string): Record<string, number> {
   const counts: Record<string, number> = {}
   for (const item of items) {
@@ -358,4 +466,8 @@ function topEntries(counts: Record<string, number>, limit: number): Record<strin
 
 function slash(path: string): string {
   return path.replace(/\\/g, '/')
+}
+
+function lineNumberAt(sourceText: string, offset: number): number {
+  return sourceText.slice(0, Math.max(0, offset)).split(/\r?\n/).length
 }

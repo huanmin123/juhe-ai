@@ -11,9 +11,9 @@ export interface AuditHotRetentionCleanupResult {
 }
 
 const hourMs = 60 * 60 * 1000
-const auditHotRetentionCleanupBatchSize = 2000
-const auditHotRetentionCleanupMaxBatches = 20
-const auditHotRetentionCleanupMaxRunMs = 5000
+const auditHotRetentionCleanupBatchSize = 100
+const auditHotRetentionCleanupMaxBatches = 1
+const auditHotRetentionCleanupMaxRunMs = 3000
 let auditHotRetentionCleanupRunning = false
 
 export async function cleanupExpiredAuditHotRetentionData(nowMs = Date.now()): Promise<AuditHotRetentionCleanupResult> {

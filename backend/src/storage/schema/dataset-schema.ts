@@ -416,6 +416,8 @@ export function applyDatasetSchema(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_audit_payload_refs_log_sequence ON audit_payload_refs(audit_log_id, sequence_index);
 
+    CREATE INDEX IF NOT EXISTS idx_audit_payload_refs_attempt ON audit_payload_refs(attempt_id) WHERE attempt_id IS NOT NULL;
+
     CREATE INDEX IF NOT EXISTS idx_audit_payload_refs_headers_blob ON audit_payload_refs(headers_blob_id);
 
     CREATE INDEX IF NOT EXISTS idx_audit_payload_refs_body_blob ON audit_payload_refs(body_blob_id);

@@ -58,12 +58,14 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   const app = express()
   const { systemApiPrefix } = options
   const publicApiPrefix = options.publicApiPrefix ?? '/__aipublic__'
+  app.set('etag', false)
   if (options.trustProxy !== undefined) {
     app.set('trust proxy', options.trustProxy)
   }
 
   app.use(requestContextMiddleware)
   app.use(createHttpCompressionMiddleware())
+  app.use(systemApiPrefix, noStoreSystemApiResponse)
   app.use(systemApiPrefix, systemApiIpRateLimit)
   app.use(systemApiPrefix, express.json({ limit: systemApiJsonBodyLimit }), handleJsonBodyError)
   app.use(systemApiPrefix, systemApiDbAccessModeMiddleware(systemApiPrefix))
@@ -135,6 +137,11 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(handleSystemApiError)
 
   return app
+}
+
+function noStoreSystemApiResponse(_req: Request, res: Response, next: NextFunction): void {
+  res.setHeader('Cache-Control', 'no-store')
+  next()
 }
 
 function handleJsonBodyError(error: BodyParserError, req: Request, res: Response, next: NextFunction): void {

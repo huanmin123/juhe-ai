@@ -13,6 +13,8 @@ const requiredRouteTokens = [
   'listPublicRouteStrategiesAsync',
   'listPublicApiKeysAsync',
   'listPublicWelfareAccountsAsync',
+  'addPublicGroupAsync',
+  'addPublicWelfareAccountAsync',
   'addPublicRouteStrategyAsync',
   'updatePublicRouteStrategyAsync',
   'deletePublicRouteStrategyAsync',
@@ -36,6 +38,8 @@ for (const token of [
   'listPublicRouteStrategies',
   'listPublicApiKeys',
   'listPublicWelfareAccounts',
+  'addPublicGroup',
+  'addPublicWelfareAccount',
   'addPublicRouteStrategy',
   'updatePublicRouteStrategy',
   'deletePublicRouteStrategy',
@@ -52,7 +56,8 @@ for (const token of [
 assert.doesNotMatch(routesSource, /\bcreateOperationLog\(/, '公开推送操作日志不能回退同步写入')
 
 const requiredServiceTokens = [
-  'export async function addPublicGroup',
+  'export async function addPublicGroupAsync',
+  'export async function addPublicWelfareAccountAsync',
   'export async function updatePublicGroupAsync',
   'export async function deletePublicGroupAsync',
   'export async function listPublicGroupsAsync',

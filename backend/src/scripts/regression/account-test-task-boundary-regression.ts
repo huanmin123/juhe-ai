@@ -24,10 +24,27 @@ const frontendAccountTestSessionClientSource = readFileSync(resolve(projectRoot,
 const frontendAccountBatchExecutionSource = readFileSync(resolve(projectRoot, 'frontend/src/views/accounts/accountBatchExecution.ts'), 'utf8')
 const frontendAccountTestModalComponentSource = readFileSync(resolve(projectRoot, 'frontend/src/views/accounts/AccountTestModal.vue'), 'utf8')
 const frontendAccountTestDisplayFormattersSource = readFileSync(resolve(projectRoot, 'frontend/src/views/accounts/accountTestDisplayFormatters.ts'), 'utf8')
+const accountTestRuntimeCallSources = [
+  'modules/accounts/account-test-task-queue.service.ts',
+  'modules/background/cooldown-account-retest.service.ts',
+  'modules/background/account-health-check.service.ts',
+  'modules/background/account-quality-failure-precheck.service.ts',
+  'modules/background/account-api-key-cooldown-retest.service.ts',
+  'modules/background/normal-route-speed-first-recovery-probe.service.ts',
+  'modules/gateway/runtime/account-side-effects.service.ts',
+  'modules/gateway/client-profiles/codex-switch-probe.ts'
+].map((relativePath) => ({
+  relativePath,
+  source: readFileSync(resolve(backendSrc, relativePath), 'utf8')
+}))
 const accountTestQueueItemSource = interfaceBody(accountTestTaskQueueSource, 'AccountTestQueueItem')
 const runOpenAIAccountTestWithSideEffectsSource = accountTestTaskQueueSource.slice(
   accountTestTaskQueueSource.indexOf('async function runOpenAIAccountTestWithSideEffects'),
   accountTestTaskQueueSource.indexOf('function enqueueManualAccountTestFailurePrecheck')
+)
+const runManualAccountTestFailurePrecheckQueueItemSource = accountTestTaskQueueSource.slice(
+  accountTestTaskQueueSource.indexOf('async function runManualAccountTestFailurePrecheckQueueItem'),
+  accountTestTaskQueueSource.indexOf('async function openAIDraftAccountSecret')
 )
 
 assert.equal(
@@ -171,6 +188,11 @@ assert(
   '真实账号测试应在后台任务队列中执行，并使用诊断重试等待策略'
 )
 assert(
+  runOpenAIAccountTestWithSideEffectsSource.includes('findAccountForTest: loadAccountForTestViaDbService')
+    && runOpenAIAccountTestWithSideEffectsSource.includes('findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService'),
+  '真实账号测试应同时通过 DB service 读取账号详情和分组候选账号，避免 PostgreSQL 模式回退 SQLite'
+)
+assert(
   accountTestTaskQueueSource.includes('testOpenAIDraftAccountWithDiagnosticRetries')
     && accountTestTaskQueueSource.includes('openAIDraftAccountSecret(draft, attemptSignal)'),
   '草稿账号测试应把 OAuth 刷新和候选账号生成纳入单次诊断 attempt 超时'
@@ -224,6 +246,11 @@ assert(
     && accountTestTaskQueueSource.includes('await manualAccountTestFailurePrecheckSkipReason')
     && accountTestTaskQueueSource.includes('await getAccountPrecheckMutationStateAsync'),
   '账号测试失败应进入事前确认队列，确认失败后才允许写临时不可调用，并需要通过 async 入口跳过已被更新的旧确认'
+)
+assert(
+  runManualAccountTestFailurePrecheckQueueItemSource.includes('findAccountForTest: loadAccountForTestViaDbService')
+    && runManualAccountTestFailurePrecheckQueueItemSource.includes('findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService'),
+  '账号测试失败事前确认应同时通过 DB service 读取账号详情和分组候选账号，避免 PostgreSQL 模式回退 SQLite'
 )
 assert(
   accountTestSessionRoutesSource.includes("router.post('/test-sessions'")
@@ -290,6 +317,16 @@ assert(
     && accountsRoutesSource.includes('accountCreateStatusFromActivationTestAsync')
     && accountDraftTestServiceSource.includes('getAccountTestTaskRecordAsync'),
   '账号测试 HTTP 请求路径必须使用异步 repository，避免高性能模式回退到 SQLite 同步连接'
+)
+assert.doesNotMatch(
+  [
+    accountsRoutesSource,
+    accountTestDispatchRoutesSource,
+    accountTestSessionRoutesSource,
+    accountTestStatusRoutesSource
+  ].join('\n'),
+  /\b(?:savedAccountDraftTestSnapshot|prepareAccountDraftTestSnapshot|accountCreateStatusFromActivationTest|getAccountTestTaskRecord)\(/,
+  '账号测试 HTTP 路由不得调用同步草稿准备、激活校验或任务读取入口，避免 PostgreSQL 模式回退 SQLite'
 )
 assert(
   dbServiceHandlersSource.includes('findAccountForTestAsync(operation.accountId, operation.access)')
@@ -399,6 +436,21 @@ assert(
   '批量测试弹窗应明确展示固定小批次提交策略'
 )
 
+for (const { relativePath, source } of accountTestRuntimeCallSources) {
+  for (const call of accountTestRuntimeCalls(source)) {
+    const hasCandidate = call.block.includes('candidateAccount')
+    const requiresDefensiveReaders = relativePath !== 'modules/accounts/account-test-task-queue.service.ts'
+    assert(
+      (!requiresDefensiveReaders && hasCandidate) || call.block.includes('findAccountForTest:'),
+      `${relativePath}:${call.line} ${call.name} 必须注入 findAccountForTest，避免 PostgreSQL 模式回退 SQLite`
+    )
+    assert(
+      (!requiresDefensiveReaders && hasCandidate) || call.block.includes('findOpenAIAccountForGroup:'),
+      `${relativePath}:${call.line} ${call.name} 必须注入 findOpenAIAccountForGroup，避免 PostgreSQL 模式回退 SQLite`
+    )
+  }
+}
+
 console.log('账号测试任务边界回归通过：手动测试由后台 worker 队列执行，前端通过任务接口查询结果')
 
 function interfaceBody(source: string, interfaceName: string): string {
@@ -409,4 +461,47 @@ function interfaceBody(source: string, interfaceName: string): string {
   const closeBrace = source.indexOf('}', openBrace)
   assert(closeBrace >= 0, `接口 ${interfaceName} 未闭合`)
   return source.slice(openBrace, closeBrace + 1)
+}
+
+function accountTestRuntimeCalls(source: string): Array<{ name: string; line: number; block: string }> {
+  const calls: Array<{ name: string; line: number; block: string }> = []
+  for (const name of ['testOpenAIAccountWithDiagnosticRetries', 'testOpenAIAccount']) {
+    let index = 0
+    while ((index = source.indexOf(`${name}(`, index)) >= 0) {
+      if (source.slice(Math.max(0, index - 20), index).includes('function ')) {
+        index += name.length
+        continue
+      }
+      const openParen = source.indexOf('(', index)
+      assert(openParen >= 0, `${name} 调用缺少左括号`)
+      const end = matchingCallEnd(source, openParen)
+      const block = source.slice(index, end)
+      calls.push({
+        name,
+        line: source.slice(0, index).split(/\r?\n/).length,
+        block
+      })
+      index = end
+    }
+  }
+  return calls
+}
+
+function matchingCallEnd(source: string, openParen: number): number {
+  let depth = 0
+  for (let index = openParen; index < source.length; index += 1) {
+    const char = source[index]
+    if (char === '(') {
+      depth += 1
+      continue
+    }
+    if (char !== ')') {
+      continue
+    }
+    depth -= 1
+    if (depth === 0) {
+      return index + 1
+    }
+  }
+  throw new Error('账号测试调用未闭合')
 }

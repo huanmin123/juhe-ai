@@ -356,6 +356,9 @@ function flushExternalIntegrationSourceLastUsedTouches(): void {
 }
 
 export async function flushExternalIntegrationSourceLastUsedTouchesForTest(): Promise<void> {
+  if (runtimeConfig.databaseDriver !== 'sqlite') {
+    throw new Error('flushExternalIntegrationSourceLastUsedTouchesForTest 仅支持 SQLite 测试路径；PostgreSQL 测试必须使用 async driver 刷新')
+  }
   if (pendingLastUsedTouchTimer) {
     clearTimeout(pendingLastUsedTouchTimer)
     pendingLastUsedTouchTimer = undefined

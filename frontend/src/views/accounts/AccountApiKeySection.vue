@@ -127,7 +127,7 @@ defineEmits<{
 const filledApiKeyCount = computed(() => normalizedAccountApiKeys(props.form).length)
 const showApiKeyStrategy = computed(() => filledApiKeyCount.value > 1)
 const showWeightInputs = computed(() => showApiKeyStrategy.value && props.form.apiKeyStrategy === 'weighted_round_robin')
-const showBatchDeleteApiKeys = computed(() => props.form.apiKeys.some((value) => value.trim()))
+const showBatchDeleteApiKeys = computed(() => filledApiKeyCount.value > 1)
 const showApiKeyRuntimeDetails = computed(() => (
   filledApiKeyCount.value > 0
   && (

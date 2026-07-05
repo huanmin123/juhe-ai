@@ -176,8 +176,11 @@ export function useResponsivePagedList<T, ExtraOptions extends Record<string, un
     const next = paginationInfo as { current?: unknown; pageSize?: unknown }
     const nextCurrent = Number(next.current)
     const nextPageSize = Number(next.pageSize)
-    pagination.current = Number.isFinite(nextCurrent) && nextCurrent > 0 ? nextCurrent : 1
-    pagination.pageSize = Number.isFinite(nextPageSize) && nextPageSize > 0 ? nextPageSize : options.pageSize
+    const current = Number.isFinite(nextCurrent) && nextCurrent > 0 ? nextCurrent : 1
+    const pageSize = Number.isFinite(nextPageSize) && nextPageSize > 0 ? nextPageSize : options.pageSize
+    if (pagination.current === current && pagination.pageSize === pageSize) return
+    pagination.current = current
+    pagination.pageSize = pageSize
     void loadData()
   }
 

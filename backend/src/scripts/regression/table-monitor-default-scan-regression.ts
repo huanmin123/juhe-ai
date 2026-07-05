@@ -129,11 +129,12 @@ try {
     statsDatabase.prepare = originalPrepare as typeof statsDatabase.prepare
   }
   const databaseHistoryRoles = new Set(databaseHistory.map((row) => row.databaseRole))
-  assert.equal(databaseHistory.length, 4, '四库增长趋势应一次返回业务库、数据集目录库、使用记录目录库和统计结果库历史点')
+  assert.equal(databaseHistory.length, 5, '数据库增长趋势应一次返回业务库、数据集目录库、使用记录目录库、统计结果库和 codex context state 历史点')
   assert(databaseHistoryRoles.has('business'), '四库增长趋势应包含业务库')
   assert(databaseHistoryRoles.has('dataset'), '四库增长趋势应包含数据集目录库')
   assert(databaseHistoryRoles.has('usage-catalog'), '四库增长趋势应包含使用记录目录库')
   assert(databaseHistoryRoles.has('stats'), '四库增长趋势应包含统计结果库')
+  assert(databaseHistoryRoles.has('codex-context-state'), '数据库增长趋势应包含 codex context state')
   const databaseHistorySql = capturedHistorySql.find((sql) => sql.includes('FROM database_storage_snapshots'))
   assert(databaseHistorySql, '四库增长趋势应按库角色读取历史快照')
   const databaseHistoryPlan = explainQueryPlan(statsDatabase, databaseHistorySql, ['business', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', 720])
@@ -199,6 +200,9 @@ function assertTableMonitorAsyncSourceGuard(): void {
   assert(repositorySource.includes('createPostgresDatabaseClient(await getPostgresPool())'), '表监控 async 读路径应使用 PostgreSQL client')
   assert(repositorySource.includes("statsTable(client, 'database_storage_snapshots')"), '表监控数据库快照 PG 读路径应使用 juhe_stats schema 表名')
   assert(repositorySource.includes("statsTable(client, 'table_storage_snapshots')"), '表监控表快照 PG 读路径应使用 juhe_stats schema 表名')
+  assert(repositorySource.includes('tableStorageOverviewCacheTtlMs'), '表监控 overview async 入口应有短 TTL 缓存，避免管理端重复刷新反复扫描快照')
+  assert(repositorySource.includes('getCachedTableStorageOverview(input)'), '表监控 overview async 入口应先读缓存')
+  assert(repositorySource.includes('CROSS JOIN LATERAL'), '表监控 PG overview 表快照查询应使用 LATERAL latest lookup，避免窗口排序扫描所有历史快照')
   assert(routesSource.includes('await getTableStorageOverviewAsync('), '表监控 overview 路由必须 await async 读入口')
   assert(routesSource.includes('await listTableStorageHistoryAsync('), '表监控 history 路由必须 await async 读入口')
   assert(routesSource.includes('await listDatabaseStorageHistoryAsync('), '表监控 database-history 路由必须 await async 读入口')

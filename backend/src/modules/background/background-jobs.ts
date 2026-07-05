@@ -124,8 +124,11 @@ function scheduleBackgroundJobs(): void {
         scheduler.schedule({ name: backgroundScheduledJobName('usage-rank-snapshots-refresh'), intervalMs: usageRankSnapshotRefreshIntervalMs, initialDelayMs: 2 * minuteMs + 30 * secondMs, task: () => runUsageRankSnapshotsRefresh(backgroundScheduledJobName('usage-rank-snapshots-refresh'), usageRankSnapshotCoreStageNames) })
         scheduler.schedule({ name: backgroundScheduledJobName('system-metrics-trend-windows-refresh'), intervalMs: usageRankSnapshotRefreshIntervalMs, initialDelayMs: 3 * minuteMs + 20 * secondMs, task: () => runUsageRankSnapshotsRefresh(backgroundScheduledJobName('system-metrics-trend-windows-refresh'), systemMetricsTrendStageNames) })
         scheduler.schedule({ name: backgroundScheduledJobName('usage-overview-windows-refresh'), intervalMs: usageRankSnapshotRefreshIntervalMs, initialDelayMs: 4 * minuteMs + 10 * secondMs, task: () => runUsageRankSnapshotsRefresh(backgroundScheduledJobName('usage-overview-windows-refresh'), usageOverviewWindowStageNames) })
-        scheduler.schedule({ name: backgroundScheduledJobName('usage-scope-range-windows-refresh'), intervalMs: coldUsageRangeWindowRefreshIntervalMs, initialDelayMs: usageScopeRangeWindowInitialDelayMs, task: () => runUsageRankSnapshotsRefresh(backgroundScheduledJobName('usage-scope-range-windows-refresh'), usageScopeRangeWindowStageNames) })
-        scheduler.schedule({ name: backgroundScheduledJobName('authorization-usage-range-windows-refresh'), intervalMs: coldUsageRangeWindowRefreshIntervalMs, initialDelayMs: authorizationUsageRangeWindowInitialDelayMs, task: () => runUsageRankSnapshotsRefresh(backgroundScheduledJobName('authorization-usage-range-windows-refresh'), authorizationUsageRangeWindowStageNames) })
+        logger.info({
+          event: 'background_cold_range_window_refresh_disabled',
+          driver: runtimeConfig.databaseDriver,
+          hotStages: usageScopeRangeWindowStageNames
+        }, 'PG 高性能模式跳过在线冷历史范围窗口重刷，热窗口刷新保持今日范围数据新鲜')
         scheduler.schedule({ name: backgroundScheduledJobName('account-quality-refresh'), intervalMs: settingsNumber('accountQualityRefreshIntervalSeconds', 60, 3600) * secondMs, initialDelayMs: 75 * secondMs, task: () => runAccountQualityRefresh({ settingsNumber, ensureUsageRecordsIngestedBeforeStatsAggregation: ensureUsageRecordsSafeForStatsAggregation, yieldToEventLoop }) })
         scheduler.schedule({ name: backgroundScheduledJobName('table-storage-monitor'), intervalMs: 10 * minuteMs, initialDelayMs: 3 * minuteMs, task: runTableStorageMonitor })
         scheduler.schedule({ name: backgroundScheduledJobName('usage-stats-consistency-check'), intervalMs: 60 * minuteMs, initialDelayMs: 11 * minuteMs, task: runUsageStatsConsistencyCheck })

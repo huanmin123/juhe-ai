@@ -50,7 +50,7 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
+import { onBeforeUnmount, reactive, ref } from 'vue'
 import type { Dayjs } from 'dayjs'
 
 import type { useScopedApiKeysApi, useScopedRouteStrategiesApi } from '@/composables/useScopedDomainApi'
@@ -60,6 +60,7 @@ import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatServerDateTimeInput, parseStrictDatePickerValue } from '@/shared/formatters'
 import { routeStrategySelectionFromOption, type RouteStrategySelection } from '@/shared/routeStrategyLabelCache'
+import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type { ApiKeyAvailabilitySchedule, ApiKeyQuotaLimits, ApiKeySummary, RouteStrategyOptionSummary } from '@/types/domain'
 import RequestQuotaFields from '@/views/shared/RequestQuotaFields.vue'
 import { createQuotaLimitForm, quotaLimitsPayload as buildQuotaLimitsPayload } from '@/views/shared/requestQuotaForm'
@@ -106,6 +107,11 @@ const { submitAction, submittingRef } = useSubmitAction('api-keys')
 const apiKeySaving = submittingRef('api_keys.save')
 const routeStrategyOptionsRaw = ref<RouteStrategyOptionSummary[]>([])
 const routeStrategyOptionsLoading = ref(false)
+const routeStrategyOptionsCache = createShortLivedQueryCache<RouteStrategyOptionSummary[]>({ ttlMs: 10_000 })
+let routeStrategyOptionsRequestToken = 0
+let routeStrategyOptionsLoadingKey: string | undefined
+let routeStrategyOptionsLoadingPromise: Promise<void> | undefined
+let routeStrategyOptionsSearchTimer: ReturnType<typeof window.setTimeout> | undefined
 
 const form = reactive({
   name: '',
@@ -136,14 +142,16 @@ async function openCreate() {
     quotaLimits: createQuotaLimitForm(),
     availabilitySchedule: createApiKeyTimeScheduleForm()
   })
+  resetRouteStrategyOptions()
   await loadRouteStrategyOptions()
-  const defaultStrategy = routeStrategyOptionsRaw.value.find((strategy) => strategy.isDefault && strategy.status === 'active')
+  const activeStrategies = routeStrategyOptionsRaw.value.filter((strategy) => strategy.status === 'active')
+  const defaultStrategy = activeStrategies.find((strategy) => strategy.isDefault)
   if (defaultStrategy) {
     form.routeStrategyId = defaultStrategy.id
     form.routeStrategy = routeStrategySelectionFromOption(defaultStrategy)
-  } else if (routeStrategyOptionsRaw.value.length === 1) {
-    form.routeStrategyId = routeStrategyOptionsRaw.value[0].id
-    form.routeStrategy = routeStrategySelectionFromOption(routeStrategyOptionsRaw.value[0])
+  } else if (activeStrategies.length === 1) {
+    form.routeStrategyId = activeStrategies[0].id
+    form.routeStrategy = routeStrategySelectionFromOption(activeStrategies[0])
   }
   modalOpen.value = true
 }
@@ -178,6 +186,7 @@ async function openEdit(apiKey: ApiKeySummary) {
     quotaLimits,
     availabilitySchedule
   })
+  resetRouteStrategyOptions()
   await loadRouteStrategyOptions('', [apiKey.routeStrategyId])
   form.routeStrategy = selectedRouteStrategySelection(apiKey.routeStrategyId) ?? form.routeStrategy
   modalOpen.value = true
@@ -247,20 +256,97 @@ function availabilitySchedulePayload(): ApiKeyAvailabilitySchedule | null | fals
   return buildTimeSchedulePayload(form.availabilitySchedule)
 }
 
-async function loadRouteStrategyOptions(keyword = '', ids?: string[]) {
-  routeStrategyOptionsLoading.value = true
-  try {
-    routeStrategyOptionsRaw.value = await props.routeStrategiesApi.options({
-      keyword: keyword.trim() || undefined,
-      ids,
-      limit: 100,
-      systemAccountId: apiKeyOperationScopeParams()?.systemAccountId
-    })
-  } catch (error) {
-    message.error(extractApiErrorMessage(error, '策略路由选项加载失败'))
-  } finally {
+function resetRouteStrategyOptions() {
+  clearRouteStrategyOptionsSearchTimer()
+  routeStrategyOptionsRequestToken += 1
+  routeStrategyOptionsLoadingKey = undefined
+  routeStrategyOptionsLoadingPromise = undefined
+  routeStrategyOptionsRaw.value = []
+  routeStrategyOptionsLoading.value = false
+}
+
+async function loadRouteStrategyOptions(keyword = '', selectedIds: string[] = []) {
+  const operationScopeParams = apiKeyOperationScopeParams()
+  if (props.isManagementView && !operationScopeParams?.systemAccountId) {
+    routeStrategyOptionsRequestToken += 1
+    routeStrategyOptionsLoadingKey = undefined
+    routeStrategyOptionsLoadingPromise = undefined
+    routeStrategyOptionsRaw.value = []
     routeStrategyOptionsLoading.value = false
+    return
   }
+  const requestKeyword = keyword.trim() || undefined
+  const normalizedSelectedIds = [...new Set(selectedIds.map((id) => id.trim()).filter(Boolean))]
+  const requestKey = routeStrategyOptionsRequestKey(operationScopeParams?.systemAccountId, requestKeyword, normalizedSelectedIds)
+  if (routeStrategyOptionsLoadingKey === requestKey && routeStrategyOptionsLoadingPromise) {
+    return routeStrategyOptionsLoadingPromise
+  }
+  const requestToken = ++routeStrategyOptionsRequestToken
+  const cachedOptions = routeStrategyOptionsCache.get(requestKey)
+  if (cachedOptions) {
+    routeStrategyOptionsLoadingKey = undefined
+    routeStrategyOptionsLoadingPromise = undefined
+    routeStrategyOptionsRaw.value = cachedOptions
+    routeStrategyOptionsLoading.value = false
+    return
+  }
+  routeStrategyOptionsLoading.value = true
+  routeStrategyOptionsLoadingKey = requestKey
+  routeStrategyOptionsLoadingPromise = (async () => {
+    try {
+      const windowStrategies = await props.routeStrategiesApi.options({
+        keyword: requestKeyword,
+        limit: 50,
+        activeOnly: false,
+        systemAccountId: operationScopeParams?.systemAccountId
+      })
+      if (requestToken !== routeStrategyOptionsRequestToken) return
+      const missingSelectedIds = normalizedSelectedIds.filter((id) => !windowStrategies.some((strategy) => strategy.id === id))
+      if (!missingSelectedIds.length) {
+        routeStrategyOptionsCache.set(requestKey, windowStrategies)
+        routeStrategyOptionsRaw.value = windowStrategies
+        return
+      }
+      const selectedStrategies = await props.routeStrategiesApi.options({
+        ids: missingSelectedIds,
+        limit: missingSelectedIds.length,
+        activeOnly: false,
+        systemAccountId: operationScopeParams?.systemAccountId
+      })
+      if (requestToken !== routeStrategyOptionsRequestToken) return
+      const mergedStrategies = mergeRouteStrategyOptionsById(selectedStrategies, windowStrategies)
+      routeStrategyOptionsCache.set(requestKey, mergedStrategies)
+      routeStrategyOptionsRaw.value = mergedStrategies
+    } catch (error) {
+      if (requestToken !== routeStrategyOptionsRequestToken) return
+      message.error(extractApiErrorMessage(error, '策略路由选项加载失败'))
+    } finally {
+      if (routeStrategyOptionsLoadingKey === requestKey) {
+        routeStrategyOptionsLoadingKey = undefined
+        routeStrategyOptionsLoadingPromise = undefined
+      }
+      if (requestToken === routeStrategyOptionsRequestToken) {
+        routeStrategyOptionsLoading.value = false
+      }
+    }
+  })()
+  return routeStrategyOptionsLoadingPromise
+}
+
+function mergeRouteStrategyOptionsById(leading: RouteStrategyOptionSummary[], trailing: RouteStrategyOptionSummary[]): RouteStrategyOptionSummary[] {
+  const merged = new Map<string, RouteStrategyOptionSummary>()
+  for (const strategy of [...leading, ...trailing]) {
+    merged.set(strategy.id, strategy)
+  }
+  return [...merged.values()]
+}
+
+function routeStrategyOptionsRequestKey(systemAccountId: string | undefined, keyword: string | undefined, selectedIds: string[]): string {
+  return JSON.stringify([
+    props.isManagementView ? `management:${systemAccountId ?? ''}` : 'self',
+    keyword ?? '',
+    selectedIds
+  ])
 }
 
 function handleRouteStrategyDropdown(open: boolean) {
@@ -268,7 +354,18 @@ function handleRouteStrategyDropdown(open: boolean) {
 }
 
 function handleRouteStrategySearch(value: string) {
-  void loadRouteStrategyOptions(value)
+  clearRouteStrategyOptionsSearchTimer()
+  routeStrategyOptionsSearchTimer = window.setTimeout(() => {
+    routeStrategyOptionsSearchTimer = undefined
+    void loadRouteStrategyOptions(value)
+  }, 250)
+}
+
+function clearRouteStrategyOptionsSearchTimer() {
+  if (routeStrategyOptionsSearchTimer && typeof window !== 'undefined') {
+    window.clearTimeout(routeStrategyOptionsSearchTimer)
+    routeStrategyOptionsSearchTimer = undefined
+  }
 }
 
 function selectedRouteStrategySelection(id: string | undefined): RouteStrategySelection | undefined {
@@ -290,6 +387,8 @@ function apiKeyRouteStrategySelection(apiKey: ApiKeySummary): RouteStrategySelec
     systemAccountName: apiKey.systemAccountName
   }
 }
+
+onBeforeUnmount(clearRouteStrategyOptionsSearchTimer)
 
 defineExpose({ openCreate, openEdit })
 </script>

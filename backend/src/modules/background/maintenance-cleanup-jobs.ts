@@ -384,6 +384,7 @@ function cutoffMonthKey(now: number, retentionMonths: number, timezone: string):
 }
 
 export async function runAuditHotRetentionCleanup(): Promise<void> {
+  if (runtimeConfig.databaseDriver === 'postgres') return
   await cleanupExpiredAuditHotRetentionData()
 }
 

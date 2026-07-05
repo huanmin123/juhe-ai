@@ -47,7 +47,7 @@ try {
     yieldToEventLoop: async () => {}
   })
   assert.equal(refreshed.skipped, false, '首次热用量窗口刷新不应跳过')
-  assert.deepEqual(refreshed.stages.map((stage) => stage.name), ['usage_overview_windows'], '热刷新只应执行轻量概览窗口，范围窗口交给独立低频任务')
+  assert.deepEqual(refreshed.stages.map((stage) => stage.name), ['usage_overview_windows', 'usage_scope_range_windows'], '热刷新应同时更新概览窗口和今天结束的账号范围窗口')
 
   const overview = await usageStatsRepository.getUsageStatsOverviewAsync(adminAccess, usageStatsRepository.normalizeDefaultUsageStatsRange())
   assert.equal(overview.summary.requestCount, 7, '热刷新后统计首页 summary 应读取今日窗口')
@@ -65,7 +65,18 @@ try {
       AND start_date = ?
       AND end_date = ?
   `).get(systemAccountId, accountId, previousEndDate, previousEndDate) as { request_count?: number } | undefined
-  assert.equal(previousWindow?.request_count, 99, '热刷新不应删除或重建范围窗口')
+  assert.equal(previousWindow?.request_count, 99, '热刷新不应删除或重建历史结束日期范围窗口')
+
+  const todayWindow = statsDatabase.prepare(`
+    SELECT request_count
+    FROM usage_scope_range_windows
+    WHERE system_account_id = ?
+      AND scope_type = 'account'
+      AND scope_id = ?
+      AND start_date = ?
+      AND end_date = ?
+  `).get(systemAccountId, accountId, today, today) as { request_count?: number } | undefined
+  assert.equal(todayWindow?.request_count, 11, '热刷新应发布今天结束的账号范围窗口')
 
   const skipped = await usageStatsRepository.refreshHotUsageWindowSnapshots({
     skipIfUnchanged: true,
@@ -74,7 +85,7 @@ try {
   })
   assert.equal(skipped.skipped, true, '同一天同源水位热刷新应跳过')
 
-  console.log('热用量窗口 SQLite 回归通过：只刷新轻量概览窗口、保留范围窗口且同水位跳过')
+  console.log('热用量窗口 SQLite 回归通过：刷新概览和今日范围窗口、保留历史范围窗口且同水位跳过')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()

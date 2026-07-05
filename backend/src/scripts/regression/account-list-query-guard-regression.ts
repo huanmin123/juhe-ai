@@ -292,8 +292,9 @@ function assertAccountListRouteBoundary(): void {
   assert(
     accountListRuntimeStatusFilterSource.includes('export function accountListNeedsRuntimeStatusFilter')
       && accountListRuntimeStatusFilterSource.includes('export async function listAccountsPageWithRuntimeStatusFilter')
-      && accountListRuntimeStatusFilterSource.includes('if (!serverRuntimeSnapshot?.accountRuntimeAvailability) return undefined'),
-    '运行态状态过滤模块应暴露显式接管入口，并保留快照不可用时回退普通列表的契约'
+      && accountListRuntimeStatusFilterSource.includes('peekServerAccountRuntimeAvailabilitySnapshot')
+      && accountListRuntimeStatusFilterSource.includes('if (!runtimeAvailability) return undefined'),
+    '运行态状态过滤模块应暴露显式接管入口，并保留只用已有快照、快照不可用时回退普通列表的契约'
   )
   assert(
     !accountListRoutesSource.includes('mutationGuard(')

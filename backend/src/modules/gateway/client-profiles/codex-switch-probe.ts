@@ -13,6 +13,7 @@ import {
 import { type UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import { recordGatewayUpstreamBucketFailureAsync } from '../runtime/proxy-health.service.js'
 import { getRequestLogger } from '../../../shared/request-context.js'
+import { requestGatewayDbService } from '../runtime/gateway-db-service-request.js'
 
 export interface CodexSwitchProbeResult {
   accountId: string
@@ -62,7 +63,20 @@ export async function probeCodexSwitchCandidateAccount(
           codexSwitchProbeGatewayTimeoutMs(timeoutMs)
         ),
         disableAccountStateMutation: true,
-        candidateAccount: account
+        candidateAccount: account,
+        findAccountForTest: (accountId, access) => requestGatewayDbService({
+          type: 'find_account_for_test',
+          accountId,
+          access
+        }, { timeoutMs: 10_000 }),
+        findOpenAIAccountForGroup: (groupId, accountId, systemAccountId, options) => requestGatewayDbService({
+          type: 'find_openai_account_for_group',
+          groupId,
+          accountId,
+          systemAccountId,
+          includeUnavailable: options?.includeUnavailable,
+          ignoreAvailability: options?.ignoreAvailability
+        }, { timeoutMs: 10_000 })
       })
       lastResult = result
       if (result.success || !shouldRetryCodexSwitchProbeSameAccount(attemptSignal, input.signal, attemptIndex)) {

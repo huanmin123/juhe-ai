@@ -135,7 +135,7 @@ const publicResourceOwnerLookupAccess = {
   role: 'super_admin' as const
 }
 
-export async function addPublicWelfareAccount(input: PublicAccountPushInput): Promise<PublicAccountPushResponse> {
+export async function addPublicWelfareAccountAsync(input: PublicAccountPushInput): Promise<PublicAccountPushResponse> {
   const targetPasswordHash = await autoCreatedTargetPasswordHash()
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return writePublicWelfareAccount(input, targetPasswordHash)
@@ -523,7 +523,7 @@ export async function listPublicWelfareAccountsAsync(input: PublicAccountListInp
   })
 }
 
-export async function addPublicGroup(input: PublicGroupAddInput): Promise<PublicGroupResponse> {
+export async function addPublicGroupAsync(input: PublicGroupAddInput): Promise<PublicGroupResponse> {
   const providerCode = requiredProviderCode(input.providerCode)
   if (runtimeConfig.databaseDriver !== 'postgres') {
     assertProviderCodeEnabled(providerCode)

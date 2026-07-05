@@ -65,6 +65,8 @@ export interface TableStorageOverview {
   tables: TableStorageSnapshotSummary[]
 }
 
+type TableStorageOverviewInput = { startAt?: string; endAt?: string; limit?: number }
+
 export interface CollectTableStorageSnapshotOptions {
   tableScanMode?: 'full' | 'cursor' | 'none'
   maxTablesPerDatabase?: number
@@ -159,6 +161,7 @@ interface LatestDatabaseSnapshotRow {
 
 export const tableMonitorSampleRetentionDays = 30
 const defaultTableStorageHistoryLimit = 720
+const tableStorageOverviewCacheTtlMs = 30_000
 const monitoredDatabaseRoles: MonitoredDatabaseRole[] = ['business', 'dataset', 'usage-catalog', 'stats', 'codex-context-state']
 const statsSchemaName = 'juhe_stats'
 const postgresMonitoredSchemaTargets: PostgresMonitoredSchemaTarget[] = [
@@ -168,6 +171,7 @@ const postgresMonitoredSchemaTargets: PostgresMonitoredSchemaTarget[] = [
   { role: 'stats', schemaName: 'juhe_stats', databasePath: 'postgres:juhe_stats' },
   { role: 'codex-context-state', schemaName: 'juhe_codex_context', databasePath: 'postgres:juhe_codex_context' }
 ]
+let tableStorageOverviewCache: { key: string; cachedAtMs: number; value: TableStorageOverview } | undefined
 
 export function collectTableStorageSnapshot(sampledAt = nowIso(), options: CollectTableStorageSnapshotOptions = {}): CollectTableStorageSnapshotResult {
   const tableScanMode = options.tableScanMode ?? 'cursor'
@@ -246,7 +250,7 @@ export async function collectTableStorageSnapshotAsync(sampledAt = nowIso(), opt
   })
 }
 
-export function getTableStorageOverview(input: { startAt?: string; endAt?: string; limit?: number } = {}): TableStorageOverview {
+export function getTableStorageOverview(input: TableStorageOverviewInput = {}): TableStorageOverview {
   const database = getStatsDatabase()
   const range = normalizeDateRange(input.startAt, input.endAt)
   const databaseSnapshotStatement = database
@@ -291,15 +295,23 @@ export function getTableStorageOverview(input: { startAt?: string; endAt?: strin
   }
 }
 
-export async function getTableStorageOverviewAsync(input: { startAt?: string; endAt?: string; limit?: number } = {}): Promise<TableStorageOverview> {
+export async function getTableStorageOverviewAsync(input: TableStorageOverviewInput = {}): Promise<TableStorageOverview> {
+  const cachedOverview = getCachedTableStorageOverview(input)
+  if (cachedOverview) return cachedOverview
+
+  let overview: TableStorageOverview
   if (sqliteReadWorkerPoolEnabled()) {
-    return requestSqliteReadWorker({
+    overview = await requestSqliteReadWorker({
       type: 'get_table_storage_overview_read_only',
       input
     })
+    setCachedTableStorageOverview(input, overview)
+    return overview
   }
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return getTableStorageOverview(input)
+    overview = getTableStorageOverview(input)
+    setCachedTableStorageOverview(input, overview)
+    return overview
   }
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const range = normalizeDateRange(input.startAt, input.endAt)
@@ -317,21 +329,27 @@ export async function getTableStorageOverviewAsync(input: { startAt?: string; en
     .sort(compareDatabaseSnapshotsByRole)
   const sampledAt = databases.map((row) => row.sampled_at).sort().at(-1)
   const tables = await client.query<LatestTableSnapshotRow>(`
-    SELECT ${tableStorageSnapshotSelectColumns('ranked')}
-    FROM (
-      SELECT
-        ${tableStorageSnapshotSelectColumns()},
-        ROW_NUMBER() OVER (
-          PARTITION BY database_role, table_name
-          ORDER BY sampled_at DESC, id DESC
-        ) AS rank
+    WITH table_keys AS (
+      SELECT database_role, table_name
       FROM ${statsTable(client, 'table_storage_snapshots')}
       WHERE sampled_at >= ?
         AND sampled_at <= ?
-    ) ranked
-    WHERE ranked.rank = 1
-  `, [range.startAt, range.endAt])
-  return {
+      GROUP BY database_role, table_name
+    )
+    SELECT ${tableStorageSnapshotSelectColumns('latest')}
+    FROM table_keys key
+    CROSS JOIN LATERAL (
+      SELECT ${tableStorageSnapshotSelectColumns()}
+      FROM ${statsTable(client, 'table_storage_snapshots')} latest
+      WHERE latest.database_role = key.database_role
+        AND latest.table_name = key.table_name
+        AND latest.sampled_at >= ?
+        AND latest.sampled_at <= ?
+      ORDER BY latest.sampled_at DESC, latest.id DESC
+      LIMIT 1
+    ) latest
+  `, [range.startAt, range.endAt, range.startAt, range.endAt])
+  overview = {
     sampledAt,
     databases: databases.map(databaseSnapshotFromRow),
     tables: tables
@@ -339,6 +357,32 @@ export async function getTableStorageOverviewAsync(input: { startAt?: string; en
       .slice(0, normalizeLimit(input.limit ?? 200))
       .map(tableSnapshotFromRow)
   }
+  setCachedTableStorageOverview(input, overview)
+  return overview
+}
+
+function getCachedTableStorageOverview(input: TableStorageOverviewInput): TableStorageOverview | undefined {
+  const key = tableStorageOverviewCacheKey(input)
+  const cached = tableStorageOverviewCache
+  if (!cached || cached.key !== key) return undefined
+  if (Date.now() - cached.cachedAtMs > tableStorageOverviewCacheTtlMs) return undefined
+  return cached.value
+}
+
+function setCachedTableStorageOverview(input: TableStorageOverviewInput, value: TableStorageOverview): void {
+  tableStorageOverviewCache = {
+    key: tableStorageOverviewCacheKey(input),
+    cachedAtMs: Date.now(),
+    value
+  }
+}
+
+function tableStorageOverviewCacheKey(input: TableStorageOverviewInput): string {
+  return JSON.stringify({
+    startAt: input.startAt ?? '',
+    endAt: input.endAt ?? '',
+    limit: input.limit ?? ''
+  })
 }
 
 export function listTableStorageHistory(input: {

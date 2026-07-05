@@ -158,6 +158,7 @@ import { copyTextToClipboard } from '@/shared/clipboard'
 import { formatNumber } from '@/shared/formatters'
 import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { routeStrategySelectionFromOption } from '@/shared/routeStrategyLabelCache'
+import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type { ApiKeySummary, RouteStrategyOptionSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import { defaultApiKeysPageState, type ApiKeyRouteStrategyFilterSelection, type ApiKeysPageState } from './apiKeyPageState'
@@ -194,8 +195,12 @@ const apiKeysApi = useScopedApiKeysApi(isManagementView)
 const routeStrategiesApi = useScopedRouteStrategiesApi(isManagementView)
 const routeStrategyOptionsRaw = ref<RouteStrategyOptionSummary[]>([])
 const routeStrategyOptionsLoading = ref(false)
+const routeStrategyOptionsCache = createShortLivedQueryCache<RouteStrategyOptionSummary[]>({ ttlMs: 10_000 })
 let routeStrategyOptionsSearchTimer: ReturnType<typeof window.setTimeout> | undefined
 let routeStrategyOptionsKeyword = ''
+let routeStrategyOptionsRequestToken = 0
+let routeStrategyOptionsLoadingKey: string | undefined
+let routeStrategyOptionsLoadingPromise: Promise<void> | undefined
 const apiKeyScopeParams = computed(() => {
   const systemAccountId = scopedSystemAccountId(systemAccountFilter.value)
   return systemAccountId ? { systemAccountId } : undefined
@@ -336,23 +341,60 @@ async function loadApiKeyOptions(systemAccountId: string | undefined, force = fa
 
 async function loadRouteStrategyOptions(keyword = routeStrategyOptionsKeyword, force = false): Promise<void> {
   routeStrategyOptionsKeyword = keyword
-  const requestKeyword = keyword.trim()
-  routeStrategyOptionsLoading.value = true
-  try {
-    routeStrategyOptionsRaw.value = await routeStrategiesApi.options({
-      keyword: requestKeyword || undefined,
-      limit: 100,
-      activeOnly: false,
-      systemAccountId: apiKeyScopeParams.value?.systemAccountId
-    })
-    if (force) {
-      routeStrategyFilterSelection.value = selectedRouteStrategySelection(routeStrategyFilterSelection.value?.id)
-    }
-  } catch (error) {
-    message.error(extractApiErrorMessage(error, '策略路由选项加载失败'))
-  } finally {
-    routeStrategyOptionsLoading.value = false
+  const requestKeyword = keyword.trim() || undefined
+  const systemAccountId = apiKeyScopeParams.value?.systemAccountId
+  const requestKey = routeStrategyOptionsRequestKey(systemAccountId, requestKeyword)
+  if (!force && routeStrategyOptionsLoadingKey === requestKey && routeStrategyOptionsLoadingPromise) {
+    return routeStrategyOptionsLoadingPromise
   }
+  const requestToken = ++routeStrategyOptionsRequestToken
+  if (!force) {
+    const cachedOptions = routeStrategyOptionsCache.get(requestKey)
+    if (cachedOptions) {
+      routeStrategyOptionsLoadingKey = undefined
+      routeStrategyOptionsLoadingPromise = undefined
+      routeStrategyOptionsRaw.value = cachedOptions
+      routeStrategyOptionsLoading.value = false
+      return
+    }
+  }
+  routeStrategyOptionsLoading.value = true
+  routeStrategyOptionsLoadingKey = requestKey
+  routeStrategyOptionsLoadingPromise = (async () => {
+    try {
+      const nextOptions = await routeStrategiesApi.options({
+        keyword: requestKeyword,
+        limit: 50,
+        activeOnly: false,
+        systemAccountId
+      })
+      routeStrategyOptionsCache.set(requestKey, nextOptions)
+      if (requestToken !== routeStrategyOptionsRequestToken) return
+      routeStrategyOptionsRaw.value = nextOptions
+      if (force) {
+        routeStrategyFilterSelection.value = selectedRouteStrategySelection(routeStrategyFilterSelection.value?.id)
+      }
+    } catch (error) {
+      if (requestToken !== routeStrategyOptionsRequestToken) return
+      message.error(extractApiErrorMessage(error, '策略路由选项加载失败'))
+    } finally {
+      if (routeStrategyOptionsLoadingKey === requestKey) {
+        routeStrategyOptionsLoadingKey = undefined
+        routeStrategyOptionsLoadingPromise = undefined
+      }
+      if (requestToken === routeStrategyOptionsRequestToken) {
+        routeStrategyOptionsLoading.value = false
+      }
+    }
+  })()
+  return routeStrategyOptionsLoadingPromise
+}
+
+function routeStrategyOptionsRequestKey(systemAccountId: string | undefined, keyword: string | undefined): string {
+  return JSON.stringify([
+    isManagementView.value ? `management:${systemAccountId ?? 'all'}` : 'self',
+    keyword ?? ''
+  ])
 }
 
 function handleRouteStrategyOptionsDropdown(open: boolean) {
@@ -370,6 +412,10 @@ function handleRouteStrategyOptionsSearch(value: string) {
 
 function resetRouteStrategyOptionsSearch() {
   routeStrategyOptionsKeyword = ''
+  routeStrategyOptionsRequestToken += 1
+  routeStrategyOptionsLoadingKey = undefined
+  routeStrategyOptionsLoadingPromise = undefined
+  routeStrategyOptionsLoading.value = false
   clearRouteStrategyOptionsSearchTimer()
 }
 

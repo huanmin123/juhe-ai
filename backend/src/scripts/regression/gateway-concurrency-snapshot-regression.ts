@@ -17,6 +17,11 @@ assert(runtimeSnapshotSource.includes('loadAccountCurrentConcurrencyByIdsAsync(a
 assert(runtimeSnapshotSource.includes('loadRedisAccountConcurrencySnapshot(accountIds)'), 'Redis runtime state 下分组列表当前并发必须从 Redis 批量读取账号并发')
 assert(runtimeSnapshotSource.includes("runtimeConfig.runtimeStateDriver === 'redis'"), '列表运行态快照必须显式区分 Redis runtime state')
 assert(runtimeSnapshotSource.includes('account.authorizationInstanceSourceAccountId || account.id'), '授权实例当前并发必须读取来源账号并发槽')
+assert(runtimeSnapshotSource.includes('peekServerAccountRuntimeAvailabilitySnapshot'), 'Redis runtime state 下管理端读取只能使用已有 server 运行态快照，缺失时后台刷新，不能同步阻塞列表')
+assert(
+  !/Promise\.all\(\s*\[[\s\S]*loadRedisAccountConcurrencySnapshot\([\s\S]*loadServerAccountRuntimeSnapshot\(\)[\s\S]*\]\s*\)/.test(runtimeSnapshotSource),
+  'Redis runtime state 下账户列表 / 详情不能把 Redis 并发读取和 server 运行态 IPC 绑定成同步等待'
+)
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-gateway-concurrency-snapshot-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'gateway-concurrency-snapshot.sqlite3')

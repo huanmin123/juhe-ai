@@ -605,7 +605,8 @@ async function runOpenAIAccountTestWithSideEffects(
         diagnostics: input.diagnostics,
         systemAccountId: access.systemAccountId,
         onDiagnosticAttemptProgress: input.onDiagnosticAttemptProgress,
-        findAccountForTest: loadAccountForTestViaDbService
+        findAccountForTest: loadAccountForTestViaDbService,
+        findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService
       })
   }
 
@@ -1042,6 +1043,7 @@ async function runManualAccountTestFailurePrecheckQueueItem(
     trafficSource: 'cooldown_retest',
     disableAccountStateMutation: true,
     findAccountForTest: loadAccountForTestViaDbService,
+    findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService,
     gatewaySettingsOverride: {
       temporaryUnschedulableRetryAttempts: 0,
       temporaryUnschedulableRetryIntervalSeconds: 0
