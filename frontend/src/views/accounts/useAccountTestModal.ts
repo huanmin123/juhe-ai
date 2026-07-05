@@ -48,6 +48,7 @@ interface UseAccountTestModalOptions {
   providers: ComputedRef<ProviderDefinition[]>
   draftApiKeyTestSnapshot?: { value: DraftApiKeyTestSnapshot | undefined }
   successfulDraftActivationTest?: { value: SuccessfulDraftActivationTest | undefined }
+  successfulSavedDraftUpdateTest?: { value: SuccessfulDraftActivationTest | undefined }
 }
 
 export interface SuccessfulDraftActivationTest {
@@ -70,6 +71,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   const draftTestMode = ref<AccountTestDraftMode>()
   const draftApiKeyTestSnapshot = options.draftApiKeyTestSnapshot ?? ref<DraftApiKeyTestSnapshot>()
   const successfulDraftActivationTest = options.successfulDraftActivationTest ?? ref<SuccessfulDraftActivationTest>()
+  const successfulSavedDraftUpdateTest = options.successfulSavedDraftUpdateTest ?? ref<SuccessfulDraftActivationTest>()
   const testForm = reactive<AccountTestForm>({ model: '', testEndpointMode: 'account_default' })
   const testTargetAccountSelection = computed(() => (
     testMode.value === 'batch' ? batchTestingAccounts.value : testingAccount.value
@@ -112,6 +114,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     draftTestingAccountPayload.value = undefined
     draftTestMode.value = undefined
     draftApiKeyTestSnapshot.value = undefined
+    successfulSavedDraftUpdateTest.value = undefined
     testResult.value = undefined
     testForm.model = defaultModelForSelection(account)
     testForm.testEndpointMode = defaultAccountTestEndpointModeForSelection(account) ?? 'account_default'
@@ -133,6 +136,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     draftTestMode.value = 'create'
     draftApiKeyTestSnapshot.value = undefined
     successfulDraftActivationTest.value = undefined
+    successfulSavedDraftUpdateTest.value = undefined
     testResult.value = undefined
     testForm.model = defaultModelForSelection(account)
     testForm.testEndpointMode = defaultAccountTestEndpointModeForSelection(account, draftPayload) ?? 'account_default'
@@ -153,6 +157,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     draftTestingAccountPayload.value = draftPayload
     draftTestMode.value = 'saved'
     draftApiKeyTestSnapshot.value = undefined
+    successfulSavedDraftUpdateTest.value = undefined
     testResult.value = undefined
     testForm.model = defaultModelForSelection(account)
     testForm.testEndpointMode = defaultAccountTestEndpointModeForSelection(account, draftPayload) ?? 'account_default'
@@ -206,6 +211,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     const account = testingAccount.value
     const draftPayload = activeDraftTestPayload(account)
     const activationDraftPayload = activeActivationDraftTestPayload(account)
+    const savedDraftUpdatePayload = activeSavedDraftUpdateTestPayload(account)
     try {
       const session = await createAccountTestSession(account)
       startAccountTestSessionHeartbeat(session.id, accountTestTaskScopeParams(account))
@@ -225,6 +231,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
       const result = await waitForSubmittedAccountTestResult(task, account, controller.signal, (latestTask) => {
         activeSingleTestTask.value = latestTask
         syncDraftActivationTestFromTask(latestTask, activationDraftPayload)
+        syncSavedDraftUpdateTestFromTask(latestTask, savedDraftUpdatePayload)
       })
       testResult.value = result
       syncDraftApiKeyTestSnapshot(draftPayload, result)
@@ -232,10 +239,16 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
         if (activationDraftPayload) {
           successfulDraftActivationTest.value = { taskId: task.id, account: activationDraftPayload }
         }
+        if (savedDraftUpdatePayload) {
+          successfulSavedDraftUpdateTest.value = { taskId: task.id, account: savedDraftUpdatePayload }
+        }
         message.success(accountTestSuccessMessage(account, result))
       } else {
         if (activationDraftPayload) {
           successfulDraftActivationTest.value = undefined
+        }
+        if (savedDraftUpdatePayload) {
+          successfulSavedDraftUpdateTest.value = undefined
         }
         message.error(accountTestErrorMessage(account, result))
       }
@@ -258,6 +271,9 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
       message.error(`${account.name}: 测试失败`)
       if (activationDraftPayload) {
         successfulDraftActivationTest.value = undefined
+      }
+      if (savedDraftUpdatePayload) {
+        successfulSavedDraftUpdateTest.value = undefined
       }
     } finally {
       for (const taskId of [...activeAccountTestTasks.keys()]) {
@@ -527,12 +543,25 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     return draftTestMode.value === 'create' ? activeDraftTestPayload(account) : undefined
   }
 
+  function activeSavedDraftUpdateTestPayload(account: AccountSummary): AccountDraftTestPayload['account'] | undefined {
+    return draftTestMode.value === 'saved' ? activeDraftTestPayload(account) : undefined
+  }
+
   function syncDraftActivationTestFromTask(task: AccountTestTask, activationDraftPayload: AccountDraftTestPayload['account'] | undefined): void {
     if (!activationDraftPayload) return
     if (task.status === 'success' && task.result?.success === true) {
       successfulDraftActivationTest.value = { taskId: task.id, account: activationDraftPayload }
     } else if (task.status === 'failed' || task.status === 'canceled') {
       successfulDraftActivationTest.value = undefined
+    }
+  }
+
+  function syncSavedDraftUpdateTestFromTask(task: AccountTestTask, savedDraftUpdatePayload: AccountDraftTestPayload['account'] | undefined): void {
+    if (!savedDraftUpdatePayload) return
+    if (task.status === 'success' && task.result?.success === true) {
+      successfulSavedDraftUpdateTest.value = { taskId: task.id, account: savedDraftUpdatePayload }
+    } else if (task.status === 'failed' || task.status === 'canceled') {
+      successfulSavedDraftUpdateTest.value = undefined
     }
   }
 

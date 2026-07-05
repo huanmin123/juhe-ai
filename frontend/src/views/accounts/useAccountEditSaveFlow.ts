@@ -40,6 +40,7 @@ type ReadonlyValue<T> = {
 
 interface UseAccountEditSaveFlowOptions {
   accountCreatePayloadWithActivationTest: (payload: AccountSavePayload) => AccountSavePayload & { status?: 'active'; activationTestTaskId?: string }
+  accountUpdateActivationTestTaskId: (payload: AccountSavePayload) => string | undefined
   accountAdvancedDetailLoaded: ReadonlyValue<boolean>
   accountErrorPolicyRules: Ref<AccountErrorPolicyRuleForm[]>
   accountResponseInspectionRules: Ref<AccountResponseInspectionRuleForm[]>
@@ -52,6 +53,7 @@ interface UseAccountEditSaveFlowOptions {
   editingId: Ref<string | undefined>
   extractApiErrorMessage: (error: unknown, fallback: string) => string
   form: AccountFormModel
+  isApiKeyRuntimeChanged: () => boolean
   isManagementView: ComputedRef<boolean>
   loadData: () => Promise<void>
   mappingAnthropicSourceModelOptions: ReadonlyValue<AccountModelSelectOption[]>
@@ -75,6 +77,10 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
     }
 
     if (options.editingId.value && !options.accountAdvancedDetailLoaded.value) {
+      if (options.isApiKeyRuntimeChanged()) {
+        message.warning('更换 API Key 或 Base URL 后请先点击测试，测试通过后再保存账户')
+        return
+      }
       await saveBasicAccountEdit()
       return
     }
@@ -108,6 +114,14 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
     try {
       if (options.editingId.value) {
         const updatePayload = buildAccountUpdatePayload(payload)
+        if (options.isApiKeyRuntimeChanged()) {
+          const activationTestTaskId = options.accountUpdateActivationTestTaskId(payload)
+          if (!activationTestTaskId) {
+            message.warning('更换 API Key 或 Base URL 后请先测试通过，再保存账户')
+            return
+          }
+          updatePayload.activationTestTaskId = activationTestTaskId
+        }
         if (options.isManagementView.value) {
           await api.accounts.update(options.editingId.value, updatePayload, options.editingAccountScopeParams())
         } else {

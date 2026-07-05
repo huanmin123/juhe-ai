@@ -13,6 +13,8 @@ import {
   isAccountModelMappingProtocolAllowed,
   isAccountModelMappingSourceEndpointFamilyAllowed
 } from '../../src/views/accounts/accountModelMappingProtocolMatrix'
+import { accountFormApiKeyRuntimeChanged } from '../../src/views/accounts/accountCredentials'
+import type { AccountSummary } from '../../src/types/domain'
 
 const currentDir = dirname(fileURLToPath(import.meta.url))
 const frontendRoot = resolve(currentDir, '../..')
@@ -57,6 +59,7 @@ assertIncludes(savePayloadSource, 'accountModelMappingProtocolValidationMessage'
 assertIncludes(strategySectionSource, 'isAccountModelMappingProtocolAllowed', '模型映射 UI 右侧协议选择必须复用协议矩阵 helper')
 assertIncludes(strategySectionSource, 'isAccountModelMappingSourceEndpointFamilyAllowed', '模型映射 UI 左侧协议选择必须复用协议矩阵 helper')
 assertApiKeyDraftActivationPayload()
+assertApiKeyRuntimeChangeDetection()
 assertModelMappingProtocolValidation()
 assertModelMappingProtocolMatrixHelper()
 
@@ -218,6 +221,29 @@ function assertApiKeyDraftActivationPayload(): void {
 
   assert.equal(activatedPayload.status, 'active', 'API Key 新增账户成功草稿测试后保存 payload 应创建为正常状态')
   assert.equal(activatedPayload.activationTestTaskId, 'accttest_api_key_activation', 'API Key 新增账户成功草稿测试后保存 payload 应携带测试任务')
+}
+
+function assertApiKeyRuntimeChangeDetection(): void {
+  const account = {
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-regression-protocol-matrix',
+      base_url: 'https://api.openai.com/v1'
+    }
+  } as AccountSummary
+  assert.equal(accountFormApiKeyRuntimeChanged(apiKeyFormFixture(), account), false, 'API Key 和 Base URL 未变化时不应要求重新测试')
+  assert.equal(accountFormApiKeyRuntimeChanged({
+    ...apiKeyFormFixture(),
+    baseUrl: ' https://api.openai.com/v1 '
+  }, account), false, 'Base URL 仅前后空格变化不应要求重新测试')
+  assert.equal(accountFormApiKeyRuntimeChanged({
+    ...apiKeyFormFixture(),
+    baseUrl: 'https://ai.example.com/v1'
+  }, account), true, 'Base URL 变化后必须要求测试通过才能保存')
+  assert.equal(accountFormApiKeyRuntimeChanged({
+    ...apiKeyFormFixture(),
+    apiKeys: ['sk-regression-updated']
+  }, account), true, 'API Key 变化后必须要求测试通过才能保存')
 }
 
 function assertModelMappingProtocolValidation(): void {

@@ -20,6 +20,7 @@ import {
   recordAccountApiKeyRuntimeSuccessAsync
 } from '../../storage/account-api-key-runtime-state.repository.js'
 import {
+  assertAccountUpdateActivationTestMatchesAsync,
   accountCreateStatusFromActivationTestAsync,
   prepareAccountDraftTestSnapshotAsync
 } from './account-draft-test.service.js'
@@ -325,6 +326,13 @@ function effectiveRequestSystemAccountId(access?: RequestAccessScope): string | 
   return access?.systemAccountFilterId?.trim() || access?.systemAccountId
 }
 
+function isApiKeyCredentialChanged(account: AccountSummary, credentials: unknown): boolean {
+  if (account.type !== 'api_key') return false
+  const requestedCredentials = credentialsRecordValue(credentials)
+  if (!requestedCredentials) return false
+  return accountCredentialFingerprint(requestedCredentials) !== accountCredentialFingerprint(account.credentials)
+}
+
 function isAuthorizedAccountUpdateTarget(account: AccountSummary): boolean {
   return account.accessType === 'authorized' || Boolean(account.accountAuthorizationId || account.authorizationInstanceSourceAccountId)
 }
@@ -344,7 +352,12 @@ accountsRouter.patch('/:id', async (req, res) => {
     return
   }
   const body = parsed.data as Record<string, unknown>
-  const { groupId: requestedGroupId, clearFailureState: requestedClearFailureState, ...accountUpdateInput } = parsed.data
+  const {
+    activationTestTaskId: requestedActivationTestTaskId,
+    groupId: requestedGroupId,
+    clearFailureState: requestedClearFailureState,
+    ...accountUpdateInput
+  } = parsed.data
   const existingAccount = await findAccountForTestAsync(req.params.id, requestAccess)
   if (!existingAccount) {
     res.status(404).json({ message: '账户不存在' })
@@ -384,6 +397,26 @@ accountsRouter.patch('/:id', async (req, res) => {
   const requestedCredentials = credentialsRecordValue(body.credentials)
   if (Object.prototype.hasOwnProperty.call(body, 'credentials') && requestedCredentials) {
     accountUpdateInput.credentials = mergeAccountCredentialsForUpdate(existingAccount, requestedCredentials)
+  }
+  if (isApiKeyCredentialChanged(existingAccount, accountUpdateInput.credentials)) {
+    if (!requestedActivationTestTaskId) {
+      res.status(400).json(badRequest('更换 API Key 后请先测试通过，再保存账户'))
+      return
+    }
+    try {
+      await assertAccountUpdateActivationTestMatchesAsync({
+        currentAccount: existingAccount,
+        update: {
+          ...accountUpdateInput,
+          ...(hasGroupId ? { groupId: groupIdToBind } : {})
+        },
+        activationTestTaskId: requestedActivationTestTaskId,
+        requestAccess
+      })
+    } catch (error) {
+      res.status(400).json(badRequest(error instanceof Error ? error.message : '账户测试结果无效，请重新测试后再保存'))
+      return
+    }
   }
   const hasAccountUpdateInput = Object.keys(accountUpdateInput).length > 0
   const canUseExistingWithoutAccountUpdate = existingAccount.accessType !== 'authorized' && !existingAccount.accountAuthorizationId

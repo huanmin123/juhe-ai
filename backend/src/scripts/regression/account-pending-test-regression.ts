@@ -23,6 +23,8 @@ runtimeConfig.secret = 'account-pending-test-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'worker'
+runtimeConfig.sqliteReadWorkerPoolSize = 2
+runtimeConfig.sqliteReadWorkerQueueMaxItems = 16
 runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
@@ -35,6 +37,7 @@ const [
   accountImport,
   accountExport,
   accountTestTasks,
+  readWorkerPool,
   { accountsRouter },
   { forceSelfAccessScope, requireAuth },
   { requestContextMiddleware },
@@ -46,6 +49,7 @@ const [
   import('../../modules/accounts/account-import.service.js'),
   import('../../modules/accounts/account-export.service.js'),
   import('../../storage/account-test-tasks.repository.js'),
+  import('../../storage/sqlite-read-worker-pool.js'),
   import('../../modules/accounts/accounts.routes.js'),
   import('../../modules/auth/auth.middleware.js'),
   import('../../shared/request-context.js'),
@@ -80,6 +84,7 @@ try {
 
   const pending = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '默认创建待测试账户',
     type: 'api_key',
     credentials: { api_key: 'sk-pending-default', base_url: 'https://api.openai.com/v1' },
@@ -131,6 +136,7 @@ try {
       {
         name: '导入 active 转待测试账户',
         providerCode: 'gpt',
+        providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
         type: 'api_key',
         status: 'active',
         groupId: group.id,
@@ -175,6 +181,7 @@ try {
   await closeServer(appServer)
   await closeServer(mockOpenAIServer)
   try {
+    await readWorkerPool.closeSqliteReadWorkerPool().catch(() => undefined)
     flushAllUsageRecordQueue()
     flushAllOperationLogQueue()
     databaseModule.closeStorageDatabases()
@@ -186,6 +193,7 @@ try {
 
 interface RouteAccountCreatePayload {
   providerCode: 'gpt'
+  providerProtocolProfileId: typeof GPT_OPENAI_V1_PROFILE_ID
   name: string
   type: 'api_key'
   credentials: Record<string, unknown>
@@ -238,6 +246,33 @@ async function assertRouteCreateActivation(input: {
   assert.equal(realSuccessCreateResponse.status, 201, `真实成功草稿测试应允许创建正常账户：${responseMessage(realSuccessCreateResponse.body)}`)
   assert.equal(realSuccessCreateResponse.body.data?.status, 'active', '真实成功草稿测试创建的账户应为正常状态')
   assert.equal(realSuccessCreateResponse.body.data?.schedulable, true, '真实成功草稿测试创建的账户应参与调度')
+  const realSuccessAccount = realSuccessCreateResponse.body.data
+  assert(realSuccessAccount?.id, '真实成功草稿测试创建结果应返回账户 ID')
+
+  const updateWithoutTestResponse = await patchJson<AccountSummary>(input.baseUrl, `/__aisys__/api/my-accounts/${realSuccessAccount.id}`, input.cookie, {
+    credentials: { api_key: 'sk-update-without-test', base_url: input.mockBaseUrl }
+  })
+  assert.equal(updateWithoutTestResponse.status, 400, '已保存账户更换 API Key 时不应允许未测试直接保存')
+  assert.match(responseMessage(updateWithoutTestResponse.body), /测试通过/, '已保存账户更换 API Key 未测试时应提示先测试')
+
+  const savedUpdateDraftPayload = routeAccountPayload(input.groupId, realSuccessAccount.name, 'sk-update-after-saved-draft-test', input.mockBaseUrl)
+  const savedUpdateTask = await submitSavedAccountTestAndWait(input.baseUrl, input.cookie, realSuccessAccount.id, savedUpdateDraftPayload)
+  assert.equal(savedUpdateTask.result?.success, true, `已保存账户编辑快照测试应成功：${savedUpdateTask.result?.message ?? ''}`)
+  const updateAfterTestResponse = await patchJson<AccountSummary>(input.baseUrl, `/__aisys__/api/my-accounts/${realSuccessAccount.id}`, input.cookie, {
+    credentials: savedUpdateDraftPayload.credentials,
+    activationTestTaskId: savedUpdateTask.id
+  })
+  assert.equal(updateAfterTestResponse.status, 200, `已保存账户更换 API Key 测试通过后应允许保存：${responseMessage(updateAfterTestResponse.body)}`)
+  assert.equal(updateAfterTestResponse.body.data?.status, 'active', '已保存账户更换 API Key 测试通过后应保持正常状态')
+  const updatedStored = repositories.findAccountSummary(realSuccessAccount.id, { systemAccountId: input.ownerSystemAccountId, role: 'user' })
+  assert.equal(updatedStored?.credentials.api_key, 'sk-update-after-saved-draft-test', '测试通过后的新 API Key 应落库')
+
+  const updateChangedAfterTestResponse = await patchJson<AccountSummary>(input.baseUrl, `/__aisys__/api/my-accounts/${realSuccessAccount.id}`, input.cookie, {
+    credentials: { api_key: 'sk-update-changed-after-test', base_url: input.mockBaseUrl },
+    activationTestTaskId: savedUpdateTask.id
+  })
+  assert.equal(updateChangedAfterTestResponse.status, 400, '测试通过后再次更换 API Key 应要求重新测试')
+  assert.match(responseMessage(updateChangedAfterTestResponse.body), /重新测试/, '测试后 API Key 变化应提示重新测试')
 
   const realPendingPayload = routeAccountPayload(input.groupId, '真实手动测试激活账户', 'sk-real-manual-test-activate', input.mockBaseUrl)
   const realPendingCreateResponse = await postJson<AccountSummary>(input.baseUrl, '/__aisys__/api/my-accounts', input.cookie, realPendingPayload)
@@ -255,7 +290,7 @@ async function assertRouteCreateActivation(input: {
     baseUrl: input.baseUrl,
     path: `/__aisys__/api/my-accounts/${realPendingAccount.id}/test`,
     cookie: input.cookie,
-    body: { model: 'gpt-5.5' }
+    body: { model: 'gpt-5.5', testEndpointMode: 'responses_sse' }
   })
   assert.equal(manualTestResult.success, true, `待测试账户真实手动测试应通过：${manualTestResult.message}`)
   assert.equal(manualTestResult.accountStatusChanged, true, '待测试账户测试成功后应报告状态变化')
@@ -282,6 +317,7 @@ async function assertRouteCreateActivation(input: {
     cookie: input.cookie,
     body: {
       model: 'gpt-5.5',
+      testEndpointMode: 'responses_sse',
       account: routeAccountPayload(input.groupId, '编辑弹框快照测试账户（未保存）', 'sk-edit-current-input-test', input.mockBaseUrl)
     }
   })
@@ -365,6 +401,7 @@ async function assertRouteCreateActivation(input: {
 function routeAccountPayload(groupId: string, name: string, apiKey: string, baseUrl = 'https://api.openai.com/v1'): RouteAccountCreatePayload {
   return {
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name,
     type: 'api_key',
     credentials: { api_key: apiKey, base_url: baseUrl },
@@ -506,6 +543,21 @@ async function postJson<T>(baseUrl: string, path: string, cookie: string, body: 
   }
 }
 
+async function patchJson<T>(baseUrl: string, path: string, cookie: string, body: unknown): Promise<{ status: number; body: ApiEnvelope<T> }> {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: 'PATCH',
+    headers: {
+      'content-type': 'application/json',
+      cookie
+    },
+    body: JSON.stringify(body)
+  })
+  return {
+    status: response.status,
+    body: await response.json() as ApiEnvelope<T>
+  }
+}
+
 interface AccountTestTask<T = AccountTestResult> {
   id: string
   status: 'queued' | 'running' | 'success' | 'failed' | 'canceled'
@@ -516,7 +568,8 @@ interface AccountTestTask<T = AccountTestResult> {
 async function submitDraftAccountTestAndWait(baseUrl: string, cookie: string, account: RouteAccountCreatePayload): Promise<AccountTestTask<AccountTestResult>> {
   const response = await postJson<AccountTestTask<AccountTestResult>>(baseUrl, '/__aisys__/api/my-accounts/test-draft', cookie, {
     account,
-    model: 'gpt-5.5'
+    model: 'gpt-5.5',
+    testEndpointMode: 'responses_sse'
   })
   assert.equal(response.status, 202, `草稿测试任务应成功入队：${responseMessage(response.body)}`)
   const task = response.body.data
@@ -524,8 +577,21 @@ async function submitDraftAccountTestAndWait(baseUrl: string, cookie: string, ac
   return waitForAccountTestTask(baseUrl, cookie, task.id)
 }
 
+async function submitSavedAccountTestAndWait(baseUrl: string, cookie: string, accountId: string, account: RouteAccountCreatePayload): Promise<AccountTestTask<AccountTestResult>> {
+  const response = await postJson<AccountTestTask<AccountTestResult>>(baseUrl, `/__aisys__/api/my-accounts/${accountId}/test`, cookie, {
+    account,
+    model: 'gpt-5.5',
+    testEndpointMode: 'responses_sse'
+  })
+  assert.equal(response.status, 202, `已保存账户编辑快照测试任务应成功入队：${responseMessage(response.body)}`)
+  const task = response.body.data
+  assert(task?.id, '已保存账户编辑快照测试任务应返回任务 ID')
+  return waitForAccountTestTask(baseUrl, cookie, task.id)
+}
+
 async function waitForAccountTestTask(baseUrl: string, cookie: string, taskId: string): Promise<AccountTestTask<AccountTestResult>> {
   const startedAt = Date.now()
+  let lastTask: AccountTestTask<AccountTestResult> | undefined
   while (Date.now() - startedAt < 30_000) {
     const tasks = await getEnvelope<Array<AccountTestTask<AccountTestResult>>>(
       baseUrl,
@@ -534,8 +600,9 @@ async function waitForAccountTestTask(baseUrl: string, cookie: string, taskId: s
     )
     const task = tasks.find((item) => item.id === taskId)
     assert(task, `草稿测试任务 ${taskId} 应可查询`)
+    lastTask = task
     if (task.status === 'success' || task.status === 'failed') {
-      assert(task.result, `草稿测试任务 ${taskId} 已结束但没有结果`)
+      assert(task.result, `草稿测试任务 ${taskId} 已结束但没有结果：status=${task.status} message=${task.message ?? ''}`)
       return task
     }
     if (task.status === 'canceled') {
@@ -543,7 +610,7 @@ async function waitForAccountTestTask(baseUrl: string, cookie: string, taskId: s
     }
     await sleep(100)
   }
-  throw new Error(`草稿测试任务 ${taskId} 等待超时`)
+  throw new Error(`草稿测试任务 ${taskId} 等待超时：最后状态=${lastTask?.status ?? '未查询'} message=${lastTask?.message ?? ''}`)
 }
 
 async function getEnvelope<T>(baseUrl: string, path: string, cookie: string): Promise<T> {

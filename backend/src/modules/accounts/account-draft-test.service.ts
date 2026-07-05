@@ -288,6 +288,63 @@ export async function accountCreateStatusFromActivationTestAsync(input: {
   return 'active'
 }
 
+export async function assertAccountUpdateActivationTestMatchesAsync(input: {
+  currentAccount: AccountSummary
+  update: Record<string, unknown>
+  activationTestTaskId: string
+  requestAccess?: RequestAccessScope
+}): Promise<void> {
+  if (!input.requestAccess) {
+    throw new Error('缺少系统账户上下文，无法确认账户测试结果')
+  }
+  const task = await getAccountTestTaskRecordAsync(input.activationTestTaskId)
+  if (!task || !sameAccountTestRequester(task, input.requestAccess)) {
+    throw new Error('账户测试任务不存在或不属于当前编辑上下文')
+  }
+  if (task.status !== 'success' || task.result?.success !== true || !task.draftAccount) {
+    throw new Error('账户测试尚未成功，不能保存新的 API Key')
+  }
+  if (task.draftAccount.stateTargetAccountId !== input.currentAccount.id) {
+    throw new Error('账户测试任务不是当前账户的编辑测试，请重新测试')
+  }
+  const provider = (await listProvidersAsync()).find((item) => item.code === input.currentAccount.providerCode)
+  const providerProfile = provider?.protocolProfiles.find((item) => item.id === input.currentAccount.providerProtocolProfileId)
+  if (!provider || !providerProfile) {
+    throw new Error('账户供应商协议档案无效，无法确认账户测试结果')
+  }
+  const groupId = accountUpdateGroupId(input.currentAccount, input.update)
+  if (!groupId) {
+    throw new Error('账户分组无效，无法确认账户测试结果')
+  }
+  const group = await findGroupSummaryAsync(groupId, input.requestAccess)
+  if (!group || group.providerCode !== input.currentAccount.providerCode) {
+    throw new Error('账户分组无效，无法确认账户测试结果')
+  }
+  const ownerSystemAccountId = group.ownerSystemAccountId
+    ?? group.systemAccountId
+    ?? input.currentAccount.ownerSystemAccountId
+    ?? input.currentAccount.systemAccountId
+    ?? input.requestAccess.systemAccountFilterId
+    ?? input.requestAccess.systemAccountId
+  if (!ownerSystemAccountId) {
+    throw new Error('账户分组缺少归属用户，无法确认账户测试结果')
+  }
+  const expected = accountUpdateActivationFingerprintSnapshot({
+    currentAccount: input.currentAccount,
+    update: input.update,
+    providerBaseUrl: providerProfile.baseUrl,
+    providerProtocolProfileId: providerProfile.id,
+    protocolCode: providerProfile.protocolCode,
+    protocolVersion: providerProfile.protocolVersion,
+    groupId,
+    ownerSystemAccountId
+  })
+  const actual = draftUpdateActivationFingerprintSnapshot(task.draftAccount)
+  if (hashStableValue(expected) !== hashStableValue(actual)) {
+    throw new Error('账户测试内容已变化，请重新测试后再保存')
+  }
+}
+
 function draftAccountCredentials(account: AccountDraftTestAccountRequest, providerBaseUrl: string): Record<string, unknown> {
   const credentials = credentialsRecordValue(account.credentials) ?? {}
   if (account.type !== 'oauth' || hasCredentialText(credentials.base_url)) {
@@ -459,6 +516,57 @@ function accountCreateActivationFingerprintSnapshot(input: {
   }
 }
 
+function accountUpdateActivationFingerprintSnapshot(input: {
+  currentAccount: AccountSummary
+  update: Record<string, unknown>
+  providerBaseUrl: string
+  providerProtocolProfileId: string
+  protocolCode: string
+  protocolVersion: string
+  groupId: string
+  ownerSystemAccountId: string
+}): Record<string, unknown> {
+  const account = accountDraftRequestFromUpdate(input.currentAccount, input.update, input.groupId)
+  const clientCompatibility = isAnthropicProtocolProfile({
+    providerCode: account.providerCode,
+    providerProtocolProfileId: input.providerProtocolProfileId,
+    protocolCode: input.protocolCode,
+    protocolVersion: input.protocolVersion
+  })
+    ? 'openai_standard' as const
+    : normalizeOpenAIAccountClientCompatibility(
+        account.providerCode,
+        account.type,
+        undefined,
+        'openai_standard',
+        {
+          providerCode: account.providerCode,
+          providerProtocolProfileId: input.providerProtocolProfileId,
+          protocolCode: input.protocolCode,
+          protocolVersion: input.protocolVersion
+        }
+      )
+  const credentials = normalizeAccountCredentialsForWrite(account.type, draftAccountCredentials(account, input.providerBaseUrl), {
+    providerCode: account.providerCode,
+    accountType: account.type,
+    clientCompatibility,
+    providerProtocolProfileId: input.providerProtocolProfileId,
+    protocolCode: input.protocolCode,
+    protocolVersion: input.protocolVersion
+  })
+  return {
+    ownerSystemAccountId: input.ownerSystemAccountId,
+    groupId: account.groupId,
+    providerCode: account.providerCode,
+    providerProtocolProfileId: input.providerProtocolProfileId,
+    protocolCode: input.protocolCode,
+    protocolVersion: input.protocolVersion,
+    type: account.type,
+    credentials,
+    proxyProfileId: optionalText(account.proxyProfileId)
+  }
+}
+
 function assertDraftEndpointModesCompatible(
   providerProfile: {
     id?: string
@@ -547,6 +655,63 @@ function accountDraftRequestFromCreate(account: AccountCreateDraftActivationRequ
     availabilitySchedule: account.availabilitySchedule,
     notes: account.notes
   }
+}
+
+function draftUpdateActivationFingerprintSnapshot(draft: AccountTestDraftSnapshot): Record<string, unknown> {
+  return {
+    ownerSystemAccountId: draft.ownerSystemAccountId,
+    groupId: draft.groupId,
+    providerCode: draft.providerCode,
+    providerProtocolProfileId: draft.providerProtocolProfileId,
+    protocolCode: draft.protocolCode,
+    protocolVersion: draft.protocolVersion,
+    type: draft.type,
+    credentials: draft.credentials,
+    proxyProfileId: optionalText(draft.proxyProfileId)
+  }
+}
+
+function accountDraftRequestFromUpdate(
+  account: AccountSummary,
+  update: Record<string, unknown>,
+  groupId: string
+): AccountDraftTestAccountRequest {
+  return {
+    providerCode: account.providerCode,
+    providerProtocolProfileId: account.providerProtocolProfileId ?? '',
+    name: hasOwnRecordKey(update, 'name') ? optionalText(update.name) ?? account.name : account.name,
+    type: account.type,
+    credentials: hasOwnRecordKey(update, 'credentials')
+      ? credentialsRecordValue(update.credentials) ?? {}
+      : account.credentials,
+    supportedModels: hasOwnRecordKey(update, 'supportedModels')
+      ? normalizedTextList(Array.isArray(update.supportedModels) ? update.supportedModels.filter((item): item is string => typeof item === 'string') : undefined)
+      : normalizedTextList(account.supportedModels),
+    modelMappings: hasOwnRecordKey(update, 'modelMappings') ? update.modelMappings : account.modelMappings,
+    concurrencyLimit: hasOwnRecordKey(update, 'concurrencyLimit') && typeof update.concurrencyLimit === 'number'
+      ? update.concurrencyLimit
+      : account.concurrencyLimit,
+    priority: hasOwnRecordKey(update, 'priority') && typeof update.priority === 'number'
+      ? update.priority
+      : account.priority,
+    superPriorityEnabled: hasOwnRecordKey(update, 'superPriorityEnabled') && typeof update.superPriorityEnabled === 'boolean'
+      ? update.superPriorityEnabled
+      : account.superPriorityEnabled,
+    fallbackEnabled: hasOwnRecordKey(update, 'fallbackEnabled') && typeof update.fallbackEnabled === 'boolean'
+      ? update.fallbackEnabled
+      : account.fallbackEnabled,
+    proxyProfileId: hasOwnRecordKey(update, 'proxyProfileId') ? optionalText(update.proxyProfileId) : optionalText(account.proxyProfileId),
+    groupId,
+    accountExpiresAt: hasOwnRecordKey(update, 'accountExpiresAt') ? optionalText(update.accountExpiresAt) : optionalText(account.accountExpiresAt),
+    availabilitySchedule: hasOwnRecordKey(update, 'availabilitySchedule')
+      ? credentialsRecordValue(update.availabilitySchedule) ?? null
+      : account.availabilitySchedule as unknown as Record<string, unknown> | undefined,
+    notes: hasOwnRecordKey(update, 'notes') ? optionalText(update.notes) : optionalText(account.notes)
+  }
+}
+
+function accountUpdateGroupId(account: AccountSummary, update: Record<string, unknown>): string | undefined {
+  return hasOwnRecordKey(update, 'groupId') ? optionalText(update.groupId) : optionalText(account.boundGroupId)
 }
 
 function draftTestAccountSummary(input: {
@@ -671,6 +836,10 @@ function optionalText(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
   const text = value.trim()
   return text || undefined
+}
+
+function hasOwnRecordKey(value: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key)
 }
 
 function hasCredentialText(value: unknown): boolean {
