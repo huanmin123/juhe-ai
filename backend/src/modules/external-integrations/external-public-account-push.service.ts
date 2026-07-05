@@ -40,7 +40,7 @@ import {
 import { getBusinessDatabase, runInDatabaseTransaction } from '../../storage/database.js'
 import { createPostgresDatabaseClient } from '../../storage/database-client.js'
 import { getPostgresPool } from '../../storage/postgres-client.js'
-import { submitApiKeyRelatedCleanup } from '../api-keys/api-key-cleanup.service.js'
+import { submitApiKeyRelatedCleanup, submitApiKeyRelatedCleanupAsync } from '../api-keys/api-key-cleanup.service.js'
 import {
   accountCreateInputForPush,
   accountPartialUpdateInputForPush,
@@ -831,7 +831,7 @@ export async function deletePublicApiKeyAsync(input: PublicApiKeyDeleteInput): P
   const deletedApiKey = sanitizeApiKey(apiKey)
   const result = await deleteApiKeyWithRelatedCleanupAsync(apiKey.id, access)
   if (result.cleanupTarget) {
-    submitApiKeyRelatedCleanup(result.cleanupTarget)
+    await submitApiKeyRelatedCleanupAsync(result.cleanupTarget)
   }
   return publicApiKeyResponse(result.deleted ? 'deleted' : 'not_found', target, result.deleted ? deletedApiKey : null)
 }

@@ -7,6 +7,7 @@ import { createAppCache } from '../../shared/cache.js'
 import { registerGatewayRuntimeCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { getRedisClient, type RedisCommandClient } from '../../shared/redis-client.js'
+import { redisNamespacedKey } from '../../shared/redis-namespace.js'
 import { createRuntimeStateStore } from '../../shared/runtime-state-store.js'
 import { fixedRetryPolicy, retryAttemptCount, retryDueAtMs, shouldRetryPolicyAttempt } from '../../shared/retry-policy.js'
 import {
@@ -768,7 +769,7 @@ function redisStateClient(): Promise<RedisCommandClient> {
 }
 
 function redisRefreshFailureStateKey(accountId: string): string {
-  return `juhe-ai:state:openai-oauth-refresh-failure:${redisKeyHash(accountId)}`
+  return redisNamespacedKey(`juhe-ai:state:openai-oauth-refresh-failure:${redisKeyHash(accountId)}`)
 }
 
 function redisKeyHash(value: string): string {

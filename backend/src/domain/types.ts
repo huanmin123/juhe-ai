@@ -1122,7 +1122,6 @@ export interface RouteStrategySpeedFirstConfig {
   recoverySuccessCount: number
   probeIntervalSeconds: number
   degradedTtlSeconds: number
-  retryOnFirstByteTimeout: boolean
   maxFirstByteRetriesPerRequest: number
 }
 

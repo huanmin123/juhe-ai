@@ -33,7 +33,9 @@
         <a-tag :color="trafficSourceColor(record.trafficSource)">{{ trafficSourceText(record.trafficSource) }}</a-tag>
       </template>
       <template v-else-if="column.key === 'endpoint'">
-        <span class="endpoint-cell">{{ record.method }} {{ record.path }}</span>
+        <a-tooltip :title="auditEndpointText(record)" placement="topLeft">
+          <span class="endpoint-cell">{{ auditEndpointText(record) }}</span>
+        </a-tooltip>
       </template>
       <template v-else-if="column.key === 'model'">
         <span v-if="record.model" class="model-cell">
@@ -155,6 +157,10 @@ function handleActionClick(key: string, record: AuditLogSummary) {
   if (key === 'detail') {
     emit('detail', record)
   }
+}
+
+function auditEndpointText(record: AuditLogSummary): string {
+  return `${record.method} ${record.path}`
 }
 </script>
 

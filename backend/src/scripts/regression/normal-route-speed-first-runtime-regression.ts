@@ -14,7 +14,6 @@ const {
   recordNormalRouteFirstByteSlowAsync,
   recordNormalRouteFirstByteSuccessAsync
 } = await import('../../modules/gateway/runtime/normal-route-latency-degradation.service.js')
-
 const config: RouteStrategySpeedFirstConfig = {
   firstByteThresholdMs: 30000,
   slowTriggerCount: 2,
@@ -22,8 +21,7 @@ const config: RouteStrategySpeedFirstConfig = {
   recoverySuccessCount: 3,
   probeIntervalSeconds: 10,
   degradedTtlSeconds: 300,
-  retryOnFirstByteTimeout: true,
-  maxFirstByteRetriesPerRequest: 1
+  maxFirstByteRetriesPerRequest: 2
 }
 
 const scope = normalRouteLatencyDegradationScope({
@@ -46,6 +44,25 @@ assert.equal(firstSlow?.slowCount, 1, '第一次慢速样本应只记录观察')
 assert.equal(firstSlow?.degraded, false, '未达到触发次数前不应降级')
 const observedOrder = await orderGatewayAccountsByNormalRouteLatencyDegradationAsync(accounts, scope, config)
 assert.deepEqual(observedOrder.accounts.map((account) => account.id), accounts.map((account) => account.id), '未达到触发次数前应保持原排序')
+
+const observationClearScope = normalRouteLatencyDegradationScope({
+  systemAccountId: 'sys_speed_first_runtime',
+  routeStrategyId: `route_strategy_speed_first_observation_clear_${Date.now()}`,
+  groupId: 'group_speed_first_runtime'
+})
+assert(observationClearScope, '速度优先观察态清理回归需要有效 scope')
+await recordNormalRouteFirstByteSlowAsync(accounts[0]!, observationClearScope, config)
+const observationClearCount = await clearNormalRouteLatencyDegradationForRouteStrategyAsync(observationClearScope.routeStrategyId)
+assert.equal(observationClearCount >= 1, true, '按路由策略清理应删除未确认降级的慢样本观察态')
+const observationAfterClear = await recordNormalRouteFirstByteSlowAsync(accounts[0]!, observationClearScope, config)
+assert.equal(observationAfterClear?.slowCount, 1, '观察态清理后下一次慢样本应重新从 1 计数')
+await clearNormalRouteLatencyDegradationForRouteStrategyAsync(observationClearScope.routeStrategyId)
+
+const transientRecovery = await recordNormalRouteFirstByteSuccessAsync(accounts[0]!, scope, config, 100)
+assert.equal(transientRecovery?.cleared, true, '未确认慢前的快首字应清理慢样本窗口')
+const transientSlow = await recordNormalRouteFirstByteSlowAsync(accounts[0]!, scope, config)
+assert.equal(transientSlow?.slowCount, 1, '快首字清理后下一次慢样本应重新从 1 计数')
+assert.equal(transientSlow?.degraded, false, '偶发慢后恢复快不应被累计成速度降级')
 
 const secondSlow = await recordNormalRouteFirstByteSlowAsync(accounts[0]!, scope, config)
 assert.equal(secondSlow?.slowCount, 2, '第二次慢速样本应达到触发次数')
@@ -90,4 +107,18 @@ assert.equal(clearedCount >= 2, true, '按路由策略清理应删除当前策�
 const clearedOrder = await orderGatewayAccountsByNormalRouteLatencyDegradationAsync(accounts, scope, config)
 assert.equal(clearedOrder.applied, false, '清理速度优先运行态后不应继续应用降级排序')
 
-console.log('普通路由速度优先运行态回归通过：慢速窗口、短 TTL 降级排序、后台探针候选和恢复成功次数均生效')
+const concurrentSlowResults = await Promise.all([
+  recordNormalRouteFirstByteSlowAsync(accounts[0]!, scope, config),
+  recordNormalRouteFirstByteSlowAsync(accounts[0]!, scope, config)
+])
+assert.equal(
+  concurrentSlowResults.some((result) => result?.degraded === true),
+  true,
+  '并发慢样本达到触发次数时应稳定进入速度降级'
+)
+const concurrentOrder = await orderGatewayAccountsByNormalRouteLatencyDegradationAsync(accounts, scope, config)
+assert.equal(concurrentOrder.applied, true, '并发慢样本触发后应应用速度降级排序')
+assert.deepEqual(concurrentOrder.accounts.map((account) => account.id), [accounts[1]!.id, accounts[0]!.id], '并发慢样本后应把慢账号后置')
+await clearNormalRouteLatencyDegradationForRouteStrategyAsync(scope.routeStrategyId)
+
+console.log('普通路由速度优先运行态回归通过：慢速窗口、短 TTL 降级排序、后台探针候选、恢复成功次数和并发慢样本均生效')

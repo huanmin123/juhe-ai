@@ -49,8 +49,12 @@ export async function cleanupExpiredAuditHotRetentionData(nowMs = Date.now()): P
       }
     }
 
-    if (Date.now() - startedAt < auditHotRetentionCleanupMaxRunMs) {
-      result.auditHotSearchFiles = await cleanupAuditHotSearchFilesBefore(successHotCutoffCreatedAt)
+    const remainingFileCleanupMs = auditHotRetentionCleanupMaxRunMs - (Date.now() - startedAt)
+    if (remainingFileCleanupMs > 0) {
+      result.auditHotSearchFiles = await cleanupAuditHotSearchFilesBefore(successHotCutoffCreatedAt, {
+        maxFiles: auditHotRetentionCleanupBatchSize,
+        maxRunMs: remainingFileCleanupMs
+      })
     }
     if (result.auditLogs > 0 || result.auditPayloadBlobs > 0 || result.auditHotSearchFiles > 0) {
       logger.info({

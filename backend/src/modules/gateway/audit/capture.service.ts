@@ -88,6 +88,19 @@ interface CompleteAttemptInput {
   errorMessage?: string
 }
 
+interface FailedDispatchAttemptInput {
+  account: OpenAIAccountSecret
+  attemptIndex: number
+  upstreamUrl: string
+  method: string
+  startedAtMs: number
+  statusCode?: number
+  errorPhase: string
+  errorCode?: string
+  errorMessage?: string
+  requestForModelAccounting?: Request
+}
+
 interface AddGatewayMetadataInput {
   metadata: Record<string, unknown>
   label?: string
@@ -326,6 +339,39 @@ export class AuditCaptureContext {
         contentEncoding: input.responseHeaders?.get('content-encoding') ?? undefined
       })
     }
+  }
+
+  recordFailedDispatchAttempt(input: FailedDispatchAttemptInput): string {
+    if (!this.enabled) return ''
+    const accountingRequest = input.requestForModelAccounting ?? this.req
+    this.bindContext({ providerCode: input.account.providerCode })
+    this.bindContext(auditModelAccounting(input.account, requestModel(accountingRequest), this.gatewayContext.systemAccountId, gatewayRequestEndpointFamily(accountingRequest)))
+    const tempId = `attempt_${input.attemptIndex}_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`
+    const endedAtMs = Date.now()
+    const sanitizedUpstreamUrl = sanitizeUrlCredentialsForLog(input.upstreamUrl) ?? input.upstreamUrl.trim()
+    const attempt: AuditLogAttemptInput = {
+      id: `audatt_${Date.now()}_${randomUUID()}`,
+      tempId,
+      attemptIndex: input.attemptIndex,
+      accountId: input.account.id,
+      accountOwnerSystemAccountId: input.account.accountOwnerSystemAccountId,
+      groupId: this.gatewayContext.groupId,
+      proxyUrl: sanitizeUrlCredentialsForLog(input.account.proxyUrl),
+      providerCode: input.account.providerCode,
+      upstreamMethod: input.method,
+      upstreamUrl: sanitizedUpstreamUrl || 'unknown',
+      upstreamStatusCode: input.statusCode,
+      success: false,
+      errorPhase: input.errorPhase,
+      errorCode: sanitizeOptionalDiagnosticMessage(input.errorCode),
+      errorMessage: sanitizeOptionalDiagnosticMessage(input.errorMessage),
+      startedAt: new Date(input.startedAtMs).toISOString(),
+      endedAt: new Date(endedAtMs).toISOString(),
+      durationMs: endedAtMs - input.startedAtMs
+    }
+    this.attempts.push(attempt)
+    this.hadFailedAttempt = true
+    return tempId
   }
 
   finalize(input: FinalizeAuditInput): void {

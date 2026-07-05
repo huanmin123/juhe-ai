@@ -47,7 +47,7 @@ try {
     yieldToEventLoop: async () => {}
   })
   assert.equal(refreshed.skipped, false, '首次热用量窗口刷新不应跳过')
-  assert.deepEqual(refreshed.stages.map((stage) => stage.name), ['usage_overview_windows', 'usage_scope_range_windows'], '热刷新只应执行概览窗口和范围窗口')
+  assert.deepEqual(refreshed.stages.map((stage) => stage.name), ['usage_overview_windows'], '热刷新只应执行轻量概览窗口，范围窗口交给独立低频任务')
 
   const overview = await usageStatsRepository.getUsageStatsOverviewAsync(adminAccess, usageStatsRepository.normalizeDefaultUsageStatsRange())
   assert.equal(overview.summary.requestCount, 7, '热刷新后统计首页 summary 应读取今日窗口')
@@ -56,19 +56,6 @@ try {
   assert.equal(overview.errors[0]?.errorCount, 2, '热刷新后错误排行应读取今日窗口')
 
   const statsDatabase = databaseModule.getStatsDatabase()
-  const accountToday = statsDatabase.prepare(`
-    SELECT request_count, active_days, total_cost_usd
-    FROM usage_scope_range_windows
-    WHERE system_account_id = ?
-      AND scope_type = 'account'
-      AND scope_id = ?
-      AND start_date = ?
-      AND end_date = ?
-  `).get(systemAccountId, accountId, today, today) as { request_count?: number; active_days?: number; total_cost_usd?: number } | undefined
-  assert.equal(accountToday?.request_count, 11, '热刷新应发布今日账号范围窗口')
-  assert.equal(accountToday?.active_days, 1, '今日账号范围窗口 active_days 应来自 daily')
-  assert.equal(accountToday?.total_cost_usd, 0.321, '今日账号范围窗口成本应来自 daily')
-
   const previousWindow = statsDatabase.prepare(`
     SELECT request_count
     FROM usage_scope_range_windows
@@ -78,7 +65,7 @@ try {
       AND start_date = ?
       AND end_date = ?
   `).get(systemAccountId, accountId, previousEndDate, previousEndDate) as { request_count?: number } | undefined
-  assert.equal(previousWindow?.request_count, 99, '热刷新不应删除或重建非今日 end_date 的范围窗口')
+  assert.equal(previousWindow?.request_count, 99, '热刷新不应删除或重建范围窗口')
 
   const skipped = await usageStatsRepository.refreshHotUsageWindowSnapshots({
     skipIfUnchanged: true,
@@ -87,7 +74,7 @@ try {
   })
   assert.equal(skipped.skipped, true, '同一天同源水位热刷新应跳过')
 
-  console.log('热用量窗口 SQLite 回归通过：只刷新今日窗口、保留历史窗口且同水位跳过')
+  console.log('热用量窗口 SQLite 回归通过：只刷新轻量概览窗口、保留范围窗口且同水位跳过')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()

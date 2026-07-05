@@ -16,10 +16,6 @@ interface HardCleanupTableRule {
 }
 
 const nonBusinessDatasetCleanupTables: HardCleanupTableRule[] = [
-  { databaseRole: 'dataset', tableName: 'audit_payload_refs', timeColumnName: 'created_at', cutoffKey: 'iso' },
-  { databaseRole: 'dataset', tableName: 'audit_log_attempts', timeColumnName: 'started_at', cutoffKey: 'iso' },
-  { databaseRole: 'dataset', tableName: 'audit_logs', timeColumnName: 'created_at', cutoffKey: 'iso' },
-  { databaseRole: 'dataset', tableName: 'audit_error_groups', timeColumnName: 'updated_at', cutoffKey: 'iso' },
   { databaseRole: 'dataset', tableName: 'model_check_items', timeColumnName: 'created_at', cutoffKey: 'iso' },
   { databaseRole: 'dataset', tableName: 'model_check_runs', timeColumnName: 'created_at', cutoffKey: 'iso' },
   { databaseRole: 'dataset', tableName: 'operation_log_targets', timeColumnName: 'created_at', cutoffKey: 'iso' },
@@ -84,9 +80,10 @@ const nonBusinessStatsCleanupTables: HardCleanupTableRule[] = [
   { databaseRole: 'stats', tableName: 'client_ip_stats_daily', timeColumnName: 'stat_date', cutoffKey: 'date' },
   { databaseRole: 'stats', tableName: 'client_ip_usage_range_windows', timeColumnName: 'end_date', cutoffKey: 'date' },
   { databaseRole: 'stats', tableName: 'client_ip_range_window_dirty_ips', timeColumnName: 'updated_at', cutoffKey: 'iso' },
-  { databaseRole: 'stats', tableName: 'client_ip_policies', timeColumnName: 'updated_at', cutoffKey: 'iso' },
   { databaseRole: 'stats', tableName: 'client_ip_policy_hits', timeColumnName: 'stat_date', cutoffKey: 'date' },
-  { databaseRole: 'stats', tableName: 'stats_job_state', timeColumnName: 'updated_at', cutoffKey: 'iso' },
+  { databaseRole: 'stats', tableName: 'client_ip_account_stats_daily', timeColumnName: 'stat_date', cutoffKey: 'date' },
+  { databaseRole: 'stats', tableName: 'client_ip_account_usage_range_windows', timeColumnName: 'end_date', cutoffKey: 'date' },
+  { databaseRole: 'stats', tableName: 'client_ip_account_range_window_dirty_ips', timeColumnName: 'updated_at', cutoffKey: 'iso' },
   { databaseRole: 'stats', tableName: 'usage_record_cleanup_deductions', timeColumnName: 'updated_at', cutoffKey: 'iso' },
   { databaseRole: 'stats', tableName: 'system_metrics_samples', timeColumnName: 'sampled_at', cutoffKey: 'iso' },
   { databaseRole: 'stats', tableName: 'system_metrics_hourly', timeColumnName: 'stat_hour', cutoffKey: 'hour' },

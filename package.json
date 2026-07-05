@@ -140,6 +140,7 @@
     "test:db-service-runtime-metrics": "pnpm --filter juhe-ai-backend test:db-service-runtime-metrics",
     "test:usage-stats-rebuild-shard-cursor": "pnpm --filter juhe-ai-backend test:usage-stats-rebuild-shard-cursor",
     "test:usage-record-batch-lookup": "pnpm --filter juhe-ai-backend test:usage-record-batch-lookup",
+    "test:record-endpoint-path-preservation": "pnpm --filter juhe-ai-backend test:record-endpoint-path-preservation",
     "test:usage-stats-shard-fanout-boundary": "pnpm --filter juhe-ai-backend test:usage-stats-shard-fanout-boundary",
     "test:usage-stats-batch-statement": "pnpm --filter juhe-ai-backend test:usage-stats-batch-statement",
     "test:stats-aggregation-batch-yield": "pnpm --filter juhe-ai-backend test:stats-aggregation-batch-yield",

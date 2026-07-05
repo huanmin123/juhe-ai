@@ -20,6 +20,7 @@
   - [../../functions/Gemini账号接入.md](../../functions/Gemini账号接入.md)
   - [../../functions/SQLite存储说明.md](../../functions/SQLite存储说明.md)
   - [../../functions/PostgreSQL与Redis高性能模式设计.md](../../functions/PostgreSQL与Redis高性能模式设计.md)
+  - [../../functions/可靠统计与读写资源隔离设计.md](../../functions/可靠统计与读写资源隔离设计.md)
   - [../../functions/存储适配接口设计.md](../../functions/存储适配接口设计.md)
   - [../../functions/SQLite单写者写队列治理设计.md](../../functions/SQLite单写者写队列治理设计.md)
   - [后台任务使用说明](后台任务使用说明.md)

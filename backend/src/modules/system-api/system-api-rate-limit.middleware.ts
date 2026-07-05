@@ -3,6 +3,7 @@ import type { NextFunction, Request, Response } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { getRedisClient, type RedisCommandClient } from '../../shared/redis-client.js'
+import { redisNamespacedKey } from '../../shared/redis-namespace.js'
 import { getRequestAuthContext } from '../auth/request-context.js'
 import { getSettingsAsync } from '../../storage/repositories.js'
 import { getRequestContext, getRequestLogger, sanitizeUrlForLog } from '../../shared/request-context.js'
@@ -385,7 +386,7 @@ function redisStateClient(): Promise<RedisCommandClient> {
 }
 
 function redisFixedWindowRateLimitKey(storeName: string, key: string): string {
-  return `juhe-ai:rate-limit:fixed:${redisKeyHash(storeName)}:${redisKeyHash(key)}`
+  return redisNamespacedKey(`juhe-ai:rate-limit:fixed:${redisKeyHash(storeName)}:${redisKeyHash(key)}`)
 }
 
 function redisKeyHash(value: string): string {

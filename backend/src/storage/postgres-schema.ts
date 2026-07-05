@@ -92,10 +92,64 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
     schemaName: 'juhe_usage',
     source: 'usage-catalog-pg-list-indexes',
     sql: 'CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_traffic_created_sort ON usage_record_shard_entries(system_account_id, traffic_source, created_at DESC, usage_id DESC) INCLUDE (account_id, shard_key)'
+  },
+  {
+    schemaName: 'juhe_dataset',
+    source: 'dataset-log-pg-prefix-indexes',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_audit_logs_trace_c_created_sort ON audit_logs((trace_id COLLATE "C"), created_at DESC, id DESC)'
+  },
+  {
+    schemaName: 'juhe_dataset',
+    source: 'dataset-log-pg-prefix-indexes',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_audit_logs_system_trace_c_created_sort ON audit_logs(system_account_id, (trace_id COLLATE "C"), created_at DESC, id DESC)'
+  },
+  {
+    schemaName: 'juhe_dataset',
+    source: 'dataset-log-pg-prefix-indexes',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_audit_logs_client_ip_c_created_sort ON audit_logs((client_ip COLLATE "C"), created_at DESC, id DESC)'
+  },
+  {
+    schemaName: 'juhe_dataset',
+    source: 'dataset-log-pg-prefix-indexes',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_audit_logs_system_client_ip_c_created_sort ON audit_logs(system_account_id, (client_ip COLLATE "C"), created_at DESC, id DESC)'
+  },
+  {
+    schemaName: 'juhe_dataset',
+    source: 'dataset-log-pg-prefix-indexes',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_public_api_logs_trace_c_created_sort ON public_api_logs((trace_id COLLATE "C"), created_at DESC, id DESC)'
+  },
+  {
+    schemaName: 'juhe_dataset',
+    source: 'dataset-log-pg-prefix-indexes',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_public_api_logs_client_ip_c_created_sort ON public_api_logs((client_ip COLLATE "C"), created_at DESC, id DESC)'
+  },
+  {
+    schemaName: 'juhe_dataset',
+    source: 'dataset-log-pg-prefix-indexes',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_runtime_logs_trace_c_time ON runtime_logs((trace_id COLLATE "C"), time DESC, id DESC)'
+  },
+  {
+    schemaName: 'juhe_dataset',
+    source: 'dataset-log-pg-prefix-indexes',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_operation_logs_trace_c_created ON operation_logs((trace_id COLLATE "C"), created_at DESC, id DESC)'
   }
 ]
 
 const postgresBigintColumnNames = new Set([
+  'bytes',
+  'usage_bytes',
+  'storage_offset_bytes',
+  'raw_size_bytes',
+  'compressed_size_bytes',
+  'raw_payload_bytes',
+  'compressed_payload_bytes',
+  'compression_saved_bytes',
+  'request_size_bytes',
+  'response_size_bytes',
+  'log_offset',
+  'cursor_offset',
+  'file_size',
+  'file_mtime_ms',
   'request_count',
   'success_count',
   'error_count',
@@ -123,7 +177,9 @@ const postgresBigintColumnNames = new Set([
   'freelist_count',
   'table_count',
   'index_count',
+  'growth_bytes_1h',
   'growth_rows_1h',
+  'growth_bytes_24h',
   'growth_rows_24h'
 ])
 
@@ -301,13 +357,11 @@ function transformSqliteStatementToPostgres(sql: string, schemaName: PostgresSch
   transformed = transformed.replace(/\bBLOB\b/gi, 'bytea')
   transformed = transformed.replace(/\bREAL\b/gi, 'double precision')
   transformed = transformed.replace(/\bINTEGER\b/gi, 'integer')
-  if (schemaName === 'juhe_stats') {
-    transformed = transformed.replace(/^(\s*)([A-Za-z_][A-Za-z0-9_]*)(\s+)integer\b/gim, (match, indent: string, columnName: string, spacing: string) => {
-      return postgresBigintColumnNames.has(columnName.toLowerCase())
-        ? `${indent}${columnName}${spacing}bigint`
-        : match
-    })
-  }
+  transformed = transformed.replace(/^(\s*)([A-Za-z_][A-Za-z0-9_]*)(\s+)integer\b/gim, (match, indent: string, columnName: string, spacing: string) => {
+    return postgresBigintColumnNames.has(columnName.toLowerCase())
+      ? `${indent}${columnName}${spacing}bigint`
+      : match
+  })
   transformed = transformed.replace(/\bTEXT\b/gi, 'text')
   transformed = transformed.replace(/[ \t]+\n/g, '\n')
   transformed = transformed.replace(/\n{3,}/g, '\n\n')

@@ -89,13 +89,15 @@ try {
   const groupList = repositories.listGroupsPage(access, { page: 1, pageSize: 20 })
   const listedGroup = groupList.items.find((item) => item.id === group.id)
   assert(listedGroup, '分组列表应返回种子分组')
-  assert.deepEqual(listedGroup.accountIds, [account.id], '分组列表 accountIds 应保留真实绑定账号')
+  assert.deepEqual(listedGroup.accountIds, [], '分组分页列表不应返回完整账号 ID，避免列表读放大')
   assert.equal(listedGroup.accountStats.total, 1, '分组列表 accountStats.total 应读取预聚合真实账号数')
   assert.equal(listedGroup.accountStats.available, 1, '分组列表 accountStats.available 应读取预聚合真实可用账号数')
   assert.equal(listedGroup.accountStats.usage.requestCount, 13, '分组列表 accountStats.usage 应读取预聚合真实总请求数')
   assert.equal(listedGroup.accountStats.usage.inputTokens, 3200, '分组列表 accountStats.usage 应读取预聚合真实输入 token')
   assert.equal(listedGroup.accountStats.usage.outputTokens, 1000, '分组列表 accountStats.usage 应读取预聚合真实输出 token')
   assertGroupStatsContract(listedGroup.accountStats)
+  const groupDetail = repositories.findGroupSummary(group.id, access)
+  assert.deepEqual(groupDetail?.accountIds, [account.id], '分组详情应保留真实绑定账号 ID')
 
   assertStatsBusyFails(
     'API Key 列表统计读取',

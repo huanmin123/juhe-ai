@@ -61,7 +61,10 @@
         <span :class="record.clientIp ? 'ip-cell' : 'muted-cell'">{{ record.clientIp ?? '-' }}</span>
       </template>
       <template v-else-if="column.key === 'endpoint'">
-        <span :class="record.endpoint ? 'endpoint-cell' : 'muted-cell'">{{ formatEndpoint(record.endpoint) }}</span>
+        <a-tooltip v-if="record.endpoint" :title="formatEndpoint(record.endpoint)" placement="topLeft">
+          <span class="endpoint-cell">{{ formatEndpoint(record.endpoint) }}</span>
+        </a-tooltip>
+        <span v-else class="muted-cell">-</span>
       </template>
       <template v-else-if="column.key === 'model'">
         <span v-if="record.model" class="model-cell">

@@ -9,9 +9,10 @@ import {
 } from '../usage/types.js'
 import {
   isUpstreamRequestAbortedError,
-  readStreamChunkWithTimeout
+  UpstreamRequestAbortedError
 } from '../upstream/request.js'
 import { GatewayFirstByteTimeoutError, isGatewayFirstByteTimeoutError } from '../upstream/first-byte-timeout.js'
+import type { FirstByteDeadlineHandler } from '../upstream/first-byte-deadline.js'
 import {
   gatewayStreamFailureCode,
   type GatewayErrorProtocol,
@@ -82,6 +83,8 @@ export interface StreamPipeOptions {
   responseProtocol?: ResponseProtocolCode
   endpointFamily?: ResponseEndpointFamily
   firstByteTimeoutMs?: number
+  firstByteDeadlineMs?: number
+  onFirstByteDeadline?: FirstByteDeadlineHandler
   prepareDownstream?: () => void
   transformUpstreamChunk?: (chunk: Buffer) => Buffer[]
   flushTransformedUpstreamChunks?: () => Buffer[]
@@ -134,6 +137,7 @@ export async function pipeUpstreamStream(
   let parserSkipLogged = false
   let responseInspectionParserSkipLogged = false
   let firstTokenMs: number | undefined
+  let firstByteDeadlineObserved = false
   let waitingForFirstChunk = true
   let lastUpstreamActivityAt = startedAt
   let lastSseEventActivityAt: number | undefined
@@ -367,7 +371,7 @@ export async function pipeUpstreamStream(
         throw new Error('客户端连接已断开')
       }
       const readStartedAt = Date.now()
-      const result = await readNextStreamChunk(iterator, settings, startedAt, {
+      const readResult = await readNextStreamChunk(iterator, settings, startedAt, {
         waitingForFirstChunk,
         lastUpstreamActivityAt,
         lastSseEventActivityAt,
@@ -375,8 +379,17 @@ export async function pipeUpstreamStream(
         semanticResultReceived,
         pendingProtocolEvent,
         parserSkipped: streamParserSkipped,
-        waitingForFirstOutput: options.firstByteTimeoutMs !== undefined && firstTokenMs === undefined
-      }, signal, options.firstByteTimeoutMs)
+        waitingForFirstOutput: options.firstByteDeadlineMs !== undefined
+          && firstTokenMs === undefined
+          && totalResponseBytes === 0
+          && !res.headersSent,
+        firstByteDeadlineObserved
+      }, signal, {
+        firstByteDeadlineMs: options.firstByteDeadlineMs,
+        onFirstByteDeadline: options.onFirstByteDeadline
+      })
+      firstByteDeadlineObserved = readResult.firstByteDeadlineObserved
+      const result = readResult.result
       const readWaitMs = Date.now() - readStartedAt
 
       if (result.done) {
@@ -884,6 +897,9 @@ export async function pipeUpstreamStream(
       options.clientRetryEnabled === true,
       totalResponseBytes
     )
+    if (isGatewayFirstByteTimeoutError(error) && error.source === 'speed_first_deadline') {
+      await closeAsyncIterator(iterator)
+    }
     await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, inspection.failedReceived))
     if (shouldFailBeforeDownstreamCommit()) {
       streamLogger.warn({
@@ -1101,7 +1117,7 @@ export async function pipeUpstreamStream(
   return finishStreamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
 }
 
-function readNextStreamChunk(
+async function readNextStreamChunk(
   iterator: AsyncIterator<Uint8Array>,
   settings: GatewaySettings,
   startedAt: number,
@@ -1114,31 +1130,126 @@ function readNextStreamChunk(
     pendingProtocolEvent: boolean
     parserSkipped: boolean
     waitingForFirstOutput: boolean
+    firstByteDeadlineObserved: boolean
   },
   signal?: AbortSignal,
-  firstByteTimeoutMs?: number
-): Promise<IteratorResult<Uint8Array>> {
-  const firstByteDeadlineMs = status.waitingForFirstOutput && !status.parserSkipped && firstByteTimeoutMs !== undefined
-    ? firstByteTimeoutMs - (Date.now() - startedAt)
-    : undefined
-  const readPlan = buildStreamReadPlan(settings, startedAt, status)
-  const planTimeoutMs = readPlan.timeoutMs
-  const timeoutMs = firstByteDeadlineMs === undefined
-    ? planTimeoutMs
-    : Math.min(firstByteDeadlineMs, planTimeoutMs)
-  const firstByteDeadlineSelected = firstByteDeadlineMs !== undefined && firstByteDeadlineMs <= planTimeoutMs
-  // If downstream writes delayed the next read, upstream bytes may already be buffered locally.
-  // Give iterator.next() one tick before declaring the stream idle.
-  return readStreamChunkWithTimeout(
-    iterator,
-    Math.max(0.001, timeoutMs / 1000),
-    () => firstByteDeadlineSelected
-      ? new GatewayFirstByteTimeoutError(`上游流式响应 ${Math.ceil((firstByteTimeoutMs ?? 0) / 1000)}s 后仍未返回首个有效输出`, firstByteTimeoutMs ?? 0)
-      : readPlan.timeoutKind === 'stream_lifetime'
-        ? new StreamMaxLifetimeExceededError(readPlan.timeoutMessage)
-        : new Error(readPlan.timeoutMessage),
-    signal
-  )
+  options: {
+    firstByteDeadlineMs?: number
+    onFirstByteDeadline?: FirstByteDeadlineHandler
+  } = {}
+): Promise<{ result: IteratorResult<Uint8Array>; firstByteDeadlineObserved: boolean }> {
+  const pendingRead = iterator.next()
+  let firstByteDeadlineObserved = status.firstByteDeadlineObserved
+
+  while (true) {
+    const now = Date.now()
+    const firstByteDeadlineMs = options.firstByteDeadlineMs
+    const firstByteRemainingMs = status.waitingForFirstOutput
+      && !status.parserSkipped
+      && !firstByteDeadlineObserved
+      && firstByteDeadlineMs !== undefined
+      ? startedAt + firstByteDeadlineMs - now
+      : undefined
+    if (firstByteRemainingMs !== undefined && firstByteRemainingMs <= 0) {
+      firstByteDeadlineObserved = true
+      const deadlineMs = firstByteDeadlineMs ?? 0
+      const action = await options.onFirstByteDeadline?.({
+        elapsedMs: Date.now() - startedAt,
+        timeoutMs: deadlineMs,
+        transport: 'stream'
+      }) ?? 'abort'
+      if (action === 'abort') {
+        throw new GatewayFirstByteTimeoutError(`上游流式响应 ${Math.ceil(deadlineMs / 1000)}s 后仍未返回首个有效输出`, deadlineMs, 'speed_first_deadline')
+      }
+      continue
+    }
+
+    const readPlan = buildStreamReadPlan(settings, startedAt, status)
+    if (readPlan.timeoutMs <= 0) {
+      throw streamReadPlanTimeoutError(readPlan)
+    }
+    const race = await raceStreamReadWithDeadlines(pendingRead, {
+      signal,
+      softTimeoutMs: firstByteRemainingMs,
+      planTimeoutMs: readPlan.timeoutMs
+    })
+    if (race.type === 'read') {
+      return { result: race.result, firstByteDeadlineObserved }
+    }
+    if (race.type === 'abort') {
+      throw new UpstreamRequestAbortedError('请求已取消', true)
+    }
+    if (race.type === 'plan_timeout') {
+      throw streamReadPlanTimeoutError(readPlan)
+    }
+
+    firstByteDeadlineObserved = true
+    const action = await options.onFirstByteDeadline?.({
+      elapsedMs: Date.now() - startedAt,
+      timeoutMs: options.firstByteDeadlineMs ?? 0,
+      transport: 'stream'
+    }) ?? 'abort'
+    if (action === 'abort') {
+      throw new GatewayFirstByteTimeoutError(`上游流式响应 ${Math.ceil((options.firstByteDeadlineMs ?? 0) / 1000)}s 后仍未返回首个有效输出`, options.firstByteDeadlineMs ?? 0, 'speed_first_deadline')
+    }
+  }
+}
+
+function streamReadPlanTimeoutError(readPlan: ReturnType<typeof buildStreamReadPlan>): Error {
+  return readPlan.timeoutKind === 'stream_lifetime'
+    ? new StreamMaxLifetimeExceededError(readPlan.timeoutMessage)
+    : new Error(readPlan.timeoutMessage)
+}
+
+async function raceStreamReadWithDeadlines(
+  pendingRead: Promise<IteratorResult<Uint8Array>>,
+  input: {
+    signal?: AbortSignal
+    softTimeoutMs?: number
+    planTimeoutMs: number
+  }
+): Promise<
+  | { type: 'read'; result: IteratorResult<Uint8Array> }
+  | { type: 'soft_timeout' }
+  | { type: 'plan_timeout' }
+  | { type: 'abort' }
+> {
+  let softTimer: NodeJS.Timeout | undefined
+  let planTimer: NodeJS.Timeout | undefined
+  let abortListener: (() => void) | undefined
+  try {
+    const races: Array<Promise<
+      | { type: 'read'; result: IteratorResult<Uint8Array> }
+      | { type: 'soft_timeout' }
+      | { type: 'plan_timeout' }
+      | { type: 'abort' }
+    >> = [pendingRead.then((result) => ({ type: 'read' as const, result }))]
+    const softTimeoutMs = input.softTimeoutMs
+    if (softTimeoutMs !== undefined) {
+      races.push(new Promise((resolve) => {
+        softTimer = setTimeout(() => resolve({ type: 'soft_timeout' as const }), Math.max(1, softTimeoutMs))
+      }))
+    }
+    races.push(new Promise((resolve) => {
+      planTimer = setTimeout(() => resolve({ type: 'plan_timeout' as const }), Math.max(1, input.planTimeoutMs))
+    }))
+    if (input.signal) {
+      if (input.signal.aborted) {
+        return { type: 'abort' }
+      }
+      races.push(new Promise((resolve) => {
+        abortListener = () => resolve({ type: 'abort' as const })
+        input.signal?.addEventListener('abort', abortListener, { once: true })
+      }))
+    }
+    return await Promise.race(races)
+  } finally {
+    if (softTimer) clearTimeout(softTimer)
+    if (planTimer) clearTimeout(planTimer)
+    if (input.signal && abortListener) {
+      input.signal.removeEventListener('abort', abortListener)
+    }
+  }
 }
 
 function streamOutputReceived(inspection: GatewayStreamInspection): boolean {

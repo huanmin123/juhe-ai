@@ -3,7 +3,8 @@ export class GatewayFirstByteTimeoutError extends Error {
 
   constructor(
     message: string,
-    readonly timeoutMs: number
+    readonly timeoutMs: number,
+    readonly source: 'hard_timeout' | 'speed_first_deadline' = 'hard_timeout'
   ) {
     super(message)
     this.name = 'GatewayFirstByteTimeoutError'

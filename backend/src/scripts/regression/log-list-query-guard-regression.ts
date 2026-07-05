@@ -145,6 +145,12 @@ try {
       ['audit_log_guard_error_group', 'audit_log_guard_exact'],
       '审计 path 筛选应精确匹配，不应命中相似路径'
     )
+    const auditPathWithMethodAndQuery = repositories.listAuditLogs({ path: 'POST /v1/responses?include[]=input', pageSize: 10 })
+    assert.deepEqual(
+      auditPathWithMethodAndQuery.items.map((item) => item.id).sort(),
+      ['audit_log_guard_error_group', 'audit_log_guard_exact'],
+      '审计 path 筛选应兼容从接口列复制的 METHOD path?query 文本'
+    )
 
     const auditModel = repositories.listAuditLogs({ model: 'gpt-5.5', pageSize: 10 })
     assert(!auditModel.items.some((item) => item.model === 'gpt-5.5-mini'), '审计 model 筛选应精确匹配，不应命中模型名前缀')
@@ -155,8 +161,21 @@ try {
     const auditClientIpPrefix = repositories.listAuditLogs({ clientIp: '127.0.', pageSize: 10 })
     assert.equal(auditClientIpPrefix.items.length, 3, '审计 clientIp 筛选应支持右侧前缀定位')
 
+    const auditTimeWindow = repositories.listAuditLogs({
+      startAt: '2026-02-01T00:00:01.000Z',
+      endAt: '2026-02-01T00:00:02.000Z',
+      pageSize: 10
+    })
+    assert.deepEqual(
+      auditTimeWindow.items.map((item) => item.id),
+      ['audit_log_guard_error_group', 'audit_log_guard_prefix_only'],
+      '审计普通列表应支持 created_at 时间窗筛选'
+    )
+
     const errorGroups = repositories.listAuditErrorGroups({ path: '/v1/responses', model: 'gpt-5.5', statusCode: 503, pageSize: 10 })
     assert.equal(errorGroups.items.length, 1, '审计错误组 path/model/statusCode 应按结构化条件定位')
+    const errorGroupsWithMethodAndQuery = repositories.listAuditErrorGroups({ path: 'POST /v1/responses?include[]=input', model: 'gpt-5.5', statusCode: 503, pageSize: 10 })
+    assert.equal(errorGroupsWithMethodAndQuery.items.length, 1, '审计错误组 path 筛选应兼容 METHOD path?query 文本')
 
     const operationKeyword = repositories.listOperationLogs({ summaryKeyword: 'keywordguardneedle', pageSize: 10 })
     assert.deepEqual(operationKeyword.items.map((item) => item.id), ['op_log_guard_keyword_match'], '操作日志摘要搜索应通过倒排词项命中中文摘要')
@@ -205,6 +224,13 @@ try {
   }
   assert(capturedCalls.some((call) => /\bal\.client_ip\s+>=\s+\?/i.test(call.sql)
     && /\bal\.client_ip\s+<\s+\?/i.test(call.sql)), '审计 clientIp 前缀检索应使用范围条件而不是 LIKE')
+  const auditLogListQuerySource = readFileSync(resolve('src/storage/audit-log-list-query.ts'), 'utf8')
+  const operationLogReadSource = readFileSync(resolve('src/storage/operation-log-read.repository.ts'), 'utf8')
+  assert.match(auditLogListQuerySource, /runtimeConfig\.databaseDriver === 'postgres' \? `\$\{column\} COLLATE "C"` : column/, 'PG 审计 traceId/clientIp 前缀筛选必须使用 C collation')
+  assert.match(auditLogListQuerySource, /textPrefixUpperBound\(text\)/, '审计 traceId/clientIp 前缀筛选必须使用统一二进制上界')
+  assert.match(auditLogListQuerySource, /al\.created_at >= \?[\s\S]*al\.created_at <= \?/, '审计普通列表必须绑定 created_at 时间窗口筛选')
+  assert.match(operationLogReadSource, /runtimeConfig\.databaseDriver === 'postgres' \? `\$\{column\} COLLATE "C"` : column/, 'PG 操作日志 traceId 前缀筛选必须使用 C collation')
+  assert.match(operationLogReadSource, /textPrefixUpperBound\(text\)/, '操作日志 traceId 前缀筛选必须使用统一二进制上界')
 
   const boundedCalls: Array<{ sql: string; params: unknown[] }> = []
   const boundedDatasetDatabase = databaseModule.getDatasetDatabase()

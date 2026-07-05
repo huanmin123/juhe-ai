@@ -8,8 +8,10 @@ import {
   type PublicApiLogListOptions,
   type PublicApiLogResultFilter
 } from '../../storage/repositories.js'
+import { requireAdmin } from '../auth/auth.middleware.js'
 
 export const publicApiLogsRouter = Router()
+publicApiLogsRouter.use(requireAdmin)
 
 publicApiLogsRouter.get('/', async (req, res, next) => {
   try {

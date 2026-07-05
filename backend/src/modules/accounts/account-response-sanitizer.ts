@@ -12,6 +12,10 @@ const publicCredentialKeys = new Set([
 ])
 
 const editBasicCredentialKeys = new Set([
+  'api_key',
+  'api_keys',
+  'api_key_strategy',
+  'api_key_weights',
   'base_url',
   'supported_endpoint_modes'
 ])

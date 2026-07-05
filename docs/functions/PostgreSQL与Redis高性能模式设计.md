@@ -2,6 +2,7 @@
 
 > 本文定义 `juhe-ai` 从默认 SQLite + 内存缓存扩展到 PostgreSQL + Redis 高性能模式的长期边界。执行计划见 [PLAN-0066 PostgreSQL 与 Redis 高性能模式](../plans/计划-0066-PostgreSQL与Redis高性能模式.md)。
 > 数据库、缓存、运行态和队列的业务语义适配边界见 [存储适配接口设计](存储适配接口设计.md)。
+> 统计准确性、读写资源隔离、Redis 清理和压测验收的细化规则见 [可靠统计与读写资源隔离设计](可靠统计与读写资源隔离设计.md)。
 
 ## 背景
 
@@ -69,6 +70,8 @@ JUHE_AI_POSTGRES_URL=postgres://juhe_ai:<密码URL编码>@pgbouncer:5432/juhe_ai
 JUHE_AI_REDIS_CACHE_URL=redis://:<缓存密码URL编码>@redis-cache:6379/0
 JUHE_AI_REDIS_STATE_URL=redis://:<运行态密码URL编码>@redis-state:6379/0
 JUHE_AI_REDIS_QUEUE_URL=redis://:<队列密码URL编码>@redis-queue:6379/0
+JUHE_AI_REDIS_NAMESPACE=prod
+JUHE_AI_ALLOW_SHARED_REDIS_URLS=false
 JUHE_AI_REDIS_STREAM_READ_COUNT=1000
 JUHE_AI_REDIS_STREAM_BLOCK_MS=1000
 JUHE_AI_REDIS_STREAM_CLAIM_IDLE_MS=60000
@@ -76,6 +79,9 @@ JUHE_AI_SYSTEM_API_DB_SERVICE_MAX_IN_FLIGHT=256
 JUHE_AI_DB_POOL_MAX=150
 JUHE_AI_DB_WRITE_MAX_CONCURRENCY=100
 JUHE_AI_DB_WRITE_QUEUE_MAX_ITEMS=50000
+JUHE_AI_POSTGRES_STATEMENT_TIMEOUT_MS=30000
+JUHE_AI_POSTGRES_LOCK_TIMEOUT_MS=2000
+JUHE_AI_POSTGRES_IDLE_IN_TRANSACTION_TIMEOUT_MS=30000
 ```
 
 规则：
@@ -84,7 +90,11 @@ JUHE_AI_DB_WRITE_QUEUE_MAX_ITEMS=50000
 - `JUHE_AI_DATABASE_DRIVER=postgres` 时不读取 `JUHE_AI_DATABASE_PATH`、`JUHE_AI_DATASET_DATABASE_PATH`、`JUHE_AI_USAGE_CATALOG_DATABASE_PATH`、`JUHE_AI_STATS_DATABASE_PATH` 和 `JUHE_AI_USAGE_SHARD_ROOT`。
 - `JUHE_AI_CACHE_DRIVER=redis` 只表示可丢弃缓存；需要硬并发槽、限流计数或短 TTL 调度运行态时必须走 `JUHE_AI_RUNTIME_STATE_DRIVER`。
 - `JUHE_AI_QUEUE_DRIVER=redis_stream` 使用 Redis Streams 承接高性能模式队列缓冲；`JUHE_AI_REDIS_QUEUE_URL` 默认应指向独立 `redis-queue`，不再复用 `redis-state`。Redis Stream 入队失败不回退 IPC 或本地内存队列，避免掩盖队列基础设施故障；可靠队列入队不使用 `MAXLEN ~` 自动裁剪，消息成功 `XACK` 后同步 `XDEL` 删除已落库条目。
+- `JUHE_AI_REDIS_NAMESPACE` 是 Redis key 的部署隔离前缀，生产建议显式配置并保持稳定；压测、回归和多套环境共用 Redis 实例时必须使用不同 namespace。
+- 高性能模式默认禁止 cache/state/queue 指向同一个 Redis DB / 实例地址，防止清理、淘汰策略和队列事实互相污染；临时 smoke 需要复用时必须显式设置 `JUHE_AI_ALLOW_SHARED_REDIS_URLS=true`。
+- `JUHE_AI_POSTGRES_STATEMENT_TIMEOUT_MS`、`JUHE_AI_POSTGRES_LOCK_TIMEOUT_MS` 和 `JUHE_AI_POSTGRES_IDLE_IN_TRANSACTION_TIMEOUT_MS` 由应用在事务内执行 `SET LOCAL`，不要把这些参数追加到 PgBouncer startup parameter；否则部分 PgBouncer 配置会拒绝连接，事务池复用连接时也可能污染后续请求。
 - 生产环境不使用 `latest` 镜像；PostgreSQL 和 Redis 镜像必须固定 major / patch 或 digest。
+- 高性能模式不能为了吞吐降低原始审计保留语义。完全成功请求仍和 standalone 一样先进入最近 `1` 小时热保留窗口，超过热窗口后只保留 `10%` 稳定采样；失败、异常、中断和重试后成功链路继续全量进入审计。容量和吞吐问题通过 Redis Streams 背压、PG 小批次写入、热窗口清理、payload 摘要 / 压缩 / 去重解决，不通过关闭成功热窗口解决。
 
 ## 部署边界
 
@@ -292,11 +302,12 @@ interface RuntimeStateStore {
 Redis key 统一命名：
 
 ```text
-juhe-ai:{env}:{driver}:{cache-name}:v{version}:{scope}:{key}
+juhe-ai:{namespace}:{driver}:{cache-name}:v{version}:{scope}:{key}
 ```
 
 规则：
 
+- `{namespace}` 由 `JUHE_AI_REDIS_NAMESPACE` 决定；没有显式配置时运行配置会基于 `JUHE_AI_SECRET` 派生稳定默认值，但生产仍建议写明。
 - `clear()` 不做全库 `SCAN + DEL`，优先递增 domain version，实现常量成本失效。
 - 所有 Redis cache / state key 必须有 TTL；确需长期保留的运行态要先证明不是持久业务事实。Redis Streams 使用长度、pending 和 consumer 监控控制容量，不用 TTL 表达消息生命周期。
 - Redis payload 使用 JSON，并带 `schemaVersion`；结构变化时递增 cache domain version。
@@ -361,7 +372,7 @@ PostgreSQL 模式下保留 DB service，理由不是规避 SQLite 同步阻塞�
 - DB service 承接系统管理 API、登录态校验、网关关键读写和业务 typed operation。
 - 常驻后台进程收敛为 ingest-worker、stats-worker、ops-worker 三类；写入 PostgreSQL 时按 typed operation、队列优先级和连接池背压并发消费。
 - 高性能模式下 ops-worker 已恢复 API Key / 账户时间计划同步、资源授权过期扫描、过期逻辑删除账户清理、账号健康检测、账号冷却复测、账户内 API Key 冷却复测、代理延迟刷新和 OpenAI OAuth access token 自动刷新；这些任务的候选读取和状态写回必须走 PG async repository / DB service 分支。
-- 高性能模式下 ingest-worker 仍注册 `data-retention-cleanup`，但 PG 分支只按系统设置投递 `usage_records_cleanup` 和 `non_business_data_cleanup` 到 record-maintenance；底层单机数据保留清理服务在 PG 下保持 fail-fast，避免回落 SQLite 清理链路。
+- 高性能模式下 ingest-worker 仍注册 `data-retention-cleanup`。PG 分支按系统设置投递 `usage_records_cleanup`，并按原始审计固定保全策略投递 `audit_retained_data_cleanup` 到 record-maintenance；操作日志、公开接口日志、运行日志索引 / 游标、模型检测历史、统计窗口、系统指标、表容量快照、系统会话和 Codex 上下文状态走 PostgreSQL async 保留入口按各自 retention 清理。底层单机数据保留清理服务在 PG 下保持 fail-fast，避免回落 SQLite 清理链路。通用 `non_business_data_cleanup` 不再由 PG 定时保留入口复用 usage cutoff 清审计表，审计主表、attempt、payload refs 和错误组只能走专用审计保留策略清理。
 - ops-worker 的账号健康检测和冷却复测执行队列仍是本地短窗口 retry queue，只保存 accountId 等小对象；候选、取消、状态和结果事实以 PostgreSQL 为准。没有真实积压、重启恢复延迟或多 worker 抢占证据前，不把该执行缓冲强行迁入 Redis Streams。
 - OpenAI OAuth access token 自动刷新已恢复 PG 调度；OAuth token、refresh token 和代理 URL 不进入 Redis shared cache。远端 smoke 使用测试替身 token endpoint 验证 PG 候选、写回、连续失败异常标记和错误脱敏，真实上游 refresh token 仍按真实账号和生产网络单独验证。代理延迟刷新已恢复 PG 调度，但代理 URL 只在探测进程内即时使用，不作为共享缓存内容。
 - 已退役的 `metrics-worker`、`snapshot-worker`、`probe-worker` 和 `maintenance-worker` 不再作为独立 worker role 出现在调度分支中。
@@ -372,13 +383,15 @@ PostgreSQL 模式下保留 DB service，理由不是规避 SQLite 同步阻塞�
 - 跨事实域强一致需求应优先收敛到同一个 PostgreSQL 事务；不再按 SQLite 跨库短事务拆解。
 - 对 usage 明细、审计、日志、统计缓存这类异步事实链路，仍保持“事实先落库，统计后聚合”的最终一致模型。
 - 统计结果和统计游标必须同事务提交。
-- Redis 只承接短 TTL 运行态；Redis 丢失不能导致账务、授权、使用记录或审计事实丢失。
+- Redis cache / Redis state 只承接可重建缓存和短 TTL 运行态；Redis queue 承接 usage、audit、operation log、public API log 和 runtime log 等未落库消息，未 ACK 前不能当作可丢缓存处理。`redis-queue` 必须使用 `noeviction`、持久化和 pending / lag 监控；事实最终以 PostgreSQL 落库为准。
 
 ## PostgreSQL 调优基线
 
 具体数值按 `<测试主机IP>` 和生产机器 CPU / 内存 / 磁盘测试后写入部署文档。默认基线：
 
 - 应用连接 PgBouncer，不直接把每个 Node 进程的连接池打到 PostgreSQL。
+- 应用通过 `storage/postgres-client.ts` 创建连接，`application_name` 必须区分 `server`、`db-service`、`ingest-worker`、`stats-worker` 和 `ops-worker`，便于生产从 `pg_stat_activity` 定位慢源。
+- 默认启用 `JUHE_AI_POSTGRES_STATEMENT_TIMEOUT_MS`、`JUHE_AI_POSTGRES_LOCK_TIMEOUT_MS` 和 `JUHE_AI_POSTGRES_IDLE_IN_TRANSACTION_TIMEOUT_MS`，避免后台重统计或维护 SQL 无限占用连接；超时失败由 worker 记录并等待下一轮重试。
 - PostgreSQL `max_connections` 按 PgBouncer 后端池设置，不为每个 worker 并发开同等连接。
 - `shared_buffers` 初始按机器内存 25% 估算，`effective_cache_size` 按 50% 到 75% 估算。
 - `work_mem` 保守设置，避免并发 100 下排序 / hash 聚合放大内存。

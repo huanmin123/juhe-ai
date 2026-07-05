@@ -78,6 +78,20 @@ try {
   databaseModule.closeStorageDatabases()
 
   runtimeConfig.processRole = 'worker'
+  runtimeConfig.workerRole = 'temporary-maintenance-worker'
+  assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('business'), false)
+  assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('codex-context-state'), false)
+  assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('dataset'), true)
+  assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('usage-catalog'), true)
+  assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('stats'), true)
+  assert.equal(usageRecordShards.currentProcessOwnsUsageShardWriter(), true)
+  databaseModule.getDatasetDatabase()
+  databaseModule.getUsageCatalogDatabase()
+  databaseModule.getStatsDatabase()
+  usageRecordShards.getUsageRecordShardDatabase(shardLocation)
+  databaseModule.closeStorageDatabases()
+
+  runtimeConfig.processRole = 'worker'
   runtimeConfig.workerRole = 'ops-worker'
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('business'), false)
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('codex-context-state'), false)

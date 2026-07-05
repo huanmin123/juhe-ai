@@ -9,7 +9,7 @@ import { getPostgresPool } from './postgres-client.js'
 import { sqlPlaceholders } from './query-utils.js'
 import { deletePostgresUsageRecordCatalogRowsByUsageIds } from './usage-record-catalog-cleanup.js'
 import { deleteUsageRecordShardEntries, getUsageRecordShardDatabase, listUsageRecordShardLocationsForApiKey, type UsageRecordShardLocation } from './usage-record-shards.js'
-import { refreshUsageQuotaHourlyWindowsCache, refreshUsageRankSnapshots } from './usage-stats.repository.js'
+import { refreshUsageQuotaHourlyWindowsCache, refreshUsageRankSnapshots, subtractPostgresUsageStatsRows } from './usage-stats.repository.js'
 import { USAGE_STATS_RECORD_SELECT_COLUMNS, type UsageStatsRecordRow } from './usage-stats-types.js'
 import { subtractUsageStatsRecord } from './usage-stats-writers.js'
 
@@ -127,6 +127,7 @@ const apiKeyScopeStatsTables = [
 const deletedApiKeyRecordCleanupBatchLimit = 100
 const deletedApiKeyRecordCleanupShardLimit = 16
 const usageRecordCleanupRequiredCursorJobNames = ['usage_stats_aggregation', 'client_ip_stats_aggregation'] as const
+const postgresUsageRecordCleanupDeductionShardKey = 'postgres'
 
 export function registerDeletedApiKeyRecordCleanupTarget(input: DeletedApiKeyRecordCleanupTarget): void {
   assertSqliteApiKeyRecordCleanup('registerDeletedApiKeyRecordCleanupTarget')
@@ -487,7 +488,7 @@ async function cleanupDeletedApiKeyRelatedRecordDataCorePostgresAsync(
   try {
     let deletedRows = 0
     await client.transaction(async (tx) => {
-      deletedRows += await deletePostgresApiKeyUsageDataBatch(tx, input, batchLimit)
+      deletedRows += await deletePostgresApiKeyUsageDataBatch(tx, input, batchLimit, updatedAt)
       deletedRows += await deletePostgresApiKeyAuditDataBatch(tx, input, batchLimit)
     })
     const [hasUsageMore, hasAuditMore] = await Promise.all([
@@ -963,12 +964,13 @@ function markApiKeyUsageCleanupRowsDeleted(
 async function deletePostgresApiKeyUsageDataBatch(
   client: DatabaseClient,
   input: DeletedApiKeyRecordCleanupTarget,
-  limit: number
+  limit: number,
+  updatedAt: string
 ): Promise<number> {
   const cursor = await postgresUsageRecordCleanupFloorCursor(client)
   if (!cursor) return 0
-  const rows = await client.query<{ id?: string | null }>(`
-    SELECT id
+  const rows = await client.query<UsageStatsRecordRow>(`
+    SELECT ${USAGE_STATS_RECORD_SELECT_COLUMNS}
     FROM juhe_usage.usage_records
     WHERE api_key_id = ?
       AND system_account_id = ?
@@ -978,9 +980,82 @@ async function deletePostgresApiKeyUsageDataBatch(
   `, [input.apiKeyId, input.systemAccountId, cursor.cursorCreatedAt, cursor.cursorCreatedAt, cursor.cursorId, Math.max(1, Math.trunc(limit))])
   const usageIds = uniqueNonEmpty(rows.map((row) => row.id))
   if (!usageIds.length) return 0
-  await deletePostgresUsageRecordCatalogRowsByUsageIds(client, usageIds)
-  const result = await client.execute('DELETE FROM juhe_usage.usage_records WHERE id = ANY(?::text[])', [usageIds])
-  return changed(result)
+  let deletedRows = 0
+  await client.transaction(async (tx) => {
+    await subtractPostgresApiKeyUsageRowsOnce(tx, rows, input, updatedAt)
+    await deletePostgresUsageRecordCatalogRowsByUsageIds(tx, usageIds)
+    const result = await tx.execute('DELETE FROM juhe_usage.usage_records WHERE id = ANY(?::text[])', [usageIds])
+    deletedRows = changed(result)
+    await markPostgresUsageCleanupRowsDeleted(tx, usageIds, updatedAt)
+  })
+  return deletedRows
+}
+
+async function subtractPostgresApiKeyUsageRowsOnce(
+  client: DatabaseClient,
+  rows: UsageStatsRecordRow[],
+  input: DeletedApiKeyRecordCleanupTarget,
+  updatedAt: string
+): Promise<void> {
+  const rowsToSubtract: UsageStatsRecordRow[] = []
+  for (const row of rows) {
+    await client.execute(`
+      INSERT INTO juhe_stats.usage_record_cleanup_deductions (
+        usage_id, api_key_id, account_id, system_account_id, source_shard_key, record_json,
+        stats_subtracted_at, shard_deleted_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
+      ON CONFLICT(usage_id, source_shard_key) DO UPDATE SET
+        api_key_id = EXCLUDED.api_key_id,
+        account_id = COALESCE(usage_record_cleanup_deductions.account_id, EXCLUDED.account_id),
+        system_account_id = EXCLUDED.system_account_id,
+        record_json = EXCLUDED.record_json,
+        updated_at = EXCLUDED.updated_at
+    `, [
+      row.id,
+      input.apiKeyId,
+      row.account_id ?? null,
+      input.systemAccountId,
+      postgresUsageRecordCleanupDeductionShardKey,
+      JSON.stringify(row),
+      updatedAt,
+      updatedAt
+    ])
+    const deduction = await client.one<UsageRecordCleanupDeductionRow>(`
+      SELECT stats_subtracted_at
+      FROM juhe_stats.usage_record_cleanup_deductions
+      WHERE usage_id = ? AND source_shard_key = ?
+      LIMIT 1
+      FOR UPDATE
+    `, [row.id, postgresUsageRecordCleanupDeductionShardKey])
+    if (!deduction?.stats_subtracted_at) {
+      rowsToSubtract.push(row)
+    }
+  }
+  if (rowsToSubtract.length === 0) return
+  await subtractPostgresUsageStatsRows(client, rowsToSubtract, updatedAt)
+  await markPostgresUsageCleanupRowsSubtracted(client, rowsToSubtract.map((row) => row.id), updatedAt)
+}
+
+async function markPostgresUsageCleanupRowsSubtracted(client: DatabaseClient, usageIds: string[], updatedAt: string): Promise<void> {
+  if (usageIds.length === 0) return
+  await client.execute(`
+    UPDATE juhe_stats.usage_record_cleanup_deductions
+    SET stats_subtracted_at = COALESCE(stats_subtracted_at, ?),
+        updated_at = ?
+    WHERE usage_id = ANY(?::text[])
+      AND source_shard_key = ?
+  `, [updatedAt, updatedAt, usageIds, postgresUsageRecordCleanupDeductionShardKey])
+}
+
+async function markPostgresUsageCleanupRowsDeleted(client: DatabaseClient, usageIds: string[], updatedAt: string): Promise<void> {
+  if (usageIds.length === 0) return
+  await client.execute(`
+    UPDATE juhe_stats.usage_record_cleanup_deductions
+    SET shard_deleted_at = COALESCE(shard_deleted_at, ?),
+        updated_at = ?
+    WHERE usage_id = ANY(?::text[])
+      AND source_shard_key = ?
+  `, [updatedAt, updatedAt, usageIds, postgresUsageRecordCleanupDeductionShardKey])
 }
 
 async function postgresUsageRecordCleanupFloorCursor(client: DatabaseClient): Promise<{ cursorCreatedAt: string; cursorId: string } | undefined> {

@@ -3,12 +3,13 @@ import { createClient } from 'redis'
 import { runtimeConfig } from '../../config/runtime.js'
 import {
   clearRecordMaintenanceQueueForTest,
-  enqueueRecordMaintenanceJobWithResult,
+  enqueueRecordMaintenanceJobWithResultAsync,
   startRecordMaintenanceRedisStreamConsumer,
   stopRecordMaintenanceRedisStreamConsumer
 } from '../../modules/record-maintenance/record-maintenance-queue.service.js'
 import { logger } from '../../shared/logger.js'
 import { closeRedisClients } from '../../shared/redis-client.js'
+import { redisNamespacedGroup, redisNamespacedKey } from '../../shared/redis-namespace.js'
 import { closeStorageDatabases } from '../../storage/database.js'
 import { closePostgresPool } from '../../storage/postgres-client.js'
 
@@ -23,8 +24,8 @@ interface StreamSnapshot {
   lag: number
 }
 
-const streamKey = 'juhe-ai:queue:record-maintenance'
-const groupName = 'juhe-ai:record-maintenance-writers'
+const streamKey = redisNamespacedKey('juhe-ai:queue:record-maintenance')
+const groupName = redisNamespacedGroup('juhe-ai:record-maintenance-writers')
 const smokeId = `record-maintenance-smoke-${Date.now()}`
 
 logger.level = 'silent'
@@ -59,7 +60,7 @@ try {
 
   runtimeConfig.processRole = 'server'
   runtimeConfig.workerRole = 'worker'
-  const result = enqueueRecordMaintenanceJobWithResult({
+  const result = await enqueueRecordMaintenanceJobWithResultAsync({
     type: 'usage_records_cleanup',
     id: smokeId,
     cutoffAt: new Date().toISOString(),

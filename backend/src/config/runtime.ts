@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, isAbsolute, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -39,11 +40,15 @@ export interface RuntimeConfig {
     poolMax: number
     writeMaxConcurrency: number
     writeQueueMaxItems: number
+    statementTimeoutMs: number
+    lockTimeoutMs: number
+    idleInTransactionSessionTimeoutMs: number
   }
   redis: {
     cacheUrl?: string
     stateUrl?: string
     queueUrl?: string
+    namespace: string
   }
   queue: {
     redisStreamReadCount: number
@@ -207,6 +212,9 @@ const configuredPostgresUrl = optionalStringConfig('JUHE_AI_POSTGRES_URL')
 const configuredRedisCacheUrl = optionalStringConfig('JUHE_AI_REDIS_CACHE_URL')
 const configuredRedisStateUrl = optionalStringConfig('JUHE_AI_REDIS_STATE_URL')
 const configuredRedisQueueUrl = optionalStringConfig('JUHE_AI_REDIS_QUEUE_URL')
+const configuredSecret = secretConfig('JUHE_AI_SECRET', defaultRuntimeSecret)
+const configuredRedisNamespace = redisNamespaceConfig('JUHE_AI_REDIS_NAMESPACE', configuredSecret)
+const configuredAllowSharedRedisUrls = booleanConfig('JUHE_AI_ALLOW_SHARED_REDIS_URLS', false)
 
 assertRuntimeModeDrivers({
   runtimeMode: configuredRuntimeMode,
@@ -217,7 +225,8 @@ assertRuntimeModeDrivers({
   postgresUrl: configuredPostgresUrl,
   redisCacheUrl: configuredRedisCacheUrl,
   redisStateUrl: configuredRedisStateUrl,
-  redisQueueUrl: configuredRedisQueueUrl
+  redisQueueUrl: configuredRedisQueueUrl,
+  allowSharedRedisUrls: configuredAllowSharedRedisUrls
 })
 
 export const runtimeConfig: RuntimeConfig = {
@@ -244,12 +253,16 @@ export const runtimeConfig: RuntimeConfig = {
     url: configuredPostgresUrl,
     poolMax: numberConfig('JUHE_AI_DB_POOL_MAX', 50, 1, 500),
     writeMaxConcurrency: numberConfig('JUHE_AI_DB_WRITE_MAX_CONCURRENCY', 100, 1, 1000),
-    writeQueueMaxItems: numberConfig('JUHE_AI_DB_WRITE_QUEUE_MAX_ITEMS', 50000, 100, 1000000)
+    writeQueueMaxItems: numberConfig('JUHE_AI_DB_WRITE_QUEUE_MAX_ITEMS', 50000, 100, 1000000),
+    statementTimeoutMs: numberConfig('JUHE_AI_POSTGRES_STATEMENT_TIMEOUT_MS', 30000, 0, 3600000),
+    lockTimeoutMs: numberConfig('JUHE_AI_POSTGRES_LOCK_TIMEOUT_MS', 2000, 0, 60000),
+    idleInTransactionSessionTimeoutMs: numberConfig('JUHE_AI_POSTGRES_IDLE_IN_TRANSACTION_TIMEOUT_MS', 30000, 0, 3600000)
   },
   redis: {
     cacheUrl: configuredRedisCacheUrl,
     stateUrl: configuredRedisStateUrl,
-    queueUrl: configuredRedisQueueUrl
+    queueUrl: configuredRedisQueueUrl,
+    namespace: configuredRedisNamespace
   },
   queue: {
     redisStreamReadCount: numberConfig('JUHE_AI_REDIS_STREAM_READ_COUNT', 1000, 1, 5000),
@@ -274,7 +287,7 @@ export const runtimeConfig: RuntimeConfig = {
   usageRecordWriterPoolSize: numberConfig('JUHE_AI_USAGE_RECORD_WRITER_POOL_SIZE', 0, 0, 64),
   usageRecordWriterQueueMaxItems: numberConfig('JUHE_AI_USAGE_RECORD_WRITER_QUEUE_MAX_ITEMS', 5000, 1, 100000),
   usageShardCount: numberConfig('JUHE_AI_USAGE_SHARD_COUNT', 16, 1, 256),
-  secret: secretConfig('JUHE_AI_SECRET', defaultRuntimeSecret),
+  secret: configuredSecret,
   httpSecurity: httpSecurityConfig(),
   upstreamUrlSecurity: upstreamUrlSecurityConfig(),
   oauthProxyUrl: optionalStringConfig('JUHE_AI_OAUTH_PROXY_URL'),
@@ -434,6 +447,19 @@ function queueDriverConfig(name: string, fallback: QueueDriver): QueueDriver {
   throw new Error(`${name} 只能配置为 memory 或 redis_stream`)
 }
 
+function redisNamespaceConfig(name: string, secret: string): string {
+  const rawValue = rawStringConfig(name)
+  const value = rawValue?.trim() || `env-${createHash('sha256').update(secret).digest('hex').slice(0, 12)}`
+  const normalized = value.replace(/[^a-zA-Z0-9_.:-]+/g, '_').replace(/^_+|_+$/g, '')
+  if (!normalized) {
+    throw new Error(`${name} 不能为空`)
+  }
+  if (normalized.length > 64) {
+    throw new Error(`${name} 最多 64 个字符`)
+  }
+  return normalized
+}
+
 function assertRuntimeModeDrivers(config: {
   runtimeMode: RuntimeMode
   databaseDriver: DatabaseDriver
@@ -444,6 +470,7 @@ function assertRuntimeModeDrivers(config: {
   redisCacheUrl?: string
   redisStateUrl?: string
   redisQueueUrl?: string
+  allowSharedRedisUrls: boolean
 }): void {
   if (config.runtimeMode === 'standalone') {
     if (config.databaseDriver !== 'sqlite') {
@@ -477,6 +504,13 @@ function assertRuntimeModeDrivers(config: {
   assertUrlConfig('JUHE_AI_REDIS_CACHE_URL', config.redisCacheUrl, ['redis:', 'rediss:'])
   assertUrlConfig('JUHE_AI_REDIS_STATE_URL', config.redisStateUrl, ['redis:', 'rediss:'])
   assertUrlConfig('JUHE_AI_REDIS_QUEUE_URL', config.redisQueueUrl, ['redis:', 'rediss:'])
+  if (!config.allowSharedRedisUrls) {
+    assertDistinctRedisUrls([
+      ['JUHE_AI_REDIS_CACHE_URL', config.redisCacheUrl],
+      ['JUHE_AI_REDIS_STATE_URL', config.redisStateUrl],
+      ['JUHE_AI_REDIS_QUEUE_URL', config.redisQueueUrl]
+    ])
+  }
 }
 
 function assertUrlConfig(name: string, value: string | undefined, protocols: string[]): void {
@@ -492,6 +526,31 @@ function assertUrlConfig(name: string, value: string | undefined, protocols: str
   if (!protocols.includes(url.protocol)) {
     throw new Error(`${name} 只允许协议：${protocols.join(', ')}`)
   }
+}
+
+function assertDistinctRedisUrls(values: Array<[string, string | undefined]>): void {
+  const seen = new Map<string, string>()
+  for (const [name, value] of values) {
+    if (!value) continue
+    const key = redisUrlResourceKey(value)
+    const existing = seen.get(key)
+    if (existing) {
+      throw new Error(`${name} 不能与 ${existing} 指向同一个 Redis DB；如明确接受共享风险，请设置 JUHE_AI_ALLOW_SHARED_REDIS_URLS=true`)
+    }
+    seen.set(key, name)
+  }
+}
+
+function redisUrlResourceKey(value: string): string {
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    throw new Error('Redis URL 必须是有效 URL')
+  }
+  const port = url.port || '6379'
+  const db = url.pathname && url.pathname !== '/' ? url.pathname : '/0'
+  return `${url.protocol}//${url.hostname}:${port}${db}`
 }
 
 function logLevelConfig(name: string, fallback: LogLevel): LogLevel {

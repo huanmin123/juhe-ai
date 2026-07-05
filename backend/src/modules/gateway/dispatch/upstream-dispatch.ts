@@ -178,8 +178,20 @@ export async function fetchFirstAvailableUpstream(
         failedAccountIds.add(originalAccount.id)
         continue
       }
-      const unavailableProxyAttempt = await handleUnavailableProxyProfile(req, usageContext, originalAccount, settings, failedProxyDispatchKeys, accountStateMutationEnabled)
+      const unavailableProxyAuditAttemptIndex = auditAttemptIndex + 1
+      const unavailableProxyAttempt = await handleUnavailableProxyProfile(
+        req,
+        usageContext,
+        originalAccount,
+        settings,
+        failedProxyDispatchKeys,
+        accountStateMutationEnabled,
+        undefined,
+        auditCapture,
+        unavailableProxyAuditAttemptIndex
+      )
       if (unavailableProxyAttempt) {
+        auditAttemptIndex = unavailableProxyAuditAttemptIndex
         halfOpenLease?.release()
         lastAttempt = unavailableProxyAttempt
         failedAccountIds.add(originalAccount.id)
@@ -211,7 +223,8 @@ export async function fetchFirstAvailableUpstream(
         if (canUseHighConcurrencyDispatchQueue(groupSchedulingPolicy)) {
           capacityLimitFailures.push({ account: originalAccount, message })
         } else {
-          await recordAccountCapacityLimitFailure(req, usageContext, originalAccount, message)
+          auditAttemptIndex += 1
+          await recordAccountCapacityLimitFailure(req, usageContext, originalAccount, message, auditCapture, auditAttemptIndex)
         }
         continue
       }
@@ -314,6 +327,7 @@ export async function fetchFirstAvailableUpstream(
             ) {
               throw error
             }
+            auditAttemptIndex += 1
             const requestErrorResult = await handleUpstreamRequestError({
               req,
               usageContext,
@@ -539,7 +553,8 @@ export async function fetchFirstAvailableUpstream(
       }
       const failure = capacityLimitFailures[capacityLimitFailures.length - 1]
       if (failure) {
-        await recordAccountCapacityLimitFailure(req, usageContext, failure.account, failure.message)
+        auditAttemptIndex += 1
+        await recordAccountCapacityLimitFailure(req, usageContext, failure.account, failure.message, auditCapture, auditAttemptIndex)
       }
     }
 
@@ -696,13 +711,27 @@ async function recordAccountCapacityLimitFailure(
   req: Request,
   usageContext: GatewayUsageContext,
   account: UpstreamAccount,
-  message: string
+  message: string,
+  auditCapture: AuditCaptureContext,
+  auditAttemptIndex: number
 ): Promise<void> {
+  const attemptStartedAt = Date.now()
   await recordFailedUpstreamAttempt(req, usageContext, account, {
     upstreamUrl: 'concurrency:limit',
-    startedAt: Date.now(),
+    startedAt: attemptStartedAt,
     errorMessage: message,
     failureAttribution: 'gateway_capacity'
+  })
+  auditCapture.recordFailedDispatchAttempt({
+    account,
+    attemptIndex: auditAttemptIndex,
+    upstreamUrl: 'concurrency:limit',
+    method: req.method,
+    startedAtMs: attemptStartedAt,
+    errorPhase: 'dispatch',
+    errorCode: 'account_concurrency_limit',
+    errorMessage: message,
+    requestForModelAccounting: req
   })
 }
 

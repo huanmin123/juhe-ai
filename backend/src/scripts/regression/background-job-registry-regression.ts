@@ -120,6 +120,7 @@ function assertRecordMaintenanceJobTypesAreRegistered(): void {
     'account_related_cleanup',
     'usage_records_cleanup',
     'non_business_data_cleanup',
+    'audit_retained_data_cleanup',
     'account_usage_snapshot_upsert'
   ]
   for (const jobType of knownJobTypes) {

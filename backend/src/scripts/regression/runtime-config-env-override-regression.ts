@@ -49,9 +49,13 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_CHILD === '1') {
   assert.equal(runtimeConfig.redis.cacheUrl, 'redis://:cache-secret@127.0.0.1:6379/0', 'Redis cache URL 应正确读取')
   assert.equal(runtimeConfig.redis.stateUrl, 'redis://:state-secret@127.0.0.1:6380/0', 'Redis state URL 应正确读取')
   assert.equal(runtimeConfig.redis.queueUrl, 'redis://:queue-secret@127.0.0.1:6381/0', 'Redis queue URL 应正确读取')
+  assert.equal(runtimeConfig.redis.namespace, 'runtime-test', 'Redis namespace 应正确读取')
   assert.equal(runtimeConfig.postgres.poolMax, 25, 'PostgreSQL pool max 应正确读取')
   assert.equal(runtimeConfig.postgres.writeMaxConcurrency, 100, 'PostgreSQL 写队列并发应正确读取')
   assert.equal(runtimeConfig.postgres.writeQueueMaxItems, 60000, 'PostgreSQL 写队列容量应正确读取')
+  assert.equal(runtimeConfig.postgres.statementTimeoutMs, 45000, 'PostgreSQL statement timeout 应正确读取')
+  assert.equal(runtimeConfig.postgres.lockTimeoutMs, 3000, 'PostgreSQL lock timeout 应正确读取')
+  assert.equal(runtimeConfig.postgres.idleInTransactionSessionTimeoutMs, 55000, 'PostgreSQL idle transaction timeout 应正确读取')
   assert.equal(runtimeConfig.systemApi.dbServiceMaxInFlight, 321, 'System API DB service 在途上限应正确读取')
   assert.equal(runtimeConfig.queue.redisStreamReadCount, 500, 'Redis Stream 批量读取数量应正确读取')
 
@@ -63,6 +67,10 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_DEFAULT_CHILD === '1') {
 
   assert.equal(runtimeConfig.runtimeMode, 'performance', '高性能模式应读取为 performance')
   assert.equal(runtimeConfig.systemApi.dbServiceMaxInFlight, 256, 'performance 默认 System API DB service 在途上限应为 256')
+  assert.equal(runtimeConfig.postgres.statementTimeoutMs, 30000, 'performance 默认 PostgreSQL statement timeout 应为 30 秒')
+  assert.equal(runtimeConfig.postgres.lockTimeoutMs, 2000, 'performance 默认 PostgreSQL lock timeout 应为 2 秒')
+  assert.equal(runtimeConfig.postgres.idleInTransactionSessionTimeoutMs, 30000, 'performance 默认 PostgreSQL idle transaction timeout 应为 30 秒')
+  assert.match(runtimeConfig.redis.namespace, /^env-[a-f0-9]{12}$/, '未显式配置 Redis namespace 时应由运行密钥派生稳定环境前缀')
   assert.equal('redisStreamMaxLen' in runtimeConfig.queue, false, 'Redis Stream 可靠队列不应暴露近似裁剪配置')
 
   process.exit(0)
@@ -151,9 +159,13 @@ const performanceResult = spawnRegression({
   JUHE_AI_REDIS_CACHE_URL: 'redis://:cache-secret@127.0.0.1:6379/0',
   JUHE_AI_REDIS_STATE_URL: 'redis://:state-secret@127.0.0.1:6380/0',
   JUHE_AI_REDIS_QUEUE_URL: 'redis://:queue-secret@127.0.0.1:6381/0',
+  JUHE_AI_REDIS_NAMESPACE: 'runtime-test',
   JUHE_AI_DB_POOL_MAX: '25',
   JUHE_AI_DB_WRITE_MAX_CONCURRENCY: '100',
   JUHE_AI_DB_WRITE_QUEUE_MAX_ITEMS: '60000',
+  JUHE_AI_POSTGRES_STATEMENT_TIMEOUT_MS: '45000',
+  JUHE_AI_POSTGRES_LOCK_TIMEOUT_MS: '3000',
+  JUHE_AI_POSTGRES_IDLE_IN_TRANSACTION_TIMEOUT_MS: '55000',
   JUHE_AI_SYSTEM_API_DB_SERVICE_MAX_IN_FLIGHT: '321',
   JUHE_AI_REDIS_STREAM_READ_COUNT: '500'
 })
@@ -212,6 +224,19 @@ assertRegressionFailure(spawnRegression({
   JUHE_AI_REDIS_CACHE_URL: 'redis://:cache-secret@127.0.0.1:6379/0',
   JUHE_AI_REDIS_STATE_URL: 'redis://:state-secret@127.0.0.1:6380/0'
 }), /JUHE_AI_REDIS_QUEUE_URL/, '高性能模式必须显式配置 Redis queue URL，不能自动复用 Redis state URL')
+
+assertRegressionFailure(spawnRegression({
+  JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_DEFAULT_CHILD: '1',
+  JUHE_AI_RUNTIME_MODE: 'performance',
+  JUHE_AI_DATABASE_DRIVER: 'postgres',
+  JUHE_AI_CACHE_DRIVER: 'redis',
+  JUHE_AI_RUNTIME_STATE_DRIVER: 'redis',
+  JUHE_AI_QUEUE_DRIVER: 'redis_stream',
+  JUHE_AI_POSTGRES_URL: 'postgres://juhe_ai:secret@127.0.0.1:5432/juhe_ai',
+  JUHE_AI_REDIS_CACHE_URL: 'redis://:shared-secret@127.0.0.1:6379/0',
+  JUHE_AI_REDIS_STATE_URL: 'redis://:shared-secret@127.0.0.1:6379/0',
+  JUHE_AI_REDIS_QUEUE_URL: 'redis://:shared-secret@127.0.0.1:6379/0'
+}), /不能与 .* 指向同一个 Redis DB/, '高性能模式默认必须拒绝 cache/state/queue 共享同一个 Redis DB')
 
 assertRegressionFailure(spawnRegression({
   JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_DEFAULT_CHILD: '1',
@@ -283,6 +308,7 @@ writeFileSync(overlayPath, [
   'JUHE_AI_REDIS_CACHE_URL=redis://:cache-secret@127.0.0.1:6379/0',
   'JUHE_AI_REDIS_STATE_URL=redis://:state-secret@127.0.0.1:6380/0',
   'JUHE_AI_REDIS_QUEUE_URL=redis://:queue-secret@127.0.0.1:6381/0',
+  'JUHE_AI_REDIS_NAMESPACE=runtime-env-file',
   'JUHE_AI_DB_POOL_MAX=44',
   'JUHE_AI_SYSTEM_API_DB_SERVICE_MAX_IN_FLIGHT=333',
   ''

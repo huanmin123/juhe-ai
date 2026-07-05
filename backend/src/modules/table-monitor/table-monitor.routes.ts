@@ -7,7 +7,7 @@ import { nowIso } from '../../storage/database.js'
 import { getTableStorageOverviewAsync, listDatabaseStorageHistoryAsync, listTableStorageHistoryAsync, type MonitoredDatabaseRole } from '../../storage/table-monitor.repository.js'
 import { bodyField, mutationGuard } from '../deduplication/mutation-guard.middleware.js'
 import { recordOperationLogAsync, safeChange } from '../operation-logs/operation-log.service.js'
-import { enqueueRecordMaintenanceJobWithResult } from '../record-maintenance/record-maintenance-queue.service.js'
+import { enqueueRecordMaintenanceJobWithResultAsync } from '../record-maintenance/record-maintenance-queue.service.js'
 
 export const tableMonitorRouter = Router()
 
@@ -108,7 +108,7 @@ tableMonitorRouter.post('/non-business-data/cleanup', mutationGuard({
     queued: false
   }
 
-  const enqueueResult = enqueueRecordMaintenanceJobWithResult({
+  const enqueueResult = await enqueueRecordMaintenanceJobWithResultAsync({
     type: 'non_business_data_cleanup',
     cutoffAt: cutoff.iso,
     batchSize,

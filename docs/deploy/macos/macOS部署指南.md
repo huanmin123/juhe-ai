@@ -133,9 +133,13 @@ curl -i http://127.0.0.1:3000/__aisys__/api/health
 ```bash
 ln -sfn "$HOME/juhe-ai-lite/releases/新版本/juhe-ai-release" "$HOME/juhe-ai-lite/current"
 launchctl kickstart -k "gui/$UID/com.juhe-ai"
+sleep 3
+launchctl print "gui/$UID/com.juhe-ai" | head
+lsof -nP -iTCP:3000 -sTCP:LISTEN
+pgrep -af 'node|juhe-ai' | grep 'juhe-ai-lite' || true
 ```
 
-主进程会看护 DB service 和 worker；不要把 `worker.js` 或 `db-service.js` 单独注册为 launchd 服务。持续 SQLite `database is locked` 时再排查旧子进程残留。
+主进程会看护 DB service 和 worker；不要把 `worker.js` 或 `db-service.js` 单独注册为 launchd 服务。升级后必须确认只有当前 release 的主进程监听 `3000`，没有旧 release 路径下的 node 子进程残留。持续 SQLite `database is locked`、PG 连接数异常或管理接口忽快忽慢时，先查旧子进程残留和端口监听，再查数据库。
 
 ## 5. HTTPS 和端口边界
 

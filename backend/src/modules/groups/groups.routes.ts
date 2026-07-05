@@ -124,7 +124,7 @@ function toGroupListItem(group: NonNullable<Awaited<ReturnType<typeof findGroupS
   const { accountIds, authorizationSources, ...item } = group
   return {
     ...item,
-    accountCount: accountIds.length,
+    accountCount: group.accessType === 'authorized' ? 0 : group.accountStats.total,
     authorizationSourceSummary: authorizationSources ? summarizeAuthorizationSources(authorizationSources) : undefined
   }
 }

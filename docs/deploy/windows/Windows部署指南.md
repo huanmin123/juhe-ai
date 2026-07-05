@@ -112,9 +112,14 @@ $App = 'C:\juhe-ai-lite\releases\新版本\juhe-ai-release'
 if (Test-Path "$Root\current") { Remove-Item -LiteralPath "$Root\current" -Force }
 New-Item -ItemType Junction -Path "$Root\current" -Target $App | Out-Null
 nssm restart JuheAI
+Start-Sleep -Seconds 3
+Get-NetTCPConnection -LocalPort 3000 -State Listen | Select-Object LocalAddress, LocalPort, OwningProcess
+Get-CimInstance Win32_Process -Filter "name = 'node.exe'" |
+  Where-Object { $_.CommandLine -like '*juhe-ai-lite*' } |
+  Select-Object ProcessId, CommandLine
 ```
 
-常驻服务只守护主进程；不要把 worker 或 DB service 单独注册成服务。
+常驻服务只守护主进程；不要把 worker 或 DB service 单独注册成服务。升级后必须确认 `3000` 只由当前服务进程监听，`node.exe` 命令行里没有旧 release 路径。
 
 ## 5. HTTPS 和防火墙
 

@@ -151,7 +151,8 @@ async function parseListOptionsAsync(query: Record<string, unknown>): Promise<Us
   const rawPage = finiteNumberQueryValue(query.page)
   const rawPageSize = finiteNumberQueryValue(query.pageSize)
   const rawStatusCode = finiteNumberQueryValue(query.statusCode)
-  const createdAtRange = dateRangeQueryValue(query.startDate, query.endDate, timezone)
+  const traceId = optionalQueryText(query.traceId)
+  const createdAtRange = dateRangeQueryValue(query.startDate, query.endDate, timezone, Boolean(traceId))
   const sortBy = typeof query.sortBy === 'string' && usageRecordSortFields.has(query.sortBy as UsageRecordSortField)
     ? query.sortBy as UsageRecordSortField
     : undefined
@@ -164,7 +165,7 @@ async function parseListOptionsAsync(query: Record<string, unknown>): Promise<Us
     pageSize: Number.isInteger(rawPageSize) ? rawPageSize : undefined,
     sortBy,
     sortOrder,
-    traceId: optionalQueryText(query.traceId),
+    traceId,
     accountKeyword: optionalQueryText(query.accountKeyword),
     clientIp: optionalQueryText(query.clientIp),
     result,
@@ -187,11 +188,11 @@ function usageRecordTrafficSourceQueryValue(value: unknown): UsageRecordTrafficS
     : undefined
 }
 
-function dateRangeQueryValue(startValue: unknown, endValue: unknown, timezone: string): { startAt?: string; endAt?: string } {
+function dateRangeQueryValue(startValue: unknown, endValue: unknown, timezone: string, skipDefaultRange = false): { startAt?: string; endAt?: string } {
   const startDate = dateQueryValue(startValue)
   const endDate = dateQueryValue(endValue)
   if (!startDate && !endDate) {
-    return optionalQueryText(startValue) || optionalQueryText(endValue)
+    return skipDefaultRange || optionalQueryText(startValue) || optionalQueryText(endValue)
       ? {}
       : defaultUsageRecordDateRange(timezone)
   }

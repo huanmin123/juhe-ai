@@ -9,11 +9,14 @@ import type { BackgroundTaskRunSummary } from '../../storage/background-task-run
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-temporary-maintenance-worker-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 const recordMaintenanceQueueSource = readFileSync(new URL('../../modules/record-maintenance/record-maintenance-queue.service.ts', import.meta.url), 'utf8')
+const temporaryMaintenanceWorkerSource = readFileSync(new URL('../../modules/record-maintenance/temporary-maintenance-worker-runner.ts', import.meta.url), 'utf8')
 assert.match(recordMaintenanceQueueSource, /child\.on\('message'[\s\S]*handleTemporaryMaintenanceWorkerMessage/, '临时维护 worker 父进程必须接收子进程 IPC 请求')
 assert.match(recordMaintenanceQueueSource, /background_worker_stats_write_request[\s\S]*requestStatsWriter[\s\S]*background_worker_stats_write_response/, '临时维护 worker stats-writer 请求必须由父进程转发并响应')
 assert.match(recordMaintenanceQueueSource, /background_worker_db_service_request[\s\S]*requestBackgroundWorkerDbService[\s\S]*background_worker_db_service_response/, '临时维护 worker DB service 请求必须由父进程转发并响应')
 assert.match(recordMaintenanceQueueSource, /await spawnTemporaryMaintenanceWorker\(run\.runId, job\)/, 'Redis Stream 数据维护消息必须等临时 worker 成功退出后才能 ACK')
 assert.match(recordMaintenanceQueueSource, /function spawnTemporaryMaintenanceWorker[\s\S]*Promise<void>[\s\S]*child\.once\('exit'[\s\S]*code === 0[\s\S]*settle\(\)[\s\S]*settle\(new Error/, '临时维护 worker 非 0 退出必须让父任务失败，消息保持 pending 等待重投')
+assert.match(recordMaintenanceQueueSource, /job\.type === 'usage_records_cleanup' \|\| job\.type === 'non_business_data_cleanup' \|\| job\.type === 'audit_retained_data_cleanup'/, '使用记录清理、非业务数据清理和审计保留清理必须走临时维护 worker，不能阻塞主 ingest-worker 消费')
+assert.match(temporaryMaintenanceWorkerSource, /job\.type === 'usage_records_cleanup' \|\| job\.type === 'non_business_data_cleanup' \|\| job\.type === 'audit_retained_data_cleanup'/, '临时维护 worker runner 必须允许审计保留清理任务')
 
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
@@ -55,11 +58,14 @@ try {
   await recordMaintenanceQueue.flushAllRecordMaintenanceQueue()
 
   const runId = latestTemporaryRunId('record-maintenance:usage_records_cleanup')
-  assert.equal(runId, undefined, '使用记录清理不应再 fork 临时维护 worker')
-  assert.equal(usageRecordCount('temporary_usage_cleanup_regression'), 0, 'ingest-worker 应删除符合条件的使用记录')
+  assert(runId, '使用记录清理必须 fork 临时维护 worker')
+  const run = await waitForTaskRun(runId)
+  assert.equal(run.status, 'completed', '使用记录清理临时维护 worker 应执行成功')
+  assert.equal(activeLeaseCount(runId), 0, '临时维护 worker 完成后不应残留租约')
+  assert.equal(usageRecordCount('temporary_usage_cleanup_regression'), 0, '临时维护 worker 应删除符合条件的使用记录')
   assert.equal(eventLoopSampleCount('temporary-maintenance-worker'), 0, '临时维护 worker 禁止直接写入 stats 事件循环采样')
 
-  console.log('临时维护 worker 回归通过：使用记录清理由 ingest 本地队列执行，不再 fork 临时 worker 且不直写 stats 采样')
+  console.log('临时维护 worker 回归通过：使用记录清理走临时 worker，不阻塞 ingest 且不直写 stats 采样')
 } finally {
   await databaseModule.closeStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })

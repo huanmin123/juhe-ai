@@ -193,7 +193,6 @@ const routeStrategySpeedFirstConfigSchema = z.object({
   recoverySuccessCount: z.number().int().min(3).max(10).optional(),
   probeIntervalSeconds: z.number().int().min(10).max(300).optional(),
   degradedTtlSeconds: z.number().int().min(60).max(3600).optional(),
-  retryOnFirstByteTimeout: z.boolean().optional(),
   maxFirstByteRetriesPerRequest: z.number().int().min(1).max(3).optional()
 }).strict()
 const routeStrategyNormalRoutingConfigSchema = z.object({

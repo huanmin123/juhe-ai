@@ -50,6 +50,34 @@ export async function recordGatewayAccountApiKeyFailure(
   if (!guardDecision.persist) {
     return
   }
+  if (runtimeConfig.runtimeStateDriver === 'redis') {
+    void requestGatewayDbService({
+      type: 'record_account_api_key_failure',
+      account,
+      input: {
+        status: input.status,
+        statusCode: input.statusCode,
+        errorCode: input.errorCode,
+        errorMessage: input.errorMessage,
+        cooldownUntil: input.cooldownUntil,
+        observedAt
+      }
+    }, {
+      priority: 'low'
+    }).then((result) => {
+      if (result.changed) {
+        clearGatewayRuntimeCache()
+      }
+    }).catch((error) => {
+      logger.warn(errorLogFields(error, {
+        event: 'gateway_account_api_key_failure_side_effect_failed',
+        accountId: account.id,
+        selectedApiKeyFingerprint: account.selectedApiKeyFingerprint,
+        source: input.source
+      }), '账户内 API Key 失败运行态异步写入失败')
+    })
+    return
+  }
   try {
     const result = await requestGatewayDbService({
       type: 'record_account_api_key_failure',
@@ -75,9 +103,6 @@ export async function recordGatewayAccountApiKeyFailure(
       selectedApiKeyFingerprint: account.selectedApiKeyFingerprint,
       source: input.source
     }), '账户内 API Key 失败运行态写入失败')
-    if (runtimeConfig.runtimeStateDriver === 'redis') {
-      throw error
-    }
   }
 }
 

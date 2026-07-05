@@ -830,6 +830,19 @@ export const backgroundWorkerRegistry = [
     writes: ['dataset:*', 'stats:*', 'usage-shards:usage_records', 'audit-payload-files:*']
   }),
   entry({
+    jobName: 'record-maintenance:audit_retained_data_cleanup',
+    category: 'maintenance-task',
+    kind: 'maintenance',
+    lifecycle: 'hybrid',
+    defaultRole: 'ingest-worker',
+    hotspot: false,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: false,
+    writes: ['dataset:audit_logs', 'dataset:audit_log_attempts', 'dataset:audit_payload_refs', 'dataset:audit_error_groups', 'dataset:audit_payload_blobs', 'audit-payload-files:*']
+  }),
+  entry({
     jobName: 'record-maintenance:account_usage_snapshot_upsert',
     category: 'maintenance-task',
     kind: 'maintenance',

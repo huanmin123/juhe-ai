@@ -17,6 +17,7 @@ import {
 import { readAuditLogSettings } from './audit-log-settings.js'
 import { grepAuditHotSearchFiles } from '../../storage/audit-log-hot-search-files.js'
 import { requestServerRuntimeSnapshot } from '../db-service/db-service-ipc.js'
+import { requireAdmin } from '../auth/auth.middleware.js'
 
 export const auditLogsRouter = Router()
 const auditLogRouteTimeoutMs = 120_000
@@ -26,6 +27,7 @@ auditLogsRouter.use((req, res, next) => {
   res.setTimeout(auditLogRouteTimeoutMs)
   next()
 })
+auditLogsRouter.use(requireAdmin)
 
 auditLogsRouter.get('/', async (req, res, next) => {
   try {
@@ -164,6 +166,7 @@ function parseAuditLogListOptions(query: Record<string, unknown>): AuditLogListO
     page: Number.isInteger(rawPage) ? rawPage : undefined,
     pageSize: Number.isInteger(rawPageSize) ? rawPageSize : undefined,
     traceId: optionalQueryText(query.traceId),
+    errorGroupId: optionalQueryText(query.errorGroupId),
     outcome: typeof query.outcome === 'string' && auditOutcomes.has(query.outcome as AuditOutcome | 'all')
       ? query.outcome as AuditOutcome | 'all'
       : undefined,
@@ -175,6 +178,8 @@ function parseAuditLogListOptions(query: Record<string, unknown>): AuditLogListO
     groupId: optionalQueryText(query.groupId),
     accountId: optionalQueryText(query.accountId),
     clientIp: optionalQueryText(query.clientIp),
+    startAt: optionalQueryText(query.startAt),
+    endAt: optionalQueryText(query.endAt),
     trafficSource: auditTrafficSourceQueryValue(query.trafficSource)
   }
 }

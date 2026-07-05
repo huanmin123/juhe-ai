@@ -16,7 +16,7 @@ import type {
   OperationLogSummary,
   OperationLogVisibilityScope
 } from './operation-log-types.js'
-import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
+import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows, textPrefixUpperBound } from './query-utils.js'
 import { loadSystemAccountNameMapByIds } from './repository-lookups.js'
 import { optionalString } from './value-utils.js'
 import { getPostgresPool } from './postgres-client.js'
@@ -669,8 +669,9 @@ function pushExactFilter(clauses: string[], params: OperationLogFilterValue[], c
 function pushPrefixFilter(clauses: string[], params: OperationLogFilterValue[], column: string, value?: string): void {
   const text = value?.trim()
   if (!text) return
-  clauses.push(`${column} >= ? AND ${column} < ?`)
-  params.push(text, `${text}\uffff`)
+  const columnExpression = runtimeConfig.databaseDriver === 'postgres' ? `${column} COLLATE "C"` : column
+  clauses.push(`${columnExpression} >= ? AND ${columnExpression} < ?`)
+  params.push(text, textPrefixUpperBound(text))
 }
 
 function loadViewerDetailLevels(operationLogIds: string[], systemAccountId: string): Map<string, OperationLogDetailLevel> {

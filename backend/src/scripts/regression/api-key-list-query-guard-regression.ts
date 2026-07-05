@@ -89,7 +89,8 @@ try {
     assert(nameIds.includes(matchedByName.id), 'API Key 搜索应命中名称精确值')
     assert(nameIds.includes(matchedByNamePrefix.id), 'API Key 搜索应命中名称前缀值')
     assert(!nameIds.includes(middleNameOnly.id), 'API Key 搜索不应命中名称中间包含值')
-    assert.equal(nameResult.items.find((item) => item.id === matchedByName.id)?.key, '', 'API Key 列表不应重复返回完整本地密钥')
+    const matchedListItem = nameResult.items.find((item) => item.id === matchedByName.id) as Record<string, unknown> | undefined
+    assert.equal(Object.prototype.hasOwnProperty.call(matchedListItem ?? {}, 'key'), false, 'API Key 列表不应包含完整本地密钥字段')
     assert.equal(matchedByName.key.startsWith(matchedByName.keyPrefix), true, 'API Key 创建响应仍应返回一次完整密钥供用户保存')
     assert.equal(matchedByName.key.endsWith(matchedByName.keySuffix), true, 'API Key 创建响应应返回后缀供列表安全识别')
 
@@ -126,8 +127,9 @@ try {
   assertBusinessIndexMissing('idx_api_keys_description_lookup')
   assertBusinessIndexMissing('idx_api_keys_system_account_description_lookup')
   assertPostgresApiKeyListKeywordUsesLowerPrefixRange()
+  assertApiKeyReadPathsDoNotEnsureDefaults()
 
-  console.log('API Key 列表查询防护回归通过：搜索仅按名称精确/前缀匹配，列表不返回完整密钥')
+  console.log('API Key 列表查询防护回归通过：搜索仅按名称精确/前缀匹配，列表不返回完整密钥，读路径不补默认数据')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()
@@ -169,4 +171,25 @@ function assertPostgresApiKeyListKeywordUsesLowerPrefixRange(): void {
   assert(filterSnippet.includes('api_keys.name COLLATE "C" >= ?'), 'PG API Key 列表 filter helper 前缀范围应使用 C collation')
   assert(filterSnippet.includes('starts_with(lower(api_keys.name), ?)') === false, 'PG API Key 列表 filter helper 不应折叠名称大小写')
   assert(!/\bILIKE\b/i.test(`${keywordSnippet}\n${filterSnippet}`), 'PG API Key 列表 keyword 不应使用 ILIKE 前缀参数')
+}
+
+function assertApiKeyReadPathsDoNotEnsureDefaults(): void {
+  const source = readFileSync(resolve('src/storage/api-key.repository.ts'), 'utf8')
+  for (const name of [
+    'listApiKeys',
+    'listApiKeysAsync',
+    'listApiKeysReadOnly',
+    'listApiKeysPage',
+    'listApiKeysPageAsync',
+    'listApiKeysPageReadOnly',
+    'queryApiKeys',
+    'queryApiKeysAsync'
+  ]) {
+    const start = source.indexOf(`function ${name}`)
+    assert.notEqual(start, -1, `应能找到 API Key 读函数 ${name}`)
+    const nextFunction = source.slice(start + 1).search(/\n(?:export\s+)?(?:async\s+)?function\s+/)
+    const end = nextFunction === -1 ? undefined : start + 1 + nextFunction
+    const snippet = source.slice(start, end)
+    assert(!snippet.includes('ensureDefaultApiKeys'), `${name} 不允许在读路径补默认 API Key`)
+  }
 }

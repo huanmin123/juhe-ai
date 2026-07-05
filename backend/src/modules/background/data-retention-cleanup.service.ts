@@ -113,6 +113,10 @@ export interface DataRetentionCleanupResult {
   usageQuotaHourlyWindows: number
   usageScopeRangeWindows: number
   clientIpUsageRangeWindows: number
+  clientIpRangeWindowDirtyIps: number
+  clientIpAccountStatsDaily: number
+  clientIpAccountUsageRangeWindows: number
+  clientIpAccountRangeWindowDirtyIps: number
   accountUsageSnapshots: number
   systemMetricsSamples: number
   systemMetricsHourly: number
@@ -539,6 +543,10 @@ function emptyCleanupResult(): DataRetentionCleanupResult {
     usageQuotaHourlyWindows: 0,
     usageScopeRangeWindows: 0,
     clientIpUsageRangeWindows: 0,
+    clientIpRangeWindowDirtyIps: 0,
+    clientIpAccountStatsDaily: 0,
+    clientIpAccountUsageRangeWindows: 0,
+    clientIpAccountRangeWindowDirtyIps: 0,
     accountUsageSnapshots: 0,
     systemMetricsSamples: 0,
     systemMetricsHourly: 0,

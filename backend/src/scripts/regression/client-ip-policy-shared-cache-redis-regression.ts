@@ -18,6 +18,7 @@ mkdirSync(tempRoot, { recursive: true })
 
 runtimeConfig.cacheDriver = 'redis'
 runtimeConfig.redis.cacheUrl = cacheUrl
+runtimeConfig.redis.namespace = `client-ip-policy-${Date.now()}`
 runtimeConfig.processRole = 'worker'
 runtimeConfig.workerRole = 'stats-worker'
 runtimeConfig.databaseDriver = 'sqlite'
@@ -29,12 +30,14 @@ runtimeConfig.log.fileEnabled = false
 
 const [
   { createDedicatedRedisClient, closeRedisClients },
+  { redisNamespacedKey },
   { logger },
   databaseModule,
   clientIpStats,
   clientIpPolicyCache
 ] = await Promise.all([
   import('../../shared/redis-client.js'),
+  import('../../shared/redis-namespace.js'),
   import('../../shared/logger.js'),
   import('../../storage/database.js'),
   import('../../storage/client-ip-stats.repository.js'),
@@ -44,8 +47,8 @@ const [
 logger.level = 'silent'
 
 const redisClient = await createDedicatedRedisClient(cacheUrl)
-const cacheKeyPattern = 'juhe-ai:cache:gateway:client-ip-policy-by-ip:*'
-const cacheVersionKey = 'juhe-ai:cache-version:gateway:client-ip-policy-by-ip'
+const cacheKeyPattern = redisNamespacedKey('juhe-ai:cache:gateway:client-ip-policy-by-ip:*')
+const cacheVersionKey = redisNamespacedKey('juhe-ai:cache-version:gateway:client-ip-policy-by-ip')
 
 try {
   await cleanupRedisKeys()
@@ -219,7 +222,7 @@ function assertRedisCleanupAllowed(redisUrl: string): void {
   if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {
     return
   }
-  throw new Error('客户端 IP 封禁策略 Redis shared cache 回归会清理 juhe-ai:cache:gateway:client-ip-policy-by-ip:* 和对应 version key；非本机 Redis 必须先确认是测试实例，并设置 JUHE_AI_ALLOW_CLIENT_IP_POLICY_SHARED_CACHE_CLEANUP=1')
+  throw new Error('客户端 IP 封禁策略 Redis shared cache 回归会清理当前 JUHE_AI_REDIS_NAMESPACE 下的 client-ip-policy cache key；非本机 Redis 必须先确认是测试实例，并设置 JUHE_AI_ALLOW_CLIENT_IP_POLICY_SHARED_CACHE_CLEANUP=1')
 }
 
 function numericRedisResult(value: unknown): number {

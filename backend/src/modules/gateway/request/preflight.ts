@@ -703,6 +703,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     return undefined
   }
   requestLane = imagePermissionPreflight.requestLane
+  const normalRouteSpeedFirstConfig = normalRouteSpeedFirstConfigForApiKey(apiKeyRecord)
 
   const dispatchPreparation = await prepareOpenAIGatewayDispatchAccounts({
     req,
@@ -718,7 +719,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     apiKeyId,
     groupId,
     routeStrategyId: apiKeyRecord?.route_strategy_id,
-    normalRouteSpeedFirstConfig: normalRouteSpeedFirstConfigForApiKey(apiKeyRecord),
+    normalRouteSpeedFirstConfig,
     clientIp: gatewayClientIp,
     clientStrategy,
     requestLane,
@@ -785,7 +786,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     modelPriority: candidateFilter.modelPriority,
     requestLane,
     groupSchedulingPolicy: groupAccess.schedulingPolicy,
-    normalRouteSpeedFirstConfig: normalRouteSpeedFirstConfigForApiKey(apiKeyRecord),
+    normalRouteSpeedFirstConfig,
     responseInspectionPolicies: runtimeResponseInspectionPolicies ?? [],
     apiKeyRecord,
     groupFallbackApiKeyRecord,

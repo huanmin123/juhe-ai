@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { runtimeConfig } from '../config/runtime.js'
 import { errorLogFields, logger } from './logger.js'
 import { getRedisClient, type RedisCommandClient } from './redis-client.js'
+import { redisNamespacedKey } from './redis-namespace.js'
 
 const currentConcurrencyByAccountId = new Map<string, number>()
 const currentConcurrencyByAccountLaneKey = new Map<string, number>()
@@ -624,15 +625,15 @@ function redisStateClient(): Promise<RedisCommandClient> {
 }
 
 function redisAccountConcurrencyKey(accountId: string): string {
-  return `juhe-ai:account-concurrency-v2:${accountId}:total`
+  return redisNamespacedKey(`juhe-ai:account-concurrency-v2:${accountId}:total`)
 }
 
 function redisAccountConcurrencyLaneKey(accountId: string, lane: AccountConcurrencyLane): string {
-  return `juhe-ai:account-concurrency-v2:${accountId}:${lane}`
+  return redisNamespacedKey(`juhe-ai:account-concurrency-v2:${accountId}:${lane}`)
 }
 
 function redisAccountConcurrencyMetadataKey(accountId: string): string {
-  return `juhe-ai:account-concurrency-v2:${accountId}:metadata`
+  return redisNamespacedKey(`juhe-ai:account-concurrency-v2:${accountId}:metadata`)
 }
 
 function redisAccountConcurrencySlotToken(): string {

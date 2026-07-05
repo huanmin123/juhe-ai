@@ -24,7 +24,9 @@
               @click="selectApiDoc(item.id)"
             >
               <span class="api-doc-list-title">{{ item.name }}</span>
-              <span class="api-doc-list-path">{{ item.method }} {{ item.path }}</span>
+              <a-tooltip :title="`${item.method} ${item.path}`" placement="right">
+                <span class="api-doc-list-path">{{ item.method }} {{ item.path }}</span>
+              </a-tooltip>
             </button>
             <a-empty v-if="!filteredApiDocs.length" image="simple" description="没有匹配的接口。" />
           </div>

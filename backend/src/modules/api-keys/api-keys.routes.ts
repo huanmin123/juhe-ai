@@ -18,7 +18,7 @@ import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
 import { requestQuotaLimitsSchema } from '../request-quota-limit.schema.js'
 import { apiKeyAvailabilityScheduleSchema } from './api-key-availability-schedule.schema.js'
-import { submitApiKeyRelatedCleanup } from './api-key-cleanup.service.js'
+import { submitApiKeyRelatedCleanupAsync } from './api-key-cleanup.service.js'
 import { diffSafeFields, operationMode, recordOperationLogAsync, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 
 export const apiKeysRouter = Router()
@@ -66,7 +66,7 @@ apiKeysRouter.get('/:id/secret', async (req, res, next) => {
       throw new Error('API Key 密钥读取失败')
     }
     const ownerSystemAccountId = resolveOperationOwner(apiKey as unknown as Record<string, unknown>, requestAccess)
-    await recordOperationLogAsync({
+    const operationLog = {
       operationScopeSystemAccountId: ownerSystemAccountId,
       mode: operationMode(requestAccess),
       module: 'api_keys',
@@ -80,9 +80,10 @@ apiKeysRouter.get('/:id/secret', async (req, res, next) => {
         safeChange('key', '密钥标识', undefined, `${apiKey.keyPrefix}...${apiKey.keySuffix}`)
       ],
       viewers: viewer(ownerSystemAccountId, 'resource_owner')
-    }, req)
+    }
     setNoStoreSecretHeaders(res)
     res.json(ok({ key: apiKey.key }))
+    void recordOperationLogAsync(operationLog, req)
   } catch (error) {
     next(error)
   }
@@ -279,9 +280,9 @@ apiKeysRouter.delete('/:id', async (req, res, next) => {
       if (!deleteResult.deleted) throw new Error('API Key 不存在')
       return {
         result: true,
-        afterCommit: () => {
+        afterCommit: async () => {
           if (deleteResult.cleanupTarget) {
-            submitApiKeyRelatedCleanup(deleteResult.cleanupTarget)
+            await submitApiKeyRelatedCleanupAsync(deleteResult.cleanupTarget)
           }
         },
         log: {

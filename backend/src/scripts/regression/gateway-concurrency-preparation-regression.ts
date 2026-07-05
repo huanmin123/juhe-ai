@@ -67,10 +67,15 @@ const usageContext: GatewayUsageContext = {
   }
 }
 
+const recordedFailedDispatchAttempts: Array<Parameters<AuditCaptureContext['recordFailedDispatchAttempt']>[0]> = []
 const auditCapture = {
   startAttempt: () => '',
   completeAttempt: () => undefined,
-  addGatewayMetadata: () => undefined
+  addGatewayMetadata: () => undefined,
+  recordFailedDispatchAttempt: (input: Parameters<AuditCaptureContext['recordFailedDispatchAttempt']>[0]) => {
+    recordedFailedDispatchAttempts.push(input)
+    return `audit_attempt_${recordedFailedDispatchAttempts.length}`
+  }
 } as unknown as AuditCaptureContext
 
 let holdAndReleaseServer: http.Server | undefined
@@ -146,6 +151,9 @@ try {
   assert.equal(usage?.account_id, saturatedAccount.id, '账号并发满也应写入失败使用记录')
   assert.equal(usage?.success, 0, '账号并发满使用记录应标记失败')
   assert.match(usage?.error_message ?? '', /并发已达到上限/, '账号并发满使用记录应保留错误原因')
+  const saturatedAuditAttempt = recordedFailedDispatchAttempts.find((item) => item.account.id === saturatedAccount.id)
+  assert.equal(saturatedAuditAttempt?.upstreamUrl, 'concurrency:limit', '账号并发满写入使用记录时也必须写入审计 attempt')
+  assert.equal(saturatedAuditAttempt?.errorCode, 'account_concurrency_limit', '账号并发满审计 attempt 应保留可检索错误码')
 
   heldSlot.release()
   clearAccountConcurrency()
@@ -186,6 +194,7 @@ try {
   }
   usageRecordQueue.flushAllUsageRecordQueue()
   assert.equal(latestUsageRecordForAccount(highConcurrencyQueuedAccount.id), undefined, '高并发队列等待期间不应写入账号并发满失败使用记录')
+  assert.equal(recordedFailedDispatchAttempts.some((item) => item.account.id === highConcurrencyQueuedAccount.id), false, '高并发队列等待成功时也不应写入账号并发满审计 attempt')
   clearHighConcurrencyGroupQueues()
   clearAccountConcurrency()
 

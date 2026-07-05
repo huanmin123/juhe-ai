@@ -28,7 +28,7 @@ export type OperationLogRecordInput = Omit<OperationLogInput, 'actorSystemAccoun
 type LoggedOperationResult<T> = {
   result: T
   log?: OperationLogRecordInput | OperationLogRecordInput[]
-  afterCommit?: () => void
+  afterCommit?: () => void | Promise<void>
 }
 
 export function recordOperationLog(input: OperationLogRecordInput, req?: Request): void {
@@ -92,7 +92,7 @@ export async function runLoggedOperationAsync<T>(operation: () => Promise<Logged
   for (const log of logs) {
     await recordOperationLogAsync(log, req)
   }
-  runAfterCommitEffect(outcome.afterCommit)
+  await runAfterCommitEffectAsync(outcome.afterCommit)
   return outcome.result
 }
 
@@ -288,10 +288,28 @@ function operationLogComparableValue(value: unknown): string {
   }
 }
 
-function runAfterCommitEffect(afterCommit?: () => void): void {
+function runAfterCommitEffect(afterCommit?: () => void | Promise<void>): void {
   if (!afterCommit) return
   try {
-    afterCommit()
+    const result = afterCommit()
+    if (result && typeof result === 'object' && 'catch' in result && typeof result.catch === 'function') {
+      void result.catch((error: unknown) => {
+        getRequestLogger().warn(errorLogFields(error, {
+          event: 'operation_log_after_commit_effect_failed'
+        }), '操作日志提交后副作用执行失败')
+      })
+    }
+  } catch (error) {
+    getRequestLogger().warn(errorLogFields(error, {
+      event: 'operation_log_after_commit_effect_failed'
+    }), '操作日志提交后副作用执行失败')
+  }
+}
+
+async function runAfterCommitEffectAsync(afterCommit?: () => void | Promise<void>): Promise<void> {
+  if (!afterCommit) return
+  try {
+    await afterCommit()
   } catch (error) {
     getRequestLogger().warn(errorLogFields(error, {
       event: 'operation_log_after_commit_effect_failed'

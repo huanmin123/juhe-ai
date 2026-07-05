@@ -99,6 +99,33 @@ try {
     assert.equal((successDetail.requestData.query as Record<string, unknown>).keyword, 'public-query-secret', '请求快照 query 应保留 keyword 参数原文')
     assert(JSON.stringify(successDetail).includes('public-query-secret'), '公开接口日志详情应保存 query token 原文')
 
+    const suffixPath = '/__aipublic__/group/list/compact'
+    const suffixPathRequest = await requestJson(baseUrl, `${suffixPath}?targetUsername=huanmin&include=suffix`, {
+      Authorization: `Bearer ${builtInTestToken}`,
+      'x-trace-id': 'trace-public-path-suffix'
+    })
+    assert.equal(suffixPathRequest.status, 404)
+    const suffixPathLog = singleLogByTraceId('trace-public-path-suffix')
+    assert.equal(suffixPathLog.path, suffixPath, '公开接口日志列表应保留完整接口后缀路径')
+    assert.equal(suffixPathLog.queryString, 'targetUsername=huanmin&include=suffix', '公开接口日志后缀路径 queryString 应单独保留')
+    const suffixPathDetail = requiredDetail(suffixPathLog.id)
+    assert.equal(suffixPathDetail.path, suffixPath, '公开接口日志详情应保留完整接口后缀路径')
+    assert.equal((suffixPathDetail.requestData as Record<string, unknown>).path, suffixPath, '公开接口日志请求摘要应保留完整接口后缀路径')
+    assert.deepEqual(
+      listPublicApiLogs({ path: suffixPath, pageSize: 10 }).items.map((item) => item.traceId),
+      ['trace-public-path-suffix'],
+      '公开接口日志 path 筛选应按完整后缀路径精确命中'
+    )
+    assert.deepEqual(
+      listPublicApiLogs({ path: `GET ${suffixPath}?targetUsername=huanmin&include=suffix`, pageSize: 10 }).items.map((item) => item.traceId),
+      ['trace-public-path-suffix'],
+      '公开接口日志 path 筛选应兼容从接口列复制的 METHOD path?query 文本'
+    )
+    assert(
+      !listPublicApiLogs({ path: '/__aipublic__/group/list', pageSize: 20 }).items.some((item) => item.traceId === 'trace-public-path-suffix'),
+      '公开接口日志 path 筛选不应把后缀路径折叠到父路径'
+    )
+
     const apiKeyAdd = await requestJson(baseUrl, '/__aipublic__/api-key/add', {
       Authorization: `Bearer ${builtInTestToken}`,
       'x-trace-id': 'trace-public-api-key-add'
@@ -267,7 +294,8 @@ try {
   const publicApiLogRepositorySource = readFileSync(new URL('../../storage/public-api-logs.repository.ts', import.meta.url), 'utf8')
   assert.match(publicApiLogRepositorySource, /insertPublicApiLogsPostgres\(tx,\s*chunk\)/, 'PG 公开接口日志应走批量写入')
   assert.match(publicApiLogRepositorySource, /ON CONFLICT\(id\) DO NOTHING/, 'PG 公开接口日志应支持 Redis Stream 重投幂等')
-  assert.match(publicApiLogRepositorySource, /prefixUpperBound\(text\)/, '公开接口日志前缀筛选不应使用固定 \\uffff 上界')
+  assert.match(publicApiLogRepositorySource, /textPrefixUpperBound\(text\)/, '公开接口日志前缀筛选不应使用固定 \\uffff 上界')
+  assert.match(publicApiLogRepositorySource, /runtimeConfig\.databaseDriver === 'postgres' \? `\$\{column\} COLLATE "C"` : column/, 'PG 公开接口日志前缀筛选必须使用 C collation，和使用记录 traceId 搜索一致')
 
   console.log('公开接口日志回归通过：公开请求记录、管理员查询、原文日志和 30 天保留清理均符合预期')
 } finally {

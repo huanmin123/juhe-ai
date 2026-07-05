@@ -17,6 +17,7 @@ import { buildGatewayUpstreamRequestParts, prepareGatewayUpstreamAccount } from 
 import type { ProviderGatewayRequestContext } from '../../providers/drivers/_shared/types.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import type { UpstreamAttempt } from '../upstream/attempt.js'
+import type { AuditCaptureContext } from '../audit/capture.service.js'
 import {
   accountApiKeyEntries,
   isAccountApiKeyPoolIsolationEnabled,
@@ -77,7 +78,9 @@ export async function handleUnavailableProxyProfile(
   settings: GatewaySettings,
   failedProxyDispatchKeys: Map<string, string>,
   accountStateMutationEnabled = true,
-  recordPrecheckFailure: GatewayAccountFailurePrecheckRecorder = recordGatewayAccountFailureForPrecheck
+  recordPrecheckFailure: GatewayAccountFailurePrecheckRecorder = recordGatewayAccountFailureForPrecheck,
+  auditCapture?: AuditCaptureContext,
+  auditAttemptIndex?: number
 ): Promise<UpstreamAttempt | undefined> {
   if (!account.proxyProfileUnavailable) {
     return undefined
@@ -97,9 +100,22 @@ export async function handleUnavailableProxyProfile(
   }
   await recordFailedUpstreamAttempt(req, usageContext, account, {
     upstreamUrl: 'proxy:configured',
-      startedAt: attemptStartedAt,
-      errorMessage: message
+    startedAt: attemptStartedAt,
+    errorMessage: message
+  })
+  if (auditCapture && typeof auditAttemptIndex === 'number') {
+    auditCapture.recordFailedDispatchAttempt({
+      account,
+      attemptIndex: auditAttemptIndex,
+      upstreamUrl: 'proxy:configured',
+      method: req.method,
+      startedAtMs: attemptStartedAt,
+      errorPhase: 'dispatch',
+      errorCode: 'proxy_unavailable',
+      errorMessage: message,
+      requestForModelAccounting: req
     })
+  }
   if (accountStateMutationEnabled && usageContext.trafficSource !== 'gateway') {
     await applyAccountErrorHandlingWithCacheInvalidation(account, {
       success: false,

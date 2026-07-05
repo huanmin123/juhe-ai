@@ -2,7 +2,7 @@ import { runtimeConfig } from '../config/runtime.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatasetDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
-import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
+import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows, textPrefixUpperBound } from './query-utils.js'
 import { getSettings, getSettingsAsync } from './settings.repository.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import { optionalString } from './value-utils.js'
@@ -433,6 +433,38 @@ export function cleanupRuntimeLogIndex(cutoffIso = retentionCutoffIso(currentRun
   }
 }
 
+export async function cleanupRuntimeLogIndexAsync(cutoffIso?: string, limit = 10000): Promise<number> {
+  const effectiveCutoffIso = cutoffIso ?? retentionCutoffIso(await currentRuntimeLogIndexRetentionDaysAsync())
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return cleanupRuntimeLogIndex(effectiveCutoffIso, limit)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const rows = await client.query<RuntimeLogRow>(`
+    SELECT id, time, level, event
+    FROM juhe_dataset.runtime_logs
+    WHERE time < ?
+    ORDER BY time ASC, id ASC
+    LIMIT ?
+  `, [effectiveCutoffIso, Math.max(1, Math.trunc(limit))])
+  const ids = rows.map((row) => String(row.id)).filter(Boolean)
+  if (ids.length === 0) return 0
+
+  let deleted = 0
+  await client.transaction(async (tx) => {
+    for (const chunk of chunkValues(ids, 10000)) {
+      deleted += Number((await tx.execute('DELETE FROM juhe_dataset.runtime_logs WHERE id = ANY(?::text[])', [chunk])).changes ?? 0)
+    }
+    if (deleted > 0) {
+      await decrementRuntimeLogFacetSnapshotsAsync(tx, rows.map((row) => ({
+        time: String(row.time),
+        level: String(row.level),
+        event: optionalString(row.event)
+      })), effectiveCutoffIso)
+    }
+  })
+  return deleted
+}
+
 export function cleanupRuntimeLogFileCursorsBefore(cutoffIso: string, limit = 10000): number {
   const database = getDatasetDatabase()
   const result = database.prepare(`
@@ -445,6 +477,24 @@ export function cleanupRuntimeLogFileCursorsBefore(cutoffIso: string, limit = 10
       LIMIT ?
     )
   `).run(cutoffIso, Math.max(1, Math.trunc(limit)))
+  return Number(result.changes ?? 0)
+}
+
+export async function cleanupRuntimeLogFileCursorsBeforeAsync(cutoffIso: string, limit = 10000): Promise<number> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return cleanupRuntimeLogFileCursorsBefore(cutoffIso, limit)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const result = await client.execute(`
+    DELETE FROM juhe_dataset.runtime_log_file_cursors
+    WHERE ctid IN (
+      SELECT ctid
+      FROM juhe_dataset.runtime_log_file_cursors
+      WHERE updated_at < ?
+      ORDER BY updated_at ASC, ctid ASC
+      LIMIT ?
+    )
+  `, [cutoffIso, Math.max(1, Math.trunc(limit))])
   return Number(result.changes ?? 0)
 }
 
@@ -535,8 +585,9 @@ function pushExactTextFilter(clauses: string[], params: RuntimeLogFilterValue[],
 function pushPrefixTextFilter(clauses: string[], params: RuntimeLogFilterValue[], column: string, value?: string): void {
   const text = value?.trim()
   if (!text) return
-  clauses.push(`${column} >= ? AND ${column} < ?`)
-  params.push(text, `${text}\uffff`)
+  const columnExpression = runtimeConfig.databaseDriver === 'postgres' ? `${column} COLLATE "C"` : column
+  clauses.push(`${columnExpression} >= ? AND ${columnExpression} < ?`)
+  params.push(text, textPrefixUpperBound(text))
 }
 
 function pushMessageKeywordFilter(clauses: string[], params: RuntimeLogFilterValue[], value?: string): void {
@@ -863,6 +914,81 @@ function decrementRuntimeLogFacetSnapshots(database: ReturnType<typeof getDatase
     updateEvent.run(count, timestamp, runtimeLogFacetBucketKey, event)
   }
   database.prepare('DELETE FROM runtime_log_event_facets WHERE bucket_key = ? AND count <= 0').run(runtimeLogFacetBucketKey)
+}
+
+async function decrementRuntimeLogFacetSnapshotsAsync(client: DatabaseClient, rows: RuntimeLogFacetInput[], cutoffIso: string): Promise<void> {
+  if (rows.length === 0) return
+
+  const timestamp = nowIso()
+  const summary = await client.one<RuntimeLogRow>(
+    'SELECT earliest_time FROM juhe_dataset.runtime_log_facet_summary WHERE bucket_key = ?',
+    [runtimeLogFacetBucketKey]
+  )
+  const earliestCountedTime = optionalString(summary?.earliest_time)
+  const countedRows = earliestCountedTime
+    ? rows.filter((row) => row.time >= earliestCountedTime)
+    : rows
+  if (countedRows.length === 0) return
+
+  const earliestRow = await client.one<RuntimeLogRow>(`
+    SELECT time
+    FROM juhe_dataset.runtime_logs
+    WHERE time >= ?
+    ORDER BY time ASC, id ASC
+    LIMIT 1
+  `, [cutoffIso])
+  const latestRow = await client.one<RuntimeLogRow>(`
+    SELECT time
+    FROM juhe_dataset.runtime_logs
+    WHERE time >= ?
+    ORDER BY time DESC, id DESC
+    LIMIT 1
+  `, [cutoffIso])
+  await client.execute(`
+    UPDATE juhe_dataset.runtime_log_facet_summary
+    SET total_count = GREATEST(0, total_count - ?),
+        earliest_time = ?,
+        latest_time = ?,
+        updated_at = ?
+    WHERE bucket_key = ?
+  `, [
+    countedRows.length,
+    optionalString(earliestRow?.time) ?? null,
+    optionalString(latestRow?.time) ?? null,
+    timestamp,
+    runtimeLogFacetBucketKey
+  ])
+  await client.execute('DELETE FROM juhe_dataset.runtime_log_facet_summary WHERE bucket_key = ? AND total_count <= 0', [runtimeLogFacetBucketKey])
+
+  const levels = new Map<string, number>()
+  const events = new Map<string, number>()
+  for (const row of countedRows) {
+    levels.set(row.level, (levels.get(row.level) ?? 0) + 1)
+    const event = row.event?.trim()
+    if (event) {
+      events.set(event, (events.get(event) ?? 0) + 1)
+    }
+  }
+
+  for (const [level, count] of levels) {
+    await client.execute(`
+      UPDATE juhe_dataset.runtime_log_level_facets
+      SET count = GREATEST(0, count - ?),
+          updated_at = ?
+      WHERE bucket_key = ? AND level = ?
+    `, [count, timestamp, runtimeLogFacetBucketKey, level])
+  }
+  await client.execute('DELETE FROM juhe_dataset.runtime_log_level_facets WHERE bucket_key = ? AND count <= 0', [runtimeLogFacetBucketKey])
+
+  for (const [event, count] of events) {
+    await client.execute(`
+      UPDATE juhe_dataset.runtime_log_event_facets
+      SET count = GREATEST(0, count - ?),
+          updated_at = ?
+      WHERE bucket_key = ? AND event = ?
+    `, [count, timestamp, runtimeLogFacetBucketKey, event])
+  }
+  await client.execute('DELETE FROM juhe_dataset.runtime_log_event_facets WHERE bucket_key = ? AND count <= 0', [runtimeLogFacetBucketKey])
 }
 
 function normalizeLevel(value: string): string {

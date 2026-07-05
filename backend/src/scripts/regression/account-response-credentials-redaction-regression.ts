@@ -101,12 +101,20 @@ try {
 
   const editBasicDetail = await getEnvelope<AccountResponse>(baseUrl, `/__aisys__/api/accounts/${seed.apiKeyAccountId}/edit-basic`, seed.adminCookie)
   assert(editBasicDetail.credentials, '账户编辑首屏详情应返回基础凭据字段')
+  assert.equal(editBasicDetail.credentials.api_key, 'sk-redaction-existing-api-key', '账户编辑首屏详情应返回完整 API Key 供用户查看和修改')
   assert.equal(editBasicDetail.credentials.base_url, 'https://api.openai.com/v1', '账户编辑首屏详情应返回 Base URL')
   assert(Array.isArray(editBasicDetail.credentials.supported_endpoint_modes), '账户编辑首屏详情应返回接口能力')
   assert(Array.isArray(editBasicDetail.supportedModels) && editBasicDetail.supportedModels.length > 0, '账户编辑首屏详情应返回支持模型')
   assert.equal(Object.prototype.hasOwnProperty.call(editBasicDetail, 'modelMappings'), false, '账户编辑首屏详情不应返回模型映射')
   assert.equal(Object.prototype.hasOwnProperty.call(editBasicDetail, 'apiKeyRuntimeDetails'), false, '账户编辑首屏详情不应返回 API Key 运行明细')
-  assertNoCredentialLeak(editBasicDetail, '账户编辑首屏详情响应')
+  assertNoForbiddenCredentialKeysExcept(editBasicDetail, '账户编辑首屏详情响应', new Set(['api_key', 'api_keys', 'api_key_strategy', 'api_key_weights']))
+
+  const multiKeyEditBasicDetail = await getEnvelope<AccountResponse>(baseUrl, `/__aisys__/api/accounts/${seed.multiApiKeyAccountId}/edit-basic`, seed.adminCookie)
+  assert(multiKeyEditBasicDetail.credentials, '账户编辑首屏详情应返回多 API Key 凭据')
+  assert.deepEqual(multiKeyEditBasicDetail.credentials.api_keys, ['sk-redaction-multi-a', 'sk-redaction-multi-b'], '账户编辑首屏详情应返回完整多 API Key 列表供用户查看和修改')
+  assert.equal(multiKeyEditBasicDetail.credentials.api_key_strategy, 'weighted_round_robin', '账户编辑首屏详情应返回多 API Key 调度策略')
+  assert.deepEqual(multiKeyEditBasicDetail.credentials.api_key_weights, [2, 1], '账户编辑首屏详情应返回多 API Key 权重')
+  assertNoForbiddenCredentialKeysExcept(multiKeyEditBasicDetail, '账户编辑首屏多 Key 详情响应', new Set(['api_key', 'api_keys', 'api_key_strategy', 'api_key_weights']))
 
   const detail = await getEnvelope<AccountResponse>(baseUrl, `/__aisys__/api/accounts/${seed.apiKeyAccountId}/advanced`, seed.adminCookie)
   assert(detail.credentials, '账户高级详情应返回编辑凭据')
@@ -402,6 +410,21 @@ function assertNoForbiddenCredentialKeys(value: unknown, label: string, path = '
       `${label} 不应包含凭据字段 ${path}.${key}`
     )
     assertNoForbiddenCredentialKeys(child, label, `${path}.${key}`)
+  }
+}
+
+function assertNoForbiddenCredentialKeysExcept(value: unknown, label: string, allowedKeys: ReadonlySet<string>, path = '$'): void {
+  if (!value || typeof value !== 'object') return
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertNoForbiddenCredentialKeysExcept(item, label, allowedKeys, `${path}[${index}]`))
+    return
+  }
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    assert(
+      allowedKeys.has(key) || !['api_key', 'access_token', 'refresh_token', 'id_token', 'error_handling_rules', 'response_inspection_rules'].includes(key),
+      `${label} 不应包含凭据字段 ${path}.${key}`
+    )
+    assertNoForbiddenCredentialKeysExcept(child, label, allowedKeys, `${path}.${key}`)
   }
 }
 

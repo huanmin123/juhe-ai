@@ -77,8 +77,8 @@ function assertAccessModeMetadata(): void {
   )
   assert.equal(
     resolveSystemApiDbAccessMode(requestFor('GET', '/__aisys__/api/api-keys/key_1/secret'), '/__aisys__/api'),
-    'readWithSideEffect',
-    'GET /api-keys/:id/secret 会记录查看密钥操作日志，不能标记为纯 read'
+    'read',
+    'GET /api-keys/:id/secret 的操作日志已异步投递，不能占用写 admission'
   )
   assert.equal(
     resolveSystemApiDbAccessMode(requestFor('GET', '/__aisys__/api/groups'), '/__aisys__/api'),
@@ -127,6 +127,10 @@ function assertAccessModeMetadata(): void {
   const sideEffectResponse = new FakeResponse()
   setSystemApiDbAccessMode(sideEffectResponse as unknown as Response, 'readWithSideEffect')
   assert.equal(shouldTouchSessionForSystemApiRequest(sideEffectResponse as unknown as Response), true, '未拆副作用的 readWithSideEffect 请求必须保留 session touch')
+
+  const secretRevealResponse = new FakeResponse()
+  setSystemApiDbAccessMode(secretRevealResponse as unknown as Response, 'read')
+  assert.equal(shouldTouchSessionForSystemApiRequest(secretRevealResponse as unknown as Response), false, '查看密钥操作日志已拆为异步投递，不应 touch session')
 }
 
 function assertSqliteAdmissionByAccessMode(): void {
@@ -154,9 +158,8 @@ function assertSqliteAdmissionByAccessMode(): void {
   clearSystemApiDbAccessAdmissionStateForTest()
   setSystemApiDbAccessAdmissionStateForTest({ writeInFlight: systemApiDbServiceMaxInFlight })
   const secretRevealResult = runAdmission('GET', '/__aisys__/api/api-keys/key_1/secret')
-  assert.equal(secretRevealResult.nextCalled, false, 'GET /api-keys/:id/secret 带操作日志副作用，应受 SQLite 写 admission 控制')
-  assert.equal(secretRevealResult.response.statusCode, 503, 'SQLite 写 admission 满载时 secret reveal 应返回 503')
-  assert.equal(secretRevealResult.response.body?.code, 'system_api_busy', 'secret reveal 满载应返回稳定错误码')
+  assert.equal(secretRevealResult.nextCalled, true, 'GET /api-keys/:id/secret 操作日志异步投递，不应受 SQLite 写 admission 控制')
+  assert.equal(secretRevealResult.response.statusCode, undefined, 'SQLite 写 admission 满载时 secret reveal 不应返回 busy')
 
   clearSystemApiDbAccessAdmissionStateForTest()
   setSystemApiDbAccessAdmissionStateForTest({ writeInFlight: systemApiDbServiceMaxInFlight })

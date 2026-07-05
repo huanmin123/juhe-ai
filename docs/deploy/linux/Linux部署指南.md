@@ -120,9 +120,11 @@ sudo journalctl -u juhe-ai -f
 sudo ln -sfn /opt/juhe-ai-lite/releases/新版本/juhe-ai-release /opt/juhe-ai-lite/current
 sudo systemctl restart juhe-ai
 sudo systemctl status juhe-ai --no-pager
+ss -lntp | grep ':3000 ' || true
+pgrep -af 'node|juhe-ai' | grep '/opt/juhe-ai-lite' || true
 ```
 
-当前新版本由主进程看护 DB service 和 worker，不要把 `worker.js` 或 `db-service.js` 单独注册成 systemd 服务。只有强杀、系统崩溃或持续 SQLite `database is locked` 时，再检查是否有脱离当前 server 的旧子进程。
+当前新版本由主进程看护 DB service 和 worker，不要把 `worker.js` 或 `db-service.js` 单独注册成 systemd 服务。升级后必须确认 `3000` 只由当前服务进程监听，进程命令行里没有旧 release 路径。只有强杀、系统崩溃或持续 SQLite `database is locked` 时，再检查是否有脱离当前 server 的旧子进程。
 
 ## 4. Docker 差异
 

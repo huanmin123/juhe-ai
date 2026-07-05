@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import type { SQLInputValue } from 'node:sqlite'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -124,8 +124,9 @@ try {
   assertBusinessIndexExists('idx_route_strategies_system_account_name_lookup')
   assertBusinessIndexExists('idx_route_strategies_owner_mode')
   assertBusinessIndexExists('idx_route_strategy_groups_group_strategy')
+  assertRouteStrategyReadPathsDoNotEnsureDefaults()
 
-  console.log('策略路由列表查询防护回归通过：搜索仅按名称精确/前缀匹配，列表筛选命中索引，分组反查索引仍存在')
+  console.log('策略路由列表查询防护回归通过：搜索仅按名称精确/前缀匹配，列表筛选命中索引，读路径不补默认数据')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()
@@ -147,4 +148,23 @@ function assertBusinessIndexExists(indexName: string): void {
     .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(indexName) as unknown as { name?: string } | undefined
   assert.equal(row?.name, indexName, `业务库应创建索引 ${indexName}`)
+}
+
+function assertRouteStrategyReadPathsDoNotEnsureDefaults(): void {
+  const source = readFileSync(resolve('src/storage/route-strategy.repository.ts'), 'utf8')
+  for (const name of [
+    'listRouteStrategiesPage',
+    'listRouteStrategyListItemsPage',
+    'listRouteStrategiesPageAsync',
+    'listRouteStrategyListItemsPageAsync',
+    'listRouteStrategyOptions',
+    'listRouteStrategyOptionsAsync'
+  ]) {
+    const start = source.indexOf(`function ${name}`)
+    assert.notEqual(start, -1, `应能找到策略路由读函数 ${name}`)
+    const nextFunction = source.slice(start + 1).search(/\n(?:export\s+)?(?:async\s+)?function\s+/)
+    const end = nextFunction === -1 ? undefined : start + 1 + nextFunction
+    const snippet = source.slice(start, end)
+    assert(!snippet.includes('ensureDefaultRouteStrategy'), `${name} 不允许在读路径补默认策略路由`)
+  }
 }

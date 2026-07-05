@@ -228,6 +228,7 @@ function clientIpStatsShardJobState(database: DatabaseSync, shardKey: string): {
 }
 
 async function postgresClientIpStatsJobState(client: DatabaseClient): Promise<{ cursorCreatedAt: string; cursorId: string }> {
+  await ensurePostgresClientIpStatsJobStateRow(client)
   const row = await client.one<StatsJobStateRow>(`
     SELECT cursor_created_at, cursor_id
     FROM juhe_stats.stats_job_state
@@ -235,8 +236,17 @@ async function postgresClientIpStatsJobState(client: DatabaseClient): Promise<{ 
       AND scope_id = ''
       AND job_name = ?
     LIMIT 1
+    FOR UPDATE
   `, [clientIpStatsJobName])
   return { cursorCreatedAt: row?.cursor_created_at ?? '', cursorId: row?.cursor_id ?? '' }
+}
+
+async function ensurePostgresClientIpStatsJobStateRow(client: DatabaseClient): Promise<void> {
+  await client.execute(`
+    INSERT INTO juhe_stats.stats_job_state (scope_type, scope_id, job_name, updated_at)
+    VALUES ('global', '', ?, ?)
+    ON CONFLICT(scope_type, scope_id, job_name) DO NOTHING
+  `, [clientIpStatsJobName, nowIso()])
 }
 
 function updateClientIpStatsJobState(database: DatabaseSync, input: { cursorCreatedAt?: string; cursorId?: string; lastSuccessAt?: string; lastErrorMessage?: string; lagSeconds?: number }): void {

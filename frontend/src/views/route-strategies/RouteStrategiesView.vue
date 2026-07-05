@@ -208,23 +208,12 @@
             </a-tooltip>
           </div>
           <div class="hybrid-config-grid">
-            <a-form-item label="调度偏好" tooltip="成本优先保持当前账号缓存和会话粘黏；速度优先在首字慢速时优先切换到更快账号。">
+            <a-form-item label="调度偏好" tooltip="成本优先保持当前账号缓存和会话粘黏；速度优先先观察首字慢样本，确认账号近期变慢后再优先切换到更快账号。">
               <a-segmented v-model:value="form.normal.schedulingPreference" block :options="normalSchedulingPreferenceOptions" />
-            </a-form-item>
-            <a-form-item
-              v-if="form.normal.schedulingPreference === 'speed_first'"
-              label="当前请求切号"
-              tooltip="首字等待超过阈值时，当前请求允许立即换号重试；原账号进入短期速度降级。"
-            >
-              <a-switch
-                v-model:checked="form.normal.speedFirstConfig.retryOnFirstByteTimeout"
-                checked-children="启用"
-                un-checked-children="停用"
-              />
             </a-form-item>
           </div>
           <div v-if="form.normal.schedulingPreference === 'speed_first'" class="hybrid-config-grid">
-            <a-form-item label="首字等待阈值" required tooltip="等待上游首字的最长时间，低于 10 秒容易误判网络抖动。">
+            <a-form-item label="首字观察阈值" required tooltip="超过阈值先记录慢样本；达到触发次数确认慢后，才会在安全窗口切换账号。">
               <a-input-number v-model:value="form.normal.speedFirstConfig.firstByteThresholdMs" :min="10000" :max="60000" addon-after="ms" />
             </a-form-item>
             <a-form-item label="慢速触发次数" required tooltip="窗口期内达到这个慢速次数后，账号进入速度降级。">
@@ -239,13 +228,12 @@
             <a-form-item label="探针间隔" required tooltip="账号速度降级后，后台探针的最小执行间隔。">
               <a-input-number v-model:value="form.normal.speedFirstConfig.probeIntervalSeconds" :min="10" :max="300" addon-after="秒" />
             </a-form-item>
-            <a-form-item label="降级保留时间" required tooltip="速度降级状态的短期保留时间；到期未再次触发则允许恢复候选。">
+            <a-form-item label="降级租约时间" required tooltip="确认慢或探针失败后刷新这段租约；持续慢会继续后置，连续达标后恢复。">
               <a-input-number v-model:value="form.normal.speedFirstConfig.degradedTtlSeconds" :min="60" :max="3600" addon-after="秒" />
             </a-form-item>
-            <a-form-item label="单请求切号次数" required tooltip="同一个请求因首字超时最多切换账号的次数。">
+            <a-form-item label="单请求切号次数" required tooltip="同一个请求在账号已确认首字慢后，最多隐藏切换账号的次数。">
               <a-input-number
                 v-model:value="form.normal.speedFirstConfig.maxFirstByteRetriesPerRequest"
-                :disabled="!form.normal.speedFirstConfig.retryOnFirstByteTimeout"
                 :min="1"
                 :max="3"
                 addon-after="次"
@@ -1403,8 +1391,7 @@ function defaultSpeedFirstConfigForm(): RouteStrategySpeedFirstConfig {
     recoverySuccessCount: 3,
     probeIntervalSeconds: 30,
     degradedTtlSeconds: 300,
-    retryOnFirstByteTimeout: true,
-    maxFirstByteRetriesPerRequest: 1
+    maxFirstByteRetriesPerRequest: 2
   }
 }
 
@@ -1434,7 +1421,6 @@ function buildNormalRoutingConfigPayload(): RouteStrategyNormalRoutingConfig {
       recoverySuccessCount: boundedInteger(speedFirstConfig.recoverySuccessCount, 3, 10),
       probeIntervalSeconds: boundedInteger(speedFirstConfig.probeIntervalSeconds, 10, 300),
       degradedTtlSeconds: boundedInteger(speedFirstConfig.degradedTtlSeconds, 60, 3600),
-      retryOnFirstByteTimeout: Boolean(speedFirstConfig.retryOnFirstByteTimeout),
       maxFirstByteRetriesPerRequest: boundedInteger(speedFirstConfig.maxFirstByteRetriesPerRequest, 1, 3)
     }
   }

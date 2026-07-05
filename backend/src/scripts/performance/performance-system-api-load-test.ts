@@ -5,6 +5,7 @@ import { dirname, resolve } from 'node:path'
 import { performance } from 'node:perf_hooks'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { captchaAnswerForTest } from '../../modules/auth/captcha.service.js'
 import { createSystemApiApp } from '../../modules/system-api/system-api-app.js'
 import { logger } from '../../shared/logger.js'
@@ -27,7 +28,10 @@ interface LoadConfig {
   maxAllowedXactAgeSeconds: number
   maxAllowedActiveQuerySeconds: number
   maxAllowedP95Ms: number
+  maxAllowedReadP95Ms: number
+  maxAllowedReadP99Ms: number
   resetPgStatStatements: boolean
+  baseUrl?: string
   reportPath?: string
 }
 
@@ -154,8 +158,9 @@ try {
 process.exit(exitCode)
 
 async function runLoadTest(input: LoadConfig): Promise<LoadReport> {
-  const app = createSystemApiApp({ systemApiPrefix: '/__aisys__/api', trustProxy: true })
-  const server = app.listen(0, '127.0.0.1')
+  const server = input.baseUrl
+    ? undefined
+    : createSystemApiApp({ systemApiPrefix: '/__aisys__/api', trustProxy: true }).listen(0, '127.0.0.1')
   let fixture: LoadFixture | undefined
   let settingsSnapshot: Record<string, unknown> | undefined
   const samples: PostgresSample[] = []
@@ -165,8 +170,10 @@ async function runLoadTest(input: LoadConfig): Promise<LoadReport> {
   let stopSampler = false
 
   try {
-    await listen(server)
-    const baseUrl = `http://127.0.0.1:${serverAddress(server).port}`
+    if (server) {
+      await listen(server)
+    }
+    const baseUrl = input.baseUrl ?? internalServerBaseUrl(server)
     const cookie = await login(baseUrl)
     settingsSnapshot = await getEnvelope<Record<string, unknown>>(baseUrl, '/__aisys__/api/settings', cookie, input.requestTimeoutMs)
     await patchEnvelope(baseUrl, '/__aisys__/api/settings', {
@@ -200,14 +207,19 @@ async function runLoadTest(input: LoadConfig): Promise<LoadReport> {
   } finally {
     stopSampler = true
     if (settingsSnapshot) {
-      await restoreSettings(server, settingsSnapshot).catch(() => undefined)
+      const baseUrl = input.baseUrl ?? (server ? internalServerBaseUrl(server) : undefined)
+      if (baseUrl) {
+        await restoreSettings(baseUrl, settingsSnapshot).catch(() => undefined)
+      }
     }
     if (fixture) {
       await cleanupFixture(fixture).catch((error) => {
         console.error(error instanceof Error ? error.message : error)
       })
     }
-    await closeServer(server)
+    if (server) {
+      await closeServer(server)
+    }
   }
 }
 
@@ -257,12 +269,13 @@ async function createFixture(baseUrl: string, cookie: string, input: LoadConfig)
       const account = await postEnvelope<{ id: string; name: string }>(baseUrl, '/__aisys__/api/accounts', {
         name: `压测AI账户${suffix}-${index + 1}`,
         providerCode: 'gpt',
+        providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
         type: 'api_key',
         status: 'temporary_unavailable',
         groupId: group.id,
         credentials: {
           api_key: `sk-load-account-${suffix}-${index + 1}`,
-          base_url: 'https://example.invalid/v1'
+          base_url: 'https://api.openai.com/v1'
         },
         supportedModels: ['gpt-5-mini'],
         modelMappings: [{
@@ -396,9 +409,14 @@ async function runWorkers(
       { name: 'GET /providers', path: '/__aisys__/api/providers' },
       { name: 'GET /groups', path: `/__aisys__/api/groups?keyword=${encodeURIComponent(loadFixture.groupName)}&page=1&pageSize=20` },
       { name: 'GET /groups/options', path: '/__aisys__/api/groups/options?providerCode=gpt&limit=20' },
+      { name: 'GET /my-accounts', path: `/__aisys__/api/my-accounts?page=1&pageSize=20&groupId=${encodeURIComponent(loadFixture.groupId)}&status=active&sorts=priority:asc` },
       { name: 'GET /accounts', path: `/__aisys__/api/accounts?keyword=${encodeURIComponent(loadFixture.accountName)}&page=1&pageSize=20` },
       { name: 'GET /accounts/:id', path: `/__aisys__/api/accounts/${readAccount.id}` },
       { name: 'GET /accounts/options', path: `/__aisys__/api/accounts/options?ids=${encodeURIComponent(readAccount.id)}&providerCode=gpt&limit=20` },
+      { name: 'GET /my-route-strategies', path: '/__aisys__/api/my-route-strategies?page=1&pageSize=20&mode=all&status=all' },
+      { name: 'GET /route-strategies', path: '/__aisys__/api/route-strategies?page=1&pageSize=20&mode=all&status=all' },
+      { name: 'GET /my-route-strategies/:id', path: `/__aisys__/api/my-route-strategies/${loadFixture.routeStrategyId}` },
+      { name: 'GET /my-route-strategies/options', path: `/__aisys__/api/my-route-strategies/options?ids=${encodeURIComponent(loadFixture.routeStrategyId)}&limit=100&manageableOnly=true` },
       { name: 'GET /api-keys', path: `/__aisys__/api/api-keys?keyword=${encodeURIComponent(loadFixture.apiKeyName)}&page=1&pageSize=20` },
       { name: 'GET /api-keys/:id/secret', path: `/__aisys__/api/api-keys/${loadFixture.apiKeyId}/secret` },
       { name: 'GET /auth/me', path: '/__aisys__/api/auth/me' }
@@ -418,9 +436,7 @@ function randomAccount(fixture: LoadFixture): { id: string; name: string } {
   }
 }
 
-async function restoreSettings(server: http.Server, settingsSnapshot: Record<string, unknown>): Promise<void> {
-  const address = serverAddress(server)
-  const baseUrl = `http://127.0.0.1:${address.port}`
+async function restoreSettings(baseUrl: string, settingsSnapshot: Record<string, unknown>): Promise<void> {
   const cookie = await login(baseUrl)
   await patchEnvelope(baseUrl, '/__aisys__/api/settings', {
     systemApiRateLimitIpReadPerMinute: settingsSnapshot.systemApiRateLimitIpReadPerMinute,
@@ -656,7 +672,7 @@ function buildReport(
   const totalRequests = metrics.length
   const errorRequests = metrics.filter((item) => !item.ok).length
   const errorRate = totalRequests > 0 ? errorRequests / totalRequests : 0
-  const violations = collectViolations(input, overall, errorRate, postgres)
+  const violations = collectViolations(input, overall, operations, errorRate, postgres)
   return {
     mode: {
       runtimeMode: runtimeConfig.runtimeMode,
@@ -683,7 +699,13 @@ function buildReport(
   }
 }
 
-function collectViolations(input: LoadConfig, overall: OperationReport, errorRate: number, postgres: PostgresReport): string[] {
+function collectViolations(
+  input: LoadConfig,
+  overall: OperationReport,
+  operations: Record<string, OperationReport>,
+  errorRate: number,
+  postgres: PostgresReport
+): string[] {
   const violations: string[] = []
   if (errorRate > input.maxAllowedErrorRate) {
     violations.push(`HTTP error rate ${round(errorRate * 100)}% > ${round(input.maxAllowedErrorRate * 100)}%`)
@@ -699,6 +721,15 @@ function collectViolations(input: LoadConfig, overall: OperationReport, errorRat
   }
   if (overall.p95Ms > input.maxAllowedP95Ms) {
     violations.push(`Overall p95 ${overall.p95Ms}ms > ${input.maxAllowedP95Ms}ms`)
+  }
+  for (const [operation, report] of Object.entries(operations)) {
+    if (!operation.startsWith('GET ') || report.count === 0) continue
+    if (report.p95Ms > input.maxAllowedReadP95Ms) {
+      violations.push(`${operation} p95 ${report.p95Ms}ms > ${input.maxAllowedReadP95Ms}ms`)
+    }
+    if (report.p99Ms > input.maxAllowedReadP99Ms) {
+      violations.push(`${operation} p99 ${report.p99Ms}ms > ${input.maxAllowedReadP99Ms}ms`)
+    }
   }
   return violations
 }
@@ -781,6 +812,7 @@ function validateRuntime(): void {
 function loadConfig(): LoadConfig {
   const concurrency = intEnv('JUHE_PERFORMANCE_LOAD_CONCURRENCY', 50, 1, 500)
   const reportPath = process.env.JUHE_PERFORMANCE_LOAD_REPORT_PATH?.trim()
+  const baseUrl = normalizeBaseUrl(process.env.JUHE_PERFORMANCE_LOAD_BASE_URL)
   return {
     durationMs: intEnv('JUHE_PERFORMANCE_LOAD_DURATION_MS', 30_000, 1_000, 600_000),
     concurrency,
@@ -794,7 +826,10 @@ function loadConfig(): LoadConfig {
     maxAllowedXactAgeSeconds: numberEnv('JUHE_PERFORMANCE_LOAD_MAX_XACT_AGE_SECONDS', 5, 0.1, 3600),
     maxAllowedActiveQuerySeconds: numberEnv('JUHE_PERFORMANCE_LOAD_MAX_ACTIVE_QUERY_SECONDS', 5, 0.1, 3600),
     maxAllowedP95Ms: numberEnv('JUHE_PERFORMANCE_LOAD_MAX_P95_MS', 1500, 1, 120_000),
+    maxAllowedReadP95Ms: numberEnv('JUHE_PERFORMANCE_LOAD_MAX_READ_P95_MS', 1500, 1, 120_000),
+    maxAllowedReadP99Ms: numberEnv('JUHE_PERFORMANCE_LOAD_MAX_READ_P99_MS', 3000, 1, 120_000),
     resetPgStatStatements: boolEnv('JUHE_PERFORMANCE_LOAD_RESET_PG_STAT_STATEMENTS', false),
+    ...(baseUrl ? { baseUrl } : {}),
     ...(reportPath ? { reportPath: resolve(reportPath) } : {})
   }
 }
@@ -826,6 +861,11 @@ function boolEnv(name: string, fallback: boolean): boolean {
   if (['1', 'true', 'yes', 'on'].includes(value)) return true
   if (['0', 'false', 'no', 'off'].includes(value)) return false
   return fallback
+}
+
+function normalizeBaseUrl(value: string | undefined): string | undefined {
+  const normalized = value?.trim().replace(/\/+$/, '')
+  return normalized || undefined
 }
 
 function percentile(samples: number[], p: number): number {
@@ -879,4 +919,9 @@ function serverAddress(server: http.Server): { port: number } {
   const address = server.address()
   assert.ok(address && typeof address === 'object', '压测服务监听地址应可读取')
   return { port: address.port }
+}
+
+function internalServerBaseUrl(server: http.Server | undefined): string {
+  assert.ok(server, '未配置 JUHE_PERFORMANCE_LOAD_BASE_URL 时压测脚本必须能启动内置 System API 服务')
+  return `http://127.0.0.1:${serverAddress(server).port}`
 }

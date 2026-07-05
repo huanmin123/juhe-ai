@@ -206,6 +206,8 @@ export interface AuditLogListOptions {
   clientIp?: string
   errorGroupId?: string
   trafficSource?: AuditTrafficSource
+  startAt?: string
+  endAt?: string
 }
 
 export interface AuditLogPayloadReadOptions {
