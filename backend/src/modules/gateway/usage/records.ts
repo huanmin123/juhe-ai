@@ -1,5 +1,6 @@
 import type { Request } from 'express'
 
+import { runtimeConfig } from '../../../config/runtime.js'
 import type {
   GroupUsageAccessMetadata,
   OpenAIAccountSecret,
@@ -27,6 +28,7 @@ import {
   requestModel,
   requestStream
 } from '../request/metadata.js'
+import { isAccountProbeTrafficSource } from './traffic-source.js'
 import type { GatewayErrorPayload } from '../response/responses.js'
 import { downstreamConnectionClosedMessage } from '../response/client-abort.js'
 import type { OpenAIGatewayTrafficSource } from './traffic-source.js'
@@ -40,6 +42,13 @@ import { parseGatewayProtocolErrorPayload } from '../protocols/registry.js'
 import { gatewayRequestEndpointFamily } from '../protocols/openai-v1/model-mapping.js'
 
 type UpstreamAccount = OpenAIAccountSecret
+
+interface AccountUsageModelAccounting {
+  upstreamModel?: string
+  pricingModel?: string
+  modelMappingApplied: boolean
+  modelMappingSource?: string
+}
 
 export type UsageAccessFields = Pick<OpenAIAccountSecret,
   'accountOwnerSystemAccountId'
@@ -92,12 +101,9 @@ export function accountUsageMetadata(account: UpstreamAccount): UsageAccessField
   }
 }
 
-export function groupUsageMetadata(groupAccess: GroupUsageAccessMetadata): Pick<GatewayFailureUsageContext, 'providerCode' | 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion' | 'groupOwnerSystemAccountId' | 'groupAccessType' | 'groupAuthorizationId' | 'groupAuthorizationSourceType' | 'groupAuthorizationSourceTeamId'> {
+export function groupUsageMetadata(groupAccess: GroupUsageAccessMetadata): Pick<GatewayFailureUsageContext, 'providerCode' | 'groupOwnerSystemAccountId' | 'groupAccessType' | 'groupAuthorizationId' | 'groupAuthorizationSourceType' | 'groupAuthorizationSourceTeamId'> {
   return {
     providerCode: groupAccess.providerCode,
-    providerProtocolProfileId: groupAccess.providerProtocolProfileId,
-    protocolCode: groupAccess.protocolCode,
-    protocolVersion: groupAccess.protocolVersion,
     groupOwnerSystemAccountId: groupAccess.groupOwnerSystemAccountId,
     groupAccessType: groupAccess.groupAccessType,
     groupAuthorizationId: groupAccess.groupAuthorizationId,
@@ -106,7 +112,7 @@ export function groupUsageMetadata(groupAccess: GroupUsageAccessMetadata): Pick<
   }
 }
 
-export function recordFailedUpstreamAttempt(
+export async function recordFailedUpstreamAttempt(
   req: Request,
   usageContext: GatewayUsageContext,
   account: UpstreamAccount,
@@ -119,7 +125,7 @@ export function recordFailedUpstreamAttempt(
     errorMessage?: string
     failureAttribution?: UsageFailureAttribution
   }
-): void {
+): Promise<void> {
   const model = requestModel(req)
   const catalogSystemAccountId = account.accountOwnerSystemAccountId || usageContext.systemAccountId
   const modelAccounting = accountUsageModelAccounting(account, model, catalogSystemAccountId, gatewayRequestEndpointFamily(req))
@@ -145,7 +151,7 @@ export function recordFailedUpstreamAttempt(
     endpoint: usageContext.endpoint
   }, '网关上游尝试失败')
 
-  enqueueUsageRecord({
+  await enqueueUsageRecord({
     traceId: usageContext.traceId,
     trafficSource: usageContext.trafficSource,
     clientIp: usageContext.clientIp,
@@ -181,7 +187,7 @@ export function recordFailedUpstreamAttempt(
   })
 }
 
-export function recordCompletedUpstreamAttempt(
+export async function recordCompletedUpstreamAttempt(
   req: Request,
   input: {
     traceId: string
@@ -204,14 +210,15 @@ export function recordCompletedUpstreamAttempt(
     requestSnapshot?: ReturnType<typeof buildUsageRequestSnapshot>
     responseSnapshot?: ReturnType<typeof buildUsageResponseSnapshot>
   }
-): void {
+): Promise<void> {
   if (input.success) {
     recordGatewayAccountApiKeySuccess(input.account, 'upstream_attempt_completed')
   }
   const model = requestModel(req)
   const catalogSystemAccountId = input.account.accountOwnerSystemAccountId || input.systemAccountId
   const modelAccounting = accountUsageModelAccounting(input.account, model, catalogSystemAccountId, gatewayRequestEndpointFamily(req))
-  enqueueUsageRecord({
+  const costModel = usageCostCatalogModel(modelAccounting, model)
+  await enqueueUsageRecord({
     traceId: input.traceId,
     trafficSource: input.trafficSource,
     clientIp: input.clientIp,
@@ -243,23 +250,26 @@ export function recordCompletedUpstreamAttempt(
     thinkingTokens: input.usage.thinkingTokens,
     inputImageTokens: input.usage.inputImageTokens,
     outputImageTokens: input.usage.outputImageTokens,
-    cacheReadCostUsd: estimateCatalogCacheReadCostUsd({
+    inputAudioTokens: input.usage.inputAudioTokens,
+    outputAudioTokens: input.usage.outputAudioTokens,
+    outputImageCount: input.usage.outputImageCount,
+    cacheReadCostUsd: estimateGatewayCatalogCacheReadCostUsd({
       providerCode: input.account.providerCode,
       systemAccountId: catalogSystemAccountId,
-      model: modelAccounting.upstreamModel,
+      model: costModel,
       cacheReadTokens: input.usage.cacheReadTokens
     }),
-    cacheWriteCostUsd: estimateCatalogCacheWriteCostUsd({
+    cacheWriteCostUsd: estimateGatewayCatalogCacheWriteCostUsd({
       providerCode: input.account.providerCode,
       systemAccountId: catalogSystemAccountId,
-      model: modelAccounting.upstreamModel,
+      model: costModel,
       cacheWriteTokens: input.usage.cacheWriteTokens,
       cacheWrite1hTokens: input.usage.cacheWrite1hTokens
     }),
-    costUsd: estimateCatalogCostUsd({
+    costUsd: estimateGatewayCatalogCostUsd({
       providerCode: input.account.providerCode,
       systemAccountId: catalogSystemAccountId,
-      model: modelAccounting.upstreamModel,
+      model: costModel,
       inputTokens: input.usage.inputTokens,
       outputTokens: input.usage.outputTokens,
       cacheReadTokens: input.usage.cacheReadTokens,
@@ -279,7 +289,7 @@ export function recordCompletedUpstreamAttempt(
   })
 }
 
-export function recordHybridScoringAttempt(input: {
+export async function recordHybridScoringAttempt(input: {
   traceId: string
   clientIp?: string
   systemAccountId: string
@@ -298,10 +308,11 @@ export function recordHybridScoringAttempt(input: {
   requestSnapshot?: unknown
   responseSnapshot?: unknown
   trafficSource?: Extract<OpenAIGatewayTrafficSource, 'hybrid_scoring' | 'hybrid_quality_scoring'>
-}): void {
+}): Promise<void> {
   const catalogSystemAccountId = input.account.accountOwnerSystemAccountId || input.systemAccountId
   const modelAccounting = accountUsageModelAccounting(input.account, input.scoringModel, catalogSystemAccountId, 'chat_completions')
-  enqueueUsageRecord({
+  const costModel = usageCostCatalogModel(modelAccounting, input.scoringModel)
+  await enqueueUsageRecord({
     traceId: input.traceId,
     trafficSource: input.trafficSource ?? 'hybrid_scoring',
     clientIp: input.clientIp,
@@ -332,23 +343,26 @@ export function recordHybridScoringAttempt(input: {
     thinkingTokens: input.usage.thinkingTokens,
     inputImageTokens: input.usage.inputImageTokens,
     outputImageTokens: input.usage.outputImageTokens,
-    cacheReadCostUsd: estimateCatalogCacheReadCostUsd({
+    inputAudioTokens: input.usage.inputAudioTokens,
+    outputAudioTokens: input.usage.outputAudioTokens,
+    outputImageCount: input.usage.outputImageCount,
+    cacheReadCostUsd: estimateGatewayCatalogCacheReadCostUsd({
       providerCode: input.account.providerCode,
       systemAccountId: catalogSystemAccountId,
-      model: modelAccounting.upstreamModel,
+      model: costModel,
       cacheReadTokens: input.usage.cacheReadTokens
     }),
-    cacheWriteCostUsd: estimateCatalogCacheWriteCostUsd({
+    cacheWriteCostUsd: estimateGatewayCatalogCacheWriteCostUsd({
       providerCode: input.account.providerCode,
       systemAccountId: catalogSystemAccountId,
-      model: modelAccounting.upstreamModel,
+      model: costModel,
       cacheWriteTokens: input.usage.cacheWriteTokens,
       cacheWrite1hTokens: input.usage.cacheWrite1hTokens
     }),
-    costUsd: estimateCatalogCostUsd({
+    costUsd: estimateGatewayCatalogCostUsd({
       providerCode: input.account.providerCode,
       systemAccountId: catalogSystemAccountId,
-      model: modelAccounting.upstreamModel,
+      model: costModel,
       inputTokens: input.usage.inputTokens,
       outputTokens: input.usage.outputTokens,
       cacheReadTokens: input.usage.cacheReadTokens,
@@ -368,7 +382,7 @@ export function recordHybridScoringAttempt(input: {
   })
 }
 
-export function recordClientAbortedUpstreamAttempt(
+export async function recordClientAbortedUpstreamAttempt(
   req: Request,
   input: {
     traceId: string
@@ -386,8 +400,8 @@ export function recordClientAbortedUpstreamAttempt(
     requestSnapshot?: ReturnType<typeof buildUsageRequestSnapshot>
     responseSnapshot?: ReturnType<typeof buildUsageResponseSnapshot>
   }
-): void {
-  recordCompletedUpstreamAttempt(req, {
+): Promise<void> {
+  await recordCompletedUpstreamAttempt(req, {
     ...input,
     success: false,
     usage: emptyUsage(),
@@ -397,7 +411,7 @@ export function recordClientAbortedUpstreamAttempt(
   })
 }
 
-export function recordGatewayFailure(
+export async function recordGatewayFailure(
   req: Request,
   usageContext: GatewayFailureUsageContext,
   input: {
@@ -409,7 +423,7 @@ export function recordGatewayFailure(
     failureAttribution?: UsageFailureAttribution
     responseSnapshot?: ReturnType<typeof buildUsageResponseSnapshot>
   }
-): void {
+): Promise<void> {
   const errorMessage = input.errorMessage ?? input.responsePayload.error.message
   const errorCode = input.errorCode
     ?? (typeof input.responsePayload.error.code === 'string' ? input.responsePayload.error.code : undefined)
@@ -427,7 +441,7 @@ export function recordGatewayFailure(
   const providerCode = usageContext.providerCode ?? defaultGatewayUsageProviderCode()
   const providerProtocolProfileId = usageContext.providerProtocolProfileId
 
-  enqueueUsageRecord({
+  await enqueueUsageRecord({
     traceId: usageContext.traceId,
     trafficSource: usageContext.trafficSource,
     clientIp: usageContext.clientIp,
@@ -468,7 +482,7 @@ function usageRecordSnapshot(
   usageContext: Pick<GatewayUsageContext, 'trafficSource'>,
   snapshot: unknown
 ): unknown {
-  return usageContext.trafficSource === 'cooldown_retest' ? undefined : snapshot
+  return isAccountProbeTrafficSource(usageContext.trafficSource) ? undefined : snapshot
 }
 
 function failedUpstreamAttemptAttribution(input: {
@@ -504,24 +518,69 @@ function accountUsageModelAccounting(
   requestedModel: string | undefined,
   catalogSystemAccountId: string,
   sourceEndpointFamily: ReturnType<typeof gatewayRequestEndpointFamily>
-): {
-  upstreamModel?: string
-  pricingModel?: string
-  modelMappingApplied: boolean
-  modelMappingSource?: string
-} {
+): AccountUsageModelAccounting {
   const resolved = resolveGatewayUsageModel(account, requestedModel, sourceEndpointFamily)
   const upstreamModel = resolved.upstreamModel ?? requestedModel
   return {
     upstreamModel,
-    pricingModel: resolveCatalogPricingModel({
-      providerCode: account.providerCode,
-      systemAccountId: catalogSystemAccountId,
-      model: upstreamModel
-    }),
+    pricingModel: resolveUsagePricingModel(account, catalogSystemAccountId, upstreamModel, requestedModel),
     modelMappingApplied: resolved.modelMappingApplied,
     modelMappingSource: resolved.modelMappingSource
   }
+}
+
+function resolveUsagePricingModel(
+  account: UpstreamAccount,
+  catalogSystemAccountId: string,
+  upstreamModel: string | undefined,
+  requestedModel: string | undefined
+): string | undefined {
+  const upstreamPricingModel = resolveGatewayCatalogPricingModel({
+    providerCode: account.providerCode,
+    systemAccountId: catalogSystemAccountId,
+    model: upstreamModel
+  })
+  if (upstreamPricingModel) return upstreamPricingModel
+
+  const sourceModel = requestedModel?.trim()
+  if (!sourceModel || sourceModel === upstreamModel) return undefined
+  return resolveGatewayCatalogPricingModel({
+    providerCode: account.providerCode,
+    systemAccountId: catalogSystemAccountId,
+    model: sourceModel
+  })
+}
+
+function usageCostCatalogModel(modelAccounting: AccountUsageModelAccounting, requestedModel: string | undefined): string | undefined {
+  return modelAccounting.pricingModel ?? modelAccounting.upstreamModel ?? requestedModel
+}
+
+function estimateGatewayCatalogCacheReadCostUsd(input: Parameters<typeof estimateCatalogCacheReadCostUsd>[0]): number | undefined {
+  return canUseSynchronousCatalogPricingInGatewayRequest()
+    ? estimateCatalogCacheReadCostUsd(input)
+    : undefined
+}
+
+function estimateGatewayCatalogCacheWriteCostUsd(input: Parameters<typeof estimateCatalogCacheWriteCostUsd>[0]): number | undefined {
+  return canUseSynchronousCatalogPricingInGatewayRequest()
+    ? estimateCatalogCacheWriteCostUsd(input)
+    : undefined
+}
+
+function estimateGatewayCatalogCostUsd(input: Parameters<typeof estimateCatalogCostUsd>[0]): number | undefined {
+  return canUseSynchronousCatalogPricingInGatewayRequest()
+    ? estimateCatalogCostUsd(input)
+    : undefined
+}
+
+function resolveGatewayCatalogPricingModel(input: Parameters<typeof resolveCatalogPricingModel>[0]): string | undefined {
+  return canUseSynchronousCatalogPricingInGatewayRequest()
+    ? resolveCatalogPricingModel(input)
+    : undefined
+}
+
+function canUseSynchronousCatalogPricingInGatewayRequest(): boolean {
+  return runtimeConfig.cacheDriver !== 'redis'
 }
 
 function logGatewayAttemptFailure(
@@ -534,7 +593,7 @@ function logGatewayAttemptFailure(
     ...fields,
     trafficSource: usageContext.trafficSource
   }
-  if (usageContext.trafficSource === 'cooldown_retest') {
+  if (isAccountProbeTrafficSource(usageContext.trafficSource)) {
     logger.debug(enrichedFields, message)
     return
   }

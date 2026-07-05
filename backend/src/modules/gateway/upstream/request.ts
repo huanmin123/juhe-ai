@@ -14,7 +14,7 @@ import type { Request } from 'express'
 
 import { createProxyAgent } from '../../openai-oauth/openai-oauth.service.js'
 import { prepareSafeUpstreamRequestUrl } from '../../../shared/upstream-url-policy.js'
-import { createAppCache } from '../../../shared/cache.js'
+import { createProcessLocalResourceCache } from '../../../shared/cache.js'
 import type { GatewaySettings } from '../policy/account-error-policy.service.js'
 import {
   isOpenAIOAuthCodexCompactRequest
@@ -30,6 +30,7 @@ import {
   openAICodexUserAgent,
   openAICodexVersion
 } from '../adapters/gpt-codex/client-headers.js'
+import { runtimeConfig } from '../../../config/runtime.js'
 
 export interface GatewayUpstreamResponse {
   readonly status: number
@@ -65,15 +66,15 @@ export class UpstreamRequestAbortedError extends Error {
 
 const gatewayUpstreamAgentOptions: http.AgentOptions = {
   keepAlive: true,
-  maxSockets: 512,
-  maxFreeSockets: 128,
-  maxTotalSockets: 2048
+  maxSockets: runtimeConfig.gateway.upstreamAgentMaxSockets,
+  maxFreeSockets: runtimeConfig.gateway.upstreamAgentMaxFreeSockets,
+  maxTotalSockets: runtimeConfig.gateway.upstreamAgentMaxTotalSockets
 }
 const gatewayProxyAgentCacheMaxEntries = 256
 const gatewayProxyAgentCacheTtlMs = 30 * 60 * 1000
 let directHttpAgent: http.Agent | undefined
 let directHttpsAgent: https.Agent | undefined
-const proxyAgents = createAppCache<string, http.Agent>({
+const proxyAgents = createProcessLocalResourceCache<string, http.Agent>({
   name: 'gateway:proxy-agents',
   max: gatewayProxyAgentCacheMaxEntries,
   ttlMs: gatewayProxyAgentCacheTtlMs,
@@ -377,7 +378,7 @@ export async function readStreamChunkWithAbort(
 export function upstreamSocketTimeoutMs(req: Request, settings: GatewaySettings, account?: { type?: string }): number {
   const isStreamRequest = isEffectiveOpenAIStreamRequest(req, account)
   const requestTimeoutSeconds = Math.max(1, settings.streamRequestTimeoutSeconds)
-  if (!isStreamRequest || !settings.streamCircuitBreakerEnabled) {
+  if (!isStreamRequest) {
     return Math.max(requestTimeoutSeconds, 30) * 1000
   }
   return Math.max(requestTimeoutSeconds, settings.streamIdleTimeoutSeconds + 15, 30) * 1000

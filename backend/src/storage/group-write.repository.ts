@@ -9,11 +9,10 @@ import { maxRouteStrategyAvailabilityLossCandidates } from './route-strategy-gro
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
 import { emptyGroupAccountStats } from './group-account-stats.mapper.js'
-import { refreshGroupAccountStatsAfterWrite } from './group-account-stats-write-invalidation.js'
+import { refreshGroupAccountStatsAfterWrite, refreshGroupAccountStatsAfterWriteAsync } from './group-account-stats-write-invalidation.js'
 import { invalidateGroupAccountIdsCache } from './group-read-loaders.js'
 import { findGroupSummary, findGroupSummaryAsync } from './group-summary.repository.js'
 import { getPostgresPool } from './postgres-client.js'
-import { requireEnabledProviderProtocolProfile, requireEnabledProviderProtocolProfileAsync } from './provider.repository.js'
 import { sqlPlaceholders } from './query-utils.js'
 import {
   activeResourceAuthorization,
@@ -74,7 +73,6 @@ function writableSchedulingPolicyInput(policy: GroupSchedulingPolicy | undefined
 const groupCreateInputKeys = new Set([
   'name',
   'providerCode',
-  'providerProtocolProfileId',
   'description',
   'enabled',
   'groupType',
@@ -84,7 +82,6 @@ const groupCreateInputKeys = new Set([
 const groupUpdateInputKeys = new Set([
   'name',
   'providerCode',
-  'providerProtocolProfileId',
   'description',
   'enabled',
   'groupType',
@@ -104,21 +101,16 @@ export function createGroup(input: Record<string, unknown>, access?: AccessScope
   const now = nowIso()
   const systemAccountId = writeSystemAccountId(access)
   const providerCode = requiredTextInput(input.providerCode, '供应商')
-  const providerProfile = requireEnabledProviderProtocolProfile(providerCode, input.providerProtocolProfileId)
   const groupType = normalizeGroupType(input.groupType)
   const schedulingPolicyJson = groupSchedulingPolicyJson(groupSchedulingPolicyInput(input), groupType)
   const name = requiredTextInput(input.name, '分组名称')
   const enabled = normalizeOptionalBooleanInput(input, 'enabled', true, '分组启用状态')
-  assertGroupNameAvailable(systemAccountId, providerCode, name)
   const group: GroupSummary = {
     id: newId('grp'),
     systemAccountId: includeSystemAccountFields(access) ? systemAccountId : undefined,
     systemAccountName: includeSystemAccountFields(access) ? loadSystemAccountNameMapByIds([systemAccountId]).get(systemAccountId) : undefined,
     name,
     providerCode,
-    providerProtocolProfileId: providerProfile.id,
-    protocolCode: providerProfile.protocolCode,
-    protocolVersion: providerProfile.protocolVersion,
     description: normalizeNullableTextInput(input.description, '分组说明'),
     enabled,
     isDefault: false,
@@ -129,8 +121,8 @@ export function createGroup(input: Record<string, unknown>, access?: AccessScope
   }
   try {
     getBusinessDatabase()
-      .prepare('INSERT INTO groups (id, system_account_id, name, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, description, enabled, is_default, group_type, scheduling_policy_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)')
-      .run(group.id, systemAccountId, group.name, group.providerCode, providerProfile.id, providerProfile.protocolCode, providerProfile.protocolVersion, group.description ?? null, group.enabled ? 1 : 0, group.groupType, schedulingPolicyJson, now, now)
+      .prepare('INSERT INTO groups (id, system_account_id, name, provider_code, description, enabled, is_default, group_type, scheduling_policy_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)')
+      .run(group.id, systemAccountId, group.name, group.providerCode, group.description ?? null, group.enabled ? 1 : 0, group.groupType, schedulingPolicyJson, now, now)
   } catch (error) {
     if (isDuplicateGroupNameError(error)) {
       throw new Error(`同一供应商下分组名称已存在：${group.name}`)
@@ -147,7 +139,6 @@ export async function createGroupAsync(input: Record<string, unknown>, access?: 
   const now = nowIso()
   const systemAccountId = writeSystemAccountId(access)
   const providerCode = requiredTextInput(input.providerCode, '供应商')
-  const providerProfile = await requireEnabledProviderProtocolProfileAsync(providerCode, input.providerProtocolProfileId)
   const groupType = normalizeGroupType(input.groupType)
   const schedulingPolicyJson = groupSchedulingPolicyJson(groupSchedulingPolicyInput(input), groupType)
   const name = requiredTextInput(input.name, '分组名称')
@@ -158,9 +149,6 @@ export async function createGroupAsync(input: Record<string, unknown>, access?: 
     systemAccountName: undefined,
     name,
     providerCode,
-    providerProtocolProfileId: providerProfile.id,
-    protocolCode: providerProfile.protocolCode,
-    protocolVersion: providerProfile.protocolVersion,
     description: normalizeNullableTextInput(input.description, '分组说明'),
     enabled,
     isDefault: false,
@@ -172,21 +160,16 @@ export async function createGroupAsync(input: Record<string, unknown>, access?: 
   const client = await getGroupWriteDatabaseClient()
   try {
     await client.transaction(async (tx) => {
-      await assertGroupNameAvailableAsync(tx, systemAccountId, providerCode, name)
       await tx.execute(`
         INSERT INTO ${groupWriteTable(tx, 'groups')} (
-          id, system_account_id, name, provider_code, provider_protocol_profile_id, protocol_code,
-          protocol_version, description, enabled, is_default, group_type, scheduling_policy_json,
+          id, system_account_id, name, provider_code, description, enabled, is_default, group_type, scheduling_policy_json,
           created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
       `, [
         group.id,
         systemAccountId,
         group.name,
         group.providerCode,
-        providerProfile.id,
-        providerProfile.protocolCode,
-        providerProfile.protocolVersion,
         group.description ?? null,
         group.enabled ? 1 : 0,
         group.groupType,
@@ -228,24 +211,17 @@ export function updateGroup(id: string, input: Record<string, unknown>, access?:
   }
   const hasDescriptionInput = hasOwnInput(input, 'description')
   const hasProviderCodeInput = hasOwnInput(input, 'providerCode')
-  const hasProviderProtocolProfileInput = hasOwnInput(input, 'providerProtocolProfileId')
   const hasGroupTypeInput = hasOwnInput(input, 'groupType')
   const hasSchedulingPolicyInput = hasGroupSchedulingPolicyInput(input)
   const nextProviderCode = hasProviderCodeInput
     ? normalizeOptionalRequiredTextInput(input, 'providerCode', current.providerCode, '供应商')
     : current.providerCode
-  const nextProviderProtocolProfileId = hasProviderProtocolProfileInput
-    ? normalizeOptionalRequiredTextInput(input, 'providerProtocolProfileId', current.providerProtocolProfileId ?? '', '供应商协议档案')
-    : nextProviderCode === current.providerCode
-      ? current.providerProtocolProfileId
-      : undefined
   const nextGroupType = hasGroupTypeInput ? normalizeGroupType(input.groupType) : current.groupType
   const nextSchedulingPolicyInput = hasSchedulingPolicyInput ? groupSchedulingPolicyInput(input) : writableSchedulingPolicyInput(current.schedulingPolicy)
   const next: GroupSummary = {
     ...current,
     name: normalizeOptionalRequiredTextInput(input, 'name', current.name, '分组名称'),
     providerCode: nextProviderCode,
-    providerProtocolProfileId: nextProviderProtocolProfileId,
     description: hasDescriptionInput ? normalizeNullableTextInput(input.description, '分组说明') : current.description,
     enabled: normalizeOptionalBooleanInput(input, 'enabled', current.enabled, '分组启用状态'),
     groupType: nextGroupType,
@@ -254,20 +230,15 @@ export function updateGroup(id: string, input: Record<string, unknown>, access?:
   if (next.providerCode !== current.providerCode && current.accountStats.total > 0) {
     throw new Error('已有账户的分组不允许修改供应商')
   }
-  const providerProfile = requireEnabledProviderProtocolProfile(next.providerCode, next.providerProtocolProfileId)
-  next.providerProtocolProfileId = providerProfile.id
-  next.protocolCode = providerProfile.protocolCode
-  next.protocolVersion = providerProfile.protocolVersion
   const database = getBusinessDatabase()
   const transactionStarted = beginDatabaseTransaction(database)
   try {
-    assertGroupNameAvailable(systemAccountId, next.providerCode, next.name, id)
     if (current.enabled && !next.enabled) {
       assertRouteStrategiesCanLoseGroupAvailability(database, id, current.name, '停用分组')
     }
     database
-      .prepare('UPDATE groups SET name = ?, provider_code = ?, provider_protocol_profile_id = ?, protocol_code = ?, protocol_version = ?, description = ?, enabled = ?, group_type = ?, scheduling_policy_json = ?, updated_at = ? WHERE id = ? AND system_account_id = ?')
-      .run(next.name, next.providerCode, next.providerProtocolProfileId, next.protocolCode, next.protocolVersion, next.description ?? null, next.enabled ? 1 : 0, next.groupType, groupSchedulingPolicyJson(nextSchedulingPolicyInput, nextGroupType), nowIso(), id, systemAccountId)
+      .prepare('UPDATE groups SET name = ?, provider_code = ?, description = ?, enabled = ?, group_type = ?, scheduling_policy_json = ?, updated_at = ? WHERE id = ? AND system_account_id = ?')
+      .run(next.name, next.providerCode, next.description ?? null, next.enabled ? 1 : 0, next.groupType, groupSchedulingPolicyJson(nextSchedulingPolicyInput, nextGroupType), nowIso(), id, systemAccountId)
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     rollbackDatabaseTransaction(database, transactionStarted)
@@ -303,24 +274,17 @@ export async function updateGroupAsync(id: string, input: Record<string, unknown
   }
   const hasDescriptionInput = hasOwnInput(input, 'description')
   const hasProviderCodeInput = hasOwnInput(input, 'providerCode')
-  const hasProviderProtocolProfileInput = hasOwnInput(input, 'providerProtocolProfileId')
   const hasGroupTypeInput = hasOwnInput(input, 'groupType')
   const hasSchedulingPolicyInput = hasGroupSchedulingPolicyInput(input)
   const nextProviderCode = hasProviderCodeInput
     ? normalizeOptionalRequiredTextInput(input, 'providerCode', current.providerCode, '供应商')
     : current.providerCode
-  const nextProviderProtocolProfileId = hasProviderProtocolProfileInput
-    ? normalizeOptionalRequiredTextInput(input, 'providerProtocolProfileId', current.providerProtocolProfileId ?? '', '供应商协议档案')
-    : nextProviderCode === current.providerCode
-      ? current.providerProtocolProfileId
-      : undefined
   const nextGroupType = hasGroupTypeInput ? normalizeGroupType(input.groupType) : current.groupType
   const nextSchedulingPolicyInput = hasSchedulingPolicyInput ? groupSchedulingPolicyInput(input) : writableSchedulingPolicyInput(current.schedulingPolicy)
   const next: GroupSummary = {
     ...current,
     name: normalizeOptionalRequiredTextInput(input, 'name', current.name, '分组名称'),
     providerCode: nextProviderCode,
-    providerProtocolProfileId: nextProviderProtocolProfileId,
     description: hasDescriptionInput ? normalizeNullableTextInput(input.description, '分组说明') : current.description,
     enabled: normalizeOptionalBooleanInput(input, 'enabled', current.enabled, '分组启用状态'),
     groupType: nextGroupType,
@@ -329,37 +293,35 @@ export async function updateGroupAsync(id: string, input: Record<string, unknown
   if (next.providerCode !== current.providerCode && current.accountStats.total > 0) {
     throw new Error('已有账户的分组不允许修改供应商')
   }
-  const providerProfile = await requireEnabledProviderProtocolProfileAsync(next.providerCode, next.providerProtocolProfileId)
-  next.providerProtocolProfileId = providerProfile.id
-  next.protocolCode = providerProfile.protocolCode
-  next.protocolVersion = providerProfile.protocolVersion
   const client = await getGroupWriteDatabaseClient()
-  await client.transaction(async (tx) => {
-    await lockGroupMutationRowAsync(tx, id, owner.systemAccountId)
-    await assertGroupNameAvailableAsync(tx, owner.systemAccountId, next.providerCode, next.name, id)
-    if (current.enabled && !next.enabled) {
-      await assertRouteStrategiesCanLoseGroupAvailabilityAsync(tx, id, current.name, '停用分组')
+  try {
+    await client.transaction(async (tx) => {
+      await lockGroupMutationRowAsync(tx, id, owner.systemAccountId)
+      if (current.enabled && !next.enabled) {
+        await assertRouteStrategiesCanLoseGroupAvailabilityAsync(tx, id, current.name, '停用分组')
+      }
+      await tx.execute(`
+        UPDATE ${groupWriteTable(tx, 'groups')}
+        SET name = ?, provider_code = ?, description = ?, enabled = ?, group_type = ?, scheduling_policy_json = ?, updated_at = ?
+        WHERE id = ? AND system_account_id = ?
+      `, [
+        next.name,
+        next.providerCode,
+        next.description ?? null,
+        next.enabled ? 1 : 0,
+        next.groupType,
+        groupSchedulingPolicyJson(nextSchedulingPolicyInput, nextGroupType),
+        nowIso(),
+        id,
+        owner.systemAccountId
+      ])
+    })
+  } catch (error) {
+    if (isDuplicateGroupNameError(error)) {
+      throw new Error(`同一供应商下分组名称已存在：${next.name}`)
     }
-    await tx.execute(`
-      UPDATE ${groupWriteTable(tx, 'groups')}
-      SET name = ?, provider_code = ?, provider_protocol_profile_id = ?, protocol_code = ?, protocol_version = ?,
-          description = ?, enabled = ?, group_type = ?, scheduling_policy_json = ?, updated_at = ?
-      WHERE id = ? AND system_account_id = ?
-    `, [
-      next.name,
-      next.providerCode,
-      next.providerProtocolProfileId,
-      next.protocolCode,
-      next.protocolVersion,
-      next.description ?? null,
-      next.enabled ? 1 : 0,
-      next.groupType,
-      groupSchedulingPolicyJson(nextSchedulingPolicyInput, nextGroupType),
-      nowIso(),
-      id,
-      owner.systemAccountId
-    ])
-  })
+    throw error
+  }
   invalidateGroupLookupCache(id)
   invalidateGatewayRuntimeAfterBusinessWrite('group_updated')
   return await findGroupSummaryAsync(id, access)
@@ -585,7 +547,7 @@ export async function deleteGroupAsync(id: string, access?: AccessScope): Promis
     deleted = Number(result.changes ?? 0) > 0
   })
   if (deleted) {
-    refreshGroupAccountStatsAfterWriteForCurrentDriver({ groupIds: [id], reason: 'group_deleted' })
+    await refreshGroupAccountStatsAfterWriteAsync({ groupIds: [id], reason: 'group_deleted' })
     invalidateGroupLookupCache(id)
     invalidateGroupAccountIdsCache(id)
     invalidateGatewayRuntimeAfterBusinessWrite('group_deleted')
@@ -743,35 +705,6 @@ async function loadDeletedGroupApiKeyRouteChangesAsync(
   }
 }
 
-function assertGroupNameAvailable(systemAccountId: string, providerCode: string, name: string, excludeId?: string): void {
-  const params: string[] = [systemAccountId, providerCode, name]
-  const excludeClause = excludeId ? ' AND id <> ?' : ''
-  if (excludeId) {
-    params.push(excludeId)
-  }
-  const row = getBusinessDatabase()
-    .prepare(`SELECT id FROM groups WHERE system_account_id = ? AND provider_code = ? AND lower(name) = lower(?)${excludeClause} LIMIT 1`)
-    .get(...params) as { id?: string } | undefined
-  if (row?.id) {
-    throw new Error(`同一供应商下分组名称已存在：${name}`)
-  }
-}
-
-async function assertGroupNameAvailableAsync(client: DatabaseClient, systemAccountId: string, providerCode: string, name: string, excludeId?: string): Promise<void> {
-  const row = await client.one<{ id?: string }>(`
-    SELECT id
-    FROM ${groupWriteTable(client, 'groups')}
-    WHERE system_account_id = ?
-      AND provider_code = ?
-      AND lower(name) = lower(?)
-      AND id <> ?
-    LIMIT 1
-  `, [systemAccountId, providerCode, name, excludeId ?? ''])
-  if (row?.id) {
-    throw new Error(`同一供应商下分组名称已存在：${name}`)
-  }
-}
-
 function emptyDeleteGroupResult(): DeleteGroupResult {
   return {
     deleted: false,
@@ -802,28 +735,26 @@ async function lockGroupMutationRowAsync(client: DatabaseClient, groupId: string
 
 function isDuplicateGroupNameError(error: unknown): boolean {
   if (!(error instanceof Error)) return false
-  return error.message.includes('idx_groups_owner_provider_name_unique_lower')
-    || error.message.includes('idx_groups_owner_protocol_profile_name_unique_lower')
+  return error.message.includes('idx_groups_owner_provider_name_unique')
+    || error.message.includes('idx_groups_owner_provider_name_unique_lower')
+    || error.message.includes('UNIQUE constraint failed: groups.system_account_id, groups.provider_code, groups.name')
 }
 
 function writeSystemAccountId(access?: AccessScope): string {
   return manageableSystemAccountId(access) ?? currentSystemAccountId(access)
 }
 
-async function groupOwnerAndProviderAsync(groupId: string): Promise<{ systemAccountId: string; providerCode: ProviderCode; providerProtocolProfileId: string; protocolCode: string; protocolVersion: string; name?: string } | undefined> {
+async function groupOwnerAndProviderAsync(groupId: string): Promise<{ systemAccountId: string; providerCode: ProviderCode; name?: string } | undefined> {
   const client = await getGroupWriteDatabaseClient()
-  const row = await client.one<{ system_account_id?: string; provider_code?: ProviderCode; provider_protocol_profile_id?: string; protocol_code?: string; protocol_version?: string; name?: string }>(`
-    SELECT system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name
+  const row = await client.one<{ system_account_id?: string; provider_code?: ProviderCode; name?: string }>(`
+    SELECT system_account_id, provider_code, name
     FROM ${groupWriteTable(client, 'groups')}
     WHERE id = ?
   `, [groupId])
-  return row?.system_account_id && row.provider_code && row.provider_protocol_profile_id && row.protocol_code && row.protocol_version
+  return row?.system_account_id && row.provider_code
     ? {
         systemAccountId: row.system_account_id,
         providerCode: row.provider_code,
-        providerProtocolProfileId: row.provider_protocol_profile_id,
-        protocolCode: row.protocol_code,
-        protocolVersion: row.protocol_version,
         name: row.name
       }
     : undefined
@@ -840,13 +771,6 @@ function groupWriteTable(client: DatabaseClient, tableName: string): string {
   return client.driver === 'postgres'
     ? client.dialect.qualifyTable('juhe_business', tableName)
     : client.dialect.quoteIdentifier(tableName)
-}
-
-function refreshGroupAccountStatsAfterWriteForCurrentDriver(input: Parameters<typeof refreshGroupAccountStatsAfterWrite>[0]): void {
-  if (runtimeConfig.databaseDriver === 'postgres') {
-    return
-  }
-  refreshGroupAccountStatsAfterWrite(input)
 }
 
 function invalidateGatewayRuntimeAfterBusinessWrite(reason: string): void {

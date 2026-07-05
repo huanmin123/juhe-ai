@@ -24,9 +24,10 @@ import {
   revokeAllTeamSourcesAsync,
   revokeTeamSourcesForMemberAsync
 } from './resource-authorization-write.repository.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import { findSystemAccountById } from './system-accounts.repository.js'
 import { maxSystemTeamListPageSize, maxSystemTeamMemberBatchSize, maxSystemTeamMembersPerTeam } from './system-team-limits.js'
-import { markAllGroupAccountStatsDirty } from './usage-stats.repository.js'
+import { markAllGroupAccountStatsDirty, markAllGroupAccountStatsDirtyAsync } from './usage-stats.repository.js'
 import { optionalString } from './value-utils.js'
 
 export interface SystemTeamListOptions {
@@ -41,14 +42,19 @@ interface NormalizedSystemTeamListOptions {
   keyword?: string
 }
 
+interface SystemTeamMemberCounts {
+  memberCount: number
+  activeMemberCount: number
+}
+
 const systemTeamInputKeys = new Set(['name', 'description', 'status'])
 const systemTeamMembersInputKeys = new Set(['systemAccountIds'])
 const businessSchemaName = 'juhe_business'
 
 export function listSystemTeams(access?: AccessScope): SystemTeamSummary[] {
   const rows = querySystemTeamRows(access, undefined, normalizeSystemTeamListOptions()).rows
-  const members = listSystemTeamMembersForTeamIds(rows.map((row) => row.id), true)
-  return rows.map((row) => systemTeamSummaryFromRow(row, members.get(row.id) ?? []))
+  const memberCounts = listSystemTeamMemberCountsForTeamIds(rows.map((row) => row.id))
+  return rows.map((row) => systemTeamListItemFromRow(row, memberCounts.get(row.id)))
 }
 
 export function listSystemTeamsPage(access?: AccessScope, options: SystemTeamListOptions = {}): SystemTeamListResult {
@@ -58,8 +64,8 @@ export function listSystemTeamsPage(access?: AccessScope, options: SystemTeamLis
     offset: (listOptions.page - 1) * listOptions.pageSize
   }, listOptions).rows
   const pageRows = takePageRows(rows, listOptions.pageSize)
-  const members = listSystemTeamMembersForTeamIds(pageRows.rows.map((row) => row.id), true)
-  const items = pageRows.rows.map((row) => systemTeamSummaryFromRow(row, members.get(row.id) ?? []))
+  const memberCounts = listSystemTeamMemberCountsForTeamIds(pageRows.rows.map((row) => row.id))
+  const items = pageRows.rows.map((row) => systemTeamListItemFromRow(row, memberCounts.get(row.id)))
   return {
     items,
     total: pagedTotalUpperBound(listOptions.page, listOptions.pageSize, items.length, pageRows.hasMore),
@@ -70,16 +76,29 @@ export function listSystemTeamsPage(access?: AccessScope, options: SystemTeamLis
 }
 
 export async function listSystemTeamsAsync(access?: AccessScope): Promise<SystemTeamSummary[]> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_system_teams_read_only',
+      access
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listSystemTeams(access)
   }
   const client = await getSystemTeamDatabaseClient()
   const rows = (await querySystemTeamRowsAsync(client, access, undefined, normalizeSystemTeamListOptions())).rows
-  const members = await listSystemTeamMembersForTeamIdsAsync(client, rows.map((row) => row.id), true)
-  return rows.map((row) => systemTeamSummaryFromRow(row, members.get(row.id) ?? []))
+  const memberCounts = await listSystemTeamMemberCountsForTeamIdsAsync(client, rows.map((row) => row.id))
+  return rows.map((row) => systemTeamListItemFromRow(row, memberCounts.get(row.id)))
 }
 
 export async function listSystemTeamsPageAsync(access?: AccessScope, options: SystemTeamListOptions = {}): Promise<SystemTeamListResult> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_system_teams_page_read_only',
+      access,
+      options
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listSystemTeamsPage(access, options)
   }
@@ -90,8 +109,8 @@ export async function listSystemTeamsPageAsync(access?: AccessScope, options: Sy
     offset: (listOptions.page - 1) * listOptions.pageSize
   }, listOptions)).rows
   const pageRows = takePageRows(rows, listOptions.pageSize)
-  const members = await listSystemTeamMembersForTeamIdsAsync(client, pageRows.rows.map((row) => row.id), true)
-  const items = pageRows.rows.map((row) => systemTeamSummaryFromRow(row, members.get(row.id) ?? []))
+  const memberCounts = await listSystemTeamMemberCountsForTeamIdsAsync(client, pageRows.rows.map((row) => row.id))
+  const items = pageRows.rows.map((row) => systemTeamListItemFromRow(row, memberCounts.get(row.id)))
   return {
     items,
     total: pagedTotalUpperBound(listOptions.page, listOptions.pageSize, items.length, pageRows.hasMore),
@@ -122,6 +141,13 @@ export function findSystemTeamSummary(id: string, access?: AccessScope): SystemT
 }
 
 export async function findSystemTeamSummaryAsync(id: string, access?: AccessScope): Promise<SystemTeamSummary | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'find_system_team_summary_read_only',
+      id,
+      access
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return findSystemTeamSummary(id, access)
   }
@@ -136,12 +162,18 @@ export function createSystemTeam(input: Record<string, unknown>, access?: Access
   assertKnownInputKeys(input, systemTeamInputKeys, '系统团队')
   const name = normalizeSystemTeamName(input.name)
   const database = getBusinessDatabase()
-  ensureSystemTeamNameUnique(name, undefined, database)
   const now = nowIso()
   const id = newId('team')
-  database
-    .prepare('INSERT INTO system_teams (id, name, description, status, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .run(id, name, normalizeSystemTeamDescription(input.description), normalizeSystemTeamStatus(input.status, 'active'), currentSystemAccountId(access), now, now)
+  try {
+    database
+      .prepare('INSERT INTO system_teams (id, name, description, status, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(id, name, normalizeSystemTeamDescription(input.description), normalizeSystemTeamStatus(input.status, 'active'), currentSystemAccountId(access), now, now)
+  } catch (error) {
+    if (isDuplicateSystemTeamNameError(error)) {
+      throw new Error('团队名称已存在')
+    }
+    throw error
+  }
   const created = findSystemTeamSummary(id, access)
   if (!created) throw new Error('创建团队失败')
   invalidateSystemTeamLookupCache(id)
@@ -157,22 +189,28 @@ export async function createSystemTeamAsync(input: Record<string, unknown>, acce
   const client = await getSystemTeamDatabaseClient()
   const now = nowIso()
   const id = newId('team')
-  await client.transaction(async (tx) => {
-    await ensureSystemTeamNameUniqueAsync(tx, name)
-    await tx.execute(`
-      INSERT INTO ${systemTeamTable(tx, 'system_teams')} (
-        id, name, description, status, created_by, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
-    `, [
-      id,
-      name,
-      normalizeSystemTeamDescription(input.description),
-      normalizeSystemTeamStatus(input.status, 'active'),
-      currentSystemAccountId(access),
-      now,
-      now
-    ])
-  })
+  try {
+    await client.transaction(async (tx) => {
+      await tx.execute(`
+        INSERT INTO ${systemTeamTable(tx, 'system_teams')} (
+          id, name, description, status, created_by, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `, [
+        id,
+        name,
+        normalizeSystemTeamDescription(input.description),
+        normalizeSystemTeamStatus(input.status, 'active'),
+        currentSystemAccountId(access),
+        now,
+        now
+      ])
+    })
+  } catch (error) {
+    if (isDuplicateSystemTeamNameError(error)) {
+      throw new Error('团队名称已存在')
+    }
+    throw error
+  }
   const created = await findSystemTeamSummaryAsync(id, access)
   if (!created) throw new Error('创建团队失败')
   invalidateSystemTeamLookupCache(id)
@@ -185,7 +223,6 @@ export function updateSystemTeam(id: string, input: Record<string, unknown>, acc
   const row = findSystemTeamRowForAccess(id, access)
   if (!row) return undefined
   const name = input.name === undefined ? row.name : normalizeSystemTeamName(input.name)
-  ensureSystemTeamNameUnique(name, id, database)
   const status = normalizeSystemTeamStatus(input.status, row.status)
   const now = nowIso()
   let authorizationChanged = false
@@ -205,6 +242,9 @@ export function updateSystemTeam(id: string, input: Record<string, unknown>, acc
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     rollbackDatabaseTransaction(database, transactionStarted)
+    if (isDuplicateSystemTeamNameError(error)) {
+      throw new Error('团队名称已存在')
+    }
     throw error
   }
   if (authorizationChanged) {
@@ -228,23 +268,29 @@ export async function updateSystemTeamAsync(id: string, input: Record<string, un
     const row = await findSystemTeamRowForAccessAsync(tx, id, access)
     if (!row) return
     const name = input.name === undefined ? row.name : normalizeSystemTeamName(input.name)
-    await ensureSystemTeamNameUniqueAsync(tx, name, id)
     const status = normalizeSystemTeamStatus(input.status, row.status)
     const now = nowIso()
-    await tx.execute(`
-      UPDATE ${systemTeamTable(tx, 'system_teams')}
-      SET name = ?,
-          description = ?,
-          status = ?,
-          updated_at = ?
-      WHERE id = ?
-    `, [
-      name,
-      input.description === undefined ? row.description : normalizeSystemTeamDescription(input.description),
-      status,
-      now,
-      id
-    ])
+    try {
+      await tx.execute(`
+        UPDATE ${systemTeamTable(tx, 'system_teams')}
+        SET name = ?,
+            description = ?,
+            status = ?,
+            updated_at = ?
+        WHERE id = ?
+      `, [
+        name,
+        input.description === undefined ? row.description : normalizeSystemTeamDescription(input.description),
+        status,
+        now,
+        id
+      ])
+    } catch (error) {
+      if (isDuplicateSystemTeamNameError(error)) {
+        throw new Error('团队名称已存在')
+      }
+      throw error
+    }
     if (row.status !== 'disabled' && status === 'disabled') {
       await revokeAllTeamSourcesAsync(id, currentSystemAccountId(access), tx, now, 'team_disabled')
       authorizationChanged = true
@@ -255,7 +301,7 @@ export async function updateSystemTeamAsync(id: string, input: Record<string, un
     }
   })
   if (authorizationChanged) {
-    refreshGroupAccountStatsAfterWrite('team_authorization_changed')
+    await refreshGroupAccountStatsAfterWriteAsync('team_authorization_changed')
     invalidateAuthorizationRuntimeAfterBusinessWrite('team_authorization_changed')
   }
   invalidateSystemTeamLookupCache(id)
@@ -341,6 +387,7 @@ export async function addSystemTeamMembersAsync(teamId: string, input: Record<st
     const team = await findSystemTeamRowForAccessAsync(tx, teamId, access, { activeOnly: true })
     if (!team) return
     teamExists = true
+    await lockSystemTeamRowForUpdateAsync(tx, teamId)
     const existingActiveMemberRows = await tx.query<{ system_account_id?: string }>(`
       SELECT system_account_id
       FROM ${systemTeamTable(tx, 'system_team_members')}
@@ -402,7 +449,7 @@ export async function addSystemTeamMembersAsync(teamId: string, input: Record<st
     }
   })
   if (!teamExists) return undefined
-  refreshGroupAccountStatsAfterWrite('team_members_changed')
+  await refreshGroupAccountStatsAfterWriteAsync('team_members_changed')
   invalidateAuthorizationRuntimeAfterBusinessWrite('team_members_changed')
   for (const systemAccountId of systemAccountIds) {
     invalidateSystemAccountTeamMembershipLookupCache(systemAccountId)
@@ -451,7 +498,7 @@ export async function removeSystemTeamMemberAsync(teamId: string, memberId: stri
     await revokeTeamSourcesForMemberAsync(teamId, member.system_account_id, currentSystemAccountId(access), tx, now)
   })
   if (!removedSystemAccountId) return undefined
-  refreshGroupAccountStatsAfterWrite('team_members_changed')
+  await refreshGroupAccountStatsAfterWriteAsync('team_members_changed')
   invalidateAuthorizationRuntimeAfterBusinessWrite('team_members_changed')
   invalidateSystemAccountTeamMembershipLookupCache(removedSystemAccountId)
   return findSystemTeamSummaryAsync(teamId, access)
@@ -522,12 +569,8 @@ function querySystemTeamRows(access: AccessScope | undefined, pagination: { limi
   }
   const keyword = options.keyword?.trim()
   if (keyword) {
-    const prefix = `${escapeLikePrefix(keyword)}%`
-    clauses.push(`(
-      system_teams.name COLLATE NOCASE = ?
-      OR system_teams.name LIKE ? ESCAPE '\\'
-    )`)
-    params.push(keyword, prefix)
+    clauses.push('(system_teams.name >= ? AND system_teams.name < ?)')
+    params.push(keyword, systemTeamTextPrefixUpperBound(keyword))
   }
   const whereClause = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : ''
   const pageClause = pagination ? ' LIMIT ? OFFSET ?' : ''
@@ -555,23 +598,15 @@ async function querySystemTeamRowsAsync(client: DatabaseClient, access: AccessSc
   const keyword = options.keyword?.trim()
   if (keyword) {
     if (client.driver === 'postgres') {
-      const lowerKeyword = keyword.toLowerCase()
       clauses.push(`(
-        lower(system_teams.name) = ?
-        OR (
-          lower(system_teams.name) >= ?
-          AND lower(system_teams.name) < ?
-          AND starts_with(lower(system_teams.name), ?)
-        )
+        system_teams.name COLLATE "C" >= ?
+        AND system_teams.name COLLATE "C" < ?
+        AND starts_with(system_teams.name, ?)
       )`)
-      params.push(lowerKeyword, lowerKeyword, systemTeamTextPrefixUpperBound(lowerKeyword), lowerKeyword)
+      params.push(keyword, systemTeamTextPrefixUpperBound(keyword), keyword)
     } else {
-      const prefix = `${escapeLikePrefix(keyword)}%`
-      clauses.push(`(
-        system_teams.name COLLATE NOCASE = ?
-        OR system_teams.name LIKE ? ESCAPE '\\'
-      )`)
-      params.push(keyword, prefix)
+      clauses.push('(system_teams.name >= ? AND system_teams.name < ?)')
+      params.push(keyword, systemTeamTextPrefixUpperBound(keyword))
     }
   }
   const whereClause = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : ''
@@ -609,6 +644,16 @@ async function findSystemTeamRowForAccessAsync(client: DatabaseClient, id: strin
     WHERE system_teams.id = ?${activeClause}
     LIMIT 1
   `, [id])
+}
+
+async function lockSystemTeamRowForUpdateAsync(client: DatabaseClient, teamId: string): Promise<void> {
+  if (client.driver !== 'postgres') return
+  await client.one<{ id?: string }>(`
+    SELECT id
+    FROM ${systemTeamTable(client, 'system_teams')}
+    WHERE id = ?
+    FOR UPDATE
+  `, [teamId])
 }
 
 async function findActiveSystemTeamMemberForAccessAsync(client: DatabaseClient, teamId: string, memberId: string, access?: AccessScope): Promise<SystemTeamMemberRow | undefined> {
@@ -652,6 +697,59 @@ function normalizeSystemTeamListOptions(options: SystemTeamListOptions = {}): No
 
 function systemTeamSummaryFromRow(row: SystemTeamRow, members: SystemTeamMemberSummary[]): SystemTeamSummary {
   return { id: row.id, name: row.name, description: row.description ?? undefined, status: row.status, memberCount: members.length, activeMemberCount: members.filter((member) => member.status === 'active').length, members, createdBy: row.created_by, createdAt: row.created_at, updatedAt: row.updated_at }
+}
+
+function systemTeamListItemFromRow(row: SystemTeamRow, counts?: SystemTeamMemberCounts): SystemTeamSummary {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description ?? undefined,
+    status: row.status,
+    memberCount: counts?.memberCount ?? 0,
+    activeMemberCount: counts?.activeMemberCount ?? 0,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  }
+}
+
+function listSystemTeamMemberCountsForTeamIds(teamIds: string[]): Map<string, SystemTeamMemberCounts> {
+  const ids = [...new Set(teamIds)].filter(Boolean)
+  if (!ids.length) return new Map()
+  const rows: Array<{ team_id: string; active_member_count: number }> = []
+  const database = getBusinessDatabase()
+  for (const chunk of chunkValues(ids, 900)) {
+    rows.push(...database.prepare(`
+      SELECT team_id,
+        SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active_member_count
+      FROM system_team_members
+      WHERE team_id IN (${sqlPlaceholders(chunk.length)})
+      GROUP BY team_id
+    `).all(...chunk) as unknown as Array<{ team_id: string; active_member_count: number }>)
+  }
+  return new Map(rows.map((row) => {
+    const activeMemberCount = Number(row.active_member_count) || 0
+    return [row.team_id, { memberCount: activeMemberCount, activeMemberCount }]
+  }))
+}
+
+async function listSystemTeamMemberCountsForTeamIdsAsync(client: DatabaseClient, teamIds: string[]): Promise<Map<string, SystemTeamMemberCounts>> {
+  const ids = [...new Set(teamIds)].filter(Boolean)
+  if (!ids.length) return new Map()
+  const rows: Array<{ team_id: string; active_member_count: number }> = []
+  for (const chunk of chunkValues(ids, 900)) {
+    rows.push(...await client.query<{ team_id: string; active_member_count: number }>(`
+      SELECT team_id,
+        SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active_member_count
+      FROM ${systemTeamTable(client, 'system_team_members')}
+      WHERE team_id IN (${sqlPlaceholders(chunk.length)})
+      GROUP BY team_id
+    `, chunk))
+  }
+  return new Map(rows.map((row) => {
+    const activeMemberCount = Number(row.active_member_count) || 0
+    return [row.team_id, { memberCount: activeMemberCount, activeMemberCount }]
+  }))
 }
 
 function listSystemTeamMembersForTeamIds(teamIds: string[], activeOnly = false): Map<string, SystemTeamMemberSummary[]> {
@@ -734,24 +832,6 @@ function systemTeamMemberSelectColumns(alias: string): string {
   ].map((column) => `${alias}.${column}`).join(', ')
 }
 
-function ensureSystemTeamNameUnique(name: string, excludeId?: string, database = getBusinessDatabase()): void {
-  const row = database
-    .prepare('SELECT id FROM system_teams WHERE lower(name) = lower(?) AND id <> ? LIMIT 1')
-    .get(name, excludeId ?? '') as unknown as { id?: string } | undefined
-  if (row?.id) throw new Error('团队名称已存在')
-}
-
-async function ensureSystemTeamNameUniqueAsync(client: DatabaseClient, name: string, excludeId?: string): Promise<void> {
-  const row = await client.one<{ id?: string }>(`
-    SELECT id
-    FROM ${systemTeamTable(client, 'system_teams')}
-    WHERE lower(name) = lower(?)
-      AND id <> ?
-    LIMIT 1
-  `, [name, excludeId ?? ''])
-  if (row?.id) throw new Error('团队名称已存在')
-}
-
 function normalizeSystemTeamName(value: unknown): string {
   if (typeof value !== 'string') {
     throw new Error('团队名称不能为空')
@@ -820,23 +900,33 @@ function refreshGroupAccountStatsAfterWrite(reason: string): void {
   markAllGroupAccountStatsDirty(reason)
 }
 
+async function refreshGroupAccountStatsAfterWriteAsync(reason: string): Promise<void> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    refreshGroupAccountStatsAfterWrite(reason)
+    return
+  }
+  await markAllGroupAccountStatsDirtyAsync(reason)
+}
+
 function invalidateAuthorizationRuntimeAfterBusinessWrite(reason: string): void {
   notifyGatewayRuntimeCacheInvalidation(reason)
   notifyAuthorizationQuotaCacheInvalidation(reason)
 }
 
-function escapeLikePrefix(value: string): string {
-  return value.replace(/[\\%_]/g, (char) => `\\${char}`)
+function systemTeamTextPrefixUpperBound(value: string): string {
+  const chars = [...value]
+  for (let index = chars.length - 1; index >= 0; index -= 1) {
+    const codePoint = chars[index].codePointAt(0)
+    if (codePoint === undefined || codePoint >= 0x10ffff) continue
+    return `${chars.slice(0, index).join('')}${String.fromCodePoint(codePoint + 1)}`
+  }
+  return `${value}\u{10ffff}`
 }
 
-function systemTeamTextPrefixUpperBound(value: string): string {
-  for (let index = value.length - 1; index >= 0; index -= 1) {
-    const code = value.charCodeAt(index)
-    if (code < 0xffff) {
-      return `${value.slice(0, index)}${String.fromCharCode(code + 1)}`
-    }
-  }
-  return `${value}\uffff`
+function isDuplicateSystemTeamNameError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  return error.message.includes('idx_system_teams_name_unique')
+    || error.message.includes('idx_system_teams_name_unique_lower')
 }
 
 async function getSystemTeamDatabaseClient(): Promise<DatabaseClient> {

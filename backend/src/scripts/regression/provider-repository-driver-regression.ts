@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
@@ -26,6 +26,10 @@ if (process.env.JUHE_PROVIDER_REPOSITORY_DRIVER_CHILD === 'postgres') {
 
 const tempRoot = mkdtempSync(join(tmpdir(), 'juhe-provider-driver-'))
 try {
+  assertAccountTestDefaultModelRuntimeBoundary()
+  assertModelCatalogPostgresSyncBoundary()
+  assertOpenAIAccountSelectorPostgresAuthorizationBoundary()
+
   process.env.JUHE_AI_RUNTIME_MODE = 'standalone'
   process.env.JUHE_AI_DATABASE_DRIVER = 'sqlite'
   process.env.JUHE_AI_CACHE_DRIVER = 'memory'
@@ -56,9 +60,11 @@ try {
         JUHE_AI_DATABASE_DRIVER: 'postgres',
         JUHE_AI_CACHE_DRIVER: 'redis',
         JUHE_AI_RUNTIME_STATE_DRIVER: 'redis',
+        JUHE_AI_QUEUE_DRIVER: 'redis_stream',
         JUHE_AI_POSTGRES_URL: process.env.JUHE_PROVIDER_REPOSITORY_POSTGRES_URL,
         JUHE_AI_REDIS_CACHE_URL: process.env.JUHE_PROVIDER_REPOSITORY_REDIS_CACHE_URL ?? 'redis://:unused@127.0.0.1:6379/0',
-        JUHE_AI_REDIS_STATE_URL: process.env.JUHE_PROVIDER_REPOSITORY_REDIS_STATE_URL ?? 'redis://:unused@127.0.0.1:6380/0'
+        JUHE_AI_REDIS_STATE_URL: process.env.JUHE_PROVIDER_REPOSITORY_REDIS_STATE_URL ?? 'redis://:unused@127.0.0.1:6380/0',
+        JUHE_AI_REDIS_QUEUE_URL: process.env.JUHE_PROVIDER_REPOSITORY_REDIS_QUEUE_URL ?? process.env.JUHE_PROVIDER_REPOSITORY_REDIS_STATE_URL ?? 'redis://:unused@127.0.0.1:6380/0'
       }
     })
     if (result.status !== 0) {
@@ -72,6 +78,91 @@ try {
 } finally {
   await closeSqliteStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function assertModelCatalogPostgresSyncBoundary(): void {
+  const srcRoot = join(dirname(fileURLToPath(import.meta.url)), '../..')
+  const source = readFileSync(join(srcRoot, 'modules/model-pricing/model-catalog.service.ts'), 'utf8')
+  assert.ok(
+    source.includes('postgresSyncOpenAIProtocolProviderCodes')
+      && source.includes("runtimeConfig.databaseDriver === 'postgres'"),
+    '模型目录同步路径在 PG 模式下必须使用内置 provider code 列表'
+  )
+  assert.doesNotMatch(
+    source,
+    /function modelCatalogSourceProviderCodes\([\s\S]*?listOpenAIProtocolProviderCodes\(\)[\s\S]*?runtimeConfig\.databaseDriver === 'postgres'/,
+    '模型目录同步路径在 PG 模式下不得先调用 provider.repository'
+  )
+}
+
+function assertAccountTestDefaultModelRuntimeBoundary(): void {
+  const srcRoot = join(dirname(fileURLToPath(import.meta.url)), '../..')
+  const accountTestServiceSource = readFileSync(join(srcRoot, 'modules/accounts/account-test.service.ts'), 'utf8')
+  assert.ok(
+    accountTestServiceSource.includes('findProviderDefaultTestModelAsync')
+      && accountTestServiceSource.includes('await defaultAccountTestModelAsync'),
+    '账号测试默认模型应提供 async 读取路径，避免 PG 模式回退 SQLite'
+  )
+  assert.ok(
+    accountTestServiceSource.includes('findAccountForTestAsync')
+      && accountTestServiceSource.includes('input.findAccountForTest ?? findAccountForTestAsync'),
+    '账号测试状态回读默认路径必须使用 async 账户读取，避免 PG 模式回退 SQLite'
+  )
+  const accountTestRepositoryImport = accountTestServiceSource.match(/import\s*\{[\s\S]*?\}\s*from '\.\.\/\.\.\/storage\/repositories\.js'/)?.[0] ?? ''
+  assert.doesNotMatch(
+    accountTestRepositoryImport,
+    /\bfindAccountForTest\b(?!Async)/,
+    '账号测试服务不得从 repository 导入同步 findAccountForTest'
+  )
+  assert.doesNotMatch(
+    accountTestServiceSource,
+    /\bfindProviderDefaultTestModel\b(?!Async)/,
+    '账号测试服务不得导入或调用同步供应商默认测试模型读取入口'
+  )
+  assert.doesNotMatch(
+    accountTestServiceSource,
+    /\bexport function preferredSystemAccountTestModel\b/,
+    '账号测试服务不得继续暴露同步默认测试模型入口'
+  )
+  assert.doesNotMatch(
+    accountTestServiceSource,
+    /\bfunction defaultAccountTestModel\b(?!Async)/,
+    '账号测试服务不得保留同步默认测试模型 fallback'
+  )
+
+  for (const relativePath of [
+    'modules/background/cooldown-account-retest.service.ts',
+    'modules/background/account-health-check.service.ts',
+    'modules/background/account-quality-failure-precheck.service.ts',
+    'modules/background/account-api-key-cooldown-retest.service.ts',
+    'modules/accounts/account-test-task-queue.service.ts',
+    'modules/gateway/client-profiles/codex-switch-probe.ts',
+    'modules/gateway/runtime/account-side-effects.service.ts'
+  ]) {
+    const source = readFileSync(join(srcRoot, relativePath), 'utf8')
+    assert.ok(source.includes('preferredSystemAccountTestModelAsync'), `${relativePath} 应使用 async 默认测试模型读取入口`)
+    assert.doesNotMatch(source, /\bpreferredSystemAccountTestModel\(/, `${relativePath} 不得在运行路径调用同步默认测试模型读取入口`)
+  }
+}
+
+function assertOpenAIAccountSelectorPostgresAuthorizationBoundary(): void {
+  const srcRoot = join(dirname(fileURLToPath(import.meta.url)), '../..')
+  const source = readFileSync(join(srcRoot, 'storage/openai-account-selector.repository.ts'), 'utf8')
+  assert.match(
+    source,
+    /export async function findOpenAIAccountForGroupAsync[\s\S]*?const accountAuthorizationsByIdOrResourceId = await loadAccountAuthorizationsForSelectionAsync\(client, \[selectionRow\], groupAccess, systemAccountId\) \?\? new Map\(\)/,
+    'PG 单账号候选读取必须把空授权预加载结果规范成 Map，避免回落同步 SQLite 授权查询'
+  )
+  assert.match(
+    source,
+    /export async function listOpenAIAccountsForGroupResultAsync[\s\S]*?const accountAuthorizationsByIdOrResourceId = await loadAccountAuthorizationsForSelectionAsync\(client, groupAccountRows, groupAccess, systemAccountId\) \?\? new Map\(\)/,
+    'PG 分组候选读取必须把空授权预加载结果规范成 Map，避免回落同步 SQLite 授权查询'
+  )
+  assert.match(
+    source,
+    /function resolveOpenAIAccountAccess[\s\S]*?accountAuthorizationsByIdOrResourceId\s*\?[\s\S]*?accountAuthorizationsByIdOrResourceId\.get\([\s\S]*?:\s*activeResourceAuthorizationById/,
+    '授权解析仍应保留 standalone 同步兜底，但 PG async 调用方必须传入 Map 阻断该兜底'
+  )
 }
 
 async function closeSqliteStorageDatabases(): Promise<void> {

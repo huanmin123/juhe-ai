@@ -4,6 +4,9 @@ import { setMustChangePasswordHandler, setUnauthorizedHandler } from '@/api/clie
 import { clearAuthState, loadCurrentUser } from '@/composables/useAuth'
 import { getPreferredEntryPath } from '@/composables/useMenuMode'
 import type { SystemAccountRole } from '@/types/domain'
+import { installRouteLoadRecovery, recoverRouteAssetLoadError } from './routeLoadRecovery'
+
+export { recoverRouteAssetLoadError }
 
 declare module 'vue-router' {
   interface RouteMeta {
@@ -410,7 +413,20 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/table-monitor/TableMonitorView.vue'),
     meta: {
       title: '表监控',
-      description: '查看业务库、数据集目录库和统计结果库的表大小、行数、文件空闲空间和近期增长；usage shard 文件集合观测仍在后续增强阶段。',
+      description: '查看业务库、数据集目录库、使用记录目录库和统计结果库的表大小、行数、文件空闲空间和近期增长；usage shard 文件集合观测仍在后续增强阶段。',
+      menuGroup: 'system-operations',
+      menuGroupTitle: '系统运维',
+      viewScope: 'admin',
+      roles: managementRoles,
+      heavy: true
+    }
+  },
+  {
+    path: '/system-metrics-stats',
+    component: () => import('@/views/stats/SystemMetricsStatsView.vue'),
+    meta: {
+      title: '系统指标统计',
+      description: '查看系统性能、网络吞吐、进程事件循环延迟、后台任务运行状态和进程 RSS 峰值趋势。',
       menuGroup: 'system-operations',
       menuGroupTitle: '系统运维',
       viewScope: 'admin',
@@ -423,7 +439,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/ip-stats/IpStatsView.vue'),
     meta: {
       title: 'IP管理',
-      description: '查看来源 IP 的请求、Token、成本、失败率、活跃天数和封禁状态。',
+      description: '查看来源 IP 的请求、Token、成本、失败率、活跃天数、封禁和白名单状态。',
       menuGroup: 'system-operations',
       menuGroupTitle: '系统运维',
       viewScope: 'admin',
@@ -541,6 +557,8 @@ export const router = createRouter({
     }
   ]
 })
+
+installRouteLoadRecovery(router)
 
 router.beforeEach(async (to) => {
   const user = await loadCurrentUser()

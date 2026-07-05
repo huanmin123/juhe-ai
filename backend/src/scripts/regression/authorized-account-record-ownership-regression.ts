@@ -88,17 +88,14 @@ try {
   const granteeGroup = repositories.createGroup({
     name: '记录归属被授权人分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, granteeAccess)
   const granteeTargetGroup = repositories.createGroup({
     name: '记录归属被授权人重新绑定分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, granteeAccess)
   const ownerSourceGroup = repositories.createGroup({
     name: '记录归属来源分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, ownerAccess)
   const ownerAccount = repositories.createAccount({
     providerCode: 'gpt',

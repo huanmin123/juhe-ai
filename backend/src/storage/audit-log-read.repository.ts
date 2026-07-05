@@ -42,6 +42,7 @@ import { optionalString } from './value-utils.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
 export function listAuditLogs(options: AuditLogListOptions = {}): AuditLogListResult {
   const filters = buildAuditLogFilters(options)
@@ -73,6 +74,12 @@ export function listAuditLogs(options: AuditLogListOptions = {}): AuditLogListRe
 }
 
 export async function listAuditLogsAsync(options: AuditLogListOptions = {}): Promise<AuditLogListResult> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_audit_logs_read_only',
+      options
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listAuditLogs(options)
   }
@@ -106,6 +113,12 @@ export function listAuditLogsByIds(ids: string[]): AuditLogSummary[] {
 }
 
 export async function listAuditLogsByIdsAsync(ids: string[]): Promise<AuditLogSummary[]> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_audit_logs_by_ids_read_only',
+      ids
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listAuditLogsByIds(ids)
   }
@@ -159,6 +172,12 @@ export function listAuditErrorGroups(options: AuditErrorGroupListOptions = {}): 
 }
 
 export async function listAuditErrorGroupsAsync(options: AuditErrorGroupListOptions = {}): Promise<AuditErrorGroupListResult> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_audit_error_groups_read_only',
+      options
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listAuditErrorGroups(options)
   }
@@ -171,6 +190,13 @@ export function listAuditErrorGroupEvents(errorGroupId: string, options: AuditLo
 }
 
 export async function listAuditErrorGroupEventsAsync(errorGroupId: string, options: AuditLogListOptions = {}): Promise<AuditLogListResult> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_audit_error_group_events_read_only',
+      errorGroupId,
+      options
+    })
+  }
   return listAuditLogsAsync({ ...options, errorGroupId })
 }
 
@@ -203,6 +229,12 @@ export function getAuditLogDetail(id: string): AuditLogDetail | undefined {
 }
 
 export async function getAuditLogDetailAsync(id: string): Promise<AuditLogDetail | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'get_audit_log_detail_read_only',
+      id
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return getAuditLogDetail(id)
   }
@@ -240,6 +272,14 @@ export async function getAuditLogPayload(
   payloadId: string,
   options: AuditLogPayloadReadOptions = {}
 ): Promise<AuditLogPayloadDetail | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'get_audit_log_payload_read_only',
+      auditLogId,
+      payloadId,
+      options
+    })
+  }
   if (runtimeConfig.databaseDriver === 'postgres') {
     const client = createPostgresDatabaseClient(await getPostgresPool())
     const row = await client.one<AuditLogRow>(`
@@ -265,6 +305,14 @@ export async function getAuditLogPayload(
       bodyTruncated: bodyWindow.truncated
     }
   }
+  return getAuditLogPayloadReadOnly(auditLogId, payloadId, options)
+}
+
+export async function getAuditLogPayloadReadOnly(
+  auditLogId: string,
+  payloadId: string,
+  options: AuditLogPayloadReadOptions = {}
+): Promise<AuditLogPayloadDetail | undefined> {
   const row = getDatasetDatabase()
     .prepare(`
       SELECT *

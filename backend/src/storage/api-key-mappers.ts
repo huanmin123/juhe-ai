@@ -10,7 +10,7 @@ import { loadSystemAccountNameMapByIds } from './repository-lookups.js'
 import { parseRequestQuotaLimitsJson } from './request-quota-limits.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { emptyAccountUsageSummary } from './usage-stats-helpers.js'
-import { loadApiKeyUsageSummariesForScopes } from './usage-summary-loaders.js'
+import { loadApiKeyUsageSummariesForScopes, loadApiKeyUsageSummariesForScopesAsync } from './usage-summary-loaders.js'
 import { chunkValues } from './query-utils.js'
 
 export interface ApiKeyRow {
@@ -61,14 +61,18 @@ export async function apiKeySummariesFromRowsAsync(
   const includeSecret = options.includeSecret === true
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
   const client = await getApiKeyMapperDatabaseClient()
-  const accountNames = shouldIncludeSystemAccountFields
-    ? await loadSystemAccountNameMapByIdsAsync(client, rows.map((row) => row.system_account_id))
-    : new Map<string, string>()
+  const usageScopes = rows.map((row) => ({ rowKey: row.id, systemAccountId: row.system_account_id, scopeId: row.id }))
+  const [accountNames, usageByApiKey] = await Promise.all([
+    shouldIncludeSystemAccountFields
+      ? loadSystemAccountNameMapByIdsAsync(client, rows.map((row) => row.system_account_id))
+      : Promise.resolve(new Map<string, string>()),
+    loadApiKeyUsageSummariesForScopesAsync(usageScopes)
+  ])
   return rows.map((row) => apiKeySummaryFromRow(row, {
     includeSecret,
     shouldIncludeSystemAccountFields,
     accountNames,
-    usage: emptyAccountUsageSummary()
+    usage: usageByApiKey.get(row.id) ?? emptyAccountUsageSummary()
   }))
 }
 
@@ -83,7 +87,7 @@ function apiKeySummaryFromRow(
 ): ApiKeySummary {
   const availabilitySchedule = parseApiKeyAvailabilityScheduleJson(row.availability_schedule_json)
   const routeStrategyMode = row.route_strategy_mode ? normalizeRouteStrategyMode(row.route_strategy_mode) : undefined
-  return {
+  const summary: ApiKeySummary = {
     id: row.id,
     systemAccountId: options.shouldIncludeSystemAccountFields ? row.system_account_id : undefined,
     systemAccountName: options.shouldIncludeSystemAccountFields
@@ -93,7 +97,6 @@ function apiKeySummaryFromRow(
     description: row.description ?? undefined,
     keyPrefix: row.key_prefix,
     keySuffix: row.key_suffix,
-    key: options.includeSecret ? decryptApiKeySecret(row.key_secret_encrypted) : '',
     status: row.status,
     isDefault: normalizeApiKeyDefaultFlag(row.is_default),
     routeStrategyId: row.route_strategy_id,
@@ -105,6 +108,10 @@ function apiKeySummaryFromRow(
     availabilitySchedule,
     usage: options.usage
   }
+  if (options.includeSecret) {
+    summary.key = decryptApiKeySecret(row.key_secret_encrypted)
+  }
+  return summary
 }
 
 function normalizeRouteStrategyStatus(value: unknown): ApiKeySummary['routeStrategyStatus'] {

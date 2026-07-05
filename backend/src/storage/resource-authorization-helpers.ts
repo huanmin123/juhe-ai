@@ -15,17 +15,14 @@ export function groupSystemAccountId(groupId: string): string | undefined {
   return row?.system_account_id
 }
 
-export function groupOwnerAndProvider(groupId: string): { systemAccountId: string; providerCode: ProviderCode; providerProtocolProfileId: string; protocolCode: string; protocolVersion: string; name?: string } | undefined {
+export function groupOwnerAndProvider(groupId: string): { systemAccountId: string; providerCode: ProviderCode; name?: string } | undefined {
   const row = getBusinessDatabase()
-    .prepare('SELECT system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name FROM groups WHERE id = ?')
-    .get(groupId) as unknown as { system_account_id?: string; provider_code?: ProviderCode; provider_protocol_profile_id?: string; protocol_code?: string; protocol_version?: string; name?: string } | undefined
-  return row?.system_account_id && row.provider_code && row.provider_protocol_profile_id && row.protocol_code && row.protocol_version
+    .prepare('SELECT system_account_id, provider_code, name FROM groups WHERE id = ?')
+    .get(groupId) as unknown as { system_account_id?: string; provider_code?: ProviderCode; name?: string } | undefined
+  return row?.system_account_id && row.provider_code
     ? {
         systemAccountId: row.system_account_id,
         providerCode: row.provider_code,
-        providerProtocolProfileId: row.provider_protocol_profile_id,
-        protocolCode: row.protocol_code,
-        protocolVersion: row.protocol_version,
         name: row.name
       }
     : undefined

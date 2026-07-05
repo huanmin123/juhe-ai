@@ -1,8 +1,9 @@
+import { existsSync } from 'node:fs'
+
 import { runtimeConfig } from '../config/runtime.js'
-import { createAppCache, createSharedJsonCache } from '../shared/cache.js'
-import { errorLogFields, logger } from '../shared/logger.js'
+import { clearSharedJsonCacheInBackground, createAppCache, createSharedJsonCache } from '../shared/cache.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
-import { getBusinessDatabase, getStatsDatabase } from './database.js'
+import { getBusinessDatabase, getStatsDatabase, statsDatabasePath } from './database.js'
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 
@@ -37,6 +38,7 @@ const groupAccountIdsSharedCache = createSharedJsonCache<string[]>({
 })
 
 export function loadGroupAccountIdsByGroupIds(groupIds: string[]): Map<string, string[]> {
+  assertSyncGroupReadLoaderAllowed('loadGroupAccountIdsByGroupIds')
   const ids = uniqueIds(groupIds)
   if (!ids.length) return new Map()
   const result = new Map<string, string[]>()
@@ -88,23 +90,32 @@ export function loadGroupAccountIdsByGroupIds(groupIds: string[]): Map<string, s
   return result
 }
 
+function assertSyncGroupReadLoaderAllowed(operation: string): void {
+  if (runtimeConfig.cacheDriver !== 'redis') return
+  throw new Error(`高性能模式禁止同步读取本地分组 loader：${operation} 必须使用 Redis async loader`)
+}
+
 export async function loadGroupAccountIdsByGroupIdsAsync(groupIds: string[]): Promise<Map<string, string[]>> {
   const ids = uniqueIds(groupIds)
   if (!ids.length) return new Map()
   const result = new Map<string, string[]>()
-  const missingLocalIds: string[] = []
-  for (const id of ids) {
-    const cached = groupAccountIdsCache.get(id)
-    if (cached !== undefined) {
-      result.set(id, [...cached])
-    } else {
-      missingLocalIds.push(id)
+  const missingSharedIds: string[] = []
+  if (runtimeConfig.cacheDriver !== 'redis') {
+    for (const id of ids) {
+      const cached = groupAccountIdsCache.get(id)
+      if (cached !== undefined) {
+        result.set(id, [...cached])
+      } else {
+        missingSharedIds.push(id)
+      }
     }
+  } else {
+    missingSharedIds.push(...ids)
   }
-  if (!missingLocalIds.length) return result
+  if (!missingSharedIds.length) return result
 
   const missingDatabaseIds: string[] = []
-  for (const id of missingLocalIds) {
+  for (const id of missingSharedIds) {
     const sharedCached = await getGroupAccountIdsSharedCacheEntry(id)
     if (sharedCached !== undefined) {
       groupAccountIdsCache.set(id, sharedCached)
@@ -118,8 +129,8 @@ export async function loadGroupAccountIdsByGroupIdsAsync(groupIds: string[]): Pr
   const loaded = await loadGroupAccountIdsFromDatabaseAsync(missingDatabaseIds)
   for (const id of missingDatabaseIds) {
     const accountIds = loaded.get(id) ?? []
-    groupAccountIdsCache.set(id, accountIds)
     await setGroupAccountIdsSharedCacheEntryAsync(id, accountIds)
+    groupAccountIdsCache.set(id, accountIds)
     result.set(id, [...accountIds])
   }
   return result
@@ -137,18 +148,44 @@ export function invalidateGroupAccountIdsCache(groupId?: string): void {
 }
 
 export function loadGroupAccountStatsByGroupIds(groupIds: string[]): Map<string, GroupAccountStatsRow> {
+  assertSyncGroupReadLoaderAllowed('loadGroupAccountStatsByGroupIds')
   const ids = uniqueIds(groupIds)
   if (!ids.length) return new Map()
+  if (shouldSkipMissingSqliteStatsRead()) return new Map()
   const rows: GroupAccountStatsRow[] = []
-  const database = getStatsDatabase()
-  for (const chunk of chunkValues(ids, 900)) {
-    rows.push(...database
-      .prepare(`
-        SELECT ${groupAccountStatsSelectColumns()}
-        FROM group_account_stats
-        WHERE group_id IN (${sqlPlaceholders(chunk.length)})
-      `)
-      .all(...chunk) as unknown as GroupAccountStatsRow[])
+  try {
+    const database = getStatsDatabase()
+    for (const chunk of chunkValues(ids, 900)) {
+      rows.push(...database
+        .prepare(`
+          SELECT ${groupAccountStatsSelectColumns()}
+          FROM group_account_stats
+          WHERE group_id IN (${sqlPlaceholders(chunk.length)})
+        `)
+        .all(...chunk) as unknown as GroupAccountStatsRow[])
+    }
+  } catch (error) {
+    if (isMissingSqliteStatsReadError(error)) return new Map()
+    throw error
+  }
+  return new Map(rows.map((row) => [row.group_id, row]))
+}
+
+export async function loadGroupAccountStatsByGroupIdsAsync(groupIds: string[]): Promise<Map<string, GroupAccountStatsRow>> {
+  const ids = uniqueIds(groupIds)
+  if (!ids.length) return new Map()
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return loadGroupAccountStatsByGroupIds(ids)
+  }
+  const rows: GroupAccountStatsRow[] = []
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const tableName = client.dialect.qualifyTable('juhe_stats', 'group_account_stats')
+  for (const chunk of chunkValues(ids, 500)) {
+    rows.push(...await client.query<GroupAccountStatsRow>(`
+      SELECT ${groupAccountStatsSelectColumns()}
+      FROM ${tableName}
+      WHERE group_id IN (${client.dialect.bindPlaceholders(chunk.length)})
+    `, chunk))
   }
   return new Map(rows.map((row) => [row.group_id, row]))
 }
@@ -218,18 +255,25 @@ function groupReadLoaderTable(client: DatabaseClient, tableName: string): string
     : client.dialect.quoteIdentifier(tableName)
 }
 
+function shouldSkipMissingSqliteStatsRead(): boolean {
+  return isSqliteReadWorkerProcess()
+    && runtimeConfig.databaseDriver !== 'postgres'
+    && !existsSync(statsDatabasePath())
+}
+
+function isMissingSqliteStatsReadError(error: unknown): boolean {
+  return isSqliteReadWorkerProcess()
+    && error instanceof Error
+    && (/no such table:/i.test(error.message) || /unable to open database file/i.test(error.message))
+}
+
+function isSqliteReadWorkerProcess(): boolean {
+  return process.env.JUHE_AI_SQLITE_READ_WORKER === 'true'
+}
+
 async function getGroupAccountIdsSharedCacheEntry(groupId: string): Promise<string[] | undefined> {
-  try {
-    const value = await groupAccountIdsSharedCache.get(groupId)
-    return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : undefined
-  } catch (error) {
-    logger.warn({
-      event: 'group_account_ids_shared_cache_read_failed',
-      groupId,
-      err: errorLogFields(error)
-    }, '读取分组账号 ID Redis shared cache 失败，将回退数据库')
-    return undefined
-  }
+  const value = await groupAccountIdsSharedCache.get(groupId)
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : undefined
 }
 
 function setGroupAccountIdsSharedCacheEntry(groupId: string, accountIds: string[]): void {
@@ -237,32 +281,17 @@ function setGroupAccountIdsSharedCacheEntry(groupId: string, accountIds: string[
 }
 
 async function setGroupAccountIdsSharedCacheEntryAsync(groupId: string, accountIds: string[]): Promise<void> {
-  try {
-    await groupAccountIdsSharedCache.set(groupId, [...accountIds])
-  } catch (error) {
-    logger.warn({
-      event: 'group_account_ids_shared_cache_write_failed',
-      groupId,
-      err: errorLogFields(error)
-    }, '写入分组账号 ID Redis shared cache 失败')
-  }
+  await groupAccountIdsSharedCache.set(groupId, [...accountIds])
 }
 
 function deleteGroupAccountIdsSharedCacheEntry(groupId: string): void {
-  void groupAccountIdsSharedCache.delete(groupId).catch((error) => {
-    logger.warn({
-      event: 'group_account_ids_shared_cache_delete_failed',
-      groupId,
-      err: errorLogFields(error)
-    }, '删除分组账号 ID Redis shared cache 失败')
-  })
+  void groupAccountIdsSharedCache.delete(groupId)
 }
 
 function clearGroupAccountIdsSharedCache(): void {
-  void groupAccountIdsSharedCache.clear().catch((error) => {
-    logger.warn({
-      event: 'group_account_ids_shared_cache_clear_failed',
-      err: errorLogFields(error)
-    }, '清理分组账号 ID Redis shared cache 失败')
-  })
+  clearSharedJsonCacheInBackground(
+    groupAccountIdsSharedCache,
+    'group_account_ids_shared_cache_clear_failed',
+    '分组账号 ID Redis shared cache 清理失败'
+  )
 }

@@ -1,6 +1,5 @@
 import { createAppCache, createSharedJsonCache } from '../shared/cache.js'
 import { syncGatewayCacheInvalidationsFromRuntimeState } from '../shared/gateway-cache-invalidation.js'
-import { errorLogFields, logger } from '../shared/logger.js'
 import { maxRouteStrategyGroupBindings } from './route-strategy-group-binding-limits.js'
 import {
   normalizeApiKeyGroupBindingWeight
@@ -9,13 +8,14 @@ import {
   normalizeRouteStrategyMode,
   parseRouteStrategyRuntimeConfigJson
 } from '../domain/route-strategy.js'
-import type { ApiKeyHybridRoutingConfig, RouteStrategyMode } from '../domain/types.js'
+import type { ApiKeyHybridRoutingConfig, RouteStrategyMode, RouteStrategyNormalRoutingConfig } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { hashSecret } from './crypto.js'
 import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient } from './database-client.js'
 import { getBusinessDatabase, nowIso } from './database.js'
 import { getPostgresPool } from './postgres-client.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
 export interface GatewayApiKeyRow {
   id: string
@@ -27,6 +27,7 @@ export interface GatewayApiKeyRow {
   status: 'active' | 'disabled'
   expires_at: string | null
   quota_limits_json: string | null
+  normal_routing_config?: RouteStrategyNormalRoutingConfig
   hybrid_routing_config?: ApiKeyHybridRoutingConfig
   system_account_image_generation_enabled: number
   group_bindings?: GatewayApiKeyGroupBindingRow[]
@@ -41,9 +42,6 @@ export interface GatewayApiKeyGroupBindingRow {
   weight: number
   status: 'active' | 'disabled'
   provider_code: string
-  provider_protocol_profile_id: string
-  protocol_code: string
-  protocol_version: string
   group_enabled: number
 }
 
@@ -86,7 +84,7 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
     && cached.forceRevalidateAtMs > now
     && !isGatewayApiKeyRowExpired(cached.row, now)
   ) {
-    return cached.row
+    return cloneGatewayApiKeyRow(cached.row)
   }
 
   const row = getBusinessDatabase().prepare(`
@@ -130,14 +128,62 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
   }
   row.selected_group_id = row.group_bindings[0]?.group_id ?? row.selected_group_id
   setGatewayApiKeyCacheEntry(keyHash, {
-    row,
+    row: cloneGatewayApiKeyRow(row),
     forceRevalidateAtMs: now + GATEWAY_API_KEY_CACHE_MAX_STALE_MS
   }, { ttlMs: gatewayApiKeyCacheTtlMs(now, row) })
+  return cloneGatewayApiKeyRow(row)
+}
+
+export function loadGatewayApiKeyForValidationReadOnly(key: string): GatewayApiKeyRow | undefined {
+  if (!key.startsWith('sk-')) {
+    return undefined
+  }
+  const keyHash = hashSecret(key)
+  const now = Date.now()
+  const row = getBusinessDatabase().prepare(`
+    SELECT
+      api_keys.id,
+      api_keys.system_account_id,
+      route_strategies.id AS route_strategy_id,
+      route_strategies.mode AS route_strategy_mode,
+      route_strategies.config_json AS route_strategy_config_json,
+      '' AS selected_group_id,
+      api_keys.status,
+      api_keys.expires_at,
+      api_keys.quota_limits_json,
+      system_accounts.image_generation_enabled AS system_account_image_generation_enabled
+    FROM api_keys
+    INNER JOIN system_accounts ON system_accounts.id = api_keys.system_account_id
+    INNER JOIN route_strategies
+      ON route_strategies.id = api_keys.route_strategy_id
+      AND route_strategies.system_account_id = api_keys.system_account_id
+      AND route_strategies.status = 'active'
+    WHERE api_keys.key_hash = ?
+      AND system_accounts.status = 'active'
+  `).get(keyHash) as unknown as GatewayApiKeyRow | undefined
+  if (!row) {
+    return undefined
+  }
+  if (isGatewayApiKeyRowExpired(row, now)) {
+    return undefined
+  }
+  if (row.status !== 'active') {
+    return undefined
+  }
+  normalizeGatewayApiKeyRouteFields(row)
+  row.group_bindings = loadActiveGatewayApiKeyGroupBindings(row.id, row.route_strategy_id, row.system_account_id)
+  if (!row.group_bindings.length) {
+    return undefined
+  }
+  row.selected_group_id = row.group_bindings[0]?.group_id ?? row.selected_group_id
   return row
 }
 
 export async function validateGatewayApiKeyAsync(key: string): Promise<GatewayApiKeyRow | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
+    if (sqliteReadWorkerPoolEnabled()) {
+      return await validateGatewayApiKeyWithSqliteReadWorker(key)
+    }
     return validateGatewayApiKey(key)
   }
   if (runtimeConfig.runtimeStateDriver === 'redis') {
@@ -148,13 +194,15 @@ export async function validateGatewayApiKeyAsync(key: string): Promise<GatewayAp
   }
   const keyHash = hashSecret(key)
   const now = Date.now()
-  const cached = gatewayApiKeyCache.get(keyHash)
-  if (
-    cached
-    && cached.forceRevalidateAtMs > now
-    && !isGatewayApiKeyRowExpired(cached.row, now)
-  ) {
-    return cloneGatewayApiKeyRow(cached.row)
+  if (runtimeConfig.cacheDriver !== 'redis') {
+    const cached = gatewayApiKeyCache.get(keyHash)
+    if (
+      cached
+      && cached.forceRevalidateAtMs > now
+      && !isGatewayApiKeyRowExpired(cached.row, now)
+    ) {
+      return cloneGatewayApiKeyRow(cached.row)
+    }
   }
   const sharedCached = await getGatewayApiKeySharedCacheEntry(keyHash)
   if (
@@ -220,6 +268,56 @@ export async function validateGatewayApiKeyAsync(key: string): Promise<GatewayAp
   return cloneGatewayApiKeyRow(row)
 }
 
+async function validateGatewayApiKeyWithSqliteReadWorker(key: string): Promise<GatewayApiKeyRow | undefined> {
+  if (runtimeConfig.runtimeStateDriver === 'redis') {
+    await syncGatewayCacheInvalidationsFromRuntimeState()
+  }
+  if (!key.startsWith('sk-')) {
+    return undefined
+  }
+  const keyHash = hashSecret(key)
+  const now = Date.now()
+  if (runtimeConfig.cacheDriver !== 'redis') {
+    const cached = gatewayApiKeyCache.get(keyHash)
+    if (
+      cached
+      && cached.forceRevalidateAtMs > now
+      && !isGatewayApiKeyRowExpired(cached.row, now)
+    ) {
+      return cloneGatewayApiKeyRow(cached.row)
+    }
+  }
+  const sharedCached = await getGatewayApiKeySharedCacheEntry(keyHash)
+  if (
+    sharedCached
+    && sharedCached.forceRevalidateAtMs > now
+    && !isGatewayApiKeyRowExpired(sharedCached.row, now)
+  ) {
+    setGatewayApiKeyCacheEntry(keyHash, {
+      row: cloneGatewayApiKeyRow(sharedCached.row),
+      forceRevalidateAtMs: sharedCached.forceRevalidateAtMs
+    }, {
+      ttlMs: gatewayApiKeyCacheTtlMs(now, sharedCached.row),
+      skipSharedCache: true
+    })
+    return cloneGatewayApiKeyRow(sharedCached.row)
+  }
+
+  const row = await requestSqliteReadWorker({
+    type: 'load_gateway_api_key_for_validation_read_only',
+    key
+  })
+  if (!row) {
+    gatewayApiKeyCache.delete(keyHash)
+    return undefined
+  }
+  await setGatewayApiKeyCacheEntryAsync(keyHash, {
+    row: cloneGatewayApiKeyRow(row),
+    forceRevalidateAtMs: now + GATEWAY_API_KEY_CACHE_MAX_STALE_MS
+  }, { ttlMs: gatewayApiKeyCacheTtlMs(now, row) })
+  return cloneGatewayApiKeyRow(row)
+}
+
 export function findActiveGatewayApiKeyById(id: string): GatewayApiKeyRow | undefined {
   const apiKeyId = id.trim()
   if (!apiKeyId) return undefined
@@ -266,6 +364,9 @@ export function findActiveGatewayApiKeyById(id: string): GatewayApiKeyRow | unde
 function normalizeGatewayApiKeyRouteFields(row: GatewayApiKeyRow): void {
   row.route_strategy_mode = normalizeRouteStrategyMode(row.route_strategy_mode)
   const routeStrategyConfig = parseRouteStrategyRuntimeConfigJson(row.route_strategy_config_json)
+  row.normal_routing_config = row.route_strategy_mode === 'normal'
+    ? routeStrategyConfig.normalRoutingConfig
+    : undefined
   row.hybrid_routing_config = row.route_strategy_mode === 'hybrid_smart'
     ? routeStrategyConfig.hybridRoutingConfig
     : undefined
@@ -276,7 +377,17 @@ export function clearGatewayApiKeyValidationCache(): void {
   clearGatewayApiKeySharedCache()
 }
 
+export async function clearGatewayApiKeyValidationCacheAsync(): Promise<void> {
+  gatewayApiKeyCache.clear()
+  await clearGatewayApiKeySharedCacheAsync()
+}
+
 export function invalidateGatewayApiKeyCacheById(id: string): void {
+  if (runtimeConfig.cacheDriver === 'redis') {
+    gatewayApiKeyCacheKeysById.clear()
+    clearGatewayApiKeySharedCache()
+    return
+  }
   const keyHashes = gatewayApiKeyCacheKeysById.get(id)
   if (keyHashes) {
     for (const keyHash of [...keyHashes]) {
@@ -285,6 +396,22 @@ export function invalidateGatewayApiKeyCacheById(id: string): void {
     gatewayApiKeyCacheKeysById.delete(id)
   }
   clearGatewayApiKeySharedCache()
+}
+
+export async function invalidateGatewayApiKeyCacheByIdAsync(id: string): Promise<void> {
+  if (runtimeConfig.cacheDriver === 'redis') {
+    gatewayApiKeyCacheKeysById.clear()
+    await clearGatewayApiKeySharedCacheAsync()
+    return
+  }
+  const keyHashes = gatewayApiKeyCacheKeysById.get(id)
+  if (keyHashes) {
+    for (const keyHash of [...keyHashes]) {
+      gatewayApiKeyCache.delete(keyHash)
+    }
+    gatewayApiKeyCacheKeysById.delete(id)
+  }
+  await clearGatewayApiKeySharedCacheAsync()
 }
 
 function isGatewayApiKeyRowExpired(row: GatewayApiKeyRow, now = Date.now()): boolean {
@@ -309,15 +436,22 @@ function setGatewayApiKeyCacheEntry(
   entry: GatewayApiKeyCacheEntry,
   options: { ttlMs?: number; skipSharedCache?: boolean } = {}
 ): void {
+  if (runtimeConfig.cacheDriver === 'redis') {
+    gatewayApiKeyCacheKeysById.clear()
+    if (!options.skipSharedCache) {
+      throw new Error('高性能模式禁止同步写入 API Key Redis 共享缓存，必须使用 setGatewayApiKeyCacheEntryAsync')
+    }
+    return
+  }
   const previous = gatewayApiKeyCache.get(keyHash)
   if (previous) {
     removeGatewayApiKeyCacheIndex(previous.row.id, keyHash)
   }
-  gatewayApiKeyCache.set(keyHash, entry, options)
+  gatewayApiKeyCache.set(keyHash, {
+    row: cloneGatewayApiKeyRow(entry.row),
+    forceRevalidateAtMs: entry.forceRevalidateAtMs
+  }, options)
   addGatewayApiKeyCacheIndex(entry.row.id, keyHash)
-  if (!options.skipSharedCache) {
-    void setGatewayApiKeySharedCacheEntry(keyHash, entry, options)
-  }
 }
 
 async function setGatewayApiKeyCacheEntryAsync(
@@ -325,11 +459,11 @@ async function setGatewayApiKeyCacheEntryAsync(
   entry: GatewayApiKeyCacheEntry,
   options: { ttlMs?: number } = {}
 ): Promise<void> {
+  await setGatewayApiKeySharedCacheEntry(keyHash, entry, options)
   setGatewayApiKeyCacheEntry(keyHash, entry, {
     ...options,
     skipSharedCache: true
   })
-  await setGatewayApiKeySharedCacheEntry(keyHash, entry, options)
 }
 
 function addGatewayApiKeyCacheIndex(apiKeyId: string, keyHash: string): void {
@@ -359,9 +493,6 @@ export function loadActiveGatewayApiKeyGroupBindings(apiKeyId: string, routeStra
       route_strategy_groups.weight,
       route_strategy_groups.status,
       groups.provider_code,
-      groups.provider_protocol_profile_id,
-      groups.protocol_code,
-      groups.protocol_version,
       groups.enabled AS group_enabled
     FROM route_strategies
     INNER JOIN route_strategy_groups
@@ -418,9 +549,6 @@ export async function loadActiveGatewayApiKeyGroupBindingsAsync(
       route_strategy_groups.weight,
       route_strategy_groups.status,
       groups.provider_code,
-      groups.provider_protocol_profile_id,
-      groups.protocol_code,
-      groups.protocol_version,
       groups.enabled AS group_enabled
     FROM ${gatewayApiKeyTable(activeClient, 'route_strategies')} route_strategies
     INNER JOIN ${gatewayApiKeyTable(activeClient, 'route_strategy_groups')} route_strategy_groups
@@ -472,6 +600,14 @@ function gatewayApiKeyTable(client: DatabaseClient, tableName: string): string {
 function cloneGatewayApiKeyRow(row: GatewayApiKeyRow): GatewayApiKeyRow {
   return {
     ...row,
+    normal_routing_config: row.normal_routing_config
+      ? {
+        ...row.normal_routing_config,
+        speedFirstConfig: row.normal_routing_config.speedFirstConfig
+          ? { ...row.normal_routing_config.speedFirstConfig }
+          : undefined
+      }
+      : undefined,
     hybrid_routing_config: row.hybrid_routing_config
       ? {
         ...row.hybrid_routing_config,
@@ -484,20 +620,13 @@ function cloneGatewayApiKeyRow(row: GatewayApiKeyRow): GatewayApiKeyRow {
 
 async function getGatewayApiKeySharedCacheEntry(keyHash: string): Promise<GatewayApiKeyCacheEntry | undefined> {
   if (runtimeConfig.cacheDriver !== 'redis') return undefined
-  try {
-    const entry = await gatewayApiKeySharedCache.get(keyHash)
-    return entry
-      ? {
-          row: cloneGatewayApiKeyRow(entry.row),
-          forceRevalidateAtMs: entry.forceRevalidateAtMs
-        }
-      : undefined
-  } catch (error) {
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_api_key_validation_shared_cache_read_failed'
-    }), '读取 API Key 校验 Redis 共享缓存失败，继续读取数据库')
-    return undefined
-  }
+  const entry = await gatewayApiKeySharedCache.get(keyHash)
+  return entry
+    ? {
+        row: cloneGatewayApiKeyRow(entry.row),
+        forceRevalidateAtMs: entry.forceRevalidateAtMs
+      }
+    : undefined
 }
 
 async function setGatewayApiKeySharedCacheEntry(
@@ -506,23 +635,17 @@ async function setGatewayApiKeySharedCacheEntry(
   options: { ttlMs?: number } = {}
 ): Promise<void> {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  try {
-    await gatewayApiKeySharedCache.set(keyHash, {
-      row: cloneGatewayApiKeyRow(entry.row),
-      forceRevalidateAtMs: entry.forceRevalidateAtMs
-    }, { ttlMs: options.ttlMs ?? GATEWAY_API_KEY_CACHE_TTL_MS })
-  } catch (error) {
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_api_key_validation_shared_cache_write_failed'
-    }), '写入 API Key 校验 Redis 共享缓存失败')
-  }
+  await gatewayApiKeySharedCache.set(keyHash, {
+    row: cloneGatewayApiKeyRow(entry.row),
+    forceRevalidateAtMs: entry.forceRevalidateAtMs
+  }, { ttlMs: options.ttlMs ?? GATEWAY_API_KEY_CACHE_TTL_MS })
 }
 
 function clearGatewayApiKeySharedCache(): void {
+  void clearGatewayApiKeySharedCacheAsync()
+}
+
+async function clearGatewayApiKeySharedCacheAsync(): Promise<void> {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  void gatewayApiKeySharedCache.clear().catch((error) => {
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_api_key_validation_shared_cache_clear_failed'
-    }), '清理 API Key 校验 Redis 共享缓存失败')
-  })
+  await gatewayApiKeySharedCache.clear()
 }

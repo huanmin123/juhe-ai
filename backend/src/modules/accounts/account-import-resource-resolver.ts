@@ -63,7 +63,7 @@ export function resolveAccountGroup(
   account: AccountImportResourceAccount,
   context: AccountImportResourceContext,
   groupIdsByKey: Map<string, string>,
-  groupNamesToCreate: Map<string, { providerCode: string, providerProtocolProfileId: string, name: string }>,
+  groupNamesToCreate: Map<string, { providerCode: string, name: string }>,
   item: AccountImportResourceMessageItem
 ): string | undefined {
   if (account.groupId && account.groupName) {
@@ -85,14 +85,10 @@ export function resolveAccountGroup(
     item.messages.push('账户 groupId 或 groupName 必填')
     return undefined
   }
-  if (!account.providerProtocolProfileId) {
-    item.messages.push('账户 providerProtocolProfileId 无效')
-    return undefined
-  }
   const key = accountImportGroupKey(account.providerCode, account.groupName)
   const existingGroupId = groupIdsByKey.get(key)
   if (existingGroupId) return existingGroupId
-  const group = findGroupOptionByName(account.providerCode, account.providerProtocolProfileId, account.groupName, context)
+  const group = findGroupOptionByName(account.providerCode, account.groupName, context)
   if (group) {
     groupIdsByKey.set(key, group.id)
     return group.id
@@ -103,7 +99,6 @@ export function resolveAccountGroup(
   }
   groupNamesToCreate.set(key, {
     providerCode: account.providerCode,
-    providerProtocolProfileId: account.providerProtocolProfileId,
     name: account.groupName
   })
   return undefined
@@ -113,7 +108,7 @@ export async function resolveAccountGroupAsync(
   account: AccountImportResourceAccount,
   context: AccountImportResourceContext,
   groupIdsByKey: Map<string, string>,
-  groupNamesToCreate: Map<string, { providerCode: string, providerProtocolProfileId: string, name: string }>,
+  groupNamesToCreate: Map<string, { providerCode: string, name: string }>,
   item: AccountImportResourceMessageItem
 ): Promise<string | undefined> {
   if (account.groupId && account.groupName) {
@@ -135,14 +130,10 @@ export async function resolveAccountGroupAsync(
     item.messages.push('账户 groupId 或 groupName 必填')
     return undefined
   }
-  if (!account.providerProtocolProfileId) {
-    item.messages.push('账户 providerProtocolProfileId 无效')
-    return undefined
-  }
   const key = accountImportGroupKey(account.providerCode, account.groupName)
   const existingGroupId = groupIdsByKey.get(key)
   if (existingGroupId) return existingGroupId
-  const group = await findGroupOptionByNameAsync(account.providerCode, account.providerProtocolProfileId, account.groupName, context)
+  const group = await findGroupOptionByNameAsync(account.providerCode, account.groupName, context)
   if (group) {
     groupIdsByKey.set(key, group.id)
     return group.id
@@ -153,7 +144,6 @@ export async function resolveAccountGroupAsync(
   }
   groupNamesToCreate.set(key, {
     providerCode: account.providerCode,
-    providerProtocolProfileId: account.providerProtocolProfileId,
     name: account.groupName
   })
   return undefined
@@ -251,66 +241,67 @@ export async function resolveAccountProxyAsync(
   return proxy.id
 }
 
-export function findGroupOptionByName(providerCode: string, providerProtocolProfileId: string, name: string, context: AccountImportResourceContext): GroupOptionSummary | undefined {
+export function findGroupOptionByName(providerCode: string, name: string, context: AccountImportResourceContext): GroupOptionSummary | undefined {
   const key = accountImportGroupKey(providerCode, name)
   if (context.groupLookup.has(key)) {
     return context.groupLookup.get(key)
   }
-  const normalized = name.trim().toLowerCase()
+  const normalized = name.trim()
   const group = listGroupOptions(context.access, {
     providerCode,
     keyword: name,
     manageableOnly: true,
     limit: 50
-  }).find((item) => item.providerCode === providerCode && item.name.trim().toLowerCase() === normalized)
+  }).find((item) => item.providerCode === providerCode && item.name.trim() === normalized)
   context.groupLookup.set(key, group)
   return group
 }
 
-export async function findGroupOptionByNameAsync(providerCode: string, providerProtocolProfileId: string, name: string, context: AccountImportResourceContext): Promise<GroupOptionSummary | undefined> {
-  void providerProtocolProfileId
+export async function findGroupOptionByNameAsync(providerCode: string, name: string, context: AccountImportResourceContext): Promise<GroupOptionSummary | undefined> {
   const key = accountImportGroupKey(providerCode, name)
   if (context.groupLookup.has(key)) {
     return context.groupLookup.get(key)
   }
-  const normalized = name.trim().toLowerCase()
+  const normalized = name.trim()
   const group = (await listGroupOptionsAsync(context.access, {
     providerCode,
     keyword: name,
     manageableOnly: true,
     limit: 50
-  })).find((item) => item.providerCode === providerCode && item.name.trim().toLowerCase() === normalized)
+  })).find((item) => item.providerCode === providerCode && item.name.trim() === normalized)
   context.groupLookup.set(key, group)
   return group
 }
 
 export function findProxyOptionByName(name: string, context: AccountImportResourceContext): ProxyProfileOptionSummary | undefined {
-  const key = name.trim().toLowerCase()
+  const key = name.trim()
   if (context.proxyLookup.has(key)) {
     return context.proxyLookup.get(key)
   }
-  const proxy = listProxyOptions({ keyword: name, limit: 50 }).find((item) => item.name.trim().toLowerCase() === key)
+  const proxy = listProxyOptions({ keyword: name, limit: 50 }).find((item) => item.name.trim() === key)
   context.proxyLookup.set(key, proxy)
   return proxy
 }
 
 export async function findProxyOptionByNameAsync(name: string, context: AccountImportResourceContext): Promise<ProxyProfileOptionSummary | undefined> {
-  const key = name.trim().toLowerCase()
+  const key = name.trim()
   if (context.proxyLookup.has(key)) {
     return context.proxyLookup.get(key)
   }
-  const proxy = (await listProxyOptionsAsync({ keyword: name, limit: 50 })).find((item) => item.name.trim().toLowerCase() === key)
+  const proxy = (await listProxyOptionsAsync({ keyword: name, limit: 50 })).find((item) => item.name.trim() === key)
   context.proxyLookup.set(key, proxy)
   return proxy
 }
 
 export function findProxyByName(name: string): ProxyProfileSummary | undefined {
-  const option = listProxyOptions({ keyword: name, limit: 50 }).find((item) => item.name.trim().toLowerCase() === name.trim().toLowerCase())
+  const key = name.trim()
+  const option = listProxyOptions({ keyword: name, limit: 50 }).find((item) => item.name.trim() === key)
   return option ? findProxy(option.id) : undefined
 }
 
 export async function findProxyByNameAsync(name: string): Promise<ProxyProfileSummary | undefined> {
-  const option = (await listProxyOptionsAsync({ keyword: name, limit: 50 })).find((item) => item.name.trim().toLowerCase() === name.trim().toLowerCase())
+  const key = name.trim()
+  const option = (await listProxyOptionsAsync({ keyword: name, limit: 50 })).find((item) => item.name.trim() === key)
   return option ? await findProxyAsync(option.id) : undefined
 }
 

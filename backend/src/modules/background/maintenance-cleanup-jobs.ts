@@ -1,17 +1,29 @@
+import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { cleanupPendingDeletedAccountRecordTargetsAsync } from '../../storage/account-record-cleanup.js'
 import { cleanupPendingDeletedApiKeyRecordTargetsAsync } from '../../storage/api-key-record-cleanup.js'
+import { getSettingsAsync } from '../../storage/settings.repository.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
 import { requestStatsWriter } from './background-stats-writer.js'
 import { cleanupExpiredAuditHotRetentionData } from './audit-hot-retention-cleanup.service.js'
 import { cleanupExpiredRetainedData } from './data-retention-cleanup.service.js'
-import { enqueueRecordMaintenanceJobWithResult } from '../record-maintenance/record-maintenance-queue.service.js'
+import {
+  DATA_RETENTION_CLEANUP_BATCH_SIZE,
+  DATA_RETENTION_CLEANUP_MAX_BATCHES_PER_RUN
+} from './data-retention-cleanup.constants.js'
+import { enqueueRecordMaintenanceJobAsync, enqueueRecordMaintenanceJobWithResult } from '../record-maintenance/record-maintenance-queue.service.js'
+
+const dayMs = 24 * 60 * 60 * 1000
+const usageRecordRetentionMaxDays = 180
+let postgresDataRetentionDispatchRunning = false
 
 export async function runApiKeyRecordCleanupRetry(): Promise<void> {
   try {
-    const summary = await cleanupPendingDeletedApiKeyRecordTargetsAsync(1, async (input) => {
-      await requestStatsWriter({ type: 'cleanup_deleted_api_key_record_stats', input })
-    })
+    const summary = await cleanupPendingDeletedApiKeyRecordTargetsAsync(1, runtimeConfig.databaseDriver === 'postgres'
+      ? undefined
+      : async (input) => {
+          await requestStatsWriter({ type: 'cleanup_deleted_api_key_record_stats', input })
+        })
     if (summary.attempted > 0) {
       logger.info({
         event: 'background_api_key_record_cleanup_retry_completed',
@@ -26,9 +38,11 @@ export async function runApiKeyRecordCleanupRetry(): Promise<void> {
 
 export async function runAccountRecordCleanupRetry(): Promise<void> {
   try {
-    const summary = await cleanupPendingDeletedAccountRecordTargetsAsync(1, async (input) => {
-      await requestStatsWriter({ type: 'cleanup_deleted_account_record_stats', input })
-    })
+    const summary = await cleanupPendingDeletedAccountRecordTargetsAsync(1, runtimeConfig.databaseDriver === 'postgres'
+      ? undefined
+      : async (input) => {
+          await requestStatsWriter({ type: 'cleanup_deleted_account_record_stats', input })
+        })
     if (summary.attempted > 0) {
       logger.info({
         event: 'background_account_record_cleanup_retry_completed',
@@ -42,7 +56,50 @@ export async function runAccountRecordCleanupRetry(): Promise<void> {
 }
 
 export async function runDataRetentionCleanup(): Promise<void> {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    await enqueuePostgresDataRetentionMaintenanceJobs()
+    return
+  }
   await cleanupExpiredRetainedData()
+}
+
+async function enqueuePostgresDataRetentionMaintenanceJobs(): Promise<void> {
+  if (runtimeConfig.processRole !== 'worker') return
+  if (postgresDataRetentionDispatchRunning) return
+  postgresDataRetentionDispatchRunning = true
+  try {
+    const settings = await getSettingsAsync()
+    const batchSize = DATA_RETENTION_CLEANUP_BATCH_SIZE
+    const maxBatches = DATA_RETENTION_CLEANUP_MAX_BATCHES_PER_RUN
+    const usageRecordRetentionDays = settingNumber(settings, 'usageRecordRetentionDays', 1, usageRecordRetentionMaxDays)
+    const cutoffAt = new Date(Date.now() - usageRecordRetentionDays * dayMs).toISOString()
+    await enqueueRecordMaintenanceJobAsync({
+      type: 'usage_records_cleanup',
+      cutoffAt,
+      batchSize,
+      maxBatches
+    })
+    await enqueueRecordMaintenanceJobAsync({
+      type: 'non_business_data_cleanup',
+      cutoffAt,
+      batchSize,
+      maxBatches
+    })
+    logger.info({
+      event: 'postgres_data_retention_maintenance_jobs_enqueued',
+      cutoffAt,
+      usageRecordRetentionDays,
+      batchSize,
+      maxBatches
+    }, 'PostgreSQL 高性能数据保留维护任务已投递')
+  } catch (error) {
+    logger.error(errorLogFields(error, {
+      event: 'postgres_data_retention_maintenance_jobs_enqueue_failed'
+    }), 'PostgreSQL 高性能数据保留维护任务投递失败')
+    throw error
+  } finally {
+    postgresDataRetentionDispatchRunning = false
+  }
 }
 
 export async function runAuditHotRetentionCleanup(): Promise<void> {
@@ -83,4 +140,15 @@ export async function runExpiredDeletedAccountCleanup(): Promise<void> {
     logger.error(errorLogFields(error, { event: 'background_expired_deleted_account_cleanup_failed' }), '超过一个月的逻辑删除 AI 账户物理清理失败')
     throw error
   }
+}
+
+function settingNumber(settings: Record<string, unknown>, key: string, min: number, max: number): number {
+  const value = settings[key]
+  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
+    throw new Error(`系统设置 ${key} 必须是整数`)
+  }
+  if (value < min || value > max) {
+    throw new Error(`系统设置 ${key} 必须在 ${min} 到 ${max} 之间`)
+  }
+  return value
 }

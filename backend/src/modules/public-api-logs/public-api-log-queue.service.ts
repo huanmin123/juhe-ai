@@ -1,6 +1,7 @@
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { scheduleProcessFatalError } from '../../shared/process-fatal.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
-import { RedisStreamQueue, type RedisStreamMessage } from '../../shared/redis-stream-queue.js'
+import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime } from '../../shared/redis-stream-queue.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { createPublicApiLogsBatch, createPublicApiLogsBatchAsync, type PublicApiLogInput } from '../../storage/public-api-logs.repository.js'
 import { sendPublicApiLogsToWorker } from '../background/background-ipc.js'
@@ -36,7 +37,7 @@ let publicApiLogRedisConsumerPromise: Promise<void> | undefined
 
 export function enqueuePublicApiLog(input: PublicApiLogInput): boolean {
   if (shouldEnqueuePublicApiLogToRedisStream()) {
-    void enqueuePublicApiLogToRedisStream(input)
+    void enqueuePublicApiLogToRedisStream(input).catch(scheduleProcessFatalError)
     return true
   }
   if (runtimeConfig.processRole === 'server') {
@@ -301,7 +302,14 @@ async function enqueuePublicApiLogToRedisStream(input: PublicApiLogInput): Promi
   try {
     await publicApiLogRedisStreamQueue().enqueue(input)
   } catch (error) {
-    recordPublicApiLogDispatchFailure(error, input)
+    logger.error(errorLogFields(error, {
+      event: 'public_api_log_redis_stream_enqueue_failed',
+      traceId: input.traceId,
+      method: input.method,
+      path: input.path,
+      statusCode: input.statusCode
+    }), '公开接口日志写入 Redis Stream 失败，高性能模式禁止回退 IPC 或本地队列')
+    throw error
   }
 }
 
@@ -356,6 +364,11 @@ function publicApiLogRedisStreamQueue(): RedisStreamQueue<PublicApiLogInput> {
     })
   }
   return publicApiLogRedisStreamQueueInstance
+}
+
+export async function getPublicApiLogRedisStreamRuntime(): Promise<RedisStreamQueueRuntime | undefined> {
+  if (!shouldUseRedisStreamPublicApiLogQueue()) return undefined
+  return await publicApiLogRedisStreamQueue().inspectRuntime()
 }
 
 async function flushPublicApiLogQueueBatchAsync(): Promise<boolean> {
@@ -432,6 +445,9 @@ function recordPublicApiLogDispatchFailure(error: unknown, input: PublicApiLogIn
 }
 
 function assertLocalPublicApiLogWriteAllowed(operation: string): void {
+  if (shouldUseRedisStreamPublicApiLogQueue()) {
+    throw new Error(`Redis Stream queue driver 下禁止写入公开接口日志本地队列：${operation}`)
+  }
   if (!isPublicApiLogIngestWorker()) {
     throw new Error(`${operation} 只能在 ingest-worker 本地执行`)
   }
@@ -446,7 +462,7 @@ function shouldUseRedisStreamPublicApiLogQueue(): boolean {
 }
 
 function shouldEnqueuePublicApiLogToRedisStream(): boolean {
-  return shouldUseRedisStreamPublicApiLogQueue() && !isPublicApiLogIngestWorker()
+  return shouldUseRedisStreamPublicApiLogQueue()
 }
 
 function delay(ms: number): Promise<void> {

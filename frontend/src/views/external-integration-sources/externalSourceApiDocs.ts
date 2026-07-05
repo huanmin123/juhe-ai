@@ -227,13 +227,5 @@ function quoteShell(value: string, platform: CurlCommandPlatform): string {
 
 function publicResponseExample(item: ExternalPublicApiDocItem | undefined): unknown {
   if (!item) return {}
-  if (item.id !== 'source-auth-demo') return item.responseExample
-  const response = item.responseExample
-  if (!isRecord(response) || !isRecord(response.data)) return response
-  const { scopes: _scopes, ...publicData } = response.data
-  return { ...response, data: publicData }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+  return item.responseExample
 }

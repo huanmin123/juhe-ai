@@ -2,6 +2,7 @@ import type {
   AccountAvailabilitySchedule,
   AccountClientCompatibility,
   AccountSummary,
+  AccountSupportedEndpointMode,
   AccountTestResult,
   AccountTestSession,
   AccountTestSessionStatus,
@@ -9,8 +10,6 @@ import type {
   AccountTestTaskStatus,
   SystemAccountRole
 } from '../domain/types.js'
-import { normalizeOpenAIAccountClientCompatibility } from '../domain/account-client-compatibility.js'
-import { isGptVendorCode, isOpenAIProtocolProfile } from '../domain/provider-protocol.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { decryptJson, encryptJson } from './crypto.js'
 import { getBusinessDatabase, newId, nowIso } from './database.js'
@@ -18,6 +17,7 @@ import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import type { AccessScope } from './access-scope.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
 export type AccountTestTaskDiagnostics = 'full' | 'limited'
 
@@ -72,7 +72,7 @@ interface AccountTestTaskRow {
   request_system_account_filter_id: string | null
   diagnostics: string
   model: string | null
-  client_compatibility: string | null
+  test_endpoint_mode: string | null
   draft_account_encrypted: string | null
   status: string
   status_message: string | null
@@ -106,7 +106,7 @@ export interface CreateAccountTestTaskInput {
   diagnostics: AccountTestTaskDiagnostics
   sessionId?: string
   model?: string
-  clientCompatibility?: AccountClientCompatibility
+  testEndpointMode?: AccountSupportedEndpointMode
   draftAccount?: AccountTestDraftSnapshot
 }
 
@@ -205,12 +205,11 @@ export function createAccountTestTask(input: CreateAccountTestTaskInput): Accoun
   if (sessionId) {
     assertUsableAccountTestSession(sessionId, input.access)
   }
-  const clientCompatibility = normalizeAccountTestTaskClientCompatibility(input.account, input.clientCompatibility)
   getBusinessDatabase().prepare(`
     INSERT INTO account_test_tasks (
       id, account_id, account_name, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, account_type,
       request_system_account_id, request_role, request_system_account_filter_id,
-      diagnostics, model, client_compatibility, draft_account_encrypted, status, status_message,
+      diagnostics, model, test_endpoint_mode, draft_account_encrypted, status, status_message,
       cancel_requested, queued_at, created_at, updated_at
     )
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', '等待后台测试', 0, ?, ?, ?)
@@ -228,7 +227,7 @@ export function createAccountTestTask(input: CreateAccountTestTaskInput): Accoun
     input.access.systemAccountFilterId ?? null,
     input.diagnostics,
     normalizedOptionalText(input.model) ?? null,
-    clientCompatibility ?? null,
+    accountTestEndpointMode(input.testEndpointMode) ?? null,
     encryptedDraftAccount(input.draftAccount),
     now,
     now,
@@ -575,6 +574,13 @@ export async function createAccountTestSessionAsync(access: AccessScope): Promis
 }
 
 export async function getAccountTestSessionAsync(id: string, access?: AccessScope): Promise<AccountTestSession | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'get_account_test_session_read_only',
+      id,
+      access
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return getAccountTestSession(id, access)
   }
@@ -654,7 +660,6 @@ export async function createAccountTestTaskAsync(input: CreateAccountTestTaskInp
   const now = nowIso()
   const id = newId('accttest')
   const sessionId = normalizedOptionalText(input.sessionId)
-  const clientCompatibility = normalizeAccountTestTaskClientCompatibility(input.account, input.clientCompatibility)
   await client.transaction(async (tx) => {
     if (sessionId) {
       await assertUsableAccountTestSessionAsync(tx, sessionId, input.access)
@@ -663,7 +668,7 @@ export async function createAccountTestTaskAsync(input: CreateAccountTestTaskInp
       INSERT INTO ${accountTestTable(tx, 'account_test_tasks')} (
         id, account_id, account_name, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, account_type,
         request_system_account_id, request_role, request_system_account_filter_id,
-        diagnostics, model, client_compatibility, draft_account_encrypted, status, status_message,
+        diagnostics, model, test_endpoint_mode, draft_account_encrypted, status, status_message,
         cancel_requested, queued_at, created_at, updated_at
       )
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', '等待后台测试', 0, ?, ?, ?)
@@ -681,7 +686,7 @@ export async function createAccountTestTaskAsync(input: CreateAccountTestTaskInp
       input.access.systemAccountFilterId ?? null,
       input.diagnostics,
       normalizedOptionalText(input.model) ?? null,
-      clientCompatibility ?? null,
+      accountTestEndpointMode(input.testEndpointMode) ?? null,
       encryptedDraftAccount(input.draftAccount),
       now,
       now,
@@ -703,6 +708,13 @@ export async function createAccountTestTaskAsync(input: CreateAccountTestTaskInp
 }
 
 export async function getAccountTestTaskAsync(id: string, access?: AccessScope): Promise<AccountTestTask | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'get_account_test_task_read_only',
+      id,
+      access
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return getAccountTestTask(id, access)
   }
@@ -715,6 +727,13 @@ export async function getAccountTestTaskAsync(id: string, access?: AccessScope):
 }
 
 export async function listAccountTestTasksAsync(ids: string[], access?: AccessScope): Promise<AccountTestTask[]> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_account_test_tasks_read_only',
+      ids,
+      access
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listAccountTestTasks(ids, access)
   }
@@ -1219,7 +1238,7 @@ function accountTestTaskFromRow(row: AccountTestTaskRow): AccountTestTask {
     status: accountTestTaskStatus(row.status),
     message: row.status_message ?? row.error_message ?? undefined,
     model: row.model ?? undefined,
-    clientCompatibility: accountTestTaskClientCompatibility(row),
+    testEndpointMode: accountTestEndpointMode(row.test_endpoint_mode),
     result: accountTestResult(row.result_json),
     cancelRequested: Number(row.cancel_requested ?? 0) === 1,
     createdAt: row.created_at,
@@ -1390,20 +1409,20 @@ function accountClientCompatibility(value: string | null): AccountClientCompatib
   return value === 'openai_standard' || value === 'codex_responses' ? value : undefined
 }
 
-function normalizeAccountTestTaskClientCompatibility(account: AccountSummary, value: AccountClientCompatibility | undefined): AccountClientCompatibility | undefined {
-  if (isGptVendorCode(account.providerCode) && isOpenAIProtocolProfile(account) && account.type === 'oauth') {
-    return 'codex_responses'
-  }
-  return value === undefined
-    ? undefined
-    : normalizeOpenAIAccountClientCompatibility(account.providerCode, account.type, value, account.clientCompatibility, account)
-}
-
-function accountTestTaskClientCompatibility(row: AccountTestTaskRow): AccountClientCompatibility | undefined {
-  if (isGptVendorCode(row.provider_code) && isOpenAIProtocolProfile({ protocolCode: row.protocol_code, protocolVersion: row.protocol_version }) && row.account_type === 'oauth') {
-    return 'codex_responses'
-  }
-  return accountClientCompatibility(row.client_compatibility)
+function accountTestEndpointMode(value: unknown): AccountSupportedEndpointMode | undefined {
+  return value === 'chat_json'
+    || value === 'chat_sse'
+    || value === 'responses_json'
+    || value === 'responses_sse'
+    || value === 'messages_json'
+    || value === 'messages_sse'
+    || value === 'message_token_counting'
+    || value === 'generate_content_json'
+    || value === 'generate_content_sse'
+    || value === 'count_tokens'
+    || value === 'embed_content'
+    ? value
+    : undefined
 }
 
 function accountTestResult(value: string | null): AccountTestResult | undefined {

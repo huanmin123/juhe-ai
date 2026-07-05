@@ -83,7 +83,6 @@ export function buildAiPerformanceOption(overview: AiPerformanceOverview, metric
           accountDisplayName: seriesName,
           statHour: point.statHour,
           requestCount: point.requestCount,
-          sampleCount: metricSampleCount(point, metric),
           defaultVisible: account?.defaultVisible,
           selected: account?.selected
         }))
@@ -122,7 +121,7 @@ function performanceTooltip(params: unknown, overview: AiPerformanceOverview, me
   const points = tooltipParams(params)
   const title = performanceTooltipTitle(points[0])
   const visiblePoints = points.filter((point) => pointValue(point) !== undefined)
-  const emptyMessage = isFirstTokenMetric(metric) ? '本小时暂无首 token 样本' : '本小时暂无总耗时样本'
+  const emptyMessage = isFirstTokenMetric(metric) ? '本小时暂无首 token 数据' : '本小时暂无总耗时数据'
   if (!visiblePoints.length) {
     return [`<strong>${escapeHtml(title)}</strong>`, emptyMessage].join('<br/>')
   }
@@ -130,7 +129,7 @@ function performanceTooltip(params: unknown, overview: AiPerformanceOverview, me
   for (const point of visiblePoints) {
     const data = tooltipData(point)
     const accountName = String(data.accountDisplayName ?? point.seriesName ?? data.accountName ?? '')
-    lines.push(`${point.marker ?? ''}${escapeHtml(accountName)}: ${formatDurationSeconds(pointValue(point))}，样本 ${formatInteger(numberFromTooltip(data.sampleCount))}，请求 ${formatInteger(numberFromTooltip(data.requestCount))}`)
+    lines.push(`${point.marker ?? ''}${escapeHtml(accountName)}: ${formatDurationSeconds(pointValue(point))}，请求 ${formatInteger(numberFromTooltip(data.requestCount))}`)
   }
   return lines.join('<br/>')
 }
@@ -217,10 +216,6 @@ function metricPointValue(point: AiPerformancePoint, metric: AiPerformanceMetric
     case 'maxDuration':
       return point.maxDurationMs
   }
-}
-
-function metricSampleCount(point: AiPerformancePoint, metric: AiPerformanceMetric) {
-  return isFirstTokenMetric(metric) ? point.firstTokenCount : point.durationCount
 }
 
 function isFirstTokenMetric(metric: AiPerformanceMetric) {

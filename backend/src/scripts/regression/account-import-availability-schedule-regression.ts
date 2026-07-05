@@ -192,7 +192,6 @@ try {
 	  repositories.createGroup({
 	    name: importGroupName,
 	    providerCode: 'gpt',
-	    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
 	  }, access)
 
   const importData = {

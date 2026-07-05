@@ -1,4 +1,4 @@
-import { formatCompactUsageAmount, formatDateTime, formatNumber, formatUsd, serverDateTimeTimestamp } from '@/shared/formatters'
+import { formatCompactUsageAmount, formatDateTime, formatNumber, formatRequestCountTag, formatUsd, serverDateTimeTimestamp } from '@/shared/formatters'
 import type { AccountUsageSummary, GroupAccountStats, GroupSummary } from '@/types/domain'
 import { systemAccountDisplayText } from '@/utils/systemAccountFilter'
 import { hasQuotaLimits } from '../shared/requestQuotaForm'
@@ -83,7 +83,7 @@ export function groupInfoIconClass(group: GroupSummary): string {
 }
 
 export function formatUsageSummary(usage: AccountUsageSummary): string {
-  return `${formatNumber(usage.requestCount)}req/${formatUsageAmount(usage.totalTokens)}/${formatCost(usage.totalCost)}`
+  return `${formatRequestCountTag(usage.requestCount)}/${formatUsageAmount(usage.totalTokens)}/${formatCost(usage.totalCost)}`
 }
 
 function normalizedNumber(value: unknown): number {
@@ -129,6 +129,18 @@ function authorizedGroupTooltip(group: GroupSummary): string {
 
 function authorizedGroupSourceText(group: GroupSummary): string {
   const activeSources = group.authorizationSources?.filter((source) => source.status === 'active') ?? []
+  const sourceSummary = group.authorizationSourceSummary
+  if (!activeSources.length && sourceSummary) {
+    if (sourceSummary.hasManual && sourceSummary.hasTeam) {
+      return sourceSummary.teamNames.length ? `个人授权 + 团队授权（${sourceSummary.teamNames.join('、')}）` : '个人授权 + 团队授权'
+    }
+    if (sourceSummary.hasTeam) {
+      return sourceSummary.teamNames.length ? `团队授权（${sourceSummary.teamNames.join('、')}）` : '团队授权'
+    }
+    if (sourceSummary.hasManual) {
+      return '个人授权'
+    }
+  }
   if (!activeSources.length && group.authorizationSources?.some((source) => source.sourceType === 'team')) {
     return '团队授权'
   }

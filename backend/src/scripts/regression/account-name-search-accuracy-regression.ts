@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { logger } from '../../shared/logger.js'
 
@@ -56,8 +57,8 @@ try {
   const adminAlphaAccess: AccessScope = { systemAccountId: 'sys_admin', role: 'admin', systemAccountFilterId: alpha.id }
   const adminBetaAccess: AccessScope = { systemAccountId: 'sys_admin', role: 'admin', systemAccountFilterId: beta.id }
 
-  const alphaGroup = repositories.createGroup({ name: '账户名搜索准确性甲分组', providerCode: 'gpt', providerProtocolProfileId: 'profile_gpt_openai_v1' }, alphaAccess)
-  const betaGroup = repositories.createGroup({ name: '账户名搜索准确性乙分组', providerCode: 'gpt', providerProtocolProfileId: 'profile_gpt_openai_v1' }, betaAccess)
+  const alphaGroup = repositories.createGroup({ name: '账户名搜索准确性甲分组', providerCode: 'gpt' }, alphaAccess)
+  const betaGroup = repositories.createGroup({ name: '账户名搜索准确性乙分组', providerCode: 'gpt' }, betaAccess)
 
   createTrackedAccount(alphaAccess, alphaGroup.id, alpha.id, '账户检索目标')
   createTrackedAccount(alphaAccess, alphaGroup.id, alpha.id, '普通账户检索目标')
@@ -117,6 +118,7 @@ try {
     '索',
     '检索',
     '账户检索目标',
+    'MixedCase-Token',
     'mixedcase-token',
     'ABC账号123',
     'percent%',
@@ -177,6 +179,7 @@ function createTrackedAccount(
   const index = trackedIds.size
   const account = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name,
     type: 'api_key',
     credentials: {
@@ -251,7 +254,7 @@ function currentTrackedAccounts(): TrackedAccount[] {
       FROM accounts
       WHERE deleted_at IS NULL
         AND id IN (${placeholders(ids.length)})
-      ORDER BY system_account_id ASC, name COLLATE NOCASE ASC, id ASC
+      ORDER BY system_account_id ASC, name ASC, id ASC
     `)
     .all(...ids) as unknown as Array<{ id: string; system_account_id: string; name: string }>
   return rows.map((row) => ({
@@ -267,7 +270,7 @@ function namesForIds(ids: string[]): string {
 }
 
 function normalizeForSearch(value: string): string {
-  return value.normalize('NFKC').toLowerCase().trim()
+  return value.normalize('NFKC').trim()
 }
 
 function deterministicAccountName(prefix: '甲' | '乙', index: number): string {

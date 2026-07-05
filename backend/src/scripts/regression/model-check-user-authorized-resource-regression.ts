@@ -207,7 +207,6 @@ function seedData(upstreamBaseUrl: string): SeedState {
   const ownerSourceGroup = repositories.createGroup({
     name: '模型检测授权来源分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, ownerAccess)
   const ownerAccount = repositories.createAccount({
     providerCode: 'gpt',
@@ -225,7 +224,6 @@ function seedData(upstreamBaseUrl: string): SeedState {
   const granteeGroup = repositories.createGroup({
     name: '模型检测授权用户分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, granteeAccess)
   repositories.createResourceAuthorization({
     resourceType: 'account',

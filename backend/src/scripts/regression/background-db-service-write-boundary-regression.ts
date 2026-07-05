@@ -18,7 +18,9 @@ assert(
 assert(
   backgroundIpcSource.includes('background_worker_db_service_request')
     && backgroundIpcSource.includes('background_worker_db_service_response')
-    && backgroundIpcSource.includes('requestDbService(operation)'),
+    && backgroundIpcSource.includes('backgroundDbServiceRequestOptionsForOperation(operation, options)')
+    && backgroundIpcSource.includes('dbServiceOperationAccessMode(operation)')
+    && backgroundIpcSource.includes("accessMode === 'write' || accessMode === 'maintenance'"),
   'background IPC 必须保留 worker 到 DB service 的 typed operation 转发桥'
 )
 assert(

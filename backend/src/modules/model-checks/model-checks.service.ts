@@ -60,7 +60,6 @@ import {
   evaluateCrossModelComparisonProbe,
   evaluateDistributionSimilarityProbe,
   evaluateLongContextProbeSet,
-  evaluateModelCatalogProbe,
   evaluateProtocolStreamProbe,
   evaluateStabilityProbe,
   evaluateStreamProbe,
@@ -68,6 +67,7 @@ import {
   evaluateToolCallingProbe,
   evaluateUsageShapeProbe,
   summarizeChecks,
+  summarizeEvidenceCompleteness,
   type BehaviorProbeObservation,
   type DistributionProbePair,
   type GatewayProbeResult,
@@ -309,6 +309,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
       items: itemInputs
     })
     const summary = summarizeChecks(checks, { trustedComparison })
+    const evidenceCompleteness = summarizeEvidenceCompleteness(checks)
     await requestDatasetWriter({
       type: 'finish_model_check_run',
       runId: run.id,
@@ -322,6 +323,9 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
           passedCount: checks.filter((item) => item.status === 'passed').length,
           warningCount: checks.filter((item) => item.status === 'warning').length,
           failedCount: checks.filter((item) => item.status === 'failed').length,
+          skippedCount: checks.filter((item) => item.status === 'skipped').length,
+          requestFailureCount: checks.filter((item) => recordValue(item.evidenceSummary)?.requestFailure === true).length,
+          evidenceCompleteness,
           trustedComparison,
           trustedComparisonAccountId: comparison?.targetId
         }
@@ -501,13 +505,6 @@ function accountAllowsModel(account: AccountSummary, model: string): boolean {
 async function executeProbeSuite(target: ModelCheckTarget, model: SupportedModel, prefix: ModelCheckProbePrefix, signal?: AbortSignal, progress?: ModelCheckProgressReporter): Promise<ProbeSuiteResult> {
   const profile = target.modelCheckProfile
   const items: ModelCheckItemCreateInput[] = []
-  const catalog = await runGatewayProbe(target, {
-    method: 'GET',
-    path: modelCatalogPath(profile),
-    itemKey: `${prefix}.model_catalog`,
-    responseProtocol: profile.protocol
-  }, signal, progress)
-  pushProbeItem(items, evaluateModelCatalogProbe(catalog, model, prefix), progress)
 
   const basicRequest = createModelCheckProbeRequest(profile.protocol, model, 'Reply with exactly: OK-MODEL-CHECK', { maxOutputTokens: 16, stream: false })
   const basic = await runModelCheckProbeRequest(target, basicRequest, basicProbeItemKey(profile, prefix), signal, progress)
@@ -623,10 +620,6 @@ async function executeDistributionSimilarityComparison(
   const item = evaluateDistributionSimilarityProbe(pairs, model)
   emitModelCheckItemProgress(progress, item)
   return item
-}
-
-function modelCatalogPath(profile: ModelCheckProtocolProfile): string {
-  return profile.protocol === 'gemini_native' ? '/v1beta/models' : '/v1/models'
 }
 
 function basicProbeItemKey(profile: ModelCheckProtocolProfile, prefix: ModelCheckProbePrefix): string {

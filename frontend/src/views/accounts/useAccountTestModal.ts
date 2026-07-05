@@ -36,6 +36,7 @@ import {
 import { useAccountTestModels } from './useAccountTestModels'
 import { waitForAccountTestResult } from './accountTestTaskPolling'
 import { isGatewayTestableAccountProfile } from './accountProviderCapabilities'
+import { defaultAccountTestEndpointModeForSelection } from './accountEndpointModes'
 import { hasSingleProviderProfileForAccountSelection } from './accountDerivedState'
 import type { DraftApiKeyTestSnapshot } from './accountDraftApiKeyTestRuntime'
 
@@ -69,7 +70,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   const draftTestMode = ref<AccountTestDraftMode>()
   const draftApiKeyTestSnapshot = options.draftApiKeyTestSnapshot ?? ref<DraftApiKeyTestSnapshot>()
   const successfulDraftActivationTest = options.successfulDraftActivationTest ?? ref<SuccessfulDraftActivationTest>()
-  const testForm = reactive<AccountTestForm>({ model: '', clientCompatibility: 'account_default' })
+  const testForm = reactive<AccountTestForm>({ model: '', testEndpointMode: 'account_default' })
   const testTargetAccountSelection = computed(() => (
     testMode.value === 'batch' ? batchTestingAccounts.value : testingAccount.value
   ))
@@ -93,7 +94,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   async function openTestModal(account: AccountSummary) {
     if (!canTestAccount(account)) {
       if (!isGatewayTestableAccountProfile(account)) {
-        message.warning('当前仅支持测试 OpenAI 或 Anthropic 协议账户')
+        message.warning('当前仅支持测试 OpenAI、Anthropic 或 Gemini 协议账户')
       } else if (isAuthorizedAccount(account) && !account.boundGroupId) {
         message.warning('请先把授权账户绑定到你的分组')
       } else if (isAuthorizedAccount(account)) {
@@ -113,14 +114,14 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     draftApiKeyTestSnapshot.value = undefined
     testResult.value = undefined
     testForm.model = defaultModelForSelection(account)
-    testForm.clientCompatibility = 'account_default'
+    testForm.testEndpointMode = defaultAccountTestEndpointModeForSelection(account) ?? 'account_default'
     testModalOpen.value = true
     void loadTestModels()
   }
 
   async function openDraftTestModal(account: AccountSummary, draftPayload: AccountDraftTestPayload['account']) {
     if (!isGatewayTestableAccountProfile(account)) {
-      message.warning('当前仅支持测试 OpenAI 或 Anthropic 协议账户')
+      message.warning('当前仅支持测试 OpenAI、Anthropic 或 Gemini 协议账户')
       return
     }
     testMode.value = 'single'
@@ -134,14 +135,14 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     successfulDraftActivationTest.value = undefined
     testResult.value = undefined
     testForm.model = defaultModelForSelection(account)
-    testForm.clientCompatibility = 'account_default'
+    testForm.testEndpointMode = defaultAccountTestEndpointModeForSelection(account, draftPayload) ?? 'account_default'
     testModalOpen.value = true
     void loadTestModels()
   }
 
   async function openSavedDraftTestModal(account: AccountSummary, draftPayload: AccountDraftTestPayload['account']) {
     if (!isGatewayTestableAccountProfile(account)) {
-      message.warning('当前仅支持测试 OpenAI 或 Anthropic 协议账户')
+      message.warning('当前仅支持测试 OpenAI、Anthropic 或 Gemini 协议账户')
       return
     }
     testMode.value = 'single'
@@ -154,7 +155,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     draftApiKeyTestSnapshot.value = undefined
     testResult.value = undefined
     testForm.model = defaultModelForSelection(account)
-    testForm.clientCompatibility = 'account_default'
+    testForm.testEndpointMode = defaultAccountTestEndpointModeForSelection(account, draftPayload) ?? 'account_default'
     testModalOpen.value = true
     void loadTestModels()
   }
@@ -190,7 +191,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     draftApiKeyTestSnapshot.value = undefined
     testResult.value = undefined
     testForm.model = defaultModelForSelection(testableAccounts)
-    testForm.clientCompatibility = 'account_default'
+    testForm.testEndpointMode = defaultAccountTestEndpointModeForSelection(testableAccounts) ?? 'account_default'
     testModalOpen.value = true
     void loadTestModels()
   }
@@ -249,7 +250,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
         account,
         error,
         model: testForm.model,
-        clientCompatibility: 'account_default',
+        testEndpointMode: testForm.testEndpointMode,
         startedAt
       })
       testResult.value = result
@@ -374,7 +375,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
         account,
         error,
         model: payload.model ?? '',
-        clientCompatibility: 'account_default',
+        testEndpointMode: payload.testEndpointMode ?? testForm.testEndpointMode,
         startedAt: submittedAt
       })
       updateBatchTestItem(index, {
@@ -434,9 +435,8 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   function buildAccountSpecificTestPayload(account: AccountSummary) {
     return buildAccountTestPayload({
       ...testForm,
-      clientCompatibility: 'account_default',
       model: testForm.model || defaultModelForSelection(account)
-    })
+    }, account, activeDraftTestPayload(account))
   }
 
   async function createAccountTestSession(account?: AccountSummary) {
@@ -564,7 +564,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     return waitForAccountTestResult({
       account,
       cancelTask: cancelCreatedAccountTestTask,
-      currentClientCompatibility: () => 'account_default',
+      currentTestEndpointMode: () => testForm.testEndpointMode,
       currentModel: () => testForm.model,
       fetchTask: fetchAccountTestTask,
       initialTask,
@@ -620,6 +620,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     testResult,
     testRunning,
     testingAccount,
+    draftTestingAccountPayload,
     draftApiKeyTestSnapshot,
     successfulDraftActivationTest
   }

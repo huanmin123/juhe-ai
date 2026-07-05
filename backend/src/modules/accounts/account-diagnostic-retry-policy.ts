@@ -25,7 +25,8 @@ export function diagnosticAccountTestGatewaySettingsOverride(
     temporaryUnschedulableRetryIntervalSeconds: 0,
     streamRequestTimeoutSeconds: timeoutSeconds,
     streamIdleTimeoutSeconds: timeoutSeconds,
-    streamClientTotalWaitTimeoutSeconds: timeoutSeconds
+    streamClientTotalWaitTimeoutSeconds: timeoutSeconds,
+    streamMaxLifetimeSeconds: Math.max(60, timeoutSeconds)
   }
 }
 

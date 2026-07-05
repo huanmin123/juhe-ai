@@ -16,12 +16,15 @@ const accountApiKeyId = `api_key_for_${accountId}`
 const relatedAccountId = `account_related_${marker}`
 const authorizationId = `auth_${marker}`
 const teamScopeId = `${accountId}:team_${marker}`
-const now = new Date().toISOString()
+const cleanupCursorJobNames = ['usage_stats_aggregation', 'client_ip_stats_aggregation'] as const
+let now = new Date().toISOString()
+let originalCleanupCursorRows: StatsJobStateRow[] | undefined
 
 const pool = await getPostgresPool()
 const client = createPostgresDatabaseClient(pool)
 
 try {
+  now = await cleanupEligibleUsageCreatedAt()
   await seedApiKeyRows()
   const apiKeyCleanup = await cleanupDeletedApiKeyRelatedRecordDataAsync({ apiKeyId, systemAccountId })
   assert.equal(apiKeyCleanup.hasMore, false, 'API Key PG 清理不应遗留后续批次')
@@ -49,17 +52,31 @@ try {
   assert.equal(await countRows('juhe_usage.usage_record_api_key_shards', 'api_key_id = ? AND system_account_id = ?', [accountApiKeyId, systemAccountId]), 0, 'AI 账户关联 API Key usage scope catalog 应被清理')
   assert.equal(await countRows('juhe_dataset.audit_logs', 'account_id = ?', [accountId]), 0, 'AI 账户 audit PG 记录应被清理')
   assert.equal(await countRows('juhe_dataset.model_check_runs', 'target_id = ?', [accountId]), 0, 'AI 账户 model check PG 记录应被清理')
-  assert.equal(await countRows('juhe_stats.usage_stats_totals', "scope_type IN ('account', 'caller_account', 'account_authorization') AND scope_id = ANY(?)", [[accountId, authorizationId]]), 0, 'AI 账户 stats PG 记录应被清理')
+  assert.equal(await countRows('juhe_stats.usage_stats_totals', "scope_type IN ('account', 'caller_account', 'account_authorization') AND scope_id = ANY(?::text[])", [[accountId, authorizationId]]), 0, 'AI 账户 stats PG 记录应被清理')
   assert.equal(await countRows('juhe_dataset.account_record_cleanup_targets', 'account_id = ?', [accountId]), 0, 'AI 账户 PG 清理目标应完成后删除')
 
   console.log(JSON.stringify({
     message: 'PG 记录清理 smoke 通过',
+    usageCreatedAt: now,
     apiKeyDeletedRows: apiKeyCleanup.deletedRows,
     accountDeletedRows: accountCleanup.deletedRows
   }))
 } finally {
   await cleanupSmokeRows().catch(() => undefined)
+  await restoreCleanupCursorRows().catch(() => undefined)
   await closePostgresPool()
+}
+
+interface StatsJobStateRow {
+  scope_type: string
+  scope_id: string
+  job_name: string
+  cursor_created_at?: string | null
+  cursor_id?: string | null
+  last_success_at?: string | null
+  last_error_message?: string | null
+  lag_seconds?: string | number | null
+  updated_at: string
 }
 
 async function seedApiKeyRows(): Promise<void> {
@@ -146,7 +163,7 @@ async function seedUsageCatalogRows(input: {
     ON CONFLICT(shard_key) DO UPDATE SET
       last_write_at = EXCLUDED.last_write_at,
       updated_at = EXCLUDED.updated_at
-  `, [input.shardKey, now.slice(0, 10), `/tmp/${input.shardKey}.sqlite`, now, now, now, now])
+  `, [input.shardKey, now.slice(0, 10), `postgres:${input.shardKey}`, now, now, now, now])
   await client.execute(`
     INSERT INTO juhe_usage.usage_record_shard_entries (
       usage_id, shard_key, system_account_id, trace_id, api_key_id, account_id, group_id, model,
@@ -185,19 +202,113 @@ async function countRows(tableName: string, whereClause: string, params: unknown
   return Number(row?.count ?? 0)
 }
 
+async function cleanupEligibleUsageCreatedAt(): Promise<string> {
+  if (!originalCleanupCursorRows) {
+    originalCleanupCursorRows = await client.query<StatsJobStateRow>(`
+      SELECT scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at,
+        last_error_message, lag_seconds, updated_at
+      FROM juhe_stats.stats_job_state
+      WHERE scope_type = 'global'
+        AND scope_id = ''
+        AND job_name = ANY(?::text[])
+    `, [[...cleanupCursorJobNames]])
+  }
+
+  const existingUsableJobs = new Set(originalCleanupCursorRows
+    .filter((row) => Number.isFinite(Date.parse(String(row.cursor_created_at ?? ''))) && String(row.cursor_id ?? '').trim())
+    .map((row) => row.job_name))
+  const cursorNow = new Date().toISOString()
+  for (const jobName of cleanupCursorJobNames) {
+    if (existingUsableJobs.has(jobName)) {
+      continue
+    }
+    await client.execute(`
+      INSERT INTO juhe_stats.stats_job_state (
+        scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at,
+        last_error_message, lag_seconds, updated_at
+      ) VALUES ('global', '', ?, ?, ?, ?, NULL, 0, ?)
+      ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
+        cursor_created_at = EXCLUDED.cursor_created_at,
+        cursor_id = EXCLUDED.cursor_id,
+        last_success_at = EXCLUDED.last_success_at,
+        last_error_message = NULL,
+        lag_seconds = 0,
+        updated_at = EXCLUDED.updated_at
+    `, [jobName, cursorNow, `${marker}_${jobName}_cursor`, cursorNow, cursorNow])
+  }
+
+  const rows = await client.query<{ job_name?: string | null; cursor_created_at?: string | null }>(`
+    SELECT job_name, cursor_created_at
+    FROM juhe_stats.stats_job_state
+    WHERE scope_type = 'global'
+      AND scope_id = ''
+      AND job_name = ANY(?::text[])
+      AND cursor_created_at IS NOT NULL
+      AND cursor_id IS NOT NULL
+    ORDER BY cursor_created_at ASC
+  `, [[...cleanupCursorJobNames]])
+  const jobNames = new Set(rows.map((row) => String(row.job_name ?? '').trim()).filter(Boolean))
+  if (!jobNames.has('usage_stats_aggregation') || !jobNames.has('client_ip_stats_aggregation')) {
+    throw new Error('PG 记录清理 smoke 需要 usage_stats_aggregation 和 client_ip_stats_aggregation 全局游标')
+  }
+  const cursorCreatedAt = rows[0]?.cursor_created_at?.trim()
+  const cursorTime = Date.parse(cursorCreatedAt ?? '')
+  if (!Number.isFinite(cursorTime)) {
+    throw new Error('PG 记录清理 smoke 未读到有效 usage 清理游标时间')
+  }
+  return new Date(Math.max(0, cursorTime - 1000)).toISOString()
+}
+
+async function restoreCleanupCursorRows(): Promise<void> {
+  if (!originalCleanupCursorRows) {
+    return
+  }
+  await client.execute(`
+    DELETE FROM juhe_stats.stats_job_state
+    WHERE scope_type = 'global'
+      AND scope_id = ''
+      AND job_name = ANY(?::text[])
+  `, [[...cleanupCursorJobNames]])
+  for (const row of originalCleanupCursorRows) {
+    await client.execute(`
+      INSERT INTO juhe_stats.stats_job_state (
+        scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at,
+        last_error_message, lag_seconds, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
+        cursor_created_at = EXCLUDED.cursor_created_at,
+        cursor_id = EXCLUDED.cursor_id,
+        last_success_at = EXCLUDED.last_success_at,
+        last_error_message = EXCLUDED.last_error_message,
+        lag_seconds = EXCLUDED.lag_seconds,
+        updated_at = EXCLUDED.updated_at
+    `, [
+      row.scope_type,
+      row.scope_id,
+      row.job_name,
+      row.cursor_created_at ?? null,
+      row.cursor_id ?? null,
+      row.last_success_at ?? null,
+      row.last_error_message ?? null,
+      row.lag_seconds ?? null,
+      row.updated_at
+    ])
+  }
+}
+
 async function cleanupSmokeRows(): Promise<void> {
   await client.execute('DELETE FROM juhe_dataset.account_record_cleanup_targets WHERE account_id = ?', [accountId])
   await client.execute('DELETE FROM juhe_dataset.api_key_record_cleanup_targets WHERE api_key_id = ?', [apiKeyId])
   await client.execute('DELETE FROM juhe_dataset.model_check_items WHERE run_id = ?', [`model_check_${accountId}`])
   await client.execute('DELETE FROM juhe_dataset.model_check_runs WHERE id = ?', [`model_check_${accountId}`])
-  await client.execute('DELETE FROM juhe_dataset.audit_payload_refs WHERE audit_log_id = ANY(?)', [[`audit_${apiKeyId}`, `audit_${accountId}`]])
-  await client.execute('DELETE FROM juhe_dataset.audit_log_attempts WHERE audit_log_id = ANY(?)', [[`audit_${apiKeyId}`, `audit_${accountId}`]])
-  await client.execute('DELETE FROM juhe_dataset.audit_logs WHERE id = ANY(?)', [[`audit_${apiKeyId}`, `audit_${accountId}`]])
-  await client.execute('DELETE FROM juhe_usage.usage_record_account_shards WHERE account_id = ANY(?)', [[accountId]])
-  await client.execute('DELETE FROM juhe_usage.usage_record_api_key_shards WHERE api_key_id = ANY(?)', [[apiKeyId, accountApiKeyId]])
-  await client.execute('DELETE FROM juhe_usage.usage_record_shard_entries WHERE usage_id = ANY(?)', [[`usage_${apiKeyId}`, `usage_${accountId}`]])
-  await client.execute('DELETE FROM juhe_usage.usage_records WHERE id = ANY(?)', [[`usage_${apiKeyId}`, `usage_${accountId}`]])
-  await client.execute('DELETE FROM juhe_usage.usage_record_shards WHERE shard_key = ANY(?)', [[`shard_${apiKeyId}`, `shard_${accountId}`]])
-  await client.execute('DELETE FROM juhe_stats.usage_stats_totals WHERE scope_id = ANY(?)', [[apiKeyId, accountId, authorizationId, teamScopeId]])
-  await client.execute('DELETE FROM juhe_stats.usage_record_cleanup_deductions WHERE usage_id = ANY(?)', [[`usage_${apiKeyId}`, `usage_${accountId}`]])
+  await client.execute('DELETE FROM juhe_dataset.audit_payload_refs WHERE audit_log_id = ANY(?::text[])', [[`audit_${apiKeyId}`, `audit_${accountId}`]])
+  await client.execute('DELETE FROM juhe_dataset.audit_log_attempts WHERE audit_log_id = ANY(?::text[])', [[`audit_${apiKeyId}`, `audit_${accountId}`]])
+  await client.execute('DELETE FROM juhe_dataset.audit_logs WHERE id = ANY(?::text[])', [[`audit_${apiKeyId}`, `audit_${accountId}`]])
+  await client.execute('DELETE FROM juhe_usage.usage_record_account_shards WHERE account_id = ANY(?::text[])', [[accountId]])
+  await client.execute('DELETE FROM juhe_usage.usage_record_api_key_shards WHERE api_key_id = ANY(?::text[])', [[apiKeyId, accountApiKeyId]])
+  await client.execute('DELETE FROM juhe_usage.usage_record_shard_entries WHERE usage_id = ANY(?::text[])', [[`usage_${apiKeyId}`, `usage_${accountId}`]])
+  await client.execute('DELETE FROM juhe_usage.usage_records WHERE id = ANY(?::text[])', [[`usage_${apiKeyId}`, `usage_${accountId}`]])
+  await client.execute('DELETE FROM juhe_usage.usage_record_shards WHERE shard_key = ANY(?::text[])', [[`shard_${apiKeyId}`, `shard_${accountId}`]])
+  await client.execute('DELETE FROM juhe_stats.usage_stats_totals WHERE scope_id = ANY(?::text[])', [[apiKeyId, accountId, authorizationId, teamScopeId]])
+  await client.execute('DELETE FROM juhe_stats.usage_record_cleanup_deductions WHERE usage_id = ANY(?::text[])', [[`usage_${apiKeyId}`, `usage_${accountId}`]])
 }

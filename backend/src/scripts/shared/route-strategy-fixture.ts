@@ -11,6 +11,7 @@ type ApiKeyFixtureInput = Record<string, unknown> & {
   routeStrategyId?: unknown
   routeMode?: unknown
   groupRouteStrategy?: unknown
+  normalRoutingConfig?: unknown
   hybridRoutingConfig?: unknown
   name?: unknown
 }
@@ -23,16 +24,21 @@ export function createApiKeyRecordWithRouteStrategy(
   if (input.routeStrategyId || !Array.isArray(input.groupBindings)) {
     return repositories.createApiKeyRecord(input, access)
   }
-  const routeStrategy = repositories.createRouteStrategy({
+  const routeStrategyInput: Record<string, unknown> = {
     name: routeStrategyFixtureName(input.name),
     mode: routeStrategyFixtureMode(input),
     groupBindings: input.groupBindings,
     hybridRoutingConfig: input.hybridRoutingConfig
-  }, access)
+  }
+  if (Object.prototype.hasOwnProperty.call(input, 'normalRoutingConfig')) {
+    routeStrategyInput.normalRoutingConfig = input.normalRoutingConfig
+  }
+  const routeStrategy = repositories.createRouteStrategy(routeStrategyInput, access)
   const {
     groupBindings: _groupBindings,
     routeMode: _routeMode,
     groupRouteStrategy: _groupRouteStrategy,
+    normalRoutingConfig: _normalRoutingConfig,
     hybridRoutingConfig: _hybridRoutingConfig,
     ...apiKeyInput
   } = input

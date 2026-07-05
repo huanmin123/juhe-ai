@@ -92,6 +92,32 @@ async function testPostgresDatabaseClient(): Promise<void> {
     params: ['name', 'id']
   })
 
+  pool.nextRows = [{
+    request_count: '10',
+    totalBytes: '2048',
+    metric_value: '1.5',
+    totalCostUsd: '2.75',
+    count: '3',
+    rank: '4',
+    schema_version: '7',
+    scope_id: '123',
+    model: '456',
+    protocol_version: '1'
+  }]
+  const normalizedRow = await client.one<Record<string, unknown>>('SELECT numeric fields FROM demo')
+  assert.deepEqual(normalizedRow, {
+    request_count: 10,
+    totalBytes: 2048,
+    metric_value: 1.5,
+    totalCostUsd: 2.75,
+    count: 3,
+    rank: 4,
+    schema_version: 7,
+    scope_id: '123',
+    model: '456',
+    protocol_version: '1'
+  })
+
   pool.nextMultiResults = [
     { rows: [], rowCount: null },
     { rows: [], rowCount: 1 },

@@ -43,8 +43,8 @@ export interface OperationLogSummary {
   summary: string
   detailLevel: OperationLogDetailLevel
   visibilityScope: OperationLogVisibilityScope
-  changes: OperationLogChange[]
-  metadata: Record<string, unknown>
+  changes?: OperationLogChange[]
+  metadata?: Record<string, unknown>
   method?: string
   path?: string
   statusCode?: number
@@ -73,6 +73,8 @@ export interface OperationLogViewerSummary {
 }
 
 export interface OperationLogDetail extends OperationLogSummary {
+  changes: OperationLogChange[]
+  metadata: Record<string, unknown>
   targets: OperationLogTargetSummary[]
   viewers: OperationLogViewerSummary[]
 }

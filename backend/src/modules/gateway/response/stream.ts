@@ -9,9 +9,9 @@ import {
 } from '../usage/types.js'
 import {
   isUpstreamRequestAbortedError,
-  readStreamChunkWithAbort,
   readStreamChunkWithTimeout
 } from '../upstream/request.js'
+import { GatewayFirstByteTimeoutError, isGatewayFirstByteTimeoutError } from '../upstream/first-byte-timeout.js'
 import {
   gatewayStreamFailureCode,
   type GatewayErrorProtocol,
@@ -81,6 +81,7 @@ export interface StreamPipeOptions {
   responseInspectionContext?: ResponseInspectionRuntimeContext
   responseProtocol?: ResponseProtocolCode
   endpointFamily?: ResponseEndpointFamily
+  firstByteTimeoutMs?: number
   prepareDownstream?: () => void
   transformUpstreamChunk?: (chunk: Buffer) => Buffer[]
   flushTransformedUpstreamChunks?: () => Buffer[]
@@ -93,12 +94,14 @@ const streamProgressLogIntervalMs = 60_000
 const streamBackpressureLogIntervalMs = 30_000
 const maxResponseInspectionObservationCount = 20
 
+class StreamMaxLifetimeExceededError extends Error {}
+
 export async function pipeUpstreamStream(
   upstreamBody: AsyncIterable<Uint8Array>,
   res: Response,
   settings: GatewaySettings,
   startedAt: number,
-  handleStreamFailure: (reason: string, errorCode: string | undefined, context: StreamFailureContext) => void,
+  handleStreamFailure: (reason: string, errorCode: string | undefined, context: StreamFailureContext) => Promise<void>,
   signal?: AbortSignal,
   options: StreamPipeOptions = {}
 ): Promise<StreamPipeResult> {
@@ -136,6 +139,9 @@ export async function pipeUpstreamStream(
   let lastSseEventActivityAt: number | undefined
   let lastSseEventCount = 0
   let upstreamChunkReceived = false
+  let semanticResultReceived = false
+  let pendingProtocolEvent = false
+  let streamParserSkipped = false
   let chunkIndex = 0
   let totalUpstreamBytes = 0
   let totalResponseBytes = 0
@@ -198,6 +204,17 @@ export async function pipeUpstreamStream(
         responseInspectionObservationOmittedCount += 1
       }
     }
+  }
+  const markFirstSemanticOutput = (inspection: GatewayStreamInspection) => {
+    if (firstTokenMs !== undefined || !streamOutputReceived(inspection)) return
+    firstTokenMs = Date.now() - startedAt
+    options.onFirstOutput?.()
+  }
+  const updateStreamInspectionProgress = (inspection: GatewayStreamInspection) => {
+    markFirstSemanticOutput(inspection)
+    semanticResultReceived = semanticResultReceived || streamSemanticResultReceived(inspection)
+    pendingProtocolEvent = inspection.pendingEvent
+    streamParserSkipped = inspection.skipped
   }
   const closeIterator = () => {
     clientClosed = true
@@ -277,6 +294,7 @@ export async function pipeUpstreamStream(
       finalInspection = await drainIteratorAfterTerminalForInspection(iterator, inspector, {
         lightweightImageStream: bodyCaptureOmitted || finalInspection.imageOutputReceived
       })
+      updateStreamInspectionProgress(finalInspection)
       omitBodyCaptureIfImageStream(finalInspection, { eofPendingFlush: true })
     } else {
       res.off('close', closeIterator)
@@ -290,7 +308,7 @@ export async function pipeUpstreamStream(
         options.clientRetryEnabled === true,
         totalResponseBytes
       )
-      handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, finalInspection.outputReceived, finalInspection.failedReceived))
+      await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, finalInspection.outputReceived, finalInspection.failedReceived))
       endResponse(res)
       if (closeIteratorAfterEnd) {
         void closeAsyncIterator(iterator)
@@ -338,7 +356,6 @@ export async function pipeUpstreamStream(
 
   streamLogger.debug({
     event: 'gateway_stream_pipe_started',
-    streamCircuitBreakerEnabled: settings.streamCircuitBreakerEnabled,
     streamRequestTimeoutSeconds: settings.streamRequestTimeoutSeconds,
     streamIdleTimeoutSeconds: settings.streamIdleTimeoutSeconds,
     startedAt
@@ -354,8 +371,12 @@ export async function pipeUpstreamStream(
         waitingForFirstChunk,
         lastUpstreamActivityAt,
         lastSseEventActivityAt,
-        upstreamChunkReceived
-      }, signal)
+        upstreamChunkReceived,
+        semanticResultReceived,
+        pendingProtocolEvent,
+        parserSkipped: streamParserSkipped,
+        waitingForFirstOutput: options.firstByteTimeoutMs !== undefined && firstTokenMs === undefined
+      }, signal, options.firstByteTimeoutMs)
       const readWaitMs = Date.now() - readStartedAt
 
       if (result.done) {
@@ -369,10 +390,6 @@ export async function pipeUpstreamStream(
       upstreamChunkReceived = true
       waitingForFirstChunk = false
       lastUpstreamActivityAt = Date.now()
-      if (firstTokenMs === undefined) {
-        firstTokenMs = lastUpstreamActivityAt - startedAt
-        options.onFirstOutput?.()
-      }
       if (!bodyCaptureOmitted) {
         upstreamCapture.push(buffer)
       }
@@ -380,6 +397,10 @@ export async function pipeUpstreamStream(
       const interceptResult = interceptor
         ? pushResponseInspectionChunks(interceptor, transformedChunks)
         : passThroughResponseInspectionChunks(transformedChunks)
+      pendingProtocolEvent = interceptResult.pendingEvent === true
+      if (interceptResult.pendingEvent === true) {
+        lastSseEventActivityAt = lastUpstreamActivityAt
+      }
       if (interceptResult.parserSkipped && !responseInspectionParserSkipLogged) {
         responseInspectionParserSkipLogged = true
         streamLogger.info({
@@ -436,6 +457,7 @@ export async function pipeUpstreamStream(
         latestInspection = inspector.pushChunk(outbound, {
           lightweightImageStream: bodyCaptureOmitted || latestInspection.imageOutputReceived
         })
+        updateStreamInspectionProgress(latestInspection)
         omitBodyCaptureIfImageStream(latestInspection)
         if (latestInspection.skipped && !parserSkipLogged) {
           parserSkipLogged = true
@@ -450,7 +472,7 @@ export async function pipeUpstreamStream(
         lastSseEventCount = latestInspection.eventCount
         if (latestInspection.skipped) {
           lastSseEventActivityAt = undefined
-        } else if (lastSseEventActivityAt === undefined || outboundSseEventCount > 0) {
+        } else if (outboundSseEventCount > 0 || latestInspection.pendingEvent) {
           lastSseEventActivityAt = lastUpstreamActivityAt
         }
         if (canKeepPreCommitBuffered(latestInspection, outbound)) {
@@ -465,7 +487,7 @@ export async function pipeUpstreamStream(
             options.clientRetryEnabled === true,
             totalResponseBytes
           )
-          handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, latestInspection.outputReceived, latestInspection.failedReceived))
+          await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, latestInspection.outputReceived, latestInspection.failedReceived))
           await closeAsyncIterator(iterator)
           streamLogger.warn({
             event: 'gateway_stream_failure_before_downstream_commit',
@@ -530,6 +552,8 @@ export async function pipeUpstreamStream(
           failedReceived: latestInspection.failedReceived,
           outputReceived: latestInspection.outputReceived,
           outputEventCount: latestInspection.outputEventCount,
+          semanticResultReceived,
+          pendingProtocolEvent,
           parserSkipped: latestInspection.skipped,
           skipReason: latestInspection.skipReason
         }, '网关流式响应进度摘要')
@@ -644,6 +668,7 @@ export async function pipeUpstreamStream(
         latestInspection = inspector.pushChunk(outbound, {
           lightweightImageStream: bodyCaptureOmitted || latestInspection.imageOutputReceived
         })
+        updateStreamInspectionProgress(latestInspection)
         omitBodyCaptureIfImageStream(latestInspection, { eofPendingFlush: true })
         if (latestInspection.skipped && !parserSkipLogged) {
           parserSkipLogged = true
@@ -657,7 +682,7 @@ export async function pipeUpstreamStream(
         lastSseEventCount = latestInspection.eventCount
         if (latestInspection.skipped) {
           lastSseEventActivityAt = undefined
-        } else if (lastSseEventActivityAt === undefined || outboundSseEventCount > 0) {
+        } else if (outboundSseEventCount > 0 || latestInspection.pendingEvent) {
           lastSseEventActivityAt = lastUpstreamActivityAt
         }
         if (canKeepPreCommitBuffered(latestInspection, outbound)) {
@@ -672,7 +697,7 @@ export async function pipeUpstreamStream(
             options.clientRetryEnabled === true,
             totalResponseBytes
           )
-          handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, latestInspection.outputReceived, latestInspection.failedReceived))
+          await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, latestInspection.outputReceived, latestInspection.failedReceived))
           streamLogger.warn({
             event: 'gateway_stream_failure_before_downstream_commit',
             message,
@@ -819,6 +844,30 @@ export async function pipeUpstreamStream(
       parserSkipped: inspection.skipped,
       skipReason: inspection.skipReason
     }, '网关流式转发捕获异常')
+    if (error instanceof StreamMaxLifetimeExceededError && totalResponseBytes > 0) {
+      const errorCode = streamClientFailureCode(
+        inspection.errorCode ?? gatewayStreamFailureCode(rawMessage),
+        inspection.outputReceived,
+        options.clientRetryEnabled === true,
+        totalResponseBytes
+      )
+      await handleStreamFailure(rawMessage, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, inspection.failedReceived))
+      streamLogger.warn({
+        event: 'gateway_stream_max_lifetime_interrupted',
+        elapsedMs: Date.now() - startedAt,
+        chunkCount: chunkIndex,
+        totalUpstreamBytes,
+        totalResponseBytes,
+        firstTokenMs,
+        message: rawMessage,
+        errorCode,
+        outputReceived: inspection.outputReceived,
+        sseEventCount: inspection.eventCount,
+        recentSseEventTypes: inspection.recentEventTypes
+      }, '网关流式响应达到最大存活时间，已直接中断下游连接以交由客户端重试')
+      interruptResponse(res)
+      return finishStreamResult(false, rawMessage, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
+    }
     if (inspection.terminalReceived && !inspection.failedReceived) {
       endResponse(res)
       streamLogger.info({
@@ -830,12 +879,12 @@ export async function pipeUpstreamStream(
     }
     const message = inspection.errorMessage ?? rawMessage
     const errorCode = streamClientFailureCode(
-      inspection.errorCode ?? gatewayStreamFailureCode(message),
+      inspection.errorCode ?? (isGatewayFirstByteTimeoutError(error) ? 'first_byte_timeout' : gatewayStreamFailureCode(message)),
       inspection.outputReceived,
       options.clientRetryEnabled === true,
       totalResponseBytes
     )
-    handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, inspection.failedReceived))
+    await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, inspection.failedReceived))
     if (shouldFailBeforeDownstreamCommit()) {
       streamLogger.warn({
         event: 'gateway_stream_failure_before_downstream_commit',
@@ -902,7 +951,7 @@ export async function pipeUpstreamStream(
       totalResponseBytes
     )
     if (!success) {
-      handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, inspection.failedReceived))
+      await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, inspection.failedReceived))
     }
     streamLogger.warn({
       event: 'gateway_stream_completed_with_parser_skipped',
@@ -926,7 +975,7 @@ export async function pipeUpstreamStream(
       options.clientRetryEnabled === true,
       totalResponseBytes
     )
-    handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, false))
+    await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, false))
     streamLogger.warn({
       event: 'gateway_stream_missing_terminal',
       elapsedMs: Date.now() - startedAt,
@@ -980,8 +1029,6 @@ export async function pipeUpstreamStream(
     return finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
   }
 
-  endResponse(res)
-
   if (!completed || inspection.failedReceived) {
     const message = inspection.errorMessage ?? '上游流式响应失败'
     const errorCode = streamClientFailureCode(
@@ -990,7 +1037,34 @@ export async function pipeUpstreamStream(
       options.clientRetryEnabled === true,
       totalResponseBytes
     )
-    handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, inspection.failedReceived))
+    await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, inspection.failedReceived))
+    if (shouldFailBeforeDownstreamCommit()) {
+      streamLogger.warn({
+        event: 'gateway_stream_finished_failed_before_downstream_commit',
+        completed,
+        errorCode,
+        totalUpstreamBytes,
+        totalResponseBytes,
+        sseEventCount: inspection.eventCount,
+        recentSseEventTypes: inspection.recentEventTypes
+      }, '网关在 EOF pending 收尾后识别到失败，交由上层决定是否服务端换号重试')
+      return finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
+    }
+    if (shouldInterruptCommittedGenericStream(options.clientRetryEnabled === true, totalResponseBytes)) {
+      streamLogger.warn({
+        event: 'gateway_stream_finished_failed_committed_generic_interrupted',
+        completed,
+        errorCode,
+        totalUpstreamBytes,
+        totalResponseBytes,
+        sseEventCount: inspection.eventCount,
+        recentSseEventTypes: inspection.recentEventTypes
+      }, '普通客户端已收到部分流式响应且 EOF pending 收尾后识别到失败，网关直接中断连接以交由客户端重试')
+      interruptResponse(res)
+      return finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
+    }
+    await flushPreCommitChunks()
+    endResponse(res)
     streamLogger.warn({
       event: 'gateway_stream_finished_failed',
       completed,
@@ -1007,6 +1081,9 @@ export async function pipeUpstreamStream(
     }, '网关流式响应以失败结束')
     return finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
   }
+
+  await flushPreCommitChunks()
+  endResponse(res)
 
   streamLogger.info({
     event: 'gateway_stream_finished_success',
@@ -1033,24 +1110,46 @@ function readNextStreamChunk(
     lastUpstreamActivityAt: number
     lastSseEventActivityAt?: number
     upstreamChunkReceived: boolean
+    semanticResultReceived: boolean
+    pendingProtocolEvent: boolean
+    parserSkipped: boolean
+    waitingForFirstOutput: boolean
   },
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  firstByteTimeoutMs?: number
 ): Promise<IteratorResult<Uint8Array>> {
-  if (!settings.streamCircuitBreakerEnabled) {
-    return readStreamChunkWithAbort(iterator, signal)
-  }
+  const firstByteDeadlineMs = status.waitingForFirstOutput && !status.parserSkipped && firstByteTimeoutMs !== undefined
+    ? firstByteTimeoutMs - (Date.now() - startedAt)
+    : undefined
   const readPlan = buildStreamReadPlan(settings, startedAt, status)
-  if (readPlan.timeoutMs === undefined) {
-    return readStreamChunkWithAbort(iterator, signal)
-  }
+  const planTimeoutMs = readPlan.timeoutMs
+  const timeoutMs = firstByteDeadlineMs === undefined
+    ? planTimeoutMs
+    : Math.min(firstByteDeadlineMs, planTimeoutMs)
+  const firstByteDeadlineSelected = firstByteDeadlineMs !== undefined && firstByteDeadlineMs <= planTimeoutMs
   // If downstream writes delayed the next read, upstream bytes may already be buffered locally.
   // Give iterator.next() one tick before declaring the stream idle.
   return readStreamChunkWithTimeout(
     iterator,
-    Math.max(0.001, readPlan.timeoutMs / 1000),
-    () => new Error(readPlan.timeoutMessage),
+    Math.max(0.001, timeoutMs / 1000),
+    () => firstByteDeadlineSelected
+      ? new GatewayFirstByteTimeoutError(`上游流式响应 ${Math.ceil((firstByteTimeoutMs ?? 0) / 1000)}s 后仍未返回首个有效输出`, firstByteTimeoutMs ?? 0)
+      : readPlan.timeoutKind === 'stream_lifetime'
+        ? new StreamMaxLifetimeExceededError(readPlan.timeoutMessage)
+        : new Error(readPlan.timeoutMessage),
     signal
   )
+}
+
+function streamOutputReceived(inspection: GatewayStreamInspection): boolean {
+  return inspection.outputReceived || inspection.imageOutputReceived
+}
+
+function streamSemanticResultReceived(inspection: GatewayStreamInspection): boolean {
+  return inspection.outputReceived
+    || inspection.imageOutputReceived
+    || inspection.terminalReceived
+    || inspection.failedReceived
 }
 
 async function drainIteratorAfterTerminalForInspection(
@@ -1121,6 +1220,7 @@ function pushResponseInspectionChunks(
 ): ResponseInspectionSseResult {
   let result: ResponseInspectionSseResult = {
     chunks: [],
+    pendingEvent: false,
     parserSkipped: false
   }
   for (const chunk of chunks) {
@@ -1135,6 +1235,7 @@ function pushResponseInspectionChunks(
 function passThroughResponseInspectionChunks(chunks: Buffer[]): ResponseInspectionSseResult {
   return {
     chunks,
+    pendingEvent: false,
     parserSkipped: false
   }
 }
@@ -1152,6 +1253,7 @@ function mergeResponseInspectionSseResults(
     ].length
       ? [...(left.observations ?? []), ...(right.observations ?? [])]
       : undefined,
+    pendingEvent: right.pendingEvent ?? left.pendingEvent,
     parserSkipped: left.parserSkipped || right.parserSkipped
   }
 }

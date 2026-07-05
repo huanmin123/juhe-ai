@@ -28,8 +28,35 @@
         @user-menu-click="handleUserMenuClick"
       />
       <a-layout-content class="content">
+        <div v-if="routeSwitching" class="route-switch-indicator" role="status" aria-live="polite">
+          <a-spin size="small" />
+          <span>正在打开页面</span>
+        </div>
         <div v-if="mustChangePassword" class="password-lock-state">
           <a-result status="warning" title="请先修改初始密码" sub-title="完成后将自动进入控制台。" />
+        </div>
+        <div v-else-if="routeSwitching" class="route-switch-page-shell" aria-busy="true">
+          <a-card class="page-card route-switch-toolbar-card">
+            <div class="route-switch-skeleton-block">
+              <span class="route-switch-skeleton-line route-switch-title-line" />
+              <span class="route-switch-skeleton-line route-switch-toolbar-line" />
+            </div>
+          </a-card>
+          <div class="route-switch-summary-grid">
+            <a-card v-for="item in 4" :key="item" class="route-switch-summary-card">
+              <div class="route-switch-skeleton-block compact">
+                <span class="route-switch-skeleton-line route-switch-summary-title" />
+                <span class="route-switch-skeleton-line route-switch-summary-value" />
+                <span class="route-switch-skeleton-line route-switch-summary-extra" />
+              </div>
+            </a-card>
+          </div>
+          <a-card class="page-card route-switch-main-card">
+            <div class="route-switch-skeleton-block main">
+              <span class="route-switch-skeleton-line route-switch-main-title" />
+              <span v-for="item in 6" :key="item" class="route-switch-skeleton-line route-switch-main-row" />
+            </div>
+          </a-card>
         </div>
         <router-view v-else v-slot="{ Component, route: viewRoute }">
           <KeepAlive v-if="viewRoute.meta.keepAlive !== false" :max="keepAliveMax">
@@ -76,8 +103,8 @@ import {
 import type { MenuProps } from 'ant-design-vue'
 import { message } from '@/lib/antd'
 import type { ItemType } from 'ant-design-vue'
-import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { computed, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { isNavigationFailure, useRoute, useRouter } from 'vue-router'
 
 import { api } from '@/api/client'
 import { authState, changePassword, logout, updateProfile } from '@/composables/useAuth'
@@ -90,7 +117,7 @@ import {
   syncMenuModeWithUser,
   type AppMenuMode
 } from '@/composables/useMenuMode'
-import { menuRoutes } from '@/router'
+import { menuRoutes, recoverRouteAssetLoadError } from '@/router'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { isAdminRole, systemAccountRoleLabel } from '@/shared/systemAccountRoles'
 import type { PublishedAnnouncementSummary } from '@/types/domain'
@@ -119,16 +146,35 @@ const announcements = ref<PublishedAnnouncementSummary[]>([])
 let announcementsRefreshTimer: number | undefined
 let announcementsRefreshRunning = false
 let announcementsRequestId = 0
+const pendingRoutePath = ref<string>()
+const routePrefetches = new Map<string, Promise<unknown>>()
+let routeNavigationSeq = 0
 
-const selectedKeys = computed(() => [route.path])
+interface AnnouncementLoadOptions {
+  notifyError?: boolean
+}
+
+interface AnnouncementLoadResult {
+  items: PublishedAnnouncementSummary[]
+  loaded: boolean
+}
+
+interface AnnouncementMarkReadOptions {
+  notifyError?: boolean
+}
+
+const selectedKeys = computed(() => [pendingRoutePath.value || route.path])
+const routeSwitching = computed(() => Boolean(pendingRoutePath.value && pendingRoutePath.value !== route.path))
+const pendingMenuRoute = computed(() => pendingRoutePath.value ? menuRoutes.find((item) => item.path === pendingRoutePath.value) : undefined)
 const openMenuKeys = computed(() => {
-  const currentRoute = visibleMenuRoutes.value.find((item) => item.path === route.path)
+  const currentPath = pendingRoutePath.value || route.path
+  const currentRoute = visibleMenuRoutes.value.find((item) => item.path === currentPath)
   return currentRoute?.meta?.menuGroup ? [`group:${currentRoute.meta.menuGroup}`] : []
 })
 const currentUser = authState.currentUser
 const mustChangePassword = computed(() => Boolean(currentUser.value?.mustChangePassword))
-const currentPageTitle = computed(() => mustChangePassword.value ? '修改登录密码' : route.meta.title || '轻量中转管理')
-const currentPageDescription = computed(() => mustChangePassword.value ? '请先完成初始密码修改' : route.meta.description || 'OpenAI OAuth + API Key')
+const currentPageTitle = computed(() => mustChangePassword.value ? '修改登录密码' : pendingMenuRoute.value?.meta?.title || route.meta.title || '轻量中转管理')
+const currentPageDescription = computed(() => mustChangePassword.value ? '请先完成初始密码修改' : pendingMenuRoute.value?.meta?.description || route.meta.description || 'OpenAI OAuth + API Key')
 const requireOldPasswordForPasswordChange = computed(() => !mustChangePassword.value)
 const canSwitchMenuMode = computed(() => isAdminRole(currentUser.value?.role))
 const switchMenuModeLabel = computed(() => (appMenuMode.value === 'admin' ? '切换到用户模式' : '切换到管理模式'))
@@ -212,6 +258,7 @@ const menuIconMap = {
   '/audit-logs': FileSearchOutlined,
   '/runtime-logs': SearchOutlined,
   '/table-monitor': DatabaseOutlined,
+  '/system-metrics-stats': BarChartOutlined,
   '/ip-stats': GlobalOutlined,
   '/response-inspection-policies': FilterOutlined,
   '/external-integration-sources': LinkOutlined,
@@ -236,7 +283,11 @@ function routeToMenuItem(item: typeof menuRoutes[number]): ItemType {
   const iconComponent = menuIconMap[item.path as keyof typeof menuIconMap]
   return {
     key: item.path,
-    label: item.meta?.title ?? '',
+    label: h('span', {
+      class: 'menu-item-label',
+      onFocus: () => prefetchRouteComponent(item.path),
+      onPointerenter: () => prefetchRouteComponent(item.path)
+    }, item.meta?.title ?? ''),
     ...(iconComponent ? { icon: () => h(iconComponent) } : {})
   }
 }
@@ -279,8 +330,23 @@ function handleMenuClick(event: { key: string | number }) {
     sidebarOpen.value = false
     return
   }
-  router.push(key)
+  void pushRouteSafely(key)
   sidebarOpen.value = false
+}
+
+function prefetchRouteComponent(path: string): void {
+  if (routePrefetches.has(path)) return
+  const targetRoute = menuRoutes.find((item) => item.path === path)
+  const component = targetRoute?.component
+  if (typeof component !== 'function') return
+
+  const prefetch = Promise.resolve()
+    .then(() => (component as () => Promise<unknown>)())
+    .catch((error) => {
+      routePrefetches.delete(path)
+      console.debug('页面预加载失败，将在正式打开时重试。', error)
+    })
+  routePrefetches.set(path, prefetch)
 }
 
 async function handleUserMenuClick(event: Parameters<NonNullable<MenuProps['onClick']>>[0]) {
@@ -314,38 +380,45 @@ async function openAnnouncements() {
     return
   }
   announcementModalOpen.value = true
-  const visibleAnnouncements = await loadAnnouncements()
-  await markAnnouncementsViewed(visibleAnnouncements)
-}
-
-async function refreshAnnouncementsInModal() {
-  const visibleAnnouncements = await loadAnnouncements()
-  if (announcementModalOpen.value) {
-    await markAnnouncementsViewed(visibleAnnouncements)
+  const result = await loadAnnouncements({ notifyError: true })
+  if (result.loaded) {
+    await markAnnouncementsViewed(result.items, { notifyError: true })
   }
 }
 
-async function loadAnnouncements(): Promise<PublishedAnnouncementSummary[]> {
+async function refreshAnnouncementsInModal() {
+  const result = await loadAnnouncements()
+  if (announcementModalOpen.value && result.loaded) {
+    await markAnnouncementsViewed(result.items)
+  }
+}
+
+async function loadAnnouncements(options: AnnouncementLoadOptions = {}): Promise<AnnouncementLoadResult> {
   const requestUserKey = currentAnnouncementUserKey()
   if (!requestUserKey || mustChangePassword.value) {
     announcementsRequestId += 1
     announcements.value = []
     announcementsLoading.value = false
-    return []
+    return { items: [], loaded: false }
   }
   const requestId = ++announcementsRequestId
   announcementsLoading.value = true
   try {
     const nextAnnouncements = await api.announcements.publicList({ limit: 30 })
     if (requestId !== announcementsRequestId || requestUserKey !== currentAnnouncementUserKey()) {
-      return announcements.value
+      return { items: announcements.value, loaded: false }
     }
     announcements.value = nextAnnouncements
-    return nextAnnouncements
+    return { items: nextAnnouncements, loaded: true }
   } catch (error) {
+    if (requestId !== announcementsRequestId || requestUserKey !== currentAnnouncementUserKey()) {
+      return { items: announcements.value, loaded: false }
+    }
     console.error(error)
-    message.error('加载公告失败')
-    return announcements.value
+    if (options.notifyError) {
+      message.error(extractApiErrorMessage(error, '加载公告失败'))
+    }
+    return { items: announcements.value, loaded: false }
   } finally {
     if (requestId === announcementsRequestId) {
       announcementsLoading.value = false
@@ -358,7 +431,7 @@ function currentAnnouncementUserKey(): string {
   return user?.id || user?.username || ''
 }
 
-async function markAnnouncementsViewed(visibleAnnouncements = announcements.value) {
+async function markAnnouncementsViewed(visibleAnnouncements = announcements.value, options: AnnouncementMarkReadOptions = {}) {
   const requestUserKey = currentAnnouncementUserKey()
   if (!requestUserKey) return
   const unreadIds = visibleAnnouncements.filter((announcement) => !announcement.readAt).map((announcement) => announcement.id)
@@ -371,8 +444,11 @@ async function markAnnouncementsViewed(visibleAnnouncements = announcements.valu
       ? { ...announcement, readAt: result.readAt }
       : announcement)
   } catch (error) {
+    if (requestUserKey !== currentAnnouncementUserKey()) return
     console.error(error)
-    message.error('记录公告已读失败')
+    if (options.notifyError) {
+      message.error(extractApiErrorMessage(error, '记录公告已读失败'))
+    }
   }
 }
 
@@ -387,8 +463,39 @@ async function switchMenuMode() {
   const targetPath = getDefaultPathForMenuMode(savedMode)
   message.success(savedMode === 'admin' ? '已切换到管理模式' : '已切换到用户模式')
   if (route.path !== targetPath) {
-    await router.push(targetPath)
+    await pushRouteSafely(targetPath)
   }
+}
+
+async function pushRouteSafely(path: string): Promise<void> {
+  if (path === route.path) return
+  const navigationSeq = ++routeNavigationSeq
+  pendingRoutePath.value = path
+  try {
+    await waitForRouteSwitchFeedbackPaint()
+    if (navigationSeq !== routeNavigationSeq || pendingRoutePath.value !== path) return
+    await router.push(path)
+  } catch (error) {
+    if (navigationSeq !== routeNavigationSeq) return
+    if (recoverRouteAssetLoadError(error, router, path)) return
+    if (!isNavigationFailure(error)) {
+      console.error(error)
+    }
+  } finally {
+    if (navigationSeq === routeNavigationSeq && pendingRoutePath.value === path) {
+      pendingRoutePath.value = undefined
+    }
+  }
+}
+
+async function waitForRouteSwitchFeedbackPaint(): Promise<void> {
+  await nextTick()
+  if (typeof window === 'undefined') return
+  await new Promise<void>((resolve) => {
+    window.requestAnimationFrame(() => {
+      window.setTimeout(resolve, 0)
+    })
+  })
 }
 
 async function handleUpdateDisplayName() {
@@ -507,9 +614,6 @@ onMounted(() => {
   loadAppBrandSettings().catch((error) => {
     console.error(error)
   })
-  loadAnnouncements().catch((error) => {
-    console.error(error)
-  })
   announcementsRefreshTimer = window.setInterval(() => {
     void refreshAnnouncementsSafely()
   }, 60000)
@@ -609,10 +713,142 @@ watch(
 }
 
 .content {
+  position: relative;
   padding: 26px 24px 36px;
   background:
     radial-gradient(circle at 20% 0%, rgba(22, 119, 255, 0.06), transparent 28%),
     #f5f7fb;
+}
+
+.route-switch-indicator {
+  position: sticky;
+  top: 12px;
+  z-index: 6;
+  width: max-content;
+  max-width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: -10px 0 12px auto;
+  padding: 8px 12px;
+  border: 1px solid #dbeafe;
+  border-radius: 8px;
+  color: #1d4ed8;
+  background: rgba(239, 246, 255, 0.96);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
+  font-size: 13px;
+}
+
+.route-switch-page-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.route-switch-toolbar-card :deep(.ant-card-body),
+.route-switch-main-card :deep(.ant-card-body),
+.route-switch-summary-card :deep(.ant-card-body) {
+  padding: 18px;
+}
+
+.route-switch-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.route-switch-summary-card {
+  border: 1px solid #e8edf5;
+  border-radius: 8px;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
+}
+
+.route-switch-main-card {
+  min-height: 420px;
+}
+
+.route-switch-skeleton-block {
+  display: grid;
+  gap: 12px;
+}
+
+.route-switch-skeleton-block.compact {
+  gap: 10px;
+}
+
+.route-switch-skeleton-block.main {
+  gap: 14px;
+}
+
+.route-switch-skeleton-line {
+  display: block;
+  height: 14px;
+  border-radius: 6px;
+  background:
+    linear-gradient(90deg, rgba(226, 232, 240, 0.88) 25%, rgba(241, 245, 249, 0.95) 37%, rgba(226, 232, 240, 0.88) 63%);
+  background-size: 400% 100%;
+  animation: route-switch-skeleton-loading 1.2s ease-in-out infinite;
+}
+
+.route-switch-title-line {
+  width: 24%;
+  height: 18px;
+}
+
+.route-switch-toolbar-line {
+  width: 46%;
+}
+
+.route-switch-summary-title {
+  width: 48%;
+}
+
+.route-switch-summary-value {
+  width: 70%;
+  height: 22px;
+}
+
+.route-switch-summary-extra {
+  width: 44%;
+}
+
+.route-switch-main-title {
+  width: 30%;
+  height: 18px;
+}
+
+.route-switch-main-row {
+  width: 92%;
+}
+
+.route-switch-main-row:nth-child(3) {
+  width: 84%;
+}
+
+.route-switch-main-row:nth-child(4) {
+  width: 96%;
+}
+
+.route-switch-main-row:nth-child(5) {
+  width: 76%;
+}
+
+.route-switch-main-row:nth-child(6) {
+  width: 88%;
+}
+
+.route-switch-main-row:nth-child(7) {
+  width: 52%;
+}
+
+@keyframes route-switch-skeleton-loading {
+  0% {
+    background-position: 100% 50%;
+  }
+
+  100% {
+    background-position: 0 50%;
+  }
 }
 
 .password-lock-state {
@@ -630,6 +866,16 @@ watch(
 @media (max-width: 991px) {
   .content {
     padding: 16px;
+  }
+
+  .route-switch-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .route-switch-summary-grid {
+    grid-template-columns: 1fr;
   }
 }
 </style>

@@ -9,6 +9,7 @@ import {
   sendCancelAccountTestSessionOnUnload,
   submitAccountTestTask
 } from '../../views/accounts/accountTestSessionClient'
+import { buildAccountTestPayload } from '../../views/accounts/accountTestFlow'
 
 interface ApiCall {
   method: string
@@ -59,7 +60,37 @@ assertLastCall('accounts.cancelTestSession', ['session_3', scopeParams], '管理
 await cancelAccountTestSession({ isManagementView: false, scopeParams, sessionId: 'session_4' })
 assertLastCall('myAccounts.cancelTestSession', ['session_4'], '个人端取消 session 不应携带管理端 scope')
 
-const testPayload: AccountTestPayload = { model: 'gpt-5.1', prompt: 'ping' }
+const testPayload: AccountTestPayload = { model: 'gpt-5.1', testEndpointMode: 'chat_sse', prompt: 'ping' }
+
+assertDeepEqual(
+  buildAccountTestPayload({ model: '  gpt-5.1  ', testEndpointMode: 'account_default' }, accountFixture({
+    providerCode: 'gpt',
+    protocolCode: 'openai',
+    protocolVersion: 'v1'
+  })),
+  { model: 'gpt-5.1', testEndpointMode: 'chat_sse' },
+  'GPT API Key 默认测试形态应从接口能力限制中明确提交 endpoint mode'
+)
+assertDeepEqual(
+  buildAccountTestPayload({ model: '', testEndpointMode: 'responses_sse' }, accountFixture({
+    providerCode: 'deepseek',
+    providerProtocolProfileId: 'profile_deepseek_openai_v1',
+    protocolCode: 'openai',
+    protocolVersion: 'v1'
+  })),
+  { testEndpointMode: 'responses_sse' },
+  'OpenAI v1 账户选择 Responses SSE 时应原样提交测试形态'
+)
+assertDeepEqual(
+  buildAccountTestPayload({ model: 'claude-opus-4-8', testEndpointMode: 'account_default' }, accountFixture({
+    providerCode: 'anthropic',
+    providerProtocolProfileId: 'profile_anthropic_anthropic_v1',
+    protocolCode: 'anthropic',
+    protocolVersion: 'v1'
+  })),
+  { model: 'claude-opus-4-8', testEndpointMode: 'messages_sse' },
+  'Anthropic 测试应从接口能力限制中明确提交 Messages endpoint mode'
+)
 
 await submitAccountTestTask({
   account: boundAccount,

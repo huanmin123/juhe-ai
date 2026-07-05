@@ -312,7 +312,7 @@ GLM 账户测试必须复用真实网关链路：
 - 创建通用 GLM API Key 账户，保存后落到 `profile_glm_general_openai_v1`。
 - 创建 GLM Coding Plan Key 账户，保存后落到 `profile_glm_coding_openai_v1`。
 - 两类账户默认 `supported_endpoint_modes` 均为 `chat_json/chat_sse`；通用 GLM 和 GLM Coding 普通账号只有在显式 `responses -> chat_completions` 模型别名命中时才通过 bridge 承接流式 Responses。
-- 两类账户分别绑定同档案分组，跨档案绑定被拒绝。
+- 两类账户绑定同一 GLM 供应商分组，账户协议档案由账户接入类型区分。
 - OpenAI 标准账户测试使用 `/v1/chat/completions`；GLM Coding 普通账户测试也使用 `/v1/chat/completions`；通用 GLM API 默认模型为 `glm-5.2`，GLM Coding Plan 默认模型为 `glm-5.2`。
 - 网关请求通用 GLM API 时命中 `https://open.bigmodel.cn/api/paas/v4/chat/completions`。
 - 网关请求 GLM Coding Plan 时命中 `https://open.bigmodel.cn/api/coding/paas/v4/chat/completions`。

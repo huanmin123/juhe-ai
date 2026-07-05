@@ -130,15 +130,15 @@ try {
   }
   const databaseHistoryRoles = new Set(databaseHistory.map((row) => row.databaseRole))
   assert.equal(databaseHistory.length, 4, '四库增长趋势应一次返回业务库、数据集目录库、使用记录目录库和统计结果库历史点')
-  assert(databaseHistoryRoles.has('business'), '三库增长趋势应包含业务库')
-  assert(databaseHistoryRoles.has('dataset'), '三库增长趋势应包含数据集目录库')
+  assert(databaseHistoryRoles.has('business'), '四库增长趋势应包含业务库')
+  assert(databaseHistoryRoles.has('dataset'), '四库增长趋势应包含数据集目录库')
   assert(databaseHistoryRoles.has('usage-catalog'), '四库增长趋势应包含使用记录目录库')
-  assert(databaseHistoryRoles.has('stats'), '三库增长趋势应包含统计结果库')
+  assert(databaseHistoryRoles.has('stats'), '四库增长趋势应包含统计结果库')
   const databaseHistorySql = capturedHistorySql.find((sql) => sql.includes('FROM database_storage_snapshots'))
-  assert(databaseHistorySql, '三库增长趋势应按库角色读取历史快照')
+  assert(databaseHistorySql, '四库增长趋势应按库角色读取历史快照')
   const databaseHistoryPlan = explainQueryPlan(statsDatabase, databaseHistorySql, ['business', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', 720])
-  assertNoTempBtree(databaseHistoryPlan, '三库增长趋势查询')
-  assert(databaseHistoryPlan.includes('idx_database_storage_snapshots_role_time_id'), `三库增长趋势应使用 role+time+id 索引，实际计划：${databaseHistoryPlan}`)
+  assertNoTempBtree(databaseHistoryPlan, '四库增长趋势查询')
+  assert(databaseHistoryPlan.includes('idx_database_storage_snapshots_role_time_id'), `四库增长趋势应使用 role+time+id 索引，实际计划：${databaseHistoryPlan}`)
   assert.deepEqual(await tableMonitorRepository.listDatabaseStorageHistoryAsync({
     startAt: '2026-01-01T00:00:00.000Z',
     endAt: '2026-01-01T00:00:00.000Z',

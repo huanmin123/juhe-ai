@@ -1,18 +1,18 @@
 import { runtimeConfig } from '../../config/runtime.js'
-import type { AccountSummary, AccountTestApiKeyPoolItemResult, AccountTestResult } from '../../domain/types.js'
+import type { AccountSummary, AccountSupportedEndpointMode, AccountTestApiKeyPoolItemResult, AccountTestResult } from '../../domain/types.js'
 import { logger, errorLogFields } from '../../shared/logger.js'
 import { createRetryQueue } from '../../shared/retry-queue.js'
 import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import {
   accountTestUnavailableMessage,
-  findRecentOpenAIRequestShapeForAccountAsync,
-  getAccountPrecheckMutationState,
+  getAccountPrecheckMutationStateAsync,
   resolveProxyUrlForProfileAsync,
   runtimeOpenAIAccountCredentials,
   type OpenAIAccountSecret
 } from '../../storage/repositories.js'
-import { accountApiKeyEntries, selectAccountRuntimeApiKey, type AccountApiKeyEntry } from '../../storage/account-api-key-rotation.js'
+import { accountApiKeyEntries, selectAccountRuntimeApiKeyEntryAsync, type AccountApiKeyEntry } from '../../storage/account-api-key-rotation.js'
 import { getSettings } from '../../storage/settings.repository.js'
+import { DEFAULT_SYSTEM_SETTINGS } from '../../storage/schema-defaults.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import {
   type AccountTestDraftSnapshot,
@@ -21,7 +21,7 @@ import { requestBackgroundWorkerDbService, sendAccountRuntimeClearToServer, send
 import { operationMode, recordOperationLogAsync, resolveOperationOwner, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 import { buildOpenAIOAuthCredentials, refreshOpenAIOAuthToken, shouldRefreshOpenAIOAuthCredentials } from '../openai-oauth/openai-oauth.service.js'
 import { isGatewaySupportedProtocolProfile } from '../../domain/provider-protocol.js'
-import { preferredSystemAccountTestModel, testOpenAIAccount, testOpenAIAccountWithDiagnosticRetries } from './account-test.service.js'
+import { preferredSystemAccountTestModelAsync, testOpenAIAccount, testOpenAIAccountWithDiagnosticRetries } from './account-test.service.js'
 import {
   type AccountDiagnosticAttemptProgress,
   accountDiagnosticAttemptProgress,
@@ -45,13 +45,14 @@ interface ManualAccountTestFailurePrecheckQueueItem {
   accountName: string
   access: AccessScope
   model?: string
-  clientCompatibility?: AccountSummary['clientCompatibility']
+  testEndpointMode?: AccountSupportedEndpointMode
   originalResult: Pick<AccountTestResult, 'traceId' | 'statusCode' | 'errorCode' | 'message' | 'model'>
   precheckStartedAt: string
 }
 
-const unsupportedGatewayProtocolTestMessage = '当前仅支持测试 OpenAI 或 Anthropic 协议账户'
+const unsupportedGatewayProtocolTestMessage = '当前仅支持测试 OpenAI、Anthropic 或 Gemini 协议账户'
 const defaultManualAccountTestConcurrency = 100
+const defaultSystemSettingsByKey = new Map<string, unknown>(DEFAULT_SYSTEM_SETTINGS.map(([key, value]) => [key, value]))
 const manualAccountTestRefillMinBatchSize = 100
 const manualAccountTestRefillMaxBatchSize = 1000
 const manualAccountTestQueuedMaxWaitMs = 10 * 60_000
@@ -61,6 +62,7 @@ const manualAccountTestRetryPolicy = sequenceRetryPolicy('manual_account_test', 
 const manualAccountTestFailurePrecheckRetryPolicy = sequenceRetryPolicy('manual_account_test_failure_precheck', [], 0)
 const runningAccountTestControllers = new Map<string, AbortController>()
 let accountTestSessionStaleSweepTimer: NodeJS.Timeout | undefined
+let sqliteSettingsTableMissingWarningLogged = false
 
 const manualAccountTestQueue = createRetryQueue<AccountTestQueueItem>({
   name: 'manual-account-test',
@@ -178,15 +180,36 @@ function accountTestTaskConcurrency(): number {
   if (runtimeConfig.databaseDriver === 'postgres') {
     return defaultManualAccountTestConcurrency
   }
-  const value = getSettings().accountTestTaskConcurrency
+  const value = accountTestTaskConcurrencySettingValue()
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return defaultManualAccountTestConcurrency
   }
   return Math.min(1000, Math.max(1, Math.trunc(value)))
 }
 
+function accountTestTaskConcurrencySettingValue(): unknown {
+  try {
+    return getSettings().accountTestTaskConcurrency
+  } catch (error) {
+    if (!isMissingSystemSettingsTableError(error)) {
+      throw error
+    }
+    if (!sqliteSettingsTableMissingWarningLogged) {
+      sqliteSettingsTableMissingWarningLogged = true
+      logger.warn(errorLogFields(error, {
+        event: 'manual_account_test_settings_table_missing_default'
+      }), '账号测试队列启动时系统设置表尚未初始化，将临时使用默认并发')
+    }
+    return defaultSystemSettingsByKey.get('accountTestTaskConcurrency')
+  }
+}
+
 function manualAccountTestRefillBatchSize(): number {
   return Math.min(manualAccountTestRefillMaxBatchSize, Math.max(manualAccountTestRefillMinBatchSize, accountTestTaskConcurrency() * 2))
+}
+
+function isMissingSystemSettingsTableError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes('no such table: system_settings')
 }
 
 function startAccountTestSessionStaleSweep(): void {
@@ -258,7 +281,7 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
         }
         const result = await runOpenAIAccountTestWithSideEffects(account, access, {
           model: task.model,
-          clientCompatibility: task.clientCompatibility ?? draft.clientCompatibility,
+          testEndpointMode: task.testEndpointMode,
           diagnostics: task.diagnostics,
           signal: controller.signal,
           draftAccount: draft,
@@ -277,7 +300,7 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
 
       const result = await runOpenAIDraftAccountTestWithApiKeyPool(draftAccount, access, draft, {
         model: task.model,
-        clientCompatibility: task.clientCompatibility ?? draft.clientCompatibility,
+        testEndpointMode: task.testEndpointMode,
         diagnostics: task.diagnostics,
         signal: controller.signal,
         onDiagnosticAttemptProgress,
@@ -310,7 +333,7 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
 
     const result = await runOpenAIAccountTestWithSideEffects(account, access, {
       model: task.model,
-      clientCompatibility: task.clientCompatibility,
+      testEndpointMode: task.testEndpointMode,
       diagnostics: task.diagnostics,
       signal: controller.signal,
       onDiagnosticAttemptProgress,
@@ -461,7 +484,7 @@ async function runOpenAIDraftAccountTest(
   draft: AccountTestDraftSnapshot,
   input: {
     model?: string
-    clientCompatibility?: AccountSummary['clientCompatibility']
+    testEndpointMode?: AccountSupportedEndpointMode
     diagnostics: 'full' | 'limited'
     signal: AbortSignal
     onDiagnosticAttemptProgress?: (progress: AccountDiagnosticAttemptProgress) => void
@@ -476,7 +499,7 @@ async function runOpenAIDraftAccountTestWithApiKeyPool(
   draft: AccountTestDraftSnapshot,
   input: {
     model?: string
-    clientCompatibility?: AccountSummary['clientCompatibility']
+    testEndpointMode?: AccountSupportedEndpointMode
     diagnostics: 'full' | 'limited'
     signal: AbortSignal
     onDiagnosticAttemptProgress?: (progress: AccountDiagnosticAttemptProgress) => void
@@ -494,7 +517,7 @@ async function testOpenAIDraftAccountWithDiagnosticRetries(
   draft: AccountTestDraftSnapshot,
   input: {
     model?: string
-    clientCompatibility?: AccountSummary['clientCompatibility']
+    testEndpointMode?: AccountSupportedEndpointMode
     diagnostics: 'full' | 'limited'
     signal: AbortSignal
     onDiagnosticAttemptProgress?: (progress: AccountDiagnosticAttemptProgress) => void
@@ -515,7 +538,7 @@ async function testOpenAIDraftAccountWithDiagnosticRetries(
         model: input.model,
         groupId: draft.groupId,
         systemAccountId: draft.ownerSystemAccountId,
-        clientCompatibility: input.clientCompatibility,
+        testEndpointMode: input.testEndpointMode,
         diagnostics: input.diagnostics,
         signal: attemptSignal,
         candidateAccount,
@@ -556,7 +579,7 @@ async function runOpenAIAccountTestWithSideEffects(
   access: AccessScope,
   input: {
     model?: string
-    clientCompatibility?: AccountSummary['clientCompatibility']
+    testEndpointMode?: AccountSupportedEndpointMode
     diagnostics: 'full' | 'limited'
     signal: AbortSignal
     draftAccount?: AccountTestDraftSnapshot
@@ -570,18 +593,17 @@ async function runOpenAIAccountTestWithSideEffects(
     result = input.draftAccount
       ? await runOpenAIDraftAccountTest(account, input.draftAccount, {
         model: input.model,
-        clientCompatibility: input.clientCompatibility ?? input.draftAccount.clientCompatibility,
+        testEndpointMode: input.testEndpointMode,
         diagnostics: input.diagnostics,
         signal: input.signal,
         onDiagnosticAttemptProgress: input.onDiagnosticAttemptProgress
       })
       : await testOpenAIAccountWithDiagnosticRetries(account, {
         model: input.model,
-        clientCompatibility: input.clientCompatibility,
+        testEndpointMode: input.testEndpointMode,
         signal: input.signal,
         diagnostics: input.diagnostics,
         systemAccountId: access.systemAccountId,
-        requestShape: await findRecentOpenAIRequestShapeForAccountAsync(account.id, account.boundGroupId),
         onDiagnosticAttemptProgress: input.onDiagnosticAttemptProgress,
         findAccountForTest: loadAccountForTestViaDbService
       })
@@ -615,7 +637,7 @@ async function runOpenAIAccountTestWithSideEffects(
   if (shouldRunAccountTestFailurePrecheck(account, result)) {
     enqueueManualAccountTestFailurePrecheck(account, access, result, {
       model: input.model ?? result.model,
-      clientCompatibility: input.clientCompatibility
+      testEndpointMode: input.testEndpointMode ?? result.testEndpointMode
     })
   }
 
@@ -652,7 +674,7 @@ async function runAccountApiKeyPoolTestIfNeeded(
   access: AccessScope,
   input: {
     model?: string
-    clientCompatibility?: AccountSummary['clientCompatibility']
+    testEndpointMode?: AccountSupportedEndpointMode
     diagnostics: 'full' | 'limited'
     signal: AbortSignal
     draftAccount?: AccountTestDraftSnapshot
@@ -681,17 +703,13 @@ async function runAccountApiKeyPoolTestIfNeeded(
   }
 
   input.onStatusMessage?.(accountApiKeyPoolProgressMessage(0, entries.length, 0, 0))
-  const requestShape = input.draftAccount
-    ? undefined
-    : await findRecentOpenAIRequestShapeForAccountAsync(account.id, account.boundGroupId)
   const itemResults = await runAccountApiKeyPoolEntryTests(account, baseCandidate, entries, {
     model: input.model,
-    clientCompatibility: input.clientCompatibility,
+    testEndpointMode: input.testEndpointMode,
     diagnostics: input.diagnostics,
     signal: input.signal,
     groupId,
     systemAccountId,
-    requestShape,
     onProgress: input.onStatusMessage
   })
   let persistedRuntime = false
@@ -734,12 +752,11 @@ async function runAccountApiKeyPoolEntryTests(
   entries: AccountApiKeyEntry[],
   input: {
     model?: string
-    clientCompatibility?: AccountSummary['clientCompatibility']
+    testEndpointMode?: AccountSupportedEndpointMode
     diagnostics: 'full' | 'limited'
     signal: AbortSignal
     groupId: string
     systemAccountId: string
-    requestShape?: Awaited<ReturnType<typeof findRecentOpenAIRequestShapeForAccountAsync>>
     onProgress?: (message: string) => void
   }
 ): Promise<AccountApiKeyPoolEntryTestResult[]> {
@@ -776,12 +793,11 @@ async function runAccountApiKeyPoolEntryTest(
   entry: AccountApiKeyEntry,
   input: {
     model?: string
-    clientCompatibility?: AccountSummary['clientCompatibility']
+    testEndpointMode?: AccountSupportedEndpointMode
     diagnostics: 'full' | 'limited'
     signal: AbortSignal
     groupId: string
     systemAccountId: string
-    requestShape?: Awaited<ReturnType<typeof findRecentOpenAIRequestShapeForAccountAsync>>
   }
 ): Promise<AccountApiKeyPoolEntryTestResult> {
   const timeoutMs = accountDiagnosticRetryTimeoutMs[0] ?? 10_000
@@ -793,10 +809,9 @@ async function runAccountApiKeyPoolEntryTest(
       model: input.model,
       groupId: input.groupId,
       systemAccountId: input.systemAccountId,
-      clientCompatibility: input.clientCompatibility,
+      testEndpointMode: input.testEndpointMode,
       diagnostics: input.diagnostics,
       signal: attemptSignal,
-      requestShape: input.requestShape,
       candidateAccount: fixedCandidate,
       disableAccountStateMutation: true,
       findAccountForTest: loadAccountForTestViaDbService,
@@ -958,7 +973,7 @@ function enqueueManualAccountTestFailurePrecheck(
   result: AccountTestResult,
   input: {
     model?: string
-    clientCompatibility?: AccountSummary['clientCompatibility']
+    testEndpointMode?: AccountSupportedEndpointMode
   }
 ): void {
   const precheckStartedAt = new Date().toISOString()
@@ -967,7 +982,7 @@ function enqueueManualAccountTestFailurePrecheck(
     accountName: account.name,
     access: { ...access },
     model: normalizedString(input.model ?? result.model),
-    clientCompatibility: input.clientCompatibility,
+    testEndpointMode: input.testEndpointMode,
     originalResult: {
       traceId: result.traceId,
       statusCode: result.statusCode,
@@ -985,6 +1000,7 @@ function enqueueManualAccountTestFailurePrecheck(
     statusCode: result.statusCode,
     errorCode: result.errorCode,
     model: input.model ?? result.model,
+    testEndpointMode: input.testEndpointMode,
     precheckStartedAt
   }, enqueued ? '账号测试失败，已进入事前确认队列' : '账号测试失败事前确认已在队列中，本次不重复入队')
 }
@@ -1004,7 +1020,7 @@ async function runManualAccountTestFailurePrecheckQueueItem(
     }, '账号测试失败事前确认已失效，跳过状态写入')
     return true
   }
-  const skipReason = manualAccountTestFailurePrecheckSkipReason(item, account)
+  const skipReason = await manualAccountTestFailurePrecheckSkipReason(item, account)
   if (skipReason) {
     logger.info({
       event: 'manual_account_test_failure_precheck_skipped',
@@ -1018,16 +1034,15 @@ async function runManualAccountTestFailurePrecheckQueueItem(
   }
 
   const result = await testOpenAIAccountWithDiagnosticRetries(account, {
-    model: item.model || preferredSystemAccountTestModel(account),
-    clientCompatibility: item.clientCompatibility,
+    model: item.model || await preferredSystemAccountTestModelAsync(account),
+    testEndpointMode: item.testEndpointMode,
     diagnostics: 'full',
     groupId: account.boundGroupId,
     systemAccountId: accountTestPrecheckSystemAccountId(account),
-      requestShape: await findRecentOpenAIRequestShapeForAccountAsync(account.id, account.boundGroupId),
-      trafficSource: 'cooldown_retest',
-      disableAccountStateMutation: true,
-      findAccountForTest: loadAccountForTestViaDbService,
-      gatewaySettingsOverride: {
+    trafficSource: 'cooldown_retest',
+    disableAccountStateMutation: true,
+    findAccountForTest: loadAccountForTestViaDbService,
+    gatewaySettingsOverride: {
       temporaryUnschedulableRetryAttempts: 0,
       temporaryUnschedulableRetryIntervalSeconds: 0
     }
@@ -1075,7 +1090,7 @@ async function runManualAccountTestFailurePrecheckQueueItem(
     }, '账号测试失败事前确认完成前账户已变化，跳过状态写入')
     return true
   }
-  const latestSkipReason = manualAccountTestFailurePrecheckSkipReason(item, latestAccount)
+  const latestSkipReason = await manualAccountTestFailurePrecheckSkipReason(item, latestAccount)
   if (latestSkipReason) {
     logger.info({
       event: 'manual_account_test_failure_precheck_mark_skipped',
@@ -1138,12 +1153,19 @@ async function openAIDraftAccountSecret(draft: AccountTestDraftSnapshot, signal:
       ...refreshedCredentials
     }
   }
+  const selectedApiKeyEntry = draft.type === 'api_key'
+    ? await selectAccountRuntimeApiKeyEntryAsync({ accountId: draft.id, credentials })
+    : undefined
   const apiKey = draft.type === 'oauth'
     ? stringCredential(credentials.access_token)
-    : selectAccountRuntimeApiKey({ accountId: draft.id, credentials })
+    : selectedApiKeyEntry?.key
   if (!apiKey) {
     throw new DraftAccountConfigurationError(draft.type === 'oauth' ? 'OAuth 草稿缺少 Access Token' : '账户草稿缺少 API Key')
   }
+  const runtimeCredentials = runtimeOpenAIAccountCredentials({
+    ...credentials,
+    ...(draft.type === 'api_key' ? { api_key: apiKey } : {})
+  })
   const baseUrl = stringCredential(credentials.base_url) || 'https://api.openai.com/v1'
   return {
     id: draft.id,
@@ -1170,6 +1192,8 @@ async function openAIDraftAccountSecret(draft: AccountTestDraftSnapshot, signal:
     baseUrl,
     apiKey,
     apiKeys: draft.type === 'api_key' ? accountApiKeyEntries(credentials).map((entry) => entry.key) : undefined,
+    selectedApiKeyFingerprint: selectedApiKeyEntry?.fingerprint,
+    selectedApiKeyIndex: selectedApiKeyEntry?.index,
     refreshToken: stringCredential(credentials.refresh_token) || undefined,
     clientId: stringCredential(credentials.client_id) || undefined,
     proxyProfileId: draft.proxyProfileId,
@@ -1179,7 +1203,7 @@ async function openAIDraftAccountSecret(draft: AccountTestDraftSnapshot, signal:
     streamFailureCount: 0,
     accountExpiresAt: draft.accountExpiresAt,
     expiresAt: stringCredential(credentials.expires_at) || undefined,
-    credentials: runtimeOpenAIAccountCredentials(credentials)
+    credentials: runtimeCredentials
   }
 }
 
@@ -1364,10 +1388,10 @@ function shouldRunAccountTestFailurePrecheck(account: AccountSummary, result: { 
   return true
 }
 
-function manualAccountTestFailurePrecheckSkipReason(
+async function manualAccountTestFailurePrecheckSkipReason(
   item: ManualAccountTestFailurePrecheckQueueItem,
   account: AccountSummary | undefined
-): string | undefined {
+): Promise<string | undefined> {
   if (!account) return 'account_missing'
   if (!shouldRunAccountTestFailurePrecheck(account, {
     success: false,
@@ -1376,7 +1400,7 @@ function manualAccountTestFailurePrecheckSkipReason(
   })) {
     return 'account_not_eligible'
   }
-  const state = getAccountPrecheckMutationState({
+  const state = await getAccountPrecheckMutationStateAsync({
     accountId: account.id,
     authorizedBinding: manualAccountTestFailurePrecheckAuthorizedBinding(account, item.access)
   })

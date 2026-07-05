@@ -81,6 +81,7 @@ function auditTrafficSource(value: unknown): AuditLogSummary['trafficSource'] {
   if (
     value === 'gateway'
     || value === 'manual_account_test'
+    || value === 'runtime_recovery_probe'
     || value === 'cooldown_retest'
     || value === 'hybrid_scoring'
     || value === 'hybrid_quality_scoring'

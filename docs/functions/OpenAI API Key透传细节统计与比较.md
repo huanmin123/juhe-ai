@@ -19,7 +19,7 @@
 
 | 范围 | 关键文件 | 关注点 |
 | --- | --- | --- |
-| `/v1` 原始 body | `backend/src/server.ts` | 认证预检通过后用 `express.raw({ type: () => true, limit: '64mb' })` 捕获 `rawBody`；文本 lane 再按系统设置 `gatewayTextRawBodyLimitMegabytes` 做业务上限，默认 `8MB`；JSON 请求小体积主线程解析，超过 `256KB` 后转入 worker thread 扫描/解析 |
+| `/v1` 原始 body | `backend/src/server.ts` | 认证预检通过后用 `express.raw({ type: () => true, limit: '64mb' })` 捕获 `rawBody`；文本 lane 再按系统设置 `gatewayTextRawBodyLimitMegabytes` 做业务上限，默认 `16MB`；JSON 请求小体积主线程解析，超过 `256KB` 后转入 worker thread 扫描/解析 |
 | API Key 上游 body | `backend/src/modules/gateway/upstream/request.ts` | 始终使用网关捕获的 `req.rawBody` 作为上游请求体 |
 | API Key 上游 header | `backend/src/modules/gateway/upstream/request.ts` | 复制客户端语义头，过滤危险头、代理链路头、SDK / tracing 噪声，替换认证，不从账号凭据写入 OpenAI 组织 / 项目 / Beta |
 | API Key 表单 | `frontend/src/views/accounts/AccountApiKeySection.vue` | 只配置 API Key 和 Base URL，不暴露 OpenAI 组织、项目和 Beta 字段 |

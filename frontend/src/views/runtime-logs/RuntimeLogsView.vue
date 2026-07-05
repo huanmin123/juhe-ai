@@ -28,8 +28,6 @@
       :mobile-has-more="mobileHasMore"
       :mobile-loading-more="mobileLoadingMore"
       :pagination="tablePagination"
-      :queue-health-alert-description="queueHealthAlertDescription"
-      :queue-health-alert-visible="queueHealthAlertVisible"
       :records="records"
       :runtime-log-columns="runtimeLogColumns"
       :runtime-logs-alert-description="runtimeLogsAlertDescription"
@@ -79,10 +77,8 @@ import { copyTextToClipboard } from '@/shared/clipboard'
 import {
   buildRuntimeLogEventOptions,
   filterRuntimeLogEventOption,
-  isRuntimeLogQueueHealthAlertVisible,
   isRuntimeLogsAlertVisible,
   runtimeLogGrepRangeLimitText,
-  runtimeLogQueueHealthAlertDescription,
   runtimeLogsAlertDescription as buildRuntimeLogsAlertDescription
 } from './runtimeLogFacets'
 import {
@@ -213,8 +209,6 @@ const grepRuntime = computed(() => facets.value?.grep)
 const grepRangeLimitText = computed(() => runtimeLogGrepRangeLimitText(grepRuntime.value))
 const runtimeLogsAlertVisible = computed(() => isRuntimeLogsAlertVisible(facets.value))
 const runtimeLogsAlertDescription = computed(() => buildRuntimeLogsAlertDescription(facets.value))
-const queueHealthAlertVisible = computed(() => isRuntimeLogQueueHealthAlertVisible(facets.value))
-const queueHealthAlertDescription = computed(() => runtimeLogQueueHealthAlertDescription(facets.value))
 
 const activeFilterCount = computed(() => {
   let count = 0

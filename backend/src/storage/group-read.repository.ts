@@ -6,7 +6,13 @@ import { getPostgresPool } from './postgres-client.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { normalizeListPage, pagedTotalUpperBound, takePageRows } from './query-utils.js'
 import type { GroupListRow } from './repository-row-types.js'
-import { loadAuthorizationUsageRangeSummariesForScopes, loadAuthorizationUsageSummariesForScopes, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
+import {
+  loadAuthorizationUsageRangeSummariesForScopes,
+  loadAuthorizationUsageRangeSummariesForScopesAsync,
+  loadAuthorizationUsageSummariesForScopes,
+  loadAuthorizationUsageSummariesForScopesAsync,
+  type UsageSummaryScopeRequest
+} from './usage-summary-loaders.js'
 
 export interface GroupListOptions {
   page?: number
@@ -14,7 +20,6 @@ export interface GroupListOptions {
   ids?: string[]
   keyword?: string
   providerCode?: string
-  providerProtocolProfileId?: string
   manageableOnly?: boolean
   preferDefault?: boolean
 }
@@ -35,7 +40,6 @@ interface NormalizedGroupListOptions {
   ids: string[]
   keyword?: string
   providerCode?: string
-  providerProtocolProfileId?: string
   manageableOnly: boolean
   preferDefault: boolean
   page: number
@@ -121,7 +125,6 @@ function normalizeGroupListOptions(options?: GroupListOptions): NormalizedGroupL
     ids: normalizeTextList(options?.ids),
     keyword: normalizeTextFilter(options?.keyword),
     providerCode: normalizeTextFilter(options?.providerCode),
-    providerProtocolProfileId: normalizeTextFilter(options?.providerProtocolProfileId),
     manageableOnly: options?.manageableOnly === true,
     preferDefault: options?.preferDefault === true,
     page,
@@ -133,7 +136,7 @@ function normalizeGroupOptionListOptions(options?: GroupOptionListOptions): Norm
   return normalizeGroupListOptions({ ...options, pageSize: options?.limit })
 }
 
-function queryGroupRowsForAccess(access?: AccessScope, pagination?: { limit: number; offset: number }, options: Pick<NormalizedGroupListOptions, 'ids' | 'keyword' | 'providerCode' | 'providerProtocolProfileId' | 'manageableOnly' | 'preferDefault'> = { ids: [], manageableOnly: false, preferDefault: false }): { rows: GroupListRow[] } {
+function queryGroupRowsForAccess(access?: AccessScope, pagination?: { limit: number; offset: number }, options: Pick<NormalizedGroupListOptions, 'ids' | 'keyword' | 'providerCode' | 'manageableOnly' | 'preferDefault'> = { ids: [], manageableOnly: false, preferDefault: false }): { rows: GroupListRow[] } {
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   const ownerSystemAccountId = manageableSystemAccountId(access)
   const pageClause = pagination ? ' LIMIT ? OFFSET ?' : ''
@@ -184,7 +187,7 @@ function queryGroupRowsForAccess(access?: AccessScope, pagination?: { limit: num
   return { rows }
 }
 
-async function queryGroupRowsForAccessAsync(access?: AccessScope, pagination?: { limit: number; offset: number }, options: Pick<NormalizedGroupListOptions, 'ids' | 'keyword' | 'providerCode' | 'providerProtocolProfileId' | 'manageableOnly' | 'preferDefault'> = { ids: [], manageableOnly: false, preferDefault: false }): Promise<{ rows: GroupListRow[] }> {
+async function queryGroupRowsForAccessAsync(access?: AccessScope, pagination?: { limit: number; offset: number }, options: Pick<NormalizedGroupListOptions, 'ids' | 'keyword' | 'providerCode' | 'manageableOnly' | 'preferDefault'> = { ids: [], manageableOnly: false, preferDefault: false }): Promise<{ rows: GroupListRow[] }> {
   const client = await getGroupReadDatabaseClient()
   const groupsTable = groupTable(client, 'groups')
   const resourceAuthorizationsTable = groupTable(client, 'resource_authorizations')
@@ -353,9 +356,6 @@ function groupRowSelectColumns(alias: string): string {
     'system_account_id',
     'name',
     'provider_code',
-    'provider_protocol_profile_id',
-    'protocol_code',
-    'protocol_version',
     'description',
     'enabled',
     'is_default',
@@ -373,9 +373,6 @@ function authorizedGroupRowSelectColumns(groupAlias: string, settingsAlias: stri
     `${groupAlias}.system_account_id`,
     `${groupAlias}.name`,
     `${groupAlias}.provider_code`,
-    `${groupAlias}.provider_protocol_profile_id`,
-    `${groupAlias}.protocol_code`,
-    `${groupAlias}.protocol_version`,
     `${groupAlias}.description`,
     `CASE WHEN ${groupAlias}.enabled = 1 THEN COALESCE(${settingsAlias}.enabled, 1) ELSE 0 END AS enabled`,
     `${groupAlias}.is_default`,
@@ -392,9 +389,6 @@ function groupListRowOuterSelectColumns(): string {
     'system_account_id',
     'name',
     'provider_code',
-    'provider_protocol_profile_id',
-    'protocol_code',
-    'protocol_version',
     'description',
     'enabled',
     'is_default',
@@ -418,37 +412,30 @@ function groupOrderClause(preferDefault: boolean): string {
 
 function buildGroupFilter(
   alias: string | undefined,
-  options: Pick<NormalizedGroupListOptions, 'ids' | 'keyword' | 'providerCode' | 'providerProtocolProfileId'>,
+  options: Pick<NormalizedGroupListOptions, 'ids' | 'keyword' | 'providerCode'>,
   initialClauses: string[] = [],
   initialParams: string[] = []
 ): { clauses: string[]; params: string[] } {
   const clauses = [...initialClauses]
   const params = [...initialParams]
   const providerCode = options.providerCode?.trim()
-  const providerProtocolProfileId = 'providerProtocolProfileId' in options ? options.providerProtocolProfileId?.trim() : undefined
   const column = (name: string) => alias ? `${alias}.${name}` : name
   if (options.ids.length) {
     clauses.push(`${column('id')} IN (${options.ids.map(() => '?').join(', ')})`)
     params.push(...options.ids)
   }
   if (providerCode) {
-    clauses.push(`${column('provider_code')} COLLATE NOCASE = ?`)
+    clauses.push(`${column('provider_code')} = ?`)
     params.push(providerCode)
-  }
-  if (providerProtocolProfileId) {
-    clauses.push(`${column('provider_protocol_profile_id')} COLLATE NOCASE = ?`)
-    params.push(providerProtocolProfileId)
   }
   const text = options.keyword?.trim()
   if (text) {
-    const prefix = `${escapeLikePrefix(text)}%`
+    const upperBound = textPrefixUpperBound(text)
     clauses.push(`(
-      ${column('name')} COLLATE NOCASE = ?
-      OR ${column('name')} LIKE ? ESCAPE '\\'
-      OR ${column('provider_code')} COLLATE NOCASE = ?
-      OR ${column('provider_code')} LIKE ? ESCAPE '\\'
+      (${column('name')} >= ? AND ${column('name')} < ?)
+      OR (${column('provider_code')} >= ? AND ${column('provider_code')} < ?)
     )`)
-    params.push(text, prefix, text, prefix)
+    params.push(text, upperBound, text, upperBound)
   }
   return { clauses, params }
 }
@@ -456,7 +443,7 @@ function buildGroupFilter(
 function buildGroupFilterForClient(
   client: DatabaseClient,
   alias: string | undefined,
-  options: Pick<NormalizedGroupListOptions, 'ids' | 'keyword' | 'providerCode' | 'providerProtocolProfileId'>,
+  options: Pick<NormalizedGroupListOptions, 'ids' | 'keyword' | 'providerCode'>,
   initialClauses: string[] = [],
   initialParams: string[] = []
 ): { clauses: string[]; params: string[] } {
@@ -466,32 +453,24 @@ function buildGroupFilterForClient(
   const clauses = [...initialClauses]
   const params = [...initialParams]
   const providerCode = options.providerCode?.trim()
-  const providerProtocolProfileId = 'providerProtocolProfileId' in options ? options.providerProtocolProfileId?.trim() : undefined
   const column = (name: string) => alias ? `${alias}.${name}` : name
-  const lowerEquals = (name: string) => `lower(${column(name)}) = lower(?)`
-  const lowerLike = (name: string) => `lower(${column(name)}) LIKE lower(?) ESCAPE '\\'`
+  const cRange = (name: string) => `(${column(name)} COLLATE "C" >= ? AND ${column(name)} COLLATE "C" < ?)`
   if (options.ids.length) {
     clauses.push(`${column('id')} IN (${options.ids.map(() => '?').join(', ')})`)
     params.push(...options.ids)
   }
   if (providerCode) {
-    clauses.push(lowerEquals('provider_code'))
+    clauses.push(`${column('provider_code')} = ?`)
     params.push(providerCode)
-  }
-  if (providerProtocolProfileId) {
-    clauses.push(lowerEquals('provider_protocol_profile_id'))
-    params.push(providerProtocolProfileId)
   }
   const text = options.keyword?.trim()
   if (text) {
-    const prefix = `${escapeLikePrefix(text)}%`
+    const upperBound = textPrefixUpperBound(text)
     clauses.push(`(
-      ${lowerEquals('name')}
-      OR ${lowerLike('name')}
-      OR ${lowerEquals('provider_code')}
-      OR ${lowerLike('provider_code')}
+      ${cRange('name')}
+      OR ${cRange('provider_code')}
     )`)
-    params.push(text, prefix, text, prefix)
+    params.push(text, upperBound, text, upperBound)
   }
   return { clauses, params }
 }
@@ -511,8 +490,15 @@ function normalizeTextList(values?: string[]): string[] {
     .slice(0, 500)
 }
 
-function escapeLikePrefix(value: string): string {
-  return value.replace(/[\\%_]/g, (char) => `\\${char}`)
+function textPrefixUpperBound(value: string): string {
+  const chars = [...value]
+  for (let index = chars.length - 1; index >= 0; index -= 1) {
+    const codePoint = chars[index]?.codePointAt(0)
+    if (codePoint !== undefined && codePoint < 0x10ffff) {
+      return `${chars.slice(0, index).join('')}${String.fromCodePoint(codePoint + 1)}`
+    }
+  }
+  return `${value}\uffff`
 }
 
 export function loadGroupAuthorizationUsageSummaries(
@@ -524,6 +510,17 @@ export function loadGroupAuthorizationUsageSummaries(
     return loadAuthorizationUsageRangeSummariesForScopes(scopes, scopeType, statDateOrRange)
   }
   return loadAuthorizationUsageSummariesForScopes(scopes, scopeType, statDateOrRange)
+}
+
+export async function loadGroupAuthorizationUsageSummariesAsync(
+  scopes: UsageSummaryScopeRequest[],
+  statDateOrRange?: string | Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>,
+  scopeType: 'group_authorization' | 'group_authorization_team' = 'group_authorization'
+): Promise<Map<string, AccountUsageSummary>> {
+  if (statDateOrRange && typeof statDateOrRange !== 'string') {
+    return loadAuthorizationUsageRangeSummariesForScopesAsync(scopes, scopeType, statDateOrRange)
+  }
+  return loadAuthorizationUsageSummariesForScopesAsync(scopes, scopeType, statDateOrRange)
 }
 
 async function getGroupReadDatabaseClient(): Promise<DatabaseClient> {

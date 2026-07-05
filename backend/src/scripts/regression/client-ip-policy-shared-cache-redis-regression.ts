@@ -5,13 +5,13 @@ import { join, resolve } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import type { ActiveClientIpPolicy } from '../../storage/client-ip-stats.repository.js'
 
 const cacheUrl = optionalEnv('JUHE_CLIENT_IP_POLICY_SHARED_CACHE_REDIS_URL') ?? optionalEnv('JUHE_AI_REDIS_CACHE_URL')
 
 if (!cacheUrl) {
   throw new Error('客户端 IP 封禁策略 Redis shared cache 回归需要配置 JUHE_AI_REDIS_CACHE_URL 或 JUHE_CLIENT_IP_POLICY_SHARED_CACHE_REDIS_URL')
 }
+assertRedisCleanupAllowed(cacheUrl)
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-client-ip-policy-shared-cache-redis-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 mkdirSync(tempRoot, { recursive: true })
@@ -44,41 +44,90 @@ const [
 logger.level = 'silent'
 
 const redisClient = await createDedicatedRedisClient(cacheUrl)
-const cacheKeyPattern = 'juhe-ai:cache:gateway:client-ip-policy-snapshot:*'
-const cacheVersionKey = 'juhe-ai:cache-version:gateway:client-ip-policy-snapshot'
+const cacheKeyPattern = 'juhe-ai:cache:gateway:client-ip-policy-by-ip:*'
+const cacheVersionKey = 'juhe-ai:cache-version:gateway:client-ip-policy-by-ip'
 
 try {
   await cleanupRedisKeys()
 
   const normalizedIp = clientIpStats.normalizeClientIpForStats('203.0.113.222')
   assert(normalizedIp, '测试 IPv4 应可规范化')
-  const policy: ActiveClientIpPolicy = {
-    id: `policy_shared_cache_${Date.now()}`,
+  const now = new Date().toISOString()
+  databaseModule.getStatsDatabase().prepare(`
+    INSERT INTO client_ip_registry (
+      ip_hash, bucket_no, aggregate_ip_key, client_ip, ip_version,
+      first_seen_at, last_seen_at, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    normalizedIp.ipHash,
+    normalizedIp.bucketNo,
+    normalizedIp.aggregateIpKey,
+    normalizedIp.clientIp,
+    normalizedIp.ipVersion,
+    now,
+    now,
+    now,
+    now
+  )
+  const policy = await clientIpStats.createClientIpPolicyAsync({
     ipHash: normalizedIp.ipHash,
-    aggregateIpKey: normalizedIp.aggregateIpKey,
-    clientIp: normalizedIp.clientIp,
-    reason: 'redis shared cache regression'
-  }
+    policyType: 'blacklist',
+    reason: 'redis shared cache regression',
+    actorSystemAccountId: 'sys_admin'
+  })
 
-  clientIpPolicyCache.replaceClientIpPolicyCacheLocal([policy])
-  await waitFor(async () => (await countRedisKeys(cacheKeyPattern)) > 0, 'IP 封禁策略快照应写入 Redis shared cache')
+  assert.equal(
+    (await clientIpPolicyCache.inspectClientIpPolicy(normalizedIp.clientIp)).blacklistPolicy?.id,
+    policy.id,
+    '首次判定应从数据库回源并写入 Redis shared cache'
+  )
+  await waitFor(async () => (await countRedisKeys(cacheKeyPattern)) > 0, 'IP 封禁策略单 IP 条目应写入 Redis shared cache')
 
   clientIpPolicyCache.replaceClientIpPolicyCacheLocal([], { skipSharedCache: true })
   assert.equal(
-    (await clientIpPolicyCache.inspectClientIpPolicy(normalizedIp.clientIp, { cacheOnly: true })).blocked,
-    false,
-    '清空本地快照后，请求路径不应自己读取 Redis shared cache'
+    (await clientIpPolicyCache.inspectClientIpPolicy(normalizedIp.clientIp, { cacheOnly: true })).blacklistPolicy?.id,
+    policy.id,
+    '清空本地快照后，cacheOnly 判定应能读取单 IP Redis shared cache'
   )
 
-  await clientIpPolicyCache.reloadClientIpPolicyCacheLocal()
+  await clientIpStats.disableClientIpPolicies({
+    ipHash: normalizedIp.ipHash,
+    policyType: 'blacklist',
+    reason: 'redis shared cache regression disabled',
+    actorSystemAccountId: 'sys_admin'
+  })
   assert.equal(
     (await clientIpPolicyCache.inspectClientIpPolicy(normalizedIp.clientIp, { cacheOnly: true })).blacklistPolicy?.id,
     policy.id,
-    '重载本地快照应从 Redis shared cache 恢复 active IP 封禁策略'
+    '数据库禁用策略后，未失效的 cacheOnly 判定仍会命中旧 Redis shared cache'
+  )
+  await clientIpPolicyCache.reloadClientIpPolicyCacheLocal({ bypassSharedCache: true })
+  assert.equal(
+    (await clientIpPolicyCache.inspectClientIpPolicy(normalizedIp.clientIp, { cacheOnly: true })).blocked,
+    false,
+    '绕过 Redis shared cache 重载后，cacheOnly 判定应看到单 IP shared cache 已清理'
+  )
+  const recreatedPolicy = await clientIpStats.createClientIpPolicyAsync({
+    ipHash: normalizedIp.ipHash,
+    policyType: 'blacklist',
+    reason: 'redis shared cache regression recreated',
+    actorSystemAccountId: 'sys_admin'
+  })
+
+  await cleanupRedisKeys()
+  assert.equal(
+    (await clientIpPolicyCache.inspectClientIpPolicy(normalizedIp.clientIp, { cacheOnly: true })).blocked,
+    false,
+    '清理 Redis shared cache 后，cacheOnly 判定不应回源数据库'
+  )
+  assert.equal(
+    (await clientIpPolicyCache.inspectClientIpPolicy(normalizedIp.clientIp)).blacklistPolicy?.id,
+    recreatedPolicy.id,
+    'Redis shared cache miss 后，普通判定应从数据库回源并重建 shared cache'
   )
 
   await cleanupRedisKeys()
-  console.log('客户端 IP 封禁策略 Redis shared cache 回归通过：快照可跨本地清空恢复，请求热路径仍只读 server 本地快照')
+  console.log('客户端 IP 封禁策略 Redis shared cache 回归通过：单 IP 条目可跨本地清空恢复，cacheOnly 不回源数据库')
 } finally {
   await cleanupRedisKeys().catch(() => undefined)
   try {
@@ -155,6 +204,22 @@ async function closeRedisClient(client: typeof redisClient): Promise<void> {
 function optionalEnv(name: string): string | undefined {
   const value = process.env[name]?.trim()
   return value ? value : undefined
+}
+
+function assertRedisCleanupAllowed(redisUrl: string): void {
+  if (optionalEnv('JUHE_AI_ALLOW_CLIENT_IP_POLICY_SHARED_CACHE_CLEANUP') === '1') {
+    return
+  }
+  let hostname = ''
+  try {
+    hostname = new URL(redisUrl).hostname.toLowerCase().replace(/^\[(.*)\]$/, '$1')
+  } catch {
+    hostname = ''
+  }
+  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {
+    return
+  }
+  throw new Error('客户端 IP 封禁策略 Redis shared cache 回归会清理 juhe-ai:cache:gateway:client-ip-policy-by-ip:* 和对应 version key；非本机 Redis 必须先确认是测试实例，并设置 JUHE_AI_ALLOW_CLIENT_IP_POLICY_SHARED_CACHE_CLEANUP=1')
 }
 
 function numericRedisResult(value: unknown): number {

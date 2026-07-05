@@ -1,24 +1,25 @@
-# IP 统计与封禁设计
+# IP 统计与封禁 / 白名单设计
 
 > 面向 `juhe-ai` 后端、前端系统运维页面和后续 AI 维护者。
-> 当前实现已经落地持久 IP 注册表、IP 统计聚合表、IP 策略表、`/__aisys__/api/ip-stats` 管理接口、系统运维 / IP管理页面、网关封禁缓存，以及受保护的 `/__aipublic__/ip/usage` IP 聚合读取接口。
+> 当前实现已经落地持久 IP 注册表、IP 统计聚合表、IP 策略表、`/__aisys__/api/ip-stats` 管理接口、系统运维 / IP管理页面、网关封禁缓存和后台内部接口白名单放行。IP 统计只作为后台运维能力，不再通过 `/__aipublic__` 对外提供聚合读取。
 
 ## 当前状态
 
 - 已实现：`client_ip_registry`、`client_ip_stats_daily`、`client_ip_usage_range_windows`、`client_ip_account_stats_daily`、`client_ip_account_usage_range_windows`、`client_ip_policies`、`client_ip_policy_hits`。
 - 已实现：后台 `client-ip-stats-aggregation` job 按 usage shard 独立游标增量聚合 IP 统计，不在页面或网关请求路径扫描 `usage_records`。
-- 已实现：管理员 `GET /__aisys__/api/ip-stats` 列表、`GET /__aisys__/api/ip-stats/:ipHash/detail` 账号详情、封禁和解封接口。
-- 已实现：系统运维菜单新增 `IP管理` 页面，展示请求、Token、成本、失败率、活跃天数、速度、最近使用、账号详情和策略操作。
-- 已实现：网关请求入口只读 server 进程内 active IP 封禁快照和来源级短 TTL 决策缓存，命中 active 封禁策略时本地返回 `403 client_ip_blacklisted`；请求路径不按单个 IP 查询 DB service。封禁命中异步批量写入 `client_ip_policy_hits`，命中缓冲最多保留 `5000` 个 distinct `ip_hash + policy_id`，单次 flush 最多投递 `1000` 条，超出窗口的新 distinct 命中丢弃并计数，避免多来源封禁流量在主进程形成无界 Map 或大 IPC；管理端封禁 / 解封会触发 server 重载 active 策略快照，stats-worker 也会周期推送快照。
-- 已实现：受保护外部来源 IP 聚合接口和 IP 消耗排行便利视图，只暴露 IP 聚合事实，不暴露封禁策略、内部账号、API Key、模型或公益站业务关系。
+- 已实现：管理员 `GET /__aisys__/api/ip-stats` 列表、`GET /__aisys__/api/ip-stats/:ipHash/detail` 账号详情、封禁 / 解封和加入 / 移出白名单接口。
+- 已实现：系统运维菜单新增 `IP管理` 页面，展示请求、Token、成本、失败率、活跃天数、速度、最近使用、账号详情、封禁状态和白名单状态。
+- 已实现：网关请求入口按当前部署模式读取 active IP 封禁策略，standalone 模式只读 server 进程内快照，高性能 Redis cache driver 下按单个 `ip_hash` 读取 Redis shared cache，miss 后通过 stats-worker/PG 索引精确回源；请求路径不加载全量 active 策略。命中 active 封禁策略时本地返回 `403 client_ip_blacklisted`。封禁命中异步批量写入 `client_ip_policy_hits`，命中缓冲最多保留 `5000` 个 distinct `ip_hash + policy_id`，单次 flush 最多投递 `1000` 条，超出窗口的新 distinct 命中丢弃并计数，避免多来源封禁流量在主进程形成无界 Map 或大 IPC；管理端封禁 / 解封会触发 server 清理策略缓存。
+- 已实现：IP 管理白名单只放行后台管理 / 内部任务接口的 IP 和登录用户限流，不绕过认证、权限、网关 API Key 校验或网关封禁策略。
+- 已移除：受保护外部来源 IP 聚合接口和 IP 消耗排行便利视图；`/__aipublic__` 不再提供 IP 维度消费聚合或排行。
 
 ## 设计目标
 
 - 建立独立的 IP 统计事实层，支撑系统管理员在“系统运维 / IP管理”查看来源 IP 的请求次数、Token、成本、失败情况和活跃情况。
 - 后台 job 按 `usage_records` 分片游标增量处理新记录，不能在页面、接口或普通请求路径按 IP 全量 `GROUP BY usage_records`。
 - 通过 IP 注册表和本进程懒加载分桶 Set 识别当前进程已见过的 IP，避免启动时全量预热造成 worker 长时间阻塞；最终正确性仍由 SQLite 唯一约束兜底。
-- 提供管理员可控的 IP 封禁、临时封禁和解封能力，作为 `juhe-ai` 自身网关运维能力。
-- 给 `juhe-ai-public-welfare` 等允许来源系统读取 IP 聚合数据时，只暴露受保护的 IP 聚合事实，不暴露后台封禁策略、用户映射或公益榜快照。
+- 提供管理员可控的 IP 封禁、临时封禁、解封和后台内部接口白名单能力，作为 `juhe-ai` 自身运维能力。
+- IP 统计只服务后台管理员运维排障，不再作为外部来源系统公开读取能力。
 
 ## 范围边界
 
@@ -29,7 +30,7 @@
 - IP 账号详情：按 `ip_hash + account_id` 预聚合常用日期范围，管理员可以从某个 IP 查看涉及过的 AI 账户列表和每个账户在该 IP 下的使用情况。
 - IP 运维页面：管理员在“系统运维 / IP管理”查看列表、筛选、排序和策略状态。
 - IP 策略：支持封禁、临时封禁、解封和封禁命中记录。
-- 后台 job：负责注册 IP、写入 IP 聚合、刷新范围窗口，并周期推送 active IP 封禁策略快照到 server；管理端封禁 / 解封会触发 server 重载快照。
+- 后台 job：负责注册 IP、写入 IP 聚合、刷新范围窗口；管理端封禁 / 解封、加入 / 移出白名单会触发 server 清理策略缓存。后台 IP 聚合不能周期性全量推送 active IP 策略快照。
 
 ### 本期不包含
 
@@ -37,17 +38,17 @@
 - 公益榜快照、贡献榜、消耗榜和公开展示名称：由公益站自己快照汇总。
 - 地区、国家、ASN、运营商、IP 段归属或代理标签封禁：容易误伤，不作为默认能力。
 - 基于固定状态码 / 固定错误码的自动永久封禁：已有 IP 级错误熔断仍保持短 TTL 易失运行态。
-- 浏览器或公网无鉴权读取 IP 统计：IP 统计属于管理员和受保护来源系统可读数据。
+- 浏览器、公网或外部来源系统读取 IP 统计：IP 统计只允许后台管理员读取。
 
 ## 核心结论
 
-- IP 统计已经支撑受保护的公益站 IP 聚合读取接口；如后续扩展公益站用户维度快照或公开展示能力，需要先补对应 schema、worker 快照和接口契约。
+- IP 统计不再支撑公开来源接口；如后续重新评估对外聚合读取，需要重新立项并同步接口契约、鉴权和日志边界。
 - 页面和接口只读预聚合表或窗口表，不能为了 IP 列表临时扫描 `usage_records`。
 - IP 注册 Set 是懒加载性能优化，不是事实源；启动时不全量读取注册表，最终正确性依赖 SQLite 唯一约束和 `INSERT OR IGNORE`。
 - 首期只为 IP 写 `daily` 和范围窗口，避免把 IP 维度直接接入全套 `minute / hourly / weekly / monthly / totals` 造成写放大。
 - 统计 scope 使用 `ip_hash`，列表接口再关联 IP 注册表返回可展示 IP。
 - 当前 IP 管理只识别 IPv4；非 IPv4 来源不进入 IP 注册、统计和封禁策略。
-- IP 封禁是网关运行前置判断，请求路径只读 server 内存中的 active 策略快照和来源级运行态缓存；禁止在请求链路按当前 `ip_hash` 查询 DB service，也禁止把策略数组塞进 API Key runtime 响应。
+- IP 封禁是网关运行前置判断；standalone 请求路径只读 server 内存中的 active 策略快照和来源级运行态缓存，高性能 Redis cache driver 下按当前 `ip_hash` 读取单 IP shared cache，cache miss 只能走 `ip_hash` 索引回源，禁止加载全量 active 策略，也禁止把策略数组塞进 API Key runtime 响应。
 
 ## 数据流
 
@@ -61,7 +62,7 @@
   -> 写入 client_ip_stats_daily
   -> 有 account_id 时同步写入 client_ip_account_stats_daily
   -> 按 dirty IP 增量刷新 client_ip_usage_range_windows 和 client_ip_account_usage_range_windows
-  -> 管理页面和外部来源接口只读 IP 维度窗口表；IP 详情只读 IP+账号窗口表
+  -> 管理页面只读 IP 维度窗口表；IP 详情只读 IP+账号窗口表
 ```
 
 封禁流程：
@@ -69,9 +70,8 @@
 ```text
 管理员封禁 / 解封
   -> 写 client_ip_policies 和操作日志
-  -> 通知网关进程重载 active 策略快照
-  -> stats-worker 周期推送 active 策略快照兜底
-  -> 网关请求进入时只读 server 内存快照和来源级短 TTL 决策缓存
+  -> 通知网关进程清理策略缓存
+  -> 网关请求进入时按部署模式读取 server 内存快照或单 IP Redis shared cache
   -> 命中 active 封禁策略返回本地拒绝
   -> 异步记录封禁命中计数
 ```
@@ -269,6 +269,7 @@ IP 管理当前只需要 IP 维度行，不需要范围整体总统计。后端�
 client_ip_policies
 - id TEXT PRIMARY KEY
 - ip_hash TEXT NOT NULL
+- policy_type TEXT NOT NULL      -- blacklist | allowlist
 - status TEXT NOT NULL           -- active | disabled
 - reason TEXT
 - expires_at TEXT
@@ -282,9 +283,11 @@ client_ip_policies
 
 规则：
 
-- `status = active` 表示当前处于封禁状态。
-- `expires_at` 为空表示长期生效；非空表示临时封禁。
-- 解封不删除记录，改为 `disabled` 并保留原因。
+- `policy_type = blacklist` 表示封禁策略，命中后网关返回 `403 client_ip_blacklisted` 并记录封禁命中次数。
+- `policy_type = allowlist` 表示白名单策略，只放行后台管理 / 内部任务接口的 IP 和登录用户限流；不绕过认证、权限、网关 API Key 校验或封禁策略。
+- 同一 IP 只能有一条 active 策略；加入白名单会停用旧封禁策略，重新封禁会停用旧白名单策略，保证“白名单”和“已封禁”互斥。
+- `expires_at` 为空表示长期生效；非空表示临时封禁。白名单当前不暴露期限配置。
+- 解封或移出白名单不删除记录，改为 `disabled` 并保留原因。
 
 ### client_ip_policy_hits
 
@@ -376,10 +379,10 @@ else:
 
 职责：
 
-- 以 `ip_hash` 为键保存 server 进程内 active 策略快照和来源级短 TTL 决策，缓存上限固定；active 策略快照由管理变更和 stats-worker 后台刷新，不随 API Key runtime IPC 放大。
+- standalone 模式以 `ip_hash` 为键保存 server 进程内 active 策略快照和来源级短 TTL 决策；高性能 Redis cache driver 下以 `ip_hash` 为键保存单 IP shared cache，缓存上限固定，cache miss 只能按 `ip_hash` 索引回源，不随 API Key runtime IPC 放大。
 - 封禁命中写入采用 server 内短暂聚合缓冲：最多保留 `5000` 个 distinct `ip_hash + policy_id`，单次 flush 最多 `1000` 条；满载时丢弃新的 distinct 命中而不是继续扩大内存或一次性发送大 IPC。
-- 网关认证前和认证后都只读本地内存快照；未加载快照时不在请求上等待 DB。
-- 管理员创建、解封或更新策略后主动重载 server 进程 active 策略快照；stats-worker 周期推送快照兜底处理策略过期。
+- 网关认证前和认证后都不能加载全量 active 策略；standalone 未加载快照时不在请求上等待 DB，高性能 Redis cache driver 下只允许当前 `ip_hash` 精确回源。
+- 管理员创建、解封或更新策略后主动清理 server 进程策略缓存；过期策略由 TTL、运行态 active 判断和后台清理共同收敛。
 - 过期策略可由定时 job 标记为 disabled，也可以运行态读取时自然忽略，再由清理 job 归档。
 
 ## 管理端页面
@@ -433,7 +436,7 @@ else:
 - Token 降序
 - 请求次数降序
 - 失败率降序
-- 最近使用时间降序；管理页按注册表全局 `last_seen_at` 排序，公开 IP 用量接口仍按窗口内 `rangeUsage.lastUsedAt` 排序。
+- 最近使用时间降序；管理页按注册表全局 `last_seen_at` 排序。
 
 列表默认按请求次数降序，再按 IP hash 稳定排序；状态是否正常通过状态筛选解决，不参与默认排序。
 
@@ -446,6 +449,8 @@ GET /__aisys__/api/ip-stats
 GET /__aisys__/api/ip-stats/:ipHash/detail
 POST /__aisys__/api/ip-stats/:ipHash/blacklist
 POST /__aisys__/api/ip-stats/:ipHash/unblock
+POST /__aisys__/api/ip-stats/:ipHash/allowlist
+POST /__aisys__/api/ip-stats/:ipHash/unallowlist
 ```
 
 列表查询参数：
@@ -456,7 +461,7 @@ endDate=YYYY-MM-DD
 page=1
 pageSize=20
 keyword=1.2.3
-status=all | normal | blacklisted
+status=all | normal | blacklisted | allowlisted
 sortField=totalCost | totalTokens | requestCount | errorRate | lastUsedAt
 sortOrder=desc | asc
 ```
@@ -482,7 +487,7 @@ interface ClientIpStatsListItem {
   ipHash: string
   aggregateIpKey: string
   lastSeenAt?: string
-  status: 'normal' | 'blacklisted'
+  status: 'normal' | 'blacklisted' | 'allowlisted'
   rangeUsage: ClientIpUsageSummary
 }
 
@@ -563,31 +568,15 @@ interface ClientIpBlacklistRequest {
 
 ## 外部来源接口边界
 
-后续 `juhe-ai-public-welfare` 只读取 IP 聚合事实：
+IP 维度公开接口已移除。以下路径不再作为现行契约提供：
 
 ```http
 GET /__aipublic__/ip/usage
-Authorization: Bearer <source_token>
-```
-
-来源授权鉴权复用 [外部来源系统鉴权设计](外部来源系统鉴权设计.md)，IP 用量接口使用独立 scope `juhe_ai_public:ip_usage:read`。正式 token 读取真实 IP 窗口表；内置测试 token 只返回 mock 数据。
-
-该接口：
-
-- 只校验来源系统是否允许调用。
-- 可复用来源系统级公开接口限频；不做公益站公网 IP 拦截或用户权限判断。
-- 不返回后台封禁策略和操作历史。
-- 不返回 API Key、系统账户、AI 账户、分组、供应商或模型业务关系。
-- 只读 `client_ip_usage_range_windows` 和 `client_ip_registry`。
-
-同一 scope 还提供：
-
-```http
 GET /__aipublic__/consumption/ranking
 GET /__aipublic__/access/info
 ```
 
-`consumption-ranking` 只是 IP 聚合的 TopN 排序视图，不是公益站用户消耗榜；公益站仍需自行完成 IP 到用户归属和用户维度快照。
+来源系统公开接口当前只保留 API Key、路由策略、分组和 AI 账户维护能力，见 [公开资源维护接口设计](公开资源维护接口设计.md)。IP 统计窗口表仍由后台 worker 维护，但只供系统运维 / IP管理页面和管理员接口读取。
 
 ## 性能影响与约束
 
@@ -601,7 +590,7 @@ GET /__aipublic__/access/info
 
 ### 查询影响
 
-- IP 列表按范围窗口表查询，配合排序索引；管理页按最后使用排序时走 `client_ip_registry(last_seen_at DESC, ip_hash)`，公开 IP 用量接口保持范围窗口 `last_used_at` 排序。
+- IP 列表按范围窗口表查询，配合排序索引；管理页按最后使用排序时走 `client_ip_registry(last_seen_at DESC, ip_hash)`。
 - IP 详情按 `client_ip_account_usage_range_windows(ip_hash, start_date, end_date, 排序字段, account_id)` 读取当前页账号用量，再按当前页账号 ID 批量查业务库名称；详情请求不能读取 `usage_records`、不能实时聚合 daily，也不能为了精确总数执行大范围 `COUNT(*)`。
 - IP 管理不展示范围总统计卡片，也不在后端维护范围总聚合。
 - IP 速度指标只读窗口表中已经落表的 `average_first_token_ms`、`average_duration_ms` 和 `duration_ms_max`；`sum/count` 只作为后台刷新单个 IP 窗口行派生字段的输入，不回扫 `usage_records`。
@@ -622,7 +611,7 @@ GET /__aipublic__/access/info
 - IP 属于敏感运维数据，后台页面只允许管理员访问。
 - 普通日志不输出完整 IP，可以输出 hash 前缀、策略状态和 traceId。
 - 操作日志记录封禁和解封变更，但不记录不必要的请求明细。
-- 外部来源接口只返回 IP 聚合事实，不返回封禁原因、管理员 ID、内部策略历史或操作日志。
+- IP 统计不通过外部来源接口返回；封禁原因、管理员 ID、内部策略历史或操作日志只在管理员授权页面内按权限展示。
 - 不做区域性封禁和外部标签自动定罪，避免误伤共享出口和移动网络用户。
 
 ## 与既有 IP 机制的关系

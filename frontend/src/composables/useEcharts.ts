@@ -1,10 +1,10 @@
 import { nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, type Ref, type ShallowRef } from 'vue'
-import { init, type ECharts } from '@/lib/echarts'
+import type { ECharts } from '@/lib/echarts'
 
 export type EChartsInstanceRef = ShallowRef<ECharts | undefined>
 
 type EchartsPageLifecycleOptions = {
-  renderCharts: () => void
+  renderCharts: () => void | Promise<void>
   resizeCharts: () => void
   disposeCharts: () => void
   onMounted?: () => void | Promise<void>
@@ -13,12 +13,18 @@ type EchartsPageLifecycleOptions = {
   renderOnActivated?: 'pending' | 'always'
 }
 
-export function ensureChart(elementRef: Ref<HTMLDivElement | undefined>, chartRef: EChartsInstanceRef): ECharts | undefined {
-  return ensureChartFromElement(elementRef.value, chartRef)
+let echartsRuntime: Promise<typeof import('@/lib/echarts')> | undefined
+
+export function ensureChart(elementRef: Ref<HTMLDivElement | undefined>, chartRef: EChartsInstanceRef, shouldCreate?: () => boolean): Promise<ECharts | undefined> {
+  return ensureChartFromElement(elementRef.value, chartRef, shouldCreate)
 }
 
-export function ensureChartFromElement(element: HTMLDivElement | undefined, chartRef: EChartsInstanceRef): ECharts | undefined {
+export async function ensureChartFromElement(element: HTMLDivElement | undefined, chartRef: EChartsInstanceRef, shouldCreate?: () => boolean): Promise<ECharts | undefined> {
   if (!element) return undefined
+  if (shouldCreate && !shouldCreate()) return undefined
+  const { init } = await loadEchartsRuntime()
+  if (shouldCreate && !shouldCreate()) return undefined
+  if (!element.isConnected) return undefined
   if (chartRef.value && !chartRef.value.isDisposed() && chartRef.value.getDom() !== element) {
     chartRef.value.dispose()
     chartRef.value = undefined
@@ -27,6 +33,11 @@ export function ensureChartFromElement(element: HTMLDivElement | undefined, char
     chartRef.value = init(element)
   }
   return chartRef.value
+}
+
+function loadEchartsRuntime(): Promise<typeof import('@/lib/echarts')> {
+  echartsRuntime ??= import('@/lib/echarts')
+  return echartsRuntime
 }
 
 export function disposeChart(chartRef: EChartsInstanceRef): void {
@@ -64,8 +75,17 @@ export function useEchartsPageLifecycle(options: EchartsPageLifecycleOptions) {
         return
       }
       renderPending.value = false
-      options.renderCharts()
-      resizeWhenActive()
+      void Promise.resolve(options.renderCharts())
+        .catch((error) => {
+          console.error(error)
+        })
+        .finally(() => {
+          if (!pageActive.value) {
+            renderPending.value = true
+            return
+          }
+          resizeWhenActive()
+        })
     })
   }
 

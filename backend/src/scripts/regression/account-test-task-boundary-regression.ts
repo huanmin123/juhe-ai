@@ -220,8 +220,10 @@ assert(
   accountTestTaskQueueSource.includes('manualAccountTestFailurePrecheckQueue')
     && accountTestTaskQueueSource.includes('enqueueManualAccountTestFailurePrecheck(account, access, result')
     && accountTestTaskQueueSource.includes("trafficSource: 'cooldown_retest'")
-    && accountTestTaskQueueSource.includes('getAccountPrecheckMutationState'),
-  '账号测试失败应进入事前确认队列，确认失败后才允许写临时不可调用，并需要跳过已被更新的旧确认'
+    && accountTestTaskQueueSource.includes('getAccountPrecheckMutationStateAsync')
+    && accountTestTaskQueueSource.includes('await manualAccountTestFailurePrecheckSkipReason')
+    && accountTestTaskQueueSource.includes('await getAccountPrecheckMutationStateAsync'),
+  '账号测试失败应进入事前确认队列，确认失败后才允许写临时不可调用，并需要通过 async 入口跳过已被更新的旧确认'
 )
 assert(
   accountTestSessionRoutesSource.includes("router.post('/test-sessions'")

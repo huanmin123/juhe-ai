@@ -117,18 +117,25 @@ import { listActiveResponseInspectionPoliciesForGateway, listActiveResponseInspe
 import { cleanupExpiredSystemSessions, cleanupExpiredSystemSessionsAsync } from '../../storage/data-retention.repository.js'
 import {
   cleanupExpiredCodexContextStates,
+  cleanupExpiredCodexContextStatesAsync,
   readCodexContextCompactState,
+  readCodexContextCompactStateAsync,
   readCodexContextResponseStateChain,
+  readCodexContextResponseStateChainAsync,
   saveCodexContextCompactStateIndex,
-  saveCodexContextResponseStateIndex
+  saveCodexContextCompactStateIndexAsync,
+  saveCodexContextResponseStateIndex,
+  saveCodexContextResponseStateIndexAsync
 } from '../../storage/codex-context-state.repository.js'
 import {
   cleanupExpiredCodexContextStatesWithWriterPool,
+  getCodexContextStateWriterPoolRuntime,
   readCodexContextCompactStateWithWriterPool,
   readCodexContextResponseStateChainWithWriterPool,
   saveCodexContextCompactStateIndexWithWriterPool,
   saveCodexContextResponseStateIndexWithWriterPool
 } from '../../storage/codex-context-state-writer-pool.js'
+import { getSqliteReadWorkerPoolRuntime, requestSqliteReadWorker } from '../../storage/sqlite-read-worker-pool.js'
 import {
   deleteGroupAccountStatsDirtyRowsLocal,
   deleteGroupAccountStatsDirtyRowsAsync,
@@ -144,7 +151,10 @@ import {
 } from '../gateway/runtime/runtime-cache.service.js'
 import { isGptVendorCode, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
 import { isDynamicRouteStrategyMode } from '../../domain/route-strategy.js'
-import { orderGatewayApiKeyGroupBindingsForDispatch } from '../gateway/routing/api-key-group-route-selector.service.js'
+import {
+  orderGatewayApiKeyGroupBindingsForDispatch,
+  orderGatewayApiKeyGroupBindingsForDispatchAsync
+} from '../gateway/routing/api-key-group-route-selector.service.js'
 import { checkGatewayApiKeyQuota, checkGatewayApiKeyQuotaExactAsync, clearApiKeyQuotaCache } from '../gateway/quota/api-key-quota.service.js'
 import {
   checkGatewayAuthorizationQuotaBatchByIds,
@@ -154,7 +164,10 @@ import {
   clearAuthorizationQuotaCache
 } from '../gateway/quota/authorization-quota.service.js'
 import { applyAccountErrorHandling, applyAccountErrorHandlingAsync, readGatewaySettingsAsync } from '../gateway/policy/account-error-policy.service.js'
-import { persistOpenAICodexUsageHeaders } from '../gateway/adapters/gpt-codex/usage.service.js'
+import {
+  persistOpenAICodexUsageHeaders,
+  persistOpenAICodexUsageHeadersAsync
+} from '../gateway/adapters/gpt-codex/usage.service.js'
 import { listProviderModelCatalog, listProviderModelCatalogAsync } from '../model-pricing/model-catalog.service.js'
 import {
   recordAccountApiKeyRuntimeFailure,
@@ -260,19 +273,23 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await listPublicGlobalSettingsAsync()
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({ type: 'list_global_settings_read_only' })
     case 'validate_gateway_api_key':
       return await validateGatewayApiKeyAsync(operation.key)
     case 'read_gateway_settings':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await readGatewaySettingsAsync()
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({ type: 'read_gateway_settings_read_only' })
     case 'resolve_group_usage_access':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await resolveGroupUsageAccessMetadataAsync(operation.groupId, operation.systemAccountId)
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({
+        type: 'resolve_group_usage_access_read_only',
+        groupId: operation.groupId,
+        systemAccountId: operation.systemAccountId
+      })
     case 'list_openai_accounts_for_group':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return (await listOpenAIAccountsForGroupResultAsync(operation.groupId, operation.systemAccountId, {
@@ -280,7 +297,15 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
           requestedEndpointFamily: operation.requestedEndpointFamily
         })).accounts
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({
+        type: 'list_openai_accounts_for_group_read_only',
+        groupId: operation.groupId,
+        systemAccountId: operation.systemAccountId,
+        options: {
+          requestedModel: operation.requestedModel,
+          requestedEndpointFamily: operation.requestedEndpointFamily
+        }
+      })
     case 'list_openai_accounts_for_group_result':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await listOpenAIAccountsForGroupResultAsync(operation.groupId, operation.systemAccountId, {
@@ -288,7 +313,15 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
           requestedEndpointFamily: operation.requestedEndpointFamily
         })
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({
+        type: 'list_openai_accounts_for_group_result_read_only',
+        groupId: operation.groupId,
+        systemAccountId: operation.systemAccountId,
+        options: {
+          requestedModel: operation.requestedModel,
+          requestedEndpointFamily: operation.requestedEndpointFamily
+        }
+      })
     case 'find_openai_account_for_group':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await findOpenAIAccountForGroupAsync(operation.groupId, operation.accountId, operation.systemAccountId, {
@@ -296,7 +329,16 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
           ignoreAvailability: operation.ignoreAvailability
         })
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({
+        type: 'find_openai_account_for_group_read_only',
+        groupId: operation.groupId,
+        accountId: operation.accountId,
+        systemAccountId: operation.systemAccountId,
+        options: {
+          includeUnavailable: operation.includeUnavailable,
+          ignoreAvailability: operation.ignoreAvailability
+        }
+      })
     case 'list_recoverable_unavailable_openai_accounts_for_group':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return recoverableUnavailableOpenAIAccounts(await listOpenAIAccountsForGroupResultAsync(operation.groupId, operation.systemAccountId, {
@@ -305,7 +347,16 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
           includeUnavailable: true
         }), operation.windowMs)
       }
-      return handleDbServiceOperationSync(operation)
+      return recoverableUnavailableOpenAIAccounts(await requestSqliteReadWorker({
+        type: 'list_openai_accounts_for_group_result_read_only',
+        groupId: operation.groupId,
+        systemAccountId: operation.systemAccountId,
+        options: {
+          requestedModel: operation.requestedModel,
+          requestedEndpointFamily: operation.requestedEndpointFamily,
+          includeUnavailable: true
+        }
+      }), operation.windowMs)
     case 'read_gateway_runtime':
       return await readGatewayRuntimeAsync(operation)
     case 'create_openai_compatible_file':
@@ -317,7 +368,10 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await listOpenAICompatibleFilesAsync(operation.options)
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({
+        type: 'list_openai_compatible_files_read_only',
+        options: operation.options
+      })
     case 'get_openai_compatible_file':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await findOpenAICompatibleFileAsync({
@@ -326,7 +380,12 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
           apiKeyId: operation.apiKeyId
         })
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({
+        type: 'get_openai_compatible_file_read_only',
+        fileId: operation.fileId,
+        systemAccountId: operation.systemAccountId,
+        apiKeyId: operation.apiKeyId
+      })
     case 'delete_openai_compatible_file':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await deleteOpenAICompatibleFileAsync({
@@ -345,7 +404,10 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await listOpenAICompatibleVectorStoresAsync(operation.options)
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({
+        type: 'list_openai_compatible_vector_stores_read_only',
+        options: operation.options
+      })
     case 'get_openai_compatible_vector_store':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await findOpenAICompatibleVectorStoreAsync({
@@ -354,7 +416,12 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
           apiKeyId: operation.apiKeyId
         })
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({
+        type: 'get_openai_compatible_vector_store_read_only',
+        vectorStoreId: operation.vectorStoreId,
+        systemAccountId: operation.systemAccountId,
+        apiKeyId: operation.apiKeyId
+      })
     case 'delete_openai_compatible_vector_store':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await deleteOpenAICompatibleVectorStoreAsync({
@@ -373,7 +440,10 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await listOpenAICompatibleVectorStoreFilesAsync(operation.options)
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({
+        type: 'list_openai_compatible_vector_store_files_read_only',
+        options: operation.options
+      })
     case 'get_openai_compatible_vector_store_file':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await findOpenAICompatibleVectorStoreFileAsync({
@@ -383,7 +453,13 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
           apiKeyId: operation.apiKeyId
         })
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({
+        type: 'get_openai_compatible_vector_store_file_read_only',
+        vectorStoreId: operation.vectorStoreId,
+        fileId: operation.fileId,
+        systemAccountId: operation.systemAccountId,
+        apiKeyId: operation.apiKeyId
+      })
     case 'delete_openai_compatible_vector_store_file':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await deleteOpenAICompatibleVectorStoreFileAsync({
@@ -398,7 +474,10 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await searchOpenAICompatibleVectorStoreAsync(operation.options)
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({
+        type: 'search_openai_compatible_vector_store_read_only',
+        options: operation.options
+      })
     case 'list_openai_compatible_vector_store_file_chunks':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await listOpenAICompatibleVectorStoreFileChunksAsync({
@@ -409,7 +488,14 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
           limit: operation.limit
         })
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({
+        type: 'list_openai_compatible_vector_store_file_chunks_read_only',
+        vectorStoreId: operation.vectorStoreId,
+        fileId: operation.fileId,
+        systemAccountId: operation.systemAccountId,
+        apiKeyId: operation.apiKeyId,
+        limit: operation.limit
+      })
     case 'list_provider_model_catalog':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await listProviderModelCatalogAsync({
@@ -419,12 +505,24 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
           includeUnpriced: operation.includeUnpriced
         })
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({
+        type: 'list_provider_model_catalog_read_only',
+        options: {
+          providerCode: operation.providerCode,
+          systemAccountId: operation.systemAccountId,
+          includeInactive: operation.includeInactive,
+          includeUnpriced: operation.includeUnpriced
+        }
+      })
     case 'find_account_for_test':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await findAccountForTestAsync(operation.accountId, operation.access)
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({
+        type: 'find_account_for_test_read_only',
+        accountId: operation.accountId,
+        access: operation.access
+      })
     case 'mark_account_test_temporary_unavailable': {
       if (runtimeConfig.databaseDriver === 'postgres') {
         const account = await findAccountForTestAsync(operation.accountId, operation.access ?? internalDbServiceAccountAccess)
@@ -493,12 +591,22 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       if (runtimeConfig.databaseDriver === 'postgres') {
         return { canceled: await isAccountTestTaskCancelRequestedAsync(operation.taskId) }
       }
-      return handleDbServiceOperationSync(operation)
+      return {
+        canceled: await requestSqliteReadWorker({
+          type: 'is_account_test_task_cancel_requested_read_only',
+          id: operation.taskId
+        })
+      }
     case 'read_account_test_task_cancel_message':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return { message: await accountTestTaskCancelMessageAsync(operation.taskId) }
       }
-      return handleDbServiceOperationSync(operation)
+      return {
+        message: await requestSqliteReadWorker({
+          type: 'read_account_test_task_cancel_message_read_only',
+          id: operation.taskId
+        })
+      }
     case 'record_account_successful_test_model': {
       if (runtimeConfig.databaseDriver === 'postgres') {
         const updated = await recordAccountSuccessfulTestModelAsync(operation.accountId, operation.model, operation.access ?? internalDbServiceAccountAccess)
@@ -524,7 +632,7 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
     }
     case 'record_account_api_key_success': {
       if (runtimeConfig.databaseDriver === 'postgres') {
-        const result = await recordAccountApiKeyRuntimeSuccessAsync(operation.account)
+        const result = await recordAccountApiKeyRuntimeSuccessAsync(operation.account, { observedAt: operation.observedAt })
         if (result.changed) {
           clearGatewayRuntimeCacheLocal()
         }
@@ -586,8 +694,16 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await findOpenAIOAuthAccountForRefreshAsync(operation.accountId)
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({
+        type: 'find_openai_oauth_account_for_refresh_read_only',
+        accountId: operation.accountId
+      })
     case 'persist_openai_codex_usage_headers':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return {
+          persisted: await persistOpenAICodexUsageHeadersAsync(operation.accountId, operation.headers, operation.source)
+        }
+      }
       return handleDbServiceOperationSync(operation)
     case 'apply_account_error_handling': {
       if (runtimeConfig.databaseDriver === 'postgres') {
@@ -650,7 +766,9 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await listActiveClientIpPoliciesAsync()
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({
+        type: 'list_active_client_ip_policies_read_only'
+      })
     case 'list_active_response_inspection_policies':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await listActiveResponseInspectionPoliciesForGatewayAsync({
@@ -658,25 +776,42 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
           providerCode: operation.providerCode
         })
       }
-      return handleDbServiceOperationSync(operation)
+      return await requestSqliteReadWorker({
+        type: 'list_active_response_inspection_policies_read_only',
+        input: {
+          protocolCode: operation.protocolCode,
+          providerCode: operation.providerCode
+        }
+      })
     case 'check_api_key_quota':
       return runtimeConfig.databaseDriver === 'postgres'
         ? await checkGatewayApiKeyQuotaExactAsync(operation.apiKey)
-        : handleDbServiceOperationSync(operation)
+        : await requestSqliteReadWorker({
+            type: 'check_api_key_quota_read_only',
+            apiKey: operation.apiKey
+          })
     case 'check_authorization_quota':
       return runtimeConfig.databaseDriver === 'postgres'
         ? await checkGatewayAuthorizationQuotaByIdsExactAsync({
             groupAuthorizationId: operation.groupAuthorizationId,
             accountAuthorizationId: operation.accountAuthorizationId
           })
-        : handleDbServiceOperationSync(operation)
+        : await requestSqliteReadWorker({
+            type: 'check_authorization_quota_read_only',
+            groupAuthorizationId: operation.groupAuthorizationId,
+            accountAuthorizationId: operation.accountAuthorizationId
+          })
     case 'check_authorization_quota_batch':
       return runtimeConfig.databaseDriver === 'postgres'
         ? await checkGatewayAuthorizationQuotaBatchByIdsExactAsync({
             groupAuthorizationId: operation.groupAuthorizationId,
             accounts: operation.accounts
           })
-        : handleDbServiceOperationSync(operation)
+        : await requestSqliteReadWorker({
+            type: 'check_authorization_quota_batch_read_only',
+            groupAuthorizationId: operation.groupAuthorizationId,
+            accounts: operation.accounts
+          })
     case 'list_accounts_due_for_health_check':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await listAccountsDueForHealthCheckAsync(operation.input)
@@ -804,10 +939,25 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
     case 'status':
       return buildDbServiceRuntimeSnapshot()
     case 'save_codex_context_response_state':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await saveCodexContextResponseStateIndexAsync(operation.input)
+      }
       return await saveCodexContextResponseStateIndexWithWriterPool(operation.input)
     case 'save_codex_context_compact_state':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await saveCodexContextCompactStateIndexAsync(operation.input)
+      }
       return await saveCodexContextCompactStateIndexWithWriterPool(operation.input)
     case 'read_codex_context_response_chain':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await readCodexContextResponseStateChainAsync({
+          responseId: operation.responseId,
+          boundary: operation.boundary,
+          maxDepth: operation.maxDepth,
+          now: operation.now,
+          refreshExpiresAt: operation.refreshExpiresAt
+        })
+      }
       return await readCodexContextResponseStateChainWithWriterPool({
         responseId: operation.responseId,
         boundary: operation.boundary,
@@ -816,6 +966,14 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
         refreshExpiresAt: operation.refreshExpiresAt
       })
     case 'read_codex_context_compact_state':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await readCodexContextCompactStateAsync({
+          compactId: operation.compactId,
+          boundary: operation.boundary,
+          now: operation.now,
+          refreshExpiresAt: operation.refreshExpiresAt
+        })
+      }
       return await readCodexContextCompactStateWithWriterPool({
         compactId: operation.compactId,
         boundary: operation.boundary,
@@ -823,6 +981,12 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
         refreshExpiresAt: operation.refreshExpiresAt
       })
     case 'cleanup_expired_codex_context_states':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await cleanupExpiredCodexContextStatesAsync({
+          expiredBefore: operation.expiredBefore,
+          limit: operation.limit
+        })
+      }
       return await cleanupExpiredCodexContextStatesWithWriterPool({
         expiredBefore: operation.expiredBefore,
         limit: operation.limit
@@ -897,7 +1061,9 @@ export function buildDbServiceRuntimeSnapshot(pid = process.pid): DbServiceRunti
     handledRequestCount,
     failedRequestCount,
     lastRequestAt,
-    lastError
+    lastError,
+    codexContextStateWriterPool: getCodexContextStateWriterPoolRuntime(),
+    sqliteReadWorkerPool: getSqliteReadWorkerPoolRuntime()
   }
 }
 
@@ -1077,7 +1243,7 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       return result
     }
     case 'record_account_api_key_success': {
-      const result = recordAccountApiKeyRuntimeSuccess(operation.account)
+      const result = recordAccountApiKeyRuntimeSuccess(operation.account, { observedAt: operation.observedAt })
       if (result.changed) {
         clearGatewayRuntimeCacheLocal()
       }
@@ -1542,10 +1708,7 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
     if (!hasDispatchableGatewayAccount(accounts) && uniqueCandidateGroupIds.length > 1) {
       continue
     }
-    const responseInspectionPolicies = listActiveResponseInspectionPoliciesForGateway({
-      protocolCode: groupAccess.protocolCode,
-      providerCode: groupAccess.providerCode
-    })
+    const responseInspectionPolicies = listActiveResponseInspectionPoliciesForAccounts(accounts)
     return {
       apiKey: {
         ...apiKey,
@@ -1570,7 +1733,13 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
 
 async function readGatewayRuntimeAsync(operation: Extract<DbServiceOperation, { type: 'read_gateway_runtime' }>): Promise<DbServiceGatewayRuntime> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return withDbServiceLocalRole(() => readGatewayRuntime(operation))
+    return await requestSqliteReadWorker({
+      type: 'read_gateway_runtime_static_read_only',
+      key: operation.key,
+      groupId: operation.groupId,
+      systemAccountId: operation.systemAccountId,
+      skipDynamicRouteSelection: operation.skipDynamicRouteSelection
+    })
   }
   const settings = await readGatewaySettingsAsync()
   const apiKey = await validateGatewayApiKeyAsync(operation.key)
@@ -1592,7 +1761,7 @@ async function readGatewayRuntimeAsync(operation: Extract<DbServiceOperation, { 
       responseInspectionPolicies: []
     }
   }
-  const orderedBindings = orderGatewayApiKeyGroupBindingsForDispatch(apiKey)
+  const orderedBindings = await orderGatewayApiKeyGroupBindingsForDispatchAsync(apiKey)
   apiKey.selected_group_id = orderedBindings[0]?.group_id ?? apiKey.selected_group_id
   const candidateGroupIds = operation.groupId
     ? orderedBindings.some((binding) => binding.group_id === operation.groupId)
@@ -1611,10 +1780,7 @@ async function readGatewayRuntimeAsync(operation: Extract<DbServiceOperation, { 
     if (!hasDispatchableGatewayAccount(accounts) && uniqueCandidateGroupIds.length > 1) {
       continue
     }
-    const responseInspectionPolicies = await listActiveResponseInspectionPoliciesForGatewayAsync({
-      protocolCode: groupAccess.protocolCode,
-      providerCode: groupAccess.providerCode
-    })
+    const responseInspectionPolicies = await listActiveResponseInspectionPoliciesForAccountsAsync(accounts)
     return {
       apiKey: {
         ...apiKey,
@@ -1648,6 +1814,54 @@ function withDbServiceLocalRole<T>(operation: () => T): T {
   } finally {
     runtimeConfig.processRole = previousProcessRole
   }
+}
+
+function listActiveResponseInspectionPoliciesForAccounts(accounts: readonly Pick<OpenAIAccountSecret, 'protocolCode' | 'providerCode'>[]) {
+  const profileKeys = new Set<string>()
+  const policiesById = new Map<string, ReturnType<typeof listActiveResponseInspectionPoliciesForGateway>[number]>()
+  for (const account of accounts) {
+    const protocolCode = account.protocolCode?.trim()
+    if (!protocolCode) {
+      continue
+    }
+    const providerCode = account.providerCode?.trim()
+    const key = `${protocolCode}:${providerCode ?? ''}`
+    if (profileKeys.has(key)) {
+      continue
+    }
+    profileKeys.add(key)
+    for (const policy of listActiveResponseInspectionPoliciesForGateway({ protocolCode, providerCode })) {
+      policiesById.set(policy.id, policy)
+    }
+  }
+  return [...policiesById.values()]
+}
+
+async function listActiveResponseInspectionPoliciesForAccountsAsync(accounts: readonly Pick<OpenAIAccountSecret, 'protocolCode' | 'providerCode'>[]) {
+  const profileKeys = new Set<string>()
+  const profileScopes: Array<{ protocolCode: string; providerCode?: string }> = []
+  const policiesById = new Map<string, Awaited<ReturnType<typeof listActiveResponseInspectionPoliciesForGatewayAsync>>[number]>()
+  for (const account of accounts) {
+    const protocolCode = account.protocolCode?.trim()
+    if (!protocolCode) {
+      continue
+    }
+    const providerCode = account.providerCode?.trim() || undefined
+    const key = `${protocolCode}:${providerCode ?? ''}`
+    if (profileKeys.has(key)) {
+      continue
+    }
+    profileKeys.add(key)
+    profileScopes.push({ protocolCode, providerCode })
+  }
+  const policyGroups = await Promise.all(profileScopes.map((scope) =>
+    listActiveResponseInspectionPoliciesForGatewayAsync(scope)))
+  for (const policies of policyGroups) {
+    for (const policy of policies) {
+      policiesById.set(policy.id, policy)
+    }
+  }
+  return [...policiesById.values()]
 }
 
 function hasDispatchableGatewayAccount(accounts: OpenAIAccountSecret[]): boolean {

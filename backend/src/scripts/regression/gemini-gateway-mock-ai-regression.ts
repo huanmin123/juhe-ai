@@ -102,7 +102,6 @@ try {
     const group = repositories.createGroup({
       name: 'Gemini Mock AI 回归分组',
       providerCode: GEMINI_PROVIDER_CODE,
-      providerProtocolProfileId: GEMINI_NATIVE_V1BETA_PROFILE_ID,
       enabled: true
     }, access)
     const account = repositories.createAccount({
@@ -146,7 +145,6 @@ try {
     const openAIChatGroup = repositories.createGroup({
       name: 'Gemini OpenAI Chat Mock AI 回归分组',
       providerCode: GEMINI_PROVIDER_CODE,
-      providerProtocolProfileId: GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
       enabled: true
     }, access)
     const openAIChatAccount = repositories.createAccount({
@@ -200,7 +198,6 @@ try {
     const openAIChatRootGroup = repositories.createGroup({
       name: 'Gemini OpenAI Chat NewAPI 根地址回归分组',
       providerCode: GEMINI_PROVIDER_CODE,
-      providerProtocolProfileId: GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
       enabled: true
     }, access)
     repositories.createAccount({
@@ -226,7 +223,6 @@ try {
     const glmBridgeGroup = repositories.createGroup({
       name: 'Gemini Native 转 GLM Chat 回归分组',
       providerCode: GLM_PROVIDER_CODE,
-      providerProtocolProfileId: GLM_GENERAL_OPENAI_V1_PROFILE_ID,
       enabled: true
     }, access)
     repositories.createAccount({
@@ -296,7 +292,6 @@ try {
     const anthropicBridgeGroup = repositories.createGroup({
       name: 'Gemini Native 转 Anthropic Messages 回归分组',
       providerCode: ANTHROPIC_PROVIDER_CODE,
-      providerProtocolProfileId: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
       enabled: true
     }, access)
     const anthropicBridgeAccount = repositories.createAccount({
@@ -367,7 +362,6 @@ try {
     const geminiNativeTargetBridgeGroup = repositories.createGroup({
       name: 'OpenAI Anthropic 转 Gemini Native 回归分组',
       providerCode: GEMINI_PROVIDER_CODE,
-      providerProtocolProfileId: GEMINI_NATIVE_V1BETA_PROFILE_ID,
       enabled: true
     }, access)
     const geminiNativeTargetBridgeAccount = repositories.createAccount({

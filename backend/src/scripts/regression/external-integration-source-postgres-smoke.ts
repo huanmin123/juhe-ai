@@ -5,9 +5,8 @@ import { closeRedisClients } from '../../shared/redis-client.js'
 import {
   createExternalIntegrationSourceAuthorizationAsync,
   deleteExternalIntegrationSourceAsync,
-  externalIntegrationAccessInfoReadScope,
   externalIntegrationAccountAddWriteScope,
-  externalIntegrationSourceAuthDemoScope,
+  externalIntegrationGroupListReadScope,
   findExternalIntegrationSourceAsync,
   findExternalIntegrationSourceTokenSecretAsync,
   listExternalIntegrationSourcesAsync,
@@ -29,7 +28,7 @@ try {
   const created = await createExternalIntegrationSourceAuthorizationAsync({
     name: sourceName,
     status: 'active',
-    scopes: [externalIntegrationSourceAuthDemoScope, externalIntegrationAccessInfoReadScope],
+    scopes: [externalIntegrationGroupListReadScope],
     rateLimits: [{ windowSeconds: 60, maxRequests: 100 }],
     notes: 'pg smoke'
   })
@@ -51,7 +50,7 @@ try {
 
   const authOk = await validateExternalIntegrationSourceTokenAsync({
     token: created.token.token,
-    requiredScope: externalIntegrationSourceAuthDemoScope
+    requiredScope: externalIntegrationGroupListReadScope
   })
   assert.equal(authOk.ok, true, 'PG 外部来源系统 token 应通过授权 scope 校验')
   assert.equal(authOk.ok ? authOk.context.sourceRefId : undefined, sourceId, 'PG 外部来源系统鉴权上下文应返回 sourceRefId')
@@ -65,18 +64,18 @@ try {
 
   const token = await updateExternalIntegrationSourceTokenAsync(sourceId, tokenId, {
     name: `外部来源 PG smoke token ${marker}`,
-    scopes: [externalIntegrationSourceAuthDemoScope]
+    scopes: [externalIntegrationGroupListReadScope]
   })
   assert.equal(token?.name, `外部来源 PG smoke token ${marker}`, 'PG 外部来源系统 token 应可更新名称')
-  assert.deepEqual(token?.scopes, [externalIntegrationSourceAuthDemoScope], 'PG 外部来源系统 token 应可更新 scopes')
+  assert.deepEqual(token?.scopes, [externalIntegrationGroupListReadScope], 'PG 外部来源系统 token 应可更新 scopes')
 
   const disabled = await updateExternalIntegrationSourceAsync(sourceId, { status: 'disabled' })
   assert.equal(disabled?.status, 'disabled', 'PG 外部来源系统应可禁用')
-  assert.equal(disabled?.tokens[0]?.status, 'disabled', 'PG 外部来源系统禁用后应同步禁用非 revoked token')
+  assert.equal(disabled?.tokens?.[0]?.status, 'disabled', 'PG 外部来源系统禁用后应同步禁用非 revoked token')
 
   const authDisabled = await validateExternalIntegrationSourceTokenAsync({
     token: created.token.token,
-    requiredScope: externalIntegrationSourceAuthDemoScope
+    requiredScope: externalIntegrationGroupListReadScope
   })
   assert.equal(authDisabled.ok, false, 'PG 外部来源系统禁用后 token 应拒绝')
   assert.equal(authDisabled.ok ? undefined : authDisabled.code, 'external_source_disabled', 'PG 外部来源系统禁用后应返回固定错误码')

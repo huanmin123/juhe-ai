@@ -17,12 +17,14 @@ runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'worker'
 runtimeConfig.workerRole = 'ingest-worker'
 runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
+runtimeConfig.modelCheck.probeRetryDelayMs = 20
 mkdirSync(tempRoot, { recursive: true })
 
 const retryState = {
   transientBasicAttempts: 0,
   transientStreamAttempts: 0,
-  persistentBasicAttempts: 0
+  persistentBasicAttempts: 0,
+  rateLimitedBasicAttempts: 0
 }
 const upstream = createRetryAwareUpstream()
 let stopGatewayJsonParseWorker: (() => Promise<void>) | undefined
@@ -53,6 +55,7 @@ try {
   const transientAccount = transientFixture.accounts[0]
   assert(transientAccount, 'mock fixture should create a transient target account')
 
+  const transientStartedAt = Date.now()
   const transientRun = await runModelCheck({
     targetType: 'account',
     targetId: transientAccount.id,
@@ -65,6 +68,7 @@ try {
   assert.equal(transientRun.level, 'high_confidence', '瞬态上游异常恢复后不应误判失败')
   assert.equal(retryState.transientBasicAttempts, 3, '瞬态异常 basic 探针应在同一账号上尝试三次')
   assert.equal(retryState.transientStreamAttempts, 3, '瞬态流式异常应在同一账号上尝试三次')
+  assert(Date.now() - transientStartedAt >= 35, '普通瞬态错误也应执行统一等待，不能贴着重打')
   assert.equal(transientBasic.status, 'passed', '第 3 次恢复后 basic 探针应通过')
   assert.equal(transientBasic.evidenceSummary.attemptCount, 3, `basic 探针应记录总尝试次数：${JSON.stringify(transientBasic.evidenceSummary)}`)
   assert.equal(transientBasic.evidenceSummary.retryAttemptCount, 2, 'basic 探针应记录重试次数')
@@ -72,6 +76,32 @@ try {
   assert.equal(transientStream.status, 'passed', '第 3 次恢复后流式探针应通过')
   assert.equal(transientStream.evidenceSummary.attemptCount, 3, '流式探针应记录总尝试次数')
   assert.deepEqual(transientStream.evidenceSummary.attemptStatusCodes, [503, 503, 200], '流式探针应记录每次 HTTP 状态码')
+
+  const rateLimitedFixture = createMockGatewayFixture({
+    label: 'model-check-retry-rate-limit',
+    upstreamBaseUrl,
+    systemAccountId: 'sys_admin',
+    accountCount: 1,
+    createApiKey: false
+  })
+  const rateLimitedAccount = rateLimitedFixture.accounts[0]
+  assert(rateLimitedAccount, 'mock fixture should create a rate-limited target account')
+  const rateLimitedStartedAt = Date.now()
+  const rateLimitedRun = await runModelCheck({
+    targetType: 'account',
+    targetId: rateLimitedAccount.id,
+    model: 'gpt-5.5',
+    profile: 'full',
+    trustedComparison: false
+  }, access)
+  const rateLimitedBasic = requiredCheck(rateLimitedRun.checks, 'target.responses_basic')
+  assert.equal(rateLimitedRun.level, 'high_confidence', `429 瞬态限流恢复后不应误判失败：${JSON.stringify(checkStatusSummary(rateLimitedRun.checks))}`)
+  assert.equal(retryState.rateLimitedBasicAttempts, 3, '429 basic 探针应等待后在同一账号上尝试三次')
+  assert(Date.now() - rateLimitedStartedAt >= 35, '失败重试应执行统一等待，不能贴着重打')
+  assert.equal(rateLimitedBasic.status, 'passed', '第 3 次限流恢复后 basic 探针应通过')
+  assert.equal(rateLimitedBasic.evidenceSummary.retryAttemptCount, 2, '429 basic 探针应记录重试次数')
+  assert.deepEqual(rateLimitedBasic.evidenceSummary.attemptStatusCodes, [503, 503, 200], '429 basic 探针应记录网关侧状态码')
+  assert.deepEqual(rateLimitedBasic.evidenceSummary.attemptUpstreamStatusCodes, [429, 429, 200], '429 basic 探针应记录真实上游状态码')
 
   const persistentFixture = createMockGatewayFixture({
     label: 'model-check-retry-persistent',
@@ -93,13 +123,16 @@ try {
   const persistentBasic = requiredCheck(persistentRun.checks, 'target.responses_basic')
   assert.equal(persistentRun.level, 'unavailable', '连续重试仍失败时应落不可检测')
   assert.equal(retryState.persistentBasicAttempts, 3, '持续异常 basic 探针应达到最大尝试次数')
-  assert.equal(persistentBasic.status, 'failed', '持续异常时 basic 探针应失败')
+  assert.equal(persistentBasic.status, 'skipped', '持续异常时 basic 探针应记录为请求失败未计分')
+  assert.equal(persistentBasic.maxScore, 0, '持续异常时 basic 探针不应进入评分分母')
+  assert.equal(persistentBasic.evidenceSummary.requestFailure, true, '持续异常报告应标记请求失败')
+  assert.equal(persistentBasic.evidenceSummary.excludedFromScoring, true, '持续异常报告应标记不参与评分')
   assert.equal(persistentBasic.evidenceSummary.attemptCount, 3, '持续异常报告应记录总尝试次数')
   assert.equal(persistentBasic.evidenceSummary.retryAttemptCount, 2, '持续异常报告应记录重试次数')
   assert.deepEqual(persistentBasic.evidenceSummary.attemptStatusCodes, [503, 503, 503], '持续异常报告应记录全部失败状态码')
   assert(!persistentRun.checks.some((item) => item.itemKey === 'target.behavior_probe'), 'basic 连续失败后不应继续执行重型行为探针')
 
-  console.log('模型检测探针重试回归通过：瞬态异常同账号重试后恢复，持续异常三次后失败')
+  console.log('模型检测探针重试回归通过：统一延迟重试、瞬态恢复和持续失败未计分均符合预期')
 } finally {
   await stopGatewayJsonParseWorker?.()
   await closeServer(upstream)
@@ -109,6 +142,14 @@ function requiredCheck(checks: ModelCheckItemSummary[], itemKey: string): ModelC
   const check = checks.find((item) => item.itemKey === itemKey)
   assert(check, `检测报告应包含 ${itemKey}`)
   return check
+}
+
+function checkStatusSummary(checks: ModelCheckItemSummary[]): Array<{ itemKey: string; status: string; errorMessage?: string }> {
+  return checks.map((item) => ({
+    itemKey: item.itemKey,
+    status: item.status,
+    errorMessage: item.errorMessage
+  }))
 }
 
 function createRetryAwareUpstream(): http.Server {
@@ -134,6 +175,13 @@ function createRetryAwareUpstream(): http.Server {
         const authorization = String(req.headers.authorization ?? '').toLowerCase()
         const bodyText = JSON.stringify(body).toUpperCase()
         if (bodyText.includes('OK-MODEL-CHECK')) {
+          if (authorization.includes('model-check-retry-rate-limit')) {
+            retryState.rateLimitedBasicAttempts += 1
+            if (retryState.rateLimitedBasicAttempts <= 2) {
+              sendRateLimit(res)
+              return
+            }
+          }
           if (authorization.includes('model-check-retry-transient')) {
             retryState.transientBasicAttempts += 1
             if (retryState.transientBasicAttempts <= 2) {
@@ -248,6 +296,11 @@ function sendJson(res: http.ServerResponse, body: unknown): void {
 function sendError(res: http.ServerResponse, message: string): void {
   res.writeHead(503, { 'content-type': 'application/json' })
   res.end(JSON.stringify({ error: { message } }))
+}
+
+function sendRateLimit(res: http.ServerResponse): void {
+  res.writeHead(429, { 'content-type': 'application/json' })
+  res.end(JSON.stringify({ error: { message: 'group requests-per-minute limit exceeded', type: 'rate_limit_exceeded' } }))
 }
 
 function parseJson(text: string): Record<string, unknown> {

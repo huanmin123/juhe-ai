@@ -24,5 +24,8 @@ assert.doesNotMatch(middlewareSource, /\bvalidateExternalIntegrationSourceToken\
 assert(repositorySource.includes('createExternalIntegrationSourceTokenInClientAsync'), '外部来源系统创建授权必须在同一 PG transaction 内创建 source 和 token')
 assert(tokenRepositorySource.includes('loadExternalIntegrationSourceTokensBySourceIdsAsync'), '外部来源系统 token summary 必须提供 async 批量读取')
 assert(authRepositorySource.includes('touchExternalIntegrationSourceLastUsedAsync'), '外部来源系统 PG token 校验必须异步更新 last_used_at')
+assert(authRepositorySource.includes('load_external_integration_source_token_for_auth_read_only'), 'SQLite 外部来源 token 校验必须进入 read worker 只读查询')
+assert(authRepositorySource.includes('scheduleExternalIntegrationSourceLastUsedTouch'), 'SQLite 外部来源 token 最近使用时间必须后台 touch，不能阻塞公开 GET/list')
+assert.doesNotMatch(authRepositorySource, /if \(runtimeConfig\.databaseDriver !== 'postgres'\) \{\s*return validateExternalIntegrationSourceToken\(input\)/, 'SQLite async token 校验不能回退同步读写函数')
 
 console.log('外部来源系统 async 边界回归通过：管理 CRUD、token 操作、鉴权和操作日志均固定 async 路径')

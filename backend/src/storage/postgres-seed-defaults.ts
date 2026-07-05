@@ -215,10 +215,10 @@ export async function seedPostgresDefaults(client: Pick<DatabaseClient, 'execute
     await query(
       `
         INSERT INTO ${businessTable('groups')} (
-          id, system_account_id, name, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+          id, system_account_id, name, provider_code,
           description, enabled, is_default, created_at, updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1, 1, $9, $10)
+        VALUES ($1, $2, $3, $4, $5, 1, 1, $6, $7)
         ON CONFLICT DO NOTHING
       `,
       [
@@ -226,9 +226,6 @@ export async function seedPostgresDefaults(client: Pick<DatabaseClient, 'execute
         group.systemAccountId,
         group.name,
         group.providerCode,
-        group.providerProtocolProfileId,
-        group.protocolCode,
-        group.protocolVersion,
         group.description,
         now,
         now

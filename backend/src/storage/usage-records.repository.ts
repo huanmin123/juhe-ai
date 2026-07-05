@@ -1,3 +1,5 @@
+import type { SQLInputValue } from 'node:sqlite'
+
 import { buildSystemAccountScopeClause, includeSystemAccountFields, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getUsageCatalogDatabase, mainDatabaseRuntimeInfo, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
@@ -9,7 +11,6 @@ import {
   generateUsageRecordId,
   getUsageRecordShardDatabase,
   findRegisteredUsageRecordShardLocation,
-  listRecentUsageRecordShardLocations,
   listUsageRecordShardLocations,
   queryUsageRecordShardById,
   recordUsageRecordShardEntries,
@@ -24,13 +25,18 @@ import {
 import { writeUsageRecordShardRowsWithWriterPool } from './usage-record-writer-pool.js'
 import { optionalString } from './value-utils.js'
 import type { ResourceAuthorizationSourceType } from '../domain/types.js'
-import { GPT_VENDOR_CODE } from '../domain/provider-protocol.js'
-import { listOpenAIProtocolProviderCodes, listOpenAIProtocolProviderCodesAsync } from './provider.repository.js'
 import { recordAccountHealthSuccessSignals } from './account-health-check.repository.js'
 import { errorLogFields, logger } from '../shared/logger.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
+import {
+  estimateCatalogCacheReadCostUsdAsync,
+  estimateCatalogCacheWriteCostUsdAsync,
+  estimateCatalogCostUsdAsync,
+  resolveCatalogPricingModelAsync
+} from '../modules/model-pricing/model-catalog.service.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
 export interface UsageRecordLogSnapshot {
   [key: string]: unknown
@@ -74,6 +80,9 @@ export interface UsageRecordSummary {
   thinkingTokens?: number
   inputImageTokens?: number
   outputImageTokens?: number
+  inputAudioTokens?: number
+  outputAudioTokens?: number
+  outputImageCount?: number
   costUsd?: number
   errorCode?: string
   errorMessage?: string
@@ -82,7 +91,7 @@ export interface UsageRecordSummary {
   createdAt: string
 }
 
-export type UsageRecordTrafficSource = 'gateway' | 'manual_account_test' | 'cooldown_retest' | 'hybrid_scoring' | 'hybrid_quality_scoring'
+export type UsageRecordTrafficSource = 'gateway' | 'manual_account_test' | 'runtime_recovery_probe' | 'cooldown_retest' | 'hybrid_scoring' | 'hybrid_quality_scoring'
 export type UsageFailureAttribution = 'account_upstream' | 'account_dependency' | 'gateway_capacity' | 'gateway_policy' | 'client_lifecycle'
 export type UsageRecordSortField = 'createdAt' | 'firstTokenMs' | 'durationMs' | 'costUsd'
 export type UsageRecordSortDirection = 'asc' | 'desc'
@@ -110,13 +119,6 @@ export interface UsageRecordListResult {
   hasMore: boolean
   page: number
   pageSize: number
-}
-
-export interface RecentOpenAIRequestShape {
-  endpoint: string
-  model?: string
-  stream: boolean
-  createdAt: string
 }
 
 export interface UsageRecordInput {
@@ -163,6 +165,9 @@ export interface UsageRecordInput {
   thinkingTokens?: number
   inputImageTokens?: number
   outputImageTokens?: number
+  inputAudioTokens?: number
+  outputAudioTokens?: number
+  outputImageCount?: number
   costUsd?: number
   errorCode?: string
   errorMessage?: string
@@ -205,6 +210,13 @@ export function listUsageRecords(access?: AccessScope, options?: UsageRecordList
 }
 
 export async function listUsageRecordsAsync(access?: AccessScope, options?: UsageRecordListOptions): Promise<UsageRecordListResult> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_usage_records_read_only',
+      access,
+      options
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listUsageRecords(access, options)
   }
@@ -243,14 +255,17 @@ export function getUsageRecordDetail(id: string, access?: AccessScope): UsageRec
   if (!recordId) return undefined
   const scope = buildSystemAccountScopeClause(access, 'ur.system_account_id')
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
-  const row = queryUsageRecordShardById<UsageRecordRow>(recordId, `
+  const detailSql = `
       SELECT
         ur.*
       FROM usage_records ur
       WHERE ur.id = ?
       ${scope.clause}
       LIMIT 1
-    `, [recordId, ...scope.params])
+    `
+  const detailParams = [recordId, ...scope.params]
+  const row = queryUsageRecordShardById<UsageRecordRow>(recordId, detailSql, detailParams)
+    ?? queryUsageRecordShardByCatalogEntry<UsageRecordRow>(recordId, detailSql, detailParams)
   const namedRow = row ? hydrateUsageRecordNames([row])[0] : undefined
   const accountNames = shouldIncludeSystemAccountFields
     ? loadSystemAccountNameMapByIds([optionalString(namedRow?.system_account_id)])
@@ -258,7 +273,35 @@ export function getUsageRecordDetail(id: string, access?: AccessScope): UsageRec
   return namedRow ? usageRecordSummaryFromRow(namedRow, shouldIncludeSystemAccountFields, accountNames, true) : undefined
 }
 
+function queryUsageRecordShardByCatalogEntry<T extends Record<string, unknown>>(
+  id: string,
+  selectSql: string,
+  params: SQLInputValue[]
+): T | undefined {
+  const entry = getUsageCatalogDatabase()
+    .prepare(`
+      SELECT shard_key
+      FROM usage_record_shard_entries
+      WHERE usage_id = ?
+      LIMIT 1
+    `)
+    .get(id) as { shard_key?: string } | undefined
+  if (!entry?.shard_key) return undefined
+  const location = findRegisteredUsageRecordShardLocation(entry.shard_key)
+  if (!location) return undefined
+  return getUsageRecordShardDatabase(location)
+    .prepare(selectSql)
+    .get(...params) as T | undefined
+}
+
 export async function getUsageRecordDetailAsync(id: string, access?: AccessScope): Promise<UsageRecordSummary | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'get_usage_record_detail_read_only',
+      id,
+      access
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return getUsageRecordDetail(id, access)
   }
@@ -280,158 +323,6 @@ export async function getUsageRecordDetailAsync(id: string, access?: AccessScope
     : new Map<string, string>()
   return namedRow ? usageRecordSummaryFromRow(namedRow, shouldIncludeSystemAccountFields, accountNames, true) : undefined
 }
-
-export function findRecentOpenAIRequestShapeForAccount(accountId: string, groupId?: string): RecentOpenAIRequestShape | undefined {
-  const normalizedAccountId = accountId.trim()
-  const normalizedGroupId = groupId?.trim()
-  if (!normalizedAccountId) return undefined
-  const accountShape = findRecentOpenAIRequestShape({ accountId: normalizedAccountId, groupId: normalizedGroupId })
-  return accountShape ?? (normalizedGroupId ? findRecentOpenAIRequestShape({ groupId: normalizedGroupId }) : undefined)
-}
-
-export async function findRecentOpenAIRequestShapeForAccountAsync(accountId: string, groupId?: string): Promise<RecentOpenAIRequestShape | undefined> {
-  if (runtimeConfig.databaseDriver !== 'postgres') {
-    return findRecentOpenAIRequestShapeForAccount(accountId, groupId)
-  }
-  const normalizedAccountId = accountId.trim()
-  const normalizedGroupId = groupId?.trim()
-  if (!normalizedAccountId) return undefined
-  const client = createPostgresDatabaseClient(await getPostgresPool())
-  const accountShape = await findRecentOpenAIRequestShapeAsync(client, { accountId: normalizedAccountId, groupId: normalizedGroupId })
-  return accountShape ?? (normalizedGroupId ? await findRecentOpenAIRequestShapeAsync(client, { groupId: normalizedGroupId }) : undefined)
-}
-
-function findRecentOpenAIRequestShape(input: { accountId?: string; groupId?: string }): RecentOpenAIRequestShape | undefined {
-  const clauses: string[] = []
-  const params: string[] = []
-  if (input.accountId) {
-    clauses.push('account_id = ?')
-    params.push(input.accountId)
-  }
-  if (input.groupId) {
-    clauses.push('group_id = ?')
-    params.push(input.groupId)
-  }
-  if (clauses.length === 0) return undefined
-  const providerCodes = openAIProtocolProviderCodesForRecentRequestShape()
-  if (!providerCodes.length) return undefined
-  const endpointFilter = recentOpenAIEndpointFilter()
-  let currentBucketDateKey = ''
-  let currentRows: RecentOpenAIRequestShapeRow[] = []
-  for (const location of listRecentUsageRecordShardLocations(recentOpenAIRequestShapeLookbackDays)) {
-    if (currentBucketDateKey && location.bucketDateKey !== currentBucketDateKey) {
-      const shape = recentOpenAIRequestShapeFromRows(currentRows)
-      if (shape) return shape
-      currentRows = []
-    }
-    currentBucketDateKey = location.bucketDateKey
-    const row = getUsageRecordShardDatabase(location)
-      .prepare(`
-      SELECT id, endpoint, model, stream, created_at
-      FROM usage_records
-      WHERE ${clauses.join(' AND ')}
-        AND api_key_id IS NOT NULL
-        AND traffic_source = 'gateway'
-        AND provider_code IN (${sqlPlaceholders(providerCodes.length)})
-        AND endpoint IS NOT NULL
-        AND TRIM(endpoint) <> ''
-        AND (${endpointFilter.clause})
-      ORDER BY created_at DESC, id DESC
-      LIMIT 1
-    `)
-      .get(...params, ...providerCodes, ...endpointFilter.params) as unknown as RecentOpenAIRequestShapeRow | undefined
-    if (row) {
-      currentRows.push(row)
-    }
-  }
-  return recentOpenAIRequestShapeFromRows(currentRows)
-}
-
-async function findRecentOpenAIRequestShapeAsync(
-  client: DatabaseClient,
-  input: { accountId?: string; groupId?: string }
-): Promise<RecentOpenAIRequestShape | undefined> {
-  const clauses: string[] = []
-  const params: string[] = []
-  if (input.accountId) {
-    clauses.push('account_id = ?')
-    params.push(input.accountId)
-  }
-  if (input.groupId) {
-    clauses.push('group_id = ?')
-    params.push(input.groupId)
-  }
-  if (clauses.length === 0) return undefined
-  const providerCodes = await openAIProtocolProviderCodesForRecentRequestShapeAsync()
-  if (!providerCodes.length) return undefined
-  const endpointFilter = recentOpenAIEndpointFilter()
-  const rows = await client.query<RecentOpenAIRequestShapeRow>(`
-    SELECT id, endpoint, model, stream, created_at
-    FROM ${client.dialect.qualifyTable('juhe_usage', 'usage_records')}
-    WHERE ${clauses.join(' AND ')}
-      AND api_key_id IS NOT NULL
-      AND traffic_source = 'gateway'
-      AND provider_code IN (${providerCodes.map(() => '?').join(', ')})
-      AND endpoint IS NOT NULL
-      AND TRIM(endpoint) <> ''
-      AND (${endpointFilter.clause})
-    ORDER BY created_at DESC, id DESC
-    LIMIT 1
-  `, [...params, ...providerCodes, ...endpointFilter.params])
-  return recentOpenAIRequestShapeFromRows(rows)
-}
-
-function openAIProtocolProviderCodesForRecentRequestShape(): string[] {
-  const codes = listOpenAIProtocolProviderCodes()
-  return codes.length ? codes : [GPT_VENDOR_CODE]
-}
-
-async function openAIProtocolProviderCodesForRecentRequestShapeAsync(): Promise<string[]> {
-  const codes = await listOpenAIProtocolProviderCodesAsync()
-  return codes.length ? codes : [GPT_VENDOR_CODE]
-}
-
-function recentOpenAIRequestShapeFromRows(rows: RecentOpenAIRequestShapeRow[]): RecentOpenAIRequestShape | undefined {
-  rows.sort((left, right) => {
-    const byCreatedAt = String(right.created_at ?? '').localeCompare(String(left.created_at ?? ''))
-    return byCreatedAt || String(right.id ?? '').localeCompare(String(left.id ?? ''))
-  })
-  const row = rows[0]
-  const endpoint = optionalString(row?.endpoint)
-  const createdAt = optionalString(row?.created_at)
-  if (!endpoint || !createdAt) return undefined
-  return {
-    endpoint,
-    model: optionalString(row?.model),
-    stream: row?.stream === 1 || row?.stream === true,
-    createdAt
-  }
-}
-
-interface RecentOpenAIRequestShapeRow {
-  id?: string | null
-  endpoint?: string | null
-  model?: string | null
-  stream?: number | boolean | null
-  created_at?: string | null
-}
-
-function recentOpenAIEndpointFilter(): { clause: string; params: string[] } {
-  const endpoints = ['/v1/responses', '/v1/chat/completions']
-  const prefixes = endpoints.flatMap((endpoint) => [`post ${endpoint}`, endpoint])
-  return {
-    clause: prefixes.map(() => `
-      ${recentOpenAIEndpointExpression} = ?
-      OR (${recentOpenAIEndpointExpression} >= ? AND ${recentOpenAIEndpointExpression} < ?)
-    `).join(' OR '),
-    params: prefixes.flatMap((prefix) => {
-      const childPrefix = `${prefix}/`
-      return [prefix, childPrefix, `${childPrefix}\uffff`]
-    })
-  }
-}
-
-const recentOpenAIEndpointExpression = 'LOWER(TRIM(endpoint))'
 
 export function createUsageRecord(input: UsageRecordInput): void {
   createUsageRecordsBatch([input])
@@ -510,7 +401,11 @@ async function createUsageRecordsBatchPostgres(inputs: UsageRecordInput[]): Prom
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const accountLastUsedAt = new Map<string, string>()
   const accountHealthSuccessAt = new Map<string, string>()
-  const writePlan = buildUsageRecordBatchWritePlan(inputs, { accessLookupMode: 'provided' })
+  const enrichedInputs = await enrichUsageRecordPricingAsync(inputs)
+  const writePlan = buildUsageRecordBatchWritePlan(enrichedInputs, {
+    accessLookupMode: 'provided',
+    shardLocationMode: 'postgres'
+  })
   if (writePlan.shardEntries.length === 0) return
 
   await client.transaction(async (tx) => {
@@ -521,6 +416,150 @@ async function createUsageRecordsBatchPostgres(inputs: UsageRecordInput[]): Prom
     await recordPostgresUsageRecordShardEntries(tx, writePlan.shardEntries, writePlan.locations)
     await flushPostgresUsageRecordBusinessSideEffects(tx, accountLastUsedAt, accountHealthSuccessAt)
   })
+}
+
+async function enrichUsageRecordPricingAsync(inputs: UsageRecordInput[]): Promise<UsageRecordInput[]> {
+  const pricingModelCache = new Map<string, Promise<string | undefined>>()
+  const resolvePricingModel = async (input: { providerCode: string; model?: string; systemAccountId?: string }): Promise<string | undefined> => {
+    const key = [input.providerCode, input.systemAccountId ?? '', input.model ?? ''].join('\u0000')
+    let pending = pricingModelCache.get(key)
+    if (!pending) {
+      pending = resolveCatalogPricingModelAsync(input)
+      pricingModelCache.set(key, pending)
+    }
+    return await pending
+  }
+  const enriched: UsageRecordInput[] = []
+  for (const input of inputs) {
+    enriched.push(await enrichSingleUsageRecordPricingAsync(input, resolvePricingModel))
+  }
+  return enriched
+}
+
+async function enrichSingleUsageRecordPricingAsync(
+  input: UsageRecordInput,
+  resolvePricingModel: (input: { providerCode: string; model?: string; systemAccountId?: string }) => Promise<string | undefined>
+): Promise<UsageRecordInput> {
+  if (!input.providerCode) return input
+  const providerCode = input.providerCode
+  const catalogSystemAccountId = input.accountOwnerSystemAccountId || input.systemAccountId
+  const upstreamModel = normalizeUsageRecordPricingModel(input.upstreamModel)
+  const requestedModel = normalizeUsageRecordPricingModel(input.model)
+  const existingPricingModel = normalizeUsageRecordPricingModel(input.pricingModel)
+
+  try {
+    const pricingModel = existingPricingModel
+      ?? await resolveUsageRecordPricingModelAsync({
+        providerCode,
+        systemAccountId: catalogSystemAccountId,
+        upstreamModel,
+        requestedModel,
+        resolvePricingModel
+      })
+    const costModel = pricingModel ?? upstreamModel ?? requestedModel
+    if (!costModel) {
+      return pricingModel && pricingModel !== input.pricingModel
+        ? { ...input, pricingModel }
+        : input
+    }
+
+    const enriched: UsageRecordInput = pricingModel && pricingModel !== input.pricingModel
+      ? { ...input, pricingModel }
+      : { ...input }
+
+    if (enriched.cacheReadCostUsd === undefined && enriched.cacheReadTokens !== undefined) {
+      enriched.cacheReadCostUsd = await estimateCatalogCacheReadCostUsdAsync({
+        providerCode,
+        systemAccountId: catalogSystemAccountId,
+        model: costModel,
+        cacheReadTokens: enriched.cacheReadTokens
+      })
+    }
+
+    if (
+      enriched.cacheWriteCostUsd === undefined
+      && (enriched.cacheWriteTokens !== undefined || enriched.cacheWrite1hTokens !== undefined)
+    ) {
+      enriched.cacheWriteCostUsd = await estimateCatalogCacheWriteCostUsdAsync({
+        providerCode,
+        systemAccountId: catalogSystemAccountId,
+        model: costModel,
+        cacheWriteTokens: enriched.cacheWriteTokens,
+        cacheWrite1hTokens: enriched.cacheWrite1hTokens
+      })
+    }
+
+    if (enriched.costUsd === undefined && hasUsageRecordCostDimension(enriched)) {
+      enriched.costUsd = await estimateCatalogCostUsdAsync({
+        providerCode,
+        systemAccountId: catalogSystemAccountId,
+        model: costModel,
+        inputTokens: enriched.inputTokens,
+        outputTokens: enriched.outputTokens,
+        cacheReadTokens: enriched.cacheReadTokens,
+        cacheWriteTokens: enriched.cacheWriteTokens,
+        cacheWrite1hTokens: enriched.cacheWrite1hTokens,
+        thinkingTokens: enriched.thinkingTokens,
+        inputImageTokens: enriched.inputImageTokens,
+        outputImageTokens: enriched.outputImageTokens,
+        inputAudioTokens: enriched.inputAudioTokens,
+        outputAudioTokens: enriched.outputAudioTokens,
+        outputImageCount: enriched.outputImageCount
+      })
+    }
+
+    return enriched
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'usage_record_pricing_enrichment_failed',
+      traceId: input.traceId,
+      providerCode,
+      model: input.model,
+      upstreamModel: input.upstreamModel,
+      trafficSource: input.trafficSource
+    }), '使用记录写入前补算成本失败，保留原始用量记录')
+    return input
+  }
+}
+
+async function resolveUsageRecordPricingModelAsync(input: {
+  providerCode: string
+  systemAccountId?: string
+  upstreamModel?: string
+  requestedModel?: string
+  resolvePricingModel: (input: { providerCode: string; model?: string; systemAccountId?: string }) => Promise<string | undefined>
+}): Promise<string | undefined> {
+  const upstreamPricingModel = await input.resolvePricingModel({
+    providerCode: input.providerCode,
+    systemAccountId: input.systemAccountId,
+    model: input.upstreamModel
+  })
+  if (upstreamPricingModel) return upstreamPricingModel
+
+  if (!input.requestedModel || input.requestedModel === input.upstreamModel) return undefined
+  return await input.resolvePricingModel({
+    providerCode: input.providerCode,
+    systemAccountId: input.systemAccountId,
+    model: input.requestedModel
+  })
+}
+
+function normalizeUsageRecordPricingModel(value: string | undefined): string | undefined {
+  const normalized = value?.trim()
+  return normalized || undefined
+}
+
+function hasUsageRecordCostDimension(input: UsageRecordInput): boolean {
+  return input.inputTokens !== undefined
+    || input.outputTokens !== undefined
+    || input.cacheReadTokens !== undefined
+    || input.cacheWriteTokens !== undefined
+    || input.cacheWrite1hTokens !== undefined
+    || input.inputImageTokens !== undefined
+    || input.outputImageTokens !== undefined
+    || input.inputAudioTokens !== undefined
+    || input.outputAudioTokens !== undefined
+    || input.outputImageCount !== undefined
 }
 
 function normalizeUsageRecordBatchWriteError(errors: unknown[]): Error {
@@ -539,9 +578,10 @@ interface UsageRecordBatchWritePlan {
 
 function buildUsageRecordBatchWritePlan(
   inputs: UsageRecordInput[],
-  options: { accessLookupMode?: 'database' | 'provided' } = {}
+  options: { accessLookupMode?: 'database' | 'provided'; shardLocationMode?: 'sqlite' | 'postgres' } = {}
 ): UsageRecordBatchWritePlan {
   const providedOnly = options.accessLookupMode === 'provided'
+  const postgresLogicalShardLocations = options.shardLocationMode === 'postgres'
   const accessLookupContext = providedOnly ? undefined : buildUsageAccessLookupContext(inputs)
   const rowsByShard = new Map<string, { location: UsageRecordShardLocation; rows: UsageRecordShardWriteRow[] }>()
   const shardEntries: UsageRecordShardEntryInput[] = []
@@ -594,6 +634,9 @@ function buildUsageRecordBatchWritePlan(
         input.thinkingTokens ?? null,
         input.inputImageTokens ?? null,
         input.outputImageTokens ?? null,
+        input.inputAudioTokens ?? null,
+        input.outputAudioTokens ?? null,
+        input.outputImageCount ?? null,
         input.costUsd ?? null,
         input.errorCode ?? null,
         input.errorMessage ?? null,
@@ -616,7 +659,9 @@ function buildUsageRecordBatchWritePlan(
       accountHealthSuccessAt: shouldRecordAccountUsageSideEffects(trafficSource) && input.success ? now : undefined
     }
 
-    const location = usageRecordShardLocationForRecord(id, now)
+    const location = postgresLogicalShardLocations
+      ? usageRecordLogicalShardLocationForPostgres(id, now)
+      : usageRecordShardLocationForRecord(id, now)
     const shardRows = rowsByShard.get(location.shardKey) ?? { location, rows: [] }
     shardRows.rows.push(row)
     rowsByShard.set(location.shardKey, shardRows)
@@ -709,6 +754,9 @@ const postgresUsageRecordColumns = [
   'thinking_tokens',
   'input_image_tokens',
   'output_image_tokens',
+  'input_audio_tokens',
+  'output_audio_tokens',
+  'output_image_count',
   'cost_usd',
   'error_code',
   'error_message',
@@ -748,10 +796,45 @@ async function recordPostgresUsageRecordShardEntries(
   await registerPostgresUsageRecordShardLocations(client, uniquePostgresUsageRecordShardLocations([
     ...locations,
     ...uniqueEntries
-      .map((entry) => usageRecordShardLocationForRecord(entry.id, entry.createdAt))
+      .map((entry) => usageRecordLogicalShardLocationForPostgres(entry.id, entry.createdAt))
   ]), timestamp)
   await upsertPostgresUsageRecordShardEntries(client, uniqueEntries, timestamp)
   await upsertPostgresUsageRecordScopeShardCatalog(client, uniqueEntries)
+}
+
+function usageRecordLogicalShardLocationForPostgres(id: string, createdAt?: string): UsageRecordShardLocation {
+  const parsed = /^usage_(\d{8})_s(\d+)_/.exec(id)
+  const bucketDateKey = parsed?.[1] ?? usageRecordBucketDateKey(createdAt)
+  const shardId = parsed?.[2] ? Number(parsed[2]) : usageRecordLogicalShardId(id)
+  const normalizedShardId = Number.isInteger(shardId) ? Math.max(0, Math.trunc(shardId)) : usageRecordLogicalShardId(id)
+  const shardKey = `${bucketDateKey}:s${formatUsageRecordLogicalShardId(normalizedShardId)}`
+  return {
+    shardKey,
+    bucketDate: `${bucketDateKey.slice(0, 4)}-${bucketDateKey.slice(4, 6)}-${bucketDateKey.slice(6, 8)}`,
+    bucketDateKey,
+    shardId: normalizedShardId,
+    filePath: `postgres:juhe_usage.usage_records:${shardKey}`
+  }
+}
+
+function usageRecordBucketDateKey(createdAt?: string): string {
+  const value = createdAt ?? nowIso()
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value)
+  if (match) return `${match[1]}${match[2]}${match[3]}`
+  const fallback = nowIso()
+  return `${fallback.slice(0, 4)}${fallback.slice(5, 7)}${fallback.slice(8, 10)}`
+}
+
+function usageRecordLogicalShardId(value: string): number {
+  let hash = 0
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0
+  }
+  return hash % runtimeConfig.usageShardCount
+}
+
+function formatUsageRecordLogicalShardId(value: number): string {
+  return String(Math.max(0, Math.trunc(value))).padStart(3, '0')
 }
 
 async function registerPostgresUsageRecordShardLocations(
@@ -1033,8 +1116,10 @@ async function postgresAccountIdsForKeyword(client: DatabaseClient, keyword: str
   const normalizedKeyword = normalizeUsageRecordAccountKeyword(keyword)
   const upperBound = usageRecordAccountKeywordUpperBound(normalizedKeyword)
   const ids: string[] = []
-  const accountNameClause = 'lower(accounts.name) >= ? AND lower(accounts.name) < ?'
-  const sourceNameClause = 'lower(source_accounts.name) >= ? AND lower(source_accounts.name) < ?'
+  const accountNameExpression = '(accounts.name COLLATE "C")'
+  const sourceNameExpression = '(source_accounts.name COLLATE "C")'
+  const accountNameClause = `${accountNameExpression} >= ? AND ${accountNameExpression} < ?`
+  const sourceNameClause = `${sourceNameExpression} >= ? AND ${sourceNameExpression} < ?`
   const ownerClause = ownerSystemAccountId ? 'AND accounts.system_account_id = ?' : ''
   const ownerParams = ownerSystemAccountId ? [ownerSystemAccountId] : []
 
@@ -1044,7 +1129,7 @@ async function postgresAccountIdsForKeyword(client: DatabaseClient, keyword: str
     WHERE accounts.deleted_at IS NULL
       AND ${accountNameClause}
       ${ownerClause}
-    ORDER BY lower(accounts.name) ASC, accounts.id ASC
+    ORDER BY ${accountNameExpression} ASC, accounts.id ASC
     LIMIT ?
   `, [normalizedKeyword, upperBound, ...ownerParams, usageRecordAccountKeywordMatchLimit]))
 
@@ -1057,7 +1142,7 @@ async function postgresAccountIdsForKeyword(client: DatabaseClient, keyword: str
       AND instance_accounts.deleted_at IS NULL
       AND ${sourceNameClause}
       ${ownerSystemAccountId ? 'AND instance_accounts.system_account_id = ?' : ''}
-    ORDER BY lower(source_accounts.name) ASC, instance_accounts.id ASC
+    ORDER BY ${sourceNameExpression} ASC, instance_accounts.id ASC
     LIMIT ?
   `, [normalizedKeyword, upperBound, ...ownerParams, usageRecordAccountKeywordMatchLimit]))
 
@@ -1071,7 +1156,7 @@ async function postgresAccountIdsForKeyword(client: DatabaseClient, keyword: str
         AND ra.grantee_system_account_id = ?
       WHERE accounts.deleted_at IS NULL
         AND ${accountNameClause}
-      ORDER BY lower(accounts.name) ASC, accounts.id ASC
+      ORDER BY ${accountNameExpression} ASC, accounts.id ASC
       LIMIT ?
     `, [ownerSystemAccountId, normalizedKeyword, upperBound, usageRecordAccountKeywordMatchLimit]))
     appendUsageRecordAccountIds(ids, await client.query<{ id?: string }>(`
@@ -1086,7 +1171,7 @@ async function postgresAccountIdsForKeyword(client: DatabaseClient, keyword: str
         AND ra.grantee_system_account_id = ?
       WHERE accounts.deleted_at IS NULL
         AND ${accountNameClause}
-      ORDER BY lower(accounts.name) ASC, accounts.id ASC
+      ORDER BY ${accountNameExpression} ASC, accounts.id ASC
       LIMIT ?
     `, [ownerSystemAccountId, normalizedKeyword, upperBound, usageRecordAccountKeywordMatchLimit]))
   }
@@ -1108,11 +1193,21 @@ function usageRecordTextPrefixUpperBound(value: string): string {
 }
 
 function normalizeUsageRecordAccountKeyword(value: string): string {
-  return value.normalize('NFKC').toLowerCase().trim()
+  return value.normalize('NFKC').trim()
 }
 
 function usageRecordAccountKeywordUpperBound(value: string): string {
-  return `${value}\uffff`
+  return usageRecordBinaryPrefixUpperBound(value)
+}
+
+function usageRecordBinaryPrefixUpperBound(value: string): string {
+  const chars = [...value]
+  for (let index = chars.length - 1; index >= 0; index -= 1) {
+    const codePoint = chars[index].codePointAt(0)
+    if (codePoint === undefined || codePoint >= 0x10ffff) continue
+    return `${chars.slice(0, index).join('')}${String.fromCodePoint(codePoint + 1)}`
+  }
+  return `${value}\u{10ffff}`
 }
 
 function listUsageRecordEntries(
@@ -1194,6 +1289,9 @@ function loadUsageRecordRowsByEntries(entries: UsageRecordEntryRow[]): UsageReco
             ur.thinking_tokens,
             ur.input_image_tokens,
             ur.output_image_tokens,
+            ur.input_audio_tokens,
+            ur.output_audio_tokens,
+            ur.output_image_count,
             ur.cost_usd,
             ur.error_code,
             ur.error_message,
@@ -1215,7 +1313,47 @@ async function loadUsageRecordRowsByEntriesAsync(client: DatabaseClient, entries
   const rowsById = new Map<string, UsageRecordRow>()
   for (const chunk of chunkValues(entries.map((entry) => entry.usage_id), 900)) {
     const rows = await client.query<UsageRecordRow>(`
-      SELECT ur.*
+      SELECT
+        ur.id,
+        ur.system_account_id,
+        ur.trace_id,
+        ur.traffic_source,
+        ur.client_ip,
+        ur.api_key_id,
+        ur.group_id,
+        ur.account_id,
+        ur.endpoint,
+        ur.provider_code,
+        ur.provider_protocol_profile_id,
+        ur.usage_semantic,
+        ur.model,
+        ur.upstream_model,
+        ur.pricing_model,
+        ur.model_mapping_applied,
+        ur.model_mapping_source,
+        ur.stream,
+        ur.status_code,
+        ur.success,
+        ur.failure_attribution,
+        ur.first_token_ms,
+        ur.duration_ms,
+        ur.input_tokens,
+        ur.output_tokens,
+        ur.cache_read_tokens,
+        ur.cache_read_cost_usd,
+        ur.cache_write_tokens,
+        ur.cache_write_1h_tokens,
+        ur.cache_write_cost_usd,
+        ur.thinking_tokens,
+        ur.input_image_tokens,
+        ur.output_image_tokens,
+        ur.input_audio_tokens,
+        ur.output_audio_tokens,
+        ur.output_image_count,
+        ur.cost_usd,
+        ur.error_code,
+        ur.error_message,
+        ur.created_at
       FROM juhe_usage.usage_records ur
       WHERE ur.id IN (${sqlPlaceholders(chunk.length)})
     `, chunk)
@@ -1273,6 +1411,9 @@ function listUsageRecordRowsFromShards(
           ur.thinking_tokens,
           ur.input_image_tokens,
           ur.output_image_tokens,
+          ur.input_audio_tokens,
+          ur.output_audio_tokens,
+          ur.output_image_count,
           ur.cost_usd,
           ur.error_code,
           ur.error_message,
@@ -1383,12 +1524,11 @@ function updateAccountLastUsedAt(accountLastUsedAt: Map<string, string>, databas
   }
 }
 
-const recentOpenAIRequestShapeLookbackDays = 7
-
 function normalizeUsageRecordTrafficSource(value: unknown): UsageRecordTrafficSource {
   if (
     value === 'gateway'
     || value === 'manual_account_test'
+    || value === 'runtime_recovery_probe'
     || value === 'cooldown_retest'
     || value === 'hybrid_scoring'
     || value === 'hybrid_quality_scoring'
@@ -1422,7 +1562,8 @@ function normalizeUsageFailureAttribution(value: unknown): UsageFailureAttributi
 }
 
 function shouldRecordAccountUsageSideEffects(trafficSource: UsageRecordTrafficSource): boolean {
-  return trafficSource !== 'cooldown_retest'
+  return trafficSource !== 'runtime_recovery_probe'
+    && trafficSource !== 'cooldown_retest'
     && trafficSource !== 'hybrid_scoring'
     && trafficSource !== 'hybrid_quality_scoring'
 }

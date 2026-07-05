@@ -282,10 +282,8 @@ export interface AiPerformanceAccountOption {
 export interface AiPerformancePoint {
   statHour: string
   requestCount: number
-  firstTokenCount: number
   averageFirstTokenMs?: number
   maxFirstTokenMs?: number
-  durationCount: number
   averageDurationMs?: number
   maxDurationMs?: number
 }
@@ -305,14 +303,11 @@ export interface AiPerformanceOverview {
   hourlySeries: AiPerformanceAccountSeries[]
   summary: {
     requestCount: number
-    firstTokenCount: number
     averageFirstTokenMs?: number
     maxFirstTokenMs?: number
-    durationCount: number
     averageDurationMs?: number
     maxDurationMs?: number
   }
-  statsLagSeconds?: number
 }
 
 export interface AccountUsageStatsRange {
@@ -647,7 +642,6 @@ export interface AccountUsageStatsOverview {
   hasMore: boolean
   page: number
   pageSize: number
-  statsLagSeconds?: number
 }
 
 export interface AccountTestResult {
@@ -681,8 +675,7 @@ export interface AccountTestResult {
   accountFailureEligible?: boolean
   errorPolicyAction?: 'none' | 'retry_next' | 'cooldown' | 'disable'
   errorPolicyReason?: string
-  clientCompatibility?: AccountClientCompatibility
-  testClientCompatibility?: AccountClientCompatibility
+  testEndpointMode?: AccountSupportedEndpointMode
   apiKeyPool?: AccountTestApiKeyPoolResult
 }
 
@@ -733,7 +726,7 @@ export interface AccountTestTask {
   status: AccountTestTaskStatus
   message?: string
   model?: string
-  clientCompatibility?: AccountClientCompatibility
+  testEndpointMode?: AccountSupportedEndpointMode
   result?: AccountTestResult
   cancelRequested?: boolean
   createdAt: string
@@ -822,8 +815,8 @@ export interface ModelCheckRunSummary {
   startedAt: string
   finishedAt?: string
   durationMs?: number
-  requestSummary: Record<string, unknown>
-  resultSummary: Record<string, unknown>
+  requestSummary?: Record<string, unknown>
+  resultSummary?: Record<string, unknown>
   errorCode?: string
   errorMessage?: string
   createdAt: string
@@ -831,6 +824,8 @@ export interface ModelCheckRunSummary {
 }
 
 export interface ModelCheckRunDetail extends ModelCheckRunSummary {
+  requestSummary: Record<string, unknown>
+  resultSummary: Record<string, unknown>
   checks: ModelCheckItemSummary[]
 }
 
@@ -867,9 +862,6 @@ export interface GroupSummary {
   systemAccountName?: string
   name: string
   providerCode: ProviderCode
-  providerProtocolProfileId?: string
-  protocolCode?: string
-  protocolVersion?: string
   description?: string
   enabled: boolean
   isDefault: boolean
@@ -905,9 +897,6 @@ export type GroupOptionSummary = Pick<
   | 'ownerSystemAccountName'
   | 'name'
   | 'providerCode'
-  | 'providerProtocolProfileId'
-  | 'protocolCode'
-  | 'protocolVersion'
   | 'enabled'
   | 'isDefault'
   | 'groupType'
@@ -1057,6 +1046,7 @@ export type ApiKeyGroupBindingStatus = 'active' | 'disabled'
 export type RouteStrategyMode = 'normal' | 'hybrid_smart' | 'weighted' | 'failover' | 'round_robin'
 export type ApiKeyClientProfile = 'auto' | 'generic_openai' | 'codex' | 'generic_anthropic' | 'claude_code' | 'generic_gemini' | 'gemini_cli'
 export type ApiKeyExplicitHybridRouteAdapterMode = 'direct' | 'bridge'
+export type RouteStrategyNormalSchedulingPreference = 'cost_first' | 'speed_first'
 export type ApiKeyHybridQualityPreference = 'cost_first' | 'balanced' | 'quality_first'
 export type ApiKeyHybridQualityInspectionTriggerMode = 'quality_first_only' | 'risk_based' | 'always_for_hybrid'
 export type ApiKeyHybridQualityInspectionFailureAction = 'repair_then_upgrade' | 'upgrade_next_level' | 'retry_same_model' | 'return_error'
@@ -1119,14 +1109,29 @@ export interface RouteStrategyGroupBindingSummary {
   groupId: string
   groupName?: string
   providerCode?: ProviderCode
-  providerProtocolProfileId?: string
-  protocolCode?: string
-  protocolVersion?: string
   priority: number
   weight: number
   status: ApiKeyGroupBindingStatus
   groupEnabled: boolean
 }
+
+export interface RouteStrategySpeedFirstConfig {
+  firstByteThresholdMs: number
+  slowTriggerCount: number
+  slowWindowSeconds: number
+  recoverySuccessCount: number
+  probeIntervalSeconds: number
+  degradedTtlSeconds: number
+  retryOnFirstByteTimeout: boolean
+  maxFirstByteRetriesPerRequest: number
+}
+
+export interface RouteStrategyNormalRoutingConfig {
+  schedulingPreference: RouteStrategyNormalSchedulingPreference
+  speedFirstConfig?: RouteStrategySpeedFirstConfig
+}
+
+export type RouteStrategyGroupBindingPreview = Pick<RouteStrategyGroupBindingSummary, 'id' | 'groupId' | 'groupName' | 'providerCode' | 'status' | 'groupEnabled'>
 
 export type RouteStrategyStatus = 'active' | 'disabled'
 
@@ -1139,8 +1144,26 @@ export interface RouteStrategySummary {
   mode: RouteStrategyMode
   status: RouteStrategyStatus
   isDefault: boolean
+  normalRoutingConfig?: RouteStrategyNormalRoutingConfig
   hybridRoutingConfig?: ApiKeyHybridRoutingConfig
   groupBindings: RouteStrategyGroupBindingSummary[]
+  apiKeyCount?: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface RouteStrategyListItem {
+  id: string
+  systemAccountId?: string
+  systemAccountName?: string
+  name: string
+  description?: string
+  mode: RouteStrategyMode
+  status: RouteStrategyStatus
+  isDefault: boolean
+  normalRoutingConfig?: RouteStrategyNormalRoutingConfig
+  groupBindingPreview: RouteStrategyGroupBindingPreview[]
+  bindingCount: number
   apiKeyCount?: number
   createdAt: string
   updatedAt: string
@@ -1154,6 +1177,14 @@ export interface RouteStrategyOptionSummary {
   mode: RouteStrategyMode
   status: RouteStrategyStatus
   isDefault: boolean
+}
+
+export interface RouteStrategyListItemResult {
+  items: RouteStrategyListItem[]
+  total: number
+  hasMore: boolean
+  page: number
+  pageSize: number
 }
 
 export interface RouteStrategyListResult {
@@ -1235,7 +1266,7 @@ export interface ApiKeySummary {
   description?: string
   keyPrefix: string
   keySuffix: string
-  key: string
+  key?: string
   status: 'active' | 'disabled'
   isDefault?: boolean
   routeStrategyId: string

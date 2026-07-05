@@ -4,7 +4,7 @@ export interface AccountUsagePageState {
 }
 
 export function accountUsageStatsTableScrollX(isManagementView: boolean): number {
-  return isManagementView ? 1620 : 1450
+  return isManagementView ? 1650 : 1470
 }
 
 export function accountUsageStatsTableColumns(isManagementView: boolean): Array<Record<string, unknown>> {
@@ -21,7 +21,7 @@ export function accountUsageStatsTableColumns(isManagementView: boolean): Array<
   baseColumns.push(
     { title: '请求', key: 'requests', width: 120, align: 'right' },
     { title: 'Token', key: 'tokens', width: 130, align: 'right' },
-    { title: '缓存率', key: 'cacheRate', width: 120, align: 'right' },
+    { title: '缓存读占比', key: 'cacheRate', width: 130, align: 'right' },
     { title: '缓存成本', key: 'cacheCost', width: 130, align: 'right' },
     { title: '成本', key: 'cost', width: 130, align: 'right' },
     { title: '最后使用', key: 'lastUsedAt', width: 180 }
@@ -31,11 +31,11 @@ export function accountUsageStatsTableColumns(isManagementView: boolean): Array<
 
 export function accountUsageStatsParams(input: {
   systemAccountId: string | undefined
-  dateRange: readonly [string, string]
+  dateRange?: readonly [string, string]
   accountIds: string[]
   pageState: AccountUsagePageState
 }) {
-  const [startDate, endDate] = input.dateRange
+  const [startDate, endDate] = input.dateRange ?? []
   return {
     systemAccountId: input.systemAccountId,
     accountIds: input.accountIds,

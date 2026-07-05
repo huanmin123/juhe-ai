@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert'
 
 import type { OpenAIAccountSecret } from '../../storage/openai-account-selector.types.js'
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { createAccountAsync, createGroupAsync } from '../../storage/repositories.js'
 import {
@@ -40,7 +41,7 @@ try {
   const account = await createAccountAsync({
     name: `API Key runtime PG smoke 账号 ${marker}`,
     providerCode: 'gpt',
-    providerProtocolProfileId: group.providerProtocolProfileId,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     type: 'api_key',
     status: 'active',
     groupId: group.id,

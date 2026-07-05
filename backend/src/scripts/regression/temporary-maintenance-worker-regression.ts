@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -8,6 +8,13 @@ import { logger } from '../../shared/logger.js'
 import type { BackgroundTaskRunSummary } from '../../storage/background-task-runs.repository.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-temporary-maintenance-worker-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+const recordMaintenanceQueueSource = readFileSync(new URL('../../modules/record-maintenance/record-maintenance-queue.service.ts', import.meta.url), 'utf8')
+assert.match(recordMaintenanceQueueSource, /child\.on\('message'[\s\S]*handleTemporaryMaintenanceWorkerMessage/, '临时维护 worker 父进程必须接收子进程 IPC 请求')
+assert.match(recordMaintenanceQueueSource, /background_worker_stats_write_request[\s\S]*requestStatsWriter[\s\S]*background_worker_stats_write_response/, '临时维护 worker stats-writer 请求必须由父进程转发并响应')
+assert.match(recordMaintenanceQueueSource, /background_worker_db_service_request[\s\S]*requestBackgroundWorkerDbService[\s\S]*background_worker_db_service_response/, '临时维护 worker DB service 请求必须由父进程转发并响应')
+assert.match(recordMaintenanceQueueSource, /await spawnTemporaryMaintenanceWorker\(run\.runId, job\)/, 'Redis Stream 数据维护消息必须等临时 worker 成功退出后才能 ACK')
+assert.match(recordMaintenanceQueueSource, /function spawnTemporaryMaintenanceWorker[\s\S]*Promise<void>[\s\S]*child\.once\('exit'[\s\S]*code === 0[\s\S]*settle\(\)[\s\S]*settle\(new Error/, '临时维护 worker 非 0 退出必须让父任务失败，消息保持 pending 等待重投')
+
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
 runtimeConfig.usageCatalogDatabasePath = join(tempRoot, 'usage-catalog.sqlite3')

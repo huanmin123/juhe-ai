@@ -42,7 +42,6 @@ try {
   const group = repositories.createGroup({
     name: 'Anthropic 到 OpenAI 旧桥接边界分组',
     providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
-    providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
 

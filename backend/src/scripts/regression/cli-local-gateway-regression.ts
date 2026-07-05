@@ -191,7 +191,6 @@ function seedCliGateways(input: {
   const anthropicGroup = repositories.createGroup({
     name: '真实 CLI 本地网关 Anthropic 分组',
     providerCode: ANTHROPIC_PROVIDER_CODE,
-    providerProtocolProfileId: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
     enabled: true
   }, access)
   repositories.createAccount({
@@ -217,7 +216,6 @@ function seedCliGateways(input: {
   const deepseekGroup = repositories.createGroup({
     name: '真实 CLI 本地网关 DeepSeek Chat-only 分组',
     providerCode: DEEPSEEK_PROVIDER_CODE,
-    providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   repositories.createAccount({
@@ -243,7 +241,6 @@ function seedCliGateways(input: {
   const glmGroup = repositories.createGroup({
     name: '真实 CLI 本地网关 GLM opencode 分组',
     providerCode: GLM_PROVIDER_CODE,
-    providerProtocolProfileId: GLM_GENERAL_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   repositories.createAccount({

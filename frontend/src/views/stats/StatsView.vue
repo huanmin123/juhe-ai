@@ -14,6 +14,13 @@
             @change="handleDateRangeChange"
             @open-change="handleDateRangeOpenChange"
           />
+          <a-segmented
+            :value="quickRangeValue"
+            :disabled="loading"
+            :options="quickRangeOptions"
+            class="stats-quick-range"
+            @change="handleQuickRangeChange"
+          />
           <SystemPrincipalSelect
             v-if="isManagementView"
             v-model:value="selectedSystemAccountId"
@@ -47,7 +54,7 @@
     <StatsSummaryCards :cards="summaryCards" :loading="initialLoading" />
 
     <a-row :gutter="[16, 16]" class="stats-section">
-      <a-col :xs="24" :xl="showAdminDetailCharts ? 14 : 24">
+      <a-col :xs="24" :xl="14">
         <StatsChartCard
           :title="`请求、失败、Token 消耗、平均总耗时（${currentWindowLabel}）`"
           :description="usageTrendDescription"
@@ -58,7 +65,7 @@
           <div ref="usageTrendChartRef" class="chart-panel chart-panel-large" />
         </StatsChartCard>
       </a-col>
-      <a-col v-if="showAdminDetailCharts" :xs="24" :xl="10">
+      <a-col :xs="24" :xl="10">
         <StatsChartCard
           :title="`模型分布（${currentWindowLabel}）`"
           description="按模型汇总 Token 消耗；没有 Token 的记录会用请求次数参与展示。"
@@ -72,7 +79,7 @@
     </a-row>
 
     <a-row :gutter="[16, 16]" class="stats-section">
-      <a-col :xs="24" :xl="showAdminDetailCharts ? 10 : 12">
+      <a-col :xs="24">
         <StatsChartCard
           :title="`错误 Top 10（${currentWindowLabel}）`"
           description="统计窗口内失败请求按错误码聚合；悬浮可查看状态码和错误信息。"
@@ -81,62 +88,6 @@
           :empty-description="errorEmptyDescription"
         >
           <div ref="errorChartRef" class="chart-panel chart-panel-large" />
-        </StatsChartCard>
-      </a-col>
-      <a-col v-if="!showAdminDetailCharts" :xs="24" :xl="12">
-        <StatsChartCard
-          :title="`模型分布（${currentWindowLabel}）`"
-          description="按模型汇总 Token 消耗；没有 Token 的记录会用请求次数参与展示。"
-          :loading="initialLoading"
-          :has-data="hasModelDistribution"
-          :empty-description="modelDistributionEmptyDescription"
-        >
-          <div ref="modelDistributionChartRef" class="chart-panel chart-panel-large" />
-        </StatsChartCard>
-      </a-col>
-      <a-col v-if="showAdminDetailCharts" :xs="24" :xl="14">
-        <StatsChartCard :title="`系统性能 / 网络吞吐趋势（${currentWindowLabel}）`" :loading="systemInitialLoading" :has-data="hasVisibleSystemTrend" :empty-description="systemTrendEmptyDescription">
-          <div ref="systemMetricsChartRef" class="chart-panel chart-panel-large" />
-        </StatsChartCard>
-      </a-col>
-    </a-row>
-
-    <a-row v-if="showAdminDetailCharts" :gutter="[16, 16]" class="stats-section">
-      <a-col :xs="24" :xl="14">
-        <StatsChartCard
-          :title="`进程事件循环延迟（${currentWindowLabel}）`"
-          :loading="systemInitialLoading"
-          :has-data="hasProcessEventLoopData"
-          :empty-description="processEventLoopEmptyDescription"
-        >
-          <div v-if="hasProcessEventLoopTrend" ref="processEventLoopChartRef" class="chart-panel chart-panel-large" />
-          <a-empty v-else class="process-event-loop-trend-empty" :description="processEventLoopTrendEmptyDescription" />
-          <StatsProcessEventLoopTable :rows="processEventLoopRows" />
-        </StatsChartCard>
-      </a-col>
-      <a-col :xs="24" :xl="10">
-        <StatsBackgroundJobsCard
-          :empty-description="backgroundJobEmptyDescription"
-          :has-data="hasBackgroundJobs"
-          :loading="systemInitialLoading"
-          :pagination="backgroundJobPagination"
-          :rows="backgroundJobRows"
-          :runtime-alert-description="systemRuntimeAlertDescription"
-          :runtime-alert-visible="systemRuntimeAlertVisible"
-          @change="handleBackgroundJobTableChange"
-        />
-      </a-col>
-    </a-row>
-
-    <a-row v-if="showAdminDetailCharts" :gutter="[16, 16]" class="stats-section">
-      <a-col :xs="24">
-        <StatsChartCard
-          :title="`进程 RSS 峰值趋势（${currentWindowLabel}）`"
-          :loading="systemInitialLoading"
-          :has-data="hasProcessMemoryTrend"
-          :empty-description="processMemoryTrendEmptyDescription"
-        >
-          <div ref="processMemoryChartRef" class="chart-panel chart-panel-large" />
         </StatsChartCard>
       </a-col>
     </a-row>
@@ -155,19 +106,24 @@ import { disposeChart, ensureChart, resizeEcharts, useEchartsPageLifecycle, type
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
+import { useUsageStatsWindow } from '@/composables/useUsageStatsWindow'
 import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys, todayDateRange } from '@/shared/dateRange'
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
-import type { SystemMetricsOverview, UsageStatsOverview } from '@/types/domain'
+import type { UsageStatsOverview } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
-import StatsBackgroundJobsCard from './StatsBackgroundJobsCard.vue'
 import StatsChartCard from './StatsChartCard.vue'
-import StatsProcessEventLoopTable from './StatsProcessEventLoopTable.vue'
 import StatsSummaryCards from './StatsSummaryCards.vue'
-import { buildErrorOption, buildModelDistributionOption, buildProcessEventLoopOption, buildProcessMemoryOption, buildSystemMetricsOption, buildUsageTrendOption } from './statsChartOptions'
-import { formatCompactInteger, formatCost, formatDurationSeconds, formatInteger, formatPercent, formatSeconds } from './statsFormatters'
-import { buildProcessEventLoopRows, hasProcessEventLoopRowSample } from './statsProcessEventLoop'
+import { buildErrorOption, buildModelDistributionOption, buildUsageTrendOption } from './statsChartOptions'
+import { formatCompactInteger, formatCost, formatDurationSeconds, formatInteger, formatPercent } from './statsFormatters'
 
 const MAX_RANGE_DAYS = 31
+type QuickRange = 'today' | 'recent7d' | 'recent1m'
+const quickRangeOptions: Array<{ label: string; value: QuickRange }> = [
+  { label: '今天', value: 'today' },
+  { label: '近7天', value: 'recent7d' },
+  { label: '近1月', value: 'recent1m' }
+]
+
 type StatsPageState = {
   range?: {
     startDate: string
@@ -176,26 +132,24 @@ type StatsPageState = {
   selectedSystemAccountId: string
   selectedSystemAccount?: PrincipalSelection
 }
+
 const defaultDateRange = todayDateRange
-const defaultStatsPageState = (): StatsPageState => {
-  return {
-    selectedSystemAccountId: allSystemAccountsValue,
-    selectedSystemAccount: undefined
-  }
-}
-const pageStateCache = usePageStateCache<StatsPageState>(undefined, defaultStatsPageState, { version: 4 })
+const defaultStatsPageState = (): StatsPageState => ({
+  selectedSystemAccountId: allSystemAccountsValue,
+  selectedSystemAccount: undefined
+})
+const pageStateCache = usePageStateCache<StatsPageState>(undefined, defaultStatsPageState, { version: 5 })
 const initialPageState = pageStateCache.read()
 
 const loading = ref(false)
-const systemMetricsLoading = ref(false)
 const dateRange = ref<[Dayjs, Dayjs]>(parseDateRange(initialPageState.range))
 const dateRangeExplicit = ref(Boolean(initialPageState.range?.startDate || initialPageState.range?.endDate))
 const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
 const selectedSystemAccountId = ref(initialPageState.selectedSystemAccountId || allSystemAccountsValue)
 const selectedSystemAccount = ref<PrincipalSelection | undefined>(initialPageState.selectedSystemAccount)
 const usageOverview = ref<UsageStatsOverview>()
-const systemMetrics = ref<SystemMetricsOverview>()
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
+const { usageStatsWindowEndDate, usageStatsWindowMaxDays, loadUsageStatsWindow } = useUsageStatsWindow()
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
   handleSearch: handleSystemAccountOptionsSearch,
@@ -210,123 +164,76 @@ const {
 const usageTrendChartRef = ref<HTMLDivElement>()
 const modelDistributionChartRef = ref<HTMLDivElement>()
 const errorChartRef = ref<HTMLDivElement>()
-const systemMetricsChartRef = ref<HTMLDivElement>()
-const processEventLoopChartRef = ref<HTMLDivElement>()
-const processMemoryChartRef = ref<HTMLDivElement>()
-
 const usageTrendChart = shallowRef<ECharts>()
 const modelDistributionChart = shallowRef<ECharts>()
 const errorChart = shallowRef<ECharts>()
-const systemMetricsChart = shallowRef<ECharts>()
-const processEventLoopChart = shallowRef<ECharts>()
-const processMemoryChart = shallowRef<ECharts>()
+let statsRequestSeq = 0
+
 const { pageActive, requestRender: renderCharts } = useEchartsPageLifecycle({
   renderCharts: renderStatsCharts,
   resizeCharts,
   disposeCharts,
-  onMounted: loadData,
-  onDeactivate: cancelPendingSystemMetricsLoad,
-  onBeforeUnmount: cancelPendingSystemMetricsLoad
+  onMounted: loadData
 })
-const backgroundJobPageSize = 10
-const backgroundJobPage = ref(1)
-let statsRequestSeq = 0
-let systemMetricsLoadTimer: ReturnType<typeof window.setTimeout> | undefined
 
 const hasUsageTrend = computed(() => (usageOverview.value?.hourlyTrend.length ?? 0) > 0)
 const hasModelDistribution = computed(() => (usageOverview.value?.modelDistribution.length ?? 0) > 0)
 const hasErrors = computed(() => (usageOverview.value?.errors.length ?? 0) > 0)
-const hasSystemTrend = computed(() => (systemMetrics.value?.hourlyTrend.length ?? 0) > 0)
-const hasVisibleSystemTrend = computed(() => showAdminDetailCharts.value && hasSystemTrend.value)
-const hasProcessEventLoopTrend = computed(() => showAdminDetailCharts.value && (systemMetrics.value?.processEventLoopTrend ?? []).some((item) => item.eventLoopLagMsAvg !== undefined || item.eventLoopLagMsMax !== undefined))
-const hasProcessMemoryTrend = computed(() => showAdminDetailCharts.value && (systemMetrics.value?.processEventLoopTrend ?? []).some((item) => item.processRssBytesAvg !== undefined || item.processRssBytesMax !== undefined))
-const processEventLoopRows = computed(() => buildProcessEventLoopRows(systemMetrics.value))
-const hasProcessEventLoopData = computed(() => hasProcessEventLoopTrend.value || hasProcessEventLoopRowSample(processEventLoopRows.value))
-const backgroundJobRows = computed(() => {
-  return [...(systemMetrics.value?.backgroundJobs ?? [])].sort((left, right) => {
-    const leftDuration = left.maxDurationMs ?? -1
-    const rightDuration = right.maxDurationMs ?? -1
-    if (leftDuration !== rightDuration) return rightDuration - leftDuration
-    return left.name.localeCompare(right.name)
-  })
-})
-const backgroundJobPagination = computed(() => ({
-  current: backgroundJobPage.value,
-  pageSize: backgroundJobPageSize,
-  total: backgroundJobRows.value.length,
-  showSizeChanger: false
-}))
-const backgroundJobsAvailable = computed(() => systemMetrics.value?.backgroundJobsAvailable === true)
-const hasBackgroundJobs = computed(() => backgroundJobsAvailable.value && backgroundJobRows.value.length > 0)
-const systemRuntimeAlertVisible = computed(() => Boolean(systemMetrics.value && (
-  !systemMetrics.value.runtimeSnapshotAvailable
-  || systemMetrics.value.ingestWorkerSnapshotAvailable === false
-  || systemMetrics.value.statsWorkerSnapshotAvailable === false
-  || systemMetrics.value.opsWorkerSnapshotAvailable === false
-  || !systemMetrics.value.backgroundJobsAvailable
-)))
-const systemRuntimeAlertDescription = computed(() => {
-  const metrics = systemMetrics.value
-  if (!metrics) return ''
-  const reasons: string[] = []
-  if (!metrics.runtimeSnapshotAvailable) {
-    reasons.push('服务运行态不可用')
-  } else {
-    if (metrics.ingestWorkerSnapshotAvailable === false) reasons.push('写入 worker 快照不可用')
-    if (metrics.statsWorkerSnapshotAvailable === false) reasons.push('统计 worker 快照不可用')
-    if (metrics.opsWorkerSnapshotAvailable === false) reasons.push('运维 worker 快照不可用')
-    if (!metrics.backgroundJobsAvailable) reasons.push('后台任务状态不可用')
-  }
-  return `${reasons.join('；') || '运行态状态未知'}。`
-})
 const hasUsageOverview = computed(() => Boolean(usageOverview.value))
 const initialLoading = computed(() => loading.value && !hasUsageOverview.value)
-const systemInitialLoading = computed(() => systemMetricsLoading.value && isManagementView.value && !systemMetrics.value)
-const showAdminDetailCharts = computed(() => isManagementView.value)
 const selectedRange = computed(() => normalizedDateRange(dateRange.value))
 const displayRange = computed(() => [formatDateKey(dateRange.value[0]), formatDateKey(dateRange.value[1])] as const)
+const quickRangeValue = computed<QuickRange | undefined>(() => {
+  const [startDate, endDate] = selectedRange.value
+  const windowEnd = statsWindowEndDate()
+  if (!windowEnd || endDate !== formatDateKey(windowEnd)) return undefined
+  if (startDate === formatDateKey(windowEnd)) return 'today'
+  if (startDate === formatDateKey(windowEnd.subtract(6, 'day'))) return 'recent7d'
+  if (startDate === formatDateKey(windowEnd.subtract((usageStatsWindowMaxDays.value || MAX_RANGE_DAYS) - 1, 'day'))) return 'recent1m'
+  return undefined
+})
 const currentWindowLabel = computed(() => `${formatDateLabel(displayRange.value[0])} 至 ${formatDateLabel(displayRange.value[1])}`)
 const hasWindowUsage = computed(() => (usageOverview.value?.summary.requestCount ?? 0) > 0)
 const usageTrendEmptyDescription = computed(() => hasWindowUsage.value ? `${currentWindowLabel.value}暂无趋势数据，窗口指标已在上方展示` : `${currentWindowLabel.value}暂无趋势数据`)
 const modelDistributionEmptyDescription = computed(() => `${currentWindowLabel.value}暂无模型调用`)
 const errorEmptyDescription = computed(() => hasWindowUsage.value ? `${currentWindowLabel.value}暂无失败请求` : `${currentWindowLabel.value}暂无失败请求`)
-const systemTrendEmptyDescription = computed(() => '等待后台监控采样')
-const processEventLoopEmptyDescription = computed(() => '等待进程事件循环采样')
-const processEventLoopTrendEmptyDescription = computed(() => `${currentWindowLabel.value}暂无事件循环趋势，等待后台窗口缓存刷新`)
-const processMemoryTrendEmptyDescription = computed(() => `${currentWindowLabel.value}暂无进程内存趋势，等待后台窗口缓存刷新`)
-const backgroundJobEmptyDescription = computed(() => backgroundJobsAvailable.value ? '暂无后台任务' : '暂时无法获取后台 worker 任务状态')
 const usageTrendDescription = computed(() => '请求和失败按次数统计；Token 为输入 + 输出；平均总耗时取网关均值。')
 const summaryCards = computed(() => {
   const summary = usageOverview.value?.summary
   return [
     { key: 'requests', label: '范围请求', value: formatInteger(summary?.requestCount), extra: `成功 ${formatInteger(summary?.successCount)} / 失败 ${formatInteger(summary?.errorCount)} / 失败率 ${formatPercent((summary?.errorRate ?? 0) * 100)}` },
     { key: 'firstToken', label: '平均首 Token', value: formatDurationSeconds(summary?.averageFirstTokenMs), extra: `平均总耗时 ${formatDurationSeconds(summary?.averageDurationMs)}` },
-    { key: 'tokens', label: 'Token 消耗', value: formatCompactInteger(summary?.totalTokens), extra: `输入 ${formatCompactInteger(summary?.inputTokens)} / 输出 ${formatCompactInteger(summary?.outputTokens)} / 缓存读 ${formatCompactInteger(summary?.cacheReadTokens)} / 缓存写 ${formatCompactInteger(summary?.cacheWriteTokens)}` },
-    { key: 'cost', label: '成本', value: formatCost(summary?.totalCost), extra: `统计滞后 ${formatSeconds(usageOverview.value?.statsLagSeconds)}` }
+    { key: 'tokens', label: 'Token 消耗', value: formatCompactInteger(summary?.totalTokens), extra: `输入 ${formatCompactInteger(summary?.inputTokens)} / 输出 ${formatCompactInteger(summary?.outputTokens)} / 缓存读 ${formatCompactInteger(summary?.cacheReadTokens)}` },
+    { key: 'cost', label: '成本', value: formatCost(summary?.totalCost), extra: buildCostExtra(summary) }
   ]
 })
+
+function buildCostExtra(summary?: UsageStatsOverview['summary']) {
+  const totalCost = summary?.totalCost ?? 0
+  const requestCount = summary?.requestCount ?? 0
+  const totalTokens = summary?.totalTokens ?? 0
+  const averageRequestCost = requestCount > 0 ? totalCost / requestCount : undefined
+  const costPerMillionTokens = totalTokens > 0 ? (totalCost / totalTokens) * 1_000_000 : undefined
+  return `均次 ${formatOptionalCost(averageRequestCost)} / 每 1M Token ${formatOptionalCost(costPerMillionTokens)}`
+}
+
+function formatOptionalCost(value?: number) {
+  return typeof value === 'number' && Number.isFinite(value) ? formatCost(value) : '-'
+}
 
 async function loadData() {
   const requestSeq = ++statsRequestSeq
   loading.value = true
-  cancelPendingSystemMetricsLoad()
   try {
-    const managementView = isManagementView.value
-    const systemAccountId = managementView ? scopedSystemAccountId(selectedSystemAccountId.value) : undefined
+    const systemAccountId = isManagementView.value ? scopedSystemAccountId(selectedSystemAccountId.value) : undefined
     const rangeParams = selectedRangeParams()
-    const overview = managementView
-      ? await api.stats.usageOverview({ ...rangeParams, systemAccountId })
-      : await api.myStats.usageOverview(rangeParams)
+    const [overview] = await Promise.all([
+      isManagementView.value ? api.stats.usageOverview({ ...rangeParams, systemAccountId }) : api.myStats.usageOverview(rangeParams),
+      loadUsageStatsWindow({ force: true })
+    ])
     if (requestSeq !== statsRequestSeq) return
     usageOverview.value = overview
-    if (!managementView) {
-      systemMetrics.value = undefined
-      systemMetricsLoading.value = false
-    }
     syncDateRangeFromResponse(overview.range)
-    if (managementView) {
-      scheduleSystemMetricsLoad(rangeParams, requestSeq)
-    }
   } catch (error) {
     if (requestSeq !== statsRequestSeq) return
     console.error(error)
@@ -337,46 +244,6 @@ async function loadData() {
       renderCharts()
     }
   }
-}
-
-function scheduleSystemMetricsLoad(rangeParams: { startDate?: string; endDate?: string }, requestSeq: number) {
-  systemMetrics.value = undefined
-  systemMetricsLoading.value = true
-  systemMetricsLoadTimer = window.setTimeout(() => {
-    systemMetricsLoadTimer = undefined
-    if (requestSeq !== statsRequestSeq || !pageActive.value || !isManagementView.value) {
-      if (requestSeq === statsRequestSeq) {
-        systemMetricsLoading.value = false
-      }
-      return
-    }
-    void loadSystemMetrics(rangeParams, requestSeq)
-  }, 0)
-}
-
-async function loadSystemMetrics(rangeParams: { startDate?: string; endDate?: string }, requestSeq: number) {
-  try {
-    const metrics = await api.stats.systemMetrics(rangeParams)
-    if (requestSeq !== statsRequestSeq) return
-    systemMetrics.value = metrics
-    renderCharts()
-  } catch (error) {
-    if (requestSeq !== statsRequestSeq) return
-    console.error(error)
-  } finally {
-    if (requestSeq === statsRequestSeq) {
-      systemMetricsLoading.value = false
-      renderCharts()
-    }
-  }
-}
-
-function cancelPendingSystemMetricsLoad() {
-  if (systemMetricsLoadTimer !== undefined) {
-    window.clearTimeout(systemMetricsLoadTimer)
-    systemMetricsLoadTimer = undefined
-  }
-  systemMetricsLoading.value = false
 }
 
 function handleDateRangeChange() {
@@ -405,13 +272,6 @@ function handleSystemAccountChange() {
   void loadData()
 }
 
-function handleBackgroundJobTableChange(paginationInfo: unknown) {
-  if (!paginationInfo || typeof paginationInfo !== 'object') return
-  const next = paginationInfo as { current?: unknown }
-  const current = Number(next.current)
-  backgroundJobPage.value = Number.isFinite(current) && current > 0 ? Math.trunc(current) : 1
-}
-
 function resetFilters() {
   const defaults = defaultStatsPageState()
   dateRange.value = parseDateRange(defaults.range)
@@ -424,92 +284,52 @@ function resetFilters() {
   void loadData()
 }
 
-function renderStatsCharts() {
-  renderUsageTrendChart()
-  renderModelDistributionChart()
-  renderErrorChart()
-  renderSystemMetricsChart()
-  renderProcessEventLoopChart()
-  renderProcessMemoryChart()
+async function renderStatsCharts() {
+  await Promise.all([
+    renderUsageTrendChart(),
+    renderModelDistributionChart(),
+    renderErrorChart()
+  ])
 }
 
-function renderUsageTrendChart() {
+async function renderUsageTrendChart() {
   if (!hasUsageTrend.value) {
     disposeChart(usageTrendChart)
     return
   }
-  const chart = ensureChart(usageTrendChartRef, usageTrendChart)
-  if (!chart || !usageOverview.value) return
-
+  const chart = await ensureChart(usageTrendChartRef, usageTrendChart, () => pageActive.value)
+  if (!chart || !usageOverview.value || !pageActive.value) return
   chart.setOption(buildUsageTrendOption(usageOverview.value.hourlyTrend), { notMerge: true })
 }
 
-function renderModelDistributionChart() {
+async function renderModelDistributionChart() {
   if (!hasModelDistribution.value) {
     disposeChart(modelDistributionChart)
     return
   }
-  const chart = ensureChart(modelDistributionChartRef, modelDistributionChart)
-  if (!chart || !usageOverview.value) return
-
+  const chart = await ensureChart(modelDistributionChartRef, modelDistributionChart, () => pageActive.value)
+  if (!chart || !usageOverview.value || !pageActive.value) return
   chart.setOption(buildModelDistributionOption(usageOverview.value.modelDistribution), { notMerge: true })
 }
 
-function renderErrorChart() {
+async function renderErrorChart() {
   if (!hasErrors.value) {
     disposeChart(errorChart)
     return
   }
-  const chart = ensureChart(errorChartRef, errorChart)
-  if (!chart || !usageOverview.value) return
-
+  const chart = await ensureChart(errorChartRef, errorChart, () => pageActive.value)
+  if (!chart || !usageOverview.value || !pageActive.value) return
   chart.setOption(buildErrorOption(usageOverview.value.errors), { notMerge: true })
 }
 
-function renderSystemMetricsChart() {
-  if (!showAdminDetailCharts.value || !hasSystemTrend.value) {
-    disposeChart(systemMetricsChart)
-    return
-  }
-  const chart = ensureChart(systemMetricsChartRef, systemMetricsChart)
-  if (!chart || !systemMetrics.value) return
-
-  chart.setOption(buildSystemMetricsOption(systemMetrics.value.hourlyTrend), { notMerge: true })
-}
-
-function renderProcessEventLoopChart() {
-  if (!showAdminDetailCharts.value || !hasProcessEventLoopTrend.value) {
-    disposeChart(processEventLoopChart)
-    return
-  }
-  const chart = ensureChart(processEventLoopChartRef, processEventLoopChart)
-  if (!chart || !systemMetrics.value) return
-
-  chart.setOption(buildProcessEventLoopOption(systemMetrics.value.processEventLoopTrend), { notMerge: true })
-}
-
-function renderProcessMemoryChart() {
-  if (!showAdminDetailCharts.value || !hasProcessMemoryTrend.value) {
-    disposeChart(processMemoryChart)
-    return
-  }
-  const chart = ensureChart(processMemoryChartRef, processMemoryChart)
-  if (!chart || !systemMetrics.value) return
-
-  chart.setOption(buildProcessMemoryOption(systemMetrics.value.processEventLoopTrend), { notMerge: true })
-}
-
 function resizeCharts() {
-  resizeEcharts([usageTrendChart.value, modelDistributionChart.value, errorChart.value, systemMetricsChart.value, processEventLoopChart.value, processMemoryChart.value])
+  resizeEcharts([usageTrendChart.value, modelDistributionChart.value, errorChart.value])
 }
 
 function disposeCharts() {
   disposeChart(usageTrendChart)
   disposeChart(modelDistributionChart)
   disposeChart(errorChart)
-  disposeChart(systemMetricsChart)
-  disposeChart(processEventLoopChart)
-  disposeChart(processMemoryChart)
 }
 
 function snapshotPageState(): StatsPageState {
@@ -527,8 +347,32 @@ function selectedRangeParams(): { startDate?: string; endDate?: string } {
   return { startDate, endDate }
 }
 
+async function handleQuickRangeChange(value: string | number) {
+  await loadUsageStatsWindow({ force: true })
+  const range = quickRangeDateRange(value as QuickRange)
+  if (!range) return
+  dateRange.value = parseDateRange({
+    startDate: formatDateKey(range[0]),
+    endDate: formatDateKey(range[1])
+  })
+  dateRangeExplicit.value = true
+  void loadData()
+}
+
 function disabledDate(current: Dayjs) {
-  return isRecentWindowDateDisabled(current, calendarRange.value, MAX_RANGE_DAYS)
+  return isRecentWindowDateDisabled(current, calendarRange.value, usageStatsWindowMaxDays.value, usageStatsWindowEndDate.value)
+}
+
+function statsWindowEndDate(): Dayjs | undefined {
+  return usageStatsWindowEndDate.value?.isValid() ? usageStatsWindowEndDate.value.startOf('day') : undefined
+}
+
+function quickRangeDateRange(value: QuickRange): [Dayjs, Dayjs] | undefined {
+  const end = statsWindowEndDate()
+  if (!end) return undefined
+  if (value === 'today') return [end, end]
+  if (value === 'recent7d') return [end.subtract(6, 'day'), end]
+  return [end.subtract((usageStatsWindowMaxDays.value || MAX_RANGE_DAYS) - 1, 'day'), end]
 }
 
 function parseDateRange(value?: { startDate?: string; endDate?: string }): [Dayjs, Dayjs] {
@@ -548,12 +392,6 @@ function normalizedDateRange(value: [Dayjs, Dayjs]): [string, string] {
 
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 watch(selectedSystemAccount, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
-watch(() => backgroundJobRows.value.length, (total) => {
-  const maxPage = Math.max(1, Math.ceil(total / backgroundJobPageSize))
-  if (backgroundJobPage.value > maxPage) {
-    backgroundJobPage.value = maxPage
-  }
-})
 </script>
 
 <style scoped>
@@ -601,14 +439,6 @@ watch(() => backgroundJobRows.value.length, (total) => {
 
 .chart-panel-large {
   height: 340px;
-}
-
-.process-event-loop-trend-empty {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  justify-content: center;
-  min-height: 220px;
 }
 
 :global(.stats-error-tooltip) {
@@ -670,21 +500,16 @@ watch(() => backgroundJobRows.value.length, (total) => {
     align-items: stretch;
   }
 
-  .stats-range-picker {
-    width: 100%;
-    min-width: 0;
-  }
-
+  .stats-range-picker,
+  .stats-quick-range,
   .stats-system-account-select {
     width: 100%;
+    min-width: 0;
   }
 
   .chart-panel,
   .chart-panel-large {
     height: 280px;
   }
-
 }
 </style>
-
-

@@ -31,22 +31,32 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
   {
     schemaName: 'juhe_business',
     source: 'api-keys-pg-prefix-indexes',
-    sql: 'CREATE INDEX IF NOT EXISTS idx_api_keys_name_c_lookup ON api_keys((lower(name) COLLATE "C"), id)'
+    sql: 'CREATE INDEX IF NOT EXISTS idx_api_keys_name_c_lookup ON api_keys((name COLLATE "C"), id)'
   },
   {
     schemaName: 'juhe_business',
     source: 'api-keys-pg-prefix-indexes',
-    sql: 'CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_name_c_lookup ON api_keys(system_account_id, (lower(name) COLLATE "C"), id)'
+    sql: 'CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_name_c_lookup ON api_keys(system_account_id, (name COLLATE "C"), id)'
   },
   {
     schemaName: 'juhe_business',
     source: 'accounts-pg-prefix-indexes',
-    sql: 'CREATE INDEX IF NOT EXISTS idx_accounts_name_c_lookup ON accounts((lower(name) COLLATE "C"), id) WHERE deleted_at IS NULL'
+    sql: 'CREATE INDEX IF NOT EXISTS idx_accounts_name_c_lookup ON accounts((name COLLATE "C"), id) WHERE deleted_at IS NULL'
   },
   {
     schemaName: 'juhe_business',
     source: 'accounts-pg-prefix-indexes',
-    sql: 'CREATE INDEX IF NOT EXISTS idx_accounts_owner_name_c_lookup ON accounts(system_account_id, (lower(name) COLLATE "C"), id) WHERE deleted_at IS NULL AND authorization_instance_authorization_id IS NULL'
+    sql: 'CREATE INDEX IF NOT EXISTS idx_accounts_owner_name_c_lookup ON accounts(system_account_id, (name COLLATE "C"), id) WHERE deleted_at IS NULL AND authorization_instance_authorization_id IS NULL'
+  },
+  {
+    schemaName: 'juhe_business',
+    source: 'accounts-pg-prefix-indexes',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_accounts_owner_all_name_c_lookup ON accounts(system_account_id, (name COLLATE "C"), id) WHERE deleted_at IS NULL'
+  },
+  {
+    schemaName: 'juhe_business',
+    source: 'system-teams-pg-prefix-indexes',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_system_teams_name_c_lookup ON system_teams((name COLLATE "C"), id)'
   },
   {
     schemaName: 'juhe_usage',
@@ -77,15 +87,52 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
     schemaName: 'juhe_usage',
     source: 'usage-catalog-pg-prefix-indexes',
     sql: 'CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_client_ip_c_created_sort ON usage_record_shard_entries(system_account_id, (client_ip COLLATE "C"), created_at DESC, usage_id DESC)'
+  },
+  {
+    schemaName: 'juhe_usage',
+    source: 'usage-catalog-pg-list-indexes',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_traffic_created_sort ON usage_record_shard_entries(system_account_id, traffic_source, created_at DESC, usage_id DESC) INCLUDE (account_id, shard_key)'
   }
 ]
+
+const postgresBigintColumnNames = new Set([
+  'request_count',
+  'success_count',
+  'error_count',
+  'input_tokens',
+  'output_tokens',
+  'cache_read_tokens',
+  'cache_write_tokens',
+  'cache_write_1h_tokens',
+  'thinking_tokens',
+  'input_image_tokens',
+  'output_image_tokens',
+  'duration_ms_sum',
+  'duration_ms_count',
+  'duration_ms_max',
+  'first_token_ms_sum',
+  'first_token_ms_count',
+  'first_token_ms_max',
+  'sample_count',
+  'event_loop_lag_ms_count',
+  'network_rx_bytes_per_sec_count',
+  'network_tx_bytes_per_sec_count',
+  'hit_count',
+  'row_count',
+  'page_count',
+  'freelist_count',
+  'table_count',
+  'index_count',
+  'growth_rows_1h',
+  'growth_rows_24h'
+])
 
 export function collectPostgresSchemaStatements(): PostgresSchemaStatement[] {
   const statements: PostgresSchemaStatement[] = []
   for (const definition of schemaSourceDefinitions) {
     const rawStatements = collectSqlStatements(definition.apply)
     for (const rawStatement of rawStatements) {
-      const normalized = transformSqliteStatementToPostgres(rawStatement)
+      const normalized = transformSqliteStatementToPostgres(rawStatement, definition.schemaName)
       if (!normalized) continue
       statements.push({
         schemaName: definition.schemaName,
@@ -234,7 +281,7 @@ function splitSqlStatements(sql: string): string[] {
   return statements
 }
 
-function transformSqliteStatementToPostgres(sql: string): string | undefined {
+function transformSqliteStatementToPostgres(sql: string, schemaName: PostgresSchemaName): string | undefined {
   const trimmed = sql.trim()
   if (trimmed.length === 0) {
     return undefined
@@ -254,6 +301,13 @@ function transformSqliteStatementToPostgres(sql: string): string | undefined {
   transformed = transformed.replace(/\bBLOB\b/gi, 'bytea')
   transformed = transformed.replace(/\bREAL\b/gi, 'double precision')
   transformed = transformed.replace(/\bINTEGER\b/gi, 'integer')
+  if (schemaName === 'juhe_stats') {
+    transformed = transformed.replace(/^(\s*)([A-Za-z_][A-Za-z0-9_]*)(\s+)integer\b/gim, (match, indent: string, columnName: string, spacing: string) => {
+      return postgresBigintColumnNames.has(columnName.toLowerCase())
+        ? `${indent}${columnName}${spacing}bigint`
+        : match
+    })
+  }
   transformed = transformed.replace(/\bTEXT\b/gi, 'text')
   transformed = transformed.replace(/[ \t]+\n/g, '\n')
   transformed = transformed.replace(/\n{3,}/g, '\n\n')

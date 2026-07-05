@@ -53,6 +53,10 @@ export interface ResolvedOpenAIModelMapping {
   runtimeRouteRuleId?: string
 }
 
+type GatewayModelMappingSourceEndpointFamilyOverrideRequest = Request & {
+  gatewayModelMappingSourceEndpointFamilyOverride?: GatewayRequestEndpointFamily
+}
+
 export function resolveOpenAIAccountModelMapping(
   account: OpenAIModelMappingRuntimeAccount | undefined,
   requestedModel: string | undefined,
@@ -89,7 +93,23 @@ export function resolveOpenAIRequestModelMapping(
   return resolveOpenAIAccountModelMapping(account, requestModel(req), gatewayRequestEndpointFamily(req))
 }
 
+export function setGatewayModelMappingSourceEndpointFamilyOverride(
+  req: Request,
+  sourceEndpointFamily: GatewayRequestEndpointFamily | undefined
+): void {
+  const request = req as GatewayModelMappingSourceEndpointFamilyOverrideRequest
+  if (!sourceEndpointFamily) {
+    delete request.gatewayModelMappingSourceEndpointFamilyOverride
+    return
+  }
+  request.gatewayModelMappingSourceEndpointFamilyOverride = sourceEndpointFamily
+}
+
 export function gatewayRequestEndpointFamily(req: Request): GatewayRequestEndpointFamily | undefined {
+  const request = req as GatewayModelMappingSourceEndpointFamilyOverrideRequest
+  if (request.gatewayModelMappingSourceEndpointFamilyOverride) {
+    return request.gatewayModelMappingSourceEndpointFamilyOverride
+  }
   return openAIRequestEndpointFamily(req) ?? anthropicMessagesRequestEndpointFamily(req) ?? geminiRequestEndpointFamily(req)
 }
 

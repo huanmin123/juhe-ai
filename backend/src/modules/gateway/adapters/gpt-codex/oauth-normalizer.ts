@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto'
 
 const {
+  OpenAIOAuthCodexAdapterError
+} = await import(resolveOpenAICodexOAuthErrorsModuleUrl()) as typeof import('./oauth-errors.js')
+const {
   normalizeOpenAICodexBuiltinTools
 } = await import(resolveOpenAICodexBuiltinToolsModuleUrl()) as typeof import('./builtin-tools.js')
 
@@ -34,25 +37,6 @@ export interface OpenAIOAuthCodexSessionResolution {
   sessionId?: string
   conversationId?: string
   promptCacheKey?: string
-}
-
-export class OpenAIOAuthCodexAdapterError extends Error {
-  readonly statusCode: number
-  readonly type: string
-  readonly code: string
-  readonly accountScoped: boolean
-
-  constructor(
-    message: string,
-    code = 'invalid_openai_oauth_codex_request',
-    options: { statusCode?: number; type?: string; accountScoped?: boolean } = {}
-  ) {
-    super(message)
-    this.code = code
-    this.statusCode = options.statusCode ?? 400
-    this.type = options.type ?? 'invalid_request_error'
-    this.accountScoped = options.accountScoped === true
-  }
 }
 
 export function normalizeOpenAIOAuthCodexParsedBody(
@@ -177,6 +161,12 @@ function resolveOpenAICodexBuiltinToolsModuleUrl(): string {
   return import.meta.url.endsWith('.ts')
     ? new URL('./builtin-tools.ts', import.meta.url).href
     : new URL('./builtin-tools.js', import.meta.url).href
+}
+
+function resolveOpenAICodexOAuthErrorsModuleUrl(): string {
+  return import.meta.url.endsWith('.ts')
+    ? new URL('./oauth-errors.ts', import.meta.url).href
+    : new URL('./oauth-errors.js', import.meta.url).href
 }
 
 function normalizeOpenAIOAuthCodexServiceTier(body: Record<string, unknown>): void {

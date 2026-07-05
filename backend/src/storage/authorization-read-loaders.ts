@@ -5,8 +5,7 @@ import type {
   ResourceAuthorizationSourceType
 } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
-import { createAppCache, createSharedJsonCache } from '../shared/cache.js'
-import { errorLogFields, logger } from '../shared/logger.js'
+import { clearSharedJsonCacheInBackground, createAppCache, createSharedJsonCache } from '../shared/cache.js'
 import { getBusinessDatabase } from './database.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
@@ -69,6 +68,7 @@ const emptyAuthorizationStats: ResourceAuthorizationStats = {
 }
 
 export function loadResourceAuthorizationStatsByResourceIds(resourceType: ResourceAuthorizationResourceType, resourceIds: string[]): Map<string, ResourceAuthorizationStats> {
+  assertSyncAuthorizationReadLoaderAllowed('loadResourceAuthorizationStatsByResourceIds')
   const ids = uniqueIds(resourceIds)
   if (!ids.length) return new Map()
   const result = new Map<string, ResourceAuthorizationStats>()
@@ -120,20 +120,24 @@ export async function loadResourceAuthorizationStatsByResourceIdsAsync(resourceT
   const ids = uniqueIds(resourceIds)
   if (!ids.length) return new Map()
   const result = new Map<string, ResourceAuthorizationStats>()
-  const missingLocalIds: string[] = []
-  for (const id of ids) {
-    const cacheKey = resourceAuthorizationStatsCacheKey(resourceType, id)
-    const cached = authorizationStatsCache.get(cacheKey)
-    if (cached !== undefined) {
-      result.set(id, cached)
-    } else {
-      missingLocalIds.push(id)
+  const missingSharedIds: string[] = []
+  if (runtimeConfig.cacheDriver !== 'redis') {
+    for (const id of ids) {
+      const cacheKey = resourceAuthorizationStatsCacheKey(resourceType, id)
+      const cached = authorizationStatsCache.get(cacheKey)
+      if (cached !== undefined) {
+        result.set(id, cached)
+      } else {
+        missingSharedIds.push(id)
+      }
     }
+  } else {
+    missingSharedIds.push(...ids)
   }
-  if (!missingLocalIds.length) return result
+  if (!missingSharedIds.length) return result
 
   const missingDatabaseIds: string[] = []
-  for (const id of missingLocalIds) {
+  for (const id of missingSharedIds) {
     const cacheKey = resourceAuthorizationStatsCacheKey(resourceType, id)
     const sharedCached = await getAuthorizationStatsSharedCacheEntry(cacheKey)
     if (sharedCached !== undefined) {
@@ -149,14 +153,15 @@ export async function loadResourceAuthorizationStatsByResourceIdsAsync(resourceT
   for (const id of missingDatabaseIds) {
     const stats = loaded.get(id) ?? emptyAuthorizationStats
     const cacheKey = resourceAuthorizationStatsCacheKey(resourceType, id)
-    authorizationStatsCache.set(cacheKey, stats)
     await setAuthorizationStatsSharedCacheEntryAsync(cacheKey, stats)
+    authorizationStatsCache.set(cacheKey, stats)
     result.set(id, stats)
   }
   return result
 }
 
 export function loadResourceAuthorizationSourcesByAuthorizationIds(authorizationIds: string[]): Map<string, ResourceAuthorizationSourceSummary[]> {
+  assertSyncAuthorizationReadLoaderAllowed('loadResourceAuthorizationSourcesByAuthorizationIds')
   const ids = uniqueIds(authorizationIds)
   if (!ids.length) return new Map()
   const result = new Map<string, ResourceAuthorizationSourceSummary[]>()
@@ -211,23 +216,32 @@ export function loadResourceAuthorizationSourcesByAuthorizationIds(authorization
   return result
 }
 
+function assertSyncAuthorizationReadLoaderAllowed(operation: string): void {
+  if (runtimeConfig.cacheDriver !== 'redis') return
+  throw new Error(`高性能模式禁止同步读取本地授权 loader：${operation} 必须使用 Redis async loader`)
+}
+
 export async function loadResourceAuthorizationSourcesByAuthorizationIdsAsync(authorizationIds: string[]): Promise<Map<string, ResourceAuthorizationSourceSummary[]>> {
   const ids = uniqueIds(authorizationIds)
   if (!ids.length) return new Map()
   const result = new Map<string, ResourceAuthorizationSourceSummary[]>()
-  const missingLocalIds: string[] = []
-  for (const id of ids) {
-    const cached = authorizationSourcesCache.get(id)
-    if (cached !== undefined) {
-      result.set(id, [...cached])
-    } else {
-      missingLocalIds.push(id)
+  const missingSharedIds: string[] = []
+  if (runtimeConfig.cacheDriver !== 'redis') {
+    for (const id of ids) {
+      const cached = authorizationSourcesCache.get(id)
+      if (cached !== undefined) {
+        result.set(id, [...cached])
+      } else {
+        missingSharedIds.push(id)
+      }
     }
+  } else {
+    missingSharedIds.push(...ids)
   }
-  if (!missingLocalIds.length) return result
+  if (!missingSharedIds.length) return result
 
   const missingDatabaseIds: string[] = []
-  for (const id of missingLocalIds) {
+  for (const id of missingSharedIds) {
     const sharedCached = await getAuthorizationSourcesSharedCacheEntry(id)
     if (sharedCached !== undefined) {
       authorizationSourcesCache.set(id, sharedCached)
@@ -241,8 +255,8 @@ export async function loadResourceAuthorizationSourcesByAuthorizationIdsAsync(au
   const loaded = await loadResourceAuthorizationSourcesFromDatabaseAsync(missingDatabaseIds)
   for (const id of missingDatabaseIds) {
     const sources = loaded.get(id) ?? []
-    authorizationSourcesCache.set(id, sources)
     await setAuthorizationSourcesSharedCacheEntryAsync(id, sources)
+    authorizationSourcesCache.set(id, sources)
     result.set(id, [...sources])
   }
   return result
@@ -390,17 +404,8 @@ function authorizationReadLoaderTable(client: DatabaseClient, tableName: string)
 }
 
 async function getAuthorizationStatsSharedCacheEntry(cacheKey: string): Promise<ResourceAuthorizationStats | undefined> {
-  try {
-    const value = await authorizationStatsSharedCache.get(cacheKey)
-    return normalizeAuthorizationStats(value)
-  } catch (error) {
-    logger.warn({
-      event: 'resource_authorization_stats_shared_cache_read_failed',
-      cacheKey,
-      err: errorLogFields(error)
-    }, '读取授权统计 Redis shared cache 失败，将回退数据库')
-    return undefined
-  }
+  const value = await authorizationStatsSharedCache.get(cacheKey)
+  return normalizeAuthorizationStats(value)
 }
 
 function setAuthorizationStatsSharedCacheEntry(cacheKey: string, stats: ResourceAuthorizationStats): void {
@@ -408,48 +413,24 @@ function setAuthorizationStatsSharedCacheEntry(cacheKey: string, stats: Resource
 }
 
 async function setAuthorizationStatsSharedCacheEntryAsync(cacheKey: string, stats: ResourceAuthorizationStats): Promise<void> {
-  try {
-    await authorizationStatsSharedCache.set(cacheKey, cloneAuthorizationStats(stats))
-  } catch (error) {
-    logger.warn({
-      event: 'resource_authorization_stats_shared_cache_write_failed',
-      cacheKey,
-      err: errorLogFields(error)
-    }, '写入授权统计 Redis shared cache 失败')
-  }
+  await authorizationStatsSharedCache.set(cacheKey, cloneAuthorizationStats(stats))
 }
 
 function deleteAuthorizationStatsSharedCacheEntry(cacheKey: string): void {
-  void authorizationStatsSharedCache.delete(cacheKey).catch((error) => {
-    logger.warn({
-      event: 'resource_authorization_stats_shared_cache_delete_failed',
-      cacheKey,
-      err: errorLogFields(error)
-    }, '删除授权统计 Redis shared cache 失败')
-  })
+  void authorizationStatsSharedCache.delete(cacheKey)
 }
 
 function clearAuthorizationStatsSharedCache(): void {
-  void authorizationStatsSharedCache.clear().catch((error) => {
-    logger.warn({
-      event: 'resource_authorization_stats_shared_cache_clear_failed',
-      err: errorLogFields(error)
-    }, '清理授权统计 Redis shared cache 失败')
-  })
+  clearSharedJsonCacheInBackground(
+    authorizationStatsSharedCache,
+    'authorization_stats_shared_cache_clear_failed',
+    '授权统计 Redis shared cache 清理失败'
+  )
 }
 
 async function getAuthorizationSourcesSharedCacheEntry(authorizationId: string): Promise<ResourceAuthorizationSourceSummary[] | undefined> {
-  try {
-    const value = await authorizationSourcesSharedCache.get(authorizationId)
-    return Array.isArray(value) ? value.map(cloneAuthorizationSourceSummary).filter((item): item is ResourceAuthorizationSourceSummary => Boolean(item)) : undefined
-  } catch (error) {
-    logger.warn({
-      event: 'resource_authorization_sources_shared_cache_read_failed',
-      authorizationId,
-      err: errorLogFields(error)
-    }, '读取授权来源 Redis shared cache 失败，将回退数据库')
-    return undefined
-  }
+  const value = await authorizationSourcesSharedCache.get(authorizationId)
+  return Array.isArray(value) ? value.map(cloneAuthorizationSourceSummary).filter((item): item is ResourceAuthorizationSourceSummary => Boolean(item)) : undefined
 }
 
 function setAuthorizationSourcesSharedCacheEntry(authorizationId: string, sources: ResourceAuthorizationSourceSummary[]): void {
@@ -457,34 +438,19 @@ function setAuthorizationSourcesSharedCacheEntry(authorizationId: string, source
 }
 
 async function setAuthorizationSourcesSharedCacheEntryAsync(authorizationId: string, sources: ResourceAuthorizationSourceSummary[]): Promise<void> {
-  try {
-    await authorizationSourcesSharedCache.set(authorizationId, sources.map((source) => ({ ...source })))
-  } catch (error) {
-    logger.warn({
-      event: 'resource_authorization_sources_shared_cache_write_failed',
-      authorizationId,
-      err: errorLogFields(error)
-    }, '写入授权来源 Redis shared cache 失败')
-  }
+  await authorizationSourcesSharedCache.set(authorizationId, sources.map((source) => ({ ...source })))
 }
 
 function deleteAuthorizationSourcesSharedCacheEntry(authorizationId: string): void {
-  void authorizationSourcesSharedCache.delete(authorizationId).catch((error) => {
-    logger.warn({
-      event: 'resource_authorization_sources_shared_cache_delete_failed',
-      authorizationId,
-      err: errorLogFields(error)
-    }, '删除授权来源 Redis shared cache 失败')
-  })
+  void authorizationSourcesSharedCache.delete(authorizationId)
 }
 
 function clearAuthorizationSourcesSharedCache(): void {
-  void authorizationSourcesSharedCache.clear().catch((error) => {
-    logger.warn({
-      event: 'resource_authorization_sources_shared_cache_clear_failed',
-      err: errorLogFields(error)
-    }, '清理授权来源 Redis shared cache 失败')
-  })
+  clearSharedJsonCacheInBackground(
+    authorizationSourcesSharedCache,
+    'authorization_sources_shared_cache_clear_failed',
+    '授权来源 Redis shared cache 清理失败'
+  )
 }
 
 function normalizeAuthorizationStats(value: ResourceAuthorizationStats | undefined): ResourceAuthorizationStats | undefined {

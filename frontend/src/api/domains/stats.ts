@@ -7,6 +7,7 @@ import type {
   SystemMetricsOverview,
   TableStorageOverview,
   TableStorageSnapshotSummary,
+  UsageStatsWindow,
   UsageStatsOverview
 } from '@/types/domain'
 import type {
@@ -23,6 +24,7 @@ import { http, noTimeout, unwrap } from '../http'
 import { accountUsageStatsParams, aiPerformanceAccountOptionsParams, aiPerformanceParams, stripSystemAccountParam } from '../params'
 
 export const statsApi = {
+  usageWindow: () => unwrap<UsageStatsWindow>(http.get('/stats/usage-window')),
   usageOverview: (params?: UsageOverviewParams) => unwrap<UsageStatsOverview>(http.get('/stats/usage-overview', { params })),
   accountUsage: (params?: AccountUsageStatsParams) => unwrap<AccountUsageStatsOverview>(http.get('/stats/account-usage', { params: accountUsageStatsParams(params) })),
   aiPerformanceAccounts: (params?: AiPerformanceAccountOptionsParams) => unwrap<AiPerformanceAccountOption[]>(http.get('/stats/ai-performance/accounts', { params: aiPerformanceAccountOptionsParams(params) })),
@@ -38,6 +40,7 @@ export const tableMonitorApi = {
 }
 
 export const myStatsApi = {
+  usageWindow: () => unwrap<UsageStatsWindow>(http.get('/my-stats/usage-window')),
   usageOverview: (params?: UsageOverviewParams) => unwrap<UsageStatsOverview>(http.get('/my-stats/usage-overview', { params: stripSystemAccountParam(params) })),
   accountUsage: (params?: AccountUsageStatsParams) => unwrap<AccountUsageStatsOverview>(http.get('/my-stats/account-usage', { params: accountUsageStatsParams(params, false) })),
   aiPerformanceAccounts: (params?: AiPerformanceAccountOptionsParams) => unwrap<AiPerformanceAccountOption[]>(http.get('/my-stats/ai-performance/accounts', { params: aiPerformanceAccountOptionsParams(params, false) })),

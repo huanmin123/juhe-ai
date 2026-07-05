@@ -53,19 +53,16 @@ try {
   const primaryGroup = repositories.createGroup({
     name: '策略路由回归主分组',
     providerCode: DEFAULT_GPT_GROUP.providerCode,
-    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     enabled: true
   }, access)
   const fallbackGroup = repositories.createGroup({
     name: '策略路由回归后备分组',
     providerCode: DEFAULT_GPT_GROUP.providerCode,
-    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     enabled: true
   }, access)
   const disabledGroup = repositories.createGroup({
     name: '策略路由回归停用分组',
     providerCode: DEFAULT_GPT_GROUP.providerCode,
-    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     enabled: false
   }, access)
 
@@ -97,8 +94,76 @@ try {
     groupBindings: [{ groupId: primaryGroup.id, priority: 1, weight: 10, status: 'active' }]
   }, access)
   assert.equal(normalStrategy.mode, 'normal', '普通路由策略模式应为 normal')
+  assert.equal(normalStrategy.normalRoutingConfig?.schedulingPreference, 'cost_first', '普通路由默认应使用成本优先调度')
   assert.equal(normalStrategy.groupBindings.length, 1, '普通路由只能保存一个分组绑定')
   assert.equal(normalStrategy.groupBindings[0]?.groupId, primaryGroup.id, '普通路由应绑定目标分组')
+
+  const speedFirstStrategy = repositories.createRouteStrategy({
+    name: '普通路由速度优先回归策略',
+    mode: 'normal',
+    normalRoutingConfig: {
+      schedulingPreference: 'speed_first',
+      speedFirstConfig: {
+        firstByteThresholdMs: 30000,
+        slowTriggerCount: 3,
+        slowWindowSeconds: 120,
+        recoverySuccessCount: 3,
+        probeIntervalSeconds: 30,
+        degradedTtlSeconds: 300,
+        retryOnFirstByteTimeout: true,
+        maxFirstByteRetriesPerRequest: 1
+      }
+    },
+    groupBindings: [{ groupId: primaryGroup.id, priority: 1, status: 'active' }]
+  }, access)
+  assert.equal(speedFirstStrategy.normalRoutingConfig?.schedulingPreference, 'speed_first', '速度优先配置应保存到普通路由')
+  assert.equal(speedFirstStrategy.normalRoutingConfig?.speedFirstConfig?.firstByteThresholdMs, 30000, '速度优先首字等待阈值应按毫秒保存')
+  assert.equal(speedFirstStrategy.normalRoutingConfig?.speedFirstConfig?.slowTriggerCount, 3, '速度优先慢速触发次数默认基线应为 3')
+
+  assert.throws(() => {
+    repositories.createRouteStrategy({
+      name: '普通路由首字阈值过低回归策略',
+      mode: 'normal',
+      normalRoutingConfig: {
+        schedulingPreference: 'speed_first',
+        speedFirstConfig: { firstByteThresholdMs: 9999 }
+      },
+      groupBindings: [{ groupId: primaryGroup.id, priority: 1, status: 'active' }]
+    }, access)
+  }, /首字等待阈值/, '速度优先首字等待阈值不能低于 10 秒')
+
+  assert.throws(() => {
+    repositories.createRouteStrategy({
+      name: '普通路由慢速触发次数过低回归策略',
+      mode: 'normal',
+      normalRoutingConfig: {
+        schedulingPreference: 'speed_first',
+        speedFirstConfig: { slowTriggerCount: 1 }
+      },
+      groupBindings: [{ groupId: primaryGroup.id, priority: 1, status: 'active' }]
+    }, access)
+  }, /触发次数/, '速度优先慢速触发次数不能低于 2')
+
+  assert.throws(() => {
+    repositories.createRouteStrategy({
+      name: '普通路由误配混合规则回归策略',
+      mode: 'normal',
+      hybridRoutingConfig: {},
+      groupBindings: [{ groupId: primaryGroup.id, priority: 1, status: 'active' }]
+    }, access)
+  }, /普通路由不能配置混合评分规则/, '普通路由不能接收混合智能配置')
+
+  assert.throws(() => {
+    repositories.createRouteStrategy({
+      name: '权重路由误配普通调度回归策略',
+      mode: 'weighted',
+      normalRoutingConfig: { schedulingPreference: 'speed_first' },
+      groupBindings: [
+        { groupId: primaryGroup.id, priority: 1, weight: 50, status: 'active' },
+        { groupId: fallbackGroup.id, priority: 1, weight: 50, status: 'active' }
+      ]
+    }, access)
+  }, /只有普通路由可以配置调度偏好/, '非普通路由不能接收普通路由调度配置')
 
   assert.throws(() => {
     repositories.createRouteStrategy({
@@ -230,7 +295,6 @@ try {
   const authorizedSourceGroup = repositories.createGroup({
     name: '策略路由授权来源分组',
     providerCode: DEFAULT_GPT_GROUP.providerCode,
-    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     enabled: true
   }, ownerAccess)
   repositories.createResourceAuthorization({
@@ -257,7 +321,6 @@ try {
   const extraGroups = Array.from({ length: maxRouteStrategyGroupBindings }, (_, index) => repositories.createGroup({
     name: `策略路由绑定上限回归分组 ${index + 1}`,
     providerCode: DEFAULT_GPT_GROUP.providerCode,
-    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     enabled: true
   }, access))
   assert.throws(() => {

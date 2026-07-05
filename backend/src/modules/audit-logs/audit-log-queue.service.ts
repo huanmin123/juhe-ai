@@ -5,7 +5,8 @@ import { nowIso } from '../../storage/database.js'
 import type { AuditLogInput, AuditLogPayloadInput } from '../../storage/audit-log-types.js'
 import { createAuditLogsBatch, createAuditLogsBatchAsync } from '../../storage/repositories.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
-import { RedisStreamQueue, type RedisStreamMessage } from '../../shared/redis-stream-queue.js'
+import { scheduleProcessFatalError } from '../../shared/process-fatal.js'
+import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime } from '../../shared/redis-stream-queue.js'
 import { sanitizeUrlForLog } from '../../shared/request-context.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import { sendAuditLogsToWorker } from '../background/background-ipc.js'
@@ -155,7 +156,7 @@ function sanitizeDroppedAuditUrl(path?: string, queryString?: string): { path: s
 export function enqueueAuditLog(input: AuditLogInput): void {
   const queuedInput = normalizeAuditLogInput(input)
   if (shouldEnqueueAuditLogToRedisStream()) {
-    void enqueueAuditLogToRedisStream(queuedInput)
+    void enqueueAuditLogToRedisStream(queuedInput).catch(scheduleProcessFatalError)
     return
   }
   if (shouldDispatchAuditLogToIngestWorker()) {
@@ -542,8 +543,8 @@ async function enqueueAuditLogToRedisStream(input: AuditLogInput): Promise<void>
       traceId: input.traceId,
       auditOutcome: input.auditOutcome,
       success: input.success
-    }), '审计日志写入 Redis Stream 失败，未切换到 IPC 或本地队列，已丢弃本条')
-    recordAuditLogDispatchFailure(input)
+    }), '审计日志写入 Redis Stream 失败，高性能模式禁止回退 IPC 或本地队列')
+    throw error
   }
 }
 
@@ -616,6 +617,11 @@ function auditLogRedisStreamQueue(consumerIndex?: number): RedisStreamQueue<Audi
     })
   }
   return auditLogRedisStreamQueueInstance
+}
+
+export async function getAuditLogRedisStreamRuntime(): Promise<RedisStreamQueueRuntime | undefined> {
+  if (!shouldUseRedisStreamAuditLogQueue()) return undefined
+  return await auditLogRedisStreamQueue().inspectRuntime()
 }
 
 function auditLogRedisConsumerConcurrency(): number {
@@ -806,7 +812,7 @@ function shouldUseRedisStreamAuditLogQueue(): boolean {
 }
 
 function shouldEnqueueAuditLogToRedisStream(): boolean {
-  return shouldUseRedisStreamAuditLogQueue() && !isAuditLogIngestWorker()
+  return shouldUseRedisStreamAuditLogQueue()
 }
 
 function delay(ms: number): Promise<void> {
@@ -840,6 +846,9 @@ function normalizeAuditLogInput(input: AuditLogInput): AuditLogInput {
 }
 
 function assertLocalAuditLogWriteAllowed(operation: string): void {
+  if (shouldUseRedisStreamAuditLogQueue()) {
+    throw new Error(`Redis Stream queue driver 下禁止写入审计日志本地队列：${operation}`)
+  }
   if (!isLocalAuditLogWriteAllowed()) {
     throw new Error(`${runtimeConfig.processRole}/${runtimeConfig.workerRole} 角色禁止直接写入审计日志：${operation} 必须投递 ingest-worker`)
   }

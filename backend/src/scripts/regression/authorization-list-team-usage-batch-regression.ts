@@ -61,7 +61,6 @@ try {
   const group = repositories.createGroup({
     name: '团队授权批量查询分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, ownerAccess)
 
   const grantCount = 120
@@ -155,7 +154,10 @@ function assertRepositoryLookupSharedCacheBoundary(): void {
   assert(repositoryLookupSource.includes('createSharedJsonCache<SystemTeamLookup>'), '系统团队 lookup 应声明 Redis shared cache')
   assert(repositoryLookupSource.includes('createSharedJsonCache<SystemAccountTeamNamesLookup>'), '系统账号团队名 lookup 应声明 Redis shared cache')
   assert(repositoryLookupSource.includes('loadCachedRowsByIdsAsync'), '资源 lookup 应提供 async shared cache helper')
-  assert(repositoryLookupSource.includes('repository_lookup_shared_cache_read_failed'), '资源 lookup shared cache 读失败应有可观测日志')
+  assert(!repositoryLookupSource.includes('repository_lookup_shared_cache_read_failed'), '资源 lookup shared cache 读失败必须直接抛错，不能日志吞掉后回退')
+  assert(repositoryLookupSource.includes('[id, await sharedCache.get(id)] as const'), '资源 lookup Redis shared cache 读取必须 await，失败直接抛错')
+  assert(repositoryLookupSource.includes('await setLookupSharedCacheEntryAsync(sharedCache, row.id, row)'), '资源 lookup Redis miss 回源后必须等待 shared cache 写入')
+  assert(repositoryLookupSource.includes('await cache.set(id, value'), '资源 lookup Redis shared cache 写入 helper 必须 await，失败直接抛错')
   assert(resourceAuthorizationReadSource.includes('loadAccountLookupMapAsync,'), '授权读路径应导入统一账号 lookup async helper')
   assert(resourceAuthorizationReadSource.includes('loadSystemAccountPrincipalMapByIdsAsync,'), '授权读路径应导入统一系统账户 lookup async helper')
   assert(!resourceAuthorizationReadSource.includes('async function loadAccountLookupMapAsync('), '授权读路径不应保留本地重复账号 lookup async helper')

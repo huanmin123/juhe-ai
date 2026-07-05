@@ -35,7 +35,7 @@ try {
     assert.equal(
       readBusyTimeout(databaseModule.getCodexContextStateShardDatabase(shardIndex)),
       sqliteBusyTimeoutMs,
-      `Codex Responses 上下文索引库分片 ${shardIndex} busy_timeout 应使用统一锁等待配置`
+      `Responses 桥接状态索引库分片 ${shardIndex} busy_timeout 应使用统一锁等待配置`
     )
   }
   assert.equal(readBusyTimeout(databaseModule.getDatasetDatabase()), sqliteBusyTimeoutMs, '数据集目录库 busy_timeout 应使用统一锁等待配置')

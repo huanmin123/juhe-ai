@@ -60,7 +60,6 @@ try {
   const group = repositories.createGroup({
     name: '账户计划回归分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, access)
   const allowed = repositories.createAccount({
     providerCode: 'gpt',

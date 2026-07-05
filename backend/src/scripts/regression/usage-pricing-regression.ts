@@ -1016,7 +1016,7 @@ assert.match(gatewayResponseFinalizationSource, /gateway_stream_usage_estimated/
 assert.match(gatewayResponseFinalizationSource, /responseSemanticText\s*=\s*completeBodyText/, '非流式完整 JSON 响应语义文本不能依赖成功审计正文捕获开关')
 assert.match(gatewayResponseFinalizationSource, /responseBodyText:\s*responseBodyText\s*\?\?\s*responseSemanticText/, '非流式 usage fallback 应读取完整检查窗口文本')
 assert.match(gatewayResponseFinalizationSource, /const errorMessage\s*=\s*'上游响应体为空'/)
-assert.match(gatewayResponseFinalizationSource, /recordCompletedUpstreamAttempt[\s\S]+errorMessage\n\s*\}/)
+assert.match(gatewayResponseFinalizationSource, /recordCompletedUpstreamAttempt[\s\S]+errorMessage\r?\n\s*\}/)
 
 const gatewayResponseStreamSource = readSource('modules/gateway/response/stream.ts')
 assert.match(gatewayResponseStreamSource, /requireGatewayProtocolDriverForResponseProtocol/)
@@ -1181,7 +1181,8 @@ assert.match(backgroundJobsSource, /safeCreatedBefore: safety\.safeCreatedBefore
 assert.match(backgroundJobsSource, /requestIngestWorkerDrainStatus\(1000\)/)
 assert.match(backgroundJobsSource, /defaultUsageStatsSafeCreatedBeforeIso\(\)/)
 assert.match(backgroundJobsSource, /使用记录 ingest 队列已有/)
-assert.match(backgroundJobsSource, /超龄未落库记录/)
+assert.match(backgroundJobsSource, /usageStatsSafeCreatedBeforeForPendingBacklog/)
+assert.match(backgroundJobsSource, /oldestRedisStreamUsageRecordCreatedAtForStatsAggregation/)
 assert.match(backgroundJobsSource, /settingsNumber\('cooldownAccountRetestIntervalSeconds', 1, 3600\)/)
 assert.doesNotMatch(backgroundSettingsNumberSource, /typeof value === 'string' \? Number\(value\)/)
 
@@ -1198,22 +1199,32 @@ assert.match(cooldownAccountRetestSource, /sequenceRetryPolicy\('cooldown_accoun
 assert.match(cooldownAccountRetestSource, /createRetryQueue/)
 assert.doesNotMatch(cooldownAccountRetestSource, /background_cooldown_account_retest_retry_scheduled/)
 assert.match(cooldownAccountRetestSource, /diagnostics:\s*'full'/)
+assert.match(cooldownAccountRetestSource, /model:\s*await preferredSystemAccountTestModelAsync\(account\)/)
 assert.match(cooldownAccountRetestSource, /trafficSource:\s*'cooldown_retest'/)
 assert.match(cooldownAccountRetestSource, /temporaryUnschedulableRetryAttempts:\s*0/)
 assert.match(cooldownAccountRetestSource, /testOpenAIAccountWithDiagnosticRetries/)
-assert.match(cooldownAccountRetestSource, /findRecentOpenAIRequestShapeForAccount/)
+assert.doesNotMatch(cooldownAccountRetestSource, /requestShape/, '冷却复测只能使用账户测试健康探针，不能复用失败请求形态')
 assert.match(cooldownAccountRetestSource, /account\.boundGroupId/)
 assert.doesNotMatch(cooldownAccountRetestSource, /waitForRetryDelay/)
+
+const accountHealthCheckSource = readSource('modules/background/account-health-check.service.ts')
+assert.match(accountHealthCheckSource, /diagnostics:\s*'limited'/)
+assert.match(accountHealthCheckSource, /model:\s*await preferredSystemAccountTestModelAsync\(account\)/)
+assert.match(accountHealthCheckSource, /trafficSource:\s*'cooldown_retest'/)
+assert.doesNotMatch(accountHealthCheckSource, /requestShape/, '账号健康检查只能使用账户测试健康探针，不能复用失败请求形态')
 
 const gatewayAccountSideEffectsSource = readSource('modules/gateway/runtime/account-side-effects.service.ts')
 assert.match(gatewayAccountSideEffectsSource, /runSingleGatewayAccountPrecheck/)
 assert.match(gatewayAccountSideEffectsSource, /diagnostics:\s*'full'/)
 assert.doesNotMatch(gatewayAccountSideEffectsSource, /diagnostics:\s*'limited'/)
-assert.match(gatewayAccountSideEffectsSource, /latestState\.reason\s*=\s*accountPrecheckFailureReason\(result\)/)
+assert.match(gatewayAccountSideEffectsSource, /stateAfterResult\.reason\s*=\s*accountPrecheckFailureReason\(result\)/)
 assert.match(gatewayAccountSideEffectsSource, /function accountPrecheckFailureReason/)
 assert.match(gatewayAccountSideEffectsSource, /errorCode\?:\s*string/)
 assert.match(gatewayAccountSideEffectsSource, /precheckMaxAttempts\s*=\s*accountDiagnosticRetryTimeoutMs\.length/)
 assert.match(gatewayAccountSideEffectsSource, /diagnosticAccountTestGatewaySettingsOverride\(state\.settings,\s*timeoutMs\)/)
+assert.match(gatewayAccountSideEffectsSource, /model:\s*await preferredSystemAccountTestModelAsync\(account\)/)
+assert.match(gatewayAccountSideEffectsSource, /trafficSource:\s*'runtime_recovery_probe'/)
+assert.doesNotMatch(gatewayAccountSideEffectsSource, /requestShape:/, '运行态恢复探针不能复用失败请求形态')
 assert.doesNotMatch(gatewayAccountSideEffectsSource, /precheckAttemptTimeoutMs|precheckRetryDelayMs|45_000/)
 const codexSwitchProbeSource = readSource('modules/gateway/client-profiles/codex-switch-probe.ts')
 assert.match(codexSwitchProbeSource, /accountDiagnosticRetryTimeoutMs/)
@@ -1225,7 +1236,7 @@ assert.doesNotMatch(codexSwitchProbeSource, /8_000|codexSwitchProbeTimeoutMs|tes
 
 const usageRecordsRepositorySource = readSource('storage/usage-records.repository.ts')
 assert.match(usageRecordsRepositorySource, /traffic_source/)
-assert.match(usageRecordsRepositorySource, /traffic_source = 'gateway'/)
+assert.doesNotMatch(usageRecordsRepositorySource, /requestShape|RequestShape/, '使用记录仓储不应保留请求形态查询入口')
 assert.doesNotMatch(usageRecordsRepositorySource, /COALESCE\(traffic_source, 'gateway'\)/)
 
 const usageRecordListQuerySource = readSource('storage/usage-record-list-query.ts')
@@ -1237,8 +1248,8 @@ assert.match(auditLogListQuerySource, /al\.traffic_source = \?/)
 assert.doesNotMatch(auditLogListQuerySource, /COALESCE\(al\.traffic_source, 'gateway'\)/)
 
 const clientIpStatsAggregationRepositorySource = readSource('storage/client-ip-stats-aggregation.repository.ts')
-assert.match(clientIpStatsAggregationRepositorySource, /traffic_source <> 'cooldown_retest'/)
-assert.match(clientIpStatsAggregationRepositorySource, /traffic_source = 'cooldown_retest'/)
+assert.match(clientIpStatsAggregationRepositorySource, /traffic_source NOT IN \('runtime_recovery_probe', 'cooldown_retest'\)/)
+assert.match(clientIpStatsAggregationRepositorySource, /traffic_source IN \('runtime_recovery_probe', 'cooldown_retest'\)/)
 assert.doesNotMatch(clientIpStatsAggregationRepositorySource, /COALESCE\(traffic_source, 'gateway'\)/)
 
 const usageStatsRepositorySource = readSource('storage/usage-stats.repository.ts')
@@ -1258,7 +1269,7 @@ assert.match(usageStatsWritersSource, /from '\.\/usage-stats-model-writer\.js'/)
 assert.match(usageStatsWritersSource, /from '\.\/usage-stats-error-writer\.js'/)
 assert.match(usageStatsWritersSource, /from '\.\/usage-stats-latency-writer\.js'/)
 assert.match(usageStatsWritersSource, /from '\.\/usage-stats-time-buckets\.js'/)
-assert.match(usageStatsWritersSource, /function shouldRecordAccountQualityStats\(row: UsageStatsRecordRow\): boolean \{[\s\S]+row\.traffic_source === 'cooldown_retest'[\s\S]+row\.traffic_source === 'hybrid_scoring'[\s\S]+row\.traffic_source === 'hybrid_quality_scoring'[\s\S]+return false[\s\S]+\}/, '恢复探活、混合评分和混合质量评分应计入用量统计但不写入账号质量分钟样本')
+assert.match(usageStatsWritersSource, /function shouldRecordAccountQualityStats\(row: UsageStatsRecordRow\): boolean \{[\s\S]+row\.traffic_source === 'runtime_recovery_probe'[\s\S]+row\.traffic_source === 'cooldown_retest'[\s\S]+row\.traffic_source === 'hybrid_scoring'[\s\S]+row\.traffic_source === 'hybrid_quality_scoring'[\s\S]+return false[\s\S]+\}/, '运行态恢复探针、恢复探活、混合评分和混合质量评分应计入用量统计但不写入账号质量分钟样本')
 assert.match(usageStatsWritersSource, /if \(shouldRecordAccountQualityStats\(row\)\) \{[\s\S]+upsertAccountQualityMinuteStats/, '恢复探活应计入用量统计但不写入账号质量分钟样本')
 assert.match(usageStatsWritersSource, /if \(shouldRecordAccountQualityStats\(row\)\) \{[\s\S]+subtractAccountQualityMinuteStats/, '恢复探活反向扣减时也不应触碰账号质量分钟样本')
 assert.doesNotMatch(usageStatsWritersSource, /function authorizationReportRows|authorization_team_usage_summary_daily|authorization_user_usage_summary_daily/)
@@ -1351,27 +1362,38 @@ const externalPublicApiCatalogSource = [
 ].join('\n')
 assert.match(externalPublicApiCatalogSource, /id: 'api-key-delete'[\s\S]+routeStrategyId:\s*'rts_xxx'/)
 assert.doesNotMatch(externalPublicApiCatalogSource, /groupRouteStrategy:\s*'priority_failover'/)
-assert.doesNotMatch(externalPublicApiCatalogSource, /groupBindings: \[\{[^}]*groupId: 'grp_xxx'/)
 assert.doesNotMatch(externalPublicApiCatalogSource, /apiKey:\s*\{[^\n]*groupId:\s*'grp_xxx'/)
 assert.doesNotMatch(externalPublicApiCatalogSource, /新的主绑定分组 ID/)
 assert.doesNotMatch(externalPublicApiCatalogSource, /绑定分组 ID；与 groupName/)
+assert.doesNotMatch(externalPublicApiCatalogSource, /status:\s*'mock'/, '公开接口接入文档不应把已落地接口标记为 Mock 数据')
 const externalPublicAccountUpdateCatalogSource = sourceBetween(externalPublicApiCatalogSource, "id: 'account-update'", "id: 'account-delete'")
 assert.match(externalPublicAccountUpdateCatalogSource, /name: 'accountId'[\s\S]+required: true/)
 assert.match(externalPublicAccountUpdateCatalogSource, /name: 'providerCode'[\s\S]+required: false/)
+assert.match(externalPublicAccountUpdateCatalogSource, /name: 'providerProtocolProfileId'[\s\S]+required: false/)
 assert.match(externalPublicAccountUpdateCatalogSource, /name: 'type'[\s\S]+required: false/)
 assert.doesNotMatch(externalPublicAccountUpdateCatalogSource, /targetDisplayName/, '账号修改公开文档不应再保留无实际语义的兼容字段')
 assert.match(externalPublicAccountUpdateCatalogSource, /accountId:\s*'acc_xxx'/)
 assert.match(externalPublicAccountUpdateCatalogSource, /apiKey:\s*'sk-\.\.\.'/)
 assert.match(externalPublicAccountUpdateCatalogSource, /status:\s*'disabled'/)
-const externalPublicApiKeyListCatalogSource = sourceBetween(externalPublicApiCatalogSource, "id: 'api-key-list'", "id: 'account-list'")
+const externalPublicApiKeyListCatalogSource = sourceBetween(externalPublicApiCatalogSource, "id: 'api-key-list'", "id: 'api-key-add'")
 assert.doesNotMatch(externalPublicApiKeyListCatalogSource, /name: 'groupId'/, 'API Key 列表公开文档不应再保留按分组筛选的旧契约')
+assert.doesNotMatch(externalPublicApiKeyListCatalogSource, /groupBindings: \[\{[^}]*groupId: 'grp_xxx'/, 'API Key 列表公开文档不应返回策略内分组绑定')
+const externalPublicRouteStrategyListCatalogSource = sourceBetween(externalPublicApiCatalogSource, "id: 'route-strategy-list'", "id: 'route-strategy-add'")
+assert.match(externalPublicRouteStrategyListCatalogSource, /path: '\/__aipublic__\/route-strategy\/list'/)
+assert.match(externalPublicApiCatalogSource, /const routeStrategy[\s\S]+groupBindings/, '路由策略公开文档示例应包含分组绑定摘要')
+const externalPublicRouteStrategyUpdateCatalogSource = sourceBetween(externalPublicApiCatalogSource, "id: 'route-strategy-update'", "id: 'route-strategy-delete'")
+assert.match(externalPublicRouteStrategyUpdateCatalogSource, /routeStrategyId:\s*'rts_xxx'/)
+assert.match(externalPublicRouteStrategyUpdateCatalogSource, /mode:\s*'round_robin'/)
+const externalPublicAccountListCatalogSource = sourceBetween(externalPublicApiCatalogSource, "id: 'account-list'", "id: 'account-add'")
+assert.match(externalPublicAccountListCatalogSource, /name: 'providerProtocolProfileId'[\s\S]+required: false/, '账号列表公开文档必须暴露实际支持的协议档案筛选字段')
+assert.match(externalPublicApiCatalogSource, /const account[\s\S]+providerProtocolProfileId:\s*'profile_gpt_openai_v1'/, '账号列表公开文档示例必须返回协议档案字段')
 const externalPublicGroupUpdateCatalogSource = sourceBetween(externalPublicApiCatalogSource, "id: 'group-update'", "id: 'group-delete'")
 assert.match(externalPublicGroupUpdateCatalogSource, /name: 'targetUsername'[\s\S]+required: false/)
 assert.match(externalPublicGroupUpdateCatalogSource, /groupId:\s*'grp_xxx'[\s\S]+name:\s*'福利-主池'/)
 const externalPublicApiKeyUpdateCatalogSource = sourceBetween(externalPublicApiCatalogSource, "id: 'api-key-update'", "id: 'api-key-delete'")
 assert.match(externalPublicApiKeyUpdateCatalogSource, /name: 'targetUsername'[\s\S]+required: false/)
 assert.match(externalPublicApiKeyUpdateCatalogSource, /apiKeyId:\s*'key_xxx'[\s\S]+status:\s*'disabled'/)
-const externalPublicAccountDeleteCatalogSource = sourceBetween(externalPublicApiCatalogSource, "id: 'account-delete'", "case 'source-auth-demo'")
+const externalPublicAccountDeleteCatalogSource = sourceBetween(externalPublicApiCatalogSource, "id: 'account-delete'", "] satisfies ExternalPublicApiDocItemSeed[]")
 assert.match(externalPublicAccountDeleteCatalogSource, /name: 'accountId'[\s\S]+required: true/)
 assert.match(externalPublicAccountDeleteCatalogSource, /name: 'targetUsername'[\s\S]+required: false/)
 assert.match(externalPublicAccountDeleteCatalogSource, /name: 'providerCode'[\s\S]+required: false/)
@@ -1379,20 +1401,19 @@ assert.doesNotMatch(externalPublicApiCatalogSource, /externalId/)
 
 const externalPublicApiCatalog = getExternalPublicApiCatalog()
 assert.deepEqual(externalPublicApiCatalog.items.map((item) => item.id), [
-  'source-auth-demo',
-  'ip-usage',
-  'consumption-ranking',
-  'account-usage',
-  'access-info',
-  'group-list',
   'api-key-list',
-  'account-list',
-  'group-add',
-  'group-update',
-  'group-delete',
   'api-key-add',
   'api-key-update',
   'api-key-delete',
+  'route-strategy-list',
+  'route-strategy-add',
+  'route-strategy-update',
+  'route-strategy-delete',
+  'group-list',
+  'group-add',
+  'group-update',
+  'group-delete',
+  'account-list',
   'account-add',
   'account-update',
   'account-delete'
@@ -1400,6 +1421,7 @@ assert.deepEqual(externalPublicApiCatalog.items.map((item) => item.id), [
 const externalIntegrationScopeValues = new Set<string>(externalIntegrationScopeOptions.map((item) => item.value))
 for (const item of externalPublicApiCatalog.items) {
   const scope = item.scope
+  assert.equal(item.status, 'available', `public API catalog item ${item.id} should be marked available`)
   if (typeof scope !== 'string') {
     throw new Error(`public API catalog item ${item.id} should expose a scope`)
   }
@@ -1492,10 +1514,16 @@ assert.match(modelChecksGatewayProbeSource, /from '\.\.\/gateway\/testing\/memor
 assert.match(modelChecksGatewayProbeSource, /probeMaxAttempts\s*=\s*accountDiagnosticRetryTimeoutMs\.length/)
 assert.match(modelChecksGatewayProbeSource, /diagnosticAccountTestGatewaySettingsOverride\(undefined,\s*timeoutMs\)/)
 assert.match(modelChecksGatewayProbeSource, /diagnosticAttemptSignal\(signal,\s*timeoutMs\)/)
+assert.match(modelChecksGatewayProbeSource, /probeRetryDelayMs/)
+assert.match(modelChecksGatewayProbeSource, /attemptUpstreamStatusCodes/)
+assert.match(modelChecksGatewayProbeSource, /upstreamStatusCode/)
+assert.match(modelChecksGatewayProbeSource, /requests-per-minute/)
 assert.match(modelChecksGatewayProbeSource, /createMemoryGatewayRequest\(/)
 assert.doesNotMatch(modelChecksGatewayProbeSource, /from '\.\.\/accounts\/account-test\.service\.js'/)
 assert.doesNotMatch(modelChecksGatewayProbeSource, /class MemoryGatewayRequest/)
-assert.doesNotMatch(modelChecksGatewayProbeSource, /probeRetryDelayMs|waitForProbeRetryDelay|45_000/, '模型检测探针必须复用 10s/20s/30s 诊断策略，不能额外 sleep 或回退旧超时')
+assert.doesNotMatch(modelChecksGatewayProbeSource, /acquireModelCheckProbeSlot|model-checks-probe-scheduler|probeMaxInFlight|probeMinStartIntervalMs/, '模型检测正常探针不应再做本机并发或启动间隔限制')
+assert.doesNotMatch(modelChecksGatewayProbeSource, /probeRateLimitRetryDelayMs/, '模型检测重试延迟不能依赖上游状态码或限流类型判断')
+assert.doesNotMatch(modelChecksGatewayProbeSource, /45_000/, '模型检测探针不能回退旧 45s 超时')
 
 const responseInspectionPoliciesRoutesSource = readSource('modules/response-inspection-policies/response-inspection-policies.routes.ts')
 const responseInspectionPolicyBodySchemaSource = sourceBetween(responseInspectionPoliciesRoutesSource, 'const policyBodySchema', 'responseInspectionPoliciesRouter.get')

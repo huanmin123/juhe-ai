@@ -50,7 +50,8 @@ assertFunctionIncludes(gatewayRuntimeCacheSource, 'clearGatewayRuntimeCacheLocal
 
 assert(gatewayRuntimeCacheSource.includes('createSharedJsonCache<GroupUsageAccessCacheEntry>'), '网关分组访问缓存应声明 Redis JSON 共享缓存')
 assertFunctionIncludes(gatewayRuntimeCacheSource, 'resolveCachedGroupUsageAccessMetadataAsync', 'getGroupUsageAccessSharedCacheEntry(cacheKey)', '网关分组访问异步读取应先读取 Redis 共享缓存')
-assertFunctionIncludes(gatewayRuntimeCacheSource, 'resolveCachedGroupUsageAccessMetadataAsync', 'setGroupUsageAccessCacheEntryAsync(cacheKey', '网关分组访问 DB 命中后应写 Redis 共享缓存')
+assertFunctionIncludes(gatewayRuntimeCacheSource, 'resolveCachedGroupUsageAccessMetadataAsync', 'loadGroupUsageAccessMetadataAndPopulateCache(groupId, systemAccountId, cacheKey)', '网关分组访问缓存 miss 后应进入统一加载并写缓存 helper')
+assertFunctionIncludes(gatewayRuntimeCacheSource, 'loadGroupUsageAccessMetadataAndPopulateCache', 'setGroupUsageAccessCacheEntryAsync(cacheKey', '网关分组访问 DB 命中后应写 Redis 共享缓存')
 assertFunctionIncludes(gatewayRuntimeCacheSource, 'refreshGroupUsageAccessMetadataInBackground', 'setGroupUsageAccessSharedCacheEntry(cacheKey, entry)', '网关分组访问后台刷新应同步写 Redis 共享缓存')
 assertFunctionIncludes(gatewayRuntimeCacheSource, 'clearGatewayRuntimeCacheLocal', 'clearGroupUsageAccessSharedCache()', '网关运行态全量失效应清理分组访问 Redis 共享缓存')
 
@@ -59,7 +60,8 @@ assert(gatewayRuntimeCacheSource.includes('createSharedJsonCache<ResponseInspect
 assertFunctionIncludes(gatewayRuntimeCacheSource, 'listCachedProviderModelCatalogAsync', 'getProviderModelCatalogSharedCacheEntry(cacheKey)', '网关模型目录异步读取应先读取 Redis 共享缓存')
 assertFunctionIncludes(gatewayRuntimeCacheSource, 'listCachedProviderModelCatalogAsync', 'setProviderModelCatalogCacheEntryAsync(cacheKey', '网关模型目录 DB 命中后应写 Redis 共享缓存')
 assertFunctionIncludes(gatewayRuntimeCacheSource, 'listCachedActiveResponseInspectionPoliciesAsync', 'getResponseInspectionPolicySharedCacheEntry(cacheKey)', '网关响应检查策略异步读取应先读取 Redis 共享缓存')
-assertFunctionIncludes(gatewayRuntimeCacheSource, 'listCachedActiveResponseInspectionPoliciesAsync', 'setResponseInspectionPolicyCacheEntryAsync(cacheKey', '网关响应检查策略 DB 命中后应写 Redis 共享缓存')
+assertFunctionIncludes(gatewayRuntimeCacheSource, 'listCachedActiveResponseInspectionPoliciesAsync', 'loadActiveResponseInspectionPoliciesAndPopulateCache(input, cacheKey)', '网关响应检查策略缓存 miss 后应进入统一加载并写缓存 helper')
+assertFunctionIncludes(gatewayRuntimeCacheSource, 'loadActiveResponseInspectionPoliciesAndPopulateCache', 'setResponseInspectionPolicyCacheEntryAsync(cacheKey', '网关响应检查策略 DB 命中后应写 Redis 共享缓存')
 assertFunctionIncludes(gatewayRuntimeCacheSource, 'clearGatewayRuntimeCacheLocal', 'clearProviderModelCatalogSharedCache()', '网关运行态全量失效应清理模型目录 Redis 共享缓存')
 assert(gatewayRuntimeCacheSource.includes('createSharedJsonCache<ProviderModelRouteIndexSharedCacheEntry>'), '网关模型路由索引应声明 Redis JSON 共享缓存')
 assertFunctionIncludes(gatewayRuntimeCacheSource, 'resolveCachedProviderModelRouteAsync', 'getProviderModelRouteIndexSharedCacheEntry(cacheKey)', '网关模型路由索引本地 miss 后应读取 Redis 共享缓存')
@@ -68,13 +70,18 @@ assertFunctionIncludes(gatewayRuntimeCacheSource, 'clearGatewayRuntimeCacheLocal
 assertFunctionIncludes(gatewayRuntimeCacheSource, 'providerModelRouteIndexCacheEntryToShared', 'entries: [...entry.index.entries()]', '网关模型路由索引写入 Redis 前应把 Map 转成 JSON 数组')
 assertFunctionIncludes(gatewayRuntimeCacheSource, 'clearGatewayRuntimeCacheLocal', 'clearResponseInspectionPolicySharedCache()', '网关运行态全量失效应清理响应检查策略 Redis 共享缓存')
 
-assert(clientIpPolicyCacheSource.includes('createSharedJsonCache<ClientIpPolicySnapshotCacheEntry>'), '客户端 IP 封禁策略快照应声明 Redis JSON 共享缓存')
-assertFunctionIncludes(clientIpPolicyCacheSource, 'reloadClientIpPolicyCacheLocal', 'getActivePolicySnapshotSharedCacheEntry()', '客户端 IP 封禁策略快照重载应先读取 Redis 共享缓存')
-assertFunctionIncludes(clientIpPolicyCacheSource, 'replaceClientIpPolicyCacheLocal', 'setActivePolicySnapshotSharedCacheEntry', '客户端 IP 封禁策略快照替换应写入 Redis 共享缓存')
+assert(clientIpPolicyCacheSource.includes('createSharedJsonCache<ClientIpPolicyByIpCacheEntry>'), '客户端 IP 封禁策略应声明单 IP Redis JSON 共享缓存')
+assertFunctionIncludes(clientIpPolicyCacheSource, 'reloadClientIpPolicyCacheLocal', 'clearPolicyByIpSharedCache()', '客户端 IP 封禁策略重载应清理单 IP Redis 共享缓存')
+assertFunctionIncludes(clientIpPolicyCacheSource, 'reloadClientIpPolicyCacheLocal', 'bypassSharedCache', '客户端 IP 封禁策略失效重载必须支持绕过旧 Redis shared cache')
+assert.match(functionBody(clientIpPolicyCacheSource, 'reloadClientIpPolicyCacheLocal'), /runtimeConfig\.cacheDriver === 'redis'[\s\S]*clearPolicyByIpSharedCache\(\)[\s\S]*return[\s\S]*const sharedSnapshot/, '客户端 IP 封禁策略 Redis 重载不能回源全量策略快照')
+assertFunctionIncludes(clientIpPolicyCacheSource, 'replaceClientIpPolicyCacheLocal', '高性能模式禁止同步写入 Client-IP 策略 Redis shared cache', '客户端 IP 封禁策略同步替换在高性能模式下必须拒绝写 Redis shared cache')
+assertFunctionIncludes(clientIpPolicyCacheSource, 'loadClientIpPolicyByHashFromDatabase', "type: 'find_active_client_ip_policy_by_hash'", '客户端 IP 封禁策略 Redis miss 后应按 ip_hash 索引回源')
+assertFunctionIncludes(clientIpPolicyCacheSource, 'replaceClientIpPolicySharedSnapshotAsync', 'setClientIpPolicyByIpSharedCacheEntry', '显式客户端 IP 封禁策略快照应写入单 IP Redis 共享缓存')
 assertFunctionIncludes(clientIpPolicyCacheSource, 'clearClientIpPolicyCacheLocal', 'clearActivePolicySnapshotSharedCache()', '客户端 IP 封禁策略本地清理应清理 Redis 共享缓存')
-assertFunctionIncludes(clientIpPolicyCacheSource, 'inspectClientIpPolicy', 'activePolicySnapshot.get', '客户端 IP 封禁策略请求路径仍应读取 server 本地快照')
-assertFunctionExcludes(clientIpPolicyCacheSource, 'inspectClientIpPolicy', 'requestStatsWriter', '客户端 IP 封禁策略请求路径不能按单个 IP 通过 stats-writer 查库')
-assertFunctionExcludes(clientIpPolicyCacheSource, 'inspectClientIpPolicy', 'getActivePolicySnapshotSharedCacheEntry', '客户端 IP 封禁策略请求路径不能每次读 Redis shared cache')
+assertFunctionIncludes(clientIpPolicyCacheSource, 'clearClientIpPolicyCacheLocal', 'clearPolicyByIpSharedCache()', '客户端 IP 封禁策略本地清理应清理单 IP Redis 共享缓存')
+assertFunctionIncludes(clientIpPolicyCacheSource, 'inspectClientIpPolicy', 'loadClientIpPolicyByHashFromSharedCacheOrDatabase', '客户端 IP 封禁策略高性能请求路径应按单 IP hash 读取 Redis shared cache 或索引回源')
+assertFunctionIncludes(clientIpPolicyCacheSource, 'inspectClientIpPolicy', 'activePolicySnapshot.get', '客户端 IP 封禁策略单机请求路径仍应读取 server 本地快照')
+assertFunctionExcludes(clientIpPolicyCacheSource, 'inspectClientIpPolicy', 'loadClientIpPolicySnapshotFromSharedCacheOrDatabase', '客户端 IP 封禁策略高性能请求路径不能加载全量 active 策略快照')
 
 assert(hybridScoringSource.includes('createSharedJsonCache<HybridScoringCacheEntry>'), '混合路由评分结果缓存应声明 Redis JSON 共享缓存')
 assertFunctionIncludes(hybridScoringSource, 'scoreHybridGatewayRequest', 'getHybridScoringSharedCacheEntry(cacheKey)', '混合路由评分本地缓存 miss 后应读取 Redis 共享缓存')
@@ -108,7 +115,7 @@ assert(appCacheSource.includes('store = createStore(options)'), '通用缓存 cl
 
 await assertGatewayCacheInvalidationBehavior()
 
-console.log('网关缓存定点失效回归通过：API Key 校验和额度缓存按反向索引删除，网关设置、分组访问、网关 / 管理端模型目录、模型路由索引、响应检查策略、客户端 IP 封禁策略快照和混合路由评分结果包含 Redis shared cache 路径，行为级定点失效正确，通用缓存清理不再扫描全部缓存条目')
+console.log('网关缓存定点失效回归通过：API Key 校验和额度缓存按反向索引删除，网关设置、分组访问、网关 / 管理端模型目录、模型路由索引、响应检查策略、客户端 IP 封禁策略单 IP 条目和混合路由评分结果包含 Redis shared cache 路径，行为级定点失效正确，通用缓存清理不再扫描全部缓存条目')
 
 function readSource(relativePath: string): string {
   return readFileSync(resolve(backendSrcRoot, relativePath), 'utf8')
@@ -120,14 +127,7 @@ interface CacheDeclaration {
 }
 
 const localOnlyAppCacheReasons = new Map<string, string>([
-  ['gateway:proxy-agents', 'holds http.Agent socket pools and destroys them on LRU eviction'],
-  ['gateway:codex-turn-retry', 'short-lived per-request retry hint'],
-  ['gateway:hybrid-route-affinity', 'best-effort sticky routing state with per-request session keys'],
-  ['gateway:client-ip-policy-by-ip', 'per-node derived lookup over the Redis-backed policy snapshot'],
-  ['gateway:client-ip-pre-auth-circuit', 'short-window defensive circuit state'],
-  ['gateway:client-ip-error-circuit', 'short-window defensive circuit state'],
-  ['gateway:client-ip-account-avoidance', 'short-window client/account avoidance state'],
-  ['gateway:upstream-bucket-health', 'per-node upstream failure bucket state'],
+  ['gateway:client-ip-policy-by-ip', 'per-IP derived lookup over the Redis-backed policy entries'],
   ['gateway:runtime', 'large gateway runtime snapshot invalidated by runtime-state versioning'],
   ['gateway:openai-accounts', 'contains upstream account secrets and must stay process-local'],
   ['gateway:openai-session-affinity', 'session affinity uses local reverse indexes for migration'],

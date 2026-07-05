@@ -55,6 +55,7 @@ const gatewaySettings: GatewaySettings = {
   streamRequestTimeoutSeconds: 120,
   streamIdleTimeoutSeconds: 30,
   streamClientTotalWaitTimeoutSeconds: 270,
+  streamMaxLifetimeSeconds: 1800,
   streamFailureThresholdCount: 3,
   streamFailureThresholdWindowMinutes: 5
 }
@@ -66,7 +67,7 @@ try {
   testRuntimeDegradationOrderingAndSuccessRecovery()
   await testRuntimeDegradationDispatchPreparationFallback()
   testLocalSuppressionHalfOpenEscalation()
-  testUnavailableProxyPreparationEscalatesAfterHalfOpenSequence()
+  await testUnavailableProxyPreparationEscalatesAfterHalfOpenSequence()
   await testRuntimePrecheckPendingAndSuccessRecovery()
   await testPersistedAccountErrorClearsRuntimeAvailability()
   await testStalePrecheckAfterManualRestoreIsSkipped()
@@ -95,7 +96,7 @@ function testPrecheckSummaryMapperBoundary(): void {
     '账号事前确认运行态服务应从专用 mapper 导入测试摘要适配器'
   )
   assert(
-    sideEffectsSource.includes('accountSummaryFromGatewayPrecheckAccount(state.account, state)'),
+    /accountSummaryFromGatewayPrecheckAccount\(\s*state\.account\s*,\s*\{[\s\S]*?groupId:\s*state\.groupId[\s\S]*?systemAccountId:\s*state\.systemAccountId[\s\S]*?\}\s*\)/.test(sideEffectsSource),
     '事前确认探针应通过专用 mapper 构造测试账户摘要'
   )
   assert(
@@ -116,7 +117,7 @@ function testPrecheckSummaryMapperBoundary(): void {
     '事前确认测试摘要应保持可用于测试的权限语义'
   )
   assert(
-    mapperSource.includes('bindingSystemAccountId') && mapperSource.includes('gatewayAccountSummarySystemAccountId(account)'),
+    mapperSource.includes('bindingSystemAccountId') && mapperSource.includes('gatewayAccountSummarySystemAccountId(account, context)'),
     '授权账户测试摘要应使用绑定系统账户维度'
   )
   assert(
@@ -146,6 +147,7 @@ function testLocalSuppressionStoreBoundary(): void {
   assert.doesNotMatch(sideEffectsSource, /function isLocalSuppressionBlocking/)
   assert.match(storeSource, /const localAccountSuppressions = new Map/)
   assert.match(storeSource, /export function suppressLocalAccountForGatewayFailure/)
+  assert.match(storeSource, /localDegradationActivationFailureThreshold = 2/)
   assert.match(storeSource, /export function filterLocalAccountSuppressions/)
   assert.match(storeSource, /export function snapshotLocalAccountRuntimeAvailability/)
   assert.match(storeSource, /getAccountCurrentConcurrency/)
@@ -156,9 +158,37 @@ function testRuntimeDegradationOrderingAndSuccessRecovery(): void {
   const backup = createRuntimeAccount('runtime-normal-backup')
 
   gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
-  const degraded = gatewaySideEffects.degradeGatewayAccountForRuntimeFailure(primary, '模拟近期上游失败')
-  assert.equal(degraded.status, 'degraded', '运行态失败应先写入调度降级，而不是直接处罚账号')
-  assert.equal(degraded.failureCount, 1, '首次运行态降级应记录失败次数')
+  gatewaySideEffects.suppressGatewayAccountLocally(primary, gatewaySettings, '模拟首轮上游失败')
+  gatewaySideEffects.suppressGatewayAccountLocally(primary, gatewaySettings, '模拟同一避让轮次内的并发残留失败')
+  assert.notEqual(
+    gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[primary.id]?.status,
+    'degraded',
+    '同一短暂避让轮次内的并发失败不应激活调度降级'
+  )
+  assert.equal(
+    gatewaySideEffects.orderGatewayAccountsByRuntimeDegradation([primary, backup]).applied,
+    false,
+    '同一短暂避让轮次内的并发失败不应影响调度排序'
+  )
+
+  gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
+  const observed = gatewaySideEffects.degradeGatewayAccountForRuntimeFailure(primary, '模拟近期上游失败')
+  assert.equal(observed.status, 'normal', '单次运行态失败只应记录观察，不应立即调度降级')
+  assert.equal(observed.failureCount, 1, '首次运行态失败应记录失败次数')
+  assert.equal(
+    gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[primary.id],
+    undefined,
+    '单次运行态失败不应进入前端运行态快照'
+  )
+  const observedOrder = gatewaySideEffects.orderGatewayAccountsByRuntimeDegradation([primary, backup])
+  assert.equal(observedOrder.applied, false, '单次失败未达到门槛时不应影响调度排序')
+
+  const repeatedObserved = gatewaySideEffects.degradeGatewayAccountForRuntimeFailure(primary, '模拟近期上游再次失败')
+  assert.equal(repeatedObserved.status, 'normal', '未达到最小观察时间时，重复失败仍不应写入调度降级')
+  gatewaySideEffects.ageGatewayAccountRuntimeDegradationForTest(primary, 61_000)
+  const degraded = gatewaySideEffects.degradeGatewayAccountForRuntimeFailure(primary, '模拟后台探针确认近期不稳')
+  assert.equal(degraded.status, 'degraded', '达到观察窗口后才应写入调度降级')
+  assert((degraded.failureCount ?? 0) >= 2, '激活调度降级时应保留累计失败次数')
   assert.equal(
     gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[primary.id]?.status,
     'degraded',
@@ -175,7 +205,38 @@ function testRuntimeDegradationOrderingAndSuccessRecovery(): void {
   )
   assert.deepEqual(ordered.degradedAccountIds, [primary.id], '降级排序结果应报告被降级账号')
 
-  gatewaySideEffects.degradeGatewayAccountForRuntimeFailure(backup, '模拟备选账号近期失败')
+  gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
+  const priorityPrimary = createRuntimeAccount('runtime-degraded-priority-primary', { priority: 0 })
+  const priorityBackup = createRuntimeAccount('runtime-normal-low-priority-backup', { priority: 10 })
+  activateRuntimeDegradation(priorityPrimary, '模拟高优先级账号近期失败')
+  const priorityBoundaryOrder = gatewaySideEffects.orderGatewayAccountsByRuntimeDegradation([priorityPrimary, priorityBackup])
+  assert.equal(priorityBoundaryOrder.applied, true, '高优先级账号降级时仍应报告调度降级排序已参与')
+  assert.deepEqual(
+    priorityBoundaryOrder.accounts.map((account) => account.id),
+    [priorityPrimary.id, priorityBackup.id],
+    '运行态降级不能让低优先级账号越过高优先级账号'
+  )
+
+  gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
+  const modelDirectPrimary = createRuntimeAccount('runtime-degraded-model-direct', { priority: 0 })
+  const modelUnrestrictedBackup = createRuntimeAccount('runtime-normal-model-unrestricted', { priority: 0 })
+  activateRuntimeDegradation(modelDirectPrimary, '模拟直连模型匹配账号近期失败')
+  const modelBoundaryOrder = gatewaySideEffects.orderGatewayAccountsByRuntimeDegradation([modelDirectPrimary, modelUnrestrictedBackup], {
+    modelRankByAccountId: new Map([
+      [modelDirectPrimary.id, 0],
+      [modelUnrestrictedBackup.id, 2]
+    ])
+  })
+  assert.equal(modelBoundaryOrder.applied, true, '直连模型匹配账号降级时仍应报告调度降级排序已参与')
+  assert.deepEqual(
+    modelBoundaryOrder.accounts.map((account) => account.id),
+    [modelDirectPrimary.id, modelUnrestrictedBackup.id],
+    '运行态降级不能让低模型匹配等级账号越过直连匹配账号'
+  )
+
+  gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
+  activateRuntimeDegradation(primary, '恢复原测试主账号降级状态')
+  activateRuntimeDegradation(backup, '模拟备选账号近期失败')
   const allDegraded = gatewaySideEffects.orderGatewayAccountsByRuntimeDegradation([primary, backup])
   assert.equal(allDegraded.applied, false, '全部账号降级时不应再重排候选')
   assert.equal(allDegraded.bypassedAllDegraded, true, '全部候选均降级时应允许兜底选择')
@@ -196,14 +257,19 @@ function testRuntimeDegradationOrderingAndSuccessRecovery(): void {
   gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
 }
 
+function activateRuntimeDegradation(account: OpenAIAccountSecret, reason: string): void {
+  const degraded = gatewaySideEffects.activateGatewayAccountRuntimeDegradationForTest(account, reason)
+  assert.equal(degraded.status, 'degraded', '后台探针确认后应激活运行态调度降级')
+}
+
 async function testRuntimeDegradationDispatchPreparationFallback(): Promise<void> {
   const primary = createRuntimeAccount('runtime-degraded-prepare-primary')
   const backup = createRuntimeAccount('runtime-degraded-prepare-backup')
   const metadataLabels: string[] = []
 
   gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
-  gatewaySideEffects.degradeGatewayAccountForRuntimeFailure(primary, '模拟主账号近期失败')
-  gatewaySideEffects.degradeGatewayAccountForRuntimeFailure(backup, '模拟备账号近期失败')
+  activateRuntimeDegradation(primary, '模拟主账号近期失败')
+  activateRuntimeDegradation(backup, '模拟备账号近期失败')
 
   const fallbackReasons: string[] = []
   const readyResult = await dispatchPreparation.prepareOpenAIGatewayDispatchAccounts({
@@ -297,7 +363,7 @@ async function testRuntimePrecheckPendingAndSuccessRecovery(): Promise<void> {
   })
   assert.equal(gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[account.id], undefined, '达到数量和多 IP 阈值但观察时间不足时不应立即进入事前确认')
 
-  await delay(2100)
+  gatewaySideEffects.ageGatewayAccountFailureStormForTest(account, 61_000)
   gatewaySideEffects.recordGatewayAccountFailureForPrecheckForTest(account, undefined, {
     systemAccountId: 'sys_admin',
     groupId: 'group-a',
@@ -337,7 +403,7 @@ async function testRuntimePrecheckPendingAndSuccessRecovery(): Promise<void> {
       reason: '模拟近期成功后的网关短窗口失败'
     })
   }
-  await delay(2100)
+  gatewaySideEffects.ageGatewayAccountFailureStormForTest(account, 61_000)
   gatewaySideEffects.recordGatewayAccountFailureForPrecheckForTest(account, undefined, {
     systemAccountId: 'sys_admin',
     groupId: 'group-a',
@@ -371,7 +437,7 @@ async function testRuntimePrecheckPendingAndSuccessRecovery(): Promise<void> {
   const authorizedAccount = createRuntimeAuthorizedAccount('precheck-runtime-authorized-account')
   for (let index = 0; index < 5; index += 1) {
     if (index === 4) {
-      await delay(2100)
+      gatewaySideEffects.ageGatewayAccountFailureStormForTest(authorizedAccount, 61_000)
     }
     gatewaySideEffects.recordGatewayAccountFailureForPrecheckForTest(authorizedAccount, undefined, {
       systemAccountId: 'sys_grantee',
@@ -433,8 +499,18 @@ function testLocalSuppressionHalfOpenEscalation(): void {
   gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
   gatewaySideEffects.suppressGatewayAccountLocallyForTest(account.id, 0, '第三轮到期', 'local_suppressed', { localFailureCount: 3 })
   gatewaySideEffects.filterLocallySuppressedGatewayAccounts([account], { acquireHalfOpenLease: true })
-  const precheck = gatewaySideEffects.suppressGatewayAccountLocally(account, undefined, '第三轮半开失败')
-  assert.equal(precheck.action, 'precheck_required', '第三轮半开失败后应要求进入事前确认')
+  const delayedPrecheck = gatewaySideEffects.suppressGatewayAccountLocally(account, undefined, '第三轮半开失败')
+  assert.equal(delayedPrecheck.action, 'suppressed', '第三轮半开失败但未满观察窗口时仍应停留在短暂避让')
+  assert.equal(delayedPrecheck.localFailureCount, 4, '延后事前确认时仍应记录已超过短暂避让阶梯')
+
+  gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
+  gatewaySideEffects.suppressGatewayAccountLocallyForTest(account.id, 0, '第三轮到期且已满观察窗口', 'local_suppressed', {
+    sinceMs: Date.now() - 61_000,
+    localFailureCount: 3
+  })
+  gatewaySideEffects.filterLocallySuppressedGatewayAccounts([account], { acquireHalfOpenLease: true })
+  const precheck = gatewaySideEffects.suppressGatewayAccountLocally(account, undefined, '第三轮半开失败且已满观察窗口')
+  assert.equal(precheck.action, 'precheck_required', '第三轮半开失败且满足观察窗口后才应要求进入事前确认')
   assert.equal(precheck.localFailureCount, 4, '触发事前确认时应记录已超过短暂避让阶梯')
 
   gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
@@ -456,7 +532,7 @@ function testLocalSuppressionHalfOpenEscalation(): void {
   gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
 }
 
-function testUnavailableProxyPreparationEscalatesAfterHalfOpenSequence(): void {
+async function testUnavailableProxyPreparationEscalatesAfterHalfOpenSequence(): Promise<void> {
   const account = {
     ...createRuntimeAccount('preparation-proxy-half-open-account'),
     proxyProfileId: 'proxy-profile-broken',
@@ -466,7 +542,7 @@ function testUnavailableProxyPreparationEscalatesAfterHalfOpenSequence(): void {
   const failedProxyDispatchKeys = new Map<string, string>()
   const req = buildRuntimeGatewayRequest()
 
-  accountPreparation.handleUnavailableProxyProfile(
+  await accountPreparation.handleUnavailableProxyProfile(
     req,
     buildRuntimeGatewayUsageContext('preparation-proxy-trace-1'),
     account,
@@ -484,7 +560,7 @@ function testUnavailableProxyPreparationEscalatesAfterHalfOpenSequence(): void {
   gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
   gatewaySideEffects.suppressGatewayAccountLocallyForTest(account.id, 0, '第一轮代理避让到期', 'local_suppressed', { localFailureCount: 1 })
   gatewaySideEffects.filterLocallySuppressedGatewayAccounts([account], { acquireHalfOpenLease: true })
-  accountPreparation.handleUnavailableProxyProfile(
+  await accountPreparation.handleUnavailableProxyProfile(
     req,
     buildRuntimeGatewayUsageContext('preparation-proxy-trace-2'),
     account,
@@ -502,7 +578,7 @@ function testUnavailableProxyPreparationEscalatesAfterHalfOpenSequence(): void {
   gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
   gatewaySideEffects.suppressGatewayAccountLocallyForTest(account.id, 0, '第二轮代理避让到期', 'local_suppressed', { localFailureCount: 2 })
   gatewaySideEffects.filterLocallySuppressedGatewayAccounts([account], { acquireHalfOpenLease: true })
-  accountPreparation.handleUnavailableProxyProfile(
+  await accountPreparation.handleUnavailableProxyProfile(
     req,
     buildRuntimeGatewayUsageContext('preparation-proxy-trace-3'),
     account,
@@ -518,9 +594,23 @@ function testUnavailableProxyPreparationEscalatesAfterHalfOpenSequence(): void {
   )
 
   gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
-  gatewaySideEffects.suppressGatewayAccountLocallyForTest(account.id, 0, '第三轮代理避让到期', 'local_suppressed', { localFailureCount: 3 })
+  for (let index = 0; index < 5; index += 1) {
+    gatewaySideEffects.recordGatewayAccountFailureForPrecheckForTest(account, undefined, {
+      systemAccountId: 'sys_admin',
+      groupId: 'group-a',
+      apiKeyId: index < 4 ? 'key-proxy-a' : 'key-proxy-b',
+      clientIp: index < 4 ? '10.2.0.1' : '10.2.0.2',
+      endpoint: '/v1/responses',
+      reason: '模拟代理准备失败观察样本'
+    })
+  }
+  gatewaySideEffects.ageGatewayAccountFailureStormForTest(account, 61_000)
+  gatewaySideEffects.suppressGatewayAccountLocallyForTest(account.id, 0, '第三轮代理避让到期且已满观察窗口', 'local_suppressed', {
+    sinceMs: Date.now() - 61_000,
+    localFailureCount: 3
+  })
   gatewaySideEffects.filterLocallySuppressedGatewayAccounts([account], { acquireHalfOpenLease: true })
-  accountPreparation.handleUnavailableProxyProfile(
+  await accountPreparation.handleUnavailableProxyProfile(
     req,
     buildRuntimeGatewayUsageContext('preparation-proxy-trace-4'),
     account,
@@ -530,7 +620,7 @@ function testUnavailableProxyPreparationEscalatesAfterHalfOpenSequence(): void {
     gatewaySideEffects.recordGatewayAccountFailureForPrecheckForTest
   )
   const runtime = gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[account.id]
-  assert.equal(runtime?.status, 'precheck_pending', '代理准备失败第三轮半开失败后应进入事前确认阶段')
+  assert.equal(runtime?.status, 'precheck_pending', '代理准备失败且满足观察窗口后应进入事前确认阶段')
   assert.match(runtime?.reason ?? '', /短暂避让半开探测连续失败/, '代理准备失败升级原因应保留短暂避让连续失败语义')
 
   gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
@@ -680,6 +770,7 @@ function createGatewayAccount(name: string, errorHandlingRules: AccountErrorHand
   }, adminAccess)
   const account = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: `${name}-${Math.random().toString(16).slice(2, 8)}`,
     type: 'api_key',
     groupId: group.id,
@@ -713,7 +804,7 @@ function assertActiveAccount(accountId: string, message: string): void {
   assert.equal(account?.cooldownUntil, undefined, `${message}：实际冷却时间 ${account?.cooldownUntil}`)
 }
 
-function createRuntimeAccount(id: string): OpenAIAccountSecret {
+function createRuntimeAccount(id: string, options: { priority?: number } = {}): OpenAIAccountSecret {
   return {
     id,
     providerCode: 'gpt',
@@ -729,7 +820,7 @@ function createRuntimeAccount(id: string): OpenAIAccountSecret {
     type: 'api_key',
     status: 'active',
     concurrencyLimit: 10,
-    priority: 0,
+    priority: options.priority ?? 0,
     superPriorityEnabled: false,
     fallbackEnabled: false,
     clientCompatibility: 'openai_standard',
@@ -778,9 +869,6 @@ function runtimePreparationGroupAccess(): GroupUsageAccessMetadata {
   return {
     groupOwnerSystemAccountId: 'sys_admin',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-    protocolCode: OPENAI_PROTOCOL_CODE,
-    protocolVersion: OPENAI_PROTOCOL_VERSION,
     groupAccessType: 'owner',
     groupType: 'personal'
   }

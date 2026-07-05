@@ -45,7 +45,8 @@ const [
   gatewayCache,
   accountSideEffects,
   usageRecordQueue,
-  auditLogQueue
+  auditLogQueue,
+  readWorkerPool
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
   import('../../shared/request-context.js'),
@@ -54,11 +55,13 @@ const [
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('../../modules/audit-logs/audit-log-queue.service.js')
+  import('../../modules/audit-logs/audit-log-queue.service.js'),
+  import('../../storage/sqlite-read-worker-pool.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 const upstreamHits: MockUpstreamHit[] = []
+let rateLimitedCooldownClearTimer: ReturnType<typeof setTimeout> | undefined
 
 const app = express()
 app.use(requestContextMiddleware)
@@ -96,9 +99,15 @@ try {
     await closeServer(upstreamServer)
   }
 } finally {
+  if (rateLimitedCooldownClearTimer) {
+    clearTimeout(rateLimitedCooldownClearTimer)
+    rateLimitedCooldownClearTimer = undefined
+  }
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
   usageRecordQueue.clearUsageRecordQueueForTest()
   auditLogQueue.clearAuditLogQueueForTest()
+  await readWorkerPool.closeSqliteReadWorkerPool()
+  databaseModule.getBusinessDatabase().close()
   databaseModule.closeStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })
 }
@@ -125,10 +134,12 @@ async function assertRateLimitedCooldownWaitsAndRecovers(baseUrl: string, scenar
     'rate_limited'
   )
   gatewayCache.clearGatewayRuntimeCache()
-  setTimeout(() => {
+  rateLimitedCooldownClearTimer = setTimeout(() => {
+    rateLimitedCooldownClearTimer = undefined
     repositories.clearAccountFailureState(scenario.accountId, access)
     gatewayCache.clearGatewayRuntimeCache()
-  }, 500).unref()
+  }, 500)
+  rateLimitedCooldownClearTimer.unref()
   const startedAt = Date.now()
   const response = await postChat(baseUrl, scenario.apiKey, 'rate limited cooldown should wait and recover')
   const elapsedMs = Date.now() - startedAt
@@ -206,7 +217,6 @@ function createSingleAccountScenario(label: string, upstreamApiKey: string, upst
   const group = repositories.createGroup({
     name: `${label}分组`,
     providerCode: GPT_VENDOR_CODE,
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   const account = repositories.createAccount({
@@ -239,13 +249,11 @@ function createFallbackScenario(upstreamBaseUrl: string): { primaryAccountId: st
   const primaryGroup = repositories.createGroup({
     name: '恢复等待后备分组优先主分组',
     providerCode: GPT_VENDOR_CODE,
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   const backupGroup = repositories.createGroup({
     name: '恢复等待后备分组优先备用分组',
     providerCode: GPT_VENDOR_CODE,
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   const primary = repositories.createAccount({
@@ -295,7 +303,6 @@ function createDisabledScenario(upstreamBaseUrl: string): { apiKey: string } {
   const group = repositories.createGroup({
     name: '恢复等待硬不可用分组',
     providerCode: GPT_VENDOR_CODE,
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   repositories.createAccount({

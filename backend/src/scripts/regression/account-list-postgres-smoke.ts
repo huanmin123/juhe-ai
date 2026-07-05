@@ -1,6 +1,7 @@
 import { strict as assert } from 'node:assert'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { closeRedisClients } from '../../shared/redis-client.js'
 import {
   accountNameSearchQueryTerms,
@@ -17,6 +18,7 @@ import {
   deleteGroupAsync,
   listAccountsPageAsync
 } from '../../storage/repositories.js'
+import { todayDateKey, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
 
 assert.equal(runtimeConfig.databaseDriver, 'postgres', 'AI 账户列表 PG smoke 需要 JUHE_AI_DATABASE_DRIVER=postgres')
 
@@ -100,6 +102,7 @@ try {
     groupId: matchedGroup.id,
     status: 'active'
   })
+  await seedAccountListUsage(matchedByName.id)
 
   const keywordResult = await listAccountsPageAsync(access, { keyword, page: 1, pageSize: 50 })
   const keywordIds = keywordResult.items.map((item) => item.id)
@@ -108,6 +111,8 @@ try {
   assert(keywordIds.includes(middleNameOnly.id), 'PG AI 账户列表 keyword 应命中名称中间包含值')
   assert(!keywordIds.includes(notesOnly.id), 'PG AI 账户列表 keyword 不应扫描备注字段命中')
   assert.deepEqual(keywordResult.items.find((item) => item.id === matchedByName.id)?.credentials, {}, 'PG AI 账户列表不应返回完整凭据')
+  assert.equal(keywordResult.items.find((item) => item.id === matchedByName.id)?.usage.requestCount, 9, 'PG AI 账户列表应返回累计账号用量')
+  assert.equal(keywordResult.items.find((item) => item.id === matchedByName.id)?.todayUsage.requestCount, 4, 'PG AI 账户列表应返回当天账号用量')
 
   const wildcardResult = await listAccountsPageAsync(access, { keyword: `percent%literal ${marker}`, page: 1, pageSize: 50 })
   const wildcardIds = wildcardResult.items.map((item) => item.id)
@@ -155,6 +160,7 @@ async function createSmokeAccount(input: {
 }) {
   const createInput: Record<string, unknown> = {
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: input.name,
     type: 'api_key',
     credentials: {
@@ -173,6 +179,26 @@ async function createSmokeAccount(input: {
   const account = await createAccountAsync(createInput, access)
   createdAccountIds.push(account.id)
   return account
+}
+
+async function seedAccountListUsage(accountId: string): Promise<void> {
+  const pool = await getPostgresPool()
+  const updatedAt = new Date().toISOString()
+  const today = todayDateKey(await usageStatsTimezoneAsync())
+  await pool.query(`
+    INSERT INTO juhe_stats.usage_stats_totals (
+      system_account_id, scope_type, scope_id, request_count, success_count, error_count,
+      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd,
+      last_used_at, updated_at
+    ) VALUES ($1, 'account', $2, 9, 8, 1, 90, 45, 6, 0.006, 0.123, $3, $3)
+  `, [access.systemAccountId, accountId, updatedAt])
+  await pool.query(`
+    INSERT INTO juhe_stats.usage_stats_daily (
+      system_account_id, scope_type, scope_id, stat_date, request_count, success_count, error_count,
+      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd,
+      last_used_at, updated_at
+    ) VALUES ($1, 'account', $2, $3, 4, 4, 0, 40, 20, 3, 0.003, 0.056, $4, $4)
+  `, [access.systemAccountId, accountId, today, updatedAt])
 }
 
 async function assertAccountListIndexedPlans(
@@ -205,18 +231,20 @@ async function assertAccountListIndexedPlans(
     ['idx_accounts_owner_list_order']
   )
   await assertIndexedPlan(
-    'AI 账户名称精确 PG 查询',
+    'AI 账户名称前缀 PG 查询',
     `
       SELECT accounts.id
       FROM juhe_business.accounts accounts
       WHERE accounts.system_account_id = $1
         AND accounts.deleted_at IS NULL
         AND accounts.authorization_instance_authorization_id IS NULL
-        AND lower(accounts.name) = lower($2)
+        AND accounts.name COLLATE "C" >= $2
+        AND accounts.name COLLATE "C" < $3
+      ORDER BY accounts.name COLLATE "C" ASC, accounts.id ASC
       LIMIT 20
     `,
-    [systemAccountId, keyword],
-    ['idx_accounts_owner_name_lower_lookup', 'idx_accounts_system_account_name_lookup']
+    [systemAccountId, normalizedKeyword, accountNamePrefixUpperBoundForTest(normalizedKeyword)],
+    ['idx_accounts_owner_name_c_lookup', 'idx_accounts_owner_all_name_c_lookup']
   )
   await assertIndexedPlan(
     'AI 账户名称包含候选 PG 查询',
@@ -257,7 +285,7 @@ async function assertAccountListIndexedPlans(
       LIMIT 50
     `,
     [systemAccountId, groupId],
-    ['idx_group_accounts_owner_group_enabled', 'idx_group_accounts_group_enabled']
+    ['idx_group_accounts_owner_group_enabled', 'idx_group_accounts_group_enabled', 'idx_group_accounts_scope_enabled_updated']
   )
   await assertIndexedPlan(
     'AI 账户标签筛选 PG 查询',
@@ -439,6 +467,17 @@ async function assertIndexedPlan(label: string, sql: string, params: unknown[], 
   }
 }
 
+function accountNamePrefixUpperBoundForTest(value: string): string {
+  const chars = [...value]
+  for (let index = chars.length - 1; index >= 0; index -= 1) {
+    const codePoint = chars[index]?.codePointAt(0)
+    if (codePoint !== undefined && codePoint < 0x10ffff) {
+      return `${chars.slice(0, index).join('')}${String.fromCodePoint(codePoint + 1)}`
+    }
+  }
+  return `${value}\uffff`
+}
+
 async function cleanupSmokeRows(): Promise<void> {
   for (const accountId of createdAccountIds) {
     await deleteAccountAsync(accountId, access).catch(() => false)
@@ -447,6 +486,8 @@ async function cleanupSmokeRows(): Promise<void> {
     await deleteGroupAsync(groupId, access).catch(() => undefined)
   }
   const pool = await getPostgresPool()
+  await pool.query("DELETE FROM juhe_stats.usage_stats_totals WHERE scope_type = 'account' AND scope_id = ANY($1::text[])", [createdAccountIds])
+  await pool.query("DELETE FROM juhe_stats.usage_stats_daily WHERE scope_type = 'account' AND scope_id = ANY($1::text[])", [createdAccountIds])
   await pool.query('DELETE FROM juhe_business.account_name_search_terms WHERE account_id = ANY($1::text[])', [plannerAccountIds])
   await pool.query('DELETE FROM juhe_business.account_name_search_documents WHERE account_id = ANY($1::text[])', [plannerAccountIds])
   await pool.query('DELETE FROM juhe_business.accounts WHERE id = ANY($1::text[]) OR position($2 in name) > 0', [plannerAccountIds, `${marker}_planner`])

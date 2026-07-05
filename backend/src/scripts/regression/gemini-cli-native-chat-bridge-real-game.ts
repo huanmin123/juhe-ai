@@ -109,7 +109,6 @@ try {
     const group = repositories.createGroup({
       name: 'Gemini CLI Native 转 Chat 真实游戏分组',
       providerCode: upstreamProvider.providerCode,
-      providerProtocolProfileId: upstreamProvider.providerProtocolProfileId,
       enabled: true
     }, access)
     repositories.createAccount({

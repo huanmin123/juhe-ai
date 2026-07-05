@@ -68,7 +68,7 @@ export function useAccountFilterTagOptions(config: UseAccountFilterTagOptionsCon
   }
 
   function handleDropdown(open: boolean): void {
-    if (open) void load(true)
+    if (open) void load()
   }
 
   function currentScopeKey(): string | undefined {

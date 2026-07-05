@@ -73,6 +73,7 @@ import {
   listAccounts,
   listAccountsPageAsync,
   listAccountsPage,
+  listAccountsPageReadOnly,
   type AccountListResult
 } from './account-summary.repository.js'
 export {
@@ -81,6 +82,7 @@ export {
   listAccounts,
   listAccountsPageAsync,
   listAccountsPage,
+  listAccountsPageReadOnly,
   type AccountListResult
 } from './account-summary.repository.js'
 import {
@@ -94,10 +96,11 @@ import { createApiKeyRecord, createApiKeyRecordAsync, deleteApiKey, deleteApiKey
 import { loadResourceAuthorizationSourcesByAuthorizationIds, loadResourceAuthorizationStatsByResourceIds } from './authorization-read-loaders.js'
 import { decryptJson, encryptJson, maskSecret } from './crypto.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import { runtimeConfig } from '../config/runtime.js'
 import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient } from './database-client.js'
-import { refreshGroupAccountStatsAfterWrite } from './group-account-stats-write-invalidation.js'
+import { refreshGroupAccountStatsAfterWrite, refreshGroupAccountStatsAfterWriteAsync } from './group-account-stats-write-invalidation.js'
 import {
   listAccountGroupOptions,
   listAccountGroupOptionsAsync,
@@ -140,6 +143,7 @@ import {
 } from './resource-authorization-helpers.js'
 import { authorizedAccountPermissions, hasActiveManualAuthorizationSource, ownerPermissions } from './resource-permissions.js'
 import { findResourceAuthorizationSummary, findResourceAuthorizationSummaryAsync, listResourceAuthorizationSummaries, listResourceAuthorizationSummariesPage, listResourceAuthorizationSummariesPageAsync, type ResourceAuthorizationListOptions } from './resource-authorization-read.repository.js'
+import { expireDueResourceAuthorizationsAsync } from './resource-authorization-write.repository.js'
 export {
   returnAccountAuthorizationInstanceForGrantee,
   returnAccountAuthorizationInstanceForGranteeAsync,
@@ -395,6 +399,7 @@ export {
   cleanupPendingDeletedAccountRecordTargetsAsync,
   listDeletedAccountRecordCleanupTargets,
   registerDeletedAccountRecordCleanupTarget,
+  registerDeletedAccountRecordCleanupTargetAsync,
   type DeletedAccountDetachedStatsCleanupTarget,
   type DeletedAccountRecordCleanupResult,
   type DeletedAccountRecordCleanupTarget,
@@ -420,6 +425,7 @@ export {
   listDeletedApiKeyRecordCleanupQueueTargets,
   listDeletedApiKeyRecordCleanupTargets,
   registerDeletedApiKeyRecordCleanupTarget,
+  registerDeletedApiKeyRecordCleanupTargetAsync,
   type DeletedApiKeyRecordCleanupQueueSummary,
   type DeletedApiKeyRecordCleanupQueueTarget,
   type DeletedApiKeyRecordCleanupResult,
@@ -460,6 +466,8 @@ export {
   ensureDefaultRouteStrategiesForSystemAccountAsync,
   ensureDefaultRouteStrategyForSystemAccount,
   ensureDefaultRouteStrategyForSystemAccountAsync,
+  listRouteStrategyListItemsPage,
+  listRouteStrategyListItemsPageAsync,
   listRouteStrategiesPage,
   listRouteStrategiesPageAsync,
   listRouteStrategyOptions,
@@ -619,13 +627,10 @@ export {
   createUsageRecord,
   createUsageRecordsBatchAsync,
   createUsageRecordsBatch,
-  findRecentOpenAIRequestShapeForAccountAsync,
-  findRecentOpenAIRequestShapeForAccount,
   getUsageRecordDetail,
   getUsageRecordDetailAsync,
   listUsageRecords,
   listUsageRecordsAsync,
-  type RecentOpenAIRequestShape,
   type UsageRecordInput,
   type UsageFailureAttribution,
   type UsageRecordListResult,
@@ -781,10 +786,15 @@ export {
 export {
   acquireBackgroundJobLease,
   createBackgroundTaskRun,
+  createBackgroundTaskRunAsync,
   finishBackgroundTaskRun,
+  finishBackgroundTaskRunAsync,
   getBackgroundTaskRun,
+  getBackgroundTaskRunAsync,
   heartbeatBackgroundTaskRun,
+  heartbeatBackgroundTaskRunAsync,
   tryStartBackgroundTaskRun,
+  tryStartBackgroundTaskRunAsync,
   type BackgroundTaskRunSummary
 } from './background-task-runs.repository.js'
 
@@ -806,7 +816,9 @@ export {
 } from './model-checks.repository.js'
 export {
   listAccountQualityFailurePrecheckCandidates,
+  listAccountQualityFailurePrecheckCandidatesAsync,
   refreshAccountQualityFromUsage,
+  refreshAccountQualityFromUsageAsync,
   type AccountQualityFailurePrecheckCandidate,
   type AccountQualityRealtimeRefreshResult
 } from './account-quality.repository.js'
@@ -889,54 +901,22 @@ function runDelete(sql: string, id: string): boolean {
 
 function isDuplicateAccountNameError(error: unknown): boolean {
   if (!(error instanceof Error)) return false
-  return error.message.includes('idx_accounts_owner_name_unique_lower')
+  return error.message.includes('idx_accounts_owner_name_unique')
+    || error.message.includes('idx_accounts_owner_name_unique_lower')
+    || error.message.includes('accounts.system_account_id, accounts.name')
     || error.message.includes('accounts.system_account_id, lower(name)')
 }
 
-function assertAccountNameAvailable(systemAccountId: string, name: string, excludeId?: string): void {
-  const params: string[] = [systemAccountId, name]
-  const excludeClause = excludeId ? ' AND id <> ?' : ''
-  if (excludeId) {
-    params.push(excludeId)
-  }
-  const row = getBusinessDatabase()
-    .prepare(`SELECT id FROM accounts WHERE system_account_id = ? AND lower(name) = lower(?) AND deleted_at IS NULL${excludeClause} LIMIT 1`)
-    .get(...params) as { id?: string } | undefined
-  if (row?.id) {
-    throw new Error(`同一用户下账户名称已存在：${name}`)
-  }
-}
-
-async function assertAccountNameAvailableAsync(client: DatabaseClient, systemAccountId: string, name: string, excludeId?: string): Promise<void> {
-  const params: string[] = [systemAccountId, name]
-  const excludeClause = excludeId ? ' AND id <> ?' : ''
-  if (excludeId) {
-    params.push(excludeId)
-  }
-  const row = await client.one<{ id?: string }>(`
-    SELECT id
-    FROM ${accountWriteTable(client, 'accounts')}
-    WHERE system_account_id = ? AND lower(name) = lower(?) AND deleted_at IS NULL${excludeClause}
-    LIMIT 1
-  `, params)
-  if (row?.id) {
-    throw new Error(`同一用户下账户名称已存在：${name}`)
-  }
-}
-
-async function groupOwnerAndProviderForAccountWriteAsync(client: DatabaseClient, groupId: string): Promise<{ systemAccountId: string; providerCode: ProviderCode; providerProtocolProfileId: string; protocolCode: string; protocolVersion: string; name?: string } | undefined> {
-  const row = await client.one<{ system_account_id?: string; provider_code?: ProviderCode; provider_protocol_profile_id?: string; protocol_code?: string; protocol_version?: string; name?: string }>(`
-    SELECT system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name
+async function groupOwnerAndProviderForAccountWriteAsync(client: DatabaseClient, groupId: string): Promise<{ systemAccountId: string; providerCode: ProviderCode; name?: string } | undefined> {
+  const row = await client.one<{ system_account_id?: string; provider_code?: ProviderCode; name?: string }>(`
+    SELECT system_account_id, provider_code, name
     FROM ${accountWriteTable(client, 'groups')}
     WHERE id = ?
   `, [groupId])
-  return row?.system_account_id && row.provider_code && row.provider_protocol_profile_id && row.protocol_code && row.protocol_version
+  return row?.system_account_id && row.provider_code
     ? {
         systemAccountId: row.system_account_id,
         providerCode: row.provider_code,
-        providerProtocolProfileId: row.provider_protocol_profile_id,
-        protocolCode: row.protocol_code,
-        protocolVersion: row.protocol_version,
         name: row.name
       }
     : undefined
@@ -1040,6 +1020,13 @@ export function getAccountUsageStatsOverviewPage(access?: AccessScope, options?:
 }
 
 export async function getAccountUsageStatsOverviewPageAsync(access?: AccessScope, options?: AccountListOptions & { range?: AccountUsageStatsRange; accountIds?: string[] }): Promise<AccountUsageStatsOverview> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'get_account_usage_stats_overview_page_read_only',
+      access,
+      options
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return getAccountUsageStatsOverviewPage(access, options)
   }
@@ -1157,6 +1144,13 @@ export function findAccountForTest(accountId: string, access?: AccessScope): Acc
 }
 
 export async function findAccountForTestAsync(accountId: string, access?: AccessScope): Promise<AccountSummary | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'find_account_for_test_read_only',
+      accountId,
+      access
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return findAccountForTest(accountId, access)
   }
@@ -1493,7 +1487,6 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   })
 
   const database = getBusinessDatabase()
-  assertAccountNameAvailable(systemAccountId, account.name)
   const transactionStarted = beginDatabaseTransaction(database)
   const availabilityScheduleNextCheckAt = nextAccountAvailabilityScheduleCheckAt(account.availabilitySchedule, new Date(nowMs))
   let savedTags = account.tags ?? []
@@ -1710,7 +1703,6 @@ export async function createAccountAsync(input: Record<string, unknown>, access?
     groupBindStatus: 'bound'
   })
 
-  await assertAccountNameAvailableAsync(client, systemAccountId, account.name)
   const availabilityScheduleNextCheckAt = nextAccountAvailabilityScheduleCheckAt(account.availabilitySchedule, new Date(nowMs))
   let savedTags = account.tags ?? []
   try {
@@ -1785,6 +1777,7 @@ export async function createAccountAsync(input: Record<string, unknown>, access?
     throw error
   }
 
+  await refreshGroupAccountStatsAfterWriteAsync({ groupIds: [groupId], reason: 'account_created' })
   invalidateAccountLookupCache(account.id)
   invalidateGroupAccountIdsCache(groupId)
   invalidateGatewayRuntimeAfterBusinessWrite('account_created')
@@ -1983,7 +1976,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
       : current.proxyProfileId,
     schedulable: expiredByPackage || accountStatusForcesSchedulableOff(nextStatus)
       ? false
-      : hasStatusInput
+      : hasStatusInput && nextStatus !== 'disabled'
         ? true
         : requestedSchedulable,
     availabilitySchedule: nextAvailabilitySchedule,
@@ -2001,9 +1994,6 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
 
   const supportedModelsChanged = hasSupportedModelsInput && !unorderedStringListEquals(current.supportedModels, nextSupportedModels)
   const modelMappingsChanged = hasModelMappingsInput && !accountModelMappingsEqual(current.modelMappings, nextModelMappings)
-  if (next.name !== current.name) {
-    assertAccountNameAvailable(systemAccountId, next.name, id)
-  }
   const database = getBusinessDatabase()
   const updatedAt = nowIso()
   const availabilityScheduleNextCheckAt = nextAccountAvailabilityScheduleCheckAt(next.availabilitySchedule, new Date(updateNowMs))
@@ -2300,7 +2290,7 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
     proxyProfileId,
     schedulable: expiredByPackage || accountStatusForcesSchedulableOff(nextStatus)
       ? false
-      : hasStatusInput
+      : hasStatusInput && nextStatus !== 'disabled'
         ? true
         : requestedSchedulable,
     availabilitySchedule: nextAvailabilitySchedule,
@@ -2318,13 +2308,11 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
 
   const supportedModelsChanged = hasSupportedModelsInput && !unorderedStringListEquals(current.supportedModels, nextSupportedModels)
   const modelMappingsChanged = hasModelMappingsInput && !accountModelMappingsEqual(current.modelMappings, nextModelMappings)
-  if (next.name !== current.name) {
-    await assertAccountNameAvailableAsync(client, systemAccountId, next.name, id)
-  }
   const updatedAt = nowIso()
   const availabilityScheduleNextCheckAt = nextAccountAvailabilityScheduleCheckAt(next.availabilitySchedule, new Date(updateNowMs))
   let renamedAuthorizationInstanceIds: string[] = []
   let savedTags = next.tags ?? []
+  let updated = false
   try {
     await client.transaction(async (tx) => {
       const result = await tx.execute(`
@@ -2370,6 +2358,7 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
       if (Number(result.changes ?? 0) <= 0) {
         return
       }
+      updated = true
       if (next.name !== current.name) {
         await replaceAccountNameSearchTermsAsync(tx, id, systemAccountId, next.name, updatedAt)
         renamedAuthorizationInstanceIds = await syncAccountAuthorizationInstanceNamesForSourceAccountAsync(tx, id, next.name, updatedAt)
@@ -2410,6 +2399,9 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
     throw error
   }
 
+  if (updated) {
+    await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [id], reason: 'account_updated' })
+  }
   invalidateAccountLookupCache(id)
   for (const instanceId of renamedAuthorizationInstanceIds) {
     invalidateAccountLookupCache(instanceId)
@@ -2477,7 +2469,7 @@ async function isAccountNameAvailableAsync(client: DatabaseClient, systemAccount
     SELECT id
     FROM ${accountWriteTable(client, 'accounts')}
     WHERE system_account_id = ?
-      AND lower(name) = lower(?)
+      AND name = ?
       AND deleted_at IS NULL${exceptClause}
     LIMIT 1
   `, params)
@@ -2560,9 +2552,18 @@ export function listResourceAuthorizationsPage(filters: Record<string, unknown> 
 }
 
 export async function listResourceAuthorizationsPageAsync(filters: Record<string, unknown> = {}, access?: AccessScope, options: ResourceAuthorizationListOptions = {}): Promise<ResourceAuthorizationListResult> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_resource_authorizations_page_read_only',
+      filters,
+      access,
+      options
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listResourceAuthorizationsPage(filters, access, options)
   }
+  await expireDueResourceAuthorizationsAsync()
   return listResourceAuthorizationSummariesPageAsync(filters, access, options)
 }
 
@@ -2572,8 +2573,17 @@ export function findResourceAuthorization(authorizationId: string, access?: Acce
 }
 
 export async function findResourceAuthorizationAsync(authorizationId: string, access?: AccessScope, options: ResourceAuthorizationListOptions = {}): Promise<ResourceAuthorizationSummary | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'find_resource_authorization_read_only',
+      id: authorizationId,
+      access,
+      options
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return findResourceAuthorization(authorizationId, access, options)
   }
+  await expireDueResourceAuthorizationsAsync()
   return findResourceAuthorizationSummaryAsync(authorizationId, access, options)
 }

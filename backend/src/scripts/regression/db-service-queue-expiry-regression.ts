@@ -56,7 +56,11 @@ try {
     'DB service 入队容量判断前必须先清理过期请求，避免队列满但全过期时拒绝新请求'
   )
 
-  const expired = await requestDbServiceRaw(child, { type: 'status' }, Date.now() - 1)
+  const expired = await requestDbServiceRaw(child, {
+    type: 'cleanup_expired_system_sessions',
+    expiredBefore: '2000-01-01T00:00:00.000Z',
+    limit: 1
+  }, Date.now() - 1)
   assert.equal(expired.ok, false, '已过期 DB service 请求应被拒绝')
   assert.match(expired.errorMessage ?? '', /本地数据库服务请求已过期/, '过期请求应返回明确的本地队列过期错误')
 

@@ -84,15 +84,7 @@
       </template>
       <template v-else-if="column.key === 'tokens'">
         <div class="token-cell">
-          <span>输入 {{ formatTokens(record.inputTokens) }}</span>
-          <span>输出 {{ formatTokens(record.outputTokens) }}</span>
-          <span>缓存读 {{ formatTokens(record.cacheReadTokens) }}</span>
-          <span v-if="(record.cacheWriteTokens ?? 0) > 0">缓存写 {{ formatTokens(record.cacheWriteTokens) }}</span>
-          <span v-if="(record.cacheWrite1hTokens ?? 0) > 0">1h {{ formatTokens(record.cacheWrite1hTokens) }}</span>
-          <span v-if="(record.thinkingTokens ?? 0) > 0">思考 {{ formatTokens(record.thinkingTokens) }}</span>
-          <span v-if="(record.inputImageTokens ?? 0) + (record.outputImageTokens ?? 0) > 0">
-            图片 {{ formatTokens((record.inputImageTokens ?? 0) + (record.outputImageTokens ?? 0)) }}
-          </span>
+          <span v-for="part in usageRecordTokenParts(record)" :key="part">{{ part }}</span>
         </div>
       </template>
       <template v-else-if="column.key === 'cost'">
@@ -135,11 +127,11 @@ import {
   formatDateTime,
   formatDuration,
   formatEndpoint,
-  formatTokens,
   statusCodeColor,
   statusCodeText,
   trafficSourceColor,
   trafficSourceText,
+  usageRecordTokenParts,
   usageRecordSystemAccountText
 } from './usageRecordFormatters'
 

@@ -10,7 +10,7 @@ import { accountTagsUpdateSchema } from './account-request.schemas.js'
 import { sanitizeAccountResponse } from './account-response-sanitizer.js'
 
 export function registerAccountTagsRoutes(router: Router): void {
-  router.get('/tags', async (req, res) => {
+  router.get('/tags', async (req, res, next) => {
     const scopeQuery = parseRequestScopeQuery(req.query)
     if (!scopeQuery.success) {
       res.status(400).json(badRequest(scopeQuery.message))
@@ -19,7 +19,7 @@ export function registerAccountTagsRoutes(router: Router): void {
     try {
       res.json(ok(await listAccountTagsAsync(getRequestAccessScope(scopeQuery.data.systemAccountId))))
     } catch (error) {
-      res.status(400).json(badRequest(error instanceof Error ? error.message : '加载账户标签失败'))
+      next(error)
     }
   })
 

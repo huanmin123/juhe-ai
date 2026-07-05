@@ -1,4 +1,10 @@
-import { getBusinessDatabase, getUsageCatalogDatabase } from '../../../../storage/database.js'
+import { runtimeConfig } from '../../../../config/runtime.js'
+import {
+  codexContextStateShardIndexes,
+  getBusinessDatabase,
+  getCodexContextStateShardDatabase,
+  getUsageCatalogDatabase
+} from '../../../../storage/database.js'
 import { cleanupUnreferencedAuditPayloadBlobs } from '../../../../storage/repositories.js'
 import {
   deleteUsageRecordShardEntries,
@@ -21,6 +27,7 @@ export function cleanupMockdata(businessDatabase: Database, datasetDatabase: Dat
   const mockApiKeyIds = selectIds(businessDatabase, 'SELECT id FROM api_keys WHERE name LIKE ?', `${namePrefix}%`)
   cleanupDatasetMockdata(datasetDatabase, mockAccountIds, mockApiKeyIds)
   cleanupStatsMockdata(statsDatabase, mockAccountIds)
+  cleanupCodexContextStateMockdata()
   cleanupBusinessMockdata(businessDatabase, adminId, mockUserIds)
 }
 
@@ -42,6 +49,15 @@ function cleanupBusinessMockdata(database: Database, adminId: string, mockUserId
     const mockCustomProviderModelIds = selectIds(database, 'SELECT id FROM custom_provider_models WHERE model LIKE ?', 'mockdata-%')
     deleteWhereIn(database, 'custom_provider_models', 'id', mockCustomProviderModelIds)
 
+    const mockAccountTestTaskIds = selectIds(database, 'SELECT id FROM account_test_tasks WHERE id LIKE ? OR account_name LIKE ? OR status_message LIKE ?', `${idPrefix}%`, likeName, `${namePrefix}%`)
+    const mockAccountTestSessionIds = selectIdsForChunks(database, mockAccountTestTaskIds, 'SELECT session_id AS id FROM account_test_session_tasks WHERE task_id IN ({placeholders})')
+    deleteWhereIn(database, 'account_test_session_tasks', 'task_id', mockAccountTestTaskIds)
+    deleteWhereIn(database, 'account_test_tasks', 'id', mockAccountTestTaskIds)
+    deleteWhereIn(database, 'account_test_sessions', 'id', mockAccountTestSessionIds)
+
+    database.prepare('DELETE FROM account_schedule_status_events WHERE event_key LIKE ?').run(`${idPrefix}%`)
+    database.prepare('DELETE FROM api_key_schedule_status_events WHERE event_key LIKE ?').run(`${idPrefix}%`)
+
     const mockRuntimeAuthorizationIds = selectIds(database, 'SELECT id FROM resource_authorizations WHERE created_by = ? AND remark LIKE ?', adminId, likeName)
     deleteWhereIn(database, 'resource_authorization_sources', 'authorization_id', mockRuntimeAuthorizationIds)
     const mockGrantIds = selectIds(database, 'SELECT id FROM resource_authorization_grants WHERE created_by = ? AND remark LIKE ?', adminId, likeName)
@@ -49,9 +65,11 @@ function cleanupBusinessMockdata(database: Database, adminId: string, mockUserId
 
     const mockApiKeyIds = selectIds(database, 'SELECT id FROM api_keys WHERE name LIKE ?', likeName)
     const mockRouteStrategyIds = selectIdsForChunks(database, mockApiKeyIds, 'SELECT route_strategy_id FROM api_keys WHERE id IN ({placeholders})')
+    const mockNamedRouteStrategyIds = selectIds(database, 'SELECT id FROM route_strategies WHERE name LIKE ?', likeName)
+    const allMockRouteStrategyIds = uniqueIds([...mockRouteStrategyIds, ...mockNamedRouteStrategyIds])
     deleteWhereIn(database, 'api_keys', 'id', mockApiKeyIds)
-    deleteWhereIn(database, 'route_strategy_groups', 'route_strategy_id', mockRouteStrategyIds)
-    deleteWhereIn(database, 'route_strategies', 'id', mockRouteStrategyIds)
+    deleteWhereIn(database, 'route_strategy_groups', 'route_strategy_id', allMockRouteStrategyIds)
+    deleteWhereIn(database, 'route_strategies', 'id', allMockRouteStrategyIds)
 
     const mockGroupIds = selectIds(database, 'SELECT id FROM groups WHERE name LIKE ?', likeName)
     const mockAccountIds = selectIds(database, 'SELECT id FROM accounts WHERE name LIKE ?', likeName)
@@ -80,6 +98,7 @@ function cleanupBusinessMockdata(database: Database, adminId: string, mockUserId
     deleteWhereIn(database, 'proxy_profiles', 'id', mockProxyIds)
 
     deleteWhereIn(database, 'system_sessions', 'system_account_id', mockUserIds)
+    database.prepare('DELETE FROM system_sessions WHERE id LIKE ?').run(`${idPrefix}%`)
     deleteWhereIn(database, 'system_accounts', 'id', mockUserIds)
     database.exec('COMMIT')
   } catch (error) {
@@ -130,6 +149,7 @@ function cleanupDatasetMockdata(database: Database, mockAccountIds: string[], mo
 
     const runtimeIds = selectIds(database, 'SELECT id FROM runtime_logs WHERE id LIKE ? OR trace_id LIKE ?', `${idPrefix}%`, `${tracePrefix}%`)
     deleteWhereIn(database, 'runtime_logs', 'id', runtimeIds)
+    database.prepare('DELETE FROM runtime_log_file_cursors WHERE log_file LIKE ? OR file_identity LIKE ?').run(`${idPrefix}%`, `${tracePrefix}%`)
 
     const modelCheckRunIds = selectIds(database, 'SELECT id FROM model_check_runs WHERE id LIKE ? OR trace_id LIKE ?', `${idPrefix}%`, `${tracePrefix}%`)
     deleteWhereIn(database, 'model_check_items', 'run_id', modelCheckRunIds)
@@ -151,6 +171,28 @@ function cleanupStatsMockdata(database: Database, mockAccountIds: string[]): voi
     deleteWhereIn(database, 'client_ip_policy_hits', 'policy_id', mockClientIpPolicyIds)
     deleteWhereIn(database, 'client_ip_policies', 'id', mockClientIpPolicyIds)
     deleteWhereIn(database, 'account_usage_snapshots', 'account_id', mockAccountIds)
+    deleteWhereIn(database, 'account_quality_dirty_accounts', 'account_id', mockAccountIds)
+    database.prepare(`
+      DELETE FROM client_ip_range_window_dirty_ips
+      WHERE ip_hash IN (
+        SELECT ip_hash FROM client_ip_registry
+        WHERE client_ip LIKE '10.10.%'
+           OR client_ip LIKE '10.20.%'
+      )
+         OR ip_hash LIKE ?
+    `).run(`${idPrefix}%`)
+    database.prepare(`
+      DELETE FROM client_ip_account_range_window_dirty_ips
+      WHERE ip_hash IN (
+        SELECT ip_hash FROM client_ip_registry
+        WHERE client_ip LIKE '10.10.%'
+           OR client_ip LIKE '10.20.%'
+      )
+         OR ip_hash LIKE ?
+    `).run(`${idPrefix}%`)
+    database.prepare('DELETE FROM usage_record_cleanup_deductions WHERE usage_id LIKE ? OR record_json LIKE ?').run(`${idPrefix}%`, `%${namePrefix}%`)
+    database.prepare('DELETE FROM background_job_leases WHERE lease_key LIKE ? OR owner_id LIKE ? OR run_id LIKE ?').run(`${idPrefix}%`, `${idPrefix}%`, `${idPrefix}%`)
+    database.prepare('DELETE FROM background_task_runs WHERE run_id LIKE ? OR lease_key LIKE ? OR owner_id LIKE ? OR params_json LIKE ? OR result_json LIKE ?').run(`${idPrefix}%`, `${idPrefix}%`, `${idPrefix}%`, `%${idPrefix}%`, `%${idPrefix}%`)
     database.prepare('DELETE FROM system_metrics_samples WHERE id LIKE ?').run(`${idPrefix}%`)
     database.prepare('DELETE FROM process_event_loop_samples WHERE id LIKE ?').run(`${idPrefix}%`)
     database.prepare('DELETE FROM database_storage_snapshots WHERE id LIKE ?').run(`${idPrefix}%`)
@@ -163,6 +205,7 @@ function cleanupStatsMockdata(database: Database, mockAccountIds: string[]): voi
 }
 
 function cleanupUsageRecordShardMockdata(): void {
+  assertSqliteMockdataMaintenance('cleanupUsageRecordShardMockdata')
   const mockUsageIds = selectIds(
     getUsageCatalogDatabase(),
     'SELECT usage_id AS id FROM usage_record_shard_entries WHERE usage_id LIKE ?',
@@ -174,6 +217,47 @@ function cleanupUsageRecordShardMockdata(): void {
       .run(`${idPrefix}%`, `${tracePrefix}%`)
   }
   deleteUsageRecordShardEntries(mockUsageIds)
+}
+
+function cleanupCodexContextStateMockdata(): void {
+  assertSqliteMockdataMaintenance('cleanupCodexContextStateMockdata')
+  for (const shardIndex of codexContextStateShardIndexes()) {
+    const database = getCodexContextStateShardDatabase(shardIndex)
+    database.exec('BEGIN')
+    try {
+      database.prepare(`
+        DELETE FROM codex_context_compacts
+        WHERE compact_id LIKE ?
+           OR session_id LIKE ?
+           OR source_response_id LIKE ?
+           OR storage_key LIKE ?
+      `).run(`${idPrefix}%`, `${idPrefix}%`, `${idPrefix}%`, `${idPrefix}%`)
+      database.prepare(`
+        DELETE FROM codex_context_responses
+        WHERE response_id LIKE ?
+           OR session_id LIKE ?
+           OR previous_response_id LIKE ?
+           OR storage_key LIKE ?
+      `).run(`${idPrefix}%`, `${idPrefix}%`, `${idPrefix}%`, `${idPrefix}%`)
+      database.prepare(`
+        DELETE FROM codex_context_sessions
+        WHERE id LIKE ?
+           OR source_response_id LIKE ?
+           OR latest_response_id LIKE ?
+           OR latest_compact_id LIKE ?
+      `).run(`${idPrefix}%`, `${idPrefix}%`, `${idPrefix}%`, `${idPrefix}%`)
+      database.exec('COMMIT')
+    } catch (error) {
+      database.exec('ROLLBACK')
+      throw error
+    }
+  }
+}
+
+function assertSqliteMockdataMaintenance(operation: string): void {
+  if (runtimeConfig.databaseDriver === 'postgres' || runtimeConfig.runtimeMode === 'performance') {
+    throw new Error(`高性能 PG + Redis 模式禁止调用 SQLite mockdata usage shard 清理入口：${operation}`)
+  }
 }
 
 function selectIds(database: Database, sql: string, ...params: SqlValue[]): string[] {
@@ -192,6 +276,10 @@ function selectIdsForChunks(database: Database, ids: string[], sqlTemplate: stri
     }
   }
   return [...output]
+}
+
+function uniqueIds(ids: string[]): string[] {
+  return [...new Set(ids.filter(Boolean))]
 }
 
 function deleteWhereIn(database: Database, tableName: string, columnName: string, ids: string[]): void {

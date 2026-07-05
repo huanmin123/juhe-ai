@@ -26,6 +26,7 @@ export interface ResponseInspectionSseResult {
   chunks: Buffer[]
   intercepted?: ResponseInspectionDecision
   observations?: ResponseInspectionDecision[]
+  pendingEvent: boolean
   parserSkipped: boolean
 }
 
@@ -76,10 +77,10 @@ export class OpenAIResponseInspectionBuffer {
 
   pushChunk(chunk: Buffer): ResponseInspectionSseResult {
     if (!this.clientRetryEnabled && this.policies.length === 0) {
-      return { chunks: [chunk], parserSkipped: false }
+      return { chunks: [chunk], pendingEvent: false, parserSkipped: false }
     }
     if (this.parserSkipped) {
-      return { chunks: [...this.drainDeferredLeadingNoopChunks(), chunk], parserSkipped: true }
+      return { chunks: [...this.drainDeferredLeadingNoopChunks(), chunk], pendingEvent: false, parserSkipped: true }
     }
 
     this.pendingBuffer.push(chunk)
@@ -89,7 +90,7 @@ export class OpenAIResponseInspectionBuffer {
         return this.interceptOversizedCodexCompactionEvent(buffered)
       }
       this.parserSkipped = true
-      return { chunks: [...this.drainDeferredLeadingNoopChunks(), buffered], parserSkipped: true }
+      return { chunks: [...this.drainDeferredLeadingNoopChunks(), buffered], pendingEvent: false, parserSkipped: true }
     }
 
     const chunks: Buffer[] = []
@@ -145,6 +146,7 @@ export class OpenAIResponseInspectionBuffer {
           chunks,
           intercepted: decision,
           observations: observations.length > 0 ? observations : undefined,
+          pendingEvent: this.hasPendingProtocolEvent(),
           parserSkipped: this.parserSkipped
         }
       }
@@ -163,17 +165,22 @@ export class OpenAIResponseInspectionBuffer {
     return {
       chunks,
       observations: observations.length > 0 ? observations : undefined,
+      pendingEvent: this.hasPendingProtocolEvent(),
       parserSkipped: this.parserSkipped
     }
   }
 
   flushPendingOnEof(): ResponseInspectionSseResult {
     if (!this.clientRetryEnabled && this.policies.length === 0) {
-      return { chunks: [], parserSkipped: false }
+      return { chunks: [], pendingEvent: false, parserSkipped: false }
+    }
+    if (!this.parserSkipped && this.pendingBuffer.length === 0 && this.deferredCodexCompactionChunks.length > 0) {
+      return this.interceptIncompleteCodexCompactionOnEof()
     }
     if (this.parserSkipped || this.pendingBuffer.length === 0) {
       return {
         chunks: this.parserSkipped ? this.drainDeferredLeadingNoopChunks() : [],
+        pendingEvent: this.hasPendingProtocolEvent(),
         parserSkipped: this.parserSkipped
       }
     }
@@ -185,6 +192,7 @@ export class OpenAIResponseInspectionBuffer {
     if (this.canPassThroughCommonResponsesTextDeltaBuffer(rawBuffer)) {
       return {
         chunks: [...this.drainDeferredLeadingNoopChunks(), rawBuffer],
+        pendingEvent: this.hasPendingProtocolEvent(),
         parserSkipped: this.parserSkipped
       }
     }
@@ -192,11 +200,12 @@ export class OpenAIResponseInspectionBuffer {
     if (!this.downstreamWritten && isDeferrableLeadingChatCompletionNoopEvent(event)) {
       this.deferredLeadingNoopChunks.push(rawBuffer)
       this.clearDeferredLeadingNoopChunks()
-      return { chunks: [], parserSkipped: this.parserSkipped }
+      return { chunks: [], pendingEvent: this.hasPendingProtocolEvent(), parserSkipped: this.parserSkipped }
     }
     if (this.canPassThroughUninspectableVisibleOutputTextEvent(event)) {
       return {
         chunks: [...this.drainDeferredLeadingNoopChunks(), rawBuffer],
+        pendingEvent: this.hasPendingProtocolEvent(),
         parserSkipped: this.parserSkipped
       }
     }
@@ -214,9 +223,13 @@ export class OpenAIResponseInspectionBuffer {
     })
     if (!inspection.decision) {
       if (codexCompaction.defer) {
+        if (eofPendingFlush) {
+          return this.interceptIncompleteCodexCompactionOnEof(inspection.observations)
+        }
         return {
           chunks: [],
           observations: inspection.observations,
+          pendingEvent: this.hasPendingProtocolEvent(),
           parserSkipped: this.parserSkipped
         }
       }
@@ -224,12 +237,14 @@ export class OpenAIResponseInspectionBuffer {
         return {
           chunks: [...this.drainDeferredLeadingNoopChunks(), ...codexCompaction.releaseChunks],
           observations: inspection.observations,
+          pendingEvent: this.hasPendingProtocolEvent(),
           parserSkipped: this.parserSkipped
         }
       }
       return {
         chunks: [...this.drainDeferredLeadingNoopChunks(), rawBuffer],
         observations: inspection.observations,
+        pendingEvent: this.hasPendingProtocolEvent(),
         parserSkipped: this.parserSkipped
       }
     }
@@ -239,6 +254,7 @@ export class OpenAIResponseInspectionBuffer {
       return {
         chunks: [],
         observations: inspection.observations,
+        pendingEvent: this.hasPendingProtocolEvent(),
         parserSkipped: this.parserSkipped
       }
     }
@@ -249,6 +265,7 @@ export class OpenAIResponseInspectionBuffer {
       chunks: failureEvent ? [failureEvent] : [],
       intercepted: decision,
       observations: inspection.observations,
+      pendingEvent: this.hasPendingProtocolEvent(),
       parserSkipped: this.parserSkipped
     }
   }
@@ -289,6 +306,7 @@ export class OpenAIResponseInspectionBuffer {
           rawBuffer
         ],
         observations: inspection.observations,
+        pendingEvent: false,
         parserSkipped: true
       }
     }
@@ -300,8 +318,54 @@ export class OpenAIResponseInspectionBuffer {
       chunks: failureEvent ? [failureEvent] : [],
       intercepted: decision,
       observations: inspection.observations,
+      pendingEvent: this.hasPendingProtocolEvent(),
       parserSkipped: this.parserSkipped
     }
+  }
+
+  private interceptIncompleteCodexCompactionOnEof(observations: ResponseInspectionDecision[] | undefined = undefined): ResponseInspectionSseResult {
+    const contractFrame = codexCompactionContractMismatchFrame({
+      outputItemCount: this.codexCompactionOutputItemCount,
+      compactionItemCount: this.codexCompactionItemCount,
+      transport: 'sse',
+      eventType: 'eof',
+      force: true,
+      message: 'Codex Remote Compaction V2 流式响应在 EOF 前未收到 response.completed，已按不可接受响应处理'
+    })!
+    const inspection = inspectResponseSemanticFrames({
+      frames: [contractFrame],
+      policies: this.policies,
+      downstreamWritten: this.downstreamWritten,
+      transport: 'sse',
+      context: this.context
+    })
+    const combinedObservations = [
+      ...(observations ?? []),
+      ...(inspection.observations ?? [])
+    ]
+    if (!inspection.decision) {
+      return {
+        chunks: [...this.drainDeferredLeadingNoopChunks(), ...this.drainDeferredCodexCompactionChunks()],
+        observations: combinedObservations.length > 0 ? combinedObservations : undefined,
+        pendingEvent: this.hasPendingProtocolEvent(),
+        parserSkipped: this.parserSkipped
+      }
+    }
+    const decision = inspection.decision
+    this.clearDeferredLeadingNoopChunks()
+    this.clearDeferredCodexCompactionChunks()
+    const failureEvent = this.buildFailureEvent(decision, this.clientRetryEnabled)
+    return {
+      chunks: failureEvent ? [failureEvent] : [],
+      intercepted: decision,
+      observations: combinedObservations.length > 0 ? combinedObservations : undefined,
+      pendingEvent: this.hasPendingProtocolEvent(),
+      parserSkipped: this.parserSkipped
+    }
+  }
+
+  private hasPendingProtocolEvent(): boolean {
+    return this.pendingBuffer.length > 0 || this.deferredCodexCompactionChunks.length > 0
   }
 
   private prepareCodexCompactionEvent(

@@ -54,25 +54,29 @@
       @submit="submitNonBusinessDataCleanup"
     />
 
-    <a-row :gutter="[16, 16]" class="database-summary-grid">
-      <a-col v-for="item in databaseSummaryRows" :key="item.role" :xs="24" :lg="8">
-        <a-card class="database-summary-card">
-          <div class="database-summary-head">
-            <a-tag :color="databaseRoleColor(item.role)">{{ databaseRoleLabel(item.role) }}</a-tag>
+    <div class="database-summary-grid">
+      <a-card v-for="item in databaseSummaryRows" :key="item.role" class="database-summary-card">
+        <div class="database-summary-head">
+          <a-tooltip :title="databaseRoleDetailLabel(item.role)">
+            <a-tag :color="databaseRoleColor(item.role)" class="database-role-tag">
+              {{ databaseRoleLabel(item.role) }}
+            </a-tag>
+          </a-tooltip>
+          <a-tooltip :title="item.database?.databasePath ?? '等待采样后显示数据库路径'">
             <span class="database-path">{{ item.database?.databasePath ?? '等待采样后显示数据库路径' }}</span>
-          </div>
-          <div class="database-summary-value">{{ formatBytes(totalDatabaseBytes(item.database)) }}</div>
-          <div class="database-summary-meta">
-            <span>主库 {{ formatBytes(item.database?.fileBytes) }}</span>
-            <span>WAL {{ formatBytes(item.database?.walBytes) }}</span>
-            <span>空闲 {{ formatBytes(item.database?.freeBytes) }}</span>
-            <span>表 {{ formatInteger(item.database?.tableCount) }}</span>
-          </div>
-        </a-card>
-      </a-col>
-    </a-row>
+          </a-tooltip>
+        </div>
+        <div class="database-summary-value">{{ formatBytes(totalDatabaseBytes(item.database)) }}</div>
+        <div class="database-summary-meta">
+          <span>主库 {{ formatBytes(item.database?.fileBytes) }}</span>
+          <span>WAL {{ formatBytes(item.database?.walBytes) }}</span>
+          <span>空闲 {{ formatBytes(item.database?.freeBytes) }}</span>
+          <span>表 {{ formatInteger(item.database?.tableCount) }}</span>
+        </div>
+      </a-card>
+    </div>
 
-    <a-card class="page-card history-card" title="三库增长趋势">
+    <a-card class="page-card history-card" title="存储增长趋势">
       <DeferredRender
         v-if="hasHistoryRows"
         :active="pageActive"
@@ -183,7 +187,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, ref, shallowRef } from 'vue'
+import { computed, nextTick, ref, shallowRef, watch } from 'vue'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
 import { DeleteOutlined } from '@ant-design/icons-vue'
@@ -194,14 +198,17 @@ import DeferredRender from '@/components/DeferredRender.vue'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import { disposeChart, ensureChartFromElement, resizeEcharts, useEchartsPageLifecycle, type ECharts } from '@/composables/useEcharts'
+import { usePageStateCache } from '@/composables/usePageStateCache'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime, formatServerDateTimeInput } from '@/shared/formatters'
+import { stringOrFallback } from '@/shared/pageStateSanitizers'
 import type { DatabaseStorageSnapshotSummary, NonBusinessDataCleanupResult, TableStorageOverview } from '@/types/domain'
 
 import TableMonitorCleanupModal from './TableMonitorCleanupModal.vue'
 import {
   buildTableMonitorHistoryChartOption,
   databaseRoleColor,
+  databaseRoleDetailLabel,
   databaseRoleLabel,
   formatBytes,
   formatGrowthBytes,
@@ -215,11 +222,21 @@ import {
   totalDatabaseBytes
 } from './tableMonitorDisplay'
 
+interface TableMonitorPageState {
+  historyRange: [string, string] | null
+  keyword: string
+}
+
 const columns = tableMonitorColumns
+const pageStateCache = usePageStateCache<TableMonitorPageState>(undefined, defaultTableMonitorPageState, {
+  sanitize: sanitizeTableMonitorPageState,
+  version: 1
+})
+const initialPageState = pageStateCache.read()
 
 const loading = ref(false)
-const keyword = ref('')
-const historyRange = ref<[Dayjs, Dayjs] | undefined>(defaultHistoryRange())
+const keyword = ref(initialPageState.keyword)
+const historyRange = ref<[Dayjs, Dayjs] | undefined>(parseCachedHistoryRange(initialPageState.historyRange))
 const overview = ref<TableStorageOverview>()
 const cleanupModalOpen = ref(false)
 const cleanupSubmitting = ref(false)
@@ -309,11 +326,7 @@ async function submitNonBusinessDataCleanup() {
   }
   cleanupSubmitting.value = true
   try {
-    const result = await api.tableMonitor.cleanupNonBusinessData({
-      cutoffAt,
-      batchSize: 10000,
-      maxBatches: 100
-    })
+    const result = await api.tableMonitor.cleanupNonBusinessData({ cutoffAt })
     cleanupResult.value = result
     if (result.queued) {
       message.success('非业务数据清理任务已提交后台')
@@ -338,8 +351,10 @@ function handleFilterChange() {
 }
 
 function resetFilters() {
-  keyword.value = ''
-  historyRange.value = defaultHistoryRange()
+  const defaults = defaultTableMonitorPageState()
+  keyword.value = defaults.keyword
+  historyRange.value = parseCachedHistoryRange(defaults.historyRange)
+  pageStateCache.clear()
   void loadData()
 }
 
@@ -354,6 +369,54 @@ function defaultHistoryRange(): [Dayjs, Dayjs] {
   return [dayjs().subtract(1, 'month').startOf('day'), dayjs().endOf('day')]
 }
 
+function defaultTableMonitorPageState(): TableMonitorPageState {
+  const range = defaultHistoryRange()
+  return {
+    historyRange: [formatDayKey(range[0]), formatDayKey(range[1])],
+    keyword: ''
+  }
+}
+
+function sanitizeTableMonitorPageState(value: unknown, fallback: TableMonitorPageState): TableMonitorPageState {
+  const source = value && typeof value === 'object' ? value as Partial<TableMonitorPageState> : {}
+  return {
+    historyRange: source.historyRange === null ? null : sanitizeCachedHistoryRange(source.historyRange) ?? fallback.historyRange,
+    keyword: stringOrFallback(source.keyword, fallback.keyword)
+  }
+}
+
+function sanitizeCachedHistoryRange(value: unknown): [string, string] | undefined {
+  if (!Array.isArray(value) || value.length !== 2) return undefined
+  const [start, end] = value
+  if (typeof start !== 'string' || typeof end !== 'string') return undefined
+  const startDate = dayjs(start, 'YYYY-MM-DD', true)
+  const endDate = dayjs(end, 'YYYY-MM-DD', true)
+  if (!startDate.isValid() || !endDate.isValid() || startDate.isAfter(endDate, 'day')) return undefined
+  return [formatDayKey(startDate), formatDayKey(endDate)]
+}
+
+function parseCachedHistoryRange(value: [string, string] | null): [Dayjs, Dayjs] | undefined {
+  if (!value) return undefined
+  const start = dayjs(value[0], 'YYYY-MM-DD', true)
+  const end = dayjs(value[1], 'YYYY-MM-DD', true)
+  return start.isValid() && end.isValid() && !start.isAfter(end, 'day')
+    ? [start.startOf('day'), end.startOf('day')]
+    : defaultHistoryRange()
+}
+
+function formatDayKey(value: Dayjs): string {
+  return value.format('YYYY-MM-DD')
+}
+
+function snapshotPageState(): TableMonitorPageState {
+  return {
+    historyRange: historyRange.value ? [formatDayKey(historyRange.value[0]), formatDayKey(historyRange.value[1])] : null,
+    keyword: keyword.value
+  }
+}
+
+watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
+
 function isDefaultHistoryRange(value: [Dayjs, Dayjs]) {
   const defaults = defaultHistoryRange()
   return value[0].isSame(defaults[0], 'day') && value[1].isSame(defaults[1], 'day')
@@ -363,25 +426,24 @@ function defaultCleanupCutoffAt() {
   return dayjs().subtract(7, 'day').endOf('day')
 }
 
-function renderHistoryChart() {
+async function renderHistoryChart() {
   if (!pageActive.value) return
-  void nextTick(() => {
-    if (!pageActive.value) return
-    if (!hasHistoryRows.value) {
-      disposeChart(historyChart)
-      return
-    }
-    const chart = ensureChartFromElement(historyChartElement.value, historyChart)
-    if (!chart) return
-    chart.setOption(buildTableMonitorHistoryChartOption({
-      rows: databaseHistoryRows.value,
-      roles: databaseSummaryRoles
-    }), { notMerge: true })
-  })
+  await nextTick()
+  if (!pageActive.value) return
+  if (!hasHistoryRows.value) {
+    disposeChart(historyChart)
+    return
+  }
+  const chart = await ensureChartFromElement(historyChartElement.value, historyChart, () => pageActive.value)
+  if (!chart || !pageActive.value) return
+  chart.setOption(buildTableMonitorHistoryChartOption({
+    rows: databaseHistoryRows.value,
+    roles: databaseSummaryRoles
+  }), { notMerge: true })
 }
 
-function renderHistoryCharts() {
-  renderHistoryChart()
+async function renderHistoryCharts() {
+  await renderHistoryChart()
 }
 
 function disposeHistoryCharts() {
@@ -412,14 +474,20 @@ function resizeHistoryChart() {
   width: 100%;
 }
 
-.database-summary-grid :deep(.ant-col) {
-  display: flex;
+.database-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 16px;
 }
 
 .database-summary-card {
   width: 100%;
   border: 1px solid #e8edf5;
-  border-radius: 14px;
+  border-radius: 8px;
+}
+
+.database-summary-card :deep(.ant-card-body) {
+  padding: 20px 18px;
 }
 
 .database-summary-head {
@@ -429,8 +497,13 @@ function resizeHistoryChart() {
   min-width: 0;
 }
 
+.database-role-tag {
+  flex: 0 0 auto;
+}
+
 .database-path {
   min-width: 0;
+  cursor: default;
   overflow: hidden;
   color: #64748b;
   font-family: Consolas, 'Courier New', monospace;
@@ -510,6 +583,18 @@ function resizeHistoryChart() {
   height: 340px;
 }
 
+@media (max-width: 1280px) {
+  .database-summary-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 900px) {
+  .database-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 768px) {
   .table-history-range {
     width: 100%;
@@ -517,6 +602,12 @@ function resizeHistoryChart() {
 
   .history-chart {
     height: 300px;
+  }
+}
+
+@media (max-width: 560px) {
+  .database-summary-grid {
+    grid-template-columns: 1fr;
   }
 }
 </style>

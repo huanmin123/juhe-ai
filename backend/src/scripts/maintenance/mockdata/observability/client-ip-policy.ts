@@ -25,21 +25,24 @@ export function createClientIpPolicyMockdata(created: CreatedMockdata): ClientIp
   const now = nowIso()
   const insertPolicy = database.prepare(`
     INSERT INTO client_ip_policies (
-      id, ip_hash, status, reason, expires_at, created_by_system_account_id,
+      id, ip_hash, policy_type, status, reason, expires_at, created_by_system_account_id,
       created_at, updated_at, disabled_at, disabled_by_system_account_id, disabled_reason
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
+  const policyTypes = rows.map((_, index) => index === 1 ? 'allowlist' : 'blacklist')
   database.exec('BEGIN')
   try {
     rows.forEach((row, index) => {
       const status = index % 4 === 3 ? 'disabled' : 'active'
+      const policyType = policyTypes[index]
       const createdAt = new Date(Date.now() - (index + 1) * 6 * 60 * minuteMs).toISOString()
       insertPolicy.run(
         `${idPrefix}client_ip_policy_${String(index + 1).padStart(2, '0')}`,
         row.ip_hash,
+        policyType,
         status,
-        index % 3 === 0 ? `${namePrefix}高错误率自动封禁样例` : `${namePrefix}公益接口异常流量观察`,
-        status === 'active' && index % 2 === 0 ? new Date(Date.now() + (index + 1) * dayMs).toISOString() : null,
+        policyType === 'allowlist' ? `${namePrefix}内部任务白名单样例` : index % 3 === 0 ? `${namePrefix}高错误率自动封禁样例` : `${namePrefix}公益接口异常流量观察`,
+        policyType === 'blacklist' && status === 'active' && index % 2 === 0 ? new Date(Date.now() + (index + 1) * dayMs).toISOString() : null,
         created.users.admin.id,
         createdAt,
         now,
@@ -55,6 +58,7 @@ export function createClientIpPolicyMockdata(created: CreatedMockdata): ClientIp
   }
 
   const hits = rows.flatMap((row, index) => {
+    if (policyTypes[index] === 'allowlist') return []
     const policyId = `${idPrefix}client_ip_policy_${String(index + 1).padStart(2, '0')}`
     return Array.from({ length: Math.min(14, Math.max(4, Math.floor(index + 4))) }, (_, dayIndex) => ({
       ipHash: row.ip_hash,

@@ -172,7 +172,7 @@ async function loadAccountSystemAccountIdsAsync(client: DatabaseClient, accountI
   const output = new Map<string, string>()
   for (const chunk of chunkValues(ids, 900)) {
     const rows = await client.query<{ id?: string; system_account_id?: string }>(
-      `SELECT id, system_account_id FROM juhe_business.accounts WHERE id = ANY(?)`,
+      `SELECT id, system_account_id FROM juhe_business.accounts WHERE id = ANY(?::text[])`,
       [chunk]
     )
     for (const row of rows) {

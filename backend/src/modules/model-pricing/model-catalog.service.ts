@@ -22,13 +22,21 @@ import {
   type ProviderModelApiProtocol,
   type ProviderModelPricing
 } from './model-pricing.service.js'
-import { OPENAI_COMPATIBLE_PROVIDER_CODE, normalizeProviderToken } from '../../domain/provider-protocol.js'
+import {
+  DEEPSEEK_PROVIDER_CODE,
+  GEMINI_PROVIDER_CODE,
+  GLM_PROVIDER_CODE,
+  GPT_VENDOR_CODE,
+  OPENAI_COMPATIBLE_PROVIDER_CODE,
+  normalizeProviderToken
+} from '../../domain/provider-protocol.js'
 import { listOpenAIProtocolProviderCodes, listOpenAIProtocolProviderCodesAsync } from '../../storage/provider.repository.js'
-import { createAppCache, createSharedJsonCache } from '../../shared/cache.js'
+import { clearSharedJsonCacheInBackground, createAppCache, createSharedJsonCache } from '../../shared/cache.js'
 import { registerGatewayRuntimeCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
 import { modelPricingProviderDriverForProvider } from './provider-driver.registry.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from '../../storage/sqlite-read-worker-pool.js'
 
 export type ModelCatalogScope = 'built_in' | CustomProviderModelScope
 
@@ -130,7 +138,18 @@ const providerModelCatalogSharedCache = createSharedJsonCache<ProviderModelCatal
   ttlMs: modelCatalogCacheTtlMs
 })
 
+const postgresSyncOpenAIProtocolProviderCodes = [
+  GPT_VENDOR_CODE,
+  DEEPSEEK_PROVIDER_CODE,
+  GLM_PROVIDER_CODE,
+  GEMINI_PROVIDER_CODE,
+  OPENAI_COMPATIBLE_PROVIDER_CODE
+] as const
+
 export function listProviderModelCatalog(options: ModelCatalogListOptions): ProviderModelCatalogItem[] {
+  if (runtimeConfig.databaseDriver === 'postgres' || runtimeConfig.cacheDriver === 'redis') {
+    throw new Error('高性能模式禁止同步读取模型目录，必须使用 listProviderModelCatalogAsync')
+  }
   const cacheKey = modelCatalogCacheKey(options)
   const cached = providerModelCatalogCache.get(cacheKey)
   if (cached) {
@@ -141,11 +160,23 @@ export function listProviderModelCatalog(options: ModelCatalogListOptions): Prov
   return cloneProviderModelCatalogItems(catalog)
 }
 
+export function listProviderModelCatalogReadOnly(options: ModelCatalogListOptions): ProviderModelCatalogItem[] {
+  return cloneProviderModelCatalogItems(buildProviderModelCatalog(options))
+}
+
 export async function listProviderModelCatalogAsync(options: ModelCatalogListOptions): Promise<ProviderModelCatalogItem[]> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_provider_model_catalog_read_only',
+      options
+    })
+  }
   const cacheKey = modelCatalogCacheKey(options)
-  const cached = providerModelCatalogCache.get(cacheKey)
-  if (cached) {
-    return cloneProviderModelCatalogItems(cached)
+  if (runtimeConfig.cacheDriver !== 'redis') {
+    const cached = providerModelCatalogCache.get(cacheKey)
+    if (cached) {
+      return cloneProviderModelCatalogItems(cached)
+    }
   }
   const sharedCached = await getProviderModelCatalogSharedCacheEntry(cacheKey)
   if (sharedCached) {
@@ -158,14 +189,15 @@ export async function listProviderModelCatalogAsync(options: ModelCatalogListOpt
 }
 
 function buildProviderModelCatalog(options: ModelCatalogListOptions): ProviderModelCatalogItem[] {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    throw new Error('PostgreSQL 模式禁止同步构建模型目录，必须使用 buildProviderModelCatalogAsync')
+  }
   const sourceProviderCodes = modelCatalogSourceProviderCodes(options.providerCode)
   const builtInSourceProviderCodes = modelCatalogBuiltInSourceProviderCodes(options.providerCode, sourceProviderCodes)
   const builtIn = builtInSourceProviderCodes.flatMap((providerCode) => listProviderModelPricing(providerCode)
     .filter((item) => item.catalogVisible)
     .map(toBuiltInCatalogItem))
-  const custom = runtimeConfig.databaseDriver === 'postgres'
-    ? []
-    : sourceProviderCodes.flatMap((providerCode) => listCustomProviderModelsForCatalog({
+  const custom = sourceProviderCodes.flatMap((providerCode) => listCustomProviderModelsForCatalog({
       providerCode,
       systemAccountId: options.systemAccountId,
       includeInactive: options.includeInactive
@@ -267,12 +299,29 @@ export function estimateCatalogCostUsd(input: CostInput & { systemAccountId?: st
   if (!pricing || !hasAnyCostDimension(input)) {
     return undefined
   }
-  const breakdown = buildCatalogCostBreakdown({ ...input, model: pricing.model })
+  const breakdown = buildCatalogCostBreakdownFromPricing(pricing, { ...input, model: pricing.model })
+  return breakdown?.accountChargeUsd
+}
+
+export async function estimateCatalogCostUsdAsync(input: CostInput & { systemAccountId?: string }): Promise<number | undefined> {
+  const pricing = await resolveCatalogPricingAsync(input)
+  if (!pricing || !hasAnyCostDimension(input)) {
+    return undefined
+  }
+  const breakdown = buildCatalogCostBreakdownFromPricing(pricing, { ...input, model: pricing.model })
   return breakdown?.accountChargeUsd
 }
 
 export function estimateCatalogCacheReadCostUsd(input: CostInput & { systemAccountId?: string }): number | undefined {
   const pricing = resolveCatalogPricing(input)
+  if (!pricing || input.cacheReadTokens === undefined) return undefined
+  const cachedInputPrice = perToken(pricing.cachedInputUsdPer1M) ?? perToken(pricing.inputUsdPer1M)
+  if (cachedInputPrice === undefined) return undefined
+  return roundCost(Math.max(input.cacheReadTokens, 0) * cachedInputPrice)
+}
+
+export async function estimateCatalogCacheReadCostUsdAsync(input: CostInput & { systemAccountId?: string }): Promise<number | undefined> {
+  const pricing = await resolveCatalogPricingAsync(input)
   if (!pricing || input.cacheReadTokens === undefined) return undefined
   const cachedInputPrice = perToken(pricing.cachedInputUsdPer1M) ?? perToken(pricing.inputUsdPer1M)
   if (cachedInputPrice === undefined) return undefined
@@ -294,14 +343,45 @@ export function estimateCatalogCacheWriteCostUsd(input: CostInput & { systemAcco
   )
 }
 
+export async function estimateCatalogCacheWriteCostUsdAsync(input: CostInput & { systemAccountId?: string }): Promise<number | undefined> {
+  const pricing = await resolveCatalogPricingAsync(input)
+  if (!pricing || (input.cacheWriteTokens === undefined && input.cacheWrite1hTokens === undefined)) return undefined
+  const cacheWritePrice = perToken(pricing.cacheWriteUsdPer1M)
+  const cacheWrite1hPrice = perToken(pricing.cacheWrite1hUsdPer1M) ?? cacheWritePrice
+  if (cacheWritePrice === undefined && cacheWrite1hPrice === undefined) return undefined
+  const cacheWriteTokens = Math.max(input.cacheWriteTokens ?? 0, 0)
+  const cacheWrite1hTokens = normalizedCacheWrite1hTokens(input, cacheWriteTokens)
+  const cacheWriteStandardTokens = Math.max(cacheWriteTokens - cacheWrite1hTokens, 0)
+  return roundCost(
+    cacheWriteStandardTokens * (cacheWritePrice ?? 0)
+    + cacheWrite1hTokens * (cacheWrite1hPrice ?? 0)
+  )
+}
+
 export function resolveCatalogPricingModel(input: { providerCode: string; model?: string; systemAccountId?: string }): string | undefined {
   return resolveCatalogPricing(input)?.model
+}
+
+export async function resolveCatalogPricingModelAsync(input: { providerCode: string; model?: string; systemAccountId?: string }): Promise<string | undefined> {
+  return (await resolveCatalogPricingAsync(input))?.model
 }
 
 export function buildCatalogCostBreakdown(input: CostInput & { systemAccountId?: string; costUsd?: number }): ProviderCostBreakdown | undefined {
   const pricing = resolveCatalogPricing(input)
   if (!pricing) return undefined
+  return buildCatalogCostBreakdownFromPricing(pricing, input)
+}
 
+export async function buildCatalogCostBreakdownAsync(input: CostInput & { systemAccountId?: string; costUsd?: number }): Promise<ProviderCostBreakdown | undefined> {
+  const pricing = await resolveCatalogPricingAsync(input)
+  if (!pricing) return undefined
+  return buildCatalogCostBreakdownFromPricing(pricing, input)
+}
+
+function buildCatalogCostBreakdownFromPricing(
+  pricing: ProviderModelCatalogItem,
+  input: CostInput & { systemAccountId?: string; costUsd?: number }
+): ProviderCostBreakdown | undefined {
   const inputPrice = perToken(pricing.inputUsdPer1M)
   const outputPrice = perToken(pricing.outputUsdPer1M)
   const cachedInputPrice = perToken(pricing.cachedInputUsdPer1M) ?? inputPrice
@@ -367,6 +447,18 @@ export function buildCatalogCostBreakdown(input: CostInput & { systemAccountId?:
 function resolveCatalogPricing(input: CostInput & { systemAccountId?: string }): ProviderModelCatalogItem | undefined {
   if (!input.model) return undefined
   const catalog = listProviderModelCatalog({
+    providerCode: input.providerCode,
+    systemAccountId: input.systemAccountId
+  })
+  const item = findCatalogItem(catalog, input.model)
+  if (!item) return undefined
+  if (!item.pricingModel) return item
+  return findCatalogItem(catalog, item.pricingModel)
+}
+
+async function resolveCatalogPricingAsync(input: CostInput & { systemAccountId?: string }): Promise<ProviderModelCatalogItem | undefined> {
+  if (!input.model) return undefined
+  const catalog = await listProviderModelCatalogAsync({
     providerCode: input.providerCode,
     systemAccountId: input.systemAccountId
   })
@@ -460,7 +552,7 @@ function toCustomCatalogItem(item: CustomProviderModelRecord): ProviderModelCata
     supportsPromptCaching: item.cachedInputUsdPer1M !== undefined,
     supportsServiceTier: false,
     catalogVisible: true,
-    source: 'custom-personal',
+    source: item.scope === 'global' ? 'custom-global' : 'custom-personal',
     scope: item.scope,
     status: item.status,
     systemAccountId: item.systemAccountId,
@@ -531,6 +623,7 @@ function codexContextWindow(item: ProviderModelCatalogItem): number {
 
 function catalogPriority(item: ProviderModelCatalogItem): number {
   if (item.scope === 'personal') return 3
+  if (item.scope === 'global') return 2
   return 1
 }
 
@@ -570,6 +663,7 @@ function modelCatalogSourceProviderCodes(providerCode: string): string[] {
   const normalizedProviderCode = normalizeProviderToken(providerCode)
   if (!normalizedProviderCode) return []
   if (normalizedProviderCode !== OPENAI_COMPATIBLE_PROVIDER_CODE) return [normalizedProviderCode]
+  if (runtimeConfig.databaseDriver === 'postgres') return [...postgresSyncOpenAIProtocolProviderCodes]
 
   const openAIProtocolProviderCodes = listOpenAIProtocolProviderCodes()
     .map((code) => normalizeProviderToken(code))
@@ -669,41 +763,28 @@ function sumCostParts(...parts: Array<number | undefined>): number | undefined {
 
 async function getProviderModelCatalogSharedCacheEntry(cacheKey: string): Promise<ProviderModelCatalogItem[] | undefined> {
   if (runtimeConfig.cacheDriver !== 'redis') return undefined
-  try {
-    const cached = await providerModelCatalogSharedCache.get(cacheKey)
-    return cached ? cloneProviderModelCatalogItems(cached) : undefined
-  } catch (error) {
-    logger.warn(errorLogFields(error, {
-      event: 'model_catalog_shared_cache_read_failed'
-    }), '读取模型目录 Redis 共享缓存失败，继续读取数据库')
-    return undefined
-  }
+  const cached = await providerModelCatalogSharedCache.get(cacheKey)
+  return cached ? cloneProviderModelCatalogItems(cached) : undefined
 }
 
 async function setProviderModelCatalogCacheEntryAsync(cacheKey: string, value: ProviderModelCatalogItem[]): Promise<void> {
   const cached = cloneProviderModelCatalogItems(value)
-  providerModelCatalogCache.set(cacheKey, cloneProviderModelCatalogItems(cached))
   await setProviderModelCatalogSharedCacheEntry(cacheKey, cached)
+  providerModelCatalogCache.set(cacheKey, cloneProviderModelCatalogItems(cached))
 }
 
 async function setProviderModelCatalogSharedCacheEntry(cacheKey: string, value: ProviderModelCatalogItem[]): Promise<void> {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  try {
-    await providerModelCatalogSharedCache.set(cacheKey, cloneProviderModelCatalogItems(value), { ttlMs: modelCatalogCacheTtlMs })
-  } catch (error) {
-    logger.warn(errorLogFields(error, {
-      event: 'model_catalog_shared_cache_write_failed'
-    }), '写入模型目录 Redis 共享缓存失败')
-  }
+  await providerModelCatalogSharedCache.set(cacheKey, cloneProviderModelCatalogItems(value), { ttlMs: modelCatalogCacheTtlMs })
 }
 
 function clearProviderModelCatalogSharedCache(): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  void providerModelCatalogSharedCache.clear().catch((error) => {
-    logger.warn(errorLogFields(error, {
-      event: 'model_catalog_shared_cache_clear_failed'
-    }), '清理模型目录 Redis 共享缓存失败')
-  })
+  clearSharedJsonCacheInBackground(
+    providerModelCatalogSharedCache,
+    'provider_model_catalog_shared_cache_clear_failed',
+    '供应商模型目录 Redis shared cache 清理失败'
+  )
 }
 
 function clearProviderModelCatalogCaches(): void {

@@ -1,15 +1,15 @@
 import { normalizeOpenAIAccountClientCompatibility } from '../../domain/account-client-compatibility.js'
 import { normalizeOpenAIEndpointModesForRuntime } from '../../domain/openai-endpoint-modes.js'
 import { normalizeAnthropicEndpointModesForRuntime } from '../../domain/anthropic-endpoint-modes.js'
-import { isAnthropicProtocolProfile } from '../../domain/provider-protocol.js'
-import type { AccountClientCompatibility, AccountSummary, AccountTestResult } from '../../domain/types.js'
+import { normalizeGeminiEndpointModesForRuntime } from '../../domain/gemini-endpoint-modes.js'
+import { isAnthropicProtocolProfile, isGeminiProtocolProfile, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
+import type { AccountClientCompatibility, AccountSummary, AccountSupportedEndpointMode, AccountTestResult } from '../../domain/types.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { createTraceId, withRequestContext, type RequestContext } from '../../shared/request-context.js'
 import {
-  findProviderDefaultTestModel,
-  findAccountForTest,
+  findProviderDefaultTestModelAsync,
+  findAccountForTestAsync,
   findOpenAIAccountForGroupAsync,
-  type RecentOpenAIRequestShape,
   type OpenAIAccountSecret
 } from '../../storage/repositories.js'
 import type { AccessScope } from '../../storage/access-scope.js'
@@ -47,6 +47,7 @@ import {
   accountTestDefaultPrompt,
   accountTestModelsPath,
   createAnthropicTestRequest,
+  createGeminiTestRequest,
   createOpenAITestRequest
 } from './account-test-request.js'
 
@@ -56,12 +57,11 @@ type AccountTestInput = {
   signal?: AbortSignal
   groupId?: string
   systemAccountId?: string
-  requestShape?: RecentOpenAIRequestShape
+  testEndpointMode?: AccountSupportedEndpointMode
   diagnostics?: 'full' | 'limited'
   trafficSource?: OpenAIGatewayTrafficSource
   gatewaySettingsOverride?: Partial<GatewaySettings>
   disableAccountStateMutation?: boolean
-  clientCompatibility?: AccountClientCompatibility
   candidateAccount?: OpenAIAccountSecret
   onDiagnosticAttemptProgress?: AccountDiagnosticAttemptProgressHandler
   findAccountForTest?: (accountId: string, access?: AccessScope) => AccountSummary | undefined | Promise<AccountSummary | undefined>
@@ -128,11 +128,13 @@ export async function testOpenAIAccount(
   const startedAt = Date.now()
   const limitedDiagnostics = input.diagnostics === 'limited'
   const anthropicProtocol = isAnthropicProtocolProfile(account)
-  let testRequest: ReturnType<typeof createAnthropicTestRequest> | ReturnType<typeof createOpenAITestRequest> | undefined
+  const geminiProtocol = isGeminiProtocolProfile(account)
+  let testEndpointMode: AccountSupportedEndpointMode | undefined
+  let testRequest: ReturnType<typeof createAnthropicTestRequest> | ReturnType<typeof createGeminiTestRequest> | ReturnType<typeof createOpenAITestRequest> | undefined
   let requestBody: Record<string, unknown> | undefined
   let requestUrl: string | undefined
-  // Anthropic 账户不使用 OpenAI 的 clientCompatibility 规范化，避免写入无意义的 OpenAI 格式值
-  const accountClientCompatibility = anthropicProtocol
+  // 非 OpenAI v1 账户不使用 OpenAI 的 clientCompatibility 规范化，避免写入无意义的 OpenAI 格式值
+  const accountClientCompatibility = anthropicProtocol || geminiProtocol
     ? 'openai_standard' as const
     : normalizeOpenAIAccountClientCompatibility(
         account.providerCode,
@@ -141,19 +143,14 @@ export async function testOpenAIAccount(
         account.clientCompatibility,
         account
       )
-  const clientCompatibility = anthropicProtocol
-    ? 'openai_standard' as const
-    : normalizeOpenAIAccountClientCompatibility(
-        account.providerCode,
-        account.type,
-        input.clientCompatibility ?? accountClientCompatibility,
-        accountClientCompatibility,
-        account
-      )
+  let clientCompatibility = accountClientCompatibility
   const modelsUrl = accountTestModelsPath
   const traceId = createTraceId()
 
   try {
+    const supportedEndpointModes = normalizedAccountTestEndpointModes(account)
+    testEndpointMode = resolveAccountTestEndpointMode(account, supportedEndpointModes, input.testEndpointMode)
+    clientCompatibility = accountTestClientCompatibility(account, testEndpointMode, accountClientCompatibility)
     const resolved = await resolveAccountTestCandidate(account, {
       groupId: stringValue(input.groupId),
       systemAccountId: stringValue(input.systemAccountId),
@@ -161,38 +158,30 @@ export async function testOpenAIAccount(
       candidateAccount: input.candidateAccount,
       findOpenAIAccountForGroup: input.findOpenAIAccountForGroup
     })
-    const model = explicitModel || defaultAccountTestModel(account, input.systemAccountId)
-    // Anthropic 账户直接规范化 Anthropic 端点模式；OpenAI 账户规范化 OpenAI 端点模式
-    const gatewaySupportedEndpointModes = anthropicProtocol
-      ? normalizeAnthropicEndpointModesForRuntime(account.credentials.supported_endpoint_modes, {
-        providerCode: account.providerCode,
-        accountType: account.type,
-        protocolCode: account.protocolCode,
-        protocolVersion: account.protocolVersion
-      })
-      : normalizeOpenAIEndpointModesForRuntime(account.credentials.supported_endpoint_modes, {
-        providerCode: account.providerCode,
-        providerProtocolProfileId: account.providerProtocolProfileId,
-        accountType: account.type,
-        clientCompatibility
-      })
+    const model = explicitModel || await defaultAccountTestModelAsync(account, input.systemAccountId)
     testRequest = anthropicProtocol
       ? createAnthropicTestRequest({
         explicitModel,
         fallbackModel: model,
         prompt,
-        supportedEndpointModes: gatewaySupportedEndpointModes
+        supportedEndpointModes,
+        testEndpointMode
       })
-      : createOpenAITestRequest({
-        explicitModel,
-        fallbackModel: model,
-        prompt,
-        isOAuth: account.type === 'oauth',
-        clientCompatibility,
-        providerProtocolProfileId: account.providerProtocolProfileId,
-        supportedEndpointModes: gatewaySupportedEndpointModes,
-        requestShape: input.requestShape
-      })
+      : geminiProtocol
+        ? createGeminiTestRequest({
+          explicitModel,
+          fallbackModel: model,
+          prompt,
+          testEndpointMode
+        })
+        : createOpenAITestRequest({
+          explicitModel,
+          fallbackModel: model,
+          prompt,
+          isOAuth: account.type === 'oauth',
+          clientCompatibility,
+          testEndpointMode
+        })
     requestBody = testRequest.body
     const requestBodyText = JSON.stringify(requestBody)
     requestUrl = testRequest.path
@@ -245,13 +234,19 @@ export async function testOpenAIAccount(
     const diagnosticAttemptText = diagnosticLastAttempt?.responseBodyText?.trim() ?? ''
     const upstreamMessage = anthropicProtocol
       ? parseAnthropicUpstreamMessage(diagnosticAttemptText) ?? parseAnthropicUpstreamMessage(responseText) ?? parseOpenAIUpstreamMessage(diagnosticAttemptText, { rawFallback: true }) ?? parseOpenAIUpstreamMessage(responseText, { rawFallback: true })
+      : geminiProtocol
+        ? parseGeminiUpstreamMessage(diagnosticAttemptText) ?? parseGeminiUpstreamMessage(responseText) ?? parseOpenAIUpstreamMessage(diagnosticAttemptText, { rawFallback: true }) ?? parseOpenAIUpstreamMessage(responseText, { rawFallback: true })
       : parseOpenAIUpstreamMessage(diagnosticAttemptText, { rawFallback: true }) ?? parseOpenAIUpstreamMessage(responseText, { rawFallback: true })
     const upstreamErrorCode = parseUpstreamErrorCode(diagnosticAttemptText) ?? parseUpstreamErrorCode(responseText)
     const streamFailureMessage = anthropicProtocol
       ? parseAnthropicStreamFailureMessage(responseText) ?? parseOpenAIStreamFailureMessage(responseText)
+      : geminiProtocol
+        ? parseGeminiStreamFailureMessage(responseText) ?? parseOpenAIStreamFailureMessage(responseText)
       : parseOpenAIStreamFailureMessage(responseText)
     const outputText = anthropicProtocol
       ? extractAnthropicResponseOutputText(responseText)
+      : geminiProtocol
+        ? extractGeminiResponseOutputText(responseText)
       : extractOpenAIResponseOutputText(responseText)
     const success = response.statusCode >= 200 && response.statusCode < 300 && !streamFailureMessage
     const diagnosticStatusCode = accountTestDiagnosticStatusCode(response.statusCode, success, diagnosticLastAttempt)
@@ -266,15 +261,14 @@ export async function testOpenAIAccount(
       protocolVersion: account.protocolVersion,
       type: account.type,
       traceId,
-      clientCompatibility: accountClientCompatibility,
-      testClientCompatibility: clientCompatibility,
       success,
       statusCode: diagnosticStatusCode,
       errorCode: success ? undefined : upstreamErrorCode,
       message: success
-        ? accountTestSuccessMessage(anthropicProtocol, responseTruncated, requestUrl)
+        ? accountTestSuccessMessage(account, responseTruncated, requestUrl)
         : proxyFailureMessage || upstreamMessage || streamFailureMessage || accountTestHttpFailureMessage(diagnosticStatusCode, response.statusCode),
       model: testRequest?.model,
+      testEndpointMode,
       requestUrl,
       requestBody,
       responseHeaders: response.headersObject(),
@@ -293,7 +287,7 @@ export async function testOpenAIAccount(
     }), limitedDiagnostics)
   } catch (error) {
     const normalizedError = input.signal?.aborted ? accountTestAbortError(input.signal) : error
-    const message = normalizedError instanceof Error ? normalizedError.message : accountTestFailureMessage(anthropicProtocol, requestUrl)
+    const message = normalizedError instanceof Error ? normalizedError.message : accountTestFailureMessage(account, requestUrl)
     const accountFailureEligible = accountTestFailureEligible(normalizedError)
     return accountTestResultWithDiagnosticsMode(sanitizeAccountTestResult({
       accountId: account.id,
@@ -304,11 +298,10 @@ export async function testOpenAIAccount(
       protocolVersion: account.protocolVersion,
       type: account.type,
       traceId,
-      clientCompatibility: accountClientCompatibility,
-      testClientCompatibility: clientCompatibility,
       success: false,
       message,
       model: testRequest?.model,
+      testEndpointMode,
       requestUrl,
       requestBody,
       responseText: message,
@@ -327,19 +320,107 @@ async function loadAccountForTest(
   accountId: string,
   access?: AccessScope
 ): Promise<AccountSummary | undefined> {
-  const reader = input.findAccountForTest ?? findAccountForTest
+  const reader = input.findAccountForTest ?? findAccountForTestAsync
   return await reader(accountId, access)
 }
 
-export function preferredSystemAccountTestModel(account: Pick<AccountSummary, 'providerCode' | 'supportedModels' | 'lastSuccessfulTestModel' | 'systemAccountId' | 'ownerSystemAccountId' | 'bindingSystemAccountId'>): string {
+export async function preferredSystemAccountTestModelAsync(account: Pick<AccountSummary, 'providerCode' | 'supportedModels' | 'lastSuccessfulTestModel' | 'systemAccountId' | 'ownerSystemAccountId' | 'bindingSystemAccountId'>): Promise<string> {
   return stringValue(account.lastSuccessfulTestModel)
-    || findProviderDefaultTestModel(account.providerCode, accountDefaultPreferenceSystemAccountId(account))
+    || await findProviderDefaultTestModelAsync(account.providerCode, accountDefaultPreferenceSystemAccountId(account))
     || account.supportedModels?.map((model) => stringValue(model)).find(Boolean)
     || ''
 }
 
 function sanitizeAccountTestResult(result: AccountTestResult): AccountTestResult {
   return sanitizeDiagnosticPayload(result)
+}
+
+function normalizedAccountTestEndpointModes(account: AccountSummary): AccountSupportedEndpointMode[] {
+  if (isAnthropicProtocolProfile(account)) {
+    return normalizeAnthropicEndpointModesForRuntime(account.credentials.supported_endpoint_modes, {
+      providerCode: account.providerCode,
+      accountType: account.type,
+      protocolCode: account.protocolCode,
+      protocolVersion: account.protocolVersion,
+      providerProtocolProfileId: account.providerProtocolProfileId
+    }).filter((mode) => mode === 'messages_json' || mode === 'messages_sse')
+  }
+  if (isGeminiProtocolProfile(account)) {
+    return normalizeGeminiEndpointModesForRuntime(account.credentials.supported_endpoint_modes, {
+      providerCode: account.providerCode,
+      accountType: account.type,
+      protocolCode: account.protocolCode,
+      protocolVersion: account.protocolVersion,
+      providerProtocolProfileId: account.providerProtocolProfileId
+    }).filter((mode) => mode === 'generate_content_json' || mode === 'generate_content_sse')
+  }
+  if (isOpenAIProtocolProfile(account)) {
+    return normalizeOpenAIEndpointModesForRuntime(account.credentials.supported_endpoint_modes, {
+      providerCode: account.providerCode,
+      providerProtocolProfileId: account.providerProtocolProfileId,
+      accountType: account.type,
+      clientCompatibility: account.clientCompatibility
+    })
+  }
+  return []
+}
+
+function resolveAccountTestEndpointMode(
+  account: AccountSummary,
+  supportedModes: AccountSupportedEndpointMode[],
+  requestedMode?: AccountSupportedEndpointMode
+): AccountSupportedEndpointMode {
+  const allowedModes = accountTestEndpointModeOrder(account).filter((mode) => supportedModes.includes(mode))
+  if (requestedMode) {
+    if (!accountTestEndpointModeOrder(account).includes(requestedMode)) {
+      throw new AccountTestConfigurationError(`当前账户协议不支持该测试请求形态：${requestedMode}`)
+    }
+    if (!allowedModes.includes(requestedMode)) {
+      throw new AccountTestConfigurationError(`测试请求形态不在账户接口能力限制中：${requestedMode}`)
+    }
+    return requestedMode
+  }
+  const mode = allowedModes[0]
+  if (!mode) {
+    throw new AccountTestConfigurationError('账户接口能力限制中没有可用于连接测试的请求形态')
+  }
+  return mode
+}
+
+function accountTestEndpointModeOrder(account: AccountSummary): AccountSupportedEndpointMode[] {
+  if (isAnthropicProtocolProfile(account)) {
+    return ['messages_sse', 'messages_json']
+  }
+  if (isGeminiProtocolProfile(account)) {
+    return ['generate_content_sse', 'generate_content_json']
+  }
+  if (account.type === 'oauth') {
+    return ['responses_sse', 'responses_json']
+  }
+  return ['chat_sse', 'responses_sse', 'chat_json', 'responses_json']
+}
+
+function accountTestClientCompatibility(
+  account: AccountSummary,
+  testEndpointMode: AccountSupportedEndpointMode,
+  accountClientCompatibility: AccountClientCompatibility
+): AccountClientCompatibility {
+  if (!isOpenAIProtocolProfile(account)) {
+    return 'openai_standard'
+  }
+  if (testEndpointMode === 'chat_json' || testEndpointMode === 'chat_sse') {
+    return 'openai_standard'
+  }
+  if (account.type === 'oauth') {
+    return 'codex_responses'
+  }
+  return normalizeOpenAIAccountClientCompatibility(
+    account.providerCode,
+    account.type,
+    accountClientCompatibility,
+    account.clientCompatibility,
+    account
+  )
 }
 
 function accountTestDiagnosticStatusCode(downstreamStatusCode: number, success: boolean, lastAttempt?: UpstreamAttempt): number | undefined {
@@ -375,13 +456,12 @@ function accountTestResultWithDiagnosticsMode(result: AccountTestResult, limited
     protocolVersion: result.protocolVersion,
     type: result.type,
     traceId: result.traceId,
-    clientCompatibility: result.clientCompatibility,
-    testClientCompatibility: result.testClientCompatibility,
     success: result.success,
     statusCode: result.statusCode,
     errorCode: result.errorCode,
     message,
     model: result.model,
+    testEndpointMode: result.testEndpointMode,
     responseText: result.success ? undefined : message,
     responseTruncated: result.success ? result.responseTruncated : undefined,
     outputText: result.success ? result.outputText : undefined,
@@ -490,8 +570,8 @@ async function resolveAccountTestCandidate(account: AccountSummary, input: { gro
   }
 }
 
-function defaultAccountTestModel(account: AccountSummary, requestSystemAccountId?: string): string {
-  return findProviderDefaultTestModel(account.providerCode, stringValue(requestSystemAccountId) || accountDefaultPreferenceSystemAccountId(account))
+async function defaultAccountTestModelAsync(account: AccountSummary, requestSystemAccountId?: string): Promise<string> {
+  return await findProviderDefaultTestModelAsync(account.providerCode, stringValue(requestSystemAccountId) || accountDefaultPreferenceSystemAccountId(account))
     || account.supportedModels?.map((model) => stringValue(model)).find(Boolean)
     || ''
 }
@@ -539,19 +619,87 @@ function parseUpstreamErrorCode(bodyText: string): string | undefined {
   }
 }
 
-function accountTestSuccessMessage(anthropicProtocol: boolean, responseTruncated: boolean, requestUrl: string): string {
-  const protocolName = accountTestProtocolName(anthropicProtocol, requestUrl)
+function parseGeminiUpstreamMessage(bodyText: string): string | undefined {
+  for (const payload of parseGeminiPayloads(bodyText)) {
+    const error = objectValue(payload.error)
+    const message = stringValue(error?.message) || stringValue(payload.message)
+    if (message) return message
+  }
+  return undefined
+}
+
+function parseGeminiStreamFailureMessage(bodyText: string): string | undefined {
+  return parseGeminiUpstreamMessage(bodyText)
+}
+
+function extractGeminiResponseOutputText(bodyText: string): string | undefined {
+  const parts = parseGeminiPayloads(bodyText)
+    .flatMap((payload) => geminiCandidateTexts(payload))
+    .map((text) => text.trim())
+    .filter(Boolean)
+  return parts.length ? parts.join('') : undefined
+}
+
+function parseGeminiPayloads(bodyText: string): Record<string, unknown>[] {
+  const text = bodyText.trim()
+  if (!text) return []
+  const direct = parseJsonObject(text)
+  if (direct) return [direct]
+  const output: Record<string, unknown>[] = []
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith('data:')) continue
+    const data = trimmed.slice(5).trim()
+    if (!data || data === '[DONE]') continue
+    const parsed = parseJsonObject(data)
+    if (parsed) output.push(parsed)
+  }
+  return output
+}
+
+function parseJsonObject(text: string): Record<string, unknown> | undefined {
+  try {
+    const parsed = JSON.parse(text) as unknown
+    return objectValue(parsed)
+  } catch {
+    return undefined
+  }
+}
+
+function geminiCandidateTexts(payload: Record<string, unknown>): string[] {
+  const candidates = Array.isArray(payload.candidates) ? payload.candidates : []
+  const output: string[] = []
+  for (const candidate of candidates) {
+    const content = objectValue(objectValue(candidate)?.content)
+    const parts = Array.isArray(content?.parts) ? content.parts : []
+    for (const part of parts) {
+      const text = stringValue(objectValue(part)?.text)
+      if (text) output.push(text)
+    }
+  }
+  return output
+}
+
+function objectValue(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined
+}
+
+function accountTestSuccessMessage(account: AccountSummary, responseTruncated: boolean, requestUrl: string): string {
+  const protocolName = accountTestProtocolName(account, requestUrl)
   return responseTruncated
     ? `${protocolName} 测试通过（响应体过大，已截断展示）`
     : `${protocolName} 测试通过`
 }
 
-function accountTestFailureMessage(anthropicProtocol: boolean, requestUrl?: string): string {
-  return `${accountTestProtocolName(anthropicProtocol, requestUrl)} 测试失败`
+function accountTestFailureMessage(account: AccountSummary, requestUrl?: string): string {
+  return `${accountTestProtocolName(account, requestUrl)} 测试失败`
 }
 
-function accountTestProtocolName(anthropicProtocol: boolean, requestUrl?: string): string {
-  if (anthropicProtocol) return 'Anthropic Messages'
+function accountTestProtocolName(account: AccountSummary, requestUrl?: string): string {
+  if (isAnthropicProtocolProfile(account)) return 'Anthropic Messages'
+  if (isGeminiProtocolProfile(account)) return 'Gemini GenerateContent'
   return requestUrl?.includes('/chat/completions') ? 'OpenAI Chat Completions' : 'OpenAI Responses'
 }
 

@@ -7,7 +7,7 @@ import {
 } from '../../../domain/api-key-hybrid-routing.js'
 import type { ApiKeyHybridRoutingConfig } from '../../../domain/types.js'
 import { runtimeConfig } from '../../../config/runtime.js'
-import { createAppCache, createSharedJsonCache } from '../../../shared/cache.js'
+import { clearSharedJsonCacheInBackground, createAppCache, createSharedJsonCache } from '../../../shared/cache.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import type { GatewayApiKeyRow } from '../../../storage/repositories.js'
 import {
@@ -37,7 +37,7 @@ export interface HybridScoringResult {
   statusCode?: number
 }
 
-interface HybridScoringCacheEntry {
+export interface HybridScoringCacheEntry {
   level: number
   confidence?: number
   factors?: string[]
@@ -47,6 +47,7 @@ interface HybridScoringCacheEntry {
 const hybridScoringContextMaxBytes = 128 * 1024
 const hybridScoringRawBodyParseMaxBytes = hybridScoringContextMaxBytes
 const hybridScoringResponseMaxBytes = 2 * 1024 * 1024
+const hybridScoringMaxTokens = 240
 const hybridScoringCacheMaxEntries = 10_000
 const hybridScoringCacheMaxTtlMs = 60 * 60 * 1000
 
@@ -116,7 +117,7 @@ export async function scoreHybridGatewayRequest(input: {
     })
     if (dispatch.outcome === 'failed') {
       if (dispatch.shouldRecordUsage && dispatch.account && dispatch.groupId) {
-        recordHybridScoringAttempt({
+        await recordHybridScoringAttempt({
           traceId: input.traceId,
           clientIp: input.clientIp,
           systemAccountId: input.apiKeyRecord.system_account_id,
@@ -142,7 +143,7 @@ export async function scoreHybridGatewayRequest(input: {
       parsed = parseHybridScoringResponse(dispatch.responseBody)
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error)
-      recordHybridScoringAttempt({
+      await recordHybridScoringAttempt({
         traceId: input.traceId,
         clientIp: input.clientIp,
         systemAccountId: input.apiKeyRecord.system_account_id,
@@ -160,7 +161,7 @@ export async function scoreHybridGatewayRequest(input: {
         requestSnapshot: { model: input.config.scoringModel, contextBytes: Buffer.byteLength(context, 'utf8') },
         responseSnapshot: { statusCode: dispatch.statusCode, body: responseBodySnippet(dispatch.responseBody) }
       })
-      dispatch.finish({ success: false, errorCode: 'hybrid_scoring_failed', errorMessage })
+      await dispatch.finish({ success: false, errorCode: 'hybrid_scoring_failed', errorMessage })
       return failedScoringResult(input.config, 'hybrid_scoring_failed', errorMessage, dispatch.account.id, dispatch.statusCode)
     }
     const scoringResult: HybridScoringResult = {
@@ -175,7 +176,7 @@ export async function scoreHybridGatewayRequest(input: {
       statusCode: dispatch.statusCode
     }
     await rememberHybridScoringCacheResult(cacheKey, scoringResult, input.config.scoringCacheTtlSeconds)
-    recordHybridScoringAttempt({
+    await recordHybridScoringAttempt({
       traceId: input.traceId,
       clientIp: input.clientIp,
       systemAccountId: input.apiKeyRecord.system_account_id,
@@ -191,7 +192,7 @@ export async function scoreHybridGatewayRequest(input: {
       requestSnapshot: { model: input.config.scoringModel, contextBytes: Buffer.byteLength(context, 'utf8') },
       responseSnapshot: { statusCode: dispatch.statusCode, parsed }
     })
-    dispatch.finish({ success: true })
+    await dispatch.finish({ success: true })
     return scoringResult
   } catch (error) {
     return failedScoringResult(
@@ -214,6 +215,24 @@ export function clearHybridScoringCacheForTest(options: { clearShared?: boolean 
 export async function clearHybridScoringSharedCacheForTest(): Promise<void> {
   if (runtimeConfig.cacheDriver !== 'redis') return
   await hybridScoringSharedCache.clear()
+}
+
+export async function setHybridScoringSharedCacheEntryForTest(
+  cacheKey: string,
+  entry: HybridScoringCacheEntry,
+  ttlMs = 300_000
+): Promise<void> {
+  if (runtimeConfig.cacheDriver !== 'redis') {
+    throw new Error('混合路由评分 shared cache 测试必须启用 Redis cache driver')
+  }
+  await setHybridScoringSharedCacheEntry(cacheKey, entry, ttlMs)
+}
+
+export async function getHybridScoringSharedCacheEntryForTest(cacheKey: string): Promise<HybridScoringCacheEntry | undefined> {
+  if (runtimeConfig.cacheDriver !== 'redis') {
+    throw new Error('混合路由评分 shared cache 测试必须启用 Redis cache driver')
+  }
+  return await getHybridScoringSharedCacheEntry(cacheKey)
 }
 
 async function parseHybridRequestBody(req: Request, timeoutMs: number, signal?: AbortSignal): Promise<Record<string, unknown> | undefined> {
@@ -249,7 +268,7 @@ function buildHybridScoringRequestBody(
     model,
     stream: false,
     temperature: 0,
-    max_tokens: 240,
+    max_tokens: hybridScoringMaxTokens,
     messages: [
       {
         role: 'system',
@@ -514,14 +533,7 @@ function hybridScoringCacheHitResult(entry: HybridScoringCacheEntry): HybridScor
 
 async function getHybridScoringSharedCacheEntry(cacheKey: string): Promise<HybridScoringCacheEntry | undefined> {
   if (runtimeConfig.cacheDriver !== 'redis') return undefined
-  try {
-    return await hybridScoringSharedCache.get(cacheKey)
-  } catch (error) {
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_hybrid_scoring_shared_cache_read_failed'
-    }), '读取混合路由评分 Redis 共享缓存失败，继续调用评分模型')
-    return undefined
-  }
+  return await hybridScoringSharedCache.get(cacheKey)
 }
 
 async function setHybridScoringSharedCacheEntry(
@@ -530,29 +542,30 @@ async function setHybridScoringSharedCacheEntry(
   ttlMs: number
 ): Promise<void> {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  try {
-    await hybridScoringSharedCache.set(cacheKey, entry, { ttlMs })
-  } catch (error) {
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_hybrid_scoring_shared_cache_write_failed'
-    }), '写入混合路由评分 Redis 共享缓存失败')
-  }
+  await hybridScoringSharedCache.set(cacheKey, entry, { ttlMs })
 }
 
 function clearHybridScoringSharedCache(): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  void hybridScoringSharedCache.clear().catch((error) => {
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_hybrid_scoring_shared_cache_clear_failed'
-    }), '清理混合路由评分 Redis 共享缓存失败')
-  })
+  clearSharedJsonCacheInBackground(
+    hybridScoringSharedCache,
+    'hybrid_scoring_shared_cache_clear_failed',
+    '混合评分 Redis shared cache 清理失败'
+  )
 }
 
 function parseHybridScoringResponse(body: Buffer): { level: number; confidence?: number; factors?: string[]; reason?: string } {
   const response = JSON.parse(body.toString('utf8')) as {
-    choices?: Array<{ message?: { content?: unknown } }>
+    choices?: Array<{
+      finish_reason?: unknown
+      message?: {
+        content?: unknown
+        reasoning_content?: unknown
+      }
+    }>
   }
-  const content = response.choices?.[0]?.message?.content
+  const choice = response.choices?.[0]
+  const content = choice?.message?.content
   const text = typeof content === 'string'
     ? content
     : Array.isArray(content)
@@ -560,6 +573,12 @@ function parseHybridScoringResponse(body: Buffer): { level: number; confidence?:
       : ''
   const jsonText = extractJsonObjectText(text)
   if (!jsonText) {
+    if (typeof choice?.message?.reasoning_content === 'string' && choice.message.reasoning_content.trim()) {
+      if (choice.finish_reason === 'length') {
+        throw new Error('评分模型只返回思考内容且达到输出上限，未产生 JSON')
+      }
+      throw new Error('评分模型只返回思考内容，未产生 JSON')
+    }
     throw new Error('评分模型未返回 JSON')
   }
   const parsed = JSON.parse(jsonText) as Record<string, unknown>

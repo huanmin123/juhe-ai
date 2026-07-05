@@ -3,11 +3,12 @@ import { z } from 'zod'
 
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
+import { errorLogFields, logger } from '../../shared/logger.js'
 import {
   createRouteStrategyAsync,
   deleteRouteStrategyAsync,
   findRouteStrategySummaryAsync,
-  listRouteStrategiesPageAsync,
+  listRouteStrategyListItemsPageAsync,
   listRouteStrategyOptionsAsync,
   updateRouteStrategyAsync,
   type RouteStrategyListOptions
@@ -15,6 +16,7 @@ import {
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
+import { clearNormalRouteLatencyDegradationForRouteStrategyAsync } from '../gateway/runtime/normal-route-latency-degradation.service.js'
 import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 
 export const routeStrategiesRouter = Router()
@@ -57,12 +59,57 @@ const hybridRoutingConfigSchema = z.object({
   }).strict().optional()
 }).strict()
 
+const speedFirstConfigSchema = z.object({
+  firstByteThresholdMs: z.number({ invalid_type_error: '首字等待阈值必须是数字' })
+    .int('首字等待阈值必须是整数')
+    .min(10000, '首字等待阈值不能低于 10000 毫秒')
+    .max(60000, '首字等待阈值不能高于 60000 毫秒')
+    .optional(),
+  slowTriggerCount: z.number({ invalid_type_error: '慢速触发次数必须是数字' })
+    .int('慢速触发次数必须是整数')
+    .min(2, '慢速触发次数不能低于 2 次')
+    .max(10, '慢速触发次数不能高于 10 次')
+    .optional(),
+  slowWindowSeconds: z.number({ invalid_type_error: '慢速窗口期必须是数字' })
+    .int('慢速窗口期必须是整数')
+    .min(60, '慢速窗口期不能低于 60 秒')
+    .max(600, '慢速窗口期不能高于 600 秒')
+    .optional(),
+  recoverySuccessCount: z.number({ invalid_type_error: '恢复成功次数必须是数字' })
+    .int('恢复成功次数必须是整数')
+    .min(3, '恢复成功次数不能低于 3 次')
+    .max(10, '恢复成功次数不能高于 10 次')
+    .optional(),
+  probeIntervalSeconds: z.number({ invalid_type_error: '探针间隔必须是数字' })
+    .int('探针间隔必须是整数')
+    .min(10, '探针间隔不能低于 10 秒')
+    .max(300, '探针间隔不能高于 300 秒')
+    .optional(),
+  degradedTtlSeconds: z.number({ invalid_type_error: '降级保留时间必须是数字' })
+    .int('降级保留时间必须是整数')
+    .min(60, '降级保留时间不能低于 60 秒')
+    .max(3600, '降级保留时间不能高于 3600 秒')
+    .optional(),
+  retryOnFirstByteTimeout: z.boolean({ invalid_type_error: '当前请求切号开关必须是布尔值' }).optional(),
+  maxFirstByteRetriesPerRequest: z.number({ invalid_type_error: '单请求切号次数必须是数字' })
+    .int('单请求切号次数必须是整数')
+    .min(1, '单请求切号次数不能低于 1 次')
+    .max(3, '单请求切号次数不能高于 3 次')
+    .optional()
+}).strict()
+
+const normalRoutingConfigSchema = z.object({
+  schedulingPreference: z.enum(['cost_first', 'speed_first']).optional(),
+  speedFirstConfig: speedFirstConfigSchema.optional()
+}).strict()
+
 const routeStrategyMutationSchema = z.object({
   name: z.string().trim().min(1, '请填写策略路由名称'),
   description: z.string().trim().max(200).nullable().optional(),
   mode: z.enum(['normal', 'hybrid_smart', 'weighted', 'failover', 'round_robin']).optional(),
   status: z.enum(['active', 'disabled']).optional(),
   groupBindings: z.array(routeStrategyGroupBindingSchema).min(1, '策略路由至少需要绑定一个分组').max(20).optional(),
+  normalRoutingConfig: normalRoutingConfigSchema.nullable().optional(),
   hybridRoutingConfig: hybridRoutingConfigSchema.nullable().optional()
 }).strict()
 
@@ -76,7 +123,7 @@ const routeStrategyUpdateSchema = routeStrategyMutationSchema.partial().refine((
 
 routeStrategiesRouter.get('/', async (req, res, next) => {
   try {
-    res.json(ok(await listRouteStrategiesPageAsync(getRequestAccessScope(req.query.systemAccountId), parseRouteStrategyListOptions(req.query))))
+    res.json(ok(await listRouteStrategyListItemsPageAsync(getRequestAccessScope(req.query.systemAccountId), parseRouteStrategyListOptions(req.query))))
   } catch (error) {
     next(error)
   }
@@ -153,6 +200,7 @@ routeStrategiesRouter.post('/', mutationGuard({
             safeChange('mode', '路由模式', undefined, routeStrategy.mode),
             safeChange('status', '状态', undefined, routeStrategy.status),
             safeChange('groupBindings', '绑定分组', undefined, routeStrategy.groupBindings),
+            safeChange('normalRoutingConfig', '普通路由调度配置', undefined, routeStrategy.normalRoutingConfig),
             safeChange('hybridRoutingConfig', '混合智能路由配置', undefined, routeStrategy.hybridRoutingConfig)
           ],
           viewers: viewer(ownerSystemAccountId, 'resource_owner')
@@ -208,12 +256,14 @@ routeStrategiesRouter.patch('/:id', async (req, res, next) => {
             mode: '路由模式',
             status: '状态',
             groupBindings: '绑定分组',
+            normalRoutingConfig: '普通路由调度配置',
             hybridRoutingConfig: '混合智能路由配置'
           }),
           viewers: viewer(ownerSystemAccountId, 'resource_owner')
         }
       }
     }, req)
+    await clearNormalRouteSpeedFirstRuntime(routeStrategy.id, 'route_strategy_updated')
     res.json(ok(routeStrategy))
   } catch (error) {
     if (error instanceof Error && error.message === '策略路由不存在') {
@@ -261,6 +311,7 @@ routeStrategiesRouter.delete('/:id', async (req, res, next) => {
         }
       }
     }, req)
+    await clearNormalRouteSpeedFirstRuntime(req.params.id, 'route_strategy_deleted')
   } catch (error) {
     if (error instanceof Error && error.message === '策略路由不存在') {
       res.status(404).json({ message: '策略路由不存在' })
@@ -307,4 +358,24 @@ function booleanQueryValue(value: unknown): boolean | undefined {
   if (['1', 'true', 'yes'].includes(normalized)) return true
   if (['0', 'false', 'no'].includes(normalized)) return false
   return undefined
+}
+
+async function clearNormalRouteSpeedFirstRuntime(routeStrategyId: string, reason: string): Promise<void> {
+  try {
+    const cleared = await clearNormalRouteLatencyDegradationForRouteStrategyAsync(routeStrategyId)
+    if (cleared > 0) {
+      logger.info({
+        event: 'route_strategy_normal_route_speed_first_runtime_cleared',
+        routeStrategyId,
+        reason,
+        cleared
+      }, '策略路由速度优先运行态已清理')
+    }
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'route_strategy_normal_route_speed_first_runtime_clear_failed',
+      routeStrategyId,
+      reason
+    }), '策略路由速度优先运行态清理失败')
+  }
 }

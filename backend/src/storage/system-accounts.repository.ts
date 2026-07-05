@@ -6,7 +6,7 @@ import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabas
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
 import { ensureDefaultBuiltInGroupsForSystemAccount } from './default-group.repository.js'
 import { ensureDefaultApiKeysForSystemAccount, ensureDefaultApiKeysForSystemAccountAsync } from './api-key.repository.js'
-import { clearGatewayApiKeyValidationCache } from './gateway-api-key.repository.js'
+import { clearGatewayApiKeyValidationCache, clearGatewayApiKeyValidationCacheAsync } from './gateway-api-key.repository.js'
 import { getPostgresPool } from './postgres-client.js'
 import { ensureDefaultRouteStrategiesForSystemAccount, ensureDefaultRouteStrategiesForSystemAccountAsync } from './route-strategy.repository.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
@@ -14,6 +14,7 @@ import { runtimeConfig } from '../config/runtime.js'
 import { DEFAULT_BUILT_IN_GROUPS } from './schema-defaults.js'
 import { normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { invalidateSystemAccountLookupCache } from './repository-lookups.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import { systemAccountPrincipalSummaryFromRow, systemAccountSummaryFromRow, type SystemAccountRow } from './system-account-mappers.js'
 import { optionalString } from './value-utils.js'
 
@@ -25,6 +26,8 @@ interface SystemSessionRow {
   created_at: string
   last_seen_at: string
 }
+
+type SystemSessionAccountRow = SystemSessionRow & Omit<SystemAccountRow, 'id'> & { account_id: string }
 
 const sessionTouchMinIntervalMs = 60 * 1000
 const defaultSystemAccountOptionLimit = 50
@@ -71,6 +74,10 @@ export async function listSystemAccountsAsync(): Promise<SystemAccountSummary[]>
 }
 
 export function listSystemAccountsPage(options: SystemAccountListOptions = {}): SystemAccountListResult {
+  return listSystemAccountsPageReadOnly(options)
+}
+
+export function listSystemAccountsPageReadOnly(options: SystemAccountListOptions = {}): SystemAccountListResult {
   const normalized = normalizeSystemAccountListOptions(options)
   const keywordFilter = buildSystemAccountListKeywordFilter(normalized.keyword)
   const rows = getBusinessDatabase()
@@ -94,6 +101,15 @@ export function listSystemAccountsPage(options: SystemAccountListOptions = {}): 
 }
 
 export async function listSystemAccountsPageAsync(options: SystemAccountListOptions = {}): Promise<SystemAccountListResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    if (sqliteReadWorkerPoolEnabled()) {
+      return requestSqliteReadWorker({
+        type: 'list_system_accounts_page_read_only',
+        options
+      })
+    }
+    return listSystemAccountsPageReadOnly(options)
+  }
   const normalized = normalizeSystemAccountListOptions(options)
   const client = await getSystemAccountDatabaseClient()
   const keywordFilter = buildSystemAccountListKeywordFilterForClient(client, normalized.keyword)
@@ -116,6 +132,10 @@ export async function listSystemAccountsPageAsync(options: SystemAccountListOpti
 }
 
 export function listSystemAccountOptions(options: SystemAccountOptionListOptions = {}): SystemAccountPrincipalSummary[] {
+  return listSystemAccountOptionsReadOnly(options)
+}
+
+export function listSystemAccountOptionsReadOnly(options: SystemAccountOptionListOptions = {}): SystemAccountPrincipalSummary[] {
   const optionFilter = buildSystemAccountOptionFilter(options)
   const limitClause = systemAccountOptionLimitClause(options.limit)
   const rows = getBusinessDatabase()
@@ -131,6 +151,15 @@ export function listSystemAccountOptions(options: SystemAccountOptionListOptions
 }
 
 export async function listSystemAccountOptionsAsync(options: SystemAccountOptionListOptions = {}): Promise<SystemAccountPrincipalSummary[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    if (sqliteReadWorkerPoolEnabled()) {
+      return requestSqliteReadWorker({
+        type: 'list_system_account_options_read_only',
+        options
+      })
+    }
+    return listSystemAccountOptionsReadOnly(options)
+  }
   const client = await getSystemAccountDatabaseClient()
   const optionFilter = buildSystemAccountOptionFilterForClient(client, options)
   const limitClause = systemAccountOptionLimitClause(options.limit)
@@ -291,6 +320,12 @@ function buildSystemAccountOptionFilterForClient(client: DatabaseClient, options
 }
 
 export async function findSystemAccountByIdAsync(id: string): Promise<SystemAccountSummary | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'find_system_account_by_id_read_only',
+      id
+    })
+  }
   const client = await getSystemAccountDatabaseClient()
   return findSystemAccountByIdWithClient(client, id)
 }
@@ -318,6 +353,12 @@ export function findSystemAccountByUsername(username: string): (SystemAccountSum
 }
 
 export async function findSystemAccountByUsernameAsync(username: string): Promise<(SystemAccountSummary & { passwordHash: string }) | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'find_system_account_by_username_read_only',
+      username
+    })
+  }
   const client = await getSystemAccountDatabaseClient()
   const row = await client.one<SystemAccountRow>(`
     SELECT id, username, display_name, description, role, status, password_hash, must_change_password, image_generation_enabled, last_login_at, created_at, updated_at
@@ -656,7 +697,7 @@ export async function updateSystemAccountWithPasswordHashAsync(id: string, input
   }
   invalidateSystemAccountLookupCache(id)
   if (current && (updated.status !== current.status || updated.imageGenerationEnabled !== current.imageGenerationEnabled)) {
-    clearGatewayApiKeyValidationCache()
+    await clearGatewayApiKeyValidationCacheAsync()
     notifyGatewayRuntimeCacheInvalidation(updated.status !== current.status ? 'system_account_status_changed' : 'system_account_image_generation_changed')
   }
   return updated
@@ -706,6 +747,10 @@ export async function createSessionAsync(systemAccountId: string, ttlDays = 14):
 }
 
 export function findSessionByToken(token: string): (SessionWithAccount & { tokenHash: string }) | undefined {
+  return findSessionByTokenReadOnly(hashSecret(token))
+}
+
+export function findSessionByTokenReadOnly(tokenHash: string): (SessionWithAccount & { tokenHash: string }) | undefined {
   const row = getBusinessDatabase()
     .prepare(`
       SELECT
@@ -729,27 +774,25 @@ export function findSessionByToken(token: string): (SessionWithAccount & { token
       INNER JOIN system_accounts sa ON sa.id = ss.system_account_id
       WHERE ss.token_hash = ?
     `)
-    .get(hashSecret(token)) as unknown as (SystemSessionRow & Omit<SystemAccountRow, 'id'> & { account_id: string }) | undefined
-  if (!row) {
-    return undefined
-  }
-  if (Date.parse(row.expires_at) <= Date.now() || row.status !== 'active') {
-    return undefined
-  }
-  return {
-    sessionId: row.id,
-    expiresAt: row.expires_at,
-    lastSeenAt: row.last_seen_at,
-    tokenHash: row.token_hash,
-    account: systemAccountSummaryFromRow({ ...row, id: row.account_id })
-  }
+    .get(tokenHash) as unknown as SystemSessionAccountRow | undefined
+  return sessionWithAccountFromRow(row)
 }
 
 export async function findSessionByTokenAsync(token: string): Promise<(SessionWithAccount & { tokenHash: string }) | undefined> {
+  const tokenHash = hashSecret(token)
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    if (sqliteReadWorkerPoolEnabled()) {
+      return await requestSqliteReadWorker({
+        type: 'find_session_by_token_read_only',
+        tokenHash
+      })
+    }
+    return findSessionByTokenReadOnly(tokenHash)
+  }
   const client = await getSystemAccountDatabaseClient()
   const sessionsTable = systemAccountTable(client, 'system_sessions')
   const accountsTable = systemAccountTable(client, 'system_accounts')
-  const row = await client.one<SystemSessionRow & Omit<SystemAccountRow, 'id'> & { account_id: string }>(`
+  const row = await client.one<SystemSessionAccountRow>(`
     SELECT
       ss.id AS id,
       ss.token_hash,
@@ -770,7 +813,11 @@ export async function findSessionByTokenAsync(token: string): Promise<(SessionWi
     FROM ${sessionsTable} ss
     INNER JOIN ${accountsTable} sa ON sa.id = ss.system_account_id
     WHERE ss.token_hash = ?
-  `, [hashSecret(token)])
+  `, [tokenHash])
+  return sessionWithAccountFromRow(row)
+}
+
+function sessionWithAccountFromRow(row: SystemSessionAccountRow | undefined): (SessionWithAccount & { tokenHash: string }) | undefined {
   if (!row) {
     return undefined
   }
@@ -879,17 +926,14 @@ async function ensureDefaultBuiltInGroupsForSystemAccountAsync(client: DatabaseC
     }
     await client.execute(`
       INSERT INTO ${groupsTable} (
-        id, system_account_id, name, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+        id, system_account_id, name, provider_code,
         description, enabled, is_default, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?)
     `, [
       newId('grp'),
       systemAccountId,
       group.name,
       group.providerCode,
-      group.providerProtocolProfileId,
-      group.protocolCode,
-      group.protocolVersion,
       group.description,
       timestamp,
       timestamp

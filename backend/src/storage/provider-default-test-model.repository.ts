@@ -3,6 +3,7 @@ import { runtimeConfig } from '../config/runtime.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getBusinessDatabase, nowIso } from './database.js'
 import { getPostgresPool } from './postgres-client.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
 export interface ProviderDefaultTestModelPreference {
   systemAccountId: string
@@ -55,6 +56,16 @@ export async function listProviderDefaultTestModelPreferencesAsync(
   systemAccountId: string | undefined,
   providerCodes: string[] = []
 ): Promise<Map<string, string>> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    const entries = sqliteReadWorkerPoolEnabled()
+      ? await requestSqliteReadWorker({
+        type: 'list_provider_default_test_model_preferences_read_only',
+        systemAccountId,
+        providerCodes
+      })
+      : listProviderDefaultTestModelPreferenceEntriesReadOnly(systemAccountId, providerCodes)
+    return new Map(entries)
+  }
   const normalizedSystemAccountId = normalizeText(systemAccountId)
   if (!normalizedSystemAccountId) return new Map()
   const normalizedProviderCodes = [...new Set(providerCodes.map((code) => normalizeText(code)).filter(Boolean))]
@@ -72,6 +83,30 @@ export async function listProviderDefaultTestModelPreferencesAsync(
   return new Map(rows
     .map((row) => [normalizeText(row.provider_code), normalizeModel(row.model)] as const)
     .filter((entry): entry is readonly [string, string] => Boolean(entry[0] && entry[1])))
+}
+
+export function listProviderDefaultTestModelPreferenceEntriesReadOnly(
+  systemAccountId: string | undefined,
+  providerCodes: string[] = []
+): Array<[string, string]> {
+  const normalizedSystemAccountId = normalizeText(systemAccountId)
+  if (!normalizedSystemAccountId) return []
+  const normalizedProviderCodes = [...new Set(providerCodes.map((code) => normalizeText(code)).filter(Boolean))]
+  const providerFilter = normalizedProviderCodes.length
+    ? `AND provider_code IN (${normalizedProviderCodes.map(() => '?').join(', ')})`
+    : ''
+  const rows = getBusinessDatabase()
+    .prepare(`
+      SELECT provider_code, model
+      FROM provider_default_test_models
+      WHERE system_account_id = ?
+        ${providerFilter}
+      ORDER BY provider_code ASC
+    `)
+    .all(normalizedSystemAccountId, ...normalizedProviderCodes) as Array<Pick<ProviderDefaultTestModelPreferenceRow, 'provider_code' | 'model'>>
+  return rows
+    .map((row) => [normalizeText(row.provider_code), normalizeModel(row.model)] as [string, string | undefined])
+    .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1]))
 }
 
 export async function upsertProviderDefaultTestModelPreferenceAsync(input: {
@@ -118,8 +153,16 @@ export async function clearProviderDefaultTestModelPreferenceIfModelAsync(input:
   const systemAccountId = normalizeText(input.systemAccountId)
   const providerCode = normalizeText(input.providerCode)
   const model = normalizeModel(input.model)
-  if (!systemAccountId || !providerCode || !model) return false
+  if (!providerCode || !model) return false
   const client = await getProviderDefaultTestModelDatabaseClient()
+  if (!systemAccountId) {
+    const result = await client.execute(`
+      DELETE FROM ${providerDefaultTestModelTable(client)}
+      WHERE provider_code = ?
+        AND model = ?
+    `, [providerCode, model])
+    return Number(result.changes ?? 0) > 0
+  }
   const result = await client.execute(`
     DELETE FROM ${providerDefaultTestModelTable(client)}
     WHERE system_account_id = ?

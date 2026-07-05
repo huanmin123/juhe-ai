@@ -277,7 +277,12 @@ async function seedData(upstreamBaseUrl: string): Promise<SeededGateway> {
   schema.applyBusinessSchema(businessDatabase)
   schema.seedDefaults(businessDatabase)
   repositories.updateSettings({
-    systemApiRateLimitEnabled: false,
+    systemApiRateLimitIpReadPerMinute: 1_000_000,
+    systemApiRateLimitIpReadBurstPer10Seconds: 1_000_000,
+    systemApiRateLimitIpWritePerMinute: 1_000_000,
+    systemApiRateLimitIpWriteBurstPer10Seconds: 1_000_000,
+    systemApiRateLimitUserReadPerMinute: 1_000_000,
+    systemApiRateLimitUserWritePerMinute: 1_000_000,
     statsAggregationIntervalSeconds: 5,
     statsAggregationBatchSize: 1000,
     statsAggregationMaxBatchesPerRun: 10,

@@ -1,0 +1,27 @@
+[
+  {
+    "test": "test:record-maintenance-queue",
+    "exitCode": 0,
+    "log": "F:\\sub2api-lite\\reports\\codex-validation\\test_record-maintenance-queue.rerun3.log"
+  },
+  {
+    "test": "test:temporary-maintenance-worker",
+    "exitCode": 0,
+    "log": "F:\\sub2api-lite\\reports\\codex-validation\\test_temporary-maintenance-worker.rerun3.log"
+  },
+  {
+    "test": "test:background-job-registry",
+    "exitCode": 0,
+    "log": "F:\\sub2api-lite\\reports\\codex-validation\\test_background-job-registry.rerun3.log"
+  },
+  {
+    "test": "test:openai-oauth-codex-adapter",
+    "exitCode": 0,
+    "log": "F:\\sub2api-lite\\reports\\codex-validation\\test_openai-oauth-codex-adapter.rerun3.log"
+  },
+  {
+    "test": "test:gateway-auth-preflight-body",
+    "exitCode": 0,
+    "log": "F:\\sub2api-lite\\reports\\codex-validation\\test_gateway-auth-preflight-body.rerun3.log"
+  }
+]

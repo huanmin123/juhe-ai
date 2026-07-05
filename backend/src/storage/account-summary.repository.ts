@@ -1,20 +1,21 @@
-import type { AccountClientCompatibility, AccountGroupBindStatus, AccountSummary } from '../domain/types.js'
+import { existsSync } from 'node:fs'
+import type { AccountClientCompatibility, AccountGroupBindStatus, AccountStatus, AccountSummary } from '../domain/types.js'
 import { normalizeOpenAIAccountClientCompatibility } from '../domain/account-client-compatibility.js'
 import { isGptVendorCode } from '../domain/provider-protocol.js'
 import { accountSummaryWithEffectiveAvailability } from '../domain/account-effective-availability.js'
 import { runtimeConfig } from '../config/runtime.js'
-import { loadAccountCurrentConcurrencyByIds } from '../shared/account-concurrency.js'
+import { loadAccountCurrentConcurrencyByIds, loadAccountCurrentConcurrencyByIdsAsync } from '../shared/account-concurrency.js'
 import { canAccessAll, manageableSystemAccountId, userVisibleSystemAccountId, includeSystemAccountFields, type AccessScope } from './access-scope.js'
 import { accountCredentialsForList, findAccountRowForAccess, hydrateAccountRowsWithRuntimeState, listAccountRowsForAccess, listAccountRowsPageForAccess, loadAccountAuthorizationUsageSummaries } from './account-read.repository.js'
 import { accountStatusFilterValues, normalizeAccountListOptions, type AccountListOptions, type NormalizedAccountListOptions } from './account-list-options.js'
 import { parseAccountAvailabilityScheduleJson } from './account-availability-schedule.js'
-import { authorizationRuntimeBlockingStatus, disableExpiredAccounts } from './account-runtime-status.js'
-import { accountNameSearchQueryTerms, escapeAccountNameSearchLike, normalizeAccountNameSearchText } from './account-name-search.repository.js'
+import { authorizationRuntimeBlockingStatus } from './account-runtime-status.js'
+import { accountNameSearchQueryTerms, normalizeAccountNameSearchText } from './account-name-search.repository.js'
 import { loadAccountTagsByAccountIds, loadAccountTagsByAccountIdsAsync } from './account-tags.repository.js'
 import { loadModelMappingsByAccountIdsAsync } from './account-model-mappings.repository.js'
 import { loadSupportedModelsByAccountIdsAsync } from './account-supported-models.repository.js'
 import { loadResourceAuthorizationSourcesByAuthorizationIds, loadResourceAuthorizationStatsByResourceIds } from './authorization-read-loaders.js'
-import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
+import { getBusinessDatabase, getStatsDatabase, isSqliteDatabaseLocked, nowIso, runWithSqliteBusyTimeout, statsDatabasePath } from './database.js'
 import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient } from './database-client.js'
 import { loadOpenAICodexUsageSnapshotsByAccountIds } from './oauth-usage-loaders.js'
@@ -25,18 +26,25 @@ import { authorizedAccountPermissions, hasActiveManualAuthorizationSource, owner
 import { loadSystemAccountNameMapByIds } from './repository-lookups.js'
 import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from './request-quota-limits.js'
 import type { AccountListRow, ResourceAuthorizationRow } from './repository-row-types.js'
-import { emptyAccountUsageSummary, todayDateKey, usageStatsTimezone } from './usage-stats-helpers.js'
-import { loadAccountUsageSummariesForScopes } from './usage-summary-loaders.js'
+import { emptyAccountUsageSummary, todayDateKey, usageStatsTimezone, usageStatsTimezoneAsync } from './usage-stats-helpers.js'
+import { loadAccountUsageSummariesForScopes, loadAccountUsageSummariesForScopesAsync, loadAuthorizationUsageSummariesForScopesAsync } from './usage-summary-loaders.js'
 import {
   isRequestQuotaExceeded,
   loadRequestQuotaCostsBatch,
   loadRequestQuotaCostsBatchAsync,
   requestQuotaCostKey,
   requestQuotaCostKeyAsync,
-  type RequestQuotaCostInput
+  type RequestQuotaCostInput,
+  type RequestQuotaCosts
 } from '../modules/gateway/quota/request-quota-checker.js'
 import { optionalString } from './value-utils.js'
-import { loadAccountApiKeyRuntimeDetailsByAccountIds, loadAccountApiKeyRuntimeSummariesByAccountIds } from './account-api-key-runtime-state.repository.js'
+import {
+  loadAccountApiKeyRuntimeDetailsByAccountIds,
+  loadAccountApiKeyRuntimeDetailsByAccountIdsAsync,
+  loadAccountApiKeyRuntimeSummariesByAccountIds,
+  loadAccountApiKeyRuntimeSummariesByAccountIdsAsync
+} from './account-api-key-runtime-state.repository.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
 export interface AccountListResult {
   items: AccountSummary[]
@@ -51,18 +59,21 @@ interface AccountSummaryBuildOptions {
 }
 
 const businessSchemaName = 'juhe_business'
+const accountListStatsBusyTimeoutMs = 60
 
 export function listAccounts(access?: AccessScope, options?: AccountListOptions): AccountSummary[] {
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
-  disableExpiredAccounts(access)
   const listOptions = normalizeAccountListOptions(options)
   const rows = hydrateAccountRowsWithRuntimeState(listAccountRowsForAccess(access, listOptions), { includeCredentials: true })
   return accountSummariesFromRows(rows, access, viewerSystemAccountId)
 }
 
 export function listAccountsPage(access?: AccessScope, options?: AccountListOptions): AccountListResult {
+  return listAccountsPageReadOnly(access, options)
+}
+
+export function listAccountsPageReadOnly(access?: AccessScope, options?: AccountListOptions): AccountListResult {
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
-  disableExpiredAccounts(access)
   const listOptions = normalizeAccountListOptions(options)
   const databasePage = listAccountRowsPageForAccess(access, listOptions, { includeCredentials: false })
   const page = {
@@ -81,13 +92,23 @@ export function listAccountsPage(access?: AccessScope, options?: AccountListOpti
 
 export async function listAccountsPageAsync(access?: AccessScope, options?: AccountListOptions): Promise<AccountListResult> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return listAccountsPage(access, options)
+    if (sqliteReadWorkerPoolEnabled()) {
+      return await requestSqliteReadWorker({
+        type: 'list_accounts_page_read_only',
+        access,
+        options
+      })
+    }
+    return listAccountsPageReadOnly(access, options)
   }
   const listOptions = normalizeAccountListOptions(options)
   const client = createPostgresDatabaseClient(await getPostgresPool())
-  const databasePage = await listOwnerAccountRowsPageAsync(client, access, listOptions)
+  if (accountListNeedsPostSummaryEffectiveFilter(listOptions)) {
+    return await listAccountsPageWithPostSummaryEffectiveFilterAsync(client, access, listOptions)
+  }
+  const databasePage = await listAccountRowsPageAsync(client, access, listOptions)
   const pageRows = takePageRows(databasePage.rows, listOptions.pageSize)
-  const items = await ownerAccountSummariesFromRowsAsync(client, pageRows.rows, access, { includeCredentials: false })
+  const items = await accountSummariesFromRowsAsync(client, pageRows.rows, access, { includeCredentials: false })
   return {
     items,
     total: pagedTotalUpperBound(listOptions.page, listOptions.pageSize, pageRows.rows.length, pageRows.hasMore),
@@ -97,9 +118,104 @@ export async function listAccountsPageAsync(access?: AccessScope, options?: Acco
   }
 }
 
+async function listAccountsPageWithPostSummaryEffectiveFilterAsync(
+  client: DatabaseClient,
+  access: AccessScope | undefined,
+  options: NormalizedAccountListOptions
+): Promise<AccountListResult> {
+  const offset = (options.page - 1) * options.pageSize
+  const requiredMatches = offset + options.pageSize + 1
+  const candidatePageSize = Math.max(options.pageSize, Math.min(200, options.pageSize * 4))
+  const candidateOptions: NormalizedAccountListOptions = {
+    ...options,
+    page: 1,
+    pageSize: candidatePageSize,
+    status: undefined,
+    schedulable: 'all'
+  }
+  const matchedItems: AccountSummary[] = []
+  let candidatePage = 1
+  let exhausted = false
+  while (matchedItems.length < requiredMatches && !exhausted) {
+    const databasePage = await listAccountRowsPageAsync(client, access, {
+      ...candidateOptions,
+      page: candidatePage
+    })
+    const pageRows = takePageRows(databasePage.rows, candidatePageSize)
+    const summaries = await accountSummariesFromRowsAsync(client, pageRows.rows, access, { includeCredentials: false })
+    for (const summary of summaries) {
+      if (accountSummaryMatchesPostSummaryEffectiveFilter(summary, options)) {
+        matchedItems.push(summary)
+      }
+    }
+    exhausted = !pageRows.hasMore
+    candidatePage += 1
+  }
+  const items = matchedItems.slice(offset, offset + options.pageSize)
+  const hasMore = matchedItems.length > offset + options.pageSize || !exhausted
+  return {
+    items,
+    total: pagedTotalUpperBound(options.page, options.pageSize, items.length, hasMore),
+    hasMore,
+    page: options.page,
+    pageSize: options.pageSize
+  }
+}
+
+function accountListNeedsPostSummaryEffectiveFilter(options: Pick<NormalizedAccountListOptions, 'status' | 'schedulable'>): boolean {
+  return accountStatusFilterValues(options.status).length > 0 || options.schedulable !== 'all'
+}
+
+function accountSummaryMatchesPostSummaryEffectiveFilter(summary: AccountSummary, options: Pick<NormalizedAccountListOptions, 'status' | 'schedulable'>): boolean {
+  const effectiveStatus = accountSummaryEffectiveStatusForFilter(summary)
+  const statuses = accountStatusFilterValues(options.status)
+  if (statuses.length > 0 && !statuses.includes(effectiveStatus)) {
+    return false
+  }
+  if (options.schedulable === 'enabled') {
+    return summary.effectiveAvailability.available
+  }
+  if (options.schedulable === 'cooling') {
+    return !summary.effectiveAvailability.available && accountSummaryCoolingForSchedulableFilter(summary, effectiveStatus)
+  }
+  if (options.schedulable === 'disabled') {
+    return !summary.effectiveAvailability.available && !accountSummaryCoolingForSchedulableFilter(summary, effectiveStatus)
+  }
+  return true
+}
+
+function accountSummaryEffectiveStatusForFilter(summary: AccountSummary): AccountStatus {
+  if (summary.effectiveAvailability.available) {
+    return summary.status
+  }
+  const status = summary.effectiveAvailability.status
+  if (status === 'authorization_quota_exceeded') return 'rate_limited'
+  if (status === 'source_rate_limited' || status === 'instance_rate_limited') return 'rate_limited'
+  if (
+    status === 'source_temporary_unavailable'
+    || status === 'source_cooldown'
+    || status === 'instance_temporary_unavailable'
+    || status === 'instance_cooldown'
+    || status === 'api_key_pool_unavailable'
+    || status === 'runtime_precheck_pending'
+    || status === 'runtime_local_suppressed'
+    || status === 'runtime_half_open'
+    || status === 'runtime_precheck_failed'
+  ) {
+    return 'temporary_unavailable'
+  }
+  if (status === 'source_pending_test' || status === 'instance_pending_test') return 'pending_test'
+  if (status === 'source_error' || status === 'instance_error') return 'error'
+  return 'disabled'
+}
+
+function accountSummaryCoolingForSchedulableFilter(summary: AccountSummary, effectiveStatus: AccountStatus): boolean {
+  return summary.effectiveAvailability.status !== 'authorization_quota_exceeded'
+    && (effectiveStatus === 'rate_limited' || effectiveStatus === 'temporary_unavailable')
+}
+
 export function findAccountSummary(accountId: string, access?: AccessScope): AccountSummary | undefined {
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
-  disableExpiredAccounts(access)
   const listOptions = normalizeAccountListOptions({ page: 1, pageSize: 1 })
   const row = findAccountRowForAccess(access, accountId, listOptions)
   if (!row) return undefined
@@ -108,6 +224,13 @@ export function findAccountSummary(accountId: string, access?: AccessScope): Acc
 }
 
 export async function findAccountSummaryAsync(accountId: string, access?: AccessScope): Promise<AccountSummary | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'find_account_summary_read_only',
+      accountId,
+      access
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return findAccountSummary(accountId, access)
   }
@@ -218,7 +341,18 @@ async function authorizedAccountSummaryFromRowAsync(
   const factAccountId = accountResourceFactAccountId(row)
   const includeAccountNames = includeSystemAccountFields(access)
   const displayOwnerSystemAccountId = row.authorization_resource_owner_system_account_id ?? row.authorization_instance_owner_system_account_id ?? row.system_account_id
-  const [supportedModelsByAccount, modelMappingsByAccount, tagsByAccount, accountNames, authorizationQuotaExceededByAuthorization] = await Promise.all([
+  const timezone = await usageStatsTimezoneAsync()
+  const authorizationScopes = row.authorization_id ? [usageScope(row.authorization_id, row.system_account_id, row.authorization_id)] : []
+  const [
+    supportedModelsByAccount,
+    modelMappingsByAccount,
+    tagsByAccount,
+    accountNames,
+    authorizationQuotaExceededByAuthorization,
+    usageByAuthorization,
+    todayUsageByAuthorization,
+    currentConcurrencyByAccount
+  ] = await Promise.all([
     factAccountId ? loadSupportedModelsByAccountIdsAsync([factAccountId]) : Promise.resolve(new Map<string, string[]>()),
     factAccountId ? loadModelMappingsByAccountIdsAsync([factAccountId]) : Promise.resolve(new Map()),
     loadAccountTagsByAccountIdsAsync([row.id]),
@@ -226,7 +360,10 @@ async function authorizedAccountSummaryFromRowAsync(
       row.system_account_id,
       displayOwnerSystemAccountId
     ]),
-    loadAuthorizationQuotaExceededByAuthorizationIdAsync(client, [row])
+    loadAuthorizationQuotaExceededByAuthorizationIdAsync(client, [row]),
+    loadAuthorizationUsageSummariesForScopesAsync(authorizationScopes, 'account_authorization'),
+    loadAuthorizationUsageSummariesForScopesAsync(authorizationScopes, 'account_authorization', todayDateKey(timezone)),
+    loadAccountCurrentConcurrencyByIdsAsync([row.id])
   ])
   row.supported_models = factAccountId ? supportedModelsByAccount.get(factAccountId) ?? [] : []
   row.model_mappings = factAccountId ? modelMappingsByAccount.get(factAccountId) ?? [] : []
@@ -246,6 +383,12 @@ async function authorizedAccountSummaryFromRowAsync(
   const dispatchPriority = Number(row.bound_group_local_priority ?? row.priority ?? 0)
   const dispatchSuperPriorityEnabled = row.bound_group_local_super_priority_enabled === 1
   const dispatchFallbackEnabled = row.bound_group_local_fallback_enabled === 1
+  const usage = row.authorization_id
+    ? usageByAuthorization.get(row.authorization_id) ?? emptyAccountUsageSummary()
+    : emptyAccountUsageSummary()
+  const todayUsage = row.authorization_id
+    ? todayUsageByAuthorization.get(row.authorization_id) ?? emptyAccountUsageSummary()
+    : emptyAccountUsageSummary()
   return accountSummaryWithEffectiveAvailability({
     id: row.id,
     systemAccountId: includeAccountNames ? row.system_account_id : undefined,
@@ -261,7 +404,7 @@ async function authorizedAccountSummaryFromRowAsync(
     credentials: accountCredentialsForList(row, true),
     status: effectiveAuthorizedStatus,
     concurrencyLimit: accountResourceConcurrencyLimit(row),
-    currentConcurrency: loadAccountCurrentConcurrencyByIds([row.id]).get(row.id) ?? 0,
+    currentConcurrency: currentConcurrencyByAccount.get(row.id) ?? 0,
     priority: dispatchPriority,
     superPriorityEnabled: dispatchSuperPriorityEnabled,
     fallbackEnabled: dispatchFallbackEnabled,
@@ -287,8 +430,9 @@ async function authorizedAccountSummaryFromRowAsync(
     lastHealthCheckErrorMessage: row.last_health_check_error_message ?? undefined,
     streamFailureCount: Math.max(0, Number(row.stream_failure_count ?? 0)),
     streamFailureWindowStartedAt: row.stream_failure_window_started_at ?? undefined,
-    todayUsage: emptyAccountUsageSummary(),
-    usage: emptyAccountUsageSummary(),
+    lastUsedAt: usage.lastUsedAt,
+    todayUsage,
+    usage,
     accessType: 'authorized',
     accountAuthorizationId: row.authorization_id ?? undefined,
     authorizationInstanceSourceAccountId: row.authorization_instance_source_account_id ?? undefined,
@@ -420,6 +564,163 @@ async function listOwnerAccountRowsPageAsync(
   return { rows }
 }
 
+async function listAccountRowsPageAsync(
+  client: DatabaseClient,
+  access: AccessScope | undefined,
+  options: NormalizedAccountListOptions
+): Promise<{ rows: AccountListRow[] }> {
+  const viewerSystemAccountId = userVisibleSystemAccountId(access)
+  if (!viewerSystemAccountId && !canAccessAll(access)) {
+    throw new Error('缺少系统账户上下文')
+  }
+  const scopeClause = viewerSystemAccountId ? 'AND accounts.system_account_id = ?' : ''
+  const scopeParams = viewerSystemAccountId ? [viewerSystemAccountId] : []
+  const filters = accountListFilters(client, options, viewerSystemAccountId)
+  const orderClause = accountListOrderClause(options)
+  const rows = await client.query<AccountListRow>(`
+    WITH account_rows AS (
+      SELECT
+        accounts.*,
+        'owner' AS access_type,
+        NULL AS authorization_id,
+        NULL AS authorization_status,
+        NULL AS authorization_expires_at,
+        NULL AS authorization_limits_json,
+        NULL AS authorization_effective_source_type,
+        NULL AS authorization_effective_source_team_id,
+        NULL AS authorization_resource_owner_system_account_id,
+        NULL AS authorization_resource_id,
+        NULL AS source_provider_code,
+        NULL AS source_provider_protocol_profile_id,
+        NULL AS source_protocol_code,
+        NULL AS source_protocol_version,
+        NULL AS source_type,
+        NULL AS source_status,
+        NULL AS source_schedulable,
+        NULL AS source_availability_schedule_json,
+        NULL AS source_account_expires_at,
+        NULL AS source_cooldown_until,
+        NULL AS source_last_error_code,
+        NULL AS source_last_error_message,
+        NULL AS source_credential_mask,
+        NULL AS source_credentials_encrypted,
+        NULL AS source_proxy_profile_id,
+        NULL AS source_concurrency_limit,
+        NULL AS source_client_compatibility
+      FROM ${accountSummaryTable(client, 'accounts')} accounts
+      WHERE accounts.deleted_at IS NULL
+        AND accounts.authorization_instance_authorization_id IS NULL
+        ${scopeClause}
+      UNION ALL
+      SELECT
+        accounts.*,
+        'authorized' AS access_type,
+        authorizations.id AS authorization_id,
+        authorizations.status AS authorization_status,
+        authorizations.expires_at AS authorization_expires_at,
+        authorizations.limits_json AS authorization_limits_json,
+        authorizations.effective_source_type AS authorization_effective_source_type,
+        authorizations.effective_source_team_id AS authorization_effective_source_team_id,
+        authorizations.resource_owner_system_account_id AS authorization_resource_owner_system_account_id,
+        authorizations.resource_id AS authorization_resource_id,
+        source_accounts.provider_code AS source_provider_code,
+        source_accounts.provider_protocol_profile_id AS source_provider_protocol_profile_id,
+        source_accounts.protocol_code AS source_protocol_code,
+        source_accounts.protocol_version AS source_protocol_version,
+        source_accounts.type AS source_type,
+        source_accounts.status AS source_status,
+        source_accounts.schedulable AS source_schedulable,
+        source_accounts.availability_schedule_json AS source_availability_schedule_json,
+        source_accounts.account_expires_at AS source_account_expires_at,
+        source_accounts.cooldown_until AS source_cooldown_until,
+        source_accounts.last_error_code AS source_last_error_code,
+        source_accounts.last_error_message AS source_last_error_message,
+        source_accounts.credential_mask AS source_credential_mask,
+        '' AS source_credentials_encrypted,
+        source_accounts.proxy_profile_id AS source_proxy_profile_id,
+        source_accounts.concurrency_limit AS source_concurrency_limit,
+        source_accounts.client_compatibility AS source_client_compatibility
+      FROM ${accountSummaryTable(client, 'accounts')} accounts
+      INNER JOIN ${accountSummaryTable(client, 'resource_authorizations')} authorizations
+        ON authorizations.id = accounts.authorization_instance_authorization_id
+      LEFT JOIN ${accountSummaryTable(client, 'accounts')} source_accounts
+        ON source_accounts.id = accounts.authorization_instance_source_account_id
+        AND source_accounts.deleted_at IS NULL
+      WHERE accounts.deleted_at IS NULL
+        AND accounts.authorization_instance_authorization_id IS NOT NULL
+        AND authorizations.status IN ('active', 'paused', 'expired')
+        ${scopeClause}
+    )
+    SELECT
+      account_rows.*,
+      group_bindings.system_account_id AS binding_system_account_id,
+      group_bindings.group_id AS bound_group_id,
+      bound_groups.name AS bound_group_name,
+      group_bindings.account_authorization_id AS bound_group_account_authorization_id,
+      group_bindings.local_priority AS bound_group_local_priority,
+      group_bindings.local_super_priority_enabled AS bound_group_local_super_priority_enabled,
+      group_bindings.local_fallback_enabled AS bound_group_local_fallback_enabled,
+      COALESCE(system_accounts.display_name, system_accounts.username, account_rows.system_account_id) AS system_account_sort_name
+    FROM account_rows
+    LEFT JOIN LATERAL (
+      SELECT
+        group_accounts.system_account_id,
+        group_accounts.group_id,
+        group_accounts.account_authorization_id,
+        group_accounts.local_priority,
+        group_accounts.local_super_priority_enabled,
+        group_accounts.local_fallback_enabled,
+        group_accounts.updated_at,
+        group_accounts.account_id
+      FROM ${accountSummaryTable(client, 'group_accounts')} group_accounts
+      WHERE group_accounts.account_id = account_rows.id
+        AND group_accounts.system_account_id = account_rows.system_account_id
+        AND group_accounts.enabled = 1
+      ORDER BY group_accounts.updated_at DESC, group_accounts.group_id ASC, group_accounts.account_id ASC
+      LIMIT 1
+    ) group_bindings ON TRUE
+    LEFT JOIN ${accountSummaryTable(client, 'groups')} bound_groups
+      ON bound_groups.id = group_bindings.group_id
+    LEFT JOIN ${accountSummaryTable(client, 'system_accounts')} system_accounts
+      ON system_accounts.id = account_rows.system_account_id
+    ${filters.clause}
+    ${orderClause}
+    LIMIT ? OFFSET ?
+  `, [
+    ...scopeParams,
+    ...scopeParams,
+    ...filters.params,
+    options.pageSize + 1,
+    (options.page - 1) * options.pageSize
+  ])
+  return { rows }
+}
+
+async function accountSummariesFromRowsAsync(
+  client: DatabaseClient,
+  rows: AccountListRow[],
+  access: AccessScope | undefined,
+  options: AccountSummaryBuildOptions = {}
+): Promise<AccountSummary[]> {
+  if (!rows.length) return []
+  const ownerRows = rows.filter((row) => row.access_type !== 'authorized')
+  const authorizedRows = rows.filter((row) => row.access_type === 'authorized')
+  const [ownerSummaries, authorizedSummaries] = await Promise.all([
+    ownerAccountSummariesFromRowsAsync(client, ownerRows, access, options),
+    Promise.all(authorizedRows.map((row) => authorizedAccountSummaryFromRowAsync(client, row, access)))
+  ])
+  const summariesByRowKey = new Map<string, AccountSummary>()
+  for (const summary of ownerSummaries) {
+    summariesByRowKey.set(`owner:${summary.id}`, summary)
+  }
+  for (const summary of authorizedSummaries) {
+    summariesByRowKey.set(`authorized:${summary.id}`, summary)
+  }
+  return rows
+    .map((row) => summariesByRowKey.get(`${row.access_type === 'authorized' ? 'authorized' : 'owner'}:${row.id}`))
+    .filter((summary): summary is AccountSummary => Boolean(summary))
+}
+
 async function ownerAccountSummariesFromRowsAsync(
   client: DatabaseClient,
   rows: AccountListRow[],
@@ -430,11 +731,31 @@ async function ownerAccountSummariesFromRowsAsync(
   const includeCredentials = options.includeCredentials ?? true
   const accountIds = rows.map((row) => row.id)
   const includeAccountNames = includeSystemAccountFields(access)
-  const [supportedModelsByAccount, modelMappingsByAccount, tagsByAccount, accountNames] = await Promise.all([
+  const timezone = await usageStatsTimezoneAsync()
+  const accountUsageScopes = rows.map((row) => usageScope(row.id, row.system_account_id, row.id))
+  const ownerAccountIds = includeCredentials
+    ? rows.filter((row) => (row.access_type ?? 'owner') !== 'authorized').map((row) => row.id)
+    : []
+  const [
+    supportedModelsByAccount,
+    modelMappingsByAccount,
+    tagsByAccount,
+    accountNames,
+    usageByAccount,
+    todayUsageByAccount,
+    currentConcurrencyByAccount,
+    apiKeyRuntimeByAccount,
+    apiKeyRuntimeDetailsByAccount
+  ] = await Promise.all([
     loadSupportedModelsByAccountIdsAsync(accountIds),
     loadModelMappingsByAccountIdsAsync(accountIds),
     loadAccountTagsByAccountIdsAsync(accountIds),
-    loadAccountSummarySystemAccountNamesAsync(client, includeAccountNames ? rows.map((row) => row.system_account_id) : [])
+    loadAccountSummarySystemAccountNamesAsync(client, includeAccountNames ? rows.map((row) => row.system_account_id) : []),
+    loadAccountUsageSummariesForScopesAsync(accountUsageScopes),
+    loadAccountUsageSummariesForScopesAsync(accountUsageScopes, todayDateKey(timezone)),
+    loadAccountCurrentConcurrencyByIdsAsync(accountIds),
+    loadAccountApiKeyRuntimeSummariesByAccountIdsAsync(accountIds),
+    loadAccountApiKeyRuntimeDetailsByAccountIdsAsync(ownerAccountIds)
   ])
 
   return rows.map((row) => {
@@ -442,6 +763,8 @@ async function ownerAccountSummariesFromRowsAsync(
     row.model_mappings = modelMappingsByAccount.get(row.id) ?? []
     const groupBinding = accountGroupBindingFromRow(row, row.system_account_id)
     const ownerSystemAccountName = accountNames.get(row.system_account_id)
+    const usage = usageByAccount.get(row.id) ?? emptyAccountUsageSummary()
+    const todayUsage = todayUsageByAccount.get(row.id) ?? emptyAccountUsageSummary()
     return accountSummaryWithEffectiveAvailability({
       id: row.id,
       systemAccountId: includeAccountNames ? row.system_account_id : undefined,
@@ -458,7 +781,7 @@ async function ownerAccountSummariesFromRowsAsync(
       credentials: accountCredentialsForList(row, includeCredentials),
       status: row.status,
       concurrencyLimit: Number(row.concurrency_limit),
-      currentConcurrency: 0,
+      currentConcurrency: currentConcurrencyByAccount.get(row.id) ?? 0,
       priority: Number(row.priority ?? 0),
       superPriorityEnabled: row.super_priority_enabled === 1,
       fallbackEnabled: row.fallback_enabled === 1,
@@ -486,11 +809,13 @@ async function ownerAccountSummariesFromRowsAsync(
       lastHealthCheckStatusCode: optionalNumber(row.last_health_check_status_code),
       lastHealthCheckErrorCode: row.last_health_check_error_code ?? undefined,
       lastHealthCheckErrorMessage: row.last_health_check_error_message ?? undefined,
+      apiKeyRuntime: apiKeyRuntimeByAccount.get(row.id),
+      apiKeyRuntimeDetails: apiKeyRuntimeDetailsByAccount.get(row.id),
       streamFailureCount: Math.max(0, Number(row.stream_failure_count ?? 0)),
       streamFailureWindowStartedAt: row.stream_failure_window_started_at ?? undefined,
       lastUsedAt: row.last_used_at ?? undefined,
-      todayUsage: emptyAccountUsageSummary(),
-      usage: emptyAccountUsageSummary(),
+      todayUsage,
+      usage,
       accessType: 'owner',
       boundGroupId: groupBinding?.groupId,
       boundGroupName: groupBinding?.groupName,
@@ -524,11 +849,11 @@ function ownerAccountListFilters(
   }
   const keyword = options.keyword?.trim()
   if (keyword) {
-    const normalizedKeywordPrefix = normalizeAccountNameSearchText(keyword)
+    const keywordPrefix = normalizeAccountNameSearchText(keyword)
     const keywordClauses = [
-      '(lower(accounts.name) >= ? AND lower(accounts.name) < ?)'
+      '(accounts.name COLLATE "C" >= ? AND accounts.name COLLATE "C" < ?)'
     ]
-    const keywordParams: unknown[] = [normalizedKeywordPrefix, accountNamePrefixUpperBound(normalizedKeywordPrefix)]
+    const keywordParams: unknown[] = [keywordPrefix, accountNamePrefixUpperBound(keywordPrefix)]
     const containsSubquery = ownerAccountNameContainsSubquery(client, keyword, ownerSystemAccountId ?? undefined)
     if (containsSubquery) {
       keywordClauses.push(`accounts.id IN (${containsSubquery.sql})`)
@@ -608,6 +933,206 @@ function ownerAccountListFilters(
   }
 }
 
+function accountListFilters(
+  client: DatabaseClient,
+  options: NormalizedAccountListOptions,
+  viewerSystemAccountId?: string
+): { clause: string; params: unknown[] } {
+  const clauses: string[] = []
+  const params: unknown[] = []
+  if (options.ids.length) {
+    clauses.push(`account_rows.id IN (${options.ids.map(() => '?').join(', ')})`)
+    params.push(...options.ids)
+  }
+  const keyword = options.keyword?.trim()
+  if (keyword) {
+    const keywordPrefix = normalizeAccountNameSearchText(keyword)
+    const keywordClauses = [
+      '(account_rows.name COLLATE "C" >= ? AND account_rows.name COLLATE "C" < ?)'
+    ]
+    const keywordParams: unknown[] = [keywordPrefix, accountNamePrefixUpperBound(keywordPrefix)]
+    const containsSubquery = ownerAccountNameContainsSubquery(client, keyword, viewerSystemAccountId)
+    if (containsSubquery) {
+      keywordClauses.push(`account_rows.id IN (${containsSubquery.sql})`)
+      keywordParams.push(...containsSubquery.params)
+    }
+    clauses.push(`(${keywordClauses.join(' OR ')})`)
+    params.push(...keywordParams)
+  }
+  if (options.providerCode && options.providerCode !== 'all') {
+    clauses.push('COALESCE(account_rows.source_provider_code, account_rows.provider_code) = ?')
+    params.push(options.providerCode)
+  }
+  if (options.providerProtocolProfileId && options.providerProtocolProfileId !== 'all') {
+    clauses.push('COALESCE(account_rows.source_provider_protocol_profile_id, account_rows.provider_protocol_profile_id) = ?')
+    params.push(options.providerProtocolProfileId)
+  }
+  if (options.groupId) {
+    clauses.push('group_bindings.group_id = ?')
+    params.push(options.groupId)
+  }
+  if (options.tagIds.length) {
+    clauses.push(`EXISTS (
+      SELECT 1
+      FROM ${accountSummaryTable(client, 'account_tag_bindings')} tag_filter
+      WHERE tag_filter.account_id = account_rows.id
+        AND tag_filter.system_account_id = account_rows.system_account_id
+        AND tag_filter.tag_id IN (${options.tagIds.map(() => '?').join(', ')})
+    )`)
+    params.push(...options.tagIds)
+  }
+  if (options.type && options.type !== 'all') {
+    clauses.push('COALESCE(account_rows.source_type, account_rows.type) = ?')
+    params.push(options.type)
+  }
+  const statuses = accountStatusFilterValues(options.status)
+  if (statuses.length === 1) {
+    clauses.push(`${accountListEffectiveStatusSql()} = ?`)
+    params.push(statuses[0])
+  } else if (statuses.length > 1) {
+    clauses.push(`${accountListEffectiveStatusSql()} IN (${statuses.map(() => '?').join(', ')})`)
+    params.push(...statuses)
+  }
+  if (options.schedulable === 'enabled') {
+    clauses.push(`${accountListEffectiveSchedulableSql()} = 1`)
+  } else if (options.schedulable === 'disabled') {
+    clauses.push(`(${accountListEffectiveSchedulableSql()} = 0 AND ${accountListCoolingSql()} = 0)`)
+  } else if (options.schedulable === 'cooling') {
+    clauses.push(`${accountListCoolingSql()} = 1`)
+  }
+  return {
+    clause: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '',
+    params
+  }
+}
+
+function accountListOrderClause(options: NormalizedAccountListOptions): string {
+  const orderParts = options.sorts.map((sort) => {
+    const direction = sort.order === 'desc' ? 'DESC' : 'ASC'
+    const column = accountListSortColumn(sort.field)
+    if (sort.field === 'qualityScore') {
+      return `${column} ${direction} NULLS LAST`
+    }
+    return `${column} ${direction}`
+  })
+  return `ORDER BY ${[...orderParts, 'account_rows.created_at ASC', 'account_rows.id ASC'].join(', ')}`
+}
+
+function accountListSortColumn(field: NormalizedAccountListOptions['sorts'][number]['field']): string {
+  if (field === 'priority') return "CASE WHEN account_rows.access_type = 'authorized' THEN COALESCE(group_bindings.local_priority, account_rows.priority) ELSE account_rows.priority END"
+  if (field === 'superPriority') return "CASE WHEN account_rows.access_type = 'authorized' THEN COALESCE(group_bindings.local_super_priority_enabled, account_rows.super_priority_enabled) ELSE account_rows.super_priority_enabled END"
+  if (field === 'fallback') return "CASE WHEN account_rows.access_type = 'authorized' THEN COALESCE(group_bindings.local_fallback_enabled, account_rows.fallback_enabled) ELSE account_rows.fallback_enabled END"
+  if (field === 'qualityScore') return 'NULL'
+  if (field === 'name') return 'account_rows.name COLLATE "C"'
+  if (field === 'type') return 'COALESCE(account_rows.source_type, account_rows.type) COLLATE "C"'
+  if (field === 'providerCode') return 'COALESCE(account_rows.source_provider_code, account_rows.provider_code) COLLATE "C"'
+  if (field === 'systemAccount') return 'COALESCE(system_accounts.display_name, system_accounts.username, account_rows.system_account_id) COLLATE "C"'
+  if (field === 'concurrency') return 'COALESCE(account_rows.source_concurrency_limit, account_rows.concurrency_limit)'
+  if (field === 'status') return accountListEffectiveStatusSql()
+  if (field === 'accountExpiresAt') return 'COALESCE(account_rows.authorization_expires_at, account_rows.source_account_expires_at, account_rows.account_expires_at)'
+  if (field === 'lastUsedAt') return 'account_rows.last_used_at'
+  return "CASE WHEN account_rows.access_type = 'authorized' THEN COALESCE(group_bindings.local_priority, account_rows.priority) ELSE account_rows.priority END"
+}
+
+function accountListEffectiveStatusSql(): string {
+  const current = accountListCurrentIsoSql()
+  return `CASE
+    WHEN account_rows.access_type = 'authorized' THEN
+      CASE
+        WHEN group_bindings.group_id IS NULL
+          OR group_bindings.account_authorization_id IS NULL
+          OR group_bindings.account_authorization_id <> account_rows.authorization_id
+        THEN 'disabled'
+        WHEN account_rows.authorization_status IS NULL
+          OR account_rows.authorization_status <> 'active'
+          OR (account_rows.authorization_expires_at IS NOT NULL AND account_rows.authorization_expires_at <= ${current})
+        THEN 'disabled'
+        WHEN account_rows.source_status IS NULL THEN 'disabled'
+        WHEN account_rows.source_last_error_code = 'account_expired'
+          OR (account_rows.source_account_expires_at IS NOT NULL AND account_rows.source_account_expires_at <= ${current})
+        THEN 'disabled'
+        WHEN account_rows.source_status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN account_rows.source_status
+        WHEN account_rows.source_cooldown_until IS NOT NULL AND account_rows.source_cooldown_until > ${current} THEN 'temporary_unavailable'
+        WHEN COALESCE(account_rows.source_schedulable, 0) <> 1 THEN 'disabled'
+        WHEN account_rows.account_expires_at IS NOT NULL AND account_rows.account_expires_at <= ${current} THEN 'disabled'
+        WHEN account_rows.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN account_rows.status
+        WHEN account_rows.cooldown_until IS NOT NULL AND account_rows.cooldown_until > ${current} THEN 'temporary_unavailable'
+        WHEN account_rows.schedulable <> 1 THEN 'disabled'
+        ELSE account_rows.status
+      END
+    ELSE
+      CASE
+        WHEN account_rows.last_error_code = 'account_expired'
+          OR (account_rows.account_expires_at IS NOT NULL AND account_rows.account_expires_at <= ${current})
+        THEN 'disabled'
+        WHEN account_rows.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN account_rows.status
+        WHEN account_rows.cooldown_until IS NOT NULL AND account_rows.cooldown_until > ${current} THEN 'temporary_unavailable'
+        WHEN account_rows.schedulable <> 1 THEN 'disabled'
+        ELSE account_rows.status
+      END
+  END`
+}
+
+function accountListEffectiveSchedulableSql(): string {
+  const current = accountListCurrentIsoSql()
+  return `CASE
+    WHEN account_rows.access_type = 'authorized' THEN
+      CASE
+        WHEN group_bindings.group_id IS NOT NULL
+          AND group_bindings.account_authorization_id = account_rows.authorization_id
+          AND account_rows.authorization_status = 'active'
+          AND (account_rows.authorization_expires_at IS NULL OR account_rows.authorization_expires_at > ${current})
+          AND account_rows.source_status = 'active'
+          AND account_rows.source_schedulable = 1
+          AND (account_rows.source_cooldown_until IS NULL OR account_rows.source_cooldown_until <= ${current})
+          AND (account_rows.source_account_expires_at IS NULL OR account_rows.source_account_expires_at > ${current})
+          AND (account_rows.source_last_error_code IS NULL OR account_rows.source_last_error_code <> 'account_expired')
+          AND account_rows.status = 'active'
+          AND account_rows.schedulable = 1
+          AND (account_rows.cooldown_until IS NULL OR account_rows.cooldown_until <= ${current})
+          AND (account_rows.account_expires_at IS NULL OR account_rows.account_expires_at > ${current})
+        THEN 1
+        ELSE 0
+      END
+    ELSE
+      CASE
+        WHEN account_rows.status = 'active'
+          AND account_rows.schedulable = 1
+          AND (account_rows.cooldown_until IS NULL OR account_rows.cooldown_until <= ${current})
+          AND (account_rows.account_expires_at IS NULL OR account_rows.account_expires_at > ${current})
+          AND (account_rows.last_error_code IS NULL OR account_rows.last_error_code <> 'account_expired')
+        THEN 1
+        ELSE 0
+      END
+  END`
+}
+
+function accountListCoolingSql(): string {
+  const current = accountListCurrentIsoSql()
+  return `CASE
+    WHEN account_rows.access_type = 'authorized' THEN
+      CASE
+        WHEN account_rows.status IN ('rate_limited', 'temporary_unavailable')
+          OR account_rows.source_status IN ('rate_limited', 'temporary_unavailable')
+          OR (account_rows.cooldown_until IS NOT NULL AND account_rows.cooldown_until > ${current})
+          OR (account_rows.source_cooldown_until IS NOT NULL AND account_rows.source_cooldown_until > ${current})
+        THEN 1
+        ELSE 0
+      END
+    ELSE
+      CASE
+        WHEN account_rows.status IN ('rate_limited', 'temporary_unavailable')
+          OR (account_rows.cooldown_until IS NOT NULL AND account_rows.cooldown_until > ${current})
+        THEN 1
+        ELSE 0
+      END
+  END`
+}
+
+function accountListCurrentIsoSql(): string {
+  return `'${nowIso().replace(/'/g, "''")}'`
+}
+
 function ownerAccountNameContainsSubquery(
   client: DatabaseClient,
   keyword: string,
@@ -616,10 +1141,13 @@ function ownerAccountNameContainsSubquery(
   const terms = accountNameSearchQueryTerms(keyword)
   if (!terms.length) return undefined
   const systemAccountClause = ownerSystemAccountId ? 'search.system_account_id = ? AND' : ''
-  const keywordContains = `%${escapeAccountNameSearchLike(normalizeAccountNameSearchText(keyword))}%`
+  const keywordContains = normalizeAccountNameSearchText(keyword)
   const params: unknown[] = ownerSystemAccountId
     ? [ownerSystemAccountId, ...terms, keywordContains, terms.length]
     : [...terms, keywordContains, terms.length]
+  const containsExpression = client.driver === 'postgres'
+    ? 'position(? in documents.normalized_name) > 0'
+    : 'instr(documents.normalized_name, ?) > 0'
   return {
     sql: `
       WITH candidate_terms AS MATERIALIZED (
@@ -631,7 +1159,7 @@ function ownerAccountNameContainsSubquery(
       FROM candidate_terms
       INNER JOIN ${accountSummaryTable(client, 'account_name_search_documents')} documents
         ON documents.account_id = candidate_terms.account_id
-      WHERE documents.normalized_name LIKE ? ESCAPE '\\'
+      WHERE ${containsExpression}
       GROUP BY candidate_terms.account_id
       HAVING COUNT(DISTINCT candidate_terms.term) = ?
     `,
@@ -656,10 +1184,10 @@ function ownerAccountListSortColumn(field: NormalizedAccountListOptions['sorts']
   if (field === 'superPriority') return 'accounts.super_priority_enabled'
   if (field === 'fallback') return 'accounts.fallback_enabled'
   if (field === 'qualityScore') return 'NULL'
-  if (field === 'name') return 'lower(accounts.name)'
-  if (field === 'type') return 'lower(accounts.type)'
-  if (field === 'providerCode') return 'lower(accounts.provider_code)'
-  if (field === 'systemAccount') return 'lower(COALESCE(system_accounts.display_name, system_accounts.username, accounts.system_account_id))'
+  if (field === 'name') return 'accounts.name COLLATE "C"'
+  if (field === 'type') return 'accounts.type COLLATE "C"'
+  if (field === 'providerCode') return 'accounts.provider_code COLLATE "C"'
+  if (field === 'systemAccount') return 'COALESCE(system_accounts.display_name, system_accounts.username, accounts.system_account_id) COLLATE "C"'
   if (field === 'concurrency') return 'accounts.concurrency_limit'
   if (field === 'status') return ownerAccountEffectiveStatusSql()
   if (field === 'accountExpiresAt') return 'accounts.account_expires_at'
@@ -712,17 +1240,17 @@ function accountSummariesFromRows(
   const currentConcurrencyByAccount = loadAccountCurrentConcurrencyByIds(accountIds)
   const tagsByAccount = loadAccountTagsByAccountIds(accountIds)
   const accountUsageScopes = rows.map((row) => usageScope(row.id, row.system_account_id, row.id))
-  const usageByAccount = loadAccountUsageSummariesForScopes(accountUsageScopes)
-  const todayUsageByAccount = loadAccountUsageSummariesForScopes(accountUsageScopes, todayDateKey(timezone))
+  const usageByAccount = loadAccountListStatsMap('account_usage_total', () => loadAccountUsageSummariesForScopes(accountUsageScopes))
+  const todayUsageByAccount = loadAccountListStatsMap('account_usage_today', () => loadAccountUsageSummariesForScopes(accountUsageScopes, todayDateKey(timezone)))
   const authorizationStatsByAccount = loadResourceAuthorizationStatsByResourceIds('account', accountIds)
   const authorizationScopes = rows
     .filter((row) => row.authorization_id)
     .map((row) => usageScope(row.authorization_id ?? '', row.system_account_id, row.authorization_id ?? ''))
-  const usageByAuthorization = loadAccountAuthorizationUsageSummaries(authorizationScopes)
-  const todayUsageByAuthorization = loadAccountAuthorizationUsageSummaries(authorizationScopes, todayDateKey(timezone))
+  const usageByAuthorization = loadAccountListStatsMap('account_authorization_usage_total', () => loadAccountAuthorizationUsageSummaries(authorizationScopes))
+  const todayUsageByAuthorization = loadAccountListStatsMap('account_authorization_usage_today', () => loadAccountAuthorizationUsageSummaries(authorizationScopes, todayDateKey(timezone)))
   const quotaExceededByAuthorization = loadAuthorizationQuotaExceededByAuthorizationId(rows)
   const sourcesByAuthorization = loadResourceAuthorizationSourcesByAuthorizationIds(rows.map((row) => row.authorization_id ?? ''))
-  const oauthUsageByAccount = loadOpenAICodexUsageSnapshotsByAccountIds(rows.map((row) => accountResourceFactAccountId(row)))
+  const oauthUsageByAccount = loadAccountListStatsMap('account_oauth_usage_snapshot', () => loadOpenAICodexUsageSnapshotsByAccountIds(rows.map((row) => accountResourceFactAccountId(row))))
   const apiKeyRuntimeByAccount = loadAccountApiKeyRuntimeSummariesByAccountIds(accountIds)
   const ownerAccountIds = includeCredentials
     ? rows.filter((row) => (row.access_type ?? 'owner') !== 'authorized').map((row) => row.id)
@@ -862,6 +1390,66 @@ function accountSummariesFromRows(
       authorizationTeamCount: isAuthorizedView ? 0 : authorizationStats.authorizationTeamCount
     })
   })
+}
+
+function loadAccountListStatsMap<T>(
+  lookupName: string,
+  loader: () => Map<string, T>
+): Map<string, T> {
+  if (isSqliteReadWorkerProcess() && !existsSync(statsDatabasePath())) {
+    return new Map()
+  }
+  try {
+    return runWithSqliteBusyTimeout(getStatsDatabase(), accountListStatsBusyTimeoutMs, loader)
+  } catch (error) {
+    if (isSqliteReadWorkerProcess() && isMissingStatsDecoratorTableError(error)) {
+      return new Map()
+    }
+    if (!isSqliteDatabaseLocked(error)) {
+      throw error
+    }
+    throw accountListStatsBusyError(lookupName, error)
+  }
+}
+
+function loadAccountListQuotaCosts(
+  checks: RequestQuotaCostInput[]
+): Map<string, RequestQuotaCosts> {
+  if (isSqliteReadWorkerProcess() && !existsSync(statsDatabasePath())) {
+    return new Map()
+  }
+  try {
+    const statsDatabase = getStatsDatabase()
+    return runWithSqliteBusyTimeout(
+      statsDatabase,
+      accountListStatsBusyTimeoutMs,
+      () => loadRequestQuotaCostsBatch(statsDatabase, checks)
+    )
+  } catch (error) {
+    if (isSqliteReadWorkerProcess() && isMissingStatsDecoratorTableError(error)) {
+      return new Map()
+    }
+    if (!isSqliteDatabaseLocked(error)) {
+      throw error
+    }
+    throw accountListStatsBusyError('authorization_quota_costs', error)
+  }
+}
+
+function accountListStatsBusyError(lookupName: string, cause: unknown): Error {
+  const error = new Error(`AI 账户列表统计装饰读取遇到 SQLite 忙锁：${lookupName}，已等待 ${accountListStatsBusyTimeoutMs}ms，未返回伪造空统计`)
+  ;(error as Error & { code?: string; cause?: unknown }).code = 'SQLITE_BUSY'
+  ;(error as Error & { code?: string; cause?: unknown }).cause = cause
+  return error
+}
+
+function isSqliteReadWorkerProcess(): boolean {
+  return process.env.JUHE_AI_SQLITE_READ_WORKER === 'true'
+}
+
+function isMissingStatsDecoratorTableError(error: unknown): boolean {
+  return error instanceof Error
+    && (/no such table:/i.test(error.message) || /unable to open database file/i.test(error.message))
 }
 
 export function accountGroupBinding(accountId: string, systemAccountId: string): { groupId: string; groupName: string; groupBindStatus: AccountGroupBindStatus } | undefined {
@@ -1020,7 +1608,7 @@ export function loadAuthorizationQuotaExceededByAuthorizationId(rows: AccountLis
     })
   }
   if (!checks.length) return output
-  const costsByKey = loadRequestQuotaCostsBatch(getStatsDatabase(), checks.map((check) => check.input))
+  const costsByKey = loadAccountListQuotaCosts(checks.map((check) => check.input))
   for (const check of checks) {
     const costs = costsByKey.get(requestQuotaCostKey(check.input))
     if (costs && isRequestQuotaExceeded(check.limits, costs)) {

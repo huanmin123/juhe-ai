@@ -1,13 +1,38 @@
 import type { AccountRuntimeAvailability, AccountSummary, GroupSummary } from '../../../domain/types.js'
 import { accountSummaryWithEffectiveAvailability } from '../../../domain/account-effective-availability.js'
+import { runtimeConfig } from '../../../config/runtime.js'
+import { loadAccountCurrentConcurrencyByIdsAsync } from '../../../shared/account-concurrency.js'
 import { requestServerAccountConcurrencySnapshot, requestServerAccountRuntimeSnapshot } from '../../db-service/db-service-ipc.js'
 
 type AccountConcurrencySnapshot = Record<string, number>
 type AccountRuntimeAvailabilitySnapshot = Record<string, AccountRuntimeAvailability>
+type AccountRuntimeSnapshot = {
+  accountConcurrency?: AccountConcurrencySnapshot
+  accountRuntimeAvailability?: AccountRuntimeAvailabilitySnapshot
+}
+
+interface RuntimeSnapshotCache<T> {
+  value?: T
+  updatedAtMs: number
+  refreshStartedAtMs: number
+  refresh?: Promise<T | undefined>
+}
 
 export interface AccountRuntimeSnapshotStatus {
   accountConcurrencyAvailable: boolean
   accountRuntimeAvailabilityAvailable: boolean
+}
+
+const serverRuntimeSnapshotCacheTtlMs = 300
+const serverRuntimeSnapshotMaxStaleMs = 5_000
+const serverRuntimeSnapshotRefreshMinIntervalMs = 100
+const accountConcurrencySnapshotCache: RuntimeSnapshotCache<AccountConcurrencySnapshot> = {
+  updatedAtMs: 0,
+  refreshStartedAtMs: 0
+}
+const accountRuntimeSnapshotCache: RuntimeSnapshotCache<AccountRuntimeSnapshot> = {
+  updatedAtMs: 0,
+  refreshStartedAtMs: 0
 }
 
 export async function applyServerAccountConcurrencyToAccountList<T extends { items: AccountSummary[] }>(
@@ -21,6 +46,9 @@ export async function applyServerAccountConcurrencyToAccountList<T extends { ite
         accountRuntimeAvailabilityAvailable: true
       }
     }
+  }
+  if (runtimeConfig.runtimeStateDriver === 'redis') {
+    return await applyRedisAccountRuntimeToAccountList(result)
   }
   const runtime = await loadServerAccountRuntimeSnapshot()
   if (!runtime?.accountConcurrency) {
@@ -48,6 +76,16 @@ export async function applyServerAccountConcurrencyToAccountList<T extends { ite
 }
 
 export async function applyServerAccountRuntimeToAccount(account: AccountSummary): Promise<AccountSummary> {
+  if (runtimeConfig.runtimeStateDriver === 'redis') {
+    const [concurrency, runtime] = await Promise.all([
+      loadRedisAccountConcurrencySnapshot([accountConcurrencySnapshotId(account)]),
+      loadServerAccountRuntimeSnapshot()
+    ])
+    const withConcurrency = concurrency
+      ? applyAccountConcurrency(account, concurrency)
+      : markAccountConcurrencyUnavailable(account)
+    return applyAccountRuntimeAvailability(withConcurrency, runtime?.accountRuntimeAvailability)
+  }
   const runtime = await loadServerAccountRuntimeSnapshot()
   if (!runtime?.accountConcurrency && !runtime?.accountRuntimeAvailability) {
     return account
@@ -62,24 +100,19 @@ export async function applyServerAccountConcurrencyToGroups(groups: GroupSummary
   if (!groupsRequireServerConcurrencySnapshot(groups)) {
     return groups
   }
+  if (runtimeConfig.runtimeStateDriver === 'redis') {
+    const accountIds = groups.flatMap((group) => group.accessType === 'authorized' ? [] : group.accountIds)
+    const concurrency = await loadRedisAccountConcurrencySnapshot(accountIds)
+    if (!concurrency) {
+      return groups.map(markGroupConcurrencyUnavailable)
+    }
+    return applyAccountConcurrencyToGroups(groups, concurrency)
+  }
   const concurrency = await loadServerAccountConcurrencySnapshot()
   if (!concurrency) {
     return groups.map(markGroupConcurrencyUnavailable)
   }
-  return groups.map((group) => {
-    if (group.accessType === 'authorized') {
-      return group
-    }
-    const currentConcurrency = sumCurrentConcurrency(group.accountIds, concurrency)
-    return {
-      ...group,
-      accountStats: {
-        ...group.accountStats,
-        currentConcurrency,
-        currentConcurrencyAvailable: true
-      }
-    }
-  })
+  return applyAccountConcurrencyToGroups(groups, concurrency)
 }
 
 export async function applyServerAccountConcurrencyToGroupList<T extends { items: GroupSummary[] }>(
@@ -97,22 +130,123 @@ export async function applyServerAccountConcurrencyToGroupList<T extends { items
 }
 
 async function loadServerAccountConcurrencySnapshot(): Promise<AccountConcurrencySnapshot | undefined> {
-  return await requestServerAccountConcurrencySnapshot(80).catch(() => undefined)
+  return await loadCachedServerRuntimeSnapshot(accountConcurrencySnapshotCache, () => requestServerAccountConcurrencySnapshot(80))
 }
 
-async function loadServerAccountRuntimeSnapshot(): Promise<{
-  accountConcurrency?: AccountConcurrencySnapshot
-  accountRuntimeAvailability?: AccountRuntimeAvailabilitySnapshot
-} | undefined> {
-  return await requestServerAccountRuntimeSnapshot(80).catch(() => undefined)
+async function loadServerAccountRuntimeSnapshot(): Promise<AccountRuntimeSnapshot | undefined> {
+  return await loadCachedServerRuntimeSnapshot(accountRuntimeSnapshotCache, () => requestServerAccountRuntimeSnapshot(80))
+}
+
+async function loadCachedServerRuntimeSnapshot<T>(
+  cache: RuntimeSnapshotCache<T>,
+  loader: () => Promise<T | undefined>
+): Promise<T | undefined> {
+  if (runtimeConfig.processRole !== 'db-service') {
+    return undefined
+  }
+  const now = Date.now()
+  if (cache.value && now - cache.updatedAtMs <= serverRuntimeSnapshotCacheTtlMs) {
+    return cache.value
+  }
+  if (cache.value && now - cache.updatedAtMs <= serverRuntimeSnapshotMaxStaleMs) {
+    scheduleServerRuntimeSnapshotRefresh(cache, loader, now)
+    return cache.value
+  }
+  if (cache.refresh) {
+    return await cache.refresh
+  }
+  cache.refresh = refreshServerRuntimeSnapshotCache(cache, loader, now)
+    .finally(() => {
+      cache.refresh = undefined
+    })
+  return await cache.refresh
+}
+
+function scheduleServerRuntimeSnapshotRefresh<T>(
+  cache: RuntimeSnapshotCache<T>,
+  loader: () => Promise<T | undefined>,
+  now = Date.now()
+): void {
+  if (cache.refresh || now - cache.refreshStartedAtMs < serverRuntimeSnapshotRefreshMinIntervalMs) {
+    return
+  }
+  cache.refresh = refreshServerRuntimeSnapshotCache(cache, loader, now)
+    .catch(() => undefined)
+    .finally(() => {
+      cache.refresh = undefined
+    })
+}
+
+async function refreshServerRuntimeSnapshotCache<T>(
+  cache: RuntimeSnapshotCache<T>,
+  loader: () => Promise<T | undefined>,
+  now = Date.now()
+): Promise<T | undefined> {
+  cache.refreshStartedAtMs = now
+  const value = await loader().catch(() => undefined)
+  if (value !== undefined) {
+    cache.value = value
+    cache.updatedAtMs = Date.now()
+  }
+  return value ?? cache.value
+}
+
+async function applyRedisAccountRuntimeToAccountList<T extends { items: AccountSummary[] }>(
+  result: T
+): Promise<T & { runtimeSnapshot: AccountRuntimeSnapshotStatus }> {
+  const [concurrency, runtime] = await Promise.all([
+    loadRedisAccountConcurrencySnapshot(accountConcurrencySnapshotIds(result.items)),
+    loadServerAccountRuntimeSnapshot()
+  ])
+  const runtimeAvailability = runtime?.accountRuntimeAvailability
+  return {
+    ...result,
+    runtimeSnapshot: {
+      accountConcurrencyAvailable: Boolean(concurrency),
+      accountRuntimeAvailabilityAvailable: Boolean(runtimeAvailability)
+    },
+    items: result.items.map((account) => {
+      const withConcurrency = concurrency
+        ? applyAccountConcurrency(account, concurrency)
+        : markAccountConcurrencyUnavailable(account)
+      return applyAccountRuntimeAvailability(withConcurrency, runtimeAvailability)
+    })
+  }
+}
+
+async function loadRedisAccountConcurrencySnapshot(accountIds: string[]): Promise<AccountConcurrencySnapshot | undefined> {
+  try {
+    const concurrencyByAccount = await loadAccountCurrentConcurrencyByIdsAsync(accountIds)
+    return Object.fromEntries(concurrencyByAccount.entries())
+  } catch {
+    return undefined
+  }
 }
 
 function applyAccountConcurrency(account: AccountSummary, concurrency: AccountConcurrencySnapshot): AccountSummary {
   return {
     ...account,
-    currentConcurrency: concurrency[account.id] ?? 0,
+    currentConcurrency: numberValue(concurrency[accountConcurrencySnapshotId(account)]),
     currentConcurrencyAvailable: true
   }
+}
+
+function accountConcurrencySnapshotIds(accounts: AccountSummary[]): string[] {
+  const result: string[] = []
+  const seen = new Set<string>()
+  for (const account of accounts) {
+    const accountId = accountConcurrencySnapshotId(account)
+    if (!accountId || seen.has(accountId)) {
+      continue
+    }
+    seen.add(accountId)
+    result.push(accountId)
+  }
+  return result
+}
+
+function accountConcurrencySnapshotId(account: AccountSummary): string {
+  return account.authorizationInstanceSourceAccountId || account.id
 }
 
 function applyAccountRuntimeAvailability(
@@ -151,6 +285,23 @@ function markGroupConcurrencyUnavailable(group: GroupSummary): GroupSummary {
   }
 }
 
+function applyAccountConcurrencyToGroups(groups: GroupSummary[], concurrency: AccountConcurrencySnapshot): GroupSummary[] {
+  return groups.map((group) => {
+    if (group.accessType === 'authorized') {
+      return group
+    }
+    const currentConcurrency = sumCurrentConcurrency(group.accountIds, concurrency)
+    return {
+      ...group,
+      accountStats: {
+        ...group.accountStats,
+        currentConcurrency,
+        currentConcurrencyAvailable: true
+      }
+    }
+  })
+}
+
 function accountsRequireServerConcurrencySnapshot(accounts: AccountSummary[]): boolean {
   return accounts.length > 0
 }
@@ -176,7 +327,12 @@ function accountRuntimeAvailabilityKey(account: AccountSummary): string {
 function sumCurrentConcurrency(accountIds: string[], concurrency: AccountConcurrencySnapshot): number {
   let total = 0
   for (const accountId of new Set(accountIds.filter(Boolean))) {
-    total += concurrency[accountId] ?? 0
+    total += numberValue(concurrency[accountId])
   }
   return total
+}
+
+function numberValue(value: unknown): number {
+  const number = typeof value === 'string' ? Number(value.trim()) : value
+  return typeof number === 'number' && Number.isFinite(number) ? number : 0
 }

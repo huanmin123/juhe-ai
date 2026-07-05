@@ -71,6 +71,7 @@ try {
   assert.equal(detail.trustedComparison, true)
   assert.equal(detail.trustedComparisonAvailable, true)
   assert.equal(detail.level, 'high_confidence', '可信对比通过后应允许高可信')
+  assert(!detail.checks.some((item) => item.itemType === 'model_catalog'), '可信对比检测不应生成本地模型目录检测项')
   assert(detail.checks.some((item) => item.itemKey === 'trusted_comparison.responses_basic' && item.status === 'passed'), '应记录可信对比基础探针')
   assert(detail.checks.some((item) => item.itemKey === 'trusted_comparison.long_context' && item.status === 'passed'), '可信对比也应执行长上下文探针')
   assert(detail.checks.some((item) => item.itemKey === 'trusted_comparison.comparison' && item.status === 'passed'), '应记录可信对比汇总项')

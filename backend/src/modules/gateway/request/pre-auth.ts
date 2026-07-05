@@ -27,8 +27,8 @@ import {
 import { resolveOpenAIGatewayRequestLane } from '../protocols/openai-v1/request-lane.js'
 import { GEMINI_PROTOCOL_CODE } from '../../../domain/provider-protocol.js'
 import {
-  inspectGatewayPreAuthCircuit,
-  recordGatewayPreAuthFailure,
+  inspectGatewayPreAuthCircuitAsync,
+  recordGatewayPreAuthFailureAsync,
   type GatewayCircuitDecision,
   type GatewayPreAuthFailureReason
 } from '../runtime/client-ip-error-circuit.service.js'
@@ -36,6 +36,10 @@ import {
   gatewayProtocolClientErrorProtocolForRequest,
   isGatewayProtocolNativeRequest
 } from '../protocols/registry.js'
+import { isOpenAIModelsRequest } from '../protocols/openai-v1/route-helpers.js'
+import { isAnthropicModelsRequest } from '../protocols/anthropic-v1/route-helpers.js'
+import { isGeminiModelsRequest } from '../protocols/gemini-v1beta/route-helpers.js'
+import { errorLogFields } from '../../../shared/logger.js'
 
 export type GatewayRuntimeRequest = Request & {
   gatewayRuntime?: DbServiceGatewayRuntime
@@ -52,6 +56,10 @@ export async function preResolveGatewayRuntime(
   next: NextFunction
 ): Promise<void> {
   try {
+    if (isGatewayModelsRequest(req)) {
+      next()
+      return
+    }
     const runtime = await resolveGatewayRuntimeAsync(req, res, {
       closeConnectionOnAuthFailure: true,
       inspectClientIpPolicyAfterRuntime: false
@@ -64,7 +72,7 @@ export async function preResolveGatewayRuntime(
       sendEarlyImageGenerationDisabledResponse(req, res)
       return
     }
-    if (await rejectCachedClientIpBlacklist(req, res, extractClientIp(req), { closeConnectionOnAuthFailure: true }, { cacheOnly: false })) {
+    if (await rejectCachedClientIpBlacklist(req, res, extractClientIp(req), { closeConnectionOnAuthFailure: true }, { cacheOnly: true })) {
       return
     }
     req.gatewayRuntime = runtime
@@ -88,7 +96,7 @@ export async function resolveGatewayRuntimeAsync(
   if (await rejectCachedClientIpBlacklist(req, res, clientIp, options, { cacheOnly: true })) {
     return undefined
   }
-  const preAuthDecision = inspectGatewayPreAuthCircuit({ clientIp, authorization: gatewayAuthSource })
+  const preAuthDecision = await inspectGatewayPreAuthCircuitAsync({ clientIp, authorization: gatewayAuthSource })
   if (preAuthDecision.blocked) {
     getRequestLogger().warn({
       event: 'gateway_pre_auth_error_circuit_blocked',
@@ -103,7 +111,7 @@ export async function resolveGatewayRuntimeAsync(
   }
   const gatewayApiKey = extractGatewayApiKey(req, authorization)
   if (!gatewayApiKey) {
-    const failureDecision = recordPreAuthFailure(req, res, 'missing_bearer_token', options)
+    const failureDecision = await recordPreAuthFailure(req, res, 'missing_bearer_token', options)
     if (failureDecision.blocked) {
       return undefined
     }
@@ -121,7 +129,7 @@ export async function resolveGatewayRuntimeAsync(
 
   const runtime = await readCachedGatewayRuntimeAsync(gatewayApiKey)
   if (!runtime.apiKey) {
-    const failureDecision = recordPreAuthFailure(req, res, 'invalid_api_key', options)
+    const failureDecision = await recordPreAuthFailure(req, res, 'invalid_api_key', options)
     if (failureDecision.blocked) {
       return undefined
     }
@@ -136,7 +144,7 @@ export async function resolveGatewayRuntimeAsync(
     })
     return undefined
   }
-  if (options.inspectClientIpPolicyAfterRuntime !== false && await rejectCachedClientIpBlacklist(req, res, clientIp, options, { cacheOnly: false })) {
+  if (options.inspectClientIpPolicyAfterRuntime !== false && await rejectCachedClientIpBlacklist(req, res, clientIp, options, { cacheOnly: true })) {
     return undefined
   }
 
@@ -164,29 +172,36 @@ async function rejectCachedClientIpBlacklist(
   if (!ipPolicyDecision.blocked || !ipPolicyDecision.blacklistPolicy) {
     return false
   }
+  const blacklistPolicy = ipPolicyDecision.blacklistPolicy
   getRequestLogger().warn({
     event: 'gateway_client_ip_blacklist_blocked',
-    policyId: ipPolicyDecision.blacklistPolicy.id,
-    ipHash: ipPolicyDecision.blacklistPolicy.ipHash,
+    policyId: blacklistPolicy.id,
+    ipHash: blacklistPolicy.ipHash,
     endpoint: `${req.method.toUpperCase()} ${sanitizeUrlForLog(req.originalUrl)}`
   }, '网关来源 IP 命中管理员封禁')
-  recordClientIpPolicyHitAsync(ipPolicyDecision.blacklistPolicy)
+  recordClientIpPolicyHitAsync(blacklistPolicy).catch((error) => {
+    getRequestLogger().warn(errorLogFields(error, {
+      event: 'gateway_client_ip_blacklist_hit_record_failed',
+      policyId: blacklistPolicy.id,
+      ipHash: blacklistPolicy.ipHash
+    }), '记录 IP 封禁命中失败，已继续返回封禁响应')
+  })
   prepareEarlyAuthFailureResponse(res, options)
   sendClientIpBlacklistResponse(req, res, {
-    reason: ipPolicyDecision.blacklistPolicy.reason,
-    clientIp: ipPolicyDecision.normalizedIp?.clientIp ?? ipPolicyDecision.blacklistPolicy.clientIp,
-    aggregateIpKey: ipPolicyDecision.normalizedIp?.aggregateIpKey ?? ipPolicyDecision.blacklistPolicy.aggregateIpKey
+    reason: blacklistPolicy.reason,
+    clientIp: ipPolicyDecision.normalizedIp?.clientIp ?? blacklistPolicy.clientIp,
+    aggregateIpKey: ipPolicyDecision.normalizedIp?.aggregateIpKey ?? blacklistPolicy.aggregateIpKey
   })
   return true
 }
 
-function recordPreAuthFailure(
+async function recordPreAuthFailure(
   req: Request,
   res: Response,
   reason: GatewayPreAuthFailureReason,
   options: ResolveGatewayRuntimeOptions
-): GatewayCircuitDecision {
-  const decision = recordGatewayPreAuthFailure({
+): Promise<GatewayCircuitDecision> {
+  const decision = await recordGatewayPreAuthFailureAsync({
     clientIp: extractClientIp(req),
     authorization: gatewayPreAuthSource(req, req.header('authorization')),
     reason
@@ -206,7 +221,7 @@ function recordPreAuthFailure(
   return decision
 }
 
-function extractGatewayApiKey(req: Request, authorization?: string): string | undefined {
+export function extractGatewayApiKey(req: Request, authorization?: string): string | undefined {
   return extractBearerToken(authorization)
     ?? headerToken(req, 'x-api-key')
     ?? geminiNativeGatewayApiKey(req)
@@ -233,6 +248,10 @@ function geminiNativeGatewayApiKey(req: Request): string | undefined {
     return undefined
   }
   return headerToken(req, 'x-goog-api-key') ?? queryToken(req, 'key')
+}
+
+function isGatewayModelsRequest(req: Request): boolean {
+  return isOpenAIModelsRequest(req) || isAnthropicModelsRequest(req) || isGeminiModelsRequest(req)
 }
 
 function queryToken(req: Request, name: string): string | undefined {

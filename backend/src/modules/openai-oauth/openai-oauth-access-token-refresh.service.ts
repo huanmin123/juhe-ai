@@ -1,9 +1,13 @@
+import { createHash, randomBytes } from 'node:crypto'
+
 import type { AccountSummary } from '../../domain/types.js'
 import { isGptVendorCode, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { createAppCache } from '../../shared/cache.js'
 import { registerGatewayRuntimeCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { getRedisClient, type RedisCommandClient } from '../../shared/redis-client.js'
+import { createRuntimeStateStore } from '../../shared/runtime-state-store.js'
 import { fixedRetryPolicy, retryAttemptCount, retryDueAtMs, shouldRetryPolicyAttempt } from '../../shared/retry-policy.js'
 import {
   clearAccountFailureState,
@@ -57,9 +61,17 @@ const oauthTokenRefreshFailureThreshold = 3
 export const OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE = 'oauth_token_refresh_failed'
 const openAIOAuthRefreshRaceRetryPolicy = fixedRetryPolicy('openai_oauth_access_token_refresh_race', 0, 1)
 const internalOpenAIOAuthRefreshAccess: AccessScope = { systemAccountId: 'sys_admin', role: 'super_admin' }
-const refreshFailureStateByAccountId = new Map<string, { count: number; backoffUntil: number }>()
+interface OpenAIOAuthRefreshFailureState {
+  count: number
+  backoffUntil: number
+}
+
+const refreshFailureStateByAccountId = new Map<string, OpenAIOAuthRefreshFailureState>()
 const refreshQueueByAccountId = new Map<string, Promise<void>>()
 const recentRefreshTtlMs = 30_000
+const openAIOAuthRefreshFailureStateTtlMs = 7 * 24 * 60 * 60 * 1000
+const openAIOAuthRefreshLockTtlMs = 90_000
+const openAIOAuthRefreshLockWaitMs = 30_000
 const recentRefreshByAccountId = createAppCache<string, OpenAIOAuthRefreshAccount>({
   name: 'openai-oauth:recent-refresh',
   max: 5000,
@@ -239,16 +251,17 @@ export async function refreshDueOpenAIOAuthAccessTokens(
   const retryBackoffPolicy = fixedRetryPolicy('openai_oauth_access_token_refresh_backoff', retryBackoffMs)
   cleanupRefreshFailureBackoff(now)
   const accountIdFilter = normalizedRefreshAccountIdSet(options.accountIds)
+  const candidateFetchLimit = refreshCandidateFetchLimit(batchSize)
 
   const dueAccounts = (runtimeConfig.databaseDriver === 'postgres'
     ? await listOpenAIOAuthAccountsDueForAccessTokenRefreshAsync({
       leadSeconds,
-      limit: batchSize + refreshFailureStateByAccountId.size,
+      limit: candidateFetchLimit,
       stoppedErrorCode: OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE
     })
     : listOpenAIOAuthAccountsDueForAccessTokenRefresh({
     leadSeconds,
-    limit: batchSize + refreshFailureStateByAccountId.size,
+    limit: candidateFetchLimit,
     stoppedErrorCode: OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE
     })).filter((account) =>
     (!accountIdFilter || accountIdFilter.has(account.id)) &&
@@ -268,7 +281,7 @@ export async function refreshDueOpenAIOAuthAccessTokens(
 
   const candidates: AccountSummary[] = []
   for (const account of dueAccounts) {
-    const failureState = refreshFailureStateByAccountId.get(account.id)
+    const failureState = await readRefreshFailureState(account.id, now)
     if (failureState?.backoffUntil !== undefined && failureState.backoffUntil > now) {
       result.skippedBackoff += 1
       continue
@@ -281,14 +294,14 @@ export async function refreshDueOpenAIOAuthAccessTokens(
   for (const account of candidates) {
     try {
       await refreshOpenAIOAuthAccountAccessToken(account, { force: false, leadSeconds, restoreFailureState: false, persistMode })
-      refreshFailureStateByAccountId.delete(account.id)
+      await clearRefreshFailureState(account.id)
       await restoreOpenAIOAuthTokenRefreshFailureIfRecovered(account, persistMode)
       result.refreshed += 1
     } catch (error) {
       result.failed += 1
       const expiredOrMissing = isAccessTokenExpiredOrMissing(account.credentials, Date.now())
       const message = errorMessage(error)
-      const failureState = recordRefreshFailure(account.id, retryDueAtMs(retryBackoffPolicy))
+      const failureState = await recordRefreshFailure(account.id, retryDueAtMs(retryBackoffPolicy))
       logger.warn(errorLogFields(error, {
         event: 'openai_oauth_access_token_refresh_account_failed',
         accountId: account.id,
@@ -306,7 +319,7 @@ export async function refreshDueOpenAIOAuthAccessTokens(
         }, persistMode)
         if (updated.updated) {
           clearGatewayRuntimeCache()
-          refreshFailureStateByAccountId.delete(account.id)
+          await clearRefreshFailureState(account.id)
           result.exceptioned += 1
         }
       }
@@ -363,7 +376,21 @@ function parseCredentialExpiresAt(credentials: Record<string, unknown>): number 
   return Number.isFinite(expiresAt) ? expiresAt : undefined
 }
 
-function recordRefreshFailure(accountId: string, backoffUntil: number): { count: number; backoffUntil: number } {
+async function recordRefreshFailure(accountId: string, backoffUntil: number): Promise<OpenAIOAuthRefreshFailureState> {
+  if (runtimeConfig.runtimeStateDriver === 'redis') {
+    const result = await (await redisStateClient()).eval(redisRecordRefreshFailureScript, {
+      keys: [redisRefreshFailureStateKey(accountId)],
+      arguments: [
+        String(Math.max(0, Math.trunc(backoffUntil))),
+        String(openAIOAuthRefreshFailureStateTtlMs)
+      ]
+    })
+    const values = numericRedisArray(result)
+    return {
+      count: Math.max(1, Math.trunc(values[0] ?? 1)),
+      backoffUntil: Math.max(0, Math.trunc(values[1] ?? backoffUntil))
+    }
+  }
   const previous = refreshFailureStateByAccountId.get(accountId)
   const next = {
     count: (previous?.count ?? 0) + 1,
@@ -373,7 +400,43 @@ function recordRefreshFailure(accountId: string, backoffUntil: number): { count:
   return next
 }
 
+async function readRefreshFailureState(accountId: string, now: number): Promise<OpenAIOAuthRefreshFailureState | undefined> {
+  if (runtimeConfig.runtimeStateDriver === 'redis') {
+    const rawValue = await (await redisStateClient()).get(redisRefreshFailureStateKey(accountId))
+    if (!rawValue) return undefined
+    try {
+      const parsed = JSON.parse(rawValue) as Partial<OpenAIOAuthRefreshFailureState>
+      const count = typeof parsed.count === 'number' && Number.isFinite(parsed.count) ? Math.max(0, Math.trunc(parsed.count)) : 0
+      const backoffUntil = typeof parsed.backoffUntil === 'number' && Number.isFinite(parsed.backoffUntil) ? Math.max(0, Math.trunc(parsed.backoffUntil)) : 0
+      return {
+        count,
+        backoffUntil: backoffUntil > now ? backoffUntil : 0
+      }
+    } catch {
+      await clearRefreshFailureState(accountId)
+      return undefined
+    }
+  }
+  const failureState = refreshFailureStateByAccountId.get(accountId)
+  if (!failureState) return undefined
+  return {
+    count: failureState.count,
+    backoffUntil: failureState.backoffUntil > now ? failureState.backoffUntil : 0
+  }
+}
+
+async function clearRefreshFailureState(accountId: string): Promise<void> {
+  if (runtimeConfig.runtimeStateDriver === 'redis') {
+    await (await redisStateClient()).del(redisRefreshFailureStateKey(accountId))
+    return
+  }
+  refreshFailureStateByAccountId.delete(accountId)
+}
+
 function cleanupRefreshFailureBackoff(now: number): void {
+  if (runtimeConfig.runtimeStateDriver === 'redis') {
+    return
+  }
   for (const [accountId, failureState] of refreshFailureStateByAccountId.entries()) {
     if (failureState.backoffUntil <= now) {
       refreshFailureStateByAccountId.set(accountId, { ...failureState, backoffUntil: 0 })
@@ -420,6 +483,9 @@ async function restoreOpenAIOAuthTokenRefreshFailureIfRecovered(account: Account
 }
 
 async function runWithAccountRefreshLock<T>(accountId: string, task: () => Promise<T>): Promise<T> {
+  if (runtimeConfig.runtimeStateDriver === 'redis') {
+    return runWithRedisAccountRefreshLock(accountId, task)
+  }
   const previous = refreshQueueByAccountId.get(accountId) ?? Promise.resolve()
   const ready = previous.catch(() => undefined)
   let release: () => void = () => {}
@@ -435,6 +501,28 @@ async function runWithAccountRefreshLock<T>(accountId: string, task: () => Promi
     if (refreshQueueByAccountId.get(accountId) === current) {
       refreshQueueByAccountId.delete(accountId)
     }
+  }
+}
+
+async function runWithRedisAccountRefreshLock<T>(accountId: string, task: () => Promise<T>): Promise<T> {
+  const lockStore = createRuntimeStateStore('openai-oauth:refresh-locks')
+  const token = randomBytes(16).toString('hex')
+  const deadline = Date.now() + openAIOAuthRefreshLockWaitMs
+  while (!await lockStore.acquireLock(accountId, { ttlMs: openAIOAuthRefreshLockTtlMs, token })) {
+    if (Date.now() >= deadline) {
+      throw new Error('OpenAI OAuth 账户正在其他节点刷新，请稍后重试')
+    }
+    await delay(250)
+  }
+  try {
+    return await task()
+  } finally {
+    await lockStore.releaseLock(accountId, token).catch((error) => {
+      logger.error(errorLogFields(error, {
+        event: 'openai_oauth_access_token_refresh_lock_release_failed',
+        accountId
+      }), 'OpenAI OAuth Redis 刷新锁释放失败')
+    })
   }
 }
 
@@ -527,6 +615,12 @@ function resolveRefreshProxyUrl(account: OpenAIOAuthRefreshAccount, persistMode:
 }
 
 function effectivePersistMode(options: OpenAIOAuthAccountRefreshCallOptions): 'sync' | 'db-service' {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    if (options.persistMode === 'sync') {
+      throw new Error('高性能 PostgreSQL 模式禁止 OpenAI OAuth sync persistMode，必须通过 DB service 持久化')
+    }
+    return 'db-service'
+  }
   return options.persistMode ?? (runtimeConfig.processRole === 'server' || runtimeConfig.processRole === 'worker' ? 'db-service' : 'sync')
 }
 
@@ -657,3 +751,61 @@ function optionInteger(value: unknown, label: string, min: number, max: number):
 }
 
 registerGatewayRuntimeCacheInvalidator(clearOpenAIOAuthRecentRefreshCache)
+
+function refreshCandidateFetchLimit(batchSize: number): number {
+  if (runtimeConfig.runtimeStateDriver !== 'redis') {
+    return batchSize + refreshFailureStateByAccountId.size
+  }
+  return 500
+}
+
+function redisStateClient(): Promise<RedisCommandClient> {
+  const redisUrl = runtimeConfig.redis.stateUrl
+  if (!redisUrl) {
+    throw new Error('JUHE_AI_REDIS_STATE_URL 在 Redis runtime state driver 下必须配置')
+  }
+  return getRedisClient(redisUrl)
+}
+
+function redisRefreshFailureStateKey(accountId: string): string {
+  return `juhe-ai:state:openai-oauth-refresh-failure:${redisKeyHash(accountId)}`
+}
+
+function redisKeyHash(value: string): string {
+  return createHash('sha256').update(value).digest('base64url')
+}
+
+function numericRedisArray(value: unknown): number[] {
+  if (Array.isArray(value)) {
+    return value.map(numericRedisResult)
+  }
+  return []
+}
+
+function numericRedisResult(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'bigint') return Number(value)
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms))
+}
+
+const redisRecordRefreshFailureScript = `
+local raw = redis.call('GET', KEYS[1])
+local count = 0
+if raw then
+  local ok, decoded = pcall(cjson.decode, raw)
+  if ok and decoded then
+    count = tonumber(decoded['count']) or 0
+  end
+end
+count = count + 1
+local backoff_until = tonumber(ARGV[1])
+local ttl_ms = tonumber(ARGV[2])
+local payload = cjson.encode({ count = count, backoffUntil = backoff_until })
+redis.call('SET', KEYS[1], payload, 'PX', ttl_ms)
+return {count, backoff_until}
+`

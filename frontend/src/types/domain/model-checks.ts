@@ -72,8 +72,8 @@ export interface ModelCheckRunSummary {
   startedAt: string
   finishedAt?: string
   durationMs?: number
-  requestSummary: Record<string, unknown>
-  resultSummary: Record<string, unknown>
+  requestSummary?: Record<string, unknown>
+  resultSummary?: Record<string, unknown>
   errorCode?: string
   errorMessage?: string
   createdAt: string
@@ -98,6 +98,8 @@ export interface ModelCheckCheckResult {
 }
 
 export interface ModelCheckRunDetail extends ModelCheckRunSummary {
+  requestSummary: Record<string, unknown>
+  resultSummary: Record<string, unknown>
   checks: ModelCheckCheckResult[]
 }
 

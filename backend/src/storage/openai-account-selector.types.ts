@@ -80,9 +80,6 @@ export type DispatchAccountSecret = OpenAIAccountSecret
 export interface GroupUsageAccessMetadata {
   groupOwnerSystemAccountId: string
   providerCode: ProviderCode
-  providerProtocolProfileId: string
-  protocolCode: string
-  protocolVersion: string
   groupAccessType: 'owner' | 'authorized'
   groupType?: GroupType
   schedulingPolicy?: GroupSchedulingPolicy

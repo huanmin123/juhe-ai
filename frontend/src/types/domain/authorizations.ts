@@ -57,6 +57,16 @@ export interface AuthorizationSourceSummary {
   updatedAt?: string
 }
 
+export interface AuthorizationSourceListSummary {
+  activeSourceCount: number
+  hasManual: boolean
+  hasTeam: boolean
+  teamSources: Array<{
+    sourceTeamId: string
+    sourceTeamName?: string
+  }>
+}
+
 export interface AuthorizationUserUsageDetail {
   systemAccountId: string
   systemAccountName?: string
@@ -108,8 +118,9 @@ export interface ResourceAuthorizationSummary {
   revokedReason?: string
   createdBy?: string
   revokedBy?: string
-  authorizationSources: AuthorizationSourceSummary[]
-  usage: AccountUsageSummary
+  authorizationSources?: AuthorizationSourceSummary[]
+  sourceSummary?: AuthorizationSourceListSummary
+  usage?: AccountUsageSummary
   lastUsedAt?: string
   usageBySystemAccount?: AuthorizationUserUsageDetail[]
   usageBySystemAccountTotal?: number
@@ -214,5 +225,4 @@ export interface AccountUsageStatsOverview {
   hasMore: boolean
   page: number
   pageSize: number
-  statsLagSeconds?: number
 }

@@ -1,6 +1,6 @@
 import type { AccountSummary, AccountTestResult, AccountTestTask } from '@/types/domain'
 
-import { type AccountTestClientCompatibility, failedAccountTestResult } from './accountTestFlow'
+import { type AccountTestEndpointMode, failedAccountTestResult } from './accountTestFlow'
 import {
   accountTestTaskMaxWaitMs,
   accountTestTaskRemainingWaitMs,
@@ -11,7 +11,7 @@ import {
 interface WaitForAccountTestResultOptions {
   account: AccountSummary
   cancelTask: (taskId: string, account: AccountSummary) => Promise<void>
-  currentClientCompatibility: () => AccountTestClientCompatibility
+  currentTestEndpointMode: () => AccountTestEndpointMode
   currentModel: () => string
   fetchTask: (taskId: string, account: AccountSummary, signal?: AbortSignal) => Promise<AccountTestTask>
   initialTask: AccountTestTask
@@ -24,7 +24,7 @@ export async function waitForAccountTestResult(options: WaitForAccountTestResult
   const {
     account,
     cancelTask,
-    currentClientCompatibility,
+    currentTestEndpointMode,
     currentModel,
     fetchTask,
     onTaskSettled,
@@ -46,7 +46,7 @@ export async function waitForAccountTestResult(options: WaitForAccountTestResult
         account,
         error: new Error(task.message ?? '测试失败'),
         model: task.model ?? currentModel(),
-        clientCompatibility: currentClientCompatibility(),
+        testEndpointMode: currentTestEndpointMode(),
         startedAt: task.startedAt ? Date.parse(task.startedAt) : Date.now()
       })
     }
@@ -56,7 +56,7 @@ export async function waitForAccountTestResult(options: WaitForAccountTestResult
     }
     const timeoutResult = accountTestTaskTimeoutResult({
       account,
-      clientCompatibility: currentClientCompatibility(),
+      testEndpointMode: currentTestEndpointMode(),
       model: currentModel(),
       task
     })
@@ -73,7 +73,7 @@ export async function waitForAccountTestResult(options: WaitForAccountTestResult
 
 export function accountTestTaskTimeoutResult(input: {
   account: AccountSummary
-  clientCompatibility: AccountTestClientCompatibility
+  testEndpointMode: AccountTestEndpointMode
   model: string
   task: AccountTestTask
 }): AccountTestResult | undefined {
@@ -90,7 +90,7 @@ export function accountTestTaskTimeoutResult(input: {
     account: input.account,
     error: new Error(message),
     model: input.task.model ?? input.model,
-    clientCompatibility: input.clientCompatibility,
+    testEndpointMode: input.testEndpointMode,
     startedAt
   })
 }

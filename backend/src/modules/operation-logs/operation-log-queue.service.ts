@@ -1,7 +1,8 @@
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { scheduleProcessFatalError } from '../../shared/process-fatal.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
-import { RedisStreamQueue, type RedisStreamMessage } from '../../shared/redis-stream-queue.js'
+import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime } from '../../shared/redis-stream-queue.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import { newId, nowIso } from '../../storage/database.js'
 import { createOperationLogsBatch, createOperationLogsBatchAsync, type OperationLogInput } from '../../storage/repositories.js'
@@ -46,7 +47,7 @@ interface OperationLogFlushOptions {
 export function enqueueOperationLog(input: OperationLogInput): void {
   const queuedInput = normalizeOperationLogInput(input)
   if (shouldEnqueueOperationLogToRedisStream()) {
-    void enqueueOperationLogToRedisStream(queuedInput)
+    void enqueueOperationLogToRedisStream(queuedInput).catch(scheduleProcessFatalError)
     return
   }
   if (shouldDispatchOperationLogToIngestWorker()) {
@@ -313,7 +314,14 @@ async function enqueueOperationLogToRedisStream(input: OperationLogInput): Promi
   try {
     await operationLogRedisStreamQueue().enqueue(input)
   } catch (error) {
-    recordOperationLogDispatchFailure(error, input)
+    logger.error(errorLogFields(error, {
+      event: 'operation_log_redis_stream_enqueue_failed',
+      operationLogId: input.id,
+      actorSystemAccountId: input.actorSystemAccountId,
+      module: input.module,
+      action: input.action
+    }), '操作日志写入 Redis Stream 失败，高性能模式禁止回退 IPC 或本地队列')
+    throw error
   }
 }
 
@@ -369,6 +377,11 @@ function operationLogRedisStreamQueue(): RedisStreamQueue<OperationLogInput> {
     })
   }
   return operationLogRedisStreamQueueInstance
+}
+
+export async function getOperationLogRedisStreamRuntime(): Promise<RedisStreamQueueRuntime | undefined> {
+  if (!shouldUseRedisStreamOperationLogQueue()) return undefined
+  return await operationLogRedisStreamQueue().inspectRuntime()
 }
 
 export function clearOperationLogQueueForTest(): void {
@@ -455,6 +468,9 @@ function recordOperationLogLocalDrop(item: QueuedOperationLog, reason: 'overflow
 }
 
 function assertLocalOperationLogWriteAllowed(operation: string): void {
+  if (shouldUseRedisStreamOperationLogQueue()) {
+    throw new Error(`Redis Stream queue driver 下禁止写入操作日志本地队列：${operation}`)
+  }
   if (!isOperationLogIngestWorker()) {
     throw new Error(`${runtimeConfig.processRole}/${runtimeConfig.workerRole} 角色禁止直接写入操作日志：${operation} 必须投递 ingest-worker`)
   }
@@ -469,7 +485,7 @@ function shouldUseRedisStreamOperationLogQueue(): boolean {
 }
 
 function shouldEnqueueOperationLogToRedisStream(): boolean {
-  return shouldUseRedisStreamOperationLogQueue() && !isOperationLogIngestWorker()
+  return shouldUseRedisStreamOperationLogQueue()
 }
 
 function shouldDispatchOperationLogToIngestWorker(): boolean {

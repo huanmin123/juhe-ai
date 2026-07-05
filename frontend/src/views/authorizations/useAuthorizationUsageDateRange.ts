@@ -1,6 +1,7 @@
 import type { Dayjs } from 'dayjs'
 import { computed, ref } from 'vue'
 
+import { useUsageStatsWindow } from '@/composables/useUsageStatsWindow'
 import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys, todayDateRange, type DateRangeKeys } from '@/shared/dateRange'
 
 const defaultMaxRangeDays = 31
@@ -10,6 +11,7 @@ export function useAuthorizationUsageDateRange(options: {
   onChange?: () => void | Promise<void>
 } = {}) {
   const maxRangeDays = options.maxRangeDays ?? defaultMaxRangeDays
+  const { usageStatsWindowEndDate, usageStatsWindowMaxDays, loadUsageStatsWindow } = useUsageStatsWindow()
   const dateRange = ref<[Dayjs, Dayjs]>(defaultDateRange())
   const dateRangeExplicit = ref(false)
   const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
@@ -43,7 +45,7 @@ export function useAuthorizationUsageDateRange(options: {
   }
 
   function disabledDate(current: Dayjs) {
-    return isRecentWindowDateDisabled(current, calendarRange.value, maxRangeDays)
+    return isRecentWindowDateDisabled(current, calendarRange.value, usageStatsWindowMaxDays.value || maxRangeDays, usageStatsWindowEndDate.value)
   }
 
   function resetDateRange() {
@@ -75,6 +77,8 @@ export function useAuthorizationUsageDateRange(options: {
   function normalizedDateRange(value: [Dayjs, Dayjs]): [string, string] {
     return normalizeDateRangeKeys(value, { defaultRange: defaultDateRange, maxDays: maxRangeDays })
   }
+
+  void loadUsageStatsWindow()
 
   return {
     dateRange,

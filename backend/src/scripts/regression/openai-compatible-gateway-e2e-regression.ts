@@ -77,7 +77,6 @@ try {
     const group = repositories.createGroup({
       name: '通用 OpenAI 兼容网关 E2E 分组',
       providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
-      providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
       enabled: true
     }, access)
     assert.throws(() => repositories.createAccount({

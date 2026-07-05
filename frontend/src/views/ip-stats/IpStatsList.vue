@@ -8,7 +8,7 @@
     :loading="loading"
     :pagination="tablePagination"
     :pagination-summary="false"
-    :scroll-x="1770"
+    :scroll-x="1790"
     @change="emitTableChange"
   >
     <template #emptyText>
@@ -97,7 +97,7 @@
             <strong>{{ formatCompactInteger(record.rangeUsage.cacheReadTokens) }}</strong>
           </div>
           <div class="mobile-list-meta-item">
-            <span>缓存率</span>
+            <span>缓存读占比</span>
             <strong>{{ formatPercent(cacheReadRate(record.rangeUsage)) }}</strong>
           </div>
           <div class="mobile-list-meta-item">
@@ -145,7 +145,25 @@
             <a-button size="small">解封</a-button>
           </a-popconfirm>
           <a-popconfirm
+            v-else-if="record.status === 'allowlisted'"
+            title="确认将这个 IP 移出白名单？"
+            ok-text="移出"
+            cancel-text="取消"
+            @confirm="emitPolicyAction(record, 'unallowlist')"
+          >
+            <a-button size="small">移出白名单</a-button>
+          </a-popconfirm>
+          <a-popconfirm
             v-else
+            title="确认将这个 IP 加入白名单？"
+            ok-text="加白"
+            cancel-text="取消"
+            @confirm="emitPolicyAction(record, 'allowlist')"
+          >
+            <a-button size="small">加白</a-button>
+          </a-popconfirm>
+          <a-popconfirm
+            v-if="record.status === 'normal'"
             title="确认封禁这个 IP？封禁后该 IP 的公开请求会被拒绝。"
             ok-text="封禁"
             cancel-text="取消"
@@ -200,7 +218,7 @@ function handleRowAction(key: IpStatsRowAction | string, record: ClientIpStatsRo
     emitDetail(record)
     return
   }
-  if (key === 'blacklist' || key === 'unblock') {
+  if (key === 'blacklist' || key === 'unblock' || key === 'allowlist' || key === 'unallowlist') {
     emitPolicyAction(record, key)
   }
 }

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-test-responses-contract-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -22,7 +23,7 @@ logger.level = 'silent'
 const seenResponsesPayloads: Record<string, unknown>[] = []
 
 const [
-  { preferredSystemAccountTestModel, testOpenAIAccount },
+  { preferredSystemAccountTestModelAsync, testOpenAIAccount },
   { flushGatewayAccountSideEffects },
   { flushAllUsageRecordQueue, setDbServiceUsageRecordLocalWriteAllowedForTest },
   databaseModule,
@@ -72,6 +73,7 @@ try {
   )
   const oauthAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '测试 OAuth 固定 Codex 账户',
     type: 'oauth',
     groupId: group.id,
@@ -97,12 +99,13 @@ try {
     access,
     diagnostics: 'full',
     model: 'gpt-5.5',
-    clientCompatibility: 'openai_standard'
+    testEndpointMode: 'responses_sse'
   })
-  assert.equal(oauthTestTask.clientCompatibility, 'codex_responses', 'OpenAI OAuth 测试任务入队时应固定 Codex Responses 兼容')
+  assert.equal(oauthTestTask.testEndpointMode, 'responses_sse', 'OpenAI OAuth 测试任务入队时应保留本次测试 endpoint mode')
 
   const account = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '测试 Responses 当前契约账户',
     type: 'api_key',
     groupId: group.id,
@@ -110,13 +113,13 @@ try {
   }, access)
   assert.equal(account.clientCompatibility, 'codex_responses', 'GPT API Key 账户创建时默认应使用 Codex Responses 兼容')
 
-  assert.equal(preferredSystemAccountTestModel(account), 'gpt-5.5', '无手动成功测试模型时，系统复测应使用供应商默认测试模型')
+  assert.equal(await preferredSystemAccountTestModelAsync(account), 'gpt-5.5', '无手动成功测试模型时，系统复测应使用供应商默认测试模型')
   repositories.recordAccountSuccessfulTestModel(account.id, 'gpt-5.4', access)
   const accountWithSuccessfulModel = repositories.findAccountSummary(account.id, access)
   assert.equal(accountWithSuccessfulModel?.lastSuccessfulTestModel, 'gpt-5.4', '手动测试成功模型应写入账户')
-  assert.equal(preferredSystemAccountTestModel(accountWithSuccessfulModel!), 'gpt-5.4', '系统复测应优先使用手动测试通过模型')
+  assert.equal(await preferredSystemAccountTestModelAsync(accountWithSuccessfulModel!), 'gpt-5.4', '系统复测应优先使用手动测试通过模型')
 
-  const tested = await testOpenAIAccount(account, { model: 'gpt-5.5' })
+  const tested = await testOpenAIAccount(account, { model: 'gpt-5.5', testEndpointMode: 'responses_sse' })
   await flushGatewayAccountSideEffects()
   flushAllUsageRecordQueue()
 
@@ -131,19 +134,13 @@ try {
 
   const defaultModelAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '测试 Responses 默认模型账户',
     type: 'api_key',
     groupId: group.id,
     credentials: { api_key: 'sk-account-test-default-model', base_url: mockBaseUrl }
   }, access)
-  const defaultModelTested = await testOpenAIAccount(defaultModelAccount, {
-    requestShape: {
-      endpoint: '/v1/responses',
-      model: 'gpt-5.4',
-      stream: true,
-      createdAt: new Date().toISOString()
-    }
-  })
+  const defaultModelTested = await testOpenAIAccount(defaultModelAccount, { testEndpointMode: 'responses_sse' })
   await flushGatewayAccountSideEffects()
   flushAllUsageRecordQueue()
   assert.equal(defaultModelTested.success, true, `默认模型账户测试应成功：${defaultModelTested.message}`)
@@ -157,6 +154,7 @@ try {
   })
   const userDefaultModelAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '测试 Responses 用户默认测试模型账户',
     type: 'api_key',
     groupId: group.id,
@@ -164,12 +162,7 @@ try {
   }, access)
   const userDefaultModelTested = await testOpenAIAccount(userDefaultModelAccount, {
     systemAccountId: admin.id,
-    requestShape: {
-      endpoint: '/v1/responses',
-      model: 'gpt-5.4',
-      stream: true,
-      createdAt: new Date().toISOString()
-    }
+    testEndpointMode: 'responses_sse'
   })
   await flushGatewayAccountSideEffects()
   flushAllUsageRecordQueue()
@@ -177,7 +170,7 @@ try {
   assert.equal(userDefaultModelTested.model, 'gpt-5.4-mini', '未显式指定测试模型时，应优先使用当前用户默认测试模型偏好')
   assert.equal(seenResponsesPayloads.at(-1)?.model, 'gpt-5.4-mini', '用户默认测试模型偏好应写入上游测试请求')
 
-  console.log('账户测试 Responses 当前契约回归通过：客户端画像内部推导，API Key 测试不发送 max_output_tokens')
+  console.log('账户测试 Responses 当前契约回归通过：显式 testEndpointMode 生效，API Key 测试不发送 max_output_tokens')
 } finally {
   setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   await closeServer(mockOpenAIServer)

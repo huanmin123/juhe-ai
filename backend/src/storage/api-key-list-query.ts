@@ -37,9 +37,8 @@ export function buildApiKeyFilters(scope: { clause: string; params: string[] }, 
     params.push(...scope.params)
   }
   if (options.keyword) {
-    const keywordPrefix = `${escapeLikePrefix(options.keyword)}%`
-    clauses.push("(api_keys.name COLLATE NOCASE = ? OR api_keys.name LIKE ? ESCAPE '\\')")
-    params.push(options.keyword, keywordPrefix)
+    clauses.push('(api_keys.name >= ? AND api_keys.name < ?)')
+    params.push(options.keyword, textPrefixUpperBound(options.keyword))
   }
   if (options.status) {
     clauses.push('api_keys.status = ?')
@@ -59,6 +58,13 @@ function textFilter(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }
 
-function escapeLikePrefix(value: string): string {
-  return value.replace(/[\\%_]/g, (char) => `\\${char}`)
+function textPrefixUpperBound(value: string): string {
+  const chars = [...value]
+  for (let index = chars.length - 1; index >= 0; index -= 1) {
+    const codePoint = chars[index]?.codePointAt(0)
+    if (codePoint !== undefined && codePoint < 0x10ffff) {
+      return `${chars.slice(0, index).join('')}${String.fromCodePoint(codePoint + 1)}`
+    }
+  }
+  return `${value}\uffff`
 }

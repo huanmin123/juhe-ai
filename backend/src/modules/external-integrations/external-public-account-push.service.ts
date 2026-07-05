@@ -130,6 +130,11 @@ export type {
   PublicGroupUpdateInput
 } from './external-public-account-push.types.js'
 
+const publicResourceOwnerLookupAccess = {
+  systemAccountId: '__public_resource_owner_lookup__',
+  role: 'super_admin' as const
+}
+
 export async function addPublicWelfareAccount(input: PublicAccountPushInput): Promise<PublicAccountPushResponse> {
   const targetPasswordHash = await autoCreatedTargetPasswordHash()
   if (runtimeConfig.databaseDriver !== 'postgres') {
@@ -163,7 +168,7 @@ function writePublicWelfareAccount(input: PublicAccountPushInput, targetPassword
     assertTargetActive(target.account)
 
     const access = targetAccess(target.account.id)
-    const targetGroup = ensureTargetGroup({ access, providerCode, providerProtocolProfileId: providerProfile.id, groupName: input.targetGroupName })
+    const targetGroup = ensureTargetGroup({ access, providerCode, groupName: input.targetGroupName })
     const existing = findTargetAccount({
       access,
       providerCode,
@@ -210,7 +215,7 @@ async function writePublicWelfareAccountAsync(input: PublicAccountPushInput, tar
   assertTargetActive(target.account)
 
   const access = targetAccess(target.account.id)
-  const targetGroup = await ensureTargetGroupAsync({ access, providerCode, providerProtocolProfileId: providerProfile.id, groupName: input.targetGroupName })
+  const targetGroup = await ensureTargetGroupAsync({ access, providerCode, groupName: input.targetGroupName })
   const existing = await findTargetAccountAsync({
     access,
     providerCode,
@@ -456,7 +461,6 @@ export function listPublicWelfareAccounts(input: PublicAccountListInput): Public
   const providerProtocolProfileId = resolveOptionalProviderProtocolProfileId(providerCode, input.providerProtocolProfileId)
   const groupId = resolveAccountListGroupId(access, {
     providerCode,
-    providerProtocolProfileId,
     groupId: input.groupId,
     targetGroupName: input.targetGroupName
   })
@@ -492,7 +496,6 @@ export async function listPublicWelfareAccountsAsync(input: PublicAccountListInp
   const providerProtocolProfileId = await resolveOptionalProviderProtocolProfileIdAsync(providerCode, input.providerProtocolProfileId)
   const groupId = await resolveAccountListGroupIdAsync(access, {
     providerCode,
-    providerProtocolProfileId,
     groupId: input.groupId,
     targetGroupName: input.targetGroupName
   })
@@ -523,45 +526,45 @@ export async function listPublicWelfareAccountsAsync(input: PublicAccountListInp
 export async function addPublicGroup(input: PublicGroupAddInput): Promise<PublicGroupResponse> {
   const providerCode = requiredProviderCode(input.providerCode)
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    const providerProfile = assertProviderEnabled(providerCode, input.providerProtocolProfileId)
+    assertProviderCodeEnabled(providerCode)
     const targetPasswordHash = await autoCreatedTargetPasswordHash()
     return runInDatabaseTransaction(() => {
       const target = ensureTargetSystemAccount(input, targetPasswordHash)
       assertTargetActive(target.account)
       const access = targetAccess(target.account.id)
-      const existing = resolvePublicGroup(access, { name: input.name, providerCode, providerProtocolProfileId: providerProfile.id })
+      const existing = resolvePublicGroup(access, { name: input.name, providerCode })
       if (existing) {
         return publicGroupResponse('existing', target, sanitizeGroup(existing))
       }
-      const group = createGroup({
+      const groupInput: Record<string, unknown> = {
         name: input.name,
         providerCode,
-        providerProtocolProfileId: providerProfile.id,
         description: input.description,
-        enabled: input.enabled,
         groupType: input.groupType ?? 'personal'
-      }, access)
+      }
+      if (input.enabled !== undefined) groupInput.enabled = input.enabled
+      const group = createGroup(groupInput, access)
       return publicGroupResponse('created', target, sanitizeGroup(group))
     }, getBusinessDatabase())
   }
 
-  const providerProfile = await assertProviderEnabledAsync(providerCode, input.providerProtocolProfileId)
+  await assertProviderCodeEnabledAsync(providerCode)
   const targetPasswordHash = await autoCreatedTargetPasswordHash()
   const target = await ensureTargetSystemAccountAsync(input, targetPasswordHash)
   assertTargetActive(target.account)
   const access = targetAccess(target.account.id)
-  const existing = await resolvePublicGroupAsync(access, { name: input.name, providerCode, providerProtocolProfileId: providerProfile.id })
+  const existing = await resolvePublicGroupAsync(access, { name: input.name, providerCode })
   if (existing) {
     return publicGroupResponse('existing', target, sanitizeGroup(existing))
   }
-  const group = await createGroupAsync({
+  const groupInput: Record<string, unknown> = {
     name: input.name,
     providerCode,
-    providerProtocolProfileId: providerProfile.id,
     description: input.description,
-    enabled: input.enabled,
     groupType: input.groupType ?? 'personal'
-  }, access)
+  }
+  if (input.enabled !== undefined) groupInput.enabled = input.enabled
+  const group = await createGroupAsync(groupInput, access)
   return publicGroupResponse('created', target, sanitizeGroup(group))
 }
 
@@ -584,13 +587,10 @@ export function updatePublicGroup(input: PublicGroupUpdateInput): PublicGroupRes
   if (!group) {
     return publicGroupResponse('not_found', target, null)
   }
-  const payloadInput = input.providerCode
-    ? {
-        ...input,
-        providerProtocolProfileId: assertProviderEnabled(input.providerCode, input.providerProtocolProfileId).id
-      }
-    : input
-  const updated = updateGroup(group.id, publicGroupUpdatePayload(payloadInput), access)
+  if (input.providerCode) {
+    assertProviderCodeEnabled(input.providerCode)
+  }
+  const updated = updateGroup(group.id, publicGroupUpdatePayload(input), access)
   if (!updated) {
     return publicGroupResponse('not_found', target, null)
   }
@@ -616,13 +616,10 @@ export async function updatePublicGroupAsync(input: PublicGroupUpdateInput): Pro
   if (!group) {
     return publicGroupResponse('not_found', target, null)
   }
-  const payloadInput = input.providerCode
-    ? {
-        ...input,
-        providerProtocolProfileId: (await assertProviderEnabledAsync(input.providerCode, input.providerProtocolProfileId)).id
-      }
-    : input
-  const updated = await updateGroupAsync(group.id, publicGroupUpdatePayload(payloadInput), access)
+  if (input.providerCode) {
+    await assertProviderCodeEnabledAsync(input.providerCode)
+  }
+  const updated = await updateGroupAsync(group.id, publicGroupUpdatePayload(input), access)
   if (!updated) {
     return publicGroupResponse('not_found', target, null)
   }
@@ -888,6 +885,17 @@ function assertProviderEnabled(providerCode: string, providerProtocolProfileId?:
   return requireProviderProtocolProfile(provider, providerProtocolProfileId)
 }
 
+function assertProviderCodeEnabled(providerCode: string): ProviderDefinition {
+  const provider = listProviders().find((item) => item.code === providerCode)
+  if (!provider) {
+    throw new Error(`不支持的供应商：${providerCode}`)
+  }
+  if (!provider.enabled) {
+    throw new Error(`供应商已停用：${providerCode}`)
+  }
+  return provider
+}
+
 async function assertProviderEnabledAsync(providerCode: string, providerProtocolProfileId?: string): Promise<ProviderProtocolProfileDefinition> {
   const provider = (await listProvidersAsync()).find((item) => item.code === providerCode)
   if (!provider) {
@@ -897,6 +905,17 @@ async function assertProviderEnabledAsync(providerCode: string, providerProtocol
     throw new Error(`供应商已停用：${providerCode}`)
   }
   return requireProviderProtocolProfile(provider, providerProtocolProfileId)
+}
+
+async function assertProviderCodeEnabledAsync(providerCode: string): Promise<ProviderDefinition> {
+  const provider = (await listProvidersAsync()).find((item) => item.code === providerCode)
+  if (!provider) {
+    throw new Error(`不支持的供应商：${providerCode}`)
+  }
+  if (!provider.enabled) {
+    throw new Error(`供应商已停用：${providerCode}`)
+  }
+  return provider
 }
 
 function requireProviderProtocolProfile(provider: ProviderDefinition, providerProtocolProfileId?: string): ProviderProtocolProfileDefinition {
@@ -999,7 +1018,15 @@ async function findTargetAccountByIdAsync(input: {
     return undefined
   }
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return findTargetAccountById(input)
+    const page = await listAccountsPageAsync(input.access, {
+      ids: [accountId],
+      providerCode: input.providerCode,
+      providerProtocolProfileId: input.providerProtocolProfileId,
+      groupId: input.groupId,
+      page: 1,
+      pageSize: 1
+    })
+    return page.items.find((account) => account.id === accountId)
   }
 
   const client = createPostgresDatabaseClient(await getPostgresPool())
@@ -1037,7 +1064,8 @@ function findPublicAccountOwnerById(accountId: string): { id: string; systemAcco
 
 async function findPublicAccountOwnerByIdAsync(accountId: string): Promise<{ id: string; systemAccountId: string } | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return findPublicAccountOwnerById(accountId)
+    const account = await findAccountSummaryAsync(accountId, publicResourceOwnerLookupAccess)
+    return account?.systemAccountId ? { id: account.id, systemAccountId: account.systemAccountId } : undefined
   }
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const row = await client.one<{ id: string; systemAccountId: string }>(`
@@ -1061,7 +1089,8 @@ function findPublicGroupOwnerById(groupId: string): { id: string; systemAccountI
 
 async function findPublicGroupOwnerByIdAsync(groupId: string): Promise<{ id: string; systemAccountId: string } | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return findPublicGroupOwnerById(groupId)
+    const group = await findGroupSummaryAsync(groupId, publicResourceOwnerLookupAccess)
+    return group?.systemAccountId ? { id: group.id, systemAccountId: group.systemAccountId } : undefined
   }
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const row = await client.one<{ id: string; systemAccountId: string }>(`
@@ -1084,7 +1113,8 @@ function findPublicApiKeyOwnerById(apiKeyId: string): { id: string; systemAccoun
 
 async function findPublicApiKeyOwnerByIdAsync(apiKeyId: string): Promise<{ id: string; systemAccountId: string } | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return findPublicApiKeyOwnerById(apiKeyId)
+    const apiKey = await findApiKeySummaryAsync(apiKeyId, publicResourceOwnerLookupAccess)
+    return apiKey?.systemAccountId ? { id: apiKey.id, systemAccountId: apiKey.systemAccountId } : undefined
   }
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const row = await client.one<{ id: string; systemAccountId: string }>(`
@@ -1122,7 +1152,6 @@ function resolvePublicAccountGroupFilter(
   const group = findExistingTargetGroup({
     access,
     providerCode: account.providerCode,
-    providerProtocolProfileId: accountProviderProtocolProfileId,
     groupName
   })
   if (!group) {
@@ -1167,7 +1196,6 @@ async function resolvePublicAccountGroupFilterAsync(
   const group = await findExistingTargetGroupAsync({
     access,
     providerCode: account.providerCode,
-    providerProtocolProfileId: accountProviderProtocolProfileId,
     groupName
   })
   if (!group) {

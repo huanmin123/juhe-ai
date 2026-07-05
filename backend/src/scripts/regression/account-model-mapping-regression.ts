@@ -23,6 +23,10 @@ import {
 import type { AccountModelMapping } from '../../domain/types.js'
 import {
   buildOpenAIModelMappedJsonBody,
+  gatewayRequestEndpointFamily,
+  openAIModelMappedUpstreamPathAndQuery,
+  resolveOpenAIRequestModelMapping,
+  setGatewayModelMappingSourceEndpointFamilyOverride,
   resolveOpenAIAccountModelMapping
 } from '../../modules/gateway/protocols/openai-v1/model-mapping.js'
 import { recordCompletedUpstreamAttempt } from '../../modules/gateway/usage/records.js'
@@ -77,6 +81,7 @@ const anthropicMessagesUpstreamModel = 'claude-haiku-4-5'
 const chatCompletionsUpstreamModel = 'gpt-mapping-regression-chat-upstream'
 const replacementUpstreamModel = 'gpt-mapping-regression-upstream-global'
 const unavailableSourceModel = 'gpt-mapping-regression-draft-source'
+const unpricedUpstreamModel = 'gpt-mapping-regression-unpriced-upstream'
 
 function responsesMapping(sourceModel: string, upstreamModel: string, enabled = true): AccountModelMapping {
   return {
@@ -332,7 +337,6 @@ try {
   const group = repositories.createGroup({
     name: '账号模型映射回归分组',
     providerCode: GPT_VENDOR_CODE,
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, ownerAccess)
   const account = repositories.createAccount({
     providerCode: GPT_VENDOR_CODE,
@@ -415,6 +419,7 @@ try {
   assertNativeResponsesUpstreamRequiresEndpointModes()
   assertRuntimeIgnoresUnsupportedChatToResponsesMapping()
   assertRuntimeIgnoresPersistentCrossProtocolMappings()
+  await assertCompactSyntheticChatUsesResponsesModelMapping()
   assertCrossProtocolAccountMappingsRejected(group.id)
   await assertInvalidMappingBodyRejected()
   await assertInvalidMappingBodyDoesNotSwitchAccount(group.id)
@@ -506,12 +511,10 @@ function assertNativeResponsesUpstreamRequiresEndpointModes(): void {
   const group = repositories.createGroup({
     name: '账号模型映射 Responses 原生能力约束分组',
     providerCode: GPT_VENDOR_CODE,
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, ownerAccess)
   const openAICompatibleGroup = repositories.createGroup({
     name: '账号模型映射 OpenAI-compatible bridge 分组',
     providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
-    providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID
   }, ownerAccess)
   assert.throws(() => {
     repositories.createAccount({
@@ -654,6 +657,35 @@ function assertRuntimeIgnoresPersistentCrossProtocolMappings(): void {
     upstreamEndpointFamily: 'chat_completions'
   }, '运行时解析器应执行 OpenAI v1 账号级 Responses -> Chat Completions 映射')
 
+  const chatRequestWithoutExactMapping = resolveOpenAIAccountModelMapping({
+    providerCode: GPT_VENDOR_CODE,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    protocolCode: 'openai',
+    protocolVersion: 'v1',
+    modelMappings: [
+      responsesToChatMapping(sourceModel, chatCompletionsUpstreamModel)
+    ]
+  }, sourceModel, 'chat_completions')
+  assert.equal(chatRequestWithoutExactMapping, undefined, '运行时解析器没有当前请求协议精确映射时不应复用其它协议映射')
+
+  const disabledExplicitChatMapping = resolveOpenAIAccountModelMapping({
+    providerCode: GPT_VENDOR_CODE,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    protocolCode: 'openai',
+    protocolVersion: 'v1',
+    modelMappings: [
+      {
+        sourceModel,
+        sourceEndpointFamily: 'chat_completions',
+        upstreamModel: chatCompletionsUpstreamModel,
+        upstreamEndpointFamily: 'chat_completions',
+        enabled: false
+      },
+      responsesToChatMapping(sourceModel, chatCompletionsUpstreamModel)
+    ]
+  }, sourceModel, 'chat_completions')
+  assert.equal(disabledExplicitChatMapping, undefined, '显式停用当前协议映射时不应命中模型映射')
+
   const persistentMessagesToChat = resolveOpenAIAccountModelMapping({
     modelMappings: [
       messagesToChatMapping(anthropicMessagesSourceModel, chatCompletionsUpstreamModel)
@@ -672,6 +704,52 @@ function assertRuntimeIgnoresPersistentCrossProtocolMappings(): void {
   } as unknown as { modelMappings: AccountModelMapping[] }
   const explicitRouteMapping = resolveOpenAIAccountModelMapping(explicitRouteAccount, sourceModel, 'responses')
   assert.equal(explicitRouteMapping, undefined, '运行时解析器不应继续放行旧显式混合路由标记注入的 Responses -> Chat Completions 映射')
+}
+
+async function assertCompactSyntheticChatUsesResponsesModelMapping(): Promise<void> {
+  const account = {
+    providerCode: GPT_VENDOR_CODE,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    protocolCode: 'openai',
+    protocolVersion: 'v1',
+    modelMappings: [
+      responsesMapping(sourceModel, upstreamModel)
+    ]
+  }
+  const req = jsonRequestAtPath('/v1/chat/completions', {
+    model: sourceModel,
+    messages: [{ role: 'user', content: 'compact summary' }],
+    stream: false
+  })
+
+  assert.equal(gatewayRequestEndpointFamily(req), 'chat_completions', '普通 Chat 请求应保持 Chat Completions 源协议')
+  assert.equal(
+    resolveOpenAIRequestModelMapping(req, account),
+    undefined,
+    '普通 Chat 请求不应自动复用 Responses 模型别名'
+  )
+
+  setGatewayModelMappingSourceEndpointFamilyOverride(req, 'responses')
+  assert.equal(gatewayRequestEndpointFamily(req), 'responses', '内部 compact 摘要请求应允许按 Responses 源协议解析模型别名')
+  const mapping = resolveOpenAIRequestModelMapping(req, account)
+  assert.deepEqual(mapping, {
+    sourceModel,
+    sourceEndpointFamily: 'responses',
+    upstreamModel,
+    upstreamEndpointFamily: 'responses'
+  }, '内部 compact 摘要请求应命中原始 Responses 模型别名')
+  assert(mapping, '内部 compact 摘要请求应返回模型映射')
+  assert.equal(
+    openAIModelMappedUpstreamPathAndQuery(req, mapping),
+    '/v1/chat/completions',
+    '内部 compact 摘要请求即使命中 Responses 同协议别名，也必须继续转发 Chat Completions 路径'
+  )
+  const mappedBody = JSON.parse((await buildOpenAIModelMappedJsonBody(req, mapping.upstreamModel)).toString('utf8')) as {
+    model?: string
+    messages?: unknown[]
+  }
+  assert.equal(mappedBody.model, upstreamModel, '内部 compact 摘要请求应把上游 Chat body 的 model 改写为映射目标')
+  assert(Array.isArray(mappedBody.messages), '内部 compact 摘要请求改写模型时不应丢失 Chat messages')
 }
 
 function assertCrossProtocolAccountMappingsRejected(groupId: string): void {
@@ -696,7 +774,6 @@ function assertCrossProtocolAccountMappingsRejected(groupId: string): void {
   const anthropicGroup = repositories.createGroup({
     name: '账号模型别名拒绝 Gemini 到 Messages 分组',
     providerCode: ANTHROPIC_PROVIDER_CODE,
-    providerProtocolProfileId: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID
   }, ownerAccess)
   assert.throws(() => {
     repositories.createAccount({
@@ -720,7 +797,6 @@ function assertCrossProtocolAccountMappingsRejected(groupId: string): void {
   const geminiGroup = repositories.createGroup({
     name: '账号模型别名拒绝 OpenAI 到 Gemini 分组',
     providerCode: GEMINI_PROVIDER_CODE,
-    providerProtocolProfileId: GEMINI_NATIVE_V1BETA_PROFILE_ID
   }, ownerAccess)
   assert.throws(() => {
     repositories.createAccount({
@@ -746,7 +822,6 @@ function assertHybridProtocolModelPools(): void {
   const group = repositories.createGroup({
     name: '混合供应商协议模型池约束分组',
     providerCode: HYBRID_PROVIDER_CODE,
-    providerProtocolProfileId: HYBRID_OPENAI_CHAT_V1_PROFILE_ID
   }, ownerAccess)
   assert.throws(() => {
     repositories.createAccount({
@@ -1029,12 +1104,16 @@ function loadStoredMappings(accountId: string): AccountModelMapping[] {
 }
 
 function jsonRequest(body: Record<string, unknown>): Request {
+  return jsonRequestAtPath('/v1/responses', body)
+}
+
+function jsonRequestAtPath(path: string, body: Record<string, unknown>): Request {
   const rawBody = Buffer.from(JSON.stringify(body), 'utf8')
   const headers: Record<string, string> = { 'content-type': 'application/json' }
   return {
     method: 'POST',
-    path: '/v1/responses',
-    originalUrl: '/v1/responses',
+    path,
+    originalUrl: path,
     headers,
     header(name: string) {
       const value = headers[name.toLowerCase()]
@@ -1227,6 +1306,70 @@ async function assertUsageRecordFields(
   assert.equal(record.modelMappingApplied, true, '使用记录应标记命中模型映射')
   assert.equal(record.modelMappingSource, 'account', '使用记录映射来源应固定为 account')
   assert.equal(record.costUsd, 12, '授权调用应按资源账号所有者个人映射目标模型计价')
+
+  const compactTraceId = 'trace-account-model-mapping-compact-summary-regression'
+  const compactSummaryReq = jsonRequestAtPath('/v1/chat/completions', {
+    model: sourceModel,
+    messages: [{ role: 'user', content: 'compact usage' }],
+    stream: false
+  })
+  setGatewayModelMappingSourceEndpointFamilyOverride(compactSummaryReq, 'responses')
+  recordCompletedUpstreamAttempt(compactSummaryReq, {
+    traceId: compactTraceId,
+    trafficSource: 'gateway',
+    systemAccountId: 'sys_mapping_grantee',
+    groupId,
+    account,
+    endpoint: 'POST /v1/chat/completions',
+    statusCode: 200,
+    success: true,
+    stream: false,
+    startedAt: Date.now(),
+    usage: {
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000
+    }
+  })
+  flushAllUsageRecordQueue()
+  const compactRecord = repositories.listUsageRecords(undefined, { page: 1, pageSize: 20 })
+    .items
+    .find((item) => item.traceId === compactTraceId)
+  assert(compactRecord, '内部 compact 摘要请求应写入使用记录')
+  assert.equal(compactRecord.model, sourceModel, '内部 compact 摘要请求使用记录 model 应保留下游 Responses 模型')
+  assert.equal(compactRecord.upstreamModel, upstreamModel, '内部 compact 摘要请求使用记录 upstreamModel 应记录模型映射目标')
+  assert.equal(compactRecord.modelMappingApplied, true, '内部 compact 摘要请求使用记录应标记命中模型映射')
+
+  const unpricedTraceId = 'trace-account-model-mapping-unpriced-upstream-regression'
+  recordCompletedUpstreamAttempt(jsonRequest({ model: sourceModel, input: 'usage', stream: false }), {
+    traceId: unpricedTraceId,
+    trafficSource: 'gateway',
+    systemAccountId: 'sys_mapping_grantee',
+    groupId,
+    account: {
+      ...account,
+      modelMappings: [
+        responsesMapping(sourceModel, unpricedUpstreamModel)
+      ]
+    },
+    endpoint: 'POST /v1/responses',
+    statusCode: 200,
+    success: true,
+    stream: false,
+    startedAt: Date.now(),
+    usage: {
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000
+    }
+  })
+  flushAllUsageRecordQueue()
+  const unpricedRecord = repositories.listUsageRecords(undefined, { page: 1, pageSize: 20 })
+    .items
+    .find((item) => item.traceId === unpricedTraceId)
+  assert(unpricedRecord, '上游别名未在价格目录命中时也应写入使用记录')
+  assert.equal(unpricedRecord.model, sourceModel, '上游别名未定价时使用记录仍应保留下游模型')
+  assert.equal(unpricedRecord.upstreamModel, unpricedUpstreamModel, '上游别名未定价时使用记录仍应记录实际上游模型')
+  assert.equal(unpricedRecord.pricingModel, sourceModel, '上游别名未定价时应回落到下游来源模型计价')
+  assert.equal(unpricedRecord.costUsd, 3, '上游别名未定价时不应把成本错误记录为 0')
 }
 
 async function assertAuditLogFields(

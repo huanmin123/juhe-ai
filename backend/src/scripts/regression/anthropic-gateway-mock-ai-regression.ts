@@ -85,12 +85,6 @@ const [
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 const repositories = {
   ...rawRepositories,
-  createGroup(
-    input: Parameters<typeof rawRepositories.createGroup>[0],
-    actor: Parameters<typeof rawRepositories.createGroup>[1]
-  ) {
-    return rawRepositories.createGroup(withFixtureProfile(input), actor)
-  },
   createAccount(
     input: Parameters<typeof rawRepositories.createAccount>[0],
     actor: Parameters<typeof rawRepositories.createAccount>[1]
@@ -696,7 +690,8 @@ async function assertAnthropicModels(baseUrl: string, localApiKey: string): Prom
   upstreamHits.length = 0
   const response = await fetch(`${baseUrl}/v1/models`, {
     headers: {
-      'x-api-key': localApiKey
+      'x-api-key': localApiKey,
+      'anthropic-version': '2023-06-01'
     }
   })
   const text = await response.text()
@@ -707,6 +702,19 @@ async function assertAnthropicModels(baseUrl: string, localApiKey: string): Prom
   assert(Object.prototype.hasOwnProperty.call(body, 'first_id'), 'Anthropic Models 响应应包含 first_id')
   assert(Object.prototype.hasOwnProperty.call(body, 'last_id'), 'Anthropic Models 响应应包含 last_id')
   assert.equal(upstreamHits.length, 0, 'Anthropic /v1/models 应由本地模型目录响应，不应打到上游 mock')
+
+  const fallbackResponse = await fetch(`${baseUrl}/v1/models`, {
+    headers: {
+      authorization: `Bearer ${localApiKey}`
+    }
+  })
+  const fallbackText = await fallbackResponse.text()
+  assert.equal(fallbackResponse.status, 200, `未识别客户端 /v1/models 应默认返回 OpenAI 模型目录，实际 HTTP ${fallbackResponse.status}: ${fallbackText}`)
+  const fallbackBody = JSON.parse(fallbackText) as { object?: string; data?: unknown[]; has_more?: boolean }
+  assert.equal(fallbackBody.object, 'list', '未识别客户端 /v1/models 应返回 OpenAI object=list')
+  assert(Array.isArray(fallbackBody.data), '未识别客户端 /v1/models 应返回 OpenAI data 数组')
+  assert.equal(Object.prototype.hasOwnProperty.call(fallbackBody, 'has_more'), false, '未识别客户端 /v1/models 不应返回 Anthropic has_more 字段')
+  assert.equal(upstreamHits.length, 0, '未识别客户端 /v1/models 应由本地模型目录响应，不应打到上游 mock')
 }
 
 function assertAnthropicModelMappingIsOpenAIProtocolOnly(upstreamBaseUrl: string): void {

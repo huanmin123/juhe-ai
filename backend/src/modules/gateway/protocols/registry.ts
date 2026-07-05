@@ -47,7 +47,7 @@ export function gatewayProtocolDriverForRequestOrProfile(
   profile: ProviderProtocolProfileDefinition | undefined
 ): GatewayProtocolDriver {
   const endpoint = req.originalUrl || req.path || ''
-  if (openAIEndpointFamilyFromPath(endpoint)) {
+  if (isOpenAIProtocolRequestPath(endpoint)) {
     return openAIV1ProtocolDriver
   }
   return gatewayProtocolDrivers.find((driver) => driver.isNativeRequest?.(req) === true)
@@ -118,6 +118,20 @@ export function gatewayProtocolDefaultClientProfileForRequest(
   profile: ProviderProtocolProfileDefinition | undefined
 ): GatewayProtocolDefaultClientProfile {
   return gatewayProtocolDriverForRequestOrProfile(req, profile).defaultClientProfile
+}
+
+function isOpenAIProtocolRequestPath(endpoint: string): boolean {
+  if (openAIEndpointFamilyFromPath(endpoint)) {
+    return true
+  }
+  const path = endpoint.split('?', 1)[0]?.trim().toLowerCase() ?? ''
+  const normalizedPath = path.replace(/^\/v1(?=\/|$)/, '') || '/'
+  return normalizedPath === '/models'
+    || normalizedPath === '/images'
+    || normalizedPath.startsWith('/images/')
+    || normalizedPath === '/embeddings'
+    || normalizedPath === '/audio'
+    || normalizedPath.startsWith('/audio/')
 }
 
 export function gatewayProtocolResponseEndpointFamilyForRequest(

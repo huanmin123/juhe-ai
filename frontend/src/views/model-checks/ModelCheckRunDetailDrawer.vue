@@ -32,6 +32,7 @@
         <a-descriptions-item label="创建时间">{{ formatDateTime(run.createdAt) }}</a-descriptions-item>
         <a-descriptions-item label="完成时间">{{ formatDateTime(run.finishedAt) }}</a-descriptions-item>
         <a-descriptions-item label="耗时">{{ formatDuration(run.durationMs) }}</a-descriptions-item>
+        <a-descriptions-item label="证据完整度">{{ evidenceCompletenessText(run) }}</a-descriptions-item>
         <a-descriptions-item label="结论">{{ run.message || run.errorMessage || '-' }}</a-descriptions-item>
         <a-descriptions-item label="Trace ID">{{ run.traceId || '-' }}</a-descriptions-item>
       </a-descriptions>
@@ -64,6 +65,7 @@ import {
   checkStatusColor,
   checkStatusText,
   checkTitle,
+  evidenceCompletenessText,
   formatModelCheckDuration as formatDuration,
   formatModelCheckJson as formatJson,
   hasCheckExtra,

@@ -34,14 +34,13 @@ try {
   assert(providerProfile, 'AI 性能 PG smoke 需要 GPT 默认协议档案')
   const group = await createGroupAsync({
     name: `AI 性能 PG smoke 分组 ${marker}`,
-    providerCode: 'gpt',
-    providerProtocolProfileId: providerProfile.id
+    providerCode: 'gpt'
   }, access)
   createdGroupIds.push(group.id)
 
   const account = await createAccountAsync({
     providerCode: 'gpt',
-    providerProtocolProfileId: group.providerProtocolProfileId,
+    providerProtocolProfileId: providerProfile.id,
     name: `${marker} AI 性能 PG smoke 账号`,
     type: 'api_key',
     credentials: {

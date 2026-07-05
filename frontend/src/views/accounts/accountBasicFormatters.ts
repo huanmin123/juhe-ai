@@ -76,7 +76,7 @@ export function asString(value: unknown): string {
 }
 
 export function normalizeKeyword(value: unknown): string {
-  return String(value ?? '').trim().toLowerCase()
+  return String(value ?? '').trim()
 }
 
 export function accountLastUsedAt(account: AccountSummary): string | undefined {

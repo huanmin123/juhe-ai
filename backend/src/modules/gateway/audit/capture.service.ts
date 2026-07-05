@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import type { Request, Response } from 'express'
 
 import { nowIso } from '../../../storage/database.js'
+import { runtimeConfig } from '../../../config/runtime.js'
 import { logger } from '../../../shared/logger.js'
 import { sanitizeUrlCredentialsForLog, sanitizeUrlForLog } from '../../../shared/request-context.js'
 import type {
@@ -503,7 +504,7 @@ function auditModelAccounting(
   const catalogSystemAccountId = account.accountOwnerSystemAccountId || fallbackSystemAccountId
   return {
     upstreamModel,
-    pricingModel: upstreamModel
+    pricingModel: upstreamModel && runtimeConfig.cacheDriver !== 'redis'
       ? resolveCatalogPricingModel({
         providerCode: account.providerCode,
         systemAccountId: catalogSystemAccountId,

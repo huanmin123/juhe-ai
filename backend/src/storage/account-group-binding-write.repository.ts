@@ -1,12 +1,13 @@
 import type { AccountSummary, GroupSummary } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
+import { clearNormalRouteLatencyDegradationForAccountBindingAsync } from '../modules/gateway/runtime/normal-route-latency-degradation.service.js'
 import { findAccountSummary, findAccountSummaryAsync } from './account-summary.repository.js'
 import type { AccessScope } from './access-scope.js'
 import { getBusinessDatabase, nowIso } from './database.js'
 import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient } from './database-client.js'
-import { refreshGroupAccountStatsAfterWrite } from './group-account-stats-write-invalidation.js'
+import { refreshGroupAccountStatsAfterWrite, refreshGroupAccountStatsAfterWriteAsync } from './group-account-stats-write-invalidation.js'
 import { invalidateGroupAccountIdsCache } from './group-read-loaders.js'
 import { findGroupSummary } from './group-summary.repository.js'
 import { getPostgresPool } from './postgres-client.js'
@@ -96,32 +97,31 @@ async function accountEnabledGroupIdAsync(client: DatabaseClient, accountId: str
   return row?.group_id
 }
 
-async function groupOwnerAndProviderAsync(client: DatabaseClient, groupId: string): Promise<{ systemAccountId: string; providerCode: string; providerProtocolProfileId: string } | undefined> {
-  const row = await client.one<{ system_account_id?: string; provider_code?: string; provider_protocol_profile_id?: string }>(`
-    SELECT system_account_id, provider_code, provider_protocol_profile_id
+async function groupOwnerAndProviderAsync(client: DatabaseClient, groupId: string): Promise<{ systemAccountId: string; providerCode: string } | undefined> {
+  const row = await client.one<{ system_account_id?: string; provider_code?: string }>(`
+    SELECT system_account_id, provider_code
     FROM ${accountGroupBindingTable(client, 'groups')}
     WHERE id = ?
   `, [groupId])
-  return row?.system_account_id && row.provider_code && row.provider_protocol_profile_id
+  return row?.system_account_id && row.provider_code
     ? {
         systemAccountId: row.system_account_id,
-        providerCode: row.provider_code,
-        providerProtocolProfileId: row.provider_protocol_profile_id
+        providerCode: row.provider_code
       }
     : undefined
 }
 
 function validAccountIdsForGroup(providerCode: string, accountIds: string[], systemAccountId: string): string[] {
   const uniqueIds = [...new Set(accountIds)]
-  const accountsById = new Map<string, { provider_code?: string; provider_protocol_profile_id?: string }>()
+  const accountsById = new Map<string, { provider_code?: string }>()
   const database = getBusinessDatabase()
   for (const chunk of chunkValues(uniqueIds, 900)) {
     const rows = database.prepare(`
-      SELECT id, provider_code, provider_protocol_profile_id
+      SELECT id, provider_code
       FROM accounts
       WHERE system_account_id = ?
         AND id IN (${sqlPlaceholders(chunk.length)})
-    `).all(systemAccountId, ...chunk) as Array<{ id?: string; provider_code?: string; provider_protocol_profile_id?: string }>
+    `).all(systemAccountId, ...chunk) as Array<{ id?: string; provider_code?: string }>
     for (const row of rows) {
       if (row.id) {
         accountsById.set(row.id, row)
@@ -199,6 +199,7 @@ export function setAccountGroup(
   }
   invalidateGroupAccountIdsCache(groupId)
   notifyGatewayRuntimeCacheInvalidation('group_account_binding')
+  clearNormalRouteLatencyBindingState(group.systemAccountId, accountId, [previousGroupId, groupId])
 
   return findAccountSummary(accountId, { systemAccountId: group.systemAccountId, role: 'user' })
 }
@@ -260,11 +261,13 @@ export async function setAccountGroupAsync(
       now
     ])
   })
+  await refreshGroupAccountStatsAfterWriteAsync({ groupIds: [previousGroupId, groupId], reason: 'group_account_binding' })
   if (previousGroupId && previousGroupId !== groupId) {
     invalidateGroupAccountIdsCache(previousGroupId)
   }
   invalidateGroupAccountIdsCache(groupId)
   notifyGatewayRuntimeCacheInvalidation('group_account_binding')
+  await clearNormalRouteLatencyBindingStateAsync(group.systemAccountId, accountId, [previousGroupId, groupId])
 
   return await findAccountSummaryAsync(accountId, { systemAccountId: group.systemAccountId, role: 'user' })
 }
@@ -331,5 +334,30 @@ export function addAccountToGroup(groupId: string, accountId: string): GroupSumm
   }
   invalidateGroupAccountIdsCache(groupId)
   notifyGatewayRuntimeCacheInvalidation('group_account_binding')
+  clearNormalRouteLatencyBindingState(current.systemAccountId, accountId, [previousGroupId, groupId])
   return findGroupSummary(groupId)
+}
+
+function clearNormalRouteLatencyBindingState(
+  systemAccountId: string,
+  accountId: string,
+  groupIds: Array<string | null | undefined>
+): void {
+  void clearNormalRouteLatencyBindingStateAsync(systemAccountId, accountId, groupIds)
+}
+
+async function clearNormalRouteLatencyBindingStateAsync(
+  systemAccountId: string,
+  accountId: string,
+  groupIds: Array<string | null | undefined>
+): Promise<void> {
+  try {
+    await clearNormalRouteLatencyDegradationForAccountBindingAsync({
+      systemAccountId,
+      accountId,
+      groupIds
+    })
+  } catch {
+    // 运行态清理失败不能阻断账号分组绑定写入。
+  }
 }

@@ -1,6 +1,7 @@
 import { strict as assert } from 'node:assert'
 
 import { DEFAULT_OPENAI_SUPPORTED_MODELS } from '../../storage/schema-defaults.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { closeRedisClients } from '../../shared/redis-client.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { createApiKeyRecordAsync } from '../../storage/api-key.repository.js'
@@ -72,7 +73,7 @@ try {
   const account = await createAccountAsync({
     name: `时间计划授权 PG smoke 账号 ${marker}`,
     providerCode: 'gpt',
-    providerProtocolProfileId: group.providerProtocolProfileId,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     type: 'api_key',
     status: 'active',
     groupId: group.id,
@@ -269,6 +270,7 @@ async function cleanupSmokeRows(): Promise<void> {
     )
   }
   if (createdApiKeyIds.length > 0) {
+    await pool.query('DELETE FROM juhe_business.api_key_schedule_status_events WHERE api_key_id = ANY($1::text[])', [createdApiKeyIds])
     await pool.query('DELETE FROM juhe_business.api_keys WHERE id = ANY($1::text[])', [createdApiKeyIds])
   }
   if (createdRouteStrategyIds.length > 0) {
@@ -276,6 +278,7 @@ async function cleanupSmokeRows(): Promise<void> {
     await pool.query('DELETE FROM juhe_business.route_strategies WHERE id = ANY($1::text[])', [createdRouteStrategyIds])
   }
   if (createdAccountIds.length > 0) {
+    await pool.query('DELETE FROM juhe_business.account_schedule_status_events WHERE account_id = ANY($1::text[])', [createdAccountIds])
     await pool.query('DELETE FROM juhe_business.account_supported_models WHERE account_id = ANY($1::text[])', [createdAccountIds])
     await pool.query('DELETE FROM juhe_business.account_model_mappings WHERE account_id = ANY($1::text[])', [createdAccountIds])
     await pool.query('DELETE FROM juhe_business.account_tag_bindings WHERE account_id = ANY($1::text[])', [createdAccountIds])

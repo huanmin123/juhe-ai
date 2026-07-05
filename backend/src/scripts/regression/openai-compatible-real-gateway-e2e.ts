@@ -3,6 +3,7 @@ import { mkdirSync, rmSync } from 'node:fs'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 
 import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express from 'express'
@@ -38,6 +39,7 @@ const [
   { openAIGatewayRouter },
   { requestContextMiddleware },
   databaseModule,
+  readWorkerPool,
   repositories,
   gatewayCache,
   accountSideEffects,
@@ -47,6 +49,7 @@ const [
   import('../../modules/gateway/routes.js'),
   import('../../shared/request-context.js'),
   import('../../storage/database.js'),
+  import('../../storage/sqlite-read-worker-pool.js'),
   import('../../storage/repositories.js'),
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
@@ -69,7 +72,6 @@ try {
     const group = repositories.createGroup({
       name: '通用 OpenAI 兼容真实网关 E2E 分组',
       providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
-      providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
       enabled: true
     }, access)
     repositories.createAccount({
@@ -132,8 +134,24 @@ try {
   auditLogQueue.clearAuditLogQueueForTest()
   auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
+  await readWorkerPool.closeSqliteReadWorkerPool().catch(() => undefined)
   databaseModule.closeStorageDatabases()
-  rmSync(tempRoot, { recursive: true, force: true })
+  await removeTempRoot()
+}
+
+async function removeTempRoot(): Promise<void> {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      rmSync(tempRoot, { recursive: true, force: true })
+      return
+    } catch (error) {
+      if (!(error instanceof Error) || !/EBUSY|EPERM/.test(error.message)) {
+        throw error
+      }
+      if (attempt === 4) return
+      await delay(250)
+    }
+  }
 }
 
 async function assertChatJson(baseUrl: string, localApiKey: string): Promise<Record<string, unknown>> {

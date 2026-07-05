@@ -3,12 +3,15 @@ import type {
   SystemAccountSummary
 } from '../../../../domain/types.js'
 import type { AccessScope } from '../../../../storage/access-scope.js'
+import { hashPassword } from '../../../../storage/crypto.js'
+import { getBusinessDatabase, newId, nowIso } from '../../../../storage/database.js'
 import * as repositories from '../../../../storage/repositories.js'
 import {
   mockPassword,
   namePrefix,
   type MockSystemAccounts
 } from '../shared.js'
+import { ensureMockDefaultGptGroup } from '../core/group-writes.js'
 
 export function createMockUsers(admin: SystemAccountSummary): MockSystemAccounts {
   return {
@@ -82,18 +85,54 @@ function ensureSystemAccount(input: {
       password: mockPassword
     })
     if (!updated) throw new Error(`更新 Mockdata 用户失败：${input.username}`)
+    ensureMockDefaultGptGroup(updated.id)
     return updated
   }
-  return repositories.createSystemAccount({
+  const created = createMockSystemAccount(input, role)
+  ensureMockDefaultGptGroup(created.id)
+  return created
+}
+
+function createMockSystemAccount(input: {
+  username: string
+  displayName: string
+  description: string
+  status: 'active' | 'disabled'
+  imageGenerationEnabled?: boolean
+}, role: SystemAccountRole): SystemAccountSummary {
+  const now = nowIso()
+  const summary: SystemAccountSummary = {
+    id: newId('sysacc'),
     username: input.username,
     displayName: input.displayName,
     description: input.description,
-    password: mockPassword,
     role,
     status: input.status,
     mustChangePassword: false,
-    imageGenerationEnabled: input.imageGenerationEnabled ?? false
-  })
+    imageGenerationEnabled: input.imageGenerationEnabled ?? false,
+    createdAt: now,
+    updatedAt: now
+  }
+  getBusinessDatabase()
+    .prepare(`
+      INSERT INTO system_accounts (
+        id, username, display_name, description, role, status, password_hash, must_change_password,
+        image_generation_enabled, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+    `)
+    .run(
+      summary.id,
+      summary.username,
+      summary.displayName,
+      summary.description ?? null,
+      summary.role,
+      summary.status,
+      hashPassword(mockPassword),
+      summary.imageGenerationEnabled ? 1 : 0,
+      now,
+      now
+    )
+  return summary
 }
 
 export function createProxies(adminAccess: AccessScope): { http: string; socks: string; disabled: string } {

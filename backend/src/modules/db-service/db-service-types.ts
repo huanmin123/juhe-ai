@@ -28,6 +28,8 @@ import type {
   CodexContextResponseStateIndexInput,
   CodexContextStateBoundary
 } from '../../storage/codex-context-state.repository.js'
+import type { CodexContextStateWriterPoolRuntime } from '../../storage/codex-context-state-writer-pool.js'
+import type { SqliteReadWorkerPoolRuntime } from '../../storage/sqlite-read-worker-pool.js'
 import type {
   OpenAICompatibleFileCreateInput,
   OpenAICompatibleFileListOptions,
@@ -47,6 +49,8 @@ import type {
   OpenAICompatibleVectorStoreSearchOptions,
   OpenAICompatibleVectorStoreSearchResult
 } from '../../storage/openai-compatible-vector-stores.repository.js'
+
+export type DbServiceRequestPriority = 'high' | 'normal' | 'low'
 
 export type AccountRuntimeAvailabilityStatus = 'normal' | 'degraded' | 'local_suppressed' | 'half_open' | 'precheck_pending' | 'precheck_failed'
 
@@ -124,6 +128,8 @@ export interface DbServiceRuntimeSnapshot {
   failedRequestCount: number
   lastRequestAt?: string
   lastError?: string
+  codexContextStateWriterPool?: CodexContextStateWriterPoolRuntime
+  sqliteReadWorkerPool?: SqliteReadWorkerPoolRuntime
 }
 
 export interface DbServiceServerRuntimeSnapshot {
@@ -305,7 +311,15 @@ export interface DbServiceServerRuntimeSnapshot {
     unavailableCircuitOpenUntil?: string
     httpHost?: string
     httpPort?: number
+    codexContextStateWriterPool?: CodexContextStateWriterPoolRuntime
+    sqliteReadWorkerPool?: SqliteReadWorkerPoolRuntime
   }
+  highConcurrencyQueues?: Array<{
+    groupKey: string
+    lane: string
+    queueSize: number
+    perApiKeyQueueSize: Record<string, number>
+  }>
   gatewayAccountSideEffects?: Record<string, unknown>
   activeAuditCaptureCount?: number
 }
@@ -538,18 +552,20 @@ export type DbServiceOperation =
   | {
     type: 'record_account_api_key_failure'
     account: OpenAIAccountSecret
-    input: {
-      status?: Exclude<AccountApiKeyRuntimeStatus, 'active' | 'disabled'>
-      statusCode?: number
-      errorCode?: string
-      errorMessage?: string
-      cooldownUntil?: string
+      input: {
+        status?: Exclude<AccountApiKeyRuntimeStatus, 'active' | 'disabled'>
+        statusCode?: number
+        errorCode?: string
+        errorMessage?: string
+        cooldownUntil?: string
+        observedAt?: string
+      }
     }
-  }
-  | {
-    type: 'record_account_api_key_success'
-    account: OpenAIAccountSecret
-  }
+    | {
+      type: 'record_account_api_key_success'
+      account: OpenAIAccountSecret
+      observedAt?: string
+    }
   | {
     type: 'record_account_stream_failure'
     input: {
@@ -909,6 +925,7 @@ export type DbServiceParentMessage =
     type: 'db_service_request'
     requestId: string
     operation: DbServiceOperation
+    priority?: DbServiceRequestPriority
     deadlineAtMs?: number
   }
   | {

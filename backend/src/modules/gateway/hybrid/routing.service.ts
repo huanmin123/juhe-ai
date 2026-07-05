@@ -17,11 +17,11 @@ import type {
   OpenAIAccountSecret
 } from '../../../storage/repositories.js'
 import type { ResponseInspectionPolicySummary } from '../../../storage/response-inspection-policy.repository.js'
-import { orderGatewayApiKeyGroupBindingsForDispatch } from '../routing/api-key-group-route-selector.service.js'
+import { orderGatewayApiKeyGroupBindingsForDispatchAsync } from '../routing/api-key-group-route-selector.service.js'
 import { selectGatewayModelTargetGroup } from '../routing/model-target-group-selector.js'
 import { replaceGatewayJsonBodyModel } from '../request/body.js'
 import { parseGatewayJsonBodyInWorker } from '../request/json-parser.js'
-import { applyHybridRouteAffinity } from './affinity.service.js'
+import { applyHybridRouteAffinityAsync } from './affinity.service.js'
 import { scoreHybridGatewayRequest, type HybridScoringResult } from './scoring.service.js'
 import type { AuditCaptureContext } from '../audit/capture.service.js'
 import type { GatewayRawBodyRequest } from '../request/body.js'
@@ -179,7 +179,7 @@ export async function resolveHybridGatewayRoute(input: {
   if (!initialRoute) {
     return { outcome: 'failed', reason: 'hybrid_level_route_missing', scoring }
   }
-  const affinity = applyHybridRouteAffinity({
+  const affinity = await applyHybridRouteAffinityAsync({
     req: input.req,
     systemAccountId: input.apiKeyRecord.system_account_id,
     apiKeyId: input.apiKeyRecord.id,
@@ -324,7 +324,7 @@ async function selectHybridTargetGroup(input: {
   return selectGatewayModelTargetGroup({
     req: input.req,
     apiKeyRecord: input.apiKeyRecord,
-    bindings: orderGatewayApiKeyGroupBindingsForDispatch(input.apiKeyRecord),
+    bindings: await orderGatewayApiKeyGroupBindingsForDispatchAsync(input.apiKeyRecord),
     targetModel: input.route.targetModel,
     requestClientCompatibility: input.requestClientCompatibility
   })

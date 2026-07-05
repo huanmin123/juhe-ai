@@ -1,7 +1,6 @@
 <template>
   <StatsChartCard
     title="后台任务运行状态"
-    description="展示各后台 worker 内定时任务的最近耗时、失败、跳过和关键本地队列情况。"
     :loading="loading"
     :has-data="hasData"
     :empty-description="emptyDescription"
@@ -19,7 +18,7 @@
       :pagination="pagination"
       row-key="name"
       size="small"
-      :scroll-x="860"
+      :scroll-x="1160"
       :table-scroll-y="240"
       :table-scroll-enabled="false"
       :lock-body-scroll="false"
@@ -38,9 +37,6 @@
                 <InfoCircleOutlined class="background-job-info-icon" />
               </a-tooltip>
             </span>
-            <span v-if="backgroundJobQueueSummary(record)" class="background-job-queue-summary">
-              {{ backgroundJobQueueSummary(record) }}
-            </span>
           </span>
         </template>
         <template v-else-if="column.key === 'running'">
@@ -57,8 +53,14 @@
         <template v-else-if="column.key === 'maxDurationMs'">
           {{ formatJobDuration(record.maxDurationMs) }}
         </template>
-        <template v-else-if="column.key === 'counts'">
-          {{ formatJobCounts(record) }}
+        <template v-else-if="column.key === 'successCount'">
+          {{ formatInteger(record.successCount) }}
+        </template>
+        <template v-else-if="column.key === 'failureCount'">
+          {{ formatInteger(record.failureCount) }}
+        </template>
+        <template v-else-if="column.key === 'skippedCount'">
+          {{ formatInteger(record.skippedCount) }}
         </template>
         <template v-else-if="column.key === 'lastFinishedAt'">
           {{ formatDateTime(record.lastFinishedAt) }}
@@ -99,8 +101,16 @@
               <strong>{{ formatJobDuration(record.maxDurationMs) }}</strong>
             </div>
             <div class="mobile-list-meta-item">
-              <span>成功 / 失败 / 跳过</span>
-              <strong>{{ formatJobCounts(record) }}</strong>
+              <span>成功</span>
+              <strong>{{ formatInteger(record.successCount) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item">
+              <span>失败</span>
+              <strong>{{ formatInteger(record.failureCount) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item">
+              <span>跳过</span>
+              <strong>{{ formatInteger(record.skippedCount) }}</strong>
             </div>
             <div class="mobile-list-meta-item">
               <span>最近完成</span>
@@ -109,10 +119,6 @@
             <div v-if="record.lastError" class="mobile-list-meta-item mobile-list-meta-wide">
               <span>最近错误</span>
               <strong>{{ record.lastError }}</strong>
-            </div>
-            <div v-if="backgroundJobQueueSummary(record)" class="mobile-list-meta-item mobile-list-meta-wide">
-              <span>队列状态</span>
-              <strong>{{ backgroundJobQueueSummary(record) }}</strong>
             </div>
           </div>
         </article>
@@ -126,11 +132,11 @@ import { InfoCircleOutlined } from '@ant-design/icons-vue'
 
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import RuntimeAvailabilityAlert from '@/components/RuntimeAvailabilityAlert.vue'
-import { formatDateTime, serverDateTimeTimestamp } from '@/shared/formatters'
+import { formatDateTime } from '@/shared/formatters'
 import type { SystemMetricsOverview } from '@/types/domain'
 import StatsChartCard from './StatsChartCard.vue'
 import { processRoleLabel } from './statsChartOptions'
-import { formatBytesMiB, formatDuration, formatInteger } from './statsFormatters'
+import { formatDuration, formatInteger } from './statsFormatters'
 
 type BackgroundJobRow = NonNullable<SystemMetricsOverview['backgroundJobs']>[number]
 
@@ -154,7 +160,9 @@ const backgroundJobColumns = [
   { title: '状态', key: 'running', width: 86 },
   { title: '最近耗时', key: 'lastDurationMs', width: 96 },
   { title: '最长耗时', key: 'maxDurationMs', width: 96 },
-  { title: '成功 / 失败 / 跳过', key: 'counts', width: 138 },
+  { title: '成功', key: 'successCount', width: 84, align: 'right', sorter: sortBackgroundJobNumber('successCount') },
+  { title: '失败', key: 'failureCount', width: 84, align: 'right', sorter: sortBackgroundJobNumber('failureCount'), defaultSortOrder: 'descend' },
+  { title: '跳过', key: 'skippedCount', width: 84, align: 'right', sorter: sortBackgroundJobNumber('skippedCount') },
   { title: '最近完成', key: 'lastFinishedAt', width: 168 },
   { title: '最近错误', key: 'lastError', ellipsis: true }
 ]
@@ -167,45 +175,8 @@ function formatJobDuration(value?: number): string {
   return value === undefined ? '-' : formatDuration(value)
 }
 
-function formatJobCounts(row: BackgroundJobRow): string {
-  return `${formatInteger(row.successCount)} / ${formatInteger(row.failureCount)} / ${formatInteger(row.skippedCount)}`
-}
-
-function backgroundJobQueueSummary(row: BackgroundJobRow): string | undefined {
-  return backgroundJobRetryQueueSummary(row) ?? backgroundJobLocalQueueSummary(row)
-}
-
-function backgroundJobRetryQueueSummary(row: BackgroundJobRow): string | undefined {
-  const queue = row.retryQueue
-  if (!queue) return undefined
-  const nextRunAt = formatRetryQueueNextRunAt(queue.nextRunAt)
-  return `队列：待执行 ${formatInteger(queue.pendingCount)} / 运行中 ${formatInteger(queue.runningCount)}${nextRunAt ? ` / 下次 ${nextRunAt}` : ''}`
-}
-
-function backgroundJobLocalQueueSummary(row: BackgroundJobRow): string | undefined {
-  const queue = row.localQueue
-  if (!queue) return undefined
-  const parts = [
-    `积压 ${formatInteger(numberValue(queue.queueLength))}`,
-    `大小 ${formatBytesMiB(numberValue(queue.queueBytes))}`
-  ]
-  const droppedCount = numberValue(queue.droppedCount)
-  const flushFailureCount = numberValue(queue.flushFailureCount)
-  if (droppedCount > 0) parts.push(`丢弃 ${formatInteger(droppedCount)}`)
-  if (flushFailureCount > 0) parts.push(`Flush 失败 ${formatInteger(flushFailureCount)}`)
-  return `队列：${parts.join(' / ')}`
-}
-
-function formatRetryQueueNextRunAt(value?: string): string | undefined {
-  if (!value) return undefined
-  const timestamp = serverDateTimeTimestamp(value)
-  if (timestamp === undefined) return undefined
-  return new Intl.DateTimeFormat('zh-CN', {
-    hour12: false,
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit'
-  }).format(timestamp)
+function sortBackgroundJobNumber(field: 'successCount' | 'failureCount' | 'skippedCount') {
+  return (left: BackgroundJobRow, right: BackgroundJobRow) => numberValue(left[field]) - numberValue(right[field])
 }
 
 function backgroundJobDurationNote(row: BackgroundJobRow): string | undefined {
@@ -213,13 +184,14 @@ function backgroundJobDurationNote(row: BackgroundJobRow): string | undefined {
     return '该任务会在冷却到期后按真实网关链路复测账号；失败后由 cooldown_until 推进下一次复测，先 3 秒起步并翻倍，达到最大暂停时间后进入慢速恢复。'
   }
   if (row.name === 'account-api-key-cooldown-retest') {
-    return '该任务会在冷却到期后按真实网关链路复测账户内 API Key；队列堆积表示 Key 级恢复探测仍在排队。'
+    return '该任务会在冷却到期后按真实网关链路复测账户内 API Key，并按复测结果恢复或延长冷却状态。'
   }
   return undefined
 }
 
 function numberValue(value: unknown): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+  const numericValue = typeof value === 'string' ? Number(value.trim()) : value
+  return typeof numericValue === 'number' && Number.isFinite(numericValue) ? numericValue : 0
 }
 </script>
 
@@ -245,15 +217,6 @@ function numberValue(value: unknown): number {
 
 .background-job-name span {
   min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.background-job-queue-summary {
-  min-width: 0;
-  color: #64748b;
-  font-size: 12px;
-  font-weight: 400;
-  line-height: 1.35;
   overflow-wrap: anywhere;
 }
 

@@ -1,13 +1,13 @@
 import { hostname } from 'node:os'
 
 import { runtimeConfig } from '../config/runtime.js'
+import { errorLogFields, logger } from './logger.js'
 import { createDedicatedRedisClient, getRedisClient, type RedisCommandClient } from './redis-client.js'
 
 export interface RedisStreamQueueOptions<T> {
   streamKey: string
   groupName: string
   consumerName?: string
-  maxLen?: number
   readCount?: number
   blockMs?: number
   claimIdleMs?: number
@@ -21,11 +21,28 @@ export interface RedisStreamMessage<T> {
   payload: T
 }
 
+export interface RedisStreamQueueRuntime {
+  streamLength: number
+  pendingCount: number
+  lag?: number
+  consumers?: number
+  lastDeliveredId?: string
+  entriesRead?: number
+  oldestPendingId?: string
+  newestPendingId?: string
+}
+
+export interface RedisStreamBacklogInspection<T> {
+  runtime: RedisStreamQueueRuntime
+  messages: Array<RedisStreamMessage<T>>
+  pendingTruncated: boolean
+  undeliveredTruncated: boolean
+}
+
 export class RedisStreamQueue<T> {
   private readonly streamKey: string
   private readonly groupName: string
   private readonly consumerName: string
-  private readonly maxLen: number
   private readonly readCount: number
   private readonly blockMs: number
   private readonly claimIdleMs: number
@@ -39,7 +56,6 @@ export class RedisStreamQueue<T> {
     this.streamKey = options.streamKey
     this.groupName = options.groupName
     this.consumerName = options.consumerName ?? defaultRedisStreamConsumerName(options.groupName)
-    this.maxLen = options.maxLen ?? runtimeConfig.queue.redisStreamMaxLen
     this.readCount = options.readCount ?? runtimeConfig.queue.redisStreamReadCount
     this.blockMs = options.blockMs ?? runtimeConfig.queue.redisStreamBlockMs
     this.claimIdleMs = options.claimIdleMs ?? runtimeConfig.queue.redisStreamClaimIdleMs
@@ -50,16 +66,8 @@ export class RedisStreamQueue<T> {
 
   async enqueue(payload: T): Promise<string> {
     const client = await getRedisClient(this.redisUrl)
-    const id = await client.sendCommand([
-      'XADD',
-      this.streamKey,
-      'MAXLEN',
-      '~',
-      String(this.maxLen),
-      '*',
-      'payload',
-      this.encode(payload)
-    ])
+    const command = ['XADD', this.streamKey, '*', 'payload', this.encode(payload)]
+    const id = await client.sendCommand(command)
     return String(id ?? '')
   }
 
@@ -99,8 +107,78 @@ export class RedisStreamQueue<T> {
     const normalizedIds = ids.map((id) => id.trim()).filter(Boolean)
     if (!normalizedIds.length) return 0
     const client = await getRedisClient(this.redisUrl)
-    const result = await client.sendCommand(['XACK', this.streamKey, this.groupName, ...normalizedIds])
+    const result = await client.eval(redisAckAndDeleteMessagesScript, {
+      keys: [this.streamKey],
+      arguments: [this.groupName, ...normalizedIds]
+    })
     return Number(result ?? 0)
+  }
+
+  async inspectRuntime(): Promise<RedisStreamQueueRuntime> {
+    await this.ensureGroup()
+    const client = await getRedisClient(this.redisUrl)
+    const [groupsResult, pendingResult, streamLengthResult] = await Promise.all([
+      client.sendCommand(['XINFO', 'GROUPS', this.streamKey]),
+      client.sendCommand(['XPENDING', this.streamKey, this.groupName]),
+      client.sendCommand(['XLEN', this.streamKey])
+    ])
+    const groupRuntime = parseGroupRuntime(groupsResult, this.groupName)
+    const pendingRuntime = parsePendingRuntime(pendingResult)
+    return {
+      ...groupRuntime,
+      ...pendingRuntime,
+      streamLength: numberField(streamLengthResult) ?? 0,
+      pendingCount: pendingRuntime.pendingCount ?? groupRuntime.pendingCount ?? 0
+    }
+  }
+
+  async inspectBacklogMessages(limit = 2): Promise<Array<RedisStreamMessage<T>>> {
+    return (await this.inspectBacklog(limit)).messages
+  }
+
+  async inspectBacklog(limit = 256): Promise<RedisStreamBacklogInspection<T>> {
+    await this.ensureGroup()
+    const runtime = await this.inspectRuntime()
+    const client = await getRedisClient(this.redisUrl)
+    const normalizedLimit = Math.max(1, Math.trunc(limit))
+    const output: Array<RedisStreamMessage<T>> = []
+    const seen = new Set<string>()
+    const addEntries = (entries: Array<RedisStreamMessage<T>>) => {
+      for (const entry of entries) {
+        if (seen.has(entry.id)) continue
+        seen.add(entry.id)
+        output.push(entry)
+      }
+    }
+
+    const pending = await this.inspectPendingMessages(client, normalizedLimit)
+    const pendingIds = pending.ids
+    addEntries(pending.entries)
+
+    const remainingLimit = Math.max(0, normalizedLimit - seen.size)
+    let undeliveredScanned = 0
+    if (remainingLimit > 0 && runtime.lastDeliveredId) {
+      const start = runtime.lastDeliveredId ? `(${runtime.lastDeliveredId}` : '-'
+      const entries = this.parseEntries(await client.sendCommand([
+        'XRANGE',
+        this.streamKey,
+        start,
+        '+',
+        'COUNT',
+        String(remainingLimit)
+      ]))
+      undeliveredScanned = entries.length
+      addEntries(entries)
+    }
+
+    return {
+      runtime,
+      messages: output,
+      pendingTruncated: runtime.pendingCount > pendingIds.length,
+      undeliveredTruncated: runtime.lag !== undefined
+        ? runtime.lag > undeliveredScanned
+        : runtime.lastDeliveredId !== undefined && (remainingLimit === 0 || undeliveredScanned >= remainingLimit)
+    }
   }
 
   async closeConsumer(): Promise<void> {
@@ -130,7 +208,7 @@ export class RedisStreamQueue<T> {
   private async ensureGroupUnsafe(): Promise<void> {
     const client = await getRedisClient(this.redisUrl)
     try {
-      await client.sendCommand(['XGROUP', 'CREATE', this.streamKey, this.groupName, '$', 'MKSTREAM'])
+      await client.sendCommand(['XGROUP', 'CREATE', this.streamKey, this.groupName, '0', 'MKSTREAM'])
     } catch (error) {
       if (!isRedisBusyGroupError(error)) {
         throw error
@@ -207,6 +285,17 @@ export class RedisStreamQueue<T> {
     return this.parseEntries(result[1])
   }
 
+  private async inspectPendingMessages(client: RedisCommandClient, limit: number): Promise<{ ids: string[]; entries: Array<RedisStreamMessage<T>> }> {
+    const result = await client.eval(redisInspectPendingMessagesScript, {
+      keys: [this.streamKey],
+      arguments: [
+        this.groupName,
+        String(Math.max(1, Math.trunc(limit)))
+      ]
+    })
+    return this.parsePendingMessageInspection(result)
+  }
+
   private parseEntries(entries: unknown): Array<RedisStreamMessage<T>> {
     if (!Array.isArray(entries)) return []
     const output: Array<RedisStreamMessage<T>> = []
@@ -215,13 +304,143 @@ export class RedisStreamQueue<T> {
       const id = String(entry[0] ?? '')
       const payload = fieldValue(entry[1], 'payload')
       if (!id || payload === undefined) continue
-      output.push({
-        id,
-        payload: this.decode(payload)
-      })
+      try {
+        output.push({
+          id,
+          payload: this.decode(payload)
+        })
+      } catch (error) {
+        this.ackPoisonMessage(id, error)
+      }
     }
     return output
   }
+
+  private parsePendingMessageInspection(result: unknown): { ids: string[]; entries: Array<RedisStreamMessage<T>> } {
+    if (!Array.isArray(result)) return { ids: [], entries: [] }
+    const ids: string[] = []
+    const entries: Array<RedisStreamMessage<T>> = []
+    for (let index = 0; index < result.length; index += 2) {
+      const id = stringField(result[index])
+      if (id) ids.push(id)
+      entries.push(...this.parseEntries(result[index + 1]))
+    }
+    return { ids, entries }
+  }
+
+  private ackPoisonMessage(id: string, error: unknown): void {
+    logger.error(errorLogFields(error, {
+      event: 'redis_stream_message_decode_failed',
+      streamKey: this.streamKey,
+      groupName: this.groupName,
+      messageId: id
+    }), 'Redis Stream 消息解码失败，已跳过坏消息并尝试 ack')
+    void this.ack([id]).catch((ackError) => {
+      logger.error(errorLogFields(ackError, {
+        event: 'redis_stream_poison_message_ack_failed',
+        streamKey: this.streamKey,
+        groupName: this.groupName,
+        messageId: id
+      }), 'Redis Stream 坏消息 ack 失败，后续消费将再次尝试')
+    })
+  }
+}
+
+function parseGroupRuntime(result: unknown, groupName: string): Partial<RedisStreamQueueRuntime> {
+  const groups = Array.isArray(result) ? result : []
+  for (const group of groups) {
+    const fields = fieldMap(group)
+    if (String(fields.get('name') ?? '') !== groupName) continue
+    return {
+      pendingCount: numberField(fieldAlias(fields, 'pending', 'pendingCount')) ?? 0,
+      lag: numberField(fieldAlias(fields, 'lag')),
+      consumers: numberField(fieldAlias(fields, 'consumers')),
+      lastDeliveredId: stringField(fieldAlias(fields, 'last-delivered-id', 'lastDeliveredId', 'last_delivered_id')),
+      entriesRead: numberField(fieldAlias(fields, 'entries-read', 'entriesRead', 'entries_read'))
+    }
+  }
+  return { pendingCount: 0, lag: 0 }
+}
+
+function parsePendingRuntime(result: unknown): Partial<RedisStreamQueueRuntime> {
+  if (Array.isArray(result)) {
+    return {
+      pendingCount: numberField(result[0]) ?? 0,
+      oldestPendingId: stringField(result[1]),
+      newestPendingId: stringField(result[2])
+    }
+  }
+  if (result && typeof result === 'object') {
+    const fields = new Map(Object.entries(result as Record<string, unknown>))
+    return {
+      pendingCount: numberField(fieldAlias(fields, 'pending', 'count', 'pendingCount', 'pending-count')) ?? 0,
+      oldestPendingId: stringField(fieldAlias(fields, 'firstId', 'first-id', 'smallestId', 'smallest-id', 'start', 'startId', 'start-id', 'oldestPendingId', 'oldest-pending-id')),
+      newestPendingId: stringField(fieldAlias(fields, 'lastId', 'last-id', 'greatestId', 'greatest-id', 'end', 'endId', 'end-id', 'newestPendingId', 'newest-pending-id'))
+    }
+  }
+  return { pendingCount: 0 }
+}
+
+const redisInspectPendingMessagesScript = `
+local pending = redis.call('XPENDING', KEYS[1], ARGV[1], '-', '+', ARGV[2])
+local output = {}
+for _, item in ipairs(pending) do
+  local id = item[1]
+  output[#output + 1] = id
+  output[#output + 1] = redis.call('XRANGE', KEYS[1], id, id, 'COUNT', 1)
+end
+return output
+`
+
+const redisAckAndDeleteMessagesScript = `
+local group_name = ARGV[1]
+local acked = 0
+for index = 2, #ARGV do
+  local id = ARGV[index]
+  local result = redis.call('XACK', KEYS[1], group_name, id)
+  if result > 0 then
+    acked = acked + result
+    redis.call('XDEL', KEYS[1], id)
+  end
+end
+return acked
+`
+
+function fieldAlias(fields: Map<string, unknown>, ...names: string[]): unknown {
+  for (const name of names) {
+    if (fields.has(name)) return fields.get(name)
+  }
+  return undefined
+}
+
+function fieldMap(fields: unknown): Map<string, unknown> {
+  if (Array.isArray(fields)) {
+    const output = new Map<string, unknown>()
+    for (let index = 0; index < fields.length; index += 2) {
+      output.set(String(fields[index] ?? ''), fields[index + 1])
+    }
+    return output
+  }
+  if (fields && typeof fields === 'object') {
+    return new Map(Object.entries(fields as Record<string, unknown>))
+  }
+  return new Map()
+}
+
+function numberField(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return Math.max(0, Math.trunc(value))
+  if (typeof value === 'bigint') return Number(value)
+  if (typeof value === 'string' && value.trim()) {
+    const numeric = Number(value)
+    return Number.isFinite(numeric) ? Math.max(0, Math.trunc(numeric)) : undefined
+  }
+  return undefined
+}
+
+function stringField(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  return trimmed && trimmed !== 'null' ? trimmed : undefined
 }
 
 function requiredRedisQueueUrl(): string {

@@ -37,6 +37,7 @@ export function trafficSourceText(value: AuditTrafficSource): string {
   return {
     gateway: '网关请求',
     manual_account_test: 'AI账户测试',
+    runtime_recovery_probe: '运行态恢复探针',
     cooldown_retest: '恢复探活',
     hybrid_scoring: '混合评分',
     hybrid_quality_scoring: '混合质量评分'
@@ -46,6 +47,7 @@ export function trafficSourceText(value: AuditTrafficSource): string {
 export function trafficSourceColor(value: AuditTrafficSource): string {
   if (value === 'hybrid_quality_scoring') return 'purple'
   if (value === 'hybrid_scoring') return 'blue'
+  if (value === 'runtime_recovery_probe') return 'orange'
   if (value === 'cooldown_retest') return 'gold'
   if (value === 'manual_account_test') return 'cyan'
   return 'default'

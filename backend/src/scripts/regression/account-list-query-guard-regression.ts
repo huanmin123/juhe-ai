@@ -32,13 +32,11 @@ try {
   const matchedGroup = repositories.createGroup({
     name: '账户绑定前缀分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   const middleGroup = repositories.createGroup({
     name: '普通账户绑定前缀分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   const matchedByName = createGuardAccount('账户检索目标', 'sk-account-list-query-guard-name', '普通备注', matchedGroup.id)
@@ -72,7 +70,6 @@ try {
   const granteeTargetGroup = repositories.createGroup({
     name: '账户列表防护被授权目标分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, granteeAccess)
   repositories.createResourceAuthorization({
     resourceType: 'account',
@@ -179,8 +176,8 @@ try {
 
   assert(capturedCalls.length >= 5, '回归应捕获 AI 账户列表 SQL')
   assert(
-    capturedCalls.some((call) => call.params.some((param) => typeof param === 'string' && param.startsWith('%') && param.endsWith('%'))),
-    'AI 账户列表名称搜索应传入包含匹配参数'
+    capturedCalls.some((call) => /\binstr\s*\(\s*documents\.normalized_name\s*,\s*\?\s*\)\s*>\s*0/i.test(call.sql)),
+    'AI 账户列表名称包含匹配应使用搜索文档字面包含确认'
   )
   for (const call of capturedCalls) {
     assert(!/\bCOALESCE\s*\(\s*account_rows\.notes\b/i.test(call.sql), 'AI 账户列表搜索不应通过 COALESCE 扫描备注字段')
@@ -190,12 +187,10 @@ try {
     assert(!/\baccount_rows\.id\s+(?:=|LIKE)\s+\?/i.test(call.sql), 'AI 账户列表名称搜索不应把账户 ID 放进通用关键词 WHERE')
     assert(!/\baccount_rows\.provider_code\s+(?:COLLATE|LIKE)\b/i.test(call.sql), 'AI 账户列表名称搜索不应把供应商编码放进通用关键词 WHERE')
     assert(!/\baccount_rows\.type\s+(?:COLLATE|LIKE)\b/i.test(call.sql), 'AI 账户列表名称搜索不应把账户类型放进通用关键词 WHERE')
-    if (/\bLIKE\s+\?/i.test(call.sql)) {
-      assert(/\bESCAPE\s+'\\'/i.test(call.sql), 'AI 账户列表前缀搜索应显式转义 LIKE 通配符')
-    }
-    if (call.params.some((param) => typeof param === 'string' && param.startsWith('%'))) {
+    assert(!/\bLIKE\s+\?/i.test(call.sql), 'AI 账户列表名称搜索不应使用 LIKE，避免大小写折叠或通配符语义')
+    if (/\binstr\s*\(\s*documents\.normalized_name\s*,\s*\?\s*\)\s*>\s*0/i.test(call.sql)) {
       assert(
-        /\bdocuments\.normalized_name\s+LIKE\s+\?\s+ESCAPE\s+'\\'/i.test(call.sql),
+        /\binstr\s*\(\s*documents\.normalized_name\s*,\s*\?\s*\)\s*>\s*0/i.test(call.sql),
         'AI 账户列表包含匹配只能落到账户名称规范化搜索文档'
       )
       assert(
@@ -263,6 +258,7 @@ function createGuardAccount(
 function assertAccountListRouteBoundary(): void {
   const accountsRoutesSource = readFileSync(resolve('src/modules/accounts/accounts.routes.ts'), 'utf8')
   const accountListRoutesSource = readFileSync(resolve('src/modules/accounts/account-list.routes.ts'), 'utf8')
+  const accountListRuntimeStatusFilterSource = readFileSync(resolve('src/modules/accounts/account-list-runtime-status-filter.ts'), 'utf8')
   const accountSummaryRepositorySource = readFileSync(resolve('src/storage/account-summary.repository.ts'), 'utf8')
   const accountOptionsRepositorySource = readFileSync(resolve('src/storage/account-options.repository.ts'), 'utf8')
   const accountReadRepositorySource = readFileSync(resolve('src/storage/account-read.repository.ts'), 'utf8')
@@ -288,6 +284,17 @@ function assertAccountListRouteBoundary(): void {
       && accountListRoutesSource.includes('sanitizeAccountListResponse'),
     '账户列表只读子路由应保留并发水合、运行态状态后置归类、Server-Timing 和响应脱敏'
   )
+  assert.match(
+    accountListRoutesSource,
+    /accountListNeedsRuntimeStatusFilter\(listOptions\)[\s\S]*listAccountsPageWithRuntimeStatusFilter\(requestAccess, listOptions\)[\s\S]*if \(!filteredResult\) \{[\s\S]*listAccountsPageAsync\(requestAccess, listOptions\)/,
+    '账户列表运行态状态过滤应先走单次运行态分页，快照不可用时才回退普通列表，避免 PG 状态过滤重复昂贵查询'
+  )
+  assert(
+    accountListRuntimeStatusFilterSource.includes('export function accountListNeedsRuntimeStatusFilter')
+      && accountListRuntimeStatusFilterSource.includes('export async function listAccountsPageWithRuntimeStatusFilter')
+      && accountListRuntimeStatusFilterSource.includes('if (!serverRuntimeSnapshot?.accountRuntimeAvailability) return undefined'),
+    '运行态状态过滤模块应暴露显式接管入口，并保留快照不可用时回退普通列表的契约'
+  )
   assert(
     !accountListRoutesSource.includes('mutationGuard(')
       && !accountListRoutesSource.includes('recordOperationLog(')
@@ -301,12 +308,12 @@ function assertAccountListRouteBoundary(): void {
   )
   assert.match(
     accountSummaryRepositorySource,
-    /lower\(accounts\.name\) >= \?[\s\S]+lower\(accounts\.name\) < \?/,
-    'PG 自有账户列表名称前缀搜索必须使用 lower(name) 范围条件，避免 LIKE 扫描'
+    /accounts\.name COLLATE "C" >= \?[\s\S]+accounts\.name COLLATE "C" < \?/,
+    'PG 自有账户列表名称前缀搜索必须使用大小写敏感 C collation 范围条件，避免 LIKE 扫描'
   )
   assert.match(
     accountSummaryRepositorySource,
-    /accountNamePrefixUpperBound\(normalizedKeywordPrefix\)/,
+    /accountNamePrefixUpperBound\(keywordPrefix\)/,
     'PG 自有账户列表名称前缀搜索必须使用代码点上界，避免固定 \\uffff 在 PG 排序规则下失效'
   )
   assert.doesNotMatch(
@@ -319,14 +326,19 @@ function assertAccountListRouteBoundary(): void {
     /lower\(accounts\.name\)\s+LIKE\s+lower\(\?\)/,
     'PG 自有账户列表名称前缀搜索不能回退 lower(name) LIKE lower(?)'
   )
-  assert.match(
-    accountOptionsRepositorySource,
-    /lower\(accounts\.name\) >= \?[\s\S]+lower\(accounts\.name\) < \?/,
-    'PG 账户 options 名称前缀搜索必须使用 lower(name) 范围条件，避免 LIKE 扫描'
+  assert.doesNotMatch(
+    accountSummaryRepositorySource,
+    /lower\(accounts\.name\)\s+>=\s+\?/,
+    'PG 自有账户列表名称前缀搜索不能折叠账户名称大小写'
   )
   assert.match(
     accountOptionsRepositorySource,
-    /accountOptionNamePrefixUpperBound\(normalizedKeywordPrefix\)/,
+    /accounts\.name COLLATE "C" >= \?[\s\S]+accounts\.name COLLATE "C" < \?/,
+    'PG 账户 options 名称前缀搜索必须使用大小写敏感 C collation 范围条件，避免 LIKE 扫描'
+  )
+  assert.match(
+    accountOptionsRepositorySource,
+    /accountOptionNamePrefixUpperBound\(keywordPrefix\)/,
     'PG 账户 options 名称前缀搜索必须使用代码点上界，避免固定 \\uffff 在 PG 排序规则下失效'
   )
   assert.doesNotMatch(
@@ -338,6 +350,11 @@ function assertAccountListRouteBoundary(): void {
     accountOptionsRepositorySource,
     /lower\(accounts\.name\)\s+LIKE\s+lower\(\?\)/,
     'PG 账户 options 名称前缀搜索不能回退 lower(name) LIKE lower(?)'
+  )
+  assert.doesNotMatch(
+    accountOptionsRepositorySource,
+    /lower\(accounts\.name\)\s+>=\s+\?/,
+    'PG 账户 options 名称前缀搜索不能折叠账户名称大小写'
   )
   assert(
     accountReadRepositorySource.includes('accountApiKeyPoolAllUnavailableSql')
@@ -383,11 +400,11 @@ function assertAccountNameSearchCandidateQueryPlan(accountId: string): void {
     INNER JOIN account_name_search_documents documents ON documents.account_id = search.account_id
     INNER JOIN accounts ON accounts.id = search.account_id
     WHERE search.term IN (?)
-      AND documents.normalized_name LIKE ? ESCAPE '\\'
+      AND instr(documents.normalized_name, ?) > 0
       AND accounts.deleted_at IS NULL
     GROUP BY search.account_id
     HAVING COUNT(DISTINCT search.term) = ?
-  `, [termRow.term, `%${termRow.term}%`, 1])
+  `, [termRow.term, termRow.term, 1])
   assert(details.includes('idx_account_name_search_terms_term_owner'), `AI 账户名称包含候选查询必须走词项索引，实际计划：${details}`)
   assert(!details.includes('SCAN accounts'), `AI 账户名称包含候选查询不能扫描 accounts 主表，实际计划：${details}`)
 }
@@ -424,18 +441,17 @@ function assertExpiredAccountCleanupIsBoundedAndIndexed(access: { systemAccountI
   assertAccountExpirySweepQueryPlan()
   assertAccountExpirySweepQueryPlan(access.systemAccountId)
 
-	  const group = repositories.createGroup({
-	    name: '过期账号批量停用防护分组',
-	    providerCode: 'gpt',
-	    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-	    enabled: true
-	  }, access)
+  const group = repositories.createGroup({
+    name: '过期账号读路径防写分组',
+    providerCode: 'gpt',
+    enabled: true
+  }, access)
   const accountIds: string[] = []
   for (let index = 0; index < maxAccountExpirySweepBatchSize + 1; index += 1) {
-	    const account = repositories.createAccount({
-	      providerCode: 'gpt',
-	      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-	      name: `过期账号批量停用防护 ${String(index).padStart(2, '0')}`,
+    const account = repositories.createAccount({
+      providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+      name: `过期账号读路径防写 ${String(index).padStart(2, '0')}`,
       type: 'api_key',
       credentials: {
         api_key: `sk-account-expiry-batch-guard-${index}`,
@@ -470,17 +486,15 @@ function assertExpiredAccountCleanupIsBoundedAndIndexed(access: { systemAccountI
   }) as typeof database.prepare
   try {
     repositories.listAccountsPage(access, { page: 1, pageSize: 20 })
+    repositories.listAccountOptions(access, { limit: 20 })
+    repositories.findAccountSummary(accountIds[0] ?? '', access)
   } finally {
     database.prepare = originalPrepare
   }
 
-  assert(capturedUpdates.length >= 1, '过期账号清理回归应捕获 accounts 更新 SQL')
-  for (const sql of capturedUpdates) {
-    assert(/\bWHERE\s+id\s+IN\s*\(/i.test(sql), `账户读取请求路径只能按已选 ID 小批量更新过期账号，实际 SQL：${sql}`)
-    assert(!/\bWHERE\s+account_expires_at\s+IS\s+NOT\s+NULL\b/i.test(sql), `账户读取请求路径不应直接执行按到期条件无界 UPDATE，实际 SQL：${sql}`)
-  }
-  assert.equal(expiredDisabledCount(accountIds), maxAccountExpirySweepBatchSize, '单次账户读取请求只应清理固定批量过期账号')
-  assert.equal(expiredPendingCount(accountIds), 1, '超过批量窗口的过期账号应留给后续请求或后台轮次继续处理')
+  assert.equal(capturedUpdates.length, 0, `账户读取请求路径不应更新 accounts；过期账号停用必须交给后台 sweep，实际 SQL：${capturedUpdates.join('\n')}`)
+  assert.equal(expiredDisabledCount(accountIds), 0, '账户读取请求不应停用过期账号')
+  assert.equal(expiredPendingCount(accountIds), maxAccountExpirySweepBatchSize + 1, '过期账号应保留给后台 sweep 处理，列表只计算展示态')
 }
 
 function assertAccountExpirySweepQueryPlan(systemAccountId?: string): void {

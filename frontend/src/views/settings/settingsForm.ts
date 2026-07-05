@@ -8,7 +8,6 @@ export interface GlobalForm {
 
 export interface SystemForm {
   gatewayTextRawBodyLimitMegabytes: number
-  systemApiRateLimitEnabled: boolean
   systemApiRateLimitIpReadPerMinute: number
   systemApiRateLimitIpReadBurstPer10Seconds: number
   systemApiRateLimitIpWritePerMinute: number
@@ -18,10 +17,10 @@ export interface SystemForm {
   defaultTemporaryUnschedulableMinutes: number
   temporaryUnschedulableRetryIntervalSeconds: number
   temporaryUnschedulableRetryAttempts: number
-  streamCircuitBreakerEnabled: boolean
   streamRequestTimeoutSeconds: number
   streamIdleTimeoutSeconds: number
   streamClientTotalWaitTimeoutSeconds: number
+  streamMaxLifetimeSeconds: number
   streamFailureThresholdCount: number
   streamFailureThresholdWindowMinutes: number
   accountTestTaskConcurrency: number
@@ -29,10 +28,9 @@ export interface SystemForm {
   accountHealthCheckJitterMinutes: number
   accountHealthCheckBatchSize: number
   accountHealthCheckFailureThreshold: number
+  runtimeLogIndexRetentionDays: number
+  publicApiLogRetentionDays: number
   usageRecordRetentionDays: number
-  dataRetentionCleanupIntervalMinutes: number
-  dataRetentionCleanupBatchSize: number
-  dataRetentionCleanupMaxBatchesPerRun: number
   cooldownAccountRetestMaxBackoffHours: number
   cooldownAccountRetestLongTermIntervalHours: number
 }
@@ -43,8 +41,7 @@ export const defaultGlobalSettings: GlobalForm = {
 }
 
 export const defaultSystemSettings: SystemForm = {
-  gatewayTextRawBodyLimitMegabytes: 8,
-  systemApiRateLimitEnabled: true,
+  gatewayTextRawBodyLimitMegabytes: 16,
   systemApiRateLimitIpReadPerMinute: 600,
   systemApiRateLimitIpReadBurstPer10Seconds: 120,
   systemApiRateLimitIpWritePerMinute: 180,
@@ -54,10 +51,10 @@ export const defaultSystemSettings: SystemForm = {
   defaultTemporaryUnschedulableMinutes: 2,
   temporaryUnschedulableRetryIntervalSeconds: 3,
   temporaryUnschedulableRetryAttempts: 3,
-  streamCircuitBreakerEnabled: true,
   streamRequestTimeoutSeconds: 120,
   streamIdleTimeoutSeconds: 30,
   streamClientTotalWaitTimeoutSeconds: 270,
+  streamMaxLifetimeSeconds: 1800,
   streamFailureThresholdCount: 3,
   streamFailureThresholdWindowMinutes: 5,
   accountTestTaskConcurrency: 100,
@@ -65,10 +62,9 @@ export const defaultSystemSettings: SystemForm = {
   accountHealthCheckJitterMinutes: 120,
   accountHealthCheckBatchSize: 20,
   accountHealthCheckFailureThreshold: 3,
-  usageRecordRetentionDays: 7,
-  dataRetentionCleanupIntervalMinutes: 10,
-  dataRetentionCleanupBatchSize: 1000,
-  dataRetentionCleanupMaxBatchesPerRun: 20,
+  runtimeLogIndexRetentionDays: 14,
+  publicApiLogRetentionDays: 30,
+  usageRecordRetentionDays: 30,
   cooldownAccountRetestMaxBackoffHours: 12,
   cooldownAccountRetestLongTermIntervalHours: 1
 }
@@ -83,7 +79,6 @@ export function normalizeGlobalSettings(settings: GlobalSettings | GlobalForm): 
 export function normalizeSystemSettings(settings: SystemSettings | SystemForm): SystemForm {
   return {
     gatewayTextRawBodyLimitMegabytes: integerValue(settings.gatewayTextRawBodyLimitMegabytes, '文本请求体上限', 1, 64),
-    systemApiRateLimitEnabled: booleanValue(settings.systemApiRateLimitEnabled, '后台接口限流开关'),
     systemApiRateLimitIpReadPerMinute: integerValue(settings.systemApiRateLimitIpReadPerMinute, 'IP 读请求每分钟上限', 0, 1_000_000),
     systemApiRateLimitIpReadBurstPer10Seconds: integerValue(settings.systemApiRateLimitIpReadBurstPer10Seconds, 'IP 读请求突发上限', 0, 1_000_000),
     systemApiRateLimitIpWritePerMinute: integerValue(settings.systemApiRateLimitIpWritePerMinute, 'IP 写请求每分钟上限', 0, 1_000_000),
@@ -93,10 +88,10 @@ export function normalizeSystemSettings(settings: SystemSettings | SystemForm): 
     defaultTemporaryUnschedulableMinutes: integerValue(settings.defaultTemporaryUnschedulableMinutes, '临时不可调用最大暂停时间', 1, 1440),
     temporaryUnschedulableRetryIntervalSeconds: integerValue(settings.temporaryUnschedulableRetryIntervalSeconds, '临时状态重试间隔', 0, 3600),
     temporaryUnschedulableRetryAttempts: integerValue(settings.temporaryUnschedulableRetryAttempts, '临时状态重试次数', 0, 10),
-    streamCircuitBreakerEnabled: booleanValue(settings.streamCircuitBreakerEnabled, '流式熔断开关'),
     streamRequestTimeoutSeconds: integerValue(settings.streamRequestTimeoutSeconds, '上游首包等待上限', 10, 3600),
     streamIdleTimeoutSeconds: integerValue(settings.streamIdleTimeoutSeconds, '输出停顿上限', 1, 3600),
     streamClientTotalWaitTimeoutSeconds: integerValue(settings.streamClientTotalWaitTimeoutSeconds, '客户端总等待时长', 10, 3600),
+    streamMaxLifetimeSeconds: integerValue(settings.streamMaxLifetimeSeconds, '单条流最大存活时间', 60, 86400),
     streamFailureThresholdCount: integerValue(settings.streamFailureThresholdCount, '流失败诊断计数', 1, 100),
     streamFailureThresholdWindowMinutes: integerValue(settings.streamFailureThresholdWindowMinutes, '流失败诊断窗口', 1, 1440),
     accountTestTaskConcurrency: integerValue(settings.accountTestTaskConcurrency, '账号测试后台并发上限', 1, 1000),
@@ -104,10 +99,9 @@ export function normalizeSystemSettings(settings: SystemSettings | SystemForm): 
     accountHealthCheckJitterMinutes: integerValue(settings.accountHealthCheckJitterMinutes, '健康检测错峰窗口', 0, 1440),
     accountHealthCheckBatchSize: integerValue(settings.accountHealthCheckBatchSize, '健康检测单轮账号数', 1, 100),
     accountHealthCheckFailureThreshold: integerValue(settings.accountHealthCheckFailureThreshold, '健康检测连续失败阈值', 1, 10),
-    usageRecordRetentionDays: integerValue(settings.usageRecordRetentionDays, '使用记录保留天数', 1, 7),
-    dataRetentionCleanupIntervalMinutes: integerValue(settings.dataRetentionCleanupIntervalMinutes, '数据保留清理间隔', 5, 1440),
-    dataRetentionCleanupBatchSize: integerValue(settings.dataRetentionCleanupBatchSize, '数据保留清理单批行数', 100, 5_000),
-    dataRetentionCleanupMaxBatchesPerRun: integerValue(settings.dataRetentionCleanupMaxBatchesPerRun, '数据保留清理单轮批数', 1, 100),
+    runtimeLogIndexRetentionDays: integerValue(settings.runtimeLogIndexRetentionDays, '运行日志索引保留天数', 1, 90),
+    publicApiLogRetentionDays: integerValue(settings.publicApiLogRetentionDays, '公开接口日志保留天数', 1, 365),
+    usageRecordRetentionDays: integerValue(settings.usageRecordRetentionDays, '使用记录保留天数', 1, 180),
     cooldownAccountRetestMaxBackoffHours: integerValue(settings.cooldownAccountRetestMaxBackoffHours, '长期不可用观察阈值', 1, 720),
     cooldownAccountRetestLongTermIntervalHours: integerValue(settings.cooldownAccountRetestLongTermIntervalHours, '长期不可用复测间隔', 1, 720)
   }
@@ -127,13 +121,6 @@ function integerValue(value: unknown, label: string, min: number, max: number): 
   }
   if (value < min || value > max) {
     throw new Error(`${label}必须在 ${min} 到 ${max} 之间`)
-  }
-  return value
-}
-
-function booleanValue(value: unknown, label: string): boolean {
-  if (typeof value !== 'boolean') {
-    throw new Error(`${label}必须是布尔值`)
   }
   return value
 }

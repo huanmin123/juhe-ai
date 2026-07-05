@@ -11,6 +11,7 @@ import { GPT_OPENAI_V1_PROFILE_ID, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION
 import { clearAccountConcurrency, tryAcquireAccountConcurrency } from '../../shared/account-concurrency.js'
 import { fetchFirstAvailableUpstream, UpstreamAttemptError } from '../../modules/gateway/dispatch/upstream-dispatch.js'
 import { resolveOpenAIGatewayRequestLane } from '../../modules/gateway/protocols/openai-v1/request-lane.js'
+import { clearHighConcurrencyGroupQueues } from '../../modules/gateway/runtime/high-concurrency-queue.service.js'
 import type { GatewaySettings } from '../../modules/gateway/policy/account-error-policy.service.js'
 import type { AuditCaptureContext } from '../../modules/gateway/audit/capture.service.js'
 import type { GatewayUsageContext } from '../../modules/gateway/usage/records.js'
@@ -40,10 +41,11 @@ const settings: GatewaySettings = {
   defaultTemporaryUnschedulableMinutes: 5,
   temporaryUnschedulableRetryIntervalSeconds: 0,
   temporaryUnschedulableRetryAttempts: 0,
-  streamCircuitBreakerEnabled: false,
+  streamCircuitBreakerEnabled: true,
   streamRequestTimeoutSeconds: 120,
   streamIdleTimeoutSeconds: 30,
   streamClientTotalWaitTimeoutSeconds: 270,
+  streamMaxLifetimeSeconds: 1800,
   streamFailureThresholdCount: 3,
   streamFailureThresholdWindowMinutes: 5
 }
@@ -76,6 +78,7 @@ let hitAccountIds: string[] = []
 
 try {
   clearAccountConcurrency()
+  clearHighConcurrencyGroupQueues()
   assert.equal(resolveOpenAIGatewayRequestLane(buildLaneRequest('/v1/images/generations')), 'image', 'OpenAI 图片接口应识别为图像通道')
   assert.equal(resolveOpenAIGatewayRequestLane(buildLaneRequest('/v1/responses', { model: 'gpt-image-1', prompt: 'x' })), 'image', 'gpt-image 模型应识别为图像通道')
   assert.equal(resolveOpenAIGatewayRequestLane(buildLaneRequest('/v1/chat/completions', { model: 'dall-e-3', prompt: 'x' })), 'image', 'dall-e 模型应识别为图像通道')
@@ -145,6 +148,45 @@ try {
   assert.match(usage?.error_message ?? '', /并发已达到上限/, '账号并发满使用记录应保留错误原因')
 
   heldSlot.release()
+  clearAccountConcurrency()
+
+  const highConcurrencyQueuedAccount = buildAccount({
+    id: 'acct_high_concurrency_queue_after_slot_race',
+    name: '高并发槽位竞态排队账号',
+    concurrencyLimit: 1,
+    type: 'api_key',
+    baseUrl: holdAndReleaseUpstream.baseUrl
+  })
+  const highConcurrencyHeldSlot = tryAcquireAccountConcurrency(highConcurrencyQueuedAccount.id, highConcurrencyQueuedAccount.concurrencyLimit)
+  assert.equal(highConcurrencyHeldSlot.acquired, true, '高并发排队测试前应先占用账号并发槽')
+  const releaseHighConcurrencyHeldSlot = setTimeout(() => highConcurrencyHeldSlot.release(), 1500)
+  try {
+    const queuedDispatchResult = await fetchFirstAvailableUpstream(
+      buildRequest(),
+      [highConcurrencyQueuedAccount],
+      settings,
+      usageContext,
+      auditCapture,
+      undefined,
+      new AbortController().signal,
+      undefined,
+      'text',
+      {
+        maxQueueWaitMs: 3000,
+        maxQueueSize: 10,
+        perApiKeyQueueLimit: 10
+      }
+    )
+    assert.equal(queuedDispatchResult.account.id, highConcurrencyQueuedAccount.id, '高并发真实抢槽失败后应进入队列并在释放后继续调度')
+    assert.equal(queuedDispatchResult.response.status, 200, '高并发队列唤醒后应成功拿到上游响应')
+    await drainAndRelease(queuedDispatchResult)
+  } finally {
+    clearTimeout(releaseHighConcurrencyHeldSlot)
+    highConcurrencyHeldSlot.release()
+  }
+  usageRecordQueue.flushAllUsageRecordQueue()
+  assert.equal(latestUsageRecordForAccount(highConcurrencyQueuedAccount.id), undefined, '高并发队列等待期间不应写入账号并发满失败使用记录')
+  clearHighConcurrencyGroupQueues()
   clearAccountConcurrency()
 
   const imageLaneAccount = buildAccount({
@@ -289,9 +331,10 @@ try {
   hitAccountIds = []
   clearAccountConcurrency()
 
-  console.log('网关并发准备回归通过：短等复用、饱和失败记录、图像通道预留文本槽、自定义图像通道上限和图像 lane 排序均符合预期')
+  console.log('网关并发准备回归通过：短等复用、饱和失败记录、高并发真实抢槽排队、图像通道预留文本槽、自定义图像通道上限和图像 lane 排序均符合预期')
 } finally {
   clearAccountConcurrency()
+  clearHighConcurrencyGroupQueues()
   holdAndReleaseServer?.close()
   try {
     databaseModule.getBusinessDatabase().close()

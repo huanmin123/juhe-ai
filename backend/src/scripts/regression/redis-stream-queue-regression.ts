@@ -17,6 +17,7 @@ const queue = new RedisStreamQueue<TestPayload>({
 const parser = queue as unknown as {
   parseStreamReadResult(result: unknown): Array<RedisStreamMessage<TestPayload>>
   parseAutoClaimResult(result: unknown): Array<RedisStreamMessage<TestPayload>>
+  parsePendingMessageInspection(result: unknown): { ids: string[]; entries: Array<RedisStreamMessage<TestPayload>> }
 }
 
 const readMessages = parser.parseStreamReadResult([
@@ -63,6 +64,24 @@ assert.deepEqual(objectClaimedMessages, [
   { id: '1730000000001-1', payload: { id: 'object-c', value: 30 } }
 ], 'XAUTOCLAIM object result should parse node-redis pending payloads')
 
+const pendingInspection = parser.parsePendingMessageInspection([
+  '1730000000002-0',
+  [
+    ['1730000000002-0', ['payload', JSON.stringify({ id: 'pending-a', value: 100 })]]
+  ],
+  '1730000000002-1',
+  [
+    ['1730000000002-1', ['payload', JSON.stringify({ id: 'pending-b', value: 101 })]]
+  ]
+])
+assert.deepEqual(pendingInspection, {
+  ids: ['1730000000002-0', '1730000000002-1'],
+  entries: [
+    { id: '1730000000002-0', payload: { id: 'pending-a', value: 100 } },
+    { id: '1730000000002-1', payload: { id: 'pending-b', value: 101 } }
+  ]
+}, 'Lua XPENDING/XRANGE inspection result should parse pending ids and payloads')
+
 const runtimeSource = readFileSync(new URL('../../config/runtime.ts', import.meta.url), 'utf8')
 assert.match(runtimeSource, /export type QueueDriver = 'memory' \| 'redis_stream'/, 'runtime config should expose queue driver')
 assert.match(runtimeSource, /JUHE_AI_QUEUE_DRIVER/, 'runtime config should read JUHE_AI_QUEUE_DRIVER')
@@ -73,9 +92,23 @@ assert.match(redisStreamQueueSource, /isRedisNoGroupError/, 'Redis Stream queue 
 assert.match(redisStreamQueueSource, /recreateGroupAfterNoGroup/, 'Redis Stream queue should recreate deleted stream groups')
 assert.match(redisStreamQueueSource, /readNewUnsafe[\s\S]*recreateGroupAfterNoGroup[\s\S]*readNewUnsafe/, 'XREADGROUP should retry once after recreating a missing group')
 assert.match(redisStreamQueueSource, /claimPendingUnsafe[\s\S]*recreateGroupAfterNoGroup[\s\S]*claimPendingUnsafe/, 'XAUTOCLAIM should retry once after recreating a missing group')
+assert.match(redisStreamQueueSource, /parseEntries[\s\S]*try[\s\S]*this\.decode\(payload\)[\s\S]*catch[\s\S]*ackPoisonMessage/, 'Redis Stream parser should skip and ack poison messages instead of throwing forever')
+assert.match(redisStreamQueueSource, /redis_stream_message_decode_failed[\s\S]*redis_stream_poison_message_ack_failed/, 'Redis Stream poison message path should log decode and ack failures')
+assert.match(redisStreamQueueSource, /const redisInspectPendingMessagesScript = `[\s\S]*XPENDING[\s\S]*XRANGE/, 'Redis Stream backlog inspection should fetch pending ids and payloads in one Lua call')
+assert.match(redisStreamQueueSource, /async inspectBacklog\(limit = 256\)[\s\S]*pendingTruncated[\s\S]*undeliveredTruncated/, 'Redis Stream backlog inspection should expose truncation flags for stats safety windows')
+assert.match(redisStreamQueueSource, /const command = \['XADD', this\.streamKey, '\*', 'payload', this\.encode\(payload\)\]/, 'Redis Stream enqueue should build XADD command explicitly')
+assert.match(redisStreamQueueSource, /async ack\(ids: string\[\]\): Promise<number>[\s\S]*redisAckAndDeleteMessagesScript/, 'Redis Stream ack should use a single Lua script for XACK and XDEL')
+assert.match(redisStreamQueueSource, /const redisAckAndDeleteMessagesScript = `[\s\S]*XACK[\s\S]*if result > 0 then[\s\S]*XDEL/, 'Redis Stream ack should delete only messages successfully acknowledged by XACK')
+assert.match(redisStreamQueueSource, /async inspectRuntime\(\): Promise<RedisStreamQueueRuntime>[\s\S]*'XLEN', this\.streamKey[\s\S]*streamLength:/, 'Redis Stream runtime should expose XLEN for queue capacity monitoring')
+assert.doesNotMatch(redisStreamQueueSource, /MAXLEN|redisStreamMaxLen|maxLen/, 'Redis Stream reliable queue must not expose trimming controls')
 
 const usageQueueSource = readFileSync(new URL('../../modules/gateway/usage/record-queue.service.ts', import.meta.url), 'utf8')
 assert.match(usageQueueSource, /shouldEnqueueUsageRecordToRedisStream/, 'usage record queue should route producers through Redis Stream in redis_stream mode')
+assertProducerPrefersRedisStream(usageQueueSource, 'enqueueUsageRecord', 'shouldEnqueueUsageRecordToRedisStream()', [
+  'sendUsageRecordsToWorker',
+  'sendUsageRecordFromDbServiceToServer',
+  'enqueueUsageRecordLocal'
+], 'usage record producer must short-circuit to Redis Stream before IPC/local queues')
 assert.match(usageQueueSource, /startUsageRecordRedisStreamConsumer/, 'usage record queue should expose an ingest-worker Redis Stream consumer')
 assert.match(usageQueueSource, /queue\.ack\(messages\.map/, 'usage record Redis Stream consumer should ack only after flush')
 assert.match(usageQueueSource, /Redis Stream 使用记录落库失败，消息保持 pending 等待重投/, 'usage record Redis Stream consumer should keep failed messages pending')
@@ -83,6 +116,11 @@ assert.doesNotMatch(usageQueueSource, /AfterRedisStreamFailure/, 'usage record R
 
 const auditQueueSource = readFileSync(new URL('../../modules/audit-logs/audit-log-queue.service.ts', import.meta.url), 'utf8')
 assert.match(auditQueueSource, /shouldEnqueueAuditLogToRedisStream/, 'audit log queue should route producers through Redis Stream in redis_stream mode')
+assertProducerPrefersRedisStream(auditQueueSource, 'enqueueAuditLog', 'shouldEnqueueAuditLogToRedisStream()', [
+  'sendAuditLogsToWorker',
+  'sendAuditLogFromDbServiceToServer',
+  'enqueueAuditLogLocal'
+], 'audit log producer must short-circuit to Redis Stream before IPC/local queues')
 assert.match(auditQueueSource, /startAuditLogRedisStreamConsumer/, 'audit log queue should expose an ingest-worker Redis Stream consumer')
 assert.match(auditQueueSource, /queue\.ack\(messages\.map/, 'audit log Redis Stream consumer should ack only after flush')
 assert.match(auditQueueSource, /Redis Stream 审计日志落库失败，消息保持 pending 等待重投/, 'audit log Redis Stream consumer should keep failed messages pending')
@@ -98,6 +136,11 @@ assert.match(auditQueueSource, /Buffer\.from\(body\.base64, 'base64'\)/, 'audit 
 
 const operationQueueSource = readFileSync(new URL('../../modules/operation-logs/operation-log-queue.service.ts', import.meta.url), 'utf8')
 assert.match(operationQueueSource, /shouldEnqueueOperationLogToRedisStream/, 'operation log queue should route producers through Redis Stream in redis_stream mode')
+assertProducerPrefersRedisStream(operationQueueSource, 'enqueueOperationLog', 'shouldEnqueueOperationLogToRedisStream()', [
+  'sendOperationLogsToWorker',
+  'process.send',
+  'enqueueOperationLogLocal'
+], 'operation log producer must short-circuit to Redis Stream before IPC/local queues')
 assert.match(operationQueueSource, /startOperationLogRedisStreamConsumer/, 'operation log queue should expose an ingest-worker Redis Stream consumer')
 assert.match(operationQueueSource, /queue\.ack\(messages\.map/, 'operation log Redis Stream consumer should ack only after flush')
 assert.match(operationQueueSource, /Redis Stream 操作日志落库失败，消息保持 pending 等待重投/, 'operation log Redis Stream consumer should keep failed messages pending')
@@ -106,6 +149,11 @@ assert.doesNotMatch(operationQueueSource, /AfterRedisStreamFailure/, 'operation 
 
 const publicApiQueueSource = readFileSync(new URL('../../modules/public-api-logs/public-api-log-queue.service.ts', import.meta.url), 'utf8')
 assert.match(publicApiQueueSource, /shouldEnqueuePublicApiLogToRedisStream/, 'public API log queue should route producers through Redis Stream in redis_stream mode')
+assertProducerPrefersRedisStream(publicApiQueueSource, 'enqueuePublicApiLog', 'shouldEnqueuePublicApiLogToRedisStream()', [
+  'sendPublicApiLogsToWorker',
+  'sendPublicApiLogToParent',
+  'enqueuePublicApiLogsLocal'
+], 'public API log producer must short-circuit to Redis Stream before IPC/local queues')
 assert.match(publicApiQueueSource, /startPublicApiLogRedisStreamConsumer/, 'public API log queue should expose an ingest-worker Redis Stream consumer')
 assert.match(publicApiQueueSource, /queue\.ack\(messages\.map/, 'public API log Redis Stream consumer should ack only after flush')
 assert.match(publicApiQueueSource, /Redis Stream 公开接口日志落库失败，消息保持 pending 等待重投/, 'public API log Redis Stream consumer should keep failed messages pending')
@@ -113,7 +161,12 @@ assert.match(publicApiQueueSource, /readCount: publicApiLogFlushBatchSize/, 'pub
 assert.doesNotMatch(publicApiQueueSource, /AfterRedisStreamFailure/, 'public API log Redis Stream producer must not fall back to IPC/local queues after enqueue failure')
 
 const recordMaintenanceQueueSource = readFileSync(new URL('../../modules/record-maintenance/record-maintenance-queue.service.ts', import.meta.url), 'utf8')
-assert.match(recordMaintenanceQueueSource, /shouldEnqueueRecordMaintenanceJobToRedisStream/, 'record maintenance queue should route non-local producers through Redis Stream in redis_stream mode')
+assert.match(recordMaintenanceQueueSource, /shouldEnqueueRecordMaintenanceJobToRedisStream/, 'record maintenance queue should route all producers through Redis Stream in redis_stream mode')
+assertProducerPrefersRedisStream(recordMaintenanceQueueSource, 'enqueueRecordMaintenanceJobWithResult', 'shouldEnqueueRecordMaintenanceJobToRedisStream(job)', [
+  'sendRecordMaintenanceJobsToWorker',
+  'process.send',
+  'enqueueRecordMaintenanceJobLocal'
+], 'record maintenance producer must short-circuit to Redis Stream before IPC/local queues')
 assert.match(recordMaintenanceQueueSource, /startRecordMaintenanceRedisStreamConsumer/, 'record maintenance queue should expose an ingest-worker Redis Stream consumer')
 assert.match(recordMaintenanceQueueSource, /queue\.ack\(/, 'record maintenance Redis Stream consumer should ack only after each successful job or coalesced batch')
 assert.match(recordMaintenanceQueueSource, /Redis Stream 数据维护任务执行失败，消息保持 pending 等待重投/, 'record maintenance Redis Stream consumer should keep failed messages pending')
@@ -121,7 +174,12 @@ assert.match(recordMaintenanceQueueSource, /readCount: recordMaintenanceBatchSiz
 assert.doesNotMatch(recordMaintenanceQueueSource, /AfterRedisStreamFailure/, 'record maintenance Redis Stream producer must not fall back to IPC/local queues after enqueue failure')
 
 const runtimeLogQueueSource = readFileSync(new URL('../../modules/runtime-logs/runtime-log-index-queue.service.ts', import.meta.url), 'utf8')
-assert.match(runtimeLogQueueSource, /shouldEnqueueRuntimeLogToRedisStream/, 'runtime log index queue should route non-ingest producers through Redis Stream in redis_stream mode')
+assert.match(runtimeLogQueueSource, /shouldEnqueueRuntimeLogToRedisStream/, 'runtime log index queue should route all producers through Redis Stream in redis_stream mode')
+assertProducerPrefersRedisStream(runtimeLogQueueSource, 'enqueueRuntimeLogLine', 'shouldEnqueueRuntimeLogToRedisStream()', [
+  'sendRuntimeLogLineFromDbServiceToServer',
+  'sendRuntimeLogLineToWorker',
+  'enqueueRuntimeLogLineLocal'
+], 'runtime log producer must short-circuit to Redis Stream before IPC/local queues')
 assert.match(runtimeLogQueueSource, /startRuntimeLogRedisStreamConsumer/, 'runtime log index queue should expose an ingest-worker Redis Stream consumer')
 assert.match(runtimeLogQueueSource, /createRuntimeLogsBatchAsync/, 'runtime log Redis Stream consumer should use the async PG-capable writer')
 assert.match(runtimeLogQueueSource, /queue\.ack\(messages\.map/, 'runtime log Redis Stream consumer should ack only after flush')
@@ -158,3 +216,48 @@ assert.match(gatewayLoadSource, /recordMaintenanceRedisStreamKey = 'juhe-ai:queu
 assert.match(gatewayLoadSource, /runtimeLogRedisStreamKey = 'juhe-ai:queue:runtime-log-index'/, 'gateway load test should sample runtime log Redis Stream')
 
 console.log('redis-stream-queue-regression passed')
+
+function assertProducerPrefersRedisStream(
+  source: string,
+  functionName: string,
+  redisMarker: string,
+  forbiddenBeforeRedisMarkers: string[],
+  message: string
+): void {
+  const body = sourceFunctionBlock(source, functionName)
+  const redisIndex = body.indexOf(redisMarker)
+  assert(redisIndex >= 0, `${message}: missing ${redisMarker}`)
+  for (const marker of forbiddenBeforeRedisMarkers) {
+    const markerIndex = body.indexOf(marker)
+    assert(markerIndex < 0 || redisIndex < markerIndex, `${message}: ${marker} appears before Redis Stream branch`)
+  }
+}
+
+function sourceFunctionBlock(source: string, functionName: string): string {
+  const start = source.indexOf(`function ${functionName}`)
+  assert(start >= 0, `missing function ${functionName}`)
+  let openBrace = -1
+  let parenDepth = 0
+  for (let index = start; index < source.length; index += 1) {
+    const char = source[index]
+    if (char === '(') parenDepth += 1
+    if (char === ')') parenDepth = Math.max(0, parenDepth - 1)
+    if (char === '{' && parenDepth === 0) {
+      openBrace = index
+      break
+    }
+  }
+  assert(openBrace >= 0, `missing body for ${functionName}`)
+  let depth = 0
+  for (let index = openBrace; index < source.length; index += 1) {
+    const char = source[index]
+    if (char === '{') depth += 1
+    if (char === '}') {
+      depth -= 1
+      if (depth === 0) {
+        return source.slice(openBrace, index + 1)
+      }
+    }
+  }
+  throw new Error(`unclosed function body for ${functionName}`)
+}

@@ -13,6 +13,7 @@ export interface AuditHotRetentionCleanupResult {
 const hourMs = 60 * 60 * 1000
 const auditHotRetentionCleanupBatchSize = 2000
 const auditHotRetentionCleanupMaxBatches = 20
+const auditHotRetentionCleanupMaxRunMs = 5000
 let auditHotRetentionCleanupRunning = false
 
 export async function cleanupExpiredAuditHotRetentionData(nowMs = Date.now()): Promise<AuditHotRetentionCleanupResult> {
@@ -24,6 +25,7 @@ export async function cleanupExpiredAuditHotRetentionData(nowMs = Date.now()): P
   }
 
   auditHotRetentionCleanupRunning = true
+  const startedAt = Date.now()
   try {
     const auditSettings = readAuditLogSettings()
     const successHotCutoffCreatedAt = new Date(nowMs - auditSettings.successHotRetentionHours * hourMs).toISOString()
@@ -42,16 +44,23 @@ export async function cleanupExpiredAuditHotRetentionData(nowMs = Date.now()): P
       if (batch.auditLogs < auditHotRetentionCleanupBatchSize) {
         break
       }
+      if (Date.now() - startedAt >= auditHotRetentionCleanupMaxRunMs) {
+        break
+      }
     }
 
-    result.auditHotSearchFiles = await cleanupAuditHotSearchFilesBefore(successHotCutoffCreatedAt)
+    if (Date.now() - startedAt < auditHotRetentionCleanupMaxRunMs) {
+      result.auditHotSearchFiles = await cleanupAuditHotSearchFilesBefore(successHotCutoffCreatedAt)
+    }
     if (result.auditLogs > 0 || result.auditPayloadBlobs > 0 || result.auditHotSearchFiles > 0) {
       logger.info({
         event: 'audit_hot_retention_cleanup_completed',
         deleted: result,
         successHotCutoffCreatedAt,
         batchSize: auditHotRetentionCleanupBatchSize,
-        maxBatches: auditHotRetentionCleanupMaxBatches
+        maxBatches: auditHotRetentionCleanupMaxBatches,
+        maxRunMs: auditHotRetentionCleanupMaxRunMs,
+        durationMs: Date.now() - startedAt
       }, '审计成功热保留清理完成')
     }
 

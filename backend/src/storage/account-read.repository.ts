@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import type { AccountUsageStatsRange, AccountUsageSummary } from '../domain/types.js'
 import { manageableSystemAccountId, userVisibleSystemAccountId, canAccessAll, type AccessScope } from './access-scope.js'
 import { accountStatusFilterValues, buildAccountListOrderClause, type NormalizedAccountListOptions } from './account-list-options.js'
@@ -588,26 +589,7 @@ export function hydrateAccountRowsWithRuntimeState(rows: AccountListRow[], optio
   const supportedModelAccountIds = [...new Set(rowsWithSources.map((row) => supportedModelAccountIdForRow(row)).filter(Boolean))]
   const supportedModelsByAccountId = loadSupportedModelsByAccountIds(supportedModelAccountIds)
   const modelMappingsByAccountId = loadModelMappingsByAccountIds(supportedModelAccountIds)
-  const qualityRows = getStatsDatabase()
-    .prepare(`
-      SELECT account_id, quality_score, quality_state, ewma_first_token_ms, recent_avg_first_token_ms,
-        recent_request_count, recent_error_count, success_rate, last_error_at, last_error_message, updated_at
-      FROM account_quality_scores
-      WHERE account_id IN (${ids.map(() => '?').join(',')})
-    `)
-    .all(...ids) as unknown as Array<{
-      account_id: string
-      quality_score: number | null
-      quality_state: string | null
-      ewma_first_token_ms: number | null
-      recent_avg_first_token_ms: number | null
-      recent_request_count: number | null
-      recent_error_count: number | null
-      success_rate: number | null
-      last_error_at: string | null
-      last_error_message: string | null
-      updated_at: string | null
-    }>
+  const qualityRows = loadAccountRuntimeQualityRows(ids)
   const qualityByAccount = new Map(qualityRows.map((row) => [row.account_id, row]))
   return rowsWithSources.map((row) => {
     const quality = qualityByAccount.get(row.id)
@@ -631,6 +613,59 @@ export function hydrateAccountRowsWithRuntimeState(rows: AccountListRow[], optio
       quality_updated_at: quality.updated_at
     }
   })
+}
+
+function loadAccountRuntimeQualityRows(ids: string[]): Array<{
+  account_id: string
+  quality_score: number | null
+  quality_state: string | null
+  ewma_first_token_ms: number | null
+  recent_avg_first_token_ms: number | null
+  recent_request_count: number | null
+  recent_error_count: number | null
+  success_rate: number | null
+  last_error_at: string | null
+  last_error_message: string | null
+  updated_at: string | null
+}> {
+  if (isSqliteReadWorkerProcess() && !existsSync(statsDatabasePath())) {
+    return []
+  }
+  try {
+    return getStatsDatabase()
+      .prepare(`
+        SELECT account_id, quality_score, quality_state, ewma_first_token_ms, recent_avg_first_token_ms,
+          recent_request_count, recent_error_count, success_rate, last_error_at, last_error_message, updated_at
+        FROM account_quality_scores
+        WHERE account_id IN (${ids.map(() => '?').join(',')})
+      `)
+      .all(...ids) as unknown as Array<{
+        account_id: string
+        quality_score: number | null
+        quality_state: string | null
+        ewma_first_token_ms: number | null
+        recent_avg_first_token_ms: number | null
+        recent_request_count: number | null
+        recent_error_count: number | null
+        success_rate: number | null
+        last_error_at: string | null
+        last_error_message: string | null
+        updated_at: string | null
+      }>
+  } catch (error) {
+    if (isSqliteReadWorkerProcess() && isMissingAccountQualityTableError(error)) {
+      return []
+    }
+    throw error
+  }
+}
+
+function isSqliteReadWorkerProcess(): boolean {
+  return process.env.JUHE_AI_SQLITE_READ_WORKER === 'true'
+}
+
+function isMissingAccountQualityTableError(error: unknown): boolean {
+  return error instanceof Error && /no such table:\s*account_quality_scores/i.test(error.message)
 }
 
 export function accountCredentialsForList(row: AccountListRow, includeCredentials = true): Record<string, unknown> {
@@ -769,10 +804,6 @@ function accountBindingSubquery(): string {
   return `group_accounts`
 }
 
-function escapeLikePrefix(value: string): string {
-  return value.replace(/[\\%_]/g, (char) => `\\${char}`)
-}
-
 function buildAccountListFilters(options: AccountRowQueryOptions, containsSubquery?: AccountNameContainsSubquery): { clause: string; params: AccountFilterValue[] } {
   const clauses: string[] = []
   const params: AccountFilterValue[] = []
@@ -786,14 +817,13 @@ function buildAccountListFilters(options: AccountRowQueryOptions, containsSubque
   }
   const keyword = options.keyword?.trim()
   if (keyword) {
-    const keywordPrefix = `${escapeLikePrefix(keyword)}%`
+    const keywordUpperBound = accountTextPrefixUpperBound(keyword)
     const keywordClauses = [
-      'account_rows.name COLLATE NOCASE = ?',
-      "account_rows.name LIKE ? ESCAPE '\\'"
+      '(account_rows.name >= ? AND account_rows.name < ?)'
     ]
     const keywordParams: AccountFilterValue[] = [
       keyword,
-      keywordPrefix
+      keywordUpperBound
     ]
     if (containsSubquery) {
       keywordClauses.push(`account_rows.id IN (${containsSubquery.sql})`)
@@ -868,4 +898,15 @@ function buildAccountListFilters(options: AccountRowQueryOptions, containsSubque
     clause: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '',
     params
   }
+}
+
+function accountTextPrefixUpperBound(value: string): string {
+  const chars = [...value]
+  for (let index = chars.length - 1; index >= 0; index -= 1) {
+    const codePoint = chars[index]?.codePointAt(0)
+    if (codePoint !== undefined && codePoint < 0x10ffff) {
+      return `${chars.slice(0, index).join('')}${String.fromCodePoint(codePoint + 1)}`
+    }
+  }
+  return `${value}\uffff`
 }

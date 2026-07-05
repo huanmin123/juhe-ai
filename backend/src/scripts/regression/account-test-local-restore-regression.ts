@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 import { submitAccountTestAndWait } from '../shared/account-test-task-client.js'
 import { installWorkerParentIpcHarness } from '../shared/worker-parent-ipc-harness.js'
@@ -182,6 +183,7 @@ async function assertManualTestRestoresAccount(input: {
 }): Promise<void> {
   const account = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: input.accountName,
     type: 'api_key',
     credentials: { api_key: input.apiKey, base_url: input.mockBaseUrl },

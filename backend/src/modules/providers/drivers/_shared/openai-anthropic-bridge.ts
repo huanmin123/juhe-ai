@@ -203,6 +203,7 @@ interface OpenAIToAnthropicBridgeRequestPlan {
   reasoningEffort?: string
   reasoningSummary?: string
   chatStreamIncludeUsage?: boolean
+  unsupportedHostedTools?: string[]
   fileSearch?: OpenAIToAnthropicFileSearchPlan
   imageGeneration?: OpenAIToAnthropicImageGenerationPlan
   responsesToolSearch?: OpenAIToAnthropicResponsesToolSearchPlan
@@ -469,13 +470,7 @@ export async function buildOpenAIToAnthropicBridgeBody(
   validateOpenAIToAnthropicSemanticControlOptions(body, guidanceContext)
   await applyOpenAIToAnthropicFileSearchEmulation(sourceEndpointFamily, body, requestPlan, options.fileSearchExecutor, signal)
   prepareOpenAIToAnthropicCodeInterpreterTool(sourceEndpointFamily, body, requestPlan, options.codeInterpreterExecutor)
-  const guidance = openAIToAnthropicUnsupportedToolGuidance(sourceEndpointFamily, body, requestPlan, options, {
-    model,
-    stream: requestStream(req)
-  })
-  if (guidance) {
-    throw guidance
-  }
+  recordOpenAIToAnthropicUnsupportedHostedTools(sourceEndpointFamily, body, requestPlan, options)
   const localCodeInterpreterRuntimeResponse = await openAIToAnthropicCodeInterpreterRuntimeResponse(body, requestPlan, options.codeInterpreterExecutor, {
     model,
     stream: requestStream(req)
@@ -635,6 +630,7 @@ async function chatBodyToAnthropicMessages(
   }
   appendFileSearchContext(systemParts, requestPlan.fileSearch)
   appendImageGenerationPromptInstruction(systemParts, requestPlan.imageGeneration)
+  appendUnsupportedHostedToolConstraint(systemParts, requestPlan.unsupportedHostedTools)
   const output = baseAnthropicBody(body, model, options)
   output.messages = messages
   const system = systemParts.join('\n\n').trim()
@@ -692,6 +688,7 @@ async function responsesBodyToAnthropicMessages(
     appendAnthropicMessage(messages, { role: 'user', content: [{ type: 'text', text: '' }] })
   }
   appendFileSearchContext(systemParts, requestPlan.fileSearch)
+  appendUnsupportedHostedToolConstraint(systemParts, requestPlan.unsupportedHostedTools)
   const output = baseAnthropicBody(body, model, options)
   output.messages = messages
   const system = systemParts.join('\n\n').trim()
@@ -1281,6 +1278,9 @@ function chatToolsToAnthropicTools(
       if (isOpenAIFileSearchTool(item) && requestPlan?.fileSearch) {
         continue
       }
+      if (shouldSkipUnsupportedHostedTool(item, requestPlan)) {
+        continue
+      }
       throw unsupportedOpenAIToolError(item, 'Chat')
     }
     const fn = objectValue(item.function)
@@ -1327,6 +1327,9 @@ function responsesToolsToAnthropicTools(
       }
       if (isOpenAICodeInterpreterTool(item) && requestPlan?.codeInterpreterLocalRuntime?.anthropicToolName) {
         appendCodeInterpreterToolToAnthropicTools(tools, requestPlan)
+        continue
+      }
+      if (shouldSkipUnsupportedHostedTool(item, requestPlan)) {
         continue
       }
       throw unsupportedOpenAIToolError(item, 'Responses')
@@ -2474,13 +2477,12 @@ function unsupportedOpenAIToolError(tool: unknown, source: 'Chat' | 'Responses')
   )
 }
 
-function openAIToAnthropicUnsupportedToolGuidance(
+function recordOpenAIToAnthropicUnsupportedHostedTools(
   sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
   body: JsonRecord,
   requestPlan: OpenAIToAnthropicBridgeRequestPlan,
-  options: OpenAIToAnthropicBridgeBodyOptions,
-  response: { model: string; stream: boolean }
-): GatewayAgentGuidanceResponse | undefined {
+  options: OpenAIToAnthropicBridgeBodyOptions
+): void {
   const rejectedTools = rejectedOpenAIHostedRuntimeLabels(sourceEndpointFamily, body, requestPlan, options)
   if (rejectedTools.length > 0) {
     throw bridgeValidationError(
@@ -2488,19 +2490,15 @@ function openAIToAnthropicUnsupportedToolGuidance(
       'openai_anthropic_bridge_hosted_tool_runtime_rejected'
     )
   }
+  const forcedUnsupportedTool = forcedUnsupportedOpenAIHostedToolChoice(sourceEndpointFamily, body, requestPlan, options)
+  if (forcedUnsupportedTool) {
+    throw bridgeValidationError(
+      `当前 tool_choice 强制选择不可桥接的 OpenAI 托管工具：${forcedUnsupportedTool}`,
+      'openai_anthropic_bridge_unsupported_hosted_tool_choice'
+    )
+  }
   const tools = unsupportedOpenAIHostedToolLabels(sourceEndpointFamily, body, requestPlan, options)
-  if (tools.length === 0) return undefined
-  return new GatewayAgentGuidanceResponse({
-    code: 'agent_guidance_unsupported_hosted_tool',
-    protocol: sourceEndpointFamily === OPENAI_RESPONSES_FAMILY ? 'responses' : 'chat_completions',
-    stream: response.stream,
-    model: response.model,
-    message: unsupportedBridgeCapabilityGuidanceMessage({
-      tools,
-      providerName: options.guidanceProviderName,
-      bridgeName: 'OpenAI 到 Anthropic Messages bridge'
-    })
-  })
+  requestPlan.unsupportedHostedTools = tools.length > 0 ? tools : undefined
 }
 
 function openAIToAnthropicCodeInterpreterMockResponse(
@@ -3329,7 +3327,7 @@ function rejectedOpenAIHostedRuntimeLabels(
   }
   const toolChoice = objectValue(body.tool_choice)
   const choiceType = stringValue(toolChoice?.type)
-  if (choiceType && choiceType !== 'function' && choiceType !== 'allowed_tools') {
+  if (isOpenAIHostedToolChoiceType(choiceType)) {
     const label = rejectedOpenAIHostedRuntimeLabel(sourceEndpointFamily, body, toolChoice, requestPlan, options)
     if (label) labels.push(label)
   }
@@ -3373,7 +3371,7 @@ function unsupportedOpenAIHostedToolLabels(
   }
   const toolChoice = objectValue(body.tool_choice)
   const choiceType = stringValue(toolChoice?.type)
-  if (choiceType && choiceType !== 'function' && choiceType !== 'allowed_tools') {
+  if (isOpenAIHostedToolChoiceType(choiceType)) {
     const label = unsupportedOpenAIHostedToolLabel(sourceEndpointFamily, body, toolChoice, requestPlan, options)
     if (label) labels.push(label)
   }
@@ -3422,30 +3420,46 @@ function unsupportedOpenAIHostedToolLabel(
   return type
 }
 
-function unsupportedBridgeCapabilityGuidanceMessage(input: {
-  tools: string[]
-  providerName?: string
-  bridgeName: string
-}): string {
-  const tools = input.tools.join(', ')
-  const provider = input.providerName?.trim() || '当前上游供应商'
-  const providerSpecificHint = provider.toLowerCase() === 'glm'
-    ? '\n供应商提示：GLM 的联网搜索通常应通过该供应商提供的官方 MCP 或等价本地工具配置来完成。'
-    : ''
-  return [
-    `能力未执行：${tools}`,
-    '',
-    `当前供应商：${provider}`,
-    `当前协议：${input.bridgeName}`,
-    `原因：当前上游供应商或协议档案未声明这些原生托管能力。中转层不会伪造工具结果，也不会把这些工具请求透传给不支持的上游。${providerSpecificHint}`,
-    '',
-    '建议下一步：',
-    '1. 检查本地客户端是否已配置该供应商提供的 MCP、图像生成 provider、沙箱或等价工具。',
-    '2. 如果已配置，请通过本地 MCP/工具执行所需能力后继续当前任务。',
-    '3. 如果未配置，请提示用户配置对应工具，或切换到支持该能力的供应商/模型。',
-    '',
-    `注意：本轮没有执行 ${tools}，因此没有外部工具结果。`
-  ].join('\n')
+function forcedUnsupportedOpenAIHostedToolChoice(
+  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
+  body: JsonRecord,
+  requestPlan: OpenAIToAnthropicBridgeRequestPlan,
+  options: OpenAIToAnthropicBridgeBodyOptions
+): string | undefined {
+  const toolChoice = objectValue(body.tool_choice)
+  const choiceType = stringValue(toolChoice?.type)
+  if (!isOpenAIHostedToolChoiceType(choiceType)) return undefined
+  return unsupportedOpenAIHostedToolLabel(sourceEndpointFamily, body, toolChoice, requestPlan, options)
+}
+
+function isOpenAIHostedToolChoiceType(type: string | undefined): boolean {
+  return Boolean(type && type !== 'function' && type !== 'allowed_tools' && type !== 'auto' && type !== 'none' && type !== 'required')
+}
+
+function shouldSkipUnsupportedHostedTool(
+  tool: unknown,
+  requestPlan: OpenAIToAnthropicBridgeRequestPlan | undefined
+): boolean {
+  const label = openAIHostedToolLabel(tool)
+  return Boolean(label && requestPlan?.unsupportedHostedTools?.includes(label))
+}
+
+function openAIHostedToolLabel(tool: unknown): string | undefined {
+  if (!isPlainObject(tool)) return undefined
+  const type = stringValue(tool.type)
+  if (!type) return undefined
+  return resolveOpenAIHostedToolRuntimeDecision({ toolType: type })?.toolType ?? type
+}
+
+function appendUnsupportedHostedToolConstraint(systemParts: string[], tools: string[] | undefined): void {
+  const uniqueTools = [...new Set((tools ?? []).filter(Boolean))]
+  if (uniqueTools.length === 0) return
+  appendSystemText(systemParts, [
+    `OpenAI hosted tools unavailable in this Anthropic bridge: ${uniqueTools.join(', ')}.`,
+    'This is an internal capability constraint for the model, not user-facing text; do not repeat it verbatim.',
+    'Continue the user task with available function tools, provided context, and ordinary reasoning.',
+    'Do not claim that unavailable hosted tools were called. If the task truly cannot be completed without them, state the missing external capability briefly and naturally.'
+  ].join(' '))
 }
 
 function openAIHostedToolCompatibilityDetail(type: string): string {
@@ -6242,10 +6256,8 @@ function openAIToAnthropicCapabilityGuidance(
       '',
       `能力代码：${code}`,
       '',
-      '建议下一步：',
-      '1. 如果任务必须依赖该能力，请切换到原生支持该能力的上游协议或模型。',
-      '2. 如果该能力不是必须的，请移除对应字段后重试。',
-      '3. 如果可以由本地 agent / MCP / runtime 承接，请先配置本地能力，再继续任务。'
+      '内部调度提示：当前账号协议无法承载该能力；优先跳过当前账号继续调度，或在没有可用候选时返回网关错误。',
+      '不要把本段作为 assistant 回复输出给用户。'
     ].join('\n')
   })
 }

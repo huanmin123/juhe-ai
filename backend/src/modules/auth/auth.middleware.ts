@@ -5,6 +5,7 @@ import { findSessionByTokenAsync, touchSessionAsync } from '../../storage/reposi
 import { bindRequestContextFields } from '../../shared/request-context.js'
 import { parseCookie, sessionCookieName } from './auth.routes.js'
 import { getRequestAuthContext, withRequestAuthContext } from './request-context.js'
+import { shouldTouchSessionForSystemApiRequest } from '../system-api/system-api-db-access.js'
 
 export async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
   const token = parseCookie(req.headers.cookie ?? '')[sessionCookieName]
@@ -20,7 +21,9 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
       return
     }
 
-    await touchSessionAsync(session.sessionId, session.lastSeenAt)
+    if (shouldTouchSessionForSystemApiRequest(res)) {
+      await touchSessionAsync(session.sessionId, session.lastSeenAt)
+    }
     const context = {
       systemAccountId: session.account.id,
       username: session.account.username,

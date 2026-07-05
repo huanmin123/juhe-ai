@@ -108,7 +108,7 @@ try {
   assert(capturedCalls.length >= 3, '回归应捕获策略路由列表和 options SQL')
   for (const call of capturedCalls) {
     assert(!/\bdescription\s+(?:COLLATE|LIKE|ILIKE)\b/i.test(call.sql), '策略路由搜索不应扫描说明字段')
-    assert(/\bESCAPE\s+'\\'/i.test(call.sql), '策略路由前缀搜索应显式转义 LIKE 通配符')
+    assert(!/\bLIKE\s+\?/i.test(call.sql), '策略路由名称搜索不应使用 LIKE，避免大小写折叠或通配符语义')
     assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '策略路由搜索不应传入前导通配符参数')
   }
   const keywordPlans = capturedCalls

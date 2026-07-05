@@ -3,6 +3,7 @@ import { mkdirSync, rmSync } from 'node:fs'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 
 import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express from 'express'
@@ -28,6 +29,7 @@ const [
   { openAIGatewayRouter },
   { requestContextMiddleware },
   databaseModule,
+  readWorkerPool,
   repositories,
   settingsRepository,
   gatewayCache,
@@ -40,6 +42,7 @@ const [
   import('../../modules/gateway/routes.js'),
   import('../../shared/request-context.js'),
   import('../../storage/database.js'),
+  import('../../storage/sqlite-read-worker-pool.js'),
   import('../../storage/repositories.js'),
   import('../../storage/settings.repository.js'),
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
@@ -76,7 +79,7 @@ async function main(): Promise<void> {
     await listen(upstreamServer)
     const upstreamBaseUrl = `http://127.0.0.1:${serverAddress(upstreamServer).port}/v1`
 
-    const group = repositories.createGroup({ name: '上游失败回归分组', providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID, enabled: true }, access)
+    const group = repositories.createGroup({ name: '上游失败回归分组', providerCode: 'gpt', enabled: true }, access)
     const firstAccount = repositories.createAccount({
       providerCode: 'gpt',
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
@@ -121,7 +124,7 @@ async function main(): Promise<void> {
     }, access)
     const apiKey = createRegressionApiKey(group.id, 'sk-request-failure-regression')
     dispatchRaceSecondAccountId = secondAccount.id
-    const fastFailGroup = repositories.createGroup({ name: '本地屏蔽恢复等待回归分组', providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID, enabled: true }, access)
+    const fastFailGroup = repositories.createGroup({ name: '本地屏蔽恢复等待回归分组', providerCode: 'gpt', enabled: true }, access)
     const fastFailAccount = repositories.createAccount({
       providerCode: 'gpt',
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
@@ -137,7 +140,7 @@ async function main(): Promise<void> {
       schedulable: true
     }, access)
     const fastFailApiKey = createRegressionApiKey(fastFailGroup.id, 'sk-request-failure-fast-fail-key')
-    const cooldownRecoverGroup = repositories.createGroup({ name: '本地冷却恢复等待回归分组', providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID, enabled: true }, access)
+    const cooldownRecoverGroup = repositories.createGroup({ name: '本地冷却恢复等待回归分组', providerCode: 'gpt', enabled: true }, access)
     const cooldownRecoverAccount = repositories.createAccount({
       providerCode: 'gpt',
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
@@ -153,7 +156,7 @@ async function main(): Promise<void> {
       schedulable: true
     }, access)
     const cooldownRecoverApiKey = createRegressionApiKey(cooldownRecoverGroup.id, 'sk-request-failure-cooldown-recover-key')
-    const singleFailureGroup = repositories.createGroup({ name: '单账号上游失败写状态回归分组', providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID, enabled: true }, access)
+    const singleFailureGroup = repositories.createGroup({ name: '单账号上游失败写状态回归分组', providerCode: 'gpt', enabled: true }, access)
     const singleFailureAccount = repositories.createAccount({
       providerCode: 'gpt',
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
@@ -174,7 +177,7 @@ async function main(): Promise<void> {
     const closedTransportBaseUrl = `http://127.0.0.1:${serverAddress(closedTransportServer).port}/v1`
     await closeServer(closedTransportServer)
     closedTransportServer = undefined
-    const directTransportFailureGroup = repositories.createGroup({ name: '直连传输失败回归分组', providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID, enabled: true }, access)
+    const directTransportFailureGroup = repositories.createGroup({ name: '直连传输失败回归分组', providerCode: 'gpt', enabled: true }, access)
     const directTransportFailureAccounts: RegressionAccount[] = []
     for (let index = 0; index < 2; index += 1) {
       const account = repositories.createAccount({
@@ -340,6 +343,11 @@ async function main(): Promise<void> {
       temporaryUnschedulableRetryIntervalSeconds: 0
     })
     gatewayCache.clearGatewayRuntimeCache()
+    assert.equal(
+      (await gatewayCache.readCachedGatewaySettingsAsync()).temporaryUnschedulableRetryAttempts,
+      2,
+      '测试更新后的网关临时不可调度重试次数应立即生效'
+    )
     currentScenario = 'same_account_retry_success'
     const sameAccountRetryResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
@@ -575,11 +583,12 @@ async function main(): Promise<void> {
     await closeServer(upstreamServer)
     await closeServer(closedTransportServer)
     try {
+      await readWorkerPool.closeSqliteReadWorkerPool().catch(() => undefined)
       databaseModule.getBusinessDatabase().close()
       databaseModule.closeStorageDatabases()
     } catch {
     }
-    rmSync(tempRoot, { recursive: true, force: true })
+    await removeTempRoot()
   }
 }
 
@@ -984,6 +993,21 @@ async function closeServer(server: http.Server | undefined): Promise<void> {
   await new Promise<void>((resolvePromise, rejectPromise) => {
     server.close((error) => error ? rejectPromise(error) : resolvePromise())
   })
+}
+
+async function removeTempRoot(): Promise<void> {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      rmSync(tempRoot, { recursive: true, force: true })
+      return
+    } catch (error) {
+      if (!(error instanceof Error) || !/EBUSY|EPERM/.test(error.message)) {
+        throw error
+      }
+      if (attempt === 4) return
+      await delay(250)
+    }
+  }
 }
 
 await main()

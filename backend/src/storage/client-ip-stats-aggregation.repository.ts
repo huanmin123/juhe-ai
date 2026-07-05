@@ -14,7 +14,7 @@ import {
 import { writeClientIpStatsAggregatesFromUsageRows, writeClientIpStatsAggregatesFromUsageRowsAsync } from './client-ip-stats-writer.js'
 
 const clientIpStatsJobName = 'client_ip_stats_aggregation'
-const cursorSafetyDelaySeconds = 5
+const cursorSafetyDelaySeconds = 15
 const clientIpStatsMaxShardsPerBatch = 16
 let clientIpStatsShardScanOffset = 0
 
@@ -52,7 +52,7 @@ export function aggregateClientIpStatsBatch(limit = 2000): number {
           SELECT ${USAGE_STATS_RECORD_SELECT_COLUMNS}
           FROM usage_records
           WHERE created_at <= ?
-            AND traffic_source <> 'cooldown_retest'
+            AND traffic_source NOT IN ('runtime_recovery_probe', 'cooldown_retest')
             AND (created_at > ? OR (created_at = ? AND id > ?))
           ORDER BY created_at ASC, id ASC
           LIMIT ?
@@ -143,7 +143,7 @@ export async function aggregateClientIpStatsBatchAsync(limit = 2000): Promise<nu
         SELECT ${USAGE_STATS_RECORD_SELECT_COLUMNS}
         FROM juhe_usage.usage_records
         WHERE created_at <= ?
-          AND traffic_source <> 'cooldown_retest'
+          AND traffic_source NOT IN ('runtime_recovery_probe', 'cooldown_retest')
           AND (created_at > ? OR (created_at = ? AND id > ?))
         ORDER BY created_at ASC, id ASC
         LIMIT ?
@@ -302,7 +302,7 @@ function latestIgnoredUsageRecordCursor(database: DatabaseSync, safeCreatedBefor
       SELECT created_at, id
       FROM usage_records
       WHERE created_at <= ?
-        AND traffic_source = 'cooldown_retest'
+        AND traffic_source IN ('runtime_recovery_probe', 'cooldown_retest')
         AND (created_at > ? OR (created_at = ? AND id > ?))
       ORDER BY created_at DESC, id DESC
       LIMIT 1
@@ -317,7 +317,7 @@ function latestUsageRecordLagSeconds(database: DatabaseSync, safeCreatedBefore: 
       SELECT created_at
       FROM usage_records
       WHERE created_at <= ?
-        AND traffic_source <> 'cooldown_retest'
+        AND traffic_source NOT IN ('runtime_recovery_probe', 'cooldown_retest')
         AND (created_at > ? OR (created_at = ? AND id > ?))
       ORDER BY created_at DESC, id DESC
       LIMIT 1
@@ -336,7 +336,7 @@ async function latestPostgresIgnoredUsageRecordCursor(
     SELECT created_at, id
     FROM juhe_usage.usage_records
     WHERE created_at <= ?
-      AND traffic_source = 'cooldown_retest'
+      AND traffic_source IN ('runtime_recovery_probe', 'cooldown_retest')
       AND (created_at > ? OR (created_at = ? AND id > ?))
     ORDER BY created_at DESC, id DESC
     LIMIT 1
@@ -354,7 +354,7 @@ async function latestPostgresUsageRecordLagSeconds(
     SELECT created_at
     FROM juhe_usage.usage_records
     WHERE created_at <= ?
-      AND traffic_source <> 'cooldown_retest'
+      AND traffic_source NOT IN ('runtime_recovery_probe', 'cooldown_retest')
       AND (created_at > ? OR (created_at = ? AND id > ?))
     ORDER BY created_at DESC, id DESC
     LIMIT 1

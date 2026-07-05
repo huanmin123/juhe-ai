@@ -32,10 +32,6 @@ for (const group of DEFAULT_BUILT_IN_GROUPS) {
     providerCodes.has(group.providerCode),
     `默认分组 ${group.id} 引用的 provider ${group.providerCode} 必须存在于默认 provider seed`
   )
-  assert.ok(
-    profileIds.has(group.providerProtocolProfileId),
-    `默认分组 ${group.id} 引用的 provider protocol profile ${group.providerProtocolProfileId} 必须存在于默认 profile seed`
-  )
 }
 
 console.log('postgres-seed-defaults-regression passed')

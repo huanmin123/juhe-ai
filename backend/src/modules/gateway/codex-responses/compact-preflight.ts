@@ -2,8 +2,10 @@ import type { Request, Response } from 'express'
 
 import type { GroupUsageAccessMetadata } from '../../../storage/repositories.js'
 import type { ClientCompatibilityCapability, GroupSchedulingPolicy } from '../../../domain/types.js'
+import { OPENAI_CHAT_COMPLETIONS_FAMILY, OPENAI_RESPONSES_FAMILY } from '../../../domain/provider-protocol.js'
 import type { GatewaySettings } from '../policy/account-error-policy.service.js'
 import type { AuditCaptureContext } from '../audit/capture.service.js'
+import type { GatewayAccountModelPriority } from '../dispatch/model-filter.js'
 import { responseHeadersToObject } from '../audit/capture.service.js'
 import type { ClientIpAccountAvoidanceTracker } from '../runtime/client-ip-account-avoidance.service.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
@@ -16,6 +18,7 @@ import {
   getGatewayRequestBodyState,
   type GatewayRawBodyRequest
 } from '../request/body.js'
+import { setGatewayModelMappingSourceEndpointFamilyOverride } from '../protocols/openai-v1/model-mapping.js'
 import { gatewayErrorPayload } from '../response/responses.js'
 import { sendGatewayFailureResponse } from '../response/failure-response.js'
 import type { GatewayFailureUsageContext } from '../usage/records.js'
@@ -44,6 +47,7 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
   dispatchAccounts: readonly UpstreamAccount[]
   activeGatewaySettings: GatewaySettings
   clientIpAccountAvoidanceTracker: ClientIpAccountAvoidanceTracker
+  modelPriority: GatewayAccountModelPriority
   requestLane: OpenAIGatewayRequestLane
   groupSchedulingPolicy?: GroupSchedulingPolicy
   signal?: AbortSignal
@@ -57,10 +61,7 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
     systemAccountId: input.systemAccountId,
     apiKeyId: input.apiKeyId,
     groupId: input.groupId,
-    providerCode: input.groupAccess.providerCode,
-    providerProtocolProfileId: input.groupAccess.providerProtocolProfileId,
-    protocolCode: input.groupAccess.protocolCode,
-    protocolVersion: input.groupAccess.protocolVersion
+    providerCode: input.groupAccess.providerCode
   }
   const restoreResult = await restoreCodexResponsesChatBridgeInputForCompact({
     previousResponseId,
@@ -68,7 +69,7 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
     currentInput: body.input
   })
   if (restoreResult.outcome !== 'found' && restoreResult.outcome !== 'no_previous') {
-    sendCompactFailure(input, restoreFailureForCompact(restoreResult.outcome))
+    await sendCompactFailure(input, restoreFailureForCompact(restoreResult.outcome))
     return 'completed'
   }
 
@@ -91,7 +92,8 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
       input.requestLane,
       input.groupSchedulingPolicy,
       true,
-      input.requestClientCompatibility
+      input.requestClientCompatibility,
+      input.modelPriority
     )
     const readResult = await readUpstreamBodyLimited(upstreamResult.response.body, {
       maxBytes: 1024 * 1024,
@@ -101,7 +103,7 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
     })
     const summary = extractChatCompletionSummary(readResult.bodyText)
     if (!summary) {
-      sendCompactFailure(input, {
+      await sendCompactFailure(input, {
         statusCode: 502,
         type: 'bad_gateway',
         code: 'codex_bridge_compact_summary_empty',
@@ -151,7 +153,7 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
     return 'completed'
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    sendCompactFailure(input, {
+    await sendCompactFailure(input, {
       statusCode: 502,
       type: 'bad_gateway',
       code: 'codex_bridge_compact_summary_failed',
@@ -256,6 +258,7 @@ function buildSyntheticChatCompletionsRequest(sourceReq: Request, body: JsonReco
   synthetic.gatewayParsedJsonBodyAvailable = true
   synthetic.gatewayParsedJsonBody = body
   synthetic.gatewayUpstreamBodyCache = undefined
+  setGatewayModelMappingSourceEndpointFamilyOverride(synthetic, OPENAI_CHAT_COMPLETIONS_FAMILY)
   synthetic.gatewayRequestBody = createGatewayRequestBodyState({
     rawBody,
     contentType: 'application/json',
@@ -333,15 +336,15 @@ function restoreFailureForCompact(outcome: string): {
   }
 }
 
-function sendCompactFailure(input: {
+async function sendCompactFailure(input: {
   req: Request
   res: Response
   auditCapture: AuditCaptureContext
   usageContext: GatewayFailureUsageContext
   startedAt: number
-}, failure: { statusCode: number; type: string; code: string; message: string }): void {
+}, failure: { statusCode: number; type: string; code: string; message: string }): Promise<void> {
   const responsePayload = gatewayErrorPayload(failure.message, failure.type, failure.code)
-  sendGatewayFailureResponse({
+  await sendGatewayFailureResponse({
     req: input.req,
     res: input.res,
     auditCapture: input.auditCapture,

@@ -31,7 +31,7 @@ const [databaseModule, repositories, usageStatsRepository, usageRecordShards] = 
 
 try {
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
-  const group = repositories.createGroup({ name: '分片写入回归分组', providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID, enabled: true }, access)
+  const group = repositories.createGroup({ name: '分片写入回归分组', providerCode: 'gpt', enabled: true }, access)
   const account = repositories.createAccount({
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
@@ -96,40 +96,6 @@ try {
   assert.equal(usageStatsRepository.aggregateUsageStatsBatch(1000), records.length, '统计聚合应从 usage shard 读取完整业务记录')
   assert.equal(apiKeyStatsTotal(apiKey.id), records.length, 'API Key 统计应按 shard 输入聚合到统计结果库')
   assert(usageShardCursorCount() > 1, '统计结果库应为多个 usage shard 维护独立游标')
-  const recentShape = repositories.findRecentOpenAIRequestShapeForAccount(account.id, group.id)
-  assert.equal(recentShape?.model, records[records.length - 1].model, '恢复探活应从最近日期 shard 学习真实请求形态')
-
-  const staleShapeAccount = repositories.createAccount({
-    providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-    name: '过期请求形态窗口回归账户',
-    type: 'api_key',
-    credentials: {
-      api_key: 'sk-usage-record-stale-shape',
-      base_url: 'https://api.openai.com/v1'
-    },
-    groupId: group.id
-  }, access)
-  const staleCreatedAt = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString()
-  repositories.createUsageRecordsBatch([{
-    id: usageRecordShards.generateUsageRecordId(staleCreatedAt, 'stale-request-shape'),
-    traceId: 'trace-usage-shard-stale-request-shape',
-    trafficSource: 'gateway' as const,
-    apiKeyId: apiKey.id,
-    accountId: staleShapeAccount.id,
-    endpoint: '/v1/responses',
-    providerCode: 'gpt',
-    model: 'gpt-stale-shape',
-    stream: false,
-    statusCode: 200,
-    success: true,
-    createdAt: staleCreatedAt
-  }])
-  assert.equal(
-    repositories.findRecentOpenAIRequestShapeForAccount(staleShapeAccount.id),
-    undefined,
-    '恢复探活请求形态学习应限制最近窗口，避免扫描超出窗口的 shard'
-  )
 
   console.log('使用记录分片写入回归通过：新 usage 落到多个 shard，usage catalog 独立建表，统计可从 shard 聚合')
 } finally {

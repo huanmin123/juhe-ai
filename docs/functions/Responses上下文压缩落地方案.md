@@ -158,12 +158,12 @@ OAuth Codex adapter 面向 ChatGPT / Codex backend，不等价于公开 OpenAI A
 
 存储边界：
 
-- `JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT` 指向的 Codex Responses 上下文索引 shard 只保存关系索引、授权边界、`storage_key`、`storage_offset_bytes`、`raw_size_bytes`、`compressed_size_bytes`、`sha256`、`lastUsedAt` 和 `expiresAt`，不得保存完整用户上下文、完整工具参数、完整模型输出或大段 compact payload；这些表不属于业务库。
+- `JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT` 指向的 Responses 桥接状态索引 shard 只保存关系索引、授权边界、`storage_key`、`storage_offset_bytes`、`raw_size_bytes`、`compressed_size_bytes`、`sha256`、`lastUsedAt` 和 `expiresAt`，不得保存完整用户上下文、完整工具参数、完整模型输出或大段 compact payload；这些表不属于业务库。
 - 完整上下文落在 `backend/data/codex-context/`，按 `sessionId` hash 目录和小时分段追加 gzip segment；索引通过 `storage_key + storage_offset_bytes + compressed_size_bytes + sha256` 精确定位单条 payload。
 - `responseId -> sessionId -> segment offset` 是恢复主索引；每次成功响应只追加本轮 request input / instructions 和 output items，不为每个 response id 复制一份完整历史文件。
 - 文件写入先 gzip 单条 payload，再追加到 session/hour segment；SQLite 事务只在 append 成功和 hash 计算完成后提交引用，避免数据库指向不存在的 payload。
 - 恢复读取必须按 SQLite 中记录的 `storage_key`、`storage_offset_bytes`、`compressed_size_bytes` 和 `sha256` 做有界读取，不扫描整个上下文目录，也不从审计日志或使用记录反查历史。
-- `lastUsedAt` 在成功读取、续写或 compact 时刷新；超过 7 天没有继续使用的 session 由后台清理删除过期 Codex Responses 上下文索引关系。segment 文件只有在没有任何剩余 response / compact 引用时才会删除，避免同 session/hour 内仍有活跃上下文时误删。清理后客户端再携带旧 `previous_response_id` 或 `juhecmp.v2` compact snapshot 时返回受控的状态不存在错误。
+- `lastUsedAt` 在成功读取、续写或 compact 时刷新；超过 7 天没有继续使用的 session 由后台清理删除过期 Responses 桥接状态索引关系。segment 文件只有在没有任何剩余 response / compact 引用时才会删除，避免同 session/hour 内仍有活跃上下文时误删。清理后客户端再携带旧 `previous_response_id` 或 `juhecmp.v2` compact snapshot 时返回受控的状态不存在错误。
 
 状态提交规则：
 
@@ -203,6 +203,7 @@ Chat-only bridge 的 compact 输出是网关自有 envelope，不是上游原生
 - 摘要兜底必须限定在当前供应商和当前 provider profile 可接受范围内，不跨供应商寻找便宜模型。
 - Chat-only bridge 的通用摘要路径固定使用 Chat Completions endpoint family，即 OpenAI-compatible 语义下的 `/v1/chat/completions`；不能在 Responses -> Chat 转换后再向 Chat 上游发送 `/v1/responses/compact`。
 - 内部摘要请求走正常候选账号筛选、账号可用性、冷却、切号、统计、审计和错误处理，但候选账号必须支持 Chat Completions 摘要请求。
+- 内部摘要请求的模型别名按原始 Responses compact 请求的 `Responses` 源协议匹配；命中后只改写 Chat Completions 请求体里的 `model` 和统计 / 审计上游模型口径，不把上游路径改成 `/responses`。
 - 当前内部摘要请求通过合成的非流式 `/v1/chat/completions` 请求进入同分组同供应商调度；后续应补充 `purpose = codex_compaction_summary`、`disableCompact = true` 等内部元数据，避免递归 compact。
 - 如果供应商明确提供非 Responses 的 Chat 专用 compact endpoint，可以作为供应商特化摘要入口；否则使用当前分组、当前供应商内配置的 Chat Completions 摘要模型。无论哪种方式，都不能使用上游 `/responses/compact` 作为 Chat-only 摘要兜底。
 - 允许摘要模型是专用压缩模型，也允许是普通 Chat 模型。当前实现先校验摘要为非空文本；后续 snapshot 版本再提升为固定 schema 校验。

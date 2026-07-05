@@ -6,11 +6,7 @@ import { join, resolve } from 'node:path'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import {
-  ANTHROPIC_PROTOCOL_CODE,
-  ANTHROPIC_PROTOCOL_VERSION,
-  GPT_OPENAI_V1_PROFILE_ID
-} from '../../domain/provider-protocol.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-group-scheduling-policy-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -54,7 +50,6 @@ interface GroupSummaryResponse {
   id: string
   name: string
   providerCode: string
-  providerProtocolProfileId?: string
   groupType: string
   schedulingPolicy?: {
     defaultSoftConcurrency?: number
@@ -107,9 +102,8 @@ try {
 
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
   const routeCreatedGroup = await postEnvelope<GroupSummaryResponse>(baseUrl, '/__aisys__/api/groups', adminCookie, {
-    name: '路由协议档案字段回归分组',
+    name: '路由分组字段回归分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true,
     groupType: 'high_concurrency',
     schedulingPolicy: {
@@ -120,14 +114,13 @@ try {
       imageLaneMaxConcurrency: 0
     }
   })
-  assert.equal(routeCreatedGroup.providerProtocolProfileId, GPT_OPENAI_V1_PROFILE_ID, '分组创建路由应接受并返回 providerProtocolProfileId')
+  assert.equal('providerProtocolProfileId' in routeCreatedGroup, false, '分组创建路由不应返回 providerProtocolProfileId')
   assert.equal(routeCreatedGroup.schedulingPolicy?.defaultSoftConcurrency, 2, '分组创建路由应保留高并发调度策略')
 
   assert.throws(
     () => repositories.createGroup({
       name: '高并发调度策略旧字段回归分组',
       providerCode: 'gpt',
-      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       groupType: 'high_concurrency',
       schedulingPolicy: {
         defaultSoftConcurrency: 3,
@@ -141,7 +134,6 @@ try {
   const highConcurrencyGroup = repositories.createGroup({
     name: '高并发调度策略回归分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'high_concurrency',
     schedulingPolicy: {
       defaultSoftConcurrency: 3,
@@ -181,7 +173,6 @@ try {
   const routeUpdatedGroup = await patchEnvelope<GroupSummaryResponse>(baseUrl, `/__aisys__/api/groups/${highConcurrencyGroup.id}`, adminCookie, {
     name: highConcurrencyGroup.name,
     providerCode: highConcurrencyGroup.providerCode,
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     description: highConcurrencyGroup.description ?? '',
     enabled: highConcurrencyGroup.enabled,
     groupType: 'high_concurrency',
@@ -193,7 +184,7 @@ try {
       imageLaneMaxConcurrency: 0
     }
   })
-  assert.equal(routeUpdatedGroup.providerProtocolProfileId, GPT_OPENAI_V1_PROFILE_ID, '分组更新路由应接受前端保存时提交的 providerProtocolProfileId')
+  assert.equal('providerProtocolProfileId' in routeUpdatedGroup, false, '分组更新路由不应返回 providerProtocolProfileId')
   assert.equal(routeUpdatedGroup.schedulingPolicy?.defaultSoftConcurrency, 4, '分组更新路由应保留前端提交的高并发调度策略')
 
   database
@@ -247,13 +238,13 @@ try {
     .prepare('SELECT group_id, account_id FROM group_accounts WHERE group_id = ? AND account_id = ?')
     .get(highConcurrencyGroup.id, account.id) as unknown as { group_id?: string; account_id?: string } | undefined
   assert.equal(binding?.group_id, highConcurrencyGroup.id, '账户绑定不应依赖绑定级调度参数')
-  const mismatchedProfileGroup = createSyntheticGptProfileMismatchGroup(access)
-  const movedToSameProviderGroup = repositories.setAccountGroup(account.id, mismatchedProfileGroup.id, access)
-  assert.equal(movedToSameProviderGroup?.boundGroupId, mismatchedProfileGroup.id, '账户绑定分组只按供应商校验，协议档案由账户类型决定')
+  const sameProviderGroup = createSameProviderGroup(access)
+  const movedToSameProviderGroup = repositories.setAccountGroup(account.id, sameProviderGroup.id, access)
+  assert.equal(movedToSameProviderGroup?.boundGroupId, sameProviderGroup.id, '账户绑定分组只按供应商校验，协议档案由账户类型决定')
   const mismatchedBinding = database
     .prepare('SELECT group_id FROM group_accounts WHERE account_id = ? AND system_account_id = ?')
     .get(account.id, access.systemAccountId) as unknown as { group_id?: string } | undefined
-  assert.equal(mismatchedBinding?.group_id, mismatchedProfileGroup.id, '同供应商分组应允许承接同一账户')
+  assert.equal(mismatchedBinding?.group_id, sameProviderGroup.id, '同供应商分组应允许承接同一账户')
 
   const personalGroup = repositories.updateGroup(highConcurrencyGroup.id, { groupType: 'personal' }, access)
   assert.equal(personalGroup?.groupType, 'personal')
@@ -288,33 +279,10 @@ function assertCurrentColumns(tableName: string, expectedColumns: string[]): voi
   }
 }
 
-function createSyntheticGptProfileMismatchGroup(access: { systemAccountId: string; role: 'admin' }) {
-  const now = new Date().toISOString()
-  databaseModule.getBusinessDatabase()
-    .prepare(`
-      INSERT INTO provider_protocol_profiles (
-        id, provider_code, name, description, enabled, protocol_code, protocol_version,
-        base_url, default_test_model, account_types_json, capabilities_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
-    `)
-    .run(
-      'profile_gpt_profile_mismatch_regression',
-      'gpt',
-      '回归专用 GPT 非默认协议档案',
-      '仅用于验证账号绑定不再按 providerProtocolProfileId 隔离',
-      ANTHROPIC_PROTOCOL_CODE,
-      ANTHROPIC_PROTOCOL_VERSION,
-      'https://example.invalid/v1',
-      'gpt-5.5',
-      JSON.stringify(['api_key']),
-      JSON.stringify([]),
-      now,
-      now
-    )
+function createSameProviderGroup(access: { systemAccountId: string; role: 'admin' }) {
   return repositories.createGroup({
-    name: 'profile 不匹配回归分组',
+    name: '同供应商绑定回归分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: 'profile_gpt_profile_mismatch_regression',
     enabled: true
   }, access)
 }

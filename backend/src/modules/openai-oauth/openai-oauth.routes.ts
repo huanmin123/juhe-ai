@@ -91,20 +91,18 @@ const reauthorizeFromRefreshTokenSchema = z.object({
   refreshToken: z.string().min(1)
 }).strict()
 
-function isOpenAIOAuthGroupSummary(group: Awaited<ReturnType<typeof findGroupSummaryAsync>> | undefined, providerProtocolProfileId: string): boolean {
+function isOpenAIOAuthGroupSummary(group: Awaited<ReturnType<typeof findGroupSummaryAsync>> | undefined): boolean {
   return Boolean(group
-    && isGptVendorCode(group.providerCode)
-    && group.providerProtocolProfileId === providerProtocolProfileId
-    && isOpenAIProtocolProfile(group))
+    && isGptVendorCode(group.providerCode))
 }
 
-openAIOAuthRouter.post('/auth-url', (req, res) => {
+openAIOAuthRouter.post('/auth-url', async (req, res) => {
   const parsed = authUrlSchema.safeParse(req.body ?? {})
   if (!parsed.success) {
     res.status(400).json(badRequest('OpenAI 授权链接参数无效'))
     return
   }
-  res.json(ok(generateOpenAIAuthURL()))
+  res.json(ok(await generateOpenAIAuthURL()))
 })
 
 openAIOAuthRouter.post('/create-from-code', mutationGuard({
@@ -134,7 +132,7 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
     return
   }
   const group = parsed.data.groupId ? await findGroupSummaryAsync(parsed.data.groupId, requestAccess) : undefined
-  if (parsed.data.groupId && !isOpenAIOAuthGroupSummary(group, providerProfile.profile.id)) {
+  if (parsed.data.groupId && !isOpenAIOAuthGroupSummary(group)) {
     res.status(400).json(badRequest('账户分组无效'))
     return
   }
@@ -184,6 +182,10 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
       res.status(400).json(badRequest(error.message))
       return
     }
+    if (isOAuthBusinessConflictError(error)) {
+      res.status(409).json(badRequest(oauthErrorMessage(error, 'OpenAI 授权码交换失败')))
+      return
+    }
     res.status(502).json({ message: oauthErrorMessage(error, 'OpenAI 授权码交换失败') })
   }
 })
@@ -217,7 +219,7 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
     return
   }
   const group = parsed.data.groupId ? await findGroupSummaryAsync(parsed.data.groupId, requestAccess) : undefined
-  if (parsed.data.groupId && !isOpenAIOAuthGroupSummary(group, providerProfile.profile.id)) {
+  if (parsed.data.groupId && !isOpenAIOAuthGroupSummary(group)) {
     res.status(400).json(badRequest('账户分组无效'))
     return
   }
@@ -274,6 +276,10 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
   } catch (error) {
     if (error instanceof ProxyProfileUnavailableError) {
       res.status(400).json(badRequest(error.message))
+      return
+    }
+    if (isOAuthBusinessConflictError(error)) {
+      res.status(409).json(badRequest(oauthErrorMessage(error, 'OpenAI 刷新令牌授权失败')))
       return
     }
     res.status(502).json({ message: oauthErrorMessage(error, 'OpenAI 刷新令牌授权失败') })
@@ -556,11 +562,19 @@ function handleOAuthAccountUpdateError(error: unknown, res: Response, fallbackMe
     res.status(400).json(badRequest(error.message))
     return
   }
+  if (isOAuthBusinessConflictError(error)) {
+    res.status(409).json(badRequest(oauthErrorMessage(error, fallbackMessage)))
+    return
+  }
   res.status(502).json({ message: oauthErrorMessage(error, fallbackMessage) })
 }
 
 function oauthErrorMessage(error: unknown, fallbackMessage: string): string {
   return sanitizeOpenAIOAuthErrorMessage(error instanceof Error ? error.message : fallbackMessage)
+}
+
+function isOAuthBusinessConflictError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes('已存在')
 }
 
 function buildOAuthCreateLog(

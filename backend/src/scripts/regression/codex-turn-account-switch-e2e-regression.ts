@@ -1,9 +1,10 @@
 import { strict as assert } from 'node:assert'
 import { createHash } from 'node:crypto'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 
 import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express from 'express'
@@ -27,6 +28,8 @@ logger.level = 'silent'
 
 const codexSwitchTestModel = 'gpt-5.3-codex'
 
+assertCodexAccountScopedGuidanceIsNotClientRetryable()
+
 const [
   { openAIGatewayRouter },
   { captureGatewayRawBody },
@@ -39,7 +42,9 @@ const [
   usageRecordQueue,
   auditLogQueue,
   codexTurnRetry,
-  sessionAffinity
+  sessionAffinity,
+  proxyHealth,
+  readWorkerPool
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
   import('../../modules/gateway/request/body-middleware.js'),
@@ -52,7 +57,9 @@ const [
   import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js'),
   import('../../modules/gateway/client-profiles/codex-turn-retry.service.js'),
-  import('../../modules/gateway/runtime/session-affinity.service.js')
+  import('../../modules/gateway/runtime/session-affinity.service.js'),
+  import('../../modules/gateway/runtime/proxy-health.service.js'),
+  import('../../storage/sqlite-read-worker-pool.js')
 ])
 
 interface SeededGateway {
@@ -103,7 +110,6 @@ async function main(): Promise<void> {
     auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
     codexTurnRetry.clearCodexTurnRetryStateForTest()
     settingsRepository.updateSettings({
-      streamCircuitBreakerEnabled: true,
       streamRequestTimeoutSeconds: 10,
       streamIdleTimeoutSeconds: 10,
       temporaryUnschedulableRetryAttempts: 0
@@ -171,16 +177,20 @@ async function main(): Promise<void> {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
     auditLogQueue.flushAllAuditLogQueue()
+    auditLogQueue.clearAuditLogQueueForTest()
+    usageRecordQueue.clearUsageRecordQueueForTest()
+    accountSideEffects.clearGatewayAccountSideEffectQueueForTest()
     auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
     usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
     await closeServer(gatewayServer)
     await closeServer(upstreamServer)
     try {
+      await readWorkerPool.closeSqliteReadWorkerPool()
       databaseModule.getBusinessDatabase().close()
       databaseModule.closeStorageDatabases()
     } catch {
     }
-    rmSync(tempRoot, { recursive: true, force: true })
+    await removeTempRoot()
   }
 }
 
@@ -266,6 +276,7 @@ async function assertCodexTurnProbeFailureReturnsRetryableWithoutProbeDetails(
   seeded: SeededProbeFailureGateway,
   upstreamState: MockUpstreamState
 ): Promise<void> {
+  proxyHealth.clearGatewayProxyHealthForTest()
   const turnId = 'turn-codex-probe-visible-fail'
   rememberVisibleCodexTurnFailures(seeded, turnId, [
     seeded.failedAccountId,
@@ -530,7 +541,6 @@ function seedTwoAccountGateway(upstreamBaseUrl: string, label: string, options: 
   const group = repositories.createGroup({
     name: `Codex 切号 e2e 分组-${label}`,
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   const failedUpstreamKey = `sk-codex-switch-${sequence}-failed`
@@ -596,7 +606,6 @@ function seedThreeAccountGateway(upstreamBaseUrl: string, label: string): Seeded
   const group = repositories.createGroup({
     name: `Codex 切号 e2e 分组三账号-${label}`,
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   const failedUpstreamKey = `sk-codex-switch-${sequence}-failed`
@@ -674,7 +683,6 @@ function seedProbeFailureGateway(upstreamBaseUrl: string, label: string): Seeded
   const group = repositories.createGroup({
     name: `Codex 切号 e2e 全部探针失败分组-${label}`,
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   const failedUpstreamKey = `sk-codex-switch-${sequence}-failed`
@@ -744,13 +752,14 @@ function createMockOpenAIUpstream(state: MockUpstreamState): http.Server {
       const upstreamKey = bearerToken(req.headers.authorization)
       const body = parseJsonObject(Buffer.concat(bodyChunks).toString('utf8'))
 
-      if (url.pathname !== '/v1/responses') {
+      const accountTestProbe = isAccountTestProbeBody(body)
+      if (url.pathname !== '/v1/responses' && !(url.pathname === '/v1/chat/completions' && accountTestProbe)) {
         res.writeHead(404, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ error: { code: 'mock_unexpected_path', message: `unexpected path ${url.pathname}` } }))
         return
       }
 
-      if (isAccountTestProbeBody(body)) {
+      if (accountTestProbe) {
         state.testProbeHitsByUpstreamKey[upstreamKey] = testProbeHitCount(state, upstreamKey) + 1
         state.requests.push({ upstreamKey, scenario: 'account-test-probe' })
         if (upstreamKey.endsWith('-latent-failed')) {
@@ -884,7 +893,7 @@ async function requestResponsesRaw(
   if (input.sessionId) {
     headers['x-session-id'] = input.sessionId
   }
-  const response = await fetch(`${baseUrl}/v1/responses`, {
+  const response = await fetchResponsesWithTransientResetRetry(`${baseUrl}/v1/responses`, {
     method: 'POST',
     headers,
     body: JSON.stringify({
@@ -899,6 +908,26 @@ async function requestResponsesRaw(
     contentType: response.headers.get('content-type') ?? '',
     text: await response.text()
   }
+}
+
+async function fetchResponsesWithTransientResetRetry(url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init)
+  } catch (error) {
+    if (!isTransientFetchResetError(error)) {
+      throw error
+    }
+    await sleep(100)
+    return await fetch(url, init)
+  }
+}
+
+function isTransientFetchResetError(error: unknown): boolean {
+  const cause = error instanceof Error
+    ? error.cause as { code?: unknown } | undefined
+    : undefined
+  const code = cause?.code ?? (error as { code?: unknown } | undefined)?.code
+  return code === 'ECONNRESET' || code === 'UND_ERR_SOCKET'
 }
 
 async function requestResponsesStreamAndAbortAfterFirstChunk(
@@ -1155,8 +1184,7 @@ function parseJsonObject(value: string): Record<string, unknown> {
 }
 
 function isAccountTestProbeBody(body: Record<string, unknown>): boolean {
-  return body.instructions === 'You are ChatGPT, a helpful assistant.'
-    && (jsonValueContainsString(body.input, '只输出 OK') || jsonValueContainsString(body.messages, '只输出 OK'))
+  return jsonValueContainsString(body.input, '只输出 OK') || jsonValueContainsString(body.messages, '只输出 OK')
 }
 
 function jsonValueContainsString(value: unknown, needle: string): boolean {
@@ -1228,11 +1256,39 @@ function listen(server: http.Server): Promise<void> {
   })
 }
 
-function closeServer(server: http.Server | undefined): Promise<void> {
+async function closeServer(server: http.Server | undefined): Promise<void> {
   if (!server?.listening) return Promise.resolve()
   return new Promise((resolveClose) => {
-    server.close(() => resolveClose())
+    let settled = false
+    let forceTimer: ReturnType<typeof setTimeout> | undefined
+    const finish = () => {
+      if (settled) return
+      settled = true
+      if (forceTimer) clearTimeout(forceTimer)
+      resolveClose()
+    }
+    server.close(finish)
+    server.closeIdleConnections?.()
+    forceTimer = setTimeout(() => {
+      server.closeAllConnections?.()
+      setTimeout(finish, 500)
+    }, 1000)
   })
+}
+
+async function removeTempRoot(): Promise<void> {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      rmSync(tempRoot, { recursive: true, force: true })
+      return
+    } catch (error) {
+      if (!(error instanceof Error) || !/EBUSY|EPERM/.test(error.message)) {
+        throw error
+      }
+      await delay(200)
+    }
+  }
+  rmSync(tempRoot, { recursive: true, force: true })
 }
 
 function serverPort(server: http.Server): number {
@@ -1266,6 +1322,22 @@ function forceGroupAccountOrder(groupId: string, primaryAccountId: string, stick
   const statement = databaseModule.getBusinessDatabase().prepare('UPDATE group_accounts SET created_at = ? WHERE group_id = ? AND account_id = ?')
   statement.run('2000-01-01T00:00:00.000Z', groupId, primaryAccountId)
   statement.run('2000-01-01T00:00:01.000Z', groupId, stickyAccountId)
+}
+
+function assertCodexAccountScopedGuidanceIsNotClientRetryable(): void {
+  const routesSource = readFileSync(new URL('../../modules/gateway/routes.ts', import.meta.url), 'utf8')
+  const retryPredicate = sourceFunctionBlock(routesSource, 'function shouldSendCodexDispatchExhaustedStreamRetry')
+  assert(
+    retryPredicate.includes('!error.agentGuidanceResponse'),
+    'Codex account-scoped agent guidance 不能进入 upstream_retryable_error SSE 分支，否则客户端会反复重试同一路径'
+  )
+}
+
+function sourceFunctionBlock(source: string, marker: string): string {
+  const start = source.indexOf(marker)
+  assert(start >= 0, `未找到源码片段：${marker}`)
+  const nextFunction = source.indexOf('\nfunction ', start + marker.length)
+  return source.slice(start, nextFunction === -1 ? undefined : nextFunction)
 }
 
 main().catch((error) => {

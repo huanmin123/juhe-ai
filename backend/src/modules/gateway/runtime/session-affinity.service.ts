@@ -1,8 +1,15 @@
 import { createHash } from 'node:crypto'
 import type { Request } from 'express'
 
+import { runtimeConfig } from '../../../config/runtime.js'
 import { createAppCache } from '../../../shared/cache.js'
-import { getAccountCurrentConcurrency, loadAccountInFlightStatsByIds } from '../../../shared/account-concurrency.js'
+import {
+  getAccountCurrentConcurrency,
+  loadAccountCurrentConcurrencyByIds,
+  loadAccountCurrentConcurrencyByIdsAsync,
+  loadAccountInFlightStatsByIds,
+  loadAccountInFlightStatsByIdsAsync
+} from '../../../shared/account-concurrency.js'
 import { DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY, effectiveImageLaneConcurrencyLimit, effectiveSoftConcurrencyLimit, resolveGroupSchedulingPolicy } from '../../../domain/group-scheduling.js'
 import type { GroupSchedulingPolicy, GroupType } from '../../../domain/types.js'
 import type { OpenAIAccountSecret } from '../../../storage/repositories.js'
@@ -11,6 +18,10 @@ import {
   compareGatewayAccountModelPriority,
   type GatewayAccountModelPriority
 } from '../dispatch/model-filter.js'
+import {
+  gatewayAccountConcurrencyAccountId,
+  gatewayAccountConcurrencyAccountIds
+} from '../dispatch/account-concurrency-identity.js'
 
 interface SessionBinding {
   accountId: string
@@ -125,6 +136,34 @@ export function orderOpenAIAccountsBySessionAffinity(
   return orderOpenAIPersonalAccountsBySessionAffinity(preferenceOrderedAccounts, sessionAffinityKey, options.modelPriority)
 }
 
+export async function orderOpenAIAccountsBySessionAffinityAsync(
+  accounts: OpenAIAccountSecret[],
+  sessionAffinityKey?: string,
+  options: OpenAIAccountDispatchOrderingOptions = {}
+): Promise<OpenAIAccountSecret[]> {
+  if (options.groupType !== 'high_concurrency') {
+    return orderOpenAIAccountsBySessionAffinity(accounts, sessionAffinityKey, options)
+  }
+  const modelOrderedAccounts = orderOpenAIAccountsByModelPriority(accounts, options.modelPriority)
+  const trafficMigrationPreference = trafficMigrationPreferenceForAccounts(modelOrderedAccounts, options.trafficMigrationScope)
+  const sessionTrafficMigrationTargetAccountId = trafficMigrationPreference
+    ? undefined
+    : sessionTrafficMigrationTargetForAccounts(modelOrderedAccounts, sessionAffinityKey)
+  const trafficMigrationTargetAccountId = trafficMigrationPreference?.targetAccountId ?? sessionTrafficMigrationTargetAccountId
+  const preferenceOrderedAccounts = orderOpenAIAccountsByTrafficMigrationPreference(
+    modelOrderedAccounts,
+    trafficMigrationTargetAccountId,
+    options.modelPriority
+  )
+  return orderOpenAIHighConcurrencyAccountsAsync(
+    preferenceOrderedAccounts,
+    sessionAffinityKey,
+    options.schedulingPolicy,
+    trafficMigrationTargetAccountId,
+    options.modelPriority
+  )
+}
+
 export function areOpenAIHighConcurrencyAccountsHardBusy(accounts: OpenAIAccountSecret[], options: OpenAIAccountDispatchOrderingOptions = {}): boolean {
   return options.groupType === 'high_concurrency'
     && accounts.length > 0
@@ -151,7 +190,40 @@ export function areOpenAIHighConcurrencyAccountsBusyForLane(
       accountConcurrencyLimit: hardLimit,
       policy: options.schedulingPolicy
     })
-    return getAccountCurrentConcurrency(account.id, 'image') >= imageLaneLimit
+    return getAccountCurrentConcurrency(gatewayAccountConcurrencyAccountId(account), 'image') >= imageLaneLimit
+  })
+}
+
+export async function areOpenAIHighConcurrencyAccountsBusyForLaneAsync(
+  accounts: OpenAIAccountSecret[],
+  options: OpenAIAccountDispatchOrderingOptions & { requestLane?: OpenAIGatewayRequestLane } = {}
+): Promise<boolean> {
+  if (runtimeConfig.runtimeStateDriver !== 'redis') {
+    return areOpenAIHighConcurrencyAccountsBusyForLane(accounts, options)
+  }
+  if (options.groupType !== 'high_concurrency' || accounts.length === 0) {
+    return false
+  }
+  const accountIds = gatewayAccountConcurrencyAccountIds(accounts)
+  const totalConcurrency = await loadAccountCurrentConcurrencyByIdsAsync(accountIds)
+  const imageLaneConcurrency = options.requestLane === 'image'
+    ? await loadAccountCurrentConcurrencyByIdsAsync(accountIds, 'image')
+    : undefined
+  return accounts.every((account) => {
+    const hardLimit = accountHardConcurrencyLimit(account)
+    const concurrencyAccountId = gatewayAccountConcurrencyAccountId(account)
+    const currentConcurrency = accountCurrentConcurrency(account, totalConcurrency.get(concurrencyAccountId))
+    if (currentConcurrency >= hardLimit) {
+      return true
+    }
+    if (options.requestLane !== 'image') {
+      return false
+    }
+    const imageLaneLimit = effectiveImageLaneConcurrencyLimit({
+      accountConcurrencyLimit: hardLimit,
+      policy: options.schedulingPolicy
+    })
+    return (imageLaneConcurrency?.get(concurrencyAccountId) ?? 0) >= imageLaneLimit
   })
 }
 
@@ -185,12 +257,28 @@ function orderOpenAIPersonalAccountsBySessionAffinity(
   if (targetIndex === boundIndex) {
     return accounts
   }
+  let rotationEndIndex = boundIndex + 1
+  for (; rotationEndIndex < accounts.length; rotationEndIndex += 1) {
+    if (!canSessionAffinityRotateWithinSameTier(boundAccount, accounts[rotationEndIndex], modelPriority)) {
+      break
+    }
+  }
   return [
     ...accounts.slice(0, targetIndex),
     boundAccount,
+    ...accounts.slice(boundIndex + 1, rotationEndIndex),
     ...accounts.slice(targetIndex, boundIndex),
-    ...accounts.slice(boundIndex + 1)
+    ...accounts.slice(rotationEndIndex)
   ]
+}
+
+function canSessionAffinityRotateWithinSameTier(
+  boundAccount: OpenAIAccountSecret,
+  currentAccount: OpenAIAccountSecret,
+  modelPriority?: GatewayAccountModelPriority
+): boolean {
+  return canSessionAffinityPromoteOver(boundAccount, currentAccount, modelPriority)
+    && canSessionAffinityPromoteOver(currentAccount, boundAccount, modelPriority)
 }
 
 function orderOpenAIHighConcurrencyAccounts(
@@ -210,12 +298,71 @@ function orderOpenAIHighConcurrencyAccounts(
       : orderOpenAIPersonalAccountsBySessionAffinity(accounts, sessionAffinityKey, modelPriority)
   }
   const binding = sessionAffinityKey ? sessionAffinityCache.get(sessionAffinityKey) : undefined
-  const inFlightStats = loadAccountInFlightStatsByIds(accounts.map((account) => account.id), {
+  const inFlightStats = loadAccountInFlightStatsByIds(gatewayAccountConcurrencyAccountIds(accounts), {
     slowRequestThresholdMs: policy.slowRequestThresholdMs ?? DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY.slowRequestThresholdMs,
     firstOutputSlowThresholdMs: policy.firstOutputSlowThresholdMs ?? DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY.firstOutputSlowThresholdMs
   })
   const candidates = accounts.map((account, index) => {
-    const runtimeStats = inFlightStats.get(account.id)
+    const runtimeStats = inFlightStats.get(gatewayAccountConcurrencyAccountId(account))
+    const currentConcurrency = accountCurrentConcurrency(account, runtimeStats?.currentConcurrency)
+    const hardLimit = accountHardConcurrencyLimit(account)
+    const softLimit = effectiveSoftConcurrencyLimit({
+      accountConcurrencyLimit: hardLimit,
+      policy
+    })
+    const boundToSession = binding?.accountId === account.id
+    const affinityAllowed = boundToSession
+      && currentConcurrency < hardLimit
+      && (policy.breakAffinityOnSoftLimit === false || currentConcurrency < softLimit)
+    return {
+      account,
+      index,
+      currentConcurrency,
+      hardLimit,
+      softLimit,
+      slowInFlightCount: runtimeStats?.slowInFlightCount ?? 0,
+      firstOutputSlowCount: runtimeStats?.firstOutputSlowCount ?? 0,
+      oldestInFlightMs: runtimeStats?.oldestInFlightMs ?? 0,
+      affinityAllowed,
+      trafficMigrationPreferred: account.id === trafficMigrationTargetAccountId,
+      hardBusy: currentConcurrency >= hardLimit,
+      softBusy: policy.breakAffinityOnSoftLimit === false && boundToSession
+        ? false
+        : currentConcurrency >= softLimit
+    }
+  })
+  const primarySoftAvailable = candidates.some((candidate) => !candidate.account.fallbackEnabled && !candidate.hardBusy && !candidate.softBusy)
+  return [...candidates]
+    .sort((left, right) => compareHighConcurrencyCandidates(left, right, policy, primarySoftAvailable, modelPriority))
+    .map((candidate) => candidate.account)
+}
+
+async function orderOpenAIHighConcurrencyAccountsAsync(
+  accounts: OpenAIAccountSecret[],
+  sessionAffinityKey: string | undefined,
+  policyInput: GroupSchedulingPolicy | undefined,
+  trafficMigrationTargetAccountId?: string,
+  modelPriority?: GatewayAccountModelPriority
+): Promise<OpenAIAccountSecret[]> {
+  if (runtimeConfig.runtimeStateDriver !== 'redis') {
+    return orderOpenAIHighConcurrencyAccounts(accounts, sessionAffinityKey, policyInput, trafficMigrationTargetAccountId, modelPriority)
+  }
+  if (accounts.length < 2) {
+    return accounts
+  }
+  const policy = resolveGroupSchedulingPolicy('high_concurrency', policyInput) ?? DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY
+  if (policy.fastFirstEnabled === false) {
+    return trafficMigrationTargetAccountId
+      ? await orderOpenAIHighConcurrencyHardBusyLastAsync(accounts)
+      : orderOpenAIPersonalAccountsBySessionAffinity(accounts, sessionAffinityKey, modelPriority)
+  }
+  const binding = sessionAffinityKey ? sessionAffinityCache.get(sessionAffinityKey) : undefined
+  const inFlightStats = await loadAccountInFlightStatsByIdsAsync(gatewayAccountConcurrencyAccountIds(accounts), {
+    slowRequestThresholdMs: policy.slowRequestThresholdMs ?? DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY.slowRequestThresholdMs,
+    firstOutputSlowThresholdMs: policy.firstOutputSlowThresholdMs ?? DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY.firstOutputSlowThresholdMs
+  })
+  const candidates = accounts.map((account, index) => {
+    const runtimeStats = inFlightStats.get(gatewayAccountConcurrencyAccountId(account))
     const currentConcurrency = accountCurrentConcurrency(account, runtimeStats?.currentConcurrency)
     const hardLimit = accountHardConcurrencyLimit(account)
     const softLimit = effectiveSoftConcurrencyLimit({
@@ -253,10 +400,33 @@ function orderOpenAIHighConcurrencyHardBusyLast(accounts: OpenAIAccountSecret[])
   if (accounts.length < 2) {
     return accounts
   }
+  const currentConcurrencyByAccount = loadAccountCurrentConcurrencyByIds(gatewayAccountConcurrencyAccountIds(accounts))
   const available: OpenAIAccountSecret[] = []
   const hardBusy: OpenAIAccountSecret[] = []
   for (const account of accounts) {
-    if (accountCurrentConcurrency(account) >= accountHardConcurrencyLimit(account)) {
+    if (accountCurrentConcurrency(account, currentConcurrencyByAccount.get(gatewayAccountConcurrencyAccountId(account))) >= accountHardConcurrencyLimit(account)) {
+      hardBusy.push(account)
+    } else {
+      available.push(account)
+    }
+  }
+  return available.length > 0 && hardBusy.length > 0
+    ? [...available, ...hardBusy]
+    : accounts
+}
+
+async function orderOpenAIHighConcurrencyHardBusyLastAsync(accounts: OpenAIAccountSecret[]): Promise<OpenAIAccountSecret[]> {
+  if (runtimeConfig.runtimeStateDriver !== 'redis') {
+    return orderOpenAIHighConcurrencyHardBusyLast(accounts)
+  }
+  if (accounts.length < 2) {
+    return accounts
+  }
+  const currentConcurrencyByAccount = await loadAccountCurrentConcurrencyByIdsAsync(gatewayAccountConcurrencyAccountIds(accounts))
+  const available: OpenAIAccountSecret[] = []
+  const hardBusy: OpenAIAccountSecret[] = []
+  for (const account of accounts) {
+    if (accountCurrentConcurrency(account, currentConcurrencyByAccount.get(gatewayAccountConcurrencyAccountId(account))) >= accountHardConcurrencyLimit(account)) {
       hardBusy.push(account)
     } else {
       available.push(account)
@@ -309,6 +479,7 @@ export function rememberOpenAIAccountForSession(sessionAffinityKey: string | und
   if (!sessionAffinityKey) {
     return
   }
+  if (!canUseProcessLocalSessionAffinity()) return
   const previous = sessionAffinityCache.get(sessionAffinityKey)
   setSessionAffinityBinding(sessionAffinityKey, {
     accountId,
@@ -328,6 +499,7 @@ export function rememberOpenAIAccountTrafficMigrationPreference(
   if (!source || !target || !key || source === target) {
     return
   }
+  if (!canUseProcessLocalSessionAffinity()) return
   trafficMigrationPreferenceCache.set(key, {
     sourceAccountId: source,
     targetAccountId: target
@@ -338,6 +510,7 @@ export function forgetOpenAIAccountForSession(sessionAffinityKey: string | undef
   if (!sessionAffinityKey) {
     return
   }
+  if (!canUseProcessLocalSessionAffinity()) return
   const binding = sessionAffinityCache.get(sessionAffinityKey)
   if (!binding) {
     return
@@ -354,6 +527,9 @@ export function migrateOpenAIAccountSessionAffinity(
   scope?: Partial<OpenAIGatewaySessionAffinityScope>,
   options: { preferMigratedSessions?: boolean } = {}
 ): { migratedSessionCount: number } {
+  if (!canUseProcessLocalSessionAffinity()) {
+    return { migratedSessionCount: 0 }
+  }
   let migratedSessionCount = 0
   for (const key of sessionAffinityMigrationCandidateKeys(sourceAccountId, scope)) {
     const binding = sessionAffinityCache.get(key)
@@ -377,6 +553,7 @@ export function migrateOpenAIAccountSessionAffinity(
 }
 
 function setSessionAffinityBinding(key: string, binding: SessionBinding): void {
+  if (!canUseProcessLocalSessionAffinity()) return
   const previous = sessionAffinityBindingByKey.get(key)
   if (previous) {
     removeSessionAffinityIndex(key, previous)
@@ -418,6 +595,7 @@ function clearSessionAffinityIndexes(): void {
 }
 
 function sessionAffinityMigrationCandidateKeys(sourceAccountId: string, scope?: Partial<OpenAIGatewaySessionAffinityScope>): string[] {
+  if (!canUseProcessLocalSessionAffinity()) return []
   const systemAccountId = scope?.systemAccountId
   const apiKeyId = scope?.apiKeyId
   if (systemAccountId && apiKeyId) {
@@ -474,6 +652,7 @@ function trafficMigrationPreferenceForAccounts(
   accounts: OpenAIAccountSecret[],
   scope?: Partial<OpenAIGatewaySessionAffinityScope>
 ): TrafficMigrationPreference | undefined {
+  if (!canUseProcessLocalSessionAffinity()) return undefined
   if (accounts.length < 2) {
     return undefined
   }
@@ -494,6 +673,7 @@ function trafficMigrationPreferenceForAccounts(
 function trafficMigrationPreferenceForScope(
   scope?: Partial<OpenAIGatewaySessionAffinityScope>
 ): { key: string; preference: TrafficMigrationPreference } | undefined {
+  if (!canUseProcessLocalSessionAffinity()) return undefined
   for (const key of trafficMigrationPreferenceScopeKeys(scope)) {
     const preference = trafficMigrationPreferenceCache.get(key)
     if (preference) {
@@ -507,6 +687,7 @@ function sessionTrafficMigrationTargetForAccounts(
   accounts: OpenAIAccountSecret[],
   sessionAffinityKey?: string
 ): string | undefined {
+  if (!canUseProcessLocalSessionAffinity()) return undefined
   if (!sessionAffinityKey || accounts.length < 2) {
     return undefined
   }
@@ -614,6 +795,12 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }
 
+function canUseProcessLocalSessionAffinity(): boolean {
+  if (runtimeConfig.cacheDriver !== 'redis') return true
+  clearSessionAffinityIndexes()
+  return false
+}
+
 function canSessionAffinityPromoteOver(
   boundAccount: OpenAIAccountSecret,
   currentAccount: OpenAIAccountSecret,
@@ -639,7 +826,7 @@ function canSessionAffinityPromoteOver(
 }
 
 function accountCurrentConcurrency(account: OpenAIAccountSecret, runtimeCurrentConcurrency?: number): number {
-  return Math.max(0, Math.trunc(account.currentConcurrency ?? runtimeCurrentConcurrency ?? 0))
+  return Math.max(0, Math.trunc(runtimeCurrentConcurrency ?? account.currentConcurrency ?? 0))
 }
 
 function accountHardConcurrencyLimit(account: OpenAIAccountSecret): number {

@@ -242,7 +242,6 @@ function createGlmScenario(input: {
   const group = repositories.createGroup({
     name: input.groupName,
     providerCode: GLM_PROVIDER_CODE,
-    providerProtocolProfileId: input.providerProtocolProfileId,
     enabled: true
   }, access)
   const account = repositories.createAccount({
@@ -274,7 +273,6 @@ function createGlmFailoverScenario(baseUrl: string): { localApiKey: string; resc
   const group = repositories.createGroup({
     name: 'GLM Mock 错误切号分组',
     providerCode: GLM_PROVIDER_CODE,
-    providerProtocolProfileId: GLM_GENERAL_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   repositories.createAccount({

@@ -167,7 +167,7 @@ export function useAuthorizationActions(options: UseAuthorizationActionsOptions)
       return
     }
     if (key === 'edit-expire') {
-      openExpireModal(item)
+      void openExpireModal(item)
       return
     }
     if (key === 'pause') {
@@ -219,15 +219,25 @@ export function useAuthorizationActions(options: UseAuthorizationActionsOptions)
     }
   }
 
-  function openExpireModal(item: ResourceAuthorizationSummary) {
+  async function openExpireModal(item: ResourceAuthorizationSummary) {
+    let detail: ResourceAuthorizationSummary
+    try {
+      detail = isManagementView.value
+        ? await api.authorizations.detail(item.id, authorizationOperationScopeParams(item))
+        : await api.myAuthorizations.detail(item.id)
+    } catch (error) {
+      console.error(error)
+      message.error(extractApiErrorMessage(error, '加载授权配置失败'))
+      return
+    }
     let nextForm: AuthorizationExpireFormModel
     try {
-      nextForm = authorizationExpireFormFromSummary(item)
+      nextForm = authorizationExpireFormFromSummary(detail)
     } catch (error) {
       message.error(extractApiErrorMessage(error, '授权数据结构异常，请清理后再编辑'))
       return
     }
-    expireAuthorization.value = item
+    expireAuthorization.value = detail
     Object.assign(expireForm, nextForm)
     expireModalOpen.value = true
   }

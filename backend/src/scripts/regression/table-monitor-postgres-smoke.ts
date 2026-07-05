@@ -49,6 +49,14 @@ try {
   assert.equal(targetOverview.rowCount, 123, 'overview 应映射 row_count')
   assert.equal(targetOverview.totalBytes, 3072, 'overview 应映射 total_bytes')
   assert.equal(targetOverview.growthRows1h, 23, 'overview 应映射 1h 行增长')
+  const smokeTableOrder = overview.tables
+    .filter((row) => row.tableName === targetTableName || row.tableName === otherTableName)
+    .map((row) => `${row.databaseRole}:${row.tableName}`)
+  assert.deepEqual(
+    smokeTableOrder,
+    [`business:${targetTableName}`, `stats:${otherTableName}`],
+    'PG 表监控 overview 表列表应按总大小倒序排序，不应因 bigint 字符串退化为表名排序'
+  )
 
   const targetHistory = await listTableStorageHistoryAsync({
     databaseRole: 'business',
@@ -156,7 +164,7 @@ async function assertPostgresCollectorWritesSnapshots(): Promise<void> {
     tableScanMode: 'full',
     maxTablesPerDatabase: 100
   })
-  assert.equal(result.databaseSnapshots, 4, 'PG 采样应只写入 PostgreSQL 四个逻辑 schema 快照')
+  assert.equal(result.databaseSnapshots, 5, 'PG 采样应只写入 PostgreSQL 五个逻辑 schema 快照')
   assert(result.tableSnapshots >= 1, 'PG 采样应写入表级快照')
 
   const history = await listTableStorageHistoryAsync({
@@ -231,7 +239,7 @@ async function assertTableMonitorExplainPlans(): Promise<void> {
       LIMIT 10
     `,
     ['business', targetTableName, startAt, endAt],
-    ['idx_table_storage_snapshots_latest', 'idx_table_storage_snapshots_latest_id', 'table_storage_snapshots_database_role_table_name_sampled_at_key']
+    ['idx_table_storage_snapshots_latest', 'idx_table_storage_snapshots_latest_id', 'idx_table_storage_snapshots_time', 'table_storage_snapshots_database_role_table_name_sampled_at_key']
   )
   await assertIndexedPlan(
     '表监控数据库历史 PG 查询',

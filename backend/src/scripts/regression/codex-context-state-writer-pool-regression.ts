@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert'
 import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
@@ -43,11 +44,23 @@ const sharedStorageKey = 'sessions/shared/segments/2026062200.json.gz'
 
 try {
   await runRegression()
-  console.log('Codex context state writer pool 回归通过：并发 shard 写入、read-after-write、compact 边界、cleanup 屏障和 shared storageKey 保护正常')
+  console.log('Responses bridge state writer pool 回归通过：并发 shard 写入、read-after-write、compact 边界、cleanup 屏障和 shared storageKey 保护正常')
 } finally {
   await writerPool.closeCodexContextStateWriterPool()
   databaseModule.closeStorageDatabases()
-  rmSync(tempRoot, { recursive: true, force: true })
+  await removeTempRoot()
+}
+
+async function removeTempRoot(): Promise<void> {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      rmSync(tempRoot, { recursive: true, force: true })
+      return
+    } catch (error) {
+      if (attempt === 4) throw error
+      await delay(100 * (attempt + 1))
+    }
+  }
 }
 
 async function runRegression(): Promise<void> {

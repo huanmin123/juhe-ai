@@ -45,6 +45,11 @@ import { createClientIpPolicyMockdata } from './observability/client-ip-policy.j
 import { cleanupMockdata } from './maintenance/cleanup.js'
 import { rebuildDerivedCaches } from './maintenance/derived-cache.js'
 import {
+  createBusinessTableCoverageMockdata,
+  createDatasetTableCoverageMockdata,
+  createStatsTableCoverageMockdata
+} from './maintenance/table-coverage.js'
+import {
   createAuditMockdata,
   createOperationMockdata,
   createPublicApiLogMockdata,
@@ -62,6 +67,7 @@ function main(): void {
     printHelp()
     return
   }
+  assertSqliteMockdataCli()
 
   const startedAt = Date.now()
   const businessDatabase = getBusinessDatabase()
@@ -81,12 +87,14 @@ function main(): void {
   const publicApiLogs = createPublicApiLogMockdata(created, options)
   createOperationMockdata(created, usageRecords)
   createRuntimeLogMockdata(usageRecords)
+  createDatasetTableCoverageMockdata()
   const modelCheckCounts = createModelCheckMockdata(created, options)
   const cleanupCounts = createRecordCleanupMockdata()
   createMonitoringMockdata(options)
 
   const derivedCounts = rebuildDerivedCaches(statsDatabase)
   const clientIpPolicyCounts = createClientIpPolicyMockdata(created)
+  createStatsTableCoverageMockdata(created, usageRecords)
   createStorageMockdata(created, options)
   updateApiKeyLastUsedAt(usageRecords)
   assertMockdataCoverage(created)
@@ -150,8 +158,15 @@ function printHelp(): void {
 说明：
   - 默认清理上一批 Mockdata，仅重建 ${namePrefix} 前缀和 ${idPrefix} ID 前缀的数据。
   - 默认给 admin 用户生成近 31 天业务数据，并重建用量统计、排行、账号质量、运行日志分面和监控窗口。
+  - 仅用于本地 SQLite standalone 模式；PostgreSQL 高性能模式请使用 PG smoke/readiness 脚本或后台接口准备临时数据。
   - 生成的本地网关 Key 会写入 backend/data/mockdata-summary.json。
 `)
+}
+
+function assertSqliteMockdataCli(): void {
+  if (runtimeConfig.databaseDriver === 'postgres' || runtimeConfig.runtimeMode === 'performance') {
+    throw new Error('Mockdata 脚本仅支持本地 SQLite standalone 模式；PostgreSQL 高性能模式请使用 PG smoke/readiness 脚本或后台接口准备临时数据')
+  }
 }
 
 function createBusinessMockdata(admin: SystemAccountSummary, adminAccess: AccessScope): CreatedMockdata {
@@ -171,6 +186,17 @@ function createBusinessMockdata(admin: SystemAccountSummary, adminAccess: Access
   createAnnouncements(admin.id, users)
   seedOauthUsageSnapshots(accounts)
   tuneGroupAccountBindings(groups, accounts)
+  createBusinessTableCoverageMockdata({
+    users,
+    groups,
+    accounts,
+    apiKeys,
+    teams,
+    authorizations,
+    externalSources,
+    responseInspectionPolicies,
+    customProviderModels
+  })
 
   return {
     users,

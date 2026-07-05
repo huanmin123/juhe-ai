@@ -42,7 +42,7 @@ export function normalizeFormTagNames(value: string[]): string[] {
   for (const item of value ?? []) {
     const name = item.replace(/\s+/g, ' ').trim()
     if (!name) continue
-    const key = name.toLocaleLowerCase()
+    const key = name
     if (seen.has(key)) continue
     seen.add(key)
     output.push(name)
@@ -51,7 +51,7 @@ export function normalizeFormTagNames(value: string[]): string[] {
 }
 
 function stableTagKey(value: string[]): string {
-  return normalizeFormTagNames(value).map((item) => item.toLocaleLowerCase()).sort().join('\n')
+  return normalizeFormTagNames(value).sort().join('\n')
 }
 
 export function accountApiKeysForForm(credentials: Record<string, unknown>): string[] {

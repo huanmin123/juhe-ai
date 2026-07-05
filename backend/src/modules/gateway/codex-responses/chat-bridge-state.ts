@@ -16,8 +16,8 @@ import type {
 } from '../../../storage/codex-context-state.repository.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import { getRequestLogger } from '../../../shared/request-context.js'
-import { requestDbService } from '../../db-service/db-service-ipc.js'
 import type { AuditCaptureContext } from '../audit/capture.service.js'
+import { requestGatewayDbService } from '../runtime/gateway-db-service-request.js'
 import {
   isOpenAIResponsesToChatCompletionsModelMapping,
   resolveOpenAIAccountModelMapping
@@ -138,7 +138,7 @@ export async function applyCodexResponsesChatBridgeStatePreflight(input: {
     signal: input.signal
   })
   if (compactReferenceResult.outcome !== 'resolved') {
-    sendCodexBridgeStateFailure(input, compactReferenceFailure(compactReferenceResult.outcome))
+    await sendCodexBridgeStateFailure(input, compactReferenceFailure(compactReferenceResult.outcome))
     return 'completed'
   }
   if (compactReferenceResult.changed) {
@@ -164,7 +164,7 @@ export async function applyCodexResponsesChatBridgeStatePreflight(input: {
   }
 
   const now = new Date()
-  const readResult = await requestDbService({
+  const readResult = await requestGatewayDbService({
     type: 'read_codex_context_response_chain',
     responseId: previousResponseId,
     boundary,
@@ -181,7 +181,7 @@ export async function applyCodexResponsesChatBridgeStatePreflight(input: {
         reason: readResult.outcome
       }
     })
-    sendCodexBridgeStateFailure(input, stateRestoreFailure(readResult.outcome))
+    await sendCodexBridgeStateFailure(input, stateRestoreFailure(readResult.outcome))
     return 'completed'
   }
 
@@ -205,7 +205,7 @@ export async function applyCodexResponsesChatBridgeStatePreflight(input: {
         reason: 'payload_unavailable'
       }
     })
-    sendCodexBridgeStateFailure(input, {
+    await sendCodexBridgeStateFailure(input, {
       statusCode: 404,
       type: 'invalid_request_error',
       code: 'codex_bridge_previous_response_state_unavailable',
@@ -265,7 +265,7 @@ export function codexResponsesChatBridgeCompletionHandlerForRequest(
         outputItems: completion.outputItems
       }
       const stored = await writeStatePayload(payload)
-      await requestDbService({
+      await requestGatewayDbService({
         type: 'save_codex_context_response_state',
         input: {
           responseId: completion.responseId,
@@ -319,7 +319,7 @@ export async function restoreCodexResponsesChatBridgeInputForCompact(input: {
     }
   }
   const now = new Date()
-  const readResult = await requestDbService({
+  const readResult = await requestGatewayDbService({
     type: 'read_codex_context_response_chain',
     responseId: input.previousResponseId,
     boundary: input.boundary,
@@ -382,7 +382,7 @@ export async function createCodexResponsesChatBridgeCompactSnapshot(input: {
     summary: input.summary
   }
   const stored = await writeCompactSnapshotPayload(payload)
-  await requestDbService({
+  await requestGatewayDbService({
     type: 'save_codex_context_compact_state',
     input: {
       compactId,
@@ -470,7 +470,7 @@ async function readCodexCompactionSnapshotSummary(input: {
   | { outcome: CodexCompactionReferenceFailureOutcome }
 > {
   const now = new Date()
-  const readResult = await requestDbService({
+  const readResult = await requestGatewayDbService({
     type: 'read_codex_context_compact_state',
     compactId: input.compactId,
     boundary: input.boundary,
@@ -563,10 +563,7 @@ function codexContextBoundary(input: {
     systemAccountId: input.systemAccountId,
     apiKeyId: input.apiKeyId,
     groupId: input.groupId,
-    providerCode: input.groupAccess.providerCode,
-    providerProtocolProfileId: input.groupAccess.providerProtocolProfileId,
-    protocolCode: input.groupAccess.protocolCode,
-    protocolVersion: input.groupAccess.protocolVersion
+    providerCode: input.groupAccess.providerCode
   }
 }
 
@@ -789,15 +786,15 @@ function assertRestoredInputSize(input: unknown): void {
   }
 }
 
-function sendCodexBridgeStateFailure(input: {
+async function sendCodexBridgeStateFailure(input: {
   req: Request
   res: Response
   auditCapture: AuditCaptureContext
   usageContext: GatewayFailureUsageContext
   startedAt: number
-}, failure: { statusCode: number; type: string; code: string; message: string }): void {
+}, failure: { statusCode: number; type: string; code: string; message: string }): Promise<void> {
   const responsePayload = gatewayErrorPayload(failure.message, failure.type, failure.code)
-  sendGatewayFailureResponse({
+  await sendGatewayFailureResponse({
     req: input.req,
     res: input.res,
     auditCapture: input.auditCapture,
@@ -886,13 +883,13 @@ function segmentStorageKey(sessionId: string, date: Date): string {
 function resolveStoragePath(storageKey: string): string {
   const normalizedKey = storageKey.replace(/\\/g, '/').replace(/^\/+/, '')
   if (normalizedKey.includes('..')) {
-    throw new Error('Codex context storage key 非法')
+    throw new Error('Responses 桥接状态 storage key 非法')
   }
   const root = resolve(runtimeConfig.codexContextRoot)
   const target = resolve(root, normalizedKey)
   const rel = relative(root, target)
   if (!rel || rel.startsWith('..') || rel.startsWith(`..${sep}`) || resolve(root, rel) !== target) {
-    throw new Error('Codex context storage key 超出数据目录')
+    throw new Error('Responses 桥接状态 storage key 超出数据目录')
   }
   return target
 }

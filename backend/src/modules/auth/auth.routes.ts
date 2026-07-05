@@ -8,6 +8,7 @@ import { recordOperationLogAsync, safeChange } from '../operation-logs/operation
 import { consumeCaptchaIssueAllowanceAsync, createCaptchaChallengeAsync, verifyCaptchaChallengeAsync } from './captcha.service.js'
 import { checkLoginAllowedAsync, getLoginClientIp, recordFailedLoginAsync, recordSuccessfulLoginAsync } from './login-guard.service.js'
 import { getRequestAuthContext, withRequestAuthContext } from './request-context.js'
+import { shouldTouchSessionForSystemApiRequest } from '../system-api/system-api-db-access.js'
 
 export const authRouter = Router()
 
@@ -262,7 +263,9 @@ async function requireSessionContext(req: Request, res: Response, next: NextFunc
       return
     }
 
-    await touchSessionAsync(session.sessionId, session.lastSeenAt)
+    if (shouldTouchSessionForSystemApiRequest(res)) {
+      await touchSessionAsync(session.sessionId, session.lastSeenAt)
+    }
     withRequestAuthContext({
       systemAccountId: session.account.id,
       username: session.account.username,

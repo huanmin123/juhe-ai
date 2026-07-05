@@ -1,5 +1,16 @@
 import { z } from 'zod'
 
+const accountTestEndpointModeSchema = z.enum([
+  'chat_json',
+  'chat_sse',
+  'responses_json',
+  'responses_sse',
+  'messages_json',
+  'messages_sse',
+  'generate_content_json',
+  'generate_content_sse'
+])
+
 export const accountModelMappingSchema = z.object({
   sourceModel: z.string().trim().min(1),
   sourceEndpointFamily: z.enum(['chat_completions', 'responses', 'messages', 'generate_content', 'stream_generate_content']),
@@ -72,6 +83,7 @@ export const accountDraftTestAccountSchema = z.object({
 
 export const accountTestSchema = z.object({
   model: z.string().trim().optional(),
+  testEndpointMode: accountTestEndpointModeSchema.optional(),
   prompt: z.string().trim().optional(),
   testSessionId: z.string().trim().min(1).optional(),
   account: accountDraftTestAccountSchema.optional()
@@ -80,6 +92,7 @@ export const accountTestSchema = z.object({
 export const accountDraftTestSchema = z.object({
   account: accountDraftTestAccountSchema,
   model: z.string().trim().optional(),
+  testEndpointMode: accountTestEndpointModeSchema.optional(),
   prompt: z.string().trim().optional(),
   testSessionId: z.string().trim().min(1).optional()
 }).strict()

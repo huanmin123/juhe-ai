@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { grepRuntimeLogFiles } from '../../modules/runtime-logs/runtime-log-grep.service.js'
@@ -46,6 +46,13 @@ try {
   assert.equal(result.items.length, 1, '日志搜索应过滤自身请求日志，并跳过超过安全行长的命中')
   assert(result.items.some((item) => item.event === 'gateway_test_event'), '应保留非 runtime-logs 路径的业务日志')
   assert(!result.items.some((item) => item.rawJson.includes('大日志 needle')), '超长命中日志不应由 rg 输出到 Node 侧解析')
+
+  runtimeConfig.log.directory = resolve(tempRoot, 'missing-log-dir')
+  await assert.rejects(
+    () => grepRuntimeLogFiles({ keywords: ['needle'], limit: 10 }),
+    /ENOENT|no such file|找不到/i,
+    '日志目录读取失败不能伪装成空搜索结果'
+  )
 
   console.log('运行日志 grep 路径过滤回归通过：新系统 API 前缀下不会把日志搜索请求本身混入结果')
 } finally {

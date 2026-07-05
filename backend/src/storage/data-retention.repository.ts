@@ -10,6 +10,7 @@ import {
   cleanupDiscoveredHardCleanupTablesBefore,
   deleteRowsBeforeByRowid,
   hardCleanupCutoffs,
+  hardCleanupCutoffsAsync,
   type HardCleanupCutoffKey,
   type HardCleanupDatabaseRole
 } from './data-retention-hard-cleanup.js'
@@ -421,7 +422,7 @@ async function cleanupNonBusinessDataBeforeWithResultPostgres(input: {
 }): Promise<NonBusinessDataHardCleanupResult> {
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const batchLimit = positiveLimit(input.limit)
-  const cutoffs = hardCleanupCutoffs(input.cutoffAt)
+  const cutoffs = await hardCleanupCutoffsAsync(input.cutoffAt)
   const scope = input.scope ?? 'all'
   const tableRows: Record<string, number> = {}
   const fileDeletes: Record<string, number> = {}
@@ -601,7 +602,7 @@ async function postgresUsageRecordsCleanupFloorCursor(client: DatabaseClient): P
     FROM juhe_stats.stats_job_state
     WHERE scope_type = 'global'
       AND scope_id = ''
-      AND job_name = ANY(?)
+      AND job_name = ANY(?::text[])
       AND cursor_created_at IS NOT NULL
       AND cursor_id IS NOT NULL
     ORDER BY cursor_created_at ASC, cursor_id ASC
@@ -663,7 +664,7 @@ async function deletePostgresUsageRecordRows(client: DatabaseClient, ids: string
   let deletedRows = 0
   await client.transaction(async (tx) => {
     await deletePostgresUsageRecordCatalogRowsByUsageIds(tx, usageIds)
-    deletedRows = changed(await tx.execute('DELETE FROM juhe_usage.usage_records WHERE id = ANY(?)', [usageIds]))
+    deletedRows = changed(await tx.execute('DELETE FROM juhe_usage.usage_records WHERE id = ANY(?::text[])', [usageIds]))
   })
   return deletedRows
 }
@@ -818,6 +819,51 @@ export function cleanupUsageStatsBucketsBefore(input: {
   }
 }
 
+export async function cleanupUsageStatsBucketsBeforeAsync(input: Parameters<typeof cleanupUsageStatsBucketsBefore>[0]): Promise<UsageStatsRetentionCleanupResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return cleanupUsageStatsBucketsBefore(input)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const limit = positiveLimit(input.limit)
+  return await client.transaction(async (tx) => ({
+    accountQualityMinuteStats: await deletePostgresStatsRowsBeforeByCtid(tx, 'account_quality_minute_stats', 'stat_minute', input.accountQualityMinuteCutoffMinute, limit),
+    usageStatsMinute: await deletePostgresStatsRowsBeforeByCtid(tx, 'usage_stats_minute', 'stat_minute', input.minuteCutoffMinute, limit),
+    usageModelMinute: await deletePostgresStatsRowsBeforeByCtid(tx, 'usage_model_minute', 'stat_minute', input.minuteCutoffMinute, limit),
+    usageErrorMinute: await deletePostgresStatsRowsBeforeByCtid(tx, 'usage_error_minute', 'stat_minute', input.minuteCutoffMinute, limit),
+    usageLatencyMinute: await deletePostgresStatsRowsBeforeByCtid(tx, 'usage_latency_minute', 'stat_minute', input.minuteCutoffMinute, limit),
+    usageStatsDaily: await deletePostgresStatsRowsBeforeByCtid(tx, 'usage_stats_daily', 'stat_date', input.dailyCutoffDate, limit),
+    usageModelDaily: await deletePostgresStatsRowsBeforeByCtid(tx, 'usage_model_daily', 'stat_date', input.dailyCutoffDate, limit),
+    usageErrorDaily: await deletePostgresStatsRowsBeforeByCtid(tx, 'usage_error_daily', 'stat_date', input.dailyCutoffDate, limit),
+    usageLatencyDaily: await deletePostgresStatsRowsBeforeByCtid(tx, 'usage_latency_daily', 'stat_date', input.dailyCutoffDate, limit),
+    usageStatsHourly: await deletePostgresStatsRowsBeforeByCtid(tx, 'usage_stats_hourly', 'stat_hour', input.hourlyCutoffHour, limit),
+    usageModelHourly: await deletePostgresStatsRowsBeforeByCtid(tx, 'usage_model_hourly', 'stat_hour', input.hourlyCutoffHour, limit),
+    usageErrorHourly: await deletePostgresStatsRowsBeforeByCtid(tx, 'usage_error_hourly', 'stat_hour', input.hourlyCutoffHour, limit),
+    usageLatencyHourly: await deletePostgresStatsRowsBeforeByCtid(tx, 'usage_latency_hourly', 'stat_hour', input.hourlyCutoffHour, limit),
+    usageStatsWeekly: await deletePostgresStatsRowsBeforeByCtid(tx, 'usage_stats_weekly', 'stat_week', input.weeklyCutoffWeek, limit),
+    usageModelWeekly: await deletePostgresStatsRowsBeforeByCtid(tx, 'usage_model_weekly', 'stat_week', input.weeklyCutoffWeek, limit),
+    usageErrorWeekly: await deletePostgresStatsRowsBeforeByCtid(tx, 'usage_error_weekly', 'stat_week', input.weeklyCutoffWeek, limit),
+    usageLatencyWeekly: await deletePostgresStatsRowsBeforeByCtid(tx, 'usage_latency_weekly', 'stat_week', input.weeklyCutoffWeek, limit),
+    usageStatsMonthly: await deletePostgresStatsRowsBeforeByCtid(tx, 'usage_stats_monthly', 'stat_month', input.monthlyCutoffMonth, limit),
+    usageModelMonthly: await deletePostgresStatsRowsBeforeByCtid(tx, 'usage_model_monthly', 'stat_month', input.monthlyCutoffMonth, limit),
+    usageErrorMonthly: await deletePostgresStatsRowsBeforeByCtid(tx, 'usage_error_monthly', 'stat_month', input.monthlyCutoffMonth, limit),
+    usageLatencyMonthly: await deletePostgresStatsRowsBeforeByCtid(tx, 'usage_latency_monthly', 'stat_month', input.monthlyCutoffMonth, limit),
+    authorizationTeamUsageSummaryDaily: await deletePostgresStatsRowsBeforeByCtid(tx, 'authorization_team_usage_summary_daily', 'stat_date', input.dailyCutoffDate, limit),
+    authorizationTeamUsageRangeWindows: await deletePostgresStatsRowsBeforeByCtid(tx, 'authorization_team_usage_range_windows', 'end_date', input.windowCutoffDate, limit),
+    authorizationUserUsageSummaryDaily: await deletePostgresStatsRowsBeforeByCtid(tx, 'authorization_user_usage_summary_daily', 'stat_date', input.dailyCutoffDate, limit),
+    authorizationUserUsageRangeWindows: await deletePostgresStatsRowsBeforeByCtid(tx, 'authorization_user_usage_range_windows', 'end_date', input.windowCutoffDate, limit),
+    usageRankSnapshots: await deletePostgresStatsRowsBeforeByCtid(tx, 'usage_rank_snapshots', 'snapshot_at', input.rankSnapshotCutoffIso, limit),
+    usageOverviewSummaryWindows: await deletePostgresStatsRowsBeforeByCtid(tx, 'usage_overview_summary_windows', 'end_date', input.windowCutoffDate, limit),
+    usageOverviewTrendWindows: await deletePostgresStatsRowsBeforeByCtid(tx, 'usage_overview_trend_windows', 'end_date', input.windowCutoffDate, limit),
+    usageModelRankWindows: await deletePostgresStatsRowsBeforeByCtid(tx, 'usage_model_rank_windows', 'end_date', input.windowCutoffDate, limit),
+    usageErrorRankWindows: await deletePostgresStatsRowsBeforeByCtid(tx, 'usage_error_rank_windows', 'end_date', input.windowCutoffDate, limit),
+    aiPerformanceSummaryWindows: await deletePostgresStatsRowsBeforeByCtid(tx, 'ai_performance_summary_windows', 'end_date', input.windowCutoffDate, limit),
+    usageQuotaHourlyWindows: await deletePostgresStatsRowsBeforeByCtid(tx, 'usage_quota_hourly_windows', 'updated_at', input.windowCutoffIso, limit),
+    usageScopeRangeWindows: await deletePostgresStatsRowsBeforeByCtid(tx, 'usage_scope_range_windows', 'end_date', input.windowCutoffDate, limit),
+    clientIpUsageRangeWindows: await deletePostgresStatsRowsBeforeByCtid(tx, 'client_ip_usage_range_windows', 'end_date', input.windowCutoffDate, limit),
+    accountUsageSnapshots: await deletePostgresStatsRowsBeforeByCtid(tx, 'account_usage_snapshots', 'updated_at', input.windowCutoffIso, limit)
+  }))
+}
+
 export function cleanupSystemMetricsBefore(input: { samplesCutoffIso: string; hourlyCutoffHour: string; trendWindowCutoffDate: string; limit?: number }): SystemMetricsRetentionCleanupResult {
   const database = getStatsDatabase()
   const limit = positiveLimit(input.limit)
@@ -829,6 +875,22 @@ export function cleanupSystemMetricsBefore(input: { samplesCutoffIso: string; ho
     processEventLoopHourly: deleteRowsBeforeByRowid(database, 'process_event_loop_hourly', 'stat_hour', input.hourlyCutoffHour, limit),
     processEventLoopTrendWindows: deleteRowsBeforeByRowid(database, 'process_event_loop_trend_windows', 'end_date', input.trendWindowCutoffDate, limit)
   }
+}
+
+export async function cleanupSystemMetricsBeforeAsync(input: Parameters<typeof cleanupSystemMetricsBefore>[0]): Promise<SystemMetricsRetentionCleanupResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return cleanupSystemMetricsBefore(input)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const limit = positiveLimit(input.limit)
+  return await client.transaction(async (tx) => ({
+    systemMetricsSamples: await deletePostgresStatsRowsBeforeByCtid(tx, 'system_metrics_samples', 'sampled_at', input.samplesCutoffIso, limit),
+    systemMetricsHourly: await deletePostgresStatsRowsBeforeByCtid(tx, 'system_metrics_hourly', 'stat_hour', input.hourlyCutoffHour, limit),
+    systemMetricsTrendWindows: await deletePostgresStatsRowsBeforeByCtid(tx, 'system_metrics_trend_windows', 'end_date', input.trendWindowCutoffDate, limit),
+    processEventLoopSamples: await deletePostgresStatsRowsBeforeByCtid(tx, 'process_event_loop_samples', 'sampled_at', input.samplesCutoffIso, limit),
+    processEventLoopHourly: await deletePostgresStatsRowsBeforeByCtid(tx, 'process_event_loop_hourly', 'stat_hour', input.hourlyCutoffHour, limit),
+    processEventLoopTrendWindows: await deletePostgresStatsRowsBeforeByCtid(tx, 'process_event_loop_trend_windows', 'end_date', input.trendWindowCutoffDate, limit)
+  }))
 }
 
 export function cleanupModelCheckRunsBefore(cutoffCreatedAt: string, limit = 10000): ModelCheckRetentionCleanupResult {
@@ -932,6 +994,28 @@ function deleteUsageRecordShardRows(rows: UsageRecordShardCleanupRow[]): number 
   }
   deleteUsageRecordShardEntries(processedCatalogIds)
   return deletedRows
+}
+
+async function deletePostgresStatsRowsBeforeByCtid(
+  client: DatabaseClient,
+  tableName: string,
+  columnName: string,
+  cutoffValue: string,
+  limit: number
+): Promise<number> {
+  const table = client.dialect.qualifyTable('juhe_stats', tableName)
+  const column = client.dialect.quoteIdentifier(columnName)
+  const result = await client.execute(`
+    DELETE FROM ${table}
+    WHERE ctid IN (
+      SELECT ctid
+      FROM ${table}
+      WHERE ${column} < ?
+      ORDER BY ${column} ASC, ctid ASC
+      LIMIT ?
+    )
+  `, [cutoffValue, positiveLimit(limit)])
+  return changed(result)
 }
 
 function positiveLimit(value: number | undefined): number {

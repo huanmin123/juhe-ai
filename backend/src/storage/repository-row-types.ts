@@ -232,9 +232,6 @@ export interface GroupRow {
   system_account_id: string
   name: string
   provider_code: ProviderCode
-  provider_protocol_profile_id: string
-  protocol_code: string
-  protocol_version: string
   description: string | null
   enabled: number
   is_default: number

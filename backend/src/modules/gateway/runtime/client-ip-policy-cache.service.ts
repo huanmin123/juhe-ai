@@ -2,6 +2,7 @@ import { runtimeConfig } from '../../../config/runtime.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import { createAppCache, createSharedJsonCache } from '../../../shared/cache.js'
 import {
+  findActiveClientIpPolicyByHashAsync,
   listActiveClientIpPoliciesAsync,
   normalizeClientIpForStats,
   recordClientIpPolicyHitsAsync,
@@ -12,17 +13,25 @@ import { requestStatsWriter } from '../../background/background-stats-writer.js'
 
 export interface ClientIpPolicyDecision {
   blocked: boolean
+  allowlisted: boolean
   normalizedIp?: ReturnType<typeof normalizeClientIpForStats>
   blacklistPolicy?: ActiveClientIpPolicy
+  allowlistPolicy?: ActiveClientIpPolicy
 }
 
 interface InspectClientIpPolicyOptions {
   cacheOnly?: boolean
+  ensureSnapshotLoaded?: boolean
 }
 
 interface ClientIpPolicySnapshotCacheEntry {
   loadedAt: string
   policies: ActiveClientIpPolicy[]
+}
+
+interface ClientIpPolicyByIpCacheEntry {
+  loadedAt: string
+  policy?: ActiveClientIpPolicy
 }
 
 const clientIpPolicyCacheTtlMs = 30_000
@@ -41,6 +50,11 @@ const activePolicySnapshotSharedCache = createSharedJsonCache<ClientIpPolicySnap
   max: 1,
   ttlMs: clientIpPolicyCacheTtlMs
 })
+const policyByIpSharedCache = createSharedJsonCache<ClientIpPolicyByIpCacheEntry>({
+  name: 'gateway:client-ip-policy-by-ip',
+  max: clientIpPolicyCacheMaxEntries,
+  ttlMs: clientIpPolicyCacheTtlMs
+})
 const activePolicySnapshot = new Map<string, ActiveClientIpPolicy>()
 const pendingPolicyHits = new Map<string, ClientIpPolicyHitInput>()
 let activePolicySnapshotLoadedAt: string | undefined
@@ -50,15 +64,24 @@ let droppedPolicyHitCount = 0
 export async function inspectClientIpPolicy(clientIp?: string, options: InspectClientIpPolicyOptions = {}): Promise<ClientIpPolicyDecision> {
   const normalizedIp = normalizeClientIpForStats(clientIp)
   if (!normalizedIp) {
-    return { blocked: false }
+    return { blocked: false, allowlisted: false }
+  }
+  if (runtimeConfig.cacheDriver === 'redis') {
+    const entry = options.cacheOnly
+      ? await getClientIpPolicyByIpSharedCacheEntry(normalizedIp.ipHash)
+      : await loadClientIpPolicyByHashFromSharedCacheOrDatabase(normalizedIp.ipHash)
+    return policyDecisionFromCacheEntry(normalizedIp, { policy: entry?.policy })
   }
   const cached = policyCache.get(normalizedIp.ipHash)
   if (cached) {
     return policyDecisionFromCacheEntry(normalizedIp, cached)
   }
+  if (!activePolicySnapshotLoadedAt && options.ensureSnapshotLoaded) {
+    await reloadClientIpPolicyCacheLocal()
+  }
   const snapshotPolicy = activePolicySnapshot.get(normalizedIp.ipHash)
   if (!snapshotPolicy && options.cacheOnly && !activePolicySnapshotLoadedAt) {
-    return { blocked: false, normalizedIp }
+    return { blocked: false, allowlisted: false, normalizedIp }
   }
   const entry = { policy: snapshotPolicy }
   policyCache.set(normalizedIp.ipHash, entry, {
@@ -74,6 +97,13 @@ export function primeClientIpPolicyCacheLocal(policies: ActiveClientIpPolicy[]):
 export function replaceClientIpPolicyCacheLocal(policies: ActiveClientIpPolicy[], options: { skipSharedCache?: boolean } = {}): void {
   policyCache.clear()
   activePolicySnapshot.clear()
+  if (runtimeConfig.cacheDriver === 'redis') {
+    activePolicySnapshotLoadedAt = undefined
+    if (!options.skipSharedCache) {
+      throw new Error('高性能模式禁止同步写入 Client-IP 策略 Redis shared cache，必须使用异步刷新入口')
+    }
+    return
+  }
   for (const policy of policies) {
     const cloned = cloneActiveClientIpPolicy(policy)
     if (!activePolicySnapshot.has(cloned.ipHash)) {
@@ -81,28 +111,54 @@ export function replaceClientIpPolicyCacheLocal(policies: ActiveClientIpPolicy[]
     }
   }
   activePolicySnapshotLoadedAt = new Date().toISOString()
-  if (!options.skipSharedCache) {
-    setActivePolicySnapshotSharedCacheEntry({
-      loadedAt: activePolicySnapshotLoadedAt,
-      policies: [...activePolicySnapshot.values()].map(cloneActiveClientIpPolicy)
-    })
-  }
 }
 
-export async function reloadClientIpPolicyCacheLocal(): Promise<void> {
-  const sharedSnapshot = await getActivePolicySnapshotSharedCacheEntry()
+export async function reloadClientIpPolicyCacheLocal(options: { bypassSharedCache?: boolean } = {}): Promise<void> {
+  if (runtimeConfig.cacheDriver === 'redis') {
+    activePolicySnapshot.clear()
+    activePolicySnapshotLoadedAt = undefined
+    if (options.bypassSharedCache) {
+      await clearActivePolicySnapshotSharedCache()
+      await clearPolicyByIpSharedCache()
+      return
+    }
+    await clearPolicyByIpSharedCache()
+    return
+  }
+  const sharedSnapshot = options.bypassSharedCache ? undefined : await getActivePolicySnapshotSharedCacheEntry()
   if (sharedSnapshot) {
     replaceClientIpPolicyCacheLocal(sharedSnapshot.policies, { skipSharedCache: true })
     activePolicySnapshotLoadedAt = sharedSnapshot.loadedAt
     return
   }
-  const policies = shouldUseStatsWriterBridge()
-    ? await requestStatsWriter({ type: 'list_active_client_ip_policies' }, 1000)
-    : await listActiveClientIpPoliciesAsync()
-  replaceClientIpPolicyCacheLocal(policies)
+  const snapshot = await loadClientIpPolicySnapshotFromDatabase()
+  replaceClientIpPolicyCacheLocal(snapshot.policies, { skipSharedCache: true })
+  activePolicySnapshotLoadedAt = snapshot.loadedAt
 }
 
-export function recordClientIpPolicyHitAsync(policy: ActiveClientIpPolicy): void {
+export async function replaceClientIpPolicySharedSnapshotAsync(policies: ActiveClientIpPolicy[]): Promise<void> {
+  policyCache.clear()
+  activePolicySnapshot.clear()
+  if (runtimeConfig.cacheDriver !== 'redis') {
+    replaceClientIpPolicyCacheLocal(policies)
+    return
+  }
+  activePolicySnapshotLoadedAt = undefined
+  await clearActivePolicySnapshotSharedCache()
+  await clearPolicyByIpSharedCache()
+  const loadedAt = new Date().toISOString()
+  for (const policy of policies) {
+    await setClientIpPolicyByIpSharedCacheEntry(policy.ipHash, policy, loadedAt)
+  }
+}
+
+export async function recordClientIpPolicyHitAsync(policy: ActiveClientIpPolicy): Promise<void> {
+  if (policy.policyType !== 'blacklist') return
+  const hit = clientIpPolicyHitInput(policy, 1)
+  if (runtimeConfig.cacheDriver === 'redis' || runtimeConfig.runtimeMode === 'performance') {
+    await writeClientIpPolicyHits([hit])
+    return
+  }
   const key = `${policy.ipHash}:${policy.id}`
   const current = pendingPolicyHits.get(key)
   if (!current && pendingPolicyHits.size >= clientIpPolicyHitMaxPendingEntries) {
@@ -120,10 +176,8 @@ export function recordClientIpPolicyHitAsync(policy: ActiveClientIpPolicy): void
     return
   }
   pendingPolicyHits.set(key, {
-    ipHash: policy.ipHash,
-    policyId: policy.id,
-    hitCount: (current?.hitCount ?? 0) + 1,
-    hitAt: new Date().toISOString()
+    ...hit,
+    hitCount: (current?.hitCount ?? 0) + 1
   })
   scheduleClientIpPolicyHitFlush(clientIpPolicyHitFlushDelayMs)
 }
@@ -138,7 +192,7 @@ export function getClientIpPolicyCacheRuntime(): {
 } {
   return {
     snapshotLoadedAt: activePolicySnapshotLoadedAt,
-    snapshotPolicyCount: activePolicySnapshot.size,
+    snapshotPolicyCount: runtimeConfig.cacheDriver === 'redis' ? 0 : activePolicySnapshot.size,
     pendingPolicyHitCount: pendingPolicyHits.size,
     droppedPolicyHitCount,
     maxPendingPolicyHits: clientIpPolicyHitMaxPendingEntries,
@@ -155,11 +209,12 @@ function scheduleClientIpPolicyHitFlush(delayMs: number): void {
   policyHitFlushTimer.unref?.()
 }
 
-export function clearClientIpPolicyCacheLocal(): void {
+export async function clearClientIpPolicyCacheLocal(): Promise<void> {
   policyCache.clear()
   activePolicySnapshot.clear()
   activePolicySnapshotLoadedAt = undefined
-  clearActivePolicySnapshotSharedCache()
+  await clearActivePolicySnapshotSharedCache()
+  await clearPolicyByIpSharedCache()
 }
 
 function isPolicyActiveAt(policy: ActiveClientIpPolicy, nowMs: number): boolean {
@@ -172,10 +227,14 @@ function policyDecisionFromCacheEntry(
   entry: { policy: ActiveClientIpPolicy | undefined }
 ): ClientIpPolicyDecision {
   const policy = entry.policy && isPolicyActiveAt(entry.policy, Date.now()) ? entry.policy : undefined
+  const blacklistPolicy = policy?.policyType === 'blacklist' ? policy : undefined
+  const allowlistPolicy = policy?.policyType === 'allowlist' ? policy : undefined
   return {
-    blocked: Boolean(policy),
+    blocked: Boolean(blacklistPolicy),
+    allowlisted: Boolean(allowlistPolicy),
     normalizedIp,
-    blacklistPolicy: policy
+    blacklistPolicy,
+    allowlistPolicy
   }
 }
 
@@ -197,6 +256,7 @@ function cloneActiveClientIpPolicy(policy: ActiveClientIpPolicy): ActiveClientIp
   return {
     id: policy.id,
     ipHash: policy.ipHash,
+    policyType: policy.policyType,
     aggregateIpKey: policy.aggregateIpKey,
     clientIp: policy.clientIp,
     reason: policy.reason,
@@ -204,42 +264,106 @@ function cloneActiveClientIpPolicy(policy: ActiveClientIpPolicy): ActiveClientIp
   }
 }
 
-async function getActivePolicySnapshotSharedCacheEntry(): Promise<ClientIpPolicySnapshotCacheEntry | undefined> {
-  try {
-    const cached = await activePolicySnapshotSharedCache.get(activePolicySnapshotSharedCacheKey)
-    if (!cached || !Array.isArray(cached.policies)) return undefined
-    return {
-      loadedAt: typeof cached.loadedAt === 'string' ? cached.loadedAt : new Date().toISOString(),
-      policies: cached.policies
-        .filter(isActiveClientIpPolicy)
-        .map(cloneActiveClientIpPolicy)
-    }
-  } catch (error) {
-    logger.warn(errorLogFields(error, {
-      event: 'client_ip_policy_snapshot_shared_cache_read_failed'
-    }), '读取 IP 封禁策略 Redis shared cache 失败，将回退本地快照重载')
-    return undefined
+function clientIpPolicyHitInput(policy: ActiveClientIpPolicy, hitCount: number): ClientIpPolicyHitInput {
+  return {
+    ipHash: policy.ipHash,
+    policyId: policy.id,
+    hitCount,
+    hitAt: new Date().toISOString()
   }
 }
 
-function setActivePolicySnapshotSharedCacheEntry(entry: ClientIpPolicySnapshotCacheEntry): void {
-  void activePolicySnapshotSharedCache.set(activePolicySnapshotSharedCacheKey, {
-    loadedAt: entry.loadedAt,
-    policies: entry.policies.map(cloneActiveClientIpPolicy)
-  }, { ttlMs: clientIpPolicyCacheTtlMs }).catch((error) => {
-    logger.warn(errorLogFields(error, {
-      event: 'client_ip_policy_snapshot_shared_cache_write_failed',
-      policyCount: entry.policies.length
-    }), '写入 IP 封禁策略 Redis shared cache 失败')
-  })
+async function getActivePolicySnapshotSharedCacheEntry(): Promise<ClientIpPolicySnapshotCacheEntry | undefined> {
+  const cached = await activePolicySnapshotSharedCache.get(activePolicySnapshotSharedCacheKey)
+  if (!cached || !Array.isArray(cached.policies)) return undefined
+  return {
+    loadedAt: typeof cached.loadedAt === 'string' ? cached.loadedAt : new Date().toISOString(),
+    policies: cached.policies
+      .filter(isActiveClientIpPolicy)
+      .map(cloneActiveClientIpPolicy)
+  }
 }
 
-function clearActivePolicySnapshotSharedCache(): void {
-  void activePolicySnapshotSharedCache.clear().catch((error) => {
-    logger.warn(errorLogFields(error, {
-      event: 'client_ip_policy_snapshot_shared_cache_clear_failed'
-    }), '清理 IP 封禁策略 Redis shared cache 失败')
-  })
+async function setActivePolicySnapshotSharedCacheEntry(entry: ClientIpPolicySnapshotCacheEntry): Promise<void> {
+  await activePolicySnapshotSharedCache.set(activePolicySnapshotSharedCacheKey, {
+    loadedAt: entry.loadedAt,
+    policies: entry.policies.map(cloneActiveClientIpPolicy)
+  }, { ttlMs: clientIpPolicyCacheTtlMs })
+}
+
+async function loadClientIpPolicySnapshotFromSharedCacheOrDatabase(): Promise<ClientIpPolicySnapshotCacheEntry> {
+  const sharedSnapshot = await getActivePolicySnapshotSharedCacheEntry()
+  if (sharedSnapshot) {
+    return sharedSnapshot
+  }
+  return await loadClientIpPolicySnapshotFromDatabase()
+}
+
+async function loadClientIpPolicySnapshotFromDatabase(): Promise<ClientIpPolicySnapshotCacheEntry> {
+  const policies = shouldUseStatsWriterBridge()
+    ? await requestStatsWriter({ type: 'list_active_client_ip_policies' }, 1000)
+    : await listActiveClientIpPoliciesAsync()
+  const snapshot = snapshotCacheEntryFromPolicies(policies)
+  await setActivePolicySnapshotSharedCacheEntry(snapshot)
+  return snapshot
+}
+
+async function getClientIpPolicyByIpSharedCacheEntry(ipHash: string): Promise<ClientIpPolicyByIpCacheEntry | undefined> {
+  const cached = await policyByIpSharedCache.get(ipHash)
+  if (!cached) return undefined
+  const policy = cached.policy && isActiveClientIpPolicy(cached.policy)
+    ? cloneActiveClientIpPolicy(cached.policy)
+    : undefined
+  return {
+    loadedAt: typeof cached.loadedAt === 'string' ? cached.loadedAt : new Date().toISOString(),
+    ...(policy ? { policy } : {})
+  }
+}
+
+async function setClientIpPolicyByIpSharedCacheEntry(
+  ipHash: string,
+  policy: ActiveClientIpPolicy | undefined,
+  loadedAt = new Date().toISOString()
+): Promise<void> {
+  await policyByIpSharedCache.set(ipHash, {
+    loadedAt,
+    ...(policy ? { policy: cloneActiveClientIpPolicy(policy) } : {})
+  }, { ttlMs: clientIpPolicyTtlMs(policy) })
+}
+
+async function loadClientIpPolicyByHashFromSharedCacheOrDatabase(ipHash: string): Promise<ClientIpPolicyByIpCacheEntry> {
+  const sharedEntry = await getClientIpPolicyByIpSharedCacheEntry(ipHash)
+  if (sharedEntry) {
+    return sharedEntry
+  }
+  const policy = await loadClientIpPolicyByHashFromDatabase(ipHash)
+  const loadedAt = new Date().toISOString()
+  await setClientIpPolicyByIpSharedCacheEntry(ipHash, policy, loadedAt)
+  return {
+    loadedAt,
+    ...(policy ? { policy } : {})
+  }
+}
+
+async function loadClientIpPolicyByHashFromDatabase(ipHash: string): Promise<ActiveClientIpPolicy | undefined> {
+  return shouldUseStatsWriterBridge()
+    ? await requestStatsWriter({ type: 'find_active_client_ip_policy_by_hash', ipHash }, 1000)
+    : await findActiveClientIpPolicyByHashAsync(ipHash)
+}
+
+function snapshotCacheEntryFromPolicies(policies: ActiveClientIpPolicy[]): ClientIpPolicySnapshotCacheEntry {
+  return {
+    loadedAt: new Date().toISOString(),
+    policies: policies.map(cloneActiveClientIpPolicy)
+  }
+}
+
+async function clearActivePolicySnapshotSharedCache(): Promise<void> {
+  await activePolicySnapshotSharedCache.clear()
+}
+
+async function clearPolicyByIpSharedCache(): Promise<void> {
+  await policyByIpSharedCache.clear()
 }
 
 function isActiveClientIpPolicy(value: unknown): value is ActiveClientIpPolicy {
@@ -247,6 +371,7 @@ function isActiveClientIpPolicy(value: unknown): value is ActiveClientIpPolicy {
   const record = value as Record<string, unknown>
   return typeof record.id === 'string'
     && typeof record.ipHash === 'string'
+    && (record.policyType === 'blacklist' || record.policyType === 'allowlist')
     && typeof record.aggregateIpKey === 'string'
     && typeof record.clientIp === 'string'
     && (record.reason === undefined || typeof record.reason === 'string')
@@ -261,11 +386,7 @@ async function flushClientIpPolicyHits(): Promise<void> {
   }
   const hits = entries.map(([, hit]) => hit)
   try {
-    if (shouldUseStatsWriterBridge()) {
-      await requestStatsWriter({ type: 'record_client_ip_policy_hits', hits }, 1000)
-    } else {
-      await recordClientIpPolicyHitsAsync(hits)
-    }
+    await writeClientIpPolicyHits(hits)
   } catch (error) {
     logger.warn(errorLogFields(error, {
       event: 'client_ip_policy_hits_flush_failed',
@@ -276,6 +397,14 @@ async function flushClientIpPolicyHits(): Promise<void> {
       scheduleClientIpPolicyHitFlush(0)
     }
   }
+}
+
+async function writeClientIpPolicyHits(hits: ClientIpPolicyHitInput[]): Promise<void> {
+  if (shouldUseStatsWriterBridge()) {
+    await requestStatsWriter({ type: 'record_client_ip_policy_hits', hits }, 1000)
+    return
+  }
+  await recordClientIpPolicyHitsAsync(hits)
 }
 
 function shouldUseStatsWriterBridge(): boolean {

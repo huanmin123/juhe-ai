@@ -1,4 +1,4 @@
-import { formatCompactUsageAmount, formatNumber, formatUsd } from '@/shared/formatters'
+import { formatCompactUsageAmount, formatRequestCountTag, formatUsd } from '@/shared/formatters'
 import type { AccountUsageSummary, ApiKeyAvailabilitySchedule, ApiKeySummary, RouteStrategyMode } from '@/types/domain'
 import { systemAccountDisplayText } from '@/utils/systemAccountFilter'
 import { timeScheduleSummary, timeScheduleTagColor } from '@/views/shared/timeSchedule'
@@ -53,19 +53,15 @@ export function apiKeyScheduleTagColor(apiKey: ApiKeySummary): string {
   })
 }
 
-export function formatKeyPreview(apiKey: Pick<ApiKeySummary, 'key' | 'keyPrefix' | 'keySuffix'>): string {
-  return maskSecretPreview(apiKey.key, apiKey.keyPrefix, apiKey.keySuffix, '密钥未返回')
+export function formatKeyPreview(apiKey: Pick<ApiKeySummary, 'keyPrefix' | 'keySuffix'>): string {
+  return maskSecretPreview(apiKey.keyPrefix, apiKey.keySuffix, '密钥未返回')
 }
 
-export function keyDisplayTitle(apiKey: Pick<ApiKeySummary, 'key' | 'keyPrefix' | 'keySuffix'>): string {
-  if (apiKey.key) return apiKey.key
+export function keyDisplayTitle(apiKey: Pick<ApiKeySummary, 'keyPrefix' | 'keySuffix'>): string {
   return apiKey.keyPrefix ? '列表仅显示密钥标识，点击复制按钮复制完整密钥' : '密钥未返回'
 }
 
-function maskSecretPreview(value: string | undefined, prefix: string | undefined, suffix: string | undefined, fallback: string): string {
-  if (value) {
-    return value.length > 16 ? `${value.slice(0, 8)}...${value.slice(-8)}` : value
-  }
+function maskSecretPreview(prefix: string | undefined, suffix: string | undefined, fallback: string): string {
   const head = prefix?.slice(0, 8) ?? ''
   const tail = suffix?.slice(-8) ?? ''
   if (head && tail) return `${head}...${tail}`
@@ -78,5 +74,5 @@ export function apiKeySystemAccountText(apiKey: ApiKeySummary): string {
 }
 
 export function formatUsageSummary(usage: AccountUsageSummary): string {
-  return `${formatNumber(usage.requestCount)}req / ${formatCompactUsageAmount(usage.totalTokens)} / ${formatUsd(usage.totalCost)}`
+  return `${formatRequestCountTag(usage.requestCount)} / ${formatCompactUsageAmount(usage.totalTokens)} / ${formatUsd(usage.totalCost)}`
 }

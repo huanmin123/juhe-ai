@@ -9,12 +9,12 @@ import {
   clearAccountStreamFailureStateWithCacheInvalidation,
   handleStreamFailure,
 } from '../runtime/account-effects.js'
-import { rememberCodexTurnStreamFailure } from '../client-profiles/codex-turn-retry.service.js'
+import { rememberCodexTurnStreamFailureAsync } from '../client-profiles/codex-turn-retry.service.js'
 import { downstreamConnectionClosedMessage } from './client-abort.js'
 import type { OpenAIGatewayClientStrategyContext } from '../client-profiles/strategy.js'
 import {
-  confirmClientIpAccountAvoidanceAfterFinalFailure,
-  confirmClientIpAccountAvoidanceAfterSuccess,
+  confirmClientIpAccountAvoidanceAfterFinalFailureAsync,
+  confirmClientIpAccountAvoidanceAfterSuccessAsync,
   rememberClientIpAccountPendingFailure,
   type ClientIpAccountAvoidanceTracker
 } from '../runtime/client-ip-account-avoidance.service.js'
@@ -22,7 +22,7 @@ import {
   recordGatewayAccountFailureForPrecheck,
   suppressGatewayAccountLocally
 } from '../runtime/account-side-effects.service.js'
-import { recordClientIpErrorCircuitSuccess } from '../runtime/client-ip-error-circuit.service.js'
+import { recordClientIpErrorCircuitSuccessAsync } from '../runtime/client-ip-error-circuit.service.js'
 import {
   NonStreamUpstreamBodyPipeError,
   endResponse,
@@ -45,6 +45,7 @@ import {
 import { type UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import {
   pipeUpstreamStream,
+  type StreamFailureContext,
   type StreamBodyOmissionSummary
 } from './stream.js'
 import {
@@ -59,6 +60,7 @@ import {
   UpstreamRequestAbortedError,
   type GatewayUpstreamResponse
 } from '../upstream/request.js'
+import { isGatewayFirstByteTimeoutError } from '../upstream/first-byte-timeout.js'
 import {
   buildUsageResponseSnapshot,
   type UsageRequestSnapshot
@@ -85,8 +87,7 @@ import {
   estimateTokenCountFromText
 } from '../protocols/openai-v1/stream-events.js'
 import {
-  recordGatewayUpstreamBucketSuccess,
-  suppressGatewayUpstreamBucketLocallyForSeconds
+  recordGatewayUpstreamBucketSuccessAsync
 } from '../runtime/proxy-health.service.js'
 import type { ResponseInspectionPolicySummary } from '../../../storage/response-inspection-policy.repository.js'
 import type { HybridGatewayRuntimeRoute } from '../hybrid/routing.service.js'
@@ -131,6 +132,7 @@ interface HandleUpstreamResponseInput {
   usageContext: GatewayUsageContext
   startedAt: number
   signal: AbortSignal
+  firstByteTimeoutMs?: number
   sessionAffinityKey?: string
   clientStrategy?: OpenAIGatewayClientStrategyContext
   responseInspectionPolicies?: ResponseInspectionPolicySummary[]
@@ -182,7 +184,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       errorCode: 'upstream_empty_body',
       errorMessage
     })
-    recordCompletedUpstreamAttempt(req, {
+    await recordCompletedUpstreamAttempt(req, {
       ...usageContext,
       account,
       statusCode: upstreamResponse.status,
@@ -218,7 +220,8 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
           endpoint: usageContext.endpoint,
           reason: errorMessage,
           statusCode: upstreamResponse.status,
-          forcePrecheck: localSuppression.action === 'precheck_required'
+          forcePrecheck: localSuppression.action === 'precheck_required',
+          localSuppressionDelayMs: localSuppression.delayMs
         })
       }
     }
@@ -233,19 +236,32 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
   }
 
   let streamResult: Awaited<ReturnType<typeof pipeUpstreamStream>>
+  const shouldMutateAccountForStreamFailure = (
+    errorCode: string | undefined,
+    context: StreamFailureContext
+  ): boolean => {
+    if (accountStateMutationEnabled === false) return false
+    return !(
+      input.firstByteTimeoutMs !== undefined
+      && errorCode === 'first_byte_timeout'
+      && context.downstreamBytesWritten === 0
+      && !context.outputReceived
+    )
+  }
   try {
     streamResult = await pipeUpstreamStream(
       upstreamResponse.body,
       res,
       settings,
       startedAt,
-      (message, errorCode, context) => handleStreamFailure(account, message, settings, errorCode, context, usageContext, accountStateMutationEnabled !== false),
+      (message, errorCode, context) => handleStreamFailure(account, message, settings, errorCode, context, usageContext, shouldMutateAccountForStreamFailure(errorCode, context)),
       signal,
       {
         clientRetryEnabled: clientStrategy?.allowCodexStreamClientRetry === true,
         retryBeforeDownstreamWriteUntilOutput: true,
         onFirstOutput: markFirstOutput,
         captureSuccessPayloads: auditCapture.shouldCaptureSuccessPayloads(),
+        firstByteTimeoutMs: input.firstByteTimeoutMs,
         responseInspectionPolicies: resolveRuntimeResponseInspectionPolicies({
           account,
           managementPolicies: input.responseInspectionPolicies
@@ -263,7 +279,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
   } catch (error) {
     if (isUpstreamRequestAbortedError(error) || signal.aborted) {
       forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
-      recordClientAbortedUpstreamAttempt(req, {
+      await recordClientAbortedUpstreamAttempt(req, {
         ...usageContext,
         account,
         statusCode: upstreamResponse.status,
@@ -336,7 +352,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
   if (!streamResult.completed) {
     const requestSnapshot = usageRequestSnapshotWithBodyOmission(usageContext.requestSnapshot, streamResult.bodyOmission)
     forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
-    recordCompletedUpstreamAttempt(req, {
+    await recordCompletedUpstreamAttempt(req, {
       ...usageContext,
       account,
       statusCode: upstreamResponse.status,
@@ -364,6 +380,26 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       errorMessage: streamResult.message,
       endpoint: usageContext.endpoint
     })
+    if (input.firstByteTimeoutMs !== undefined && isFirstByteTimeoutStreamResult(streamResult)) {
+      auditCapture.addGatewayMetadata({
+        label: 'normal_route_speed_first_first_byte_timeout',
+        metadata: {
+          accountId: account.id,
+          accountName: account.name,
+          timeoutMs: input.firstByteTimeoutMs,
+          message: streamResult.message
+        }
+      })
+      return {
+        alreadyFinalized: false,
+        retryUpstream: true,
+        retryReason: 'speed_first_first_byte_timeout',
+        excludeCurrentAccount: true,
+        message: streamResult.message,
+        errorCode: streamResult.errorCode,
+        uncommittedResponseBody: streamResult.uncommittedResponseBody
+      }
+    }
     if (shouldRetryResponseInspectionOnServer(streamResult, res)) {
       auditCapture.addGatewayMetadata({
         label: 'response_inspection_server_retry',
@@ -426,7 +462,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       }
     }
     if (shouldRememberCodexTurnStreamFailure(streamResult, clientStrategy)) {
-      const codexTurnFailure = rememberCodexTurnStreamFailure(clientStrategy, account.id, {
+      const codexTurnFailure = await rememberCodexTurnStreamFailureAsync(clientStrategy, account.id, {
         errorCode: streamResult.responseInspection?.upstreamErrorCode ?? streamResult.errorCode,
         message: streamResult.message
       })
@@ -448,7 +484,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       streamResult,
       clientErrorProtocol
     )
-    const clientIpAvoidanceResult = confirmClientIpAccountAvoidanceAfterFinalFailure(
+    const clientIpAvoidanceResult = await confirmClientIpAccountAvoidanceAfterFinalFailureAsync(
       clientIpAccountAvoidanceTracker,
       settings
     )
@@ -603,7 +639,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         errorCode: 'upstream_empty_body',
         errorMessage
       })
-      recordCompletedUpstreamAttempt(req, {
+      await recordCompletedUpstreamAttempt(req, {
         ...usageContext,
         account,
         statusCode: upstreamResponse.status,
@@ -639,7 +675,8 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
             endpoint: usageContext.endpoint,
             reason: errorMessage,
             statusCode: upstreamResponse.status,
-            forcePrecheck: localSuppression.action === 'precheck_required'
+            forcePrecheck: localSuppression.action === 'precheck_required',
+            localSuppressionDelayMs: localSuppression.delayMs
           })
         }
       }
@@ -661,7 +698,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
           inspectBytes: nonStreamResponseInspectionMaxBytes,
           captureBody: auditCapture.shouldCaptureSuccessPayloads(),
           signal,
-          firstByteTimeoutMs: upstreamRequestTimeoutMs(req, input.settings, account),
+          firstByteTimeoutMs: input.firstByteTimeoutMs ?? upstreamRequestTimeoutMs(req, input.settings, account),
           prepareDownstream: () => prepareUpstreamResponseForDownstream(res, upstreamResponse, false),
           onFirstByte: () => {
             firstTokenMs = Date.now() - startedAt
@@ -741,7 +778,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
           startedAt,
           captureBody: auditCapture.shouldCaptureSuccessPayloads(),
           signal,
-          firstByteTimeoutMs: upstreamRequestTimeoutMs(req, input.settings, account),
+          firstByteTimeoutMs: input.firstByteTimeoutMs ?? upstreamRequestTimeoutMs(req, input.settings, account),
           prepareDownstream: () => prepareUpstreamResponseForDownstream(res, upstreamResponse, false),
           onFirstByte: () => {
             firstTokenMs = Date.now() - startedAt
@@ -785,8 +822,55 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
       res.send(readResult.body)
     }
   } catch (error) {
+    if (input.firstByteTimeoutMs !== undefined && isGatewayFirstByteTimeoutError(error) && !res.headersSent && !res.writableEnded && !res.destroyed) {
+      const errorMessage = error.message
+      forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
+      auditCapture.completeAttempt(auditAttemptId, {
+        statusCode: upstreamResponse.status,
+        responseHeaders: upstreamResponse.headers,
+        success: false,
+        errorPhase: 'upstream_response',
+        errorCode: error.code,
+        errorMessage
+      })
+      await recordCompletedUpstreamAttempt(req, {
+        ...usageContext,
+        account,
+        statusCode: upstreamResponse.status,
+        success: false,
+        stream: isEffectiveOpenAIStreamRequest(req, account),
+        startedAt,
+        usage: emptyUsage(),
+        errorCode: error.code,
+        errorMessage,
+        requestSnapshot: usageContext.requestSnapshot,
+        responseSnapshot: buildUsageResponseSnapshot({
+          upstreamUrl,
+          statusCode: upstreamResponse.status,
+          headers: upstreamResponse.headers,
+          errorMessage
+        })
+      })
+      auditCapture.addGatewayMetadata({
+        label: 'normal_route_speed_first_first_byte_timeout',
+        metadata: {
+          accountId: account.id,
+          accountName: account.name,
+          timeoutMs: input.firstByteTimeoutMs,
+          message: errorMessage
+        }
+      })
+      return {
+        alreadyFinalized: false,
+        retryUpstream: true,
+        retryReason: 'speed_first_first_byte_timeout',
+        excludeCurrentAccount: true,
+        message: errorMessage,
+        errorCode: error.code
+      }
+    }
     if (isUpstreamRequestAbortedError(error) || signal.aborted) {
-      recordClientAbortedUpstreamAttempt(req, {
+      await recordClientAbortedUpstreamAttempt(req, {
         ...usageContext,
         account,
         statusCode: upstreamResponse.status,
@@ -839,10 +923,11 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
             endpoint: usageContext.endpoint,
             reason: runtimeReason,
             statusCode: upstreamResponse.status,
-            forcePrecheck: localSuppression.action === 'precheck_required'
+            forcePrecheck: localSuppression.action === 'precheck_required',
+            localSuppressionDelayMs: localSuppression.delayMs
           })
         } else {
-          applyAccountErrorHandlingWithCacheInvalidation(account, {
+          await applyAccountErrorHandlingWithCacheInvalidation(account, {
             success: false,
             statusCode: upstreamResponse.status,
             headers: upstreamResponse.headers,
@@ -862,7 +947,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
             }
           })
       }
-      recordCompletedUpstreamAttempt(req, {
+      await recordCompletedUpstreamAttempt(req, {
         ...usageContext,
         account,
         statusCode: upstreamResponse.status,
@@ -960,6 +1045,13 @@ function shouldBufferNonStreamJsonResponse(input: HandleUpstreamResponseInput): 
     || input.clientStrategy?.codexCompactionExpected === true
     || (input.hybridRoute && !input.hybridRoute.scoringFallbackApplied)
   )
+}
+
+function isFirstByteTimeoutStreamResult(streamResult: { errorCode?: string; firstTokenMs?: number; downstreamBytesWritten: number; outputReceived: boolean }): boolean {
+  return streamResult.errorCode === 'first_byte_timeout'
+    && streamResult.firstTokenMs === undefined
+    && streamResult.downstreamBytesWritten === 0
+    && !streamResult.outputReceived
 }
 
 function nonStreamImageResponseBodyOmission(bodyText: string | undefined, capturedBytes: number | undefined): StreamBodyOmissionSummary | undefined {
@@ -1060,7 +1152,7 @@ async function inspectBufferedHybridQualityResponse(input: {
     errorCode,
     errorMessage: message
   })
-  recordCompletedUpstreamAttempt(input.req, {
+  await recordCompletedUpstreamAttempt(input.req, {
     ...input.usageContext,
     account: input.account,
     statusCode: input.upstreamResponse.status,
@@ -1175,7 +1267,7 @@ function applyNonStreamUsageFallback(input: {
   return fallback.usage
 }
 
-export function finalizeHandledUpstreamResponse(input: FinalizeHandledUpstreamResponseInput): void {
+export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpstreamResponseInput): Promise<void> {
   const {
     req,
     res,
@@ -1190,7 +1282,7 @@ export function finalizeHandledUpstreamResponse(input: FinalizeHandledUpstreamRe
     clientIpAccountAvoidanceTracker
   } = input
   if (upstreamResponse.ok) {
-    const clearedProxyFailure = recordGatewayUpstreamBucketSuccess(account)
+    const clearedProxyFailure = await recordGatewayUpstreamBucketSuccessAsync(account)
     if (clearedProxyFailure) {
       getRequestLogger().info({
         event: 'gateway_upstream_failure_bucket_recovered',
@@ -1205,13 +1297,13 @@ export function finalizeHandledUpstreamResponse(input: FinalizeHandledUpstreamRe
       })
     }
     if (input.accountStateMutationEnabled !== false) {
-      applyAccountErrorHandlingWithCacheInvalidation(account, {
+      await applyAccountErrorHandlingWithCacheInvalidation(account, {
         success: true,
         settings,
         trafficSource: usageContext.trafficSource
       })
     }
-    const clearedClientIpErrorCircuit = recordClientIpErrorCircuitSuccess({
+    const clearedClientIpErrorCircuit = await recordClientIpErrorCircuitSuccessAsync({
       systemAccountId: usageContext.systemAccountId,
       apiKeyId: usageContext.apiKeyId,
       groupId: usageContext.groupId,
@@ -1234,7 +1326,7 @@ export function finalizeHandledUpstreamResponse(input: FinalizeHandledUpstreamRe
         }
       })
     }
-    const clientIpAvoidanceResult = confirmClientIpAccountAvoidanceAfterSuccess(
+    const clientIpAvoidanceResult = await confirmClientIpAccountAvoidanceAfterSuccessAsync(
       clientIpAccountAvoidanceTracker,
       account.id,
       settings
@@ -1259,7 +1351,7 @@ export function finalizeHandledUpstreamResponse(input: FinalizeHandledUpstreamRe
     }
   }
 
-  recordCompletedUpstreamAttempt(req, {
+  await recordCompletedUpstreamAttempt(req, {
     ...usageContext,
     account,
     stream: isEffectiveOpenAIStreamRequest(req, account),

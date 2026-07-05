@@ -5,12 +5,12 @@ import { Worker } from 'node:worker_threads'
 
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import { gatewayJsonBodyLargeWarningBytes } from './body.js'
-import type { GatewayJsonBodyMetadata } from './json-metadata-scanner.js'
+import { extractGatewayJsonBodyMetadata, type GatewayJsonBodyMetadata } from './json-metadata-scanner.js'
 import {
-  OpenAIOAuthCodexAdapterError,
   type NormalizedCodexBody,
   type OpenAIOAuthCodexNormalizeInput
 } from '../adapters/gpt-codex/oauth-normalizer.js'
+import { OpenAIOAuthCodexAdapterError } from '../adapters/gpt-codex/oauth-errors.js'
 
 type GatewayJsonWorkerJobType =
   | 'extract_json_body_metadata'
@@ -131,6 +131,9 @@ const queuedJobs = new HeadIndexedQueue<GatewayJsonWorkerJob>()
 let queuedJobsBytes = 0
 
 export function parseGatewayJsonBodyInWorker(rawBody: Buffer, timeoutMs = 30000, signal?: AbortSignal): Promise<unknown> {
+  if (shouldRunGatewayJsonWorkerInlineForTypeScriptRuntime()) {
+    return parseGatewayJsonBodyInline(rawBody, signal)
+  }
   return enqueueGatewayJsonWorkerJob({
     type: 'parse_json_body',
     rawBody,
@@ -140,6 +143,9 @@ export function parseGatewayJsonBodyInWorker(rawBody: Buffer, timeoutMs = 30000,
 }
 
 export function extractGatewayJsonBodyMetadataInWorker(rawBody: Buffer, timeoutMs = 30000, signal?: AbortSignal): Promise<GatewayJsonBodyMetadata> {
+  if (shouldRunGatewayJsonWorkerInlineForTypeScriptRuntime()) {
+    return extractGatewayJsonBodyMetadataInline(rawBody, signal)
+  }
   return enqueueGatewayJsonWorkerJob<GatewayJsonBodyMetadata>({
     type: 'extract_json_body_metadata',
     rawBody,
@@ -154,6 +160,9 @@ export function normalizeOpenAIOAuthCodexBodyInWorker(
   timeoutMs = 30000,
   signal?: AbortSignal
 ): Promise<NormalizedCodexBody> {
+  if (shouldRunGatewayJsonWorkerInlineForTypeScriptRuntime()) {
+    return normalizeOpenAIOAuthCodexBodyInline(rawBody, normalizeInput, signal)
+  }
   return enqueueGatewayJsonWorkerJob<NormalizedCodexBody>({
     type: 'normalize_openai_oauth_codex_body',
     rawBody,
@@ -165,6 +174,46 @@ export function normalizeOpenAIOAuthCodexBodyInWorker(
 
 export function isGatewayJsonWorkerQueueFullError(error: unknown): error is GatewayJsonWorkerQueueFullError {
   return error instanceof GatewayJsonWorkerQueueFullError
+}
+
+function shouldRunGatewayJsonWorkerInlineForTypeScriptRuntime(): boolean {
+  return false
+}
+
+function parseGatewayJsonBodyInline(rawBody: Buffer, signal?: AbortSignal): Promise<unknown> {
+  if (signal?.aborted) {
+    return Promise.reject(new Error('网关 JSON worker 任务已取消'))
+  }
+  try {
+    return Promise.resolve(JSON.parse(rawBody.toString('utf8')) as unknown)
+  } catch (error) {
+    return Promise.reject(error instanceof Error ? error : new Error(String(error)))
+  }
+}
+
+function extractGatewayJsonBodyMetadataInline(rawBody: Buffer, signal?: AbortSignal): Promise<GatewayJsonBodyMetadata> {
+  if (signal?.aborted) {
+    return Promise.reject(new Error('网关 JSON worker 任务已取消'))
+  }
+  try {
+    return Promise.resolve(extractGatewayJsonBodyMetadata(rawBody))
+  } catch (error) {
+    return Promise.reject(error instanceof Error ? error : new Error(String(error)))
+  }
+}
+
+async function normalizeOpenAIOAuthCodexBodyInline(
+  rawBody: Buffer,
+  normalizeInput: OpenAIOAuthCodexNormalizeInput,
+  signal?: AbortSignal
+): Promise<NormalizedCodexBody> {
+  if (signal?.aborted) {
+    throw new Error('网关 JSON worker 任务已取消')
+  }
+  const {
+    normalizeOpenAIOAuthCodexRawBody
+  } = await import('../adapters/gpt-codex/oauth-normalizer.js')
+  return normalizeOpenAIOAuthCodexRawBody(rawBody, normalizeInput)
 }
 
 export async function stopGatewayJsonParseWorker(): Promise<void> {
@@ -269,7 +318,7 @@ function createWorkerSlot(): GatewayJsonWorkerSlot {
   const slot: GatewayJsonWorkerSlot = {
     id: nextWorkerSlotId++,
     worker: new Worker(resolveGatewayJsonWorkerPath(), {
-      execArgv: process.execArgv.filter((arg) => !arg.startsWith('--inspect'))
+      execArgv: gatewayJsonWorkerExecArgv()
     })
   }
   slot.worker.unref()
@@ -328,6 +377,30 @@ function resolveGatewayJsonWorkerPath(): string {
     return workerSourcePath
   }
   return workerDistPath
+}
+
+function gatewayJsonWorkerExecArgv(): string[] {
+  const execArgv = stripNodeEvalExecArgv(process.execArgv.filter((arg) => !arg.startsWith('--inspect')))
+  if (!currentModulePath.endsWith('.ts') || execArgv.some((arg) => arg.includes('tsx'))) {
+    return execArgv
+  }
+  return [...execArgv, '--import', 'tsx']
+}
+
+function stripNodeEvalExecArgv(args: string[]): string[] {
+  const output: string[] = []
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]
+    if (arg === '-e' || arg === '--eval' || arg === '-p' || arg === '--print') {
+      index += 1
+      continue
+    }
+    if (arg.startsWith('--eval=') || arg.startsWith('--print=')) {
+      continue
+    }
+    output.push(arg)
+  }
+  return output
 }
 
 function handleWorkerMessage(slot: GatewayJsonWorkerSlot, message: GatewayJsonWorkerResponse): void {

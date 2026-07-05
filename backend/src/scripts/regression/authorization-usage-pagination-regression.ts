@@ -69,7 +69,6 @@ try {
   const group = repositories.createGroup({
     name: '授权分页分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, ownerAccess)
   const account = repositories.createAccount({
@@ -86,7 +85,6 @@ try {
   const granteeAGroup = repositories.createGroup({
     name: '授权分页用户A目标分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, granteeAAccess)
 

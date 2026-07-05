@@ -53,10 +53,10 @@ const accountListSortColumns: Record<AccountListSortField, string> = {
   superPriority: "CASE WHEN account_rows.access_type = 'authorized' THEN COALESCE(group_bindings.local_super_priority_enabled, account_rows.super_priority_enabled) ELSE account_rows.super_priority_enabled END",
   fallback: "CASE WHEN account_rows.access_type = 'authorized' THEN COALESCE(group_bindings.local_fallback_enabled, account_rows.fallback_enabled) ELSE account_rows.fallback_enabled END",
   qualityScore: 'quality_score',
-  name: 'account_rows.name COLLATE NOCASE',
-  type: 'account_rows.type COLLATE NOCASE',
-  providerCode: 'account_rows.provider_code COLLATE NOCASE',
-  systemAccount: 'system_account_sort_name COLLATE NOCASE',
+  name: 'account_rows.name',
+  type: 'account_rows.type',
+  providerCode: 'account_rows.provider_code',
+  systemAccount: 'system_account_sort_name',
   concurrency: 'account_rows.concurrency_limit',
   status: `CASE
     WHEN account_rows.access_type = 'authorized' THEN
@@ -83,7 +83,7 @@ const accountListSortColumns: Record<AccountListSortField, string> = {
         ELSE account_rows.status
       END
     ELSE account_rows.status
-  END COLLATE NOCASE`,
+  END`,
   accountExpiresAt: 'COALESCE(account_rows.authorization_expires_at, account_rows.account_expires_at)',
   lastUsedAt: 'account_rows.last_used_at'
 }

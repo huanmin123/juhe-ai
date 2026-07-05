@@ -33,6 +33,14 @@ export function formatInteger(value?: number): string {
   return formatNumber(Math.round(value ?? 0))
 }
 
+export function formatUngroupedInteger(value?: number): string {
+  return `${Math.round(value ?? 0)}`
+}
+
+export function formatRequestCountTag(value?: number): string {
+  return `${formatUngroupedInteger(value)}req`
+}
+
 export function formatCompactUsageAmount(value?: number): string {
   const amount = value ?? 0
   const absoluteValue = Math.abs(amount)

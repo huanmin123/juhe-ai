@@ -242,7 +242,7 @@
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { api } from '@/api/client'
@@ -251,9 +251,11 @@ import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
+import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteAuthorizationPrincipalOptions } from '@/composables/useRemoteAuthorizationPrincipalOptions'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList, type ResponsivePagedListLoadOptions } from '@/composables/useResponsivePagedList'
+import { sanitizePaginationState, type PagePaginationState } from '@/shared/pageStateSanitizers'
 import type { AuthorizationTeamUsageOverview, AuthorizationTeamUsageRow, SystemTeamPrincipalSummary } from '@/types/domain'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
 import { formatDateTime } from './authorizationFormatters'
@@ -275,14 +277,29 @@ import { authorizationResourceTypeOptions } from './authorizationTableColumns'
 import { useAuthorizationUsageDateRange } from './useAuthorizationUsageDateRange'
 import { useAuthorizationUsageResourceFilters } from './useAuthorizationUsageResourceFilters'
 
+interface AuthorizationTeamUsagePageState {
+  dateRange: {
+    explicit: boolean
+    startDate?: string
+    endDate?: string
+  }
+  filters: AuthorizationTeamUsageFilters
+  pagination: PagePaginationState
+}
+
 const router = useRouter()
 const authorizationUsagePageSize = 20
+const pageStateCache = usePageStateCache<AuthorizationTeamUsagePageState>(undefined, defaultAuthorizationTeamUsagePageState, {
+  sanitize: sanitizeAuthorizationTeamUsagePageState,
+  version: 1
+})
+const initialPageState = pageStateCache.read()
 const overview = ref<AuthorizationTeamUsageOverview>()
 let optionsLoaded = false
 let optionsLoading: Promise<void> | undefined
 let usageRequestSeq = 0
 
-const filters = reactive<AuthorizationTeamUsageFilters>(defaultAuthorizationTeamUsageFilters())
+const filters = reactive<AuthorizationTeamUsageFilters>({ ...defaultAuthorizationTeamUsageFilters(), ...initialPageState.filters })
 const {
   isManagementView,
   selectedResourceOwnerSystemAccountId,
@@ -331,13 +348,21 @@ const {
   handleDateRangeOpenChange,
   disabledDate,
   resetDateRange,
+  setExplicitDateRange,
   syncDateRangeFromResponse
 } = useAuthorizationUsageDateRange({ onChange: reloadFromFirstPage })
+if (initialPageState.dateRange.explicit) {
+  setExplicitDateRange({
+    startDate: initialPageState.dateRange.startDate,
+    endDate: initialPageState.dateRange.endDate
+  })
+}
 const {
   items: teamRows,
   loading,
   mobileHasMore,
   mobileLoadingMore,
+  pagination,
   tablePagination,
   handleTableChange,
   loadData,
@@ -346,6 +371,7 @@ const {
   resetPagination
 } = useResponsivePagedList<AuthorizationTeamUsageRow, { forceOptions?: boolean }>({
   pageSize: authorizationUsagePageSize,
+  initialPagination: initialPageState.pagination,
   showTotal: createAuthorizationUsageShowTotal('团队消耗'),
   fetchPage: fetchTeamUsagePage,
   onError: (error) => {
@@ -490,8 +516,48 @@ function resetFilters() {
   resetTeamOptionsSearch()
   resetResourceOptionsSearch()
   resetDateRange()
+  pageStateCache.clear()
   reloadFromFirstPage({ forceOptions: true })
 }
+
+function defaultAuthorizationTeamUsagePageState(): AuthorizationTeamUsagePageState {
+  return {
+    dateRange: { explicit: false },
+    filters: defaultAuthorizationTeamUsageFilters(),
+    pagination: { current: 1, pageSize: authorizationUsagePageSize }
+  }
+}
+
+function sanitizeAuthorizationTeamUsagePageState(value: unknown, fallback: AuthorizationTeamUsagePageState): AuthorizationTeamUsagePageState {
+  const source = value && typeof value === 'object' ? value as Partial<AuthorizationTeamUsagePageState> : {}
+  const dateRange = source.dateRange && typeof source.dateRange === 'object'
+    ? source.dateRange as Partial<AuthorizationTeamUsagePageState['dateRange']>
+    : {}
+  return {
+    dateRange: {
+      explicit: dateRange.explicit === true,
+      startDate: typeof dateRange.startDate === 'string' ? dateRange.startDate : undefined,
+      endDate: typeof dateRange.endDate === 'string' ? dateRange.endDate : undefined
+    },
+    filters: { ...fallback.filters, ...(source.filters && typeof source.filters === 'object' ? source.filters : {}) },
+    pagination: sanitizePaginationState(source.pagination, fallback.pagination)
+  }
+}
+
+function snapshotPageState(): AuthorizationTeamUsagePageState {
+  const [startDate, endDate] = displayRange.value
+  return {
+    dateRange: {
+      explicit: dateRangeExplicit.value,
+      startDate: dateRangeExplicit.value ? startDate : undefined,
+      endDate: dateRangeExplicit.value ? endDate : undefined
+    },
+    filters: { ...filters },
+    pagination: { current: pagination.current, pageSize: pagination.pageSize }
+  }
+}
+
+watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 
 onMounted(loadData)
 </script>

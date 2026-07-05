@@ -375,7 +375,7 @@ async function cleanupUnreferencedAuditPayloadBlobsPostgresAsync(limit = 1000): 
 
   const ids = rows.map((row) => String(row.id)).filter(Boolean)
   await deleteBlobFilesAsync(rows.map((row) => optionalString(row.storage_key)))
-  const result = await client.execute('DELETE FROM juhe_dataset.audit_payload_blobs WHERE id = ANY(?)', [ids])
+  const result = await client.execute('DELETE FROM juhe_dataset.audit_payload_blobs WHERE id = ANY(?::text[])', [ids])
   return Number(result.changes ?? 0)
 }
 
@@ -391,7 +391,7 @@ async function cleanupAuditPayloadBlobsBeforePostgresAsync(cutoffCreatedAt: stri
 
   const ids = rows.map((row) => String(row.id)).filter(Boolean)
   const deletedFiles = await deleteBlobFilesAsync(rows.map((row) => optionalString(row.storage_key)))
-  const result = await client.execute('DELETE FROM juhe_dataset.audit_payload_blobs WHERE id = ANY(?)', [ids])
+  const result = await client.execute('DELETE FROM juhe_dataset.audit_payload_blobs WHERE id = ANY(?::text[])', [ids])
   return {
     deletedRows: Number(result.changes ?? 0),
     deletedFiles

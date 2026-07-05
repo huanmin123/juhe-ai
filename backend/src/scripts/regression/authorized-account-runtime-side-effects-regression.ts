@@ -37,10 +37,11 @@ const gatewaySettings: GatewaySettings = {
   defaultTemporaryUnschedulableMinutes: 5,
   temporaryUnschedulableRetryIntervalSeconds: 3,
   temporaryUnschedulableRetryAttempts: 3,
-  streamCircuitBreakerEnabled: true,
+  streamCircuitBreakerEnabled: false,
   streamRequestTimeoutSeconds: 120,
   streamIdleTimeoutSeconds: 30,
   streamClientTotalWaitTimeoutSeconds: 270,
+  streamMaxLifetimeSeconds: 1800,
   streamFailureThresholdCount: 1,
   streamFailureThresholdWindowMinutes: 5
 }
@@ -67,15 +68,12 @@ try {
   const granteeGroup = repositories.createGroup({
     name: '授权副作用被授权分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, granteeAccess)
 
   const cooldownAccount = createAuthorizedAccount('授权副作用临时不可调用账户', 'sk-runtime-side-effect-cooldown', ownerAccess, grantee.id, granteeGroup.id, granteeAccess, [
     accountErrorRule('授权副本 500 临时不可调用', [500], 'temp_unschedulable')
   ])
-  const disableAccount = createAuthorizedAccount('授权副作用异常账户', 'sk-runtime-side-effect-disable', ownerAccess, grantee.id, granteeGroup.id, granteeAccess, [
-    accountErrorRule('授权副本 503 标记异常', [503], 'error_disabled')
-  ])
+  const genericFailureAccount = createAuthorizedAccount('授权副作用泛化失败账户', 'sk-runtime-side-effect-generic-failure', ownerAccess, grantee.id, granteeGroup.id, granteeAccess)
   const streamAccount = createAuthorizedAccount('授权副作用流式失败账户', 'sk-runtime-side-effect-stream', ownerAccess, grantee.id, granteeGroup.id, granteeAccess)
 
   const cooldownGatewayAccount = authorizedGatewayAccount(cooldownAccount.instanceId, granteeGroup.id, grantee.id)
@@ -92,19 +90,19 @@ try {
   assertAuthorizedInstanceStatus(cooldownAccount.instanceId, granteeAccess, 'temporary_unavailable', '账户错误处理临时不可调用应只写入被授权实例状态')
   assertAuthorizedInstanceError(cooldownAccount.instanceId, granteeAccess, /insufficient_quota；runtime side effect cooldown/, '账户错误处理临时不可调用应保留真实上游错误摘要')
 
-  const disableGatewayAccount = authorizedGatewayAccount(disableAccount.instanceId, granteeGroup.id, grantee.id)
-  const disableResult = applyAccountErrorHandling(disableGatewayAccount, {
+  const genericFailureGatewayAccount = authorizedGatewayAccount(genericFailureAccount.instanceId, granteeGroup.id, grantee.id)
+  const genericFailureResult = applyAccountErrorHandling(genericFailureGatewayAccount, {
     success: false,
     statusCode: 503,
-    bodyText: JSON.stringify({ error: { code: 'server_is_overloaded', message: 'runtime side effect disable' } }),
+    bodyText: JSON.stringify({ error: { code: 'server_is_overloaded', message: 'runtime side effect generic failure' } }),
     settings: gatewaySettings
   })
-  assert.equal(disableResult.action, 'disable', '授权副本命中禁用策略后应进入本地异常')
-  assert.equal(disableResult.changed, true, '授权副本禁用策略应写入本地绑定状态')
-  assert.match(disableResult.reason ?? '', /server_is_overloaded；runtime side effect disable/, '禁用策略返回原因应带上真实上游错误摘要')
-  assertOwnerStillActive(disableAccount.sourceId, ownerAccess, '账户错误处理异常不应修改归属人原账户')
-  assertAuthorizedInstanceStatus(disableAccount.instanceId, granteeAccess, 'error', '账户错误处理异常应只写入被授权实例状态')
-  assertAuthorizedInstanceError(disableAccount.instanceId, granteeAccess, /server_is_overloaded；runtime side effect disable/, '账户错误处理异常应保留真实上游错误摘要')
+  assert.equal(genericFailureResult.action, 'cooldown', '授权副本泛化上游失败应进入本地临时不可调用')
+  assert.equal(genericFailureResult.changed, true, '授权副本泛化上游失败应写入本地绑定状态')
+  assert.match(genericFailureResult.reason ?? '', /server_is_overloaded；runtime side effect generic failure/, '泛化上游失败返回原因应带上真实上游错误摘要')
+  assertOwnerStillActive(genericFailureAccount.sourceId, ownerAccess, '账户错误处理临时不可调用不应修改归属人原账户')
+  assertAuthorizedInstanceStatus(genericFailureAccount.instanceId, granteeAccess, 'temporary_unavailable', '账户错误处理临时不可调用应只写入被授权实例状态')
+  assertAuthorizedInstanceError(genericFailureAccount.instanceId, granteeAccess, /server_is_overloaded；runtime side effect generic failure/, '账户错误处理临时不可调用应保留真实上游错误摘要')
 
   const streamGatewayAccount = authorizedGatewayAccount(streamAccount.instanceId, granteeGroup.id, grantee.id)
   const streamResult = await withDbServiceRole(() => requestDbService({
@@ -167,7 +165,6 @@ function createAuthorizedAccount(
   const ownerSourceGroup = repositories.createGroup({
     name: `${name} 来源分组`,
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, ownerAccess)
   const account = repositories.createAccount({
     providerCode: 'gpt',

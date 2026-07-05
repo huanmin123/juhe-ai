@@ -1,7 +1,13 @@
 import type { SystemAccountSummary, SystemTeamStatus } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
-import { createAppCache, createSharedJsonCache, type AppCache, type SharedJsonCache } from '../shared/cache.js'
-import { errorLogFields, logger } from '../shared/logger.js'
+import {
+  canUseProcessLocalAppCacheAsFactSource,
+  clearSharedJsonCacheInBackground,
+  createAppCache,
+  createSharedJsonCache,
+  type AppCache,
+  type SharedJsonCache
+} from '../shared/cache.js'
 import { getBusinessDatabase } from './database.js'
 import type { DatabaseClient } from './database-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
@@ -133,6 +139,9 @@ function loadCachedRowsByIds<T extends { id: string }>(
 ): Map<string, T> {
   const ids = uniqueIds(values)
   if (!ids.length) return new Map()
+  if (!canUseProcessLocalAppCacheAsFactSource()) {
+    throw new Error('高性能模式禁止同步资源 lookup 绕过 Redis shared cache，必须使用 async lookup')
+  }
 
   const result = new Map<string, T>()
   const missingIds: string[] = []
@@ -163,6 +172,29 @@ async function loadCachedRowsByIdsAsync<T extends { id: string }>(
   const ids = uniqueIds(values)
   if (!ids.length) return new Map()
 
+  if (runtimeConfig.cacheDriver === 'redis') {
+    const result = new Map<string, T>()
+    const dbMissIds: string[] = []
+    const sharedResults = await Promise.all(ids.map(async (id) =>
+      [id, await sharedCache.get(id)] as const
+    ))
+    for (const [id, cached] of sharedResults) {
+      if (cached !== undefined) {
+        result.set(id, cached)
+      } else {
+        dbMissIds.push(id)
+      }
+    }
+
+    if (!dbMissIds.length) return result
+
+    for (const row of await loadMissingRows(dbMissIds)) {
+      await setLookupSharedCacheEntryAsync(sharedCache, row.id, row)
+      result.set(row.id, row)
+    }
+    return result
+  }
+
   const result = new Map<string, T>()
   const localMissIds: string[] = []
   for (const id of ids) {
@@ -176,37 +208,13 @@ async function loadCachedRowsByIdsAsync<T extends { id: string }>(
 
   if (!localMissIds.length) return result
 
-  const dbMissIds: string[] = []
-  if (runtimeConfig.cacheDriver === 'redis') {
-    const sharedResults = await Promise.all(localMissIds.map(async (id) => {
-      try {
-        return [id, await sharedCache.get(id)] as const
-      } catch (error) {
-        logger.warn(errorLogFields(error, {
-          event: 'repository_lookup_shared_cache_read_failed',
-          cacheName: sharedCache.name
-        }), '读取资源 lookup Redis 共享缓存失败，继续查数据库')
-        return [id, undefined] as const
-      }
-    }))
-    for (const [id, cached] of sharedResults) {
-      if (cached !== undefined) {
-        cache.set(id, cached)
-        result.set(id, cached)
-      } else {
-        dbMissIds.push(id)
-      }
-    }
-  } else {
-    dbMissIds.push(...localMissIds)
-  }
+  const dbMissIds = localMissIds
 
   if (!dbMissIds.length) return result
 
   for (const row of await loadMissingRows(dbMissIds)) {
     cache.set(row.id, row)
     result.set(row.id, row)
-    setLookupSharedCacheEntry(sharedCache, row.id, row)
   }
   return result
 }
@@ -223,6 +231,9 @@ function invalidateLookupCache<T extends { id: string }>(cache: AppCache<string,
 }
 
 export function loadSystemAccountsByIds(systemAccountIds: Array<string | undefined>): Map<string, SystemAccountSummary> {
+  if (!canUseProcessLocalAppCacheAsFactSource()) {
+    throw new Error('高性能模式禁止同步直读系统账户 lookup，必须使用 async repository lookup')
+  }
   const ids = uniqueIds(systemAccountIds)
   if (!ids.length) return new Map()
   const rows = loadRowsByIds<SystemAccountSummaryRow>(ids, (chunk) => `
@@ -420,7 +431,7 @@ export function loadActiveSystemAccountTeamNameMapByIds(systemAccountIds: Array<
           INNER JOIN system_teams teams ON teams.id = members.team_id
           WHERE members.status = 'active'
             AND members.system_account_id IN (${sqlPlaceholders(chunk.length)})
-          ORDER BY teams.name COLLATE NOCASE ASC, teams.id ASC
+          ORDER BY teams.name ASC, teams.id ASC
         `)
         .all(...chunk) as unknown as Array<{ system_account_id: string; name: string }>)
     }
@@ -502,30 +513,24 @@ function lookupTable(client: DatabaseClient, tableName: string): string {
 
 function setLookupSharedCacheEntry<T extends { id: string }>(cache: SharedJsonCache<T>, id: string, value: T): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  void cache.set(id, value, { ttlMs: lookupCacheTtlMs }).catch((error) => {
-    logger.warn(errorLogFields(error, {
-      event: 'repository_lookup_shared_cache_write_failed',
-      cacheName: cache.name
-    }), '写入资源 lookup Redis 共享缓存失败')
-  })
+  void setLookupSharedCacheEntryAsync(cache, id, value)
+}
+
+async function setLookupSharedCacheEntryAsync<T extends { id: string }>(cache: SharedJsonCache<T>, id: string, value: T): Promise<void> {
+  if (runtimeConfig.cacheDriver !== 'redis') return
+  await cache.set(id, value, { ttlMs: lookupCacheTtlMs })
 }
 
 function deleteLookupSharedCacheEntry<T extends { id: string }>(cache: SharedJsonCache<T>, id: string): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  void cache.delete(id).catch((error) => {
-    logger.warn(errorLogFields(error, {
-      event: 'repository_lookup_shared_cache_delete_failed',
-      cacheName: cache.name
-    }), '删除资源 lookup Redis 共享缓存失败')
-  })
+  void cache.delete(id)
 }
 
 function clearLookupSharedCache<T extends { id: string }>(cache: SharedJsonCache<T>): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  void cache.clear().catch((error) => {
-    logger.warn(errorLogFields(error, {
-      event: 'repository_lookup_shared_cache_clear_failed',
-      cacheName: cache.name
-    }), '清理资源 lookup Redis 共享缓存失败')
-  })
+  clearSharedJsonCacheInBackground(
+    cache,
+    'repository_lookup_shared_cache_clear_failed',
+    '资源查找 Redis shared cache 清理失败'
+  )
 }

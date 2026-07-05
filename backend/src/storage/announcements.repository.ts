@@ -7,6 +7,7 @@ import { getPostgresPool } from './postgres-client.js'
 import { normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { loadSystemAccountPrincipalMapByIds, loadSystemAccountPrincipalMapByIdsAsync } from './repository-lookups.js'
 import type { AnnouncementRow } from './repository-row-types.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
 const announcementLevels: readonly AnnouncementLevel[] = ['critical', 'warning', 'info', 'normal']
 const announcementStatuses: readonly AnnouncementStatus[] = ['draft', 'published', 'archived']
@@ -63,6 +64,13 @@ export function listPublicAnnouncements(systemAccountId: string, limit = publicA
 }
 
 export async function listPublicAnnouncementsAsync(systemAccountId: string, limit = publicAnnouncementLimit): Promise<AnnouncementSummary[]> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_public_announcements_read_only',
+      systemAccountId,
+      limit
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listPublicAnnouncements(systemAccountId, limit)
   }
@@ -187,6 +195,12 @@ export function listAnnouncementsPage(options: AnnouncementListOptions = {}): An
 }
 
 export async function listAnnouncementsPageAsync(options: AnnouncementListOptions = {}): Promise<AnnouncementListResult> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_announcements_page_read_only',
+      options
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listAnnouncementsPage(options)
   }
@@ -215,6 +229,12 @@ export function findAnnouncement(id: string): AnnouncementSummary | undefined {
 }
 
 export async function findAnnouncementAsync(id: string): Promise<AnnouncementSummary | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'find_announcement_read_only',
+      id
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return findAnnouncement(id)
   }

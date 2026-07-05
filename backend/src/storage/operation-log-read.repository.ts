@@ -20,6 +20,7 @@ import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from
 import { loadSystemAccountNameMapByIds } from './repository-lookups.js'
 import { optionalString } from './value-utils.js'
 import { getPostgresPool } from './postgres-client.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
 type OperationLogFilterValue = string | number
 
@@ -45,6 +46,12 @@ export function listOperationLogs(options: OperationLogListOptions = {}): Operat
 }
 
 export async function listOperationLogsAsync(options: OperationLogListOptions = {}): Promise<OperationLogListResult> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_operation_logs_read_only',
+      options
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listOperationLogs(options)
   }
@@ -58,6 +65,13 @@ export function listOperationLogsForViewer(systemAccountId: string, options: Ope
 }
 
 export async function listOperationLogsForViewerAsync(systemAccountId: string, options: OperationLogListOptions = {}): Promise<OperationLogListResult> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_operation_logs_for_viewer_read_only',
+      systemAccountId,
+      options
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listOperationLogsForViewer(systemAccountId, options)
   }
@@ -70,6 +84,12 @@ export function getOperationLogDetail(id: string): OperationLogDetail | undefine
 }
 
 export async function getOperationLogDetailAsync(id: string): Promise<OperationLogDetail | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'get_operation_log_detail_read_only',
+      id
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return getOperationLogDetail(id)
   }
@@ -98,6 +118,13 @@ export function getOperationLogDetailForViewer(id: string, systemAccountId: stri
 }
 
 export async function getOperationLogDetailForViewerAsync(id: string, systemAccountId: string): Promise<OperationLogDetail | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'get_operation_log_detail_for_viewer_read_only',
+      id,
+      systemAccountId
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return getOperationLogDetailForViewer(id, systemAccountId)
   }

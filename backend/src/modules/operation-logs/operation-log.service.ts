@@ -23,7 +23,6 @@ export type OperationLogRecordInput = Omit<OperationLogInput, 'actorSystemAccoun
   actorUsername?: string
   actorDisplayName?: string
   actorRole?: SystemAccountRole
-  force?: boolean
 }
 
 type LoggedOperationResult<T> = {
@@ -51,9 +50,6 @@ function recordOperationLogUnsafe(input: OperationLogRecordInput, req?: Request)
   }
 
   const settings = getSettings()
-  if (!input.force && settings.operationLogEnabled === false) {
-    return
-  }
 
   const requestPath = input.path ?? (req ? `${req.baseUrl}${req.path}` : requestContext?.path)
   enqueueOperationLog({
@@ -119,9 +115,6 @@ async function recordOperationLogUnsafeAsync(input: OperationLogRecordInput, req
   }
 
   const settings = await getSettingsAsync()
-  if (!input.force && settings.operationLogEnabled === false) {
-    return
-  }
 
   const requestPath = input.path ?? (req ? `${req.baseUrl}${req.path}` : requestContext?.path)
   enqueueOperationLog({

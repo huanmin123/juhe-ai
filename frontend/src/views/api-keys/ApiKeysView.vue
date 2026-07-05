@@ -17,14 +17,15 @@
           @dropdown-visible-change="handleSystemAccountOptionsDropdown"
           @search="handleSystemAccountOptionsSearch"
         />
-        <a-select
+        <RouteStrategySelect
           v-model:value="routeStrategyFilter"
+          v-model:selected-strategy="routeStrategyFilterSelection"
           allow-clear
-          show-search
           class="toolbar-select responsive-list-inline-filter"
           :filter-option="false"
           :loading="routeStrategyOptionsLoading"
-          :options="routeStrategyOptions"
+          :route-strategies="routeStrategyOptionsRaw"
+          :show-system-account-label="isManagementView"
           placeholder="策略路由"
           @change="handleRouteStrategyFilterChange"
           @dropdown-visible-change="handleRouteStrategyOptionsDropdown"
@@ -52,13 +53,14 @@
         </label>
         <label class="mobile-filter-field">
           <span>策略路由</span>
-          <a-select
+          <RouteStrategySelect
             v-model:value="routeStrategyFilter"
+            v-model:selected-strategy="routeStrategyFilterSelection"
             allow-clear
-            show-search
             :filter-option="false"
             :loading="routeStrategyOptionsLoading"
-            :options="routeStrategyOptions"
+            :route-strategies="routeStrategyOptionsRaw"
+            :show-system-account-label="isManagementView"
             placeholder="策略路由"
             @change="handleRouteStrategyFilterChange"
             @dropdown-visible-change="handleRouteStrategyOptionsDropdown"
@@ -144,6 +146,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import TableColumnManager from '@/components/TableColumnManager.vue'
 import { useTableColumnSettings } from '@/components/tableColumnSettings'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
+import RouteStrategySelect from '@/components/RouteStrategySelect.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
@@ -154,7 +157,8 @@ import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import { formatNumber } from '@/shared/formatters'
 import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
-import type { ApiKeySummary, RouteStrategyMode, RouteStrategyOptionSummary } from '@/types/domain'
+import { routeStrategySelectionFromOption } from '@/shared/routeStrategyLabelCache'
+import type { ApiKeySummary, RouteStrategyOptionSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import { defaultApiKeysPageState, type ApiKeyRouteStrategyFilterSelection, type ApiKeysPageState } from './apiKeyPageState'
 import {
@@ -201,16 +205,6 @@ const routeStrategyFilter = computed({
   set: (id: string | undefined) => {
     routeStrategyFilterSelection.value = selectedRouteStrategySelection(id)
   }
-})
-const routeStrategyOptions = computed(() => {
-  const selected = routeStrategyFilterSelection.value
-  const options = selected && !routeStrategyOptionsRaw.value.some((item) => item.id === selected.id)
-    ? [routeStrategyOptionFromSelection(selected), ...routeStrategyOptionsRaw.value]
-    : routeStrategyOptionsRaw.value
-  return options.map((strategy) => ({
-    label: routeStrategyOptionLabel(strategy),
-    value: strategy.id
-  }))
 })
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
@@ -392,42 +386,6 @@ function selectedRouteStrategySelection(id: string | undefined): ApiKeyRouteStra
   const strategy = routeStrategyOptionsRaw.value.find((item) => item.id === normalizedId)
   if (strategy) return routeStrategySelectionFromOption(strategy)
   return routeStrategyFilterSelection.value?.id === normalizedId ? routeStrategyFilterSelection.value : undefined
-}
-
-function routeStrategySelectionFromOption(strategy: RouteStrategyOptionSummary): ApiKeyRouteStrategyFilterSelection {
-  return {
-    id: strategy.id,
-    name: strategy.name,
-    mode: strategy.mode,
-    status: strategy.status,
-    isDefault: strategy.isDefault,
-    systemAccountName: strategy.systemAccountName
-  }
-}
-
-function routeStrategyOptionFromSelection(selection: ApiKeyRouteStrategyFilterSelection): RouteStrategyOptionSummary {
-  return {
-    id: selection.id,
-    name: selection.name,
-    mode: selection.mode,
-    status: selection.status ?? 'active',
-    isDefault: selection.isDefault ?? false,
-    systemAccountName: selection.systemAccountName
-  }
-}
-
-function routeStrategyOptionLabel(strategy: RouteStrategyOptionSummary): string {
-  const ownerPrefix = isManagementView.value && strategy.systemAccountName ? `${strategy.systemAccountName} / ` : ''
-  const suffix = strategy.isDefault ? '默认' : routeStrategyModeText(strategy.mode)
-  return `${ownerPrefix}${strategy.name}（${suffix}）`
-}
-
-function routeStrategyModeText(mode: RouteStrategyMode): string {
-  if (mode === 'hybrid_smart') return '混合智能路由'
-  if (mode === 'weighted') return '权重调度路由'
-  if (mode === 'round_robin') return '轮询路由'
-  if (mode === 'failover') return '故障回退路由'
-  return '普通路由'
 }
 
 function resetFilters() {

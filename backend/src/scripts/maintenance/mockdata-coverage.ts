@@ -1,6 +1,13 @@
 import type { SQLInputValue } from 'node:sqlite'
 
-import { getBusinessDatabase } from '../../storage/database.js'
+import {
+  codexContextStateShardIndexes,
+  getBusinessDatabase,
+  getCodexContextStateShardDatabase,
+  getDatasetDatabase,
+  getStatsDatabase,
+  getUsageCatalogDatabase
+} from '../../storage/database.js'
 import {
   listUsageRecordShardLocations,
   getUsageRecordShardDatabase
@@ -14,6 +21,7 @@ export function assertMockdataCoverage(created: CreatedMockdata): void {
   assertBusinessCoverage(database, created)
   assertUsageCoverage()
   assertCreatedShape(created)
+  assertApplicationTablesHaveRows()
 }
 
 function assertBusinessCoverage(database: BusinessDatabase, created: CreatedMockdata): void {
@@ -72,7 +80,7 @@ function assertBusinessCoverage(database: BusinessDatabase, created: CreatedMock
   assertPresent(
     '自定义模型范围覆盖不完整',
     textValuesForIds(database, 'custom_provider_models', 'id', 'scope', customProviderModelIds),
-    ['global', 'personal']
+    customProviderModelScopeExpectations(database)
   )
   assertMinimum('AI 账户标签样本缺失', scalar(database, 'SELECT COUNT(*) AS value FROM account_tags WHERE name IN (?, ?, ?, ?)', '多Key', '图像生成', '时间计划', '模型映射'), 4)
   assertMinimum('账户模型映射样本缺失', scalar(database, `
@@ -101,7 +109,7 @@ function assertUsageCoverage(): void {
     imageTokenRows += scalar(database, "SELECT COUNT(*) AS value FROM usage_records WHERE id LIKE 'mockdata_%' AND (COALESCE(input_image_tokens, 0) > 0 OR COALESCE(output_image_tokens, 0) > 0)")
     modelMappingRows += scalar(database, "SELECT COUNT(*) AS value FROM usage_records WHERE id LIKE 'mockdata_%' AND model_mapping_applied = 1")
   }
-  assertPresent('使用记录来源覆盖不完整', trafficSources, ['gateway', 'manual_account_test', 'cooldown_retest', 'hybrid_scoring', 'hybrid_quality_scoring'])
+  assertPresent('使用记录来源覆盖不完整', trafficSources, ['gateway', 'manual_account_test', 'runtime_recovery_probe', 'cooldown_retest', 'hybrid_scoring', 'hybrid_quality_scoring'])
   assertPresent('使用记录端点覆盖不完整', endpoints, ['GET /v1/models', 'POST /v1/responses', 'POST /v1/chat/completions', 'POST /v1/images/generations'])
   assertMinimum('图片 token 使用记录样本缺失', imageTokenRows, 1)
   assertMinimum('模型映射使用记录样本缺失', modelMappingRows, 1)
@@ -110,6 +118,23 @@ function assertUsageCoverage(): void {
 function assertCreatedShape(created: CreatedMockdata): void {
   assertMinimum('Mockdata 账户对象数量不足', Object.keys(created.accounts).length, 24)
   assertMinimum('Mockdata API Key 对象数量不足', Object.keys(created.apiKeys).length, 18)
+}
+
+function assertApplicationTablesHaveRows(): void {
+  const emptyTables: string[] = []
+  collectEmptyTables(emptyTables, 'business', getBusinessDatabase())
+  collectEmptyTables(emptyTables, 'dataset', getDatasetDatabase())
+  collectEmptyTables(emptyTables, 'usage-catalog', getUsageCatalogDatabase())
+  collectEmptyTables(emptyTables, 'stats', getStatsDatabase())
+  for (const shardIndex of codexContextStateShardIndexes()) {
+    collectEmptyTables(emptyTables, `codex-context-state:${String(shardIndex).padStart(3, '0')}`, getCodexContextStateShardDatabase(shardIndex))
+  }
+  for (const location of listUsageRecordShardLocations()) {
+    collectEmptyTables(emptyTables, `usage-shard:${location.shardKey}`, getUsageRecordShardDatabase(location))
+  }
+  if (emptyTables.length) {
+    throw new Error(`Mockdata 应用表覆盖不完整，空表：${emptyTables.join('、')}`)
+  }
 }
 
 function accountStatuses(database: BusinessDatabase, accountIds: string[]): Set<string> {
@@ -127,6 +152,16 @@ function customProviderModelIdsForCreated(database: BusinessDatabase): string[] 
   return (database.prepare("SELECT id FROM custom_provider_models WHERE model LIKE 'mockdata-%'").all() as Array<{ id?: string }>)
     .map((row) => row.id)
     .filter((id): id is string => Boolean(id))
+}
+
+function customProviderModelScopeExpectations(database: BusinessDatabase): string[] {
+  const table = database
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'custom_provider_models'")
+    .get() as { sql?: string } | undefined
+  if (table?.sql?.includes("CHECK (scope = 'personal')")) {
+    return ['personal']
+  }
+  return ['global', 'personal']
 }
 
 function textValuesForIds(database: BusinessDatabase, tableName: string, idColumn: string, valueColumn: string, ids: string[]): Set<string>
@@ -163,6 +198,24 @@ function assertMinimum(label: string, actual: number, minimum: number): void {
   if (actual < minimum) {
     throw new Error(`${label}，期望至少 ${minimum}，实际 ${actual}`)
   }
+}
+
+function collectEmptyTables(emptyTables: string[], databaseRole: string, database: BusinessDatabase): void {
+  const tables = database
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name ASC")
+    .all() as Array<{ name?: string }>
+  for (const table of tables) {
+    const tableName = table.name
+    if (!tableName) continue
+    const row = database.prepare(`SELECT COUNT(*) AS value FROM ${quoteIdentifier(tableName)}`).get() as { value?: number } | undefined
+    if (Number(row?.value ?? 0) === 0) {
+      emptyTables.push(`${databaseRole}.${tableName}`)
+    }
+  }
+}
+
+function quoteIdentifier(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`
 }
 
 function placeholders(ids: unknown[]): string {

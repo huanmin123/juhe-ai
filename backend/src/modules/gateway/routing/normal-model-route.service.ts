@@ -55,7 +55,6 @@ export interface ResolveNormalGatewayModelRouteInput {
 
 interface CatalogProviderRoute {
   providerCode: string
-  providerProtocolProfileIds: Set<string>
   matchedProviderCodes: string[]
 }
 
@@ -77,9 +76,9 @@ export async function resolveNormalGatewayModelRoute(
     return { outcome: 'skipped', reason: 'empty_binding', requestedModel }
   }
 
-  const activeProviderProtocolProfileIds = new Set(bindings.map(binding => binding.provider_protocol_profile_id))
-  if (activeProviderProtocolProfileIds.size === 1) {
-    return { outcome: 'skipped', reason: 'single_provider_protocol_profile', requestedModel }
+  const activeProviderCodes = new Set(bindings.map(binding => binding.provider_code))
+  if (activeProviderCodes.size === 1) {
+    return { outcome: 'skipped', reason: 'single_provider', requestedModel }
   }
 
   const catalogRoute = await resolveCatalogProviderRoute({
@@ -108,15 +107,15 @@ export async function resolveNormalGatewayModelRoute(
     acceptCandidate: (candidate) => candidate.modelFilter.mappingMatchedCount > 0
   })
   if (mappingTarget) {
-    const selectedProfileBindings = bindings
-      .filter(candidate => candidate.provider_protocol_profile_id === mappingTarget.binding.provider_protocol_profile_id)
+    const selectedProviderBindings = bindings
+      .filter(candidate => candidate.provider_code === mappingTarget.binding.provider_code)
       .map(copyGroupBinding)
     return {
       outcome: 'selected',
       apiKeyRecord: {
         ...apiKeyRecord,
         selected_group_id: mappingTarget.groupId,
-        group_bindings: selectedProfileBindings
+        group_bindings: selectedProviderBindings
       },
       groupId: mappingTarget.groupId,
       groupAccess: mappingTarget.groupAccess,
@@ -151,7 +150,7 @@ export async function resolveNormalGatewayModelRoute(
   }
   const matchedRoute = catalogRoute.route
   const candidateBindings = bindings
-    .filter(binding => matchedRoute.providerProtocolProfileIds.has(binding.provider_protocol_profile_id))
+    .filter(binding => binding.provider_code === matchedRoute.providerCode)
 
   if (!candidateBindings.length) {
     return {
@@ -184,15 +183,15 @@ export async function resolveNormalGatewayModelRoute(
     }
   }
 
-  const selectedProfileBindings = bindings
-    .filter(candidate => candidate.provider_protocol_profile_id === target.binding.provider_protocol_profile_id)
+  const selectedProviderBindings = bindings
+    .filter(candidate => candidate.provider_code === target.binding.provider_code)
     .map(copyGroupBinding)
   return {
     outcome: 'selected',
     apiKeyRecord: {
       ...apiKeyRecord,
       selected_group_id: target.groupId,
-      group_bindings: selectedProfileBindings
+      group_bindings: selectedProviderBindings
     },
     groupId: target.groupId,
     groupAccess: target.groupAccess,
@@ -237,12 +236,7 @@ async function resolveCatalogProviderRoute(input: {
   }
 
   const providerCode = route.providerCode
-  const providerProtocolProfileIds = new Set(
-    input.bindings
-      .filter(binding => binding.provider_code === providerCode)
-      .map(binding => binding.provider_protocol_profile_id)
-  )
-  if (!providerProtocolProfileIds.size) {
+  if (!input.bindings.some(binding => binding.provider_code === providerCode)) {
     return { outcome: 'missing', matchedProviderCodes: route.matchedProviderCodes }
   }
 
@@ -250,7 +244,6 @@ async function resolveCatalogProviderRoute(input: {
     outcome: 'matched',
     route: {
       providerCode,
-      providerProtocolProfileIds,
       matchedProviderCodes: route.matchedProviderCodes
     }
   }

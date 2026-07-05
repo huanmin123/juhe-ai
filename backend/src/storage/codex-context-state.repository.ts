@@ -7,6 +7,8 @@ import {
   nowIso,
   runInDatabaseTransaction
 } from './database.js'
+import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
+import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 
 export interface CodexContextStateBoundary {
@@ -14,9 +16,6 @@ export interface CodexContextStateBoundary {
   apiKeyId?: string
   groupId: string
   providerCode: string
-  providerProtocolProfileId: string
-  protocolCode: string
-  protocolVersion: string
 }
 
 export interface CodexContextPayloadReference {
@@ -123,9 +122,6 @@ interface CodexContextResponseStateRow {
   api_key_id?: string | null
   group_id: string
   provider_code: string
-  provider_protocol_profile_id: string
-  protocol_code: string
-  protocol_version: string
   upstream_account_id?: string | null
   model?: string | null
   upstream_model?: string | null
@@ -151,9 +147,6 @@ interface CodexContextCompactStateRow {
   api_key_id?: string | null
   group_id: string
   provider_code: string
-  provider_protocol_profile_id: string
-  protocol_code: string
-  protocol_version: string
   upstream_account_id?: string | null
   model?: string | null
   upstream_model?: string | null
@@ -287,7 +280,6 @@ export function readCodexContextResponseStateChain(input: {
     }
   }
   const orderedRows = rows.reverse()
-  touchCodexContextResponseChain(orderedRows, now, input.refreshExpiresAt ?? now)
   return {
     outcome: 'found',
     sessionId: orderedRows[0]?.sessionId ?? responseId,
@@ -313,7 +305,6 @@ export function readCodexContextCompactState(input: {
   if (!matchesBoundary(mapped, input.boundary)) {
     return { outcome: 'boundary_mismatch', compactId, sessionId: mapped.sessionId }
   }
-  touchCodexContextCompact(mapped, now, input.refreshExpiresAt ?? now)
   return { outcome: 'found', compact: mapped }
 }
 
@@ -325,6 +316,142 @@ export function cleanupExpiredCodexContextStates(input: {
   const limit = Math.max(1, Math.min(Math.trunc(input.limit ?? 1000), 10000))
   const expiredSessions = selectExpiredSessions(expiredBefore, limit)
   return cleanupExpiredCodexContextStateSessionRows(expiredSessions, expiredBefore)
+}
+
+export async function saveCodexContextResponseStateIndexAsync(input: CodexContextResponseStateIndexInput): Promise<CodexContextResponseStateIndex> {
+  const now = input.createdAt ?? nowIso()
+  const row = normalizeCodexContextResponseStateIndexInput(input, now)
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  await client.transaction(async (tx) => {
+    await upsertCodexContextSessionIndexAsync(tx, {
+      sessionId: row.sessionId,
+      boundary: row,
+      sourceResponseId: row.previousResponseId ? undefined : row.responseId,
+      latestResponseId: row.responseId,
+      latestCompactId: undefined,
+      now: row.updatedAt,
+      expiresAt: row.expiresAt
+    })
+    await insertCodexContextResponseStateIndexRowAsync(tx, row)
+  })
+  return row
+}
+
+export async function saveCodexContextCompactStateIndexAsync(input: CodexContextCompactStateIndexInput): Promise<CodexContextCompactStateIndex> {
+  const now = input.createdAt ?? nowIso()
+  const row = normalizeCodexContextCompactStateIndexInput(input, now)
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  await client.transaction(async (tx) => {
+    await upsertCodexContextSessionIndexAsync(tx, {
+      sessionId: row.sessionId,
+      boundary: row,
+      sourceResponseId: undefined,
+      latestResponseId: undefined,
+      latestCompactId: row.compactId,
+      now: row.updatedAt,
+      expiresAt: row.expiresAt
+    })
+    await insertCodexContextCompactStateIndexRowAsync(tx, row)
+  })
+  return row
+}
+
+export async function readCodexContextResponseStateChainAsync(input: {
+  responseId: string
+  boundary: CodexContextStateBoundary
+  maxDepth?: number
+  now?: string
+  refreshExpiresAt?: string
+}): Promise<CodexContextResponseChainReadResult> {
+  const responseId = normalizedRequiredText(input.responseId, 'responseId')
+  const now = input.now ?? nowIso()
+  const maxDepth = Math.max(1, Math.min(Math.trunc(input.maxDepth ?? 64), 256))
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const rows: CodexContextResponseStateIndex[] = []
+  let cursor: string | undefined = responseId
+  for (let depth = 0; cursor && depth < maxDepth; depth += 1) {
+    const mapped = await readCodexContextResponseStateRowAsync(client, cursor)
+    if (!mapped) {
+      return {
+        outcome: rows.length === 0 ? 'not_found' : 'chain_broken',
+        responseId: cursor
+      }
+    }
+    if (mapped.expiresAt < now) {
+      return {
+        outcome: 'expired',
+        responseId: mapped.responseId,
+        sessionId: mapped.sessionId
+      }
+    }
+    if (!matchesBoundary(mapped, input.boundary)) {
+      return {
+        outcome: 'boundary_mismatch',
+        responseId: mapped.responseId,
+        sessionId: mapped.sessionId
+      }
+    }
+    rows.push(mapped)
+    cursor = mapped.previousResponseId
+  }
+  if (cursor) {
+    return {
+      outcome: 'chain_too_deep',
+      responseId: cursor,
+      sessionId: rows[0]?.sessionId
+    }
+  }
+  const orderedRows = rows.reverse()
+  await touchCodexContextResponseChainAsync(client, orderedRows, now, input.refreshExpiresAt ?? now)
+  return {
+    outcome: 'found',
+    sessionId: orderedRows[0]?.sessionId ?? responseId,
+    responses: orderedRows
+  }
+}
+
+export async function readCodexContextCompactStateAsync(input: {
+  compactId: string
+  boundary: CodexContextStateBoundary
+  now?: string
+  refreshExpiresAt?: string
+}): Promise<CodexContextCompactReadResult> {
+  const compactId = normalizedRequiredText(input.compactId, 'compactId')
+  const now = input.now ?? nowIso()
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const mapped = await readCodexContextCompactStateRowAsync(client, compactId)
+  if (!mapped) {
+    return { outcome: 'not_found', compactId }
+  }
+  if (mapped.expiresAt < now) {
+    return { outcome: 'expired', compactId, sessionId: mapped.sessionId }
+  }
+  if (!matchesBoundary(mapped, input.boundary)) {
+    return { outcome: 'boundary_mismatch', compactId, sessionId: mapped.sessionId }
+  }
+  await touchCodexContextCompactAsync(client, mapped, now, input.refreshExpiresAt ?? now)
+  return { outcome: 'found', compact: mapped }
+}
+
+export async function cleanupExpiredCodexContextStatesAsync(input: {
+  expiredBefore?: string
+  limit?: number
+} = {}): Promise<CodexContextExpiredStateCleanupResult> {
+  const expiredBefore = input.expiredBefore ?? nowIso()
+  const limit = Math.max(1, Math.min(Math.trunc(input.limit ?? 1000), 10000))
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const expiredRows = await client.query<CodexContextSessionRow>(`
+    SELECT id, expires_at
+    FROM ${codexContextTable(client, 'codex_context_sessions')}
+    WHERE expires_at < ?
+    ORDER BY expires_at ASC, id ASC
+    LIMIT ?
+  `, [expiredBefore, limit + 1])
+  const rows = expiredRows.slice(0, limit)
+  if (!rows.length) {
+    return { deletedSessions: 0, deletedResponses: 0, deletedCompacts: 0, storageKeys: [], hasMore: false }
+  }
+  return cleanupExpiredCodexContextStateSessionRowsAsync(client, rows, expiredBefore, expiredRows.length > limit)
 }
 
 export function cleanupExpiredCodexContextStatesInShard(input: {
@@ -436,6 +563,28 @@ export function readCodexContextCompactStateRow(compactId: string): CodexContext
   return row ? mapCompactStateRow(row) : undefined
 }
 
+async function readCodexContextResponseStateRowAsync(client: DatabaseClient, responseId: string): Promise<CodexContextResponseStateIndex | undefined> {
+  const normalizedResponseId = normalizedRequiredText(responseId, 'responseId')
+  const row = await client.one<CodexContextResponseStateRow>(`
+    SELECT *
+    FROM ${codexContextTable(client, 'codex_context_responses')}
+    WHERE response_id = ?
+    LIMIT 1
+  `, [normalizedResponseId])
+  return row ? mapResponseStateRow(row) : undefined
+}
+
+async function readCodexContextCompactStateRowAsync(client: DatabaseClient, compactId: string): Promise<CodexContextCompactStateIndex | undefined> {
+  const normalizedCompactId = normalizedRequiredText(compactId, 'compactId')
+  const row = await client.one<CodexContextCompactStateRow>(`
+    SELECT *
+    FROM ${codexContextTable(client, 'codex_context_compacts')}
+    WHERE compact_id = ?
+    LIMIT 1
+  `, [normalizedCompactId])
+  return row ? mapCompactStateRow(row) : undefined
+}
+
 export function touchCodexContextSessionState(sessionId: string, now: string, refreshExpiresAt: string): void {
   const normalizedSessionId = normalizedRequiredText(sessionId, 'sessionId')
   const database = sessionDatabase(normalizedSessionId)
@@ -515,28 +664,51 @@ function upsertCodexContextSessionBatch(inputs: CodexContextSessionUpsertInput[]
   }
 }
 
-function touchCodexContextResponseChain(rows: CodexContextResponseStateIndex[], now: string, refreshExpiresAt: string): void {
+async function touchCodexContextResponseChainAsync(client: DatabaseClient, rows: CodexContextResponseStateIndex[], now: string, refreshExpiresAt: string): Promise<void> {
   if (rows.length === 0) return
   const sessionId = rows[0]?.sessionId
-  if (sessionId) {
-    touchCodexContextSessionState(sessionId, now, refreshExpiresAt)
-  }
-  touchCodexContextResponseStateRows(rows.map((row) => row.responseId), now, refreshExpiresAt)
+  await client.transaction(async (tx) => {
+    if (sessionId) {
+      await tx.execute(`
+        UPDATE ${codexContextTable(tx, 'codex_context_sessions')}
+        SET last_used_at = ?, updated_at = ?, expires_at = ?
+        WHERE id = ?
+      `, [now, now, refreshExpiresAt, sessionId])
+    }
+    const responseIds = rows.map((row) => row.responseId)
+    for (const chunk of chunkValues(responseIds, 900)) {
+      await tx.execute(`
+        UPDATE ${codexContextTable(tx, 'codex_context_responses')}
+        SET last_used_at = ?, updated_at = ?, expires_at = ?
+        WHERE response_id IN (${chunk.map(() => '?').join(', ')})
+      `, [now, now, refreshExpiresAt, ...chunk])
+    }
+  })
 }
 
-function touchCodexContextCompact(row: CodexContextCompactStateIndex, now: string, refreshExpiresAt: string): void {
-  touchCodexContextCompactStateRow(row.compactId, now, refreshExpiresAt)
-  touchCodexContextSessionState(row.sessionId, now, refreshExpiresAt)
+async function touchCodexContextCompactAsync(client: DatabaseClient, row: CodexContextCompactStateIndex, now: string, refreshExpiresAt: string): Promise<void> {
+  await client.transaction(async (tx) => {
+    await tx.execute(`
+      UPDATE ${codexContextTable(tx, 'codex_context_compacts')}
+      SET last_used_at = ?, updated_at = ?, expires_at = ?
+      WHERE compact_id = ?
+    `, [now, now, refreshExpiresAt, row.compactId])
+    await tx.execute(`
+      UPDATE ${codexContextTable(tx, 'codex_context_sessions')}
+      SET last_used_at = ?, updated_at = ?, expires_at = ?
+      WHERE id = ?
+    `, [now, now, refreshExpiresAt, row.sessionId])
+  })
 }
 
 function prepareCodexContextSessionUpsertStatement(database: DatabaseSync): StatementSync {
   return database.prepare(`
     INSERT INTO codex_context_sessions (
-      id, system_account_id, api_key_id, group_id, provider_code, provider_protocol_profile_id,
-      protocol_code, protocol_version, source_response_id, latest_response_id, latest_compact_id,
+      id, system_account_id, api_key_id, group_id, provider_code,
+      source_response_id, latest_response_id, latest_compact_id,
       created_at, updated_at, last_used_at, expires_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       source_response_id = COALESCE(codex_context_sessions.source_response_id, excluded.source_response_id),
       latest_response_id = COALESCE(excluded.latest_response_id, codex_context_sessions.latest_response_id),
@@ -554,9 +726,6 @@ function upsertCodexContextSessionRow(statement: StatementSync, input: CodexCont
     input.boundary.apiKeyId ?? null,
     input.boundary.groupId,
     input.boundary.providerCode,
-    input.boundary.providerProtocolProfileId,
-    input.boundary.protocolCode,
-    input.boundary.protocolVersion,
     input.sourceResponseId ?? null,
     input.latestResponseId ?? null,
     input.latestCompactId ?? null,
@@ -567,16 +736,47 @@ function upsertCodexContextSessionRow(statement: StatementSync, input: CodexCont
   )
 }
 
+async function upsertCodexContextSessionIndexAsync(client: DatabaseClient, input: CodexContextSessionUpsertInput): Promise<void> {
+  await client.execute(`
+    INSERT INTO ${codexContextTable(client, 'codex_context_sessions')} (
+      id, system_account_id, api_key_id, group_id, provider_code,
+      source_response_id, latest_response_id, latest_compact_id,
+      created_at, updated_at, last_used_at, expires_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      source_response_id = COALESCE(codex_context_sessions.source_response_id, excluded.source_response_id),
+      latest_response_id = COALESCE(excluded.latest_response_id, codex_context_sessions.latest_response_id),
+      latest_compact_id = COALESCE(excluded.latest_compact_id, codex_context_sessions.latest_compact_id),
+      updated_at = excluded.updated_at,
+      last_used_at = excluded.last_used_at,
+      expires_at = excluded.expires_at
+  `, [
+    input.sessionId,
+    input.boundary.systemAccountId,
+    input.boundary.apiKeyId ?? null,
+    input.boundary.groupId,
+    input.boundary.providerCode,
+    input.sourceResponseId ?? null,
+    input.latestResponseId ?? null,
+    input.latestCompactId ?? null,
+    input.now,
+    input.now,
+    input.now,
+    input.expiresAt
+  ])
+}
+
 function prepareCodexContextResponseStateIndexStatement(database: DatabaseSync): StatementSync {
   return database.prepare(`
     INSERT INTO codex_context_responses (
       response_id, session_id, previous_response_id, system_account_id, api_key_id, group_id,
-      provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+      provider_code,
       upstream_account_id, model, upstream_model, storage_key, storage_offset_bytes, sha256,
       raw_size_bytes, compressed_size_bytes, compression, schema_version,
       created_at, updated_at, last_used_at, expires_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(response_id) DO UPDATE SET
       session_id = excluded.session_id,
       previous_response_id = excluded.previous_response_id,
@@ -605,9 +805,6 @@ function insertCodexContextResponseStateIndexRow(statement: StatementSync, row: 
     row.apiKeyId ?? null,
     row.groupId,
     row.providerCode,
-    row.providerProtocolProfileId,
-    row.protocolCode,
-    row.protocolVersion,
     row.upstreamAccountId ?? null,
     row.model ?? null,
     row.upstreamModel ?? null,
@@ -625,16 +822,67 @@ function insertCodexContextResponseStateIndexRow(statement: StatementSync, row: 
   )
 }
 
-function prepareCodexContextCompactStateIndexStatement(database: DatabaseSync): StatementSync {
-  return database.prepare(`
-    INSERT INTO codex_context_compacts (
-      compact_id, session_id, source_response_id, summary_digest, system_account_id, api_key_id, group_id,
-      provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+async function insertCodexContextResponseStateIndexRowAsync(client: DatabaseClient, row: CodexContextResponseStateIndex): Promise<void> {
+  await client.execute(`
+    INSERT INTO ${codexContextTable(client, 'codex_context_responses')} (
+      response_id, session_id, previous_response_id, system_account_id, api_key_id, group_id,
+      provider_code,
       upstream_account_id, model, upstream_model, storage_key, storage_offset_bytes, sha256,
       raw_size_bytes, compressed_size_bytes, compression, schema_version,
       created_at, updated_at, last_used_at, expires_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(response_id) DO UPDATE SET
+      session_id = excluded.session_id,
+      previous_response_id = excluded.previous_response_id,
+      upstream_account_id = excluded.upstream_account_id,
+      model = excluded.model,
+      upstream_model = excluded.upstream_model,
+      storage_key = excluded.storage_key,
+      storage_offset_bytes = excluded.storage_offset_bytes,
+      sha256 = excluded.sha256,
+      raw_size_bytes = excluded.raw_size_bytes,
+      compressed_size_bytes = excluded.compressed_size_bytes,
+      compression = excluded.compression,
+      schema_version = excluded.schema_version,
+      updated_at = excluded.updated_at,
+      last_used_at = excluded.last_used_at,
+      expires_at = excluded.expires_at
+  `, [
+    row.responseId,
+    row.sessionId,
+    row.previousResponseId ?? null,
+    row.systemAccountId,
+    row.apiKeyId ?? null,
+    row.groupId,
+    row.providerCode,
+    row.upstreamAccountId ?? null,
+    row.model ?? null,
+    row.upstreamModel ?? null,
+    row.storageKey,
+    row.storageOffsetBytes,
+    row.sha256,
+    row.rawSizeBytes,
+    row.compressedSizeBytes,
+    row.compression,
+    row.schemaVersion,
+    row.createdAt,
+    row.updatedAt,
+    row.lastUsedAt,
+    row.expiresAt
+  ])
+}
+
+function prepareCodexContextCompactStateIndexStatement(database: DatabaseSync): StatementSync {
+  return database.prepare(`
+    INSERT INTO codex_context_compacts (
+      compact_id, session_id, source_response_id, summary_digest, system_account_id, api_key_id, group_id,
+      provider_code,
+      upstream_account_id, model, upstream_model, storage_key, storage_offset_bytes, sha256,
+      raw_size_bytes, compressed_size_bytes, compression, schema_version,
+      created_at, updated_at, last_used_at, expires_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(compact_id) DO UPDATE SET
       session_id = excluded.session_id,
       source_response_id = excluded.source_response_id,
@@ -665,9 +913,6 @@ function insertCodexContextCompactStateIndexRow(statement: StatementSync, row: C
     row.apiKeyId ?? null,
     row.groupId,
     row.providerCode,
-    row.providerProtocolProfileId,
-    row.protocolCode,
-    row.protocolVersion,
     row.upstreamAccountId ?? null,
     row.model ?? null,
     row.upstreamModel ?? null,
@@ -683,6 +928,59 @@ function insertCodexContextCompactStateIndexRow(statement: StatementSync, row: C
     row.lastUsedAt,
     row.expiresAt
   )
+}
+
+async function insertCodexContextCompactStateIndexRowAsync(client: DatabaseClient, row: CodexContextCompactStateIndex): Promise<void> {
+  await client.execute(`
+    INSERT INTO ${codexContextTable(client, 'codex_context_compacts')} (
+      compact_id, session_id, source_response_id, summary_digest, system_account_id, api_key_id, group_id,
+      provider_code,
+      upstream_account_id, model, upstream_model, storage_key, storage_offset_bytes, sha256,
+      raw_size_bytes, compressed_size_bytes, compression, schema_version,
+      created_at, updated_at, last_used_at, expires_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(compact_id) DO UPDATE SET
+      session_id = excluded.session_id,
+      source_response_id = excluded.source_response_id,
+      summary_digest = excluded.summary_digest,
+      upstream_account_id = excluded.upstream_account_id,
+      model = excluded.model,
+      upstream_model = excluded.upstream_model,
+      storage_key = excluded.storage_key,
+      storage_offset_bytes = excluded.storage_offset_bytes,
+      sha256 = excluded.sha256,
+      raw_size_bytes = excluded.raw_size_bytes,
+      compressed_size_bytes = excluded.compressed_size_bytes,
+      compression = excluded.compression,
+      schema_version = excluded.schema_version,
+      updated_at = excluded.updated_at,
+      last_used_at = excluded.last_used_at,
+      expires_at = excluded.expires_at
+  `, [
+    row.compactId,
+    row.sessionId,
+    row.sourceResponseId ?? null,
+    row.summaryDigest,
+    row.systemAccountId,
+    row.apiKeyId ?? null,
+    row.groupId,
+    row.providerCode,
+    row.upstreamAccountId ?? null,
+    row.model ?? null,
+    row.upstreamModel ?? null,
+    row.storageKey,
+    row.storageOffsetBytes,
+    row.sha256,
+    row.rawSizeBytes,
+    row.compressedSizeBytes,
+    row.compression,
+    row.schemaVersion,
+    row.createdAt,
+    row.updatedAt,
+    row.lastUsedAt,
+    row.expiresAt
+  ])
 }
 
 function prepareCodexContextSessionTouchStatement(database: DatabaseSync): StatementSync {
@@ -919,6 +1217,130 @@ function filterUnreferencedStorageKeys(storageKeys: Set<string>): string[] {
   return [...deletable]
 }
 
+async function cleanupExpiredCodexContextStateSessionRowsAsync(
+  client: DatabaseClient,
+  rows: CodexContextSessionRow[],
+  expiredBefore: string,
+  hasMore: boolean
+): Promise<CodexContextExpiredStateCleanupResult> {
+  const candidateStorageKeys = new Set<string>()
+  const sessionIds = rows.map((row) => row.id)
+  let deletedResponses = 0
+  let deletedCompacts = 0
+  let deletedSessions = 0
+  await client.transaction(async (tx) => {
+    deletedResponses = await deleteExpiredCodexContextRowsBySessionIdsAsync(tx, 'codex_context_responses', sessionIds, expiredBefore, candidateStorageKeys)
+    deletedCompacts = await deleteExpiredCodexContextRowsBySessionIdsAsync(tx, 'codex_context_compacts', sessionIds, expiredBefore, candidateStorageKeys)
+    const remainingExpiresAtBySessionId = await selectRemainingCodexContextSessionExpiresAtBySessionIdsAsync(tx, sessionIds)
+    for (const row of rows) {
+      const remainingExpiresAt = remainingExpiresAtBySessionId.get(row.id)
+      if (remainingExpiresAt) {
+        await tx.execute(`
+          UPDATE ${codexContextTable(tx, 'codex_context_sessions')}
+          SET updated_at = ?, expires_at = ?
+          WHERE id = ?
+        `, [nowIso(), remainingExpiresAt, row.id])
+      } else {
+        const result = await tx.execute(`
+          DELETE FROM ${codexContextTable(tx, 'codex_context_sessions')}
+          WHERE id = ?
+        `, [row.id])
+        deletedSessions += result.changes
+      }
+    }
+  })
+  const storageKeys = await filterUnreferencedStorageKeysAsync(client, candidateStorageKeys)
+  return {
+    deletedSessions,
+    deletedResponses,
+    deletedCompacts,
+    storageKeys,
+    hasMore
+  }
+}
+
+async function deleteExpiredCodexContextRowsBySessionIdsAsync(
+  client: DatabaseClient,
+  table: 'codex_context_responses' | 'codex_context_compacts',
+  sessionIds: string[],
+  expiredBefore: string,
+  storageKeys: Set<string>
+): Promise<number> {
+  let deleted = 0
+  for (const chunk of chunkValues(sessionIds, 900)) {
+    const placeholders = chunk.map(() => '?').join(', ')
+    const rows = await client.query<{ storage_key?: string | null }>(`
+      SELECT storage_key
+      FROM ${codexContextTable(client, table)}
+      WHERE session_id IN (${placeholders})
+        AND expires_at < ?
+    `, [...chunk, expiredBefore])
+    deleted += rows.length
+    for (const row of rows) {
+      const key = String(row.storage_key ?? '').trim()
+      if (key) storageKeys.add(key)
+    }
+    await client.execute(`
+      DELETE FROM ${codexContextTable(client, table)}
+      WHERE session_id IN (${placeholders})
+        AND expires_at < ?
+    `, [...chunk, expiredBefore])
+  }
+  return deleted
+}
+
+async function selectRemainingCodexContextSessionExpiresAtBySessionIdsAsync(client: DatabaseClient, sessionIds: string[]): Promise<Map<string, string>> {
+  const expiresAtBySessionId = new Map<string, string>()
+  for (const table of ['codex_context_responses', 'codex_context_compacts'] as const) {
+    for (const chunk of chunkValues(sessionIds, 900)) {
+      const rows = await client.query<{ session_id?: string | null; expires_at?: string | null }>(`
+        SELECT session_id, MAX(expires_at) AS expires_at
+        FROM ${codexContextTable(client, table)}
+        WHERE session_id IN (${chunk.map(() => '?').join(', ')})
+        GROUP BY session_id
+      `, chunk)
+      for (const row of rows) {
+        const sessionId = String(row.session_id ?? '').trim()
+        const expiresAt = String(row.expires_at ?? '').trim()
+        if (!sessionId || !expiresAt) continue
+        const existing = expiresAtBySessionId.get(sessionId)
+        if (!existing || expiresAt > existing) {
+          expiresAtBySessionId.set(sessionId, expiresAt)
+        }
+      }
+    }
+  }
+  return expiresAtBySessionId
+}
+
+async function filterUnreferencedStorageKeysAsync(client: DatabaseClient, storageKeys: Set<string>): Promise<string[]> {
+  const deletable = new Set(storageKeys)
+  if (deletable.size === 0) return []
+  const keys = [...deletable]
+  for (const table of ['codex_context_responses', 'codex_context_compacts'] as const) {
+    for (const chunk of chunkValues(keys, 900)) {
+      const remaining = chunk.filter((key) => deletable.has(key))
+      if (!remaining.length) continue
+      const rows = await client.query<{ storage_key?: string | null }>(`
+        SELECT DISTINCT storage_key
+        FROM ${codexContextTable(client, table)}
+        WHERE storage_key IN (${remaining.map(() => '?').join(', ')})
+      `, remaining)
+      for (const row of rows) {
+        const key = String(row.storage_key ?? '').trim()
+        if (key) deletable.delete(key)
+      }
+    }
+  }
+  return [...deletable]
+}
+
+function codexContextTable(client: DatabaseClient, tableName: string): string {
+  return client.driver === 'postgres'
+    ? client.dialect.qualifyTable('juhe_codex_context', tableName)
+    : client.dialect.quoteIdentifier(tableName)
+}
+
 export function normalizeCodexContextResponseStateIndexInput(input: CodexContextResponseStateIndexInput, now: string): CodexContextResponseStateIndex {
   return {
     responseId: normalizedRequiredText(input.responseId, 'responseId'),
@@ -928,9 +1350,6 @@ export function normalizeCodexContextResponseStateIndexInput(input: CodexContext
     apiKeyId: normalizedOptionalText(input.apiKeyId),
     groupId: normalizedRequiredText(input.groupId, 'groupId'),
     providerCode: normalizedRequiredText(input.providerCode, 'providerCode'),
-    providerProtocolProfileId: normalizedRequiredText(input.providerProtocolProfileId, 'providerProtocolProfileId'),
-    protocolCode: normalizedRequiredText(input.protocolCode, 'protocolCode'),
-    protocolVersion: normalizedRequiredText(input.protocolVersion, 'protocolVersion'),
     upstreamAccountId: normalizedOptionalText(input.upstreamAccountId),
     model: normalizedOptionalText(input.model),
     upstreamModel: normalizedOptionalText(input.upstreamModel),
@@ -952,9 +1371,6 @@ export function normalizeCodexContextCompactStateIndexInput(input: CodexContextC
     apiKeyId: normalizedOptionalText(input.apiKeyId),
     groupId: normalizedRequiredText(input.groupId, 'groupId'),
     providerCode: normalizedRequiredText(input.providerCode, 'providerCode'),
-    providerProtocolProfileId: normalizedRequiredText(input.providerProtocolProfileId, 'providerProtocolProfileId'),
-    protocolCode: normalizedRequiredText(input.protocolCode, 'protocolCode'),
-    protocolVersion: normalizedRequiredText(input.protocolVersion, 'protocolVersion'),
     upstreamAccountId: normalizedOptionalText(input.upstreamAccountId),
     model: normalizedOptionalText(input.model),
     upstreamModel: normalizedOptionalText(input.upstreamModel),
@@ -987,9 +1403,6 @@ function mapResponseStateRow(row: CodexContextResponseStateRow): CodexContextRes
     apiKeyId: normalizedOptionalText(row.api_key_id),
     groupId: String(row.group_id),
     providerCode: String(row.provider_code),
-    providerProtocolProfileId: String(row.provider_protocol_profile_id),
-    protocolCode: String(row.protocol_code),
-    protocolVersion: String(row.protocol_version),
     upstreamAccountId: normalizedOptionalText(row.upstream_account_id),
     model: normalizedOptionalText(row.model),
     upstreamModel: normalizedOptionalText(row.upstream_model),
@@ -1017,9 +1430,6 @@ function mapCompactStateRow(row: CodexContextCompactStateRow): CodexContextCompa
     apiKeyId: normalizedOptionalText(row.api_key_id),
     groupId: String(row.group_id),
     providerCode: String(row.provider_code),
-    providerProtocolProfileId: String(row.provider_protocol_profile_id),
-    protocolCode: String(row.protocol_code),
-    protocolVersion: String(row.protocol_version),
     upstreamAccountId: normalizedOptionalText(row.upstream_account_id),
     model: normalizedOptionalText(row.model),
     upstreamModel: normalizedOptionalText(row.upstream_model),
@@ -1042,9 +1452,6 @@ function matchesBoundary(row: CodexContextStateBoundary, boundary: CodexContextS
     && (row.apiKeyId ?? '') === (boundary.apiKeyId ?? '')
     && row.groupId === boundary.groupId
     && row.providerCode === boundary.providerCode
-    && row.providerProtocolProfileId === boundary.providerProtocolProfileId
-    && row.protocolCode === boundary.protocolCode
-    && row.protocolVersion === boundary.protocolVersion
 }
 
 function sessionDatabase(sessionId: string): DatabaseSync {

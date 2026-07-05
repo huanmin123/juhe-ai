@@ -19,6 +19,7 @@ export interface AccountApiKeyRuntimeFailureInput {
   errorCode?: string
   errorMessage?: string
   cooldownUntil?: string
+  observedAt?: string
 }
 
 export interface AccountApiKeyRuntimeWriteResult {
@@ -94,6 +95,16 @@ interface AccountApiKeyRuntimeProbeRow {
   protocol_version: string
   type: string
   credentials_encrypted: string
+}
+
+interface AccountApiKeyRuntimeSummarySourceRow {
+  viewAccountId: string
+  sourceAccountId: string
+  providerCode: string
+  protocolCode: string
+  protocolVersion: string
+  type: string
+  credentialsEncrypted: string
 }
 
 const initialProbeBackoffSeconds = 3
@@ -266,10 +277,28 @@ function accountApiKeyRuntimeProbeCandidatesFromRows(rows: AccountApiKeyRuntimeP
 
 export function loadAccountApiKeyRuntimeSummariesByAccountIds(accountIds: string[]): Map<string, AccountApiKeyRuntimeSummary> {
   const ids = [...new Set(accountIds.map((id) => id.trim()).filter(Boolean))]
-  const output = new Map<string, AccountApiKeyRuntimeSummary>()
-  if (!ids.length) return output
+  if (!ids.length) return new Map<string, AccountApiKeyRuntimeSummary>()
   const rows = accountApiKeyRuntimeSummaryRows(ids)
   const statesByAccountId = loadAccountApiKeyRuntimeStatesByAccountIds(rows.map((row) => row.sourceAccountId))
+  return accountApiKeyRuntimeSummariesFromRows(rows, statesByAccountId)
+}
+
+export async function loadAccountApiKeyRuntimeSummariesByAccountIdsAsync(accountIds: string[]): Promise<Map<string, AccountApiKeyRuntimeSummary>> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return loadAccountApiKeyRuntimeSummariesByAccountIds(accountIds)
+  }
+  const ids = [...new Set(accountIds.map((id) => id.trim()).filter(Boolean))]
+  if (!ids.length) return new Map<string, AccountApiKeyRuntimeSummary>()
+  const rows = await accountApiKeyRuntimeSummaryRowsAsync(ids)
+  const statesByAccountId = await loadAccountApiKeyRuntimeStatesByAccountIdsAsync(rows.map((row) => row.sourceAccountId))
+  return accountApiKeyRuntimeSummariesFromRows(rows, statesByAccountId)
+}
+
+function accountApiKeyRuntimeSummariesFromRows(
+  rows: AccountApiKeyRuntimeSummarySourceRow[],
+  statesByAccountId: Map<string, AccountApiKeyRuntimeSelectionState[]>
+): Map<string, AccountApiKeyRuntimeSummary> {
+  const output = new Map<string, AccountApiKeyRuntimeSummary>()
   for (const row of rows) {
     let credentials: Record<string, unknown>
     try {
@@ -326,10 +355,28 @@ export function loadAccountApiKeyRuntimeSummariesByAccountIds(accountIds: string
 
 export function loadAccountApiKeyRuntimeDetailsByAccountIds(accountIds: string[]): Map<string, AccountApiKeyRuntimeDetail[]> {
   const ids = [...new Set(accountIds.map((id) => id.trim()).filter(Boolean))]
-  const output = new Map<string, AccountApiKeyRuntimeDetail[]>()
-  if (!ids.length) return output
+  if (!ids.length) return new Map<string, AccountApiKeyRuntimeDetail[]>()
   const rows = accountApiKeyRuntimeSummaryRows(ids)
   const statesByAccountId = loadAccountApiKeyRuntimeDetailRowsByAccountIds(rows.map((row) => row.sourceAccountId))
+  return accountApiKeyRuntimeDetailsFromRows(rows, statesByAccountId)
+}
+
+export async function loadAccountApiKeyRuntimeDetailsByAccountIdsAsync(accountIds: string[]): Promise<Map<string, AccountApiKeyRuntimeDetail[]>> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return loadAccountApiKeyRuntimeDetailsByAccountIds(accountIds)
+  }
+  const ids = [...new Set(accountIds.map((id) => id.trim()).filter(Boolean))]
+  if (!ids.length) return new Map<string, AccountApiKeyRuntimeDetail[]>()
+  const rows = await accountApiKeyRuntimeSummaryRowsAsync(ids)
+  const statesByAccountId = await loadAccountApiKeyRuntimeDetailRowsByAccountIdsAsync(rows.map((row) => row.sourceAccountId))
+  return accountApiKeyRuntimeDetailsFromRows(rows, statesByAccountId)
+}
+
+function accountApiKeyRuntimeDetailsFromRows(
+  rows: AccountApiKeyRuntimeSummarySourceRow[],
+  statesByAccountId: Map<string, AccountApiKeyRuntimeDetailRow[]>
+): Map<string, AccountApiKeyRuntimeDetail[]> {
+  const output = new Map<string, AccountApiKeyRuntimeDetail[]>()
   for (const row of rows) {
     let credentials: Record<string, unknown>
     try {
@@ -397,6 +444,7 @@ export function recordAccountApiKeyRuntimeFailure(input: AccountApiKeyRuntimeFai
   }
 
   const now = nowIso()
+  const observedAt = normalizeObservedAt(input.observedAt, now)
   const nextBackoffSeconds = nextProbeBackoffSeconds(existing?.probe_backoff_seconds)
   const status = normalizeFailureStatus(input.status)
   const nextProbeAt = input.cooldownUntil && status === 'rate_limited'
@@ -426,6 +474,7 @@ export function recordAccountApiKeyRuntimeFailure(input: AccountApiKeyRuntimeFai
           WHERE account_id = ?
             AND key_fingerprint = ?
             AND status <> 'disabled'
+            AND (last_attempt_at IS NULL OR last_attempt_at <= ?)
         `)
         .run(
           target.systemAccountId,
@@ -435,13 +484,14 @@ export function recordAccountApiKeyRuntimeFailure(input: AccountApiKeyRuntimeFai
           nextProbeAt,
           nextBackoffSeconds,
           now,
-          now,
-          now,
+          observedAt,
+          observedAt,
           errorCode,
           errorMessage,
           now,
           target.accountId,
-          target.keyFingerprint
+          target.keyFingerprint,
+          observedAt
         )
     : database
         .prepare(`
@@ -465,8 +515,8 @@ export function recordAccountApiKeyRuntimeFailure(input: AccountApiKeyRuntimeFai
           nextProbeAt,
           nextBackoffSeconds,
           now,
-          now,
-          now,
+          observedAt,
+          observedAt,
           errorCode,
           errorMessage,
           now,
@@ -501,6 +551,7 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
   }
 
   const now = nowIso()
+  const observedAt = normalizeObservedAt(input.observedAt, now)
   const nextBackoffSeconds = nextProbeBackoffSeconds(existing?.probe_backoff_seconds)
   const status = normalizeFailureStatus(input.status)
   const nextProbeAt = input.cooldownUntil && status === 'rate_limited'
@@ -535,6 +586,7 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
       last_error_message = excluded.last_error_message,
       updated_at = excluded.updated_at
     WHERE current_state.status <> 'disabled'
+      AND (current_state.last_attempt_at IS NULL OR current_state.last_attempt_at <= excluded.last_attempt_at)
   `, [
     newId('account_api_key_runtime_state'),
     target.systemAccountId,
@@ -546,8 +598,8 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
     nextProbeAt,
     nextBackoffSeconds,
     now,
-    now,
-    now,
+    observedAt,
+    observedAt,
     errorCode,
     errorMessage,
     now,
@@ -561,12 +613,13 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
   return { changed }
 }
 
-export function recordAccountApiKeyRuntimeSuccess(account: OpenAIAccountSecret): AccountApiKeyRuntimeWriteResult {
+export function recordAccountApiKeyRuntimeSuccess(account: OpenAIAccountSecret, input: { observedAt?: string } = {}): AccountApiKeyRuntimeWriteResult {
   const target = accountApiKeyRuntimeTarget(account)
   if (!target) {
     return { changed: false, skippedReason: 'not_api_key_pool_account' }
   }
   const now = nowIso()
+  const observedAt = normalizeObservedAt(input.observedAt, now)
   const result = getBusinessDatabase()
     .prepare(`
       INSERT INTO account_api_key_runtime_states (
@@ -593,6 +646,7 @@ export function recordAccountApiKeyRuntimeSuccess(account: OpenAIAccountSecret):
         last_error_message = NULL,
         updated_at = excluded.updated_at
       WHERE account_api_key_runtime_states.status <> 'disabled'
+        AND (account_api_key_runtime_states.last_attempt_at IS NULL OR account_api_key_runtime_states.last_attempt_at <= excluded.last_attempt_at)
     `)
     .run(
       newId('account_api_key_runtime_state'),
@@ -600,8 +654,8 @@ export function recordAccountApiKeyRuntimeSuccess(account: OpenAIAccountSecret):
       target.accountId,
       target.keyFingerprint,
       target.keyIndex,
-      now,
-      now,
+      observedAt,
+      observedAt,
       now,
       now
     )
@@ -612,15 +666,16 @@ export function recordAccountApiKeyRuntimeSuccess(account: OpenAIAccountSecret):
   return { changed }
 }
 
-export async function recordAccountApiKeyRuntimeSuccessAsync(account: OpenAIAccountSecret): Promise<AccountApiKeyRuntimeWriteResult> {
+export async function recordAccountApiKeyRuntimeSuccessAsync(account: OpenAIAccountSecret, input: { observedAt?: string } = {}): Promise<AccountApiKeyRuntimeWriteResult> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return recordAccountApiKeyRuntimeSuccess(account)
+    return recordAccountApiKeyRuntimeSuccess(account, input)
   }
   const target = accountApiKeyRuntimeTarget(account)
   if (!target) {
     return { changed: false, skippedReason: 'not_api_key_pool_account' }
   }
   const now = nowIso()
+  const observedAt = normalizeObservedAt(input.observedAt, now)
   const client = await getAccountApiKeyRuntimeStateDatabaseClient()
   const result = await client.execute(`
     INSERT INTO ${accountApiKeyRuntimeStatesTable(client)} AS current_state (
@@ -647,14 +702,15 @@ export async function recordAccountApiKeyRuntimeSuccessAsync(account: OpenAIAcco
       last_error_message = NULL,
       updated_at = excluded.updated_at
     WHERE current_state.status <> 'disabled'
+      AND (current_state.last_attempt_at IS NULL OR current_state.last_attempt_at <= excluded.last_attempt_at)
   `, [
     newId('account_api_key_runtime_state'),
     target.systemAccountId,
     target.accountId,
     target.keyFingerprint,
     target.keyIndex,
-    now,
-    now,
+    observedAt,
+    observedAt,
     now,
     now
   ])
@@ -663,6 +719,12 @@ export async function recordAccountApiKeyRuntimeSuccessAsync(account: OpenAIAcco
     await markRuntimeStateChangedAsync(client, target.accountId)
   }
   return { changed }
+}
+
+function normalizeObservedAt(value: string | undefined, fallback: string): string {
+  if (!value) return fallback
+  const time = Date.parse(value)
+  return Number.isFinite(time) ? new Date(time).toISOString() : fallback
 }
 
 function accountApiKeyRuntimeTarget(account: OpenAIAccountSecret): AccountApiKeyRuntimeTarget | undefined {
@@ -753,6 +815,54 @@ function accountApiKeyRuntimeSummaryRows(accountIds: string[]): Array<{
     }))
 }
 
+async function accountApiKeyRuntimeSummaryRowsAsync(accountIds: string[]): Promise<AccountApiKeyRuntimeSummarySourceRow[]> {
+  const rows: Array<{
+    view_account_id: string
+    source_account_id: string
+    provider_code: string
+    protocol_code: string
+    protocol_version: string
+    type: string
+    credentials_encrypted: string
+  }> = []
+  const client = await getAccountApiKeyRuntimeStateDatabaseClient()
+  for (const chunk of chunkValues(accountIds, 900)) {
+    rows.push(...await client.query<{
+      view_account_id: string
+      source_account_id: string
+      provider_code: string
+      protocol_code: string
+      protocol_version: string
+      type: string
+      credentials_encrypted: string
+    }>(`
+      SELECT accounts.id AS view_account_id,
+        COALESCE(source_accounts.id, accounts.id) AS source_account_id,
+        COALESCE(source_accounts.provider_code, accounts.provider_code) AS provider_code,
+        COALESCE(source_accounts.protocol_code, accounts.protocol_code) AS protocol_code,
+        COALESCE(source_accounts.protocol_version, accounts.protocol_version) AS protocol_version,
+        COALESCE(source_accounts.type, accounts.type) AS type,
+        COALESCE(source_accounts.credentials_encrypted, accounts.credentials_encrypted) AS credentials_encrypted
+      FROM ${accountApiKeyRuntimeBusinessTable(client, 'accounts')} accounts
+      LEFT JOIN ${accountApiKeyRuntimeBusinessTable(client, 'accounts')} source_accounts ON source_accounts.id = accounts.authorization_instance_source_account_id
+      WHERE accounts.id IN (${chunk.map(() => '?').join(', ')})
+        AND accounts.deleted_at IS NULL
+        AND (source_accounts.id IS NULL OR source_accounts.deleted_at IS NULL)
+    `, chunk))
+  }
+  return rows
+    .filter((row) => row.view_account_id && row.source_account_id && row.credentials_encrypted)
+    .map((row) => ({
+      viewAccountId: row.view_account_id,
+      sourceAccountId: row.source_account_id,
+      providerCode: row.provider_code,
+      protocolCode: row.protocol_code,
+      protocolVersion: row.protocol_version,
+      type: row.type,
+      credentialsEncrypted: row.credentials_encrypted
+    }))
+}
+
 function loadAccountApiKeyRuntimeDetailRowsByAccountIds(accountIds: string[]): Map<string, AccountApiKeyRuntimeDetailRow[]> {
   const ids = [...new Set(accountIds.map((id) => id.trim()).filter(Boolean))]
   const output = new Map<string, AccountApiKeyRuntimeDetailRow[]>()
@@ -768,6 +878,28 @@ function loadAccountApiKeyRuntimeDetailRowsByAccountIds(accountIds: string[]): M
         WHERE account_id IN (${sqlPlaceholders(chunk.length)})
       `)
       .all(...chunk) as unknown as AccountApiKeyRuntimeDetailRow[]
+    for (const row of rows) {
+      const items = output.get(row.account_id) ?? []
+      items.push(row)
+      output.set(row.account_id, items)
+    }
+  }
+  return output
+}
+
+async function loadAccountApiKeyRuntimeDetailRowsByAccountIdsAsync(accountIds: string[]): Promise<Map<string, AccountApiKeyRuntimeDetailRow[]>> {
+  const ids = [...new Set(accountIds.map((id) => id.trim()).filter(Boolean))]
+  const output = new Map<string, AccountApiKeyRuntimeDetailRow[]>()
+  if (!ids.length) return output
+  const client = await getAccountApiKeyRuntimeStateDatabaseClient()
+  for (const chunk of chunkValues(ids, 900)) {
+    const rows = await client.query<AccountApiKeyRuntimeDetailRow>(`
+      SELECT account_id, key_fingerprint, key_index, status, failure_count, consecutive_failures,
+        success_count, cooldown_until, next_probe_at, last_attempt_at, last_success_at, last_failure_at,
+        last_error_code, last_error_message
+      FROM ${accountApiKeyRuntimeStatesTable(client)}
+      WHERE account_id IN (${chunk.map(() => '?').join(', ')})
+    `, chunk)
     for (const row of rows) {
       const items = output.get(row.account_id) ?? []
       items.push(row)

@@ -124,7 +124,6 @@ try {
   const group = repositories.createGroup({
     name: 'Anthropic 真实模型联调分组',
     providerCode: ANTHROPIC_PROVIDER_CODE,
-    providerProtocolProfileId: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
     enabled: true
   }, access)
   repositories.createAccount({

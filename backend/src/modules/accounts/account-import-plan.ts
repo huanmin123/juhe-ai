@@ -4,7 +4,6 @@ type AccountImportPlanAction = 'create' | 'reuse' | 'skip' | 'failed'
 
 export interface AccountImportGroupCreatePlan {
   providerCode: string
-  providerProtocolProfileId: string
   name: string
 }
 
@@ -25,7 +24,7 @@ export function markDuplicateAccountImportItems(accounts: AccountImportDuplicate
   const seenName = new Map<string, number>()
   for (const account of accounts) {
     if (account.item.action === 'failed') continue
-    const nameKey = account.source.name.trim().toLowerCase()
+    const nameKey = account.source.name.trim()
     const duplicatedByName = seenName.get(nameKey)
     if (duplicatedByName) {
       account.item.action = skipDuplicates ? 'skip' : 'failed'
@@ -73,5 +72,5 @@ export function buildAccountImportSummary(
 }
 
 export function accountImportGroupKey(providerCode: string, name: string): string {
-  return `${providerCode.trim().toLowerCase()}:${name.trim().toLowerCase()}`
+  return `${providerCode.trim().toLowerCase()}:${name.trim()}`
 }

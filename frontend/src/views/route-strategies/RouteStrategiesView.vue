@@ -103,7 +103,7 @@
           <span :class="record.systemAccountName ? 'name-cell' : 'muted-cell'">{{ routeStrategySystemAccountText(record) }}</span>
         </template>
         <template v-else-if="column.key === 'mode'">
-          <a-tag :color="routeStrategyModeColor(record.mode)">{{ routeStrategyModeText(record.mode) }}</a-tag>
+          <a-tag :color="routeStrategyModeColor(record.mode)">{{ routeStrategyModeDisplayText(record) }}</a-tag>
         </template>
         <template v-else-if="column.key === 'status'">
           <a-tag :color="routeStrategyStatusColor(record.status)">{{ routeStrategyStatusText(record.status) }}</a-tag>
@@ -118,7 +118,7 @@
               {{ routeStrategyGroupLabel(binding) }}
             </a-tag>
             <a-tag v-if="hiddenGroupBindingCount(record) > 0" color="default">+{{ hiddenGroupBindingCount(record) }}</a-tag>
-            <span v-if="!record.groupBindings.length" class="muted-cell">未绑定</span>
+            <span v-if="!record.bindingCount" class="muted-cell">未绑定</span>
           </div>
         </template>
         <template v-else-if="column.key === 'apiKeyCount'">
@@ -141,7 +141,7 @@
               </div>
             </div>
             <div class="mobile-list-card-tags">
-              <a-tag :color="routeStrategyModeColor(record.mode)">{{ routeStrategyModeText(record.mode) }}</a-tag>
+              <a-tag :color="routeStrategyModeColor(record.mode)">{{ routeStrategyModeDisplayText(record) }}</a-tag>
               <a-tag :color="routeStrategyStatusColor(record.status)">{{ routeStrategyStatusText(record.status) }}</a-tag>
             </div>
           </div>
@@ -200,6 +200,60 @@
           </a-col>
         </a-row>
 
+        <template v-if="form.mode === 'normal'">
+          <div class="modal-section-title">
+            <span>普通路由调度</span>
+            <a-tooltip :title="normalRoutingConfigTooltip">
+              <InfoCircleOutlined class="route-strategy-field-help-icon" />
+            </a-tooltip>
+          </div>
+          <div class="hybrid-config-grid">
+            <a-form-item label="调度偏好" tooltip="成本优先保持当前账号缓存和会话粘黏；速度优先在首字慢速时优先切换到更快账号。">
+              <a-segmented v-model:value="form.normal.schedulingPreference" block :options="normalSchedulingPreferenceOptions" />
+            </a-form-item>
+            <a-form-item
+              v-if="form.normal.schedulingPreference === 'speed_first'"
+              label="当前请求切号"
+              tooltip="首字等待超过阈值时，当前请求允许立即换号重试；原账号进入短期速度降级。"
+            >
+              <a-switch
+                v-model:checked="form.normal.speedFirstConfig.retryOnFirstByteTimeout"
+                checked-children="启用"
+                un-checked-children="停用"
+              />
+            </a-form-item>
+          </div>
+          <div v-if="form.normal.schedulingPreference === 'speed_first'" class="hybrid-config-grid">
+            <a-form-item label="首字等待阈值" required tooltip="等待上游首字的最长时间，低于 10 秒容易误判网络抖动。">
+              <a-input-number v-model:value="form.normal.speedFirstConfig.firstByteThresholdMs" :min="10000" :max="60000" addon-after="ms" />
+            </a-form-item>
+            <a-form-item label="慢速触发次数" required tooltip="窗口期内达到这个慢速次数后，账号进入速度降级。">
+              <a-input-number v-model:value="form.normal.speedFirstConfig.slowTriggerCount" :min="2" :max="10" addon-after="次" />
+            </a-form-item>
+            <a-form-item label="慢速窗口期" required tooltip="统计连续慢速触发的时间窗口。">
+              <a-input-number v-model:value="form.normal.speedFirstConfig.slowWindowSeconds" :min="60" :max="600" addon-after="秒" />
+            </a-form-item>
+            <a-form-item label="恢复成功次数" required tooltip="后台探针连续满足首字阈值达到该次数后，账号恢复正常调度。">
+              <a-input-number v-model:value="form.normal.speedFirstConfig.recoverySuccessCount" :min="3" :max="10" addon-after="次" />
+            </a-form-item>
+            <a-form-item label="探针间隔" required tooltip="账号速度降级后，后台探针的最小执行间隔。">
+              <a-input-number v-model:value="form.normal.speedFirstConfig.probeIntervalSeconds" :min="10" :max="300" addon-after="秒" />
+            </a-form-item>
+            <a-form-item label="降级保留时间" required tooltip="速度降级状态的短期保留时间；到期未再次触发则允许恢复候选。">
+              <a-input-number v-model:value="form.normal.speedFirstConfig.degradedTtlSeconds" :min="60" :max="3600" addon-after="秒" />
+            </a-form-item>
+            <a-form-item label="单请求切号次数" required tooltip="同一个请求因首字超时最多切换账号的次数。">
+              <a-input-number
+                v-model:value="form.normal.speedFirstConfig.maxFirstByteRetriesPerRequest"
+                :disabled="!form.normal.speedFirstConfig.retryOnFirstByteTimeout"
+                :min="1"
+                :max="3"
+                addon-after="次"
+              />
+            </a-form-item>
+          </div>
+        </template>
+
         <div class="modal-section-title">
           <span>分组绑定</span>
           <a-tooltip :title="bindingSectionTooltip">
@@ -244,9 +298,9 @@
               </button>
               <span v-else class="route-strategy-binding-drag-placeholder"></span>
             </div>
-            <a-select
+            <GroupSelect
               v-model:value="binding.groupId"
-              show-search
+              v-model:selected-group="binding.group"
               :filter-option="false"
               :loading="groupOptionsLoading"
               :options="groupOptions"
@@ -426,15 +480,18 @@ import type { RouteStrategyMutationPayload } from '@/api/domains/routeStrategies
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
+import GroupSelect from '@/components/GroupSelect.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { filterModelOption, useProviderModelSelectOptions } from '@/composables/useProviderModelSelectOptions'
+import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useScopedGroupsApi, useScopedRouteStrategiesApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime, formatNumber } from '@/shared/formatters'
+import type { GroupSelection } from '@/shared/groupLabelCache'
 import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import type {
   ApiKeyHybridLevelRoute,
@@ -444,7 +501,12 @@ import type {
   ApiKeyHybridQualityPreference,
   ApiKeyHybridRoutingConfig,
   GroupOptionSummary,
+  RouteStrategyNormalRoutingConfig,
+  RouteStrategyNormalSchedulingPreference,
+  RouteStrategySpeedFirstConfig,
+  RouteStrategyGroupBindingPreview,
   RouteStrategyGroupBindingSummary,
+  RouteStrategyListItem,
   RouteStrategyMode,
   RouteStrategyStatus,
   RouteStrategySummary
@@ -454,6 +516,7 @@ import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 interface BindingFormRow {
   key: string
   groupId: string
+  group?: GroupSelection
   priority: number
   weight: number
   status: 'active' | 'disabled'
@@ -467,6 +530,18 @@ interface BindingColumn {
 
 interface HybridLevelRouteFormRow extends ApiKeyHybridLevelRoute {
   key: string
+}
+
+interface RouteStrategiesPageState {
+  keyword: string
+  modeFilter: RouteStrategyMode | 'all'
+  pagination: {
+    current: number
+    pageSize: number
+  }
+  statusFilter: RouteStrategyStatus | 'all'
+  systemAccountFilter: string
+  systemAccountFilterSelection?: PrincipalSelection
 }
 
 interface HybridQualityInspectionForm {
@@ -492,25 +567,37 @@ interface HybridRoutingForm {
   qualityInspection: HybridQualityInspectionForm
 }
 
+interface NormalRoutingForm {
+  schedulingPreference: RouteStrategyNormalSchedulingPreference
+  speedFirstConfig: RouteStrategySpeedFirstConfig
+}
+
+const routeStrategiesPageSize = 20
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const routeStrategiesApi = useScopedRouteStrategiesApi(isManagementView)
 const groupsApi = useScopedGroupsApi(isManagementView)
-const keyword = ref('')
-const systemAccountFilter = ref(allSystemAccountsValue)
-const systemAccountFilterSelection = ref<PrincipalSelection | undefined>()
-const statusFilter = ref<RouteStrategyStatus | 'all'>('all')
-const modeFilter = ref<RouteStrategyMode | 'all'>('all')
+const pageStateCache = usePageStateCache<RouteStrategiesPageState>(undefined, defaultRouteStrategiesPageState, {
+  sanitize: sanitizeRouteStrategiesPageState,
+  version: 2
+})
+const initialPageState = pageStateCache.read()
+const keyword = ref(initialPageState.keyword)
+const systemAccountFilter = ref(initialPageState.systemAccountFilter)
+const systemAccountFilterSelection = ref<PrincipalSelection | undefined>(initialPageState.systemAccountFilterSelection)
+const statusFilter = ref<RouteStrategyStatus | 'all'>(initialPageState.statusFilter)
+const modeFilter = ref<RouteStrategyMode | 'all'>(initialPageState.modeFilter)
 const loading = ref(false)
 const saving = ref(false)
 const modalOpen = ref(false)
 const editingId = ref<string>()
 const editingSystemAccountId = ref<string>()
+let editDetailRequestToken = 0
 const bindingDragSourceIndex = ref<number | null>(null)
 const bindingDragOverIndex = ref<number | null>(null)
-const items = ref<RouteStrategySummary[]>([])
+const items = ref<RouteStrategyListItem[]>([])
 const total = ref(0)
-const page = ref(1)
-const pageSize = ref(20)
+const page = ref(initialPageState.pagination.current)
+const pageSize = ref(initialPageState.pagination.pageSize)
 const groupOptionsRaw = ref<GroupOptionSummary[]>([])
 const groupOptionsLoading = ref(false)
 
@@ -544,6 +631,7 @@ const form = reactive({
   mode: 'normal' as RouteStrategyMode,
   status: 'active' as RouteStrategyStatus,
   groupBindings: [] as BindingFormRow[],
+  normal: defaultNormalRoutingForm(),
   hybrid: defaultHybridRoutingForm()
 })
 
@@ -568,6 +656,11 @@ const statusFilterOptions = [
 const modeFilterOptions = [
   { label: '全部模式', value: 'all' },
   ...modeOptions
+]
+
+const normalSchedulingPreferenceOptions = [
+  { label: '成本优先', value: 'cost_first' },
+  { label: '速度优先', value: 'speed_first' }
 ]
 
 const qualityPreferenceOptions = [
@@ -595,6 +688,7 @@ const qualityInspectionUnavailableActionOptions = [
 ]
 
 const hybridConfigTooltip = '混合智能路由会先评分请求难度，再按等级模型和质量偏好选择目标模型。'
+const normalRoutingConfigTooltip = '成本优先尽量保持会话粘黏和账号缓存；速度优先在首字慢速连续触发后临时降级当前账号，并按配置探针恢复。'
 const hybridLevelRoutesTooltip = '把评分等级 1-10 映射到目标模型；请求评分落入某个范围后优先使用该目标模型。'
 const qualityInspectionTooltip = '在高风险或指定场景复审上游响应，未通过时按失败处理策略重试、升级或返回错误。'
 const hybridCacheSwitchTooltip = '控制评分缓存、模型亲和和升降级节奏，减少重复评分和频繁切换。'
@@ -699,6 +793,7 @@ watch(() => form.mode, (mode) => {
     void loadModelOptions()
   }
 })
+watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 watch(systemAccountFilterSelection, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
 
 onMounted(() => {
@@ -743,14 +838,17 @@ function refreshRouteStrategies() {
 }
 
 function resetFilters() {
-  keyword.value = ''
-  systemAccountFilter.value = allSystemAccountsValue
-  systemAccountFilterSelection.value = undefined
-  statusFilter.value = 'all'
-  modeFilter.value = 'all'
+  const defaults = defaultRouteStrategiesPageState()
+  keyword.value = defaults.keyword
+  systemAccountFilter.value = defaults.systemAccountFilter
+  systemAccountFilterSelection.value = defaults.systemAccountFilterSelection
+  statusFilter.value = defaults.statusFilter
+  modeFilter.value = defaults.modeFilter
   groupOptionsRaw.value = []
   resetSystemAccountOptionsSearch()
-  page.value = 1
+  page.value = defaults.pagination.current
+  pageSize.value = defaults.pagination.pageSize
+  pageStateCache.clear()
   void loadRouteStrategies()
 }
 
@@ -764,7 +862,81 @@ function handleSystemAccountFilterChange() {
   void loadRouteStrategies()
 }
 
+function defaultRouteStrategiesPageState(): RouteStrategiesPageState {
+  return {
+    keyword: '',
+    modeFilter: 'all',
+    pagination: { current: 1, pageSize: routeStrategiesPageSize },
+    statusFilter: 'all',
+    systemAccountFilter: allSystemAccountsValue,
+    systemAccountFilterSelection: undefined
+  }
+}
+
+function sanitizeRouteStrategiesPageState(value: unknown, fallback: RouteStrategiesPageState): RouteStrategiesPageState {
+  if (!value || typeof value !== 'object') return fallback
+  const source = value as Partial<RouteStrategiesPageState>
+  const pagination = source.pagination && typeof source.pagination === 'object'
+    ? source.pagination as Partial<RouteStrategiesPageState['pagination']>
+    : {}
+  return {
+    keyword: typeof source.keyword === 'string' ? source.keyword : fallback.keyword,
+    modeFilter: isRouteStrategyModeFilter(source.modeFilter) ? source.modeFilter : fallback.modeFilter,
+    pagination: {
+      current: sanitizePositiveInteger(pagination.current, fallback.pagination.current),
+      pageSize: sanitizePositiveInteger(pagination.pageSize, fallback.pagination.pageSize, 200)
+    },
+    statusFilter: isRouteStrategyStatusFilter(source.statusFilter) ? source.statusFilter : fallback.statusFilter,
+    systemAccountFilter: typeof source.systemAccountFilter === 'string' && source.systemAccountFilter.trim()
+      ? source.systemAccountFilter
+      : fallback.systemAccountFilter,
+    systemAccountFilterSelection: sanitizeSystemAccountSelection(source.systemAccountFilterSelection)
+  }
+}
+
+function isRouteStrategyModeFilter(value: unknown): value is RouteStrategyMode | 'all' {
+  return value === 'all'
+    || value === 'normal'
+    || value === 'hybrid_smart'
+    || value === 'weighted'
+    || value === 'failover'
+    || value === 'round_robin'
+}
+
+function isRouteStrategyStatusFilter(value: unknown): value is RouteStrategyStatus | 'all' {
+  return value === 'all' || value === 'active' || value === 'disabled'
+}
+
+function sanitizePositiveInteger(value: unknown, fallback: number, max = Number.MAX_SAFE_INTEGER): number {
+  const numeric = Number(value)
+  return Number.isInteger(numeric) && numeric > 0 && numeric <= max ? numeric : fallback
+}
+
+function sanitizeSystemAccountSelection(value: unknown): PrincipalSelection | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const selection = value as Partial<PrincipalSelection>
+  const id = typeof selection.id === 'string' ? selection.id.trim() : ''
+  const name = typeof selection.name === 'string' ? selection.name.trim() : ''
+  if (!id || !name || selection.kind !== 'system_account') return undefined
+  return { id, name, kind: 'system_account' }
+}
+
+function snapshotPageState(): RouteStrategiesPageState {
+  return {
+    keyword: keyword.value,
+    modeFilter: modeFilter.value,
+    pagination: {
+      current: page.value,
+      pageSize: pageSize.value
+    },
+    statusFilter: statusFilter.value,
+    systemAccountFilter: systemAccountFilter.value,
+    systemAccountFilterSelection: systemAccountFilterSelection.value
+  }
+}
+
 function openCreate() {
+  editDetailRequestToken += 1
   if (isManagementView.value && !routeStrategyScopeParams.value?.systemAccountId) {
     message.warning('请先在右侧选择目标系统账户，再创建策略路由')
     return
@@ -776,26 +948,42 @@ function openCreate() {
   form.mode = 'normal'
   form.status = 'active'
   form.groupBindings = [createBindingRow()]
+  form.normal = defaultNormalRoutingForm()
   form.hybrid = defaultHybridRoutingForm()
   groupOptionsRaw.value = []
   void loadGroupOptions()
   modalOpen.value = true
 }
 
-function openEdit(record: RouteStrategySummary) {
+async function openEdit(record: RouteStrategyListItem) {
   if (isManagementView.value && !record.systemAccountId?.trim()) {
     message.warning('无法确定策略路由归属系统账户，请刷新后重试')
     return
   }
+  const operationScopeParams = routeStrategyOperationScopeParams(record)
+  const requestToken = editDetailRequestToken + 1
+  editDetailRequestToken = requestToken
+  try {
+    const detail = await routeStrategiesApi.detail(record.id, operationScopeParams)
+    if (requestToken !== editDetailRequestToken) return
+    fillEditForm(detail, record.systemAccountId)
+  } catch (error) {
+    if (requestToken !== editDetailRequestToken) return
+    message.error(extractApiErrorMessage(error, '策略路由详情加载失败'))
+  }
+}
+
+function fillEditForm(record: RouteStrategySummary, fallbackSystemAccountId?: string) {
   editingId.value = record.id
-  editingSystemAccountId.value = record.systemAccountId
+  editingSystemAccountId.value = record.systemAccountId ?? fallbackSystemAccountId
   form.name = record.name
   form.description = record.description ?? ''
   form.mode = record.mode
   form.status = record.status
   form.groupBindings = record.groupBindings.length
-    ? record.groupBindings.map((binding) => createBindingRow(binding.groupId, binding.priority, binding.weight, binding.status))
+    ? record.groupBindings.map((binding) => createBindingRow(binding.groupId, binding.priority, binding.weight, binding.status, binding.groupName))
     : [createBindingRow()]
+  form.normal = normalRoutingFormFromConfig(record.normalRoutingConfig)
   form.hybrid = hybridRoutingFormFromConfig(record.hybridRoutingConfig)
   normalizeBindingRowsForMode()
   if (record.mode === 'hybrid_smart') normalizeHybridLevelRouteRanges()
@@ -835,7 +1023,12 @@ async function saveRouteStrategy() {
       const hybridRoutingConfig = buildHybridRoutingConfigPayload()
       if (hybridRoutingConfig === false) return
       payload.hybridRoutingConfig = hybridRoutingConfig
+      payload.normalRoutingConfig = null
+    } else if (form.mode === 'normal') {
+      payload.normalRoutingConfig = buildNormalRoutingConfigPayload()
+      payload.hybridRoutingConfig = null
     } else {
+      payload.normalRoutingConfig = null
       payload.hybridRoutingConfig = null
     }
     const operationScopeParams = routeStrategyOperationScopeParams()
@@ -859,7 +1052,7 @@ async function saveRouteStrategy() {
   }
 }
 
-async function deleteRouteStrategy(record: RouteStrategySummary) {
+async function deleteRouteStrategy(record: RouteStrategyListItem) {
   if (record.isDefault) {
     message.warning('默认路由不能删除')
     return
@@ -981,17 +1174,24 @@ function bindingRoleColor(index: number): string {
   return index === 0 ? 'blue' : 'orange'
 }
 
-function createBindingRow(groupId = '', priority = form.groupBindings.length + 1, weight = 1, status: 'active' | 'disabled' = 'active'): BindingFormRow {
+function createBindingRow(
+  groupId = '',
+  priority = form.groupBindings.length + 1,
+  weight = 1,
+  status: 'active' | 'disabled' = 'active',
+  groupName?: string
+): BindingFormRow {
   return {
     key: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
     groupId,
+    group: groupId && groupName?.trim() ? { id: groupId, name: groupName.trim() } : undefined,
     priority,
     weight,
     status
   }
 }
 
-function routeStrategyOperationScopeParams(record?: Pick<RouteStrategySummary, 'systemAccountId'>): { systemAccountId: string } | undefined {
+function routeStrategyOperationScopeParams(record?: Pick<RouteStrategyListItem | RouteStrategySummary, 'systemAccountId'>): { systemAccountId: string } | undefined {
   const systemAccountId = record?.systemAccountId?.trim()
     || editingSystemAccountId.value?.trim()
     || routeStrategyScopeParams.value?.systemAccountId
@@ -1107,7 +1307,7 @@ function normalizeBindingWeightValue(value: unknown): number {
   return Number.isInteger(numeric) && numeric >= 1 ? numeric : 1
 }
 
-function routeStrategyActions(record: RouteStrategySummary): RowActionItem[] {
+function routeStrategyActions(record: RouteStrategyListItem): RowActionItem[] {
   const actions: RowActionItem[] = [
     { key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' }
   ]
@@ -1124,9 +1324,9 @@ function routeStrategyActions(record: RouteStrategySummary): RowActionItem[] {
   return actions
 }
 
-function handleRouteStrategyAction(key: string, record: RouteStrategySummary) {
+function handleRouteStrategyAction(key: string, record: RouteStrategyListItem) {
   if (key === 'edit') {
-    openEdit(record)
+    void openEdit(record)
     return
   }
   if (key === 'delete') {
@@ -1134,35 +1334,42 @@ function handleRouteStrategyAction(key: string, record: RouteStrategySummary) {
   }
 }
 
-function visibleGroupBindings(record: RouteStrategySummary): RouteStrategyGroupBindingSummary[] {
-  return record.groupBindings.slice(0, 3)
+function visibleGroupBindings(record: RouteStrategyListItem): RouteStrategyGroupBindingPreview[] {
+  return record.groupBindingPreview
 }
 
-function hiddenGroupBindingCount(record: RouteStrategySummary): number {
-  return Math.max(0, record.groupBindings.length - 3)
+function hiddenGroupBindingCount(record: RouteStrategyListItem): number {
+  return Math.max(0, record.bindingCount - record.groupBindingPreview.length)
 }
 
-function routeStrategyGroupSummary(record: RouteStrategySummary): string {
-  if (!record.groupBindings.length) return '未绑定'
+function routeStrategyGroupSummary(record: RouteStrategyListItem): string {
+  if (!record.bindingCount) return '未绑定'
   const visibleNames = visibleGroupBindings(record).map(routeStrategyGroupLabel).join('、')
   const hiddenCount = hiddenGroupBindingCount(record)
-  return hiddenCount > 0 ? `${visibleNames} 等 ${record.groupBindings.length} 个分组` : visibleNames
+  return hiddenCount > 0 ? `${visibleNames} 等 ${record.bindingCount} 个分组` : visibleNames
 }
 
-function routeStrategyGroupLabel(binding: RouteStrategyGroupBindingSummary): string {
+function routeStrategyGroupLabel(binding: RouteStrategyGroupBindingPreview | RouteStrategyGroupBindingSummary): string {
   return binding.groupName || binding.groupId
 }
 
-function routeStrategyGroupTagColor(binding: RouteStrategyGroupBindingSummary): string {
+function routeStrategyGroupTagColor(binding: RouteStrategyGroupBindingPreview | RouteStrategyGroupBindingSummary): string {
   return binding.status === 'active' && binding.groupEnabled ? 'blue' : 'default'
 }
 
-function routeStrategySystemAccountText(record: RouteStrategySummary): string {
+function routeStrategySystemAccountText(record: RouteStrategyListItem | RouteStrategySummary): string {
   return record.systemAccountName || record.systemAccountId || '-'
 }
 
 function routeStrategyModeText(mode: RouteStrategyMode): string {
   return modeOptions.find((item) => item.value === mode)?.label ?? mode
+}
+
+function routeStrategyModeDisplayText(record: RouteStrategyListItem | RouteStrategySummary): string {
+  const base = routeStrategyModeText(record.mode)
+  if (record.mode !== 'normal') return base
+  const preference = record.normalRoutingConfig?.schedulingPreference ?? 'cost_first'
+  return `${base} / ${preference === 'speed_first' ? '速度优先' : '成本优先'}`
 }
 
 function routeStrategyModeColor(mode: RouteStrategyMode): string {
@@ -1179,6 +1386,58 @@ function routeStrategyStatusText(status: RouteStrategyStatus): string {
 
 function routeStrategyStatusColor(status: RouteStrategyStatus): string {
   return status === 'active' ? 'green' : 'default'
+}
+
+function defaultNormalRoutingForm(): NormalRoutingForm {
+  return {
+    schedulingPreference: 'cost_first',
+    speedFirstConfig: defaultSpeedFirstConfigForm()
+  }
+}
+
+function defaultSpeedFirstConfigForm(): RouteStrategySpeedFirstConfig {
+  return {
+    firstByteThresholdMs: 30000,
+    slowTriggerCount: 3,
+    slowWindowSeconds: 120,
+    recoverySuccessCount: 3,
+    probeIntervalSeconds: 30,
+    degradedTtlSeconds: 300,
+    retryOnFirstByteTimeout: true,
+    maxFirstByteRetriesPerRequest: 1
+  }
+}
+
+function normalRoutingFormFromConfig(config?: RouteStrategyNormalRoutingConfig): NormalRoutingForm {
+  const fallback = defaultNormalRoutingForm()
+  if (!config) return fallback
+  return {
+    schedulingPreference: config.schedulingPreference ?? fallback.schedulingPreference,
+    speedFirstConfig: {
+      ...fallback.speedFirstConfig,
+      ...(config.speedFirstConfig ?? {})
+    }
+  }
+}
+
+function buildNormalRoutingConfigPayload(): RouteStrategyNormalRoutingConfig {
+  if (form.normal.schedulingPreference !== 'speed_first') {
+    return { schedulingPreference: 'cost_first' }
+  }
+  const speedFirstConfig = form.normal.speedFirstConfig
+  return {
+    schedulingPreference: 'speed_first',
+    speedFirstConfig: {
+      firstByteThresholdMs: boundedInteger(speedFirstConfig.firstByteThresholdMs, 10000, 60000),
+      slowTriggerCount: boundedInteger(speedFirstConfig.slowTriggerCount, 2, 10),
+      slowWindowSeconds: boundedInteger(speedFirstConfig.slowWindowSeconds, 60, 600),
+      recoverySuccessCount: boundedInteger(speedFirstConfig.recoverySuccessCount, 3, 10),
+      probeIntervalSeconds: boundedInteger(speedFirstConfig.probeIntervalSeconds, 10, 300),
+      degradedTtlSeconds: boundedInteger(speedFirstConfig.degradedTtlSeconds, 60, 3600),
+      retryOnFirstByteTimeout: Boolean(speedFirstConfig.retryOnFirstByteTimeout),
+      maxFirstByteRetriesPerRequest: boundedInteger(speedFirstConfig.maxFirstByteRetriesPerRequest, 1, 3)
+    }
+  }
 }
 
 function defaultHybridRoutingForm(): HybridRoutingForm {
@@ -1398,9 +1657,14 @@ function boundedInteger(value: unknown, min: number, max: number): number {
 .route-strategy-name-text {
   overflow: hidden;
   color: #0f172a;
-  font-weight: 600;
+  font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.mobile-list-card-title,
+.mobile-list-card-name-row {
+  font-weight: 400;
 }
 
 .route-strategy-description {

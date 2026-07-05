@@ -9,7 +9,7 @@ import { getPostgresPool } from './postgres-client.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 
 type CustomProviderModelApiProtocol = ProviderModelPricing['supportedApiProtocols'][number]
-export type CustomProviderModelScope = 'personal'
+export type CustomProviderModelScope = 'global' | 'personal'
 export type CustomProviderModelStatus = 'draft' | 'active' | 'disabled'
 
 const customProviderModelApiProtocols = new Set<CustomProviderModelApiProtocol>([
@@ -140,10 +140,10 @@ export function listCustomProviderModelsForCatalog(input: {
     clauses.push("status = 'active'")
   }
   if (input.systemAccountId) {
-    clauses.push("scope = 'personal' AND system_account_id = ?")
+    clauses.push("((scope = 'global' AND system_account_id IS NULL) OR (scope = 'personal' AND system_account_id = ?))")
     params.push(input.systemAccountId)
   } else {
-    clauses.push('1 = 0')
+    clauses.push("scope = 'global' AND system_account_id IS NULL")
   }
 
   const rows = getBusinessDatabase()
@@ -171,10 +171,10 @@ export async function listCustomProviderModelsForCatalogAsync(input: {
     clauses.push("status = 'active'")
   }
   if (input.systemAccountId) {
-    clauses.push("scope = 'personal' AND system_account_id = ?")
+    clauses.push("((scope = 'global' AND system_account_id IS NULL) OR (scope = 'personal' AND system_account_id = ?))")
     params.push(input.systemAccountId)
   } else {
-    clauses.push('1 = 0')
+    clauses.push("scope = 'global' AND system_account_id IS NULL")
   }
 
   const client = await getCustomProviderModelsDatabaseClient()
@@ -211,8 +211,10 @@ export async function findCustomProviderModelByIdAsync(id: string): Promise<Cust
 export function upsertCustomProviderModel(input: UpsertCustomProviderModelInput): CustomProviderModelRecord {
   const providerCode = requiredText(input.providerCode, '供应商代码不能为空')
   const model = requiredText(input.model, '模型 ID 不能为空')
-  const scope: CustomProviderModelScope = 'personal'
-  const systemAccountId = requiredText(input.systemAccountId ?? input.actorSystemAccountId, '自定义模型必须归属当前系统账户')
+  const scope: CustomProviderModelScope = input.scope === 'global' ? 'global' : 'personal'
+  const systemAccountId = scope === 'global'
+    ? undefined
+    : requiredText(input.systemAccountId ?? input.actorSystemAccountId, '个人模型必须归属系统账户')
   const status = input.status ?? 'active'
   const now = nowIso()
   const existing = input.id
@@ -309,8 +311,10 @@ export async function upsertCustomProviderModelAsync(input: UpsertCustomProvider
   }
   const providerCode = requiredText(input.providerCode, '供应商代码不能为空')
   const model = requiredText(input.model, '模型 ID 不能为空')
-  const scope: CustomProviderModelScope = 'personal'
-  const systemAccountId = requiredText(input.systemAccountId ?? input.actorSystemAccountId, '自定义模型必须归属当前系统账户')
+  const scope: CustomProviderModelScope = input.scope === 'global' ? 'global' : 'personal'
+  const systemAccountId = scope === 'global'
+    ? undefined
+    : requiredText(input.systemAccountId ?? input.actorSystemAccountId, '个人模型必须归属系统账户')
   const status = input.status ?? 'active'
   const now = nowIso()
   const existing = input.id
@@ -552,6 +556,9 @@ export async function customProviderModelAccountBindingSummaryAsync(input: {
 }
 
 function accountBindingOwnerScope(scope: CustomProviderModelScope, systemAccountId?: string): { sql: string; params: SQLInputValue[] } {
+  if (scope === 'global') {
+    return { sql: '', params: [] }
+  }
   return {
     sql: 'AND accounts.system_account_id = ?',
     params: [requiredText(systemAccountId, '个人模型必须归属系统账户')]
@@ -564,11 +571,13 @@ function findCustomProviderModelByScope(
   systemAccountId: string | undefined,
   model: string
 ): CustomProviderModelRecord | undefined {
-  const row = scope === 'personal'
+  const row = scope === 'global'
     ? getBusinessDatabase()
+      .prepare(`SELECT ${customProviderModelColumns()} FROM custom_provider_models WHERE provider_code = ? AND scope = 'global' AND system_account_id IS NULL AND model = ? LIMIT 1`)
+      .get(providerCode, model)
+    : getBusinessDatabase()
       .prepare(`SELECT ${customProviderModelColumns()} FROM custom_provider_models WHERE provider_code = ? AND scope = 'personal' AND system_account_id = ? AND model = ? LIMIT 1`)
       .get(providerCode, systemAccountId ?? '', model)
-    : undefined
   return row ? customProviderModelFromRow(row as unknown as CustomProviderModelRow) : undefined
 }
 
@@ -578,8 +587,19 @@ async function findCustomProviderModelByScopeAsync(
   systemAccountId: string | undefined,
   model: string
 ): Promise<CustomProviderModelRecord | undefined> {
-  if (scope !== 'personal') return undefined
   const client = await getCustomProviderModelsDatabaseClient()
+  if (scope === 'global') {
+    const row = await client.one<CustomProviderModelRow>(`
+      SELECT ${customProviderModelColumns()}
+      FROM ${customProviderModelsTable(client)}
+      WHERE provider_code = ?
+        AND scope = 'global'
+        AND system_account_id IS NULL
+        AND model = ?
+      LIMIT 1
+    `, [providerCode, model])
+    return row ? customProviderModelFromRow(row) : undefined
+  }
   const row = await client.one<CustomProviderModelRow>(`
     SELECT ${customProviderModelColumns()}
     FROM ${customProviderModelsTable(client)}

@@ -4,7 +4,7 @@ import { runtimeConfig } from '../config/runtime.js'
 import { getBusinessDatabase, newId, nowIso, runInDatabaseTransaction } from './database.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { isBuiltInExternalIntegrationTestSourceId } from './external-integration-source-constants.js'
-import { mapSourceSummary } from './external-integration-source-mappers.js'
+import { mapSourceListItem, mapSourceSummary } from './external-integration-source-mappers.js'
 import {
   encodeRateLimits,
   encodeScopes,
@@ -16,6 +16,8 @@ import {
 import {
   createExternalIntegrationSourceToken,
   createExternalIntegrationSourceTokenInClientAsync,
+  loadExternalIntegrationSourcePrimaryTokensBySourceIds,
+  loadExternalIntegrationSourcePrimaryTokensBySourceIdsAsync,
   loadExternalIntegrationSourceTokensBySourceIds,
   loadExternalIntegrationSourceTokensBySourceIdsAsync,
   syncExternalIntegrationSourceTokenState,
@@ -38,31 +40,36 @@ import {
 } from './external-integration-source-write-helpers.js'
 import { getPostgresPool } from './postgres-client.js'
 import { normalizeListPage } from './query-utils.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
 export {
   builtInExternalIntegrationTestSourceId,
   builtInExternalIntegrationTestTokenId,
-  externalIntegrationAccessInfoReadScope,
   externalIntegrationAccountAddWriteScope,
   externalIntegrationAccountDeleteWriteScope,
   externalIntegrationAccountListReadScope,
   externalIntegrationAccountUpdateWriteScope,
-  externalIntegrationAccountUsageReadScope,
   externalIntegrationApiKeyAddWriteScope,
   externalIntegrationApiKeyDeleteWriteScope,
   externalIntegrationApiKeyListReadScope,
   externalIntegrationApiKeyUpdateWriteScope,
-  externalIntegrationConsumptionRankingReadScope,
   externalIntegrationGroupAddWriteScope,
   externalIntegrationGroupDeleteWriteScope,
   externalIntegrationGroupListReadScope,
   externalIntegrationGroupUpdateWriteScope,
-  externalIntegrationIpUsageReadScope,
-  externalIntegrationScopeOptions,
-  externalIntegrationSourceAuthDemoScope
+  externalIntegrationRouteStrategyAddWriteScope,
+  externalIntegrationRouteStrategyDeleteWriteScope,
+  externalIntegrationRouteStrategyListReadScope,
+  externalIntegrationRouteStrategyUpdateWriteScope,
+  externalIntegrationScopeOptions
 } from './external-integration-source-constants.js'
 
-export { validateExternalIntegrationSourceToken, validateExternalIntegrationSourceTokenAsync } from './external-integration-source-auth.repository.js'
+export {
+  flushExternalIntegrationSourceLastUsedTouchesForTest,
+  loadExternalIntegrationSourceTokenForAuthReadOnly,
+  validateExternalIntegrationSourceToken,
+  validateExternalIntegrationSourceTokenAsync
+} from './external-integration-source-auth.repository.js'
 export {
   createExternalIntegrationSourceToken,
   createExternalIntegrationSourceTokenAsync,
@@ -120,8 +127,17 @@ export function listExternalIntegrationSources(options: ExternalIntegrationSourc
   const rows = getBusinessDatabase().prepare(`
     SELECT
       sources.*,
-      0 AS token_count,
-      0 AS active_token_count
+      (
+        SELECT COUNT(*)
+        FROM external_integration_source_tokens AS tokens
+        WHERE tokens.source_ref_id = sources.id
+      ) AS token_count,
+      (
+        SELECT COUNT(*)
+        FROM external_integration_source_tokens AS tokens
+        WHERE tokens.source_ref_id = sources.id
+          AND tokens.status = 'active'
+      ) AS active_token_count
     FROM external_integration_sources AS sources
     ${whereSql}
     ORDER BY sources.updated_at DESC, sources.id DESC
@@ -129,16 +145,9 @@ export function listExternalIntegrationSources(options: ExternalIntegrationSourc
   `).all(...params, pageSize + 1, offset) as unknown as ExternalIntegrationSourceListRow[]
 
   const pageRows = rows.slice(0, pageSize)
-  const tokensBySourceId = loadExternalIntegrationSourceTokensBySourceIds(pageRows.map((row) => row.id))
+  const primaryTokensBySourceId = loadExternalIntegrationSourcePrimaryTokensBySourceIds(pageRows.map((row) => row.id))
   return {
-    items: pageRows.map((row) => {
-      const tokens = tokensBySourceId.get(row.id) ?? []
-      return mapSourceSummary({
-        ...row,
-        token_count: tokens.length,
-        active_token_count: tokens.filter((token) => token.status === 'active').length
-      }, tokens)
-    }),
+    items: pageRows.map((row) => mapSourceListItem(row, primaryTokensBySourceId.get(row.id))),
     page,
     pageSize,
     pageUpperBound: offset + pageRows.length + (rows.length > pageSize ? 1 : 0),
@@ -147,6 +156,12 @@ export function listExternalIntegrationSources(options: ExternalIntegrationSourc
 }
 
 export async function listExternalIntegrationSourcesAsync(options: ExternalIntegrationSourceListOptions = {}): Promise<ExternalIntegrationSourceListResult> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_external_integration_sources_read_only',
+      options
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listExternalIntegrationSources(options)
   }
@@ -169,8 +184,17 @@ export async function listExternalIntegrationSourcesAsync(options: ExternalInteg
   const rows = await client.query<ExternalIntegrationSourceListRow>(`
     SELECT
       sources.*,
-      0 AS token_count,
-      0 AS active_token_count
+      (
+        SELECT COUNT(*)
+        FROM ${externalIntegrationSourceBusinessTable(client, 'external_integration_source_tokens')} AS tokens
+        WHERE tokens.source_ref_id = sources.id
+      ) AS token_count,
+      (
+        SELECT COUNT(*)
+        FROM ${externalIntegrationSourceBusinessTable(client, 'external_integration_source_tokens')} AS tokens
+        WHERE tokens.source_ref_id = sources.id
+          AND tokens.status = 'active'
+      ) AS active_token_count
     FROM ${externalIntegrationSourceBusinessTable(client, 'external_integration_sources')} AS sources
     ${whereSql}
     ORDER BY sources.updated_at DESC, sources.id DESC
@@ -178,16 +202,9 @@ export async function listExternalIntegrationSourcesAsync(options: ExternalInteg
   `, [...params, pageSize + 1, offset])
 
   const pageRows = rows.slice(0, pageSize)
-  const tokensBySourceId = await loadExternalIntegrationSourceTokensBySourceIdsAsync(pageRows.map((row) => row.id), client)
+  const primaryTokensBySourceId = await loadExternalIntegrationSourcePrimaryTokensBySourceIdsAsync(pageRows.map((row) => row.id), client)
   return {
-    items: pageRows.map((row) => {
-      const tokens = tokensBySourceId.get(row.id) ?? []
-      return mapSourceSummary({
-        ...row,
-        token_count: tokens.length,
-        active_token_count: tokens.filter((token) => token.status === 'active').length
-      }, tokens)
-    }),
+    items: pageRows.map((row) => mapSourceListItem(row, primaryTokensBySourceId.get(row.id))),
     page,
     pageSize,
     pageUpperBound: offset + pageRows.length + (rows.length > pageSize ? 1 : 0),
@@ -211,6 +228,12 @@ export function findExternalIntegrationSource(id: string): ExternalIntegrationSo
 }
 
 export async function findExternalIntegrationSourceAsync(id: string): Promise<ExternalIntegrationSourceSummary | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'find_external_integration_source_read_only',
+      id
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return findExternalIntegrationSource(id)
   }
@@ -388,6 +411,56 @@ export function upsertExternalIntegrationSource(input: ExternalIntegrationSource
     now,
     now
   )
+  return { id, name }
+}
+
+export async function upsertExternalIntegrationSourceAsync(input: ExternalIntegrationSourceInput): Promise<{ id: string; name: string }> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return upsertExternalIntegrationSource(input)
+  }
+  assertKnownInputKeys(input, externalIntegrationSourceInputKeys, '来源系统')
+  const name = normalizeNameOrThrow(input.name, '来源系统名称不能为空')
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const existing = await client.one<Pick<ExternalIntegrationSourceRow, 'id' | 'name'>>(`
+    SELECT id, name
+    FROM ${externalIntegrationSourceBusinessTable(client, 'external_integration_sources')}
+    WHERE lower(name) = lower(?)
+    LIMIT 1
+  `, [name])
+  const id = existing?.id ?? newId('extsrc')
+  const now = nowIso()
+  if (existing) {
+    await client.execute(`
+      UPDATE ${externalIntegrationSourceBusinessTable(client, 'external_integration_sources')}
+      SET name = ?, status = ?, scopes_json = ?, rate_limits_json = ?, expires_at = ?, notes = ?, updated_at = ?
+      WHERE id = ?
+    `, [
+      name,
+      normalizeSourceStatusInput(input.status),
+      encodeScopes(input.scopes),
+      encodeRateLimits(input.rateLimits),
+      normalizeNullableIso(input.expiresAt),
+      normalizeNullableText(input.notes),
+      now,
+      id
+    ])
+    return { id, name }
+  }
+  await client.execute(`
+    INSERT INTO ${externalIntegrationSourceBusinessTable(client, 'external_integration_sources')} (
+      id, name, status, scopes_json, rate_limits_json, expires_at, notes, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `, [
+    id,
+    name,
+    normalizeSourceStatusInput(input.status),
+    encodeScopes(input.scopes),
+    encodeRateLimits(input.rateLimits),
+    normalizeNullableIso(input.expiresAt),
+    normalizeNullableText(input.notes),
+    now,
+    now
+  ])
   return { id, name }
 }
 

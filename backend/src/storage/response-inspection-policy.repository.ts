@@ -6,6 +6,7 @@ import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import { isProtocolProviderCode, isProtocolProviderCodeAsync } from './provider.repository.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 export type ResponseInspectionPolicyScopeType = 'protocol' | 'provider'
 export type ResponseInspectionPolicySource = 'system_default' | 'management' | 'account'
 export type ResponseInspectionPolicyClientProfile =
@@ -229,6 +230,7 @@ const systemDefaultRules: ResponseInspectionPolicySummary[] = [
     protocolCode: OPENAI_PROTOCOL_CODE,
     providerCode: GPT_VENDOR_CODE,
     match: {
+      clientProfiles: ['codex'],
       errorCodes: ['cyber_policy']
     },
     action: 'retry_no_avoidance',
@@ -294,6 +296,11 @@ export function listResponseInspectionPolicies(): ResponseInspectionPolicyListRe
 }
 
 export async function listResponseInspectionPoliciesAsync(): Promise<ResponseInspectionPolicyListResult> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_response_inspection_policies_read_only'
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listResponseInspectionPolicies()
   }
@@ -343,6 +350,12 @@ export async function listActiveResponseInspectionPoliciesForGatewayAsync(input:
   protocolCode: string
   providerCode?: string
 }): Promise<ResponseInspectionPolicySummary[]> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_active_response_inspection_policies_read_only',
+      input
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listActiveResponseInspectionPoliciesForGateway(input)
   }

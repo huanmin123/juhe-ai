@@ -1,5 +1,6 @@
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { listAccountApiKeyRuntimeStatesDueForProbeAsync } from '../../storage/account-api-key-runtime-state.repository.js'
+import { listNormalRouteLatencyProbeCandidatesAsync } from '../gateway/runtime/normal-route-latency-degradation.service.js'
 import { clearGatewayRuntimeCache } from '../gateway/runtime/runtime-cache.service.js'
 import { requestStatsWriter } from './background-stats-writer.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
@@ -23,8 +24,14 @@ import {
   getCooldownAccountRetestQueueSnapshot,
   setCooldownAccountRetestQueueConcurrency
 } from './cooldown-account-retest.service.js'
+import {
+  enqueueNormalRouteSpeedFirstRecoveryProbe,
+  getNormalRouteSpeedFirstRecoveryProbeQueueSnapshot,
+  setNormalRouteSpeedFirstRecoveryProbeQueueConcurrency
+} from './normal-route-speed-first-recovery-probe.service.js'
 
 const accountQualityFailurePrecheckBatchSize = 10
+const normalRouteSpeedFirstRecoveryProbeBatchSize = 10
 const maxOpsExternalIoConcurrency = 10
 const maxOpsFullDiagnosticConcurrency = 3
 const backgroundProbeDbServiceTimeoutMs = 10_000
@@ -194,6 +201,37 @@ export async function runAccountApiKeyCooldownRetest(deps: AccountRetestDeps): P
       retryQueueNextRunAt: queue.nextRunAt,
       elapsedMs: Date.now() - startedAtMs
     }, '账户内 API Key 复测候选已加入异步队列')
+  }
+}
+
+export async function runNormalRouteSpeedFirstRecoveryProbe(): Promise<void> {
+  const batchSize = normalRouteSpeedFirstRecoveryProbeBatchSize
+  const queueConcurrency = boundedOpsQueueConcurrency(batchSize)
+  setNormalRouteSpeedFirstRecoveryProbeQueueConcurrency(queueConcurrency)
+  const candidates = await listNormalRouteLatencyProbeCandidatesAsync(batchSize)
+  const startedAtMs = Date.now()
+  let enqueuedCount = 0
+  let skippedQueuedCount = 0
+  for (const candidate of candidates) {
+    if (enqueueNormalRouteSpeedFirstRecoveryProbe(candidate)) {
+      enqueuedCount += 1
+    } else {
+      skippedQueuedCount += 1
+    }
+  }
+  if (candidates.length > 0) {
+    const queue = getNormalRouteSpeedFirstRecoveryProbeQueueSnapshot()
+    logger.info({
+      event: 'background_normal_route_speed_first_recovery_probe_completed',
+      candidateCount: candidates.length,
+      enqueuedCount,
+      skippedQueuedCount,
+      recoveryProbeQueueConcurrency: queueConcurrency,
+      recoveryProbeQueuePendingCount: queue.pendingCount,
+      recoveryProbeQueueRunningCount: queue.runningCount,
+      recoveryProbeQueueNextRunAt: queue.nextRunAt,
+      elapsedMs: Date.now() - startedAtMs
+    }, '普通路由速度优先恢复探针候选已加入异步队列')
   }
 }
 

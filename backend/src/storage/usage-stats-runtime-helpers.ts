@@ -1,4 +1,5 @@
 import type { AccountUsageStatsRange } from '../domain/types.js'
+import { runtimeConfig } from '../config/runtime.js'
 import { getStatsDatabase } from './database.js'
 import { dateKey, usageStatsTimezone } from './usage-stats-helpers.js'
 import { FIXED_RANGE_WINDOW_DAYS } from './usage-stats-window-helpers.js'
@@ -14,6 +15,9 @@ export function normalizeDefaultUsageStatsRange(timezone = usageStatsTimezone())
 }
 
 export function latestUsageStatsLagSeconds(): number | undefined {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    throw new Error('PostgreSQL 模式禁止读取 SQLite stats_job_state，请使用 latestUsageStatsLagSecondsForRuntime')
+  }
   const database = getStatsDatabase()
   const shardRow = database
     .prepare("SELECT MAX(lag_seconds) AS lag_seconds FROM stats_job_state WHERE scope_type = 'usage_shard' AND job_name = 'usage_stats_aggregation'")

@@ -55,7 +55,7 @@
 | `runtime-log-file-import` | `ingest-worker` | 按 offset / cursor 追增量 |
 | `background_worker_record_maintenance` | `ingest-worker` / `stats-worker` | usage / dataset 进 ingest；stats-only command 进 stats writer |
 | `api-key-record-cleanup-retry` / `account-record-cleanup-retry` | `ingest-worker` | 关联明细清理，等待统计安全游标 |
-| `audit-hot-retention-cleanup` / `data-retention-cleanup` dataset 部分 | `ingest-worker` | 小批多轮，不能压住热写入 |
+| `audit-hot-retention-cleanup` / `data-retention-cleanup` dataset 部分 | `ingest-worker` | 小批多轮，不能压住热写入；PostgreSQL performance 下 `data-retention-cleanup` 只投递 record-maintenance 维护任务 |
 | `system-metrics-sample` | `stats-worker` | 系统采样和进程事件循环 / 内存样本统一写 stats SQLite |
 | `usage-stats-aggregation` | `stats-worker` | 按 usage shard 游标增量聚合 |
 | `client-ip-stats-aggregation` | `stats-worker` | dirty IP 增量窗口刷新 |

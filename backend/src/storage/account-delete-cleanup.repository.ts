@@ -1075,7 +1075,7 @@ async function loadDeletedAccountCleanupAuthorizationRowsAsync(
       SELECT id, resource_id, grantee_system_account_id
       FROM juhe_business.resource_authorizations
       WHERE resource_type = 'account'
-        AND resource_id = ANY(?)
+        AND resource_id = ANY(?::text[])
     `, [chunk])
     for (const row of chunkRows) {
       if (row.id) rows.set(row.id, row)
@@ -1085,7 +1085,7 @@ async function loadDeletedAccountCleanupAuthorizationRowsAsync(
     const chunkRows = await client.query<DeletedAccountCleanupAuthorizationRow>(`
       SELECT id, resource_id, grantee_system_account_id
       FROM juhe_business.resource_authorizations
-      WHERE id = ANY(?)
+      WHERE id = ANY(?::text[])
     `, [chunk])
     for (const row of chunkRows) {
       if (row.id) rows.set(row.id, row)
@@ -1100,7 +1100,7 @@ async function loadActiveDeletedAccountCleanupAuthorizationInstanceIdsAsync(clie
     const rows = await client.query<{ authorization_instance_authorization_id?: string | null }>(`
       SELECT DISTINCT authorization_instance_authorization_id
       FROM juhe_business.accounts
-      WHERE authorization_instance_authorization_id = ANY(?)
+      WHERE authorization_instance_authorization_id = ANY(?::text[])
         AND deleted_at IS NULL
     `, [chunk])
     for (const row of rows) {
@@ -1123,7 +1123,7 @@ async function loadDeletedAccountCleanupTeamScopeIdsAsync(
     const rows = await client.query<DeletedAccountCleanupTeamSourceRow>(`
       SELECT authorization_id, source_team_id
       FROM juhe_business.resource_authorization_sources
-      WHERE authorization_id = ANY(?)
+      WHERE authorization_id = ANY(?::text[])
         AND source_team_id IS NOT NULL
     `, [chunk])
     for (const row of rows) {
@@ -1146,7 +1146,7 @@ async function loadDeletedSourceAccountGrantIdsAsync(client: DatabaseClient, acc
       SELECT id
       FROM juhe_business.resource_authorization_grants
       WHERE resource_type = 'account'
-        AND resource_id = ANY(?)
+        AND resource_id = ANY(?::text[])
     `, [chunk])
     grantIds.push(...rows.map((row) => String(row.id ?? '')))
   }
@@ -1168,7 +1168,7 @@ async function loadDeletedAuthorizationInstanceGrantIdsAsync(client: DatabaseCli
       INNER JOIN juhe_business.resource_authorization_sources sources
         ON sources.authorization_id = authorizations.id
         AND sources.source_type = 'manual'
-      WHERE authorizations.id = ANY(?)
+      WHERE authorizations.id = ANY(?::text[])
     `, [chunk])
     grantIds.push(...rows.map((row) => String(row.id ?? '')))
   }
@@ -1182,7 +1182,7 @@ async function hasDeletedAccountRelatedRecordDataAsync(client: DatabaseClient, i
   if (await postgresRowsExist(client, `
     SELECT 1
     FROM juhe_dataset.account_record_cleanup_targets
-    WHERE account_id = ANY(?)
+    WHERE account_id = ANY(?::text[])
     LIMIT 1
   `, [accountIds])) {
     return true
@@ -1190,7 +1190,7 @@ async function hasDeletedAccountRelatedRecordDataAsync(client: DatabaseClient, i
   if (await postgresRowsExist(client, `
     SELECT 1
     FROM juhe_usage.usage_records
-    WHERE account_id = ANY(?)
+    WHERE account_id = ANY(?::text[])
     LIMIT 1
   `, [accountIds])) {
     return true
@@ -1198,7 +1198,7 @@ async function hasDeletedAccountRelatedRecordDataAsync(client: DatabaseClient, i
   if (authorizationIds.length > 0 && await postgresRowsExist(client, `
     SELECT 1
     FROM juhe_usage.usage_records
-    WHERE account_authorization_id = ANY(?)
+    WHERE account_authorization_id = ANY(?::text[])
     LIMIT 1
   `, [authorizationIds])) {
     return true
@@ -1206,7 +1206,7 @@ async function hasDeletedAccountRelatedRecordDataAsync(client: DatabaseClient, i
   if (teamScopeIds.length > 0 && await postgresRowsExist(client, `
     SELECT 1
     FROM juhe_usage.usage_records
-    WHERE group_authorization_id = ANY(?)
+    WHERE group_authorization_id = ANY(?::text[])
     LIMIT 1
   `, [teamScopeIds])) {
     return true
@@ -1214,7 +1214,7 @@ async function hasDeletedAccountRelatedRecordDataAsync(client: DatabaseClient, i
   if (await postgresRowsExist(client, `
     SELECT 1
     FROM juhe_dataset.audit_logs
-    WHERE account_id = ANY(?)
+    WHERE account_id = ANY(?::text[])
     LIMIT 1
   `, [accountIds])) {
     return true
@@ -1223,7 +1223,7 @@ async function hasDeletedAccountRelatedRecordDataAsync(client: DatabaseClient, i
     SELECT 1
     FROM juhe_dataset.model_check_runs
     WHERE target_type = 'account'
-      AND target_id = ANY(?)
+      AND target_id = ANY(?::text[])
     LIMIT 1
   `, [accountIds])) {
     return true
@@ -1231,7 +1231,7 @@ async function hasDeletedAccountRelatedRecordDataAsync(client: DatabaseClient, i
   if (await postgresRowsExist(client, `
     SELECT 1
     FROM juhe_stats.account_quality_scores
-    WHERE account_id = ANY(?)
+    WHERE account_id = ANY(?::text[])
     LIMIT 1
   `, [accountIds])) {
     return true
@@ -1239,7 +1239,7 @@ async function hasDeletedAccountRelatedRecordDataAsync(client: DatabaseClient, i
   if (await postgresRowsExist(client, `
     SELECT 1
     FROM juhe_stats.account_usage_snapshots
-    WHERE account_id = ANY(?)
+    WHERE account_id = ANY(?::text[])
     LIMIT 1
   `, [accountIds])) {
     return true
@@ -1278,7 +1278,7 @@ async function hasDeletedAccountScopeStatsRowsAsync(client: DatabaseClient, inpu
         FROM juhe_stats.${tableName}
         WHERE system_account_id = ?
           AND scope_type = ?
-          AND scope_id = ANY(?)
+          AND scope_id = ANY(?::text[])
         LIMIT 1
       `, [input.systemAccountId, type, scopeIds])) {
         return true
@@ -1289,7 +1289,7 @@ async function hasDeletedAccountScopeStatsRowsAsync(client: DatabaseClient, inpu
       FROM juhe_stats.usage_rank_snapshots
       WHERE system_account_id = ?
         AND scope_type = ?
-        AND scope_id = ANY(?)
+        AND scope_id = ANY(?::text[])
       LIMIT 1
     `, [input.systemAccountId, type, scopeIds])) {
       return true
@@ -1373,27 +1373,27 @@ async function physicallyDeleteExpiredDeletedAccountBusinessRowsAsync(
   }
   await client.transaction(async (tx) => {
     for (const chunk of chunkValues(accountIds, 900)) {
-      result.groupBindings += await executeChangedRows(tx, 'DELETE FROM juhe_business.group_accounts WHERE account_id = ANY(?)', [chunk])
-      await tx.execute('DELETE FROM juhe_business.account_supported_models WHERE account_id = ANY(?)', [chunk])
-      await tx.execute('DELETE FROM juhe_business.account_model_mappings WHERE account_id = ANY(?)', [chunk])
-      await tx.execute('DELETE FROM juhe_business.account_tag_bindings WHERE account_id = ANY(?)', [chunk])
-      await tx.execute('DELETE FROM juhe_business.account_name_search_terms WHERE account_id = ANY(?)', [chunk])
-      await tx.execute('DELETE FROM juhe_business.account_name_search_documents WHERE account_id = ANY(?)', [chunk])
-      await tx.execute('DELETE FROM juhe_business.account_api_key_runtime_states WHERE account_id = ANY(?)', [chunk])
+      result.groupBindings += await executeChangedRows(tx, 'DELETE FROM juhe_business.group_accounts WHERE account_id = ANY(?::text[])', [chunk])
+      await tx.execute('DELETE FROM juhe_business.account_supported_models WHERE account_id = ANY(?::text[])', [chunk])
+      await tx.execute('DELETE FROM juhe_business.account_model_mappings WHERE account_id = ANY(?::text[])', [chunk])
+      await tx.execute('DELETE FROM juhe_business.account_tag_bindings WHERE account_id = ANY(?::text[])', [chunk])
+      await tx.execute('DELETE FROM juhe_business.account_name_search_terms WHERE account_id = ANY(?::text[])', [chunk])
+      await tx.execute('DELETE FROM juhe_business.account_name_search_documents WHERE account_id = ANY(?::text[])', [chunk])
+      await tx.execute('DELETE FROM juhe_business.account_api_key_runtime_states WHERE account_id = ANY(?::text[])', [chunk])
     }
     for (const chunk of chunkValues(authorizationIds, 900)) {
-      result.groupBindings += await executeChangedRows(tx, 'DELETE FROM juhe_business.group_accounts WHERE account_authorization_id = ANY(?)', [chunk])
-      await tx.execute('DELETE FROM juhe_business.resource_authorization_sources WHERE authorization_id = ANY(?)', [chunk])
+      result.groupBindings += await executeChangedRows(tx, 'DELETE FROM juhe_business.group_accounts WHERE account_authorization_id = ANY(?::text[])', [chunk])
+      await tx.execute('DELETE FROM juhe_business.resource_authorization_sources WHERE authorization_id = ANY(?::text[])', [chunk])
     }
     for (const chunk of chunkValues(grantIds, 900)) {
-      result.grants += await executeChangedRows(tx, 'DELETE FROM juhe_business.resource_authorization_grants WHERE id = ANY(?)', [chunk])
+      result.grants += await executeChangedRows(tx, 'DELETE FROM juhe_business.resource_authorization_grants WHERE id = ANY(?::text[])', [chunk])
     }
     for (const chunk of chunkValues(relatedAccountIds, 900)) {
-      result.accounts += await executeChangedRows(tx, 'DELETE FROM juhe_business.accounts WHERE id = ANY(?)', [chunk])
+      result.accounts += await executeChangedRows(tx, 'DELETE FROM juhe_business.accounts WHERE id = ANY(?::text[])', [chunk])
     }
     result.accounts += await executeChangedRows(tx, 'DELETE FROM juhe_business.accounts WHERE id = ?', [target.accountId])
     for (const chunk of chunkValues(authorizationIds, 900)) {
-      result.authorizations += await executeChangedRows(tx, 'DELETE FROM juhe_business.resource_authorizations WHERE id = ANY(?)', [chunk])
+      result.authorizations += await executeChangedRows(tx, 'DELETE FROM juhe_business.resource_authorizations WHERE id = ANY(?::text[])', [chunk])
     }
   })
   return result

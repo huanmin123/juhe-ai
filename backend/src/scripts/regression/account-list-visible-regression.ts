@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-list-visible-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -141,6 +142,7 @@ function seedData(): SeedState {
   }, userBAccess)
   const userAAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '账户列表可见种子 A',
     type: 'api_key',
     credentials: { api_key: 'sk-account-list-visible-a', base_url: 'https://api.openai.com/v1' },
@@ -149,6 +151,7 @@ function seedData(): SeedState {
   }, userAAccess)
   const userBAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '账户列表可见种子 B',
     type: 'api_key',
     credentials: { api_key: 'sk-account-list-visible-b', base_url: 'https://api.openai.com/v1' },

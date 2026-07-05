@@ -40,6 +40,7 @@ import {
 } from './modules/record-maintenance/record-maintenance-queue.service.js'
 import { startRuntimeLogFileImport } from './modules/runtime-logs/runtime-log-file-import.service.js'
 import {
+  enqueueRuntimeLogLine,
   enqueueRuntimeLogLineLocal,
   flushRuntimeLogIndexQueueForShutdownAsync,
   getRuntimeLogIndexRuntime,
@@ -60,6 +61,7 @@ import { getCooldownAccountRetestQueueSnapshot } from './modules/background/cool
 import { getAccountApiKeyCooldownRetestQueueSnapshot } from './modules/background/account-api-key-cooldown-retest.service.js'
 import { getAccountHealthCheckQueueSnapshot } from './modules/background/account-health-check.service.js'
 import { getAccountQualityFailurePrecheckQueueSnapshot } from './modules/background/account-quality-failure-precheck.service.js'
+import { getNormalRouteSpeedFirstRecoveryProbeQueueSnapshot } from './modules/background/normal-route-speed-first-recovery-probe.service.js'
 import { handleStatsWriteOperation, type BackgroundStatsWriteOperation } from './modules/background/background-stats-writer.js'
 import { handleDatasetWriteOperation, type BackgroundDatasetWriteOperation } from './modules/background/background-dataset-writer.js'
 import {
@@ -104,7 +106,9 @@ if (isIngestWorker()) {
   installAuditLogQueueShutdownHooks()
   installPublicApiLogQueueShutdownHooks()
   installRecordMaintenanceQueueShutdownHooks()
-  setRuntimeLogLineSink((line, options) => enqueueRuntimeLogLineLocal(line, options))
+  setRuntimeLogLineSink(runtimeConfig.queueDriver === 'redis_stream'
+    ? (line, options) => enqueueRuntimeLogLine(line, options)
+    : (line, options) => enqueueRuntimeLogLineLocal(line, options))
   startUsageRecordRedisStreamConsumer()
   startOperationLogRedisStreamConsumer()
   startPublicApiLogRedisStreamConsumer()
@@ -115,9 +119,7 @@ if (isIngestWorker()) {
     startRuntimeLogFileImport()
   }
 } else if (isOpsWorker()) {
-  if (runtimeConfig.databaseDriver === 'sqlite') {
-    startAccountTestTaskQueue()
-  }
+  startAccountTestTaskQueue()
 }
 startBackgroundJobs()
 
@@ -136,6 +138,7 @@ process.on('message', (message: unknown) => {
   if (isStatsWorker() && !isWorkerControlMessage(message)) {
     return
   }
+  assertLocalQueueIpcAllowed(message)
 
   switch (message.type) {
     case 'background_worker_usage_records':
@@ -255,6 +258,7 @@ function buildRuntimeSnapshot(): BackgroundWorkerRuntimeSnapshot {
     accountHealthCheckQueue: getAccountHealthCheckQueueSnapshot(),
     cooldownAccountRetestQueue: getCooldownAccountRetestQueueSnapshot(),
     accountApiKeyCooldownRetestQueue: getAccountApiKeyCooldownRetestQueueSnapshot(),
+    normalRouteSpeedFirstRecoveryProbeQueue: getNormalRouteSpeedFirstRecoveryProbeQueueSnapshot(),
     accountQualityFailurePrecheckQueue: getAccountQualityFailurePrecheckQueueSnapshot(),
     manualAccountTestQueue: getManualAccountTestQueueSnapshot()
   }
@@ -439,6 +443,21 @@ function isIngestWorkerMessage(message: WorkerIncomingMessage): boolean {
     || message.type === 'background_worker_public_api_logs'
     || message.type === 'background_worker_record_maintenance'
     || message.type === 'background_worker_dataset_write_request'
+    || message.type === 'background_worker_runtime_log_line'
+}
+
+function assertLocalQueueIpcAllowed(message: WorkerIncomingMessage): void {
+  if (runtimeConfig.queueDriver !== 'redis_stream') return
+  if (!isLocalQueueIpcMessage(message)) return
+  throw new Error(`Redis Stream queue driver 下禁止消费后台 IPC 本地队列消息：${message.type}`)
+}
+
+function isLocalQueueIpcMessage(message: WorkerIncomingMessage): boolean {
+  return message.type === 'background_worker_usage_records'
+    || message.type === 'background_worker_audit_logs'
+    || message.type === 'background_worker_operation_logs'
+    || message.type === 'background_worker_public_api_logs'
+    || message.type === 'background_worker_record_maintenance'
     || message.type === 'background_worker_runtime_log_line'
 }
 

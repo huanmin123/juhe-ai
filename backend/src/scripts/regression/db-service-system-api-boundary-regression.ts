@@ -10,6 +10,7 @@ const dbServiceSource = readFileSync(resolve(backendRoot, 'src/db-service.ts'), 
 const systemApiSource = readFileSync(resolve(backendRoot, 'src/modules/system-api/system-api-app.ts'), 'utf8')
 const proxySource = readFileSync(resolve(backendRoot, 'src/modules/db-service/db-service-http-proxy.ts'), 'utf8')
 const dbServicePrioritySource = readFileSync(resolve(backendRoot, 'src/modules/db-service/db-service-request-priority.ts'), 'utf8')
+const dbServiceAccessModeSource = readFileSync(resolve(backendRoot, 'src/modules/db-service/db-service-operation-access-mode.ts'), 'utf8')
 
 const forbiddenServerImports = [
   'modules/accounts/',
@@ -59,12 +60,20 @@ assert(publicProxyIndex < gatewayRawIndex, '公开系统 API 代理必须早于�
 assert(systemApiSource.includes("systemApiJsonBodyLimit = '256kb'"), 'DB service system API JSON 请求体上限必须保持 256KB')
 assert(proxySource.includes('dbServiceHttpProxyMaxInFlight'), 'DB service HTTP proxy 必须保留最大并发保护')
 assert(proxySource.includes('dbServiceHttpProxyTimeoutMs'), 'DB service HTTP proxy 必须保留内部超时保护')
-assert(dbServiceSource.includes('enqueueDbServiceRequest'), 'DB service 父进程 IPC 请求必须先进入内部优先级队列')
-assert(dbServiceSource.includes('shiftNextDbServiceRequest'), 'DB service 内部队列必须按优先级取下一个请求')
+assert(dbServiceSource.includes('shouldQueueDbServiceRequest'), 'DB service 父进程 IPC 请求必须先区分读写调度路径')
+assert(dbServiceSource.includes('enqueueDbServiceRequest'), 'DB service 写入/维护 IPC 请求必须进入内部优先级队列')
+assert(dbServiceSource.includes('dispatchDbServiceRequestImmediately'), 'DB service 读/runtime IPC 请求必须支持绕过写队列直接派发')
+assert(dbServiceSource.includes('shiftNextDispatchableDbServiceRequest'), 'DB service 内部队列必须按优先级取下一个可派发请求')
 assert(dbServiceSource.includes('yieldDbServiceRequestQueue'), 'DB service 内部队列每个请求后必须让出事件循环，避免后台 IPC 长时间压住 HTTP 管理请求')
 assert(systemApiSource.includes('systemApiDbServiceAdmissionControl'), 'DB service system API 必须有内部在途请求保护，避免管理端慢查询压住 DB service')
 assert(dbServiceSource.includes('dbServiceRequestQueueMaxRequests'), 'DB service 子进程队列必须保留请求数上限')
 assert(dbServiceSource.includes('dbServiceRequestQueueMaxBytes'), 'DB service 子进程队列必须保留字节上限')
+assert(
+  dbServiceSource.includes('dbServiceRequestPriorityForMessage')
+    && dbServiceSource.includes('message.priority')
+    && dbServiceSource.includes('normalizeDbServiceRequestPriority'),
+  'DB service 子进程队列必须支持 IPC 显式优先级，确保后台 worker 请求可整体降级'
+)
 assert(
   dbServiceSource.includes('dbServiceHighDispatchesBeforeLow')
     && dbServiceSource.includes('dbServiceRequestPriorityOrder')
@@ -78,7 +87,8 @@ assert(
     && !dbServiceSource.includes('blockedByConcurrentLimit'),
   'DB service concurrent 写池满时必须跳过暂不可执行请求，不能队首阻塞普通管理操作'
 )
-assert(dbServicePrioritySource.includes('cleanup_expired_system_sessions'), 'DB service 维护类操作必须登记为低优先级候选')
+assert(dbServicePrioritySource.includes('dbServiceOperationAccessMode'), 'DB service 优先级必须由 operation access mode 派生')
+assert(dbServiceAccessModeSource.includes("cleanup_expired_system_sessions: 'maintenance'"), 'DB service 维护类操作必须登记为 maintenance access mode')
 assert.equal(
   dbServiceOperationPriority({ type: 'cleanup_expired_system_sessions', expiredBefore: '2000-01-01T00:00:00.000Z', limit: 1 }),
   'low',

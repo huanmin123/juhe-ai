@@ -1,4 +1,4 @@
-import { createAppCache, createSharedJsonCache } from '../../../shared/cache.js'
+import { clearSharedJsonCacheInBackground, createAppCache, createSharedJsonCache } from '../../../shared/cache.js'
 import { registerApiKeyQuotaCacheInvalidator, syncGatewayCacheInvalidationsFromRuntimeState } from '../../../shared/gateway-cache-invalidation.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
@@ -77,6 +77,25 @@ export function checkGatewayApiKeyQuota(apiKey: GatewayApiKeyRow, now = new Date
   return decision
 }
 
+export function checkGatewayApiKeyQuotaReadOnly(apiKey: GatewayApiKeyRow, now = new Date()): ApiKeyQuotaDecision {
+  const quotaLimits = parseRequestQuotaLimitsJson(apiKey.quota_limits_json)
+  if (!hasEnabledRequestQuotaLimit(quotaLimits)) {
+    return { allowed: true }
+  }
+  const quotaCosts = loadRequestQuotaCosts(getStatsDatabase(), {
+    systemAccountId: apiKey.system_account_id,
+    scopeType: 'api_key',
+    scopeId: apiKey.id,
+    now,
+    hourlyWindowHours: quotaLimits.hourly?.hours
+  })
+  const allowed = !isRequestQuotaExceeded(quotaLimits, quotaCosts)
+  return {
+    allowed,
+    message: allowed ? undefined : API_KEY_QUOTA_EXCEEDED_MESSAGE
+  }
+}
+
 export async function checkGatewayApiKeyQuotaExactAsync(apiKey: GatewayApiKeyRow, now = new Date()): Promise<ApiKeyQuotaDecision> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return checkGatewayApiKeyQuota(apiKey, now)
@@ -88,9 +107,11 @@ export async function checkGatewayApiKeyQuotaExactAsync(apiKey: GatewayApiKeyRow
   }
 
   const cacheKey = await apiKeyQuotaCacheKeyAsync(apiKey, now, quotaLimits.hourly?.hours)
-  const cached = apiKeyQuotaCache.get(cacheKey)
-  if (cached) {
-    return cached
+  if (runtimeConfig.cacheDriver !== 'redis') {
+    const cached = apiKeyQuotaCache.get(cacheKey)
+    if (cached) {
+      return cached
+    }
   }
   const sharedCached = await getApiKeyQuotaSharedCacheEntry(cacheKey)
   if (sharedCached) {
@@ -130,14 +151,34 @@ export async function checkGatewayApiKeyQuotaAsync(apiKey: GatewayApiKeyRow): Pr
   const cacheKey = runtimeConfig.databaseDriver === 'postgres'
     ? await apiKeyQuotaCacheKeyAsync(apiKey, now, quotaLimits.hourly?.hours)
     : apiKeyQuotaCacheKey(apiKey, now, quotaLimits.hourly?.hours)
-  const cached = apiKeyQuotaCache.get(cacheKey)
-  if (cached) {
-    return cached
+  if (runtimeConfig.cacheDriver !== 'redis') {
+    const cached = apiKeyQuotaCache.get(cacheKey)
+    if (cached) {
+      return cached
+    }
   }
   const sharedCached = await getApiKeyQuotaSharedCacheEntry(cacheKey)
   if (sharedCached) {
     setApiKeyQuotaCacheEntry(apiKey.id, cacheKey, sharedCached, { skipSharedCache: true })
     return sharedCached
+  }
+  if (runtimeConfig.cacheDriver === 'redis' && runtimeConfig.processRole === 'server') {
+    try {
+      const dbService = await import('../../db-service/db-service-ipc.js')
+      const decision = await dbService.requestDbService({ type: 'check_api_key_quota', apiKey }, { timeoutMs: 1000 })
+      await setApiKeyQuotaCacheEntryAsync(apiKey.id, cacheKey, {
+        ...decision,
+        checkedAtMs: Date.now()
+      })
+      return decision
+    } catch (error) {
+      logger.warn(errorLogFields(error, {
+        event: 'gateway_api_key_quota_redis_exact_check_failed',
+        apiKeyId: apiKey.id,
+        systemAccountId: apiKey.system_account_id
+      }), 'Redis 模式 API Key 配额精确补判失败，按保护策略拒绝请求')
+      return { allowed: false, message: API_KEY_QUOTA_EXCEEDED_MESSAGE }
+    }
   }
   if (runtimeConfig.processRole === 'server') {
     const costs = readGatewayQuotaCostsSnapshot({
@@ -189,6 +230,11 @@ export function clearApiKeyQuotaCache(): void {
 }
 
 export function invalidateApiKeyQuotaCacheById(id: string): void {
+  if (runtimeConfig.cacheDriver === 'redis') {
+    apiKeyQuotaCacheKeysById.clear()
+    clearApiKeyQuotaSharedCache()
+    return
+  }
   const cacheKeys = apiKeyQuotaCacheKeysById.get(id)
   if (!cacheKeys) return
   for (const cacheKey of [...cacheKeys]) {
@@ -231,6 +277,13 @@ function apiKeyIdFromQuotaCacheKey(cacheKey: string): string {
 }
 
 function setApiKeyQuotaCacheEntry(apiKeyId: string, cacheKey: string, entry: ApiKeyQuotaCacheEntry, options: { skipSharedCache?: boolean } = {}): void {
+  if (runtimeConfig.cacheDriver === 'redis') {
+    apiKeyQuotaCacheKeysById.clear()
+    if (!options.skipSharedCache) {
+      void setApiKeyQuotaSharedCacheEntry(cacheKey, entry)
+    }
+    return
+  }
   const previousApiKeyId = apiKeyIdFromQuotaCacheKey(cacheKey)
   if (previousApiKeyId) {
     removeApiKeyQuotaCacheIndex(previousApiKeyId, cacheKey)
@@ -243,8 +296,8 @@ function setApiKeyQuotaCacheEntry(apiKeyId: string, cacheKey: string, entry: Api
 }
 
 async function setApiKeyQuotaCacheEntryAsync(apiKeyId: string, cacheKey: string, entry: ApiKeyQuotaCacheEntry): Promise<void> {
-  setApiKeyQuotaCacheEntry(apiKeyId, cacheKey, entry, { skipSharedCache: true })
   await setApiKeyQuotaSharedCacheEntry(cacheKey, entry)
+  setApiKeyQuotaCacheEntry(apiKeyId, cacheKey, entry, { skipSharedCache: true })
 }
 
 function addApiKeyQuotaCacheIndex(apiKeyId: string, cacheKey: string): void {
@@ -272,34 +325,21 @@ registerApiKeyQuotaCacheInvalidator((apiKeyId) => {
 
 async function getApiKeyQuotaSharedCacheEntry(cacheKey: string): Promise<ApiKeyQuotaCacheEntry | undefined> {
   if (runtimeConfig.cacheDriver !== 'redis') return undefined
-  try {
-    return await apiKeyQuotaSharedCache.get(sharedQuotaCacheKey(cacheKey))
-  } catch (error) {
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_api_key_quota_shared_cache_read_failed'
-    }), '读取 API Key 额度 Redis 共享缓存失败，继续使用本地判定')
-    return undefined
-  }
+  return await apiKeyQuotaSharedCache.get(sharedQuotaCacheKey(cacheKey))
 }
 
 async function setApiKeyQuotaSharedCacheEntry(cacheKey: string, entry: ApiKeyQuotaCacheEntry): Promise<void> {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  try {
-    await apiKeyQuotaSharedCache.set(sharedQuotaCacheKey(cacheKey), entry, { ttlMs: API_KEY_QUOTA_CACHE_TTL_MS })
-  } catch (error) {
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_api_key_quota_shared_cache_write_failed'
-    }), '写入 API Key 额度 Redis 共享缓存失败')
-  }
+  await apiKeyQuotaSharedCache.set(sharedQuotaCacheKey(cacheKey), entry, { ttlMs: API_KEY_QUOTA_CACHE_TTL_MS })
 }
 
 function clearApiKeyQuotaSharedCache(): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  void apiKeyQuotaSharedCache.clear().catch((error) => {
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_api_key_quota_shared_cache_clear_failed'
-    }), '清理 API Key 额度 Redis 共享缓存失败')
-  })
+  clearSharedJsonCacheInBackground(
+    apiKeyQuotaSharedCache,
+    'api_key_quota_shared_cache_clear_failed',
+    'API Key 额度 Redis shared cache 清理失败'
+  )
 }
 
 function sharedQuotaCacheKey(cacheKey: string): string {

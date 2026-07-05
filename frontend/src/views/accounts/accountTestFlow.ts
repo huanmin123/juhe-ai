@@ -1,17 +1,19 @@
-import type { AccountClientCompatibility, AccountSummary, AccountTestResult } from '@/types/domain'
+import type { AccountDraftTestAccountPayload } from '@/api/client'
+import type { AccountSummary, AccountSupportedEndpointMode, AccountTestResult } from '@/types/domain'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import {
-  effectiveAccountTestClientCompatibility as resolveEffectiveAccountTestClientCompatibility
-} from './accountProviderCapabilities'
+  accountTestEndpointModesForAccount,
+  defaultAccountTestEndpointModeForSelection
+} from './accountEndpointModes'
 
-export type AccountTestClientCompatibility = 'account_default' | AccountClientCompatibility
+export type AccountTestEndpointMode = 'account_default' | AccountSupportedEndpointMode
 export type AccountTestMode = 'single' | 'batch'
 
 export type AccountBatchTestStatus = 'pending' | 'queued' | 'running' | 'success' | 'failed' | 'stopped'
 
 export type AccountTestForm = {
   model: string
-  clientCompatibility: AccountTestClientCompatibility
+  testEndpointMode: AccountTestEndpointMode
 }
 
 export interface AccountBatchTestItem {
@@ -24,11 +26,21 @@ export interface AccountBatchTestItem {
   finishedAt?: number
 }
 
-export function buildAccountTestPayload(form: AccountTestForm): { model?: string } {
-  const payload: { model?: string } = {}
+export function buildAccountTestPayload(
+  form: AccountTestForm,
+  account?: AccountSummary,
+  draftAccount?: AccountDraftTestAccountPayload
+): { model?: string; testEndpointMode?: AccountSupportedEndpointMode } {
+  const payload: { model?: string; testEndpointMode?: AccountSupportedEndpointMode } = {}
   const model = form.model.trim()
   if (model) {
     payload.model = model
+  }
+  if (account) {
+    const testEndpointMode = effectiveAccountTestEndpointMode(account, form.testEndpointMode, draftAccount)
+    if (testEndpointMode) {
+      payload.testEndpointMode = testEndpointMode
+    }
   }
   return payload
 }
@@ -49,28 +61,33 @@ export function failedAccountTestResult(input: {
   account: AccountSummary
   error: unknown
   model: string
-  clientCompatibility: AccountTestClientCompatibility
+  testEndpointMode: AccountTestEndpointMode
   startedAt: number
 }): AccountTestResult {
   const fallbackMessage = extractApiErrorMessage(input.error, '测试失败')
-  const testClientCompatibility = effectiveAccountTestClientCompatibility(input.account, 'account_default')
+  const testEndpointMode = effectiveAccountTestEndpointMode(input.account, input.testEndpointMode)
   return {
     accountId: input.account.id,
     accountName: input.account.name,
     providerCode: input.account.providerCode,
     type: input.account.type,
-    clientCompatibility: effectiveAccountTestClientCompatibility(input.account, 'account_default'),
-    testClientCompatibility,
     success: false,
     message: fallbackMessage,
     model: input.model,
+    testEndpointMode,
     responseText: fallbackMessage,
     durationMs: Date.now() - input.startedAt
   }
 }
 
-function effectiveAccountTestClientCompatibility(account: AccountSummary, clientCompatibility: AccountTestClientCompatibility): AccountClientCompatibility {
-  return resolveEffectiveAccountTestClientCompatibility(account, clientCompatibility)
+export function effectiveAccountTestEndpointMode(
+  account: AccountSummary,
+  testEndpointMode: AccountTestEndpointMode,
+  draftAccount?: AccountDraftTestAccountPayload
+): AccountSupportedEndpointMode | undefined {
+  if (testEndpointMode !== 'account_default') return testEndpointMode
+  return accountTestEndpointModesForAccount(account, draftAccount)[0]
+    ?? defaultAccountTestEndpointModeForSelection(account, draftAccount)
 }
 
 export function nextTestModel(currentModel: string, modelOptions: Array<{ value: string }>, defaultModel: string): string {

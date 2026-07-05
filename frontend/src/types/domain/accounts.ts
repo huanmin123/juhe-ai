@@ -386,8 +386,7 @@ export interface AccountTestResult {
   accountFailureEligible?: boolean
   errorPolicyAction?: 'none' | 'retry_next' | 'cooldown' | 'disable'
   errorPolicyReason?: string
-  clientCompatibility?: AccountClientCompatibility
-  testClientCompatibility?: AccountClientCompatibility
+  testEndpointMode?: AccountSupportedEndpointMode
   apiKeyPool?: AccountTestApiKeyPoolResult
 }
 
@@ -438,7 +437,7 @@ export interface AccountTestTask {
   status: AccountTestTaskStatus
   message?: string
   model?: string
-  clientCompatibility?: AccountClientCompatibility
+  testEndpointMode?: AccountSupportedEndpointMode
   result?: AccountTestResult
   cancelRequested?: boolean
   createdAt: string
@@ -588,15 +587,13 @@ export interface GroupSummary {
   systemAccountName?: string
   name: string
   providerCode: ProviderCode
-  providerProtocolProfileId?: string
-  protocolCode?: string
-  protocolVersion?: string
   description?: string
   enabled: boolean
   isDefault: boolean
   groupType: GroupType
   schedulingPolicy?: GroupSchedulingPolicy
-  accountIds: string[]
+  accountIds?: string[]
+  accountCount?: number
   accountStats: GroupAccountStats
   accessType?: ResourceAccessType
   groupAuthorizationId?: string
@@ -606,6 +603,12 @@ export interface GroupSummary {
   authorizationExpiresAt?: string
   authorizationLimits?: RequestQuotaLimits
   authorizationSources?: AuthorizationSourceSummary[]
+  authorizationSourceSummary?: {
+    activeSourceCount: number
+    hasManual: boolean
+    hasTeam: boolean
+    teamNames: string[]
+  }
   permissions?: ResourcePermissions
 }
 
@@ -629,9 +632,6 @@ export type GroupOptionSummary = Pick<
   | 'ownerSystemAccountName'
   | 'name'
   | 'providerCode'
-  | 'providerProtocolProfileId'
-  | 'protocolCode'
-  | 'protocolVersion'
   | 'enabled'
   | 'isDefault'
   | 'groupType'

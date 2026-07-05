@@ -50,6 +50,8 @@ interface TestContext {
   mockBaseUrl: string
 }
 
+type AccountTestEndpointMode = 'chat_sse' | 'responses_sse'
+
 const mockState = {
   hitsByKey: new Map<string, number>()
 }
@@ -66,7 +68,14 @@ let mockUpstream: http.Server | undefined
 let backendProcess: ChildProcess | undefined
 
 try {
-  repositories.updateSettings({ systemApiRateLimitEnabled: false })
+  repositories.updateSettings({
+    systemApiRateLimitIpReadPerMinute: 1_000_000,
+    systemApiRateLimitIpReadBurstPer10Seconds: 1_000_000,
+    systemApiRateLimitIpWritePerMinute: 1_000_000,
+    systemApiRateLimitIpWriteBurstPer10Seconds: 1_000_000,
+    systemApiRateLimitUserReadPerMinute: 1_000_000,
+    systemApiRateLimitUserWritePerMinute: 1_000_000
+  })
   mockUpstream = createMockAIUpstream()
   mockUpstream.listen(0, '127.0.0.1')
   await onceListening(mockUpstream)
@@ -93,8 +102,7 @@ try {
 
   const group = await postEnvelope<{ id: string; name: string }>(backendBaseUrl, '/groups', cookie, {
     name: `Key池批测 mock 分组 ${Date.now()}`,
-    providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
+    providerCode: 'gpt'
   })
   const context: TestContext = {
     backendBaseUrl,
@@ -122,6 +130,20 @@ try {
   assertKeyRuntime(savedDetail, 'ad-a', 'temporary_unavailable', '已保存账户坏 Key A 应进入后台恢复')
   assertKeyRuntime(savedDetail, 'ad-b', 'temporary_unavailable', '已保存账户坏 Key B 应进入后台恢复')
 
+  const responsesAccount = await postEnvelope<AccountSummary>(backendBaseUrl, '/accounts', cookie, accountPayload({
+    name: '已保存 Key 池 Responses 批测账户',
+    apiKeys: ['sk-pool-responses-bad', 'sk-pool-responses-good'],
+    groupId: group.id,
+    mockBaseUrl
+  }))
+  const responsesTask = await submitAccountTest(context, responsesAccount.id, 'responses_sse')
+  const responsesFinished = await waitForTask(context, responsesTask.id)
+  assert.equal(responsesFinished.status, 'success', 'Responses SSE Key 池账户只要至少一个 Key 可用就应测试成功')
+  assert.equal(responsesFinished.result?.testEndpointMode, 'responses_sse', 'Responses SSE Key 池测试应记录实际测试接口形态')
+  assert.equal(responsesFinished.result?.apiKeyPool?.successCount, 1, 'Responses SSE 测试应统计 1 个可用 Key')
+  assert.equal(responsesFinished.result?.apiKeyPool?.failedCount, 1, 'Responses SSE 测试应统计 1 个不可用 Key')
+  assertKeyPoolPreview(responsesFinished.result, 1, 'sk-p', 'good', 'Responses SSE 可用 Key 应返回安全预览')
+
   const draftAccount = accountPayload({
     name: '创建 Key 池批测账户',
     apiKeys: ['sk-pool-create-bad-a', 'sk-pool-create-good', 'sk-pool-create-bad-b'],
@@ -148,6 +170,8 @@ try {
   assert.equal(mockState.hitsByKey.get('pool-saved-bad-a'), 1, '已保存账户坏 Key A 应被测试一次')
   assert.equal(mockState.hitsByKey.get('pool-saved-good'), 1, '已保存账户好 Key 应被测试一次')
   assert.equal(mockState.hitsByKey.get('pool-saved-bad-b'), 1, '已保存账户坏 Key B 应被测试一次')
+  assert.equal(mockState.hitsByKey.get('pool-responses-bad'), 1, 'Responses SSE 坏 Key 应被测试一次')
+  assert.equal(mockState.hitsByKey.get('pool-responses-good'), 1, 'Responses SSE 好 Key 应被测试一次')
   assert.equal(mockState.hitsByKey.get('pool-create-bad-a'), 1, '创建草稿坏 Key A 应被测试一次')
   assert.equal(mockState.hitsByKey.get('pool-create-good'), 1, '创建草稿好 Key 应被测试一次')
   assert.equal(mockState.hitsByKey.get('pool-create-bad-b'), 1, '创建草稿坏 Key B 应被测试一次')
@@ -157,6 +181,7 @@ try {
     backendBaseUrl,
     mockBaseUrl,
     saved: savedFinished.result?.apiKeyPool,
+    responses: responsesFinished.result?.apiKeyPool,
     created: draftFinished.result?.apiKeyPool
   }, null, 2))
 } finally {
@@ -193,16 +218,18 @@ function accountPayload(input: {
   }
 }
 
-async function submitAccountTest(context: TestContext, accountId: string): Promise<AccountTestTask> {
+async function submitAccountTest(context: TestContext, accountId: string, testEndpointMode?: AccountTestEndpointMode): Promise<AccountTestTask> {
   return await postEnvelope<AccountTestTask>(context.backendBaseUrl, `/accounts/${accountId}/test`, context.cookie, {
-    model: 'gpt-5.5'
+    model: 'gpt-5.5',
+    ...(testEndpointMode ? { testEndpointMode } : {})
   })
 }
 
-async function submitDraftAccountTest(context: TestContext, account: ReturnType<typeof accountPayload>): Promise<AccountTestTask> {
+async function submitDraftAccountTest(context: TestContext, account: ReturnType<typeof accountPayload>, testEndpointMode?: AccountTestEndpointMode): Promise<AccountTestTask> {
   return await postEnvelope<AccountTestTask>(context.backendBaseUrl, '/accounts/test-draft', context.cookie, {
     account,
-    model: 'gpt-5.5'
+    model: 'gpt-5.5',
+    ...(testEndpointMode ? { testEndpointMode } : {})
   })
 }
 
@@ -243,7 +270,7 @@ async function waitForAccountRuntimeDetails(context: TestContext, accountId: str
 }
 
 async function getAccount(context: TestContext, accountId: string): Promise<AccountSummary> {
-  return await getEnvelope<AccountSummary>(context.backendBaseUrl, `/accounts/${accountId}`, context.cookie)
+  return await getEnvelope<AccountSummary>(context.backendBaseUrl, `/accounts/${accountId}/advanced`, context.cookie)
 }
 
 function assertKeyRuntime(account: AccountSummary, suffix: string, status: string, message: string): void {
@@ -362,7 +389,7 @@ function createMockAIUpstream(): http.Server {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
     req.on('data', () => {})
     req.on('end', () => {
-      if (req.method !== 'POST' || url.pathname !== '/v1/responses') {
+      if (req.method !== 'POST' || (url.pathname !== '/v1/responses' && url.pathname !== '/v1/chat/completions')) {
         sendJsonError(res, 404, 'mock path not found')
         return
       }
@@ -370,6 +397,10 @@ function createMockAIUpstream(): http.Server {
       mockState.hitsByKey.set(key, (mockState.hitsByKey.get(key) ?? 0) + 1)
       if (key.includes('bad')) {
         sendJsonError(res, 401, `mock invalid key ${key}`)
+        return
+      }
+      if (url.pathname === '/v1/chat/completions') {
+        sendChatCompletionsCompleted(res, `OK ${key}`)
         return
       }
       sendResponsesCompleted(res, `OK ${key}`)
@@ -409,6 +440,38 @@ function sendResponsesCompleted(res: http.ServerResponse, outputText: string): v
   }
   res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
   res.end(`event: response.completed\ndata: ${JSON.stringify(completedEvent)}\n\n`)
+}
+
+function sendChatCompletionsCompleted(res: http.ServerResponse, outputText: string): void {
+  const chunk = {
+    id: 'chatcmpl_account_api_key_pool_test_mock_ai',
+    object: 'chat.completion.chunk',
+    choices: [
+      {
+        index: 0,
+        delta: { content: outputText },
+        finish_reason: null
+      }
+    ]
+  }
+  const done = {
+    id: 'chatcmpl_account_api_key_pool_test_mock_ai',
+    object: 'chat.completion.chunk',
+    choices: [
+      {
+        index: 0,
+        delta: {},
+        finish_reason: 'stop'
+      }
+    ],
+    usage: {
+      prompt_tokens: 1,
+      completion_tokens: 1,
+      total_tokens: 2
+    }
+  }
+  res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
+  res.end(`data: ${JSON.stringify(chunk)}\n\ndata: ${JSON.stringify(done)}\n\ndata: [DONE]\n\n`)
 }
 
 async function onceListening(server: http.Server): Promise<void> {

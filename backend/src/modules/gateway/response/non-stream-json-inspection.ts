@@ -150,7 +150,7 @@ export async function inspectBufferedGatewayJsonResponse(input: {
     errorCode,
     errorMessage: message
   })
-  recordCompletedUpstreamAttempt(input.req, {
+  await recordCompletedUpstreamAttempt(input.req, {
     ...input.usageContext,
     account: input.account,
     statusCode: input.upstreamResponse.status,
@@ -171,7 +171,7 @@ export async function inspectBufferedGatewayJsonResponse(input: {
     errorMessage: message
   })
 
-  const shouldRetryOnServer = decision.accountSwitch !== 'none'
+  const shouldRetryOnServer = decision.retryEnabled
   if (shouldRetryOnServer && !input.res.headersSent && !input.res.writableEnded && !input.res.destroyed) {
     input.auditCapture.addGatewayMetadata({
       label: 'response_inspection_server_retry',
@@ -282,7 +282,7 @@ async function finalizeBufferedJsonProtocolFailure(
     errorCode: failure.errorCode,
     errorMessage: failure.message
   })
-  recordCompletedUpstreamAttempt(input.req, {
+  await recordCompletedUpstreamAttempt(input.req, {
     ...input.usageContext,
     account: input.account,
     statusCode: input.upstreamResponse.status,
@@ -302,7 +302,7 @@ async function finalizeBufferedJsonProtocolFailure(
     }),
     errorMessage: failure.message
   })
-  if (input.accountStateMutationEnabled && input.usageContext.trafficSource === 'gateway' && !input.account.selectedApiKeyFingerprint) {
+  if (input.accountStateMutationEnabled && input.usageContext.trafficSource === 'gateway' && !hasAlternativeAccountApiKeys(input.account)) {
     const localSuppression = suppressGatewayAccountLocally(input.account, input.settings, failure.message)
     recordGatewayAccountFailureForPrecheck(input.account, input.settings, {
       systemAccountId: input.usageContext.systemAccountId,
@@ -312,7 +312,8 @@ async function finalizeBufferedJsonProtocolFailure(
       endpoint: requestEndpoint(input.req),
       reason: failure.message,
       statusCode: input.upstreamResponse.status,
-      forcePrecheck: localSuppression.action === 'precheck_required'
+      forcePrecheck: localSuppression.action === 'precheck_required',
+      localSuppressionDelayMs: localSuppression.delayMs
     })
     input.auditCapture.addGatewayMetadata({
       label: 'upstream_protocol_runtime_avoidance',
@@ -358,6 +359,10 @@ async function finalizeBufferedJsonProtocolFailure(
     firstTokenMs: input.firstTokenMs
   })
   return { alreadyFinalized: true }
+}
+
+function hasAlternativeAccountApiKeys(account: UpstreamAccount): boolean {
+  return Boolean(account.selectedApiKeyFingerprint) && (account.apiKeys?.length ?? 0) > 1
 }
 
 function plainObject(value: unknown): Record<string, unknown> | undefined {

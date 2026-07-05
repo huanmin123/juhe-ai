@@ -4,14 +4,20 @@ import { readFileSync } from 'node:fs'
 import {
   clearAccountConcurrency,
   getAccountCurrentConcurrency,
+  snapshotAccountConcurrency,
   tryAcquireAccountConcurrency
 } from '../../shared/account-concurrency.js'
 
 const source = readFileSync(new URL('../../shared/account-concurrency.ts', import.meta.url), 'utf8')
 const laneGetterBody = functionBody(source, 'getAccountCurrentConcurrency')
+const asyncAcquireBody = functionBody(source, 'tryAcquireAccountConcurrencyAsync')
 assert(source.includes('currentConcurrencyByAccountLaneKey'), '账号并发应维护 lane 级计数索引')
 assert(!laneGetterBody.includes('slots.values()'), '读取账号 lane 并发不应遍历该账号全部 in-flight slot')
 assert(laneGetterBody.includes('currentConcurrencyByAccountLaneKey.get'), '读取账号 lane 并发应直接查询 lane 级计数索引')
+assert(asyncAcquireBody.includes('acquireLocalAccountConcurrencySlot(accountId, lane, redisToken)'), 'Redis async 占槽成功后也必须维护 server 本地并发快照，供账户和分组列表展示')
+assert(asyncAcquireBody.includes('ensureRedisAccountConcurrencySlotRefresh()'), 'Redis async 占槽成功后必须启动活跃槽位续租，避免长请求槽位过租约')
+assert(asyncAcquireBody.includes('releaseAccountConcurrency(accountId, slotId)'), 'Redis async 释放槽后必须同步释放 server 本地并发快照')
+assert.match(asyncAcquireBody, /releaseAccountConcurrency\(accountId, slotId\)[\s\S]*releaseRedisAccountConcurrencyWithRetry\(accountId, redisToken\)/, 'Redis async 释放必须先释放本地槽再异步删 Redis，避免 Redis 命令挂住时继续续租已结束请求')
 
 clearAccountConcurrency()
 
@@ -23,6 +29,7 @@ assert.equal(imageSlotA.acquired, true, '第一个图像并发槽应可占用')
 assert.equal(imageSlotB.acquired, true, '第二个图像并发槽应可占用')
 assert.equal(getAccountCurrentConcurrency('acct_lane_index'), 3, '总并发计数应包含文本和图像槽')
 assert.equal(getAccountCurrentConcurrency('acct_lane_index', 'text'), 1, '文本 lane 计数应独立维护')
+assert.equal(snapshotAccountConcurrency().acct_lane_index, 3, 'server 运行态快照应暴露当前总并发')
 
 const originalValues = Map.prototype.values
 let valuesCalled = false
@@ -50,7 +57,23 @@ console.log('账号并发 lane 计数回归通过：图像/文本通道读取走
 function functionBody(sourceText: string, functionName: string): string {
   const start = sourceText.indexOf(`function ${functionName}`)
   assert(start >= 0, `缺少函数 ${functionName}`)
-  const openBrace = sourceText.indexOf('{', start)
+  const parametersStart = sourceText.indexOf('(', start)
+  assert(parametersStart >= 0, `函数 ${functionName} 缺少参数列表`)
+  let parameterDepth = 0
+  let parametersEnd = -1
+  for (let index = parametersStart; index < sourceText.length; index += 1) {
+    const char = sourceText[index]
+    if (char === '(') parameterDepth += 1
+    if (char === ')') {
+      parameterDepth -= 1
+      if (parameterDepth === 0) {
+        parametersEnd = index
+        break
+      }
+    }
+  }
+  assert(parametersEnd >= 0, `函数 ${functionName} 参数列表未闭合`)
+  const openBrace = sourceText.indexOf('{', parametersEnd)
   assert(openBrace >= 0, `函数 ${functionName} 缺少函数体`)
   let depth = 0
   for (let index = openBrace; index < sourceText.length; index += 1) {

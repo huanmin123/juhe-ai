@@ -47,6 +47,7 @@ import {
   updateResponseInspectionPolicy,
   updateResponseInspectionPolicyAsync
 } from '../../storage/response-inspection-policy.repository.js'
+import { closeSqliteReadWorkerPool } from '../../storage/sqlite-read-worker-pool.js'
 
 const settings: GatewaySettings = {
   gatewayTextRawBodyLimitMegabytes: 8,
@@ -57,6 +58,7 @@ const settings: GatewaySettings = {
   streamRequestTimeoutSeconds: 120,
   streamIdleTimeoutSeconds: 30,
   streamClientTotalWaitTimeoutSeconds: 270,
+  streamMaxLifetimeSeconds: 1800,
   streamFailureThresholdCount: 3,
   streamFailureThresholdWindowMinutes: 5
 }
@@ -124,7 +126,7 @@ async function assertMalformedResponsesSseFailsBeforeDownstreamCommit(
     response as never,
     settings,
     Date.now(),
-    () => { failureCalled = true },
+    async () => { failureCalled = true },
     undefined,
     {
       clientRetryEnabled: true,
@@ -490,6 +492,34 @@ assert.equal(validateAccountResponseInspectionRules([
 }
 
 {
+  const frames = extractAnthropicJsonSemanticFrames({
+    type: 'error',
+    error: {
+      type: 'overloaded_error',
+      message: 'overloaded error type should drive provider routing'
+    }
+  }, 'messages')
+  const result = inspectResponseSemanticFrames({
+    frames,
+    policies: [
+      responsePolicy({
+        protocolCode: ANTHROPIC_PROTOCOL_CODE,
+        providerCode: ANTHROPIC_PROVIDER_CODE,
+        match: {
+          errorTypes: ['overloaded_error']
+        }
+      })
+    ],
+    downstreamWritten: false,
+    transport: 'json',
+    context: {
+      clientProfile: 'generic_anthropic'
+    }
+  })
+  assert.equal(result.decision?.matchedField, 'errorTypes', '未绑定客户端画像的响应检查策略应允许按协议 errorType 命中')
+}
+
+{
   const frames = extractOpenAIJsonSemanticFrames({
     choices: [
       {
@@ -817,6 +847,47 @@ assert.equal(validateAccountResponseInspectionRules([
   assert.equal(completed.intercepted, undefined, '恰好 1 个 compaction output item 不应命中契约错误')
   assert(responseBody.includes('mock-encrypted-context'), `合法 compact output 应在 completed 后释放：${responseBody}`)
   assert(responseBody.includes('response.completed'), `合法 compact completed 应随暂存事件一起释放：${responseBody}`)
+}
+
+{
+  const policies = resolveRuntimeResponseInspectionPolicies({
+    account: {
+      id: 'acct_codex_compaction_eof_before_completed',
+      protocolCode: OPENAI_PROTOCOL_CODE,
+      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      clientCompatibility: 'codex_responses',
+      credentials: {}
+    } as never,
+    managementPolicies: listResponseInspectionPolicyDefaultRules()
+  })
+  const buffer = new OpenAIResponseInspectionBuffer({
+    clientRetryEnabled: true,
+    endpointFamily: 'responses',
+    policies,
+    context: {
+      clientProfile: 'codex',
+      accountClientCompatibility: 'codex_responses',
+      codexCompactionExpected: true
+    }
+  })
+  const outputItem = sseEvent('response.output_item.done', {
+    output_index: 0,
+    item: {
+      id: 'item_compaction_eof_before_completed',
+      type: 'compaction',
+      status: 'completed',
+      encrypted_content: 'mock-encrypted-context'
+    }
+  })
+  const first = buffer.pushChunk(outputItem)
+  assert.equal(first.chunks.length, 0, 'compact EOF 前不能提前释放暂存 output item')
+  assert.equal(first.pendingEvent, true, 'compact 暂存事件必须标记为 pending')
+  const completed = buffer.flushPendingOnEof()
+  const responseBody = Buffer.concat(completed.chunks).toString('utf8')
+  assert.equal(completed.pendingEvent, false, 'compact EOF 失败收尾后不应继续保留 pending 状态')
+  assert.equal(completed.intercepted?.policyId, 'default_codex_compaction_contract', 'compact EOF 前缺少 response.completed 必须按契约错误拦截')
+  assert(responseBody.includes('upstream_retryable_error'), `compact EOF 契约错误应改写为客户端可重试失败：${responseBody}`)
+  assert(!responseBody.includes('mock-encrypted-context'), `compact EOF 缺少 completed 时不得释放暂存 output：${responseBody}`)
 }
 
 {
@@ -1211,7 +1282,7 @@ assert.equal(validateAccountResponseInspectionRules([
     response as never,
     settings,
     Date.now(),
-    () => { failureCalled = true },
+    async () => { failureCalled = true },
     undefined,
     {
       endpointFamily: 'responses',
@@ -1270,7 +1341,7 @@ assert.equal(validateAccountResponseInspectionRules([
     response as never,
     settings,
     Date.now(),
-    () => { failureCalled = true },
+    async () => { failureCalled = true },
     undefined,
     {
       endpointFamily: 'responses'
@@ -1324,7 +1395,7 @@ assert.equal(validateAccountResponseInspectionRules([
     response as never,
     settings,
     Date.now(),
-    () => { failureCalled = true },
+    async () => { failureCalled = true },
     undefined,
     {
       endpointFamily: 'responses'
@@ -1376,7 +1447,8 @@ await assertMalformedResponsesSseFailsBeforeDownstreamCommit('未闭合 data 直
   assert(!routeSource.includes('recordOperationLog({'), '响应检查策略管理端不得重新调用同步操作日志入口')
   assert(schemaSource.includes("CHECK (action IN ('observe', 'drop_event', 'retry_no_avoidance', 'retry_next_account', 'avoid_account_ttl', 'avoid_upstream_bucket_ttl'))"), '响应检查策略动作必须有数据库 CHECK 约束')
   assert(schemaSource.includes('json_valid(match_json)'), '响应检查策略 match_json 必须有 JSON 有效性约束')
-  assert(fallbackCandidateSource.includes('listCachedActiveResponseInspectionPoliciesAsync'), 'API Key 分组 fallback 候选必须按目标分组协议和供应商加载响应检查策略')
+  assert(fallbackCandidateSource.includes('listCachedActiveResponseInspectionPoliciesForAccountsAsync'), 'API Key 分组 fallback 候选必须按目标候选账号集合的协议和供应商加载响应检查策略')
+  assert(fallbackCandidateSource.includes('orderedQuotaAllowedAccounts'), 'API Key 分组 fallback 响应检查策略必须基于目标候选分组完成过滤和排序后的账号集合加载')
   assert(gatewayPreflightSource.includes('responseInspectionPolicies: candidate.responseInspectionPolicies'), 'fallback dispatch context 必须使用目标候选分组的响应检查策略')
   assert(!gatewayPreflightSource.includes('responseInspectionPolicies: input.responseInspectionPolicies'), 'fallback dispatch context 不得沿用原分组传入的响应检查策略')
 }
@@ -1473,6 +1545,7 @@ await assertMalformedResponsesSseFailsBeforeDownstreamCommit('未闭合 data 直
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run('rip_invalid_json', '非法 JSON', 1, 21, 'protocol', OPENAI_PROTOCOL_CODE, '{bad json', 'observe', now, now), /constraint|CHECK/i, '数据库必须拒绝非法 match_json')
   } finally {
+    await closeSqliteReadWorkerPool().catch(() => undefined)
     closeStorageDatabases()
     rmSync(tempRoot, { recursive: true, force: true })
   }

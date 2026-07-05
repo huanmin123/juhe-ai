@@ -40,11 +40,11 @@ export async function loadAccountTagOptionsCached(input: AccountTagOptionsLoadIn
   const scopeKey = resolveAccountTagOptionsScopeKey(input.isManagementView, input.scopeParams)
   if (!scopeKey) return []
 
+  const pending = accountTagOptionsInFlight.get(scopeKey)
+  if (pending) return pending
   if (!input.force) {
     const cached = accountTagOptionsCache.get(scopeKey)
     if (cached) return cached
-    const pending = accountTagOptionsInFlight.get(scopeKey)
-    if (pending) return pending
   }
 
   let request: Promise<AccountTagSummary[]>

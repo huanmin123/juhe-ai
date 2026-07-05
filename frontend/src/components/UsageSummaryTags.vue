@@ -1,13 +1,13 @@
 <template>
   <div class="usage-summary-tags" :class="{ 'usage-summary-tags-compact': compact }">
-    <a-tag class="usage-summary-tag">{{ `${formatInteger(usage?.requestCount)}req` }}</a-tag>
+    <a-tag class="usage-summary-tag">{{ formatRequestCountTag(usage?.requestCount) }}</a-tag>
     <a-tag class="usage-summary-tag">{{ formatCompactUsageAmount(usage?.totalTokens) }}</a-tag>
     <a-tag class="usage-summary-tag">{{ formatUsd(usage?.totalCost) }}</a-tag>
   </div>
 </template>
 
 <script setup lang="ts">
-import { formatCompactUsageAmount, formatInteger, formatUsd } from '@/shared/formatters'
+import { formatCompactUsageAmount, formatRequestCountTag, formatUsd } from '@/shared/formatters'
 
 defineProps<{
   compact?: boolean

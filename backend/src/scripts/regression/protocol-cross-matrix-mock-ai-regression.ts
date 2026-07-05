@@ -22,6 +22,7 @@ import { captureGatewayRawBody } from '../../modules/gateway/request/body-middle
 import { saveCustomProviderModel } from '../../modules/model-pricing/model-catalog.service.js'
 import { logger } from '../../shared/logger.js'
 import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
+import type { UsageRecordSummary } from '../../storage/repositories.js'
 
 interface UpstreamHit {
   method: string
@@ -60,7 +61,8 @@ const [
   gatewayCache,
   accountSideEffects,
   usageRecordQueue,
-  auditLogQueue
+  auditLogQueue,
+  { withCostBreakdown }
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
   import('../../shared/request-context.js'),
@@ -69,7 +71,8 @@ const [
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('../../modules/audit-logs/audit-log-queue.service.js')
+  import('../../modules/audit-logs/audit-log-queue.service.js'),
+  import('../../modules/usage-records/usage-records.routes.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -113,6 +116,7 @@ try {
 
     await assertOpenAIChatNativePasses(baseUrl, chatRuntime.apiKey)
     await assertResponsesToOpenAIChatPasses(baseUrl, chatRuntime.apiKey)
+    await assertOpenAIChatDoesNotReuseResponsesMapping(baseUrl, chatRuntime.apiKey)
     await assertAnthropicMessagesToOpenAIChatRejected(baseUrl, chatRuntime.apiKey)
     await assertGeminiNativeToOpenAIChatRejected(baseUrl, chatRuntime.apiKey)
     await assertOpenAIChatToAnthropicMessagesRejected(baseUrl, messagesRuntime.apiKey)
@@ -121,6 +125,7 @@ try {
     await assertHybridOpenAIChatFailoverPreservesBridge(baseUrl, hybridOpenAIChatFailoverRuntime.apiKey)
 
     usageRecordQueue.flushAllUsageRecordQueue()
+    assertUsageRecordsReflectMappings()
     auditLogQueue.flushAllAuditLogQueue()
 
     console.log('protocol cross matrix mock ai boundary regression passed')
@@ -204,7 +209,6 @@ function assertAccountModelMappingsRejectCrossProtocol(upstreamOrigin: string): 
   const group = repositories.createGroup({
     name: '协议交叉矩阵模型映射拒绝分组',
     providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
-    providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   const openAIResponsesBridgeAccount = repositories.createAccount({
@@ -238,7 +242,6 @@ function assertAccountModelMappingsRejectCrossProtocol(upstreamOrigin: string): 
   const hybridGroup = repositories.createGroup({
     name: '协议交叉矩阵混合供应商 Responses 上游拒绝分组',
     providerCode: HYBRID_PROVIDER_CODE,
-    providerProtocolProfileId: HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
     enabled: true
   }, access)
   assert.throws(() => repositories.createAccount({
@@ -269,7 +272,6 @@ function createOpenAIChatRuntime(upstreamOrigin: string): CrossRuntime {
   const group = repositories.createGroup({
     name: '协议交叉矩阵 OpenAI Chat 分组',
     providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
-    providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
     enabled: true
   }, access)
   repositories.createAccount({
@@ -307,7 +309,6 @@ function createAnthropicMessagesRuntime(upstreamOrigin: string): CrossRuntime {
   const group = repositories.createGroup({
     name: '协议交叉矩阵 Anthropic Messages 分组',
     providerCode: ANTHROPIC_PROVIDER_CODE,
-    providerProtocolProfileId: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
     enabled: true
   }, access)
   repositories.createAccount({
@@ -332,7 +333,6 @@ function createGeminiNativeRuntime(upstreamOrigin: string): CrossRuntime {
   const group = repositories.createGroup({
     name: '协议交叉矩阵 Gemini native 分组',
     providerCode: GEMINI_PROVIDER_CODE,
-    providerProtocolProfileId: GEMINI_NATIVE_V1BETA_PROFILE_ID,
     enabled: true
   }, access)
   repositories.createAccount({
@@ -357,7 +357,6 @@ function createHybridOpenAIChatRuntime(upstreamOrigin: string): CrossRuntime {
   const group = repositories.createGroup({
     name: '协议交叉矩阵混合供应商 OpenAI Chat 分组',
     providerCode: HYBRID_PROVIDER_CODE,
-    providerProtocolProfileId: HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
     enabled: true
   }, access)
   repositories.createAccount({
@@ -389,7 +388,6 @@ function createHybridOpenAIChatFailoverRuntime(upstreamOrigin: string): CrossRun
   const group = repositories.createGroup({
     name: '协议交叉矩阵混合供应商 OpenAI Chat 切号分组',
     providerCode: HYBRID_PROVIDER_CODE,
-    providerProtocolProfileId: HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
     enabled: true
   }, access)
   for (const account of [
@@ -489,6 +487,18 @@ async function assertResponsesToOpenAIChatPasses(baseUrl: string, localApiKey: s
   assert(Array.isArray(hit.body.messages), 'Responses -> Chat bridge 应把 input 转成 Chat messages')
 }
 
+async function assertOpenAIChatDoesNotReuseResponsesMapping(baseUrl: string, localApiKey: string): Promise<void> {
+  const start = upstreamHits.length
+  const response = await gatewayFetch(baseUrl, '/v1/chat/completions', localApiKey, {
+    model: openAIResponsesSourceModel,
+    messages: [{ role: 'user', content: 'ping' }],
+    stream: false
+  })
+  const text = await response.text()
+  assert.notEqual(response.status, 200, `Chat 请求没有当前协议精确映射时不应复用 Responses 映射，实际 HTTP ${response.status}: ${text}`)
+  assert.equal(upstreamHits.length, start, 'Chat 请求没有当前协议精确映射时不应命中 mock 上游')
+}
+
 async function assertAnthropicMessagesToOpenAIChatRejected(baseUrl: string, localApiKey: string): Promise<void> {
   await assertCrossProtocolRejected('Anthropic Messages -> OpenAI Chat', baseUrl, '/v1/messages', localApiKey, {
     model: anthropicMessagesSourceModel,
@@ -570,6 +580,107 @@ function lastHitWithAuthorization(hits: UpstreamHit[], authorization: string): U
     if (hit?.authorization === authorization) return hit
   }
   return undefined
+}
+
+function assertUsageRecordsReflectMappings(): void {
+  const records = repositories.listUsageRecords(access, { page: 1, pageSize: 50, result: 'all' }).items
+  const openAIChatRecord = expectUsageRecord(records, (record) => (
+    record.success
+    && record.endpoint === 'POST /v1/chat/completions'
+    && record.model === openAIChatSourceModel
+  ), '缺少 OpenAI Chat 同协议映射成功使用记录')
+  assertMappedUsageRecord(openAIChatRecord, {
+    label: 'OpenAI Chat 同协议映射',
+    endpoint: 'POST /v1/chat/completions',
+    sourceModel: openAIChatSourceModel,
+    upstreamModel: openAIChatUpstreamModel,
+    stream: false,
+    costUsd: 0.000021
+  })
+
+  const responsesBridgeRecord = expectUsageRecord(records, (record) => (
+    record.success
+    && record.endpoint === 'POST /v1/responses'
+    && record.model === openAIResponsesSourceModel
+  ), '缺少 Responses -> Chat 显式映射成功使用记录')
+  assertMappedUsageRecord(responsesBridgeRecord, {
+    label: 'Responses -> Chat 显式映射',
+    endpoint: 'POST /v1/responses',
+    sourceModel: openAIResponsesSourceModel,
+    upstreamModel: openAIChatUpstreamModel,
+    stream: true,
+    costUsd: 0.000021
+  })
+
+  const chatWithoutExactMapping = expectUsageRecord(records, (record) => (
+    !record.success
+    && record.endpoint === 'POST /v1/chat/completions'
+    && record.model === openAIResponsesSourceModel
+  ), '缺少 Chat 无精确映射失败使用记录')
+  assert.equal(chatWithoutExactMapping.modelMappingApplied, false, 'Chat 无精确映射失败记录不应标记命中模型映射')
+  assert.equal(chatWithoutExactMapping.upstreamModel, undefined, 'Chat 无精确映射失败记录不应记录虚构上游模型')
+  assert.equal(chatWithoutExactMapping.pricingModel, undefined, 'Chat 无精确映射失败记录不应记录虚构计价模型')
+
+  const hybridMessagesRecord = expectUsageRecord(records, (record) => (
+    record.success
+    && record.endpoint === 'POST /v1/messages'
+    && record.model === anthropicMessagesSourceModel
+    && record.upstreamModel === openAIChatUpstreamModel
+  ), '缺少混合供应商 Messages -> Chat 映射成功使用记录')
+  assert.equal(hybridMessagesRecord.modelMappingApplied, true, '混合供应商 Messages -> Chat 使用记录应标记命中模型映射')
+  assert.equal(hybridMessagesRecord.modelMappingSource, 'account', '混合供应商 Messages -> Chat 使用记录应标记账号映射来源')
+}
+
+function assertMappedUsageRecord(
+  record: UsageRecordSummary,
+  expected: {
+    label: string
+    endpoint: string
+    sourceModel: string
+    upstreamModel: string
+    stream: boolean
+    costUsd: number
+  }
+): void {
+  assert.equal(record.endpoint, expected.endpoint, `${expected.label} 使用记录 endpoint 应保持下游请求`)
+  assert.equal(record.model, expected.sourceModel, `${expected.label} 使用记录 model 应保留下游模型`)
+  assert.equal(record.upstreamModel, expected.upstreamModel, `${expected.label} 使用记录 upstreamModel 应记录真实上游模型`)
+  assert.equal(record.pricingModel, expected.upstreamModel, `${expected.label} 使用记录 pricingModel 应使用真实计价模型`)
+  assert.equal(record.modelMappingApplied, true, `${expected.label} 使用记录应标记命中模型映射`)
+  assert.equal(record.modelMappingSource, 'account', `${expected.label} 使用记录应标记账号映射来源`)
+  assert.equal(record.stream, expected.stream, `${expected.label} 使用记录 stream 应匹配下游请求`)
+  assert.equal(record.inputTokens, 3, `${expected.label} 使用记录应记录输入 tokens`)
+  assert.equal(record.outputTokens, 3, `${expected.label} 使用记录应记录输出 tokens`)
+  assert.equal(record.costUsd, expected.costUsd, `${expected.label} 使用记录应按真实计价模型计算成本`)
+
+  const response = withCostBreakdown(record)
+  const breakdown = response.costBreakdown
+  assert(breakdown, `${expected.label} 使用记录接口响应应包含成本明细`)
+  assert.equal(breakdown.inputCostUsd, 0.000009, `${expected.label} 成本明细应包含输入成本`)
+  assert.equal(breakdown.outputCostUsd, 0.000012, `${expected.label} 成本明细应包含输出成本`)
+  assert.equal(breakdown.inputUsdPer1M, 3, `${expected.label} 成本明细应包含输入单价`)
+  assert.equal(breakdown.outputUsdPer1M, 4, `${expected.label} 成本明细应包含输出单价`)
+  assert.equal(breakdown.accountChargeUsd, expected.costUsd, `${expected.label} 成本明细应包含账户计费`)
+}
+
+function expectUsageRecord(
+  records: UsageRecordSummary[],
+  predicate: (record: UsageRecordSummary) => boolean,
+  message: string
+): UsageRecordSummary {
+  const record = records.find(predicate)
+  assert(record, `${message}；现有记录：${records.map(usageRecordDebugLabel).join(' | ')}`)
+  return record
+}
+
+function usageRecordDebugLabel(record: UsageRecordSummary): string {
+  return [
+    record.success ? 'success' : 'failed',
+    record.endpoint ?? 'unknown-endpoint',
+    record.model ?? 'unknown-model',
+    record.upstreamModel ? `upstream=${record.upstreamModel}` : undefined,
+    record.pricingModel ? `pricing=${record.pricingModel}` : undefined
+  ].filter(Boolean).join(',')
 }
 
 async function assertCrossProtocolRejected(

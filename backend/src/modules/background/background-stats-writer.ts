@@ -3,7 +3,10 @@ import { errorLogFields, logger } from '../../shared/logger.js'
 import type { ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 import type { ClientIpPolicyHitInput } from '../../storage/client-ip-stats.repository.js'
 import {
+  createClientIpPolicyAsync,
   aggregateClientIpStatsBatchAsync,
+  disableClientIpPoliciesAsync,
+  findActiveClientIpPolicyByHashAsync,
   listActiveClientIpPoliciesAsync,
   recordClientIpPolicyHitsAsync,
   refreshClientIpUsageRangeWindowsAsync
@@ -16,12 +19,14 @@ import { cleanupTableStorageSnapshotsBefore, cleanupTableStorageSnapshotsBeforeA
 import {
   aggregateUsageStatsBatchAsync,
   checkUsageStatsConsistency,
+  checkUsageStatsConsistencyAsync,
   insertProcessEventLoopSample,
   insertProcessEventLoopSampleAsync,
   insertSystemMetricsSample,
   insertSystemMetricsSampleAsync,
   refreshDirtyGroupAccountStatsCacheAsync,
   refreshDirtyGroupAccountStatsCacheWithWriter,
+  refreshHotUsageWindowSnapshots,
   refreshUsageQuotaHourlyWindowsCache,
   refreshUsageQuotaHourlyWindowsCacheAsync,
   refreshUsageRankSnapshotsInStages,
@@ -32,9 +37,11 @@ import {
 } from '../../storage/usage-stats.repository.js'
 import {
   cleanupSystemMetricsBefore,
+  cleanupSystemMetricsBeforeAsync,
   cleanupNonBusinessDataBeforeWithResult,
   type NonBusinessDataHardCleanupResult,
-  cleanupUsageStatsBucketsBefore
+  cleanupUsageStatsBucketsBefore,
+  cleanupUsageStatsBucketsBeforeAsync
 } from '../../storage/data-retention.repository.js'
 import {
   cleanupDeletedAccountRecordStatsData,
@@ -46,7 +53,9 @@ import {
 } from '../../storage/api-key-record-cleanup.js'
 import {
   listAccountQualityFailurePrecheckCandidates,
+  listAccountQualityFailurePrecheckCandidatesAsync,
   refreshAccountQualityFromUsage,
+  refreshAccountQualityFromUsageAsync,
   upsertAccountUsageSnapshotsAsync,
   upsertAccountUsageSnapshots,
   type AccountUsageSnapshotUpsertInput,
@@ -57,7 +66,6 @@ import type { ActiveClientIpPolicy } from '../../storage/client-ip-stats.reposit
 import {
   requestBackgroundWorkerDbService,
   requestBackgroundWorkerStatsWrite,
-  sendClientIpPolicySnapshotToServer,
   sendGatewayQuotaSnapshotToServer
 } from './background-ipc.js'
 import { buildGatewayQuotaSnapshot, buildGatewayQuotaSnapshotAsync } from '../../storage/gateway-quota-snapshot.repository.js'
@@ -101,6 +109,10 @@ export type BackgroundStatsWriteOperation =
     stageNames: UsageRankSnapshotStageName[]
   }
   | {
+    type: 'refresh_hot_usage_windows'
+    jobName: string
+  }
+  | {
     type: 'check_usage_stats_consistency'
     limit: number
   }
@@ -114,7 +126,19 @@ export type BackgroundStatsWriteOperation =
     hits: ClientIpPolicyHitInput[]
   }
   | {
+    type: 'create_client_ip_policy'
+    input: import('../../storage/client-ip-stats.repository.js').ClientIpPolicyMutationInput
+  }
+  | {
+    type: 'disable_client_ip_policies'
+    input: import('../../storage/client-ip-stats.repository.js').ClientIpPolicyDisableInput
+  }
+  | {
     type: 'list_active_client_ip_policies'
+  }
+  | {
+    type: 'find_active_client_ip_policy_by_hash'
+    ipHash: string
   }
   | {
     type: 'upsert_account_usage_snapshots'
@@ -149,15 +173,19 @@ export type BackgroundStatsWriteOperation =
 
 export type BackgroundStatsWriteOperationResult<T extends BackgroundStatsWriteOperation = BackgroundStatsWriteOperation> =
   T extends { type: 'aggregate_usage_stats' } ? { processed: number; quotaSnapshotSent: boolean; stoppedByTimeBudget: boolean; effectiveBatchSize: number } :
-  T extends { type: 'aggregate_client_ip_stats' } ? { processed: number; policies: ActiveClientIpPolicy[] } :
+  T extends { type: 'aggregate_client_ip_stats' } ? { processed: number } :
   T extends { type: 'refresh_group_account_stats' } ? { refreshed: true } :
   T extends { type: 'refresh_account_quality' } ? AccountQualityRealtimeRefreshResult & { failureCandidates: AccountQualityFailurePrecheckCandidate[] } :
   T extends { type: 'record_system_metrics_sample' } ? { recorded: true } :
   T extends { type: 'refresh_usage_rank_snapshots' } ? UsageRankSnapshotRefreshResult :
+  T extends { type: 'refresh_hot_usage_windows' } ? UsageRankSnapshotRefreshResult :
   T extends { type: 'check_usage_stats_consistency' } ? ReturnType<typeof checkUsageStatsConsistency> :
   T extends { type: 'collect_table_storage_snapshot' } ? CollectTableStorageSnapshotResult :
   T extends { type: 'record_client_ip_policy_hits' } ? { recorded: number } :
+  T extends { type: 'create_client_ip_policy' } ? import('../../storage/client-ip-stats.repository.js').ClientIpPolicySummary :
+  T extends { type: 'disable_client_ip_policies' } ? { disabledCount: number } :
   T extends { type: 'list_active_client_ip_policies' } ? ActiveClientIpPolicy[] :
+  T extends { type: 'find_active_client_ip_policy_by_hash' } ? ActiveClientIpPolicy | undefined :
   T extends { type: 'upsert_account_usage_snapshots' } ? { upsertedCount: number } :
   T extends { type: 'cleanup_usage_stats_retention' } ? ReturnType<typeof cleanupUsageStatsBucketsBefore> :
   T extends { type: 'cleanup_system_metrics_retention' } ? ReturnType<typeof cleanupSystemMetricsBefore> :
@@ -191,7 +219,7 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
       return { refreshed: await refreshGroupAccountStats() }
     case 'refresh_account_quality':
       if (runtimeConfig.databaseDriver === 'postgres') {
-        throw postgresStatsWriterOperationNotImplemented(operation.type)
+        return await refreshAccountQualityAsync(operation.windowMinutes, operation.failureCandidateLimit)
       }
       return refreshAccountQuality(operation.windowMinutes, operation.failureCandidateLimit)
     case 'record_system_metrics_sample':
@@ -214,9 +242,15 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
         skipIfUnchanged: true,
         jobName: operation.jobName
       })
+    case 'refresh_hot_usage_windows':
+      return await refreshHotUsageWindowSnapshots({
+        yieldToEventLoop,
+        skipIfUnchanged: true,
+        jobName: operation.jobName
+      })
     case 'check_usage_stats_consistency':
       if (runtimeConfig.databaseDriver === 'postgres') {
-        throw postgresStatsWriterOperationNotImplemented(operation.type)
+        return await checkUsageStatsConsistencyAsync(operation.limit)
       }
       return checkUsageStatsConsistency(operation.limit)
     case 'collect_table_storage_snapshot':
@@ -226,8 +260,14 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
       return collectTableStorageSnapshot(operation.sampledAt, operation.options)
     case 'record_client_ip_policy_hits':
       return await recordClientIpPolicyHitsAsync(operation.hits)
+    case 'create_client_ip_policy':
+      return await createClientIpPolicyAsync(operation.input)
+    case 'disable_client_ip_policies':
+      return await disableClientIpPoliciesAsync(operation.input)
     case 'list_active_client_ip_policies':
       return await listActiveClientIpPoliciesAsync()
+    case 'find_active_client_ip_policy_by_hash':
+      return await findActiveClientIpPolicyByHashAsync(operation.ipHash)
     case 'upsert_account_usage_snapshots':
       if (runtimeConfig.databaseDriver === 'postgres') {
         await upsertAccountUsageSnapshotsAsync(operation.inputs)
@@ -237,12 +277,12 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
       return { upsertedCount: operation.inputs.length }
     case 'cleanup_usage_stats_retention':
       if (runtimeConfig.databaseDriver === 'postgres') {
-        throw postgresStatsWriterOperationNotImplemented(operation.type)
+        return await cleanupUsageStatsBucketsBeforeAsync(operation.input)
       }
       return cleanupStatsDatabaseAfterDelete(cleanupUsageStatsBucketsBefore(operation.input))
     case 'cleanup_system_metrics_retention':
       if (runtimeConfig.databaseDriver === 'postgres') {
-        throw postgresStatsWriterOperationNotImplemented(operation.type)
+        return await cleanupSystemMetricsBeforeAsync(operation.input)
       }
       return cleanupStatsDatabaseAfterDelete(cleanupSystemMetricsBefore(operation.input))
     case 'cleanup_table_storage_snapshots_retention':
@@ -257,9 +297,15 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
         scope: 'stats'
       })
     case 'cleanup_deleted_api_key_record_stats':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        throw postgresStatsWriterOperationNotImplemented(operation.type)
+      }
       cleanupDeletedApiKeyRecordStatsData(operation.input)
       return { cleaned: true }
     case 'cleanup_deleted_account_record_stats':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        throw postgresStatsWriterOperationNotImplemented(operation.type)
+      }
       cleanupDeletedAccountRecordStatsData(operation.input)
       return { cleaned: true }
     default:
@@ -313,7 +359,7 @@ async function aggregateUsageStats(batchSize: number, maxBatches: number, maxRun
   return { processed, quotaSnapshotSent: false, stoppedByTimeBudget, effectiveBatchSize: normalizedBatchSize }
 }
 
-async function aggregateClientIpStats(batchSize: number, maxBatches: number, maxRunMs: number): Promise<{ processed: number; policies: ActiveClientIpPolicy[] }> {
+async function aggregateClientIpStats(batchSize: number, maxBatches: number, maxRunMs: number): Promise<{ processed: number }> {
   const startedAtMs = Date.now()
   let processed = 0
   const normalizedBatchSize = boundedPositiveInteger(batchSize, 1, 10000)
@@ -327,9 +373,7 @@ async function aggregateClientIpStats(batchSize: number, maxBatches: number, max
     await pauseBetweenStatsAggregationBatches()
   }
   await refreshClientIpUsageRangeWindowsAsync()
-  const policies = await listActiveClientIpPoliciesAsync()
-  sendClientIpPolicySnapshotToServer(policies)
-  return { processed, policies }
+  return { processed }
 }
 
 function cleanupStatsDatabaseAfterDelete<T extends object>(result: T): T {
@@ -370,6 +414,14 @@ function refreshAccountQuality(windowMinutes: number, failureCandidateLimit: num
   return {
     ...result,
     failureCandidates: listAccountQualityFailurePrecheckCandidates(boundedPositiveInteger(failureCandidateLimit, 1, 100))
+  }
+}
+
+async function refreshAccountQualityAsync(windowMinutes: number, failureCandidateLimit: number): Promise<AccountQualityRealtimeRefreshResult & { failureCandidates: AccountQualityFailurePrecheckCandidate[] }> {
+  const result = await refreshAccountQualityFromUsageAsync(boundedPositiveInteger(windowMinutes, 1, 24 * 60))
+  return {
+    ...result,
+    failureCandidates: await listAccountQualityFailurePrecheckCandidatesAsync(boundedPositiveInteger(failureCandidateLimit, 1, 100))
   }
 }
 

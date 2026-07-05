@@ -80,7 +80,6 @@ export function publicGroupUpdatePayload(input: PublicGroupUpdateInput): Record<
   const payload: Record<string, unknown> = {}
   if (input.name !== undefined) payload.name = input.name
   if (input.providerCode !== undefined) payload.providerCode = input.providerCode
-  if (input.providerProtocolProfileId !== undefined) payload.providerProtocolProfileId = input.providerProtocolProfileId
   if (input.description !== undefined) payload.description = input.description
   if (input.enabled !== undefined) payload.enabled = input.enabled
   if (input.groupType !== undefined) payload.groupType = input.groupType

@@ -18,6 +18,7 @@ import {
   providerDriverForAccount
 } from '../../modules/providers/drivers/registry.js'
 import { buildOpenAIToAnthropicBridgeBody } from '../../modules/providers/drivers/_shared/openai-anthropic-bridge.js'
+import { GatewayRequestValidationError } from '../../modules/gateway/request/validation-error.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-openai-anthropic-boundary-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -43,7 +44,6 @@ try {
   const group = repositories.createGroup({
     name: 'OpenAI 到 Anthropic 旧桥接边界分组',
     providerCode: ANTHROPIC_PROVIDER_CODE,
-    providerProtocolProfileId: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
     enabled: true
   }, access)
   const account = repositories.createAccount({
@@ -138,6 +138,72 @@ try {
     }), {}),
     /legacy role=function \/ assistant\.function_call 已移除/,
     'OpenAI -> Anthropic bridge 不应继续接收 Chat legacy function history'
+  )
+
+  const chatBridgeBody = JSON.parse((await buildOpenAIToAnthropicBridgeBody(gatewayPostRequest('/v1/chat/completions', {
+    model: 'gpt-5.5',
+    messages: [{ role: 'user', content: '需要检索时继续分析' }],
+    tools: [
+      { type: 'web_search' },
+      {
+        type: 'function',
+        function: {
+          name: 'local_lookup',
+          description: '本地查询',
+          parameters: { type: 'object', properties: { query: { type: 'string' } } }
+        }
+      }
+    ],
+    tool_choice: 'auto'
+  }), {})).toString('utf8')) as Record<string, unknown>
+  assert.match(
+    String(chatBridgeBody.system ?? ''),
+    /OpenAI hosted tools unavailable in this Anthropic bridge: web_search/,
+    'Chat 非强制托管工具应转成上游 system 内部约束'
+  )
+  assert.doesNotMatch(String(chatBridgeBody.system ?? ''), /能力未执行|建议下一步/, '内部约束不应沿用用户可见 guidance 文案')
+  assert.deepEqual(
+    (chatBridgeBody.tools as Array<Record<string, unknown>>).map((tool) => tool.name),
+    ['local_lookup'],
+    'Chat 非强制托管工具应被剥离，普通 function 工具应继续桥接'
+  )
+
+  const responsesBridgeBody = JSON.parse((await buildOpenAIToAnthropicBridgeBody(gatewayPostRequest('/v1/responses', {
+    model: 'gpt-5.5',
+    input: '需要检索时继续回答',
+    tools: [
+      { type: 'web_search_preview' },
+      {
+        type: 'function',
+        name: 'local_lookup',
+        description: '本地查询',
+        parameters: { type: 'object', properties: { query: { type: 'string' } } }
+      }
+    ],
+    tool_choice: 'auto'
+  }), {})).toString('utf8')) as Record<string, unknown>
+  assert.match(
+    String(responsesBridgeBody.system ?? ''),
+    /OpenAI hosted tools unavailable in this Anthropic bridge: web_search_preview/,
+    'Responses 非强制托管工具应转成上游 system 内部约束'
+  )
+  assert.doesNotMatch(String(responsesBridgeBody.system ?? ''), /能力未执行|建议下一步/, 'Responses 内部约束不应成为用户可见 guidance 文案')
+  assert.deepEqual(
+    (responsesBridgeBody.tools as Array<Record<string, unknown>>).map((tool) => tool.name),
+    ['local_lookup'],
+    'Responses 非强制托管工具应被剥离，普通 function 工具应继续桥接'
+  )
+
+  await assert.rejects(
+    () => buildOpenAIToAnthropicBridgeBody(gatewayPostRequest('/v1/responses', {
+      model: 'gpt-5.5',
+      input: '必须搜索',
+      tools: [{ type: 'web_search_preview' }],
+      tool_choice: { type: 'web_search_preview' }
+    }), {}),
+    (error: unknown) => error instanceof GatewayRequestValidationError
+      && error.code === 'openai_anthropic_bridge_unsupported_hosted_tool_choice',
+    '强制选择不可桥接托管工具时应返回请求级错误，而不是 200 guidance'
   )
 
   console.log('openai anthropic protocol boundary regression passed')

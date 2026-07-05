@@ -3,7 +3,7 @@
     <a-card v-for="item in cards" :key="item.key" class="metric-card compact-card" :loading="loading">
       <div class="metric-label">{{ item.label }}</div>
       <div class="metric-value">{{ item.value }}</div>
-      <div class="metric-extra">{{ item.extra }}</div>
+      <div v-if="item.extra" class="metric-extra">{{ item.extra }}</div>
     </a-card>
   </div>
   <a-row v-else :gutter="[16, 16]">
@@ -11,7 +11,7 @@
       <a-card class="metric-card" :loading="loading">
         <div class="metric-label">{{ item.label }}</div>
         <div class="metric-value">{{ item.value }}</div>
-        <div class="metric-extra">{{ item.extra }}</div>
+        <div v-if="item.extra" class="metric-extra">{{ item.extra }}</div>
       </a-card>
     </a-col>
   </a-row>
@@ -22,7 +22,7 @@ export interface StatsSummaryCardItem {
   key: string
   label: string
   value: string
-  extra: string
+  extra?: string
 }
 
 defineProps<{
@@ -40,9 +40,15 @@ defineProps<{
 }
 
 .metric-card {
+  width: 100%;
+  height: 100%;
   border: 1px solid #e8edf5;
   border-radius: 16px;
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
+}
+
+.metric-card :deep(.ant-card-body) {
+  min-height: 128px;
 }
 
 .compact-card :deep(.ant-card-body) {

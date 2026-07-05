@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-tags-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -112,26 +113,31 @@ try {
   }, access)
   const account = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '标签回归账户',
     type: 'api_key',
     credentials: { api_key: 'sk-account-tags-regression', base_url: 'https://api.openai.com/v1' },
     groupId: group.id,
-    tags: ['主力', 'API', ' 主力 ']
+    tags: ['主力', 'API', 'api', ' 主力 ']
   }, access)
   repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '标签未命中账户',
     type: 'api_key',
     credentials: { api_key: 'sk-account-tags-unmatched', base_url: 'https://api.openai.com/v1' },
     groupId: group.id
   }, access)
 
-  assert.deepEqual(sortedTagNames(account.tags), sortedText(['API', '主力']), '创建账户应去重并保存多个标签')
+  assert.deepEqual(sortedTagNames(account.tags), sortedText(['API', 'api', '主力']), '创建账户应按大小写敏感去重并保存多个标签')
   const tagOptions = repositories.listAccountTags(access)
   const mainTag = tagOptions.find((tag) => tag.name === '主力')
   const apiTag = tagOptions.find((tag) => tag.name === 'API')
+  const lowercaseApiTag = tagOptions.find((tag) => tag.name === 'api')
   assert(mainTag, '标签下拉应返回已创建标签')
   assert(apiTag, '标签下拉应返回 API 标签')
+  assert(lowercaseApiTag, '标签下拉应保留大小写不同的 api 标签')
+  assert.notEqual(apiTag.id, lowercaseApiTag.id, '大小写不同的标签应是两个独立标签')
   assert.equal(mainTag.accountCount, 1, '已绑定标签应返回绑定账户数')
   assert.deepEqual(
     repositories.listAccountsPage(access, { tagIds: [mainTag.id], page: 1, pageSize: 10 }).items.map((item) => item.name),
@@ -201,6 +207,7 @@ try {
       {
         name: '标签导入账户',
         providerCode: 'gpt',
+        providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
         type: 'api_key',
         status: 'pending_test',
         groupName: importGroupName,
@@ -229,6 +236,7 @@ try {
       {
         name: '接口能力非法导入账户',
         providerCode: 'gpt',
+        providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
         type: 'api_key',
         status: 'pending_test',
         groupName: importGroupName,
@@ -254,6 +262,7 @@ try {
       {
         name: '标签非法导入账户',
         providerCode: 'gpt',
+        providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
         type: 'api_key',
         status: 'pending_test',
         groupName: importGroupName,
@@ -318,6 +327,7 @@ async function assertHiddenAuthorizationInstanceTagsNotMutated(baseUrl: string):
   }, granteeAccess)
   const ownerAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '标签可见性来源账户',
     type: 'api_key',
     credentials: { api_key: 'sk-account-tags-visibility', base_url: 'https://api.openai.com/v1' },

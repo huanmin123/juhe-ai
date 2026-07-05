@@ -12,12 +12,28 @@ export async function applyAccountListRuntimeStatusFilter(
   options: AccountListOptions,
   result: AccountListResult & { runtimeSnapshot?: AccountRuntimeSnapshotStatus }
 ): Promise<AccountListResult & { runtimeSnapshot?: AccountRuntimeSnapshotStatus }> {
+  if (result.runtimeSnapshot?.accountRuntimeAvailabilityAvailable !== true) return result
+  return await listAccountsPageWithRuntimeStatusFilter(access, options) ?? result
+}
+
+export function accountListNeedsRuntimeStatusFilter(options: AccountListOptions): boolean {
   const listOptions = normalizeAccountListOptions(options)
   const statusFilters = accountStatusFilterValues(listOptions.status)
-  if (!statusFilters.some(statusFilterCanBeChangedByRuntime)) return result
-  if (result.runtimeSnapshot?.accountRuntimeAvailabilityAvailable !== true) return result
-  const serverRuntimeSnapshot = await requestServerAccountRuntimeSnapshot(80).catch(() => undefined)
-  const runtimeBlockedAccountCount = runtimeBlockedAccountIds(serverRuntimeSnapshot?.accountRuntimeAvailability).size
+  return statusFilters.some(statusFilterCanBeChangedByRuntime)
+}
+
+export async function listAccountsPageWithRuntimeStatusFilter(
+  access: AccessScope | undefined,
+  options: AccountListOptions
+): Promise<(AccountListResult & { runtimeSnapshot: AccountRuntimeSnapshotStatus }) | undefined> {
+  const listOptions = normalizeAccountListOptions(options)
+  const statusFilters = accountStatusFilterValues(listOptions.status)
+  if (!statusFilters.some(statusFilterCanBeChangedByRuntime)) return undefined
+  const serverRuntimeSnapshot = await requestServerAccountRuntimeSnapshot(80)
+  if (!serverRuntimeSnapshot?.accountRuntimeAvailability) {
+    throw new Error('运行态账号状态筛选暂不可用，请稍后重试')
+  }
+  const runtimeBlockedAccountCount = runtimeBlockedAccountIds(serverRuntimeSnapshot.accountRuntimeAvailability).size
 
   const pageSize = listOptions.pageSize
   const sourcePageSize = Math.max(pageSize, Math.min(500, pageSize * 4))
@@ -35,7 +51,7 @@ export async function applyAccountListRuntimeStatusFilter(
   while (!hasMore && sourcePage <= maxSourcePages) {
     const candidatePage = await listAccountsPageAsync(access, {
       ...listOptions,
-      status: undefined,
+      status: runtimeStatusFilterSourceStatus(statusFilters),
       page: sourcePage,
       pageSize: sourcePageSize
     })
@@ -61,7 +77,6 @@ export async function applyAccountListRuntimeStatusFilter(
 
   const items = output.slice(0, pageSize)
   return {
-    ...result,
     items,
     total: pagedTotalUpperBound(listOptions.page, pageSize, items.length, hasMore),
     hasMore,
@@ -73,6 +88,15 @@ export async function applyAccountListRuntimeStatusFilter(
 
 function statusFilterCanBeChangedByRuntime(status: string): boolean {
   return status === 'active' || status === 'temporary_unavailable'
+}
+
+function runtimeStatusFilterSourceStatus(statusFilters: string[]): string | undefined {
+  const statuses = new Set(statusFilters)
+  if (statusFilters.includes('active') || statusFilters.includes('temporary_unavailable')) {
+    statuses.add('active')
+    statuses.add('temporary_unavailable')
+  }
+  return statuses.size > 0 ? [...statuses].join(',') : undefined
 }
 
 function runtimeBlockedAccountIds(runtimeAvailability: Record<string, { status?: string }> | undefined): Set<string> {

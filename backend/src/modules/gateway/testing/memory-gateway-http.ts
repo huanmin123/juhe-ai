@@ -34,7 +34,7 @@ export function createGatewayTestRequest(
   signal?: AbortSignal,
   clientCompatibility?: AccountClientCompatibility
 ): Request {
-  const stream = body.stream === true
+  const stream = body.stream === true || /:streamGenerateContent\b/i.test(path)
   const headers: IncomingHttpHeaders = {
     accept: stream ? isOAuth ? 'text/event-stream' : 'application/json, text/event-stream' : 'application/json',
     'content-type': 'application/json',

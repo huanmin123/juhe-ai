@@ -44,6 +44,7 @@ try {
 
   const processed = usageStatsRepository.aggregateUsageStatsBatch(10)
   assert.equal(processed, 1, '删除后的 API Key 既有使用记录仍应作为事实参与聚合')
+  seedClientIpStatsCursorsForApiKey(apiKeyId)
   usageStatsRepository.refreshUsageQuotaHourlyWindowsCache()
   usageStatsRepository.refreshUsageRankSnapshots()
   assert.equal(
@@ -82,6 +83,7 @@ try {
 
   seedUsageRecord('usage_deleted_key_after_queue_saturation', 'key_deleted_after_queue_saturation', fallbackCreatedAt)
   usageStatsRepository.aggregateUsageStatsBatch(10)
+  seedClientIpStatsCursorsForApiKey('key_deleted_after_queue_saturation')
   runtimeConfig.processRole = 'server'
   const recordMaintenanceQueue = await import('../../modules/record-maintenance/record-maintenance-queue.service.js')
   const apiKeyCleanupService = await import('../../modules/api-keys/api-key-cleanup.service.js')
@@ -127,6 +129,7 @@ try {
   assert.equal(cleanupTargetExists(pendingApiKeyId), true, '未完成的 API Key 清理目标应持久登记，等待 worker 后续重试')
 
   assert.equal(usageStatsRepository.aggregateUsageStatsBatch(10), 1, '待清理记录应先被统计聚合处理')
+  seedClientIpStatsCursorsForApiKey(pendingApiKeyId)
   const retrySummary = apiKeyRecordCleanup.cleanupPendingDeletedApiKeyRecordTargets(10)
   assert.equal(retrySummary.completed, 1, '统计游标追平后持久待清理目标应可完成')
   assert.equal(usageRecordExists(pendingUsageRecordId), false, '统计游标追平后待重试清理应删除关联使用记录')
@@ -139,6 +142,7 @@ try {
   const resumedCreatedAt = new Date(baseCreatedAtMs + 150 * 60 * 1000).toISOString()
   seedUsageRecord(resumedUsageRecordId, resumedApiKeyId, resumedCreatedAt)
   assert.equal(usageStatsRepository.aggregateUsageStatsBatch(10), 1, '恢复场景使用记录应先进入统计游标')
+  seedClientIpStatsCursorsForApiKey(resumedApiKeyId)
   assert.equal(usageStatsTotal('sys_admin', 'system_account', 'sys_admin'), 1, '恢复场景初始统计应存在')
   simulateCleanupStatsSubtractedBeforeShardDelete(resumedUsageRecordId, resumedApiKeyId, resumedCreatedAt)
   assert.equal(usageRecordExists(resumedUsageRecordId), true, '模拟中途失败时 usage shard 行仍未删除')
@@ -195,6 +199,7 @@ try {
     }
   }
   assert.equal(aggregatedRows, 1200, '大批量待清理记录应先通过有界 shard 窗口轮转完成统计聚合')
+  seedClientIpStatsCursorsForApiKey(largeApiKeyId)
   assert.equal(
     usageStatsTotal('sys_admin', 'api_key', largeApiKeyId),
     1200,
@@ -263,6 +268,38 @@ function seedUsageRecord(id: string, apiKeyIdInput: string, createdAtInput: stri
     costUsd: 0.12,
     createdAt: createdAtInput
   }])
+}
+
+function seedClientIpStatsCursorsForApiKey(apiKeyIdInput: string): void {
+  const rows = databaseModule.getUsageCatalogDatabase()
+    .prepare(`
+      SELECT shard_key AS shardKey, usage_id AS usageId, created_at AS createdAt
+      FROM usage_record_shard_entries
+      WHERE api_key_id = ?
+      ORDER BY shard_key ASC, created_at DESC, usage_id DESC
+    `)
+    .all(apiKeyIdInput) as Array<{ shardKey?: string | null; usageId?: string | null; createdAt?: string | null }>
+  const latestByShard = new Map<string, { usageId: string; createdAt: string }>()
+  for (const row of rows) {
+    const shardKey = row.shardKey?.trim()
+    const usageId = row.usageId?.trim()
+    const createdAtValue = row.createdAt?.trim()
+    if (!shardKey || !usageId || !createdAtValue || latestByShard.has(shardKey)) continue
+    latestByShard.set(shardKey, { usageId, createdAt: createdAtValue })
+  }
+  const statement = databaseModule.getStatsDatabase().prepare(`
+    INSERT INTO stats_job_state (
+      scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, updated_at
+    ) VALUES ('usage_shard', ?, 'client_ip_stats_aggregation', ?, ?, ?, ?)
+    ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
+      cursor_created_at = excluded.cursor_created_at,
+      cursor_id = excluded.cursor_id,
+      last_success_at = excluded.last_success_at,
+      updated_at = excluded.updated_at
+  `)
+  for (const [shardKey, cursor] of latestByShard.entries()) {
+    statement.run(shardKey, cursor.createdAt, cursor.usageId, cursor.createdAt, cursor.createdAt)
+  }
 }
 
 function assertDeletedRecordCleanupUsesShardCatalog(): void {

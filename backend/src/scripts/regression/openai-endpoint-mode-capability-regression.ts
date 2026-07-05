@@ -246,6 +246,15 @@ const deepSeekResponsesToChatMappedAccount = deepSeekApiKeyAccount('deepseek-res
     enabled: true
   }
 ])
+const deepSeekHybridTargetMappedAccount = deepSeekApiKeyAccount('deepseek-hybrid-target-responses-to-chat', ['chat_json', 'chat_sse'], 'openai_standard', [
+  {
+    sourceModel: 'glm-5.1',
+    sourceEndpointFamily: 'responses',
+    upstreamModel: 'glm-5.1',
+    upstreamEndpointFamily: 'chat_completions',
+    enabled: true
+  }
+])
 
 assert.deepEqual(
   filterGatewayAccountsByRequestCapability(request('/v1/chat/completions', true), [chatOnly, responsesOnly, jsonOnly]).accounts.map((item) => item.id),
@@ -299,6 +308,21 @@ assert.deepEqual(
   }).accounts.map((item) => item.id),
   ['deepseek-responses-to-chat'],
   'Codex Responses 请求命中显式 Responses -> Chat 模型映射时应允许 DeepSeek Chat-only 账号承接'
+)
+assert.deepEqual(
+  filterGatewayAccountsByRequestCapability(request('/v1/responses', true, 'gpt-5.4-mini'), [deepSeekHybridTargetMappedAccount], {
+    requestClientCompatibility: 'codex_responses'
+  }).accounts.map((item) => item.id),
+  [],
+  '没有目标模型覆盖时，客户端原始模型不应误命中混合路由目标模型映射'
+)
+assert.deepEqual(
+  filterGatewayAccountsByRequestCapability(request('/v1/responses', true, 'gpt-5.4-mini'), [deepSeekHybridTargetMappedAccount], {
+    requestClientCompatibility: 'codex_responses',
+    requestModelOverride: 'glm-5.1'
+  }).accounts.map((item) => item.id),
+  ['deepseek-hybrid-target-responses-to-chat'],
+  '混合路由目标选择应能按目标模型命中 Responses -> Chat 映射，而不是按客户端原始模型过滤'
 )
 assert.deepEqual(
   filterGatewayAccountsByRequestCapability(request('/v1/responses', true), [deepSeekChatOnlyAccount], {

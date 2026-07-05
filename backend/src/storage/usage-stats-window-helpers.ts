@@ -58,6 +58,17 @@ export function fixedUsageStatsRanges(timezone: string, todayKey = dateKey(new D
   return ranges
 }
 
+export function fixedUsageStatsDefaultRange(timezone: string, todayKey = dateKey(new Date(), timezone)): AccountUsageStatsRange {
+  const dates = fixedUsageStatsDateKeys(timezone, todayKey)
+  const endDate = dates[dates.length - 1] ?? todayKey
+  return {
+    startDate: dates[0] ?? endDate,
+    endDate,
+    days: dates.length || 1,
+    maxDays: FIXED_RANGE_WINDOW_DAYS
+  }
+}
+
 export function hourBucketsUntilNow(hours: number, now = Date.now(), timezone?: string): string[] {
   const size = Math.max(1, Math.trunc(hours))
   return Array.from({ length: size }, (_, index) => hourKey(new Date(now - (size - 1 - index) * HOUR_MS), timezone))

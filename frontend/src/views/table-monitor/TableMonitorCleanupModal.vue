@@ -13,7 +13,7 @@
       show-icon
       type="warning"
       message="硬清理业务库之外的历史数据"
-      description="系统会提交后台任务，按所选截止时间清理数据集目录库、统计结果库中具备时间列的全部非业务表，以及 usage shard 和审计 payload 外部文件；业务库不会清理。删除后 SQLite 文件大小不会立即变小，释放出的空闲页会留在库内供后续新增数据复用；只有需要归还磁盘时，才需要停服执行 VACUUM。"
+      description="系统会提交后台任务，按所选截止时间清理数据集目录库、使用记录目录库、统计结果库中具备时间列的非业务表，以及审计 payload 外部文件；业务库不会清理。清理后存储空间释放效果取决于当前数据库后端和维护策略。"
     />
     <a-form class="cleanup-form" layout="vertical">
       <a-form-item label="清理这个时间之前的非业务数据" required>
@@ -91,7 +91,7 @@ const cleanupResultDescription = computed(() => {
       `截止时间：${formatDateTime(result.cutoffAt)}`,
       result.submittedAt ? `提交时间：${formatDateTime(result.submittedAt)}` : undefined,
       result.jobId ? `任务：${result.jobId}` : undefined,
-      'worker 会在后台分批清理，稍后刷新表监控可查看数据集目录库、统计结果库和 usage shard 变化。'
+      'worker 会在后台分批清理，稍后刷新表监控可查看数据集目录库、使用记录目录库和统计结果库变化。'
     ].filter((item): item is string => Boolean(item))
     return details.join('；')
   }

@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 import { submitAccountTestAndWait } from '../shared/account-test-task-client.js'
 import { installWorkerParentIpcHarness } from '../shared/worker-parent-ipc-harness.js'
@@ -57,9 +58,14 @@ app.use('/__aisys__/api/accounts', requireAdmin, accountsRouter)
 const accountsRoutesSource = readFileSync(new URL('../../modules/accounts/accounts.routes.ts', import.meta.url), 'utf8')
 const accountAuthorizedDispatchRoutesSource = readFileSync(new URL('../../modules/accounts/account-authorized-dispatch.routes.ts', import.meta.url), 'utf8')
 const accountTrafficMigrationRoutesSource = readFileSync(new URL('../../modules/accounts/account-traffic-migration.routes.ts', import.meta.url), 'utf8')
+const accountBasicInfoSectionSource = readFileSync(new URL('../../../../frontend/src/views/accounts/AccountBasicInfoSection.vue', import.meta.url), 'utf8')
 assert(
   accountsRoutesSource.includes('registerAccountAuthorizedDispatchRoutes(accountsRouter)'),
   '账户主路由必须通过 registerAccountAuthorizedDispatchRoutes 注册授权调度路由'
+)
+assert(
+  accountsRoutesSource.includes('授权账户并发上限由来源账户控制，不能在被授权账户上修改'),
+  '账户普通更新路由必须显式禁止被授权人修改授权账户共享并发上限'
 )
 assert(
   !accountsRoutesSource.includes("accountsRouter.patch('/:id/authorized-dispatch'"),
@@ -105,6 +111,11 @@ assert(
   accountTrafficMigrationRoutesSource.includes('migrateServerOpenAIAccountTrafficRuntime'),
   '账户流量迁移子路由必须把会话亲和迁移和目标偏向投递到网关 server 运行态'
 )
+assert.match(
+  accountBasicInfoSectionSource,
+  /v-model:value="form\.concurrencyLimit"[\s\S]*:disabled="authorizedEditing"/,
+  '授权账户编辑表单必须禁用并发上限输入'
+)
 
 interface ApiEnvelope<T> {
   data: T
@@ -127,6 +138,7 @@ interface AccountSummary {
   ownerSystemAccountId?: string
   authorizationInstanceSourceAccountId?: string
   schedulable?: boolean
+  priority?: number
   superPriorityEnabled: boolean
   fallbackEnabled: boolean
 }
@@ -208,6 +220,29 @@ try {
   assert.equal(authorizedAccount.boundGroupId, seed.granteeGroupId, '授权账户应返回被授权用户自己的绑定分组')
   assert.equal(authorizedAccount.bindingSystemAccountId, seed.granteeId, '授权账户应返回本地绑定所属系统账户，供管理侧代操作写入同一作用域')
 
+  const ownerConcurrencyBefore = repositories.listAccounts({ systemAccountId: seed.ownerId, role: 'user' as const })
+    .find((account) => account.id === seed.ownerSourceAccountId)?.concurrencyLimit
+  const granteeConcurrencyUpdate = await patchRaw(
+    baseUrl,
+    `/__aisys__/api/my-accounts/${seed.ownerAccountId}`,
+    seed.granteeCookie,
+    { concurrencyLimit: 99 }
+  )
+  assert.equal(granteeConcurrencyUpdate.status, 400, '被授权人普通编辑授权账户并发上限必须被拒绝')
+  assert.match(await granteeConcurrencyUpdate.text(), /授权账户并发上限由来源账户控制/, '被授权人修改授权账户并发上限时应返回明确中文错误')
+  const adminConcurrencyUpdate = await patchRaw(
+    baseUrl,
+    `/__aisys__/api/accounts/${seed.ownerAccountId}?systemAccountId=${seed.granteeId}`,
+    seed.adminCookie,
+    { concurrencyLimit: 99 }
+  )
+  assert.equal(adminConcurrencyUpdate.status, 400, '管理员代被授权人普通编辑授权账户并发上限必须被拒绝')
+  assert.equal(
+    repositories.listAccounts({ systemAccountId: seed.ownerId, role: 'user' as const }).find((account) => account.id === seed.ownerSourceAccountId)?.concurrencyLimit,
+    ownerConcurrencyBefore,
+    '被拒绝的授权实例并发更新不得修改来源账号并发上限'
+  )
+
   const locallyDisabled = await patchEnvelope<AccountSummary>(
     baseUrl,
     `/__aisys__/api/my-accounts/${seed.ownerAccountId}/authorized-dispatch`,
@@ -281,6 +316,22 @@ try {
   )
   assert.equal(locallyEnabled.status, 'active', '被授权用户应能重新启用自己的授权账户绑定')
 
+  const ownerPriorityBefore = repositories.listAccounts({ systemAccountId: seed.ownerId, role: 'user' as const })
+    .find((account) => account.id === seed.ownerSourceAccountId)?.priority
+  const localPriorityUpdated = await patchEnvelope<AccountSummary>(
+    baseUrl,
+    `/__aisys__/api/my-accounts/${seed.ownerAccountId}/authorized-dispatch`,
+    seed.granteeCookie,
+    { priority: 7 }
+  )
+  assert.equal(localPriorityUpdated.priority, 7, '被授权用户应能修改自己视角下授权账户的本地优先级')
+  const granteePriorityView = repositories.listAccounts({ systemAccountId: seed.granteeId, role: 'user' as const })
+    .find((account) => account.id === seed.ownerAccountId)
+  const ownerPriorityView = repositories.listAccounts({ systemAccountId: seed.ownerId, role: 'user' as const })
+    .find((account) => account.id === seed.ownerSourceAccountId)
+  assert.equal(granteePriorityView?.priority, 7, '被授权用户修改优先级后应只写入自己的授权账户绑定')
+  assert.equal(ownerPriorityView?.priority, ownerPriorityBefore, '被授权用户修改优先级不应影响账户所有者原始优先级')
+
   const updated = await patchEnvelope<AccountSummary>(
     baseUrl,
     `/__aisys__/api/accounts/${seed.ownerAccountId}/authorized-dispatch?systemAccountId=${authorizedAccount.bindingSystemAccountId}`,
@@ -301,7 +352,7 @@ try {
   const testAccount = repositories.findAccountForTest(seed.ownerAccountId, { systemAccountId: seed.granteeId, role: 'user' as const })
   assert.equal(testAccount?.accessType, 'authorized', '被授权用户视角应能拿到授权账户测试对象')
   assert.equal(testAccount?.bindingSystemAccountId, seed.granteeId, '测试对象应保留本地绑定所属系统账户')
-  const tested: AccountTestResult = await withDbServiceRole(() => testOpenAIAccount(testAccount, { model: 'gpt-5.5', prompt: 'hi' }))
+  const tested: AccountTestResult = await withDbServiceRole(() => testOpenAIAccount(testAccount, { model: 'gpt-5.5', prompt: 'hi', testEndpointMode: 'responses_sse' }))
   assert.equal(tested.success, true, `管理员应能代被授权用户测试授权账户：${tested.message}`)
   assert.equal(tested.statusCode, 200, '授权账户测试应通过被授权用户自己的分组绑定进入网关链路')
 
@@ -309,7 +360,7 @@ try {
     baseUrl,
     path: `/__aisys__/api/my-accounts/${seed.ownerAccountId}/test`,
     cookie: seed.granteeCookie,
-    body: { model: 'gpt-5.5', prompt: 'hi' }
+    body: { model: 'gpt-5.5', prompt: 'hi', testEndpointMode: 'responses_sse' }
   }))
   assert.equal(granteeLimitedTest.success, true, `被授权用户应能测试已绑定且可用的授权账户：${granteeLimitedTest.message}`)
   assert.equal(granteeLimitedTest.statusCode, 200, '被授权用户测试应保留状态码')
@@ -325,7 +376,7 @@ try {
 
   const ownerPausedByOwner = repositories.updateAccount(seed.ownerPausedSourceAccountId, { status: 'disabled' }, { systemAccountId: seed.ownerId, role: 'user' as const })
   assert.equal(ownerPausedByOwner?.status, 'disabled', '归属人应能停用自己的主账户')
-  assert.equal(ownerPausedByOwner?.schedulable, false, '归属人停用主账户后主账户自身不可调度')
+  assert.equal(ownerPausedByOwner?.effectiveAvailability?.available, false, '归属人停用主账户后主账户实际不可调度')
   const ownerPausedAuthorizedAccounts = await getEnvelope<AccountListResult>(
     baseUrl,
     '/__aisys__/api/my-accounts?page=1&pageSize=20',
@@ -359,14 +410,14 @@ try {
     baseUrl,
     `/__aisys__/api/my-accounts/${seed.ownerPausedAccountId}/test`,
     seed.granteeCookie,
-    { model: 'gpt-5.5', prompt: 'hi' }
+    { model: 'gpt-5.5', prompt: 'hi', testEndpointMode: 'responses_sse' }
   )), /授权方原账户已停用/, '归属人停用主账户后被授权用户测试应被前置拦截')
 
   const granteeLimitedErrorTest = await withWorkerRole(() => submitAccountTestAndWait<AccountTestResult>({
     baseUrl,
     path: `/__aisys__/api/my-accounts/${seed.ownerErrorAccountId}/test`,
     cookie: seed.granteeCookie,
-    body: { model: 'gpt-5.5-diagnostic-error', prompt: 'hi' }
+    body: { model: 'gpt-5.5-diagnostic-error', prompt: 'hi', testEndpointMode: 'responses_sse' }
   }))
   assert.equal(granteeLimitedErrorTest.success, false, '被授权用户测试上游错误时应返回测试失败')
   assert.equal(typeof granteeLimitedErrorTest.statusCode, 'number', '被授权用户测试上游错误时可保留 HTTP 状态码')
@@ -491,6 +542,7 @@ function seedData(mockBaseUrl: string): SeedState {
   }, ownerAccess)
   const ownerAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '管理员代操作授权账户',
     type: 'api_key',
     credentials: { api_key: 'sk-admin-authorized-dispatch', base_url: mockBaseUrl },
@@ -500,6 +552,7 @@ function seedData(mockBaseUrl: string): SeedState {
   }, ownerAccess)
   const ownerErrorAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '管理员代操作授权错误脱敏账户',
     type: 'api_key',
     credentials: { api_key: 'sk-admin-authorized-dispatch-error', base_url: mockBaseUrl },
@@ -509,6 +562,7 @@ function seedData(mockBaseUrl: string): SeedState {
   }, ownerAccess)
   const ownerPausedAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '管理员代操作归属人停用账户',
     type: 'api_key',
     credentials: { api_key: 'sk-admin-authorized-dispatch-owner-disabled', base_url: mockBaseUrl },
@@ -518,6 +572,7 @@ function seedData(mockBaseUrl: string): SeedState {
   }, ownerAccess)
   const granteeTargetAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '管理员代操作迁移目标账户',
     type: 'api_key',
     credentials: { api_key: 'sk-admin-authorized-dispatch-target', base_url: mockBaseUrl },
@@ -611,6 +666,14 @@ async function postEnvelope<T>(baseUrl: string, path: string, cookie: string, bo
     body: JSON.stringify(body)
   })
   return parseEnvelope<T>(path, response)
+}
+
+async function patchRaw(baseUrl: string, path: string, cookie: string, body: Record<string, unknown>): Promise<Response> {
+  return fetch(`${baseUrl}${path}`, {
+    method: 'PATCH',
+    headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  })
 }
 
 async function withDbServiceRole<T>(action: () => Promise<T>): Promise<T> {

@@ -2,6 +2,7 @@ import type {
   ProviderModelApiProtocol,
   ProviderModelMode,
   ProviderModelPricing,
+  CustomProviderModelScope,
   ProviderModelStatus,
   ProviderModelUpsertPayload
 } from '@/types/domain'
@@ -17,6 +18,7 @@ import {
 
 export interface CustomModelForm {
   id?: string
+  scope: CustomProviderModelScope
   model: string
   status: ProviderModelStatus
   mode: ProviderModelMode
@@ -38,6 +40,7 @@ export interface CustomModelForm {
 }
 
 export const emptyCustomModelForm: CustomModelForm = {
+  scope: 'personal',
   model: '',
   status: 'active',
   mode: 'text',
@@ -50,6 +53,7 @@ export function createCustomModelFormFromPricing(
 ): CustomModelForm {
   const form: CustomModelForm = {
     id: record.id,
+    scope: record.scope === 'global' ? 'global' : 'personal',
     model: record.model,
     status: record.status ?? 'active',
     mode: categoryFromModeOrModel(record.mode, record.model),
@@ -84,6 +88,7 @@ export function buildCustomModelPayload(
   const model = form.model.trim()
   if (!model) return undefined
   return {
+    scope: form.scope,
     model,
     status: form.status,
     mode: form.mode,

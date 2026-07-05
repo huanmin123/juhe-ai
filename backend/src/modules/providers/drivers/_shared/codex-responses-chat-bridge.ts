@@ -7,7 +7,7 @@ import {
   gatewayJsonBodyInlineParseMaxBytes,
   type GatewayRawBodyRequest
 } from '../../../gateway/request/body.js'
-import { GatewayAgentGuidanceResponse, GatewayRequestValidationError } from '../../../gateway/request/validation-error.js'
+import { GatewayRequestValidationError } from '../../../gateway/request/validation-error.js'
 import {
   isGatewayJsonWorkerQueueFullError,
   parseGatewayJsonBodyInWorker
@@ -202,13 +202,6 @@ export async function buildCodexResponsesChatBridgeBody(
   const runtimeRequest = req as CodexResponsesChatBridgeRuntimeRequest
   runtimeRequest.codexResponsesChatBridgeToolAdaptersByChatName = toolPlan.adaptersByChatName
   const toolChoice = responsesToolChoiceToChatToolChoice(body.tool_choice, toolPlan)
-  const guidance = unsupportedResponsesToolsGuidance(toolPlan.unsupportedTools, body.tool_choice, toolPlan, {
-    model,
-    providerName: options.guidanceProviderName
-  })
-  if (guidance) {
-    throw guidance
-  }
   const chatBody: JsonRecord = {
     model,
     messages: responsesInputToChatMessages(body, {
@@ -944,7 +937,12 @@ function unsupportedResponsesToolLabel(item: JsonRecord, namespace?: string): st
 function unsupportedToolsSystemMessage(unsupportedTools: string[] | undefined): string | undefined {
   const tools = [...new Set((unsupportedTools ?? []).filter(Boolean))]
   if (tools.length === 0) return undefined
-  return `Chat-only bridge 当前不能代执行以下 Responses 原生托管工具：${tools.join(', ')}。如果任务必须依赖这些工具，请直接说明当前 Chat 上游不支持该能力，不要假装已经调用。`
+  return [
+    `Chat-only bridge 当前不能代执行以下 Responses 原生托管工具：${tools.join(', ')}。`,
+    '这是给模型看的内部能力约束，不要把本段说明原文输出给用户。',
+    '继续使用当前请求中可用的 function/custom 工具、已有上下文和普通推理完成用户任务。',
+    '不要假装已经调用这些不可用工具；只有任务确实无法在缺少这些工具时完成，才用简短自然语言说明缺少对应外部能力。'
+  ].join(' ')
 }
 
 function forcedToolChoiceSystemMessage(
@@ -990,73 +988,6 @@ function unsupportedToolsForSystemMessage(
       : plan.unsupportedTools
   }
   return plan.unsupportedTools
-}
-
-function throwIfUnsupportedResponsesTools(
-  unsupportedTools: string[],
-  toolChoice: unknown,
-  plan: CodexResponsesChatBridgeToolPlan
-): void {
-  const tools = [...new Set(unsupportedTools.filter(Boolean))]
-  if (tools.length === 0) {
-    return
-  }
-  if (canIgnoreUnsupportedResponsesTools(toolChoice, plan)) {
-    return
-  }
-  throw new GatewayRequestValidationError(
-    `当前 Chat-only bridge 不能执行 Responses 原生托管工具：${tools.join(', ')}`,
-    'unsupported_codex_native_tool'
-  )
-}
-
-function unsupportedResponsesToolsGuidance(
-  unsupportedTools: string[],
-  toolChoice: unknown,
-  plan: CodexResponsesChatBridgeToolPlan,
-  options: { model: string; providerName?: string }
-): GatewayAgentGuidanceResponse | undefined {
-  const tools = [...new Set(unsupportedTools.filter(Boolean))]
-  if (tools.length === 0 || canIgnoreUnsupportedResponsesTools(toolChoice, plan)) {
-    return undefined
-  }
-  return new GatewayAgentGuidanceResponse({
-    code: 'agent_guidance_unsupported_native_tool',
-    protocol: 'responses',
-    stream: true,
-    model: options.model,
-    message: unsupportedCapabilityGuidanceMessage({
-      tools,
-      providerName: options.providerName,
-      bridgeName: 'Responses 到 Chat bridge'
-    })
-  })
-}
-
-function unsupportedCapabilityGuidanceMessage(input: {
-  tools: string[]
-  providerName?: string
-  bridgeName: string
-}): string {
-  const tools = input.tools.join(', ')
-  const provider = input.providerName?.trim() || '当前上游供应商'
-  const providerSpecificHint = provider.toLowerCase() === 'glm'
-    ? '\n供应商提示：GLM 的联网搜索通常应通过该供应商提供的官方 MCP 或等价本地工具配置来完成。'
-    : ''
-  return [
-    `能力未执行：${tools}`,
-    '',
-    `当前供应商：${provider}`,
-    `当前协议：${input.bridgeName}`,
-    `原因：当前上游供应商或协议档案未声明这些原生托管能力。中转层不会伪造工具结果，也不会把这些工具请求透传给不支持的上游。${providerSpecificHint}`,
-    '',
-    '建议下一步：',
-    '1. 检查本地客户端是否已配置该供应商提供的 MCP 或等价工具。',
-    '2. 如果已配置，请通过本地 MCP/工具执行所需能力后继续当前任务。',
-    '3. 如果未配置，请提示用户配置对应工具，或切换到支持该能力的供应商/模型。',
-    '',
-    `注意：本轮没有执行 ${tools}，因此没有外部工具结果。`
-  ].join('\n')
 }
 
 function canIgnoreUnsupportedResponsesTools(

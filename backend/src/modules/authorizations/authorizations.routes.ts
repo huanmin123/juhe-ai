@@ -14,7 +14,8 @@ import {
 } from '../../storage/repositories.js'
 import { getBusinessDatabase } from '../../storage/database.js'
 import { optionalServerDateTimeIso } from '../../storage/value-utils.js'
-import { normalizeAccountUsageStatsRange, todayDateKey, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
+import { normalizeAccountUsageStatsRange, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
+import { fixedUsageStatsDefaultRange } from '../../storage/usage-stats-window-helpers.js'
 import { getRequestAccessScope, getRequestAuthContext } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField, textValue } from '../deduplication/mutation-guard.middleware.js'
@@ -127,7 +128,8 @@ authorizationsRouter.get('/', async (req, res, next) => {
     const routeFilters = req.baseUrl.endsWith('/my-authorizations') && direction && direction !== 'all'
       ? { ...filters, ...sourceTypeFilter, direction }
       : { ...filters, ...sourceTypeFilter }
-    res.json(ok(await listResourceAuthorizationsPageAsync(routeFilters, getRequestAccessScope(systemAccountId), { includeUsage: false, page, pageSize })))
+    const result = await listResourceAuthorizationsPageAsync(routeFilters, getRequestAccessScope(systemAccountId), { includeUsage: false, page, pageSize })
+    res.json(ok(toAuthorizationListResponse(result)))
   } catch (error) {
     next(error)
   }
@@ -223,6 +225,33 @@ authorizationsRouter.post('/', mutationGuard({
     res.status(201).json(ok(authorization))
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '创建授权失败'))
+  }
+})
+
+authorizationsRouter.get('/:id', async (req, res, next) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    sendBadRequest(res, scopeQuery.message)
+    return
+  }
+  const paramsParsed = parseOrBadRequest(authorizationIdParamsSchema, req.params, '授权记录 ID 不合法')
+  if (!paramsParsed.success) {
+    sendBadRequest(res, paramsParsed.message)
+    return
+  }
+  try {
+    const authorization = await findResourceAuthorizationAsync(
+      paramsParsed.data.id,
+      getRequestAccessScope(scopeQuery.data.systemAccountId),
+      { includeUsage: false }
+    )
+    if (!authorization) {
+      sendNotFound(res, '授权记录不存在')
+      return
+    }
+    res.json(ok(authorization))
+  } catch (error) {
+    next(error)
   }
 })
 
@@ -488,6 +517,95 @@ authorizationsRouter.get('/:id/usage', async (req, res, next) => {
   }
 })
 
+type ResourceAuthorizationListResponse = {
+  items: ResourceAuthorizationListItem[]
+  total: number
+  hasMore: boolean
+  page: number
+  pageSize: number
+}
+
+type ResourceAuthorizationListItem = Omit<
+  ResourceAuthorizationSummary,
+  | 'authorizationSources'
+  | 'limits'
+  | 'resourceAccountExpiresAt'
+  | 'usage'
+  | 'usageBySystemAccount'
+  | 'usageBySystemAccountTotal'
+  | 'usageBySystemAccountPage'
+  | 'usageBySystemAccountPageSize'
+  | 'usageBySystemAccountHasMore'
+  | 'usageRange'
+> & {
+  sourceSummary?: {
+    activeSourceCount: number
+    hasManual: boolean
+    hasTeam: boolean
+    teamSources: Array<{
+      sourceTeamId: string
+      sourceTeamName?: string
+    }>
+  }
+}
+
+function toAuthorizationListResponse(result: {
+  items: ResourceAuthorizationSummary[]
+  total: number
+  hasMore: boolean
+  page: number
+  pageSize: number
+}): ResourceAuthorizationListResponse {
+  return {
+    ...result,
+    items: result.items.map(toAuthorizationListItem)
+  }
+}
+
+function toAuthorizationListItem(authorization: ResourceAuthorizationSummary): ResourceAuthorizationListItem {
+  const {
+    authorizationSources,
+    limits,
+    resourceAccountExpiresAt,
+    usage,
+    usageBySystemAccount,
+    usageBySystemAccountTotal,
+    usageBySystemAccountPage,
+    usageBySystemAccountPageSize,
+    usageBySystemAccountHasMore,
+    usageRange,
+    ...item
+  } = authorization
+  void limits
+  void resourceAccountExpiresAt
+  void usage
+  void usageBySystemAccount
+  void usageBySystemAccountTotal
+  void usageBySystemAccountPage
+  void usageBySystemAccountPageSize
+  void usageBySystemAccountHasMore
+  void usageRange
+  return {
+    ...item,
+    sourceSummary: summarizeAuthorizationSources(authorizationSources)
+  }
+}
+
+function summarizeAuthorizationSources(sources: ResourceAuthorizationSummary['authorizationSources']): ResourceAuthorizationListItem['sourceSummary'] {
+  const activeSources = sources.filter((source) => source.status === 'active')
+  return {
+    activeSourceCount: activeSources.length,
+    hasManual: activeSources.some((source) => source.sourceType === 'manual'),
+    hasTeam: activeSources.some((source) => source.sourceType === 'team'),
+    teamSources: activeSources
+      .filter((source) => source.sourceType === 'team' && Boolean(source.sourceTeamId))
+      .map((source) => ({
+        sourceTeamId: source.sourceTeamId!,
+        sourceTeamName: source.sourceTeamName
+      }))
+  }
+}
+
 function authorizationTargets(authorization: ResourceAuthorizationSummary) {
   const targets = [
     ownerTarget({
@@ -533,9 +651,9 @@ function authorizationGranteeName(authorization: ResourceAuthorizationSummary): 
 
 async function normalizeAuthorizationUsageRangeAsync(input: { startDate?: string; endDate?: string }) {
   const timezone = await usageStatsTimezoneAsync()
-  const today = todayDateKey(timezone)
-  const startDate = input.startDate ?? input.endDate ?? today
-  const endDate = input.endDate ?? input.startDate ?? today
+  const defaultRange = fixedUsageStatsDefaultRange(timezone)
+  const startDate = input.startDate ?? input.endDate ?? defaultRange.startDate
+  const endDate = input.endDate ?? input.startDate ?? defaultRange.endDate
   return normalizeAccountUsageStatsRange({
     startDate,
     endDate

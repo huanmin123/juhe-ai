@@ -68,7 +68,6 @@ if (hybridScoringRedisSharedCacheRegression) {
   if (!hybridScoringRedisSharedCacheUrl) {
     throw new Error('混合路由评分 Redis shared cache 回归需要配置 JUHE_AI_REDIS_CACHE_URL 或 JUHE_HYBRID_SCORING_SHARED_CACHE_REDIS_URL')
   }
-  runtimeConfig.cacheDriver = 'redis'
   runtimeConfig.redis.cacheUrl = hybridScoringRedisSharedCacheUrl
 }
 runtimeConfig.databasePath = join(tempRoot, 'hybrid-gateway-mock-ai.sqlite3')
@@ -128,9 +127,6 @@ try {
   gatewayCache.clearGatewayRuntimeCache()
   hybridAffinity.clearHybridRouteAffinityForTest()
   hybridScoring.clearHybridScoringCacheForTest({ clearShared: false })
-  if (hybridScoringRedisSharedCacheRegression) {
-    await hybridScoring.clearHybridScoringSharedCacheForTest()
-  }
   let upstreamServer: http.Server | undefined
   let appServer: http.Server | undefined
   try {
@@ -302,6 +298,14 @@ try {
       status: 'active'
     }, access)
     assert(qualityUnavailableApiKey.key, '混合质量评分不可用回归 API Key 未返回明文密钥')
+
+    if (hybridScoringRedisSharedCacheRegression) {
+      runtimeConfig.cacheDriver = 'redis'
+      runtimeConfig.redis.cacheUrl = hybridScoringRedisSharedCacheUrl
+      gatewayCache.clearGatewayRuntimeCache()
+      hybridScoring.clearHybridScoringCacheForTest({ clearShared: false })
+      await hybridScoring.clearHybridScoringSharedCacheForTest()
+    }
 
     appServer = http.createServer(app)
     await listen(appServer)
@@ -520,7 +524,6 @@ function createHybridGroupAccount(input: {
   const group = repositories.createGroup({
     name: input.groupName,
     providerCode: input.providerCode,
-    providerProtocolProfileId: input.providerProtocolProfileId,
     enabled: true
   }, access)
   const account = repositories.createAccount({

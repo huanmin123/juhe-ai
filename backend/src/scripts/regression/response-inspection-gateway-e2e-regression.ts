@@ -134,7 +134,6 @@ async function runScenario(baseUrl: string, upstreamBaseUrl: string, scenario: S
   const group = repositories.createGroup({
     name: `响应检查 E2E ${scenario}`,
     providerCode: accountProvider.providerCode,
-    providerProtocolProfileId: accountProvider.providerProtocolProfileId,
     enabled: true
   }, access)
   repositories.createAccount({
@@ -243,7 +242,6 @@ async function runCodexBrokenGzipExhaustedScenario(baseUrl: string, upstreamBase
   const group = repositories.createGroup({
     name: '响应检查 E2E codex broken gzip exhausted',
     providerCode: accountProvider.providerCode,
-    providerProtocolProfileId: accountProvider.providerProtocolProfileId,
     enabled: true
   }, access)
   repositories.createAccount({

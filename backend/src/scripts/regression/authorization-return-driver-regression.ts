@@ -70,6 +70,7 @@ try {
         JUHE_AI_DATABASE_DRIVER: 'postgres',
         JUHE_AI_CACHE_DRIVER: 'redis',
         JUHE_AI_RUNTIME_STATE_DRIVER: 'redis',
+        JUHE_AI_QUEUE_DRIVER: 'redis_stream',
         JUHE_AI_POSTGRES_URL: process.env.JUHE_AUTHORIZATION_RETURN_POSTGRES_URL,
         JUHE_AI_REDIS_CACHE_URL: process.env.JUHE_AUTHORIZATION_RETURN_REDIS_CACHE_URL ?? 'redis://:unused@127.0.0.1:6379/0',
         JUHE_AI_REDIS_STATE_URL: process.env.JUHE_AUTHORIZATION_RETURN_REDIS_STATE_URL ?? 'redis://:unused@127.0.0.1:6380/0',
@@ -322,18 +323,14 @@ async function seedReturnableGroupAuthorization(client: DatabaseClient): Promise
 
   await client.execute(`
     INSERT INTO ${table(client, 'groups')} (
-      id, system_account_id, name, provider_code, provider_protocol_profile_id,
-      protocol_code, protocol_version, description, enabled, is_default, group_type,
+      id, system_account_id, name, provider_code, description, enabled, is_default, group_type,
       scheduling_policy_json, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 'personal', NULL, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, 1, 0, 'personal', NULL, ?, ?)
   `, [
     groupId,
     ownerSystemAccountId,
     `分组授权归还${suffix}`,
     profile.provider_code,
-    profile.id,
-    profile.protocol_code,
-    profile.protocol_version,
     '分组授权归还驱动回归',
     now,
     now

@@ -10,6 +10,7 @@ import express, { type NextFunction, type Request, type Response as ExpressRespo
 import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-stream-first-output-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'stream-first-output.sqlite3')
@@ -34,7 +35,8 @@ const [
   accountSideEffects,
   usageRecordQueue,
   auditLogQueue,
-  clientIpAvoidance
+  clientIpAvoidance,
+  readWorkerPool
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
   import('../../shared/request-context.js'),
@@ -46,7 +48,8 @@ const [
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js'),
-  import('../../modules/gateway/runtime/client-ip-account-avoidance.service.js')
+  import('../../modules/gateway/runtime/client-ip-account-avoidance.service.js'),
+  import('../../storage/sqlite-read-worker-pool.js')
 ])
 
 type RawBodyRequest = Request & { rawBody?: Buffer }
@@ -57,6 +60,7 @@ app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRa
 let scenarioCredentialIndex = 0
 let scenarioCredentialOwnerAccess: { systemAccountId: string; role: 'user' } | undefined
 const regressionSupportedModels = ['gpt-4o-mini']
+const upstreamScenarioHits: Array<{ scenario: string; accountRole: 'primary' | 'backup' | 'single' | 'multi'; authorization: string }> = []
 
 function codexStreamHeaders(apiKey: string, turnId: string): Record<string, string> {
   return {
@@ -109,7 +113,6 @@ async function main(): Promise<void> {
     usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
     auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
     settingsRepository.updateSettings({
-      streamCircuitBreakerEnabled: true,
       streamRequestTimeoutSeconds: 10,
       streamIdleTimeoutSeconds: 10,
       temporaryUnschedulableRetryAttempts: 0
@@ -146,6 +149,7 @@ async function main(): Promise<void> {
     const jsonResponseForStreamCredential = createScenarioCredential(upstreamBaseUrl, 'stream 请求返回 JSON')
     const noFirstChunkServerRetryCredential = createTwoAccountScenarioCredential(upstreamBaseUrl, '首段等待服务端切号')
     const missingTerminalServerRetryCredential = createTwoAccountScenarioCredential(upstreamBaseUrl, '缺终止服务端切号')
+    const heartbeatOnlyServerRetryCredential = createTwoAccountScenarioCredential(upstreamBaseUrl, '心跳无有效输出服务端切号')
     const failedEventServerRetryCredential = createTwoAccountScenarioCredential(upstreamBaseUrl, '失败事件服务端切号')
     const preCommitFuzzServerRetryCredential = createTwoAccountScenarioCredential(upstreamBaseUrl, '预提交失败 fuzz 服务端切号')
     const fourAccountServerRetryCredential = createMultiAccountScenarioCredential(upstreamBaseUrl, '超过三账号隐藏重试', 4)
@@ -171,7 +175,12 @@ async function main(): Promise<void> {
     assert(streamText.includes('response.failed'), `客户端未收到网关失败事件：${streamText}`)
     assert(streamText.includes('上游流式响应在输出前失败，请重试'), `Codex 首段等待超时应返回统一可重试文案：${streamText}`)
     assert(streamText.includes('"code":"upstream_retryable_error"'), `首段等待超时应改写为可重试错误码：${streamText}`)
-    assert(durationMs < 15000, `首段等待超时没有及时结束，耗时 ${durationMs}ms`)
+    assert.equal(
+      upstreamScenarioHits.filter((hit) => hit.scenario === 'no-first-chunk').length,
+      1,
+      '单账号首段等待超时不应隐藏重试同一上游'
+    )
+    assert(durationMs >= 9000 && durationMs < 25000, `首段等待超时没有在合理窗口内结束，耗时 ${durationMs}ms`)
 
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -183,7 +192,6 @@ async function main(): Promise<void> {
     assert.equal(Number(noFirstChunkFailureState?.stream_failure_count ?? 0), 0, '首段前失败未产生可见输出，不应累计账号流失败计数')
 
     settingsRepository.updateSettings({
-      streamCircuitBreakerEnabled: true,
       streamRequestTimeoutSeconds: 10,
       streamIdleTimeoutSeconds: 10,
       temporaryUnschedulableRetryAttempts: 0
@@ -212,7 +220,7 @@ async function main(): Promise<void> {
     assert(fragmentedSseEventResult.streamText.includes('response.completed'), `碎片化 SSE 事件持续有原始字节时应等到上游完成：${fragmentedSseEventResult.streamText}`)
     assert(!fragmentedSseEventResult.streamText.includes('response.failed'), `碎片化 SSE 事件持续有原始字节时不应补发失败事件：${fragmentedSseEventResult.streamText}`)
     assert(
-      fragmentedSseEventResult.durationMs >= 1200 && fragmentedSseEventResult.durationMs < 5000,
+      fragmentedSseEventResult.durationMs >= 10_000 && fragmentedSseEventResult.durationMs < 18_000,
       `碎片化 SSE 事件没有持续等待到上游完成，耗时 ${fragmentedSseEventResult.durationMs}ms`
     )
     usageRecordQueue.flushAllUsageRecordQueue()
@@ -233,7 +241,7 @@ async function main(): Promise<void> {
     usageRecordQueue.flushAllUsageRecordQueue()
     assertSuccessfulUsageRecord(largeImageEventCredential.account.id)
     assertUsageRecordBodyOmitted(largeImageEventCredential.account.id, largeImageTraceId)
-    auditLogQueue.flushAllAuditLogQueue()
+    await auditLogQueue.flushAllAuditLogQueueAsync()
     await assertImageStreamAuditBodyOmitted(largeImageTraceId, 'response.image_generation_call.completed')
 
     const largeImagePartialTraceId = traceIdForSampledSuccessBucket('large-image-partial')
@@ -244,7 +252,7 @@ async function main(): Promise<void> {
     usageRecordQueue.flushAllUsageRecordQueue()
     assertSuccessfulUsageRecord(largeImagePartialCredential.account.id)
     assertUsageRecordBodyOmitted(largeImagePartialCredential.account.id, largeImagePartialTraceId)
-    auditLogQueue.flushAllAuditLogQueue()
+    await auditLogQueue.flushAllAuditLogQueueAsync()
     await assertImageStreamAuditBodyOmitted(largeImagePartialTraceId, 'response.image_generation_call.partial_image')
 
     const largeImageApiTraceId = traceIdForSampledSuccessBucket('large-image-api-event')
@@ -254,7 +262,7 @@ async function main(): Promise<void> {
     usageRecordQueue.flushAllUsageRecordQueue()
     assertSuccessfulUsageRecord(largeImageApiEventCredential.account.id, { inputTokens: 1, outputTokens: 100 })
     assertUsageRecordBodyOmitted(largeImageApiEventCredential.account.id, largeImageApiTraceId)
-    auditLogQueue.flushAllAuditLogQueue()
+    await auditLogQueue.flushAllAuditLogQueueAsync()
     await assertImageStreamAuditBodyOmitted(largeImageApiTraceId, 'image_generation.completed')
 
     const largeImageApiSplitTraceId = traceIdForSampledSuccessBucket('large-image-api-split')
@@ -264,7 +272,7 @@ async function main(): Promise<void> {
     usageRecordQueue.flushAllUsageRecordQueue()
     assertSuccessfulUsageRecord(largeImageApiSplitCredential.account.id, { inputTokens: 3, outputTokens: 4 })
     assertUsageRecordBodyOmitted(largeImageApiSplitCredential.account.id, largeImageApiSplitTraceId)
-    auditLogQueue.flushAllAuditLogQueue()
+    await auditLogQueue.flushAllAuditLogQueueAsync()
     await assertImageStreamAuditBodyOmitted(largeImageApiSplitTraceId, 'image_generation.completed')
 
     const largeImageApiEofTraceId = traceIdForSampledSuccessBucket('large-image-api-eof')
@@ -274,7 +282,7 @@ async function main(): Promise<void> {
     usageRecordQueue.flushAllUsageRecordQueue()
     assertSuccessfulUsageRecord(largeImageApiEofCredential.account.id, { inputTokens: 1, outputTokens: 100 })
     assertUsageRecordBodyOmitted(largeImageApiEofCredential.account.id, largeImageApiEofTraceId)
-    auditLogQueue.flushAllAuditLogQueue()
+    await auditLogQueue.flushAllAuditLogQueueAsync()
     await assertImageStreamAuditBodyOmitted(largeImageApiEofTraceId, 'image_generation.completed')
 
     const missingTerminalResult = await requestMissingTerminalEof(baseUrl, missingTerminalCredential.apiKey.key)
@@ -305,9 +313,25 @@ async function main(): Promise<void> {
     assert(!heartbeatThenCompletedResult.streamText.includes('response.failed'), `上游持续心跳时不应触发失败事件：${heartbeatThenCompletedResult.streamText}`)
     assert(heartbeatThenCompletedResult.durationMs < 5000, `持续心跳后完成没有及时结束，耗时 ${heartbeatThenCompletedResult.durationMs}ms`)
 
+    const heartbeatOnlyServerRetryResult = await requestHeartbeatOnlyServerRetry(baseUrl, heartbeatOnlyServerRetryCredential.apiKey.key)
+    assert.deepEqual(
+      upstreamScenarioHits
+        .filter((hit) => hit.scenario === 'server-retry-heartbeat-only-then-success')
+        .map((hit) => hit.accountRole),
+      ['primary', 'backup'],
+      '心跳-only 服务端切号应先命中主账号，再隐藏切到备用账号'
+    )
+    assert(heartbeatOnlyServerRetryResult.durationMs >= 9000 && heartbeatOnlyServerRetryResult.durationMs < 15000, `心跳-only 服务端切号应按 10s 左右有效输出超时后救回，耗时 ${heartbeatOnlyServerRetryResult.durationMs}ms`)
+    assert(heartbeatOnlyServerRetryResult.streamText.includes('resp_heartbeat_only_backup'), `心跳-only 后应切备用账号完成：${heartbeatOnlyServerRetryResult.streamText}`)
+    assert(heartbeatOnlyServerRetryResult.streamText.includes('response.completed'), `心跳-only 服务端切号后应完成：${heartbeatOnlyServerRetryResult.streamText}`)
+    assert(!heartbeatOnlyServerRetryResult.streamText.includes('response.failed'), `心跳-only 服务端切号成功时客户端不应看到中间失败：${heartbeatOnlyServerRetryResult.streamText}`)
+    usageRecordQueue.flushAllUsageRecordQueue()
+    assertFailedUsageRecordExists(heartbeatOnlyServerRetryCredential.primaryAccount.id)
+    assertSuccessfulUsageRecord(heartbeatOnlyServerRetryCredential.backupAccount.id, { inputTokens: 2, outputTokens: 1 })
+
     await requestAndCloseAfterTerminal(baseUrl, clientCloseAfterTerminalCredential.apiKey.key)
     await waitForSuccessfulUsageRecord(clientCloseAfterTerminalCredential.account.id)
-    auditLogQueue.flushAllAuditLogQueue()
+    await auditLogQueue.flushAllAuditLogQueueAsync()
     assertNoClientAbortedAuditLogForAccount(clientCloseAfterTerminalCredential.account.id)
 
     const overloadedBeforeOutputResult = await requestServerOverloadedBeforeOutput(baseUrl, overloadedBeforeOutputCredential.apiKey.key)
@@ -319,7 +343,7 @@ async function main(): Promise<void> {
     const overloadedBeforeOutputAccount = repositories.listAccounts(scenarioCredentialAccess()).find((item) => item.id === overloadedBeforeOutputCredential.account.id)
     assert.equal(overloadedBeforeOutputAccount?.status, 'active', '未输出前容量错误不应把账号置为临时不可调用')
     assert.equal(overloadedBeforeOutputAccount?.streamFailureCount, 0, '未输出前容量错误不应累计账号流失败计数')
-    auditLogQueue.flushAllAuditLogQueue()
+    await auditLogQueue.flushAllAuditLogQueueAsync()
     await assertResponseInspectionAuditMetadata(overloadedBeforeOutputCredential.account.id, {
       upstreamErrorCode: 'server_is_overloaded',
       rewriteErrorCode: 'server_is_overloaded',
@@ -364,7 +388,7 @@ async function main(): Promise<void> {
     const genericErrorEventAccount = repositories.listAccounts(scenarioCredentialAccess()).find((item) => item.id === genericErrorEventCredential.account.id)
     assert.equal(genericErrorEventAccount?.status, 'active', '未知 error 事件未输出前不应把账号置为临时不可调用')
     assert.equal(genericErrorEventAccount?.streamFailureCount, 0, '未知 error 事件未输出前不应累计账号流失败计数')
-    auditLogQueue.flushAllAuditLogQueue()
+    await auditLogQueue.flushAllAuditLogQueueAsync()
     await assertResponseInspectionAuditMetadata(genericErrorEventCredential.account.id, {
       upstreamErrorCode: 'internal_server_error',
       rewriteErrorCode: 'internal_server_error',
@@ -380,7 +404,7 @@ async function main(): Promise<void> {
     const cyberPolicyAccount = repositories.listAccounts(scenarioCredentialAccess()).find((item) => item.id === cyberPolicyCredential.account.id)
     assert.equal(cyberPolicyAccount?.status, 'active', '未输出前 cyber_policy 不应把账号置为临时不可调用')
     assert.equal(cyberPolicyAccount?.streamFailureCount, 0, '未输出前 cyber_policy 不应累计账号流失败计数')
-    auditLogQueue.flushAllAuditLogQueue()
+    await auditLogQueue.flushAllAuditLogQueueAsync()
     await assertResponseInspectionAuditMetadata(cyberPolicyCredential.account.id, {
       upstreamErrorCode: 'cyber_policy',
       rewriteErrorCode: 'upstream_retryable_error',
@@ -397,7 +421,7 @@ async function main(): Promise<void> {
     const cyberPolicyAfterOutputAccount = repositories.listAccounts(scenarioCredentialAccess()).find((item) => item.id === cyberPolicyAfterOutputCredential.account.id)
     assert.equal(cyberPolicyAfterOutputAccount?.status, 'active', '输出后 cyber_policy 不应把账号置为临时不可调用')
     assert.equal(cyberPolicyAfterOutputAccount?.streamFailureCount, 0, '输出后 cyber_policy 改写后不应累计账号流失败计数')
-    auditLogQueue.flushAllAuditLogQueue()
+    await auditLogQueue.flushAllAuditLogQueueAsync()
     await assertResponseInspectionAuditMetadata(cyberPolicyAfterOutputCredential.account.id, {
       upstreamErrorCode: 'cyber_policy',
       rewriteErrorCode: 'upstream_retryable_error',
@@ -448,16 +472,17 @@ async function main(): Promise<void> {
     assert(jsonResponseForStreamResult.text.includes('json response ok'), `stream:true 的明确 JSON 响应应原样返回：${jsonResponseForStreamResult.text}`)
     assert(!jsonResponseForStreamResult.text.includes('response.failed'), `stream:true 的明确 JSON 响应不应被 SSE 解析器追加失败事件：${jsonResponseForStreamResult.text}`)
 
-    console.log('流式超时回归通过：Codex 首段等待、首段后无新数据、碎片化 SSE 有原始字节时不误熔断、解析跳过后原样转发、图像大事件继续完成且审计不落正文、Image API 大图终止事件和无收尾边界识别、缺少终止事件未输出不计数、输出前流失败服务端优先切号、心跳刷新空闲计时、容量错误/slow_down 专属兜底、未知 error 事件兜底、context_length_exceeded/cyber_policy 可重试改写、普通客户端不伪造专用可重试码、输出后真实网关流量不直接写账号流失败计数、output item 输出判定、顶层 code/message 非失败、stream:true 明确 JSON 响应和 EOF 尾包场景符合预期')
+    console.log('流式超时回归通过：Codex 首段等待、首段后无新数据、碎片化 SSE 有原始字节时不误熔断、解析跳过后原样转发、图像大事件继续完成且审计不落正文、Image API 大图终止事件和无收尾边界识别、缺少终止事件未输出不计数、输出前流失败服务端优先切号、心跳刷新空闲计时、心跳-only 无有效输出触发服务端切号、容量错误/slow_down 专属兜底、未知 error 事件兜底、context_length_exceeded/cyber_policy 可重试改写、普通客户端不伪造专用可重试码、输出后真实网关流量不直接写账号流失败计数、output item 输出判定、顶层 code/message 非失败、stream:true 明确 JSON 响应和 EOF 尾包场景符合预期')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
-    auditLogQueue.flushAllAuditLogQueue()
+    await auditLogQueue.flushAllAuditLogQueueAsync()
     usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
     auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
     await closeServer(appServer)
     await closeServer(upstreamServer)
     try {
+      await readWorkerPool.closeSqliteReadWorkerPool()
       databaseModule.getBusinessDatabase().close()
       databaseModule.closeStorageDatabases()
     } catch {
@@ -471,10 +496,11 @@ function createScenarioCredential(upstreamBaseUrl: string, label: string): {
   apiKey: ReturnType<typeof apiKeyRepository.createApiKeyRecord>
 } {
   const access = scenarioCredentialAccess()
-  const group = repositories.createGroup({ name: `流式超时回归分组-${label}`, providerCode: 'gpt', providerProtocolProfileId: 'profile_gpt_openai_v1', enabled: true }, access)
+  const group = repositories.createGroup({ name: `流式超时回归分组-${label}`, providerCode: 'gpt', enabled: true }, access)
   scenarioCredentialIndex += 1
   const account = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: `流式超时回归账户-${label}`,
     type: 'api_key',
     credentials: {
@@ -501,12 +527,13 @@ function createTwoAccountScenarioCredential(upstreamBaseUrl: string, label: stri
   apiKey: ReturnType<typeof apiKeyRepository.createApiKeyRecord>
 } {
   const access = scenarioCredentialAccess()
-  const group = repositories.createGroup({ name: `流式超时回归双账号分组-${label}`, providerCode: 'gpt', providerProtocolProfileId: 'profile_gpt_openai_v1', enabled: true }, access)
+  const group = repositories.createGroup({ name: `流式超时回归双账号分组-${label}`, providerCode: 'gpt', enabled: true }, access)
   scenarioCredentialIndex += 1
   const primaryKey = `sk-stream-timeout-regression-${scenarioCredentialIndex}-primary`
   const backupKey = `sk-stream-timeout-regression-${scenarioCredentialIndex}-backup`
   const primaryAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: `流式超时回归主账户-${label}`,
     type: 'api_key',
     credentials: {
@@ -521,6 +548,7 @@ function createTwoAccountScenarioCredential(upstreamBaseUrl: string, label: stri
   }, access)
   const backupAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: `流式超时回归备用账户-${label}`,
     type: 'api_key',
     credentials: {
@@ -547,10 +575,11 @@ function createMultiAccountScenarioCredential(upstreamBaseUrl: string, label: st
   apiKey: ReturnType<typeof apiKeyRepository.createApiKeyRecord>
 } {
   const access = scenarioCredentialAccess()
-  const group = repositories.createGroup({ name: `流式超时回归多账号分组-${label}`, providerCode: 'gpt', providerProtocolProfileId: 'profile_gpt_openai_v1', enabled: true }, access)
+  const group = repositories.createGroup({ name: `流式超时回归多账号分组-${label}`, providerCode: 'gpt', enabled: true }, access)
   scenarioCredentialIndex += 1
   const accounts = Array.from({ length: count }, (_, index) => repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: `流式超时回归多账号-${label}-${index + 1}`,
     type: 'api_key',
     credentials: {
@@ -605,6 +634,17 @@ function createStreamTimeoutRegressionUpstream(): http.Server {
       } catch {
       }
       const upstreamAuthorization = String(req.headers.authorization ?? '')
+      upstreamScenarioHits.push({
+        scenario,
+        accountRole: upstreamAuthorization.includes('-primary')
+          ? 'primary'
+          : upstreamAuthorization.includes('-backup')
+            ? 'backup'
+            : upstreamAuthorization.includes('-multi-')
+              ? 'multi'
+              : 'single',
+        authorization: upstreamAuthorization
+      })
 
       if (scenario === 'json-response-for-stream-request') {
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
@@ -692,6 +732,25 @@ function createStreamTimeoutRegressionUpstream(): http.Server {
         sendFuzzBackupSuccess(res, scenario)
         return
       }
+      if (scenario === 'server-retry-heartbeat-only-then-success') {
+        if (upstreamAuthorization.includes('-primary')) {
+          const interval = setInterval(() => {
+            res.write(': keep-alive\n\n')
+          }, 100)
+          res.on('close', () => {
+            clearInterval(interval)
+          })
+          return
+        }
+        res.write('event: response.created\n')
+        res.write('data: {"type":"response.created","response":{"id":"resp_heartbeat_only_backup","status":"in_progress"}}\n\n')
+        res.write('event: response.output_text.delta\n')
+        res.write('data: {"type":"response.output_text.delta","delta":"ok"}\n\n')
+        res.write('event: response.completed\n')
+        res.write('data: {"type":"response.completed","response":{"id":"resp_heartbeat_only_backup","status":"completed","usage":{"input_tokens":2,"output_tokens":1}}}\n\n')
+        res.end()
+        return
+      }
       if (scenario === 'no-first-chunk') {
         return
       }
@@ -699,10 +758,9 @@ function createStreamTimeoutRegressionUpstream(): http.Server {
         res.write('event: response.created\n')
         res.write('data: {"type":"response.created"')
         const chunks = [
-          ',"response":{"id":"resp_regression"',
-          ',"status":"in_progress"',
-          ',"metadata":{"fragment":1}',
-          '}}\n\n',
+          ',"response":{"id":"resp_regression","status":"in_progress","metadata":{"fragment":"',
+          ...Array.from({ length: 30 }, () => 'xxxxxxxxxx'),
+          '"}}}\n\n',
           'event: response.completed\n',
           'data: {"type":"response.completed","response":{"id":"resp_regression","status":"completed","usage":{"input_tokens":1,"output_tokens":0}}}\n\n'
         ]
@@ -1010,7 +1068,6 @@ function sendFuzzBackupSuccess(res: http.ServerResponse, scenario: string): void
 
 async function requestFirstChunkThenIdleTimeout(baseUrl: string, apiKey: string): Promise<{ streamText: string; durationMs: number }> {
   settingsRepository.updateSettings({
-    streamCircuitBreakerEnabled: true,
     streamRequestTimeoutSeconds: 10,
     streamIdleTimeoutSeconds: 1,
     temporaryUnschedulableRetryAttempts: 0
@@ -1040,7 +1097,6 @@ async function requestFirstChunkThenIdleTimeout(baseUrl: string, apiKey: string)
 
 async function requestFragmentedSseEventKeepalive(baseUrl: string, apiKey: string): Promise<{ streamText: string; durationMs: number }> {
   settingsRepository.updateSettings({
-    streamCircuitBreakerEnabled: true,
     streamRequestTimeoutSeconds: 10,
     streamIdleTimeoutSeconds: 1,
     temporaryUnschedulableRetryAttempts: 0
@@ -1070,7 +1126,6 @@ async function requestFragmentedSseEventKeepalive(baseUrl: string, apiKey: strin
 
 async function requestParserSkippedRawForward(baseUrl: string, apiKey: string): Promise<{ streamText: string; durationMs: number }> {
   settingsRepository.updateSettings({
-    streamCircuitBreakerEnabled: true,
     streamRequestTimeoutSeconds: 10,
     streamIdleTimeoutSeconds: 1,
     temporaryUnschedulableRetryAttempts: 0
@@ -1100,7 +1155,6 @@ async function requestParserSkippedRawForward(baseUrl: string, apiKey: string): 
 
 async function requestMissingTerminalEof(baseUrl: string, apiKey: string): Promise<{ streamText: string; durationMs: number }> {
   settingsRepository.updateSettings({
-    streamCircuitBreakerEnabled: true,
     streamRequestTimeoutSeconds: 10,
     streamIdleTimeoutSeconds: 1,
     temporaryUnschedulableRetryAttempts: 0
@@ -1130,7 +1184,6 @@ async function requestMissingTerminalEof(baseUrl: string, apiKey: string): Promi
 
 async function requestHeartbeatThenCompleted(baseUrl: string, apiKey: string): Promise<{ streamText: string; durationMs: number }> {
   settingsRepository.updateSettings({
-    streamCircuitBreakerEnabled: true,
     streamRequestTimeoutSeconds: 10,
     streamIdleTimeoutSeconds: 1,
     temporaryUnschedulableRetryAttempts: 0
@@ -1158,9 +1211,37 @@ async function requestHeartbeatThenCompleted(baseUrl: string, apiKey: string): P
   }
 }
 
+async function requestHeartbeatOnlyServerRetry(baseUrl: string, apiKey: string): Promise<{ streamText: string; durationMs: number }> {
+  settingsRepository.updateSettings({
+    streamRequestTimeoutSeconds: 10,
+    streamIdleTimeoutSeconds: 1,
+    temporaryUnschedulableRetryAttempts: 0
+  })
+  gatewayCache.clearGatewayRuntimeCache()
+
+  const startedAt = Date.now()
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: codexStreamHeaders(apiKey, 'server-retry-heartbeat-only-then-success'),
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      input: 'server-retry-heartbeat-only-then-success',
+      stream: true
+    })
+  })
+  if (response.status !== 200) {
+    throw new Error(`心跳-only 服务端切号场景状态码异常：${response.status} ${await response.text()}`)
+  }
+  assert(response.headers.get('content-type')?.includes('text/event-stream'), '网关应保持 SSE content-type')
+  const streamText = await response.text()
+  return {
+    streamText,
+    durationMs: Date.now() - startedAt
+  }
+}
+
 async function requestAndCloseAfterTerminal(baseUrl: string, apiKey: string): Promise<void> {
   settingsRepository.updateSettings({
-    streamCircuitBreakerEnabled: true,
     streamRequestTimeoutSeconds: 10,
     streamIdleTimeoutSeconds: 10,
     temporaryUnschedulableRetryAttempts: 0
@@ -1221,7 +1302,6 @@ async function requestStreamFailureBeforeOutput(
   scenario: string
 ): Promise<{ streamText: string; durationMs: number }> {
   settingsRepository.updateSettings({
-    streamCircuitBreakerEnabled: true,
     streamRequestTimeoutSeconds: 10,
     streamIdleTimeoutSeconds: 10,
     temporaryUnschedulableRetryAttempts: 0
@@ -1252,7 +1332,6 @@ async function requestGenericStreamFailureBeforeOutput(
   scenario: string
 ): Promise<{ streamText: string; durationMs: number }> {
   settingsRepository.updateSettings({
-    streamCircuitBreakerEnabled: true,
     streamRequestTimeoutSeconds: 10,
     streamIdleTimeoutSeconds: 10,
     temporaryUnschedulableRetryAttempts: 0
@@ -1295,7 +1374,6 @@ async function requestStreamScenario(
   traceId?: string
 ): Promise<{ streamText: string; durationMs: number }> {
   settingsRepository.updateSettings({
-    streamCircuitBreakerEnabled: true,
     streamRequestTimeoutSeconds: 10,
     streamIdleTimeoutSeconds: 10,
     temporaryUnschedulableRetryAttempts: 0
@@ -1328,7 +1406,6 @@ async function requestJsonResponseForStreamRequest(
   apiKey: string
 ): Promise<{ text: string; contentType: string }> {
   settingsRepository.updateSettings({
-    streamCircuitBreakerEnabled: true,
     streamRequestTimeoutSeconds: 10,
     streamIdleTimeoutSeconds: 10,
     temporaryUnschedulableRetryAttempts: 0
@@ -1559,7 +1636,14 @@ function serverAddress(server: http.Server): { port: number } {
 async function closeServer(server: http.Server | undefined): Promise<void> {
   if (!server?.listening) return
   await new Promise<void>((resolvePromise, rejectPromise) => {
-    server.close((error) => error ? rejectPromise(error) : resolvePromise())
+    server.closeIdleConnections?.()
+    const forceCloseTimer = setTimeout(() => {
+      server.closeAllConnections?.()
+    }, 500)
+    server.close((error) => {
+      clearTimeout(forceCloseTimer)
+      return error ? rejectPromise(error) : resolvePromise()
+    })
   })
 }
 

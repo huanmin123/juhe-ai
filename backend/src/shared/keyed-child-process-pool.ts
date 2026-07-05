@@ -31,6 +31,7 @@ export interface KeyedChildProcessPoolOptions<Operation> {
   shardIndexForOperation: (operation: Operation) => number
   operationType?: (operation: Operation) => string
   runTimeoutMs?: () => number
+  slotSelection?: 'keyed' | 'least-loaded'
 }
 
 interface KeyedChildProcessPoolJob<Operation> {
@@ -46,6 +47,7 @@ interface KeyedChildProcessPoolJob<Operation> {
 interface KeyedChildProcessPoolSlot<Operation> {
   index: number
   worker?: ChildProcess
+  stopping?: Promise<void>
   queue: Array<KeyedChildProcessPoolJob<Operation>>
   active?: KeyedChildProcessPoolJob<Operation>
 }
@@ -62,6 +64,7 @@ export class KeyedChildProcessPool<Operation> {
   private maxRunMs = 0
   private exclusiveBarrier: Promise<unknown> = Promise.resolve()
   private idleWaiters: Array<() => void> = []
+  private poolGeneration = 0
 
   constructor(private readonly options: KeyedChildProcessPoolOptions<Operation>) {}
 
@@ -82,14 +85,20 @@ export class KeyedChildProcessPool<Operation> {
   }
 
   async close(): Promise<void> {
+    this.poolGeneration += 1
     const closing = this.slots
     this.slots = []
     this.exclusiveBarrier = Promise.resolve()
     await Promise.allSettled(closing.map(async (slot) => {
       this.failSlotJobs(slot, new Error(`${this.options.name} writer pool 已关闭`))
-      if (slot.worker) {
-        await stopWriterChild(slot.worker)
-      }
+      const stopping = slot.stopping
+      const worker = slot.worker
+      slot.stopping = undefined
+      slot.worker = undefined
+      await Promise.allSettled([
+        stopping,
+        worker ? stopWriterChild(worker) : undefined
+      ])
     }))
     this.handledJobs = 0
     this.failedJobs = 0
@@ -147,7 +156,9 @@ export class KeyedChildProcessPool<Operation> {
       })
     }
     for (const slot of this.slots) {
-      this.ensureSlotWorker(slot)
+      if (!slot.stopping) {
+        this.ensureSlotWorker(slot)
+      }
     }
   }
 
@@ -185,7 +196,7 @@ export class KeyedChildProcessPool<Operation> {
   }
 
   private pumpSlot(slot: KeyedChildProcessPoolSlot<Operation>): void {
-    if (slot.active || slot.queue.length === 0) {
+    if (slot.active || slot.stopping || slot.queue.length === 0) {
       return
     }
     const job = slot.queue.shift()
@@ -229,7 +240,8 @@ export class KeyedChildProcessPool<Operation> {
       this.handledJobs += 1
       job.resolve(message.result)
     } else {
-      this.failJob(job, new Error(message.errorMessage ?? `${this.options.name} writer 操作失败`))
+      const operationType = this.options.operationType?.(job.operation) ?? 'unknown'
+      this.failJob(job, new Error(`${this.options.name} ${operationType} 操作失败：${message.errorMessage ?? 'worker 未返回错误详情'}`))
     }
     this.pumpSlot(slot)
     this.notifyIdle()
@@ -296,15 +308,30 @@ export class KeyedChildProcessPool<Operation> {
   }
 
   private restartSlotWorker(slot: KeyedChildProcessPoolSlot<Operation>): void {
+    const generation = this.poolGeneration
     const worker = slot.worker
     if (worker) {
       slot.worker = undefined
       this.restartedWorkers += 1
-      void stopWriterChild(worker).finally(() => {
+      const stopping = stopWriterChild(worker).finally(() => {
+        if (slot.stopping === stopping) {
+          slot.stopping = undefined
+        }
+        if (this.poolGeneration !== generation || !this.slots.includes(slot)) {
+          return
+        }
         this.ensureSlotWorker(slot)
         this.pumpSlot(slot)
         this.notifyIdle()
       })
+      slot.stopping = stopping
+      void stopping
+      return
+    }
+    if (slot.stopping) {
+      return
+    }
+    if (!this.slots.includes(slot)) {
       return
     }
     this.ensureSlotWorker(slot)
@@ -360,6 +387,14 @@ export class KeyedChildProcessPool<Operation> {
   }
 
   private slotForOperation(operation: Operation): KeyedChildProcessPoolSlot<Operation> {
+    if (this.options.slotSelection === 'least-loaded') {
+      const slot = this.leastLoadedSlot()
+      if (!slot) {
+        const operationType = this.options.operationType?.(operation)
+        throw new Error(`${this.options.name} writer pool 未初始化${operationType ? `：${operationType}` : ''}`)
+      }
+      return slot
+    }
     const shardIndex = this.options.shardIndexForOperation(operation)
     const slot = this.slots[shardIndex % Math.max(1, this.slots.length)]
     if (!slot) {
@@ -368,21 +403,47 @@ export class KeyedChildProcessPool<Operation> {
     }
     return slot
   }
+
+  private leastLoadedSlot(): KeyedChildProcessPoolSlot<Operation> | undefined {
+    return this.slots.reduce<KeyedChildProcessPoolSlot<Operation> | undefined>((selected, slot) => {
+      if (!selected) return slot
+      const slotLoad = slot.queue.length + (slot.active ? 1 : 0)
+      const selectedLoad = selected.queue.length + (selected.active ? 1 : 0)
+      return slotLoad < selectedLoad ? slot : selected
+    }, undefined)
+  }
 }
 
 async function stopWriterChild(child: ChildProcess): Promise<void> {
   if (child.killed || child.exitCode !== null) {
+    unrefWriterChild(child)
     return
   }
   await new Promise<void>((resolve) => {
-    const timer = setTimeout(() => {
+    let settled = false
+    let forceKillTimer: NodeJS.Timeout | undefined
+    let finalTimer: NodeJS.Timeout | undefined
+    const finish = () => {
+      if (settled) return
+      settled = true
+      if (forceKillTimer) clearTimeout(forceKillTimer)
+      if (finalTimer) clearTimeout(finalTimer)
+      child.off('exit', finish)
+      child.off('close', finishAfterProcessEnded)
+      unrefWriterChild(child)
+      resolve()
+    }
+    const finishAfterProcessEnded = () => {
+      if (child.exitCode !== null || child.killed) {
+        finish()
+      }
+    }
+    forceKillTimer = setTimeout(() => {
       child.kill()
-      resolve()
     }, 2000)
-    child.once('exit', () => {
-      clearTimeout(timer)
-      resolve()
-    })
+    finalTimer = setTimeout(finish, 5000)
+    child.once('exit', finish)
+    child.once('close', finishAfterProcessEnded)
     try {
       if (child.connected) {
         child.disconnect()
@@ -393,4 +454,16 @@ async function stopWriterChild(child: ChildProcess): Promise<void> {
       child.kill()
     }
   })
+}
+
+function unrefWriterChild(child: ChildProcess): void {
+  if (typeof (child as { unref?: unknown }).unref === 'function') {
+    child.unref()
+  }
+  for (const stream of child.stdio ?? []) {
+    const unref = (stream as unknown as { unref?: () => void } | null)?.unref
+    if (typeof unref === 'function') {
+      unref.call(stream)
+    }
+  }
 }

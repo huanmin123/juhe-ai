@@ -38,9 +38,7 @@ export function getBusinessDatabase(): DatabaseSync {
   }
 
   const databasePath = runtimeConfig.databasePath
-  mkdirSync(dirname(databasePath), { recursive: true })
-
-  businessDatabase = createSqliteDatabase(databasePath)
+  businessDatabase = createSqliteDatabase(databasePath, 'business')
   configureDatabase(businessDatabase, 'business')
   if (shouldApplyMainDatabaseSchema('business')) {
     applyBusinessSchema(businessDatabase)
@@ -157,8 +155,7 @@ export function codexContextStateShardPath(shardIndex: number): string {
 }
 
 function openDatasetDatabase(databasePath: string): DatabaseSync {
-  mkdirSync(dirname(databasePath), { recursive: true })
-  const database = createSqliteDatabase(databasePath)
+  const database = createSqliteDatabase(databasePath, 'dataset')
   configureDatabase(database, 'dataset')
   if (shouldApplyMainDatabaseSchema('dataset')) {
     applyDatasetSchema(database)
@@ -167,8 +164,7 @@ function openDatasetDatabase(databasePath: string): DatabaseSync {
 }
 
 function openUsageCatalogDatabase(databasePath: string): DatabaseSync {
-  mkdirSync(dirname(databasePath), { recursive: true })
-  const database = createSqliteDatabase(databasePath)
+  const database = createSqliteDatabase(databasePath, 'usage-catalog')
   configureDatabase(database, 'usage-catalog')
   if (shouldApplyMainDatabaseSchema('usage-catalog')) {
     applyUsageCatalogSchema(database)
@@ -177,8 +173,7 @@ function openUsageCatalogDatabase(databasePath: string): DatabaseSync {
 }
 
 function openStatsDatabase(databasePath: string): DatabaseSync {
-  mkdirSync(dirname(databasePath), { recursive: true })
-  const database = createSqliteDatabase(databasePath)
+  const database = createSqliteDatabase(databasePath, 'stats')
   configureDatabase(database, 'stats')
   if (shouldApplyMainDatabaseSchema('stats')) {
     applyStatsSchema(database)
@@ -187,8 +182,7 @@ function openStatsDatabase(databasePath: string): DatabaseSync {
 }
 
 function openCodexContextStateDatabase(databasePath: string): DatabaseSync {
-  mkdirSync(dirname(databasePath), { recursive: true })
-  const database = createSqliteDatabase(databasePath)
+  const database = createSqliteDatabase(databasePath, 'codex-context-state')
   configureDatabase(database, 'codex-context-state')
   if (shouldApplyMainDatabaseSchema('codex-context-state')) {
     applyCodexContextStateSchema(database)
@@ -196,9 +190,17 @@ function openCodexContextStateDatabase(databasePath: string): DatabaseSync {
   return database
 }
 
-function createSqliteDatabase(databasePath: string): DatabaseSync {
+function createSqliteDatabase(databasePath: string, kind: SqliteMainDatabaseKind): DatabaseSync {
   const Constructor = getDatabaseSyncConstructor()
+  if (shouldOpenSqliteDatabaseReadOnly(kind)) {
+    return new Constructor(databasePath, { readOnly: true })
+  }
+  mkdirSync(dirname(databasePath), { recursive: true })
   return new Constructor(databasePath)
+}
+
+function shouldOpenSqliteDatabaseReadOnly(kind: SqliteMainDatabaseKind): boolean {
+  return sqliteWriterBoundaryStrictModeEnabled() && !currentProcessOwnsSqliteMainDatabase(kind)
 }
 
 function getDatabaseSyncConstructor(): typeof import('node:sqlite').DatabaseSync {
@@ -253,6 +255,16 @@ export function runInDatabaseTransaction<T>(operation: () => T, target = getBusi
   }
 }
 
+export function runWithSqliteBusyTimeout<T>(target: DatabaseSync, timeoutMs: number, operation: () => T): T {
+  const normalizedTimeoutMs = Math.max(0, Math.trunc(timeoutMs))
+  target.exec(`PRAGMA busy_timeout = ${normalizedTimeoutMs}`)
+  try {
+    return operation()
+  } finally {
+    target.exec(`PRAGMA busy_timeout = ${sqliteBusyTimeoutMs}`)
+  }
+}
+
 function configureDatabase(database: DatabaseSync, kind: SqliteMainDatabaseKind): void {
   database.exec(`
     PRAGMA busy_timeout = ${sqliteBusyTimeoutMs};
@@ -283,7 +295,7 @@ function assertDistinctStoragePaths(): void {
     { role: '使用记录目录库', path: usageCatalogDatabasePath() },
     { role: '统计结果库', path: statsDatabasePath() },
     ...codexContextStateShardIndexes().map((shardIndex) => ({
-      role: `Codex Responses 上下文索引库分片 ${shardIndex}`,
+      role: `Responses 桥接状态索引库分片 ${shardIndex}`,
       path: codexContextStateShardPath(shardIndex)
     }))
   ]
@@ -380,7 +392,7 @@ function normalizeCodexContextStateShardIndex(shardIndex: number): number {
   const count = codexContextStateShardCount()
   const integer = Math.trunc(Number(shardIndex))
   if (!Number.isFinite(integer) || integer < 0 || integer >= count) {
-    throw new Error(`Codex Responses 上下文索引库分片编号必须在 0 到 ${count - 1} 之间`)
+    throw new Error(`Responses 桥接状态索引库分片编号必须在 0 到 ${count - 1} 之间`)
   }
   return integer
 }

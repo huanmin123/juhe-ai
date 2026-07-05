@@ -29,7 +29,7 @@
             </button>
           </div>
         </a-form-item>
-        <a-button block size="large" type="primary" :loading="loading" @click="handleLogin">进入控制台</a-button>
+        <a-button block size="large" type="primary" html-type="submit" :loading="loading">进入控制台</a-button>
       </a-form>
     </a-card>
   </div>

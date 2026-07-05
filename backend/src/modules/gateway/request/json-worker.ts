@@ -2,6 +2,10 @@ import { parentPort } from 'node:worker_threads'
 
 import type { OpenAIOAuthCodexNormalizeInput } from '../adapters/gpt-codex/oauth-normalizer.js'
 
+const {
+  extractGatewayJsonBodyMetadata
+} = await import(resolveJsonMetadataScannerModuleUrl()) as typeof import('./json-metadata-scanner.js')
+
 type GatewayJsonWorkerJobType =
   | 'extract_json_body_metadata'
   | 'parse_json_body'
@@ -18,15 +22,8 @@ if (!parentPort) {
   throw new Error('网关 JSON worker 缺少 parentPort')
 }
 const workerPort = parentPort
-const {
-  OpenAIOAuthCodexAdapterError,
-  normalizeOpenAIOAuthCodexRawBody
-} = await import(resolveNormalizerModuleUrl()) as typeof import('../adapters/gpt-codex/oauth-normalizer.js')
-const {
-  extractGatewayJsonBodyMetadata
-} = await import(resolveJsonMetadataScannerModuleUrl()) as typeof import('./json-metadata-scanner.js')
 
-workerPort.on('message', (message: GatewayJsonWorkerRequest) => {
+workerPort.on('message', async (message: GatewayJsonWorkerRequest) => {
   const id = message.id
   try {
     const rawBody = Buffer.from(message.rawBody.buffer, message.rawBody.byteOffset, message.rawBody.byteLength)
@@ -42,6 +39,9 @@ workerPort.on('message', (message: GatewayJsonWorkerRequest) => {
       if (!message.normalizeInput) {
         throw new Error('OpenAI OAuth Codex 归一化参数缺失')
       }
+      const {
+        normalizeOpenAIOAuthCodexRawBody
+      } = await import(resolveNormalizerModuleUrl()) as typeof import('../adapters/gpt-codex/oauth-normalizer.js')
       workerPort.postMessage({
         id,
         ok: true,
@@ -72,7 +72,7 @@ function resolveJsonMetadataScannerModuleUrl(): string {
 }
 
 function workerErrorResponse(id: number, error: unknown): Record<string, unknown> {
-  if (error instanceof OpenAIOAuthCodexAdapterError) {
+  if (isOpenAIOAuthCodexAdapterErrorLike(error)) {
     return {
       id,
       ok: false,
@@ -87,4 +87,16 @@ function workerErrorResponse(id: number, error: unknown): Record<string, unknown
     ok: false,
     errorMessage: error instanceof Error ? error.message : String(error)
   }
+}
+
+function isOpenAIOAuthCodexAdapterErrorLike(error: unknown): error is {
+  message: string
+  code: string
+  statusCode: number
+  type: string
+} {
+  return error instanceof Error
+    && typeof (error as { code?: unknown }).code === 'string'
+    && typeof (error as { statusCode?: unknown }).statusCode === 'number'
+    && typeof (error as { type?: unknown }).type === 'string'
 }

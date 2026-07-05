@@ -30,7 +30,6 @@ try {
   const group = repositories.createGroup({
     name: 'API Key 列表查询防护分组',
     providerCode: DEFAULT_GPT_GROUP.providerCode,
-    providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
     enabled: true
   }, access)
   const matchedByName = createApiKeyRecordWithRouteStrategy(repositories, {
@@ -115,7 +114,7 @@ try {
     assert(!/\bCOALESCE\s*\(/i.test(call.sql), 'API Key 列表搜索不应通过 COALESCE 扫描说明字段')
     assert(!/\bapi_keys\.key_prefix\s+(?:=|LIKE)\s+\?/i.test(call.sql), 'API Key 列表名称搜索不应把 Key 前缀放进通用关键词 WHERE')
     assert(!/\bapi_keys\.description\s+(?:COLLATE|LIKE)\b/i.test(call.sql), 'API Key 列表搜索不应把说明字段放进通用关键词 WHERE')
-    assert(/\bESCAPE\s+'\\'/i.test(call.sql), 'API Key 列表前缀搜索应显式转义 LIKE 通配符')
+    assert(!/\bLIKE\s+\?/i.test(call.sql), 'API Key 列表名称搜索不应使用 LIKE，避免大小写折叠或通配符语义')
     assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), 'API Key 列表搜索不应传入前导通配符参数')
   }
   assertBusinessIndexExists('idx_api_keys_name_lookup')
@@ -162,10 +161,12 @@ function assertPostgresApiKeyListKeywordUsesLowerPrefixRange(): void {
     source.indexOf('function buildApiKeyFiltersForClient'),
     source.indexOf('function apiKeyTextPrefixUpperBound')
   )
-  assert(keywordSnippet.includes('starts_with(lower(keyword_api_keys.name), ?)'), 'PG API Key 列表 keyword 应使用 lower + starts_with 固定字面前缀语义')
-  assert(keywordSnippet.includes('lower(keyword_api_keys.name) COLLATE "C" >= ?'), 'PG API Key 列表 keyword 前缀范围应使用 C collation，避免受 PG 默认排序规则影响')
+  assert(keywordSnippet.includes('starts_with(keyword_api_keys.name, ?)'), 'PG API Key 列表 keyword 应使用 starts_with 固定字面前缀语义')
+  assert(keywordSnippet.includes('keyword_api_keys.name COLLATE "C" >= ?'), 'PG API Key 列表 keyword 前缀范围应使用 C collation，避免受 PG 默认排序规则影响')
   assert(keywordSnippet.includes('WITH matched_api_key_ids AS MATERIALIZED'), 'PG API Key 列表 keyword 应先用名称索引 CTE 锁定匹配 ID')
-  assert(filterSnippet.includes('starts_with(lower(api_keys.name), ?)'), 'PG API Key 列表 filter helper 应保留 lower + starts_with 字面前缀语义')
-  assert(filterSnippet.includes('lower(api_keys.name) COLLATE "C" >= ?'), 'PG API Key 列表 filter helper 前缀范围应使用 C collation')
+  assert(keywordSnippet.includes('starts_with(lower(keyword_api_keys.name), ?)') === false, 'PG API Key 列表 keyword 不应折叠名称大小写')
+  assert(filterSnippet.includes('starts_with(api_keys.name, ?)'), 'PG API Key 列表 filter helper 应保留 starts_with 字面前缀语义')
+  assert(filterSnippet.includes('api_keys.name COLLATE "C" >= ?'), 'PG API Key 列表 filter helper 前缀范围应使用 C collation')
+  assert(filterSnippet.includes('starts_with(lower(api_keys.name), ?)') === false, 'PG API Key 列表 filter helper 不应折叠名称大小写')
   assert(!/\bILIKE\b/i.test(`${keywordSnippet}\n${filterSnippet}`), 'PG API Key 列表 keyword 不应使用 ILIKE 前缀参数')
 }

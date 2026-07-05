@@ -69,7 +69,7 @@ try {
   const adminCookie = `juhe_ai_session=${createSession('sys_admin', 1).token}`
 
   try {
-    const missingToken = await requestJson(baseUrl, '/__aipublic__/demo/source-auth', {
+    const missingToken = await requestJson(baseUrl, '/__aipublic__/group/list?targetUsername=huanmin', {
       'x-trace-id': 'trace-public-missing-token'
     })
     assert.equal(missingToken.status, 401)
@@ -80,13 +80,13 @@ try {
     assert.equal(missingTokenLog.success, false)
     assert.equal(missingTokenLog.sourceName, undefined, '缺少 token 时不应伪造来源系统')
 
-    const success = await requestJson(baseUrl, '/__aipublic__/demo/source-auth?token=public-query-secret&safe=ok', {
+    const success = await requestJson(baseUrl, '/__aipublic__/group/list?targetUsername=huanmin&keyword=public-query-secret&providerCode=gpt', {
       Authorization: `Bearer ${builtInTestToken}`,
       'x-trace-id': 'trace-public-success',
       'x-forwarded-for': '198.51.100.250, 203.0.113.88'
     })
     assert.equal(success.status, 200)
-    assert.equal(success.body.data.mock, true)
+    assert.equal(success.body.data.source, 'mock')
 
     const successLog = singleLogByTraceId('trace-public-success')
     assert.equal(successLog.statusCode, 200)
@@ -94,9 +94,9 @@ try {
     assert.equal(successLog.isTestToken, true)
     assert.equal(successLog.sourceName, '内置测试来源')
     assert.equal(successLog.clientIp, '203.0.113.88', '公开接口日志应记录主进程转发后的真实客户端 IP，不能退回 DB service 本地地址')
-    assert.equal(successLog.queryString, 'token=public-query-secret&safe=ok', '公开接口日志 queryString 应保留敏感参数原文')
+    assert.equal(successLog.queryString, 'targetUsername=huanmin&keyword=public-query-secret&providerCode=gpt', '公开接口日志 queryString 应保留查询参数原文')
     const successDetail = requiredDetail(successLog.id)
-    assert.equal((successDetail.requestData.query as Record<string, unknown>).token, 'public-query-secret', '请求快照 query 应保留 token 参数原文')
+    assert.equal((successDetail.requestData.query as Record<string, unknown>).keyword, 'public-query-secret', '请求快照 query 应保留 keyword 参数原文')
     assert(JSON.stringify(successDetail).includes('public-query-secret'), '公开接口日志详情应保存 query token 原文')
 
     const apiKeyAdd = await requestJson(baseUrl, '/__aipublic__/api-key/add', {
@@ -121,6 +121,7 @@ try {
       targetUsername: 'huanmin',
       targetGroupName: '福利',
       providerCode: 'gpt',
+      providerProtocolProfileId: 'profile_gpt_openai_v1',
       name: '公开接口日志回归账号',
       type: 'api_key',
       baseUrl: 'https://push.example/v1',
@@ -212,12 +213,14 @@ try {
   }
 
   const now = Date.now()
-  const oldLog = createPublicApiLog(publicApiLogFixture('publog_old_retention', new Date(now - 8 * 24 * 60 * 60 * 1000).toISOString()))
-  const recentLog = createPublicApiLog(publicApiLogFixture('publog_recent_retention', new Date(now - 7 * 24 * 60 * 60 * 1000 + 5 * 60 * 1000).toISOString()))
-  const cleanupResult = cleanupPublicApiLogsBefore(new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString(), 1000)
-  assert(cleanupResult >= 1, '公开接口日志保留清理应删除 7 天前的记录')
-  assert.equal(getPublicApiLogDetail(oldLog.id), undefined, '超过 7 天的公开接口日志应被清理')
-  assert(getPublicApiLogDetail(recentLog.id), '7 天内公开接口日志应保留')
+  const retentionDays = 30
+  const oneDayMs = 24 * 60 * 60 * 1000
+  const oldLog = createPublicApiLog(publicApiLogFixture('publog_old_retention', new Date(now - (retentionDays + 1) * oneDayMs).toISOString()))
+  const recentLog = createPublicApiLog(publicApiLogFixture('publog_recent_retention', new Date(now - retentionDays * oneDayMs + 5 * 60 * 1000).toISOString()))
+  const cleanupResult = cleanupPublicApiLogsBefore(new Date(now - retentionDays * oneDayMs).toISOString(), 1000)
+  assert(cleanupResult >= 1, '公开接口日志保留清理应删除超过 30 天的记录')
+  assert.equal(getPublicApiLogDetail(oldLog.id), undefined, '超过 30 天的公开接口日志应被清理')
+  assert(getPublicApiLogDetail(recentLog.id), '30 天内公开接口日志应保留')
 
   const batchCutoff = new Date().toISOString()
   for (let index = 0; index < 12; index += 1) {
@@ -266,7 +269,7 @@ try {
   assert.match(publicApiLogRepositorySource, /ON CONFLICT\(id\) DO NOTHING/, 'PG 公开接口日志应支持 Redis Stream 重投幂等')
   assert.match(publicApiLogRepositorySource, /prefixUpperBound\(text\)/, '公开接口日志前缀筛选不应使用固定 \\uffff 上界')
 
-  console.log('公开接口日志回归通过：公开请求记录、管理员查询、原文日志和 7 天保留清理均符合预期')
+  console.log('公开接口日志回归通过：公开请求记录、管理员查询、原文日志和 30 天保留清理均符合预期')
 } finally {
   try {
     closeStorageDatabases()
@@ -306,7 +309,7 @@ function publicApiLogFixture(id: string, createdAt: string): Parameters<typeof c
     id,
     traceId: id,
     method: 'GET',
-    path: '/__aipublic__/demo/source-auth',
+    path: '/__aipublic__/group/list',
     statusCode: 200,
     success: true,
     durationMs: 1,

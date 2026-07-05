@@ -6,8 +6,9 @@ import { createUsageRecordsBatch, createUsageRecordsBatchAsync, type UsageRecord
 import { generateUsageRecordId } from '../../../storage/usage-record-shards.js'
 import { closeUsageRecordWriterPool, getUsageRecordWriterPoolRuntime, usageRecordWriterPoolEnabled } from '../../../storage/usage-record-writer-pool.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
+import { scheduleProcessFatalError } from '../../../shared/process-fatal.js'
 import { estimateJsonLikeBytes } from '../../../shared/queue-size.js'
-import { RedisStreamQueue, type RedisStreamMessage } from '../../../shared/redis-stream-queue.js'
+import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime } from '../../../shared/redis-stream-queue.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../../shared/retry-policy.js'
 import { sendUsageRecordsToWorker } from '../../background/background-ipc.js'
 import { sanitizeHeaderRecord } from '../upstream/headers.js'
@@ -59,10 +60,10 @@ interface UsageRecordFlushOptions {
   maxBatches?: number
 }
 
-export function enqueueUsageRecord(input: UsageRecordInput): void {
+export async function enqueueUsageRecord(input: UsageRecordInput): Promise<void> {
   const queuedInput = normalizeUsageRecordInput(input)
   if (shouldEnqueueUsageRecordToRedisStream()) {
-    void enqueueUsageRecordToRedisStream(queuedInput)
+    await enqueueUsageRecordToRedisStream(queuedInput).catch(scheduleProcessFatalError)
     return
   }
   if (shouldDispatchUsageRecordToIngestWorker()) {
@@ -361,6 +362,38 @@ export function getUsageRecordQueueRuntime(): {
   }
 }
 
+export async function getUsageRecordRedisStreamRuntime(): Promise<RedisStreamQueueRuntime | undefined> {
+  if (!shouldUseRedisStreamUsageRecordQueue()) {
+    return undefined
+  }
+  return await usageRecordRedisStreamQueue().inspectRuntime()
+}
+
+export async function getUsageRecordRedisStreamOldestCreatedAt(): Promise<string | undefined> {
+  if (!shouldUseRedisStreamUsageRecordQueue()) {
+    return undefined
+  }
+  const inspection = await usageRecordRedisStreamQueue().inspectBacklog(512)
+  if (inspection.pendingTruncated || inspection.undeliveredTruncated) {
+    logger.warn({
+      event: 'usage_record_redis_stream_backlog_inspection_truncated',
+      pendingCount: inspection.runtime.pendingCount,
+      lag: inspection.runtime.lag,
+      scannedMessages: inspection.messages.length
+    }, 'Redis Stream 使用记录 backlog 超过统计保护扫描上限，本轮统计使用保守安全边界')
+    return '1970-01-01T00:00:00.000Z'
+  }
+  let oldest: string | undefined
+  for (const message of inspection.messages) {
+    const createdAt = normalizeUsageRecordCreatedAtForBacklog(message.payload.createdAt)
+    if (!createdAt) continue
+    if (!oldest || Date.parse(createdAt) < Date.parse(oldest)) {
+      oldest = createdAt
+    }
+  }
+  return oldest
+}
+
 export function installUsageRecordQueueShutdownHooks(): void {
   if (shutdownHooksInstalled) {
     return
@@ -427,7 +460,13 @@ async function enqueueUsageRecordToRedisStream(input: UsageRecordInput): Promise
   try {
     await usageRecordRedisStreamQueue().enqueue(input)
   } catch (error) {
-    recordUsageRecordDispatchFailure(error, input)
+    logger.error(errorLogFields(error, {
+      event: 'usage_record_redis_stream_enqueue_failed',
+      traceId: input.traceId,
+      apiKeyId: input.apiKeyId,
+      accountId: input.accountId
+    }), '使用记录写入 Redis Stream 失败，高性能模式禁止回退 IPC 或本地队列')
+    throw error
   }
 }
 
@@ -459,8 +498,8 @@ async function flushUsageRecordRedisStreamMessages(messages: Array<RedisStreamMe
   if (messages.length === 0) return
   const queue = usageRecordRedisStreamQueue()
   const startedAt = Date.now()
-  const inputs = messages.map((message) => normalizeUsageRecordInput(message.payload))
   try {
+    const inputs = messages.map((message) => normalizeUsageRecordInput(message.payload))
     await createUsageRecordsBatchAsync(inputs)
     recordUsageRecordFlushDuration(Date.now() - startedAt)
     flushFailureCount = 0
@@ -473,6 +512,7 @@ async function flushUsageRecordRedisStreamMessages(messages: Array<RedisStreamMe
       firstMessageId: messages[0]?.id,
       flushFailureCount
     }), 'Redis Stream 使用记录落库失败，消息保持 pending 等待重投')
+    await delay(usageRecordRedisConsumerErrorRetryMs)
   }
 }
 
@@ -491,7 +531,7 @@ function shouldUseRedisStreamUsageRecordQueue(): boolean {
 }
 
 function shouldEnqueueUsageRecordToRedisStream(): boolean {
-  return shouldUseRedisStreamUsageRecordQueue() && !isUsageRecordIngestWorker()
+  return shouldUseRedisStreamUsageRecordQueue()
 }
 
 function delay(ms: number): Promise<void> {
@@ -502,7 +542,7 @@ function delay(ms: number): Promise<void> {
 }
 
 function normalizeUsageRecordInput(input: UsageRecordInput): UsageRecordInput {
-  const createdAt = input.createdAt ?? nowIso()
+  const createdAt = normalizeUsageRecordCreatedAt(input.createdAt)
   return {
     ...input,
     id: input.id ?? generateUsageRecordId(createdAt, randomUUID()),
@@ -512,6 +552,18 @@ function normalizeUsageRecordInput(input: UsageRecordInput): UsageRecordInput {
     responseSnapshot: sanitizeUsageRecordSnapshot(input.responseSnapshot),
     createdAt
   }
+}
+
+function normalizeUsageRecordCreatedAt(value: unknown): string {
+  return normalizeUsageRecordCreatedAtForBacklog(value) ?? nowIso()
+}
+
+function normalizeUsageRecordCreatedAtForBacklog(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  if (!trimmed) return undefined
+  const time = Date.parse(trimmed)
+  return Number.isFinite(time) ? new Date(time).toISOString() : undefined
 }
 
 export function pendingUsageRecordCount(): number {
@@ -920,6 +972,9 @@ function recordUsageRecordLocalDrop(item: QueuedUsageRecord, reason: 'overflow' 
 }
 
 function assertLocalUsageRecordWriteAllowed(operation: string): void {
+  if (shouldUseRedisStreamUsageRecordQueue()) {
+    throw new Error(`Redis Stream queue driver 下禁止写入使用记录本地队列：${operation}`)
+  }
   if (!isLocalUsageRecordWriteAllowed()) {
     throw new Error(`${runtimeConfig.processRole}/${runtimeConfig.workerRole} 角色禁止直接写入使用记录：${operation} 必须投递 ingest-worker`)
   }

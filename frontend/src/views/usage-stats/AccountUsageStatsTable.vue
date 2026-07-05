@@ -62,7 +62,7 @@
           <span class="usage-number">{{ formatCompactInteger(record.rangeUsage.totalTokens) }}</span>
         </template>
         <template v-else-if="column.key === 'cacheRate'">
-          <span class="usage-number">{{ formatPercent(cacheReadRate(record.rangeUsage)) }}</span>
+          <span class="usage-number">{{ formatPercent(cacheReadRate(record.rangeUsage, record.providerCode)) }}</span>
         </template>
         <template v-else-if="column.key === 'cacheCost'">
           <span class="usage-number">{{ formatCost(record.rangeUsage.cacheReadCost) }}</span>
@@ -100,8 +100,8 @@
               <strong>{{ formatCompactInteger(record.rangeUsage.totalTokens) }}</strong>
             </div>
             <div class="usage-mobile-metric">
-              <span>缓存率</span>
-              <strong>{{ formatPercent(cacheReadRate(record.rangeUsage)) }}</strong>
+              <span>缓存读占比</span>
+              <strong>{{ formatPercent(cacheReadRate(record.rangeUsage, record.providerCode)) }}</strong>
             </div>
             <div class="usage-mobile-metric">
               <span>缓存成本</span>
@@ -144,7 +144,7 @@ defineProps<{
   rows: AccountUsageStatsRow[]
   scrollX: number
   authorizationAccountTagText: (account: Pick<AccountUsageStatsRow, 'ownerSystemAccountName'>) => string
-  cacheReadRate: (summary?: AccountUsageSummary) => number
+  cacheReadRate: (summary?: AccountUsageSummary, providerCode?: string) => number
   providerName: (providerCode?: string) => string
 }>()
 

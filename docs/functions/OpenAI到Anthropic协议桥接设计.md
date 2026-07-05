@@ -294,7 +294,7 @@ Chat 入口示例：
 
 - `sourceEndpointFamily` 允许 `chat_completions` 或 `responses`。
 - `targetGroupId` 必须是当前 API Key 所选路由策略已绑定且启用的目标分组。
-- `upstreamEndpointFamily = messages` 只允许目标分组协议档案为 Anthropic v1 Messages。
+- `upstreamEndpointFamily = messages` 只允许目标账户协议档案为 Anthropic v1 Messages，目标分组只按供应商归属校验。
 - Anthropic 官方目标分组的 `upstreamModel` 必须来自 Anthropic 模型目录或目标账号支持模型。
 - Anthropic-compatible 第三方目标分组的 `upstreamModel` 必须来自该供应商模型目录或目标账号支持模型。
 - `responses -> messages` 的 SSE 请求要求 `messages_sse`；JSON 请求要求 `messages_json`。

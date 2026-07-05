@@ -88,12 +88,16 @@ const policyBodySchema = z.object({
   }
 })
 
-responseInspectionPoliciesRouter.get('/', async (_req, res) => {
-  const result = await listResponseInspectionPoliciesAsync()
-  res.json(ok({
-    defaultRules: result.defaultRules.map(publicPolicySummary),
-    policies: result.policies.map(publicPolicySummary)
-  }))
+responseInspectionPoliciesRouter.get('/', async (_req, res, next) => {
+  try {
+    const result = await listResponseInspectionPoliciesAsync()
+    res.json(ok({
+      defaultRules: result.defaultRules.map(publicPolicySummary),
+      policies: result.policies.map(publicPolicySummary)
+    }))
+  } catch (error) {
+    next(error)
+  }
 })
 
 responseInspectionPoliciesRouter.post('/', mutationGuard({

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { ChildProcess } from 'node:child_process'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { logger } from '../../shared/logger.js'
+import { errorLogFields, logger } from '../../shared/logger.js'
 import { buildProcessEventLoopSample, type ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 import type { ActiveClientIpPolicy } from '../../storage/client-ip-stats.repository.js'
 import type { AuditLogInput, OperationLogInput, UsageRecordInput } from '../../storage/repositories.js'
@@ -10,6 +10,7 @@ import type { PublicApiLogInput } from '../../storage/public-api-logs.repository
 import type { GatewayQuotaSnapshot } from '../gateway/quota/quota-snapshot-cache.service.js'
 import type { RecordMaintenanceJob } from '../record-maintenance/record-maintenance-queue.service.js'
 import type { RuntimeLogLineIndexOptions } from '../runtime-logs/runtime-log-index-queue.service.js'
+import { dbServiceOperationAccessMode } from '../db-service/db-service-operation-access-mode.js'
 import type { AccountRuntimeAvailabilityClearTarget } from '../db-service/db-service-types.js'
 import { auditWorkerMessageMaxBytes, trimAuditLogsForWorkerIpc } from './background-ipc-audit-trim.js'
 import { estimateWorkerMessageBytes, regularWorkerMessageMaxBytes, usageRecordWorkerMessageMaxBytes } from './background-ipc-message-size.js'
@@ -21,6 +22,7 @@ import {
   type IpcQueueKey
 } from './background-ipc-queue-runtime.js'
 import type {
+  BackgroundWorkerDbServiceRequestOptions,
   BackgroundWorkerIngestDrainStatus,
   BackgroundWorkerIpcQueuesRuntime,
   BackgroundWorkerMessage,
@@ -384,6 +386,10 @@ function sendBackgroundWorkerMessageToParent(message: BackgroundWorkerMessage): 
   if (runtimeConfig.processRole !== 'worker' || typeof process.send !== 'function') {
     return false
   }
+  if (runtimeConfig.queueDriver === 'redis_stream' && isRedisStreamManagedIngestQueueMessage(message)) {
+    rejectRedisStreamLocalQueueMessage(message, 'sendBackgroundWorkerMessageToParent')
+    return false
+  }
   try {
     process.send(message, (error) => {
       if (error) {
@@ -657,7 +663,12 @@ function handleWorkerMessage(message: unknown, role: BackgroundWorkerProcessRole
       break
     case 'background_worker_db_service_request':
       if (runtimeConfig.processRole === 'server' && typeof record.requestId === 'string' && record.operation) {
-        void respondToDbServiceRequest(record.requestId, record.operation, child)
+        void respondToDbServiceRequest(
+          record.requestId,
+          record.operation,
+          child,
+          isBackgroundWorkerDbServiceRequestOptions(record.options) ? record.options : undefined
+        )
       }
       break
     case 'background_worker_dataset_write_request':
@@ -704,7 +715,12 @@ function handleWorkerMessage(message: unknown, role: BackgroundWorkerProcessRole
       break
     case 'client_ip_policy_snapshot_update':
       if (runtimeConfig.processRole === 'server' && isActiveClientIpPolicyArray(record.policies)) {
-        void replaceServerClientIpPolicySnapshot(record.policies)
+        void replaceServerClientIpPolicySnapshot(record.policies).catch((error) => {
+          logger.warn(errorLogFields(error, {
+            event: 'client_ip_policy_snapshot_update_failed',
+            policyCount: record.policies?.length
+          }), '客户端 IP 策略 IPC 处理失败')
+        })
       }
       break
     default:
@@ -978,6 +994,10 @@ function rejectPendingBackgroundRequest(
 }
 
 function queueWorkerMessage(inputMessage: BackgroundWorkerMessage): boolean {
+  if (runtimeConfig.queueDriver === 'redis_stream' && isRedisStreamManagedIngestQueueMessage(inputMessage)) {
+    rejectRedisStreamLocalQueueMessage(inputMessage, 'queueWorkerMessage')
+    return false
+  }
   const message = coalesceWorkerMessage(inputMessage)
   if (!message) {
     flushWorkerMessageQueue()
@@ -1401,6 +1421,10 @@ function requeueWorkerMessageFirst(message: BackgroundWorkerMessage): void {
 }
 
 function requeueIngestWorkerMessageFirst(message: BackgroundWorkerMessage): void {
+  if (runtimeConfig.queueDriver === 'redis_stream' && isRedisStreamManagedIngestQueueMessage(message)) {
+    rejectRedisStreamLocalQueueMessage(message, 'requeueIngestWorkerMessageFirst')
+    return
+  }
   const messageBytes = estimateWorkerMessageBytes(message)
   const queueKey = ipcQueueKeyForMessage(message)
   if (message.type === 'background_worker_usage_records') {
@@ -1411,6 +1435,32 @@ function requeueIngestWorkerMessageFirst(message: BackgroundWorkerMessage): void
     ingestRegularWorkerMessageQueueBytes += messageBytes
   }
   addPendingQueueRuntimeMessage('ingest-worker', queueKey, messageBytes)
+}
+
+function isRedisStreamManagedIngestQueueMessage(message: BackgroundWorkerMessage): boolean {
+  switch (message.type) {
+    case 'background_worker_usage_records':
+    case 'background_worker_audit_logs':
+    case 'background_worker_operation_logs':
+    case 'background_worker_public_api_logs':
+    case 'background_worker_record_maintenance':
+    case 'background_worker_runtime_log_line':
+      return true
+    default:
+      return false
+  }
+}
+
+function rejectRedisStreamLocalQueueMessage(message: BackgroundWorkerMessage, operation: string): void {
+  const queueKey = ipcQueueKeyForMessage(message)
+  const queue = ingestPendingQueueRuntime[queueKey]
+  queue.rejectedCount = (queue.rejectedCount ?? 0) + 1
+  logger.error({
+    event: 'redis_stream_local_ipc_queue_rejected',
+    operation,
+    messageType: message.type,
+    queueKey
+  }, 'Redis Stream queue driver 下禁止使用后台 IPC 本地队列，记录类数据必须写入 Redis Stream')
 }
 
 function requeueOpsWorkerMessageFirst(message: BackgroundWorkerMessage): void {
@@ -1711,7 +1761,7 @@ async function replaceServerGatewayQuotaSnapshot(snapshot: GatewayQuotaSnapshot)
 
 async function replaceServerClientIpPolicySnapshot(policies: ActiveClientIpPolicy[]): Promise<void> {
   const policyCache = await import('../gateway/runtime/client-ip-policy-cache.service.js')
-  policyCache.replaceClientIpPolicyCacheLocal(policies)
+  await policyCache.replaceClientIpPolicySharedSnapshotAsync(policies)
 }
 
 function isAccountRuntimeClearTarget(value: unknown): value is AccountRuntimeAvailabilityClearTarget {
@@ -1755,6 +1805,7 @@ function isActiveClientIpPolicy(value: unknown): value is ActiveClientIpPolicy {
   const record = value as Record<string, unknown>
   return typeof record.id === 'string'
     && typeof record.ipHash === 'string'
+    && (record.policyType === 'blacklist' || record.policyType === 'allowlist')
     && typeof record.aggregateIpKey === 'string'
     && typeof record.clientIp === 'string'
     && (record.reason === undefined || typeof record.reason === 'string')
@@ -1817,14 +1868,19 @@ async function dbServiceProcessEventLoopSample(): Promise<ProcessEventLoopSample
   }
 }
 
-async function respondToDbServiceRequest(requestId: string, operation: import('../db-service/db-service-types.js').DbServiceOperation, targetChild: ChildProcess | undefined): Promise<void> {
+async function respondToDbServiceRequest(
+  requestId: string,
+  operation: import('../db-service/db-service-types.js').DbServiceOperation,
+  targetChild: ChildProcess | undefined,
+  options: BackgroundWorkerDbServiceRequestOptions | undefined
+): Promise<void> {
   const child = targetChild
   if (!child || !child.connected) {
     return
   }
   try {
     const { requestDbService } = await import('../db-service/db-service-ipc.js')
-    const result = await requestDbService(operation)
+    const result = await requestDbService(operation, backgroundDbServiceRequestOptionsForOperation(operation, options))
     child.send({
       type: 'background_worker_db_service_response',
       requestId,
@@ -1948,11 +2004,13 @@ const pendingBackgroundDbServiceRequests = new Map<string, PendingDbServiceReque
 
 export async function requestBackgroundWorkerDbService<T extends import('../db-service/db-service-types.js').DbServiceOperation>(
   operation: T,
-  timeoutMs = 5000
+  inputOptions: number | BackgroundWorkerDbServiceRequestOptions = {}
 ): Promise<import('../db-service/db-service-types.js').DbServiceOperationResult<T> | undefined> {
+  const options = normalizeBackgroundWorkerDbServiceRequestOptions(inputOptions)
+  const timeoutMs = options.timeoutMs ?? 5000
   if (runtimeConfig.processRole === 'server' || runtimeConfig.processRole === 'db-service') {
     const { requestDbService } = await import('../db-service/db-service-ipc.js')
-    return await requestDbService(operation, { timeoutMs })
+    return await requestDbService(operation, backgroundDbServiceRequestOptionsForOperation(operation, options))
   }
   if (runtimeConfig.processRole !== 'worker' || typeof process.send !== 'function') {
     return undefined
@@ -1978,12 +2036,48 @@ export async function requestBackgroundWorkerDbService<T extends import('../db-s
     sendToParentOrServer({
       type: 'background_worker_db_service_request',
       requestId,
-      operation
+      operation,
+      options
     }, (error) => {
       finishBackgroundDbServiceRequest(requestId, undefined)
       markParentIpcBroken(error)
     })
   })
+}
+
+function normalizeBackgroundWorkerDbServiceRequestOptions(
+  input: number | BackgroundWorkerDbServiceRequestOptions
+): BackgroundWorkerDbServiceRequestOptions {
+  if (typeof input === 'number') {
+    return { timeoutMs: input }
+  }
+  return { ...input }
+}
+
+function backgroundDbServiceRequestOptionsForOperation(
+  operation: import('../db-service/db-service-types.js').DbServiceOperation,
+  options: BackgroundWorkerDbServiceRequestOptions | undefined
+): BackgroundWorkerDbServiceRequestOptions {
+  return {
+    ...options,
+    priority: options?.priority ?? backgroundDbServiceRequestPriorityForOperation(operation)
+  }
+}
+
+function backgroundDbServiceRequestPriorityForOperation(
+  operation: import('../db-service/db-service-types.js').DbServiceOperation
+): BackgroundWorkerDbServiceRequestOptions['priority'] {
+  const accessMode = dbServiceOperationAccessMode(operation)
+  return accessMode === 'write' || accessMode === 'maintenance' ? 'low' : undefined
+}
+
+function isBackgroundWorkerDbServiceRequestOptions(value: unknown): value is BackgroundWorkerDbServiceRequestOptions {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false
+  }
+  const record = value as Record<string, unknown>
+  return (record.timeoutMs === undefined || typeof record.timeoutMs === 'number')
+    && (record.priority === undefined || record.priority === 'high' || record.priority === 'normal' || record.priority === 'low')
 }
 
 function finishBackgroundDbServiceRequest(requestId: string, response: { ok: true; result: unknown } | { ok: false; errorMessage: string } | undefined): void {

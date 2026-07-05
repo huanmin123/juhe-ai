@@ -11,7 +11,7 @@ import { enqueueRecordMaintenanceJobWithResult } from '../record-maintenance/rec
 
 export const tableMonitorRouter = Router()
 
-const defaultCleanupBatchSize = 10000
+const defaultCleanupBatchSize = 5000
 const defaultCleanupMaxBatches = 100
 
 const overviewQuerySchema = z.object({
@@ -21,7 +21,7 @@ const overviewQuerySchema = z.object({
 })
 
 const historyQuerySchema = z.object({
-  databaseRole: z.enum(['business', 'dataset', 'usage-catalog', 'stats']),
+  databaseRole: z.enum(['business', 'dataset', 'usage-catalog', 'stats', 'codex-context-state']),
   tableName: z.string().trim().min(1),
   startAt: z.string().trim().optional(),
   endAt: z.string().trim().optional(),

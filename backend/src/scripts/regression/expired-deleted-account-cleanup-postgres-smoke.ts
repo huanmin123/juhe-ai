@@ -1,6 +1,7 @@
 import { strict as assert } from 'node:assert'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { createAccountAsync, createGroupAsync, deleteAccountAsync } from '../../storage/repositories.js'
 import { handleDbServiceOperation } from '../../modules/db-service/db-service-handlers.js'
@@ -25,7 +26,7 @@ try {
   const account = await createAccountAsync({
     name: `过期删除清理PG烟测账号${marker}`,
     providerCode: 'gpt',
-    providerProtocolProfileId: group.providerProtocolProfileId,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     type: 'api_key',
     status: 'disabled',
     groupId: group.id,

@@ -15,7 +15,6 @@ export const groupsRouter = Router()
 const groupSchema = z.object({
   name: z.string().trim().min(1),
   providerCode: z.string().trim().min(1),
-  providerProtocolProfileId: z.string().trim().min(1).optional(),
   description: z.string().trim().optional(),
   enabled: z.boolean().optional(),
   groupType: z.enum(['personal', 'high_concurrency']).optional(),
@@ -34,7 +33,11 @@ const groupPatchSchema = groupSchema.partial().refine((value) => Object.keys(val
 groupsRouter.get('/', async (req, res, next) => {
   try {
     const page = await listGroupsPageAsync(getRequestAccessScope(req.query.systemAccountId), parseGroupListOptions(req.query))
-    res.json(ok(await applyServerAccountConcurrencyToGroupList(page)))
+    const withRuntime = await applyServerAccountConcurrencyToGroupList(page)
+    res.json(ok({
+      ...withRuntime,
+      items: withRuntime.items.map(toGroupListItem)
+    }))
   } catch (error) {
     next(error)
   }
@@ -63,13 +66,30 @@ groupsRouter.get('/account-options', async (req, res, next) => {
   }
 })
 
+groupsRouter.get('/:id', async (req, res, next) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    res.status(400).json(badRequest(scopeQuery.message))
+    return
+  }
+  try {
+    const group = await findGroupSummaryAsync(req.params.id, getRequestAccessScope(scopeQuery.data.systemAccountId))
+    if (!group) {
+      res.status(404).json({ message: '分组不存在' })
+      return
+    }
+    res.json(ok(group))
+  } catch (error) {
+    next(error)
+  }
+})
+
 function parseGroupOptionListOptions(query: Record<string, unknown>) {
   const ids = queryTextList(query.ids, 50)
   return {
     ids,
     keyword: optionalQueryText(query.keyword),
     providerCode: optionalQueryText(query.providerCode),
-    providerProtocolProfileId: optionalQueryText(query.providerProtocolProfileId),
     limit: optionLimitValue(integerQueryValue(query.limit)),
     manageableOnly: booleanQueryValue(query.manageableOnly),
     preferDefault: booleanQueryValue(query.preferDefault)
@@ -88,6 +108,38 @@ function booleanQueryValue(value: unknown): boolean | undefined {
   if (['1', 'true', 'yes'].includes(normalized)) return true
   if (['0', 'false', 'no'].includes(normalized)) return false
   return undefined
+}
+
+type GroupListItem = Omit<NonNullable<Awaited<ReturnType<typeof findGroupSummaryAsync>>>, 'accountIds' | 'authorizationSources'> & {
+  accountCount: number
+  authorizationSourceSummary?: {
+    activeSourceCount: number
+    hasManual: boolean
+    hasTeam: boolean
+    teamNames: string[]
+  }
+}
+
+function toGroupListItem(group: NonNullable<Awaited<ReturnType<typeof findGroupSummaryAsync>>>): GroupListItem {
+  const { accountIds, authorizationSources, ...item } = group
+  return {
+    ...item,
+    accountCount: accountIds.length,
+    authorizationSourceSummary: authorizationSources ? summarizeAuthorizationSources(authorizationSources) : undefined
+  }
+}
+
+function summarizeAuthorizationSources(sources: NonNullable<NonNullable<Awaited<ReturnType<typeof findGroupSummaryAsync>>>['authorizationSources']>): GroupListItem['authorizationSourceSummary'] {
+  const activeSources = sources.filter((source) => source.status === 'active')
+  const teamNames = [...new Set(activeSources
+    .map((source) => source.sourceTeamName?.trim())
+    .filter((name): name is string => Boolean(name)))]
+  return {
+    activeSourceCount: activeSources.length,
+    hasManual: activeSources.some((source) => source.sourceType === 'manual'),
+    hasTeam: activeSources.some((source) => source.sourceType === 'team') || sources.some((source) => source.sourceType === 'team'),
+    teamNames
+  }
 }
 
 groupsRouter.post('/', mutationGuard({

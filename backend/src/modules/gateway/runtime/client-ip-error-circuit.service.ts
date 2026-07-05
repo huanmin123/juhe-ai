@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 
-import { createAppCache } from '../../../shared/cache.js'
+import { runtimeConfig } from '../../../config/runtime.js'
+import { createRuntimeStateStore } from '../../../shared/runtime-state-store.js'
 
 export type GatewayPreAuthFailureReason = 'missing_bearer_token' | 'invalid_api_key'
 
@@ -58,20 +59,17 @@ interface ClientIpErrorEntry {
   lastReason?: GatewayClientIpErrorCircuitReason
 }
 
-const preAuthCache = createAppCache<string, PreAuthEntry>({
-  name: 'gateway:client-ip-pre-auth-circuit',
-  max: 20_000,
-  ttlMs: 15 * 60_000,
-  updateAgeOnGet: false
-})
+interface MemoryCircuitEntry<T> {
+  value: T
+  expiresAt: number
+}
 
-const clientIpErrorCircuitCache = createAppCache<string, ClientIpErrorEntry>({
-  name: 'gateway:client-ip-error-circuit',
-  max: 10_000,
-  ttlMs: 15 * 60_000,
-  updateAgeOnGet: false
-})
+const preAuthMemoryEntries = new Map<string, MemoryCircuitEntry<PreAuthEntry>>()
+const clientIpErrorCircuitMemoryEntries = new Map<string, MemoryCircuitEntry<ClientIpErrorEntry>>()
+const clientIpErrorCircuitStateStore = createRuntimeStateStore('gateway-client-ip-error-circuit')
 
+const preAuthMaxEntries = 20_000
+const clientIpErrorCircuitMaxEntries = 10_000
 const preAuthWindowMs = 60_000
 const preAuthMissingThreshold = 40
 const preAuthInvalidTokenThreshold = 8
@@ -92,7 +90,18 @@ export function inspectGatewayPreAuthCircuit(input: GatewayPreAuthCircuitInput):
   if (!specificKey) {
     return { blocked: false }
   }
-  return entryDecision(preAuthCache.get(specificKey))
+  return entryDecision(getMemoryCircuitEntry(preAuthMemoryEntries, specificKey))
+}
+
+export async function inspectGatewayPreAuthCircuitAsync(input: GatewayPreAuthCircuitInput): Promise<GatewayCircuitDecision> {
+  if (!shouldUseRedisClientIpErrorCircuitState()) {
+    return inspectGatewayPreAuthCircuit(input)
+  }
+  const specificKey = preAuthSpecificKey(input)
+  if (!specificKey) {
+    return { blocked: false }
+  }
+  return entryDecision(await getRuntimeEntry<PreAuthEntry>(specificKey))
 }
 
 export function recordGatewayPreAuthFailure(input: GatewayPreAuthFailureInput): GatewayCircuitDecision {
@@ -104,7 +113,7 @@ export function recordGatewayPreAuthFailure(input: GatewayPreAuthFailureInput): 
     ? preAuthSprayKey(input.clientIp)
     : undefined
   if (sprayKey) {
-    const activeSprayDecision = entryDecision(preAuthCache.get(sprayKey))
+    const activeSprayDecision = entryDecision(getMemoryCircuitEntry(preAuthMemoryEntries, sprayKey))
     if (activeSprayDecision.blocked) {
       return activeSprayDecision
     }
@@ -125,12 +134,56 @@ export function recordGatewayPreAuthFailure(input: GatewayPreAuthFailureInput): 
   return sprayDecision.blocked ? sprayDecision : specificDecision
 }
 
+export async function recordGatewayPreAuthFailureAsync(input: GatewayPreAuthFailureInput): Promise<GatewayCircuitDecision> {
+  if (!shouldUseRedisClientIpErrorCircuitState()) {
+    return recordGatewayPreAuthFailure(input)
+  }
+  const specificKey = preAuthSpecificKey(input)
+  if (!specificKey) {
+    return { blocked: false }
+  }
+  const sprayKey = input.reason === 'invalid_api_key' && input.clientIp?.trim()
+    ? preAuthSprayKey(input.clientIp)
+    : undefined
+  if (sprayKey) {
+    const activeSprayDecision = entryDecision(await getRuntimeEntry<PreAuthEntry>(sprayKey))
+    if (activeSprayDecision.blocked) {
+      return activeSprayDecision
+    }
+  }
+  const now = Date.now()
+  const threshold = input.reason === 'missing_bearer_token'
+    ? preAuthMissingThreshold
+    : preAuthInvalidTokenThreshold
+  const specificDecision = await recordPreAuthEntryAsync(specificKey, input.reason, threshold, now)
+  if (specificDecision.blocked) {
+    return specificDecision
+  }
+
+  if (!sprayKey) {
+    return specificDecision
+  }
+  const sprayDecision = await recordPreAuthEntryAsync(sprayKey, 'invalid_api_key_spray', preAuthInvalidTokenSprayThreshold, now)
+  return sprayDecision.blocked ? sprayDecision : specificDecision
+}
+
 export function inspectClientIpErrorCircuit(input: GatewayClientIpErrorCircuitInput): GatewayCircuitDecision {
   const key = clientIpErrorScopeKey(input)
   if (!key) {
     return { blocked: false }
   }
-  return entryDecision(clientIpErrorCircuitCache.get(key))
+  return entryDecision(getMemoryCircuitEntry(clientIpErrorCircuitMemoryEntries, key))
+}
+
+export async function inspectClientIpErrorCircuitAsync(input: GatewayClientIpErrorCircuitInput): Promise<GatewayCircuitDecision> {
+  if (!shouldUseRedisClientIpErrorCircuitState()) {
+    return inspectClientIpErrorCircuit(input)
+  }
+  const key = clientIpErrorScopeKey(input)
+  if (!key) {
+    return { blocked: false }
+  }
+  return entryDecision(await getRuntimeEntry<ClientIpErrorEntry>(key))
 }
 
 export function recordClientIpErrorCircuitSample(input: GatewayClientIpErrorCircuitSampleInput): GatewayCircuitDecision {
@@ -139,7 +192,7 @@ export function recordClientIpErrorCircuitSample(input: GatewayClientIpErrorCirc
     return { blocked: false }
   }
   const now = Date.now()
-  const entry = clientIpErrorCircuitCache.get(key) ?? {
+  const entry = getMemoryCircuitEntry(clientIpErrorCircuitMemoryEntries, key) ?? {
     key,
     samples: [],
     signatures: [],
@@ -158,7 +211,39 @@ export function recordClientIpErrorCircuitSample(input: GatewayClientIpErrorCirc
   if (shouldBlock) {
     openBlock(entry, now, clientIpInitialBlockMs, clientIpMaxBlockMs)
   }
-  clientIpErrorCircuitCache.set(key, entry, { ttlMs: clientIpMaxBlockMs + clientIpTotalWindowMs })
+  setMemoryCircuitEntry(clientIpErrorCircuitMemoryEntries, key, entry, clientIpMaxBlockMs + clientIpTotalWindowMs, clientIpErrorCircuitMaxEntries)
+  return entryDecision(entry)
+}
+
+export async function recordClientIpErrorCircuitSampleAsync(input: GatewayClientIpErrorCircuitSampleInput): Promise<GatewayCircuitDecision> {
+  if (!shouldUseRedisClientIpErrorCircuitState()) {
+    return recordClientIpErrorCircuitSample(input)
+  }
+  const key = clientIpErrorScopeKey(input)
+  if (!key) {
+    return { blocked: false }
+  }
+  const now = Date.now()
+  const entry = await getRuntimeEntry<ClientIpErrorEntry>(key) ?? {
+    key,
+    samples: [],
+    signatures: [],
+    blockCount: 0
+  }
+  const activeDecision = entryDecision(entry)
+  if (activeDecision.blocked) {
+    return activeDecision
+  }
+  appendSample(entry.samples, now, clientIpTotalWindowMs, clientIpTotalThreshold)
+  const signature = sampleSignature(input)
+  const signatureCount = upsertSignatureSample(entry, signature, now)
+  entry.lastReason = input.reason
+
+  const shouldBlock = signatureCount >= clientIpSignatureThreshold || entry.samples.length >= clientIpTotalThreshold
+  if (shouldBlock) {
+    openBlock(entry, now, clientIpInitialBlockMs, clientIpMaxBlockMs)
+  }
+  await setRuntimeEntry(key, entry, clientIpMaxBlockMs + clientIpTotalWindowMs)
   return entryDecision(entry)
 }
 
@@ -167,14 +252,27 @@ export function recordClientIpErrorCircuitSuccess(input: GatewayClientIpErrorCir
   if (!key) {
     return false
   }
-  const existed = Boolean(clientIpErrorCircuitCache.get(key))
-  clientIpErrorCircuitCache.delete(key)
+  const existed = Boolean(getMemoryCircuitEntry(clientIpErrorCircuitMemoryEntries, key))
+  clientIpErrorCircuitMemoryEntries.delete(key)
+  return existed
+}
+
+export async function recordClientIpErrorCircuitSuccessAsync(input: GatewayClientIpErrorCircuitInput): Promise<boolean> {
+  if (!shouldUseRedisClientIpErrorCircuitState()) {
+    return recordClientIpErrorCircuitSuccess(input)
+  }
+  const key = clientIpErrorScopeKey(input)
+  if (!key) {
+    return false
+  }
+  const existed = Boolean(await getRuntimeEntry<ClientIpErrorEntry>(key))
+  await clientIpErrorCircuitStateStore.delete(runtimeEntryKey(key))
   return existed
 }
 
 export function clearGatewayClientIpErrorCircuitForTest(): void {
-  preAuthCache.clear()
-  clientIpErrorCircuitCache.clear()
+  preAuthMemoryEntries.clear()
+  clientIpErrorCircuitMemoryEntries.clear()
 }
 
 export function getGatewayClientIpSecuritySnapshotForTest(): {
@@ -182,13 +280,13 @@ export function getGatewayClientIpSecuritySnapshotForTest(): {
   clientIpErrors: Array<{ key: string; failureCount: number; blocked: boolean; lastReason?: string }>
 } {
   return {
-    preAuth: [...preAuthCache.values()].map((entry) => ({
+    preAuth: memoryCircuitValues(preAuthMemoryEntries).map((entry) => ({
       key: entry.key,
       failureCount: entry.samples.length,
       blocked: entryDecision(entry).blocked,
       lastReason: entry.lastReason
     })),
-    clientIpErrors: [...clientIpErrorCircuitCache.values()].map((entry) => ({
+    clientIpErrors: memoryCircuitValues(clientIpErrorCircuitMemoryEntries).map((entry) => ({
       key: entry.key,
       failureCount: entry.samples.length,
       blocked: entryDecision(entry).blocked,
@@ -203,7 +301,7 @@ function recordPreAuthEntry(
   threshold: number,
   now: number
 ): GatewayCircuitDecision {
-  const entry = preAuthCache.get(key) ?? {
+  const entry = getMemoryCircuitEntry(preAuthMemoryEntries, key) ?? {
     key,
     samples: [],
     blockCount: 0
@@ -217,7 +315,79 @@ function recordPreAuthEntry(
   if (entry.samples.length >= threshold) {
     openBlock(entry, now, preAuthInitialBlockMs, preAuthMaxBlockMs)
   }
-  preAuthCache.set(key, entry, { ttlMs: preAuthMaxBlockMs + preAuthWindowMs })
+  setMemoryCircuitEntry(preAuthMemoryEntries, key, entry, preAuthMaxBlockMs + preAuthWindowMs, preAuthMaxEntries)
+  return entryDecision(entry)
+}
+
+function getMemoryCircuitEntry<T>(entries: Map<string, MemoryCircuitEntry<T>>, key: string): T | undefined {
+  const entry = entries.get(key)
+  if (!entry) {
+    return undefined
+  }
+  if (entry.expiresAt <= Date.now()) {
+    entries.delete(key)
+    return undefined
+  }
+  return entry.value
+}
+
+function setMemoryCircuitEntry<T>(
+  entries: Map<string, MemoryCircuitEntry<T>>,
+  key: string,
+  value: T,
+  ttlMs: number,
+  maxEntries: number
+): void {
+  entries.set(key, {
+    value,
+    expiresAt: Date.now() + Math.max(1, Math.trunc(ttlMs))
+  })
+  evictOldestMemoryCircuitEntries(entries, maxEntries)
+}
+
+function memoryCircuitValues<T>(entries: Map<string, MemoryCircuitEntry<T>>): T[] {
+  const values: T[] = []
+  for (const [key, entry] of entries.entries()) {
+    if (entry.expiresAt <= Date.now()) {
+      entries.delete(key)
+      continue
+    }
+    values.push(entry.value)
+  }
+  return values
+}
+
+function evictOldestMemoryCircuitEntries<T>(entries: Map<string, MemoryCircuitEntry<T>>, maxEntries: number): void {
+  while (entries.size > maxEntries) {
+    const oldestKey = entries.keys().next().value
+    if (typeof oldestKey !== 'string') {
+      return
+    }
+    entries.delete(oldestKey)
+  }
+}
+
+async function recordPreAuthEntryAsync(
+  key: string,
+  reason: PreAuthEntry['lastReason'],
+  threshold: number,
+  now: number
+): Promise<GatewayCircuitDecision> {
+  const entry = await getRuntimeEntry<PreAuthEntry>(key) ?? {
+    key,
+    samples: [],
+    blockCount: 0
+  }
+  const activeDecision = entryDecision(entry)
+  if (activeDecision.blocked) {
+    return activeDecision
+  }
+  appendSample(entry.samples, now, preAuthWindowMs, threshold)
+  entry.lastReason = reason
+  if (entry.samples.length >= threshold) {
+    openBlock(entry, now, preAuthInitialBlockMs, preAuthMaxBlockMs)
+  }
+  await setRuntimeEntry(key, entry, preAuthMaxBlockMs + preAuthWindowMs)
   return entryDecision(entry)
 }
 
@@ -338,6 +508,22 @@ function bearerToken(authorization?: string): string | undefined {
 
 function tokenFingerprint(token: string): string {
   return createHash('sha256').update(token).digest('hex').slice(0, 16)
+}
+
+function shouldUseRedisClientIpErrorCircuitState(): boolean {
+  return runtimeConfig.runtimeStateDriver === 'redis'
+}
+
+function runtimeEntryKey(key: string): string {
+  return `entry:${key}`
+}
+
+async function getRuntimeEntry<T extends PreAuthEntry | ClientIpErrorEntry>(key: string): Promise<T | undefined> {
+  return clientIpErrorCircuitStateStore.getJson<T>(runtimeEntryKey(key))
+}
+
+async function setRuntimeEntry<T extends PreAuthEntry | ClientIpErrorEntry>(key: string, entry: T, ttlMs: number): Promise<void> {
+  await clientIpErrorCircuitStateStore.setJson(runtimeEntryKey(key), entry, ttlMs)
 }
 
 function normalizeSignaturePart(value: string): string {

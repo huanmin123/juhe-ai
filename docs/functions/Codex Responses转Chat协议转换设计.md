@@ -163,7 +163,7 @@ finish_reason 策略：
 
 - 原生 Responses / OpenAI OAuth Codex 路径：可以按账号能力承接 `POST /responses/compact` 和 Codex Remote Compaction V2 的 `compaction_trigger`。网关不生成 compact 内容，只透传请求，并在返回侧做 Codex compact 契约检查。
 - Codex compact 契约检查：识别 `/responses/compact` 或带 `compaction_trigger` 的 Codex `/responses` 请求后，SSE 返回必须在完成时恰好包含 1 个 Codex 可反序列化的 `compaction` / `compaction_summary` item，且 `encrypted_content` 必须是字符串；否则在写给客户端前拦截并触发服务端换号或返回 Codex 可重试失败。
-- Chat-only bridge 当前实现：由网关托管 `previous_response_id` 对应的 Responses input/output 增量状态；状态关系索引写入 `JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT` 下的 Codex Responses 上下文索引 shard，完整上下文 payload 按 session/hour 追加到 `JUHE_AI_CODEX_CONTEXT_ROOT` 下的 gzip segment，不进入业务库。compact 时先还原完整上下文，再在当前分组和当前供应商内调度非流式 Chat Completions 摘要请求，保存 compact snapshot，并返回 `type=compaction_summary`、`encrypted_content=juhecmp.v2.<compact_id>.<digest>` 的网关自有 envelope。后续请求带回该 item 时，bridge 校验边界、TTL 和 digest 后读取 snapshot，再恢复为 Chat system summary。
+- Chat-only bridge 当前实现：由网关托管 `previous_response_id` 对应的 Responses input/output 增量状态；状态关系索引写入 `JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT` 下的 Responses 桥接状态索引 shard，完整上下文 payload 按 session/hour 追加到 `JUHE_AI_CODEX_CONTEXT_ROOT` 下的 gzip segment，不进入业务库。compact 时先还原完整上下文，再在当前分组和当前供应商内调度非流式 Chat Completions 摘要请求，保存 compact snapshot，并返回 `type=compaction_summary`、`encrypted_content=juhecmp.v2.<compact_id>.<digest>` 的网关自有 envelope。后续请求带回该 item 时，bridge 校验边界、TTL 和 digest 后读取 snapshot，再恢复为 Chat system summary。
 - Chat-only compact snapshot 仍然是网关自有 compact，不等价于上游原生 Responses compact；它只能在本网关、同 API Key / 分组 / 供应商档案边界内恢复。
 - 供应商自有压缩能力：如果供应商提供非 Responses 的 Chat 侧 `/compact` 或等价摘要接口，可以作为 Chat-only gateway compact 的摘要来源，但返回结果仍要落到网关 compact snapshot；通用兜底必须走 Chat Completions，即 OpenAI-compatible 语义下的 `/v1/chat/completions`，不能把已转换为 Chat 的压缩请求继续发给上游 `/v1/responses/compact`。只有供应商明确提供可被后续原生 `/responses` 直接消费的 compact output，才属于原生 Responses compact。
 
@@ -184,6 +184,7 @@ Chat-only compact 的摘要模型只能在当前请求授权边界内选择：
 - 当前请求命中的当前供应商和 provider profile。
 - 同一套候选账号筛选、账号冷却、切号、统计、审计和错误处理。
 - 通用摘要请求固定使用 Chat Completions endpoint family；上游不能收到 `/responses/compact`。
+- 内部摘要请求的模型别名按原始 Responses compact 请求的 `Responses` 源协议匹配；命中后只改写 Chat Completions 请求体里的 `model` 和统计 / 审计上游模型口径，不把上游路径改成 `/responses`。
 - 内部摘要请求必须设置 `disableCompact = true`，避免递归 compact。
 
 摘要模型可以是供应商非 Responses 的专用 compact endpoint、专用摘要模型或普通 Chat 模型。当前实现使用普通非流式 Chat Completions，并校验返回摘要必须是非空文本。客户端只看到 Codex 可识别的 `compaction_summary` item；后续请求带回该 item 时，网关按 compact id 读取 snapshot 并恢复为 Chat summary。

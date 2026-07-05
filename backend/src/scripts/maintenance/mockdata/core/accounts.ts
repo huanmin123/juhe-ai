@@ -1,7 +1,13 @@
 import type {
+  AccountSummary,
   GroupSummary,
   SystemAccountSummary
 } from '../../../../domain/types.js'
+import {
+  GPT_OPENAI_V1_PROFILE_ID,
+  OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
+  OPENAI_COMPATIBLE_PROVIDER_CODE
+} from '../../../../domain/provider-protocol.js'
 import type { AccessScope } from '../../../../storage/access-scope.js'
 import { getBusinessDatabase, nowIso } from '../../../../storage/database.js'
 import * as repositories from '../../../../storage/repositories.js'
@@ -11,6 +17,7 @@ import {
   inactiveAccountAvailabilitySchedule
 } from './availability-schedules.js'
 import { refreshAccount } from './account-helpers.js'
+import { createMockGroup } from './group-writes.js'
 import {
   dayMs,
   idPrefix,
@@ -27,18 +34,34 @@ function mockUserAccess(user: SystemAccountSummary): AccessScope {
   return { systemAccountId: user.id, role: user.role }
 }
 
+function createMockGptAccount(input: Record<string, unknown>, access: AccessScope): AccountSummary {
+  return repositories.createAccount({
+    providerCode,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    ...input
+  }, access)
+}
+
+function createMockOpenAICompatibleAccount(input: Record<string, unknown>, access: AccessScope): AccountSummary {
+  return repositories.createAccount({
+    providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+    providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
+    ...input
+  }, access)
+}
+
 export function createGroups(
   adminAccess: AccessScope,
   users: MockSystemAccounts,
   defaultGptGroup: DefaultGptGroupResolver
 ): MockGroups {
-  const main = repositories.createGroup({
+  const main = createMockGroup({
     name: `${namePrefix}主力分组`,
     description: '主力业务分组，包含高优先级与常规账户',
     providerCode,
     enabled: true
   }, adminAccess)
-  const highConcurrency = repositories.createGroup({
+  const highConcurrency = createMockGroup({
     name: `${namePrefix}高并发 AI 分组`,
     description: '高并发调度分组，用于分组管理页展示软并发、短队列和单 IP 并发限制',
     providerCode,
@@ -52,36 +75,42 @@ export function createGroups(
       imageLaneMaxConcurrency: 6
     }
   }, adminAccess)
-  const backup = repositories.createGroup({
+  const backup = createMockGroup({
     name: `${namePrefix}备用分组`,
     description: '备用调度分组，包含降级账户和冷却样例',
     providerCode,
     enabled: true
   }, adminAccess)
-  const oauth = repositories.createGroup({
+  const oauth = createMockGroup({
     name: `${namePrefix}OAuth 分组`,
     description: 'OAuth 账户分组，用于 Codex 额度快照展示',
     providerCode,
     enabled: true
   }, adminAccess)
-  const experiment = repositories.createGroup({
+  const openaiCompatible = createMockGroup({
+    name: `${namePrefix}OpenAI 兼容分组`,
+    description: 'OpenAI-compatible 标准客户端分组，用于客户端兼容覆盖和通用 API Key 透传展示',
+    providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+    enabled: true
+  }, adminAccess)
+  const experiment = createMockGroup({
     name: `${namePrefix}实验分组`,
     description: '实验分组，用于授权、额度和模型策略演示',
     providerCode,
     enabled: true
   }, adminAccess)
-  const empty = repositories.createGroup({
+  const empty = createMockGroup({
     name: `${namePrefix}空分组`,
     providerCode,
     enabled: false
   }, adminAccess)
-  const managerMain = repositories.createGroup({
+  const managerMain = createMockGroup({
     name: `${namePrefix}管理员自有分组`,
     description: '普通管理员自有分组，用于管理员模式按管理员角色筛选和创建目标验收',
     providerCode,
     enabled: true
   }, mockUserAccess(users.manager))
-  const managerHighConcurrency = repositories.createGroup({
+  const managerHighConcurrency = createMockGroup({
     name: `${namePrefix}管理员高并发分组`,
     description: '普通管理员自有高并发分组，用于管理员角色下的 AI 分组管理验收',
     providerCode,
@@ -95,13 +124,13 @@ export function createGroups(
       imageLaneMaxConcurrency: 4
     }
   }, mockUserAccess(users.manager))
-  const adminGrantedDev = repositories.createGroup({
+  const adminGrantedDev = createMockGroup({
     name: `${namePrefix}研发授权给超级管理员分组`,
     description: '研发用户自有分组，主动授权给超级管理员，用于 AI 分组管理查看授权分组',
     providerCode,
     enabled: true
   }, mockUserAccess(users.dev))
-  const adminGrantedOps = repositories.createGroup({
+  const adminGrantedOps = createMockGroup({
     name: `${namePrefix}运维授权给超级管理员高并发分组`,
     description: '运维用户自有高并发分组，授权给超级管理员后暂停，用于授权状态展示',
     providerCode,
@@ -115,7 +144,7 @@ export function createGroups(
       imageLaneMaxConcurrency: 2
     }
   }, mockUserAccess(users.ops))
-  const adminGrantedTester = repositories.createGroup({
+  const adminGrantedTester = createMockGroup({
     name: `${namePrefix}测试授权给超级管理员过期分组`,
     description: '测试用户自有分组，授权给超级管理员后过期，用于 AI 分组管理过期状态展示',
     providerCode,
@@ -127,6 +156,7 @@ export function createGroups(
     highConcurrency,
     backup,
     oauth,
+    openaiCompatible,
     experiment,
     empty,
     managerMain,
@@ -149,8 +179,7 @@ export function createAccounts(
   users: MockSystemAccounts,
   proxies: { http: string; socks: string }
 ): MockAccounts {
-  const primary = repositories.createAccount({
-    providerCode,
+  const primary = createMockGptAccount({
     name: `${namePrefix}主力 API Key 账户`,
     type: 'api_key',
     status: 'active',
@@ -165,8 +194,7 @@ export function createAccounts(
     notes: 'Mockdata 主力账号，超级优先'
   }, adminAccess)
 
-  const proxied = repositories.createAccount({
-    providerCode,
+  const proxied = createMockGptAccount({
     name: `${namePrefix}带代理 API Key 账户`,
     type: 'api_key',
     status: 'active',
@@ -179,8 +207,7 @@ export function createAccounts(
     notes: 'Mockdata 代理账号，用于账户授权给用户'
   }, adminAccess)
 
-  const normal = repositories.createAccount({
-    providerCode,
+  const normal = createMockGptAccount({
     name: `${namePrefix}普通 API Key 账户`,
     type: 'api_key',
     status: 'active',
@@ -193,14 +220,13 @@ export function createAccounts(
     notes: 'Mockdata 普通账号'
   }, adminAccess)
 
-  const standardClient = repositories.createAccount({
-    providerCode,
+  const standardClient = createMockGptAccount({
     name: `${namePrefix}OpenAI 标准兼容账户`,
     type: 'api_key',
     status: 'active',
     groupId: groups.main.id,
     credentials: apiKeyCredentials('standard-client'),
-    supportedModels: ['gpt-5.4-mini', 'gpt-4.1-mini'],
+    supportedModels: ['gpt-5.4', 'gpt-5.4-mini', 'gpt-4.1-mini'],
     modelMappings: [
       {
         sourceModel: 'mockdata-global-long-context',
@@ -223,8 +249,20 @@ export function createAccounts(
     notes: 'Mockdata OpenAI 标准兼容账号，用于客户端兼容、模型映射和标签展示'
   }, adminAccess)
 
-  const multiKeyPool = repositories.createAccount({
-    providerCode,
+  const openaiStandard = createMockOpenAICompatibleAccount({
+    name: `${namePrefix}OpenAI 兼容 API Key 账户`,
+    type: 'api_key',
+    status: 'active',
+    groupId: groups.openaiCompatible.id,
+    credentials: apiKeyCredentials('openai-compatible'),
+    supportedModels: ['gpt-5.4-mini', 'gpt-4.1-mini'],
+    tags: ['OpenAI兼容', '标准客户端', 'Mockdata'],
+    concurrencyLimit: 28,
+    priority: 36,
+    notes: 'Mockdata OpenAI-compatible 账号，用于 openai_standard 客户端兼容覆盖'
+  }, adminAccess)
+
+  const multiKeyPool = createMockGptAccount({
     name: `${namePrefix}多 API Key 轮换账户`,
     type: 'api_key',
     status: 'active',
@@ -238,8 +276,7 @@ export function createAccounts(
   }, adminAccess)
   seedAccountApiKeyRuntimeStates(multiKeyPool)
 
-  const image = repositories.createAccount({
-    providerCode,
+  const image = createMockGptAccount({
     name: `${namePrefix}图像生成账户`,
     type: 'api_key',
     status: 'active',
@@ -252,8 +289,7 @@ export function createAccounts(
     notes: 'Mockdata 图像生成账号，用于 Images API、图片 token 和系统账户图像权限展示'
   }, adminAccess)
 
-  const burstFast = repositories.createAccount({
-    providerCode,
+  const burstFast = createMockGptAccount({
     name: `${namePrefix}高并发快响账户`,
     type: 'api_key',
     status: 'active',
@@ -266,8 +302,7 @@ export function createAccounts(
     notes: 'Mockdata 高并发分组快响账号，用于高并发调度策略展示'
   }, adminAccess)
 
-  const burstImage = repositories.createAccount({
-    providerCode,
+  const burstImage = createMockGptAccount({
     name: `${namePrefix}高并发图像账户`,
     type: 'api_key',
     status: 'active',
@@ -279,8 +314,7 @@ export function createAccounts(
     notes: 'Mockdata 高并发分组图像 / 长请求账号，用于图像 lane 并发展示'
   }, adminAccess)
 
-  const burstFallback = repositories.createAccount({
-    providerCode,
+  const burstFallback = createMockGptAccount({
     name: `${namePrefix}高并发备用账户`,
     type: 'api_key',
     status: 'active',
@@ -293,8 +327,7 @@ export function createAccounts(
     notes: 'Mockdata 高并发分组备用账号，用于软并发触发后的 fallback 展示'
   }, adminAccess)
 
-  const fallback = repositories.createAccount({
-    providerCode,
+  const fallback = createMockGptAccount({
     name: `${namePrefix}降级备用账户`,
     type: 'api_key',
     status: 'active',
@@ -307,8 +340,7 @@ export function createAccounts(
     notes: 'Mockdata 备用账号'
   }, adminAccess)
 
-  const oauth = repositories.createAccount({
-    providerCode,
+  const oauth = createMockGptAccount({
     name: `${namePrefix}OAuth 主力账户`,
     type: 'oauth',
     status: 'active',
@@ -321,8 +353,7 @@ export function createAccounts(
     notes: 'Mockdata OAuth 主力账号，带 Codex 额度快照'
   }, adminAccess)
 
-  const oauthBackup = repositories.createAccount({
-    providerCode,
+  const oauthBackup = createMockGptAccount({
     name: `${namePrefix}OAuth 备用账户`,
     type: 'oauth',
     status: 'active',
@@ -335,8 +366,7 @@ export function createAccounts(
     notes: 'Mockdata OAuth 备用账号'
   }, adminAccess)
 
-  const pendingTest = repositories.createAccount({
-    providerCode,
+  const pendingTest = createMockGptAccount({
     name: `${namePrefix}待测试账户`,
     type: 'api_key',
     status: 'pending_test',
@@ -349,8 +379,7 @@ export function createAccounts(
     notes: 'Mockdata 待测试账号，用于待测试状态、手动测试入口和不可调度展示'
   }, adminAccess)
 
-  const disabled = repositories.createAccount({
-    providerCode,
+  const disabled = createMockGptAccount({
     name: `${namePrefix}手动停用账户`,
     type: 'api_key',
     status: 'disabled',
@@ -363,8 +392,7 @@ export function createAccounts(
     notes: 'Mockdata 手动停用账号，用于停用状态和恢复入口展示'
   }, adminAccess)
 
-  const unschedulable = repositories.createAccount({
-    providerCode,
+  const unschedulable = createMockGptAccount({
     name: `${namePrefix}停调账户`,
     type: 'api_key',
     status: 'active',
@@ -378,8 +406,7 @@ export function createAccounts(
     notes: 'Mockdata 正常但手动关闭调度账号，用于参与调度筛选和有效可用性展示'
   }, adminAccess)
 
-  const scheduledInactive = repositories.createAccount({
-    providerCode,
+  const scheduledInactive = createMockGptAccount({
     name: `${namePrefix}时间计划停调账户`,
     type: 'api_key',
     status: 'active',
@@ -393,8 +420,7 @@ export function createAccounts(
     notes: 'Mockdata 当前不在允许时段内的账号，用于账户时间计划和调度过滤展示'
   }, adminAccess)
 
-  const rateLimited = repositories.createAccount({
-    providerCode,
+  const rateLimited = createMockGptAccount({
     name: `${namePrefix}限流中账户`,
     type: 'api_key',
     status: 'active',
@@ -412,8 +438,7 @@ export function createAccounts(
     'rate_limited'
   )
 
-  const temporary = repositories.createAccount({
-    providerCode,
+  const temporary = createMockGptAccount({
     name: `${namePrefix}临时不可调用账户`,
     type: 'api_key',
     status: 'active',
@@ -426,8 +451,7 @@ export function createAccounts(
   }, adminAccess)
   repositories.markAccountTemporaryUnavailable(temporary.id, 'Mockdata 模拟上游 503 维护')
 
-  const error = repositories.createAccount({
-    providerCode,
+  const error = createMockGptAccount({
     name: `${namePrefix}异常账户`,
     type: 'api_key',
     status: 'active',
@@ -440,8 +464,7 @@ export function createAccounts(
   }, adminAccess)
   repositories.markAccountDisabledByFailure(error.id, 'Mockdata 模拟 401 认证失败')
 
-  const expired = repositories.createAccount({
-    providerCode,
+  const expired = createMockGptAccount({
     name: `${namePrefix}已到期账户`,
     type: 'api_key',
     status: 'active',
@@ -453,8 +476,7 @@ export function createAccounts(
     notes: 'Mockdata 已到期停用账号'
   }, adminAccess)
 
-  const managerPrimary = repositories.createAccount({
-    providerCode,
+  const managerPrimary = createMockGptAccount({
     name: `${namePrefix}管理员 API Key 账户`,
     type: 'api_key',
     status: 'active',
@@ -466,8 +488,7 @@ export function createAccounts(
     notes: 'Mockdata 普通管理员自有账号，用于管理员模式资源归属验收'
   }, mockUserAccess(users.manager))
 
-  const managerBurst = repositories.createAccount({
-    providerCode,
+  const managerBurst = createMockGptAccount({
     name: `${namePrefix}管理员高并发账户`,
     type: 'api_key',
     status: 'active',
@@ -481,8 +502,7 @@ export function createAccounts(
     notes: 'Mockdata 普通管理员高并发账号，用于管理员角色高并发分组验收'
   }, mockUserAccess(users.manager))
 
-  const devShared = repositories.createAccount({
-    providerCode,
+  const devShared = createMockGptAccount({
     name: `${namePrefix}研发共享给超级管理员账户`,
     type: 'api_key',
     status: 'active',
@@ -494,8 +514,7 @@ export function createAccounts(
     notes: 'Mockdata 研发用户自有账号，用于授权分组给超级管理员'
   }, mockUserAccess(users.dev))
 
-  const opsShared = repositories.createAccount({
-    providerCode,
+  const opsShared = createMockGptAccount({
     name: `${namePrefix}运维共享给超级管理员账户`,
     type: 'api_key',
     status: 'active',
@@ -507,8 +526,7 @@ export function createAccounts(
     notes: 'Mockdata 运维用户自有账号，用于暂停授权分组展示'
   }, mockUserAccess(users.ops))
 
-  const testerShared = repositories.createAccount({
-    providerCode,
+  const testerShared = createMockGptAccount({
     name: `${namePrefix}测试共享给超级管理员账户`,
     type: 'api_key',
     status: 'active',
@@ -525,6 +543,7 @@ export function createAccounts(
     proxied,
     normal,
     standardClient,
+    openaiStandard,
     multiKeyPool: refreshAccount(multiKeyPool.id),
     image,
     burstFast,

@@ -1,6 +1,7 @@
 import { createHmac } from 'node:crypto'
 
 import { runtimeConfig } from '../config/runtime.js'
+import { getRedisClient } from '../shared/redis-client.js'
 import {
   ANTHROPIC_PROVIDER_CODE,
   isGeminiProviderCode,
@@ -40,6 +41,7 @@ interface WeightedState {
 
 const roundRobinStates = new Map<string, RoundRobinState>()
 const weightedStates = new Map<string, WeightedState>()
+const redisAccountApiKeyRotationTtlMs = 30 * 24 * 60 * 60 * 1000
 
 export function selectAccountRuntimeApiKey(input: {
   accountId: string
@@ -66,10 +68,38 @@ export function selectAccountRuntimeApiKeyEntry(input: {
   if (entries.length === 1) return candidateEntries[0]
   const availableEntries = accountApiKeyEntriesAvailableForDispatch(candidateEntries, input.runtimeStates)
   if (!availableEntries.length) return undefined
+  if (availableEntries.length === 1) return availableEntries[0]
   const strategy = accountApiKeyStrategy(input.credentials)
+  assertSyncAccountApiKeyRotationAllowed(strategy)
   return strategy === 'weighted_round_robin'
     ? selectWeightedApiKey(input.accountId, availableEntries)
     : selectRoundRobinApiKey(input.accountId, availableEntries)
+}
+
+export async function selectAccountRuntimeApiKeyEntryAsync(input: {
+  accountId: string
+  credentials: Record<string, unknown>
+  runtimeStates?: AccountApiKeyRuntimeSelectionState[]
+  excludeFingerprints?: Iterable<string>
+}): Promise<AccountApiKeyEntry | undefined> {
+  const entries = accountApiKeyEntries(input.credentials)
+  if (!entries.length) return undefined
+  const excludedFingerprints = new Set([...(input.excludeFingerprints ?? [])].map((value) => value.trim()).filter(Boolean))
+  const candidateEntries = excludedFingerprints.size
+    ? entries.filter((entry) => !excludedFingerprints.has(entry.fingerprint))
+    : entries
+  if (!candidateEntries.length) return undefined
+  if (entries.length === 1) return candidateEntries[0]
+  const availableEntries = accountApiKeyEntriesAvailableForDispatch(candidateEntries, input.runtimeStates)
+  if (!availableEntries.length) return undefined
+  if (availableEntries.length === 1) return availableEntries[0]
+  if (runtimeConfig.runtimeStateDriver !== 'redis') {
+    return selectAccountRuntimeApiKeyEntry(input)
+  }
+  const strategy = accountApiKeyStrategy(input.credentials)
+  return strategy === 'weighted_round_robin'
+    ? selectWeightedApiKeyWithRedisCounter(input.accountId, availableEntries)
+    : selectRoundRobinApiKeyWithRedisCounter(input.accountId, availableEntries)
 }
 
 export function accountApiKeyEntries(credentials: Record<string, unknown>): AccountApiKeyEntry[] {
@@ -143,6 +173,10 @@ function selectRoundRobinApiKey(accountId: string, entries: AccountApiKeyEntry[]
   return entries[index]
 }
 
+async function selectRoundRobinApiKeyWithRedisCounter(accountId: string, entries: AccountApiKeyEntry[]): Promise<AccountApiKeyEntry> {
+  return entries[await nextRedisAccountApiKeyRotationIndex(accountId, 'round-robin', entries.length)] ?? entries[0]
+}
+
 function selectWeightedApiKey(accountId: string, entries: AccountApiKeyEntry[]): AccountApiKeyEntry {
   const state = weightedStates.get(accountId) ?? { currentWeights: new Map<string, number>() }
   cleanupWeightedState(state, entries)
@@ -160,6 +194,19 @@ function selectWeightedApiKey(accountId: string, entries: AccountApiKeyEntry[]):
   state.currentWeights.set(selected.id, (state.currentWeights.get(selected.id) ?? 0) - totalWeight)
   weightedStates.set(accountId, state)
   return selected
+}
+
+async function selectWeightedApiKeyWithRedisCounter(accountId: string, entries: AccountApiKeyEntry[]): Promise<AccountApiKeyEntry> {
+  const totalWeight = entries.reduce((sum, entry) => sum + entry.weight, 0)
+  const selectedWeightIndex = await nextRedisAccountApiKeyRotationIndex(accountId, 'weighted', totalWeight)
+  let cursor = 0
+  for (const entry of entries) {
+    cursor += entry.weight
+    if (selectedWeightIndex < cursor) {
+      return entry
+    }
+  }
+  return entries[0]
 }
 
 function cleanupWeightedState(state: WeightedState, entries: AccountApiKeyEntry[]): void {
@@ -188,4 +235,39 @@ function accountApiKeyEntriesAvailableForDispatch(
   )
   if (!unavailableFingerprints.size) return entries
   return entries.filter((entry) => !unavailableFingerprints.has(entry.fingerprint))
+}
+
+async function nextRedisAccountApiKeyRotationIndex(
+  accountId: string,
+  strategy: 'round-robin' | 'weighted',
+  modulo: number
+): Promise<number> {
+  if (modulo <= 0) return 0
+  const runtimeStateUrl = runtimeConfig.redis.stateUrl
+  if (!runtimeStateUrl) {
+    throw new Error('高性能模式账户 API Key 轮换需要 JUHE_AI_REDIS_STATE_URL')
+  }
+  const result = await (await getRedisClient(runtimeStateUrl)).eval(`
+    local value = redis.call('INCR', KEYS[1])
+    redis.call('PEXPIRE', KEYS[1], ARGV[2])
+    return (value - 1) % tonumber(ARGV[1])
+  `, {
+    keys: [redisAccountApiKeyRotationKey(accountId, strategy)],
+    arguments: [String(Math.trunc(modulo)), String(redisAccountApiKeyRotationTtlMs)]
+  })
+  const index = typeof result === 'number' ? result : Number(result)
+  if (!Number.isFinite(index)) {
+    throw new Error('Redis 账户 API Key 轮换计数器返回值无效')
+  }
+  return Math.max(0, Math.trunc(index))
+}
+
+function redisAccountApiKeyRotationKey(accountId: string, strategy: 'round-robin' | 'weighted'): string {
+  return `juhe-ai:route-state:account-api-key:${strategy}:${Buffer.from(accountId).toString('base64url')}`
+}
+
+function assertSyncAccountApiKeyRotationAllowed(strategy: AccountApiKeyStrategy): void {
+  if (runtimeConfig.runtimeStateDriver !== 'redis') return
+  if (strategy !== 'round_robin' && strategy !== 'weighted_round_robin') return
+  throw new Error('高性能模式账户 API Key 轮换禁止使用本机同步状态，请调用 selectAccountRuntimeApiKeyEntryAsync')
 }

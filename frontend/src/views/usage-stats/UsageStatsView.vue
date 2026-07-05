@@ -134,6 +134,7 @@ import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList, type ResponsivePagedListResult } from '@/composables/useResponsivePagedList'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
+import { useUsageStatsWindow } from '@/composables/useUsageStatsWindow'
 import { formatDateKey, formatDateLabel } from '@/shared/dateRange'
 import { rememberPrincipalSelection } from '@/shared/principalLabelCache'
 import { providerDisplayName } from '@/shared/providerDisplay'
@@ -145,6 +146,7 @@ import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
 import { formatInteger } from '@/views/stats/statsFormatters'
 import AccountUsageStatsTable from './AccountUsageStatsTable.vue'
 import {
+  aggregateUsageSummaries,
   authorizationAccountTagText,
   buildAccountUsageSummaryCards,
   cacheReadRate,
@@ -174,10 +176,9 @@ import { useUsageStatsTrendAccountSelection } from './useUsageStatsTrendAccountS
 import { buildAccountUsageTrendOption, orderedUsageRows, type UsageTrendMetric } from './usageTrendChartOptions'
 
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
+const { usageStatsWindowEndDate, usageStatsWindowMaxDays, loadUsageStatsWindow } = useUsageStatsWindow()
 
 const overview = ref<AccountUsageStatsOverview>()
-const selectedTrendSummary = ref<AccountUsageSummary>()
-const selectedTrendSummaryLoading = ref(false)
 const providers = ref<ProviderDefinition[]>([])
 const usageStatsOptionsLoaded = ref(false)
 const usageStatsOptionsScopeKey = ref('')
@@ -200,7 +201,6 @@ const dateRange = ref<[Dayjs, Dayjs]>(parseUsageStatsDateRange(initialPageState.
 const dateRangeExplicit = ref(Boolean(initialPageState.range?.startDate || initialPageState.range?.endDate))
 const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
 const addedTrendAccountIds = ref<string[]>([])
-let selectedTrendSummaryRequestToken = 0
 const {
   items: accountUsageRows,
   loading,
@@ -221,7 +221,8 @@ const {
     const systemAccountId = isManagementView.value ? scopedSystemAccountId(filters.systemAccountId) : undefined
     const [usageOverview] = await Promise.all([
       isManagementView.value ? api.stats.accountUsage(accountUsageParams(systemAccountId, pageState)) : api.myStats.accountUsage(accountUsageParams(undefined, pageState)),
-      loadUsageStatsOptions(options.forceOptions === true)
+      loadUsageStatsOptions(options.forceOptions === true),
+      loadUsageStatsWindow({ force: true })
     ])
     overview.value = usageOverview
     syncDateRangeFromResponse(usageOverview.range)
@@ -316,25 +317,13 @@ const displayMobileHasMore = computed(() => hasSelectedTrendAccounts.value ? fal
 const displayMobileLoadingMore = computed(() => hasSelectedTrendAccounts.value ? false : accountUsageMobileLoadingMore.value)
 const tableScrollX = computed(() => accountUsageStatsTableScrollX(isManagementView.value))
 const columns = computed(() => accountUsageStatsTableColumns(isManagementView.value))
-const displaySummary = computed(() => hasSelectedTrendAccounts.value ? selectedTrendSummary.value : overview.value?.summary)
-const summaryCardsLoading = computed(() => initialLoading.value || selectedTrendSummaryLoading.value)
+const displaySummary = computed(() => hasSelectedTrendAccounts.value
+  ? aggregateUsageSummaries(displayRows.value.map((row) => row.rangeUsage))
+  : overview.value?.summary)
+const summaryCardsLoading = computed(() => initialLoading.value)
 const summaryCards = computed(() => {
   return buildAccountUsageSummaryCards({
-    summary: displaySummary.value,
-    statsLagSeconds: overview.value?.statsLagSeconds
-  })
-})
-const selectedTrendSummaryKey = computed(() => {
-  const accountIds = selectedTrendAccountIds.value.map((id) => id.trim()).filter(Boolean)
-  if (!accountIds.length) return ''
-  const [startDate, endDate] = selectedRange.value
-  const systemAccountId = isManagementView.value ? scopedSystemAccountId(filters.systemAccountId) : undefined
-  return JSON.stringify({
-    accountIds,
-    mode: isManagementView.value ? 'management' : 'self',
-    systemAccountId,
-    startDate,
-    endDate
+    summary: displaySummary.value
   })
 })
 
@@ -389,48 +378,10 @@ async function refreshMobileRows() {
 function accountUsageParams(systemAccountId: string | undefined, pageState: AccountUsagePageState) {
   return buildAccountUsageStatsParams({
     systemAccountId,
-    dateRange: selectedRange.value,
+    dateRange: dateRangeExplicit.value ? selectedRange.value : undefined,
     accountIds: addedTrendAccountIds.value,
     pageState
   })
-}
-
-function accountUsageSummaryParams(systemAccountId: string | undefined, accountIds: string[]) {
-  return buildAccountUsageStatsParams({
-    systemAccountId,
-    dateRange: selectedRange.value,
-    accountIds,
-    pageState: { current: 1, pageSize: 1 }
-  })
-}
-
-async function loadSelectedTrendSummary(): Promise<void> {
-  const accountIds = selectedTrendAccountIds.value.map((id) => id.trim()).filter(Boolean)
-  if (!accountIds.length) {
-    selectedTrendSummary.value = undefined
-    selectedTrendSummaryLoading.value = false
-    return
-  }
-  const requestKey = selectedTrendSummaryKey.value
-  const requestToken = ++selectedTrendSummaryRequestToken
-  selectedTrendSummaryLoading.value = true
-  try {
-    const systemAccountId = isManagementView.value ? scopedSystemAccountId(filters.systemAccountId) : undefined
-    const result = isManagementView.value
-      ? await api.stats.accountUsage(accountUsageSummaryParams(systemAccountId, accountIds))
-      : await api.myStats.accountUsage(accountUsageSummaryParams(undefined, accountIds))
-    if (requestToken !== selectedTrendSummaryRequestToken || requestKey !== selectedTrendSummaryKey.value) return
-    selectedTrendSummary.value = result.summary
-  } catch (error) {
-    if (requestToken !== selectedTrendSummaryRequestToken) return
-    console.error(error)
-    selectedTrendSummary.value = undefined
-    message.error('账户摘要加载失败')
-  } finally {
-    if (requestToken === selectedTrendSummaryRequestToken) {
-      selectedTrendSummaryLoading.value = false
-    }
-  }
 }
 
 function handleDateRangeChange() {
@@ -485,20 +436,20 @@ function clearTrendAccountState() {
 }
 
 function disabledDate(current: Dayjs) {
-  return isUsageStatsDateDisabled(current, calendarRange.value)
+  return isUsageStatsDateDisabled(current, calendarRange.value, usageStatsWindowEndDate.value, usageStatsWindowMaxDays.value)
 }
 
 function providerName(providerCode?: string) {
   return providerDisplayName(providerCode, availableProviders.value)
 }
 
-function renderUsageTrendChart() {
+async function renderUsageTrendChart() {
   if (!overview.value || !hasTrendData.value) {
     disposeChart(trendChart)
     return
   }
-  const chart = ensureChart(trendChartRef, trendChart)
-  if (!chart) return
+  const chart = await ensureChart(trendChartRef, trendChart, () => pageActive.value)
+  if (!chart || !overview.value || !pageActive.value) return
   chart.setOption(buildAccountUsageTrendOption(overview.value, selectedMetric.value, visibleTrendRows.value), { notMerge: true })
 }
 
@@ -530,9 +481,6 @@ function pruneLoadedTrendAccounts(currentRows: AccountUsageStatsRow[]) {
 }
 
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
-watch(selectedTrendSummaryKey, () => {
-  void loadSelectedTrendSummary()
-}, { immediate: true })
 watch(() => filters.systemAccount, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
 </script>
 

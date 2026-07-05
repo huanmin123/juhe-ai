@@ -60,39 +60,43 @@ auditLogsRouter.get('/search-hot', async (req, res, next) => {
   }
 })
 
-auditLogsRouter.get('/runtime', async (_req, res) => {
-  const serverRuntime = await requestServerRuntimeSnapshot()
-  const workerSnapshot = serverRuntime?.ingestWorker?.snapshot
-  const auditLogQueue = workerSnapshot?.auditLogQueue
-  const workerRuntime = serverRuntime?.ingestWorker
-  const runtimeAvailable = Boolean(serverRuntime)
-  const workerSnapshotAvailable = Boolean(workerSnapshot)
-  const auditLogQueueAvailable = Boolean(auditLogQueue)
-  const settings = readAuditLogSettings()
-  res.json(ok({
-    runtimeAvailable,
-    workerSnapshotAvailable,
-    auditLogQueueAvailable,
-    activeCaptureAvailable: serverRuntime?.activeAuditCaptureCount !== undefined,
-    unavailableReason: auditLogRuntimeUnavailableReason(runtimeAvailable, workerSnapshotAvailable, auditLogQueueAvailable),
-    queueLength: auditLogQueue?.queueLength ?? null,
-    queueBytes: auditLogQueue?.queueBytes ?? null,
-    flushLastSuccessAt: auditLogQueue?.flushLastSuccessAt,
-    flushLastError: auditLogQueue?.flushLastError,
-    droppedSuccessCount: auditLogQueue?.droppedSuccessCount ?? null,
-    droppedFailureCount: auditLogQueue?.droppedFailureCount ?? null,
-    droppedOverflowCount: auditLogQueue?.droppedOverflowCount ?? null,
-    droppedOversizeCount: auditLogQueue?.droppedOversizeCount ?? null,
-    activeCaptureCount: serverRuntime?.activeAuditCaptureCount ?? null,
-    worker: {
-      available: Boolean(workerSnapshot ?? workerRuntime),
-      snapshotAvailable: workerSnapshotAvailable,
-      pid: workerSnapshot?.pid ?? workerRuntime?.pid,
-      ready: workerSnapshot?.ready ?? workerRuntime?.ready ?? null,
-      pendingMessageCount: workerRuntime?.pendingMessageCount ?? null
-    },
-    settings
-  }))
+auditLogsRouter.get('/runtime', async (_req, res, next) => {
+  try {
+    const serverRuntime = await requestServerRuntimeSnapshot()
+    const workerSnapshot = serverRuntime?.ingestWorker?.snapshot
+    const auditLogQueue = workerSnapshot?.auditLogQueue
+    const workerRuntime = serverRuntime?.ingestWorker
+    const runtimeAvailable = Boolean(serverRuntime)
+    const workerSnapshotAvailable = Boolean(workerSnapshot)
+    const auditLogQueueAvailable = Boolean(auditLogQueue)
+    const settings = readAuditLogSettings()
+    res.json(ok({
+      runtimeAvailable,
+      workerSnapshotAvailable,
+      auditLogQueueAvailable,
+      activeCaptureAvailable: serverRuntime?.activeAuditCaptureCount !== undefined,
+      unavailableReason: auditLogRuntimeUnavailableReason(runtimeAvailable, workerSnapshotAvailable, auditLogQueueAvailable),
+      queueLength: auditLogQueue?.queueLength ?? null,
+      queueBytes: auditLogQueue?.queueBytes ?? null,
+      flushLastSuccessAt: auditLogQueue?.flushLastSuccessAt,
+      flushLastError: auditLogQueue?.flushLastError,
+      droppedSuccessCount: auditLogQueue?.droppedSuccessCount ?? null,
+      droppedFailureCount: auditLogQueue?.droppedFailureCount ?? null,
+      droppedOverflowCount: auditLogQueue?.droppedOverflowCount ?? null,
+      droppedOversizeCount: auditLogQueue?.droppedOversizeCount ?? null,
+      activeCaptureCount: serverRuntime?.activeAuditCaptureCount ?? null,
+      worker: {
+        available: Boolean(workerSnapshot ?? workerRuntime),
+        snapshotAvailable: workerSnapshotAvailable,
+        pid: workerSnapshot?.pid ?? workerRuntime?.pid,
+        ready: workerSnapshot?.ready ?? workerRuntime?.ready ?? null,
+        pendingMessageCount: workerRuntime?.pendingMessageCount ?? null
+      },
+      settings
+    }))
+  } catch (error) {
+    next(error)
+  }
 })
 
 auditLogsRouter.get('/error-groups', async (req, res, next) => {
@@ -150,7 +154,7 @@ const auditOutcomes = new Set<AuditOutcome | 'all'>([
   'stream_failed',
   'client_aborted'
 ])
-const auditTrafficSources = new Set<AuditTrafficSource>(['gateway', 'manual_account_test', 'cooldown_retest', 'hybrid_scoring', 'hybrid_quality_scoring'])
+const auditTrafficSources = new Set<AuditTrafficSource>(['gateway', 'manual_account_test', 'runtime_recovery_probe', 'cooldown_retest', 'hybrid_scoring', 'hybrid_quality_scoring'])
 
 function parseAuditLogListOptions(query: Record<string, unknown>): AuditLogListOptions {
   const rawPage = finiteNumberQueryValue(query.page)

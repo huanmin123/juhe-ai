@@ -56,7 +56,6 @@ try {
   const ownerGroup = repositories.createGroup({
     name: '缓存失效所有者分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, ownerAccess)
 
   const proxy = repositories.createProxy({
@@ -117,7 +116,6 @@ try {
   const emptyGroup = repositories.createGroup({
     name: '缓存失效新空分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, ownerAccess)
   repositories.updateRouteStrategy(apiKey.routeStrategyId, {
     groupBindings: [{ groupId: emptyGroup.id, priority: 1, status: 'active' }]
@@ -172,7 +170,6 @@ try {
   const granteeGroup = repositories.createGroup({
     name: '缓存失效被授权分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, granteeAccess)
   const replacedRevokedGroupBindingRouteStrategy = repositories.updateRouteStrategy(granteeAuthorizedGroupApiKey.routeStrategyId, {
     groupBindings: [
@@ -265,7 +262,6 @@ try {
   const statusGroup = repositories.createGroup({
     name: '缓存失效状态分组',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, statusOwnerAccess)
   const statusAccount = repositories.createAccount({
     providerCode: 'gpt',

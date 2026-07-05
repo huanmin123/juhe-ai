@@ -1,5 +1,8 @@
-import { createAppCache } from '../../../shared/cache.js'
+import { runtimeConfig } from '../../../config/runtime.js'
+import { createRuntimeStateStore } from '../../../shared/runtime-state-store.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
+import { preserveGatewayAccountDispatchPriorityTiers } from '../runtime/account-dispatch-priority-order.js'
+import type { GatewayAccountModelPriority } from '../dispatch/model-filter.js'
 import type { OpenAIGatewayClientStrategyContext } from './strategy.js'
 
 export interface CodexTurnAccountAvoidanceResult {
@@ -33,21 +36,44 @@ interface CodexTurnRetryState {
   updatedAtMs: number
 }
 
+interface MemoryCodexTurnRetryEntry {
+  value: CodexTurnRetryState
+  expiresAt: number
+}
+
 const codexTurnRetryTtlMs = 30 * 60_000
 const codexTurnAccountAvoidanceFailureThreshold = 2
-
-const codexTurnRetryCache = createAppCache<string, CodexTurnRetryState>({
-  name: 'gateway:codex-turn-retry',
-  max: 5000,
-  ttlMs: codexTurnRetryTtlMs,
-  updateAgeOnGet: true
-})
+const codexTurnRetryMaxEntries = 5000
+const codexTurnRetryMemoryEntries = new Map<string, MemoryCodexTurnRetryEntry>()
+const codexTurnRetryStateStore = createRuntimeStateStore('gateway-codex-turn-retry')
 
 export function orderOpenAIAccountsByCodexTurnAvoidance(
   accounts: UpstreamAccount[],
-  strategy: OpenAIGatewayClientStrategyContext
+  strategy: OpenAIGatewayClientStrategyContext,
+  modelPriority?: GatewayAccountModelPriority
 ): CodexTurnAccountAvoidanceResult {
-  const state = strategy.codexTurn?.stateKey ? codexTurnRetryCache.get(strategy.codexTurn.stateKey) : undefined
+  const state = strategy.codexTurn?.stateKey ? getMemoryCodexTurnRetryState(strategy.codexTurn.stateKey) : undefined
+  return orderOpenAIAccountsByCodexTurnAvoidanceWithState(accounts, strategy, state, modelPriority)
+}
+
+export async function orderOpenAIAccountsByCodexTurnAvoidanceAsync(
+  accounts: UpstreamAccount[],
+  strategy: OpenAIGatewayClientStrategyContext,
+  modelPriority?: GatewayAccountModelPriority
+): Promise<CodexTurnAccountAvoidanceResult> {
+  if (!shouldUseRedisCodexTurnRetryState()) {
+    return orderOpenAIAccountsByCodexTurnAvoidance(accounts, strategy, modelPriority)
+  }
+  const state = strategy.codexTurn?.stateKey ? await getRedisCodexTurnRetryState(strategy.codexTurn.stateKey) : undefined
+  return orderOpenAIAccountsByCodexTurnAvoidanceWithState(accounts, strategy, state, modelPriority)
+}
+
+function orderOpenAIAccountsByCodexTurnAvoidanceWithState(
+  accounts: UpstreamAccount[],
+  strategy: OpenAIGatewayClientStrategyContext,
+  state: CodexTurnRetryState | undefined,
+  modelPriority?: GatewayAccountModelPriority
+): CodexTurnAccountAvoidanceResult {
   if (!strategy.allowCodexTurnAccountAvoidance || !state || state.failureCount < codexTurnAccountAvoidanceFailureThreshold) {
     return {
       accounts,
@@ -74,7 +100,9 @@ export function orderOpenAIAccountsByCodexTurnAvoidance(
   }
 
   return {
-    accounts: [...freshAccounts, ...failedAccounts],
+    accounts: preserveGatewayAccountDispatchPriorityTiers(accounts, [...freshAccounts, ...failedAccounts], {
+      modelRankByAccountId: modelPriority?.rankByAccountId
+    }),
     applied: true,
     thresholdReached: true,
     failureCount: state.failureCount,
@@ -96,7 +124,7 @@ export function rememberCodexTurnStreamFailure(
     return undefined
   }
   const now = Date.now()
-  const current = codexTurnRetryCache.get(stateKey) ?? {
+  const current = getMemoryCodexTurnRetryState(stateKey) ?? {
     stateKey,
     failureCount: 0,
     failedAccounts: {},
@@ -115,7 +143,50 @@ export function rememberCodexTurnStreamFailure(
   current.failureCount += 1
   current.updatedAtMs = now
   current.failedAccounts[accountId] = accountState
-  codexTurnRetryCache.set(stateKey, current)
+  setMemoryCodexTurnRetryState(stateKey, current)
+  return {
+    stateKey,
+    failureCount: current.failureCount,
+    failedAccountIds: Object.keys(current.failedAccounts)
+  }
+}
+
+export async function rememberCodexTurnStreamFailureAsync(
+  strategy: OpenAIGatewayClientStrategyContext,
+  accountId: string,
+  input: {
+    errorCode?: string
+    message?: string
+  } = {}
+): Promise<CodexTurnFailureRecordResult | undefined> {
+  if (!shouldUseRedisCodexTurnRetryState()) {
+    return rememberCodexTurnStreamFailure(strategy, accountId, input)
+  }
+  const stateKey = strategy.codexTurn?.stateKey
+  if (!strategy.allowCodexTurnAccountAvoidance || !stateKey) {
+    return undefined
+  }
+  const now = Date.now()
+  const current = await getRedisCodexTurnRetryState(stateKey) ?? {
+    stateKey,
+    failureCount: 0,
+    failedAccounts: {},
+    createdAtMs: now,
+    updatedAtMs: now
+  }
+  const accountState = current.failedAccounts[accountId] ?? {
+    accountId,
+    failureCount: 0,
+    lastFailedAtMs: now
+  }
+  accountState.failureCount += 1
+  accountState.lastErrorCode = input.errorCode
+  accountState.lastErrorMessage = input.message
+  accountState.lastFailedAtMs = now
+  current.failureCount += 1
+  current.updatedAtMs = now
+  current.failedAccounts[accountId] = accountState
+  await setRedisCodexTurnRetryState(stateKey, current)
   return {
     stateKey,
     failureCount: current.failureCount,
@@ -127,7 +198,7 @@ export function getCodexTurnRetryStateForTest(stateKey: string): {
   failureCount: number
   failedAccountIds: string[]
 } | undefined {
-  const state = codexTurnRetryCache.get(stateKey)
+  const state = getMemoryCodexTurnRetryState(stateKey)
   return state
     ? {
       failureCount: state.failureCount,
@@ -137,5 +208,48 @@ export function getCodexTurnRetryStateForTest(stateKey: string): {
 }
 
 export function clearCodexTurnRetryStateForTest(): void {
-  codexTurnRetryCache.clear()
+  codexTurnRetryMemoryEntries.clear()
+}
+
+function getMemoryCodexTurnRetryState(stateKey: string): CodexTurnRetryState | undefined {
+  const entry = codexTurnRetryMemoryEntries.get(stateKey)
+  if (!entry) {
+    return undefined
+  }
+  if (entry.expiresAt <= Date.now()) {
+    codexTurnRetryMemoryEntries.delete(stateKey)
+    return undefined
+  }
+  entry.expiresAt = Date.now() + codexTurnRetryTtlMs
+  return entry.value
+}
+
+function setMemoryCodexTurnRetryState(stateKey: string, state: CodexTurnRetryState): void {
+  codexTurnRetryMemoryEntries.set(stateKey, {
+    value: state,
+    expiresAt: Date.now() + codexTurnRetryTtlMs
+  })
+  while (codexTurnRetryMemoryEntries.size > codexTurnRetryMaxEntries) {
+    const oldestKey = codexTurnRetryMemoryEntries.keys().next().value
+    if (typeof oldestKey !== 'string') {
+      return
+    }
+    codexTurnRetryMemoryEntries.delete(oldestKey)
+  }
+}
+
+function shouldUseRedisCodexTurnRetryState(): boolean {
+  return runtimeConfig.runtimeStateDriver === 'redis'
+}
+
+function redisCodexTurnRetryStateKey(stateKey: string): string {
+  return `state:${stateKey}`
+}
+
+async function getRedisCodexTurnRetryState(stateKey: string): Promise<CodexTurnRetryState | undefined> {
+  return codexTurnRetryStateStore.getJson<CodexTurnRetryState>(redisCodexTurnRetryStateKey(stateKey))
+}
+
+async function setRedisCodexTurnRetryState(stateKey: string, state: CodexTurnRetryState): Promise<void> {
+  await codexTurnRetryStateStore.setJson(redisCodexTurnRetryStateKey(stateKey), state, codexTurnRetryTtlMs)
 }

@@ -47,13 +47,17 @@ const updateAnnouncementSchema = z.object({
   status: z.enum(['draft', 'published', 'archived']).optional()
 }).strict()
 
-announcementsRouter.get('/public', async (req, res) => {
-  const parsed = publicListQuerySchema.safeParse(req.query)
-  if (!parsed.success) {
-    res.status(400).json(badRequest('公告查询参数无效'))
-    return
+announcementsRouter.get('/public', async (req, res, next) => {
+  try {
+    const parsed = publicListQuerySchema.safeParse(req.query)
+    if (!parsed.success) {
+      res.status(400).json(badRequest('公告查询参数无效'))
+      return
+    }
+    res.json(ok(await listPublicAnnouncementsAsync(requireActor(), parsed.data.limit)))
+  } catch (error) {
+    next(error)
   }
-  res.json(ok(await listPublicAnnouncementsAsync(requireActor(), parsed.data.limit)))
 })
 
 announcementsRouter.post('/public/read', async (req, res) => {
@@ -65,22 +69,30 @@ announcementsRouter.post('/public/read', async (req, res) => {
   res.json(ok(await markPublicAnnouncementsReadAsync(requireActor(), parsed.data.announcementIds)))
 })
 
-announcementsRouter.get('/', requireAdmin, async (req, res) => {
-  const parsed = adminListQuerySchema.safeParse(req.query)
-  if (!parsed.success) {
-    res.status(400).json(badRequest('公告查询参数无效'))
-    return
+announcementsRouter.get('/', requireAdmin, async (req, res, next) => {
+  try {
+    const parsed = adminListQuerySchema.safeParse(req.query)
+    if (!parsed.success) {
+      res.status(400).json(badRequest('公告查询参数无效'))
+      return
+    }
+    res.json(ok(await listAnnouncementsPageAsync(parsed.data)))
+  } catch (error) {
+    next(error)
   }
-  res.json(ok(await listAnnouncementsPageAsync(parsed.data)))
 })
 
-announcementsRouter.get('/:id', requireAdmin, async (req, res) => {
-  const announcement = await findAnnouncementAsync(req.params.id)
-  if (!announcement) {
-    res.status(404).json({ message: '公告不存在' })
-    return
+announcementsRouter.get('/:id', requireAdmin, async (req, res, next) => {
+  try {
+    const announcement = await findAnnouncementAsync(req.params.id)
+    if (!announcement) {
+      res.status(404).json({ message: '公告不存在' })
+      return
+    }
+    res.json(ok(announcement))
+  } catch (error) {
+    next(error)
   }
-  res.json(ok(announcement))
 })
 
 announcementsRouter.post('/', requireAdmin, mutationGuard({

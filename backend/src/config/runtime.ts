@@ -46,7 +46,6 @@ export interface RuntimeConfig {
     queueUrl?: string
   }
   queue: {
-    redisStreamMaxLen: number
     redisStreamReadCount: number
     redisStreamBlockMs: number
     redisStreamClaimIdleMs: number
@@ -63,6 +62,8 @@ export interface RuntimeConfig {
   codexContextStateWriterPoolEnabled: boolean
   codexContextStateWriterPoolSize: number
   codexContextStateWriterQueueMaxItems: number
+  sqliteReadWorkerPoolSize: number
+  sqliteReadWorkerQueueMaxItems: number
   usageRecordWriterPoolEnabled: boolean
   usageRecordWriterPoolSize: number
   usageRecordWriterQueueMaxItems: number
@@ -71,9 +72,15 @@ export interface RuntimeConfig {
   oauthProxyUrl?: string
   gateway: {
     bodyInFlightMaxBytes: number
+    upstreamAgentMaxSockets: number
+    upstreamAgentMaxFreeSockets: number
+    upstreamAgentMaxTotalSockets: number
   }
   audit: {
     fullBodyCaptureEnabled: boolean
+  }
+  modelCheck: {
+    probeRetryDelayMs: number
   }
   codexWebSearch: {
     endpoint?: string
@@ -168,11 +175,18 @@ const minimumProductionSecretLength = 32
 const localEnv = loadLocalEnv(localEnvPath)
 const localEnvOverlayPath = envFilePathConfig(process.env.JUHE_AI_ENV_FILE ?? localEnv.JUHE_AI_ENV_FILE)
 const localEnvOverlay = localEnvOverlayPath ? loadLocalEnv(localEnvOverlayPath) : {}
-const configuredRuntimeMode = runtimeModeConfig('JUHE_AI_RUNTIME_MODE', 'standalone')
+const hasPerformanceDriverHints = hasAnyRawConfig([
+  'JUHE_AI_POSTGRES_URL',
+  'JUHE_AI_REDIS_CACHE_URL',
+  'JUHE_AI_REDIS_STATE_URL',
+  'JUHE_AI_REDIS_QUEUE_URL'
+])
+const configuredRuntimeMode = runtimeModeConfig('JUHE_AI_RUNTIME_MODE', hasPerformanceDriverHints ? 'performance' : 'standalone')
 const defaultSystemApiDbServiceMaxInFlight =
   configuredRuntimeMode === 'performance'
     ? defaultPerformanceSystemApiDbServiceMaxInFlight
     : defaultStandaloneSystemApiDbServiceMaxInFlight
+const defaultModelCheckProbeRetryDelayMs = isScriptEntryRuntime() ? 0 : 65000
 const configuredDatabaseDriver = databaseDriverConfig(
   'JUHE_AI_DATABASE_DRIVER',
   configuredRuntimeMode === 'performance' ? 'postgres' : 'sqlite'
@@ -238,7 +252,6 @@ export const runtimeConfig: RuntimeConfig = {
     queueUrl: configuredRedisQueueUrl
   },
   queue: {
-    redisStreamMaxLen: numberConfig('JUHE_AI_REDIS_STREAM_MAXLEN', 1_000_000, 1000, 10_000_000),
     redisStreamReadCount: numberConfig('JUHE_AI_REDIS_STREAM_READ_COUNT', 1000, 1, 5000),
     redisStreamBlockMs: numberConfig('JUHE_AI_REDIS_STREAM_BLOCK_MS', 1000, 100, 60000),
     redisStreamClaimIdleMs: numberConfig('JUHE_AI_REDIS_STREAM_CLAIM_IDLE_MS', 60000, 1000, 3600000)
@@ -255,6 +268,8 @@ export const runtimeConfig: RuntimeConfig = {
   codexContextStateWriterPoolEnabled: booleanConfig('JUHE_AI_CODEX_CONTEXT_STATE_WRITER_POOL_ENABLED', !isScriptEntryRuntime()),
   codexContextStateWriterPoolSize: numberConfig('JUHE_AI_CODEX_CONTEXT_STATE_WRITER_POOL_SIZE', 0, 0, 64),
   codexContextStateWriterQueueMaxItems: numberConfig('JUHE_AI_CODEX_CONTEXT_STATE_WRITER_QUEUE_MAX_ITEMS', 5000, 1, 100000),
+  sqliteReadWorkerPoolSize: numberConfig('JUHE_AI_SQLITE_READ_WORKER_POOL_SIZE', 0, 0, 64),
+  sqliteReadWorkerQueueMaxItems: numberConfig('JUHE_AI_SQLITE_READ_WORKER_QUEUE_MAX_ITEMS', 1000, 1, 100000),
   usageRecordWriterPoolEnabled: booleanConfig('JUHE_AI_USAGE_RECORD_WRITER_POOL_ENABLED', false),
   usageRecordWriterPoolSize: numberConfig('JUHE_AI_USAGE_RECORD_WRITER_POOL_SIZE', 0, 0, 64),
   usageRecordWriterQueueMaxItems: numberConfig('JUHE_AI_USAGE_RECORD_WRITER_QUEUE_MAX_ITEMS', 5000, 1, 100000),
@@ -264,10 +279,16 @@ export const runtimeConfig: RuntimeConfig = {
   upstreamUrlSecurity: upstreamUrlSecurityConfig(),
   oauthProxyUrl: optionalStringConfig('JUHE_AI_OAUTH_PROXY_URL'),
   gateway: {
-    bodyInFlightMaxBytes: numberConfig('JUHE_AI_GATEWAY_BODY_IN_FLIGHT_MAX_MB', 256, 16, 4096) * 1024 * 1024
+    bodyInFlightMaxBytes: numberConfig('JUHE_AI_GATEWAY_BODY_IN_FLIGHT_MAX_MB', 256, 16, 4096) * 1024 * 1024,
+    upstreamAgentMaxSockets: numberConfig('JUHE_AI_GATEWAY_UPSTREAM_AGENT_MAX_SOCKETS', 2048, 64, 20000),
+    upstreamAgentMaxFreeSockets: numberConfig('JUHE_AI_GATEWAY_UPSTREAM_AGENT_MAX_FREE_SOCKETS', 512, 16, 5000),
+    upstreamAgentMaxTotalSockets: numberConfig('JUHE_AI_GATEWAY_UPSTREAM_AGENT_MAX_TOTAL_SOCKETS', 8192, 64, 50000)
   },
   audit: {
     fullBodyCaptureEnabled: booleanConfig('JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED', true)
+  },
+  modelCheck: {
+    probeRetryDelayMs: numberConfig('JUHE_AI_MODEL_CHECK_PROBE_RETRY_DELAY_MS', defaultModelCheckProbeRetryDelayMs, 0, 300000)
   },
   codexWebSearch: {
     endpoint: optionalStringConfig('JUHE_AI_CODEX_WEB_SEARCH_ENDPOINT'),
@@ -342,6 +363,10 @@ function stringConfig(name: string, fallback: string): string {
 
 function rawStringConfig(name: string): string | undefined {
   return process.env[name]?.trim() ?? localEnvOverlay[name]?.trim() ?? localEnv[name]?.trim()
+}
+
+function hasAnyRawConfig(names: string[]): boolean {
+  return names.some((name) => Boolean(rawStringConfig(name)))
 }
 
 function secretConfig(name: string, fallback: string): string {

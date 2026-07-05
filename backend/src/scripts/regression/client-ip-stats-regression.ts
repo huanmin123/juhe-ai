@@ -20,12 +20,13 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories, clientIpStats, usageStatsHelpers, clientIpPolicyCache] = await Promise.all([
+const [databaseModule, repositories, clientIpStats, usageStatsHelpers, clientIpPolicyCache, crypto] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../storage/client-ip-stats.repository.js'),
   import('../../storage/usage-stats-helpers.js'),
-  import('../../modules/gateway/runtime/client-ip-policy-cache.service.js')
+  import('../../modules/gateway/runtime/client-ip-policy-cache.service.js'),
+  import('../../storage/crypto.js')
 ])
 
 try {
@@ -39,6 +40,21 @@ try {
   const emptyWindowAfterBuild = clientIpStats.listClientIpStats({ startDate: today, endDate: today, pageSize: 10 })
   assert.equal(emptyWindowAfterBuild.rangeReady, true, '空 IP 窗口完成刷新后应返回 ready 空列表')
   assert.equal(emptyWindowAfterBuild.items.length, 0, '空 IP 窗口不应伪造任何汇总行')
+
+  const accountCreatedAt = new Date(createdAtBase - 1000).toISOString()
+  const accountInsert = databaseModule.getBusinessDatabase().prepare(`
+    INSERT INTO accounts (
+      id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+      name, type, status, credentials_encrypted, credential_mask, created_at, updated_at
+    ) VALUES (?, 'sys_admin', 'gpt', 'profile_gpt_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', ?, 'sk-client-ip-stats', ?, ?)
+  `)
+  for (const account of [
+    { id: 'acct_client_ip_primary', name: 'IP详情主账号' },
+    { id: 'acct_client_ip_secondary', name: 'IP详情次账号' },
+    { id: 'acct_client_ip_fallback', name: 'IP详情新增账号' }
+  ]) {
+    accountInsert.run(account.id, account.name, crypto.encryptJson({ api_key: `sk-${account.id}` }), accountCreatedAt, accountCreatedAt)
+  }
 
   repositories.createUsageRecordsBatch([
     {
@@ -226,6 +242,7 @@ try {
   for (const column of [
     'id',
     'ip_hash',
+    'policy_type',
     'status',
     'reason',
     'expires_at',
@@ -287,7 +304,7 @@ try {
   assert.deepEqual(
     rangeLastUsedSortList.items.map((item) => item.ipHash),
     [secondaryIpv4Identity.ipHash, ipv4Identity.ipHash],
-    '默认 lastUsedAt 排序应保持窗口内最近使用语义，避免影响公开 IP 用量接口'
+    '默认 lastUsedAt 排序应保持窗口内最近使用语义，避免影响后台 IP 管理排序'
   )
   const globalLastUsedSortList = clientIpStats.listClientIpStats({
     startDate: today,
@@ -348,6 +365,11 @@ try {
   assert.equal(refreshedDetail.rangeReady, true, '账号详情窗口刷新后应标记可用')
   assert.equal(refreshedDetail.pageUpperBound, 2, 'IP 详情分页上界应按账号窗口页计算')
   assert.deepEqual(refreshedDetail.items.map((item) => item.accountId), ['acct_client_ip_primary', 'acct_client_ip_fallback'], 'IP 详情应按请求数展示涉及账号')
+  assert.equal(refreshedDetail.items[0]?.accountName, 'IP详情主账号', 'IP 详情应批量补齐账号名称')
+  assert.equal(refreshedDetail.items[0]?.accountOwnerSystemAccountId, 'sys_admin', 'IP 详情应返回账号所属系统账户 ID')
+  assert.equal(refreshedDetail.items[0]?.accountOwnerSystemAccountName, '超级管理员', 'IP 详情应返回账号所属用户名称')
+  assert.equal(refreshedDetail.items[1]?.accountName, 'IP详情新增账号', 'IP 详情应补齐后续账号名称')
+  assert.equal(refreshedDetail.items[1]?.accountOwnerSystemAccountName, '超级管理员', 'IP 详情应补齐后续账号所属用户名称')
   assert.equal(refreshedDetail.items[0]?.rangeUsage.requestCount, 2, '主账号在该 IP 下的请求数应来自 IP+账号窗口')
   assert.equal(refreshedDetail.items[0]?.rangeUsage.errorCount, 1, '主账号在该 IP 下的失败数应来自 IP+账号窗口')
   assert.equal(refreshedDetail.items[0]?.rangeUsage.inputTokens, 140, '主账号在该 IP 下的输入 token 应来自 IP+账号窗口')
@@ -407,20 +429,57 @@ try {
   assert.equal(clientIpStats.listActiveClientIpPolicies().some((item) => item.id === expiringPolicy.id), false, '封禁策略过期后不应进入运行态列表')
   const blacklistedList = clientIpStats.listClientIpStats({ startDate: today, endDate: today, status: 'blacklisted', pageSize: 10 })
   assert.deepEqual(blacklistedList.items.map((item) => item.ipHash), [], 'IP 列表封禁筛选不应返回已过期封禁 IP')
+
+  const allowlistPolicy = clientIpStats.createClientIpPolicy({
+    ipHash: ipv4Identity.ipHash,
+    policyType: 'allowlist',
+    reason: 'regression allowlist',
+    actorSystemAccountId: 'sys_admin'
+  })
+  assert.equal(allowlistPolicy.policyType, 'allowlist', 'IP 白名单策略应保存 policy_type=allowlist')
+  assert.equal(clientIpStats.listActiveClientIpPolicies().some((item) => item.id === allowlistPolicy.id), true, 'active 白名单策略应进入运行态列表')
+  assert.equal(clientIpStats.listActiveClientIpPolicies().some((item) => item.id === expiringPolicy.id), false, '加入白名单应停用同 IP 旧 active 封禁策略')
+  clientIpPolicyCache.clearClientIpPolicyCacheLocal()
+  clientIpPolicyCache.replaceClientIpPolicyCacheLocal(clientIpStats.listActiveClientIpPolicies())
+  const allowlistDecision = await clientIpPolicyCache.inspectClientIpPolicy(ipv4Identity.clientIp)
+  assert.equal(allowlistDecision.allowlistPolicy?.id, allowlistPolicy.id, '白名单快照加载后应从 server 内存命中策略')
+  assert.equal(allowlistDecision.allowlisted, true, '白名单快照命中后应返回 allowlisted=true')
+  assert.equal(allowlistDecision.blocked, false, '白名单策略不能被网关封禁判断误拦截')
+  const allowlistedList = clientIpStats.listClientIpStats({ startDate: today, endDate: today, status: 'allowlisted', pageSize: 10 })
+  assert.deepEqual(allowlistedList.items.map((item) => item.ipHash), [ipv4Identity.ipHash], 'IP 列表白名单筛选应返回 active 白名单 IP')
+  const normalAfterAllowlist = clientIpStats.listClientIpStats({ startDate: today, endDate: today, status: 'normal', pageSize: 10 })
+  assert.equal(normalAfterAllowlist.items.some((item) => item.ipHash === ipv4Identity.ipHash), false, '白名单 IP 不应出现在正常筛选中')
+
+  const replacementBlacklist = clientIpStats.createClientIpPolicy({
+    ipHash: ipv4Identity.ipHash,
+    policyType: 'blacklist',
+    reason: 'regression replacement blacklist',
+    actorSystemAccountId: 'sys_admin'
+  })
+  assert.equal(clientIpStats.listActiveClientIpPolicies().some((item) => item.id === replacementBlacklist.id), true, '重新封禁应创建新的 active 封禁策略')
+  assert.equal(clientIpStats.listActiveClientIpPolicies().some((item) => item.id === allowlistPolicy.id), false, '封禁同 IP 应停用 active 白名单策略')
+  clientIpPolicyCache.clearClientIpPolicyCacheLocal()
+  clientIpPolicyCache.replaceClientIpPolicyCacheLocal(clientIpStats.listActiveClientIpPolicies())
+  const blacklistDecision = await clientIpPolicyCache.inspectClientIpPolicy(ipv4Identity.clientIp)
+  assert.equal(blacklistDecision.blacklistPolicy?.id, replacementBlacklist.id, '封禁替换白名单后应命中新的封禁策略')
+  assert.equal(blacklistDecision.allowlisted, false, '封禁策略不能继续保留白名单放行状态')
+  assert.equal(clientIpStats.listClientIpStats({ startDate: today, endDate: today, status: 'blacklisted', pageSize: 10 }).items.some((item) => item.ipHash === ipv4Identity.ipHash), true, '封禁筛选应返回重新封禁 IP')
+  assert.deepEqual(clientIpStats.listClientIpStats({ startDate: today, endDate: today, status: 'allowlisted', pageSize: 10 }).items.map((item) => item.ipHash), [], '白名单和已封禁互斥，同一 IP 重新封禁后不应继续出现在白名单筛选中')
   assertClientIpListPolicyQueryPlan(today)
   assertClientIpListSortQueryPlans(today)
   assertClientIpListGlobalLastUsedSortQueryPlan(today)
   assert.equal(
-    clientIpStats.recordClientIpPolicyHits([{ ipHash: ipv4Identity.ipHash, policyId: expiringPolicy.id, hitCount: 3, hitAt: new Date(createdAtBase + 10).toISOString() }]).recorded,
+    clientIpStats.recordClientIpPolicyHits([{ ipHash: ipv4Identity.ipHash, policyId: replacementBlacklist.id, hitCount: 3, hitAt: new Date(createdAtBase + 10).toISOString() }]).recorded,
     1,
     '封禁命中计数应可后台累计'
   )
   assert.equal(clientIpStats.disableClientIpPolicies({
     ipHash: ipv4Identity.ipHash,
+    policyType: 'blacklist',
     reason: 'regression unblock',
     actorSystemAccountId: 'sys_admin'
   }).disabledCount, 1, '解封应停用当前 status=active 的封禁策略')
-  assert.equal(clientIpStats.listActiveClientIpPolicies().some((item) => item.id === expiringPolicy.id), false, '解封后策略不应继续进入运行态列表')
+  assert.equal(clientIpStats.listActiveClientIpPolicies().some((item) => item.id === replacementBlacklist.id), false, '解封后策略不应继续进入运行态列表')
 
   const cursorCount = statsDatabase
     .prepare("SELECT COUNT(*) AS total FROM stats_job_state WHERE job_name = 'client_ip_stats_aggregation' AND scope_type = 'usage_shard' AND cursor_id IS NOT NULL")
@@ -448,6 +507,7 @@ function assertClientIpListPolicyQueryPlan(today: string): void {
         SELECT 1
         FROM client_ip_policies active_policies
         WHERE active_policies.status = 'active'
+          AND active_policies.policy_type = 'blacklist'
           AND active_policies.ip_hash = registry.ip_hash
           AND (active_policies.expires_at IS NULL OR active_policies.expires_at > ?)
         LIMIT 1
@@ -594,12 +654,14 @@ function assertIpStatsViewUsesUsageWindowAsPrimaryTimeFilter(): void {
   const listSource = readFileSync(resolve('..', 'frontend', 'src', 'views', 'ip-stats', 'IpStatsList.vue'), 'utf8')
   const displaySource = readFileSync(resolve('..', 'frontend', 'src', 'views', 'ip-stats', 'ipStatsDisplay.ts'), 'utf8')
   const apiSource = readFileSync(resolve('..', 'frontend', 'src', 'api', 'domains', 'ipStats.ts'), 'utf8')
+  const routeSource = readFileSync(resolve('..', 'backend', 'src', 'modules', 'ip-stats', 'ip-stats.routes.ts'), 'utf8')
   const buildListParamsSource = sourceFunctionBlock(source, 'function buildListParams')
-  assert(source.includes("type UsageWindow = 'today' | 'recent7d' | 'recent31d'"), 'IP 管理页面应显式提供今天、近 7 天和近 31 天统计范围')
-  assert(source.includes("const usageWindow = ref<UsageWindow>('recent7d')"), 'IP 管理页面默认统计范围应为近 7 天')
+  assert(source.includes("type UsageWindow = 'today' | 'recent7d' | 'recent1m'"), 'IP 管理页面应显式提供今天、近 7 天和近 1 月统计范围')
+  assert(source.includes("const usageWindow = ref<UsageWindow>(initialPageState.usageWindow)"), 'IP 管理页面应从页面状态缓存恢复统计范围')
+  assert(source.includes("usageWindow: 'recent7d'"), 'IP 管理页面默认统计范围应为近 7 天')
   assert(!source.includes('lastUsedDateRange'), 'IP 管理页面不应再展示最后使用日期筛选')
   assert(source.includes('if (value === \'today\') return [today, today]'), 'IP 管理今天统计范围应提交当天窗口')
-  assert(source.includes('if (value === \'recent31d\') return [today.subtract(30, \'day\'), today]'), 'IP 管理近 31 天统计范围应提交最近 31 天窗口')
+  assert(source.includes('if (value === \'recent1m\') return [today.subtract(30, \'day\'), today]'), 'IP 管理近 1 月统计范围应提交最近 31 天窗口')
   assert(buildListParamsSource.includes('const usageRange = usageWindowDateRange(usageWindow.value)'), 'IP 管理页面应使用统计范围构造 startDate/endDate')
   assert(buildListParamsSource.includes('startDate: formatDateKey(usageRange[0])'), 'IP 管理 startDate 应来自用量统计窗口')
   assert(buildListParamsSource.includes('endDate: formatDateKey(usageRange[1])'), 'IP 管理 endDate 应来自用量统计窗口')
@@ -613,10 +675,18 @@ function assertIpStatsViewUsesUsageWindowAsPrimaryTimeFilter(): void {
   assert(source.includes("{ title: 'AI 账户', key: 'account', width: 180"), 'IP 管理详情账号列应保持紧凑宽度')
   assert(!source.includes('record.accountName ? record.accountId'), 'IP 管理详情账号列不应展示账户号')
   assert(!source.includes('record.systemAccountName'), 'IP 管理详情账号列不应展示系统账户角色')
+  assert(source.includes("@policy-action=\"handlePolicyAction\""), 'IP 管理白名单动作应交给统一处理函数')
+  assert(source.includes("if (action === 'blacklist')"), 'IP 管理白名单提交应保留封禁单独弹窗')
+  assert(source.includes("await api.ipStats.allowlist(record.ipHash, {})"), 'IP 管理加白不应继续填写白名单原因')
+  assert(!source.includes("policyAction === 'blacklist' || policyAction === 'allowlist'"), 'IP 管理白名单原因输入不应继续覆盖 allowlist')
+  assert(!source.includes("policyReasonLabel = computed(() => policyAction.value === 'allowlist' ? '白名单原因' : '封禁原因')"), 'IP 管理不应再显示白名单原因字段')
   assert(listSource.includes("detail: [record: ClientIpStatsRow]"), 'IP 管理列表应向页面抛出详情事件')
   assert(displaySource.includes("export type IpStatsRowAction = 'detail' | IpStatsPolicyAction"), 'IP 管理行操作应包含详情动作')
   assert(displaySource.includes("const detailAction: RowActionItem = { key: 'detail'"), 'IP 管理行操作应始终提供详情按钮')
   assert(apiSource.includes('detail: (ipHash: string'), 'IP 管理 API 应提供详情请求方法')
+  assert(routeSource.includes("requestStatsWriter({"), 'IP 管理白名单写入应走 stats-writer 统一入口')
+  assert(routeSource.includes("type: 'create_client_ip_policy'"), 'IP 管理加白应通过 stats-writer 创建策略')
+  assert(routeSource.includes("type: 'disable_client_ip_policies'"), 'IP 管理移出白名单/解封应通过 stats-writer 停用策略')
 }
 
 function delay(ms: number): Promise<void> {
@@ -631,6 +701,7 @@ function assertClientIpPolicyLookupQueryPlan(ipHash: string): void {
     INNER JOIN client_ip_registry registry ON registry.ip_hash = policies.ip_hash
     WHERE policies.ip_hash = ?
       AND policies.status = 'active'
+      AND policies.policy_type = 'blacklist'
       AND (policies.expires_at IS NULL OR policies.expires_at > ?)
     ORDER BY policies.created_at DESC, policies.id DESC
     LIMIT 1
@@ -653,10 +724,13 @@ function assertGatewayPolicyLookupDoesNotRideRuntimeSnapshot(): void {
     'export async function inspectClientIpPolicy',
     'export function primeClientIpPolicyCacheLocal'
   )
-  assert(inspectSource.includes('activePolicySnapshot.get'), '网关 IP 封禁请求路径应只读 server 内存快照')
+  assert(inspectSource.includes('activePolicySnapshot.get'), '网关 IP 封禁单机请求路径应只读 server 内存快照')
+  assert(inspectSource.includes('loadClientIpPolicyByHashFromSharedCacheOrDatabase'), '网关 IP 封禁 Redis 请求路径应按单个 IP hash 读取 shared cache 或索引查询')
+  assert(inspectSource.includes('getClientIpPolicyByIpSharedCacheEntry'), '网关 IP 封禁 cacheOnly 路径应只读单 IP Redis shared cache')
+  assert(!inspectSource.includes('loadClientIpPolicySnapshotFromSharedCacheOrDatabase'), '网关 IP 封禁 Redis 请求路径不能加载全量 active 策略快照')
   assert(!inspectSource.includes('requestDbService'), '网关 IP 封禁请求路径不能请求 DB service')
-  assert(!cacheSource.includes("type: 'find_active_client_ip_policy'"), '网关 IP 封禁请求路径不能按单个 IP 查库')
-  assert(cacheSource.includes("type: 'list_active_client_ip_policies'"), 'active IP 封禁策略只能通过快照重载进入 server 内存')
+  assert(cacheSource.includes("type: 'find_active_client_ip_policy_by_hash'"), 'Redis cache miss 下 IP 封禁应通过 stats writer 按 ip_hash 索引查询')
+  assert(cacheSource.includes('findActiveClientIpPolicyByHashAsync'), 'IP 封禁单 IP 回源必须使用 repository 索引查询 helper')
 }
 
 function sourceFunctionBlock(source: string, marker: string): string {

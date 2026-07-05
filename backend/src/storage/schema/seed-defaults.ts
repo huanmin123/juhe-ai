@@ -291,10 +291,10 @@ function defaultApiKeyNameForRouteStrategy(routeStrategyName: string): string {
 function seedAdminDefaultBuiltInGroups(database: DatabaseSync, timestamp: string): void {
   const insertStatement = database.prepare(`
     INSERT OR IGNORE INTO groups (
-      id, system_account_id, name, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+      id, system_account_id, name, provider_code,
       description, enabled, is_default, created_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)
+    VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?)
   `)
   const updateStatement = database.prepare('UPDATE groups SET is_default = 1 WHERE id = ? AND system_account_id = ?')
   for (const group of DEFAULT_BUILT_IN_GROUPS) {
@@ -309,9 +309,6 @@ function seedAdminDefaultBuiltInGroups(database: DatabaseSync, timestamp: string
       group.systemAccountId,
       group.name,
       group.providerCode,
-      group.providerProtocolProfileId,
-      group.protocolCode,
-      group.protocolVersion,
       group.description,
       timestamp,
       timestamp

@@ -7,6 +7,7 @@ import cors from 'cors'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { ok } from '../../shared/http.js'
 import { logger } from '../../shared/logger.js'
 import { submitAccountTestAndWait } from '../shared/account-test-task-client.js'
@@ -101,6 +102,7 @@ async function main(): Promise<void> {
     }, access)
     const account = repositories.createAccount({
       providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: '停用账户状态保护回归',
       type: 'api_key',
       credentials: {
@@ -117,7 +119,7 @@ async function main(): Promise<void> {
     const staleGatewayAccount = repositories.findOpenAIAccountForGroup(group.id, account.id, 'sys_admin', { ignoreAvailability: true })
     assert(staleGatewayAccount?.status === 'active', '停用前应能读取到完整网关账号对象')
     const disabled = repositories.updateAccount(account.id, { status: 'disabled' }, access)
-    assert(disabled?.status === 'disabled' && disabled.schedulable === false, '测试账户停用失败')
+    assert(disabled?.status === 'disabled' && disabled.schedulable === true, '测试账户停用失败或调度意愿被错误清理')
     assertAccountDispatchFlags(account.id, true, false, '停用账户应保留用户设置的超级优先')
 
     const apiTestResult = await submitAccountTestAndWait<AccountTestResult>({
@@ -128,7 +130,7 @@ async function main(): Promise<void> {
     })
     assert(apiTestResult.success === false, '停用账户测试接口应返回测试失败结果')
     assert(!apiTestResult.message.includes('账户已停用'), `停用账户测试不应被停用状态短路：${apiTestResult.message}`)
-    assertAccountStatus(account.id, 'disabled', false, '测试接口不应改变停用状态')
+    assertAccountStatus(account.id, 'disabled', true, '测试接口不应改变停用状态或调度意愿')
     assertAccountDispatchFlags(account.id, true, false, '测试接口不应清理停用账户调度标记')
 
     const latestDisabled = repositories.findAccountForTest(account.id, access)
@@ -136,22 +138,41 @@ async function main(): Promise<void> {
     const serviceTest = await testOpenAIAccount(latestDisabled, { groupId: group.id })
     assert(serviceTest.success === false, '测试服务应允许停用账户进入真实测试并返回失败结果')
     assert(!serviceTest.message.includes('账户已停用'), `测试服务不应被停用状态短路：${serviceTest.message}`)
-    assertAccountStatus(account.id, 'disabled', false, '测试服务不应改变停用状态')
+    assertAccountStatus(account.id, 'disabled', true, '测试服务不应改变停用状态或调度意愿')
 
     const cooldownResult = repositories.markAccountTemporaryUnavailable(account.id, '模拟冷却')
     assert(cooldownResult === undefined, '停用账户不应被标记为冷却')
-    assertAccountStatus(account.id, 'disabled', false, '冷却写回不应改变停用状态')
+    assertAccountStatus(account.id, 'disabled', true, '冷却写回不应改变停用状态或调度意愿')
 
     const disabledByFailure = repositories.markAccountDisabledByFailure(account.id, '模拟错误停用')
     assert(disabledByFailure === undefined, '停用账户不应被错误策略改为 error')
-    assertAccountStatus(account.id, 'disabled', false, '错误停用写回不应改变停用状态')
+    assertAccountStatus(account.id, 'disabled', true, '错误停用写回不应改变停用状态或调度意愿')
 
     const clearResult = repositories.clearAccountFailureState(account.id, access)
     assert(clearResult?.status === 'disabled', '清理失败态不应恢复停用账户')
-    assertAccountStatus(account.id, 'disabled', false, '清理失败态不应改变停用状态')
+    assertAccountStatus(account.id, 'disabled', true, '清理失败态不应改变停用状态或调度意愿')
     assertAccountDispatchFlags(account.id, true, false, '清理失败态不应清理停用账户调度标记')
     const disabledFlagCleared = repositories.updateAccount(account.id, { superPriorityEnabled: false }, access)
     assert(disabledFlagCleared?.superPriorityEnabled === false, '停用账户应允许用户手动取消超级优先')
+
+    const unschedulableBeforeDisabled = repositories.createAccount({
+      providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+      name: '停用保留不可调度意愿',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-disabled-preserve-unschedulable',
+        base_url: 'http://127.0.0.1:9/v1'
+      },
+      status: 'active',
+      schedulable: false,
+      groupId: group.id
+    }, access)
+    const disabledUnschedulable = repositories.updateAccount(unschedulableBeforeDisabled.id, { status: 'disabled' }, access)
+    assert(
+      disabledUnschedulable?.status === 'disabled' && disabledUnschedulable.schedulable === false,
+      '停用账户不应把用户原本关闭的调度意愿重新打开'
+    )
 
     const errorHandlingResult = applyAccountErrorHandling({
       id: account.id,
@@ -165,7 +186,7 @@ async function main(): Promise<void> {
       bodyText: 'upstream failed'
     })
     assert(errorHandlingResult.changed === false && errorHandlingResult.accountStatus === 'disabled', '错误处理不应改变停用账户')
-    assertAccountStatus(account.id, 'disabled', false, '错误处理写回不应改变停用状态')
+    assertAccountStatus(account.id, 'disabled', true, '错误处理写回不应改变停用状态或调度意愿')
 
     const streamFailureResult = repositories.recordAccountStreamFailure({
       accountId: account.id,
@@ -175,7 +196,7 @@ async function main(): Promise<void> {
       reason: '模拟流式异常'
     })
     assert(streamFailureResult.triggered === false, '停用账户不应触发流式熔断状态写回')
-    assertAccountStatus(account.id, 'disabled', false, '流式熔断不应改变停用状态')
+    assertAccountStatus(account.id, 'disabled', true, '流式熔断不应改变停用状态或调度意愿')
 
     const dbServiceResult = await handleDbServiceOperation({
       type: 'apply_account_error_handling',
@@ -186,7 +207,7 @@ async function main(): Promise<void> {
       }
     })
     assert(dbServiceResult.changed === false, 'DB service 成功回写不应恢复停用账户')
-    assertAccountStatus(account.id, 'disabled', false, 'DB service 成功回写不应改变停用状态')
+    assertAccountStatus(account.id, 'disabled', true, 'DB service 成功回写不应改变停用状态或调度意愿')
 
     const staleFailureResult = await handleDbServiceOperation({
       type: 'apply_account_error_handling',
@@ -198,10 +219,11 @@ async function main(): Promise<void> {
       }
     })
     assert(staleFailureResult.changed === false, 'DB service 失败回写不应把已停用账户改成临时不可调用')
-    assertAccountStatus(account.id, 'disabled', false, 'DB service 失败回写不应改变停用状态')
+    assertAccountStatus(account.id, 'disabled', true, 'DB service 失败回写不应改变停用状态或调度意愿')
 
     const errorAccount = repositories.createAccount({
       providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: '异常账户测试成功不自动恢复',
       type: 'api_key',
       credentials: {
@@ -237,6 +259,7 @@ async function main(): Promise<void> {
 
     const errorRaceAccount = repositories.createAccount({
       providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: '异常竞态成功回写不自动恢复',
       type: 'api_key',
       credentials: {
@@ -313,6 +336,7 @@ async function main(): Promise<void> {
 
     const createdError = repositories.createAccount({
       providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: '创建时异常账户不可调度',
       type: 'api_key',
       credentials: {

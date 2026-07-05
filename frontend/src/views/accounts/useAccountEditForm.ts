@@ -40,8 +40,9 @@ import type { AccountFormModel } from './accountFormTypes'
 import { FALLBACK_PROVIDERS } from './accountOptions'
 import { canCreateOAuthAccount } from './accountProviderCapabilities'
 import { authUrl } from './accountOAuthPayload'
-import { loadAccountDetailCached } from './accountDetailCache'
+import { loadAccountDetailCached, type AccountDetailLevel } from './accountDetailCache'
 import { accountOperationScopeParams, type AccountScopeParams } from './accountOperationScope'
+import { normalizedAccountApiKeys } from './accountCredentials'
 import type { AccountSavePayload } from './accountSavePayload'
 import {
   accountCreatePayloadWithActivationTest as applyActivationTestToCreatePayload
@@ -86,6 +87,9 @@ interface UseAccountEditFormOptions {
 
 export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const modalOpen = ref(false)
+  const accountEditDetailLoading = ref(false)
+  const accountAdvancedDetailLoading = ref(false)
+  const accountAdvancedDetailLoaded = ref(false)
   const editingId = ref<string>()
   const editingAccountDetail = ref<AccountSummary>()
   const cloningSourceId = ref<string>()
@@ -164,7 +168,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     return buildTargetSystemAccountLabel(options.systemAccounts.value, systemAccountId, options.systemAccountSelection?.value)
   })
 
-  const groupOptions = computed(() => groupOptionsForProviderWithSelected(options.groups.value, form.providerCode, [form.groupId], form.providerProtocolProfileId))
+  const groupOptions = computed(() => groupOptionsForProviderWithSelected(options.groups.value, form.providerCode, [form.groupId]))
   const availableProviders = computed(() => options.providers.value.length ? options.providers.value : FALLBACK_PROVIDERS)
   const selectedProvider = computed(() => availableProviders.value.find((provider) => provider.code === form.providerCode))
   const selectedProtocolProfile = computed(() => selectedProvider.value
@@ -190,6 +194,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     saving
   } = useAccountEditSaveFlow({
     accountCreatePayloadWithActivationTest,
+    accountAdvancedDetailLoaded,
     accountErrorPolicyRules,
     accountResponseInspectionRules,
     accounts: options.accounts,
@@ -234,11 +239,11 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const modalConfirmLoading = computed(() => saving.value)
   const modalOkButtonProps = computed(() => ({
     type: 'primary' as const,
-    disabled: saving.value || !hasAccountType.value || (!editingId.value && isOAuthForm.value && !isOpenAIOAuthForm.value)
+    disabled: accountEditDetailLoading.value || accountAdvancedDetailLoading.value || saving.value || !hasAccountType.value || (!editingId.value && isOAuthForm.value && !isOpenAIOAuthForm.value)
   }))
   const selectedAccountTypeTitle = computed(() => hasAccountType.value ? selectedAccountTypeChoice.value?.label ?? accountTypeTitle(form.providerCode, form.type) : '')
   const apiKeyTestDetails = computed<AccountApiKeyRuntimeDetail[] | undefined>(() => {
-    if (!modalOpen.value || !isApiKeyForm.value || editingAuthorizedAccount.value) return undefined
+    if (!modalOpen.value || accountEditDetailLoading.value || !isApiKeyForm.value || editingAuthorizedAccount.value) return undefined
     return draftApiKeyTestRuntimeDetailsForPayload(options.draftApiKeyTestSnapshot?.value, currentDraftTestPayload())
   })
 
@@ -247,6 +252,9 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   }
 
   function resetForm(providerCode = '', type: AccountType = '') {
+    accountEditDetailLoading.value = false
+    accountAdvancedDetailLoading.value = false
+    accountAdvancedDetailLoaded.value = false
     cloningSourceId.value = undefined
     editingScheduleFingerprint.value = undefined
     cloningScheduleFingerprint.value = undefined
@@ -255,7 +263,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     resetProviderModelOptions()
     resetAnthropicProviderModelOptions()
     resetGeminiProviderModelOptions()
-    ensureDefaultGroupSelected(form.providerCode, form.providerProtocolProfileId)
+    ensureDefaultGroupSelected(form.providerCode)
     accountErrorPolicyRules.value = loadAccountErrorPolicyRules()
     accountResponseInspectionRules.value = loadAccountResponseInspectionRules()
     authResult.value = undefined
@@ -269,22 +277,22 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     return accountEditProviderName(providerCode, availableProviders.value)
   }
 
-  function defaultGroupForProvider(providerCode: string, providerProtocolProfileId?: string) {
-    return selectDefaultGroupForProvider(options.groups.value, providerCode, providerProtocolProfileId)
+  function defaultGroupForProvider(providerCode: string) {
+    return selectDefaultGroupForProvider(options.groups.value, providerCode)
   }
 
-  function ensureDefaultGroupSelected(providerCode = form.providerCode, providerProtocolProfileId = form.providerProtocolProfileId) {
+  function ensureDefaultGroupSelected(providerCode = form.providerCode) {
     if (!providerCode) {
       form.groupId = undefined
       form.group = undefined
       return
     }
     const currentGroup = options.groups.value.find((group) => group.id === form.groupId)
-    if (currentGroup && isManageableGroupForProvider(currentGroup, providerCode, providerProtocolProfileId)) {
+    if (currentGroup && isManageableGroupForProvider(currentGroup, providerCode)) {
       form.group = { id: currentGroup.id, name: currentGroup.name }
       return
     }
-    const nextGroup = defaultGroupForProvider(providerCode, providerProtocolProfileId)
+    const nextGroup = defaultGroupForProvider(providerCode)
     setFormGroup(nextGroup ? { id: nextGroup.id, name: nextGroup.name } : undefined)
   }
 
@@ -301,6 +309,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     creatingAccountScopeParams.value = undefined
     void options.loadAccountOptions(options.accountScopeParams.value?.systemAccountId)
     resetForm('', '')
+    accountAdvancedDetailLoaded.value = true
+    accountAdvancedDetailLoading.value = false
     void options.loadGroupOptions('', false, {
       providerCode: form.providerCode,
       systemAccountId: options.accountScopeParams.value?.systemAccountId
@@ -325,6 +335,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   )
 
   function handleModalCancel() {
+    nextFormOpenRequestToken()
+    accountEditDetailLoading.value = false
+    accountAdvancedDetailLoading.value = false
+    accountAdvancedDetailLoaded.value = false
     modalOpen.value = false
     authResult.value = undefined
     clearDraftApiKeyTestSnapshot()
@@ -333,7 +347,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   function selectProvider(providerCode: string) {
     if (editingId.value || form.providerCode === providerCode) return
     resetForm(providerCode, '')
-    void loadProviderGroupOptions(providerCode, form.providerProtocolProfileId)
+    void loadProviderGroupOptions(providerCode)
     void loadProviderModelOptions(providerCode)
     void loadAllProviderModelOptions()
     void loadAnthropicProviderModelOptions()
@@ -371,20 +385,129 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       accountExpiresAt: form.accountExpiresAt,
       availabilitySchedule: form.availabilitySchedule
     })
-    void loadProviderGroupOptions(providerCode, providerProtocolProfileId)
+    void loadProviderGroupOptions(providerCode)
     void loadProviderModelOptions(providerCode)
     void loadAllProviderModelOptions()
     void loadAnthropicProviderModelOptions()
     void loadGeminiProviderModelOptions()
-    ensureDefaultGroupSelected(providerCode, providerProtocolProfileId)
+    ensureDefaultGroupSelected(providerCode)
     authResult.value = undefined
   }
 
   async function openEdit(account: AccountSummary) {
     const requestToken = nextFormOpenRequestToken()
     const editScopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
-    const sourceAccount = await loadAccountDetailForForm(account.id, editScopeParams, '加载账户详情失败')
-    if (!sourceAccount || !isCurrentFormOpenRequest(requestToken)) return
+    editingId.value = account.id
+    editingAccountDetail.value = account
+    accountAdvancedDetailLoaded.value = false
+    accountAdvancedDetailLoading.value = false
+    editingScheduleFingerprint.value = undefined
+    cloningSourceId.value = undefined
+    cloningScheduleFingerprint.value = undefined
+    creatingAccountScopeParams.value = undefined
+    accountEditDetailLoading.value = false
+    authResult.value = undefined
+    clearSuccessfulDraftActivationTest()
+
+    if (isAuthorizedAccount(account)) {
+      accountEditDetailLoading.value = true
+      modalOpen.value = true
+      const sourceAccount = await loadAccountDetailForForm(account.id, editScopeParams, '加载账户详情失败')
+      if (!isCurrentFormOpenRequest(requestToken)) return
+      if (!sourceAccount) {
+        accountEditDetailLoading.value = false
+        modalOpen.value = false
+        editingId.value = undefined
+        editingAccountDetail.value = undefined
+        return
+      }
+      if (!applyLoadedAccountDetailToEditForm(sourceAccount, editScopeParams, '账户数据结构异常，请清理后再编辑')) {
+        accountEditDetailLoading.value = false
+        modalOpen.value = false
+        editingId.value = undefined
+        editingAccountDetail.value = undefined
+        return
+      }
+      accountAdvancedDetailLoaded.value = true
+      accountEditDetailLoading.value = false
+      modalOpen.value = true
+      return
+    }
+
+    accountEditDetailLoading.value = true
+    modalOpen.value = true
+    const sourceAccount = await loadAccountDetailForForm(account.id, editScopeParams, '加载账户基础配置失败', 'edit-basic')
+    if (!isCurrentFormOpenRequest(requestToken)) return
+    if (!sourceAccount) {
+      accountEditDetailLoading.value = false
+      modalOpen.value = false
+      editingId.value = undefined
+      editingAccountDetail.value = undefined
+      return
+    }
+    if (!applyLoadedAccountDetailToEditForm(sourceAccount, editScopeParams, '账户基础配置结构异常，请清理后再编辑')) {
+      accountEditDetailLoading.value = false
+      modalOpen.value = false
+      editingId.value = undefined
+      editingAccountDetail.value = undefined
+      return
+    }
+    accountAdvancedDetailLoaded.value = false
+    accountEditDetailLoading.value = false
+  }
+
+  async function loadAdvancedAccountDetail() {
+    if (!editingId.value || accountAdvancedDetailLoaded.value || accountAdvancedDetailLoading.value || editingAuthorizedAccount.value) return
+    const requestToken = formOpenRequestToken
+    const scopeParams = editingAccountScopeParams()
+    accountAdvancedDetailLoading.value = true
+    const sourceAccount = await loadAccountDetailForForm(editingId.value, scopeParams, '加载账户高级配置失败')
+    if (!isCurrentFormOpenRequest(requestToken)) return
+    if (!sourceAccount) {
+      accountAdvancedDetailLoading.value = false
+      return
+    }
+    if (applyLoadedAccountDetailToEditForm(sourceAccount, scopeParams, '账户高级配置结构异常，请清理后再编辑', true)) {
+      accountAdvancedDetailLoaded.value = true
+    }
+    accountAdvancedDetailLoading.value = false
+  }
+
+  function applyLoadedAccountDetailToEditForm(
+    sourceAccount: AccountSummary,
+    editScopeParams: AccountScopeParams | undefined,
+    errorMessage: string,
+    preserveBasicFields = false
+  ): boolean {
+    const preserveTypedApiKeys = form.type === 'api_key' && normalizedAccountApiKeys(form).length > 0
+    const preserveTypedOAuthTokens = form.type === 'oauth' && Boolean(form.accessToken.trim() || form.refreshToken.trim())
+    const preservedBasic = preserveBasicFields
+      ? {
+          name: form.name,
+          groupId: form.groupId,
+          group: form.group,
+          concurrencyLimit: form.concurrencyLimit,
+          priority: form.priority,
+          tags: [...form.tags],
+          notes: form.notes,
+          baseUrl: form.baseUrl,
+          supportedModels: [...form.supportedModels],
+          ...(preserveTypedApiKeys
+            ? {
+                apiKey: form.apiKey,
+                apiKeys: [...form.apiKeys],
+                apiKeyStrategy: form.apiKeyStrategy,
+                apiKeyWeights: [...form.apiKeyWeights]
+              }
+            : {}),
+          ...(preserveTypedOAuthTokens
+            ? {
+                accessToken: form.accessToken,
+                refreshToken: form.refreshToken
+              }
+            : {})
+        }
+      : undefined
     const defaults = defaultForm(sourceAccount.providerCode, sourceAccount.type, sourceAccount.providerProtocolProfileId)
     const selectedGroup = sourceAccount.boundGroupId
       ? groupSelectionForId(sourceAccount.boundGroupId, sourceAccount.boundGroupName)
@@ -400,8 +523,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
         selectedGroup
       })
     } catch (error) {
-      reportAccountFormLoadError(error, '账户数据结构异常，请清理后再编辑')
-      return
+      reportAccountFormLoadError(error, errorMessage)
+      return false
     }
     editingId.value = sourceAccount.id
     editingAccountDetail.value = sourceAccount
@@ -409,12 +532,14 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     creatingAccountScopeParams.value = undefined
     void options.loadAccountOptions(editScopeParams?.systemAccountId)
     Object.assign(form, formLoad.patch)
+    if (preservedBasic) {
+      Object.assign(form, preservedBasic)
+    }
     editingScheduleFingerprint.value = formLoad.scheduleFingerprint
     cloningScheduleFingerprint.value = undefined
     accountErrorPolicyRules.value = formLoad.errorPolicyRules
     accountResponseInspectionRules.value = formLoad.responseInspectionRules
     authResult.value = undefined
-    modalOpen.value = true
     void options.loadGroupOptions('', false, {
       providerCode: sourceAccount.providerCode,
       systemAccountId: editScopeParams?.systemAccountId,
@@ -427,6 +552,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     void loadAllProviderModelOptions()
     void loadAnthropicProviderModelOptions()
     void loadGeminiProviderModelOptions()
+    return true
   }
 
   async function openClone(account: AccountSummary) {
@@ -438,6 +564,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     }
     const sourceAccount = await loadAccountDetailForForm(account.id, cloneScopeParams, '加载克隆账户配置失败')
     if (!sourceAccount || !isCurrentFormOpenRequest(requestToken)) return
+    accountEditDetailLoading.value = false
     editingId.value = undefined
     editingAccountDetail.value = undefined
     editingScheduleFingerprint.value = undefined
@@ -482,7 +609,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     void loadGeminiProviderModelOptions()
   }
 
-  async function loadProviderGroupOptions(providerCode: string, providerProtocolProfileId = form.providerProtocolProfileId): Promise<void> {
+  async function loadProviderGroupOptions(providerCode: string): Promise<void> {
     await nextTick()
     await options.loadGroupOptions('', false, {
       providerCode,
@@ -492,14 +619,20 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       useLocalWindow: false
     })
     syncFormGroupFromOptions()
-    ensureDefaultGroupSelected(providerCode, providerProtocolProfileId)
+    ensureDefaultGroupSelected(providerCode)
   }
 
-  async function loadAccountDetailForForm(accountId: string, scopeParams: AccountScopeParams | undefined, fallbackMessage: string): Promise<AccountSummary | undefined> {
+  async function loadAccountDetailForForm(
+    accountId: string,
+    scopeParams: AccountScopeParams | undefined,
+    fallbackMessage: string,
+    level: AccountDetailLevel = 'advanced'
+  ): Promise<AccountSummary | undefined> {
     try {
       return await loadAccountDetailCached({
         accountId,
         isManagementView: options.isManagementView.value,
+        level,
         scopeParams
       })
     } catch (error) {
@@ -525,6 +658,9 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   }
 
   return {
+    accountAdvancedDetailLoaded,
+    accountAdvancedDetailLoading,
+    accountEditDetailLoading,
     accountErrorPolicyRules,
     accountResponseInspectionRules,
     apiKeyTestDetails,
@@ -561,6 +697,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     openClone,
     openCreate,
     openEdit,
+    loadAdvancedAccountDetail,
     providerName,
     providerModelOptions,
     providerModelsLoading,

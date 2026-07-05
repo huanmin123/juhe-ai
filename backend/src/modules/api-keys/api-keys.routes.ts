@@ -1,4 +1,4 @@
-import { Router } from 'express'
+import { type Response, Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
@@ -19,7 +19,7 @@ import { bodyField, mutationGuard, normalizedText, queryField } from '../dedupli
 import { requestQuotaLimitsSchema } from '../request-quota-limit.schema.js'
 import { apiKeyAvailabilityScheduleSchema } from './api-key-availability-schedule.schema.js'
 import { submitApiKeyRelatedCleanup } from './api-key-cleanup.service.js'
-import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
+import { diffSafeFields, operationMode, recordOperationLogAsync, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 
 export const apiKeysRouter = Router()
 
@@ -56,11 +56,32 @@ apiKeysRouter.get('/:id/secret', async (req, res, next) => {
     return
   }
   try {
-    const apiKey = await findApiKeySecretAsync(req.params.id, getRequestAccessScope(scopeQuery.data.systemAccountId))
+    const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+    const apiKey = await findApiKeySecretAsync(req.params.id, requestAccess)
     if (!apiKey) {
       res.status(404).json({ message: 'API Key 不存在' })
       return
     }
+    if (!apiKey.key) {
+      throw new Error('API Key 密钥读取失败')
+    }
+    const ownerSystemAccountId = resolveOperationOwner(apiKey as unknown as Record<string, unknown>, requestAccess)
+    await recordOperationLogAsync({
+      operationScopeSystemAccountId: ownerSystemAccountId,
+      mode: operationMode(requestAccess),
+      module: 'api_keys',
+      action: 'reveal_secret',
+      operationKey: 'api_keys.reveal_secret',
+      resourceType: 'api_key',
+      resourceId: apiKey.id,
+      resourceName: apiKey.name,
+      summary: `查看 API Key 完整密钥：${apiKey.name}`,
+      changes: [
+        safeChange('key', '密钥标识', undefined, `${apiKey.keyPrefix}...${apiKey.keySuffix}`)
+      ],
+      viewers: viewer(ownerSystemAccountId, 'resource_owner')
+    }, req)
+    setNoStoreSecretHeaders(res)
     res.json(ok({ key: apiKey.key }))
   } catch (error) {
     next(error)
@@ -112,6 +133,7 @@ apiKeysRouter.post('/:id/refresh-key', mutationGuard({
         }
       }
     }, req)
+    setNoStoreSecretHeaders(res)
     res.json(ok(apiKey, 'API Key 密钥已刷新，请立即复制完整密钥'))
   } catch (error) {
     if (error instanceof Error && error.message === 'API Key 不存在') {
@@ -168,6 +190,7 @@ apiKeysRouter.post('/', mutationGuard({
         }
       }
     }, req)
+    setNoStoreSecretHeaders(res)
     res.status(201).json(ok(apiKey, 'API Key 已创建，请立即复制完整密钥'))
   } catch (error) {
     const message = error instanceof Error ? error.message : 'API Key 参数无效'
@@ -304,4 +327,9 @@ function parseApiKeyListOptions(query: Record<string, unknown>): ApiKeyListOptio
 function apiKeyStatusQueryValue(value: unknown): ApiKeyListOptions['status'] {
   const text = optionalQueryText(value)
   return text === 'active' || text === 'disabled' || text === 'all' ? text : undefined
+}
+
+function setNoStoreSecretHeaders(res: Response): void {
+  res.set('Cache-Control', 'no-store')
+  res.set('Pragma', 'no-cache')
 }

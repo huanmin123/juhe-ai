@@ -11,6 +11,11 @@ const publicCredentialKeys = new Set([
   'plan_type'
 ])
 
+const editBasicCredentialKeys = new Set([
+  'base_url',
+  'supported_endpoint_modes'
+])
+
 export function sanitizeAccountCredentialsForResponse(credentials: Record<string, unknown> | undefined): Record<string, unknown> {
   if (!credentials) return {}
   const output: Record<string, unknown> = {}
@@ -29,6 +34,22 @@ export function sanitizeAccountResponse<T extends AccountSummary>(account: T): T
   } as T
 }
 
+export function sanitizeAccountEditBasicDetailResponse<T extends AccountSummary>(account: T): T {
+  const {
+    modelMappings: _modelMappings,
+    apiKeyRuntime: _apiKeyRuntime,
+    apiKeyRuntimeDetails: _apiKeyRuntimeDetails,
+    oauthUsage: _oauthUsage,
+    authorizationSources: _authorizationSources,
+    ...item
+  } = account
+  return {
+    ...item,
+    credentials: sanitizeAccountCredentialsByKeys(account.credentials, editBasicCredentialKeys),
+    supportedModels: [...(account.supportedModels ?? [])]
+  } as T
+}
+
 export function sanitizeAccountCredentialCarrierResponse<T extends { credentials: Record<string, unknown> }>(value: T): T {
   return {
     ...value,
@@ -39,8 +60,33 @@ export function sanitizeAccountCredentialCarrierResponse<T extends { credentials
 export function sanitizeAccountListResponse<T extends { items: AccountSummary[] }>(result: T): T {
   return {
     ...result,
-    items: result.items.map(sanitizeAccountResponse)
+    items: result.items.map(sanitizeAccountBasicDetailResponse)
   }
+}
+
+export function sanitizeAccountBasicDetailResponse<T extends AccountSummary>(account: T): T {
+  const {
+    credentials: _credentials,
+    supportedModels: _supportedModels,
+    modelMappings: _modelMappings,
+    apiKeyRuntimeDetails: _apiKeyRuntimeDetails,
+    ...item
+  } = account
+  return item as T
+}
+
+function sanitizeAccountCredentialsByKeys(
+  credentials: Record<string, unknown> | undefined,
+  keys: Set<string>
+): Record<string, unknown> {
+  if (!credentials) return {}
+  const output: Record<string, unknown> = {}
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(credentials, key)) {
+      output[key] = credentials[key]
+    }
+  }
+  return output
 }
 
 export function sanitizeAccountTrafficMigrationResponse<T extends { sourceAccount: AccountSummary; targetAccount: AccountSummary }>(result: T): T {

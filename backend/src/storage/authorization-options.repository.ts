@@ -5,23 +5,23 @@ import { getBusinessDatabase } from './database.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { buildGroupOptionSummaries, buildGroupOptionSummariesAsync } from './group-summary.repository.js'
 import { getPostgresPool } from './postgres-client.js'
-import { escapeLikePrefix, sqlPlaceholders } from './query-utils.js'
+import { sqlPlaceholders } from './query-utils.js'
 import type { GroupListRow, SystemTeamRow } from './repository-row-types.js'
 import { authorizedPermissions } from './resource-permissions.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import { systemAccountPrincipalSummaryFromRow, type SystemAccountRow } from './system-account-mappers.js'
 import { findSystemAccountById } from './system-accounts.repository.js'
 import { optionalString } from './value-utils.js'
 
-interface AuthorizationPrincipalOptionListOptions {
+export interface AuthorizationPrincipalOptionListOptions {
   ids?: string[]
   keyword?: string
   limit?: number
 }
 
-interface AuthorizationGranteeGroupOptionListOptions extends AuthorizationPrincipalOptionListOptions {
+export interface AuthorizationGranteeGroupOptionListOptions extends AuthorizationPrincipalOptionListOptions {
   granteeSystemAccountId?: string
   providerCode?: string
-  providerProtocolProfileId?: string
   preferDefault?: boolean
 }
 
@@ -43,6 +43,13 @@ export function listAuthorizationGranteeAccounts(access?: AccessScope, options: 
 }
 
 export async function listAuthorizationGranteeAccountsAsync(access?: AccessScope, options: AuthorizationPrincipalOptionListOptions = {}): Promise<SystemAccountPrincipalSummary[]> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_authorization_grantee_accounts_read_only',
+      access,
+      options
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listAuthorizationGranteeAccounts(access, options)
   }
@@ -76,6 +83,13 @@ export function listAuthorizationGranteeTeams(access?: AccessScope, options: Aut
 }
 
 export async function listAuthorizationGranteeTeamsAsync(access?: AccessScope, options: AuthorizationPrincipalOptionListOptions = {}): Promise<SystemTeamPrincipalSummary[]> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_authorization_grantee_teams_read_only',
+      access,
+      options
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listAuthorizationGranteeTeams(access, options)
   }
@@ -117,6 +131,13 @@ export function listAuthorizationGranteeGroups(access?: AccessScope, options: Au
 }
 
 export async function listAuthorizationGranteeGroupsAsync(access?: AccessScope, options: AuthorizationGranteeGroupOptionListOptions = {}): Promise<GroupOptionSummary[]> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_authorization_grantee_groups_read_only',
+      access,
+      options
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listAuthorizationGranteeGroups(access, options)
   }
@@ -152,9 +173,6 @@ function authorizationGranteeGroupSelectColumns(): string {
     'system_account_id',
     'name',
     'provider_code',
-    'provider_protocol_profile_id',
-    'protocol_code',
-    'protocol_version',
     'description',
     'enabled',
     'is_default',
@@ -191,22 +209,13 @@ function buildAuthorizationGranteeGroupFilter(options: AuthorizationGranteeGroup
   }
   const providerCode = optionalString(options.providerCode)
   if (providerCode) {
-    clauses.push('groups.provider_code COLLATE NOCASE = ?')
+    clauses.push('groups.provider_code = ?')
     params.push(providerCode)
-  }
-  const providerProtocolProfileId = optionalString(options.providerProtocolProfileId)
-  if (providerProtocolProfileId) {
-    clauses.push('groups.provider_protocol_profile_id = ?')
-    params.push(providerProtocolProfileId)
   }
   const keyword = optionalString(options.keyword)
   if (keyword) {
-    const prefix = `${escapeLikePrefix(keyword)}%`
-    clauses.push(`(
-      groups.name COLLATE NOCASE = ?
-      OR groups.name LIKE ? ESCAPE '\\'
-    )`)
-    params.push(keyword, prefix)
+    clauses.push('(groups.name >= ? AND groups.name < ?)')
+    params.push(keyword, textPrefixUpperBound(keyword))
   }
   return {
     clause: `WHERE ${clauses.join(' AND ')}`,
@@ -224,27 +233,17 @@ function buildAuthorizationGranteeGroupFilterForClient(client: DatabaseClient, o
   }
   const providerCode = optionalString(options.providerCode)
   if (providerCode) {
-    clauses.push(client.driver === 'postgres' ? 'lower(groups.provider_code) = lower(?)' : 'groups.provider_code COLLATE NOCASE = ?')
+    clauses.push('groups.provider_code = ?')
     params.push(providerCode)
-  }
-  const providerProtocolProfileId = optionalString(options.providerProtocolProfileId)
-  if (providerProtocolProfileId) {
-    clauses.push('groups.provider_protocol_profile_id = ?')
-    params.push(providerProtocolProfileId)
   }
   const keyword = optionalString(options.keyword)
   if (keyword) {
-    const prefix = `${escapeLikePrefix(keyword)}%`
     clauses.push(client.driver === 'postgres'
-      ? `(
-        lower(groups.name) = lower(?)
-        OR groups.name ILIKE ? ESCAPE '\\'
-      )`
-      : `(
-        groups.name COLLATE NOCASE = ?
-        OR groups.name LIKE ? ESCAPE '\\'
-      )`)
-    params.push(keyword, prefix)
+      ? '(groups.name COLLATE "C" >= ? AND groups.name COLLATE "C" < ? AND starts_with(groups.name, ?))'
+      : '(groups.name >= ? AND groups.name < ?)')
+    params.push(...(client.driver === 'postgres'
+      ? [keyword, textPrefixUpperBound(keyword), keyword]
+      : [keyword, textPrefixUpperBound(keyword)]))
   }
   return {
     clause: `WHERE ${clauses.join(' AND ')}`,
@@ -284,28 +283,21 @@ function normalizeTextList(values?: string[]): string[] {
 function buildSystemAccountPrincipalKeywordFilter(keyword?: string): { clause: string; params: string[] } {
   const text = optionalString(keyword)
   if (!text) return { clause: '', params: [] }
-  const prefix = `${escapeLikePrefix(text)}%`
   return {
     clause: `WHERE (
-      username COLLATE NOCASE = ?
-      OR username LIKE ? ESCAPE '\\'
-      OR display_name COLLATE NOCASE = ?
-      OR display_name LIKE ? ESCAPE '\\'
+      (username >= ? AND username < ?)
+      OR (display_name >= ? AND display_name < ?)
     )`,
-    params: [text, prefix, text, prefix]
+    params: [text, textPrefixUpperBound(text), text, textPrefixUpperBound(text)]
   }
 }
 
 function buildSystemTeamPrincipalKeywordFilter(keyword?: string): { clause: string; params: string[] } {
   const text = optionalString(keyword)
   if (!text) return { clause: '', params: [] }
-  const prefix = `${escapeLikePrefix(text)}%`
   return {
-    clause: `WHERE (
-      name COLLATE NOCASE = ?
-      OR name LIKE ? ESCAPE '\\'
-    )`,
-    params: [text, prefix]
+    clause: 'WHERE (name >= ? AND name < ?)',
+    params: [text, textPrefixUpperBound(text)]
   }
 }
 
@@ -313,15 +305,12 @@ function buildSystemAccountPrincipalKeywordFilterForClient(client: DatabaseClien
   if (client.driver !== 'postgres') return buildSystemAccountPrincipalKeywordFilter(keyword)
   const text = optionalString(keyword)
   if (!text) return { clause: '', params: [] }
-  const prefix = `${escapeLikePrefix(text)}%`
   return {
     clause: `WHERE (
-      lower(username) = lower(?)
-      OR username ILIKE ? ESCAPE '\\'
-      OR lower(display_name) = lower(?)
-      OR display_name ILIKE ? ESCAPE '\\'
+      (username COLLATE "C" >= ? AND username COLLATE "C" < ? AND starts_with(username, ?))
+      OR (display_name COLLATE "C" >= ? AND display_name COLLATE "C" < ? AND starts_with(display_name, ?))
     )`,
-    params: [text, prefix, text, prefix]
+    params: [text, textPrefixUpperBound(text), text, text, textPrefixUpperBound(text), text]
   }
 }
 
@@ -329,14 +318,20 @@ function buildSystemTeamPrincipalKeywordFilterForClient(client: DatabaseClient, 
   if (client.driver !== 'postgres') return buildSystemTeamPrincipalKeywordFilter(keyword)
   const text = optionalString(keyword)
   if (!text) return { clause: '', params: [] }
-  const prefix = `${escapeLikePrefix(text)}%`
   return {
-    clause: `WHERE (
-      lower(name) = lower(?)
-      OR name ILIKE ? ESCAPE '\\'
-    )`,
-    params: [text, prefix]
+    clause: 'WHERE (name COLLATE "C" >= ? AND name COLLATE "C" < ? AND starts_with(name, ?))',
+    params: [text, textPrefixUpperBound(text), text]
   }
+}
+
+function textPrefixUpperBound(value: string): string {
+  const chars = [...value]
+  for (let index = chars.length - 1; index >= 0; index -= 1) {
+    const codePoint = chars[index].codePointAt(0)
+    if (codePoint === undefined || codePoint >= 0x10ffff) continue
+    return `${chars.slice(0, index).join('')}${String.fromCodePoint(codePoint + 1)}`
+  }
+  return `${value}\u{10ffff}`
 }
 
 function authorizationPrincipalOptionLimitClause(limit?: number): { clause: string; params: number[] } {

@@ -20,7 +20,7 @@
           <a-tag :color="record.status === 'active' ? 'green' : 'default'">{{ record.status === 'active' ? '启用' : '停用' }}</a-tag>
         </template>
         <template v-else-if="column.key === 'memberCount'">
-          {{ record.members?.length ?? record.memberCount ?? 0 }}
+          {{ record.activeMemberCount ?? record.memberCount ?? 0 }}
         </template>
         <template v-else-if="column.key === 'description'">
           <span>{{ record.description || '-' }}</span>
@@ -44,7 +44,7 @@
           <div class="mobile-list-meta-grid">
             <div class="mobile-list-meta-item">
               <span>成员数</span>
-              <strong>{{ record.members?.length ?? record.memberCount ?? 0 }}</strong>
+              <strong>{{ record.activeMemberCount ?? record.memberCount ?? 0 }}</strong>
             </div>
             <div class="mobile-list-meta-item">
               <span>创建时间</span>
@@ -107,6 +107,7 @@
           :columns="memberColumns"
           :data-source="activeTeamMembers"
           row-key="id"
+          :loading="memberDetailLoading"
           :pagination="false"
           :table-scroll-enabled="false"
           :lock-body-scroll="false"
@@ -142,7 +143,7 @@
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
@@ -150,6 +151,7 @@ import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import type { RowActionItem } from '@/components/rowActions'
+import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useScopedSystemTeamsApi } from '@/composables/useScopedDomainApi'
@@ -157,15 +159,26 @@ import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime, formatNumber } from '@/shared/formatters'
+import { sanitizePaginationState, stringOrFallback, type PagePaginationState } from '@/shared/pageStateSanitizers'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import type { SystemTeamMemberSummary, SystemTeamSummary } from '@/types/domain'
 
+interface SystemTeamsPageState {
+  keyword: string
+  pagination: PagePaginationState
+}
+
 const pageSize = 20
+const pageStateCache = usePageStateCache<SystemTeamsPageState>(undefined, defaultSystemTeamsPageState, {
+  sanitize: sanitizeSystemTeamsPageState,
+  version: 1
+})
+const initialPageState = pageStateCache.read()
 const { submitAction, submittingRef } = useSubmitAction('system-teams')
 const teamSaving = submittingRef('system_teams.save')
 const memberSaving = submittingRef('system_teams.add_members')
 
-const keyword = ref('')
+const keyword = ref(initialPageState.keyword)
 const { isManagementView } = useScopedMenuView()
 const systemTeamsApi = useScopedSystemTeamsApi(isManagementView)
 const {
@@ -183,8 +196,10 @@ const {
 
 const teamModalOpen = ref(false)
 const memberModalOpen = ref(false)
+const memberDetailLoading = ref(false)
 const editingTeamId = ref<string>()
 const selectedTeamId = ref<string>()
+const selectedTeamDetail = ref<SystemTeamSummary>()
 
 const teamForm = reactive({
   name: '',
@@ -202,6 +217,7 @@ const {
   loading,
   mobileHasMore,
   mobileLoadingMore,
+  pagination,
   tablePagination,
   handleTableChange,
   loadData,
@@ -210,6 +226,7 @@ const {
   resetPagination
 } = useResponsivePagedList<SystemTeamSummary>({
   pageSize,
+  initialPagination: initialPageState.pagination,
   showTotal: (total, range, context) => context?.hasMore
     ? `已加载到第 ${formatNumber(range?.[1] ?? total - 1)} 个授权团队，还有更多`
     : `共 ${formatNumber(total)} 个授权团队`,
@@ -247,7 +264,7 @@ const memberColumns = computed(() => {
   return baseColumns
 })
 
-const selectedTeam = computed(() => teams.value.find((team) => team.id === selectedTeamId.value))
+const selectedTeam = computed(() => selectedTeamDetail.value ?? teams.value.find((team) => team.id === selectedTeamId.value))
 const activeTeamMembers = computed(() => selectedTeam.value ? activeMembers(selectedTeam.value) : [])
 const usedMemberIds = computed(() => activeTeamMembers.value.map((item) => item.systemAccountId))
 const emptyTeamDescription = computed(() => isManagementView.value ? '还没有授权团队，先创建一个授权团队并添加成员。' : '你还没有加入任何授权团队。')
@@ -289,6 +306,7 @@ function searchTeams() {
 
 function resetSearch() {
   keyword.value = ''
+  pageStateCache.clear()
   searchTeams()
 }
 
@@ -347,13 +365,20 @@ const saveTeam = submitAction('system_teams.save', async () => {
   }
 })
 
-function openMemberModal(team: SystemTeamSummary) {
+async function openMemberModal(team: SystemTeamSummary) {
   selectedTeamId.value = team.id
+  selectedTeamDetail.value = undefined
   memberForm.systemAccountIds = []
   memberForm.systemAccounts = []
   resetMemberOptionSearch()
-  memberModalOpen.value = true
-  void loadMemberOptions()
+  try {
+    await loadSelectedTeamDetail(team.id)
+    memberModalOpen.value = true
+    void loadMemberOptions()
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '加载团队成员失败'))
+  }
 }
 
 function handleTeamAction(key: string, team: SystemTeamSummary) {
@@ -363,7 +388,7 @@ function handleTeamAction(key: string, team: SystemTeamSummary) {
     return
   }
   if (key === 'members') {
-    openMemberModal(team)
+    void openMemberModal(team)
   }
 }
 
@@ -381,15 +406,19 @@ const addMembers = submitAction('system_teams.add_members', async () => {
     message.warning('请先选择成员')
     return
   }
+  const teamId = selectedTeam.value.id
   try {
-    await api.systemTeams.addMembers(selectedTeam.value.id, {
+    await api.systemTeams.addMembers(teamId, {
       systemAccountIds: memberForm.systemAccountIds
     })
     memberForm.systemAccountIds = []
     memberForm.systemAccounts = []
     message.success('成员已添加')
-    await loadData()
-    await loadMemberOptions()
+    await Promise.all([
+      loadData(),
+      loadSelectedTeamDetail(teamId),
+      loadMemberOptions()
+    ])
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '添加成员失败'))
@@ -399,14 +428,27 @@ const addMembers = submitAction('system_teams.add_members', async () => {
 async function removeMember(memberId: string) {
   if (!ensureManagementAction()) return
   if (!selectedTeam.value) return
+  const teamId = selectedTeam.value.id
   try {
-    await api.systemTeams.removeMember(selectedTeam.value.id, memberId)
+    await api.systemTeams.removeMember(teamId, memberId)
     message.success('成员已移除')
-    await loadData()
-    await loadMemberOptions()
+    await Promise.all([
+      loadData(),
+      loadSelectedTeamDetail(teamId),
+      loadMemberOptions()
+    ])
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '移除成员失败'))
+  }
+}
+
+async function loadSelectedTeamDetail(teamId: string): Promise<void> {
+  memberDetailLoading.value = true
+  try {
+    selectedTeamDetail.value = await systemTeamsApi.detail(teamId)
+  } finally {
+    memberDetailLoading.value = false
   }
 }
 
@@ -420,6 +462,30 @@ function ensureManagementAction(): boolean {
   message.warning('当前是只读视图，不能维护授权团队')
   return false
 }
+
+function defaultSystemTeamsPageState(): SystemTeamsPageState {
+  return {
+    keyword: '',
+    pagination: { current: 1, pageSize }
+  }
+}
+
+function sanitizeSystemTeamsPageState(value: unknown, fallback: SystemTeamsPageState): SystemTeamsPageState {
+  const source = value && typeof value === 'object' ? value as Partial<SystemTeamsPageState> : {}
+  return {
+    keyword: stringOrFallback(source.keyword, fallback.keyword),
+    pagination: sanitizePaginationState(source.pagination, fallback.pagination)
+  }
+}
+
+function snapshotPageState(): SystemTeamsPageState {
+  return {
+    keyword: keyword.value,
+    pagination: { current: pagination.current, pageSize: pagination.pageSize }
+  }
+}
+
+watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 
 onMounted(loadData)
 </script>

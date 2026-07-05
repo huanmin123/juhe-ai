@@ -197,8 +197,9 @@ function accountIdsForKeyword(keyword: string, access?: AccessScope): string[] {
     .prepare(`
       SELECT accounts.id
       FROM accounts
-      WHERE lower(accounts.name) >= ? AND lower(accounts.name) < ?${accountOwnerFilterClause(ownerSystemAccountId)}
-      ORDER BY lower(accounts.name) ASC, accounts.id ASC
+      WHERE accounts.deleted_at IS NULL
+        AND accounts.name >= ? AND accounts.name < ?${accountOwnerFilterClause(ownerSystemAccountId)}
+      ORDER BY accounts.name ASC, accounts.id ASC
       LIMIT ?
     `)
     .all(normalizedKeyword, upperBound, ...accountOwnerFilterParams(ownerSystemAccountId), accountKeywordMatchLimit) as unknown as Array<{ id?: string }>)
@@ -206,10 +207,12 @@ function accountIdsForKeyword(keyword: string, access?: AccessScope): string[] {
     .prepare(`
       SELECT instance_accounts.id
       FROM accounts source_accounts
-      INNER JOIN accounts instance_accounts
-        ON instance_accounts.authorization_instance_source_account_id = source_accounts.id
-      WHERE lower(source_accounts.name) >= ? AND lower(source_accounts.name) < ?${accountOwnerFilterClause(ownerSystemAccountId, 'instance_accounts')}
-      ORDER BY lower(source_accounts.name) ASC, instance_accounts.id ASC
+      CROSS JOIN accounts instance_accounts
+      WHERE source_accounts.deleted_at IS NULL
+        AND instance_accounts.authorization_instance_source_account_id = source_accounts.id
+        AND instance_accounts.deleted_at IS NULL
+        AND source_accounts.name >= ? AND source_accounts.name < ?${accountOwnerFilterClause(ownerSystemAccountId, 'instance_accounts')}
+      ORDER BY source_accounts.name ASC, instance_accounts.id ASC
       LIMIT ?
     `)
     .all(normalizedKeyword, upperBound, ...accountOwnerFilterParams(ownerSystemAccountId), accountKeywordMatchLimit) as unknown as Array<{ id?: string }>)
@@ -222,8 +225,9 @@ function accountIdsForKeyword(keyword: string, access?: AccessScope): string[] {
           ON ra.resource_type = 'account'
           AND ra.resource_id = accounts.id
           AND ra.grantee_system_account_id = ?
-        WHERE lower(accounts.name) >= ? AND lower(accounts.name) < ?
-        ORDER BY lower(accounts.name) ASC, accounts.id ASC
+        WHERE accounts.deleted_at IS NULL
+          AND accounts.name >= ? AND accounts.name < ?
+        ORDER BY accounts.name ASC, accounts.id ASC
         LIMIT ?
       `)
       .all(ownerSystemAccountId, normalizedKeyword, upperBound, accountKeywordMatchLimit) as unknown as Array<{ id?: string }>)
@@ -238,8 +242,9 @@ function accountIdsForKeyword(keyword: string, access?: AccessScope): string[] {
           ON ra.resource_type = 'group'
           AND ra.resource_id = ga.group_id
           AND ra.grantee_system_account_id = ?
-        WHERE lower(accounts.name) >= ? AND lower(accounts.name) < ?
-        ORDER BY lower(accounts.name) ASC, accounts.id ASC
+        WHERE accounts.deleted_at IS NULL
+          AND accounts.name >= ? AND accounts.name < ?
+        ORDER BY accounts.name ASC, accounts.id ASC
         LIMIT ?
       `)
       .all(ownerSystemAccountId, normalizedKeyword, upperBound, accountKeywordMatchLimit) as unknown as Array<{ id?: string }>)
@@ -265,7 +270,7 @@ function accountOwnerFilterParams(systemAccountId?: string): string[] {
 }
 
 function normalizeAccountKeyword(value: string): string {
-  return value.normalize('NFKC').toLowerCase().trim()
+  return value.normalize('NFKC').trim()
 }
 
 function accountKeywordUpperBound(value: string): string {

@@ -8,41 +8,55 @@ import {
 } from '../quota/authorization-quota.service.js'
 import type { AuditCaptureContext } from '../audit/capture.service.js'
 import {
-  filterLocallySuppressedGatewayAccounts,
-  orderGatewayAccountsByRuntimeDegradation
+  filterGatewayAccountRuntimeSuppressionsAsync,
+  orderGatewayAccountsByRuntimeDegradation,
+  type LocalAccountSuppressionFilterResult
 } from '../runtime/account-side-effects.service.js'
 import {
-  orderOpenAIAccountsByClientIpAccountAvoidance
+  orderOpenAIAccountsByClientIpAccountAvoidanceAsync
 } from '../runtime/client-ip-account-avoidance.service.js'
 import {
   acquireHighConcurrencyClientIpSlot,
   type ClientIpConcurrencyDecision
 } from '../runtime/client-ip-concurrency.service.js'
 import {
-  orderOpenAIAccountsByCodexTurnAvoidance
+  orderOpenAIAccountsByCodexTurnAvoidanceAsync
 } from '../client-profiles/codex-turn-retry.service.js'
 import {
-  areGatewayAccountsCapacityBusyForLane,
-  refreshGatewayAccountCurrentConcurrency
+  areGatewayAccountsCapacityBusyForLaneAsync,
+  orderGatewayAccountsByLaneCapacityAvailabilityAsync,
+  refreshGatewayAccountCurrentConcurrencyAsync
 } from './capacity.js'
 import { sendGatewayFailureResponse, sendQuotaExceededResponse } from '../response/failure-response.js'
 import { waitForHighConcurrencyGroupCapacity } from '../runtime/high-concurrency-queue.service.js'
 import { resolveLocalSuppressionFilter } from '../runtime/local-suppression-preflight.js'
 import {
-  orderGatewayAccountsByUpstreamBucketHealth
+  orderGatewayAccountsByUpstreamBucketHealthAsync
 } from '../runtime/proxy-health.service.js'
+import {
+  normalRouteLatencyDegradationScope,
+  orderGatewayAccountsByNormalRouteLatencyDegradationAsync
+} from '../runtime/normal-route-latency-degradation.service.js'
 import type { OpenAIGatewayRequestLane } from '../protocols/openai-v1/request-lane.js'
 import { gatewayErrorPayload } from '../response/responses.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import {
   areOpenAIHighConcurrencyAccountsBusyForLane,
+  areOpenAIHighConcurrencyAccountsBusyForLaneAsync,
   orderOpenAIAccountsBySessionAffinity,
+  orderOpenAIAccountsBySessionAffinityAsync,
   type OpenAIAccountDispatchOrderingOptions
 } from '../runtime/session-affinity.service.js'
 import type { OpenAIGatewayClientStrategyContext } from '../client-profiles/strategy.js'
 import type { GatewayFailureUsageContext } from '../usage/records.js'
+import { isAccountProbeTrafficSource } from '../usage/traffic-source.js'
 import type { OpenAIGatewayDispatchContext } from '../request/preflight.js'
+import {
+  gatewayAccountConcurrencyAccountIds,
+  gatewayAccountConcurrencyLimitsByAccountId
+} from './account-concurrency-identity.js'
 import type { GatewayAccountModelPriority } from './model-filter.js'
+import type { RouteStrategySpeedFirstConfig } from '../../../domain/types.js'
 
 export interface DispatchPreparationFallbackResult {
   attempted: boolean
@@ -73,6 +87,8 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
   systemAccountId: string
   apiKeyId?: string
   groupId: string
+  routeStrategyId?: string
+  normalRouteSpeedFirstConfig?: RouteStrategySpeedFirstConfig
   clientIp?: string
   clientStrategy: OpenAIGatewayClientStrategyContext
   requestLane: OpenAIGatewayRequestLane
@@ -90,12 +106,15 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     }
   }
 
-  const orderedCandidateAccounts = orderOpenAIAccountsBySessionAffinity(
+  const orderedCandidateAccounts = await orderOpenAIAccountsBySessionAffinityAsync(
     input.candidateAccounts,
     input.sessionAffinityKey,
     dispatchOrderingOptions
   )
-  const initialLocalSuppressionFilter = filterLocallySuppressedGatewayAccounts(orderedCandidateAccounts)
+  const bypassLocalSuppression = isAccountProbeTrafficSource(input.usageContext.trafficSource)
+  const initialLocalSuppressionFilter = bypassLocalSuppression
+    ? localSuppressionBypassResult(orderedCandidateAccounts)
+    : await filterGatewayAccountRuntimeSuppressionsAsync(orderedCandidateAccounts)
   if (initialLocalSuppressionFilter.allSuppressed) {
     const fallback = await input.attemptFallback('local_account_suppressed')
     if (fallback.attempted) {
@@ -122,23 +141,27 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     }
   }
 
-  const localSuppressionFilter = await resolveLocalSuppressionFilter({
-    req: input.req,
-    res: input.res,
-    auditCapture: input.auditCapture,
-    usageContext: input.usageContext,
-    startedAt: input.startedAt,
-    accounts: orderedCandidateAccounts,
-    systemAccountId: input.systemAccountId,
-    apiKeyId: input.apiKeyId,
-    groupId: input.groupId,
-    signal: input.signal
-  })
+  const localSuppressionFilter = bypassLocalSuppression
+    ? localSuppressionBypassResult(orderedCandidateAccounts)
+    : await resolveLocalSuppressionFilter({
+        req: input.req,
+        res: input.res,
+        auditCapture: input.auditCapture,
+        usageContext: input.usageContext,
+        startedAt: input.startedAt,
+        accounts: orderedCandidateAccounts,
+        systemAccountId: input.systemAccountId,
+        apiKeyId: input.apiKeyId,
+        groupId: input.groupId,
+        signal: input.signal
+      })
   if (!localSuppressionFilter) {
     return { outcome: 'completed' }
   }
 
-  const runtimeDegradationOrder = orderGatewayAccountsByRuntimeDegradation(localSuppressionFilter.accounts)
+  const runtimeDegradationOrder = orderGatewayAccountsByRuntimeDegradation(localSuppressionFilter.accounts, {
+    modelRankByAccountId: input.modelPriority.rankByAccountId
+  })
   if (runtimeDegradationOrder.applied || runtimeDegradationOrder.bypassedAllDegraded) {
     logger.warn({
       event: runtimeDegradationOrder.applied
@@ -172,7 +195,42 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     }
   }
 
-  const proxyHealthOrder = orderGatewayAccountsByUpstreamBucketHealth(runtimeDegradationOrder.accounts)
+  const latencyDegradationOrder = await orderGatewayAccountsByNormalRouteLatencyDegradationAsync(
+    runtimeDegradationOrder.accounts,
+    normalRouteLatencyDegradationScope({
+      systemAccountId: input.systemAccountId,
+      routeStrategyId: input.routeStrategyId,
+      groupId: input.groupId
+    }),
+    input.normalRouteSpeedFirstConfig,
+    input.modelPriority
+  )
+  if (latencyDegradationOrder.applied || latencyDegradationOrder.bypassedAllDegraded) {
+    logger.warn({
+      event: latencyDegradationOrder.applied
+        ? 'gateway_normal_route_latency_degradation_order_applied'
+        : 'gateway_normal_route_latency_degradation_bypassed',
+      applied: latencyDegradationOrder.applied,
+      degradedAccountIds: latencyDegradationOrder.degradedAccountIds,
+      bypassedAllDegraded: latencyDegradationOrder.bypassedAllDegraded,
+      groupId: input.groupId,
+      routeStrategyId: input.routeStrategyId,
+      systemAccountId: input.systemAccountId,
+      apiKeyId: input.apiKeyId
+    }, latencyDegradationOrder.applied
+      ? '普通路由速度优先已将首字慢速账号排到候选末尾'
+      : '普通路由速度优先无未降级候选，保持原候选顺序')
+    input.auditCapture.addGatewayMetadata({
+      label: 'normal_route_latency_degradation',
+      metadata: {
+        applied: latencyDegradationOrder.applied,
+        degradedAccountIds: latencyDegradationOrder.degradedAccountIds,
+        bypassedAllDegraded: latencyDegradationOrder.bypassedAllDegraded
+      }
+    })
+  }
+
+  const proxyHealthOrder = await orderGatewayAccountsByUpstreamBucketHealthAsync(latencyDegradationOrder.accounts, input.modelPriority)
   if (proxyHealthOrder.applied || proxyHealthOrder.bypassedAllAvoided) {
     logger.warn({
       event: proxyHealthOrder.applied
@@ -205,12 +263,12 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     })
   }
 
-  const clientIpAccountAvoidance = orderOpenAIAccountsByClientIpAccountAvoidance(proxyHealthOrder.accounts, {
+  const clientIpAccountAvoidance = await orderOpenAIAccountsByClientIpAccountAvoidanceAsync(proxyHealthOrder.accounts, {
     systemAccountId: input.systemAccountId,
     apiKeyId: input.apiKeyId,
     groupId: input.groupId,
     clientIp: input.clientIp
-  })
+  }, input.modelPriority)
   if (clientIpAccountAvoidance.applied || clientIpAccountAvoidance.bypassedAllAvoided) {
     logger.warn({
       event: clientIpAccountAvoidance.applied
@@ -236,7 +294,11 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     })
   }
 
-  const codexTurnAvoidance = orderOpenAIAccountsByCodexTurnAvoidance(clientIpAccountAvoidance.accounts, input.clientStrategy)
+  const codexTurnAvoidance = await orderOpenAIAccountsByCodexTurnAvoidanceAsync(
+    clientIpAccountAvoidance.accounts,
+    input.clientStrategy,
+    input.modelPriority
+  )
   if (codexTurnAvoidance.applied || codexTurnAvoidance.bypassedAllAvoided) {
     logger.warn({
       event: 'gateway_codex_turn_account_avoidance',
@@ -305,7 +367,7 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
     accounts.push(account)
   }
   if (input.dispatchOrderingOptions.groupType === 'high_concurrency') {
-    accounts = refreshGatewayAccountCurrentConcurrency(accounts)
+    accounts = await refreshGatewayAccountCurrentConcurrencyAsync(accounts)
   }
 
   if (accounts.length === 0) {
@@ -314,12 +376,12 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
       if (fallback.attempted) {
         return { outcome: 'fallback', context: fallback.context }
       }
-      sendQuotaExceededResponse(input.req, input.res, input.auditCapture, input.usageContext, input.startedAt, AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE)
+      await sendQuotaExceededResponse(input.req, input.res, input.auditCapture, input.usageContext, input.startedAt, AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE)
       return { outcome: 'completed' }
     }
     const statusCode = 503
     const responsePayload = gatewayErrorPayload('没有可用的上游账户', 'service_unavailable')
-    sendGatewayFailureResponse({
+    await sendGatewayFailureResponse({
       req: input.req,
       res: input.res,
       auditCapture: input.auditCapture,
@@ -342,26 +404,33 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
     requestLane: input.requestLane
   }
 
-  if (areOpenAIHighConcurrencyAccountsBusyForLane(accounts, laneAwareDispatchOrderingOptions)) {
-    accounts = orderOpenAIAccountsBySessionAffinity(
-      refreshGatewayAccountCurrentConcurrency(accounts),
+  if (await areOpenAIHighConcurrencyAccountsBusyForLaneAsync(accounts, laneAwareDispatchOrderingOptions)) {
+    accounts = await orderOpenAIAccountsBySessionAffinityAsync(
+      await refreshGatewayAccountCurrentConcurrencyAsync(accounts),
       input.sessionAffinityKey,
       input.dispatchOrderingOptions
     )
   }
 
-  if (areOpenAIHighConcurrencyAccountsBusyForLane(accounts, laneAwareDispatchOrderingOptions)) {
+  if (await areOpenAIHighConcurrencyAccountsBusyForLaneAsync(accounts, laneAwareDispatchOrderingOptions)) {
     const fallback = await input.attemptFallback('high_concurrency_group_busy')
     if (fallback.attempted) {
       return { outcome: 'fallback', context: fallback.context }
     }
   }
 
-  if (input.dispatchOrderingOptions.groupType !== 'high_concurrency'
-    && areGatewayAccountsCapacityBusyForLane(accounts, input.requestLane, input.groupAccess.schedulingPolicy)) {
-    const fallback = await input.attemptFallback('group_capacity_busy')
-    if (fallback.attempted) {
-      return { outcome: 'fallback', context: fallback.context }
+  if (input.dispatchOrderingOptions.groupType !== 'high_concurrency') {
+    accounts = await orderGatewayAccountsByLaneCapacityAvailabilityAsync(
+      accounts,
+      input.requestLane,
+      input.groupAccess.schedulingPolicy,
+      input.dispatchOrderingOptions.modelPriority
+    )
+    if (await areGatewayAccountsCapacityBusyForLaneAsync(accounts, input.requestLane, input.groupAccess.schedulingPolicy)) {
+      const fallback = await input.attemptFallback('group_capacity_busy')
+      if (fallback.attempted) {
+        return { outcome: 'fallback', context: fallback.context }
+      }
     }
   }
 
@@ -387,7 +456,7 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
       }
       const statusCode = 429
       const responsePayload = gatewayErrorPayload(clientIpConcurrencyFailureMessage(clientIpConcurrency), 'rate_limit_exceeded')
-      sendGatewayFailureResponse({
+      await sendGatewayFailureResponse({
         req: input.req,
         res: input.res,
         auditCapture: input.auditCapture,
@@ -412,13 +481,13 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
     }
   }
 
-  if (areOpenAIHighConcurrencyAccountsBusyForLane(accounts, laneAwareDispatchOrderingOptions)) {
+  if (await areOpenAIHighConcurrencyAccountsBusyForLaneAsync(accounts, laneAwareDispatchOrderingOptions)) {
     const queueWait = await waitForHighConcurrencyGroupCapacity({
       systemAccountId: input.systemAccountId,
       groupId: input.groupId,
       apiKeyId: input.apiKeyId,
-      accountIds: accounts.map((account) => account.id),
-      accountConcurrencyLimits: Object.fromEntries(accounts.map((account) => [account.id, account.concurrencyLimit])),
+      accountIds: gatewayAccountConcurrencyAccountIds(accounts),
+      accountConcurrencyLimits: gatewayAccountConcurrencyLimitsByAccountId(accounts),
       lane: input.requestLane,
       policy: input.groupAccess.schedulingPolicy,
       signal: input.signal
@@ -434,14 +503,14 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
       releaseClientIpConcurrency()
       return { outcome: 'completed' }
     }
-    accounts = orderOpenAIAccountsBySessionAffinity(
-      refreshGatewayAccountCurrentConcurrency(accounts),
+    accounts = await orderOpenAIAccountsBySessionAffinityAsync(
+      await refreshGatewayAccountCurrentConcurrencyAsync(accounts),
       input.sessionAffinityKey,
       input.dispatchOrderingOptions
     )
   }
 
-  if (areOpenAIHighConcurrencyAccountsBusyForLane(accounts, laneAwareDispatchOrderingOptions)) {
+  if (await areOpenAIHighConcurrencyAccountsBusyForLaneAsync(accounts, laneAwareDispatchOrderingOptions)) {
     const fallback = await input.attemptFallback('high_concurrency_group_busy')
     if (fallback.attempted) {
       releaseClientIpConcurrency()
@@ -450,7 +519,7 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
     const statusCode = 429
     const responsePayload = gatewayErrorPayload('分组繁忙，请稍后重试', 'rate_limit_exceeded')
     releaseClientIpConcurrency()
-    sendGatewayFailureResponse({
+    await sendGatewayFailureResponse({
       req: input.req,
       res: input.res,
       auditCapture: input.auditCapture,
@@ -499,6 +568,16 @@ function clientIpConcurrencyAuditMetadata(decision: ClientIpConcurrencyDecision)
     limit: decision.limit,
     waitedMs: decision.waitedMs,
     queueSize: decision.queueSize
+  }
+}
+
+function localSuppressionBypassResult(accounts: UpstreamAccount[]): LocalAccountSuppressionFilterResult<UpstreamAccount> {
+  return {
+    accounts,
+    suppressedCount: 0,
+    allSuppressed: false,
+    suppressedAccountIds: [],
+    acquiredHalfOpenLeases: []
   }
 }
 

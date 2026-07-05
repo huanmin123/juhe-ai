@@ -36,6 +36,7 @@ let targetSystemAccountId: string | undefined
 let accountId: string | undefined
 let extraGroupId: string | undefined
 let apiKeyId: string | undefined
+let routeStrategyId: string | undefined
 
 try {
   await cleanupSmokeRows()
@@ -88,7 +89,6 @@ try {
     targetUsername,
     name: extraGroupName,
     providerCode: GPT_VENDOR_CODE,
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     enabled: true,
     groupType: 'personal'
   })
@@ -114,7 +114,7 @@ try {
   assert.equal(updatedGroup.group?.name, updatedGroupName, 'PG 公开分组修改应返回新名称')
   assert.equal(updatedGroup.group?.enabled, false, 'PG 公开分组修改应更新启用状态')
 
-  const routeStrategyId = await createSmokeRouteStrategy(targetSystemAccountId, extraGroupId)
+  routeStrategyId = await createSmokeRouteStrategy(targetSystemAccountId, extraGroupId)
   const createdApiKey = await addPublicApiKeyAsync({
     targetUsername,
     name: apiKeyName,
@@ -150,6 +150,9 @@ try {
   const deletedApiKey = await deletePublicApiKeyAsync({ targetUsername, apiKeyId })
   assert.equal(deletedApiKey.action, 'deleted', 'PG 公开 API Key 应可删除')
   apiKeyId = undefined
+
+  await deleteSmokeRouteStrategy(routeStrategyId)
+  routeStrategyId = undefined
 
   const deletedGroup = await deletePublicGroupAsync({ targetUsername, groupId: extraGroupId })
   assert.equal(deletedGroup.action, 'deleted', 'PG 公开分组应可删除')
@@ -189,6 +192,15 @@ async function createSmokeRouteStrategy(systemAccountId: string, groupId: string
     ) VALUES ($1, $2, $3, $4, 1, 1, 'active', $5, $5)
   `, [bindingId, id, systemAccountId, groupId, now])
   return id
+}
+
+async function deleteSmokeRouteStrategy(id: string | undefined): Promise<void> {
+  if (!id) {
+    return
+  }
+  const pool = await getPostgresPool()
+  await pool.query('DELETE FROM juhe_business.route_strategy_groups WHERE route_strategy_id = $1', [id])
+  await pool.query('DELETE FROM juhe_business.route_strategies WHERE id = $1', [id])
 }
 
 async function cleanupSmokeRows(): Promise<void> {

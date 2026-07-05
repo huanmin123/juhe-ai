@@ -65,7 +65,7 @@ assertTrue(accountTypeDescription('other', 'api_key').includes('供应商定义'
 
 assertEqual(asString('hello'), 'hello', '字符串值应原样返回')
 assertEqual(asString(123), '', '非字符串值应返回空字符串')
-assertEqual(normalizeKeyword('  AbC  '), 'abc', '关键词应 trim 并小写')
+assertEqual(normalizeKeyword('  AbC  '), 'AbC', '关键词应 trim 并保留大小写')
 assertEqual(normalizeKeyword(null), '', '空关键词应归一为空字符串')
 
 assertEqual(accountDisplayName(standardAccount), '标准账户', '普通账户显示名不应剥离授权后缀')
@@ -135,7 +135,7 @@ assertEqual(canSelectClientCompatibility(deepSeekBridgeProfile), true, 'DeepSeek
 assertEqual(
   accountClientCompatibilityCapabilities(deepSeekBridgeProfile).join(','),
   'openai_standard,codex_responses',
-  'DeepSeek bridge 账号应同时展示 OpenAI-compatible 与 Codex Responses 测试请求形态'
+  'DeepSeek bridge 账号应同时展示 OpenAI-compatible 与 Codex Responses 客户端兼容能力'
 )
 assertEqual(
   defaultEndpointModesForAccount({

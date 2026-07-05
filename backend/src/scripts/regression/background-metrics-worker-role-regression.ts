@@ -13,7 +13,11 @@ const processMonitorSource = readSource('../../shared/process-event-loop-monitor
 const systemMetricsSource = readSource('../../storage/system-metrics.repository.ts')
 const statsRoutesSource = readSource('../../modules/stats/stats.routes.ts')
 const dbServiceIpcSource = readSource('../../modules/db-service/db-service-ipc.ts')
+const dbServiceHandlersSource = readSource('../../modules/db-service/db-service-handlers.ts')
 const frontendBackgroundJobsSource = readSource('../../../../frontend/src/views/stats/StatsBackgroundJobsCard.vue')
+const frontendBackgroundQueuesSource = readSource('../../../../frontend/src/views/stats/StatsBackgroundQueuesCard.vue')
+const frontendBackgroundQueuesHelperSource = readSource('../../../../frontend/src/views/stats/statsBackgroundQueues.ts')
+const frontendSystemMetricsSource = readSource('../../../../frontend/src/views/stats/SystemMetricsStatsView.vue')
 
 const registryByName = new Map<string, typeof backgroundWorkerRegistry[number]>(backgroundWorkerRegistry.map((job) => [job.jobName, job]))
 const expectedSupervisedRoles = ['ingest-worker', 'stats-worker', 'ops-worker'] as const
@@ -52,6 +56,13 @@ assertRoleBlockContainsOnly('stats-worker', [
   'table-storage-monitor',
   'usage-stats-consistency-check'
 ])
+assertRolePostgresBlockContains('stats-worker', 'table-storage-monitor', 'PG 高性能 stats-worker 必须注册 table-storage-monitor，避免生产表监控无采样数据')
+assertRolePostgresBlockContains('stats-worker', 'group-account-stats-refresh', 'PG 高性能 stats-worker 必须注册 group-account-stats-refresh，避免分组账户统计缓存长期不刷新')
+assertRolePostgresBlockContains('stats-worker', 'account-quality-refresh', 'PG 高性能 stats-worker 必须注册 account-quality-refresh，避免账户质量分长期不刷新')
+assertRolePostgresBlockContains('stats-worker', 'usage-stats-consistency-check', 'PG 高性能 stats-worker 必须注册 usage-stats-consistency-check，避免统计一致性漂移无人检测')
+assert.match(backgroundJobsSource, /runtimeConfig\.databaseDriver === 'postgres'[\s\S]*refreshBackgroundJobSettingsSnapshotIfNeeded\(\)[\s\S]*\.then\(scheduleBackgroundJobs\)/, 'PG 后台定时任务必须等待系统设置快照加载后再注册 interval')
+assert.match(backgroundJobsSource, /function refreshBackgroundJobSettingsSnapshotIfNeeded\(\): Promise<void>/, 'PG 后台任务系统设置快照刷新必须返回 Promise，避免启动时异步未完成就注册默认 interval')
+assert(backgroundJobsSource.includes("reason: 'stats_worker_startup_refresh'"), 'PG stats-worker 首次分组统计刷新必须写全量脏标记，修复已有统计缓存缺失或旧 0 值')
 assertRoleBlockContainsOnly('ops-worker', [
   'proxy-latency-refresh',
   'account-health-check',
@@ -75,17 +86,41 @@ assert(!workerSource.includes('isMaintenanceWorkerMessage'), 'worker.ts 不应�
 assert(workerSource.includes('isOpsWorkerMessage'), 'worker.ts 必须禁止非 ops-worker 消费账号测试消息')
 assert(workerSource.includes("message.type === 'background_worker_process_event_loop_request'"), 'worker 必须响应 server 发起的事件循环采样请求')
 
-assert(statsRoutesSource.includes("job.name === 'account-api-key-cooldown-retest'") && statsRoutesSource.includes('opsWorkerSnapshot.accountApiKeyCooldownRetestQueue'), '系统指标后台任务表必须把 Key 级冷却复测队列挂到 ops-worker 任务行')
-assert(statsRoutesSource.includes("retryQueueBackgroundJobRow('manual-account-test-queue'") && statsRoutesSource.includes('opsWorkerSnapshot?.manualAccountTestQueue'), '系统指标后台任务表必须展示手动账号测试本地队列')
-assert(statsRoutesSource.includes("'account-quality-failure-precheck-queue'") && statsRoutesSource.includes('accountQualityFailurePrecheckSnapshot'), '系统指标后台任务表必须展示账号质量失败预检队列')
-assert(statsRoutesSource.includes("localQueueBackgroundJobRow('record-maintenance-ingest-queue'") && statsRoutesSource.includes('ingestWorkerSnapshot?.recordMaintenanceQueue'), '系统指标后台任务表必须展示 ingest-worker 数据维护本地队列')
-assert(statsRoutesSource.includes("localQueueBackgroundJobRow('record-maintenance-stats-queue'") && statsRoutesSource.includes('statsWorkerSnapshot?.recordMaintenanceQueue'), '系统指标后台任务表必须展示 stats-worker 数据维护本地队列')
+assert(statsRoutesSource.includes("job.name === 'account-api-key-cooldown-retest'") && statsRoutesSource.includes('opsWorkerSnapshot.accountApiKeyCooldownRetestQueue'), '系统指标接口必须保留 Key 级冷却复测队列运行态')
+assert(statsRoutesSource.includes("retryQueueBackgroundJobRow('manual-account-test-queue'") && statsRoutesSource.includes('opsWorkerSnapshot?.manualAccountTestQueue'), '系统指标接口必须保留手动账号测试本地队列运行态')
+assert(statsRoutesSource.includes("'account-quality-failure-precheck-queue'") && statsRoutesSource.includes('accountQualityFailurePrecheckSnapshot'), '系统指标接口必须保留账号质量失败预检队列运行态')
 assert(dbServiceIpcSource.includes('requestOpsWorkerSnapshot'), 'DB service runtime snapshot 必须请求 ops-worker 快照')
 assert(dbServiceIpcSource.includes('accountApiKeyCooldownRetestQueue: opsWorkerSnapshot.accountApiKeyCooldownRetestQueue'), 'DB service runtime snapshot 必须转发 ops-worker 的 Key 级冷却复测队列')
 assert(dbServiceIpcSource.includes('recordMaintenanceQueue: { ...ingestWorkerSnapshot.recordMaintenanceQueue }'), 'DB service runtime snapshot 必须转发 ingest-worker 数据维护本地队列')
 assert(dbServiceIpcSource.includes('recordMaintenanceQueue: { ...statsWorkerSnapshot.recordMaintenanceQueue }'), 'DB service runtime snapshot 必须转发 stats-worker 数据维护本地队列')
-assert(frontendBackgroundJobsSource.includes('const queue = row.retryQueue'), '前端后台任务表必须展示任意任务行携带的 retryQueue')
-assert(frontendBackgroundJobsSource.includes('const queue = row.localQueue'), '前端后台任务表必须展示任意任务行携带的 localQueue')
+assert(dbServiceIpcSource.includes("import('../gateway/runtime/high-concurrency-queue.service.js')") && dbServiceIpcSource.includes('highConcurrencyQueues: highConcurrencyQueue.highConcurrencyGroupQueueSnapshot()'), 'server runtime snapshot 必须暴露高并发短队列')
+assert(dbServiceHandlersSource.includes('getCodexContextStateWriterPoolRuntime()') && dbServiceIpcSource.includes('codexContextStateWriterPool: dbServiceState.lastSnapshot?.codexContextStateWriterPool'), 'DB service runtime snapshot 必须暴露 Codex 状态写入池队列')
+assert(statsRoutesSource.includes('buildBackgroundQueueHealthSnapshot(runtime)') && statsRoutesSource.includes('queueHealth.workerQueues') && statsRoutesSource.includes('queueHealth.serverIpcQueues'), '系统指标接口必须复用后台队列健康快照接入 worker 本地队列和 IPC 队列')
+assert(!statsRoutesSource.includes('loadMockBackgroundRuntimeSnapshot'), '系统指标接口不能在 runtime snapshot 不可用时回退 mock 运行态，避免误导运维排障')
+assert(statsRoutesSource.includes('redisStreamRuntimeQueueRows()') && statsRoutesSource.includes('Redis Stream 使用记录') && statsRoutesSource.includes('getAuditLogRedisStreamRuntime') && statsRoutesSource.includes('getRuntimeLogRedisStreamRuntime'), '系统指标接口必须接入高性能模式 Redis Stream 队列')
+assert(statsRoutesSource.includes('dbServiceRuntimeQueueRows(runtime)') && statsRoutesSource.includes('DB service 请求队列') && statsRoutesSource.includes('DB service dataset-writer pending') && statsRoutesSource.includes('DB service Codex 状态写入池'), '系统指标接口必须接入 DB service 请求队列和写入池队列')
+assert(statsRoutesSource.includes('gatewayAccountSideEffectQueueRows(runtime)') && statsRoutesSource.includes('网关账号副作用队列'), '系统指标接口必须接入网关账号副作用队列')
+assert(statsRoutesSource.includes('highConcurrencyRuntimeQueueRows(runtime)') && statsRoutesSource.includes('高并发短队列'), '系统指标接口必须接入高并发短队列')
+assert(frontendSystemMetricsSource.includes('filter(isBackgroundTaskRow)') && frontendSystemMetricsSource.includes("row.intervalMs > 0 && !row.name.endsWith('-queue')"), '前端后台任务表必须过滤队列伪行，只展示真实定时任务')
+assert(!frontendBackgroundJobsSource.includes('队列：') && !frontendBackgroundJobsSource.includes('队列状态') && !frontendBackgroundJobsSource.includes('backgroundJobQueueSummary'), '前端后台任务表不能展示队列摘要，避免把队列误认为任务')
+assert(frontendSystemMetricsSource.includes('<StatsBackgroundQueuesCard') && frontendSystemMetricsSource.includes('buildBackgroundQueueRows(systemMetrics.value)'), '系统指标页必须把后台队列拆到独立列表')
+assert(frontendBackgroundQueuesHelperSource.includes('.flatMap(backgroundQueueRowsFromRuntimeRow)') && frontendBackgroundQueuesHelperSource.includes('row.retryQueue') && frontendBackgroundQueuesHelperSource.includes('row.localQueue'), '后台队列列表必须从 retryQueue 和 localQueue 独立构建')
+for (const columnTitle of ['积压', '活跃', '大小', '已完成', '丢弃', '写入失败', '拒绝/超时/失败', '最老等待', '时间', 'Redis Stream']) {
+  assert(frontendBackgroundQueuesSource.includes(columnTitle), `后台队列列表必须包含 ${columnTitle} 列`)
+}
+assert(frontendSystemMetricsSource.includes('<a-col :xs="24">\n        <StatsChartCard\n          :title="`进程事件循环延迟'), '系统指标页进程事件循环延迟必须独占整行展示')
+assert(frontendSystemMetricsSource.includes('<a-col :xs="24">\n        <StatsBackgroundJobsCard'), '系统指标页后台任务运行状态必须独占整行展示')
+assert(!frontendSystemMetricsSource.includes(':xl="14"') && !frontendSystemMetricsSource.includes(':xl="10"'), '系统指标页不能把进程事件循环延迟和后台任务运行状态用大屏分栏挤在同一行')
+const processEventLoopCardIndex = frontendSystemMetricsSource.indexOf(':title="`进程事件循环延迟')
+const processMemoryCardIndex = frontendSystemMetricsSource.indexOf(':title="`进程 RSS 峰值趋势')
+const backgroundJobsCardIndex = frontendSystemMetricsSource.indexOf('<StatsBackgroundJobsCard')
+const backgroundQueuesCardIndex = frontendSystemMetricsSource.indexOf('<StatsBackgroundQueuesCard')
+assert(processEventLoopCardIndex >= 0 && processMemoryCardIndex > processEventLoopCardIndex && backgroundJobsCardIndex > processMemoryCardIndex && backgroundQueuesCardIndex > backgroundJobsCardIndex, '系统指标页后台任务和后台队列列表必须放在系统趋势卡片之后，且队列列表跟在任务列表后面')
+assert(!frontendBackgroundJobsSource.includes('展示各后台 worker 内定时任务的最近耗时、失败、跳过和关键本地队列情况。'), '后台任务运行状态不展示说明文案')
+assert(!frontendBackgroundJobsSource.includes('成功 / 失败 / 跳过'), '后台任务表不能把成功、失败、跳过挤在同一列')
+assert(frontendBackgroundJobsSource.includes("{ title: '成功', key: 'successCount'") && frontendBackgroundJobsSource.includes("sorter: sortBackgroundJobNumber('successCount')"), '后台任务成功次数必须单独成列并支持排序')
+assert(frontendBackgroundJobsSource.includes("{ title: '失败', key: 'failureCount'") && frontendBackgroundJobsSource.includes("sorter: sortBackgroundJobNumber('failureCount'), defaultSortOrder: 'descend'"), '后台任务失败次数必须单独成列、支持排序并默认倒序')
+assert(frontendBackgroundJobsSource.includes("{ title: '跳过', key: 'skippedCount'") && frontendBackgroundJobsSource.includes("sorter: sortBackgroundJobNumber('skippedCount')"), '后台任务跳过次数必须单独成列并支持排序')
 
 assert(processMonitorSource.includes("'ops-worker'"), '事件循环采样必须识别 ops-worker')
 assert(!processMonitorSource.includes("'probe-worker'"), '事件循环采样不应保留 probe-worker')
@@ -121,6 +156,17 @@ function assertRoleBlockContainsOnly(role: string, jobNames: string[]): void {
   for (const jobName of jobNames) {
     assert.equal(registryByName.get(jobName)?.defaultRole, role, `${jobName} registry defaultRole 必须和 ${role} 实际挂载一致`)
   }
+}
+
+function assertRolePostgresBlockContains(role: string, jobName: string, message: string): void {
+  const block = roleCaseBlock(role)
+  const marker = 'if (isPostgresHighPerformanceMode()) {'
+  const start = block.indexOf(marker)
+  assert(start >= 0, `${role} 必须包含 PostgreSQL 高性能分支`)
+  const end = block.indexOf('\n      }\n', start)
+  assert(end > start, `${role} PostgreSQL 高性能分支必须有明确结束位置`)
+  const postgresBlock = block.slice(start, end)
+  assert(postgresBlock.includes(`backgroundScheduledJobName('${jobName}')`), message)
 }
 
 function roleCaseBlock(role: string): string {

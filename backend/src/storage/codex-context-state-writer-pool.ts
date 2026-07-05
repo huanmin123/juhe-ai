@@ -97,7 +97,7 @@ const codexContextStateWriterOperationTypes = new Set<CodexContextStateWriterOpe
 const writerBatchDelayMs = 2
 const writerBatchMaxItems = 256
 const writerPool = new KeyedChildProcessPool<CodexContextStateWriterOperation>({
-  name: 'Codex context state',
+  name: 'Responses bridge state index',
   createWorker: createWriterChild,
   targetSize: targetWriterPoolSize,
   queueMaxItems: () => runtimeConfig.codexContextStateWriterQueueMaxItems,
@@ -105,7 +105,7 @@ const writerPool = new KeyedChildProcessPool<CodexContextStateWriterOperation>({
   operationType: (operation) => operation.type
 })
 const responseSessionSaveBatch = new KeyedBatchBuffer<CodexContextResponseStateIndex>({
-  name: 'Codex context response session save',
+  name: 'Responses bridge response session save',
   maxItems: writerBatchMaxItems,
   delayMs: writerBatchDelayMs,
   flush: async (_key, rows) => {
@@ -113,7 +113,7 @@ const responseSessionSaveBatch = new KeyedBatchBuffer<CodexContextResponseStateI
   }
 })
 const responseRowSaveBatch = new KeyedBatchBuffer<CodexContextResponseStateIndex>({
-  name: 'Codex context response row save',
+  name: 'Responses bridge response row save',
   maxItems: writerBatchMaxItems,
   delayMs: writerBatchDelayMs,
   flush: async (_key, rows) => {
@@ -121,7 +121,7 @@ const responseRowSaveBatch = new KeyedBatchBuffer<CodexContextResponseStateIndex
   }
 })
 const compactSessionSaveBatch = new KeyedBatchBuffer<CodexContextCompactStateIndex>({
-  name: 'Codex context compact session save',
+  name: 'Responses bridge compact session save',
   maxItems: writerBatchMaxItems,
   delayMs: writerBatchDelayMs,
   flush: async (_key, rows) => {
@@ -129,7 +129,7 @@ const compactSessionSaveBatch = new KeyedBatchBuffer<CodexContextCompactStateInd
   }
 })
 const compactRowSaveBatch = new KeyedBatchBuffer<CodexContextCompactStateIndex>({
-  name: 'Codex context compact row save',
+  name: 'Responses bridge compact row save',
   maxItems: writerBatchMaxItems,
   delayMs: writerBatchDelayMs,
   flush: async (_key, rows) => {
@@ -137,7 +137,7 @@ const compactRowSaveBatch = new KeyedBatchBuffer<CodexContextCompactStateIndex>(
   }
 })
 const sessionTouchBatch = new KeyedBatchBuffer<{ sessionId: string; now: string; refreshExpiresAt: string }>({
-  name: 'Codex context session touch',
+  name: 'Responses bridge session touch',
   maxItems: writerBatchMaxItems,
   delayMs: writerBatchDelayMs,
   flush: async (_key, touches) => {
@@ -145,7 +145,7 @@ const sessionTouchBatch = new KeyedBatchBuffer<{ sessionId: string; now: string;
   }
 })
 const responseTouchBatch = new KeyedBatchBuffer<{ responseIds: string[]; now: string; refreshExpiresAt: string }>({
-  name: 'Codex context response touch',
+  name: 'Responses bridge response touch',
   maxItems: writerBatchMaxItems,
   delayMs: writerBatchDelayMs,
   flush: async (_key, touches) => {
@@ -160,7 +160,7 @@ const responseTouchBatch = new KeyedBatchBuffer<{ responseIds: string[]; now: st
   }
 })
 const compactTouchBatch = new KeyedBatchBuffer<{ compactId: string; now: string; refreshExpiresAt: string }>({
-  name: 'Codex context compact touch',
+  name: 'Responses bridge compact touch',
   maxItems: writerBatchMaxItems,
   delayMs: writerBatchDelayMs,
   flush: async (_key, touches) => {
@@ -179,7 +179,8 @@ const writerBatches = [
 let cleanupShardCursor = 0
 
 export function codexContextStateWriterPoolEnabled(): boolean {
-  return runtimeConfig.processRole === 'db-service'
+  return runtimeConfig.databaseDriver === 'sqlite'
+    && runtimeConfig.processRole === 'db-service'
     && runtimeConfig.codexContextStateWriterPoolEnabled
     && codexContextStateShardCount() > 1
 }
@@ -509,7 +510,7 @@ function scheduleCodexContextTouch(promise: Promise<void>, kind: string, key: st
       event: 'codex_context_touch_batch_failed',
       touchKind: kind,
       touchKey: key
-    }), 'Codex context last_used 刷新失败，已保留读取结果')
+    }), 'Responses 桥接状态 last_used 刷新失败，已保留读取结果')
   })
 }
 
@@ -577,9 +578,6 @@ function matchesBoundary(row: CodexContextStateBoundary, boundary: CodexContextS
     && (row.apiKeyId ?? '') === (boundary.apiKeyId ?? '')
     && row.groupId === boundary.groupId
     && row.providerCode === boundary.providerCode
-    && row.providerProtocolProfileId === boundary.providerProtocolProfileId
-    && row.protocolCode === boundary.protocolCode
-    && row.protocolVersion === boundary.protocolVersion
 }
 
 function requiredText(value: unknown, label: string): string {
@@ -631,5 +629,5 @@ function writerWorkerEnv(): NodeJS.ProcessEnv {
 }
 
 function assertNever(value: never): never {
-  throw new Error(`未知 Codex context state writer 操作：${JSON.stringify(value)}`)
+  throw new Error(`未知 Responses bridge state writer 操作：${JSON.stringify(value)}`)
 }

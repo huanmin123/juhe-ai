@@ -112,14 +112,26 @@ import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import { authState } from '@/composables/useAuth'
+import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime, formatNumber } from '@/shared/formatters'
+import { sanitizePaginationState, stringOrFallback, type PagePaginationState } from '@/shared/pageStateSanitizers'
 import { isAdminRole, isSuperAdminRole, systemAccountRoleColor, systemAccountRoleLabel } from '@/shared/systemAccountRoles'
 import type { SystemAccountRole, SystemAccountStatus, SystemAccountSummary } from '@/types/domain'
 
+interface SystemAccountsPageState {
+  keyword: string
+  pagination: PagePaginationState
+}
+
 const pageSize = 20
+const pageStateCache = usePageStateCache<SystemAccountsPageState>(undefined, defaultSystemAccountsPageState, {
+  sanitize: sanitizeSystemAccountsPageState,
+  version: 1
+})
+const initialPageState = pageStateCache.read()
 const { submitAction, submittingRef } = useSubmitAction('system-accounts')
 const systemAccountSaving = submittingRef('system_accounts.save')
 const resetPasswordSaving = submittingRef('system_accounts.reset_password')
@@ -129,7 +141,7 @@ const editingId = ref<string>()
 const resettingId = ref<string>()
 const resettingAccountRole = ref<SystemAccountRole>()
 const resetPassword = ref('')
-const keyword = ref('')
+const keyword = ref(initialPageState.keyword)
 const canManageSystemAccounts = computed(() => isSuperAdminRole(authState.currentUser.value?.role))
 const whitespacePattern = /\s/
 
@@ -188,6 +200,7 @@ const {
   loading,
   mobileHasMore,
   mobileLoadingMore,
+  pagination,
   tablePagination,
   handleTableChange,
   loadData,
@@ -196,6 +209,7 @@ const {
   resetPagination
 } = useResponsivePagedList<SystemAccountSummary>({
   pageSize,
+  initialPagination: initialPageState.pagination,
   showTotal: (total, range, context) => context?.hasMore
     ? `已加载到第 ${formatNumber(range?.[1] ?? total - 1)} 个系统账户，还有更多`
     : `共 ${formatNumber(total)} 个系统账户`,
@@ -344,6 +358,7 @@ function searchAccounts() {
 function resetSearch() {
   keyword.value = ''
   resetPagination()
+  pageStateCache.clear()
   void loadData()
 }
 
@@ -354,6 +369,30 @@ function refreshAccounts() {
 function hasWhitespace(value: string): boolean {
   return whitespacePattern.test(value)
 }
+
+function defaultSystemAccountsPageState(): SystemAccountsPageState {
+  return {
+    keyword: '',
+    pagination: { current: 1, pageSize }
+  }
+}
+
+function sanitizeSystemAccountsPageState(value: unknown, fallback: SystemAccountsPageState): SystemAccountsPageState {
+  const source = value && typeof value === 'object' ? value as Partial<SystemAccountsPageState> : {}
+  return {
+    keyword: stringOrFallback(source.keyword, fallback.keyword),
+    pagination: sanitizePaginationState(source.pagination, fallback.pagination)
+  }
+}
+
+function snapshotPageState(): SystemAccountsPageState {
+  return {
+    keyword: keyword.value,
+    pagination: { current: pagination.current, pageSize: pagination.pageSize }
+  }
+}
+
+watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 
 onMounted(loadData)
 

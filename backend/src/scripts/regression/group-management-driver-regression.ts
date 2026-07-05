@@ -51,9 +51,11 @@ try {
         JUHE_AI_DATABASE_DRIVER: 'postgres',
         JUHE_AI_CACHE_DRIVER: 'redis',
         JUHE_AI_RUNTIME_STATE_DRIVER: 'redis',
+        JUHE_AI_QUEUE_DRIVER: 'redis_stream',
         JUHE_AI_POSTGRES_URL: process.env.JUHE_GROUP_MANAGEMENT_POSTGRES_URL,
         JUHE_AI_REDIS_CACHE_URL: process.env.JUHE_GROUP_MANAGEMENT_REDIS_CACHE_URL ?? 'redis://:unused@127.0.0.1:6379/0',
-        JUHE_AI_REDIS_STATE_URL: process.env.JUHE_GROUP_MANAGEMENT_REDIS_STATE_URL ?? 'redis://:unused@127.0.0.1:6380/0'
+        JUHE_AI_REDIS_STATE_URL: process.env.JUHE_GROUP_MANAGEMENT_REDIS_STATE_URL ?? 'redis://:unused@127.0.0.1:6380/0',
+        JUHE_AI_REDIS_QUEUE_URL: process.env.JUHE_GROUP_MANAGEMENT_REDIS_QUEUE_URL ?? process.env.JUHE_GROUP_MANAGEMENT_REDIS_STATE_URL ?? 'redis://:unused@127.0.0.1:6380/0'
       }
     })
     if (result.status !== 0) {
@@ -110,6 +112,15 @@ async function assertGroupManagementAsync(repositories: typeof import('../../sto
     }, adminAccess),
     /同一供应商下分组名称已存在/,
     '异步创建分组不能重复同供应商名称'
+  )
+  await assert.rejects(
+    () => repositories.createGroupAsync({
+      name: `${name}协议档案禁用`,
+      providerCode: 'gpt',
+      providerProtocolProfileId: 'profile_should_not_be_allowed'
+    }, adminAccess),
+    /分组创建参数包含未知字段/,
+    '异步创建分组不应接受协议档案字段'
   )
 
   const renamed = await repositories.updateGroupAsync(created.id, {

@@ -148,22 +148,21 @@ export function groupNameByAccountIdMap(accounts: AccountSummary[], groups: Grou
   return map
 }
 
-export function manageableGroupsForProvider(groups: GroupOptionSummary[], providerCode?: string, providerProtocolProfileId?: string): GroupOptionSummary[] {
-  return groups.filter((group) => isManageableGroupForProvider(group, providerCode, providerProtocolProfileId))
+export function manageableGroupsForProvider(groups: GroupOptionSummary[], providerCode?: string): GroupOptionSummary[] {
+  return groups.filter((group) => isManageableGroupForProvider(group, providerCode))
 }
 
-export function isManageableGroupForProvider(group: GroupOptionSummary, providerCode?: string, providerProtocolProfileId?: string): boolean {
-  void providerProtocolProfileId
+export function isManageableGroupForProvider(group: GroupOptionSummary, providerCode?: string): boolean {
   return canManageGroupAccounts(group)
     && (!providerCode || group.providerCode === providerCode)
 }
 
-export function groupOptionsForProvider(groups: GroupOptionSummary[], providerCode?: string, providerProtocolProfileId?: string): SelectOption[] {
-  return manageableGroupsForProvider(groups, providerCode, providerProtocolProfileId).map((group) => ({ label: group.name, value: group.id }))
+export function groupOptionsForProvider(groups: GroupOptionSummary[], providerCode?: string): SelectOption[] {
+  return manageableGroupsForProvider(groups, providerCode).map((group) => ({ label: group.name, value: group.id }))
 }
 
-export function groupOptionsForProviderWithSelected(groups: GroupOptionSummary[], providerCode: string | undefined, selectedIds: Array<string | undefined>, providerProtocolProfileId?: string): SelectOption[] {
-  const options = groupOptionsForProvider(groups, providerCode, providerProtocolProfileId)
+export function groupOptionsForProviderWithSelected(groups: GroupOptionSummary[], providerCode: string | undefined, selectedIds: Array<string | undefined>): SelectOption[] {
+  const options = groupOptionsForProvider(groups, providerCode)
   const merged = new Map(options.map((option) => [option.value, option]))
   for (const id of selectedIds) {
     const normalizedId = id?.trim()
@@ -176,14 +175,14 @@ export function groupOptionsForProviderWithSelected(groups: GroupOptionSummary[]
   return [...merged.values()]
 }
 
-export function defaultGroupForProvider(groups: GroupOptionSummary[], providerCode: string, providerProtocolProfileId?: string): GroupOptionSummary | undefined {
-  const candidates = manageableGroupsForProvider(groups, providerCode, providerProtocolProfileId)
+export function defaultGroupForProvider(groups: GroupOptionSummary[], providerCode: string): GroupOptionSummary | undefined {
+  const candidates = manageableGroupsForProvider(groups, providerCode)
   return candidates.find((group) => group.isDefault)
 }
 
 export function bindGroupOptionsForAccount(groups: GroupOptionSummary[], account?: AccountSummary): SelectOption[] {
   if (!account) return []
-  return groupOptionsForProviderWithSelected(groups, account.providerCode, [account.boundGroupId], account.providerProtocolProfileId)
+  return groupOptionsForProviderWithSelected(groups, account.providerCode, [account.boundGroupId])
 }
 
 export function bindGroupTip(account?: AccountSummary): string {

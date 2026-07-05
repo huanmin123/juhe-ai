@@ -4,7 +4,7 @@ import type { GatewayApiKeyRow } from '../../../storage/repositories.js'
 import { checkGatewayAuthorizationQuotaBatchAsync } from '../quota/authorization-quota.service.js'
 import {
   listCachedOpenAIAccountsForGroupAsync,
-  listCachedActiveResponseInspectionPoliciesAsync,
+  listCachedActiveResponseInspectionPoliciesForAccountsAsync,
   resolveCachedGroupUsageAccessMetadataAsync
 } from '../runtime/runtime-cache.service.js'
 import {
@@ -21,7 +21,7 @@ import { gatewayRequestEndpointFamily } from '../protocols/openai-v1/model-mappi
 import type { ClientCompatibilityCapability } from '../../../domain/types.js'
 import type { OpenAIGatewayRequestLane } from '../protocols/openai-v1/request-lane.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
-import { areGatewayAccountsCapacityBusyForLane } from './capacity.js'
+import { areGatewayAccountsCapacityBusyForLaneAsync } from './capacity.js'
 import type { ResponseInspectionPolicySummary } from '../../../storage/response-inspection-policy.repository.js'
 
 export interface ApiKeyGroupFallbackCandidateInput {
@@ -104,19 +104,18 @@ export async function resolveNextApiKeyGroupFallbackCandidate(
     if (!quotaAllowedAccounts.length) {
       continue
     }
-    const runtimeDegradationOrder = orderGatewayAccountsByRuntimeDegradation(quotaAllowedAccounts)
+    const runtimeDegradationOrder = orderGatewayAccountsByRuntimeDegradation(quotaAllowedAccounts, {
+      modelRankByAccountId: modelFilter.modelPriority.rankByAccountId
+    })
     if (input.reason === 'runtime_degraded' && runtimeDegradationOrder.bypassedAllDegraded) {
       continue
     }
     const orderedQuotaAllowedAccounts = runtimeDegradationOrder.accounts
     if ((input.reason === 'high_concurrency_group_busy' || input.reason === 'group_capacity_busy')
-      && areGatewayAccountsCapacityBusyForLane(orderedQuotaAllowedAccounts, input.requestLane, groupAccess.schedulingPolicy)) {
+      && await areGatewayAccountsCapacityBusyForLaneAsync(orderedQuotaAllowedAccounts, input.requestLane, groupAccess.schedulingPolicy)) {
       continue
     }
-    const responseInspectionPolicies = await listCachedActiveResponseInspectionPoliciesAsync({
-      protocolCode: groupAccess.protocolCode,
-      providerCode: groupAccess.providerCode
-    })
+    const responseInspectionPolicies = await listCachedActiveResponseInspectionPoliciesForAccountsAsync(orderedQuotaAllowedAccounts)
     return {
       groupId: binding.group_id,
       accounts: orderedQuotaAllowedAccounts,

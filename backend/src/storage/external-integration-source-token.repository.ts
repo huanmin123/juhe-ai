@@ -35,6 +35,7 @@ import {
   normalizeNameOrThrow
 } from './external-integration-source-write-helpers.js'
 import { getPostgresPool } from './postgres-client.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
 const externalIntegrationSourceTokenInputKeys = new Set(['sourceRefId', 'name', 'token', 'status', 'scopes', 'expiresAt'])
 const externalIntegrationSourceTokenUpdateInputKeys = new Set(['name', 'status', 'scopes', 'expiresAt'])
@@ -236,6 +237,13 @@ export function findExternalIntegrationSourceTokenSecret(sourceRefId: string, to
 }
 
 export async function findExternalIntegrationSourceTokenSecretAsync(sourceRefId: string, tokenId: string): Promise<ExternalIntegrationSourceTokenSecret | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'find_external_integration_source_token_secret_read_only',
+      sourceRefId,
+      tokenId
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return findExternalIntegrationSourceTokenSecret(sourceRefId, tokenId)
   }
@@ -441,6 +449,32 @@ export function loadExternalIntegrationSourceTokensBySourceIds(sourceIds: string
   return result
 }
 
+export function loadExternalIntegrationSourcePrimaryTokensBySourceIds(sourceIds: string[]): Map<string, ExternalIntegrationSourceTokenSummary> {
+  const result = new Map<string, ExternalIntegrationSourceTokenSummary>()
+  const ids = [...new Set(sourceIds.filter(Boolean))]
+  if (!ids.length) {
+    return result
+  }
+  const placeholders = ids.map(() => '?').join(',')
+  const rows = getBusinessDatabase().prepare(`
+    SELECT *
+    FROM (
+      SELECT tokens.*,
+        ROW_NUMBER() OVER (
+          PARTITION BY tokens.source_ref_id
+          ORDER BY CASE WHEN tokens.status = 'active' THEN 0 ELSE 1 END ASC, tokens.created_at DESC, tokens.id DESC
+        ) AS token_rank
+      FROM external_integration_source_tokens AS tokens
+      WHERE tokens.source_ref_id IN (${placeholders})
+    )
+    WHERE token_rank = 1
+  `).all(...ids) as unknown as ExternalIntegrationSourceTokenListRow[]
+  for (const row of rows) {
+    result.set(row.source_ref_id, mapTokenSummary(row))
+  }
+  return result
+}
+
 export async function loadExternalIntegrationSourceTokensBySourceIdsAsync(sourceIds: string[], clientInput?: DatabaseClient): Promise<Map<string, ExternalIntegrationSourceTokenSummary[]>> {
   if (runtimeConfig.databaseDriver !== 'postgres' && !clientInput) {
     return loadExternalIntegrationSourceTokensBySourceIds(sourceIds)
@@ -464,6 +498,35 @@ export async function loadExternalIntegrationSourceTokensBySourceIdsAsync(source
     } else {
       result.set(row.source_ref_id, [token])
     }
+  }
+  return result
+}
+
+export async function loadExternalIntegrationSourcePrimaryTokensBySourceIdsAsync(sourceIds: string[], clientInput?: DatabaseClient): Promise<Map<string, ExternalIntegrationSourceTokenSummary>> {
+  if (runtimeConfig.databaseDriver !== 'postgres' && !clientInput) {
+    return loadExternalIntegrationSourcePrimaryTokensBySourceIds(sourceIds)
+  }
+  const result = new Map<string, ExternalIntegrationSourceTokenSummary>()
+  const ids = [...new Set(sourceIds.filter(Boolean))]
+  if (!ids.length) {
+    return result
+  }
+  const client = clientInput ?? createPostgresDatabaseClient(await getPostgresPool())
+  const rows = await client.query<ExternalIntegrationSourceTokenListRow>(`
+    SELECT *
+    FROM (
+      SELECT tokens.*,
+        ROW_NUMBER() OVER (
+          PARTITION BY tokens.source_ref_id
+          ORDER BY CASE WHEN tokens.status = 'active' THEN 0 ELSE 1 END ASC, tokens.created_at DESC, tokens.id DESC
+        ) AS token_rank
+      FROM ${externalIntegrationTokenBusinessTable(client, 'external_integration_source_tokens')} AS tokens
+      WHERE tokens.source_ref_id IN (${client.dialect.bindPlaceholders(ids.length)})
+    ) ranked_tokens
+    WHERE token_rank = 1
+  `, ids)
+  for (const row of rows) {
+    result.set(row.source_ref_id, mapTokenSummary(row))
   }
   return result
 }

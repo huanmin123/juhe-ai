@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { scheduleProcessFatalError } from '../../shared/process-fatal.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
-import { RedisStreamQueue, type RedisStreamMessage } from '../../shared/redis-stream-queue.js'
+import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime } from '../../shared/redis-stream-queue.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import { nowIso } from '../../storage/database.js'
 import {
@@ -82,7 +83,7 @@ export function enqueueRuntimeLogLine(rawLine: string, options: RuntimeLogLineIn
   if (shouldEnqueueRuntimeLogToRedisStream()) {
     const input = runtimeLogInputFromLine(rawLine, options)
     if (!input) return
-    void enqueueRuntimeLogToRedisStream(input, rawLine, options)
+    void enqueueRuntimeLogToRedisStream(input, rawLine, options).catch(scheduleProcessFatalError)
     return
   }
   if (runtimeConfig.processRole === 'db-service') {
@@ -486,7 +487,8 @@ async function enqueueRuntimeLogToRedisStream(input: RuntimeLogIndexInput, _rawL
     await runtimeLogRedisStreamQueue().enqueue(input)
   } catch (error) {
     flushLastError = error instanceof Error ? error.message : String(error)
-    writeRuntimeLogIndexError(`运行日志索引写入 Redis Stream 失败，未切换到 IPC 或本地队列：${flushLastError}`)
+    writeRuntimeLogIndexError(`运行日志索引写入 Redis Stream 失败，高性能模式禁止回退 IPC 或本地队列：${flushLastError}`)
+    throw error
   }
 }
 
@@ -536,6 +538,11 @@ function runtimeLogRedisStreamQueue(): RedisStreamQueue<RuntimeLogIndexInput> {
   return runtimeLogRedisStreamQueueInstance
 }
 
+export async function getRuntimeLogRedisStreamRuntime(): Promise<RedisStreamQueueRuntime | undefined> {
+  if (!shouldUseRedisStreamRuntimeLogQueue()) return undefined
+  return await runtimeLogRedisStreamQueue().inspectRuntime()
+}
+
 function sendRuntimeLogLineFromDbServiceToServer(rawLine: string, options: RuntimeLogLineIndexOptions): void {
   if (!process.send || process.connected === false) {
     writeRuntimeLogIndexError('DB service 无法投递运行日志索引到 ingest-worker，已丢弃日志行')
@@ -560,6 +567,9 @@ function sendRuntimeLogLineFromDbServiceToServer(rawLine: string, options: Runti
 }
 
 function assertLocalRuntimeLogIndexAllowed(operation: string): void {
+  if (shouldUseRedisStreamRuntimeLogQueue()) {
+    throw new Error(`Redis Stream queue driver 下禁止写入运行日志索引本地队列：${operation}`)
+  }
   if (!isRuntimeLogIngestWorker()) {
     throw new Error(`${runtimeConfig.processRole}/${runtimeConfig.workerRole} 角色禁止直接写入运行日志索引：${operation} 必须投递 ingest-worker`)
   }
@@ -579,7 +589,7 @@ function shouldUseRedisStreamRuntimeLogQueue(): boolean {
 }
 
 function shouldEnqueueRuntimeLogToRedisStream(): boolean {
-  return shouldUseRedisStreamRuntimeLogQueue() && !isRuntimeLogIngestWorker()
+  return shouldUseRedisStreamRuntimeLogQueue()
 }
 
 function estimateRuntimeLogBytes(input: RuntimeLogIndexInput): number {

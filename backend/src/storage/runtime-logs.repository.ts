@@ -3,6 +3,8 @@ import { beginDatabaseTransaction, commitDatabaseTransaction, getDatasetDatabase
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
+import { getSettings, getSettingsAsync } from './settings.repository.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import { optionalString } from './value-utils.js'
 
 export type RuntimeLogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal'
@@ -49,11 +51,11 @@ export interface RuntimeLogSummary {
   event?: string
   message?: string
   errorMessage?: string
-  rawJson: string
+  rawJson?: string
   createdAt: string
 }
 
-export type RuntimeLogDetail = RuntimeLogSummary
+export type RuntimeLogDetail = RuntimeLogSummary & { rawJson: string }
 
 export interface RuntimeLogFacets {
   retentionDays: number
@@ -109,7 +111,8 @@ interface NormalizedRuntimeLogIndexInput {
 const runtimeLogDefaultPageSize = 100
 const runtimeLogMaxPageSize = 100
 const runtimeLogMaxListWindowRows = 1001
-export const runtimeLogIndexRetentionDays = 3
+export const runtimeLogIndexRetentionDays = 14
+export const runtimeLogIndexRetentionMaxDays = 90
 const runtimeLogKeywordDefaultWindowHours = 6
 const runtimeLogFacetBucketKey = 'current'
 const runtimeLogFacetMaxEvents = 80
@@ -161,6 +164,10 @@ export function createRuntimeLogsBatch(inputs: RuntimeLogIndexInput[]): void {
 }
 
 export function listRuntimeLogs(options: RuntimeLogListOptions = {}): RuntimeLogListResult {
+  return listRuntimeLogsReadOnly(options)
+}
+
+export function listRuntimeLogsReadOnly(options: RuntimeLogListOptions = {}): RuntimeLogListResult {
   const filters = buildRuntimeLogFilters(options)
   const pageSize = normalizeRuntimeLogPageSize(options.pageSize)
   const page = normalizeRuntimeLogPage(options.page, pageSize)
@@ -178,7 +185,7 @@ export function listRuntimeLogs(options: RuntimeLogListOptions = {}): RuntimeLog
     .all(...filters.params, pageSize + 1, offset) as RuntimeLogRow[]
 
   const pageRows = takePageRows(rows, pageSize)
-  const items = pageRows.rows.map(runtimeLogFromRow)
+  const items = pageRows.rows.map((row) => runtimeLogFromRow(row, { includeRawJson: false }))
   return {
     items,
     total: pagedTotalUpperBound(page, pageSize, items.length, pageRows.hasMore),
@@ -234,7 +241,13 @@ async function insertRuntimeLogPostgres(client: DatabaseClient, input: Normalize
 
 export async function listRuntimeLogsAsync(options: RuntimeLogListOptions = {}): Promise<RuntimeLogListResult> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return listRuntimeLogs(options)
+    if (sqliteReadWorkerPoolEnabled()) {
+      return requestSqliteReadWorker({
+        type: 'list_runtime_logs_read_only',
+        options
+      })
+    }
+    return listRuntimeLogsReadOnly(options)
   }
   const filters = buildRuntimeLogFilters(options)
   const pageSize = normalizeRuntimeLogPageSize(options.pageSize)
@@ -251,7 +264,7 @@ export async function listRuntimeLogsAsync(options: RuntimeLogListOptions = {}):
   `, [...filters.params, pageSize + 1, offset])
 
   const pageRows = takePageRows(rows, pageSize)
-  const items = pageRows.rows.map(runtimeLogFromRow)
+  const items = pageRows.rows.map((row) => runtimeLogFromRow(row, { includeRawJson: false }))
   return {
     items,
     total: pagedTotalUpperBound(page, pageSize, items.length, pageRows.hasMore),
@@ -262,6 +275,10 @@ export async function listRuntimeLogsAsync(options: RuntimeLogListOptions = {}):
 }
 
 export function getRuntimeLogDetail(id: string): RuntimeLogDetail | undefined {
+  return getRuntimeLogDetailReadOnly(id)
+}
+
+export function getRuntimeLogDetailReadOnly(id: string): RuntimeLogDetail | undefined {
   const row = getDatasetDatabase()
     .prepare(`
       SELECT ${runtimeLogDetailSelectColumns('rl')}
@@ -270,12 +287,18 @@ export function getRuntimeLogDetail(id: string): RuntimeLogDetail | undefined {
       LIMIT 1
     `)
     .get(id.trim()) as RuntimeLogRow | undefined
-  return row ? runtimeLogFromRow(row) : undefined
+  return row ? runtimeLogDetailFromRow(row) : undefined
 }
 
 export async function getRuntimeLogDetailAsync(id: string): Promise<RuntimeLogDetail | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return getRuntimeLogDetail(id)
+    if (sqliteReadWorkerPoolEnabled()) {
+      return requestSqliteReadWorker({
+        type: 'get_runtime_log_detail_read_only',
+        id
+      })
+    }
+    return getRuntimeLogDetailReadOnly(id)
   }
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const row = await client.one<RuntimeLogRow>(`
@@ -284,10 +307,14 @@ export async function getRuntimeLogDetailAsync(id: string): Promise<RuntimeLogDe
     WHERE rl.id = ?
     LIMIT 1
   `, [id.trim()])
-  return row ? runtimeLogFromRow(row) : undefined
+  return row ? runtimeLogDetailFromRow(row) : undefined
 }
 
 export function getRuntimeLogFacets(): RuntimeLogFacets {
+  return getRuntimeLogFacetsReadOnly()
+}
+
+export function getRuntimeLogFacetsReadOnly(): RuntimeLogFacets {
   const database = getDatasetDatabase()
   const range = database
     .prepare('SELECT earliest_time, latest_time, total_count FROM runtime_log_facet_summary WHERE bucket_key = ?')
@@ -310,7 +337,7 @@ export function getRuntimeLogFacets(): RuntimeLogFacets {
     `)
     .all(runtimeLogFacetBucketKey, runtimeLogFacetMaxEvents) as RuntimeLogRow[]
   return {
-    retentionDays: runtimeLogIndexRetentionDays,
+    retentionDays: currentRuntimeLogIndexRetentionDays(),
     earliestIndexedAt: optionalString(range?.earliest_time),
     latestIndexedAt: optionalString(range?.latest_time),
     totalIndexed: Number(range?.total_count ?? 0),
@@ -321,7 +348,12 @@ export function getRuntimeLogFacets(): RuntimeLogFacets {
 
 export async function getRuntimeLogFacetsAsync(): Promise<RuntimeLogFacets> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return getRuntimeLogFacets()
+    if (sqliteReadWorkerPoolEnabled()) {
+      return requestSqliteReadWorker({
+        type: 'get_runtime_log_facets_read_only'
+      })
+    }
+    return getRuntimeLogFacetsReadOnly()
   }
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const [range, levels, events] = await Promise.all([
@@ -343,8 +375,9 @@ export async function getRuntimeLogFacetsAsync(): Promise<RuntimeLogFacets> {
       LIMIT ?
     `, [runtimeLogFacetBucketKey, runtimeLogFacetMaxEvents])
   ])
+  const retentionDays = await currentRuntimeLogIndexRetentionDaysAsync()
   return {
-    retentionDays: runtimeLogIndexRetentionDays,
+    retentionDays,
     earliestIndexedAt: optionalString(range?.earliest_time),
     latestIndexedAt: optionalString(range?.latest_time),
     totalIndexed: Number(range?.total_count ?? 0),
@@ -353,7 +386,7 @@ export async function getRuntimeLogFacetsAsync(): Promise<RuntimeLogFacets> {
   }
 }
 
-export function ensureRuntimeLogFacetSnapshots(cutoffIso = retentionCutoffIso()): void {
+export function ensureRuntimeLogFacetSnapshots(cutoffIso = retentionCutoffIso(currentRuntimeLogIndexRetentionDays())): void {
   const database = getDatasetDatabase()
   const summary = database
     .prepare('SELECT bucket_key FROM runtime_log_facet_summary WHERE bucket_key = ? LIMIT 1')
@@ -366,7 +399,7 @@ export function ensureRuntimeLogFacetSnapshots(cutoffIso = retentionCutoffIso())
   if (!hasIndexedLogs?.id) return
 }
 
-export function cleanupRuntimeLogIndex(cutoffIso = retentionCutoffIso(), limit = 10000): number {
+export function cleanupRuntimeLogIndex(cutoffIso = retentionCutoffIso(currentRuntimeLogIndexRetentionDays()), limit = 10000): number {
   const database = getDatasetDatabase()
   const rows = database
     .prepare('SELECT id, time, level, event FROM runtime_logs WHERE time < ? ORDER BY time ASC, id ASC LIMIT ?')
@@ -560,7 +593,7 @@ function positiveInteger(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0
 }
 
-function runtimeLogFromRow(row: RuntimeLogRow): RuntimeLogSummary {
+function runtimeLogFromRow(row: RuntimeLogRow, options: { includeRawJson?: boolean } = { includeRawJson: true }): RuntimeLogSummary {
   return {
     id: String(row.id),
     time: String(row.time),
@@ -569,9 +602,13 @@ function runtimeLogFromRow(row: RuntimeLogRow): RuntimeLogSummary {
     event: optionalString(row.event),
     message: optionalString(row.message),
     errorMessage: optionalString(row.error_message),
-    rawJson: optionalString(row.raw_json) ?? '',
+    ...(options.includeRawJson === false ? {} : { rawJson: optionalString(row.raw_json) ?? '' }),
     createdAt: String(row.created_at)
   }
+}
+
+function runtimeLogDetailFromRow(row: RuntimeLogRow): RuntimeLogDetail {
+  return runtimeLogFromRow(row) as RuntimeLogDetail
 }
 
 function runtimeLogFileCursorFromRow(row: RuntimeLogRow): RuntimeLogFileCursor {
@@ -607,7 +644,7 @@ function normalizeRuntimeLogIndexInput(input: RuntimeLogIndexInput): NormalizedR
 }
 
 function incrementRuntimeLogFacetSnapshots(database: ReturnType<typeof getDatasetDatabase>, rows: RuntimeLogFacetInput[]): void {
-  const cutoff = retentionCutoffIso()
+  const cutoff = retentionCutoffIso(currentRuntimeLogIndexRetentionDays())
   const retainedRows = rows.filter((row) => row.time >= cutoff)
   if (retainedRows.length === 0) return
 
@@ -681,7 +718,7 @@ function incrementRuntimeLogFacetSnapshots(database: ReturnType<typeof getDatase
 }
 
 async function incrementRuntimeLogFacetSnapshotsPostgres(client: DatabaseClient, rows: RuntimeLogFacetInput[]): Promise<void> {
-  const cutoff = retentionCutoffIso()
+  const cutoff = retentionCutoffIso(await currentRuntimeLogIndexRetentionDaysAsync())
   const retainedRows = rows.filter((row) => row.time >= cutoff)
   if (retainedRows.length === 0) return
 
@@ -833,6 +870,30 @@ function normalizeLevel(value: string): string {
   return text || 'info'
 }
 
-function retentionCutoffIso(): string {
-  return new Date(Date.now() - runtimeLogIndexRetentionDays * 24 * 60 * 60 * 1000).toISOString()
+export function runtimeLogIndexRetentionDaysFromSettings(settings: Record<string, unknown>): number {
+  const value = settings.runtimeLogIndexRetentionDays
+  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
+    return runtimeLogIndexRetentionDays
+  }
+  return Math.min(Math.max(1, value), runtimeLogIndexRetentionMaxDays)
+}
+
+function currentRuntimeLogIndexRetentionDays(): number {
+  try {
+    return runtimeLogIndexRetentionDaysFromSettings(getSettings())
+  } catch {
+    return runtimeLogIndexRetentionDays
+  }
+}
+
+async function currentRuntimeLogIndexRetentionDaysAsync(): Promise<number> {
+  try {
+    return runtimeLogIndexRetentionDaysFromSettings(await getSettingsAsync())
+  } catch {
+    return runtimeLogIndexRetentionDays
+  }
+}
+
+function retentionCutoffIso(retentionDays = runtimeLogIndexRetentionDays): string {
+  return new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString()
 }

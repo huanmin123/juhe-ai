@@ -151,16 +151,18 @@
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
-import { onMounted, reactive, ref } from 'vue'
+import { onMounted, reactive, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
+import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatNumber } from '@/shared/formatters'
+import { sanitizePaginationState, stringOrFallback, type PagePaginationState } from '@/shared/pageStateSanitizers'
 import type { ProxyProfileSummary, ProxyTestReport } from '@/types/domain'
 import ProxyTestReportModal from './ProxyTestReportModal.vue'
 import {
@@ -174,12 +176,22 @@ import {
   testStatusText
 } from './proxyDisplay'
 
+interface ProxiesPageState {
+  keyword: string
+  pagination: PagePaginationState
+}
+
 const pageSize = 20
+const pageStateCache = usePageStateCache<ProxiesPageState>(undefined, defaultProxiesPageState, {
+  sanitize: sanitizeProxiesPageState,
+  version: 1
+})
+const initialPageState = pageStateCache.read()
 const modalOpen = ref(false)
 const editingId = ref<string>()
 const { submitAction, submittingRef } = useSubmitAction('proxies')
 const proxySaving = submittingRef('proxies.save')
-const keyword = ref('')
+const keyword = ref(initialPageState.keyword)
 const testingProxyId = ref<string>()
 const testReportOpen = ref(false)
 const selectedTestProxy = ref<ProxyProfileSummary>()
@@ -201,6 +213,7 @@ const {
   loading,
   mobileHasMore,
   mobileLoadingMore,
+  pagination,
   tablePagination,
   handleTableChange,
   loadData,
@@ -211,6 +224,7 @@ const {
   updateItems: updateProxyItems
 } = useResponsivePagedList<ProxyProfileSummary>({
   pageSize,
+  initialPagination: initialPageState.pagination,
   showTotal: (total, range, context) => context?.hasMore
     ? `已加载到第 ${formatNumber(range?.[1] ?? total - 1)} 个代理，还有更多`
     : `共 ${formatNumber(total)} 个代理`,
@@ -318,8 +332,33 @@ function searchProxies() {
 
 function resetSearch() {
   keyword.value = ''
+  pageStateCache.clear()
   searchProxies()
 }
+
+function defaultProxiesPageState(): ProxiesPageState {
+  return {
+    keyword: '',
+    pagination: { current: 1, pageSize }
+  }
+}
+
+function sanitizeProxiesPageState(value: unknown, fallback: ProxiesPageState): ProxiesPageState {
+  const source = value && typeof value === 'object' ? value as Partial<ProxiesPageState> : {}
+  return {
+    keyword: stringOrFallback(source.keyword, fallback.keyword),
+    pagination: sanitizePaginationState(source.pagination, fallback.pagination)
+  }
+}
+
+function snapshotPageState(): ProxiesPageState {
+  return {
+    keyword: keyword.value,
+    pagination: { current: pagination.current, pageSize: pagination.pageSize }
+  }
+}
+
+watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 
 onMounted(loadData)
 </script>

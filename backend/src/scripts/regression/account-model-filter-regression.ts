@@ -198,7 +198,7 @@ async function assertStorageRoundTrip(): Promise<void> {
       name: '账户模型限制 OpenAI 兼容分组',
       providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE
     }, access)
-    assert.equal(openAICompatibleGroup.providerProtocolProfileId, OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID)
+    assert.equal(openAICompatibleGroup.providerCode, OPENAI_COMPATIBLE_PROVIDER_CODE)
     const openAICompatibleAccount = repositories.createAccount({
       providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
       name: '账户模型限制 OpenAI 兼容账号回归',

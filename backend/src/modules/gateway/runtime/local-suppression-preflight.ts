@@ -2,7 +2,7 @@ import type { Request, Response } from 'express'
 
 import { logger } from '../../../shared/logger.js'
 import {
-  filterLocallySuppressedGatewayAccounts,
+  filterGatewayAccountRuntimeSuppressionsAsync,
   type LocalAccountSuppressionFilterResult
 } from './account-side-effects.service.js'
 import type { AuditCaptureContext } from '../audit/capture.service.js'
@@ -24,7 +24,7 @@ export async function resolveLocalSuppressionFilter(input: {
   groupId: string
   signal?: AbortSignal
 }): Promise<LocalAccountSuppressionFilterResult<UpstreamAccount> | undefined> {
-  let filter = filterLocallySuppressedGatewayAccounts(input.accounts)
+  let filter = await filterGatewayAccountRuntimeSuppressionsAsync(input.accounts)
   if (filter.suppressedCount > 0) {
     logger.warn({
       event: filter.allSuppressed
@@ -56,7 +56,7 @@ export async function resolveLocalSuppressionFilter(input: {
       scopeKey: recoverableSuppressionScopeKey(input.systemAccountId, input.apiKeyId, input.groupId),
       reason: 'local_account_suppression',
       initialState: filter,
-      refresh: () => filterLocallySuppressedGatewayAccounts(input.accounts),
+      refresh: () => filterGatewayAccountRuntimeSuppressionsAsync(input.accounts),
       isReady: (state) => !state.allSuppressed,
       nextRetryAfterMs: (state) => state.nextRetryAfterMs,
       waitWithoutRetryAfter: true,
@@ -79,7 +79,7 @@ export async function resolveLocalSuppressionFilter(input: {
   if (!input.res.headersSent && filter.nextRetryAfterMs !== undefined) {
     input.res.setHeader('Retry-After', String(Math.max(1, Math.ceil(filter.nextRetryAfterMs / 1000))))
   }
-  sendGatewayFailureResponse({
+  await sendGatewayFailureResponse({
     req: input.req,
     res: input.res,
     auditCapture: input.auditCapture,

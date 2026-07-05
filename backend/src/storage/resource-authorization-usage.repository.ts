@@ -15,9 +15,11 @@ import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { findResourceAuthorizationSummary, findResourceAuthorizationSummaryAsync } from './resource-authorization-read.repository.js'
 import { resourceAuthorizationSelectColumns, usageScope } from './resource-authorization-helpers.js'
+import { expireDueResourceAuthorizationsAsync } from './resource-authorization-write.repository.js'
 import { expireDueResourceAuthorizations } from './resource-authorization-write-state.repository.js'
 import { loadSystemAccountPrincipalMapByIds, loadSystemAccountPrincipalMapByIdsAsync } from './repository-lookups.js'
 import type { ResourceAuthorizationRow } from './repository-row-types.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import {
   emptyAccountUsageSummary,
   addUsageSummaries,
@@ -46,6 +48,10 @@ export interface ResourceAuthorizationUsageOptions {
 
 export function getResourceAuthorizationUsage(authorizationId: string, access?: AccessScope, options: ResourceAuthorizationUsageOptions = {}): ResourceAuthorizationSummary | undefined {
   expireDueResourceAuthorizations()
+  return getResourceAuthorizationUsageReadOnly(authorizationId, access, options)
+}
+
+export function getResourceAuthorizationUsageReadOnly(authorizationId: string, access?: AccessScope, options: ResourceAuthorizationUsageOptions = {}): ResourceAuthorizationSummary | undefined {
   const authorization = findResourceAuthorizationSummary(authorizationId, access, { includeUsage: false })
   if (!authorization) return undefined
   const range = options.range ?? normalizeAccountUsageStatsRange({}, usageStatsTimezone())
@@ -64,9 +70,18 @@ export function getResourceAuthorizationUsage(authorizationId: string, access?: 
 }
 
 export async function getResourceAuthorizationUsageAsync(authorizationId: string, access?: AccessScope, options: ResourceAuthorizationUsageOptions = {}): Promise<ResourceAuthorizationSummary | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'get_resource_authorization_usage_read_only',
+      id: authorizationId,
+      access,
+      options
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return getResourceAuthorizationUsage(authorizationId, access, options)
   }
+  await expireDueResourceAuthorizationsAsync()
   const authorization = await findResourceAuthorizationSummaryAsync(authorizationId, access, { includeUsage: false })
   if (!authorization) return undefined
   const range = options.range ?? normalizeAccountUsageStatsRange({}, await usageStatsTimezoneAsync())
@@ -573,8 +588,8 @@ async function loadAuthorizationTeamUsageRangeSummaryAsync(
   const client = await getResourceAuthorizationUsageStatsClient()
   const row = await client.one<Parameters<typeof usageSummaryFromAggregate>[0]>(`
     SELECT request_count, input_tokens, output_tokens, cache_read_tokens,
-      cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd,
-      thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd AS total_cost, last_used_at
+      CAST(cache_read_cost_usd AS double precision) AS cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, CAST(cache_write_cost_usd AS double precision) AS cache_write_cost_usd,
+      thinking_tokens, input_image_tokens, output_image_tokens, CAST(total_cost_usd AS double precision) AS total_cost, last_used_at
     FROM ${resourceAuthorizationUsageStatsTable(client, 'authorization_team_usage_range_windows')}
     WHERE system_account_id = ?
       AND start_date = ?

@@ -313,7 +313,6 @@ async function assertApiKeyScheduleStatusSyncAndGatewayGuard(): Promise<void> {
     const group = repositories.createGroup({
       name: 'API Key 时间计划补偿回归分组',
       providerCode: DEFAULT_GPT_GROUP.providerCode,
-      providerProtocolProfileId: DEFAULT_GPT_GROUP.providerProtocolProfileId,
       enabled: true
     }, access)
     const rangedCrossDayKey = await withMockedNow(Date.parse('2026-06-01T21:59:00.000Z'), () => createApiKeyRecordWithRouteStrategy(repositories, {

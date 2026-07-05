@@ -88,12 +88,21 @@ export function refreshUsageScopeRangeWindowSnapshots(database: DatabaseSync, up
   }
 }
 
-export async function refreshUsageScopeRangeWindowSnapshotsAsync(client: DatabaseClient, updatedAt: string, timezone: string, yieldToEventLoop?: () => Promise<void>): Promise<void> {
+export async function refreshUsageScopeRangeWindowSnapshotsAsync(
+  client: DatabaseClient,
+  updatedAt: string,
+  timezone: string,
+  yieldToEventLoop?: () => Promise<void>,
+  previousSourceWatermark?: string,
+  sourceWatermark?: string
+): Promise<void> {
   const todayKey = dateKey(new Date(), timezone)
   const dates = fixedUsageStatsDateKeys(timezone, todayKey)
   if (!dates.length) return
-  for (let startIndex = 0; startIndex < dates.length; startIndex += 1) {
-    for (let endIndex = startIndex; endIndex < dates.length; endIndex += 1) {
+  const refreshStartIndex = await usageScopeRangeWindowRefreshStartIndexAsync(client, dates, todayKey, previousSourceWatermark, sourceWatermark)
+  if (refreshStartIndex === undefined) return
+  for (let endIndex = refreshStartIndex; endIndex < dates.length; endIndex += 1) {
+    for (let startIndex = 0; startIndex <= endIndex; startIndex += 1) {
       const startDate = dates[startIndex]
       const rangeEndDate = dates[endIndex]
       await client.transaction(async (tx) => {
@@ -168,6 +177,180 @@ export async function refreshUsageScopeRangeWindowSnapshotsAsync(client: Databas
       })
       await yieldToEventLoop?.()
     }
+  }
+}
+
+export async function refreshUsageScopeRangeTodayWindowSnapshotsInStages(
+  database: DatabaseSync,
+  updatedAt: string,
+  timezone: string,
+  yieldToEventLoop: () => Promise<void>
+): Promise<void> {
+  const todayKey = dateKey(new Date(), timezone)
+  const dates = fixedUsageStatsDateKeys(timezone, todayKey)
+  if (!dates.length) return
+  const insert = database.prepare(`
+    INSERT INTO usage_scope_range_windows (
+      system_account_id, scope_type, scope_id, start_date, end_date,
+      request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens,
+      cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
+      first_token_ms_sum, first_token_ms_count, first_token_ms_max, active_days,
+      last_used_at, last_error_at, updated_at
+    )
+    SELECT
+      system_account_id,
+      scope_type,
+      scope_id,
+      ?,
+      ?,
+      COALESCE(SUM(request_count), 0),
+      COALESCE(SUM(success_count), 0),
+      COALESCE(SUM(error_count), 0),
+      COALESCE(SUM(input_tokens), 0),
+      COALESCE(SUM(output_tokens), 0),
+      COALESCE(SUM(cache_read_tokens), 0),
+      COALESCE(SUM(cache_read_cost_usd), 0),
+      COALESCE(SUM(cache_write_tokens), 0),
+      COALESCE(SUM(cache_write_1h_tokens), 0),
+      COALESCE(SUM(cache_write_cost_usd), 0),
+      COALESCE(SUM(thinking_tokens), 0),
+      COALESCE(SUM(input_image_tokens), 0),
+      COALESCE(SUM(output_image_tokens), 0),
+      COALESCE(SUM(total_cost_usd), 0),
+      COALESCE(SUM(duration_ms_sum), 0),
+      COALESCE(SUM(duration_ms_count), 0),
+      COALESCE(MAX(duration_ms_max), 0),
+      COALESCE(SUM(first_token_ms_sum), 0),
+      COALESCE(SUM(first_token_ms_count), 0),
+      COALESCE(MAX(first_token_ms_max), 0),
+      COUNT(CASE
+        WHEN request_count > 0
+          OR input_tokens > 0
+          OR output_tokens > 0
+          OR cache_read_tokens > 0
+          OR cache_write_tokens > 0
+          OR cache_write_1h_tokens > 0
+          OR thinking_tokens > 0
+          OR input_image_tokens > 0
+          OR output_image_tokens > 0
+          OR total_cost_usd > 0
+        THEN 1
+      END),
+      MAX(last_used_at),
+      MAX(last_error_at),
+      ?
+    FROM usage_stats_daily
+    WHERE stat_date >= ?
+      AND stat_date <= ?
+    GROUP BY system_account_id, scope_type, scope_id
+    HAVING COALESCE(SUM(request_count), 0) > 0
+      OR COALESCE(SUM(input_tokens), 0) > 0
+      OR COALESCE(SUM(output_tokens), 0) > 0
+      OR COALESCE(SUM(cache_read_tokens), 0) > 0
+      OR COALESCE(SUM(cache_read_cost_usd), 0) > 0
+      OR COALESCE(SUM(cache_write_tokens), 0) > 0
+      OR COALESCE(SUM(cache_write_1h_tokens), 0) > 0
+      OR COALESCE(SUM(cache_write_cost_usd), 0) > 0
+      OR COALESCE(SUM(thinking_tokens), 0) > 0
+      OR COALESCE(SUM(input_image_tokens), 0) > 0
+      OR COALESCE(SUM(output_image_tokens), 0) > 0
+      OR COALESCE(SUM(total_cost_usd), 0) > 0
+  `)
+  for (const startDate of dates) {
+    const transactionStarted = beginDatabaseTransaction(database)
+    try {
+      database.prepare('DELETE FROM usage_scope_range_windows WHERE end_date = ? AND start_date = ?').run(todayKey, startDate)
+      insert.run(startDate, todayKey, updatedAt, startDate, todayKey)
+      commitDatabaseTransaction(database, transactionStarted)
+    } catch (error) {
+      rollbackDatabaseTransaction(database, transactionStarted)
+      throw error
+    }
+    await yieldToEventLoop()
+  }
+}
+
+export async function refreshUsageScopeRangeTodayWindowSnapshotsAsync(
+  client: DatabaseClient,
+  updatedAt: string,
+  timezone: string,
+  yieldToEventLoop?: () => Promise<void>
+): Promise<void> {
+  const todayKey = dateKey(new Date(), timezone)
+  const dates = fixedUsageStatsDateKeys(timezone, todayKey)
+  if (!dates.length) return
+  for (const startDate of dates) {
+    await client.transaction(async (tx) => {
+      await tx.execute(`DELETE FROM ${statsTable(tx, 'usage_scope_range_windows')} WHERE end_date = ? AND start_date = ?`, [todayKey, startDate])
+      await tx.execute(`
+        INSERT INTO ${statsTable(tx, 'usage_scope_range_windows')} (
+          system_account_id, scope_type, scope_id, start_date, end_date,
+          request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens,
+          cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
+          first_token_ms_sum, first_token_ms_count, first_token_ms_max, active_days,
+          last_used_at, last_error_at, updated_at
+        )
+        SELECT
+          system_account_id,
+          scope_type,
+          scope_id,
+          ?,
+          ?,
+          COALESCE(SUM(request_count), 0),
+          COALESCE(SUM(success_count), 0),
+          COALESCE(SUM(error_count), 0),
+          COALESCE(SUM(input_tokens), 0),
+          COALESCE(SUM(output_tokens), 0),
+          COALESCE(SUM(cache_read_tokens), 0),
+          COALESCE(SUM(cache_read_cost_usd), 0),
+          COALESCE(SUM(cache_write_tokens), 0),
+          COALESCE(SUM(cache_write_1h_tokens), 0),
+          COALESCE(SUM(cache_write_cost_usd), 0),
+          COALESCE(SUM(thinking_tokens), 0),
+          COALESCE(SUM(input_image_tokens), 0),
+          COALESCE(SUM(output_image_tokens), 0),
+          COALESCE(SUM(total_cost_usd), 0),
+          COALESCE(SUM(duration_ms_sum), 0),
+          COALESCE(SUM(duration_ms_count), 0),
+          COALESCE(MAX(duration_ms_max), 0),
+          COALESCE(SUM(first_token_ms_sum), 0),
+          COALESCE(SUM(first_token_ms_count), 0),
+          COALESCE(MAX(first_token_ms_max), 0),
+          COUNT(CASE
+            WHEN request_count > 0
+              OR input_tokens > 0
+              OR output_tokens > 0
+              OR cache_read_tokens > 0
+              OR cache_write_tokens > 0
+              OR cache_write_1h_tokens > 0
+              OR thinking_tokens > 0
+              OR input_image_tokens > 0
+              OR output_image_tokens > 0
+              OR total_cost_usd > 0
+            THEN 1
+          END),
+          MAX(last_used_at),
+          MAX(last_error_at),
+          ?
+        FROM ${statsTable(tx, 'usage_stats_daily')}
+        WHERE stat_date >= ?
+          AND stat_date <= ?
+        GROUP BY system_account_id, scope_type, scope_id
+        HAVING COALESCE(SUM(request_count), 0) > 0
+          OR COALESCE(SUM(input_tokens), 0) > 0
+          OR COALESCE(SUM(output_tokens), 0) > 0
+          OR COALESCE(SUM(cache_read_tokens), 0) > 0
+          OR COALESCE(SUM(cache_read_cost_usd), 0) > 0
+          OR COALESCE(SUM(cache_write_tokens), 0) > 0
+          OR COALESCE(SUM(cache_write_1h_tokens), 0) > 0
+          OR COALESCE(SUM(cache_write_cost_usd), 0) > 0
+          OR COALESCE(SUM(thinking_tokens), 0) > 0
+          OR COALESCE(SUM(input_image_tokens), 0) > 0
+          OR COALESCE(SUM(output_image_tokens), 0) > 0
+          OR COALESCE(SUM(total_cost_usd), 0) > 0
+      `, [startDate, todayKey, updatedAt, startDate, todayKey])
+    })
+    await yieldToEventLoop?.()
   }
 }
 
@@ -500,6 +683,32 @@ function usageScopeRangeWindowRefreshStartIndex(
       AND stat_date >= ?
       AND stat_date <= ?
   `).get(previousUpdatedAt, dates[0], todayKey) as { stat_date?: string | null } | undefined
+  const changedDate = row?.stat_date
+  if (!changedDate && sourceWatermark !== previousSourceWatermark) return 0
+  if (!changedDate) return undefined
+  const index = dates.findIndex((date) => date >= changedDate)
+  return index >= 0 ? index : undefined
+}
+
+async function usageScopeRangeWindowRefreshStartIndexAsync(
+  client: DatabaseClient,
+  dates: string[],
+  todayKey: string,
+  previousSourceWatermark?: string,
+  sourceWatermark?: string
+): Promise<number | undefined> {
+  if (!previousSourceWatermark) return 0
+  const previousUpdatedAt = rangeWindowSourceWatermarkUpdatedAt(previousSourceWatermark)
+  const sourceUpdatedAt = rangeWindowSourceWatermarkUpdatedAt(sourceWatermark)
+  if (!previousUpdatedAt) return 0
+  if (sourceUpdatedAt && sourceUpdatedAt < previousUpdatedAt) return 0
+  const row = await client.one<{ stat_date?: string | null }>(`
+    SELECT MIN(stat_date) AS stat_date
+    FROM ${statsTable(client, 'usage_stats_daily')}
+    WHERE updated_at > ?
+      AND stat_date >= ?
+      AND stat_date <= ?
+  `, [previousUpdatedAt, dates[0], todayKey])
   const changedDate = row?.stat_date
   if (!changedDate && sourceWatermark !== previousSourceWatermark) return 0
   if (!changedDate) return undefined

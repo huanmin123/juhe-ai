@@ -254,33 +254,30 @@ async function listLogFiles(): Promise<LogFileListing> {
   let scannedEntryCount = 0
   let truncatedReason: LogFileListing['truncatedReason']
   const deadline = performance.now() + maxLogDirectoryScanMs
-  try {
-    const directory = await opendir(runtimeConfig.log.directory)
-    for await (const entry of directory) {
-      if (scannedEntryCount >= maxLogDirectoryScanEntries) {
-        truncatedReason = 'entry_limit'
-        break
-      }
-      if (performance.now() >= deadline) {
-        truncatedReason = 'deadline'
-        break
-      }
-      scannedEntryCount += 1
-      if (scannedEntryCount % logFileScanYieldEvery === 0) {
-        await yieldImmediate()
-      }
-      if (!entry.isFile() || !entry.name.endsWith('.log')) continue
-      const path = join(runtimeConfig.log.directory, entry.name)
-      try {
-        const stats = await stat(path)
-        if (stats.isFile()) {
-          retainNewestLogFile(retainedFiles, { path, fileName: entry.name, stats }, maxFiles)
-        }
-      } catch {
-      }
+  const directory = await opendir(runtimeConfig.log.directory)
+  for await (const entry of directory) {
+    if (scannedEntryCount >= maxLogDirectoryScanEntries) {
+      truncatedReason = 'entry_limit'
+      break
     }
-  } catch {
-    return { files: [], scannedEntryCount, truncatedReason }
+    if (performance.now() >= deadline) {
+      truncatedReason = 'deadline'
+      break
+    }
+    scannedEntryCount += 1
+    if (scannedEntryCount % logFileScanYieldEvery === 0) {
+      await yieldImmediate()
+    }
+    if (!entry.isFile() || !entry.name.endsWith('.log')) continue
+    const path = join(runtimeConfig.log.directory, entry.name)
+    try {
+      const stats = await stat(path)
+      if (stats.isFile()) {
+        retainNewestLogFile(retainedFiles, { path, fileName: entry.name, stats }, maxFiles)
+      }
+    } catch (error) {
+      if (!isLogFileStatRace(error)) throw error
+    }
   }
   return {
     files: retainedFiles.map((file, order) => ({
@@ -294,6 +291,10 @@ async function listLogFiles(): Promise<LogFileListing> {
     scannedEntryCount,
     truncatedReason
   }
+}
+
+function isLogFileStatRace(error: unknown): boolean {
+  return Boolean(error && typeof error === 'object' && (error as NodeJS.ErrnoException).code === 'ENOENT')
 }
 
 function logFileListingWarning(listing: LogFileListing): string | undefined {

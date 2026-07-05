@@ -14,6 +14,7 @@ import type {
   DbServiceOperation,
   DbServiceOperationResult,
   DbServiceParentMessage,
+  DbServiceRequestPriority,
   DbServiceRuntimeQueueSnapshot,
   DbServiceRuntimeSnapshot,
   DbServiceServerRuntimeSnapshot,
@@ -36,6 +37,11 @@ class DbServiceRequestTimedOutError extends Error {
 }
 
 class DbServiceRequestQueueFullError extends Error {
+}
+
+export interface RequestDbServiceOptions {
+  timeoutMs?: number
+  priority?: DbServiceRequestPriority
 }
 
 interface DbServiceState {
@@ -145,7 +151,7 @@ export function attachDbServiceProcess(child: ChildProcess, options: { onReady?:
 
 export async function requestDbService<T extends DbServiceOperation>(
   operation: T,
-  options: { timeoutMs?: number } = {}
+  options: RequestDbServiceOptions = {}
 ): Promise<DbServiceOperationResult<T>> {
   if (runtimeConfig.processRole === 'db-service') {
     return await runLocalDbServiceOperation(operation)
@@ -172,11 +178,14 @@ export async function requestDbService<T extends DbServiceOperation>(
   }
   const requestId = randomUUID()
   const timeoutMs = options.timeoutMs ?? requestTimeoutMs
-  const message: DbServiceParentMessage = {
+  const message: Extract<DbServiceParentMessage, { type: 'db_service_request' }> = {
     type: 'db_service_request',
     requestId,
     operation,
     deadlineAtMs: Date.now() + timeoutMs
+  }
+  if (options.priority) {
+    message.priority = options.priority
   }
   try {
     return await new Promise<DbServiceOperationResult<T>>((resolve, reject) => {
@@ -224,6 +233,7 @@ export async function requestDbService<T extends DbServiceOperation>(
 
 export function clearDbServiceGatewayRuntimeCache(): void {
   if (runtimeConfig.processRole === 'db-service') {
+    sendDbServiceChildMessage({ type: 'gateway_runtime_cache_invalidate' })
     void requestDbService(
       { type: 'clear_gateway_runtime_cache' },
       { timeoutMs: invalidateTimeoutMs }
@@ -231,8 +241,6 @@ export function clearDbServiceGatewayRuntimeCache(): void {
       logger.warn(errorLogFields(error, {
         event: 'db_service_local_cache_invalidation_failed'
       }), 'DB service 本地缓存失效失败')
-    }).finally(() => {
-      sendDbServiceChildMessage({ type: 'gateway_runtime_cache_invalidate' })
     })
     return
   }
@@ -287,8 +295,11 @@ export function notifyClientIpPolicyCacheInvalidated(): void {
     void clearServerClientIpPolicyCache()
     return
   }
-  if (runtimeConfig.processRole === 'db-service' && typeof process.send === 'function') {
-    sendDbServiceChildMessage({ type: 'client_ip_policy_cache_invalidate' })
+  if (runtimeConfig.processRole === 'db-service') {
+    void clearServerClientIpPolicyCache()
+    if (typeof process.send === 'function') {
+      sendDbServiceChildMessage({ type: 'client_ip_policy_cache_invalidate' })
+    }
   }
 }
 
@@ -366,9 +377,13 @@ export async function clearServerAccountRuntimeAvailability(
   if (!normalizedTarget) {
     return undefined
   }
-  if (runtimeConfig.processRole !== 'db-service' || !process.send) {
+  if (runtimeConfig.processRole !== 'db-service') {
     const gatewaySideEffects = await import('../gateway/runtime/account-side-effects.service.js')
     return gatewaySideEffects.clearGatewayAccountRuntimeAvailability(normalizedTarget)
+  }
+  if (!process.send) {
+    assertDbServiceParentIpcAvailable('clearServerAccountRuntimeAvailability')
+    return undefined
   }
 
   const requestId = randomUUID()
@@ -400,8 +415,12 @@ export async function migrateServerOpenAIAccountTrafficRuntime(
   if (!normalizedInput) {
     return undefined
   }
-  if (runtimeConfig.processRole !== 'db-service' || !process.send) {
+  if (runtimeConfig.processRole !== 'db-service') {
     return migrateOpenAIAccountTrafficRuntimeLocal(normalizedInput)
+  }
+  if (!process.send) {
+    assertDbServiceParentIpcAvailable('migrateServerOpenAIAccountTrafficRuntime')
+    return undefined
   }
 
   const requestId = randomUUID()
@@ -933,12 +952,14 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
     backgroundIpc,
     gatewaySideEffects,
     auditCapture,
-    accountConcurrency
+    accountConcurrency,
+    highConcurrencyQueue
   ] = await Promise.all([
     import('../background/background-ipc.js'),
     import('../gateway/runtime/account-side-effects.service.js'),
     import('../gateway/audit/capture.service.js'),
-    import('../../shared/account-concurrency.js')
+    import('../../shared/account-concurrency.js'),
+    import('../gateway/runtime/high-concurrency-queue.service.js')
   ])
   const [
     ingestWorkerSnapshot,
@@ -1079,8 +1100,11 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
       failedServerRuntimeRequestCount: dbServiceState.failedServerRuntimeRequestCount,
       unavailableCircuitOpenUntil: dbServiceState.unavailableCircuitOpenUntil,
       httpHost: dbServiceState.httpHost,
-      httpPort: dbServiceState.httpPort
+      httpPort: dbServiceState.httpPort,
+      codexContextStateWriterPool: dbServiceState.lastSnapshot?.codexContextStateWriterPool,
+      sqliteReadWorkerPool: dbServiceState.lastSnapshot?.sqliteReadWorkerPool
     },
+    highConcurrencyQueues: highConcurrencyQueue.highConcurrencyGroupQueueSnapshot(),
     gatewayAccountSideEffects: { ...gatewaySideEffects.getGatewayAccountSideEffectState() },
     activeAuditCaptureCount: auditCapture.getActiveAuditCaptureCount()
   }
@@ -1299,9 +1323,9 @@ async function clearServerAuthorizationQuotaRuntimeCache(): Promise<void> {
 async function clearServerClientIpPolicyCache(): Promise<void> {
   const policyCache = await import('../gateway/runtime/client-ip-policy-cache.service.js')
   try {
-    await policyCache.reloadClientIpPolicyCacheLocal()
+    await policyCache.reloadClientIpPolicyCacheLocal({ bypassSharedCache: true })
   } catch (error) {
-    policyCache.clearClientIpPolicyCacheLocal()
+    await policyCache.clearClientIpPolicyCacheLocal()
     logger.warn(errorLogFields(error, {
       event: 'client_ip_policy_snapshot_reload_failed'
     }), 'IP 封禁策略快照重载失败，已清空 server 本地快照')
@@ -1311,6 +1335,7 @@ async function clearServerClientIpPolicyCache(): Promise<void> {
 registerAuthorizationQuotaCacheInvalidator(notifyServerAuthorizationQuotaCacheInvalidated)
 
 async function forwardUsageRecordsToWorker(items: unknown[]): Promise<void> {
+  if (rejectRedisStreamLocalQueueForward('background_worker_usage_records', items.length)) return
   const backgroundIpc = await import('../background/background-ipc.js')
   const usageRecordQueue = await import('../gateway/usage/record-queue.service.js')
   const usageRecords = items.filter(usageRecordQueue.isUsageRecordInput)
@@ -1323,6 +1348,7 @@ async function forwardUsageRecordsToWorker(items: unknown[]): Promise<void> {
 }
 
 async function forwardAuditLogsToWorker(items: unknown[]): Promise<void> {
+  if (rejectRedisStreamLocalQueueForward('background_worker_audit_logs', items.length)) return
   const backgroundIpc = await import('../background/background-ipc.js')
   const auditLogQueue = await import('../audit-logs/audit-log-queue.service.js')
   const auditLogs = items.filter(auditLogQueue.isAuditLogInput)
@@ -1335,6 +1361,7 @@ async function forwardAuditLogsToWorker(items: unknown[]): Promise<void> {
 }
 
 async function forwardOperationLogsToWorker(items: unknown[]): Promise<void> {
+  if (rejectRedisStreamLocalQueueForward('background_worker_operation_logs', items.length)) return
   const backgroundIpc = await import('../background/background-ipc.js')
   const operationLogQueue = await import('../operation-logs/operation-log-queue.service.js')
   const operationLogs = items.filter(operationLogQueue.isOperationLogInput)
@@ -1347,6 +1374,7 @@ async function forwardOperationLogsToWorker(items: unknown[]): Promise<void> {
 }
 
 async function forwardPublicApiLogsToWorker(items: unknown[]): Promise<void> {
+  if (rejectRedisStreamLocalQueueForward('background_worker_public_api_logs', items.length)) return
   const backgroundIpc = await import('../background/background-ipc.js')
   const publicApiLogQueue = await import('../public-api-logs/public-api-log-queue.service.js')
   const publicApiLogs = items.filter(publicApiLogQueue.isPublicApiLogInput)
@@ -1362,6 +1390,7 @@ async function forwardRuntimeLogLineToWorker(
   line: string,
   options: import('../runtime-logs/runtime-log-index-queue.service.js').RuntimeLogLineIndexOptions
 ): Promise<void> {
+  if (rejectRedisStreamLocalQueueForward('background_worker_runtime_log_line', 1)) return
   const backgroundIpc = await import('../background/background-ipc.js')
   if (!backgroundIpc.sendRuntimeLogLineToWorker(line, options)) {
     logger.warn({
@@ -1372,6 +1401,7 @@ async function forwardRuntimeLogLineToWorker(
 }
 
 async function forwardRecordMaintenanceJobsToWorker(items: unknown[]): Promise<void> {
+  if (rejectRedisStreamLocalQueueForward('background_worker_record_maintenance', items.length)) return
   const backgroundIpc = await import('../background/background-ipc.js')
   const recordMaintenanceQueue = await import('../record-maintenance/record-maintenance-queue.service.js')
   const jobs = items.filter(recordMaintenanceQueue.isRecordMaintenanceJob)
@@ -1380,6 +1410,22 @@ async function forwardRecordMaintenanceJobsToWorker(items: unknown[]): Promise<v
       event: 'db_service_record_maintenance_forward_failed',
       itemCount: jobs.length
     }, 'DB service 转发数据维护任务到后台 worker 失败')
+  }
+}
+
+function rejectRedisStreamLocalQueueForward(messageType: string, itemCount: number): boolean {
+  if (runtimeConfig.queueDriver !== 'redis_stream') return false
+  logger.error({
+    event: 'db_service_redis_stream_local_queue_forward_rejected',
+    messageType,
+    itemCount
+  }, 'Redis Stream queue driver 下禁止 DB service 通过父进程 IPC 转发记录类本地队列消息')
+  return true
+}
+
+function assertDbServiceParentIpcAvailable(operation: string): void {
+  if (runtimeConfig.runtimeMode === 'performance') {
+    throw new Error(`高性能模式 DB service 缺少父进程 IPC，禁止回退当前进程本地 runtime：${operation}`)
   }
 }
 

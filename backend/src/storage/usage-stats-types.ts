@@ -209,7 +209,6 @@ export interface UsageStatsOverview {
   hourlyTrend: Array<{ statHour: string; requestCount: number; totalTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number; cacheWrite1hTokens?: number; cacheWriteCost?: number; thinkingTokens?: number; inputImageTokens?: number; outputImageTokens?: number; totalCost: number; averageDurationMs?: number; errorCount: number }>
   modelDistribution: Array<{ model: string; providerCode: string; requestCount: number; totalTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number; cacheWrite1hTokens?: number; cacheWriteCost?: number; thinkingTokens?: number; inputImageTokens?: number; outputImageTokens?: number; totalCost: number }>
   errors: Array<{ errorCode: string; providerCode: string; statusCode?: number; errorMessage?: string; errorCount: number }>
-  statsLagSeconds?: number
 }
 
 export interface SystemMetricsOverview {

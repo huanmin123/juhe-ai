@@ -1,27 +1,27 @@
 import { Router, type Request } from 'express'
 import { z } from 'zod'
 
+import { normalizeNormalRoutingConfig } from '../../domain/route-strategy.js'
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import type { ExternalIntegrationSourceAuthContext } from '../../storage/external-integration-source-types.js'
 import {
-  externalIntegrationAccessInfoReadScope,
   externalIntegrationAccountAddWriteScope,
   externalIntegrationAccountDeleteWriteScope,
   externalIntegrationAccountListReadScope,
   externalIntegrationAccountUpdateWriteScope,
-  externalIntegrationAccountUsageReadScope,
   externalIntegrationApiKeyAddWriteScope,
   externalIntegrationApiKeyDeleteWriteScope,
   externalIntegrationApiKeyListReadScope,
   externalIntegrationApiKeyUpdateWriteScope,
-  externalIntegrationConsumptionRankingReadScope,
   externalIntegrationGroupAddWriteScope,
   externalIntegrationGroupDeleteWriteScope,
   externalIntegrationGroupListReadScope,
   externalIntegrationGroupUpdateWriteScope,
-  externalIntegrationIpUsageReadScope,
-  externalIntegrationSourceAuthDemoScope
+  externalIntegrationRouteStrategyAddWriteScope,
+  externalIntegrationRouteStrategyDeleteWriteScope,
+  externalIntegrationRouteStrategyListReadScope,
+  externalIntegrationRouteStrategyUpdateWriteScope
 } from '../../storage/external-integration-source-constants.js'
 import { createOperationLogAsync } from '../../storage/repositories.js'
 import { requestQuotaLimitsSchema } from '../request-quota-limit.schema.js'
@@ -57,50 +57,20 @@ import {
   mockPublicWelfareAccountPush
 } from './external-public-account-push.mock.js'
 import {
-  getPublicAccessInfo,
-  getPublicAccountUsageAsync,
-  getPublicClientIpUsageAsync,
-  getPublicConsumptionRankingAsync
-} from './external-public-welfare.service.js'
+  addPublicRouteStrategyAsync,
+  deletePublicRouteStrategyAsync,
+  listPublicRouteStrategiesAsync,
+  updatePublicRouteStrategyAsync
+} from './external-public-route-strategy.service.js'
+import {
+  mockPublicRouteStrategyAdd,
+  mockPublicRouteStrategyDelete,
+  mockPublicRouteStrategyList,
+  mockPublicRouteStrategyUpdate
+} from './external-public-route-strategy.mock.js'
 
 export const externalIntegrationsRouter = Router()
 
-const rangePresetSchema = z.enum(['today', 'last7d', 'last31d'])
-const unsupportedDateRangeSchema = z.undefined({
-  invalid_type_error: '公开 IP 聚合接口暂不支持自定义日期范围'
-}).optional()
-const publicUsageKeywordSchema = z.string().trim().max(120, '关键词不能超过 120 个字符').optional()
-const ipUsageQuerySchema = z.object({
-  range: rangePresetSchema.optional(),
-  startDate: unsupportedDateRangeSchema,
-  endDate: unsupportedDateRangeSchema,
-  page: z.coerce.number().int().min(1).optional(),
-  pageSize: z.coerce.number().int().min(1).max(100).optional(),
-  keyword: publicUsageKeywordSchema,
-  sortField: z.enum(['requestCount', 'successCount', 'errorCount', 'errorRate', 'totalTokens', 'totalCost', 'activeDays', 'lastUsedAt']).optional(),
-  sortOrder: z.enum(['asc', 'desc']).optional()
-})
-const accountUsageQuerySchema = z.object({
-  range: rangePresetSchema.optional(),
-  startDate: z.undefined({
-    invalid_type_error: '公开账号聚合接口暂不支持自定义日期范围'
-  }).optional(),
-  endDate: z.undefined({
-    invalid_type_error: '公开账号聚合接口暂不支持自定义日期范围'
-  }).optional(),
-  page: z.coerce.number().int().min(1).optional(),
-  pageSize: z.coerce.number().int().min(1).max(100).optional(),
-  keyword: publicUsageKeywordSchema,
-  sortField: z.enum(['requestCount', 'successCount', 'errorCount', 'errorRate', 'totalTokens', 'totalCost', 'activeDays', 'lastUsedAt']).optional(),
-  sortOrder: z.enum(['asc', 'desc']).optional()
-})
-const consumptionRankingQuerySchema = z.object({
-  range: rangePresetSchema.optional(),
-  startDate: unsupportedDateRangeSchema,
-  endDate: unsupportedDateRangeSchema,
-  limit: z.coerce.number().int().min(1).max(100).optional(),
-  metric: z.enum(['totalTokens', 'totalCost', 'requestCount']).optional()
-})
 const providerCodeSchema = z.string({ required_error: '供应商编码不能为空' }).trim().min(1, '供应商编码不能为空').max(60)
 const providerProtocolProfileIdSchema = z.string().trim().min(1).max(120)
 const publicAccountTypeSchema = z.custom<'api_key'>((value) => value === 'api_key', {
@@ -179,18 +149,16 @@ const groupAddSchema = z.object({
   targetDisplayName: z.string().trim().min(1).max(80).optional(),
   name: z.string().trim().min(1).max(80),
   providerCode: providerCodeSchema,
-  providerProtocolProfileId: providerProtocolProfileIdSchema,
   description: z.string().trim().max(500).optional(),
   enabled: z.boolean().optional(),
   groupType: z.enum(['personal', 'high_concurrency']).optional()
 }).strict()
-const groupUpdateMutableFields = ['name', 'providerCode', 'providerProtocolProfileId', 'description', 'enabled', 'groupType'] as const
+const groupUpdateMutableFields = ['name', 'providerCode', 'description', 'enabled', 'groupType'] as const
 const groupUpdateSchema = z.object({
   targetUsername: z.string().trim().min(2).max(80).optional(),
   groupId: z.string().trim().min(1).max(120),
   name: z.string().trim().min(1).max(80).optional(),
   providerCode: z.string().trim().min(1).max(60).optional(),
-  providerProtocolProfileId: providerProtocolProfileIdSchema.optional(),
   description: z.string().trim().max(500).nullable().optional(),
   enabled: z.boolean().optional(),
   groupType: z.enum(['personal', 'high_concurrency']).optional()
@@ -205,8 +173,75 @@ const groupDeleteSchema = z.object({
 const groupListQuerySchema = z.object({
   targetUsername: z.string().trim().min(2).max(80),
   providerCode: z.string().trim().min(1).max(60).optional(),
-  providerProtocolProfileId: providerProtocolProfileIdSchema.optional(),
   keyword: z.string().trim().max(80).optional(),
+  page: z.coerce.number().int().min(1).optional(),
+  pageSize: z.coerce.number().int().min(1).max(100).optional()
+}).strict()
+const routeStrategyModeSchema = z.enum(['normal', 'hybrid_smart', 'weighted', 'failover', 'round_robin'])
+const routeStrategyStatusSchema = z.enum(['active', 'disabled'])
+const routeStrategyGroupBindingSchema = z.object({
+  groupId: z.string().trim().min(1).max(120),
+  priority: z.number().int().positive().optional(),
+  weight: z.number().int().min(1).max(100).optional(),
+  status: routeStrategyStatusSchema.optional()
+}).strict()
+const routeStrategyHybridRoutingConfigSchema = z.record(z.string(), z.unknown()).nullable()
+const routeStrategySpeedFirstConfigSchema = z.object({
+  firstByteThresholdMs: z.number().int().min(10000).max(60000).optional(),
+  slowTriggerCount: z.number().int().min(2).max(10).optional(),
+  slowWindowSeconds: z.number().int().min(60).max(600).optional(),
+  recoverySuccessCount: z.number().int().min(3).max(10).optional(),
+  probeIntervalSeconds: z.number().int().min(10).max(300).optional(),
+  degradedTtlSeconds: z.number().int().min(60).max(3600).optional(),
+  retryOnFirstByteTimeout: z.boolean().optional(),
+  maxFirstByteRetriesPerRequest: z.number().int().min(1).max(3).optional()
+}).strict()
+const routeStrategyNormalRoutingConfigSchema = z.object({
+  schedulingPreference: z.enum(['cost_first', 'speed_first']).optional(),
+  speedFirstConfig: routeStrategySpeedFirstConfigSchema.optional()
+}).strict().transform((value) => normalizeNormalRoutingConfig(value)).nullable()
+const routeStrategyAddSchema = z.object({
+  targetUsername: z.string().trim().min(2).max(80),
+  name: z.string().trim().min(1).max(120),
+  description: z.string().trim().max(200).nullable().optional(),
+  mode: routeStrategyModeSchema.optional(),
+  status: routeStrategyStatusSchema.optional(),
+  groupBindings: z.array(routeStrategyGroupBindingSchema).min(1).max(20),
+  normalRoutingConfig: routeStrategyNormalRoutingConfigSchema.optional(),
+  hybridRoutingConfig: routeStrategyHybridRoutingConfigSchema.optional()
+}).strict()
+const routeStrategyUpdateMutableFields = [
+  'name',
+  'description',
+  'mode',
+  'status',
+  'groupBindings',
+  'normalRoutingConfig',
+  'hybridRoutingConfig'
+] as const
+const routeStrategyUpdateSchema = z.object({
+  targetUsername: z.string().trim().min(2).max(80).optional(),
+  routeStrategyId: z.string().trim().min(1).max(120),
+  name: z.string().trim().min(1).max(120).optional(),
+  description: z.string().trim().max(200).nullable().optional(),
+  mode: routeStrategyModeSchema.optional(),
+  status: routeStrategyStatusSchema.optional(),
+  groupBindings: z.array(routeStrategyGroupBindingSchema).min(1).max(20).optional(),
+  normalRoutingConfig: routeStrategyNormalRoutingConfigSchema.optional(),
+  hybridRoutingConfig: routeStrategyHybridRoutingConfigSchema.optional()
+}).strict().refine(
+  (value) => routeStrategyUpdateMutableFields.some((field) => Object.prototype.hasOwnProperty.call(value, field)),
+  { message: '路由策略修改至少提供一个要修改的字段' }
+)
+const routeStrategyDeleteSchema = z.object({
+  targetUsername: z.string().trim().min(2).max(80).optional(),
+  routeStrategyId: z.string().trim().min(1).max(120)
+}).strict()
+const routeStrategyListQuerySchema = z.object({
+  targetUsername: z.string().trim().min(2).max(80),
+  keyword: z.string().trim().max(120).optional(),
+  mode: z.enum(['normal', 'hybrid_smart', 'weighted', 'failover', 'round_robin', 'all']).optional(),
+  status: z.enum(['active', 'disabled', 'all']).optional(),
   page: z.coerce.number().int().min(1).optional(),
   pageSize: z.coerce.number().int().min(1).max(100).optional()
 }).strict()
@@ -257,85 +292,6 @@ const apiKeyListQuerySchema = z.object({
 }).strict()
 
 externalIntegrationsRouter.get(
-  '/demo/source-auth',
-  requireExternalIntegrationSource(externalIntegrationSourceAuthDemoScope),
-  (_req, res) => {
-    const context = getExternalIntegrationSourceContext(res)
-    res.json(ok({
-      ok: true,
-      sourceName: context.sourceName,
-      tokenName: context.tokenName,
-      tokenPrefix: context.tokenPrefix,
-      authenticatedAt: context.authenticatedAt,
-      mock: context.isTestToken
-    }))
-  }
-)
-
-externalIntegrationsRouter.get(
-  '/ip/usage',
-  requireExternalIntegrationSource(externalIntegrationIpUsageReadScope),
-  async (req, res, next) => {
-    const parsed = ipUsageQuerySchema.safeParse(req.query)
-    if (!parsed.success) {
-      res.status(400).json(badRequest(firstIssueMessage(parsed.error, 'IP 聚合公开接口参数无效')))
-      return
-    }
-    const context = getExternalIntegrationSourceContext(res)
-    try {
-      res.json(ok(await getPublicClientIpUsageAsync(parsed.data, { mock: context.isTestToken })))
-    } catch (error) {
-      next(error)
-    }
-  }
-)
-
-externalIntegrationsRouter.get(
-  '/account/usage',
-  requireExternalIntegrationSource(externalIntegrationAccountUsageReadScope),
-  async (req, res, next) => {
-    const parsed = accountUsageQuerySchema.safeParse(req.query)
-    if (!parsed.success) {
-      res.status(400).json(badRequest(firstIssueMessage(parsed.error, '账号聚合公开接口参数无效')))
-      return
-    }
-    const context = getExternalIntegrationSourceContext(res)
-    try {
-      res.json(ok(await getPublicAccountUsageAsync(parsed.data, { mock: context.isTestToken })))
-    } catch (error) {
-      next(error)
-    }
-  }
-)
-
-externalIntegrationsRouter.get(
-  '/consumption/ranking',
-  requireExternalIntegrationSource(externalIntegrationConsumptionRankingReadScope),
-  async (req, res, next) => {
-    const parsed = consumptionRankingQuerySchema.safeParse(req.query)
-    if (!parsed.success) {
-      res.status(400).json(badRequest(firstIssueMessage(parsed.error, 'IP 消耗排行公开接口参数无效')))
-      return
-    }
-    const context = getExternalIntegrationSourceContext(res)
-    try {
-      res.json(ok(await getPublicConsumptionRankingAsync(parsed.data, { mock: context.isTestToken })))
-    } catch (error) {
-      next(error)
-    }
-  }
-)
-
-externalIntegrationsRouter.get(
-  '/access/info',
-  requireExternalIntegrationSource(externalIntegrationAccessInfoReadScope),
-  (_req, res) => {
-    const context = getExternalIntegrationSourceContext(res)
-    res.json(ok(getPublicAccessInfo({ mock: context.isTestToken })))
-  }
-)
-
-externalIntegrationsRouter.get(
   '/group/list',
   requireExternalIntegrationSource(externalIntegrationGroupListReadScope),
   async (req, res) => {
@@ -353,6 +309,29 @@ externalIntegrationsRouter.get(
       res.json(ok(await listPublicGroupsAsync(parsed.data)))
     } catch (error) {
       const message = error instanceof Error ? error.message : '分组列表读取失败'
+      res.status(message.includes('不存在') ? 404 : 400).json(badRequest(message))
+    }
+  }
+)
+
+externalIntegrationsRouter.get(
+  '/route-strategy/list',
+  requireExternalIntegrationSource(externalIntegrationRouteStrategyListReadScope),
+  async (req, res) => {
+    const parsed = routeStrategyListQuerySchema.safeParse(req.query)
+    if (!parsed.success) {
+      res.status(400).json(badRequest(firstIssueMessage(parsed.error, '路由策略列表参数无效')))
+      return
+    }
+    const context = getExternalIntegrationSourceContext(res)
+    if (context.isTestToken) {
+      res.json(ok(mockPublicRouteStrategyList(parsed.data)))
+      return
+    }
+    try {
+      res.json(ok(await listPublicRouteStrategiesAsync(parsed.data)))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '路由策略列表读取失败'
       res.status(message.includes('不存在') ? 404 : 400).json(badRequest(message))
     }
   }
@@ -470,6 +449,76 @@ externalIntegrationsRouter.post(
       res.status(result.action === 'not_found' ? 404 : 200).json(result.action === 'not_found' ? { message: '分组不存在' } : ok(result))
     } catch (error) {
       res.status(400).json(badRequest(error instanceof Error ? error.message : '分组删除失败'))
+    }
+  }
+)
+
+externalIntegrationsRouter.post(
+  '/route-strategy/add',
+  requireExternalIntegrationSource(externalIntegrationRouteStrategyAddWriteScope),
+  async (req, res) => {
+    const parsed = routeStrategyAddSchema.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json(badRequest(firstIssueMessage(parsed.error, '路由策略新增参数无效')))
+      return
+    }
+    const context = getExternalIntegrationSourceContext(res)
+    if (context.isTestToken) {
+      res.status(201).json(ok(mockPublicRouteStrategyAdd(parsed.data)))
+      return
+    }
+    try {
+      res.status(201).json(ok(await addPublicRouteStrategyAsync(parsed.data)))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '路由策略新增失败'
+      res.status(message.includes('已存在') ? 409 : 400).json(badRequest(message))
+    }
+  }
+)
+
+externalIntegrationsRouter.post(
+  '/route-strategy/update',
+  requireExternalIntegrationSource(externalIntegrationRouteStrategyUpdateWriteScope),
+  async (req, res) => {
+    const parsed = routeStrategyUpdateSchema.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json(badRequest(firstIssueMessage(parsed.error, '路由策略修改参数无效')))
+      return
+    }
+    const context = getExternalIntegrationSourceContext(res)
+    if (context.isTestToken) {
+      res.json(ok(mockPublicRouteStrategyUpdate(parsed.data)))
+      return
+    }
+    try {
+      const result = await updatePublicRouteStrategyAsync(parsed.data)
+      res.status(result.action === 'not_found' ? 404 : 200).json(result.action === 'not_found' ? { message: '路由策略不存在' } : ok(result))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '路由策略修改失败'
+      res.status(message.includes('已存在') ? 409 : 400).json(badRequest(message))
+    }
+  }
+)
+
+externalIntegrationsRouter.post(
+  '/route-strategy/del',
+  requireExternalIntegrationSource(externalIntegrationRouteStrategyDeleteWriteScope),
+  async (req, res) => {
+    const parsed = routeStrategyDeleteSchema.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json(badRequest(firstIssueMessage(parsed.error, '路由策略删除参数无效')))
+      return
+    }
+    const context = getExternalIntegrationSourceContext(res)
+    if (context.isTestToken) {
+      res.json(ok(mockPublicRouteStrategyDelete(parsed.data)))
+      return
+    }
+    try {
+      const result = await deletePublicRouteStrategyAsync(parsed.data)
+      res.status(result.action === 'not_found' ? 404 : 200).json(result.action === 'not_found' ? { message: '路由策略不存在' } : ok(result))
+    } catch (error) {
+      res.status(400).json(badRequest(error instanceof Error ? error.message : '路由策略删除失败'))
     }
   }
 )

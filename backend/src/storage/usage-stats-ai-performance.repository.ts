@@ -12,8 +12,9 @@ import { createPostgresDatabaseClient, type DatabaseClient } from './database-cl
 import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import { averageFromSum, hourKey, usageStatsTimezone, usageStatsTimezoneAsync } from './usage-stats-helpers.js'
-import { latestUsageStatsLagSeconds, normalizeDefaultUsageStatsRange } from './usage-stats-runtime-helpers.js'
+import { normalizeDefaultUsageStatsRange } from './usage-stats-runtime-helpers.js'
 import {
   GLOBAL_STATS_SYSTEM_ACCOUNT_ID
 } from './usage-stats-types.js'
@@ -71,10 +72,8 @@ export function getAiPerformanceOverview(access?: AccessScope, range: AccountUsa
       return {
         statHour,
         requestCount,
-        firstTokenCount,
         averageFirstTokenMs: averageFromSum(row?.first_token_ms_sum, row?.first_token_ms_count),
         maxFirstTokenMs: maxFromCountedMetric(row?.first_token_ms_max, firstTokenCount),
-        durationCount,
         averageDurationMs: averageFromSum(row?.duration_ms_sum, row?.duration_ms_count),
         maxDurationMs: maxFromCountedMetric(row?.duration_ms_max, durationCount)
       }
@@ -89,18 +88,23 @@ export function getAiPerformanceOverview(access?: AccessScope, range: AccountUsa
     hourlySeries,
     summary: {
       requestCount: Number(summaryRow?.request_count ?? 0),
-      firstTokenCount: Number(summaryRow?.first_token_ms_count ?? 0),
       averageFirstTokenMs: averageFromSum(summaryRow?.first_token_ms_sum, summaryRow?.first_token_ms_count),
       maxFirstTokenMs: maxFromCountedMetric(summaryRow?.first_token_ms_max, Number(summaryRow?.first_token_ms_count ?? 0)),
-      durationCount: Number(summaryRow?.duration_ms_count ?? 0),
       averageDurationMs: averageFromSum(summaryRow?.duration_ms_sum, summaryRow?.duration_ms_count),
       maxDurationMs: maxFromCountedMetric(summaryRow?.duration_ms_max, Number(summaryRow?.duration_ms_count ?? 0))
-    },
-    statsLagSeconds: latestUsageStatsLagSeconds()
+    }
   }
 }
 
 export async function getAiPerformanceOverviewAsync(access?: AccessScope, range?: AccountUsageStatsRange, accountIds: string[] = []): Promise<AiPerformanceOverview> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'get_ai_performance_overview_read_only',
+      access,
+      range,
+      accountIds
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return getAiPerformanceOverview(access, range, accountIds)
   }
@@ -124,12 +128,11 @@ export async function getAiPerformanceOverviewAsync(access?: AccessScope, range?
   const selectedIds = new Set(selectedRows.map((row) => row.id))
   const orderedRows = dedupeAiPerformanceAccountRows([...defaultRows, ...selectedRows])
   const accounts = orderedRows.map((row) => mapAiPerformanceAccount(row, defaultIds, selectedIds))
-  const [hourlyRows, summaryRow, statsLagSeconds] = await Promise.all([
+  const [hourlyRows, summaryRow] = await Promise.all([
     accounts.length
       ? loadAiPerformanceHourlyRowsAsync(client, scope, accounts.map((account) => account.id), windowSinceHour, windowEndHour)
       : Promise.resolve([]),
-    loadAiPerformanceSummaryRowAsync(client, scope.systemAccountId, normalizedRange),
-    latestUsageStatsLagSecondsAsync(client)
+    loadAiPerformanceSummaryRowAsync(client, scope.systemAccountId, normalizedRange)
   ])
   const hourlyRowsByAccountHour = new Map(hourlyRows.map((row) => [`${row.scope_id}\n${row.stat_hour}`, row]))
   const hourlySeries = accounts.map((account) => ({
@@ -145,10 +148,8 @@ export async function getAiPerformanceOverviewAsync(access?: AccessScope, range?
       return {
         statHour,
         requestCount,
-        firstTokenCount,
         averageFirstTokenMs: averageFromSum(row?.first_token_ms_sum, row?.first_token_ms_count),
         maxFirstTokenMs: maxFromCountedMetric(row?.first_token_ms_max, firstTokenCount),
-        durationCount,
         averageDurationMs: averageFromSum(row?.duration_ms_sum, row?.duration_ms_count),
         maxDurationMs: maxFromCountedMetric(row?.duration_ms_max, durationCount)
       }
@@ -163,14 +164,11 @@ export async function getAiPerformanceOverviewAsync(access?: AccessScope, range?
     hourlySeries,
     summary: {
       requestCount: Number(summaryRow?.request_count ?? 0),
-      firstTokenCount: Number(summaryRow?.first_token_ms_count ?? 0),
       averageFirstTokenMs: averageFromSum(summaryRow?.first_token_ms_sum, summaryRow?.first_token_ms_count),
       maxFirstTokenMs: maxFromCountedMetric(summaryRow?.first_token_ms_max, Number(summaryRow?.first_token_ms_count ?? 0)),
-      durationCount: Number(summaryRow?.duration_ms_count ?? 0),
       averageDurationMs: averageFromSum(summaryRow?.duration_ms_sum, summaryRow?.duration_ms_count),
       maxDurationMs: maxFromCountedMetric(summaryRow?.duration_ms_max, Number(summaryRow?.duration_ms_count ?? 0))
-    },
-    statsLagSeconds
+    }
   }
 }
 
@@ -210,6 +208,13 @@ export async function listAiPerformanceAccountOptionsAsync(
   access?: AccessScope,
   options: { keyword?: string; accountIds?: string[]; limit?: number } = {}
 ): Promise<AiPerformanceAccountOption[]> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_ai_performance_account_options_read_only',
+      access,
+      options
+    })
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listAiPerformanceAccountOptions(access, options)
   }
@@ -551,9 +556,9 @@ function loadAiPerformanceAccountOptionRows(
     SELECT accounts.id
     FROM accounts
     WHERE accounts.deleted_at IS NULL
-      AND lower(accounts.name) >= ? AND lower(accounts.name) < ?
+      AND accounts.name >= ? AND accounts.name < ?
       ${visibleFilter.sql}
-    ORDER BY accounts.name COLLATE NOCASE ASC, accounts.id ASC
+    ORDER BY accounts.name ASC, accounts.id ASC
     LIMIT ?
   `).all(keywordPrefix.start, keywordPrefix.end, ...visibleFilter.params, options.limit) as unknown as Array<{ id: string }>
   const sourceInstanceParams = scope.systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? [] : [scope.systemAccountId]
@@ -564,9 +569,9 @@ function loadAiPerformanceAccountOptionRows(
       ON instance_accounts.authorization_instance_source_account_id = source_accounts.id
     WHERE source_accounts.deleted_at IS NULL
       AND instance_accounts.deleted_at IS NULL
-      AND lower(source_accounts.name) >= ? AND lower(source_accounts.name) < ?
+      AND source_accounts.name >= ? AND source_accounts.name < ?
       ${scope.systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? '' : 'AND instance_accounts.system_account_id = ?'}
-    ORDER BY source_accounts.name COLLATE NOCASE ASC, instance_accounts.id ASC
+    ORDER BY source_accounts.name ASC, instance_accounts.id ASC
     LIMIT ?
   `).all(keywordPrefix.start, keywordPrefix.end, ...sourceInstanceParams, options.limit) as unknown as Array<{ id: string }>
   const accountIds = uniqueNonEmpty([
@@ -596,8 +601,8 @@ async function loadAiPerformanceAccountOptionRowsAsync(
       SELECT accounts.id
       FROM ${accountsTable} accounts
       WHERE accounts.deleted_at IS NULL
-        AND LOWER(accounts.name) COLLATE "C" >= ? AND LOWER(accounts.name) COLLATE "C" < ? AND starts_with(LOWER(accounts.name), ?)
-      ORDER BY LOWER(accounts.name) COLLATE "C" ASC, accounts.id ASC
+        AND accounts.name COLLATE "C" >= ? AND accounts.name COLLATE "C" < ? AND starts_with(accounts.name, ?)
+      ORDER BY accounts.name COLLATE "C" ASC, accounts.id ASC
       LIMIT ?
     `, [keywordPrefix.start, keywordPrefix.end, keywordPrefix.start, options.limit])
     : uniqueNonEmpty([
@@ -607,8 +612,8 @@ async function loadAiPerformanceAccountOptionRowsAsync(
         WHERE accounts.system_account_id = ?
           AND accounts.deleted_at IS NULL
           AND accounts.authorization_instance_authorization_id IS NULL
-          AND LOWER(accounts.name) COLLATE "C" >= ? AND LOWER(accounts.name) COLLATE "C" < ? AND starts_with(LOWER(accounts.name), ?)
-        ORDER BY LOWER(accounts.name) COLLATE "C" ASC, accounts.id ASC
+          AND accounts.name COLLATE "C" >= ? AND accounts.name COLLATE "C" < ? AND starts_with(accounts.name, ?)
+        ORDER BY accounts.name COLLATE "C" ASC, accounts.id ASC
         LIMIT ?
       `, [scope.systemAccountId, keywordPrefix.start, keywordPrefix.end, keywordPrefix.start, options.limit])).map((row) => row.id),
       ...(await client.query<{ id: string }>(`
@@ -617,15 +622,15 @@ async function loadAiPerformanceAccountOptionRowsAsync(
         WHERE accounts.system_account_id = ?
           AND accounts.deleted_at IS NULL
           AND accounts.authorization_instance_authorization_id IS NOT NULL
-          AND LOWER(accounts.name) COLLATE "C" >= ? AND LOWER(accounts.name) COLLATE "C" < ? AND starts_with(LOWER(accounts.name), ?)
-        ORDER BY LOWER(accounts.name) COLLATE "C" ASC, accounts.id ASC
+          AND accounts.name COLLATE "C" >= ? AND accounts.name COLLATE "C" < ? AND starts_with(accounts.name, ?)
+        ORDER BY accounts.name COLLATE "C" ASC, accounts.id ASC
         LIMIT ?
       `, [scope.systemAccountId, keywordPrefix.start, keywordPrefix.end, keywordPrefix.start, options.limit])).map((row) => row.id),
       ...(await client.query<{ id: string }>(`
         SELECT accounts.id
         FROM ${accountsTable} accounts
         WHERE accounts.deleted_at IS NULL
-          AND LOWER(accounts.name) COLLATE "C" >= ? AND LOWER(accounts.name) COLLATE "C" < ? AND starts_with(LOWER(accounts.name), ?)
+          AND accounts.name COLLATE "C" >= ? AND accounts.name COLLATE "C" < ? AND starts_with(accounts.name, ?)
           AND EXISTS (
             SELECT 1
             FROM ${businessTable(client, 'group_accounts')} visible_group_accounts
@@ -638,7 +643,7 @@ async function loadAiPerformanceAccountOptionRowsAsync(
             WHERE visible_group_accounts.account_id = accounts.id
               AND visible_group_accounts.enabled = 1
           )
-        ORDER BY LOWER(accounts.name) COLLATE "C" ASC, accounts.id ASC
+        ORDER BY accounts.name COLLATE "C" ASC, accounts.id ASC
         LIMIT ?
       `, [keywordPrefix.start, keywordPrefix.end, keywordPrefix.start, scope.systemAccountId, nowIso(), options.limit])).map((row) => row.id)
     ]).slice(0, options.limit).map((id) => ({ id }))
@@ -650,9 +655,9 @@ async function loadAiPerformanceAccountOptionRowsAsync(
       ON instance_accounts.authorization_instance_source_account_id = source_accounts.id
     WHERE source_accounts.deleted_at IS NULL
       AND instance_accounts.deleted_at IS NULL
-      AND LOWER(source_accounts.name) COLLATE "C" >= ? AND LOWER(source_accounts.name) COLLATE "C" < ? AND starts_with(LOWER(source_accounts.name), ?)
+      AND source_accounts.name COLLATE "C" >= ? AND source_accounts.name COLLATE "C" < ? AND starts_with(source_accounts.name, ?)
       ${scope.systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? '' : 'AND instance_accounts.system_account_id = ?'}
-    ORDER BY LOWER(source_accounts.name) COLLATE "C" ASC, instance_accounts.id ASC
+    ORDER BY source_accounts.name COLLATE "C" ASC, instance_accounts.id ASC
     LIMIT ?
   `, [keywordPrefix.start, keywordPrefix.end, keywordPrefix.start, ...sourceInstanceParams, options.limit])
   const accountIds = uniqueNonEmpty([
@@ -665,7 +670,7 @@ async function loadAiPerformanceAccountOptionRowsAsync(
 }
 
 function normalizeAccountNamePrefix(value: string): { start: string; end: string } {
-  const start = value.normalize('NFKC').toLowerCase().trim()
+  const start = value.normalize('NFKC').trim()
   return { start, end: accountNamePrefixUpperBound(start) }
 }
 
@@ -901,28 +906,6 @@ function aiPerformanceVisibleAccountFilterForClient(client: DatabaseClient, scop
   }
 }
 
-async function latestUsageStatsLagSecondsAsync(client: DatabaseClient): Promise<number | undefined> {
-  const shardRow = await client.one<{ lag_seconds?: number | string | null }>(`
-    SELECT MAX(lag_seconds) AS lag_seconds
-    FROM ${statsTable(client, 'stats_job_state')}
-    WHERE scope_type = 'usage_shard'
-      AND job_name = 'usage_stats_aggregation'
-  `)
-  const shardLag = numberOrUndefined(shardRow?.lag_seconds)
-  if (shardLag !== undefined) {
-    return shardLag
-  }
-  const row = await client.one<{ lag_seconds?: number | string | null }>(`
-    SELECT lag_seconds
-    FROM ${statsTable(client, 'stats_job_state')}
-    WHERE scope_type = 'global'
-      AND scope_id = ''
-      AND job_name = 'usage_stats_aggregation'
-    LIMIT 1
-  `)
-  return numberOrUndefined(row?.lag_seconds)
-}
-
 function statsTable(client: DatabaseClient, tableName: string): string {
   return client.dialect.qualifyTable('juhe_stats', tableName)
 }
@@ -952,9 +935,4 @@ function boundedAccountOptionLimit(value?: number): number {
 function maxFromCountedMetric(value: unknown, count: number): number | undefined {
   const number = Number(value ?? 0)
   return count > 0 && Number.isFinite(number) ? Math.max(0, Math.round(number)) : undefined
-}
-
-function numberOrUndefined(value: unknown): number | undefined {
-  const number = Number(value)
-  return Number.isFinite(number) ? number : undefined
 }

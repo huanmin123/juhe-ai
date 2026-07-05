@@ -65,7 +65,7 @@ export function checkStatusText(value: NonNullable<ModelCheckCheckResult['status
   if (value === 'passed') return '通过'
   if (value === 'warning') return '需关注'
   if (value === 'failed') return '失败'
-  if (value === 'skipped') return '跳过'
+  if (value === 'skipped') return '未计分'
   return value
 }
 
@@ -85,13 +85,21 @@ export function formatModelCheckDuration(value?: number): string {
   return formatMillisecondsAsSeconds(value)
 }
 
+export function evidenceCompletenessText(run: Pick<ModelCheckRunSummary, 'resultSummary'>): string {
+  const summary = recordValue(run.resultSummary?.evidenceCompleteness)
+  const score = numberValue(summary?.evidenceCompletenessScore)
+  const scored = numberValue(summary?.scoredEvidenceProbeCount)
+  const total = numberValue(summary?.evidenceProbeCount)
+  if (score === undefined || scored === undefined || total === undefined || total <= 0) return '-'
+  return `${scored} / ${total}（${score}%）`
+}
+
 export function checkTitle(check: ModelCheckCheckResult): string {
   return checkTitleByType(check.itemType, check.itemKey)
 }
 
 export function checkTitleByType(itemType: string, itemKey: string): string {
   const labels: Record<string, string> = {
-    model_catalog: '模型目录',
     responses_basic: 'Responses 非流式',
     responses_stream: 'Responses 流式',
     protocol_basic: '协议非流式',
@@ -147,4 +155,12 @@ export function formatClockTime(value: Date): string {
   return [value.getHours(), value.getMinutes(), value.getSeconds()]
     .map((item) => String(item).padStart(2, '0'))
     .join(':')
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }

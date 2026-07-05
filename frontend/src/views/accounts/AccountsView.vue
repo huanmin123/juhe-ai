@@ -123,12 +123,14 @@
       :accounts="batchTestingAccounts"
       :active-task="activeSingleTestTask"
       :batch-items="batchTestItems"
+      :draft-account="draftTestingAccountPayload"
       :mode="testMode"
       :model-options="testModelOptions"
       :models-loading="testModelsLoading"
       :provider-name="providerName"
       :result="testResult"
       :running="testRunning"
+      v-model:test-endpoint-mode="testForm.testEndpointMode"
       @close="closeTestModal"
       @copy-result="copyText"
       @run="runAccountTest"
@@ -136,7 +138,6 @@
     />
 
     <AccountEditModal
-      v-if="modalOpen"
       v-model:open="modalOpen"
       v-model:error-policy-rules="accountErrorPolicyRules"
       v-model:response-inspection-rules="accountResponseInspectionRules"
@@ -150,6 +151,8 @@
       :credential-title="selectedAccountTypeTitle"
       :editing="Boolean(editingId)"
       :account-detail="editingAccountDetail"
+      :advanced-loaded="accountAdvancedDetailLoaded"
+      :advanced-loading="accountAdvancedDetailLoading"
       :form="form"
       :group-options="groupOptions"
       :group-options-loading="groupOptionsLoading"
@@ -161,6 +164,7 @@
       :is-management-view="isManagementView"
       :is-o-auth-form="isOAuthForm"
       :is-open-a-i-o-auth-form="isOpenAIOAuthForm"
+      :loading="accountEditDetailLoading"
       :mapping-anthropic-source-model-options="mappingAnthropicSourceModelOptions"
       :mapping-gemini-source-model-options="mappingGeminiSourceModelOptions"
       :mapping-source-model-options="mappingSourceModelOptions"
@@ -180,6 +184,7 @@
       @generate-auth-url="generateOAuthUrl"
       @group-options-dropdown="handleGroupOptionsDropdown"
       @group-options-search="handleGroupOptionsSearch"
+      @advanced-open="loadAdvancedAccountDetail"
       @ok="saveAccount"
       @open-auth-url="openAuthUrl"
       @select-provider="selectProvider"
@@ -443,6 +448,9 @@ const {
 const {
   accountErrorPolicyRules,
   accountResponseInspectionRules,
+  accountAdvancedDetailLoaded,
+  accountAdvancedDetailLoading,
+  accountEditDetailLoading,
   apiKeyTestDetails,
   accountTagOptions,
   accountTagOptionsLoading,
@@ -476,6 +484,7 @@ const {
   openClone,
   openCreate,
   openEdit,
+  loadAdvancedAccountDetail,
   providerName,
   providerModelOptions,
   strategyModelsLoading,
@@ -517,7 +526,6 @@ watch(
       : undefined
     setEditGroupOptionScope({
       providerCode: form.providerCode,
-      providerProtocolProfileId: form.providerProtocolProfileId,
       systemAccountId: isManagementView.value
         ? accountOperationSystemAccountId(activeAccount, createScopeParams.value) ?? ''
         : undefined,
@@ -564,6 +572,7 @@ const {
   testModelsLoading,
   testResult,
   testRunning,
+  draftTestingAccountPayload,
   testingAccount
 } = useAccountTestModal({
   accountScopeParams,
@@ -574,7 +583,7 @@ const {
   draftApiKeyTestSnapshot,
   successfulDraftActivationTest
 })
-const accountEditTestButtonDisabled = computed(() => modalConfirmLoading.value || testRunning.value || !hasAccountType.value)
+const accountEditTestButtonDisabled = computed(() => accountEditDetailLoading.value || accountAdvancedDetailLoading.value || (Boolean(editingId.value) && !editingAuthorizedAccount.value && !accountAdvancedDetailLoaded.value) || modalConfirmLoading.value || testRunning.value || !hasAccountType.value)
 const {
   testAccountFromEditModal
 } = useAccountEditTestAction({

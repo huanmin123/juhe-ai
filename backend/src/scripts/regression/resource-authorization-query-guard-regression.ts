@@ -144,12 +144,13 @@ function assertAuthorizationListPlan(ownerSystemAccountId: string): void {
 function assertPostgresKeywordSourceGuard(): void {
   const source = readFileSync(resolve('src/storage/resource-authorization-read.repository.ts'), 'utf8')
   const start = source.indexOf('function resourceAuthorizationKeywordFilterForClient')
-  const end = source.indexOf('function escapeLikePrefix', start)
+  const end = source.indexOf('function textPrefixUpperBound', start)
   assert.notEqual(start, -1, '应存在 PG 授权列表 keyword filter')
   assert.notEqual(end, -1, '应能截取 PG 授权列表 keyword filter')
   const snippet = source.slice(start, end)
-  assert(snippet.includes('starts_with(lower('), 'PG 授权列表 keyword 应使用 lower + starts_with 固定字面前缀语义')
-  assert(snippet.includes('lowerPrefixBounds(keyword)'), 'PG 授权列表 keyword 应计算 lower 前缀范围边界')
+  assert(snippet.includes('starts_with(${expression}, ?)'), 'PG 授权列表 keyword 应使用 starts_with 固定字面前缀语义')
+  assert(snippet.includes('textPrefixUpperBound(keyword)'), 'PG 授权列表 keyword 应计算大小写敏感前缀范围边界')
+  assert(!/starts_with\(lower\(/i.test(snippet), 'PG 授权列表 keyword 不应折叠名称大小写')
   assert(!/\bILIKE\b/i.test(snippet), 'PG 授权列表 keyword 不应使用 ILIKE 前缀参数')
   assert(!/ESCAPE\s+'\\\\'/.test(snippet), 'PG 授权列表 keyword 不应依赖 LIKE ESCAPE 语义')
 }

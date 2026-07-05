@@ -76,14 +76,16 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { BookOutlined } from '@ant-design/icons-vue'
 
 import { api, type ExternalIntegrationSourceListParams } from '@/api/client'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import type { RowActionItem } from '@/components/rowActions'
+import { usePageStateCache } from '@/composables/usePageStateCache'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
+import { sanitizePaginationState, stringOrFallback, stringUnionOrFallback, type PagePaginationState } from '@/shared/pageStateSanitizers'
 import type {
   ExternalIntegrationScopeOption,
   ExternalIntegrationSourceStatus,
@@ -103,13 +105,24 @@ import {
 } from './externalSourceFormModel'
 import { useExternalSourceTokenActions } from './useExternalSourceTokenActions'
 
+interface ExternalIntegrationSourcesPageState {
+  keyword: string
+  pagination: PagePaginationState
+  statusFilter: ExternalIntegrationSourceStatus | 'all'
+}
+
 const pageSize = 20
+const pageStateCache = usePageStateCache<ExternalIntegrationSourcesPageState>(undefined, defaultExternalSourcesPageState, {
+  sanitize: sanitizeExternalSourcesPageState,
+  version: 1
+})
+const initialPageState = pageStateCache.read()
 const loading = ref(false)
-const keyword = ref('')
-const statusFilter = ref<ExternalIntegrationSourceStatus | 'all'>('all')
+const keyword = ref(initialPageState.keyword)
+const statusFilter = ref<ExternalIntegrationSourceStatus | 'all'>(initialPageState.statusFilter)
 const rows = ref<ExternalIntegrationSourceSummary[]>([])
 const paginationUpperBound = ref(0)
-const pagination = reactive({ current: 1, pageSize })
+const pagination = reactive({ ...initialPageState.pagination })
 const scopeOptions = ref<ExternalIntegrationScopeOption[]>([])
 
 const apiDocsOpen = ref(false)
@@ -120,7 +133,7 @@ const sourceSaving = ref(false)
 const editingSourceId = ref<string>()
 const sourceForm = reactive<ExternalSourceForm>(createEmptySourceForm())
 
-const builtInSourceDescription = '已授权全部公开接口；复制完整 Token 调用 /__aipublic__ 接口时只返回 Mock 数据，可用于对接请求头、参数和响应解析。'
+const builtInSourceDescription = '已授权全部公开资源维护接口；复制完整 Token 调用 /__aipublic__ 接口时只返回 Mock 数据，可用于对接请求头、参数和响应解析。'
 const {
   createdTokenOpen,
   createdTokenPlain,
@@ -170,9 +183,10 @@ async function loadScopes(): Promise<void> {
     scopeOptions.value = await api.externalIntegrationSources.scopes()
   } catch {
     scopeOptions.value = [
-      { value: 'external_integrations:source_auth_demo:read', label: 'GET 来源鉴权 Demo' },
-      { value: 'juhe_ai_public:ip_usage:read', label: 'GET IP 维度消费聚合' },
-      { value: 'juhe_ai_public:account_usage:read', label: 'GET 账号维度实际消耗聚合' }
+      { value: 'juhe_ai_public:api_key_list:read', label: 'GET API Key 列表' },
+      { value: 'juhe_ai_public:route_strategy_list:read', label: 'GET 路由策略列表' },
+      { value: 'juhe_ai_public:group_list:read', label: 'GET 分组列表' },
+      { value: 'juhe_ai_public:account_list:read', label: 'GET 账号列表' }
     ]
   }
 }
@@ -211,9 +225,13 @@ function applyFilters(): void {
 }
 
 function resetFilters(): void {
-  keyword.value = ''
-  statusFilter.value = 'all'
-  applyFilters()
+  const defaults = defaultExternalSourcesPageState()
+  keyword.value = defaults.keyword
+  statusFilter.value = defaults.statusFilter
+  pagination.current = defaults.pagination.current
+  pagination.pageSize = defaults.pagination.pageSize
+  pageStateCache.clear()
+  void loadData()
 }
 
 function handleTableChange(nextPagination: unknown): void {
@@ -223,6 +241,33 @@ function handleTableChange(nextPagination: unknown): void {
   void loadData()
 }
 
+function defaultExternalSourcesPageState(): ExternalIntegrationSourcesPageState {
+  return {
+    keyword: '',
+    pagination: { current: 1, pageSize },
+    statusFilter: 'all'
+  }
+}
+
+function sanitizeExternalSourcesPageState(value: unknown, fallback: ExternalIntegrationSourcesPageState): ExternalIntegrationSourcesPageState {
+  const source = value && typeof value === 'object' ? value as Partial<ExternalIntegrationSourcesPageState> : {}
+  return {
+    keyword: stringOrFallback(source.keyword, fallback.keyword),
+    pagination: sanitizePaginationState(source.pagination, fallback.pagination),
+    statusFilter: stringUnionOrFallback(source.statusFilter, ['all', 'active', 'disabled'], fallback.statusFilter)
+  }
+}
+
+function snapshotPageState(): ExternalIntegrationSourcesPageState {
+  return {
+    keyword: keyword.value,
+    pagination: { current: pagination.current, pageSize: pagination.pageSize },
+    statusFilter: statusFilter.value
+  }
+}
+
+watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
+
 function openCreateSource(): void {
   editingSourceId.value = undefined
   clearCreatedToken()
@@ -230,10 +275,17 @@ function openCreateSource(): void {
   sourceModalOpen.value = true
 }
 
-function openEditSource(record: ExternalIntegrationSourceSummary): void {
+async function openEditSource(record: ExternalIntegrationSourceSummary): Promise<void> {
+  let detail: ExternalIntegrationSourceSummary
+  try {
+    detail = await api.externalIntegrationSources.detail(record.id)
+  } catch (error) {
+    message.error(extractApiErrorMessage(error, '加载来源授权详情失败'))
+    return
+  }
   let nextForm: ExternalSourceForm
   try {
-    nextForm = createSourceFormFromRecord(record)
+    nextForm = createSourceFormFromRecord(detail)
   } catch (error) {
     message.error(extractApiErrorMessage(error, '来源授权数据异常，请清理后再编辑'))
     return
@@ -316,7 +368,7 @@ function sourceActions(record: ExternalIntegrationSourceSummary): RowActionItem[
 
 function handleSourceAction(key: string, record: ExternalIntegrationSourceSummary): void {
   if (key === 'edit') {
-    openEditSource(record)
+    void openEditSource(record)
     return
   }
   if (key === 'enable' || key === 'disable') {

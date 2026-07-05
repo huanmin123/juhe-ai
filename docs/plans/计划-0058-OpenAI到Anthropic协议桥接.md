@@ -118,7 +118,7 @@
 | 2026-06-24 | 不静默丢弃不可映射字段 | OpenAI 与 Anthropic 协议不是无损同构 | unsupported 字段必须受控拒绝或明确降级记录 |
 | 2026-06-24 | 真实凭据只用于临时联调 | 用户提供了真实可用账户，但凭据属于敏感信息 | 不写入仓库、文档、脚本默认值或日志 |
 | 2026-06-24 | 客户端画像按请求协议优先 | OpenAI / Codex 请求可能被路由到 Anthropic 档案 | OpenAI 路径先按 OpenAI/Codex 解析，原生 Anthropic 路径再按 Anthropic 解析 |
-| 2026-06-24 | 回归脚本隔离 Codex context state | 状态 shard 默认目录跨进程共享，固定 response id 会污染续链测试 | 新增 bridge mock / real E2E 脚本必须把 Codex context root 指到 tempRoot |
+| 2026-06-24 | 回归脚本隔离 Responses 桥接状态索引 | 状态 shard 默认目录跨进程共享，固定 response id 会污染续链测试 | 新增 bridge mock / real E2E 脚本必须把 Responses 桥接状态根目录指到 tempRoot |
 
 ## 验收标准
 

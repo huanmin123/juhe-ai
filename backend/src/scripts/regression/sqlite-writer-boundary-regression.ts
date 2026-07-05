@@ -89,7 +89,7 @@ try {
   for (const shardIndex of databaseModule.codexContextStateShardIndexes()) {
     assertNonOwnerWriteBlocked(
       databaseModule.getCodexContextStateShardDatabase(shardIndex),
-      `Codex Responses 上下文索引库分片 ${shardIndex}`
+      `Responses 桥接状态索引库分片 ${shardIndex}`
     )
   }
   assertNonOwnerWriteBlocked(databaseModule.getDatasetDatabase(), '数据集目录库')
@@ -290,7 +290,7 @@ function assertCodexContextStateSchemaBoundary(): void {
   assert.equal(
     businessSchemaSource.includes('codex_context_'),
     false,
-    'Codex Responses 上下文运行态索引不能放入业务库 schema'
+    'Responses 桥接状态运行态索引不能放入业务库 schema'
   )
 
   const codexContextSchemaSource = readFileSync(resolve('src/storage/schema/codex-context-state-schema.ts'), 'utf8')
@@ -298,7 +298,7 @@ function assertCodexContextStateSchemaBoundary(): void {
     codexContextSchemaSource.includes('codex_context_sessions')
       && codexContextSchemaSource.includes('codex_context_responses')
       && codexContextSchemaSource.includes('codex_context_compacts'),
-    'Codex Responses 上下文索引必须保留在独立 schema'
+    'Responses 桥接状态索引必须保留在独立 schema'
   )
 }
 

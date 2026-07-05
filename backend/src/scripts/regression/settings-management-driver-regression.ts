@@ -53,9 +53,11 @@ try {
         JUHE_AI_DATABASE_DRIVER: 'postgres',
         JUHE_AI_CACHE_DRIVER: 'redis',
         JUHE_AI_RUNTIME_STATE_DRIVER: 'redis',
+        JUHE_AI_QUEUE_DRIVER: 'redis_stream',
         JUHE_AI_POSTGRES_URL: process.env.JUHE_SETTINGS_MANAGEMENT_POSTGRES_URL,
         JUHE_AI_REDIS_CACHE_URL: process.env.JUHE_SETTINGS_MANAGEMENT_REDIS_CACHE_URL ?? 'redis://:unused@127.0.0.1:6379/0',
-        JUHE_AI_REDIS_STATE_URL: process.env.JUHE_SETTINGS_MANAGEMENT_REDIS_STATE_URL ?? 'redis://:unused@127.0.0.1:6380/0'
+        JUHE_AI_REDIS_STATE_URL: process.env.JUHE_SETTINGS_MANAGEMENT_REDIS_STATE_URL ?? 'redis://:unused@127.0.0.1:6380/0',
+        JUHE_AI_REDIS_QUEUE_URL: process.env.JUHE_SETTINGS_MANAGEMENT_REDIS_QUEUE_URL ?? process.env.JUHE_SETTINGS_MANAGEMENT_REDIS_STATE_URL ?? 'redis://:unused@127.0.0.1:6380/0'
       }
     })
     if (result.status !== 0) {
@@ -87,7 +89,9 @@ async function assertSettingsManagementAsync(repositories: typeof import('../../
 
     const updatedSystem = await repositories.updateSettingsAsync({ systemApiRateLimitIpReadPerMinute: nextReadLimit })
     assert.equal(updatedSystem.systemApiRateLimitIpReadPerMinute, nextReadLimit, '系统设置 async 更新后应返回新限流值')
-    assert.equal(updatedSystem.systemApiRateLimitEnabled, originalSystem.systemApiRateLimitEnabled, '系统设置 async 局部更新不应覆盖未提交字段')
+    assert.equal(Object.prototype.hasOwnProperty.call(updatedSystem, 'systemApiRateLimitEnabled'), false, '系统 API 限流开关不应暴露为系统设置')
+    assert.equal(Object.prototype.hasOwnProperty.call(updatedSystem, 'streamCircuitBreakerEnabled'), false, '流式熔断开关不应暴露为系统设置')
+    assert.equal(Object.prototype.hasOwnProperty.call(updatedSystem, 'operationLogEnabled'), false, '操作日志开关不应暴露为系统设置')
     const reloadedSystem = await repositories.getSettingsAsync()
     assert.equal(reloadedSystem.systemApiRateLimitIpReadPerMinute, nextReadLimit, '系统设置 async 更新后缓存应失效并可重新读取')
 
@@ -95,6 +99,11 @@ async function assertSettingsManagementAsync(repositories: typeof import('../../
       () => repositories.updateSettingsAsync({ rogue_settings_key_0: true }),
       /未知系统设置字段/,
       '系统设置 async 更新不能接受未知字段'
+    )
+    await assert.rejects(
+      () => repositories.updateSettingsAsync({ systemApiRateLimitEnabled: false }),
+      /未知系统设置字段/,
+      '系统设置 async 更新不能关闭系统 API 限流'
     )
     await assert.rejects(
       () => repositories.updateGlobalSettingsAsync({ legacyBrandName: '旧字段' }),

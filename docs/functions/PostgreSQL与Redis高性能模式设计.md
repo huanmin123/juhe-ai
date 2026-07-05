@@ -35,7 +35,7 @@
 - 不把 PostgreSQL 高性能模式做成默认依赖。
 - 不在首期引入 Kafka、RabbitMQ、BullMQ、ClickHouse 或其他外部队列 / OLAP。
 - 不在首期实现多节点自动故障转移、跨地域复制或自动用户迁移；多节点路由仍按 [分布式部署与用户分片设计](分布式部署与用户分片设计.md) 单独推进。
-- 不把 Redis 作为账务、权限、授权、账号健康、审计或使用记录事实源；Redis Streams 只作为可恢复队列缓冲，消息成功写入事实库后才 ack。
+- 不把 Redis 作为账务、权限、授权、账号健康、审计或使用记录的持久事实库；但在高性能模式下，跨进程短 TTL 缓存、运行态、原子计数和记录型队列的当前事实源必须是 Redis / Redis Streams，不能回退到进程内 memory 或本地 IPC 后继续声明高性能模式可用。Redis Streams 消息成功写入事实库后才 ack。
 - 不为了迁移保留运行时旧 schema 兼容分支；历史数据处理只允许离线脚本或重建流程。
 
 ## 配置模型
@@ -68,8 +68,7 @@ JUHE_AI_QUEUE_DRIVER=redis_stream
 JUHE_AI_POSTGRES_URL=postgres://juhe_ai:<密码URL编码>@pgbouncer:5432/juhe_ai
 JUHE_AI_REDIS_CACHE_URL=redis://:<缓存密码URL编码>@redis-cache:6379/0
 JUHE_AI_REDIS_STATE_URL=redis://:<运行态密码URL编码>@redis-state:6379/0
-JUHE_AI_REDIS_QUEUE_URL=redis://:<运行态密码URL编码>@redis-state:6379/0
-JUHE_AI_REDIS_STREAM_MAXLEN=1000000
+JUHE_AI_REDIS_QUEUE_URL=redis://:<队列密码URL编码>@redis-queue:6379/0
 JUHE_AI_REDIS_STREAM_READ_COUNT=1000
 JUHE_AI_REDIS_STREAM_BLOCK_MS=1000
 JUHE_AI_REDIS_STREAM_CLAIM_IDLE_MS=60000
@@ -83,8 +82,8 @@ JUHE_AI_DB_WRITE_QUEUE_MAX_ITEMS=50000
 
 - `JUHE_AI_RUNTIME_MODE=performance` 时必须同时配置 PostgreSQL、Redis cache、Redis state 和 Redis queue；缺失时快速失败。
 - `JUHE_AI_DATABASE_DRIVER=postgres` 时不读取 `JUHE_AI_DATABASE_PATH`、`JUHE_AI_DATASET_DATABASE_PATH`、`JUHE_AI_USAGE_CATALOG_DATABASE_PATH`、`JUHE_AI_STATS_DATABASE_PATH` 和 `JUHE_AI_USAGE_SHARD_ROOT`。
-- `JUHE_AI_CACHE_DRIVER=redis` 只表示可丢弃缓存；需要原子并发、限流、锁或调度运行态时必须走 `JUHE_AI_RUNTIME_STATE_DRIVER`。
-- `JUHE_AI_QUEUE_DRIVER=redis_stream` 使用 Redis Streams 承接高性能模式队列缓冲；`JUHE_AI_REDIS_QUEUE_URL` 必须显式配置，可以与 `JUHE_AI_REDIS_STATE_URL` 填同一个 Redis，也可以拆到独立 Redis 队列实例。Redis Stream 入队失败不回退 IPC 或本地内存队列，避免掩盖队列基础设施故障。
+- `JUHE_AI_CACHE_DRIVER=redis` 只表示可丢弃缓存；需要硬并发槽、限流计数或短 TTL 调度运行态时必须走 `JUHE_AI_RUNTIME_STATE_DRIVER`。
+- `JUHE_AI_QUEUE_DRIVER=redis_stream` 使用 Redis Streams 承接高性能模式队列缓冲；`JUHE_AI_REDIS_QUEUE_URL` 默认应指向独立 `redis-queue`，不再复用 `redis-state`。Redis Stream 入队失败不回退 IPC 或本地内存队列，避免掩盖队列基础设施故障；可靠队列入队不使用 `MAXLEN ~` 自动裁剪，消息成功 `XACK` 后同步 `XDEL` 删除已落库条目。
 - 生产环境不使用 `latest` 镜像；PostgreSQL 和 Redis 镜像必须固定 major / patch 或 digest。
 
 ## 部署边界
@@ -98,7 +97,8 @@ JUHE_AI_DB_WRITE_QUEUE_MAX_ITEMS=50000
 | `postgres` | 主事实库 | 使用 PostgreSQL 18 当前稳定版本线；PostgreSQL 19 仍处 beta 阶段，不作为生产默认。 |
 | `pgbouncer` | 连接池网关 | 应用进程和 worker 连接 PgBouncer，避免多进程各自连接池把 PostgreSQL 连接打爆。 |
 | `redis-cache` | 可丢弃缓存 | `maxmemory-policy=allkeys-lru` 或 `volatile-lru`，只放可重建缓存。 |
-| `redis-state` | 运行态、原子计数和默认 Redis Streams 队列 | `maxmemory-policy=noeviction`，所有 key 必须有 TTL 或容量上限；Stream 使用 `MAXLEN ~` 控制长度，开启 AOF everysec。 |
+| `redis-state` | 运行态和原子计数 | `maxmemory-policy=noeviction`；运行态 key 必须有 TTL 或容量上限。 |
+| `redis-queue` | Redis Streams 可靠队列 | `maxmemory-policy=noeviction`，开启 AOF everysec；队列默认不自动裁剪，按 backlog、pending 和磁盘增长监控扩容。 |
 | `juhe-ai` | 后端服务 | 按现有 server / DB service / worker 拓扑启动，连接 PostgreSQL 和 Redis。 |
 
 版本参考：
@@ -116,11 +116,12 @@ PostgreSQL 模式不再模拟多个 SQLite 文件，而是把当前事实域映�
 | `juhe_dataset` | 数据集目录库 | 审计元数据、操作日志、公开接口日志、运行日志索引、模型检测、记录清理目标 |
 | `juhe_usage` | 使用记录目录库 + usage shard | `usage_records`、使用记录列表索引、账号 / API Key scope catalog |
 | `juhe_stats` | 统计结果库 | 用量桶、额度窗口、范围窗口、排行、账号质量、系统监控、表监控、`stats_job_state` |
-| `juhe_codex_context` | Codex context state shard | Responses session / response / compact 索引 |
+| `juhe_codex_context` | Responses 桥接状态索引 | Responses session / response / compact 索引 |
 
 表名可以保留当前语义，代码通过 repository / dialect 选择 schema，不把 schema 名写进业务服务层。
+表监控在 PostgreSQL 模式下按这 5 个 schema 采样 relation size、估算行数和 1 小时 / 24 小时增长，结果统一写入 `juhe_stats.database_storage_snapshots` 与 `juhe_stats.table_storage_snapshots`，不回读 SQLite 文件路径。
 
-当前已新增 `backend/src/storage/postgres-schema.ts`，从现有 SQLite schema DDL 收集建表 / 建索引语句并映射为 PostgreSQL SQL：移除 `PRAGMA`，把 `COLLATE NOCASE` 映射为 `lower(...)` 表达式索引，把 SQLite JSON object check 映射为 `jsonb_typeof(...::jsonb)`，并按外键依赖重新排序 `CREATE TABLE`，避免 PostgreSQL 的前向外键引用失败。`postgres:init-schema` 默认执行 schema 初始化并写入默认种子数据，`postgres:init-schema-only` 只执行 DDL。`<测试主机IP>` 最新完整初始化已验证 5 个 schema、617 条 schema 语句、132 条默认种子语句可以成功执行。
+当前已新增 `backend/src/storage/postgres-schema.ts`，从现有 SQLite schema DDL 收集建表 / 建索引语句并映射为 PostgreSQL SQL：移除 `PRAGMA`，把 `COLLATE NOCASE` 映射为 `lower(...)` 表达式索引，把 SQLite JSON object check 映射为 `jsonb_typeof(...::jsonb)`，并按外键依赖重新排序 `CREATE TABLE`，避免 PostgreSQL 的前向外键引用失败。`postgres:init-schema` 默认执行 schema 初始化并写入默认种子数据，`postgres:init-schema-only` 只执行 DDL。当前版本完整初始化应以 `test:postgres-schema-sql` / `test:postgres-seed-defaults` 的实际输出为准；最近本地校验口径为 5 个 schema、594 条 schema 语句。
 
 ### usage_records 目标形态
 
@@ -243,7 +244,7 @@ API Key 管理关键路径已落地到 `backend/src/storage/api-key.repository.t
 - `updateResourceAuthorizationAsync()` 和 `revokeResourceAuthorizationAsync()` 已新增 PG 现有授权管理写路径：`PATCH /__aisys__/api/authorizations/:id` 支持暂停 / 恢复和额度更新，`PATCH /__aisys__/api/authorizations/:id/expire` 支持有效期与额度更新，`DELETE /__aisys__/api/authorizations/:id` 支持回收；PG 事务内会更新 grant、runtime authorization、source、额度窗口配置，并在提交后失效网关运行态、授权额度、API Key 校验和授权读取缓存。
 - 完整账号管理端还需授权实例列表视图、过期物理清理、统计聚合和使用记录读写继续迁移；当前 `authorizations` 路由本身没有独立 `GET /:id` 详情入口。
 - PG 模式下 API Key 摘要会读取真实绑定路由策略及其策略分组；`usage` 暂时返回空聚合，等待 usage / stats repository 迁移后接入预聚合窗口。
-- PG 模式下删除 API Key 会删除业务库中的 key 和绑定，并返回 cleanup target；路由暂不投递旧的 dataset / stats 清理目标，等待 dataset / record-maintenance 清理仓储迁移后恢复。
+- PG 模式下删除 API Key 会删除业务库中的 key 和绑定，并投递关联记录清理目标；record-maintenance 通过 PostgreSQL usage / dataset / stats 清理实现推进，不再因 PostgreSQL driver 跳过历史数据清理。
 - PG 模式下 API Key 列表 keyword 搜索使用 `matched_api_key_ids` materialized CTE 先按 `lower(name) COLLATE "C"` 前缀范围命中名称索引，再按原列表排序输出；如果直接在主查询中叠加 keyword 过滤，PostgreSQL 可能优先选择列表排序索引后过滤名称，导致大表搜索退化。
 - PG 模式下 API Key 创建 / 更新混合路由配置会通过 async provider 与模型目录读取校验评分模型、质量评分模型和等级目标模型；`test:performance-system-api-smoke` 已覆盖 SQLite 与远端 PostgreSQL / Redis 下混合路由 API Key 的 HTTP 创建、更新和删除。
 - `backend/src/modules/api-keys/api-keys.routes.ts` 的列表、secret、创建、更新、刷新密钥和删除已切到 async repository。
@@ -284,9 +285,9 @@ interface RuntimeStateStore {
 
 边界：
 
-- `AppCache` 是进程本地同步缓存，可存放不可序列化对象，例如 HTTP agent、临时近端只读结果和进程内 memoization；高性能模式下仍允许使用，但不能承载跨进程一致性。
+- `AppCache` 是进程本地同步缓存，可存放不可序列化对象，例如 HTTP agent、临时近端只读结果和进程内 memoization；高性能模式下仍允许使用，但不能承载跨进程事实源。需要跨进程一致的缓存必须接入 `SharedJsonCache` / Redis，`AppCache` 只能作为可丢弃本地 L1 或明确的进程内易失优化。
 - `SharedJsonCache` 是跨进程可丢弃 JSON 缓存，`standalone` 使用 memory driver，`performance` 使用 Redis cache driver。
-- `RuntimeStateStore` 是跨进程短 TTL 运行态，`standalone` 使用 memory driver，`performance` 使用 Redis state driver；原子计数和锁必须通过该工具或封装后的专用工具访问。
+- `RuntimeStateStore` 是跨进程短 TTL 运行态，`standalone` 使用 memory driver，`performance` 使用 Redis state driver；硬并发槽、限流计数这类不能超卖的状态必须通过该工具或封装后的专用原子操作访问。`acquireLock / releaseLock` 只保留给明确需要单资源串行化且不可接受重复执行的基础设施保护，例如 OAuth access token 单账号刷新；网关调度、账号运行态探针、上游桶避让、IP 级账号回避、IP 错误熔断和 Codex turn retry 不允许在请求路径使用 Redis 分布式锁。
 
 Redis key 统一命名：
 
@@ -297,11 +298,37 @@ juhe-ai:{env}:{driver}:{cache-name}:v{version}:{scope}:{key}
 规则：
 
 - `clear()` 不做全库 `SCAN + DEL`，优先递增 domain version，实现常量成本失效。
-- 所有 Redis key 必须有 TTL，确需长期保留的运行态要先证明不是事实数据。
+- 所有 Redis cache / state key 必须有 TTL；确需长期保留的运行态要先证明不是持久业务事实。Redis Streams 使用长度、pending 和 consumer 监控控制容量，不用 TTL 表达消息生命周期。
 - Redis payload 使用 JSON，并带 `schemaVersion`；结构变化时递增 cache domain version。
 - API Key 明文、OAuth token、代理密码、完整请求 / 响应 payload、审计正文和可能造成越权的权限中间结果不得进入通用 Redis cache。
 - 调度运行态、并发占用、IP 级错误熔断、登录失败窗口、验证码挑战、会话亲和和 cache invalidation index 在 performance 模式下进入 Redis state。
-- 当前已落地 `RuntimeStateStore` Redis driver、`SharedJsonCache` Redis driver、登录失败窗口 Redis state、验证码 challenge / 发放限频 Redis state、账号并发槽 Redis 原子获取 / 释放和网关缓存失效 runtime state 版本广播；仍需继续迁移会话亲和、客户端 IP 并发和错误熔断。
+- 当前已落地 `RuntimeStateStore` Redis driver、`RuntimeProbeStateStore` Redis driver、`SharedJsonCache` Redis driver、登录失败窗口 Redis state、验证码 challenge / 发放限频 Redis state、账号并发槽 Redis 原子获取 / 释放、账号并发列表展示 Redis 批量读取、网关缓存失效 runtime state 版本广播、AI 账户运行态探针 due / generation、上游桶避让、IP 级账号回避、IP 错误熔断、Codex turn retry 和记录型 Redis Streams 队列；不能在 performance 模式下把跨进程事实绑定到进程内 memory。
+- 账户页展示的当前并发是列表加载时的瞬时 in-flight 快照，不是累计请求数。performance 模式下管理端和用户侧账户列表必须在列表响应中读取当前可见账户在 Redis state 中的并发槽，并保留 `currentConcurrencyAvailable` 可用性标记；授权实例必须按来源账号 ID 读取同一个硬并发槽，不能按授权实例 ID 另算一份并发；Redis state 不可用时显示不可用状态，不能把默认 `0` 误当成真实无并发。前端不得为账户当前并发额外开启定时轮询。
+
+### Redis 运行态一致性分级
+
+Redis runtime state 按一致性要求分三类处理：
+
+- 硬约束状态：账号并发槽、系统 API 限流、验证码发放限频等不能突破上限的状态，必须使用 Lua / Redis 原生命令 / 封装后的原子操作，失败时按保护性拒绝或快速失败处理。
+- 短 TTL 调度状态：上游桶避让、IP 级账号回避、IP 错误熔断、Codex turn retry、AI 账户运行态探针状态。这类状态允许秒级短暂不一致和重复写入，使用 TTL、时间窗口、generation、成功信号清理和后台探针收敛，不在用户请求路径等待分布式锁。
+- 可丢弃缓存：列表快照、只读 options、runtime cache version 等可重建数据，使用 `SharedJsonCache` 或本机 L1，失效慢一点只影响短期展示或调度偏好，不能承载账务、授权、使用记录或审计事实。
+
+短 TTL 调度状态禁止把“避免丢一个计数”作为加分布式锁的理由。高并发下丢失少量样本的代价低于请求路径等待锁、锁残留、跨节点排队和恢复探针被误限制的代价；状态升级必须由时间窗口、最小观察期、探针结果和成功信号共同决定。
+
+### AI 账户运行态探针
+
+AI 账户运行态探针在 performance 模式下必须按多节点设计运行：
+
+- `failure_observed`、`local_suppressed`、`runtime_degraded`、`precheck_pending` 这类短 TTL 调度态可以存放在 Redis runtime state，但不能作为账务、授权、审计或账号健康持久事实。
+- 状态事件只提交 probe intent；探针调度器负责去重、本机预算、jitter、generation 和 due 索引。
+- 请求调度链路允许短暂不一致，优先使用 server 进程内短 TTL 近端缓存读取 Redis 探针状态，避免高并发下每次请求按候选账号数量访问 Redis。
+- due 索引必须跨节点可见，使用 Redis sorted set 或等价 Redis runtime state 结构保存 `runtimeKey -> dueAt`。任意 server 节点都可以 sweep due 任务；重复执行由 generation 条件写入和条件删除收敛。
+- 不使用 Redis 分布式锁、分布式全局预算锁、provider 锁、proxy 锁或 baseUrl 锁限制恢复探针预算；预算只做本机保护和 jitter，避免 Redis 锁残留导致恢复并发被误限制。
+- 探针结果回写和探针成功清理前必须校验 generation，避免旧探针覆盖或误删真实成功、手动恢复或后续状态转换产生的新状态。
+- Redis 探针状态只保存非敏感运行态元数据和 due 信息，不保存账号凭据、API Key、OAuth token、代理密码、失败请求 payload、失败请求 model 或 endpoint；执行探针前通过 DB service 重载账号凭据。
+- server 进程负责 sweep Redis due 索引并执行运行态恢复探针；worker 和 DB service 不执行该类短 TTL 运行态探针。持久冷却复测仍由 ops-worker 负责。
+- `runtime_recovery_probe` 只表示本地 / Redis 运行态恢复探针；持久 `temporary_unavailable / rate_limited` 冷却复测继续使用 `cooldown_retest`。两类探针都不写账号质量分钟样本，不保存完整请求 / 响应正文。
+- Redis state 不可用时，高性能模式不能静默退回进程内 memory；应记录基础设施错误并保守跳过探针或快速失败。
 
 ## 队列与消费并发
 
@@ -310,8 +337,8 @@ juhe-ai:{env}:{driver}:{cache-name}:v{version}:{scope}:{key}
 | 队列 / command | SQLite standalone | PostgreSQL performance |
 | --- | --- | --- |
 | DB service 业务写 | 业务库单 owner 串行 | 保持 typed operation，可并发执行，按事务和同 key 顺序约束 |
-| usage records | ingest 内按 shard / 批次串行 | `redis_stream` 模式先写入 Redis Stream `juhe-ai:queue:usage-records`，ingest worker 通过 consumer group `juhe-ai:usage-record-writers` 消费，落库成功后 ack；Redis 入队失败时回退到现有 IPC / 本地队列 |
-| audit / operation / public logs | ingest owner 串行 | 可按表和 trace 分桶并发，保留容量上限和失败重试 |
+| usage records | ingest 内按 shard / 批次串行 | `redis_stream` 模式先写入 Redis Stream `juhe-ai:queue:usage-records`，ingest worker 通过 consumer group `juhe-ai:usage-record-writers` 消费，落库成功后 ack；Redis 入队失败时返回或记录队列基础设施错误，禁止回退到现有 IPC / 本地内存队列 |
+| audit / operation / public logs | ingest owner 串行 | performance 模式先写入对应 Redis Stream，再由 ingest-worker consumer 按表和 trace 分桶消费，落库成功后 ack；Redis 入队失败不回退 IPC / 本地内存队列 |
 | stats aggregation | stats writer 串行短事务 | 可按作用域 / 分区并行读取，写入仍按窗口事务控制，避免同一 summary key 并发 upsert 放大冲突 |
 | record maintenance | 低优先级串行小批 | 低优先级并发小批，受全局并发和连接池限制 |
 
@@ -320,7 +347,7 @@ juhe-ai:{env}:{driver}:{cache-name}:v{version}:{scope}:{key}
 - `JUHE_AI_DB_WRITE_MAX_CONCURRENCY=100` 是后台写入队列总并发上限，不等于 PostgreSQL 连接池必须开到 100。
 - 实际执行受 `JUHE_AI_DB_POOL_MAX`、PgBouncer 池大小、命令优先级、同资源互斥和队列容量共同限制。
 - Redis Streams 只提供 at-least-once 投递，不提供 exactly-once；消费端写库必须保持幂等，失败消息留在 pending，超过 `JUHE_AI_REDIS_STREAM_CLAIM_IDLE_MS` 后由消费者重新 claim。
-- `JUHE_AI_REDIS_STREAM_MAXLEN` 控制 Stream 近似最大长度，避免 Redis state 被持续写满；生产监控必须包含 stream length、pending 数量、consumer idle 和落库失败次数。压测报告中判断本轮是否制造积压时必须使用当前测试窗口的 positive pending / backlog delta，历史遗留 pending / lag 只能作为单独清理项记录，不能直接判定当前压测失败。
+- 可靠队列入队固定不发送 `MAXLEN`，避免消费滞后时 Redis 近似裁剪未落库消息；消费成功后必须 `XACK` 并 `XDEL` 已确认条目，stream length 只反映未清理或未确认 backlog。容量风险通过 stream length、pending 数量、consumer idle、落库失败次数、积压告警和人工扩容 / 清理处理，不能通过静默裁剪处理。压测报告中判断本轮是否制造积压时必须使用当前测试窗口的 positive pending / backlog delta，历史遗留 pending / lag 只能作为单独清理项记录，不能直接判定当前压测失败。
 - 入队后立即调度 drain，不再等待固定 SQLite flush 周期；但允许 0 到 10ms 的微批窗口合并当前事件循环内已经排队的同类写入。
 - 同一个业务资源的状态覆盖类 command 仍可合并；事实明细 append-only 不做 last-write-wins。
 - 失败重试必须指数退避并有最大重试 / dead-letter 指标，不能无限占用并发槽。
@@ -334,6 +361,7 @@ PostgreSQL 模式下保留 DB service，理由不是规避 SQLite 同步阻塞�
 - DB service 承接系统管理 API、登录态校验、网关关键读写和业务 typed operation。
 - 常驻后台进程收敛为 ingest-worker、stats-worker、ops-worker 三类；写入 PostgreSQL 时按 typed operation、队列优先级和连接池背压并发消费。
 - 高性能模式下 ops-worker 已恢复 API Key / 账户时间计划同步、资源授权过期扫描、过期逻辑删除账户清理、账号健康检测、账号冷却复测、账户内 API Key 冷却复测、代理延迟刷新和 OpenAI OAuth access token 自动刷新；这些任务的候选读取和状态写回必须走 PG async repository / DB service 分支。
+- 高性能模式下 ingest-worker 仍注册 `data-retention-cleanup`，但 PG 分支只按系统设置投递 `usage_records_cleanup` 和 `non_business_data_cleanup` 到 record-maintenance；底层单机数据保留清理服务在 PG 下保持 fail-fast，避免回落 SQLite 清理链路。
 - ops-worker 的账号健康检测和冷却复测执行队列仍是本地短窗口 retry queue，只保存 accountId 等小对象；候选、取消、状态和结果事实以 PostgreSQL 为准。没有真实积压、重启恢复延迟或多 worker 抢占证据前，不把该执行缓冲强行迁入 Redis Streams。
 - OpenAI OAuth access token 自动刷新已恢复 PG 调度；OAuth token、refresh token 和代理 URL 不进入 Redis shared cache。远端 smoke 使用测试替身 token endpoint 验证 PG 候选、写回、连续失败异常标记和错误脱敏，真实上游 refresh token 仍按真实账号和生产网络单独验证。代理延迟刷新已恢复 PG 调度，但代理 URL 只在探测进程内即时使用，不作为共享缓存内容。
 - 已退役的 `metrics-worker`、`snapshot-worker`、`probe-worker` 和 `maintenance-worker` 不再作为独立 worker role 出现在调度分支中。
@@ -361,10 +389,11 @@ PostgreSQL 模式下保留 DB service，理由不是规避 SQLite 同步阻塞�
 
 ## Redis 调优基线
 
-- `redis-cache` 和 `redis-state` 生产建议拆成两个实例或两个容器，因为 cache 可以淘汰，runtime state 不能被 LRU 随机淘汰。
+- `redis-cache`、`redis-state` 和 `redis-queue` 生产建议拆成三个实例或三个容器，因为 cache 可以淘汰，runtime state 与可靠队列都不能被 LRU 随机淘汰，队列还需要单独按 backlog 扩容。
 - `redis-cache` 设置 `maxmemory` 和淘汰策略，命中率低于阈值时优先检查 key 设计，不直接加内存。
 - `redis-state` 使用 `noeviction`，所有写入必须带 TTL；写失败时调用方按降级策略处理。
-- 运行态原子操作使用 Lua 或事务 pipeline 收口，不把 `GET -> 本地判断 -> SET` 暴露给并发调用方。
+- `redis-queue` 使用 `noeviction + AOF everysec`，Redis Streams 不配置自动裁剪；队列内存和磁盘水位异常时应扩容或排查消费者，而不是丢弃未消费消息。
+- 硬约束运行态使用 Lua 或 Redis 原生命令收口，不把 `GET -> 本地判断 -> SET` 暴露给并发调用方；短 TTL 调度状态可以直接读写并接受短暂覆盖，但必须有 TTL、成功清理、后台恢复或 generation 收敛机制。
 - 监控 `used_memory`、`evicted_keys`、`expired_keys`、`blocked_clients`、`instantaneous_ops_per_sec`、命中率和慢命令。
 
 ## 数据切换边界
@@ -383,7 +412,7 @@ PostgreSQL 模式下保留 DB service，理由不是规避 SQLite 同步阻塞�
 | 配置 | performance 缺少 PostgreSQL / Redis | 启动快速失败，错误可读 |
 | SQL dialect | SQLite / PostgreSQL 同一 repository 语义 | CRUD、分页、唯一约束、upsert、事务回滚一致；provider 只读 repository、登录 / 会话最小 repository、系统账户管理读写、分组管理读写、API Key 管理读写与网关 Key 校验入口、授权列表 / options / usage 详情读取、公共设置读取、系统 API 限流设置读取和系统设置管理读写已通过双 driver 回归 |
 | Redis cache | memory / redis driver 一致 | TTL、失效、序列化、domain clear 行为一致 |
-| Redis state | 原子计数和锁 | 并发下不突破限制，不出现锁误释放 |
+| Redis state | 硬计数原子化、短 TTL 调度状态无锁 | 账号并发槽和限流不突破限制；网关调度、探针、上游桶、IP 回避 / 熔断和 Codex turn retry 不在请求路径等待 Redis 分布式锁 |
 | 队列 | DB 写并发上限 100，Redis Streams 使用记录缓冲 | 入队即触发消费，连接池不爆，pending 可重投，低优先级不饿死高优先级 |
 | usage | 高并发写入和统计聚合 | 明细无丢失，统计游标与结果同事务推进 |
 | 网关 | API Key 校验、调度、使用记录、审计 | 主链路成功，缓存失效后能读到新事实 |
@@ -395,7 +424,7 @@ PostgreSQL 模式下保留 DB service，理由不是规避 SQLite 同步阻塞�
 1. 新增配置模型、运行模式校验和文档。已完成基础配置、`.env` 示例和 fail-fast 校验。
 2. 抽象 `DatabaseClient` / `SqlDialect`，保持 SQLite 默认路径不变，并接入 PostgreSQL 初始化脚本、schema 映射、默认种子和主要 repository async adapter。
 3. 完成核心管理链路和网关链路的 PostgreSQL adapter：登录 / 会话、系统账户、系统团队、分组、API Key、授权、AI 账户、代理、设置、模型目录、网关 Key 校验、候选账号读取、使用记录、审计 / 操作 / 公开接口 / 运行日志和主要统计读写已纳入 smoke 或 readiness。
-4. 完成 Redis cache / runtime state / Redis Streams 基础 driver 与关键调用点：共享缓存、运行态计数 / 锁、验证码状态、网关缓存失效版本、使用记录、审计日志、操作日志、公开接口日志、运行日志和维护队列均有回归覆盖。
+4. 完成 Redis cache / runtime state / Redis Streams 基础 driver 与关键调用点：共享缓存、硬约束运行态计数、短 TTL 调度状态、验证码状态、网关缓存失效版本、使用记录、审计日志、操作日志、公开接口日志、运行日志和维护队列均有回归覆盖。
 5. 完成高性能模式测试栈、schema 初始化、远端 PG/Redis smoke、readiness、压测、故障演练和备份恢复验证；生产上线前仍必须在目标机器执行本机安装、配置、数据导出 / 导入演练和维护窗口回归。
 6. 明确数据切换边界：代码库不提供 SQLite -> PostgreSQL 自动迁移、旧 schema 兼容、双读双写或启动期自动迁移；历史数据保留和导入只在上线窗口按当前 schema 离线处理。
 7. 保留 fail-fast 边界：低频管理入口、复杂筛选、长周期运维任务或未验证路径如果尚未覆盖 PostgreSQL，必须显式失败并补专项验证，不能在 performance 模式回退 SQLite。

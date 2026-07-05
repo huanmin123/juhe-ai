@@ -8,6 +8,7 @@ import { join, resolve } from 'node:path'
 import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express, { type NextFunction, type Request, type Response } from 'express'
 
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import type { GatewayRuntimeRequest } from '../../modules/gateway/request/pre-auth.js'
 import { logger } from '../../shared/logger.js'
@@ -39,7 +40,8 @@ const [
   auditLogQueue,
   gatewayCache,
   clientIpErrorCircuit,
-  backgroundIpc
+  backgroundIpc,
+  readWorkerPool
 ] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
@@ -55,7 +57,8 @@ const [
   import('../../modules/audit-logs/audit-log-queue.service.js'),
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/runtime/client-ip-error-circuit.service.js'),
-  import('../../modules/background/background-ipc.js')
+  import('../../modules/background/background-ipc.js'),
+  import('../../storage/sqlite-read-worker-pool.js')
 ])
 
 class FakeDbServiceChild extends EventEmitter {
@@ -109,6 +112,13 @@ try {
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
   auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
   const apiKey = seedGatewayRuntime()
+  const seededRuntime = await dbServiceHandlers.handleDbServiceOperation({
+    type: 'read_gateway_runtime',
+    key: apiKey.key,
+    skipDynamicRouteSelection: true
+  })
+  assert.equal(seededRuntime.apiKey?.id, apiKey.id, '认证预解析运行态应读取到当前 API Key')
+  assert.equal(seededRuntime.apiKey?.system_account_image_generation_enabled, 0, '认证预解析运行态应继承系统账户图像权限禁用状态')
   const fakeChild = new FakeDbServiceChild()
   runtimeConfig.processRole = 'server'
   dbServiceIpc.attachDbServiceProcess(fakeChild as never)
@@ -145,7 +155,7 @@ try {
 
     const dbOperationCountBeforeDisabledImage = fakeChild.sentOperationCount
     const disabledImage = await postJson(`${baseUrl}/v1/images/generations`, authRejectBody, apiKey.key, 'disabledImage')
-    assert.equal(disabledImage.status, 403, '未开启图像生成权限的 API Key 应在读取 body 前返回 403')
+    assert.equal(disabledImage.status, 403, `未开启图像生成权限的 API Key 应在读取 body 前返回 403：${disabledImage.text}`)
     assert.match(disabledImage.text, /当前用户图像生成被禁用了，请联系管理员开启/, '图像生成权限禁用应返回中文错误')
     assert.equal(rawBodyMiddlewareHitCount, 0, '路径可识别的图像请求被禁用时不应读取 raw body')
     assert.equal(fakeChild.sentOperationCount, dbOperationCountBeforeDisabledImage + 1, '图像权限早拒绝只需要一次运行配置读取')
@@ -212,17 +222,28 @@ try {
   usageRecordQueue.clearUsageRecordQueueForTest()
   auditLogQueue.clearAuditLogQueueForTest()
   auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
-  usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
-  try {
-    databaseModule.getBusinessDatabase().close()
-    databaseModule.closeStorageDatabases()
-  } catch {
+usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
+try {
+  await readWorkerPool.closeSqliteReadWorkerPool()
+  databaseModule.getBusinessDatabase().close()
+  databaseModule.closeStorageDatabases()
+} catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
 function seedGatewayRuntime(): { id: string; key: string } {
-  const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
+  const owner = repositories.createSystemAccount({
+    username: 'auth_preflight_owner',
+    displayName: '认证预解析回归用户',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false,
+    imageGenerationEnabled: false
+  })
+  assert.equal(owner.imageGenerationEnabled, false, '认证预解析回归用户应关闭图像生成权限')
+  const access = { systemAccountId: owner.id, role: 'user' as const }
   const group = repositories.createGroup({
     name: '认证预解析分组',
     providerCode: 'gpt',
@@ -230,6 +251,7 @@ function seedGatewayRuntime(): { id: string; key: string } {
   }, access)
   const account = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '认证预解析账号',
     type: 'api_key',
     credentials: {
@@ -278,12 +300,19 @@ async function listen(): Promise<Server> {
   return server
 }
 
-function handleRawBodyErrorForTest(
+async function handleRawBodyErrorForTest(
   error: Error & { status?: number; statusCode?: number; type?: string; received?: number; length?: number; limit?: number },
   req: Request,
   res: Response,
   next: NextFunction
-): void {
+): Promise<void> {
+  const bodyParserError = typeof error.type === 'string'
+    || Number.isInteger(error.statusCode)
+    || Number.isInteger(error.status)
+  if (!bodyParserError) {
+    next(error)
+    return
+  }
   const statusCode = Number.isInteger(error.statusCode)
     ? Number(error.statusCode)
     : Number.isInteger(error.status)
@@ -292,7 +321,7 @@ function handleRawBodyErrorForTest(
   if (statusCode >= 400 && statusCode < 600) {
     const message = statusCode === 413 ? '请求体过大' : '请求体无效'
     const responsePayload = gatewayErrorPayload(message, statusCode === 413 ? 'request_too_large' : 'invalid_request_error')
-    gatewayBodyMiddleware.recordGatewayBodyRejection(req as never, {
+    await gatewayBodyMiddleware.recordGatewayBodyRejection(req as never, {
       statusCode,
       responsePayload,
       rawBodyBytes: Number(error.received ?? error.length ?? error.limit ?? 0),
@@ -308,7 +337,8 @@ function handleRawBodyErrorForTest(
 
 async function postJson(url: string, body: string, token?: string, label = 'request'): Promise<{ status: number; text: string }> {
   const headers: Record<string, string> = {
-    'content-type': 'application/json'
+    'content-type': 'application/json',
+    connection: 'close'
   }
   if (token) {
     headers.authorization = `Bearer ${token}`

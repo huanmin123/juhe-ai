@@ -21,59 +21,54 @@ export function accountDisplayText(record: UsageRecordSummary): string {
   return '-'
 }
 
-export function formatTokens(value?: number): string {
-  return new Intl.NumberFormat('zh-CN').format(value ?? 0)
+export function formatTokens(value?: unknown): string {
+  return new Intl.NumberFormat('zh-CN').format(numberValue(value) ?? 0)
 }
 
-export function formatRecordTokens(record: UsageRecordSummary): string {
-  const parts = [
+export function isAnthropicUsageRecord(record: UsageRecordSummary): boolean {
+  return record.usageSemantic === 'anthropic' || record.providerCode === 'anthropic'
+}
+
+export function usageRecordTokenParts(record: UsageRecordSummary): string[] {
+  return [
     `输入 ${formatTokens(record.inputTokens)}`,
     `输出 ${formatTokens(record.outputTokens)}`,
     `缓存读 ${formatTokens(record.cacheReadTokens)}`
   ]
-  if ((record.cacheWriteTokens ?? 0) > 0) {
-    parts.push(`缓存写 ${formatTokens(record.cacheWriteTokens)}`)
-  }
-  if ((record.cacheWrite1hTokens ?? 0) > 0) {
-    parts.push(`1h ${formatTokens(record.cacheWrite1hTokens)}`)
-  }
-  if ((record.thinkingTokens ?? 0) > 0) {
-    parts.push(`思考 ${formatTokens(record.thinkingTokens)}`)
-  }
-  const imageTokens = (record.inputImageTokens ?? 0) + (record.outputImageTokens ?? 0)
-  if (imageTokens > 0) {
-    parts.push(`图片 ${formatTokens(imageTokens)}`)
-  }
-  return parts.join(' / ')
+}
+
+export function formatRecordTokens(record: UsageRecordSummary): string {
+  return usageRecordTokenParts(record).join(' / ')
 }
 
 export function formatEndpoint(value?: string): string {
   return value ?? '-'
 }
 
-export function formatCost(value?: number): string {
-  if (!value) return '$0.000000'
-  return `$${value.toFixed(6)}`
+export function formatCost(value?: unknown): string {
+  const numericValue = numberValue(value)
+  if (!numericValue) return '$0.000000'
+  return `$${numericValue.toFixed(6)}`
 }
 
-export function formatUnitPrice(value?: number): string {
-  return typeof value === 'number' ? `$${value.toFixed(4)} / 1M Token` : '-'
+export function formatUnitPrice(value?: unknown): string {
+  const numericValue = numberValue(value)
+  return numericValue === undefined ? '-' : `$${numericValue.toFixed(4)} / 1M Token`
 }
 
 export function formatCacheRate(record: UsageRecordSummary): string {
-  const inputTokens = record.inputTokens ?? 0
-  const cacheReadTokens = record.cacheReadTokens ?? 0
-  const cacheWriteTokens = record.cacheWriteTokens ?? 0
-  const anthropicUsage = record.usageSemantic === 'anthropic' || record.providerCode === 'anthropic'
-  const denominator = anthropicUsage || cacheReadTokens > inputTokens
+  const inputTokens = numberValue(record.inputTokens) ?? 0
+  const cacheReadTokens = numberValue(record.cacheReadTokens) ?? 0
+  const cacheWriteTokens = numberValue(record.cacheWriteTokens) ?? 0
+  const denominator = isAnthropicUsageRecord(record) || cacheReadTokens > inputTokens
     ? inputTokens + cacheReadTokens + cacheWriteTokens
     : inputTokens
   if (denominator <= 0) return '0.0%'
   return `${((cacheReadTokens / denominator) * 100).toFixed(1)}%`
 }
 
-export function formatDuration(value?: number): string {
-  return formatMillisecondsAsSeconds(value)
+export function formatDuration(value?: unknown): string {
+  return formatMillisecondsAsSeconds(numberValue(value))
 }
 
 export function statusCodeColor(record: UsageRecordSummary): string {
@@ -90,10 +85,16 @@ export function statusCodeText(record: UsageRecordSummary): string {
   return '-'
 }
 
+function numberValue(value: unknown): number | undefined {
+  const numericValue = typeof value === 'string' ? Number(value.trim()) : value
+  return typeof numericValue === 'number' && Number.isFinite(numericValue) ? numericValue : undefined
+}
+
 export function trafficSourceText(record: UsageRecordSummary): string {
   return {
     gateway: '网关请求',
     manual_account_test: '账号测试',
+    runtime_recovery_probe: '运行态恢复探针',
     cooldown_retest: '恢复探活',
     hybrid_scoring: '混合评分',
     hybrid_quality_scoring: '混合质量评分'
@@ -103,6 +104,7 @@ export function trafficSourceText(record: UsageRecordSummary): string {
 export function trafficSourceColor(record: UsageRecordSummary): string {
   if (record.trafficSource === 'hybrid_quality_scoring') return 'purple'
   if (record.trafficSource === 'hybrid_scoring') return 'blue'
+  if (record.trafficSource === 'runtime_recovery_probe') return 'orange'
   if (record.trafficSource === 'cooldown_retest') return 'gold'
   if (record.trafficSource === 'manual_account_test') return 'cyan'
   return 'default'

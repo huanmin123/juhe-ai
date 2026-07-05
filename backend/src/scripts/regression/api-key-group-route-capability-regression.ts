@@ -47,7 +47,8 @@ const [
   usageRecordShards,
   responseInspectionPolicyRepository,
   upstreamModule,
-  clientIpAccountAvoidance
+  clientIpAccountAvoidance,
+  readWorkerPool
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
   import('../../modules/gateway/request/body-middleware.js'),
@@ -65,7 +66,8 @@ const [
   import('../../storage/usage-record-shards.js'),
   import('../../storage/response-inspection-policy.repository.js'),
   import('../../modules/gateway/upstream/request.js'),
-  import('../../modules/gateway/runtime/client-ip-account-avoidance.service.js')
+  import('../../modules/gateway/runtime/client-ip-account-avoidance.service.js'),
+  import('../../storage/sqlite-read-worker-pool.js')
 ])
 
 usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
@@ -131,11 +133,12 @@ try {
   auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
   upstreamModule.closeGatewayUpstreamAgentsForTest()
   await closeServer(gatewayServer)
-  await closeServer(upstreamServer)
-  try {
-    databaseModule.getBusinessDatabase().close()
-    databaseModule.closeStorageDatabases()
-  } catch {
+await closeServer(upstreamServer)
+try {
+  await readWorkerPool.closeSqliteReadWorkerPool()
+  databaseModule.getBusinessDatabase().close()
+  databaseModule.closeStorageDatabases()
+} catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
 }
@@ -153,13 +156,11 @@ async function assertResponseInspectionFallbackToNextGroup(gatewayBaseUrl: strin
   const primaryGroup = repositories.createGroup({
     name: '响应检查主号池',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'personal'
   }, access)
   const fallbackGroup = repositories.createGroup({
     name: '响应检查后备号池',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'personal'
   }, access)
   const primaryUpstreamKey = 'sk-route-response-inspection-primary'
@@ -249,13 +250,11 @@ async function assertCrossGroupFallbackAfterUpstreamAccountsExhausted(gatewayBas
   const primaryGroup = repositories.createGroup({
     name: '上游账号耗尽主号池',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'personal'
   }, access)
   const fallbackGroup = repositories.createGroup({
     name: '上游账号耗尽后备号池',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'personal'
   }, access)
   const primaryUpstreamKey = 'sk-route-upstream-exhausted-primary'
@@ -373,19 +372,16 @@ async function assertRouteStrategyFallbackAfterUpstreamAccountsExhausted(
   const primaryGroup = repositories.createGroup({
     name: `策略仿真 ${item.displayName} A 号池`,
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'personal'
   }, access)
   const fallbackGroup = repositories.createGroup({
     name: `策略仿真 ${item.displayName} B 号池`,
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'personal'
   }, access)
   const thirdGroup = repositories.createGroup({
     name: `策略仿真 ${item.displayName} C 号池`,
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'personal'
   }, access)
   const primaryUpstreamKey = `sk-route-strategy-${item.suffix}-primary-fail`
@@ -482,19 +478,16 @@ async function assertKeyRedistributionWrapsToRecoveredPrimaryAccount(gatewayBase
   const primaryGroup = repositories.createGroup({
     name: '回绕重分配 A 号池',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'personal'
   }, access)
   const secondGroup = repositories.createGroup({
     name: '回绕重分配 B 号池',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'personal'
   }, access)
   const thirdGroup = repositories.createGroup({
     name: '回绕重分配 C 号池',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'personal'
   }, access)
   const primaryFailKey = 'sk-route-wrap-a-fail'
@@ -608,13 +601,11 @@ async function assertCapabilityFallback(gatewayBaseUrl: string, upstreamBaseUrl:
   const primaryGroup = repositories.createGroup({
     name: '请求能力主号池 OAuth',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'high_concurrency'
   }, access)
   const fallbackGroup = repositories.createGroup({
     name: '请求能力后备号池 API Key',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'personal'
   }, access)
   repositories.createAccount({
@@ -720,13 +711,11 @@ async function assertCapabilityThenBusyMultiHopFallback(gatewayBaseUrl: string, 
   const primaryGroup = repositories.createGroup({
     name: '多跳能力不匹配主号池',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'personal'
   }, access)
   const busyGroup = repositories.createGroup({
     name: '多跳繁忙中间号池',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'high_concurrency',
     schedulingPolicy: {
       maxQueueWaitMs: 5
@@ -735,7 +724,6 @@ async function assertCapabilityThenBusyMultiHopFallback(gatewayBaseUrl: string, 
   const finalGroup = repositories.createGroup({
     name: '多跳最终可承接号池',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'personal'
   }, access)
   repositories.createAccount({
@@ -840,13 +828,11 @@ async function assertModelFallback(gatewayBaseUrl: string, upstreamBaseUrl: stri
   const primaryGroup = repositories.createGroup({
     name: '模型主号池',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'personal'
   }, access)
   const fallbackGroup = repositories.createGroup({
     name: '模型后备号池',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'high_concurrency'
   }, access)
   const primaryUpstreamKey = 'sk-route-model-primary'
@@ -914,7 +900,6 @@ async function assertModelSpecificAccountPreferred(gatewayBaseUrl: string, upstr
   const group = repositories.createGroup({
     name: '模型显式账号优先号池',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'personal'
   }, access)
   const mappingUpstreamKey = 'sk-route-model-specific-mapping'
@@ -1002,7 +987,6 @@ async function assertHighConcurrencyModelSpecificAccountPreferred(gatewayBaseUrl
   const group = repositories.createGroup({
     name: '高并发模型显式账号优先号池',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'high_concurrency'
   }, access)
   const mappingUpstreamKey = 'sk-route-hc-model-specific-mapping'
@@ -1090,7 +1074,6 @@ async function assertPersonalQualityTieBreakWithMockAI(gatewayBaseUrl: string, u
   const group = repositories.createGroup({
     name: '普通分组质量分同级选择号池',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'personal'
   }, access)
   const slowerUpstreamKey = 'sk-route-personal-quality-slower'
@@ -1157,7 +1140,6 @@ async function assertHighConcurrencyQualityTieBreakWithMockAI(gatewayBaseUrl: st
   const group = repositories.createGroup({
     name: '高并发质量分同级选择号池',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'high_concurrency'
   }, access)
   const slowerUpstreamKey = 'sk-route-hc-quality-slower'
@@ -1224,13 +1206,11 @@ async function assertNormalApiKeyCrossProviderModelRoute(gatewayBaseUrl: string,
   const gptGroup = repositories.createGroup({
     name: '普通 Key 跨供应商 GPT 号池',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'personal'
   }, access)
   const deepSeekGroup = repositories.createGroup({
     name: '普通 Key 跨供应商 DeepSeek 号池',
     providerCode: 'deepseek',
-    providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
     groupType: 'personal'
   }, access)
   const gptUpstreamKey = 'sk-route-normal-cross-provider-gpt'
@@ -1316,13 +1296,11 @@ async function assertNormalApiKeyUnknownModelReturnsLocalError(gatewayBaseUrl: s
   const gptGroup = repositories.createGroup({
     name: '普通 Key 未知模型 GPT 号池',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'personal'
   }, access)
   const deepSeekGroup = repositories.createGroup({
     name: '普通 Key 未知模型 DeepSeek 号池',
     providerCode: 'deepseek',
-    providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
     groupType: 'personal'
   }, access)
   repositories.createAccount({
@@ -1399,7 +1377,6 @@ async function assertHighConcurrencyBusyFallback(gatewayBaseUrl: string, upstrea
   const primaryGroup = repositories.createGroup({
     name: '高并发繁忙主号池',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'high_concurrency',
     schedulingPolicy: {
       maxQueueWaitMs: 5
@@ -1408,7 +1385,6 @@ async function assertHighConcurrencyBusyFallback(gatewayBaseUrl: string, upstrea
   const fallbackGroup = repositories.createGroup({
     name: '高并发繁忙后备号池',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'personal'
   }, access)
   const primaryUpstreamKey = 'sk-route-busy-primary'
@@ -1481,13 +1457,11 @@ async function assertPersonalConcurrencyBusyFallback(gatewayBaseUrl: string, ups
   const primaryGroup = repositories.createGroup({
     name: '个人繁忙主号池',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'personal'
   }, access)
   const fallbackGroup = repositories.createGroup({
     name: '个人繁忙后备高并发号池',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'high_concurrency',
     schedulingPolicy: {
       maxQueueWaitMs: 5
@@ -1577,13 +1551,11 @@ async function assertLocalSuppressionFallback(gatewayBaseUrl: string, upstreamBa
   const primaryGroup = repositories.createGroup({
     name: '本地屏蔽主号池',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'personal'
   }, access)
   const fallbackGroup = repositories.createGroup({
     name: '本地屏蔽后备号池',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'personal'
   }, access)
   const primaryUpstreamKey = 'sk-route-local-suppression-primary'
@@ -1662,19 +1634,16 @@ async function assertAuthorizationQuotaFallback(gatewayBaseUrl: string, upstream
   const ownerSourceGroup = repositories.createGroup({
     name: '授权额度来源号池',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'personal'
   }, ownerAccess)
   const primaryGroup = repositories.createGroup({
     name: '授权额度主号池',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'personal'
   }, granteeAccess)
   const fallbackGroup = repositories.createGroup({
     name: '授权额度后备号池',
     providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupType: 'personal'
   }, granteeAccess)
   const primaryUpstreamKey = 'sk-route-authorization-quota-primary'

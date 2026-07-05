@@ -9,7 +9,7 @@ import { encryptJson } from './crypto.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { clearGatewayApiKeyValidationCache } from './gateway-api-key.repository.js'
-import { refreshGroupAccountStatsAfterWrite } from './group-account-stats-write-invalidation.js'
+import { refreshGroupAccountStatsAfterWrite, refreshGroupAccountStatsAfterWriteAsync } from './group-account-stats-write-invalidation.js'
 import { invalidateGroupAccountIdsCache } from './group-read-loaders.js'
 import { getPostgresPool } from './postgres-client.js'
 import { groupOwnerAndProvider, canManageResourceOwner, isResourceAuthorizationExpired } from './resource-authorization-helpers.js'
@@ -154,7 +154,7 @@ export async function createResourceAuthorizationAsync(input: Record<string, unk
     await upsertResourceAuthorizationForUserAsync({ resourceType, resourceId, ownerSystemAccountId, granteeSystemAccountId: granteeId, sourceType: 'manual', targetGroupId, remark, expiresAt, limits: input.limits, actor, now, client: tx })
   })
 
-  refreshAfterResourceAuthorizationBusinessWrite('resource_authorization_created')
+  await refreshAfterResourceAuthorizationBusinessWriteAsync('resource_authorization_created')
   const created = createdGrantId ? await findResourceAuthorizationAfterWriteAsync(createdGrantId, access) : undefined
   if (created) return created
   throw new Error('创建资源授权失败')
@@ -198,7 +198,7 @@ export async function revokeResourceAuthorizationAsync(authorizationId: string, 
     return true
   })
   if (!revoked) return undefined
-  refreshAfterResourceAuthorizationBusinessWrite('resource_authorization_revoked')
+  await refreshAfterResourceAuthorizationBusinessWriteAsync('resource_authorization_revoked')
   return findResourceAuthorizationAfterWriteAsync(authorizationId, access)
 }
 
@@ -268,6 +268,7 @@ export async function updateResourceAuthorizationAsync(authorizationId: string, 
     return updateResourceAuthorization(authorizationId, input, access)
   }
   assertKnownInputKeys(input, resourceAuthorizationUpdateInputKeys, '资源授权')
+  await expireDueResourceAuthorizationsAsync()
   const client = await getResourceAuthorizationWriteClient()
   const actor = currentSystemAccountId(access)
   const now = nowIso()
@@ -328,7 +329,7 @@ export async function updateResourceAuthorizationAsync(authorizationId: string, 
     return true
   })
   if (!updated) return undefined
-  refreshAfterResourceAuthorizationBusinessWrite('resource_authorization_updated')
+  await refreshAfterResourceAuthorizationBusinessWriteAsync('resource_authorization_updated')
   return findResourceAuthorizationAfterWriteAsync(authorizationId, access)
 }
 
@@ -369,13 +370,12 @@ export async function expireDueResourceAuthorizationsAsync(limit = maxAuthorizat
     return dueGrants.length
   })
   if (expired > 0) {
-    refreshAfterResourceAuthorizationBusinessWrite('authorization_expired')
+    await refreshAfterResourceAuthorizationBusinessWriteAsync('authorization_expired')
   }
   return expired
 }
 
 function findResourceAuthorizationAfterWrite(authorizationId: string, access?: AccessScope): ResourceAuthorizationSummary | undefined {
-  expireDueResourceAuthorizations()
   return findResourceAuthorizationSummary(authorizationId, access)
 }
 
@@ -745,6 +745,26 @@ async function syncTeamGrantMemberAuthorizationsAsync(grant: ResourceAuthorizati
     await revokeTeamGrantSourcesAsync(grant.resource_type, grant.resource_id, teamId, actor, client, now)
     return
   }
+  if (grant.status === 'active') {
+    const members = (await activeTeamMemberRowsAsync(teamId, client))
+      .filter((member) => member.system_account_id !== grant.resource_owner_system_account_id)
+    for (const member of members) {
+      await upsertResourceAuthorizationForUserAsync({
+        resourceType: grant.resource_type,
+        resourceId: grant.resource_id,
+        ownerSystemAccountId: grant.resource_owner_system_account_id,
+        granteeSystemAccountId: member.system_account_id,
+        sourceType: 'team',
+        sourceTeamId: teamId,
+        remark: grant.remark ?? undefined,
+        expiresAt: grant.expires_at,
+        limits: parseRequestQuotaLimitsJson(grant.limits_json),
+        actor,
+        now,
+        client
+      })
+    }
+  }
   const rows = await client.query<{ id?: string }>(`
     SELECT ra.id
     FROM ${resourceAuthorizationWriteTable(client, 'resource_authorizations')} ra
@@ -756,8 +776,8 @@ async function syncTeamGrantMemberAuthorizationsAsync(grant: ResourceAuthorizati
       AND ras.status = 'active'
     ORDER BY ra.id ASC
     LIMIT ?
-  `, [grant.resource_type, grant.resource_id, teamId, 1001])
-  if (rows.length > 1000) {
+  `, [grant.resource_type, grant.resource_id, teamId, maxSystemTeamMembersPerTeam + 1])
+  if (rows.length > maxSystemTeamMembersPerTeam) {
     throw new Error('授权团队来源展开超过当前系统上限，请先拆分团队或回收部分授权')
   }
   for (const row of rows) {
@@ -795,9 +815,9 @@ async function revokeTeamGrantSourcesAsync(
       AND ra.resource_id = ?
     ORDER BY ras.authorization_id ASC
     LIMIT ?
-  `, [teamId, resourceType, resourceId, 1001])
-  if (rows.length > 1000) {
-    throw new Error('授权团队最多支持 1000 个成员，请先移除部分成员后再继续')
+  `, [teamId, resourceType, resourceId, maxSystemTeamMembersPerTeam + 1])
+  if (rows.length > maxSystemTeamMembersPerTeam) {
+    throw new Error(`授权团队最多支持 ${maxSystemTeamMembersPerTeam} 个成员，请先移除部分成员后再继续`)
   }
   for (const row of rows) {
     await client.execute(`
@@ -1103,7 +1123,7 @@ async function bindActiveAccountAuthorizationToGranteeGroupAsync(client: Databas
   if (authorization.resource_type !== 'account') return
   if (authorization.status !== 'active' || isResourceAuthorizationExpired(authorization.expires_at, Date.parse(now))) return
   const instance = await ensureAccountAuthorizationInstanceAsync(client, authorization, now)
-  if (!instance?.id || !instance.provider_code || !instance.provider_protocol_profile_id) return
+  if (!instance?.id || !instance.provider_code) return
   const requestedGroupId = targetGroupId?.trim()
   const existingBinding = await client.one<{ group_id?: string | null }>(`
     SELECT group_id
@@ -1116,7 +1136,7 @@ async function bindActiveAccountAuthorizationToGranteeGroupAsync(client: Databas
     LIMIT 1
   `, [instance.id, authorization.grantee_system_account_id, authorization.id])
   if (existingBinding?.group_id && (!requestedGroupId || existingBinding.group_id === requestedGroupId)) return
-  const bindGroupId = await groupIdForAuthorizationBindingAsync(client, instance.provider_code, instance.provider_protocol_profile_id, authorization.grantee_system_account_id, requestedGroupId)
+  const bindGroupId = await groupIdForAuthorizationBindingAsync(client, instance.provider_code, authorization.grantee_system_account_id, requestedGroupId)
   if (!bindGroupId) return
   if (existingBinding?.group_id && existingBinding.group_id !== bindGroupId) {
     await client.execute(`
@@ -1167,43 +1187,48 @@ async function ensureAccountAuthorizationInstanceAsync(client: DatabaseClient, a
   `, [authorization.id])
   if (deletedExisting?.id) {
     const restoredName = await uniqueAuthorizedAccountInstanceNameAsync(client, source.name, authorization.grantee_system_account_id, authorization.id, deletedExisting.id)
-    await client.execute(`
-      UPDATE ${resourceAuthorizationWriteTable(client, 'accounts')}
-      SET provider_code = ?,
-          provider_protocol_profile_id = ?,
-          protocol_code = ?,
-          protocol_version = ?,
-          name = ?,
-          type = ?,
-          status = 'active',
-          schedulable = 1,
-          cooldown_until = NULL,
-          last_error_code = NULL,
-          last_error_message = NULL,
-          cooldown_retest_failure_count = 0,
-          cooldown_retest_observation_started_at = NULL,
-          cooldown_retest_last_at = NULL,
-          cooldown_retest_last_status_code = NULL,
-          stream_failure_count = 0,
-          stream_failure_window_started_at = NULL,
-          authorization_instance_source_account_id = ?,
-          authorization_instance_owner_system_account_id = ?,
-          deleted_at = NULL,
-          deleted_by = NULL,
-          updated_at = ?
-      WHERE id = ?
-    `, [
-      source.provider_code,
-      source.provider_protocol_profile_id,
-      source.protocol_code,
-      source.protocol_version,
-      restoredName,
-      source.type,
-      authorization.resource_id,
-      authorization.resource_owner_system_account_id,
-      now,
-      deletedExisting.id
-    ])
+    try {
+      await client.execute(`
+        UPDATE ${resourceAuthorizationWriteTable(client, 'accounts')}
+        SET provider_code = ?,
+            provider_protocol_profile_id = ?,
+            protocol_code = ?,
+            protocol_version = ?,
+            name = ?,
+            type = ?,
+            status = 'active',
+            schedulable = 1,
+            cooldown_until = NULL,
+            last_error_code = NULL,
+            last_error_message = NULL,
+            cooldown_retest_failure_count = 0,
+            cooldown_retest_observation_started_at = NULL,
+            cooldown_retest_last_at = NULL,
+            cooldown_retest_last_status_code = NULL,
+            stream_failure_count = 0,
+            stream_failure_window_started_at = NULL,
+            authorization_instance_source_account_id = ?,
+            authorization_instance_owner_system_account_id = ?,
+            deleted_at = NULL,
+            deleted_by = NULL,
+            updated_at = ?
+        WHERE id = ?
+      `, [
+        source.provider_code,
+        source.provider_protocol_profile_id,
+        source.protocol_code,
+        source.protocol_version,
+        restoredName,
+        source.type,
+        authorization.resource_id,
+        authorization.resource_owner_system_account_id,
+        now,
+        deletedExisting.id
+      ])
+    } catch (error) {
+      if (!isAuthorizationInstanceUniqueConflict(error)) throw error
+      return activeAuthorizationInstanceForGrantAsync(client, authorization.id)
+    }
     await replaceAccountNameSearchTermsAsync(client, deletedExisting.id, authorization.grantee_system_account_id, restoredName, now)
     return client.one<AccountRow>(`
       SELECT *
@@ -1215,39 +1240,44 @@ async function ensureAccountAuthorizationInstanceAsync(client: DatabaseClient, a
   }
   const id = newId('acc')
   const name = await uniqueAuthorizedAccountInstanceNameAsync(client, source.name, authorization.grantee_system_account_id, authorization.id)
-  await client.execute(`
-    INSERT INTO ${resourceAuthorizationWriteTable(client, 'accounts')} (
-      id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-      name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
-      proxy_profile_id, concurrency_limit,
-      priority, super_priority_enabled, fallback_enabled, schedulable, notes, account_expires_at,
-      cooldown_until, last_error_code, last_error_message,
-      cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at,
-      authorization_instance_source_account_id, authorization_instance_authorization_id, authorization_instance_owner_system_account_id,
-      created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL, ?, ?, ?, ?, ?, ?, 1, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?, ?, ?, ?, ?)
-  `, [
-    id,
-    authorization.grantee_system_account_id,
-    source.provider_code,
-    source.provider_protocol_profile_id,
-    source.protocol_code,
-    source.protocol_version,
-    name,
-    source.type,
-    encryptJson({}),
-    '',
-    null,
-    source.concurrency_limit,
-    0,
-    0,
-    0,
-    authorization.resource_id,
-    authorization.id,
-    authorization.resource_owner_system_account_id,
-    now,
-    now
-  ])
+  try {
+    await client.execute(`
+      INSERT INTO ${resourceAuthorizationWriteTable(client, 'accounts')} (
+        id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+        name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
+        proxy_profile_id, concurrency_limit,
+        priority, super_priority_enabled, fallback_enabled, schedulable, notes, account_expires_at,
+        cooldown_until, last_error_code, last_error_message,
+        cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at,
+        authorization_instance_source_account_id, authorization_instance_authorization_id, authorization_instance_owner_system_account_id,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL, ?, ?, ?, ?, ?, ?, 1, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?, ?, ?, ?, ?)
+    `, [
+      id,
+      authorization.grantee_system_account_id,
+      source.provider_code,
+      source.provider_protocol_profile_id,
+      source.protocol_code,
+      source.protocol_version,
+      name,
+      source.type,
+      encryptJson({}),
+      '',
+      null,
+      source.concurrency_limit,
+      0,
+      0,
+      0,
+      authorization.resource_id,
+      authorization.id,
+      authorization.resource_owner_system_account_id,
+      now,
+      now
+    ])
+  } catch (error) {
+    if (!isAuthorizationInstanceUniqueConflict(error)) throw error
+    return activeAuthorizationInstanceForGrantAsync(client, authorization.id)
+  }
   await replaceAccountNameSearchTermsAsync(client, id, authorization.grantee_system_account_id, name, now)
   return client.one<AccountRow>(`
     SELECT *
@@ -1255,6 +1285,23 @@ async function ensureAccountAuthorizationInstanceAsync(client: DatabaseClient, a
     WHERE id = ?
     LIMIT 1
   `, [id])
+}
+
+async function activeAuthorizationInstanceForGrantAsync(client: DatabaseClient, authorizationId: string): Promise<AccountRow | undefined> {
+  return client.one<AccountRow>(`
+    SELECT *
+    FROM ${resourceAuthorizationWriteTable(client, 'accounts')}
+    WHERE authorization_instance_authorization_id = ?
+      AND deleted_at IS NULL
+    LIMIT 1
+  `, [authorizationId])
+}
+
+function isAuthorizationInstanceUniqueConflict(error: unknown): boolean {
+  return error instanceof Error && (
+    error.message.includes('idx_accounts_authorization_instance_active_unique')
+    || error.message.includes('authorization_instance_authorization_id')
+  )
 }
 
 async function uniqueAuthorizedAccountInstanceNameAsync(client: DatabaseClient, sourceName: string, systemAccountId: string, authorizationId: string, exceptAccountId?: string): Promise<string> {
@@ -1282,17 +1329,17 @@ async function isAccountNameAvailableAsync(client: DatabaseClient, systemAccount
     SELECT id
     FROM ${resourceAuthorizationWriteTable(client, 'accounts')}
     WHERE system_account_id = ?
-      AND lower(name) = lower(?)
+      AND name = ?
       AND deleted_at IS NULL${exceptClause}
     LIMIT 1
   `, params)
   return !row?.id
 }
 
-async function groupIdForAuthorizationBindingAsync(client: DatabaseClient, providerCode: string, providerProtocolProfileId: string, systemAccountId: string, targetGroupId?: string): Promise<string> {
+async function groupIdForAuthorizationBindingAsync(client: DatabaseClient, providerCode: string, systemAccountId: string, targetGroupId?: string): Promise<string> {
   if (targetGroupId) {
-    const group = await client.one<{ id?: string; system_account_id?: string | null; provider_code?: string | null; provider_protocol_profile_id?: string | null; enabled?: number | boolean | null }>(`
-      SELECT id, system_account_id, provider_code, provider_protocol_profile_id, enabled
+    const group = await client.one<{ id?: string; system_account_id?: string | null; provider_code?: string | null; enabled?: number | boolean | null }>(`
+      SELECT id, system_account_id, provider_code, enabled
       FROM ${resourceAuthorizationWriteTable(client, 'groups')}
       WHERE id = ?
       LIMIT 1
@@ -1303,29 +1350,25 @@ async function groupIdForAuthorizationBindingAsync(client: DatabaseClient, provi
     if (group.provider_code !== providerCode) {
       throw new Error('目标分组供应商与授权账户不一致')
     }
-    if (group.provider_protocol_profile_id !== providerProtocolProfileId) {
-      throw new Error('目标分组协议 Profile 与授权账户不一致')
-    }
     if (Number(group.enabled) !== 1) {
       throw new Error('目标分组已停用，请选择启用分组')
     }
     return group.id
   }
-  return defaultGroupIdForAuthorizationBindingAsync(client, providerCode, providerProtocolProfileId, systemAccountId)
+  return defaultGroupIdForAuthorizationBindingAsync(client, providerCode, systemAccountId)
 }
 
-async function defaultGroupIdForAuthorizationBindingAsync(client: DatabaseClient, providerCode: string, providerProtocolProfileId: string, systemAccountId: string): Promise<string> {
+async function defaultGroupIdForAuthorizationBindingAsync(client: DatabaseClient, providerCode: string, systemAccountId: string): Promise<string> {
   const existing = await client.one<{ id?: string }>(`
     SELECT id
     FROM ${resourceAuthorizationWriteTable(client, 'groups')}
     WHERE system_account_id = ?
       AND provider_code = ?
-      AND provider_protocol_profile_id = ?
       AND is_default = 1
       AND enabled = 1
     ORDER BY updated_at DESC, id ASC
     LIMIT 1
-  `, [systemAccountId, providerCode, providerProtocolProfileId])
+  `, [systemAccountId, providerCode])
   if (existing?.id) return existing.id
   throw new Error('目标用户缺少启用的默认分组，请按当前数据契约修复目标用户分组后再授权')
 }
@@ -1628,6 +1671,18 @@ function refreshAfterResourceAuthorizationBusinessWrite(reason: string): void {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     refreshGroupAccountStatsAfterWrite({ all: true, reason })
   }
+  clearGatewayApiKeyValidationCache()
+  invalidateGroupAccountIdsCache()
+  clearResourceAuthorizationLookupCaches()
+  invalidateAuthorizationRuntimeAfterBusinessWrite(reason)
+}
+
+async function refreshAfterResourceAuthorizationBusinessWriteAsync(reason: string): Promise<void> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    refreshAfterResourceAuthorizationBusinessWrite(reason)
+    return
+  }
+  await refreshGroupAccountStatsAfterWriteAsync({ all: true, reason })
   clearGatewayApiKeyValidationCache()
   invalidateGroupAccountIdsCache()
   clearResourceAuthorizationLookupCaches()

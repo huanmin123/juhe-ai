@@ -40,6 +40,20 @@ assert(
   'usage 统计聚合结果必须暴露时间预算截断和实际批次，便于压测与运行观测'
 )
 assert(
+  backgroundJobsSource.includes('const usageStatsOnlineFreshnessMaxIntervalSeconds = 60')
+    && backgroundJobsSource.includes('function usageStatsOnlineAggregationIntervalSeconds(): number')
+    && backgroundJobsSource.includes("settingsNumber('statsAggregationIntervalSeconds', 5, 3600)")
+    && backgroundJobsSource.includes('usageStatsOnlineFreshnessMaxIntervalSeconds'),
+  'usage 在线统计聚合必须有 60 秒新鲜度上限，不能因系统设置误配 3600 秒造成新日空窗'
+)
+assert(
+  backgroundJobsSource.includes("type: 'refresh_hot_usage_windows'")
+    && backgroundJobsSource.includes("jobName: usageHotWindowRefreshJobName")
+    && backgroundJobsSource.includes("reason !== 'date_changed'")
+    && backgroundJobsSource.includes('usageHotWindowRefreshMinIntervalMs'),
+  'usage 聚合后必须通过防抖热窗口刷新发布今日概览和范围窗口'
+)
+assert(
   usageStatsRepositorySource.includes('aggregateUsageStatsRecords(database, rows, updatedAt, aggregationContext)')
     && usageStatsWritersSource.includes('export function aggregateUsageStatsRecords')
     && usageStatsWritersSource.includes('addAggregatedUsageStatsEntry')
@@ -51,9 +65,10 @@ assert(
   !backgroundJobsSource.includes('pendingUsageQueueBlockReason')
     && backgroundJobsSource.includes('safeCreatedBefore: safety.safeCreatedBefore')
     && backgroundJobsSource.includes('oldestPendingUsageRecordCreatedAt(status)')
-    && backgroundJobsSource.includes('超龄未落库记录')
+    && backgroundJobsSource.includes('oldestRedisStreamUsageRecordCreatedAtForStatsAggregation()')
+    && backgroundJobsSource.includes('usageStatsSafeCreatedBeforeForPendingBacklog')
     && usageStatsRepositorySource.includes('export const usageStatsCursorSafetyDelaySeconds = 15'),
-  'stats 聚合前不应要求队列完全为空，但必须用 15 秒 cursor safety 拦截超龄未落库 usage'
+  'stats 聚合前不应要求队列或 Redis Stream 完全为空，但必须用最早 backlog createdAt 收窄 cursor safety 上界'
 )
 assert(
   usageRecordQueueSource.includes('oldestCreatedAt: oldestUsageRecordCreatedAt()'),
@@ -84,9 +99,9 @@ assert(
   '核心功能设计必须记录持续写入下 stats 聚合用 cursor safety 吸收队列延迟'
 )
 assert(
-  sqliteDoc.includes('若 pending usage 中存在超过 15 秒仍未落库的记录，本轮统计会跳过')
-    && coreDoc.includes('若 pending usage 中存在超过 15 秒仍未落库的记录，stats-worker 会跳过本轮统计'),
-  '功能文档必须记录超龄 pending usage 会跳过本轮统计，避免统计游标越过未落库记录'
+  sqliteDoc.includes('若 pending usage 或 Redis Stream backlog 中存在超过 15 秒仍未落库的记录，本轮统计只会聚合早于该记录的安全窗口')
+    && coreDoc.includes('若 pending usage 或 Redis Stream backlog 中存在超过 15 秒仍未落库的记录，stats-worker 只会聚合早于该记录的安全窗口'),
+  '功能文档必须记录 backlog 会收窄本轮统计安全窗口，避免统计游标越过未落库记录'
 )
 
 console.log('统计聚合批间让出回归通过：usage/client IP 聚合不会同步连续占用 stats-worker，usage 在线聚合有批次硬上限和运行预算')

@@ -43,15 +43,14 @@ export async function ensureSelectedAuthorizationGranteeGroupOption(
   selectedId: string | undefined,
   granteeSystemAccountId: string,
   providerCode: string,
-  providerProtocolProfileId: string | undefined,
   isManagementView: boolean
 ): Promise<GroupOptionSummary[]> {
   const id = selectedId?.trim()
   if (!id || options.some((item) => item.id === id)) return options
   try {
     const selected = isManagementView
-      ? await api.authorizationOptions.granteeGroups({ granteeSystemAccountId, providerCode, providerProtocolProfileId, ids: [id], limit: 1, preferDefault: true })
-      : await api.myAuthorizationOptions.granteeGroups({ granteeSystemAccountId, providerCode, providerProtocolProfileId, ids: [id], limit: 1, preferDefault: true })
+      ? await api.authorizationOptions.granteeGroups({ granteeSystemAccountId, providerCode, ids: [id], limit: 1, preferDefault: true })
+      : await api.myAuthorizationOptions.granteeGroups({ granteeSystemAccountId, providerCode, ids: [id], limit: 1, preferDefault: true })
     return mergeOptionsById(selected, options)
   } catch {
     return options

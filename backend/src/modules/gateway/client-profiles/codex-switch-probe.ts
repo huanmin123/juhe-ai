@@ -1,11 +1,8 @@
 import type { Request } from 'express'
 
 import type { AccountSummary, AccountTestResult, AccountUsageSummary } from '../../../domain/types.js'
-import type { RecentOpenAIRequestShape } from '../../../storage/repositories.js'
 import {
-  requestEndpoint,
-  requestModel,
-  requestStream
+  requestModel
 } from '../request/metadata.js'
 import {
   accountDiagnosticRetryTimeoutMs,
@@ -13,8 +10,9 @@ import {
   diagnosticAttemptSignal,
   isDiagnosticTimeoutSignal
 } from '../../accounts/account-diagnostic-retry-policy.js'
-import type { GatewaySettings } from '../policy/account-error-policy.service.js'
 import { type UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
+import { recordGatewayUpstreamBucketFailureAsync } from '../runtime/proxy-health.service.js'
+import { getRequestLogger } from '../../../shared/request-context.js'
 
 export interface CodexSwitchProbeResult {
   accountId: string
@@ -35,7 +33,6 @@ export async function probeCodexSwitchCandidateAccount(
     req: Request
     systemAccountId: string
     groupId: string
-    settings: GatewaySettings
     signal?: AbortSignal
   }
 ): Promise<CodexSwitchProbeResult> {
@@ -48,43 +45,41 @@ export async function probeCodexSwitchCandidateAccount(
 
   try {
     const accountTestService = await import('../../accounts/account-test.service.js')
-    const model = requestModel(input.req) || accountTestService.preferredSystemAccountTestModel(summary)
+    const model = requestModel(input.req) || await accountTestService.preferredSystemAccountTestModelAsync(summary)
     let lastResult: AccountTestResult | undefined
     for (let attemptIndex = 0; attemptIndex < accountDiagnosticRetryTimeoutMs.length; attemptIndex += 1) {
       const timeoutMs = accountDiagnosticRetryTimeoutMs[attemptIndex] ?? accountDiagnosticRetryTimeoutMs[accountDiagnosticRetryTimeoutMs.length - 1]
       const attemptSignal = diagnosticAttemptSignal(input.signal, timeoutMs)
       const result = await accountTestService.testOpenAIAccount(summary, {
         model,
-        requestShape: currentRequestShape(input.req, model),
         groupId: input.groupId,
         systemAccountId: input.systemAccountId,
         signal: attemptSignal,
         diagnostics: 'full',
         trafficSource: 'manual_account_test',
         gatewaySettingsOverride: diagnosticAccountTestGatewaySettingsOverride(
-          codexSwitchProbeGatewaySettings(input.settings),
+          undefined,
           codexSwitchProbeGatewayTimeoutMs(timeoutMs)
         ),
         disableAccountStateMutation: true,
-        clientCompatibility: account.clientCompatibility,
         candidateAccount: account
       })
       lastResult = result
       if (result.success || !shouldRetryCodexSwitchProbeSameAccount(attemptSignal, input.signal, attemptIndex)) {
-        return codexSwitchProbeResultFromAccountTest(account, result, startedAt)
+        const probeResult = codexSwitchProbeResultFromAccountTest(account, result, startedAt)
+        await recordCodexSwitchProbeBucketFailure(account, probeResult, input.signal)
+        return probeResult
       }
     }
-    return lastResult
+    const probeResult = lastResult
       ? codexSwitchProbeResultFromAccountTest(account, lastResult, startedAt)
       : failedProbe(account, startedAt, 'account_test_failed', 'Codex 切号真实账号测试失败：未执行探针')
+    await recordCodexSwitchProbeBucketFailure(account, probeResult, input.signal)
+    return probeResult
   } catch (error) {
-    return failedProbe(account, startedAt, 'account_test_failed', errorMessage(error))
-  }
-}
-
-function codexSwitchProbeGatewaySettings(settings: GatewaySettings): Partial<GatewaySettings> {
-  return {
-    streamCircuitBreakerEnabled: settings.streamCircuitBreakerEnabled
+    const probeResult = failedProbe(account, startedAt, 'account_test_failed', errorMessage(error))
+    await recordCodexSwitchProbeBucketFailure(account, probeResult, input.signal)
+    return probeResult
   }
 }
 
@@ -118,18 +113,21 @@ function codexSwitchProbeResultFromAccountTest(
   }
 }
 
-function currentRequestShape(req: Request, model?: string): RecentOpenAIRequestShape {
-  return {
-    endpoint: requestEndpoint(req),
-    model,
-    stream: requestStream(req) || requestAcceptsEventStream(req),
-    createdAt: new Date().toISOString()
+async function recordCodexSwitchProbeBucketFailure(
+  account: UpstreamAccount,
+  result: CodexSwitchProbeResult,
+  signal?: AbortSignal
+): Promise<void> {
+  if (result.success || signal?.aborted) return
+  try {
+    await recordGatewayUpstreamBucketFailureAsync(account, `Codex 切号探针失败：${result.errorCode ?? 'account_test_failed'}`)
+  } catch (error) {
+    getRequestLogger().warn({
+      event: 'gateway_codex_switch_probe_bucket_failure_record_failed',
+      accountId: account.id,
+      error: errorMessage(error)
+    }, 'Codex 切号探针失败后记录上游桶运行态失败失败')
   }
-}
-
-function requestAcceptsEventStream(req: Request): boolean {
-  const accept = req.header('accept')
-  return typeof accept === 'string' && accept.toLowerCase().includes('text/event-stream')
 }
 
 function accountSummaryFromUpstreamAccount(account: UpstreamAccount): AccountSummary {

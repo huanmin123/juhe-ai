@@ -126,10 +126,28 @@ const apiKeyScopeStatsTables = [
 ] as const
 const deletedApiKeyRecordCleanupBatchLimit = 100
 const deletedApiKeyRecordCleanupShardLimit = 16
+const usageRecordCleanupRequiredCursorJobNames = ['usage_stats_aggregation', 'client_ip_stats_aggregation'] as const
 
 export function registerDeletedApiKeyRecordCleanupTarget(input: DeletedApiKeyRecordCleanupTarget): void {
   assertSqliteApiKeyRecordCleanup('registerDeletedApiKeyRecordCleanupTarget')
   upsertDeletedApiKeyRecordCleanupTarget(getDatasetDatabase(), input, nowIso())
+}
+
+export async function registerDeletedApiKeyRecordCleanupTargetAsync(input: DeletedApiKeyRecordCleanupTarget): Promise<void> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    registerDeletedApiKeyRecordCleanupTarget(input)
+    return
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  await registerDeletedApiKeyRecordCleanupTargetInClientAsync(client, input)
+}
+
+export async function registerDeletedApiKeyRecordCleanupTargetInClientAsync(
+  client: DatabaseClient,
+  input: DeletedApiKeyRecordCleanupTarget,
+  updatedAt = nowIso()
+): Promise<void> {
+  await upsertDeletedApiKeyRecordCleanupTargetAsync(client, input, updatedAt)
 }
 
 export function cleanupPendingDeletedApiKeyRecordTargets(limit = 50): PendingDeletedApiKeyRecordCleanupSummary {
@@ -775,9 +793,27 @@ function selectApiKeyUsageRowsCoveredByShardCursors(
 }
 
 function usageStatsShardCursor(database: DatabaseSync, shardKey: string): { cursorCreatedAt: string; cursorId: string } | undefined {
-  const row = database
-    .prepare("SELECT cursor_created_at, cursor_id FROM stats_job_state WHERE scope_type = 'usage_shard' AND scope_id = ? AND job_name = 'usage_stats_aggregation'")
-    .get(shardKey) as unknown as { cursor_created_at?: string | null; cursor_id?: string | null } | undefined
+  const rows = database
+    .prepare(`
+      SELECT job_name, cursor_created_at, cursor_id
+      FROM stats_job_state
+      WHERE scope_type = 'usage_shard'
+        AND scope_id = ?
+        AND job_name IN (${sqlPlaceholders(usageRecordCleanupRequiredCursorJobNames.length)})
+        AND cursor_created_at IS NOT NULL
+        AND cursor_id IS NOT NULL
+      ORDER BY cursor_created_at ASC, cursor_id ASC
+    `)
+    .all(shardKey, ...usageRecordCleanupRequiredCursorJobNames) as unknown as Array<{
+      job_name?: string | null
+      cursor_created_at?: string | null
+      cursor_id?: string | null
+    }>
+  const jobNames = new Set(rows.map((row) => row.job_name?.trim()).filter(Boolean))
+  if (usageRecordCleanupRequiredCursorJobNames.some((jobName) => !jobNames.has(jobName))) {
+    return undefined
+  }
+  const row = rows[0]
   const cursorCreatedAt = row?.cursor_created_at?.trim()
   const cursorId = row?.cursor_id?.trim()
   return cursorCreatedAt && cursorId ? { cursorCreatedAt, cursorId } : undefined
@@ -929,19 +965,43 @@ async function deletePostgresApiKeyUsageDataBatch(
   input: DeletedApiKeyRecordCleanupTarget,
   limit: number
 ): Promise<number> {
+  const cursor = await postgresUsageRecordCleanupFloorCursor(client)
+  if (!cursor) return 0
   const rows = await client.query<{ id?: string | null }>(`
     SELECT id
     FROM juhe_usage.usage_records
     WHERE api_key_id = ?
       AND system_account_id = ?
+      AND (created_at < ? OR (created_at = ? AND id <= ?))
     ORDER BY created_at ASC, id ASC
     LIMIT ?
-  `, [input.apiKeyId, input.systemAccountId, Math.max(1, Math.trunc(limit))])
+  `, [input.apiKeyId, input.systemAccountId, cursor.cursorCreatedAt, cursor.cursorCreatedAt, cursor.cursorId, Math.max(1, Math.trunc(limit))])
   const usageIds = uniqueNonEmpty(rows.map((row) => row.id))
   if (!usageIds.length) return 0
   await deletePostgresUsageRecordCatalogRowsByUsageIds(client, usageIds)
-  const result = await client.execute('DELETE FROM juhe_usage.usage_records WHERE id = ANY(?)', [usageIds])
+  const result = await client.execute('DELETE FROM juhe_usage.usage_records WHERE id = ANY(?::text[])', [usageIds])
   return changed(result)
+}
+
+async function postgresUsageRecordCleanupFloorCursor(client: DatabaseClient): Promise<{ cursorCreatedAt: string; cursorId: string } | undefined> {
+  const rows = await client.query<{ job_name?: string | null; cursor_created_at?: string | null; cursor_id?: string | null }>(`
+    SELECT job_name, cursor_created_at, cursor_id
+    FROM juhe_stats.stats_job_state
+    WHERE scope_type = 'global'
+      AND scope_id = ''
+      AND job_name = ANY(?::text[])
+      AND cursor_created_at IS NOT NULL
+      AND cursor_id IS NOT NULL
+    ORDER BY cursor_created_at ASC, cursor_id ASC
+  `, [[...usageRecordCleanupRequiredCursorJobNames]])
+  const jobNames = new Set(rows.map((row) => String(row.job_name ?? '').trim()).filter(Boolean))
+  if (usageRecordCleanupRequiredCursorJobNames.some((jobName) => !jobNames.has(jobName))) {
+    return undefined
+  }
+  const row = rows[0]
+  const cursorCreatedAt = row?.cursor_created_at?.trim()
+  const cursorId = row?.cursor_id?.trim()
+  return cursorCreatedAt && cursorId ? { cursorCreatedAt, cursorId } : undefined
 }
 
 async function hasPostgresApiKeyUsageRecords(client: DatabaseClient, input: DeletedApiKeyRecordCleanupTarget): Promise<boolean> {
@@ -988,9 +1048,9 @@ async function deletePostgresApiKeyAuditDataBatch(
   const auditLogIds = uniqueNonEmpty(rows.map((row) => row.id))
   let deletedRows = 0
   if (auditLogIds.length > 0) {
-    deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.audit_payload_refs WHERE audit_log_id = ANY(?)', [auditLogIds]))
-    deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.audit_log_attempts WHERE audit_log_id = ANY(?)', [auditLogIds]))
-    deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.audit_logs WHERE id = ANY(?) AND api_key_id = ? AND system_account_id = ?', [
+    deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.audit_payload_refs WHERE audit_log_id = ANY(?::text[])', [auditLogIds]))
+    deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.audit_log_attempts WHERE audit_log_id = ANY(?::text[])', [auditLogIds]))
+    deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.audit_logs WHERE id = ANY(?::text[]) AND api_key_id = ? AND system_account_id = ?', [
       auditLogIds,
       input.apiKeyId,
       input.systemAccountId
@@ -1006,7 +1066,7 @@ async function deletePostgresApiKeyAuditDataBatch(
   `, [input.apiKeyId, input.systemAccountId, batchLimit])
   const groupIds = uniqueNonEmpty(groupRows.map((row) => row.id))
   if (groupIds.length > 0) {
-    deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.audit_error_groups WHERE id = ANY(?) AND api_key_id = ? AND system_account_id = ?', [
+    deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.audit_error_groups WHERE id = ANY(?::text[]) AND api_key_id = ? AND system_account_id = ?', [
       groupIds,
       input.apiKeyId,
       input.systemAccountId

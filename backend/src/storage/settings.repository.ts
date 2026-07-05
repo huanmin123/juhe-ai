@@ -1,12 +1,13 @@
 import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
-import { createAppCache, createSharedJsonCache } from '../shared/cache.js'
+import { clearSharedJsonCacheInBackground, createAppCache, createSharedJsonCache } from '../shared/cache.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { errorLogFields, logger } from '../shared/logger.js'
 import { clearUsageStatsTimezoneCache, normalizeUsageStatsTimezone, usageStatsTimezone } from './usage-stats-helpers.js'
 import { getPostgresPool } from './postgres-client.js'
 import { sqlPlaceholders } from './query-utils.js'
 import { runtimeConfig } from '../config/runtime.js'
+import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
 interface GlobalSettingRow {
   key: string
@@ -19,7 +20,6 @@ const settingsCacheTtlMs = 60_000
 const businessSchemaName = 'juhe_business'
 export const systemSettingKeys = [
   'gatewayTextRawBodyLimitMegabytes',
-  'systemApiRateLimitEnabled',
   'systemApiRateLimitIpReadPerMinute',
   'systemApiRateLimitIpReadBurstPer10Seconds',
   'systemApiRateLimitIpWritePerMinute',
@@ -29,13 +29,12 @@ export const systemSettingKeys = [
   'defaultTemporaryUnschedulableMinutes',
   'temporaryUnschedulableRetryIntervalSeconds',
   'temporaryUnschedulableRetryAttempts',
-  'streamCircuitBreakerEnabled',
   'streamRequestTimeoutSeconds',
   'streamIdleTimeoutSeconds',
   'streamClientTotalWaitTimeoutSeconds',
+  'streamMaxLifetimeSeconds',
   'streamFailureThresholdCount',
   'streamFailureThresholdWindowMinutes',
-  'operationLogEnabled',
   'operationLogRetentionDays',
   'operationLogMaxChangesPerRecord',
   'statsAggregationIntervalSeconds',
@@ -60,6 +59,8 @@ export const systemSettingKeys = [
   'oauthAccessTokenRefreshBatchSize',
   'oauthAccessTokenRefreshRetryBackoffSeconds',
   'modelCheckRetentionDays',
+  'runtimeLogIndexRetentionDays',
+  'publicApiLogRetentionDays',
   'usageRecordRetentionDays',
   'usageStatsTimezone',
   'usageStatsMinuteRetentionHours',
@@ -69,10 +70,7 @@ export const systemSettingKeys = [
   'usageStatsMonthlyRetentionMonths',
   'usageRankSnapshotRetentionDays',
   'systemMetricsRetentionDays',
-  'systemMetricsHourlyRetentionDays',
-  'dataRetentionCleanupIntervalMinutes',
-  'dataRetentionCleanupBatchSize',
-  'dataRetentionCleanupMaxBatchesPerRun'
+  'systemMetricsHourlyRetentionDays'
 ] as const
 
 const SYSTEM_SETTING_KEYS = new Set<string>(systemSettingKeys)
@@ -84,7 +82,6 @@ const globalSettingKeys = ['appName', 'appIcon'] as const
 const GLOBAL_SETTING_KEYS = new Set<string>(globalSettingKeys)
 const SYSTEM_SETTING_VALIDATORS: Record<SystemSettingKey, SettingValidator> = {
   gatewayTextRawBodyLimitMegabytes: integerSetting(1, 64),
-  systemApiRateLimitEnabled: booleanSetting,
   systemApiRateLimitIpReadPerMinute: integerSetting(0, 1_000_000),
   systemApiRateLimitIpReadBurstPer10Seconds: integerSetting(0, 1_000_000),
   systemApiRateLimitIpWritePerMinute: integerSetting(0, 1_000_000),
@@ -94,13 +91,12 @@ const SYSTEM_SETTING_VALIDATORS: Record<SystemSettingKey, SettingValidator> = {
   defaultTemporaryUnschedulableMinutes: integerSetting(1, 1440),
   temporaryUnschedulableRetryIntervalSeconds: integerSetting(0, 3600),
   temporaryUnschedulableRetryAttempts: integerSetting(0, 10),
-  streamCircuitBreakerEnabled: booleanSetting,
   streamRequestTimeoutSeconds: integerSetting(10, 3600),
   streamIdleTimeoutSeconds: integerSetting(1, 3600),
   streamClientTotalWaitTimeoutSeconds: integerSetting(10, 3600),
+  streamMaxLifetimeSeconds: integerSetting(60, 86400),
   streamFailureThresholdCount: integerSetting(1, 100),
   streamFailureThresholdWindowMinutes: integerSetting(1, 1440),
-  operationLogEnabled: booleanSetting,
   operationLogRetentionDays: integerSetting(1, 3650),
   operationLogMaxChangesPerRecord: integerSetting(1, 500),
   statsAggregationIntervalSeconds: integerSetting(5, 3600),
@@ -125,7 +121,9 @@ const SYSTEM_SETTING_VALIDATORS: Record<SystemSettingKey, SettingValidator> = {
   oauthAccessTokenRefreshBatchSize: integerSetting(1, 200),
   oauthAccessTokenRefreshRetryBackoffSeconds: integerSetting(0, 86400),
   modelCheckRetentionDays: integerSetting(1, 365),
-  usageRecordRetentionDays: integerSetting(1, 7),
+  runtimeLogIndexRetentionDays: integerSetting(1, 90),
+  publicApiLogRetentionDays: integerSetting(1, 365),
+  usageRecordRetentionDays: integerSetting(1, 180),
   usageStatsTimezone: timezoneSetting,
   usageStatsMinuteRetentionHours: integerSetting(1, 24 * 14),
   usageStatsHourlyRetentionDays: integerSetting(1, 180),
@@ -134,10 +132,7 @@ const SYSTEM_SETTING_VALIDATORS: Record<SystemSettingKey, SettingValidator> = {
   usageStatsMonthlyRetentionMonths: integerSetting(1, 60),
   usageRankSnapshotRetentionDays: integerSetting(1, 365),
   systemMetricsRetentionDays: integerSetting(1, 7),
-  systemMetricsHourlyRetentionDays: integerSetting(1, 30),
-  dataRetentionCleanupIntervalMinutes: integerSetting(5, 1440),
-  dataRetentionCleanupBatchSize: integerSetting(100, 5_000),
-  dataRetentionCleanupMaxBatchesPerRun: integerSetting(1, 100)
+  systemMetricsHourlyRetentionDays: integerSetting(1, 30)
 }
 const GLOBAL_SETTING_VALIDATORS: Record<GlobalSettingKey, SettingValidator> = {
   appName: nonEmptyStringSetting,
@@ -165,6 +160,7 @@ const globalSettingsSharedCache = createSharedJsonCache<Record<string, unknown>>
 })
 
 export function listGlobalSettings(): Record<string, unknown> {
+  assertSyncSettingsReadAllowed('listGlobalSettings')
   const cached = globalSettingsCache.get('current')
   if (cached) {
     return { ...cached }
@@ -179,17 +175,31 @@ export function listGlobalSettings(): Record<string, unknown> {
   return { ...settings }
 }
 
+export function listGlobalSettingsReadOnly(): Record<string, unknown> {
+  const rows = getBusinessDatabase().prepare("SELECT key, value_json, updated_at FROM global_settings WHERE key IN ('appName', 'appIcon') ORDER BY key ASC").all() as unknown as Array<GlobalSettingRow>
+  const settings: Record<string, unknown> = {}
+  for (const row of rows) {
+    settings[row.key] = normalizeGlobalSetting(row.key, JSON.parse(row.value_json) as unknown)
+  }
+  assertAllSettingsPresent(settings, globalSettingKeys, '全局设置')
+  return { ...settings }
+}
+
 export async function listGlobalSettingsAsync(): Promise<Record<string, unknown>> {
-  const cached = globalSettingsCache.get('current')
-  if (cached) {
-    return { ...cached }
+  if (runtimeConfig.cacheDriver !== 'redis') {
+    const cached = globalSettingsCache.get('current')
+    if (cached) {
+      return { ...cached }
+    }
   }
   const sharedCached = await getGlobalSettingsSharedCache()
   if (sharedCached) {
     globalSettingsCache.set('current', sharedCached)
     return { ...sharedCached }
   }
-  const settings = await loadGlobalSettingsFromDatabaseAsync()
+  const settings = sqliteReadWorkerPoolEnabled()
+    ? await requestSqliteReadWorker({ type: 'list_global_settings_read_only' })
+    : await loadGlobalSettingsFromDatabaseAsync()
   await setGlobalSettingsCacheAsync(settings)
   return { ...settings }
 }
@@ -254,6 +264,7 @@ function pickGlobalSettings(input: Record<string, unknown>): Record<string, unkn
 }
 
 export function getSettings(): Record<string, unknown> {
+  assertSyncSettingsReadAllowed('getSettings')
   const cached = systemSettingsCache.get('current')
   if (cached) {
     return { ...cached }
@@ -271,17 +282,34 @@ export function getSettings(): Record<string, unknown> {
   return { ...settings }
 }
 
+export function getSettingsReadOnly(): Record<string, unknown> {
+  const systemAccountId = SYSTEM_SETTINGS_ACCOUNT_ID
+  const rows = getBusinessDatabase()
+    .prepare(`SELECT key, value_json FROM system_settings WHERE system_account_id = ? AND key IN (${sqlPlaceholders(systemSettingKeys.length)}) ORDER BY key ASC`)
+    .all(systemAccountId, ...systemSettingKeys) as Array<{ key: string; value_json: string }>
+  const settings: Record<string, unknown> = {}
+  for (const row of rows) {
+    settings[row.key] = normalizeSystemSetting(row.key, JSON.parse(row.value_json) as unknown)
+  }
+  assertAllSettingsPresent(settings, systemSettingKeys, '系统设置')
+  return { ...settings }
+}
+
 export async function getSettingsAsync(): Promise<Record<string, unknown>> {
-  const cached = systemSettingsCache.get('current')
-  if (cached) {
-    return { ...cached }
+  if (runtimeConfig.cacheDriver !== 'redis') {
+    const cached = systemSettingsCache.get('current')
+    if (cached) {
+      return { ...cached }
+    }
   }
   const sharedCached = await getSystemSettingsSharedCache()
   if (sharedCached) {
     systemSettingsCache.set('current', sharedCached)
     return { ...sharedCached }
   }
-  const settings = await loadSystemSettingsFromDatabaseAsync()
+  const settings = sqliteReadWorkerPoolEnabled()
+    ? await requestSqliteReadWorker({ type: 'get_settings_read_only' })
+    : await loadSystemSettingsFromDatabaseAsync()
   await setSystemSettingsCacheAsync(settings)
   return { ...settings }
 }
@@ -364,63 +392,78 @@ function clearGlobalSettingsCache(): void {
 }
 
 async function getSystemSettingsSharedCache(): Promise<Record<string, unknown> | undefined> {
-  return getSettingsSharedCache(systemSettingsSharedCache, 'settings_system_shared_cache_read_failed')
-}
-
-async function getGlobalSettingsSharedCache(): Promise<Record<string, unknown> | undefined> {
-  return getSettingsSharedCache(globalSettingsSharedCache, 'settings_global_shared_cache_read_failed')
-}
-
-async function getSettingsSharedCache(
-  cache: typeof systemSettingsSharedCache,
-  event: string
-): Promise<Record<string, unknown> | undefined> {
-  if (runtimeConfig.cacheDriver !== 'redis') return undefined
+  const settings = await getSettingsSharedCache(systemSettingsSharedCache)
+  if (!settings) return undefined
   try {
-    const value = await cache.get('current')
-    return value ? { ...value } : undefined
+    return normalizeSystemSettingsSnapshot(settings)
   } catch (error) {
-    logger.warn(errorLogFields(error, { event }), '读取设置 Redis 共享缓存失败，继续读取数据库')
+    logger.warn(errorLogFields(error, {
+      event: 'system_settings_shared_cache_schema_mismatch'
+    }), '系统设置 Redis shared cache 与当前字段结构不一致，已忽略本次缓存')
+    clearSystemSettingsSharedCache()
     return undefined
   }
 }
 
+async function getGlobalSettingsSharedCache(): Promise<Record<string, unknown> | undefined> {
+  const settings = await getSettingsSharedCache(globalSettingsSharedCache)
+  if (!settings) return undefined
+  try {
+    return normalizeGlobalSettingsSnapshot(settings)
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'global_settings_shared_cache_schema_mismatch'
+    }), '全局设置 Redis shared cache 与当前字段结构不一致，已忽略本次缓存')
+    clearGlobalSettingsSharedCache()
+    return undefined
+  }
+}
+
+async function getSettingsSharedCache(cache: typeof systemSettingsSharedCache): Promise<Record<string, unknown> | undefined> {
+  if (runtimeConfig.cacheDriver !== 'redis') return undefined
+  const value = await cache.get('current')
+  return value ? { ...value } : undefined
+}
+
 async function setSystemSettingsCacheAsync(settings: Record<string, unknown>): Promise<void> {
+  await setSettingsSharedCache(systemSettingsSharedCache, settings)
   systemSettingsCache.set('current', settings)
-  await setSettingsSharedCache(systemSettingsSharedCache, settings, 'settings_system_shared_cache_write_failed')
 }
 
 async function setGlobalSettingsCacheAsync(settings: Record<string, unknown>): Promise<void> {
+  await setSettingsSharedCache(globalSettingsSharedCache, settings)
   globalSettingsCache.set('current', settings)
-  await setSettingsSharedCache(globalSettingsSharedCache, settings, 'settings_global_shared_cache_write_failed')
 }
 
 async function setSettingsSharedCache(
   cache: typeof systemSettingsSharedCache,
-  settings: Record<string, unknown>,
-  event: string
+  settings: Record<string, unknown>
 ): Promise<void> {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  try {
-    await cache.set('current', { ...settings }, { ttlMs: settingsCacheTtlMs })
-  } catch (error) {
-    logger.warn(errorLogFields(error, { event }), '写入设置 Redis 共享缓存失败')
-  }
+  await cache.set('current', { ...settings }, { ttlMs: settingsCacheTtlMs })
 }
 
 function clearSystemSettingsSharedCache(): void {
-  clearSettingsSharedCache(systemSettingsSharedCache, 'settings_system_shared_cache_clear_failed')
+  clearSettingsSharedCache(systemSettingsSharedCache)
 }
 
 function clearGlobalSettingsSharedCache(): void {
-  clearSettingsSharedCache(globalSettingsSharedCache, 'settings_global_shared_cache_clear_failed')
+  clearSettingsSharedCache(globalSettingsSharedCache)
 }
 
-function clearSettingsSharedCache(cache: typeof systemSettingsSharedCache, event: string): void {
+function clearSettingsSharedCache(cache: typeof systemSettingsSharedCache): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  void cache.clear().catch((error) => {
-    logger.warn(errorLogFields(error, { event }), '清理设置 Redis 共享缓存失败')
-  })
+  clearSharedJsonCacheInBackground(
+    cache,
+    'settings_shared_cache_clear_failed',
+    '系统设置 Redis shared cache 清理失败'
+  )
+}
+
+function assertSyncSettingsReadAllowed(operation: string): void {
+  if (runtimeConfig.databaseDriver === 'postgres' || runtimeConfig.runtimeMode === 'performance') {
+    throw new Error(`高性能模式禁止同步读取本地 settings 缓存或 SQLite：${operation} 必须使用 async PG + Redis 路径`)
+  }
 }
 
 async function getSettingsDatabaseClient(): Promise<DatabaseClient> {
@@ -493,6 +536,15 @@ function normalizeSystemSettingsInput(input: Record<string, unknown>): Record<st
   return output
 }
 
+function normalizeSystemSettingsSnapshot(input: Record<string, unknown>): Record<string, unknown> {
+  const output: Record<string, unknown> = {}
+  for (const key of systemSettingKeys) {
+    output[key] = normalizeSystemSetting(key, input[key])
+  }
+  assertAllSettingsPresent(output, systemSettingKeys, '系统设置')
+  return output
+}
+
 function normalizeGlobalSettingsInput(input: Record<string, unknown>): Record<string, unknown> {
   const output: Record<string, unknown> = {}
   for (const [key, value] of Object.entries(input)) {
@@ -501,6 +553,15 @@ function normalizeGlobalSettingsInput(input: Record<string, unknown>): Record<st
   if (Object.keys(output).length === 0) {
     throw new Error('全局设置更新不能为空')
   }
+  return output
+}
+
+function normalizeGlobalSettingsSnapshot(input: Record<string, unknown>): Record<string, unknown> {
+  const output: Record<string, unknown> = {}
+  for (const key of globalSettingKeys) {
+    output[key] = normalizeGlobalSetting(key, input[key])
+  }
+  assertAllSettingsPresent(output, globalSettingKeys, '全局设置')
   return output
 }
 
@@ -536,13 +597,6 @@ function integerSetting(min: number, max: number): SettingValidator {
     }
     return value
   }
-}
-
-function booleanSetting(value: unknown, key: string): boolean {
-  if (typeof value !== 'boolean') {
-    throw new Error(`${key} 必须是布尔值`)
-  }
-  return value
 }
 
 function nonEmptyStringSetting(value: unknown, key: string): string {

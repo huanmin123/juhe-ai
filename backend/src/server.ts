@@ -25,6 +25,7 @@ import { setRuntimeLogLineSink } from './modules/runtime-logs/runtime-log-stream
 import { enqueueRuntimeLogLine } from './modules/runtime-logs/runtime-log-index-queue.service.js'
 import { openAICompatibleFilesRouter } from './modules/openai-compatible-files/files.routes.js'
 import { openAICompatibleVectorStoresRouter } from './modules/openai-compatible-vector-stores/vector-stores.routes.js'
+import { createHttpCompressionMiddleware } from './shared/http-compression.js'
 
 const app = express()
 const host = runtimeConfig.host
@@ -88,6 +89,13 @@ startProcessEventLoopMonitor()
 setRuntimeLogLineSink((line, options) => enqueueRuntimeLogLine(line, options))
 startDbServiceSupervisor({ onReady: startBackgroundWorkerSupervisorAfterDbServiceReady })
 backgroundWorkerStartupFallbackTimer = setTimeout(() => {
+  if (runtimeConfig.runtimeMode === 'performance') {
+    logger.warn({
+      event: 'background_worker_waiting_for_db_service_ready',
+      timeoutMs: backgroundWorkerStartupFallbackMs
+    }, '高性能模式 DB service ready 等待超时，后台 worker 将继续等待 DB service 就绪')
+    return
+  }
   logger.warn({
     event: 'background_worker_start_before_db_service_ready',
     timeoutMs: backgroundWorkerStartupFallbackMs
@@ -114,6 +122,7 @@ if (runtimeConfig.httpSecurity.trustProxy !== false) {
 
 app.use(requestContextMiddleware)
 app.use(cors({ credentials: true, origin: createCorsOriginDelegate() }))
+app.use(createHttpCompressionMiddleware())
 
 app.get(`${systemPrefix}/health`, (_req, res) => {
   res.json({ status: 'ok', service: 'juhe-ai' })

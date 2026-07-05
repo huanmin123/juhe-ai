@@ -88,7 +88,7 @@ accountsRouter.post('/test-draft', async (req, res) => {
       diagnostics: 'full',
       sessionId: testSessionId,
       model: testOptions.model,
-      clientCompatibility: preparedDraft.draftAccount.clientCompatibility,
+      testEndpointMode: testOptions.testEndpointMode,
       draftAccount: preparedDraft.draftAccount
     })
     if (!dispatchAccountTestTasks([task.id])) {
@@ -325,6 +325,10 @@ function effectiveRequestSystemAccountId(access?: RequestAccessScope): string | 
   return access?.systemAccountFilterId?.trim() || access?.systemAccountId
 }
 
+function isAuthorizedAccountUpdateTarget(account: AccountSummary): boolean {
+  return account.accessType === 'authorized' || Boolean(account.accountAuthorizationId || account.authorizationInstanceSourceAccountId)
+}
+
 registerAccountAuthorizedDispatchRoutes(accountsRouter)
 
 accountsRouter.patch('/:id', async (req, res) => {
@@ -348,6 +352,10 @@ accountsRouter.patch('/:id', async (req, res) => {
   }
   if (requestedClearFailureState === true && existingAccount.status === 'pending_test') {
     res.status(400).json(badRequest('待测试账户需手动测试通过后才能参与调度'))
+    return
+  }
+  if (isAuthorizedAccountUpdateTarget(existingAccount) && Object.prototype.hasOwnProperty.call(body, 'concurrencyLimit')) {
+    res.status(400).json(badRequest('授权账户并发上限由来源账户控制，不能在被授权账户上修改'))
     return
   }
   const hasGroupId = Object.prototype.hasOwnProperty.call(body, 'groupId')

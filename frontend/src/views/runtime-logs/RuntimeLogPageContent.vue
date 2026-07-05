@@ -47,8 +47,6 @@
   <RuntimeLogStatusAlerts
     :runtime-logs-alert-visible="runtimeLogsAlertVisible"
     :runtime-logs-alert-description="runtimeLogsAlertDescription"
-    :queue-health-alert-visible="queueHealthAlertVisible"
-    :queue-health-alert-description="queueHealthAlertDescription"
   />
 
   <RuntimeLogListSection
@@ -118,8 +116,6 @@ defineProps<{
   mobileHasMore: boolean
   mobileLoadingMore: boolean
   pagination?: false | Record<string, unknown>
-  queueHealthAlertDescription: string
-  queueHealthAlertVisible: boolean
   records: RuntimeLogSummary[]
   runtimeLogColumns: Array<Record<string, any>>
   runtimeLogsAlertDescription: string

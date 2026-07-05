@@ -50,13 +50,16 @@ try {
   assert(account, 'mock fixture should create a target account')
   assert(secondAccount, 'mock fixture should create a second group account')
 
+  const progressItemKeys: string[] = []
   const accountRun = await runModelCheck({
     targetType: 'account',
     targetId: account.id,
     model: 'gpt-5.5',
     profile: 'full',
     trustedComparison: false
-  }, { systemAccountId: 'sys_admin', role: 'admin' })
+  }, { systemAccountId: 'sys_admin', role: 'admin' }, undefined, (event) => {
+    if ('itemKey' in event) progressItemKeys.push(event.itemKey)
+  })
   await assertRunShape(accountRun, {
     targetType: 'account',
     targetId: account.id,
@@ -64,6 +67,8 @@ try {
     highConfidence: true
   })
   assert.equal(accountRun.accountId, account.id, '账户目标报告应记录被测账号 ID')
+  assert(!accountRun.checks.some((item) => item.itemType === 'model_catalog'), '模型检测报告不应再包含本地模型目录检测项')
+  assert(!progressItemKeys.some((itemKey) => itemKey.endsWith('.model_catalog')), '模型检测进度不应再执行本地模型目录探针')
 
   usageRecordQueue.flushUsageRecordQueue({ drain: true, retryOnFailure: false })
   const runTraceIds = new Set(accountRun.checks.map((check) => check.traceId).filter((traceId): traceId is string => Boolean(traceId)))
@@ -96,6 +101,7 @@ async function assertRunShape(run: ModelCheckRunDetail, options: {
   assert(run.checks.some((item) => item.itemKey === 'target.long_context' && item.status === 'passed'), '完整检测应包含并通过长上下文探针')
   assert(run.checks.some((item) => item.itemKey === 'target.cross_model' && item.status === 'passed'), '完整检测应包含并通过辅助模型对照')
   assert(run.checks.some((item) => item.itemKey === 'target.stability' && item.status === 'passed'), '完整检测应包含并通过稳定性探针')
+  assert(!run.checks.some((item) => item.itemType === 'model_catalog'), '完整检测不应把本地模型目录作为可信度证据')
   assert(run.checks.every((item) => item.evidenceSummary.modelMismatch !== true), '通过场景不应出现模型不匹配证据')
   const serialized = JSON.stringify(run)
   assert(!serialized.includes('sk-mockdata'), '检测报告不应泄露 mock 上游 API Key')

@@ -44,6 +44,7 @@ try {
 
   let targetId = ''
   let targetGroupName = ''
+  let dueAuthorizationId = ''
   for (let index = 0; index < 250; index += 1) {
     const group = repositories.createGroup({
       name: `授权单条读取回归-${String(index).padStart(3, '0')}`,
@@ -60,6 +61,9 @@ try {
     if (index === 0) {
       targetId = authorization.id
       targetGroupName = group.name
+    }
+    if (index === 1) {
+      dueAuthorizationId = authorization.id
     }
   }
 
@@ -80,9 +84,13 @@ try {
   assert.equal(updated?.id, targetId, '更新授权应通过单条读取返回目标授权摘要')
   assert.equal(updated?.expiresAt, '2099-01-01T00:00:00.000Z', '更新授权应保留新的过期时间')
 
+  databaseModule.getBusinessDatabase()
+    .prepare("UPDATE resource_authorization_grants SET expires_at = '2000-01-01T00:00:00.000Z', updated_at = '2000-01-01T00:00:00.000Z' WHERE id = ?")
+    .run(dueAuthorizationId)
   const revoked = repositories.revokeResourceAuthorization(targetId, ownerAccess)
   assert.equal(revoked?.id, targetId, '回收授权应通过单条读取返回目标授权摘要')
   assert.equal(revoked?.status, 'revoked', '回收授权应返回已回收状态')
+  assert.equal(grantStatus(dueAuthorizationId), 'active', '回收授权的返回摘要路径不应顺带扫描并过期其他授权')
   const defaultListAfterRevoke = repositories.listResourceAuthorizations({}, ownerAccess)
   assert.equal(defaultListAfterRevoke.some((authorization) => authorization.id === targetId), true, '默认授权列表应保留已回收授权')
   const allListAfterRevoke = repositories.listResourceAuthorizations({ status: 'all' }, ownerAccess)
@@ -117,4 +125,11 @@ function explainBusinessQuery(sql: string, params: SQLInputValue[]): string {
     .all(...params)
     .map((row) => String((row as { detail?: unknown }).detail ?? ''))
     .join('\n')
+}
+
+function grantStatus(id: string): string | undefined {
+  const row = databaseModule.getBusinessDatabase()
+    .prepare('SELECT status FROM resource_authorization_grants WHERE id = ?')
+    .get(id) as { status?: string } | undefined
+  return row?.status
 }

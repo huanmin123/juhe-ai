@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 const backendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 
 const entrypointFiles: Array<{ path: string; allowedCalls?: string[] }> = [
-  { path: 'src/db-service.ts' },
+  { path: 'src/db-service.ts', allowedCalls: ['getBusinessDatabase'] },
   { path: 'src/worker.ts', allowedCalls: ['getDatasetDatabase'] },
   { path: 'src/modules/record-maintenance/temporary-maintenance-worker-runner.ts' }
 ]
@@ -17,7 +17,7 @@ for (const entrypoint of entrypointFiles) {
   assertNoEagerDatabaseOpen(relativePath, content, new Set(entrypoint.allowedCalls ?? []))
 }
 
-console.log('SQLite 入口懒打开回归通过：DB service、后台 worker 和临时维护 worker 启动入口不再预热打开非 owner 业务库或统计库')
+console.log('SQLite 入口懒打开回归通过：DB service 仅预热 owner 业务库，后台 worker 和临时维护 worker 启动入口不再预热打开非 owner 业务库或统计库')
 
 function assertNoEagerDatabaseOpen(relativePath: string, content: string, allowedCalls: Set<string>): void {
   const stripped = stripImports(content)

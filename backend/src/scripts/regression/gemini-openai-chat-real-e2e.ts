@@ -75,7 +75,6 @@ try {
     const group = repositories.createGroup({
       name: 'Gemini OpenAI Chat 真实网关 E2E 分组',
       providerCode: GEMINI_PROVIDER_CODE,
-      providerProtocolProfileId: GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
       enabled: true
     }, access)
     repositories.createAccount({

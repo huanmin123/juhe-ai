@@ -1,7 +1,8 @@
 import type { AccountUsageStatsRange } from './usage-stats'
 
 export type ClientIpPolicyStatus = 'active' | 'disabled'
-export type ClientIpStatus = 'all' | 'normal' | 'blacklisted'
+export type ClientIpPolicyType = 'blacklist' | 'allowlist'
+export type ClientIpStatus = 'all' | 'normal' | 'blacklisted' | 'allowlisted'
 export type ClientIpStatsSortField = 'requestCount' | 'successCount' | 'errorCount' | 'errorRate' | 'totalTokens' | 'totalCost' | 'activeDays' | 'lastUsedAt'
 
 export interface ClientIpUsageSummary {
@@ -50,6 +51,8 @@ export interface ClientIpStatsListResult {
 export interface ClientIpAccountUsageRow {
   accountId: string
   accountName?: string
+  accountOwnerSystemAccountId?: string
+  accountOwnerSystemAccountName?: string
   rangeUsage: ClientIpUsageSummary
 }
 
@@ -69,6 +72,7 @@ export interface ClientIpStatsDetailResult {
 export interface ClientIpPolicySummary {
   id: string
   ipHash: string
+  policyType: ClientIpPolicyType
   status: ClientIpPolicyStatus
   reason?: string
   expiresAt?: string
