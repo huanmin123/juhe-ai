@@ -4,6 +4,7 @@ import { DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY, effectiveImageLaneCon
 import type { GroupSchedulingPolicy } from '../../../domain/types.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 import { getRedisClient, type RedisCommandClient } from '../../../shared/redis-client.js'
+import { redisNamespacedKey } from '../../../shared/redis-namespace.js'
 import {
   getAccountCurrentConcurrency,
   loadAccountCurrentConcurrencyByIdsAsync,
@@ -529,11 +530,11 @@ function redisStateClient(): Promise<RedisCommandClient> {
 }
 
 function redisHighConcurrencyGroupQueueKey(groupKey: string): string {
-  return `juhe-ai:state:high-concurrency-queue:${sanitizeRedisKeyPart(groupKey)}`
+  return redisNamespacedKey(`juhe-ai:state:high-concurrency-queue:${sanitizeRedisKeyPart(groupKey)}`)
 }
 
 function redisHighConcurrencyApiKeyQueueKey(groupKey: string, apiKeyKey: string): string {
-  return `juhe-ai:state:high-concurrency-queue:${sanitizeRedisKeyPart(groupKey)}:api-key:${sanitizeRedisKeyPart(apiKeyKey)}`
+  return redisNamespacedKey(`juhe-ai:state:high-concurrency-queue:${sanitizeRedisKeyPart(groupKey)}:api-key:${sanitizeRedisKeyPart(apiKeyKey)}`)
 }
 
 function sanitizeRedisKeyPart(value: string): string {

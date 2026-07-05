@@ -1,4 +1,6 @@
 import type { AuditErrorGroupListOptions, AuditLogListOptions } from './audit-log-types.js'
+import { runtimeConfig } from '../config/runtime.js'
+import { textPrefixUpperBound } from './query-utils.js'
 
 export type AuditLogFilterValue = string | number
 
@@ -13,7 +15,7 @@ export function buildAuditLogFilters(options: AuditLogListOptions): { clause: st
   const params: AuditLogFilterValue[] = []
 
   pushPrefixFilter(clauses, params, 'al.trace_id', options.traceId)
-  pushExactFilter(clauses, params, 'al.path', options.path)
+  pushPathExactFilter(clauses, params, 'al.path', options.path)
   pushExactFilter(clauses, params, 'al.model', options.model)
   pushPrefixFilter(clauses, params, 'al.client_ip', options.clientIp)
   if (options.outcome && options.outcome !== 'all') {
@@ -27,6 +29,16 @@ export function buildAuditLogFilters(options: AuditLogListOptions): { clause: st
   if (options.trafficSource) {
     clauses.push('al.traffic_source = ?')
     params.push(options.trafficSource)
+  }
+  const startAt = options.startAt?.trim()
+  if (startAt) {
+    clauses.push('al.created_at >= ?')
+    params.push(startAt)
+  }
+  const endAt = options.endAt?.trim()
+  if (endAt) {
+    clauses.push('al.created_at <= ?')
+    params.push(endAt)
   }
   for (const [column, value] of [
     ['al.system_account_id', options.systemAccountId],
@@ -51,7 +63,7 @@ export function buildAuditErrorGroupFilters(options: AuditErrorGroupListOptions)
   const clauses: string[] = []
   const params: AuditLogFilterValue[] = []
 
-  pushExactFilter(clauses, params, 'aeg.path', options.path)
+  pushPathExactFilter(clauses, params, 'aeg.path', options.path)
   pushExactFilter(clauses, params, 'aeg.model', options.model)
   if (isHttpStatusCode(options.statusCode)) {
     clauses.push('aeg.status_code = ?')
@@ -124,13 +136,29 @@ function pushExactFilter(clauses: string[], params: AuditLogFilterValue[], colum
   params.push(text)
 }
 
+function pushPathExactFilter(clauses: string[], params: AuditLogFilterValue[], column: string, value?: string): void {
+  const text = normalizePathFilter(value)
+  if (!text) return
+  clauses.push(`${column} = ?`)
+  params.push(text)
+}
+
 function pushPrefixFilter(clauses: string[], params: AuditLogFilterValue[], column: string, value?: string): void {
   const text = value?.trim()
   if (!text) return
-  clauses.push(`${column} >= ? AND ${column} < ?`)
-  params.push(text, `${text}\uffff`)
+  const columnExpression = runtimeConfig.databaseDriver === 'postgres' ? `${column} COLLATE "C"` : column
+  clauses.push(`${columnExpression} >= ? AND ${columnExpression} < ?`)
+  params.push(text, textPrefixUpperBound(text))
 }
 
 function isHttpStatusCode(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 100 && value <= 599
+}
+
+function normalizePathFilter(value?: string): string | undefined {
+  const text = value?.trim()
+  if (!text) return undefined
+  const withoutMethod = text.replace(/^(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+/i, '')
+  const path = withoutMethod.split('?')[0]?.trim()
+  return path || undefined
 }

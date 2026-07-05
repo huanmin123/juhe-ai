@@ -86,12 +86,32 @@ export function accountCreatePayloadWithActivationTest(
   }
 }
 
+export function accountUpdateActivationTestTaskId(
+  payload: AccountSavePayload,
+  activationTest: SuccessfulDraftActivationTest | undefined,
+  fallbackName: string
+): string | undefined {
+  return isUpdateActivationTestForPayload(activationTest, payload, fallbackName)
+    ? activationTest?.taskId
+    : undefined
+}
+
 function isActivationTestForPayload(
-  activationTest: SuccessfulDraftActivationTest,
+  activationTest: SuccessfulDraftActivationTest | undefined,
   payload: AccountSavePayload,
   fallbackName: string
 ): boolean {
+  if (!activationTest) return false
   return stablePayloadFingerprint(activationTest.account) === stablePayloadFingerprint(accountDraftPayloadFromSavePayload(payload, fallbackName))
+}
+
+function isUpdateActivationTestForPayload(
+  activationTest: SuccessfulDraftActivationTest | undefined,
+  payload: AccountSavePayload,
+  fallbackName: string
+): boolean {
+  if (!activationTest) return false
+  return stablePayloadFingerprint(savedUpdateTestTarget(activationTest.account)) === stablePayloadFingerprint(savedUpdateTestTarget(accountDraftPayloadFromSavePayload(payload, fallbackName)))
 }
 
 function accountDraftPayloadFromSavePayload(
@@ -113,6 +133,17 @@ function accountDraftPayloadFromSavePayload(
     accountExpiresAt: payload.accountExpiresAt,
     availabilitySchedule: payload.availabilitySchedule as AccountDraftTestAccountPayload['availabilitySchedule'],
     notes: payload.notes
+  }
+}
+
+function savedUpdateTestTarget(payload: AccountDraftTestAccountPayload): Record<string, unknown> {
+  return {
+    providerCode: payload.providerCode,
+    providerProtocolProfileId: payload.providerProtocolProfileId,
+    type: payload.type,
+    groupId: payload.groupId,
+    proxyProfileId: payload.proxyProfileId,
+    credentials: payload.credentials
   }
 }
 

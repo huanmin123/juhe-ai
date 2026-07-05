@@ -16,6 +16,7 @@ runtimeConfig.redis.cacheUrl = cacheUrl
 runtimeConfig.redis.stateUrl = stateUrl
 
 const suffix = safeRedisPart(`regression_${Date.now()}_${Math.random().toString(16).slice(2)}`)
+runtimeConfig.redis.namespace = `runtime-state-cache-${suffix}`
 const stateName = `runtime_state_${suffix}`
 const cacheName = `shared_cache_${suffix}`
 const accountId = `account_${suffix}`
@@ -29,6 +30,7 @@ const [
   { createDedicatedRedisClient, closeRedisClients },
   { createRuntimeStateStore },
   { createSharedJsonCache },
+  { redisNamespacedKey },
   accountConcurrency,
   loginGuard,
   captchaService
@@ -36,6 +38,7 @@ const [
   import('../../shared/redis-client.js'),
   import('../../shared/runtime-state-store.js'),
   import('../../shared/cache.js'),
+  import('../../shared/redis-namespace.js'),
   import('../../shared/account-concurrency.js'),
   import('../../modules/auth/login-guard.service.js'),
   import('../../modules/auth/captcha.service.js')
@@ -45,24 +48,20 @@ const cacheClient = await createDedicatedRedisClient(cacheUrl)
 const stateClient = await createDedicatedRedisClient(stateUrl)
 
 const startedAt = Date.now()
-const cleanupPatterns = [
-  `juhe-ai:cache:${cacheName}:*`,
-  `juhe-ai:cache-index:${cacheName}:*`,
-  `juhe-ai:cache-version:${cacheName}`,
-  `juhe-ai:state:${stateName}:*`,
-  `juhe-ai:state:auth_login_guard:login:ip:${loginIp}:*`,
-  `juhe-ai:state:auth_login_guard:login:username:${loginUser}:*`,
-  `juhe-ai:state:auth_login_guard:login:ip:${loginFailIp}:*`,
-  `juhe-ai:state:auth_login_guard:login:username:${loginFailUser}:*`,
-  `juhe-ai:state:auth_captcha:issue:${captchaIp}`,
-  `juhe-ai:account-concurrency:${accountId}:*`,
-  `juhe-ai:account-concurrency:${accountId}_parallel:*`,
-  `juhe-ai:account-concurrency:${accountId}_external:*`,
-  `juhe-ai:account-concurrency:${accountId}_expired:*`,
-  `juhe-ai:account-concurrency-v2:${accountId}:*`,
-  `juhe-ai:account-concurrency-v2:${accountId}_parallel:*`,
-  `juhe-ai:account-concurrency-v2:${accountId}_external:*`,
-  `juhe-ai:account-concurrency-v2:${accountId}_expired:*`
+const cleanupTargets = [
+  { client: cacheClient, pattern: redisNamespacedKey(`juhe-ai:cache:${cacheName}:*`) },
+  { client: cacheClient, pattern: redisNamespacedKey(`juhe-ai:cache-index:${cacheName}:*`) },
+  { client: cacheClient, pattern: redisNamespacedKey(`juhe-ai:cache-version:${cacheName}`) },
+  { client: stateClient, pattern: redisNamespacedKey(`juhe-ai:state:${stateName}:*`) },
+  { client: stateClient, pattern: redisNamespacedKey(`juhe-ai:state:auth_login_guard:login:ip:${loginIp}:*`) },
+  { client: stateClient, pattern: redisNamespacedKey(`juhe-ai:state:auth_login_guard:login:username:${loginUser}:*`) },
+  { client: stateClient, pattern: redisNamespacedKey(`juhe-ai:state:auth_login_guard:login:ip:${loginFailIp}:*`) },
+  { client: stateClient, pattern: redisNamespacedKey(`juhe-ai:state:auth_login_guard:login:username:${loginFailUser}:*`) },
+  { client: stateClient, pattern: redisNamespacedKey(`juhe-ai:state:auth_captcha:issue:${captchaIp}`) },
+  { client: stateClient, pattern: redisNamespacedKey(`juhe-ai:account-concurrency-v2:${accountId}:*`) },
+  { client: stateClient, pattern: redisNamespacedKey(`juhe-ai:account-concurrency-v2:${accountId}_parallel:*`) },
+  { client: stateClient, pattern: redisNamespacedKey(`juhe-ai:account-concurrency-v2:${accountId}_external:*`) },
+  { client: stateClient, pattern: redisNamespacedKey(`juhe-ai:account-concurrency-v2:${accountId}_expired:*`) }
 ]
 
 try {
@@ -156,9 +155,10 @@ async function verifyCaptchaRuntimeState(): Promise<void> {
   const challenge = await captchaService.createCaptchaChallengeAsync()
   const answer = captchaService.captchaAnswerForTest(challenge.captchaId)
   assert.ok(answer, 'Redis 验证码回归应能通过测试夹具读取刚生成的答案')
-  assert.equal(await stateClient.get(`juhe-ai:state:auth_captcha:challenge:${challenge.captchaId}`) !== null, true, 'Redis 验证码 challenge 应写入 runtime state')
+  const challengeKey = redisNamespacedKey(`juhe-ai:state:auth_captcha:challenge:${challenge.captchaId}`)
+  assert.equal(await stateClient.get(challengeKey) !== null, true, 'Redis 验证码 challenge 应写入 runtime state')
   assert.equal(await captchaService.verifyCaptchaChallengeAsync(challenge.captchaId, answer), true, 'Redis 验证码应支持正确答案校验')
-  assert.equal(await stateClient.get(`juhe-ai:state:auth_captcha:challenge:${challenge.captchaId}`), null, 'Redis 验证码校验后应原子消费 challenge')
+  assert.equal(await stateClient.get(challengeKey), null, 'Redis 验证码校验后应原子消费 challenge')
   assert.equal(await captchaService.verifyCaptchaChallengeAsync(challenge.captchaId, answer), false, 'Redis 验证码 challenge 不应允许重复使用')
 
   let blocked = false
@@ -207,15 +207,15 @@ async function verifyAccountConcurrency(): Promise<void> {
 
   first.release()
   second.release()
-  await waitForRedisKeyAbsent(`juhe-ai:account-concurrency-v2:${accountId}:total`)
-  await waitForRedisKeyAbsent(`juhe-ai:account-concurrency-v2:${accountId}:metadata`)
+  await waitForRedisKeyAbsent(redisNamespacedKey(`juhe-ai:account-concurrency-v2:${accountId}:total`))
+  await waitForRedisKeyAbsent(redisNamespacedKey(`juhe-ai:account-concurrency-v2:${accountId}:metadata`))
   await waitForLocalConcurrency(accountId, 0)
 
   const reacquired = await accountConcurrency.tryAcquireAccountConcurrencyAsync(accountId, 2, { lane: 'text' })
   assert.equal(reacquired.acquired, true, 'Redis 账号并发释放后应允许再次占用')
   assert.equal(accountConcurrency.snapshotAccountConcurrency()[accountId], 1, 'Redis 模式重新占槽后 server 快照应恢复为 1')
   reacquired.release()
-  await waitForRedisKeyAbsent(`juhe-ai:account-concurrency-v2:${accountId}:total`)
+  await waitForRedisKeyAbsent(redisNamespacedKey(`juhe-ai:account-concurrency-v2:${accountId}:total`))
   await waitForLocalConcurrency(accountId, 0)
 
   const externalAccountId = `${accountId}_external`
@@ -233,7 +233,7 @@ async function verifyAccountConcurrency(): Promise<void> {
   const expiredAccountId = `${accountId}_expired`
   await addRedisConcurrencySlot(expiredAccountId, 'text', 'dead-owner|expired', Date.now() - 1000)
   assert.equal((await accountConcurrency.loadAccountCurrentConcurrencyByIdsAsync([expiredAccountId])).get(expiredAccountId), 0, 'Redis 模式批量读取应清理已过租约的死槽')
-  await waitForRedisKeyAbsent(`juhe-ai:account-concurrency-v2:${expiredAccountId}:total`)
+  await waitForRedisKeyAbsent(redisNamespacedKey(`juhe-ai:account-concurrency-v2:${expiredAccountId}:total`))
 
   const parallelAccountId = `${accountId}_parallel`
   const parallelSlots = await Promise.all(
@@ -246,14 +246,14 @@ async function verifyAccountConcurrency(): Promise<void> {
   for (const slot of acquiredSlots) {
     slot.release()
   }
-  await waitForRedisKeyAbsent(`juhe-ai:account-concurrency-v2:${parallelAccountId}:total`)
+  await waitForRedisKeyAbsent(redisNamespacedKey(`juhe-ai:account-concurrency-v2:${parallelAccountId}:total`))
   await waitForLocalConcurrency(parallelAccountId, 0)
 }
 
 async function addRedisConcurrencySlot(accountId: string, lane: 'text' | 'image', token: string, expiresAtMs: number): Promise<void> {
-  const totalKey = `juhe-ai:account-concurrency-v2:${accountId}:total`
-  const laneKey = `juhe-ai:account-concurrency-v2:${accountId}:${lane}`
-  const metadataKey = `juhe-ai:account-concurrency-v2:${accountId}:metadata`
+  const totalKey = redisNamespacedKey(`juhe-ai:account-concurrency-v2:${accountId}:total`)
+  const laneKey = redisNamespacedKey(`juhe-ai:account-concurrency-v2:${accountId}:${lane}`)
+  const metadataKey = redisNamespacedKey(`juhe-ai:account-concurrency-v2:${accountId}:metadata`)
   await stateClient.sendCommand(['ZADD', totalKey, String(expiresAtMs), token])
   await stateClient.sendCommand(['ZADD', laneKey, String(expiresAtMs), token])
   await stateClient.sendCommand(['PEXPIRE', totalKey, '90000'])
@@ -287,8 +287,7 @@ async function waitFor(predicate: () => Promise<boolean>, message: string): Prom
 }
 
 async function cleanupRedisKeys(): Promise<void> {
-  for (const pattern of cleanupPatterns) {
-    const client = pattern.startsWith('juhe-ai:cache') ? cacheClient : stateClient
+  for (const { client, pattern } of cleanupTargets) {
     await deleteRedisKeysByPattern(client, pattern)
   }
 }

@@ -42,10 +42,11 @@ import { canCreateOAuthAccount } from './accountProviderCapabilities'
 import { authUrl } from './accountOAuthPayload'
 import { loadAccountDetailCached, type AccountDetailLevel } from './accountDetailCache'
 import { accountOperationScopeParams, type AccountScopeParams } from './accountOperationScope'
-import { normalizedAccountApiKeys } from './accountCredentials'
+import { accountFormApiKeyRuntimeChanged, normalizedAccountApiKeys } from './accountCredentials'
 import type { AccountSavePayload } from './accountSavePayload'
 import {
-  accountCreatePayloadWithActivationTest as applyActivationTestToCreatePayload
+  accountCreatePayloadWithActivationTest as applyActivationTestToCreatePayload,
+  accountUpdateActivationTestTaskId as updateActivationTestTaskIdForPayload
 } from './accountEditFormPayload'
 import { buildAccountDraftTestPayload } from './accountDraftTestPayload'
 import {
@@ -83,6 +84,7 @@ interface UseAccountEditFormOptions {
   systemAccountSelection?: ReadonlyValue<PrincipalSelection | undefined>
   systemAccounts: ReadonlyValue<SystemAccountPrincipalSummary[]>
   successfulDraftActivationTest?: { value: SuccessfulDraftActivationTest | undefined }
+  successfulSavedDraftUpdateTest?: { value: SuccessfulDraftActivationTest | undefined }
 }
 
 export function useAccountEditForm(options: UseAccountEditFormOptions) {
@@ -194,6 +196,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     saving
   } = useAccountEditSaveFlow({
     accountCreatePayloadWithActivationTest,
+    accountUpdateActivationTestTaskId,
     accountAdvancedDetailLoaded,
     accountErrorPolicyRules,
     accountResponseInspectionRules,
@@ -206,6 +209,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     editingId,
     extractApiErrorMessage: options.extractApiErrorMessage,
     form,
+    isApiKeyRuntimeChanged,
     isManagementView: options.isManagementView,
     loadData: options.loadData,
     mappingAnthropicSourceModelOptions,
@@ -259,6 +263,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     editingScheduleFingerprint.value = undefined
     cloningScheduleFingerprint.value = undefined
     clearSuccessfulDraftActivationTest()
+    clearSuccessfulSavedDraftUpdateTest()
     Object.assign(form, defaultForm(providerCode, type))
     resetProviderModelOptions()
     resetAnthropicProviderModelOptions()
@@ -342,6 +347,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     modalOpen.value = false
     authResult.value = undefined
     clearDraftApiKeyTestSnapshot()
+    clearSuccessfulSavedDraftUpdateTest()
   }
 
   function selectProvider(providerCode: string) {
@@ -408,6 +414,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     accountEditDetailLoading.value = false
     authResult.value = undefined
     clearSuccessfulDraftActivationTest()
+    clearSuccessfulSavedDraftUpdateTest()
 
     if (isAuthorizedAccount(account)) {
       accountEditDetailLoading.value = true
@@ -456,21 +463,39 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     accountEditDetailLoading.value = false
   }
 
-  async function loadAdvancedAccountDetail() {
-    if (!editingId.value || accountAdvancedDetailLoaded.value || accountAdvancedDetailLoading.value || editingAuthorizedAccount.value) return
+  async function ensureAccountEditDetailLoaded(): Promise<boolean> {
+    if (!editingId.value) return true
+    const requestToken = formOpenRequestToken
+    while (accountEditDetailLoading.value && isCurrentFormOpenRequest(requestToken)) {
+      await sleep(50)
+    }
+    return isCurrentFormOpenRequest(requestToken) && Boolean(editingAccountDetail.value)
+  }
+
+  async function loadAdvancedAccountDetail(): Promise<boolean> {
+    if (!editingId.value || editingAuthorizedAccount.value) return accountAdvancedDetailLoaded.value
+    if (accountAdvancedDetailLoaded.value) return true
+    if (accountAdvancedDetailLoading.value) {
+      const requestToken = formOpenRequestToken
+      while (accountAdvancedDetailLoading.value && isCurrentFormOpenRequest(requestToken)) {
+        await sleep(50)
+      }
+      return isCurrentFormOpenRequest(requestToken) && accountAdvancedDetailLoaded.value
+    }
     const requestToken = formOpenRequestToken
     const scopeParams = editingAccountScopeParams()
     accountAdvancedDetailLoading.value = true
     const sourceAccount = await loadAccountDetailForForm(editingId.value, scopeParams, '加载账户高级配置失败')
-    if (!isCurrentFormOpenRequest(requestToken)) return
+    if (!isCurrentFormOpenRequest(requestToken)) return false
     if (!sourceAccount) {
       accountAdvancedDetailLoading.value = false
-      return
+      return false
     }
     if (applyLoadedAccountDetailToEditForm(sourceAccount, scopeParams, '账户高级配置结构异常，请清理后再编辑', true)) {
       accountAdvancedDetailLoaded.value = true
     }
     accountAdvancedDetailLoading.value = false
+    return accountAdvancedDetailLoaded.value
   }
 
   function applyLoadedAccountDetailToEditForm(
@@ -697,6 +722,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     openClone,
     openCreate,
     openEdit,
+    ensureAccountEditDetailLoaded,
     loadAdvancedAccountDetail,
     providerName,
     providerModelOptions,
@@ -767,11 +793,26 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     return applyActivationTestToCreatePayload(payload, options.successfulDraftActivationTest?.value, form.name.trim())
   }
 
+  function accountUpdateActivationTestTaskId(payload: AccountSavePayload): string | undefined {
+    return updateActivationTestTaskIdForPayload(payload, options.successfulSavedDraftUpdateTest?.value, form.name.trim())
+  }
+
+  function isApiKeyRuntimeChanged(): boolean {
+    return accountFormApiKeyRuntimeChanged(form, editingAccountDetail.value)
+  }
+
   function clearSuccessfulDraftActivationTest(): void {
     if (options.successfulDraftActivationTest) {
       options.successfulDraftActivationTest.value = undefined
     }
+    clearSuccessfulSavedDraftUpdateTest()
     clearDraftApiKeyTestSnapshot()
+  }
+
+  function clearSuccessfulSavedDraftUpdateTest(): void {
+    if (options.successfulSavedDraftUpdateTest) {
+      options.successfulSavedDraftUpdateTest.value = undefined
+    }
   }
 
   function clearDraftApiKeyTestSnapshot(): void {
@@ -799,4 +840,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       return undefined
     }
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms))
 }

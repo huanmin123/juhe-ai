@@ -3,6 +3,7 @@ import { hostname } from 'node:os'
 import { runtimeConfig } from '../config/runtime.js'
 import { errorLogFields, logger } from './logger.js'
 import { createDedicatedRedisClient, getRedisClient, type RedisCommandClient } from './redis-client.js'
+import { redisNamespacedGroup, redisNamespacedKey } from './redis-namespace.js'
 
 export interface RedisStreamQueueOptions<T> {
   streamKey: string
@@ -53,9 +54,11 @@ export class RedisStreamQueue<T> {
   private groupReadyPromise: Promise<void> | undefined
 
   constructor(options: RedisStreamQueueOptions<T>) {
-    this.streamKey = options.streamKey
-    this.groupName = options.groupName
-    this.consumerName = options.consumerName ?? defaultRedisStreamConsumerName(options.groupName)
+    this.streamKey = redisNamespacedKey(options.streamKey)
+    this.groupName = redisNamespacedGroup(options.groupName)
+    this.consumerName = options.consumerName
+      ? redisNamespacedGroup(options.consumerName)
+      : defaultRedisStreamConsumerName(this.groupName)
     this.readCount = options.readCount ?? runtimeConfig.queue.redisStreamReadCount
     this.blockMs = options.blockMs ?? runtimeConfig.queue.redisStreamBlockMs
     this.claimIdleMs = options.claimIdleMs ?? runtimeConfig.queue.redisStreamClaimIdleMs

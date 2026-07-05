@@ -60,10 +60,10 @@ const hybridRoutingConfigSchema = z.object({
 }).strict()
 
 const speedFirstConfigSchema = z.object({
-  firstByteThresholdMs: z.number({ invalid_type_error: '首字等待阈值必须是数字' })
-    .int('首字等待阈值必须是整数')
-    .min(10000, '首字等待阈值不能低于 10000 毫秒')
-    .max(60000, '首字等待阈值不能高于 60000 毫秒')
+  firstByteThresholdMs: z.number({ invalid_type_error: '首字观察阈值必须是数字' })
+    .int('首字观察阈值必须是整数')
+    .min(10000, '首字观察阈值不能低于 10000 毫秒')
+    .max(60000, '首字观察阈值不能高于 60000 毫秒')
     .optional(),
   slowTriggerCount: z.number({ invalid_type_error: '慢速触发次数必须是数字' })
     .int('慢速触发次数必须是整数')
@@ -90,7 +90,6 @@ const speedFirstConfigSchema = z.object({
     .min(60, '降级保留时间不能低于 60 秒')
     .max(3600, '降级保留时间不能高于 3600 秒')
     .optional(),
-  retryOnFirstByteTimeout: z.boolean({ invalid_type_error: '当前请求切号开关必须是布尔值' }).optional(),
   maxFirstByteRetriesPerRequest: z.number({ invalid_type_error: '单请求切号次数必须是数字' })
     .int('单请求切号次数必须是整数')
     .min(1, '单请求切号次数不能低于 1 次')

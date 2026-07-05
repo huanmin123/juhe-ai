@@ -37,7 +37,7 @@ try {
     yieldToEventLoop: async () => {}
   })
   assert.equal(refreshed.skipped, false, '首次 PG 热用量窗口刷新不应跳过')
-  assert.deepEqual(refreshed.stages.map((stage) => stage.name), ['usage_overview_windows', 'usage_scope_range_windows'], 'PG 热刷新只应执行概览窗口和范围窗口')
+  assert.deepEqual(refreshed.stages.map((stage) => stage.name), ['usage_overview_windows'], 'PG 热刷新只应执行轻量概览窗口，范围窗口交给独立低频任务')
 
   const overviewRow = await client.one<{ request_count: string | number }>(`
     SELECT request_count
@@ -48,23 +48,6 @@ try {
   `, [systemAccountId, today, today])
   assert.equal(Number(overviewRow?.request_count), 7, 'PG 热刷新应发布今日概览 summary 窗口')
 
-  const scopeWindowRow = await client.one<{
-    request_count: string | number
-    active_days: string | number
-    total_cost_usd: string | number
-  }>(`
-    SELECT request_count, active_days, total_cost_usd
-    FROM juhe_stats.usage_scope_range_windows
-    WHERE system_account_id = ?
-      AND scope_type = 'account'
-      AND scope_id = ?
-      AND start_date = ?
-      AND end_date = ?
-  `, [systemAccountId, accountId, today, today])
-  assert.equal(Number(scopeWindowRow?.request_count), 11, 'PG 热刷新应发布今日账号范围窗口')
-  assert.equal(Number(scopeWindowRow?.active_days), 1, 'PG 今日账号范围窗口 active_days 应来自 daily')
-  assert.equal(Number(scopeWindowRow?.total_cost_usd), 0.321, 'PG 今日账号范围窗口成本应来自 daily')
-
   const previousWindow = await client.one<{ request_count: string | number }>(`
     SELECT request_count
     FROM juhe_stats.usage_scope_range_windows
@@ -74,7 +57,7 @@ try {
       AND start_date = ?
       AND end_date = ?
   `, [systemAccountId, accountId, previousEndDate, previousEndDate])
-  assert.equal(Number(previousWindow?.request_count), 99, 'PG 热刷新不应删除非今日 end_date 的范围窗口')
+  assert.equal(Number(previousWindow?.request_count), 99, 'PG 热刷新不应删除范围窗口')
 
   const skipped = await refreshHotUsageWindowSnapshots({
     skipIfUnchanged: true,
@@ -85,9 +68,7 @@ try {
 
   console.log(JSON.stringify({
     message: '热用量窗口 PG smoke 通过',
-    requestCount: Number(scopeWindowRow?.request_count),
-    activeDays: Number(scopeWindowRow?.active_days),
-    totalCost: Number(scopeWindowRow?.total_cost_usd),
+    overviewRequestCount: Number(overviewRow?.request_count),
     skipped: skipped.skipped === true
   }))
 } finally {

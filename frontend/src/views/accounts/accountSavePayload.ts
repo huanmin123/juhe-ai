@@ -45,7 +45,9 @@ export type AccountSavePayload = {
   notes: string
 }
 
-export type AccountUpdatePayload = Omit<AccountSavePayload, 'providerCode' | 'providerProtocolProfileId' | 'type'>
+export type AccountUpdatePayload = Omit<AccountSavePayload, 'providerCode' | 'providerProtocolProfileId' | 'type'> & {
+  activationTestTaskId?: string
+}
 
 export type AccountOAuthCreateCommonPayload = {
   providerProtocolProfileId?: string

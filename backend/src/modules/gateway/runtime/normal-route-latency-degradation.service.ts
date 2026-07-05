@@ -64,11 +64,14 @@ interface NormalRouteLatencyState {
 
 const latencyStateStore = createRuntimeStateStore('gateway-normal-route-latency-degradation')
 const latencyStateVersion = 'v1'
-const latencyStateIndexKey = `${latencyStateVersion}:probe-index`
-const latencyStateIndexLockKey = `${latencyStateVersion}:probe-index-lock`
+const latencyStateAllIndexKey = `${latencyStateVersion}:all-index`
+const latencyStateProbeIndexKey = `${latencyStateVersion}:probe-index`
+const latencyStateAllIndexLockKey = `${latencyStateVersion}:all-index-lock`
+const latencyStateProbeIndexLockKey = `${latencyStateVersion}:probe-index-lock`
 const latencyStateIndexMaxKeys = 10_000
 const latencyStateIndexTtlMs = 24 * 60 * 60 * 1000
 const latencyStateIndexLockTtlMs = 2000
+const latencyStateMutationLockTtlMs = 2000
 
 export async function orderGatewayAccountsByNormalRouteLatencyDegradationAsync<T extends SuppressibleGatewayAccount>(
   accounts: T[],
@@ -137,17 +140,31 @@ export async function recordNormalRouteFirstByteSlowAsync(
   reason = '普通路由速度优先首字等待超时'
 ): Promise<NormalRouteLatencySlowResult | undefined> {
   if (!scope || !config) return undefined
-  const now = Date.now()
   const key = accountLatencyStateKey(scope, account)
+  return withLatencyStateMutationLock(key, () => recordNormalRouteFirstByteSlowLockedAsync(account, scope, config, reason, key))
+}
+
+async function recordNormalRouteFirstByteSlowLockedAsync(
+  account: SuppressibleGatewayAccount,
+  scope: NormalRouteLatencyDegradationScope,
+  config: RouteStrategySpeedFirstConfig,
+  reason: string,
+  key: string
+): Promise<NormalRouteLatencySlowResult> {
+  const now = Date.now()
   const current = await loadLatencyState(key)
   const slowWindowMs = Math.max(60, config.slowWindowSeconds) * 1000
   const withinWindow = current && now - current.firstSlowAtMs <= slowWindowMs
   const slowCount = withinWindow ? current.slowCount + 1 : 1
-  const degraded = slowCount >= config.slowTriggerCount
-  const degradedUntilMs = degraded
+  const currentStillDegraded = Boolean(current?.degradedUntilMs && current.degradedUntilMs > now)
+  const triggeredDegraded = slowCount >= config.slowTriggerCount
+  const degraded = triggeredDegraded || currentStillDegraded
+  const degradedUntilMs = triggeredDegraded
     ? Math.max(current?.degradedUntilMs ?? 0, now + Math.max(60, config.degradedTtlSeconds) * 1000)
     : current?.degradedUntilMs
-  const nextProbeAtMs = degraded ? now + nextProbeDelayMs(config, key) : current?.nextProbeAtMs
+  const nextProbeAtMs = triggeredDegraded
+    ? now + nextProbeDelayMs(config, key)
+    : current?.nextProbeAtMs
   const runtimeKey = gatewayAccountRuntimeKey(account)
   const state: NormalRouteLatencyState = {
     accountId: account.id,
@@ -164,8 +181,9 @@ export async function recordNormalRouteFirstByteSlowAsync(
     reason
   }
   await latencyStateStore.setJson(key, state, latencyStateTtlMs(config, degraded))
+  await addLatencyStateAllIndexKey(key)
   if (degraded) {
-    await addLatencyStateIndexKey(key)
+    await addLatencyStateProbeIndexKey(key)
   }
   return {
     accountId: account.id,
@@ -185,6 +203,14 @@ export async function recordNormalRouteFirstByteSuccessAsync(
 ): Promise<NormalRouteLatencySuccessResult | undefined> {
   if (!scope || !config || firstByteMs === undefined || firstByteMs > config.firstByteThresholdMs) return undefined
   const key = accountLatencyStateKey(scope, account)
+  return withLatencyStateMutationLock(key, async () => recordNormalRouteFirstByteSuccessLockedAsync(account, config, key))
+}
+
+async function recordNormalRouteFirstByteSuccessLockedAsync(
+  account: SuppressibleGatewayAccount,
+  config: RouteStrategySpeedFirstConfig,
+  key: string
+): Promise<NormalRouteLatencySuccessResult | undefined> {
   const current = await loadLatencyState(key)
   if (!current) return undefined
   const now = Date.now()
@@ -222,19 +248,35 @@ export async function recordNormalRouteFirstByteSuccessAsync(
   }
 }
 
+export async function isNormalRouteAccountLatencyDegradedAsync(
+  account: SuppressibleGatewayAccount,
+  scope: NormalRouteLatencyDegradationScope | undefined
+): Promise<boolean> {
+  if (!scope) return false
+  const current = await loadLatencyState(accountLatencyStateKey(scope, account))
+  return Boolean(current?.degradedUntilMs && current.degradedUntilMs > Date.now())
+}
+
 export async function listNormalRouteLatencyProbeCandidatesAsync(
   limit = 20,
   now = Date.now()
 ): Promise<NormalRouteLatencyProbeCandidate[]> {
   const normalizedLimit = normalizePositiveInteger(limit, 20, 1, 100)
-  const keys = await loadLatencyStateIndexKeys()
+  const keys = await loadLatencyStateIndexKeys(latencyStateProbeIndexKey)
   if (keys.length === 0) return []
 
   const staleKeys: string[] = []
   const candidates: Array<NormalRouteLatencyProbeCandidate & { nextProbeAtMs: number }> = []
   for (const key of keys) {
     const state = await loadLatencyState(key)
-    if (!state || !state.degradedUntilMs || state.degradedUntilMs <= now) {
+    if (!state) {
+      staleKeys.push(key)
+      continue
+    }
+    if (!state.degradedUntilMs) {
+      continue
+    }
+    if (state.degradedUntilMs <= now) {
       staleKeys.push(key)
       continue
     }
@@ -261,6 +303,13 @@ export async function recordNormalRouteProbeFailureAsync(
   candidate: NormalRouteLatencyProbeCandidate,
   reason = '普通路由速度优先恢复探针未达标'
 ): Promise<NormalRouteLatencySlowResult | undefined> {
+  return withLatencyStateMutationLock(candidate.stateKey, () => recordNormalRouteProbeFailureLockedAsync(candidate, reason))
+}
+
+async function recordNormalRouteProbeFailureLockedAsync(
+  candidate: NormalRouteLatencyProbeCandidate,
+  reason: string
+): Promise<NormalRouteLatencySlowResult | undefined> {
   const current = await loadLatencyState(candidate.stateKey)
   const now = Date.now()
   if (!current || !current.degradedUntilMs || current.degradedUntilMs <= now) {
@@ -282,7 +331,8 @@ export async function recordNormalRouteProbeFailureAsync(
     nextProbeAtMs,
     reason
   }, latencyStateTtlMs(config, true))
-  await addLatencyStateIndexKey(candidate.stateKey)
+  await addLatencyStateAllIndexKey(candidate.stateKey)
+  await addLatencyStateProbeIndexKey(candidate.stateKey)
   return {
     accountId: current.accountId,
     slowCount,
@@ -301,7 +351,7 @@ export async function discardNormalRouteLatencyProbeCandidateAsync(candidate: No
 export async function clearNormalRouteLatencyDegradationForRouteStrategyAsync(routeStrategyId: string): Promise<number> {
   const normalizedRouteStrategyId = routeStrategyId.trim()
   if (!normalizedRouteStrategyId) return 0
-  const keys = await loadLatencyStateIndexKeys()
+  const keys = await loadLatencyStateIndexKeys(latencyStateAllIndexKey)
   if (keys.length === 0) return 0
   const keysToClear: string[] = []
   for (const key of keys) {
@@ -324,7 +374,7 @@ export async function clearNormalRouteLatencyDegradationForAccountBindingAsync(i
   const accountId = input.accountId.trim()
   const groupIds = new Set(input.groupIds.map((groupId) => groupId?.trim()).filter((groupId): groupId is string => Boolean(groupId)))
   if (!systemAccountId || !accountId || groupIds.size === 0) return 0
-  const keys = await loadLatencyStateIndexKeys()
+  const keys = await loadLatencyStateIndexKeys(latencyStateAllIndexKey)
   if (keys.length === 0) return 0
   const keysToClear: string[] = []
   for (const key of keys) {
@@ -416,13 +466,21 @@ function stableProbeJitterRatio(key: string): number {
   return ((hash % 21) - 10) / 100
 }
 
-async function loadLatencyStateIndexKeys(): Promise<string[]> {
-  const index = await latencyStateStore.getJson<{ keys?: unknown }>(latencyStateIndexKey)
+async function loadLatencyStateIndexKeys(indexKey: string): Promise<string[]> {
+  const index = await latencyStateStore.getJson<{ keys?: unknown }>(indexKey)
   return normalizeLatencyStateIndexKeys(index?.keys)
 }
 
-async function addLatencyStateIndexKey(key: string): Promise<void> {
-  await mutateLatencyStateIndexKeys((keys) => {
+async function addLatencyStateAllIndexKey(key: string): Promise<void> {
+  await addLatencyStateIndexKey(latencyStateAllIndexKey, latencyStateAllIndexLockKey, key)
+}
+
+async function addLatencyStateProbeIndexKey(key: string): Promise<void> {
+  await addLatencyStateIndexKey(latencyStateProbeIndexKey, latencyStateProbeIndexLockKey, key)
+}
+
+async function addLatencyStateIndexKey(indexKey: string, lockKey: string, key: string): Promise<void> {
+  await mutateLatencyStateIndexKeys(indexKey, lockKey, (keys) => {
     if (keys.includes(key)) return keys
     return [...keys, key].slice(-latencyStateIndexMaxKeys)
   })
@@ -431,29 +489,51 @@ async function addLatencyStateIndexKey(key: string): Promise<void> {
 async function removeLatencyStateIndexKeys(keysToRemove: string[]): Promise<void> {
   if (keysToRemove.length === 0) return
   const removeSet = new Set(keysToRemove)
-  await mutateLatencyStateIndexKeys((keys) => keys.filter((key) => !removeSet.has(key)))
+  await Promise.all([
+    mutateLatencyStateIndexKeys(latencyStateAllIndexKey, latencyStateAllIndexLockKey, (keys) => keys.filter((key) => !removeSet.has(key))),
+    mutateLatencyStateIndexKeys(latencyStateProbeIndexKey, latencyStateProbeIndexLockKey, (keys) => keys.filter((key) => !removeSet.has(key)))
+  ])
 }
 
-async function mutateLatencyStateIndexKeys(mutator: (keys: string[]) => string[]): Promise<void> {
+async function mutateLatencyStateIndexKeys(indexKey: string, lockKey: string, mutator: (keys: string[]) => string[]): Promise<void> {
   const token = randomUUID()
-  const locked = await acquireLatencyStateIndexLock(token)
+  const locked = await acquireLatencyStateIndexLock(lockKey, token)
+  if (!locked) {
+    return
+  }
   try {
-    const current = await loadLatencyStateIndexKeys()
+    const current = await loadLatencyStateIndexKeys(indexKey)
     const next = normalizeLatencyStateIndexKeys(mutator(current))
-    await latencyStateStore.setJson(latencyStateIndexKey, { keys: next }, latencyStateIndexTtlMs)
+    await latencyStateStore.setJson(indexKey, { keys: next }, latencyStateIndexTtlMs)
   } finally {
-    if (locked) {
-      await latencyStateStore.releaseLock(latencyStateIndexLockKey, token)
-    }
+    await latencyStateStore.releaseLock(lockKey, token)
   }
 }
 
-async function acquireLatencyStateIndexLock(token: string): Promise<boolean> {
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    if (await latencyStateStore.acquireLock(latencyStateIndexLockKey, { ttlMs: latencyStateIndexLockTtlMs, token })) {
+async function withLatencyStateMutationLock<T>(key: string, operation: () => Promise<T>): Promise<T> {
+  const lockKey = `${latencyStateVersion}:mutation-lock:${key}`
+  const token = randomUUID()
+  const locked = await acquireLatencyStateLock(lockKey, token)
+  if (!locked) {
+    return undefined as T
+  }
+  try {
+    return await operation()
+  } finally {
+    await latencyStateStore.releaseLock(lockKey, token)
+  }
+}
+
+async function acquireLatencyStateIndexLock(lockKey: string, token: string): Promise<boolean> {
+  return acquireLatencyStateLock(lockKey, token, latencyStateIndexLockTtlMs)
+}
+
+async function acquireLatencyStateLock(lockKey: string, token: string, ttlMs = latencyStateMutationLockTtlMs): Promise<boolean> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (await latencyStateStore.acquireLock(lockKey, { ttlMs, token })) {
       return true
     }
-    await delay(20 + attempt * 10)
+    await delay(Math.min(100, 20 + attempt * 5))
   }
   return false
 }
@@ -498,7 +578,6 @@ function isRouteStrategySpeedFirstConfig(value: unknown): value is RouteStrategy
     && isFinitePositiveInteger(record.recoverySuccessCount)
     && isFinitePositiveInteger(record.probeIntervalSeconds)
     && isFinitePositiveInteger(record.degradedTtlSeconds)
-    && typeof record.retryOnFirstByteTimeout === 'boolean'
     && isFinitePositiveInteger(record.maxFirstByteRetriesPerRequest)
 }
 

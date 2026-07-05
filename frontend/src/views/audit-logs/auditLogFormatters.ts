@@ -8,6 +8,7 @@ export function outcomeText(value: AuditOutcome): string {
   return {
     success: '成功',
     success_after_retry: '重试后成功',
+    gateway_succeeded: '网关成功',
     gateway_failed: '网关失败',
     upstream_failed: '上游失败',
     stream_failed: '流式失败',
@@ -16,7 +17,7 @@ export function outcomeText(value: AuditOutcome): string {
 }
 
 export function outcomeColor(value: AuditOutcome): string {
-  if (value === 'success') return 'green'
+  if (value === 'success' || value === 'gateway_succeeded') return 'green'
   if (value === 'success_after_retry') return 'blue'
   if (value === 'client_aborted') return 'orange'
   return 'red'

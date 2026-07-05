@@ -9,7 +9,7 @@ import {
 import { runtimeConfig } from '../config/runtime.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
-import { chunkValues, normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
+import { chunkValues, normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows, textPrefixUpperBound } from './query-utils.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import { optionalString, optionalServerDateTimeIso } from './value-utils.js'
 
@@ -432,12 +432,37 @@ export function cleanupPublicApiLogsBefore(cutoffCreatedAt: string, limit = 1000
   return Number(result.changes ?? 0)
 }
 
+export async function cleanupPublicApiLogsBeforeAsync(cutoffCreatedAt: string, limit = 1000): Promise<number> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return cleanupPublicApiLogsBefore(cutoffCreatedAt, limit)
+  }
+  const batchLimit = Math.max(1, Math.trunc(limit))
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const rows = await client.query<PublicApiLogRow>(`
+    SELECT id
+    FROM juhe_dataset.public_api_logs
+    WHERE created_at < ?
+    ORDER BY created_at ASC, id ASC
+    LIMIT ?
+  `, [cutoffCreatedAt, batchLimit])
+  const ids = rows.map((row) => String(row.id ?? '')).filter(Boolean)
+  if (ids.length === 0) return 0
+
+  let deleted = 0
+  await client.transaction(async (tx) => {
+    for (const chunk of chunkValues(ids, 10000)) {
+      deleted += Number((await tx.execute('DELETE FROM juhe_dataset.public_api_logs WHERE id = ANY(?::text[])', [chunk])).changes ?? 0)
+    }
+  })
+  return deleted
+}
+
 function buildPublicApiLogFilters(options: PublicApiLogListOptions): { clauses: string[]; params: PublicApiLogFilterValue[] } {
   const clauses: string[] = []
   const params: PublicApiLogFilterValue[] = []
   pushPrefixFilter(clauses, params, 'pal.trace_id', options.traceId)
   pushExactFilter(clauses, params, 'pal.source_ref_id', options.sourceRefId)
-  pushExactFilter(clauses, params, 'pal.path', options.path)
+  pushPathExactFilter(clauses, params, 'pal.path', options.path)
   pushPrefixFilter(clauses, params, 'pal.client_ip', options.clientIp)
   if (options.result === 'success') {
     clauses.push('pal.success = 1')
@@ -544,11 +569,19 @@ function pushExactFilter(clauses: string[], params: PublicApiLogFilterValue[], c
   params.push(text)
 }
 
+function pushPathExactFilter(clauses: string[], params: PublicApiLogFilterValue[], column: string, value?: string): void {
+  const text = normalizePathFilter(value)
+  if (!text) return
+  clauses.push(`${column} = ?`)
+  params.push(text)
+}
+
 function pushPrefixFilter(clauses: string[], params: PublicApiLogFilterValue[], column: string, value?: string): void {
   const text = value?.trim()
   if (!text) return
-  clauses.push(`${column} >= ? AND ${column} < ?`)
-  params.push(text, prefixUpperBound(text))
+  const columnExpression = runtimeConfig.databaseDriver === 'postgres' ? `${column} COLLATE "C"` : column
+  clauses.push(`${columnExpression} >= ? AND ${columnExpression} < ?`)
+  params.push(text, textPrefixUpperBound(text))
 }
 
 function normalizeCaptureStatus(value: unknown): PublicApiLogCaptureStatus {
@@ -589,6 +622,14 @@ function isHttpStatusCode(value: unknown): value is number {
   return Number.isInteger(value) && Number(value) >= 100 && Number(value) <= 599
 }
 
+function normalizePathFilter(value?: string): string | undefined {
+  const text = value?.trim()
+  if (!text || text === 'all') return undefined
+  const withoutMethod = text.replace(/^(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+/i, '')
+  const path = withoutMethod.split('?')[0]?.trim()
+  return path || undefined
+}
+
 function integerOrNull(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : null
 }
@@ -610,13 +651,3 @@ function multiRowPlaceholders(rowCount: number, columnCount: number): string {
   return Array.from({ length: rowCount }, () => row).join(', ')
 }
 
-function prefixUpperBound(value: string): string {
-  const chars = [...value]
-  for (let index = chars.length - 1; index >= 0; index -= 1) {
-    const codePoint = chars[index]?.codePointAt(0)
-    if (codePoint !== undefined && codePoint < 0x10ffff) {
-      return `${chars.slice(0, index).join('')}${String.fromCodePoint(codePoint + 1)}`
-    }
-  }
-  return `${value}\uffff`
-}

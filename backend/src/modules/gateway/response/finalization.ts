@@ -61,6 +61,7 @@ import {
   type GatewayUpstreamResponse
 } from '../upstream/request.js'
 import { isGatewayFirstByteTimeoutError } from '../upstream/first-byte-timeout.js'
+import type { FirstByteDeadlineHandler } from '../upstream/first-byte-deadline.js'
 import {
   buildUsageResponseSnapshot,
   type UsageRequestSnapshot
@@ -133,6 +134,8 @@ interface HandleUpstreamResponseInput {
   startedAt: number
   signal: AbortSignal
   firstByteTimeoutMs?: number
+  firstByteDeadlineMs?: number
+  onFirstByteDeadline?: FirstByteDeadlineHandler
   sessionAffinityKey?: string
   clientStrategy?: OpenAIGatewayClientStrategyContext
   responseInspectionPolicies?: ResponseInspectionPolicySummary[]
@@ -242,7 +245,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
   ): boolean => {
     if (accountStateMutationEnabled === false) return false
     return !(
-      input.firstByteTimeoutMs !== undefined
+      (input.firstByteTimeoutMs !== undefined || input.firstByteDeadlineMs !== undefined)
       && errorCode === 'first_byte_timeout'
       && context.downstreamBytesWritten === 0
       && !context.outputReceived
@@ -262,6 +265,8 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
         onFirstOutput: markFirstOutput,
         captureSuccessPayloads: auditCapture.shouldCaptureSuccessPayloads(),
         firstByteTimeoutMs: input.firstByteTimeoutMs,
+        firstByteDeadlineMs: input.firstByteDeadlineMs,
+        onFirstByteDeadline: input.onFirstByteDeadline,
         responseInspectionPolicies: resolveRuntimeResponseInspectionPolicies({
           account,
           managementPolicies: input.responseInspectionPolicies
@@ -350,6 +355,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     errorMessage: streamResult.completed ? undefined : streamResult.message
   })
   if (!streamResult.completed) {
+    const speedFirstFirstByteCutover = input.firstByteDeadlineMs !== undefined && isFirstByteTimeoutStreamResult(streamResult)
     const requestSnapshot = usageRequestSnapshotWithBodyOmission(usageContext.requestSnapshot, streamResult.bodyOmission)
     forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
     await recordCompletedUpstreamAttempt(req, {
@@ -373,20 +379,22 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       }),
       errorMessage: streamResult.message
     })
-    rememberClientIpAccountPendingFailure(clientIpAccountAvoidanceTracker, account, {
-      statusCode: upstreamResponse.status,
-      errorCode: streamResult.responseInspection?.upstreamErrorCode ?? streamResult.errorCode,
-      errorPhase: 'stream',
-      errorMessage: streamResult.message,
-      endpoint: usageContext.endpoint
-    })
-    if (input.firstByteTimeoutMs !== undefined && isFirstByteTimeoutStreamResult(streamResult)) {
+    if (!speedFirstFirstByteCutover) {
+      rememberClientIpAccountPendingFailure(clientIpAccountAvoidanceTracker, account, {
+        statusCode: upstreamResponse.status,
+        errorCode: streamResult.responseInspection?.upstreamErrorCode ?? streamResult.errorCode,
+        errorPhase: 'stream',
+        errorMessage: streamResult.message,
+        endpoint: usageContext.endpoint
+      })
+    }
+    if (speedFirstFirstByteCutover) {
       auditCapture.addGatewayMetadata({
-        label: 'normal_route_speed_first_first_byte_timeout',
+        label: 'normal_route_speed_first_confirmed_cutover',
         metadata: {
           accountId: account.id,
           accountName: account.name,
-          timeoutMs: input.firstByteTimeoutMs,
+          timeoutMs: input.firstByteDeadlineMs,
           message: streamResult.message
         }
       })
@@ -698,7 +706,9 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
           inspectBytes: nonStreamResponseInspectionMaxBytes,
           captureBody: auditCapture.shouldCaptureSuccessPayloads(),
           signal,
-          firstByteTimeoutMs: input.firstByteTimeoutMs ?? upstreamRequestTimeoutMs(req, input.settings, account),
+          firstByteTimeoutMs: upstreamRequestTimeoutMs(req, input.settings, account),
+          firstByteDeadlineMs: input.firstByteDeadlineMs,
+          onFirstByteDeadline: input.onFirstByteDeadline,
           prepareDownstream: () => prepareUpstreamResponseForDownstream(res, upstreamResponse, false),
           onFirstByte: () => {
             firstTokenMs = Date.now() - startedAt
@@ -778,7 +788,9 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
           startedAt,
           captureBody: auditCapture.shouldCaptureSuccessPayloads(),
           signal,
-          firstByteTimeoutMs: input.firstByteTimeoutMs ?? upstreamRequestTimeoutMs(req, input.settings, account),
+          firstByteTimeoutMs: upstreamRequestTimeoutMs(req, input.settings, account),
+          firstByteDeadlineMs: input.firstByteDeadlineMs,
+          onFirstByteDeadline: input.onFirstByteDeadline,
           prepareDownstream: () => prepareUpstreamResponseForDownstream(res, upstreamResponse, false),
           onFirstByte: () => {
             firstTokenMs = Date.now() - startedAt
@@ -822,7 +834,15 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
       res.send(readResult.body)
     }
   } catch (error) {
-    if (input.firstByteTimeoutMs !== undefined && isGatewayFirstByteTimeoutError(error) && !res.headersSent && !res.writableEnded && !res.destroyed) {
+    if (
+      input.firstByteDeadlineMs !== undefined
+      && isGatewayFirstByteTimeoutError(error)
+      && error.source === 'speed_first_deadline'
+      && error.timeoutMs === input.firstByteDeadlineMs
+      && !res.headersSent
+      && !res.writableEnded
+      && !res.destroyed
+    ) {
       const errorMessage = error.message
       forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
       auditCapture.completeAttempt(auditAttemptId, {
@@ -852,11 +872,11 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         })
       })
       auditCapture.addGatewayMetadata({
-        label: 'normal_route_speed_first_first_byte_timeout',
+        label: 'normal_route_speed_first_confirmed_cutover',
         metadata: {
           accountId: account.id,
           accountName: account.name,
-          timeoutMs: input.firstByteTimeoutMs,
+          timeoutMs: input.firstByteDeadlineMs,
           message: errorMessage
         }
       })

@@ -4,10 +4,10 @@ import { getRequestLogger } from '../../../shared/request-context.js'
 import {
   isUpstreamRequestAbortedError,
   readStreamChunkWithAbort,
-  readStreamChunkWithTimeout,
   UpstreamRequestAbortedError
 } from './request.js'
 import { GatewayFirstByteTimeoutError } from './first-byte-timeout.js'
+import type { FirstByteDeadlineHandler } from './first-byte-deadline.js'
 
 export interface NonStreamPipeResult {
   firstByteMs?: number
@@ -41,6 +41,11 @@ export interface ResponseWriteResult {
   logLevel?: 'debug' | 'warn'
 }
 
+type NonStreamReadWithDeadlineResult = {
+  result: IteratorResult<Uint8Array>
+  firstByteDeadlineObserved: boolean
+}
+
 export class NonStreamUpstreamBodyPipeError extends Error {
   constructor(
     message: string,
@@ -70,6 +75,8 @@ export async function pipeNonStreamUpstreamResponse(
     signal?: AbortSignal
     onFirstByte?: () => void
     firstByteTimeoutMs?: number
+    firstByteDeadlineMs?: number
+    onFirstByteDeadline?: FirstByteDeadlineHandler
     prepareDownstream?: () => void
   }
 ): Promise<NonStreamPipeResult> {
@@ -78,6 +85,7 @@ export async function pipeNonStreamUpstreamResponse(
   const usageTailCapture = new RollingBufferCapture(input.usageTailBytes ?? nonStreamUsageTailCaptureBytes)
   let transferredBytes = 0
   let firstByteMs: number | undefined
+  let firstByteDeadlineObserved = false
   let downstreamPrepared = false
   let clientClosed = false
   const closeIterator = () => {
@@ -92,14 +100,17 @@ export async function pipeNonStreamUpstreamResponse(
         throw new UpstreamRequestAbortedError('请求已取消', true)
       }
 
-      const result = firstByteMs === undefined && input.firstByteTimeoutMs !== undefined
-        ? await readStreamChunkWithTimeout(
-          iterator,
-          Math.max(0.001, input.firstByteTimeoutMs / 1000),
-          () => new GatewayFirstByteTimeoutError(`上游非流式响应 ${Math.ceil((input.firstByteTimeoutMs ?? 0) / 1000)}s 后仍未返回首个字节`, input.firstByteTimeoutMs ?? 0),
-          input.signal
-        )
-        : await readStreamChunkWithAbort(iterator, input.signal)
+      const readResult: NonStreamReadWithDeadlineResult = firstByteMs === undefined
+        ? await readFirstNonStreamChunkWithDeadlines(iterator, input.startedAt, {
+          signal: input.signal,
+          firstByteTimeoutMs: input.firstByteTimeoutMs,
+          firstByteDeadlineMs: input.firstByteDeadlineMs,
+          firstByteDeadlineObserved,
+          onFirstByteDeadline: input.onFirstByteDeadline
+        })
+        : { result: await readStreamChunkWithAbort(iterator, input.signal), firstByteDeadlineObserved }
+      firstByteDeadlineObserved = readResult.firstByteDeadlineObserved
+      const result = readResult.result
       if (result.done) {
         break
       }
@@ -158,6 +169,8 @@ export async function pipeNonStreamUpstreamResponseForInspection(
     signal?: AbortSignal
     onFirstByte?: () => void
     firstByteTimeoutMs?: number
+    firstByteDeadlineMs?: number
+    onFirstByteDeadline?: FirstByteDeadlineHandler
     prepareDownstream?: () => void
   }
 ): Promise<InspectableNonStreamPipeResult> {
@@ -169,6 +182,7 @@ export async function pipeNonStreamUpstreamResponseForInspection(
   let inspectionBytes = 0
   let transferredBytes = 0
   let firstByteMs: number | undefined
+  let firstByteDeadlineObserved = false
   let downstreamPrepared = false
   let downstreamWriting = false
   let clientClosed = false
@@ -196,14 +210,17 @@ export async function pipeNonStreamUpstreamResponseForInspection(
         throw new UpstreamRequestAbortedError('请求已取消', true)
       }
 
-      const result = firstByteMs === undefined && input.firstByteTimeoutMs !== undefined
-        ? await readStreamChunkWithTimeout(
-          iterator,
-          Math.max(0.001, input.firstByteTimeoutMs / 1000),
-          () => new GatewayFirstByteTimeoutError(`上游非流式响应 ${Math.ceil((input.firstByteTimeoutMs ?? 0) / 1000)}s 后仍未返回首个字节`, input.firstByteTimeoutMs ?? 0),
-          input.signal
-        )
-        : await readStreamChunkWithAbort(iterator, input.signal)
+      const readResult: NonStreamReadWithDeadlineResult = firstByteMs === undefined
+        ? await readFirstNonStreamChunkWithDeadlines(iterator, input.startedAt, {
+          signal: input.signal,
+          firstByteTimeoutMs: input.firstByteTimeoutMs,
+          firstByteDeadlineMs: input.firstByteDeadlineMs,
+          firstByteDeadlineObserved,
+          onFirstByteDeadline: input.onFirstByteDeadline
+        })
+        : { result: await readStreamChunkWithAbort(iterator, input.signal), firstByteDeadlineObserved }
+      firstByteDeadlineObserved = readResult.firstByteDeadlineObserved
+      const result = readResult.result
       if (result.done) {
         break
       }
@@ -270,6 +287,137 @@ export async function pipeNonStreamUpstreamResponseForInspection(
     fullyBuffered: true,
     completeBody,
     completeBodyText: completeBody.toString('utf8')
+  }
+}
+
+async function readFirstNonStreamChunkWithDeadlines(
+  iterator: AsyncIterator<Uint8Array>,
+  startedAt: number,
+  input: {
+    signal?: AbortSignal
+    firstByteTimeoutMs?: number
+    firstByteDeadlineMs?: number
+    firstByteDeadlineObserved: boolean
+    onFirstByteDeadline?: FirstByteDeadlineHandler
+  }
+): Promise<{ result: IteratorResult<Uint8Array>; firstByteDeadlineObserved: boolean }> {
+  if (input.firstByteTimeoutMs === undefined && input.firstByteDeadlineMs === undefined) {
+    return {
+      result: await readStreamChunkWithAbort(iterator, input.signal),
+      firstByteDeadlineObserved: input.firstByteDeadlineObserved
+    }
+  }
+
+  const pendingRead = iterator.next()
+  const hardDeadlineAt = input.firstByteTimeoutMs === undefined
+    ? undefined
+    : Date.now() + input.firstByteTimeoutMs
+  const softDeadlineAt = input.firstByteDeadlineMs === undefined || input.firstByteDeadlineObserved
+    ? undefined
+    : startedAt + input.firstByteDeadlineMs
+  let firstByteDeadlineObserved = input.firstByteDeadlineObserved
+
+  while (true) {
+    const now = Date.now()
+    const softRemainingMs = softDeadlineAt === undefined || firstByteDeadlineObserved
+      ? undefined
+      : softDeadlineAt - now
+    if (softRemainingMs !== undefined && softRemainingMs <= 0) {
+      firstByteDeadlineObserved = true
+      const action = await input.onFirstByteDeadline?.({
+        elapsedMs: Date.now() - startedAt,
+        timeoutMs: input.firstByteDeadlineMs ?? 0,
+        transport: 'non_stream'
+      }) ?? 'abort'
+      if (action === 'abort') {
+        throw new GatewayFirstByteTimeoutError(`上游非流式响应 ${Math.ceil((input.firstByteDeadlineMs ?? 0) / 1000)}s 后仍未返回首个字节`, input.firstByteDeadlineMs ?? 0, 'speed_first_deadline')
+      }
+      continue
+    }
+
+    const hardRemainingMs = hardDeadlineAt === undefined ? undefined : hardDeadlineAt - now
+    if (hardRemainingMs !== undefined && hardRemainingMs <= 0) {
+      throw new GatewayFirstByteTimeoutError(`上游非流式响应 ${Math.ceil((input.firstByteTimeoutMs ?? 0) / 1000)}s 后仍未返回首个字节`, input.firstByteTimeoutMs ?? 0)
+    }
+
+    const race = await raceReadWithDeadlines(pendingRead, {
+      signal: input.signal,
+      softTimeoutMs: softRemainingMs,
+      hardTimeoutMs: hardRemainingMs
+    })
+    if (race.type === 'read') {
+      return { result: race.result, firstByteDeadlineObserved }
+    }
+    if (race.type === 'abort') {
+      throw new UpstreamRequestAbortedError('请求已取消', true)
+    }
+    if (race.type === 'hard_timeout') {
+      throw new GatewayFirstByteTimeoutError(`上游非流式响应 ${Math.ceil((input.firstByteTimeoutMs ?? 0) / 1000)}s 后仍未返回首个字节`, input.firstByteTimeoutMs ?? 0)
+    }
+
+    firstByteDeadlineObserved = true
+    const action = await input.onFirstByteDeadline?.({
+      elapsedMs: Date.now() - startedAt,
+      timeoutMs: input.firstByteDeadlineMs ?? 0,
+      transport: 'non_stream'
+    }) ?? 'abort'
+    if (action === 'abort') {
+      throw new GatewayFirstByteTimeoutError(`上游非流式响应 ${Math.ceil((input.firstByteDeadlineMs ?? 0) / 1000)}s 后仍未返回首个字节`, input.firstByteDeadlineMs ?? 0, 'speed_first_deadline')
+    }
+  }
+}
+
+async function raceReadWithDeadlines(
+  pendingRead: Promise<IteratorResult<Uint8Array>>,
+  input: {
+    signal?: AbortSignal
+    softTimeoutMs?: number
+    hardTimeoutMs?: number
+  }
+): Promise<
+  | { type: 'read'; result: IteratorResult<Uint8Array> }
+  | { type: 'soft_timeout' }
+  | { type: 'hard_timeout' }
+  | { type: 'abort' }
+> {
+  let softTimer: NodeJS.Timeout | undefined
+  let hardTimer: NodeJS.Timeout | undefined
+  let abortListener: (() => void) | undefined
+  try {
+    const races: Array<Promise<
+      | { type: 'read'; result: IteratorResult<Uint8Array> }
+      | { type: 'soft_timeout' }
+      | { type: 'hard_timeout' }
+      | { type: 'abort' }
+    >> = [pendingRead.then((result) => ({ type: 'read' as const, result }))]
+    const softTimeoutMs = input.softTimeoutMs
+    if (softTimeoutMs !== undefined) {
+      races.push(new Promise((resolve) => {
+        softTimer = setTimeout(() => resolve({ type: 'soft_timeout' as const }), Math.max(1, softTimeoutMs))
+      }))
+    }
+    const hardTimeoutMs = input.hardTimeoutMs
+    if (hardTimeoutMs !== undefined) {
+      races.push(new Promise((resolve) => {
+        hardTimer = setTimeout(() => resolve({ type: 'hard_timeout' as const }), Math.max(1, hardTimeoutMs))
+      }))
+    }
+    if (input.signal) {
+      if (input.signal.aborted) {
+        return { type: 'abort' }
+      }
+      races.push(new Promise((resolve) => {
+        abortListener = () => resolve({ type: 'abort' as const })
+        input.signal?.addEventListener('abort', abortListener, { once: true })
+      }))
+    }
+    return await Promise.race(races)
+  } finally {
+    if (softTimer) clearTimeout(softTimer)
+    if (hardTimer) clearTimeout(hardTimer)
+    if (input.signal && abortListener) {
+      input.signal.removeEventListener('abort', abortListener)
+    }
   }
 }
 

@@ -94,6 +94,8 @@ assert.match(redisStreamQueueSource, /readNewUnsafe[\s\S]*recreateGroupAfterNoGr
 assert.match(redisStreamQueueSource, /claimPendingUnsafe[\s\S]*recreateGroupAfterNoGroup[\s\S]*claimPendingUnsafe/, 'XAUTOCLAIM should retry once after recreating a missing group')
 assert.match(redisStreamQueueSource, /parseEntries[\s\S]*try[\s\S]*this\.decode\(payload\)[\s\S]*catch[\s\S]*ackPoisonMessage/, 'Redis Stream parser should skip and ack poison messages instead of throwing forever')
 assert.match(redisStreamQueueSource, /redis_stream_message_decode_failed[\s\S]*redis_stream_poison_message_ack_failed/, 'Redis Stream poison message path should log decode and ack failures')
+assert.match(redisStreamQueueSource, /this\.streamKey = redisNamespacedKey\(options\.streamKey\)/, 'Redis Stream queue should namespace stream keys')
+assert.match(redisStreamQueueSource, /this\.groupName = redisNamespacedGroup\(options\.groupName\)/, 'Redis Stream queue should namespace consumer groups')
 assert.match(redisStreamQueueSource, /const redisInspectPendingMessagesScript = `[\s\S]*XPENDING[\s\S]*XRANGE/, 'Redis Stream backlog inspection should fetch pending ids and payloads in one Lua call')
 assert.match(redisStreamQueueSource, /async inspectBacklog\(limit = 256\)[\s\S]*pendingTruncated[\s\S]*undeliveredTruncated/, 'Redis Stream backlog inspection should expose truncation flags for stats safety windows')
 assert.match(redisStreamQueueSource, /const command = \['XADD', this\.streamKey, '\*', 'payload', this\.encode\(payload\)\]/, 'Redis Stream enqueue should build XADD command explicitly')
@@ -210,10 +212,10 @@ assert.match(gatewayLoadSource, /backlogCount: usageRecords\.backlogCount \+ aud
 assert.match(gatewayLoadSource, /redisStreamsDelta\(input\.redisBefore,\s*input\.redisAfter\)/, 'gateway load test should compare Redis Stream backlog against the pre-test baseline')
 assert.match(gatewayLoadSource, /redisDelta\.positiveBacklogDelta > input\.input\.maxAllowedRedisPending/, 'gateway load test should fail only on new Redis Stream backlog produced by the current run')
 assert.doesNotMatch(gatewayLoadSource, /input\.redisAfter\.backlogCount > input\.input\.maxAllowedRedisPending/, 'gateway load test should not fail on historical Redis Stream backlog alone')
-assert.match(gatewayLoadSource, /operationLogRedisStreamKey = 'juhe-ai:queue:operation-logs'/, 'gateway load test should sample operation log Redis Stream')
-assert.match(gatewayLoadSource, /publicApiLogRedisStreamKey = 'juhe-ai:queue:public-api-logs'/, 'gateway load test should sample public API log Redis Stream')
-assert.match(gatewayLoadSource, /recordMaintenanceRedisStreamKey = 'juhe-ai:queue:record-maintenance'/, 'gateway load test should sample record maintenance Redis Stream')
-assert.match(gatewayLoadSource, /runtimeLogRedisStreamKey = 'juhe-ai:queue:runtime-log-index'/, 'gateway load test should sample runtime log Redis Stream')
+assert.match(gatewayLoadSource, /operationLogRedisStreamKey = redisNamespacedKey\('juhe-ai:queue:operation-logs'\)/, 'gateway load test should sample operation log Redis Stream')
+assert.match(gatewayLoadSource, /publicApiLogRedisStreamKey = redisNamespacedKey\('juhe-ai:queue:public-api-logs'\)/, 'gateway load test should sample public API log Redis Stream')
+assert.match(gatewayLoadSource, /recordMaintenanceRedisStreamKey = redisNamespacedKey\('juhe-ai:queue:record-maintenance'\)/, 'gateway load test should sample record maintenance Redis Stream')
+assert.match(gatewayLoadSource, /runtimeLogRedisStreamKey = redisNamespacedKey\('juhe-ai:queue:runtime-log-index'\)/, 'gateway load test should sample runtime log Redis Stream')
 
 console.log('redis-stream-queue-regression passed')
 

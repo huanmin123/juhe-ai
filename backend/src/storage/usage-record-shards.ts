@@ -167,7 +167,8 @@ function getUsageRecordShardDatabaseSyncConstructor(): typeof import('node:sqlit
 }
 
 export function currentProcessOwnsUsageShardWriter(): boolean {
-  return runtimeConfig.processRole === 'worker' && runtimeConfig.workerRole === 'ingest-worker'
+  return runtimeConfig.processRole === 'worker'
+    && (runtimeConfig.workerRole === 'ingest-worker' || runtimeConfig.workerRole === 'temporary-maintenance-worker')
 }
 
 export function closeUsageRecordShardDatabases(): void {

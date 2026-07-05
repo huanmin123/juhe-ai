@@ -136,6 +136,7 @@ assert.match(accountConcurrencySource, /runtimeConfig\.runtimeStateDriver === 'm
 assert.match(accountConcurrencySource, /acquireRedisAccountConcurrency\(accountId, limit, lane, laneLimit, redisToken\)/, '账号并发在 Redis runtime state driver 下必须使用 Redis 原子占用')
 assert.match(accountConcurrencySource, /redisStateClient\(\)/, '账号并发读取在 Redis runtime state driver 下必须读取 Redis state')
 assert.match(accountConcurrencySource, /account-concurrency-v2/, 'Redis 账号并发必须使用带槽位租约的 v2 key，避免旧数字计数脏占用')
+assert.match(accountConcurrencySource, /redisNamespacedKey\(`juhe-ai:account-concurrency-v2:\$\{accountId\}:total`\)/, 'Redis 账号并发 key 必须使用命名空间，避免多环境共享 Redis DB 时互相污染')
 assert.match(accountConcurrencySource, /redisAccountConcurrencySlotLeaseTtlMs\s*=\s*90_000/, 'Redis 账号并发槽必须使用短租约，释放失败或进程退出后应及时过期')
 assert.match(accountConcurrencySource, /function ensureRedisAccountConcurrencySlotRefresh\(\)/, 'Redis 账号并发活跃槽必须由当前进程定期续租')
 assert.match(accountConcurrencySource, /ZREMRANGEBYSCORE/, 'Redis 账号并发读取和占用前必须清理已过租约的槽位')
@@ -247,7 +248,13 @@ function assertQueueContracts(): void {
     assert.match(content, /runtimeConfig\.queueDriver === 'redis_stream'/, `${contract.file} 必须在 redis_stream driver 下写 Redis Stream`)
     assert.match(content, new RegExp(contract.startConsumer), `${contract.file} 必须暴露 Redis Stream consumer`)
     assert.match(content, /queue\.ack\(/, `${contract.file} 必须只在成功消费后 ack Redis Stream 消息`)
-    assert.match(content, /catch\(scheduleProcessFatalError\)/, `${contract.file} 同步入口 Redis Stream 入队失败必须进入受控 fail-fast，不能退化为未处理 Promise`)
+    if (contract.file === 'modules/record-maintenance/record-maintenance-queue.service.ts') {
+      assert.match(content, /async function enqueueRecordMaintenanceJobWithResultAsync[\s\S]*await enqueueRecordMaintenanceJobToRedisStream/, '数据维护 Redis Stream async-with-result 必须等待 XADD 成功')
+      assert.match(content, /export function enqueueRecordMaintenanceJobWithResult\(input: RecordMaintenanceJob\): RecordMaintenanceEnqueueResult \{[\s\S]*droppedReason: 'redis_stream_async_required'/, '数据维护同步 withResult 在 redis_stream 下不能假报 queued=true')
+      assert.doesNotMatch(content, /export function enqueueRecordMaintenanceJobWithResult\(input: RecordMaintenanceJob\): RecordMaintenanceEnqueueResult \{[\s\S]*void enqueueRecordMaintenanceJobToRedisStream/, '数据维护同步 withResult 禁止 fire-and-forget 写 Redis Stream')
+    } else {
+      assert.match(content, /catch\(scheduleProcessFatalError\)/, `${contract.file} 同步入口 Redis Stream 入队失败必须进入受控 fail-fast，不能退化为未处理 Promise`)
+    }
     assert.doesNotMatch(content, /AfterRedisStreamFailure/, `${contract.file} Redis Stream 入队失败后不能回退到进程内队列作为事实源`)
     assert.doesNotMatch(content, /shouldEnqueue\w+ToRedisStream[\s\S]*&&\s*!is\w+IngestWorker/, `${contract.file} redis_stream driver 下不能因为当前是 ingest-worker 而绕过 Redis Stream`)
     assert.match(content, /Redis Stream queue driver 下禁止写入/, `${contract.file} redis_stream driver 下必须禁止写入本地队列`)
@@ -427,6 +434,9 @@ function assertStrictRedisCacheBoundaries(): void {
 
   const auditCaptureSource = source('modules/gateway/audit/capture.service.ts')
   assert.match(functionBody(auditCaptureSource, 'auditModelAccounting'), /runtimeConfig\.cacheDriver !== 'redis'[\s\S]*resolveCatalogPricingModel/, '高性能审计尝试记录不能同步读取模型目录解析 pricingModel')
+  const auditLogsRepositorySource = source('storage/audit-logs.repository.ts')
+  assert.match(auditLogsRepositorySource, /resolveCatalogPricingModelAsync/, 'PostgreSQL 审计日志写入前必须在异步落库链路补齐 pricingModel')
+  assert.match(functionBody(auditLogsRepositorySource, 'createAuditLogsBatchPostgres'), /await enrichPostgresAuditLogPricing\(inputs\)[\s\S]*for \(const input of enrichedInputs\)/, 'PostgreSQL 审计日志必须先异步补齐 pricingModel，再生成写入计划')
 }
 
 function assertPostgresAsyncRuntimeFactReads(): void {
@@ -513,15 +523,15 @@ function assertNoPerformanceLocalFactQueues(): void {
   )
 
   const accountSideEffectsSource = source('modules/gateway/runtime/account-side-effects.service.ts')
-  assert.match(
+  assert.doesNotMatch(
     functionBody(accountSideEffectsSource, 'enqueueGatewayAccountErrorHandlingSideEffect'),
-    /runtimeConfig\.runtimeStateDriver === 'redis'[\s\S]*await executeAccountSideEffect\(operation\)[\s\S]*return[\s\S]*enqueueAccountSideEffect/,
-    'Redis runtime state 下账号状态副作用必须直接写 DB service，不能先进入本机队列'
+    /await executeAccountSideEffect\(operation\)/,
+    'Redis runtime state 下账号状态副作用不能在请求链路等待 DB service 写入'
   )
   assert.match(
     accountSideEffectsSource,
-    /export async function flushGatewayAccountSideEffects\(\): Promise<void> \{[\s\S]*runtimeConfig\.runtimeStateDriver === 'redis'[\s\S]*return/,
-    'Redis runtime state 下账号状态副作用 flush 不应处理本机队列'
+    /export async function flushGatewayAccountSideEffects\(\): Promise<void> \{[\s\S]*await drainSideEffectQueue\(\)/,
+    'Redis runtime state 下账号状态副作用仍必须支持异步队列 drain，避免请求直接等待 PG 写'
   )
 
   const clientIpPolicySource = source('modules/gateway/runtime/client-ip-policy-cache.service.ts')
@@ -534,8 +544,8 @@ function assertNoPerformanceLocalFactQueues(): void {
   const accountApiKeyEffectsSource = source('modules/gateway/runtime/account-api-key-effects.service.ts')
   assert.match(
     functionBody(accountApiKeyEffectsSource, 'recordGatewayAccountApiKeyFailure'),
-    /await requestGatewayDbService[\s\S]*runtimeConfig\.runtimeStateDriver === 'redis'[\s\S]*throw error/,
-    'Redis runtime state 下账户内 API Key 失败状态必须等待 DB service 写入，失败时禁止静默回退'
+    /runtimeConfig\.runtimeStateDriver === 'redis'[\s\S]*void requestGatewayDbService[\s\S]*return[\s\S]*await requestGatewayDbService/,
+    'Redis runtime state 下账户内 API Key 失败状态必须异步投递，不能在请求链路等待 DB service 写入'
   )
   assert.doesNotMatch(
     source('modules/gateway/runtime/account-effects.ts'),

@@ -27,6 +27,11 @@ export interface AuditHotSearchFileResult {
   message?: string
 }
 
+export interface AuditHotSearchFileCleanupOptions {
+  maxFiles?: number
+  maxRunMs?: number
+}
+
 interface AuditHotSearchLine {
   auditLogId?: string
   createdAt?: string
@@ -74,6 +79,9 @@ const maxRgParsedMatchEvents = 2_000
 const maxConcurrentHotSearches = 1
 const maxSearchFileScanEntries = 2_000
 const searchFileScanYieldEvery = 100
+const cleanupFileScanYieldEvery = 100
+const defaultCleanupMaxFiles = 1_000
+const defaultCleanupMaxRunMs = 5_000
 const defaultHotSearchWindowMs = 60 * 60 * 1000
 let activeHotSearches = 0
 
@@ -194,14 +202,25 @@ export async function grepAuditHotSearchFiles(options: AuditHotSearchOptions): P
   }
 }
 
-export async function cleanupAuditHotSearchFilesBefore(cutoffCreatedAt: string): Promise<number> {
+export async function cleanupAuditHotSearchFilesBefore(cutoffCreatedAt: string, options: AuditHotSearchFileCleanupOptions = {}): Promise<number> {
   const cutoffMs = Date.parse(cutoffCreatedAt)
   if (!Number.isFinite(cutoffMs)) return 0
+  const maxFiles = positiveInteger(options.maxFiles, defaultCleanupMaxFiles)
+  const maxRunMs = positiveInteger(options.maxRunMs, defaultCleanupMaxRunMs)
+  const startedAt = Date.now()
   let deleted = 0
+  let scanned = 0
   try {
     const directory = await opendir(auditHotSearchRoot())
     for await (const entry of directory) {
+      if (deleted >= maxFiles || Date.now() - startedAt >= maxRunMs) {
+        break
+      }
       if (!entry.isFile()) continue
+      scanned += 1
+      if (scanned % cleanupFileScanYieldEvery === 0) {
+        await yieldToEventLoop()
+      }
       const bucketStartMs = hotSearchBucketStartMsFromFileName(entry.name)
       if (bucketStartMs === undefined) continue
       if (bucketStartMs + hotSearchBucketMs > cutoffMs) continue
@@ -705,6 +724,16 @@ function acquireHotSearchSlot(): boolean {
 
 function releaseHotSearchSlot(): void {
   activeHotSearches = Math.max(0, activeHotSearches - 1)
+}
+
+function positiveInteger(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.trunc(value)
+    : fallback
+}
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolvePromise) => setImmediate(resolvePromise))
 }
 
 function unavailableHotSearchResult(

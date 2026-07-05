@@ -287,12 +287,42 @@ export function cleanupUnreferencedAuditPayloadBlobs(limit = 1000): number {
   return Number(result.changes ?? 0)
 }
 
+export function cleanupUnreferencedAuditPayloadBlobsByIds(blobIds: string[], limit = 1000): number {
+  assertSqliteAuditPayloadBlobCleanup('cleanupUnreferencedAuditPayloadBlobsByIds')
+  const database = getDatasetDatabase()
+  const rows = listUnreferencedAuditPayloadBlobRowsByIds(database, blobIds, limit)
+  if (rows.length === 0) return 0
+
+  const ids = rows.map((row) => String(row.id)).filter(Boolean)
+  for (const row of rows) {
+    deleteBlobFile(optionalString(row.storage_key))
+  }
+  const placeholders = ids.map(() => '?').join(',')
+  const result = database.prepare(`DELETE FROM audit_payload_blobs WHERE id IN (${placeholders})`).run(...ids)
+  return Number(result.changes ?? 0)
+}
+
 export async function cleanupUnreferencedAuditPayloadBlobsAsync(limit = 1000): Promise<number> {
   if (runtimeConfig.databaseDriver === 'postgres') {
     return cleanupUnreferencedAuditPayloadBlobsPostgresAsync(limit)
   }
   const database = getDatasetDatabase()
   const rows = listUnreferencedAuditPayloadBlobRows(database, limit)
+  if (rows.length === 0) return 0
+
+  const ids = rows.map((row) => String(row.id)).filter(Boolean)
+  await deleteBlobFilesAsync(rows.map((row) => optionalString(row.storage_key)))
+  const placeholders = ids.map(() => '?').join(',')
+  const result = database.prepare(`DELETE FROM audit_payload_blobs WHERE id IN (${placeholders})`).run(...ids)
+  return Number(result.changes ?? 0)
+}
+
+export async function cleanupUnreferencedAuditPayloadBlobsByIdsAsync(blobIds: string[], limit = 1000): Promise<number> {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    return cleanupUnreferencedAuditPayloadBlobsByIdsPostgresAsync(blobIds, limit)
+  }
+  const database = getDatasetDatabase()
+  const rows = listUnreferencedAuditPayloadBlobRowsByIds(database, blobIds, limit)
   if (rows.length === 0) return 0
 
   const ids = rows.map((row) => String(row.id)).filter(Boolean)
@@ -371,6 +401,17 @@ export async function readAuditPayloadBlobWindow(
 async function cleanupUnreferencedAuditPayloadBlobsPostgresAsync(limit = 1000): Promise<number> {
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const rows = await listUnreferencedAuditPayloadBlobRowsAsync(client, limit)
+  if (rows.length === 0) return 0
+
+  const ids = rows.map((row) => String(row.id)).filter(Boolean)
+  await deleteBlobFilesAsync(rows.map((row) => optionalString(row.storage_key)))
+  const result = await client.execute('DELETE FROM juhe_dataset.audit_payload_blobs WHERE id = ANY(?::text[])', [ids])
+  return Number(result.changes ?? 0)
+}
+
+async function cleanupUnreferencedAuditPayloadBlobsByIdsPostgresAsync(blobIds: string[], limit = 1000): Promise<number> {
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const rows = await listUnreferencedAuditPayloadBlobRowsByIdsAsync(client, blobIds, limit)
   if (rows.length === 0) return 0
 
   const ids = rows.map((row) => String(row.id)).filter(Boolean)
@@ -632,6 +673,30 @@ function listUnreferencedAuditPayloadBlobRows(database: DatabaseSync, limit: num
     .all(Math.max(1, Math.trunc(limit))) as AuditPayloadBlobRow[]
 }
 
+function listUnreferencedAuditPayloadBlobRowsByIds(database: DatabaseSync, blobIds: string[], limit: number): AuditPayloadBlobRow[] {
+  const ids = uniqueAuditPayloadBlobIds(blobIds).slice(0, Math.max(1, Math.trunc(limit)))
+  if (ids.length === 0) return []
+  const placeholders = ids.map(() => '?').join(',')
+  return database
+    .prepare(`
+      SELECT b.id, b.storage_key
+      FROM audit_payload_blobs b
+      WHERE b.id IN (${placeholders})
+        AND NOT EXISTS (
+          SELECT 1
+          FROM audit_payload_refs r
+          WHERE r.headers_blob_id = b.id
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM audit_payload_refs r
+          WHERE r.body_blob_id = b.id
+        )
+      ORDER BY b.created_at ASC, b.id ASC
+    `)
+    .all(...ids) as AuditPayloadBlobRow[]
+}
+
 async function listUnreferencedAuditPayloadBlobRowsAsync(client: DatabaseClient, limit: number): Promise<AuditPayloadBlobRow[]> {
   return client.query<AuditPayloadBlobRow>(`
     SELECT b.id, b.storage_key
@@ -646,13 +711,40 @@ async function listUnreferencedAuditPayloadBlobRowsAsync(client: DatabaseClient,
   `, [Math.max(1, Math.trunc(limit))])
 }
 
+async function listUnreferencedAuditPayloadBlobRowsByIdsAsync(client: DatabaseClient, blobIds: string[], limit: number): Promise<AuditPayloadBlobRow[]> {
+  const ids = uniqueAuditPayloadBlobIds(blobIds).slice(0, Math.max(1, Math.trunc(limit)))
+  if (ids.length === 0) return []
+  return client.query<AuditPayloadBlobRow>(`
+    SELECT b.id, b.storage_key
+    FROM juhe_dataset.audit_payload_blobs b
+    WHERE b.id = ANY(?::text[])
+      AND NOT EXISTS (
+        SELECT 1
+        FROM juhe_dataset.audit_payload_refs r
+        WHERE r.headers_blob_id = b.id
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM juhe_dataset.audit_payload_refs r
+        WHERE r.body_blob_id = b.id
+      )
+    ORDER BY b.created_at ASC, b.id ASC
+    LIMIT ?
+  `, [ids, Math.max(1, Math.trunc(limit))])
+}
+
 function listAuditPayloadBlobRowsBefore(database: DatabaseSync, cutoffCreatedAt: string, limit: number): AuditPayloadBlobRow[] {
   return database
     .prepare(`
-      SELECT id, storage_key
-      FROM audit_payload_blobs
-      WHERE created_at < ?
-      ORDER BY created_at ASC, id ASC
+      SELECT b.id, b.storage_key
+      FROM audit_payload_blobs b
+      WHERE b.created_at < ?
+        AND NOT EXISTS (
+          SELECT 1
+          FROM audit_payload_refs r
+          WHERE r.headers_blob_id = b.id OR r.body_blob_id = b.id
+        )
+      ORDER BY b.created_at ASC, b.id ASC
       LIMIT ?
     `)
     .all(cutoffCreatedAt, Math.max(1, Math.trunc(limit))) as AuditPayloadBlobRow[]
@@ -660,10 +752,15 @@ function listAuditPayloadBlobRowsBefore(database: DatabaseSync, cutoffCreatedAt:
 
 async function listAuditPayloadBlobRowsBeforeAsync(client: DatabaseClient, cutoffCreatedAt: string, limit: number): Promise<AuditPayloadBlobRow[]> {
   return client.query<AuditPayloadBlobRow>(`
-    SELECT id, storage_key
-    FROM juhe_dataset.audit_payload_blobs
-    WHERE created_at < ?
-    ORDER BY created_at ASC, id ASC
+    SELECT b.id, b.storage_key
+    FROM juhe_dataset.audit_payload_blobs b
+    WHERE b.created_at < ?
+      AND NOT EXISTS (
+        SELECT 1
+        FROM juhe_dataset.audit_payload_refs r
+        WHERE r.headers_blob_id = b.id OR r.body_blob_id = b.id
+      )
+    ORDER BY b.created_at ASC, b.id ASC
     LIMIT ?
   `, [cutoffCreatedAt, Math.max(1, Math.trunc(limit))])
 }
@@ -725,6 +822,10 @@ function normalizePayloadReadLimit(value: unknown): number {
   const number = typeof value === 'number' ? value : Number(value)
   if (!Number.isFinite(number) || number <= 0) return auditPayloadDefaultReadLimitBytes
   return Math.min(auditPayloadMaxReadLimitBytes, Math.max(1, Math.trunc(number)))
+}
+
+function uniqueAuditPayloadBlobIds(blobIds: string[]): string[] {
+  return [...new Set(blobIds.map((id) => id.trim()).filter(Boolean))]
 }
 
 function emptyPayloadBlobWindow(

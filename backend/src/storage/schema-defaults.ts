@@ -544,6 +544,7 @@ export const DEFAULT_SYSTEM_SETTINGS = [
   ['statsAggregationIntervalSeconds', 60],
   ['statsAggregationBatchSize', 2000],
   ['statsAggregationMaxBatchesPerRun', 5],
+  ['usageHotWindowRefreshIntervalSeconds', 600],
   ['groupAccountStatsRefreshIntervalSeconds', 60],
   ['systemMetricsSampleIntervalSeconds', 30],
   ['tableMonitorMaxTablesPerRun', 4],

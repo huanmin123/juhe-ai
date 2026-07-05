@@ -26,10 +26,6 @@ type StatsDatabase = ReturnType<typeof getStatsDatabase>
 const usageRecordCleanupRequiredCursorJobNames = ['usage_stats_aggregation', 'client_ip_stats_aggregation'] as const
 const postgresHardCleanupTables: Record<HardCleanupDatabaseRole, Array<{ tableName: string; timeColumnName: string; cutoffKey: HardCleanupCutoffKey }>> = {
   dataset: [
-    { tableName: 'audit_payload_refs', timeColumnName: 'created_at', cutoffKey: 'iso' },
-    { tableName: 'audit_log_attempts', timeColumnName: 'started_at', cutoffKey: 'iso' },
-    { tableName: 'audit_logs', timeColumnName: 'created_at', cutoffKey: 'iso' },
-    { tableName: 'audit_error_groups', timeColumnName: 'updated_at', cutoffKey: 'iso' },
     { tableName: 'model_check_items', timeColumnName: 'created_at', cutoffKey: 'iso' },
     { tableName: 'model_check_runs', timeColumnName: 'created_at', cutoffKey: 'iso' },
     { tableName: 'operation_log_targets', timeColumnName: 'created_at', cutoffKey: 'iso' },
@@ -92,9 +88,10 @@ const postgresHardCleanupTables: Record<HardCleanupDatabaseRole, Array<{ tableNa
     { tableName: 'client_ip_stats_daily', timeColumnName: 'stat_date', cutoffKey: 'date' },
     { tableName: 'client_ip_usage_range_windows', timeColumnName: 'end_date', cutoffKey: 'date' },
     { tableName: 'client_ip_range_window_dirty_ips', timeColumnName: 'updated_at', cutoffKey: 'iso' },
-    { tableName: 'client_ip_policies', timeColumnName: 'updated_at', cutoffKey: 'iso' },
     { tableName: 'client_ip_policy_hits', timeColumnName: 'stat_date', cutoffKey: 'date' },
-    { tableName: 'stats_job_state', timeColumnName: 'updated_at', cutoffKey: 'iso' },
+    { tableName: 'client_ip_account_stats_daily', timeColumnName: 'stat_date', cutoffKey: 'date' },
+    { tableName: 'client_ip_account_usage_range_windows', timeColumnName: 'end_date', cutoffKey: 'date' },
+    { tableName: 'client_ip_account_range_window_dirty_ips', timeColumnName: 'updated_at', cutoffKey: 'iso' },
     { tableName: 'usage_record_cleanup_deductions', timeColumnName: 'updated_at', cutoffKey: 'iso' },
     { tableName: 'system_metrics_samples', timeColumnName: 'sampled_at', cutoffKey: 'iso' },
     { tableName: 'system_metrics_hourly', timeColumnName: 'stat_hour', cutoffKey: 'hour' },
@@ -184,6 +181,10 @@ export interface UsageStatsRetentionCleanupResult {
   usageQuotaHourlyWindows: number
   usageScopeRangeWindows: number
   clientIpUsageRangeWindows: number
+  clientIpRangeWindowDirtyIps: number
+  clientIpAccountStatsDaily: number
+  clientIpAccountUsageRangeWindows: number
+  clientIpAccountRangeWindowDirtyIps: number
   accountUsageSnapshots: number
 }
 
@@ -388,9 +389,12 @@ export async function cleanupNonBusinessDataBeforeWithResult(input: {
     addRows('dataset.audit_payload_blobs', oldAuditBlobs.deletedRows)
     addFiles('audit_payload_blobs', oldAuditBlobs.deletedFiles)
 
-    const usageRecords = cleanupUsageRecordsBeforeWithResult(cutoffs.iso, batchLimit)
+    const usageRecords = cleanupProcessedUsageRecordsBeforeWithResult(cutoffs.iso, batchLimit)
     addRows('usage_shards.usage_records', usageRecords.deletedRows)
     hasMore = hasMore || usageRecords.hasMore
+    if (usageRecords.blockedReason) {
+      hasMore = true
+    }
 
     cleanupDiscoveredHardCleanupTablesBefore('dataset', cutoffs, batchLimit, addRows)
     cleanupDiscoveredHardCleanupTablesBefore('usage-catalog', cutoffs, batchLimit, addRows)
@@ -815,6 +819,10 @@ export function cleanupUsageStatsBucketsBefore(input: {
     usageQuotaHourlyWindows: deleteRowsBeforeByRowid(database, 'usage_quota_hourly_windows', 'updated_at', input.windowCutoffIso, limit),
     usageScopeRangeWindows: deleteRowsBeforeByRowid(database, 'usage_scope_range_windows', 'end_date', input.windowCutoffDate, limit),
     clientIpUsageRangeWindows: deleteRowsBeforeByRowid(database, 'client_ip_usage_range_windows', 'end_date', input.windowCutoffDate, limit),
+    clientIpRangeWindowDirtyIps: deleteRowsBeforeByRowid(database, 'client_ip_range_window_dirty_ips', 'updated_at', input.windowCutoffIso, limit),
+    clientIpAccountStatsDaily: deleteRowsBeforeByRowid(database, 'client_ip_account_stats_daily', 'stat_date', input.dailyCutoffDate, limit),
+    clientIpAccountUsageRangeWindows: deleteRowsBeforeByRowid(database, 'client_ip_account_usage_range_windows', 'end_date', input.windowCutoffDate, limit),
+    clientIpAccountRangeWindowDirtyIps: deleteRowsBeforeByRowid(database, 'client_ip_account_range_window_dirty_ips', 'updated_at', input.windowCutoffIso, limit),
     accountUsageSnapshots: deleteRowsBeforeByRowid(database, 'account_usage_snapshots', 'updated_at', input.windowCutoffIso, limit)
   }
 }
@@ -860,6 +868,10 @@ export async function cleanupUsageStatsBucketsBeforeAsync(input: Parameters<type
     usageQuotaHourlyWindows: await deletePostgresStatsRowsBeforeByCtid(tx, 'usage_quota_hourly_windows', 'updated_at', input.windowCutoffIso, limit),
     usageScopeRangeWindows: await deletePostgresStatsRowsBeforeByCtid(tx, 'usage_scope_range_windows', 'end_date', input.windowCutoffDate, limit),
     clientIpUsageRangeWindows: await deletePostgresStatsRowsBeforeByCtid(tx, 'client_ip_usage_range_windows', 'end_date', input.windowCutoffDate, limit),
+    clientIpRangeWindowDirtyIps: await deletePostgresStatsRowsBeforeByCtid(tx, 'client_ip_range_window_dirty_ips', 'updated_at', input.windowCutoffIso, limit),
+    clientIpAccountStatsDaily: await deletePostgresStatsRowsBeforeByCtid(tx, 'client_ip_account_stats_daily', 'stat_date', input.dailyCutoffDate, limit),
+    clientIpAccountUsageRangeWindows: await deletePostgresStatsRowsBeforeByCtid(tx, 'client_ip_account_usage_range_windows', 'end_date', input.windowCutoffDate, limit),
+    clientIpAccountRangeWindowDirtyIps: await deletePostgresStatsRowsBeforeByCtid(tx, 'client_ip_account_range_window_dirty_ips', 'updated_at', input.windowCutoffIso, limit),
     accountUsageSnapshots: await deletePostgresStatsRowsBeforeByCtid(tx, 'account_usage_snapshots', 'updated_at', input.windowCutoffIso, limit)
   }))
 }
@@ -926,6 +938,40 @@ export function cleanupModelCheckRunsBefore(cutoffCreatedAt: string, limit = 100
       modelCheckItems
     }
   }, database)
+}
+
+export async function cleanupModelCheckRunsBeforeAsync(cutoffCreatedAt: string, limit = 10000): Promise<ModelCheckRetentionCleanupResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return cleanupModelCheckRunsBefore(cutoffCreatedAt, limit)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const rows = await client.query<CleanupRow>(`
+    SELECT id
+    FROM juhe_dataset.model_check_runs
+    WHERE created_at < ?
+    ORDER BY created_at ASC, id ASC
+    LIMIT ?
+  `, [cutoffCreatedAt, positiveLimit(limit)])
+  const ids = rows.map((row) => String(row.id ?? '')).filter(Boolean)
+  if (ids.length === 0) {
+    return {
+      modelCheckRuns: 0,
+      modelCheckItems: 0
+    }
+  }
+
+  return client.transaction(async (tx) => {
+    let modelCheckItems = 0
+    let modelCheckRuns = 0
+    for (const chunk of chunkValues(ids, 10000)) {
+      modelCheckItems += changed(await tx.execute('DELETE FROM juhe_dataset.model_check_items WHERE run_id = ANY(?::text[])', [chunk]))
+      modelCheckRuns += changed(await tx.execute('DELETE FROM juhe_dataset.model_check_runs WHERE id = ANY(?::text[])', [chunk]))
+    }
+    return {
+      modelCheckRuns,
+      modelCheckItems
+    }
+  })
 }
 
 export function cleanupExpiredSystemSessions(expiredBefore = nowIso(), limit = 1000): number {

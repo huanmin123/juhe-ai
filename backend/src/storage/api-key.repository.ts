@@ -65,10 +65,6 @@ type ApiKeyDeleteRow = {
   is_default?: number | string | boolean | null
 }
 
-interface QueryApiKeysOptions {
-  ensureDefaults?: boolean
-}
-
 export function listApiKeys(access?: AccessScope, options?: ApiKeyListOptions): ApiKeySummary[] {
   return queryApiKeys(access, options).items
 }
@@ -88,7 +84,7 @@ export async function listApiKeysAsync(access?: AccessScope, options?: ApiKeyLis
 }
 
 export function listApiKeysReadOnly(access?: AccessScope, options?: ApiKeyListOptions): ApiKeySummary[] {
-  return queryApiKeys(access, options, false, { ensureDefaults: false }).items
+  return queryApiKeys(access, options).items
 }
 
 export function listApiKeysPage(access?: AccessScope, options?: ApiKeyListOptions): ApiKeyListResult {
@@ -110,7 +106,7 @@ export async function listApiKeysPageAsync(access?: AccessScope, options?: ApiKe
 }
 
 export function listApiKeysPageReadOnly(access?: AccessScope, options?: ApiKeyListOptions): ApiKeyListResult {
-  return queryApiKeys(access, options, true, { ensureDefaults: false })
+  return queryApiKeys(access, options, true)
 }
 
 export function findApiKeySummary(id: string, access?: AccessScope): ApiKeySummary | undefined {
@@ -181,10 +177,7 @@ export async function findApiKeySecretAsync(id: string, access?: AccessScope): P
   return row ? (await apiKeySummariesFromRowsAsync([row], access, { includeSecret: true }))[0] : undefined
 }
 
-function queryApiKeys(access?: AccessScope, options?: ApiKeyListOptions, paged = false, queryOptions: QueryApiKeysOptions = {}): ApiKeyListResult {
-  if (queryOptions.ensureDefaults !== false) {
-    ensureDefaultApiKeysForAccess(access)
-  }
+function queryApiKeys(access?: AccessScope, options?: ApiKeyListOptions, paged = false): ApiKeyListResult {
   const normalized = normalizeApiKeyListOptions(options)
   const scope = buildSystemAccountWhereClause(access, 'api_keys.system_account_id')
   const filters = buildApiKeyFilters(scope, normalized)
@@ -214,7 +207,6 @@ function queryApiKeys(access?: AccessScope, options?: ApiKeyListOptions, paged =
 async function queryApiKeysAsync(access?: AccessScope, options?: ApiKeyListOptions, paged = false): Promise<ApiKeyListResult> {
   const normalized = normalizeApiKeyListOptions(options)
   const client = await getApiKeyDatabaseClient()
-  await ensureDefaultApiKeysForAccessAsync(access, client)
   const scope = buildSystemAccountWhereClause(access, 'api_keys.system_account_id')
   const keywordCte = client.driver === 'postgres' && normalized.keyword
     ? buildPostgresApiKeyKeywordCte(client, access, normalized.keyword)
@@ -912,18 +904,6 @@ export async function ensureDefaultApiKeysForSystemAccountAsync(client: Database
     }
   }
   return apiKeyIds
-}
-
-function ensureDefaultApiKeysForAccess(access?: AccessScope): void {
-  const systemAccountId = manageableSystemAccountId(access)
-  if (!systemAccountId) return
-  ensureDefaultApiKeysForSystemAccount(systemAccountId)
-}
-
-async function ensureDefaultApiKeysForAccessAsync(access: AccessScope | undefined, client: DatabaseClient): Promise<void> {
-  const systemAccountId = manageableSystemAccountId(access)
-  if (!systemAccountId) return
-  await ensureDefaultApiKeysForSystemAccountAsync(client, systemAccountId)
 }
 
 function defaultRouteStrategiesForSystemAccount(database: ReturnType<typeof getBusinessDatabase>, systemAccountId: string): Array<{ id: string; name: string }> {

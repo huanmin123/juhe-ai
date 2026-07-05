@@ -26,6 +26,8 @@ import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
+import { resolveCatalogPricingModelAsync } from '../modules/model-pricing/model-catalog.service.js'
+import { errorLogFields, logger } from '../shared/logger.js'
 
 const auditPayloadBlobWriteConcurrency = 4
 
@@ -458,8 +460,9 @@ async function createAuditLogsBatchPostgres(inputs: AuditLogInput[]): Promise<vo
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const seenLogIds = new Set<string>()
   const preparedLogs: PreparedAuditLogForWrite[] = []
+  const enrichedInputs = await enrichPostgresAuditLogPricing(inputs)
 
-  for (const input of inputs) {
+  for (const input of enrichedInputs) {
     const id = input.id ?? newId('audit')
     if (seenLogIds.has(id)) continue
     seenLogIds.add(id)
@@ -519,6 +522,56 @@ async function createAuditLogsBatchPostgres(inputs: AuditLogInput[]): Promise<vo
   } catch (error) {
     await cleanupCreatedAuditBlobFilesAsync([...new Set([...createdStorageKeys, ...plannedStorageKeys])])
     throw error
+  }
+}
+
+async function enrichPostgresAuditLogPricing(inputs: AuditLogInput[]): Promise<AuditLogInput[]> {
+  const pricingModelCache = new Map<string, Promise<string | undefined>>()
+  const resolvePricingModel = async (input: { providerCode: string; model?: string; systemAccountId?: string }): Promise<string | undefined> => {
+    const key = [input.providerCode, input.systemAccountId ?? '', input.model ?? ''].join('\u0000')
+    let pending = pricingModelCache.get(key)
+    if (!pending) {
+      pending = resolveCatalogPricingModelAsync(input)
+      pricingModelCache.set(key, pending)
+    }
+    return await pending
+  }
+  return await Promise.all(inputs.map((input) => enrichSinglePostgresAuditLogPricing(input, resolvePricingModel)))
+}
+
+async function enrichSinglePostgresAuditLogPricing(
+  input: AuditLogInput,
+  resolvePricingModel: (input: { providerCode: string; model?: string; systemAccountId?: string }) => Promise<string | undefined>
+): Promise<AuditLogInput> {
+  if (input.pricingModel || !input.providerCode) return input
+  const upstreamModel = input.upstreamModel?.trim()
+  const requestedModel = input.model?.trim()
+  const model = upstreamModel || requestedModel
+  if (!model) return input
+  const systemAccountId = input.attempts.find((attempt) => attempt.accountOwnerSystemAccountId)?.accountOwnerSystemAccountId
+    || input.systemAccountId
+  try {
+    const pricingModel = await resolvePricingModel({
+      providerCode: input.providerCode,
+      systemAccountId,
+      model
+    }) ?? (requestedModel && requestedModel !== model
+      ? await resolvePricingModel({
+          providerCode: input.providerCode,
+          systemAccountId,
+          model: requestedModel
+        })
+      : undefined)
+    return pricingModel ? { ...input, pricingModel } : input
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'audit_log_pricing_model_enrichment_failed',
+      traceId: input.traceId,
+      providerCode: input.providerCode,
+      model: input.model,
+      upstreamModel: input.upstreamModel
+    }), '审计日志写入前补齐计价模型失败，保留原始审计记录')
+    return input
   }
 }
 

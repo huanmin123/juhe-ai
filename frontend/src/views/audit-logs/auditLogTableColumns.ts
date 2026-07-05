@@ -2,6 +2,7 @@ export const auditOutcomeOptions = [
   { label: '全部结果', value: 'all' },
   { label: '成功', value: 'success' },
   { label: '重试后成功', value: 'success_after_retry' },
+  { label: '网关成功', value: 'gateway_succeeded' },
   { label: '网关失败', value: 'gateway_failed' },
   { label: '上游失败', value: 'upstream_failed' },
   { label: '流式失败', value: 'stream_failed' },

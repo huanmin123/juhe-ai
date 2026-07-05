@@ -22,7 +22,12 @@ import {
   type GroupListOptions,
   type GroupOptionListOptions
 } from './group-read.repository.js'
-import { loadGroupAccountIdsByGroupIds, loadGroupAccountIdsByGroupIdsAsync, loadGroupAccountStatsByGroupIds, loadGroupAccountStatsByGroupIdsAsync } from './group-read-loaders.js'
+import {
+  loadGroupAccountIdsByGroupIds,
+  loadGroupAccountIdsByGroupIdsAsync,
+  loadGroupAccountStatsByGroupIds,
+  loadGroupAccountStatsByGroupIdsAsync
+} from './group-read-loaders.js'
 import { loadSystemAccountNameMapByIds } from './repository-lookups.js'
 import { chunkValues } from './query-utils.js'
 import type { GroupListRow } from './repository-row-types.js'
@@ -61,7 +66,7 @@ export function listGroupsPage(access?: AccessScope, options?: GroupListOptions)
 export function listGroupsPageReadOnly(access?: AccessScope, options?: GroupListOptions): GroupListResult {
   const page = listGroupRowsPageForAccess(access, options)
   return {
-    items: buildGroupSummaries(page.rows, access),
+    items: buildGroupSummaries(page.rows, access, { includeAccountIds: false }),
     total: page.total,
     hasMore: page.hasMore,
     page: page.page,
@@ -82,7 +87,7 @@ export async function listGroupsPageAsync(access?: AccessScope, options?: GroupL
   }
   const page = await listGroupRowsPageForAccessAsync(access, options)
   return {
-    items: await buildGroupSummariesAsync(page.rows, access),
+    items: await buildGroupSummariesAsync(page.rows, access, { includeAccountIds: false }),
     total: page.total,
     hasMore: page.hasMore,
     page: page.page,
@@ -240,13 +245,18 @@ export async function buildGroupOptionSummariesAsync(rows: GroupListRow[], acces
   })
 }
 
-function buildGroupSummaries(rows: GroupListRow[], access?: AccessScope): GroupSummary[] {
+interface BuildGroupSummaryOptions {
+  includeAccountIds?: boolean
+}
+
+function buildGroupSummaries(rows: GroupListRow[], access?: AccessScope, options: BuildGroupSummaryOptions = {}): GroupSummary[] {
   const timezone = usageStatsTimezone()
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
+  const includeAccountIds = options.includeAccountIds !== false
   const groupIds = rows.map((row) => row.id)
   const groupStatsByGroup = loadGroupAccountStatsByGroupIds(groupIds)
-  const accountIdsByGroup = loadGroupAccountIdsByGroupIds(groupIds)
-  const currentConcurrencyByAccount = loadAccountCurrentConcurrencyByIds([...accountIdsByGroup.values()].flat())
+  const accountIdsByGroup = includeAccountIds ? loadGroupAccountIdsByGroupIds(groupIds) : new Map<string, string[]>()
+  const currentConcurrencyByAccount = includeAccountIds ? loadAccountCurrentConcurrencyByIds([...accountIdsByGroup.values()].flat()) : new Map<string, number>()
   const groupUsageScopes = rows.map((row) => usageScope(row.id, row.system_account_id, row.id))
   const groupAuthorizationScopes = rows
     .filter((row) => row.authorization_id)
@@ -259,7 +269,7 @@ function buildGroupSummaries(rows: GroupListRow[], access?: AccessScope): GroupS
   const accountNames = loadSystemAccountNameMapByIds(rows.map((row) => row.system_account_id))
   return rows.map((row) => {
     const isAuthorizedView = row.access_type === 'authorized'
-    const accountIds = isAuthorizedView ? [] : accountIdsByGroup.get(row.id) ?? []
+    const accountIds = !includeAccountIds || isAuthorizedView ? [] : accountIdsByGroup.get(row.id) ?? []
     const todayUsage = isAuthorizedView && row.authorization_id
       ? todayUsageByAuthorization.get(row.authorization_id) ?? emptyAccountUsageSummary()
       : todayUsageByGroup.get(row.id) ?? emptyAccountUsageSummary()
@@ -268,8 +278,10 @@ function buildGroupSummaries(rows: GroupListRow[], access?: AccessScope): GroupS
       : totalUsageByGroup.get(row.id) ?? emptyAccountUsageSummary()
     const accountStats = groupAccountStatsFromRow(groupStatsByGroup.get(row.id), todayUsage, totalUsage)
     if (!isAuthorizedView) {
-      accountStats.total = accountIds.length
-      accountStats.currentConcurrency = sumAccountCurrentConcurrency(accountIds, currentConcurrencyByAccount)
+      if (includeAccountIds) {
+        accountStats.total = accountIds.length
+        accountStats.currentConcurrency = sumAccountCurrentConcurrency(accountIds, currentConcurrencyByAccount)
+      }
     }
     return {
       id: row.id,
@@ -299,12 +311,13 @@ function buildGroupSummaries(rows: GroupListRow[], access?: AccessScope): GroupS
   })
 }
 
-async function buildGroupSummariesAsync(rows: GroupListRow[], access?: AccessScope): Promise<GroupSummary[]> {
+async function buildGroupSummariesAsync(rows: GroupListRow[], access?: AccessScope, options: BuildGroupSummaryOptions = {}): Promise<GroupSummary[]> {
   const [timezone, client] = await Promise.all([
     usageStatsTimezoneAsync(),
     getGroupSummaryDatabaseClient()
   ])
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
+  const includeAccountIds = options.includeAccountIds !== false
   const groupIds = rows.map((row) => row.id)
   const groupUsageScopes = rows.map((row) => usageScope(row.id, row.system_account_id, row.id))
   const groupAuthorizationScopes = rows
@@ -321,7 +334,7 @@ async function buildGroupSummariesAsync(rows: GroupListRow[], access?: AccessSco
     totalUsageByAuthorization
   ] = await Promise.all([
     loadGroupAccountStatsByGroupIdsAsync(groupIds),
-    loadGroupAccountIdsByGroupIdsAsync(groupIds),
+    includeAccountIds ? loadGroupAccountIdsByGroupIdsAsync(groupIds) : Promise.resolve(new Map<string, string[]>()),
     loadSystemAccountNameMapByIdsAsync(client, rows.map((row) => row.system_account_id)),
     loadResourceAuthorizationSourcesByAuthorizationIdsAsync(rows.map((row) => row.authorization_id ?? '')),
     loadGroupUsageSummariesForScopesAsync(groupUsageScopes, todayDateKey(timezone)),
@@ -329,10 +342,12 @@ async function buildGroupSummariesAsync(rows: GroupListRow[], access?: AccessSco
     loadGroupAuthorizationUsageSummariesAsync(groupAuthorizationScopes, todayDateKey(timezone)),
     loadGroupAuthorizationUsageSummariesAsync(groupAuthorizationScopes)
   ])
-  const currentConcurrencyByAccount = await loadAccountCurrentConcurrencyByIdsAsync([...accountIdsByGroup.values()].flat())
+  const currentConcurrencyByAccount = includeAccountIds
+    ? await loadAccountCurrentConcurrencyByIdsAsync([...accountIdsByGroup.values()].flat())
+    : new Map<string, number>()
   return rows.map((row) => {
     const isAuthorizedView = row.access_type === 'authorized'
-    const accountIds = isAuthorizedView ? [] : accountIdsByGroup.get(row.id) ?? []
+    const accountIds = !includeAccountIds || isAuthorizedView ? [] : accountIdsByGroup.get(row.id) ?? []
     const todayUsage = isAuthorizedView && row.authorization_id
       ? todayUsageByAuthorization.get(row.authorization_id) ?? emptyAccountUsageSummary()
       : todayUsageByGroup.get(row.id) ?? emptyAccountUsageSummary()
@@ -341,8 +356,10 @@ async function buildGroupSummariesAsync(rows: GroupListRow[], access?: AccessSco
       : totalUsageByGroup.get(row.id) ?? emptyAccountUsageSummary()
     const accountStats = groupAccountStatsFromRow(groupStatsByGroup.get(row.id), todayUsage, totalUsage)
     if (!isAuthorizedView) {
-      accountStats.total = accountIds.length
-      accountStats.currentConcurrency = sumAccountCurrentConcurrency(accountIds, currentConcurrencyByAccount)
+      if (includeAccountIds) {
+        accountStats.total = accountIds.length
+        accountStats.currentConcurrency = sumAccountCurrentConcurrency(accountIds, currentConcurrencyByAccount)
+      }
     }
     return {
       id: row.id,

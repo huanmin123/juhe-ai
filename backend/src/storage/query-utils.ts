@@ -27,6 +27,17 @@ export function pagedTotalUpperBound(page: number, pageSize: number, itemCount: 
   return (safePage - 1) * safePageSize + safeItemCount + (hasMore ? 1 : 0)
 }
 
+export function textPrefixUpperBound(value: string): string {
+  const chars = [...value]
+  for (let index = chars.length - 1; index >= 0; index -= 1) {
+    const codePoint = chars[index]?.codePointAt(0)
+    if (codePoint !== undefined && codePoint < 0x10ffff) {
+      return `${chars.slice(0, index).join('')}${String.fromCodePoint(codePoint + 1)}`
+    }
+  }
+  return `${value}\u{10ffff}`
+}
+
 export const defaultListWindowRows = 1001
 
 export function pageUpperBoundForWindow(pageSize: number, windowRows = defaultListWindowRows): number {

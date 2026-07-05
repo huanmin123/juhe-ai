@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 
 import { backendRoot, runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
+import type { AuditLogInput } from '../../storage/audit-log-types.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-non-business-cleanup-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -24,11 +25,14 @@ const recentIso = '2099-01-01T00:00:00.000Z'
 const cutoffIso = '2001-01-01T00:00:00.000Z'
 const oldAuditBlobStorageKey = `zz/non-business-cleanup-old-${Date.now()}.blob`
 const recentAuditBlobStorageKey = `zz/non-business-cleanup-recent-${Date.now()}.blob`
+const referencedAuditLogId = 'audit_referenced_non_business_cleanup'
+const referencedAuditBlobStorageKeys: string[] = []
 
-const [databaseModule, dataRetention, usageShards] = await Promise.all([
+const [databaseModule, dataRetention, usageShards, repositories] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/data-retention.repository.js'),
-  import('../../storage/usage-record-shards.js')
+  import('../../storage/usage-record-shards.js'),
+  import('../../storage/repositories.js')
 ])
 
 try {
@@ -38,7 +42,8 @@ try {
   seedStatsRows()
   seedAuditBlob(oldAuditBlobStorageKey, oldIso)
   seedAuditBlob(recentAuditBlobStorageKey, recentIso)
-  const oldShardFilePath = seedUsageShard()
+  referencedAuditBlobStorageKeys.push(...seedReferencedAuditLog())
+  const oldShard = seedUsageShard()
 
   const result = await dataRetention.cleanupNonBusinessDataBeforeWithResult({
     cutoffAt: cutoffIso,
@@ -57,11 +62,24 @@ try {
   assert.equal(existsSync(auditBlobFilePath(oldAuditBlobStorageKey)), false, '旧审计 blob 外部文件应被删除')
   assert.equal(tableCount(databaseModule.getDatasetDatabase(), 'audit_payload_blobs', "id = 'audblob_recent_non_business_cleanup'"), 1, 'cutoff 之后的审计 blob 元数据应保留')
   assert.equal(existsSync(auditBlobFilePath(recentAuditBlobStorageKey)), true, 'cutoff 之后的审计 blob 外部文件应保留')
+  assert.equal(tableCount(databaseModule.getDatasetDatabase(), 'audit_logs', `id = '${referencedAuditLogId}'`), 1, '通用非业务硬清理不应删除审计主表记录')
+  assert.equal(tableCount(databaseModule.getDatasetDatabase(), 'audit_payload_refs', `audit_log_id = '${referencedAuditLogId}'`) > 0, true, '通用非业务硬清理不应删除审计 payload 引用')
+  const referencedBlobRows = referencedAuditBlobRows()
+  assert.equal(referencedBlobRows.length > 0, true, '测试审计日志应保留至少一个 payload blob 引用')
+  assert.equal(referencedBlobRows.every((row) => existsSync(auditBlobFilePath(row.storage_key))), true, '仍被审计引用的旧 payload blob 外部文件应保留')
+  assert.equal(tableCount(databaseModule.getUsageCatalogDatabase(), 'usage_record_shards'), 1, '统计游标未追平前旧 usage shard 目录不能被硬清理')
+  assert.equal(existsSync(oldShard.filePath), true, '统计游标未追平前旧 usage shard SQLite 文件不能被删除')
+
+  seedUsageCleanupSafetyCursors(oldShard.shardKey)
+  const usageCleanupResult = await dataRetention.cleanupNonBusinessDataBeforeWithResult({
+    cutoffAt: cutoffIso,
+    limit: 100
+  })
   assert.equal(tableCount(databaseModule.getUsageCatalogDatabase(), 'usage_record_shards'), 0, '旧 usage shard 目录应被硬清理')
-  assert.equal(existsSync(oldShardFilePath), false, '旧 usage shard SQLite 文件应被删除')
+  assert.equal(existsSync(oldShard.filePath), false, '旧 usage shard SQLite 文件应被删除')
   assert.equal(tableCount(businessDatabase, 'system_accounts'), businessRowsBefore, '非业务数据硬清理不应清业务库')
-  assert(result.deletedRows >= 4, '硬清理结果应累计删除行数')
-  assert(result.deletedFiles >= 2, '硬清理结果应累计删除外部文件数')
+  assert(result.deletedRows + usageCleanupResult.deletedRows >= 4, '硬清理结果应累计删除行数')
+  assert(result.deletedFiles + usageCleanupResult.deletedFiles >= 2, '硬清理结果应累计删除外部文件数')
 
   console.log('非业务数据硬清理回归通过：业务库保留，显式登记的数据集库、usage catalog、统计库、usage shard 和审计 blob 文件按 cutoff 清理，未登记动态表不再靠字段猜测清理')
 } finally {
@@ -72,6 +90,9 @@ try {
   }
   rmSync(auditBlobFilePath(oldAuditBlobStorageKey), { force: true })
   rmSync(auditBlobFilePath(recentAuditBlobStorageKey), { force: true })
+  for (const storageKey of referencedAuditBlobStorageKeys) {
+    rmSync(auditBlobFilePath(storageKey), { force: true })
+  }
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
@@ -135,7 +156,60 @@ function seedAuditBlob(storageKey: string, createdAt: string): void {
   `).run(id, id, storageKey, createdAt, createdAt, createdAt)
 }
 
-function seedUsageShard(): string {
+function seedReferencedAuditLog(): string[] {
+  const input: AuditLogInput = {
+    id: referencedAuditLogId,
+    traceId: 'trace_referenced_non_business_cleanup',
+    trafficSource: 'gateway',
+    systemAccountId: 'sys_admin',
+    providerCode: 'gpt',
+    method: 'POST',
+    path: '/v1/responses',
+    model: 'gpt-5.4-mini',
+    auditOutcome: 'gateway_failed',
+    success: false,
+    finalStatusCode: 502,
+    errorPhase: 'gateway',
+    errorCode: 'referenced_old_audit_blob',
+    errorMessage: '旧审计 payload 仍有引用时不能被通用硬清理删除',
+    sampleBucket: 9999,
+    sampleReason: 'full_capture',
+    captureStatus: 'complete',
+    startedAt: oldIso,
+    endedAt: oldIso,
+    durationMs: 10,
+    attempts: [],
+    payloads: [
+      {
+        id: 'audref_referenced_non_business_cleanup_payload',
+        partType: 'gateway_error',
+        sequenceIndex: 0,
+        contentType: 'application/json',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ error: 'referenced old audit blob' }),
+        createdAt: oldIso
+      }
+    ],
+    createdAt: oldIso
+  }
+  repositories.createAuditLogsBatch([input])
+  return referencedAuditBlobRows().map((row) => row.storage_key)
+}
+
+function referencedAuditBlobRows(): Array<{ id: string; storage_key: string }> {
+  return databaseModule.getDatasetDatabase()
+    .prepare(`
+      SELECT DISTINCT b.id, b.storage_key
+      FROM audit_payload_refs r
+      JOIN audit_payload_blobs b
+        ON b.id = r.headers_blob_id OR b.id = r.body_blob_id
+      WHERE r.audit_log_id = ?
+      ORDER BY b.id ASC
+    `)
+    .all(referencedAuditLogId) as Array<{ id: string; storage_key: string }>
+}
+
+function seedUsageShard(): { filePath: string; shardKey: string } {
   const usageId = 'usage_20000101_s00_non_business_cleanup'
   const location = usageShards.usageRecordShardLocationForRecord(usageId, oldIso)
   usageShards.getUsageRecordShardDatabase(location).prepare(`
@@ -152,7 +226,21 @@ function seedUsageShard(): string {
     createdAt: oldIso
   }])
   assert.equal(existsSync(location.filePath), true, '测试前 usage shard 文件应存在')
-  return location.filePath
+  return {
+    filePath: location.filePath,
+    shardKey: location.shardKey
+  }
+}
+
+function seedUsageCleanupSafetyCursors(shardKey: string): void {
+  const insert = databaseModule.getStatsDatabase().prepare(`
+    INSERT INTO stats_job_state (
+      scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, updated_at
+    ) VALUES ('usage_shard', ?, ?, ?, ?, ?, ?)
+  `)
+  for (const jobName of ['usage_stats_aggregation', 'client_ip_stats_aggregation']) {
+    insert.run(shardKey, jobName, cutoffIso, 'usage_20000101_s00_non_business_cleanup', cutoffIso, cutoffIso)
+  }
 }
 
 function auditBlobFilePath(storageKey: string): string {

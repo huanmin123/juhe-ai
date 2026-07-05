@@ -199,6 +199,8 @@ export interface AuditLogListParams extends ListParams {
   outcome?: AuditOutcome | 'all'
   statusCode?: number
   path?: string
+  model?: string
+  clientIp?: string
   apiKeyId?: string
   groupId?: string
   accountId?: string

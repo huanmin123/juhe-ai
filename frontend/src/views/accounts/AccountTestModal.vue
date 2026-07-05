@@ -46,15 +46,14 @@
             />
           </a-form-item>
           <a-form-item class="test-config-field" label="测试请求形态">
-            <a-segmented
-              v-if="canSelectEndpointMode"
-              :value="displayTestEndpointMode"
-              :disabled="running"
+            <a-select
+              class="test-endpoint-select"
+              :value="selectedEndpointModeSelectValue"
+              :disabled="running || !canSelectEndpointMode"
               :options="testEndpointModeOptions"
-              block
+              placeholder="无可测试请求形态"
               @update:value="handleTestEndpointModeUpdate"
             />
-            <a-input v-else :value="selectedEndpointModeText" disabled />
           </a-form-item>
         </div>
       </a-form>
@@ -199,8 +198,13 @@ const displayTestEndpointMode = computed<AccountTestEndpointMode>(() => {
   if (props.testEndpointMode !== 'account_default') return props.testEndpointMode
   return testEndpointModeOptions.value[0]?.value ?? 'account_default'
 })
-const selectedEndpointModeText = computed(() => {
+const selectedEndpointModeSelectValue = computed<AccountSupportedEndpointMode | undefined>(() => {
   const selected = displayTestEndpointMode.value
+  return testEndpointModeOptions.value.find((item) => item.value === selected)?.value
+    ?? testEndpointModeOptions.value[0]?.value
+})
+const selectedEndpointModeText = computed(() => {
+  const selected = selectedEndpointModeSelectValue.value
   const option = testEndpointModeOptions.value.find((item) => item.value === selected)
   return option?.label ?? testEndpointModeOptions.value[0]?.label ?? '无可测试请求形态'
 })
@@ -259,7 +263,7 @@ function handleOpenUpdate(value: boolean) {
   emit('update:open', value)
 }
 
-function handleTestEndpointModeUpdate(value: string | number): void {
+function handleTestEndpointModeUpdate(value: string | number | undefined): void {
   const option = testEndpointModeOptions.value.find((item) => item.value === value)
   if (option) {
     emit('update:testEndpointMode', option.value)
@@ -363,6 +367,10 @@ function accountTestEndpointModeOptions(
 
 .test-config-field {
   min-width: 0;
+}
+
+.test-endpoint-select {
+  width: 100%;
 }
 
 .test-terminal {

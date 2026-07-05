@@ -75,6 +75,23 @@ export async function upsertAuthorizationUsageReportRowsAsync(
   }
 }
 
+export async function subtractAuthorizationUsageReportRowsAsync(
+  client: DatabaseClient,
+  row: UsageStatsRecordRow,
+  statDate: string,
+  updatedAt: string,
+  context?: AuthorizationReportContext
+): Promise<void> {
+  const stats = usageStatsAccumulatorFromRecord(row)
+  for (const reportRow of authorizationReportRows(row, context)) {
+    const reportScopeRows = authorizationReportScopeRows(reportRow)
+    const filters = authorizationReportResourceFilters(reportRow)
+    for (const scopedReportRow of reportScopeRows) {
+      await subtractAuthorizationSummaryRowsAsync(client, scopedReportRow, filters, stats, statDate, updatedAt)
+    }
+  }
+}
+
 export function subtractAuthorizationUsageReportRows(
   database: DatabaseSync,
   row: UsageStatsRecordRow,
@@ -230,6 +247,34 @@ function subtractAuthorizationSummaryRows(
   }
 }
 
+async function subtractAuthorizationSummaryRowsAsync(
+  client: DatabaseClient,
+  row: AuthorizationReportRow,
+  filters: AuthorizationReportResourceFilter[],
+  stats: UsageStatsAccumulator,
+  statDate: string,
+  updatedAt: string
+): Promise<void> {
+  const userSummaryKeys: AuthorizationReportSummaryKey[] = []
+  const teamSummaryKeys: AuthorizationReportSummaryKey[] = []
+  for (const filter of filters) {
+    userSummaryKeys.push({ teamFilterId: '', granteeFilterSystemAccountId: '', ...filter })
+    userSummaryKeys.push({ teamFilterId: '', granteeFilterSystemAccountId: row.granteeSystemAccountId, ...filter })
+    if (row.sourceType === 'team' && row.sourceTeamId) {
+      teamSummaryKeys.push({ teamFilterId: '', ...filter })
+      teamSummaryKeys.push({ teamFilterId: row.sourceTeamId, ...filter })
+      userSummaryKeys.push({ teamFilterId: row.sourceTeamId, granteeFilterSystemAccountId: '', ...filter })
+      userSummaryKeys.push({ teamFilterId: row.sourceTeamId, granteeFilterSystemAccountId: row.granteeSystemAccountId, ...filter })
+    }
+  }
+  for (const key of teamSummaryKeys) {
+    await subtractAuthorizationTeamUsageSummaryRowAsync(client, row.ownerSystemAccountId, statDate, key, stats, updatedAt)
+  }
+  for (const key of userSummaryKeys) {
+    await subtractAuthorizationUserUsageSummaryRowAsync(client, row.ownerSystemAccountId, statDate, key, stats, updatedAt)
+  }
+}
+
 async function upsertAuthorizationTeamUsageSummaryRowAsync(client: DatabaseClient, systemAccountId: string, statDate: string, key: AuthorizationReportSummaryKey, stats: UsageStatsAccumulator, updatedAt: string): Promise<void> {
   await client.execute(`
     INSERT INTO ${authorizationStatsTable(client, 'authorization_team_usage_summary_daily')} AS current_row (
@@ -302,6 +347,68 @@ async function upsertAuthorizationUserUsageSummaryRowAsync(client: DatabaseClien
       last_error_at = CASE WHEN EXCLUDED.last_error_at IS NULL THEN current_row.last_error_at WHEN current_row.last_error_at IS NULL OR EXCLUDED.last_error_at > current_row.last_error_at THEN EXCLUDED.last_error_at ELSE current_row.last_error_at END,
       updated_at = EXCLUDED.updated_at
   `, [systemAccountId, statDate, key.teamFilterId ?? '', key.granteeFilterSystemAccountId ?? '', key.resourceFilterType, key.resourceFilterId, ...statsParamsTail(stats, updatedAt)])
+}
+
+async function subtractAuthorizationTeamUsageSummaryRowAsync(client: DatabaseClient, systemAccountId: string, statDate: string, key: AuthorizationReportSummaryKey, stats: UsageStatsAccumulator, updatedAt: string): Promise<void> {
+  await client.execute(`
+    UPDATE ${authorizationStatsTable(client, 'authorization_team_usage_summary_daily')}
+    SET request_count = GREATEST(0, request_count - ?),
+        success_count = GREATEST(0, success_count - ?),
+        error_count = GREATEST(0, error_count - ?),
+        input_tokens = GREATEST(0, input_tokens - ?),
+        output_tokens = GREATEST(0, output_tokens - ?),
+        cache_read_tokens = GREATEST(0, cache_read_tokens - ?),
+        cache_read_cost_usd = GREATEST(0, cache_read_cost_usd - ?),
+        cache_write_tokens = GREATEST(0, cache_write_tokens - ?),
+        cache_write_1h_tokens = GREATEST(0, cache_write_1h_tokens - ?),
+        cache_write_cost_usd = GREATEST(0, cache_write_cost_usd - ?),
+        thinking_tokens = GREATEST(0, thinking_tokens - ?),
+        input_image_tokens = GREATEST(0, input_image_tokens - ?),
+        output_image_tokens = GREATEST(0, output_image_tokens - ?),
+        total_cost_usd = GREATEST(0, total_cost_usd - ?),
+        duration_ms_sum = GREATEST(0, duration_ms_sum - ?),
+        duration_ms_count = GREATEST(0, duration_ms_count - ?),
+        duration_ms_max = CASE WHEN duration_ms_count <= ? THEN 0 ELSE duration_ms_max END,
+        first_token_ms_sum = GREATEST(0, first_token_ms_sum - ?),
+        first_token_ms_count = GREATEST(0, first_token_ms_count - ?),
+        first_token_ms_max = CASE WHEN first_token_ms_count <= ? THEN 0 ELSE first_token_ms_max END,
+        last_used_at = CASE WHEN request_count <= ? THEN NULL ELSE last_used_at END,
+        last_error_at = CASE WHEN error_count <= ? THEN NULL ELSE last_error_at END,
+        updated_at = ?
+    WHERE system_account_id = ? AND stat_date = ? AND team_filter_id = ? AND resource_filter_type = ? AND resource_filter_id = ?
+  `, [...statsSubtractParams(stats), updatedAt, systemAccountId, statDate, key.teamFilterId ?? '', key.resourceFilterType, key.resourceFilterId])
+  await deleteEmptyAuthorizationTeamUsageSummaryRowAsync(client, systemAccountId, statDate, key)
+}
+
+async function subtractAuthorizationUserUsageSummaryRowAsync(client: DatabaseClient, systemAccountId: string, statDate: string, key: AuthorizationReportSummaryKey, stats: UsageStatsAccumulator, updatedAt: string): Promise<void> {
+  await client.execute(`
+    UPDATE ${authorizationStatsTable(client, 'authorization_user_usage_summary_daily')}
+    SET request_count = GREATEST(0, request_count - ?),
+        success_count = GREATEST(0, success_count - ?),
+        error_count = GREATEST(0, error_count - ?),
+        input_tokens = GREATEST(0, input_tokens - ?),
+        output_tokens = GREATEST(0, output_tokens - ?),
+        cache_read_tokens = GREATEST(0, cache_read_tokens - ?),
+        cache_read_cost_usd = GREATEST(0, cache_read_cost_usd - ?),
+        cache_write_tokens = GREATEST(0, cache_write_tokens - ?),
+        cache_write_1h_tokens = GREATEST(0, cache_write_1h_tokens - ?),
+        cache_write_cost_usd = GREATEST(0, cache_write_cost_usd - ?),
+        thinking_tokens = GREATEST(0, thinking_tokens - ?),
+        input_image_tokens = GREATEST(0, input_image_tokens - ?),
+        output_image_tokens = GREATEST(0, output_image_tokens - ?),
+        total_cost_usd = GREATEST(0, total_cost_usd - ?),
+        duration_ms_sum = GREATEST(0, duration_ms_sum - ?),
+        duration_ms_count = GREATEST(0, duration_ms_count - ?),
+        duration_ms_max = CASE WHEN duration_ms_count <= ? THEN 0 ELSE duration_ms_max END,
+        first_token_ms_sum = GREATEST(0, first_token_ms_sum - ?),
+        first_token_ms_count = GREATEST(0, first_token_ms_count - ?),
+        first_token_ms_max = CASE WHEN first_token_ms_count <= ? THEN 0 ELSE first_token_ms_max END,
+        last_used_at = CASE WHEN request_count <= ? THEN NULL ELSE last_used_at END,
+        last_error_at = CASE WHEN error_count <= ? THEN NULL ELSE last_error_at END,
+        updated_at = ?
+    WHERE system_account_id = ? AND stat_date = ? AND team_filter_id = ? AND grantee_filter_system_account_id = ? AND resource_filter_type = ? AND resource_filter_id = ?
+  `, [...statsSubtractParams(stats), updatedAt, systemAccountId, statDate, key.teamFilterId ?? '', key.granteeFilterSystemAccountId ?? '', key.resourceFilterType, key.resourceFilterId])
+  await deleteEmptyAuthorizationUserUsageSummaryRowAsync(client, systemAccountId, statDate, key)
 }
 
 function authorizationStatsTable(client: DatabaseClient, tableName: string): string {
@@ -466,4 +573,26 @@ function deleteEmptyAuthorizationUserUsageSummaryRow(database: DatabaseSync, sys
       AND cache_write_tokens = 0 AND cache_write_1h_tokens = 0 AND cache_write_cost_usd = 0
       AND thinking_tokens = 0 AND input_image_tokens = 0 AND output_image_tokens = 0 AND total_cost_usd = 0
   `).run(systemAccountId, statDate, key.teamFilterId ?? '', key.granteeFilterSystemAccountId ?? '', key.resourceFilterType, key.resourceFilterId)
+}
+
+async function deleteEmptyAuthorizationTeamUsageSummaryRowAsync(client: DatabaseClient, systemAccountId: string, statDate: string, key: AuthorizationReportSummaryKey): Promise<void> {
+  await client.execute(`
+    DELETE FROM ${authorizationStatsTable(client, 'authorization_team_usage_summary_daily')}
+    WHERE system_account_id = ? AND stat_date = ? AND team_filter_id = ? AND resource_filter_type = ? AND resource_filter_id = ?
+      AND request_count = 0 AND success_count = 0 AND error_count = 0
+      AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND cache_read_cost_usd = 0
+      AND cache_write_tokens = 0 AND cache_write_1h_tokens = 0 AND cache_write_cost_usd = 0
+      AND thinking_tokens = 0 AND input_image_tokens = 0 AND output_image_tokens = 0 AND total_cost_usd = 0
+  `, [systemAccountId, statDate, key.teamFilterId ?? '', key.resourceFilterType, key.resourceFilterId])
+}
+
+async function deleteEmptyAuthorizationUserUsageSummaryRowAsync(client: DatabaseClient, systemAccountId: string, statDate: string, key: AuthorizationReportSummaryKey): Promise<void> {
+  await client.execute(`
+    DELETE FROM ${authorizationStatsTable(client, 'authorization_user_usage_summary_daily')}
+    WHERE system_account_id = ? AND stat_date = ? AND team_filter_id = ? AND grantee_filter_system_account_id = ? AND resource_filter_type = ? AND resource_filter_id = ?
+      AND request_count = 0 AND success_count = 0 AND error_count = 0
+      AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND cache_read_cost_usd = 0
+      AND cache_write_tokens = 0 AND cache_write_1h_tokens = 0 AND cache_write_cost_usd = 0
+      AND thinking_tokens = 0 AND input_image_tokens = 0 AND output_image_tokens = 0 AND total_cost_usd = 0
+  `, [systemAccountId, statDate, key.teamFilterId ?? '', key.granteeFilterSystemAccountId ?? '', key.resourceFilterType, key.resourceFilterId])
 }

@@ -1,5 +1,6 @@
 import { runtimeConfig } from '../config/runtime.js'
 import { getRedisClient, type RedisCommandClient } from './redis-client.js'
+import { redisNamespacedKey } from './redis-namespace.js'
 
 export type RuntimeStateKey = string
 
@@ -110,7 +111,7 @@ class RedisRuntimeStateStore implements RuntimeStateStore {
     if (!redisUrl) {
       throw new Error('JUHE_AI_REDIS_STATE_URL 在 Redis runtime state driver 下必须配置')
     }
-    this.keyPrefix = `juhe-ai:state:${sanitizeRedisKeyPart(name)}:`
+    this.keyPrefix = redisNamespacedKey(`juhe-ai:state:${sanitizeRedisKeyPart(name)}:`)
   }
 
   async getJson<T>(key: RuntimeStateKey): Promise<T | undefined> {

@@ -303,19 +303,57 @@ class FetchGatewayUpstreamResponse implements GatewayUpstreamResponse {
   }
 }
 
-async function* fetchReadableStreamBody(
+function fetchReadableStreamBody(
   body: ReadableStream<Uint8Array>,
   options: { timeoutMs?: number; signal?: AbortSignal }
 ): AsyncIterable<Uint8Array> {
   const reader = body.getReader()
-  try {
-    while (true) {
-      const result = await readFetchBodyChunk(reader, options)
-      if (result.done) return
-      if (result.value) yield result.value
+  let released = false
+  let closed = false
+  const release = () => {
+    if (released) return
+    released = true
+    try {
+      reader.releaseLock()
+    } catch {
     }
-  } finally {
-    reader.releaseLock()
+  }
+  const cancel = async (reason?: unknown) => {
+    if (closed) return
+    closed = true
+    try {
+      await reader.cancel(reason)
+    } catch {
+    } finally {
+      release()
+    }
+  }
+  return {
+    [Symbol.asyncIterator]() {
+      return {
+        async next(): Promise<IteratorResult<Uint8Array>> {
+          if (closed) {
+            return { done: true, value: undefined }
+          }
+          try {
+            const result = await readFetchBodyChunk(reader, options)
+            if (result.done) {
+              closed = true
+              release()
+              return { done: true, value: undefined }
+            }
+            return { done: false, value: result.value ?? new Uint8Array(0) }
+          } catch (error) {
+            await cancel(error)
+            throw error
+          }
+        },
+        async return(): Promise<IteratorResult<Uint8Array>> {
+          await cancel()
+          return { done: true, value: undefined }
+        }
+      }
+    }
   }
 }
 

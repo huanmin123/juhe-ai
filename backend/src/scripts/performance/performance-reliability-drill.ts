@@ -9,6 +9,7 @@ import type { Client as PgClient } from 'pg'
 import { backendRoot, runtimeConfig } from '../../config/runtime.js'
 import { closePostgresPool } from '../../storage/postgres-client.js'
 import { createDedicatedRedisClient, type RedisCommandClient } from '../../shared/redis-client.js'
+import { redisNamespacedGroup, redisNamespacedKey } from '../../shared/redis-namespace.js'
 import { RedisStreamQueue } from '../../shared/redis-stream-queue.js'
 
 type DrillStatus = 'passed' | 'failed' | 'skipped'
@@ -223,8 +224,8 @@ async function redisQueueHealthCheck(): Promise<Record<string, unknown>> {
 async function redisUsageStreamSnapshotCheck(): Promise<Record<string, unknown>> {
   const client = await createDedicatedRedisClient(requiredRedisQueueUrl())
   try {
-    const streamKey = 'juhe-ai:queue:usage-records'
-    const groupName = 'juhe-ai:usage-record-writers'
+    const streamKey = redisNamespacedKey('juhe-ai:queue:usage-records')
+    const groupName = redisNamespacedGroup('juhe-ai:usage-record-writers')
     const length = await client.sendCommand(['XLEN', streamKey]).catch((error) => {
       return { error: error instanceof Error ? error.message : String(error) }
     })
@@ -243,8 +244,8 @@ async function redisUsageStreamSnapshotCheck(): Promise<Record<string, unknown>>
 }
 
 async function redisStreamPendingReclaimCheck(): Promise<Record<string, unknown>> {
-  const streamKey = `juhe-ai:drill:stream:${runId}`
-  const groupName = `juhe-ai:drill:group:${runId}`
+  const streamKey = redisNamespacedKey(`juhe-ai:drill:stream:${runId}`)
+  const groupName = redisNamespacedGroup(`juhe-ai:drill:group:${runId}`)
   const deadConsumerName = `dead:${runId}`
   const liveConsumerName = `live:${runId}`
   const redisUrl = requiredRedisQueueUrl()

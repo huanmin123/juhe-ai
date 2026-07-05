@@ -1,4 +1,4 @@
-import { toValue, type MaybeRefOrGetter } from 'vue'
+import { ref, toValue, type MaybeRefOrGetter } from 'vue'
 
 import type { AccountDraftTestAccountPayload } from '@/api/client'
 import { message } from '@/lib/antd'
@@ -18,12 +18,15 @@ import {
 
 interface UseAccountEditTestActionOptions {
   accountDetail: MaybeRefOrGetter<AccountSummary | undefined>
+  accountAdvancedDetailLoaded: MaybeRefOrGetter<boolean>
   accountScopeParams: MaybeRefOrGetter<{ systemAccountId: string } | undefined>
   accounts: MaybeRefOrGetter<AccountSummary[]>
   authSessionId: MaybeRefOrGetter<string | undefined>
   createScopeParams: MaybeRefOrGetter<{ systemAccountId: string } | undefined>
   editingAuthorizedAccount: MaybeRefOrGetter<boolean>
   editingId: MaybeRefOrGetter<string | undefined>
+  ensureAccountEditDetailLoaded: () => Promise<boolean>
+  ensureAdvancedAccountDetailLoaded: () => Promise<boolean>
   errorPolicyRules: MaybeRefOrGetter<AccountErrorPolicyRuleForm[]>
   form: AccountFormModel
   mappingAnthropicSourceModelOptions: MaybeRefOrGetter<AccountModelSelectOption[]>
@@ -39,40 +42,62 @@ interface UseAccountEditTestActionOptions {
 }
 
 export function useAccountEditTestAction(options: UseAccountEditTestActionOptions) {
+  const accountEditTestPreparing = ref(false)
+
   async function testAccountFromEditModal(): Promise<void> {
-    const accountDetail = toValue(options.accountDetail)
-    if (toValue(options.editingAuthorizedAccount)) {
-      if (!accountDetail) {
-        message.warning('请选择要测试的授权账户')
+    if (accountEditTestPreparing.value) return
+    accountEditTestPreparing.value = true
+    try {
+      let accountDetail = toValue(options.accountDetail)
+      if (toValue(options.editingId)) {
+        const loaded = await options.ensureAccountEditDetailLoaded()
+        if (!loaded) {
+          message.warning('账户详情加载失败，请重试后再测试')
+          return
+        }
+        accountDetail = toValue(options.accountDetail)
+      }
+
+      if (toValue(options.editingAuthorizedAccount)) {
+        if (!accountDetail) {
+          message.warning('请选择要测试的授权账户')
+          return
+        }
+        if (options.form.groupId && options.form.groupId !== accountDetail.boundGroupId) {
+          message.info('授权账户测试使用当前已保存的分组绑定，保存后新分组才会生效')
+        }
+        await options.openTestModal(accountDetail)
         return
       }
-      if (options.form.groupId && options.form.groupId !== accountDetail.boundGroupId) {
-        message.info('授权账户测试使用当前已保存的分组绑定，保存后新分组才会生效')
+
+      if (toValue(options.editingId) && !toValue(options.accountAdvancedDetailLoaded)) {
+        const loaded = await options.ensureAdvancedAccountDetailLoaded()
+        if (!loaded) {
+          message.warning('账户高级配置加载失败，请重试后再测试')
+          return
+        }
+        accountDetail = toValue(options.accountDetail)
       }
-      await options.openTestModal(accountDetail)
-      return
-    }
 
-    const validationMessage = validateAccountDraftTestForm({
-      accounts: toValue(options.accounts),
-      accountDetail,
-      editingId: toValue(options.editingId),
-      form: options.form,
-      hasAuthSession: Boolean(toValue(options.authSessionId)),
-      errorPolicyRules: toValue(options.errorPolicyRules),
-      responseInspectionRules: toValue(options.responseInspectionRules),
-      mappingAnthropicSourceModelOptions: toValue(options.mappingAnthropicSourceModelOptions),
-      mappingGeminiSourceModelOptions: toValue(options.mappingGeminiSourceModelOptions),
-      mappingSourceModelOptions: toValue(options.mappingSourceModelOptions),
-      mappingUpstreamModelOptions: toValue(options.mappingUpstreamModelOptions),
-      providers: toValue(options.providers)
-    })
-    if (validationMessage) {
-      message.warning(validationMessage)
-      return
-    }
+      const validationMessage = validateAccountDraftTestForm({
+        accounts: toValue(options.accounts),
+        accountDetail,
+        editingId: toValue(options.editingId),
+        form: options.form,
+        hasAuthSession: Boolean(toValue(options.authSessionId)),
+        errorPolicyRules: toValue(options.errorPolicyRules),
+        responseInspectionRules: toValue(options.responseInspectionRules),
+        mappingAnthropicSourceModelOptions: toValue(options.mappingAnthropicSourceModelOptions),
+        mappingGeminiSourceModelOptions: toValue(options.mappingGeminiSourceModelOptions),
+        mappingSourceModelOptions: toValue(options.mappingSourceModelOptions),
+        mappingUpstreamModelOptions: toValue(options.mappingUpstreamModelOptions),
+        providers: toValue(options.providers)
+      })
+      if (validationMessage) {
+        message.warning(validationMessage)
+        return
+      }
 
-    try {
       const draftPayload = buildAccountDraftTestPayload({
         accounts: toValue(options.accounts),
         accountDetail,
@@ -110,6 +135,8 @@ export function useAccountEditTestAction(options: UseAccountEditTestActionOption
     } catch (error) {
       console.error(error)
       message.error(extractApiErrorMessage(error, '生成账户测试草稿失败'))
+    } finally {
+      accountEditTestPreparing.value = false
     }
   }
 
@@ -121,6 +148,7 @@ export function useAccountEditTestAction(options: UseAccountEditTestActionOption
   }
 
   return {
+    accountEditTestPreparing,
     testAccountFromEditModal
   }
 }

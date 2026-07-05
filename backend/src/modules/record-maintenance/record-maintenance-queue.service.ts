@@ -5,7 +5,6 @@ import { fileURLToPath } from 'node:url'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
-import { scheduleProcessFatalError } from '../../shared/process-fatal.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
 import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime } from '../../shared/redis-stream-queue.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
@@ -14,6 +13,7 @@ import {
   cleanupProcessedUsageRecordsBeforeWithResultAsync,
   type NonBusinessDataHardCleanupResult
 } from '../../storage/data-retention.repository.js'
+import { cleanupAuditLogsByRetentionAsync } from '../../storage/audit-logs.repository.js'
 import { newId, nowIso, usageCatalogDatabasePath } from '../../storage/database.js'
 import {
   createBackgroundTaskRun,
@@ -62,6 +62,19 @@ export type RecordMaintenanceJob =
     type: 'non_business_data_cleanup'
     id?: string
     cutoffAt: string
+    batchSize: number
+    maxBatches: number
+    createdAt?: string
+  }
+  | {
+    type: 'audit_retained_data_cleanup'
+    id?: string
+    nowAt: string
+    successHotRetentionHours: number
+    successRetentionDays: number
+    failureRetentionDays: number
+    errorGroupRetentionDays: number
+    successSampleBucketThreshold: number
     batchSize: number
     maxBatches: number
     createdAt?: string
@@ -135,11 +148,23 @@ export async function enqueueRecordMaintenanceJobAsync(input: RecordMaintenanceJ
   return enqueueRecordMaintenanceJobWithResult(job).job
 }
 
+export async function enqueueRecordMaintenanceJobWithResultAsync(input: RecordMaintenanceJob): Promise<RecordMaintenanceEnqueueResult> {
+  const job = normalizeRecordMaintenanceJob(input)
+  if (shouldEnqueueRecordMaintenanceJobToRedisStream(job)) {
+    try {
+      await enqueueRecordMaintenanceJobToRedisStream(job)
+      return { job, queued: true }
+    } catch {
+      return { job, queued: false, droppedReason: 'redis_stream_enqueue_failed' }
+    }
+  }
+  return enqueueRecordMaintenanceJobWithResult(job)
+}
+
 export function enqueueRecordMaintenanceJobWithResult(input: RecordMaintenanceJob): RecordMaintenanceEnqueueResult {
   const job = normalizeRecordMaintenanceJob(input)
   if (shouldEnqueueRecordMaintenanceJobToRedisStream(job)) {
-    void enqueueRecordMaintenanceJobToRedisStream(job).catch(scheduleProcessFatalError)
-    return { job, queued: true }
+    return { job, queued: false, droppedReason: 'redis_stream_async_required' }
   }
   if (runtimeConfig.processRole === 'server') {
     const queued = sendRecordMaintenanceJobsToWorker([job])
@@ -588,6 +613,15 @@ export async function runRecordMaintenanceJobOnce(job: RecordMaintenanceJob): Pr
       }, '非业务数据后台硬清理完成')
       return result as unknown as Record<string, unknown>
     }
+    case 'audit_retained_data_cleanup': {
+      const result = await cleanupAuditRetainedData(job)
+      logger.info({
+        event: 'record_maintenance_audit_retained_data_cleanup_completed',
+        jobId: job.id,
+        ...result
+      }, '审计日志保留后台清理完成')
+      return result
+    }
     case 'account_usage_snapshot_upsert':
       await processAccountUsageSnapshotUpsertJobs([job])
       return { upsertedCount: 1 }
@@ -807,7 +841,7 @@ function resolveTemporaryMaintenanceWorkerEntry(): { modulePath: string; execArg
 }
 
 function isTemporaryRecordMaintenanceJob(job: RecordMaintenanceJob): boolean {
-  return job.type === 'non_business_data_cleanup'
+  return job.type === 'usage_records_cleanup' || job.type === 'non_business_data_cleanup' || job.type === 'audit_retained_data_cleanup'
 }
 
 type AccountUsageSnapshotUpsertJob = Extract<RecordMaintenanceJob, { type: 'account_usage_snapshot_upsert' }>
@@ -954,6 +988,60 @@ async function cleanupNonBusinessDataBefore(input: { cutoffAt: string; batchSize
   }
 }
 
+async function cleanupAuditRetainedData(input: Extract<RecordMaintenanceJob, { type: 'audit_retained_data_cleanup' }>): Promise<{
+  nowAt: string
+  auditLogs: number
+  batches: number
+  batchSize: number
+  maxBatches: number
+  hasMore: boolean
+  blockedReason?: string
+}> {
+  const nowMs = Date.parse(input.nowAt)
+  if (Number.isNaN(nowMs)) {
+    return {
+      nowAt: input.nowAt,
+      auditLogs: 0,
+      batches: 0,
+      batchSize: input.batchSize,
+      maxBatches: input.maxBatches,
+      hasMore: false,
+      blockedReason: '审计清理基准时间无效'
+    }
+  }
+  let auditLogs = 0
+  let batches = 0
+  let hasMore = false
+  const batchSize = positiveBatchSize(input.batchSize)
+  const maxBatches = normalizeMaxBatches(input.maxBatches)
+  for (let index = 0; index < maxBatches; index += 1) {
+    const deleted = await cleanupAuditLogsByRetentionAsync({
+      successHotCutoffCreatedAt: cutoffHoursIso(nowMs, input.successHotRetentionHours),
+      successCutoffCreatedAt: cutoffDaysIso(nowMs, input.successRetentionDays),
+      failureCutoffCreatedAt: cutoffDaysIso(nowMs, input.failureRetentionDays),
+      errorGroupCutoffUpdatedAt: cutoffDaysIso(nowMs, input.errorGroupRetentionDays),
+      successSampleBucketThreshold: input.successSampleBucketThreshold,
+      limit: batchSize
+    })
+    auditLogs += deleted
+    hasMore = deleted >= batchSize
+    if (deleted > 0) {
+      batches += 1
+    }
+    if (deleted < batchSize) {
+      break
+    }
+  }
+  return {
+    nowAt: input.nowAt,
+    auditLogs,
+    batches,
+    batchSize,
+    maxBatches,
+    hasMore
+  }
+}
+
 function mergeNonBusinessCleanupResult(
   current: NonBusinessDataHardCleanupResult,
   batch: NonBusinessDataHardCleanupResult
@@ -1015,6 +1103,25 @@ export function isRecordMaintenanceJob(value: unknown): value is RecordMaintenan
   }
   if (record.type === 'non_business_data_cleanup') {
     return typeof record.cutoffAt === 'string'
+      && typeof record.batchSize === 'number'
+      && Number.isFinite(record.batchSize)
+      && typeof record.maxBatches === 'number'
+      && Number.isFinite(record.maxBatches)
+      && (record.id === undefined || typeof record.id === 'string')
+      && (record.createdAt === undefined || typeof record.createdAt === 'string')
+  }
+  if (record.type === 'audit_retained_data_cleanup') {
+    return typeof record.nowAt === 'string'
+      && typeof record.successHotRetentionHours === 'number'
+      && Number.isFinite(record.successHotRetentionHours)
+      && typeof record.successRetentionDays === 'number'
+      && Number.isFinite(record.successRetentionDays)
+      && typeof record.failureRetentionDays === 'number'
+      && Number.isFinite(record.failureRetentionDays)
+      && typeof record.errorGroupRetentionDays === 'number'
+      && Number.isFinite(record.errorGroupRetentionDays)
+      && typeof record.successSampleBucketThreshold === 'number'
+      && Number.isFinite(record.successSampleBucketThreshold)
       && typeof record.batchSize === 'number'
       && Number.isFinite(record.batchSize)
       && typeof record.maxBatches === 'number'
@@ -1107,6 +1214,18 @@ function isStringArray(value: unknown): value is string[] {
 
 function normalizeMaxBatches(value: number | undefined): number {
   return typeof value === 'number' && Number.isFinite(value) ? Math.max(1, Math.trunc(value)) : Number.POSITIVE_INFINITY
+}
+
+function positiveBatchSize(value: number): number {
+  return Number.isFinite(value) ? Math.max(1, Math.trunc(value)) : 1000
+}
+
+function cutoffDaysIso(nowMs: number, days: number): string {
+  return new Date(nowMs - Math.max(0, days) * 24 * 60 * 60 * 1000).toISOString()
+}
+
+function cutoffHoursIso(nowMs: number, hours: number): string {
+  return new Date(nowMs - Math.max(0, hours) * 60 * 60 * 1000).toISOString()
 }
 
 function estimateRecordMaintenanceJobBytes(job: RecordMaintenanceJob): number {

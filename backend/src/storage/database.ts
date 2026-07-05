@@ -330,10 +330,10 @@ export function currentProcessOwnsSqliteMainDatabase(kind: SqliteMainDatabaseKin
   }
   if (kind === 'dataset' || kind === 'usage-catalog') {
     return runtimeConfig.processRole === 'worker'
-      && runtimeConfig.workerRole === 'ingest-worker'
+      && (runtimeConfig.workerRole === 'ingest-worker' || runtimeConfig.workerRole === 'temporary-maintenance-worker')
   }
   return runtimeConfig.processRole === 'worker'
-    && runtimeConfig.workerRole === 'stats-worker'
+    && (runtimeConfig.workerRole === 'stats-worker' || runtimeConfig.workerRole === 'temporary-maintenance-worker')
 }
 
 export function sqliteWriterBoundaryStrictModeEnabled(): boolean {

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { getRedisClient, type RedisCommandClient } from '../../shared/redis-client.js'
+import { redisNamespacedKey } from '../../shared/redis-namespace.js'
 
 export interface PenaltyWindowRateLimitRule {
   windowSeconds: number
@@ -279,7 +280,7 @@ function redisPenaltyWindowRateLimitKey(
   rule: PenaltyWindowRateLimitRule
 ): string {
   return [
-    'juhe-ai:rate-limit:penalty',
+    redisNamespacedKey('juhe-ai:rate-limit:penalty'),
     redisKeyHash(storeName),
     redisKeyHash(scopeKey),
     rule.windowSeconds,

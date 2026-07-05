@@ -114,7 +114,7 @@ async function loadEditableAccountDetail(accountId: string, query: Record<string
   if (visibleAccount.permissions?.canViewCredentials === false || visibleAccount.permissions?.canEdit === false) {
     throw new Error('无权查看账户凭据')
   }
-  const account = await findAccountForTestAsync(accountId, requestAccess)
+  const account = await findAccountForTestAsync(accountId, requestAccess, visibleAccount)
   if (!account) return undefined
   return applyServerAccountRuntimeToAccount(account)
 }

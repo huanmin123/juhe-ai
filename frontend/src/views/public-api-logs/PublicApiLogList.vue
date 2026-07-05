@@ -27,7 +27,9 @@
         </div>
       </template>
       <template v-else-if="column.key === 'path'">
-        <span class="path-cell">{{ record.method }} {{ record.path }}</span>
+        <a-tooltip :title="publicApiEndpointText(record)" placement="topLeft">
+          <span class="path-cell">{{ publicApiEndpointText(record) }}</span>
+        </a-tooltip>
       </template>
       <template v-else-if="column.key === 'result'">
         <a-tag :color="record.success ? 'green' : 'red'">{{ record.success ? '成功' : '失败' }}</a-tag>
@@ -50,7 +52,7 @@
         <div class="log-mobile-card-head">
           <div>
             <strong>{{ record.sourceName || '未认证来源' }}</strong>
-            <span>{{ record.method }} {{ record.path }}</span>
+            <span :title="publicApiEndpointText(record)">{{ publicApiEndpointText(record) }}</span>
           </div>
           <a-tag :color="record.success ? 'green' : 'red'">{{ record.success ? '成功' : '失败' }}</a-tag>
         </div>
@@ -103,6 +105,10 @@ function handleActionClick(key: string, record: PublicApiLogSummary): void {
   if (key === 'detail') {
     emit('detail', record)
   }
+}
+
+function publicApiEndpointText(record: PublicApiLogSummary): string {
+  return `${record.method} ${record.path}`
 }
 </script>
 

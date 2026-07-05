@@ -1,5 +1,6 @@
 import { runtimeConfig } from '../config/runtime.js'
 import { getRedisClient, type RedisCommandClient } from './redis-client.js'
+import { redisNamespacedKey } from './redis-namespace.js'
 
 export interface RuntimeProbeStateStore<TState extends { runtimeKey: string; generation: number; nextProbeAtMs: number }> {
   get(runtimeKey: string): Promise<TState | undefined>
@@ -122,9 +123,9 @@ implements RuntimeProbeStateStore<TState> {
 
   constructor(name: string) {
     const safeName = sanitizeRedisKeyPart(name)
-    this.statePrefix = `juhe-ai:probe:${safeName}:state:`
-    this.generationPrefix = `juhe-ai:probe:${safeName}:generation:`
-    this.dueKey = `juhe-ai:probe:${safeName}:due`
+    this.statePrefix = redisNamespacedKey(`juhe-ai:probe:${safeName}:state:`)
+    this.generationPrefix = redisNamespacedKey(`juhe-ai:probe:${safeName}:generation:`)
+    this.dueKey = redisNamespacedKey(`juhe-ai:probe:${safeName}:due`)
   }
 
   async get(runtimeKey: string): Promise<TState | undefined> {

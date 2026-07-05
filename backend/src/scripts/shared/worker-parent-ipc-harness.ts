@@ -25,14 +25,21 @@ async function handleWorkerParentIpcMessage(message: unknown): Promise<void> {
     emit(event: 'message', message: unknown): boolean
   }
   try {
+    const { runtimeConfig } = await import('../../config/runtime.js')
     const { handleDbServiceOperation } = await import('../../modules/db-service/db-service-handlers.js')
-    const result = await handleDbServiceOperation(message.operation)
-    processWithMessageEmitter.emit('message', {
-      type: 'background_worker_db_service_response',
-      requestId: message.requestId,
-      ok: true,
-      result
-    })
+    const previousProcessRole = runtimeConfig.processRole
+    try {
+      runtimeConfig.processRole = 'db-service'
+      const result = await handleDbServiceOperation(message.operation)
+      processWithMessageEmitter.emit('message', {
+        type: 'background_worker_db_service_response',
+        requestId: message.requestId,
+        ok: true,
+        result
+      })
+    } finally {
+      runtimeConfig.processRole = previousProcessRole
+    }
   } catch (error) {
     processWithMessageEmitter.emit('message', {
       type: 'background_worker_db_service_response',

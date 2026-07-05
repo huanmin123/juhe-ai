@@ -6,6 +6,7 @@ import type { RuntimeLogLevel, RuntimeLogListOptions } from '../../storage/runti
 import { buildBackgroundQueueHealthSnapshot } from '../background/background-queue-health.service.js'
 import { requestDbService, requestServerRuntimeSnapshot } from '../db-service/db-service-ipc.js'
 import { getRuntimeLogGrepRuntime, grepRuntimeLogFiles } from './runtime-log-grep.service.js'
+import { requireAdmin } from '../auth/auth.middleware.js'
 
 export const runtimeLogsRouter = Router()
 const runtimeLogRouteTimeoutMs = 120_000
@@ -15,6 +16,7 @@ runtimeLogsRouter.use((req, res, next) => {
   res.setTimeout(runtimeLogRouteTimeoutMs)
   next()
 })
+runtimeLogsRouter.use(requireAdmin)
 
 runtimeLogsRouter.get('/', async (req, res, next) => {
   try {

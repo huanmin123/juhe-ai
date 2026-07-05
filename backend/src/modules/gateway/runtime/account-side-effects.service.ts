@@ -258,26 +258,6 @@ let droppedCount = 0
 let expiredCount = 0
 
 export async function enqueueGatewayAccountErrorHandlingSideEffect(operation: AccountErrorHandlingOperation): Promise<void> {
-  if (runtimeConfig.runtimeStateDriver === 'redis') {
-    if (shouldSkipHealthySuccessfulAccountSideEffect(operation)) {
-      skippedHealthySuccessCount += 1
-      return
-    }
-    enqueuedCount += 1
-    try {
-      await executeAccountSideEffect(operation)
-      completedCount += 1
-    } catch (error) {
-      failedAttemptCount += 1
-      logger.error(errorLogFields(error, {
-        event: 'gateway_account_side_effect_direct_write_failed',
-        operationType: operation.type,
-        accountId: operationAccountId(operation)
-      }), '高性能模式账号副作用直接写入 DB service 失败，禁止回退本机队列')
-      throw error
-    }
-    return
-  }
   if (operation.input.success) {
     const runtimeKey = accountErrorHandlingOperationRuntimeKey(operation)
     recordGatewayAccountSuccessObservation(runtimeKey)
@@ -1681,9 +1661,6 @@ export function clearGatewayAccountRuntimeAvailability(
 }
 
 export async function flushGatewayAccountSideEffects(): Promise<void> {
-  if (runtimeConfig.runtimeStateDriver === 'redis') {
-    return
-  }
   if (drainTimer) {
     clearTimeout(drainTimer)
     drainTimer = undefined

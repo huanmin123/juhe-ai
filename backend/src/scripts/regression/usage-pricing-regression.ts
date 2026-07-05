@@ -1050,6 +1050,7 @@ const gatewayFailureDispatchSource = readSource('modules/gateway/response/failur
 assert.match(gatewayFailureDispatchSource, /shouldRecordAbortedUpstreamAttempt/)
 assert.match(gatewayFailureDispatchSource, /suppressGatewayAccountLocally/)
 assert.match(gatewayFailureDispatchSource, /parseGatewayProtocolErrorPayload/)
+assert.match(gatewayFailureDispatchSource, /recordFailedDispatchAttempt/, '账号准备等未创建 upstream attempt 的失败分支必须补审计 attempt')
 assert.doesNotMatch(gatewayFailureDispatchSource, /parseErrorPayload/)
 assert.doesNotMatch(gatewayFailureDispatchSource, /shouldRetryPolicyAttempt/)
 assert.doesNotMatch(gatewayFailureDispatchSource, /shouldRetryAttempt\(/)
@@ -1068,6 +1069,7 @@ assert.doesNotMatch(gatewayUpstreamDispatchSource, /temporaryUnschedulableRetryP
 assert.match(gatewayUpstreamDispatchSource, /retryAttemptCount\(sameAccountRetryPolicy\)/)
 assert.match(gatewayUpstreamDispatchSource, /shouldRetryPolicyAttempt\(attemptIndex, sameAccountRetryPolicy\)/)
 assert.match(gatewayUpstreamDispatchSource, /waitForSameAccountRetry/)
+assert.match(gatewayUpstreamDispatchSource, /recordAccountCapacityLimitFailure\([\s\S]*auditCapture[\s\S]*auditAttemptIndex/, '账号容量失败写使用记录时也必须补审计 attempt')
 
 const oauthAccessTokenRefreshSource = readSource('modules/openai-oauth/openai-oauth-access-token-refresh.service.ts')
 assert.match(oauthAccessTokenRefreshSource, /openAIOAuthRefreshRaceRetryPolicy/)
@@ -1079,6 +1081,7 @@ assert.doesNotMatch(oauthAccessTokenRefreshSource, /历史后台刷新失败/)
 
 const gatewayAccountPreparationSource = readSource('modules/gateway/dispatch/account-preparation.ts')
 assert.match(gatewayAccountPreparationSource, /prepareGatewayUpstreamAccount/)
+assert.match(gatewayAccountPreparationSource, /recordFailedDispatchAttempt/, '代理配置不可用写使用记录时也必须补审计 attempt')
 assert.doesNotMatch(gatewayAccountPreparationSource, /refreshOpenAIOAuthAccountAccessToken/)
 assert.doesNotMatch(gatewayAccountPreparationSource, /shouldRefreshOpenAIOAuthCredentials/)
 

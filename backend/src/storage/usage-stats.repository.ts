@@ -52,7 +52,7 @@ import {
   refreshUsageQuotaHourlyWindowSnapshots
 } from './usage-stats-snapshot-helpers.js'
 import { aggregateUsageStatsRecords, createUsageStatsAggregationContext, extendUsageStatsAggregationContext } from './usage-stats-writers.js'
-import { upsertAuthorizationUsageReportRowsAsync } from './usage-stats-authorization-daily-writer.js'
+import { subtractAuthorizationUsageReportRowsAsync, upsertAuthorizationUsageReportRowsAsync } from './usage-stats-authorization-daily-writer.js'
 import { shouldAggregateUsageStatsRecord, usageStatsAccumulatorFromRecord, usageStatsEntries } from './usage-stats-aggregation.js'
 import { addAggregatedLatencyEntries, type AggregatedLatencyEntry } from './usage-stats-latency-writer.js'
 import { usageErrorTimeBuckets, usageModelTimeBuckets, usageStatsTimeBuckets, type UsageStatsTimeBucketDefinition, type UsageStatsTimeKeys } from './usage-stats-time-buckets.js'
@@ -80,7 +80,7 @@ import {
   type UsageStatsOverview,
   type UsageStatsRecordRow
 } from './usage-stats-types.js'
-import { statsParamsTail } from './usage-stats-writer-params.js'
+import { statsParamsTail, statsSubtractParams } from './usage-stats-writer-params.js'
 
 export type { ProcessEventLoopSampleInput, SystemMetricsOverview, SystemMetricsSampleInput, UsageStatsOverview } from './usage-stats-types.js'
 export {
@@ -370,6 +370,61 @@ async function aggregatePostgresUsageStatsRows(client: DatabaseClient, rows: Usa
   await upsertPostgresUsageModelEntries(client, [...modelEntries.values()], updatedAt)
   await upsertPostgresUsageErrorEntries(client, [...errorEntries.values()], updatedAt)
   await upsertPostgresAccountQualityEntries(client, [...accountQualityEntries.values()], updatedAt)
+}
+
+export async function subtractPostgresUsageStatsRows(
+  client: DatabaseClient,
+  inputRows: UsageStatsRecordRow[],
+  updatedAt = nowIso(),
+  timezone?: string
+): Promise<void> {
+  if (inputRows.length === 0) return
+  const rows = inputRows.map(normalizePostgresUsageStatsRecordRow)
+  const lookup = await createPostgresUsageStatsAuthorizationLookup(client, rows)
+  const statsTimezone = timezone ?? await usageStatsTimezoneAsync()
+  const totalEntries = new Map<string, PostgresAggregatedUsageStatsEntry>()
+  const timeEntries = new Map<string, PostgresAggregatedUsageStatsTimeEntry>()
+  const latencyEntries = new Map<string, AggregatedLatencyEntry>()
+  const modelEntries = new Map<string, PostgresAggregatedUsageModelEntry>()
+  const errorEntries = new Map<string, PostgresAggregatedUsageErrorEntry>()
+  const accountQualityEntries = new Map<string, PostgresAggregatedAccountQualityEntry>()
+
+  for (const row of rows) {
+    if (!shouldAggregateUsageStatsRecord(row)) {
+      continue
+    }
+    applyPostgresEstimatedCacheReadCost(row)
+    const timeKeys = postgresUsageStatsTimeKeys(row, statsTimezone)
+    for (const entry of usageStatsEntries(row, lookup)) {
+      addPostgresAggregatedUsageStatsEntry(totalEntries, entry)
+      for (const bucket of usageStatsTimeBuckets) {
+        addPostgresAggregatedUsageStatsTimeEntry(timeEntries, bucket, timeKeys[bucket.valueKey], entry)
+      }
+      addAggregatedLatencyEntries(latencyEntries, entry, row, timeKeys)
+    }
+    addPostgresAggregatedUsageModelEntries(modelEntries, row, timeKeys)
+    addPostgresAggregatedAccountQualityEntry(accountQualityEntries, row, timeKeys)
+    if (row.account_authorization_id || row.group_authorization_id) {
+      await subtractAuthorizationUsageReportRowsAsync(client, row, timeKeys.statDate, updatedAt, lookup)
+    }
+    if (row.success !== 1) {
+      addPostgresAggregatedUsageErrorEntries(errorEntries, row, timeKeys)
+    }
+  }
+
+  await subtractPostgresUsageStatsTotals(client, [...totalEntries.values()], updatedAt)
+  for (const bucket of usageStatsTimeBuckets) {
+    await subtractPostgresUsageStatsTimeBucket(
+      client,
+      bucket,
+      [...timeEntries.values()].filter((entry) => entry.bucket.tableName === bucket.tableName),
+      updatedAt
+    )
+  }
+  await subtractPostgresUsageLatencyEntries(client, [...latencyEntries.values()], updatedAt)
+  await subtractPostgresUsageModelEntries(client, [...modelEntries.values()], updatedAt)
+  await subtractPostgresUsageErrorEntries(client, [...errorEntries.values()], updatedAt)
+  await subtractPostgresAccountQualityEntries(client, [...accountQualityEntries.values()], updatedAt)
 }
 
 async function createPostgresUsageStatsAuthorizationLookup(
@@ -922,14 +977,295 @@ async function upsertPostgresAccountQualityEntries(client: DatabaseClient, entri
   }
 }
 
+async function subtractPostgresUsageStatsTotals(client: DatabaseClient, entries: PostgresAggregatedUsageStatsEntry[], updatedAt: string): Promise<void> {
+  for (const entry of entries) {
+    await client.execute(`
+      UPDATE juhe_stats.usage_stats_totals
+      SET request_count = GREATEST(0, request_count - ?),
+          success_count = GREATEST(0, success_count - ?),
+          error_count = GREATEST(0, error_count - ?),
+          input_tokens = GREATEST(0, input_tokens - ?),
+          output_tokens = GREATEST(0, output_tokens - ?),
+          cache_read_tokens = GREATEST(0, cache_read_tokens - ?),
+          cache_read_cost_usd = GREATEST(0, cache_read_cost_usd - ?),
+          cache_write_tokens = GREATEST(0, cache_write_tokens - ?),
+          cache_write_1h_tokens = GREATEST(0, cache_write_1h_tokens - ?),
+          cache_write_cost_usd = GREATEST(0, cache_write_cost_usd - ?),
+          thinking_tokens = GREATEST(0, thinking_tokens - ?),
+          input_image_tokens = GREATEST(0, input_image_tokens - ?),
+          output_image_tokens = GREATEST(0, output_image_tokens - ?),
+          total_cost_usd = GREATEST(0, total_cost_usd - ?),
+          duration_ms_sum = GREATEST(0, duration_ms_sum - ?),
+          duration_ms_count = GREATEST(0, duration_ms_count - ?),
+          duration_ms_max = CASE WHEN duration_ms_count <= ? THEN 0 ELSE duration_ms_max END,
+          first_token_ms_sum = GREATEST(0, first_token_ms_sum - ?),
+          first_token_ms_count = GREATEST(0, first_token_ms_count - ?),
+          first_token_ms_max = CASE WHEN first_token_ms_count <= ? THEN 0 ELSE first_token_ms_max END,
+          last_used_at = CASE WHEN request_count <= ? THEN NULL ELSE last_used_at END,
+          last_error_at = CASE WHEN error_count <= ? THEN NULL ELSE last_error_at END,
+          updated_at = ?
+      WHERE system_account_id = ? AND scope_type = ? AND scope_id = ?
+    `, [...statsSubtractParams(entry.accumulator), updatedAt, entry.systemAccountId, entry.scopeType, entry.scopeId])
+    await deleteEmptyPostgresUsageStatsTotal(client, entry.systemAccountId, entry.scopeType, entry.scopeId)
+  }
+}
+
+async function subtractPostgresUsageStatsTimeBucket(
+  client: DatabaseClient,
+  bucket: PostgresAggregatedUsageStatsTimeEntry['bucket'],
+  entries: PostgresAggregatedUsageStatsTimeEntry[],
+  updatedAt: string
+): Promise<void> {
+  for (const entry of entries) {
+    await client.execute(`
+      UPDATE juhe_stats.${bucket.tableName}
+      SET request_count = GREATEST(0, request_count - ?),
+          success_count = GREATEST(0, success_count - ?),
+          error_count = GREATEST(0, error_count - ?),
+          input_tokens = GREATEST(0, input_tokens - ?),
+          output_tokens = GREATEST(0, output_tokens - ?),
+          cache_read_tokens = GREATEST(0, cache_read_tokens - ?),
+          cache_read_cost_usd = GREATEST(0, cache_read_cost_usd - ?),
+          cache_write_tokens = GREATEST(0, cache_write_tokens - ?),
+          cache_write_1h_tokens = GREATEST(0, cache_write_1h_tokens - ?),
+          cache_write_cost_usd = GREATEST(0, cache_write_cost_usd - ?),
+          thinking_tokens = GREATEST(0, thinking_tokens - ?),
+          input_image_tokens = GREATEST(0, input_image_tokens - ?),
+          output_image_tokens = GREATEST(0, output_image_tokens - ?),
+          total_cost_usd = GREATEST(0, total_cost_usd - ?),
+          duration_ms_sum = GREATEST(0, duration_ms_sum - ?),
+          duration_ms_count = GREATEST(0, duration_ms_count - ?),
+          duration_ms_max = CASE WHEN duration_ms_count <= ? THEN 0 ELSE duration_ms_max END,
+          first_token_ms_sum = GREATEST(0, first_token_ms_sum - ?),
+          first_token_ms_count = GREATEST(0, first_token_ms_count - ?),
+          first_token_ms_max = CASE WHEN first_token_ms_count <= ? THEN 0 ELSE first_token_ms_max END,
+          last_used_at = CASE WHEN request_count <= ? THEN NULL ELSE last_used_at END,
+          last_error_at = CASE WHEN error_count <= ? THEN NULL ELSE last_error_at END,
+          updated_at = ?
+      WHERE system_account_id = ? AND scope_type = ? AND scope_id = ? AND ${bucket.columnName} = ?
+    `, [...statsSubtractParams(entry.accumulator), updatedAt, entry.systemAccountId, entry.scopeType, entry.scopeId, entry.timeValue])
+    await deleteEmptyPostgresUsageStatsTimeBucket(client, bucket, entry.timeValue, entry.systemAccountId, entry.scopeType, entry.scopeId)
+  }
+}
+
+async function subtractPostgresUsageLatencyEntries(client: DatabaseClient, entries: AggregatedLatencyEntry[], updatedAt: string): Promise<void> {
+  for (const entry of entries) {
+    await client.execute(`
+      UPDATE juhe_stats.${entry.bucket.tableName}
+      SET sample_count = GREATEST(0, sample_count - ?),
+          updated_at = ?
+      WHERE system_account_id = ? AND scope_type = ? AND scope_id = ?
+        AND metric_type = ? AND ${entry.bucket.columnName} = ? AND bucket_upper_bound_ms = ?
+    `, [
+      entry.sampleCount,
+      updatedAt,
+      entry.systemAccountId,
+      entry.scopeType,
+      entry.scopeId,
+      entry.metricType,
+      entry.timeValue,
+      entry.bucketUpperBoundMs
+    ])
+    await client.execute(`
+      DELETE FROM juhe_stats.${entry.bucket.tableName}
+      WHERE system_account_id = ? AND scope_type = ? AND scope_id = ?
+        AND metric_type = ? AND ${entry.bucket.columnName} = ? AND bucket_upper_bound_ms = ?
+        AND sample_count = 0
+    `, [
+      entry.systemAccountId,
+      entry.scopeType,
+      entry.scopeId,
+      entry.metricType,
+      entry.timeValue,
+      entry.bucketUpperBoundMs
+    ])
+  }
+}
+
+async function subtractPostgresUsageModelEntries(client: DatabaseClient, entries: PostgresAggregatedUsageModelEntry[], updatedAt: string): Promise<void> {
+  for (const entry of entries) {
+    const stats = entry.accumulator
+    await client.execute(`
+      UPDATE juhe_stats.${entry.bucket.tableName}
+      SET request_count = GREATEST(0, request_count - ?),
+          success_count = GREATEST(0, success_count - ?),
+          error_count = GREATEST(0, error_count - ?),
+          input_tokens = GREATEST(0, input_tokens - ?),
+          output_tokens = GREATEST(0, output_tokens - ?),
+          cache_read_tokens = GREATEST(0, cache_read_tokens - ?),
+          cache_read_cost_usd = GREATEST(0, cache_read_cost_usd - ?),
+          cache_write_tokens = GREATEST(0, cache_write_tokens - ?),
+          cache_write_1h_tokens = GREATEST(0, cache_write_1h_tokens - ?),
+          cache_write_cost_usd = GREATEST(0, cache_write_cost_usd - ?),
+          thinking_tokens = GREATEST(0, thinking_tokens - ?),
+          input_image_tokens = GREATEST(0, input_image_tokens - ?),
+          output_image_tokens = GREATEST(0, output_image_tokens - ?),
+          total_cost_usd = GREATEST(0, total_cost_usd - ?),
+          updated_at = ?
+      WHERE system_account_id = ? AND ${entry.bucket.columnName} = ? AND provider_code = ? AND model = ?
+    `, [
+      stats.requestCount,
+      stats.successCount,
+      stats.errorCount,
+      stats.inputTokens,
+      stats.outputTokens,
+      stats.cacheReadTokens,
+      stats.cacheReadCostUsd,
+      stats.cacheWriteTokens,
+      stats.cacheWrite1hTokens,
+      stats.cacheWriteCostUsd,
+      stats.thinkingTokens,
+      stats.inputImageTokens,
+      stats.outputImageTokens,
+      stats.totalCostUsd,
+      updatedAt,
+      entry.systemAccountId,
+      entry.timeValue,
+      entry.providerCode,
+      entry.model
+    ])
+    await deleteEmptyPostgresUsageModelBucket(client, entry)
+  }
+}
+
+async function subtractPostgresUsageErrorEntries(client: DatabaseClient, entries: PostgresAggregatedUsageErrorEntry[], updatedAt: string): Promise<void> {
+  for (const entry of entries) {
+    await client.execute(`
+      UPDATE juhe_stats.${entry.bucket.tableName}
+      SET request_count = GREATEST(0, request_count - ?),
+          error_count = GREATEST(0, error_count - ?),
+          updated_at = ?
+      WHERE system_account_id = ? AND ${entry.bucket.columnName} = ? AND error_group = ?
+        AND provider_code = ? AND error_code = ? AND status_code = ?
+    `, [
+      entry.requestCount,
+      entry.errorCount,
+      updatedAt,
+      entry.systemAccountId,
+      entry.timeValue,
+      entry.errorGroup,
+      entry.providerCode,
+      entry.errorCode,
+      entry.statusCode
+    ])
+    await client.execute(`
+      DELETE FROM juhe_stats.${entry.bucket.tableName}
+      WHERE system_account_id = ? AND ${entry.bucket.columnName} = ? AND error_group = ?
+        AND provider_code = ? AND error_code = ? AND status_code = ?
+        AND request_count = 0 AND error_count = 0
+    `, [
+      entry.systemAccountId,
+      entry.timeValue,
+      entry.errorGroup,
+      entry.providerCode,
+      entry.errorCode,
+      entry.statusCode
+    ])
+  }
+}
+
+async function subtractPostgresAccountQualityEntries(client: DatabaseClient, entries: PostgresAggregatedAccountQualityEntry[], updatedAt: string): Promise<void> {
+  for (const entry of entries) {
+    await client.execute(`
+      UPDATE juhe_stats.account_quality_minute_stats
+      SET request_count = GREATEST(0, request_count - ?),
+          success_count = GREATEST(0, success_count - ?),
+          error_count = GREATEST(0, error_count - ?),
+          first_token_ms_sum = GREATEST(0, first_token_ms_sum - ?),
+          first_token_ms_count = GREATEST(0, first_token_ms_count - ?),
+          updated_at = ?
+      WHERE account_id = ? AND stat_minute = ?
+    `, [
+      entry.requestCount,
+      entry.successCount,
+      entry.errorCount,
+      entry.firstTokenMsSum,
+      entry.firstTokenMsCount,
+      updatedAt,
+      entry.accountId,
+      entry.statMinute
+    ])
+    await client.execute(`
+      DELETE FROM juhe_stats.account_quality_minute_stats
+      WHERE account_id = ? AND stat_minute = ?
+        AND request_count = 0 AND success_count = 0 AND error_count = 0
+        AND first_token_ms_sum = 0 AND first_token_ms_count = 0
+    `, [entry.accountId, entry.statMinute])
+  }
+
+  const dirtyAccountIds = uniqueNonEmptyIds(entries.map((entry) => entry.accountId))
+  for (const chunk of chunkValues(dirtyAccountIds, 900)) {
+    await client.execute(`
+      INSERT INTO juhe_stats.account_quality_dirty_accounts (account_id, first_dirty_at, updated_at)
+      VALUES ${postgresMultiRowPlaceholders(chunk.length, 3)}
+      ON CONFLICT(account_id) DO UPDATE SET
+        updated_at = EXCLUDED.updated_at
+    `, chunk.flatMap((accountId) => [
+      accountId,
+      updatedAt,
+      updatedAt
+    ]))
+  }
+}
+
+async function deleteEmptyPostgresUsageStatsTotal(client: DatabaseClient, systemAccountId: string, scopeType: string, scopeId: string): Promise<void> {
+  await client.execute(`
+    DELETE FROM juhe_stats.usage_stats_totals
+    WHERE system_account_id = ? AND scope_type = ? AND scope_id = ?
+      AND request_count = 0 AND success_count = 0 AND error_count = 0
+      AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND cache_read_cost_usd = 0
+      AND cache_write_tokens = 0 AND cache_write_1h_tokens = 0 AND cache_write_cost_usd = 0
+      AND thinking_tokens = 0 AND input_image_tokens = 0 AND output_image_tokens = 0 AND total_cost_usd = 0
+  `, [systemAccountId, scopeType, scopeId])
+}
+
+async function deleteEmptyPostgresUsageStatsTimeBucket(
+  client: DatabaseClient,
+  bucket: PostgresAggregatedUsageStatsTimeEntry['bucket'],
+  timeValue: string,
+  systemAccountId: string,
+  scopeType: string,
+  scopeId: string
+): Promise<void> {
+  await client.execute(`
+    DELETE FROM juhe_stats.${bucket.tableName}
+    WHERE system_account_id = ? AND scope_type = ? AND scope_id = ? AND ${bucket.columnName} = ?
+      AND request_count = 0 AND success_count = 0 AND error_count = 0
+      AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND cache_read_cost_usd = 0
+      AND cache_write_tokens = 0 AND cache_write_1h_tokens = 0 AND cache_write_cost_usd = 0
+      AND thinking_tokens = 0 AND input_image_tokens = 0 AND output_image_tokens = 0 AND total_cost_usd = 0
+  `, [systemAccountId, scopeType, scopeId, timeValue])
+}
+
+async function deleteEmptyPostgresUsageModelBucket(client: DatabaseClient, entry: PostgresAggregatedUsageModelEntry): Promise<void> {
+  await client.execute(`
+    DELETE FROM juhe_stats.${entry.bucket.tableName}
+    WHERE system_account_id = ? AND ${entry.bucket.columnName} = ? AND provider_code = ? AND model = ?
+      AND request_count = 0 AND success_count = 0 AND error_count = 0
+      AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND cache_read_cost_usd = 0
+      AND cache_write_tokens = 0 AND cache_write_1h_tokens = 0 AND cache_write_cost_usd = 0
+      AND thinking_tokens = 0 AND input_image_tokens = 0 AND output_image_tokens = 0 AND total_cost_usd = 0
+  `, [entry.systemAccountId, entry.timeValue, entry.providerCode, entry.model])
+}
+
 async function postgresStatsJobState(client: DatabaseClient): Promise<{ cursorCreatedAt: string; cursorId: string }> {
+  await ensurePostgresStatsJobStateRow(client)
   const row = await client.one<StatsJobStateRow>(`
     SELECT cursor_created_at, cursor_id, lag_seconds
     FROM juhe_stats.stats_job_state
     WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_stats_aggregation'
     LIMIT 1
+    FOR UPDATE
   `)
   return { cursorCreatedAt: row?.cursor_created_at ?? '', cursorId: row?.cursor_id ?? '' }
+}
+
+async function ensurePostgresStatsJobStateRow(client: DatabaseClient): Promise<void> {
+  await client.execute(`
+    INSERT INTO juhe_stats.stats_job_state (scope_type, scope_id, job_name, updated_at)
+    VALUES ('global', '', 'usage_stats_aggregation', ?)
+    ON CONFLICT(scope_type, scope_id, job_name) DO NOTHING
+  `, [nowIso()])
 }
 
 async function updatePostgresStatsJobState(
@@ -1154,7 +1490,7 @@ export type UsageRankSnapshotStageName =
   | 'usage_scope_range_windows'
   | 'authorization_usage_range_windows'
 
-const hotUsageWindowStageNames = ['usage_overview_windows', 'usage_scope_range_windows'] as const satisfies readonly UsageRankSnapshotStageName[]
+const hotUsageWindowStageNames = ['usage_overview_windows'] as const satisfies readonly UsageRankSnapshotStageName[]
 
 type UsageRankSnapshotSourceTable =
   | 'usage_stats_totals'

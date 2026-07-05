@@ -176,7 +176,7 @@
       :selected-protocol-profile="selectedProtocolProfile"
       :selected-provider="selectedProvider"
       :test-button-disabled="accountEditTestButtonDisabled"
-      :test-loading="testRunning"
+      :test-loading="accountEditTestLoading"
       :title="modalTitle"
       @cancel="handleModalCancel"
       @copy-auth-url="copyText"
@@ -432,6 +432,7 @@ const {
   systemAccounts
 })
 const successfulDraftActivationTest = ref<SuccessfulDraftActivationTest>()
+const successfulSavedDraftUpdateTest = ref<SuccessfulDraftActivationTest>()
 const draftApiKeyTestSnapshot = ref<DraftApiKeyTestSnapshot>()
 const {
   groups,
@@ -484,6 +485,7 @@ const {
   openClone,
   openCreate,
   openEdit,
+  ensureAccountEditDetailLoaded,
   loadAdvancedAccountDetail,
   providerName,
   providerModelOptions,
@@ -509,7 +511,8 @@ const {
   draftApiKeyTestSnapshot,
   systemAccountSelection: computed(() => filters.systemAccount),
   systemAccounts,
-  successfulDraftActivationTest
+  successfulDraftActivationTest,
+  successfulSavedDraftUpdateTest
 })
 watch(
   [
@@ -581,12 +584,14 @@ const {
   loadData,
   providers: availableProviders,
   draftApiKeyTestSnapshot,
-  successfulDraftActivationTest
+  successfulDraftActivationTest,
+  successfulSavedDraftUpdateTest
 })
-const accountEditTestButtonDisabled = computed(() => accountEditDetailLoading.value || accountAdvancedDetailLoading.value || (Boolean(editingId.value) && !editingAuthorizedAccount.value && !accountAdvancedDetailLoaded.value) || modalConfirmLoading.value || testRunning.value || !hasAccountType.value)
 const {
+  accountEditTestPreparing,
   testAccountFromEditModal
 } = useAccountEditTestAction({
+  accountAdvancedDetailLoaded,
   accountDetail: editingAccountDetail,
   accountScopeParams,
   accounts,
@@ -594,6 +599,8 @@ const {
   createScopeParams,
   editingAuthorizedAccount,
   editingId,
+  ensureAccountEditDetailLoaded,
+  ensureAdvancedAccountDetailLoaded: loadAdvancedAccountDetail,
   errorPolicyRules: accountErrorPolicyRules,
   form,
   mappingAnthropicSourceModelOptions,
@@ -607,6 +614,8 @@ const {
   responseInspectionRules: accountResponseInspectionRules,
   selectedProtocolProfile
 })
+const accountEditTestLoading = computed(() => accountEditTestPreparing.value || testRunning.value)
+const accountEditTestButtonDisabled = computed(() => accountEditTestLoading.value)
 const {
   openTrafficMigration,
   saveTrafficMigration,

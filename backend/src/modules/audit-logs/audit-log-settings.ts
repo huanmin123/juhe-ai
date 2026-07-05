@@ -34,18 +34,10 @@ export const fixedAuditLogSettings: AuditLogSettings = Object.freeze({
 })
 
 export function readAuditLogSettings(): AuditLogSettings {
-  const baseSettings = runtimeConfig.audit.fullBodyCaptureEnabled
+  return runtimeConfig.audit.fullBodyCaptureEnabled
     ? fixedAuditLogSettings
     : {
         ...fixedAuditLogSettings,
         fullBodyCaptureEnabled: false
       }
-  if (runtimeConfig.runtimeMode === 'performance' || runtimeConfig.databaseDriver === 'postgres') {
-    return {
-      ...baseSettings,
-      successSampleRate: 0.02,
-      successHotRetentionHours: 0
-    }
-  }
-  return baseSettings
 }

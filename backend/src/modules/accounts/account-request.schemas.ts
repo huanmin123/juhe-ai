@@ -45,6 +45,7 @@ export const accountCreateSchema = z.object({
 export const accountUpdateSchema = z.object({
   name: z.string().trim().min(1).optional(),
   credentials: z.record(z.unknown()).optional(),
+  activationTestTaskId: z.string().trim().min(1).optional(),
   supportedModels: z.array(z.string().trim().min(1)).min(1).max(500).optional(),
   modelMappings: z.array(accountModelMappingSchema).max(500).optional(),
   tags: z.array(z.string().trim()).max(24).optional(),

@@ -19,6 +19,8 @@ type MockAccountKey =
   | 'sk-speed-secondary'
   | 'sk-cost-primary'
   | 'sk-cost-secondary'
+  | 'sk-priority-super'
+  | 'sk-priority-normal'
 
 type MockPhase = 'slow_first_byte' | 'fast'
 
@@ -54,8 +56,7 @@ const speedFirstConfig: RouteStrategySpeedFirstConfig = {
   recoverySuccessCount: 3,
   probeIntervalSeconds: 10,
   degradedTtlSeconds: 60,
-  retryOnFirstByteTimeout: true,
-  maxFirstByteRetriesPerRequest: 1
+  maxFirstByteRetriesPerRequest: 2
 }
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-normal-route-speed-first-mock-ai-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -104,7 +105,9 @@ const accountPhases = new Map<MockAccountKey, MockPhase>([
   ['sk-speed-primary', 'slow_first_byte'],
   ['sk-speed-secondary', 'fast'],
   ['sk-cost-primary', 'fast'],
-  ['sk-cost-secondary', 'fast']
+  ['sk-cost-secondary', 'fast'],
+  ['sk-priority-super', 'fast'],
+  ['sk-priority-normal', 'fast']
 ])
 
 const app = express()
@@ -129,18 +132,23 @@ try {
     const upstreamBaseUrl = `http://127.0.0.1:${serverAddress(upstreamServer).port}/v1`
     const speedScenario = createSpeedFirstScenario(upstreamBaseUrl)
     const costScenario = createCostFirstScenario(upstreamBaseUrl)
+    const priorityScenario = createPriorityTierScenario(upstreamBaseUrl)
 
     appServer = http.createServer(app)
     await listen(appServer)
     const baseUrl = `http://127.0.0.1:${serverAddress(appServer).port}`
 
+    await assertTransientSlowThenFastDoesNotDegrade(baseUrl, speedScenario)
     await assertNonStreamSlowFirstByteRetriesAndDegrades(baseUrl, speedScenario)
     await assertCostFirstRouteUnaffected(baseUrl, costScenario)
+    await assertSpeedFirstDoesNotCrossPriorityTier(baseUrl, priorityScenario)
     await assertBackgroundProbeRestoresPrimary(baseUrl, speedScenario)
+    await assertBulkFastTrafficAfterRecovery(baseUrl, speedScenario)
+    await assertResponsesSlowFirstByteUsesObservationAndConfirmedCutover(baseUrl, speedScenario)
     await assertAllDegradedBypassKeepsOriginalOrder(baseUrl, speedScenario)
     await assertStreamSlowFirstByteRetriesBeforeDownstreamOutput(baseUrl, speedScenario)
 
-    console.log('普通路由速度优先 Mock AI 回归通过：非流式首字慢切号、降级后置、成本优先隔离、后台探针恢复、全部降级旁路和流式首字慢切号均生效')
+    console.log('普通路由速度优先 Mock AI 回归通过：偶发慢后快样本清理、Chat/Responses 首字慢延迟切号、批量混合请求、降级后置、成本优先隔离、后台探针恢复、全部降级旁路和流式首字确认切号均生效')
   } finally {
     await closeServer(appServer)
     await closeServer(upstreamServer)
@@ -157,6 +165,44 @@ try {
 
 process.exit(0)
 
+async function assertTransientSlowThenFastDoesNotDegrade(baseUrl: string, scenario: SpeedFirstScenario): Promise<void> {
+  await latencyDegradation.clearNormalRouteLatencyDegradationForRouteStrategyAsync(scenario.routeStrategyId)
+  setAccountPhase('sk-speed-primary', 'slow_first_byte')
+  setAccountPhase('sk-speed-secondary', 'fast')
+
+  const firstSlowHitStart = upstreamHits.length
+  const firstSlowStartedAt = Date.now()
+  const firstSlowResponse = await postChat(baseUrl, scenario.apiKey, 'transient slow sample', false)
+  assert.equal(firstSlowResponse.status, 200, `偶发慢请求应成功，实际 HTTP ${firstSlowResponse.status}: ${firstSlowResponse.text}`)
+  assert(Date.now() - firstSlowStartedAt >= speedFirstConfig.firstByteThresholdMs - 2_500, '偶发慢请求应真实等待接近首字阈值')
+  assert.match(firstSlowResponse.text, /late mock ai body/, '偶发慢未确认退化前应继续等待主号返回')
+  const firstSlowHits = upstreamHits.slice(firstSlowHitStart)
+  assert.equal(countHits(firstSlowHits, 'sk-speed-primary', '/v1/chat/completions'), 1, '偶发慢应命中主号')
+  assert.equal(countHits(firstSlowHits, 'sk-speed-secondary', '/v1/chat/completions'), 0, '偶发慢未确认退化前不应切到副号')
+  assert.equal((await listSpeedProbeCandidates(scenario)).length, 0, '单次偶发慢不应产生恢复探针候选')
+
+  setAccountPhase('sk-speed-primary', 'fast')
+  const fastHitStart = upstreamHits.length
+  const fastResponse = await postChat(baseUrl, scenario.apiKey, 'transient slow recovered fast', false)
+  assert.equal(fastResponse.status, 200, `偶发慢后的快请求应成功，实际 HTTP ${fastResponse.status}: ${fastResponse.text}`)
+  assert.match(fastResponse.text, /mock ai chat sk-speed-primary/, '偶发慢后的快请求应回到主号')
+  const fastHits = upstreamHits.slice(fastHitStart)
+  assert.equal(countHits(fastHits, 'sk-speed-primary', '/v1/chat/completions'), 1, '偶发慢后的快请求应命中主号')
+  assert.equal(countHits(fastHits, 'sk-speed-secondary', '/v1/chat/completions'), 0, '偶发慢后的快请求不应误切副号')
+
+  setAccountPhase('sk-speed-primary', 'slow_first_byte')
+  const secondSlowHitStart = upstreamHits.length
+  const secondSlowResponse = await postChat(baseUrl, scenario.apiKey, 'transient second slow after fast reset', false)
+  assert.equal(secondSlowResponse.status, 200, `快样本清理后的再次慢请求应成功，实际 HTTP ${secondSlowResponse.status}: ${secondSlowResponse.text}`)
+  assert.match(secondSlowResponse.text, /late mock ai body/, '快样本清理后再次慢应重新作为第一次观察，不应立即切号')
+  const secondSlowHits = upstreamHits.slice(secondSlowHitStart)
+  assert.equal(countHits(secondSlowHits, 'sk-speed-primary', '/v1/chat/completions'), 1, '快样本清理后的再次慢应命中主号')
+  assert.equal(countHits(secondSlowHits, 'sk-speed-secondary', '/v1/chat/completions'), 0, '快样本清理后的再次慢不应切到副号')
+  assert.equal((await listSpeedProbeCandidates(scenario)).length, 0, '快样本清理后再次单次慢不应产生恢复探针候选')
+
+  await latencyDegradation.clearNormalRouteLatencyDegradationForRouteStrategyAsync(scenario.routeStrategyId)
+}
+
 async function assertNonStreamSlowFirstByteRetriesAndDegrades(baseUrl: string, scenario: SpeedFirstScenario): Promise<void> {
   setAccountPhase('sk-speed-primary', 'slow_first_byte')
   setAccountPhase('sk-speed-secondary', 'fast')
@@ -165,13 +211,18 @@ async function assertNonStreamSlowFirstByteRetriesAndDegrades(baseUrl: string, s
     const hitStart = upstreamHits.length
     const startedAt = Date.now()
     const response = await postChat(baseUrl, scenario.apiKey, `non stream slow sample ${attempt}`, false)
-    assert.equal(response.status, 200, `第 ${attempt} 次慢首字请求应隐藏切到副号成功，实际 HTTP ${response.status}: ${response.text}`)
-    assert.match(response.text, /mock ai chat sk-speed-secondary/, '慢首字隐藏重试后应返回副号响应')
+    assert.equal(response.status, 200, `第 ${attempt} 次慢首字请求应成功，实际 HTTP ${response.status}: ${response.text}`)
     assert(Date.now() - startedAt >= speedFirstConfig.firstByteThresholdMs - 2_500, '慢首字样本应真实等待接近首字阈值')
 
     const hits = upstreamHits.slice(hitStart)
     assert.equal(countHits(hits, 'sk-speed-primary', '/v1/chat/completions'), 1, `第 ${attempt} 次请求应先命中主号`)
-    assert.equal(countHits(hits, 'sk-speed-secondary', '/v1/chat/completions'), 1, `第 ${attempt} 次请求应切到副号`)
+    if (attempt < speedFirstConfig.slowTriggerCount) {
+      assert.match(response.text, /late mock ai body/, '未达到慢触发次数前应继续等待当前主号返回')
+      assert.equal(countHits(hits, 'sk-speed-secondary', '/v1/chat/completions'), 0, `第 ${attempt} 次请求未确认退化前不应切到副号`)
+    } else {
+      assert.match(response.text, /mock ai chat sk-speed-secondary/, '达到慢触发次数后应隐藏切到副号返回')
+      assert.equal(countHits(hits, 'sk-speed-secondary', '/v1/chat/completions'), 1, `第 ${attempt} 次请求确认退化后应切到副号`)
+    }
     const candidates = await listSpeedProbeCandidates(scenario)
     assert.equal(
       candidates.some((candidate) => candidate.accountId === scenario.primaryAccountId),
@@ -214,6 +265,17 @@ async function assertNonStreamSlowFirstByteRetriesAndDegrades(baseUrl: string, s
   const hits = upstreamHits.slice(hitStart)
   assert.equal(countHits(hits, 'sk-speed-primary', '/v1/chat/completions'), 0, '速度降级后不应再先打慢主号')
   assert.equal(countHits(hits, 'sk-speed-secondary', '/v1/chat/completions'), 1, '速度降级后应直接命中副号')
+
+  const bulkHitStart = upstreamHits.length
+  const bulkResponses = await runBulkChatRequests(baseUrl, scenario.apiKey, 'bulk after degradation', 60, 4)
+  for (const [index, bulkResponse] of bulkResponses.entries()) {
+    assert.equal(bulkResponse.status, 200, `降级后批量请求 ${index + 1} 应成功，实际 HTTP ${bulkResponse.status}: ${bulkResponse.text}`)
+    assert.match(bulkResponse.text, /sk-speed-secondary/, `降级后批量请求 ${index + 1} 应稳定命中副号`)
+    assertChatTransportShape(bulkResponse, `降级后批量请求 ${index + 1}`)
+  }
+  const bulkHits = upstreamHits.slice(bulkHitStart)
+  assert.equal(countHits(bulkHits, 'sk-speed-primary', '/v1/chat/completions'), 0, '速度降级后批量请求不应回打慢主号')
+  assert.equal(countHits(bulkHits, 'sk-speed-secondary', '/v1/chat/completions'), 60, '速度降级后批量请求应全部命中副号')
 }
 
 async function assertCostFirstRouteUnaffected(baseUrl: string, scenario: CostFirstScenario): Promise<void> {
@@ -224,6 +286,29 @@ async function assertCostFirstRouteUnaffected(baseUrl: string, scenario: CostFir
   const hits = upstreamHits.slice(hitStart)
   assert.equal(countHits(hits, 'sk-cost-primary', '/v1/chat/completions'), 1, '成本优先路由应命中自己的主号')
   assert.equal(countHits(hits, 'sk-speed-primary', '/v1/chat/completions'), 0, '速度优先降级状态不应污染成本优先路由')
+}
+
+async function assertSpeedFirstDoesNotCrossPriorityTier(baseUrl: string, scenario: SpeedFirstScenario): Promise<void> {
+  const scope = latencyDegradation.normalRouteLatencyDegradationScope({
+    systemAccountId: access.systemAccountId,
+    routeStrategyId: scenario.routeStrategyId,
+    groupId: scenario.groupId
+  })
+  assert(scope, '优先级层切号保护测试需要有效普通路由速度优先 scope')
+  await latencyDegradation.recordNormalRouteFirstByteSlowAsync({ id: scenario.primaryAccountId }, scope, speedFirstConfig)
+  await latencyDegradation.recordNormalRouteFirstByteSlowAsync({ id: scenario.primaryAccountId }, scope, speedFirstConfig)
+  setAccountPhase('sk-priority-super', 'slow_first_byte')
+  setAccountPhase('sk-priority-normal', 'fast')
+  const hitStart = upstreamHits.length
+  const startedAt = Date.now()
+  const response = await postChat(baseUrl, scenario.apiKey, 'speed first must not cross priority tier', false)
+  assert.equal(response.status, 200, `唯一超级优先账号慢时请求仍应成功，实际 HTTP ${response.status}: ${response.text}`)
+  assert.match(response.text, /late mock ai body/, '唯一超级优先账号慢时不应切到普通优先级账号')
+  assert(Date.now() - startedAt >= speedFirstConfig.firstByteThresholdMs - 2_500, '唯一超级优先账号慢时应继续等待当前账号而不是立即跨层切号')
+  const hits = upstreamHits.slice(hitStart)
+  assert.equal(countHits(hits, 'sk-priority-super', '/v1/chat/completions'), 1, '唯一超级优先账号慢时应命中超级优先账号')
+  assert.equal(countHits(hits, 'sk-priority-normal', '/v1/chat/completions'), 0, '速度优先不得跨到普通优先级账号')
+  await latencyDegradation.clearNormalRouteLatencyDegradationForRouteStrategyAsync(scenario.routeStrategyId)
 }
 
 async function assertBackgroundProbeRestoresPrimary(baseUrl: string, scenario: SpeedFirstScenario): Promise<void> {
@@ -280,6 +365,58 @@ async function assertBackgroundProbeRestoresPrimary(baseUrl: string, scenario: S
   assert.equal(countHits(hits, 'sk-speed-secondary', '/v1/chat/completions'), 0, '恢复后不应继续绕到副号')
 }
 
+async function assertBulkFastTrafficAfterRecovery(baseUrl: string, scenario: SpeedFirstScenario): Promise<void> {
+  setAccountPhase('sk-speed-primary', 'fast')
+  setAccountPhase('sk-speed-secondary', 'fast')
+  const hitStart = upstreamHits.length
+  const responses = await runBulkChatRequests(baseUrl, scenario.apiKey, 'bulk after recovery', 120, 5)
+  for (const [index, response] of responses.entries()) {
+    assert.equal(response.status, 200, `恢复后批量请求 ${index + 1} 应成功，实际 HTTP ${response.status}: ${response.text}`)
+    assert.match(response.text, /sk-speed-primary/, `恢复后批量请求 ${index + 1} 应稳定命中主号`)
+    assertChatTransportShape(response, `恢复后批量请求 ${index + 1}`)
+  }
+  const hits = upstreamHits.slice(hitStart)
+  assert.equal(countHits(hits, 'sk-speed-primary', '/v1/chat/completions'), 120, '恢复后批量请求应全部命中主号')
+  assert.equal(countHits(hits, 'sk-speed-secondary', '/v1/chat/completions'), 0, '恢复后批量请求不应误切副号')
+}
+
+async function assertResponsesSlowFirstByteUsesObservationAndConfirmedCutover(baseUrl: string, scenario: SpeedFirstScenario): Promise<void> {
+  await latencyDegradation.clearNormalRouteLatencyDegradationForRouteStrategyAsync(scenario.routeStrategyId)
+  setAccountPhase('sk-speed-primary', 'slow_first_byte')
+  setAccountPhase('sk-speed-secondary', 'fast')
+
+  for (let attempt = 1; attempt <= speedFirstConfig.slowTriggerCount; attempt += 1) {
+    const hitStart = upstreamHits.length
+    const startedAt = Date.now()
+    const response = await postResponses(baseUrl, scenario.apiKey, `responses slow sample ${attempt}`)
+    assert.equal(response.status, 200, `Responses 第 ${attempt} 次慢首字请求应成功，实际 HTTP ${response.status}: ${response.text}`)
+    assert(Date.now() - startedAt >= speedFirstConfig.firstByteThresholdMs - 2_500, 'Responses 慢首字样本应真实等待接近首字阈值')
+    const hits = upstreamHits.slice(hitStart)
+    assert.equal(countHits(hits, 'sk-speed-primary', '/v1/responses'), 1, `Responses 第 ${attempt} 次请求应先命中主号`)
+    if (attempt < speedFirstConfig.slowTriggerCount) {
+      assert.match(response.text, /late mock ai responses/, 'Responses 未确认退化前应继续等待当前主号返回')
+      assert.equal(countHits(hits, 'sk-speed-secondary', '/v1/responses'), 0, 'Responses 未确认退化前不应切到副号')
+    } else {
+      assert.match(response.text, /mock ai responses sk-speed-secondary/, 'Responses 确认退化后应隐藏切到副号返回')
+      assert.equal(countHits(hits, 'sk-speed-secondary', '/v1/responses'), 1, 'Responses 确认退化后应切到副号')
+    }
+  }
+
+  const bulkHitStart = upstreamHits.length
+  const responses = await runBulkResponsesRequests(baseUrl, scenario.apiKey, 'responses bulk after degradation', 30)
+  for (const [index, response] of responses.entries()) {
+    assert.equal(response.status, 200, `Responses 降级后批量请求 ${index + 1} 应成功，实际 HTTP ${response.status}: ${response.text}`)
+    assert.match(response.text, /mock ai responses sk-speed-secondary/, `Responses 降级后批量请求 ${index + 1} 应直接命中副号`)
+  }
+  const bulkHits = upstreamHits.slice(bulkHitStart)
+  assert.equal(countHits(bulkHits, 'sk-speed-primary', '/v1/responses'), 0, 'Responses 降级后批量请求不应回打慢主号')
+  assert.equal(countHits(bulkHits, 'sk-speed-secondary', '/v1/responses'), 30, 'Responses 降级后批量请求应全部命中副号')
+
+  await latencyDegradation.clearNormalRouteLatencyDegradationForRouteStrategyAsync(scenario.routeStrategyId)
+  setAccountPhase('sk-speed-primary', 'fast')
+  setAccountPhase('sk-speed-secondary', 'fast')
+}
+
 async function assertAllDegradedBypassKeepsOriginalOrder(baseUrl: string, scenario: SpeedFirstScenario): Promise<void> {
   const scope = latencyDegradation.normalRouteLatencyDegradationScope({
     systemAccountId: access.systemAccountId,
@@ -305,6 +442,13 @@ async function assertAllDegradedBypassKeepsOriginalOrder(baseUrl: string, scenar
 
 async function assertStreamSlowFirstByteRetriesBeforeDownstreamOutput(baseUrl: string, scenario: SpeedFirstScenario): Promise<void> {
   await latencyDegradation.clearNormalRouteLatencyDegradationForRouteStrategyAsync(scenario.routeStrategyId)
+  const scope = latencyDegradation.normalRouteLatencyDegradationScope({
+    systemAccountId: access.systemAccountId,
+    routeStrategyId: scenario.routeStrategyId,
+    groupId: scenario.groupId
+  })
+  assert(scope, '流式首字慢切号测试需要有效普通路由速度优先 scope')
+  await latencyDegradation.recordNormalRouteFirstByteSlowAsync({ id: scenario.primaryAccountId }, scope, speedFirstConfig)
   setAccountPhase('sk-speed-primary', 'slow_first_byte')
   setAccountPhase('sk-speed-secondary', 'fast')
   const hitStart = upstreamHits.length
@@ -423,7 +567,74 @@ function createCostFirstScenario(upstreamBaseUrl: string): CostFirstScenario {
   return { apiKey: apiKey.key }
 }
 
-async function postChat(baseUrl: string, apiKey: string, content: string, stream: boolean): Promise<{ status: number; text: string }> {
+function createPriorityTierScenario(upstreamBaseUrl: string): SpeedFirstScenario {
+  const group = repositories.createGroup({
+    name: '普通路由速度优先优先级层 Mock AI 分组',
+    providerCode: GPT_VENDOR_CODE,
+    enabled: true
+  }, access)
+  const primary = repositories.createAccount({
+    providerCode: GPT_VENDOR_CODE,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: '01-普通路由速度优先唯一超级优先 Mock AI 主号',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-priority-super',
+      base_url: upstreamBaseUrl,
+      supported_endpoint_modes: ['responses_sse', 'chat_json']
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    supportedModels: [model],
+    superPriorityEnabled: true,
+    priority: 0
+  }, access)
+  const secondary = repositories.createAccount({
+    providerCode: GPT_VENDOR_CODE,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: '02-普通路由速度优先普通优先级 Mock AI 副号',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-priority-normal',
+      base_url: upstreamBaseUrl,
+      supported_endpoint_modes: ['responses_sse', 'chat_json']
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    supportedModels: [model],
+    priority: 1
+  }, access)
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
+    name: '普通路由速度优先优先级层 Mock AI 网关 Key',
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+    normalRoutingConfig: {
+      schedulingPreference: 'speed_first',
+      speedFirstConfig
+    },
+    status: 'active'
+  }, access)
+  assert(apiKey.key, '速度优先优先级层 Mock AI 网关 Key 未返回明文密钥')
+  assert(apiKey.routeStrategyId, '速度优先优先级层 Mock AI 网关 Key 未绑定策略路由')
+  return {
+    apiKey: apiKey.key,
+    routeStrategyId: apiKey.routeStrategyId,
+    groupId: group.id,
+    primaryAccountId: primary.id,
+    primaryAccountName: primary.name,
+    secondaryAccountId: secondary.id,
+    secondaryAccountName: secondary.name
+  }
+}
+
+interface ChatResponseResult {
+  status: number
+  text: string
+  stream: boolean
+}
+
+async function postChat(baseUrl: string, apiKey: string, content: string, stream: boolean): Promise<ChatResponseResult> {
   const response = await fetch(`${baseUrl}/v1/chat/completions`, {
     method: 'POST',
     headers: {
@@ -440,8 +651,80 @@ async function postChat(baseUrl: string, apiKey: string, content: string, stream
   })
   return {
     status: response.status,
-    text: await response.text()
+    text: await response.text(),
+    stream
   }
+}
+
+async function postResponses(baseUrl: string, apiKey: string, content: string): Promise<ChatResponseResult> {
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream'
+    },
+    body: JSON.stringify({
+      model,
+      input: [{ role: 'user', content: [{ type: 'input_text', text: content }] }],
+      stream: true,
+      max_output_tokens: 16
+    })
+  })
+  return {
+    status: response.status,
+    text: await response.text(),
+    stream: true
+  }
+}
+
+async function runBulkChatRequests(
+  baseUrl: string,
+  apiKey: string,
+  prefix: string,
+  total: number,
+  streamEvery: number
+): Promise<ChatResponseResult[]> {
+  const responses: ChatResponseResult[] = []
+  const batchSize = 12
+  for (let offset = 0; offset < total; offset += batchSize) {
+    const count = Math.min(batchSize, total - offset)
+    const batch = await Promise.all(Array.from({ length: count }, (_, index) => {
+      const requestIndex = offset + index + 1
+      return postChat(baseUrl, apiKey, `${prefix} ${requestIndex}`, requestIndex % streamEvery === 0)
+    }))
+    responses.push(...batch)
+  }
+  return responses
+}
+
+async function runBulkResponsesRequests(
+  baseUrl: string,
+  apiKey: string,
+  prefix: string,
+  total: number
+): Promise<ChatResponseResult[]> {
+  const responses: ChatResponseResult[] = []
+  const batchSize = 10
+  for (let offset = 0; offset < total; offset += batchSize) {
+    const count = Math.min(batchSize, total - offset)
+    const batch = await Promise.all(Array.from({ length: count }, (_, index) => {
+      const requestIndex = offset + index + 1
+      return postResponses(baseUrl, apiKey, `${prefix} ${requestIndex}`)
+    }))
+    responses.push(...batch)
+  }
+  return responses
+}
+
+function assertChatTransportShape(response: ChatResponseResult, label: string): void {
+  if (response.stream) {
+    assert.match(response.text, /data:\s*\{/, `${label} 的 stream 响应应包含 SSE data JSON 帧`)
+    assert.match(response.text, /data:\s*\[DONE\]/, `${label} 的 stream 响应应包含 SSE DONE 帧`)
+    return
+  }
+  assert.doesNotMatch(response.text, /data:\s*\{/, `${label} 的非流式响应不应返回 SSE 帧`)
+  assert.doesNotThrow(() => JSON.parse(response.text), `${label} 的非流式响应应是 JSON`)
 }
 
 async function listSpeedProbeCandidates(scenario: SpeedFirstScenario) {
@@ -478,11 +761,11 @@ function createMockOpenAIUpstream(): http.Server {
         return
       }
       if (phase === 'slow_first_byte') {
-        sendSlowFirstByteResponse(res, stream || path === '/v1/responses')
+        sendSlowFirstByteResponse(res, path === '/v1/responses' ? 'responses' : stream ? 'chat_stream' : 'chat_json')
         return
       }
       if (path === '/v1/responses') {
-        sendResponsesCompleted(res, `mock ai probe ${accountKey}`)
+        sendResponsesCompleted(res, `mock ai responses ${accountKey}`)
         return
       }
       if (stream) {
@@ -494,13 +777,15 @@ function createMockOpenAIUpstream(): http.Server {
   })
 }
 
-function sendSlowFirstByteResponse(res: http.ServerResponse, stream: boolean): void {
-  res.writeHead(200, { 'content-type': stream ? 'text/event-stream; charset=utf-8' : 'application/json; charset=utf-8' })
+function sendSlowFirstByteResponse(res: http.ServerResponse, mode: 'chat_json' | 'chat_stream' | 'responses'): void {
+  res.writeHead(200, { 'content-type': mode === 'chat_json' ? 'application/json; charset=utf-8' : 'text/event-stream; charset=utf-8' })
   res.flushHeaders()
   const timer = setTimeout(() => {
     if (res.destroyed || res.writableEnded) return
     try {
-      if (stream) {
+      if (mode === 'responses') {
+        writeResponsesCompletedEvent(res, 'late mock ai responses')
+      } else if (mode === 'chat_stream') {
         res.write(`data: ${JSON.stringify(chatSseChunk('late mock ai chunk'))}\n\n`)
         res.end('data: [DONE]\n\n')
       } else {
@@ -524,6 +809,11 @@ function sendChatCompletionSse(res: http.ServerResponse, content: string): void 
 }
 
 function sendResponsesCompleted(res: http.ServerResponse, outputText: string): void {
+  res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
+  writeResponsesCompletedEvent(res, outputText)
+}
+
+function writeResponsesCompletedEvent(res: http.ServerResponse, outputText: string): void {
   const completedEvent = {
     type: 'response.completed',
     response: {
@@ -543,7 +833,6 @@ function sendResponsesCompleted(res: http.ServerResponse, outputText: string): v
       }
     }
   }
-  res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
   res.end(`event: response.completed\ndata: ${JSON.stringify(completedEvent)}\n\n`)
 }
 

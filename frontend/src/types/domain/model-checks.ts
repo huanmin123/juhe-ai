@@ -44,6 +44,8 @@ export interface ModelCheckRunListParams {
   model?: ModelCheckModel
   level?: ModelCheckLevel
   status?: ModelCheckStatus
+  startAt?: string
+  endAt?: string
 }
 
 export interface ModelCheckRunSummary {

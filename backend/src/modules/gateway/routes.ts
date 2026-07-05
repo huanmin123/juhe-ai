@@ -87,9 +87,12 @@ import { forgetOpenAIAccountForSession } from './runtime/session-affinity.servic
 import { gatewayProtocolClientErrorProtocolForRequest } from './protocols/registry.js'
 import {
   normalRouteLatencyDegradationScope,
+  isNormalRouteAccountLatencyDegradedAsync,
   recordNormalRouteFirstByteSlowAsync,
-  recordNormalRouteFirstByteSuccessAsync
+  recordNormalRouteFirstByteSuccessAsync,
+  type NormalRouteLatencySlowResult
 } from './runtime/normal-route-latency-degradation.service.js'
+import { gatewayAccountDispatchPriorityTier } from './runtime/account-dispatch-priority-order.js'
 
 export const openAIGatewayRouter = Router()
 
@@ -116,7 +119,7 @@ export function handleGatewayDbServiceUnavailable(error: unknown, req: Request, 
 
   getRequestLogger().error(errorLogFields(error, {
     event: 'gateway_db_service_unavailable',
-    endpoint: `${req.method.toUpperCase()} ${requestEndpoint(req)}`
+    endpoint: requestEndpoint(req)
   }), '网关 DB service 不可用')
 
   sendGatewayErrorResponse(res, 503, gatewayErrorPayload(message, 'service_unavailable'), {
@@ -208,6 +211,7 @@ export async function handleOpenAIGatewayRequest(
   let streamServerRetryExcludedAccountIds = new Set<string>()
   let streamServerRetryCount = 0
   let speedFirstByteRetryCount = 0
+  let speedFirstRetryCandidateAccountIds: Set<string> | undefined
   let fallbackSwitchCount = 0
   const exhaustedAccountIds = new Set<string>()
   const nonStreamResponseStartedFailedAccountIds = new Set<string>()
@@ -276,6 +280,7 @@ export async function handleOpenAIGatewayRequest(
     streamServerRetryExcludedAccountIds = new Set<string>()
     streamServerRetryCount = 0
     speedFirstByteRetryCount = 0
+    speedFirstRetryCandidateAccountIds = undefined
     return 'switched'
   }
   const switchToHybridQualityUpgrade = async (
@@ -360,6 +365,7 @@ export async function handleOpenAIGatewayRequest(
     streamServerRetryExcludedAccountIds = new Set<string>()
     streamServerRetryCount = 0
     speedFirstByteRetryCount = 0
+    speedFirstRetryCandidateAccountIds = undefined
     return 'switched'
   }
 
@@ -380,6 +386,9 @@ export async function handleOpenAIGatewayRequest(
         codexTurnAvoidedAccountIds
       } = currentPreflight
       let dispatchAccounts = streamRetryDispatchAccounts(accounts, streamServerRetryExcludedAccountIds)
+      if (speedFirstRetryCandidateAccountIds) {
+        dispatchAccounts = dispatchAccounts.filter((account) => speedFirstRetryCandidateAccountIds?.has(account.id))
+      }
       if (dispatchAccounts.length === 0) {
         for (const accountId of streamServerRetryExcludedAccountIds) {
           exhaustedAccountIds.add(accountId)
@@ -485,13 +494,67 @@ export async function handleOpenAIGatewayRequest(
         throw error
       }
       const { account, response: upstreamResponse, upstreamUrl, auditAttemptId, attemptStartedAt, releaseConcurrency, markFirstOutput, confirmSameAccountApiKeyFailures } = upstreamResult
-      const speedFirstByteTimeoutMs = normalRouteSpeedFirstByteTimeoutMs({
-        config: normalRouteSpeedFirstConfig,
-        accounts,
-        excludedAccountIds: streamServerRetryExcludedAccountIds,
-        currentAccountId: account.id,
-        retryCount: speedFirstByteRetryCount
+      const speedFirstFirstByteDeadlineMs = normalRouteSpeedFirstByteDeadlineMs(normalRouteSpeedFirstConfig)
+      const speedFirstLatencyScope = normalRouteLatencyDegradationScope({
+        systemAccountId: gatewayUsageContext.systemAccountId,
+        routeStrategyId: apiKeyRecord?.route_strategy_id,
+        groupId: gatewayUsageContext.groupId
       })
+      let speedFirstSlowObservedForAttempt: NormalRouteLatencySlowResult | undefined
+      let speedFirstCutoverAllowedAtDeadline = false
+      const onSpeedFirstFirstByteDeadline = speedFirstFirstByteDeadlineMs !== undefined && normalRouteSpeedFirstConfig
+        ? async () => {
+            const alreadyDegraded = await isNormalRouteAccountLatencyDegradedAsync(account, speedFirstLatencyScope)
+            speedFirstSlowObservedForAttempt = await recordNormalRouteFirstByteSlowAsync(
+              account,
+              speedFirstLatencyScope,
+              normalRouteSpeedFirstConfig,
+              `普通路由速度优先首字观察阈值 ${speedFirstFirstByteDeadlineMs}ms 已到达`
+            )
+            const nextExcludedAccountIds = new Set(streamServerRetryExcludedAccountIds)
+            nextExcludedAccountIds.add(account.id)
+            const sameTierRemainingAccounts = speedFirstSameTierDispatchAccounts(accounts, account, nextExcludedAccountIds, modelPriority)
+            const remainingCandidateCount = sameTierRemainingAccounts.length
+            const maxRetries = normalRouteSpeedFirstConfig.maxFirstByteRetriesPerRequest
+            const totalWaitTimedOut = streamClientTotalWaitTimedOut(activeGatewaySettings, startedAt)
+            const degradedForCutover = alreadyDegraded || speedFirstSlowObservedForAttempt?.degraded === true
+            speedFirstCutoverAllowedAtDeadline = degradedForCutover
+              && speedFirstByteRetryCount < maxRetries
+              && remainingCandidateCount > 0
+              && !totalWaitTimedOut
+            auditCapture.addGatewayMetadata({
+              label: 'normal_route_speed_first_slow_observed',
+              metadata: {
+                accountId: account.id,
+                accountName: account.name,
+                firstTokenMs: undefined,
+                thresholdMs: normalRouteSpeedFirstConfig.firstByteThresholdMs,
+                elapsedMs: Date.now() - attemptStartedAt,
+                observedAt: 'first_byte_deadline',
+                alreadyDegraded,
+                slowCount: speedFirstSlowObservedForAttempt?.slowCount,
+                degraded: speedFirstSlowObservedForAttempt?.degraded,
+                degradedUntil: speedFirstSlowObservedForAttempt?.degradedUntil,
+                nextProbeAt: speedFirstSlowObservedForAttempt?.nextProbeAt,
+                cutoverAllowed: speedFirstCutoverAllowedAtDeadline,
+                retryBlockedReason: speedFirstCutoverAllowedAtDeadline
+                  ? undefined
+                  : totalWaitTimedOut
+                    ? 'client_total_wait_timeout'
+                    : remainingCandidateCount <= 0
+                      ? 'no_remaining_candidate'
+                      : !degradedForCutover
+                        ? 'slow_observation_not_degraded'
+                        : 'max_retry_exceeded',
+                retryCount: speedFirstByteRetryCount,
+                maxRetries,
+                remainingCandidateCount,
+                sameTierCandidateAccountIds: sameTierRemainingAccounts.map((item) => item.id)
+              }
+            })
+            return speedFirstCutoverAllowedAtDeadline ? 'abort' as const : 'continue' as const
+          }
+        : undefined
 
       try {
         activeDownstreamSessionAffinity = sessionAffinityKey
@@ -518,7 +581,8 @@ export async function handleOpenAIGatewayRequest(
             usageContext: gatewayUsageContext,
             startedAt: attemptStartedAt,
             signal: abortController.signal,
-            firstByteTimeoutMs: speedFirstByteTimeoutMs,
+            firstByteDeadlineMs: speedFirstFirstByteDeadlineMs,
+            onFirstByteDeadline: onSpeedFirstFirstByteDeadline,
             sessionAffinityKey,
             clientStrategy,
             responseInspectionPolicies,
@@ -542,7 +606,8 @@ export async function handleOpenAIGatewayRequest(
               usageContext: gatewayUsageContext,
               startedAt: attemptStartedAt,
               signal: abortController.signal,
-              firstByteTimeoutMs: speedFirstByteTimeoutMs,
+              firstByteDeadlineMs: speedFirstFirstByteDeadlineMs,
+              onFirstByteDeadline: onSpeedFirstFirstByteDeadline,
               sessionAffinityKey,
               responseInspectionPolicies,
               hybridRoute: currentPreflight.hybridRoute,
@@ -597,23 +662,14 @@ export async function handleOpenAIGatewayRequest(
         }
         if (handledResponse.retryUpstream) {
           if (handledResponse.retryReason === 'speed_first_first_byte_timeout') {
-            const latencyScope = normalRouteLatencyDegradationScope({
-              systemAccountId: gatewayUsageContext.systemAccountId,
-              routeStrategyId: apiKeyRecord?.route_strategy_id,
-              groupId: gatewayUsageContext.groupId
-            })
-            const slowResult = await recordNormalRouteFirstByteSlowAsync(
-              account,
-              latencyScope,
-              normalRouteSpeedFirstConfig,
-              handledResponse.message
-            )
             speedFirstByteRetryCount += 1
             streamServerRetryExcludedAccountIds.add(account.id)
-            const remainingCandidateCount = streamRetryDispatchAccounts(accounts, streamServerRetryExcludedAccountIds).length
-            const maxRetries = normalRouteSpeedFirstConfig?.maxFirstByteRetriesPerRequest ?? 1
+            const sameTierRemainingAccounts = speedFirstSameTierDispatchAccounts(accounts, account, streamServerRetryExcludedAccountIds, modelPriority)
+            const remainingCandidateCount = sameTierRemainingAccounts.length
+            const maxRetries = normalRouteSpeedFirstConfig?.maxFirstByteRetriesPerRequest ?? 0
             const totalWaitTimedOut = streamClientTotalWaitTimedOut(activeGatewaySettings, startedAt)
-            const retryAllowed = speedFirstByteRetryCount <= maxRetries
+            const retryAllowed = speedFirstCutoverAllowedAtDeadline
+              && speedFirstByteRetryCount <= maxRetries
               && remainingCandidateCount > 0
               && !totalWaitTimedOut
             auditCapture.addGatewayMetadata({
@@ -628,19 +684,24 @@ export async function handleOpenAIGatewayRequest(
                     ? 'client_total_wait_timeout'
                     : remainingCandidateCount <= 0
                       ? 'no_remaining_candidate'
-                      : 'max_retry_exceeded',
+                      : !speedFirstCutoverAllowedAtDeadline
+                        ? 'cutover_not_confirmed'
+                        : 'max_retry_exceeded',
                 accountId: account.id,
                 remainingCandidateCount,
                 excludedAccountIds: [...streamServerRetryExcludedAccountIds],
                 thresholdMs: normalRouteSpeedFirstConfig?.firstByteThresholdMs,
-                slowCount: slowResult?.slowCount,
-                degraded: slowResult?.degraded,
-                degradedUntil: slowResult?.degradedUntil,
-                nextProbeAt: slowResult?.nextProbeAt,
+                slowCount: speedFirstSlowObservedForAttempt?.slowCount,
+                degraded: speedFirstSlowObservedForAttempt?.degraded,
+                degradedUntil: speedFirstSlowObservedForAttempt?.degradedUntil,
+                nextProbeAt: speedFirstSlowObservedForAttempt?.nextProbeAt,
+                cutoverAllowedAtDeadline: speedFirstCutoverAllowedAtDeadline,
+                sameTierCandidateAccountIds: sameTierRemainingAccounts.map((item) => item.id),
                 errorCode: handledResponse.errorCode
               }
             })
             if (retryAllowed) {
+              speedFirstRetryCandidateAccountIds = new Set(sameTierRemainingAccounts.map((item) => item.id))
               continue
             }
             if (remainingCandidateCount <= 0) {
@@ -878,34 +939,32 @@ export async function handleOpenAIGatewayRequest(
           continue
         }
         if (normalRouteSpeedFirstConfig && handledResponse.firstTokenMs !== undefined) {
-          const latencyScope = normalRouteLatencyDegradationScope({
-            systemAccountId: gatewayUsageContext.systemAccountId,
-            routeStrategyId: apiKeyRecord?.route_strategy_id,
-            groupId: gatewayUsageContext.groupId
-          })
           if (handledResponse.firstTokenMs > normalRouteSpeedFirstConfig.firstByteThresholdMs) {
-            const slowResult = await recordNormalRouteFirstByteSlowAsync(
-              account,
-              latencyScope,
-              normalRouteSpeedFirstConfig,
-              `普通路由速度优先首字耗时 ${handledResponse.firstTokenMs}ms 超过阈值 ${normalRouteSpeedFirstConfig.firstByteThresholdMs}ms`
-            )
-            auditCapture.addGatewayMetadata({
-              label: 'normal_route_speed_first_slow_observed',
-              metadata: {
-                accountId: account.id,
-                firstTokenMs: handledResponse.firstTokenMs,
-                thresholdMs: normalRouteSpeedFirstConfig.firstByteThresholdMs,
-                slowCount: slowResult?.slowCount,
-                degraded: slowResult?.degraded,
-                degradedUntil: slowResult?.degradedUntil,
-                nextProbeAt: slowResult?.nextProbeAt
-              }
-            })
+            if (!speedFirstSlowObservedForAttempt) {
+              const slowResult = await recordNormalRouteFirstByteSlowAsync(
+                account,
+                speedFirstLatencyScope,
+                normalRouteSpeedFirstConfig,
+                `普通路由速度优先首字耗时 ${handledResponse.firstTokenMs}ms 超过阈值 ${normalRouteSpeedFirstConfig.firstByteThresholdMs}ms`
+              )
+              auditCapture.addGatewayMetadata({
+                label: 'normal_route_speed_first_slow_observed',
+                metadata: {
+                  accountId: account.id,
+                  firstTokenMs: handledResponse.firstTokenMs,
+                  thresholdMs: normalRouteSpeedFirstConfig.firstByteThresholdMs,
+                  observedAt: 'response_completed',
+                  slowCount: slowResult?.slowCount,
+                  degraded: slowResult?.degraded,
+                  degradedUntil: slowResult?.degradedUntil,
+                  nextProbeAt: slowResult?.nextProbeAt
+                }
+              })
+            }
           } else if (upstreamResponse.ok) {
             const recoveryResult = await recordNormalRouteFirstByteSuccessAsync(
               account,
-              latencyScope,
+              speedFirstLatencyScope,
               normalRouteSpeedFirstConfig,
               handledResponse.firstTokenMs
             )
@@ -1106,20 +1165,24 @@ function streamRetryDispatchAccounts(accounts: UpstreamAccount[], excludedAccoun
   return accounts.filter((account) => !excludedAccountIds.has(account.id))
 }
 
-function normalRouteSpeedFirstByteTimeoutMs(input: {
-  config?: RouteStrategySpeedFirstConfig
-  accounts: UpstreamAccount[]
-  excludedAccountIds: Set<string>
-  currentAccountId: string
-  retryCount: number
-}): number | undefined {
-  if (input.config?.retryOnFirstByteTimeout !== true) return undefined
-  if (input.retryCount >= input.config.maxFirstByteRetriesPerRequest) return undefined
-  const nextExcludedAccountIds = new Set(input.excludedAccountIds)
-  nextExcludedAccountIds.add(input.currentAccountId)
-  return streamRetryDispatchAccounts(input.accounts, nextExcludedAccountIds).length > 0
-    ? input.config.firstByteThresholdMs
-    : undefined
+function normalRouteSpeedFirstByteDeadlineMs(config?: RouteStrategySpeedFirstConfig): number | undefined {
+  return config?.firstByteThresholdMs
+}
+
+function speedFirstSameTierDispatchAccounts(
+  accounts: UpstreamAccount[],
+  currentAccount: UpstreamAccount,
+  excludedAccountIds: Set<string>,
+  modelPriority?: { rankByAccountId: ReadonlyMap<string, number> }
+): UpstreamAccount[] {
+  const currentTier = gatewayAccountDispatchPriorityTier(currentAccount, {
+    modelRankByAccountId: modelPriority?.rankByAccountId
+  })
+  return streamRetryDispatchAccounts(accounts, excludedAccountIds).filter((candidate) => (
+    gatewayAccountDispatchPriorityTier(candidate, {
+      modelRankByAccountId: modelPriority?.rankByAccountId
+    }) === currentTier
+  ))
 }
 
 function streamClientTotalWaitTimedOut(settings: GatewaySettings, startedAt: number): boolean {

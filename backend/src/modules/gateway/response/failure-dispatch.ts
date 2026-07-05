@@ -348,7 +348,14 @@ export async function handleUpstreamRequestError(
         message: downstreamConnectionClosedMessage
       }
     }
-    auditCapture.completeAttempt(auditAttemptId, {
+    completeOrRecordFailedAttempt({
+      req,
+      auditCapture,
+      auditAttemptId,
+      account,
+      upstreamUrl,
+      attemptStartedAt,
+      auditAttemptIndex,
       success: false,
       errorPhase: 'client',
       errorMessage: downstreamConnectionClosedMessage
@@ -381,7 +388,14 @@ export async function handleUpstreamRequestError(
     upstreamUrl,
     message
   }
-  auditCapture.completeAttempt(auditAttemptId, {
+  completeOrRecordFailedAttempt({
+    req,
+    auditCapture,
+    auditAttemptId,
+    account,
+    upstreamUrl,
+    attemptStartedAt,
+    auditAttemptIndex,
     success: false,
     errorPhase: 'upstream_request',
     errorMessage: message
@@ -515,4 +529,55 @@ function isRealUpstreamUrl(value: string): boolean {
 
 function shouldRecordPrecheckForRequestFailure(upstreamUrl: string): boolean {
   return isRealUpstreamUrl(upstreamUrl) || upstreamUrl === 'account:preparation'
+}
+
+function completeOrRecordFailedAttempt(input: {
+  req: Request
+  auditCapture: AuditCaptureContext
+  auditAttemptId: string
+  account: UpstreamAccount
+  upstreamUrl: string
+  attemptStartedAt: number
+  auditAttemptIndex: number
+  success: false
+  statusCode?: number
+  errorPhase: string
+  errorCode?: string
+  errorMessage?: string
+}): void {
+  const {
+    req,
+    auditCapture,
+    auditAttemptId,
+    account,
+    upstreamUrl,
+    attemptStartedAt,
+    auditAttemptIndex,
+    statusCode,
+    errorPhase,
+    errorCode,
+    errorMessage
+  } = input
+  if (auditAttemptId) {
+    auditCapture.completeAttempt(auditAttemptId, {
+      statusCode,
+      success: false,
+      errorPhase,
+      errorCode,
+      errorMessage
+    })
+    return
+  }
+  auditCapture.recordFailedDispatchAttempt({
+    account,
+    attemptIndex: auditAttemptIndex,
+    upstreamUrl,
+    method: req.method,
+    startedAtMs: attemptStartedAt,
+    statusCode,
+    errorPhase,
+    errorCode,
+    errorMessage,
+    requestForModelAccounting: req
+  })
 }

@@ -171,7 +171,7 @@
 
     <template #footer>
       <div class="account-modal-footer">
-        <a-button :disabled="loading || testButtonDisabled" :loading="testLoading" @click="$emit('test')">测试</a-button>
+        <a-button :disabled="testButtonDisabled" :loading="testLoading" @click="$emit('test')">测试</a-button>
         <a-space>
           <a-button @click="$emit('cancel')">取消</a-button>
           <a-button v-bind="confirmButtonProps" :loading="confirmLoading" @click="$emit('ok')">确定</a-button>

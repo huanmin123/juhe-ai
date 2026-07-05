@@ -11,6 +11,7 @@ import { backendRoot, runtimeConfig } from '../../config/runtime.js'
 import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { readAuditLogSettings } from '../../modules/audit-logs/audit-log-settings.js'
 import { logger } from '../../shared/logger.js'
+import { redisNamespacedGroup, redisNamespacedKey } from '../../shared/redis-namespace.js'
 import { closeStorageDatabases } from '../../storage/database.js'
 import { closePostgresPool, getPostgresPool } from '../../storage/postgres-client.js'
 import {
@@ -229,18 +230,18 @@ interface ProcessOutput {
 const access = { systemAccountId: 'sys_admin', role: 'super_admin' as const }
 const runId = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
 const tracePrefix = `perf-gateway-${runId}`
-const usageRecordRedisStreamKey = 'juhe-ai:queue:usage-records'
-const usageRecordRedisStreamGroup = 'juhe-ai:usage-record-writers'
-const auditLogRedisStreamKey = 'juhe-ai:queue:audit-logs'
-const auditLogRedisStreamGroup = 'juhe-ai:audit-log-writers'
-const operationLogRedisStreamKey = 'juhe-ai:queue:operation-logs'
-const operationLogRedisStreamGroup = 'juhe-ai:operation-log-writers'
-const publicApiLogRedisStreamKey = 'juhe-ai:queue:public-api-logs'
-const publicApiLogRedisStreamGroup = 'juhe-ai:public-api-log-writers'
-const recordMaintenanceRedisStreamKey = 'juhe-ai:queue:record-maintenance'
-const recordMaintenanceRedisStreamGroup = 'juhe-ai:record-maintenance-writers'
-const runtimeLogRedisStreamKey = 'juhe-ai:queue:runtime-log-index'
-const runtimeLogRedisStreamGroup = 'juhe-ai:runtime-log-index-writers'
+const usageRecordRedisStreamKey = redisNamespacedKey('juhe-ai:queue:usage-records')
+const usageRecordRedisStreamGroup = redisNamespacedGroup('juhe-ai:usage-record-writers')
+const auditLogRedisStreamKey = redisNamespacedKey('juhe-ai:queue:audit-logs')
+const auditLogRedisStreamGroup = redisNamespacedGroup('juhe-ai:audit-log-writers')
+const operationLogRedisStreamKey = redisNamespacedKey('juhe-ai:queue:operation-logs')
+const operationLogRedisStreamGroup = redisNamespacedGroup('juhe-ai:operation-log-writers')
+const publicApiLogRedisStreamKey = redisNamespacedKey('juhe-ai:queue:public-api-logs')
+const publicApiLogRedisStreamGroup = redisNamespacedGroup('juhe-ai:public-api-log-writers')
+const recordMaintenanceRedisStreamKey = redisNamespacedKey('juhe-ai:queue:record-maintenance')
+const recordMaintenanceRedisStreamGroup = redisNamespacedGroup('juhe-ai:record-maintenance-writers')
+const runtimeLogRedisStreamKey = redisNamespacedKey('juhe-ai:queue:runtime-log-index')
+const runtimeLogRedisStreamGroup = redisNamespacedGroup('juhe-ai:runtime-log-index-writers')
 const redisAccountConcurrencySampleScript = `
 local now_ms = tonumber(ARGV[1])
 local expired = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', now_ms)
@@ -1176,8 +1177,8 @@ async function sampleRedisAccountConcurrency(client: RedisSampleClient, accountI
     'EVAL',
     redisAccountConcurrencySampleScript,
     '2',
-    `juhe-ai:account-concurrency-v2:${accountId}:total`,
-    `juhe-ai:account-concurrency-v2:${accountId}:metadata`,
+    redisNamespacedKey(`juhe-ai:account-concurrency-v2:${accountId}:total`),
+    redisNamespacedKey(`juhe-ai:account-concurrency-v2:${accountId}:metadata`),
     String(now)
   ])
   return numberValue(result)

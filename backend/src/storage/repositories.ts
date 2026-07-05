@@ -1119,9 +1119,9 @@ async function loadAccountUsageDefaultTrendAccountIdsAsync(access?: AccessScope)
   return rows.map((row) => row.scope_id).filter((id): id is string => Boolean(id))
 }
 
-export function findAccountForTest(accountId: string, access?: AccessScope): AccountSummary | undefined {
+export function findAccountForTest(accountId: string, access?: AccessScope, visibleAccountInput?: AccountSummary): AccountSummary | undefined {
   const accountAccess = access ?? internalAccountReadAccess
-  const visibleAccount = findAccountSummary(accountId, accountAccess)
+  const visibleAccount = visibleAccountInput ?? findAccountSummary(accountId, accountAccess)
   if (!visibleAccount?.permissions?.canUse) {
     return undefined
   }
@@ -1143,8 +1143,8 @@ export function findAccountForTest(accountId: string, access?: AccessScope): Acc
   }
 }
 
-export async function findAccountForTestAsync(accountId: string, access?: AccessScope): Promise<AccountSummary | undefined> {
-  if (sqliteReadWorkerPoolEnabled()) {
+export async function findAccountForTestAsync(accountId: string, access?: AccessScope, visibleAccountInput?: AccountSummary): Promise<AccountSummary | undefined> {
+  if (sqliteReadWorkerPoolEnabled() && !visibleAccountInput) {
     return requestSqliteReadWorker({
       type: 'find_account_for_test_read_only',
       accountId,
@@ -1152,10 +1152,10 @@ export async function findAccountForTestAsync(accountId: string, access?: Access
     })
   }
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return findAccountForTest(accountId, access)
+    return findAccountForTest(accountId, access, visibleAccountInput)
   }
   const accountAccess = access ?? internalAccountReadAccess
-  const visibleAccount = await findAccountSummaryAsync(accountId, accountAccess)
+  const visibleAccount = visibleAccountInput ?? await findAccountSummaryAsync(accountId, accountAccess)
   if (!visibleAccount?.permissions?.canUse) {
     return undefined
   }

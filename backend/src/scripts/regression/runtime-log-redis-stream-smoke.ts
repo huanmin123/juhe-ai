@@ -11,6 +11,7 @@ import {
 } from '../../modules/runtime-logs/runtime-log-index-queue.service.js'
 import { logger } from '../../shared/logger.js'
 import { closeRedisClients } from '../../shared/redis-client.js'
+import { redisNamespacedGroup, redisNamespacedKey } from '../../shared/redis-namespace.js'
 import { closeStorageDatabases } from '../../storage/database.js'
 import { closePostgresPool } from '../../storage/postgres-client.js'
 import { listRuntimeLogsAsync } from '../../storage/runtime-logs.repository.js'
@@ -26,8 +27,8 @@ interface StreamSnapshot {
   lag: number
 }
 
-const streamKey = 'juhe-ai:queue:runtime-log-index'
-const groupName = 'juhe-ai:runtime-log-index-writers'
+const streamKey = redisNamespacedKey('juhe-ai:queue:runtime-log-index')
+const groupName = redisNamespacedGroup('juhe-ai:runtime-log-index-writers')
 const smokeId = `runtime-log-smoke-${Date.now()}`
 const traceId = `runtime-log-redis-stream-smoke-${Date.now()}`
 const sourceKey = `${traceId}:source`

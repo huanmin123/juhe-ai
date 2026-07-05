@@ -58,7 +58,7 @@ export function preserveGatewayAccountDispatchPriorityTiers<T extends GatewayDis
   return output
 }
 
-function gatewayAccountDispatchPriorityTier(
+export function gatewayAccountDispatchPriorityTier(
   account: GatewayDispatchPriorityAccount,
   options: GatewayDispatchPriorityOrderOptions
 ): string {

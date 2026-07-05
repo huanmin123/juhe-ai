@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -113,6 +113,9 @@ try {
     ['trace-runtime-guard-long', 'trace-runtime-guard-raw-json', 'trace-runtime-guard-short'],
     '运行日志 traceId 筛选应支持右侧前缀定位，与审计/操作日志契约一致'
   )
+  const runtimeLogsSource = readFileSync(new URL('../../storage/runtime-logs.repository.ts', import.meta.url), 'utf8')
+  assert.match(runtimeLogsSource, /runtimeConfig\.databaseDriver === 'postgres' \? `\$\{column\} COLLATE "C"` : column/, 'PG 运行日志 traceId 前缀筛选必须使用 C collation')
+  assert.match(runtimeLogsSource, /textPrefixUpperBound\(text\)/, '运行日志 traceId 前缀筛选必须使用统一二进制上界')
 
   const datasetDatabase = databaseModule.getDatasetDatabase()
   const originalPrepare = datasetDatabase.prepare.bind(datasetDatabase) as typeof datasetDatabase.prepare

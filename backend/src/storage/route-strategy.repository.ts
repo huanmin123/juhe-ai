@@ -117,12 +117,10 @@ interface RouteStrategyBindableGroupRow {
 }
 
 export function listRouteStrategiesPage(access?: AccessScope, options?: RouteStrategyListOptions): RouteStrategyListResult {
-  ensureDefaultRouteStrategyForAccess(access)
   return listRouteStrategiesPageReadOnly(access, options)
 }
 
 export function listRouteStrategyListItemsPage(access?: AccessScope, options?: RouteStrategyListOptions): RouteStrategyListItemResult {
-  ensureDefaultRouteStrategyForAccess(access)
   return listRouteStrategyListItemsPageReadOnly(access, options)
 }
 
@@ -189,7 +187,6 @@ export async function listRouteStrategiesPageAsync(access?: AccessScope, options
   }
   const normalized = normalizeRouteStrategyListOptions(options)
   const client = await getRouteStrategyDatabaseClient()
-  await ensureDefaultRouteStrategyForAccessAsync(access, client)
   const scope = buildSystemAccountWhereClause(access, 'route_strategies.system_account_id')
   const filters = buildRouteStrategyFiltersForClient(client, scope, normalized)
   const rows = await client.query<RouteStrategyRow>(`
@@ -213,7 +210,6 @@ export async function listRouteStrategiesPageAsync(access?: AccessScope, options
 }
 
 export function listRouteStrategyOptions(access?: AccessScope, options?: RouteStrategyOptionListOptions): RouteStrategyOptionSummary[] {
-  ensureDefaultRouteStrategyForAccess(access)
   return listRouteStrategyOptionsReadOnly(access, options)
 }
 
@@ -230,7 +226,6 @@ export async function listRouteStrategyListItemsPageAsync(access?: AccessScope, 
   }
   const normalized = normalizeRouteStrategyListOptions(options)
   const client = await getRouteStrategyDatabaseClient()
-  await ensureDefaultRouteStrategyForAccessAsync(access, client)
   const scope = buildSystemAccountWhereClause(access, 'route_strategies.system_account_id')
   const filters = buildRouteStrategyFiltersForClient(client, scope, normalized)
   const rows = await client.query<RouteStrategyRow>(`
@@ -282,7 +277,6 @@ export async function listRouteStrategyOptionsAsync(access?: AccessScope, option
   }
   const normalized = normalizeRouteStrategyOptionListOptions(options)
   const client = await getRouteStrategyDatabaseClient()
-  await ensureDefaultRouteStrategyForAccessAsync(access, client)
   const scope = buildSystemAccountWhereClause(access, 'route_strategies.system_account_id')
   const filters = buildRouteStrategyOptionFiltersForClient(client, scope, normalized)
   const rows = await client.query<RouteStrategyRow>(`
@@ -1303,6 +1297,7 @@ function routeStrategyListItemColumns(): string {
     'route_strategies.mode',
     'route_strategies.status',
     'route_strategies.is_default',
+    'route_strategies.config_json',
     '(SELECT COUNT(1) FROM route_strategy_groups WHERE route_strategy_groups.route_strategy_id = route_strategies.id AND route_strategy_groups.system_account_id = route_strategies.system_account_id) AS binding_count',
     '(SELECT COUNT(1) FROM api_keys WHERE api_keys.route_strategy_id = route_strategies.id AND api_keys.system_account_id = route_strategies.system_account_id) AS api_key_count',
     'route_strategies.created_at',
@@ -1337,6 +1332,7 @@ function routeStrategyListItemColumnsForClient(client: DatabaseClient): string {
     'route_strategies.mode',
     'route_strategies.status',
     'route_strategies.is_default',
+    'route_strategies.config_json',
     `(SELECT COUNT(1) FROM ${routeStrategyTable(client, 'route_strategy_groups')} route_strategy_groups WHERE route_strategy_groups.route_strategy_id = route_strategies.id AND route_strategy_groups.system_account_id = route_strategies.system_account_id) AS binding_count`,
     `(SELECT COUNT(1) FROM ${routeStrategyTable(client, 'api_keys')} api_keys WHERE api_keys.route_strategy_id = route_strategies.id AND api_keys.system_account_id = route_strategies.system_account_id) AS api_key_count`,
     'route_strategies.created_at',
@@ -1546,18 +1542,6 @@ async function routeStrategyApiKeyCountAsync(client: DatabaseClient, routeStrate
     WHERE route_strategy_id = ? AND system_account_id = ?
   `, [routeStrategyId, systemAccountId])
   return Number(row?.count ?? 0)
-}
-
-function ensureDefaultRouteStrategyForAccess(access?: AccessScope): void {
-  const systemAccountId = manageableSystemAccountId(access)
-  if (!systemAccountId) return
-  ensureDefaultRouteStrategiesForSystemAccount(systemAccountId)
-}
-
-async function ensureDefaultRouteStrategyForAccessAsync(access: AccessScope | undefined, client: DatabaseClient): Promise<void> {
-  const systemAccountId = manageableSystemAccountId(access)
-  if (!systemAccountId) return
-  await ensureDefaultRouteStrategiesForSystemAccountAsync(client, systemAccountId)
 }
 
 function defaultRouteStrategyIdForGroup(database: DatabaseSync, systemAccountId: string, groupId: string): string | undefined {

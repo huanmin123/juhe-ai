@@ -489,6 +489,7 @@ function assertAuditPayloadCleanupUsesAsyncFiles(): void {
   const auditRepositorySource = readFileSync(new URL('../../storage/audit-logs.repository.ts', import.meta.url), 'utf8')
   const dataRetentionSource = readFileSync(new URL('../../modules/background/data-retention-cleanup.service.ts', import.meta.url), 'utf8')
   assert(payloadBlobSource.includes('cleanupUnreferencedAuditPayloadBlobsAsync'), '审计 payload blob 应提供异步清理入口')
+  assert.match(payloadBlobSource, /listAuditPayloadBlobRowsBefore[\s\S]*NOT EXISTS[\s\S]*audit_payload_refs[\s\S]*headers_blob_id = b\.id OR r\.body_blob_id = b\.id/, '按时间清理审计 payload blob 时必须跳过仍被 audit_payload_refs 引用的 blob')
   assert(payloadBlobSource.includes('auditBlobCleanupDeleteConcurrency'), '审计 payload blob 异步清理应限制单轮文件删除并发')
   assert(payloadBlobSource.includes('await Promise.all(chunk.map((storageKey) => deleteBlobFileAsync(storageKey)))'), '审计 payload blob 异步清理应使用异步文件删除，不能批量 unlinkSync')
   assert(auditRepositorySource.includes('cleanupAuditLogsByRetentionAsync'), '审计日志保留清理应提供异步入口')

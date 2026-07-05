@@ -109,16 +109,20 @@ try {
         slowWindowSeconds: 120,
         recoverySuccessCount: 3,
         probeIntervalSeconds: 30,
-        degradedTtlSeconds: 300,
-        retryOnFirstByteTimeout: true,
-        maxFirstByteRetriesPerRequest: 1
+        degradedTtlSeconds: 300
       }
     },
     groupBindings: [{ groupId: primaryGroup.id, priority: 1, status: 'active' }]
   }, access)
   assert.equal(speedFirstStrategy.normalRoutingConfig?.schedulingPreference, 'speed_first', '速度优先配置应保存到普通路由')
-  assert.equal(speedFirstStrategy.normalRoutingConfig?.speedFirstConfig?.firstByteThresholdMs, 30000, '速度优先首字等待阈值应按毫秒保存')
+  assert.equal(speedFirstStrategy.normalRoutingConfig?.speedFirstConfig?.firstByteThresholdMs, 30000, '速度优先首字观察阈值应按毫秒保存')
   assert.equal(speedFirstStrategy.normalRoutingConfig?.speedFirstConfig?.slowTriggerCount, 3, '速度优先慢速触发次数默认基线应为 3')
+  assert.equal(speedFirstStrategy.normalRoutingConfig?.speedFirstConfig?.maxFirstByteRetriesPerRequest, 2, '速度优先单请求切号次数默认基线应为 2')
+  const speedFirstListItem = repositories
+    .listRouteStrategyListItemsPage(access, { mode: 'normal', page: 1, pageSize: 50 })
+    .items
+    .find((item) => item.id === speedFirstStrategy.id)
+  assert.equal(speedFirstListItem?.normalRoutingConfig?.schedulingPreference, 'speed_first', '策略路由列表项应返回速度优先配置供前端模式列展示')
 
   assert.throws(() => {
     repositories.createRouteStrategy({
@@ -130,7 +134,7 @@ try {
       },
       groupBindings: [{ groupId: primaryGroup.id, priority: 1, status: 'active' }]
     }, access)
-  }, /首字等待阈值/, '速度优先首字等待阈值不能低于 10 秒')
+}, /首字观察阈值/, '速度优先首字观察阈值不能低于 10 秒')
 
   assert.throws(() => {
     repositories.createRouteStrategy({

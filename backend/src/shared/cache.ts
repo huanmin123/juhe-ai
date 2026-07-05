@@ -3,6 +3,7 @@ import { LRUCache } from 'lru-cache'
 import { runtimeConfig } from '../config/runtime.js'
 import { errorLogFields, logger } from './logger.js'
 import { getRedisClient, type RedisCommandClient } from './redis-client.js'
+import { redisNamespacedKey } from './redis-namespace.js'
 
 export interface AppCacheOptions<K extends {}, V extends {}> {
   name: string
@@ -221,9 +222,9 @@ class RedisSharedJsonCache<V extends {}> implements SharedJsonCache<V> {
     }
     this.name = options.name
     const safeName = sanitizeRedisKeyPart(options.name)
-    this.keyPrefix = `juhe-ai:cache:${safeName}:`
-    this.indexKeyPrefix = `juhe-ai:cache-index:${safeName}:`
-    this.versionKey = `juhe-ai:cache-version:${safeName}`
+    this.keyPrefix = redisNamespacedKey(`juhe-ai:cache:${safeName}:`)
+    this.indexKeyPrefix = redisNamespacedKey(`juhe-ai:cache-index:${safeName}:`)
+    this.versionKey = redisNamespacedKey(`juhe-ai:cache-version:${safeName}`)
   }
 
   async get(key: string): Promise<V | undefined> {

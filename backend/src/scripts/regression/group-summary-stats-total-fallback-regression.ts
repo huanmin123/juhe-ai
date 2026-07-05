@@ -56,11 +56,13 @@ try {
   const page = await repositories.listGroupsPageAsync(access, { page: 1, pageSize: 20 })
   const summary = page.items.find((item) => item.id === group.id)
   assert(summary, '分组列表应返回新建分组')
-  assert(summary.accountIds.includes(account.id), '分组业务绑定账号 ID 应来自业务库')
-  assert.equal(summary.accountStats.total, 1, 'stats 库缺失时 accountStats.total 仍必须等于业务绑定账号数')
+  assert.deepEqual(summary.accountIds, [], '分组分页列表不应加载完整账号 ID，避免列表读放大')
+  assert.equal(summary.accountStats.total, 0, 'stats 库缺失时分组分页列表不应实时扫描业务绑定账号数')
+  const detail = await repositories.findGroupSummaryAsync(group.id, access)
+  assert(detail?.accountIds.includes(account.id), '分组详情仍应返回业务绑定账号 ID')
   assert(readWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs > handledJobsBefore, '分组列表 async 读应由 SQLite read worker 执行')
 
-  console.log('分组 summary stats total 回归通过：SQLite read worker 缺 stats 库时仍返回真实绑定账号数量')
+  console.log('分组 summary stats total 回归通过：分页列表不加载账号 ID，不在缺 stats 时实时回算，详情保留账号 ID')
 } finally {
   await readWorkerPool.closeSqliteReadWorkerPool().catch(() => undefined)
   try {
