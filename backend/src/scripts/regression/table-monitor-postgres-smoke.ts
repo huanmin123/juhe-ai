@@ -49,6 +49,14 @@ try {
   assert.equal(targetOverview.rowCount, 123, 'overview 应映射 row_count')
   assert.equal(targetOverview.totalBytes, 3072, 'overview 应映射 total_bytes')
   assert.equal(targetOverview.growthRows1h, 23, 'overview 应映射 1h 行增长')
+  const smokeTableOrder = overview.tables
+    .filter((row) => row.tableName === targetTableName || row.tableName === otherTableName)
+    .map((row) => `${row.databaseRole}:${row.tableName}`)
+  assert.deepEqual(
+    smokeTableOrder,
+    [`business:${targetTableName}`, `stats:${otherTableName}`],
+    'PG 表监控 overview 表列表应按总大小倒序排序，不应因 bigint 字符串退化为表名排序'
+  )
 
   const targetHistory = await listTableStorageHistoryAsync({
     databaseRole: 'business',

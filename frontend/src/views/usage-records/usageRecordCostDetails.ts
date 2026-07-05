@@ -172,12 +172,18 @@ function pushUnitPriceRow(rows: UsageRecordCostDetailRow[], key: string, label: 
   }
 }
 
-function positiveNumber(value: number | undefined): number {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0
+function positiveNumber(value: unknown): number {
+  const numericValue = numberValue(value)
+  return numericValue !== undefined && numericValue > 0 ? numericValue : 0
 }
 
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value)
+function isFiniteNumber(value: unknown): boolean {
+  return numberValue(value) !== undefined
+}
+
+function numberValue(value: unknown): number | undefined {
+  const numericValue = typeof value === 'string' ? Number(value.trim()) : value
+  return typeof numericValue === 'number' && Number.isFinite(numericValue) ? numericValue : undefined
 }
 
 function normalizeToken(value: unknown): string {

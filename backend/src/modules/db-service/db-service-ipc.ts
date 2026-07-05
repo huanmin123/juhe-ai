@@ -233,6 +233,7 @@ export async function requestDbService<T extends DbServiceOperation>(
 
 export function clearDbServiceGatewayRuntimeCache(): void {
   if (runtimeConfig.processRole === 'db-service') {
+    sendDbServiceChildMessage({ type: 'gateway_runtime_cache_invalidate' })
     void requestDbService(
       { type: 'clear_gateway_runtime_cache' },
       { timeoutMs: invalidateTimeoutMs }
@@ -240,8 +241,6 @@ export function clearDbServiceGatewayRuntimeCache(): void {
       logger.warn(errorLogFields(error, {
         event: 'db_service_local_cache_invalidation_failed'
       }), 'DB service 本地缓存失效失败')
-    }).finally(() => {
-      sendDbServiceChildMessage({ type: 'gateway_runtime_cache_invalidate' })
     })
     return
   }

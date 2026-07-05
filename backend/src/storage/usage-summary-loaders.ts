@@ -1,6 +1,8 @@
+import { existsSync } from 'node:fs'
+
 import type { AccountUsageStatsRange, AccountUsageSummary } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
-import { getStatsDatabase } from './database.js'
+import { getStatsDatabase, statsDatabasePath } from './database.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
@@ -71,43 +73,50 @@ function loadUsageSummariesForScopeRequests(scopes: UsageSummaryScopeRequest[], 
   const normalizedScopes = [...scopeRowsByMapKey.values()]
   if (!normalizedScopes.length) return result
 
+  if (shouldSkipMissingSqliteStatsRead()) return result
+
   const source = usageStatsSource(statDate)
-  const database = getStatsDatabase()
   const rows: UsageSummaryAggregateRow[] = []
   const scopesBySystemAccountId = new Map<string, UsageSummaryScopeRequest[]>()
   for (const scope of normalizedScopes) {
     scopesBySystemAccountId.set(scope.systemAccountId, [...(scopesBySystemAccountId.get(scope.systemAccountId) ?? []), scope])
   }
 
-  for (const [systemAccountId, systemScopes] of scopesBySystemAccountId) {
-    const scopeIds = [...new Set(systemScopes.map((scope) => scope.scopeId))]
-    for (const scopeIdChunk of chunkValues(scopeIds, 400)) {
-      rows.push(...database.prepare(`
-        SELECT
-          system_account_id,
-          scope_id,
-          request_count,
-          input_tokens,
-          output_tokens,
-          cache_read_tokens,
-          cache_read_cost_usd,
-          cache_write_tokens,
-          cache_write_1h_tokens,
-          cache_write_cost_usd,
-          thinking_tokens,
-          input_image_tokens,
-          output_image_tokens,
-          total_cost_usd AS total_cost,
-          last_used_at
-        FROM ${source.tableName}
-        WHERE system_account_id = ?
-          AND scope_type = ?${source.dateClause}
-          AND scope_id IN (${sqlPlaceholders(scopeIdChunk.length)})
-      `).all(...(statDate
-        ? [systemAccountId, scopeType, statDate, ...scopeIdChunk]
-        : [systemAccountId, scopeType, ...scopeIdChunk]
-      )) as unknown as UsageSummaryAggregateRow[])
+  try {
+    const database = getStatsDatabase()
+    for (const [systemAccountId, systemScopes] of scopesBySystemAccountId) {
+      const scopeIds = [...new Set(systemScopes.map((scope) => scope.scopeId))]
+      for (const scopeIdChunk of chunkValues(scopeIds, 400)) {
+        rows.push(...database.prepare(`
+          SELECT
+            system_account_id,
+            scope_id,
+            request_count,
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            cache_read_cost_usd,
+            cache_write_tokens,
+            cache_write_1h_tokens,
+            cache_write_cost_usd,
+            thinking_tokens,
+            input_image_tokens,
+            output_image_tokens,
+            total_cost_usd AS total_cost,
+            last_used_at
+          FROM ${source.tableName}
+          WHERE system_account_id = ?
+            AND scope_type = ?${source.dateClause}
+            AND scope_id IN (${sqlPlaceholders(scopeIdChunk.length)})
+        `).all(...(statDate
+          ? [systemAccountId, scopeType, statDate, ...scopeIdChunk]
+          : [systemAccountId, scopeType, ...scopeIdChunk]
+        )) as unknown as UsageSummaryAggregateRow[])
+      }
     }
+  } catch (error) {
+    if (isMissingSqliteStatsReadError(error)) return result
+    throw error
   }
 
   for (const row of rows) {
@@ -200,47 +209,54 @@ function loadUsageRangeSummariesForScopeRequests(scopes: UsageSummaryScopeReques
   const normalizedScopes = [...scopeRowsByMapKey.values()]
   if (!normalizedScopes.length) return result
 
-  const database = getStatsDatabase()
+  if (shouldSkipMissingSqliteStatsRead()) return result
+
   const scopesBySystemAccountId = new Map<string, UsageSummaryScopeRequest[]>()
   for (const scope of normalizedScopes) {
     scopesBySystemAccountId.set(scope.systemAccountId, [...(scopesBySystemAccountId.get(scope.systemAccountId) ?? []), scope])
   }
 
-  for (const [systemAccountId, systemScopes] of scopesBySystemAccountId) {
-    const scopeIds = [...new Set(systemScopes.map((scope) => scope.scopeId))]
-    for (const scopeIdChunk of chunkValues(scopeIds, 400)) {
-      const rows = database.prepare(`
-        SELECT
-          system_account_id,
-          scope_id,
-          request_count,
-          input_tokens,
-          output_tokens,
-          cache_read_tokens,
-          cache_read_cost_usd,
-          cache_write_tokens,
-          cache_write_1h_tokens,
-          cache_write_cost_usd,
-          thinking_tokens,
-          input_image_tokens,
-          output_image_tokens,
-          total_cost_usd AS total_cost,
-          last_used_at
-        FROM usage_scope_range_windows
-        WHERE system_account_id = ?
-          AND scope_type = ?
-          AND start_date = ?
-          AND end_date = ?
-          AND scope_id IN (${sqlPlaceholders(scopeIdChunk.length)})
-      `).all(systemAccountId, scopeType, range.startDate, range.endDate, ...scopeIdChunk) as unknown as UsageSummaryAggregateRow[]
-      for (const row of rows) {
-        const rowKeys = rowKeysByScopeMapKey.get(usageSummaryRowMapKey(row))
-        if (!rowKeys) continue
-        for (const rowKey of rowKeys) {
-          result.set(rowKey, usageSummaryFromAggregate(row))
+  try {
+    const database = getStatsDatabase()
+    for (const [systemAccountId, systemScopes] of scopesBySystemAccountId) {
+      const scopeIds = [...new Set(systemScopes.map((scope) => scope.scopeId))]
+      for (const scopeIdChunk of chunkValues(scopeIds, 400)) {
+        const rows = database.prepare(`
+          SELECT
+            system_account_id,
+            scope_id,
+            request_count,
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            cache_read_cost_usd,
+            cache_write_tokens,
+            cache_write_1h_tokens,
+            cache_write_cost_usd,
+            thinking_tokens,
+            input_image_tokens,
+            output_image_tokens,
+            total_cost_usd AS total_cost,
+            last_used_at
+          FROM usage_scope_range_windows
+          WHERE system_account_id = ?
+            AND scope_type = ?
+            AND start_date = ?
+            AND end_date = ?
+            AND scope_id IN (${sqlPlaceholders(scopeIdChunk.length)})
+        `).all(systemAccountId, scopeType, range.startDate, range.endDate, ...scopeIdChunk) as unknown as UsageSummaryAggregateRow[]
+        for (const row of rows) {
+          const rowKeys = rowKeysByScopeMapKey.get(usageSummaryRowMapKey(row))
+          if (!rowKeys) continue
+          for (const rowKey of rowKeys) {
+            result.set(rowKey, usageSummaryFromAggregate(row))
+          }
         }
       }
     }
+  } catch (error) {
+    if (isMissingSqliteStatsReadError(error)) return result
+    throw error
   }
   return result
 }
@@ -386,4 +402,20 @@ function statsTable(client: DatabaseClient, tableName: string): string {
   return client.driver === 'postgres'
     ? client.dialect.qualifyTable(statsSchemaName, tableName)
     : client.dialect.quoteIdentifier(tableName)
+}
+
+function shouldSkipMissingSqliteStatsRead(): boolean {
+  return isSqliteReadWorkerProcess()
+    && runtimeConfig.databaseDriver !== 'postgres'
+    && !existsSync(statsDatabasePath())
+}
+
+function isMissingSqliteStatsReadError(error: unknown): boolean {
+  return isSqliteReadWorkerProcess()
+    && error instanceof Error
+    && (/no such table:/i.test(error.message) || /unable to open database file/i.test(error.message))
+}
+
+function isSqliteReadWorkerProcess(): boolean {
+  return process.env.JUHE_AI_SQLITE_READ_WORKER === 'true'
 }

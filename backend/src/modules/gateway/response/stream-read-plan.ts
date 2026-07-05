@@ -1,12 +1,12 @@
 import type { GatewaySettings } from '../policy/account-error-policy.service.js'
 
 export interface StreamReadPlan {
-  phase: 'first_chunk' | 'active_stream' | 'no_circuit_breaker'
-  timeoutMs?: number
+  phase: 'first_chunk' | 'active_stream'
+  timeoutMs: number
   rawTimeoutMs?: number
   semanticResultTimeoutMs?: number
   streamLifetimeTimeoutMs?: number
-  timeoutKind?: 'first_chunk' | 'upstream_activity' | 'semantic_result' | 'stream_lifetime'
+  timeoutKind: 'first_chunk' | 'upstream_activity' | 'semantic_result' | 'stream_lifetime'
   timeoutMessage: string
   deadlineExceeded: boolean
 }
@@ -24,14 +24,6 @@ export function buildStreamReadPlan(
     parserSkipped: boolean
   }
 ): StreamReadPlan {
-  if (!settings.streamCircuitBreakerEnabled) {
-    return {
-      phase: 'no_circuit_breaker',
-      timeoutMessage: '',
-      deadlineExceeded: false
-    }
-  }
-
   const now = Date.now()
   const streamMaxLifetimeSeconds = Math.max(60, settings.streamMaxLifetimeSeconds)
   const streamLifetimeTimeoutMs = streamMaxLifetimeSeconds * 1000 - (now - startedAt)
@@ -40,7 +32,8 @@ export function buildStreamReadPlan(
     const streamIdleTimeoutSeconds = Math.max(1, settings.streamIdleTimeoutSeconds)
     const rawTimeoutMs = streamIdleTimeoutSeconds * 1000 - (now - status.lastUpstreamActivityAt)
     const semanticResultTimeoutSeconds = Math.max(1, settings.streamRequestTimeoutSeconds)
-    const semanticResultTimeoutMs = semanticResultTimeoutSeconds * 1000 - (now - startedAt)
+    const semanticResultStartedAt = status.lastSseEventActivityAt ?? startedAt
+    const semanticResultTimeoutMs = semanticResultTimeoutSeconds * 1000 - (now - semanticResultStartedAt)
     if (
       !status.semanticResultReceived
       && !status.pendingProtocolEvent

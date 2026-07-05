@@ -205,7 +205,8 @@ function backgroundJobsFromSnapshot(snapshot: BackgroundJobsSnapshot | undefined
 }
 
 function numberValue(value: unknown): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+  const number = typeof value === 'string' ? Number(value.trim()) : value
+  return typeof number === 'number' && Number.isFinite(number) ? number : 0
 }
 
 function retryQueueBackgroundJobRow(

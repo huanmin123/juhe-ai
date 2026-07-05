@@ -25,6 +25,7 @@ try {
     env: {
       ...process.env,
       JUHE_AI_EXTERNAL_SOURCE_AUTH_DEMO_CHILD: '1',
+      JUHE_AI_PROCESS_ROLE: 'db-service',
       JUHE_AI_DATABASE_PATH: join(tempRoot, 'business.sqlite3'),
       JUHE_AI_DATASET_DATABASE_PATH: join(tempRoot, 'dataset.sqlite3'),
       JUHE_AI_STATS_DATABASE_PATH: join(tempRoot, 'stats.sqlite3'),
@@ -72,11 +73,15 @@ async function runChild(): Promise<void> {
     upsertExternalIntegrationSource
   } = await import('../../storage/external-integration-source.repository.js')
   const {
+    flushExternalIntegrationSourceLastUsedTouchesForTest
+  } = await import('../../storage/external-integration-source-auth.repository.js')
+  const {
     createSession,
     findSystemAccountByUsername,
     updateSystemAccount
   } = await import('../../storage/repositories.js')
   const { closeStorageDatabases, getBusinessDatabase } = await import('../../storage/database.js')
+  const { closeSqliteReadWorkerPool } = await import('../../storage/sqlite-read-worker-pool.js')
 
   const groupReadToken = 'juis_valid_group_read_public_token_32_chars'
   const noScopeToken = 'juis_no_scope_external_source_token_32_chars'
@@ -218,6 +223,7 @@ async function runChild(): Promise<void> {
     })
     assert.equal(protectedApi.status, 401, '外部来源 token 不能绕过后台登录态接口')
 
+    await flushExternalIntegrationSourceLastUsedTouchesForTest()
     const lastUsedRow = getBusinessDatabase()
       .prepare(`
         SELECT tokens.last_used_at AS token_last_used_at, sources.last_used_at AS source_last_used_at
@@ -230,6 +236,7 @@ async function runChild(): Promise<void> {
     assert(lastUsedRow?.source_last_used_at, '成功鉴权后应低频记录来源系统最近调用时间')
   } finally {
     await closeServer(server)
+    await closeSqliteReadWorkerPool().catch(() => undefined)
     closeStorageDatabases()
   }
 

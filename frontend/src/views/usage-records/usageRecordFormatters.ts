@@ -21,8 +21,8 @@ export function accountDisplayText(record: UsageRecordSummary): string {
   return '-'
 }
 
-export function formatTokens(value?: number): string {
-  return new Intl.NumberFormat('zh-CN').format(value ?? 0)
+export function formatTokens(value?: unknown): string {
+  return new Intl.NumberFormat('zh-CN').format(numberValue(value) ?? 0)
 }
 
 export function isAnthropicUsageRecord(record: UsageRecordSummary): boolean {
@@ -45,19 +45,21 @@ export function formatEndpoint(value?: string): string {
   return value ?? '-'
 }
 
-export function formatCost(value?: number): string {
-  if (!value) return '$0.000000'
-  return `$${value.toFixed(6)}`
+export function formatCost(value?: unknown): string {
+  const numericValue = numberValue(value)
+  if (!numericValue) return '$0.000000'
+  return `$${numericValue.toFixed(6)}`
 }
 
-export function formatUnitPrice(value?: number): string {
-  return typeof value === 'number' ? `$${value.toFixed(4)} / 1M Token` : '-'
+export function formatUnitPrice(value?: unknown): string {
+  const numericValue = numberValue(value)
+  return numericValue === undefined ? '-' : `$${numericValue.toFixed(4)} / 1M Token`
 }
 
 export function formatCacheRate(record: UsageRecordSummary): string {
-  const inputTokens = record.inputTokens ?? 0
-  const cacheReadTokens = record.cacheReadTokens ?? 0
-  const cacheWriteTokens = record.cacheWriteTokens ?? 0
+  const inputTokens = numberValue(record.inputTokens) ?? 0
+  const cacheReadTokens = numberValue(record.cacheReadTokens) ?? 0
+  const cacheWriteTokens = numberValue(record.cacheWriteTokens) ?? 0
   const denominator = isAnthropicUsageRecord(record) || cacheReadTokens > inputTokens
     ? inputTokens + cacheReadTokens + cacheWriteTokens
     : inputTokens
@@ -65,8 +67,8 @@ export function formatCacheRate(record: UsageRecordSummary): string {
   return `${((cacheReadTokens / denominator) * 100).toFixed(1)}%`
 }
 
-export function formatDuration(value?: number): string {
-  return formatMillisecondsAsSeconds(value)
+export function formatDuration(value?: unknown): string {
+  return formatMillisecondsAsSeconds(numberValue(value))
 }
 
 export function statusCodeColor(record: UsageRecordSummary): string {
@@ -81,6 +83,11 @@ export function statusCodeColor(record: UsageRecordSummary): string {
 export function statusCodeText(record: UsageRecordSummary): string {
   if (typeof record.statusCode === 'number') return String(record.statusCode)
   return '-'
+}
+
+function numberValue(value: unknown): number | undefined {
+  const numericValue = typeof value === 'string' ? Number(value.trim()) : value
+  return typeof numericValue === 'number' && Number.isFinite(numericValue) ? numericValue : undefined
 }
 
 export function trafficSourceText(record: UsageRecordSummary): string {

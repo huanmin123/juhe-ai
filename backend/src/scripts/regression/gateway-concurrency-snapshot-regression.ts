@@ -41,7 +41,7 @@ const [
   import('../../modules/gateway/runtime/runtime-snapshot.service.js')
 ])
 
-let serverConcurrency: Record<string, number> = {}
+let serverConcurrency: Record<string, number | string> = {}
 let serverRuntimeAvailability: ServerRuntimeAvailabilitySnapshot = {}
 const requestedScopes: Array<string | undefined> = []
 
@@ -127,9 +127,9 @@ try {
   assert(authorizedAccountA?.id, '被授权用户应看到授权实例账户')
 
   serverConcurrency = {
-    [accountA.id]: 6,
-    [accountB.id]: 1,
-    [authorizedAccountA.id]: 4
+    [accountA.id]: '6',
+    [accountB.id]: '1',
+    [authorizedAccountA.id]: '4'
   }
   assert(authorizedAccountA.accountAuthorizationId, '授权实例应包含账户授权 ID')
   const authorizedRuntimeKey = `${authorizedAccountA.id}:authorized:${grantee.id}:${granteeTargetGroup.id}:${authorizedAccountA.accountAuthorizationId}`

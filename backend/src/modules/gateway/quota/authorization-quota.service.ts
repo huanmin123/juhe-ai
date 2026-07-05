@@ -478,6 +478,49 @@ export function checkGatewayAuthorizationQuotaBatchByIds(input: {
   })
 }
 
+export function checkGatewayAuthorizationQuotaByIdsReadOnly(input: {
+  groupAuthorizationId?: string
+  accountAuthorizationId?: string
+  now?: Date
+}): AuthorizationQuotaDecision {
+  return checkGatewayAuthorizationQuotaBatchByIdsReadOnly({
+    groupAuthorizationId: input.groupAuthorizationId,
+    accounts: [{
+      accountId: input.accountAuthorizationId ?? '',
+      accountAuthorizationId: input.accountAuthorizationId
+    }],
+    now: input.now
+  })[0] ?? { allowed: true }
+}
+
+export function checkGatewayAuthorizationQuotaBatchByIdsReadOnly(input: {
+  groupAuthorizationId?: string
+  accounts: Array<{
+    accountId: string
+    accountAuthorizationId?: string
+  }>
+  now?: Date
+}): AuthorizationQuotaDecision[] {
+  const now = input.now ?? new Date()
+  const scopes = uniqueAuthorizationQuotaScopes([
+    ...(input.groupAuthorizationId ? [{ authorizationId: input.groupAuthorizationId, scopeType: 'group_authorization' as const }] : []),
+    ...input.accounts
+      .filter((account) => Boolean(account.accountAuthorizationId))
+      .map((account) => ({ authorizationId: account.accountAuthorizationId as string, scopeType: 'account_authorization' as const }))
+  ])
+  const costChecksByScope = loadAuthorizationQuotaCostChecksByScope(scopes, now)
+  const allCostChecks = uniqueAuthorizationQuotaCostChecks([...costChecksByScope.values()].flat())
+  const checksByCacheKey = materializeAuthorizationQuotaCostCheckMap(allCostChecks)
+
+  return input.accounts.map((account) => {
+    const checks = [
+      ...authorizationQuotaChecksForScope(input.groupAuthorizationId, 'group_authorization', costChecksByScope, checksByCacheKey),
+      ...authorizationQuotaChecksForScope(account.accountAuthorizationId, 'account_authorization', costChecksByScope, checksByCacheKey)
+    ]
+    return checks.length ? authorizationQuotaDecisionFromChecksReadOnly(checks) : { allowed: true }
+  })
+}
+
 export async function checkGatewayAuthorizationQuotaByIdsExactAsync(input: {
   groupAuthorizationId?: string
   accountAuthorizationId?: string
@@ -545,6 +588,14 @@ function authorizationQuotaDecisionFromChecks(checks: AuthorizationQuotaCheck[])
     setAuthorizationQuotaCacheEntry(cacheKey, decision)
   }
   return decision
+}
+
+function authorizationQuotaDecisionFromChecksReadOnly(checks: AuthorizationQuotaCheck[]): AuthorizationQuotaDecision {
+  const allowed = checks.every((check) => !check.exceeded)
+  return {
+    allowed,
+    message: allowed ? undefined : AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE
+  }
 }
 
 export function clearAuthorizationQuotaCache(): void {

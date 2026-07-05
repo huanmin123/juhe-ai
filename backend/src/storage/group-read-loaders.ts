@@ -1,7 +1,9 @@
+import { existsSync } from 'node:fs'
+
 import { runtimeConfig } from '../config/runtime.js'
 import { clearSharedJsonCacheInBackground, createAppCache, createSharedJsonCache } from '../shared/cache.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
-import { getBusinessDatabase, getStatsDatabase } from './database.js'
+import { getBusinessDatabase, getStatsDatabase, statsDatabasePath } from './database.js'
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 
@@ -149,16 +151,22 @@ export function loadGroupAccountStatsByGroupIds(groupIds: string[]): Map<string,
   assertSyncGroupReadLoaderAllowed('loadGroupAccountStatsByGroupIds')
   const ids = uniqueIds(groupIds)
   if (!ids.length) return new Map()
+  if (shouldSkipMissingSqliteStatsRead()) return new Map()
   const rows: GroupAccountStatsRow[] = []
-  const database = getStatsDatabase()
-  for (const chunk of chunkValues(ids, 900)) {
-    rows.push(...database
-      .prepare(`
-        SELECT ${groupAccountStatsSelectColumns()}
-        FROM group_account_stats
-        WHERE group_id IN (${sqlPlaceholders(chunk.length)})
-      `)
-      .all(...chunk) as unknown as GroupAccountStatsRow[])
+  try {
+    const database = getStatsDatabase()
+    for (const chunk of chunkValues(ids, 900)) {
+      rows.push(...database
+        .prepare(`
+          SELECT ${groupAccountStatsSelectColumns()}
+          FROM group_account_stats
+          WHERE group_id IN (${sqlPlaceholders(chunk.length)})
+        `)
+        .all(...chunk) as unknown as GroupAccountStatsRow[])
+    }
+  } catch (error) {
+    if (isMissingSqliteStatsReadError(error)) return new Map()
+    throw error
   }
   return new Map(rows.map((row) => [row.group_id, row]))
 }
@@ -245,6 +253,22 @@ function groupReadLoaderTable(client: DatabaseClient, tableName: string): string
   return client.driver === 'postgres'
     ? client.dialect.qualifyTable('juhe_business', tableName)
     : client.dialect.quoteIdentifier(tableName)
+}
+
+function shouldSkipMissingSqliteStatsRead(): boolean {
+  return isSqliteReadWorkerProcess()
+    && runtimeConfig.databaseDriver !== 'postgres'
+    && !existsSync(statsDatabasePath())
+}
+
+function isMissingSqliteStatsReadError(error: unknown): boolean {
+  return isSqliteReadWorkerProcess()
+    && error instanceof Error
+    && (/no such table:/i.test(error.message) || /unable to open database file/i.test(error.message))
+}
+
+function isSqliteReadWorkerProcess(): boolean {
+  return process.env.JUHE_AI_SQLITE_READ_WORKER === 'true'
 }
 
 async function getGroupAccountIdsSharedCacheEntry(groupId: string): Promise<string[] | undefined> {

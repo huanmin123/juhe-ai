@@ -84,7 +84,7 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
     && cached.forceRevalidateAtMs > now
     && !isGatewayApiKeyRowExpired(cached.row, now)
   ) {
-    return cached.row
+    return cloneGatewayApiKeyRow(cached.row)
   }
 
   const row = getBusinessDatabase().prepare(`
@@ -128,10 +128,10 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
   }
   row.selected_group_id = row.group_bindings[0]?.group_id ?? row.selected_group_id
   setGatewayApiKeyCacheEntry(keyHash, {
-    row,
+    row: cloneGatewayApiKeyRow(row),
     forceRevalidateAtMs: now + GATEWAY_API_KEY_CACHE_MAX_STALE_MS
   }, { ttlMs: gatewayApiKeyCacheTtlMs(now, row) })
-  return row
+  return cloneGatewayApiKeyRow(row)
 }
 
 export function loadGatewayApiKeyForValidationReadOnly(key: string): GatewayApiKeyRow | undefined {
@@ -447,7 +447,10 @@ function setGatewayApiKeyCacheEntry(
   if (previous) {
     removeGatewayApiKeyCacheIndex(previous.row.id, keyHash)
   }
-  gatewayApiKeyCache.set(keyHash, entry, options)
+  gatewayApiKeyCache.set(keyHash, {
+    row: cloneGatewayApiKeyRow(entry.row),
+    forceRevalidateAtMs: entry.forceRevalidateAtMs
+  }, options)
   addGatewayApiKeyCacheIndex(entry.row.id, keyHash)
 }
 

@@ -10,7 +10,6 @@ import {
   diagnosticAttemptSignal,
   isDiagnosticTimeoutSignal
 } from '../../accounts/account-diagnostic-retry-policy.js'
-import type { GatewaySettings } from '../policy/account-error-policy.service.js'
 import { type UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 
 export interface CodexSwitchProbeResult {
@@ -32,7 +31,6 @@ export async function probeCodexSwitchCandidateAccount(
     req: Request
     systemAccountId: string
     groupId: string
-    settings: GatewaySettings
     signal?: AbortSignal
   }
 ): Promise<CodexSwitchProbeResult> {
@@ -58,7 +56,7 @@ export async function probeCodexSwitchCandidateAccount(
         diagnostics: 'full',
         trafficSource: 'manual_account_test',
         gatewaySettingsOverride: diagnosticAccountTestGatewaySettingsOverride(
-          codexSwitchProbeGatewaySettings(input.settings),
+          undefined,
           codexSwitchProbeGatewayTimeoutMs(timeoutMs)
         ),
         disableAccountStateMutation: true,
@@ -74,12 +72,6 @@ export async function probeCodexSwitchCandidateAccount(
       : failedProbe(account, startedAt, 'account_test_failed', 'Codex 切号真实账号测试失败：未执行探针')
   } catch (error) {
     return failedProbe(account, startedAt, 'account_test_failed', errorMessage(error))
-  }
-}
-
-function codexSwitchProbeGatewaySettings(settings: GatewaySettings): Partial<GatewaySettings> {
-  return {
-    streamCircuitBreakerEnabled: settings.streamCircuitBreakerEnabled
   }
 }
 

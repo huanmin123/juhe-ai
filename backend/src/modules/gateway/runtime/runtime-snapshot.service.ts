@@ -226,7 +226,7 @@ async function loadRedisAccountConcurrencySnapshot(accountIds: string[]): Promis
 function applyAccountConcurrency(account: AccountSummary, concurrency: AccountConcurrencySnapshot): AccountSummary {
   return {
     ...account,
-    currentConcurrency: concurrency[accountConcurrencySnapshotId(account)] ?? 0,
+    currentConcurrency: numberValue(concurrency[accountConcurrencySnapshotId(account)]),
     currentConcurrencyAvailable: true
   }
 }
@@ -327,7 +327,12 @@ function accountRuntimeAvailabilityKey(account: AccountSummary): string {
 function sumCurrentConcurrency(accountIds: string[], concurrency: AccountConcurrencySnapshot): number {
   let total = 0
   for (const accountId of new Set(accountIds.filter(Boolean))) {
-    total += concurrency[accountId] ?? 0
+    total += numberValue(concurrency[accountId])
   }
   return total
+}
+
+function numberValue(value: unknown): number {
+  const number = typeof value === 'string' ? Number(value.trim()) : value
+  return typeof number === 'number' && Number.isFinite(number) ? number : 0
 }

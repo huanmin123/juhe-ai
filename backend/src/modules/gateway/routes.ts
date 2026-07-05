@@ -398,7 +398,6 @@ export async function handleOpenAIGatewayRequest(
           accounts: dispatchAccounts,
           avoidedAccountIds: new Set(codexTurnAvoidedAccountIds ?? []),
           req,
-          settings: activeGatewaySettings,
           systemAccountId: gatewayUsageContext.systemAccountId,
           groupId: gatewayUsageContext.groupId,
           auditCapture,
@@ -1153,7 +1152,6 @@ async function selectCodexProbeVerifiedDispatchAccount(input: {
   accounts: UpstreamAccount[]
   avoidedAccountIds: Set<string>
   req: Request
-  settings: GatewaySettings
   systemAccountId: string
   groupId: string
   auditCapture: ReturnType<typeof createAuditCapture>
@@ -1166,7 +1164,6 @@ async function selectCodexProbeVerifiedDispatchAccount(input: {
       req: input.req,
       systemAccountId: input.systemAccountId,
       groupId: input.groupId,
-      settings: input.settings,
       signal: input.signal
     })
     probes.push(probe)

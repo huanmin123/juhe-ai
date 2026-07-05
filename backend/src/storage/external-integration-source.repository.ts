@@ -64,7 +64,12 @@ export {
   externalIntegrationScopeOptions
 } from './external-integration-source-constants.js'
 
-export { validateExternalIntegrationSourceToken, validateExternalIntegrationSourceTokenAsync } from './external-integration-source-auth.repository.js'
+export {
+  flushExternalIntegrationSourceLastUsedTouchesForTest,
+  loadExternalIntegrationSourceTokenForAuthReadOnly,
+  validateExternalIntegrationSourceToken,
+  validateExternalIntegrationSourceTokenAsync
+} from './external-integration-source-auth.repository.js'
 export {
   createExternalIntegrationSourceToken,
   createExternalIntegrationSourceTokenAsync,

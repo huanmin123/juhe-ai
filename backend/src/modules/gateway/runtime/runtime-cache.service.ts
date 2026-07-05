@@ -879,7 +879,7 @@ function cloneOpenAIAccountSecretForDispatch(account: OpenAIAccountSecret): Open
 }
 
 function sanitizedGatewayRuntimeForDispatch(runtime: DbServiceGatewayRuntime, now = Date.now()): DbServiceGatewayRuntime {
-  const settings = { ...runtime.settings }
+  const settings = cloneGatewaySettings(runtime.settings)
   if (!runtime.apiKey || !isGatewayApiKeyRuntimeUsableAt(runtime.apiKey, now)) {
     return {
       settings,
@@ -912,14 +912,17 @@ function cloneGroupUsageAccessMetadata(value: GroupUsageAccessMetadata): GroupUs
 }
 
 function cloneGatewaySettings(settings: GatewaySettings): GatewaySettings {
-  return { ...settings }
+  return {
+    ...settings,
+    streamCircuitBreakerEnabled: true
+  }
 }
 
 function cloneStaticGatewayRuntime(runtime: DbServiceGatewayRuntime): DbServiceGatewayRuntime {
   return {
     apiKey: runtime.apiKey ? cloneGatewayApiKeyRow(runtime.apiKey) : undefined,
     accountDispatchDiagnostics: runtime.accountDispatchDiagnostics ? { ...runtime.accountDispatchDiagnostics } : undefined,
-    settings: { ...runtime.settings },
+    settings: cloneGatewaySettings(runtime.settings),
     groupAccess: runtime.groupAccess ? cloneGroupUsageAccessMetadata(runtime.groupAccess) : undefined,
     accounts: runtime.accounts.map(cloneStaticOpenAIAccountSecret),
     responseInspectionPolicies: runtime.responseInspectionPolicies ? runtime.responseInspectionPolicies.map(cloneResponseInspectionPolicy) : undefined

@@ -47,7 +47,8 @@ const [
   usageRecordShards,
   responseInspectionPolicyRepository,
   upstreamModule,
-  clientIpAccountAvoidance
+  clientIpAccountAvoidance,
+  readWorkerPool
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
   import('../../modules/gateway/request/body-middleware.js'),
@@ -65,7 +66,8 @@ const [
   import('../../storage/usage-record-shards.js'),
   import('../../storage/response-inspection-policy.repository.js'),
   import('../../modules/gateway/upstream/request.js'),
-  import('../../modules/gateway/runtime/client-ip-account-avoidance.service.js')
+  import('../../modules/gateway/runtime/client-ip-account-avoidance.service.js'),
+  import('../../storage/sqlite-read-worker-pool.js')
 ])
 
 usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
@@ -131,11 +133,12 @@ try {
   auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
   upstreamModule.closeGatewayUpstreamAgentsForTest()
   await closeServer(gatewayServer)
-  await closeServer(upstreamServer)
-  try {
-    databaseModule.getBusinessDatabase().close()
-    databaseModule.closeStorageDatabases()
-  } catch {
+await closeServer(upstreamServer)
+try {
+  await readWorkerPool.closeSqliteReadWorkerPool()
+  databaseModule.getBusinessDatabase().close()
+  databaseModule.closeStorageDatabases()
+} catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
 }

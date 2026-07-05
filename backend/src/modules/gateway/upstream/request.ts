@@ -378,7 +378,7 @@ export async function readStreamChunkWithAbort(
 export function upstreamSocketTimeoutMs(req: Request, settings: GatewaySettings, account?: { type?: string }): number {
   const isStreamRequest = isEffectiveOpenAIStreamRequest(req, account)
   const requestTimeoutSeconds = Math.max(1, settings.streamRequestTimeoutSeconds)
-  if (!isStreamRequest || !settings.streamCircuitBreakerEnabled) {
+  if (!isStreamRequest) {
     return Math.max(requestTimeoutSeconds, 30) * 1000
   }
   return Math.max(requestTimeoutSeconds, settings.streamIdleTimeoutSeconds + 15, 30) * 1000

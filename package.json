@@ -44,6 +44,7 @@
     "test:account-list-stable-sort": "pnpm --filter juhe-ai-backend test:account-list-stable-sort",
     "test:account-list-stats-lock": "pnpm --filter juhe-ai-backend test:account-list-stats-lock",
     "test:sqlite-read-worker": "pnpm --filter juhe-ai-backend test:sqlite-read-worker",
+    "test:sqlite-query-regression": "pnpm --filter juhe-ai-backend test:sqlite-query-regression",
     "test:management-list-contract": "pnpm --filter juhe-ai-backend test:management-list-contract",
     "test:account-tags": "pnpm --filter juhe-ai-backend test:account-tags",
     "test:time-schedule": "pnpm --filter juhe-ai-frontend test:time-schedule",

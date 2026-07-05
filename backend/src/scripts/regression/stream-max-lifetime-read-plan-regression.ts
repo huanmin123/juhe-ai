@@ -54,14 +54,6 @@ const firstChunkLifetimePlan = buildStreamReadPlan(settings, now - 61_000, {
 })
 assert.equal(firstChunkLifetimePlan.timeoutKind, 'stream_lifetime', '首段未返回但先达到最大存活时间时应按 lifetime 中断')
 
-const disabledPlan = buildStreamReadPlan({ ...settings, streamCircuitBreakerEnabled: false }, now - 61_000, {
-  waitingForFirstChunk: false,
-  lastUpstreamActivityAt: now,
-  upstreamChunkReceived: true,
-  ...activeStreamStatus
-})
-assert.equal(disabledPlan.phase, 'no_circuit_breaker', '关闭流式熔断时最大存活时间也应随该开关关闭')
-
 const semanticResultPlan = buildStreamReadPlan({ ...settings, streamMaxLifetimeSeconds: 300 }, now - 121_000, {
   waitingForFirstChunk: false,
   lastUpstreamActivityAt: now,
@@ -72,6 +64,17 @@ const semanticResultPlan = buildStreamReadPlan({ ...settings, streamMaxLifetimeS
 })
 assert.equal(semanticResultPlan.timeoutKind, 'semantic_result', '只有心跳 raw chunk 但无语义结果时应按有效输出超时中断')
 assert(semanticResultPlan.timeoutMessage.includes('有效输出'), `有效输出超时文案不正确：${semanticResultPlan.timeoutMessage}`)
+
+const recentProtocolEventPlan = buildStreamReadPlan({ ...settings, streamMaxLifetimeSeconds: 300 }, now - 121_000, {
+  waitingForFirstChunk: false,
+  lastUpstreamActivityAt: now,
+  lastSseEventActivityAt: now - 1_000,
+  upstreamChunkReceived: true,
+  semanticResultReceived: false,
+  pendingProtocolEvent: false,
+  parserSkipped: false
+})
+assert.equal(recentProtocolEventPlan.timeoutKind, 'upstream_activity', '最近完整协议事件应刷新有效输出等待窗口，避免碎片或非输出事件后误杀')
 
 const pendingEventPlan = buildStreamReadPlan({ ...settings, streamMaxLifetimeSeconds: 300 }, now - 121_000, {
   waitingForFirstChunk: false,

@@ -9,7 +9,6 @@ import {
 } from '../usage/types.js'
 import {
   isUpstreamRequestAbortedError,
-  readStreamChunkWithAbort,
   readStreamChunkWithTimeout
 } from '../upstream/request.js'
 import { GatewayFirstByteTimeoutError, isGatewayFirstByteTimeoutError } from '../upstream/first-byte-timeout.js'
@@ -350,7 +349,6 @@ export async function pipeUpstreamStream(
 
   streamLogger.debug({
     event: 'gateway_stream_pipe_started',
-    streamCircuitBreakerEnabled: settings.streamCircuitBreakerEnabled,
     streamRequestTimeoutSeconds: settings.streamRequestTimeoutSeconds,
     streamIdleTimeoutSeconds: settings.streamIdleTimeoutSeconds,
     startedAt
@@ -395,6 +393,10 @@ export async function pipeUpstreamStream(
       const interceptResult = interceptor
         ? pushResponseInspectionChunks(interceptor, transformedChunks)
         : passThroughResponseInspectionChunks(transformedChunks)
+      if (interceptResult.pendingEvent === true) {
+        pendingProtocolEvent = true
+        lastSseEventActivityAt = lastUpstreamActivityAt
+      }
       if (interceptResult.parserSkipped && !responseInspectionParserSkipLogged) {
         responseInspectionParserSkipLogged = true
         streamLogger.info({
@@ -466,7 +468,7 @@ export async function pipeUpstreamStream(
         lastSseEventCount = latestInspection.eventCount
         if (latestInspection.skipped) {
           lastSseEventActivityAt = undefined
-        } else if (lastSseEventActivityAt === undefined || outboundSseEventCount > 0) {
+        } else if (outboundSseEventCount > 0 || latestInspection.pendingEvent) {
           lastSseEventActivityAt = lastUpstreamActivityAt
         }
         if (canKeepPreCommitBuffered(latestInspection, outbound)) {
@@ -676,7 +678,7 @@ export async function pipeUpstreamStream(
         lastSseEventCount = latestInspection.eventCount
         if (latestInspection.skipped) {
           lastSseEventActivityAt = undefined
-        } else if (lastSseEventActivityAt === undefined || outboundSseEventCount > 0) {
+        } else if (outboundSseEventCount > 0 || latestInspection.pendingEvent) {
           lastSseEventActivityAt = lastUpstreamActivityAt
         }
         if (canKeepPreCommitBuffered(latestInspection, outbound)) {
@@ -1086,22 +1088,12 @@ function readNextStreamChunk(
   const firstByteDeadlineMs = status.waitingForFirstChunk && firstByteTimeoutMs !== undefined
     ? firstByteTimeoutMs - (Date.now() - startedAt)
     : undefined
-  if (!settings.streamCircuitBreakerEnabled && firstByteDeadlineMs === undefined) {
-    return readStreamChunkWithAbort(iterator, signal)
-  }
-  const readPlan = settings.streamCircuitBreakerEnabled
-    ? buildStreamReadPlan(settings, startedAt, status)
-    : undefined
-  const planTimeoutMs = readPlan?.timeoutMs
+  const readPlan = buildStreamReadPlan(settings, startedAt, status)
+  const planTimeoutMs = readPlan.timeoutMs
   const timeoutMs = firstByteDeadlineMs === undefined
     ? planTimeoutMs
-    : planTimeoutMs === undefined
-      ? firstByteDeadlineMs
-      : Math.min(firstByteDeadlineMs, planTimeoutMs)
-  if (timeoutMs === undefined) {
-    return readStreamChunkWithAbort(iterator, signal)
-  }
-  const firstByteDeadlineSelected = firstByteDeadlineMs !== undefined && firstByteDeadlineMs <= (planTimeoutMs ?? firstByteDeadlineMs)
+    : Math.min(firstByteDeadlineMs, planTimeoutMs)
+  const firstByteDeadlineSelected = firstByteDeadlineMs !== undefined && firstByteDeadlineMs <= planTimeoutMs
   // If downstream writes delayed the next read, upstream bytes may already be buffered locally.
   // Give iterator.next() one tick before declaring the stream idle.
   return readStreamChunkWithTimeout(
@@ -1109,9 +1101,9 @@ function readNextStreamChunk(
     Math.max(0.001, timeoutMs / 1000),
     () => firstByteDeadlineSelected
       ? new GatewayFirstByteTimeoutError(`上游流式响应 ${Math.ceil((firstByteTimeoutMs ?? 0) / 1000)}s 后仍未返回首个字节`, firstByteTimeoutMs ?? 0)
-      : readPlan?.timeoutKind === 'stream_lifetime'
+      : readPlan.timeoutKind === 'stream_lifetime'
         ? new StreamMaxLifetimeExceededError(readPlan.timeoutMessage)
-        : new Error(readPlan?.timeoutMessage ?? '上游流式响应读取超时'),
+        : new Error(readPlan.timeoutMessage),
     signal
   )
 }
@@ -1191,6 +1183,7 @@ function pushResponseInspectionChunks(
 ): ResponseInspectionSseResult {
   let result: ResponseInspectionSseResult = {
     chunks: [],
+    pendingEvent: false,
     parserSkipped: false
   }
   for (const chunk of chunks) {
@@ -1205,6 +1198,7 @@ function pushResponseInspectionChunks(
 function passThroughResponseInspectionChunks(chunks: Buffer[]): ResponseInspectionSseResult {
   return {
     chunks,
+    pendingEvent: false,
     parserSkipped: false
   }
 }
@@ -1222,6 +1216,7 @@ function mergeResponseInspectionSseResults(
     ].length
       ? [...(left.observations ?? []), ...(right.observations ?? [])]
       : undefined,
+    pendingEvent: right.pendingEvent ?? left.pendingEvent,
     parserSkipped: left.parserSkipped || right.parserSkipped
   }
 }

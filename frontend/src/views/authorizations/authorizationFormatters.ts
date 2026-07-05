@@ -159,19 +159,19 @@ export function emptyUsageSummary(): AccountUsageSummary {
 
 export function normalizeUsageSummary(usage?: Partial<AccountUsageSummary>): AccountUsageSummary {
   return {
-    requestCount: usage?.requestCount ?? 0,
-    inputTokens: usage?.inputTokens ?? 0,
-    outputTokens: usage?.outputTokens ?? 0,
-    cacheReadTokens: usage?.cacheReadTokens ?? 0,
-    cacheReadCost: usage?.cacheReadCost ?? 0,
-    cacheWriteTokens: usage?.cacheWriteTokens ?? 0,
-    cacheWrite1hTokens: usage?.cacheWrite1hTokens ?? 0,
-    cacheWriteCost: usage?.cacheWriteCost ?? 0,
-    thinkingTokens: usage?.thinkingTokens ?? 0,
-    inputImageTokens: usage?.inputImageTokens ?? 0,
-    outputImageTokens: usage?.outputImageTokens ?? 0,
-    totalTokens: usage?.totalTokens ?? 0,
-    totalCost: usage?.totalCost ?? 0,
+    requestCount: numberValue(usage?.requestCount),
+    inputTokens: numberValue(usage?.inputTokens),
+    outputTokens: numberValue(usage?.outputTokens),
+    cacheReadTokens: numberValue(usage?.cacheReadTokens),
+    cacheReadCost: numberValue(usage?.cacheReadCost),
+    cacheWriteTokens: numberValue(usage?.cacheWriteTokens),
+    cacheWrite1hTokens: numberValue(usage?.cacheWrite1hTokens),
+    cacheWriteCost: numberValue(usage?.cacheWriteCost),
+    thinkingTokens: numberValue(usage?.thinkingTokens),
+    inputImageTokens: numberValue(usage?.inputImageTokens),
+    outputImageTokens: numberValue(usage?.outputImageTokens),
+    totalTokens: numberValue(usage?.totalTokens),
+    totalCost: numberValue(usage?.totalCost),
     lastUsedAt: usage?.lastUsedAt
   }
 }
@@ -202,6 +202,11 @@ export function sumUsageSummaries(items: Array<Partial<AccountUsageSummary> | un
 }
 
 export { formatDateTime, formatNumber, formatServerDateTimeInput, parseStrictDatePickerValue }
+
+function numberValue(value: unknown): number {
+  const numericValue = typeof value === 'string' ? Number(value.trim()) : value
+  return typeof numericValue === 'number' && Number.isFinite(numericValue) ? numericValue : 0
+}
 
 function authorizationSourceSummary(item: ResourceAuthorizationSummary) {
   if (item.sourceSummary) return item.sourceSummary

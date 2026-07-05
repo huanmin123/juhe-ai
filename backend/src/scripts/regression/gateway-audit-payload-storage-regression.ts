@@ -8,6 +8,7 @@ import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fi
 import express from 'express'
 
 import { backendRoot, runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-gateway-audit-payload-storage-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -32,7 +33,8 @@ const [
   auditLogQueue,
   usageRecordQueue,
   gatewayCache,
-  accountSideEffects
+  accountSideEffects,
+  readWorkerPool
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
   import('../../modules/gateway/request/body-middleware.js'),
@@ -43,7 +45,8 @@ const [
   import('../../modules/audit-logs/audit-log-queue.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
-  import('../../modules/gateway/runtime/account-side-effects.service.js')
+  import('../../modules/gateway/runtime/account-side-effects.service.js'),
+  import('../../storage/sqlite-read-worker-pool.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -95,7 +98,6 @@ app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRa
 try {
   settingsRepository.updateSettings({
     temporaryUnschedulableRetryAttempts: 0,
-    streamCircuitBreakerEnabled: true,
     streamRequestTimeoutSeconds: 10,
     streamIdleTimeoutSeconds: 10
   })
@@ -132,6 +134,7 @@ try {
   try {
     cleanupAuditBlobFilesForTest()
     accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
+    await readWorkerPool.closeSqliteReadWorkerPool()
     databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
@@ -409,6 +412,7 @@ function seedGatewayRoute(upstreamBaseUrl: string, label: string, upstreamKeys: 
   for (const [index, upstreamKey] of upstreamKeys.entries()) {
     repositories.createAccount({
       providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: `${label}账户-${String(index + 1).padStart(2, '0')}`,
       type: 'api_key',
       credentials: {

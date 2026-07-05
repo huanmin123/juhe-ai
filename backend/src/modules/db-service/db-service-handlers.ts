@@ -1733,20 +1733,13 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
 
 async function readGatewayRuntimeAsync(operation: Extract<DbServiceOperation, { type: 'read_gateway_runtime' }>): Promise<DbServiceGatewayRuntime> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    if (operation.skipDynamicRouteSelection === true) {
-      const runtime = await requestSqliteReadWorker({
-        type: 'read_gateway_runtime_static_read_only',
-        key: operation.key,
-        groupId: operation.groupId,
-        systemAccountId: operation.systemAccountId,
-        skipDynamicRouteSelection: operation.skipDynamicRouteSelection
-      })
-      return {
-        ...runtime,
-        settings: readCachedGatewaySettings()
-      }
-    }
-    return withDbServiceLocalRole(() => readGatewayRuntime(operation))
+    return await requestSqliteReadWorker({
+      type: 'read_gateway_runtime_static_read_only',
+      key: operation.key,
+      groupId: operation.groupId,
+      systemAccountId: operation.systemAccountId,
+      skipDynamicRouteSelection: operation.skipDynamicRouteSelection
+    })
   }
   const settings = await readGatewaySettingsAsync()
   const apiKey = await validateGatewayApiKeyAsync(operation.key)

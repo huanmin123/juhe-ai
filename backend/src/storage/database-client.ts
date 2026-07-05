@@ -195,7 +195,7 @@ function createPostgresDatabaseClientInternal(client: PostgresPoolLike, transact
     async query<T extends object = Record<string, unknown>>(sql: string, params: readonly unknown[] = []): Promise<T[]> {
       const bound = postgresDialect.bind(sql, params)
       const result = await queryPostgres(client, bound.sql, bound.params)
-      return result.rows as T[]
+      return normalizePostgresRows(result.rows) as T[]
     },
     async one<T extends object = Record<string, unknown>>(sql: string, params: readonly unknown[] = []): Promise<T | undefined> {
       const rows = await this.query<T>(sql, params)
@@ -269,6 +269,96 @@ function normalizePostgresQueryResult(result: Awaited<ReturnType<PostgresQueryCl
     }
   }
   return result
+}
+
+const postgresNumericResultFieldNames = new Set([
+  'active',
+  'blocked_targets',
+  'canceled',
+  'completed',
+  'count',
+  'failed',
+  'failed_targets',
+  'found',
+  'index_count',
+  'lag_seconds',
+  'metric_value',
+  'pending',
+  'pending_targets',
+  'ready',
+  'running',
+  'schema_version',
+  'success',
+  'total'
+])
+
+const postgresNumericResultFieldPatterns = [
+  /(^|_)average$/,
+  /(^|_)avg$/,
+  /(^|_)backlog$/,
+  /(^|_)bindings$/,
+  /(^|_)bytes$/,
+  /(^|_)cost$/,
+  /(^|_)count$/,
+  /(^|_)days$/,
+  /(^|_)duration$/,
+  /(^|_)hits$/,
+  /(^|_)hours$/,
+  /(^|_)lag$/,
+  /(^|_)latency$/,
+  /(^|_)length$/,
+  /(^|_)max$/,
+  /(^|_)members$/,
+  /(^|_)min$/,
+  /(^|_)ms$/,
+  /(^|_)offset$/,
+  /(^|_)pages$/,
+  /(^|_)percent$/,
+  /(^|_)rank$/,
+  /(^|_)rate$/,
+  /(^|_)rows$/,
+  /(^|_)score$/,
+  /(^|_)seconds$/,
+  /(^|_)size$/,
+  /(^|_)sum$/,
+  /(^|_)targets$/,
+  /(^|_)tokens$/,
+  /(^|_)total$/,
+  /(^|_)usd$/
+]
+
+function normalizePostgresRows(rows: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  return rows.map((row) => {
+    let normalized: Record<string, unknown> | undefined
+    for (const [key, value] of Object.entries(row)) {
+      const numericValue = postgresNumericResultValue(key, value)
+      if (numericValue === value) continue
+      normalized ??= { ...row }
+      normalized[key] = numericValue
+    }
+    return normalized ?? row
+  })
+}
+
+function postgresNumericResultValue(key: string, value: unknown): unknown {
+  if (!isPostgresNumericResultField(key)) return value
+  if (typeof value === 'number') return Number.isFinite(value) ? value : value
+  if (typeof value === 'bigint') return Number(value)
+  if (typeof value !== 'string') return value
+  const trimmed = value.trim()
+  if (!trimmed) return value
+  const numberValue = Number(trimmed)
+  return Number.isFinite(numberValue) ? numberValue : value
+}
+
+function isPostgresNumericResultField(key: string): boolean {
+  const normalizedKey = camelToSnakeCase(key)
+  if (postgresNumericResultFieldNames.has(normalizedKey)) return true
+  return postgresNumericResultFieldPatterns.some((pattern) => pattern.test(normalizedKey))
+}
+
+function camelToSnakeCase(value: string): string {
+  return value.replace(/([a-z0-9])([A-Z])/g, '$1_$2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2').toLowerCase()
 }
 
 function normalizedPlaceholderCount(count: number): number {

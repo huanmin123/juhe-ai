@@ -69,6 +69,7 @@ import type {
   ExternalIntegrationSourceListOptions,
   ExternalIntegrationSourceListResult,
   ExternalIntegrationSourceSummary,
+  ExternalIntegrationSourceTokenRow,
   ExternalIntegrationSourceTokenSecret
 } from './external-integration-source.repository.js'
 import type { ModelCheckRunListOptions } from './model-checks.repository.js'
@@ -372,6 +373,10 @@ export type SqliteReadWorkerOperation =
     type: 'find_external_integration_source_token_secret_read_only'
     sourceRefId: string
     tokenId: string
+  }
+  | {
+    type: 'load_external_integration_source_token_for_auth_read_only'
+    token: string
   }
   | {
     type: 'get_usage_stats_timezone_read_only'
@@ -736,6 +741,7 @@ export type SqliteReadWorkerOperationResult<T extends SqliteReadWorkerOperation>
   T extends { type: 'list_external_integration_sources_read_only' } ? ExternalIntegrationSourceListResult :
   T extends { type: 'find_external_integration_source_read_only' } ? ExternalIntegrationSourceSummary | undefined :
   T extends { type: 'find_external_integration_source_token_secret_read_only' } ? ExternalIntegrationSourceTokenSecret | undefined :
+  T extends { type: 'load_external_integration_source_token_for_auth_read_only' } ? ExternalIntegrationSourceTokenRow | undefined :
   T extends { type: 'get_usage_stats_timezone_read_only' } ? string :
   T extends { type: 'get_usage_stats_overview_read_only' } ? UsageStatsOverview :
   T extends { type: 'get_ai_performance_overview_read_only' } ? AiPerformanceOverview :

@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 
 import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express from 'express'
@@ -41,7 +42,9 @@ const [
   usageRecordQueue,
   auditLogQueue,
   codexTurnRetry,
-  sessionAffinity
+  sessionAffinity,
+  proxyHealth,
+  readWorkerPool
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
   import('../../modules/gateway/request/body-middleware.js'),
@@ -54,7 +57,9 @@ const [
   import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js'),
   import('../../modules/gateway/client-profiles/codex-turn-retry.service.js'),
-  import('../../modules/gateway/runtime/session-affinity.service.js')
+  import('../../modules/gateway/runtime/session-affinity.service.js'),
+  import('../../modules/gateway/runtime/proxy-health.service.js'),
+  import('../../storage/sqlite-read-worker-pool.js')
 ])
 
 interface SeededGateway {
@@ -105,7 +110,6 @@ async function main(): Promise<void> {
     auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
     codexTurnRetry.clearCodexTurnRetryStateForTest()
     settingsRepository.updateSettings({
-      streamCircuitBreakerEnabled: true,
       streamRequestTimeoutSeconds: 10,
       streamIdleTimeoutSeconds: 10,
       temporaryUnschedulableRetryAttempts: 0
@@ -172,17 +176,18 @@ async function main(): Promise<void> {
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
-    auditLogQueue.flushAllAuditLogQueue()
+    await auditLogQueue.flushAllAuditLogQueueAsync()
     auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
     usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
     await closeServer(gatewayServer)
     await closeServer(upstreamServer)
     try {
+      await readWorkerPool.closeSqliteReadWorkerPool()
       databaseModule.getBusinessDatabase().close()
       databaseModule.closeStorageDatabases()
     } catch {
     }
-    rmSync(tempRoot, { recursive: true, force: true })
+    await removeTempRoot()
   }
 }
 
@@ -268,6 +273,7 @@ async function assertCodexTurnProbeFailureReturnsRetryableWithoutProbeDetails(
   seeded: SeededProbeFailureGateway,
   upstreamState: MockUpstreamState
 ): Promise<void> {
+  proxyHealth.clearGatewayProxyHealthForTest()
   const turnId = 'turn-codex-probe-visible-fail'
   rememberVisibleCodexTurnFailures(seeded, turnId, [
     seeded.failedAccountId,
@@ -743,13 +749,14 @@ function createMockOpenAIUpstream(state: MockUpstreamState): http.Server {
       const upstreamKey = bearerToken(req.headers.authorization)
       const body = parseJsonObject(Buffer.concat(bodyChunks).toString('utf8'))
 
-      if (url.pathname !== '/v1/responses') {
+      const accountTestProbe = isAccountTestProbeBody(body)
+      if (url.pathname !== '/v1/responses' && !(url.pathname === '/v1/chat/completions' && accountTestProbe)) {
         res.writeHead(404, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ error: { code: 'mock_unexpected_path', message: `unexpected path ${url.pathname}` } }))
         return
       }
 
-      if (isAccountTestProbeBody(body)) {
+      if (accountTestProbe) {
         state.testProbeHitsByUpstreamKey[upstreamKey] = testProbeHitCount(state, upstreamKey) + 1
         state.requests.push({ upstreamKey, scenario: 'account-test-probe' })
         if (upstreamKey.endsWith('-latent-failed')) {
@@ -1154,8 +1161,7 @@ function parseJsonObject(value: string): Record<string, unknown> {
 }
 
 function isAccountTestProbeBody(body: Record<string, unknown>): boolean {
-  return body.instructions === 'You are ChatGPT, a helpful assistant.'
-    && (jsonValueContainsString(body.input, '只输出 OK') || jsonValueContainsString(body.messages, '只输出 OK'))
+  return jsonValueContainsString(body.input, '只输出 OK') || jsonValueContainsString(body.messages, '只输出 OK')
 }
 
 function jsonValueContainsString(value: unknown, needle: string): boolean {
@@ -1227,11 +1233,39 @@ function listen(server: http.Server): Promise<void> {
   })
 }
 
-function closeServer(server: http.Server | undefined): Promise<void> {
+async function closeServer(server: http.Server | undefined): Promise<void> {
   if (!server?.listening) return Promise.resolve()
   return new Promise((resolveClose) => {
-    server.close(() => resolveClose())
+    let settled = false
+    let forceTimer: ReturnType<typeof setTimeout> | undefined
+    const finish = () => {
+      if (settled) return
+      settled = true
+      if (forceTimer) clearTimeout(forceTimer)
+      resolveClose()
+    }
+    server.close(finish)
+    server.closeIdleConnections?.()
+    forceTimer = setTimeout(() => {
+      server.closeAllConnections?.()
+      setTimeout(finish, 500)
+    }, 1000)
   })
+}
+
+async function removeTempRoot(): Promise<void> {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      rmSync(tempRoot, { recursive: true, force: true })
+      return
+    } catch (error) {
+      if (!(error instanceof Error) || !/EBUSY|EPERM/.test(error.message)) {
+        throw error
+      }
+      await delay(200)
+    }
+  }
+  rmSync(tempRoot, { recursive: true, force: true })
 }
 
 function serverPort(server: http.Server): number {

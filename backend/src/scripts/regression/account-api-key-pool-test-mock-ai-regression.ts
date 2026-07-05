@@ -100,8 +100,7 @@ try {
 
   const group = await postEnvelope<{ id: string; name: string }>(backendBaseUrl, '/groups', cookie, {
     name: `Key池批测 mock 分组 ${Date.now()}`,
-    providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
+    providerCode: 'gpt'
   })
   const context: TestContext = {
     backendBaseUrl,
@@ -250,7 +249,7 @@ async function waitForAccountRuntimeDetails(context: TestContext, accountId: str
 }
 
 async function getAccount(context: TestContext, accountId: string): Promise<AccountSummary> {
-  return await getEnvelope<AccountSummary>(context.backendBaseUrl, `/accounts/${accountId}`, context.cookie)
+  return await getEnvelope<AccountSummary>(context.backendBaseUrl, `/accounts/${accountId}/advanced`, context.cookie)
 }
 
 function assertKeyRuntime(account: AccountSummary, suffix: string, status: string, message: string): void {
@@ -369,7 +368,7 @@ function createMockAIUpstream(): http.Server {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
     req.on('data', () => {})
     req.on('end', () => {
-      if (req.method !== 'POST' || url.pathname !== '/v1/responses') {
+      if (req.method !== 'POST' || (url.pathname !== '/v1/responses' && url.pathname !== '/v1/chat/completions')) {
         sendJsonError(res, 404, 'mock path not found')
         return
       }
@@ -377,6 +376,10 @@ function createMockAIUpstream(): http.Server {
       mockState.hitsByKey.set(key, (mockState.hitsByKey.get(key) ?? 0) + 1)
       if (key.includes('bad')) {
         sendJsonError(res, 401, `mock invalid key ${key}`)
+        return
+      }
+      if (url.pathname === '/v1/chat/completions') {
+        sendChatCompletionsCompleted(res, `OK ${key}`)
         return
       }
       sendResponsesCompleted(res, `OK ${key}`)
@@ -416,6 +419,38 @@ function sendResponsesCompleted(res: http.ServerResponse, outputText: string): v
   }
   res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
   res.end(`event: response.completed\ndata: ${JSON.stringify(completedEvent)}\n\n`)
+}
+
+function sendChatCompletionsCompleted(res: http.ServerResponse, outputText: string): void {
+  const chunk = {
+    id: 'chatcmpl_account_api_key_pool_test_mock_ai',
+    object: 'chat.completion.chunk',
+    choices: [
+      {
+        index: 0,
+        delta: { content: outputText },
+        finish_reason: null
+      }
+    ]
+  }
+  const done = {
+    id: 'chatcmpl_account_api_key_pool_test_mock_ai',
+    object: 'chat.completion.chunk',
+    choices: [
+      {
+        index: 0,
+        delta: {},
+        finish_reason: 'stop'
+      }
+    ],
+    usage: {
+      prompt_tokens: 1,
+      completion_tokens: 1,
+      total_tokens: 2
+    }
+  }
+  res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
+  res.end(`data: ${JSON.stringify(chunk)}\n\ndata: ${JSON.stringify(done)}\n\ndata: [DONE]\n\n`)
 }
 
 async function onceListening(server: http.Server): Promise<void> {

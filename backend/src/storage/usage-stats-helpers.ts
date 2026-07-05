@@ -244,7 +244,8 @@ export function monthKey(date: Date, timezone = DEFAULT_USAGE_STATS_TIMEZONE): s
 
 export function usageStatsTimezone(): string {
   const nowMs = Date.now()
-  if (cachedUsageStatsTimezone && cachedUsageStatsTimezone.expiresAtMs > nowMs) {
+  const cacheable = !isSqliteReadWorkerProcess()
+  if (cacheable && cachedUsageStatsTimezone && cachedUsageStatsTimezone.expiresAtMs > nowMs) {
     return cachedUsageStatsTimezone.value
   }
   const row = getBusinessDatabase().prepare("SELECT value_json FROM system_settings WHERE system_account_id = 'sys_admin' AND key = 'usageStatsTimezone'").get() as unknown as { value_json?: string } | undefined
@@ -253,7 +254,8 @@ export function usageStatsTimezone(): string {
   }
   try {
     const value = JSON.parse(row.value_json) as unknown
-    return cacheUsageStatsTimezone(normalizeUsageStatsTimezone(value), nowMs)
+    const timezone = normalizeUsageStatsTimezone(value)
+    return cacheable ? cacheUsageStatsTimezone(timezone, nowMs) : timezone
   } catch (error) {
     throw new Error(`系统设置 usageStatsTimezone 无效：${error instanceof Error ? error.message : String(error)}`)
   }
@@ -311,6 +313,10 @@ function cacheUsageStatsTimezone(value: string, nowMs = Date.now()): string {
     expiresAtMs: nowMs + usageStatsTimezoneCacheTtlMs
   }
   return value
+}
+
+function isSqliteReadWorkerProcess(): boolean {
+  return process.env.JUHE_AI_SQLITE_READ_WORKER === 'true'
 }
 
 export function normalizeUsageStatsTimezone(value: unknown): string {

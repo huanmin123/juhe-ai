@@ -1,6 +1,7 @@
+import { existsSync } from 'node:fs'
 import type { DatabaseSync } from 'node:sqlite'
 
-import { getStatsDatabase } from './database.js'
+import { getStatsDatabase, statsDatabasePath } from './database.js'
 import type { DatabaseClient } from './database-client.js'
 import type {
   EligibleOpenAIGroupAccountSelection,
@@ -658,21 +659,31 @@ export function loadFreshGatewayDispatchCandidateQualityRows(
     quality_state: string | null
     quality_ewma_first_token_ms: number | null
   }> = []
+  if (isSqliteReadWorkerProcess() && !existsSync(statsDatabasePath())) {
+    return new Map()
+  }
   const database = getStatsDatabase()
   for (const chunk of chunkValues(ids, 900)) {
-    rows.push(...database
-      .prepare(`
-        SELECT account_id, quality_score, quality_state, ewma_first_token_ms AS quality_ewma_first_token_ms
-        FROM account_quality_scores
-        WHERE account_id IN (${sqlPlaceholders(chunk.length)})
-          AND last_sample_at >= ?
-      `)
-      .all(...chunk, freshAfter) as unknown as Array<{
-        account_id: string
-        quality_score: number | null
-        quality_state: string | null
-        quality_ewma_first_token_ms: number | null
-      }>)
+    try {
+      rows.push(...database
+        .prepare(`
+          SELECT account_id, quality_score, quality_state, ewma_first_token_ms AS quality_ewma_first_token_ms
+          FROM account_quality_scores
+          WHERE account_id IN (${sqlPlaceholders(chunk.length)})
+            AND last_sample_at >= ?
+        `)
+        .all(...chunk, freshAfter) as unknown as Array<{
+          account_id: string
+          quality_score: number | null
+          quality_state: string | null
+          quality_ewma_first_token_ms: number | null
+        }>)
+    } catch (error) {
+      if (isSqliteReadWorkerProcess() && isMissingAccountQualityTableError(error)) {
+        return new Map()
+      }
+      throw error
+    }
   }
   return new Map(rows.map((row) => [row.account_id, row]))
 }
@@ -708,6 +719,14 @@ export async function loadFreshGatewayDispatchCandidateQualityRowsAsync(
     `, [...chunk, freshAfter]))
   }
   return new Map(rows.map((row) => [row.account_id, row]))
+}
+
+function isSqliteReadWorkerProcess(): boolean {
+  return process.env.JUHE_AI_SQLITE_READ_WORKER === 'true'
+}
+
+function isMissingAccountQualityTableError(error: unknown): boolean {
+  return error instanceof Error && /no such table:\s*account_quality_scores/i.test(error.message)
 }
 
 function gatewayDispatchCandidateBusinessTables(client: DatabaseClient): {

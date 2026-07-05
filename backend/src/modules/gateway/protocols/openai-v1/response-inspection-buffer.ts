@@ -26,6 +26,7 @@ export interface ResponseInspectionSseResult {
   chunks: Buffer[]
   intercepted?: ResponseInspectionDecision
   observations?: ResponseInspectionDecision[]
+  pendingEvent?: boolean
   parserSkipped: boolean
 }
 
@@ -163,6 +164,7 @@ export class OpenAIResponseInspectionBuffer {
     return {
       chunks,
       observations: observations.length > 0 ? observations : undefined,
+      pendingEvent: this.pendingBuffer.length > 0,
       parserSkipped: this.parserSkipped
     }
   }

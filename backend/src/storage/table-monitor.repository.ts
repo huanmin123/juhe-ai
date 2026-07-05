@@ -25,6 +25,7 @@ import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
 export type MonitoredDatabaseRole = 'business' | 'dataset' | 'usage-catalog' | 'stats' | 'codex-context-state'
+type SnapshotNumberValue = number | string | null
 
 export interface TableStorageSnapshotSummary {
   databaseRole: MonitoredDatabaseRole
@@ -128,32 +129,32 @@ interface LatestTableSnapshotRow {
   database_role: MonitoredDatabaseRole
   table_name: string
   sampled_at: string
-  row_count: number | null
-  table_bytes: number | null
-  index_bytes: number | null
-  total_bytes: number | null
-  page_count: number | null
-  index_count: number
-  growth_bytes_1h: number | null
-  growth_rows_1h: number | null
-  growth_bytes_24h: number | null
-  growth_rows_24h: number | null
+  row_count: SnapshotNumberValue
+  table_bytes: SnapshotNumberValue
+  index_bytes: SnapshotNumberValue
+  total_bytes: SnapshotNumberValue
+  page_count: SnapshotNumberValue
+  index_count: number | string
+  growth_bytes_1h: SnapshotNumberValue
+  growth_rows_1h: SnapshotNumberValue
+  growth_bytes_24h: SnapshotNumberValue
+  growth_rows_24h: SnapshotNumberValue
 }
 
 interface LatestDatabaseSnapshotRow {
   database_role: MonitoredDatabaseRole
   database_path: string
   sampled_at: string
-  file_bytes: number | null
-  wal_bytes: number | null
-  shm_bytes: number | null
-  page_size: number | null
-  page_count: number | null
-  freelist_count: number | null
-  used_bytes: number | null
-  free_bytes: number | null
-  table_count: number | null
-  index_count: number | null
+  file_bytes: SnapshotNumberValue
+  wal_bytes: SnapshotNumberValue
+  shm_bytes: SnapshotNumberValue
+  page_size: SnapshotNumberValue
+  page_count: SnapshotNumberValue
+  freelist_count: SnapshotNumberValue
+  used_bytes: SnapshotNumberValue
+  free_bytes: SnapshotNumberValue
+  table_count: SnapshotNumberValue
+  index_count: SnapshotNumberValue
 }
 
 export const tableMonitorSampleRetentionDays = 30
@@ -540,10 +541,10 @@ function collectTargetTableRows(
       totalBytes,
       pageCount,
       indexCount: indexNames.length,
-      growthBytes1h: previous1h && totalBytes !== undefined && previous1h.total_bytes !== null ? totalBytes - previous1h.total_bytes : undefined,
-      growthRows1h: previous1h && rowCount !== undefined && previous1h.row_count !== null ? rowCount - previous1h.row_count : undefined,
-      growthBytes24h: previous24h && totalBytes !== undefined && previous24h.total_bytes !== null ? totalBytes - previous24h.total_bytes : undefined,
-      growthRows24h: previous24h && rowCount !== undefined && previous24h.row_count !== null ? rowCount - previous24h.row_count : undefined
+      growthBytes1h: numericDelta(totalBytes, previous1h?.total_bytes),
+      growthRows1h: numericDelta(rowCount, previous1h?.row_count),
+      growthBytes24h: numericDelta(totalBytes, previous24h?.total_bytes),
+      growthRows24h: numericDelta(rowCount, previous24h?.row_count)
     }
   })
 }
@@ -592,10 +593,10 @@ function collectAggregateTargetTableRows(
       totalBytes,
       pageCount: hasDbstat ? pageCount : undefined,
       indexCount,
-      growthBytes1h: previous1h && totalBytes !== undefined && previous1h.total_bytes !== null ? totalBytes - previous1h.total_bytes : undefined,
-      growthRows1h: previous1h && previous1h.row_count !== null ? rowCount - previous1h.row_count : undefined,
-      growthBytes24h: previous24h && totalBytes !== undefined && previous24h.total_bytes !== null ? totalBytes - previous24h.total_bytes : undefined,
-      growthRows24h: previous24h && previous24h.row_count !== null ? rowCount - previous24h.row_count : undefined
+      growthBytes1h: numericDelta(totalBytes, previous1h?.total_bytes),
+      growthRows1h: numericDelta(rowCount, previous1h?.row_count),
+      growthBytes24h: numericDelta(totalBytes, previous24h?.total_bytes),
+      growthRows24h: numericDelta(rowCount, previous24h?.row_count)
     }
   })
 }
@@ -819,10 +820,10 @@ async function collectPostgresTargetTableRows(
       totalBytes,
       pageCount,
       indexCount,
-      growthBytes1h: previousHour && totalBytes !== undefined && previousHour.total_bytes !== null ? totalBytes - previousHour.total_bytes : undefined,
-      growthRows1h: previousHour && rowCount !== undefined && previousHour.row_count !== null ? rowCount - previousHour.row_count : undefined,
-      growthBytes24h: previousDay && totalBytes !== undefined && previousDay.total_bytes !== null ? totalBytes - previousDay.total_bytes : undefined,
-      growthRows24h: previousDay && rowCount !== undefined && previousDay.row_count !== null ? rowCount - previousDay.row_count : undefined
+      growthBytes1h: numericDelta(totalBytes, previousHour?.total_bytes),
+      growthRows1h: numericDelta(rowCount, previousHour?.row_count),
+      growthBytes24h: numericDelta(totalBytes, previousDay?.total_bytes),
+      growthRows24h: numericDelta(rowCount, previousDay?.row_count)
     }
   })
 }
@@ -1169,9 +1170,9 @@ function compareTableSnapshotsForOverview(left: LatestTableSnapshotRow, right: L
   return tableName !== 0 ? tableName : left.database_role.localeCompare(right.database_role)
 }
 
-function compareNullableNumberDesc(left: number | null | undefined, right: number | null | undefined): number {
-  const leftNumber = typeof left === 'number' ? left : Number.NEGATIVE_INFINITY
-  const rightNumber = typeof right === 'number' ? right : Number.NEGATIVE_INFINITY
+function compareNullableNumberDesc(left: number | string | null | undefined, right: number | string | null | undefined): number {
+  const leftNumber = optionalNumber(left) ?? Number.NEGATIVE_INFINITY
+  const rightNumber = optionalNumber(right) ?? Number.NEGATIVE_INFINITY
   if (leftNumber === rightNumber) return 0
   return leftNumber > rightNumber ? -1 : 1
 }
@@ -1309,4 +1310,9 @@ function tableSnapshotFromRow(row: LatestTableSnapshotRow): TableStorageSnapshot
 function optionalNumber(value: number | string | null | undefined): number | undefined {
   const numberValue = typeof value === 'string' ? Number(value) : value
   return typeof numberValue === 'number' && Number.isFinite(numberValue) ? numberValue : undefined
+}
+
+function numericDelta(current: number | undefined, previous: number | string | null | undefined): number | undefined {
+  const previousNumber = optionalNumber(previous)
+  return current !== undefined && previousNumber !== undefined ? current - previousNumber : undefined
 }

@@ -92,8 +92,7 @@ try {
   const codexFailedResult = await probeCodexSwitchCandidateAccount(codexFailedCandidate, {
     req: mockResponsesRequest('gpt-5.5'),
     systemAccountId: admin.id,
-    groupId: group.id,
-    settings: readGatewaySettings()
+    groupId: group.id
   })
   await flushGatewayAccountSideEffects()
   flushAllUsageRecordQueue()
@@ -106,8 +105,7 @@ try {
   const codexTimeoutResult = await probeCodexSwitchCandidateAccount(codexTimeoutCandidate, {
     req: mockResponsesRequest('gpt-5.5'),
     systemAccountId: admin.id,
-    groupId: group.id,
-    settings: readGatewaySettings()
+    groupId: group.id
   })
   AbortSignal.timeout = originalAbortSignalTimeout
   await flushGatewayAccountSideEffects()
@@ -122,6 +120,9 @@ try {
   auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
   setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   await closeServer(upstream)
+  await import('../../storage/sqlite-read-worker-pool.js')
+    .then((module) => module.closeSqliteReadWorkerPool())
+    .catch(() => undefined)
   try {
     databaseModule.closeStorageDatabases()
   } catch {
@@ -173,7 +174,8 @@ function createMockAIUpstream(): http.Server {
       chunks.push(Buffer.from(chunk))
     })
     req.on('end', () => {
-      if (req.method !== 'POST' || url.pathname !== '/v1/responses') {
+      const responseMode = mockResponseMode(url.pathname)
+      if (req.method !== 'POST' || !responseMode) {
         sendJsonError(res, 404, 'mock path not found')
         return
       }
@@ -194,14 +196,20 @@ function createMockAIUpstream(): http.Server {
       if (key === 'codex-timeout') {
         setTimeout(() => {
           if (!res.destroyed) {
-            sendResponsesCompleted(res, 'OK')
+            sendMockCompleted(res, responseMode, 'OK')
           }
         }, 200)
         return
       }
-      sendResponsesCompleted(res, 'OK')
+      sendMockCompleted(res, responseMode, 'OK')
     })
   })
+}
+
+function mockResponseMode(pathname: string): 'responses' | 'chat' | undefined {
+  if (pathname === '/v1/responses') return 'responses'
+  if (pathname === '/v1/chat/completions') return 'chat'
+  return undefined
 }
 
 function upstreamKey(authorization: string | string[] | undefined): string {
@@ -246,6 +254,34 @@ function sendResponsesCompleted(res: http.ServerResponse, outputText: string): v
   }
   res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
   res.end(`event: response.completed\ndata: ${JSON.stringify(completedEvent)}\n\n`)
+}
+
+function sendChatCompleted(res: http.ServerResponse, outputText: string): void {
+  const chunk = {
+    id: 'chatcmpl_account_diagnostic_mock_ai',
+    object: 'chat.completion.chunk',
+    choices: [{ index: 0, delta: { content: outputText }, finish_reason: null }]
+  }
+  const done = {
+    id: 'chatcmpl_account_diagnostic_mock_ai',
+    object: 'chat.completion.chunk',
+    choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+    usage: {
+      prompt_tokens: 1,
+      completion_tokens: 1,
+      total_tokens: 2
+    }
+  }
+  res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
+  res.end(`data: ${JSON.stringify(chunk)}\n\ndata: ${JSON.stringify(done)}\n\ndata: [DONE]\n\n`)
+}
+
+function sendMockCompleted(res: http.ServerResponse, mode: 'responses' | 'chat', outputText: string): void {
+  if (mode === 'chat') {
+    sendChatCompleted(res, outputText)
+    return
+  }
+  sendResponsesCompleted(res, outputText)
 }
 
 async function listen(server: http.Server): Promise<void> {

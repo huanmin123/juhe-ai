@@ -302,7 +302,7 @@ externalIntegrationSourcesRouter.post('/:id/tokens', mutationGuard({
   }
 })
 
-externalIntegrationSourcesRouter.get('/:id/tokens/:tokenId/secret', async (req, res) => {
+externalIntegrationSourcesRouter.get('/:id/tokens/:tokenId/secret', async (req, res, next) => {
   const params = tokenParamSchema.safeParse(req.params)
   if (!params.success) {
     res.status(400).json(badRequest(firstIssueMessage(params.error, 'Token 不存在')))
@@ -317,7 +317,7 @@ externalIntegrationSourcesRouter.get('/:id/tokens/:tokenId/secret', async (req, 
     setSecretResponseHeaders(res)
     res.json(ok(token))
   } catch (error) {
-    res.status(400).json(badRequest(error instanceof Error ? error.message : '读取 Token 失败'))
+    next(error)
   }
 })
 

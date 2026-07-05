@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import type { AccountClientCompatibility, AccountGroupBindStatus, AccountStatus, AccountSummary } from '../domain/types.js'
 import { normalizeOpenAIAccountClientCompatibility } from '../domain/account-client-compatibility.js'
 import { isGptVendorCode } from '../domain/provider-protocol.js'
@@ -14,7 +15,7 @@ import { loadAccountTagsByAccountIds, loadAccountTagsByAccountIdsAsync } from '.
 import { loadModelMappingsByAccountIdsAsync } from './account-model-mappings.repository.js'
 import { loadSupportedModelsByAccountIdsAsync } from './account-supported-models.repository.js'
 import { loadResourceAuthorizationSourcesByAuthorizationIds, loadResourceAuthorizationStatsByResourceIds } from './authorization-read-loaders.js'
-import { getBusinessDatabase, getStatsDatabase, isSqliteDatabaseLocked, nowIso, runWithSqliteBusyTimeout } from './database.js'
+import { getBusinessDatabase, getStatsDatabase, isSqliteDatabaseLocked, nowIso, runWithSqliteBusyTimeout, statsDatabasePath } from './database.js'
 import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient } from './database-client.js'
 import { loadOpenAICodexUsageSnapshotsByAccountIds } from './oauth-usage-loaders.js'
@@ -1373,9 +1374,15 @@ function loadAccountListStatsMap<T>(
   lookupName: string,
   loader: () => Map<string, T>
 ): Map<string, T> {
+  if (isSqliteReadWorkerProcess() && !existsSync(statsDatabasePath())) {
+    return new Map()
+  }
   try {
     return runWithSqliteBusyTimeout(getStatsDatabase(), accountListStatsBusyTimeoutMs, loader)
   } catch (error) {
+    if (isSqliteReadWorkerProcess() && isMissingStatsDecoratorTableError(error)) {
+      return new Map()
+    }
     if (!isSqliteDatabaseLocked(error)) {
       throw error
     }
@@ -1386,6 +1393,9 @@ function loadAccountListStatsMap<T>(
 function loadAccountListQuotaCosts(
   checks: RequestQuotaCostInput[]
 ): Map<string, RequestQuotaCosts> {
+  if (isSqliteReadWorkerProcess() && !existsSync(statsDatabasePath())) {
+    return new Map()
+  }
   try {
     const statsDatabase = getStatsDatabase()
     return runWithSqliteBusyTimeout(
@@ -1394,6 +1404,9 @@ function loadAccountListQuotaCosts(
       () => loadRequestQuotaCostsBatch(statsDatabase, checks)
     )
   } catch (error) {
+    if (isSqliteReadWorkerProcess() && isMissingStatsDecoratorTableError(error)) {
+      return new Map()
+    }
     if (!isSqliteDatabaseLocked(error)) {
       throw error
     }
@@ -1406,6 +1419,15 @@ function accountListStatsBusyError(lookupName: string, cause: unknown): Error {
   ;(error as Error & { code?: string; cause?: unknown }).code = 'SQLITE_BUSY'
   ;(error as Error & { code?: string; cause?: unknown }).cause = cause
   return error
+}
+
+function isSqliteReadWorkerProcess(): boolean {
+  return process.env.JUHE_AI_SQLITE_READ_WORKER === 'true'
+}
+
+function isMissingStatsDecoratorTableError(error: unknown): boolean {
+  return error instanceof Error
+    && (/no such table:/i.test(error.message) || /unable to open database file/i.test(error.message))
 }
 
 export function accountGroupBinding(accountId: string, systemAccountId: string): { groupId: string; groupName: string; groupBindStatus: AccountGroupBindStatus } | undefined {

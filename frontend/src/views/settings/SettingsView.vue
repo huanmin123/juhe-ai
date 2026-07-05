@@ -277,10 +277,6 @@
             </div>
           </div>
 
-          <a-alert class="setting-alert section-alert" type="warning" show-icon>
-            <template #message>清理任务固定按 10 分钟一轮、1000 行/批、20 批/轮的小批多轮策略执行，页面只开放保留期配置。</template>
-          </a-alert>
-
           <div class="settings-grid">
             <div class="setting-item">
               <a-form-item label="使用记录保留天数" tooltip="默认 30 天，最大 180 天；清理前会等待统计游标处理完成，避免破坏聚合。">
@@ -429,14 +425,6 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 18px;
-}
-
-.setting-alert {
-  border-radius: 12px;
-}
-
-.section-alert {
-  margin-bottom: 16px;
 }
 
 .settings-form {

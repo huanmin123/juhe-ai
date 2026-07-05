@@ -62,6 +62,7 @@
     "test:account-list-query-guard": "tsx src/scripts/regression/account-list-query-guard-regression.ts",
     "test:account-list-stats-lock": "tsx src/scripts/regression/account-list-stats-lock-regression.ts",
     "test:sqlite-read-worker": "tsx src/scripts/regression/sqlite-read-worker-regression.ts",
+    "test:sqlite-query-regression": "pnpm run test:sqlite-read-worker && pnpm run test:system-api-db-access && pnpm run test:system-api-read-burst && pnpm run test:db-service-read-write-dispatch-simulation && pnpm run test:external-source-auth && pnpm run test:external-integration-source-async-boundary && pnpm run test:external-public-account-push-async-boundary",
     "test:management-list-contract": "tsx src/scripts/regression/management-list-contract-regression.ts",
     "test:management-progressive-list-contract": "tsx src/scripts/regression/management-progressive-list-contract-regression.ts",
     "test:account-list-postgres-smoke": "tsx src/scripts/regression/account-list-postgres-smoke.ts",

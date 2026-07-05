@@ -96,7 +96,7 @@ function testPrecheckSummaryMapperBoundary(): void {
     '账号事前确认运行态服务应从专用 mapper 导入测试摘要适配器'
   )
   assert(
-    sideEffectsSource.includes('accountSummaryFromGatewayPrecheckAccount(state.account, state)'),
+    /accountSummaryFromGatewayPrecheckAccount\(\s*state\.account\s*,\s*\{[\s\S]*?groupId:\s*state\.groupId[\s\S]*?systemAccountId:\s*state\.systemAccountId[\s\S]*?\}\s*\)/.test(sideEffectsSource),
     '事前确认探针应通过专用 mapper 构造测试账户摘要'
   )
   assert(
@@ -117,7 +117,7 @@ function testPrecheckSummaryMapperBoundary(): void {
     '事前确认测试摘要应保持可用于测试的权限语义'
   )
   assert(
-    mapperSource.includes('bindingSystemAccountId') && mapperSource.includes('gatewayAccountSummarySystemAccountId(account)'),
+    mapperSource.includes('bindingSystemAccountId') && mapperSource.includes('gatewayAccountSummarySystemAccountId(account, context)'),
     '授权账户测试摘要应使用绑定系统账户维度'
   )
   assert(

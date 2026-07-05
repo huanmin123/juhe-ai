@@ -41,7 +41,7 @@ const settings: GatewaySettings = {
   defaultTemporaryUnschedulableMinutes: 5,
   temporaryUnschedulableRetryIntervalSeconds: 0,
   temporaryUnschedulableRetryAttempts: 0,
-  streamCircuitBreakerEnabled: false,
+  streamCircuitBreakerEnabled: true,
   streamRequestTimeoutSeconds: 120,
   streamIdleTimeoutSeconds: 30,
   streamClientTotalWaitTimeoutSeconds: 270,

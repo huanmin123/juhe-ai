@@ -392,11 +392,31 @@ function clearGlobalSettingsCache(): void {
 }
 
 async function getSystemSettingsSharedCache(): Promise<Record<string, unknown> | undefined> {
-  return getSettingsSharedCache(systemSettingsSharedCache)
+  const settings = await getSettingsSharedCache(systemSettingsSharedCache)
+  if (!settings) return undefined
+  try {
+    return normalizeSystemSettingsSnapshot(settings)
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'system_settings_shared_cache_schema_mismatch'
+    }), '系统设置 Redis shared cache 与当前字段结构不一致，已忽略本次缓存')
+    clearSystemSettingsSharedCache()
+    return undefined
+  }
 }
 
 async function getGlobalSettingsSharedCache(): Promise<Record<string, unknown> | undefined> {
-  return getSettingsSharedCache(globalSettingsSharedCache)
+  const settings = await getSettingsSharedCache(globalSettingsSharedCache)
+  if (!settings) return undefined
+  try {
+    return normalizeGlobalSettingsSnapshot(settings)
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'global_settings_shared_cache_schema_mismatch'
+    }), '全局设置 Redis shared cache 与当前字段结构不一致，已忽略本次缓存')
+    clearGlobalSettingsSharedCache()
+    return undefined
+  }
 }
 
 async function getSettingsSharedCache(cache: typeof systemSettingsSharedCache): Promise<Record<string, unknown> | undefined> {
@@ -516,6 +536,15 @@ function normalizeSystemSettingsInput(input: Record<string, unknown>): Record<st
   return output
 }
 
+function normalizeSystemSettingsSnapshot(input: Record<string, unknown>): Record<string, unknown> {
+  const output: Record<string, unknown> = {}
+  for (const key of systemSettingKeys) {
+    output[key] = normalizeSystemSetting(key, input[key])
+  }
+  assertAllSettingsPresent(output, systemSettingKeys, '系统设置')
+  return output
+}
+
 function normalizeGlobalSettingsInput(input: Record<string, unknown>): Record<string, unknown> {
   const output: Record<string, unknown> = {}
   for (const [key, value] of Object.entries(input)) {
@@ -524,6 +553,15 @@ function normalizeGlobalSettingsInput(input: Record<string, unknown>): Record<st
   if (Object.keys(output).length === 0) {
     throw new Error('全局设置更新不能为空')
   }
+  return output
+}
+
+function normalizeGlobalSettingsSnapshot(input: Record<string, unknown>): Record<string, unknown> {
+  const output: Record<string, unknown> = {}
+  for (const key of globalSettingKeys) {
+    output[key] = normalizeGlobalSetting(key, input[key])
+  }
+  assertAllSettingsPresent(output, globalSettingKeys, '全局设置')
   return output
 }
 

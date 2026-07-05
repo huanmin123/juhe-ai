@@ -35,7 +35,8 @@ const [
   accountSideEffects,
   usageRecordQueue,
   auditLogQueue,
-  clientIpAvoidance
+  clientIpAvoidance,
+  readWorkerPool
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
   import('../../shared/request-context.js'),
@@ -47,7 +48,8 @@ const [
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js'),
-  import('../../modules/gateway/runtime/client-ip-account-avoidance.service.js')
+  import('../../modules/gateway/runtime/client-ip-account-avoidance.service.js'),
+  import('../../storage/sqlite-read-worker-pool.js')
 ])
 
 type RawBodyRequest = Request & { rawBody?: Buffer }
@@ -111,7 +113,6 @@ async function main(): Promise<void> {
     usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
     auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
     settingsRepository.updateSettings({
-      streamCircuitBreakerEnabled: true,
       streamRequestTimeoutSeconds: 10,
       streamIdleTimeoutSeconds: 10,
       temporaryUnschedulableRetryAttempts: 0
@@ -174,7 +175,12 @@ async function main(): Promise<void> {
     assert(streamText.includes('response.failed'), `客户端未收到网关失败事件：${streamText}`)
     assert(streamText.includes('上游流式响应在输出前失败，请重试'), `Codex 首段等待超时应返回统一可重试文案：${streamText}`)
     assert(streamText.includes('"code":"upstream_retryable_error"'), `首段等待超时应改写为可重试错误码：${streamText}`)
-    assert(durationMs < 15000, `首段等待超时没有及时结束，耗时 ${durationMs}ms`)
+    assert.equal(
+      upstreamScenarioHits.filter((hit) => hit.scenario === 'no-first-chunk').length,
+      1,
+      '单账号首段等待超时不应隐藏重试同一上游'
+    )
+    assert(durationMs >= 9000 && durationMs < 25000, `首段等待超时没有在合理窗口内结束，耗时 ${durationMs}ms`)
 
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -186,7 +192,6 @@ async function main(): Promise<void> {
     assert.equal(Number(noFirstChunkFailureState?.stream_failure_count ?? 0), 0, '首段前失败未产生可见输出，不应累计账号流失败计数')
 
     settingsRepository.updateSettings({
-      streamCircuitBreakerEnabled: true,
       streamRequestTimeoutSeconds: 10,
       streamIdleTimeoutSeconds: 10,
       temporaryUnschedulableRetryAttempts: 0
@@ -215,7 +220,7 @@ async function main(): Promise<void> {
     assert(fragmentedSseEventResult.streamText.includes('response.completed'), `碎片化 SSE 事件持续有原始字节时应等到上游完成：${fragmentedSseEventResult.streamText}`)
     assert(!fragmentedSseEventResult.streamText.includes('response.failed'), `碎片化 SSE 事件持续有原始字节时不应补发失败事件：${fragmentedSseEventResult.streamText}`)
     assert(
-      fragmentedSseEventResult.durationMs >= 1200 && fragmentedSseEventResult.durationMs < 5000,
+      fragmentedSseEventResult.durationMs >= 10_000 && fragmentedSseEventResult.durationMs < 18_000,
       `碎片化 SSE 事件没有持续等待到上游完成，耗时 ${fragmentedSseEventResult.durationMs}ms`
     )
     usageRecordQueue.flushAllUsageRecordQueue()
@@ -236,7 +241,7 @@ async function main(): Promise<void> {
     usageRecordQueue.flushAllUsageRecordQueue()
     assertSuccessfulUsageRecord(largeImageEventCredential.account.id)
     assertUsageRecordBodyOmitted(largeImageEventCredential.account.id, largeImageTraceId)
-    auditLogQueue.flushAllAuditLogQueue()
+    await auditLogQueue.flushAllAuditLogQueueAsync()
     await assertImageStreamAuditBodyOmitted(largeImageTraceId, 'response.image_generation_call.completed')
 
     const largeImagePartialTraceId = traceIdForSampledSuccessBucket('large-image-partial')
@@ -247,7 +252,7 @@ async function main(): Promise<void> {
     usageRecordQueue.flushAllUsageRecordQueue()
     assertSuccessfulUsageRecord(largeImagePartialCredential.account.id)
     assertUsageRecordBodyOmitted(largeImagePartialCredential.account.id, largeImagePartialTraceId)
-    auditLogQueue.flushAllAuditLogQueue()
+    await auditLogQueue.flushAllAuditLogQueueAsync()
     await assertImageStreamAuditBodyOmitted(largeImagePartialTraceId, 'response.image_generation_call.partial_image')
 
     const largeImageApiTraceId = traceIdForSampledSuccessBucket('large-image-api-event')
@@ -257,7 +262,7 @@ async function main(): Promise<void> {
     usageRecordQueue.flushAllUsageRecordQueue()
     assertSuccessfulUsageRecord(largeImageApiEventCredential.account.id, { inputTokens: 1, outputTokens: 100 })
     assertUsageRecordBodyOmitted(largeImageApiEventCredential.account.id, largeImageApiTraceId)
-    auditLogQueue.flushAllAuditLogQueue()
+    await auditLogQueue.flushAllAuditLogQueueAsync()
     await assertImageStreamAuditBodyOmitted(largeImageApiTraceId, 'image_generation.completed')
 
     const largeImageApiSplitTraceId = traceIdForSampledSuccessBucket('large-image-api-split')
@@ -267,7 +272,7 @@ async function main(): Promise<void> {
     usageRecordQueue.flushAllUsageRecordQueue()
     assertSuccessfulUsageRecord(largeImageApiSplitCredential.account.id, { inputTokens: 3, outputTokens: 4 })
     assertUsageRecordBodyOmitted(largeImageApiSplitCredential.account.id, largeImageApiSplitTraceId)
-    auditLogQueue.flushAllAuditLogQueue()
+    await auditLogQueue.flushAllAuditLogQueueAsync()
     await assertImageStreamAuditBodyOmitted(largeImageApiSplitTraceId, 'image_generation.completed')
 
     const largeImageApiEofTraceId = traceIdForSampledSuccessBucket('large-image-api-eof')
@@ -277,7 +282,7 @@ async function main(): Promise<void> {
     usageRecordQueue.flushAllUsageRecordQueue()
     assertSuccessfulUsageRecord(largeImageApiEofCredential.account.id, { inputTokens: 1, outputTokens: 100 })
     assertUsageRecordBodyOmitted(largeImageApiEofCredential.account.id, largeImageApiEofTraceId)
-    auditLogQueue.flushAllAuditLogQueue()
+    await auditLogQueue.flushAllAuditLogQueueAsync()
     await assertImageStreamAuditBodyOmitted(largeImageApiEofTraceId, 'image_generation.completed')
 
     const missingTerminalResult = await requestMissingTerminalEof(baseUrl, missingTerminalCredential.apiKey.key)
@@ -326,7 +331,7 @@ async function main(): Promise<void> {
 
     await requestAndCloseAfterTerminal(baseUrl, clientCloseAfterTerminalCredential.apiKey.key)
     await waitForSuccessfulUsageRecord(clientCloseAfterTerminalCredential.account.id)
-    auditLogQueue.flushAllAuditLogQueue()
+    await auditLogQueue.flushAllAuditLogQueueAsync()
     assertNoClientAbortedAuditLogForAccount(clientCloseAfterTerminalCredential.account.id)
 
     const overloadedBeforeOutputResult = await requestServerOverloadedBeforeOutput(baseUrl, overloadedBeforeOutputCredential.apiKey.key)
@@ -338,7 +343,7 @@ async function main(): Promise<void> {
     const overloadedBeforeOutputAccount = repositories.listAccounts(scenarioCredentialAccess()).find((item) => item.id === overloadedBeforeOutputCredential.account.id)
     assert.equal(overloadedBeforeOutputAccount?.status, 'active', '未输出前容量错误不应把账号置为临时不可调用')
     assert.equal(overloadedBeforeOutputAccount?.streamFailureCount, 0, '未输出前容量错误不应累计账号流失败计数')
-    auditLogQueue.flushAllAuditLogQueue()
+    await auditLogQueue.flushAllAuditLogQueueAsync()
     await assertResponseInspectionAuditMetadata(overloadedBeforeOutputCredential.account.id, {
       upstreamErrorCode: 'server_is_overloaded',
       rewriteErrorCode: 'server_is_overloaded',
@@ -383,7 +388,7 @@ async function main(): Promise<void> {
     const genericErrorEventAccount = repositories.listAccounts(scenarioCredentialAccess()).find((item) => item.id === genericErrorEventCredential.account.id)
     assert.equal(genericErrorEventAccount?.status, 'active', '未知 error 事件未输出前不应把账号置为临时不可调用')
     assert.equal(genericErrorEventAccount?.streamFailureCount, 0, '未知 error 事件未输出前不应累计账号流失败计数')
-    auditLogQueue.flushAllAuditLogQueue()
+    await auditLogQueue.flushAllAuditLogQueueAsync()
     await assertResponseInspectionAuditMetadata(genericErrorEventCredential.account.id, {
       upstreamErrorCode: 'internal_server_error',
       rewriteErrorCode: 'internal_server_error',
@@ -399,7 +404,7 @@ async function main(): Promise<void> {
     const cyberPolicyAccount = repositories.listAccounts(scenarioCredentialAccess()).find((item) => item.id === cyberPolicyCredential.account.id)
     assert.equal(cyberPolicyAccount?.status, 'active', '未输出前 cyber_policy 不应把账号置为临时不可调用')
     assert.equal(cyberPolicyAccount?.streamFailureCount, 0, '未输出前 cyber_policy 不应累计账号流失败计数')
-    auditLogQueue.flushAllAuditLogQueue()
+    await auditLogQueue.flushAllAuditLogQueueAsync()
     await assertResponseInspectionAuditMetadata(cyberPolicyCredential.account.id, {
       upstreamErrorCode: 'cyber_policy',
       rewriteErrorCode: 'upstream_retryable_error',
@@ -416,7 +421,7 @@ async function main(): Promise<void> {
     const cyberPolicyAfterOutputAccount = repositories.listAccounts(scenarioCredentialAccess()).find((item) => item.id === cyberPolicyAfterOutputCredential.account.id)
     assert.equal(cyberPolicyAfterOutputAccount?.status, 'active', '输出后 cyber_policy 不应把账号置为临时不可调用')
     assert.equal(cyberPolicyAfterOutputAccount?.streamFailureCount, 0, '输出后 cyber_policy 改写后不应累计账号流失败计数')
-    auditLogQueue.flushAllAuditLogQueue()
+    await auditLogQueue.flushAllAuditLogQueueAsync()
     await assertResponseInspectionAuditMetadata(cyberPolicyAfterOutputCredential.account.id, {
       upstreamErrorCode: 'cyber_policy',
       rewriteErrorCode: 'upstream_retryable_error',
@@ -471,12 +476,13 @@ async function main(): Promise<void> {
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
-    auditLogQueue.flushAllAuditLogQueue()
+    await auditLogQueue.flushAllAuditLogQueueAsync()
     usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
     auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
     await closeServer(appServer)
     await closeServer(upstreamServer)
     try {
+      await readWorkerPool.closeSqliteReadWorkerPool()
       databaseModule.getBusinessDatabase().close()
       databaseModule.closeStorageDatabases()
     } catch {
@@ -752,10 +758,9 @@ function createStreamTimeoutRegressionUpstream(): http.Server {
         res.write('event: response.created\n')
         res.write('data: {"type":"response.created"')
         const chunks = [
-          ',"response":{"id":"resp_regression"',
-          ',"status":"in_progress"',
-          ',"metadata":{"fragment":1}',
-          '}}\n\n',
+          ',"response":{"id":"resp_regression","status":"in_progress","metadata":{"fragment":"',
+          ...Array.from({ length: 30 }, () => 'xxxxxxxxxx'),
+          '"}}}\n\n',
           'event: response.completed\n',
           'data: {"type":"response.completed","response":{"id":"resp_regression","status":"completed","usage":{"input_tokens":1,"output_tokens":0}}}\n\n'
         ]
@@ -1063,7 +1068,6 @@ function sendFuzzBackupSuccess(res: http.ServerResponse, scenario: string): void
 
 async function requestFirstChunkThenIdleTimeout(baseUrl: string, apiKey: string): Promise<{ streamText: string; durationMs: number }> {
   settingsRepository.updateSettings({
-    streamCircuitBreakerEnabled: true,
     streamRequestTimeoutSeconds: 10,
     streamIdleTimeoutSeconds: 1,
     temporaryUnschedulableRetryAttempts: 0
@@ -1093,7 +1097,6 @@ async function requestFirstChunkThenIdleTimeout(baseUrl: string, apiKey: string)
 
 async function requestFragmentedSseEventKeepalive(baseUrl: string, apiKey: string): Promise<{ streamText: string; durationMs: number }> {
   settingsRepository.updateSettings({
-    streamCircuitBreakerEnabled: true,
     streamRequestTimeoutSeconds: 10,
     streamIdleTimeoutSeconds: 1,
     temporaryUnschedulableRetryAttempts: 0
@@ -1123,7 +1126,6 @@ async function requestFragmentedSseEventKeepalive(baseUrl: string, apiKey: strin
 
 async function requestParserSkippedRawForward(baseUrl: string, apiKey: string): Promise<{ streamText: string; durationMs: number }> {
   settingsRepository.updateSettings({
-    streamCircuitBreakerEnabled: true,
     streamRequestTimeoutSeconds: 10,
     streamIdleTimeoutSeconds: 1,
     temporaryUnschedulableRetryAttempts: 0
@@ -1153,7 +1155,6 @@ async function requestParserSkippedRawForward(baseUrl: string, apiKey: string): 
 
 async function requestMissingTerminalEof(baseUrl: string, apiKey: string): Promise<{ streamText: string; durationMs: number }> {
   settingsRepository.updateSettings({
-    streamCircuitBreakerEnabled: true,
     streamRequestTimeoutSeconds: 10,
     streamIdleTimeoutSeconds: 1,
     temporaryUnschedulableRetryAttempts: 0
@@ -1183,7 +1184,6 @@ async function requestMissingTerminalEof(baseUrl: string, apiKey: string): Promi
 
 async function requestHeartbeatThenCompleted(baseUrl: string, apiKey: string): Promise<{ streamText: string; durationMs: number }> {
   settingsRepository.updateSettings({
-    streamCircuitBreakerEnabled: true,
     streamRequestTimeoutSeconds: 10,
     streamIdleTimeoutSeconds: 1,
     temporaryUnschedulableRetryAttempts: 0
@@ -1213,7 +1213,6 @@ async function requestHeartbeatThenCompleted(baseUrl: string, apiKey: string): P
 
 async function requestHeartbeatOnlyServerRetry(baseUrl: string, apiKey: string): Promise<{ streamText: string; durationMs: number }> {
   settingsRepository.updateSettings({
-    streamCircuitBreakerEnabled: true,
     streamRequestTimeoutSeconds: 10,
     streamIdleTimeoutSeconds: 1,
     temporaryUnschedulableRetryAttempts: 0
@@ -1243,7 +1242,6 @@ async function requestHeartbeatOnlyServerRetry(baseUrl: string, apiKey: string):
 
 async function requestAndCloseAfterTerminal(baseUrl: string, apiKey: string): Promise<void> {
   settingsRepository.updateSettings({
-    streamCircuitBreakerEnabled: true,
     streamRequestTimeoutSeconds: 10,
     streamIdleTimeoutSeconds: 10,
     temporaryUnschedulableRetryAttempts: 0
@@ -1304,7 +1302,6 @@ async function requestStreamFailureBeforeOutput(
   scenario: string
 ): Promise<{ streamText: string; durationMs: number }> {
   settingsRepository.updateSettings({
-    streamCircuitBreakerEnabled: true,
     streamRequestTimeoutSeconds: 10,
     streamIdleTimeoutSeconds: 10,
     temporaryUnschedulableRetryAttempts: 0
@@ -1335,7 +1332,6 @@ async function requestGenericStreamFailureBeforeOutput(
   scenario: string
 ): Promise<{ streamText: string; durationMs: number }> {
   settingsRepository.updateSettings({
-    streamCircuitBreakerEnabled: true,
     streamRequestTimeoutSeconds: 10,
     streamIdleTimeoutSeconds: 10,
     temporaryUnschedulableRetryAttempts: 0
@@ -1378,7 +1374,6 @@ async function requestStreamScenario(
   traceId?: string
 ): Promise<{ streamText: string; durationMs: number }> {
   settingsRepository.updateSettings({
-    streamCircuitBreakerEnabled: true,
     streamRequestTimeoutSeconds: 10,
     streamIdleTimeoutSeconds: 10,
     temporaryUnschedulableRetryAttempts: 0
@@ -1411,7 +1406,6 @@ async function requestJsonResponseForStreamRequest(
   apiKey: string
 ): Promise<{ text: string; contentType: string }> {
   settingsRepository.updateSettings({
-    streamCircuitBreakerEnabled: true,
     streamRequestTimeoutSeconds: 10,
     streamIdleTimeoutSeconds: 10,
     temporaryUnschedulableRetryAttempts: 0
@@ -1642,7 +1636,14 @@ function serverAddress(server: http.Server): { port: number } {
 async function closeServer(server: http.Server | undefined): Promise<void> {
   if (!server?.listening) return
   await new Promise<void>((resolvePromise, rejectPromise) => {
-    server.close((error) => error ? rejectPromise(error) : resolvePromise())
+    server.closeIdleConnections?.()
+    const forceCloseTimer = setTimeout(() => {
+      server.closeAllConnections?.()
+    }, 500)
+    server.close((error) => {
+      clearTimeout(forceCloseTimer)
+      return error ? rejectPromise(error) : resolvePromise()
+    })
   })
 }
 

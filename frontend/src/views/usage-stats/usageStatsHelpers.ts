@@ -33,18 +33,18 @@ export function aggregateUsageSummaries(summaries: AccountUsageSummary[]): Accou
   const summary = zeroUsageSummary()
   let lastUsedAt: string | undefined
   for (const item of summaries) {
-    summary.requestCount += item.requestCount
-    summary.inputTokens += item.inputTokens
-    summary.outputTokens += item.outputTokens
-    summary.cacheReadTokens += item.cacheReadTokens
-    summary.cacheReadCost += item.cacheReadCost
-    summary.cacheWriteTokens += item.cacheWriteTokens
-    summary.cacheWrite1hTokens += item.cacheWrite1hTokens
-    summary.cacheWriteCost += item.cacheWriteCost
-    summary.thinkingTokens += item.thinkingTokens
-    summary.inputImageTokens += item.inputImageTokens
-    summary.outputImageTokens += item.outputImageTokens
-    summary.totalCost += item.totalCost
+    summary.requestCount += positiveUsageNumber(item.requestCount)
+    summary.inputTokens += positiveUsageNumber(item.inputTokens)
+    summary.outputTokens += positiveUsageNumber(item.outputTokens)
+    summary.cacheReadTokens += positiveUsageNumber(item.cacheReadTokens)
+    summary.cacheReadCost += positiveUsageNumber(item.cacheReadCost)
+    summary.cacheWriteTokens += positiveUsageNumber(item.cacheWriteTokens)
+    summary.cacheWrite1hTokens += positiveUsageNumber(item.cacheWrite1hTokens)
+    summary.cacheWriteCost += positiveUsageNumber(item.cacheWriteCost)
+    summary.thinkingTokens += positiveUsageNumber(item.thinkingTokens)
+    summary.inputImageTokens += positiveUsageNumber(item.inputImageTokens)
+    summary.outputImageTokens += positiveUsageNumber(item.outputImageTokens)
+    summary.totalCost += positiveUsageNumber(item.totalCost)
     if (item.lastUsedAt && (!lastUsedAt || item.lastUsedAt > lastUsedAt)) {
       lastUsedAt = item.lastUsedAt
     }
@@ -175,7 +175,7 @@ function cacheReadRateDenominator(
   return inputTokens
 }
 
-function positiveUsageNumber(value?: number): number {
+function positiveUsageNumber(value?: unknown): number {
   const numericValue = Number(value ?? 0)
   return Number.isFinite(numericValue) ? Math.max(numericValue, 0) : 0
 }

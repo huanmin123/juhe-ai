@@ -305,6 +305,12 @@ try {
   })
   assert.equal(runtime.apiKey?.id, apiKey.id, 'DB service gateway runtime 静态读应经 read worker 返回真实 API Key')
   assert(runtime.accounts.some((item) => item.id === account.id), 'DB service gateway runtime 静态读应经 read worker 返回真实候选账号')
+  const runtimeWithoutSkip = await dbServiceHandlers.handleDbServiceOperation({
+    type: 'read_gateway_runtime',
+    key: apiKey.key
+  })
+  assert.equal(runtimeWithoutSkip.apiKey?.id, apiKey.id, 'DB service gateway runtime 未传 skip 时也应经 read worker 返回真实 API Key')
+  assert(runtimeWithoutSkip.accounts.some((item) => item.id === account.id), 'DB service gateway runtime 未传 skip 时不能回落 DB service 主线程同步读')
   assert.equal((await dbServiceHandlers.handleDbServiceOperation({
     type: 'resolve_group_usage_access',
     groupId: group.id,
@@ -332,6 +338,14 @@ try {
     accountId: account.id,
     access
   }))?.id, account.id, 'DB service 账号测试详情应经 read worker 返回真实数据')
+  assert.deepEqual(await dbServiceHandlers.handleDbServiceOperation({
+    type: 'is_account_test_task_cancel_requested',
+    taskId: 'missing_task'
+  }), { canceled: false }, 'DB service 账号测试取消状态读应经 read worker 返回真实空结果')
+  assert.deepEqual(await dbServiceHandlers.handleDbServiceOperation({
+    type: 'read_account_test_task_cancel_message',
+    taskId: 'missing_task'
+  }), { message: '已停止测试' }, 'DB service 账号测试取消消息读应经 read worker 返回默认消息')
   assert.equal(await dbServiceHandlers.handleDbServiceOperation({
     type: 'find_openai_oauth_account_for_refresh',
     accountId: account.id
@@ -456,13 +470,13 @@ try {
   assert(chunkResults.some((item) => item.fileId === compatibleFile.id && item.contentPreview.includes('needle')), 'OpenAI-compatible vector store chunks 应经 read worker 返回真实 chunk')
   const dbServiceReadHandledJobsDelta = readWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs - dbServiceReadHandledJobsBefore
   assert(
-    dbServiceReadHandledJobsDelta >= 22,
+    dbServiceReadHandledJobsDelta >= 25,
     `DB service 剩余纯读应批量进入 read worker，实际新增 ${dbServiceReadHandledJobsDelta}`
   )
 
   const poolRuntime = readWorkerPool.getSqliteReadWorkerPoolRuntime()
   assert(poolRuntime.workerCount > 0, 'read worker pool 应创建子进程')
-  assert(poolRuntime.handledJobs >= 63, '管理端 SQLite async 读应批量由 read worker 处理')
+  assert(poolRuntime.handledJobs >= 66, '管理端 SQLite async 读应批量由 read worker 处理')
 
   console.log('SQLite read worker 回归通过：管理端账号/分组/API Key/策略/代理/系统账户/供应商/设置/模型目录/运行日志/网关运行时/OpenAI-compatible files/vector stores 读进入 query-only 子进程，返回真实数据且不触发隐藏写')
 } finally {

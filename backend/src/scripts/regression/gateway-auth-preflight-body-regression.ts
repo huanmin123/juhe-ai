@@ -40,7 +40,8 @@ const [
   auditLogQueue,
   gatewayCache,
   clientIpErrorCircuit,
-  backgroundIpc
+  backgroundIpc,
+  readWorkerPool
 ] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
@@ -56,7 +57,8 @@ const [
   import('../../modules/audit-logs/audit-log-queue.service.js'),
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/runtime/client-ip-error-circuit.service.js'),
-  import('../../modules/background/background-ipc.js')
+  import('../../modules/background/background-ipc.js'),
+  import('../../storage/sqlite-read-worker-pool.js')
 ])
 
 class FakeDbServiceChild extends EventEmitter {
@@ -220,11 +222,12 @@ try {
   usageRecordQueue.clearUsageRecordQueueForTest()
   auditLogQueue.clearAuditLogQueueForTest()
   auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
-  usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
-  try {
-    databaseModule.getBusinessDatabase().close()
-    databaseModule.closeStorageDatabases()
-  } catch {
+usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
+try {
+  await readWorkerPool.closeSqliteReadWorkerPool()
+  databaseModule.getBusinessDatabase().close()
+  databaseModule.closeStorageDatabases()
+} catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
 }

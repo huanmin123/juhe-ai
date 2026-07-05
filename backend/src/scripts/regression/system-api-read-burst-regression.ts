@@ -8,6 +8,7 @@ import { performance } from 'node:perf_hooks'
 const tempRoot = mkdtempSync(join(tmpdir(), 'juhe-system-api-read-burst-'))
 
 process.env.JUHE_AI_RUNTIME_MODE = 'standalone'
+process.env.JUHE_AI_PROCESS_ROLE = 'db-service'
 process.env.JUHE_AI_DATABASE_DRIVER = 'sqlite'
 process.env.JUHE_AI_CACHE_DRIVER = 'memory'
 process.env.JUHE_AI_RUNTIME_STATE_DRIVER = 'memory'
@@ -35,7 +36,8 @@ try {
     { logger },
     repositories,
     databaseModule,
-    readWorkerPool
+    readWorkerPool,
+    { createApiKeyRecordWithRouteStrategy }
   ] = await Promise.all([
     import('../../modules/system-api/system-api-app.js'),
     import('../../modules/auth/captcha.service.js'),
@@ -43,7 +45,8 @@ try {
     import('../../shared/logger.js'),
     import('../../storage/repositories.js'),
     import('../../storage/database.js'),
-    import('../../storage/sqlite-read-worker-pool.js')
+    import('../../storage/sqlite-read-worker-pool.js'),
+    import('../shared/route-strategy-fixture.js')
   ])
   logger.level = 'silent'
   closeStorageDatabases = databaseModule.closeStorageDatabases
@@ -76,7 +79,22 @@ try {
     status: 'active'
   }, access)
   repositories.updateAccountTags(account.id, ['读突发回归标签'], access)
-  repositories.createProxy({
+  const routeStrategy = repositories.createRouteStrategy({
+    name: '读突发回归路由',
+    mode: 'normal',
+    groupBindings: [{
+      groupId: group.id,
+      priority: 1,
+      weight: 100,
+      status: 'active'
+    }]
+  }, access)
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
+    name: '读突发回归 API Key',
+    routeStrategyId: routeStrategy.id,
+    status: 'active'
+  }, access)
+  const proxy = repositories.createProxy({
     name: '读突发回归代理',
     type: 'http',
     host: '127.0.0.1',
@@ -89,6 +107,15 @@ try {
   await listen(server)
   const baseUrl = `http://127.0.0.1:${serverAddress(server).port}`
   const cookie = await login(baseUrl, captchaAnswerForTest)
+  const expectations: BurstExpectations = {
+    accountId: account.id,
+    accountName: account.name,
+    groupId: group.id,
+    routeStrategyId: routeStrategy.id,
+    apiKeyId: apiKey.id,
+    proxyId: proxy.id,
+    tagName: '读突发回归标签'
+  }
 
   const targets = [
     '/__aisys__/api/auth/me',
@@ -114,12 +141,14 @@ try {
   ]
 
   for (const target of targets) {
-    await getOk(baseUrl, target, cookie)
+    await getOk(baseUrl, target, cookie, expectations)
   }
 
+  const readWorkerRuntimeBeforeBurst = readWorkerPool.getSqliteReadWorkerPoolRuntime()
+  assert(readWorkerRuntimeBeforeBurst.enabled, 'System API 读突发回归必须在 db-service 角色启用 SQLite read worker')
   const summaries: Array<{ path: string; count: number; p50: number; p95: number; max: number }> = []
   for (const target of targets) {
-    const durations = await burstGet(baseUrl, target, cookie, {
+    const durations = await burstGet(baseUrl, target, cookie, expectations, {
       total: 24,
       concurrency: 6
     })
@@ -128,6 +157,21 @@ try {
     assert(summary.p95 < 750, `${target} 连续读 p95 过高：${summary.p95.toFixed(1)}ms`)
     assert(summary.max < 1500, `${target} 连续读 max 过高：${summary.max.toFixed(1)}ms`)
   }
+  const readWorkerRuntimeAfterBurst = readWorkerPool.getSqliteReadWorkerPoolRuntime()
+  assert(
+    readWorkerRuntimeAfterBurst.handledJobs > readWorkerRuntimeBeforeBurst.handledJobs,
+    `System API 读突发必须命中 SQLite read worker，before=${readWorkerRuntimeBeforeBurst.handledJobs} after=${readWorkerRuntimeAfterBurst.handledJobs}`
+  )
+  assert.equal(
+    readWorkerRuntimeAfterBurst.timedOutJobs,
+    readWorkerRuntimeBeforeBurst.timedOutJobs,
+    'System API 读突发不应导致 SQLite read worker 超时'
+  )
+  assert.equal(
+    readWorkerRuntimeAfterBurst.restartedWorkers,
+    readWorkerRuntimeBeforeBurst.restartedWorkers,
+    'System API 读突发不应重启 SQLite read worker'
+  )
 
   console.log(`System API 读突发回归通过：${summaries.map((item) => `${item.path} p50=${item.p50.toFixed(1)}ms p95=${item.p95.toFixed(1)}ms max=${item.max.toFixed(1)}ms`).join(' | ')}`)
 } finally {
@@ -165,6 +209,7 @@ async function burstGet(
   baseUrl: string,
   path: string,
   cookie: string,
+  expectations: BurstExpectations,
   options: { total: number; concurrency: number }
 ): Promise<number[]> {
   const durations: number[] = []
@@ -173,7 +218,7 @@ async function burstGet(
     while (nextIndex < options.total) {
       nextIndex += 1
       const startedAt = performance.now()
-      await getOk(baseUrl, path, cookie)
+      await getOk(baseUrl, path, cookie, expectations)
       durations.push(performance.now() - startedAt)
     }
   })
@@ -181,13 +226,82 @@ async function burstGet(
   return durations
 }
 
-async function getOk(baseUrl: string, path: string, cookie: string): Promise<void> {
+interface BurstExpectations {
+  accountId: string
+  accountName: string
+  groupId: string
+  routeStrategyId: string
+  apiKeyId: string
+  proxyId: string
+  tagName: string
+}
+
+async function getOk(baseUrl: string, path: string, cookie: string, expectations: BurstExpectations): Promise<void> {
   const response = await fetch(`${baseUrl}${path}`, {
     headers: { cookie },
     signal: AbortSignal.timeout(10_000)
   })
   const text = await response.text()
   assert.equal(response.status, 200, `${path} 应返回 HTTP 200，实际 HTTP ${response.status}: ${text}`)
+  const data = (JSON.parse(text) as { data?: unknown }).data
+  assertTargetPayload(path, data, expectations)
+}
+
+function assertTargetPayload(path: string, data: unknown, expectations: BurstExpectations): void {
+  if (path.includes('/accounts/test-tasks')) {
+    assert(Array.isArray(data), `${path} 应返回任务数组，不能返回空 envelope`)
+    return
+  }
+  if (path.includes('/accounts/tags')) {
+    assert(arrayIncludesObject(data, 'name', expectations.tagName), `${path} 应返回 seed 标签`)
+    return
+  }
+  if (path.includes('/accounts/options')) {
+    assert(arrayIncludesObject(data, 'id', expectations.accountId), `${path} 应返回 seed 账号选项`)
+    return
+  }
+  if (path.includes(`/accounts/${expectations.accountId}`)) {
+    assert.equal((data as { id?: string } | undefined)?.id, expectations.accountId, `${path} 应返回 seed 账号详情`)
+    return
+  }
+  if (path.includes('/my-accounts') || path.includes('/accounts?page=')) {
+    assert(pageIncludesObject(data, 'id', expectations.accountId), `${path} 应返回 seed 账号列表`)
+    return
+  }
+  if (path.includes('/proxies/options')) {
+    assert(arrayIncludesObject(data, 'id', expectations.proxyId), `${path} 应返回 seed 代理选项`)
+    return
+  }
+  if (path.includes('/groups/options')) {
+    assert(arrayIncludesObject(data, 'id', expectations.groupId), `${path} 应返回 seed 分组选项`)
+    return
+  }
+  if (path.includes('/groups?page=')) {
+    assert(pageIncludesObject(data, 'id', expectations.groupId), `${path} 应返回 seed 分组列表`)
+    return
+  }
+  if (path.includes('/api-keys?page=')) {
+    assert(pageIncludesObject(data, 'id', expectations.apiKeyId), `${path} 应返回 seed API Key 列表`)
+    return
+  }
+  if (path.includes('/route-strategies/options')) {
+    assert(arrayIncludesObject(data, 'id', expectations.routeStrategyId), `${path} 应返回 seed 路由策略选项`)
+    return
+  }
+  if (path.includes('/auth/me')) {
+    assert.equal((data as { id?: string } | undefined)?.id, 'sys_admin', `${path} 应返回登录账户信息`)
+    return
+  }
+  assert.notEqual(data, undefined, `${path} 应返回 data envelope`)
+}
+
+function pageIncludesObject(data: unknown, key: string, value: string): boolean {
+  const items = (data as { items?: unknown[] } | undefined)?.items
+  return Array.isArray(items) && items.some((item) => (item as Record<string, unknown>)[key] === value)
+}
+
+function arrayIncludesObject(data: unknown, key: string, value: string): boolean {
+  return Array.isArray(data) && data.some((item) => (item as Record<string, unknown>)[key] === value)
 }
 
 async function getEnvelope<T>(baseUrl: string, path: string): Promise<T> {

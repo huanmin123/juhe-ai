@@ -2,8 +2,8 @@ import { runtimeConfig } from '../config/runtime.js'
 import { isGptVendorCode, isOpenAIProtocolProfile } from '../domain/provider-protocol.js'
 import { isDynamicRouteStrategyMode } from '../domain/route-strategy.js'
 import {
-  checkGatewayAuthorizationQuotaBatchByIds,
-  checkGatewayAuthorizationQuotaByIds
+  checkGatewayAuthorizationQuotaBatchByIdsReadOnly,
+  checkGatewayAuthorizationQuotaByIdsReadOnly
 } from '../modules/gateway/quota/authorization-quota.service.js'
 import { checkGatewayApiKeyQuotaReadOnly } from '../modules/gateway/quota/api-key-quota.service.js'
 import { readGatewaySettingsReadOnly } from '../modules/gateway/policy/account-error-policy.service.js'
@@ -44,6 +44,7 @@ import { getAuthorizationTeamUsageOverview, getAuthorizationUserUsageOverview } 
 import { closeStorageDatabases } from './database.js'
 import { listClientIpStats, getClientIpStatsDetail, listActiveClientIpPolicies, findActiveClientIpPolicyByHash } from './client-ip-stats.repository.js'
 import {
+  loadExternalIntegrationSourceTokenForAuthReadOnly,
   findExternalIntegrationSource,
   findExternalIntegrationSourceTokenSecret,
   listExternalIntegrationSources
@@ -272,6 +273,8 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
       return findExternalIntegrationSource(operation.id)
     case 'find_external_integration_source_token_secret_read_only':
       return findExternalIntegrationSourceTokenSecret(operation.sourceRefId, operation.tokenId)
+    case 'load_external_integration_source_token_for_auth_read_only':
+      return loadExternalIntegrationSourceTokenForAuthReadOnly(operation.token)
     case 'get_usage_stats_timezone_read_only':
       return usageStatsTimezone()
     case 'get_usage_stats_overview_read_only':
@@ -313,14 +316,14 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
     case 'find_active_client_ip_policy_by_hash_read_only':
       return findActiveClientIpPolicyByHash(operation.ipHash)
     case 'check_authorization_quota_read_only':
-      return checkGatewayAuthorizationQuotaByIds({
+      return checkGatewayAuthorizationQuotaByIdsReadOnly({
         groupAuthorizationId: operation.groupAuthorizationId,
         accountAuthorizationId: operation.accountAuthorizationId
       })
     case 'check_api_key_quota_read_only':
       return checkGatewayApiKeyQuotaReadOnly(operation.apiKey)
     case 'check_authorization_quota_batch_read_only':
-      return checkGatewayAuthorizationQuotaBatchByIds({
+      return checkGatewayAuthorizationQuotaBatchByIdsReadOnly({
         groupAuthorizationId: operation.groupAuthorizationId,
         accounts: operation.accounts
       })

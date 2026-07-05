@@ -27,12 +27,20 @@ const proxySchema = z.object({
 
 const proxyUpdateSchema = proxySchema.partial().strict()
 
-proxiesRouter.get('/options', async (req, res) => {
-  res.json(ok(await listProxyOptionsAsync(parseProxyOptionListOptions(req.query))))
+proxiesRouter.get('/options', async (req, res, next) => {
+  try {
+    res.json(ok(await listProxyOptionsAsync(parseProxyOptionListOptions(req.query))))
+  } catch (error) {
+    next(error)
+  }
 })
 
-proxiesRouter.get('/', requireAdmin, async (req, res) => {
-  res.json(ok(await listProxiesPageAsync(parseProxyListOptions(req.query))))
+proxiesRouter.get('/', requireAdmin, async (req, res, next) => {
+  try {
+    res.json(ok(await listProxiesPageAsync(parseProxyListOptions(req.query))))
+  } catch (error) {
+    next(error)
+  }
 })
 
 function parseProxyListOptions(query: Record<string, unknown>) {

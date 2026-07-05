@@ -232,7 +232,8 @@ export class KeyedChildProcessPool<Operation> {
       this.handledJobs += 1
       job.resolve(message.result)
     } else {
-      this.failJob(job, new Error(message.errorMessage ?? `${this.options.name} writer 操作失败`))
+      const operationType = this.options.operationType?.(job.operation) ?? 'unknown'
+      this.failJob(job, new Error(`${this.options.name} ${operationType} 操作失败：${message.errorMessage ?? 'worker 未返回错误详情'}`))
     }
     this.pumpSlot(slot)
     this.notifyIdle()
@@ -402,14 +403,24 @@ async function stopWriterChild(child: ChildProcess): Promise<void> {
     return
   }
   await new Promise<void>((resolve) => {
-    const timer = setTimeout(() => {
+    let settled = false
+    let forceKillTimer: NodeJS.Timeout | undefined
+    let finalTimer: NodeJS.Timeout | undefined
+    const finish = () => {
+      if (settled) return
+      settled = true
+      if (forceKillTimer) clearTimeout(forceKillTimer)
+      if (finalTimer) clearTimeout(finalTimer)
+      child.off('exit', finish)
+      child.off('close', finish)
+      resolve()
+    }
+    forceKillTimer = setTimeout(() => {
       child.kill()
-      resolve()
     }, 2000)
-    child.once('exit', () => {
-      clearTimeout(timer)
-      resolve()
-    })
+    finalTimer = setTimeout(finish, 5000)
+    child.once('exit', finish)
+    child.once('close', finish)
     try {
       if (child.connected) {
         child.disconnect()

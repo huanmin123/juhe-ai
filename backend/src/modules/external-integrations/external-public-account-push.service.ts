@@ -130,6 +130,11 @@ export type {
   PublicGroupUpdateInput
 } from './external-public-account-push.types.js'
 
+const publicResourceOwnerLookupAccess = {
+  systemAccountId: '__public_resource_owner_lookup__',
+  role: 'super_admin' as const
+}
+
 export async function addPublicWelfareAccount(input: PublicAccountPushInput): Promise<PublicAccountPushResponse> {
   const targetPasswordHash = await autoCreatedTargetPasswordHash()
   if (runtimeConfig.databaseDriver !== 'postgres') {
@@ -1013,7 +1018,15 @@ async function findTargetAccountByIdAsync(input: {
     return undefined
   }
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return findTargetAccountById(input)
+    const page = await listAccountsPageAsync(input.access, {
+      ids: [accountId],
+      providerCode: input.providerCode,
+      providerProtocolProfileId: input.providerProtocolProfileId,
+      groupId: input.groupId,
+      page: 1,
+      pageSize: 1
+    })
+    return page.items.find((account) => account.id === accountId)
   }
 
   const client = createPostgresDatabaseClient(await getPostgresPool())
@@ -1051,7 +1064,8 @@ function findPublicAccountOwnerById(accountId: string): { id: string; systemAcco
 
 async function findPublicAccountOwnerByIdAsync(accountId: string): Promise<{ id: string; systemAccountId: string } | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return findPublicAccountOwnerById(accountId)
+    const account = await findAccountSummaryAsync(accountId, publicResourceOwnerLookupAccess)
+    return account?.systemAccountId ? { id: account.id, systemAccountId: account.systemAccountId } : undefined
   }
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const row = await client.one<{ id: string; systemAccountId: string }>(`
@@ -1075,7 +1089,8 @@ function findPublicGroupOwnerById(groupId: string): { id: string; systemAccountI
 
 async function findPublicGroupOwnerByIdAsync(groupId: string): Promise<{ id: string; systemAccountId: string } | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return findPublicGroupOwnerById(groupId)
+    const group = await findGroupSummaryAsync(groupId, publicResourceOwnerLookupAccess)
+    return group?.systemAccountId ? { id: group.id, systemAccountId: group.systemAccountId } : undefined
   }
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const row = await client.one<{ id: string; systemAccountId: string }>(`
@@ -1098,7 +1113,8 @@ function findPublicApiKeyOwnerById(apiKeyId: string): { id: string; systemAccoun
 
 async function findPublicApiKeyOwnerByIdAsync(apiKeyId: string): Promise<{ id: string; systemAccountId: string } | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return findPublicApiKeyOwnerById(apiKeyId)
+    const apiKey = await findApiKeySummaryAsync(apiKeyId, publicResourceOwnerLookupAccess)
+    return apiKey?.systemAccountId ? { id: apiKey.id, systemAccountId: apiKey.systemAccountId } : undefined
   }
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const row = await client.one<{ id: string; systemAccountId: string }>(`

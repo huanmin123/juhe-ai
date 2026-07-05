@@ -47,6 +47,7 @@ import {
   updateResponseInspectionPolicy,
   updateResponseInspectionPolicyAsync
 } from '../../storage/response-inspection-policy.repository.js'
+import { closeSqliteReadWorkerPool } from '../../storage/sqlite-read-worker-pool.js'
 
 const settings: GatewaySettings = {
   gatewayTextRawBodyLimitMegabytes: 8,
@@ -1503,6 +1504,7 @@ await assertMalformedResponsesSseFailsBeforeDownstreamCommit('未闭合 data 直
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run('rip_invalid_json', '非法 JSON', 1, 21, 'protocol', OPENAI_PROTOCOL_CODE, '{bad json', 'observe', now, now), /constraint|CHECK/i, '数据库必须拒绝非法 match_json')
   } finally {
+    await closeSqliteReadWorkerPool().catch(() => undefined)
     closeStorageDatabases()
     rmSync(tempRoot, { recursive: true, force: true })
   }

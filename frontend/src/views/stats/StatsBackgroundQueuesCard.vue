@@ -274,7 +274,8 @@ function queueRunningDisplayCount(row: BackgroundQueueRow): number {
 }
 
 function numberValue(value: unknown): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+  const numericValue = typeof value === 'string' ? Number(value.trim()) : value
+  return typeof numericValue === 'number' && Number.isFinite(numericValue) ? numericValue : 0
 }
 </script>
 
