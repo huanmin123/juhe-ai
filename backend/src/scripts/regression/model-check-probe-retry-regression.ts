@@ -3,9 +3,14 @@ import http from 'node:http'
 import { mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import type { ModelCheckItemSummary } from '../../domain/types.js'
+import {
+  acquireModelCheckProbeSlot,
+  modelCheckProbeSchedulerRuntime
+} from '../../modules/model-checks/model-checks-probe-scheduler.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-model-check-probe-retry-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -17,12 +22,16 @@ runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'worker'
 runtimeConfig.workerRole = 'ingest-worker'
 runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
+runtimeConfig.modelCheck.probeMaxInFlight = 4
+runtimeConfig.modelCheck.probeMinStartIntervalMs = 0
+runtimeConfig.modelCheck.probeRetryDelayMs = 20
 mkdirSync(tempRoot, { recursive: true })
 
 const retryState = {
   transientBasicAttempts: 0,
   transientStreamAttempts: 0,
-  persistentBasicAttempts: 0
+  persistentBasicAttempts: 0,
+  rateLimitedBasicAttempts: 0
 }
 const upstream = createRetryAwareUpstream()
 let stopGatewayJsonParseWorker: (() => Promise<void>) | undefined
@@ -42,6 +51,7 @@ try {
 
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
   const upstreamBaseUrl = `http://127.0.0.1:${serverPort(upstream)}/v1`
+  await assertProbeSchedulerThrottle()
 
   const transientFixture = createMockGatewayFixture({
     label: 'model-check-retry-transient',
@@ -73,6 +83,32 @@ try {
   assert.equal(transientStream.evidenceSummary.attemptCount, 3, '流式探针应记录总尝试次数')
   assert.deepEqual(transientStream.evidenceSummary.attemptStatusCodes, [503, 503, 200], '流式探针应记录每次 HTTP 状态码')
 
+  const rateLimitedFixture = createMockGatewayFixture({
+    label: 'model-check-retry-rate-limit',
+    upstreamBaseUrl,
+    systemAccountId: 'sys_admin',
+    accountCount: 1,
+    createApiKey: false
+  })
+  const rateLimitedAccount = rateLimitedFixture.accounts[0]
+  assert(rateLimitedAccount, 'mock fixture should create a rate-limited target account')
+  const rateLimitedStartedAt = Date.now()
+  const rateLimitedRun = await runModelCheck({
+    targetType: 'account',
+    targetId: rateLimitedAccount.id,
+    model: 'gpt-5.5',
+    profile: 'full',
+    trustedComparison: false
+  }, access)
+  const rateLimitedBasic = requiredCheck(rateLimitedRun.checks, 'target.responses_basic')
+  assert.equal(rateLimitedRun.level, 'high_confidence', '429 瞬态限流恢复后不应误判失败')
+  assert.equal(retryState.rateLimitedBasicAttempts, 3, '429 basic 探针应等待后在同一账号上尝试三次')
+  assert(Date.now() - rateLimitedStartedAt >= 35, '失败重试应执行统一等待，不能贴着重打')
+  assert.equal(rateLimitedBasic.status, 'passed', '第 3 次限流恢复后 basic 探针应通过')
+  assert.equal(rateLimitedBasic.evidenceSummary.retryAttemptCount, 2, '429 basic 探针应记录重试次数')
+  assert.deepEqual(rateLimitedBasic.evidenceSummary.attemptStatusCodes, [503, 503, 200], '429 basic 探针应记录网关侧状态码')
+  assert.deepEqual(rateLimitedBasic.evidenceSummary.attemptUpstreamStatusCodes, [429, 429, 200], '429 basic 探针应记录真实上游状态码')
+
   const persistentFixture = createMockGatewayFixture({
     label: 'model-check-retry-persistent',
     upstreamBaseUrl,
@@ -102,10 +138,76 @@ try {
   assert.deepEqual(persistentBasic.evidenceSummary.attemptStatusCodes, [503, 503, 503], '持续异常报告应记录全部失败状态码')
   assert(!persistentRun.checks.some((item) => item.itemKey === 'target.behavior_probe'), 'basic 连续失败后不应继续执行重型行为探针')
 
-  console.log('模型检测探针重试回归通过：瞬态异常同账号重试后恢复，持续异常三次后未计分')
+  console.log('模型检测探针重试回归通过：探针节流、统一延迟重试、瞬态恢复和持续失败未计分均符合预期')
 } finally {
   await stopGatewayJsonParseWorker?.()
   await closeServer(upstream)
+}
+
+type ReleaseProbeSlot = Awaited<ReturnType<typeof acquireModelCheckProbeSlot>>
+
+async function assertProbeSchedulerThrottle(): Promise<void> {
+  const originalModelCheckConfig = { ...runtimeConfig.modelCheck }
+  let releaseA: ReleaseProbeSlot | undefined
+  let releaseB: ReleaseProbeSlot | undefined
+  let releaseC: ReleaseProbeSlot | undefined
+  let releaseIntervalA: ReleaseProbeSlot | undefined
+  let releaseIntervalB: ReleaseProbeSlot | undefined
+  try {
+    runtimeConfig.modelCheck.probeMaxInFlight = 2
+    runtimeConfig.modelCheck.probeMinStartIntervalMs = 0
+    releaseA = await acquireModelCheckProbeSlot()
+    releaseB = await acquireModelCheckProbeSlot()
+    let thirdAcquired = false
+    const thirdAcquire = acquireModelCheckProbeSlot().then((release) => {
+      thirdAcquired = true
+      releaseC = release
+    })
+    await delay(10)
+    assert.equal(thirdAcquired, false, '探针调度器达到最大在途数后应排队等待')
+    assert.deepEqual(modelCheckProbeSchedulerRuntime(), {
+      active: 2,
+      pending: 1,
+      maxInFlight: 2,
+      minStartIntervalMs: 0
+    }, '探针调度器应暴露当前在途和排队状态')
+    releaseA()
+    releaseA = undefined
+    await thirdAcquire
+    assert.equal(thirdAcquired, true, '释放一个探针槽后排队探针应继续执行')
+    releaseC?.()
+    releaseC = undefined
+    releaseB()
+    releaseB = undefined
+    await delay(30)
+
+    runtimeConfig.modelCheck.probeMaxInFlight = 4
+    runtimeConfig.modelCheck.probeMinStartIntervalMs = 25
+    const intervalStartedAt = Date.now()
+    releaseIntervalA = await acquireModelCheckProbeSlot()
+    let secondStartAt = 0
+    const secondAcquire = acquireModelCheckProbeSlot().then((release) => {
+      secondStartAt = Date.now()
+      releaseIntervalB = release
+    })
+    await delay(10)
+    assert.equal(secondStartAt, 0, '探针启动间隔未到时不应立即放行下一个探针')
+    await secondAcquire
+    assert(secondStartAt - intervalStartedAt >= 20, '探针启动间隔应限制同机探针发起速度')
+    releaseIntervalB?.()
+    releaseIntervalB = undefined
+    releaseIntervalA()
+    releaseIntervalA = undefined
+  } finally {
+    releaseIntervalB?.()
+    releaseIntervalA?.()
+    releaseC?.()
+    releaseB?.()
+    releaseA?.()
+    runtimeConfig.modelCheck.probeMaxInFlight = originalModelCheckConfig.probeMaxInFlight
+    runtimeConfig.modelCheck.probeMinStartIntervalMs = originalModelCheckConfig.probeMinStartIntervalMs
+    runtimeConfig.modelCheck.probeRetryDelayMs = originalModelCheckConfig.probeRetryDelayMs
+  }
 }
 
 function requiredCheck(checks: ModelCheckItemSummary[], itemKey: string): ModelCheckItemSummary {
@@ -137,6 +239,13 @@ function createRetryAwareUpstream(): http.Server {
         const authorization = String(req.headers.authorization ?? '').toLowerCase()
         const bodyText = JSON.stringify(body).toUpperCase()
         if (bodyText.includes('OK-MODEL-CHECK')) {
+          if (authorization.includes('model-check-retry-rate-limit')) {
+            retryState.rateLimitedBasicAttempts += 1
+            if (retryState.rateLimitedBasicAttempts <= 2) {
+              sendRateLimit(res)
+              return
+            }
+          }
           if (authorization.includes('model-check-retry-transient')) {
             retryState.transientBasicAttempts += 1
             if (retryState.transientBasicAttempts <= 2) {
@@ -251,6 +360,11 @@ function sendJson(res: http.ServerResponse, body: unknown): void {
 function sendError(res: http.ServerResponse, message: string): void {
   res.writeHead(503, { 'content-type': 'application/json' })
   res.end(JSON.stringify({ error: { message } }))
+}
+
+function sendRateLimit(res: http.ServerResponse): void {
+  res.writeHead(429, { 'content-type': 'application/json' })
+  res.end(JSON.stringify({ error: { message: 'group requests-per-minute limit exceeded', type: 'rate_limit_exceeded' } }))
 }
 
 function parseJson(text: string): Record<string, unknown> {

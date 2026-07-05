@@ -79,6 +79,11 @@ export interface RuntimeConfig {
   audit: {
     fullBodyCaptureEnabled: boolean
   }
+  modelCheck: {
+    probeMaxInFlight: number
+    probeMinStartIntervalMs: number
+    probeRetryDelayMs: number
+  }
   codexWebSearch: {
     endpoint?: string
     apiKey?: string
@@ -183,6 +188,8 @@ const defaultSystemApiDbServiceMaxInFlight =
   configuredRuntimeMode === 'performance'
     ? defaultPerformanceSystemApiDbServiceMaxInFlight
     : defaultStandaloneSystemApiDbServiceMaxInFlight
+const defaultModelCheckProbeMinStartIntervalMs = isScriptEntryRuntime() ? 0 : 4000
+const defaultModelCheckProbeRetryDelayMs = isScriptEntryRuntime() ? 0 : 65000
 const configuredDatabaseDriver = databaseDriverConfig(
   'JUHE_AI_DATABASE_DRIVER',
   configuredRuntimeMode === 'performance' ? 'postgres' : 'sqlite'
@@ -282,6 +289,11 @@ export const runtimeConfig: RuntimeConfig = {
   },
   audit: {
     fullBodyCaptureEnabled: booleanConfig('JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED', true)
+  },
+  modelCheck: {
+    probeMaxInFlight: numberConfig('JUHE_AI_MODEL_CHECK_PROBE_MAX_IN_FLIGHT', 4, 1, 32),
+    probeMinStartIntervalMs: numberConfig('JUHE_AI_MODEL_CHECK_PROBE_MIN_START_INTERVAL_MS', defaultModelCheckProbeMinStartIntervalMs, 0, 60000),
+    probeRetryDelayMs: numberConfig('JUHE_AI_MODEL_CHECK_PROBE_RETRY_DELAY_MS', defaultModelCheckProbeRetryDelayMs, 0, 300000)
   },
   codexWebSearch: {
     endpoint: optionalStringConfig('JUHE_AI_CODEX_WEB_SEARCH_ENDPOINT'),

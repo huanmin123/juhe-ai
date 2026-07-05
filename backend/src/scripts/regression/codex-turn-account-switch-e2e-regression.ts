@@ -176,7 +176,10 @@ async function main(): Promise<void> {
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
-    await auditLogQueue.flushAllAuditLogQueueAsync()
+    auditLogQueue.flushAllAuditLogQueue()
+    auditLogQueue.clearAuditLogQueueForTest()
+    usageRecordQueue.clearUsageRecordQueueForTest()
+    accountSideEffects.clearGatewayAccountSideEffectQueueForTest()
     auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
     usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
     await closeServer(gatewayServer)
@@ -890,7 +893,7 @@ async function requestResponsesRaw(
   if (input.sessionId) {
     headers['x-session-id'] = input.sessionId
   }
-  const response = await fetch(`${baseUrl}/v1/responses`, {
+  const response = await fetchResponsesWithTransientResetRetry(`${baseUrl}/v1/responses`, {
     method: 'POST',
     headers,
     body: JSON.stringify({
@@ -905,6 +908,26 @@ async function requestResponsesRaw(
     contentType: response.headers.get('content-type') ?? '',
     text: await response.text()
   }
+}
+
+async function fetchResponsesWithTransientResetRetry(url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init)
+  } catch (error) {
+    if (!isTransientFetchResetError(error)) {
+      throw error
+    }
+    await sleep(100)
+    return await fetch(url, init)
+  }
+}
+
+function isTransientFetchResetError(error: unknown): boolean {
+  const cause = error instanceof Error
+    ? error.cause as { code?: unknown } | undefined
+    : undefined
+  const code = cause?.code ?? (error as { code?: unknown } | undefined)?.code
+  return code === 'ECONNRESET' || code === 'UND_ERR_SOCKET'
 }
 
 async function requestResponsesStreamAndAbortAfterFirstChunk(

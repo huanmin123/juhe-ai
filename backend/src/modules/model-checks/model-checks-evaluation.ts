@@ -44,12 +44,17 @@ export type GatewayProbeResult = {
   model?: string
   usage?: Record<string, unknown>
   errorMessage?: string
+  upstreamStatusCode?: number
+  retryAfterMs?: number
+  rateLimited?: boolean
   attemptCount?: number
   retryAttemptCount?: number
   retryableFailureCount?: number
   retryMaxAttempts?: number
   attemptTraceIds?: string[]
   attemptStatusCodes?: number[]
+  attemptUpstreamStatusCodes?: number[]
+  attemptRetryAfterMs?: number[]
   attemptMessages?: string[]
 }
 
@@ -864,6 +869,8 @@ function retryEvidence(result: GatewayProbeResult): Record<string, unknown> {
     retryableFailureCount: result.retryableFailureCount,
     attemptTraceIds: result.attemptTraceIds,
     attemptStatusCodes: result.attemptStatusCodes,
+    attemptUpstreamStatusCodes: result.attemptUpstreamStatusCodes,
+    attemptRetryAfterMs: result.attemptRetryAfterMs,
     attemptMessages: result.attemptMessages
   }
 }
@@ -884,6 +891,8 @@ function item(
     success: result.success,
     responseModel: result.model ?? evidenceResponseModel,
     firstTokenMs: result.firstTokenMs,
+    upstreamStatusCode: result.upstreamStatusCode,
+    rateLimited: result.rateLimited,
     responseTruncated: result.bodyTruncated,
     ...retrySummary,
     ...evidence
@@ -892,6 +901,8 @@ function item(
   evidenceSummary.success = result.success
   evidenceSummary.responseModel = result.model ?? evidenceResponseModel
   evidenceSummary.firstTokenMs = result.firstTokenMs
+  evidenceSummary.upstreamStatusCode = result.upstreamStatusCode
+  evidenceSummary.rateLimited = result.rateLimited
   evidenceSummary.responseTruncated = result.bodyTruncated
   for (const [key, value] of Object.entries(retrySummary)) {
     evidenceSummary[key] = value

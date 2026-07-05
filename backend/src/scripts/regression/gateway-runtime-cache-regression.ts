@@ -683,14 +683,21 @@ async function runScheduleSyncAsDbService(operation: () => void): Promise<void> 
   } finally {
     runtimeConfig.processRole = previousProcessRole
   }
-  await delay(0)
+  await settleGatewayRuntimeInvalidationEffectsForRegression()
   clearGatewayCachesForRegression()
+  await settleGatewayRuntimeInvalidationEffectsForRegression()
 }
 
 function clearGatewayCachesForRegression(): void {
   runtimeConfig.processRole = 'server'
   repositories.clearGatewayApiKeyValidationCache()
   gatewayCache.clearGatewayRuntimeCacheLocal()
+}
+
+async function settleGatewayRuntimeInvalidationEffectsForRegression(): Promise<void> {
+  for (let index = 0; index < 5; index += 1) {
+    await delay(0)
+  }
 }
 
 function withMockedNowSync<T>(nowMs: number, operation: () => T): T {

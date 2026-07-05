@@ -91,10 +91,14 @@ export class KeyedChildProcessPool<Operation> {
     this.exclusiveBarrier = Promise.resolve()
     await Promise.allSettled(closing.map(async (slot) => {
       this.failSlotJobs(slot, new Error(`${this.options.name} writer pool 已关闭`))
-      await slot.stopping
-      if (slot.worker) {
-        await stopWriterChild(slot.worker)
-      }
+      const stopping = slot.stopping
+      const worker = slot.worker
+      slot.stopping = undefined
+      slot.worker = undefined
+      await Promise.allSettled([
+        stopping,
+        worker ? stopWriterChild(worker) : undefined
+      ])
     }))
     this.handledJobs = 0
     this.failedJobs = 0
@@ -412,6 +416,7 @@ export class KeyedChildProcessPool<Operation> {
 
 async function stopWriterChild(child: ChildProcess): Promise<void> {
   if (child.killed || child.exitCode !== null) {
+    unrefWriterChild(child)
     return
   }
   await new Promise<void>((resolve) => {
@@ -424,15 +429,21 @@ async function stopWriterChild(child: ChildProcess): Promise<void> {
       if (forceKillTimer) clearTimeout(forceKillTimer)
       if (finalTimer) clearTimeout(finalTimer)
       child.off('exit', finish)
-      child.off('close', finish)
+      child.off('close', finishAfterProcessEnded)
+      unrefWriterChild(child)
       resolve()
+    }
+    const finishAfterProcessEnded = () => {
+      if (child.exitCode !== null || child.killed) {
+        finish()
+      }
     }
     forceKillTimer = setTimeout(() => {
       child.kill()
     }, 2000)
     finalTimer = setTimeout(finish, 5000)
     child.once('exit', finish)
-    child.once('close', finish)
+    child.once('close', finishAfterProcessEnded)
     try {
       if (child.connected) {
         child.disconnect()
@@ -443,4 +454,16 @@ async function stopWriterChild(child: ChildProcess): Promise<void> {
       child.kill()
     }
   })
+}
+
+function unrefWriterChild(child: ChildProcess): void {
+  if (typeof (child as { unref?: unknown }).unref === 'function') {
+    child.unref()
+  }
+  for (const stream of child.stdio ?? []) {
+    const unref = (stream as unknown as { unref?: () => void } | null)?.unref
+    if (typeof unref === 'function') {
+      unref.call(stream)
+    }
+  }
 }
