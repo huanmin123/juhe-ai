@@ -22,19 +22,25 @@ const usageIds = [
   `usage_${marker}_failed`,
   `usage_${marker}_other`,
   `usage_${marker}_priced`,
-  `usage_${marker}_audio_image`
+  `usage_${marker}_audio_image`,
+  `usage_${marker}_account_trace`
 ]
+const usageCreatedAts = usageIds.map((_id, index) => new Date(createdAtBase + index).toISOString())
+const accountId = `acct_${marker}`
+const accountKeyword = `PG 使用记录账户 ${marker}`
 const tracePrefix = `trace_${marker}`
 const model = `model-${marker}`
 const pricedModel = 'gpt-5.5'
 const audioImagePricingModelId = `custom_model_${marker}`
 const audioImagePricingModel = `gpt-regression-audio-image-${marker}`
-const clientIpPrefix = '198.18.204.'
+const clientIpPrefix = `198.18.${100 + (createdAtBase % 100)}.`
 const primaryClientIp = `${clientIpPrefix}10`
 const pool = await getPostgresPool()
-const smokeAccess = { systemAccountId: 'sys_admin', role: 'admin' as const }
+const smokeAccess = { systemAccountId: 'sys_admin', role: 'admin' as const, systemAccountFilterId: 'sys_admin' }
 
 try {
+  await cleanupLegacySmokeRows()
+  await seedSmokeAccount()
   await saveCustomProviderModelAsync({
     id: audioImagePricingModelId,
     providerCode: 'gpt',
@@ -64,7 +70,7 @@ try {
       inputTokens: 12,
       outputTokens: 8,
       costUsd: 0.001,
-      createdAt: new Date(createdAtBase).toISOString()
+      createdAt: usageCreatedAts[0]
     },
     {
       id: usageIds[1],
@@ -83,7 +89,7 @@ try {
       inputTokens: 30,
       outputTokens: 0,
       errorCode: 'rate_limit',
-      createdAt: new Date(createdAtBase + 1).toISOString()
+      createdAt: usageCreatedAts[1]
     },
     {
       id: usageIds[2],
@@ -100,7 +106,7 @@ try {
       firstTokenMs: 20,
       inputTokens: 3,
       outputTokens: 4,
-      createdAt: new Date(createdAtBase + 2).toISOString()
+      createdAt: usageCreatedAts[2]
     },
     {
       id: usageIds[3],
@@ -118,7 +124,7 @@ try {
       inputTokens: 1_000_000,
       outputTokens: 1_000_000,
       cacheReadTokens: 100_000,
-      createdAt: new Date(createdAtBase + 3).toISOString()
+      createdAt: usageCreatedAts[3]
     },
     {
       id: usageIds[4],
@@ -136,31 +142,57 @@ try {
       inputAudioTokens: 1_000_000,
       outputAudioTokens: 1_000_000,
       outputImageCount: 2,
-      createdAt: new Date(createdAtBase + 4).toISOString()
+      createdAt: usageCreatedAts[4]
+    },
+    {
+      id: usageIds[5],
+      traceId: `${tracePrefix}_account_trace`,
+      trafficSource: 'gateway',
+      systemAccountId: 'sys_admin',
+      accountId,
+      clientIp: '198.18.206.3',
+      endpoint: '/v1/responses',
+      providerCode: 'gpt',
+      model: `${model}-account`,
+      statusCode: 200,
+      success: true,
+      durationMs: 75,
+      firstTokenMs: 18,
+      inputTokens: 5,
+      outputTokens: 6,
+      createdAt: usageCreatedAts[5]
     }
   ])
   const writeCounts = await readSmokeWriteCounts()
   assert.equal(writeCounts.records, usageIds.length, 'PG 使用记录 smoke 应写入 usage_records 主表')
-  assert.equal(writeCounts.entries, usageIds.length, 'PG 使用记录 smoke 应写入 usage_record_shard_entries catalog')
+  assert.equal(writeCounts.entries, 0, 'PG 使用记录 smoke 不应再写入 usage_record_shard_entries catalog')
 
-  const traceList = await listUsageRecordsAsync(undefined, {
+  const traceList = await listUsageRecordsAsync(smokeAccess, {
     traceId: tracePrefix,
     page: 1,
     pageSize: 10
   })
-  assert.deepEqual(traceList.items.map((item) => item.id), [usageIds[4], usageIds[3], usageIds[2], usageIds[1], usageIds[0]], 'PG 使用记录列表应按 trace 前缀读取 catalog 窗口')
+  assert.deepEqual(traceList.items.map((item) => item.id), [usageIds[5], usageIds[4], usageIds[3], usageIds[2], usageIds[1], usageIds[0]], 'PG 使用记录列表应按用户范围直接读取 usage_records 主表')
 
-  const failedList = await listUsageRecordsAsync(undefined, {
+  const traceAccountList = await listUsageRecordsAsync(smokeAccess, {
+    traceId: tracePrefix,
+    accountKeyword,
+    page: 1,
+    pageSize: 10
+  })
+  assert.deepEqual(traceAccountList.items.map((item) => item.id), [usageIds[5]], 'PG 使用记录 trace + accountKeyword 组合查询应保留 trace 前缀索引路径并按账户命中')
+
+  const failedList = await listUsageRecordsAsync(smokeAccess, {
     model,
     result: 'failed',
-    sortBy: 'durationMs',
+    sortBy: 'createdAt',
     sortOrder: 'desc',
     page: 1,
     pageSize: 10
   })
-  assert.deepEqual(failedList.items.map((item) => item.id), [usageIds[1]], 'PG 使用记录列表应支持 model + failed + duration 排序筛选')
+  assert.deepEqual(failedList.items.map((item) => item.id), [usageIds[1]], 'PG 使用记录列表应支持用户范围内 model + failed 筛选')
 
-  const clientIpList = await listUsageRecordsAsync(undefined, {
+  const clientIpList = await listUsageRecordsAsync(smokeAccess, {
     clientIp: clientIpPrefix,
     page: 1,
     pageSize: 10
@@ -212,13 +244,14 @@ try {
   assert.equal(audioImageResponse.costBreakdown?.outputImageUnitCostUsd, 0.08, '使用记录响应成本拆解应包含按张图片成本')
   assert.equal(audioImageResponse.costBreakdown?.outputUsdPerImage, 0.04, '使用记录响应成本拆解应包含每张图片单价')
 
-  await assertUsageRecordExplainPlans(tracePrefix, model, clientIpPrefix)
+  await assertUsageRecordExplainPlans(tracePrefix, model, clientIpPrefix, accountId)
 
   console.log(JSON.stringify({
     message: '使用记录列表 PG smoke 通过',
     records: writeCounts.records,
     entries: writeCounts.entries,
     traceItems: traceList.items.length,
+    traceAccountItems: traceAccountList.items.length,
     failedItems: failedList.items.length,
     clientIpItems: clientIpList.items.length,
     explainIndexed: true
@@ -241,53 +274,82 @@ async function readSmokeWriteCounts(): Promise<{ records: number; entries: numbe
   }
 }
 
-async function assertUsageRecordExplainPlans(traceId: string, targetModel: string, clientIp: string): Promise<void> {
+async function assertUsageRecordExplainPlans(traceId: string, targetModel: string, clientIp: string, targetAccountId: string): Promise<void> {
+  await assertIndexedPlan(
+    '使用记录 trace + account PG 查询',
+    `
+      WITH matched_usage_records AS MATERIALIZED (
+        SELECT ur.id, ur.created_at
+        FROM juhe_usage.usage_records ur
+        WHERE ur.system_account_id = $1
+          AND ur.trace_id COLLATE "C" >= $2
+          AND ur.trace_id COLLATE "C" < $3
+          AND ur.account_id IN ($4)
+        ORDER BY ur.created_at DESC, ur.id DESC
+        LIMIT 11
+      )
+      SELECT ur.id
+      FROM matched_usage_records matched_usage_records
+      INNER JOIN juhe_usage.usage_records ur
+        ON ur.created_at = matched_usage_records.created_at
+        AND ur.id = matched_usage_records.id
+      ORDER BY ur.created_at DESC, ur.id DESC
+      LIMIT 11
+    `,
+    ['sys_admin', traceId, usageRecordTextPrefixUpperBound(traceId), targetAccountId],
+    [
+      'idx_usage_records_system_trace_c_created_sort',
+      'system_account_id_trace_id_created__idx',
+      'system_account_id_account_id_created_idx'
+    ]
+  )
   await assertIndexedPlan(
     '使用记录 trace 前缀 PG 查询',
     `
-      SELECT usage_id
-      FROM juhe_usage.usage_record_shard_entries
-      WHERE trace_id COLLATE "C" >= $1 AND trace_id COLLATE "C" < $2
-      ORDER BY created_at DESC, usage_id DESC
+      WITH matched_usage_records AS MATERIALIZED (
+        SELECT ur.id, ur.created_at
+        FROM juhe_usage.usage_records ur
+        WHERE ur.system_account_id = $1
+          AND ur.trace_id COLLATE "C" >= $2
+          AND ur.trace_id COLLATE "C" < $3
+      )
+      SELECT ur.id
+      FROM matched_usage_records matched_usage_records
+      INNER JOIN juhe_usage.usage_records ur
+        ON ur.created_at = matched_usage_records.created_at
+        AND ur.id = matched_usage_records.id
+      ORDER BY ur.created_at DESC, ur.id DESC
       LIMIT 11
     `,
-    [traceId, usageRecordTextPrefixUpperBound(traceId)],
-    ['idx_usage_record_shard_entries_trace_c_created_sort']
+    ['sys_admin', traceId, usageRecordTextPrefixUpperBound(traceId)],
+    ['idx_usage_records_system_trace_c_created_sort', 'system_account_id_trace_id_created__idx']
   )
   await assertIndexedPlan(
     '使用记录 model 筛选 PG 查询',
     `
-      SELECT usage_id
-      FROM juhe_usage.usage_record_shard_entries
-      WHERE model = $1
-      ORDER BY created_at DESC, usage_id DESC
+      SELECT id
+      FROM juhe_usage.usage_records
+      WHERE system_account_id = $1
+        AND model = $2
+      ORDER BY created_at DESC, id DESC
       LIMIT 11
     `,
-    [targetModel],
-    ['idx_usage_record_shard_entries_model_created_sort']
+    ['sys_admin', targetModel],
+    ['idx_usage_records_system_account_created_sort', 'system_account_id_created_at_id_idx']
   )
   await assertIndexedPlan(
     '使用记录 client IP 前缀 PG 查询',
     `
-      SELECT usage_id
-      FROM juhe_usage.usage_record_shard_entries
-      WHERE client_ip COLLATE "C" >= $1 AND client_ip COLLATE "C" < $2
-      ORDER BY created_at DESC, usage_id DESC
+      SELECT id
+      FROM juhe_usage.usage_records
+      WHERE system_account_id = $1
+        AND client_ip COLLATE "C" >= $2
+        AND client_ip COLLATE "C" < $3
+      ORDER BY created_at DESC, id DESC
       LIMIT 11
     `,
-    [clientIp, usageRecordTextPrefixUpperBound(clientIp)],
-    ['idx_usage_record_shard_entries_client_ip_c_created_sort']
-  )
-  await assertIndexedPlan(
-    '使用记录耗时排序 PG 查询',
-    `
-      SELECT usage_id
-      FROM juhe_usage.usage_record_shard_entries
-      ORDER BY duration_ms DESC, created_at DESC, usage_id DESC
-      LIMIT 11
-    `,
-    [],
-    ['idx_usage_record_shard_entries_duration_sort']
+    ['sys_admin', clientIp, usageRecordTextPrefixUpperBound(clientIp)],
+    ['idx_usage_records_system_account_created_sort', 'system_account_id_created_at_id_idx']
   )
 }
 
@@ -328,5 +390,56 @@ function usageRecordTextPrefixUpperBound(value: string): string {
 async function cleanupSmokeRows(): Promise<void> {
   await removeCustomProviderModelAsync(audioImagePricingModelId).catch(() => false)
   await pool.query('DELETE FROM juhe_usage.usage_record_shard_entries WHERE usage_id = ANY($1::text[])', [usageIds])
-  await pool.query('DELETE FROM juhe_usage.usage_records WHERE id = ANY($1::text[])', [usageIds])
+  await deleteUsageRecordsByPartitionKeys(usageIds.map((id, index) => ({ id, createdAt: usageCreatedAts[index] })))
+  await pool.query('DELETE FROM juhe_business.accounts WHERE id = $1', [accountId])
+}
+
+async function cleanupLegacySmokeRows(): Promise<void> {
+  await pool.query("DELETE FROM juhe_usage.usage_record_shard_entries WHERE usage_id LIKE 'usage_usage_record_list_pg_smoke_%'")
+  const legacyRows = await pool.query(`
+    SELECT id, created_at
+    FROM juhe_usage.usage_records
+    WHERE id LIKE 'usage_usage_record_list_pg_smoke_%'
+    LIMIT 5000
+  `)
+  await deleteUsageRecordsByPartitionKeys(legacyRows.rows.map((row: Record<string, unknown>) => ({
+    id: String(row.id ?? ''),
+    createdAt: String(row.created_at ?? '')
+  })))
+  await pool.query("DELETE FROM juhe_business.custom_provider_models WHERE id LIKE 'custom_model_usage_record_list_pg_smoke_%'")
+  await pool.query("DELETE FROM juhe_business.accounts WHERE id LIKE 'acct_usage_record_list_pg_smoke_%'")
+}
+
+async function deleteUsageRecordsByPartitionKeys(rows: Array<{ id: string; createdAt: string }>): Promise<void> {
+  const keys = rows
+    .map((row) => ({ id: row.id.trim(), createdAt: row.createdAt.trim() }))
+    .filter((row) => row.id && row.createdAt)
+  if (!keys.length) return
+  await pool.query(
+    `DELETE FROM juhe_usage.usage_records WHERE (created_at, id) IN (${keys.map((_row, index) => `($${index * 2 + 1}, $${index * 2 + 2})`).join(', ')})`,
+    keys.flatMap((row) => [row.createdAt, row.id])
+  )
+}
+
+async function seedSmokeAccount(): Promise<void> {
+  const profileResult = await pool.query(`
+    SELECT id, protocol_code, protocol_version
+    FROM juhe_business.provider_protocol_profiles
+    WHERE provider_code = 'gpt'
+    ORDER BY id ASC
+    LIMIT 1
+  `)
+  const profile = profileResult.rows[0] as { id?: string; protocol_code?: string; protocol_version?: string } | undefined
+  assert(profile, 'PG 使用记录 smoke 需要默认 gpt provider protocol profile')
+  const now = new Date().toISOString()
+  await pool.query(`
+    INSERT INTO juhe_business.accounts (
+      id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+      name, type, status, credentials_encrypted, credential_mask, created_at, updated_at
+    ) VALUES ($1, 'sys_admin', 'gpt', $2, $3, $4, $5, 'api_key', 'active', '{}', '', $6, $6)
+    ON CONFLICT (id) DO UPDATE SET
+      name = EXCLUDED.name,
+      status = EXCLUDED.status,
+      updated_at = EXCLUDED.updated_at
+  `, [accountId, profile.id, profile.protocol_code, profile.protocol_version, accountKeyword, now])
 }

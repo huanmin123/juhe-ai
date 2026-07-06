@@ -392,6 +392,7 @@ export async function createRouteStrategyAsync(input: Record<string, unknown>, a
     updatedAt: now
   }
   const client = await getRouteStrategyDatabaseClient()
+  let summary: RouteStrategySummary | undefined
   try {
     await client.transaction(async (tx) => {
       const bindings = await normalizeRouteStrategyGroupBindingsAsync(bindingInputs, systemAccountId, tx, true)
@@ -400,6 +401,23 @@ export async function createRouteStrategyAsync(input: Record<string, unknown>, a
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [record.id, systemAccountId, record.name, record.description ?? null, mode, record.status, record.configJson, now, now])
       await replaceRouteStrategyGroupsAsync(tx, record.id, systemAccountId, mode, bindings, now)
+      const scope = buildSystemAccountScopeClause(access, 'route_strategies.system_account_id')
+      const row = await tx.one<RouteStrategyRow>(`
+        SELECT ${routeStrategyListColumnsForClient(tx)}
+        FROM ${routeStrategyTable(tx, 'route_strategies')} route_strategies
+        LEFT JOIN ${routeStrategyTable(tx, 'system_accounts')} system_accounts
+          ON system_accounts.id = route_strategies.system_account_id
+        WHERE route_strategies.id = ?${scope.clause}
+      `, [record.id, ...scope.params])
+      if (row) {
+        const bindingsByStrategyId = await loadRouteStrategyGroupBindingSummariesByRouteStrategyIdsAsync([row.id], tx)
+        summary = routeStrategySummaryFromRow(
+          row,
+          bindingsByStrategyId.get(row.id) ?? [],
+          includeSystemAccountFields(access),
+          new Map()
+        )
+      }
     })
   } catch (error) {
     if (isDuplicateRouteStrategyNameError(error)) {
@@ -408,7 +426,7 @@ export async function createRouteStrategyAsync(input: Record<string, unknown>, a
     throw error
   }
   notifyGatewayRuntimeCacheInvalidation('route_strategy_created')
-  return (await findRouteStrategySummaryAsync(record.id, access))!
+  return summary!
 }
 
 export function updateRouteStrategy(id: string, input: Record<string, unknown>, access?: AccessScope): RouteStrategySummary | undefined {
@@ -715,14 +733,14 @@ export function loadRouteStrategyGroupBindingSummariesByRouteStrategyIds(routeSt
   return result
 }
 
-export async function loadRouteStrategyGroupBindingSummariesByRouteStrategyIdsAsync(routeStrategyIds: string[]): Promise<Map<string, RouteStrategyGroupBindingSummary[]>> {
+export async function loadRouteStrategyGroupBindingSummariesByRouteStrategyIdsAsync(routeStrategyIds: string[], client?: DatabaseClient): Promise<Map<string, RouteStrategyGroupBindingSummary[]>> {
   const ids = [...new Set(routeStrategyIds.filter(Boolean))]
   const result = new Map<string, RouteStrategyGroupBindingSummary[]>()
   if (!ids.length) return result
-  const client = await getRouteStrategyDatabaseClient()
+  const db = client ?? await getRouteStrategyDatabaseClient()
   const now = nowIso()
   for (const chunk of chunkValues(ids, 500)) {
-    const rows = await client.query<RouteStrategyGroupBindingRow>(routeStrategyGroupBindingRowsSqlForClient(client, `route_strategy_groups.route_strategy_id IN (${client.dialect.bindPlaceholders(chunk.length)})`), [now, ...chunk])
+    const rows = await db.query<RouteStrategyGroupBindingRow>(routeStrategyGroupBindingRowsSqlForClient(db, `route_strategy_groups.route_strategy_id IN (${db.dialect.bindPlaceholders(chunk.length)})`), [now, ...chunk])
     appendRouteStrategyBindingRows(result, rows)
   }
   return result
@@ -758,14 +776,14 @@ function loadRouteStrategyGroupBindingPreviewSummariesByRouteStrategyIds(routeSt
   return result
 }
 
-async function loadRouteStrategyGroupBindingPreviewSummariesByRouteStrategyIdsAsync(routeStrategyIds: string[], limit = 3): Promise<Map<string, RouteStrategyGroupBindingSummary[]>> {
+async function loadRouteStrategyGroupBindingPreviewSummariesByRouteStrategyIdsAsync(routeStrategyIds: string[], limit = 3, client?: DatabaseClient): Promise<Map<string, RouteStrategyGroupBindingSummary[]>> {
   const ids = [...new Set(routeStrategyIds.filter(Boolean))]
   const result = new Map<string, RouteStrategyGroupBindingSummary[]>()
   if (!ids.length) return result
-  const client = await getRouteStrategyDatabaseClient()
+  const db = client ?? await getRouteStrategyDatabaseClient()
   const now = nowIso()
   for (const chunk of chunkValues(ids, 500)) {
-    const rows = await client.query<RouteStrategyGroupBindingRow>(routeStrategyGroupBindingRowsSqlForClient(client, `route_strategy_groups.id IN (
+    const rows = await db.query<RouteStrategyGroupBindingRow>(routeStrategyGroupBindingRowsSqlForClient(db, `route_strategy_groups.id IN (
       SELECT ranked.id
       FROM (
         SELECT ranked_groups.id,
@@ -773,11 +791,11 @@ async function loadRouteStrategyGroupBindingPreviewSummariesByRouteStrategyIdsAs
             PARTITION BY ranked_groups.route_strategy_id
             ORDER BY CASE WHEN ranked_groups.status = 'active' THEN 0 ELSE 1 END ASC,
               ranked_groups.priority ASC,
-              ranked_groups.created_at ASC,
-              ranked_groups.id ASC
-          ) AS row_number
-        FROM ${routeStrategyTable(client, 'route_strategy_groups')} ranked_groups
-        WHERE ranked_groups.route_strategy_id IN (${client.dialect.bindPlaceholders(chunk.length)})
+                ranked_groups.created_at ASC,
+                ranked_groups.id ASC
+            ) AS row_number
+        FROM ${routeStrategyTable(db, 'route_strategy_groups')} ranked_groups
+        WHERE ranked_groups.route_strategy_id IN (${db.dialect.bindPlaceholders(chunk.length)})
       ) ranked
       WHERE ranked.row_number <= ?
     )`), [now, ...chunk, limit])
@@ -797,7 +815,7 @@ async function routeStrategySummariesFromRowsAsync(rows: RouteStrategyRow[], acc
   const includeOwner = includeSystemAccountFields(access)
   const lookupClient = includeOwner ? (client ?? await getRouteStrategyDatabaseClient()) : undefined
   const accountNames = includeOwner ? await loadSystemAccountNameMapByIdsAsync(lookupClient!, rows.map((row) => row.system_account_id)) : new Map<string, string>()
-  const bindingsByStrategyId = await loadRouteStrategyGroupBindingSummariesByRouteStrategyIdsAsync(rows.map((row) => row.id))
+  const bindingsByStrategyId = await loadRouteStrategyGroupBindingSummariesByRouteStrategyIdsAsync(rows.map((row) => row.id), client)
   return rows.map((row) => routeStrategySummaryFromRow(row, bindingsByStrategyId.get(row.id) ?? [], includeOwner, accountNames))
 }
 
@@ -812,7 +830,7 @@ async function routeStrategyListItemsFromRowsAsync(rows: RouteStrategyRow[], acc
   const includeOwner = includeSystemAccountFields(access)
   const lookupClient = includeOwner ? (client ?? await getRouteStrategyDatabaseClient()) : undefined
   const accountNames = includeOwner ? await loadSystemAccountNameMapByIdsAsync(lookupClient!, rows.map((row) => row.system_account_id)) : new Map<string, string>()
-  const bindingsByStrategyId = await loadRouteStrategyGroupBindingPreviewSummariesByRouteStrategyIdsAsync(rows.map((row) => row.id))
+  const bindingsByStrategyId = await loadRouteStrategyGroupBindingPreviewSummariesByRouteStrategyIdsAsync(rows.map((row) => row.id), 3, client)
   return rows.map((row) => routeStrategyListItemFromRow(row, bindingsByStrategyId.get(row.id) ?? [], includeOwner, accountNames))
 }
 

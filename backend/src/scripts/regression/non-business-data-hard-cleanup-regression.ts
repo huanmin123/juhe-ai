@@ -68,6 +68,8 @@ try {
   assert.equal(referencedBlobRows.length > 0, true, '测试审计日志应保留至少一个 payload blob 引用')
   assert.equal(referencedBlobRows.every((row) => existsSync(auditBlobFilePath(row.storage_key))), true, '仍被审计引用的旧 payload blob 外部文件应保留')
   assert.equal(tableCount(databaseModule.getUsageCatalogDatabase(), 'usage_record_shards'), 1, '统计游标未追平前旧 usage shard 目录不能被硬清理')
+  assert.equal(tableCount(databaseModule.getUsageCatalogDatabase(), 'usage_record_account_shards'), 1, '统计游标未追平前账号 usage shard scope 目录不能被硬清理')
+  assert.equal(tableCount(databaseModule.getUsageCatalogDatabase(), 'usage_record_api_key_shards'), 1, '统计游标未追平前 API Key usage shard scope 目录不能被硬清理')
   assert.equal(existsSync(oldShard.filePath), true, '统计游标未追平前旧 usage shard SQLite 文件不能被删除')
 
   seedUsageCleanupSafetyCursors(oldShard.shardKey)
@@ -76,6 +78,8 @@ try {
     limit: 100
   })
   assert.equal(tableCount(databaseModule.getUsageCatalogDatabase(), 'usage_record_shards'), 0, '旧 usage shard 目录应被硬清理')
+  assert.equal(tableCount(databaseModule.getUsageCatalogDatabase(), 'usage_record_account_shards'), 0, '旧账号 usage shard scope 目录应在明细清理完成后硬清理')
+  assert.equal(tableCount(databaseModule.getUsageCatalogDatabase(), 'usage_record_api_key_shards'), 0, '旧 API Key usage shard scope 目录应在明细清理完成后硬清理')
   assert.equal(existsSync(oldShard.filePath), false, '旧 usage shard SQLite 文件应被删除')
   assert.equal(tableCount(businessDatabase, 'system_accounts'), businessRowsBefore, '非业务数据硬清理不应清业务库')
   assert(result.deletedRows + usageCleanupResult.deletedRows >= 4, '硬清理结果应累计删除行数')
@@ -213,14 +217,16 @@ function seedUsageShard(): { filePath: string; shardKey: string } {
   const usageId = 'usage_20000101_s00_non_business_cleanup'
   const location = usageShards.usageRecordShardLocationForRecord(usageId, oldIso)
   usageShards.getUsageRecordShardDatabase(location).prepare(`
-    INSERT INTO usage_records (id, system_account_id, trace_id, traffic_source, created_at)
-    VALUES (?, 'sys_admin', 'trace_non_business_cleanup', 'gateway', ?)
+    INSERT INTO usage_records (id, system_account_id, trace_id, traffic_source, api_key_id, account_id, created_at)
+    VALUES (?, 'sys_admin', 'trace_non_business_cleanup', 'gateway', 'api_key_non_business_cleanup', 'acct_non_business_cleanup', ?)
   `).run(usageId, oldIso)
   usageShards.recordUsageRecordShardEntries([{
     id: usageId,
     shardKey: location.shardKey,
     systemAccountId: 'sys_admin',
     traceId: 'trace_non_business_cleanup',
+    apiKeyId: 'api_key_non_business_cleanup',
+    accountId: 'acct_non_business_cleanup',
     trafficSource: 'gateway',
     success: true,
     createdAt: oldIso

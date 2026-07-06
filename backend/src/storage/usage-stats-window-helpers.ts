@@ -58,6 +58,35 @@ export function fixedUsageStatsRanges(timezone: string, todayKey = dateKey(new D
   return ranges
 }
 
+export function hotUsageStatsRanges(timezone: string, todayKey = dateKey(new Date(), timezone)): AccountUsageStatsRange[] {
+  const endDate = parseDateKeyStrict(todayKey)
+  if (!endDate) return []
+  const fixedStartDate = addDays(endDate, -(FIXED_RANGE_WINDOW_DAYS - 1))
+  const monthStartDate = new Date(endDate.getFullYear(), endDate.getMonth(), 1)
+  const candidates = [
+    { startDate: endDate, endDate },
+    { startDate: addDays(endDate, -1), endDate: addDays(endDate, -1) },
+    { startDate: addDays(endDate, -6), endDate },
+    { startDate: fixedStartDate, endDate },
+    { startDate: monthStartDate < fixedStartDate ? fixedStartDate : monthStartDate, endDate }
+  ]
+  const unique = new Map<string, AccountUsageStatsRange>()
+  for (const candidate of candidates) {
+    if (candidate.endDate < fixedStartDate || candidate.startDate > endDate) continue
+    const startDate = candidate.startDate < fixedStartDate ? fixedStartDate : candidate.startDate
+    const normalizedStart = localDateKey(startDate)
+    const normalizedEnd = localDateKey(candidate.endDate)
+    const days = Math.max(1, Math.round((startOfLocalDay(candidate.endDate).getTime() - startOfLocalDay(startDate).getTime()) / DAY_MS) + 1)
+    unique.set(`${normalizedStart}:${normalizedEnd}`, {
+      startDate: normalizedStart,
+      endDate: normalizedEnd,
+      days,
+      maxDays: FIXED_RANGE_WINDOW_DAYS
+    })
+  }
+  return [...unique.values()]
+}
+
 export function fixedUsageStatsDefaultRange(timezone: string, todayKey = dateKey(new Date(), timezone)): AccountUsageStatsRange {
   const dates = fixedUsageStatsDateKeys(timezone, todayKey)
   const endDate = dates[dates.length - 1] ?? todayKey
@@ -137,6 +166,10 @@ function parseDateKeyStrict(value: string): Date | undefined {
 
 function localDateKey(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+
+function startOfLocalDay(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate())
 }
 
 function addDays(date: Date, days: number): Date {

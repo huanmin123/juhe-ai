@@ -223,14 +223,24 @@ async function queryApiKeysAsync(access?: AccessScope, options?: ApiKeyListOptio
   const whereClause = filterClauses.length ? `WHERE ${filterClauses.join(' AND ')}` : ''
   const limitClause = paged ? 'LIMIT ? OFFSET ?' : ''
   const limitParams = paged ? [normalized.pageSize + 1, (normalized.page - 1) * normalized.pageSize] : []
+  const cteParts = [
+    keywordCte?.sql.replace(/^\s*WITH\s+/i, ''),
+    `page_api_key_ids AS MATERIALIZED (
+      SELECT api_keys.id
+      FROM ${apiKeyTable(client, 'api_keys')} api_keys
+      ${whereClause}
+      ORDER BY api_keys.is_default DESC, api_keys.updated_at DESC, api_keys.created_at DESC, api_keys.id DESC
+      ${limitClause}
+    )`
+  ].filter((part): part is string => Boolean(part))
   const rows = await client.query<ApiKeyRow>(`
-    ${keywordCte?.sql ?? ''}
+    WITH ${cteParts.join(', ')}
     SELECT ${apiKeyListColumns()}
-    FROM ${apiKeyTable(client, 'api_keys')} api_keys
+    FROM page_api_key_ids
+    INNER JOIN ${apiKeyTable(client, 'api_keys')} api_keys
+      ON api_keys.id = page_api_key_ids.id
     ${apiKeyListJoinsForClient(client)}
-    ${whereClause}
     ORDER BY api_keys.is_default DESC, api_keys.updated_at DESC, api_keys.created_at DESC, api_keys.id DESC
-    ${limitClause}
   `, [...(keywordCte?.params ?? []), ...filters.params, ...limitParams])
   const pageRows = paged ? takePageRows(rows, normalized.pageSize) : { rows, hasMore: false }
   const items = await apiKeySummariesFromRowsAsync(pageRows.rows, access, { includeSecret: false })

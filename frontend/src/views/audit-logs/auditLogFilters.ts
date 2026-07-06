@@ -1,6 +1,6 @@
 import type { AuditLogListParams } from '@/api/client'
 import type { AuditOutcome, AuditTrafficSource } from '@/types/domain'
-import { allSystemAccountsValue, selectedSystemAccountId } from '@/utils/systemAccountFilter'
+import { selectedSystemAccountId } from '@/utils/systemAccountFilter'
 import { normalizedStatusCode } from './auditLogFormatters'
 
 export interface AuditLogFilterValues {
@@ -53,7 +53,7 @@ function auditLogAdvancedFilterCount(filters: AuditLogFilterValues): number {
   let count = 0
   if (filters.accountIdFilter) count += 1
   if (filters.outcomeFilter !== 'all') count += 1
-  if (filters.systemAccountFilter !== allSystemAccountsValue) count += 1
+  if (selectedSystemAccountId(filters.systemAccountFilter, true)) count += 1
   if (filters.pathFilter.trim()) count += 1
   if (filters.statusCodeFilter.trim()) count += 1
   if (filters.trafficSourceFilter !== 'all') count += 1

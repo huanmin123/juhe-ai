@@ -928,10 +928,11 @@ async function cleanupUsageRecordsBefore(input: { cutoffAt: string; batchSize: n
     deletedRows += batch.deletedRows
     hasMore = batch.hasMore
     blockedReason = batch.blockedReason ?? blockedReason
-    if (batch.deletedRows > 0) {
+    const changed = batch.deletedRows > 0 || Number(batch.droppedPartitions ?? 0) > 0
+    if (changed) {
       batches += 1
     }
-    if (batch.deletedRows === 0 || !batch.hasMore) {
+    if (!changed || !batch.hasMore) {
       break
     }
   }

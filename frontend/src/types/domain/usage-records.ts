@@ -87,4 +87,5 @@ export interface UsageRecordListResult {
   hasMore: boolean
   page: number
   pageSize: number
+  requiresSystemAccountSelection?: boolean
 }

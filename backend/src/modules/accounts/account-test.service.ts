@@ -211,6 +211,7 @@ export async function testOpenAIAccount(
       trafficSource: input.trafficSource ?? 'manual_account_test',
       settingsOverride: input.gatewaySettingsOverride,
       disableAccountStateMutation: input.disableAccountStateMutation ?? true,
+      ignoreAccountRuntimeSuppression: true,
       onUpstreamAttemptDiagnostic: (lastAttempt) => {
         diagnosticLastAttempt = lastAttempt
       }

@@ -3,15 +3,25 @@ import type { DatabaseSync } from 'node:sqlite'
 import { beginDatabaseTransaction, commitDatabaseTransaction, rollbackDatabaseTransaction } from './database.js'
 import type { DatabaseClient } from './database-client.js'
 import { dateKey } from './usage-stats-helpers.js'
-import { fixedUsageStatsDateKeys } from './usage-stats-window-helpers.js'
+import { fixedUsageStatsDateKeys, hotUsageStatsRanges } from './usage-stats-window-helpers.js'
+import {
+  listPendingUsageRangeWindowRequests,
+  listPendingUsageRangeWindowRequestsAsync,
+  markUsageRangeWindowRequestCompleted,
+  markUsageRangeWindowRequestCompletedAsync,
+  markUsageRangeWindowRequestFailed,
+  markUsageRangeWindowRequestFailedAsync,
+  markUsageRangeWindowRequestProcessing,
+  markUsageRangeWindowRequestProcessingAsync
+} from './usage-range-window-requests.repository.js'
 
 const USAGE_RANGE_WINDOW_STAGED_YIELD_EVERY = 1
 
 export function refreshUsageScopeRangeWindowSnapshots(database: DatabaseSync, updatedAt: string, timezone: string): void {
   const todayKey = dateKey(new Date(), timezone)
-  const dates = fixedUsageStatsDateKeys(timezone, todayKey)
-  if (!dates.length) return
-  database.prepare('DELETE FROM usage_scope_range_windows WHERE end_date >= ? AND end_date <= ?').run(dates[0], todayKey)
+  const ranges = hotUsageStatsRanges(timezone, todayKey)
+  if (!ranges.length) return
+  database.prepare('DELETE FROM usage_scope_range_windows WHERE end_date >= ? AND end_date <= ?').run(earliestRangeStartDate(ranges), todayKey)
   const insert = database.prepare(`
     INSERT INTO usage_scope_range_windows (
       system_account_id, scope_type, scope_id, start_date, end_date,
@@ -79,12 +89,8 @@ export function refreshUsageScopeRangeWindowSnapshots(database: DatabaseSync, up
       OR COALESCE(SUM(output_image_tokens), 0) > 0
       OR COALESCE(SUM(total_cost_usd), 0) > 0
   `)
-  for (let startIndex = 0; startIndex < dates.length; startIndex += 1) {
-    for (let endIndex = startIndex; endIndex < dates.length; endIndex += 1) {
-      const startDate = dates[startIndex]
-      const rangeEndDate = dates[endIndex]
-      insert.run(startDate, rangeEndDate, updatedAt, startDate, rangeEndDate)
-    }
+  for (const range of ranges) {
+    insert.run(range.startDate, range.endDate, updatedAt, range.startDate, range.endDate)
   }
 }
 
@@ -98,15 +104,14 @@ export async function refreshUsageScopeRangeWindowSnapshotsAsync(
 ): Promise<void> {
   const todayKey = dateKey(new Date(), timezone)
   const dates = fixedUsageStatsDateKeys(timezone, todayKey)
+  const ranges = hotUsageStatsRanges(timezone, todayKey)
   if (!dates.length) return
   const refreshStartIndex = await usageScopeRangeWindowRefreshStartIndexAsync(client, dates, todayKey, previousSourceWatermark, sourceWatermark)
   if (refreshStartIndex === undefined) return
-  for (let endIndex = refreshStartIndex; endIndex < dates.length; endIndex += 1) {
-    for (let startIndex = 0; startIndex <= endIndex; startIndex += 1) {
-      const startDate = dates[startIndex]
-      const rangeEndDate = dates[endIndex]
+  const refreshStartDate = dates[refreshStartIndex]
+  for (const range of ranges.filter((item) => item.endDate >= refreshStartDate)) {
       await client.transaction(async (tx) => {
-        await tx.execute(`DELETE FROM ${statsTable(tx, 'usage_scope_range_windows')} WHERE end_date = ? AND start_date = ?`, [rangeEndDate, startDate])
+        await tx.execute(`DELETE FROM ${statsTable(tx, 'usage_scope_range_windows')} WHERE end_date = ? AND start_date = ?`, [range.endDate, range.startDate])
         await tx.execute(`
           INSERT INTO ${statsTable(tx, 'usage_scope_range_windows')} (
             system_account_id, scope_type, scope_id, start_date, end_date,
@@ -173,10 +178,9 @@ export async function refreshUsageScopeRangeWindowSnapshotsAsync(
             OR COALESCE(SUM(input_image_tokens), 0) > 0
             OR COALESCE(SUM(output_image_tokens), 0) > 0
             OR COALESCE(SUM(total_cost_usd), 0) > 0
-        `, [startDate, rangeEndDate, updatedAt, startDate, rangeEndDate])
+        `, [range.startDate, range.endDate, updatedAt, range.startDate, range.endDate])
       })
       await yieldToEventLoop?.()
-    }
   }
 }
 
@@ -187,8 +191,8 @@ export async function refreshUsageScopeRangeTodayWindowSnapshotsInStages(
   yieldToEventLoop: () => Promise<void>
 ): Promise<void> {
   const todayKey = dateKey(new Date(), timezone)
-  const dates = fixedUsageStatsDateKeys(timezone, todayKey)
-  if (!dates.length) return
+  const ranges = hotUsageStatsRanges(timezone, todayKey).filter((range) => range.endDate === todayKey)
+  if (!ranges.length) return
   const insert = database.prepare(`
     INSERT INTO usage_scope_range_windows (
       system_account_id, scope_type, scope_id, start_date, end_date,
@@ -256,11 +260,11 @@ export async function refreshUsageScopeRangeTodayWindowSnapshotsInStages(
       OR COALESCE(SUM(output_image_tokens), 0) > 0
       OR COALESCE(SUM(total_cost_usd), 0) > 0
   `)
-  for (const startDate of dates) {
+  for (const range of ranges) {
     const transactionStarted = beginDatabaseTransaction(database)
     try {
-      database.prepare('DELETE FROM usage_scope_range_windows WHERE end_date = ? AND start_date = ?').run(todayKey, startDate)
-      insert.run(startDate, todayKey, updatedAt, startDate, todayKey)
+      database.prepare('DELETE FROM usage_scope_range_windows WHERE end_date = ? AND start_date = ?').run(range.endDate, range.startDate)
+      insert.run(range.startDate, range.endDate, updatedAt, range.startDate, range.endDate)
       commitDatabaseTransaction(database, transactionStarted)
     } catch (error) {
       rollbackDatabaseTransaction(database, transactionStarted)
@@ -268,6 +272,7 @@ export async function refreshUsageScopeRangeTodayWindowSnapshotsInStages(
     }
     await yieldToEventLoop()
   }
+  await refreshPendingUsageScopeRangeWindowRequests(database, updatedAt, yieldToEventLoop)
 }
 
 export async function refreshUsageScopeRangeTodayWindowSnapshotsAsync(
@@ -277,11 +282,11 @@ export async function refreshUsageScopeRangeTodayWindowSnapshotsAsync(
   yieldToEventLoop?: () => Promise<void>
 ): Promise<void> {
   const todayKey = dateKey(new Date(), timezone)
-  const dates = fixedUsageStatsDateKeys(timezone, todayKey)
-  if (!dates.length) return
-  for (const startDate of dates) {
+  const ranges = hotUsageStatsRanges(timezone, todayKey).filter((range) => range.endDate === todayKey)
+  if (!ranges.length) return
+  for (const range of ranges) {
     await client.transaction(async (tx) => {
-      await tx.execute(`DELETE FROM ${statsTable(tx, 'usage_scope_range_windows')} WHERE end_date = ? AND start_date = ?`, [todayKey, startDate])
+      await tx.execute(`DELETE FROM ${statsTable(tx, 'usage_scope_range_windows')} WHERE end_date = ? AND start_date = ?`, [range.endDate, range.startDate])
       await tx.execute(`
         INSERT INTO ${statsTable(tx, 'usage_scope_range_windows')} (
           system_account_id, scope_type, scope_id, start_date, end_date,
@@ -348,18 +353,221 @@ export async function refreshUsageScopeRangeTodayWindowSnapshotsAsync(
           OR COALESCE(SUM(input_image_tokens), 0) > 0
           OR COALESCE(SUM(output_image_tokens), 0) > 0
           OR COALESCE(SUM(total_cost_usd), 0) > 0
-      `, [startDate, todayKey, updatedAt, startDate, todayKey])
+      `, [range.startDate, range.endDate, updatedAt, range.startDate, range.endDate])
     })
+    await yieldToEventLoop?.()
+  }
+  await refreshPendingUsageScopeRangeWindowRequestsAsync(client, updatedAt, yieldToEventLoop)
+}
+
+async function refreshPendingUsageScopeRangeWindowRequests(
+  database: DatabaseSync,
+  updatedAt: string,
+  yieldToEventLoop: () => Promise<void>
+): Promise<void> {
+  const requests = listPendingUsageRangeWindowRequests(database, 'usage_scope')
+  for (const request of requests) {
+    markUsageRangeWindowRequestProcessing(database, request.id, updatedAt)
+    try {
+      refreshUsageScopeRangeWindowRequest(database, updatedAt, {
+        startDate: request.start_date,
+        endDate: request.end_date
+      })
+      markUsageRangeWindowRequestCompleted(database, request.id, updatedAt)
+    } catch (error) {
+      markUsageRangeWindowRequestFailed(database, request.id, error instanceof Error ? error.message : String(error), updatedAt)
+    }
+    await yieldToEventLoop()
+  }
+}
+
+async function refreshPendingUsageScopeRangeWindowRequestsAsync(
+  client: DatabaseClient,
+  updatedAt: string,
+  yieldToEventLoop?: () => Promise<void>
+): Promise<void> {
+  const requests = await listPendingUsageRangeWindowRequestsAsync(client, 'usage_scope')
+  for (const request of requests) {
+    await markUsageRangeWindowRequestProcessingAsync(client, request.id, updatedAt)
+    try {
+      await refreshUsageScopeRangeWindowRequestAsync(client, updatedAt, {
+        startDate: request.start_date,
+        endDate: request.end_date
+      })
+      await markUsageRangeWindowRequestCompletedAsync(client, request.id, updatedAt)
+    } catch (error) {
+      await markUsageRangeWindowRequestFailedAsync(client, request.id, error instanceof Error ? error.message : String(error), updatedAt)
+    }
     await yieldToEventLoop?.()
   }
 }
 
+function refreshUsageScopeRangeWindowRequest(
+  database: DatabaseSync,
+  updatedAt: string,
+  range: { startDate: string; endDate: string }
+): void {
+  const transactionStarted = beginDatabaseTransaction(database)
+  try {
+    database.prepare('DELETE FROM usage_scope_range_windows WHERE end_date = ? AND start_date = ?').run(range.endDate, range.startDate)
+    database.prepare(`
+      INSERT INTO usage_scope_range_windows (
+        system_account_id, scope_type, scope_id, start_date, end_date,
+        request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens,
+        cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
+        first_token_ms_sum, first_token_ms_count, first_token_ms_max, active_days,
+        last_used_at, last_error_at, updated_at
+      )
+      SELECT
+        system_account_id,
+        scope_type,
+        scope_id,
+        ?,
+        ?,
+        COALESCE(SUM(request_count), 0),
+        COALESCE(SUM(success_count), 0),
+        COALESCE(SUM(error_count), 0),
+        COALESCE(SUM(input_tokens), 0),
+        COALESCE(SUM(output_tokens), 0),
+        COALESCE(SUM(cache_read_tokens), 0),
+        COALESCE(SUM(cache_read_cost_usd), 0),
+        COALESCE(SUM(cache_write_tokens), 0),
+        COALESCE(SUM(cache_write_1h_tokens), 0),
+        COALESCE(SUM(cache_write_cost_usd), 0),
+        COALESCE(SUM(thinking_tokens), 0),
+        COALESCE(SUM(input_image_tokens), 0),
+        COALESCE(SUM(output_image_tokens), 0),
+        COALESCE(SUM(total_cost_usd), 0),
+        COALESCE(SUM(duration_ms_sum), 0),
+        COALESCE(SUM(duration_ms_count), 0),
+        COALESCE(MAX(duration_ms_max), 0),
+        COALESCE(SUM(first_token_ms_sum), 0),
+        COALESCE(SUM(first_token_ms_count), 0),
+        COALESCE(MAX(first_token_ms_max), 0),
+        COUNT(CASE
+          WHEN request_count > 0
+            OR input_tokens > 0
+            OR output_tokens > 0
+            OR cache_read_tokens > 0
+            OR cache_write_tokens > 0
+            OR cache_write_1h_tokens > 0
+            OR thinking_tokens > 0
+            OR input_image_tokens > 0
+            OR output_image_tokens > 0
+            OR total_cost_usd > 0
+          THEN 1
+        END),
+        MAX(last_used_at),
+        MAX(last_error_at),
+        ?
+      FROM usage_stats_daily
+      WHERE stat_date >= ?
+        AND stat_date <= ?
+      GROUP BY system_account_id, scope_type, scope_id
+      HAVING COALESCE(SUM(request_count), 0) > 0
+        OR COALESCE(SUM(input_tokens), 0) > 0
+        OR COALESCE(SUM(output_tokens), 0) > 0
+        OR COALESCE(SUM(cache_read_tokens), 0) > 0
+        OR COALESCE(SUM(cache_read_cost_usd), 0) > 0
+        OR COALESCE(SUM(cache_write_tokens), 0) > 0
+        OR COALESCE(SUM(cache_write_1h_tokens), 0) > 0
+        OR COALESCE(SUM(cache_write_cost_usd), 0) > 0
+        OR COALESCE(SUM(thinking_tokens), 0) > 0
+        OR COALESCE(SUM(input_image_tokens), 0) > 0
+        OR COALESCE(SUM(output_image_tokens), 0) > 0
+        OR COALESCE(SUM(total_cost_usd), 0) > 0
+    `).run(range.startDate, range.endDate, updatedAt, range.startDate, range.endDate)
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
+}
+
+async function refreshUsageScopeRangeWindowRequestAsync(
+  client: DatabaseClient,
+  updatedAt: string,
+  range: { startDate: string; endDate: string }
+): Promise<void> {
+  await client.transaction(async (tx) => {
+    await tx.execute(`DELETE FROM ${statsTable(tx, 'usage_scope_range_windows')} WHERE end_date = ? AND start_date = ?`, [range.endDate, range.startDate])
+    await tx.execute(`
+      INSERT INTO ${statsTable(tx, 'usage_scope_range_windows')} (
+        system_account_id, scope_type, scope_id, start_date, end_date,
+        request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens,
+        cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
+        first_token_ms_sum, first_token_ms_count, first_token_ms_max, active_days,
+        last_used_at, last_error_at, updated_at
+      )
+      SELECT
+        system_account_id,
+        scope_type,
+        scope_id,
+        ?,
+        ?,
+        COALESCE(SUM(request_count), 0),
+        COALESCE(SUM(success_count), 0),
+        COALESCE(SUM(error_count), 0),
+        COALESCE(SUM(input_tokens), 0),
+        COALESCE(SUM(output_tokens), 0),
+        COALESCE(SUM(cache_read_tokens), 0),
+        COALESCE(SUM(cache_read_cost_usd), 0),
+        COALESCE(SUM(cache_write_tokens), 0),
+        COALESCE(SUM(cache_write_1h_tokens), 0),
+        COALESCE(SUM(cache_write_cost_usd), 0),
+        COALESCE(SUM(thinking_tokens), 0),
+        COALESCE(SUM(input_image_tokens), 0),
+        COALESCE(SUM(output_image_tokens), 0),
+        COALESCE(SUM(total_cost_usd), 0),
+        COALESCE(SUM(duration_ms_sum), 0),
+        COALESCE(SUM(duration_ms_count), 0),
+        COALESCE(MAX(duration_ms_max), 0),
+        COALESCE(SUM(first_token_ms_sum), 0),
+        COALESCE(SUM(first_token_ms_count), 0),
+        COALESCE(MAX(first_token_ms_max), 0),
+        COUNT(CASE
+          WHEN request_count > 0
+            OR input_tokens > 0
+            OR output_tokens > 0
+            OR cache_read_tokens > 0
+            OR cache_write_tokens > 0
+            OR cache_write_1h_tokens > 0
+            OR thinking_tokens > 0
+            OR input_image_tokens > 0
+            OR output_image_tokens > 0
+            OR total_cost_usd > 0
+          THEN 1
+        END),
+        MAX(last_used_at),
+        MAX(last_error_at),
+        ?
+      FROM ${statsTable(tx, 'usage_stats_daily')}
+      WHERE stat_date >= ?
+        AND stat_date <= ?
+      GROUP BY system_account_id, scope_type, scope_id
+      HAVING COALESCE(SUM(request_count), 0) > 0
+        OR COALESCE(SUM(input_tokens), 0) > 0
+        OR COALESCE(SUM(output_tokens), 0) > 0
+        OR COALESCE(SUM(cache_read_tokens), 0) > 0
+        OR COALESCE(SUM(cache_read_cost_usd), 0) > 0
+        OR COALESCE(SUM(cache_write_tokens), 0) > 0
+        OR COALESCE(SUM(cache_write_1h_tokens), 0) > 0
+        OR COALESCE(SUM(cache_write_cost_usd), 0) > 0
+        OR COALESCE(SUM(thinking_tokens), 0) > 0
+        OR COALESCE(SUM(input_image_tokens), 0) > 0
+        OR COALESCE(SUM(output_image_tokens), 0) > 0
+        OR COALESCE(SUM(total_cost_usd), 0) > 0
+    `, [range.startDate, range.endDate, updatedAt, range.startDate, range.endDate])
+  })
+}
+
 export function refreshAuthorizationUsageRangeWindowSnapshots(database: DatabaseSync, updatedAt: string, timezone: string): void {
   const todayKey = dateKey(new Date(), timezone)
-  const dates = fixedUsageStatsDateKeys(timezone, todayKey)
-  if (!dates.length) return
-  database.prepare('DELETE FROM authorization_team_usage_range_windows WHERE end_date >= ? AND end_date <= ?').run(dates[0], todayKey)
-  database.prepare('DELETE FROM authorization_user_usage_range_windows WHERE end_date >= ? AND end_date <= ?').run(dates[0], todayKey)
+  const ranges = hotUsageStatsRanges(timezone, todayKey)
+  if (!ranges.length) return
+  const earliestStartDate = earliestRangeStartDate(ranges)
+  database.prepare('DELETE FROM authorization_team_usage_range_windows WHERE end_date >= ? AND end_date <= ?').run(earliestStartDate, todayKey)
+  database.prepare('DELETE FROM authorization_user_usage_range_windows WHERE end_date >= ? AND end_date <= ?').run(earliestStartDate, todayKey)
 
   const insertTeamRange = database.prepare(`
     INSERT INTO authorization_team_usage_range_windows (
@@ -448,27 +656,20 @@ export function refreshAuthorizationUsageRangeWindowSnapshots(database: Database
       OR COALESCE(SUM(output_image_tokens), 0) > 0
       OR COALESCE(SUM(total_cost_usd), 0) > 0
   `)
-  for (let startIndex = 0; startIndex < dates.length; startIndex += 1) {
-    for (let endIndex = startIndex; endIndex < dates.length; endIndex += 1) {
-      const startDate = dates[startIndex]
-      const rangeEndDate = dates[endIndex]
-      insertTeamRange.run(startDate, rangeEndDate, updatedAt, startDate, rangeEndDate)
-      insertUserRange.run(startDate, rangeEndDate, updatedAt, startDate, rangeEndDate)
-    }
+  for (const range of ranges) {
+    insertTeamRange.run(range.startDate, range.endDate, updatedAt, range.startDate, range.endDate)
+    insertUserRange.run(range.startDate, range.endDate, updatedAt, range.startDate, range.endDate)
   }
 }
 
 export async function refreshAuthorizationUsageRangeWindowSnapshotsAsync(client: DatabaseClient, updatedAt: string, timezone: string, yieldToEventLoop?: () => Promise<void>): Promise<void> {
   const todayKey = dateKey(new Date(), timezone)
-  const dates = fixedUsageStatsDateKeys(timezone, todayKey)
-  if (!dates.length) return
-  for (let startIndex = 0; startIndex < dates.length; startIndex += 1) {
-    for (let endIndex = startIndex; endIndex < dates.length; endIndex += 1) {
-      const startDate = dates[startIndex]
-      const rangeEndDate = dates[endIndex]
+  const ranges = hotUsageStatsRanges(timezone, todayKey)
+  if (!ranges.length) return
+  for (const range of ranges) {
       await client.transaction(async (tx) => {
-        await tx.execute(`DELETE FROM ${statsTable(tx, 'authorization_team_usage_range_windows')} WHERE end_date = ? AND start_date = ?`, [rangeEndDate, startDate])
-        await tx.execute(`DELETE FROM ${statsTable(tx, 'authorization_user_usage_range_windows')} WHERE end_date = ? AND start_date = ?`, [rangeEndDate, startDate])
+        await tx.execute(`DELETE FROM ${statsTable(tx, 'authorization_team_usage_range_windows')} WHERE end_date = ? AND start_date = ?`, [range.endDate, range.startDate])
+        await tx.execute(`DELETE FROM ${statsTable(tx, 'authorization_user_usage_range_windows')} WHERE end_date = ? AND start_date = ?`, [range.endDate, range.startDate])
         await tx.execute(`
           INSERT INTO ${statsTable(tx, 'authorization_team_usage_range_windows')} (
             system_account_id, start_date, end_date, team_filter_id, resource_filter_type, resource_filter_id,
@@ -511,7 +712,7 @@ export async function refreshAuthorizationUsageRangeWindowSnapshotsAsync(client:
             OR COALESCE(SUM(input_image_tokens), 0) > 0
             OR COALESCE(SUM(output_image_tokens), 0) > 0
             OR COALESCE(SUM(total_cost_usd), 0) > 0
-        `, [startDate, rangeEndDate, updatedAt, startDate, rangeEndDate])
+        `, [range.startDate, range.endDate, updatedAt, range.startDate, range.endDate])
         await tx.execute(`
           INSERT INTO ${statsTable(tx, 'authorization_user_usage_range_windows')} (
             system_account_id, start_date, end_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id,
@@ -555,10 +756,9 @@ export async function refreshAuthorizationUsageRangeWindowSnapshotsAsync(client:
             OR COALESCE(SUM(input_image_tokens), 0) > 0
             OR COALESCE(SUM(output_image_tokens), 0) > 0
             OR COALESCE(SUM(total_cost_usd), 0) > 0
-        `, [startDate, rangeEndDate, updatedAt, startDate, rangeEndDate])
+        `, [range.startDate, range.endDate, updatedAt, range.startDate, range.endDate])
       })
       await yieldToEventLoop?.()
-    }
   }
 }
 
@@ -572,9 +772,13 @@ export async function refreshUsageScopeRangeWindowSnapshotsInStages(
 ): Promise<void> {
   const todayKey = dateKey(new Date(), timezone)
   const dates = fixedUsageStatsDateKeys(timezone, todayKey)
+  const ranges = hotUsageStatsRanges(timezone, todayKey)
   if (!dates.length) return
   const refreshStartIndex = usageScopeRangeWindowRefreshStartIndex(database, dates, todayKey, previousSourceWatermark, sourceWatermark)
   if (refreshStartIndex === undefined) return
+  const refreshStartDate = dates[refreshStartIndex]
+  const refreshRanges = ranges.filter((range) => range.endDate >= refreshStartDate)
+  if (!refreshRanges.length) return
   const tempTableName = 'usage_scope_range_windows_refresh_tmp'
   prepareUsageScopeRangeWindowRefreshTempTable(database, tempTableName)
   try {
@@ -647,18 +851,14 @@ export async function refreshUsageScopeRangeWindowSnapshotsInStages(
         OR COALESCE(SUM(total_cost_usd), 0) > 0
     `)
     let processedRanges = 0
-    for (let endIndex = refreshStartIndex; endIndex < dates.length; endIndex += 1) {
-      for (let startIndex = 0; startIndex <= endIndex; startIndex += 1) {
-        const startDate = dates[startIndex]
-        const rangeEndDate = dates[endIndex]
-        insert.run(startDate, rangeEndDate, updatedAt, startDate, rangeEndDate)
-        processedRanges += 1
-        if (processedRanges % USAGE_RANGE_WINDOW_STAGED_YIELD_EVERY === 0) {
-          await yieldToEventLoop()
-        }
+    for (const range of refreshRanges) {
+      insert.run(range.startDate, range.endDate, updatedAt, range.startDate, range.endDate)
+      processedRanges += 1
+      if (processedRanges % USAGE_RANGE_WINDOW_STAGED_YIELD_EVERY === 0) {
+        await yieldToEventLoop()
       }
     }
-    await publishUsageScopeRangeWindowSnapshotsInStages(database, dates, refreshStartIndex, tempTableName, yieldToEventLoop)
+    await publishUsageScopeRangeWindowSnapshotsInStages(database, refreshRanges, tempTableName, yieldToEventLoop)
   } finally {
     clearTemporaryRangeWindowTable(database, tempTableName)
   }
@@ -722,6 +922,10 @@ function rangeWindowSourceWatermarkUpdatedAt(watermark?: string): string | undef
   return updatedAt || undefined
 }
 
+function earliestRangeStartDate(ranges: Array<{ startDate: string }>): string {
+  return ranges.reduce((earliest, range) => range.startDate < earliest ? range.startDate : earliest, ranges[0]?.startDate ?? dateKey(new Date(), 'UTC'))
+}
+
 export async function refreshAuthorizationUsageRangeWindowSnapshotsInStages(
   database: DatabaseSync,
   updatedAt: string,
@@ -729,8 +933,8 @@ export async function refreshAuthorizationUsageRangeWindowSnapshotsInStages(
   yieldToEventLoop: () => Promise<void>
 ): Promise<void> {
   const todayKey = dateKey(new Date(), timezone)
-  const dates = fixedUsageStatsDateKeys(timezone, todayKey)
-  if (!dates.length) return
+  const ranges = hotUsageStatsRanges(timezone, todayKey)
+  if (!ranges.length) return
   const teamTempTableName = 'authorization_team_usage_range_windows_refresh_tmp'
   const userTempTableName = 'authorization_user_usage_range_windows_refresh_tmp'
   prepareAuthorizationUsageRangeWindowRefreshTempTables(database, teamTempTableName, userTempTableName)
@@ -826,19 +1030,15 @@ export async function refreshAuthorizationUsageRangeWindowSnapshotsInStages(
         OR COALESCE(SUM(total_cost_usd), 0) > 0
     `)
     let processedRanges = 0
-    for (let startIndex = 0; startIndex < dates.length; startIndex += 1) {
-      for (let endIndex = startIndex; endIndex < dates.length; endIndex += 1) {
-        const startDate = dates[startIndex]
-        const rangeEndDate = dates[endIndex]
-        insertTeamRange.run(startDate, rangeEndDate, updatedAt, startDate, rangeEndDate)
-        insertUserRange.run(startDate, rangeEndDate, updatedAt, startDate, rangeEndDate)
-        processedRanges += 1
-        if (processedRanges % USAGE_RANGE_WINDOW_STAGED_YIELD_EVERY === 0) {
-          await yieldToEventLoop()
-        }
+    for (const range of ranges) {
+      insertTeamRange.run(range.startDate, range.endDate, updatedAt, range.startDate, range.endDate)
+      insertUserRange.run(range.startDate, range.endDate, updatedAt, range.startDate, range.endDate)
+      processedRanges += 1
+      if (processedRanges % USAGE_RANGE_WINDOW_STAGED_YIELD_EVERY === 0) {
+        await yieldToEventLoop()
       }
     }
-    publishAuthorizationUsageRangeWindowSnapshots(database, dates[0], todayKey, teamTempTableName, userTempTableName)
+    publishAuthorizationUsageRangeWindowSnapshots(database, earliestRangeStartDate(ranges), todayKey, teamTempTableName, userTempTableName)
   } finally {
     clearTemporaryRangeWindowTable(database, teamTempTableName)
     clearTemporaryRangeWindowTable(database, userTempTableName)
@@ -942,32 +1142,27 @@ function prepareAuthorizationUsageRangeWindowRefreshTempTables(database: Databas
 
 async function publishUsageScopeRangeWindowSnapshotsInStages(
   database: DatabaseSync,
-  dates: string[],
-  refreshStartIndex: number,
+  ranges: Array<{ startDate: string; endDate: string }>,
   tempTableName: string,
   yieldToEventLoop: () => Promise<void>
 ): Promise<void> {
-  for (let endIndex = refreshStartIndex; endIndex < dates.length; endIndex += 1) {
-    await publishUsageScopeRangeWindowSnapshotEndDate(database, dates, endIndex, tempTableName, yieldToEventLoop)
+  for (const range of ranges) {
+    await publishUsageScopeRangeWindowSnapshotRange(database, range, tempTableName, yieldToEventLoop)
   }
 }
 
-async function publishUsageScopeRangeWindowSnapshotEndDate(
+async function publishUsageScopeRangeWindowSnapshotRange(
   database: DatabaseSync,
-  dates: string[],
-  endIndex: number,
+  range: { startDate: string; endDate: string },
   tempTableName: string,
   yieldToEventLoop: () => Promise<void>
 ): Promise<void> {
-  const endDate = dates[endIndex]
-  for (let startIndex = 0; startIndex <= endIndex; startIndex += 1) {
-    const startDate = dates[startIndex]
-    const transactionStarted = beginDatabaseTransaction(database)
-    try {
-      database
-        .prepare('DELETE FROM usage_scope_range_windows WHERE end_date = ? AND start_date = ?')
-        .run(endDate, startDate)
-      database.prepare(`
+  const transactionStarted = beginDatabaseTransaction(database)
+  try {
+    database
+      .prepare('DELETE FROM usage_scope_range_windows WHERE end_date = ? AND start_date = ?')
+      .run(range.endDate, range.startDate)
+    database.prepare(`
       INSERT INTO usage_scope_range_windows (
         system_account_id, scope_type, scope_id, start_date, end_date,
         request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens,
@@ -1007,14 +1202,13 @@ async function publishUsageScopeRangeWindowSnapshotEndDate(
         updated_at
       FROM ${tempTableName}
       WHERE end_date = ? AND start_date = ?
-    `).run(endDate, startDate)
-      commitDatabaseTransaction(database, transactionStarted)
-    } catch (error) {
-      rollbackDatabaseTransaction(database, transactionStarted)
-      throw error
-    }
-    await yieldToEventLoop()
+    `).run(range.endDate, range.startDate)
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
   }
+  await yieldToEventLoop()
 }
 
 function publishAuthorizationUsageRangeWindowSnapshots(

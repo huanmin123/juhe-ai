@@ -37,7 +37,7 @@
 
 ## 3. 技术边界
 
-- 运行时：官方 Node.js LTS，当前支持 `22.x >= 22.13.0` 或 `24.x >= 24.11.0`；standalone 模式需要内置 `node:sqlite` 可用，performance 模式不应在运行路径加载 SQLite。
+- 运行时：当前实现使用官方 Node.js LTS，当前支持 `22.x >= 22.13.0` 或 `24.x >= 24.11.0`；standalone 模式需要内置 `node:sqlite` 可用，performance 模式不应在运行路径加载 SQLite。后续后端目标运行时是 Go，目标存储只保留 PostgreSQL + Redis，不再保留 SQLite 或两套模式；迁移规则见 [Go 渐进减法迁移目录](../../migration/README.md) 和 [存储目标与 SQLite 移除](../../migration/存储目标与SQLite移除.md)。迁移完成前，本文仍描述当前 Node 后端事实。
 - 语言：`TypeScript`，ESM 模块。
 - Web 框架：`Express`。
 - 存储：默认 standalone 模式使用 Node 内置 `node:sqlite`，按业务库 `backend/data/juhe-ai.sqlite3`、数据集目录库 `backend/data/juhe-ai-dataset.sqlite3`、使用记录目录库 `backend/data/juhe-ai-usage-catalog.sqlite3`、统计结果库 `backend/data/juhe-ai-stats.sqlite3` 和 usage shard 文件运行；显式 performance 模式使用 PostgreSQL 保存事实域和统计域，使用 Redis 保存可丢弃缓存、短 TTL 运行态和 Redis Streams 队列。业务层必须通过 Store Port 访问存储，不能直接感知 SQLite / PostgreSQL / Redis。
@@ -75,6 +75,7 @@
 ### 4.2 存储适配边界
 
 - 后端存储长期边界是 Store Port / Adapter，而不是 routes、service 或 DB service handler 内散落数据库 driver 分支。
+- Go 迁移后的长期存储边界已经调整为 PostgreSQL + Redis 单模式；以下 SQLite / memory / standalone adapter 规则只描述当前 Node 过渡事实，不能作为新增 Go 模块的目标。
 - routes 和 service 只能调用业务语义接口，例如系统账户、AI 账户、API Key、网关运行态、使用记录、审计日志、统计窗口、维护清理、共享缓存、运行态状态和队列 Port。
 - SQLite、PostgreSQL、Redis、Redis Streams、SQL 方言、连接池、事务对象、Redis key 和 Stream consumer group 只允许出现在 adapter 或基础设施层。
 - 新增 DB / cache / queue 能力时，先更新 [存储适配接口设计](../../functions/存储适配接口设计.md)，再实现 standalone adapter 和 performance adapter；不能只补一个 `if postgres` 分支。

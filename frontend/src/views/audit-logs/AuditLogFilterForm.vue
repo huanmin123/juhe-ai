@@ -14,9 +14,7 @@
         :active-only="false"
         :filter-option="false"
         :loading="systemAccountOptionsLoading"
-        include-all
-        all-label="全部用户"
-        placeholder="筛选用户"
+        placeholder="选择用户"
         @change="handleAdvancedApply"
         @dropdown-visible-change="$emit('system-account-dropdown-visible-change', $event)"
         @search="$emit('system-account-search', $event)"

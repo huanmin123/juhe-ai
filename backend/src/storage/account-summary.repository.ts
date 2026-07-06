@@ -569,13 +569,13 @@ async function listAccountRowsPageAsync(
   access: AccessScope | undefined,
   options: NormalizedAccountListOptions
 ): Promise<{ rows: AccountListRow[] }> {
-  const viewerSystemAccountId = userVisibleSystemAccountId(access)
-  if (!viewerSystemAccountId && !canAccessAll(access)) {
+  const ownerSystemAccountId = manageableSystemAccountId(access)
+  if (!ownerSystemAccountId && !canAccessAll(access)) {
     throw new Error('缺少系统账户上下文')
   }
-  const scopeClause = viewerSystemAccountId ? 'AND accounts.system_account_id = ?' : ''
-  const scopeParams = viewerSystemAccountId ? [viewerSystemAccountId] : []
-  const filters = accountListFilters(client, options, viewerSystemAccountId)
+  const scopeClause = ownerSystemAccountId ? 'AND accounts.system_account_id = ?' : ''
+  const scopeParams = ownerSystemAccountId ? [ownerSystemAccountId] : []
+  const filters = accountListFilters(client, options, ownerSystemAccountId)
   const orderClause = accountListOrderClause(options)
   const rows = await client.query<AccountListRow>(`
     WITH account_rows AS (

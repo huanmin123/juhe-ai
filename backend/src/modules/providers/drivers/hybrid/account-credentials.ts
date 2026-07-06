@@ -48,6 +48,20 @@ function normalizeHybridEndpointModesForWrite(value: unknown, label = '接口能
   return output
 }
 
+export function normalizeHybridEndpointModesForRuntime(value: unknown): AccountSupportedEndpointMode[] {
+  if (!Array.isArray(value)) {
+    return [...HYBRID_ENDPOINT_MODE_VALUES]
+  }
+  const output: AccountSupportedEndpointMode[] = []
+  const seen = new Set<AccountSupportedEndpointMode>()
+  for (const item of value) {
+    if (!isHybridEndpointMode(item) || seen.has(item)) continue
+    seen.add(item)
+    output.push(item)
+  }
+  return output.length ? output : [...HYBRID_ENDPOINT_MODE_VALUES]
+}
+
 function isHybridEndpointMode(value: unknown): value is AccountSupportedEndpointMode {
   return typeof value === 'string' && hybridEndpointModeSet.has(value)
 }

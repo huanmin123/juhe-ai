@@ -9,6 +9,7 @@ export type NormalizedUsageRecordListOptions = Required<Pick<UsageRecordListOpti
 export interface UsageRecordFilterResult {
   clause: string
   params: UsageRecordFilterValue[]
+  tracePrefixLookup?: boolean
 }
 
 export interface UsageRecordFilterSettings {
@@ -73,10 +74,9 @@ const usageRecordMaxPageSize = 200
 const usageRecordMaxListWindowRows = 1001
 
 export function normalizeUsageRecordListOptions(options?: UsageRecordListOptions): NormalizedUsageRecordListOptions {
-  const sortBy = options?.sortBy && Object.prototype.hasOwnProperty.call(usageRecordShardSortColumns, options.sortBy)
-    ? options.sortBy
-    : 'createdAt'
-  const sortOrder = options?.sortOrder === 'asc' ? 'asc' : 'desc'
+  const acceptsRequestedSort = options?.sortBy === 'createdAt'
+  const sortBy = 'createdAt'
+  const sortOrder = acceptsRequestedSort && options?.sortOrder === 'asc' ? 'asc' : 'desc'
   const rawPage = options?.page
   const rawPageSize = options?.pageSize
   const pageSize = typeof rawPageSize === 'number' && Number.isInteger(rawPageSize)
@@ -124,7 +124,8 @@ function buildUsageRecordFiltersForColumns(
     clauses.push(scope.clause.replace(/^ AND /, ''))
     params.push(...scope.params)
   }
-  pushPrefixFilter(clauses, params, columns.traceId, options?.traceId, settings)
+  const tracePrefixText = options?.traceId?.trim()
+  pushPrefixFilter(clauses, params, columns.traceId, tracePrefixText, settings)
   const accountKeyword = options?.accountKeyword?.trim()
   if (accountKeyword) {
     const matchedAccountIds = accountIdsForKeyword(accountKeyword, access)
@@ -172,11 +173,10 @@ function buildUsageRecordFiltersForColumns(
   }
   return {
     clause: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '',
-    params
+    params,
+    tracePrefixLookup: Boolean(tracePrefixText && settings?.textPrefixCollation)
   }
 }
-
-const usageRecordShardSortColumns = usageRecordSortColumns(usageRecordShardColumns)
 
 function usageRecordSortColumns(columns: UsageRecordQueryColumns): Record<UsageRecordSortField, string> {
   return {

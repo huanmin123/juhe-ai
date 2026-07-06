@@ -5,11 +5,11 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { hashPasswordAsync } from '../../storage/crypto.js'
 import {
   createAccount,
-  createAccountAsync,
+  createAccountInClientAsync,
   createApiKeyRecord,
   createApiKeyRecordAsync,
   createGroup,
-  createGroupAsync,
+  createGroupInClientAsync,
   deleteAccountWithRelatedCleanup,
   deleteAccountWithRelatedCleanupAsync,
   deleteApiKeyWithRelatedCleanup,
@@ -64,11 +64,12 @@ import {
 import {
   assertTargetActive,
   ensureTargetGroup,
-  ensureTargetGroupAsync,
+  ensureTargetGroupInClientAsync,
   ensureTargetSystemAccount,
-  ensureTargetSystemAccountAsync,
+  ensureTargetSystemAccountInClientAsync,
   findExistingTargetGroup,
   findExistingTargetGroupAsync,
+  findExistingTargetGroupInClientAsync,
   findPublicTarget,
   findPublicTargetAsync,
   normalizedText,
@@ -77,7 +78,6 @@ import {
   resolveAccountListGroupId,
   resolveAccountListGroupIdAsync,
   resolvePublicGroup,
-  resolvePublicGroupAsync,
   resolvePublicOwnedResourceTarget,
   resolvePublicOwnedResourceTargetAsync,
   sameText,
@@ -211,38 +211,41 @@ async function writePublicWelfareAccountAsync(input: PublicAccountPushInput, tar
   const providerProfile = requireProviderProtocolProfile(provider, input.providerProtocolProfileId)
   assertSupportedPushAccountType(input.type, providerProfile.accountTypes)
 
-  const target = await ensureTargetSystemAccountAsync(input, targetPasswordHash)
-  assertTargetActive(target.account)
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  return await client.transaction(async (tx) => {
+    const target = await ensureTargetSystemAccountInClientAsync(tx, input, targetPasswordHash)
+    assertTargetActive(target.account)
 
-  const access = targetAccess(target.account.id)
-  const targetGroup = await ensureTargetGroupAsync({ access, providerCode, groupName: input.targetGroupName })
-  const existing = await findTargetAccountAsync({
-    access,
-    providerCode,
-    providerProtocolProfileId: providerProfile.id,
-    groupId: targetGroup.group.id,
-    name: input.name
-  })
-  if (existing) {
-    throw new Error(`账号已存在：${existing.name}`)
-  }
-  const account = await createAccountAsync(accountCreateInputForPush(input, providerCode, providerProfile.id, targetGroup.group.id), access)
-
-  return {
-    source: 'stats',
-    generatedAt: new Date().toISOString(),
-    action: 'created',
-    target: {
-      username: target.account.username,
-      displayName: target.account.displayName,
-      systemAccountId: target.account.id,
-      created: target.created,
+    const access = targetAccess(target.account.id)
+    const targetGroup = await ensureTargetGroupInClientAsync(tx, { access, providerCode, groupName: input.targetGroupName })
+    const existing = await findTargetAccountAsync({
+      access,
+      providerCode,
+      providerProtocolProfileId: providerProfile.id,
       groupId: targetGroup.group.id,
-      groupName: targetGroup.group.name,
-      groupCreated: targetGroup.created
-    },
-    account: sanitizeAccount(account)
-  }
+      name: input.name
+    })
+    if (existing) {
+      throw new Error(`账号已存在：${existing.name}`)
+    }
+    const account = await createAccountInClientAsync(tx, accountCreateInputForPush(input, providerCode, providerProfile.id, targetGroup.group.id), access)
+
+    return {
+      source: 'stats',
+      generatedAt: new Date().toISOString(),
+      action: 'created',
+      target: {
+        username: target.account.username,
+        displayName: target.account.displayName,
+        systemAccountId: target.account.id,
+        created: target.created,
+        groupId: targetGroup.group.id,
+        groupName: targetGroup.group.name,
+        groupCreated: targetGroup.created
+      },
+      account: sanitizeAccount(account)
+    }
+  })
 }
 
 function updatePublicWelfareAccountById(input: PublicAccountUpdateInput): PublicAccountPushResponse {
@@ -550,22 +553,25 @@ export async function addPublicGroupAsync(input: PublicGroupAddInput): Promise<P
 
   await assertProviderCodeEnabledAsync(providerCode)
   const targetPasswordHash = await autoCreatedTargetPasswordHash()
-  const target = await ensureTargetSystemAccountAsync(input, targetPasswordHash)
-  assertTargetActive(target.account)
-  const access = targetAccess(target.account.id)
-  const existing = await resolvePublicGroupAsync(access, { name: input.name, providerCode })
-  if (existing) {
-    return publicGroupResponse('existing', target, sanitizeGroup(existing))
-  }
-  const groupInput: Record<string, unknown> = {
-    name: input.name,
-    providerCode,
-    description: input.description,
-    groupType: input.groupType ?? 'personal'
-  }
-  if (input.enabled !== undefined) groupInput.enabled = input.enabled
-  const group = await createGroupAsync(groupInput, access)
-  return publicGroupResponse('created', target, sanitizeGroup(group))
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  return await client.transaction(async (tx) => {
+    const target = await ensureTargetSystemAccountInClientAsync(tx, input, targetPasswordHash)
+    assertTargetActive(target.account)
+    const access = targetAccess(target.account.id)
+    const existing = await findExistingTargetGroupInClientAsync(tx, { access, providerCode, groupName: input.name })
+    if (existing) {
+      return publicGroupResponse('existing', target, sanitizeGroup(existing))
+    }
+    const groupInput: Record<string, unknown> = {
+      name: input.name,
+      providerCode,
+      description: input.description,
+      groupType: input.groupType ?? 'personal'
+    }
+    if (input.enabled !== undefined) groupInput.enabled = input.enabled
+    const group = await createGroupInClientAsync(tx, groupInput, access)
+    return publicGroupResponse('created', target, sanitizeGroup(group))
+  })
 }
 
 export function updatePublicGroup(input: PublicGroupUpdateInput): PublicGroupResponse {

@@ -61,6 +61,7 @@ export default defineConfig(function (_a) {
         server: {
             port: 5173,
             proxy: {
+                '^/__aisys__/help(/|$)': backendTarget,
                 '^/__aisys__/api(/|$)': backendTarget,
                 '/v1': backendTarget
             }

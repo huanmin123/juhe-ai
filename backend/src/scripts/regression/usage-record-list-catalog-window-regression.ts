@@ -30,7 +30,7 @@ const [databaseModule, repositories, usageRecordShards] = await Promise.all([
 ])
 
 try {
-  const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
+  const access = { systemAccountId: 'sys_admin', role: 'admin' as const, systemAccountFilterId: 'sys_admin' }
   const group = repositories.createGroup({ name: '使用记录 catalog 窗口回归分组', providerCode: 'gpt', enabled: true }, access)
   const account = repositories.createAccount({
     providerCode: 'gpt',
@@ -75,21 +75,6 @@ try {
   }
   assert(usageRecordShards.listUsageRecordShardLocations().length > 1, '回归需要多 usage shard 样本')
 
-  const datasetDatabase = databaseModule.getUsageCatalogDatabase()
-  const originalDatasetPrepare = datasetDatabase.prepare.bind(datasetDatabase) as typeof datasetDatabase.prepare
-  const listCalls: Array<{ sql: string; params: unknown[] }> = []
-  datasetDatabase.prepare = ((sql: string) => {
-    const statement = originalDatasetPrepare(sql)
-    if (/\bFROM\s+usage_record_shard_entries\s+ue\b/i.test(sql)) {
-      const originalAll = statement.all.bind(statement) as typeof statement.all
-      statement.all = ((...params: SQLInputValue[]) => {
-        listCalls.push({ sql, params })
-        return originalAll(...params)
-      }) as typeof statement.all
-    }
-    return statement
-  }) as typeof datasetDatabase.prepare
-
   const shardCalls: Array<{ sql: string; params: unknown[] }> = []
   const shardRestorers: Array<() => void> = []
   for (const location of usageRecordShards.listUsageRecordShardLocations()) {
@@ -115,34 +100,32 @@ try {
     const deepPage = repositories.listUsageRecords(access, { page: 999999, pageSize: 1 })
     assert.equal(deepPage.page, 1000, '使用记录深翻页应按固定候选窗口收敛到最多 1000 页')
     assert.equal(deepPage.items.length, 1, '深翻页仍应返回窗口内最后一条记录')
-    assert.equal(deepPage.items[0]?.id, records[300].id, '深翻页应只读取固定 catalog 窗口内的末尾记录')
-    assert.equal(deepPage.hasMore, true, 'catalog 多取一条应标记窗口内还有后续记录')
+    assert.equal(deepPage.items[0]?.id, records[300].id, '深翻页应只读取固定 shard 候选窗口内的末尾记录')
+    assert.equal(deepPage.hasMore, true, 'shard 多取一条应标记窗口内还有后续记录')
   } finally {
-    datasetDatabase.prepare = originalDatasetPrepare
     for (const restore of shardRestorers) restore()
   }
 
-  assert.equal(listCalls.length, 1, '使用记录列表应只查一次 catalog，不应逐 shard 查询候选窗口')
-  assert(/\bFROM\s+usage_record_shard_entries\s+ue\b/i.test(listCalls[0].sql), '使用记录列表应先读取全局 shard entry catalog')
-  assert(!/\bFROM\s+usage_records\s+ur\b/i.test(listCalls[0].sql), '使用记录列表候选窗口不应直接扫 shard 明细表')
-  assert.equal(Number(listCalls[0].params.at(-1)), 1001, '深翻页 catalog 候选窗口应固定为 offset + pageSize + 1 且最大 1001')
-  assert(shardCalls.length > 0 && shardCalls.length <= usageRecordShards.listUsageRecordShardLocations().length, '详情补取只应访问当前页命中的 shard')
-  assert(shardCalls.every((call) => call.params.length <= 1), 'pageSize=1 时 shard 补取只应按当前页 ID 查询')
+  assert(shardCalls.length > 1, '使用记录列表应按日期窗口直接查询多个 shard')
+  assert(shardCalls.every((call) => /\bFROM\s+usage_records\s+ur\b/i.test(call.sql)), '使用记录列表候选窗口应直接读取 shard 明细表')
+  assert(shardCalls.every((call) => /\bur\.system_account_id\s+=\s+\?/i.test(call.sql)), '使用记录列表 shard 查询必须带系统账户过滤')
+  assert(shardCalls.every((call) => Number(call.params.at(-1)) === 1001), '深翻页 shard 候选窗口应固定为 offset + pageSize + 1 且最大 1001')
 
-  const planDetails = datasetDatabase
+  const planDetails = usageRecordShards.getUsageRecordShardDatabase(usageRecordShards.listUsageRecordShardLocations()[0])
     .prepare(`
       EXPLAIN QUERY PLAN
-      SELECT usage_id, shard_key, created_at
-      FROM usage_record_shard_entries ue
-      ORDER BY ue.created_at DESC, ue.usage_id DESC
+      SELECT id
+      FROM usage_records ur
+      WHERE ur.system_account_id = ?
+      ORDER BY ur.created_at DESC, ur.id DESC
       LIMIT ?
     `)
-    .all(1001)
+    .all('sys_admin', 1001)
     .map((row) => String((row as { detail?: unknown }).detail ?? ''))
     .join('\n')
-  assert(planDetails.includes('idx_usage_record_shard_entries_created_sort'), `catalog created_at 排序应使用目标索引，实际计划：${planDetails}`)
+  assert(planDetails.includes('idx_usage_records_system_account_created_sort'), `shard created_at 排序应使用用户时间索引，实际计划：${planDetails}`)
 
-  console.log('使用记录列表 catalog 窗口回归通过：请求列表只读取独立 usage catalog 的固定 entry 窗口，再按当前页 ID 补取 shard 明细')
+  console.log('使用记录列表 shard 窗口回归通过：请求列表按系统账户直接读取 usage shard 的固定候选窗口')
 } finally {
   try {
     databaseModule.closeStorageDatabases()

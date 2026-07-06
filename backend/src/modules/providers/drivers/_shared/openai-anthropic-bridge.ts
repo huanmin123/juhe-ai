@@ -1,9 +1,11 @@
+import { createHash, randomUUID } from 'node:crypto'
 import { StringDecoder } from 'node:string_decoder'
 import type { Request } from 'express'
 
 import type {
   AccountModelMappingSourceEndpointFamily,
-  AccountSupportedEndpointMode
+  AccountSupportedEndpointMode,
+  ClientCompatibilityCapability
 } from '../../../../domain/types.js'
 import { runtimeConfig } from '../../../../config/runtime.js'
 import {
@@ -34,6 +36,10 @@ import {
   type OpenAIModelMappingRuntimeAccount
 } from '../../../gateway/protocols/openai-v1/model-mapping.js'
 import {
+  anthropicClaudeCodeVersion,
+  shouldApplyClaudeCodeMessagesCompatibility
+} from '../../../gateway/protocols/anthropic-v1/client-compatibility.js'
+import {
   openAIHostedToolRuntimeCompatibilityDetail,
   resolveOpenAIHostedToolRuntimeDecision
 } from './openai-hosted-tool-runtime-registry.js'
@@ -44,6 +50,8 @@ export interface OpenAIToAnthropicBridgeBodyOptions {
   defaultMaxTokens?: number
   guidanceProviderName?: string
   modelOverride?: string
+  requestClientCompatibility?: ClientCompatibilityCapability
+  targetPathAndQuery?: string
   fileResolver?: OpenAIToAnthropicFileResolver
   fileSearchExecutor?: OpenAIToAnthropicFileSearchExecutor
   imageGenerationExecutor?: OpenAIToAnthropicImageGenerationExecutor
@@ -509,8 +517,82 @@ export async function buildOpenAIToAnthropicBridgeBody(
   const anthropicBody = sourceEndpointFamily === OPENAI_RESPONSES_FAMILY
     ? await responsesBodyToAnthropicMessages(body, model, options, requestPlan, contentContext, guidanceContext)
     : await chatBodyToAnthropicMessages(body, model, options, requestPlan, contentContext, guidanceContext)
+  applyOpenAIToAnthropicClaudeCodeBodyCompatibility(req, anthropicBody, options)
   requestPlan.anthropicRequestBody = anthropicBody
   return Buffer.from(JSON.stringify(anthropicBody), 'utf8')
+}
+
+function applyOpenAIToAnthropicClaudeCodeBodyCompatibility(
+  req: Request,
+  body: JsonRecord,
+  options: Pick<OpenAIToAnthropicBridgeBodyOptions, 'requestClientCompatibility' | 'targetPathAndQuery'>
+): void {
+  if (!shouldApplyClaudeCodeMessagesCompatibility(req, {
+    requestClientCompatibility: options.requestClientCompatibility,
+    targetPathAndQuery: options.targetPathAndQuery ?? '/messages'
+  })) {
+    return
+  }
+  body.system = claudeCodeCompatibleSystemBlocks(body.system)
+  if (body.thinking === undefined) {
+    body.thinking = { type: 'adaptive' }
+  }
+  body.output_config = {
+    ...(objectValue(body.output_config) ?? {}),
+    effort: 'high'
+  }
+  delete body.tools
+  delete body.tool_choice
+  const metadata = objectValue(body.metadata) ?? {}
+  body.metadata = {
+    ...metadata,
+    user_id: stringValue(metadata.user_id) ?? claudeCodeBridgeMetadataUserId(req)
+  }
+}
+
+function claudeCodeCompatibleSystemBlocks(value: unknown): JsonRecord[] {
+  const prefixBlocks = [
+    {
+      type: 'text',
+      text: `x-anthropic-billing-header: cc_version=${anthropicClaudeCodeVersion}.532; cc_entrypoint=sdk-cli;`
+    },
+    {
+      type: 'text',
+      text: "You are Claude Code, Anthropic's official CLI for Claude."
+    }
+  ]
+  if (Array.isArray(value)) {
+    return [...prefixBlocks, ...value.filter(isPlainObject)]
+  }
+  const text = typeof value === 'string' && value.trim()
+    ? value.trim()
+    : value === undefined || value === null
+      ? ''
+      : JSON.stringify(value)
+  return text
+    ? [...prefixBlocks, { type: 'text', text }]
+    : prefixBlocks
+}
+
+function claudeCodeBridgeMetadataUserId(req: Request): string {
+  const sessionId = stringValue(requestHeader(req, 'x-claude-code-session-id'))
+    ?? stringValue(requestHeader(req, 'x-juhe-request-id'))
+    ?? randomUUID()
+  return JSON.stringify({
+    device_id: createHash('sha256').update('juhe-ai-claude-code-bridge').digest('hex'),
+    account_uuid: '',
+    session_id: sessionId
+  })
+}
+
+function requestHeader(req: Request, name: string): string | undefined {
+  if (typeof req.header === 'function') {
+    return req.header(name)
+  }
+  const headers = (req as Request & { headers?: Record<string, string | string[] | undefined> }).headers
+  const value = headers?.[name.toLowerCase()] ?? headers?.[name]
+  if (Array.isArray(value)) return value.join(', ')
+  return typeof value === 'string' ? value : undefined
 }
 
 export function transformOpenAIToAnthropicBridgeUpstreamResponse(

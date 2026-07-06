@@ -303,7 +303,7 @@ function assertStrictRedisCacheBoundaries(): void {
   )
   assert.match(
     invalidationSource,
-    /gateway_cache_invalidation_runtime_state_publish_failed[\s\S]*runtimeConfig\.runtimeMode === 'performance'[\s\S]*throw error/,
+    /gateway_cache_invalidation_runtime_state_publish_failed[\s\S]*runtimeConfig\.runtimeMode === 'performance'[\s\S]*(throw error|scheduleProcessFatalError\(error\))/,
     'performance 模式发布 Redis runtime state 失效版本失败必须 fail-fast'
   )
 
@@ -455,7 +455,7 @@ function assertPostgresAsyncRuntimeFactReads(): void {
     },
     {
       file: 'storage/group-summary.repository.ts',
-      functions: ['buildGroupSummariesAsync']
+      functions: ['buildGroupSummariesInClientAsync']
     }
   ]
   for (const item of asyncConcurrencyReaders) {

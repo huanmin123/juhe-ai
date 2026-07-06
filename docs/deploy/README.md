@@ -22,7 +22,8 @@
 - [跨平台部署基线](部署指南.md)：发布包兼容矩阵、解压配置、启动验证、常驻运行、备份迁移和常见排障。
 - [部署流程示例](部署流程示例.md)：一次从选择场景、构建、选择平台文档、配置 HTTPS / 代理到验证的完整示例。
 - [Docker 部署指南](Docker部署指南.md)：单容器镜像构建、默认配置、启动、验证和清理。
-- [高性能模式部署指南](高性能模式部署指南.md)：PostgreSQL、PgBouncer、Redis cache、Redis state、初始化、设置、验证和备份。
+- [高性能模式部署指南](高性能模式部署指南.md)：当前 Node 阶段的 PostgreSQL、PgBouncer、Redis cache、Redis state、初始化、设置、验证和备份；Go 迁移完成后 PostgreSQL + Redis 将成为唯一正式模式。
+- [Go 渐进减法迁移开发构建部署调整](../migration/开发构建部署调整.md)：后端迁移到 Go 期间的构建、发布包、Docker、服务化和回滚目标。
 - [Linux 部署目录](linux/README.md)：Linux 发布包、Docker、systemd、防火墙和代理访问差异。
 - [Windows 部署目录](windows/README.md)：Windows 发布包、PowerShell、服务化、Docker Desktop 和代理访问差异。
 - [macOS 部署目录](macos/README.md)：macOS 发布包、launchd、Docker Desktop 和代理访问差异。
@@ -35,7 +36,7 @@
 - 构建指南回答“如何从源码生成可部署发布包，以及构建后如何检查产物”。
 - 跨平台部署基线回答“发布包在目标机器上如何启动、配置、验证、常驻和迁移”，不负责选择服务器或家庭宽带入口方案。
 - Docker 部署指南回答“如何直接用 Docker 镜像和 Compose 运行项目”。
-- 高性能模式部署指南回答“如何用 Docker 或非 Docker 方式部署 PostgreSQL + Redis 中间件、初始化 PostgreSQL schema / 默认数据、记录生产凭据，以及如何配置 performance 模式”。
+- 高性能模式部署指南当前回答“如何用 Docker 或非 Docker 方式部署 PostgreSQL + Redis 中间件、初始化 PostgreSQL schema / 默认数据、记录生产凭据，以及如何配置 performance 模式”；Go 迁移完成后不再保留 standalone / performance 两套模式，部署文档需要收敛为 PostgreSQL + Redis 默认运行方式。
 - 部署场景目录回答“这次部署到底是服务器入口还是家庭宽带反代入口，以及该读哪些后续文档”。
 - 三端子目录回答“Windows、macOS、Linux 在启动脚本、服务化、Docker 访问宿主机代理、防火墙和反向代理上有什么差异”。
 - 网络代理目录回答“服务器无法直连上游 API 时，如何部署 sing-box 并把本地代理绑定到 AI 账户”。

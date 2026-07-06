@@ -158,7 +158,7 @@ async function main(): Promise<void> {
       databaseModule.closeStorageDatabases()
     } catch {
     }
-    rmSync(tempRoot, { recursive: true, force: true })
+    await removeTempRootForTest(tempRoot)
   }
 }
 
@@ -1060,6 +1060,33 @@ function sanitizedProcessEnv(): Record<string, string> {
 
 function sanitizeSecretText(value: string): string {
   return value.replace(/sk-[A-Za-z0-9_-]+/g, 'sk-***')
+}
+
+async function removeTempRootForTest(path: string): Promise<void> {
+  const maxAttempts = 30
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      rmSync(path, { recursive: true, force: true })
+      return
+    } catch (error) {
+      if (!isWindowsTempCleanupBusyError(error) || attempt >= maxAttempts) {
+        console.warn(`真实 CLI 本地网关回归临时目录清理失败: ${error instanceof Error ? error.message : String(error)}`)
+        return
+      }
+      await sleep(200)
+    }
+  }
+}
+
+function isWindowsTempCleanupBusyError(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && (error as { code?: unknown }).code === 'EBUSY'
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms))
 }
 
 function listen(server: http.Server): Promise<void> {

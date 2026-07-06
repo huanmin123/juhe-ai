@@ -164,7 +164,7 @@ async function assertPostgresCollectorWritesSnapshots(): Promise<void> {
     tableScanMode: 'full',
     maxTablesPerDatabase: 100
   })
-  assert.equal(result.databaseSnapshots, 5, 'PG 采样应只写入 PostgreSQL 五个逻辑 schema 快照')
+  assert.equal(result.databaseSnapshots, 6, 'PG 采样应写入 PostgreSQL 业务、数据集、使用记录、统计、归档和状态六个逻辑 schema 快照')
   assert(result.tableSnapshots >= 1, 'PG 采样应写入表级快照')
 
   const history = await listTableStorageHistoryAsync({

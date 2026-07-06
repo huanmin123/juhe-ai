@@ -68,6 +68,7 @@ export type DispatchPreparationResult =
     outcome: 'ready'
     accounts: UpstreamAccount[]
     releaseClientIpConcurrency: () => void
+    normalRouteLatencyDegradationApplied?: boolean
     codexTurnAccountAvoidanceApplied?: boolean
     codexTurnAvoidedAccountIds?: string[]
   }
@@ -93,6 +94,7 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
   clientStrategy: OpenAIGatewayClientStrategyContext
   requestLane: OpenAIGatewayRequestLane
   signal?: AbortSignal
+  ignoreAccountRuntimeSuppression?: boolean
   attemptFallback: (reason: string) => Promise<DispatchPreparationFallbackResult>
 }): Promise<DispatchPreparationResult> {
   const dispatchOrderingOptions = {
@@ -111,7 +113,7 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     input.sessionAffinityKey,
     dispatchOrderingOptions
   )
-  const bypassLocalSuppression = isAccountProbeTrafficSource(input.usageContext.trafficSource)
+  const bypassLocalSuppression = input.ignoreAccountRuntimeSuppression === true || isAccountProbeTrafficSource(input.usageContext.trafficSource)
   const initialLocalSuppressionFilter = bypassLocalSuppression
     ? localSuppressionBypassResult(orderedCandidateAccounts)
     : await filterGatewayAccountRuntimeSuppressionsAsync(orderedCandidateAccounts)
@@ -332,6 +334,7 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
   }
   return {
     ...readyPreparation,
+    normalRouteLatencyDegradationApplied: latencyDegradationOrder.applied,
     codexTurnAccountAvoidanceApplied: codexTurnAvoidance.thresholdReached,
     codexTurnAvoidedAccountIds: codexTurnAvoidance.avoidedAccountIds
   }

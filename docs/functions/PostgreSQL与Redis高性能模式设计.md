@@ -4,6 +4,8 @@
 > 数据库、缓存、运行态和队列的业务语义适配边界见 [存储适配接口设计](存储适配接口设计.md)。
 > 统计准确性、读写资源隔离、Redis 清理和压测验收的细化规则见 [可靠统计与读写资源隔离设计](可靠统计与读写资源隔离设计.md)。
 
+> 迁移方向更新：自 [PLAN-0081 Node 转 Go 渐进减法迁移](../plans/计划-0081-Node转Go渐进减法迁移.md) 起，Go 后端目标不再保留 SQLite standalone / PostgreSQL performance 两套模式。本文中 `standalone`、SQLite 和 performance 模式的内容只描述当前 Node 过渡事实；迁移完成后的长期目标以 [存储目标与 SQLite 移除](../migration/存储目标与SQLite移除.md) 为准，PostgreSQL + Redis 将成为唯一正式存储模式。
+
 ## 背景
 
 当前默认单机模式已经通过 DB service、SQLite 多库拆分、usage shard、单写者 writer queue 和预聚合统计缓解了大部分轻量部署瓶颈。但随着用户量和网关请求量上升，瓶颈已经从“单个 SQL 慢”变成了几类系统性限制：
@@ -133,15 +135,15 @@ PostgreSQL 模式不再模拟多个 SQLite 文件，而是把当前事实域映�
 
 当前已新增 `backend/src/storage/postgres-schema.ts`，从现有 SQLite schema DDL 收集建表 / 建索引语句并映射为 PostgreSQL SQL：移除 `PRAGMA`，把 `COLLATE NOCASE` 映射为 `lower(...)` 表达式索引，把 SQLite JSON object check 映射为 `jsonb_typeof(...::jsonb)`，并按外键依赖重新排序 `CREATE TABLE`，避免 PostgreSQL 的前向外键引用失败。`postgres:init-schema` 默认执行 schema 初始化并写入默认种子数据，`postgres:init-schema-only` 只执行 DDL。当前版本完整初始化应以 `test:postgres-schema-sql` / `test:postgres-seed-defaults` 的实际输出为准；最近本地校验口径为 5 个 schema、594 条 schema 语句。
 
-### usage_records 目标形态
+### usage_records 当前形态
 
-当前初始化脚本先创建 `juhe_usage.usage_records` 普通表，保证空 PostgreSQL 库可初始化和后续 repository adapter 可接入。最终高性能形态不继续使用 SQLite shard 文件，目标是把 `usage_records` 改为 PostgreSQL 分区表：
+高性能模式不继续复制 SQLite usage catalog 明细模型，`juhe_usage.usage_records` 当前按 `created_at` 建日分区父表，主键为 `(created_at, id)`。写入前会按记录时间确保对应日分区存在，列表、详情、统计游标和清理都必须带上时间窗口或由 usage id 推导分区窗口，不能对分区父表做无界扫描。
 
-- 分区键：`created_at` 按天或按月 range partition，首期按 usage 保留期和日请求量选择。
-- 热写入维度：保留 `shard_id` 计算列或普通列，取值为 `stable_hash(id) % 16`，用于索引、批处理分桶和后续 hash subpartition。
-- 默认索引：`created_at + id`、`system_account_id + created_at + id`、`api_key_id + created_at + id`、`account_id + created_at + id`、`trace_id`、`request_id`。
+- 分区键：`created_at` 日 range partition；过期在线数据优先按分区 `DETACH / DROP`，并通过 `juhe_archive.data_archive_manifests` 记录归档 manifest。
+- 热查询索引白名单以用户维度开头：`system_account_id + created_at + id`、`system_account_id + api_key_id + created_at + id`、`system_account_id + account_id + created_at + id`、`system_account_id + trace_id COLLATE "C" + created_at + id`。
+- 管理员页面也必须先限定用户和日期窗口；低频全局 `created_at + id`、独立 `trace_id`、独立 `request_id`、全局 `model/path/status/client_ip` 不能作为大表默认索引。
 - PostgreSQL 前缀筛选必须显式使用稳定 collation。`trace_id`、`client_ip`、API Key 名称和 AI 性能账号选项名称等文本前缀查询使用 `COLLATE "C"`、二进制上界和对应 C collation 表达式索引；不能依赖 `prefix + '\uffff'`，也不能假设数据库默认 collation 的排序行为和 SQLite 一致。
-- 清理策略：优先 drop / detach 过期分区；不能在热表上做大批量 `DELETE`。
+- 清理策略：常规过期清理按统计安全游标追平后处理整日分区；已删除账号 / API Key 的关联明细小批次清理必须使用 `(created_at, id)` 命中分区，不能只按裸 `id` 删除。
 - 统计游标：`stats.stats_job_state` 继续记录按分区 / shard 窗口推进的游标，统计写入和游标推进在同一 PostgreSQL 事务提交。
 
 ### JSON 与时间

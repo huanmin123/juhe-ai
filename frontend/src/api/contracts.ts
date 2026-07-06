@@ -188,7 +188,7 @@ export interface UsageRecordListParams extends ListParams {
   trafficSource?: UsageRecordTrafficSource
   startDate?: string
   endDate?: string
-  sortBy?: 'createdAt' | 'firstTokenMs' | 'durationMs' | 'costUsd'
+  sortBy?: 'createdAt'
   sortOrder?: SortDirection
 }
 

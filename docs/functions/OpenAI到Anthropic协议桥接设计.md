@@ -61,6 +61,7 @@ v1 不强制承接：
 - OpenAI 下游本地错误、上游 Anthropic 错误和流内错误都要按下游协议渲染，不能把 Anthropic error shape 直接返回给 OpenAI 客户端。
 - 使用记录和审计必须同时记录下游 endpoint family、上游实际 endpoint family、下游模型、实际上游模型、桥接类型和 usage 语义。
 - 上游供应商或当前模型不支持的 hosted/native 能力必须走 agent guidance 或受控拒绝，不因为能力缺口返回 500，也不把不支持能力伪装成上游成功。guidance 只写通用客户端 agent 可执行的下一步，不绑定具体客户端名称。
+- Claude Code-compatible 代理可能同时校验 header、`?beta=true` 和 body 形态。该兼容只在下游显式发送 `x-juhe-client-profile: claude_code` 且上游目标是 Anthropic Messages 时启用；普通 OpenAI -> Anthropic bridge 不默认伪装 Claude Code。
 
 ## 4. 触发条件
 
@@ -83,6 +84,7 @@ v1 不强制承接：
 - 不允许 API Key 绑定的策略路由无法调度到目标混合供应商账户时，通过桥接越权访问该账号。
 - 不允许模型无法唯一定位时猜测 Anthropic 账号。
 - 不允许把 Anthropic native `/v1/messages` 请求反向包装成 OpenAI Chat / Responses。
+- 不允许仅凭 opencode / AI SDK User-Agent 自动启用 Claude Code-compatible body；opencode 需要在 provider `options.headers` 显式发送 `x-juhe-client-profile: claude_code`。
 
 ## 5. 请求转换矩阵
 
@@ -107,6 +109,14 @@ v1 不强制承接：
 | `stream` | `stream` | 根据下游请求保持一致 |
 
 请求级控制字段必须按语义分层处理，不能因为 Anthropic Messages 不认识字段就静默丢弃：`service_tier=auto/default`、`store=false/null` 可作为默认路径进入桥接且不透传；`service_tier=flex/priority/unknown`、`prompt_cache_retention`、`store=true`、Responses `prompt` 模板和 Chat / Responses 顶层 `moderation` 当前没有等价服务档位、缓存保留、存储、托管 prompt 或审核策略，必须本地返回 OpenAI 形态错误且不请求 Anthropic。图像工具内部的 `moderation` 由本地图像 provider 路径单独承接，不属于顶层请求审核配置。
+
+Claude Code-compatible bridge 补齐规则：
+
+- 触发条件是显式 `x-juhe-client-profile: claude_code` 或运行时 `requestClientCompatibility = claude_code`，且转换后的上游目标路径是 `/messages`。
+- 上游 URL 补 `?beta=true`，上游 header 补 Claude Code `User-Agent` 和 `anthropic-beta`。
+- 上游 body 补最小 envelope：`system` 数组前缀、`metadata.user_id`、`thinking: { type: "adaptive" }`、`output_config: { effort: "high" }`。
+- 不覆盖客户端显式 `max_tokens`，不额外伪造 Bash / Edit / Read 等 Claude Code 工具 schema；为避免被 Claude Code-compatible 上游判定为非标准客户端，显式 `claude_code` bridge 会剥离下游 opencode / OpenAI function tools，不把它们透传成 Anthropic tools；不引入 OAuth、CCH signing、TLS 指纹或订阅账号字段。
+- 未显式声明 `claude_code` 的普通 bridge 保持原始 OpenAI -> Anthropic 转换结果，不注入上述 envelope。
 
 Chat `response_format` 做受控结构化输出适配：
 

@@ -1,17 +1,24 @@
 import type { GroupSummary, SystemAccountSummary } from '../../domain/types.js'
+import type { DatabaseClient } from '../../storage/database-client.js'
+import { invalidateSystemAccountLookupCache } from '../../storage/repository-lookups.js'
 import {
   createGroup,
   createGroupAsync,
+  createGroupInClientAsync,
   createSystemAccountWithPasswordHash,
   createSystemAccountWithPasswordHashAsync,
+  createSystemAccountWithPasswordHashInClientAsync,
   findGroupSummary,
   findGroupSummaryAsync,
+  findGroupSummaryInClientAsync,
   findSystemAccountById,
   findSystemAccountByIdAsync,
   findSystemAccountByUsername,
   findSystemAccountByUsernameAsync,
+  findSystemAccountByUsernameInClientAsync,
   listGroupOptions,
-  listGroupOptionsAsync
+  listGroupOptionsAsync,
+  listGroupOptionsInClientAsync
 } from '../../storage/repositories.js'
 
 export type PublicPushResolvedTarget = {
@@ -120,6 +127,36 @@ export async function ensureTargetSystemAccountAsync(input: { targetUsername: st
     status: 'active',
     mustChangePassword: true
   }, passwordHash)
+  return { account, created: true }
+}
+
+export async function ensureTargetSystemAccountInClientAsync(
+  client: DatabaseClient,
+  input: { targetUsername: string; targetDisplayName?: string },
+  passwordHash?: string
+): Promise<PublicPushResolvedTarget> {
+  const username = normalizedText(input.targetUsername)
+  if (!username) {
+    throw new Error('目标用户不能为空')
+  }
+  const existing = await findSystemAccountByUsernameInClientAsync(client, username)
+  if (existing) {
+    return { account: existing, created: false }
+  }
+
+  const displayName = normalizedText(input.targetDisplayName) || username
+  if (!passwordHash) {
+    throw new Error('自动创建目标用户缺少密码哈希')
+  }
+  const account = await createSystemAccountWithPasswordHashInClientAsync(client, {
+    username,
+    displayName,
+    description: '由公开接口自动创建',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: true
+  }, passwordHash)
+  invalidateSystemAccountLookupCache(account.id)
   return { account, created: true }
 }
 
@@ -303,6 +340,39 @@ export async function ensureTargetGroupAsync(input: {
   }
 }
 
+export async function ensureTargetGroupInClientAsync(
+  client: DatabaseClient,
+  input: {
+    access: PublicPushTargetAccess
+    providerCode: string
+    groupName: string
+  }
+): Promise<PublicPushResolvedGroup> {
+  const groupName = normalizedText(input.groupName)
+  if (!groupName) {
+    throw new Error('目标分组不能为空')
+  }
+  const existing = await findExistingTargetGroupInClientAsync(client, input)
+
+  if (existing) {
+    return {
+      group: existing,
+      created: false
+    }
+  }
+
+  return {
+    group: await createGroupInClientAsync(client, {
+      name: groupName,
+      providerCode: input.providerCode,
+      description: '由公开接口自动创建',
+      enabled: true,
+      groupType: 'personal'
+    }, input.access),
+    created: true
+  }
+}
+
 export function findExistingTargetGroup(input: {
   access: PublicPushTargetAccess
   providerCode: string
@@ -335,6 +405,26 @@ export async function findExistingTargetGroupAsync(input: {
     limit: 20
   })).find((item) => item.providerCode === input.providerCode && sameText(item.name, groupName))
   return existing ? await findGroupSummaryAsync(existing.id, input.access) : undefined
+}
+
+export async function findExistingTargetGroupInClientAsync(
+  client: DatabaseClient,
+  input: {
+    access: PublicPushTargetAccess
+    providerCode: string
+    groupName: string
+  }
+): Promise<GroupSummary | undefined> {
+  const groupName = normalizedText(input.groupName)
+  if (!groupName) {
+    throw new Error('目标分组不能为空')
+  }
+  const existing = (await listGroupOptionsInClientAsync(client, input.access, {
+    keyword: groupName,
+    providerCode: input.providerCode,
+    limit: 20
+  })).find((item) => item.providerCode === input.providerCode && sameText(item.name, groupName))
+  return existing ? await findGroupSummaryInClientAsync(client, existing.id, input.access) : undefined
 }
 
 export function normalizedText(value: unknown): string | undefined {

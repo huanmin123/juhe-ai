@@ -1,11 +1,11 @@
 import type { SQLInputValue } from 'node:sqlite'
 
-import { buildSystemAccountScopeClause, includeSystemAccountFields, scopedSystemAccountId, type AccessScope } from './access-scope.js'
+import { buildSystemAccountScopeClause, canAccessAll, includeSystemAccountFields, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getUsageCatalogDatabase, mainDatabaseRuntimeInfo, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { loadSystemAccountNameMapByIds, loadSystemAccountNameMapByIdsAsync } from './repository-lookups.js'
 import { buildUsageAccessLookupContext, systemAccountIdForUsage, usageAccessMetadata, usageApiKeyExists } from './usage-record-access-metadata.js'
-import { buildUsageRecordEntryFilters, buildUsageRecordEntryOrderClause, buildUsageRecordFilters, buildUsageRecordOrderClause, type NormalizedUsageRecordListOptions, normalizeUsageRecordListOptions, type UsageRecordFilterResult, type UsageRecordFilterSettings } from './usage-record-list-query.js'
+import { buildUsageRecordFilters, buildUsageRecordOrderClause, type NormalizedUsageRecordListOptions, normalizeUsageRecordListOptions, type UsageRecordFilterResult, type UsageRecordFilterSettings } from './usage-record-list-query.js'
 import { hydrateUsageRecordNames, hydrateUsageRecordNamesAsync, usageRecordSummaryFromRow, type UsageRecordRow } from './usage-record-mappers.js'
 import {
   generateUsageRecordId,
@@ -30,6 +30,10 @@ import { errorLogFields, logger } from '../shared/logger.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
+import {
+  ensurePostgresUsageRecordPartitions,
+  postgresUsageRecordPartitionPruningClauseForId
+} from './postgres-usage-record-partitions.js'
 import {
   estimateCatalogCacheReadCostUsdAsync,
   estimateCatalogCacheWriteCostUsdAsync,
@@ -119,6 +123,7 @@ export interface UsageRecordListResult {
   hasMore: boolean
   page: number
   pageSize: number
+  requiresSystemAccountSelection?: boolean
 }
 
 export interface UsageRecordInput {
@@ -183,18 +188,19 @@ export function listUsageRecords(access?: AccessScope, options?: UsageRecordList
     throw new Error('JUHE_AI_DATABASE_DRIVER=postgres 时请使用 listUsageRecordsAsync 读取使用记录')
   }
   const listOptions = normalizeUsageRecordListOptions(options)
+  if (usageRecordListRequiresSystemAccountSelection(access)) {
+    return emptyUsageRecordListResult(listOptions, true)
+  }
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
   const offset = (listOptions.page - 1) * listOptions.pageSize
-  const entryRows = listUsageRecordEntries(
-    buildUsageRecordEntryFilters(access, options),
-    buildUsageRecordEntryOrderClause(listOptions),
-    offset + listOptions.pageSize + 1
+  const rows = listUsageRecordRowsFromShards(
+    buildUsageRecordFilters(access, options),
+    listOptions,
+    buildUsageRecordOrderClause(listOptions),
+    offset + listOptions.pageSize + 1,
+    usageRecordShardQueryWindowFromOptions(options)
   )
-  const pageEntryRows = takePageRows(entryRows.slice(offset), listOptions.pageSize)
-  const pageRows = {
-    rows: loadUsageRecordRowsByEntries(pageEntryRows.rows),
-    hasMore: pageEntryRows.hasMore
-  }
+  const pageRows = takePageRows(rows.slice(offset), listOptions.pageSize)
   const rowsWithNames = hydrateUsageRecordNames(pageRows.rows)
   const accountNames = shouldIncludeSystemAccountFields
     ? loadSystemAccountNameMapByIds(rowsWithNames.map((row) => optionalString(row.system_account_id)))
@@ -206,6 +212,21 @@ export function listUsageRecords(access?: AccessScope, options?: UsageRecordList
     hasMore: pageRows.hasMore,
     page: listOptions.page,
     pageSize: listOptions.pageSize
+  }
+}
+
+function usageRecordListRequiresSystemAccountSelection(access?: AccessScope): boolean {
+  return canAccessAll(access) && !scopedSystemAccountId(access)
+}
+
+function emptyUsageRecordListResult(listOptions: NormalizedUsageRecordListOptions, requiresSystemAccountSelection = false): UsageRecordListResult {
+  return {
+    items: [],
+    total: 0,
+    hasMore: false,
+    page: listOptions.page,
+    pageSize: listOptions.pageSize,
+    requiresSystemAccountSelection
   }
 }
 
@@ -222,26 +243,28 @@ export async function listUsageRecordsAsync(access?: AccessScope, options?: Usag
   }
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const listOptions = normalizeUsageRecordListOptions(options)
+  if (usageRecordListRequiresSystemAccountSelection(access)) {
+    return emptyUsageRecordListResult(listOptions, true)
+  }
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
   const offset = (listOptions.page - 1) * listOptions.pageSize
-  const filters = await buildUsageRecordEntryFiltersAsync(client, access, options)
-  const entryRows = await listUsageRecordEntriesAsync(
+  const filters = await buildUsageRecordFiltersAsync(client, access, options)
+  const rows = await listPostgresUsageRecordRows(
     client,
     filters,
-    buildUsageRecordEntryOrderClause(listOptions),
+    buildUsageRecordOrderClause(listOptions),
     offset + listOptions.pageSize + 1
   )
-  const pageEntryRows = takePageRows(entryRows.slice(offset), listOptions.pageSize)
-  const rows = await loadUsageRecordRowsByEntriesAsync(client, pageEntryRows.rows)
-  const rowsWithNames = await hydrateUsageRecordNamesAsync(client, rows)
+  const pageRows = takePageRows(rows.slice(offset), listOptions.pageSize)
+  const rowsWithNames = await hydrateUsageRecordNamesAsync(client, pageRows.rows)
   const accountNames = shouldIncludeSystemAccountFields
     ? await loadSystemAccountNameMapByIdsAsync(client, rowsWithNames.map((row) => optionalString(row.system_account_id)))
     : new Map<string, string>()
   const items = rowsWithNames.map((row) => usageRecordSummaryFromRow(row, shouldIncludeSystemAccountFields, accountNames))
   return {
     items,
-    total: pagedTotalUpperBound(listOptions.page, listOptions.pageSize, items.length, pageEntryRows.hasMore),
-    hasMore: pageEntryRows.hasMore,
+    total: pagedTotalUpperBound(listOptions.page, listOptions.pageSize, items.length, pageRows.hasMore),
+    hasMore: pageRows.hasMore,
     page: listOptions.page,
     pageSize: listOptions.pageSize
   }
@@ -310,13 +333,15 @@ export async function getUsageRecordDetailAsync(id: string, access?: AccessScope
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const scope = buildSystemAccountScopeClause(access, 'ur.system_account_id')
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
+  const partitionPruning = postgresUsageRecordPartitionPruningClauseForId(recordId)
   const row = await client.one<UsageRecordRow>(`
     SELECT ur.*
     FROM juhe_usage.usage_records ur
     WHERE ur.id = ?
+    ${partitionPruning.clause}
     ${scope.clause}
     LIMIT 1
-  `, [recordId, ...scope.params])
+  `, [recordId, ...partitionPruning.params, ...scope.params])
   const namedRow = row ? (await hydrateUsageRecordNamesAsync(client, [row]))[0] : undefined
   const accountNames = shouldIncludeSystemAccountFields
     ? await loadSystemAccountNameMapByIdsAsync(client, [optionalString(namedRow?.system_account_id)])
@@ -413,7 +438,6 @@ async function createUsageRecordsBatchPostgres(inputs: UsageRecordInput[]): Prom
       await insertPostgresUsageRecordRows(tx, shardRows.rows)
       collectPostgresUsageRecordBusinessSideEffects(accountLastUsedAt, accountHealthSuccessAt, shardRows.rows)
     }
-    await recordPostgresUsageRecordShardEntries(tx, writePlan.shardEntries, writePlan.locations)
     await flushPostgresUsageRecordBusinessSideEffects(tx, accountLastUsedAt, accountHealthSuccessAt)
   })
 }
@@ -777,11 +801,12 @@ const postgresUsageRecordColumns = [
 
 async function insertPostgresUsageRecordRows(client: DatabaseClient, rows: UsageRecordShardWriteRow[]): Promise<void> {
   if (rows.length === 0) return
+  await ensurePostgresUsageRecordPartitions(client, rows.map((row) => String(row.params[postgresUsageRecordColumns.indexOf('created_at')] ?? '')))
   const placeholders = rows.map(() => `(${postgresUsageRecordColumns.map(() => '?').join(', ')})`).join(', ')
   await client.execute(`
     INSERT INTO juhe_usage.usage_records (${postgresUsageRecordColumns.join(', ')})
     VALUES ${placeholders}
-    ON CONFLICT(id) DO NOTHING
+    ON CONFLICT(created_at, id) DO NOTHING
   `, rows.flatMap((row) => row.params))
 }
 
@@ -1085,23 +1110,24 @@ interface UsageRecordEntryRow {
   created_at: string
 }
 
-async function buildUsageRecordEntryFiltersAsync(
+async function buildUsageRecordFiltersAsync(
   client: DatabaseClient,
   access: AccessScope | undefined,
   options?: UsageRecordListOptions
 ): Promise<UsageRecordFilterResult> {
   const accountKeyword = options?.accountKeyword?.trim()
   if (!accountKeyword) {
-    return buildUsageRecordEntryFilters(access, options, usageRecordFilterSettingsForClient(client))
+    return buildUsageRecordFilters(access, options, usageRecordFilterSettingsForClient(client))
   }
-  const filters = buildUsageRecordEntryFilters(access, { ...options, accountKeyword: undefined }, usageRecordFilterSettingsForClient(client))
+  const filters = buildUsageRecordFilters(access, { ...options, accountKeyword: undefined }, usageRecordFilterSettingsForClient(client))
   const accountIds = await postgresAccountIdsForKeyword(client, accountKeyword, access)
   const accountClause = accountIds.length
-    ? `ue.account_id IN (${sqlPlaceholders(accountIds.length)})`
+    ? `ur.account_id IN (${sqlPlaceholders(accountIds.length)})`
     : '1 = 0'
   return {
     clause: filters.clause ? `${filters.clause} AND ${accountClause}` : `WHERE ${accountClause}`,
-    params: [...filters.params, ...accountIds]
+    params: [...filters.params, ...accountIds],
+    tracePrefixLookup: filters.tracePrefixLookup
   }
 }
 
@@ -1362,6 +1388,83 @@ async function loadUsageRecordRowsByEntriesAsync(client: DatabaseClient, entries
     }
   }
   return entries.map((entry) => rowsById.get(entry.usage_id)).filter((row): row is UsageRecordRow => Boolean(row))
+}
+
+async function listPostgresUsageRecordRows(
+  client: DatabaseClient,
+  filters: UsageRecordFilterResult,
+  orderClause: string,
+  limit: number
+): Promise<UsageRecordRow[]> {
+  const normalizedLimit = Math.max(1, Math.trunc(limit))
+  const selectColumns = `
+      ur.id,
+      ur.system_account_id,
+      ur.trace_id,
+      ur.traffic_source,
+      ur.client_ip,
+      ur.api_key_id,
+      ur.group_id,
+      ur.account_id,
+      ur.endpoint,
+      ur.provider_code,
+      ur.provider_protocol_profile_id,
+      ur.usage_semantic,
+      ur.model,
+      ur.upstream_model,
+      ur.pricing_model,
+      ur.model_mapping_applied,
+      ur.model_mapping_source,
+      ur.stream,
+      ur.status_code,
+      ur.success,
+      ur.failure_attribution,
+      ur.first_token_ms,
+      ur.duration_ms,
+      ur.input_tokens,
+      ur.output_tokens,
+      ur.cache_read_tokens,
+      ur.cache_read_cost_usd,
+      ur.cache_write_tokens,
+      ur.cache_write_1h_tokens,
+      ur.cache_write_cost_usd,
+      ur.thinking_tokens,
+      ur.input_image_tokens,
+      ur.output_image_tokens,
+      ur.input_audio_tokens,
+      ur.output_audio_tokens,
+      ur.output_image_count,
+      ur.cost_usd,
+      ur.error_code,
+      ur.error_message,
+      ur.created_at`
+  if (filters.tracePrefixLookup) {
+    return await client.query<UsageRecordRow>(`
+      WITH matched_usage_records AS MATERIALIZED (
+        SELECT ur.id, ur.created_at
+        FROM juhe_usage.usage_records ur
+        ${filters.clause}
+        ${orderClause}
+        LIMIT ?
+      )
+      SELECT
+        ${selectColumns}
+      FROM matched_usage_records matched_usage_records
+      INNER JOIN juhe_usage.usage_records ur
+        ON ur.created_at = matched_usage_records.created_at
+        AND ur.id = matched_usage_records.id
+      ${orderClause}
+      LIMIT ?
+    `, [...filters.params, normalizedLimit, normalizedLimit])
+  }
+  return await client.query<UsageRecordRow>(`
+    SELECT
+      ${selectColumns}
+    FROM juhe_usage.usage_records ur
+    ${filters.clause}
+    ${orderClause}
+    LIMIT ?
+  `, [...filters.params, normalizedLimit])
 }
 
 function listUsageRecordRowsFromShards(

@@ -113,6 +113,7 @@ interface OpenAIGatewayRequestPreflightOptions {
   trafficSource?: OpenAIGatewayTrafficSource
   settingsOverride?: Partial<GatewaySettings>
   requestLane?: OpenAIGatewayRequestLane
+  ignoreAccountRuntimeSuppression?: boolean
 }
 
 interface PrepareOpenAIGatewayDispatchContextInput {
@@ -143,6 +144,7 @@ export interface OpenAIGatewayDispatchContext {
   apiKeyRecord?: GatewayApiKeyRow
   groupFallbackApiKeyRecord?: GatewayApiKeyRow
   hybridRoute?: HybridGatewayRuntimeRoute
+  normalRouteLatencyDegradationApplied?: boolean
   codexTurnAccountAvoidanceApplied?: boolean
   codexTurnAvoidedAccountIds?: string[]
   releaseClientIpConcurrency: () => void
@@ -724,6 +726,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     clientStrategy,
     requestLane,
     signal,
+    ignoreAccountRuntimeSuppression: options.ignoreAccountRuntimeSuppression === true,
     attemptFallback: (reason) => prepareApiKeyGroupFallbackDispatchContext({
       req,
       res,
@@ -791,6 +794,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     apiKeyRecord,
     groupFallbackApiKeyRecord,
     hybridRoute: selectedHybridRoute,
+    normalRouteLatencyDegradationApplied: dispatchPreparation.normalRouteLatencyDegradationApplied,
     codexTurnAccountAvoidanceApplied: dispatchPreparation.codexTurnAccountAvoidanceApplied,
     codexTurnAvoidedAccountIds: dispatchPreparation.codexTurnAvoidedAccountIds,
     releaseClientIpConcurrency: dispatchPreparation.releaseClientIpConcurrency

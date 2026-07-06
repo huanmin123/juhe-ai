@@ -381,28 +381,31 @@ export function applyDatasetSchema(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_model_check_items_run_status ON model_check_items(run_id, status, created_at, id);
 
-    CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at, id);
+    DROP INDEX IF EXISTS idx_audit_logs_trace_id;
+    DROP INDEX IF EXISTS idx_audit_logs_outcome_created;
+    DROP INDEX IF EXISTS idx_audit_logs_status_created;
+    DROP INDEX IF EXISTS idx_audit_logs_path_created;
+    DROP INDEX IF EXISTS idx_audit_logs_model_created;
+    DROP INDEX IF EXISTS idx_audit_logs_upstream_model_created;
+    DROP INDEX IF EXISTS idx_audit_logs_client_ip_created;
+    DROP INDEX IF EXISTS idx_audit_logs_api_key_created;
+    DROP INDEX IF EXISTS idx_audit_logs_group_created;
+    DROP INDEX IF EXISTS idx_audit_logs_account_created;
+    DROP INDEX IF EXISTS idx_audit_logs_traffic_source_created;
 
-    CREATE INDEX IF NOT EXISTS idx_audit_logs_trace_id ON audit_logs(trace_id);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at, id);
 
     CREATE INDEX IF NOT EXISTS idx_audit_logs_system_account_created ON audit_logs(system_account_id, created_at, id);
 
-    CREATE INDEX IF NOT EXISTS idx_audit_logs_outcome_created ON audit_logs(audit_outcome, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_system_trace_created ON audit_logs(system_account_id, trace_id, created_at, id);
 
-    CREATE INDEX IF NOT EXISTS idx_audit_logs_status_created ON audit_logs(final_status_code, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_system_client_ip_created ON audit_logs(system_account_id, client_ip, created_at, id);
 
-    CREATE INDEX IF NOT EXISTS idx_audit_logs_path_created ON audit_logs(path, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_system_api_key_created ON audit_logs(system_account_id, api_key_id, created_at, id);
 
-    CREATE INDEX IF NOT EXISTS idx_audit_logs_model_created ON audit_logs(model, created_at, id);
-    CREATE INDEX IF NOT EXISTS idx_audit_logs_upstream_model_created ON audit_logs(upstream_model, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_system_group_created ON audit_logs(system_account_id, group_id, created_at, id);
 
-    CREATE INDEX IF NOT EXISTS idx_audit_logs_client_ip_created ON audit_logs(client_ip, created_at, id);
-
-    CREATE INDEX IF NOT EXISTS idx_audit_logs_api_key_created ON audit_logs(api_key_id, created_at, id);
-
-    CREATE INDEX IF NOT EXISTS idx_audit_logs_group_created ON audit_logs(group_id, created_at, id);
-
-    CREATE INDEX IF NOT EXISTS idx_audit_logs_account_created ON audit_logs(account_id, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_system_account_id_created ON audit_logs(system_account_id, account_id, created_at, id);
 
     CREATE INDEX IF NOT EXISTS idx_audit_logs_error_group_created ON audit_logs(error_group_id, created_at, id);
 
@@ -436,19 +439,15 @@ export function applyDatasetSchema(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_audit_error_groups_api_key_account ON audit_error_groups(api_key_id, system_account_id);
 
+    DROP INDEX IF EXISTS idx_public_api_logs_trace_id;
+    DROP INDEX IF EXISTS idx_public_api_logs_path_created;
+    DROP INDEX IF EXISTS idx_public_api_logs_status_created;
+    DROP INDEX IF EXISTS idx_public_api_logs_success_created;
+    DROP INDEX IF EXISTS idx_public_api_logs_client_ip_created;
+
     CREATE INDEX IF NOT EXISTS idx_public_api_logs_created ON public_api_logs(created_at, id);
 
-    CREATE INDEX IF NOT EXISTS idx_public_api_logs_trace_id ON public_api_logs(trace_id);
-
     CREATE INDEX IF NOT EXISTS idx_public_api_logs_source_created ON public_api_logs(source_ref_id, created_at, id);
-
-    CREATE INDEX IF NOT EXISTS idx_public_api_logs_path_created ON public_api_logs(path, created_at, id);
-
-    CREATE INDEX IF NOT EXISTS idx_public_api_logs_status_created ON public_api_logs(status_code, created_at, id);
-
-    CREATE INDEX IF NOT EXISTS idx_public_api_logs_success_created ON public_api_logs(success, created_at, id);
-
-    CREATE INDEX IF NOT EXISTS idx_public_api_logs_client_ip_created ON public_api_logs(client_ip, created_at, id);
 
     CREATE INDEX IF NOT EXISTS idx_operation_logs_created ON operation_logs(created_at, id);
 
@@ -498,6 +497,6 @@ export function applyDatasetSchema(database: DatabaseSync): void {
 
   `)
   database.exec(`
-    CREATE INDEX IF NOT EXISTS idx_audit_logs_traffic_source_created ON audit_logs(traffic_source, created_at, id);
+    DROP INDEX IF EXISTS idx_audit_logs_traffic_source_created;
   `)
 }

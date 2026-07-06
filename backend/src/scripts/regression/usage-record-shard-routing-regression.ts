@@ -30,7 +30,7 @@ const [databaseModule, repositories, usageStatsRepository, usageRecordShards] = 
 ])
 
 try {
-  const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
+  const access = { systemAccountId: 'sys_admin', role: 'admin' as const, systemAccountFilterId: 'sys_admin' }
   const group = repositories.createGroup({ name: '分片写入回归分组', providerCode: 'gpt', enabled: true }, access)
   const account = repositories.createAccount({
     providerCode: 'gpt',
@@ -88,7 +88,7 @@ try {
   assert.deepEqual(
     costAscList.items.map((item) => item.id),
     records.slice(-5).reverse().map((record) => record.id),
-    '使用记录列表应跨 shard 合并并保持 cost_usd ASC 排序'
+    '使用记录列表应忽略非时间排序参数并保持 created_at DESC 排序'
   )
   const detail = repositories.getUsageRecordDetail(records[7].id, access)
   assert.equal(detail?.traceId, records[7].traceId, '使用记录详情应通过新格式 usage id 直接定位 shard')

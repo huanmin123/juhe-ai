@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>管理员使用手册 - juhe-ai</title>
+  <link rel="stylesheet" href="../help.css">
+</head>
+<body>
+  <div class="page-shell">
+    <header class="manual-hero">
+      <div class="hero-inner">
+        <div class="topbar">
+          <div class="brand-mark">
+            <span class="brand-icon">?</span>
+            <span>juhe-ai 管理员手册</span>
+          </div>
+          <div class="hero-actions">
+            <a class="hero-button" href="/__aisys__/">返回控制台</a>
+            <a class="hero-button" href="/__aisys__/help/user/">普通用户手册</a>
+          </div>
+        </div>
+        <div class="hero-grid">
+          <div>
+            <span class="eyebrow">管理员</span>
+            <h1>系统配置、授权、观测和排障手册</h1>
+            <p class="hero-lead">这份手册面向管理员，覆盖用户资源管理、统一授权、路由策略、日志审计、统计观测和常见故障定位。</p>
+          </div>
+          <aside class="hero-panel" aria-label="管理员配置主线">
+            <p class="hero-panel-title">管理员配置主线</p>
+            <div class="mini-flow">
+              <span>先准备供应商、代理和 AI 账户</span>
+              <span>再组织分组、策略路由和 API Key</span>
+              <span>最后用统计、日志和审计排查链路</span>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </header>
+
+    <main class="layout">
+      <nav class="side-nav" aria-label="页面导航">
+        <strong>目录</strong>
+        <a href="#overview">管理视角</a>
+        <a href="#flow">请求与后台流转</a>
+        <a href="#resources">AI 资源管理</a>
+        <a href="#routing">策略路由</a>
+        <a href="#authorization">统一授权</a>
+        <a href="#users">系统账户</a>
+        <a href="#observability">统计与日志</a>
+        <a href="#ops">运维排障</a>
+      </nav>
+
+      <div class="content">
+        <section id="overview" class="section">
+          <h2>管理视角</h2>
+          <p class="lead">管理员既可以切到用户模式查看自己的资源，也可以切到管理模式查看和维护全局资源。管理操作应始终先确认当前作用域。</p>
+          <div class="admin-grid">
+            <article class="admin-card">
+              <h3>用户模式</h3>
+              <p>管理员作为普通用户，只能看到“我的...”范围内的数据。这里适合验证自己的账号、分组、API Key 和使用记录。</p>
+            </article>
+            <article class="admin-card">
+              <h3>管理模式</h3>
+              <p>管理模式可以按系统账户筛选或查看全局列表。新增资源时需要明确目标系统账户，不能把全局视图当作写入归属。</p>
+            </article>
+            <article class="admin-card">
+              <h3>权限边界</h3>
+              <p><code>super_admin</code> 可以维护系统账户写入能力；普通管理员可以查看系统账户列表，但不能新增、编辑或重置密码。</p>
+            </article>
+            <article class="admin-card">
+              <h3>用户可见内容</h3>
+              <p>用户侧只展示自有资源、有效授权资源和自己的使用记录；管理员内容不会暴露给普通用户手册入口。</p>
+            </article>
+          </div>
+        </section>
+
+        <section id="flow" class="section">
+          <h2>请求与后台流转</h2>
+          <p class="lead">管理排障时，建议把一次请求拆成入口校验、路由调度、上游请求、返回处理和后台聚合五段看。</p>
+          <div class="flow-board" aria-label="管理员请求与后台流转流程图">
+            <div class="flow-row">
+              <div class="flow-node teal">
+                <strong>客户端入口</strong>
+                <span>Bearer 本地 API Key 进入网关，系统前缀和网关前缀分离。</span>
+              </div>
+              <div class="flow-node blue">
+                <strong>认证预检</strong>
+                <span>读取 API Key、系统账户、额度快照、时间计划和基础请求能力。</span>
+              </div>
+              <div class="flow-node violet">
+                <strong>策略选组</strong>
+                <span>按普通、混合智能、权重、故障回退或轮询选择候选分组。</span>
+              </div>
+              <div class="flow-node amber">
+                <strong>账号调度</strong>
+                <span>按模型、授权、状态、并发、优先级和运行态选择 AI 账户。</span>
+              </div>
+            </div>
+            <div class="flow-row" style="margin-top: 28px;">
+              <div class="flow-node green">
+                <strong>上游访问</strong>
+                <span>按供应商和 AI 账户配置准备 URL、Header、凭据、代理和请求体。</span>
+              </div>
+              <div class="flow-node rose">
+                <strong>响应侧处理</strong>
+                <span>处理 JSON/SSE、响应语义检查、usage 解析和账号副作用。</span>
+              </div>
+              <div class="flow-node teal">
+                <strong>记录入队</strong>
+                <span>使用记录、审计、操作日志和公开接口日志进入后台写入链路。</span>
+              </div>
+              <div class="flow-node blue">
+                <strong>统计窗口</strong>
+                <span>worker 增量写入预聚合表，前端统计页只读聚合结果。</span>
+              </div>
+            </div>
+          </div>
+          <div class="callout">
+            业务统计、额度、趋势、TopN 和摘要卡片不能在接口请求时实时扫描明细表。需要新维度时，先补后台聚合表和 worker。
+          </div>
+        </section>
+
+        <section id="resources" class="section">
+          <h2>AI 资源管理</h2>
+          <p class="lead">AI 管理菜单承载供应商、代理、AI 账户、分组、策略路由、API Key、模型检测和使用链路。</p>
+          <div class="admin-grid">
+            <article class="admin-card">
+              <h3>供应商</h3>
+              <p>维护供应商能力、模型目录和价格口径。供应商是 AI 账户分类，不是 API Key 路由节点。</p>
+            </article>
+            <article class="admin-card">
+              <h3>代理管理</h3>
+              <p>代理供 AI 账户绑定使用。普通上游模型请求优先使用后台代理管理，OAuth 代理只作为 token 换取和刷新兜底。</p>
+            </article>
+            <article class="admin-card">
+              <h3>AI 账户管理</h3>
+              <p>管理真实上游凭据、Base URL、模型限制、账号状态、并发、代理、错误策略和可用时间。</p>
+            </article>
+            <article class="admin-card">
+              <h3>AI 分组管理</h3>
+              <p>分组承接 AI 账户集合，是账号池和分组内调度边界；它不保存供应商或模型配置。</p>
+            </article>
+          </div>
+        </section>
+
+        <section id="routing" class="section">
+          <h2>策略路由</h2>
+          <p>当前路由层级固定为 <code>API Key -> 策略路由 -> 分组 -> AI 账户 -> 供应商 / 模型能力</code>。管理员排查请求命中问题时，也按这个顺序追。</p>
+          <div class="route-grid">
+            <article class="route-card">
+              <h3>普通路由</h3>
+              <p>只能绑定一个分组。成本优先适合会话和缓存稳定，速度优先适合对首字等待敏感的请求。</p>
+            </article>
+            <article class="route-card">
+              <h3>混合智能路由</h3>
+              <p>评分模型负责判断请求等级，再映射目标模型和分组。排查时重点看等级规则、模型映射和分组可用性。</p>
+            </article>
+            <article class="route-card">
+              <h3>权重调度</h3>
+              <p>按分组权重平滑分配请求。当前分组不可承接时，按候选顺序继续尝试后续分组。</p>
+            </article>
+            <article class="route-card">
+              <h3>故障回退</h3>
+              <p>主用分组优先，主用不可承接时按备用顺序尝试。主用恢复后后续请求回到主用。</p>
+            </article>
+            <article class="route-card">
+              <h3>轮询路由</h3>
+              <p>多个分组按稳定顺序轮流作为候选起点，适合能力相近的多个账号池。</p>
+            </article>
+          </div>
+          <div class="callout">
+            编辑被多个 API Key 复用的策略路由会影响所有绑定密钥。只想调整单个 API Key 时，先复制策略再绑定。
+          </div>
+        </section>
+
+        <section id="authorization" class="section">
+          <h2>统一授权</h2>
+          <p class="lead">统一授权用于把 AI 账户或分组授权给个人或团队。授权关系和资源归属必须分开理解。</p>
+          <ul class="plain-list">
+            <li>资源所有者可以把自有账户或分组授权给其他系统账户或系统团队。</li>
+            <li>被授权用户看到的是可使用资源，不会拿到来源账户的真实凭据。</li>
+            <li>账户授权会形成授权实例账户，用于承接被授权侧本地状态、分组绑定和统计归属。</li>
+            <li>团队授权额度读取 worker 写入的团队授权缓存，网关请求路径不枚举团队成员求和。</li>
+            <li>授权消耗明细读取专用窗口表，不在页面请求时实时扫描使用记录。</li>
+          </ul>
+        </section>
+
+        <section id="users" class="section">
+          <h2>系统账户</h2>
+          <p>系统账户是后台登录、角色控制、API Key 调用方和数据隔离边界。</p>
+          <div class="priority-stack">
+            <div class="priority-item">
+              <strong>普通用户</strong>
+              <span>只能维护自己的 AI 账户、分组、策略路由、API Key 和授权相关数据。</span>
+            </div>
+            <div class="priority-item">
+              <strong>管理员</strong>
+              <span>可进入管理模式查看全局或指定系统账户范围内的数据，不能维护系统账户写入能力。</span>
+            </div>
+            <div class="priority-item">
+              <strong>超级管理员</strong>
+              <span>除管理员能力外，可以创建系统账户、编辑账户资料和重置密码。</span>
+            </div>
+          </div>
+        </section>
+
+        <section id="observability" class="section">
+          <h2>统计与日志</h2>
+          <p class="lead">排障时优先用 traceId 串联使用记录、运行日志、审计日志和操作日志。</p>
+          <div class="admin-grid">
+            <article class="note-card">
+              <h3>使用记录</h3>
+              <p>查看请求、命中账号、分组、Token、成本、耗时、结果和错误摘要。</p>
+            </article>
+            <article class="note-card">
+              <h3>运行日志</h3>
+              <p>查看服务运行事件、错误、队列和 worker 状态。grep 模式只扫描受控日志目录。</p>
+            </article>
+            <article class="note-card">
+              <h3>审计日志</h3>
+              <p>仅管理员可查看，按窗口读取 payload，不能一次性拉取大正文。</p>
+            </article>
+            <article class="note-card">
+              <h3>统计页面</h3>
+              <p>统计概览、用量统计、AI 性能监控和 IP 管理都读取后台预聚合结果。</p>
+            </article>
+          </div>
+        </section>
+
+        <section id="ops" class="section">
+          <h2>运维排障</h2>
+          <ol class="ordered-list">
+            <li>先确认问题属于后台登录、管理接口、网关请求、上游账号、代理网络、统计延迟还是日志观测。</li>
+            <li>网关请求问题先拿 traceId 查使用记录，再看命中的 API Key、策略路由、分组和账号。</li>
+            <li>账号不可用时，检查账号状态、冷却、限流、凭据、模型限制、代理测试和最近错误。</li>
+            <li>统计不一致时，确认对应 worker 是否运行、窗口是否已刷新、查询范围是否超过最近可用窗口。</li>
+            <li>日志或审计过大时，只按 offset、cursor 或窗口读取，不下载完整 payload 作为排障第一步。</li>
+          </ol>
+          <div class="callout">
+            后台 worker 和 DB service 是系统稳定性的关键路径。管理接口不可用时，先看健康检查、运行日志和 supervisor 状态。
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <footer class="footer">
+      管理员手册只通过登录态和角色校验后访问。普通用户直接访问管理员手册路径会被导回普通用户手册。
+    </footer>
+  </div>
+  <script src="../help.js"></script>
+</body>
+</html>

@@ -243,33 +243,36 @@ export function applyUsageRecordShardBaseSchema(database: UsageRecordShardSchema
       created_at TEXT NOT NULL
     );
 
-    CREATE INDEX IF NOT EXISTS idx_usage_records_created_at ON usage_records(created_at);
-    CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_created_at ON usage_records(system_account_id, created_at);
-    CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_created_sort ON usage_records(system_account_id, created_at, id);
+    DROP INDEX IF EXISTS idx_usage_records_created_at;
+    DROP INDEX IF EXISTS idx_usage_records_system_account_created_at;
+    DROP INDEX IF EXISTS idx_usage_records_group_real_usage;
+    DROP INDEX IF EXISTS idx_usage_records_group_created_sort;
+    DROP INDEX IF EXISTS idx_usage_records_first_token_sort;
+    DROP INDEX IF EXISTS idx_usage_records_duration_sort;
+    DROP INDEX IF EXISTS idx_usage_records_cost_sort;
+    DROP INDEX IF EXISTS idx_usage_records_system_account_first_token_sort;
+    DROP INDEX IF EXISTS idx_usage_records_system_account_duration_sort;
+    DROP INDEX IF EXISTS idx_usage_records_system_account_cost_sort;
+    DROP INDEX IF EXISTS idx_usage_records_api_key_created_sort;
+    DROP INDEX IF EXISTS idx_usage_records_account_created_sort;
+    DROP INDEX IF EXISTS idx_usage_records_trace_created_sort;
+    DROP INDEX IF EXISTS idx_usage_records_model_created_sort;
+    DROP INDEX IF EXISTS idx_usage_records_system_account_model_created_sort;
+    DROP INDEX IF EXISTS idx_usage_records_traffic_source_created;
+    DROP INDEX IF EXISTS idx_usage_records_client_ip_created_sort;
+    DROP INDEX IF EXISTS idx_usage_records_system_account_client_ip_created_sort;
+    DROP INDEX IF EXISTS idx_usage_records_provider_protocol_profile_created_at;
+
+    CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_created_sort ON usage_records(system_account_id, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_trace_created_sort ON usage_records(system_account_id, trace_id, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_group_created_sort ON usage_records(system_account_id, group_id, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_api_key_created_sort ON usage_records(system_account_id, api_key_id, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_account_created_sort ON usage_records(system_account_id, account_id, created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_usage_records_account_owner ON usage_records(account_owner_system_account_id, account_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_usage_records_group_owner ON usage_records(group_owner_system_account_id, group_id, created_at);
-    CREATE INDEX IF NOT EXISTS idx_usage_records_group_real_usage ON usage_records(group_id, created_at, api_key_id);
-    CREATE INDEX IF NOT EXISTS idx_usage_records_group_created_sort ON usage_records(group_id, created_at, id);
-    CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_group_created_sort ON usage_records(system_account_id, group_id, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_usage_records_account_authorization ON usage_records(account_authorization_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_usage_records_group_authorization ON usage_records(group_authorization_id, created_at);
-    CREATE INDEX IF NOT EXISTS idx_usage_records_first_token_sort ON usage_records(first_token_ms, created_at, id);
-    CREATE INDEX IF NOT EXISTS idx_usage_records_duration_sort ON usage_records(duration_ms, created_at, id);
-    CREATE INDEX IF NOT EXISTS idx_usage_records_cost_sort ON usage_records(cost_usd, created_at, id);
-    CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_first_token_sort ON usage_records(system_account_id, first_token_ms, created_at, id);
-    CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_duration_sort ON usage_records(system_account_id, duration_ms, created_at, id);
-    CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_cost_sort ON usage_records(system_account_id, cost_usd, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_usage_records_stats_cursor ON usage_records(created_at, id);
-    CREATE INDEX IF NOT EXISTS idx_usage_records_api_key_created_sort ON usage_records(api_key_id, created_at, id);
-    CREATE INDEX IF NOT EXISTS idx_usage_records_account_created_sort ON usage_records(account_id, created_at, id);
-    CREATE INDEX IF NOT EXISTS idx_usage_records_trace_created_sort ON usage_records(trace_id, created_at, id);
-    CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_trace_created_sort ON usage_records(system_account_id, trace_id, created_at, id);
-    CREATE INDEX IF NOT EXISTS idx_usage_records_model_created_sort ON usage_records(model, created_at, id);
-    CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_model_created_sort ON usage_records(system_account_id, model, created_at, id);
-    CREATE INDEX IF NOT EXISTS idx_usage_records_traffic_source_created ON usage_records(traffic_source, created_at, id);
-    CREATE INDEX IF NOT EXISTS idx_usage_records_client_ip_created_sort ON usage_records(client_ip, created_at, id);
-    CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_client_ip_created_sort ON usage_records(system_account_id, client_ip, created_at, id);
-    CREATE INDEX IF NOT EXISTS idx_usage_records_provider_protocol_profile_created_at ON usage_records(provider_protocol_profile_id, created_at);
   `)
 }
 

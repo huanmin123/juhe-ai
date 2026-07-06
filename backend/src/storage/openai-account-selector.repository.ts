@@ -4,7 +4,8 @@ import { normalizeOpenAIAccountClientCompatibility } from '../domain/account-cli
 import { normalizeOpenAIEndpointModesForRuntime } from '../domain/openai-endpoint-modes.js'
 import { normalizeAnthropicEndpointModesForRuntime } from '../domain/anthropic-endpoint-modes.js'
 import { normalizeGeminiEndpointModesForRuntime } from '../domain/gemini-endpoint-modes.js'
-import { isAnthropicProtocolProfile, isGeminiProtocolProfile } from '../domain/provider-protocol.js'
+import { isAnthropicProtocolProfile, isGeminiProtocolProfile, isHybridProviderCode } from '../domain/provider-protocol.js'
+import { normalizeHybridEndpointModesForRuntime } from '../modules/providers/drivers/hybrid/account-credentials.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { loadModelMappingsByAccountIds, loadModelMappingsByAccountIdsAsync, loadModelMappingsForAccount } from './account-model-mappings.repository.js'
 import { loadSupportedModelsByAccountIds, loadSupportedModelsByAccountIdsAsync, loadSupportedModelsForAccount } from './account-supported-models.repository.js'
@@ -755,6 +756,9 @@ function normalizeGatewayEndpointModesForRuntime(
     protocolVersion: string
   }
 ) {
+  if (isHybridProviderCode(input.providerCode)) {
+    return normalizeHybridEndpointModesForRuntime(value)
+  }
   if (isAnthropicProtocolProfile(input)) {
     return normalizeAnthropicEndpointModesForRuntime(value, {
       providerCode: input.providerCode,

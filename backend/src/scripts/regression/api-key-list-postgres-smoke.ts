@@ -125,14 +125,21 @@ async function assertApiKeyListIndexedPlans(systemAccountId: string, routeStrate
   await assertIndexedPlan(
     'API Key 默认列表排序 PG 查询',
     `
+      WITH page_api_key_ids AS MATERIALIZED (
+        SELECT api_keys.id
+        FROM juhe_business.api_keys api_keys
+        WHERE api_keys.system_account_id = $1
+        ORDER BY api_keys.is_default DESC, api_keys.updated_at DESC, api_keys.created_at DESC, api_keys.id DESC
+        LIMIT 20
+      )
       SELECT api_keys.id
-      FROM juhe_business.api_keys api_keys
+      FROM page_api_key_ids
+      INNER JOIN juhe_business.api_keys api_keys
+        ON api_keys.id = page_api_key_ids.id
       INNER JOIN juhe_business.route_strategies route_strategies
         ON route_strategies.id = api_keys.route_strategy_id
         AND route_strategies.system_account_id = api_keys.system_account_id
-      WHERE api_keys.system_account_id = $1
       ORDER BY api_keys.is_default DESC, api_keys.updated_at DESC, api_keys.created_at DESC, api_keys.id DESC
-      LIMIT 20
     `,
     [systemAccountId],
     ['idx_api_keys_system_account_default_updated']
@@ -155,7 +162,7 @@ async function assertApiKeyListIndexedPlans(systemAccountId: string, routeStrate
       LIMIT 20
     `,
     [systemAccountId, keywordValue, apiKeyTextPrefixUpperBound(keywordValue)],
-    ['idx_api_keys_system_account_name_c_lookup']
+    ['idx_api_keys_system_account_name_c_lookup', 'idx_api_keys_owner_name_unique']
   )
   await assertIndexedPlan(
     'API Key 名称前缀索引窗口 PG 查询',
@@ -170,7 +177,7 @@ async function assertApiKeyListIndexedPlans(systemAccountId: string, routeStrate
       LIMIT 20
     `,
     [systemAccountId, keywordValue, apiKeyTextPrefixUpperBound(keywordValue)],
-    ['idx_api_keys_system_account_name_c_lookup']
+    ['idx_api_keys_system_account_name_c_lookup', 'idx_api_keys_owner_name_unique']
   )
   await assertIndexedPlan(
     'API Key 策略路由筛选 PG 查询',

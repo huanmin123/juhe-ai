@@ -40,7 +40,7 @@ try {
   const database = databaseModule.getStatsDatabase()
   const today = usageStatsRepository.normalizeDefaultUsageStatsRange().endDate
   const fixedDates = usageStatsWindowHelpers.fixedUsageStatsDateKeys(usageStatsHelpers.usageStatsTimezone(), today)
-  const fixedRangeCount = fixedDates.length * (fixedDates.length + 1) / 2
+  const hotRangeCount = usageStatsWindowHelpers.hotUsageStatsRanges(usageStatsHelpers.usageStatsTimezone(), today).length
   seedPublishedRangeWindows(today)
   seedNewRangeSources(today)
 
@@ -93,7 +93,7 @@ try {
   assert.ok(result.durationMs >= 0, 'staged 刷新应返回总耗时')
   assert.ok(result.stages.some((stage) => stage.name === 'usage_scope_range_windows'), '结果应包含 usage scope 范围窗口 stage')
   assert.ok(result.stages.some((stage) => stage.name === 'authorization_usage_range_windows'), '结果应包含授权范围窗口 stage')
-  assert.ok(yieldCount >= fixedRangeCount * 3, '两个重型范围窗口 stage 应按日期区间分段 yield，usage scope 发布也应按 start_date/end_date 分段 yield')
+  assert.ok(yieldCount >= hotRangeCount * 3, '两个重型范围窗口 stage 应按热窗口分段 yield，usage scope 发布也应按 start_date/end_date 分段 yield')
   assert.ok(eventLoopTicks > 0, 'staged 刷新期间应真实让事件循环推进')
   assert.equal(usageScopeRequestCount(today), 5, '成功刷新后 usage scope 范围窗口应发布新数据')
   assert.equal(authorizationTeamRequestCount(today), 7, '成功刷新后授权团队范围窗口应发布新数据')

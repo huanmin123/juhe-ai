@@ -40,6 +40,7 @@ export interface RuntimeConfig {
     poolMax: number
     writeMaxConcurrency: number
     writeQueueMaxItems: number
+    connectionTimeoutMs: number
     statementTimeoutMs: number
     lockTimeoutMs: number
     idleInTransactionSessionTimeoutMs: number
@@ -254,6 +255,7 @@ export const runtimeConfig: RuntimeConfig = {
     poolMax: numberConfig('JUHE_AI_DB_POOL_MAX', 50, 1, 500),
     writeMaxConcurrency: numberConfig('JUHE_AI_DB_WRITE_MAX_CONCURRENCY', 100, 1, 1000),
     writeQueueMaxItems: numberConfig('JUHE_AI_DB_WRITE_QUEUE_MAX_ITEMS', 50000, 100, 1000000),
+    connectionTimeoutMs: numberConfig('JUHE_AI_POSTGRES_CONNECTION_TIMEOUT_MS', 10000, 100, 3600000),
     statementTimeoutMs: numberConfig('JUHE_AI_POSTGRES_STATEMENT_TIMEOUT_MS', 30000, 0, 3600000),
     lockTimeoutMs: numberConfig('JUHE_AI_POSTGRES_LOCK_TIMEOUT_MS', 2000, 0, 60000),
     idleInTransactionSessionTimeoutMs: numberConfig('JUHE_AI_POSTGRES_IDLE_IN_TRANSACTION_TIMEOUT_MS', 30000, 0, 3600000)

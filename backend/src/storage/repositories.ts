@@ -114,10 +114,12 @@ import {
 export {
   findGroupSummary,
   findGroupSummaryAsync,
+  findGroupSummaryInClientAsync,
   listAccountGroupOptions,
   listAccountGroupOptionsAsync,
   listGroupOptions,
   listGroupOptionsAsync,
+  listGroupOptionsInClientAsync,
   listGroups,
   listGroupsAsync,
   listGroupsPage,
@@ -350,6 +352,7 @@ export {
   DefaultGroupReadonlyError,
   createGroup,
   createGroupAsync,
+  createGroupInClientAsync,
   deleteGroup,
   deleteGroupAsync,
   updateGroup,
@@ -515,12 +518,14 @@ export {
   createSystemAccountAsync,
   createSystemAccountWithPasswordHash,
   createSystemAccountWithPasswordHashAsync,
+  createSystemAccountWithPasswordHashInClientAsync,
   findSessionByToken,
   findSessionByTokenAsync,
   findSystemAccountById,
   findSystemAccountByIdAsync,
   findSystemAccountByUsername,
   findSystemAccountByUsernameAsync,
+  findSystemAccountByUsernameInClientAsync,
   listSystemAccountOptions,
   listSystemAccountOptionsAsync,
   listSystemAccounts,
@@ -1577,8 +1582,12 @@ export async function createAccountAsync(input: Record<string, unknown>, access?
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return createAccount(input, access)
   }
-  assertKnownInputKeys(input, accountCreateInputKeys, '账户创建参数')
   const client = createPostgresDatabaseClient(await getPostgresPool())
+  return client.transaction(async (tx) => createAccountInClientAsync(tx, input, access))
+}
+
+export async function createAccountInClientAsync(client: DatabaseClient, input: Record<string, unknown>, access?: AccessScope): Promise<AccountSummary> {
+  assertKnownInputKeys(input, accountCreateInputKeys, '账户创建参数')
   const nowMs = Date.now()
   const now = new Date(nowMs).toISOString()
   const id = newId('acc')
@@ -1706,9 +1715,8 @@ export async function createAccountAsync(input: Record<string, unknown>, access?
   const availabilityScheduleNextCheckAt = nextAccountAvailabilityScheduleCheckAt(account.availabilitySchedule, new Date(nowMs))
   let savedTags = account.tags ?? []
   try {
-    await client.transaction(async (tx) => {
-      await tx.execute(`
-        INSERT INTO ${accountWriteTable(tx, 'accounts')} (
+    await client.execute(`
+        INSERT INTO ${accountWriteTable(client, 'accounts')} (
           id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
           oauth_access_token_expires_at, oauth_refresh_token_present, proxy_profile_id, concurrency_limit,
           priority, super_priority_enabled, fallback_enabled, client_compatibility, schedulable, availability_schedule_json, availability_schedule_next_check_at, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
@@ -1749,8 +1757,8 @@ export async function createAccountAsync(input: Record<string, unknown>, access?
         now,
         now
       ])
-      await tx.execute(`
-        INSERT INTO ${accountWriteTable(tx, 'group_accounts')} (
+    await client.execute(`
+        INSERT INTO ${accountWriteTable(client, 'group_accounts')} (
           system_account_id, group_id, account_id,
           local_priority, local_super_priority_enabled, local_fallback_enabled,
           enabled, created_at, updated_at
@@ -1765,11 +1773,10 @@ export async function createAccountAsync(input: Record<string, unknown>, access?
         now,
         now
       ])
-      await replaceAccountSupportedModelsInClientAsync(tx, account.id, providerCode, supportedModels)
-      await replaceAccountModelMappingsInClientAsync(tx, account.id, providerCode, modelMappings)
-      await replaceAccountNameSearchTermsAsync(tx, account.id, systemAccountId, account.name, now)
-      savedTags = await replaceAccountTagsAsync(tx, account.id, systemAccountId, tagNames, now)
-    })
+    await replaceAccountSupportedModelsInClientAsync(client, account.id, providerCode, supportedModels)
+    await replaceAccountModelMappingsInClientAsync(client, account.id, providerCode, modelMappings)
+    await replaceAccountNameSearchTermsAsync(client, account.id, systemAccountId, account.name, now)
+    savedTags = await replaceAccountTagsAsync(client, account.id, systemAccountId, tagNames, now)
   } catch (error) {
     if (isDuplicateAccountNameError(error)) {
       throw new Error(`同一用户下账户名称已存在：${account.name}`)
@@ -1777,7 +1784,7 @@ export async function createAccountAsync(input: Record<string, unknown>, access?
     throw error
   }
 
-  await refreshGroupAccountStatsAfterWriteAsync({ groupIds: [groupId], reason: 'account_created' })
+  await refreshGroupAccountStatsAfterWriteAsync({ groupIds: [groupId], reason: 'account_created' }, client)
   invalidateAccountLookupCache(account.id)
   invalidateGroupAccountIdsCache(groupId)
   invalidateGatewayRuntimeAfterBusinessWrite('account_created')

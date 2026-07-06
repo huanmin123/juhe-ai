@@ -56,6 +56,7 @@
       :loading-more="mobileLoadingMore"
       :pagination="tablePagination"
       :records="filteredRecords"
+      :empty-description="usageRecordEmptyDescription"
       @change="handleTableChange"
       @copy-trace-id="copyTraceId"
       @mobile-load-more="loadMoreMobileRecords"
@@ -83,7 +84,7 @@ import { copyTextToClipboard } from '@/shared/clipboard'
 import { rememberGroupLabel, rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { trimmedRouteQueryValue } from '@/shared/routeQuery'
-import type { UsageRecordSummary, UsageRecordTrafficSource } from '@/types/domain'
+import type { UsageRecordListResult, UsageRecordSummary, UsageRecordTrafficSource } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import UsageRecordsFilterToolbar from './UsageRecordsFilterToolbar.vue'
 import UsageRecordsTable from './UsageRecordsTable.vue'
@@ -112,7 +113,7 @@ type TraceTarget = 'audit' | 'runtime'
 const route = useRoute()
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const defaultPageState = () => defaultUsageRecordsPageState(defaultUsageRecordTrafficSourceFilter(route.meta.viewScope === 'admin'))
-const pageStateCache = usePageStateCache<UsageRecordsPageState>(undefined, defaultPageState, { version: 9 })
+const pageStateCache = usePageStateCache<UsageRecordsPageState>(undefined, defaultPageState, { version: 10 })
 const initialRouteTraceId = trimmedRouteQueryValue(route.query.traceId)
 const cachedInitialPageState = pageStateCache.read()
 const initialPageState = initialRouteTraceId
@@ -140,7 +141,8 @@ const groupFilter = computed({
     groupFilterSelection.value = selectedGroupSelection(id)
   }
 })
-const groupFilterDisabled = computed(() => false)
+const requiresSystemAccountSelection = ref(isManagementView.value && !scopedSystemAccountId(systemAccountFilter.value))
+const groupFilterDisabled = computed(() => isManagementView.value && !scopedSystemAccountId(systemAccountFilter.value))
 const { loadModelOptions, modelOptions, modelOptionsLoading } = useUsageRecordModelOptions()
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
@@ -218,6 +220,9 @@ const {
   onError: (error) => {
     console.error(error)
     message.error(extractApiErrorMessage(error, '加载使用记录失败'))
+  },
+  onLoaded: (result) => {
+    requiresSystemAccountSelection.value = Boolean((result as UsageRecordListResult).requiresSystemAccountSelection)
   }
 })
 
@@ -261,6 +266,7 @@ function filterCountInput() {
 
 const filteredRecords = computed(() => records.value)
 const mobileRecords = computed(() => records.value)
+const usageRecordEmptyDescription = computed(() => requiresSystemAccountSelection.value ? '请先选择系统账户。' : '当前条件下没有使用记录。')
 
 const rawColumns = computed(() => {
   return usageRecordTableColumns({
@@ -388,7 +394,21 @@ function handleSystemAccountFilterChange(): void {
 }
 
 async function fetchRecords(pageState: { current: number; pageSize: number }) {
+  if (isManagementView.value && !scopedSystemAccountId(systemAccountFilter.value)) {
+    return emptyUsageRecordListResult(pageState, true)
+  }
   return usageRecordsApi.list(usageRecordRequestParams(pageState))
+}
+
+function emptyUsageRecordListResult(pageState: { current: number; pageSize: number }, requiresSystemAccountSelection = false): UsageRecordListResult {
+  return {
+    items: [],
+    total: 0,
+    hasMore: false,
+    page: pageState.current,
+    pageSize: pageState.pageSize,
+    requiresSystemAccountSelection
+  }
 }
 
 function usageRecordRequestParams(pageState: { current: number; pageSize: number }) {

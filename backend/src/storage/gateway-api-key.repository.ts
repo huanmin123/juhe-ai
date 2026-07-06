@@ -1,4 +1,4 @@
-import { createAppCache, createSharedJsonCache } from '../shared/cache.js'
+import { clearSharedJsonCacheInBackground, createAppCache, createSharedJsonCache } from '../shared/cache.js'
 import { syncGatewayCacheInvalidationsFromRuntimeState } from '../shared/gateway-cache-invalidation.js'
 import { maxRouteStrategyGroupBindings } from './route-strategy-group-binding-limits.js'
 import {
@@ -642,7 +642,11 @@ async function setGatewayApiKeySharedCacheEntry(
 }
 
 function clearGatewayApiKeySharedCache(): void {
-  void clearGatewayApiKeySharedCacheAsync()
+  clearSharedJsonCacheInBackground(
+    gatewayApiKeySharedCache,
+    'gateway_api_key_shared_cache_clear_failed',
+    '清理 Redis shared API Key 缓存失败'
+  )
 }
 
 async function clearGatewayApiKeySharedCacheAsync(): Promise<void> {

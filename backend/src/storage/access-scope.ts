@@ -31,7 +31,7 @@ export function scopedSystemAccountId(access?: AccessScope): string | undefined 
   if (!scope) return undefined
   if (isAdminRole(scope.role)) {
     const filterId = scope.systemAccountFilterId?.trim()
-    return filterId || undefined
+    return filterId && filterId !== 'all' ? filterId : undefined
   }
   return scope.systemAccountId
 }

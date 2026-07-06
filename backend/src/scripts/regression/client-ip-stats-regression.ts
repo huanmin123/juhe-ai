@@ -523,14 +523,7 @@ function assertClientIpListPolicyQueryPlan(today: string): void {
 
 function assertClientIpDetailQueryPlan(today: string, ipHash: string): void {
   const sortIndexes = new Map([
-    ['requestCount', 'idx_client_ip_account_range_requests'],
-    ['successCount', 'idx_client_ip_account_range_success'],
-    ['errorCount', 'idx_client_ip_account_range_errors'],
-    ['errorRate', 'idx_client_ip_account_range_error_rate'],
-    ['totalTokens', 'idx_client_ip_account_range_tokens'],
-    ['totalCost', 'idx_client_ip_account_range_cost'],
-    ['activeDays', 'idx_client_ip_account_range_active_days'],
-    ['lastUsedAt', 'idx_client_ip_account_range_last_used']
+    ['requestCount', 'idx_client_ip_account_range_requests']
   ])
   for (const [sortField, indexName] of sortIndexes) {
     for (const direction of ['DESC', 'ASC'] as const) {
@@ -553,14 +546,7 @@ function assertClientIpDetailQueryPlan(today: string, ipHash: string): void {
 
 function assertClientIpListSortQueryPlans(today: string): void {
   const sortIndexes = new Map([
-    ['requestCount', 'idx_client_ip_range_requests'],
-    ['successCount', 'idx_client_ip_range_success'],
-    ['errorCount', 'idx_client_ip_range_errors'],
-    ['errorRate', 'idx_client_ip_range_error_rate'],
-    ['totalTokens', 'idx_client_ip_range_total_tokens'],
-    ['totalCost', 'idx_client_ip_range_cost'],
-    ['activeDays', 'idx_client_ip_range_active_days'],
-    ['lastUsedAt', 'idx_client_ip_range_last_used']
+    ['requestCount', 'idx_client_ip_range_requests']
   ])
   for (const [sortField, indexName] of sortIndexes) {
     const orderBy = clientIpListOrderByForPlan(sortField)

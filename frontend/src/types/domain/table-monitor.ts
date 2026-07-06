@@ -1,4 +1,4 @@
-export type MonitoredDatabaseRole = 'business' | 'dataset' | 'usage-catalog' | 'stats' | 'codex-context-state'
+export type MonitoredDatabaseRole = 'business' | 'dataset' | 'usage-catalog' | 'stats' | 'archive' | 'codex-context-state'
 
 export interface DatabaseStorageSnapshotSummary {
   databaseRole: MonitoredDatabaseRole
@@ -20,9 +20,15 @@ export interface TableStorageSnapshotSummary {
   databaseRole: MonitoredDatabaseRole
   tableName: string
   sampledAt: string
+  tableKind?: string
+  parentTableName?: string
+  isPartition?: boolean
+  isArchive?: boolean
   rowCount?: number
   tableBytes?: number
   indexBytes?: number
+  indexToTableRatio?: number
+  indexToTotalRatio?: number
   totalBytes?: number
   pageCount?: number
   indexCount: number

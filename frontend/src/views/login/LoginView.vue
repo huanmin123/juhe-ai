@@ -131,7 +131,12 @@ async function handleLogin() {
     if (user.mustChangePassword) {
       message.warning('当前账户使用初始密码，请先完成修改')
     }
-    await router.replace(resolveLoginRedirect(user))
+    const redirect = resolveLoginRedirect(user)
+    if (isStaticHelpRedirect(redirect)) {
+      window.location.assign(redirect)
+      return
+    }
+    await router.replace(redirect)
   } catch (error) {
     console.error(error)
     message.error(getLoginErrorMessage(error))
@@ -160,6 +165,9 @@ function getLoginErrorMessage(error: unknown): string {
 
 function resolveLoginRedirect(user: Awaited<ReturnType<typeof login>>): string {
   const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : ''
+  if (isStaticHelpRedirect(redirect)) {
+    return redirect
+  }
   if (redirect.startsWith('/') && !redirect.startsWith('//')) {
     const resolved = router.resolve(redirect)
     if (resolved.name !== 'not-found' && resolved.path !== '/login') {
@@ -167,6 +175,15 @@ function resolveLoginRedirect(user: Awaited<ReturnType<typeof login>>): string {
     }
   }
   return getPreferredEntryPath(user)
+}
+
+function isStaticHelpRedirect(value: string): boolean {
+  return value === '/__aisys__/help'
+    || value === '/__aisys__/help/'
+    || value === '/__aisys__/help/user'
+    || value === '/__aisys__/help/admin'
+    || value.startsWith('/__aisys__/help/user/')
+    || value.startsWith('/__aisys__/help/admin/')
 }
 
 function hasWhitespace(value: string): boolean {

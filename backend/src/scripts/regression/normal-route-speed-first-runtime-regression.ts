@@ -81,6 +81,27 @@ const degradedOrder = await orderGatewayAccountsByNormalRouteLatencyDegradationA
 assert.equal(degradedOrder.applied, true, '存在未降级候选时应应用速度降级排序')
 assert.deepEqual(degradedOrder.accounts.map((account) => account.id), [accounts[1]!.id, accounts[0]!.id], '速度降级账号应排到候选末尾')
 
+const priorityScope = normalRouteLatencyDegradationScope({
+  systemAccountId: 'sys_speed_first_runtime',
+  routeStrategyId: `route_strategy_speed_first_priority_override_${Date.now()}`,
+  groupId: 'group_speed_first_runtime'
+})
+assert(priorityScope, '速度优先账户偏好覆盖回归需要有效 scope')
+const priorityAccounts = [
+  { id: 'account_speed_first_super', name: '速度优先超级优先账号', superPriorityEnabled: true, priority: 0 },
+  { id: 'account_speed_first_normal', name: '速度优先普通优先级账号', priority: 10 }
+]
+await recordNormalRouteFirstByteSlowAsync(priorityAccounts[0]!, priorityScope, config)
+await recordNormalRouteFirstByteSlowAsync(priorityAccounts[0]!, priorityScope, config)
+const priorityOverrideOrder = await orderGatewayAccountsByNormalRouteLatencyDegradationAsync(priorityAccounts, priorityScope, config)
+assert.equal(priorityOverrideOrder.applied, true, '超级优先账号确认慢后应应用速度优先覆盖排序')
+assert.deepEqual(
+  priorityOverrideOrder.accounts.map((account) => account.id),
+  [priorityAccounts[1]!.id, priorityAccounts[0]!.id],
+  '速度优先应允许未降级普通优先级账号临时越过已降级超级优先账号'
+)
+await clearNormalRouteLatencyDegradationForRouteStrategyAsync(priorityScope.routeStrategyId)
+
 for (let index = 1; index <= 2; index += 1) {
   const recovery = await recordNormalRouteFirstByteSuccessAsync(accounts[0]!, scope, config, 100)
   assert.equal(recovery?.cleared, false, `第 ${index} 次恢复成功不应立即清理降级`)

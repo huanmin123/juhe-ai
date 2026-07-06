@@ -3,6 +3,13 @@ import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabas
 import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
+import { recordDataArchiveManifestAsync } from './data-archive-manifest.repository.js'
+import {
+  archivePostgresUsageRecordPartition,
+  countPostgresUsageRecordPartitionRows,
+  listPostgresUsageRecordPartitions,
+  sizePostgresUsageRecordPartitionBytes
+} from './postgres-usage-record-partitions.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { cleanupAuditPayloadBlobsBeforeAsync } from './audit-log-payload-blobs.js'
 import { deletePostgresUsageRecordCatalogRowsByUsageIds } from './usage-record-catalog-cleanup.js'
@@ -84,6 +91,7 @@ const postgresHardCleanupTables: Record<HardCleanupDatabaseRole, Array<{ tableNa
     { tableName: 'ai_performance_summary_windows', timeColumnName: 'end_date', cutoffKey: 'date' },
     { tableName: 'usage_quota_hourly_windows', timeColumnName: 'updated_at', cutoffKey: 'iso' },
     { tableName: 'usage_scope_range_windows', timeColumnName: 'end_date', cutoffKey: 'date' },
+    { tableName: 'usage_range_window_requests', timeColumnName: 'expires_at', cutoffKey: 'iso' },
     { tableName: 'client_ip_registry', timeColumnName: 'last_seen_at', cutoffKey: 'iso' },
     { tableName: 'client_ip_stats_daily', timeColumnName: 'stat_date', cutoffKey: 'date' },
     { tableName: 'client_ip_usage_range_windows', timeColumnName: 'end_date', cutoffKey: 'date' },
@@ -121,6 +129,8 @@ export interface ProcessedUsageRecordsCleanupBatchResult {
   safetyCursorCreatedAt?: string
   safetyCursorId?: string
   deletedRows: number
+  droppedPartitions?: number
+  archivedPartitions?: number
   hasMore: boolean
   blockedReason?: string
 }
@@ -342,14 +352,75 @@ export async function cleanupProcessedUsageRecordsBeforeWithResultAsync(cutoffCr
     }
   }
 
+  const partitionDrop = await dropEligiblePostgresUsageRecordPartitions(client, cutoffCreatedAt, safetyCursor)
+  if (partitionDrop.droppedPartitions > 0) {
+    return {
+      cutoffCreatedAt,
+      safetyCursorCreatedAt: safetyCursor.cursorCreatedAt,
+      safetyCursorId: safetyCursor.cursorId,
+      deletedRows: partitionDrop.deletedRows,
+      droppedPartitions: partitionDrop.droppedPartitions,
+      archivedPartitions: partitionDrop.droppedPartitions,
+      hasMore: partitionDrop.hasMore
+    }
+  }
+
   const rows = await selectPostgresProcessedUsageRecordCleanupRowsWithCursor(client, cutoffCreatedAt, safetyCursor, batchLimit + 1)
   const rowsToDelete = rows.slice(0, batchLimit)
   return {
     cutoffCreatedAt,
     safetyCursorCreatedAt: safetyCursor.cursorCreatedAt,
     safetyCursorId: safetyCursor.cursorId,
-    deletedRows: await deletePostgresUsageRecordRows(client, rowsToDelete.map((row) => row.id)),
+    deletedRows: await deletePostgresUsageRecordRows(client, rowsToDelete),
     hasMore: rows.length > batchLimit
+  }
+}
+
+async function dropEligiblePostgresUsageRecordPartitions(
+  client: DatabaseClient,
+  cutoffCreatedAt: string,
+  cursor: { cursorCreatedAt: string; cursorId: string }
+): Promise<{ deletedRows: number; droppedPartitions: number; hasMore: boolean }> {
+  const cutoffDate = isoDatePrefix(cutoffCreatedAt)
+  const cursorDate = isoDatePrefix(cursor.cursorCreatedAt)
+  if (!cutoffDate || !cursorDate) {
+    return { deletedRows: 0, droppedPartitions: 0, hasMore: false }
+  }
+  const safeEndDate = cutoffDate < cursorDate ? cutoffDate : cursorDate
+  const eligiblePartitions = (await listPostgresUsageRecordPartitions(client))
+    .filter((partition) => partition.endDate <= safeEndDate)
+    .sort((left, right) => left.startDate.localeCompare(right.startDate))
+  const partition = eligiblePartitions[0]
+  if (!partition) {
+    return { deletedRows: 0, droppedPartitions: 0, hasMore: false }
+  }
+  const rowCount = await countPostgresUsageRecordPartitionRows(client, partition.partitionName)
+  const sizeBytes = await sizePostgresUsageRecordPartitionBytes(client, partition.partitionName)
+  await client.transaction(async (tx) => {
+    const storageUri = await archivePostgresUsageRecordPartition(tx, partition.partitionName)
+    await recordDataArchiveManifestAsync(tx, {
+      domain: 'usage_records',
+      databaseRole: 'usage-catalog',
+      sourceTable: 'juhe_usage.usage_records',
+      archiveAction: 'detach_partition',
+      storageUri,
+      partitionName: partition.partitionName,
+      rangeStart: partition.startDate,
+      rangeEnd: partition.endDate,
+      rowCount,
+      sizeBytes,
+      manifest: {
+        sourceSchema: 'juhe_usage',
+        archiveSchema: 'juhe_archive',
+        partitionStartDate: partition.startDate,
+        partitionEndDate: partition.endDate
+      }
+    })
+  })
+  return {
+    deletedRows: rowCount,
+    droppedPartitions: 1,
+    hasMore: eligiblePartitions.length > 1
   }
 }
 
@@ -397,7 +468,9 @@ export async function cleanupNonBusinessDataBeforeWithResult(input: {
     }
 
     cleanupDiscoveredHardCleanupTablesBefore('dataset', cutoffs, batchLimit, addRows)
-    cleanupDiscoveredHardCleanupTablesBefore('usage-catalog', cutoffs, batchLimit, addRows)
+    if (!usageRecords.hasMore && !usageRecords.blockedReason) {
+      cleanupDiscoveredHardCleanupTablesBefore('usage-catalog', cutoffs, batchLimit, addRows)
+    }
 
     const emptyUsageShards = await cleanupEmptyUsageRecordShardFilesBefore(cutoffs.iso, batchLimit)
     addRows('usage_catalog.usage_record_shards', emptyUsageShards.usageRecordShards)
@@ -456,9 +529,14 @@ async function cleanupNonBusinessDataBeforeWithResultPostgres(input: {
     const usageRecords = await cleanupProcessedUsageRecordsBeforeWithResultAsync(cutoffs.iso, batchLimit)
     addRows('juhe_usage.usage_records', usageRecords.deletedRows)
     hasMore = hasMore || usageRecords.hasMore
+    if (usageRecords.blockedReason) {
+      hasMore = true
+    }
 
     await cleanupPostgresHardCleanupTablesBefore(client, 'dataset', cutoffs, batchLimit, addRows)
-    await cleanupPostgresHardCleanupTablesBefore(client, 'usage-catalog', cutoffs, batchLimit, addRows)
+    if (!usageRecords.hasMore && !usageRecords.blockedReason) {
+      await cleanupPostgresHardCleanupTablesBefore(client, 'usage-catalog', cutoffs, batchLimit, addRows)
+    }
   }
 
   if (scope === 'all' || scope === 'stats') {
@@ -662,13 +740,20 @@ async function selectPostgresProcessedUsageRecordCleanupRowsWithCursor(
     .filter((row) => row.id && row.created_at)
 }
 
-async function deletePostgresUsageRecordRows(client: DatabaseClient, ids: string[]): Promise<number> {
-  const usageIds = [...new Set(ids.map((id) => id.trim()).filter(Boolean))]
-  if (!usageIds.length) return 0
+async function deletePostgresUsageRecordRows(client: DatabaseClient, rows: Array<{ id: string; created_at: string }>): Promise<number> {
+  const keys = rows
+    .map((row) => ({ id: row.id.trim(), createdAt: row.created_at.trim() }))
+    .filter((row) => row.id && row.createdAt)
+  if (!keys.length) return 0
+  const usageIds = [...new Set(keys.map((row) => row.id))]
+  const placeholders = keys.map(() => '(?, ?)').join(', ')
   let deletedRows = 0
   await client.transaction(async (tx) => {
     await deletePostgresUsageRecordCatalogRowsByUsageIds(tx, usageIds)
-    deletedRows = changed(await tx.execute('DELETE FROM juhe_usage.usage_records WHERE id = ANY(?::text[])', [usageIds]))
+    deletedRows = changed(await tx.execute(`
+      DELETE FROM juhe_usage.usage_records
+      WHERE (created_at, id) IN (${placeholders})
+    `, keys.flatMap((row) => [row.createdAt, row.id])))
   })
   return deletedRows
 }
@@ -1066,6 +1151,20 @@ async function deletePostgresStatsRowsBeforeByCtid(
 
 function positiveLimit(value: number | undefined): number {
   return typeof value === 'number' && Number.isFinite(value) ? Math.max(1, Math.trunc(value)) : 10000
+}
+
+function isoDatePrefix(value: string): string | undefined {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value.trim())
+  if (!match) return undefined
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])))
+  if (
+    date.getUTCFullYear() !== Number(match[1])
+    || date.getUTCMonth() !== Number(match[2]) - 1
+    || date.getUTCDate() !== Number(match[3])
+  ) {
+    return undefined
+  }
+  return `${match[1]}-${match[2]}-${match[3]}`
 }
 
 function assertSqliteDataRetention(operation: string): void {

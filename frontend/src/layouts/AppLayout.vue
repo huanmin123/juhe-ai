@@ -23,6 +23,7 @@
         :user-avatar-text="userAvatarText"
         :user-display-name="userDisplayName"
         :user-role-label="userRoleLabel"
+        @open-help="openHelp"
         @open-announcements="openAnnouncements"
         @open-sidebar="sidebarOpen = true"
         @user-menu-click="handleUserMenuClick"
@@ -384,6 +385,18 @@ async function openAnnouncements() {
   if (result.loaded) {
     await markAnnouncementsViewed(result.items, { notifyError: true })
   }
+}
+
+function openHelp() {
+  if (mustChangePassword.value) {
+    message.warning('请先修改初始密码')
+    openPasswordModal(false)
+    return
+  }
+  const target = isAdminRole(currentUser.value?.role)
+    ? '/__aisys__/help/admin/'
+    : '/__aisys__/help/user/'
+  window.open(target, '_blank', 'noopener,noreferrer')
 }
 
 async function refreshAnnouncementsInModal() {

@@ -28,6 +28,10 @@ import {
   isHybridProviderCode
 } from '../../../../domain/provider-protocol.js'
 import type { DispatchAccountSecret } from '../../../../storage/openai-account-selector.types.js'
+import {
+  anthropicClaudeCodePathAndQueryForRequest,
+  applyAnthropicClientCompatibilityHeaders
+} from '../../../gateway/protocols/anthropic-v1/client-compatibility.js'
 import { buildAnthropicUpstreamUrl, buildAnthropicUpstreamUrlsForAccount } from '../../../gateway/protocols/anthropic-v1/route-helpers.js'
 import { buildGeminiUpstreamUrl, buildGeminiUpstreamUrlsForAccount, isGeminiModelsRequest, isGeminiNativeRequest } from '../../../gateway/protocols/gemini-v1beta/route-helpers.js'
 import { isGatewayProtocolNativeRequest } from '../../../gateway/protocols/registry.js'
@@ -326,7 +330,9 @@ function buildHybridAnthropicUpstreamUrls(account: DispatchAccountSecret, req: R
   }
   const bridgePath = openAIToAnthropicBridgeUpstreamPath(req)
   if (bridgePath && isOpenAIToAnthropicMessagesModelMapping(req, account)) {
-    return [buildAnthropicUpstreamUrl(account.baseUrl, bridgePath)]
+    return [buildAnthropicUpstreamUrl(account.baseUrl, anthropicClaudeCodePathAndQueryForRequest(req, bridgePath, {
+      targetPathAndQuery: bridgePath
+    }))]
   }
   if (isGatewayProtocolNativeRequest(req, GEMINI_PROTOCOL_CODE)) return []
   if (isGatewayProtocolNativeRequest(req, OPENAI_PROTOCOL_CODE) && !isOpenAIToAnthropicMessagesModelMapping(req, account)) return []
@@ -339,6 +345,9 @@ async function buildHybridAnthropicRequestParts(req: Request, account: DispatchA
   headers.set('anthropic-version', headerText(req, 'anthropic-version') ?? '2023-06-01')
   const betaHeader = headerText(req, 'anthropic-beta')
   if (betaHeader) headers.set('anthropic-beta', betaHeader)
+  applyAnthropicClientCompatibilityHeaders(req, headers, {
+    requestClientCompatibility: context?.requestClientCompatibility
+  })
   if (!headers.get('content-type') && req.method !== 'GET' && req.method !== 'HEAD') headers.set('content-type', 'application/json')
   if (!headers.get('accept')) headers.set('accept', requestStream(req) ? 'text/event-stream' : 'application/json')
 
@@ -356,11 +365,18 @@ async function buildHybridAnthropicRequestParts(req: Request, account: DispatchA
   }
   if (isOpenAIToAnthropicBridgeCandidateRequest(req) && isOpenAIToAnthropicMessagesModelMapping(req, account)) {
     prepareOpenAIToAnthropicBridgeHeaders(headers, req)
+    const bridgePath = openAIToAnthropicBridgeUpstreamPath(req)
+    applyAnthropicClientCompatibilityHeaders(req, headers, {
+      requestClientCompatibility: context?.requestClientCompatibility,
+      targetPathAndQuery: bridgePath
+    })
     return {
       headers,
       body: await buildOpenAIToAnthropicBridgeBody(req, {
         guidanceProviderName: '混合供应商',
-        modelOverride: openAIToAnthropicBridgeUpstreamModel(req, account)
+        modelOverride: openAIToAnthropicBridgeUpstreamModel(req, account),
+        requestClientCompatibility: context?.requestClientCompatibility,
+        targetPathAndQuery: bridgePath
       }, signal)
     }
   }

@@ -360,6 +360,13 @@ export async function findSystemAccountByUsernameAsync(username: string): Promis
     })
   }
   const client = await getSystemAccountDatabaseClient()
+  return findSystemAccountByUsernameInClientAsync(client, username)
+}
+
+export async function findSystemAccountByUsernameInClientAsync(
+  client: DatabaseClient,
+  username: string
+): Promise<(SystemAccountSummary & { passwordHash: string }) | undefined> {
   const row = await client.one<SystemAccountRow>(`
     SELECT id, username, display_name, description, role, status, password_hash, must_change_password, image_generation_enabled, last_login_at, created_at, updated_at
     FROM ${systemAccountTable(client, 'system_accounts')}
@@ -436,21 +443,7 @@ export function createSystemAccount(input: {
   return createSystemAccountWithPasswordHash(input, hashPassword(password))
 }
 
-export async function createSystemAccountAsync(input: {
-  username: string
-  displayName: string
-  description?: string | null
-  password: string
-  role?: SystemAccountRole
-  status?: SystemAccountStatus
-  mustChangePassword?: boolean
-  imageGenerationEnabled?: boolean
-}): Promise<SystemAccountSummary> {
-  const passwordHash = await hashPasswordAsync(normalizeSystemAccountPassword(input.password))
-  return createSystemAccountWithPasswordHashAsync(input, passwordHash)
-}
-
-export function createSystemAccountWithPasswordHash(input: {
+export type SystemAccountWithPasswordHashInput = {
   username: string
   displayName: string
   description?: string | null
@@ -459,7 +452,14 @@ export function createSystemAccountWithPasswordHash(input: {
   status?: SystemAccountStatus
   mustChangePassword?: boolean
   imageGenerationEnabled?: boolean
-}, passwordHash: string): SystemAccountSummary {
+}
+
+export async function createSystemAccountAsync(input: SystemAccountWithPasswordHashInput & { password: string }): Promise<SystemAccountSummary> {
+  const passwordHash = await hashPasswordAsync(normalizeSystemAccountPassword(input.password))
+  return createSystemAccountWithPasswordHashAsync(input, passwordHash)
+}
+
+export function createSystemAccountWithPasswordHash(input: SystemAccountWithPasswordHashInput, passwordHash: string): SystemAccountSummary {
   assertKnownInputKeys(input, systemAccountCreateInputKeys, '系统账户')
   if (input.password !== undefined) {
     normalizeSystemAccountPassword(input.password)
@@ -505,16 +505,18 @@ export function createSystemAccountWithPasswordHash(input: {
   return summary
 }
 
-export async function createSystemAccountWithPasswordHashAsync(input: {
-  username: string
-  displayName: string
-  description?: string | null
-  password?: string
-  role?: SystemAccountRole
-  status?: SystemAccountStatus
-  mustChangePassword?: boolean
-  imageGenerationEnabled?: boolean
-}, passwordHash: string): Promise<SystemAccountSummary> {
+export async function createSystemAccountWithPasswordHashAsync(input: SystemAccountWithPasswordHashInput, passwordHash: string): Promise<SystemAccountSummary> {
+  const client = await getSystemAccountDatabaseClient()
+  const summary = await client.transaction(async (tx) => createSystemAccountWithPasswordHashInClientAsync(tx, input, passwordHash))
+  invalidateSystemAccountLookupCache(summary.id)
+  return summary
+}
+
+export async function createSystemAccountWithPasswordHashInClientAsync(
+  client: DatabaseClient,
+  input: SystemAccountWithPasswordHashInput,
+  passwordHash: string
+): Promise<SystemAccountSummary> {
   assertKnownInputKeys(input, systemAccountCreateInputKeys, '系统账户')
   if (input.password !== undefined) {
     normalizeSystemAccountPassword(input.password)
@@ -536,20 +538,16 @@ export async function createSystemAccountWithPasswordHashAsync(input: {
     createdAt: now,
     updatedAt: now
   }
-  const client = await getSystemAccountDatabaseClient()
-  await client.transaction(async (tx) => {
-    await ensureSystemAccountUsernameUniqueAsync(tx, username)
-    await ensureSystemAccountDisplayNameUniqueAsync(tx, displayName)
-    await tx.execute(`
-      INSERT INTO ${systemAccountTable(tx, 'system_accounts')} (
+  await ensureSystemAccountUsernameUniqueAsync(client, username)
+  await ensureSystemAccountDisplayNameUniqueAsync(client, displayName)
+  await client.execute(`
+      INSERT INTO ${systemAccountTable(client, 'system_accounts')} (
         id, username, display_name, description, role, status, password_hash, must_change_password, image_generation_enabled, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [summary.id, summary.username, summary.displayName, summary.description ?? null, summary.role, summary.status, passwordHash, summary.mustChangePassword ? 1 : 0, summary.imageGenerationEnabled ? 1 : 0, now, now])
-    await ensureDefaultBuiltInGroupsForSystemAccountAsync(tx, summary.id, now)
-    await ensureDefaultRouteStrategiesForSystemAccountAsync(tx, summary.id, now)
-    await ensureDefaultApiKeysForSystemAccountAsync(tx, summary.id, now)
-  })
-  invalidateSystemAccountLookupCache(summary.id)
+  await ensureDefaultBuiltInGroupsForSystemAccountAsync(client, summary.id, now)
+  await ensureDefaultRouteStrategiesForSystemAccountAsync(client, summary.id, now)
+  await ensureDefaultApiKeysForSystemAccountAsync(client, summary.id, now)
   return summary
 }
 

@@ -73,7 +73,7 @@ try {
       LIMIT ?
     `,
     ['key_guard', 'sys_admin', 1000],
-    'idx_audit_logs_api_key_created',
+    'idx_audit_logs_system_api_key_created',
     { rejectTempSort: true }
   )
 
