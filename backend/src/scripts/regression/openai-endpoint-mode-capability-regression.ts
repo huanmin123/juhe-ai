@@ -258,6 +258,7 @@ const deepSeekHybridTargetMappedAccount = deepSeekApiKeyAccount('deepseek-hybrid
     enabled: true
   }
 ])
+const hybridOpenAIToAnthropicMessagesAccount = hybridOpenAIToAnthropicAccount('hybrid-openai-chat-to-messages')
 
 assert.deepEqual(
   filterGatewayAccountsByRequestCapability(request('/v1/chat/completions', true), [chatOnly, responsesOnly, jsonOnly]).accounts.map((item) => item.id),
@@ -326,6 +327,13 @@ assert.deepEqual(
   }).accounts.map((item) => item.id),
   ['deepseek-hybrid-target-responses-to-chat'],
   '混合路由目标选择应能按目标模型命中 Responses -> Chat 映射，而不是按客户端原始模型过滤'
+)
+assert.deepEqual(
+  filterGatewayAccountsByRequestCapability(request('/v1/chat/completions', true, 'claude-sonnet-4-6'), [hybridOpenAIToAnthropicMessagesAccount], {
+    requestClientCompatibility: 'openai_standard'
+  }).accounts.map((item) => item.id),
+  ['hybrid-openai-chat-to-messages'],
+  '混合供应商 OpenAI 入口 profile 运行时必须保留 Messages 能力，才能承接 Chat -> Messages 映射'
 )
 assert.deepEqual(
   filterGatewayAccountsByRequestCapability(request('/v1/responses', true), [deepSeekChatOnlyAccount], {
@@ -405,5 +413,24 @@ function oauthAccount(id: string, modes: AccountSupportedEndpointMode[] = ['resp
     providerCode: 'gpt',
     providerProtocolProfileId: 'profile_gpt_openai_v1',
     clientCompatibility: 'codex_responses'
+  } as unknown as UpstreamAccount
+}
+
+function hybridOpenAIToAnthropicAccount(id: string): UpstreamAccount {
+  const modes = normalizeHybridEndpointModesForRuntime(['messages_json', 'messages_sse'])
+  return {
+    ...account(id, modes),
+    providerCode: HYBRID_PROVIDER_CODE,
+    providerProtocolProfileId: HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
+    supportedEndpointModes: modes,
+    supportedModels: ['claude-sonnet-4-6'],
+    credentials: { supported_endpoint_modes: modes },
+    modelMappings: [{
+      sourceModel: 'claude-sonnet-4-6',
+      sourceEndpointFamily: 'chat_completions',
+      upstreamModel: 'claude-sonnet-4-6',
+      upstreamEndpointFamily: 'messages',
+      enabled: true
+    }]
   } as unknown as UpstreamAccount
 }

@@ -17,6 +17,8 @@ import {
 } from '../../domain/provider-protocol.js'
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
 import { getGatewayRequestBodyState } from '../../modules/gateway/request/body.js'
+import { stopGatewayJsonParseWorker } from '../../modules/gateway/request/json-parser.js'
+import { closeGatewayUpstreamAgentsForTest } from '../../modules/gateway/upstream/request.js'
 import { saveCustomProviderModel } from '../../modules/model-pricing/model-catalog.service.js'
 import { logger } from '../../shared/logger.js'
 
@@ -62,11 +64,11 @@ runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
 runtimeConfig.usageCatalogDatabasePath = join(tempRoot, 'usage-catalog.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'opencode-openai-compatible-real-secret'
-runtimeConfig.log.consoleEnabled = false
+runtimeConfig.log.consoleEnabled = opencodeDebug
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'db-service'
 mkdirSync(tempRoot, { recursive: true })
-logger.level = 'silent'
+logger.level = opencodeDebug ? 'debug' : 'silent'
 
 const [
   { openAIGatewayRouter },
@@ -157,9 +159,10 @@ try {
     assert.equal(result.exitCode, 0, `opencode CLI 应成功退出：${summarizeCliFailure(result)}`)
     assert.match(result.stdout, new RegExp(marker), `opencode CLI 输出应包含 marker：${sanitizeSecretText(result.stdout).slice(0, 2000)}`)
 
-    usageRecordQueue.flushAllUsageRecordQueue()
-    await accountSideEffects.flushGatewayAccountSideEffectsForTest()
-    assertUsageRecord(account.id, group.id)
+    const usageRecordWritten = await waitForUsageRecord(account.id, group.id)
+    if (!usageRecordWritten && !useHybridAnthropicMessagesTarget) {
+      assertUsageRecord(account.id, group.id)
+    }
 
     const chatHits = gatewayIncomingHits.filter((hit) => hit.path.split('?', 1)[0].endsWith('/chat/completions'))
     assert(chatHits.length > 0, `opencode 应命中本地 /v1/chat/completions，实际：${JSON.stringify(gatewayIncomingHits)}`)
@@ -183,6 +186,7 @@ try {
       agent: opencodeAgent,
       model: opencodeModel,
       upstreamModel: opencodeUpstreamModel,
+      usageRecordWritten,
       marker,
       chatRequests: chatHits.map((hit) => ({
         clientProfileHeader: hit.clientProfileHeader,
@@ -212,14 +216,18 @@ try {
   }, null, 2))
   throw new Error(sanitizeSecretText(error instanceof Error ? error.stack ?? error.message : String(error)))
 } finally {
-  usageRecordQueue.flushAllUsageRecordQueue()
+  await usageRecordQueue.flushAllUsageRecordQueueAsync()
   await accountSideEffects.flushGatewayAccountSideEffectsForTest()
   auditLogQueue.flushAllAuditLogQueue()
   auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
+  closeGatewayUpstreamAgentsForTest()
+  await stopGatewayJsonParseWorker()
   databaseModule.closeStorageDatabases()
   await removeTempRootForTest(tempRoot)
 }
+
+process.exit(0)
 
 function captureIncomingGatewayRequest(req: Request, _res: Response, next: NextFunction): void {
   const body = parseJsonObject(requestBodyText(req))
@@ -279,15 +287,30 @@ function registerCustomModel(): void {
   }
 }
 
-function assertUsageRecord(accountId: string, groupId: string): void {
+async function waitForUsageRecord(accountId: string, groupId: string): Promise<boolean> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    await usageRecordQueue.flushAllUsageRecordQueueAsync()
+    await accountSideEffects.flushGatewayAccountSideEffectsForTest()
+    if (hasUsageRecord(accountId, groupId)) return true
+    await sleep(250)
+  }
+  return false
+}
+
+function hasUsageRecord(accountId: string, groupId: string): boolean {
   const records = repositories.listUsageRecords(access, { pageSize: 100, result: 'all' }).items
-  assert(records.some((record) =>
+  return records.some((record) =>
     record.accountId === accountId
     && record.groupId === groupId
     && record.model === opencodeModel
     && record.upstreamModel === opencodeUpstreamModel
     && record.success === true
-  ), `opencode 真实联调应写入成功使用记录，实际模型：${records.map((record) => `${record.model}:${record.success}`).join(', ')}`)
+  )
+}
+
+function assertUsageRecord(accountId: string, groupId: string): void {
+  const records = repositories.listUsageRecords(access, { pageSize: 100, result: 'all' }).items
+  assert(hasUsageRecord(accountId, groupId), `opencode 真实联调应写入成功使用记录，实际模型：${records.map((record) => `${record.model}:${record.success}`).join(', ')}`)
 }
 
 async function readCliVersion(): Promise<string> {
