@@ -23,13 +23,13 @@ Anthropic 与 GPT 账户、测试、网关、统计和前端的全链路差异�
 
 - Anthropic 官方 API Key 账户走 `profile_anthropic_anthropic_v1`，本地网关支持 `POST /v1/messages`、`POST /v1/messages/count_tokens` 和本地 `GET /v1/models`。
 - 本地认证支持 `Authorization: Bearer <本地 API Key>` 和 Anthropic SDK 常用的 `x-api-key: <本地 API Key>`；上游认证始终替换为命中账号的 `x-api-key`。
-- `anthropic-version` 默认 `2023-06-01`；客户端显式传入时透传客户端值。普通 Anthropic 请求的 `anthropic-beta` 只透传客户端显式 header，不作为账号配置保存；`claude_code` 客户端画像下会按真实 Claude Code 请求特征补齐缺失的 `anthropic-beta`、`User-Agent` 和 `?beta=true`。
+- `anthropic-version` 默认 `2023-06-01`；客户端显式传入时透传客户端值。普通 Anthropic 请求的 `anthropic-beta` 只透传客户端显式 header，不作为账号配置保存；`claude_code` 客户端画像下会按真实 Claude Code 请求特征补齐缺失的 `anthropic-beta`、`User-Agent`、`x-claude-code-session-id` 和 `?beta=true`。
 - Anthropic 账户模型映射已支持顶层 `model` 改写，`messages`、`system`、`tools`、`thinking`、`stream`、`metadata` 等其他原生字段保持透传。
 - Anthropic 多 API Key 已启用 Key 级故障隔离，单个 Key 失败后只摘除当前 Key；全部 Key 不可用时才跳过账户。
 - Anthropic Messages JSON / SSE 已接入统一响应语义帧，覆盖 `content[].text`、`thinking`、`tool_use` 摘要、`stop_reason`、usage、JSON error object 和 SSE `event: error`。
 - 响应检查策略支持 `protocolCode = anthropic`，策略按协议层 / 供应商层隔离；默认 Anthropic error object 规则只形成响应检查输入，不直接写账号死亡状态。
 - Anthropic native 本地错误已按 Anthropic error shape 返回，认证、端点能力、模型路由、调度失败等本地错误不再暴露 OpenAI error payload。
-- Claude Code 只作为下游客户端画像，支持显式 `x-juhe-client-profile: claude_code` 和官方 CLI 多信号识别；本地画像 header 不透传上游。命中该画像时，原生 Anthropic 请求准备层只补齐 Claude Code 请求头和 `beta=true` 查询参数，不伪造 Claude Code system prompt、工具 schema、thinking body、会话 ID 或 OAuth 字段。显式 OpenAI -> Anthropic Messages bridge 命中 `claude_code` 时，会额外补最小 Claude Code-compatible body envelope，用于兼容会校验 Claude Code body 形态的第三方上游。
+- Claude Code 只作为下游客户端画像，支持显式 `x-juhe-client-profile: claude_code` 和官方 CLI 多信号识别；本地画像 header 不透传上游。命中该画像时，原生 Anthropic 请求准备层只补齐 Claude Code 请求头和 `beta=true` 查询参数，不伪造 Claude Code system prompt、工具 schema、thinking body 或 OAuth 字段。显式 OpenAI -> Anthropic Messages bridge 命中 `claude_code` 时，会额外补最小 Claude Code-compatible body envelope，用于兼容会校验 Claude Code body 形态的第三方上游。
 - 前端账户表单支持 Anthropic API Key、Base URL 和 Messages 端点能力选择；`Anthropic-Version` / `Anthropic-Beta` 不作为账号配置项。
 - Anthropic 模型价格目录已按 `providerCode = anthropic` 接入，当前成本估算覆盖 input、output、cache read、cache write 和 1h cache write，并补充 Claude Code 模型别名与常见 Antigravity 兼容别名。
 - Anthropic 使用记录明细已保存 `usage_semantic=anthropic`、cache write、1h cache 和 thinking tokens；使用记录页和成本明细可展示这些字段。
@@ -143,7 +143,7 @@ type AnthropicAccountType = 'api_key'
 
 - 用真实 Claude / Claude Code OAuth 凭据验证 `POST /v1/messages`、流式 SSE、`/v1/messages/count_tokens` 和 `/v1/models` 是否能通过本项目中转。
 - 验证本地 API Key 作为下游认证时，上游 `Authorization: Bearer <access_token>` 不会被 Anthropic 判定为第三方异常或拒绝。
-- 验证必要 `anthropic-beta`、User-Agent、Claude Code header 是否必须注入；如果必须注入，必须作为 OAuth 账号链路专属 adapter / client profile，不能污染 API Key 路径。
+- 验证 OAuth 账号链路是否还需要额外 Claude Code OAuth 专属 header；API Key 路径只允许在 `claude_code` 客户端画像下补齐已验证的 Claude Code header / query。
 - 验证 access token 刷新、setup token 有效期、账号额度、会话限制、RPM 和风控失败是否能稳定归入现有账户错误处理策略。
 - 验证失败场景不能只靠状态码或错误类型判死账号，仍必须走统一确认、半开、冷却复测和并发归零流程。
 
@@ -196,7 +196,7 @@ Anthropic 接入必须复用项目现有网关流水线，不能新增一套按�
 当前兼容策略收敛为“原生透传 + API Key 上游认证 + 显式本地边界”：
 
 - 官方 Anthropic 直连请求默认 raw passthrough，只做本地认证、路径归一、header 过滤、上游认证替换和 Base URL 拼接。
-- 账户测试由后端生成合法最小 Messages 请求；Anthropic native 真实客户端请求不自动补齐 `max_tokens`、不自动移动 system message。OpenAI Chat / Responses 请求转成 Messages 只允许在显式 bridge 命中时发生。
+- 账户测试由后端生成无工具 Claude Code Messages 健康探针；Anthropic native 真实客户端请求不自动补齐 `max_tokens`、不自动移动 system message。OpenAI Chat / Responses 请求转成 Messages 只允许在显式 bridge 命中时发生。
 - `anthropic-version` 默认值和 `anthropic-beta` 客户端 header 透传属于上游请求准备，不属于失败后的请求改写。
 - OAuth / Setup Token / Claude Code token 账号链路不进入请求准备、调度和返回侧流程；不能在运行时通过状态码或错误类型临时推断并切到 OAuth 行为。Claude Code 下游客户端画像只通过显式本地 header 或官方 CLI 多信号识别，不改变 Anthropic API Key 上游认证。
 - Anthropic 官方 OpenAI SDK compatibility 只作为用户迁移线索。本项目让 OpenAI-compatible 客户端调用 Claude 模型时，必须使用显式 OpenAI -> Anthropic adapter 和响应渲染器，不隐藏在官方直连透传链路里。
@@ -211,16 +211,16 @@ Anthropic API Key 账户按原生 Messages API 透传，不走 OpenAI v1 adapter
 - 模型映射必须复用现有大 body JSON 解析边界，只在 JSON body 顶层 `model` 命中映射时改写；不解析或改写 `messages`、`tools`、`thinking` 等嵌套字段。
 - Anthropic native 客户端应按 Anthropic 格式提交；只有 OpenAI -> Anthropic bridge 命中时，才把 OpenAI `messages[].role = system/developer` 转成 Anthropic 顶层 `system`。
 - `/v1/chat/completions`、`/v1/responses` 不由普通 Anthropic native 账号承接；只有命中混合供应商账户且该账户声明 OpenAI -> Anthropic Messages 转换时才改写为 `/v1/messages`。如果 API Key 绑定的策略路由只进入 Anthropic native 普通分组，应在本地请求能力过滤阶段返回明确不兼容错误，错误码为 `anthropic_native_group_openai_compatible_request`，并提示改用混合供应商账户或 Anthropic `/v1/messages`。
-- OpenAI-compatible 客户端如需通过混合供应商 bridge 调用要求 Claude Code 请求形态的 Anthropic-compatible 上游，应显式发送 `x-juhe-client-profile: claude_code`。opencode 1.1.11 的自定义 provider 需要把该 header 写在 `provider.<id>.options.headers`，顶层 `headers` 不会透传。命中后网关会把上游目标改为 `/v1/messages?beta=true`，改写 Claude Code header，并补 `system` 数组、`metadata.user_id`、`thinking`、`output_config` 的最小 body envelope；为避免第三方上游校验失败，该模式会剥离下游 opencode / OpenAI function tools，不把它们透传成 Anthropic tools。普通 bridge 不默认补这些字段。
-- `max_tokens` 是 Anthropic Messages 必填字段之一。账户测试由后端生成最小请求时必须显式传入；对真实客户端请求，默认让上游返回真实错误，除非后续明确要做本地兼容补齐。
+- OpenAI-compatible 客户端如需通过混合供应商 bridge 调用要求 Claude Code 请求形态的 Anthropic-compatible 上游，应显式发送 `x-juhe-client-profile: claude_code`。opencode 1.1.11 的自定义 provider 需要把该 header 写在 `provider.<id>.options.headers`，顶层 `headers` 不会透传。命中后网关会把上游目标改为 `/v1/messages?beta=true`，改写 Claude Code header，并补 `system` 数组、`metadata.user_id`、`thinking`、`output_config` 的最小 body envelope；该模式保留下游 opencode / OpenAI function tools，工具继续按普通 bridge 转成 Anthropic tools，上游不接受时返回真实上游错误。普通 bridge 不默认补这些字段。
+- `max_tokens` 是 Anthropic Messages 必填字段之一。账户测试的无工具 Claude Code 健康探针会显式传入；对真实客户端请求，默认让上游返回真实错误，除非后续明确要做本地兼容补齐。
 
 请求头：
 
 - API Key 账户上游认证写入 `x-api-key: <Anthropic API Key>`。
 - 上游写入 `anthropic-version`：优先客户端请求头；客户端未传时由 adapter 补当前默认 `2023-06-01`。
-- `anthropic-beta`：普通 Anthropic 请求只保留客户端显式值，多个值按逗号去重合并。系统不从账号凭据追加 beta，不默认追加 `oauth` 或账号级 CLI 模拟相关 beta。`claude_code` 客户端画像下，上游请求准备层会合并 `interleaved-thinking-2025-05-14`、`claude-code-20250219` 与 `effort-2025-11-24`，保留客户端已有 beta 并去重。
+- `anthropic-beta`：普通 Anthropic 请求只保留客户端显式值，多个值按逗号去重合并。系统不从账号凭据追加 beta，不默认追加 `oauth` 或账号级 CLI 模拟相关 beta。`claude_code` 客户端画像下，上游请求准备层会合并 `claude-code-20250219`、`interleaved-thinking-2025-05-14` 与 `effort-2025-11-24`，保留客户端已有 beta 并去重。
 - `?beta=true` 查询参数按请求 URL 原样拼接到上游路径。官方 Claude Code 和 new-api 兼容实现都可能使用该形态；本项目不把它转换成账户状态或失败规则。
-- `x-claude-code-session-id`、`x-claude-code-agent-id` 等官方 CLI 请求头属于客户端请求事实，默认跟随安全 header 过滤规则透传；本项目内部 `x-juhe-client-profile` 仍必须过滤。
+- `x-claude-code-session-id`、`x-claude-code-agent-id` 等官方 CLI 请求头属于客户端请求事实，默认跟随安全 header 过滤规则透传；`claude_code` 画像缺少 `x-claude-code-session-id` 时由网关为本次请求补齐，显式 OpenAI -> Anthropic bridge 的 `metadata.user_id.session_id` 与该 header 保持一致；本项目内部 `x-juhe-client-profile` 仍必须过滤。
 - 继续过滤本地认证头、代理链路头、hop-by-hop 头、Cookie、压缩协商头、内部 tracing 头和会导致上游误判的本地网关头。
 - 不生成 `OpenAI-Organization`、`OpenAI-Project`、`OpenAI-Beta` 或 GPT / Codex 专属 header。
 - `request-id`、`anthropic-organization-id` 等响应头只作为上游响应元数据捕获，不作为请求头注入。
@@ -438,14 +438,21 @@ Anthropic 模型目录必须单独维护在 `anthropic` 供应商下。
 
 Anthropic 账户测试必须复用真实网关链路。
 
-测试请求：
+测试请求使用无工具 Claude Code 健康探针，核心字段如下：
 
 ```json
 {
   "model": "claude-opus-4-8",
-  "max_tokens": 16,
+  "max_tokens": 32000,
+  "system": [
+    { "type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.201.eb7; cc_entrypoint=sdk-cli;" },
+    { "type": "text", "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK." }
+  ],
+  "thinking": { "type": "adaptive" },
+  "output_config": { "effort": "high" },
+  "tools": [],
   "messages": [
-    { "role": "user", "content": "请回复 OK" }
+    { "role": "user", "content": [{ "type": "text", "text": "请回复 OK" }] }
   ]
 }
 ```
@@ -454,7 +461,7 @@ Anthropic 账户测试必须复用真实网关链路。
 
 - 测试路径使用 `/v1/messages`。
 - 默认测试模型优先使用当前用户在供应商模型目录中手动设置的默认测试模型；没有个人偏好时使用供应商 `default_test_model`，并把本地 Anthropic 目录作为可选模型列表。目录落库以官方 Models API 返回值为准。
-- 测试请求必须带 `anthropic-version: 2023-06-01`。
+- 测试请求必须带 `anthropic-version: 2023-06-01`，并通过 `x-juhe-client-profile: claude_code` 触发上游 Claude Code `User-Agent`、`anthropic-beta`、`x-claude-code-session-id` 和 `?beta=true` 补齐。
 - 测试成功后记录 `last_successful_test_model`。
 - 测试失败不直接把正常账户写成 `temporary_unavailable`，仍遵循当前事前确认和冷却复测规则。
 - `pending_test` 账户测试失败继续保持待测试，测试成功才进入正常调度。

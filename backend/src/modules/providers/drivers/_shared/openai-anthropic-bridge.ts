@@ -1,4 +1,3 @@
-import { createHash, randomUUID } from 'node:crypto'
 import { StringDecoder } from 'node:string_decoder'
 import type { Request } from 'express'
 
@@ -37,6 +36,7 @@ import {
 } from '../../../gateway/protocols/openai-v1/model-mapping.js'
 import {
   anthropicClaudeCodeVersion,
+  anthropicClaudeCodeSessionIdForRequest,
   shouldApplyClaudeCodeMessagesCompatibility
 } from '../../../gateway/protocols/anthropic-v1/client-compatibility.js'
 import {
@@ -45,6 +45,8 @@ import {
 } from './openai-hosted-tool-runtime-registry.js'
 
 type JsonRecord = Record<string, unknown>
+const anthropicClaudeCodeBuildId = 'eb7'
+const anthropicClaudeCodeDeviceId = '7cfe24060ed291eb6ea9b7a6edf6947d14da82a0068470a6fc9cf8c147b252dc'
 
 export interface OpenAIToAnthropicBridgeBodyOptions {
   defaultMaxTokens?: number
@@ -541,8 +543,9 @@ function applyOpenAIToAnthropicClaudeCodeBodyCompatibility(
     ...(objectValue(body.output_config) ?? {}),
     effort: 'high'
   }
-  delete body.tools
-  delete body.tool_choice
+  if (body.tools === undefined) {
+    body.tools = []
+  }
   const metadata = objectValue(body.metadata) ?? {}
   body.metadata = {
     ...metadata,
@@ -554,11 +557,16 @@ function claudeCodeCompatibleSystemBlocks(value: unknown): JsonRecord[] {
   const prefixBlocks = [
     {
       type: 'text',
-      text: `x-anthropic-billing-header: cc_version=${anthropicClaudeCodeVersion}.532; cc_entrypoint=sdk-cli;`
+      text: `x-anthropic-billing-header: cc_version=${anthropicClaudeCodeVersion}.${anthropicClaudeCodeBuildId}; cc_entrypoint=sdk-cli;`
     },
     {
       type: 'text',
-      text: "You are Claude Code, Anthropic's official CLI for Claude."
+      text: "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+      cache_control: { type: 'ephemeral' }
+    },
+    {
+      type: 'text',
+      text: `CWD: ${process.cwd()}\nDate: ${new Date().toISOString().slice(0, 10)}`
     }
   ]
   if (Array.isArray(value)) {
@@ -575,11 +583,9 @@ function claudeCodeCompatibleSystemBlocks(value: unknown): JsonRecord[] {
 }
 
 function claudeCodeBridgeMetadataUserId(req: Request): string {
-  const sessionId = stringValue(requestHeader(req, 'x-claude-code-session-id'))
-    ?? stringValue(requestHeader(req, 'x-juhe-request-id'))
-    ?? randomUUID()
+  const sessionId = anthropicClaudeCodeSessionIdForRequest(req)
   return JSON.stringify({
-    device_id: createHash('sha256').update('juhe-ai-claude-code-bridge').digest('hex'),
+    device_id: anthropicClaudeCodeDeviceId,
     account_uuid: '',
     session_id: sessionId
   })

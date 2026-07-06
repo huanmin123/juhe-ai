@@ -36,6 +36,7 @@ interface AnthropicUpstreamHit {
   clientProfileHeader: string
   anthropicVersion: string
   anthropicBeta: string
+  claudeCodeSessionId: string
   bodyText: string
 }
 
@@ -520,7 +521,8 @@ async function assertClaudeCodeClientProfileHeader(baseUrl: string, localApiKey:
     bodyIncludes: 'hello claude code profile',
     rawUrl: '/v1/messages?beta=true',
     userAgent: /^claude-cli\/2\.1\.201 \(external, sdk-cli\)$/,
-    anthropicBeta: 'interleaved-thinking-2025-05-14,claude-code-20250219,effort-2025-11-24'
+    anthropicBeta: 'claude-code-20250219,interleaved-thinking-2025-05-14,effort-2025-11-24',
+    expectsClaudeCodeSession: true
   })
   assert(!upstreamHits[0].bodyText.includes('"tools"'), '合成 Claude Code 画像不应伪造工具 schema')
   assert(!upstreamHits[0].bodyText.includes('"thinking"'), '合成 Claude Code 画像不应伪造 thinking 请求体')
@@ -1463,6 +1465,7 @@ function assertAnthropicUpstreamHit(hit: AnthropicUpstreamHit | undefined, input
   xApiKey?: string
   anthropicBeta?: string
   userAgent?: string | RegExp
+  expectsClaudeCodeSession?: boolean
 }): void {
   assert(hit, '缺少 Anthropic mock 上游命中记录')
   if (input.rawUrl !== undefined) {
@@ -1475,6 +1478,9 @@ function assertAnthropicUpstreamHit(hit: AnthropicUpstreamHit | undefined, input
   assert.equal(hit.clientProfileHeader, '', 'Anthropic 上游不应收到本地客户端画像 header')
   assert.equal(hit.anthropicVersion, '2023-06-01', '缺省 Anthropic-Version 应按官方默认版本补齐')
   assert.equal(hit.anthropicBeta, input.anthropicBeta ?? '', 'Anthropic beta 头应按当前画像边界处理')
+  if (input.expectsClaudeCodeSession) {
+    assert.notEqual(hit.claudeCodeSessionId, '', 'Claude Code 画像请求应补齐上游 session header')
+  }
   if (input.userAgent instanceof RegExp) {
     assert.match(hit.userAgent, input.userAgent, '上游 User-Agent 不符合预期')
   } else if (input.userAgent !== undefined) {
@@ -1517,6 +1523,7 @@ function createAnthropicMockUpstream(): http.Server {
         clientProfileHeader: String(req.headers[gatewayClientProfileHeader] ?? ''),
         anthropicVersion: String(req.headers['anthropic-version'] ?? ''),
         anthropicBeta: String(req.headers['anthropic-beta'] ?? ''),
+        claudeCodeSessionId: String(req.headers['x-claude-code-session-id'] ?? ''),
         bodyText
       })
       if (path === '/v1/messages/count_tokens') {

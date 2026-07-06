@@ -1,6 +1,8 @@
 # SQLite 存储说明
 
-## 为什么用 SQLite
+> 迁移方向更新：本文只描述当前 Node standalone / 旧实现中的 SQLite 存储事实。自 [PLAN-0081 Node 转 Go 渐进减法迁移](../plans/计划-0081-Node转Go渐进减法迁移.md) 起，Go 后端不引入 SQLite driver，不保留 standalone / performance 双模式；长期目标以 [存储目标与 SQLite 移除](../migration/存储目标与SQLite移除.md) 为准。
+
+## 当前 Node 阶段为什么用 SQLite
 
 当前项目只给个人使用，不需要复杂部署、水平扩展或极限并发。SQLite 足够稳定，文件备份也简单，更符合轻量项目定位。
 

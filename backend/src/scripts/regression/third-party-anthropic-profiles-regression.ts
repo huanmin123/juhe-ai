@@ -248,17 +248,26 @@ assert.equal(hybridClaudeCodeBridgeParts.headers.get('authorization'), null, '�
 assert.equal(hybridClaudeCodeBridgeParts.headers.get('user-agent'), 'claude-cli/2.1.201 (external, sdk-cli)', '显式 claude_code 桥接应改写 Claude Code User-Agent')
 assert.equal(
   hybridClaudeCodeBridgeParts.headers.get('anthropic-beta'),
-  'interleaved-thinking-2025-05-14,claude-code-20250219,effort-2025-11-24',
+  'claude-code-20250219,interleaved-thinking-2025-05-14,effort-2025-11-24',
   '显式 claude_code 桥接应补齐 Claude Code beta header'
 )
+assert.equal(typeof hybridClaudeCodeBridgeParts.headers.get('x-claude-code-session-id'), 'string', '显式 claude_code 桥接应补齐 Claude Code session header')
 assert.equal(hybridClaudeCodeBridgeParts.headers.get('accept'), 'text/event-stream', '显式 claude_code Chat SSE 桥接应请求上游 Messages SSE')
 const hybridClaudeCodeBridgeBody = bodyJson(hybridClaudeCodeBridgeParts.body)
 assert.equal(hybridClaudeCodeBridgeBody.model, 'claude-sonnet-4-6', '显式桥接请求体应改写为 Anthropic Messages 上游模型')
 assert.equal(Array.isArray(hybridClaudeCodeBridgeBody.system), true, '显式 claude_code 桥接应把上游 system 调整为 Claude Code 兼容数组')
+assert.match(JSON.stringify(hybridClaudeCodeBridgeBody.system), /Claude Agent SDK/, '显式 claude_code 桥接应使用真实 Claude Code SDK system 文案')
 assert.deepEqual(hybridClaudeCodeBridgeBody.thinking, { type: 'adaptive' }, '显式 claude_code 桥接应补齐 Claude Code thinking body')
 assert.deepEqual(hybridClaudeCodeBridgeBody.output_config, { effort: 'high' }, '显式 claude_code 桥接应补齐 Claude Code output_config')
 assert.equal(typeof (hybridClaudeCodeBridgeBody.metadata as { user_id?: unknown } | undefined)?.user_id, 'string', '显式 claude_code 桥接应补齐 metadata.user_id')
-assert.equal(Array.isArray(hybridClaudeCodeBridgeBody.tools), false, '显式 claude_code 桥接不应额外伪造 Claude Code 工具列表')
+const hybridClaudeCodeBridgeMetadataUserId = JSON.parse(String((hybridClaudeCodeBridgeBody.metadata as { user_id: string }).user_id)) as { session_id?: string }
+assert.equal(
+  hybridClaudeCodeBridgeMetadataUserId.session_id,
+  hybridClaudeCodeBridgeParts.headers.get('x-claude-code-session-id'),
+  '显式 claude_code 桥接的 metadata.user_id.session_id 应与上游 session header 一致'
+)
+assert.equal(Array.isArray(hybridClaudeCodeBridgeBody.tools), true, '显式 claude_code 桥接应保留 OpenAI function tools 到 Anthropic tools 的正常转换')
+assert.equal((hybridClaudeCodeBridgeBody.tools as Array<{ name?: string }>)[0]?.name, 'todowrite', '显式 claude_code 桥接不应丢失 opencode function tool')
 
 const glmParts = await buildGatewayUpstreamRequestParts(glmSseRequest, glmCodingAccount, {
   systemAccountId: 'sys_admin',

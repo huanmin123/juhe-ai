@@ -147,12 +147,12 @@ docs/plans/
 | PLAN-0074 | AI 账户探针调度器与高性能模式 | 已完成 | 2026-07-02 | 后端 / 网关 / AI 账户 / 探针调度器 / Redis runtime state / 高性能模式 / 使用记录 / 审计 / 文档 / 验证 | `docs/plans/计划-0074-AI账户探针调度器与高性能模式.md` |
 | PLAN-0073 | AI 账户后台探针恢复状态机 | 已完成 | 2026-07-01 | 后端 / 网关 / 后台探针 / AI 账户 / 使用记录 / Mock AI / 文档 / 验证 | `docs/plans/计划-0073-AI账户后台探针恢复状态机.md` |
 | PLAN-0072 | 多供应商模型检测扩展 | 已完成 | 2026-06-30 | 前端 / 后端 / 存储 / 网关 / 供应商驱动 / 模型目录 / 模型检测 / 文档 / 验证 | `docs/plans/计划-0072-多供应商模型检测扩展.md` |
-| PLAN-0071 | 存储适配接口收敛 | 进行中 | 2026-06-29 | 后端 / 存储 / DB service / 网关 / 缓存 / Redis / PostgreSQL / SQLite / 队列 / 文档 / 验证 | `docs/plans/计划-0071-存储适配接口收敛.md` |
+| PLAN-0071 | 存储适配接口收敛 | Node 过渡期进行中 / 长期方向被 PLAN-0081 收口 | 2026-06-29 | 后端 / 存储 / DB service / 网关 / 缓存 / Redis / PostgreSQL / SQLite / 队列 / 文档 / 验证 | `docs/plans/计划-0071-存储适配接口收敛.md` |
 | PLAN-0070 | Responses 目标映射收敛 | 已完成 | 2026-06-26 | 后端 / 前端 / 网关 / 模型映射 / 协议桥接 / Mock AI / 文档 / 验证 | `docs/plans/计划-0070-Responses目标映射收敛.md` |
 | PLAN-0069 | 协议桥接框架与 Gemini Native 目标桥接 | 已完成 | 2026-06-26 | 后端 / 前端 / 网关 / 供应商驱动 / 模型映射 / 协议桥接框架 / Gemini native / Mock 回归 / 文档 / 验证 | `docs/plans/计划-0069-协议桥接框架与GeminiNative目标桥接.md` |
 | PLAN-0068 | Gemini Native 转 Anthropic Messages 桥接 | 已完成 | 2026-06-26 | 后端 / 前端 / 网关 / 供应商驱动 / 模型映射 / Gemini native / Anthropic Messages / Mock 回归 / 文档 / 验证 | `docs/plans/计划-0068-GeminiNative转AnthropicMessages桥接.md` |
 | PLAN-0067 | Gemini Native 转 Chat 桥接 | 待真实验证 | 2026-06-25 | 后端 / 前端 / 网关 / 供应商驱动 / 模型映射 / Gemini native / OpenAI Chat bridge / GLM / Mock 回归 / 文档 / 验证 | `docs/plans/计划-0067-GeminiNative转Chat桥接.md` |
-| PLAN-0066 | PostgreSQL 与 Redis 高性能模式 | 进行中 | 2026-06-25 | 后端 / 存储 / DB service / 后台 worker / 网关 / 缓存 / Redis / PostgreSQL / Docker 部署 / 迁移 / 文档 / 验证 | `docs/plans/计划-0066-PostgreSQL与Redis高性能模式.md` |
+| PLAN-0066 | PostgreSQL 与 Redis 高性能模式 | Node 过渡期进行中 / 长期方向被 PLAN-0081 收口 | 2026-06-25 | 后端 / 存储 / DB service / 后台 worker / 网关 / 缓存 / Redis / PostgreSQL / Docker 部署 / 迁移 / 文档 / 验证 | `docs/plans/计划-0066-PostgreSQL与Redis高性能模式.md` |
 | PLAN-0065 | Gemini 原生协议接入 | 已完成 | 2026-06-25 | 前端 / 后端 / 存储 / 网关 / 供应商驱动 / Gemini native / gemini-cli / Mock 回归 / 文档 / 验证 | `docs/plans/计划-0065-Gemini原生协议接入.md` |
 | PLAN-0064 | Anthropic Messages 转 Chat 协议桥接 | 已完成 | 2026-06-25 | 后端 / 前端 / 网关 / 供应商驱动 / 模型映射 / 协议桥接 / Mock 回归 / 文档 / 验证 | `docs/plans/计划-0064-AnthropicMessages转Chat协议桥接.md` |
 | PLAN-0063 | OpenAI 托管工具运行时适配 | 进行中 | 2026-06-24 | 后端 / 网关 / Anthropic bridge / OpenAI hosted tools / code execution / computer use / 文档 / 验证；MCP 固定 guidance，不做服务端 runtime | `docs/plans/计划-0063-OpenAI托管工具运行时适配.md` |

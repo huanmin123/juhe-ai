@@ -5,7 +5,7 @@
 Go 迁移完成后的正式存储目标只有一套：
 
 - PostgreSQL：保存系统账户、会话、供应商、AI 账户、分组、API Key、路由策略、授权、设置、公告、使用记录、审计、日志索引、统计窗口、监控采样、模型检测和所有可恢复事实。
-- Redis：保存短 TTL cache、运行态 state、原子计数、限流窗口、调度临时状态和 Redis Streams 队列。
+- Redis：保存短 TTL cache、运行态 state、原子计数、限流窗口、调度临时状态，以及 Asynq 使用的可靠任务队列数据。
 
 SQLite 不再作为 Go 后端运行模式存在。项目不再维护 standalone SQLite / PostgreSQL performance 两套模式，不再维护 SQLite schema、SQLite adapter、SQLite writer owner、usage shard 文件写入和 SQLite read worker。
 
@@ -57,7 +57,17 @@ SQLite 不再作为 Go 后端运行模式存在。项目不再维护 standalone 
 | queue | 使用记录、审计、操作日志、公开接口日志、运行日志索引、维护清理和后台任务队列 |
 | counter | 限流窗口、短 TTL 失败计数、队列指标和运行时采样辅助计数 |
 
-Redis 数据默认可重建或可过期。需要持久消费的队列必须用 Redis Streams consumer group、ACK、重试、死信和最大长度策略表达，不能用进程内队列冒充已接收事实。
+Redis cache / state 数据默认可重建或可过期。Asynq queue 在任务副作用落入 PostgreSQL 前属于待处理事实，不能按普通 cache 处理。
+
+Redis queue 必须满足：
+
+- 使用独立 `redis-queue` 或等效隔离 DB / namespace，避免被 cache 淘汰策略影响。
+- 生产建议使用 `noeviction` 和 AOF；如果环境不满足，部署文档必须标注可靠性降级。
+- Go 目标默认使用 Asynq，不在业务模块里手写 Redis Streams / list / sorted set 队列。
+- 任务必须定义 task type、payload version、幂等 key、timeout、retry、dead / archived 处理和 trace ID。
+- handler 成功写入 PostgreSQL 或完成业务副作用后才返回成功；失败交给 Asynq 重试或 dead / archived。
+- worker 重启后任务必须可恢复，重复投递必须幂等。
+- 监控 queue depth、in progress、retry、dead / archived、失败率、最老任务年龄和 handler 延迟。
 
 ## 7. 旧 SQLite 数据处理
 
@@ -78,8 +88,8 @@ Redis 数据默认可重建或可过期。需要持久消费的队列必须用 R
 
 - 新库初始化和 seed 成功。
 - PostgreSQL schema、索引、唯一约束、外键或软约束符合当前模型。
-- Redis cache / state / queue 的 TTL、容量、重试和降级策略清晰。
+- PostgreSQL 连接池预算、PgBouncer、事务超时、锁等待、分区查询窗口、前缀检索 collation 和慢查询观测清晰。
+- Redis cache / state / queue 的 TTL、容量、隔离、Asynq retry、dead / archived、任务恢复、幂等和降级策略清晰。
 - Go 代码没有 SQLite driver、SQLite 路径配置、standalone / performance 模式分支。
 - 旧 SQLite 数据导出如果需要，已作为离线步骤记录，不进入运行路径。
 - 部署文档只描述 PostgreSQL + Redis 正式运行方式。
-

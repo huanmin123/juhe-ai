@@ -113,9 +113,9 @@ v1 不强制承接：
 Claude Code-compatible bridge 补齐规则：
 
 - 触发条件是显式 `x-juhe-client-profile: claude_code` 或运行时 `requestClientCompatibility = claude_code`，且转换后的上游目标路径是 `/messages`。
-- 上游 URL 补 `?beta=true`，上游 header 补 Claude Code `User-Agent` 和 `anthropic-beta`。
-- 上游 body 补最小 envelope：`system` 数组前缀、`metadata.user_id`、`thinking: { type: "adaptive" }`、`output_config: { effort: "high" }`。
-- 不覆盖客户端显式 `max_tokens`，不额外伪造 Bash / Edit / Read 等 Claude Code 工具 schema；为避免被 Claude Code-compatible 上游判定为非标准客户端，显式 `claude_code` bridge 会剥离下游 opencode / OpenAI function tools，不把它们透传成 Anthropic tools；不引入 OAuth、CCH signing、TLS 指纹或订阅账号字段。
+- 上游 URL 补 `?beta=true`，上游 header 补 Claude Code `User-Agent`、`anthropic-beta` 和 `x-claude-code-session-id`。
+- 上游 body 补最小 envelope：`system` 数组前缀、`metadata.user_id`、`thinking: { type: "adaptive" }`、`output_config: { effort: "high" }`；`metadata.user_id.session_id` 与上游 `x-claude-code-session-id` 保持一致。
+- 不覆盖客户端显式 `max_tokens`，不额外伪造 Bash / Edit / Read 等 Claude Code 工具 schema；显式 `claude_code` bridge 不为画像兼容静默丢弃 opencode / OpenAI function tools，这些工具继续按普通 bridge 转成 Anthropic tools；如果上游不接受工具字段，按真实上游错误返回；不引入 OAuth、CCH signing、TLS 指纹或订阅账号字段。
 - 未显式声明 `claude_code` 的普通 bridge 保持原始 OpenAI -> Anthropic 转换结果，不注入上述 envelope。
 
 Chat `response_format` 做受控结构化输出适配：

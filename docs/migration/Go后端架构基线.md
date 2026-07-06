@@ -2,16 +2,17 @@
 
 ## 1. 技术基线
 
-- Go 版本：以正式落代码时 `go.dev/dl/` 的最新稳定 Go 版本为准；文档阶段不固定补丁号。
+- 具体依赖选择以 [Go 技术选型与依赖基线](Go技术选型与依赖基线.md) 为准；本文只记录架构边界和运行约束。
+- Go 版本：以正式落代码时 `go.dev/dl/` 的最新稳定 Go 版本为准；当前文档参考 `go1.26.x`，落代码时再固定 `go.mod` 主次版本。
 - HTTP 基础：优先使用标准库 `net/http`，路由层使用轻量 `go-chi/chi/v5`。不引入 Gin、Fiber 这类更重的框架，避免把问题转移到框架约定。
 - JSON：默认使用标准库 `encoding/json`。只有压测证明 JSON 编解码成为瓶颈时，才评估替代库，并先写报告。
 - 日志：使用标准库 `log/slog`，统一结构化字段、trace ID、请求 ID、模块名和错误摘要。
-- 配置：使用项目内 `internal/config` 读取环境变量和 `.env`，不默认引入 Viper 这类重型配置框架。
-- PostgreSQL：使用 `pgx/v5`，通过连接池、事务函数和上下文超时收口。
-- Redis：使用 `redis/go-redis/v9`，区分 cache、state 和 queue 连接配置。
+- 配置：使用 `internal/config` 封装 env 解析，不引入 Viper；配置库只在 config 层出现。
+- PostgreSQL：使用 `pgx/v5`、`pgxpool` 和 `sqlc` 生成查询代码，通过连接池、事务函数和上下文超时收口。
+- Redis：使用 `redis/go-redis/v9` 承接 cache、state 和 counter；可靠任务队列默认使用 Asynq，不手写通用 Redis Streams 队列。
 - SQLite：Go 后端不引入 SQLite driver，不提供 standalone 模式，不维护 SQLite schema、adapter 或测试矩阵。
-- 校验：优先在 DTO 层手写小型校验和中文错误，不默认引入大型 validator。重复校验稳定后再抽通用 helper。
-- 测试：使用 Go 标准 `testing`、`httptest`、`go test ./... -race`、基准测试和必要的 mock upstream；跨服务依赖测试通过 Docker / 本地服务环境明确触发。
+- 校验：使用 DTO 校验库处理字段形状和范围，跨字段业务规则仍写 service 校验，并转换为项目中文错误结构。
+- 测试：使用 Go 标准 `testing`、`httptest`、`go test ./... -race`、基准测试、testcontainers、必要的 mock upstream 和 goroutine 泄漏检查；跨服务依赖测试必须显式触发。
 
 ## 2. 目标目录
 
@@ -53,6 +54,7 @@ backend-go/
       postgres/
       redis/
     jobs/
+      queue/
       ingest/
       stats/
       ops/
@@ -74,6 +76,7 @@ backend-go/
 - `internal/modules/<module>/` 放模块 route、service、DTO 和模块私有测试。
 - `internal/store/port/` 定义业务语义接口；PostgreSQL 和 Redis 只在 adapter / 基础设施层出现。
 - `internal/jobs/` 放后台任务角色，禁止 HTTP route 直接启动长期任务。
+- `internal/jobs/queue/` 封装 Asynq，业务模块只依赖项目 Queue Port，不能 import Asynq 类型。
 - `internal/protocols/` 放协议适配和桥接，不把 OpenAI / Anthropic / Gemini 字段路径写散到 gateway service。
 - `internal/runtime/` 放短 TTL 运行态、并发占用和缓存版本，所有 map 必须有锁或使用并发安全结构。
 
@@ -86,6 +89,18 @@ Go 目标不是复制当前 Node 进程树。
 - maintenance：生产维护脚本以独立命令运行，必须明确 dry run、影响范围和失败行为。
 - DB service：迁移完成后删除。Go 后端直接通过 PostgreSQL 连接池、事务、Redis state/cache/queue 和有界后台队列表达存储边界，不再为 SQLite 单写者保留独立进程。
 
+目标进程拓扑先按独立角色设计，不把所有 worker 长期塞进主 server goroutine：
+
+| 进程 / 命令 | 职责 | 健康检查 | 退出与重启 |
+| --- | --- | --- | --- |
+| `juhe-ai server` | HTTP API、静态资源、公开接口、网关入口、轻量 supervisor 和 readiness | HTTP health、PG/Redis 基础连通、网关运行态只读检查 | 优雅关闭 HTTP、取消请求 context，不吞 worker 失败 |
+| `juhe-ai-worker ingest` | 使用记录、审计、操作日志、公开接口日志、运行日志索引和维护清理消费 | Asynq queue depth、retry / dead 数量、PG 写入延迟、游标推进 | shutdown drain，未完成任务由队列重试或进入 dead / archived 状态 |
+| `juhe-ai-worker stats` | 统计窗口、额度窗口、TopN、趋势、系统监控和表监控 | job state、统计滞后、PG 写入延迟 | 持有租约或单 owner，退出时释放租约 |
+| `juhe-ai-worker ops` | 账号测试、健康检测、代理检测、OAuth token 保活、授权到期扫描 | 任务队列、租约、外部 I/O 并发和错误率 | 取消外部请求，记录未完成任务，等待下轮重试 |
+| `juhe-ai-maintenance` | 离线导出、导入、重建、清理和诊断 | 一次性命令退出码和报告文件 | 必须支持 dry run 或明确影响范围 |
+
+如果后续为了轻量部署把 worker 由 server 看护启动，也只能作为进程生命周期管理方式，不能改变角色边界、租约、连接池预算和队列 ACK 语义。
+
 ## 4. 并发与线程安全
 
 Go 解决的是 Node 单事件循环问题，不代表可以无界并发。
@@ -93,7 +108,11 @@ Go 解决的是 Node 单事件循环问题，不代表可以无界并发。
 - 所有请求入口必须创建或继承 `context.Context`，客户端断开、超时、上游取消和服务关闭时必须向下传递取消信号。
 - 外部请求使用共享 `http.Client` 和自定义 `Transport`，设置连接池、空闲连接、TLS、代理和超时；禁止每次请求新建无界 client。
 - 数据库访问必须受连接池、事务作用域、上下文超时和热点 key 顺序约束。
-- PostgreSQL 写入必须受连接池、事务范围、锁等待、批量窗口和热点 key 顺序约束；Redis 队列必须受 stream 长度、consumer group、重试和死信策略约束。
+- PostgreSQL 通过 PgBouncer / pool budget 隔离 server、gateway hot path、management API、ingest、stats 和 ops；慢管理查询、后台批量写和网关热路径不能共用一个无差别池。
+- PostgreSQL 写入必须受事务范围、`statement_timeout`、`lock_timeout`、`idle_in_transaction_session_timeout`、批量窗口、分区查询窗口、稳定排序和热点 key 顺序约束；连接必须带 `application_name` 便于定位来源。
+- Redis cache、state、queue 必须使用独立 namespace / DB / 实例或明确隔离配置；queue 不和 cache/state 共用淘汰策略。
+- Asynq 可靠任务队列必须配置任务超时、重试、dead / archived 处理、队列深度和最老任务年龄监控；任务 handler 必须幂等。
+- 原始 Redis Streams 只允许作为专项 adapter 例外使用，不能绕过 Asynq 再手写一套通用 queue 框架。
 - 内存 map、LRU、账号并发快照、IP 运行态、会话亲和和短 TTL 状态必须使用 mutex、RWMutex、atomic 或专用并发结构。
 - channel 必须有容量和关闭语义；后台队列必须定义满载时拒绝、合并、丢弃或降级策略。
 - 启动的 goroutine 必须属于 server lifecycle、worker lifecycle 或明确任务 context；禁止无 owner 的后台 goroutine。
@@ -106,6 +125,17 @@ Go 解决的是 Node 单事件循环问题，不代表可以无界并发。
 - 管理列表、日志、审计、使用记录和统计页面不得把全量数据读入内存分页。
 - 统计、额度、趋势、TopN 和摘要继续读取 worker 生成的窗口表、summary 表或缓存，不在 API 请求里实时扫描明细。
 - pprof 和运行时指标作为 Go 后端标配入口，但公网部署必须有访问控制。
+
+Go 运行边界矩阵：
+
+| 入口 | 读取方式 | 边界要求 |
+| --- | --- | --- |
+| 网关 raw body | 有上限读取，必要时分 lane 识别 | 继承当前 `64mb` 入口硬上限和文本 lane `16mb` 业务上限；认证前可拒绝的请求不得先读大 body |
+| 大 JSON 请求 | 有界扫描或流式解析 | 不在请求路径构造无界对象；需要改写时才进入完整解析 |
+| SSE | 增量解析和 flush | 不拼接完整流；处理慢客户端 backpressure、半帧事件、客户端断开和上游 cancel |
+| OAuth token 响应 | 固定字节上限 | 超限主动中断，错误摘要不得包含敏感 token |
+| 审计 payload / 日志文件 | offset / cursor / stream / window | 不完整读入内存分页；只在完整行或完整窗口后推进游标 |
+| 导入导出 / 离线迁移 | 离线批处理 | 明确 dry run、批量窗口、失败续跑和报告位置 |
 
 ## 6. 可删除的 Node 专用复杂度
 
@@ -122,7 +152,7 @@ Go 解决的是 Node 单事件循环问题，不代表可以无界并发。
 不能删除的真实业务约束：
 
 - PostgreSQL 连接池、事务隔离、锁等待、索引和批量写窗口要求。
-- Redis cache / state / queue 的 TTL、容量、consumer group、重试和降级要求。
+- Redis cache / state / queue 的 TTL、容量、任务重试、死信和降级要求。
 - 上游账号并发、代理质量、账号冷却、短 TTL 屏蔽和来源保护。
 - 使用记录、审计、操作日志、运行日志和统计聚合的异步写入边界。
 - 请求体大小、SSE backpressure、客户端断开和上游取消处理。

@@ -1,6 +1,6 @@
 # PostgreSQL 与 Redis 高性能模式设计
 
-> 本文定义 `juhe-ai` 从默认 SQLite + 内存缓存扩展到 PostgreSQL + Redis 高性能模式的长期边界。执行计划见 [PLAN-0066 PostgreSQL 与 Redis 高性能模式](../plans/计划-0066-PostgreSQL与Redis高性能模式.md)。
+> 本文定义当前 Node 过渡阶段从默认 SQLite + 内存缓存扩展到 PostgreSQL + Redis 高性能模式的边界。执行计划见 [PLAN-0066 PostgreSQL 与 Redis 高性能模式](../plans/计划-0066-PostgreSQL与Redis高性能模式.md)。
 > 数据库、缓存、运行态和队列的业务语义适配边界见 [存储适配接口设计](存储适配接口设计.md)。
 > 统计准确性、读写资源隔离、Redis 清理和压测验收的细化规则见 [可靠统计与读写资源隔离设计](可靠统计与读写资源隔离设计.md)。
 

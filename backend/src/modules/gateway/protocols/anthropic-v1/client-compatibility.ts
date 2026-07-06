@@ -1,13 +1,15 @@
+import { randomUUID } from 'node:crypto'
 import type { Request } from 'express'
 
 import type { ClientCompatibilityCapability } from '../../../../domain/types.js'
 
 const gatewayClientProfileHeader = 'x-juhe-client-profile'
+const anthropicClaudeCodeSessionIdProperty = '__juheAnthropicClaudeCodeSessionId'
 export const anthropicClaudeCodeVersion = '2.1.201'
 export const anthropicClaudeCodeUserAgent = `claude-cli/${anthropicClaudeCodeVersion} (external, sdk-cli)`
 export const anthropicClaudeCodeBetaHeaders = [
-  'interleaved-thinking-2025-05-14',
   'claude-code-20250219',
+  'interleaved-thinking-2025-05-14',
   'effort-2025-11-24'
 ] as const
 
@@ -29,6 +31,21 @@ export function applyAnthropicClientCompatibilityHeaders(
     headers.set('user-agent', anthropicClaudeCodeUserAgent)
   }
   headers.set('anthropic-beta', mergeAnthropicBetaHeader(headers.get('anthropic-beta'), anthropicClaudeCodeBetaHeaders))
+  if (!headers.get('x-claude-code-session-id')) {
+    headers.set('x-claude-code-session-id', anthropicClaudeCodeSessionIdForRequest(req))
+  }
+}
+
+export function anthropicClaudeCodeSessionIdForRequest(req: Request): string {
+  const existing = stringValue(requestHeader(req, 'x-claude-code-session-id'))
+    ?? stringValue(requestHeader(req, 'x-client-request-id'))
+    ?? stringValue(requestHeader(req, 'x-request-id'))
+  if (existing) {
+    return existing
+  }
+  const requestWithSession = req as Request & { [anthropicClaudeCodeSessionIdProperty]?: string }
+  requestWithSession[anthropicClaudeCodeSessionIdProperty] ??= randomUUID()
+  return requestWithSession[anthropicClaudeCodeSessionIdProperty]
 }
 
 export function anthropicClaudeCodePathAndQueryForRequest(

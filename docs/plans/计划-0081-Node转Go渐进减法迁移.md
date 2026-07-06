@@ -18,6 +18,8 @@
 
 ## 范围边界
 
+本计划是 Node 后端迁移到 Go + PostgreSQL + Redis 的长期总计划；当前已完成的是 M0 文档与规则基线。下面“当前阶段不包含”只约束本次文档落地，不表示长期计划不追踪后续代码迁移。
+
 ### 本次包含
 
 - [x] 新增 `docs/migration/` 迁移目录。
@@ -29,7 +31,7 @@
 - [x] 规划开发、安装、构建、部署、Docker、服务化和回滚调整。
 - [x] 更新文档入口和计划索引。
 
-### 本次不包含
+### 当前阶段不包含
 
 - 不创建 Go 后端代码：本次先落文档基线。
 - 不删除 Node 后端代码：只有某个模块由 Go 接管并通过验收后，才按减法规则删除。
@@ -41,6 +43,7 @@
 - 迁移目录：`docs/migration/README.md`
 - 迁移总览：`docs/migration/迁移规划总览.md`
 - Go 架构基线：`docs/migration/Go后端架构基线.md`
+- Go 技术选型：`docs/migration/Go技术选型与依赖基线.md`
 - 存储目标：`docs/migration/存储目标与SQLite移除.md`
 - 模块清单：`docs/migration/模块迁移顺序与减法清单.md`
 - 测试策略：`docs/migration/测试与验收策略.md`
@@ -61,14 +64,21 @@
 
 ## 执行拆解
 
+### M0 文档基线
+
 - [x] 更新相关长期文档入口。
 - [x] 新增迁移目录主文档和示例文档。
 - [x] 新增迁移总览、Go 架构基线、模块顺序、测试策略和部署调整。
-- [ ] 建立 Go 后端最小工程骨架。
+- [x] 新增 Go 技术选型与依赖基线，固定框架、日志、配置、DB、SQL、job、测试、观测和安全扫描默认依赖。
+- [x] 明确 PostgreSQL + Redis 单模式和 SQLite 移除边界。
+
+### 后续迁移阶段
+
+- [ ] 建立 Go 后端最小工程和 PostgreSQL / Redis 基线。
 - [ ] 固定公开接口契约并迁移公开接口。
 - [ ] 迁移后台管理只读接口。
 - [ ] 迁移后台管理写接口和权限链路。
-- [ ] 迁移 worker、存储 adapter 和维护脚本。
+- [ ] 迁移 worker、Node storage 删除收尾和维护脚本。
 - [ ] 迁移真实中转网关。
 - [ ] 删除 Node 后端发布链路并更新最终部署文档。
 
@@ -92,6 +102,8 @@
 | --- | --- | --- | --- |
 | 2026-07-06 | 进行中 | AI | 创建 Go 渐进减法迁移规划，先落文档基线，不改业务代码。 |
 | 2026-07-06 | 进行中 | AI | 根据最新决策补充 PostgreSQL + Redis 单模式目标，新增 SQLite 移除范围和旧数据离线处理边界。 |
+| 2026-07-06 | 进行中 | AI | 按 10 个 agent 审阅结果补齐 PG/Redis 基线前置、网关 W9/W10 门禁、测试命令矩阵、部署收尾、旧 SQLite 文档过渡说明和历史计划方向收口。 |
+| 2026-07-06 | 进行中 | AI | 根据长期维护要求补充 Go 技术选型与依赖基线，默认采用 `net/http` + chi、slog、caarlos0/env、godotenv、pgx、sqlc、goose、go-redis、Asynq、Prometheus、testcontainers、golangci-lint 和 govulncheck，并要求 W0 完成依赖 PoC。 |
 
 ## 决策记录
 
@@ -102,23 +114,35 @@
 | 2026-07-06 | 公开接口和后台接口优先，真实网关最后 | 公开/后台接口风险相对低，网关是最核心链路 | 网关迁移必须等待测试、存储和 worker 基线成熟 |
 | 2026-07-06 | Go 架构优先使用标准库和轻量依赖 | 避免从 Node 复杂度迁移到框架复杂度 | 默认 `net/http`、`chi`、`slog`、`pgx`、`go-redis`；不引入 SQLite driver |
 | 2026-07-06 | Go 后端只保留 PostgreSQL + Redis 单模式 | 继续保留 SQLite 会让 schema、repository、测试和部署长期双倍维护 | 不再引入 Go SQLite driver；删除 standalone / performance 模式分支；旧 SQLite 数据只走离线导入 PostgreSQL |
+| 2026-07-06 | Go 通用能力优先采用成熟开源库并封装在基础设施层 | 不能为了方便手写长期维护成本高的框架、队列、SQL 映射、迁移和观测能力，也不能让第三方库类型污染业务层 | 新增依赖必须先更新 `Go技术选型与依赖基线.md`；业务模块不得直接 import chi、pgx、redis、asynq、validator、prometheus 等基础设施库 |
 
-## 验收标准
+## 本阶段验收标准
 
 - [x] `docs/migration/` 有 README 和示例文档。
 - [x] 迁移原则、阶段、减法规则和网关最后策略已经写入文档。
 - [x] Go 技术基线、目录结构、并发、线程安全、内存和大数据边界已经写入文档。
+- [x] Go 框架、日志、配置、DB、SQL、job、测试、观测和安全扫描依赖基线已经写入文档。
 - [x] PostgreSQL + Redis 单模式和 SQLite 移除范围已经写入文档。
 - [x] 测试与验收策略覆盖公开接口、后台接口、worker、存储、网关、性能和删除验证。
 - [x] 开发、构建、部署、Docker、服务化、配置和回滚调整已有规划。
-- [ ] 后续每个代码迁移模块都有独立验证记录和删除证据。
+
+## 后续迁移门禁
+
+- [ ] 每个代码迁移模块都有独立验证记录和删除证据。
+- [ ] Go 工程和 PostgreSQL / Redis 基线完成后，再允许模块进入 `已接管`。
+- [ ] W0 必须完成依赖 PoC，包括 chi、config、slog、pgx、sqlc、goose、go-redis、Asynq、Prometheus、testcontainers、lint 和 govulncheck。
+- [ ] W9 不删除 Node 网关 preflight；W10 整条网关灰度接管后统一删除 Node gateway。
+- [ ] W11 发布收尾完成后，开发、部署、Docker、watchdog 和 env 文档不再把 SQLite / standalone 当正式路径。
 
 ## 验证记录
 
 - 类型检查：不适用，本次只改文档。
 - 构建：不适用，本次只改文档。
-- 文档检查：已执行，命令：`rg "PLAN-0081|Go 渐进减法迁移|Node 转 Go|migration/README" docs`；补充执行 `rg "Go 1\\.26|SQLite driver 评估|modernc\\.org/sqlite|mattn/go-sqlite3|SQLite standalone 模式默认|PostgreSQL / Redis 仅|让 SQLite / PostgreSQL / Redis|standalone SQLite、高性能" docs/migration docs/plans/计划-0081-Node转Go渐进减法迁移.md`，未发现 Go 目标继续保留 SQLite / 双模式的旧表述。
-- 手动验证：已执行，新增文档命名、入口索引和相对链接检查通过；相对链接检查结果为 `All checked markdown links resolve.`。
+- 文档检查：已执行迁移入口检索、相对链接检查和 Go 目标存储方向检查；新增文档命名、入口索引和相对链接检查通过。
+- 链接验证：已执行覆盖本次新增和同步修改文档的 Markdown 相对链接检查，结果为 `All checked markdown links resolve.`。
+- 方向验证：已检查 `docs/migration/`、PLAN-0081、后端架构入口、存储功能文档和历史计划；旧 SQLite / 双模式内容均已标记为当前 Node 过渡事实或历史记录，Go 目标统一为 PostgreSQL + Redis 单模式。
+- 依赖基线验证：已补充 Go 默认依赖、禁用依赖和 W0 PoC 门禁；迁移文档中 Redis Streams 只保留为“不要手写通用队列 / 专项 adapter 例外”的说明，Go 默认队列改为 Asynq。
+- 多 agent 审阅：已按 10 个 agent 的审阅意见补齐关键风险，包括 PG/Redis 基线必须先于模块迁移、W9 不能提前删除 Node 网关准备层、可靠队列重试 / 死信 / 幂等边界、PgBouncer / pool / timeout 边界、W0-W11 验收矩阵和部署发布收尾清单。
 - 未验证项：Go 代码测试、接口契约测试、网关测试均待后续代码迁移阶段执行。
 
 ## 风险与注意事项

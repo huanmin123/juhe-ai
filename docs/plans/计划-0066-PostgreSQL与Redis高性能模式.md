@@ -9,6 +9,8 @@
 - 执行者：AI / 维护者
 - 关联模块：后端 / 存储 / DB service / 后台 worker / 网关 / 缓存 / Redis / PostgreSQL / Docker 部署 / 迁移 / 文档 / 验证
 
+> 方向更新：自 [PLAN-0081 Node 转 Go 渐进减法迁移](计划-0081-Node转Go渐进减法迁移.md) 起，本计划中“默认 standalone + performance 高性能模式”的双模式方向只作为当前 Node 过渡事实和历史执行记录保留。Go 后端长期目标已收敛为 PostgreSQL + Redis 单模式，不再继续按本计划新增 SQLite / PostgreSQL 双模式能力。
+
 ## 需求目标
 
 - 新增双运行模式：默认 `standalone` 使用 SQLite + 内存缓存，高性能 `performance` 使用 PostgreSQL + Redis。
