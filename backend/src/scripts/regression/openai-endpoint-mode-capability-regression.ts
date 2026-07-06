@@ -11,7 +11,9 @@ import {
   DEEPSEEK_OPENAI_V1_PROFILE_ID,
   DEEPSEEK_PROVIDER_CODE,
   GLM_CODING_ANTHROPIC_V1_PROFILE_ID,
-  GLM_CODING_OPENAI_V1_PROFILE_ID
+  GLM_CODING_OPENAI_V1_PROFILE_ID,
+  HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
+  HYBRID_PROVIDER_CODE
 } from '../../domain/provider-protocol.js'
 import {
   defaultAnthropicEndpointModes
@@ -23,6 +25,7 @@ import {
 import type { AccountSummary, AccountSupportedEndpointMode } from '../../domain/types.js'
 import { mergeAccountCredentialsForUpdate } from '../../modules/accounts/account-credential-update.js'
 import { filterGatewayAccountsByRequestCapability } from '../../modules/gateway/dispatch/account-capability-filter.js'
+import { normalizeHybridEndpointModesForRuntime } from '../../modules/providers/drivers/hybrid/account-credentials.js'
 import { normalizeAccountCredentialsForWrite } from '../../storage/repositories.js'
 import type { UpstreamAccount } from '../../modules/gateway/protocols/openai-v1/route-helpers.js'
 
