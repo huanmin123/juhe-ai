@@ -12,6 +12,7 @@ import (
 	"juhe-ai/backend-go/internal/httpapi"
 	"juhe-ai/backend-go/internal/jobs/queue"
 	"juhe-ai/backend-go/internal/modules/managementauth"
+	"juhe-ai/backend-go/internal/modules/managementgroups"
 	"juhe-ai/backend-go/internal/modules/managementprovidermodels"
 	"juhe-ai/backend-go/internal/modules/managementproviders"
 	"juhe-ai/backend-go/internal/modules/managementproxies"
@@ -87,6 +88,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementProviderModelsHandler:         managementHandlers.ProviderModelsHandler,
 		ManagementRouteStrategyOptionsHandler:   managementHandlers.RouteStrategyOptionsHandler,
 		ManagementMyRouteStrategyOptionsHandler: managementHandlers.MyRouteStrategyOptionsHandler,
+		ManagementGroupOptionsHandler:           managementHandlers.GroupOptionsHandler,
+		ManagementMyGroupOptionsHandler:         managementHandlers.MyGroupOptionsHandler,
 	})
 
 	server := &http.Server{
@@ -126,6 +129,8 @@ type managementAPIHandlers struct {
 	ProviderModelsHandler         http.Handler
 	RouteStrategyOptionsHandler   http.Handler
 	MyRouteStrategyOptionsHandler http.Handler
+	GroupOptionsHandler           http.Handler
+	MyGroupOptionsHandler         http.Handler
 }
 
 func newManagementAPIHandler(cfg config.Config, store *postgresstore.Store) managementAPIHandlers {
@@ -137,6 +142,7 @@ func newManagementAPIHandler(cfg config.Config, store *postgresstore.Store) mana
 	providerService := managementproviders.NewService(store)
 	providerModelService := managementprovidermodels.NewService(store)
 	routeStrategyService := managementroutestrategies.NewService(store)
+	groupService := managementgroups.NewService(store)
 	return managementAPIHandlers{
 		AuthMiddleware:                httpapi.NewManagementAPIAuthMiddleware(authenticator),
 		ProxyOptionsHandler:           httpapi.NewManagementProxyOptionsHandler(proxyService),
@@ -145,6 +151,8 @@ func newManagementAPIHandler(cfg config.Config, store *postgresstore.Store) mana
 		ProviderModelsHandler:         httpapi.NewManagementProviderModelsHandler(providerModelService),
 		RouteStrategyOptionsHandler:   httpapi.NewManagementRouteStrategyOptionsHandler(routeStrategyService),
 		MyRouteStrategyOptionsHandler: httpapi.NewManagementMyRouteStrategyOptionsHandler(routeStrategyService),
+		GroupOptionsHandler:           httpapi.NewManagementGroupOptionsHandler(groupService),
+		MyGroupOptionsHandler:         httpapi.NewManagementMyGroupOptionsHandler(groupService),
 	}
 }
 

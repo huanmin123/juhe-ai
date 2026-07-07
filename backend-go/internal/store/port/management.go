@@ -162,3 +162,31 @@ type ManagementRouteStrategyOptionListInput struct {
 type ManagementRouteStrategyOptionReader interface {
 	ListManagementRouteStrategyOptions(ctx context.Context, input ManagementRouteStrategyOptionListInput) ([]ManagementRouteStrategyOption, error)
 }
+
+type ManagementGroupOption struct {
+	ID                     string
+	SystemAccountID        string
+	SystemAccountName      string
+	OwnerSystemAccountID   string
+	OwnerSystemAccountName string
+	Name                   string
+	ProviderCode           string
+	Enabled                bool
+	IsDefault              bool
+	GroupType              string
+	SchedulingPolicy       map[string]any
+}
+
+type ManagementGroupOptionListInput struct {
+	SystemAccountID            string
+	IncludeSystemAccountFields bool
+	IDs                        []string
+	Keyword                    string
+	ProviderCode               string
+	Limit                      int
+	PreferDefault              bool
+}
+
+type ManagementGroupOptionReader interface {
+	ListManagementGroupOptions(ctx context.Context, input ManagementGroupOptionListInput) ([]ManagementGroupOption, error)
+}
