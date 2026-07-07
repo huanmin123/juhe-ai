@@ -7,6 +7,8 @@ package postgresqueries
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const listManagementAuthorizationGranteeAccounts = `-- name: ListManagementAuthorizationGranteeAccounts :many
@@ -70,6 +72,115 @@ func (q *Queries) ListManagementAuthorizationGranteeAccounts(ctx context.Context
 			&i.Username,
 			&i.DisplayName,
 			&i.Status,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listManagementAuthorizationGranteeGroups = `-- name: ListManagementAuthorizationGranteeGroups :many
+WITH active_grantee AS (
+  SELECT id
+  FROM juhe_business.system_accounts
+  WHERE id = $8::text
+    AND status = 'active'
+  LIMIT 1
+)
+SELECT
+  groups.id,
+  groups.system_account_id,
+  system_accounts.display_name AS system_account_name,
+  groups.name,
+  groups.provider_code,
+  groups.enabled,
+  groups.is_default,
+  groups.group_type,
+  groups.scheduling_policy_json
+FROM juhe_business.groups AS groups
+INNER JOIN active_grantee
+  ON active_grantee.id = groups.system_account_id
+LEFT JOIN juhe_business.system_accounts AS system_accounts
+  ON system_accounts.id = groups.system_account_id
+WHERE groups.enabled = true
+  AND (
+    coalesce(array_length($1::text[], 1), 0) = 0
+    OR groups.id = ANY($1::text[])
+  )
+  AND (
+    $2::text = ''
+    OR groups.provider_code = $2::text
+  )
+  AND (
+    $3::boolean = false
+    OR (
+      groups.name COLLATE "C" >= $4::text
+      AND groups.name COLLATE "C" < $5::text
+      AND starts_with(groups.name, $4::text)
+    )
+  )
+ORDER BY
+  CASE WHEN $6::boolean THEN groups.is_default ELSE false END DESC,
+  groups.updated_at DESC,
+  groups.id DESC
+LIMIT $7::int
+`
+
+type ListManagementAuthorizationGranteeGroupsParams struct {
+	Ids                    []string
+	ProviderCode           string
+	HasKeyword             bool
+	Keyword                string
+	KeywordUpper           string
+	PreferDefault          bool
+	RowLimit               int32
+	GranteeSystemAccountID string
+}
+
+type ListManagementAuthorizationGranteeGroupsRow struct {
+	ID                   string
+	SystemAccountID      string
+	SystemAccountName    pgtype.Text
+	Name                 string
+	ProviderCode         string
+	Enabled              bool
+	IsDefault            bool
+	GroupType            string
+	SchedulingPolicyJson pgtype.Text
+}
+
+func (q *Queries) ListManagementAuthorizationGranteeGroups(ctx context.Context, arg ListManagementAuthorizationGranteeGroupsParams) ([]ListManagementAuthorizationGranteeGroupsRow, error) {
+	rows, err := q.db.Query(ctx, listManagementAuthorizationGranteeGroups,
+		arg.Ids,
+		arg.ProviderCode,
+		arg.HasKeyword,
+		arg.Keyword,
+		arg.KeywordUpper,
+		arg.PreferDefault,
+		arg.RowLimit,
+		arg.GranteeSystemAccountID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListManagementAuthorizationGranteeGroupsRow
+	for rows.Next() {
+		var i ListManagementAuthorizationGranteeGroupsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.SystemAccountID,
+			&i.SystemAccountName,
+			&i.Name,
+			&i.ProviderCode,
+			&i.Enabled,
+			&i.IsDefault,
+			&i.GroupType,
+			&i.SchedulingPolicyJson,
 		); err != nil {
 			return nil, err
 		}

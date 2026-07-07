@@ -18,6 +18,10 @@ func (s *Store) ListManagementAuthorizationGranteeAccounts(ctx context.Context, 
 	return listManagementAuthorizationGranteeAccounts(ctx, s.queries(), input)
 }
 
+func (s *Store) ListManagementAuthorizationGranteeGroups(ctx context.Context, input port.ManagementAuthorizationGranteeGroupOptionListInput) ([]port.ManagementAuthorizationGranteeGroupOption, error) {
+	return listManagementAuthorizationGranteeGroups(ctx, s.queries(), input)
+}
+
 func listManagementAuthorizationGranteeAccounts(ctx context.Context, q *postgresqueries.Queries, input port.ManagementAuthorizationPrincipalOptionListInput) ([]port.ManagementAuthorizationGranteeAccountOption, error) {
 	keyword := strings.TrimSpace(input.Keyword)
 	keywordUpper := ""
@@ -44,6 +48,54 @@ func listManagementAuthorizationGranteeAccounts(ctx context.Context, q *postgres
 			DisplayName: row.DisplayName,
 			Status:      row.Status,
 		})
+	}
+	return items, nil
+}
+
+func listManagementAuthorizationGranteeGroups(ctx context.Context, q *postgresqueries.Queries, input port.ManagementAuthorizationGranteeGroupOptionListInput) ([]port.ManagementAuthorizationGranteeGroupOption, error) {
+	keyword := strings.TrimSpace(input.Keyword)
+	keywordUpper := ""
+	if keyword != "" {
+		keywordUpper = textPrefixUpperBound(keyword)
+	}
+	rows, err := q.ListManagementAuthorizationGranteeGroups(ctx, postgresqueries.ListManagementAuthorizationGranteeGroupsParams{
+		GranteeSystemAccountID: strings.TrimSpace(input.GranteeSystemAccountID),
+		Ids:                    uniqueStrings(input.IDs, 50),
+		ProviderCode:           strings.TrimSpace(input.ProviderCode),
+		HasKeyword:             keyword != "",
+		Keyword:                keyword,
+		KeywordUpper:           keywordUpper,
+		PreferDefault:          input.PreferDefault,
+		RowLimit:               int32(managementAuthorizationPrincipalOptionLimit(input.Limit)),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list management authorization grantee groups: %w", err)
+	}
+	items := make([]port.ManagementAuthorizationGranteeGroupOption, 0, len(rows))
+	for _, row := range rows {
+		schedulingPolicy, err := managementGroupSchedulingPolicy(row.ID, row.GroupType, row.SchedulingPolicyJson)
+		if err != nil {
+			return nil, err
+		}
+		item := port.ManagementAuthorizationGranteeGroupOption{
+			ID:                     row.ID,
+			OwnerSystemAccountID:   row.SystemAccountID,
+			OwnerSystemAccountName: textValue(row.SystemAccountName),
+			Name:                   row.Name,
+			ProviderCode:           row.ProviderCode,
+			Enabled:                row.Enabled,
+			IsDefault:              row.IsDefault,
+			GroupType:              managementGroupType(row.GroupType),
+			SchedulingPolicy:       schedulingPolicy,
+			AccessType:             "owner",
+		}
+		if input.IncludeSystemAccountFields {
+			item.SystemAccountID = row.SystemAccountID
+			item.SystemAccountName = textValue(row.SystemAccountName)
+		} else {
+			item.OwnerSystemAccountName = ""
+		}
+		items = append(items, item)
 	}
 	return items, nil
 }

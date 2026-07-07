@@ -68,8 +68,34 @@ type ManagementAuthorizationPrincipalOptionListInput struct {
 	Limit   int
 }
 
+type ManagementAuthorizationGranteeGroupOption struct {
+	ID                     string
+	SystemAccountID        string
+	SystemAccountName      string
+	OwnerSystemAccountID   string
+	OwnerSystemAccountName string
+	Name                   string
+	ProviderCode           string
+	Enabled                bool
+	IsDefault              bool
+	GroupType              string
+	SchedulingPolicy       map[string]any
+	AccessType             string
+}
+
+type ManagementAuthorizationGranteeGroupOptionListInput struct {
+	GranteeSystemAccountID     string
+	IncludeSystemAccountFields bool
+	IDs                        []string
+	Keyword                    string
+	ProviderCode               string
+	Limit                      int
+	PreferDefault              bool
+}
+
 type ManagementAuthorizationOptionReader interface {
 	ListManagementAuthorizationGranteeAccounts(ctx context.Context, input ManagementAuthorizationPrincipalOptionListInput) ([]ManagementAuthorizationGranteeAccountOption, error)
+	ListManagementAuthorizationGranteeGroups(ctx context.Context, input ManagementAuthorizationGranteeGroupOptionListInput) ([]ManagementAuthorizationGranteeGroupOption, error)
 }
 
 type ManagementProviderEndpointFamily struct {

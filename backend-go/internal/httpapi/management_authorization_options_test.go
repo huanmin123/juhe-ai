@@ -112,15 +112,176 @@ func TestManagementAuthorizationGranteeAccountsHandlerRedactsStoreErrors(t *test
 	}
 }
 
+func TestManagementAuthorizationGranteeGroupsHandlerRequiresAdminAndParsesQuery(t *testing.T) {
+	service := &managementAuthorizationOptionServiceStub{
+		granteeGroups: []managementauthorizationoptions.GranteeGroupOption{{
+			ID:                   "grp_default",
+			SystemAccountID:      "sys_user",
+			SystemAccountName:    "用户",
+			OwnerSystemAccountID: "sys_user",
+			Name:                 "默认分组",
+			ProviderCode:         "openai",
+			Enabled:              true,
+			IsDefault:            true,
+			GroupType:            "personal",
+			AccessType:           "owner",
+		}},
+	}
+	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
+	})(newManagementAuthorizationGranteeGroupsHandler(service, managementAuthorizationOptionScopeAdmin))
+
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/authorization-options/grantee-groups?granteeSystemAccountId=%20sys_user%20&ids=grp_default,grp_backup&ids=grp_default&limit=500&keyword=%20%E9%BB%98%E8%AE%A4%20&providerCode=%20openai%20&preferDefault=false", nil)
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if service.groupInput.GranteeSystemAccountID != "sys_user" ||
+		!service.groupInput.IncludeSystemAccountFields ||
+		service.groupInput.Keyword != "默认" ||
+		service.groupInput.ProviderCode != "openai" ||
+		service.groupInput.Limit != 500 ||
+		service.groupInput.PreferDefault {
+		t.Fatalf("service group input = %+v", service.groupInput)
+	}
+	if len(service.groupInput.IDs) != 2 || service.groupInput.IDs[0] != "grp_default" || service.groupInput.IDs[1] != "grp_backup" {
+		t.Fatalf("group ids = %#v", service.groupInput.IDs)
+	}
+	var body struct {
+		Data []managementauthorizationoptions.GranteeGroupOption `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Data) != 1 || body.Data[0].ID != "grp_default" || body.Data[0].SystemAccountID != "sys_user" {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
+func TestManagementAuthorizationGranteeGroupsHandlerRequiresGranteeSystemAccount(t *testing.T) {
+	service := &managementAuthorizationOptionServiceStub{}
+	handler := newManagementAuthorizationGranteeGroupsHandler(service, managementAuthorizationOptionScopeSelf)
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/my-authorization-options/grantee-groups?providerCode=openai", nil)
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{SystemAccountID: "sys_user", Role: "user"}))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if service.groupCalled {
+		t.Fatal("service should not be called without granteeSystemAccountId")
+	}
+	var body map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["message"] != "被授权用户不能为空" {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
+func TestManagementAuthorizationGranteeGroupsHandlerRejectsOrdinaryUserOnAdminRoute(t *testing.T) {
+	service := &managementAuthorizationOptionServiceStub{}
+	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_user", Username: "user", Role: "user", SessionID: "sess_user"},
+	})(newManagementAuthorizationGranteeGroupsHandler(service, managementAuthorizationOptionScopeAdmin))
+
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/authorization-options/grantee-groups", nil)
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+	if service.groupCalled {
+		t.Fatal("service should not be called for ordinary user on admin route")
+	}
+}
+
+func TestManagementMyAuthorizationGranteeGroupsHandlerAllowsOrdinaryUser(t *testing.T) {
+	service := &managementAuthorizationOptionServiceStub{
+		granteeGroups: []managementauthorizationoptions.GranteeGroupOption{{
+			ID:                   "grp_default",
+			OwnerSystemAccountID: "sys_target",
+			Name:                 "默认分组",
+			ProviderCode:         "openai",
+			Enabled:              true,
+			IsDefault:            true,
+			GroupType:            "personal",
+			AccessType:           "owner",
+		}},
+	}
+	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_user", Username: "user", Role: "user", SessionID: "sess_user"},
+	})(newManagementAuthorizationGranteeGroupsHandler(service, managementAuthorizationOptionScopeSelf))
+
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/my-authorization-options/grantee-groups?granteeSystemAccountId=sys_target&providerCode=openai&preferDefault=true&limit=50", nil)
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if !service.groupCalled {
+		t.Fatal("service should be called for ordinary user on my route")
+	}
+	if service.groupInput.GranteeSystemAccountID != "sys_target" || service.groupInput.IncludeSystemAccountFields {
+		t.Fatalf("service group input = %+v", service.groupInput)
+	}
+	var raw map[string][]map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&raw); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(raw["data"]) != 1 {
+		t.Fatalf("body = %+v", raw)
+	}
+	if _, exists := raw["data"][0]["systemAccountId"]; exists {
+		t.Fatalf("my route leaked systemAccountId: %+v", raw["data"][0])
+	}
+	if raw["data"][0]["ownerSystemAccountId"] != "sys_target" {
+		t.Fatalf("my route body = %+v", raw["data"][0])
+	}
+}
+
+func TestManagementAuthorizationGranteeGroupsHandlerRedactsStoreErrors(t *testing.T) {
+	handler := newManagementAuthorizationGranteeGroupsHandler(&managementAuthorizationOptionServiceStub{err: errors.New("postgres password leaked")}, managementAuthorizationOptionScopeSelf)
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/my-authorization-options/grantee-groups?granteeSystemAccountId=sys_user", nil)
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{SystemAccountID: "sys_user", Role: "user"}))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	var body map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["message"] != "服务器内部错误" {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
 func TestRouterRegistersW2ManagementAuthorizationGranteeAccounts(t *testing.T) {
 	service := &managementAuthorizationOptionServiceStub{
 		granteeAccounts: []managementauthorizationoptions.GranteeAccountOption{{ID: "sys_user", Username: "user", DisplayName: "用户", Status: "active"}},
+		granteeGroups:   []managementauthorizationoptions.GranteeGroupOption{{ID: "grp_default", OwnerSystemAccountID: "sys_user", Name: "默认分组", ProviderCode: "openai", Enabled: true, IsDefault: true, GroupType: "personal", AccessType: "owner"}},
 	}
 	router := NewRouter(RouterOptions{
 		Config: config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
 		Logger: slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
 		ManagementAuthorizationGranteeAccountsHandler:   newManagementAuthorizationGranteeAccountsHandler(service, managementAuthorizationOptionScopeAdmin),
 		ManagementMyAuthorizationGranteeAccountsHandler: newManagementAuthorizationGranteeAccountsHandler(service, managementAuthorizationOptionScopeSelf),
+		ManagementAuthorizationGranteeGroupsHandler:     newManagementAuthorizationGranteeGroupsHandler(service, managementAuthorizationOptionScopeAdmin),
+		ManagementMyAuthorizationGranteeGroupsHandler:   newManagementAuthorizationGranteeGroupsHandler(service, managementAuthorizationOptionScopeSelf),
 		ManagementAPIAuthMiddleware: NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
 			context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
 		}),
@@ -129,6 +290,8 @@ func TestRouterRegistersW2ManagementAuthorizationGranteeAccounts(t *testing.T) {
 	for _, path := range []string{
 		"/__aisys__/api/authorization-options/grantee-accounts?limit=50",
 		"/__aisys__/api/my-authorization-options/grantee-accounts?limit=50",
+		"/__aisys__/api/authorization-options/grantee-groups?granteeSystemAccountId=sys_user&limit=50",
+		"/__aisys__/api/my-authorization-options/grantee-groups?granteeSystemAccountId=sys_user&limit=50",
 	} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		req.Header.Set("Cookie", "juhe_ai_session=session-token")
@@ -150,6 +313,8 @@ func TestRouterDoesNotRegisterW2ManagementAuthorizationGranteeAccountsWhenDisabl
 		Logger: slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
 		ManagementAuthorizationGranteeAccountsHandler:   newManagementAuthorizationGranteeAccountsHandler(&managementAuthorizationOptionServiceStub{}, managementAuthorizationOptionScopeAdmin),
 		ManagementMyAuthorizationGranteeAccountsHandler: newManagementAuthorizationGranteeAccountsHandler(&managementAuthorizationOptionServiceStub{}, managementAuthorizationOptionScopeSelf),
+		ManagementAuthorizationGranteeGroupsHandler:     newManagementAuthorizationGranteeGroupsHandler(&managementAuthorizationOptionServiceStub{}, managementAuthorizationOptionScopeAdmin),
+		ManagementMyAuthorizationGranteeGroupsHandler:   newManagementAuthorizationGranteeGroupsHandler(&managementAuthorizationOptionServiceStub{}, managementAuthorizationOptionScopeSelf),
 		ManagementAPIAuthMiddleware: NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
 			context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
 		}),
@@ -158,6 +323,8 @@ func TestRouterDoesNotRegisterW2ManagementAuthorizationGranteeAccountsWhenDisabl
 	for _, path := range []string{
 		"/__aisys__/api/authorization-options/grantee-accounts",
 		"/__aisys__/api/my-authorization-options/grantee-accounts",
+		"/__aisys__/api/authorization-options/grantee-groups?granteeSystemAccountId=sys_user",
+		"/__aisys__/api/my-authorization-options/grantee-groups?granteeSystemAccountId=sys_user",
 	} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		req.Header.Set("Cookie", "juhe_ai_session=session-token")
@@ -172,8 +339,11 @@ func TestRouterDoesNotRegisterW2ManagementAuthorizationGranteeAccountsWhenDisabl
 
 type managementAuthorizationOptionServiceStub struct {
 	called          bool
+	groupCalled     bool
 	input           managementauthorizationoptions.PrincipalOptionListInput
+	groupInput      managementauthorizationoptions.GranteeGroupOptionListInput
 	granteeAccounts []managementauthorizationoptions.GranteeAccountOption
+	granteeGroups   []managementauthorizationoptions.GranteeGroupOption
 	err             error
 }
 
@@ -181,4 +351,10 @@ func (s *managementAuthorizationOptionServiceStub) GranteeAccounts(_ *http.Reque
 	s.called = true
 	s.input = input
 	return s.granteeAccounts, s.err
+}
+
+func (s *managementAuthorizationOptionServiceStub) GranteeGroups(_ *http.Request, input managementauthorizationoptions.GranteeGroupOptionListInput) ([]managementauthorizationoptions.GranteeGroupOption, error) {
+	s.groupCalled = true
+	s.groupInput = input
+	return s.granteeGroups, s.err
 }

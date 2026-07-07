@@ -29,7 +29,7 @@ func TestManagementAuthorizationGranteeAccountsSQLIsLightweight(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read authorization options query: %v", err)
 	}
-	sql := string(source)
+	sql := querySection(t, string(source), "-- name: ListManagementAuthorizationGranteeAccounts :many", "-- name: ListManagementAuthorizationGranteeGroups :many")
 	for _, want := range []string{
 		"SELECT id, username, display_name, status",
 		"FROM juhe_business.system_accounts",
@@ -62,4 +62,67 @@ func TestManagementAuthorizationGranteeAccountsSQLIsLightweight(t *testing.T) {
 			t.Fatalf("authorization grantee accounts query should not contain %q", forbidden)
 		}
 	}
+}
+
+func TestManagementAuthorizationGranteeGroupsSQLIsLightweight(t *testing.T) {
+	source, err := os.ReadFile("queries/w2_management_authorization_options.sql")
+	if err != nil {
+		t.Fatalf("read authorization options query: %v", err)
+	}
+	sql := querySection(t, string(source), "-- name: ListManagementAuthorizationGranteeGroups :many", "")
+	for _, want := range []string{
+		"WITH active_grantee AS",
+		"FROM juhe_business.system_accounts",
+		"AND status = 'active'",
+		"FROM juhe_business.groups AS groups",
+		"INNER JOIN active_grantee",
+		"groups.enabled = true",
+		"groups.id = ANY(sqlc.arg(ids)::text[])",
+		"groups.provider_code = sqlc.arg(provider_code)::text",
+		"groups.name COLLATE \"C\"",
+		"starts_with(groups.name, sqlc.arg(keyword)::text)",
+		"CASE WHEN sqlc.arg(prefer_default)::boolean THEN groups.is_default ELSE false END DESC",
+		"groups.updated_at DESC",
+		"LIMIT sqlc.arg(row_limit)::int",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("authorization grantee groups query missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		"SELECT *",
+		"group_accounts",
+		"account_stats",
+		"usage",
+		"resource_authorizations",
+		"authorization_sources",
+		"group_authorization_settings",
+		"description",
+		"password_hash",
+		"must_change_password",
+		"last_login_at",
+		"LIKE",
+		"ILIKE",
+	} {
+		if strings.Contains(sql, forbidden) {
+			t.Fatalf("authorization grantee groups query should not contain %q", forbidden)
+		}
+	}
+}
+
+func querySection(t *testing.T, source string, startMarker string, endMarker string) string {
+	t.Helper()
+	start := strings.Index(source, startMarker)
+	if start < 0 {
+		t.Fatalf("query marker %q not found", startMarker)
+	}
+	source = source[start:]
+	if endMarker == "" {
+		return source
+	}
+	end := strings.Index(source[len(startMarker):], endMarker)
+	if end < 0 {
+		t.Fatalf("query end marker %q not found", endMarker)
+	}
+	return source[:len(startMarker)+end]
 }

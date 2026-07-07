@@ -26,6 +26,8 @@ type RouterOptions struct {
 	ManagementSystemAccountOptionsHandler           http.Handler
 	ManagementAuthorizationGranteeAccountsHandler   http.Handler
 	ManagementMyAuthorizationGranteeAccountsHandler http.Handler
+	ManagementAuthorizationGranteeGroupsHandler     http.Handler
+	ManagementMyAuthorizationGranteeGroupsHandler   http.Handler
 	ManagementProviderOptionsHandler                http.Handler
 	ManagementProviderModelOptionsHandler           http.Handler
 	ManagementProviderModelsHandler                 http.Handler
@@ -72,6 +74,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementSystemAccountOptionsHandler == nil &&
 				opts.ManagementAuthorizationGranteeAccountsHandler == nil &&
 				opts.ManagementMyAuthorizationGranteeAccountsHandler == nil &&
+				opts.ManagementAuthorizationGranteeGroupsHandler == nil &&
+				opts.ManagementMyAuthorizationGranteeGroupsHandler == nil &&
 				opts.ManagementProviderOptionsHandler == nil &&
 				opts.ManagementProviderModelOptionsHandler == nil &&
 				opts.ManagementProviderModelsHandler == nil &&
@@ -98,6 +102,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementMyAuthorizationGranteeAccountsHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/my-authorization-options/grantee-accounts", opts.ManagementMyAuthorizationGranteeAccountsHandler.ServeHTTP)
+			}
+			if opts.ManagementAuthorizationGranteeGroupsHandler != nil {
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/authorization-options/grantee-groups", opts.ManagementAuthorizationGranteeGroupsHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAuthorizationGranteeGroupsHandler != nil {
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/my-authorization-options/grantee-groups", opts.ManagementMyAuthorizationGranteeGroupsHandler.ServeHTTP)
 			}
 			if opts.ManagementProviderOptionsHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/providers/options", opts.ManagementProviderOptionsHandler.ServeHTTP)
