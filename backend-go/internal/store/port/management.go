@@ -84,3 +84,26 @@ type ManagementProviderOptionListInput struct {
 type ManagementProviderOptionReader interface {
 	ListManagementProviderOptions(ctx context.Context, input ManagementProviderOptionListInput) ([]ManagementProviderOption, error)
 }
+
+type ManagementRouteStrategyOption struct {
+	ID                string
+	SystemAccountID   string
+	SystemAccountName string
+	Name              string
+	Mode              string
+	Status            string
+	IsDefault         bool
+}
+
+type ManagementRouteStrategyOptionListInput struct {
+	SystemAccountID            string
+	IncludeSystemAccountFields bool
+	IDs                        []string
+	Keyword                    string
+	Limit                      int
+	ActiveOnly                 bool
+}
+
+type ManagementRouteStrategyOptionReader interface {
+	ListManagementRouteStrategyOptions(ctx context.Context, input ManagementRouteStrategyOptionListInput) ([]ManagementRouteStrategyOption, error)
+}

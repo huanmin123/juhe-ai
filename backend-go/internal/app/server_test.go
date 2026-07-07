@@ -46,15 +46,23 @@ func TestNewPublicAPIHandlersCoversCatalog(t *testing.T) {
 }
 
 func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
-	middleware, proxyHandler, providerHandler := newManagementAPIHandler(config.Config{}, nil)
-	if middleware != nil || proxyHandler != nil || providerHandler != nil {
+	handlers := newManagementAPIHandler(config.Config{}, nil)
+	if handlers.AuthMiddleware != nil ||
+		handlers.ProxyOptionsHandler != nil ||
+		handlers.ProviderOptionsHandler != nil ||
+		handlers.RouteStrategyOptionsHandler != nil ||
+		handlers.MyRouteStrategyOptionsHandler != nil {
 		t.Fatal("newManagementAPIHandler() returned middleware or handler while disabled")
 	}
 }
 
 func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t *testing.T) {
-	middleware, proxyHandler, providerHandler := newManagementAPIHandler(config.Config{ManagementAPIEnabled: true}, nil)
-	if middleware == nil || proxyHandler == nil || providerHandler == nil {
+	handlers := newManagementAPIHandler(config.Config{ManagementAPIEnabled: true}, nil)
+	if handlers.AuthMiddleware == nil ||
+		handlers.ProxyOptionsHandler == nil ||
+		handlers.ProviderOptionsHandler == nil ||
+		handlers.RouteStrategyOptionsHandler == nil ||
+		handlers.MyRouteStrategyOptionsHandler == nil {
 		t.Fatal("newManagementAPIHandler() returned nil middleware or handler while enabled")
 	}
 }

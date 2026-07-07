@@ -15,15 +15,17 @@ import (
 )
 
 type RouterOptions struct {
-	Config                           config.Config
-	Logger                           *slog.Logger
-	PublicSettingsService            *publicsettings.Service
-	SystemAPIIPRateLimitReader       port.SystemAPIIPRateLimitReader
-	SystemAPIIPReadRateLimiter       SystemAPIIPReadRateLimiter
-	PublicAPIHandler                 http.Handler
-	ManagementAPIAuthMiddleware      func(http.Handler) http.Handler
-	ManagementProxyOptionsHandler    http.Handler
-	ManagementProviderOptionsHandler http.Handler
+	Config                                  config.Config
+	Logger                                  *slog.Logger
+	PublicSettingsService                   *publicsettings.Service
+	SystemAPIIPRateLimitReader              port.SystemAPIIPRateLimitReader
+	SystemAPIIPReadRateLimiter              SystemAPIIPReadRateLimiter
+	PublicAPIHandler                        http.Handler
+	ManagementAPIAuthMiddleware             func(http.Handler) http.Handler
+	ManagementProxyOptionsHandler           http.Handler
+	ManagementProviderOptionsHandler        http.Handler
+	ManagementRouteStrategyOptionsHandler   http.Handler
+	ManagementMyRouteStrategyOptionsHandler http.Handler
 }
 
 func NewRouter(opts RouterOptions) http.Handler {
@@ -53,7 +55,10 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementAPIAuthMiddleware == nil {
 				panic("ManagementAPIAuthMiddleware is required when JUHE_AI_MANAGEMENT_API_ENABLED is true")
 			}
-			if opts.ManagementProxyOptionsHandler == nil && opts.ManagementProviderOptionsHandler == nil {
+			if opts.ManagementProxyOptionsHandler == nil &&
+				opts.ManagementProviderOptionsHandler == nil &&
+				opts.ManagementRouteStrategyOptionsHandler == nil &&
+				opts.ManagementMyRouteStrategyOptionsHandler == nil {
 				panic("at least one management API handler is required when JUHE_AI_MANAGEMENT_API_ENABLED is true")
 			}
 			if opts.ManagementProxyOptionsHandler != nil {
@@ -61,6 +66,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementProviderOptionsHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/providers/options", opts.ManagementProviderOptionsHandler.ServeHTTP)
+			}
+			if opts.ManagementRouteStrategyOptionsHandler != nil {
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/route-strategies/options", opts.ManagementRouteStrategyOptionsHandler.ServeHTTP)
+			}
+			if opts.ManagementMyRouteStrategyOptionsHandler != nil {
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/my-route-strategies/options", opts.ManagementMyRouteStrategyOptionsHandler.ServeHTTP)
 			}
 		}
 	})

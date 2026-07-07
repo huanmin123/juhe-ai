@@ -14,6 +14,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementproviders"
 	"juhe-ai/backend-go/internal/modules/managementproxies"
+	"juhe-ai/backend-go/internal/modules/managementroutestrategies"
 	"juhe-ai/backend-go/internal/modules/publicaccounts"
 	publicapicatalog "juhe-ai/backend-go/internal/modules/publicapi"
 	publicapiauth "juhe-ai/backend-go/internal/modules/publicapi/auth"
@@ -70,17 +71,19 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	}
 
 	publicSettingsService := publicsettings.NewService(store)
-	managementAuthMiddleware, managementProxyOptionsHandler, managementProviderOptionsHandler := newManagementAPIHandler(cfg, store)
+	managementHandlers := newManagementAPIHandler(cfg, store)
 	router := httpapi.NewRouter(httpapi.RouterOptions{
-		Config:                           cfg,
-		Logger:                           logger,
-		PublicSettingsService:            &publicSettingsService,
-		SystemAPIIPRateLimitReader:       store,
-		SystemAPIIPReadRateLimiter:       httpapi.NewRedisSystemAPIIPReadRateLimiter(stateRedis),
-		PublicAPIHandler:                 publicAPIHandler,
-		ManagementAPIAuthMiddleware:      managementAuthMiddleware,
-		ManagementProxyOptionsHandler:    managementProxyOptionsHandler,
-		ManagementProviderOptionsHandler: managementProviderOptionsHandler,
+		Config:                                  cfg,
+		Logger:                                  logger,
+		PublicSettingsService:                   &publicSettingsService,
+		SystemAPIIPRateLimitReader:              store,
+		SystemAPIIPReadRateLimiter:              httpapi.NewRedisSystemAPIIPReadRateLimiter(stateRedis),
+		PublicAPIHandler:                        publicAPIHandler,
+		ManagementAPIAuthMiddleware:             managementHandlers.AuthMiddleware,
+		ManagementProxyOptionsHandler:           managementHandlers.ProxyOptionsHandler,
+		ManagementProviderOptionsHandler:        managementHandlers.ProviderOptionsHandler,
+		ManagementRouteStrategyOptionsHandler:   managementHandlers.RouteStrategyOptionsHandler,
+		ManagementMyRouteStrategyOptionsHandler: managementHandlers.MyRouteStrategyOptionsHandler,
 	})
 
 	server := &http.Server{
@@ -112,16 +115,29 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	}
 }
 
-func newManagementAPIHandler(cfg config.Config, store *postgresstore.Store) (func(http.Handler) http.Handler, http.Handler, http.Handler) {
+type managementAPIHandlers struct {
+	AuthMiddleware                func(http.Handler) http.Handler
+	ProxyOptionsHandler           http.Handler
+	ProviderOptionsHandler        http.Handler
+	RouteStrategyOptionsHandler   http.Handler
+	MyRouteStrategyOptionsHandler http.Handler
+}
+
+func newManagementAPIHandler(cfg config.Config, store *postgresstore.Store) managementAPIHandlers {
 	if !cfg.ManagementAPIEnabled {
-		return nil, nil, nil
+		return managementAPIHandlers{}
 	}
 	authenticator := managementauth.NewAuthenticator(managementauth.AuthenticatorOptions{Store: store})
 	proxyService := managementproxies.NewService(store)
 	providerService := managementproviders.NewService(store)
-	return httpapi.NewManagementAPIAuthMiddleware(authenticator),
-		httpapi.NewManagementProxyOptionsHandler(proxyService),
-		httpapi.NewManagementProviderOptionsHandler(providerService)
+	routeStrategyService := managementroutestrategies.NewService(store)
+	return managementAPIHandlers{
+		AuthMiddleware:                httpapi.NewManagementAPIAuthMiddleware(authenticator),
+		ProxyOptionsHandler:           httpapi.NewManagementProxyOptionsHandler(proxyService),
+		ProviderOptionsHandler:        httpapi.NewManagementProviderOptionsHandler(providerService),
+		RouteStrategyOptionsHandler:   httpapi.NewManagementRouteStrategyOptionsHandler(routeStrategyService),
+		MyRouteStrategyOptionsHandler: httpapi.NewManagementMyRouteStrategyOptionsHandler(routeStrategyService),
+	}
 }
 
 func newPublicAPIHandler(
