@@ -1,0 +1,109 @@
+# Go Backend
+
+> 当前 W0 Go 工程与 PG/Redis/Asynq 常规基线已落地，W1a 公开设置读接口 Go 实现中，W1b `/__aipublic__` 已补 Go 基础设施、public group CRUD、public route strategy CRUD 和 public API Key CRUD 三条真实资源纵切面；未生产接管任何现有 Node 业务接口。
+
+本目录是 `juhe-ai` 后端从 Node.js 迁移到 Go 的新后端工程。迁移规则见 `docs/migration/README.md`。
+
+## 当前范围
+
+- Go module、命令入口、配置读取、结构化日志、HTTP 路由和健康检查。
+- PostgreSQL health、baseline migration、sqlc catalog 查询、事务封装和 store adapter 基线。
+- Redis cache / state client 基线：namespace key、TTL set、pipeline、`IncrWithTTL` 原子计数、fixed-window 原子限流、W1b penalty-window 原子限流和 cache / state / queue Redis DB 去重校验。
+- Asynq queue 基线：Redis URL 解析、`rediss` TLS、显式 Redis timeout、client ping、enqueue、inspector 和 pending smoke。
+- W1a 公开设置读接口：`GET /__aisys__/api/settings/public`，读取 `juhe_business.global_settings`，返回 `{ data: { appName, appIcon } }`，并按 `system_settings` 读取限流配置，按 `JUHE_AI_TRUST_PROXY` 识别客户端 IP，生产 server 路径使用 Redis state 原子 minute / burst IP read rate limit。
+- W1b 外部维护公开接口基础设施：`internal/modules/publicapi` 固定 16 个 `/__aipublic__` method/path/scope、旧公开路径不进入 catalog、内置测试 token 常量；`internal/modules/publicapi/auth` 固定 Bearer 解析、token hash、source/token 状态与过期、scope 交集、auth error 和 `last_used_at` touch 判断；`internal/modules/publicapi/ratelimit` 映射 source/token 维度 penalty-window；`internal/modules/publicapilog` 提供公开接口日志 request / response snapshot、query string 脱敏、32KB 单侧预算、dropped / truncated / empty / complete 状态、499 和错误摘要构造；`internal/jobs/publicapilog` 提供 Asynq payload/enqueue/handler；`internal/jobs/worker` 和 `internal/app/ingest_worker.go` 提供 `juhe-ai-worker ingest` 日志消费 runtime；`internal/httpapi/public_api_shell.go` 提供不挂生产 router 的 W1b HTTP shell / capture 契约测试组合，覆盖 499 客户端提前断开和底层 `ResponseWriter` 可选接口透传；`internal/store/port/publicapi.go` 固定不泄露 pgx/sqlc/Redis 类型的 auth/log store port；`internal/store/postgres/publicapi.go` 提供 PostgreSQL auth/log adapter。
+- W1b public group / public route strategy / public API Key 三条资源纵切面：已提供 handler、service、store port、PostgreSQL sqlc query、integration smoke 和 shell E2E；public API Key 采用 hash-only 存储，完整 key 只在新增响应返回一次，日志快照和 `query_string` 均脱敏。
+- 不接管任何现有 Node 业务接口，不删除 Node 旧实现。
+
+W1a / W1b 仍是 Go 实现中，不是生产接管状态；W1b 目前没有注册 `/__aipublic__` 生产路由，HTTP shell / capture 和三条资源 handler 只在显式构造和测试中使用。AI 账户 4 个 CRUD、完整 16 个资源级全量契约验证、真实 `w1a-public-settings-smoke`、反向代理切流和 Node 删除证据还未完成。
+
+## 当前 Windows 工具链
+
+当前本机已配置：
+
+- Go：`E:\gosdk\go1.26.4`
+- Windows race C 工具链：`E:\tools\w64devkit-2.8.0\w64devkit\bin`
+- Go CLI tools：`C:\Users\Administrator\go\bin`
+
+当前 Codex 线程执行 Go 命令前建议显式设置：
+
+```powershell
+. .\scripts\use-go-env.ps1
+```
+
+该脚本会 fail-fast 校验 `go version` 必须是 `go1.26.4`，`gcc --version` 必须来自 w64devkit `16.1.0`。不要用默认 PATH 下的旧 Go / MinGW 结果记录 W0 / W1 验证。
+
+## 本地验证
+
+从仓库根目录进入 Go 工程：
+
+```powershell
+Set-Location backend-go
+. .\scripts\use-go-env.ps1
+go test ./...
+go test ./... -race
+go test -tags=integration ./...
+go vet ./...
+go build ./...
+golangci-lint run
+govulncheck ./...
+```
+
+启动 Go server 前必须先配置 PostgreSQL 和 Redis state，并显式执行 migration；Go 启动路径不会自动迁移 schema：
+
+```powershell
+$env:JUHE_AI_POSTGRES_URL = 'postgres://juhe_ai:password@127.0.0.1:5432/juhe_ai?sslmode=disable'
+$env:JUHE_AI_REDIS_STATE_URL = 'redis://127.0.0.1:6379/1'
+$env:JUHE_AI_REDIS_NAMESPACE = 'juhe-ai'
+$env:JUHE_AI_TRUST_PROXY = 'false'
+goose -dir db/migrations postgres $env:JUHE_AI_POSTGRES_URL up
+go run ./cmd/juhe-ai server
+```
+
+启动 W1b public API log ingest worker 需要 PostgreSQL 和 Redis queue：
+
+```powershell
+$env:JUHE_AI_POSTGRES_URL = 'postgres://juhe_ai:password@127.0.0.1:5432/juhe_ai?sslmode=disable'
+$env:JUHE_AI_REDIS_QUEUE_URL = 'redis://127.0.0.1:6379/2'
+$env:JUHE_AI_REDIS_NAMESPACE = 'juhe-ai'
+go run ./cmd/juhe-ai-worker ingest
+```
+
+该 worker 目前只消费 `public-api-logs` 队列中的 `public-api-log:write` 任务，并不代表 `/__aipublic__` HTTP 链路已经挂载或切流。
+
+`go test -tags=integration ./...` 需要 Docker / testcontainers 可用；当前本机没有 Docker 时会明确跳过容器子测试。
+记录验证结论时必须区分 `SKIP` 和真实 `PASS`：只有 Docker / testcontainers 健康并实际启动 PostgreSQL / Redis 容器后，才能把 integration 记为真实 PG/Redis 通过。
+
+`go.sum` 中的 `modernc.org/sqlite` 来自 `github.com/pressly/goose/v3` 测试依赖，不属于当前 Go 业务 runtime；业务代码仍以 PostgreSQL + Redis 为唯一目标。
+
+健康检查：
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:3000/__aisys__/health
+Invoke-RestMethod http://127.0.0.1:3000/__aisys__/api/health
+```
+
+真实 PG/Redis/Asynq smoke：
+
+```powershell
+$env:JUHE_AI_POSTGRES_URL = 'postgres://juhe_ai:password@127.0.0.1:5432/juhe_ai?sslmode=disable'
+$env:JUHE_AI_REDIS_CACHE_URL = 'redis://127.0.0.1:6379/0'
+$env:JUHE_AI_REDIS_STATE_URL = 'redis://127.0.0.1:6379/1'
+$env:JUHE_AI_REDIS_QUEUE_URL = 'redis://127.0.0.1:6379/2'
+$env:JUHE_AI_REDIS_NAMESPACE = 'juhe-ai'
+go run ./cmd/juhe-ai-maintenance w0-smoke
+```
+
+未配置上述 URL 时，`w0-smoke` 会直接失败，避免把依赖 `skipped` 误判成真实 smoke 通过。cache / state / queue 必须指向不同 Redis DB 或不同实例；当前本机没有 Docker 时，testcontainers 容器测试会明确跳过。
+
+真实 W1a public settings smoke：
+
+```powershell
+$env:JUHE_AI_POSTGRES_URL = 'postgres://juhe_ai:password@127.0.0.1:5432/juhe_ai?sslmode=disable'
+$env:JUHE_AI_REDIS_STATE_URL = 'redis://127.0.0.1:6379/1'
+$env:JUHE_AI_REDIS_NAMESPACE = 'juhe-ai'
+$env:JUHE_AI_TRUST_PROXY = 'false'
+go run ./cmd/juhe-ai-maintenance w1a-public-settings-smoke
+```
+
+`w1a-public-settings-smoke` 验证 W1a 公开设置读取、当前 migration、`{ data: { appName, appIcon } }` 精确响应、`no-store`、公开字段边界和 Redis state 原子 IP 读限流。该 smoke 通过不代表生产接管；反向代理切流、前端 smoke 和 Node 删除证据仍需单独完成。
