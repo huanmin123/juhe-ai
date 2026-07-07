@@ -58,6 +58,21 @@ func main() {
 			return maintenance.RunW1aPublicSettingsSmoke(ctx, cfg, cmd.OutOrStdout())
 		},
 	})
+	root.AddCommand(&cobra.Command{
+		Use:   "w1b-public-api-smoke",
+		Short: "Run W1b public API opt-in smoke checks",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load(config.LoadOptions{LoadDotEnv: true})
+			if err != nil {
+				return err
+			}
+
+			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+
+			return maintenance.RunW1bPublicAPISmoke(ctx, cfg, cmd.OutOrStdout())
+		},
+	})
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)

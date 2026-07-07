@@ -111,6 +111,40 @@ func newPublicAPIHandler(
 	store *postgresstore.Store,
 	stateRedis *redisplatform.Client,
 ) (http.Handler, *queue.Client, error) {
+	return newPublicAPIHandlerWithOptions(cfg, logger, store, stateRedis, PublicAPIHandlerOptions{})
+}
+
+type PublicAPIHandlerOptions struct {
+	Now      func() time.Time
+	NewLogID func() string
+}
+
+func NewPublicAPIHandler(
+	cfg config.Config,
+	logger *slog.Logger,
+	store *postgresstore.Store,
+	stateRedis *redisplatform.Client,
+) (http.Handler, *queue.Client, error) {
+	return newPublicAPIHandlerWithOptions(cfg, logger, store, stateRedis, PublicAPIHandlerOptions{})
+}
+
+func NewPublicAPIHandlerWithOptions(
+	cfg config.Config,
+	logger *slog.Logger,
+	store *postgresstore.Store,
+	stateRedis *redisplatform.Client,
+	opts PublicAPIHandlerOptions,
+) (http.Handler, *queue.Client, error) {
+	return newPublicAPIHandlerWithOptions(cfg, logger, store, stateRedis, opts)
+}
+
+func newPublicAPIHandlerWithOptions(
+	cfg config.Config,
+	logger *slog.Logger,
+	store *postgresstore.Store,
+	stateRedis *redisplatform.Client,
+	opts PublicAPIHandlerOptions,
+) (http.Handler, *queue.Client, error) {
 	if !cfg.PublicAPIEnabled {
 		return nil, nil, nil
 	}
@@ -144,6 +178,8 @@ func newPublicAPIHandler(
 		RateLimiter:             limiter,
 		LogClient:               logQueue,
 		EndpointHandlers:        handlers,
+		Now:                     opts.Now,
+		NewLogID:                opts.NewLogID,
 		SkipRequestIDMiddleware: true,
 	})
 
