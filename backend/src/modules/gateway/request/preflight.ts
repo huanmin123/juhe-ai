@@ -233,6 +233,23 @@ export async function prepareOpenAIGatewayDispatchContext(
     endpoint,
     requestSnapshot
   })
+  const currentGroupUsageContext = (input: { groupId?: string; groupAccess?: GroupUsageAccessMetadata } = {}): GatewayFailureUsageContext => buildGatewayUsageContext({
+    traceId,
+    clientIp,
+    identity: {
+      systemAccountId,
+      apiKeyId,
+      groupId: input.groupId ?? groupId
+    },
+    trafficSource,
+    groupUsageFields: input.groupAccess
+      ? groupUsageMetadata(input.groupAccess)
+      : runtimeGroupAccess
+        ? groupUsageMetadata(runtimeGroupAccess)
+        : undefined,
+    endpoint,
+    requestSnapshot
+  })
   const clientIpErrorCircuit = await inspectClientIpErrorCircuitAsync({
     systemAccountId,
     apiKeyId,
@@ -244,7 +261,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     req,
     res,
     auditCapture,
-    usageContext: baseUsageContext,
+    usageContext: currentGroupUsageContext(),
     startedAt,
     circuit: clientIpErrorCircuit,
     systemAccountId,
@@ -258,7 +275,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     req,
     res,
     auditCapture,
-    usageContext: baseUsageContext,
+    usageContext: currentGroupUsageContext(),
     startedAt,
     apiKeyUnavailable
   })) {
@@ -270,7 +287,7 @@ export async function prepareOpenAIGatewayDispatchContext(
       req,
       res,
       auditCapture,
-      usageContext: baseUsageContext,
+      usageContext: currentGroupUsageContext(),
       startedAt,
       systemAccountId,
       apiKeyId,
@@ -338,7 +355,7 @@ export async function prepareOpenAIGatewayDispatchContext(
         req,
         res,
         auditCapture,
-        usageContext: { ...baseUsageContext, groupId },
+        usageContext: currentGroupUsageContext({ groupId, groupAccess: runtimeGroupAccess }),
         startedAt,
         circuit: targetClientIpErrorCircuit,
         systemAccountId,
@@ -364,7 +381,7 @@ export async function prepareOpenAIGatewayDispatchContext(
         req,
         res,
         auditCapture,
-        usageContext: baseUsageContext,
+        usageContext: currentGroupUsageContext(),
         startedAt,
         statusCode: normalRoute.statusCode,
         responsePayload,
@@ -414,7 +431,7 @@ export async function prepareOpenAIGatewayDispatchContext(
         req,
         res,
         auditCapture,
-        usageContext: baseUsageContext,
+        usageContext: currentGroupUsageContext(),
         startedAt,
         statusCode,
         responsePayload,
@@ -468,7 +485,7 @@ export async function prepareOpenAIGatewayDispatchContext(
         req,
         res,
         auditCapture,
-        usageContext: { ...baseUsageContext, groupId },
+        usageContext: currentGroupUsageContext({ groupId, groupAccess: runtimeGroupAccess }),
         startedAt,
         circuit: targetClientIpErrorCircuit,
         systemAccountId,
