@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"juhe-ai/backend-go/internal/config"
+	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementproxies"
 )
 
@@ -92,13 +93,16 @@ func TestRouterRegistersW2ManagementProxyOptionsOnlyWithAuthMiddleware(t *testin
 		},
 	}
 	router := NewRouter(RouterOptions{
-		Config:                        config.Config{Host: "127.0.0.1", Port: 3000},
+		Config:                        config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
 		Logger:                        slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
 		ManagementProxyOptionsHandler: newManagementProxyOptionsHandler(service),
-		ManagementAPIAuthMiddleware:   allowManagementAPITestAuth,
+		ManagementAPIAuthMiddleware: NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+			context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
+		}),
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/proxies/options?limit=50", nil)
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
@@ -111,6 +115,58 @@ func TestRouterRegistersW2ManagementProxyOptionsOnlyWithAuthMiddleware(t *testin
 	}
 }
 
+func TestRouterDoesNotRegisterW2ManagementProxyOptionsWhenDisabled(t *testing.T) {
+	router := NewRouter(RouterOptions{
+		Config:                        config.Config{Host: "127.0.0.1", Port: 3000},
+		Logger:                        slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
+		ManagementProxyOptionsHandler: newManagementProxyOptionsHandler(&managementProxyOptionServiceStub{}),
+		ManagementAPIAuthMiddleware: NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+			context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
+		}),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/proxies/options", nil)
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 while JUHE_AI_MANAGEMENT_API_ENABLED=false", rec.Code)
+	}
+}
+
+func TestRouterW2ManagementProxyOptionsRequiresValidSession(t *testing.T) {
+	authenticator := &managementAPIAuthenticatorStub{
+		err: &managementauth.AuthError{StatusCode: http.StatusUnauthorized, Message: "请先登录"},
+	}
+	router := NewRouter(RouterOptions{
+		Config:                        config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
+		Logger:                        slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
+		ManagementProxyOptionsHandler: newManagementProxyOptionsHandler(&managementProxyOptionServiceStub{}),
+		ManagementAPIAuthMiddleware:   NewManagementAPIAuthMiddleware(authenticator),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/proxies/options", nil)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+	var body map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["message"] != "请先登录" {
+		t.Fatalf("body = %+v", body)
+	}
+	if authenticator.cookieHeader != "" {
+		t.Fatalf("cookie header = %q, want empty", authenticator.cookieHeader)
+	}
+}
+
 func TestRouterRequiresW2ManagementAuthMiddleware(t *testing.T) {
 	defer func() {
 		if recovered := recover(); recovered == nil {
@@ -119,15 +175,23 @@ func TestRouterRequiresW2ManagementAuthMiddleware(t *testing.T) {
 	}()
 
 	_ = NewRouter(RouterOptions{
-		Config:                        config.Config{Host: "127.0.0.1", Port: 3000},
+		Config:                        config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
 		Logger:                        slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
 		ManagementProxyOptionsHandler: newManagementProxyOptionsHandler(&managementProxyOptionServiceStub{}),
 	})
 }
 
-func allowManagementAPITestAuth(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(w, r)
+func TestRouterRequiresW2ManagementProxyOptionsHandlerWhenEnabled(t *testing.T) {
+	defer func() {
+		if recovered := recover(); recovered == nil {
+			t.Fatal("NewRouter() did not panic without management proxy options handler")
+		}
+	}()
+
+	_ = NewRouter(RouterOptions{
+		Config:                      config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
+		Logger:                      slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
+		ManagementAPIAuthMiddleware: NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{}),
 	})
 }
 

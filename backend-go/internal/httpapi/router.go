@@ -48,9 +48,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 			publicSettingsHandler := NewPublicSettingsHandler(*opts.PublicSettingsService, opts.Logger)
 			system.Get("/settings/public", publicSettingsHandler.ServeHTTP)
 		}
-		if opts.ManagementProxyOptionsHandler != nil {
+		if opts.Config.ManagementAPIEnabled {
+			if opts.ManagementProxyOptionsHandler == nil {
+				panic("ManagementProxyOptionsHandler is required when JUHE_AI_MANAGEMENT_API_ENABLED is true")
+			}
 			if opts.ManagementAPIAuthMiddleware == nil {
-				panic("ManagementAPIAuthMiddleware is required when management API handlers are registered")
+				panic("ManagementAPIAuthMiddleware is required when JUHE_AI_MANAGEMENT_API_ENABLED is true")
 			}
 			system.With(opts.ManagementAPIAuthMiddleware).Get("/proxies/options", opts.ManagementProxyOptionsHandler.ServeHTTP)
 		}

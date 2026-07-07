@@ -222,3 +222,15 @@ func TestLoadParsesPublicAPIEnv(t *testing.T) {
 		t.Fatalf("Secret = %q, want configured secret", cfg.Secret)
 	}
 }
+
+func TestLoadParsesManagementAPIEnv(t *testing.T) {
+	t.Setenv("JUHE_AI_MANAGEMENT_API_ENABLED", "true")
+
+	cfg, err := Load(LoadOptions{LoadDotEnv: false})
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.ManagementAPIEnabled {
+		t.Fatal("ManagementAPIEnabled = false, want true")
+	}
+}

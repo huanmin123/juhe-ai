@@ -14,21 +14,22 @@ import (
 )
 
 type Config struct {
-	Host             string        `env:"JUHE_AI_HOST" envDefault:"127.0.0.1"`
-	Port             int           `env:"JUHE_AI_PORT" envDefault:"3000"`
-	Env              string        `env:"JUHE_AI_ENV" envDefault:"development"`
-	LogLevel         string        `env:"JUHE_AI_LOG_LEVEL" envDefault:"info"`
-	PostgresURL      string        `env:"JUHE_AI_POSTGRES_URL"`
-	RedisCacheURL    string        `env:"JUHE_AI_REDIS_CACHE_URL"`
-	RedisStateURL    string        `env:"JUHE_AI_REDIS_STATE_URL"`
-	RedisQueueURL    string        `env:"JUHE_AI_REDIS_QUEUE_URL"`
-	RedisNamespace   string        `env:"JUHE_AI_REDIS_NAMESPACE" envDefault:"juhe-ai"`
-	Secret           string        `env:"JUHE_AI_SECRET"`
-	PublicAPIEnabled bool          `env:"JUHE_AI_PUBLIC_API_ENABLED" envDefault:"false"`
-	TrustProxy       string        `env:"JUHE_AI_TRUST_PROXY" envDefault:"false"`
-	MetricsEnabled   bool          `env:"JUHE_AI_METRICS_ENABLED" envDefault:"false"`
-	PprofEnabled     bool          `env:"JUHE_AI_PPROF_ENABLED" envDefault:"false"`
-	ShutdownTimeout  time.Duration `env:"JUHE_AI_SHUTDOWN_TIMEOUT" envDefault:"15s"`
+	Host                 string        `env:"JUHE_AI_HOST" envDefault:"127.0.0.1"`
+	Port                 int           `env:"JUHE_AI_PORT" envDefault:"3000"`
+	Env                  string        `env:"JUHE_AI_ENV" envDefault:"development"`
+	LogLevel             string        `env:"JUHE_AI_LOG_LEVEL" envDefault:"info"`
+	PostgresURL          string        `env:"JUHE_AI_POSTGRES_URL"`
+	RedisCacheURL        string        `env:"JUHE_AI_REDIS_CACHE_URL"`
+	RedisStateURL        string        `env:"JUHE_AI_REDIS_STATE_URL"`
+	RedisQueueURL        string        `env:"JUHE_AI_REDIS_QUEUE_URL"`
+	RedisNamespace       string        `env:"JUHE_AI_REDIS_NAMESPACE" envDefault:"juhe-ai"`
+	Secret               string        `env:"JUHE_AI_SECRET"`
+	PublicAPIEnabled     bool          `env:"JUHE_AI_PUBLIC_API_ENABLED" envDefault:"false"`
+	ManagementAPIEnabled bool          `env:"JUHE_AI_MANAGEMENT_API_ENABLED" envDefault:"false"`
+	TrustProxy           string        `env:"JUHE_AI_TRUST_PROXY" envDefault:"false"`
+	MetricsEnabled       bool          `env:"JUHE_AI_METRICS_ENABLED" envDefault:"false"`
+	PprofEnabled         bool          `env:"JUHE_AI_PPROF_ENABLED" envDefault:"false"`
+	ShutdownTimeout      time.Duration `env:"JUHE_AI_SHUTDOWN_TIMEOUT" envDefault:"15s"`
 }
 
 type TrustProxyConfig struct {

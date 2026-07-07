@@ -44,3 +44,17 @@ func TestNewPublicAPIHandlersCoversCatalog(t *testing.T) {
 		}
 	}
 }
+
+func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
+	middleware, handler := newManagementAPIHandler(config.Config{}, nil)
+	if middleware != nil || handler != nil {
+		t.Fatal("newManagementAPIHandler() returned middleware or handler while disabled")
+	}
+}
+
+func TestNewManagementAPIHandlerEnabledReturnsAuthAndProxyOptionsHandler(t *testing.T) {
+	middleware, handler := newManagementAPIHandler(config.Config{ManagementAPIEnabled: true}, nil)
+	if middleware == nil || handler == nil {
+		t.Fatal("newManagementAPIHandler() returned nil middleware or handler while enabled")
+	}
+}

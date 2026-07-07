@@ -11,6 +11,8 @@ import (
 	"juhe-ai/backend-go/internal/config"
 	"juhe-ai/backend-go/internal/httpapi"
 	"juhe-ai/backend-go/internal/jobs/queue"
+	"juhe-ai/backend-go/internal/modules/managementauth"
+	"juhe-ai/backend-go/internal/modules/managementproxies"
 	"juhe-ai/backend-go/internal/modules/publicaccounts"
 	publicapicatalog "juhe-ai/backend-go/internal/modules/publicapi"
 	publicapiauth "juhe-ai/backend-go/internal/modules/publicapi/auth"
@@ -67,13 +69,16 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	}
 
 	publicSettingsService := publicsettings.NewService(store)
+	managementAuthMiddleware, managementProxyOptionsHandler := newManagementAPIHandler(cfg, store)
 	router := httpapi.NewRouter(httpapi.RouterOptions{
-		Config:                     cfg,
-		Logger:                     logger,
-		PublicSettingsService:      &publicSettingsService,
-		SystemAPIIPRateLimitReader: store,
-		SystemAPIIPReadRateLimiter: httpapi.NewRedisSystemAPIIPReadRateLimiter(stateRedis),
-		PublicAPIHandler:           publicAPIHandler,
+		Config:                        cfg,
+		Logger:                        logger,
+		PublicSettingsService:         &publicSettingsService,
+		SystemAPIIPRateLimitReader:    store,
+		SystemAPIIPReadRateLimiter:    httpapi.NewRedisSystemAPIIPReadRateLimiter(stateRedis),
+		PublicAPIHandler:              publicAPIHandler,
+		ManagementAPIAuthMiddleware:   managementAuthMiddleware,
+		ManagementProxyOptionsHandler: managementProxyOptionsHandler,
 	})
 
 	server := &http.Server{
@@ -103,6 +108,15 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	case err := <-errCh:
 		return err
 	}
+}
+
+func newManagementAPIHandler(cfg config.Config, store *postgresstore.Store) (func(http.Handler) http.Handler, http.Handler) {
+	if !cfg.ManagementAPIEnabled {
+		return nil, nil
+	}
+	authenticator := managementauth.NewAuthenticator(managementauth.AuthenticatorOptions{Store: store})
+	proxyService := managementproxies.NewService(store)
+	return httpapi.NewManagementAPIAuthMiddleware(authenticator), httpapi.NewManagementProxyOptionsHandler(proxyService)
 }
 
 func newPublicAPIHandler(

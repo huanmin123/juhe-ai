@@ -231,6 +231,15 @@ type JuheBusinessSystemAccount struct {
 	UpdatedAt              pgtype.Timestamptz
 }
 
+type JuheBusinessSystemSession struct {
+	ID              string
+	SystemAccountID string
+	TokenHash       string
+	ExpiresAt       pgtype.Timestamptz
+	CreatedAt       pgtype.Timestamptz
+	LastSeenAt      pgtype.Timestamptz
+}
+
 type JuheBusinessSystemSetting struct {
 	SystemAccountID string
 	Key             string
