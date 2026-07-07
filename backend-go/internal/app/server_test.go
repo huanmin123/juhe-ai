@@ -52,6 +52,8 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 		handlers.SystemAccountOptionsHandler != nil ||
 		handlers.AuthorizationGranteeAccountsHandler != nil ||
 		handlers.MyAuthorizationGranteeAccountsHandler != nil ||
+		handlers.AuthorizationGranteeTeamsHandler != nil ||
+		handlers.MyAuthorizationGranteeTeamsHandler != nil ||
 		handlers.AuthorizationGranteeGroupsHandler != nil ||
 		handlers.MyAuthorizationGranteeGroupsHandler != nil ||
 		handlers.ProviderOptionsHandler != nil ||
@@ -78,6 +80,8 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 		handlers.SystemAccountOptionsHandler == nil ||
 		handlers.AuthorizationGranteeAccountsHandler == nil ||
 		handlers.MyAuthorizationGranteeAccountsHandler == nil ||
+		handlers.AuthorizationGranteeTeamsHandler == nil ||
+		handlers.MyAuthorizationGranteeTeamsHandler == nil ||
 		handlers.AuthorizationGranteeGroupsHandler == nil ||
 		handlers.MyAuthorizationGranteeGroupsHandler == nil ||
 		handlers.ProviderOptionsHandler == nil ||

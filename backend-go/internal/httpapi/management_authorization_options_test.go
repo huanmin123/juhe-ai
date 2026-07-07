@@ -112,6 +112,103 @@ func TestManagementAuthorizationGranteeAccountsHandlerRedactsStoreErrors(t *test
 	}
 }
 
+func TestManagementAuthorizationGranteeTeamsHandlerRequiresAdminAndParsesQuery(t *testing.T) {
+	service := &managementAuthorizationOptionServiceStub{
+		granteeTeams: []managementauthorizationoptions.GranteeTeamOption{{
+			ID:     "team_ops",
+			Name:   "运维团队",
+			Status: "active",
+		}},
+	}
+	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
+	})(newManagementAuthorizationGranteeTeamsHandler(service, managementAuthorizationOptionScopeAdmin))
+
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/authorization-options/grantee-teams?ids=team_ops,team_disabled&ids=team_ops&limit=500&keyword=%20%E8%BF%90%E7%BB%B4%20", nil)
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if service.teamInput.Keyword != "运维" || service.teamInput.Limit != 500 {
+		t.Fatalf("service team input = %+v", service.teamInput)
+	}
+	if len(service.teamInput.IDs) != 2 || service.teamInput.IDs[0] != "team_ops" || service.teamInput.IDs[1] != "team_disabled" {
+		t.Fatalf("team ids = %#v", service.teamInput.IDs)
+	}
+	var body struct {
+		Data []managementauthorizationoptions.GranteeTeamOption `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Data) != 1 || body.Data[0].ID != "team_ops" || body.Data[0].Name != "运维团队" || body.Data[0].Status != "active" {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
+func TestManagementAuthorizationGranteeTeamsHandlerRejectsOrdinaryUserOnAdminRoute(t *testing.T) {
+	service := &managementAuthorizationOptionServiceStub{}
+	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_user", Username: "user", Role: "user", SessionID: "sess_user"},
+	})(newManagementAuthorizationGranteeTeamsHandler(service, managementAuthorizationOptionScopeAdmin))
+
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/authorization-options/grantee-teams", nil)
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+	if service.teamCalled {
+		t.Fatal("service should not be called for ordinary user on admin route")
+	}
+}
+
+func TestManagementMyAuthorizationGranteeTeamsHandlerAllowsOrdinaryUser(t *testing.T) {
+	service := &managementAuthorizationOptionServiceStub{
+		granteeTeams: []managementauthorizationoptions.GranteeTeamOption{{ID: "team_ops", Name: "运维团队", Status: "active"}},
+	}
+	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_user", Username: "user", Role: "user", SessionID: "sess_user"},
+	})(newManagementAuthorizationGranteeTeamsHandler(service, managementAuthorizationOptionScopeSelf))
+
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/my-authorization-options/grantee-teams?limit=50", nil)
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if !service.teamCalled {
+		t.Fatal("service should be called for ordinary user on my route")
+	}
+}
+
+func TestManagementAuthorizationGranteeTeamsHandlerRedactsStoreErrors(t *testing.T) {
+	handler := newManagementAuthorizationGranteeTeamsHandler(&managementAuthorizationOptionServiceStub{err: errors.New("postgres password leaked")}, managementAuthorizationOptionScopeSelf)
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/my-authorization-options/grantee-teams", nil)
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{SystemAccountID: "sys_user", Role: "user"}))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	var body map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["message"] != "服务器内部错误" {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
 func TestManagementAuthorizationGranteeGroupsHandlerRequiresAdminAndParsesQuery(t *testing.T) {
 	service := &managementAuthorizationOptionServiceStub{
 		granteeGroups: []managementauthorizationoptions.GranteeGroupOption{{
@@ -273,6 +370,7 @@ func TestManagementAuthorizationGranteeGroupsHandlerRedactsStoreErrors(t *testin
 func TestRouterRegistersW2ManagementAuthorizationGranteeAccounts(t *testing.T) {
 	service := &managementAuthorizationOptionServiceStub{
 		granteeAccounts: []managementauthorizationoptions.GranteeAccountOption{{ID: "sys_user", Username: "user", DisplayName: "用户", Status: "active"}},
+		granteeTeams:    []managementauthorizationoptions.GranteeTeamOption{{ID: "team_ops", Name: "运维团队", Status: "active"}},
 		granteeGroups:   []managementauthorizationoptions.GranteeGroupOption{{ID: "grp_default", OwnerSystemAccountID: "sys_user", Name: "默认分组", ProviderCode: "openai", Enabled: true, IsDefault: true, GroupType: "personal", AccessType: "owner"}},
 	}
 	router := NewRouter(RouterOptions{
@@ -280,6 +378,8 @@ func TestRouterRegistersW2ManagementAuthorizationGranteeAccounts(t *testing.T) {
 		Logger: slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
 		ManagementAuthorizationGranteeAccountsHandler:   newManagementAuthorizationGranteeAccountsHandler(service, managementAuthorizationOptionScopeAdmin),
 		ManagementMyAuthorizationGranteeAccountsHandler: newManagementAuthorizationGranteeAccountsHandler(service, managementAuthorizationOptionScopeSelf),
+		ManagementAuthorizationGranteeTeamsHandler:      newManagementAuthorizationGranteeTeamsHandler(service, managementAuthorizationOptionScopeAdmin),
+		ManagementMyAuthorizationGranteeTeamsHandler:    newManagementAuthorizationGranteeTeamsHandler(service, managementAuthorizationOptionScopeSelf),
 		ManagementAuthorizationGranteeGroupsHandler:     newManagementAuthorizationGranteeGroupsHandler(service, managementAuthorizationOptionScopeAdmin),
 		ManagementMyAuthorizationGranteeGroupsHandler:   newManagementAuthorizationGranteeGroupsHandler(service, managementAuthorizationOptionScopeSelf),
 		ManagementAPIAuthMiddleware: NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
@@ -290,6 +390,8 @@ func TestRouterRegistersW2ManagementAuthorizationGranteeAccounts(t *testing.T) {
 	for _, path := range []string{
 		"/__aisys__/api/authorization-options/grantee-accounts?limit=50",
 		"/__aisys__/api/my-authorization-options/grantee-accounts?limit=50",
+		"/__aisys__/api/authorization-options/grantee-teams?limit=50",
+		"/__aisys__/api/my-authorization-options/grantee-teams?limit=50",
 		"/__aisys__/api/authorization-options/grantee-groups?granteeSystemAccountId=sys_user&limit=50",
 		"/__aisys__/api/my-authorization-options/grantee-groups?granteeSystemAccountId=sys_user&limit=50",
 	} {
@@ -313,6 +415,8 @@ func TestRouterDoesNotRegisterW2ManagementAuthorizationGranteeAccountsWhenDisabl
 		Logger: slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
 		ManagementAuthorizationGranteeAccountsHandler:   newManagementAuthorizationGranteeAccountsHandler(&managementAuthorizationOptionServiceStub{}, managementAuthorizationOptionScopeAdmin),
 		ManagementMyAuthorizationGranteeAccountsHandler: newManagementAuthorizationGranteeAccountsHandler(&managementAuthorizationOptionServiceStub{}, managementAuthorizationOptionScopeSelf),
+		ManagementAuthorizationGranteeTeamsHandler:      newManagementAuthorizationGranteeTeamsHandler(&managementAuthorizationOptionServiceStub{}, managementAuthorizationOptionScopeAdmin),
+		ManagementMyAuthorizationGranteeTeamsHandler:    newManagementAuthorizationGranteeTeamsHandler(&managementAuthorizationOptionServiceStub{}, managementAuthorizationOptionScopeSelf),
 		ManagementAuthorizationGranteeGroupsHandler:     newManagementAuthorizationGranteeGroupsHandler(&managementAuthorizationOptionServiceStub{}, managementAuthorizationOptionScopeAdmin),
 		ManagementMyAuthorizationGranteeGroupsHandler:   newManagementAuthorizationGranteeGroupsHandler(&managementAuthorizationOptionServiceStub{}, managementAuthorizationOptionScopeSelf),
 		ManagementAPIAuthMiddleware: NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
@@ -323,6 +427,8 @@ func TestRouterDoesNotRegisterW2ManagementAuthorizationGranteeAccountsWhenDisabl
 	for _, path := range []string{
 		"/__aisys__/api/authorization-options/grantee-accounts",
 		"/__aisys__/api/my-authorization-options/grantee-accounts",
+		"/__aisys__/api/authorization-options/grantee-teams",
+		"/__aisys__/api/my-authorization-options/grantee-teams",
 		"/__aisys__/api/authorization-options/grantee-groups?granteeSystemAccountId=sys_user",
 		"/__aisys__/api/my-authorization-options/grantee-groups?granteeSystemAccountId=sys_user",
 	} {
@@ -339,10 +445,13 @@ func TestRouterDoesNotRegisterW2ManagementAuthorizationGranteeAccountsWhenDisabl
 
 type managementAuthorizationOptionServiceStub struct {
 	called          bool
+	teamCalled      bool
 	groupCalled     bool
 	input           managementauthorizationoptions.PrincipalOptionListInput
+	teamInput       managementauthorizationoptions.PrincipalOptionListInput
 	groupInput      managementauthorizationoptions.GranteeGroupOptionListInput
 	granteeAccounts []managementauthorizationoptions.GranteeAccountOption
+	granteeTeams    []managementauthorizationoptions.GranteeTeamOption
 	granteeGroups   []managementauthorizationoptions.GranteeGroupOption
 	err             error
 }
@@ -351,6 +460,12 @@ func (s *managementAuthorizationOptionServiceStub) GranteeAccounts(_ *http.Reque
 	s.called = true
 	s.input = input
 	return s.granteeAccounts, s.err
+}
+
+func (s *managementAuthorizationOptionServiceStub) GranteeTeams(_ *http.Request, input managementauthorizationoptions.PrincipalOptionListInput) ([]managementauthorizationoptions.GranteeTeamOption, error) {
+	s.teamCalled = true
+	s.teamInput = input
+	return s.granteeTeams, s.err
 }
 
 func (s *managementAuthorizationOptionServiceStub) GranteeGroups(_ *http.Request, input managementauthorizationoptions.GranteeGroupOptionListInput) ([]managementauthorizationoptions.GranteeGroupOption, error) {

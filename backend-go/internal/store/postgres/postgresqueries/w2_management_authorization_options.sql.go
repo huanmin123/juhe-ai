@@ -191,3 +191,64 @@ func (q *Queries) ListManagementAuthorizationGranteeGroups(ctx context.Context, 
 	}
 	return items, nil
 }
+
+const listManagementAuthorizationGranteeTeams = `-- name: ListManagementAuthorizationGranteeTeams :many
+SELECT id, name, status
+FROM juhe_business.system_teams
+WHERE (
+    $1::boolean = false
+    OR id = ANY($2::text[])
+  )
+  AND (
+    $3::boolean = false
+    OR (
+      name COLLATE "C" >= $4::text
+      AND name COLLATE "C" < $5::text
+      AND starts_with(name, $4::text)
+    )
+  )
+ORDER BY status ASC, name ASC, id ASC
+LIMIT $6::int
+`
+
+type ListManagementAuthorizationGranteeTeamsParams struct {
+	HasIds       bool
+	Ids          []string
+	HasKeyword   bool
+	Keyword      string
+	KeywordUpper string
+	RowLimit     int32
+}
+
+type ListManagementAuthorizationGranteeTeamsRow struct {
+	ID     string
+	Name   string
+	Status string
+}
+
+func (q *Queries) ListManagementAuthorizationGranteeTeams(ctx context.Context, arg ListManagementAuthorizationGranteeTeamsParams) ([]ListManagementAuthorizationGranteeTeamsRow, error) {
+	rows, err := q.db.Query(ctx, listManagementAuthorizationGranteeTeams,
+		arg.HasIds,
+		arg.Ids,
+		arg.HasKeyword,
+		arg.Keyword,
+		arg.KeywordUpper,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListManagementAuthorizationGranteeTeamsRow
+	for rows.Next() {
+		var i ListManagementAuthorizationGranteeTeamsRow
+		if err := rows.Scan(&i.ID, &i.Name, &i.Status); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

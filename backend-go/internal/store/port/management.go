@@ -62,6 +62,12 @@ type ManagementAuthorizationGranteeAccountOption struct {
 	Status      string
 }
 
+type ManagementAuthorizationGranteeTeamOption struct {
+	ID     string
+	Name   string
+	Status string
+}
+
 type ManagementAuthorizationPrincipalOptionListInput struct {
 	IDs     []string
 	Keyword string
@@ -95,6 +101,7 @@ type ManagementAuthorizationGranteeGroupOptionListInput struct {
 
 type ManagementAuthorizationOptionReader interface {
 	ListManagementAuthorizationGranteeAccounts(ctx context.Context, input ManagementAuthorizationPrincipalOptionListInput) ([]ManagementAuthorizationGranteeAccountOption, error)
+	ListManagementAuthorizationGranteeTeams(ctx context.Context, input ManagementAuthorizationPrincipalOptionListInput) ([]ManagementAuthorizationGranteeTeamOption, error)
 	ListManagementAuthorizationGranteeGroups(ctx context.Context, input ManagementAuthorizationGranteeGroupOptionListInput) ([]ManagementAuthorizationGranteeGroupOption, error)
 }
 

@@ -143,6 +143,128 @@ func TestW2ManagementAuthorizationGranteeAccountsPostgresSmoke(t *testing.T) {
 	}
 }
 
+func TestW2ManagementAuthorizationGranteeTeamsPostgresSmoke(t *testing.T) {
+	testcontainers.SkipIfProviderIsNotHealthy(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	container, err := tcpostgres.Run(ctx, postgresImage,
+		tcpostgres.WithDatabase("juhe_ai"),
+		tcpostgres.WithUsername("juhe_ai"),
+		tcpostgres.WithPassword("juhe_ai_password"),
+		tcpostgres.BasicWaitStrategies(),
+	)
+	if err != nil {
+		t.Fatalf("start postgres container: %v", err)
+	}
+	defer terminateContainer(t, ctx, container)
+
+	postgresURL, err := container.ConnectionString(ctx, "sslmode=disable")
+	if err != nil {
+		t.Fatalf("postgres connection string: %v", err)
+	}
+
+	db := openSQLDB(t, postgresURL)
+	defer closeSQLDB(t, db)
+	runGooseMigrations(t, db)
+
+	now := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
+	insertW2ProxyOptionsFixture(t, ctx, db, now)
+	insertW2AuthorizationGranteeAccountsFixture(t, ctx, db, now)
+	insertW2AuthorizationGranteeTeamsFixture(t, ctx, db, now)
+	adminSessionToken := "w2-management-authorization-teams-admin-session-token"
+	userSessionToken := "w2-management-authorization-teams-user-session-token"
+	insertW2ManagementSessionFixture(t, ctx, db, adminSessionToken, now)
+	insertW2ManagementSessionForAccountFixture(t, ctx, db, "sess_w2_authorization_teams_user", "sys_w2_auth_option_user", userSessionToken, now)
+
+	store, err := postgresstore.Open(ctx, postgresURL)
+	if err != nil {
+		t.Fatalf("open postgres store: %v", err)
+	}
+	defer store.Close()
+
+	service := managementauthorizationoptions.NewService(store)
+	all, err := service.GranteeTeams(ctx, managementauthorizationoptions.PrincipalOptionListInput{Limit: 50})
+	if err != nil {
+		t.Fatalf("all grantee team options: %v", err)
+	}
+	if findAuthorizationGranteeTeamOption(all, "team_w2_auth_disabled") == nil {
+		t.Fatalf("disabled grantee team should stay visible: %+v", all)
+	}
+
+	prefixed, err := service.GranteeTeams(ctx, managementauthorizationoptions.PrincipalOptionListInput{Keyword: "Readonly", Limit: 10})
+	if err != nil {
+		t.Fatalf("prefixed grantee team options: %v", err)
+	}
+	if len(prefixed) != 1 || prefixed[0].ID != "team_w2_auth_readonly" {
+		t.Fatalf("prefixed team options = %+v", prefixed)
+	}
+
+	middle, err := service.GranteeTeams(ctx, managementauthorizationoptions.PrincipalOptionListInput{Keyword: "only", Limit: 10})
+	if err != nil {
+		t.Fatalf("middle keyword grantee team options: %v", err)
+	}
+	if len(middle) != 0 {
+		t.Fatalf("middle keyword should not match prefix-only team options: %+v", middle)
+	}
+
+	percent, err := service.GranteeTeams(ctx, managementauthorizationoptions.PrincipalOptionListInput{Keyword: "Percent%", Limit: 10})
+	if err != nil {
+		t.Fatalf("percent literal grantee team options: %v", err)
+	}
+	if len(percent) != 1 || percent[0].ID != "team_w2_auth_percent" {
+		t.Fatalf("percent literal team options = %+v", percent)
+	}
+
+	ids, err := service.GranteeTeams(ctx, managementauthorizationoptions.PrincipalOptionListInput{
+		IDs:   []string{"team_w2_auth_disabled", "team_w2_auth_readonly"},
+		Limit: 10,
+	})
+	if err != nil {
+		t.Fatalf("ids grantee team options: %v", err)
+	}
+	if findAuthorizationGranteeTeamOption(ids, "team_w2_auth_disabled") == nil || findAuthorizationGranteeTeamOption(ids, "team_w2_auth_readonly") == nil || findAuthorizationGranteeTeamOption(ids, "team_w2_auth_percent") != nil {
+		t.Fatalf("ids team options = %+v", ids)
+	}
+
+	authenticator := managementauth.NewAuthenticator(managementauth.AuthenticatorOptions{
+		Store: store,
+		Now:   func() time.Time { return now },
+	})
+	router := httpapi.NewRouter(httpapi.RouterOptions{
+		Config: config.Config{
+			Host:                 "127.0.0.1",
+			Port:                 3000,
+			ManagementAPIEnabled: true,
+		},
+		Logger:                      slog.Default(),
+		ManagementAPIAuthMiddleware: httpapi.NewManagementAPIAuthMiddleware(authenticator),
+		ManagementAuthorizationGranteeTeamsHandler:   httpapi.NewManagementAuthorizationGranteeTeamsHandler(service),
+		ManagementMyAuthorizationGranteeTeamsHandler: httpapi.NewManagementMyAuthorizationGranteeTeamsHandler(service),
+	})
+
+	adminReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/authorization-options/grantee-teams?keyword=Readonly&limit=1", nil)
+	adminReq.Header.Set("Cookie", "juhe_ai_session="+adminSessionToken)
+	adminRec := httptest.NewRecorder()
+	router.ServeHTTP(adminRec, adminReq)
+	assertAuthorizationGranteeTeamsResponse(t, adminRec, "team_w2_auth_readonly")
+
+	selfReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/my-authorization-options/grantee-teams?keyword=Readonly&limit=1", nil)
+	selfReq.Header.Set("Cookie", "juhe_ai_session="+userSessionToken)
+	selfRec := httptest.NewRecorder()
+	router.ServeHTTP(selfRec, selfReq)
+	assertAuthorizationGranteeTeamsResponse(t, selfRec, "team_w2_auth_readonly")
+
+	forbiddenReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/authorization-options/grantee-teams?limit=1", nil)
+	forbiddenReq.Header.Set("Cookie", "juhe_ai_session="+userSessionToken)
+	forbiddenRec := httptest.NewRecorder()
+	router.ServeHTTP(forbiddenRec, forbiddenReq)
+	if forbiddenRec.Code != http.StatusForbidden {
+		t.Fatalf("ordinary user admin route status = %d, want 403", forbiddenRec.Code)
+	}
+}
+
 func TestW2ManagementAuthorizationGranteeGroupsPostgresSmoke(t *testing.T) {
 	testcontainers.SkipIfProviderIsNotHealthy(t)
 
@@ -403,6 +525,32 @@ func insertW2AuthorizationGranteeGroupsFixture(t *testing.T, ctx context.Context
 	}
 }
 
+func insertW2AuthorizationGranteeTeamsFixture(t *testing.T, ctx context.Context, db *sql.DB, now time.Time) {
+	t.Helper()
+	fixtures := []struct {
+		id     string
+		name   string
+		status string
+	}{
+		{id: "team_w2_auth_readonly", name: "Readonly Team", status: "active"},
+		{id: "team_w2_auth_disabled", name: "Disabled Team", status: "disabled"},
+		{id: "team_w2_auth_percent", name: "Percent% Team", status: "active"},
+		{id: "team_w2_auth_other", name: "Other Team", status: "active"},
+	}
+	for index, item := range fixtures {
+		_, err := db.ExecContext(ctx, `
+			INSERT INTO juhe_business.system_teams (
+				id, name, description, status, created_by, created_at, updated_at
+			) VALUES (
+				$1, $2, NULL, $3, 'sys_w2_proxy_options', $4, $5
+			)
+		`, item.id, item.name, item.status, now.Add(time.Duration(index)*time.Second), now.Add(time.Duration(index)*time.Second))
+		if err != nil {
+			t.Fatalf("insert W2 authorization grantee team fixture %s: %v", item.id, err)
+		}
+	}
+}
+
 func insertW2ManagementSessionForAccountFixture(t *testing.T, ctx context.Context, db *sql.DB, sessionID string, accountID string, token string, now time.Time) {
 	t.Helper()
 	_, err := db.ExecContext(ctx, `
@@ -414,6 +562,22 @@ func insertW2ManagementSessionForAccountFixture(t *testing.T, ctx context.Contex
 	`, sessionID, accountID, managementauth.HashSessionToken(token), now.Add(time.Hour), now, now)
 	if err != nil {
 		t.Fatalf("insert W2 management session for %s: %v", accountID, err)
+	}
+}
+
+func assertAuthorizationGranteeTeamsResponse(t *testing.T, rec *httptest.ResponseRecorder, wantID string) {
+	t.Helper()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Data []managementauthorizationoptions.GranteeTeamOption `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.Data) != 1 || body.Data[0].ID != wantID || body.Data[0].Name == "" || body.Data[0].Status != "active" {
+		t.Fatalf("authorization grantee teams response = %+v", body.Data)
 	}
 }
 
@@ -471,6 +635,15 @@ func assertAuthorizationGranteeAccountsResponse(t *testing.T, rec *httptest.Resp
 }
 
 func findAuthorizationGranteeAccountOption(options []managementauthorizationoptions.GranteeAccountOption, id string) *managementauthorizationoptions.GranteeAccountOption {
+	for index := range options {
+		if options[index].ID == id {
+			return &options[index]
+		}
+	}
+	return nil
+}
+
+func findAuthorizationGranteeTeamOption(options []managementauthorizationoptions.GranteeTeamOption, id string) *managementauthorizationoptions.GranteeTeamOption {
 	for index := range options {
 		if options[index].ID == id {
 			return &options[index]

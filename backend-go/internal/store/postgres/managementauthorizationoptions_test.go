@@ -29,7 +29,7 @@ func TestManagementAuthorizationGranteeAccountsSQLIsLightweight(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read authorization options query: %v", err)
 	}
-	sql := querySection(t, string(source), "-- name: ListManagementAuthorizationGranteeAccounts :many", "-- name: ListManagementAuthorizationGranteeGroups :many")
+	sql := querySection(t, string(source), "-- name: ListManagementAuthorizationGranteeAccounts :many", "-- name: ListManagementAuthorizationGranteeTeams :many")
 	for _, want := range []string{
 		"SELECT id, username, display_name, status",
 		"FROM juhe_business.system_accounts",
@@ -60,6 +60,43 @@ func TestManagementAuthorizationGranteeAccountsSQLIsLightweight(t *testing.T) {
 	} {
 		if strings.Contains(sql, forbidden) {
 			t.Fatalf("authorization grantee accounts query should not contain %q", forbidden)
+		}
+	}
+}
+
+func TestManagementAuthorizationGranteeTeamsSQLIsLightweight(t *testing.T) {
+	source, err := os.ReadFile("queries/w2_management_authorization_options.sql")
+	if err != nil {
+		t.Fatalf("read authorization options query: %v", err)
+	}
+	sql := querySection(t, string(source), "-- name: ListManagementAuthorizationGranteeTeams :many", "-- name: ListManagementAuthorizationGranteeGroups :many")
+	for _, want := range []string{
+		"SELECT id, name, status",
+		"FROM juhe_business.system_teams",
+		"name COLLATE \"C\"",
+		"starts_with(name, sqlc.arg(keyword)::text)",
+		"ORDER BY status ASC, name ASC, id ASC",
+		"LIMIT sqlc.arg(row_limit)::int",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("authorization grantee teams query missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		"SELECT *",
+		"system_team_members",
+		"member_count",
+		"description",
+		"created_by",
+		"created_at",
+		"updated_at",
+		"resource_authorizations",
+		"authorization_sources",
+		"LIKE",
+		"ILIKE",
+	} {
+		if strings.Contains(sql, forbidden) {
+			t.Fatalf("authorization grantee teams query should not contain %q", forbidden)
 		}
 	}
 }

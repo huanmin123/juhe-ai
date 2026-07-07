@@ -89,6 +89,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementSystemAccountOptionsHandler:           managementHandlers.SystemAccountOptionsHandler,
 		ManagementAuthorizationGranteeAccountsHandler:   managementHandlers.AuthorizationGranteeAccountsHandler,
 		ManagementMyAuthorizationGranteeAccountsHandler: managementHandlers.MyAuthorizationGranteeAccountsHandler,
+		ManagementAuthorizationGranteeTeamsHandler:      managementHandlers.AuthorizationGranteeTeamsHandler,
+		ManagementMyAuthorizationGranteeTeamsHandler:    managementHandlers.MyAuthorizationGranteeTeamsHandler,
 		ManagementAuthorizationGranteeGroupsHandler:     managementHandlers.AuthorizationGranteeGroupsHandler,
 		ManagementMyAuthorizationGranteeGroupsHandler:   managementHandlers.MyAuthorizationGranteeGroupsHandler,
 		ManagementProviderOptionsHandler:                managementHandlers.ProviderOptionsHandler,
@@ -141,6 +143,8 @@ type managementAPIHandlers struct {
 	SystemAccountOptionsHandler           http.Handler
 	AuthorizationGranteeAccountsHandler   http.Handler
 	MyAuthorizationGranteeAccountsHandler http.Handler
+	AuthorizationGranteeTeamsHandler      http.Handler
+	MyAuthorizationGranteeTeamsHandler    http.Handler
 	AuthorizationGranteeGroupsHandler     http.Handler
 	MyAuthorizationGranteeGroupsHandler   http.Handler
 	ProviderOptionsHandler                http.Handler
@@ -177,6 +181,8 @@ func newManagementAPIHandler(cfg config.Config, store *postgresstore.Store) mana
 		SystemAccountOptionsHandler:           httpapi.NewManagementSystemAccountOptionsHandler(systemAccountService),
 		AuthorizationGranteeAccountsHandler:   httpapi.NewManagementAuthorizationGranteeAccountsHandler(authorizationOptionService),
 		MyAuthorizationGranteeAccountsHandler: httpapi.NewManagementMyAuthorizationGranteeAccountsHandler(authorizationOptionService),
+		AuthorizationGranteeTeamsHandler:      httpapi.NewManagementAuthorizationGranteeTeamsHandler(authorizationOptionService),
+		MyAuthorizationGranteeTeamsHandler:    httpapi.NewManagementMyAuthorizationGranteeTeamsHandler(authorizationOptionService),
 		AuthorizationGranteeGroupsHandler:     httpapi.NewManagementAuthorizationGranteeGroupsHandler(authorizationOptionService),
 		MyAuthorizationGranteeGroupsHandler:   httpapi.NewManagementMyAuthorizationGranteeGroupsHandler(authorizationOptionService),
 		ProviderOptionsHandler:                httpapi.NewManagementProviderOptionsHandler(providerService),

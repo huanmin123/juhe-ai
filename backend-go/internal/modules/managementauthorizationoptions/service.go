@@ -41,6 +41,12 @@ type GranteeAccountOption struct {
 	Status      string `json:"status"`
 }
 
+type GranteeTeamOption struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Status string `json:"status"`
+}
+
 type ResourcePermissions struct {
 	CanUse                 bool `json:"canUse"`
 	CanEdit                bool `json:"canEdit"`
@@ -91,6 +97,29 @@ func (s *Service) GranteeAccounts(ctx context.Context, input PrincipalOptionList
 			Username:    row.Username,
 			DisplayName: row.DisplayName,
 			Status:      row.Status,
+		})
+	}
+	return items, nil
+}
+
+func (s *Service) GranteeTeams(ctx context.Context, input PrincipalOptionListInput) ([]GranteeTeamOption, error) {
+	if s.store == nil {
+		return nil, fmt.Errorf("management authorization option store is required")
+	}
+	rows, err := s.store.ListManagementAuthorizationGranteeTeams(ctx, port.ManagementAuthorizationPrincipalOptionListInput{
+		IDs:     uniqueStrings(input.IDs, maxPrincipalOptionItems),
+		Keyword: strings.TrimSpace(input.Keyword),
+		Limit:   principalOptionLimit(input.Limit),
+	})
+	if err != nil {
+		return nil, err
+	}
+	items := make([]GranteeTeamOption, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, GranteeTeamOption{
+			ID:     row.ID,
+			Name:   row.Name,
+			Status: row.Status,
 		})
 	}
 	return items, nil

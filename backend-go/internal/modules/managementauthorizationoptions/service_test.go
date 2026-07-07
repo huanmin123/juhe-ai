@@ -61,6 +61,46 @@ func TestGranteeAccountsReturnsStoreError(t *testing.T) {
 	}
 }
 
+func TestGranteeTeamsNormalizesInputAndMapsOptions(t *testing.T) {
+	store := &authorizationOptionStoreStub{
+		granteeTeams: []port.ManagementAuthorizationGranteeTeamOption{{
+			ID:     "team_ops",
+			Name:   "运维团队",
+			Status: "active",
+		}},
+	}
+	service := NewService(store)
+
+	got, err := service.GranteeTeams(context.Background(), PrincipalOptionListInput{
+		IDs:     []string{" team_ops ", "team_ops", "", "team_disabled"},
+		Keyword: "  运维  ",
+		Limit:   500,
+	})
+	if err != nil {
+		t.Fatalf("GranteeTeams() error = %v", err)
+	}
+	if store.teamInput.Keyword != "运维" || store.teamInput.Limit != 50 {
+		t.Fatalf("store team input = %+v, want trimmed keyword and limit 50", store.teamInput)
+	}
+	if len(store.teamInput.IDs) != 2 || store.teamInput.IDs[0] != "team_ops" || store.teamInput.IDs[1] != "team_disabled" {
+		t.Fatalf("team ids = %#v", store.teamInput.IDs)
+	}
+	if len(got) != 1 || got[0].ID != "team_ops" || got[0].Name != "运维团队" || got[0].Status != "active" {
+		t.Fatalf("GranteeTeams() = %+v", got)
+	}
+}
+
+func TestGranteeTeamsReturnsStoreError(t *testing.T) {
+	want := errors.New("postgres down")
+	service := NewService(&authorizationOptionStoreStub{err: want})
+
+	_, err := service.GranteeTeams(context.Background(), PrincipalOptionListInput{})
+
+	if !errors.Is(err, want) {
+		t.Fatalf("GranteeTeams() error = %v, want %v", err, want)
+	}
+}
+
 func TestGranteeGroupsNormalizesInputAndMapsOptions(t *testing.T) {
 	store := &authorizationOptionStoreStub{
 		granteeGroups: []port.ManagementAuthorizationGranteeGroupOption{{
@@ -146,8 +186,10 @@ func TestGranteeGroupsReturnsStoreError(t *testing.T) {
 
 type authorizationOptionStoreStub struct {
 	input           port.ManagementAuthorizationPrincipalOptionListInput
+	teamInput       port.ManagementAuthorizationPrincipalOptionListInput
 	groupInput      port.ManagementAuthorizationGranteeGroupOptionListInput
 	granteeAccounts []port.ManagementAuthorizationGranteeAccountOption
+	granteeTeams    []port.ManagementAuthorizationGranteeTeamOption
 	granteeGroups   []port.ManagementAuthorizationGranteeGroupOption
 	err             error
 }
@@ -155,6 +197,11 @@ type authorizationOptionStoreStub struct {
 func (s *authorizationOptionStoreStub) ListManagementAuthorizationGranteeAccounts(_ context.Context, input port.ManagementAuthorizationPrincipalOptionListInput) ([]port.ManagementAuthorizationGranteeAccountOption, error) {
 	s.input = input
 	return s.granteeAccounts, s.err
+}
+
+func (s *authorizationOptionStoreStub) ListManagementAuthorizationGranteeTeams(_ context.Context, input port.ManagementAuthorizationPrincipalOptionListInput) ([]port.ManagementAuthorizationGranteeTeamOption, error) {
+	s.teamInput = input
+	return s.granteeTeams, s.err
 }
 
 func (s *authorizationOptionStoreStub) ListManagementAuthorizationGranteeGroups(_ context.Context, input port.ManagementAuthorizationGranteeGroupOptionListInput) ([]port.ManagementAuthorizationGranteeGroupOption, error) {

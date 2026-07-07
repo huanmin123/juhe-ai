@@ -21,6 +21,24 @@ WHERE (
 ORDER BY status ASC, display_name ASC, username ASC, id ASC
 LIMIT sqlc.arg(row_limit)::int;
 
+-- name: ListManagementAuthorizationGranteeTeams :many
+SELECT id, name, status
+FROM juhe_business.system_teams
+WHERE (
+    sqlc.arg(has_ids)::boolean = false
+    OR id = ANY(sqlc.arg(ids)::text[])
+  )
+  AND (
+    sqlc.arg(has_keyword)::boolean = false
+    OR (
+      name COLLATE "C" >= sqlc.arg(keyword)::text
+      AND name COLLATE "C" < sqlc.arg(keyword_upper)::text
+      AND starts_with(name, sqlc.arg(keyword)::text)
+    )
+  )
+ORDER BY status ASC, name ASC, id ASC
+LIMIT sqlc.arg(row_limit)::int;
+
 -- name: ListManagementAuthorizationGranteeGroups :many
 WITH active_grantee AS (
   SELECT id

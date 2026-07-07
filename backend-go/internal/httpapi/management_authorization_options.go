@@ -18,6 +18,7 @@ const (
 
 type managementAuthorizationOptionService interface {
 	GranteeAccounts(r *http.Request, input managementauthorizationoptions.PrincipalOptionListInput) ([]managementauthorizationoptions.GranteeAccountOption, error)
+	GranteeTeams(r *http.Request, input managementauthorizationoptions.PrincipalOptionListInput) ([]managementauthorizationoptions.GranteeTeamOption, error)
 	GranteeGroups(r *http.Request, input managementauthorizationoptions.GranteeGroupOptionListInput) ([]managementauthorizationoptions.GranteeGroupOption, error)
 }
 
@@ -27,6 +28,10 @@ type managementAuthorizationOptionServiceAdapter struct {
 
 func (s managementAuthorizationOptionServiceAdapter) GranteeAccounts(r *http.Request, input managementauthorizationoptions.PrincipalOptionListInput) ([]managementauthorizationoptions.GranteeAccountOption, error) {
 	return s.service.GranteeAccounts(r.Context(), input)
+}
+
+func (s managementAuthorizationOptionServiceAdapter) GranteeTeams(r *http.Request, input managementauthorizationoptions.PrincipalOptionListInput) ([]managementauthorizationoptions.GranteeTeamOption, error) {
+	return s.service.GranteeTeams(r.Context(), input)
 }
 
 func (s managementAuthorizationOptionServiceAdapter) GranteeGroups(r *http.Request, input managementauthorizationoptions.GranteeGroupOptionListInput) ([]managementauthorizationoptions.GranteeGroupOption, error) {
@@ -39,6 +44,14 @@ func NewManagementAuthorizationGranteeAccountsHandler(service *managementauthori
 
 func NewManagementMyAuthorizationGranteeAccountsHandler(service *managementauthorizationoptions.Service) http.Handler {
 	return newManagementAuthorizationGranteeAccountsHandler(managementAuthorizationOptionServiceAdapter{service: service}, managementAuthorizationOptionScopeSelf)
+}
+
+func NewManagementAuthorizationGranteeTeamsHandler(service *managementauthorizationoptions.Service) http.Handler {
+	return newManagementAuthorizationGranteeTeamsHandler(managementAuthorizationOptionServiceAdapter{service: service}, managementAuthorizationOptionScopeAdmin)
+}
+
+func NewManagementMyAuthorizationGranteeTeamsHandler(service *managementauthorizationoptions.Service) http.Handler {
+	return newManagementAuthorizationGranteeTeamsHandler(managementAuthorizationOptionServiceAdapter{service: service}, managementAuthorizationOptionScopeSelf)
 }
 
 func NewManagementAuthorizationGranteeGroupsHandler(service *managementauthorizationoptions.Service) http.Handler {
@@ -61,6 +74,26 @@ func newManagementAuthorizationGranteeAccountsHandler(service managementAuthoriz
 			return
 		}
 		options, err := service.GranteeAccounts(r, parseManagementAuthorizationPrincipalOptionListQuery(r.URL.Query()))
+		if err != nil {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		writeData(w, http.StatusOK, options)
+	})
+}
+
+func newManagementAuthorizationGranteeTeamsHandler(service managementAuthorizationOptionService, scope managementAuthorizationOptionScope) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authContext, ok := ManagementAuthContextFromRequest(r)
+		if !ok || strings.TrimSpace(authContext.SystemAccountID) == "" {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		if scope == managementAuthorizationOptionScopeAdmin && !managementauth.IsAdminRole(authContext.Role) {
+			writeMessageError(w, http.StatusForbidden, "需要管理员权限")
+			return
+		}
+		options, err := service.GranteeTeams(r, parseManagementAuthorizationPrincipalOptionListQuery(r.URL.Query()))
 		if err != nil {
 			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
 			return

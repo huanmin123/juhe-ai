@@ -18,6 +18,10 @@ func (s *Store) ListManagementAuthorizationGranteeAccounts(ctx context.Context, 
 	return listManagementAuthorizationGranteeAccounts(ctx, s.queries(), input)
 }
 
+func (s *Store) ListManagementAuthorizationGranteeTeams(ctx context.Context, input port.ManagementAuthorizationPrincipalOptionListInput) ([]port.ManagementAuthorizationGranteeTeamOption, error) {
+	return listManagementAuthorizationGranteeTeams(ctx, s.queries(), input)
+}
+
 func (s *Store) ListManagementAuthorizationGranteeGroups(ctx context.Context, input port.ManagementAuthorizationGranteeGroupOptionListInput) ([]port.ManagementAuthorizationGranteeGroupOption, error) {
 	return listManagementAuthorizationGranteeGroups(ctx, s.queries(), input)
 }
@@ -47,6 +51,35 @@ func listManagementAuthorizationGranteeAccounts(ctx context.Context, q *postgres
 			Username:    row.Username,
 			DisplayName: row.DisplayName,
 			Status:      row.Status,
+		})
+	}
+	return items, nil
+}
+
+func listManagementAuthorizationGranteeTeams(ctx context.Context, q *postgresqueries.Queries, input port.ManagementAuthorizationPrincipalOptionListInput) ([]port.ManagementAuthorizationGranteeTeamOption, error) {
+	keyword := strings.TrimSpace(input.Keyword)
+	keywordUpper := ""
+	if keyword != "" {
+		keywordUpper = textPrefixUpperBound(keyword)
+	}
+	ids := uniqueStrings(input.IDs, 50)
+	rows, err := q.ListManagementAuthorizationGranteeTeams(ctx, postgresqueries.ListManagementAuthorizationGranteeTeamsParams{
+		HasIds:       len(ids) > 0,
+		Ids:          ids,
+		HasKeyword:   keyword != "",
+		Keyword:      keyword,
+		KeywordUpper: keywordUpper,
+		RowLimit:     int32(managementAuthorizationPrincipalOptionLimit(input.Limit)),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list management authorization grantee teams: %w", err)
+	}
+	items := make([]port.ManagementAuthorizationGranteeTeamOption, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, port.ManagementAuthorizationGranteeTeamOption{
+			ID:     row.ID,
+			Name:   row.Name,
+			Status: row.Status,
 		})
 	}
 	return items, nil

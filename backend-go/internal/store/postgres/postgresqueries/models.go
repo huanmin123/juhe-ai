@@ -409,6 +409,29 @@ type JuheBusinessSystemSetting struct {
 	UpdatedAt       pgtype.Timestamptz
 }
 
+type JuheBusinessSystemTeam struct {
+	ID          string
+	Name        string
+	Description pgtype.Text
+	Status      string
+	CreatedBy   string
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+}
+
+type JuheBusinessSystemTeamMember struct {
+	ID              string
+	TeamID          string
+	SystemAccountID string
+	MemberRole      string
+	Status          string
+	JoinedAt        pgtype.Timestamptz
+	RemovedAt       pgtype.Timestamptz
+	CreatedBy       string
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
+}
+
 type JuheDatasetPublicApiLog struct {
 	ID                    string
 	TraceID               pgtype.Text

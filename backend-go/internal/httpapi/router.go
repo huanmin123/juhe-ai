@@ -26,6 +26,8 @@ type RouterOptions struct {
 	ManagementSystemAccountOptionsHandler           http.Handler
 	ManagementAuthorizationGranteeAccountsHandler   http.Handler
 	ManagementMyAuthorizationGranteeAccountsHandler http.Handler
+	ManagementAuthorizationGranteeTeamsHandler      http.Handler
+	ManagementMyAuthorizationGranteeTeamsHandler    http.Handler
 	ManagementAuthorizationGranteeGroupsHandler     http.Handler
 	ManagementMyAuthorizationGranteeGroupsHandler   http.Handler
 	ManagementProviderOptionsHandler                http.Handler
@@ -74,6 +76,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementSystemAccountOptionsHandler == nil &&
 				opts.ManagementAuthorizationGranteeAccountsHandler == nil &&
 				opts.ManagementMyAuthorizationGranteeAccountsHandler == nil &&
+				opts.ManagementAuthorizationGranteeTeamsHandler == nil &&
+				opts.ManagementMyAuthorizationGranteeTeamsHandler == nil &&
 				opts.ManagementAuthorizationGranteeGroupsHandler == nil &&
 				opts.ManagementMyAuthorizationGranteeGroupsHandler == nil &&
 				opts.ManagementProviderOptionsHandler == nil &&
@@ -102,6 +106,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementMyAuthorizationGranteeAccountsHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/my-authorization-options/grantee-accounts", opts.ManagementMyAuthorizationGranteeAccountsHandler.ServeHTTP)
+			}
+			if opts.ManagementAuthorizationGranteeTeamsHandler != nil {
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/authorization-options/grantee-teams", opts.ManagementAuthorizationGranteeTeamsHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAuthorizationGranteeTeamsHandler != nil {
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/my-authorization-options/grantee-teams", opts.ManagementMyAuthorizationGranteeTeamsHandler.ServeHTTP)
 			}
 			if opts.ManagementAuthorizationGranteeGroupsHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/authorization-options/grantee-groups", opts.ManagementAuthorizationGranteeGroupsHandler.ServeHTTP)
