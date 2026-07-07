@@ -1,0 +1,50 @@
+-- name: ListManagementProviderOptionProviders :many
+SELECT id, code, name, parent_code, description, enabled, default_supported_models_json
+FROM juhe_business.providers
+WHERE enabled = true
+ORDER BY name ASC, code ASC
+LIMIT 50;
+
+-- name: ListManagementProviderOptionProfiles :many
+SELECT
+  id,
+  provider_code,
+  name,
+  description,
+  enabled,
+  protocol_code,
+  protocol_version,
+  base_url,
+  default_test_model,
+  account_types_json,
+  capabilities_json
+FROM juhe_business.provider_protocol_profiles
+WHERE provider_code = ANY(sqlc.arg(provider_codes)::text[])
+ORDER BY provider_code ASC, updated_at DESC, id ASC
+LIMIT 200;
+
+-- name: ListManagementProviderOptionEndpointFamilies :many
+SELECT
+  ppf.profile_id,
+  f.family_code,
+  f.name,
+  f.description
+FROM juhe_business.provider_protocol_profile_families AS ppf
+INNER JOIN juhe_business.provider_protocol_profiles AS profiles
+  ON profiles.id = ppf.profile_id
+INNER JOIN juhe_business.protocol_endpoint_families AS f
+  ON f.protocol_code = profiles.protocol_code
+  AND f.protocol_version = profiles.protocol_version
+  AND f.family_code = ppf.family_code
+WHERE ppf.profile_id = ANY(sqlc.arg(profile_ids)::text[])
+  AND ppf.enabled = true
+  AND f.enabled = true
+ORDER BY ppf.profile_id ASC, f.family_code ASC;
+
+-- name: ListManagementProviderDefaultTestModelPreferences :many
+SELECT provider_code, model
+FROM juhe_business.provider_default_test_models
+WHERE system_account_id = sqlc.arg(system_account_id)
+  AND sqlc.arg(system_account_id)::text <> ''
+  AND provider_code = ANY(sqlc.arg(provider_codes)::text[])
+ORDER BY provider_code ASC;

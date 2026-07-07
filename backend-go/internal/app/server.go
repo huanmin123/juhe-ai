@@ -12,6 +12,7 @@ import (
 	"juhe-ai/backend-go/internal/httpapi"
 	"juhe-ai/backend-go/internal/jobs/queue"
 	"juhe-ai/backend-go/internal/modules/managementauth"
+	"juhe-ai/backend-go/internal/modules/managementproviders"
 	"juhe-ai/backend-go/internal/modules/managementproxies"
 	"juhe-ai/backend-go/internal/modules/publicaccounts"
 	publicapicatalog "juhe-ai/backend-go/internal/modules/publicapi"
@@ -69,16 +70,17 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	}
 
 	publicSettingsService := publicsettings.NewService(store)
-	managementAuthMiddleware, managementProxyOptionsHandler := newManagementAPIHandler(cfg, store)
+	managementAuthMiddleware, managementProxyOptionsHandler, managementProviderOptionsHandler := newManagementAPIHandler(cfg, store)
 	router := httpapi.NewRouter(httpapi.RouterOptions{
-		Config:                        cfg,
-		Logger:                        logger,
-		PublicSettingsService:         &publicSettingsService,
-		SystemAPIIPRateLimitReader:    store,
-		SystemAPIIPReadRateLimiter:    httpapi.NewRedisSystemAPIIPReadRateLimiter(stateRedis),
-		PublicAPIHandler:              publicAPIHandler,
-		ManagementAPIAuthMiddleware:   managementAuthMiddleware,
-		ManagementProxyOptionsHandler: managementProxyOptionsHandler,
+		Config:                           cfg,
+		Logger:                           logger,
+		PublicSettingsService:            &publicSettingsService,
+		SystemAPIIPRateLimitReader:       store,
+		SystemAPIIPReadRateLimiter:       httpapi.NewRedisSystemAPIIPReadRateLimiter(stateRedis),
+		PublicAPIHandler:                 publicAPIHandler,
+		ManagementAPIAuthMiddleware:      managementAuthMiddleware,
+		ManagementProxyOptionsHandler:    managementProxyOptionsHandler,
+		ManagementProviderOptionsHandler: managementProviderOptionsHandler,
 	})
 
 	server := &http.Server{
@@ -110,13 +112,16 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	}
 }
 
-func newManagementAPIHandler(cfg config.Config, store *postgresstore.Store) (func(http.Handler) http.Handler, http.Handler) {
+func newManagementAPIHandler(cfg config.Config, store *postgresstore.Store) (func(http.Handler) http.Handler, http.Handler, http.Handler) {
 	if !cfg.ManagementAPIEnabled {
-		return nil, nil
+		return nil, nil, nil
 	}
 	authenticator := managementauth.NewAuthenticator(managementauth.AuthenticatorOptions{Store: store})
 	proxyService := managementproxies.NewService(store)
-	return httpapi.NewManagementAPIAuthMiddleware(authenticator), httpapi.NewManagementProxyOptionsHandler(proxyService)
+	providerService := managementproviders.NewService(store)
+	return httpapi.NewManagementAPIAuthMiddleware(authenticator),
+		httpapi.NewManagementProxyOptionsHandler(proxyService),
+		httpapi.NewManagementProviderOptionsHandler(providerService)
 }
 
 func newPublicAPIHandler(

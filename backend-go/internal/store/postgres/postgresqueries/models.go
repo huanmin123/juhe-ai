@@ -142,6 +142,18 @@ type JuheBusinessProtocol struct {
 	UpdatedAt   pgtype.Timestamptz
 }
 
+type JuheBusinessProtocolEndpointFamily struct {
+	ID              string
+	ProtocolCode    string
+	ProtocolVersion string
+	FamilyCode      string
+	Name            string
+	Description     pgtype.Text
+	Enabled         bool
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
+}
+
 type JuheBusinessProvider struct {
 	ID                         string
 	Code                       string
@@ -152,6 +164,14 @@ type JuheBusinessProvider struct {
 	DefaultSupportedModelsJson string
 	CreatedAt                  pgtype.Timestamptz
 	UpdatedAt                  pgtype.Timestamptz
+}
+
+type JuheBusinessProviderDefaultTestModel struct {
+	SystemAccountID string
+	ProviderCode    string
+	Model           string
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
 }
 
 type JuheBusinessProviderProtocolProfile struct {
@@ -165,6 +185,16 @@ type JuheBusinessProviderProtocolProfile struct {
 	BaseUrl          string
 	DefaultTestModel string
 	AccountTypesJson string
+	CapabilitiesJson string
+	CreatedAt        pgtype.Timestamptz
+	UpdatedAt        pgtype.Timestamptz
+}
+
+type JuheBusinessProviderProtocolProfileFamily struct {
+	ProfileID        string
+	FamilyCode       string
+	Enabled          bool
+	DefaultTestModel pgtype.Text
 	CapabilitiesJson string
 	CreatedAt        pgtype.Timestamptz
 	UpdatedAt        pgtype.Timestamptz

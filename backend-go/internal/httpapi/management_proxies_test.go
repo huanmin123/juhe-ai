@@ -181,10 +181,10 @@ func TestRouterRequiresW2ManagementAuthMiddleware(t *testing.T) {
 	})
 }
 
-func TestRouterRequiresW2ManagementProxyOptionsHandlerWhenEnabled(t *testing.T) {
+func TestRouterRequiresAtLeastOneW2ManagementHandlerWhenEnabled(t *testing.T) {
 	defer func() {
 		if recovered := recover(); recovered == nil {
-			t.Fatal("NewRouter() did not panic without management proxy options handler")
+			t.Fatal("NewRouter() did not panic without management handlers")
 		}
 	}()
 

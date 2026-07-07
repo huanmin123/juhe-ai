@@ -15,14 +15,15 @@ import (
 )
 
 type RouterOptions struct {
-	Config                        config.Config
-	Logger                        *slog.Logger
-	PublicSettingsService         *publicsettings.Service
-	SystemAPIIPRateLimitReader    port.SystemAPIIPRateLimitReader
-	SystemAPIIPReadRateLimiter    SystemAPIIPReadRateLimiter
-	PublicAPIHandler              http.Handler
-	ManagementAPIAuthMiddleware   func(http.Handler) http.Handler
-	ManagementProxyOptionsHandler http.Handler
+	Config                           config.Config
+	Logger                           *slog.Logger
+	PublicSettingsService            *publicsettings.Service
+	SystemAPIIPRateLimitReader       port.SystemAPIIPRateLimitReader
+	SystemAPIIPReadRateLimiter       SystemAPIIPReadRateLimiter
+	PublicAPIHandler                 http.Handler
+	ManagementAPIAuthMiddleware      func(http.Handler) http.Handler
+	ManagementProxyOptionsHandler    http.Handler
+	ManagementProviderOptionsHandler http.Handler
 }
 
 func NewRouter(opts RouterOptions) http.Handler {
@@ -49,13 +50,18 @@ func NewRouter(opts RouterOptions) http.Handler {
 			system.Get("/settings/public", publicSettingsHandler.ServeHTTP)
 		}
 		if opts.Config.ManagementAPIEnabled {
-			if opts.ManagementProxyOptionsHandler == nil {
-				panic("ManagementProxyOptionsHandler is required when JUHE_AI_MANAGEMENT_API_ENABLED is true")
-			}
 			if opts.ManagementAPIAuthMiddleware == nil {
 				panic("ManagementAPIAuthMiddleware is required when JUHE_AI_MANAGEMENT_API_ENABLED is true")
 			}
-			system.With(opts.ManagementAPIAuthMiddleware).Get("/proxies/options", opts.ManagementProxyOptionsHandler.ServeHTTP)
+			if opts.ManagementProxyOptionsHandler == nil && opts.ManagementProviderOptionsHandler == nil {
+				panic("at least one management API handler is required when JUHE_AI_MANAGEMENT_API_ENABLED is true")
+			}
+			if opts.ManagementProxyOptionsHandler != nil {
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/proxies/options", opts.ManagementProxyOptionsHandler.ServeHTTP)
+			}
+			if opts.ManagementProviderOptionsHandler != nil {
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/providers/options", opts.ManagementProviderOptionsHandler.ServeHTTP)
+			}
 		}
 	})
 
