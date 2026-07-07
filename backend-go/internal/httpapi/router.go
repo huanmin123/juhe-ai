@@ -15,12 +15,14 @@ import (
 )
 
 type RouterOptions struct {
-	Config                     config.Config
-	Logger                     *slog.Logger
-	PublicSettingsService      *publicsettings.Service
-	SystemAPIIPRateLimitReader port.SystemAPIIPRateLimitReader
-	SystemAPIIPReadRateLimiter SystemAPIIPReadRateLimiter
-	PublicAPIHandler           http.Handler
+	Config                        config.Config
+	Logger                        *slog.Logger
+	PublicSettingsService         *publicsettings.Service
+	SystemAPIIPRateLimitReader    port.SystemAPIIPRateLimitReader
+	SystemAPIIPReadRateLimiter    SystemAPIIPReadRateLimiter
+	PublicAPIHandler              http.Handler
+	ManagementAPIAuthMiddleware   func(http.Handler) http.Handler
+	ManagementProxyOptionsHandler http.Handler
 }
 
 func NewRouter(opts RouterOptions) http.Handler {
@@ -45,6 +47,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 		if opts.PublicSettingsService != nil {
 			publicSettingsHandler := NewPublicSettingsHandler(*opts.PublicSettingsService, opts.Logger)
 			system.Get("/settings/public", publicSettingsHandler.ServeHTTP)
+		}
+		if opts.ManagementProxyOptionsHandler != nil {
+			if opts.ManagementAPIAuthMiddleware == nil {
+				panic("ManagementAPIAuthMiddleware is required when management API handlers are registered")
+			}
+			system.With(opts.ManagementAPIAuthMiddleware).Get("/proxies/options", opts.ManagementProxyOptionsHandler.ServeHTTP)
 		}
 	})
 

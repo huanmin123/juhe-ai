@@ -1,6 +1,6 @@
 # Go Backend
 
-> 当前 W0 Go 工程与 PG/Redis/Asynq 常规基线已落地，W1a 公开设置读接口 Go 实现中，W1b `/__aipublic__` 已补 Go 基础设施、public group CRUD、public route strategy CRUD、public API Key CRUD 和 public account CRUD 四条真实资源纵切面，并新增默认关闭的 opt-in 生产 router guard 与独立 `w1b-public-api-smoke` 灰度验证入口；未正式生产接管任何现有 Node 业务接口。
+> 当前 W0 Go 工程与 PG/Redis/Asynq 常规基线已落地，W1a 公开设置读接口 Go 实现中，W1b `/__aipublic__` 已补 Go 基础设施、public group CRUD、public route strategy CRUD、public API Key CRUD 和 public account CRUD 四条真实资源纵切面，并新增默认关闭的 opt-in 生产 router guard 与独立 `w1b-public-api-smoke` 灰度验证入口；W2 第一块 `GET /__aisys__/api/proxies/options` 已补 PG schema、sqlc/store、service、handler 和默认不接管的 router 注入 guard；未正式生产接管任何现有 Node 业务接口。
 
 本目录是 `juhe-ai` 后端从 Node.js 迁移到 Go 的新后端工程。迁移规则见 `docs/migration/README.md`。
 
@@ -13,9 +13,10 @@
 - W1a 公开设置读接口：`GET /__aisys__/api/settings/public`，读取 `juhe_business.global_settings`，返回 `{ data: { appName, appIcon } }`，并按 `system_settings` 读取限流配置，按 `JUHE_AI_TRUST_PROXY` 识别客户端 IP，生产 server 路径使用 Redis state 原子 minute / burst IP read rate limit。
 - W1b 外部维护公开接口基础设施：`internal/modules/publicapi` 固定 16 个 `/__aipublic__` method/path/scope、旧公开路径不进入 catalog、内置测试 token 常量；`internal/modules/publicapi/auth` 固定 Bearer 解析、token hash、source/token 状态与过期、scope 交集、auth error 和 `last_used_at` touch 判断；`internal/modules/publicapi/ratelimit` 映射 source/token 维度 penalty-window；`internal/modules/publicapilog` 提供公开接口日志 request / response snapshot、query string 脱敏、32KB 单侧预算、dropped / truncated / empty / complete 状态、499 和错误摘要构造；`internal/jobs/publicapilog` 提供 Asynq payload/enqueue/handler；`internal/jobs/worker` 和 `internal/app/ingest_worker.go` 提供 `juhe-ai-worker ingest` 日志消费 runtime；`internal/httpapi/public_api_shell.go` 提供 W1b HTTP shell / capture 契约测试组合，覆盖 499 客户端提前断开和底层 `ResponseWriter` 可选接口透传；`internal/config/config.go`、`internal/app/server.go` 和 `internal/httpapi/router.go` 提供 `JUHE_AI_PUBLIC_API_ENABLED=false` 默认关闭的生产 router opt-in guard；`cmd/juhe-ai-maintenance w1b-public-api-smoke` 提供本地 httptest 灰度 smoke，验证默认 guard、显式 opt-in mount、真实 PostgreSQL / Redis state / Redis queue、临时测试 token 和 worker 写入 public API log；`internal/store/port/publicapi.go` 固定不泄露 pgx/sqlc/Redis 类型的 auth/log store port；`internal/store/postgres/publicapi.go` 提供 PostgreSQL auth/log adapter。
 - W1b public group / public route strategy / public API Key / public account 四条资源纵切面：已提供 handler、service、store port、PostgreSQL sqlc query、integration smoke 和 shell E2E 代码；public API Key 采用 hash-only 存储，完整 key 只在新增响应返回一次，日志快照和 `query_string` 均脱敏；public account 上游凭据使用 `JUHE_AI_SECRET` 派生的 AES-GCM 加密，响应不回显 `apiKey` / `baseUrl` / `credentials`。
+- W2 管理端只读辅助接口第一块：`GET /__aisys__/api/proxies/options` 已提供 `juhe_business.proxy_profiles` migration、sqlc 查询、store port、PostgreSQL adapter、`managementproxies` service、HTTP handler 和 router 注入 guard；默认生产 server 不注册该后台路由，只有后续注入管理端鉴权 middleware 后才允许挂载。
 - 不接管任何现有 Node 业务接口，不删除 Node 旧实现。
 
-W1a / W1b 仍是 Go 实现中，不是生产接管状态；W1b 生产 router 默认不注册 `/__aipublic__`，只有显式设置 `JUHE_AI_PUBLIC_API_ENABLED=true` 才会挂载，且这只表示可灰度验证。`w1b-public-api-smoke` 通过也只表示本地 Go public API shell、真实依赖和 worker ingest 链路可用，不代表真实监听端口、反向代理切流、生产流量或 Node 删除已完成。完整 16 个资源级全量契约验证、真实 Docker/testcontainers shell E2E、真实 `w1a-public-settings-smoke`、真实 PG/Redis/Asynq integration、反向代理切流和 Node 删除证据还未完成。
+W1a / W1b / W2 第一块仍是 Go 实现中，不是生产接管状态；W1b 生产 router 默认不注册 `/__aipublic__`，只有显式设置 `JUHE_AI_PUBLIC_API_ENABLED=true` 才会挂载，且这只表示可灰度验证。W2 `proxies/options` 生产 server 默认不注册，因为 Go 管理端会话鉴权链路尚未迁移；只有注入管理端鉴权 middleware 后才允许挂载。`w1b-public-api-smoke` 通过也只表示本地 Go public API shell、真实依赖和 worker ingest 链路可用，不代表真实监听端口、反向代理切流、生产流量或 Node 删除已完成。完整 16 个资源级全量契约验证、真实 Docker/testcontainers shell E2E、真实 `w1a-public-settings-smoke`、真实 PG/Redis/Asynq integration、反向代理切流和 Node 删除证据还未完成。
 
 ## 当前 Windows 工具链
 

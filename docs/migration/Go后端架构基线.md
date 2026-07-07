@@ -119,6 +119,7 @@ Go 解决的是 Node 单事件循环问题，不代表可以无界并发。
 - PostgreSQL 写入必须受事务范围、`statement_timeout`、`lock_timeout`、`idle_in_transaction_session_timeout`、批量窗口、分区查询窗口、稳定排序和热点 key 顺序约束；连接必须带 `application_name` 便于定位来源。
 - Redis cache、state、queue 必须使用独立 namespace / DB / 实例或明确隔离配置；Go 配置层要拒绝 cache / state / queue 指向同一个 Redis DB，queue 不和 cache/state 共用淘汰策略。来源系统限频这类跨实例运行态必须落在 Redis state，不允许生产路径退回进程内 map。
 - W1b public API 生产挂载必须由 `JUHE_AI_PUBLIC_API_ENABLED` 显式控制，默认不注册 `/__aipublic__`；开启时必须显式配置 Redis state、Redis queue 和稳定 `JUHE_AI_SECRET`，不能使用开发默认密钥或本地队列兜底。
+- W2 管理端只读接口必须先经过 Go 管理端会话鉴权 middleware；在 W3 登录 / session 链路未迁移前，生产 server 不默认注册 W2 handler。任何 `__aisys__/api` 后台路由都不能为了联调绕过 `requireAuth`、初始密码修改拦截、admin / 普通用户边界或 `my-*` 作用域。
 - Asynq 可靠任务队列必须配置任务超时、重试、dead / archived 处理、Redis dial/read/write timeout、队列深度和最老任务年龄监控；任务 handler 必须幂等。
 - 原始 Redis Streams 只允许作为专项 adapter 例外使用，不能绕过 Asynq 再手写一套通用 queue 框架。
 - 内存 map、LRU、账号并发快照、IP 运行态、会话亲和和短 TTL 状态必须使用 mutex、RWMutex、atomic 或专用并发结构。

@@ -170,6 +170,27 @@ type JuheBusinessProviderProtocolProfile struct {
 	UpdatedAt        pgtype.Timestamptz
 }
 
+type JuheBusinessProxyProfile struct {
+	ID                string
+	SystemAccountID   string
+	Name              string
+	Description       pgtype.Text
+	Type              string
+	Host              string
+	Port              int32
+	Username          pgtype.Text
+	PasswordEncrypted pgtype.Text
+	Enabled           bool
+	TestStatus        string
+	LatencyMs         pgtype.Int4
+	OutboundIp        pgtype.Text
+	OutboundRegion    pgtype.Text
+	LastTestMessage   pgtype.Text
+	LastTestedAt      pgtype.Timestamptz
+	CreatedAt         pgtype.Timestamptz
+	UpdatedAt         pgtype.Timestamptz
+}
+
 type JuheBusinessRouteStrategy struct {
 	ID              string
 	SystemAccountID string
