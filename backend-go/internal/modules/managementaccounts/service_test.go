@@ -101,6 +101,63 @@ func TestServiceOptionsDefaults(t *testing.T) {
 	}
 }
 
+func TestServiceOptionsMapsAuthorizedOptions(t *testing.T) {
+	expiresAt := time.Date(2026, 7, 9, 9, 0, 0, 0, time.UTC)
+	store := &accountOptionStoreStub{
+		options: []port.ManagementAccountOption{
+			{
+				ID:                                   "acct_authorized",
+				OwnerSystemAccountID:                 "sys_owner",
+				OwnerSystemAccountName:               "Owner",
+				ProviderCode:                         "openai",
+				ProviderProtocolProfileID:            "profile_openai_openai_v1",
+				ProtocolCode:                         "openai",
+				ProtocolVersion:                      "v1",
+				Name:                                 "授权账户",
+				Type:                                 "api_key",
+				Status:                               "active",
+				AccessType:                           "authorized",
+				AccountAuthorizationID:               "auth_account",
+				AuthorizationStatus:                  "active",
+				AuthorizationExpiresAt:               &expiresAt,
+				AuthorizationInstanceSourceAccountID: "acct_source",
+				AuthorizationInstanceOwnerSystemAccountID: "sys_owner",
+			},
+		},
+	}
+	service := NewService(store)
+
+	options, err := service.Options(context.Background(), OptionListInput{SystemAccountID: "sys_viewer"})
+	if err != nil {
+		t.Fatalf("Options() error = %v", err)
+	}
+	if len(options) != 1 {
+		t.Fatalf("options = %+v", options)
+	}
+	got := options[0]
+	if got.SystemAccountID != "" ||
+		got.SystemAccountName != "" ||
+		got.OwnerSystemAccountID != "sys_owner" ||
+		got.OwnerSystemAccountName != "Owner" ||
+		got.AccessType != "authorized" ||
+		got.AccountAuthorizationID != "auth_account" ||
+		got.AuthorizationStatus != "active" ||
+		got.AuthorizationExpiresAt != expiresAt.Format(time.RFC3339Nano) ||
+		got.AuthorizationInstanceSourceAccountID != "acct_source" ||
+		got.AuthorizationInstanceOwnerSystemAccountID != "sys_owner" {
+		t.Fatalf("authorized option = %+v", got)
+	}
+	if got.Permissions.CanEdit ||
+		got.Permissions.CanDelete ||
+		got.Permissions.CanAuthorize ||
+		got.Permissions.CanViewCredentials ||
+		got.Permissions.CanManageAccounts ||
+		got.Permissions.CanBindToAPIKey ||
+		!got.Permissions.CanUse {
+		t.Fatalf("authorized permissions = %+v", got.Permissions)
+	}
+}
+
 func TestServiceTagsNormalizesInputAndMapsTags(t *testing.T) {
 	createdAt := time.Date(2026, 7, 7, 8, 0, 0, 123, time.UTC)
 	updatedAt := createdAt.Add(time.Minute)

@@ -219,19 +219,25 @@ type ManagementGroupOptionReader interface {
 }
 
 type ManagementAccountOption struct {
-	ID                        string
-	SystemAccountID           string
-	SystemAccountName         string
-	OwnerSystemAccountID      string
-	OwnerSystemAccountName    string
-	ProviderCode              string
-	ProviderProtocolProfileID string
-	ProtocolCode              string
-	ProtocolVersion           string
-	Name                      string
-	Type                      string
-	Status                    string
-	AccountExpiresAt          *time.Time
+	ID                                        string
+	SystemAccountID                           string
+	SystemAccountName                         string
+	OwnerSystemAccountID                      string
+	OwnerSystemAccountName                    string
+	ProviderCode                              string
+	ProviderProtocolProfileID                 string
+	ProtocolCode                              string
+	ProtocolVersion                           string
+	Name                                      string
+	Type                                      string
+	Status                                    string
+	AccessType                                string
+	AccountAuthorizationID                    string
+	AuthorizationStatus                       string
+	AuthorizationExpiresAt                    *time.Time
+	AuthorizationInstanceSourceAccountID      string
+	AuthorizationInstanceOwnerSystemAccountID string
+	AccountExpiresAt                          *time.Time
 }
 
 type ManagementAccountOptionListInput struct {

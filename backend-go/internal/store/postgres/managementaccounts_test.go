@@ -73,12 +73,21 @@ func TestManagementAccountOptionsSQLUsesNameSearchIndex(t *testing.T) {
 		"account_name_search_documents",
 		"position(sqlc.arg(keyword_normalized)::text in documents.normalized_name) > 0",
 		"HAVING COUNT(DISTINCT account_name_candidate_terms.term) = sqlc.arg(keyword_term_count)::int",
+		"UNION ALL",
+		"accounts.authorization_instance_authorization_id IS NULL",
+		"INNER JOIN juhe_business.resource_authorizations AS resource_authorizations",
+		"LEFT JOIN LATERAL",
+		"group_accounts.account_authorization_id = resource_authorizations.id",
+		"account_rows.access_type = 'authorized' AND group_accounts.account_authorization_id = account_rows.account_authorization_id",
+		"resource_authorizations.resource_type = 'account'",
+		"resource_authorizations.grantee_system_account_id = sqlc.arg(system_account_id)::text",
+		"resource_authorizations.status IN ('active', 'paused', 'expired')",
 	} {
 		if !strings.Contains(sql, want) {
 			t.Fatalf("account options query missing %q", want)
 		}
 	}
-	for _, forbidden := range []string{" ILIKE ", "LIKE '%", "LIKE $"} {
+	for _, forbidden := range []string{" ILIKE ", "LIKE '%", "LIKE $", "credentials_encrypted"} {
 		if strings.Contains(sql, forbidden) {
 			t.Fatalf("account options query should not use unbounded contains scan %q", forbidden)
 		}

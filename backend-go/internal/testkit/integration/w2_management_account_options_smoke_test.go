@@ -54,6 +54,7 @@ func TestW2ManagementAccountOptionsPostgresSmoke(t *testing.T) {
 	insertW2ProxyOptionsFixture(t, ctx, db, now)
 	insertW2GroupOptionsFixture(t, ctx, db, now)
 	insertW2AccountOptionsFixture(t, ctx, db, now)
+	insertW2AccountAuthorizationFixture(t, ctx, db, now)
 	insertW2AccountTagsFixture(t, ctx, db, now)
 	sessionToken := "w2-management-account-session-token"
 	insertW2ManagementSessionFixture(t, ctx, db, sessionToken, now)
@@ -75,6 +76,9 @@ func TestW2ManagementAccountOptionsPostgresSmoke(t *testing.T) {
 	if findAccountOption(adminOptions, "acct_w2_other") == nil {
 		t.Fatalf("admin all options should include other owner: %+v", adminOptions)
 	}
+	if findAccountOption(adminOptions, "acct_w2_authorized_other") != nil {
+		t.Fatalf("admin all options should not duplicate authorized instances: %+v", adminOptions)
+	}
 
 	selfOptions, err := service.Options(ctx, managementaccounts.OptionListInput{
 		SystemAccountID: "sys_w2_proxy_options",
@@ -89,6 +93,21 @@ func TestW2ManagementAccountOptionsPostgresSmoke(t *testing.T) {
 	if option := findAccountOption(selfOptions, "acct_w2_alpha"); option == nil || option.SystemAccountID != "" || option.AccessType != "owner" {
 		t.Fatalf("self options should hide management owner fields: %+v", selfOptions)
 	}
+	if option := findAccountOption(selfOptions, "acct_w2_authorized_other"); option == nil ||
+		option.SystemAccountID != "" ||
+		option.AccessType != "authorized" ||
+		option.AccountAuthorizationID != "auth_account_w2_other" ||
+		option.AuthorizationStatus != "active" ||
+		option.AuthorizationInstanceSourceAccountID != "acct_w2_other" ||
+		option.AuthorizationInstanceOwnerSystemAccountID != "sys_w2_group_other" ||
+		option.OwnerSystemAccountID != "sys_w2_group_other" ||
+		option.OwnerSystemAccountName != "W2 Group Other" ||
+		!option.Permissions.CanUse ||
+		option.Permissions.CanAuthorize ||
+		option.Permissions.CanViewCredentials ||
+		option.Permissions.CanBindToAPIKey {
+		t.Fatalf("self options missing authorized account or permissions: %+v", selfOptions)
+	}
 
 	groupFiltered, err := service.Options(ctx, managementaccounts.OptionListInput{
 		SystemAccountID:            "sys_w2_proxy_options",
@@ -100,7 +119,7 @@ func TestW2ManagementAccountOptionsPostgresSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("group filtered account options: %v", err)
 	}
-	if len(groupFiltered) != 1 || groupFiltered[0].ID != "acct_w2_alpha" {
+	if findAccountOption(groupFiltered, "acct_w2_alpha") == nil || findAccountOption(groupFiltered, "acct_w2_authorized_other") == nil {
 		t.Fatalf("group filtered options = %+v", groupFiltered)
 	}
 
@@ -113,7 +132,7 @@ func TestW2ManagementAccountOptionsPostgresSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tag filtered account options: %v", err)
 	}
-	if len(tagFiltered) != 1 || tagFiltered[0].ID != "acct_w2_alpha" {
+	if findAccountOption(tagFiltered, "acct_w2_alpha") == nil || findAccountOption(tagFiltered, "acct_w2_authorized_other") == nil {
 		t.Fatalf("tag filtered options = %+v", tagFiltered)
 	}
 
@@ -122,7 +141,7 @@ func TestW2ManagementAccountOptionsPostgresSmoke(t *testing.T) {
 		t.Fatalf("account tags: %v", err)
 	}
 	mainTag := findAccountTag(tags, "tag_w2_main")
-	if mainTag == nil || mainTag.AccountCount != 1 {
+	if mainTag == nil || mainTag.AccountCount != 2 {
 		t.Fatalf("main tag = %+v, tags = %+v", mainTag, tags)
 	}
 	if findAccountTag(tags, "tag_w2_other") != nil {
@@ -138,10 +157,12 @@ func TestW2ManagementAccountOptionsPostgresSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("available account options: %v", err)
 	}
-	if findAccountOption(available, "acct_w2_unschedulable") != nil || findAccountOption(available, "acct_w2_cooling") != nil {
+	if findAccountOption(available, "acct_w2_unschedulable") != nil ||
+		findAccountOption(available, "acct_w2_cooling") != nil ||
+		findAccountOption(available, "acct_w2_authorized_unbound") != nil {
 		t.Fatalf("available options included blocked accounts: %+v", available)
 	}
-	if findAccountOption(available, "acct_w2_alpha") == nil {
+	if findAccountOption(available, "acct_w2_alpha") == nil || findAccountOption(available, "acct_w2_authorized_other") == nil {
 		t.Fatalf("available options missing active account: %+v", available)
 	}
 
@@ -208,6 +229,9 @@ func TestW2ManagementAccountOptionsPostgresSmoke(t *testing.T) {
 	if findAccountOption(selfOwnerSearch, "acct_w2_other") != nil {
 		t.Fatalf("self contains search leaked other owner: %+v", selfOwnerSearch)
 	}
+	if findAccountOption(selfOwnerSearch, "acct_w2_authorized_other") == nil {
+		t.Fatalf("self contains search should include authorized instance name: %+v", selfOwnerSearch)
+	}
 	globalOwnerSearch, err := service.Options(ctx, managementaccounts.OptionListInput{
 		IncludeSystemAccountFields: true,
 		Keyword:                    "Owner",
@@ -218,6 +242,9 @@ func TestW2ManagementAccountOptionsPostgresSmoke(t *testing.T) {
 	}
 	if findAccountOption(globalOwnerSearch, "acct_w2_other") == nil {
 		t.Fatalf("global contains search missing other owner: %+v", globalOwnerSearch)
+	}
+	if findAccountOption(globalOwnerSearch, "acct_w2_authorized_other") != nil {
+		t.Fatalf("global contains search should not duplicate authorized instances: %+v", globalOwnerSearch)
 	}
 
 	authenticator := managementauth.NewAuthenticator(managementauth.AuthenticatorOptions{
@@ -254,6 +281,9 @@ func TestW2ManagementAccountOptionsPostgresSmoke(t *testing.T) {
 	if option := findAccountOption(adminBody.Data, "acct_w2_alpha"); option == nil || option.SystemAccountID != "sys_w2_proxy_options" {
 		t.Fatalf("admin response missing owner-scoped account: %+v", adminBody.Data)
 	}
+	if option := findAccountOption(adminBody.Data, "acct_w2_authorized_other"); option == nil || option.AccessType != "authorized" || option.SystemAccountID != "sys_w2_proxy_options" {
+		t.Fatalf("admin response missing authorized account: %+v", adminBody.Data)
+	}
 
 	tagReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/accounts/tags?systemAccountId=sys_w2_proxy_options", nil)
 	tagReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
@@ -268,7 +298,7 @@ func TestW2ManagementAccountOptionsPostgresSmoke(t *testing.T) {
 	if err := json.NewDecoder(tagRec.Body).Decode(&tagBody); err != nil {
 		t.Fatalf("decode tag response: %v", err)
 	}
-	if tag := findAccountTag(tagBody.Data, "tag_w2_main"); tag == nil || tag.AccountCount != 1 {
+	if tag := findAccountTag(tagBody.Data, "tag_w2_main"); tag == nil || tag.AccountCount != 2 {
 		t.Fatalf("tag response missing account count: %+v", tagBody.Data)
 	}
 
@@ -290,6 +320,14 @@ func TestW2ManagementAccountOptionsPostgresSmoke(t *testing.T) {
 	}
 	if option := findAccountOption(myBody.Data, "acct_w2_alpha"); option == nil || option.SystemAccountID != "" || option.AccessType != "owner" {
 		t.Fatalf("my response missing self account or leaked owner fields: %+v", myBody.Data)
+	}
+	if option := findAccountOption(myBody.Data, "acct_w2_authorized_other"); option == nil ||
+		option.SystemAccountID != "" ||
+		option.AccessType != "authorized" ||
+		option.AccountAuthorizationID != "auth_account_w2_other" ||
+		option.OwnerSystemAccountID != "sys_w2_group_other" ||
+		option.OwnerSystemAccountName != "W2 Group Other" {
+		t.Fatalf("my response missing authorized account or leaked owner fields: %+v", myBody.Data)
 	}
 
 	myTagReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/my-accounts/tags?systemAccountId=sys_w2_group_other", nil)
@@ -331,6 +369,8 @@ func insertW2AccountOptionsFixture(t *testing.T, ctx context.Context, db *sql.DB
 		{id: "acct_w2_unschedulable", systemAccountID: "sys_w2_proxy_options", name: "Unschedulable Account", providerCode: "openai", profileID: "profile_openai_openai_v1", protocolCode: "openai", protocolVersion: "v1", status: "active", schedulable: false, priority: 3},
 		{id: "acct_w2_cooling", systemAccountID: "sys_w2_proxy_options", name: "Cooling Account", providerCode: "openai", profileID: "profile_openai_openai_v1", protocolCode: "openai", protocolVersion: "v1", status: "active", schedulable: true, priority: 4, cooldownUntil: timePtr(now.Add(time.Hour))},
 		{id: "acct_w2_other", systemAccountID: "sys_w2_group_other", name: "Other Owner Account", providerCode: "openai", profileID: "profile_openai_openai_v1", protocolCode: "openai", protocolVersion: "v1", status: "active", schedulable: true, priority: 5},
+		{id: "acct_w2_unbound_source", systemAccountID: "sys_w2_group_other", name: "Other Unbound Source", providerCode: "openai", profileID: "profile_openai_openai_v1", protocolCode: "openai", protocolVersion: "v1", status: "active", schedulable: true, priority: 6},
+		{id: "acct_w2_revoked_source", systemAccountID: "sys_w2_group_other", name: "Other Revoked Source", providerCode: "openai", profileID: "profile_openai_openai_v1", protocolCode: "openai", protocolVersion: "v1", status: "active", schedulable: true, priority: 7},
 	}
 	for index, item := range fixtures {
 		_, err := db.ExecContext(ctx, `
@@ -380,6 +420,77 @@ func insertW2AccountOptionsFixture(t *testing.T, ctx context.Context, db *sql.DB
 	}
 }
 
+func insertW2AccountAuthorizationFixture(t *testing.T, ctx context.Context, db *sql.DB, now time.Time) {
+	t.Helper()
+
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO juhe_business.resource_authorizations (
+			id, resource_type, resource_id, resource_owner_system_account_id,
+			grantee_system_account_id, scope, status, effective_source_type,
+			activated_at, created_by, created_at, updated_at
+		) VALUES
+			('auth_account_w2_other', 'account', 'acct_w2_other', 'sys_w2_group_other',
+				'sys_w2_proxy_options', 'use', 'active', 'manual', $1, 'sys_w2_group_other', $1, $1),
+			('auth_account_w2_unbound', 'account', 'acct_w2_unbound_source', 'sys_w2_group_other',
+				'sys_w2_proxy_options', 'use', 'active', 'manual', $1, 'sys_w2_group_other', $1, $1),
+			('auth_account_w2_revoked', 'account', 'acct_w2_revoked_source', 'sys_w2_group_other',
+				'sys_w2_proxy_options', 'use', 'revoked', 'manual', $1, 'sys_w2_group_other', $1, $1)
+	`, now)
+	if err != nil {
+		t.Fatalf("insert W2 account authorizations: %v", err)
+	}
+
+	fixtures := []struct {
+		id              string
+		name            string
+		authorizationID string
+		priority        int
+	}{
+		{id: "acct_w2_authorized_other", name: "Authorized Other Owner Account", authorizationID: "auth_account_w2_other", priority: 6},
+		{id: "acct_w2_authorized_unbound", name: "Authorized Unbound Account", authorizationID: "auth_account_w2_unbound", priority: 7},
+		{id: "acct_w2_authorized_revoked", name: "Authorized Revoked Account", authorizationID: "auth_account_w2_revoked", priority: 8},
+	}
+	for index, item := range fixtures {
+		_, err = db.ExecContext(ctx, `
+			INSERT INTO juhe_business.accounts (
+				id, system_account_id, provider_code, provider_protocol_profile_id,
+				protocol_code, protocol_version, name, type, status, credentials_encrypted,
+				credential_fingerprint, credential_mask, concurrency_limit, priority,
+				super_priority_enabled, fallback_enabled, client_compatibility, schedulable,
+				authorization_instance_source_account_id, authorization_instance_authorization_id,
+				authorization_instance_owner_system_account_id, created_at, updated_at
+			) VALUES (
+				$1, 'sys_w2_proxy_options', 'openai', 'profile_openai_openai_v1',
+				'openai', 'v1', $2, 'api_key', 'active', 'encrypted-fixture',
+				NULL, 'sk-test', 20, $3,
+				false, false, 'openai_standard', true,
+				CASE WHEN $4 = 'auth_account_w2_unbound' THEN 'acct_w2_unbound_source'
+					WHEN $4 = 'auth_account_w2_revoked' THEN 'acct_w2_revoked_source'
+					ELSE 'acct_w2_other'
+				END,
+				$4,
+				'sys_w2_group_other', $5, $6
+			)
+		`, item.id, item.name, item.priority, item.authorizationID, now.Add(time.Duration(20+index)*time.Second), now.Add(time.Duration(20+index)*time.Second))
+		if err != nil {
+			t.Fatalf("insert W2 authorized account fixture %s: %v", item.id, err)
+		}
+		insertW2AccountNameSearchDocument(t, ctx, db, item.id, "sys_w2_proxy_options", item.name, now)
+	}
+
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO juhe_business.group_accounts (
+			system_account_id, group_id, account_id, account_authorization_id, enabled, created_at, updated_at
+		) VALUES (
+			'sys_w2_proxy_options', 'group_w2_default', 'acct_w2_authorized_other',
+			'auth_account_w2_other', true, $1, $2
+		)
+	`, now, now)
+	if err != nil {
+		t.Fatalf("insert W2 authorized account group binding: %v", err)
+	}
+}
+
 func insertW2AccountTagsFixture(t *testing.T, ctx context.Context, db *sql.DB, now time.Time) {
 	t.Helper()
 	_, err := db.ExecContext(ctx, `
@@ -399,6 +510,7 @@ func insertW2AccountTagsFixture(t *testing.T, ctx context.Context, db *sql.DB, n
 			account_id, tag_id, system_account_id, created_at
 		) VALUES
 			('acct_w2_alpha', 'tag_w2_main', 'sys_w2_proxy_options', $1),
+			('acct_w2_authorized_other', 'tag_w2_main', 'sys_w2_proxy_options', $1),
 			('acct_w2_other', 'tag_w2_other', 'sys_w2_group_other', $1)
 	`, now)
 	if err != nil {

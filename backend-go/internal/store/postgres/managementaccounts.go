@@ -58,22 +58,32 @@ func listManagementAccountOptions(ctx context.Context, q *postgresqueries.Querie
 	}
 	options := make([]port.ManagementAccountOption, 0, len(rows))
 	for _, row := range rows {
+		accessType := accountOptionAccessType(row.AccessType)
 		option := port.ManagementAccountOption{
-			ID:                        row.ID,
-			OwnerSystemAccountID:      row.SystemAccountID,
-			ProviderCode:              row.ProviderCode,
-			ProviderProtocolProfileID: row.ProviderProtocolProfileID,
-			ProtocolCode:              row.ProtocolCode,
-			ProtocolVersion:           row.ProtocolVersion,
-			Name:                      row.Name,
-			Type:                      row.Type,
-			Status:                    row.Status,
-			AccountExpiresAt:          timestamptzPtr(row.AccountExpiresAt),
+			ID:                                   row.ID,
+			OwnerSystemAccountID:                 row.OwnerSystemAccountID,
+			OwnerSystemAccountName:               row.OwnerSystemAccountName,
+			ProviderCode:                         row.ProviderCode,
+			ProviderProtocolProfileID:            row.ProviderProtocolProfileID,
+			ProtocolCode:                         row.ProtocolCode,
+			ProtocolVersion:                      row.ProtocolVersion,
+			Name:                                 row.Name,
+			Type:                                 row.Type,
+			Status:                               row.Status,
+			AccessType:                           accessType,
+			AccountAuthorizationID:               textValue(row.AccountAuthorizationID),
+			AuthorizationStatus:                  textValue(row.AuthorizationStatus),
+			AuthorizationExpiresAt:               timestamptzPtr(row.AuthorizationExpiresAt),
+			AuthorizationInstanceSourceAccountID: textValue(row.AuthorizationInstanceSourceAccountID),
+			AuthorizationInstanceOwnerSystemAccountID: textValue(row.AuthorizationInstanceOwnerSystemAccountID),
+			AccountExpiresAt: timestamptzPtr(row.AccountExpiresAt),
 		}
 		if input.IncludeSystemAccountFields {
 			option.SystemAccountID = row.SystemAccountID
 			option.SystemAccountName = row.SystemAccountName
-			option.OwnerSystemAccountName = row.SystemAccountName
+		}
+		if accessType != "authorized" && !input.IncludeSystemAccountFields {
+			option.OwnerSystemAccountName = ""
 		}
 		options = append(options, option)
 	}
@@ -154,6 +164,13 @@ func accountNameSearchGrams(value string, gramLength int) []string {
 		terms = append(terms, term)
 	}
 	return terms
+}
+
+func accountOptionAccessType(value string) string {
+	if strings.TrimSpace(value) == "authorized" {
+		return "authorized"
+	}
+	return "owner"
 }
 
 var _ port.ManagementAccountOptionReader = (*Store)(nil)

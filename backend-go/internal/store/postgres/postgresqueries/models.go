@@ -9,36 +9,39 @@ import (
 )
 
 type JuheBusinessAccount struct {
-	ID                              string
-	SystemAccountID                 string
-	ProviderCode                    string
-	ProviderProtocolProfileID       string
-	ProtocolCode                    string
-	ProtocolVersion                 string
-	Name                            string
-	Type                            string
-	Status                          string
-	CredentialsEncrypted            string
-	CredentialFingerprint           pgtype.Text
-	CredentialMask                  string
-	ConcurrencyLimit                int32
-	Priority                        int32
-	SuperPriorityEnabled            bool
-	FallbackEnabled                 bool
-	ClientCompatibility             string
-	Schedulable                     bool
-	AvailabilityScheduleJson        pgtype.Text
-	AvailabilityScheduleNextCheckAt pgtype.Timestamptz
-	Notes                           pgtype.Text
-	AccountExpiresAt                pgtype.Timestamptz
-	LastUsedAt                      pgtype.Timestamptz
-	CooldownUntil                   pgtype.Timestamptz
-	LastErrorCode                   pgtype.Text
-	LastErrorMessage                pgtype.Text
-	DeletedAt                       pgtype.Timestamptz
-	DeletedBy                       pgtype.Text
-	CreatedAt                       pgtype.Timestamptz
-	UpdatedAt                       pgtype.Timestamptz
+	ID                                        string
+	SystemAccountID                           string
+	ProviderCode                              string
+	ProviderProtocolProfileID                 string
+	ProtocolCode                              string
+	ProtocolVersion                           string
+	Name                                      string
+	Type                                      string
+	Status                                    string
+	CredentialsEncrypted                      string
+	CredentialFingerprint                     pgtype.Text
+	CredentialMask                            string
+	ConcurrencyLimit                          int32
+	Priority                                  int32
+	SuperPriorityEnabled                      bool
+	FallbackEnabled                           bool
+	ClientCompatibility                       string
+	Schedulable                               bool
+	AvailabilityScheduleJson                  pgtype.Text
+	AvailabilityScheduleNextCheckAt           pgtype.Timestamptz
+	Notes                                     pgtype.Text
+	AccountExpiresAt                          pgtype.Timestamptz
+	LastUsedAt                                pgtype.Timestamptz
+	CooldownUntil                             pgtype.Timestamptz
+	LastErrorCode                             pgtype.Text
+	LastErrorMessage                          pgtype.Text
+	DeletedAt                                 pgtype.Timestamptz
+	DeletedBy                                 pgtype.Text
+	CreatedAt                                 pgtype.Timestamptz
+	UpdatedAt                                 pgtype.Timestamptz
+	AuthorizationInstanceSourceAccountID      pgtype.Text
+	AuthorizationInstanceAuthorizationID      pgtype.Text
+	AuthorizationInstanceOwnerSystemAccountID pgtype.Text
 }
 
 type JuheBusinessAccountNameSearchDocument struct {

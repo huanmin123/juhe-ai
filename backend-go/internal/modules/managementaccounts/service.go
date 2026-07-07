@@ -52,21 +52,26 @@ type ResourcePermissions struct {
 }
 
 type Option struct {
-	ID                        string              `json:"id"`
-	SystemAccountID           string              `json:"systemAccountId,omitempty"`
-	SystemAccountName         string              `json:"systemAccountName,omitempty"`
-	OwnerSystemAccountID      string              `json:"ownerSystemAccountId"`
-	OwnerSystemAccountName    string              `json:"ownerSystemAccountName,omitempty"`
-	ProviderCode              string              `json:"providerCode"`
-	ProviderProtocolProfileID string              `json:"providerProtocolProfileId"`
-	ProtocolCode              string              `json:"protocolCode"`
-	ProtocolVersion           string              `json:"protocolVersion"`
-	Name                      string              `json:"name"`
-	Type                      string              `json:"type"`
-	Status                    string              `json:"status"`
-	AccessType                string              `json:"accessType"`
-	AccountExpiresAt          string              `json:"accountExpiresAt,omitempty"`
-	Permissions               ResourcePermissions `json:"permissions"`
+	ID                                        string              `json:"id"`
+	SystemAccountID                           string              `json:"systemAccountId,omitempty"`
+	SystemAccountName                         string              `json:"systemAccountName,omitempty"`
+	OwnerSystemAccountID                      string              `json:"ownerSystemAccountId"`
+	OwnerSystemAccountName                    string              `json:"ownerSystemAccountName,omitempty"`
+	ProviderCode                              string              `json:"providerCode"`
+	ProviderProtocolProfileID                 string              `json:"providerProtocolProfileId"`
+	ProtocolCode                              string              `json:"protocolCode"`
+	ProtocolVersion                           string              `json:"protocolVersion"`
+	Name                                      string              `json:"name"`
+	Type                                      string              `json:"type"`
+	Status                                    string              `json:"status"`
+	AccessType                                string              `json:"accessType"`
+	AccountAuthorizationID                    string              `json:"accountAuthorizationId,omitempty"`
+	AuthorizationStatus                       string              `json:"authorizationStatus,omitempty"`
+	AuthorizationExpiresAt                    string              `json:"authorizationExpiresAt,omitempty"`
+	AuthorizationInstanceSourceAccountID      string              `json:"authorizationInstanceSourceAccountId,omitempty"`
+	AuthorizationInstanceOwnerSystemAccountID string              `json:"authorizationInstanceOwnerSystemAccountId,omitempty"`
+	AccountExpiresAt                          string              `json:"accountExpiresAt,omitempty"`
+	Permissions                               ResourcePermissions `json:"permissions"`
 }
 
 type Tag struct {
@@ -107,22 +112,28 @@ func (s *Service) Options(ctx context.Context, input OptionListInput) ([]Option,
 	}
 	items := make([]Option, 0, len(rows))
 	for _, row := range rows {
+		accessType := accountAccessType(row.AccessType)
 		items = append(items, Option{
-			ID:                        row.ID,
-			SystemAccountID:           row.SystemAccountID,
-			SystemAccountName:         row.SystemAccountName,
-			OwnerSystemAccountID:      row.OwnerSystemAccountID,
-			OwnerSystemAccountName:    row.OwnerSystemAccountName,
-			ProviderCode:              row.ProviderCode,
-			ProviderProtocolProfileID: row.ProviderProtocolProfileID,
-			ProtocolCode:              row.ProtocolCode,
-			ProtocolVersion:           row.ProtocolVersion,
-			Name:                      row.Name,
-			Type:                      row.Type,
-			Status:                    row.Status,
-			AccessType:                "owner",
-			AccountExpiresAt:          formatOptionalTime(row.AccountExpiresAt),
-			Permissions:               ownerPermissions(),
+			ID:                                   row.ID,
+			SystemAccountID:                      row.SystemAccountID,
+			SystemAccountName:                    row.SystemAccountName,
+			OwnerSystemAccountID:                 row.OwnerSystemAccountID,
+			OwnerSystemAccountName:               row.OwnerSystemAccountName,
+			ProviderCode:                         row.ProviderCode,
+			ProviderProtocolProfileID:            row.ProviderProtocolProfileID,
+			ProtocolCode:                         row.ProtocolCode,
+			ProtocolVersion:                      row.ProtocolVersion,
+			Name:                                 row.Name,
+			Type:                                 row.Type,
+			Status:                               row.Status,
+			AccessType:                           accessType,
+			AccountAuthorizationID:               row.AccountAuthorizationID,
+			AuthorizationStatus:                  row.AuthorizationStatus,
+			AuthorizationExpiresAt:               formatOptionalTime(row.AuthorizationExpiresAt),
+			AuthorizationInstanceSourceAccountID: row.AuthorizationInstanceSourceAccountID,
+			AuthorizationInstanceOwnerSystemAccountID: row.AuthorizationInstanceOwnerSystemAccountID,
+			AccountExpiresAt: formatOptionalTime(row.AccountExpiresAt),
+			Permissions:      accountPermissions(accessType),
 		})
 	}
 	return items, nil
@@ -238,4 +249,31 @@ func ownerPermissions() ResourcePermissions {
 		CanManageAccounts:      true,
 		CanBindToAPIKey:        true,
 	}
+}
+
+func authorizedAccountPermissions() ResourcePermissions {
+	return ResourcePermissions{
+		CanUse:                 true,
+		CanEdit:                false,
+		CanDelete:              false,
+		CanReturnAuthorization: false,
+		CanAuthorize:           false,
+		CanViewCredentials:     false,
+		CanManageAccounts:      false,
+		CanBindToAPIKey:        false,
+	}
+}
+
+func accountPermissions(accessType string) ResourcePermissions {
+	if accessType == "authorized" {
+		return authorizedAccountPermissions()
+	}
+	return ownerPermissions()
+}
+
+func accountAccessType(value string) string {
+	if strings.TrimSpace(value) == "authorized" {
+		return "authorized"
+	}
+	return "owner"
 }
