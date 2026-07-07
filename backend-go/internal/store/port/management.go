@@ -175,6 +175,11 @@ type ManagementGroupOption struct {
 	IsDefault              bool
 	GroupType              string
 	SchedulingPolicy       map[string]any
+	AccessType             string
+	GroupAuthorizationID   string
+	AuthorizationStatus    string
+	AuthorizationExpiresAt *time.Time
+	AuthorizationLimits    map[string]any
 }
 
 type ManagementGroupAccountOption struct {
@@ -189,6 +194,11 @@ type ManagementGroupAccountOption struct {
 	IsDefault              bool
 	GroupType              string
 	SchedulingPolicy       map[string]any
+	AccessType             string
+	GroupAuthorizationID   string
+	AuthorizationStatus    string
+	AuthorizationExpiresAt *time.Time
+	AuthorizationLimits    map[string]any
 	AccountIDs             []string
 }
 
@@ -199,6 +209,7 @@ type ManagementGroupOptionListInput struct {
 	Keyword                    string
 	ProviderCode               string
 	Limit                      int
+	ManageableOnly             bool
 	PreferDefault              bool
 }
 

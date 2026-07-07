@@ -52,6 +52,28 @@ func TestManagementGroupSchedulingPolicy(t *testing.T) {
 	}
 }
 
+func TestManagementGroupAuthorizationLimits(t *testing.T) {
+	empty, err := managementGroupAuthorizationLimits("group_authorized", pgtype.Text{})
+	if err != nil {
+		t.Fatalf("empty limits error = %v", err)
+	}
+	if empty != nil {
+		t.Fatalf("empty limits = %#v, want nil", empty)
+	}
+
+	limits, err := managementGroupAuthorizationLimits("group_authorized", pgtype.Text{String: `{"daily":{"limit":100}}`, Valid: true})
+	if err != nil {
+		t.Fatalf("limits error = %v", err)
+	}
+	if limits["daily"] == nil {
+		t.Fatalf("limits = %#v", limits)
+	}
+
+	if _, err := managementGroupAuthorizationLimits("group_authorized", pgtype.Text{String: `{"daily":`, Valid: true}); err == nil {
+		t.Fatal("invalid limits error = nil")
+	}
+}
+
 func fullHighConcurrencyPolicyJSON() string {
 	return `{
 		"mode":"balanced_fast",

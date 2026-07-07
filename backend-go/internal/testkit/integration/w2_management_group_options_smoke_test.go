@@ -51,6 +51,7 @@ func TestW2ManagementGroupOptionsPostgresSmoke(t *testing.T) {
 	now := time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC)
 	insertW2ProxyOptionsFixture(t, ctx, db, now)
 	insertW2GroupOptionsFixture(t, ctx, db, now)
+	insertW2GroupAuthorizationFixture(t, ctx, db, now)
 	sessionToken := "w2-management-group-session-token"
 	insertW2ManagementSessionFixture(t, ctx, db, sessionToken, now)
 
@@ -70,6 +71,12 @@ func TestW2ManagementGroupOptionsPostgresSmoke(t *testing.T) {
 	}
 	if findGroupOption(adminOptions, "group_w2_other") == nil {
 		t.Fatalf("admin all options should include other owner: %+v", adminOptions)
+	}
+	if count := countGroupOptions(adminOptions, "group_w2_other"); count != 1 {
+		t.Fatalf("admin all options should not duplicate authorized group, count = %d, options = %+v", count, adminOptions)
+	}
+	if option := findGroupOption(adminOptions, "group_w2_other"); option.AccessType != "owner" || option.GroupAuthorizationID != "" {
+		t.Fatalf("admin all options should expose other group as owner row only: %+v", option)
 	}
 
 	preferred, err := service.Options(ctx, managementgroups.OptionListInput{
@@ -106,8 +113,32 @@ func TestW2ManagementGroupOptionsPostgresSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("self group options: %v", err)
 	}
-	if findGroupOption(selfOptions, "group_w2_other") != nil {
-		t.Fatalf("self options leaked other owner: %+v", selfOptions)
+	if option := findGroupOption(selfOptions, "group_w2_other"); option == nil ||
+		option.AccessType != "authorized" ||
+		option.GroupAuthorizationID != "auth_group_w2_other" ||
+		option.AuthorizationStatus != "active" ||
+		option.OwnerSystemAccountID != "sys_w2_group_other" ||
+		option.OwnerSystemAccountName != "W2 Group Other" ||
+		!option.Permissions.CanBindToAPIKey ||
+		option.Permissions.CanAuthorize ||
+		option.Permissions.CanManageAccounts {
+		t.Fatalf("self options missing authorized group or permissions: %+v", selfOptions)
+	}
+	if findGroupOption(selfOptions, "group_w2_revoked") != nil {
+		t.Fatalf("self options included revoked authorization: %+v", selfOptions)
+	}
+	manageableOptions, err := service.Options(ctx, managementgroups.OptionListInput{
+		SystemAccountID:            "sys_w2_proxy_options",
+		ProviderCode:               "openai",
+		Limit:                      10,
+		ManageableOnly:             true,
+		IncludeSystemAccountFields: true,
+	})
+	if err != nil {
+		t.Fatalf("manageable group options: %v", err)
+	}
+	if findGroupOption(manageableOptions, "group_w2_other") != nil {
+		t.Fatalf("manageable options should exclude authorized group: %+v", manageableOptions)
 	}
 	if option := findGroupOption(selfOptions, "group_w2_disabled"); option == nil || option.SystemAccountID != "" {
 		t.Fatalf("self options should include disabled owner group without owner fields: %+v", selfOptions)
@@ -159,8 +190,8 @@ func TestW2ManagementGroupOptionsPostgresSmoke(t *testing.T) {
 	if err := json.NewDecoder(myRec.Body).Decode(&myBody); err != nil {
 		t.Fatalf("decode my response: %v", err)
 	}
-	if findGroupOption(myBody.Data, "group_w2_other") != nil {
-		t.Fatalf("my response leaked query systemAccountId owner: %+v", myBody.Data)
+	if option := findGroupOption(myBody.Data, "group_w2_other"); option == nil || option.AccessType != "authorized" || option.SystemAccountID != "" {
+		t.Fatalf("my response should include authorized group without management owner fields: %+v", myBody.Data)
 	}
 	if option := findGroupOption(myBody.Data, "group_w2_default"); option == nil || option.SystemAccountID != "" || option.AccessType != "owner" {
 		t.Fatalf("my response missing self group or leaked owner fields: %+v", myBody.Data)
@@ -197,6 +228,7 @@ func insertW2GroupOptionsFixture(t *testing.T, ctx context.Context, db *sql.DB, 
 		{id: "group_w2_disabled", systemAccountID: "sys_w2_proxy_options", name: "停用分组", providerCode: "openai", enabled: false, groupType: "personal", updatedAt: now.Add(3 * time.Second)},
 		{id: "group_w2_high", systemAccountID: "sys_w2_proxy_options", name: "高并发分组", providerCode: "gpt", enabled: true, groupType: "high_concurrency", policy: w2GroupStringPtr(w2HighConcurrencyPolicyJSON()), updatedAt: now.Add(2 * time.Second)},
 		{id: "group_w2_other", systemAccountID: "sys_w2_group_other", name: "其他账户分组", providerCode: "openai", enabled: true, groupType: "personal", updatedAt: now.Add(time.Second)},
+		{id: "group_w2_revoked", systemAccountID: "sys_w2_group_other", name: "已回收授权分组", providerCode: "openai", enabled: true, groupType: "personal", updatedAt: now},
 	}
 	for _, item := range fixtures {
 		_, err = db.ExecContext(ctx, `
@@ -213,6 +245,34 @@ func insertW2GroupOptionsFixture(t *testing.T, ctx context.Context, db *sql.DB, 
 	}
 }
 
+func insertW2GroupAuthorizationFixture(t *testing.T, ctx context.Context, db *sql.DB, now time.Time) {
+	t.Helper()
+	expiresAt := time.Now().UTC().Add(24 * time.Hour)
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO juhe_business.resource_authorizations (
+			id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id,
+			scope, status, effective_source_type, effective_source_team_id, activated_at, last_source_changed_at,
+			remark, expires_at, limits_json, created_by, created_at, revoked_by, revoked_at,
+			revoked_reason, updated_at
+		) VALUES
+			(
+				'auth_group_w2_other', 'group', 'group_w2_other', 'sys_w2_group_other', 'sys_w2_proxy_options',
+				'use', 'active', 'manual', NULL, $1, $2,
+				NULL, $3, '{"daily":{"limit":100}}', 'sys_w2_group_other', $4, NULL, NULL,
+				NULL, $5
+			),
+			(
+				'auth_group_w2_revoked', 'group', 'group_w2_revoked', 'sys_w2_group_other', 'sys_w2_proxy_options',
+				'use', 'revoked', 'manual', NULL, $1, $2,
+				NULL, NULL, NULL, 'sys_w2_group_other', $4, 'sys_w2_group_other', $5,
+				'fixture', $5
+			)
+	`, now, now, expiresAt, now, now)
+	if err != nil {
+		t.Fatalf("insert W2 group authorization fixture: %v", err)
+	}
+}
+
 func findGroupOption(options []managementgroups.Option, id string) *managementgroups.Option {
 	for index := range options {
 		if options[index].ID == id {
@@ -220,6 +280,16 @@ func findGroupOption(options []managementgroups.Option, id string) *managementgr
 		}
 	}
 	return nil
+}
+
+func countGroupOptions(options []managementgroups.Option, id string) int {
+	count := 0
+	for index := range options {
+		if options[index].ID == id {
+			count++
+		}
+	}
+	return count
 }
 
 func w2HighConcurrencyPolicyJSON() string {

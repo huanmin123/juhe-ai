@@ -61,50 +61,119 @@ func (q *Queries) ListManagementGroupAccountOptionIDs(ctx context.Context, arg L
 }
 
 const listManagementGroupAccountOptions = `-- name: ListManagementGroupAccountOptions :many
+WITH group_rows AS (
+  SELECT
+    groups.id,
+    groups.system_account_id,
+    system_accounts.display_name AS system_account_name,
+    groups.name,
+    groups.provider_code,
+    groups.enabled,
+    groups.is_default,
+    groups.group_type,
+    groups.scheduling_policy_json,
+    groups.updated_at,
+    'owner'::text AS access_type,
+    NULL::text AS group_authorization_id,
+    NULL::text AS authorization_status,
+    NULL::timestamptz AS authorization_expires_at,
+    NULL::text AS authorization_limits_json
+  FROM juhe_business.groups AS groups
+  LEFT JOIN juhe_business.system_accounts AS system_accounts
+    ON system_accounts.id = groups.system_account_id
+  WHERE (
+    $8::text = ''
+    OR groups.system_account_id = $8::text
+  )
+
+  UNION ALL
+
+  SELECT
+    groups.id,
+    groups.system_account_id,
+    system_accounts.display_name AS system_account_name,
+    groups.name,
+    groups.provider_code,
+    CASE
+      WHEN groups.enabled THEN coalesce(group_authorization_settings.enabled, true)
+      ELSE false
+    END AS enabled,
+    false AS is_default,
+    coalesce(group_authorization_settings.group_type, groups.group_type) AS group_type,
+    CASE
+      WHEN coalesce(group_authorization_settings.group_type, groups.group_type) = 'high_concurrency'
+        THEN coalesce(group_authorization_settings.scheduling_policy_json, groups.scheduling_policy_json)
+      ELSE NULL
+    END AS scheduling_policy_json,
+    coalesce(group_authorization_settings.updated_at, groups.updated_at) AS updated_at,
+    'authorized'::text AS access_type,
+    resource_authorizations.id AS group_authorization_id,
+    resource_authorizations.status AS authorization_status,
+    resource_authorizations.expires_at AS authorization_expires_at,
+    resource_authorizations.limits_json::text AS authorization_limits_json
+  FROM juhe_business.resource_authorizations AS resource_authorizations
+  INNER JOIN juhe_business.groups AS groups
+    ON groups.id = resource_authorizations.resource_id
+    AND groups.system_account_id = resource_authorizations.resource_owner_system_account_id
+  LEFT JOIN juhe_business.group_authorization_settings AS group_authorization_settings
+    ON group_authorization_settings.authorization_id = resource_authorizations.id
+    AND group_authorization_settings.system_account_id = resource_authorizations.grantee_system_account_id
+    AND group_authorization_settings.group_id = resource_authorizations.resource_id
+  LEFT JOIN juhe_business.system_accounts AS system_accounts
+    ON system_accounts.id = groups.system_account_id
+  WHERE $8::text <> ''
+    AND $9::boolean = false
+    AND resource_authorizations.resource_type = 'group'
+    AND resource_authorizations.grantee_system_account_id = $8::text
+    AND resource_authorizations.status IN ('active', 'paused', 'expired')
+    AND groups.system_account_id <> $8::text
+)
 SELECT
-  groups.id,
-  groups.system_account_id,
-  system_accounts.display_name AS system_account_name,
-  groups.name,
-  groups.provider_code,
-  groups.enabled,
-  groups.is_default,
-  groups.group_type,
-  groups.scheduling_policy_json
-FROM juhe_business.groups AS groups
-LEFT JOIN juhe_business.system_accounts AS system_accounts
-  ON system_accounts.id = groups.system_account_id
-WHERE ($1::text = '' OR groups.system_account_id = $1::text)
+  group_rows.id,
+  group_rows.system_account_id,
+  group_rows.system_account_name,
+  group_rows.name,
+  group_rows.provider_code,
+  group_rows.enabled,
+  group_rows.is_default,
+  group_rows.group_type,
+  group_rows.scheduling_policy_json,
+  group_rows.access_type,
+  group_rows.group_authorization_id,
+  group_rows.authorization_status,
+  group_rows.authorization_expires_at,
+  group_rows.authorization_limits_json
+FROM group_rows
+WHERE true
   AND (
-    coalesce(array_length($2::text[], 1), 0) = 0
-    OR groups.id = ANY($2::text[])
+    coalesce(array_length($1::text[], 1), 0) = 0
+    OR group_rows.id = ANY($1::text[])
   )
   AND (
-    $3::text = ''
-    OR groups.provider_code = $3::text
+    $2::text = ''
+    OR group_rows.provider_code = $2::text
   )
   AND (
-    $4::boolean = false
+    $3::boolean = false
     OR (
       (
-        groups.name COLLATE "C" >= $5::text
-        AND groups.name COLLATE "C" < $6::text
+        group_rows.name COLLATE "C" >= $4::text
+        AND group_rows.name COLLATE "C" < $5::text
       )
       OR (
-        groups.provider_code COLLATE "C" >= $5::text
-        AND groups.provider_code COLLATE "C" < $6::text
+        group_rows.provider_code COLLATE "C" >= $4::text
+        AND group_rows.provider_code COLLATE "C" < $5::text
       )
     )
   )
 ORDER BY
-  CASE WHEN $7::boolean THEN groups.is_default ELSE false END DESC,
-  groups.updated_at DESC,
-  groups.id DESC
-LIMIT $8::int
+  CASE WHEN $6::boolean THEN group_rows.is_default ELSE false END DESC,
+  group_rows.updated_at DESC,
+  group_rows.id DESC
+LIMIT $7::int
 `
 
 type ListManagementGroupAccountOptionsParams struct {
-	SystemAccountID string
 	Ids             []string
 	ProviderCode    string
 	HasKeyword      bool
@@ -112,23 +181,29 @@ type ListManagementGroupAccountOptionsParams struct {
 	KeywordUpper    string
 	PreferDefault   bool
 	RowLimit        int32
+	SystemAccountID string
+	ManageableOnly  bool
 }
 
 type ListManagementGroupAccountOptionsRow struct {
-	ID                   string
-	SystemAccountID      string
-	SystemAccountName    pgtype.Text
-	Name                 string
-	ProviderCode         string
-	Enabled              bool
-	IsDefault            bool
-	GroupType            string
-	SchedulingPolicyJson pgtype.Text
+	ID                      string
+	SystemAccountID         string
+	SystemAccountName       pgtype.Text
+	Name                    string
+	ProviderCode            string
+	Enabled                 bool
+	IsDefault               bool
+	GroupType               string
+	SchedulingPolicyJson    pgtype.Text
+	AccessType              string
+	GroupAuthorizationID    pgtype.Text
+	AuthorizationStatus     pgtype.Text
+	AuthorizationExpiresAt  pgtype.Timestamptz
+	AuthorizationLimitsJson pgtype.Text
 }
 
 func (q *Queries) ListManagementGroupAccountOptions(ctx context.Context, arg ListManagementGroupAccountOptionsParams) ([]ListManagementGroupAccountOptionsRow, error) {
 	rows, err := q.db.Query(ctx, listManagementGroupAccountOptions,
-		arg.SystemAccountID,
 		arg.Ids,
 		arg.ProviderCode,
 		arg.HasKeyword,
@@ -136,6 +211,8 @@ func (q *Queries) ListManagementGroupAccountOptions(ctx context.Context, arg Lis
 		arg.KeywordUpper,
 		arg.PreferDefault,
 		arg.RowLimit,
+		arg.SystemAccountID,
+		arg.ManageableOnly,
 	)
 	if err != nil {
 		return nil, err
@@ -154,6 +231,11 @@ func (q *Queries) ListManagementGroupAccountOptions(ctx context.Context, arg Lis
 			&i.IsDefault,
 			&i.GroupType,
 			&i.SchedulingPolicyJson,
+			&i.AccessType,
+			&i.GroupAuthorizationID,
+			&i.AuthorizationStatus,
+			&i.AuthorizationExpiresAt,
+			&i.AuthorizationLimitsJson,
 		); err != nil {
 			return nil, err
 		}

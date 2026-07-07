@@ -52,6 +52,7 @@ func TestW2ManagementGroupAccountOptionsPostgresSmoke(t *testing.T) {
 	now := time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC)
 	insertW2ProxyOptionsFixture(t, ctx, db, now)
 	insertW2GroupOptionsFixture(t, ctx, db, now)
+	insertW2GroupAuthorizationFixture(t, ctx, db, now)
 	insertW2AccountOptionsFixture(t, ctx, db, now)
 	insertW2GroupAccountOptionsExtraBindingsFixture(t, ctx, db, now)
 	sessionToken := "w2-management-group-account-session-token"
@@ -78,6 +79,12 @@ func TestW2ManagementGroupAccountOptionsPostgresSmoke(t *testing.T) {
 	if defaultOption == nil {
 		t.Fatalf("admin options missing default group: %+v", adminOptions)
 	}
+	if count := countGroupAccountOptions(adminOptions, "group_w2_other"); count != 1 {
+		t.Fatalf("admin all account options should not duplicate authorized group, count = %d, options = %+v", count, adminOptions)
+	}
+	if option := findGroupAccountOption(adminOptions, "group_w2_other"); option == nil || option.AccessType != "owner" || option.GroupAuthorizationID != "" {
+		t.Fatalf("admin all account options should expose other group as owner row only: %+v", option)
+	}
 	if defaultOption.SystemAccountID != "sys_w2_proxy_options" || defaultOption.AccessType != "owner" {
 		t.Fatalf("admin default option leaked wrong owner fields: %+v", defaultOption)
 	}
@@ -93,8 +100,24 @@ func TestW2ManagementGroupAccountOptionsPostgresSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("self group account options: %v", err)
 	}
-	if findGroupAccountOption(selfOptions, "group_w2_other") != nil {
-		t.Fatalf("self options leaked other owner: %+v", selfOptions)
+	if option := findGroupAccountOption(selfOptions, "group_w2_other"); option == nil ||
+		option.AccessType != "authorized" ||
+		option.GroupAuthorizationID != "auth_group_w2_other" ||
+		len(option.AccountIDs) != 0 ||
+		!option.Permissions.CanBindToAPIKey {
+		t.Fatalf("self options missing authorized group account summary: %+v", selfOptions)
+	}
+	manageableOptions, err := service.AccountOptions(ctx, managementgroups.OptionListInput{
+		SystemAccountID: "sys_w2_proxy_options",
+		ProviderCode:    "openai",
+		Limit:           10,
+		ManageableOnly:  true,
+	})
+	if err != nil {
+		t.Fatalf("manageable group account options: %v", err)
+	}
+	if findGroupAccountOption(manageableOptions, "group_w2_other") != nil {
+		t.Fatalf("manageable account options should exclude authorized group: %+v", manageableOptions)
 	}
 	if option := findGroupAccountOption(selfOptions, "group_w2_default"); option == nil || option.SystemAccountID != "" || len(option.AccountIDs) != 1 {
 		t.Fatalf("self options missing account ids or leaked owner fields: %+v", selfOptions)
@@ -146,8 +169,11 @@ func TestW2ManagementGroupAccountOptionsPostgresSmoke(t *testing.T) {
 	if err := json.NewDecoder(myRec.Body).Decode(&myBody); err != nil {
 		t.Fatalf("decode my response: %v", err)
 	}
-	if findGroupAccountOption(myBody.Data, "group_w2_other") != nil {
-		t.Fatalf("my response leaked query systemAccountId owner: %+v", myBody.Data)
+	if option := findGroupAccountOption(myBody.Data, "group_w2_other"); option == nil ||
+		option.AccessType != "authorized" ||
+		option.SystemAccountID != "" ||
+		len(option.AccountIDs) != 0 {
+		t.Fatalf("my response should include authorized group with empty accountIds: %+v", myBody.Data)
 	}
 	if option := findGroupAccountOption(myBody.Data, "group_w2_default"); option == nil || option.SystemAccountID != "" || !reflect.DeepEqual(option.AccountIDs, []string{"acct_w2_alpha"}) {
 		t.Fatalf("my response missing self group account ids or leaked owner fields: %+v", myBody.Data)
@@ -185,4 +211,14 @@ func findGroupAccountOption(options []managementgroups.AccountOption, id string)
 		}
 	}
 	return nil
+}
+
+func countGroupAccountOptions(options []managementgroups.AccountOption, id string) int {
+	count := 0
+	for index := range options {
+		if options[index].ID == id {
+			count++
+		}
+	}
+	return count
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"juhe-ai/backend-go/internal/store/port"
 )
@@ -52,6 +53,10 @@ type Option struct {
 	GroupType              string              `json:"groupType"`
 	SchedulingPolicy       map[string]any      `json:"schedulingPolicy,omitempty"`
 	AccessType             string              `json:"accessType"`
+	GroupAuthorizationID   string              `json:"groupAuthorizationId,omitempty"`
+	AuthorizationStatus    string              `json:"authorizationStatus,omitempty"`
+	AuthorizationExpiresAt *time.Time          `json:"authorizationExpiresAt,omitempty"`
+	AuthorizationLimits    map[string]any      `json:"authorizationLimits,omitempty"`
 	Permissions            ResourcePermissions `json:"permissions"`
 }
 
@@ -75,6 +80,7 @@ func (s *Service) Options(ctx context.Context, input OptionListInput) ([]Option,
 		Keyword:                    strings.TrimSpace(input.Keyword),
 		ProviderCode:               strings.TrimSpace(input.ProviderCode),
 		Limit:                      optionLimit(input.Limit),
+		ManageableOnly:             input.ManageableOnly,
 		PreferDefault:              input.PreferDefault,
 	})
 	if err != nil {
@@ -94,8 +100,12 @@ func (s *Service) Options(ctx context.Context, input OptionListInput) ([]Option,
 			IsDefault:              row.IsDefault,
 			GroupType:              row.GroupType,
 			SchedulingPolicy:       row.SchedulingPolicy,
-			AccessType:             "owner",
-			Permissions:            ownerPermissions(),
+			AccessType:             groupAccessType(row.AccessType),
+			GroupAuthorizationID:   row.GroupAuthorizationID,
+			AuthorizationStatus:    row.AuthorizationStatus,
+			AuthorizationExpiresAt: row.AuthorizationExpiresAt,
+			AuthorizationLimits:    row.AuthorizationLimits,
+			Permissions:            groupPermissions(row),
 		})
 	}
 	return items, nil
@@ -112,6 +122,7 @@ func (s *Service) AccountOptions(ctx context.Context, input OptionListInput) ([]
 		Keyword:                    strings.TrimSpace(input.Keyword),
 		ProviderCode:               strings.TrimSpace(input.ProviderCode),
 		Limit:                      optionLimit(input.Limit),
+		ManageableOnly:             input.ManageableOnly,
 		PreferDefault:              input.PreferDefault,
 	})
 	if err != nil {
@@ -132,8 +143,12 @@ func (s *Service) AccountOptions(ctx context.Context, input OptionListInput) ([]
 				IsDefault:              row.IsDefault,
 				GroupType:              row.GroupType,
 				SchedulingPolicy:       row.SchedulingPolicy,
-				AccessType:             "owner",
-				Permissions:            ownerPermissions(),
+				AccessType:             groupAccessType(row.AccessType),
+				GroupAuthorizationID:   row.GroupAuthorizationID,
+				AuthorizationStatus:    row.AuthorizationStatus,
+				AuthorizationExpiresAt: row.AuthorizationExpiresAt,
+				AuthorizationLimits:    row.AuthorizationLimits,
+				Permissions:            groupAccountPermissions(row),
 			},
 			AccountIDs: append([]string(nil), row.AccountIDs...),
 		})
@@ -179,4 +194,45 @@ func ownerPermissions() ResourcePermissions {
 		CanManageAccounts:      true,
 		CanBindToAPIKey:        true,
 	}
+}
+
+func authorizedGroupPermissions(canBindToAPIKey bool) ResourcePermissions {
+	return ResourcePermissions{
+		CanUse:                 true,
+		CanEdit:                true,
+		CanDelete:              false,
+		CanReturnAuthorization: false,
+		CanAuthorize:           false,
+		CanViewCredentials:     false,
+		CanManageAccounts:      false,
+		CanBindToAPIKey:        canBindToAPIKey,
+	}
+}
+
+func groupPermissions(row port.ManagementGroupOption) ResourcePermissions {
+	if groupAccessType(row.AccessType) != "authorized" {
+		return ownerPermissions()
+	}
+	return authorizedGroupPermissions(canBindAuthorizedGroup(row.Enabled, row.AuthorizationStatus, row.AuthorizationExpiresAt))
+}
+
+func groupAccountPermissions(row port.ManagementGroupAccountOption) ResourcePermissions {
+	if groupAccessType(row.AccessType) != "authorized" {
+		return ownerPermissions()
+	}
+	return authorizedGroupPermissions(canBindAuthorizedGroup(row.Enabled, row.AuthorizationStatus, row.AuthorizationExpiresAt))
+}
+
+func canBindAuthorizedGroup(enabled bool, status string, expiresAt *time.Time) bool {
+	if !enabled || status != "active" {
+		return false
+	}
+	return expiresAt == nil || expiresAt.After(time.Now())
+}
+
+func groupAccessType(value string) string {
+	if strings.TrimSpace(value) == "authorized" {
+		return "authorized"
+	}
+	return "owner"
 }

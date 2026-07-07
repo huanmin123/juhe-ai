@@ -179,6 +179,17 @@ type JuheBusinessGroupAccount struct {
 	UpdatedAt                 pgtype.Timestamptz
 }
 
+type JuheBusinessGroupAuthorizationSetting struct {
+	AuthorizationID      string
+	SystemAccountID      string
+	GroupID              string
+	Enabled              bool
+	GroupType            string
+	SchedulingPolicyJson pgtype.Text
+	CreatedAt            pgtype.Timestamptz
+	UpdatedAt            pgtype.Timestamptz
+}
+
 type JuheBusinessProtocol struct {
 	ID          string
 	Code        string
@@ -300,6 +311,29 @@ type JuheBusinessProxyProfile struct {
 	LastTestedAt      pgtype.Timestamptz
 	CreatedAt         pgtype.Timestamptz
 	UpdatedAt         pgtype.Timestamptz
+}
+
+type JuheBusinessResourceAuthorization struct {
+	ID                           string
+	ResourceType                 string
+	ResourceID                   string
+	ResourceOwnerSystemAccountID string
+	GranteeSystemAccountID       string
+	Scope                        string
+	Status                       string
+	EffectiveSourceType          pgtype.Text
+	EffectiveSourceTeamID        pgtype.Text
+	ActivatedAt                  pgtype.Timestamptz
+	LastSourceChangedAt          pgtype.Timestamptz
+	Remark                       pgtype.Text
+	ExpiresAt                    pgtype.Timestamptz
+	LimitsJson                   pgtype.Text
+	CreatedBy                    string
+	CreatedAt                    pgtype.Timestamptz
+	RevokedBy                    pgtype.Text
+	RevokedAt                    pgtype.Timestamptz
+	RevokedReason                pgtype.Text
+	UpdatedAt                    pgtype.Timestamptz
 }
 
 type JuheBusinessRouteStrategy struct {

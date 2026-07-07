@@ -59,6 +59,7 @@ func listManagementGroupOptions(ctx context.Context, q *postgresqueries.Queries,
 		KeywordUpper:    keywordUpper,
 		PreferDefault:   input.PreferDefault,
 		RowLimit:        int32(managementGroupOptionLimit(input.Limit)),
+		ManageableOnly:  input.ManageableOnly,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("list management group options: %w", err)
@@ -69,20 +70,32 @@ func listManagementGroupOptions(ctx context.Context, q *postgresqueries.Queries,
 		if err != nil {
 			return nil, err
 		}
+		authorizationLimits, err := managementGroupAuthorizationLimits(row.ID, row.AuthorizationLimitsJson)
+		if err != nil {
+			return nil, err
+		}
 		option := port.ManagementGroupOption{
-			ID:                   row.ID,
-			OwnerSystemAccountID: row.SystemAccountID,
-			Name:                 row.Name,
-			ProviderCode:         row.ProviderCode,
-			Enabled:              row.Enabled,
-			IsDefault:            row.IsDefault,
-			GroupType:            managementGroupType(row.GroupType),
-			SchedulingPolicy:     schedulingPolicy,
+			ID:                     row.ID,
+			OwnerSystemAccountID:   row.SystemAccountID,
+			OwnerSystemAccountName: textValue(row.SystemAccountName),
+			Name:                   row.Name,
+			ProviderCode:           row.ProviderCode,
+			Enabled:                row.Enabled,
+			IsDefault:              row.IsDefault,
+			GroupType:              managementGroupType(row.GroupType),
+			SchedulingPolicy:       schedulingPolicy,
+			AccessType:             managementGroupAccessType(row.AccessType),
+			GroupAuthorizationID:   textValue(row.GroupAuthorizationID),
+			AuthorizationStatus:    textValue(row.AuthorizationStatus),
+			AuthorizationExpiresAt: timestamptzPtr(row.AuthorizationExpiresAt),
+			AuthorizationLimits:    authorizationLimits,
 		}
 		if input.IncludeSystemAccountFields {
 			option.SystemAccountID = row.SystemAccountID
 			option.SystemAccountName = textValue(row.SystemAccountName)
-			option.OwnerSystemAccountName = textValue(row.SystemAccountName)
+		}
+		if option.AccessType != "authorized" && !input.IncludeSystemAccountFields {
+			option.OwnerSystemAccountName = ""
 		}
 		options = append(options, option)
 	}
@@ -104,6 +117,7 @@ func listManagementGroupAccountOptions(ctx context.Context, q *postgresqueries.Q
 		KeywordUpper:    keywordUpper,
 		PreferDefault:   input.PreferDefault,
 		RowLimit:        int32(managementGroupOptionLimit(input.Limit)),
+		ManageableOnly:  input.ManageableOnly,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("list management account group options: %w", err)
@@ -131,21 +145,38 @@ func listManagementGroupAccountOptions(ctx context.Context, q *postgresqueries.Q
 		if err != nil {
 			return nil, err
 		}
+		authorizationLimits, err := managementGroupAuthorizationLimits(row.ID, row.AuthorizationLimitsJson)
+		if err != nil {
+			return nil, err
+		}
+		accessType := managementGroupAccessType(row.AccessType)
+		accountIDs := append([]string{}, accountIDsByGroupID[row.ID]...)
+		if accessType == "authorized" {
+			accountIDs = []string{}
+		}
 		option := port.ManagementGroupAccountOption{
-			ID:                   row.ID,
-			OwnerSystemAccountID: row.SystemAccountID,
-			Name:                 row.Name,
-			ProviderCode:         row.ProviderCode,
-			Enabled:              row.Enabled,
-			IsDefault:            row.IsDefault,
-			GroupType:            managementGroupType(row.GroupType),
-			SchedulingPolicy:     schedulingPolicy,
-			AccountIDs:           append([]string(nil), accountIDsByGroupID[row.ID]...),
+			ID:                     row.ID,
+			OwnerSystemAccountID:   row.SystemAccountID,
+			OwnerSystemAccountName: textValue(row.SystemAccountName),
+			Name:                   row.Name,
+			ProviderCode:           row.ProviderCode,
+			Enabled:                row.Enabled,
+			IsDefault:              row.IsDefault,
+			GroupType:              managementGroupType(row.GroupType),
+			SchedulingPolicy:       schedulingPolicy,
+			AccessType:             accessType,
+			GroupAuthorizationID:   textValue(row.GroupAuthorizationID),
+			AuthorizationStatus:    textValue(row.AuthorizationStatus),
+			AuthorizationExpiresAt: timestamptzPtr(row.AuthorizationExpiresAt),
+			AuthorizationLimits:    authorizationLimits,
+			AccountIDs:             accountIDs,
 		}
 		if input.IncludeSystemAccountFields {
 			option.SystemAccountID = row.SystemAccountID
 			option.SystemAccountName = textValue(row.SystemAccountName)
-			option.OwnerSystemAccountName = textValue(row.SystemAccountName)
+		}
+		if option.AccessType != "authorized" && !input.IncludeSystemAccountFields {
+			option.OwnerSystemAccountName = ""
 		}
 		options = append(options, option)
 	}
@@ -164,6 +195,24 @@ func managementGroupType(value string) string {
 		return "personal"
 	}
 	return value
+}
+
+func managementGroupAccessType(value string) string {
+	if strings.TrimSpace(value) == "authorized" {
+		return "authorized"
+	}
+	return "owner"
+}
+
+func managementGroupAuthorizationLimits(groupID string, value pgtype.Text) (map[string]any, error) {
+	if !value.Valid || strings.TrimSpace(value.String) == "" {
+		return nil, nil
+	}
+	var limits map[string]any
+	if err := json.Unmarshal([]byte(value.String), &limits); err != nil {
+		return nil, fmt.Errorf("group %s authorization limits json is invalid: %w", groupID, err)
+	}
+	return limits, nil
 }
 
 func managementGroupSchedulingPolicy(groupID string, groupType string, value pgtype.Text) (map[string]any, error) {
