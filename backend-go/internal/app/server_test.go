@@ -68,7 +68,9 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 		handlers.AccountOptionsHandler != nil ||
 		handlers.MyAccountOptionsHandler != nil ||
 		handlers.AccountTagsHandler != nil ||
-		handlers.MyAccountTagsHandler != nil {
+		handlers.MyAccountTagsHandler != nil ||
+		handlers.AccountTagDeleteHandler != nil ||
+		handlers.MyAccountTagDeleteHandler != nil {
 		t.Fatal("newManagementAPIHandler() returned middleware or handler while disabled")
 	}
 }
@@ -96,7 +98,9 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 		handlers.AccountOptionsHandler == nil ||
 		handlers.MyAccountOptionsHandler == nil ||
 		handlers.AccountTagsHandler == nil ||
-		handlers.MyAccountTagsHandler == nil {
+		handlers.MyAccountTagsHandler == nil ||
+		handlers.AccountTagDeleteHandler == nil ||
+		handlers.MyAccountTagDeleteHandler == nil {
 		t.Fatal("newManagementAPIHandler() returned nil middleware or handler while enabled")
 	}
 }

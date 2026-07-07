@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -147,6 +148,12 @@ func TestW2ManagementAccountOptionsPostgresSmoke(t *testing.T) {
 	if findAccountTag(tags, "tag_w2_other") != nil {
 		t.Fatalf("tags leaked other owner: %+v", tags)
 	}
+	if deleted, err := service.DeleteTag(ctx, managementaccounts.TagDeleteInput{ID: "tag_w2_main", SystemAccountID: "sys_w2_proxy_options"}); !errors.Is(err, managementaccounts.ErrAccountTagInUse) || deleted {
+		t.Fatalf("delete bound tag = %v / %v, want in-use error", deleted, err)
+	}
+	if deleted, err := service.DeleteTag(ctx, managementaccounts.TagDeleteInput{ID: "tag_w2_other", SystemAccountID: "sys_w2_proxy_options"}); err != nil || deleted {
+		t.Fatalf("delete other owner tag = %v / %v, want not found", deleted, err)
+	}
 
 	available, err := service.Options(ctx, managementaccounts.OptionListInput{
 		SystemAccountID: "sys_w2_proxy_options",
@@ -257,12 +264,14 @@ func TestW2ManagementAccountOptionsPostgresSmoke(t *testing.T) {
 			Port:                 3000,
 			ManagementAPIEnabled: true,
 		},
-		Logger:                            slog.Default(),
-		ManagementAPIAuthMiddleware:       httpapi.NewManagementAPIAuthMiddleware(authenticator),
-		ManagementAccountOptionsHandler:   httpapi.NewManagementAccountOptionsHandler(service),
-		ManagementMyAccountOptionsHandler: httpapi.NewManagementMyAccountOptionsHandler(service),
-		ManagementAccountTagsHandler:      httpapi.NewManagementAccountTagsHandler(service),
-		ManagementMyAccountTagsHandler:    httpapi.NewManagementMyAccountTagsHandler(service),
+		Logger:                              slog.Default(),
+		ManagementAPIAuthMiddleware:         httpapi.NewManagementAPIAuthMiddleware(authenticator),
+		ManagementAccountOptionsHandler:     httpapi.NewManagementAccountOptionsHandler(service),
+		ManagementMyAccountOptionsHandler:   httpapi.NewManagementMyAccountOptionsHandler(service),
+		ManagementAccountTagsHandler:        httpapi.NewManagementAccountTagsHandler(service),
+		ManagementMyAccountTagsHandler:      httpapi.NewManagementMyAccountTagsHandler(service),
+		ManagementAccountTagDeleteHandler:   httpapi.NewManagementAccountTagDeleteHandler(service),
+		ManagementMyAccountTagDeleteHandler: httpapi.NewManagementMyAccountTagDeleteHandler(service),
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/accounts/options?systemAccountId=sys_w2_proxy_options&groupId=group_w2_default&tagIds=tag_w2_main", nil)
@@ -300,6 +309,38 @@ func TestW2ManagementAccountOptionsPostgresSmoke(t *testing.T) {
 	}
 	if tag := findAccountTag(tagBody.Data, "tag_w2_main"); tag == nil || tag.AccountCount != 2 {
 		t.Fatalf("tag response missing account count: %+v", tagBody.Data)
+	}
+
+	deleteBoundTagReq := httptest.NewRequest(http.MethodDelete, "/__aisys__/api/accounts/tags/tag_w2_main?systemAccountId=sys_w2_proxy_options", nil)
+	deleteBoundTagReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
+	deleteBoundTagRec := httptest.NewRecorder()
+	router.ServeHTTP(deleteBoundTagRec, deleteBoundTagReq)
+	if deleteBoundTagRec.Code != http.StatusBadRequest || !strings.Contains(deleteBoundTagRec.Body.String(), "标签已绑定账户，不能删除") {
+		t.Fatalf("delete bound tag status = %d, body = %s", deleteBoundTagRec.Code, deleteBoundTagRec.Body.String())
+	}
+
+	deleteOtherTagReq := httptest.NewRequest(http.MethodDelete, "/__aisys__/api/accounts/tags/tag_w2_other?systemAccountId=sys_w2_proxy_options", nil)
+	deleteOtherTagReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
+	deleteOtherTagRec := httptest.NewRecorder()
+	router.ServeHTTP(deleteOtherTagRec, deleteOtherTagReq)
+	if deleteOtherTagRec.Code != http.StatusNotFound || !strings.Contains(deleteOtherTagRec.Body.String(), "标签不存在") {
+		t.Fatalf("delete other owner tag status = %d, body = %s", deleteOtherTagRec.Code, deleteOtherTagRec.Body.String())
+	}
+
+	deleteEmptyTagReq := httptest.NewRequest(http.MethodDelete, "/__aisys__/api/accounts/tags/tag_w2_empty?systemAccountId=sys_w2_proxy_options", nil)
+	deleteEmptyTagReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
+	deleteEmptyTagRec := httptest.NewRecorder()
+	router.ServeHTTP(deleteEmptyTagRec, deleteEmptyTagReq)
+	if deleteEmptyTagRec.Code != http.StatusNoContent {
+		t.Fatalf("delete empty tag status = %d, body = %s", deleteEmptyTagRec.Code, deleteEmptyTagRec.Body.String())
+	}
+
+	deleteMyEmptyTagReq := httptest.NewRequest(http.MethodDelete, "/__aisys__/api/my-accounts/tags/tag_w2_my_empty?systemAccountId=sys_w2_group_other", nil)
+	deleteMyEmptyTagReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
+	deleteMyEmptyTagRec := httptest.NewRecorder()
+	router.ServeHTTP(deleteMyEmptyTagRec, deleteMyEmptyTagReq)
+	if deleteMyEmptyTagRec.Code != http.StatusNoContent {
+		t.Fatalf("delete my empty tag status = %d, body = %s", deleteMyEmptyTagRec.Code, deleteMyEmptyTagRec.Body.String())
 	}
 
 	myReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/my-accounts/options?systemAccountId=sys_w2_group_other", nil)
@@ -499,6 +540,7 @@ func insertW2AccountTagsFixture(t *testing.T, ctx context.Context, db *sql.DB, n
 		) VALUES
 			('tag_w2_main', 'sys_w2_proxy_options', '主力', $1, $2),
 			('tag_w2_empty', 'sys_w2_proxy_options', '空标签', $1, $2),
+			('tag_w2_my_empty', 'sys_w2_proxy_options', '我的空标签', $1, $2),
 			('tag_w2_other', 'sys_w2_group_other', '其他用户标签', $1, $2)
 	`, now, now)
 	if err != nil {

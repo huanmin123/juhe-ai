@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
+
 	"juhe-ai/backend-go/internal/config"
 	"juhe-ai/backend-go/internal/modules/managementaccounts"
 	"juhe-ai/backend-go/internal/modules/managementauth"
@@ -230,18 +232,130 @@ func TestManagementAccountTagsHandlerRedactsStoreErrors(t *testing.T) {
 	}
 }
 
+func TestManagementAccountTagDeleteHandlerRequiresAdminAndParsesScope(t *testing.T) {
+	service := &managementAccountOptionServiceStub{deleteTagResult: true}
+	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
+	})(newManagementAccountTagDeleteHandler(service, managementAccountScopeAdmin))
+
+	req := managementAccountTagDeleteRequest("/__aisys__/api/accounts/tags/tag_main?systemAccountId=sys_user", "tag_main")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body = %s", rec.Code, rec.Body.String())
+	}
+	if !service.deleteTagCalled || service.deleteTagInput.ID != "tag_main" || service.deleteTagInput.SystemAccountID != "sys_user" {
+		t.Fatalf("delete tag input = %+v, called = %v", service.deleteTagInput, service.deleteTagCalled)
+	}
+}
+
+func TestManagementAccountTagDeleteHandlerRejectsOrdinaryUser(t *testing.T) {
+	service := &managementAccountOptionServiceStub{}
+	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_user", Username: "user", Role: "user", SessionID: "sess_user"},
+	})(newManagementAccountTagDeleteHandler(service, managementAccountScopeAdmin))
+
+	req := managementAccountTagDeleteRequest("/__aisys__/api/accounts/tags/tag_main?systemAccountId=sys_admin", "tag_main")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+	if service.deleteTagCalled {
+		t.Fatal("service should not be called for ordinary user on management tag delete route")
+	}
+}
+
+func TestManagementMyAccountTagDeleteHandlerForcesSelfScope(t *testing.T) {
+	service := &managementAccountOptionServiceStub{deleteTagResult: true}
+	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_user", Username: "user", Role: "user", SessionID: "sess_user"},
+	})(newManagementAccountTagDeleteHandler(service, managementAccountScopeSelf))
+
+	req := managementAccountTagDeleteRequest("/__aisys__/api/my-accounts/tags/tag_main?systemAccountId=sys_admin", "tag_main")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body = %s", rec.Code, rec.Body.String())
+	}
+	if service.deleteTagInput.ID != "tag_main" || service.deleteTagInput.SystemAccountID != "sys_user" {
+		t.Fatalf("delete tag input = %+v", service.deleteTagInput)
+	}
+}
+
+func TestManagementAccountTagDeleteHandlerMapsNotFoundAndInUse(t *testing.T) {
+	tests := []struct {
+		name       string
+		result     bool
+		err        error
+		wantStatus int
+		wantMsg    string
+	}{
+		{name: "not found", result: false, wantStatus: http.StatusNotFound, wantMsg: "标签不存在"},
+		{name: "in use", err: managementaccounts.ErrAccountTagInUse, wantStatus: http.StatusBadRequest, wantMsg: "标签已绑定账户，不能删除"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &managementAccountOptionServiceStub{deleteTagResult: tt.result, deleteTagErr: tt.err}
+			handler := newManagementAccountTagDeleteHandler(service, managementAccountScopeSelf)
+			req := managementAccountTagDeleteRequest("/__aisys__/api/my-accounts/tags/tag_main", "tag_main")
+			req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{SystemAccountID: "sys_user", Role: "user"}))
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			var body map[string]string
+			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if body["message"] != tt.wantMsg {
+				t.Fatalf("body = %+v", body)
+			}
+		})
+	}
+}
+
+func TestManagementAccountTagDeleteHandlerRedactsUnexpectedErrors(t *testing.T) {
+	handler := newManagementAccountTagDeleteHandler(&managementAccountOptionServiceStub{deleteTagErr: errors.New("postgres password leaked")}, managementAccountScopeSelf)
+	req := managementAccountTagDeleteRequest("/__aisys__/api/my-accounts/tags/tag_main", "tag_main")
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{SystemAccountID: "sys_user", Role: "user"}))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	var body map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["message"] != "服务器内部错误" {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
 func TestRouterRegistersW2ManagementAccountOptions(t *testing.T) {
 	service := &managementAccountOptionServiceStub{
-		options: []managementaccounts.Option{{ID: "acct_main", OwnerSystemAccountID: "sys_admin", Name: "主账号", ProviderCode: "openai", Type: "api_key", Status: "active", AccessType: "owner"}},
-		tags:    []managementaccounts.Tag{{ID: "tag_main", Name: "主力"}},
+		options:         []managementaccounts.Option{{ID: "acct_main", OwnerSystemAccountID: "sys_admin", Name: "主账号", ProviderCode: "openai", Type: "api_key", Status: "active", AccessType: "owner"}},
+		tags:            []managementaccounts.Tag{{ID: "tag_main", Name: "主力"}},
+		deleteTagResult: true,
 	}
 	router := NewRouter(RouterOptions{
-		Config:                            config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
-		Logger:                            slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
-		ManagementAccountOptionsHandler:   newManagementAccountOptionsHandler(service, managementAccountScopeAdmin),
-		ManagementMyAccountOptionsHandler: newManagementAccountOptionsHandler(service, managementAccountScopeSelf),
-		ManagementAccountTagsHandler:      newManagementAccountTagsHandler(service, managementAccountScopeAdmin),
-		ManagementMyAccountTagsHandler:    newManagementAccountTagsHandler(service, managementAccountScopeSelf),
+		Config:                              config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
+		Logger:                              slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
+		ManagementAccountOptionsHandler:     newManagementAccountOptionsHandler(service, managementAccountScopeAdmin),
+		ManagementMyAccountOptionsHandler:   newManagementAccountOptionsHandler(service, managementAccountScopeSelf),
+		ManagementAccountTagsHandler:        newManagementAccountTagsHandler(service, managementAccountScopeAdmin),
+		ManagementMyAccountTagsHandler:      newManagementAccountTagsHandler(service, managementAccountScopeSelf),
+		ManagementAccountTagDeleteHandler:   newManagementAccountTagDeleteHandler(service, managementAccountScopeAdmin),
+		ManagementMyAccountTagDeleteHandler: newManagementAccountTagDeleteHandler(service, managementAccountScopeSelf),
 		ManagementAPIAuthMiddleware: NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
 			context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
 		}),
@@ -256,6 +370,21 @@ func TestRouterRegistersW2ManagementAccountOptions(t *testing.T) {
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("%s status = %d, want 200", path, rec.Code)
+		}
+		if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+			t.Fatalf("%s Cache-Control = %q, want no-store", path, got)
+		}
+	}
+
+	for _, path := range []string{"/__aisys__/api/accounts/tags/tag_main", "/__aisys__/api/my-accounts/tags/tag_main"} {
+		req := httptest.NewRequest(http.MethodDelete, path, nil)
+		req.Header.Set("Cookie", "juhe_ai_session=session-token")
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("%s status = %d, want 204", path, rec.Code)
 		}
 		if got := rec.Header().Get("Cache-Control"); got != "no-store" {
 			t.Fatalf("%s Cache-Control = %q, want no-store", path, got)
@@ -285,17 +414,38 @@ func TestRouterDoesNotRegisterW2ManagementAccountOptionsWhenDisabled(t *testing.
 			t.Fatalf("%s status = %d, want 404 while JUHE_AI_MANAGEMENT_API_ENABLED=false", path, rec.Code)
 		}
 	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/__aisys__/api/accounts/tags/tag_main", nil)
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("delete status = %d, want 404 while JUHE_AI_MANAGEMENT_API_ENABLED=false", rec.Code)
+	}
 }
 
 type managementAccountOptionServiceStub struct {
-	called    bool
-	input     managementaccounts.OptionListInput
-	options   []managementaccounts.Option
-	err       error
-	tagCalled bool
-	tagInput  managementaccounts.TagListInput
-	tags      []managementaccounts.Tag
-	tagErr    error
+	called          bool
+	input           managementaccounts.OptionListInput
+	options         []managementaccounts.Option
+	err             error
+	tagCalled       bool
+	tagInput        managementaccounts.TagListInput
+	tags            []managementaccounts.Tag
+	tagErr          error
+	deleteTagCalled bool
+	deleteTagInput  managementaccounts.TagDeleteInput
+	deleteTagResult bool
+	deleteTagErr    error
+}
+
+func managementAccountTagDeleteRequest(target string, tagID string) *http.Request {
+	req := httptest.NewRequest(http.MethodDelete, target, nil)
+	routeContext := chi.NewRouteContext()
+	routeContext.URLParams.Add("tagId", tagID)
+	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeContext))
 }
 
 func (s *managementAccountOptionServiceStub) Options(_ *http.Request, input managementaccounts.OptionListInput) ([]managementaccounts.Option, error) {
@@ -308,4 +458,10 @@ func (s *managementAccountOptionServiceStub) Tags(_ *http.Request, input managem
 	s.tagCalled = true
 	s.tagInput = input
 	return s.tags, s.tagErr
+}
+
+func (s *managementAccountOptionServiceStub) DeleteTag(_ *http.Request, input managementaccounts.TagDeleteInput) (bool, error) {
+	s.deleteTagCalled = true
+	s.deleteTagInput = input
+	return s.deleteTagResult, s.deleteTagErr
 }

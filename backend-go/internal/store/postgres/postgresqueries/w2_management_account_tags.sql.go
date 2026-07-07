@@ -11,6 +11,25 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const deleteManagementAccountTag = `-- name: DeleteManagementAccountTag :execrows
+DELETE FROM juhe_business.account_tags
+WHERE id = $1::text
+  AND system_account_id = $2::text
+`
+
+type DeleteManagementAccountTagParams struct {
+	TagID           string
+	SystemAccountID string
+}
+
+func (q *Queries) DeleteManagementAccountTag(ctx context.Context, arg DeleteManagementAccountTagParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteManagementAccountTag, arg.TagID, arg.SystemAccountID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const listManagementAccountTags = `-- name: ListManagementAccountTags :many
 SELECT
   account_tags.id,
@@ -67,4 +86,58 @@ func (q *Queries) ListManagementAccountTags(ctx context.Context, systemAccountID
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockManagementAccountTagForDelete = `-- name: LockManagementAccountTagForDelete :one
+SELECT id
+FROM juhe_business.account_tags
+WHERE id = $1::text
+  AND system_account_id = $2::text
+FOR UPDATE
+`
+
+type LockManagementAccountTagForDeleteParams struct {
+	TagID           string
+	SystemAccountID string
+}
+
+func (q *Queries) LockManagementAccountTagForDelete(ctx context.Context, arg LockManagementAccountTagForDeleteParams) (string, error) {
+	row := q.db.QueryRow(ctx, lockManagementAccountTagForDelete, arg.TagID, arg.SystemAccountID)
+	var id string
+	err := row.Scan(&id)
+	return id, err
+}
+
+const managementAccountTagHasActiveBindings = `-- name: ManagementAccountTagHasActiveBindings :one
+SELECT EXISTS (
+  SELECT 1
+  FROM juhe_business.account_tag_bindings AS account_tag_bindings
+  INNER JOIN juhe_business.accounts AS accounts
+    ON accounts.id = account_tag_bindings.account_id
+    AND accounts.system_account_id = account_tag_bindings.system_account_id
+    AND accounts.deleted_at IS NULL
+  LEFT JOIN juhe_business.resource_authorizations AS visible_authorizations
+    ON visible_authorizations.id = accounts.authorization_instance_authorization_id
+    AND visible_authorizations.grantee_system_account_id = accounts.system_account_id
+    AND visible_authorizations.status IN ('active', 'paused', 'expired')
+  WHERE account_tag_bindings.tag_id = $1::text
+    AND account_tag_bindings.system_account_id = $2::text
+    AND (
+      accounts.authorization_instance_authorization_id IS NULL
+      OR visible_authorizations.id IS NOT NULL
+    )
+  LIMIT 1
+)::boolean
+`
+
+type ManagementAccountTagHasActiveBindingsParams struct {
+	TagID           string
+	SystemAccountID string
+}
+
+func (q *Queries) ManagementAccountTagHasActiveBindings(ctx context.Context, arg ManagementAccountTagHasActiveBindingsParams) (bool, error) {
+	row := q.db.QueryRow(ctx, managementAccountTagHasActiveBindings, arg.TagID, arg.SystemAccountID)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
 }

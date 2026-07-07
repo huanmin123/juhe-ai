@@ -71,7 +71,7 @@ Go 迁移期间，Node 和 Go 对照只能比较用户可见 SLI，例如请求�
 | 请求体大小 | body bytes histogram，按 `routeGroup` | 只记录大小，不记录内容 |
 | 限流和拒绝 | `rate_limited_total`、`rejected_total`、`reason` | `reason` 使用固定枚举，不包含 IP / token |
 
-W2 管理只读接口迁移后，每个 options / catalog 都必须有低基数 `routeGroup` 或 `operation`，用于压测和回归确认没有全表扫描。当前已迁移的 options / catalog 建议固定操作名为 `proxy_options_list`、`system_account_options_list`、`authorization_grantee_account_options_list`、`my_authorization_grantee_account_options_list`、`authorization_grantee_team_options_list`、`my_authorization_grantee_team_options_list`、`authorization_grantee_group_options_list`、`my_authorization_grantee_group_options_list`、`provider_options_list`、`provider_model_options_list`、`provider_models_list`、`route_strategy_options_list`、`my_route_strategy_options_list`、`group_options_list`、`my_group_options_list`、`group_account_options_list`、`my_group_account_options_list`、`account_options_list`、`my_account_options_list`、`account_tags_list` 和 `my_account_tags_list`；不要把 `systemAccountId`、供应商 code、模型名、路由策略 ID、分组 ID、账号 ID、标签 ID、keyword 原文或用户名称放入 Prometheus label。
+W2 管理辅助接口迁移后，每个 options / catalog / 低风险删除切片都必须有低基数 `routeGroup` 或 `operation`，用于压测和回归确认没有全表扫描或锁等待异常。当前已迁移路径建议固定操作名为 `proxy_options_list`、`system_account_options_list`、`authorization_grantee_account_options_list`、`my_authorization_grantee_account_options_list`、`authorization_grantee_team_options_list`、`my_authorization_grantee_team_options_list`、`authorization_grantee_group_options_list`、`my_authorization_grantee_group_options_list`、`provider_options_list`、`provider_model_options_list`、`provider_models_list`、`route_strategy_options_list`、`my_route_strategy_options_list`、`group_options_list`、`my_group_options_list`、`group_account_options_list`、`my_group_account_options_list`、`account_options_list`、`my_account_options_list`、`account_tags_list`、`my_account_tags_list`、`account_tag_delete` 和 `my_account_tag_delete`；不要把 `systemAccountId`、供应商 code、模型名、路由策略 ID、分组 ID、账号 ID、标签 ID、keyword 原文或用户名称放入 Prometheus label。
 
 ### 5.3 PostgreSQL
 
@@ -169,7 +169,7 @@ Go 系统指标迁移时建议拆分：
 | --- | --- | --- |
 | W0 | `/__aisys__/metrics` 和 pprof 受 loopback 保护；health 依赖错误脱敏；Prometheus Go collector 可用 | health / metrics / pprof 路由测试和 smoke |
 | W1a / W1b | 公开接口限流、HTTP 状态、日志入队、Asynq 任务基础指标可观察 | 单元测试、maintenance smoke 输出、Redis / Asynq integration |
-| W2 | options / catalog 管理读接口要有低基数操作名和耗时观察计划 | 文档和压测门禁，不能只看功能测试 |
+| W2 | options / catalog 管理读接口和标签删除切片要有低基数操作名、耗时观察和锁等待观察计划 | 文档和压测门禁，不能只看功能测试 |
 | W3-W5 | 登录、CRUD、权限、写事务和操作日志要覆盖 PG pool / query / tx 指标 | CRUD 压测和连接池观察 |
 | W6 | 系统指标读 API 和前端系统监控契约必须切到 Go runtime 字段；禁止继续模拟 event loop | API 契约测试、前端类型更新、旧字段 `rg` 删除证据 |
 | W7 | stats-worker 采样 Go runtime、Asynq queue、统计滞后和游标 lag；Node worker IPC 指标删除 | worker integration、queue lag、dead / retry、shutdown drain 验证 |

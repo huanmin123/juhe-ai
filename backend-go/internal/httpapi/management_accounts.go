@@ -1,9 +1,12 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/go-chi/chi/v5"
 
 	"juhe-ai/backend-go/internal/modules/managementaccounts"
 	"juhe-ai/backend-go/internal/modules/managementauth"
@@ -22,6 +25,7 @@ type managementAccountOptionService interface {
 
 type managementAccountTagService interface {
 	Tags(r *http.Request, input managementaccounts.TagListInput) ([]managementaccounts.Tag, error)
+	DeleteTag(r *http.Request, input managementaccounts.TagDeleteInput) (bool, error)
 }
 
 type managementAccountOptionServiceAdapter struct {
@@ -34,6 +38,10 @@ func (s managementAccountOptionServiceAdapter) Options(r *http.Request, input ma
 
 func (s managementAccountOptionServiceAdapter) Tags(r *http.Request, input managementaccounts.TagListInput) ([]managementaccounts.Tag, error) {
 	return s.service.Tags(r.Context(), input)
+}
+
+func (s managementAccountOptionServiceAdapter) DeleteTag(r *http.Request, input managementaccounts.TagDeleteInput) (bool, error) {
+	return s.service.DeleteTag(r.Context(), input)
 }
 
 func NewManagementAccountOptionsHandler(service *managementaccounts.Service) http.Handler {
@@ -50,6 +58,14 @@ func NewManagementAccountTagsHandler(service *managementaccounts.Service) http.H
 
 func NewManagementMyAccountTagsHandler(service *managementaccounts.Service) http.Handler {
 	return newManagementAccountTagsHandler(managementAccountOptionServiceAdapter{service: service}, managementAccountScopeSelf)
+}
+
+func NewManagementAccountTagDeleteHandler(service *managementaccounts.Service) http.Handler {
+	return newManagementAccountTagDeleteHandler(managementAccountOptionServiceAdapter{service: service}, managementAccountScopeAdmin)
+}
+
+func NewManagementMyAccountTagDeleteHandler(service *managementaccounts.Service) http.Handler {
+	return newManagementAccountTagDeleteHandler(managementAccountOptionServiceAdapter{service: service}, managementAccountScopeSelf)
 }
 
 func newManagementAccountOptionsHandler(service managementAccountOptionService, scope managementAccountOptionScope) http.Handler {
@@ -91,6 +107,38 @@ func newManagementAccountTagsHandler(service managementAccountTagService, scope 
 			return
 		}
 		writeData(w, http.StatusOK, tags)
+	})
+}
+
+func newManagementAccountTagDeleteHandler(service managementAccountTagService, scope managementAccountOptionScope) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authContext, ok := ManagementAuthContextFromRequest(r)
+		if !ok || strings.TrimSpace(authContext.SystemAccountID) == "" {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		scopeInput, allowed := managementAccountTagListInput(authContext, r.URL.Query(), scope)
+		if !allowed {
+			writeMessageError(w, http.StatusForbidden, "需要管理员权限")
+			return
+		}
+		deleted, err := service.DeleteTag(r, managementaccounts.TagDeleteInput{
+			ID:              chi.URLParam(r, "tagId"),
+			SystemAccountID: scopeInput.SystemAccountID,
+		})
+		if errors.Is(err, managementaccounts.ErrAccountTagInUse) {
+			writeMessageError(w, http.StatusBadRequest, "标签已绑定账户，不能删除")
+			return
+		}
+		if err != nil {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		if !deleted {
+			writeMessageError(w, http.StatusNotFound, "标签不存在")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	})
 }
 

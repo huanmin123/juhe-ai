@@ -2,9 +2,12 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/jackc/pgx/v5"
 	"golang.org/x/text/unicode/norm"
 	"juhe-ai/backend-go/internal/store/port"
 	"juhe-ai/backend-go/internal/store/postgres/postgresqueries"
@@ -21,6 +24,10 @@ func (s *Store) ListManagementAccountOptions(ctx context.Context, input port.Man
 
 func (s *Store) ListManagementAccountTags(ctx context.Context, input port.ManagementAccountTagListInput) ([]port.ManagementAccountTag, error) {
 	return listManagementAccountTags(ctx, s.queries(), input)
+}
+
+func (s *Store) DeleteManagementAccountTag(ctx context.Context, input port.ManagementAccountTagDeleteInput) (bool, error) {
+	return deleteManagementAccountTagInTx(ctx, s, input)
 }
 
 func listManagementAccountOptions(ctx context.Context, q *postgresqueries.Queries, input port.ManagementAccountOptionListInput) ([]port.ManagementAccountOption, error) {
@@ -114,6 +121,67 @@ func listManagementAccountTags(ctx context.Context, q *postgresqueries.Queries, 
 		})
 	}
 	return tags, nil
+}
+
+func deleteManagementAccountTagInTx(ctx context.Context, s *Store, input port.ManagementAccountTagDeleteInput) (bool, error) {
+	tagID := strings.TrimSpace(input.TagID)
+	if tagID == "" {
+		return false, nil
+	}
+	systemAccountID := strings.TrimSpace(input.SystemAccountID)
+	if systemAccountID == "" {
+		return false, fmt.Errorf("management account tag system account id is required")
+	}
+
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return false, fmt.Errorf("begin management account tag delete tx: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = tx.Rollback(rollbackCtx)
+		}
+	}()
+
+	q := s.queries().WithTx(tx)
+	_, err = q.LockManagementAccountTagForDelete(ctx, postgresqueries.LockManagementAccountTagForDeleteParams{
+		TagID:           tagID,
+		SystemAccountID: systemAccountID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("lock management account tag: %w", err)
+	}
+	inUse, err := q.ManagementAccountTagHasActiveBindings(ctx, postgresqueries.ManagementAccountTagHasActiveBindingsParams{
+		TagID:           tagID,
+		SystemAccountID: systemAccountID,
+	})
+	if err != nil {
+		return false, fmt.Errorf("check management account tag bindings: %w", err)
+	}
+	if inUse {
+		return false, port.ErrManagementAccountTagInUse
+	}
+	rows, err := q.DeleteManagementAccountTag(ctx, postgresqueries.DeleteManagementAccountTagParams{
+		TagID:           tagID,
+		SystemAccountID: systemAccountID,
+	})
+	if err != nil {
+		return false, fmt.Errorf("delete management account tag: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		if errors.Is(err, pgx.ErrTxCommitRollback) {
+			return false, fmt.Errorf("commit management account tag delete tx rolled back: %w", err)
+		}
+		return false, fmt.Errorf("commit management account tag delete tx: %w", err)
+	}
+	committed = true
+	return rows > 0, nil
 }
 
 func managementAccountOptionLimit(limit int) int {

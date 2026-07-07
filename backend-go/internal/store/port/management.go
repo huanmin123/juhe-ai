@@ -2,6 +2,7 @@ package port
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -334,7 +335,15 @@ type ManagementAccountTagListInput struct {
 	SystemAccountID string
 }
 
+type ManagementAccountTagDeleteInput struct {
+	TagID           string
+	SystemAccountID string
+}
+
+var ErrManagementAccountTagInUse = errors.New("management account tag in use")
+
 type ManagementAccountOptionReader interface {
 	ListManagementAccountOptions(ctx context.Context, input ManagementAccountOptionListInput) ([]ManagementAccountOption, error)
 	ListManagementAccountTags(ctx context.Context, input ManagementAccountTagListInput) ([]ManagementAccountTag, error)
+	DeleteManagementAccountTag(ctx context.Context, input ManagementAccountTagDeleteInput) (bool, error)
 }

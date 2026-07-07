@@ -2,6 +2,7 @@ package managementaccounts
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -189,6 +190,35 @@ func TestServiceTagsNormalizesInputAndMapsTags(t *testing.T) {
 	}
 }
 
+func TestServiceDeleteTagNormalizesInput(t *testing.T) {
+	store := &accountOptionStoreStub{deleteResult: true}
+	service := NewService(store)
+
+	deleted, err := service.DeleteTag(context.Background(), TagDeleteInput{ID: " tag_main ", SystemAccountID: " sys_user "})
+	if err != nil {
+		t.Fatalf("DeleteTag() error = %v", err)
+	}
+	if !deleted {
+		t.Fatal("DeleteTag() deleted = false, want true")
+	}
+	if store.deleteInput.TagID != "tag_main" || store.deleteInput.SystemAccountID != "sys_user" {
+		t.Fatalf("delete input = %+v", store.deleteInput)
+	}
+}
+
+func TestServiceDeleteTagMapsInUseError(t *testing.T) {
+	store := &accountOptionStoreStub{deleteErr: port.ErrManagementAccountTagInUse}
+	service := NewService(store)
+
+	deleted, err := service.DeleteTag(context.Background(), TagDeleteInput{ID: "tag_main", SystemAccountID: "sys_user"})
+	if !errors.Is(err, ErrAccountTagInUse) {
+		t.Fatalf("DeleteTag() error = %v, want ErrAccountTagInUse", err)
+	}
+	if deleted {
+		t.Fatal("DeleteTag() deleted = true, want false on in-use error")
+	}
+}
+
 func TestOptionPageClampsToWindow(t *testing.T) {
 	if got := optionPage(999, 50); got != 20 {
 		t.Fatalf("optionPage() = %d, want 20", got)
@@ -196,12 +226,15 @@ func TestOptionPageClampsToWindow(t *testing.T) {
 }
 
 type accountOptionStoreStub struct {
-	called   bool
-	input    port.ManagementAccountOptionListInput
-	options  []port.ManagementAccountOption
-	tagInput port.ManagementAccountTagListInput
-	tags     []port.ManagementAccountTag
-	err      error
+	called       bool
+	input        port.ManagementAccountOptionListInput
+	options      []port.ManagementAccountOption
+	tagInput     port.ManagementAccountTagListInput
+	tags         []port.ManagementAccountTag
+	deleteInput  port.ManagementAccountTagDeleteInput
+	deleteResult bool
+	deleteErr    error
+	err          error
 }
 
 func (s *accountOptionStoreStub) ListManagementAccountOptions(_ context.Context, input port.ManagementAccountOptionListInput) ([]port.ManagementAccountOption, error) {
@@ -213,4 +246,9 @@ func (s *accountOptionStoreStub) ListManagementAccountOptions(_ context.Context,
 func (s *accountOptionStoreStub) ListManagementAccountTags(_ context.Context, input port.ManagementAccountTagListInput) ([]port.ManagementAccountTag, error) {
 	s.tagInput = input
 	return s.tags, s.err
+}
+
+func (s *accountOptionStoreStub) DeleteManagementAccountTag(_ context.Context, input port.ManagementAccountTagDeleteInput) (bool, error) {
+	s.deleteInput = input
+	return s.deleteResult, s.deleteErr
 }

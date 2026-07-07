@@ -94,6 +94,56 @@ func TestManagementAccountOptionsSQLUsesNameSearchIndex(t *testing.T) {
 	}
 }
 
+func TestManagementAccountTagDeleteSQLProtectsBoundTags(t *testing.T) {
+	source, err := os.ReadFile("queries/w2_management_account_tags.sql")
+	if err != nil {
+		t.Fatalf("read account tags query: %v", err)
+	}
+	sql := string(source)
+	lockSQL := querySection(t, sql, "-- name: LockManagementAccountTagForDelete :one", "-- name: ManagementAccountTagHasActiveBindings :one")
+	for _, want := range []string{
+		"FROM juhe_business.account_tags",
+		"WHERE id = sqlc.arg(tag_id)::text",
+		"AND system_account_id = sqlc.arg(system_account_id)::text",
+		"FOR UPDATE",
+	} {
+		if !strings.Contains(lockSQL, want) {
+			t.Fatalf("account tag lock query missing %q", want)
+		}
+	}
+	inUseSQL := querySection(t, sql, "-- name: ManagementAccountTagHasActiveBindings :one", "-- name: DeleteManagementAccountTag :execrows")
+	for _, want := range []string{
+		"FROM juhe_business.account_tag_bindings AS account_tag_bindings",
+		"INNER JOIN juhe_business.accounts AS accounts",
+		"accounts.deleted_at IS NULL",
+		"LEFT JOIN juhe_business.resource_authorizations AS visible_authorizations",
+		"visible_authorizations.status IN ('active', 'paused', 'expired')",
+		"account_tag_bindings.tag_id = sqlc.arg(tag_id)::text",
+		"account_tag_bindings.system_account_id = sqlc.arg(system_account_id)::text",
+		"accounts.authorization_instance_authorization_id IS NULL",
+		"OR visible_authorizations.id IS NOT NULL",
+	} {
+		if !strings.Contains(inUseSQL, want) {
+			t.Fatalf("account tag in-use query missing %q", want)
+		}
+	}
+	deleteSQL := querySection(t, sql, "-- name: DeleteManagementAccountTag :execrows", "")
+	for _, want := range []string{
+		"DELETE FROM juhe_business.account_tags",
+		"WHERE id = sqlc.arg(tag_id)::text",
+		"AND system_account_id = sqlc.arg(system_account_id)::text",
+	} {
+		if !strings.Contains(deleteSQL, want) {
+			t.Fatalf("account tag delete query missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"account_tag_bindings", "accounts", "resource_authorizations"} {
+		if strings.Contains(deleteSQL, forbidden) {
+			t.Fatalf("account tag delete query should only delete tag row, found %q", forbidden)
+		}
+	}
+}
+
 func TestAccountNameSearchDocumentTerms(t *testing.T) {
 	got := make([]string, 0)
 	for length := 1; length <= accountNameSearchMaxGramLength; length++ {

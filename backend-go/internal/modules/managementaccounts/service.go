@@ -2,6 +2,7 @@ package managementaccounts
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -39,6 +40,13 @@ type OptionListInput struct {
 type TagListInput struct {
 	SystemAccountID string
 }
+
+type TagDeleteInput struct {
+	ID              string
+	SystemAccountID string
+}
+
+var ErrAccountTagInUse = errors.New("account tag in use")
 
 type ResourcePermissions struct {
 	CanUse                 bool `json:"canUse"`
@@ -164,6 +172,20 @@ func (s *Service) Tags(ctx context.Context, input TagListInput) ([]Tag, error) {
 		})
 	}
 	return items, nil
+}
+
+func (s *Service) DeleteTag(ctx context.Context, input TagDeleteInput) (bool, error) {
+	if s.store == nil {
+		return false, fmt.Errorf("management account tag store is required")
+	}
+	deleted, err := s.store.DeleteManagementAccountTag(ctx, port.ManagementAccountTagDeleteInput{
+		TagID:           strings.TrimSpace(input.ID),
+		SystemAccountID: strings.TrimSpace(input.SystemAccountID),
+	})
+	if errors.Is(err, port.ErrManagementAccountTagInUse) {
+		return false, ErrAccountTagInUse
+	}
+	return deleted, err
 }
 
 func optionLimit(limit int) int {
