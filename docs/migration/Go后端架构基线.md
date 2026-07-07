@@ -9,7 +9,7 @@
 - 日志：使用标准库 `log/slog`，统一结构化字段、trace ID、请求 ID、模块名和错误摘要。
 - 配置：使用 `internal/config` 封装 env 解析，不引入 Viper；配置库只在 config 层出现。
 - PostgreSQL：使用 `pgx/v5`、`pgxpool` 和 `sqlc` 生成查询代码，通过连接池、事务函数和上下文超时收口。
-- Redis：使用 `redis/go-redis/v9` 承接 cache、state 和 counter；可靠任务队列默认使用 Asynq，不手写通用 Redis Streams 队列。
+- Redis：使用 `redis/go-redis/v9` 承接 cache、state、counter、fixed-window 和 penalty-window 运行态；可靠任务队列默认使用 Asynq，不手写通用 Redis Streams 队列。
 - SQLite：Go 后端不引入 SQLite driver，不提供 standalone 模式，不维护 SQLite schema、adapter 或测试矩阵。
 - 校验：使用 DTO 校验库处理字段形状和范围，跨字段业务规则仍写 service 校验，并转换为项目中文错误结构。
 - 测试：使用 Go 标准 `testing`、`httptest`、`go test ./... -race`、基准测试、testcontainers、必要的 mock upstream 和 goroutine 泄漏检查；跨服务依赖测试必须显式触发。
@@ -49,12 +49,16 @@ backend-go/
       stats/
       settings/
       gateway/
+    platform/
+      postgres/
+      redis/
     store/
       port/
       postgres/
-      redis/
     jobs/
       queue/
+      publicapilog/
+      worker/
       ingest/
       stats/
       ops/
@@ -74,9 +78,12 @@ backend-go/
 - `cmd/` 只做命令装配和启动参数解析。
 - `internal/httpapi/` 放统一响应、错误结构、分页、路由注册和 API 契约工具。
 - `internal/modules/<module>/` 放模块 route、service、DTO 和模块私有测试。
-- `internal/store/port/` 定义业务语义接口；PostgreSQL 和 Redis 只在 adapter / 基础设施层出现。
+- `internal/platform/` 放 PG / Redis / 外部基础设施 health、client 和低层 adapter；第三方库类型不能穿透到业务模块。
+- `internal/store/port/` 定义业务语义接口；PostgreSQL 查询实现只在 store adapter 内出现，Redis cache / state 只通过项目封装访问。
 - `internal/jobs/` 放后台任务角色，禁止 HTTP route 直接启动长期任务。
 - `internal/jobs/queue/` 封装 Asynq，业务模块只依赖项目 Queue Port，不能 import Asynq 类型。
+- `internal/jobs/<domain>/` 放任务 payload、enqueue 封装和 handler，handler 依赖项目 store port；Asynq server/mux 装配只允许放在 worker runtime adapter。
+- `internal/jobs/worker/` 放 Asynq worker runtime adapter、任务注册和不可重试错误映射；业务模块、store port 和 HTTP route 不能 import Asynq。
 - `internal/protocols/` 放协议适配和桥接，不把 OpenAI / Anthropic / Gemini 字段路径写散到 gateway service。
 - `internal/runtime/` 放短 TTL 运行态、并发占用和缓存版本，所有 map 必须有锁或使用并发安全结构。
 
@@ -110,8 +117,8 @@ Go 解决的是 Node 单事件循环问题，不代表可以无界并发。
 - 数据库访问必须受连接池、事务作用域、上下文超时和热点 key 顺序约束。
 - PostgreSQL 通过 PgBouncer / pool budget 隔离 server、gateway hot path、management API、ingest、stats 和 ops；慢管理查询、后台批量写和网关热路径不能共用一个无差别池。
 - PostgreSQL 写入必须受事务范围、`statement_timeout`、`lock_timeout`、`idle_in_transaction_session_timeout`、批量窗口、分区查询窗口、稳定排序和热点 key 顺序约束；连接必须带 `application_name` 便于定位来源。
-- Redis cache、state、queue 必须使用独立 namespace / DB / 实例或明确隔离配置；queue 不和 cache/state 共用淘汰策略。
-- Asynq 可靠任务队列必须配置任务超时、重试、dead / archived 处理、队列深度和最老任务年龄监控；任务 handler 必须幂等。
+- Redis cache、state、queue 必须使用独立 namespace / DB / 实例或明确隔离配置；Go 配置层要拒绝 cache / state / queue 指向同一个 Redis DB，queue 不和 cache/state 共用淘汰策略。来源系统限频这类跨实例运行态必须落在 Redis state，不允许生产路径退回进程内 map。
+- Asynq 可靠任务队列必须配置任务超时、重试、dead / archived 处理、Redis dial/read/write timeout、队列深度和最老任务年龄监控；任务 handler 必须幂等。
 - 原始 Redis Streams 只允许作为专项 adapter 例外使用，不能绕过 Asynq 再手写一套通用 queue 框架。
 - 内存 map、LRU、账号并发快照、IP 运行态、会话亲和和短 TTL 状态必须使用 mutex、RWMutex、atomic 或专用并发结构。
 - channel 必须有容量和关闭语义；后台队列必须定义满载时拒绝、合并、丢弃或降级策略。

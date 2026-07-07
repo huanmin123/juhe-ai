@@ -19,14 +19,16 @@
 | Go 版本 | 正式落代码时 `go.dev/dl/` 最新稳定版；当前参考 `go1.26.x` | 编译、测试和发布基线 | `go.mod` 固定主次版本；补丁版本按安全和 CI 结果升级 |
 | HTTP server | 标准库 `net/http` | HTTP server、client、SSE、反向代理基础能力 | 网关流式、取消、backpressure 和 header 过滤直接基于标准库 |
 | Router | `github.com/go-chi/chi/v5` | 管理 API、公开 API、健康检查、路由分组和中间件 | 只在 `internal/httpapi` 注册路由；业务模块不直接依赖 chi context |
+| ResponseWriter 包装 | `github.com/felixge/httpsnoop` | HTTP response capture、保留 `Unwrap` / `Flush` / `Hijack` / `ReadFrom` / `Push` 等可选接口组合 | 只允许在 `internal/httpapi` 等 HTTP 基础设施层使用；不得让业务 handler 依赖其类型 |
 | CLI | `github.com/spf13/cobra` | `juhe-ai server`、`juhe-ai-worker`、`juhe-ai-maintenance`、离线维护命令 | 不引入 Viper；配置仍由 env 结构解析 |
 | 配置 | `github.com/caarlos0/env/v11` + `github.com/joho/godotenv` | 环境变量解析、默认值、必填校验、duration / URL 类型；本地 / 测试 `.env` 加载 | 统一封装在 `internal/config`；生产只读环境变量，godotenv 只允许在开发 / 测试入口加载 |
 | 日志 | 标准库 `log/slog` | JSON 结构化日志、trace ID、request ID、模块名、错误摘要 | 不首批引入 zap / zerolog；性能不足必须先有报告 |
+| Request ID | `github.com/google/uuid` | 没有上游 `X-Request-Id` 时生成请求 ID | 只在 HTTP 中间件使用；业务模块不直接依赖 |
 | 校验 | `github.com/go-playground/validator/v10` + 手写业务校验 | DTO 形状校验、字段格式、范围检查 | 错误转换为项目中文错误结构；跨字段业务规则仍写 service 校验 |
 | PostgreSQL driver | `github.com/jackc/pgx/v5` + `pgxpool` | PostgreSQL 连接池、事务、批量写、COPY、LISTEN / NOTIFY 预留 | 不用 `database/sql` 作为主边界；连接池按 server / gateway / worker 隔离 |
 | SQL 生成 | `sqlc` | 从 SQL 生成类型安全 Go 查询代码 | 不引入 GORM / ent；复杂查询保留显式 SQL 和 review 能力 |
 | Schema 迁移 | `github.com/pressly/goose/v3` CLI | PostgreSQL DDL、seed、离线迁移执行 | 不在 Go 启动路径自动迁移；生产迁移由维护命令或发布流程显式执行 |
-| Redis client | `github.com/redis/go-redis/v9` | cache、state、counter、Redis 连接与 pipeline | queue 通过 Asynq；业务代码不直接拼 Redis key |
+| Redis client | `github.com/redis/go-redis/v9` | cache、state、counter、fixed-window / penalty-window 限频、Redis 连接与 pipeline | queue 通过 Asynq；业务代码不直接拼 Redis key |
 | Job / queue | `github.com/hibiken/asynq` | 异步任务、重试、延迟任务、worker crash 恢复、队列指标 | 只通过 `internal/jobs/queue` Port 使用；不用项目自研 Redis Streams 通用队列 |
 | 指标 | `github.com/prometheus/client_golang` | HTTP、PG、Redis、worker、队列、网关指标 | `/metrics` 必须受部署边界保护；不首批引入 Prometheus API client |
 | pprof | 标准库 `net/http/pprof` | CPU、heap、goroutine、block profile | 只能挂在受保护的 debug/admin 入口 |
@@ -50,9 +52,9 @@ Go 目标不再手写通用 Redis Streams 队列。默认采用 Asynq 作为 Red
 
 Asynq 当前仍是 `v0.x` 公共 API，存在破坏性变更风险。因此必须做到：
 
-- Asynq 类型不得穿透到业务 service、store port 或模块 DTO。
-- `internal/jobs/queue` 封装 enqueue、task type、retry、deadline、unique key、metrics 和 inspector。
-- W0 阶段必须做最小 PoC：入队、消费、重试、dead / archived、worker crash 恢复、优雅关闭、指标和 Redis 持久化边界。
+- Asynq 类型不得穿透到业务 service、store port 或模块 DTO；生产代码只允许 `internal/jobs/queue` 和 `internal/jobs/worker` import Asynq。
+- `internal/jobs/queue` 封装 enqueue、task type、retry、deadline、unique key、explicit Redis timeout、metrics、inspector 和 smoke。
+- W0 阶段必须做最小 PoC：入队、消费、重试、dead / archived、worker crash 恢复、优雅关闭、指标和 Redis 持久化边界。当前已落地入队、消费、inspector、pending smoke、retry / archive / retry exhaustion integration、W1b public API log handler 和真实 worker runtime smoke；periodic、crash recover、长任务 drain、队列指标和 Redis 持久化演练仍不能视为完成。
 - 如果 PoC 证明 Asynq 无法满足稳定性或 Redis 部署边界，才能在 W0 决策中改为 `riverqueue/river` 或直接 `go-redis` Streams adapter；不能在业务迁移中途混用两套通用队列。
 
 ## 4. 不默认引入的依赖
@@ -96,10 +98,37 @@ W0 不能只创建空 Go 工程，必须证明这些依赖能在本项目边界�
 | testcontainers | `-tags=integration` 能启动 PostgreSQL / Redis 并清理资源 |
 | lint / vuln | lint、govulncheck、race 的命令能在 CI 或本地稳定执行 |
 
-## 7. 参考源
+## 7. 当前 W0 落地版本
+
+W0 当前只表示工程和基础设施 PoC 的版本基线；后续升级依赖必须更新本表并重跑验证矩阵。
+
+| 类型 | 当前版本 / 模块 | 验证状态 |
+| --- | --- | --- |
+| Go | `go1.26.4 windows/amd64` | `go test ./...`、`go test -race ./...`、`go vet ./...` 已通过 |
+| Windows C 工具链 | w64devkit `2.8.0`，GCC `16.1.0` | 用于 Windows race，已替换旧 MinGW race 失败路径 |
+| Router | `github.com/go-chi/chi/v5 v5.3.0` | W0 health / metrics 路由已通过 smoke |
+| ResponseWriter 包装 | `github.com/felixge/httpsnoop v1.0.4` | W1b HTTP shell / capture 用于保留底层 writer 可选接口组合，已覆盖 499、`Unwrap` / `ResponseController.Flush`、`Flush` 和 `ReadFrom` 契约测试 |
+| CLI | `github.com/spf13/cobra v1.10.2` | server / worker / maintenance `version` 命令已通过 |
+| 配置 | `github.com/caarlos0/env/v11 v11.4.1` + `github.com/joho/godotenv v1.5.1` | 配置单测已通过 |
+| Request ID | `github.com/google/uuid v1.6.0` | HTTP request ID 中间件已落地 |
+| PostgreSQL | `github.com/jackc/pgx/v5 v5.10.0` | health adapter、goose baseline / W1a / W1b migration、sqlc catalog / W1b auth-log 查询已落地；integration 用例已补，当前主线程 Docker 不可用时 `SKIP`，需 Docker 环境复跑 |
+| Redis | `github.com/redis/go-redis/v9 v9.21.0` | cache / state health adapter、namespace key 封装、TTL set、pipeline、`IncrWithTTL` 原子计数、fixed-window 和 W1b penalty-window Lua 限频、Redis DB 去重校验已落地；W1b penalty-window integration 用例已补，需 Docker 环境复跑 |
+| Job / queue | `github.com/hibiken/asynq v0.26.0` | Asynq client ping health、`rediss` TLS、显式 Redis timeout、enqueue 封装、inspector、pending smoke、retry / archive / retry exhaustion integration 代码已落地；W1b `public-api-log:write` payload/enqueue/handler、`juhe-ai-worker ingest` runtime、invalid payload `SkipRetry` 映射已补；真实 Redis/Asynq/PG smoke 当前主线程 Docker 不可用时 `SKIP`，需 Docker 环境复跑；periodic / crash recover / 长任务 drain / 队列指标待补 |
+| 指标 | `github.com/prometheus/client_golang v1.23.2` | `/__aisys__/metrics` loopback smoke 已通过 |
+| SQL CLI | `sqlc v1.31.1` | CLI 已安装，已生成 `internal/store/postgres/postgresqueries` |
+| Migration CLI / lib | `github.com/pressly/goose/v3 v3.27.2` | CLI 已安装；integration 测试通过 goose 执行 baseline DDL |
+| Testcontainers | `github.com/testcontainers/testcontainers-go v0.43.0` | `go test -tags=integration ./internal/testkit/integration -count=1` 当前主线程因 Docker 不可用输出 `SKIP`；Docker/testcontainers 健康环境必须复跑，覆盖 PostgreSQL / Redis / Asynq / W1a / W1b foundation / W1b public API log queue / public group / public route strategy / public API Key / public account smoke 与 shell E2E |
+| Lint | `golangci-lint 2.12.2` | `0 issues` |
+| 安全扫描 | `govulncheck v1.5.0` | 无已调用漏洞 |
+
+当前目标依赖中，`validator`、`oauth2` 和 `goleak` 仍未进入实际代码路径；等对应 DTO 校验、OAuth 或 goroutine 泄漏测试落地时再加入 `go.mod` 并更新本表。
+
+## 8. 参考源
 
 - Go 下载页：<https://go.dev/dl/>
+- w64devkit：<https://github.com/skeeto/w64devkit>
 - chi：<https://github.com/go-chi/chi>
+- httpsnoop：<https://github.com/felixge/httpsnoop>
 - pgx：<https://github.com/jackc/pgx>
 - sqlc：<https://docs.sqlc.dev/>
 - goose：<https://github.com/pressly/goose>
