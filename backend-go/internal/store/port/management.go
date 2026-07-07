@@ -85,6 +85,61 @@ type ManagementProviderOptionReader interface {
 	ListManagementProviderOptions(ctx context.Context, input ManagementProviderOptionListInput) ([]ManagementProviderOption, error)
 }
 
+type ManagementProviderModelProvider struct {
+	Code       string
+	Enabled    bool
+	ParentCode string
+}
+
+type ManagementProviderModelCatalogItem struct {
+	ID                    string
+	ProviderCode          string
+	Model                 string
+	Scope                 string
+	SystemAccountID       string
+	Status                string
+	Mode                  string
+	CatalogOrder          *int
+	ReleaseDate           string
+	ShutdownDate          string
+	SupportedAPIProtocols []string
+	PricingModel          string
+	ContextWindowTokens   *int
+	MaxInputTokens        *int
+	MaxOutputTokens       *int
+	MaxTokens             *int
+	InputUSDPer1M         *float64
+	OutputUSDPer1M        *float64
+	CachedInputUSDPer1M   *float64
+	CacheWriteUSDPer1M    *float64
+	CacheWrite1hUSDPer1M  *float64
+	ImageInputUSDPer1M    *float64
+	ImageOutputUSDPer1M   *float64
+	AudioInputUSDPer1M    *float64
+	AudioOutputUSDPer1M   *float64
+	OutputUSDPerImage     *float64
+	SupportsPromptCaching bool
+	SupportsServiceTier   bool
+	CatalogVisible        bool
+	Source                string
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+}
+
+type ManagementProviderModelCatalogListInput struct {
+	BuiltInProviderCodes []string
+	CustomProviderCodes  []string
+	SystemAccountID      string
+	IncludeInactive      bool
+}
+
+type ManagementProviderModelCatalogReader interface {
+	FindManagementProviderModelProvider(ctx context.Context, code string) (ManagementProviderModelProvider, bool, error)
+	ListManagementEnabledModelProviderCodes(ctx context.Context) ([]string, error)
+	ListManagementProviderCodesByProtocol(ctx context.Context, protocolCode string, protocolVersion string) ([]string, error)
+	ListManagementProviderModelCatalog(ctx context.Context, input ManagementProviderModelCatalogListInput) ([]ManagementProviderModelCatalogItem, error)
+}
+
 type ManagementRouteStrategyOption struct {
 	ID                string
 	SystemAccountID   string

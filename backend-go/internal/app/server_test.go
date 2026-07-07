@@ -50,6 +50,8 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 	if handlers.AuthMiddleware != nil ||
 		handlers.ProxyOptionsHandler != nil ||
 		handlers.ProviderOptionsHandler != nil ||
+		handlers.ProviderModelOptionsHandler != nil ||
+		handlers.ProviderModelsHandler != nil ||
 		handlers.RouteStrategyOptionsHandler != nil ||
 		handlers.MyRouteStrategyOptionsHandler != nil {
 		t.Fatal("newManagementAPIHandler() returned middleware or handler while disabled")
@@ -61,6 +63,8 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 	if handlers.AuthMiddleware == nil ||
 		handlers.ProxyOptionsHandler == nil ||
 		handlers.ProviderOptionsHandler == nil ||
+		handlers.ProviderModelOptionsHandler == nil ||
+		handlers.ProviderModelsHandler == nil ||
 		handlers.RouteStrategyOptionsHandler == nil ||
 		handlers.MyRouteStrategyOptionsHandler == nil {
 		t.Fatal("newManagementAPIHandler() returned nil middleware or handler while enabled")

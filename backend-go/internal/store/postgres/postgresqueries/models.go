@@ -68,6 +68,39 @@ type JuheBusinessApiKey struct {
 	UpdatedAt                       pgtype.Timestamptz
 }
 
+type JuheBusinessCustomProviderModel struct {
+	ID                        string
+	ProviderCode              string
+	Model                     string
+	Scope                     string
+	SystemAccountID           pgtype.Text
+	Status                    string
+	Mode                      pgtype.Text
+	SupportedApiProtocolsJson string
+	PricingModel              pgtype.Text
+	ReleaseDate               pgtype.Text
+	ShutdownDate              pgtype.Text
+	ContextWindowTokens       pgtype.Int4
+	MaxOutputTokens           pgtype.Int4
+	InputUsdPer1m             pgtype.Float8
+	OutputUsdPer1m            pgtype.Float8
+	CachedInputUsdPer1m       pgtype.Float8
+	CacheWriteUsdPer1m        pgtype.Float8
+	ImageInputUsdPer1m        pgtype.Float8
+	ImageOutputUsdPer1m       pgtype.Float8
+	AudioInputUsdPer1m        pgtype.Float8
+	AudioOutputUsdPer1m       pgtype.Float8
+	OutputUsdPerImage         pgtype.Float8
+	Currency                  string
+	PricingNotes              pgtype.Text
+	CapabilityNotes           pgtype.Text
+	Notes                     pgtype.Text
+	CreatedBy                 string
+	UpdatedBy                 pgtype.Text
+	CreatedAt                 pgtype.Timestamptz
+	UpdatedAt                 pgtype.Timestamptz
+}
+
 type JuheBusinessExternalIntegrationSource struct {
 	ID             string
 	Name           string
@@ -172,6 +205,39 @@ type JuheBusinessProviderDefaultTestModel struct {
 	Model           string
 	CreatedAt       pgtype.Timestamptz
 	UpdatedAt       pgtype.Timestamptz
+}
+
+type JuheBusinessProviderModelCatalog struct {
+	ID                        string
+	ProviderCode              string
+	Model                     string
+	Status                    string
+	Mode                      pgtype.Text
+	CatalogOrder              pgtype.Int4
+	ReleaseDate               pgtype.Text
+	ShutdownDate              pgtype.Text
+	SupportedApiProtocolsJson string
+	PricingModel              pgtype.Text
+	ContextWindowTokens       pgtype.Int4
+	InputUsdPer1m             pgtype.Float8
+	OutputUsdPer1m            pgtype.Float8
+	CachedInputUsdPer1m       pgtype.Float8
+	CacheWriteUsdPer1m        pgtype.Float8
+	CacheWrite1hUsdPer1m      pgtype.Float8
+	ImageInputUsdPer1m        pgtype.Float8
+	ImageOutputUsdPer1m       pgtype.Float8
+	AudioInputUsdPer1m        pgtype.Float8
+	AudioOutputUsdPer1m       pgtype.Float8
+	OutputUsdPerImage         pgtype.Float8
+	MaxInputTokens            pgtype.Int4
+	MaxOutputTokens           pgtype.Int4
+	MaxTokens                 pgtype.Int4
+	SupportsPromptCaching     bool
+	SupportsServiceTier       bool
+	CatalogVisible            bool
+	Source                    string
+	CreatedAt                 pgtype.Timestamptz
+	UpdatedAt                 pgtype.Timestamptz
 }
 
 type JuheBusinessProviderProtocolProfile struct {

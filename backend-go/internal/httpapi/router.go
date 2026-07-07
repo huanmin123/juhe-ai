@@ -24,6 +24,8 @@ type RouterOptions struct {
 	ManagementAPIAuthMiddleware             func(http.Handler) http.Handler
 	ManagementProxyOptionsHandler           http.Handler
 	ManagementProviderOptionsHandler        http.Handler
+	ManagementProviderModelOptionsHandler   http.Handler
+	ManagementProviderModelsHandler         http.Handler
 	ManagementRouteStrategyOptionsHandler   http.Handler
 	ManagementMyRouteStrategyOptionsHandler http.Handler
 }
@@ -57,6 +59,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementProxyOptionsHandler == nil &&
 				opts.ManagementProviderOptionsHandler == nil &&
+				opts.ManagementProviderModelOptionsHandler == nil &&
+				opts.ManagementProviderModelsHandler == nil &&
 				opts.ManagementRouteStrategyOptionsHandler == nil &&
 				opts.ManagementMyRouteStrategyOptionsHandler == nil {
 				panic("at least one management API handler is required when JUHE_AI_MANAGEMENT_API_ENABLED is true")
@@ -66,6 +70,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementProviderOptionsHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/providers/options", opts.ManagementProviderOptionsHandler.ServeHTTP)
+			}
+			if opts.ManagementProviderModelOptionsHandler != nil {
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/providers/models/options", opts.ManagementProviderModelOptionsHandler.ServeHTTP)
+			}
+			if opts.ManagementProviderModelsHandler != nil {
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/providers/{code}/models", opts.ManagementProviderModelsHandler.ServeHTTP)
 			}
 			if opts.ManagementRouteStrategyOptionsHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/route-strategies/options", opts.ManagementRouteStrategyOptionsHandler.ServeHTTP)

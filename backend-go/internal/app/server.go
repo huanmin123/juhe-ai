@@ -12,6 +12,7 @@ import (
 	"juhe-ai/backend-go/internal/httpapi"
 	"juhe-ai/backend-go/internal/jobs/queue"
 	"juhe-ai/backend-go/internal/modules/managementauth"
+	"juhe-ai/backend-go/internal/modules/managementprovidermodels"
 	"juhe-ai/backend-go/internal/modules/managementproviders"
 	"juhe-ai/backend-go/internal/modules/managementproxies"
 	"juhe-ai/backend-go/internal/modules/managementroutestrategies"
@@ -82,6 +83,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementAPIAuthMiddleware:             managementHandlers.AuthMiddleware,
 		ManagementProxyOptionsHandler:           managementHandlers.ProxyOptionsHandler,
 		ManagementProviderOptionsHandler:        managementHandlers.ProviderOptionsHandler,
+		ManagementProviderModelOptionsHandler:   managementHandlers.ProviderModelOptionsHandler,
+		ManagementProviderModelsHandler:         managementHandlers.ProviderModelsHandler,
 		ManagementRouteStrategyOptionsHandler:   managementHandlers.RouteStrategyOptionsHandler,
 		ManagementMyRouteStrategyOptionsHandler: managementHandlers.MyRouteStrategyOptionsHandler,
 	})
@@ -119,6 +122,8 @@ type managementAPIHandlers struct {
 	AuthMiddleware                func(http.Handler) http.Handler
 	ProxyOptionsHandler           http.Handler
 	ProviderOptionsHandler        http.Handler
+	ProviderModelOptionsHandler   http.Handler
+	ProviderModelsHandler         http.Handler
 	RouteStrategyOptionsHandler   http.Handler
 	MyRouteStrategyOptionsHandler http.Handler
 }
@@ -130,11 +135,14 @@ func newManagementAPIHandler(cfg config.Config, store *postgresstore.Store) mana
 	authenticator := managementauth.NewAuthenticator(managementauth.AuthenticatorOptions{Store: store})
 	proxyService := managementproxies.NewService(store)
 	providerService := managementproviders.NewService(store)
+	providerModelService := managementprovidermodels.NewService(store)
 	routeStrategyService := managementroutestrategies.NewService(store)
 	return managementAPIHandlers{
 		AuthMiddleware:                httpapi.NewManagementAPIAuthMiddleware(authenticator),
 		ProxyOptionsHandler:           httpapi.NewManagementProxyOptionsHandler(proxyService),
 		ProviderOptionsHandler:        httpapi.NewManagementProviderOptionsHandler(providerService),
+		ProviderModelOptionsHandler:   httpapi.NewManagementProviderModelOptionsHandler(providerModelService),
+		ProviderModelsHandler:         httpapi.NewManagementProviderModelsHandler(providerModelService),
 		RouteStrategyOptionsHandler:   httpapi.NewManagementRouteStrategyOptionsHandler(routeStrategyService),
 		MyRouteStrategyOptionsHandler: httpapi.NewManagementMyRouteStrategyOptionsHandler(routeStrategyService),
 	}

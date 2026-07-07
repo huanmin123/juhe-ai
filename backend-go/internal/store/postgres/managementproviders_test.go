@@ -71,3 +71,39 @@ func TestDecodeProviderStringArrayTrimsDedupes(t *testing.T) {
 		t.Fatalf("values = %#v", values)
 	}
 }
+
+func TestManagementProviderModelCatalogItemFromRowDecodesOptionalFields(t *testing.T) {
+	inputPrice := pgtype.Float8{Float64: 1.25, Valid: true}
+	maxInput := pgtype.Int4{Int32: 128000, Valid: true}
+	row := postgresqueries.ListManagementProviderModelCatalogRow{
+		ID:                        "custom_model_1",
+		ProviderCode:              "gpt",
+		Model:                     "gpt-custom",
+		Scope:                     "personal",
+		SystemAccountID:           pgtype.Text{String: "sys_user", Valid: true},
+		Status:                    "active",
+		Mode:                      pgtype.Text{String: "chat", Valid: true},
+		CatalogOrder:              pgtype.Int4{Int32: 10, Valid: true},
+		SupportedApiProtocolsJson: `[" chat_completions ","chat_completions","responses"]`,
+		ContextWindowTokens:       maxInput,
+		MaxInputTokens:            maxInput,
+		InputUsdPer1m:             inputPrice,
+		SupportsPromptCaching:     true,
+		CatalogVisible:            true,
+		Source:                    "custom-personal",
+	}
+
+	item, err := managementProviderModelCatalogItemFromRow(row)
+	if err != nil {
+		t.Fatalf("managementProviderModelCatalogItemFromRow() error = %v", err)
+	}
+	if item.SystemAccountID != "sys_user" || item.Mode != "chat" || item.InputUSDPer1M == nil || *item.InputUSDPer1M != 1.25 {
+		t.Fatalf("item = %+v", item)
+	}
+	if item.ContextWindowTokens == nil || *item.ContextWindowTokens != 128000 {
+		t.Fatalf("context window = %#v", item.ContextWindowTokens)
+	}
+	if len(item.SupportedAPIProtocols) != 2 || item.SupportedAPIProtocols[0] != "chat_completions" || item.SupportedAPIProtocols[1] != "responses" {
+		t.Fatalf("protocols = %+v", item.SupportedAPIProtocols)
+	}
+}
