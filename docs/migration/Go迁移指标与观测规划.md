@@ -71,7 +71,7 @@ Go 迁移期间，Node 和 Go 对照只能比较用户可见 SLI，例如请求�
 | 请求体大小 | body bytes histogram，按 `routeGroup` | 只记录大小，不记录内容 |
 | 限流和拒绝 | `rate_limited_total`、`rejected_total`、`reason` | `reason` 使用固定枚举，不包含 IP / token |
 
-W2 管理只读接口迁移后，每个 options / catalog 都必须有低基数 `routeGroup` 或 `operation`，用于压测和回归确认没有全表扫描。当前已迁移的 options / catalog 建议固定操作名为 `proxy_options_list`、`provider_options_list`、`provider_model_options_list`、`provider_models_list`、`route_strategy_options_list`、`my_route_strategy_options_list`、`group_options_list` 和 `my_group_options_list`；不要把 `systemAccountId`、供应商 code、模型名、路由策略 ID、分组 ID、keyword 原文或用户名称放入 Prometheus label。
+W2 管理只读接口迁移后，每个 options / catalog 都必须有低基数 `routeGroup` 或 `operation`，用于压测和回归确认没有全表扫描。当前已迁移的 options / catalog 建议固定操作名为 `proxy_options_list`、`provider_options_list`、`provider_model_options_list`、`provider_models_list`、`route_strategy_options_list`、`my_route_strategy_options_list`、`group_options_list`、`my_group_options_list`、`account_options_list` 和 `my_account_options_list`；不要把 `systemAccountId`、供应商 code、模型名、路由策略 ID、分组 ID、账号 ID、keyword 原文或用户名称放入 Prometheus label。
 
 ### 5.3 PostgreSQL
 

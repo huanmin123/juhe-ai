@@ -190,3 +190,38 @@ type ManagementGroupOptionListInput struct {
 type ManagementGroupOptionReader interface {
 	ListManagementGroupOptions(ctx context.Context, input ManagementGroupOptionListInput) ([]ManagementGroupOption, error)
 }
+
+type ManagementAccountOption struct {
+	ID                        string
+	SystemAccountID           string
+	SystemAccountName         string
+	OwnerSystemAccountID      string
+	OwnerSystemAccountName    string
+	ProviderCode              string
+	ProviderProtocolProfileID string
+	ProtocolCode              string
+	ProtocolVersion           string
+	Name                      string
+	Type                      string
+	Status                    string
+	AccountExpiresAt          *time.Time
+}
+
+type ManagementAccountOptionListInput struct {
+	SystemAccountID            string
+	IncludeSystemAccountFields bool
+	IDs                        []string
+	Keyword                    string
+	ProviderCode               string
+	GroupID                    string
+	TagIDs                     []string
+	Type                       string
+	Statuses                   []string
+	Schedulable                string
+	Limit                      int
+	Offset                     int
+}
+
+type ManagementAccountOptionReader interface {
+	ListManagementAccountOptions(ctx context.Context, input ManagementAccountOptionListInput) ([]ManagementAccountOption, error)
+}
