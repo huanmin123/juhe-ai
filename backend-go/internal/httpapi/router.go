@@ -33,6 +33,7 @@ type RouterOptions struct {
 	ManagementProviderOptionsHandler                http.Handler
 	ManagementProviderModelOptionsHandler           http.Handler
 	ManagementProviderModelsHandler                 http.Handler
+	ManagementProviderDefaultTestModelHandler       http.Handler
 	ManagementRouteStrategyOptionsHandler           http.Handler
 	ManagementMyRouteStrategyOptionsHandler         http.Handler
 	ManagementGroupOptionsHandler                   http.Handler
@@ -85,6 +86,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementProviderOptionsHandler == nil &&
 				opts.ManagementProviderModelOptionsHandler == nil &&
 				opts.ManagementProviderModelsHandler == nil &&
+				opts.ManagementProviderDefaultTestModelHandler == nil &&
 				opts.ManagementRouteStrategyOptionsHandler == nil &&
 				opts.ManagementMyRouteStrategyOptionsHandler == nil &&
 				opts.ManagementGroupOptionsHandler == nil &&
@@ -131,6 +133,9 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementProviderModelsHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/providers/{code}/models", opts.ManagementProviderModelsHandler.ServeHTTP)
+			}
+			if opts.ManagementProviderDefaultTestModelHandler != nil {
+				system.With(opts.ManagementAPIAuthMiddleware).Put("/providers/{code}/default-test-model", opts.ManagementProviderDefaultTestModelHandler.ServeHTTP)
 			}
 			if opts.ManagementRouteStrategyOptionsHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/route-strategies/options", opts.ManagementRouteStrategyOptionsHandler.ServeHTTP)

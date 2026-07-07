@@ -184,12 +184,125 @@ func TestServiceModelsReturnsProviderNotFound(t *testing.T) {
 	}
 }
 
+func TestServiceSetDefaultTestModelValidatesCatalogAndPersists(t *testing.T) {
+	store := &providerModelStoreStub{
+		providers: map[string]port.ManagementProviderModelProvider{
+			"gpt": {Code: "gpt", Enabled: true},
+		},
+		catalog: []port.ManagementProviderModelCatalogItem{
+			{ProviderCode: "gpt", Model: "gpt-5.5", Scope: "built_in", Status: "active", Mode: "text", SupportedAPIProtocols: []string{"responses"}},
+		},
+	}
+	service := NewService(store)
+
+	result, err := service.SetDefaultTestModel(context.Background(), DefaultTestModelInput{
+		ProviderCode:    " gpt ",
+		SystemAccountID: " sys_user ",
+		Model:           " gpt-5.5 ",
+	})
+	if err != nil {
+		t.Fatalf("SetDefaultTestModel() error = %v", err)
+	}
+
+	if result.ProviderCode != "gpt" || result.DefaultTestModel != "gpt-5.5" {
+		t.Fatalf("result = %+v", result)
+	}
+	if store.catalogInput.SystemAccountID != "sys_user" || !store.catalogInput.IncludeInactive {
+		t.Fatalf("catalog input = %+v", store.catalogInput)
+	}
+	if store.setDefaultInput.ProviderCode != "gpt" ||
+		store.setDefaultInput.SystemAccountID != "sys_user" ||
+		store.setDefaultInput.Model != "gpt-5.5" {
+		t.Fatalf("set default input = %+v", store.setDefaultInput)
+	}
+}
+
+func TestServiceSetDefaultTestModelRejectsInvalidSelections(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   DefaultTestModelInput
+		catalog []port.ManagementProviderModelCatalogItem
+		wantMsg string
+	}{
+		{
+			name:    "missing system account",
+			input:   DefaultTestModelInput{ProviderCode: "gpt", Model: "gpt-5.5"},
+			wantMsg: "请选择要设置默认测试模型的系统账户",
+		},
+		{
+			name:    "missing model",
+			input:   DefaultTestModelInput{ProviderCode: "gpt", SystemAccountID: "sys_user"},
+			wantMsg: "默认测试模型参数无效",
+		},
+		{
+			name:    "not visible",
+			input:   DefaultTestModelInput{ProviderCode: "gpt", SystemAccountID: "sys_user", Model: "missing"},
+			catalog: []port.ManagementProviderModelCatalogItem{{ProviderCode: "gpt", Model: "gpt-5.5", Scope: "built_in", Status: "active"}},
+			wantMsg: "模型不在当前用户可见目录中：missing",
+		},
+		{
+			name:    "inactive",
+			input:   DefaultTestModelInput{ProviderCode: "gpt", SystemAccountID: "sys_user", Model: "draft-model"},
+			catalog: []port.ManagementProviderModelCatalogItem{{ProviderCode: "gpt", Model: "draft-model", Scope: "global", Status: "draft"}},
+			wantMsg: "只能把启用模型设置为默认测试模型",
+		},
+		{
+			name:    "image model",
+			input:   DefaultTestModelInput{ProviderCode: "gpt", SystemAccountID: "sys_user", Model: "image-model"},
+			catalog: []port.ManagementProviderModelCatalogItem{{ProviderCode: "gpt", Model: "image-model", Scope: "built_in", Status: "active", Mode: "image", SupportedAPIProtocols: []string{"images"}}},
+			wantMsg: "默认测试模型只能选择文本生成模型",
+		},
+		{
+			name:    "unsupported protocol",
+			input:   DefaultTestModelInput{ProviderCode: "gpt", SystemAccountID: "sys_user", Model: "embed-model"},
+			catalog: []port.ManagementProviderModelCatalogItem{{ProviderCode: "gpt", Model: "embed-model", Scope: "built_in", Status: "active", SupportedAPIProtocols: []string{"embed_content"}}},
+			wantMsg: "默认测试模型只能选择文本生成模型",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &providerModelStoreStub{
+				providers: map[string]port.ManagementProviderModelProvider{
+					"gpt": {Code: "gpt", Enabled: true},
+				},
+				catalog: tt.catalog,
+			}
+			_, err := NewService(store).SetDefaultTestModel(context.Background(), tt.input)
+			if err == nil {
+				t.Fatal("SetDefaultTestModel() error = nil, want validation error")
+			}
+			got, ok := DefaultTestModelValidationMessage(err)
+			if !ok || got != tt.wantMsg {
+				t.Fatalf("validation message = %q, %v; want %q", got, ok, tt.wantMsg)
+			}
+			if store.setDefaultInput.ProviderCode != "" {
+				t.Fatalf("set default should not be called, got %+v", store.setDefaultInput)
+			}
+		})
+	}
+}
+
+func TestServiceSetDefaultTestModelReturnsProviderNotFound(t *testing.T) {
+	_, err := NewService(&providerModelStoreStub{}).SetDefaultTestModel(context.Background(), DefaultTestModelInput{
+		ProviderCode:    "missing",
+		SystemAccountID: "sys_user",
+		Model:           "gpt-5.5",
+	})
+	if err != ErrProviderNotFound {
+		t.Fatalf("SetDefaultTestModel() error = %v, want ErrProviderNotFound", err)
+	}
+}
+
 type providerModelStoreStub struct {
-	providers     map[string]port.ManagementProviderModelProvider
-	enabledCodes  []string
-	protocolCodes map[string][]string
-	catalog       []port.ManagementProviderModelCatalogItem
-	catalogInput  port.ManagementProviderModelCatalogListInput
+	providers        map[string]port.ManagementProviderModelProvider
+	enabledCodes     []string
+	protocolCodes    map[string][]string
+	catalog          []port.ManagementProviderModelCatalogItem
+	catalogInput     port.ManagementProviderModelCatalogListInput
+	setDefaultInput  port.ManagementProviderDefaultTestModelInput
+	setDefaultResult port.ManagementProviderDefaultTestModelPreference
+	setDefaultErr    error
 }
 
 func (s *providerModelStoreStub) FindManagementProviderModelProvider(_ context.Context, code string) (port.ManagementProviderModelProvider, bool, error) {
@@ -221,4 +334,18 @@ func (s *providerModelStoreStub) ListManagementProviderModelCatalog(_ context.Co
 		}
 	}
 	return items, nil
+}
+
+func (s *providerModelStoreStub) SetManagementProviderDefaultTestModel(_ context.Context, input port.ManagementProviderDefaultTestModelInput) (port.ManagementProviderDefaultTestModelPreference, error) {
+	s.setDefaultInput = input
+	if s.setDefaultErr != nil {
+		return port.ManagementProviderDefaultTestModelPreference{}, s.setDefaultErr
+	}
+	if s.setDefaultResult.ProviderCode != "" || s.setDefaultResult.Model != "" {
+		return s.setDefaultResult, nil
+	}
+	return port.ManagementProviderDefaultTestModelPreference{
+		ProviderCode: input.ProviderCode,
+		Model:        input.Model,
+	}, nil
 }

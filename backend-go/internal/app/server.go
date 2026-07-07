@@ -96,6 +96,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementProviderOptionsHandler:                managementHandlers.ProviderOptionsHandler,
 		ManagementProviderModelOptionsHandler:           managementHandlers.ProviderModelOptionsHandler,
 		ManagementProviderModelsHandler:                 managementHandlers.ProviderModelsHandler,
+		ManagementProviderDefaultTestModelHandler:       managementHandlers.ProviderDefaultTestModelHandler,
 		ManagementRouteStrategyOptionsHandler:           managementHandlers.RouteStrategyOptionsHandler,
 		ManagementMyRouteStrategyOptionsHandler:         managementHandlers.MyRouteStrategyOptionsHandler,
 		ManagementGroupOptionsHandler:                   managementHandlers.GroupOptionsHandler,
@@ -152,6 +153,7 @@ type managementAPIHandlers struct {
 	ProviderOptionsHandler                http.Handler
 	ProviderModelOptionsHandler           http.Handler
 	ProviderModelsHandler                 http.Handler
+	ProviderDefaultTestModelHandler       http.Handler
 	RouteStrategyOptionsHandler           http.Handler
 	MyRouteStrategyOptionsHandler         http.Handler
 	GroupOptionsHandler                   http.Handler
@@ -192,6 +194,7 @@ func newManagementAPIHandler(cfg config.Config, store *postgresstore.Store) mana
 		ProviderOptionsHandler:                httpapi.NewManagementProviderOptionsHandler(providerService),
 		ProviderModelOptionsHandler:           httpapi.NewManagementProviderModelOptionsHandler(providerModelService),
 		ProviderModelsHandler:                 httpapi.NewManagementProviderModelsHandler(providerModelService),
+		ProviderDefaultTestModelHandler:       httpapi.NewManagementProviderDefaultTestModelHandler(providerModelService),
 		RouteStrategyOptionsHandler:           httpapi.NewManagementRouteStrategyOptionsHandler(routeStrategyService),
 		MyRouteStrategyOptionsHandler:         httpapi.NewManagementMyRouteStrategyOptionsHandler(routeStrategyService),
 		GroupOptionsHandler:                   httpapi.NewManagementGroupOptionsHandler(groupService),

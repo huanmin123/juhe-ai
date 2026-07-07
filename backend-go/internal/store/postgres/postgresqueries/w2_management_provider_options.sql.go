@@ -211,3 +211,33 @@ func (q *Queries) ListManagementProviderOptionProviders(ctx context.Context) ([]
 	}
 	return items, nil
 }
+
+const upsertManagementProviderDefaultTestModelPreference = `-- name: UpsertManagementProviderDefaultTestModelPreference :one
+INSERT INTO juhe_business.provider_default_test_models (
+  system_account_id, provider_code, model, created_at, updated_at
+) VALUES (
+  $1, $2, $3, now(), now()
+)
+ON CONFLICT (system_account_id, provider_code) DO UPDATE SET
+  model = EXCLUDED.model,
+  updated_at = EXCLUDED.updated_at
+RETURNING provider_code, model
+`
+
+type UpsertManagementProviderDefaultTestModelPreferenceParams struct {
+	SystemAccountID string
+	ProviderCode    string
+	Model           string
+}
+
+type UpsertManagementProviderDefaultTestModelPreferenceRow struct {
+	ProviderCode string
+	Model        string
+}
+
+func (q *Queries) UpsertManagementProviderDefaultTestModelPreference(ctx context.Context, arg UpsertManagementProviderDefaultTestModelPreferenceParams) (UpsertManagementProviderDefaultTestModelPreferenceRow, error) {
+	row := q.db.QueryRow(ctx, upsertManagementProviderDefaultTestModelPreference, arg.SystemAccountID, arg.ProviderCode, arg.Model)
+	var i UpsertManagementProviderDefaultTestModelPreferenceRow
+	err := row.Scan(&i.ProviderCode, &i.Model)
+	return i, err
+}

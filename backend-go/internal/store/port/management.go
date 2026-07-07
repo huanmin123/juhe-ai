@@ -201,11 +201,26 @@ type ManagementProviderModelCatalogListInput struct {
 	IncludeInactive      bool
 }
 
+type ManagementProviderDefaultTestModelPreference struct {
+	ProviderCode string
+	Model        string
+}
+
+type ManagementProviderDefaultTestModelInput struct {
+	ProviderCode    string
+	SystemAccountID string
+	Model           string
+}
+
 type ManagementProviderModelCatalogReader interface {
 	FindManagementProviderModelProvider(ctx context.Context, code string) (ManagementProviderModelProvider, bool, error)
 	ListManagementEnabledModelProviderCodes(ctx context.Context) ([]string, error)
 	ListManagementProviderCodesByProtocol(ctx context.Context, protocolCode string, protocolVersion string) ([]string, error)
 	ListManagementProviderModelCatalog(ctx context.Context, input ManagementProviderModelCatalogListInput) ([]ManagementProviderModelCatalogItem, error)
+}
+
+type ManagementProviderDefaultTestModelWriter interface {
+	SetManagementProviderDefaultTestModel(ctx context.Context, input ManagementProviderDefaultTestModelInput) (ManagementProviderDefaultTestModelPreference, error)
 }
 
 type ManagementRouteStrategyOption struct {

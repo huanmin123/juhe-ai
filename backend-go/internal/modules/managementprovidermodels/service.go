@@ -24,6 +24,7 @@ var ErrProviderNotFound = errors.New("provider not found")
 
 type Store interface {
 	port.ManagementProviderModelCatalogReader
+	port.ManagementProviderDefaultTestModelWriter
 }
 
 type Service struct {
@@ -42,10 +43,40 @@ type ModelListInput struct {
 	IncludeUnpriced bool
 }
 
+type DefaultTestModelInput struct {
+	ProviderCode    string
+	SystemAccountID string
+	Model           string
+}
+
 type ModelOption struct {
 	ProviderCode          string   `json:"providerCode"`
 	Model                 string   `json:"model"`
 	SupportedAPIProtocols []string `json:"supportedApiProtocols,omitempty"`
+}
+
+type DefaultTestModelResult struct {
+	ProviderCode     string `json:"providerCode"`
+	DefaultTestModel string `json:"defaultTestModel"`
+}
+
+type DefaultTestModelValidationError struct {
+	Message string
+}
+
+func (e *DefaultTestModelValidationError) Error() string {
+	return e.Message
+}
+
+func DefaultTestModelValidationMessage(err error) (string, bool) {
+	var validationErr *DefaultTestModelValidationError
+	if !errors.As(err, &validationErr) {
+		return "", false
+	}
+	if strings.TrimSpace(validationErr.Message) == "" {
+		return "默认测试模型参数无效", true
+	}
+	return validationErr.Message, true
 }
 
 type ModelCatalogItem struct {
@@ -150,6 +181,52 @@ func (s *Service) Models(ctx context.Context, input ModelListInput) ([]ModelCata
 		output = append(output, catalogItemFromPort(item))
 	}
 	return output, nil
+}
+
+func (s *Service) SetDefaultTestModel(ctx context.Context, input DefaultTestModelInput) (DefaultTestModelResult, error) {
+	if s.store == nil {
+		return DefaultTestModelResult{}, fmt.Errorf("management provider model store is required")
+	}
+	providerCode := strings.TrimSpace(input.ProviderCode)
+	systemAccountID := strings.TrimSpace(input.SystemAccountID)
+	model := strings.TrimSpace(input.Model)
+	if systemAccountID == "" {
+		return DefaultTestModelResult{}, &DefaultTestModelValidationError{Message: "请选择要设置默认测试模型的系统账户"}
+	}
+	if model == "" {
+		return DefaultTestModelResult{}, &DefaultTestModelValidationError{Message: "默认测试模型参数无效"}
+	}
+	models, err := s.Models(ctx, ModelListInput{
+		ProviderCode:    providerCode,
+		SystemAccountID: systemAccountID,
+		IncludeInactive: true,
+		IncludeUnpriced: true,
+	})
+	if err != nil {
+		return DefaultTestModelResult{}, err
+	}
+	selected := findDefaultTestModelCandidate(models, model)
+	if selected == nil {
+		return DefaultTestModelResult{}, &DefaultTestModelValidationError{Message: "模型不在当前用户可见目录中：" + model}
+	}
+	if !isActiveCatalogItem(*selected) {
+		return DefaultTestModelResult{}, &DefaultTestModelValidationError{Message: "只能把启用模型设置为默认测试模型"}
+	}
+	if !isCatalogItemUsableForAccountTest(*selected) {
+		return DefaultTestModelResult{}, &DefaultTestModelValidationError{Message: "默认测试模型只能选择文本生成模型"}
+	}
+	saved, err := s.store.SetManagementProviderDefaultTestModel(ctx, port.ManagementProviderDefaultTestModelInput{
+		ProviderCode:    providerCode,
+		SystemAccountID: systemAccountID,
+		Model:           selected.Model,
+	})
+	if err != nil {
+		return DefaultTestModelResult{}, err
+	}
+	return DefaultTestModelResult{
+		ProviderCode:     saved.ProviderCode,
+		DefaultTestModel: saved.Model,
+	}, nil
 }
 
 func (s *Service) optionProviderCodes(ctx context.Context, protocol string) ([]string, error) {
@@ -269,6 +346,38 @@ func mergeCatalogItems(items []port.ManagementProviderModelCatalogItem, keyFunc 
 		output = append(output, merged[key])
 	}
 	return output
+}
+
+func findDefaultTestModelCandidate(items []ModelCatalogItem, model string) *ModelCatalogItem {
+	normalized := strings.TrimSpace(model)
+	for index := range items {
+		if strings.TrimSpace(items[index].Model) == normalized {
+			return &items[index]
+		}
+	}
+	return nil
+}
+
+func isActiveCatalogItem(item ModelCatalogItem) bool {
+	status := strings.TrimSpace(item.Status)
+	return status == "" || status == "active"
+}
+
+func isCatalogItemUsableForAccountTest(item ModelCatalogItem) bool {
+	switch strings.TrimSpace(item.Mode) {
+	case "image", "audio":
+		return false
+	}
+	if len(item.SupportedAPIProtocols) == 0 {
+		return true
+	}
+	for _, protocol := range item.SupportedAPIProtocols {
+		switch strings.TrimSpace(protocol) {
+		case "chat_completions", "responses", "messages", "generate_content", "stream_generate_content":
+			return true
+		}
+	}
+	return false
 }
 
 func catalogPriority(item port.ManagementProviderModelCatalogItem) int {

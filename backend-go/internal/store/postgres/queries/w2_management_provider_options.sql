@@ -48,3 +48,14 @@ WHERE system_account_id = sqlc.arg(system_account_id)
   AND sqlc.arg(system_account_id)::text <> ''
   AND provider_code = ANY(sqlc.arg(provider_codes)::text[])
 ORDER BY provider_code ASC;
+
+-- name: UpsertManagementProviderDefaultTestModelPreference :one
+INSERT INTO juhe_business.provider_default_test_models (
+  system_account_id, provider_code, model, created_at, updated_at
+) VALUES (
+  sqlc.arg(system_account_id), sqlc.arg(provider_code), sqlc.arg(model), now(), now()
+)
+ON CONFLICT (system_account_id, provider_code) DO UPDATE SET
+  model = EXCLUDED.model,
+  updated_at = EXCLUDED.updated_at
+RETURNING provider_code, model;

@@ -27,6 +27,10 @@ func (s *Store) ListManagementProviderModelCatalog(ctx context.Context, input po
 	return listManagementProviderModelCatalog(ctx, s.queries(), input)
 }
 
+func (s *Store) SetManagementProviderDefaultTestModel(ctx context.Context, input port.ManagementProviderDefaultTestModelInput) (port.ManagementProviderDefaultTestModelPreference, error) {
+	return setManagementProviderDefaultTestModel(ctx, s.queries(), input)
+}
+
 func findManagementProviderModelProvider(
 	ctx context.Context,
 	q *postgresqueries.Queries,
@@ -95,6 +99,25 @@ func listManagementProviderModelCatalog(
 	return items, nil
 }
 
+func setManagementProviderDefaultTestModel(
+	ctx context.Context,
+	q *postgresqueries.Queries,
+	input port.ManagementProviderDefaultTestModelInput,
+) (port.ManagementProviderDefaultTestModelPreference, error) {
+	row, err := q.UpsertManagementProviderDefaultTestModelPreference(ctx, postgresqueries.UpsertManagementProviderDefaultTestModelPreferenceParams{
+		SystemAccountID: input.SystemAccountID,
+		ProviderCode:    input.ProviderCode,
+		Model:           input.Model,
+	})
+	if err != nil {
+		return port.ManagementProviderDefaultTestModelPreference{}, fmt.Errorf("set management provider default test model: %w", err)
+	}
+	return port.ManagementProviderDefaultTestModelPreference{
+		ProviderCode: row.ProviderCode,
+		Model:        row.Model,
+	}, nil
+}
+
 func managementProviderModelCatalogItemFromRow(row postgresqueries.ListManagementProviderModelCatalogRow) (port.ManagementProviderModelCatalogItem, error) {
 	protocols, err := decodeProviderStringArray(row.SupportedApiProtocolsJson, "provider model supported_api_protocols_json")
 	if err != nil {
@@ -152,3 +175,4 @@ func float8Ptr(value pgtype.Float8) *float64 {
 }
 
 var _ port.ManagementProviderModelCatalogReader = (*Store)(nil)
+var _ port.ManagementProviderDefaultTestModelWriter = (*Store)(nil)
