@@ -41,6 +41,20 @@ type JuheBusinessAccount struct {
 	UpdatedAt                       pgtype.Timestamptz
 }
 
+type JuheBusinessAccountNameSearchDocument struct {
+	AccountID       string
+	SystemAccountID string
+	NormalizedName  string
+	UpdatedAt       pgtype.Timestamptz
+}
+
+type JuheBusinessAccountNameSearchTerm struct {
+	AccountID       string
+	SystemAccountID string
+	Term            string
+	CreatedAt       pgtype.Timestamptz
+}
+
 type JuheBusinessAccountSupportedModel struct {
 	AccountID    string
 	ProviderCode string

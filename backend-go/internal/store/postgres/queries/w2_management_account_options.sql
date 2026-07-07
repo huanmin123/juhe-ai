@@ -1,5 +1,28 @@
 -- name: ListManagementAccountOptions :many
-WITH owner_account_rows AS (
+WITH account_name_candidate_terms AS MATERIALIZED (
+  SELECT
+    search.account_id,
+    search.system_account_id,
+    search.term
+  FROM juhe_business.account_name_search_terms AS search
+  WHERE coalesce(array_length(sqlc.arg(keyword_terms)::text[], 1), 0) > 0
+    AND (
+      sqlc.arg(system_account_id)::text = ''
+      OR search.system_account_id = sqlc.arg(system_account_id)::text
+    )
+    AND search.term = ANY(sqlc.arg(keyword_terms)::text[])
+),
+account_name_contains_rows AS (
+  SELECT account_name_candidate_terms.account_id
+  FROM account_name_candidate_terms
+  INNER JOIN juhe_business.account_name_search_documents AS documents
+    ON documents.account_id = account_name_candidate_terms.account_id
+    AND documents.system_account_id = account_name_candidate_terms.system_account_id
+  WHERE position(sqlc.arg(keyword_normalized)::text in documents.normalized_name) > 0
+  GROUP BY account_name_candidate_terms.account_id
+  HAVING COUNT(DISTINCT account_name_candidate_terms.term) = sqlc.arg(keyword_term_count)::int
+),
+owner_account_rows AS (
   SELECT
     accounts.id,
     accounts.system_account_id,
@@ -83,6 +106,13 @@ WITH owner_account_rows AS (
       OR (
         accounts.name COLLATE "C" >= sqlc.arg(keyword)::text
         AND accounts.name COLLATE "C" < sqlc.arg(keyword_upper)::text
+      )
+      OR (
+        coalesce(array_length(sqlc.arg(keyword_terms)::text[], 1), 0) > 0
+        AND accounts.id IN (
+          SELECT account_name_contains_rows.account_id
+          FROM account_name_contains_rows
+        )
       )
     )
 )

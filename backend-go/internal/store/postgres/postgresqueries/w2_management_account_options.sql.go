@@ -12,7 +12,30 @@ import (
 )
 
 const listManagementAccountOptions = `-- name: ListManagementAccountOptions :many
-WITH owner_account_rows AS (
+WITH account_name_candidate_terms AS MATERIALIZED (
+  SELECT
+    search.account_id,
+    search.system_account_id,
+    search.term
+  FROM juhe_business.account_name_search_terms AS search
+  WHERE coalesce(array_length($5::text[], 1), 0) > 0
+    AND (
+      $6::text = ''
+      OR search.system_account_id = $6::text
+    )
+    AND search.term = ANY($5::text[])
+),
+account_name_contains_rows AS (
+  SELECT account_name_candidate_terms.account_id
+  FROM account_name_candidate_terms
+  INNER JOIN juhe_business.account_name_search_documents AS documents
+    ON documents.account_id = account_name_candidate_terms.account_id
+    AND documents.system_account_id = account_name_candidate_terms.system_account_id
+  WHERE position($7::text in documents.normalized_name) > 0
+  GROUP BY account_name_candidate_terms.account_id
+  HAVING COUNT(DISTINCT account_name_candidate_terms.term) = $8::int
+),
+owner_account_rows AS (
   SELECT
     accounts.id,
     accounts.system_account_id,
@@ -55,47 +78,54 @@ WITH owner_account_rows AS (
     ON system_accounts.id = accounts.system_account_id
   WHERE accounts.deleted_at IS NULL
     AND (
-      $5::text = ''
-      OR accounts.system_account_id = $5::text
+      $6::text = ''
+      OR accounts.system_account_id = $6::text
     )
     AND (
-      coalesce(array_length($6::text[], 1), 0) = 0
-      OR accounts.id = ANY($6::text[])
+      coalesce(array_length($9::text[], 1), 0) = 0
+      OR accounts.id = ANY($9::text[])
     )
     AND (
-      $7::text = ''
-      OR accounts.provider_code = $7::text
+      $10::text = ''
+      OR accounts.provider_code = $10::text
     )
     AND (
-      $8::text = ''
+      $11::text = ''
       OR EXISTS (
         SELECT 1
         FROM juhe_business.group_accounts AS group_accounts
         WHERE group_accounts.account_id = accounts.id
           AND group_accounts.system_account_id = accounts.system_account_id
-          AND group_accounts.group_id = $8::text
+          AND group_accounts.group_id = $11::text
           AND group_accounts.enabled = true
       )
     )
     AND (
-      coalesce(array_length($9::text[], 1), 0) = 0
+      coalesce(array_length($12::text[], 1), 0) = 0
       OR EXISTS (
         SELECT 1
         FROM juhe_business.account_tag_bindings AS option_tag_bindings
         WHERE option_tag_bindings.account_id = accounts.id
           AND option_tag_bindings.system_account_id = accounts.system_account_id
-          AND option_tag_bindings.tag_id = ANY($9::text[])
+          AND option_tag_bindings.tag_id = ANY($12::text[])
       )
     )
     AND (
-      $10::text = ''
-      OR accounts.type = $10::text
+      $13::text = ''
+      OR accounts.type = $13::text
     )
     AND (
-      $11::boolean = false
+      $14::boolean = false
       OR (
-        accounts.name COLLATE "C" >= $12::text
-        AND accounts.name COLLATE "C" < $13::text
+        accounts.name COLLATE "C" >= $15::text
+        AND accounts.name COLLATE "C" < $16::text
+      )
+      OR (
+        coalesce(array_length($5::text[], 1), 0) > 0
+        AND accounts.id IN (
+          SELECT account_name_contains_rows.account_id
+          FROM account_name_contains_rows
+        )
       )
     )
 )
@@ -129,19 +159,22 @@ OFFSET $3::int
 `
 
 type ListManagementAccountOptionsParams struct {
-	Statuses        []string
-	Schedulable     string
-	RowOffset       int32
-	RowLimit        int32
-	SystemAccountID string
-	Ids             []string
-	ProviderCode    string
-	GroupID         string
-	TagIds          []string
-	AccountType     string
-	HasKeyword      bool
-	Keyword         string
-	KeywordUpper    string
+	Statuses          []string
+	Schedulable       string
+	RowOffset         int32
+	RowLimit          int32
+	KeywordTerms      []string
+	SystemAccountID   string
+	KeywordNormalized string
+	KeywordTermCount  int32
+	Ids               []string
+	ProviderCode      string
+	GroupID           string
+	TagIds            []string
+	AccountType       string
+	HasKeyword        bool
+	Keyword           string
+	KeywordUpper      string
 }
 
 type ListManagementAccountOptionsRow struct {
@@ -164,7 +197,10 @@ func (q *Queries) ListManagementAccountOptions(ctx context.Context, arg ListMana
 		arg.Schedulable,
 		arg.RowOffset,
 		arg.RowLimit,
+		arg.KeywordTerms,
 		arg.SystemAccountID,
+		arg.KeywordNormalized,
+		arg.KeywordTermCount,
 		arg.Ids,
 		arg.ProviderCode,
 		arg.GroupID,

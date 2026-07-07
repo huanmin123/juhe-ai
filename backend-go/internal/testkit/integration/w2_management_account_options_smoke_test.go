@@ -9,11 +9,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
+	"golang.org/x/text/unicode/norm"
 
 	"juhe-ai/backend-go/internal/config"
 	"juhe-ai/backend-go/internal/httpapi"
@@ -155,6 +157,69 @@ func TestW2ManagementAccountOptionsPostgresSmoke(t *testing.T) {
 		t.Fatalf("prefixed options = %+v", prefixed)
 	}
 
+	contains, err := service.Options(ctx, managementaccounts.OptionListInput{
+		SystemAccountID: "sys_w2_proxy_options",
+		Keyword:         "cent%",
+		Limit:           10,
+	})
+	if err != nil {
+		t.Fatalf("contains account options: %v", err)
+	}
+	if len(contains) != 1 || contains[0].ID != "acct_w2_percent" {
+		t.Fatalf("contains options = %+v", contains)
+	}
+
+	containsFiltered, err := service.Options(ctx, managementaccounts.OptionListInput{
+		SystemAccountID: "sys_w2_proxy_options",
+		Keyword:         "pha Acc",
+		GroupID:         "group_w2_default",
+		TagIDs:          []string{"tag_w2_main"},
+		Status:          "active",
+		Schedulable:     "enabled",
+		Limit:           10,
+	})
+	if err != nil {
+		t.Fatalf("contains filtered account options: %v", err)
+	}
+	if len(containsFiltered) != 1 || containsFiltered[0].ID != "acct_w2_alpha" {
+		t.Fatalf("contains filtered options = %+v", containsFiltered)
+	}
+
+	nonContinuous, err := service.Options(ctx, managementaccounts.OptionListInput{
+		SystemAccountID: "sys_w2_proxy_options",
+		Keyword:         "Aha",
+		Limit:           10,
+	})
+	if err != nil {
+		t.Fatalf("non-continuous account options: %v", err)
+	}
+	if len(nonContinuous) != 0 {
+		t.Fatalf("non-continuous search should not match terms without document substring: %+v", nonContinuous)
+	}
+
+	selfOwnerSearch, err := service.Options(ctx, managementaccounts.OptionListInput{
+		SystemAccountID: "sys_w2_proxy_options",
+		Keyword:         "Owner",
+		Limit:           10,
+	})
+	if err != nil {
+		t.Fatalf("self owner keyword account options: %v", err)
+	}
+	if findAccountOption(selfOwnerSearch, "acct_w2_other") != nil {
+		t.Fatalf("self contains search leaked other owner: %+v", selfOwnerSearch)
+	}
+	globalOwnerSearch, err := service.Options(ctx, managementaccounts.OptionListInput{
+		IncludeSystemAccountFields: true,
+		Keyword:                    "Owner",
+		Limit:                      10,
+	})
+	if err != nil {
+		t.Fatalf("global owner keyword account options: %v", err)
+	}
+	if findAccountOption(globalOwnerSearch, "acct_w2_other") == nil {
+		t.Fatalf("global contains search missing other owner: %+v", globalOwnerSearch)
+	}
+
 	authenticator := managementauth.NewAuthenticator(managementauth.AuthenticatorOptions{
 		Store: store,
 		Now:   func() time.Time { return now },
@@ -288,9 +353,22 @@ func insertW2AccountOptionsFixture(t *testing.T, ctx context.Context, db *sql.DB
 		if err != nil {
 			t.Fatalf("insert W2 account fixture %s: %v", item.id, err)
 		}
+		insertW2AccountNameSearchDocument(t, ctx, db, item.id, item.systemAccountID, item.name, now)
 	}
 
 	_, err := db.ExecContext(ctx, `
+		INSERT INTO juhe_business.account_name_search_terms (
+			account_id, system_account_id, term, created_at
+		) VALUES (
+			'acct_w2_alpha', 'sys_w2_proxy_options', 'Aha', $1
+		)
+		ON CONFLICT (account_id, term) DO NOTHING
+	`, now)
+	if err != nil {
+		t.Fatalf("insert W2 account false-positive search term: %v", err)
+	}
+
+	_, err = db.ExecContext(ctx, `
 		INSERT INTO juhe_business.group_accounts (
 			system_account_id, group_id, account_id, enabled, created_at, updated_at
 		) VALUES (
@@ -326,6 +404,74 @@ func insertW2AccountTagsFixture(t *testing.T, ctx context.Context, db *sql.DB, n
 	if err != nil {
 		t.Fatalf("insert W2 account tag bindings: %v", err)
 	}
+}
+
+func insertW2AccountNameSearchDocument(t *testing.T, ctx context.Context, db *sql.DB, accountID string, systemAccountID string, name string, now time.Time) {
+	t.Helper()
+	normalizedName := w2NormalizeAccountNameSearchText(name)
+	if normalizedName == "" {
+		return
+	}
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO juhe_business.account_name_search_documents (
+			account_id, system_account_id, normalized_name, updated_at
+		) VALUES (
+			$1, $2, $3, $4
+		)
+		ON CONFLICT (account_id) DO UPDATE SET
+			system_account_id = EXCLUDED.system_account_id,
+			normalized_name = EXCLUDED.normalized_name,
+			updated_at = EXCLUDED.updated_at
+	`, accountID, systemAccountID, normalizedName, now)
+	if err != nil {
+		t.Fatalf("insert W2 account search document %s: %v", accountID, err)
+	}
+	for _, term := range w2AccountNameSearchDocumentTerms(normalizedName) {
+		_, err = db.ExecContext(ctx, `
+			INSERT INTO juhe_business.account_name_search_terms (
+				account_id, system_account_id, term, created_at
+			) VALUES (
+				$1, $2, $3, $4
+			)
+			ON CONFLICT (account_id, term) DO NOTHING
+		`, accountID, systemAccountID, term, now)
+		if err != nil {
+			t.Fatalf("insert W2 account search term %s/%s: %v", accountID, term, err)
+		}
+	}
+}
+
+func w2NormalizeAccountNameSearchText(value string) string {
+	return strings.TrimSpace(norm.NFKC.String(value))
+}
+
+func w2AccountNameSearchDocumentTerms(normalizedName string) []string {
+	terms := make([]string, 0)
+	for length := 1; length <= 3; length++ {
+		terms = append(terms, w2AccountNameSearchGrams(normalizedName, length)...)
+	}
+	return terms
+}
+
+func w2AccountNameSearchGrams(value string, gramLength int) []string {
+	chars := []rune(value)
+	if len(chars) < gramLength {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(chars))
+	terms := make([]string, 0, len(chars))
+	for index := 0; index+gramLength <= len(chars); index++ {
+		term := string(chars[index : index+gramLength])
+		if strings.TrimSpace(term) == "" {
+			continue
+		}
+		if _, ok := seen[term]; ok {
+			continue
+		}
+		seen[term] = struct{}{}
+		terms = append(terms, term)
+	}
+	return terms
 }
 
 func findAccountOption(options []managementaccounts.Option, id string) *managementaccounts.Option {
