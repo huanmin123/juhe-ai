@@ -34,6 +34,8 @@ type RouterOptions struct {
 	ManagementMyGroupAccountOptionsHandler  http.Handler
 	ManagementAccountOptionsHandler         http.Handler
 	ManagementMyAccountOptionsHandler       http.Handler
+	ManagementAccountTagsHandler            http.Handler
+	ManagementMyAccountTagsHandler          http.Handler
 }
 
 func NewRouter(opts RouterOptions) http.Handler {
@@ -74,7 +76,9 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementGroupAccountOptionsHandler == nil &&
 				opts.ManagementMyGroupAccountOptionsHandler == nil &&
 				opts.ManagementAccountOptionsHandler == nil &&
-				opts.ManagementMyAccountOptionsHandler == nil {
+				opts.ManagementMyAccountOptionsHandler == nil &&
+				opts.ManagementAccountTagsHandler == nil &&
+				opts.ManagementMyAccountTagsHandler == nil {
 				panic("at least one management API handler is required when JUHE_AI_MANAGEMENT_API_ENABLED is true")
 			}
 			if opts.ManagementProxyOptionsHandler != nil {
@@ -112,6 +116,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementMyAccountOptionsHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/my-accounts/options", opts.ManagementMyAccountOptionsHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountTagsHandler != nil {
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/accounts/tags", opts.ManagementAccountTagsHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountTagsHandler != nil {
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/my-accounts/tags", opts.ManagementMyAccountTagsHandler.ServeHTTP)
 			}
 		}
 	})

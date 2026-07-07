@@ -238,6 +238,19 @@ type ManagementAccountOptionListInput struct {
 	Offset                     int
 }
 
+type ManagementAccountTag struct {
+	ID           string
+	Name         string
+	AccountCount int
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+type ManagementAccountTagListInput struct {
+	SystemAccountID string
+}
+
 type ManagementAccountOptionReader interface {
 	ListManagementAccountOptions(ctx context.Context, input ManagementAccountOptionListInput) ([]ManagementAccountOption, error)
+	ListManagementAccountTags(ctx context.Context, input ManagementAccountTagListInput) ([]ManagementAccountTag, error)
 }

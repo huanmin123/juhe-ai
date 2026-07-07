@@ -127,21 +127,127 @@ func TestManagementAccountOptionsHandlerRedactsStoreErrors(t *testing.T) {
 	}
 }
 
+func TestManagementAccountTagsHandlerRequiresAdminAndParsesScope(t *testing.T) {
+	service := &managementAccountOptionServiceStub{
+		tags: []managementaccounts.Tag{{ID: "tag_main", Name: "主力", AccountCount: 2}},
+	}
+	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
+	})(newManagementAccountTagsHandler(service, managementAccountScopeAdmin))
+
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/accounts/tags?systemAccountId=sys_user", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if !service.tagCalled || service.tagInput.SystemAccountID != "sys_user" {
+		t.Fatalf("tag input = %+v, called = %v", service.tagInput, service.tagCalled)
+	}
+	var body struct {
+		Data []managementaccounts.Tag `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Data) != 1 || body.Data[0].ID != "tag_main" || body.Data[0].AccountCount != 2 {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
+func TestManagementAccountTagsHandlerUsesAdminSelfScopeForAll(t *testing.T) {
+	service := &managementAccountOptionServiceStub{}
+	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
+	})(newManagementAccountTagsHandler(service, managementAccountScopeAdmin))
+
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/accounts/tags?systemAccountId=all", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if service.tagInput.SystemAccountID != "sys_admin" {
+		t.Fatalf("tag input = %+v, want admin current scope", service.tagInput)
+	}
+}
+
+func TestManagementAccountTagsHandlerRejectsOrdinaryUser(t *testing.T) {
+	service := &managementAccountOptionServiceStub{}
+	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_user", Username: "user", Role: "user", SessionID: "sess_user"},
+	})(newManagementAccountTagsHandler(service, managementAccountScopeAdmin))
+
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/accounts/tags?systemAccountId=sys_admin", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+	if service.tagCalled {
+		t.Fatal("service should not be called for ordinary user on management tag route")
+	}
+}
+
+func TestManagementMyAccountTagsHandlerForcesSelfScope(t *testing.T) {
+	service := &managementAccountOptionServiceStub{}
+	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_user", Username: "user", Role: "user", SessionID: "sess_user"},
+	})(newManagementAccountTagsHandler(service, managementAccountScopeSelf))
+
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/my-accounts/tags?systemAccountId=sys_admin", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if service.tagInput.SystemAccountID != "sys_user" {
+		t.Fatalf("tag input = %+v", service.tagInput)
+	}
+}
+
+func TestManagementAccountTagsHandlerRedactsStoreErrors(t *testing.T) {
+	handler := newManagementAccountTagsHandler(&managementAccountOptionServiceStub{tagErr: errors.New("postgres password leaked")}, managementAccountScopeSelf)
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/my-accounts/tags", nil)
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{SystemAccountID: "sys_user", Role: "user"}))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	var body map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["message"] != "服务器内部错误" {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
 func TestRouterRegistersW2ManagementAccountOptions(t *testing.T) {
 	service := &managementAccountOptionServiceStub{
 		options: []managementaccounts.Option{{ID: "acct_main", OwnerSystemAccountID: "sys_admin", Name: "主账号", ProviderCode: "openai", Type: "api_key", Status: "active", AccessType: "owner"}},
+		tags:    []managementaccounts.Tag{{ID: "tag_main", Name: "主力"}},
 	}
 	router := NewRouter(RouterOptions{
 		Config:                            config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
 		Logger:                            slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
 		ManagementAccountOptionsHandler:   newManagementAccountOptionsHandler(service, managementAccountScopeAdmin),
 		ManagementMyAccountOptionsHandler: newManagementAccountOptionsHandler(service, managementAccountScopeSelf),
+		ManagementAccountTagsHandler:      newManagementAccountTagsHandler(service, managementAccountScopeAdmin),
+		ManagementMyAccountTagsHandler:    newManagementAccountTagsHandler(service, managementAccountScopeSelf),
 		ManagementAPIAuthMiddleware: NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
 			context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
 		}),
 	})
 
-	for _, path := range []string{"/__aisys__/api/accounts/options", "/__aisys__/api/my-accounts/options"} {
+	for _, path := range []string{"/__aisys__/api/accounts/options", "/__aisys__/api/my-accounts/options", "/__aisys__/api/accounts/tags", "/__aisys__/api/my-accounts/tags"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		req.Header.Set("Cookie", "juhe_ai_session=session-token")
 		rec := httptest.NewRecorder()
@@ -162,31 +268,44 @@ func TestRouterDoesNotRegisterW2ManagementAccountOptionsWhenDisabled(t *testing.
 		Config:                          config.Config{Host: "127.0.0.1", Port: 3000},
 		Logger:                          slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
 		ManagementAccountOptionsHandler: newManagementAccountOptionsHandler(&managementAccountOptionServiceStub{}, managementAccountScopeAdmin),
+		ManagementAccountTagsHandler:    newManagementAccountTagsHandler(&managementAccountOptionServiceStub{}, managementAccountScopeAdmin),
 		ManagementAPIAuthMiddleware: NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
 			context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
 		}),
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/accounts/options", nil)
-	req.Header.Set("Cookie", "juhe_ai_session=session-token")
-	rec := httptest.NewRecorder()
+	for _, path := range []string{"/__aisys__/api/accounts/options", "/__aisys__/api/accounts/tags"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Cookie", "juhe_ai_session=session-token")
+		rec := httptest.NewRecorder()
 
-	router.ServeHTTP(rec, req)
+		router.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404 while JUHE_AI_MANAGEMENT_API_ENABLED=false", rec.Code)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%s status = %d, want 404 while JUHE_AI_MANAGEMENT_API_ENABLED=false", path, rec.Code)
+		}
 	}
 }
 
 type managementAccountOptionServiceStub struct {
-	called  bool
-	input   managementaccounts.OptionListInput
-	options []managementaccounts.Option
-	err     error
+	called    bool
+	input     managementaccounts.OptionListInput
+	options   []managementaccounts.Option
+	err       error
+	tagCalled bool
+	tagInput  managementaccounts.TagListInput
+	tags      []managementaccounts.Tag
+	tagErr    error
 }
 
 func (s *managementAccountOptionServiceStub) Options(_ *http.Request, input managementaccounts.OptionListInput) ([]managementaccounts.Option, error) {
 	s.called = true
 	s.input = input
 	return s.options, s.err
+}
+
+func (s *managementAccountOptionServiceStub) Tags(_ *http.Request, input managementaccounts.TagListInput) ([]managementaccounts.Tag, error) {
+	s.tagCalled = true
+	s.tagInput = input
+	return s.tags, s.tagErr
 }

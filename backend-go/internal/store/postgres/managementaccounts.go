@@ -18,6 +18,10 @@ func (s *Store) ListManagementAccountOptions(ctx context.Context, input port.Man
 	return listManagementAccountOptions(ctx, s.queries(), input)
 }
 
+func (s *Store) ListManagementAccountTags(ctx context.Context, input port.ManagementAccountTagListInput) ([]port.ManagementAccountTag, error) {
+	return listManagementAccountTags(ctx, s.queries(), input)
+}
+
 func listManagementAccountOptions(ctx context.Context, q *postgresqueries.Queries, input port.ManagementAccountOptionListInput) ([]port.ManagementAccountOption, error) {
 	keyword := strings.TrimSpace(input.Keyword)
 	keywordUpper := ""
@@ -34,6 +38,7 @@ func listManagementAccountOptions(ctx context.Context, q *postgresqueries.Querie
 		Ids:             uniqueStrings(input.IDs, 50),
 		ProviderCode:    strings.TrimSpace(input.ProviderCode),
 		GroupID:         strings.TrimSpace(input.GroupID),
+		TagIds:          uniqueStrings(input.TagIDs, 100),
 		AccountType:     strings.TrimSpace(input.Type),
 		Statuses:        uniqueStrings(input.Statuses, 20),
 		Schedulable:     strings.TrimSpace(input.Schedulable),
@@ -68,6 +73,32 @@ func listManagementAccountOptions(ctx context.Context, q *postgresqueries.Querie
 		options = append(options, option)
 	}
 	return options, nil
+}
+
+func listManagementAccountTags(ctx context.Context, q *postgresqueries.Queries, input port.ManagementAccountTagListInput) ([]port.ManagementAccountTag, error) {
+	systemAccountID := strings.TrimSpace(input.SystemAccountID)
+	if systemAccountID == "" {
+		return nil, fmt.Errorf("management account tag system account id is required")
+	}
+	rows, err := q.ListManagementAccountTags(ctx, systemAccountID)
+	if err != nil {
+		return nil, fmt.Errorf("list management account tags: %w", err)
+	}
+	tags := make([]port.ManagementAccountTag, 0, len(rows))
+	for _, row := range rows {
+		accountCount := int(row.AccountCount)
+		if accountCount < 0 {
+			accountCount = 0
+		}
+		tags = append(tags, port.ManagementAccountTag{
+			ID:           row.ID,
+			Name:         row.Name,
+			AccountCount: accountCount,
+			CreatedAt:    timestamptzValue(row.CreatedAt),
+			UpdatedAt:    timestamptzValue(row.UpdatedAt),
+		})
+	}
+	return tags, nil
 }
 
 func managementAccountOptionLimit(limit int) int {

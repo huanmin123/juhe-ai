@@ -14,6 +14,7 @@
 - 内部系统监控 API 读取 PostgreSQL 预聚合窗口；Prometheus `/__aisys__/metrics` 用于外部采集；pprof 只用于受控排障。三者不能互相替代。
 - 不可观测必须返回 `sampleAvailable=false` 和 `null`，不能用 `0`、空数组或默认时间伪装正常。
 - 指标 label 必须低基数。系统账户 ID、API Key ID、AI 账户 ID、分组 ID、trace ID、明文 IP、SQL 文本、Redis key、模型 prompt、token 和错误消息原文不能进入 Prometheus label。
+- 系统指标统计迁移必须有独立实施记录和删除证据，不能只在 Go API 中临时拼出旧 Node 响应结构；W6 / W7 之前只允许保留 Node 过渡事实，Go owner 接管时必须同步改后端 DTO、前端类型、窗口表查询和页面 smoke。
 
 ## 3. Node 字段删除清单
 

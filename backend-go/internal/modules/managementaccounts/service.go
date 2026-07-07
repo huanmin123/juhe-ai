@@ -36,6 +36,10 @@ type OptionListInput struct {
 	Limit                      int
 }
 
+type TagListInput struct {
+	SystemAccountID string
+}
+
 type ResourcePermissions struct {
 	CanUse                 bool `json:"canUse"`
 	CanEdit                bool `json:"canEdit"`
@@ -65,6 +69,14 @@ type Option struct {
 	Permissions               ResourcePermissions `json:"permissions"`
 }
 
+type Tag struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	AccountCount int    `json:"accountCount"`
+	CreatedAt    string `json:"createdAt"`
+	UpdatedAt    string `json:"updatedAt"`
+}
+
 func NewService(store port.ManagementAccountOptionReader) *Service {
 	return &Service{store: store}
 }
@@ -74,9 +86,6 @@ func (s *Service) Options(ctx context.Context, input OptionListInput) ([]Option,
 		return nil, fmt.Errorf("management account option store is required")
 	}
 	tagIDs := uniqueStrings(input.TagIDs, 100)
-	if len(tagIDs) > 0 {
-		return []Option{}, nil
-	}
 	limit := optionLimit(input.Limit)
 	page := optionPage(input.Page, limit)
 	rows, err := s.store.ListManagementAccountOptions(ctx, port.ManagementAccountOptionListInput{
@@ -114,6 +123,33 @@ func (s *Service) Options(ctx context.Context, input OptionListInput) ([]Option,
 			AccessType:                "owner",
 			AccountExpiresAt:          formatOptionalTime(row.AccountExpiresAt),
 			Permissions:               ownerPermissions(),
+		})
+	}
+	return items, nil
+}
+
+func (s *Service) Tags(ctx context.Context, input TagListInput) ([]Tag, error) {
+	if s.store == nil {
+		return nil, fmt.Errorf("management account tag store is required")
+	}
+	rows, err := s.store.ListManagementAccountTags(ctx, port.ManagementAccountTagListInput{
+		SystemAccountID: strings.TrimSpace(input.SystemAccountID),
+	})
+	if err != nil {
+		return nil, err
+	}
+	items := make([]Tag, 0, len(rows))
+	for _, row := range rows {
+		accountCount := row.AccountCount
+		if accountCount < 0 {
+			accountCount = 0
+		}
+		items = append(items, Tag{
+			ID:           row.ID,
+			Name:         row.Name,
+			AccountCount: accountCount,
+			CreatedAt:    row.CreatedAt.UTC().Format(time.RFC3339Nano),
+			UpdatedAt:    row.UpdatedAt.UTC().Format(time.RFC3339Nano),
 		})
 	}
 	return items, nil

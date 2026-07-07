@@ -48,6 +48,21 @@ type JuheBusinessAccountSupportedModel struct {
 	CreatedAt    pgtype.Timestamptz
 }
 
+type JuheBusinessAccountTag struct {
+	ID              string
+	SystemAccountID string
+	Name            string
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
+}
+
+type JuheBusinessAccountTagBinding struct {
+	AccountID       string
+	TagID           string
+	SystemAccountID string
+	CreatedAt       pgtype.Timestamptz
+}
+
 type JuheBusinessApiKey struct {
 	ID                              string
 	SystemAccountID                 string

@@ -52,6 +52,7 @@ func TestW2ManagementAccountOptionsPostgresSmoke(t *testing.T) {
 	insertW2ProxyOptionsFixture(t, ctx, db, now)
 	insertW2GroupOptionsFixture(t, ctx, db, now)
 	insertW2AccountOptionsFixture(t, ctx, db, now)
+	insertW2AccountTagsFixture(t, ctx, db, now)
 	sessionToken := "w2-management-account-session-token"
 	insertW2ManagementSessionFixture(t, ctx, db, sessionToken, now)
 
@@ -101,6 +102,31 @@ func TestW2ManagementAccountOptionsPostgresSmoke(t *testing.T) {
 		t.Fatalf("group filtered options = %+v", groupFiltered)
 	}
 
+	tagFiltered, err := service.Options(ctx, managementaccounts.OptionListInput{
+		SystemAccountID:            "sys_w2_proxy_options",
+		IncludeSystemAccountFields: true,
+		TagIDs:                     []string{"tag_w2_main"},
+		Limit:                      10,
+	})
+	if err != nil {
+		t.Fatalf("tag filtered account options: %v", err)
+	}
+	if len(tagFiltered) != 1 || tagFiltered[0].ID != "acct_w2_alpha" {
+		t.Fatalf("tag filtered options = %+v", tagFiltered)
+	}
+
+	tags, err := service.Tags(ctx, managementaccounts.TagListInput{SystemAccountID: "sys_w2_proxy_options"})
+	if err != nil {
+		t.Fatalf("account tags: %v", err)
+	}
+	mainTag := findAccountTag(tags, "tag_w2_main")
+	if mainTag == nil || mainTag.AccountCount != 1 {
+		t.Fatalf("main tag = %+v, tags = %+v", mainTag, tags)
+	}
+	if findAccountTag(tags, "tag_w2_other") != nil {
+		t.Fatalf("tags leaked other owner: %+v", tags)
+	}
+
 	available, err := service.Options(ctx, managementaccounts.OptionListInput{
 		SystemAccountID: "sys_w2_proxy_options",
 		Status:          "active",
@@ -143,9 +169,11 @@ func TestW2ManagementAccountOptionsPostgresSmoke(t *testing.T) {
 		ManagementAPIAuthMiddleware:       httpapi.NewManagementAPIAuthMiddleware(authenticator),
 		ManagementAccountOptionsHandler:   httpapi.NewManagementAccountOptionsHandler(service),
 		ManagementMyAccountOptionsHandler: httpapi.NewManagementMyAccountOptionsHandler(service),
+		ManagementAccountTagsHandler:      httpapi.NewManagementAccountTagsHandler(service),
+		ManagementMyAccountTagsHandler:    httpapi.NewManagementMyAccountTagsHandler(service),
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/accounts/options?systemAccountId=sys_w2_proxy_options&groupId=group_w2_default", nil)
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/accounts/options?systemAccountId=sys_w2_proxy_options&groupId=group_w2_default&tagIds=tag_w2_main", nil)
 	req.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -160,6 +188,23 @@ func TestW2ManagementAccountOptionsPostgresSmoke(t *testing.T) {
 	}
 	if option := findAccountOption(adminBody.Data, "acct_w2_alpha"); option == nil || option.SystemAccountID != "sys_w2_proxy_options" {
 		t.Fatalf("admin response missing owner-scoped account: %+v", adminBody.Data)
+	}
+
+	tagReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/accounts/tags?systemAccountId=sys_w2_proxy_options", nil)
+	tagReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
+	tagRec := httptest.NewRecorder()
+	router.ServeHTTP(tagRec, tagReq)
+	if tagRec.Code != http.StatusOK {
+		t.Fatalf("tag status = %d, body = %s", tagRec.Code, tagRec.Body.String())
+	}
+	var tagBody struct {
+		Data []managementaccounts.Tag `json:"data"`
+	}
+	if err := json.NewDecoder(tagRec.Body).Decode(&tagBody); err != nil {
+		t.Fatalf("decode tag response: %v", err)
+	}
+	if tag := findAccountTag(tagBody.Data, "tag_w2_main"); tag == nil || tag.AccountCount != 1 {
+		t.Fatalf("tag response missing account count: %+v", tagBody.Data)
 	}
 
 	myReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/my-accounts/options?systemAccountId=sys_w2_group_other", nil)
@@ -180,6 +225,23 @@ func TestW2ManagementAccountOptionsPostgresSmoke(t *testing.T) {
 	}
 	if option := findAccountOption(myBody.Data, "acct_w2_alpha"); option == nil || option.SystemAccountID != "" || option.AccessType != "owner" {
 		t.Fatalf("my response missing self account or leaked owner fields: %+v", myBody.Data)
+	}
+
+	myTagReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/my-accounts/tags?systemAccountId=sys_w2_group_other", nil)
+	myTagReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
+	myTagRec := httptest.NewRecorder()
+	router.ServeHTTP(myTagRec, myTagReq)
+	if myTagRec.Code != http.StatusOK {
+		t.Fatalf("my tag status = %d, body = %s", myTagRec.Code, myTagRec.Body.String())
+	}
+	var myTagBody struct {
+		Data []managementaccounts.Tag `json:"data"`
+	}
+	if err := json.NewDecoder(myTagRec.Body).Decode(&myTagBody); err != nil {
+		t.Fatalf("decode my tag response: %v", err)
+	}
+	if findAccountTag(myTagBody.Data, "tag_w2_other") != nil || findAccountTag(myTagBody.Data, "tag_w2_main") == nil {
+		t.Fatalf("my tag response should force self scope: %+v", myTagBody.Data)
 	}
 }
 
@@ -240,10 +302,45 @@ func insertW2AccountOptionsFixture(t *testing.T, ctx context.Context, db *sql.DB
 	}
 }
 
+func insertW2AccountTagsFixture(t *testing.T, ctx context.Context, db *sql.DB, now time.Time) {
+	t.Helper()
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO juhe_business.account_tags (
+			id, system_account_id, name, created_at, updated_at
+		) VALUES
+			('tag_w2_main', 'sys_w2_proxy_options', '主力', $1, $2),
+			('tag_w2_empty', 'sys_w2_proxy_options', '空标签', $1, $2),
+			('tag_w2_other', 'sys_w2_group_other', '其他用户标签', $1, $2)
+	`, now, now)
+	if err != nil {
+		t.Fatalf("insert W2 account tags: %v", err)
+	}
+
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO juhe_business.account_tag_bindings (
+			account_id, tag_id, system_account_id, created_at
+		) VALUES
+			('acct_w2_alpha', 'tag_w2_main', 'sys_w2_proxy_options', $1),
+			('acct_w2_other', 'tag_w2_other', 'sys_w2_group_other', $1)
+	`, now)
+	if err != nil {
+		t.Fatalf("insert W2 account tag bindings: %v", err)
+	}
+}
+
 func findAccountOption(options []managementaccounts.Option, id string) *managementaccounts.Option {
 	for index := range options {
 		if options[index].ID == id {
 			return &options[index]
+		}
+	}
+	return nil
+}
+
+func findAccountTag(tags []managementaccounts.Tag, id string) *managementaccounts.Tag {
+	for index := range tags {
+		if tags[index].ID == id {
+			return &tags[index]
 		}
 	}
 	return nil

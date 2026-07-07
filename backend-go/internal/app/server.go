@@ -95,6 +95,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyGroupAccountOptionsHandler:  managementHandlers.MyGroupAccountOptionsHandler,
 		ManagementAccountOptionsHandler:         managementHandlers.AccountOptionsHandler,
 		ManagementMyAccountOptionsHandler:       managementHandlers.MyAccountOptionsHandler,
+		ManagementAccountTagsHandler:            managementHandlers.AccountTagsHandler,
+		ManagementMyAccountTagsHandler:          managementHandlers.MyAccountTagsHandler,
 	})
 
 	server := &http.Server{
@@ -140,6 +142,8 @@ type managementAPIHandlers struct {
 	MyGroupAccountOptionsHandler  http.Handler
 	AccountOptionsHandler         http.Handler
 	MyAccountOptionsHandler       http.Handler
+	AccountTagsHandler            http.Handler
+	MyAccountTagsHandler          http.Handler
 }
 
 func newManagementAPIHandler(cfg config.Config, store *postgresstore.Store) managementAPIHandlers {
@@ -167,6 +171,8 @@ func newManagementAPIHandler(cfg config.Config, store *postgresstore.Store) mana
 		MyGroupAccountOptionsHandler:  httpapi.NewManagementMyGroupAccountOptionsHandler(groupService),
 		AccountOptionsHandler:         httpapi.NewManagementAccountOptionsHandler(accountService),
 		MyAccountOptionsHandler:       httpapi.NewManagementMyAccountOptionsHandler(accountService),
+		AccountTagsHandler:            httpapi.NewManagementAccountTagsHandler(accountService),
+		MyAccountTagsHandler:          httpapi.NewManagementMyAccountTagsHandler(accountService),
 	}
 }
 

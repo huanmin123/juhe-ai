@@ -65,6 +65,16 @@ WITH owner_account_rows AS (
       )
     )
     AND (
+      coalesce(array_length(sqlc.arg(tag_ids)::text[], 1), 0) = 0
+      OR EXISTS (
+        SELECT 1
+        FROM juhe_business.account_tag_bindings AS option_tag_bindings
+        WHERE option_tag_bindings.account_id = accounts.id
+          AND option_tag_bindings.system_account_id = accounts.system_account_id
+          AND option_tag_bindings.tag_id = ANY(sqlc.arg(tag_ids)::text[])
+      )
+    )
+    AND (
       sqlc.arg(account_type)::text = ''
       OR accounts.type = sqlc.arg(account_type)::text
     )

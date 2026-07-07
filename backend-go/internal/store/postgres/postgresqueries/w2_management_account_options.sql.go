@@ -78,14 +78,24 @@ WITH owner_account_rows AS (
       )
     )
     AND (
-      $9::text = ''
-      OR accounts.type = $9::text
+      coalesce(array_length($9::text[], 1), 0) = 0
+      OR EXISTS (
+        SELECT 1
+        FROM juhe_business.account_tag_bindings AS option_tag_bindings
+        WHERE option_tag_bindings.account_id = accounts.id
+          AND option_tag_bindings.system_account_id = accounts.system_account_id
+          AND option_tag_bindings.tag_id = ANY($9::text[])
+      )
     )
     AND (
-      $10::boolean = false
+      $10::text = ''
+      OR accounts.type = $10::text
+    )
+    AND (
+      $11::boolean = false
       OR (
-        accounts.name COLLATE "C" >= $11::text
-        AND accounts.name COLLATE "C" < $12::text
+        accounts.name COLLATE "C" >= $12::text
+        AND accounts.name COLLATE "C" < $13::text
       )
     )
 )
@@ -127,6 +137,7 @@ type ListManagementAccountOptionsParams struct {
 	Ids             []string
 	ProviderCode    string
 	GroupID         string
+	TagIds          []string
 	AccountType     string
 	HasKeyword      bool
 	Keyword         string
@@ -157,6 +168,7 @@ func (q *Queries) ListManagementAccountOptions(ctx context.Context, arg ListMana
 		arg.Ids,
 		arg.ProviderCode,
 		arg.GroupID,
+		arg.TagIds,
 		arg.AccountType,
 		arg.HasKeyword,
 		arg.Keyword,

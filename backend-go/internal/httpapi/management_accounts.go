@@ -20,6 +20,10 @@ type managementAccountOptionService interface {
 	Options(r *http.Request, input managementaccounts.OptionListInput) ([]managementaccounts.Option, error)
 }
 
+type managementAccountTagService interface {
+	Tags(r *http.Request, input managementaccounts.TagListInput) ([]managementaccounts.Tag, error)
+}
+
 type managementAccountOptionServiceAdapter struct {
 	service *managementaccounts.Service
 }
@@ -28,12 +32,24 @@ func (s managementAccountOptionServiceAdapter) Options(r *http.Request, input ma
 	return s.service.Options(r.Context(), input)
 }
 
+func (s managementAccountOptionServiceAdapter) Tags(r *http.Request, input managementaccounts.TagListInput) ([]managementaccounts.Tag, error) {
+	return s.service.Tags(r.Context(), input)
+}
+
 func NewManagementAccountOptionsHandler(service *managementaccounts.Service) http.Handler {
 	return newManagementAccountOptionsHandler(managementAccountOptionServiceAdapter{service: service}, managementAccountScopeAdmin)
 }
 
 func NewManagementMyAccountOptionsHandler(service *managementaccounts.Service) http.Handler {
 	return newManagementAccountOptionsHandler(managementAccountOptionServiceAdapter{service: service}, managementAccountScopeSelf)
+}
+
+func NewManagementAccountTagsHandler(service *managementaccounts.Service) http.Handler {
+	return newManagementAccountTagsHandler(managementAccountOptionServiceAdapter{service: service}, managementAccountScopeAdmin)
+}
+
+func NewManagementMyAccountTagsHandler(service *managementaccounts.Service) http.Handler {
+	return newManagementAccountTagsHandler(managementAccountOptionServiceAdapter{service: service}, managementAccountScopeSelf)
 }
 
 func newManagementAccountOptionsHandler(service managementAccountOptionService, scope managementAccountOptionScope) http.Handler {
@@ -57,6 +73,27 @@ func newManagementAccountOptionsHandler(service managementAccountOptionService, 
 	})
 }
 
+func newManagementAccountTagsHandler(service managementAccountTagService, scope managementAccountOptionScope) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authContext, ok := ManagementAuthContextFromRequest(r)
+		if !ok || strings.TrimSpace(authContext.SystemAccountID) == "" {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		input, allowed := managementAccountTagListInput(authContext, r.URL.Query(), scope)
+		if !allowed {
+			writeMessageError(w, http.StatusForbidden, "需要管理员权限")
+			return
+		}
+		tags, err := service.Tags(r, input)
+		if err != nil {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		writeData(w, http.StatusOK, tags)
+	})
+}
+
 func managementAccountOptionListInput(
 	authContext managementauth.Context,
 	values url.Values,
@@ -76,6 +113,27 @@ func managementAccountOptionListInput(
 	case managementAccountScopeSelf:
 		input.SystemAccountID = authContext.SystemAccountID
 		input.IncludeSystemAccountFields = false
+	}
+	return input, true
+}
+
+func managementAccountTagListInput(
+	authContext managementauth.Context,
+	values url.Values,
+	scope managementAccountOptionScope,
+) (managementaccounts.TagListInput, bool) {
+	input := managementaccounts.TagListInput{SystemAccountID: authContext.SystemAccountID}
+	switch scope {
+	case managementAccountScopeAdmin:
+		if !managementauth.IsAdminRole(authContext.Role) {
+			return managementaccounts.TagListInput{}, false
+		}
+		systemAccountID := firstManagementQueryText(values, "systemAccountId")
+		if systemAccountID != "" && systemAccountID != "all" {
+			input.SystemAccountID = systemAccountID
+		}
+	case managementAccountScopeSelf:
+		input.SystemAccountID = authContext.SystemAccountID
 	}
 	return input, true
 }
