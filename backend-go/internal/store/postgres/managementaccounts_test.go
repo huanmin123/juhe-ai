@@ -127,7 +127,7 @@ func TestManagementAccountTagDeleteSQLProtectsBoundTags(t *testing.T) {
 			t.Fatalf("account tag in-use query missing %q", want)
 		}
 	}
-	deleteSQL := querySection(t, sql, "-- name: DeleteManagementAccountTag :execrows", "")
+	deleteSQL := querySection(t, sql, "-- name: DeleteManagementAccountTag :execrows", "-- name: LockManagementAccountForTagUpdate :one")
 	for _, want := range []string{
 		"DELETE FROM juhe_business.account_tags",
 		"WHERE id = sqlc.arg(tag_id)::text",
@@ -140,6 +140,65 @@ func TestManagementAccountTagDeleteSQLProtectsBoundTags(t *testing.T) {
 	for _, forbidden := range []string{"account_tag_bindings", "accounts", "resource_authorizations"} {
 		if strings.Contains(deleteSQL, forbidden) {
 			t.Fatalf("account tag delete query should only delete tag row, found %q", forbidden)
+		}
+	}
+}
+
+func TestManagementAccountTagUpdateSQLScopesAndReplacesBindings(t *testing.T) {
+	source, err := os.ReadFile("queries/w2_management_account_tags.sql")
+	if err != nil {
+		t.Fatalf("read account tags query: %v", err)
+	}
+	sql := string(source)
+	lockSQL := querySection(t, sql, "-- name: LockManagementAccountForTagUpdate :one", "-- name: DeleteManagementAccountTagBindingsForAccount :exec")
+	for _, want := range []string{
+		"FROM juhe_business.accounts AS accounts",
+		"LEFT JOIN juhe_business.resource_authorizations AS authorizations",
+		"authorizations.resource_type = 'account'",
+		"authorizations.grantee_system_account_id = accounts.system_account_id",
+		"authorizations.resource_id = accounts.authorization_instance_source_account_id",
+		"accounts.id = sqlc.arg(account_id)::text",
+		"accounts.system_account_id = sqlc.arg(system_account_id)::text",
+		"accounts.deleted_at IS NULL",
+		"accounts.authorization_instance_authorization_id IS NULL",
+		"OR authorizations.status IN ('active', 'paused', 'expired')",
+		"FOR UPDATE",
+	} {
+		if !strings.Contains(lockSQL, want) {
+			t.Fatalf("account tag update lock query missing %q", want)
+		}
+	}
+	deleteBindingsSQL := querySection(t, sql, "-- name: DeleteManagementAccountTagBindingsForAccount :exec", "-- name: UpsertManagementAccountTagForAccount :one")
+	for _, want := range []string{
+		"DELETE FROM juhe_business.account_tag_bindings",
+		"WHERE account_id = sqlc.arg(account_id)::text",
+		"AND system_account_id = sqlc.arg(system_account_id)::text",
+	} {
+		if !strings.Contains(deleteBindingsSQL, want) {
+			t.Fatalf("account tag binding delete query missing %q", want)
+		}
+	}
+	upsertSQL := querySection(t, sql, "-- name: UpsertManagementAccountTagForAccount :one", "-- name: InsertManagementAccountTagBindingForAccount :exec")
+	for _, want := range []string{
+		"INSERT INTO juhe_business.account_tags",
+		"ON CONFLICT (system_account_id, name) DO UPDATE SET",
+		"name = EXCLUDED.name",
+		"RETURNING id, name, created_at, updated_at",
+	} {
+		if !strings.Contains(upsertSQL, want) {
+			t.Fatalf("account tag upsert query missing %q", want)
+		}
+	}
+	insertBindingSQL := querySection(t, sql, "-- name: InsertManagementAccountTagBindingForAccount :exec", "-- name: GetManagementAccountTagUpdateSummary :one")
+	for _, want := range []string{
+		"INSERT INTO juhe_business.account_tag_bindings",
+		"sqlc.arg(account_id)::text",
+		"sqlc.arg(tag_id)::text",
+		"sqlc.arg(system_account_id)::text",
+		"ON CONFLICT (account_id, tag_id) DO NOTHING",
+	} {
+		if !strings.Contains(insertBindingSQL, want) {
+			t.Fatalf("account tag binding insert query missing %q", want)
 		}
 	}
 }

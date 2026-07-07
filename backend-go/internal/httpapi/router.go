@@ -46,6 +46,8 @@ type RouterOptions struct {
 	ManagementMyAccountTagsHandler                  http.Handler
 	ManagementAccountTagDeleteHandler               http.Handler
 	ManagementMyAccountTagDeleteHandler             http.Handler
+	ManagementAccountTagUpdateHandler               http.Handler
+	ManagementMyAccountTagUpdateHandler             http.Handler
 }
 
 func NewRouter(opts RouterOptions) http.Handler {
@@ -98,7 +100,9 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementAccountTagsHandler == nil &&
 				opts.ManagementMyAccountTagsHandler == nil &&
 				opts.ManagementAccountTagDeleteHandler == nil &&
-				opts.ManagementMyAccountTagDeleteHandler == nil {
+				opts.ManagementMyAccountTagDeleteHandler == nil &&
+				opts.ManagementAccountTagUpdateHandler == nil &&
+				opts.ManagementMyAccountTagUpdateHandler == nil {
 				panic("at least one management API handler is required when JUHE_AI_MANAGEMENT_API_ENABLED is true")
 			}
 			if opts.ManagementProxyOptionsHandler != nil {
@@ -172,6 +176,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementMyAccountTagDeleteHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Delete("/my-accounts/tags/{tagId}", opts.ManagementMyAccountTagDeleteHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountTagUpdateHandler != nil {
+				system.With(opts.ManagementAPIAuthMiddleware).Patch("/accounts/{id}/tags", opts.ManagementAccountTagUpdateHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountTagUpdateHandler != nil {
+				system.With(opts.ManagementAPIAuthMiddleware).Patch("/my-accounts/{id}/tags", opts.ManagementMyAccountTagUpdateHandler.ServeHTTP)
 			}
 		}
 	})

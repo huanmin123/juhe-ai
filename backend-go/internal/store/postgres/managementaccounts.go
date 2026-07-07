@@ -30,6 +30,10 @@ func (s *Store) DeleteManagementAccountTag(ctx context.Context, input port.Manag
 	return deleteManagementAccountTagInTx(ctx, s, input)
 }
 
+func (s *Store) UpdateManagementAccountTags(ctx context.Context, input port.ManagementAccountTagUpdateInput) (port.ManagementAccountSummary, bool, error) {
+	return updateManagementAccountTagsInTx(ctx, s, input)
+}
+
 func listManagementAccountOptions(ctx context.Context, q *postgresqueries.Queries, input port.ManagementAccountOptionListInput) ([]port.ManagementAccountOption, error) {
 	keyword := normalizeAccountNameSearchText(input.Keyword)
 	keywordUpper := ""
@@ -184,6 +188,94 @@ func deleteManagementAccountTagInTx(ctx context.Context, s *Store, input port.Ma
 	return rows > 0, nil
 }
 
+func updateManagementAccountTagsInTx(ctx context.Context, s *Store, input port.ManagementAccountTagUpdateInput) (port.ManagementAccountSummary, bool, error) {
+	accountID := strings.TrimSpace(input.AccountID)
+	systemAccountID := strings.TrimSpace(input.SystemAccountID)
+	if accountID == "" || systemAccountID == "" {
+		return port.ManagementAccountSummary{}, false, nil
+	}
+
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return port.ManagementAccountSummary{}, false, fmt.Errorf("begin management account tag update tx: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = tx.Rollback(rollbackCtx)
+		}
+	}()
+
+	q := s.queries().WithTx(tx)
+	_, err = q.LockManagementAccountForTagUpdate(ctx, postgresqueries.LockManagementAccountForTagUpdateParams{
+		AccountID:       accountID,
+		SystemAccountID: systemAccountID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return port.ManagementAccountSummary{}, false, nil
+	}
+	if err != nil {
+		return port.ManagementAccountSummary{}, false, fmt.Errorf("lock management account for tag update: %w", err)
+	}
+	if err := q.DeleteManagementAccountTagBindingsForAccount(ctx, postgresqueries.DeleteManagementAccountTagBindingsForAccountParams{
+		AccountID:       accountID,
+		SystemAccountID: systemAccountID,
+	}); err != nil {
+		return port.ManagementAccountSummary{}, false, fmt.Errorf("delete management account tag bindings: %w", err)
+	}
+	for _, tag := range input.Tags {
+		tagID := strings.TrimSpace(tag.ID)
+		name := strings.TrimSpace(tag.Name)
+		if tagID == "" || name == "" {
+			continue
+		}
+		savedTag, err := q.UpsertManagementAccountTagForAccount(ctx, postgresqueries.UpsertManagementAccountTagForAccountParams{
+			TagID:           tagID,
+			SystemAccountID: systemAccountID,
+			Name:            name,
+		})
+		if err != nil {
+			return port.ManagementAccountSummary{}, false, fmt.Errorf("upsert management account tag: %w", err)
+		}
+		if err := q.InsertManagementAccountTagBindingForAccount(ctx, postgresqueries.InsertManagementAccountTagBindingForAccountParams{
+			AccountID:       accountID,
+			TagID:           savedTag.ID,
+			SystemAccountID: systemAccountID,
+		}); err != nil {
+			return port.ManagementAccountSummary{}, false, fmt.Errorf("insert management account tag binding: %w", err)
+		}
+	}
+
+	row, err := q.GetManagementAccountTagUpdateSummary(ctx, postgresqueries.GetManagementAccountTagUpdateSummaryParams{
+		AccountID:       accountID,
+		SystemAccountID: systemAccountID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return port.ManagementAccountSummary{}, false, nil
+	}
+	if err != nil {
+		return port.ManagementAccountSummary{}, false, fmt.Errorf("get management account tag update summary: %w", err)
+	}
+	tags, err := q.ListManagementAccountTagsForAccount(ctx, postgresqueries.ListManagementAccountTagsForAccountParams{
+		AccountID:       accountID,
+		SystemAccountID: systemAccountID,
+	})
+	if err != nil {
+		return port.ManagementAccountSummary{}, false, fmt.Errorf("list management account tags for account: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		if errors.Is(err, pgx.ErrTxCommitRollback) {
+			return port.ManagementAccountSummary{}, false, fmt.Errorf("commit management account tag update tx rolled back: %w", err)
+		}
+		return port.ManagementAccountSummary{}, false, fmt.Errorf("commit management account tag update tx: %w", err)
+	}
+	committed = true
+
+	return managementAccountSummaryFromTagUpdateRow(row, tags), true, nil
+}
+
 func managementAccountOptionLimit(limit int) int {
 	if limit <= 0 {
 		return defaultManagementAccountOptionLimit
@@ -239,6 +331,60 @@ func accountOptionAccessType(value string) string {
 		return "authorized"
 	}
 	return "owner"
+}
+
+func managementAccountSummaryFromTagUpdateRow(
+	row postgresqueries.GetManagementAccountTagUpdateSummaryRow,
+	tags []postgresqueries.ListManagementAccountTagsForAccountRow,
+) port.ManagementAccountSummary {
+	return port.ManagementAccountSummary{
+		ID:                                   row.ID,
+		SystemAccountID:                      row.SystemAccountID,
+		SystemAccountName:                    row.SystemAccountName,
+		OwnerSystemAccountID:                 row.OwnerSystemAccountID,
+		OwnerSystemAccountName:               row.OwnerSystemAccountName,
+		ProviderCode:                         row.ProviderCode,
+		ProviderProtocolProfileID:            row.ProviderProtocolProfileID,
+		ProtocolCode:                         row.ProtocolCode,
+		ProtocolVersion:                      row.ProtocolVersion,
+		Name:                                 row.Name,
+		Notes:                                textValue(row.Notes),
+		Type:                                 row.Type,
+		Status:                               row.Status,
+		ConcurrencyLimit:                     int(row.ConcurrencyLimit),
+		Priority:                             int(row.Priority),
+		SuperPriorityEnabled:                 row.SuperPriorityEnabled,
+		FallbackEnabled:                      row.FallbackEnabled,
+		ClientCompatibility:                  row.ClientCompatibility,
+		Schedulable:                          row.Schedulable,
+		AvailabilityScheduleJSON:             textValue(row.AvailabilityScheduleJson),
+		AccountExpiresAt:                     timestamptzPtr(row.AccountExpiresAt),
+		CooldownUntil:                        timestamptzPtr(row.CooldownUntil),
+		LastErrorCode:                        textValue(row.LastErrorCode),
+		LastErrorMessage:                     textValue(row.LastErrorMessage),
+		BoundGroupID:                         row.BoundGroupID,
+		BoundGroupName:                       row.BoundGroupName,
+		AccessType:                           accountOptionAccessType(row.AccessType),
+		AccountAuthorizationID:               textValue(row.AccountAuthorizationID),
+		AuthorizationStatus:                  textValue(row.AuthorizationStatus),
+		AuthorizationExpiresAt:               timestamptzPtr(row.AuthorizationExpiresAt),
+		AuthorizationInstanceSourceAccountID: textValue(row.AuthorizationInstanceSourceAccountID),
+		AuthorizationInstanceOwnerSystemAccountID: textValue(row.AuthorizationInstanceOwnerSystemAccountID),
+		Tags: managementAccountTagsFromRows(tags),
+	}
+}
+
+func managementAccountTagsFromRows(rows []postgresqueries.ListManagementAccountTagsForAccountRow) []port.ManagementAccountTag {
+	tags := make([]port.ManagementAccountTag, 0, len(rows))
+	for _, row := range rows {
+		tags = append(tags, port.ManagementAccountTag{
+			ID:        row.ID,
+			Name:      row.Name,
+			CreatedAt: timestamptzValue(row.CreatedAt),
+			UpdatedAt: timestamptzValue(row.UpdatedAt),
+		})
+	}
+	return tags
 }
 
 var _ port.ManagementAccountOptionReader = (*Store)(nil)

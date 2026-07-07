@@ -219,6 +219,112 @@ func TestServiceDeleteTagMapsInUseError(t *testing.T) {
 	}
 }
 
+func TestServiceUpdateTagsNormalizesInputAndMapsSummary(t *testing.T) {
+	expiresAt := time.Date(2026, 7, 9, 9, 0, 0, 0, time.UTC)
+	createdAt := time.Date(2026, 7, 9, 10, 0, 0, 0, time.UTC)
+	store := &accountOptionStoreStub{
+		updateSummary: port.ManagementAccountSummary{
+			ID:                        "acct_main",
+			SystemAccountID:           "sys_user",
+			SystemAccountName:         "用户",
+			OwnerSystemAccountID:      "sys_user",
+			OwnerSystemAccountName:    "用户",
+			ProviderCode:              "gpt",
+			ProviderProtocolProfileID: "profile_gpt_openai_v1",
+			ProtocolCode:              "openai",
+			ProtocolVersion:           "v1",
+			Name:                      "主账号",
+			Notes:                     "备注",
+			Type:                      "api_key",
+			Status:                    "active",
+			ConcurrencyLimit:          20,
+			Priority:                  3,
+			SuperPriorityEnabled:      true,
+			ClientCompatibility:       "openai_standard",
+			Schedulable:               true,
+			AvailabilityScheduleJSON:  `{"enabled":true}`,
+			AccountExpiresAt:          &expiresAt,
+			BoundGroupID:              "group_main",
+			BoundGroupName:            "默认分组",
+			AccessType:                "owner",
+			Tags:                      []port.ManagementAccountTag{{ID: "tag_main", Name: "主力", CreatedAt: createdAt, UpdatedAt: createdAt}},
+		},
+		updateOK: true,
+	}
+	service := NewService(store)
+
+	summary, err := service.UpdateTags(context.Background(), TagUpdateInput{
+		AccountID:       " acct_main ",
+		SystemAccountID: " sys_user ",
+		Tags:            []string{" 主力 ", "主力", "API\t标签", "", " api "},
+	})
+	if err != nil {
+		t.Fatalf("UpdateTags() error = %v", err)
+	}
+
+	if store.updateInput.AccountID != "acct_main" || store.updateInput.SystemAccountID != "sys_user" {
+		t.Fatalf("update input = %+v", store.updateInput)
+	}
+	if len(store.updateInput.Tags) != 3 ||
+		store.updateInput.Tags[0].Name != "主力" ||
+		store.updateInput.Tags[1].Name != "API 标签" ||
+		store.updateInput.Tags[2].Name != "api" ||
+		store.updateInput.Tags[0].ID == "" ||
+		store.updateInput.Tags[0].ID[:7] != "acctag_" {
+		t.Fatalf("normalized tags = %+v", store.updateInput.Tags)
+	}
+	if summary.ID != "acct_main" ||
+		summary.Credentials == nil ||
+		summary.SystemAccountID != "sys_user" ||
+		summary.BoundGroupID != "group_main" ||
+		summary.AccountExpiresAt != expiresAt.Format(time.RFC3339Nano) ||
+		len(summary.Tags) != 1 ||
+		summary.Tags[0].Name != "主力" ||
+		summary.TodayUsage.TotalTokens != 0 ||
+		summary.Permissions != ownerPermissions() {
+		t.Fatalf("summary = %+v", summary)
+	}
+	if summary.AvailabilitySchedule == nil {
+		t.Fatalf("availability schedule should be decoded: %+v", summary)
+	}
+}
+
+func TestServiceUpdateTagsRejectsInvalidInput(t *testing.T) {
+	t.Run("too many", func(t *testing.T) {
+		values := make([]string, 25)
+		for index := range values {
+			values[index] = "标签" + string(rune('A'+index))
+		}
+		_, err := NewService(&accountOptionStoreStub{}).UpdateTags(context.Background(), TagUpdateInput{AccountID: "acct", SystemAccountID: "sys", Tags: values})
+		message, ok := ValidationMessage(err)
+		if !ok || message != "单个账户最多配置 24 个标签" {
+			t.Fatalf("validation = %q, %v; err = %v", message, ok, err)
+		}
+	})
+	t.Run("too long", func(t *testing.T) {
+		_, err := NewService(&accountOptionStoreStub{}).UpdateTags(context.Background(), TagUpdateInput{
+			AccountID:       "acct",
+			SystemAccountID: "sys",
+			Tags:            []string{"一二三四五六七八九十一二三四五六七八九十一二三四五六七八九十一二三四五六七八九十一"},
+		})
+		message, ok := ValidationMessage(err)
+		if !ok || message != "账户标签不能超过 40 个字符" {
+			t.Fatalf("validation = %q, %v; err = %v", message, ok, err)
+		}
+	})
+}
+
+func TestServiceUpdateTagsMapsNotFound(t *testing.T) {
+	_, err := NewService(&accountOptionStoreStub{}).UpdateTags(context.Background(), TagUpdateInput{
+		AccountID:       "missing",
+		SystemAccountID: "sys_user",
+		Tags:            []string{"主力"},
+	})
+	if !errors.Is(err, ErrAccountNotFound) {
+		t.Fatalf("UpdateTags() error = %v, want ErrAccountNotFound", err)
+	}
+}
+
 func TestOptionPageClampsToWindow(t *testing.T) {
 	if got := optionPage(999, 50); got != 20 {
 		t.Fatalf("optionPage() = %d, want 20", got)
@@ -226,15 +332,19 @@ func TestOptionPageClampsToWindow(t *testing.T) {
 }
 
 type accountOptionStoreStub struct {
-	called       bool
-	input        port.ManagementAccountOptionListInput
-	options      []port.ManagementAccountOption
-	tagInput     port.ManagementAccountTagListInput
-	tags         []port.ManagementAccountTag
-	deleteInput  port.ManagementAccountTagDeleteInput
-	deleteResult bool
-	deleteErr    error
-	err          error
+	called        bool
+	input         port.ManagementAccountOptionListInput
+	options       []port.ManagementAccountOption
+	tagInput      port.ManagementAccountTagListInput
+	tags          []port.ManagementAccountTag
+	deleteInput   port.ManagementAccountTagDeleteInput
+	deleteResult  bool
+	deleteErr     error
+	updateInput   port.ManagementAccountTagUpdateInput
+	updateSummary port.ManagementAccountSummary
+	updateOK      bool
+	updateErr     error
+	err           error
 }
 
 func (s *accountOptionStoreStub) ListManagementAccountOptions(_ context.Context, input port.ManagementAccountOptionListInput) ([]port.ManagementAccountOption, error) {
@@ -251,4 +361,9 @@ func (s *accountOptionStoreStub) ListManagementAccountTags(_ context.Context, in
 func (s *accountOptionStoreStub) DeleteManagementAccountTag(_ context.Context, input port.ManagementAccountTagDeleteInput) (bool, error) {
 	s.deleteInput = input
 	return s.deleteResult, s.deleteErr
+}
+
+func (s *accountOptionStoreStub) UpdateManagementAccountTags(_ context.Context, input port.ManagementAccountTagUpdateInput) (port.ManagementAccountSummary, bool, error) {
+	s.updateInput = input
+	return s.updateSummary, s.updateOK, s.updateErr
 }

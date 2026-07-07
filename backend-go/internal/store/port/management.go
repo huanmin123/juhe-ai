@@ -355,10 +355,58 @@ type ManagementAccountTagDeleteInput struct {
 	SystemAccountID string
 }
 
+type ManagementAccountTagUpsertInput struct {
+	ID   string
+	Name string
+}
+
+type ManagementAccountTagUpdateInput struct {
+	AccountID       string
+	SystemAccountID string
+	Tags            []ManagementAccountTagUpsertInput
+}
+
+type ManagementAccountSummary struct {
+	ID                                        string
+	SystemAccountID                           string
+	SystemAccountName                         string
+	OwnerSystemAccountID                      string
+	OwnerSystemAccountName                    string
+	ProviderCode                              string
+	ProviderProtocolProfileID                 string
+	ProtocolCode                              string
+	ProtocolVersion                           string
+	Name                                      string
+	Notes                                     string
+	Type                                      string
+	Status                                    string
+	ConcurrencyLimit                          int
+	Priority                                  int
+	SuperPriorityEnabled                      bool
+	FallbackEnabled                           bool
+	ClientCompatibility                       string
+	Schedulable                               bool
+	AvailabilityScheduleJSON                  string
+	AccountExpiresAt                          *time.Time
+	CooldownUntil                             *time.Time
+	LastErrorCode                             string
+	LastErrorMessage                          string
+	BoundGroupID                              string
+	BoundGroupName                            string
+	AccessType                                string
+	AccountAuthorizationID                    string
+	AuthorizationStatus                       string
+	AuthorizationExpiresAt                    *time.Time
+	AuthorizationInstanceSourceAccountID      string
+	AuthorizationInstanceOwnerSystemAccountID string
+	Tags                                      []ManagementAccountTag
+}
+
 var ErrManagementAccountTagInUse = errors.New("management account tag in use")
 
 type ManagementAccountOptionReader interface {
 	ListManagementAccountOptions(ctx context.Context, input ManagementAccountOptionListInput) ([]ManagementAccountOption, error)
 	ListManagementAccountTags(ctx context.Context, input ManagementAccountTagListInput) ([]ManagementAccountTag, error)
 	DeleteManagementAccountTag(ctx context.Context, input ManagementAccountTagDeleteInput) (bool, error)
+	UpdateManagementAccountTags(ctx context.Context, input ManagementAccountTagUpdateInput) (ManagementAccountSummary, bool, error)
 }

@@ -155,6 +155,25 @@ func TestW2ManagementAccountOptionsPostgresSmoke(t *testing.T) {
 		t.Fatalf("delete other owner tag = %v / %v, want not found", deleted, err)
 	}
 
+	updatedAccount, err := service.UpdateTags(ctx, managementaccounts.TagUpdateInput{
+		AccountID:       "acct_w2_percent",
+		SystemAccountID: "sys_w2_proxy_options",
+		Tags:            []string{" 灰度   发布 ", "灰度 发布", ""},
+	})
+	if err != nil {
+		t.Fatalf("update account tags: %v", err)
+	}
+	if updatedAccount.ID != "acct_w2_percent" || !sameAccountTagNames(updatedAccount.Tags, []string{"灰度 发布"}) {
+		t.Fatalf("updated account tags = %+v", updatedAccount.Tags)
+	}
+	if _, err := service.UpdateTags(ctx, managementaccounts.TagUpdateInput{
+		AccountID:       "acct_w2_authorized_revoked",
+		SystemAccountID: "sys_w2_proxy_options",
+		Tags:            []string{"不可见"},
+	}); !errors.Is(err, managementaccounts.ErrAccountNotFound) {
+		t.Fatalf("update revoked authorized account err = %v, want not found", err)
+	}
+
 	available, err := service.Options(ctx, managementaccounts.OptionListInput{
 		SystemAccountID: "sys_w2_proxy_options",
 		Status:          "active",
@@ -272,6 +291,8 @@ func TestW2ManagementAccountOptionsPostgresSmoke(t *testing.T) {
 		ManagementMyAccountTagsHandler:      httpapi.NewManagementMyAccountTagsHandler(service),
 		ManagementAccountTagDeleteHandler:   httpapi.NewManagementAccountTagDeleteHandler(service),
 		ManagementMyAccountTagDeleteHandler: httpapi.NewManagementMyAccountTagDeleteHandler(service),
+		ManagementAccountTagUpdateHandler:   httpapi.NewManagementAccountTagUpdateHandler(service),
+		ManagementMyAccountTagUpdateHandler: httpapi.NewManagementMyAccountTagUpdateHandler(service),
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/accounts/options?systemAccountId=sys_w2_proxy_options&groupId=group_w2_default&tagIds=tag_w2_main", nil)
@@ -327,6 +348,54 @@ func TestW2ManagementAccountOptionsPostgresSmoke(t *testing.T) {
 		t.Fatalf("delete other owner tag status = %d, body = %s", deleteOtherTagRec.Code, deleteOtherTagRec.Body.String())
 	}
 
+	updateAuthorizedTagReq := httptest.NewRequest(http.MethodPatch, "/__aisys__/api/accounts/acct_w2_authorized_other/tags?systemAccountId=sys_w2_proxy_options", strings.NewReader(`{"tags":["授权标签"]}`))
+	updateAuthorizedTagReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
+	updateAuthorizedTagRec := httptest.NewRecorder()
+	router.ServeHTTP(updateAuthorizedTagRec, updateAuthorizedTagReq)
+	if updateAuthorizedTagRec.Code != http.StatusOK {
+		t.Fatalf("update authorized tag status = %d, body = %s", updateAuthorizedTagRec.Code, updateAuthorizedTagRec.Body.String())
+	}
+	var updateAuthorizedTagBody struct {
+		Data managementaccounts.AccountSummary `json:"data"`
+	}
+	if err := json.NewDecoder(updateAuthorizedTagRec.Body).Decode(&updateAuthorizedTagBody); err != nil {
+		t.Fatalf("decode update authorized tag response: %v", err)
+	}
+	if updateAuthorizedTagBody.Data.ID != "acct_w2_authorized_other" ||
+		updateAuthorizedTagBody.Data.AccessType != "authorized" ||
+		updateAuthorizedTagBody.Data.AuthorizationStatus != "active" ||
+		!sameAccountTagNames(updateAuthorizedTagBody.Data.Tags, []string{"授权标签"}) {
+		t.Fatalf("update authorized tag response = %+v", updateAuthorizedTagBody.Data)
+	}
+	updateAuthorizedBindings := readW2AccountTagBindings(t, ctx, db, "acct_w2_authorized_other", "sys_w2_proxy_options")
+	if len(updateAuthorizedBindings) != 1 || updateAuthorizedBindings["授权标签"] == "" {
+		t.Fatalf("update authorized tag bindings = %+v", updateAuthorizedBindings)
+	}
+
+	updateTagReq := httptest.NewRequest(http.MethodPatch, "/__aisys__/api/accounts/acct_w2_other/tags?systemAccountId=sys_w2_group_other", strings.NewReader(`{"tags":["其他用户标签","跨账户标签","其他用户标签"]}`))
+	updateTagReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
+	updateTagRec := httptest.NewRecorder()
+	router.ServeHTTP(updateTagRec, updateTagReq)
+	if updateTagRec.Code != http.StatusOK {
+		t.Fatalf("update tag status = %d, body = %s", updateTagRec.Code, updateTagRec.Body.String())
+	}
+	var updateTagBody struct {
+		Data managementaccounts.AccountSummary `json:"data"`
+	}
+	if err := json.NewDecoder(updateTagRec.Body).Decode(&updateTagBody); err != nil {
+		t.Fatalf("decode update tag response: %v", err)
+	}
+	if updateTagBody.Data.ID != "acct_w2_other" ||
+		updateTagBody.Data.SystemAccountID != "sys_w2_group_other" ||
+		updateTagBody.Data.AccessType != "owner" ||
+		!sameAccountTagNames(updateTagBody.Data.Tags, []string{"其他用户标签", "跨账户标签"}) {
+		t.Fatalf("update tag response = %+v", updateTagBody.Data)
+	}
+	updateBindings := readW2AccountTagBindings(t, ctx, db, "acct_w2_other", "sys_w2_group_other")
+	if len(updateBindings) != 2 || updateBindings["其他用户标签"] != "tag_w2_other" || updateBindings["跨账户标签"] == "" {
+		t.Fatalf("update tag bindings = %+v", updateBindings)
+	}
+
 	deleteEmptyTagReq := httptest.NewRequest(http.MethodDelete, "/__aisys__/api/accounts/tags/tag_w2_empty?systemAccountId=sys_w2_proxy_options", nil)
 	deleteEmptyTagReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
 	deleteEmptyTagRec := httptest.NewRecorder()
@@ -369,6 +438,41 @@ func TestW2ManagementAccountOptionsPostgresSmoke(t *testing.T) {
 		option.OwnerSystemAccountID != "sys_w2_group_other" ||
 		option.OwnerSystemAccountName != "W2 Group Other" {
 		t.Fatalf("my response missing authorized account or leaked owner fields: %+v", myBody.Data)
+	}
+
+	myUpdateTagReq := httptest.NewRequest(http.MethodPatch, "/__aisys__/api/my-accounts/acct_w2_percent/tags?systemAccountId=sys_w2_group_other", strings.NewReader(`{"tags":[" 主力 ","主力"]}`))
+	myUpdateTagReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
+	myUpdateTagRec := httptest.NewRecorder()
+	router.ServeHTTP(myUpdateTagRec, myUpdateTagReq)
+	if myUpdateTagRec.Code != http.StatusOK {
+		t.Fatalf("my update tag status = %d, body = %s", myUpdateTagRec.Code, myUpdateTagRec.Body.String())
+	}
+	var myUpdateTagBody struct {
+		Data managementaccounts.AccountSummary `json:"data"`
+	}
+	if err := json.NewDecoder(myUpdateTagRec.Body).Decode(&myUpdateTagBody); err != nil {
+		t.Fatalf("decode my update tag response: %v", err)
+	}
+	if myUpdateTagBody.Data.ID != "acct_w2_percent" ||
+		myUpdateTagBody.Data.SystemAccountID != "sys_w2_proxy_options" ||
+		myUpdateTagBody.Data.AccessType != "owner" ||
+		!sameAccountTagNames(myUpdateTagBody.Data.Tags, []string{"主力"}) {
+		t.Fatalf("my update tag response = %+v", myUpdateTagBody.Data)
+	}
+	myUpdateBindings := readW2AccountTagBindings(t, ctx, db, "acct_w2_percent", "sys_w2_proxy_options")
+	if len(myUpdateBindings) != 1 || myUpdateBindings["主力"] != "tag_w2_main" {
+		t.Fatalf("my update tag bindings = %+v", myUpdateBindings)
+	}
+	myOtherScopeBindings := readW2AccountTagBindings(t, ctx, db, "acct_w2_percent", "sys_w2_group_other")
+	if len(myOtherScopeBindings) != 0 {
+		t.Fatalf("my update should not write query scope bindings: %+v", myOtherScopeBindings)
+	}
+	myOtherUpdateTagReq := httptest.NewRequest(http.MethodPatch, "/__aisys__/api/my-accounts/acct_w2_other/tags?systemAccountId=sys_w2_group_other", strings.NewReader(`{"tags":["越权"]}`))
+	myOtherUpdateTagReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
+	myOtherUpdateTagRec := httptest.NewRecorder()
+	router.ServeHTTP(myOtherUpdateTagRec, myOtherUpdateTagReq)
+	if myOtherUpdateTagRec.Code != http.StatusNotFound {
+		t.Fatalf("my other owner update tag status = %d, body = %s", myOtherUpdateTagRec.Code, myOtherUpdateTagRec.Body.String())
 	}
 
 	myTagReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/my-accounts/tags?systemAccountId=sys_w2_group_other", nil)
@@ -644,6 +748,53 @@ func findAccountTag(tags []managementaccounts.Tag, id string) *managementaccount
 		}
 	}
 	return nil
+}
+
+func readW2AccountTagBindings(t *testing.T, ctx context.Context, db *sql.DB, accountID string, systemAccountID string) map[string]string {
+	t.Helper()
+	rows, err := db.QueryContext(ctx, `
+		SELECT account_tags.id, account_tags.name
+		FROM juhe_business.account_tag_bindings AS bindings
+		INNER JOIN juhe_business.account_tags AS account_tags
+			ON account_tags.id = bindings.tag_id
+			AND account_tags.system_account_id = bindings.system_account_id
+		WHERE bindings.account_id = $1
+			AND bindings.system_account_id = $2
+	`, accountID, systemAccountID)
+	if err != nil {
+		t.Fatalf("read W2 account tag bindings: %v", err)
+	}
+	defer rows.Close()
+	bindings := make(map[string]string)
+	for rows.Next() {
+		var id string
+		var name string
+		if err := rows.Scan(&id, &name); err != nil {
+			t.Fatalf("scan W2 account tag binding: %v", err)
+		}
+		bindings[name] = id
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate W2 account tag bindings: %v", err)
+	}
+	return bindings
+}
+
+func sameAccountTagNames(tags []managementaccounts.Tag, want []string) bool {
+	if len(tags) != len(want) {
+		return false
+	}
+	seen := make(map[string]int, len(tags))
+	for _, tag := range tags {
+		seen[tag.Name]++
+	}
+	for _, name := range want {
+		seen[name]--
+		if seen[name] < 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func timePtr(value time.Time) *time.Time {

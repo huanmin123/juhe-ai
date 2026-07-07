@@ -30,6 +30,274 @@ func (q *Queries) DeleteManagementAccountTag(ctx context.Context, arg DeleteMana
 	return result.RowsAffected(), nil
 }
 
+const deleteManagementAccountTagBindingsForAccount = `-- name: DeleteManagementAccountTagBindingsForAccount :exec
+DELETE FROM juhe_business.account_tag_bindings
+WHERE account_id = $1::text
+  AND system_account_id = $2::text
+`
+
+type DeleteManagementAccountTagBindingsForAccountParams struct {
+	AccountID       string
+	SystemAccountID string
+}
+
+func (q *Queries) DeleteManagementAccountTagBindingsForAccount(ctx context.Context, arg DeleteManagementAccountTagBindingsForAccountParams) error {
+	_, err := q.db.Exec(ctx, deleteManagementAccountTagBindingsForAccount, arg.AccountID, arg.SystemAccountID)
+	return err
+}
+
+const getManagementAccountTagUpdateSummary = `-- name: GetManagementAccountTagUpdateSummary :one
+SELECT
+  accounts.id,
+  accounts.system_account_id,
+  system_accounts.display_name AS system_account_name,
+  accounts.provider_code,
+  accounts.provider_protocol_profile_id,
+  accounts.protocol_code,
+  accounts.protocol_version,
+  accounts.name,
+  accounts.notes,
+  accounts.type,
+  (CASE
+    WHEN accounts.authorization_instance_authorization_id IS NOT NULL
+      AND (
+        option_group_bindings.group_id IS NULL
+        OR option_group_bindings.account_authorization_id IS NULL
+        OR option_group_bindings.account_authorization_id <> authorizations.id
+      )
+    THEN 'disabled'
+    WHEN accounts.authorization_instance_authorization_id IS NOT NULL
+      AND (
+        authorizations.status <> 'active'
+        OR (authorizations.expires_at IS NOT NULL AND authorizations.expires_at <= now())
+      )
+    THEN 'disabled'
+    WHEN accounts.authorization_instance_authorization_id IS NOT NULL
+      AND source_accounts.id IS NULL
+    THEN 'disabled'
+    WHEN accounts.authorization_instance_authorization_id IS NOT NULL
+      AND (
+        source_accounts.last_error_code = 'account_expired'
+        OR (source_accounts.account_expires_at IS NOT NULL AND source_accounts.account_expires_at <= now())
+      )
+    THEN 'disabled'
+    WHEN accounts.authorization_instance_authorization_id IS NOT NULL
+      AND source_accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable')
+    THEN source_accounts.status
+    WHEN accounts.authorization_instance_authorization_id IS NOT NULL
+      AND source_accounts.cooldown_until IS NOT NULL
+      AND source_accounts.cooldown_until > now()
+    THEN 'temporary_unavailable'
+    WHEN accounts.authorization_instance_authorization_id IS NOT NULL
+      AND source_accounts.schedulable = false
+    THEN 'disabled'
+    WHEN accounts.last_error_code = 'account_expired'
+      OR (accounts.account_expires_at IS NOT NULL AND accounts.account_expires_at <= now())
+    THEN 'disabled'
+    WHEN accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN accounts.status
+    WHEN accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until > now() THEN 'temporary_unavailable'
+    WHEN accounts.schedulable = false THEN 'disabled'
+    ELSE accounts.status
+  END)::text AS status,
+  accounts.concurrency_limit,
+  accounts.priority,
+  accounts.super_priority_enabled,
+  accounts.fallback_enabled,
+  accounts.client_compatibility,
+  (CASE
+    WHEN accounts.authorization_instance_authorization_id IS NOT NULL THEN (
+      option_group_bindings.group_id IS NOT NULL
+      AND option_group_bindings.account_authorization_id IS NOT NULL
+      AND option_group_bindings.account_authorization_id = authorizations.id
+      AND authorizations.status = 'active'
+      AND (authorizations.expires_at IS NULL OR authorizations.expires_at > now())
+      AND source_accounts.id IS NOT NULL
+      AND source_accounts.status = 'active'
+      AND source_accounts.schedulable = true
+      AND (source_accounts.cooldown_until IS NULL OR source_accounts.cooldown_until <= now())
+      AND (source_accounts.account_expires_at IS NULL OR source_accounts.account_expires_at > now())
+      AND (source_accounts.last_error_code IS NULL OR source_accounts.last_error_code <> 'account_expired')
+      AND accounts.status = 'active'
+      AND accounts.schedulable = true
+      AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= now())
+      AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > now())
+      AND (accounts.last_error_code IS NULL OR accounts.last_error_code <> 'account_expired')
+    )
+    ELSE (
+      accounts.status = 'active'
+      AND accounts.schedulable = true
+      AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= now())
+      AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > now())
+      AND (accounts.last_error_code IS NULL OR accounts.last_error_code <> 'account_expired')
+    )
+  END)::boolean AS schedulable,
+  accounts.availability_schedule_json,
+  accounts.account_expires_at,
+  accounts.cooldown_until,
+  accounts.last_error_code,
+  accounts.last_error_message,
+  COALESCE(group_bindings.group_id, '') AS bound_group_id,
+  COALESCE(bound_groups.name, '') AS bound_group_name,
+  CASE
+    WHEN accounts.authorization_instance_authorization_id IS NOT NULL THEN 'authorized'
+    ELSE 'owner'
+  END AS access_type,
+  accounts.authorization_instance_authorization_id AS account_authorization_id,
+  authorizations.status AS authorization_status,
+  authorizations.expires_at AS authorization_expires_at,
+  accounts.authorization_instance_source_account_id,
+  accounts.authorization_instance_owner_system_account_id,
+  COALESCE(accounts.authorization_instance_owner_system_account_id, accounts.system_account_id) AS owner_system_account_id,
+  COALESCE(owner_accounts.display_name, '') AS owner_system_account_name
+FROM juhe_business.accounts AS accounts
+INNER JOIN juhe_business.system_accounts AS system_accounts
+  ON system_accounts.id = accounts.system_account_id
+LEFT JOIN juhe_business.resource_authorizations AS authorizations
+  ON authorizations.id = accounts.authorization_instance_authorization_id
+  AND authorizations.resource_type = 'account'
+  AND authorizations.grantee_system_account_id = accounts.system_account_id
+  AND authorizations.resource_id = accounts.authorization_instance_source_account_id
+LEFT JOIN juhe_business.accounts AS source_accounts
+  ON source_accounts.id = accounts.authorization_instance_source_account_id
+  AND source_accounts.deleted_at IS NULL
+LEFT JOIN juhe_business.system_accounts AS owner_accounts
+  ON owner_accounts.id = COALESCE(accounts.authorization_instance_owner_system_account_id, accounts.system_account_id)
+LEFT JOIN LATERAL (
+  SELECT group_accounts.group_id
+  FROM juhe_business.group_accounts AS group_accounts
+  WHERE group_accounts.account_id = accounts.id
+    AND group_accounts.system_account_id = accounts.system_account_id
+    AND group_accounts.enabled = true
+  ORDER BY group_accounts.updated_at DESC, group_accounts.group_id ASC
+  LIMIT 1
+) AS group_bindings ON true
+LEFT JOIN LATERAL (
+  SELECT
+    group_accounts.group_id,
+    group_accounts.account_authorization_id
+  FROM juhe_business.group_accounts AS group_accounts
+  WHERE group_accounts.account_id = accounts.id
+    AND group_accounts.system_account_id = accounts.system_account_id
+    AND group_accounts.enabled = true
+    AND group_accounts.account_authorization_id = authorizations.id
+  ORDER BY group_accounts.created_at ASC, group_accounts.group_id ASC
+  LIMIT 1
+) AS option_group_bindings ON true
+LEFT JOIN juhe_business.groups AS bound_groups
+  ON bound_groups.id = group_bindings.group_id
+WHERE accounts.id = $1::text
+  AND accounts.system_account_id = $2::text
+  AND accounts.deleted_at IS NULL
+  AND (
+    accounts.authorization_instance_authorization_id IS NULL
+    OR authorizations.status IN ('active', 'paused', 'expired')
+  )
+LIMIT 1
+`
+
+type GetManagementAccountTagUpdateSummaryParams struct {
+	AccountID       string
+	SystemAccountID string
+}
+
+type GetManagementAccountTagUpdateSummaryRow struct {
+	ID                                        string
+	SystemAccountID                           string
+	SystemAccountName                         string
+	ProviderCode                              string
+	ProviderProtocolProfileID                 string
+	ProtocolCode                              string
+	ProtocolVersion                           string
+	Name                                      string
+	Notes                                     pgtype.Text
+	Type                                      string
+	Status                                    string
+	ConcurrencyLimit                          int32
+	Priority                                  int32
+	SuperPriorityEnabled                      bool
+	FallbackEnabled                           bool
+	ClientCompatibility                       string
+	Schedulable                               bool
+	AvailabilityScheduleJson                  pgtype.Text
+	AccountExpiresAt                          pgtype.Timestamptz
+	CooldownUntil                             pgtype.Timestamptz
+	LastErrorCode                             pgtype.Text
+	LastErrorMessage                          pgtype.Text
+	BoundGroupID                              string
+	BoundGroupName                            string
+	AccessType                                string
+	AccountAuthorizationID                    pgtype.Text
+	AuthorizationStatus                       pgtype.Text
+	AuthorizationExpiresAt                    pgtype.Timestamptz
+	AuthorizationInstanceSourceAccountID      pgtype.Text
+	AuthorizationInstanceOwnerSystemAccountID pgtype.Text
+	OwnerSystemAccountID                      string
+	OwnerSystemAccountName                    string
+}
+
+func (q *Queries) GetManagementAccountTagUpdateSummary(ctx context.Context, arg GetManagementAccountTagUpdateSummaryParams) (GetManagementAccountTagUpdateSummaryRow, error) {
+	row := q.db.QueryRow(ctx, getManagementAccountTagUpdateSummary, arg.AccountID, arg.SystemAccountID)
+	var i GetManagementAccountTagUpdateSummaryRow
+	err := row.Scan(
+		&i.ID,
+		&i.SystemAccountID,
+		&i.SystemAccountName,
+		&i.ProviderCode,
+		&i.ProviderProtocolProfileID,
+		&i.ProtocolCode,
+		&i.ProtocolVersion,
+		&i.Name,
+		&i.Notes,
+		&i.Type,
+		&i.Status,
+		&i.ConcurrencyLimit,
+		&i.Priority,
+		&i.SuperPriorityEnabled,
+		&i.FallbackEnabled,
+		&i.ClientCompatibility,
+		&i.Schedulable,
+		&i.AvailabilityScheduleJson,
+		&i.AccountExpiresAt,
+		&i.CooldownUntil,
+		&i.LastErrorCode,
+		&i.LastErrorMessage,
+		&i.BoundGroupID,
+		&i.BoundGroupName,
+		&i.AccessType,
+		&i.AccountAuthorizationID,
+		&i.AuthorizationStatus,
+		&i.AuthorizationExpiresAt,
+		&i.AuthorizationInstanceSourceAccountID,
+		&i.AuthorizationInstanceOwnerSystemAccountID,
+		&i.OwnerSystemAccountID,
+		&i.OwnerSystemAccountName,
+	)
+	return i, err
+}
+
+const insertManagementAccountTagBindingForAccount = `-- name: InsertManagementAccountTagBindingForAccount :exec
+INSERT INTO juhe_business.account_tag_bindings (
+  account_id, tag_id, system_account_id, created_at
+) VALUES (
+  $1::text,
+  $2::text,
+  $3::text,
+  now()
+)
+ON CONFLICT (account_id, tag_id) DO NOTHING
+`
+
+type InsertManagementAccountTagBindingForAccountParams struct {
+	AccountID       string
+	TagID           string
+	SystemAccountID string
+}
+
+func (q *Queries) InsertManagementAccountTagBindingForAccount(ctx context.Context, arg InsertManagementAccountTagBindingForAccountParams) error {
+	_, err := q.db.Exec(ctx, insertManagementAccountTagBindingForAccount, arg.AccountID, arg.TagID, arg.SystemAccountID)
+	return err
+}
+
 const listManagementAccountTags = `-- name: ListManagementAccountTags :many
 SELECT
   account_tags.id,
@@ -88,6 +356,88 @@ func (q *Queries) ListManagementAccountTags(ctx context.Context, systemAccountID
 	return items, nil
 }
 
+const listManagementAccountTagsForAccount = `-- name: ListManagementAccountTagsForAccount :many
+SELECT
+  account_tags.id,
+  account_tags.name,
+  account_tags.created_at,
+  account_tags.updated_at
+FROM juhe_business.account_tag_bindings AS account_tag_bindings
+INNER JOIN juhe_business.account_tags AS account_tags
+  ON account_tags.id = account_tag_bindings.tag_id
+  AND account_tags.system_account_id = account_tag_bindings.system_account_id
+WHERE account_tag_bindings.account_id = $1::text
+  AND account_tag_bindings.system_account_id = $2::text
+ORDER BY account_tags.name ASC, account_tags.id ASC
+`
+
+type ListManagementAccountTagsForAccountParams struct {
+	AccountID       string
+	SystemAccountID string
+}
+
+type ListManagementAccountTagsForAccountRow struct {
+	ID        string
+	Name      string
+	CreatedAt pgtype.Timestamptz
+	UpdatedAt pgtype.Timestamptz
+}
+
+func (q *Queries) ListManagementAccountTagsForAccount(ctx context.Context, arg ListManagementAccountTagsForAccountParams) ([]ListManagementAccountTagsForAccountRow, error) {
+	rows, err := q.db.Query(ctx, listManagementAccountTagsForAccount, arg.AccountID, arg.SystemAccountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListManagementAccountTagsForAccountRow
+	for rows.Next() {
+		var i ListManagementAccountTagsForAccountRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockManagementAccountForTagUpdate = `-- name: LockManagementAccountForTagUpdate :one
+SELECT accounts.id
+FROM juhe_business.accounts AS accounts
+LEFT JOIN juhe_business.resource_authorizations AS authorizations
+  ON authorizations.id = accounts.authorization_instance_authorization_id
+  AND authorizations.resource_type = 'account'
+  AND authorizations.grantee_system_account_id = accounts.system_account_id
+  AND authorizations.resource_id = accounts.authorization_instance_source_account_id
+WHERE accounts.id = $1::text
+  AND accounts.system_account_id = $2::text
+  AND accounts.deleted_at IS NULL
+  AND (
+    accounts.authorization_instance_authorization_id IS NULL
+    OR authorizations.status IN ('active', 'paused', 'expired')
+  )
+FOR UPDATE OF accounts
+`
+
+type LockManagementAccountForTagUpdateParams struct {
+	AccountID       string
+	SystemAccountID string
+}
+
+func (q *Queries) LockManagementAccountForTagUpdate(ctx context.Context, arg LockManagementAccountForTagUpdateParams) (string, error) {
+	row := q.db.QueryRow(ctx, lockManagementAccountForTagUpdate, arg.AccountID, arg.SystemAccountID)
+	var id string
+	err := row.Scan(&id)
+	return id, err
+}
+
 const lockManagementAccountTagForDelete = `-- name: LockManagementAccountTagForDelete :one
 SELECT id
 FROM juhe_business.account_tags
@@ -118,6 +468,7 @@ SELECT EXISTS (
     AND accounts.deleted_at IS NULL
   LEFT JOIN juhe_business.resource_authorizations AS visible_authorizations
     ON visible_authorizations.id = accounts.authorization_instance_authorization_id
+    AND visible_authorizations.resource_type = 'account'
     AND visible_authorizations.grantee_system_account_id = accounts.system_account_id
     AND visible_authorizations.status IN ('active', 'paused', 'expired')
   WHERE account_tag_bindings.tag_id = $1::text
@@ -140,4 +491,44 @@ func (q *Queries) ManagementAccountTagHasActiveBindings(ctx context.Context, arg
 	var column_1 bool
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const upsertManagementAccountTagForAccount = `-- name: UpsertManagementAccountTagForAccount :one
+INSERT INTO juhe_business.account_tags (
+  id, system_account_id, name, created_at, updated_at
+) VALUES (
+  $1::text,
+  $2::text,
+  $3::text,
+  now(),
+  now()
+)
+ON CONFLICT (system_account_id, name) DO UPDATE SET
+  name = EXCLUDED.name
+RETURNING id, name, created_at, updated_at
+`
+
+type UpsertManagementAccountTagForAccountParams struct {
+	TagID           string
+	SystemAccountID string
+	Name            string
+}
+
+type UpsertManagementAccountTagForAccountRow struct {
+	ID        string
+	Name      string
+	CreatedAt pgtype.Timestamptz
+	UpdatedAt pgtype.Timestamptz
+}
+
+func (q *Queries) UpsertManagementAccountTagForAccount(ctx context.Context, arg UpsertManagementAccountTagForAccountParams) (UpsertManagementAccountTagForAccountRow, error) {
+	row := q.db.QueryRow(ctx, upsertManagementAccountTagForAccount, arg.TagID, arg.SystemAccountID, arg.Name)
+	var i UpsertManagementAccountTagForAccountRow
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
