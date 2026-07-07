@@ -11,6 +11,7 @@
 - PostgreSQL：使用 `pgx/v5`、`pgxpool` 和 `sqlc` 生成查询代码，通过连接池、事务函数和上下文超时收口。
 - Redis：使用 `redis/go-redis/v9` 承接 cache、state、counter、fixed-window 和 penalty-window 运行态；可靠任务队列默认使用 Asynq，不手写通用 Redis Streams 队列。
 - SQLite：Go 后端不引入 SQLite driver，不提供 standalone 模式，不维护 SQLite schema、adapter 或测试矩阵。
+- 观测：Prometheus `/__aisys__/metrics`、受控 pprof、结构化 `slog` 和内部系统监控 API 分层维护；Go runtime 指标以 `runtime/metrics`、Prometheus Go collector、PG/Redis/Asynq adapter 和 worker 采样为基础，具体口径见 [Go 迁移指标与观测规划](Go迁移指标与观测规划.md)。
 - 校验：使用 DTO 校验库处理字段形状和范围，跨字段业务规则仍写 service 校验，并转换为项目中文错误结构。
 - 测试：使用 Go 标准 `testing`、`httptest`、`go test ./... -race`、基准测试、testcontainers、必要的 mock upstream 和 goroutine 泄漏检查；跨服务依赖测试必须显式触发。
 
@@ -133,7 +134,8 @@ Go 解决的是 Node 单事件循环问题，不代表可以无界并发。
 - SSE 解析必须增量处理，不为了常规判断拼接完整流。
 - 管理列表、日志、审计、使用记录和统计页面不得把全量数据读入内存分页。
 - 统计、额度、趋势、TopN 和摘要继续读取 worker 生成的窗口表、summary 表或缓存，不在 API 请求里实时扫描明细。
-- pprof 和运行时指标作为 Go 后端标配入口，但公网部署必须有访问控制。
+- pprof 和运行时指标作为 Go 后端标配入口，但公网部署必须有访问控制。`/__aisys__/metrics` 面向外部采集，pprof 面向受控诊断，内部系统监控页面读取 PostgreSQL 窗口表；三者不能互相替代。
+- Go 系统监控契约必须使用 goroutine、scheduler latency、GC pause、heap、RSS、PG pool、Redis、Asynq queue、worker lag 和 stats freshness 等字段；不得把这些指标命名为 Node `eventLoopLagMs`，也不得继续把 `db-service` 作为 Go 长期角色。
 
 Go 运行边界矩阵：
 
@@ -153,6 +155,7 @@ Go 运行边界矩阵：
 - `node:sqlite` 能力预检和 Node 版本分支。
 - SQLite standalone、SQLite 多库拆分、usage shard 文件写入、SQLite read worker、SQLite writer owner 和相关测试矩阵。
 - 因事件循环阻塞而存在的 DB service HTTP/IPC 代理层。
+- Node 专属系统指标：`eventLoopLagMs`、`process_event_loop_*`、V8 `processHeap*` / `external` / `arrayBuffers`、DB service 运行态、SQLite 文件体积、usage shard 文件路径和 IPC pending 队列指标。
 - worker thread 大 JSON 解析边界，改为 Go 请求 goroutine + 有界解析策略。
 - `p-limit` 等为 Node 并发协调补出来的通用胶水，改为 context、semaphore、channel 或连接池。
 - `tsx` 开发运行链路和后端 TypeScript 编译链路。
@@ -166,3 +169,4 @@ Go 运行边界矩阵：
 - 使用记录、审计、操作日志、运行日志和统计聚合的异步写入边界。
 - 请求体大小、SSE backpressure、客户端断开和上游取消处理。
 - 敏感字段加密、脱敏和权限控制。
+- 系统可观测性边界：health 只判断当前依赖可用性，Prometheus 负责实时采集，pprof 负责诊断，系统监控 API 负责管理页面窗口趋势；所有指标 label 必须低基数且不含敏感信息。

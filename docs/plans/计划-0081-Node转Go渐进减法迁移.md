@@ -13,7 +13,7 @@
 ## 需求目标
 
 - 背景：当前 Node 后端为了处理并发、阻塞、事件循环、SQLite 写锁、IPC 和后台任务隔离，已经积累了大量复杂机制。用户已明确决定彻底抛弃 Node 后端，转向 Go，并彻底去掉 SQLite，不再维护 standalone / performance 两套模式。
-- 目标：通过渐进式、减法式迁移，把后端逐步迁移到 Go + PostgreSQL + Redis；迁移一个模块就删除一个 Node 旧模块和对应 SQLite / 双模式旧路径，最终只保留前端构建所需的 Node 工具链。当前已完成 M0 文档基线；W0 Go 工程与 PG/Redis/Asynq 常规基线已落地并通过本地 Go 非容器验证矩阵；W1a `GET /__aisys__/api/settings/public` 已进入 Go 实现中，未生产接管；W1b `/__aipublic__` 已补 Go catalog/auth、PostgreSQL auth/log adapter、Redis penalty-window、公开接口日志 snapshot/log builder、Asynq payload/enqueue/handler、`juhe-ai-worker ingest` 日志消费 runtime、HTTP shell / capture 契约、499 客户端提前断开捕获、ResponseWriter 透传、public group CRUD、public route strategy CRUD、public API Key CRUD、public account CRUD 四类资源 16 个 CRUD 纵切面、对应 integration / shell 测试代码、`JUHE_AI_PUBLIC_API_ENABLED=false` 默认关闭的生产 router opt-in guard，以及 `w1b-public-api-smoke` 独立灰度验证入口；account shell E2E 测试代码已补，当前主线程 Docker 不可用，真实 PG/Redis/Asynq integration、`w1b-public-api-smoke` 真实依赖执行与四类 shell E2E 待复跑，反向代理切流和 Node 删除仍未完成，未正式生产接管；W2 第一块 `GET /__aisys__/api/proxies/options` 已补 Go PG schema、sqlc/store、service、handler 和默认不接管的 router 注入 guard，等待 Go 管理端会话鉴权链路、真实 integration 和生产切流后再评估接管。
+- 目标：通过渐进式、减法式迁移，把后端逐步迁移到 Go + PostgreSQL + Redis；迁移一个模块就删除一个 Node 旧模块和对应 SQLite / 双模式旧路径，最终只保留前端构建所需的 Node 工具链。当前已完成 M0 文档基线；W0 Go 工程与 PG/Redis/Asynq 常规基线已落地并通过本地 Go 非容器验证矩阵；W1a `GET /__aisys__/api/settings/public` 已进入 Go 实现中，未生产接管；W1b `/__aipublic__` 已补 Go catalog/auth、PostgreSQL auth/log adapter、Redis penalty-window、公开接口日志 snapshot/log builder、Asynq payload/enqueue/handler、`juhe-ai-worker ingest` 日志消费 runtime、HTTP shell / capture 契约、499 客户端提前断开捕获、ResponseWriter 透传、public group CRUD、public route strategy CRUD、public API Key CRUD、public account CRUD 四类资源 16 个 CRUD 纵切面、对应 integration / shell 测试代码、`JUHE_AI_PUBLIC_API_ENABLED=false` 默认关闭的生产 router opt-in guard，以及 `w1b-public-api-smoke` 独立灰度验证入口；account shell E2E 测试代码已补，当前主线程 Docker 不可用，真实 PG/Redis/Asynq integration、`w1b-public-api-smoke` 真实依赖执行与四类 shell E2E 待复跑，反向代理切流和 Node 删除仍未完成，未正式生产接管；W2 第一块 `GET /__aisys__/api/proxies/options` 已补 Go PG schema、sqlc/store、service、handler 和默认不接管的 router 注入 guard，等待 Go 管理端会话鉴权链路、真实 integration 和生产切流后再评估接管。系统指标统计已纳入 Go 迁移规划，后续必须从 Node event-loop / DB service / SQLite 文件指标改为 Go runtime、PG、Redis、Asynq、worker lag、stats freshness 和网关 SLI。
 - 交付物：Go 迁移目录、迁移总计划、Go 架构基线、模块顺序、测试验收策略、开发构建部署调整，以及后续代码迁移计划入口。
 
 ## 范围边界
@@ -25,6 +25,7 @@
 - [x] 新增 `docs/migration/` 迁移目录。
 - [x] 规划渐进减法迁移原则和阶段。
 - [x] 规划 Go 后端目标架构、技术依赖、并发和线程安全边界。
+- [x] 规划 Go 系统指标、Prometheus / pprof、内部系统监控契约、worker lag、PG / Redis / Asynq 和网关 SLI 替换口径。
 - [x] 规划 PostgreSQL + Redis 单模式存储目标和 SQLite 移除范围。
 - [x] 规划模块迁移顺序，明确公开接口、后台接口优先，真实网关最后。
 - [x] 规划完整测试与验收策略。
@@ -46,6 +47,7 @@
 - 迁移总览：`docs/migration/迁移规划总览.md`
 - Go 架构基线：`docs/migration/Go后端架构基线.md`
 - Go 技术选型：`docs/migration/Go技术选型与依赖基线.md`
+- Go 指标观测：`docs/migration/Go迁移指标与观测规划.md`
 - 存储目标：`docs/migration/存储目标与SQLite移除.md`
 - 模块清单：`docs/migration/模块迁移顺序与减法清单.md`
 - W1b 迁移记录：`docs/migration/W1b-外部维护公开接口迁移记录.md`
@@ -67,6 +69,7 @@
 - 接口变化：本次不改接口；后续迁移需保证当前公开契约和管理契约等价，或先更新功能文档和测试预期。
 - 前端变化：本次不改前端；后续前端继续以 Vue 3 + TypeScript + Ant Design Vue 维护。
 - 后端变化：目标后端从 Node.js + TypeScript 迁移到 Go，逐步删除 Node 后端模块、DB service、SQLite adapter、SQLite 配置和双模式分支。
+- 指标变化：系统指标统计必须随 Go 接管同步重建，Node `eventLoopLagMs`、`process_event_loop_*`、`processEventLoop*`、`db-service`、SQLite 文件体积和 usage shard 文件路径不能作为 Go 长期契约。
 - 数据处理策略：既有 SQLite 数据如需保留，只通过一次性离线导出、清洗、导入 PostgreSQL 处理，不写入 Go 或 Node 运行路径。
 
 ## 执行拆解
@@ -77,6 +80,7 @@
 - [x] 新增迁移目录主文档和示例文档。
 - [x] 新增迁移总览、Go 架构基线、模块顺序、测试策略和部署调整。
 - [x] 新增 Go 技术选型与依赖基线，固定框架、日志、配置、DB、SQL、job、测试、观测和安全扫描默认依赖。
+- [x] 新增 Go 迁移指标与观测规划，固定 Go runtime、PG、Redis、Asynq、worker lag、stats freshness 和网关 SLI 指标边界。
 - [x] 明确 PostgreSQL + Redis 单模式和 SQLite 移除边界。
 
 ### 后续迁移阶段
@@ -95,6 +99,7 @@
 | --- | --- | --- | --- | --- | --- |
 | 文档结构 | 迁移目录入口 | 检查 `docs/migration/README.md` 和示例文档 | 新目录有 README 和示例文档 | 已通过 | 本次新增 |
 | 文档链接 | 文档入口引用 | `rg "migration|迁移" docs` + 相对链接检查 | 入口文档能找到迁移目录和 PLAN-0081，新增链接指向真实文件 | 已通过 | 已执行 |
+| 指标规划 | Go 系统指标替换口径 | 检查 `docs/migration/Go迁移指标与观测规划.md`、功能契约和架构入口 | Node event-loop / DB service / SQLite 文件指标被标记为过渡事实，Go 指标口径有明确替代和删除门禁 | 已通过 | 本次新增 |
 | 代码验证 | 当前代码类型检查 | `pnpm typecheck` | 当前前后端类型检查通过 | 不适用 | 本次只改文档 |
 | Go 骨架 | Go 单元测试 | `go test ./...` | Go 代码测试通过 | 已通过 | `backend-go` 已通过 |
 | Go 骨架 | Race 检测 | `go test -race ./...` | Windows 本机 race 稳定通过 | 已通过 | 已使用 w64devkit 2.8.0 / GCC 16.1.0 修复旧 MinGW 导致的 race 失败 |
@@ -215,6 +220,7 @@
 - W1b 契约固定：已用多个 gpt-5.5 xhigh 子 agent 做只读交叉梳理，新增 `docs/migration/W1b-外部维护公开接口迁移记录.md`；固定当前 16 个 `/__aipublic__` 公开 CRUD、旧 5 个公开路径继续 404、Bearer-only 鉴权、source/token scope 交集、source 级限频、60 秒 `last_used_at` 节流、公开接口日志 32KB 快照边界、资源字段和 Node 对照命令。已执行并通过 `pnpm test:external-source-auth`、`pnpm test:public-api-logs`、`pnpm --filter juhe-ai-backend test:external-integration-source-expires-at`、`pnpm --filter juhe-ai-backend test:external-integration-source-async-boundary`、`pnpm --filter juhe-ai-backend test:external-public-account-push-async-boundary`、`pnpm --filter juhe-ai-backend test:public-api-log-db-service-ipc` 和 `pnpm test:sqlite-query-regression`；W1b PG/Redis Node 对照 smoke、生产路由切流和 Node 删除仍待执行。
 - Go W1b 基础设施与四类公开资源纵切面：已新增 `backend-go/internal/modules/publicapi`、`backend-go/internal/modules/publicapi/auth`、`backend-go/internal/modules/publicapi/ratelimit`、`backend-go/internal/modules/publicapilog`、`backend-go/internal/modules/publicgroups`、`backend-go/internal/modules/publicroutestrategies`、`backend-go/internal/modules/publicapikeys`、`backend-go/internal/modules/publicaccounts`、`backend-go/internal/jobs/publicapilog`、`backend-go/internal/jobs/worker`、`backend-go/internal/app/server.go`、`backend-go/internal/app/ingest_worker.go`、`backend-go/internal/config/config.go`、`backend-go/internal/httpapi/router.go`、`backend-go/internal/httpapi/public_api_shell.go`、`backend-go/internal/httpapi/public_groups.go`、`backend-go/internal/httpapi/public_route_strategies.go`、`backend-go/internal/httpapi/public_api_keys.go`、`backend-go/internal/httpapi/public_accounts.go`、`backend-go/internal/store/port/publicapi.go`、`backend-go/internal/store/postgres/publicapi.go`、`backend-go/internal/store/postgres/publicgroups.go`、`backend-go/internal/store/postgres/publicroutestrategies.go`、`backend-go/internal/store/postgres/publicapikeys.go`、`backend-go/internal/store/postgres/publicaccounts.go`、`backend-go/internal/store/postgres/queries/w1b_public_groups.sql`、`backend-go/internal/store/postgres/queries/w1b_public_route_strategies.sql`、`backend-go/internal/store/postgres/queries/w1b_public_api_keys.sql`、`backend-go/internal/store/postgres/queries/w1b_public_accounts.sql`、`backend-go/internal/platform/redis` penalty-window helper、`backend-go/internal/maintenance/w1bpublicapismoke.go`、`backend-go/db/migrations/000003_w1b_public_api_foundation.sql`、`backend-go/db/migrations/000004_w1b_public_groups.sql`、`backend-go/db/migrations/000005_w1b_public_accounts.sql` 和 W1b integration smoke；覆盖 16 个 `/__aipublic__` method/path/scope、旧 5 个公开路径不进入 catalog、`Bearer` 解析、token hash namespace、source/token 状态与过期、scope 交集、auth error code/message/status、`last_used_at` 60 秒 touch 判断、source/token rate-limit key、公开接口日志 32KB snapshot / dropped / 499 / error info、Asynq payload/enqueue/handler、`juhe-ai-worker ingest` runtime、invalid payload `SkipRetry` 映射、Asynq import guard、PostgreSQL auth/log adapter、Redis penalty-window 限频、HTTP shell 中 16 个 catalog endpoint 进入 auth / limiter / injected handler、默认关闭 / 显式开启 router guard、`w1b-public-api-smoke` 本地 httptest + 真实依赖验证入口、旧公开路径 404 不鉴权但写日志、JSON body 400、body 413、429 `Retry-After`、response capture、客户端提前断开 499、ResponseWriter 可选接口透传、PublicGroup / PublicRouteStrategy / PublicAPIKey / PublicAccount store port 不暴露 pgx/sqlc/Redis 类型、四类资源 handler/service/store/query/schema 纵切面、AI 账户 provider profile、凭据 AES-GCM 加密、凭据指纹 hash、模型替换、pending_test 直启拦截、软删除和绑定清理，以及完整 key / query string / 来源 token / 上游 apiKey / URL userinfo 日志脱敏。account shell E2E 测试代码已补，覆盖 add/list/update/delete/limited、source/token last_used、账号凭据加密落库、软删除和 public API log 落库脱敏。已执行并通过 `sqlc generate`、`go mod tidy -diff`、`go test ./...`、`go test -race ./...`、`go vet ./...`、`go build ./cmd/...`、`go test -tags=integration ./internal/testkit/integration -run '^$'`、`go test ./internal/modules/publicaccounts ./internal/httpapi ./internal/store/postgres ./internal/modules/publicapilog`、`go test ./internal/config ./internal/httpapi ./internal/app` 和本轮 `go test ./internal/maintenance ./internal/app`；真实 Docker/testcontainers integration、`w1b-public-api-smoke` 真实依赖执行、account shell E2E 真实复跑、生产路由切流和 Node 删除仍待完成。
 - Go W2 管理只读第一块：已新增 `backend-go/db/migrations/000006_w2_management_proxy_options.sql`、`backend-go/internal/store/port/management.go`、`backend-go/internal/store/postgres/queries/w2_management_proxy_options.sql`、`backend-go/internal/store/postgres/managementproxies.go`、`backend-go/internal/modules/managementproxies`、`backend-go/internal/httpapi/management_proxies.go` 和 `backend-go/internal/testkit/integration/w2_management_proxy_options_smoke_test.go`；覆盖 `GET /__aisys__/api/proxies/options` 的启用代理过滤、`keyword` 名称前缀搜索、`limit` clamp、响应白名单、错误脱敏、默认生产 router 不注册和“注入管理端鉴权 middleware 后才可挂载”的 guard。已通过 `sqlc generate`、`go test ./internal/modules/managementproxies ./internal/httpapi ./internal/store/postgres`；真实 Docker/testcontainers integration、Go 管理端会话鉴权、生产路由切流、前端 smoke 和 Node 删除仍待完成。
+- Go 系统指标规划：已新增 `docs/migration/Go迁移指标与观测规划.md`，并同步迁移 README、迁移总览、模块减法清单、Go 架构基线、技术选型、测试验收、开发部署、接口契约、统计分层设计和后端架构入口；明确 Go 接管系统监控时必须使用 Go runtime、PG、Redis、Asynq、worker lag、stats freshness 和网关 SLI，不得模拟 Node `eventLoopLagMs`、`process_event_loop_*`、`processEventLoop*`、`db-service`、SQLite 文件体积和 usage shard 文件路径指标。
 - 文档验证：已执行覆盖本次新增 W1b / W2 文档、迁移入口、迁移清单、测试策略和 PLAN-0081 的相对链接检查，结果为 `All checked markdown links resolve.`；已执行 `git diff --check`，仅有既有 LF/CRLF 提示，无 whitespace error。
 - 未验证项：独立真实外部 URL 的 `w0-smoke` / `w1a-public-settings-smoke` / `w1b-public-api-smoke` 部署环境执行、W2 `TestW2ManagementProxyOptionsPostgresSmoke` 真实 Docker/testcontainers 执行、反向代理切流 smoke、前端品牌加载 smoke、Node public settings 删除证据、W1b Node PG/Redis 对照 smoke、Go W1b / W2 生产路由挂载、Go 管理端会话鉴权、account shell E2E 真实 Docker/testcontainers 复跑、Docker/testcontainers 真实 integration、Node 删除证据和网关测试均待后续代码迁移阶段执行。
 
@@ -226,12 +232,13 @@
 - 风险 4：真实网关迁移风险最高，必须在存储、worker、协议测试、SSE 和性能验证成熟后执行。
 - 风险 5：public group、public route strategy、public API Key、public account 四条资源纵切面、`JUHE_AI_PUBLIC_API_ENABLED` opt-in guard 和 `w1b-public-api-smoke` 只是 W1b 灰度入口，容易被误判为 `/__aipublic__` 已接管；必须保持默认关闭，直到 16 个 CRUD、account shell E2E 在真实 Docker/testcontainers 环境通过、PG+Redis smoke、公开日志副作用、反向代理单 owner 切流和 Node 删除证据整体完成。
 - 风险 6：W2 管理只读接口如果绕过 Node 当前 `requireAuth` / `requireAdmin` / `my-*` 作用域，会把后台数据裸露出来；因此当前 `proxies/options` Go handler 默认不挂生产路由，必须等 Go 管理端会话鉴权链路迁移后再切流。
+- 风险 7：系统指标如果只是把 Node 事件循环字段改名为 Go 字段，会造成错误观测和误告警；Go 接管时必须先落地 Go 原生采样、低基数 Prometheus 标签、内部系统监控 DTO 和前端契约删除证据。
 - 发布异常处理：每个模块生产切换前保留上一版发布包、配置和数据备份；schema 变化不依赖运行时自动回滚。
 
 ## 完成总结
 
 - 完成时间：待后续迁移全部完成后填写。
-- 实际完成内容：当前完成 M0 文档规划，W0 Go 常规工程基线已落地，W1a 公开设置读接口已进入 Go 实现中，W1b 已补 catalog/auth、PG auth/log adapter、Redis penalty-window、公开接口日志 snapshot/log builder、Asynq payload/enqueue/handler、public API log 单任务 worker runtime、HTTP shell / capture 契约、499 客户端提前断开捕获、ResponseWriter 可选接口透传、public group CRUD、public route strategy CRUD、public API Key CRUD、public account CRUD 四条真实资源纵切面、默认关闭的生产 router opt-in guard，以及 `w1b-public-api-smoke` 独立 maintenance smoke；W2 第一块 `proxies/options` 已补 Go schema / store / service / handler / router 注入 guard；业务接口尚未正式生产接管。
+- 实际完成内容：当前完成 M0 文档规划，W0 Go 常规工程基线已落地，W1a 公开设置读接口已进入 Go 实现中，W1b 已补 catalog/auth、PG auth/log adapter、Redis penalty-window、公开接口日志 snapshot/log builder、Asynq payload/enqueue/handler、public API log 单任务 worker runtime、HTTP shell / capture 契约、499 客户端提前断开捕获、ResponseWriter 可选接口透传、public group CRUD、public route strategy CRUD、public API Key CRUD、public account CRUD 四条真实资源纵切面、默认关闭的生产 router opt-in guard，以及 `w1b-public-api-smoke` 独立 maintenance smoke；W2 第一块 `proxies/options` 已补 Go schema / store / service / handler / router 注入 guard；Go 系统指标与观测迁移规划已补齐；业务接口尚未正式生产接管。
 - 主要改动位置：`docs/migration/`、`docs/plans/计划-0081-Node转Go渐进减法迁移.md`、`backend-go/`。
 - 验证结果：W0 常规 Go 验证矩阵、race、lint、漏洞扫描、命令入口、health smoke、public group / public route strategy / public API Key / public account handler / service 非容器专项、W2 `managementproxies` / `httpapi` / `store/postgres` 快速测试和跨平台构建已记录；本轮 `go test ./...`、`go test -race ./...`、`go vet ./...`、`go build ./cmd/...`、`go mod tidy -diff`、`sqlc generate`、integration 包编译、`go test ./internal/config ./internal/httpapi ./internal/app`、`go test ./internal/maintenance ./internal/app` 和 `go test ./internal/modules/managementproxies ./internal/httpapi ./internal/store/postgres` 已通过；testcontainers 真实 PG/Redis/Asynq integration 仍需 Docker 健康环境复跑。
 - 后续建议：下一步在具备 Docker 或真实 PG/Redis 连接串的环境执行 W0/W1a/W1b integration、W0 live smoke、`w1a-public-settings-smoke`、`w1b-public-api-smoke` 和 W1b account shell E2E 真实复跑；随后评估生产 router 挂载、反向代理切流和 Node 删除证据。

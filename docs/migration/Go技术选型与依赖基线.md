@@ -30,7 +30,7 @@
 | Schema 迁移 | `github.com/pressly/goose/v3` CLI | PostgreSQL DDL、seed、离线迁移执行 | 不在 Go 启动路径自动迁移；生产迁移由维护命令或发布流程显式执行 |
 | Redis client | `github.com/redis/go-redis/v9` | cache、state、counter、fixed-window / penalty-window 限频、Redis 连接与 pipeline | queue 通过 Asynq；业务代码不直接拼 Redis key |
 | Job / queue | `github.com/hibiken/asynq` | 异步任务、重试、延迟任务、worker crash 恢复、队列指标 | 只通过 `internal/jobs/queue` Port 使用；不用项目自研 Redis Streams 通用队列 |
-| 指标 | `github.com/prometheus/client_golang` | HTTP、PG、Redis、worker、队列、网关指标 | `/metrics` 必须受部署边界保护；不首批引入 Prometheus API client |
+| 指标 | 标准库 `runtime/metrics` + `github.com/prometheus/client_golang` | Go runtime、HTTP、PG、Redis、worker、队列、网关指标 | `/metrics` 必须受部署边界保护；内部系统监控读取 PG 窗口表；不首批引入 Prometheus API client |
 | pprof | 标准库 `net/http/pprof` | CPU、heap、goroutine、block profile | 只能挂在受保护的 debug/admin 入口 |
 | OAuth | `golang.org/x/oauth2` | OpenAI OAuth token 交换 / 刷新辅助 | HTTP client、代理、超时和响应上限仍由项目封装控制 |
 | 测试断言 | `github.com/stretchr/testify/require` | 测试断言和失败中止 | 不默认使用 testify mock；优先手写 fake / testkit |
@@ -114,7 +114,7 @@ W0 当前只表示工程和基础设施 PoC 的版本基线；后续升级依赖
 | PostgreSQL | `github.com/jackc/pgx/v5 v5.10.0` | health adapter、goose baseline / W1a / W1b migration、sqlc catalog / W1b auth-log 查询已落地；integration 用例已补，当前主线程 Docker 不可用时 `SKIP`，需 Docker 环境复跑 |
 | Redis | `github.com/redis/go-redis/v9 v9.21.0` | cache / state health adapter、namespace key 封装、TTL set、pipeline、`IncrWithTTL` 原子计数、fixed-window 和 W1b penalty-window Lua 限频、Redis DB 去重校验已落地；W1b penalty-window integration 用例已补，需 Docker 环境复跑 |
 | Job / queue | `github.com/hibiken/asynq v0.26.0` | Asynq client ping health、`rediss` TLS、显式 Redis timeout、enqueue 封装、inspector、pending smoke、retry / archive / retry exhaustion integration 代码已落地；W1b `public-api-log:write` payload/enqueue/handler、`juhe-ai-worker ingest` runtime、invalid payload `SkipRetry` 映射已补；真实 Redis/Asynq/PG smoke 当前主线程 Docker 不可用时 `SKIP`，需 Docker 环境复跑；periodic / crash recover / 长任务 drain / 队列指标待补 |
-| 指标 | `github.com/prometheus/client_golang v1.23.2` | `/__aisys__/metrics` loopback smoke 已通过 |
+| 指标 | 标准库 `runtime/metrics` + `github.com/prometheus/client_golang v1.23.2` | `/__aisys__/metrics` loopback smoke 已通过；Go runtime / PG / Redis / Asynq / worker lag 的完整采样口径见 [Go 迁移指标与观测规划](Go迁移指标与观测规划.md)，后续 W6/W7 落地 |
 | SQL CLI | `sqlc v1.31.1` | CLI 已安装，已生成 `internal/store/postgres/postgresqueries` |
 | Migration CLI / lib | `github.com/pressly/goose/v3 v3.27.2` | CLI 已安装；integration 测试通过 goose 执行 baseline DDL |
 | Testcontainers | `github.com/testcontainers/testcontainers-go v0.43.0` | `go test -tags=integration ./internal/testkit/integration -count=1` 当前主线程因 Docker 不可用输出 `SKIP`；Docker/testcontainers 健康环境必须复跑，覆盖 PostgreSQL / Redis / Asynq / W1a / W1b foundation / W1b public API log queue / public group / public route strategy / public API Key / public account smoke 与 shell E2E |
