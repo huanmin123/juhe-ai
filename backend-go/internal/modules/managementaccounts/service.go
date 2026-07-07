@@ -57,6 +57,11 @@ type TagUpdateInput struct {
 	Tags            []string
 }
 
+type TagUpdateResult struct {
+	Account      AccountSummary
+	PreviousTags []Tag
+}
+
 var ErrAccountTagInUse = errors.New("account tag in use")
 var ErrAccountNotFound = errors.New("account not found")
 
@@ -277,21 +282,21 @@ func (s *Service) DeleteTag(ctx context.Context, input TagDeleteInput) (bool, er
 	return deleted, err
 }
 
-func (s *Service) UpdateTags(ctx context.Context, input TagUpdateInput) (AccountSummary, error) {
+func (s *Service) UpdateTags(ctx context.Context, input TagUpdateInput) (TagUpdateResult, error) {
 	if s.store == nil {
-		return AccountSummary{}, fmt.Errorf("management account tag store is required")
+		return TagUpdateResult{}, fmt.Errorf("management account tag store is required")
 	}
 	accountID := strings.TrimSpace(input.AccountID)
 	systemAccountID := strings.TrimSpace(input.SystemAccountID)
 	if accountID == "" || systemAccountID == "" {
-		return AccountSummary{}, ErrAccountNotFound
+		return TagUpdateResult{}, ErrAccountNotFound
 	}
 	if len(input.Tags) > maxTagsPerAccount {
-		return AccountSummary{}, &ValidationError{Message: fmt.Sprintf("单个账户最多配置 %d 个标签", maxTagsPerAccount)}
+		return TagUpdateResult{}, &ValidationError{Message: fmt.Sprintf("单个账户最多配置 %d 个标签", maxTagsPerAccount)}
 	}
 	tags, err := normalizeTagUpdateInput(input.Tags)
 	if err != nil {
-		return AccountSummary{}, err
+		return TagUpdateResult{}, err
 	}
 	saved, ok, err := s.store.UpdateManagementAccountTags(ctx, port.ManagementAccountTagUpdateInput{
 		AccountID:       accountID,
@@ -299,12 +304,15 @@ func (s *Service) UpdateTags(ctx context.Context, input TagUpdateInput) (Account
 		Tags:            tags,
 	})
 	if err != nil {
-		return AccountSummary{}, err
+		return TagUpdateResult{}, err
 	}
 	if !ok {
-		return AccountSummary{}, ErrAccountNotFound
+		return TagUpdateResult{}, ErrAccountNotFound
 	}
-	return accountSummaryFromPort(saved), nil
+	return TagUpdateResult{
+		Account:      accountSummaryFromPort(saved.Account),
+		PreviousTags: tagsFromPort(saved.PreviousTags),
+	}, nil
 }
 
 func optionLimit(limit int) int {

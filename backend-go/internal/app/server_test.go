@@ -28,6 +28,26 @@ func TestNewPublicAPIHandlerRejectsInvalidQueueURLWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestNewManagementOperationLogQueueDisabledSkipsRuntimeDependencies(t *testing.T) {
+	logQueue, err := newManagementOperationLogQueue(config.Config{})
+	if err != nil {
+		t.Fatalf("newManagementOperationLogQueue() error = %v", err)
+	}
+	if logQueue != nil {
+		t.Fatal("newManagementOperationLogQueue() returned queue while management API disabled")
+	}
+}
+
+func TestNewManagementOperationLogQueueRejectsInvalidQueueURLWhenEnabled(t *testing.T) {
+	_, err := newManagementOperationLogQueue(config.Config{
+		ManagementAPIEnabled: true,
+		RedisQueueURL:        "http://127.0.0.1:6379/2",
+	})
+	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_REDIS_QUEUE_URL") {
+		t.Fatalf("newManagementOperationLogQueue() error = %v, want redis queue url error", err)
+	}
+}
+
 func TestNewPublicAPIHandlersCoversCatalog(t *testing.T) {
 	handlers, err := newPublicAPIHandlers(nil, "12345678901234567890123456789012")
 	if err != nil {
@@ -46,7 +66,7 @@ func TestNewPublicAPIHandlersCoversCatalog(t *testing.T) {
 }
 
 func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
-	handlers := newManagementAPIHandler(config.Config{}, nil)
+	handlers := newManagementAPIHandler(config.Config{}, nil, nil, nil)
 	if handlers.AuthMiddleware != nil ||
 		handlers.ProxyOptionsHandler != nil ||
 		handlers.SystemAccountOptionsHandler != nil ||
@@ -70,13 +90,15 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 		handlers.AccountTagsHandler != nil ||
 		handlers.MyAccountTagsHandler != nil ||
 		handlers.AccountTagDeleteHandler != nil ||
-		handlers.MyAccountTagDeleteHandler != nil {
+		handlers.MyAccountTagDeleteHandler != nil ||
+		handlers.AccountTagUpdateHandler != nil ||
+		handlers.MyAccountTagUpdateHandler != nil {
 		t.Fatal("newManagementAPIHandler() returned middleware or handler while disabled")
 	}
 }
 
 func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t *testing.T) {
-	handlers := newManagementAPIHandler(config.Config{ManagementAPIEnabled: true}, nil)
+	handlers := newManagementAPIHandler(config.Config{ManagementAPIEnabled: true}, nil, nil, nil)
 	if handlers.AuthMiddleware == nil ||
 		handlers.ProxyOptionsHandler == nil ||
 		handlers.SystemAccountOptionsHandler == nil ||
@@ -100,7 +122,9 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 		handlers.AccountTagsHandler == nil ||
 		handlers.MyAccountTagsHandler == nil ||
 		handlers.AccountTagDeleteHandler == nil ||
-		handlers.MyAccountTagDeleteHandler == nil {
+		handlers.MyAccountTagDeleteHandler == nil ||
+		handlers.AccountTagUpdateHandler == nil ||
+		handlers.MyAccountTagUpdateHandler == nil {
 		t.Fatal("newManagementAPIHandler() returned nil middleware or handler while enabled")
 	}
 }

@@ -432,6 +432,59 @@ type JuheBusinessSystemTeamMember struct {
 	UpdatedAt       pgtype.Timestamptz
 }
 
+type JuheDatasetOperationLog struct {
+	ID                            string
+	TraceID                       pgtype.Text
+	ActorSystemAccountID          string
+	ActorUsername                 pgtype.Text
+	ActorDisplayName              pgtype.Text
+	ActorRole                     string
+	OperationScopeSystemAccountID pgtype.Text
+	Mode                          string
+	Module                        string
+	Action                        string
+	OperationKey                  string
+	ResourceType                  string
+	ResourceID                    pgtype.Text
+	ResourceName                  pgtype.Text
+	Summary                       string
+	DetailLevel                   string
+	VisibilityScope               string
+	ChangesJson                   string
+	MetadataJson                  string
+	Method                        pgtype.Text
+	Path                          pgtype.Text
+	StatusCode                    pgtype.Int4
+	ClientIp                      pgtype.Text
+	UserAgent                     pgtype.Text
+	CreatedAt                     pgtype.Timestamptz
+}
+
+type JuheDatasetOperationLogSummarySearchTerm struct {
+	OperationLogID string
+	Term           string
+	CreatedAt      pgtype.Timestamptz
+}
+
+type JuheDatasetOperationLogTarget struct {
+	ID                         string
+	OperationLogID             string
+	TargetType                 string
+	TargetID                   pgtype.Text
+	TargetName                 pgtype.Text
+	TargetOwnerSystemAccountID pgtype.Text
+	Relation                   string
+	CreatedAt                  pgtype.Timestamptz
+}
+
+type JuheDatasetOperationLogViewer struct {
+	OperationLogID   string
+	SystemAccountID  string
+	VisibilityReason string
+	DetailLevel      string
+	CreatedAt        pgtype.Timestamptz
+}
+
 type JuheDatasetPublicApiLog struct {
 	ID                    string
 	TraceID               pgtype.Text

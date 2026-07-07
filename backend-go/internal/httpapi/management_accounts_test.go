@@ -9,10 +9,13 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"juhe-ai/backend-go/internal/config"
+	operationlogjob "juhe-ai/backend-go/internal/jobs/operationlog"
+	"juhe-ai/backend-go/internal/jobs/queue"
 	"juhe-ai/backend-go/internal/modules/managementaccounts"
 	"juhe-ai/backend-go/internal/modules/managementauth"
 )
@@ -344,13 +347,15 @@ func TestManagementAccountTagDeleteHandlerRedactsUnexpectedErrors(t *testing.T) 
 
 func TestManagementAccountTagUpdateHandlerRequiresAdminAndParsesScope(t *testing.T) {
 	service := &managementAccountOptionServiceStub{
-		updateTagsResult: managementaccounts.AccountSummary{
-			ID:           "acct_main",
-			Name:         "主账号",
-			ProviderCode: "gpt",
-			Type:         "api_key",
-			Status:       "active",
-			Tags:         []managementaccounts.Tag{{ID: "tag_main", Name: "主力"}},
+		updateTagsResult: managementaccounts.TagUpdateResult{
+			Account: managementaccounts.AccountSummary{
+				ID:           "acct_main",
+				Name:         "主账号",
+				ProviderCode: "gpt",
+				Type:         "api_key",
+				Status:       "active",
+				Tags:         []managementaccounts.Tag{{ID: "tag_main", Name: "主力"}},
+			},
 		},
 	}
 	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
@@ -402,7 +407,9 @@ func TestManagementAccountTagUpdateHandlerRejectsOrdinaryUser(t *testing.T) {
 
 func TestManagementMyAccountTagUpdateHandlerForcesSelfScope(t *testing.T) {
 	service := &managementAccountOptionServiceStub{
-		updateTagsResult: managementaccounts.AccountSummary{ID: "acct_main", Name: "主账号"},
+		updateTagsResult: managementaccounts.TagUpdateResult{
+			Account: managementaccounts.AccountSummary{ID: "acct_main", Name: "主账号"},
+		},
 	}
 	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
 		context: managementauth.Context{SystemAccountID: "sys_user", Username: "user", Role: "user", SessionID: "sess_user"},
@@ -417,6 +424,134 @@ func TestManagementMyAccountTagUpdateHandlerForcesSelfScope(t *testing.T) {
 	}
 	if service.updateTagsInput.SystemAccountID != "sys_user" {
 		t.Fatalf("update tags input = %+v", service.updateTagsInput)
+	}
+}
+
+func TestManagementAccountTagUpdateHandlerEnqueuesOperationLog(t *testing.T) {
+	createdAt := time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC)
+	queueStub := &operationLogQueueStub{}
+	service := &managementAccountOptionServiceStub{
+		updateTagsResult: managementaccounts.TagUpdateResult{
+			Account: managementaccounts.AccountSummary{
+				ID:                   "acct_main",
+				SystemAccountID:      "sys_user",
+				OwnerSystemAccountID: "sys_user",
+				Name:                 "主账号",
+				ProviderCode:         "openai",
+				Type:                 "api_key",
+				Status:               "active",
+				Tags:                 []managementaccounts.Tag{{ID: "tag_new", Name: "主力"}},
+			},
+			PreviousTags: []managementaccounts.Tag{{ID: "tag_old", Name: "旧标签"}},
+		},
+	}
+	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+		context: managementauth.Context{
+			SystemAccountID: "sys_admin",
+			Username:        "admin",
+			DisplayName:     "管理员",
+			Role:            "admin",
+			SessionID:       "sess_admin",
+		},
+	})(newManagementAccountTagUpdateHandler(
+		service,
+		managementAccountScopeAdmin,
+		newManagementOperationLogOptions(ManagementOperationLogOptions{
+			Config:   config.Config{TrustProxy: "false"},
+			Client:   queueStub,
+			Now:      func() time.Time { return createdAt },
+			NewLogID: func() string { return "oplog_fixed" },
+		}),
+	))
+
+	req := managementAccountTagUpdateRequest("/__aisys__/api/accounts/acct_main/tags?systemAccountId=sys_user", "acct_main", `{"tags":["主力"]}`)
+	req.RemoteAddr = "127.0.0.1:12345"
+	req = req.WithContext(context.WithValue(req.Context(), requestIDKey, "req_tags"))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if queueStub.calls != 1 {
+		t.Fatalf("queue calls = %d, want 1", queueStub.calls)
+	}
+	if queueStub.taskType != operationlogjob.TaskTypeWrite {
+		t.Fatalf("task type = %q, want %q", queueStub.taskType, operationlogjob.TaskTypeWrite)
+	}
+	if queueStub.options.Queue != operationlogjob.QueueName {
+		t.Fatalf("queue = %q, want %q", queueStub.options.Queue, operationlogjob.QueueName)
+	}
+	if queueStub.options.MaxRetry == nil || *queueStub.options.MaxRetry != 10 {
+		t.Fatalf("max retry = %+v, want 10", queueStub.options.MaxRetry)
+	}
+	logInput, err := operationlogjob.DecodeWriteTaskPayload(queueStub.payload)
+	if err != nil {
+		t.Fatalf("DecodeWriteTaskPayload() error = %v", err)
+	}
+	if logInput.ID != "oplog_fixed" ||
+		logInput.TraceID != "req_tags" ||
+		logInput.ActorSystemAccountID != "sys_admin" ||
+		logInput.ActorUsername != "admin" ||
+		logInput.ActorDisplayName != "管理员" ||
+		logInput.ActorRole != "admin" ||
+		logInput.OperationScopeSystemAccountID != "sys_user" ||
+		logInput.Mode != "admin" ||
+		logInput.Module != "accounts" ||
+		logInput.Action != "update_tags" ||
+		logInput.OperationKey != "accounts.update_tags" ||
+		logInput.ResourceType != "account" ||
+		logInput.ResourceID != "acct_main" ||
+		logInput.ResourceName != "主账号" ||
+		logInput.Summary != "更新账户标签：主账号" ||
+		logInput.Method != http.MethodPatch ||
+		logInput.Path != "/__aisys__/api/accounts/acct_main/tags" ||
+		logInput.ClientIP != "127.0.0.1" ||
+		!logInput.CreatedAt.Equal(createdAt) {
+		t.Fatalf("operation log input = %+v", logInput)
+	}
+	if logInput.StatusCode == nil || *logInput.StatusCode != http.StatusOK {
+		t.Fatalf("status code = %+v, want 200", logInput.StatusCode)
+	}
+	if len(logInput.Changes) != 1 ||
+		logInput.Changes[0].Field != "tags" ||
+		logInput.Changes[0].Label != "标签" {
+		t.Fatalf("changes = %+v", logInput.Changes)
+	}
+	if len(logInput.Viewers) != 1 ||
+		logInput.Viewers[0].SystemAccountID != "sys_user" ||
+		logInput.Viewers[0].VisibilityReason != "resource_owner" {
+		t.Fatalf("viewers = %+v", logInput.Viewers)
+	}
+}
+
+func TestManagementAccountTagUpdateHandlerKeepsSuccessWhenOperationLogQueueFails(t *testing.T) {
+	service := &managementAccountOptionServiceStub{
+		updateTagsResult: managementaccounts.TagUpdateResult{
+			Account: managementaccounts.AccountSummary{ID: "acct_main", SystemAccountID: "sys_user", Name: "主账号"},
+		},
+	}
+	queueStub := &operationLogQueueStub{err: errors.New("redis down")}
+	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_user", Username: "user", Role: "user", SessionID: "sess_user"},
+	})(newManagementAccountTagUpdateHandler(
+		service,
+		managementAccountScopeSelf,
+		newManagementOperationLogOptions(ManagementOperationLogOptions{
+			Config: config.Config{TrustProxy: "false"},
+			Client: queueStub,
+		}),
+	))
+
+	req := managementAccountTagUpdateRequest("/__aisys__/api/my-accounts/acct_main/tags", "acct_main", `{"tags":["主力"]}`)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if queueStub.calls != 1 {
+		t.Fatalf("queue calls = %d, want 1", queueStub.calls)
 	}
 }
 
@@ -464,7 +599,7 @@ func TestRouterRegistersW2ManagementAccountOptions(t *testing.T) {
 		options:          []managementaccounts.Option{{ID: "acct_main", OwnerSystemAccountID: "sys_admin", Name: "主账号", ProviderCode: "openai", Type: "api_key", Status: "active", AccessType: "owner"}},
 		tags:             []managementaccounts.Tag{{ID: "tag_main", Name: "主力"}},
 		deleteTagResult:  true,
-		updateTagsResult: managementaccounts.AccountSummary{ID: "acct_main", Name: "主账号"},
+		updateTagsResult: managementaccounts.TagUpdateResult{Account: managementaccounts.AccountSummary{ID: "acct_main", Name: "主账号"}},
 	}
 	router := NewRouter(RouterOptions{
 		Config:                              config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
@@ -588,8 +723,16 @@ type managementAccountOptionServiceStub struct {
 	deleteTagErr     error
 	updateTagsCalled bool
 	updateTagsInput  managementaccounts.TagUpdateInput
-	updateTagsResult managementaccounts.AccountSummary
+	updateTagsResult managementaccounts.TagUpdateResult
 	updateTagsErr    error
+}
+
+type operationLogQueueStub struct {
+	calls    int
+	taskType string
+	payload  []byte
+	options  queue.EnqueueOptions
+	err      error
 }
 
 func managementAccountTagDeleteRequest(target string, tagID string) *http.Request {
@@ -624,8 +767,16 @@ func (s *managementAccountOptionServiceStub) DeleteTag(_ *http.Request, input ma
 	return s.deleteTagResult, s.deleteTagErr
 }
 
-func (s *managementAccountOptionServiceStub) UpdateTags(_ *http.Request, input managementaccounts.TagUpdateInput) (managementaccounts.AccountSummary, error) {
+func (s *managementAccountOptionServiceStub) UpdateTags(_ *http.Request, input managementaccounts.TagUpdateInput) (managementaccounts.TagUpdateResult, error) {
 	s.updateTagsCalled = true
 	s.updateTagsInput = input
 	return s.updateTagsResult, s.updateTagsErr
+}
+
+func (s *operationLogQueueStub) Enqueue(_ context.Context, taskType string, payload []byte, opts queue.EnqueueOptions) (queue.TaskInfo, error) {
+	s.calls++
+	s.taskType = taskType
+	s.payload = append([]byte(nil), payload...)
+	s.options = opts
+	return queue.TaskInfo{ID: "task_1", Queue: opts.Queue, Type: taskType}, s.err
 }

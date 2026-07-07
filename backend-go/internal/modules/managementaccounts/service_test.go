@@ -253,7 +253,7 @@ func TestServiceUpdateTagsNormalizesInputAndMapsSummary(t *testing.T) {
 	}
 	service := NewService(store)
 
-	summary, err := service.UpdateTags(context.Background(), TagUpdateInput{
+	result, err := service.UpdateTags(context.Background(), TagUpdateInput{
 		AccountID:       " acct_main ",
 		SystemAccountID: " sys_user ",
 		Tags:            []string{" 主力 ", "主力", "API\t标签", "", " api "},
@@ -261,6 +261,7 @@ func TestServiceUpdateTagsNormalizesInputAndMapsSummary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateTags() error = %v", err)
 	}
+	summary := result.Account
 
 	if store.updateInput.AccountID != "acct_main" || store.updateInput.SystemAccountID != "sys_user" {
 		t.Fatalf("update input = %+v", store.updateInput)
@@ -342,6 +343,7 @@ type accountOptionStoreStub struct {
 	deleteErr     error
 	updateInput   port.ManagementAccountTagUpdateInput
 	updateSummary port.ManagementAccountSummary
+	previousTags  []port.ManagementAccountTag
 	updateOK      bool
 	updateErr     error
 	err           error
@@ -363,7 +365,10 @@ func (s *accountOptionStoreStub) DeleteManagementAccountTag(_ context.Context, i
 	return s.deleteResult, s.deleteErr
 }
 
-func (s *accountOptionStoreStub) UpdateManagementAccountTags(_ context.Context, input port.ManagementAccountTagUpdateInput) (port.ManagementAccountSummary, bool, error) {
+func (s *accountOptionStoreStub) UpdateManagementAccountTags(_ context.Context, input port.ManagementAccountTagUpdateInput) (port.ManagementAccountTagUpdateResult, bool, error) {
 	s.updateInput = input
-	return s.updateSummary, s.updateOK, s.updateErr
+	return port.ManagementAccountTagUpdateResult{
+		Account:      s.updateSummary,
+		PreviousTags: s.previousTags,
+	}, s.updateOK, s.updateErr
 }

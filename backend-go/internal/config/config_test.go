@@ -205,6 +205,29 @@ func TestConfigPublicAPIEnabledRequiresRuntimeDependencies(t *testing.T) {
 	}
 }
 
+func TestConfigManagementAPIEnabledRequiresRuntimeDependencies(t *testing.T) {
+	cfg := Config{
+		Host:                 "127.0.0.1",
+		Port:                 3000,
+		RedisNamespace:       "juhe-ai",
+		TrustProxy:           "false",
+		ManagementAPIEnabled: true,
+		ShutdownTimeout:      time.Second,
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() error = nil, want management API dependency error")
+	}
+	if got := err.Error(); !strings.Contains(got, "JUHE_AI_REDIS_QUEUE_URL") {
+		t.Fatalf("Validate() error = %q, want queue url dependency error", got)
+	}
+
+	cfg.RedisQueueURL = "redis://127.0.0.1:6379/2"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
 func TestLoadParsesPublicAPIEnv(t *testing.T) {
 	t.Setenv("JUHE_AI_PUBLIC_API_ENABLED", "true")
 	t.Setenv("JUHE_AI_REDIS_STATE_URL", "redis://127.0.0.1:6379/1")
@@ -225,6 +248,7 @@ func TestLoadParsesPublicAPIEnv(t *testing.T) {
 
 func TestLoadParsesManagementAPIEnv(t *testing.T) {
 	t.Setenv("JUHE_AI_MANAGEMENT_API_ENABLED", "true")
+	t.Setenv("JUHE_AI_REDIS_QUEUE_URL", "redis://127.0.0.1:6379/2")
 
 	cfg, err := Load(LoadOptions{LoadDotEnv: false})
 	if err != nil {

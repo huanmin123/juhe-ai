@@ -20,8 +20,11 @@ import (
 
 	"juhe-ai/backend-go/internal/config"
 	"juhe-ai/backend-go/internal/httpapi"
+	operationlogjob "juhe-ai/backend-go/internal/jobs/operationlog"
+	"juhe-ai/backend-go/internal/jobs/queue"
 	"juhe-ai/backend-go/internal/modules/managementaccounts"
 	"juhe-ai/backend-go/internal/modules/managementauth"
+	"juhe-ai/backend-go/internal/store/port"
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
 )
 
@@ -163,8 +166,8 @@ func TestW2ManagementAccountOptionsPostgresSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update account tags: %v", err)
 	}
-	if updatedAccount.ID != "acct_w2_percent" || !sameAccountTagNames(updatedAccount.Tags, []string{"灰度 发布"}) {
-		t.Fatalf("updated account tags = %+v", updatedAccount.Tags)
+	if updatedAccount.Account.ID != "acct_w2_percent" || !sameAccountTagNames(updatedAccount.Account.Tags, []string{"灰度 发布"}) {
+		t.Fatalf("updated account tags = %+v", updatedAccount.Account.Tags)
 	}
 	if _, err := service.UpdateTags(ctx, managementaccounts.TagUpdateInput{
 		AccountID:       "acct_w2_authorized_revoked",
@@ -277,6 +280,13 @@ func TestW2ManagementAccountOptionsPostgresSmoke(t *testing.T) {
 		Store: store,
 		Now:   func() time.Time { return now },
 	})
+	operationLogQueue := &w2OperationLogQueueStub{}
+	operationLogOptions := httpapi.ManagementOperationLogOptions{
+		Config: config.Config{TrustProxy: "false"},
+		Logger: slog.Default(),
+		Client: operationLogQueue,
+		Now:    func() time.Time { return now },
+	}
 	router := httpapi.NewRouter(httpapi.RouterOptions{
 		Config: config.Config{
 			Host:                 "127.0.0.1",
@@ -291,8 +301,8 @@ func TestW2ManagementAccountOptionsPostgresSmoke(t *testing.T) {
 		ManagementMyAccountTagsHandler:      httpapi.NewManagementMyAccountTagsHandler(service),
 		ManagementAccountTagDeleteHandler:   httpapi.NewManagementAccountTagDeleteHandler(service),
 		ManagementMyAccountTagDeleteHandler: httpapi.NewManagementMyAccountTagDeleteHandler(service),
-		ManagementAccountTagUpdateHandler:   httpapi.NewManagementAccountTagUpdateHandler(service),
-		ManagementMyAccountTagUpdateHandler: httpapi.NewManagementMyAccountTagUpdateHandler(service),
+		ManagementAccountTagUpdateHandler:   httpapi.NewManagementAccountTagUpdateHandlerWithOperationLog(service, operationLogOptions),
+		ManagementMyAccountTagUpdateHandler: httpapi.NewManagementMyAccountTagUpdateHandlerWithOperationLog(service, operationLogOptions),
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/accounts/options?systemAccountId=sys_w2_proxy_options&groupId=group_w2_default&tagIds=tag_w2_main", nil)
@@ -473,6 +483,23 @@ func TestW2ManagementAccountOptionsPostgresSmoke(t *testing.T) {
 	router.ServeHTTP(myOtherUpdateTagRec, myOtherUpdateTagReq)
 	if myOtherUpdateTagRec.Code != http.StatusNotFound {
 		t.Fatalf("my other owner update tag status = %d, body = %s", myOtherUpdateTagRec.Code, myOtherUpdateTagRec.Body.String())
+	}
+	if operationLogQueue.decodeErr != nil {
+		t.Fatalf("decode operation log payload: %v", operationLogQueue.decodeErr)
+	}
+	if len(operationLogQueue.logs) != 3 {
+		t.Fatalf("operation log count = %d, want 3: %+v", len(operationLogQueue.logs), operationLogQueue.logs)
+	}
+	assertW2OperationLog(t, operationLogQueue.logs[0], "acct_w2_authorized_other", "sys_w2_proxy_options", "admin")
+	assertW2OperationLog(t, operationLogQueue.logs[1], "acct_w2_other", "sys_w2_group_other", "admin")
+	assertW2OperationLog(t, operationLogQueue.logs[2], "acct_w2_percent", "sys_w2_proxy_options", "self")
+	for index, taskType := range operationLogQueue.taskTypes {
+		if taskType != operationlogjob.TaskTypeWrite {
+			t.Fatalf("operation log task type[%d] = %q, want %q", index, taskType, operationlogjob.TaskTypeWrite)
+		}
+		if operationLogQueue.options[index].Queue != operationlogjob.QueueName {
+			t.Fatalf("operation log queue[%d] = %q, want %q", index, operationLogQueue.options[index].Queue, operationlogjob.QueueName)
+		}
 	}
 
 	myTagReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/my-accounts/tags?systemAccountId=sys_w2_group_other", nil)
@@ -799,4 +826,43 @@ func sameAccountTagNames(tags []managementaccounts.Tag, want []string) bool {
 
 func timePtr(value time.Time) *time.Time {
 	return &value
+}
+
+type w2OperationLogQueueStub struct {
+	taskTypes []string
+	options   []queue.EnqueueOptions
+	logs      []port.OperationLogInput
+	decodeErr error
+}
+
+func (s *w2OperationLogQueueStub) Enqueue(_ context.Context, taskType string, payload []byte, opts queue.EnqueueOptions) (queue.TaskInfo, error) {
+	s.taskTypes = append(s.taskTypes, taskType)
+	s.options = append(s.options, opts)
+	input, err := operationlogjob.DecodeWriteTaskPayload(payload)
+	if err != nil {
+		s.decodeErr = err
+		return queue.TaskInfo{}, err
+	}
+	s.logs = append(s.logs, input)
+	return queue.TaskInfo{ID: "task_w2_operation_log", Queue: opts.Queue, Type: taskType}, nil
+}
+
+func assertW2OperationLog(t *testing.T, logInput port.OperationLogInput, resourceID string, scopeSystemAccountID string, mode string) {
+	t.Helper()
+	if logInput.OperationKey != "accounts.update_tags" ||
+		logInput.Module != "accounts" ||
+		logInput.Action != "update_tags" ||
+		logInput.ResourceType != "account" ||
+		logInput.ResourceID != resourceID ||
+		logInput.OperationScopeSystemAccountID != scopeSystemAccountID ||
+		logInput.Mode != mode ||
+		logInput.Summary == "" {
+		t.Fatalf("operation log input = %+v", logInput)
+	}
+	if logInput.StatusCode == nil || *logInput.StatusCode != http.StatusOK {
+		t.Fatalf("operation log status = %+v, want 200", logInput.StatusCode)
+	}
+	if len(logInput.Changes) != 1 || logInput.Changes[0].Field != "tags" || logInput.Changes[0].Label != "标签" {
+		t.Fatalf("operation log changes = %+v", logInput.Changes)
+	}
 }

@@ -1,17 +1,24 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
+	"juhe-ai/backend-go/internal/config"
+	operationlogjob "juhe-ai/backend-go/internal/jobs/operationlog"
 	"juhe-ai/backend-go/internal/modules/managementaccounts"
 	"juhe-ai/backend-go/internal/modules/managementauth"
+	"juhe-ai/backend-go/internal/store/port"
 )
 
 type managementAccountOptionScope int
@@ -28,7 +35,7 @@ type managementAccountOptionService interface {
 type managementAccountTagService interface {
 	Tags(r *http.Request, input managementaccounts.TagListInput) ([]managementaccounts.Tag, error)
 	DeleteTag(r *http.Request, input managementaccounts.TagDeleteInput) (bool, error)
-	UpdateTags(r *http.Request, input managementaccounts.TagUpdateInput) (managementaccounts.AccountSummary, error)
+	UpdateTags(r *http.Request, input managementaccounts.TagUpdateInput) (managementaccounts.TagUpdateResult, error)
 }
 
 type managementAccountOptionServiceAdapter struct {
@@ -47,8 +54,24 @@ func (s managementAccountOptionServiceAdapter) DeleteTag(r *http.Request, input 
 	return s.service.DeleteTag(r.Context(), input)
 }
 
-func (s managementAccountOptionServiceAdapter) UpdateTags(r *http.Request, input managementaccounts.TagUpdateInput) (managementaccounts.AccountSummary, error) {
+func (s managementAccountOptionServiceAdapter) UpdateTags(r *http.Request, input managementaccounts.TagUpdateInput) (managementaccounts.TagUpdateResult, error) {
 	return s.service.UpdateTags(r.Context(), input)
+}
+
+type ManagementOperationLogOptions struct {
+	Config   config.Config
+	Logger   *slog.Logger
+	Client   operationlogjob.EnqueueClient
+	Now      func() time.Time
+	NewLogID func() string
+}
+
+type managementOperationLogOptions struct {
+	logger   *slog.Logger
+	client   operationlogjob.EnqueueClient
+	clientIP clientIPResolver
+	now      func() time.Time
+	newLogID func() string
 }
 
 func NewManagementAccountOptionsHandler(service *managementaccounts.Service) http.Handler {
@@ -81,6 +104,22 @@ func NewManagementAccountTagUpdateHandler(service *managementaccounts.Service) h
 
 func NewManagementMyAccountTagUpdateHandler(service *managementaccounts.Service) http.Handler {
 	return newManagementAccountTagUpdateHandler(managementAccountOptionServiceAdapter{service: service}, managementAccountScopeSelf)
+}
+
+func NewManagementAccountTagUpdateHandlerWithOperationLog(service *managementaccounts.Service, opts ManagementOperationLogOptions) http.Handler {
+	return newManagementAccountTagUpdateHandler(
+		managementAccountOptionServiceAdapter{service: service},
+		managementAccountScopeAdmin,
+		newManagementOperationLogOptions(opts),
+	)
+}
+
+func NewManagementMyAccountTagUpdateHandlerWithOperationLog(service *managementaccounts.Service, opts ManagementOperationLogOptions) http.Handler {
+	return newManagementAccountTagUpdateHandler(
+		managementAccountOptionServiceAdapter{service: service},
+		managementAccountScopeSelf,
+		newManagementOperationLogOptions(opts),
+	)
 }
 
 func newManagementAccountOptionsHandler(service managementAccountOptionService, scope managementAccountOptionScope) http.Handler {
@@ -157,7 +196,8 @@ func newManagementAccountTagDeleteHandler(service managementAccountTagService, s
 	})
 }
 
-func newManagementAccountTagUpdateHandler(service managementAccountTagService, scope managementAccountOptionScope) http.Handler {
+func newManagementAccountTagUpdateHandler(service managementAccountTagService, scope managementAccountOptionScope, logOptions ...managementOperationLogOptions) http.Handler {
+	operationLogs := effectiveManagementOperationLogOptions(logOptions)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authContext, ok := ManagementAuthContextFromRequest(r)
 		if !ok || strings.TrimSpace(authContext.SystemAccountID) == "" {
@@ -183,7 +223,7 @@ func newManagementAccountTagUpdateHandler(service managementAccountTagService, s
 			writeMessageError(w, http.StatusBadRequest, "账户标签参数无效")
 			return
 		}
-		account, err := service.UpdateTags(r, managementaccounts.TagUpdateInput{
+		result, err := service.UpdateTags(r, managementaccounts.TagUpdateInput{
 			AccountID:       chi.URLParam(r, "id"),
 			SystemAccountID: scopeInput.SystemAccountID,
 			Tags:            *payload.Tags,
@@ -200,7 +240,8 @@ func newManagementAccountTagUpdateHandler(service managementAccountTagService, s
 			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
 			return
 		}
-		writeData(w, http.StatusOK, account)
+		recordAccountTagUpdateOperationLog(r, authContext, scope, scopeInput.SystemAccountID, result, operationLogs)
+		writeData(w, http.StatusOK, result.Account)
 	})
 }
 
@@ -261,4 +302,126 @@ func parseManagementAccountOptionListQuery(values url.Values) managementaccounts
 		Status:       strings.Join(managementTextListQueryValue(values, "status", 100), ","),
 		Schedulable:  firstManagementQueryText(values, "schedulable"),
 	}
+}
+
+func newManagementOperationLogOptions(opts ManagementOperationLogOptions) managementOperationLogOptions {
+	now := opts.Now
+	if now == nil {
+		now = time.Now
+	}
+	newLogID := opts.NewLogID
+	if newLogID == nil {
+		newLogID = func() string {
+			return "oplog_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+		}
+	}
+	return managementOperationLogOptions{
+		logger:   opts.Logger,
+		client:   opts.Client,
+		clientIP: newClientIPResolver(opts.Config),
+		now:      now,
+		newLogID: newLogID,
+	}
+}
+
+func effectiveManagementOperationLogOptions(values []managementOperationLogOptions) managementOperationLogOptions {
+	if len(values) == 0 {
+		return managementOperationLogOptions{}
+	}
+	return values[0]
+}
+
+func recordAccountTagUpdateOperationLog(
+	r *http.Request,
+	authContext managementauth.Context,
+	scope managementAccountOptionScope,
+	scopeSystemAccountID string,
+	result managementaccounts.TagUpdateResult,
+	opts managementOperationLogOptions,
+) {
+	if opts.client == nil {
+		return
+	}
+	now := opts.now
+	if now == nil {
+		now = time.Now
+	}
+	newLogID := opts.newLogID
+	if newLogID == nil {
+		newLogID = func() string {
+			return "oplog_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+		}
+	}
+	ownerSystemAccountID := firstNonEmptyText(
+		scopeSystemAccountID,
+		result.Account.SystemAccountID,
+		result.Account.OwnerSystemAccountID,
+		authContext.SystemAccountID,
+	)
+	mode := "self"
+	if scope == managementAccountScopeAdmin {
+		mode = "admin"
+	}
+	statusCode := http.StatusOK
+	input := port.OperationLogInput{
+		ID:                            newLogID(),
+		TraceID:                       requestIDFromContext(r.Context()),
+		ActorSystemAccountID:          authContext.SystemAccountID,
+		ActorUsername:                 authContext.Username,
+		ActorDisplayName:              authContext.DisplayName,
+		ActorRole:                     authContext.Role,
+		OperationScopeSystemAccountID: ownerSystemAccountID,
+		Mode:                          mode,
+		Module:                        "accounts",
+		Action:                        "update_tags",
+		OperationKey:                  "accounts.update_tags",
+		ResourceType:                  "account",
+		ResourceID:                    result.Account.ID,
+		ResourceName:                  result.Account.Name,
+		Summary:                       "更新账户标签：" + result.Account.Name,
+		DetailLevel:                   "full",
+		VisibilityScope:               "targeted",
+		Changes: []port.OperationLogChange{
+			{
+				Field:  "tags",
+				Label:  "标签",
+				Before: result.PreviousTags,
+				After:  result.Account.Tags,
+			},
+		},
+		Method:     r.Method,
+		Path:       r.URL.Path,
+		StatusCode: &statusCode,
+		ClientIP:   opts.clientIP.FromRequest(r),
+		UserAgent:  r.UserAgent(),
+		Viewers: []port.OperationLogViewerInput{
+			{
+				SystemAccountID:  ownerSystemAccountID,
+				VisibilityReason: "resource_owner",
+				DetailLevel:      "full",
+			},
+		},
+		CreatedAt: now().UTC(),
+	}
+	enqueueCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+	defer cancel()
+	if _, err := operationlogjob.EnqueueWrite(enqueueCtx, opts.client, input); err != nil && opts.logger != nil {
+		opts.logger.Warn("管理端操作日志入队失败",
+			slog.String("event", "operation_log_enqueue_failed"),
+			slog.String("operation_key", input.OperationKey),
+			slog.String("resource_id", input.ResourceID),
+			slog.String("request_id", input.TraceID),
+			slog.Any("error", err),
+		)
+	}
+}
+
+func firstNonEmptyText(values ...string) string {
+	for _, value := range values {
+		text := strings.TrimSpace(value)
+		if text != "" {
+			return text
+		}
+	}
+	return ""
 }

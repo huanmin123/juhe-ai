@@ -366,6 +366,11 @@ type ManagementAccountTagUpdateInput struct {
 	Tags            []ManagementAccountTagUpsertInput
 }
 
+type ManagementAccountTagUpdateResult struct {
+	Account      ManagementAccountSummary
+	PreviousTags []ManagementAccountTag
+}
+
 type ManagementAccountSummary struct {
 	ID                                        string
 	SystemAccountID                           string
@@ -408,5 +413,5 @@ type ManagementAccountOptionReader interface {
 	ListManagementAccountOptions(ctx context.Context, input ManagementAccountOptionListInput) ([]ManagementAccountOption, error)
 	ListManagementAccountTags(ctx context.Context, input ManagementAccountTagListInput) ([]ManagementAccountTag, error)
 	DeleteManagementAccountTag(ctx context.Context, input ManagementAccountTagDeleteInput) (bool, error)
-	UpdateManagementAccountTags(ctx context.Context, input ManagementAccountTagUpdateInput) (ManagementAccountSummary, bool, error)
+	UpdateManagementAccountTags(ctx context.Context, input ManagementAccountTagUpdateInput) (ManagementAccountTagUpdateResult, bool, error)
 }

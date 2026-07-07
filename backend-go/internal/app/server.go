@@ -74,9 +74,16 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	if publicAPILogQueue != nil {
 		defer func() { _ = publicAPILogQueue.Close() }()
 	}
+	managementOperationLogQueue, err := newManagementOperationLogQueue(cfg)
+	if err != nil {
+		return err
+	}
+	if managementOperationLogQueue != nil {
+		defer func() { _ = managementOperationLogQueue.Close() }()
+	}
 
 	publicSettingsService := publicsettings.NewService(store)
-	managementHandlers := newManagementAPIHandler(cfg, store)
+	managementHandlers := newManagementAPIHandler(cfg, store, managementOperationLogQueue, logger)
 	router := httpapi.NewRouter(httpapi.RouterOptions{
 		Config:                                          cfg,
 		Logger:                                          logger,
@@ -172,7 +179,12 @@ type managementAPIHandlers struct {
 	MyAccountTagUpdateHandler             http.Handler
 }
 
-func newManagementAPIHandler(cfg config.Config, store *postgresstore.Store) managementAPIHandlers {
+func newManagementAPIHandler(
+	cfg config.Config,
+	store *postgresstore.Store,
+	operationLogQueue operationLogEnqueueClient,
+	logger *slog.Logger,
+) managementAPIHandlers {
 	if !cfg.ManagementAPIEnabled {
 		return managementAPIHandlers{}
 	}
@@ -185,6 +197,11 @@ func newManagementAPIHandler(cfg config.Config, store *postgresstore.Store) mana
 	accountService := managementaccounts.NewService(store)
 	systemAccountService := managementsystemaccounts.NewService(store)
 	authorizationOptionService := managementauthorizationoptions.NewService(store)
+	operationLogOptions := httpapi.ManagementOperationLogOptions{
+		Config: cfg,
+		Logger: logger,
+		Client: operationLogQueue,
+	}
 	return managementAPIHandlers{
 		AuthMiddleware:                        httpapi.NewManagementAPIAuthMiddleware(authenticator),
 		ProxyOptionsHandler:                   httpapi.NewManagementProxyOptionsHandler(proxyService),
@@ -211,9 +228,29 @@ func newManagementAPIHandler(cfg config.Config, store *postgresstore.Store) mana
 		MyAccountTagsHandler:                  httpapi.NewManagementMyAccountTagsHandler(accountService),
 		AccountTagDeleteHandler:               httpapi.NewManagementAccountTagDeleteHandler(accountService),
 		MyAccountTagDeleteHandler:             httpapi.NewManagementMyAccountTagDeleteHandler(accountService),
-		AccountTagUpdateHandler:               httpapi.NewManagementAccountTagUpdateHandler(accountService),
-		MyAccountTagUpdateHandler:             httpapi.NewManagementMyAccountTagUpdateHandler(accountService),
+		AccountTagUpdateHandler:               httpapi.NewManagementAccountTagUpdateHandlerWithOperationLog(accountService, operationLogOptions),
+		MyAccountTagUpdateHandler:             httpapi.NewManagementMyAccountTagUpdateHandlerWithOperationLog(accountService, operationLogOptions),
 	}
+}
+
+type operationLogEnqueueClient interface {
+	Enqueue(ctx context.Context, taskType string, payload []byte, opts queue.EnqueueOptions) (queue.TaskInfo, error)
+}
+
+func newManagementOperationLogQueue(cfg config.Config) (*queue.Client, error) {
+	if !cfg.ManagementAPIEnabled {
+		return nil, nil
+	}
+	redisOpts, err := queue.ParseRedisURL(cfg.RedisQueueURL)
+	if err != nil {
+		return nil, fmt.Errorf("JUHE_AI_REDIS_QUEUE_URL 无效: %w", err)
+	}
+	logQueue := queue.NewClient(redisOpts)
+	if err := logQueue.Ping(); err != nil {
+		_ = logQueue.Close()
+		return nil, fmt.Errorf("操作日志队列不可用: %w", err)
+	}
+	return logQueue, nil
 }
 
 func newPublicAPIHandler(

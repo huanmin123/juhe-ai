@@ -45,10 +45,11 @@ func RunIngestWorker(ctx context.Context, cfg config.Config, logger *slog.Logger
 		return err
 	}
 
-	logger.Info("Go 后端 ingest worker 启动", slog.String("queue", "public-api-logs"))
+	logger.Info("Go 后端 ingest worker 启动", slog.String("queue", "public-api-logs,operation-logs"))
 	return worker.RunIngest(ctx, worker.IngestOptions{
 		Redis:             redisOpts,
 		PublicAPILogStore: store,
+		OperationLogStore: store,
 		ShutdownTimeout:   cfg.ShutdownTimeout,
 		LogLevel:          cfg.LogLevel,
 	})
