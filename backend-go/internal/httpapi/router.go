@@ -15,28 +15,30 @@ import (
 )
 
 type RouterOptions struct {
-	Config                                  config.Config
-	Logger                                  *slog.Logger
-	PublicSettingsService                   *publicsettings.Service
-	SystemAPIIPRateLimitReader              port.SystemAPIIPRateLimitReader
-	SystemAPIIPReadRateLimiter              SystemAPIIPReadRateLimiter
-	PublicAPIHandler                        http.Handler
-	ManagementAPIAuthMiddleware             func(http.Handler) http.Handler
-	ManagementProxyOptionsHandler           http.Handler
-	ManagementSystemAccountOptionsHandler   http.Handler
-	ManagementProviderOptionsHandler        http.Handler
-	ManagementProviderModelOptionsHandler   http.Handler
-	ManagementProviderModelsHandler         http.Handler
-	ManagementRouteStrategyOptionsHandler   http.Handler
-	ManagementMyRouteStrategyOptionsHandler http.Handler
-	ManagementGroupOptionsHandler           http.Handler
-	ManagementMyGroupOptionsHandler         http.Handler
-	ManagementGroupAccountOptionsHandler    http.Handler
-	ManagementMyGroupAccountOptionsHandler  http.Handler
-	ManagementAccountOptionsHandler         http.Handler
-	ManagementMyAccountOptionsHandler       http.Handler
-	ManagementAccountTagsHandler            http.Handler
-	ManagementMyAccountTagsHandler          http.Handler
+	Config                                          config.Config
+	Logger                                          *slog.Logger
+	PublicSettingsService                           *publicsettings.Service
+	SystemAPIIPRateLimitReader                      port.SystemAPIIPRateLimitReader
+	SystemAPIIPReadRateLimiter                      SystemAPIIPReadRateLimiter
+	PublicAPIHandler                                http.Handler
+	ManagementAPIAuthMiddleware                     func(http.Handler) http.Handler
+	ManagementProxyOptionsHandler                   http.Handler
+	ManagementSystemAccountOptionsHandler           http.Handler
+	ManagementAuthorizationGranteeAccountsHandler   http.Handler
+	ManagementMyAuthorizationGranteeAccountsHandler http.Handler
+	ManagementProviderOptionsHandler                http.Handler
+	ManagementProviderModelOptionsHandler           http.Handler
+	ManagementProviderModelsHandler                 http.Handler
+	ManagementRouteStrategyOptionsHandler           http.Handler
+	ManagementMyRouteStrategyOptionsHandler         http.Handler
+	ManagementGroupOptionsHandler                   http.Handler
+	ManagementMyGroupOptionsHandler                 http.Handler
+	ManagementGroupAccountOptionsHandler            http.Handler
+	ManagementMyGroupAccountOptionsHandler          http.Handler
+	ManagementAccountOptionsHandler                 http.Handler
+	ManagementMyAccountOptionsHandler               http.Handler
+	ManagementAccountTagsHandler                    http.Handler
+	ManagementMyAccountTagsHandler                  http.Handler
 }
 
 func NewRouter(opts RouterOptions) http.Handler {
@@ -68,6 +70,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementProxyOptionsHandler == nil &&
 				opts.ManagementSystemAccountOptionsHandler == nil &&
+				opts.ManagementAuthorizationGranteeAccountsHandler == nil &&
+				opts.ManagementMyAuthorizationGranteeAccountsHandler == nil &&
 				opts.ManagementProviderOptionsHandler == nil &&
 				opts.ManagementProviderModelOptionsHandler == nil &&
 				opts.ManagementProviderModelsHandler == nil &&
@@ -88,6 +92,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementSystemAccountOptionsHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/system-accounts/options", opts.ManagementSystemAccountOptionsHandler.ServeHTTP)
+			}
+			if opts.ManagementAuthorizationGranteeAccountsHandler != nil {
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/authorization-options/grantee-accounts", opts.ManagementAuthorizationGranteeAccountsHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAuthorizationGranteeAccountsHandler != nil {
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/my-authorization-options/grantee-accounts", opts.ManagementMyAuthorizationGranteeAccountsHandler.ServeHTTP)
 			}
 			if opts.ManagementProviderOptionsHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/providers/options", opts.ManagementProviderOptionsHandler.ServeHTTP)

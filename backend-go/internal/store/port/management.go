@@ -55,6 +55,23 @@ type ManagementSystemAccountOptionReader interface {
 	ListManagementSystemAccountOptions(ctx context.Context, input ManagementSystemAccountOptionListInput) ([]ManagementSystemAccountOption, error)
 }
 
+type ManagementAuthorizationGranteeAccountOption struct {
+	ID          string
+	Username    string
+	DisplayName string
+	Status      string
+}
+
+type ManagementAuthorizationPrincipalOptionListInput struct {
+	IDs     []string
+	Keyword string
+	Limit   int
+}
+
+type ManagementAuthorizationOptionReader interface {
+	ListManagementAuthorizationGranteeAccounts(ctx context.Context, input ManagementAuthorizationPrincipalOptionListInput) ([]ManagementAuthorizationGranteeAccountOption, error)
+}
+
 type ManagementProviderEndpointFamily struct {
 	Code        string
 	Name        string

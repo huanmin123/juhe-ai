@@ -13,6 +13,7 @@ import (
 	"juhe-ai/backend-go/internal/jobs/queue"
 	"juhe-ai/backend-go/internal/modules/managementaccounts"
 	"juhe-ai/backend-go/internal/modules/managementauth"
+	"juhe-ai/backend-go/internal/modules/managementauthorizationoptions"
 	"juhe-ai/backend-go/internal/modules/managementgroups"
 	"juhe-ai/backend-go/internal/modules/managementprovidermodels"
 	"juhe-ai/backend-go/internal/modules/managementproviders"
@@ -77,28 +78,30 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	publicSettingsService := publicsettings.NewService(store)
 	managementHandlers := newManagementAPIHandler(cfg, store)
 	router := httpapi.NewRouter(httpapi.RouterOptions{
-		Config:                                  cfg,
-		Logger:                                  logger,
-		PublicSettingsService:                   &publicSettingsService,
-		SystemAPIIPRateLimitReader:              store,
-		SystemAPIIPReadRateLimiter:              httpapi.NewRedisSystemAPIIPReadRateLimiter(stateRedis),
-		PublicAPIHandler:                        publicAPIHandler,
-		ManagementAPIAuthMiddleware:             managementHandlers.AuthMiddleware,
-		ManagementProxyOptionsHandler:           managementHandlers.ProxyOptionsHandler,
-		ManagementSystemAccountOptionsHandler:   managementHandlers.SystemAccountOptionsHandler,
-		ManagementProviderOptionsHandler:        managementHandlers.ProviderOptionsHandler,
-		ManagementProviderModelOptionsHandler:   managementHandlers.ProviderModelOptionsHandler,
-		ManagementProviderModelsHandler:         managementHandlers.ProviderModelsHandler,
-		ManagementRouteStrategyOptionsHandler:   managementHandlers.RouteStrategyOptionsHandler,
-		ManagementMyRouteStrategyOptionsHandler: managementHandlers.MyRouteStrategyOptionsHandler,
-		ManagementGroupOptionsHandler:           managementHandlers.GroupOptionsHandler,
-		ManagementMyGroupOptionsHandler:         managementHandlers.MyGroupOptionsHandler,
-		ManagementGroupAccountOptionsHandler:    managementHandlers.GroupAccountOptionsHandler,
-		ManagementMyGroupAccountOptionsHandler:  managementHandlers.MyGroupAccountOptionsHandler,
-		ManagementAccountOptionsHandler:         managementHandlers.AccountOptionsHandler,
-		ManagementMyAccountOptionsHandler:       managementHandlers.MyAccountOptionsHandler,
-		ManagementAccountTagsHandler:            managementHandlers.AccountTagsHandler,
-		ManagementMyAccountTagsHandler:          managementHandlers.MyAccountTagsHandler,
+		Config:                                          cfg,
+		Logger:                                          logger,
+		PublicSettingsService:                           &publicSettingsService,
+		SystemAPIIPRateLimitReader:                      store,
+		SystemAPIIPReadRateLimiter:                      httpapi.NewRedisSystemAPIIPReadRateLimiter(stateRedis),
+		PublicAPIHandler:                                publicAPIHandler,
+		ManagementAPIAuthMiddleware:                     managementHandlers.AuthMiddleware,
+		ManagementProxyOptionsHandler:                   managementHandlers.ProxyOptionsHandler,
+		ManagementSystemAccountOptionsHandler:           managementHandlers.SystemAccountOptionsHandler,
+		ManagementAuthorizationGranteeAccountsHandler:   managementHandlers.AuthorizationGranteeAccountsHandler,
+		ManagementMyAuthorizationGranteeAccountsHandler: managementHandlers.MyAuthorizationGranteeAccountsHandler,
+		ManagementProviderOptionsHandler:                managementHandlers.ProviderOptionsHandler,
+		ManagementProviderModelOptionsHandler:           managementHandlers.ProviderModelOptionsHandler,
+		ManagementProviderModelsHandler:                 managementHandlers.ProviderModelsHandler,
+		ManagementRouteStrategyOptionsHandler:           managementHandlers.RouteStrategyOptionsHandler,
+		ManagementMyRouteStrategyOptionsHandler:         managementHandlers.MyRouteStrategyOptionsHandler,
+		ManagementGroupOptionsHandler:                   managementHandlers.GroupOptionsHandler,
+		ManagementMyGroupOptionsHandler:                 managementHandlers.MyGroupOptionsHandler,
+		ManagementGroupAccountOptionsHandler:            managementHandlers.GroupAccountOptionsHandler,
+		ManagementMyGroupAccountOptionsHandler:          managementHandlers.MyGroupAccountOptionsHandler,
+		ManagementAccountOptionsHandler:                 managementHandlers.AccountOptionsHandler,
+		ManagementMyAccountOptionsHandler:               managementHandlers.MyAccountOptionsHandler,
+		ManagementAccountTagsHandler:                    managementHandlers.AccountTagsHandler,
+		ManagementMyAccountTagsHandler:                  managementHandlers.MyAccountTagsHandler,
 	})
 
 	server := &http.Server{
@@ -131,22 +134,24 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 }
 
 type managementAPIHandlers struct {
-	AuthMiddleware                func(http.Handler) http.Handler
-	ProxyOptionsHandler           http.Handler
-	SystemAccountOptionsHandler   http.Handler
-	ProviderOptionsHandler        http.Handler
-	ProviderModelOptionsHandler   http.Handler
-	ProviderModelsHandler         http.Handler
-	RouteStrategyOptionsHandler   http.Handler
-	MyRouteStrategyOptionsHandler http.Handler
-	GroupOptionsHandler           http.Handler
-	MyGroupOptionsHandler         http.Handler
-	GroupAccountOptionsHandler    http.Handler
-	MyGroupAccountOptionsHandler  http.Handler
-	AccountOptionsHandler         http.Handler
-	MyAccountOptionsHandler       http.Handler
-	AccountTagsHandler            http.Handler
-	MyAccountTagsHandler          http.Handler
+	AuthMiddleware                        func(http.Handler) http.Handler
+	ProxyOptionsHandler                   http.Handler
+	SystemAccountOptionsHandler           http.Handler
+	AuthorizationGranteeAccountsHandler   http.Handler
+	MyAuthorizationGranteeAccountsHandler http.Handler
+	ProviderOptionsHandler                http.Handler
+	ProviderModelOptionsHandler           http.Handler
+	ProviderModelsHandler                 http.Handler
+	RouteStrategyOptionsHandler           http.Handler
+	MyRouteStrategyOptionsHandler         http.Handler
+	GroupOptionsHandler                   http.Handler
+	MyGroupOptionsHandler                 http.Handler
+	GroupAccountOptionsHandler            http.Handler
+	MyGroupAccountOptionsHandler          http.Handler
+	AccountOptionsHandler                 http.Handler
+	MyAccountOptionsHandler               http.Handler
+	AccountTagsHandler                    http.Handler
+	MyAccountTagsHandler                  http.Handler
 }
 
 func newManagementAPIHandler(cfg config.Config, store *postgresstore.Store) managementAPIHandlers {
@@ -161,23 +166,26 @@ func newManagementAPIHandler(cfg config.Config, store *postgresstore.Store) mana
 	groupService := managementgroups.NewService(store)
 	accountService := managementaccounts.NewService(store)
 	systemAccountService := managementsystemaccounts.NewService(store)
+	authorizationOptionService := managementauthorizationoptions.NewService(store)
 	return managementAPIHandlers{
-		AuthMiddleware:                httpapi.NewManagementAPIAuthMiddleware(authenticator),
-		ProxyOptionsHandler:           httpapi.NewManagementProxyOptionsHandler(proxyService),
-		SystemAccountOptionsHandler:   httpapi.NewManagementSystemAccountOptionsHandler(systemAccountService),
-		ProviderOptionsHandler:        httpapi.NewManagementProviderOptionsHandler(providerService),
-		ProviderModelOptionsHandler:   httpapi.NewManagementProviderModelOptionsHandler(providerModelService),
-		ProviderModelsHandler:         httpapi.NewManagementProviderModelsHandler(providerModelService),
-		RouteStrategyOptionsHandler:   httpapi.NewManagementRouteStrategyOptionsHandler(routeStrategyService),
-		MyRouteStrategyOptionsHandler: httpapi.NewManagementMyRouteStrategyOptionsHandler(routeStrategyService),
-		GroupOptionsHandler:           httpapi.NewManagementGroupOptionsHandler(groupService),
-		MyGroupOptionsHandler:         httpapi.NewManagementMyGroupOptionsHandler(groupService),
-		GroupAccountOptionsHandler:    httpapi.NewManagementGroupAccountOptionsHandler(groupService),
-		MyGroupAccountOptionsHandler:  httpapi.NewManagementMyGroupAccountOptionsHandler(groupService),
-		AccountOptionsHandler:         httpapi.NewManagementAccountOptionsHandler(accountService),
-		MyAccountOptionsHandler:       httpapi.NewManagementMyAccountOptionsHandler(accountService),
-		AccountTagsHandler:            httpapi.NewManagementAccountTagsHandler(accountService),
-		MyAccountTagsHandler:          httpapi.NewManagementMyAccountTagsHandler(accountService),
+		AuthMiddleware:                        httpapi.NewManagementAPIAuthMiddleware(authenticator),
+		ProxyOptionsHandler:                   httpapi.NewManagementProxyOptionsHandler(proxyService),
+		SystemAccountOptionsHandler:           httpapi.NewManagementSystemAccountOptionsHandler(systemAccountService),
+		AuthorizationGranteeAccountsHandler:   httpapi.NewManagementAuthorizationGranteeAccountsHandler(authorizationOptionService),
+		MyAuthorizationGranteeAccountsHandler: httpapi.NewManagementMyAuthorizationGranteeAccountsHandler(authorizationOptionService),
+		ProviderOptionsHandler:                httpapi.NewManagementProviderOptionsHandler(providerService),
+		ProviderModelOptionsHandler:           httpapi.NewManagementProviderModelOptionsHandler(providerModelService),
+		ProviderModelsHandler:                 httpapi.NewManagementProviderModelsHandler(providerModelService),
+		RouteStrategyOptionsHandler:           httpapi.NewManagementRouteStrategyOptionsHandler(routeStrategyService),
+		MyRouteStrategyOptionsHandler:         httpapi.NewManagementMyRouteStrategyOptionsHandler(routeStrategyService),
+		GroupOptionsHandler:                   httpapi.NewManagementGroupOptionsHandler(groupService),
+		MyGroupOptionsHandler:                 httpapi.NewManagementMyGroupOptionsHandler(groupService),
+		GroupAccountOptionsHandler:            httpapi.NewManagementGroupAccountOptionsHandler(groupService),
+		MyGroupAccountOptionsHandler:          httpapi.NewManagementMyGroupAccountOptionsHandler(groupService),
+		AccountOptionsHandler:                 httpapi.NewManagementAccountOptionsHandler(accountService),
+		MyAccountOptionsHandler:               httpapi.NewManagementMyAccountOptionsHandler(accountService),
+		AccountTagsHandler:                    httpapi.NewManagementAccountTagsHandler(accountService),
+		MyAccountTagsHandler:                  httpapi.NewManagementMyAccountTagsHandler(accountService),
 	}
 }
 
