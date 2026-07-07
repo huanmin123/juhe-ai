@@ -348,13 +348,10 @@ func TestManagementAccountTagDeleteHandlerRedactsUnexpectedErrors(t *testing.T) 
 func TestManagementAccountTagUpdateHandlerRequiresAdminAndParsesScope(t *testing.T) {
 	service := &managementAccountOptionServiceStub{
 		updateTagsResult: managementaccounts.TagUpdateResult{
-			Account: managementaccounts.AccountSummary{
-				ID:           "acct_main",
-				Name:         "主账号",
-				ProviderCode: "gpt",
-				Type:         "api_key",
-				Status:       "active",
-				Tags:         []managementaccounts.Tag{{ID: "tag_main", Name: "主力"}},
+			Account: managementaccounts.TagUpdateAccount{
+				ID:   "acct_main",
+				Name: "主账号",
+				Tags: []managementaccounts.TagUpdateTag{{ID: "tag_main", Name: "主力"}},
 			},
 		},
 	}
@@ -377,7 +374,7 @@ func TestManagementAccountTagUpdateHandlerRequiresAdminAndParsesScope(t *testing
 		t.Fatalf("update tags input = %+v, called = %v", service.updateTagsInput, service.updateTagsCalled)
 	}
 	var body struct {
-		Data managementaccounts.AccountSummary `json:"data"`
+		Data managementaccounts.TagUpdateAccount `json:"data"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -408,7 +405,7 @@ func TestManagementAccountTagUpdateHandlerRejectsOrdinaryUser(t *testing.T) {
 func TestManagementMyAccountTagUpdateHandlerForcesSelfScope(t *testing.T) {
 	service := &managementAccountOptionServiceStub{
 		updateTagsResult: managementaccounts.TagUpdateResult{
-			Account: managementaccounts.AccountSummary{ID: "acct_main", Name: "主账号"},
+			Account: managementaccounts.TagUpdateAccount{ID: "acct_main", Name: "主账号"},
 		},
 	}
 	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
@@ -432,17 +429,14 @@ func TestManagementAccountTagUpdateHandlerEnqueuesOperationLog(t *testing.T) {
 	queueStub := &operationLogQueueStub{}
 	service := &managementAccountOptionServiceStub{
 		updateTagsResult: managementaccounts.TagUpdateResult{
-			Account: managementaccounts.AccountSummary{
+			Account: managementaccounts.TagUpdateAccount{
 				ID:                   "acct_main",
 				SystemAccountID:      "sys_user",
 				OwnerSystemAccountID: "sys_user",
 				Name:                 "主账号",
-				ProviderCode:         "openai",
-				Type:                 "api_key",
-				Status:               "active",
-				Tags:                 []managementaccounts.Tag{{ID: "tag_new", Name: "主力"}},
+				Tags:                 []managementaccounts.TagUpdateTag{{ID: "tag_new", Name: "主力"}},
 			},
-			PreviousTags: []managementaccounts.Tag{{ID: "tag_old", Name: "旧标签"}},
+			PreviousTags: []managementaccounts.TagUpdateTag{{ID: "tag_old", Name: "旧标签"}},
 		},
 	}
 	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
@@ -518,6 +512,17 @@ func TestManagementAccountTagUpdateHandlerEnqueuesOperationLog(t *testing.T) {
 		logInput.Changes[0].Label != "标签" {
 		t.Fatalf("changes = %+v", logInput.Changes)
 	}
+	before, err := json.Marshal(logInput.Changes[0].Before)
+	if err != nil {
+		t.Fatalf("marshal before change: %v", err)
+	}
+	after, err := json.Marshal(logInput.Changes[0].After)
+	if err != nil {
+		t.Fatalf("marshal after change: %v", err)
+	}
+	if string(before) != `[{"id":"tag_old","name":"旧标签"}]` || string(after) != `[{"id":"tag_new","name":"主力"}]` {
+		t.Fatalf("change values before=%s after=%s", before, after)
+	}
 	if len(logInput.Viewers) != 1 ||
 		logInput.Viewers[0].SystemAccountID != "sys_user" ||
 		logInput.Viewers[0].VisibilityReason != "resource_owner" {
@@ -528,7 +533,7 @@ func TestManagementAccountTagUpdateHandlerEnqueuesOperationLog(t *testing.T) {
 func TestManagementAccountTagUpdateHandlerKeepsSuccessWhenOperationLogQueueFails(t *testing.T) {
 	service := &managementAccountOptionServiceStub{
 		updateTagsResult: managementaccounts.TagUpdateResult{
-			Account: managementaccounts.AccountSummary{ID: "acct_main", SystemAccountID: "sys_user", Name: "主账号"},
+			Account: managementaccounts.TagUpdateAccount{ID: "acct_main", SystemAccountID: "sys_user", Name: "主账号"},
 		},
 	}
 	queueStub := &operationLogQueueStub{err: errors.New("redis down")}
@@ -599,7 +604,7 @@ func TestRouterRegistersW2ManagementAccountOptions(t *testing.T) {
 		options:          []managementaccounts.Option{{ID: "acct_main", OwnerSystemAccountID: "sys_admin", Name: "主账号", ProviderCode: "openai", Type: "api_key", Status: "active", AccessType: "owner"}},
 		tags:             []managementaccounts.Tag{{ID: "tag_main", Name: "主力"}},
 		deleteTagResult:  true,
-		updateTagsResult: managementaccounts.TagUpdateResult{Account: managementaccounts.AccountSummary{ID: "acct_main", Name: "主账号"}},
+		updateTagsResult: managementaccounts.TagUpdateResult{Account: managementaccounts.TagUpdateAccount{ID: "acct_main", Name: "主账号"}},
 	}
 	router := NewRouter(RouterOptions{
 		Config:                              config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},

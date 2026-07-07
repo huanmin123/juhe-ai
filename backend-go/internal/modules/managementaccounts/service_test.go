@@ -219,37 +219,18 @@ func TestServiceDeleteTagMapsInUseError(t *testing.T) {
 	}
 }
 
-func TestServiceUpdateTagsNormalizesInputAndMapsSummary(t *testing.T) {
-	expiresAt := time.Date(2026, 7, 9, 9, 0, 0, 0, time.UTC)
+func TestServiceUpdateTagsNormalizesInputAndMapsNarrowResult(t *testing.T) {
 	createdAt := time.Date(2026, 7, 9, 10, 0, 0, 0, time.UTC)
 	store := &accountOptionStoreStub{
-		updateSummary: port.ManagementAccountSummary{
-			ID:                        "acct_main",
-			SystemAccountID:           "sys_user",
-			SystemAccountName:         "用户",
-			OwnerSystemAccountID:      "sys_user",
-			OwnerSystemAccountName:    "用户",
-			ProviderCode:              "gpt",
-			ProviderProtocolProfileID: "profile_gpt_openai_v1",
-			ProtocolCode:              "openai",
-			ProtocolVersion:           "v1",
-			Name:                      "主账号",
-			Notes:                     "备注",
-			Type:                      "api_key",
-			Status:                    "active",
-			ConcurrencyLimit:          20,
-			Priority:                  3,
-			SuperPriorityEnabled:      true,
-			ClientCompatibility:       "openai_standard",
-			Schedulable:               true,
-			AvailabilityScheduleJSON:  `{"enabled":true}`,
-			AccountExpiresAt:          &expiresAt,
-			BoundGroupID:              "group_main",
-			BoundGroupName:            "默认分组",
-			AccessType:                "owner",
-			Tags:                      []port.ManagementAccountTag{{ID: "tag_main", Name: "主力", CreatedAt: createdAt, UpdatedAt: createdAt}},
+		updateAccount: port.ManagementAccountTagUpdateAccount{
+			ID:                   "acct_main",
+			SystemAccountID:      "sys_user",
+			OwnerSystemAccountID: "sys_user",
+			Name:                 "主账号",
+			Tags:                 []port.ManagementAccountTag{{ID: "tag_main", Name: "主力", CreatedAt: createdAt, UpdatedAt: createdAt}},
 		},
-		updateOK: true,
+		previousTags: []port.ManagementAccountTag{{ID: "tag_old", Name: "旧标签", CreatedAt: createdAt, UpdatedAt: createdAt}},
+		updateOK:     true,
 	}
 	service := NewService(store)
 
@@ -275,18 +256,15 @@ func TestServiceUpdateTagsNormalizesInputAndMapsSummary(t *testing.T) {
 		t.Fatalf("normalized tags = %+v", store.updateInput.Tags)
 	}
 	if summary.ID != "acct_main" ||
-		summary.Credentials == nil ||
 		summary.SystemAccountID != "sys_user" ||
-		summary.BoundGroupID != "group_main" ||
-		summary.AccountExpiresAt != expiresAt.Format(time.RFC3339Nano) ||
+		summary.OwnerSystemAccountID != "sys_user" ||
+		summary.Name != "主账号" ||
 		len(summary.Tags) != 1 ||
-		summary.Tags[0].Name != "主力" ||
-		summary.TodayUsage.TotalTokens != 0 ||
-		summary.Permissions != ownerPermissions() {
-		t.Fatalf("summary = %+v", summary)
+		summary.Tags[0] != (TagUpdateTag{ID: "tag_main", Name: "主力"}) {
+		t.Fatalf("tag update account = %+v", summary)
 	}
-	if summary.AvailabilitySchedule == nil {
-		t.Fatalf("availability schedule should be decoded: %+v", summary)
+	if len(result.PreviousTags) != 1 || result.PreviousTags[0] != (TagUpdateTag{ID: "tag_old", Name: "旧标签"}) {
+		t.Fatalf("previous tags = %+v", result.PreviousTags)
 	}
 }
 
@@ -342,7 +320,7 @@ type accountOptionStoreStub struct {
 	deleteResult  bool
 	deleteErr     error
 	updateInput   port.ManagementAccountTagUpdateInput
-	updateSummary port.ManagementAccountSummary
+	updateAccount port.ManagementAccountTagUpdateAccount
 	previousTags  []port.ManagementAccountTag
 	updateOK      bool
 	updateErr     error
@@ -368,7 +346,7 @@ func (s *accountOptionStoreStub) DeleteManagementAccountTag(_ context.Context, i
 func (s *accountOptionStoreStub) UpdateManagementAccountTags(_ context.Context, input port.ManagementAccountTagUpdateInput) (port.ManagementAccountTagUpdateResult, bool, error) {
 	s.updateInput = input
 	return port.ManagementAccountTagUpdateResult{
-		Account:      s.updateSummary,
+		Account:      s.updateAccount,
 		PreviousTags: s.previousTags,
 	}, s.updateOK, s.updateErr
 }

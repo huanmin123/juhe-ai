@@ -198,6 +198,11 @@ export interface AccountTagSummary {
   updatedAt?: string
 }
 
+export interface AccountTagsUpdateResult {
+  id: string
+  tags: Array<Pick<AccountTagSummary, 'id' | 'name'>>
+}
+
 export interface AccountSummary {
   id: string
   systemAccountId?: string

@@ -255,7 +255,7 @@ func updateManagementAccountTagsInTx(ctx context.Context, s *Store, input port.M
 		}
 	}
 
-	row, err := q.GetManagementAccountTagUpdateSummary(ctx, postgresqueries.GetManagementAccountTagUpdateSummaryParams{
+	row, err := q.GetManagementAccountTagUpdateAccount(ctx, postgresqueries.GetManagementAccountTagUpdateAccountParams{
 		AccountID:       accountID,
 		SystemAccountID: systemAccountID,
 	})
@@ -281,7 +281,7 @@ func updateManagementAccountTagsInTx(ctx context.Context, s *Store, input port.M
 	committed = true
 
 	return port.ManagementAccountTagUpdateResult{
-		Account:      managementAccountSummaryFromTagUpdateRow(row, tags),
+		Account:      managementAccountTagUpdateAccountFromRow(row, tags),
 		PreviousTags: managementAccountTagsFromRows(previousTagRows),
 	}, true, nil
 }
@@ -343,44 +343,16 @@ func accountOptionAccessType(value string) string {
 	return "owner"
 }
 
-func managementAccountSummaryFromTagUpdateRow(
-	row postgresqueries.GetManagementAccountTagUpdateSummaryRow,
+func managementAccountTagUpdateAccountFromRow(
+	row postgresqueries.GetManagementAccountTagUpdateAccountRow,
 	tags []postgresqueries.ListManagementAccountTagsForAccountRow,
-) port.ManagementAccountSummary {
-	return port.ManagementAccountSummary{
-		ID:                                   row.ID,
-		SystemAccountID:                      row.SystemAccountID,
-		SystemAccountName:                    row.SystemAccountName,
-		OwnerSystemAccountID:                 row.OwnerSystemAccountID,
-		OwnerSystemAccountName:               row.OwnerSystemAccountName,
-		ProviderCode:                         row.ProviderCode,
-		ProviderProtocolProfileID:            row.ProviderProtocolProfileID,
-		ProtocolCode:                         row.ProtocolCode,
-		ProtocolVersion:                      row.ProtocolVersion,
-		Name:                                 row.Name,
-		Notes:                                textValue(row.Notes),
-		Type:                                 row.Type,
-		Status:                               row.Status,
-		ConcurrencyLimit:                     int(row.ConcurrencyLimit),
-		Priority:                             int(row.Priority),
-		SuperPriorityEnabled:                 row.SuperPriorityEnabled,
-		FallbackEnabled:                      row.FallbackEnabled,
-		ClientCompatibility:                  row.ClientCompatibility,
-		Schedulable:                          row.Schedulable,
-		AvailabilityScheduleJSON:             textValue(row.AvailabilityScheduleJson),
-		AccountExpiresAt:                     timestamptzPtr(row.AccountExpiresAt),
-		CooldownUntil:                        timestamptzPtr(row.CooldownUntil),
-		LastErrorCode:                        textValue(row.LastErrorCode),
-		LastErrorMessage:                     textValue(row.LastErrorMessage),
-		BoundGroupID:                         row.BoundGroupID,
-		BoundGroupName:                       row.BoundGroupName,
-		AccessType:                           accountOptionAccessType(row.AccessType),
-		AccountAuthorizationID:               textValue(row.AccountAuthorizationID),
-		AuthorizationStatus:                  textValue(row.AuthorizationStatus),
-		AuthorizationExpiresAt:               timestamptzPtr(row.AuthorizationExpiresAt),
-		AuthorizationInstanceSourceAccountID: textValue(row.AuthorizationInstanceSourceAccountID),
-		AuthorizationInstanceOwnerSystemAccountID: textValue(row.AuthorizationInstanceOwnerSystemAccountID),
-		Tags: managementAccountTagsFromRows(tags),
+) port.ManagementAccountTagUpdateAccount {
+	return port.ManagementAccountTagUpdateAccount{
+		ID:                   row.ID,
+		SystemAccountID:      row.SystemAccountID,
+		OwnerSystemAccountID: row.OwnerSystemAccountID,
+		Name:                 row.Name,
+		Tags:                 managementAccountTagsFromRows(tags),
 	}
 }
 

@@ -189,7 +189,7 @@ func TestManagementAccountTagUpdateSQLScopesAndReplacesBindings(t *testing.T) {
 			t.Fatalf("account tag upsert query missing %q", want)
 		}
 	}
-	insertBindingSQL := querySection(t, sql, "-- name: InsertManagementAccountTagBindingForAccount :exec", "-- name: GetManagementAccountTagUpdateSummary :one")
+	insertBindingSQL := querySection(t, sql, "-- name: InsertManagementAccountTagBindingForAccount :exec", "-- name: GetManagementAccountTagUpdateAccount :one")
 	for _, want := range []string{
 		"INSERT INTO juhe_business.account_tag_bindings",
 		"sqlc.arg(account_id)::text",
@@ -199,6 +199,36 @@ func TestManagementAccountTagUpdateSQLScopesAndReplacesBindings(t *testing.T) {
 	} {
 		if !strings.Contains(insertBindingSQL, want) {
 			t.Fatalf("account tag binding insert query missing %q", want)
+		}
+	}
+	accountSQL := querySection(t, sql, "-- name: GetManagementAccountTagUpdateAccount :one", "-- name: ListManagementAccountTagsForAccount :many")
+	for _, want := range []string{
+		"accounts.id",
+		"accounts.system_account_id",
+		"accounts.name",
+		"COALESCE(accounts.authorization_instance_owner_system_account_id, accounts.system_account_id) AS owner_system_account_id",
+		"LEFT JOIN juhe_business.resource_authorizations AS authorizations",
+		"authorizations.resource_type = 'account'",
+		"authorizations.grantee_system_account_id = accounts.system_account_id",
+		"authorizations.resource_id = accounts.authorization_instance_source_account_id",
+		"accounts.deleted_at IS NULL",
+		"accounts.authorization_instance_authorization_id IS NULL",
+		"OR authorizations.status IN ('active', 'paused', 'expired')",
+	} {
+		if !strings.Contains(accountSQL, want) {
+			t.Fatalf("account tag update account query missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		"source_accounts",
+		"accounts.status AS status",
+		"AS schedulable",
+		"availability_schedule_json",
+		"concurrency_limit",
+		"credentials",
+	} {
+		if strings.Contains(accountSQL, forbidden) {
+			t.Fatalf("account tag update account query should stay narrow, found %q", forbidden)
 		}
 	}
 }

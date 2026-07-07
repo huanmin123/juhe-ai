@@ -366,14 +366,12 @@ func TestW2ManagementAccountOptionsPostgresSmoke(t *testing.T) {
 		t.Fatalf("update authorized tag status = %d, body = %s", updateAuthorizedTagRec.Code, updateAuthorizedTagRec.Body.String())
 	}
 	var updateAuthorizedTagBody struct {
-		Data managementaccounts.AccountSummary `json:"data"`
+		Data managementaccounts.TagUpdateAccount `json:"data"`
 	}
 	if err := json.NewDecoder(updateAuthorizedTagRec.Body).Decode(&updateAuthorizedTagBody); err != nil {
 		t.Fatalf("decode update authorized tag response: %v", err)
 	}
 	if updateAuthorizedTagBody.Data.ID != "acct_w2_authorized_other" ||
-		updateAuthorizedTagBody.Data.AccessType != "authorized" ||
-		updateAuthorizedTagBody.Data.AuthorizationStatus != "active" ||
 		!sameAccountTagNames(updateAuthorizedTagBody.Data.Tags, []string{"授权标签"}) {
 		t.Fatalf("update authorized tag response = %+v", updateAuthorizedTagBody.Data)
 	}
@@ -390,14 +388,12 @@ func TestW2ManagementAccountOptionsPostgresSmoke(t *testing.T) {
 		t.Fatalf("update tag status = %d, body = %s", updateTagRec.Code, updateTagRec.Body.String())
 	}
 	var updateTagBody struct {
-		Data managementaccounts.AccountSummary `json:"data"`
+		Data managementaccounts.TagUpdateAccount `json:"data"`
 	}
 	if err := json.NewDecoder(updateTagRec.Body).Decode(&updateTagBody); err != nil {
 		t.Fatalf("decode update tag response: %v", err)
 	}
 	if updateTagBody.Data.ID != "acct_w2_other" ||
-		updateTagBody.Data.SystemAccountID != "sys_w2_group_other" ||
-		updateTagBody.Data.AccessType != "owner" ||
 		!sameAccountTagNames(updateTagBody.Data.Tags, []string{"其他用户标签", "跨账户标签"}) {
 		t.Fatalf("update tag response = %+v", updateTagBody.Data)
 	}
@@ -458,14 +454,12 @@ func TestW2ManagementAccountOptionsPostgresSmoke(t *testing.T) {
 		t.Fatalf("my update tag status = %d, body = %s", myUpdateTagRec.Code, myUpdateTagRec.Body.String())
 	}
 	var myUpdateTagBody struct {
-		Data managementaccounts.AccountSummary `json:"data"`
+		Data managementaccounts.TagUpdateAccount `json:"data"`
 	}
 	if err := json.NewDecoder(myUpdateTagRec.Body).Decode(&myUpdateTagBody); err != nil {
 		t.Fatalf("decode my update tag response: %v", err)
 	}
 	if myUpdateTagBody.Data.ID != "acct_w2_percent" ||
-		myUpdateTagBody.Data.SystemAccountID != "sys_w2_proxy_options" ||
-		myUpdateTagBody.Data.AccessType != "owner" ||
 		!sameAccountTagNames(myUpdateTagBody.Data.Tags, []string{"主力"}) {
 		t.Fatalf("my update tag response = %+v", myUpdateTagBody.Data)
 	}
@@ -807,7 +801,7 @@ func readW2AccountTagBindings(t *testing.T, ctx context.Context, db *sql.DB, acc
 	return bindings
 }
 
-func sameAccountTagNames(tags []managementaccounts.Tag, want []string) bool {
+func sameAccountTagNames(tags []managementaccounts.TagUpdateTag, want []string) bool {
 	if len(tags) != len(want) {
 		return false
 	}

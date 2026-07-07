@@ -367,44 +367,16 @@ type ManagementAccountTagUpdateInput struct {
 }
 
 type ManagementAccountTagUpdateResult struct {
-	Account      ManagementAccountSummary
+	Account      ManagementAccountTagUpdateAccount
 	PreviousTags []ManagementAccountTag
 }
 
-type ManagementAccountSummary struct {
-	ID                                        string
-	SystemAccountID                           string
-	SystemAccountName                         string
-	OwnerSystemAccountID                      string
-	OwnerSystemAccountName                    string
-	ProviderCode                              string
-	ProviderProtocolProfileID                 string
-	ProtocolCode                              string
-	ProtocolVersion                           string
-	Name                                      string
-	Notes                                     string
-	Type                                      string
-	Status                                    string
-	ConcurrencyLimit                          int
-	Priority                                  int
-	SuperPriorityEnabled                      bool
-	FallbackEnabled                           bool
-	ClientCompatibility                       string
-	Schedulable                               bool
-	AvailabilityScheduleJSON                  string
-	AccountExpiresAt                          *time.Time
-	CooldownUntil                             *time.Time
-	LastErrorCode                             string
-	LastErrorMessage                          string
-	BoundGroupID                              string
-	BoundGroupName                            string
-	AccessType                                string
-	AccountAuthorizationID                    string
-	AuthorizationStatus                       string
-	AuthorizationExpiresAt                    *time.Time
-	AuthorizationInstanceSourceAccountID      string
-	AuthorizationInstanceOwnerSystemAccountID string
-	Tags                                      []ManagementAccountTag
+type ManagementAccountTagUpdateAccount struct {
+	ID                   string
+	SystemAccountID      string
+	OwnerSystemAccountID string
+	Name                 string
+	Tags                 []ManagementAccountTag
 }
 
 var ErrManagementAccountTagInUse = errors.New("management account tag in use")

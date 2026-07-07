@@ -2,7 +2,6 @@ package managementaccounts
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -58,8 +57,8 @@ type TagUpdateInput struct {
 }
 
 type TagUpdateResult struct {
-	Account      AccountSummary
-	PreviousTags []Tag
+	Account      TagUpdateAccount
+	PreviousTags []TagUpdateTag
 }
 
 var ErrAccountTagInUse = errors.New("account tag in use")
@@ -126,62 +125,17 @@ type Tag struct {
 	UpdatedAt    string `json:"updatedAt"`
 }
 
-type UsageSummary struct {
-	RequestCount       int     `json:"requestCount"`
-	InputTokens        int     `json:"inputTokens"`
-	OutputTokens       int     `json:"outputTokens"`
-	CacheReadTokens    int     `json:"cacheReadTokens"`
-	CacheReadCost      float64 `json:"cacheReadCost"`
-	CacheWriteTokens   int     `json:"cacheWriteTokens"`
-	CacheWrite1hTokens int     `json:"cacheWrite1hTokens"`
-	CacheWriteCost     float64 `json:"cacheWriteCost"`
-	ThinkingTokens     int     `json:"thinkingTokens"`
-	InputImageTokens   int     `json:"inputImageTokens"`
-	OutputImageTokens  int     `json:"outputImageTokens"`
-	TotalTokens        int     `json:"totalTokens"`
-	TotalCost          float64 `json:"totalCost"`
-	LastUsedAt         string  `json:"lastUsedAt,omitempty"`
+type TagUpdateTag struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
-type AccountSummary struct {
-	ID                                        string              `json:"id"`
-	SystemAccountID                           string              `json:"systemAccountId,omitempty"`
-	SystemAccountName                         string              `json:"systemAccountName,omitempty"`
-	OwnerSystemAccountID                      string              `json:"ownerSystemAccountId,omitempty"`
-	OwnerSystemAccountName                    string              `json:"ownerSystemAccountName,omitempty"`
-	ProviderCode                              string              `json:"providerCode"`
-	ProviderProtocolProfileID                 string              `json:"providerProtocolProfileId,omitempty"`
-	ProtocolCode                              string              `json:"protocolCode,omitempty"`
-	ProtocolVersion                           string              `json:"protocolVersion,omitempty"`
-	Name                                      string              `json:"name"`
-	Notes                                     string              `json:"notes,omitempty"`
-	Type                                      string              `json:"type"`
-	Credentials                               map[string]any      `json:"credentials"`
-	Status                                    string              `json:"status"`
-	ConcurrencyLimit                          int                 `json:"concurrencyLimit"`
-	CurrentConcurrency                        int                 `json:"currentConcurrency"`
-	Priority                                  int                 `json:"priority"`
-	SuperPriorityEnabled                      bool                `json:"superPriorityEnabled"`
-	FallbackEnabled                           bool                `json:"fallbackEnabled"`
-	ClientCompatibility                       string              `json:"clientCompatibility"`
-	Tags                                      []Tag               `json:"tags"`
-	Schedulable                               bool                `json:"schedulable"`
-	AvailabilitySchedule                      any                 `json:"availabilitySchedule,omitempty"`
-	AccountExpiresAt                          string              `json:"accountExpiresAt,omitempty"`
-	CooldownUntil                             string              `json:"cooldownUntil,omitempty"`
-	LastErrorCode                             string              `json:"lastErrorCode,omitempty"`
-	LastErrorMessage                          string              `json:"lastErrorMessage,omitempty"`
-	BoundGroupID                              string              `json:"boundGroupId,omitempty"`
-	BoundGroupName                            string              `json:"boundGroupName,omitempty"`
-	TodayUsage                                UsageSummary        `json:"todayUsage"`
-	Usage                                     UsageSummary        `json:"usage"`
-	AccessType                                string              `json:"accessType,omitempty"`
-	AccountAuthorizationID                    string              `json:"accountAuthorizationId,omitempty"`
-	AuthorizationInstanceSourceAccountID      string              `json:"authorizationInstanceSourceAccountId,omitempty"`
-	AuthorizationInstanceOwnerSystemAccountID string              `json:"authorizationInstanceOwnerSystemAccountId,omitempty"`
-	AuthorizationStatus                       string              `json:"authorizationStatus,omitempty"`
-	AuthorizationExpiresAt                    string              `json:"authorizationExpiresAt,omitempty"`
-	Permissions                               ResourcePermissions `json:"permissions"`
+type TagUpdateAccount struct {
+	ID                   string         `json:"id"`
+	SystemAccountID      string         `json:"-"`
+	OwnerSystemAccountID string         `json:"-"`
+	Name                 string         `json:"-"`
+	Tags                 []TagUpdateTag `json:"tags"`
 }
 
 func NewService(store port.ManagementAccountOptionReader) *Service {
@@ -310,8 +264,8 @@ func (s *Service) UpdateTags(ctx context.Context, input TagUpdateInput) (TagUpda
 		return TagUpdateResult{}, ErrAccountNotFound
 	}
 	return TagUpdateResult{
-		Account:      accountSummaryFromPort(saved.Account),
-		PreviousTags: tagsFromPort(saved.PreviousTags),
+		Account:      tagUpdateAccountFromPort(saved.Account),
+		PreviousTags: tagUpdateTagsFromPort(saved.PreviousTags),
 	}, nil
 }
 
@@ -417,47 +371,13 @@ func formatOptionalTime(value *time.Time) string {
 	return value.UTC().Format(time.RFC3339Nano)
 }
 
-func accountSummaryFromPort(row port.ManagementAccountSummary) AccountSummary {
-	accessType := accountAccessType(row.AccessType)
-	return AccountSummary{
-		ID:                                   row.ID,
-		SystemAccountID:                      row.SystemAccountID,
-		SystemAccountName:                    row.SystemAccountName,
-		OwnerSystemAccountID:                 row.OwnerSystemAccountID,
-		OwnerSystemAccountName:               row.OwnerSystemAccountName,
-		ProviderCode:                         row.ProviderCode,
-		ProviderProtocolProfileID:            row.ProviderProtocolProfileID,
-		ProtocolCode:                         row.ProtocolCode,
-		ProtocolVersion:                      row.ProtocolVersion,
-		Name:                                 row.Name,
-		Notes:                                row.Notes,
-		Type:                                 row.Type,
-		Credentials:                          map[string]any{},
-		Status:                               row.Status,
-		ConcurrencyLimit:                     row.ConcurrencyLimit,
-		CurrentConcurrency:                   0,
-		Priority:                             row.Priority,
-		SuperPriorityEnabled:                 row.SuperPriorityEnabled,
-		FallbackEnabled:                      row.FallbackEnabled,
-		ClientCompatibility:                  row.ClientCompatibility,
-		Tags:                                 tagsFromPort(row.Tags),
-		Schedulable:                          row.Schedulable,
-		AvailabilitySchedule:                 jsonValue(row.AvailabilityScheduleJSON),
-		AccountExpiresAt:                     formatOptionalTime(row.AccountExpiresAt),
-		CooldownUntil:                        formatOptionalTime(row.CooldownUntil),
-		LastErrorCode:                        row.LastErrorCode,
-		LastErrorMessage:                     row.LastErrorMessage,
-		BoundGroupID:                         row.BoundGroupID,
-		BoundGroupName:                       row.BoundGroupName,
-		TodayUsage:                           UsageSummary{},
-		Usage:                                UsageSummary{},
-		AccessType:                           accessType,
-		AccountAuthorizationID:               row.AccountAuthorizationID,
-		AuthorizationInstanceSourceAccountID: row.AuthorizationInstanceSourceAccountID,
-		AuthorizationInstanceOwnerSystemAccountID: row.AuthorizationInstanceOwnerSystemAccountID,
-		AuthorizationStatus:                       row.AuthorizationStatus,
-		AuthorizationExpiresAt:                    formatOptionalTime(row.AuthorizationExpiresAt),
-		Permissions:                               accountPermissions(accessType),
+func tagUpdateAccountFromPort(row port.ManagementAccountTagUpdateAccount) TagUpdateAccount {
+	return TagUpdateAccount{
+		ID:                   row.ID,
+		SystemAccountID:      row.SystemAccountID,
+		OwnerSystemAccountID: row.OwnerSystemAccountID,
+		Name:                 row.Name,
+		Tags:                 tagUpdateTagsFromPort(row.Tags),
 	}
 }
 
@@ -474,15 +394,15 @@ func tagsFromPort(rows []port.ManagementAccountTag) []Tag {
 	return tags
 }
 
-func jsonValue(raw string) any {
-	if strings.TrimSpace(raw) == "" {
-		return nil
+func tagUpdateTagsFromPort(rows []port.ManagementAccountTag) []TagUpdateTag {
+	tags := make([]TagUpdateTag, 0, len(rows))
+	for _, row := range rows {
+		tags = append(tags, TagUpdateTag{
+			ID:   row.ID,
+			Name: row.Name,
+		})
 	}
-	var value any
-	if err := json.Unmarshal([]byte(raw), &value); err != nil {
-		return nil
-	}
-	return value
+	return tags
 }
 
 func ownerPermissions() ResourcePermissions {
