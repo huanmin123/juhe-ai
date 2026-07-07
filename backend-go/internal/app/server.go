@@ -18,6 +18,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/managementproviders"
 	"juhe-ai/backend-go/internal/modules/managementproxies"
 	"juhe-ai/backend-go/internal/modules/managementroutestrategies"
+	"juhe-ai/backend-go/internal/modules/managementsystemaccounts"
 	"juhe-ai/backend-go/internal/modules/publicaccounts"
 	publicapicatalog "juhe-ai/backend-go/internal/modules/publicapi"
 	publicapiauth "juhe-ai/backend-go/internal/modules/publicapi/auth"
@@ -84,6 +85,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		PublicAPIHandler:                        publicAPIHandler,
 		ManagementAPIAuthMiddleware:             managementHandlers.AuthMiddleware,
 		ManagementProxyOptionsHandler:           managementHandlers.ProxyOptionsHandler,
+		ManagementSystemAccountOptionsHandler:   managementHandlers.SystemAccountOptionsHandler,
 		ManagementProviderOptionsHandler:        managementHandlers.ProviderOptionsHandler,
 		ManagementProviderModelOptionsHandler:   managementHandlers.ProviderModelOptionsHandler,
 		ManagementProviderModelsHandler:         managementHandlers.ProviderModelsHandler,
@@ -131,6 +133,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 type managementAPIHandlers struct {
 	AuthMiddleware                func(http.Handler) http.Handler
 	ProxyOptionsHandler           http.Handler
+	SystemAccountOptionsHandler   http.Handler
 	ProviderOptionsHandler        http.Handler
 	ProviderModelOptionsHandler   http.Handler
 	ProviderModelsHandler         http.Handler
@@ -157,9 +160,11 @@ func newManagementAPIHandler(cfg config.Config, store *postgresstore.Store) mana
 	routeStrategyService := managementroutestrategies.NewService(store)
 	groupService := managementgroups.NewService(store)
 	accountService := managementaccounts.NewService(store)
+	systemAccountService := managementsystemaccounts.NewService(store)
 	return managementAPIHandlers{
 		AuthMiddleware:                httpapi.NewManagementAPIAuthMiddleware(authenticator),
 		ProxyOptionsHandler:           httpapi.NewManagementProxyOptionsHandler(proxyService),
+		SystemAccountOptionsHandler:   httpapi.NewManagementSystemAccountOptionsHandler(systemAccountService),
 		ProviderOptionsHandler:        httpapi.NewManagementProviderOptionsHandler(providerService),
 		ProviderModelOptionsHandler:   httpapi.NewManagementProviderModelOptionsHandler(providerModelService),
 		ProviderModelsHandler:         httpapi.NewManagementProviderModelsHandler(providerModelService),

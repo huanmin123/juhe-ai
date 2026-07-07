@@ -49,6 +49,7 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 	handlers := newManagementAPIHandler(config.Config{}, nil)
 	if handlers.AuthMiddleware != nil ||
 		handlers.ProxyOptionsHandler != nil ||
+		handlers.SystemAccountOptionsHandler != nil ||
 		handlers.ProviderOptionsHandler != nil ||
 		handlers.ProviderModelOptionsHandler != nil ||
 		handlers.ProviderModelsHandler != nil ||
@@ -70,6 +71,7 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 	handlers := newManagementAPIHandler(config.Config{ManagementAPIEnabled: true}, nil)
 	if handlers.AuthMiddleware == nil ||
 		handlers.ProxyOptionsHandler == nil ||
+		handlers.SystemAccountOptionsHandler == nil ||
 		handlers.ProviderOptionsHandler == nil ||
 		handlers.ProviderModelOptionsHandler == nil ||
 		handlers.ProviderModelsHandler == nil ||

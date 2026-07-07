@@ -38,6 +38,23 @@ type ManagementProxyOptionReader interface {
 	ListManagementProxyOptions(ctx context.Context, input ManagementProxyOptionListInput) ([]ManagementProxyOption, error)
 }
 
+type ManagementSystemAccountOption struct {
+	ID          string
+	Username    string
+	DisplayName string
+	Status      string
+}
+
+type ManagementSystemAccountOptionListInput struct {
+	IDs     []string
+	Keyword string
+	Limit   int
+}
+
+type ManagementSystemAccountOptionReader interface {
+	ListManagementSystemAccountOptions(ctx context.Context, input ManagementSystemAccountOptionListInput) ([]ManagementSystemAccountOption, error)
+}
+
 type ManagementProviderEndpointFamily struct {
 	Code        string
 	Name        string
