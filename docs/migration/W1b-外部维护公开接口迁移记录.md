@@ -6,7 +6,7 @@
 - 状态：Go 实现中（基础设施已补；public group、public route strategy、public API Key 与 public account 四类资源 16 个 CRUD 的 Go 纵切面代码已补；生产 router 支持 `JUHE_AI_PUBLIC_API_ENABLED` opt-in 挂载 guard，默认关闭且未正式接管）
 - 迁移波次：W1b
 - 当前 Node owner：`backend/src/modules/external-integrations/`、`backend/src/modules/public-api-logs/`、`backend/src/storage/external-integration-source*.ts`、`backend/src/storage/public-api-logs.repository.ts`
-- 目标 Go owner：`backend-go/internal/modules/publicapi`、`backend-go/internal/modules/publicapi/auth`、`backend-go/internal/modules/publicapi/ratelimit`、`backend-go/internal/modules/publicapilog`、`backend-go/internal/modules/publicgroups`、`backend-go/internal/modules/publicroutestrategies`、`backend-go/internal/modules/publicapikeys`、`backend-go/internal/modules/publicaccounts`、`backend-go/internal/jobs/publicapilog`、`backend-go/internal/jobs/worker`、`backend-go/internal/app/server.go`、`backend-go/internal/app/ingest_worker.go`、`backend-go/internal/config/config.go`、`backend-go/internal/httpapi/router.go`、`backend-go/internal/httpapi/public_api_shell.go`、`backend-go/internal/httpapi/public_groups.go`、`backend-go/internal/httpapi/public_route_strategies.go`、`backend-go/internal/httpapi/public_api_keys.go`、`backend-go/internal/httpapi/public_accounts.go`、`backend-go/internal/store/port/publicapi.go`、`backend-go/internal/store/postgres/publicapi.go`、`backend-go/internal/store/postgres/publicgroups.go`、`backend-go/internal/store/postgres/publicroutestrategies.go`、`backend-go/internal/store/postgres/publicapikeys.go`、`backend-go/internal/store/postgres/publicaccounts.go`、`backend-go/internal/store/postgres/queries/w1b_public_groups.sql`、`backend-go/internal/store/postgres/queries/w1b_public_route_strategies.sql`、`backend-go/internal/store/postgres/queries/w1b_public_api_keys.sql`、`backend-go/internal/store/postgres/queries/w1b_public_accounts.sql`、`backend-go/db/migrations/000004_w1b_public_groups.sql`、`backend-go/db/migrations/000005_w1b_public_accounts.sql` 和 `backend-go/internal/platform/redis` 已作为 W1b 基础设施、四类公开资源纵切面和 opt-in 生产挂载 guard 落地；Docker 环境真实 integration 复跑、account shell E2E、反向代理切流和 Node 删除仍待完成
+- 目标 Go owner：`backend-go/internal/modules/publicapi`、`backend-go/internal/modules/publicapi/auth`、`backend-go/internal/modules/publicapi/ratelimit`、`backend-go/internal/modules/publicapilog`、`backend-go/internal/modules/publicgroups`、`backend-go/internal/modules/publicroutestrategies`、`backend-go/internal/modules/publicapikeys`、`backend-go/internal/modules/publicaccounts`、`backend-go/internal/jobs/publicapilog`、`backend-go/internal/jobs/worker`、`backend-go/internal/app/server.go`、`backend-go/internal/app/ingest_worker.go`、`backend-go/internal/config/config.go`、`backend-go/internal/httpapi/router.go`、`backend-go/internal/httpapi/public_api_shell.go`、`backend-go/internal/httpapi/public_groups.go`、`backend-go/internal/httpapi/public_route_strategies.go`、`backend-go/internal/httpapi/public_api_keys.go`、`backend-go/internal/httpapi/public_accounts.go`、`backend-go/internal/store/port/publicapi.go`、`backend-go/internal/store/postgres/publicapi.go`、`backend-go/internal/store/postgres/publicgroups.go`、`backend-go/internal/store/postgres/publicroutestrategies.go`、`backend-go/internal/store/postgres/publicapikeys.go`、`backend-go/internal/store/postgres/publicaccounts.go`、`backend-go/internal/store/postgres/queries/w1b_public_groups.sql`、`backend-go/internal/store/postgres/queries/w1b_public_route_strategies.sql`、`backend-go/internal/store/postgres/queries/w1b_public_api_keys.sql`、`backend-go/internal/store/postgres/queries/w1b_public_accounts.sql`、`backend-go/db/migrations/000004_w1b_public_groups.sql`、`backend-go/db/migrations/000005_w1b_public_accounts.sql` 和 `backend-go/internal/platform/redis` 已作为 W1b 基础设施、四类公开资源纵切面和 opt-in 生产挂载 guard 落地；account shell E2E 测试代码已补，Docker/testcontainers 环境真实 integration 与 shell E2E 复跑、反向代理切流和 Node 删除仍待完成
 - 关联计划：[PLAN-0081 Node 转 Go 渐进减法迁移](../plans/计划-0081-Node转Go渐进减法迁移.md)
 - 关联功能文档：[公开资源维护接口设计](../functions/公开资源维护接口设计.md)、[外部来源系统鉴权设计](../functions/外部来源系统鉴权设计.md)、[公开接口日志设计](../functions/公开接口日志设计.md)、[接口契约与权限矩阵](../functions/接口契约与权限矩阵.md)、[安全与日志策略](../functions/安全与日志策略.md)
 
@@ -79,7 +79,7 @@ Go 主 server 已补 W1b opt-in guard：`JUHE_AI_PUBLIC_API_ENABLED=false` 时�
 - `JUHE_AI_SECRET` 必须显式配置且不少于 32 个字符，用于 AI 账户上游凭据 AES-GCM 加密；公开接口开启时不允许落回开发默认密钥。
 - `juhe-ai-worker ingest` 已启动并能消费 `public-api-log:write`。
 
-该 guard 只是灰度验证入口，不等于 W1b 正式接管，不等于可以删除 Node。正式切流前仍必须完成 Docker/testcontainers 真实 PG/Redis/Asynq integration、account shell E2E、公开日志副作用检查、反向代理单 owner 切换和 Node 删除证据。严禁让 Node 和 Go 同时作为同一公网 `/__aipublic__/*` 路径的正式 owner；回滚优先关闭 `JUHE_AI_PUBLIC_API_ENABLED` 并恢复反向代理 owner。
+该 guard 只是灰度验证入口，不等于 W1b 正式接管，不等于可以删除 Node。正式切流前仍必须完成 Docker/testcontainers 真实 PG/Redis/Asynq integration、account shell E2E 真实通过、公开日志副作用检查、反向代理单 owner 切换和 Node 删除证据。严禁让 Node 和 Go 同时作为同一公网 `/__aipublic__/*` 路径的正式 owner；回滚优先关闭 `JUHE_AI_PUBLIC_API_ENABLED` 并恢复反向代理 owner。
 
 ## 资源字段边界
 
@@ -183,7 +183,7 @@ Go 主 server 已补 W1b opt-in guard：`JUHE_AI_PUBLIC_API_ENABLED=false` 时�
 - `backend-go/internal/store/postgres/publicaccounts.go` 和 `backend-go/internal/store/postgres/queries/w1b_public_accounts.sql`：新增 PostgreSQL public account store / sqlc query，覆盖事务、目标用户 / 分组 / provider profile、列表分页、账号行锁、同名唯一冲突、账号创建、分组绑定创建、模型替换、调度优先级更新、软删除和 summary join。
 - `backend-go/internal/httpapi/public_api_takeover_guard_test.go`：固定生产 router 当前没有注册 `/__aipublic__`，避免骨架期误接管。
 
-当前未补：生产路由挂载、Docker 环境真实 integration 复跑、四类资源完整 shell E2E 覆盖、反向代理切流和 Node 删除。HTTP shell / capture / public group handler / public route strategy handler / public API Key handler / public account handler 当前只在显式构造和测试中使用，不代表 `/__aipublic__` 生产接管。
+当前未补：生产路由挂载、Docker/testcontainers 环境真实 integration 与四类资源完整 shell E2E 复跑、反向代理切流和 Node 删除。HTTP shell / capture / public group handler / public route strategy handler / public API Key handler / public account handler 当前只在显式构造和测试中使用，不代表 `/__aipublic__` 生产接管。
 
 public group、public route strategy、public API Key 和 public account 是 W1b 当前已落地的四条真实资源纵切面，已经把 HTTP shell、handler、service、store port、PostgreSQL query 和 schema 串起来；它们只证明“资源可以按 Go + PostgreSQL + Redis 单模式落地”，不改变 `/__aipublic__` 整体 owner。生产路由仍由 Node 承担，Go 侧不代理 Node、不双写、不引入 SQLite / DB service / IPC 分支。
 
@@ -193,7 +193,7 @@ W1b 不应一次性把 16 个 CRUD 揉成一个巨大 service。建议按纵切�
 2. `publicapi/auth`：Bearer 解析、token hash 点查、source/token 状态和过期、scope 交集、last_used touch。
 3. Redis state penalty-window 限频：保持 `Retry-After`、details 字段和阻断期间惩罚延长语义。
 4. `publicapilog`：已补 32KB 快照、499、错误摘要、任务 payload、异步入队、handler、W1b public API log worker runtime，以及不挂生产 router 的 HTTP shell / response capture / 公开前缀 404 / 400 / 413 场景契约测试。请求路径只入队，不直接写 PG。
-5. 资源顺序仍为分组、路由策略、API Key、AI 账户。四类资源均已推进到 handler/service/store/query/schema；后续重点是 Docker 环境真实 integration 复跑、补齐 account shell E2E、评估生产 router 挂载与反向代理切流，不提前删除 Node。
+5. 资源顺序仍为分组、路由策略、API Key、AI 账户。四类资源均已推进到 handler/service/store/query/schema，四类 shell E2E 测试代码已补；后续重点是 Docker/testcontainers 环境真实 integration 与 shell E2E 复跑、评估生产 router 挂载与反向代理切流，不提前删除 Node。
 
 Go runtime 不调用 Node，不代理 Node，不移植 `databaseDriver` / SQLite / DB service / IPC / 本地队列分支。Node 只作为迁移前契约对照。
 
@@ -286,9 +286,9 @@ pnpm --filter juhe-ai-backend test:external-public-account-push-postgres-smoke
 - `golangci-lint run`
 - `govulncheck ./...`
 
-`go test -tags=integration ./internal/testkit/integration -count=1` 是 W1b 必跑项，但当前主线程复核时 Docker / testcontainers 不可用，容器子测试输出 `SKIP`，不计为真实 PG/Redis 通过。后续必须在 Docker 健康环境复跑，并确认不是 skip 后，才能把 W1b PG migration smoke、真实 Redis/Asynq/PG 公开日志队列 smoke、已有三条 shell E2E 和待补 account shell E2E 记为通过。
+`go test -tags=integration ./internal/testkit/integration -count=1` 是 W1b 必跑项，但当前主线程复核时 Docker / testcontainers 不可用，容器子测试输出 `SKIP`，不计为真实 PG/Redis 通过。后续必须在 Docker 健康环境复跑，并确认不是 skip 后，才能把 W1b PG migration smoke、真实 Redis/Asynq/PG 公开日志队列 smoke 和四条 shell E2E 测试记为通过。
 
-这些非容器命令证明 Go W1b catalog/auth/store port、公开接口日志快照构造、Asynq payload/enqueue/handler、HTTP shell / capture 契约、499 客户端提前断开捕获、ResponseWriter 可选接口透传和默认关闭 / 显式开启的 router guard 可用；不证明 `/__aipublic__` 已正式切流、真实 PG/Redis 集成、完整资源级 API 契约测试、account shell E2E 或 Node 删除。
+这些非容器命令证明 Go W1b catalog/auth/store port、公开接口日志快照构造、Asynq payload/enqueue/handler、HTTP shell / capture 契约、499 客户端提前断开捕获、ResponseWriter 可选接口透传和默认关闭 / 显式开启的 router guard 可用；不证明 `/__aipublic__` 已正式切流、真实 PG/Redis 集成、完整资源级 API 契约测试、account shell E2E 已在真实 Docker/testcontainers 环境通过或 Node 删除。
 
 public group、public route strategy、public API Key 与 public account 作为当前四条真实资源纵切面，已补 handler、service、PostgreSQL store/query 和 integration/shell 测试代码；当前可确认 handler/service/HTTP 非容器测试和 integration 包编译通过。真实 PostgreSQL / Redis / Asynq integration 和 shell E2E 需要 Docker/testcontainers 健康环境复跑，不能把 `SKIP` 当作通过：
 
@@ -326,7 +326,7 @@ public account 纵切面专项矩阵：
 | Handler | `go test ./internal/httpapi -run TestPublicAccountHandlers` | shell 注入 handler 后的 `account/list|add|update|del`、strict query/body、GET 分页 coerce、POST 数字不 coerce、中文错误、测试 token mock、业务响应不返回 `apiKey` / `baseUrl` / `credentials`，请求日志脱敏上游 `apiKey` 和带 userinfo 的 URL |
 | Service | `go test ./internal/modules/publicaccounts -run Test` | 目标用户 / 目标分组自动创建、provider/profile 启用校验、`type=api_key` 限制、上游 base URL 安全校验、凭据可逆加密、凭据指纹 hash、同名冲突、`pending_test -> active` 拒绝、局部凭据更新、软删除和 `not_found` 幂等 |
 | PostgreSQL store / integration | `go test -tags=integration ./internal/testkit/integration -run TestW1bPublicAccountsPostgresSmoke -count=1` | `000005_w1b_public_accounts.sql`、`w1b_public_accounts.sql`、事务、provider profile seed、owner 复合 FK、模型替换、凭据不明文落库、软删除和绑定清理；必须在 Docker/testcontainers 健康环境真实通过，且确认不引入 SQLite / DB service / IPC |
-| Shell E2E | 待补 `TestW1bPublicAccountsShellE2E` | 需在 Docker/testcontainers 健康环境真实通过；目标为 Bearer/auth/scope、Redis limiter、public API log 入队 / worker 写 PG、add/list/update/delete/limited、凭据请求日志脱敏和响应白名单一起穿过 HTTP shell；仍不代表生产 router 已挂载 |
+| Shell E2E | `go test -tags=integration ./internal/testkit/integration -run TestW1bPublicAccountsShellE2E -count=1` | 测试代码已补；需在 Docker/testcontainers 健康环境真实通过；目标为 Bearer/auth/scope、Redis limiter、public API log 入队 / worker 写 PG、add/list/update/delete/limited、source/token last_used、凭据请求日志脱敏和响应白名单一起穿过 HTTP shell；仍不代表生产 router 已挂载 |
 
 ## 灰度与回滚
 
@@ -343,8 +343,8 @@ public account 纵切面专项矩阵：
 ## 验收结论
 
 - 代码已实现：部分，当前已补 Go publicapi 契约骨架、PostgreSQL auth/log adapter、Redis penalty-window helper、公开接口日志快照 / 日志 DTO 构造、Asynq payload/enqueue/handler、W1b public API log worker runtime、HTTP shell / capture 契约、499 客户端提前断开捕获、ResponseWriter 可选接口透传、W1b PG / Asynq smoke 用例、public group CRUD、public route strategy CRUD、public API Key CRUD 与 public account CRUD 四条真实资源纵切面，以及 `JUHE_AI_PUBLIC_API_ENABLED` 默认关闭的生产 router opt-in guard。
-- 验证已通过：Node 非 PG 对照命令已通过；本轮 Go `sqlc generate`、`go mod tidy -diff`、`go test ./...`、`go test -race ./...`、`go vet ./...`、`go build ./cmd/...`、`go test -tags=integration ./internal/testkit/integration -run '^$'` 和 public account handler / service / public API log 非容器专项已通过。此前 public group / public route strategy / public API Key 的 handler / service 非容器专项已通过。当前主线程 Docker / testcontainers 不可用，真实 PostgreSQL integration 专项和完整 Redis limiter + public API log worker shell E2E 需 Docker 环境复跑；PG/Redis Node 对照 smoke、生产路由切流和 Node 删除待本阶段后续执行。
+- 验证已通过：Node 非 PG 对照命令已通过；本轮 Go `sqlc generate`、`go mod tidy -diff`、`go test ./...`、`go test -race ./...`、`go vet ./...`、`go build ./cmd/...`、`go test -tags=integration ./internal/testkit/integration -run '^$'` 和 public account handler / service / public API log 非容器专项已通过。此前 public group / public route strategy / public API Key 的 handler / service 非容器专项已通过。`TestW1bPublicAccountsShellE2E` 测试代码已补，当前 `go test -v -tags=integration ./internal/testkit/integration -run TestW1bPublicAccountsShellE2E -count=1` 因 Docker 不可用输出 `SKIP`，不计为真实通过；真实 PostgreSQL integration 专项和完整 Redis limiter + public API log worker shell E2E 需 Docker 环境复跑；PG/Redis Node 对照 smoke、生产路由切流和 Node 删除待本阶段后续执行。
 - 生产已接管：否。
 - Node 已删除：否。
 - 删除证据：待填写。
-- 剩余风险：四类资源纵切面已覆盖真实资源写入、服务层边界、PG 事务 / 索引、owner 复合 FK、并发幂等、路由策略并发删除保护、绑定整体替换、API Key hash-only secret、AI 账户可逆加密凭据、软删除和响应白名单；但生产 router 只是 opt-in guard，默认关闭，account shell E2E 仍待补，Docker/testcontainers 环境真实 PG/Redis/Asynq 仍需复跑，反向代理切流未执行。公开日志快照语义容易被误写成全量原文或漏掉业务 secret；Node 当前 SQLite/DB service/IPC 仍只是对照事实，不属于 Go 目标架构。
+- 剩余风险：四类资源纵切面已覆盖真实资源写入、服务层边界、PG 事务 / 索引、owner 复合 FK、并发幂等、路由策略并发删除保护、绑定整体替换、API Key hash-only secret、AI 账户可逆加密凭据、软删除和响应白名单；但生产 router 只是 opt-in guard，默认关闭，account shell E2E 测试代码已补但真实 Docker/testcontainers 环境仍需复跑，Docker/testcontainers 环境真实 PG/Redis/Asynq 仍需复跑，反向代理切流未执行。公开日志快照语义容易被误写成全量原文或漏掉业务 secret；Node 当前 SQLite/DB service/IPC 仍只是对照事实，不属于 Go 目标架构。
