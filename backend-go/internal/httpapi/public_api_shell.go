@@ -41,14 +41,15 @@ type PublicAPIRateLimiter interface {
 }
 
 type PublicAPIShellOptions struct {
-	Config           config.Config
-	Logger           *slog.Logger
-	Authenticator    PublicAPIAuthenticator
-	RateLimiter      PublicAPIRateLimiter
-	LogClient        publicapilogjob.EnqueueClient
-	EndpointHandlers map[string]http.Handler
-	Now              func() time.Time
-	NewLogID         func() string
+	Config                  config.Config
+	Logger                  *slog.Logger
+	Authenticator           PublicAPIAuthenticator
+	RateLimiter             PublicAPIRateLimiter
+	LogClient               publicapilogjob.EnqueueClient
+	EndpointHandlers        map[string]http.Handler
+	Now                     func() time.Time
+	NewLogID                func() string
+	SkipRequestIDMiddleware bool
 }
 
 type publicAPIShell struct {
@@ -101,6 +102,9 @@ func NewPublicAPIShell(opts PublicAPIShellOptions) http.Handler {
 		newLogID:      newLogID,
 	}
 
+	if opts.SkipRequestIDMiddleware {
+		return shell
+	}
 	return requestIDMiddleware(shell)
 }
 

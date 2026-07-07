@@ -100,7 +100,7 @@ Go 目标不是复制当前 Node 进程树。
 
 | 进程 / 命令 | 职责 | 健康检查 | 退出与重启 |
 | --- | --- | --- | --- |
-| `juhe-ai server` | HTTP API、静态资源、公开接口、网关入口、轻量 supervisor 和 readiness | HTTP health、PG/Redis 基础连通、网关运行态只读检查 | 优雅关闭 HTTP、取消请求 context，不吞 worker 失败 |
+| `juhe-ai server` | HTTP API、静态资源、公开接口、网关入口、轻量 supervisor 和 readiness；W1b `/__aipublic__` 仅在 `JUHE_AI_PUBLIC_API_ENABLED=true` 时 opt-in 挂载，默认关闭 | HTTP health、PG/Redis 基础连通、网关运行态只读检查；W1b 开启时检查 Redis state、Redis queue 和 `JUHE_AI_SECRET` | 优雅关闭 HTTP、取消请求 context，不吞 worker 失败；W1b 回滚优先关闭开关并恢复路径 owner |
 | `juhe-ai-worker ingest` | 使用记录、审计、操作日志、公开接口日志、运行日志索引和维护清理消费 | Asynq queue depth、retry / dead 数量、PG 写入延迟、游标推进 | shutdown drain，未完成任务由队列重试或进入 dead / archived 状态 |
 | `juhe-ai-worker stats` | 统计窗口、额度窗口、TopN、趋势、系统监控和表监控 | job state、统计滞后、PG 写入延迟 | 持有租约或单 owner，退出时释放租约 |
 | `juhe-ai-worker ops` | 账号测试、健康检测、代理检测、OAuth token 保活、授权到期扫描 | 任务队列、租约、外部 I/O 并发和错误率 | 取消外部请求，记录未完成任务，等待下轮重试 |
@@ -118,6 +118,7 @@ Go 解决的是 Node 单事件循环问题，不代表可以无界并发。
 - PostgreSQL 通过 PgBouncer / pool budget 隔离 server、gateway hot path、management API、ingest、stats 和 ops；慢管理查询、后台批量写和网关热路径不能共用一个无差别池。
 - PostgreSQL 写入必须受事务范围、`statement_timeout`、`lock_timeout`、`idle_in_transaction_session_timeout`、批量窗口、分区查询窗口、稳定排序和热点 key 顺序约束；连接必须带 `application_name` 便于定位来源。
 - Redis cache、state、queue 必须使用独立 namespace / DB / 实例或明确隔离配置；Go 配置层要拒绝 cache / state / queue 指向同一个 Redis DB，queue 不和 cache/state 共用淘汰策略。来源系统限频这类跨实例运行态必须落在 Redis state，不允许生产路径退回进程内 map。
+- W1b public API 生产挂载必须由 `JUHE_AI_PUBLIC_API_ENABLED` 显式控制，默认不注册 `/__aipublic__`；开启时必须显式配置 Redis state、Redis queue 和稳定 `JUHE_AI_SECRET`，不能使用开发默认密钥或本地队列兜底。
 - Asynq 可靠任务队列必须配置任务超时、重试、dead / archived 处理、Redis dial/read/write timeout、队列深度和最老任务年龄监控；任务 handler 必须幂等。
 - 原始 Redis Streams 只允许作为专项 adapter 例外使用，不能绕过 Asynq 再手写一套通用 queue 框架。
 - 内存 map、LRU、账号并发快照、IP 运行态、会话亲和和短 TTL 状态必须使用 mutex、RWMutex、atomic 或专用并发结构。

@@ -3,18 +3,37 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
 
 	"juhe-ai/backend-go/internal/config"
 	"juhe-ai/backend-go/internal/httpapi"
+	"juhe-ai/backend-go/internal/jobs/queue"
+	"juhe-ai/backend-go/internal/modules/publicaccounts"
+	publicapicatalog "juhe-ai/backend-go/internal/modules/publicapi"
+	publicapiauth "juhe-ai/backend-go/internal/modules/publicapi/auth"
+	publicapiratelimit "juhe-ai/backend-go/internal/modules/publicapi/ratelimit"
+	"juhe-ai/backend-go/internal/modules/publicapikeys"
+	"juhe-ai/backend-go/internal/modules/publicgroups"
+	"juhe-ai/backend-go/internal/modules/publicroutestrategies"
 	"juhe-ai/backend-go/internal/modules/publicsettings"
 	redisplatform "juhe-ai/backend-go/internal/platform/redis"
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
 )
 
 func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	if cfg.PostgresURL == "" {
+		return fmt.Errorf("JUHE_AI_POSTGRES_URL 不能为空")
+	}
+	if cfg.RedisStateURL == "" {
+		return fmt.Errorf("JUHE_AI_REDIS_STATE_URL 不能为空")
+	}
+
 	store, err := postgresstore.Open(ctx, cfg.PostgresURL)
 	if err != nil {
 		return err
@@ -39,6 +58,14 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	}
 	cancel()
 
+	publicAPIHandler, publicAPILogQueue, err := newPublicAPIHandler(cfg, logger, store, stateRedis)
+	if err != nil {
+		return err
+	}
+	if publicAPILogQueue != nil {
+		defer func() { _ = publicAPILogQueue.Close() }()
+	}
+
 	publicSettingsService := publicsettings.NewService(store)
 	router := httpapi.NewRouter(httpapi.RouterOptions{
 		Config:                     cfg,
@@ -46,6 +73,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		PublicSettingsService:      &publicSettingsService,
 		SystemAPIIPRateLimitReader: store,
 		SystemAPIIPReadRateLimiter: httpapi.NewRedisSystemAPIIPReadRateLimiter(stateRedis),
+		PublicAPIHandler:           publicAPIHandler,
 	})
 
 	server := &http.Server{
@@ -75,4 +103,78 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	case err := <-errCh:
 		return err
 	}
+}
+
+func newPublicAPIHandler(
+	cfg config.Config,
+	logger *slog.Logger,
+	store *postgresstore.Store,
+	stateRedis *redisplatform.Client,
+) (http.Handler, *queue.Client, error) {
+	if !cfg.PublicAPIEnabled {
+		return nil, nil, nil
+	}
+
+	redisOpts, err := queue.ParseRedisURL(cfg.RedisQueueURL)
+	if err != nil {
+		return nil, nil, fmt.Errorf("JUHE_AI_REDIS_QUEUE_URL 无效: %w", err)
+	}
+	logQueue := queue.NewClient(redisOpts)
+	if err := logQueue.Ping(); err != nil {
+		_ = logQueue.Close()
+		return nil, nil, fmt.Errorf("公开接口日志队列不可用: %w", err)
+	}
+
+	limiter, err := publicapiratelimit.NewLimiter(publicapiratelimit.Options{Client: stateRedis})
+	if err != nil {
+		_ = logQueue.Close()
+		return nil, nil, err
+	}
+
+	handlers, err := newPublicAPIHandlers(store, cfg.Secret)
+	if err != nil {
+		_ = logQueue.Close()
+		return nil, nil, err
+	}
+
+	handler := httpapi.NewPublicAPIShell(httpapi.PublicAPIShellOptions{
+		Config:                  cfg,
+		Logger:                  logger,
+		Authenticator:           publicapiauth.NewAuthenticator(publicapiauth.AuthenticatorOptions{Store: store}),
+		RateLimiter:             limiter,
+		LogClient:               logQueue,
+		EndpointHandlers:        handlers,
+		SkipRequestIDMiddleware: true,
+	})
+
+	return handler, logQueue, nil
+}
+
+func newPublicAPIHandlers(store *postgresstore.Store, credentialSecret string) (map[string]http.Handler, error) {
+	groupService := publicgroups.NewService(publicgroups.Options{Store: store, Transactor: store})
+	routeStrategyService := publicroutestrategies.NewService(publicroutestrategies.Options{Store: store, Transactor: store})
+	apiKeyService := publicapikeys.NewService(publicapikeys.Options{Store: store, Transactor: store})
+	accountService := publicaccounts.NewService(publicaccounts.Options{Store: store, Transactor: store, Secret: credentialSecret})
+
+	handlers := map[string]http.Handler{}
+	for _, part := range []map[string]http.Handler{
+		httpapi.NewPublicGroupHandlers(groupService),
+		httpapi.NewPublicRouteStrategyHandlers(routeStrategyService),
+		httpapi.NewPublicAPIKeyHandlers(apiKeyService),
+		httpapi.NewPublicAccountHandlers(accountService),
+	} {
+		for id, handler := range part {
+			if _, exists := handlers[id]; exists {
+				return nil, fmt.Errorf("公开接口 handler 重复: %s", id)
+			}
+			handlers[id] = handler
+		}
+	}
+
+	for _, endpoint := range publicapicatalog.Endpoints() {
+		if handlers[endpoint.ID] == nil {
+			return nil, fmt.Errorf("公开接口 handler 未实现: %s", endpoint.ID)
+		}
+	}
+	return handlers, nil
 }

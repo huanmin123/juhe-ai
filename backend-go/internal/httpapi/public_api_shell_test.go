@@ -97,6 +97,41 @@ func TestPublicAPIShellSuccessCapturesAndEnqueuesLog(t *testing.T) {
 	}
 }
 
+func TestPublicAPIShellCanUseOuterRequestIDMiddleware(t *testing.T) {
+	now := time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC)
+	authenticator := &publicAPIShellAuthStub{ctx: publicAPIShellAuthContext()}
+	limiter := &publicAPIShellLimiterStub{decision: publicapiratelimit.Decision{Allowed: true}}
+	logQueue := &publicAPIShellLogQueueStub{}
+	shell := NewPublicAPIShell(PublicAPIShellOptions{
+		Config:        config.Config{Host: "127.0.0.1", Port: 3000},
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Authenticator: authenticator,
+		RateLimiter:   limiter,
+		LogClient:     logQueue,
+		EndpointHandlers: map[string]http.Handler{"group-list": http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{}})
+		})},
+		Now:                     func() time.Time { return now },
+		NewLogID:                func() string { return "publog_test_1" },
+		SkipRequestIDMiddleware: true,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/__aipublic__/group/list", nil)
+	req.Header.Set("Authorization", "Bearer juis_plain")
+	req = req.WithContext(context.WithValue(req.Context(), requestIDKey, "outer_request_id"))
+	rec := httptest.NewRecorder()
+
+	shell.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	log := singlePublicAPILog(t, logQueue)
+	if log.TraceID != "outer_request_id" {
+		t.Fatalf("trace id = %q, want outer request id", log.TraceID)
+	}
+}
+
 func TestPublicAPIShellRoutesAllCatalogEndpointsThroughAuthAndHandler(t *testing.T) {
 	for _, endpoint := range publicapi.Endpoints() {
 		t.Run(endpoint.ID, func(t *testing.T) {

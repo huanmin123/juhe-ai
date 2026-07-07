@@ -9,6 +9,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"juhe-ai/backend-go/internal/config"
+	"juhe-ai/backend-go/internal/modules/publicapi"
 	"juhe-ai/backend-go/internal/modules/publicsettings"
 	"juhe-ai/backend-go/internal/store/port"
 )
@@ -19,6 +20,7 @@ type RouterOptions struct {
 	PublicSettingsService      *publicsettings.Service
 	SystemAPIIPRateLimitReader port.SystemAPIIPRateLimitReader
 	SystemAPIIPReadRateLimiter SystemAPIIPReadRateLimiter
+	PublicAPIHandler           http.Handler
 }
 
 func NewRouter(opts RouterOptions) http.Handler {
@@ -60,6 +62,14 @@ func NewRouter(opts RouterOptions) http.Handler {
 			debug.Get("/__debug/pprof/symbol", pprof.Symbol)
 			debug.Get("/__debug/pprof/trace", pprof.Trace)
 		})
+	}
+
+	if opts.Config.PublicAPIEnabled {
+		if opts.PublicAPIHandler == nil {
+			panic("PublicAPIHandler is required when JUHE_AI_PUBLIC_API_ENABLED is true")
+		}
+		r.Handle(publicapi.Prefix, opts.PublicAPIHandler)
+		r.Handle(publicapi.Prefix+"/*", opts.PublicAPIHandler)
 	}
 
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {

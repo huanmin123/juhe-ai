@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -144,5 +145,80 @@ func TestConfigAllowsDifferentRedisDBs(t *testing.T) {
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestConfigPublicAPIEnabledRequiresRuntimeDependencies(t *testing.T) {
+	base := Config{
+		Host:             "127.0.0.1",
+		Port:             3000,
+		RedisNamespace:   "juhe-ai",
+		TrustProxy:       "false",
+		PublicAPIEnabled: true,
+		RedisStateURL:    "redis://127.0.0.1:6379/1",
+		RedisQueueURL:    "redis://127.0.0.1:6379/2",
+		Secret:           "12345678901234567890123456789012",
+		ShutdownTimeout:  time.Second,
+	}
+
+	for _, tc := range []struct {
+		name string
+		edit func(*Config)
+		want string
+	}{
+		{
+			name: "state redis",
+			edit: func(cfg *Config) { cfg.RedisStateURL = "" },
+			want: "JUHE_AI_REDIS_STATE_URL",
+		},
+		{
+			name: "queue redis",
+			edit: func(cfg *Config) { cfg.RedisQueueURL = "" },
+			want: "JUHE_AI_REDIS_QUEUE_URL",
+		},
+		{
+			name: "secret",
+			edit: func(cfg *Config) { cfg.Secret = "" },
+			want: "JUHE_AI_SECRET",
+		},
+		{
+			name: "short secret",
+			edit: func(cfg *Config) { cfg.Secret = "short-secret" },
+			want: "JUHE_AI_SECRET",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := base
+			tc.edit(&cfg)
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("Validate() error = nil, want public API dependency error")
+			}
+			if got := err.Error(); !strings.Contains(got, tc.want) {
+				t.Fatalf("Validate() error = %q, want contains %q", got, tc.want)
+			}
+		})
+	}
+
+	if err := base.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestLoadParsesPublicAPIEnv(t *testing.T) {
+	t.Setenv("JUHE_AI_PUBLIC_API_ENABLED", "true")
+	t.Setenv("JUHE_AI_REDIS_STATE_URL", "redis://127.0.0.1:6379/1")
+	t.Setenv("JUHE_AI_REDIS_QUEUE_URL", "redis://127.0.0.1:6379/2")
+	t.Setenv("JUHE_AI_SECRET", "12345678901234567890123456789012")
+
+	cfg, err := Load(LoadOptions{LoadDotEnv: false})
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.PublicAPIEnabled {
+		t.Fatal("PublicAPIEnabled = false, want true")
+	}
+	if cfg.Secret != "12345678901234567890123456789012" {
+		t.Fatalf("Secret = %q, want configured secret", cfg.Secret)
 	}
 }
