@@ -52,9 +52,23 @@ func TestOperationLogSQLGuards(t *testing.T) {
 		"operation_log_viewers",
 		"operation_log_summary_search_terms",
 		"unnest(sqlc.arg(terms)::text[])",
+		"operation_log_summary_search_terms AS search",
+		`ol.trace_id COLLATE "C"`,
+		"operation_log_viewers AS visible",
+		"GetVisibleOperationLogDetail",
 	} {
 		if !strings.Contains(sql, want) {
 			t.Fatalf("operation log sql missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		" ILIKE ",
+		" LIKE ",
+		" MATCH ",
+		"UNION ALL",
+	} {
+		if strings.Contains(strings.ToUpper(sql), forbidden) {
+			t.Fatalf("operation log sql contains forbidden scan/sort pattern %q", forbidden)
 		}
 	}
 }

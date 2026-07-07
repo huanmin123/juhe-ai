@@ -15,6 +15,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementauthorizationoptions"
 	"juhe-ai/backend-go/internal/modules/managementgroups"
+	"juhe-ai/backend-go/internal/modules/managementoperationlogs"
 	"juhe-ai/backend-go/internal/modules/managementprovidermodels"
 	"juhe-ai/backend-go/internal/modules/managementproviders"
 	"juhe-ai/backend-go/internal/modules/managementproxies"
@@ -118,6 +119,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyAccountTagDeleteHandler:             managementHandlers.MyAccountTagDeleteHandler,
 		ManagementAccountTagUpdateHandler:               managementHandlers.AccountTagUpdateHandler,
 		ManagementMyAccountTagUpdateHandler:             managementHandlers.MyAccountTagUpdateHandler,
+		ManagementOperationLogsHandler:                  managementHandlers.OperationLogsHandler,
+		ManagementMyOperationLogsHandler:                managementHandlers.MyOperationLogsHandler,
 	})
 
 	server := &http.Server{
@@ -177,6 +180,8 @@ type managementAPIHandlers struct {
 	MyAccountTagDeleteHandler             http.Handler
 	AccountTagUpdateHandler               http.Handler
 	MyAccountTagUpdateHandler             http.Handler
+	OperationLogsHandler                  http.Handler
+	MyOperationLogsHandler                http.Handler
 }
 
 func newManagementAPIHandler(
@@ -197,6 +202,7 @@ func newManagementAPIHandler(
 	accountService := managementaccounts.NewService(store)
 	systemAccountService := managementsystemaccounts.NewService(store)
 	authorizationOptionService := managementauthorizationoptions.NewService(store)
+	operationLogService := managementoperationlogs.NewService(store)
 	operationLogOptions := httpapi.ManagementOperationLogOptions{
 		Config: cfg,
 		Logger: logger,
@@ -230,6 +236,8 @@ func newManagementAPIHandler(
 		MyAccountTagDeleteHandler:             httpapi.NewManagementMyAccountTagDeleteHandler(accountService),
 		AccountTagUpdateHandler:               httpapi.NewManagementAccountTagUpdateHandlerWithOperationLog(accountService, operationLogOptions),
 		MyAccountTagUpdateHandler:             httpapi.NewManagementMyAccountTagUpdateHandlerWithOperationLog(accountService, operationLogOptions),
+		OperationLogsHandler:                  httpapi.NewManagementOperationLogsHandler(operationLogService),
+		MyOperationLogsHandler:                httpapi.NewManagementMyOperationLogsHandler(operationLogService),
 	}
 }
 

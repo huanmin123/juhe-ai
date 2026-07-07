@@ -11,6 +11,124 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const getOperationLogDetail = `-- name: GetOperationLogDetail :one
+SELECT ol.id, ol.trace_id, ol.actor_system_account_id, ol.actor_username, ol.actor_display_name, ol.actor_role, ol.operation_scope_system_account_id, ol.mode, ol.module, ol.action, ol.operation_key, ol.resource_type, ol.resource_id, ol.resource_name, ol.summary, ol.detail_level, ol.visibility_scope, ol.changes_json, ol.metadata_json, ol.method, ol.path, ol.status_code, ol.client_ip, ol.user_agent, ol.created_at
+FROM juhe_dataset.operation_logs AS ol
+WHERE ol.id = $1::text
+LIMIT 1
+`
+
+func (q *Queries) GetOperationLogDetail(ctx context.Context, id string) (JuheDatasetOperationLog, error) {
+	row := q.db.QueryRow(ctx, getOperationLogDetail, id)
+	var i JuheDatasetOperationLog
+	err := row.Scan(
+		&i.ID,
+		&i.TraceID,
+		&i.ActorSystemAccountID,
+		&i.ActorUsername,
+		&i.ActorDisplayName,
+		&i.ActorRole,
+		&i.OperationScopeSystemAccountID,
+		&i.Mode,
+		&i.Module,
+		&i.Action,
+		&i.OperationKey,
+		&i.ResourceType,
+		&i.ResourceID,
+		&i.ResourceName,
+		&i.Summary,
+		&i.DetailLevel,
+		&i.VisibilityScope,
+		&i.ChangesJson,
+		&i.MetadataJson,
+		&i.Method,
+		&i.Path,
+		&i.StatusCode,
+		&i.ClientIp,
+		&i.UserAgent,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getOperationLogViewerDetailLevel = `-- name: GetOperationLogViewerDetailLevel :one
+SELECT detail_level
+FROM juhe_dataset.operation_log_viewers
+WHERE operation_log_id = $1::text
+  AND system_account_id = $2::text
+ORDER BY CASE WHEN detail_level = 'full' THEN 0 ELSE 1 END ASC
+LIMIT 1
+`
+
+type GetOperationLogViewerDetailLevelParams struct {
+	OperationLogID  string
+	SystemAccountID string
+}
+
+func (q *Queries) GetOperationLogViewerDetailLevel(ctx context.Context, arg GetOperationLogViewerDetailLevelParams) (string, error) {
+	row := q.db.QueryRow(ctx, getOperationLogViewerDetailLevel, arg.OperationLogID, arg.SystemAccountID)
+	var detail_level string
+	err := row.Scan(&detail_level)
+	return detail_level, err
+}
+
+const getVisibleOperationLogDetail = `-- name: GetVisibleOperationLogDetail :one
+SELECT ol.id, ol.trace_id, ol.actor_system_account_id, ol.actor_username, ol.actor_display_name, ol.actor_role, ol.operation_scope_system_account_id, ol.mode, ol.module, ol.action, ol.operation_key, ol.resource_type, ol.resource_id, ol.resource_name, ol.summary, ol.detail_level, ol.visibility_scope, ol.changes_json, ol.metadata_json, ol.method, ol.path, ol.status_code, ol.client_ip, ol.user_agent, ol.created_at
+FROM juhe_dataset.operation_logs AS ol
+WHERE ol.id = $1::text
+  AND (
+    ol.visibility_scope = 'all_users'
+    OR (
+      ol.visibility_scope = 'targeted'
+      AND EXISTS (
+        SELECT 1
+        FROM juhe_dataset.operation_log_viewers AS visible
+        WHERE visible.operation_log_id = ol.id
+          AND visible.system_account_id = $2::text
+      )
+    )
+  )
+LIMIT 1
+`
+
+type GetVisibleOperationLogDetailParams struct {
+	ID              string
+	SystemAccountID string
+}
+
+func (q *Queries) GetVisibleOperationLogDetail(ctx context.Context, arg GetVisibleOperationLogDetailParams) (JuheDatasetOperationLog, error) {
+	row := q.db.QueryRow(ctx, getVisibleOperationLogDetail, arg.ID, arg.SystemAccountID)
+	var i JuheDatasetOperationLog
+	err := row.Scan(
+		&i.ID,
+		&i.TraceID,
+		&i.ActorSystemAccountID,
+		&i.ActorUsername,
+		&i.ActorDisplayName,
+		&i.ActorRole,
+		&i.OperationScopeSystemAccountID,
+		&i.Mode,
+		&i.Module,
+		&i.Action,
+		&i.OperationKey,
+		&i.ResourceType,
+		&i.ResourceID,
+		&i.ResourceName,
+		&i.Summary,
+		&i.DetailLevel,
+		&i.VisibilityScope,
+		&i.ChangesJson,
+		&i.MetadataJson,
+		&i.Method,
+		&i.Path,
+		&i.StatusCode,
+		&i.ClientIp,
+		&i.UserAgent,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const insertOperationLog = `-- name: InsertOperationLog :one
 INSERT INTO juhe_dataset.operation_logs (
   id, trace_id, actor_system_account_id, actor_username, actor_display_name, actor_role,
@@ -204,4 +322,723 @@ func (q *Queries) InsertOperationLogViewer(ctx context.Context, arg InsertOperat
 		arg.CreatedAt,
 	)
 	return err
+}
+
+const listOperationLogTargets = `-- name: ListOperationLogTargets :many
+SELECT id, operation_log_id, target_type, target_id, target_name, target_owner_system_account_id, relation, created_at
+FROM juhe_dataset.operation_log_targets
+WHERE operation_log_id = $1::text
+ORDER BY created_at ASC, id ASC
+`
+
+func (q *Queries) ListOperationLogTargets(ctx context.Context, operationLogID string) ([]JuheDatasetOperationLogTarget, error) {
+	rows, err := q.db.Query(ctx, listOperationLogTargets, operationLogID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []JuheDatasetOperationLogTarget
+	for rows.Next() {
+		var i JuheDatasetOperationLogTarget
+		if err := rows.Scan(
+			&i.ID,
+			&i.OperationLogID,
+			&i.TargetType,
+			&i.TargetID,
+			&i.TargetName,
+			&i.TargetOwnerSystemAccountID,
+			&i.Relation,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOperationLogViewerDetailLevels = `-- name: ListOperationLogViewerDetailLevels :many
+SELECT operation_log_id, detail_level
+FROM juhe_dataset.operation_log_viewers
+WHERE system_account_id = $1::text
+  AND operation_log_id = ANY($2::text[])
+`
+
+type ListOperationLogViewerDetailLevelsParams struct {
+	SystemAccountID string
+	OperationLogIds []string
+}
+
+type ListOperationLogViewerDetailLevelsRow struct {
+	OperationLogID string
+	DetailLevel    string
+}
+
+func (q *Queries) ListOperationLogViewerDetailLevels(ctx context.Context, arg ListOperationLogViewerDetailLevelsParams) ([]ListOperationLogViewerDetailLevelsRow, error) {
+	rows, err := q.db.Query(ctx, listOperationLogViewerDetailLevels, arg.SystemAccountID, arg.OperationLogIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListOperationLogViewerDetailLevelsRow
+	for rows.Next() {
+		var i ListOperationLogViewerDetailLevelsRow
+		if err := rows.Scan(&i.OperationLogID, &i.DetailLevel); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOperationLogViewers = `-- name: ListOperationLogViewers :many
+SELECT operation_log_id, system_account_id, visibility_reason, detail_level, created_at
+FROM juhe_dataset.operation_log_viewers
+WHERE operation_log_id = $1::text
+ORDER BY created_at ASC, system_account_id ASC
+`
+
+func (q *Queries) ListOperationLogViewers(ctx context.Context, operationLogID string) ([]JuheDatasetOperationLogViewer, error) {
+	rows, err := q.db.Query(ctx, listOperationLogViewers, operationLogID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []JuheDatasetOperationLogViewer
+	for rows.Next() {
+		var i JuheDatasetOperationLogViewer
+		if err := rows.Scan(
+			&i.OperationLogID,
+			&i.SystemAccountID,
+			&i.VisibilityReason,
+			&i.DetailLevel,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOperationLogs = `-- name: ListOperationLogs :many
+SELECT ol.id, ol.trace_id, ol.actor_system_account_id, ol.actor_username, ol.actor_display_name, ol.actor_role, ol.operation_scope_system_account_id, ol.mode, ol.module, ol.action, ol.operation_key, ol.resource_type, ol.resource_id, ol.resource_name, ol.summary, ol.detail_level, ol.visibility_scope, ol.changes_json, ol.metadata_json, ol.method, ol.path, ol.status_code, ol.client_ip, ol.user_agent, ol.created_at
+FROM juhe_dataset.operation_logs AS ol
+WHERE (
+    $1::text = ''
+    OR (
+      ol.trace_id COLLATE "C" >= $1::text
+      AND ol.trace_id COLLATE "C" < $2::text
+    )
+  )
+  AND ($3::text = '' OR ol.module = $3::text)
+  AND ($4::text = '' OR ol.action = $4::text)
+  AND ($5::text = '' OR ol.resource_type = $5::text)
+  AND ($6::text = '' OR ol.resource_id = $6::text)
+  AND ($7::text = '' OR ol.actor_system_account_id = $7::text)
+  AND ($8::text = '' OR ol.operation_scope_system_account_id = $8::text)
+  AND (
+    $9::text = ''
+    OR ol.visibility_scope = 'all_users'
+    OR EXISTS (
+      SELECT 1
+      FROM juhe_dataset.operation_log_viewers AS affected
+      WHERE affected.operation_log_id = ol.id
+        AND affected.system_account_id = $9::text
+    )
+  )
+  AND ($10::timestamptz IS NULL OR ol.created_at >= $10::timestamptz)
+  AND ($11::timestamptz IS NULL OR ol.created_at <= $11::timestamptz)
+ORDER BY ol.created_at DESC, ol.id DESC
+LIMIT $13::int
+OFFSET $12::int
+`
+
+type ListOperationLogsParams struct {
+	TraceID                       string
+	TraceIDUpper                  string
+	Module                        string
+	Action                        string
+	ResourceType                  string
+	ResourceID                    string
+	ActorSystemAccountID          string
+	OperationScopeSystemAccountID string
+	AffectedSystemAccountID       string
+	StartAt                       pgtype.Timestamptz
+	EndAt                         pgtype.Timestamptz
+	RowOffset                     int32
+	RowLimit                      int32
+}
+
+func (q *Queries) ListOperationLogs(ctx context.Context, arg ListOperationLogsParams) ([]JuheDatasetOperationLog, error) {
+	rows, err := q.db.Query(ctx, listOperationLogs,
+		arg.TraceID,
+		arg.TraceIDUpper,
+		arg.Module,
+		arg.Action,
+		arg.ResourceType,
+		arg.ResourceID,
+		arg.ActorSystemAccountID,
+		arg.OperationScopeSystemAccountID,
+		arg.AffectedSystemAccountID,
+		arg.StartAt,
+		arg.EndAt,
+		arg.RowOffset,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []JuheDatasetOperationLog
+	for rows.Next() {
+		var i JuheDatasetOperationLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.TraceID,
+			&i.ActorSystemAccountID,
+			&i.ActorUsername,
+			&i.ActorDisplayName,
+			&i.ActorRole,
+			&i.OperationScopeSystemAccountID,
+			&i.Mode,
+			&i.Module,
+			&i.Action,
+			&i.OperationKey,
+			&i.ResourceType,
+			&i.ResourceID,
+			&i.ResourceName,
+			&i.Summary,
+			&i.DetailLevel,
+			&i.VisibilityScope,
+			&i.ChangesJson,
+			&i.MetadataJson,
+			&i.Method,
+			&i.Path,
+			&i.StatusCode,
+			&i.ClientIp,
+			&i.UserAgent,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOperationLogsBySummarySearch = `-- name: ListOperationLogsBySummarySearch :many
+SELECT ol.id, ol.trace_id, ol.actor_system_account_id, ol.actor_username, ol.actor_display_name, ol.actor_role, ol.operation_scope_system_account_id, ol.mode, ol.module, ol.action, ol.operation_key, ol.resource_type, ol.resource_id, ol.resource_name, ol.summary, ol.detail_level, ol.visibility_scope, ol.changes_json, ol.metadata_json, ol.method, ol.path, ol.status_code, ol.client_ip, ol.user_agent, ol.created_at
+FROM juhe_dataset.operation_log_summary_search_terms AS search
+INNER JOIN juhe_dataset.operation_logs AS ol
+  ON ol.id = search.operation_log_id
+WHERE search.term = $1::text
+  AND (
+    $2::text = ''
+    OR (
+      ol.trace_id COLLATE "C" >= $2::text
+      AND ol.trace_id COLLATE "C" < $3::text
+    )
+  )
+  AND ($4::text = '' OR ol.module = $4::text)
+  AND ($5::text = '' OR ol.action = $5::text)
+  AND ($6::text = '' OR ol.resource_type = $6::text)
+  AND ($7::text = '' OR ol.resource_id = $7::text)
+  AND ($8::text = '' OR ol.actor_system_account_id = $8::text)
+  AND ($9::text = '' OR ol.operation_scope_system_account_id = $9::text)
+  AND (
+    $10::text = ''
+    OR ol.visibility_scope = 'all_users'
+    OR EXISTS (
+      SELECT 1
+      FROM juhe_dataset.operation_log_viewers AS affected
+      WHERE affected.operation_log_id = ol.id
+        AND affected.system_account_id = $10::text
+    )
+  )
+  AND ($11::timestamptz IS NULL OR ol.created_at >= $11::timestamptz)
+  AND ($12::timestamptz IS NULL OR ol.created_at <= $12::timestamptz)
+ORDER BY search.created_at DESC, search.operation_log_id DESC
+LIMIT $14::int
+OFFSET $13::int
+`
+
+type ListOperationLogsBySummarySearchParams struct {
+	SearchTerm                    string
+	TraceID                       string
+	TraceIDUpper                  string
+	Module                        string
+	Action                        string
+	ResourceType                  string
+	ResourceID                    string
+	ActorSystemAccountID          string
+	OperationScopeSystemAccountID string
+	AffectedSystemAccountID       string
+	StartAt                       pgtype.Timestamptz
+	EndAt                         pgtype.Timestamptz
+	RowOffset                     int32
+	RowLimit                      int32
+}
+
+func (q *Queries) ListOperationLogsBySummarySearch(ctx context.Context, arg ListOperationLogsBySummarySearchParams) ([]JuheDatasetOperationLog, error) {
+	rows, err := q.db.Query(ctx, listOperationLogsBySummarySearch,
+		arg.SearchTerm,
+		arg.TraceID,
+		arg.TraceIDUpper,
+		arg.Module,
+		arg.Action,
+		arg.ResourceType,
+		arg.ResourceID,
+		arg.ActorSystemAccountID,
+		arg.OperationScopeSystemAccountID,
+		arg.AffectedSystemAccountID,
+		arg.StartAt,
+		arg.EndAt,
+		arg.RowOffset,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []JuheDatasetOperationLog
+	for rows.Next() {
+		var i JuheDatasetOperationLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.TraceID,
+			&i.ActorSystemAccountID,
+			&i.ActorUsername,
+			&i.ActorDisplayName,
+			&i.ActorRole,
+			&i.OperationScopeSystemAccountID,
+			&i.Mode,
+			&i.Module,
+			&i.Action,
+			&i.OperationKey,
+			&i.ResourceType,
+			&i.ResourceID,
+			&i.ResourceName,
+			&i.Summary,
+			&i.DetailLevel,
+			&i.VisibilityScope,
+			&i.ChangesJson,
+			&i.MetadataJson,
+			&i.Method,
+			&i.Path,
+			&i.StatusCode,
+			&i.ClientIp,
+			&i.UserAgent,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listVisibleAllUsersOperationLogs = `-- name: ListVisibleAllUsersOperationLogs :many
+SELECT ol.id, ol.trace_id, ol.actor_system_account_id, ol.actor_username, ol.actor_display_name, ol.actor_role, ol.operation_scope_system_account_id, ol.mode, ol.module, ol.action, ol.operation_key, ol.resource_type, ol.resource_id, ol.resource_name, ol.summary, ol.detail_level, ol.visibility_scope, ol.changes_json, ol.metadata_json, ol.method, ol.path, ol.status_code, ol.client_ip, ol.user_agent, ol.created_at
+FROM juhe_dataset.operation_logs AS ol
+WHERE ol.visibility_scope = 'all_users'
+  AND (
+    $1::text = ''
+    OR (
+      ol.trace_id COLLATE "C" >= $1::text
+      AND ol.trace_id COLLATE "C" < $2::text
+    )
+  )
+  AND ($3::text = '' OR ol.module = $3::text)
+  AND ($4::text = '' OR ol.action = $4::text)
+  AND ($5::text = '' OR ol.resource_type = $5::text)
+  AND ($6::text = '' OR ol.resource_id = $6::text)
+  AND ($7::timestamptz IS NULL OR ol.created_at >= $7::timestamptz)
+  AND ($8::timestamptz IS NULL OR ol.created_at <= $8::timestamptz)
+ORDER BY ol.created_at DESC, ol.id DESC
+LIMIT $9::int
+`
+
+type ListVisibleAllUsersOperationLogsParams struct {
+	TraceID      string
+	TraceIDUpper string
+	Module       string
+	Action       string
+	ResourceType string
+	ResourceID   string
+	StartAt      pgtype.Timestamptz
+	EndAt        pgtype.Timestamptz
+	RowLimit     int32
+}
+
+func (q *Queries) ListVisibleAllUsersOperationLogs(ctx context.Context, arg ListVisibleAllUsersOperationLogsParams) ([]JuheDatasetOperationLog, error) {
+	rows, err := q.db.Query(ctx, listVisibleAllUsersOperationLogs,
+		arg.TraceID,
+		arg.TraceIDUpper,
+		arg.Module,
+		arg.Action,
+		arg.ResourceType,
+		arg.ResourceID,
+		arg.StartAt,
+		arg.EndAt,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []JuheDatasetOperationLog
+	for rows.Next() {
+		var i JuheDatasetOperationLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.TraceID,
+			&i.ActorSystemAccountID,
+			&i.ActorUsername,
+			&i.ActorDisplayName,
+			&i.ActorRole,
+			&i.OperationScopeSystemAccountID,
+			&i.Mode,
+			&i.Module,
+			&i.Action,
+			&i.OperationKey,
+			&i.ResourceType,
+			&i.ResourceID,
+			&i.ResourceName,
+			&i.Summary,
+			&i.DetailLevel,
+			&i.VisibilityScope,
+			&i.ChangesJson,
+			&i.MetadataJson,
+			&i.Method,
+			&i.Path,
+			&i.StatusCode,
+			&i.ClientIp,
+			&i.UserAgent,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listVisibleAllUsersOperationLogsBySummarySearch = `-- name: ListVisibleAllUsersOperationLogsBySummarySearch :many
+SELECT ol.id, ol.trace_id, ol.actor_system_account_id, ol.actor_username, ol.actor_display_name, ol.actor_role, ol.operation_scope_system_account_id, ol.mode, ol.module, ol.action, ol.operation_key, ol.resource_type, ol.resource_id, ol.resource_name, ol.summary, ol.detail_level, ol.visibility_scope, ol.changes_json, ol.metadata_json, ol.method, ol.path, ol.status_code, ol.client_ip, ol.user_agent, ol.created_at
+FROM juhe_dataset.operation_log_summary_search_terms AS search
+INNER JOIN juhe_dataset.operation_logs AS ol
+  ON ol.id = search.operation_log_id
+WHERE search.term = $1::text
+  AND ol.visibility_scope = 'all_users'
+  AND (
+    $2::text = ''
+    OR (
+      ol.trace_id COLLATE "C" >= $2::text
+      AND ol.trace_id COLLATE "C" < $3::text
+    )
+  )
+  AND ($4::text = '' OR ol.module = $4::text)
+  AND ($5::text = '' OR ol.action = $5::text)
+  AND ($6::text = '' OR ol.resource_type = $6::text)
+  AND ($7::text = '' OR ol.resource_id = $7::text)
+  AND ($8::timestamptz IS NULL OR ol.created_at >= $8::timestamptz)
+  AND ($9::timestamptz IS NULL OR ol.created_at <= $9::timestamptz)
+ORDER BY search.created_at DESC, search.operation_log_id DESC
+LIMIT $10::int
+`
+
+type ListVisibleAllUsersOperationLogsBySummarySearchParams struct {
+	SearchTerm   string
+	TraceID      string
+	TraceIDUpper string
+	Module       string
+	Action       string
+	ResourceType string
+	ResourceID   string
+	StartAt      pgtype.Timestamptz
+	EndAt        pgtype.Timestamptz
+	RowLimit     int32
+}
+
+func (q *Queries) ListVisibleAllUsersOperationLogsBySummarySearch(ctx context.Context, arg ListVisibleAllUsersOperationLogsBySummarySearchParams) ([]JuheDatasetOperationLog, error) {
+	rows, err := q.db.Query(ctx, listVisibleAllUsersOperationLogsBySummarySearch,
+		arg.SearchTerm,
+		arg.TraceID,
+		arg.TraceIDUpper,
+		arg.Module,
+		arg.Action,
+		arg.ResourceType,
+		arg.ResourceID,
+		arg.StartAt,
+		arg.EndAt,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []JuheDatasetOperationLog
+	for rows.Next() {
+		var i JuheDatasetOperationLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.TraceID,
+			&i.ActorSystemAccountID,
+			&i.ActorUsername,
+			&i.ActorDisplayName,
+			&i.ActorRole,
+			&i.OperationScopeSystemAccountID,
+			&i.Mode,
+			&i.Module,
+			&i.Action,
+			&i.OperationKey,
+			&i.ResourceType,
+			&i.ResourceID,
+			&i.ResourceName,
+			&i.Summary,
+			&i.DetailLevel,
+			&i.VisibilityScope,
+			&i.ChangesJson,
+			&i.MetadataJson,
+			&i.Method,
+			&i.Path,
+			&i.StatusCode,
+			&i.ClientIp,
+			&i.UserAgent,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listVisibleTargetedOperationLogs = `-- name: ListVisibleTargetedOperationLogs :many
+SELECT ol.id, ol.trace_id, ol.actor_system_account_id, ol.actor_username, ol.actor_display_name, ol.actor_role, ol.operation_scope_system_account_id, ol.mode, ol.module, ol.action, ol.operation_key, ol.resource_type, ol.resource_id, ol.resource_name, ol.summary, ol.detail_level, ol.visibility_scope, ol.changes_json, ol.metadata_json, ol.method, ol.path, ol.status_code, ol.client_ip, ol.user_agent, ol.created_at
+FROM juhe_dataset.operation_log_viewers AS visible
+INNER JOIN juhe_dataset.operation_logs AS ol
+  ON ol.id = visible.operation_log_id
+WHERE visible.system_account_id = $1::text
+  AND ol.visibility_scope = 'targeted'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM juhe_dataset.operation_log_viewers AS previous
+    WHERE previous.operation_log_id = visible.operation_log_id
+      AND previous.system_account_id = visible.system_account_id
+      AND previous.visibility_reason < visible.visibility_reason
+  )
+  AND (
+    $2::text = ''
+    OR (
+      ol.trace_id COLLATE "C" >= $2::text
+      AND ol.trace_id COLLATE "C" < $3::text
+    )
+  )
+  AND ($4::text = '' OR ol.module = $4::text)
+  AND ($5::text = '' OR ol.action = $5::text)
+  AND ($6::text = '' OR ol.resource_type = $6::text)
+  AND ($7::text = '' OR ol.resource_id = $7::text)
+  AND ($8::timestamptz IS NULL OR ol.created_at >= $8::timestamptz)
+  AND ($9::timestamptz IS NULL OR ol.created_at <= $9::timestamptz)
+ORDER BY visible.created_at DESC, visible.operation_log_id DESC
+LIMIT $10::int
+`
+
+type ListVisibleTargetedOperationLogsParams struct {
+	SystemAccountID string
+	TraceID         string
+	TraceIDUpper    string
+	Module          string
+	Action          string
+	ResourceType    string
+	ResourceID      string
+	StartAt         pgtype.Timestamptz
+	EndAt           pgtype.Timestamptz
+	RowLimit        int32
+}
+
+func (q *Queries) ListVisibleTargetedOperationLogs(ctx context.Context, arg ListVisibleTargetedOperationLogsParams) ([]JuheDatasetOperationLog, error) {
+	rows, err := q.db.Query(ctx, listVisibleTargetedOperationLogs,
+		arg.SystemAccountID,
+		arg.TraceID,
+		arg.TraceIDUpper,
+		arg.Module,
+		arg.Action,
+		arg.ResourceType,
+		arg.ResourceID,
+		arg.StartAt,
+		arg.EndAt,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []JuheDatasetOperationLog
+	for rows.Next() {
+		var i JuheDatasetOperationLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.TraceID,
+			&i.ActorSystemAccountID,
+			&i.ActorUsername,
+			&i.ActorDisplayName,
+			&i.ActorRole,
+			&i.OperationScopeSystemAccountID,
+			&i.Mode,
+			&i.Module,
+			&i.Action,
+			&i.OperationKey,
+			&i.ResourceType,
+			&i.ResourceID,
+			&i.ResourceName,
+			&i.Summary,
+			&i.DetailLevel,
+			&i.VisibilityScope,
+			&i.ChangesJson,
+			&i.MetadataJson,
+			&i.Method,
+			&i.Path,
+			&i.StatusCode,
+			&i.ClientIp,
+			&i.UserAgent,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listVisibleTargetedOperationLogsBySummarySearch = `-- name: ListVisibleTargetedOperationLogsBySummarySearch :many
+SELECT ol.id, ol.trace_id, ol.actor_system_account_id, ol.actor_username, ol.actor_display_name, ol.actor_role, ol.operation_scope_system_account_id, ol.mode, ol.module, ol.action, ol.operation_key, ol.resource_type, ol.resource_id, ol.resource_name, ol.summary, ol.detail_level, ol.visibility_scope, ol.changes_json, ol.metadata_json, ol.method, ol.path, ol.status_code, ol.client_ip, ol.user_agent, ol.created_at
+FROM juhe_dataset.operation_log_summary_search_terms AS search
+INNER JOIN juhe_dataset.operation_logs AS ol
+  ON ol.id = search.operation_log_id
+INNER JOIN juhe_dataset.operation_log_viewers AS visible
+  ON visible.operation_log_id = ol.id
+  AND visible.system_account_id = $1::text
+WHERE search.term = $2::text
+  AND ol.visibility_scope = 'targeted'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM juhe_dataset.operation_log_viewers AS previous
+    WHERE previous.operation_log_id = visible.operation_log_id
+      AND previous.system_account_id = visible.system_account_id
+      AND previous.visibility_reason < visible.visibility_reason
+  )
+  AND (
+    $3::text = ''
+    OR (
+      ol.trace_id COLLATE "C" >= $3::text
+      AND ol.trace_id COLLATE "C" < $4::text
+    )
+  )
+  AND ($5::text = '' OR ol.module = $5::text)
+  AND ($6::text = '' OR ol.action = $6::text)
+  AND ($7::text = '' OR ol.resource_type = $7::text)
+  AND ($8::text = '' OR ol.resource_id = $8::text)
+  AND ($9::timestamptz IS NULL OR ol.created_at >= $9::timestamptz)
+  AND ($10::timestamptz IS NULL OR ol.created_at <= $10::timestamptz)
+ORDER BY search.created_at DESC, search.operation_log_id DESC
+LIMIT $11::int
+`
+
+type ListVisibleTargetedOperationLogsBySummarySearchParams struct {
+	SystemAccountID string
+	SearchTerm      string
+	TraceID         string
+	TraceIDUpper    string
+	Module          string
+	Action          string
+	ResourceType    string
+	ResourceID      string
+	StartAt         pgtype.Timestamptz
+	EndAt           pgtype.Timestamptz
+	RowLimit        int32
+}
+
+func (q *Queries) ListVisibleTargetedOperationLogsBySummarySearch(ctx context.Context, arg ListVisibleTargetedOperationLogsBySummarySearchParams) ([]JuheDatasetOperationLog, error) {
+	rows, err := q.db.Query(ctx, listVisibleTargetedOperationLogsBySummarySearch,
+		arg.SystemAccountID,
+		arg.SearchTerm,
+		arg.TraceID,
+		arg.TraceIDUpper,
+		arg.Module,
+		arg.Action,
+		arg.ResourceType,
+		arg.ResourceID,
+		arg.StartAt,
+		arg.EndAt,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []JuheDatasetOperationLog
+	for rows.Next() {
+		var i JuheDatasetOperationLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.TraceID,
+			&i.ActorSystemAccountID,
+			&i.ActorUsername,
+			&i.ActorDisplayName,
+			&i.ActorRole,
+			&i.OperationScopeSystemAccountID,
+			&i.Mode,
+			&i.Module,
+			&i.Action,
+			&i.OperationKey,
+			&i.ResourceType,
+			&i.ResourceID,
+			&i.ResourceName,
+			&i.Summary,
+			&i.DetailLevel,
+			&i.VisibilityScope,
+			&i.ChangesJson,
+			&i.MetadataJson,
+			&i.Method,
+			&i.Path,
+			&i.StatusCode,
+			&i.ClientIp,
+			&i.UserAgent,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

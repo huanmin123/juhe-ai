@@ -48,6 +48,8 @@ type RouterOptions struct {
 	ManagementMyAccountTagDeleteHandler             http.Handler
 	ManagementAccountTagUpdateHandler               http.Handler
 	ManagementMyAccountTagUpdateHandler             http.Handler
+	ManagementOperationLogsHandler                  http.Handler
+	ManagementMyOperationLogsHandler                http.Handler
 }
 
 func NewRouter(opts RouterOptions) http.Handler {
@@ -102,7 +104,9 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementAccountTagDeleteHandler == nil &&
 				opts.ManagementMyAccountTagDeleteHandler == nil &&
 				opts.ManagementAccountTagUpdateHandler == nil &&
-				opts.ManagementMyAccountTagUpdateHandler == nil {
+				opts.ManagementMyAccountTagUpdateHandler == nil &&
+				opts.ManagementOperationLogsHandler == nil &&
+				opts.ManagementMyOperationLogsHandler == nil {
 				panic("at least one management API handler is required when JUHE_AI_MANAGEMENT_API_ENABLED is true")
 			}
 			if opts.ManagementProxyOptionsHandler != nil {
@@ -182,6 +186,14 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementMyAccountTagUpdateHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Patch("/my-accounts/{id}/tags", opts.ManagementMyAccountTagUpdateHandler.ServeHTTP)
+			}
+			if opts.ManagementOperationLogsHandler != nil {
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/operation-logs", opts.ManagementOperationLogsHandler.ServeHTTP)
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/operation-logs/{id}", opts.ManagementOperationLogsHandler.ServeHTTP)
+			}
+			if opts.ManagementMyOperationLogsHandler != nil {
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/my-operation-logs", opts.ManagementMyOperationLogsHandler.ServeHTTP)
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/my-operation-logs/{id}", opts.ManagementMyOperationLogsHandler.ServeHTTP)
 			}
 		}
 	})
