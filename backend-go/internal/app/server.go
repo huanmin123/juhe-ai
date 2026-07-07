@@ -91,6 +91,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyRouteStrategyOptionsHandler: managementHandlers.MyRouteStrategyOptionsHandler,
 		ManagementGroupOptionsHandler:           managementHandlers.GroupOptionsHandler,
 		ManagementMyGroupOptionsHandler:         managementHandlers.MyGroupOptionsHandler,
+		ManagementGroupAccountOptionsHandler:    managementHandlers.GroupAccountOptionsHandler,
+		ManagementMyGroupAccountOptionsHandler:  managementHandlers.MyGroupAccountOptionsHandler,
 		ManagementAccountOptionsHandler:         managementHandlers.AccountOptionsHandler,
 		ManagementMyAccountOptionsHandler:       managementHandlers.MyAccountOptionsHandler,
 	})
@@ -134,6 +136,8 @@ type managementAPIHandlers struct {
 	MyRouteStrategyOptionsHandler http.Handler
 	GroupOptionsHandler           http.Handler
 	MyGroupOptionsHandler         http.Handler
+	GroupAccountOptionsHandler    http.Handler
+	MyGroupAccountOptionsHandler  http.Handler
 	AccountOptionsHandler         http.Handler
 	MyAccountOptionsHandler       http.Handler
 }
@@ -159,6 +163,8 @@ func newManagementAPIHandler(cfg config.Config, store *postgresstore.Store) mana
 		MyRouteStrategyOptionsHandler: httpapi.NewManagementMyRouteStrategyOptionsHandler(routeStrategyService),
 		GroupOptionsHandler:           httpapi.NewManagementGroupOptionsHandler(groupService),
 		MyGroupOptionsHandler:         httpapi.NewManagementMyGroupOptionsHandler(groupService),
+		GroupAccountOptionsHandler:    httpapi.NewManagementGroupAccountOptionsHandler(groupService),
+		MyGroupAccountOptionsHandler:  httpapi.NewManagementMyGroupAccountOptionsHandler(groupService),
 		AccountOptionsHandler:         httpapi.NewManagementAccountOptionsHandler(accountService),
 		MyAccountOptionsHandler:       httpapi.NewManagementMyAccountOptionsHandler(accountService),
 	}

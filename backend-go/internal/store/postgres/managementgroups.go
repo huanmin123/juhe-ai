@@ -40,6 +40,10 @@ func (s *Store) ListManagementGroupOptions(ctx context.Context, input port.Manag
 	return listManagementGroupOptions(ctx, s.queries(), input)
 }
 
+func (s *Store) ListManagementGroupAccountOptions(ctx context.Context, input port.ManagementGroupOptionListInput) ([]port.ManagementGroupAccountOption, error) {
+	return listManagementGroupAccountOptions(ctx, s.queries(), input)
+}
+
 func listManagementGroupOptions(ctx context.Context, q *postgresqueries.Queries, input port.ManagementGroupOptionListInput) ([]port.ManagementGroupOption, error) {
 	keyword := strings.TrimSpace(input.Keyword)
 	keywordUpper := ""
@@ -74,6 +78,69 @@ func listManagementGroupOptions(ctx context.Context, q *postgresqueries.Queries,
 			IsDefault:            row.IsDefault,
 			GroupType:            managementGroupType(row.GroupType),
 			SchedulingPolicy:     schedulingPolicy,
+		}
+		if input.IncludeSystemAccountFields {
+			option.SystemAccountID = row.SystemAccountID
+			option.SystemAccountName = textValue(row.SystemAccountName)
+			option.OwnerSystemAccountName = textValue(row.SystemAccountName)
+		}
+		options = append(options, option)
+	}
+	return options, nil
+}
+
+func listManagementGroupAccountOptions(ctx context.Context, q *postgresqueries.Queries, input port.ManagementGroupOptionListInput) ([]port.ManagementGroupAccountOption, error) {
+	keyword := strings.TrimSpace(input.Keyword)
+	keywordUpper := ""
+	if keyword != "" {
+		keywordUpper = textPrefixUpperBound(keyword)
+	}
+	rows, err := q.ListManagementGroupAccountOptions(ctx, postgresqueries.ListManagementGroupAccountOptionsParams{
+		SystemAccountID: strings.TrimSpace(input.SystemAccountID),
+		Ids:             uniqueStrings(input.IDs, 50),
+		ProviderCode:    strings.TrimSpace(input.ProviderCode),
+		HasKeyword:      keyword != "",
+		Keyword:         keyword,
+		KeywordUpper:    keywordUpper,
+		PreferDefault:   input.PreferDefault,
+		RowLimit:        int32(managementGroupOptionLimit(input.Limit)),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list management account group options: %w", err)
+	}
+	groupIDs := make([]string, 0, len(rows))
+	for _, row := range rows {
+		groupIDs = append(groupIDs, row.ID)
+	}
+	accountIDsByGroupID := map[string][]string{}
+	if len(groupIDs) > 0 {
+		accountIDRows, err := q.ListManagementGroupAccountOptionIDs(ctx, postgresqueries.ListManagementGroupAccountOptionIDsParams{
+			GroupIds:        groupIDs,
+			SystemAccountID: strings.TrimSpace(input.SystemAccountID),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("list management group account option ids: %w", err)
+		}
+		for _, row := range accountIDRows {
+			accountIDsByGroupID[row.GroupID] = append(accountIDsByGroupID[row.GroupID], row.AccountID)
+		}
+	}
+	options := make([]port.ManagementGroupAccountOption, 0, len(rows))
+	for _, row := range rows {
+		schedulingPolicy, err := managementGroupSchedulingPolicy(row.ID, row.GroupType, row.SchedulingPolicyJson)
+		if err != nil {
+			return nil, err
+		}
+		option := port.ManagementGroupAccountOption{
+			ID:                   row.ID,
+			OwnerSystemAccountID: row.SystemAccountID,
+			Name:                 row.Name,
+			ProviderCode:         row.ProviderCode,
+			Enabled:              row.Enabled,
+			IsDefault:            row.IsDefault,
+			GroupType:            managementGroupType(row.GroupType),
+			SchedulingPolicy:     schedulingPolicy,
+			AccountIDs:           append([]string(nil), accountIDsByGroupID[row.ID]...),
 		}
 		if input.IncludeSystemAccountFields {
 			option.SystemAccountID = row.SystemAccountID

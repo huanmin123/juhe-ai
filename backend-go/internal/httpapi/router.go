@@ -30,6 +30,8 @@ type RouterOptions struct {
 	ManagementMyRouteStrategyOptionsHandler http.Handler
 	ManagementGroupOptionsHandler           http.Handler
 	ManagementMyGroupOptionsHandler         http.Handler
+	ManagementGroupAccountOptionsHandler    http.Handler
+	ManagementMyGroupAccountOptionsHandler  http.Handler
 	ManagementAccountOptionsHandler         http.Handler
 	ManagementMyAccountOptionsHandler       http.Handler
 }
@@ -69,6 +71,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyRouteStrategyOptionsHandler == nil &&
 				opts.ManagementGroupOptionsHandler == nil &&
 				opts.ManagementMyGroupOptionsHandler == nil &&
+				opts.ManagementGroupAccountOptionsHandler == nil &&
+				opts.ManagementMyGroupAccountOptionsHandler == nil &&
 				opts.ManagementAccountOptionsHandler == nil &&
 				opts.ManagementMyAccountOptionsHandler == nil {
 				panic("at least one management API handler is required when JUHE_AI_MANAGEMENT_API_ENABLED is true")
@@ -96,6 +100,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementMyGroupOptionsHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/my-groups/options", opts.ManagementMyGroupOptionsHandler.ServeHTTP)
+			}
+			if opts.ManagementGroupAccountOptionsHandler != nil {
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/groups/account-options", opts.ManagementGroupAccountOptionsHandler.ServeHTTP)
+			}
+			if opts.ManagementMyGroupAccountOptionsHandler != nil {
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/my-groups/account-options", opts.ManagementMyGroupAccountOptionsHandler.ServeHTTP)
 			}
 			if opts.ManagementAccountOptionsHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/accounts/options", opts.ManagementAccountOptionsHandler.ServeHTTP)

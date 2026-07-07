@@ -55,6 +55,11 @@ type Option struct {
 	Permissions            ResourcePermissions `json:"permissions"`
 }
 
+type AccountOption struct {
+	Option
+	AccountIDs []string `json:"accountIds"`
+}
+
 func NewService(store port.ManagementGroupOptionReader) *Service {
 	return &Service{store: store}
 }
@@ -91,6 +96,46 @@ func (s *Service) Options(ctx context.Context, input OptionListInput) ([]Option,
 			SchedulingPolicy:       row.SchedulingPolicy,
 			AccessType:             "owner",
 			Permissions:            ownerPermissions(),
+		})
+	}
+	return items, nil
+}
+
+func (s *Service) AccountOptions(ctx context.Context, input OptionListInput) ([]AccountOption, error) {
+	if s.store == nil {
+		return nil, fmt.Errorf("management account group option store is required")
+	}
+	rows, err := s.store.ListManagementGroupAccountOptions(ctx, port.ManagementGroupOptionListInput{
+		SystemAccountID:            strings.TrimSpace(input.SystemAccountID),
+		IncludeSystemAccountFields: input.IncludeSystemAccountFields,
+		IDs:                        uniqueStrings(input.IDs, 50),
+		Keyword:                    strings.TrimSpace(input.Keyword),
+		ProviderCode:               strings.TrimSpace(input.ProviderCode),
+		Limit:                      optionLimit(input.Limit),
+		PreferDefault:              input.PreferDefault,
+	})
+	if err != nil {
+		return nil, err
+	}
+	items := make([]AccountOption, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, AccountOption{
+			Option: Option{
+				ID:                     row.ID,
+				SystemAccountID:        row.SystemAccountID,
+				SystemAccountName:      row.SystemAccountName,
+				OwnerSystemAccountID:   row.OwnerSystemAccountID,
+				OwnerSystemAccountName: row.OwnerSystemAccountName,
+				Name:                   row.Name,
+				ProviderCode:           row.ProviderCode,
+				Enabled:                row.Enabled,
+				IsDefault:              row.IsDefault,
+				GroupType:              row.GroupType,
+				SchedulingPolicy:       row.SchedulingPolicy,
+				AccessType:             "owner",
+				Permissions:            ownerPermissions(),
+			},
+			AccountIDs: append([]string(nil), row.AccountIDs...),
 		})
 	}
 	return items, nil

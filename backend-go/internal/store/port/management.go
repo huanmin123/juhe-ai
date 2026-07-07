@@ -177,6 +177,21 @@ type ManagementGroupOption struct {
 	SchedulingPolicy       map[string]any
 }
 
+type ManagementGroupAccountOption struct {
+	ID                     string
+	SystemAccountID        string
+	SystemAccountName      string
+	OwnerSystemAccountID   string
+	OwnerSystemAccountName string
+	Name                   string
+	ProviderCode           string
+	Enabled                bool
+	IsDefault              bool
+	GroupType              string
+	SchedulingPolicy       map[string]any
+	AccountIDs             []string
+}
+
 type ManagementGroupOptionListInput struct {
 	SystemAccountID            string
 	IncludeSystemAccountFields bool
@@ -189,6 +204,7 @@ type ManagementGroupOptionListInput struct {
 
 type ManagementGroupOptionReader interface {
 	ListManagementGroupOptions(ctx context.Context, input ManagementGroupOptionListInput) ([]ManagementGroupOption, error)
+	ListManagementGroupAccountOptions(ctx context.Context, input ManagementGroupOptionListInput) ([]ManagementGroupAccountOption, error)
 }
 
 type ManagementAccountOption struct {

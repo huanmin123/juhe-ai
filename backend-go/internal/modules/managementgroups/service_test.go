@@ -84,13 +84,81 @@ func TestServiceOptionsDefaults(t *testing.T) {
 	}
 }
 
+func TestServiceAccountOptionsNormalizesInputAndMapsAccountIDs(t *testing.T) {
+	store := &groupOptionStoreStub{
+		accountOptions: []port.ManagementGroupAccountOption{
+			{
+				ID:                     "group_default",
+				SystemAccountID:        "sys_admin",
+				SystemAccountName:      "管理员",
+				OwnerSystemAccountID:   "sys_admin",
+				OwnerSystemAccountName: "管理员",
+				Name:                   "默认分组",
+				ProviderCode:           "openai",
+				Enabled:                true,
+				IsDefault:              true,
+				GroupType:              "personal",
+				AccountIDs:             []string{"acct_a", "acct_b"},
+			},
+		},
+	}
+	service := NewService(store)
+
+	options, err := service.AccountOptions(context.Background(), OptionListInput{
+		SystemAccountID:            " sys_admin ",
+		IncludeSystemAccountFields: true,
+		IDs:                        []string{" group_default ", "group_default", "group_backup"},
+		Keyword:                    " 默认 ",
+		ProviderCode:               " openai ",
+		Limit:                      500,
+		PreferDefault:              true,
+	})
+	if err != nil {
+		t.Fatalf("AccountOptions() error = %v", err)
+	}
+
+	if store.accountInput.SystemAccountID != "sys_admin" ||
+		store.accountInput.Keyword != "默认" ||
+		store.accountInput.ProviderCode != "openai" ||
+		store.accountInput.Limit != 50 ||
+		!store.accountInput.PreferDefault ||
+		!store.accountInput.IncludeSystemAccountFields {
+		t.Fatalf("store account input = %+v", store.accountInput)
+	}
+	if len(store.accountInput.IDs) != 2 || store.accountInput.IDs[0] != "group_default" || store.accountInput.IDs[1] != "group_backup" {
+		t.Fatalf("store account ids = %#v", store.accountInput.IDs)
+	}
+	if len(options) != 1 {
+		t.Fatalf("options = %d, want 1", len(options))
+	}
+	got := options[0]
+	if got.ID != "group_default" ||
+		got.SystemAccountID != "sys_admin" ||
+		got.AccessType != "owner" ||
+		len(got.AccountIDs) != 2 ||
+		got.AccountIDs[0] != "acct_a" ||
+		got.AccountIDs[1] != "acct_b" {
+		t.Fatalf("account option = %+v", got)
+	}
+	if got.Permissions != ownerPermissions() {
+		t.Fatalf("permissions = %+v", got.Permissions)
+	}
+}
+
 type groupOptionStoreStub struct {
-	input   port.ManagementGroupOptionListInput
-	options []port.ManagementGroupOption
-	err     error
+	input          port.ManagementGroupOptionListInput
+	accountInput   port.ManagementGroupOptionListInput
+	options        []port.ManagementGroupOption
+	accountOptions []port.ManagementGroupAccountOption
+	err            error
 }
 
 func (s *groupOptionStoreStub) ListManagementGroupOptions(_ context.Context, input port.ManagementGroupOptionListInput) ([]port.ManagementGroupOption, error) {
 	s.input = input
 	return s.options, s.err
+}
+
+func (s *groupOptionStoreStub) ListManagementGroupAccountOptions(_ context.Context, input port.ManagementGroupOptionListInput) ([]port.ManagementGroupAccountOption, error) {
+	s.accountInput = input
+	return s.accountOptions, s.err
 }
