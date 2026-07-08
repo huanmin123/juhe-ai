@@ -1,17 +1,32 @@
 package httpapi
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
+	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
+
+	operationlogjob "juhe-ai/backend-go/internal/jobs/operationlog"
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementsystemaccounts"
+	"juhe-ai/backend-go/internal/store/port"
 )
 
 type managementSystemAccountOptionService interface {
 	List(r *http.Request, input managementsystemaccounts.ListInput) (managementsystemaccounts.ListResult, error)
 	Options(r *http.Request, input managementsystemaccounts.OptionListInput) ([]managementsystemaccounts.Option, error)
+}
+
+type managementSystemAccountPasswordResetService interface {
+	ResetPassword(ctx context.Context, input managementsystemaccounts.PasswordResetInput) (managementsystemaccounts.PasswordResetResult, error)
 }
 
 type managementSystemAccountOptionServiceAdapter struct {
@@ -26,12 +41,27 @@ func (s managementSystemAccountOptionServiceAdapter) List(r *http.Request, input
 	return s.service.List(r.Context(), input)
 }
 
+func (s managementSystemAccountOptionServiceAdapter) ResetPassword(ctx context.Context, input managementsystemaccounts.PasswordResetInput) (managementsystemaccounts.PasswordResetResult, error) {
+	return s.service.ResetPassword(ctx, input)
+}
+
 func NewManagementSystemAccountsHandler(service *managementsystemaccounts.Service) http.Handler {
 	return newManagementSystemAccountsHandler(managementSystemAccountOptionServiceAdapter{service: service})
 }
 
 func NewManagementSystemAccountOptionsHandler(service *managementsystemaccounts.Service) http.Handler {
 	return newManagementSystemAccountOptionsHandler(managementSystemAccountOptionServiceAdapter{service: service})
+}
+
+func NewManagementSystemAccountPasswordResetHandler(service *managementsystemaccounts.Service) http.Handler {
+	return newManagementSystemAccountPasswordResetHandler(managementSystemAccountOptionServiceAdapter{service: service})
+}
+
+func NewManagementSystemAccountPasswordResetHandlerWithOperationLog(service *managementsystemaccounts.Service, opts ManagementOperationLogOptions) http.Handler {
+	return newManagementSystemAccountPasswordResetHandler(
+		managementSystemAccountOptionServiceAdapter{service: service},
+		newManagementOperationLogOptions(opts),
+	)
 }
 
 func newManagementSystemAccountsHandler(service managementSystemAccountOptionService) http.Handler {
@@ -72,6 +102,190 @@ func newManagementSystemAccountOptionsHandler(service managementSystemAccountOpt
 		}
 		writeData(w, http.StatusOK, options)
 	})
+}
+
+func newManagementSystemAccountPasswordResetHandler(service managementSystemAccountPasswordResetService, logOptions ...managementOperationLogOptions) http.Handler {
+	operationLogs := effectiveManagementOperationLogOptions(logOptions)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authContext, ok := ManagementAuthContextFromRequest(r)
+		if !ok || strings.TrimSpace(authContext.SystemAccountID) == "" {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		if !managementauth.IsSuperAdminRole(authContext.Role) {
+			writeMessageError(w, http.StatusForbidden, "需要超级管理员权限")
+			return
+		}
+		password, mustChangePassword, ok := decodeManagementSystemAccountPasswordResetBody(w, r)
+		if !ok {
+			return
+		}
+		result, err := service.ResetPassword(r.Context(), managementsystemaccounts.PasswordResetInput{
+			SystemAccountID:    chi.URLParam(r, "id"),
+			Password:           password,
+			MustChangePassword: mustChangePassword,
+		})
+		if errors.Is(err, managementsystemaccounts.ErrPasswordResetWhitespace) {
+			writeMessageError(w, http.StatusBadRequest, "登录密码不能包含空格")
+			return
+		}
+		if errors.Is(err, managementsystemaccounts.ErrPasswordResetInvalid) {
+			writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
+			return
+		}
+		if errors.Is(err, managementsystemaccounts.ErrSystemAccountNotFound) {
+			writeMessageError(w, http.StatusNotFound, "系统账户不存在")
+			return
+		}
+		if err != nil {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		recordSystemAccountPasswordResetOperationLog(r, authContext, result, operationLogs)
+		writeData(w, http.StatusOK, result.Account)
+	})
+}
+
+func decodeManagementSystemAccountPasswordResetBody(w http.ResponseWriter, r *http.Request) (string, *bool, bool) {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	var payload map[string]json.RawMessage
+	if err := decoder.Decode(&payload); err != nil || payload == nil {
+		writeManagementSystemAccountPasswordResetBodyError(w, err)
+		return "", nil, false
+	}
+	var extra struct{}
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		writeMessageError(w, http.StatusBadRequest, "请求体无效")
+		return "", nil, false
+	}
+	if _, exists := payload["username"]; exists {
+		writeMessageError(w, http.StatusBadRequest, "用户账户创建后不能修改")
+		return "", nil, false
+	}
+	for field := range payload {
+		if field != "password" && field != "mustChangePassword" {
+			writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
+			return "", nil, false
+		}
+	}
+	rawPassword, exists := payload["password"]
+	if !exists {
+		writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
+		return "", nil, false
+	}
+	var password string
+	if err := json.Unmarshal(rawPassword, &password); err != nil {
+		writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
+		return "", nil, false
+	}
+	var mustChangePassword *bool
+	if rawMustChangePassword, exists := payload["mustChangePassword"]; exists {
+		var value *bool
+		if err := json.Unmarshal(rawMustChangePassword, &value); err != nil || value == nil {
+			writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
+			return "", nil, false
+		}
+		mustChangePassword = value
+	}
+	return password, mustChangePassword, true
+}
+
+func writeManagementSystemAccountPasswordResetBodyError(w http.ResponseWriter, err error) {
+	var maxBytesErr *http.MaxBytesError
+	if errors.As(err, &maxBytesErr) {
+		writeMessageError(w, http.StatusRequestEntityTooLarge, "请求体过大")
+		return
+	}
+	var syntaxErr *json.SyntaxError
+	if errors.As(err, &syntaxErr) || errors.Is(err, io.ErrUnexpectedEOF) {
+		writeMessageError(w, http.StatusBadRequest, "请求体无效")
+		return
+	}
+	writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
+}
+
+func recordSystemAccountPasswordResetOperationLog(
+	r *http.Request,
+	authContext managementauth.Context,
+	result managementsystemaccounts.PasswordResetResult,
+	opts managementOperationLogOptions,
+) {
+	if opts.client == nil {
+		return
+	}
+	now := opts.now
+	if now == nil {
+		now = time.Now
+	}
+	newLogID := opts.newLogID
+	if newLogID == nil {
+		newLogID = func() string {
+			return "oplog_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+		}
+	}
+	statusCode := http.StatusOK
+	input := port.OperationLogInput{
+		ID:                            newLogID(),
+		TraceID:                       requestIDFromContext(r.Context()),
+		ActorSystemAccountID:          authContext.SystemAccountID,
+		ActorUsername:                 authContext.Username,
+		ActorDisplayName:              authContext.DisplayName,
+		ActorRole:                     authContext.Role,
+		OperationScopeSystemAccountID: result.Account.ID,
+		Mode:                          "admin",
+		Module:                        "system_accounts",
+		Action:                        "reset_password",
+		OperationKey:                  "system_accounts.reset_password",
+		ResourceType:                  "system_account",
+		ResourceID:                    result.Account.ID,
+		ResourceName:                  result.Account.DisplayName,
+		Summary:                       "重置系统账户密码：" + result.Account.DisplayName,
+		DetailLevel:                   "full",
+		VisibilityScope:               "targeted",
+		Changes: []port.OperationLogChange{
+			{
+				Field:     "password",
+				Label:     "登录密码",
+				After:     "已重置",
+				Sensitive: true,
+			},
+		},
+		Metadata: map[string]any{
+			"revokedSessionCount": result.RevokedSessionCount,
+		},
+		Method:     r.Method,
+		Path:       r.URL.Path,
+		StatusCode: &statusCode,
+		ClientIP:   opts.clientIP.FromRequest(r),
+		UserAgent:  r.UserAgent(),
+		Viewers: []port.OperationLogViewerInput{
+			{
+				SystemAccountID:  result.Account.ID,
+				VisibilityReason: "admin_managed_my_resource",
+				DetailLevel:      "full",
+			},
+		},
+		CreatedAt: now().UTC(),
+	}
+	if result.Before.MustChangePassword != result.Account.MustChangePassword {
+		input.Changes = append(input.Changes, port.OperationLogChange{
+			Field:  "mustChangePassword",
+			Label:  "初始密码状态",
+			Before: result.Before.MustChangePassword,
+			After:  result.Account.MustChangePassword,
+		})
+	}
+	enqueueCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+	defer cancel()
+	if _, err := operationlogjob.EnqueueWrite(enqueueCtx, opts.client, input); err != nil && opts.logger != nil {
+		opts.logger.Warn("管理端操作日志入队失败",
+			slog.String("event", "operation_log_enqueue_failed"),
+			slog.String("operation_key", input.OperationKey),
+			slog.String("resource_id", input.ResourceID),
+			slog.String("request_id", input.TraceID),
+			slog.Any("error", err),
+		)
+	}
 }
 
 func parseManagementSystemAccountListQuery(values url.Values) managementsystemaccounts.ListInput {

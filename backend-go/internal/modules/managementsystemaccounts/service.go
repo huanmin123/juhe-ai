@@ -2,10 +2,14 @@ package managementsystemaccounts
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
+	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/store/port"
 )
 
@@ -19,8 +23,16 @@ const (
 	maxOptionFilterItemSize = 50
 )
 
+var (
+	ErrPasswordResetInvalid    = errors.New("management system account password reset invalid")
+	ErrPasswordResetWhitespace = errors.New("management system account password reset whitespace")
+	ErrSystemAccountNotFound   = errors.New("management system account not found")
+)
+
 type Service struct {
-	store port.ManagementSystemAccountOptionReader
+	store        port.ManagementSystemAccountOptionReader
+	now          func() time.Time
+	hashPassword func(string) (string, error)
 }
 
 type OptionListInput struct {
@@ -64,8 +76,42 @@ type Option struct {
 	Status      string `json:"status"`
 }
 
+type ServiceOptions struct {
+	Store        port.ManagementSystemAccountOptionReader
+	Now          func() time.Time
+	HashPassword func(string) (string, error)
+}
+
+type PasswordResetInput struct {
+	SystemAccountID    string
+	Password           string
+	MustChangePassword *bool
+}
+
+type PasswordResetResult struct {
+	Before              Summary
+	Account             Summary
+	RevokedSessionCount int
+}
+
 func NewService(store port.ManagementSystemAccountOptionReader) *Service {
-	return &Service{store: store}
+	return NewServiceWithOptions(ServiceOptions{Store: store})
+}
+
+func NewServiceWithOptions(opts ServiceOptions) *Service {
+	now := opts.Now
+	if now == nil {
+		now = time.Now
+	}
+	hashPassword := opts.HashPassword
+	if hashPassword == nil {
+		hashPassword = managementauth.HashPassword
+	}
+	return &Service{
+		store:        opts.Store,
+		now:          now,
+		hashPassword: hashPassword,
+	}
 }
 
 func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error) {
@@ -117,6 +163,48 @@ func (s *Service) Options(ctx context.Context, input OptionListInput) ([]Option,
 		})
 	}
 	return items, nil
+}
+
+func (s *Service) ResetPassword(ctx context.Context, input PasswordResetInput) (PasswordResetResult, error) {
+	if s.store == nil {
+		return PasswordResetResult{}, fmt.Errorf("management system account store is required")
+	}
+	resetter, ok := s.store.(port.ManagementSystemAccountPasswordResetter)
+	if !ok || resetter == nil {
+		return PasswordResetResult{}, fmt.Errorf("management system account password resetter is required")
+	}
+	systemAccountID := strings.TrimSpace(input.SystemAccountID)
+	if systemAccountID == "" || utf8.RuneCountInString(input.Password) < 4 {
+		return PasswordResetResult{}, ErrPasswordResetInvalid
+	}
+	if strings.ContainsFunc(input.Password, unicode.IsSpace) {
+		return PasswordResetResult{}, ErrPasswordResetWhitespace
+	}
+	passwordHash, err := s.hashPassword(input.Password)
+	if err != nil {
+		return PasswordResetResult{}, err
+	}
+	storeInput := port.ManagementSystemAccountPasswordResetInput{
+		SystemAccountID: systemAccountID,
+		PasswordHash:    passwordHash,
+		UpdatedAt:       s.now().UTC(),
+	}
+	if input.MustChangePassword != nil {
+		storeInput.HasMustChangePassword = true
+		storeInput.MustChangePassword = *input.MustChangePassword
+	}
+	result, found, err := resetter.ResetManagementSystemAccountPassword(ctx, storeInput)
+	if err != nil {
+		return PasswordResetResult{}, err
+	}
+	if !found {
+		return PasswordResetResult{}, ErrSystemAccountNotFound
+	}
+	return PasswordResetResult{
+		Before:              systemAccountSummaryFromPort(result.Before),
+		Account:             systemAccountSummaryFromPort(result.Account),
+		RevokedSessionCount: result.RevokedSessionCount,
+	}, nil
 }
 
 func listPageSize(pageSize int) int {

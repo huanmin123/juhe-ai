@@ -160,6 +160,24 @@ type ManagementSystemAccountOptionReader interface {
 	ListManagementSystemAccountOptions(ctx context.Context, input ManagementSystemAccountOptionListInput) ([]ManagementSystemAccountOption, error)
 }
 
+type ManagementSystemAccountPasswordResetInput struct {
+	SystemAccountID       string
+	PasswordHash          string
+	HasMustChangePassword bool
+	MustChangePassword    bool
+	UpdatedAt             time.Time
+}
+
+type ManagementSystemAccountPasswordResetResult struct {
+	Before              ManagementSystemAccountSummary
+	Account             ManagementSystemAccountSummary
+	RevokedSessionCount int
+}
+
+type ManagementSystemAccountPasswordResetter interface {
+	ResetManagementSystemAccountPassword(ctx context.Context, input ManagementSystemAccountPasswordResetInput) (ManagementSystemAccountPasswordResetResult, bool, error)
+}
+
 type ManagementAuthorizationGranteeAccountOption struct {
 	ID          string
 	Username    string

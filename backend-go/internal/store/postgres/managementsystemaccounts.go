@@ -2,8 +2,12 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"juhe-ai/backend-go/internal/store/port"
 	"juhe-ai/backend-go/internal/store/postgres/postgresqueries"
@@ -20,6 +24,23 @@ func (s *Store) ListManagementSystemAccounts(ctx context.Context, input port.Man
 
 func (s *Store) ListManagementSystemAccountOptions(ctx context.Context, input port.ManagementSystemAccountOptionListInput) ([]port.ManagementSystemAccountOption, error) {
 	return listManagementSystemAccountOptions(ctx, s.queries(), input)
+}
+
+func (s *Store) ResetManagementSystemAccountPassword(ctx context.Context, input port.ManagementSystemAccountPasswordResetInput) (port.ManagementSystemAccountPasswordResetResult, bool, error) {
+	row, err := s.queries().ResetManagementSystemAccountPassword(ctx, postgresqueries.ResetManagementSystemAccountPasswordParams{
+		SystemAccountID:       input.SystemAccountID,
+		PasswordHash:          input.PasswordHash,
+		HasMustChangePassword: input.HasMustChangePassword,
+		MustChangePassword:    input.MustChangePassword,
+		UpdatedAt:             pgtype.Timestamptz{Time: input.UpdatedAt.UTC(), Valid: true},
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return port.ManagementSystemAccountPasswordResetResult{}, false, nil
+	}
+	if err != nil {
+		return port.ManagementSystemAccountPasswordResetResult{}, false, fmt.Errorf("reset management system account password: %w", err)
+	}
+	return managementSystemAccountPasswordResetResultFromRow(row), true, nil
 }
 
 func listManagementSystemAccounts(ctx context.Context, q *postgresqueries.Queries, input port.ManagementSystemAccountListInput) (port.ManagementSystemAccountListResult, error) {
@@ -102,4 +123,39 @@ func managementSystemAccountOptionLimit(limit int) int {
 	return min(limit, maxManagementSystemAccountOptionLimit)
 }
 
+func managementSystemAccountPasswordResetResultFromRow(row postgresqueries.ResetManagementSystemAccountPasswordRow) port.ManagementSystemAccountPasswordResetResult {
+	before := port.ManagementSystemAccountSummary{
+		ID:                     row.BeforeID,
+		Username:               row.BeforeUsername,
+		DisplayName:            row.BeforeDisplayName,
+		Description:            textValue(row.BeforeDescription),
+		Role:                   row.BeforeRole,
+		Status:                 row.BeforeStatus,
+		MustChangePassword:     row.BeforeMustChangePassword,
+		ImageGenerationEnabled: row.BeforeImageGenerationEnabled,
+		LastLoginAt:            timestamptzPtr(row.BeforeLastLoginAt),
+		CreatedAt:              timestamptzValue(row.BeforeCreatedAt),
+		UpdatedAt:              timestamptzValue(row.BeforeUpdatedAt),
+	}
+	account := port.ManagementSystemAccountSummary{
+		ID:                     row.ID,
+		Username:               row.Username,
+		DisplayName:            row.DisplayName,
+		Description:            textValue(row.Description),
+		Role:                   row.Role,
+		Status:                 row.Status,
+		MustChangePassword:     row.MustChangePassword,
+		ImageGenerationEnabled: row.ImageGenerationEnabled,
+		LastLoginAt:            timestamptzPtr(row.LastLoginAt),
+		CreatedAt:              timestamptzValue(row.CreatedAt),
+		UpdatedAt:              timestamptzValue(row.UpdatedAt),
+	}
+	return port.ManagementSystemAccountPasswordResetResult{
+		Before:              before,
+		Account:             account,
+		RevokedSessionCount: int(row.RevokedSessionCount),
+	}
+}
+
 var _ port.ManagementSystemAccountOptionReader = (*Store)(nil)
+var _ port.ManagementSystemAccountPasswordResetter = (*Store)(nil)

@@ -178,3 +178,7 @@ func (a *Authenticator) touchSession(ctx context.Context, session port.Managemen
 func IsAdminRole(role string) bool {
 	return role == "super_admin" || role == "admin"
 }
+
+func IsSuperAdminRole(role string) bool {
+	return role == "super_admin"
+}

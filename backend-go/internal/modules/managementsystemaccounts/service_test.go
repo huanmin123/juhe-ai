@@ -141,13 +141,173 @@ func TestOptionsReturnsStoreError(t *testing.T) {
 	}
 }
 
+func TestResetPasswordHashesPasswordAndMapsResult(t *testing.T) {
+	now := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
+	updatedAt := now.Add(time.Minute)
+	mustChangePassword := true
+	store := &systemAccountOptionStoreStub{
+		resetFound: true,
+		resetResult: port.ManagementSystemAccountPasswordResetResult{
+			Before: port.ManagementSystemAccountSummary{
+				ID:                 "sys_user",
+				Username:           "user",
+				DisplayName:        "用户",
+				Role:               "user",
+				Status:             "active",
+				MustChangePassword: false,
+				CreatedAt:          now,
+				UpdatedAt:          now,
+			},
+			Account: port.ManagementSystemAccountSummary{
+				ID:                 "sys_user",
+				Username:           "user",
+				DisplayName:        "用户",
+				Role:               "user",
+				Status:             "active",
+				MustChangePassword: true,
+				CreatedAt:          now,
+				UpdatedAt:          updatedAt,
+			},
+			RevokedSessionCount: 2,
+		},
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		Store: store,
+		Now:   func() time.Time { return updatedAt },
+		HashPassword: func(password string) (string, error) {
+			if password != "NewPass123" {
+				t.Fatalf("hash password input = %q", password)
+			}
+			return "hashed-password", nil
+		},
+	})
+
+	result, err := service.ResetPassword(context.Background(), PasswordResetInput{
+		SystemAccountID:    " sys_user ",
+		Password:           "NewPass123",
+		MustChangePassword: &mustChangePassword,
+	})
+
+	if err != nil {
+		t.Fatalf("ResetPassword() error = %v", err)
+	}
+	if store.resetInput.SystemAccountID != "sys_user" ||
+		store.resetInput.PasswordHash != "hashed-password" ||
+		!store.resetInput.HasMustChangePassword ||
+		!store.resetInput.MustChangePassword ||
+		!store.resetInput.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("reset input = %+v", store.resetInput)
+	}
+	if result.Account.ID != "sys_user" ||
+		!result.Account.MustChangePassword ||
+		result.Account.UpdatedAt != updatedAt.Format(time.RFC3339Nano) ||
+		result.RevokedSessionCount != 2 {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestResetPasswordNormalizesAdminMustChangePassword(t *testing.T) {
+	now := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
+	store := &systemAccountOptionStoreStub{
+		resetFound: true,
+		resetResult: port.ManagementSystemAccountPasswordResetResult{
+			Before: port.ManagementSystemAccountSummary{ID: "sys_admin", Role: "admin", Status: "active", MustChangePassword: true, CreatedAt: now, UpdatedAt: now},
+			Account: port.ManagementSystemAccountSummary{
+				ID:                 "sys_admin",
+				Username:           "admin",
+				DisplayName:        "管理员",
+				Role:               "admin",
+				Status:             "active",
+				MustChangePassword: true,
+				CreatedAt:          now,
+				UpdatedAt:          now,
+			},
+		},
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		Store:        store,
+		HashPassword: func(string) (string, error) { return "hash", nil },
+	})
+
+	result, err := service.ResetPassword(context.Background(), PasswordResetInput{SystemAccountID: "sys_admin", Password: "NewPass123"})
+
+	if err != nil {
+		t.Fatalf("ResetPassword() error = %v", err)
+	}
+	if result.Account.MustChangePassword || result.Before.MustChangePassword {
+		t.Fatalf("admin mustChangePassword should be normalized to false, result = %+v", result)
+	}
+}
+
+func TestResetPasswordRejectsInvalidInput(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    PasswordResetInput
+		wantErr  error
+		wantCall bool
+	}{
+		{name: "missing id", input: PasswordResetInput{Password: "NewPass123"}, wantErr: ErrPasswordResetInvalid},
+		{name: "short password", input: PasswordResetInput{SystemAccountID: "sys_user", Password: "abc"}, wantErr: ErrPasswordResetInvalid},
+		{name: "password whitespace", input: PasswordResetInput{SystemAccountID: "sys_user", Password: "New Pass123"}, wantErr: ErrPasswordResetWhitespace},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &systemAccountOptionStoreStub{}
+			service := NewServiceWithOptions(ServiceOptions{
+				Store:        store,
+				HashPassword: func(string) (string, error) { return "hash", nil },
+			})
+
+			_, err := service.ResetPassword(context.Background(), tt.input)
+
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("ResetPassword() error = %v, want %v", err, tt.wantErr)
+			}
+			if store.resetCalled != tt.wantCall {
+				t.Fatalf("reset called = %v, want %v", store.resetCalled, tt.wantCall)
+			}
+		})
+	}
+}
+
+func TestResetPasswordMapsStoreNotFoundAndErrors(t *testing.T) {
+	want := errors.New("postgres down")
+	tests := []struct {
+		name    string
+		store   *systemAccountOptionStoreStub
+		wantErr error
+	}{
+		{name: "not found", store: &systemAccountOptionStoreStub{}, wantErr: ErrSystemAccountNotFound},
+		{name: "store error", store: &systemAccountOptionStoreStub{resetErr: want}, wantErr: want},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := NewServiceWithOptions(ServiceOptions{
+				Store:        tt.store,
+				HashPassword: func(string) (string, error) { return "hash", nil },
+			})
+
+			_, err := service.ResetPassword(context.Background(), PasswordResetInput{SystemAccountID: "sys_user", Password: "NewPass123"})
+
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("ResetPassword() error = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 type systemAccountOptionStoreStub struct {
-	listInput  port.ManagementSystemAccountListInput
-	listResult port.ManagementSystemAccountListResult
-	listErr    error
-	input      port.ManagementSystemAccountOptionListInput
-	options    []port.ManagementSystemAccountOption
-	err        error
+	listInput   port.ManagementSystemAccountListInput
+	listResult  port.ManagementSystemAccountListResult
+	listErr     error
+	input       port.ManagementSystemAccountOptionListInput
+	options     []port.ManagementSystemAccountOption
+	err         error
+	resetCalled bool
+	resetInput  port.ManagementSystemAccountPasswordResetInput
+	resetResult port.ManagementSystemAccountPasswordResetResult
+	resetFound  bool
+	resetErr    error
 }
 
 func (s *systemAccountOptionStoreStub) ListManagementSystemAccounts(_ context.Context, input port.ManagementSystemAccountListInput) (port.ManagementSystemAccountListResult, error) {
@@ -158,4 +318,10 @@ func (s *systemAccountOptionStoreStub) ListManagementSystemAccounts(_ context.Co
 func (s *systemAccountOptionStoreStub) ListManagementSystemAccountOptions(_ context.Context, input port.ManagementSystemAccountOptionListInput) ([]port.ManagementSystemAccountOption, error) {
 	s.input = input
 	return s.options, s.err
+}
+
+func (s *systemAccountOptionStoreStub) ResetManagementSystemAccountPassword(_ context.Context, input port.ManagementSystemAccountPasswordResetInput) (port.ManagementSystemAccountPasswordResetResult, bool, error) {
+	s.resetCalled = true
+	s.resetInput = input
+	return s.resetResult, s.resetFound, s.resetErr
 }

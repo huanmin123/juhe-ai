@@ -103,6 +103,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementProxyOptionsHandler:                   managementHandlers.ProxyOptionsHandler,
 		ManagementSystemAccountsHandler:                 managementHandlers.SystemAccountsHandler,
 		ManagementSystemAccountOptionsHandler:           managementHandlers.SystemAccountOptionsHandler,
+		ManagementSystemAccountPasswordResetHandler:     managementHandlers.SystemAccountPasswordResetHandler,
 		ManagementAuthorizationGranteeAccountsHandler:   managementHandlers.AuthorizationGranteeAccountsHandler,
 		ManagementMyAuthorizationGranteeAccountsHandler: managementHandlers.MyAuthorizationGranteeAccountsHandler,
 		ManagementAuthorizationGranteeTeamsHandler:      managementHandlers.AuthorizationGranteeTeamsHandler,
@@ -172,6 +173,7 @@ type managementAPIHandlers struct {
 	ProxyOptionsHandler                   http.Handler
 	SystemAccountsHandler                 http.Handler
 	SystemAccountOptionsHandler           http.Handler
+	SystemAccountPasswordResetHandler     http.Handler
 	AuthorizationGranteeAccountsHandler   http.Handler
 	MyAuthorizationGranteeAccountsHandler http.Handler
 	AuthorizationGranteeTeamsHandler      http.Handler
@@ -242,6 +244,7 @@ func newManagementAPIHandler(
 		ProxyOptionsHandler:                   httpapi.NewManagementProxyOptionsHandler(proxyService),
 		SystemAccountsHandler:                 httpapi.NewManagementSystemAccountsHandler(systemAccountService),
 		SystemAccountOptionsHandler:           httpapi.NewManagementSystemAccountOptionsHandler(systemAccountService),
+		SystemAccountPasswordResetHandler:     httpapi.NewManagementSystemAccountPasswordResetHandlerWithOperationLog(systemAccountService, operationLogOptions),
 		AuthorizationGranteeAccountsHandler:   httpapi.NewManagementAuthorizationGranteeAccountsHandler(authorizationOptionService),
 		MyAuthorizationGranteeAccountsHandler: httpapi.NewManagementMyAuthorizationGranteeAccountsHandler(authorizationOptionService),
 		AuthorizationGranteeTeamsHandler:      httpapi.NewManagementAuthorizationGranteeTeamsHandler(authorizationOptionService),
