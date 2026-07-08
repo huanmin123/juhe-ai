@@ -52,6 +52,9 @@ func TestW2ManagementAuthPostgresSmoke(t *testing.T) {
 	insertW2ProxyOptionsFixture(t, ctx, db, now)
 	sessionToken := "w2-management-session-token"
 	insertW2ManagementSessionFixture(t, ctx, db, sessionToken, now)
+	mustChangeSessionToken := "w2-management-must-change-session-token"
+	insertW2MustChangeSystemAccountFixture(t, ctx, db, now)
+	insertW2ManagementSessionForAccountFixture(t, ctx, db, "sess_w2_management_auth_must_change", "sys_w2_must_change", mustChangeSessionToken, now)
 
 	store, err := postgresstore.Open(ctx, postgresURL)
 	if err != nil {
@@ -79,8 +82,67 @@ func TestW2ManagementAuthPostgresSmoke(t *testing.T) {
 		},
 		Logger:                        slog.Default(),
 		ManagementAPIAuthMiddleware:   httpapi.NewManagementAPIAuthMiddleware(authenticator),
+		ManagementCurrentUserHandler:  httpapi.NewManagementCurrentUserHandler(authenticator),
 		ManagementProxyOptionsHandler: httpapi.NewManagementProxyOptionsHandler(managementproxies.NewService(store)),
 	})
+
+	currentUserReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/auth/me", nil)
+	currentUserReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
+	currentUserRec := httptest.NewRecorder()
+	router.ServeHTTP(currentUserRec, currentUserReq)
+	if currentUserRec.Code != http.StatusOK {
+		t.Fatalf("current user status = %d, body = %s", currentUserRec.Code, currentUserRec.Body.String())
+	}
+	var currentUserBody struct {
+		Data struct {
+			ID                 string `json:"id"`
+			Username           string `json:"username"`
+			Role               string `json:"role"`
+			MustChangePassword bool   `json:"mustChangePassword"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(currentUserRec.Body).Decode(&currentUserBody); err != nil {
+		t.Fatalf("decode current user response: %v", err)
+	}
+	if currentUserBody.Data.ID != "sys_w2_proxy_options" || currentUserBody.Data.Username != "w2-proxy-options" || currentUserBody.Data.Role != "admin" || currentUserBody.Data.MustChangePassword {
+		t.Fatalf("current user = %+v", currentUserBody.Data)
+	}
+
+	mustChangeReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/auth/me", nil)
+	mustChangeReq.Header.Set("Cookie", "juhe_ai_session="+mustChangeSessionToken)
+	mustChangeRec := httptest.NewRecorder()
+	router.ServeHTTP(mustChangeRec, mustChangeReq)
+	if mustChangeRec.Code != http.StatusOK {
+		t.Fatalf("must change current user status = %d, body = %s", mustChangeRec.Code, mustChangeRec.Body.String())
+	}
+	var mustChangeBody struct {
+		Data struct {
+			ID                 string `json:"id"`
+			Role               string `json:"role"`
+			MustChangePassword bool   `json:"mustChangePassword"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(mustChangeRec.Body).Decode(&mustChangeBody); err != nil {
+		t.Fatalf("decode must change current user response: %v", err)
+	}
+	if mustChangeBody.Data.ID != "sys_w2_must_change" || mustChangeBody.Data.Role != "user" || !mustChangeBody.Data.MustChangePassword {
+		t.Fatalf("must change current user = %+v", mustChangeBody.Data)
+	}
+
+	mustChangeProtectedReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/proxies/options", nil)
+	mustChangeProtectedReq.Header.Set("Cookie", "juhe_ai_session="+mustChangeSessionToken)
+	mustChangeProtectedRec := httptest.NewRecorder()
+	router.ServeHTTP(mustChangeProtectedRec, mustChangeProtectedReq)
+	if mustChangeProtectedRec.Code != http.StatusForbidden {
+		t.Fatalf("must change protected status = %d, want 403, body = %s", mustChangeProtectedRec.Code, mustChangeProtectedRec.Body.String())
+	}
+	var mustChangeProtectedBody map[string]string
+	if err := json.NewDecoder(mustChangeProtectedRec.Body).Decode(&mustChangeProtectedBody); err != nil {
+		t.Fatalf("decode must change protected response: %v", err)
+	}
+	if mustChangeProtectedBody["code"] != managementauth.ErrorCodeMustChangePassword {
+		t.Fatalf("must change protected body = %+v", mustChangeProtectedBody)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/proxies/options?keyword=Al&limit=2", nil)
 	req.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
@@ -108,14 +170,21 @@ func TestW2ManagementAuthPostgresSmoke(t *testing.T) {
 
 func insertW2ManagementSessionFixture(t *testing.T, ctx context.Context, db *sql.DB, token string, now time.Time) {
 	t.Helper()
+	insertW2ManagementSessionForAccountFixture(t, ctx, db, "sess_w2_management_auth", "sys_w2_proxy_options", token, now)
+}
+
+func insertW2MustChangeSystemAccountFixture(t *testing.T, ctx context.Context, db *sql.DB, now time.Time) {
+	t.Helper()
 	_, err := db.ExecContext(ctx, `
-		INSERT INTO juhe_business.system_sessions (
-			id, system_account_id, token_hash, expires_at, created_at, last_seen_at
+		INSERT INTO juhe_business.system_accounts (
+			id, username, display_name, description, role, status, password_hash,
+			must_change_password, image_generation_enabled, created_at, updated_at
 		) VALUES (
-			'sess_w2_management_auth', 'sys_w2_proxy_options', $1, $2, $3, $4
+			'sys_w2_must_change', 'w2-must-change', 'W2 Must Change', NULL, 'user', 'active', 'hash',
+			true, false, $1, $2
 		)
-	`, managementauth.HashSessionToken(token), now.Add(time.Hour), now, now)
+	`, now, now)
 	if err != nil {
-		t.Fatalf("insert W2 management session: %v", err)
+		t.Fatalf("insert W2 must change system account: %v", err)
 	}
 }

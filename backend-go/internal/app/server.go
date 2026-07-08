@@ -93,6 +93,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		SystemAPIIPReadRateLimiter:                      httpapi.NewRedisSystemAPIIPReadRateLimiter(stateRedis),
 		PublicAPIHandler:                                publicAPIHandler,
 		ManagementAPIAuthMiddleware:                     managementHandlers.AuthMiddleware,
+		ManagementCurrentUserHandler:                    managementHandlers.CurrentUserHandler,
 		ManagementProxyOptionsHandler:                   managementHandlers.ProxyOptionsHandler,
 		ManagementSystemAccountsHandler:                 managementHandlers.SystemAccountsHandler,
 		ManagementSystemAccountOptionsHandler:           managementHandlers.SystemAccountOptionsHandler,
@@ -155,6 +156,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 
 type managementAPIHandlers struct {
 	AuthMiddleware                        func(http.Handler) http.Handler
+	CurrentUserHandler                    http.Handler
 	ProxyOptionsHandler                   http.Handler
 	SystemAccountsHandler                 http.Handler
 	SystemAccountOptionsHandler           http.Handler
@@ -212,6 +214,7 @@ func newManagementAPIHandler(
 	}
 	return managementAPIHandlers{
 		AuthMiddleware:                        httpapi.NewManagementAPIAuthMiddleware(authenticator),
+		CurrentUserHandler:                    httpapi.NewManagementCurrentUserHandler(authenticator),
 		ProxyOptionsHandler:                   httpapi.NewManagementProxyOptionsHandler(proxyService),
 		SystemAccountsHandler:                 httpapi.NewManagementSystemAccountsHandler(systemAccountService),
 		SystemAccountOptionsHandler:           httpapi.NewManagementSystemAccountOptionsHandler(systemAccountService),

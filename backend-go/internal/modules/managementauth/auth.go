@@ -78,6 +78,14 @@ func ParseCookie(cookieHeader string) map[string]string {
 }
 
 func (a *Authenticator) AuthenticateCookie(ctx context.Context, cookieHeader string) (Context, error) {
+	return a.authenticateCookie(ctx, cookieHeader, true)
+}
+
+func (a *Authenticator) AuthenticateCookieForCurrentUser(ctx context.Context, cookieHeader string) (Context, error) {
+	return a.authenticateCookie(ctx, cookieHeader, false)
+}
+
+func (a *Authenticator) authenticateCookie(ctx context.Context, cookieHeader string, requirePasswordChangeCompleted bool) (Context, error) {
 	if a == nil || a.store == nil {
 		return Context{}, errors.New("management auth store is required")
 	}
@@ -103,7 +111,7 @@ func (a *Authenticator) AuthenticateCookie(ctx context.Context, cookieHeader str
 		MustChangePassword: mustChangePassword,
 		SessionID:          session.SessionID,
 	}
-	if authContext.MustChangePassword {
+	if requirePasswordChangeCompleted && authContext.MustChangePassword {
 		return Context{}, &AuthError{StatusCode: http.StatusForbidden, Code: ErrorCodeMustChangePassword, Message: "请先修改初始密码"}
 	}
 	return authContext, nil

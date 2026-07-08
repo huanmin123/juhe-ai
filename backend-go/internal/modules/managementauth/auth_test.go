@@ -99,6 +99,22 @@ func TestAuthenticateCookieDoesNotBlockAdminMustChangePassword(t *testing.T) {
 	}
 }
 
+func TestAuthenticateCookieForCurrentUserAllowsMustChangePassword(t *testing.T) {
+	reader := &managementSessionReaderStub{
+		record: mustChangeManagementSession("session-token", "user"),
+		found:  true,
+	}
+	authenticator := NewAuthenticator(AuthenticatorOptions{Store: reader, Now: func() time.Time { return fixedManagementAuthNow }})
+
+	ctx, err := authenticator.AuthenticateCookieForCurrentUser(context.Background(), "juhe_ai_session=session-token")
+	if err != nil {
+		t.Fatalf("AuthenticateCookieForCurrentUser() error = %v", err)
+	}
+	if ctx.Role != "user" || !ctx.MustChangePassword {
+		t.Fatalf("auth context = %+v", ctx)
+	}
+}
+
 func activeManagementSession(token string, role string) port.ManagementSessionAccount {
 	return port.ManagementSessionAccount{
 		SessionID:          "sess_admin",

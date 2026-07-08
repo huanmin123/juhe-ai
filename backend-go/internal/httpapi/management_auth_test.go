@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"juhe-ai/backend-go/internal/config"
 	"juhe-ai/backend-go/internal/modules/managementauth"
 )
 
@@ -100,6 +101,136 @@ func TestManagementAPIAuthMiddlewareRedactsUnexpectedErrors(t *testing.T) {
 	}
 }
 
+func TestManagementCurrentUserHandlerReturnsSessionUser(t *testing.T) {
+	authenticator := &managementCurrentUserAuthenticatorStub{
+		context: managementauth.Context{
+			SystemAccountID:    "sys_user",
+			Username:           "user",
+			DisplayName:        "用户",
+			Role:               "user",
+			MustChangePassword: true,
+			SessionID:          "sess_user",
+		},
+	}
+	handler := NewManagementCurrentUserHandler(authenticator)
+
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/auth/me", nil)
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if authenticator.cookieHeader != "juhe_ai_session=session-token" {
+		t.Fatalf("cookie header = %q", authenticator.cookieHeader)
+	}
+	var body struct {
+		Data managementCurrentUserResponse `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Data.ID != "sys_user" || body.Data.Role != "user" || !body.Data.MustChangePassword {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
+func TestManagementCurrentUserHandlerWritesAuthErrors(t *testing.T) {
+	handler := NewManagementCurrentUserHandler(&managementCurrentUserAuthenticatorStub{
+		err: &managementauth.AuthError{StatusCode: http.StatusUnauthorized, Message: "请先登录"},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/auth/me", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+	var body map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["message"] != "请先登录" {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
+func TestManagementCurrentUserHandlerRedactsUnexpectedErrors(t *testing.T) {
+	handler := NewManagementCurrentUserHandler(&managementCurrentUserAuthenticatorStub{
+		err: errors.New("postgres password leaked"),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/auth/me", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	var body map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["message"] != "服务器内部错误" {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
+func TestRouterRegistersManagementCurrentUserWhenEnabled(t *testing.T) {
+	authenticator := &managementCurrentUserAuthenticatorStub{
+		context: managementauth.Context{
+			SystemAccountID: "sys_admin",
+			Username:        "admin",
+			DisplayName:     "管理员",
+			Role:            "admin",
+			SessionID:       "sess_admin",
+		},
+	}
+	router := NewRouter(RouterOptions{
+		Config:                       config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
+		ManagementAPIAuthMiddleware:  NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{}),
+		ManagementCurrentUserHandler: NewManagementCurrentUserHandler(authenticator),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/auth/me", nil)
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+	if authenticator.cookieHeader != "juhe_ai_session=session-token" {
+		t.Fatalf("cookie header = %q", authenticator.cookieHeader)
+	}
+}
+
+func TestRouterDoesNotRegisterManagementCurrentUserWhenDisabled(t *testing.T) {
+	router := NewRouter(RouterOptions{
+		Config:                       config.Config{Host: "127.0.0.1", Port: 3000},
+		ManagementAPIAuthMiddleware:  NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{}),
+		ManagementCurrentUserHandler: NewManagementCurrentUserHandler(&managementCurrentUserAuthenticatorStub{}),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/auth/me", nil)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 while JUHE_AI_MANAGEMENT_API_ENABLED=false", rec.Code)
+	}
+}
+
 type managementAPIAuthenticatorStub struct {
 	cookieHeader string
 	context      managementauth.Context
@@ -107,6 +238,17 @@ type managementAPIAuthenticatorStub struct {
 }
 
 func (s *managementAPIAuthenticatorStub) AuthenticateCookie(_ context.Context, cookieHeader string) (managementauth.Context, error) {
+	s.cookieHeader = cookieHeader
+	return s.context, s.err
+}
+
+type managementCurrentUserAuthenticatorStub struct {
+	cookieHeader string
+	context      managementauth.Context
+	err          error
+}
+
+func (s *managementCurrentUserAuthenticatorStub) AuthenticateCookieForCurrentUser(_ context.Context, cookieHeader string) (managementauth.Context, error) {
 	s.cookieHeader = cookieHeader
 	return s.context, s.err
 }
