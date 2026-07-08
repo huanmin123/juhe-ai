@@ -24,6 +24,7 @@ type RouterOptions struct {
 	ManagementAPIAuthMiddleware                     func(http.Handler) http.Handler
 	ManagementCurrentUserHandler                    http.Handler
 	ManagementProfileUpdateHandler                  http.Handler
+	ManagementPasswordChangeHandler                 http.Handler
 	ManagementLogoutHandler                         http.Handler
 	ManagementProxyOptionsHandler                   http.Handler
 	ManagementSystemAccountsHandler                 http.Handler
@@ -85,6 +86,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementCurrentUserHandler == nil &&
 				opts.ManagementProfileUpdateHandler == nil &&
+				opts.ManagementPasswordChangeHandler == nil &&
 				opts.ManagementLogoutHandler == nil &&
 				opts.ManagementProxyOptionsHandler == nil &&
 				opts.ManagementSystemAccountsHandler == nil &&
@@ -122,6 +124,9 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementProfileUpdateHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Patch("/auth/me", opts.ManagementProfileUpdateHandler.ServeHTTP)
+			}
+			if opts.ManagementPasswordChangeHandler != nil {
+				system.Post("/auth/change-password", opts.ManagementPasswordChangeHandler.ServeHTTP)
 			}
 			if opts.ManagementLogoutHandler != nil {
 				system.Post("/auth/logout", opts.ManagementLogoutHandler.ServeHTTP)

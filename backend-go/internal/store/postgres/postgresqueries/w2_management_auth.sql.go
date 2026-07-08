@@ -61,6 +61,36 @@ func (q *Queries) FindManagementSessionByTokenHash(ctx context.Context, tokenHas
 	return i, err
 }
 
+const findManagementSystemAccountPasswordByUsername = `-- name: FindManagementSystemAccountPasswordByUsername :one
+SELECT
+  id,
+  username,
+  status,
+  password_hash
+FROM juhe_business.system_accounts
+WHERE lower(username) = lower($1::text)
+LIMIT 1
+`
+
+type FindManagementSystemAccountPasswordByUsernameRow struct {
+	ID           string
+	Username     string
+	Status       string
+	PasswordHash string
+}
+
+func (q *Queries) FindManagementSystemAccountPasswordByUsername(ctx context.Context, username string) (FindManagementSystemAccountPasswordByUsernameRow, error) {
+	row := q.db.QueryRow(ctx, findManagementSystemAccountPasswordByUsername, username)
+	var i FindManagementSystemAccountPasswordByUsernameRow
+	err := row.Scan(
+		&i.ID,
+		&i.Username,
+		&i.Status,
+		&i.PasswordHash,
+	)
+	return i, err
+}
+
 const revokeManagementSessionByTokenHash = `-- name: RevokeManagementSessionByTokenHash :exec
 DELETE FROM juhe_business.system_sessions
 WHERE token_hash = $1
@@ -69,6 +99,83 @@ WHERE token_hash = $1
 func (q *Queries) RevokeManagementSessionByTokenHash(ctx context.Context, tokenHash string) error {
 	_, err := q.db.Exec(ctx, revokeManagementSessionByTokenHash, tokenHash)
 	return err
+}
+
+const revokeOtherManagementSessionsForAccount = `-- name: RevokeOtherManagementSessionsForAccount :exec
+DELETE FROM juhe_business.system_sessions
+WHERE system_account_id = $1
+  AND id <> $2
+`
+
+type RevokeOtherManagementSessionsForAccountParams struct {
+	SystemAccountID string
+	ID              string
+}
+
+func (q *Queries) RevokeOtherManagementSessionsForAccount(ctx context.Context, arg RevokeOtherManagementSessionsForAccountParams) error {
+	_, err := q.db.Exec(ctx, revokeOtherManagementSessionsForAccount, arg.SystemAccountID, arg.ID)
+	return err
+}
+
+const updateManagementCurrentUserPassword = `-- name: UpdateManagementCurrentUserPassword :one
+UPDATE juhe_business.system_accounts
+SET
+  password_hash = $1::text,
+  must_change_password = false,
+  updated_at = $2::timestamptz
+WHERE id = $3::text
+  AND status = 'active'
+RETURNING
+  id,
+  username,
+  display_name,
+  description,
+  role,
+  status,
+  must_change_password,
+  image_generation_enabled,
+  last_login_at,
+  created_at,
+  updated_at
+`
+
+type UpdateManagementCurrentUserPasswordParams struct {
+	PasswordHash    string
+	UpdatedAt       pgtype.Timestamptz
+	SystemAccountID string
+}
+
+type UpdateManagementCurrentUserPasswordRow struct {
+	ID                     string
+	Username               string
+	DisplayName            string
+	Description            pgtype.Text
+	Role                   string
+	Status                 string
+	MustChangePassword     bool
+	ImageGenerationEnabled bool
+	LastLoginAt            pgtype.Timestamptz
+	CreatedAt              pgtype.Timestamptz
+	UpdatedAt              pgtype.Timestamptz
+}
+
+func (q *Queries) UpdateManagementCurrentUserPassword(ctx context.Context, arg UpdateManagementCurrentUserPasswordParams) (UpdateManagementCurrentUserPasswordRow, error) {
+	row := q.db.QueryRow(ctx, updateManagementCurrentUserPassword, arg.PasswordHash, arg.UpdatedAt, arg.SystemAccountID)
+	var i UpdateManagementCurrentUserPasswordRow
+	err := row.Scan(
+		&i.ID,
+		&i.Username,
+		&i.DisplayName,
+		&i.Description,
+		&i.Role,
+		&i.Status,
+		&i.MustChangePassword,
+		&i.ImageGenerationEnabled,
+		&i.LastLoginAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const updateManagementCurrentUserProfile = `-- name: UpdateManagementCurrentUserProfile :one

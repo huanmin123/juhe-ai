@@ -35,6 +35,22 @@ func (s *Store) RevokeManagementSessionByTokenHash(ctx context.Context, tokenHas
 	return nil
 }
 
+func (s *Store) FindManagementSystemAccountPasswordByUsername(ctx context.Context, username string) (port.ManagementSystemAccountPasswordCredential, bool, error) {
+	row, err := s.queries().FindManagementSystemAccountPasswordByUsername(ctx, username)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return port.ManagementSystemAccountPasswordCredential{}, false, nil
+	}
+	if err != nil {
+		return port.ManagementSystemAccountPasswordCredential{}, false, fmt.Errorf("find management system account password by username: %w", err)
+	}
+	return port.ManagementSystemAccountPasswordCredential{
+		ID:           row.ID,
+		Username:     row.Username,
+		Status:       row.Status,
+		PasswordHash: row.PasswordHash,
+	}, true, nil
+}
+
 func (s *Store) UpdateManagementCurrentUserProfile(ctx context.Context, input port.ManagementCurrentUserProfileUpdateInput) (port.ManagementCurrentUserProfileUpdateResult, bool, error) {
 	row, err := s.queries().UpdateManagementCurrentUserProfile(ctx, postgresqueries.UpdateManagementCurrentUserProfileParams{
 		SystemAccountID: input.SystemAccountID,
@@ -51,6 +67,31 @@ func (s *Store) UpdateManagementCurrentUserProfile(ctx context.Context, input po
 		return port.ManagementCurrentUserProfileUpdateResult{}, false, fmt.Errorf("update management current user profile: %w", err)
 	}
 	return managementProfileUpdateResultFromRow(row), true, nil
+}
+
+func (s *Store) UpdateManagementCurrentUserPassword(ctx context.Context, input port.ManagementCurrentUserPasswordUpdateInput) (port.ManagementSystemAccountSummary, bool, error) {
+	row, err := s.queries().UpdateManagementCurrentUserPassword(ctx, postgresqueries.UpdateManagementCurrentUserPasswordParams{
+		SystemAccountID: input.SystemAccountID,
+		PasswordHash:    input.PasswordHash,
+		UpdatedAt:       pgtype.Timestamptz{Time: input.UpdatedAt.UTC(), Valid: true},
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return port.ManagementSystemAccountSummary{}, false, nil
+	}
+	if err != nil {
+		return port.ManagementSystemAccountSummary{}, false, fmt.Errorf("update management current user password: %w", err)
+	}
+	return managementPasswordAccountFromRow(row), true, nil
+}
+
+func (s *Store) RevokeOtherManagementSessionsForAccount(ctx context.Context, systemAccountID string, keepSessionID string) error {
+	if err := s.queries().RevokeOtherManagementSessionsForAccount(ctx, postgresqueries.RevokeOtherManagementSessionsForAccountParams{
+		SystemAccountID: systemAccountID,
+		ID:              keepSessionID,
+	}); err != nil {
+		return fmt.Errorf("revoke other management sessions for account: %w", err)
+	}
+	return nil
 }
 
 func managementSessionFromRow(row postgresqueries.FindManagementSessionByTokenHashRow) (port.ManagementSessionAccount, error) {
@@ -95,6 +136,22 @@ func managementProfileUpdateResultFromRow(row postgresqueries.UpdateManagementCu
 	}
 }
 
+func managementPasswordAccountFromRow(row postgresqueries.UpdateManagementCurrentUserPasswordRow) port.ManagementSystemAccountSummary {
+	return port.ManagementSystemAccountSummary{
+		ID:                     row.ID,
+		Username:               row.Username,
+		DisplayName:            row.DisplayName,
+		Description:            textValue(row.Description),
+		Role:                   row.Role,
+		Status:                 row.Status,
+		MustChangePassword:     row.MustChangePassword,
+		ImageGenerationEnabled: row.ImageGenerationEnabled,
+		LastLoginAt:            timestamptzPtr(row.LastLoginAt),
+		CreatedAt:              timestamptzValue(row.CreatedAt),
+		UpdatedAt:              timestamptzValue(row.UpdatedAt),
+	}
+}
+
 func isManagementProfileDisplayNameUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) &&
@@ -105,3 +162,4 @@ func isManagementProfileDisplayNameUniqueViolation(err error) bool {
 var _ port.ManagementSessionReader = (*Store)(nil)
 var _ port.ManagementSessionRevoker = (*Store)(nil)
 var _ port.ManagementCurrentUserProfileWriter = (*Store)(nil)
+var _ port.ManagementCurrentUserPasswordChanger = (*Store)(nil)

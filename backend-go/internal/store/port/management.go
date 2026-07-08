@@ -52,6 +52,25 @@ type ManagementCurrentUserProfileWriter interface {
 	UpdateManagementCurrentUserProfile(ctx context.Context, input ManagementCurrentUserProfileUpdateInput) (ManagementCurrentUserProfileUpdateResult, bool, error)
 }
 
+type ManagementSystemAccountPasswordCredential struct {
+	ID           string
+	Username     string
+	Status       string
+	PasswordHash string
+}
+
+type ManagementCurrentUserPasswordUpdateInput struct {
+	SystemAccountID string
+	PasswordHash    string
+	UpdatedAt       time.Time
+}
+
+type ManagementCurrentUserPasswordChanger interface {
+	FindManagementSystemAccountPasswordByUsername(ctx context.Context, username string) (ManagementSystemAccountPasswordCredential, bool, error)
+	UpdateManagementCurrentUserPassword(ctx context.Context, input ManagementCurrentUserPasswordUpdateInput) (ManagementSystemAccountSummary, bool, error)
+	RevokeOtherManagementSessionsForAccount(ctx context.Context, systemAccountID string, keepSessionID string) error
+}
+
 type ManagementProxyOption struct {
 	ID      string
 	Name    string

@@ -95,6 +95,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementAPIAuthMiddleware:                     managementHandlers.AuthMiddleware,
 		ManagementCurrentUserHandler:                    managementHandlers.CurrentUserHandler,
 		ManagementProfileUpdateHandler:                  managementHandlers.ProfileUpdateHandler,
+		ManagementPasswordChangeHandler:                 managementHandlers.PasswordChangeHandler,
 		ManagementLogoutHandler:                         managementHandlers.LogoutHandler,
 		ManagementProxyOptionsHandler:                   managementHandlers.ProxyOptionsHandler,
 		ManagementSystemAccountsHandler:                 managementHandlers.SystemAccountsHandler,
@@ -160,6 +161,7 @@ type managementAPIHandlers struct {
 	AuthMiddleware                        func(http.Handler) http.Handler
 	CurrentUserHandler                    http.Handler
 	ProfileUpdateHandler                  http.Handler
+	PasswordChangeHandler                 http.Handler
 	LogoutHandler                         http.Handler
 	ProxyOptionsHandler                   http.Handler
 	SystemAccountsHandler                 http.Handler
@@ -203,6 +205,7 @@ func newManagementAPIHandler(
 	}
 	authenticator := managementauth.NewAuthenticator(managementauth.AuthenticatorOptions{Store: store})
 	profileService := managementauth.NewProfileService(store)
+	passwordService := managementauth.NewPasswordService(store)
 	proxyService := managementproxies.NewService(store)
 	providerService := managementproviders.NewService(store)
 	providerModelService := managementprovidermodels.NewService(store)
@@ -221,6 +224,7 @@ func newManagementAPIHandler(
 		AuthMiddleware:                        httpapi.NewManagementAPIAuthMiddleware(authenticator),
 		CurrentUserHandler:                    httpapi.NewManagementCurrentUserHandler(authenticator),
 		ProfileUpdateHandler:                  httpapi.NewManagementProfileUpdateHandlerWithOperationLog(profileService, operationLogOptions),
+		PasswordChangeHandler:                 httpapi.NewManagementPasswordChangeHandler(authenticator, passwordService),
 		LogoutHandler:                         httpapi.NewManagementLogoutHandler(authenticator),
 		ProxyOptionsHandler:                   httpapi.NewManagementProxyOptionsHandler(proxyService),
 		SystemAccountsHandler:                 httpapi.NewManagementSystemAccountsHandler(systemAccountService),

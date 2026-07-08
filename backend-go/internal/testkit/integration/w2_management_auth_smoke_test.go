@@ -51,11 +51,26 @@ func TestW2ManagementAuthPostgresSmoke(t *testing.T) {
 
 	now := time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC)
 	insertW2ProxyOptionsFixture(t, ctx, db, now)
+	adminOldPasswordHash, err := managementauth.HashPassword("OldPass123")
+	if err != nil {
+		t.Fatalf("hash admin old password: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		UPDATE juhe_business.system_accounts
+		SET password_hash = $1
+		WHERE id = 'sys_w2_proxy_options'
+	`, adminOldPasswordHash); err != nil {
+		t.Fatalf("set W2 admin password hash: %v", err)
+	}
 	sessionToken := "w2-management-session-token"
 	insertW2ManagementSessionFixture(t, ctx, db, sessionToken, now)
+	adminOtherSessionToken := "w2-management-other-session-token"
+	insertW2ManagementSessionForAccountFixture(t, ctx, db, "sess_w2_management_auth_other", "sys_w2_proxy_options", adminOtherSessionToken, now)
 	mustChangeSessionToken := "w2-management-must-change-session-token"
 	insertW2MustChangeSystemAccountFixture(t, ctx, db, now)
 	insertW2ManagementSessionForAccountFixture(t, ctx, db, "sess_w2_management_auth_must_change", "sys_w2_must_change", mustChangeSessionToken, now)
+	mustChangeOtherSessionToken := "w2-management-must-change-other-session-token"
+	insertW2ManagementSessionForAccountFixture(t, ctx, db, "sess_w2_management_auth_must_change_other", "sys_w2_must_change", mustChangeOtherSessionToken, now)
 
 	store, err := postgresstore.Open(ctx, postgresURL)
 	if err != nil {
@@ -96,8 +111,9 @@ func TestW2ManagementAuthPostgresSmoke(t *testing.T) {
 				NewLogID: func() string { return "oplog_w2_profile" },
 			},
 		),
-		ManagementLogoutHandler:       httpapi.NewManagementLogoutHandler(authenticator),
-		ManagementProxyOptionsHandler: httpapi.NewManagementProxyOptionsHandler(managementproxies.NewService(store)),
+		ManagementPasswordChangeHandler: httpapi.NewManagementPasswordChangeHandler(authenticator, managementauth.NewPasswordService(store)),
+		ManagementLogoutHandler:         httpapi.NewManagementLogoutHandler(authenticator),
+		ManagementProxyOptionsHandler:   httpapi.NewManagementProxyOptionsHandler(managementproxies.NewService(store)),
 	})
 
 	currentUserReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/auth/me", nil)
@@ -247,6 +263,151 @@ func TestW2ManagementAuthPostgresSmoke(t *testing.T) {
 	}
 	if mustChangeProfileBody["code"] != managementauth.ErrorCodeMustChangePassword {
 		t.Fatalf("must change profile body = %+v", mustChangeProfileBody)
+	}
+
+	mustChangePasswordReq := httptest.NewRequest(http.MethodPost, "/__aisys__/api/auth/change-password", strings.NewReader(`{"newPassword":"MustNew123"}`))
+	mustChangePasswordReq.Header.Set("Cookie", "juhe_ai_session="+mustChangeSessionToken)
+	mustChangePasswordRec := httptest.NewRecorder()
+	router.ServeHTTP(mustChangePasswordRec, mustChangePasswordReq)
+	if mustChangePasswordRec.Code != http.StatusOK {
+		t.Fatalf("must change password status = %d, body = %s", mustChangePasswordRec.Code, mustChangePasswordRec.Body.String())
+	}
+	var mustChangePasswordBody struct {
+		Data struct {
+			ID                 string `json:"id"`
+			Status             string `json:"status"`
+			MustChangePassword bool   `json:"mustChangePassword"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(mustChangePasswordRec.Body).Decode(&mustChangePasswordBody); err != nil {
+		t.Fatalf("decode must change password response: %v", err)
+	}
+	if mustChangePasswordBody.Data.ID != "sys_w2_must_change" ||
+		mustChangePasswordBody.Data.Status != "active" ||
+		mustChangePasswordBody.Data.MustChangePassword {
+		t.Fatalf("must change password response = %+v", mustChangePasswordBody.Data)
+	}
+	var mustChangeSavedHash string
+	var mustChangeSavedFlag bool
+	if err := db.QueryRowContext(ctx, `
+		SELECT password_hash, must_change_password
+		FROM juhe_business.system_accounts
+		WHERE id = 'sys_w2_must_change'
+	`).Scan(&mustChangeSavedHash, &mustChangeSavedFlag); err != nil {
+		t.Fatalf("read must change password state: %v", err)
+	}
+	if mustChangeSavedFlag || mustChangeSavedHash == "MustNew123" || !managementauth.VerifyPassword("MustNew123", mustChangeSavedHash) {
+		t.Fatalf("must change saved password state flag=%v hash=%q", mustChangeSavedFlag, mustChangeSavedHash)
+	}
+	mustChangeOtherReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/auth/me", nil)
+	mustChangeOtherReq.Header.Set("Cookie", "juhe_ai_session="+mustChangeOtherSessionToken)
+	mustChangeOtherRec := httptest.NewRecorder()
+	router.ServeHTTP(mustChangeOtherRec, mustChangeOtherReq)
+	if mustChangeOtherRec.Code != http.StatusUnauthorized {
+		t.Fatalf("must change other session status = %d, want 401, body = %s", mustChangeOtherRec.Code, mustChangeOtherRec.Body.String())
+	}
+	mustChangeAfterReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/auth/me", nil)
+	mustChangeAfterReq.Header.Set("Cookie", "juhe_ai_session="+mustChangeSessionToken)
+	mustChangeAfterRec := httptest.NewRecorder()
+	router.ServeHTTP(mustChangeAfterRec, mustChangeAfterReq)
+	if mustChangeAfterRec.Code != http.StatusOK {
+		t.Fatalf("must change current session after password status = %d, body = %s", mustChangeAfterRec.Code, mustChangeAfterRec.Body.String())
+	}
+	var mustChangeAfterBody struct {
+		Data struct {
+			MustChangePassword bool `json:"mustChangePassword"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(mustChangeAfterRec.Body).Decode(&mustChangeAfterBody); err != nil {
+		t.Fatalf("decode must change after response: %v", err)
+	}
+	if mustChangeAfterBody.Data.MustChangePassword {
+		t.Fatalf("must change current user after password = %+v", mustChangeAfterBody.Data)
+	}
+
+	adminMissingOldReq := httptest.NewRequest(http.MethodPost, "/__aisys__/api/auth/change-password", strings.NewReader(`{"newPassword":"AdminNew123"}`))
+	adminMissingOldReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
+	adminMissingOldRec := httptest.NewRecorder()
+	router.ServeHTTP(adminMissingOldRec, adminMissingOldReq)
+	if adminMissingOldRec.Code != http.StatusBadRequest {
+		t.Fatalf("admin missing old password status = %d, want 400, body = %s", adminMissingOldRec.Code, adminMissingOldRec.Body.String())
+	}
+	var adminMissingOldBody map[string]string
+	if err := json.NewDecoder(adminMissingOldRec.Body).Decode(&adminMissingOldBody); err != nil {
+		t.Fatalf("decode admin missing old response: %v", err)
+	}
+	if adminMissingOldBody["message"] != "请填写当前密码" {
+		t.Fatalf("admin missing old body = %+v", adminMissingOldBody)
+	}
+	adminWrongOldReq := httptest.NewRequest(http.MethodPost, "/__aisys__/api/auth/change-password", strings.NewReader(`{"oldPassword":"WrongPass","newPassword":"AdminNew123"}`))
+	adminWrongOldReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
+	adminWrongOldRec := httptest.NewRecorder()
+	router.ServeHTTP(adminWrongOldRec, adminWrongOldReq)
+	if adminWrongOldRec.Code != http.StatusBadRequest {
+		t.Fatalf("admin wrong old password status = %d, want 400, body = %s", adminWrongOldRec.Code, adminWrongOldRec.Body.String())
+	}
+	var adminWrongOldBody map[string]string
+	if err := json.NewDecoder(adminWrongOldRec.Body).Decode(&adminWrongOldBody); err != nil {
+		t.Fatalf("decode admin wrong old response: %v", err)
+	}
+	if adminWrongOldBody["message"] != "当前密码不正确" {
+		t.Fatalf("admin wrong old body = %+v", adminWrongOldBody)
+	}
+	adminPasswordReq := httptest.NewRequest(http.MethodPost, "/__aisys__/api/auth/change-password", strings.NewReader(`{"oldPassword":"OldPass123","newPassword":"AdminNew123"}`))
+	adminPasswordReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
+	adminPasswordRec := httptest.NewRecorder()
+	router.ServeHTTP(adminPasswordRec, adminPasswordReq)
+	if adminPasswordRec.Code != http.StatusOK {
+		t.Fatalf("admin password status = %d, body = %s", adminPasswordRec.Code, adminPasswordRec.Body.String())
+	}
+	var adminPasswordBody struct {
+		Data struct {
+			ID                     string `json:"id"`
+			DisplayName            string `json:"displayName"`
+			Status                 string `json:"status"`
+			MustChangePassword     bool   `json:"mustChangePassword"`
+			ImageGenerationEnabled bool   `json:"imageGenerationEnabled"`
+			UpdatedAt              string `json:"updatedAt"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(adminPasswordRec.Body).Decode(&adminPasswordBody); err != nil {
+		t.Fatalf("decode admin password response: %v", err)
+	}
+	if adminPasswordBody.Data.ID != "sys_w2_proxy_options" ||
+		adminPasswordBody.Data.DisplayName != "W2ProfileRenamed" ||
+		adminPasswordBody.Data.Status != "active" ||
+		adminPasswordBody.Data.MustChangePassword ||
+		adminPasswordBody.Data.UpdatedAt == "" {
+		t.Fatalf("admin password response = %+v", adminPasswordBody.Data)
+	}
+	var adminSavedHash string
+	var adminSavedFlag bool
+	if err := db.QueryRowContext(ctx, `
+		SELECT password_hash, must_change_password
+		FROM juhe_business.system_accounts
+		WHERE id = 'sys_w2_proxy_options'
+	`).Scan(&adminSavedHash, &adminSavedFlag); err != nil {
+		t.Fatalf("read admin password state: %v", err)
+	}
+	if adminSavedFlag || adminSavedHash == "AdminNew123" || !managementauth.VerifyPassword("AdminNew123", adminSavedHash) {
+		t.Fatalf("admin saved password state flag=%v hash=%q", adminSavedFlag, adminSavedHash)
+	}
+	adminOtherReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/auth/me", nil)
+	adminOtherReq.Header.Set("Cookie", "juhe_ai_session="+adminOtherSessionToken)
+	adminOtherRec := httptest.NewRecorder()
+	router.ServeHTTP(adminOtherRec, adminOtherReq)
+	if adminOtherRec.Code != http.StatusUnauthorized {
+		t.Fatalf("admin other session status = %d, want 401, body = %s", adminOtherRec.Code, adminOtherRec.Body.String())
+	}
+	adminCurrentAfterPasswordReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/auth/me", nil)
+	adminCurrentAfterPasswordReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
+	adminCurrentAfterPasswordRec := httptest.NewRecorder()
+	router.ServeHTTP(adminCurrentAfterPasswordRec, adminCurrentAfterPasswordReq)
+	if adminCurrentAfterPasswordRec.Code != http.StatusOK {
+		t.Fatalf("admin current session after password status = %d, body = %s", adminCurrentAfterPasswordRec.Code, adminCurrentAfterPasswordRec.Body.String())
+	}
+	if len(operationLogQueue.logs) != 1 {
+		t.Fatalf("operation logs after password change = %d, want only profile log", len(operationLogQueue.logs))
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/proxies/options?keyword=Al&limit=2", nil)

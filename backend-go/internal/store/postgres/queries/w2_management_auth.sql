@@ -20,6 +20,16 @@ LIMIT 1;
 DELETE FROM juhe_business.system_sessions
 WHERE token_hash = $1;
 
+-- name: FindManagementSystemAccountPasswordByUsername :one
+SELECT
+  id,
+  username,
+  status,
+  password_hash
+FROM juhe_business.system_accounts
+WHERE lower(username) = lower(sqlc.arg(username)::text)
+LIMIT 1;
+
 -- name: UpdateManagementCurrentUserProfile :one
 WITH current_account AS (
   SELECT
@@ -59,3 +69,29 @@ SELECT
   role,
   must_change_password
 FROM updated_account;
+
+-- name: UpdateManagementCurrentUserPassword :one
+UPDATE juhe_business.system_accounts
+SET
+  password_hash = sqlc.arg(password_hash)::text,
+  must_change_password = false,
+  updated_at = sqlc.arg(updated_at)::timestamptz
+WHERE id = sqlc.arg(system_account_id)::text
+  AND status = 'active'
+RETURNING
+  id,
+  username,
+  display_name,
+  description,
+  role,
+  status,
+  must_change_password,
+  image_generation_enabled,
+  last_login_at,
+  created_at,
+  updated_at;
+
+-- name: RevokeOtherManagementSessionsForAccount :exec
+DELETE FROM juhe_business.system_sessions
+WHERE system_account_id = $1
+  AND id <> $2;
