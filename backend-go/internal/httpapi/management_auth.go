@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 
+	"juhe-ai/backend-go/internal/config"
 	"juhe-ai/backend-go/internal/modules/managementauth"
 )
 
@@ -99,7 +100,7 @@ func NewManagementCurrentUserHandler(authenticator ManagementCurrentUserAuthenti
 	})
 }
 
-func NewManagementLogoutHandler(authenticator ManagementLogoutAuthenticator) http.Handler {
+func NewManagementLogoutHandler(authenticator ManagementLogoutAuthenticator, cfg config.Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if authenticator == nil {
 			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
@@ -109,7 +110,7 @@ func NewManagementLogoutHandler(authenticator ManagementLogoutAuthenticator) htt
 			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
 			return
 		}
-		clearManagementSessionCookie(w)
+		clearManagementSessionCookie(w, cfg)
 		writeData(w, http.StatusOK, managementLogoutResponse{LoggedOut: true})
 	})
 }
@@ -119,13 +120,15 @@ func ManagementAuthContextFromRequest(r *http.Request) (managementauth.Context, 
 	return value, ok
 }
 
-func clearManagementSessionCookie(w http.ResponseWriter) {
+func clearManagementSessionCookie(w http.ResponseWriter, cfg config.Config) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     managementauth.SessionCookieName,
 		Value:    "",
 		Path:     "/",
 		MaxAge:   -1,
 		HttpOnly: true,
+		Secure:   cfg.CookieSecure,
+		SameSite: managementCookieSameSite(cfg),
 	})
 }
 

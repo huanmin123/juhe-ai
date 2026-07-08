@@ -253,7 +253,7 @@ func newManagementAPIHandler(
 		CurrentUserHandler:                    httpapi.NewManagementCurrentUserHandler(authenticator),
 		ProfileUpdateHandler:                  httpapi.NewManagementProfileUpdateHandlerWithOperationLog(profileService, operationLogOptions),
 		PasswordChangeHandler:                 httpapi.NewManagementPasswordChangeHandler(authenticator, passwordService),
-		LogoutHandler:                         httpapi.NewManagementLogoutHandler(authenticator),
+		LogoutHandler:                         httpapi.NewManagementLogoutHandler(authenticator, cfg),
 		ProxyOptionsHandler:                   httpapi.NewManagementProxyOptionsHandler(proxyService),
 		SystemAccountsHandler:                 httpapi.NewManagementSystemAccountsHandler(systemAccountService),
 		SystemAccountOptionsHandler:           httpapi.NewManagementSystemAccountOptionsHandler(systemAccountService),

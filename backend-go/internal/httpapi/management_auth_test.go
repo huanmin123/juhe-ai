@@ -218,7 +218,10 @@ func TestManagementCurrentUserHandlerRedactsUnexpectedErrors(t *testing.T) {
 
 func TestManagementLogoutHandlerRevokesSessionAndClearsCookie(t *testing.T) {
 	authenticator := &managementLogoutAuthenticatorStub{}
-	handler := NewManagementLogoutHandler(authenticator)
+	handler := NewManagementLogoutHandler(authenticator, config.Config{
+		CookieSecure:   true,
+		CookieSameSite: "none",
+	})
 
 	req := httptest.NewRequest(http.MethodPost, "/__aisys__/api/auth/logout", nil)
 	req.Header.Set("Cookie", "juhe_ai_session=session-token")
@@ -242,14 +245,16 @@ func TestManagementLogoutHandlerRevokesSessionAndClearsCookie(t *testing.T) {
 		t.Fatalf("body = %+v", body)
 	}
 	setCookie := rec.Header().Get("Set-Cookie")
-	if !strings.Contains(setCookie, "juhe_ai_session=") || !strings.Contains(setCookie, "Max-Age=0") || !strings.Contains(setCookie, "Path=/") || !strings.Contains(setCookie, "HttpOnly") {
-		t.Fatalf("Set-Cookie = %q", setCookie)
+	for _, part := range []string{"juhe_ai_session=", "Max-Age=0", "Path=/", "HttpOnly", "Secure", "SameSite=None"} {
+		if !strings.Contains(setCookie, part) {
+			t.Fatalf("Set-Cookie = %q, want contains %q", setCookie, part)
+		}
 	}
 }
 
 func TestManagementLogoutHandlerAllowsMissingCookie(t *testing.T) {
 	authenticator := &managementLogoutAuthenticatorStub{}
-	handler := NewManagementLogoutHandler(authenticator)
+	handler := NewManagementLogoutHandler(authenticator, config.Config{})
 
 	req := httptest.NewRequest(http.MethodPost, "/__aisys__/api/auth/logout", nil)
 	rec := httptest.NewRecorder()
@@ -276,7 +281,7 @@ func TestManagementLogoutHandlerAllowsMissingCookie(t *testing.T) {
 func TestManagementLogoutHandlerRedactsUnexpectedErrors(t *testing.T) {
 	handler := NewManagementLogoutHandler(&managementLogoutAuthenticatorStub{
 		err: errors.New("postgres password leaked"),
-	})
+	}, config.Config{})
 
 	req := httptest.NewRequest(http.MethodPost, "/__aisys__/api/auth/logout", nil)
 	req.Header.Set("Cookie", "juhe_ai_session=session-token")
@@ -354,7 +359,7 @@ func TestRouterRegistersManagementLogoutWhenEnabled(t *testing.T) {
 	router := NewRouter(RouterOptions{
 		Config:                       config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
 		ManagementAPIAuthMiddleware:  NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{}),
-		ManagementLogoutHandler:      NewManagementLogoutHandler(authenticator),
+		ManagementLogoutHandler:      NewManagementLogoutHandler(authenticator, config.Config{}),
 		ManagementCurrentUserHandler: NewManagementCurrentUserHandler(&managementCurrentUserAuthenticatorStub{}),
 	})
 
@@ -445,7 +450,7 @@ func TestRouterDoesNotRegisterManagementLogoutWhenDisabled(t *testing.T) {
 	router := NewRouter(RouterOptions{
 		Config:                       config.Config{Host: "127.0.0.1", Port: 3000},
 		ManagementAPIAuthMiddleware:  NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{}),
-		ManagementLogoutHandler:      NewManagementLogoutHandler(&managementLogoutAuthenticatorStub{}),
+		ManagementLogoutHandler:      NewManagementLogoutHandler(&managementLogoutAuthenticatorStub{}, config.Config{}),
 		ManagementCurrentUserHandler: NewManagementCurrentUserHandler(&managementCurrentUserAuthenticatorStub{}),
 	})
 

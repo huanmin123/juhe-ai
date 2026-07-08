@@ -95,6 +95,8 @@ func TestW2ManagementAuthPostgresSmoke(t *testing.T) {
 		Port:                 3000,
 		ManagementAPIEnabled: true,
 		TrustProxy:           "false",
+		CookieSecure:         true,
+		CookieSameSite:       "none",
 	}
 	operationLogQueue := &w2OperationLogQueueStub{}
 	router := httpapi.NewRouter(httpapi.RouterOptions{
@@ -113,7 +115,7 @@ func TestW2ManagementAuthPostgresSmoke(t *testing.T) {
 			},
 		),
 		ManagementPasswordChangeHandler: httpapi.NewManagementPasswordChangeHandler(authenticator, managementauth.NewPasswordService(store)),
-		ManagementLogoutHandler:         httpapi.NewManagementLogoutHandler(authenticator),
+		ManagementLogoutHandler:         httpapi.NewManagementLogoutHandler(authenticator, cfg),
 		ManagementProxyOptionsHandler:   httpapi.NewManagementProxyOptionsHandler(managementproxies.NewService(store)),
 	})
 
@@ -470,8 +472,10 @@ func TestW2ManagementAuthPostgresSmoke(t *testing.T) {
 		t.Fatalf("logout response = %+v", logoutBody.Data)
 	}
 	setCookie := logoutRec.Header().Get("Set-Cookie")
-	if !strings.Contains(setCookie, "juhe_ai_session=") || !strings.Contains(setCookie, "Max-Age=0") || !strings.Contains(setCookie, "Path=/") {
-		t.Fatalf("logout Set-Cookie = %q", setCookie)
+	for _, part := range []string{"juhe_ai_session=", "Max-Age=0", "Path=/", "HttpOnly", "Secure", "SameSite=None"} {
+		if !strings.Contains(setCookie, part) {
+			t.Fatalf("logout Set-Cookie = %q, want contains %q", setCookie, part)
+		}
 	}
 
 	revokedReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/proxies/options", nil)
