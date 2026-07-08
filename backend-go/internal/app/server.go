@@ -110,6 +110,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementSystemAccountsHandler:                 managementHandlers.SystemAccountsHandler,
 		ManagementSystemAccountOptionsHandler:           managementHandlers.SystemAccountOptionsHandler,
 		ManagementSystemAccountPatchHandler:             managementHandlers.SystemAccountPatchHandler,
+		ManagementSystemAccountCreateHandler:            managementHandlers.SystemAccountCreateHandler,
 		ManagementAuthorizationGranteeAccountsHandler:   managementHandlers.AuthorizationGranteeAccountsHandler,
 		ManagementMyAuthorizationGranteeAccountsHandler: managementHandlers.MyAuthorizationGranteeAccountsHandler,
 		ManagementAuthorizationGranteeTeamsHandler:      managementHandlers.AuthorizationGranteeTeamsHandler,
@@ -180,6 +181,7 @@ type managementAPIHandlers struct {
 	SystemAccountsHandler                 http.Handler
 	SystemAccountOptionsHandler           http.Handler
 	SystemAccountPatchHandler             http.Handler
+	SystemAccountCreateHandler            http.Handler
 	AuthorizationGranteeAccountsHandler   http.Handler
 	MyAuthorizationGranteeAccountsHandler http.Handler
 	AuthorizationGranteeTeamsHandler      http.Handler
@@ -233,6 +235,7 @@ func newManagementAPIHandler(
 	accountService := managementaccounts.NewService(store)
 	systemAccountService := managementsystemaccounts.NewServiceWithOptions(managementsystemaccounts.ServiceOptions{
 		Store:                    store,
+		Secret:                   cfg.Secret,
 		SystemAccountInvalidator: systemAccountInvalidator,
 	})
 	authorizationOptionService := managementauthorizationoptions.NewService(store)
@@ -255,6 +258,7 @@ func newManagementAPIHandler(
 		SystemAccountsHandler:                 httpapi.NewManagementSystemAccountsHandler(systemAccountService),
 		SystemAccountOptionsHandler:           httpapi.NewManagementSystemAccountOptionsHandler(systemAccountService),
 		SystemAccountPatchHandler:             httpapi.NewManagementSystemAccountPatchHandlerWithOperationLog(systemAccountService, operationLogOptions),
+		SystemAccountCreateHandler:            httpapi.NewManagementSystemAccountCreateHandlerWithOperationLog(systemAccountService, operationLogOptions),
 		AuthorizationGranteeAccountsHandler:   httpapi.NewManagementAuthorizationGranteeAccountsHandler(authorizationOptionService),
 		MyAuthorizationGranteeAccountsHandler: httpapi.NewManagementMyAuthorizationGranteeAccountsHandler(authorizationOptionService),
 		AuthorizationGranteeTeamsHandler:      httpapi.NewManagementAuthorizationGranteeTeamsHandler(authorizationOptionService),

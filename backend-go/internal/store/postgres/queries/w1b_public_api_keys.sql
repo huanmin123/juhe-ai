@@ -155,7 +155,24 @@ WITH inserted AS (
     sqlc.arg(created_at),
     sqlc.arg(updated_at)
   )
-  RETURNING *
+  RETURNING
+    id,
+    system_account_id,
+    route_strategy_id,
+    name,
+    description,
+    key_hash,
+    key_prefix,
+    key_suffix,
+    status,
+    is_default,
+    expires_at,
+    quota_limits_json,
+    availability_schedule_json,
+    availability_schedule_next_check_at,
+    last_used_at,
+    created_at,
+    updated_at
 )
 SELECT
   inserted.id,
@@ -196,7 +213,24 @@ WITH updated AS (
       updated_at = sqlc.arg(updated_at)
   WHERE api_keys.id = sqlc.arg(id)
     AND api_keys.system_account_id = sqlc.arg(system_account_id)
-  RETURNING *
+  RETURNING
+    id,
+    system_account_id,
+    route_strategy_id,
+    name,
+    description,
+    key_hash,
+    key_prefix,
+    key_suffix,
+    status,
+    is_default,
+    expires_at,
+    quota_limits_json,
+    availability_schedule_json,
+    availability_schedule_next_check_at,
+    last_used_at,
+    created_at,
+    updated_at
 )
 SELECT
   updated.id,

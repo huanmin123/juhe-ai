@@ -3,6 +3,7 @@ package managementsystemaccounts
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -855,6 +856,10 @@ type systemAccountOptionStoreStub struct {
 	profileResult port.ManagementSystemAccountProfileUpdateResult
 	profileFound  bool
 	profileErr    error
+	createCalled  bool
+	createInput   port.ManagementSystemAccountCreateInput
+	createResult  port.ManagementSystemAccountCreateResult
+	createErr     error
 }
 
 type systemAccountInvalidatorStub struct {
@@ -912,6 +917,173 @@ func (s *systemAccountOptionStoreStub) UpdateManagementSystemAccountProfile(_ co
 	return s.profileResult, s.profileFound, s.profileErr
 }
 
+func (s *systemAccountOptionStoreStub) CreateManagementSystemAccount(_ context.Context, input port.ManagementSystemAccountCreateInput) (port.ManagementSystemAccountCreateResult, error) {
+	s.createCalled = true
+	s.createInput = input
+	return s.createResult, s.createErr
+}
+
 func stringPtr(value string) *string {
 	return &value
+}
+
+func TestCreateSystemAccountNormalizesDefaultsAndDefaultAPIKeys(t *testing.T) {
+	now := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
+	store := &systemAccountOptionStoreStub{
+		createResult: port.ManagementSystemAccountCreateResult{
+			Account: port.ManagementSystemAccountSummary{
+				ID:                     "sys_new",
+				Username:               "new_user",
+				DisplayName:            "新用户",
+				Description:            "说明",
+				Role:                   "user",
+				Status:                 "active",
+				MustChangePassword:     true,
+				ImageGenerationEnabled: true,
+				CreatedAt:              now,
+				UpdatedAt:              now,
+			},
+			DefaultGroupIDs:  []string{"grp_1"},
+			DefaultAPIKeyIDs: []string{"key_1"},
+		},
+	}
+	description := " 说明 "
+	imageEnabled := true
+	service := NewServiceWithOptions(ServiceOptions{
+		Store:        store,
+		Now:          func() time.Time { return now },
+		HashPassword: func(value string) (string, error) { return "hashed:" + value, nil },
+		Secret:       "12345678901234567890123456789012",
+	})
+
+	result, err := service.Create(context.Background(), CreateInput{
+		Username:               "new_user",
+		DisplayName:            "新用户",
+		Description:            &description,
+		Password:               "Pass1234",
+		ImageGenerationEnabled: &imageEnabled,
+	})
+
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if !store.createCalled {
+		t.Fatal("CreateManagementSystemAccount() was not called")
+	}
+	input := store.createInput
+	if input.Username != "new_user" || input.DisplayName != "新用户" || input.Description == nil || *input.Description != "说明" {
+		t.Fatalf("normalized create input = %+v", input)
+	}
+	if input.Role != "user" || input.Status != "active" || !input.MustChangePassword || !input.ImageGenerationEnabled {
+		t.Fatalf("default fields = role %q status %q mustChange %v image %v", input.Role, input.Status, input.MustChangePassword, input.ImageGenerationEnabled)
+	}
+	if input.PasswordHash != "hashed:Pass1234" || !input.CreatedAt.Equal(now) || !input.UpdatedAt.Equal(now) {
+		t.Fatalf("password/time input = %+v", input)
+	}
+	if len(input.DefaultAPIKeys) != 6 {
+		t.Fatalf("default api keys = %d, want 6", len(input.DefaultAPIKeys))
+	}
+	seen := map[string]bool{}
+	for _, item := range input.DefaultAPIKeys {
+		if item.ID == "" || item.KeyHash == "" || item.KeyPrefix == "" || item.KeySuffix == "" || item.KeySecretEncrypted == "" {
+			t.Fatalf("default api key item missing fields: %+v", item)
+		}
+		if !strings.HasPrefix(item.KeyPrefix, "sk-") {
+			t.Fatalf("key prefix = %q, want sk- prefix", item.KeyPrefix)
+		}
+		if seen[item.KeyHash] {
+			t.Fatalf("duplicate key hash %q", item.KeyHash)
+		}
+		seen[item.KeyHash] = true
+	}
+	if result.Account.ID != "sys_new" || result.Account.LastLoginAt != "" || len(result.DefaultAPIKeyIDs) != 1 || len(result.DefaultGroupIDs) != 1 {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestCreateSystemAccountNormalizesAdminMustChangePassword(t *testing.T) {
+	now := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
+	requestedMustChangePassword := true
+	store := &systemAccountOptionStoreStub{
+		createResult: port.ManagementSystemAccountCreateResult{
+			Account: port.ManagementSystemAccountSummary{
+				ID:                 "sys_admin",
+				Username:           "admin_user",
+				DisplayName:        "管理员",
+				Role:               "admin",
+				Status:             "active",
+				MustChangePassword: false,
+				CreatedAt:          now,
+				UpdatedAt:          now,
+			},
+		},
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		Store:        store,
+		Now:          func() time.Time { return now },
+		HashPassword: func(string) (string, error) { return "hash", nil },
+	})
+
+	result, err := service.Create(context.Background(), CreateInput{
+		Username:           "admin_user",
+		DisplayName:        "管理员",
+		Password:           "Pass1234",
+		Role:               "admin",
+		MustChangePassword: &requestedMustChangePassword,
+	})
+
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if store.createInput.Role != "admin" || store.createInput.MustChangePassword {
+		t.Fatalf("admin create input = %+v, want mustChangePassword=false", store.createInput)
+	}
+	if result.Account.MustChangePassword {
+		t.Fatalf("result = %+v, want admin mustChangePassword=false", result)
+	}
+}
+
+func TestCreateSystemAccountRejectsInvalidAndDuplicateInputs(t *testing.T) {
+	want := errors.New("postgres down")
+	longDescription := ""
+	for i := 0; i < maxDescriptionRunes+1; i++ {
+		longDescription += "a"
+	}
+	tests := []struct {
+		name    string
+		input   CreateInput
+		store   *systemAccountOptionStoreStub
+		wantErr error
+	}{
+		{name: "missing username", input: CreateInput{DisplayName: "用户", Password: "Pass1234"}, store: &systemAccountOptionStoreStub{}, wantErr: ErrSystemAccountCreateInvalid},
+		{name: "short password", input: CreateInput{Username: "user", DisplayName: "用户", Password: "123"}, store: &systemAccountOptionStoreStub{}, wantErr: ErrSystemAccountCreateInvalid},
+		{name: "whitespace username", input: CreateInput{Username: "new user", DisplayName: "用户", Password: "Pass1234"}, store: &systemAccountOptionStoreStub{}, wantErr: ErrSystemAccountWhitespace},
+		{name: "trimmed username still invalid", input: CreateInput{Username: " user ", DisplayName: "用户", Password: "Pass1234"}, store: &systemAccountOptionStoreStub{}, wantErr: ErrSystemAccountWhitespace},
+		{name: "trimmed display still invalid", input: CreateInput{Username: "user", DisplayName: " 用户 ", Password: "Pass1234"}, store: &systemAccountOptionStoreStub{}, wantErr: ErrSystemAccountWhitespace},
+		{name: "unicode whitespace display name", input: CreateInput{Username: "user", DisplayName: "用户　名称", Password: "Pass1234"}, store: &systemAccountOptionStoreStub{}, wantErr: ErrSystemAccountWhitespace},
+		{name: "invalid role", input: CreateInput{Username: "user", DisplayName: "用户", Password: "Pass1234", Role: "super_admin"}, store: &systemAccountOptionStoreStub{}, wantErr: ErrSystemAccountCreateInvalid},
+		{name: "spaced role", input: CreateInput{Username: "user", DisplayName: "用户", Password: "Pass1234", Role: " admin "}, store: &systemAccountOptionStoreStub{}, wantErr: ErrSystemAccountCreateInvalid},
+		{name: "invalid status", input: CreateInput{Username: "user", DisplayName: "用户", Password: "Pass1234", Status: "archived"}, store: &systemAccountOptionStoreStub{}, wantErr: ErrSystemAccountCreateInvalid},
+		{name: "spaced status", input: CreateInput{Username: "user", DisplayName: "用户", Password: "Pass1234", Status: " active "}, store: &systemAccountOptionStoreStub{}, wantErr: ErrSystemAccountCreateInvalid},
+		{name: "description too long", input: CreateInput{Username: "user", DisplayName: "用户", Description: &longDescription, Password: "Pass1234"}, store: &systemAccountOptionStoreStub{}, wantErr: ErrSystemAccountCreateInvalid},
+		{name: "duplicate username", input: CreateInput{Username: "user", DisplayName: "用户", Password: "Pass1234"}, store: &systemAccountOptionStoreStub{createErr: port.ErrManagementSystemAccountUsernameExists}, wantErr: ErrSystemAccountUsernameExists},
+		{name: "duplicate display", input: CreateInput{Username: "user", DisplayName: "用户", Password: "Pass1234"}, store: &systemAccountOptionStoreStub{createErr: port.ErrManagementSystemAccountDisplayNameExists}, wantErr: ErrSystemAccountDisplayNameExists},
+		{name: "store error", input: CreateInput{Username: "user", DisplayName: "用户", Password: "Pass1234"}, store: &systemAccountOptionStoreStub{createErr: want}, wantErr: want},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := NewServiceWithOptions(ServiceOptions{Store: tt.store, HashPassword: func(string) (string, error) { return "hash", nil }})
+
+			_, err := service.Create(context.Background(), tt.input)
+
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("Create() error = %v, want %v", err, tt.wantErr)
+			}
+			if errors.Is(tt.wantErr, ErrSystemAccountCreateInvalid) || errors.Is(tt.wantErr, ErrSystemAccountWhitespace) {
+				if tt.store.createCalled {
+					t.Fatal("store should not be called for invalid input")
+				}
+			}
+		})
+	}
 }

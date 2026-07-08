@@ -58,6 +58,7 @@ type ManagementCurrentUserProfileUpdateResult struct {
 
 var ErrManagementProfileDisplayNameExists = errors.New("management profile display name exists")
 var ErrManagementSystemAccountDisplayNameExists = errors.New("management system account display name exists")
+var ErrManagementSystemAccountUsernameExists = errors.New("management system account username exists")
 
 type ManagementCurrentUserProfileWriter interface {
 	UpdateManagementCurrentUserProfile(ctx context.Context, input ManagementCurrentUserProfileUpdateInput) (ManagementCurrentUserProfileUpdateResult, bool, error)
@@ -232,6 +233,39 @@ type ManagementSystemAccountProfileUpdateResult struct {
 
 type ManagementSystemAccountProfileUpdater interface {
 	UpdateManagementSystemAccountProfile(ctx context.Context, input ManagementSystemAccountProfileUpdateInput) (ManagementSystemAccountProfileUpdateResult, bool, error)
+}
+
+type ManagementSystemAccountCreateInput struct {
+	ID                     string
+	Username               string
+	DisplayName            string
+	Description            *string
+	Role                   string
+	Status                 string
+	PasswordHash           string
+	MustChangePassword     bool
+	ImageGenerationEnabled bool
+	DefaultAPIKeys         []ManagementDefaultAPIKeyCreateInput
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+}
+
+type ManagementSystemAccountCreateResult struct {
+	Account          ManagementSystemAccountSummary
+	DefaultGroupIDs  []string
+	DefaultAPIKeyIDs []string
+}
+
+type ManagementDefaultAPIKeyCreateInput struct {
+	ID                 string
+	KeyHash            string
+	KeyPrefix          string
+	KeySuffix          string
+	KeySecretEncrypted string
+}
+
+type ManagementSystemAccountCreator interface {
+	CreateManagementSystemAccount(ctx context.Context, input ManagementSystemAccountCreateInput) (ManagementSystemAccountCreateResult, error)
 }
 
 type ManagementAuthorizationGranteeAccountOption struct {

@@ -1006,6 +1006,10 @@ type managementSystemAccountOptionServiceStub struct {
 	profileInput  managementsystemaccounts.ProfileUpdateInput
 	profileResult managementsystemaccounts.ProfileUpdateResult
 	profileErr    error
+	createCalled  bool
+	createInput   managementsystemaccounts.CreateInput
+	createResult  managementsystemaccounts.CreateResult
+	createErr     error
 }
 
 func (s *managementSystemAccountOptionServiceStub) List(_ *http.Request, input managementsystemaccounts.ListInput) (managementsystemaccounts.ListResult, error) {
@@ -1044,9 +1048,158 @@ func (s *managementSystemAccountOptionServiceStub) UpdateProfile(_ context.Conte
 	return s.profileResult, s.profileErr
 }
 
+func (s *managementSystemAccountOptionServiceStub) Create(_ context.Context, input managementsystemaccounts.CreateInput) (managementsystemaccounts.CreateResult, error) {
+	s.createCalled = true
+	s.createInput = input
+	return s.createResult, s.createErr
+}
+
 func managementSystemAccountPatchRequest(target string, systemAccountID string, body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPatch, target, strings.NewReader(body))
 	routeContext := chi.NewRouteContext()
 	routeContext.URLParams.Add("id", systemAccountID)
 	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeContext))
+}
+
+func TestManagementSystemAccountCreateHandlerWritesOperationLog(t *testing.T) {
+	queueStub := &operationLogQueueStub{}
+	service := &managementSystemAccountOptionServiceStub{
+		createResult: managementsystemaccounts.CreateResult{
+			Account: managementsystemaccounts.Summary{
+				ID:                     "sys_new",
+				Username:               "new_user",
+				DisplayName:            "新用户",
+				Role:                   "user",
+				Status:                 "active",
+				MustChangePassword:     true,
+				ImageGenerationEnabled: true,
+			},
+			DefaultGroupIDs:  []string{"grp_1"},
+			DefaultAPIKeyIDs: []string{"key_1"},
+		},
+	}
+	handler := newManagementSystemAccountCreateHandler(
+		service,
+		newManagementOperationLogOptions(ManagementOperationLogOptions{
+			Config:   config.Config{TrustProxy: "false"},
+			Client:   queueStub,
+			NewLogID: func() string { return "oplog_create_system_account" },
+		}),
+	)
+	req := httptest.NewRequest(http.MethodPost, "/__aisys__/api/system-accounts", strings.NewReader(`{"username":"new_user","displayName":"新用户","password":"Secret123","imageGenerationEnabled":true}`))
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+		SystemAccountID: "sys_super",
+		Username:        "super",
+		DisplayName:     "超级管理员",
+		Role:            "super_admin",
+		SessionID:       "sess_super",
+	}))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201, body = %s", rec.Code, rec.Body.String())
+	}
+	if !service.createCalled || service.createInput.Username != "new_user" || service.createInput.DisplayName != "新用户" || service.createInput.Password != "Secret123" || service.createInput.ImageGenerationEnabled == nil || !*service.createInput.ImageGenerationEnabled {
+		t.Fatalf("create input = %+v", service.createInput)
+	}
+	var body struct {
+		Data managementsystemaccounts.Summary `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Data.ID != "sys_new" || body.Data.Username != "new_user" || !body.Data.ImageGenerationEnabled {
+		t.Fatalf("response data = %+v", body.Data)
+	}
+	if strings.Contains(rec.Body.String(), "Secret123") {
+		t.Fatalf("response leaked password: %s", rec.Body.String())
+	}
+	if queueStub.calls != 1 || queueStub.taskType != operationlogjob.TaskTypeWrite {
+		t.Fatalf("operation log queue calls = %d taskType = %q", queueStub.calls, queueStub.taskType)
+	}
+	logInput, err := operationlogjob.DecodeWriteTaskPayload(queueStub.payload)
+	if err != nil {
+		t.Fatalf("decode operation log payload: %v", err)
+	}
+	if logInput.OperationKey != "system_accounts.create" || logInput.Action != "create" || logInput.ResourceID != "sys_new" || logInput.StatusCode == nil || *logInput.StatusCode != http.StatusCreated {
+		t.Fatalf("operation log input = %+v", logInput)
+	}
+	if len(logInput.Changes) != 6 || logInput.Changes[5].Field != "password" || logInput.Changes[5].After != "已设置" || !logInput.Changes[5].Sensitive {
+		t.Fatalf("operation log changes = %+v", logInput.Changes)
+	}
+	if raw := string(queueStub.payload); strings.Contains(raw, "Secret123") {
+		t.Fatalf("operation log payload leaked password: %s", raw)
+	}
+}
+
+func TestManagementSystemAccountCreateHandlerRejectsNonSuperAdmin(t *testing.T) {
+	service := &managementSystemAccountOptionServiceStub{}
+	handler := newManagementSystemAccountCreateHandler(service, managementOperationLogOptions{})
+	req := httptest.NewRequest(http.MethodPost, "/__aisys__/api/system-accounts", strings.NewReader(`{"username":"user","displayName":"用户","password":"Secret123"}`))
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+		SystemAccountID: "sys_admin",
+		Role:            "admin",
+	}))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+	if service.createCalled {
+		t.Fatal("service should not be called for non-super admin")
+	}
+}
+
+func TestManagementSystemAccountCreateHandlerValidatesBody(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		wantMsg string
+	}{
+		{name: "missing username", body: `{"displayName":"用户","password":"Secret123"}`},
+		{name: "syntax error", body: `{"username":`},
+		{name: "trailing json", body: `{"username":"user","displayName":"用户","password":"Secret123"} true`},
+		{name: "username surrounding spaces", body: `{"username":" user ","displayName":"用户","password":"Secret123"}`, wantMsg: "用户名不能包含空格"},
+		{name: "display name surrounding spaces", body: `{"username":"user","displayName":" 用户 ","password":"Secret123"}`, wantMsg: "用户名称不能包含空格"},
+		{name: "password whitespace", body: `{"username":"user","displayName":"用户","password":"Secret 123"}`, wantMsg: "登录密码不能包含空格"},
+		{name: "unknown field", body: `{"username":"user","displayName":"用户","password":"Secret123","extra":true}`},
+		{name: "bad image type", body: `{"username":"user","displayName":"用户","password":"Secret123","imageGenerationEnabled":"true"}`},
+		{name: "image null", body: `{"username":"user","displayName":"用户","password":"Secret123","imageGenerationEnabled":null}`},
+		{name: "must change null", body: `{"username":"user","displayName":"用户","password":"Secret123","mustChangePassword":null}`},
+		{name: "invalid role", body: `{"username":"user","displayName":"用户","password":"Secret123","role":"super_admin"}`},
+		{name: "role null", body: `{"username":"user","displayName":"用户","password":"Secret123","role":null}`},
+		{name: "invalid status", body: `{"username":"user","displayName":"用户","password":"Secret123","status":"archived"}`},
+		{name: "status null", body: `{"username":"user","displayName":"用户","password":"Secret123","status":null}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &managementSystemAccountOptionServiceStub{}
+			handler := newManagementSystemAccountCreateHandler(service, managementOperationLogOptions{})
+			req := httptest.NewRequest(http.MethodPost, "/__aisys__/api/system-accounts", strings.NewReader(tt.body))
+			req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{SystemAccountID: "sys_super", Role: "super_admin"}))
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
+			}
+			if tt.wantMsg != "" {
+				var body map[string]string
+				if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+					t.Fatalf("decode: %v", err)
+				}
+				if body["message"] != tt.wantMsg {
+					t.Fatalf("message = %q, want %q", body["message"], tt.wantMsg)
+				}
+			}
+			if service.createCalled {
+				t.Fatal("service should not be called for invalid body")
+			}
+		})
+	}
 }

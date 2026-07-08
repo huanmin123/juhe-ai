@@ -40,6 +40,7 @@ type Service struct {
 	store                    port.ManagementSystemAccountOptionReader
 	now                      func() time.Time
 	hashPassword             func(string) (string, error)
+	secret                   string
 	systemAccountInvalidator SystemAccountInvalidator
 }
 
@@ -88,6 +89,7 @@ type ServiceOptions struct {
 	Store                    port.ManagementSystemAccountOptionReader
 	Now                      func() time.Time
 	HashPassword             func(string) (string, error)
+	Secret                   string
 	SystemAccountInvalidator SystemAccountInvalidator
 }
 
@@ -162,6 +164,7 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 		store:                    opts.Store,
 		now:                      now,
 		hashPassword:             hashPassword,
+		secret:                   opts.Secret,
 		systemAccountInvalidator: opts.SystemAccountInvalidator,
 	}
 }

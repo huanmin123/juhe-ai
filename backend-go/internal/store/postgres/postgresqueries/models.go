@@ -98,6 +98,7 @@ type JuheBusinessApiKey struct {
 	LastUsedAt                      pgtype.Timestamptz
 	CreatedAt                       pgtype.Timestamptz
 	UpdatedAt                       pgtype.Timestamptz
+	KeySecretEncrypted              pgtype.Text
 }
 
 type JuheBusinessCustomProviderModel struct {

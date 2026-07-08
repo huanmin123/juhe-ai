@@ -345,7 +345,24 @@ WITH inserted AS (
     $14,
     $15
   )
-  RETURNING id, system_account_id, route_strategy_id, name, description, key_hash, key_prefix, key_suffix, status, is_default, expires_at, quota_limits_json, availability_schedule_json, availability_schedule_next_check_at, last_used_at, created_at, updated_at
+  RETURNING
+    id,
+    system_account_id,
+    route_strategy_id,
+    name,
+    description,
+    key_hash,
+    key_prefix,
+    key_suffix,
+    status,
+    is_default,
+    expires_at,
+    quota_limits_json,
+    availability_schedule_json,
+    availability_schedule_next_check_at,
+    last_used_at,
+    created_at,
+    updated_at
 )
 SELECT
   inserted.id,
@@ -589,7 +606,24 @@ WITH updated AS (
       updated_at = $9
   WHERE api_keys.id = $10
     AND api_keys.system_account_id = $11
-  RETURNING id, system_account_id, route_strategy_id, name, description, key_hash, key_prefix, key_suffix, status, is_default, expires_at, quota_limits_json, availability_schedule_json, availability_schedule_next_check_at, last_used_at, created_at, updated_at
+  RETURNING
+    id,
+    system_account_id,
+    route_strategy_id,
+    name,
+    description,
+    key_hash,
+    key_prefix,
+    key_suffix,
+    status,
+    is_default,
+    expires_at,
+    quota_limits_json,
+    availability_schedule_json,
+    availability_schedule_next_check_at,
+    last_used_at,
+    created_at,
+    updated_at
 )
 SELECT
   updated.id,

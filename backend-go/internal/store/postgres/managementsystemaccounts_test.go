@@ -414,3 +414,126 @@ func TestManagementSystemAccountImageGenerationUpdateResultFromRowMapsBeforeAndA
 		t.Fatalf("result = %+v", result)
 	}
 }
+
+func TestManagementSystemAccountCreateSQLFansOutDefaultResources(t *testing.T) {
+	source, err := os.ReadFile("queries/w3_management_system_account_create.sql")
+	if err != nil {
+		t.Fatalf("read system account create query: %v", err)
+	}
+	sections := []struct {
+		name  string
+		start string
+		end   string
+		want  []string
+	}{
+		{
+			name:  "account",
+			start: "-- name: CreateManagementSystemAccount :one",
+			end:   "-- name: CreateManagementDefaultGroup :one",
+			want: []string{
+				"INSERT INTO juhe_business.system_accounts",
+				"password_hash",
+				"must_change_password",
+				"image_generation_enabled",
+				"RETURNING",
+			},
+		},
+		{
+			name:  "group",
+			start: "-- name: CreateManagementDefaultGroup :one",
+			end:   "-- name: CreateManagementDefaultRouteStrategy :one",
+			want: []string{
+				"INSERT INTO juhe_business.groups",
+				"provider_code",
+				"true,",
+				"RETURNING id",
+			},
+		},
+		{
+			name:  "route strategy",
+			start: "-- name: CreateManagementDefaultRouteStrategy :one",
+			end:   "-- name: CreateManagementDefaultRouteStrategyGroup :exec",
+			want: []string{
+				"INSERT INTO juhe_business.route_strategies",
+				"'normal'",
+				"'active'",
+				"true,",
+			},
+		},
+		{
+			name:  "route strategy group",
+			start: "-- name: CreateManagementDefaultRouteStrategyGroup :exec",
+			end:   "-- name: CreateManagementDefaultAPIKey :one",
+			want: []string{
+				"INSERT INTO juhe_business.route_strategy_groups",
+				"priority, weight",
+				"1,",
+				"'active'",
+			},
+		},
+		{
+			name:  "api key",
+			start: "-- name: CreateManagementDefaultAPIKey :one",
+			end:   "-- name: CountManagementDefaultGroupsForProvider :one",
+			want: []string{
+				"INSERT INTO juhe_business.api_keys",
+				"key_hash",
+				"key_prefix",
+				"key_suffix",
+				"key_secret_encrypted",
+				"true,",
+			},
+		},
+	}
+	for _, section := range sections {
+		t.Run(section.name, func(t *testing.T) {
+			sql := querySection(t, string(source), section.start, section.end)
+			for _, want := range section.want {
+				if !strings.Contains(sql, want) {
+					t.Fatalf("%s create query missing %q", section.name, want)
+				}
+			}
+			for _, forbidden := range []string{"SELECT *", "coalesce", "COALESCE"} {
+				if strings.Contains(sql, forbidden) {
+					t.Fatalf("%s create query should not contain %q", section.name, forbidden)
+				}
+			}
+		})
+	}
+}
+
+func TestManagementSystemAccountCreateDefaultGroupsMatchSeedProviders(t *testing.T) {
+	if len(defaultBuiltInGroups) != 7 {
+		t.Fatalf("default built-in groups = %d, want 7", len(defaultBuiltInGroups))
+	}
+	got := make([]string, 0, len(defaultBuiltInGroups))
+	for _, group := range defaultBuiltInGroups {
+		got = append(got, group.ProviderCode)
+	}
+	want := []string{"openai", "gpt", "deepseek", "anthropic", "gemini", "glm", "hybrid"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("default provider codes = %#v, want %#v", got, want)
+	}
+	for _, forbidden := range got {
+		if forbidden == "openai_compatible" {
+			t.Fatal("default groups must use seeded provider code openai, not openai_compatible")
+		}
+	}
+}
+
+func TestManagementSystemAccountCreateDefaultRouteResourcesExcludeHybrid(t *testing.T) {
+	if defaultRouteGroupCount() != 6 {
+		t.Fatalf("default route group count = %d, want 6", defaultRouteGroupCount())
+	}
+	if got := defaultRouteStrategyNameForGroup("默认 OpenAI 兼容分组"); got != "默认 OpenAI 兼容路由" {
+		t.Fatalf("route strategy name = %q", got)
+	}
+	if got := defaultAPIKeyNameForRouteStrategy("默认 OpenAI 兼容路由"); got != "默认 OpenAI 兼容API Key" {
+		t.Fatalf("api key name = %q", got)
+	}
+	for _, group := range defaultBuiltInGroups {
+		if group.ProviderCode == hybridProviderCode && group.Name == "" {
+			t.Fatal("hybrid default group should still be present")
+		}
+	}
+}
