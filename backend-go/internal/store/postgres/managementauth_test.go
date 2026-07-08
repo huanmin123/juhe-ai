@@ -126,6 +126,16 @@ func TestManagementAuthSQLSourceGuards(t *testing.T) {
 	if strings.Contains(logoutQuery, "system_account_id") {
 		t.Fatal("management logout SQL must not revoke all sessions for an account")
 	}
+	touchQuery := managementAuthSQLBlock(t, normalized, "TouchManagementSession")
+	if !strings.Contains(touchQuery, "update juhe_business.system_sessions") ||
+		!strings.Contains(touchQuery, "set last_seen_at = sqlc.arg(last_seen_at)::timestamptz") ||
+		!strings.Contains(touchQuery, "where id = sqlc.arg(session_id)::text") ||
+		!strings.Contains(touchQuery, "and last_seen_at < sqlc.arg(cutoff)::timestamptz") {
+		t.Fatal("management session touch SQL must only update stale last_seen_at by session id")
+	}
+	if strings.Contains(touchQuery, "expires_at") || strings.Contains(touchQuery, "system_account_id") || strings.Contains(touchQuery, "password_hash") {
+		t.Fatal("management session touch SQL must not refresh expiry, account sessions or password fields")
+	}
 	if strings.Contains(normalized, "select *") || strings.Contains(normalized, "count(") {
 		t.Fatal("management auth SQL must keep profile requests field-bounded and avoid aggregate scans")
 	}

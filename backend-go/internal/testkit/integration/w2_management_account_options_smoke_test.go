@@ -295,6 +295,7 @@ func TestW2ManagementAccountOptionsPostgresSmoke(t *testing.T) {
 		},
 		Logger:                              slog.Default(),
 		ManagementAPIAuthMiddleware:         httpapi.NewManagementAPIAuthMiddleware(authenticator),
+		ManagementAPIAuthTouchMiddleware:    httpapi.NewManagementAPIAuthTouchMiddleware(authenticator),
 		ManagementAccountOptionsHandler:     httpapi.NewManagementAccountOptionsHandler(service),
 		ManagementMyAccountOptionsHandler:   httpapi.NewManagementMyAccountOptionsHandler(service),
 		ManagementAccountTagsHandler:        httpapi.NewManagementAccountTagsHandler(service),

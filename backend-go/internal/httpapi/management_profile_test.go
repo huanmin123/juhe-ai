@@ -224,7 +224,7 @@ func TestManagementProfileUpdateHandlerErrors(t *testing.T) {
 }
 
 func TestRouterRegistersManagementProfileUpdateWhenEnabled(t *testing.T) {
-	authenticator := &managementAPIAuthenticatorStub{
+	readAuthenticator := &managementAPIAuthenticatorStub{
 		context: managementauth.Context{
 			SystemAccountID: "sys_user",
 			Username:        "user",
@@ -233,15 +233,17 @@ func TestRouterRegistersManagementProfileUpdateWhenEnabled(t *testing.T) {
 			SessionID:       "sess_user",
 		},
 	}
+	touchAuthenticator := &managementAPIAuthenticatorStub{context: readAuthenticator.context}
 	service := &managementProfileUpdateServiceStub{
 		result: managementauth.ProfileUpdateResult{
 			Account: managementauth.CurrentUserProfile{ID: "sys_user", Username: "user", DisplayName: "新名称", Role: "user"},
 		},
 	}
 	router := NewRouter(RouterOptions{
-		Config:                         config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
-		ManagementAPIAuthMiddleware:    NewManagementAPIAuthMiddleware(authenticator),
-		ManagementProfileUpdateHandler: newManagementProfileUpdateHandler(service),
+		Config:                           config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
+		ManagementAPIAuthMiddleware:      NewManagementAPIAuthMiddleware(readAuthenticator),
+		ManagementAPIAuthTouchMiddleware: NewManagementAPIAuthTouchMiddleware(touchAuthenticator),
+		ManagementProfileUpdateHandler:   newManagementProfileUpdateHandler(service),
 	})
 
 	req := httptest.NewRequest(http.MethodPatch, "/__aisys__/api/auth/me", strings.NewReader(`{"displayName":"新名称"}`))
@@ -252,8 +254,11 @@ func TestRouterRegistersManagementProfileUpdateWhenEnabled(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 	}
-	if authenticator.cookieHeader != "juhe_ai_session=session-token" {
-		t.Fatalf("cookie header = %q", authenticator.cookieHeader)
+	if touchAuthenticator.touchCookieHeader != "juhe_ai_session=session-token" {
+		t.Fatalf("touch cookie header = %q", touchAuthenticator.touchCookieHeader)
+	}
+	if readAuthenticator.cookieHeader != "" {
+		t.Fatalf("read cookie header = %q, want empty", readAuthenticator.cookieHeader)
 	}
 	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
 		t.Fatalf("Cache-Control = %q, want no-store", got)
@@ -262,6 +267,13 @@ func TestRouterRegistersManagementProfileUpdateWhenEnabled(t *testing.T) {
 
 func TestRouterBlocksManagementProfileUpdateForMustChangePassword(t *testing.T) {
 	service := &managementProfileUpdateServiceStub{}
+	touchAuthenticator := &managementAPIAuthenticatorStub{
+		err: &managementauth.AuthError{
+			StatusCode: http.StatusForbidden,
+			Code:       managementauth.ErrorCodeMustChangePassword,
+			Message:    "请先修改初始密码",
+		},
+	}
 	router := NewRouter(RouterOptions{
 		Config: config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
 		ManagementAPIAuthMiddleware: NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
@@ -271,10 +283,12 @@ func TestRouterBlocksManagementProfileUpdateForMustChangePassword(t *testing.T) 
 				Message:    "请先修改初始密码",
 			},
 		}),
-		ManagementProfileUpdateHandler: newManagementProfileUpdateHandler(service),
+		ManagementAPIAuthTouchMiddleware: NewManagementAPIAuthTouchMiddleware(touchAuthenticator),
+		ManagementProfileUpdateHandler:   newManagementProfileUpdateHandler(service),
 	})
 
 	req := httptest.NewRequest(http.MethodPatch, "/__aisys__/api/auth/me", strings.NewReader(`{"displayName":"新名称"}`))
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -283,6 +297,9 @@ func TestRouterBlocksManagementProfileUpdateForMustChangePassword(t *testing.T) 
 	}
 	if service.called {
 		t.Fatal("profile update service should not be called when middleware blocks must-change user")
+	}
+	if touchAuthenticator.touchCookieHeader == "" {
+		t.Fatal("profile update must use touch middleware before must-change 403")
 	}
 	var body map[string]string
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {

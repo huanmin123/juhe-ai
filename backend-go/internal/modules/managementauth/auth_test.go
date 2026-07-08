@@ -37,21 +37,126 @@ func TestParseCookieSkipsMalformedEncodedCookie(t *testing.T) {
 }
 
 func TestAuthenticateCookie(t *testing.T) {
-	reader := &managementSessionReaderStub{
-		record: activeManagementSession("session-token", "admin"),
-		found:  true,
-	}
-	authenticator := NewAuthenticator(AuthenticatorOptions{Store: reader, Now: func() time.Time { return fixedManagementAuthNow }})
+	store := &managementSessionStoreStub{}
+	store.record = activeManagementSession("session-token", "admin")
+	store.found = true
+	authenticator := NewAuthenticator(AuthenticatorOptions{Store: store, Now: func() time.Time { return fixedManagementAuthNow }})
 
 	ctx, err := authenticator.AuthenticateCookie(context.Background(), "juhe_ai_session=session-token")
 	if err != nil {
 		t.Fatalf("AuthenticateCookie() error = %v", err)
 	}
-	if reader.tokenHash != HashSessionToken("session-token") {
-		t.Fatalf("tokenHash = %q", reader.tokenHash)
+	if store.managementSessionReaderStub.tokenHash != HashSessionToken("session-token") {
+		t.Fatalf("tokenHash = %q", store.managementSessionReaderStub.tokenHash)
+	}
+	if store.touchCalled {
+		t.Fatal("AuthenticateCookie() must not touch read sessions by default")
 	}
 	if ctx.SystemAccountID != "sys_admin" || ctx.Username != "admin" || ctx.Role != "admin" || ctx.SessionID != "sess_admin" {
 		t.Fatalf("auth context = %+v", ctx)
+	}
+}
+
+func TestAuthenticateCookieAndTouchTouchesStaleSession(t *testing.T) {
+	store := &managementSessionStoreStub{}
+	store.record = activeManagementSession("session-token", "admin")
+	store.record.LastSeenAt = fixedManagementAuthNow.Add(-2 * time.Minute)
+	store.found = true
+	authenticator := NewAuthenticator(AuthenticatorOptions{Store: store, Now: func() time.Time { return fixedManagementAuthNow }})
+
+	if _, err := authenticator.AuthenticateCookieAndTouch(context.Background(), "juhe_ai_session=session-token"); err != nil {
+		t.Fatalf("AuthenticateCookieAndTouch() error = %v", err)
+	}
+	if !store.touchCalled {
+		t.Fatal("AuthenticateCookieAndTouch() did not touch a stale session")
+	}
+	if store.touchInput.SessionID != "sess_admin" ||
+		!store.touchInput.TouchedAt.Equal(fixedManagementAuthNow) ||
+		!store.touchInput.Cutoff.Equal(fixedManagementAuthNow.Add(-SessionTouchMinInterval)) {
+		t.Fatalf("touch input = %+v", store.touchInput)
+	}
+}
+
+func TestAuthenticateCookieAndTouchSkipsFreshSession(t *testing.T) {
+	store := &managementSessionStoreStub{}
+	store.record = activeManagementSession("session-token", "admin")
+	store.record.LastSeenAt = fixedManagementAuthNow.Add(-30 * time.Second)
+	store.found = true
+	authenticator := NewAuthenticator(AuthenticatorOptions{Store: store, Now: func() time.Time { return fixedManagementAuthNow }})
+
+	if _, err := authenticator.AuthenticateCookieAndTouch(context.Background(), "juhe_ai_session=session-token"); err != nil {
+		t.Fatalf("AuthenticateCookieAndTouch() error = %v", err)
+	}
+	if store.touchCalled {
+		t.Fatalf("fresh session should not be touched; input = %+v", store.touchInput)
+	}
+}
+
+func TestAuthenticateCookieAndTouchReturnsTouchError(t *testing.T) {
+	store := &managementSessionStoreStub{}
+	store.record = activeManagementSession("session-token", "admin")
+	store.record.LastSeenAt = fixedManagementAuthNow.Add(-2 * time.Minute)
+	store.found = true
+	store.touchErr = errors.New("postgres down")
+	authenticator := NewAuthenticator(AuthenticatorOptions{Store: store, Now: func() time.Time { return fixedManagementAuthNow }})
+
+	_, err := authenticator.AuthenticateCookieAndTouch(context.Background(), "juhe_ai_session=session-token")
+	if !errors.Is(err, store.touchErr) {
+		t.Fatalf("AuthenticateCookieAndTouch() error = %v, want touch error", err)
+	}
+}
+
+func TestAuthenticateCookieForCurrentUserAndTouchAllowsMustChangePassword(t *testing.T) {
+	store := &managementSessionStoreStub{}
+	store.record = mustChangeManagementSession("session-token", "user")
+	store.record.LastSeenAt = fixedManagementAuthNow.Add(-2 * time.Minute)
+	store.found = true
+	authenticator := NewAuthenticator(AuthenticatorOptions{Store: store, Now: func() time.Time { return fixedManagementAuthNow }})
+
+	ctx, err := authenticator.AuthenticateCookieForCurrentUserAndTouch(context.Background(), "juhe_ai_session=session-token")
+	if err != nil {
+		t.Fatalf("AuthenticateCookieForCurrentUserAndTouch() error = %v", err)
+	}
+	if !ctx.MustChangePassword || !store.touchCalled {
+		t.Fatalf("context = %+v touch = %v", ctx, store.touchCalled)
+	}
+}
+
+func TestAuthenticateCookieAndTouchTouchesBeforeMustChangePasswordBlock(t *testing.T) {
+	store := &managementSessionStoreStub{}
+	store.record = mustChangeManagementSession("session-token", "user")
+	store.record.LastSeenAt = fixedManagementAuthNow.Add(-2 * time.Minute)
+	store.found = true
+	authenticator := NewAuthenticator(AuthenticatorOptions{Store: store, Now: func() time.Time { return fixedManagementAuthNow }})
+
+	_, err := authenticator.AuthenticateCookieAndTouch(context.Background(), "juhe_ai_session=session-token")
+	var authErr *AuthError
+	if !errors.As(err, &authErr) || authErr.StatusCode != http.StatusForbidden {
+		t.Fatalf("error = %v, want must-change AuthError", err)
+	}
+	if !store.touchCalled {
+		t.Fatal("write auth should touch before must-change 403, matching Node")
+	}
+}
+
+func TestAuthenticateCookieAndTouchUsesExplicitToucher(t *testing.T) {
+	reader := &managementSessionReaderStub{
+		record: activeManagementSession("session-token", "admin"),
+		found:  true,
+	}
+	reader.record.LastSeenAt = fixedManagementAuthNow.Add(-2 * time.Minute)
+	toucher := &managementSessionToucherStub{}
+	authenticator := NewAuthenticator(AuthenticatorOptions{
+		Store:   reader,
+		Toucher: toucher,
+		Now:     func() time.Time { return fixedManagementAuthNow },
+	})
+
+	if _, err := authenticator.AuthenticateCookieAndTouch(context.Background(), "juhe_ai_session=session-token"); err != nil {
+		t.Fatalf("AuthenticateCookieAndTouch() error = %v", err)
+	}
+	if !toucher.touchCalled {
+		t.Fatal("explicit toucher was not used")
 	}
 }
 
@@ -215,7 +320,20 @@ func (s *managementSessionRevokerStub) RevokeManagementSessionByTokenHash(_ cont
 	return s.err
 }
 
+type managementSessionToucherStub struct {
+	touchCalled bool
+	touchInput  port.ManagementSessionTouchInput
+	touchErr    error
+}
+
+func (s *managementSessionToucherStub) TouchManagementSession(_ context.Context, input port.ManagementSessionTouchInput) error {
+	s.touchCalled = true
+	s.touchInput = input
+	return s.touchErr
+}
+
 type managementSessionStoreStub struct {
 	managementSessionReaderStub
 	managementSessionRevokerStub
+	managementSessionToucherStub
 }

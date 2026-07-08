@@ -17,6 +17,8 @@ const (
 	SessionCookieName = "juhe_ai_session"
 
 	ErrorCodeMustChangePassword = "must_change_password"
+
+	SessionTouchMinInterval = time.Minute
 )
 
 type Context struct {
@@ -31,12 +33,14 @@ type Context struct {
 type Authenticator struct {
 	store   port.ManagementSessionReader
 	revoker port.ManagementSessionRevoker
+	toucher port.ManagementSessionToucher
 	now     func() time.Time
 }
 
 type AuthenticatorOptions struct {
 	Store   port.ManagementSessionReader
 	Revoker port.ManagementSessionRevoker
+	Toucher port.ManagementSessionToucher
 	Now     func() time.Time
 }
 
@@ -61,7 +65,13 @@ func NewAuthenticator(opts AuthenticatorOptions) *Authenticator {
 			revoker = storeRevoker
 		}
 	}
-	return &Authenticator{store: opts.Store, revoker: revoker, now: now}
+	toucher := opts.Toucher
+	if toucher == nil {
+		if storeToucher, ok := opts.Store.(port.ManagementSessionToucher); ok {
+			toucher = storeToucher
+		}
+	}
+	return &Authenticator{store: opts.Store, revoker: revoker, toucher: toucher, now: now}
 }
 
 func HashSessionToken(token string) string {
@@ -87,11 +97,19 @@ func ParseCookie(cookieHeader string) map[string]string {
 }
 
 func (a *Authenticator) AuthenticateCookie(ctx context.Context, cookieHeader string) (Context, error) {
-	return a.authenticateCookie(ctx, cookieHeader, true)
+	return a.authenticateCookie(ctx, cookieHeader, true, false)
+}
+
+func (a *Authenticator) AuthenticateCookieAndTouch(ctx context.Context, cookieHeader string) (Context, error) {
+	return a.authenticateCookie(ctx, cookieHeader, true, true)
 }
 
 func (a *Authenticator) AuthenticateCookieForCurrentUser(ctx context.Context, cookieHeader string) (Context, error) {
-	return a.authenticateCookie(ctx, cookieHeader, false)
+	return a.authenticateCookie(ctx, cookieHeader, false, false)
+}
+
+func (a *Authenticator) AuthenticateCookieForCurrentUserAndTouch(ctx context.Context, cookieHeader string) (Context, error) {
+	return a.authenticateCookie(ctx, cookieHeader, false, true)
 }
 
 func (a *Authenticator) LogoutCookie(ctx context.Context, cookieHeader string) error {
@@ -105,7 +123,7 @@ func (a *Authenticator) LogoutCookie(ctx context.Context, cookieHeader string) e
 	return a.revoker.RevokeManagementSessionByTokenHash(ctx, HashSessionToken(token))
 }
 
-func (a *Authenticator) authenticateCookie(ctx context.Context, cookieHeader string, requirePasswordChangeCompleted bool) (Context, error) {
+func (a *Authenticator) authenticateCookie(ctx context.Context, cookieHeader string, requirePasswordChangeCompleted bool, touch bool) (Context, error) {
 	if a == nil || a.store == nil {
 		return Context{}, errors.New("management auth store is required")
 	}
@@ -121,6 +139,11 @@ func (a *Authenticator) authenticateCookie(ctx context.Context, cookieHeader str
 	if !found || !session.ExpiresAt.After(a.now().UTC()) || session.Status != "active" {
 		return Context{}, &AuthError{StatusCode: http.StatusUnauthorized, Message: "登录会话已过期"}
 	}
+	if touch {
+		if err := a.touchSession(ctx, session); err != nil {
+			return Context{}, err
+		}
+	}
 
 	mustChangePassword := session.MustChangePassword && !IsAdminRole(session.Role)
 	authContext := Context{
@@ -135,6 +158,21 @@ func (a *Authenticator) authenticateCookie(ctx context.Context, cookieHeader str
 		return Context{}, &AuthError{StatusCode: http.StatusForbidden, Code: ErrorCodeMustChangePassword, Message: "请先修改初始密码"}
 	}
 	return authContext, nil
+}
+
+func (a *Authenticator) touchSession(ctx context.Context, session port.ManagementSessionAccount) error {
+	if a == nil || a.toucher == nil {
+		return errors.New("management auth session toucher is required")
+	}
+	now := a.now().UTC()
+	if !session.LastSeenAt.IsZero() && now.Sub(session.LastSeenAt) < SessionTouchMinInterval {
+		return nil
+	}
+	return a.toucher.TouchManagementSession(ctx, port.ManagementSessionTouchInput{
+		SessionID: session.SessionID,
+		TouchedAt: now,
+		Cutoff:    now.Add(-SessionTouchMinInterval),
+	})
 }
 
 func IsAdminRole(role string) bool {

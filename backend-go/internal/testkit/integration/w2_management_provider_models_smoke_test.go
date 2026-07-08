@@ -133,6 +133,7 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 		},
 		Logger:                                    slog.Default(),
 		ManagementAPIAuthMiddleware:               httpapi.NewManagementAPIAuthMiddleware(authenticator),
+		ManagementAPIAuthTouchMiddleware:          httpapi.NewManagementAPIAuthTouchMiddleware(authenticator),
 		ManagementProviderModelOptionsHandler:     httpapi.NewManagementProviderModelOptionsHandler(service),
 		ManagementProviderModelsHandler:           httpapi.NewManagementProviderModelsHandler(service),
 		ManagementProviderDefaultTestModelHandler: httpapi.NewManagementProviderDefaultTestModelHandler(service),

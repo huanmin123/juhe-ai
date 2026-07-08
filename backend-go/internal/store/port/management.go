@@ -27,6 +27,16 @@ type ManagementSessionRevoker interface {
 	RevokeManagementSessionByTokenHash(ctx context.Context, tokenHash string) error
 }
 
+type ManagementSessionTouchInput struct {
+	SessionID  string
+	TouchedAt  time.Time
+	Cutoff     time.Time
+}
+
+type ManagementSessionToucher interface {
+	TouchManagementSession(ctx context.Context, input ManagementSessionTouchInput) error
+}
+
 type ManagementCurrentUserProfile struct {
 	ID                 string
 	Username           string

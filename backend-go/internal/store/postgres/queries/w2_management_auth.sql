@@ -20,6 +20,12 @@ LIMIT 1;
 DELETE FROM juhe_business.system_sessions
 WHERE token_hash = $1;
 
+-- name: TouchManagementSession :exec
+UPDATE juhe_business.system_sessions
+SET last_seen_at = sqlc.arg(last_seen_at)::timestamptz
+WHERE id = sqlc.arg(session_id)::text
+  AND last_seen_at < sqlc.arg(cutoff)::timestamptz;
+
 -- name: FindManagementSystemAccountPasswordByUsername :one
 SELECT
   id,

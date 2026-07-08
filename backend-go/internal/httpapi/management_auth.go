@@ -14,8 +14,16 @@ type ManagementAPIAuthenticator interface {
 	AuthenticateCookie(ctx context.Context, cookieHeader string) (managementauth.Context, error)
 }
 
+type ManagementAPIAuthTouchAuthenticator interface {
+	AuthenticateCookieAndTouch(ctx context.Context, cookieHeader string) (managementauth.Context, error)
+}
+
 type ManagementCurrentUserAuthenticator interface {
 	AuthenticateCookieForCurrentUser(ctx context.Context, cookieHeader string) (managementauth.Context, error)
+}
+
+type ManagementCurrentUserTouchAuthenticator interface {
+	AuthenticateCookieForCurrentUserAndTouch(ctx context.Context, cookieHeader string) (managementauth.Context, error)
 }
 
 type ManagementLogoutAuthenticator interface {
@@ -42,6 +50,24 @@ func NewManagementAPIAuthMiddleware(authenticator ManagementAPIAuthenticator) fu
 				return
 			}
 			authContext, err := authenticator.AuthenticateCookie(r.Context(), r.Header.Get("Cookie"))
+			if err != nil {
+				writeManagementAuthError(w, err)
+				return
+			}
+			ctx := context.WithValue(r.Context(), managementAuthContextKey, authContext)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+func NewManagementAPIAuthTouchMiddleware(authenticator ManagementAPIAuthTouchAuthenticator) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if authenticator == nil {
+				writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+				return
+			}
+			authContext, err := authenticator.AuthenticateCookieAndTouch(r.Context(), r.Header.Get("Cookie"))
 			if err != nil {
 				writeManagementAuthError(w, err)
 				return

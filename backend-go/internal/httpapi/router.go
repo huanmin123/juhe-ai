@@ -22,6 +22,7 @@ type RouterOptions struct {
 	SystemAPIIPReadRateLimiter                      SystemAPIIPReadRateLimiter
 	PublicAPIHandler                                http.Handler
 	ManagementAPIAuthMiddleware                     func(http.Handler) http.Handler
+	ManagementAPIAuthTouchMiddleware                func(http.Handler) http.Handler
 	ManagementCurrentUserHandler                    http.Handler
 	ManagementProfileUpdateHandler                  http.Handler
 	ManagementPasswordChangeHandler                 http.Handler
@@ -84,6 +85,10 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementAPIAuthMiddleware == nil {
 				panic("ManagementAPIAuthMiddleware is required when JUHE_AI_MANAGEMENT_API_ENABLED is true")
 			}
+			if managementWriteRoutesConfigured(opts) && opts.ManagementAPIAuthTouchMiddleware == nil {
+				panic("ManagementAPIAuthTouchMiddleware is required for management write routes when JUHE_AI_MANAGEMENT_API_ENABLED is true")
+			}
+			managementAPIWriteAuthMiddleware := opts.ManagementAPIAuthTouchMiddleware
 			if opts.ManagementCurrentUserHandler == nil &&
 				opts.ManagementProfileUpdateHandler == nil &&
 				opts.ManagementPasswordChangeHandler == nil &&
@@ -123,7 +128,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				system.Get("/auth/me", opts.ManagementCurrentUserHandler.ServeHTTP)
 			}
 			if opts.ManagementProfileUpdateHandler != nil {
-				system.With(opts.ManagementAPIAuthMiddleware).Patch("/auth/me", opts.ManagementProfileUpdateHandler.ServeHTTP)
+				system.With(managementAPIWriteAuthMiddleware).Patch("/auth/me", opts.ManagementProfileUpdateHandler.ServeHTTP)
 			}
 			if opts.ManagementPasswordChangeHandler != nil {
 				system.Post("/auth/change-password", opts.ManagementPasswordChangeHandler.ServeHTTP)
@@ -168,7 +173,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/providers/{code}/models", opts.ManagementProviderModelsHandler.ServeHTTP)
 			}
 			if opts.ManagementProviderDefaultTestModelHandler != nil {
-				system.With(opts.ManagementAPIAuthMiddleware).Put("/providers/{code}/default-test-model", opts.ManagementProviderDefaultTestModelHandler.ServeHTTP)
+				system.With(managementAPIWriteAuthMiddleware).Put("/providers/{code}/default-test-model", opts.ManagementProviderDefaultTestModelHandler.ServeHTTP)
 			}
 			if opts.ManagementRouteStrategyOptionsHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/route-strategies/options", opts.ManagementRouteStrategyOptionsHandler.ServeHTTP)
@@ -201,16 +206,16 @@ func NewRouter(opts RouterOptions) http.Handler {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/my-accounts/tags", opts.ManagementMyAccountTagsHandler.ServeHTTP)
 			}
 			if opts.ManagementAccountTagDeleteHandler != nil {
-				system.With(opts.ManagementAPIAuthMiddleware).Delete("/accounts/tags/{tagId}", opts.ManagementAccountTagDeleteHandler.ServeHTTP)
+				system.With(managementAPIWriteAuthMiddleware).Delete("/accounts/tags/{tagId}", opts.ManagementAccountTagDeleteHandler.ServeHTTP)
 			}
 			if opts.ManagementMyAccountTagDeleteHandler != nil {
-				system.With(opts.ManagementAPIAuthMiddleware).Delete("/my-accounts/tags/{tagId}", opts.ManagementMyAccountTagDeleteHandler.ServeHTTP)
+				system.With(managementAPIWriteAuthMiddleware).Delete("/my-accounts/tags/{tagId}", opts.ManagementMyAccountTagDeleteHandler.ServeHTTP)
 			}
 			if opts.ManagementAccountTagUpdateHandler != nil {
-				system.With(opts.ManagementAPIAuthMiddleware).Patch("/accounts/{id}/tags", opts.ManagementAccountTagUpdateHandler.ServeHTTP)
+				system.With(managementAPIWriteAuthMiddleware).Patch("/accounts/{id}/tags", opts.ManagementAccountTagUpdateHandler.ServeHTTP)
 			}
 			if opts.ManagementMyAccountTagUpdateHandler != nil {
-				system.With(opts.ManagementAPIAuthMiddleware).Patch("/my-accounts/{id}/tags", opts.ManagementMyAccountTagUpdateHandler.ServeHTTP)
+				system.With(managementAPIWriteAuthMiddleware).Patch("/my-accounts/{id}/tags", opts.ManagementMyAccountTagUpdateHandler.ServeHTTP)
 			}
 			if opts.ManagementOperationLogsHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/operation-logs", opts.ManagementOperationLogsHandler.ServeHTTP)
@@ -252,4 +257,13 @@ func NewRouter(opts RouterOptions) http.Handler {
 	})
 
 	return r
+}
+
+func managementWriteRoutesConfigured(opts RouterOptions) bool {
+	return opts.ManagementProfileUpdateHandler != nil ||
+		opts.ManagementProviderDefaultTestModelHandler != nil ||
+		opts.ManagementAccountTagDeleteHandler != nil ||
+		opts.ManagementMyAccountTagDeleteHandler != nil ||
+		opts.ManagementAccountTagUpdateHandler != nil ||
+		opts.ManagementMyAccountTagUpdateHandler != nil
 }

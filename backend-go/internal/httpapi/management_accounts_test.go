@@ -606,6 +606,12 @@ func TestRouterRegistersW2ManagementAccountOptions(t *testing.T) {
 		deleteTagResult:  true,
 		updateTagsResult: managementaccounts.TagUpdateResult{Account: managementaccounts.TagUpdateAccount{ID: "acct_main", Name: "主账号"}},
 	}
+	readAuthenticator := &managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_read"},
+	}
+	touchAuthenticator := &managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_touch"},
+	}
 	router := NewRouter(RouterOptions{
 		Config:                              config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
 		Logger:                              slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
@@ -617,9 +623,8 @@ func TestRouterRegistersW2ManagementAccountOptions(t *testing.T) {
 		ManagementMyAccountTagDeleteHandler: newManagementAccountTagDeleteHandler(service, managementAccountScopeSelf),
 		ManagementAccountTagUpdateHandler:   newManagementAccountTagUpdateHandler(service, managementAccountScopeAdmin),
 		ManagementMyAccountTagUpdateHandler: newManagementAccountTagUpdateHandler(service, managementAccountScopeSelf),
-		ManagementAPIAuthMiddleware: NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
-			context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
-		}),
+		ManagementAPIAuthMiddleware:         NewManagementAPIAuthMiddleware(readAuthenticator),
+		ManagementAPIAuthTouchMiddleware:    NewManagementAPIAuthTouchMiddleware(touchAuthenticator),
 	})
 
 	for _, path := range []string{"/__aisys__/api/accounts/options", "/__aisys__/api/my-accounts/options", "/__aisys__/api/accounts/tags", "/__aisys__/api/my-accounts/tags"} {
@@ -665,6 +670,9 @@ func TestRouterRegistersW2ManagementAccountOptions(t *testing.T) {
 		if got := rec.Header().Get("Cache-Control"); got != "no-store" {
 			t.Fatalf("%s Cache-Control = %q, want no-store", path, got)
 		}
+	}
+	if readAuthenticator.cookieHeader == "" || touchAuthenticator.touchCookieHeader == "" {
+		t.Fatalf("auth headers read=%q touch=%q", readAuthenticator.cookieHeader, touchAuthenticator.touchCookieHeader)
 	}
 }
 

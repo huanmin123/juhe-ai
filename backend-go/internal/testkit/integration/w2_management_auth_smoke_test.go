@@ -98,10 +98,11 @@ func TestW2ManagementAuthPostgresSmoke(t *testing.T) {
 	}
 	operationLogQueue := &w2OperationLogQueueStub{}
 	router := httpapi.NewRouter(httpapi.RouterOptions{
-		Config:                       cfg,
-		Logger:                       slog.Default(),
-		ManagementAPIAuthMiddleware:  httpapi.NewManagementAPIAuthMiddleware(authenticator),
-		ManagementCurrentUserHandler: httpapi.NewManagementCurrentUserHandler(authenticator),
+		Config:                           cfg,
+		Logger:                           slog.Default(),
+		ManagementAPIAuthMiddleware:      httpapi.NewManagementAPIAuthMiddleware(authenticator),
+		ManagementAPIAuthTouchMiddleware: httpapi.NewManagementAPIAuthTouchMiddleware(authenticator),
+		ManagementCurrentUserHandler:     httpapi.NewManagementCurrentUserHandler(authenticator),
 		ManagementProfileUpdateHandler: httpapi.NewManagementProfileUpdateHandlerWithOperationLog(
 			managementauth.NewProfileService(store),
 			httpapi.ManagementOperationLogOptions{
@@ -116,6 +117,8 @@ func TestW2ManagementAuthPostgresSmoke(t *testing.T) {
 		ManagementProxyOptionsHandler:   httpapi.NewManagementProxyOptionsHandler(managementproxies.NewService(store)),
 	})
 
+	adminReadLastSeenAt := now.Add(-2 * time.Minute)
+	setW2ManagementSessionLastSeenAt(t, ctx, db, "sess_w2_management_auth", adminReadLastSeenAt)
 	currentUserReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/auth/me", nil)
 	currentUserReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
 	currentUserRec := httptest.NewRecorder()
@@ -142,6 +145,7 @@ func TestW2ManagementAuthPostgresSmoke(t *testing.T) {
 		currentUserBody.Data.MustChangePassword {
 		t.Fatalf("current user = %+v", currentUserBody.Data)
 	}
+	assertW2ManagementSessionLastSeenAt(t, ctx, db, "sess_w2_management_auth", adminReadLastSeenAt)
 
 	profileReq := httptest.NewRequest(http.MethodPatch, "/__aisys__/api/auth/me", strings.NewReader(`{"displayName":"W2ProfileRenamed"}`))
 	profileReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
@@ -175,6 +179,7 @@ func TestW2ManagementAuthPostgresSmoke(t *testing.T) {
 	if savedDisplayName != "W2ProfileRenamed" {
 		t.Fatalf("saved display name = %q, want W2ProfileRenamed", savedDisplayName)
 	}
+	assertW2ManagementSessionLastSeenAt(t, ctx, db, "sess_w2_management_auth", now)
 	if operationLogQueue.decodeErr != nil {
 		t.Fatalf("decode profile operation log: %v", operationLogQueue.decodeErr)
 	}
@@ -250,6 +255,8 @@ func TestW2ManagementAuthPostgresSmoke(t *testing.T) {
 		t.Fatalf("must change protected body = %+v", mustChangeProtectedBody)
 	}
 
+	mustChangeProfileLastSeenAt := now.Add(-3 * time.Minute)
+	setW2ManagementSessionLastSeenAt(t, ctx, db, "sess_w2_management_auth_must_change", mustChangeProfileLastSeenAt)
 	mustChangeProfileReq := httptest.NewRequest(http.MethodPatch, "/__aisys__/api/auth/me", strings.NewReader(`{"displayName":"BlockedProfile"}`))
 	mustChangeProfileReq.Header.Set("Cookie", "juhe_ai_session="+mustChangeSessionToken)
 	mustChangeProfileRec := httptest.NewRecorder()
@@ -264,7 +271,10 @@ func TestW2ManagementAuthPostgresSmoke(t *testing.T) {
 	if mustChangeProfileBody["code"] != managementauth.ErrorCodeMustChangePassword {
 		t.Fatalf("must change profile body = %+v", mustChangeProfileBody)
 	}
+	assertW2ManagementSessionLastSeenAt(t, ctx, db, "sess_w2_management_auth_must_change", now)
 
+	mustChangePasswordLastSeenAt := now.Add(-4 * time.Minute)
+	setW2ManagementSessionLastSeenAt(t, ctx, db, "sess_w2_management_auth_must_change", mustChangePasswordLastSeenAt)
 	mustChangePasswordReq := httptest.NewRequest(http.MethodPost, "/__aisys__/api/auth/change-password", strings.NewReader(`{"newPassword":"MustNew123"}`))
 	mustChangePasswordReq.Header.Set("Cookie", "juhe_ai_session="+mustChangeSessionToken)
 	mustChangePasswordRec := httptest.NewRecorder()
@@ -299,6 +309,7 @@ func TestW2ManagementAuthPostgresSmoke(t *testing.T) {
 	if mustChangeSavedFlag || mustChangeSavedHash == "MustNew123" || !managementauth.VerifyPassword("MustNew123", mustChangeSavedHash) {
 		t.Fatalf("must change saved password state flag=%v hash=%q", mustChangeSavedFlag, mustChangeSavedHash)
 	}
+	assertW2ManagementSessionLastSeenAt(t, ctx, db, "sess_w2_management_auth_must_change", now)
 	mustChangeOtherReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/auth/me", nil)
 	mustChangeOtherReq.Header.Set("Cookie", "juhe_ai_session="+mustChangeOtherSessionToken)
 	mustChangeOtherRec := httptest.NewRecorder()
@@ -325,6 +336,8 @@ func TestW2ManagementAuthPostgresSmoke(t *testing.T) {
 		t.Fatalf("must change current user after password = %+v", mustChangeAfterBody.Data)
 	}
 
+	adminFreshLastSeenAt := now.Add(-30 * time.Second)
+	setW2ManagementSessionLastSeenAt(t, ctx, db, "sess_w2_management_auth", adminFreshLastSeenAt)
 	adminMissingOldReq := httptest.NewRequest(http.MethodPost, "/__aisys__/api/auth/change-password", strings.NewReader(`{"newPassword":"AdminNew123"}`))
 	adminMissingOldReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
 	adminMissingOldRec := httptest.NewRecorder()
@@ -339,6 +352,8 @@ func TestW2ManagementAuthPostgresSmoke(t *testing.T) {
 	if adminMissingOldBody["message"] != "请填写当前密码" {
 		t.Fatalf("admin missing old body = %+v", adminMissingOldBody)
 	}
+	assertW2ManagementSessionLastSeenAt(t, ctx, db, "sess_w2_management_auth", adminFreshLastSeenAt)
+
 	adminWrongOldReq := httptest.NewRequest(http.MethodPost, "/__aisys__/api/auth/change-password", strings.NewReader(`{"oldPassword":"WrongPass","newPassword":"AdminNew123"}`))
 	adminWrongOldReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
 	adminWrongOldRec := httptest.NewRecorder()
@@ -353,6 +368,8 @@ func TestW2ManagementAuthPostgresSmoke(t *testing.T) {
 	if adminWrongOldBody["message"] != "当前密码不正确" {
 		t.Fatalf("admin wrong old body = %+v", adminWrongOldBody)
 	}
+	adminPasswordLastSeenAt := now.Add(-5 * time.Minute)
+	setW2ManagementSessionLastSeenAt(t, ctx, db, "sess_w2_management_auth", adminPasswordLastSeenAt)
 	adminPasswordReq := httptest.NewRequest(http.MethodPost, "/__aisys__/api/auth/change-password", strings.NewReader(`{"oldPassword":"OldPass123","newPassword":"AdminNew123"}`))
 	adminPasswordReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
 	adminPasswordRec := httptest.NewRecorder()
@@ -392,6 +409,7 @@ func TestW2ManagementAuthPostgresSmoke(t *testing.T) {
 	if adminSavedFlag || adminSavedHash == "AdminNew123" || !managementauth.VerifyPassword("AdminNew123", adminSavedHash) {
 		t.Fatalf("admin saved password state flag=%v hash=%q", adminSavedFlag, adminSavedHash)
 	}
+	assertW2ManagementSessionLastSeenAt(t, ctx, db, "sess_w2_management_auth", now)
 	adminOtherReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/auth/me", nil)
 	adminOtherReq.Header.Set("Cookie", "juhe_ai_session="+adminOtherSessionToken)
 	adminOtherRec := httptest.NewRecorder()
@@ -468,6 +486,40 @@ func TestW2ManagementAuthPostgresSmoke(t *testing.T) {
 func insertW2ManagementSessionFixture(t *testing.T, ctx context.Context, db *sql.DB, token string, now time.Time) {
 	t.Helper()
 	insertW2ManagementSessionForAccountFixture(t, ctx, db, "sess_w2_management_auth", "sys_w2_proxy_options", token, now)
+}
+
+func setW2ManagementSessionLastSeenAt(t *testing.T, ctx context.Context, db *sql.DB, sessionID string, lastSeenAt time.Time) {
+	t.Helper()
+	result, err := db.ExecContext(ctx, `
+		UPDATE juhe_business.system_sessions
+		SET last_seen_at = $1
+		WHERE id = $2
+	`, lastSeenAt, sessionID)
+	if err != nil {
+		t.Fatalf("set W2 management session last_seen_at for %s: %v", sessionID, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		t.Fatalf("read W2 management session last_seen_at rows affected: %v", err)
+	}
+	if affected != 1 {
+		t.Fatalf("set W2 management session last_seen_at affected %d rows, want 1", affected)
+	}
+}
+
+func assertW2ManagementSessionLastSeenAt(t *testing.T, ctx context.Context, db *sql.DB, sessionID string, want time.Time) {
+	t.Helper()
+	var got time.Time
+	if err := db.QueryRowContext(ctx, `
+		SELECT last_seen_at
+		FROM juhe_business.system_sessions
+		WHERE id = $1
+	`, sessionID).Scan(&got); err != nil {
+		t.Fatalf("read W2 management session last_seen_at for %s: %v", sessionID, err)
+	}
+	if !got.UTC().Equal(want.UTC()) {
+		t.Fatalf("session %s last_seen_at = %s, want %s", sessionID, got.UTC().Format(time.RFC3339Nano), want.UTC().Format(time.RFC3339Nano))
+	}
 }
 
 func insertW2MustChangeSystemAccountFixture(t *testing.T, ctx context.Context, db *sql.DB, now time.Time) {

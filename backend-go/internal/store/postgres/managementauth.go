@@ -35,6 +35,17 @@ func (s *Store) RevokeManagementSessionByTokenHash(ctx context.Context, tokenHas
 	return nil
 }
 
+func (s *Store) TouchManagementSession(ctx context.Context, input port.ManagementSessionTouchInput) error {
+	if err := s.queries().TouchManagementSession(ctx, postgresqueries.TouchManagementSessionParams{
+		SessionID:  input.SessionID,
+		LastSeenAt: pgtype.Timestamptz{Time: input.TouchedAt.UTC(), Valid: true},
+		Cutoff:     pgtype.Timestamptz{Time: input.Cutoff.UTC(), Valid: true},
+	}); err != nil {
+		return fmt.Errorf("touch management session: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) FindManagementSystemAccountPasswordByUsername(ctx context.Context, username string) (port.ManagementSystemAccountPasswordCredential, bool, error) {
 	row, err := s.queries().FindManagementSystemAccountPasswordByUsername(ctx, username)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -161,5 +172,6 @@ func isManagementProfileDisplayNameUniqueViolation(err error) bool {
 
 var _ port.ManagementSessionReader = (*Store)(nil)
 var _ port.ManagementSessionRevoker = (*Store)(nil)
+var _ port.ManagementSessionToucher = (*Store)(nil)
 var _ port.ManagementCurrentUserProfileWriter = (*Store)(nil)
 var _ port.ManagementCurrentUserPasswordChanger = (*Store)(nil)

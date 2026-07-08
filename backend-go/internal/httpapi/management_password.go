@@ -43,17 +43,17 @@ type managementPasswordChangeResponse struct {
 	UpdatedAt              string `json:"updatedAt"`
 }
 
-func NewManagementPasswordChangeHandler(authenticator ManagementCurrentUserAuthenticator, service *managementauth.PasswordService) http.Handler {
+func NewManagementPasswordChangeHandler(authenticator ManagementCurrentUserTouchAuthenticator, service *managementauth.PasswordService) http.Handler {
 	return newManagementPasswordChangeHandler(authenticator, managementPasswordChangeServiceAdapter{service: service})
 }
 
-func newManagementPasswordChangeHandler(authenticator ManagementCurrentUserAuthenticator, service managementPasswordChangeService) http.Handler {
+func newManagementPasswordChangeHandler(authenticator ManagementCurrentUserTouchAuthenticator, service managementPasswordChangeService) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if authenticator == nil || service == nil {
 			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
 			return
 		}
-		authContext, err := authenticator.AuthenticateCookieForCurrentUser(r.Context(), r.Header.Get("Cookie"))
+		authContext, err := authenticator.AuthenticateCookieForCurrentUserAndTouch(r.Context(), r.Header.Get("Cookie"))
 		if err != nil {
 			writeManagementAuthError(w, err)
 			return

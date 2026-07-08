@@ -226,15 +226,20 @@ func TestRouterRegistersW2ManagementProviderModelHandlers(t *testing.T) {
 		models:                 []managementprovidermodels.ModelCatalogItem{{ProviderCode: "gpt", Model: "gpt-5.5", Scope: "built_in", Status: "active"}},
 		defaultTestModelResult: managementprovidermodels.DefaultTestModelResult{ProviderCode: "gpt", DefaultTestModel: "gpt-5.5"},
 	}
+	readAuthenticator := &managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_read"},
+	}
+	touchAuthenticator := &managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_touch"},
+	}
 	router := NewRouter(RouterOptions{
 		Config:                                config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
 		Logger:                                slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
 		ManagementProviderModelOptionsHandler: newManagementProviderModelOptionsHandler(service),
 		ManagementProviderModelsHandler:       newManagementProviderModelsHandler(service),
 		ManagementProviderDefaultTestModelHandler: newManagementProviderDefaultTestModelHandler(service),
-		ManagementAPIAuthMiddleware: NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
-			context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
-		}),
+		ManagementAPIAuthMiddleware:               NewManagementAPIAuthMiddleware(readAuthenticator),
+		ManagementAPIAuthTouchMiddleware:          NewManagementAPIAuthTouchMiddleware(touchAuthenticator),
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/providers/models/options", nil)
@@ -262,6 +267,9 @@ func TestRouterRegistersW2ManagementProviderModelHandlers(t *testing.T) {
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("default test model status = %d, want 200", rec.Code)
+	}
+	if readAuthenticator.cookieHeader == "" || touchAuthenticator.touchCookieHeader == "" {
+		t.Fatalf("auth headers read=%q touch=%q", readAuthenticator.cookieHeader, touchAuthenticator.touchCookieHeader)
 	}
 }
 

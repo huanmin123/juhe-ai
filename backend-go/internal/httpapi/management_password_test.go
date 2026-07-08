@@ -55,8 +55,11 @@ func TestManagementPasswordChangeHandlerChangesPassword(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 	}
-	if authenticator.cookieHeader != "juhe_ai_session=session-token" {
-		t.Fatalf("cookie header = %q", authenticator.cookieHeader)
+	if authenticator.touchCookieHeader != "juhe_ai_session=session-token" {
+		t.Fatalf("touch cookie header = %q", authenticator.touchCookieHeader)
+	}
+	if authenticator.cookieHeader != "" {
+		t.Fatalf("read cookie header = %q, want empty", authenticator.cookieHeader)
 	}
 	if !service.called || service.input.NewPassword != "NewPass123" || service.input.OldPassword != nil {
 		t.Fatalf("service input = %+v", service.input)
@@ -191,8 +194,8 @@ func TestRouterRegistersManagementPasswordChangeWithoutMustChangeMiddleware(t *t
 	if !service.called {
 		t.Fatal("password change service was not called")
 	}
-	if currentUserAuthenticator.cookieHeader != "juhe_ai_session=session-token" {
-		t.Fatalf("cookie header = %q", currentUserAuthenticator.cookieHeader)
+	if currentUserAuthenticator.touchCookieHeader != "juhe_ai_session=session-token" {
+		t.Fatalf("touch cookie header = %q", currentUserAuthenticator.touchCookieHeader)
 	}
 	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
 		t.Fatalf("Cache-Control = %q, want no-store", got)

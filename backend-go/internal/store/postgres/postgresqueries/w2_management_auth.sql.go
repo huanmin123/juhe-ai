@@ -117,6 +117,24 @@ func (q *Queries) RevokeOtherManagementSessionsForAccount(ctx context.Context, a
 	return err
 }
 
+const touchManagementSession = `-- name: TouchManagementSession :exec
+UPDATE juhe_business.system_sessions
+SET last_seen_at = $1::timestamptz
+WHERE id = $2::text
+  AND last_seen_at < $3::timestamptz
+`
+
+type TouchManagementSessionParams struct {
+	LastSeenAt pgtype.Timestamptz
+	SessionID  string
+	Cutoff     pgtype.Timestamptz
+}
+
+func (q *Queries) TouchManagementSession(ctx context.Context, arg TouchManagementSessionParams) error {
+	_, err := q.db.Exec(ctx, touchManagementSession, arg.LastSeenAt, arg.SessionID, arg.Cutoff)
+	return err
+}
+
 const updateManagementCurrentUserPassword = `-- name: UpdateManagementCurrentUserPassword :one
 UPDATE juhe_business.system_accounts
 SET
