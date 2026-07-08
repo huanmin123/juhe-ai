@@ -539,6 +539,174 @@ func TestManagementSystemAccountStatusUpdateHandlerMapsServiceErrors(t *testing.
 	}
 }
 
+func TestManagementSystemAccountProfileUpdateHandlerWritesOperationLog(t *testing.T) {
+	queueStub := &operationLogQueueStub{}
+	service := &managementSystemAccountOptionServiceStub{
+		profileResult: managementsystemaccounts.ProfileUpdateResult{
+			Before: managementsystemaccounts.Summary{
+				ID:                 "sys_user",
+				Username:           "user",
+				DisplayName:        "旧名称",
+				Description:        "旧说明",
+				Role:               "user",
+				Status:             "active",
+				MustChangePassword: false,
+			},
+			Account: managementsystemaccounts.Summary{
+				ID:                 "sys_user",
+				Username:           "user",
+				DisplayName:        "新名称",
+				Description:        "新说明",
+				Role:               "admin",
+				Status:             "active",
+				MustChangePassword: false,
+			},
+			Changed: true,
+		},
+	}
+	handler := newManagementSystemAccountPatchHandler(
+		service,
+		newManagementOperationLogOptions(ManagementOperationLogOptions{
+			Config:   config.Config{TrustProxy: "false"},
+			Client:   queueStub,
+			NewLogID: func() string { return "oplog_update_profile" },
+		}),
+	)
+	req := managementSystemAccountPatchRequest(
+		"/__aisys__/api/system-accounts/sys_user",
+		"sys_user",
+		`{"displayName":"新名称","description":"新说明","role":"admin","mustChangePassword":true}`,
+	)
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+		SystemAccountID: "sys_super",
+		Username:        "super",
+		DisplayName:     "超级管理员",
+		Role:            "super_admin",
+		SessionID:       "sess_super",
+	}))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", rec.Code, rec.Body.String())
+	}
+	if !service.profileCalled ||
+		service.profileInput.SystemAccountID != "sys_user" ||
+		service.profileInput.DisplayName == nil ||
+		*service.profileInput.DisplayName != "新名称" ||
+		!service.profileInput.HasDescription ||
+		service.profileInput.Description == nil ||
+		*service.profileInput.Description != "新说明" ||
+		service.profileInput.Role == nil ||
+		*service.profileInput.Role != "admin" ||
+		service.profileInput.MustChangePassword == nil ||
+		!*service.profileInput.MustChangePassword ||
+		service.statusCalled ||
+		service.resetCalled {
+		t.Fatalf("service inputs: profile=%+v statusCalled=%v resetCalled=%v", service.profileInput, service.statusCalled, service.resetCalled)
+	}
+	if queueStub.calls != 1 || queueStub.taskType != operationlogjob.TaskTypeWrite {
+		t.Fatalf("operation log queue calls = %d taskType = %q", queueStub.calls, queueStub.taskType)
+	}
+	payload := string(queueStub.payload)
+	if strings.Contains(payload, "password") || strings.Contains(payload, "imageGenerationEnabled") || strings.Contains(payload, "status") {
+		t.Fatalf("profile update operation log payload leaked unsupported fields: %s", payload)
+	}
+	logInput, err := operationlogjob.DecodeWriteTaskPayload(queueStub.payload)
+	if err != nil {
+		t.Fatalf("decode operation log payload: %v", err)
+	}
+	if logInput.OperationKey != "system_accounts.update" ||
+		logInput.ActorSystemAccountID != "sys_super" ||
+		logInput.OperationScopeSystemAccountID != "sys_user" ||
+		logInput.ResourceID != "sys_user" ||
+		len(logInput.Changes) != 3 {
+		t.Fatalf("operation log input = %+v", logInput)
+	}
+	if logInput.Changes[0].Field != "displayName" ||
+		logInput.Changes[1].Field != "description" ||
+		logInput.Changes[2].Field != "role" {
+		t.Fatalf("operation log changes = %+v", logInput.Changes)
+	}
+}
+
+func TestManagementSystemAccountProfileUpdateHandlerValidatesBody(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "display name null", body: `{"displayName":null}`},
+		{name: "description number", body: `{"description":123}`},
+		{name: "role null", body: `{"role":null}`},
+		{name: "must change password null", body: `{"mustChangePassword":null}`},
+		{name: "image generation not in profile slice", body: `{"displayName":"用户","imageGenerationEnabled":true}`},
+		{name: "unknown field", body: `{"displayName":"用户","unknown":true}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &managementSystemAccountOptionServiceStub{}
+			handler := newManagementSystemAccountPatchHandler(service)
+			req := managementSystemAccountPatchRequest("/__aisys__/api/system-accounts/sys_user", "sys_user", tt.body)
+			req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+				SystemAccountID: "sys_super",
+				Role:            "super_admin",
+			}))
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
+			}
+			if service.profileCalled || service.statusCalled || service.resetCalled {
+				t.Fatalf("service should not be called, profileCalled=%v statusCalled=%v resetCalled=%v", service.profileCalled, service.statusCalled, service.resetCalled)
+			}
+		})
+	}
+}
+
+func TestManagementSystemAccountProfileUpdateHandlerMapsServiceErrors(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		wantCode int
+		wantMsg  string
+	}{
+		{name: "display whitespace", err: managementsystemaccounts.ErrProfileUpdateWhitespace, wantCode: http.StatusBadRequest, wantMsg: "用户名称不能包含空格"},
+		{name: "invalid", err: managementsystemaccounts.ErrProfileUpdateInvalid, wantCode: http.StatusBadRequest, wantMsg: "系统账户参数无效"},
+		{name: "duplicate display name", err: managementsystemaccounts.ErrProfileUpdateDisplayNameDup, wantCode: http.StatusConflict, wantMsg: "用户名称已存在"},
+		{name: "not found", err: managementsystemaccounts.ErrSystemAccountNotFound, wantCode: http.StatusNotFound, wantMsg: "系统账户不存在"},
+		{name: "last active super admin", err: managementsystemaccounts.ErrActiveSuperAdminRequired, wantCode: http.StatusConflict, wantMsg: "至少保留一个启用的超级管理员"},
+		{name: "store error", err: errors.New("postgres password leaked"), wantCode: http.StatusInternalServerError, wantMsg: "服务器内部错误"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &managementSystemAccountOptionServiceStub{profileErr: tt.err}
+			handler := newManagementSystemAccountPatchHandler(service)
+			req := managementSystemAccountPatchRequest("/__aisys__/api/system-accounts/sys_user", "sys_user", `{"displayName":"用户"}`)
+			req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+				SystemAccountID: "sys_super",
+				Role:            "super_admin",
+			}))
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantCode {
+				t.Fatalf("status = %d, want %d", rec.Code, tt.wantCode)
+			}
+			var body map[string]string
+			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if body["message"] != tt.wantMsg {
+				t.Fatalf("message = %q, want %q", body["message"], tt.wantMsg)
+			}
+		})
+	}
+}
+
 func TestRouterRegistersW2ManagementSystemAccountOptions(t *testing.T) {
 	service := &managementSystemAccountOptionServiceStub{
 		listResult: managementsystemaccounts.ListResult{
@@ -657,22 +825,26 @@ func TestRouterDoesNotRegisterW2ManagementSystemAccountOptionsWhenDisabled(t *te
 }
 
 type managementSystemAccountOptionServiceStub struct {
-	listCalled   bool
-	listInput    managementsystemaccounts.ListInput
-	listResult   managementsystemaccounts.ListResult
-	listErr      error
-	called       bool
-	input        managementsystemaccounts.OptionListInput
-	options      []managementsystemaccounts.Option
-	err          error
-	resetCalled  bool
-	resetInput   managementsystemaccounts.PasswordResetInput
-	resetResult  managementsystemaccounts.PasswordResetResult
-	resetErr     error
-	statusCalled bool
-	statusInput  managementsystemaccounts.StatusUpdateInput
-	statusResult managementsystemaccounts.StatusUpdateResult
-	statusErr    error
+	listCalled    bool
+	listInput     managementsystemaccounts.ListInput
+	listResult    managementsystemaccounts.ListResult
+	listErr       error
+	called        bool
+	input         managementsystemaccounts.OptionListInput
+	options       []managementsystemaccounts.Option
+	err           error
+	resetCalled   bool
+	resetInput    managementsystemaccounts.PasswordResetInput
+	resetResult   managementsystemaccounts.PasswordResetResult
+	resetErr      error
+	statusCalled  bool
+	statusInput   managementsystemaccounts.StatusUpdateInput
+	statusResult  managementsystemaccounts.StatusUpdateResult
+	statusErr     error
+	profileCalled bool
+	profileInput  managementsystemaccounts.ProfileUpdateInput
+	profileResult managementsystemaccounts.ProfileUpdateResult
+	profileErr    error
 }
 
 func (s *managementSystemAccountOptionServiceStub) List(_ *http.Request, input managementsystemaccounts.ListInput) (managementsystemaccounts.ListResult, error) {
@@ -697,6 +869,12 @@ func (s *managementSystemAccountOptionServiceStub) UpdateStatus(_ context.Contex
 	s.statusCalled = true
 	s.statusInput = input
 	return s.statusResult, s.statusErr
+}
+
+func (s *managementSystemAccountOptionServiceStub) UpdateProfile(_ context.Context, input managementsystemaccounts.ProfileUpdateInput) (managementsystemaccounts.ProfileUpdateResult, error) {
+	s.profileCalled = true
+	s.profileInput = input
+	return s.profileResult, s.profileErr
 }
 
 func managementSystemAccountPatchRequest(target string, systemAccountID string, body string) *http.Request {

@@ -407,23 +407,199 @@ func TestUpdateStatusMapsStoreNotFoundBlockedAndErrors(t *testing.T) {
 	}
 }
 
+func TestUpdateProfileNormalizesInputAndMapsResult(t *testing.T) {
+	now := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
+	updatedAt := now.Add(time.Minute)
+	displayName := "新名称"
+	description := "  新说明  "
+	role := "admin"
+	mustChangePassword := true
+	store := &systemAccountOptionStoreStub{
+		profileFound: true,
+		profileResult: port.ManagementSystemAccountProfileUpdateResult{
+			Before: port.ManagementSystemAccountSummary{
+				ID:                 "sys_user",
+				Username:           "user",
+				DisplayName:        "旧名称",
+				Description:        "旧说明",
+				Role:               "user",
+				Status:             "active",
+				MustChangePassword: false,
+				CreatedAt:          now,
+				UpdatedAt:          now,
+			},
+			Account: port.ManagementSystemAccountSummary{
+				ID:                 "sys_user",
+				Username:           "user",
+				DisplayName:        "新名称",
+				Description:        "新说明",
+				Role:               "admin",
+				Status:             "active",
+				MustChangePassword: true,
+				CreatedAt:          now,
+				UpdatedAt:          updatedAt,
+			},
+		},
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		Store: store,
+		Now:   func() time.Time { return updatedAt },
+	})
+
+	result, err := service.UpdateProfile(context.Background(), ProfileUpdateInput{
+		SystemAccountID:    " sys_user ",
+		DisplayName:        &displayName,
+		HasDescription:     true,
+		Description:        &description,
+		Role:               &role,
+		MustChangePassword: &mustChangePassword,
+	})
+
+	if err != nil {
+		t.Fatalf("UpdateProfile() error = %v", err)
+	}
+	if !store.profileCalled ||
+		store.profileInput.SystemAccountID != "sys_user" ||
+		!store.profileInput.HasDisplayName ||
+		store.profileInput.DisplayName != "新名称" ||
+		!store.profileInput.HasDescription ||
+		store.profileInput.Description == nil ||
+		*store.profileInput.Description != "新说明" ||
+		!store.profileInput.HasRole ||
+		store.profileInput.Role != "admin" ||
+		!store.profileInput.HasMustChangePassword ||
+		!store.profileInput.MustChangePassword ||
+		!store.profileInput.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("profile input = %+v", store.profileInput)
+	}
+	if !result.Changed ||
+		result.Before.DisplayName != "旧名称" ||
+		result.Account.DisplayName != "新名称" ||
+		result.Account.Description != "新说明" ||
+		result.Account.Role != "admin" ||
+		result.Account.MustChangePassword {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestUpdateProfileAllowsDescriptionNull(t *testing.T) {
+	now := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
+	store := &systemAccountOptionStoreStub{
+		profileFound: true,
+		profileResult: port.ManagementSystemAccountProfileUpdateResult{
+			Before:  port.ManagementSystemAccountSummary{ID: "sys_user", Username: "user", DisplayName: "用户", Description: "旧说明", Role: "user", Status: "active", CreatedAt: now, UpdatedAt: now},
+			Account: port.ManagementSystemAccountSummary{ID: "sys_user", Username: "user", DisplayName: "用户", Role: "user", Status: "active", CreatedAt: now, UpdatedAt: now},
+		},
+	}
+	service := NewService(store)
+
+	result, err := service.UpdateProfile(context.Background(), ProfileUpdateInput{SystemAccountID: "sys_user", HasDescription: true})
+
+	if err != nil {
+		t.Fatalf("UpdateProfile() error = %v", err)
+	}
+	if !store.profileInput.HasDescription || store.profileInput.Description != nil {
+		t.Fatalf("profile description input = %+v", store.profileInput)
+	}
+	if !result.Changed || result.Account.Description != "" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestUpdateProfileRejectsInvalidInput(t *testing.T) {
+	spaceName := "bad user"
+	longDescription := ""
+	for i := 0; i < maxDescriptionRunes+1; i++ {
+		longDescription += "a"
+	}
+	invalidRole := "super_admin"
+	tests := []struct {
+		name    string
+		input   ProfileUpdateInput
+		wantErr error
+	}{
+		{name: "missing id", input: ProfileUpdateInput{DisplayName: stringPtr("用户")}, wantErr: ErrProfileUpdateInvalid},
+		{name: "no fields", input: ProfileUpdateInput{SystemAccountID: "sys_user"}, wantErr: ErrProfileUpdateInvalid},
+		{name: "display name whitespace", input: ProfileUpdateInput{SystemAccountID: "sys_user", DisplayName: &spaceName}, wantErr: ErrProfileUpdateWhitespace},
+		{name: "description too long", input: ProfileUpdateInput{SystemAccountID: "sys_user", HasDescription: true, Description: &longDescription}, wantErr: ErrProfileUpdateInvalid},
+		{name: "invalid role", input: ProfileUpdateInput{SystemAccountID: "sys_user", Role: &invalidRole}, wantErr: ErrProfileUpdateInvalid},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &systemAccountOptionStoreStub{}
+			service := NewService(store)
+
+			_, err := service.UpdateProfile(context.Background(), tt.input)
+
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("UpdateProfile() error = %v, want %v", err, tt.wantErr)
+			}
+			if store.profileCalled {
+				t.Fatal("store should not be called for invalid profile update input")
+			}
+		})
+	}
+}
+
+func TestUpdateProfileMapsStoreErrors(t *testing.T) {
+	want := errors.New("postgres down")
+	now := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name    string
+		store   *systemAccountOptionStoreStub
+		wantErr error
+	}{
+		{name: "not found", store: &systemAccountOptionStoreStub{}, wantErr: ErrSystemAccountNotFound},
+		{name: "duplicate display name", store: &systemAccountOptionStoreStub{profileErr: port.ErrManagementSystemAccountDisplayNameExists}, wantErr: ErrProfileUpdateDisplayNameDup},
+		{
+			name: "last active super admin",
+			store: &systemAccountOptionStoreStub{
+				profileFound: true,
+				profileResult: port.ManagementSystemAccountProfileUpdateResult{
+					Before:                      port.ManagementSystemAccountSummary{ID: "sys_super", Role: "super_admin", Status: "active", CreatedAt: now, UpdatedAt: now},
+					Account:                     port.ManagementSystemAccountSummary{ID: "sys_super", Role: "super_admin", Status: "active", CreatedAt: now, UpdatedAt: now},
+					BlockedLastActiveSuperAdmin: true,
+				},
+			},
+			wantErr: ErrActiveSuperAdminRequired,
+		},
+		{name: "store error", store: &systemAccountOptionStoreStub{profileErr: want}, wantErr: want},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := NewService(tt.store)
+
+			_, err := service.UpdateProfile(context.Background(), ProfileUpdateInput{SystemAccountID: "sys_user", DisplayName: stringPtr("用户")})
+
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("UpdateProfile() error = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 type systemAccountOptionStoreStub struct {
-	listInput    port.ManagementSystemAccountListInput
-	listResult   port.ManagementSystemAccountListResult
-	listErr      error
-	input        port.ManagementSystemAccountOptionListInput
-	options      []port.ManagementSystemAccountOption
-	err          error
-	resetCalled  bool
-	resetInput   port.ManagementSystemAccountPasswordResetInput
-	resetResult  port.ManagementSystemAccountPasswordResetResult
-	resetFound   bool
-	resetErr     error
-	statusCalled bool
-	statusInput  port.ManagementSystemAccountStatusUpdateInput
-	statusResult port.ManagementSystemAccountStatusUpdateResult
-	statusFound  bool
-	statusErr    error
+	listInput     port.ManagementSystemAccountListInput
+	listResult    port.ManagementSystemAccountListResult
+	listErr       error
+	input         port.ManagementSystemAccountOptionListInput
+	options       []port.ManagementSystemAccountOption
+	err           error
+	resetCalled   bool
+	resetInput    port.ManagementSystemAccountPasswordResetInput
+	resetResult   port.ManagementSystemAccountPasswordResetResult
+	resetFound    bool
+	resetErr      error
+	statusCalled  bool
+	statusInput   port.ManagementSystemAccountStatusUpdateInput
+	statusResult  port.ManagementSystemAccountStatusUpdateResult
+	statusFound   bool
+	statusErr     error
+	profileCalled bool
+	profileInput  port.ManagementSystemAccountProfileUpdateInput
+	profileResult port.ManagementSystemAccountProfileUpdateResult
+	profileFound  bool
+	profileErr    error
 }
 
 func (s *systemAccountOptionStoreStub) ListManagementSystemAccounts(_ context.Context, input port.ManagementSystemAccountListInput) (port.ManagementSystemAccountListResult, error) {
@@ -446,4 +622,14 @@ func (s *systemAccountOptionStoreStub) UpdateManagementSystemAccountStatus(_ con
 	s.statusCalled = true
 	s.statusInput = input
 	return s.statusResult, s.statusFound, s.statusErr
+}
+
+func (s *systemAccountOptionStoreStub) UpdateManagementSystemAccountProfile(_ context.Context, input port.ManagementSystemAccountProfileUpdateInput) (port.ManagementSystemAccountProfileUpdateResult, bool, error) {
+	s.profileCalled = true
+	s.profileInput = input
+	return s.profileResult, s.profileFound, s.profileErr
+}
+
+func stringPtr(value string) *string {
+	return &value
 }

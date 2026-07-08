@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"juhe-ai/backend-go/internal/store/port"
@@ -56,6 +57,35 @@ func (s *Store) UpdateManagementSystemAccountStatus(ctx context.Context, input p
 		return port.ManagementSystemAccountStatusUpdateResult{}, false, fmt.Errorf("update management system account status: %w", err)
 	}
 	return managementSystemAccountStatusUpdateResultFromRow(row), true, nil
+}
+
+func (s *Store) UpdateManagementSystemAccountProfile(ctx context.Context, input port.ManagementSystemAccountProfileUpdateInput) (port.ManagementSystemAccountProfileUpdateResult, bool, error) {
+	description := pgtype.Text{}
+	if input.Description != nil {
+		description = pgtype.Text{String: *input.Description, Valid: true}
+	}
+	row, err := s.queries().UpdateManagementSystemAccountProfile(ctx, postgresqueries.UpdateManagementSystemAccountProfileParams{
+		SystemAccountID:       input.SystemAccountID,
+		HasDisplayName:        input.HasDisplayName,
+		DisplayName:           input.DisplayName,
+		HasDescription:        input.HasDescription,
+		Description:           description,
+		HasRole:               input.HasRole,
+		Role:                  input.Role,
+		HasMustChangePassword: input.HasMustChangePassword,
+		MustChangePassword:    input.MustChangePassword,
+		UpdatedAt:             pgtype.Timestamptz{Time: input.UpdatedAt.UTC(), Valid: true},
+	})
+	if isManagementSystemAccountDisplayNameUniqueViolation(err) {
+		return port.ManagementSystemAccountProfileUpdateResult{}, false, port.ErrManagementSystemAccountDisplayNameExists
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return port.ManagementSystemAccountProfileUpdateResult{}, false, nil
+	}
+	if err != nil {
+		return port.ManagementSystemAccountProfileUpdateResult{}, false, fmt.Errorf("update management system account profile: %w", err)
+	}
+	return managementSystemAccountProfileUpdateResultFromRow(row), true, nil
 }
 
 func listManagementSystemAccounts(ctx context.Context, q *postgresqueries.Queries, input port.ManagementSystemAccountListInput) (port.ManagementSystemAccountListResult, error) {
@@ -207,6 +237,48 @@ func managementSystemAccountStatusUpdateResultFromRow(row postgresqueries.Update
 	}
 }
 
+func managementSystemAccountProfileUpdateResultFromRow(row postgresqueries.UpdateManagementSystemAccountProfileRow) port.ManagementSystemAccountProfileUpdateResult {
+	before := port.ManagementSystemAccountSummary{
+		ID:                     row.BeforeID,
+		Username:               row.BeforeUsername,
+		DisplayName:            row.BeforeDisplayName,
+		Description:            textValue(row.BeforeDescription),
+		Role:                   row.BeforeRole,
+		Status:                 row.BeforeStatus,
+		MustChangePassword:     row.BeforeMustChangePassword,
+		ImageGenerationEnabled: row.BeforeImageGenerationEnabled,
+		LastLoginAt:            timestamptzPtr(row.BeforeLastLoginAt),
+		CreatedAt:              timestamptzValue(row.BeforeCreatedAt),
+		UpdatedAt:              timestamptzValue(row.BeforeUpdatedAt),
+	}
+	account := port.ManagementSystemAccountSummary{
+		ID:                     row.ID,
+		Username:               row.Username,
+		DisplayName:            row.DisplayName,
+		Description:            textValue(row.Description),
+		Role:                   row.Role,
+		Status:                 row.Status,
+		MustChangePassword:     row.MustChangePassword,
+		ImageGenerationEnabled: row.ImageGenerationEnabled,
+		LastLoginAt:            timestamptzPtr(row.LastLoginAt),
+		CreatedAt:              timestamptzValue(row.CreatedAt),
+		UpdatedAt:              timestamptzValue(row.UpdatedAt),
+	}
+	return port.ManagementSystemAccountProfileUpdateResult{
+		Before:                      before,
+		Account:                     account,
+		BlockedLastActiveSuperAdmin: row.BlockedLastActiveSuperAdmin,
+	}
+}
+
+func isManagementSystemAccountDisplayNameUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) &&
+		pgErr.Code == "23505" &&
+		pgErr.ConstraintName == "idx_system_accounts_display_name_unique_lower"
+}
+
 var _ port.ManagementSystemAccountOptionReader = (*Store)(nil)
 var _ port.ManagementSystemAccountPasswordResetter = (*Store)(nil)
 var _ port.ManagementSystemAccountStatusUpdater = (*Store)(nil)
+var _ port.ManagementSystemAccountProfileUpdater = (*Store)(nil)

@@ -28,6 +28,7 @@ type managementSystemAccountOptionService interface {
 type managementSystemAccountPatchService interface {
 	ResetPassword(ctx context.Context, input managementsystemaccounts.PasswordResetInput) (managementsystemaccounts.PasswordResetResult, error)
 	UpdateStatus(ctx context.Context, input managementsystemaccounts.StatusUpdateInput) (managementsystemaccounts.StatusUpdateResult, error)
+	UpdateProfile(ctx context.Context, input managementsystemaccounts.ProfileUpdateInput) (managementsystemaccounts.ProfileUpdateResult, error)
 }
 
 type managementSystemAccountOptionServiceAdapter struct {
@@ -48,6 +49,10 @@ func (s managementSystemAccountOptionServiceAdapter) ResetPassword(ctx context.C
 
 func (s managementSystemAccountOptionServiceAdapter) UpdateStatus(ctx context.Context, input managementsystemaccounts.StatusUpdateInput) (managementsystemaccounts.StatusUpdateResult, error) {
 	return s.service.UpdateStatus(ctx, input)
+}
+
+func (s managementSystemAccountOptionServiceAdapter) UpdateProfile(ctx context.Context, input managementsystemaccounts.ProfileUpdateInput) (managementsystemaccounts.ProfileUpdateResult, error) {
+	return s.service.UpdateProfile(ctx, input)
 }
 
 func NewManagementSystemAccountsHandler(service *managementsystemaccounts.Service) http.Handler {
@@ -150,6 +155,43 @@ func newManagementSystemAccountPatchHandler(service managementSystemAccountPatch
 			writeData(w, http.StatusOK, result.Account)
 			return
 		}
+		if patch.action == managementSystemAccountPatchProfile {
+			result, err := service.UpdateProfile(r.Context(), managementsystemaccounts.ProfileUpdateInput{
+				SystemAccountID:    chi.URLParam(r, "id"),
+				DisplayName:        patch.displayName,
+				HasDescription:     patch.hasDescription,
+				Description:        patch.description,
+				Role:               patch.role,
+				MustChangePassword: patch.mustChangePassword,
+			})
+			if errors.Is(err, managementsystemaccounts.ErrProfileUpdateWhitespace) {
+				writeMessageError(w, http.StatusBadRequest, "用户名称不能包含空格")
+				return
+			}
+			if errors.Is(err, managementsystemaccounts.ErrProfileUpdateInvalid) {
+				writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
+				return
+			}
+			if errors.Is(err, managementsystemaccounts.ErrSystemAccountNotFound) {
+				writeMessageError(w, http.StatusNotFound, "系统账户不存在")
+				return
+			}
+			if errors.Is(err, managementsystemaccounts.ErrProfileUpdateDisplayNameDup) {
+				writeMessageError(w, http.StatusConflict, "用户名称已存在")
+				return
+			}
+			if errors.Is(err, managementsystemaccounts.ErrActiveSuperAdminRequired) {
+				writeMessageError(w, http.StatusConflict, "至少保留一个启用的超级管理员")
+				return
+			}
+			if err != nil {
+				writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+				return
+			}
+			recordSystemAccountProfileUpdateOperationLog(r, authContext, result, operationLogs)
+			writeData(w, http.StatusOK, result.Account)
+			return
+		}
 		result, err := service.ResetPassword(r.Context(), managementsystemaccounts.PasswordResetInput{
 			SystemAccountID:    chi.URLParam(r, "id"),
 			Password:           patch.password,
@@ -181,6 +223,7 @@ type managementSystemAccountPatchAction string
 const (
 	managementSystemAccountPatchPassword managementSystemAccountPatchAction = "password"
 	managementSystemAccountPatchStatus   managementSystemAccountPatchAction = "status"
+	managementSystemAccountPatchProfile  managementSystemAccountPatchAction = "profile"
 )
 
 type managementSystemAccountPatchBody struct {
@@ -188,6 +231,10 @@ type managementSystemAccountPatchBody struct {
 	password           string
 	mustChangePassword *bool
 	status             string
+	displayName        *string
+	hasDescription     bool
+	description        *string
+	role               *string
 }
 
 func decodeManagementSystemAccountPatchBody(w http.ResponseWriter, r *http.Request) (managementSystemAccountPatchBody, bool) {
@@ -252,8 +299,62 @@ func decodeManagementSystemAccountPatchBody(w http.ResponseWriter, r *http.Reque
 			status: *status,
 		}, true
 	}
+	if hasManagementSystemAccountProfilePatchFields(payload) {
+		for field := range payload {
+			switch field {
+			case "displayName", "description", "role", "mustChangePassword":
+			default:
+				writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
+				return managementSystemAccountPatchBody{}, false
+			}
+		}
+		patch := managementSystemAccountPatchBody{action: managementSystemAccountPatchProfile}
+		if rawDisplayName, exists := payload["displayName"]; exists {
+			var value *string
+			if err := json.Unmarshal(rawDisplayName, &value); err != nil || value == nil {
+				writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
+				return managementSystemAccountPatchBody{}, false
+			}
+			patch.displayName = value
+		}
+		if rawDescription, exists := payload["description"]; exists {
+			var value *string
+			if err := json.Unmarshal(rawDescription, &value); err != nil {
+				writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
+				return managementSystemAccountPatchBody{}, false
+			}
+			patch.hasDescription = true
+			patch.description = value
+		}
+		if rawRole, exists := payload["role"]; exists {
+			var value *string
+			if err := json.Unmarshal(rawRole, &value); err != nil || value == nil {
+				writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
+				return managementSystemAccountPatchBody{}, false
+			}
+			patch.role = value
+		}
+		if rawMustChangePassword, exists := payload["mustChangePassword"]; exists {
+			var value *bool
+			if err := json.Unmarshal(rawMustChangePassword, &value); err != nil || value == nil {
+				writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
+				return managementSystemAccountPatchBody{}, false
+			}
+			patch.mustChangePassword = value
+		}
+		return patch, true
+	}
 	writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
 	return managementSystemAccountPatchBody{}, false
+}
+
+func hasManagementSystemAccountProfilePatchFields(payload map[string]json.RawMessage) bool {
+	for _, field := range []string{"displayName", "description", "role", "mustChangePassword"} {
+		if _, exists := payload[field]; exists {
+			return true
+		}
+	}
+	return false
 }
 
 func writeManagementSystemAccountPatchBodyError(w http.ResponseWriter, err error) {
@@ -433,6 +534,113 @@ func recordSystemAccountStatusUpdateOperationLog(
 			slog.Any("error", err),
 		)
 	}
+}
+
+func recordSystemAccountProfileUpdateOperationLog(
+	r *http.Request,
+	authContext managementauth.Context,
+	result managementsystemaccounts.ProfileUpdateResult,
+	opts managementOperationLogOptions,
+) {
+	if opts.client == nil || !result.Changed {
+		return
+	}
+	changes := systemAccountProfileUpdateChanges(result)
+	if len(changes) == 0 {
+		return
+	}
+	now := opts.now
+	if now == nil {
+		now = time.Now
+	}
+	newLogID := opts.newLogID
+	if newLogID == nil {
+		newLogID = func() string {
+			return "oplog_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+		}
+	}
+	statusCode := http.StatusOK
+	input := port.OperationLogInput{
+		ID:                            newLogID(),
+		TraceID:                       requestIDFromContext(r.Context()),
+		ActorSystemAccountID:          authContext.SystemAccountID,
+		ActorUsername:                 authContext.Username,
+		ActorDisplayName:              authContext.DisplayName,
+		ActorRole:                     authContext.Role,
+		OperationScopeSystemAccountID: result.Account.ID,
+		Mode:                          "admin",
+		Module:                        "system_accounts",
+		Action:                        "update",
+		OperationKey:                  "system_accounts.update",
+		ResourceType:                  "system_account",
+		ResourceID:                    result.Account.ID,
+		ResourceName:                  result.Account.DisplayName,
+		Summary:                       "更新系统账户：" + result.Account.DisplayName,
+		DetailLevel:                   "full",
+		VisibilityScope:               "targeted",
+		Changes:                       changes,
+		Method:                        r.Method,
+		Path:                          r.URL.Path,
+		StatusCode:                    &statusCode,
+		ClientIP:                      opts.clientIP.FromRequest(r),
+		UserAgent:                     r.UserAgent(),
+		Viewers: []port.OperationLogViewerInput{
+			{
+				SystemAccountID:  result.Account.ID,
+				VisibilityReason: "admin_managed_my_resource",
+				DetailLevel:      "full",
+			},
+		},
+		CreatedAt: now().UTC(),
+	}
+	enqueueCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+	defer cancel()
+	if _, err := operationlogjob.EnqueueWrite(enqueueCtx, opts.client, input); err != nil && opts.logger != nil {
+		opts.logger.Warn("管理端操作日志入队失败",
+			slog.String("event", "operation_log_enqueue_failed"),
+			slog.String("operation_key", input.OperationKey),
+			slog.String("resource_id", input.ResourceID),
+			slog.String("request_id", input.TraceID),
+			slog.Any("error", err),
+		)
+	}
+}
+
+func systemAccountProfileUpdateChanges(result managementsystemaccounts.ProfileUpdateResult) []port.OperationLogChange {
+	changes := make([]port.OperationLogChange, 0, 4)
+	if result.Before.DisplayName != result.Account.DisplayName {
+		changes = append(changes, port.OperationLogChange{
+			Field:  "displayName",
+			Label:  "用户名称",
+			Before: result.Before.DisplayName,
+			After:  result.Account.DisplayName,
+		})
+	}
+	if result.Before.Description != result.Account.Description {
+		changes = append(changes, port.OperationLogChange{
+			Field:  "description",
+			Label:  "说明",
+			Before: result.Before.Description,
+			After:  result.Account.Description,
+		})
+	}
+	if result.Before.Role != result.Account.Role {
+		changes = append(changes, port.OperationLogChange{
+			Field:  "role",
+			Label:  "角色",
+			Before: result.Before.Role,
+			After:  result.Account.Role,
+		})
+	}
+	if result.Before.MustChangePassword != result.Account.MustChangePassword {
+		changes = append(changes, port.OperationLogChange{
+			Field:  "mustChangePassword",
+			Label:  "下次登录改密",
+			Before: result.Before.MustChangePassword,
+			After:  result.Account.MustChangePassword,
+		})
+	}
+	return changes
 }
 
 func parseManagementSystemAccountListQuery(values url.Values) managementsystemaccounts.ListInput {

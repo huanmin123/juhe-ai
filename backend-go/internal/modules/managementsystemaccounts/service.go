@@ -21,14 +21,18 @@ const (
 	defaultOptionLimit      = 50
 	maxOptionLimit          = 50
 	maxOptionFilterItemSize = 50
+	maxDescriptionRunes     = 200
 )
 
 var (
-	ErrPasswordResetInvalid     = errors.New("management system account password reset invalid")
-	ErrPasswordResetWhitespace  = errors.New("management system account password reset whitespace")
-	ErrStatusUpdateInvalid      = errors.New("management system account status update invalid")
-	ErrActiveSuperAdminRequired = errors.New("management active super admin required")
-	ErrSystemAccountNotFound    = errors.New("management system account not found")
+	ErrPasswordResetInvalid        = errors.New("management system account password reset invalid")
+	ErrPasswordResetWhitespace     = errors.New("management system account password reset whitespace")
+	ErrStatusUpdateInvalid         = errors.New("management system account status update invalid")
+	ErrProfileUpdateInvalid        = errors.New("management system account profile update invalid")
+	ErrProfileUpdateWhitespace     = errors.New("management system account profile update whitespace")
+	ErrProfileUpdateDisplayNameDup = errors.New("management system account profile display name exists")
+	ErrActiveSuperAdminRequired    = errors.New("management active super admin required")
+	ErrSystemAccountNotFound       = errors.New("management system account not found")
 )
 
 type Service struct {
@@ -105,6 +109,21 @@ type StatusUpdateResult struct {
 	Before              Summary
 	Account             Summary
 	RevokedSessionCount int
+}
+
+type ProfileUpdateInput struct {
+	SystemAccountID    string
+	DisplayName        *string
+	HasDescription     bool
+	Description        *string
+	Role               *string
+	MustChangePassword *bool
+}
+
+type ProfileUpdateResult struct {
+	Before  Summary
+	Account Summary
+	Changed bool
 }
 
 func NewService(store port.ManagementSystemAccountOptionReader) *Service {
@@ -253,6 +272,74 @@ func (s *Service) UpdateStatus(ctx context.Context, input StatusUpdateInput) (St
 	}, nil
 }
 
+func (s *Service) UpdateProfile(ctx context.Context, input ProfileUpdateInput) (ProfileUpdateResult, error) {
+	if s.store == nil {
+		return ProfileUpdateResult{}, fmt.Errorf("management system account store is required")
+	}
+	updater, ok := s.store.(port.ManagementSystemAccountProfileUpdater)
+	if !ok || updater == nil {
+		return ProfileUpdateResult{}, fmt.Errorf("management system account profile updater is required")
+	}
+	systemAccountID := strings.TrimSpace(input.SystemAccountID)
+	if systemAccountID == "" || !profileUpdateHasField(input) {
+		return ProfileUpdateResult{}, ErrProfileUpdateInvalid
+	}
+	storeInput := port.ManagementSystemAccountProfileUpdateInput{
+		SystemAccountID:       systemAccountID,
+		HasMustChangePassword: input.MustChangePassword != nil,
+		UpdatedAt:             s.now().UTC(),
+	}
+	if input.DisplayName != nil {
+		displayName, err := normalizeSystemAccountDisplayName(*input.DisplayName)
+		if err != nil {
+			return ProfileUpdateResult{}, err
+		}
+		storeInput.HasDisplayName = true
+		storeInput.DisplayName = displayName
+	}
+	if input.HasDescription {
+		description, err := normalizeSystemAccountDescription(input.Description)
+		if err != nil {
+			return ProfileUpdateResult{}, err
+		}
+		storeInput.HasDescription = true
+		storeInput.Description = description
+	}
+	if input.Role != nil {
+		if !validManagementSystemAccountProfileRole(*input.Role) {
+			return ProfileUpdateResult{}, ErrProfileUpdateInvalid
+		}
+		storeInput.HasRole = true
+		storeInput.Role = *input.Role
+	}
+	if input.MustChangePassword != nil {
+		storeInput.MustChangePassword = *input.MustChangePassword
+	}
+	result, found, err := updater.UpdateManagementSystemAccountProfile(ctx, storeInput)
+	if errors.Is(err, port.ErrManagementSystemAccountDisplayNameExists) {
+		return ProfileUpdateResult{}, ErrProfileUpdateDisplayNameDup
+	}
+	if err != nil {
+		return ProfileUpdateResult{}, err
+	}
+	if !found {
+		return ProfileUpdateResult{}, ErrSystemAccountNotFound
+	}
+	if result.BlockedLastActiveSuperAdmin {
+		return ProfileUpdateResult{}, ErrActiveSuperAdminRequired
+	}
+	before := systemAccountSummaryFromPort(result.Before)
+	account := systemAccountSummaryFromPort(result.Account)
+	return ProfileUpdateResult{
+		Before:  before,
+		Account: account,
+		Changed: before.DisplayName != account.DisplayName ||
+			before.Description != account.Description ||
+			before.Role != account.Role ||
+			before.MustChangePassword != account.MustChangePassword,
+	}, nil
+}
+
 func listPageSize(pageSize int) int {
 	if pageSize <= 0 {
 		return defaultListPageSize
@@ -320,6 +407,45 @@ func effectiveMustChangePassword(role string, mustChangePassword bool) bool {
 
 func validSystemAccountStatus(status string) bool {
 	return status == "active" || status == "disabled"
+}
+
+func validManagementSystemAccountProfileRole(role string) bool {
+	return role == "admin" || role == "user"
+}
+
+func profileUpdateHasField(input ProfileUpdateInput) bool {
+	return input.DisplayName != nil ||
+		input.HasDescription ||
+		input.Role != nil ||
+		input.MustChangePassword != nil
+}
+
+func normalizeSystemAccountDisplayName(value string) (string, error) {
+	if value == "" {
+		return "", ErrProfileUpdateInvalid
+	}
+	if strings.ContainsFunc(value, unicode.IsSpace) {
+		return "", ErrProfileUpdateWhitespace
+	}
+	displayName := strings.TrimSpace(value)
+	if displayName == "" {
+		return "", ErrProfileUpdateInvalid
+	}
+	return displayName, nil
+}
+
+func normalizeSystemAccountDescription(value *string) (*string, error) {
+	if value == nil {
+		return nil, nil
+	}
+	description := strings.TrimSpace(*value)
+	if utf8.RuneCountInString(description) > maxDescriptionRunes {
+		return nil, ErrProfileUpdateInvalid
+	}
+	if description == "" {
+		return nil, nil
+	}
+	return &description, nil
 }
 
 func formatTime(value time.Time) string {

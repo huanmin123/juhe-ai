@@ -57,6 +57,7 @@ type ManagementCurrentUserProfileUpdateResult struct {
 }
 
 var ErrManagementProfileDisplayNameExists = errors.New("management profile display name exists")
+var ErrManagementSystemAccountDisplayNameExists = errors.New("management system account display name exists")
 
 type ManagementCurrentUserProfileWriter interface {
 	UpdateManagementCurrentUserProfile(ctx context.Context, input ManagementCurrentUserProfileUpdateInput) (ManagementCurrentUserProfileUpdateResult, bool, error)
@@ -193,6 +194,29 @@ type ManagementSystemAccountStatusUpdateResult struct {
 
 type ManagementSystemAccountStatusUpdater interface {
 	UpdateManagementSystemAccountStatus(ctx context.Context, input ManagementSystemAccountStatusUpdateInput) (ManagementSystemAccountStatusUpdateResult, bool, error)
+}
+
+type ManagementSystemAccountProfileUpdateInput struct {
+	SystemAccountID       string
+	HasDisplayName        bool
+	DisplayName           string
+	HasDescription        bool
+	Description           *string
+	HasRole               bool
+	Role                  string
+	HasMustChangePassword bool
+	MustChangePassword    bool
+	UpdatedAt             time.Time
+}
+
+type ManagementSystemAccountProfileUpdateResult struct {
+	Before                      ManagementSystemAccountSummary
+	Account                     ManagementSystemAccountSummary
+	BlockedLastActiveSuperAdmin bool
+}
+
+type ManagementSystemAccountProfileUpdater interface {
+	UpdateManagementSystemAccountProfile(ctx context.Context, input ManagementSystemAccountProfileUpdateInput) (ManagementSystemAccountProfileUpdateResult, bool, error)
 }
 
 type ManagementAuthorizationGranteeAccountOption struct {

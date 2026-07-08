@@ -166,6 +166,267 @@ func (q *Queries) ResetManagementSystemAccountPassword(ctx context.Context, arg 
 	return i, err
 }
 
+const updateManagementSystemAccountProfile = `-- name: UpdateManagementSystemAccountProfile :one
+WITH locked_active_super_admins AS MATERIALIZED (
+  SELECT id
+  FROM juhe_business.system_accounts
+  WHERE role = 'super_admin'
+    AND status = 'active'
+  ORDER BY id
+  FOR UPDATE
+), active_super_admin_guard AS MATERIALIZED (
+  SELECT count(*) FILTER (WHERE id <> $1::text)::int AS other_active_super_admin_count
+  FROM locked_active_super_admins
+), current_account AS (
+  SELECT
+    system_accounts.id,
+    system_accounts.username,
+    system_accounts.display_name,
+    system_accounts.description,
+    system_accounts.role,
+    system_accounts.status,
+    system_accounts.must_change_password,
+    system_accounts.image_generation_enabled,
+    system_accounts.last_login_at,
+    system_accounts.created_at,
+    system_accounts.updated_at,
+    active_super_admin_guard.other_active_super_admin_count
+  FROM active_super_admin_guard
+  JOIN juhe_business.system_accounts AS system_accounts
+    ON system_accounts.id = $1::text
+  FOR UPDATE OF system_accounts
+), profile_guard AS (
+  SELECT
+    current_account.id,
+    current_account.username,
+    current_account.display_name,
+    current_account.description,
+    current_account.role,
+    current_account.status,
+    current_account.must_change_password,
+    current_account.image_generation_enabled,
+    current_account.last_login_at,
+    current_account.created_at,
+    current_account.updated_at,
+    CASE
+      WHEN $2::boolean THEN $3::text
+      ELSE current_account.role
+    END AS next_role,
+    current_account.role = 'super_admin'
+      AND current_account.status = 'active'
+      AND CASE
+        WHEN $2::boolean THEN $3::text
+        ELSE current_account.role
+      END <> 'super_admin'
+      AND current_account.other_active_super_admin_count = 0 AS blocked_last_active_super_admin
+  FROM current_account
+), updated_account AS (
+  UPDATE juhe_business.system_accounts AS system_accounts
+  SET
+    display_name = CASE
+      WHEN $4::boolean THEN $5::text
+      ELSE profile_guard.display_name
+    END,
+    description = CASE
+      WHEN $6::boolean THEN $7::text
+      ELSE profile_guard.description
+    END,
+    role = profile_guard.next_role,
+    must_change_password = CASE
+      WHEN profile_guard.next_role IN ('super_admin', 'admin') THEN false
+      WHEN $8::boolean THEN $9::boolean
+      ELSE profile_guard.must_change_password
+    END,
+    updated_at = $10::timestamptz
+  FROM profile_guard
+  WHERE system_accounts.id = profile_guard.id
+    AND profile_guard.blocked_last_active_super_admin = false
+  RETURNING
+    profile_guard.id AS before_id,
+    profile_guard.username AS before_username,
+    profile_guard.display_name AS before_display_name,
+    profile_guard.description AS before_description,
+    profile_guard.role AS before_role,
+    profile_guard.status AS before_status,
+    profile_guard.must_change_password AS before_must_change_password,
+    profile_guard.image_generation_enabled AS before_image_generation_enabled,
+    profile_guard.last_login_at AS before_last_login_at,
+    profile_guard.created_at AS before_created_at,
+    profile_guard.updated_at AS before_updated_at,
+    system_accounts.id,
+    system_accounts.username,
+    system_accounts.display_name,
+    system_accounts.description,
+    system_accounts.role,
+    system_accounts.status,
+    system_accounts.must_change_password,
+    system_accounts.image_generation_enabled,
+    system_accounts.last_login_at,
+    system_accounts.created_at,
+    system_accounts.updated_at,
+    false AS blocked_last_active_super_admin
+), blocked_account AS (
+  SELECT
+    profile_guard.id AS before_id,
+    profile_guard.username AS before_username,
+    profile_guard.display_name AS before_display_name,
+    profile_guard.description AS before_description,
+    profile_guard.role AS before_role,
+    profile_guard.status AS before_status,
+    profile_guard.must_change_password AS before_must_change_password,
+    profile_guard.image_generation_enabled AS before_image_generation_enabled,
+    profile_guard.last_login_at AS before_last_login_at,
+    profile_guard.created_at AS before_created_at,
+    profile_guard.updated_at AS before_updated_at,
+    profile_guard.id,
+    profile_guard.username,
+    profile_guard.display_name,
+    profile_guard.description,
+    profile_guard.role,
+    profile_guard.status,
+    profile_guard.must_change_password,
+    profile_guard.image_generation_enabled,
+    profile_guard.last_login_at,
+    profile_guard.created_at,
+    profile_guard.updated_at,
+    true AS blocked_last_active_super_admin
+  FROM profile_guard
+  WHERE profile_guard.blocked_last_active_super_admin = true
+)
+SELECT
+  updated_account.before_id,
+  updated_account.before_username,
+  updated_account.before_display_name,
+  updated_account.before_description,
+  updated_account.before_role,
+  updated_account.before_status,
+  updated_account.before_must_change_password,
+  updated_account.before_image_generation_enabled,
+  updated_account.before_last_login_at,
+  updated_account.before_created_at,
+  updated_account.before_updated_at,
+  updated_account.id,
+  updated_account.username,
+  updated_account.display_name,
+  updated_account.description,
+  updated_account.role,
+  updated_account.status,
+  updated_account.must_change_password,
+  updated_account.image_generation_enabled,
+  updated_account.last_login_at,
+  updated_account.created_at,
+  updated_account.updated_at,
+  updated_account.blocked_last_active_super_admin
+FROM updated_account
+UNION ALL
+SELECT
+  blocked_account.before_id,
+  blocked_account.before_username,
+  blocked_account.before_display_name,
+  blocked_account.before_description,
+  blocked_account.before_role,
+  blocked_account.before_status,
+  blocked_account.before_must_change_password,
+  blocked_account.before_image_generation_enabled,
+  blocked_account.before_last_login_at,
+  blocked_account.before_created_at,
+  blocked_account.before_updated_at,
+  blocked_account.id,
+  blocked_account.username,
+  blocked_account.display_name,
+  blocked_account.description,
+  blocked_account.role,
+  blocked_account.status,
+  blocked_account.must_change_password,
+  blocked_account.image_generation_enabled,
+  blocked_account.last_login_at,
+  blocked_account.created_at,
+  blocked_account.updated_at,
+  blocked_account.blocked_last_active_super_admin
+FROM blocked_account
+`
+
+type UpdateManagementSystemAccountProfileParams struct {
+	SystemAccountID       string
+	HasRole               bool
+	Role                  string
+	HasDisplayName        bool
+	DisplayName           string
+	HasDescription        bool
+	Description           pgtype.Text
+	HasMustChangePassword bool
+	MustChangePassword    bool
+	UpdatedAt             pgtype.Timestamptz
+}
+
+type UpdateManagementSystemAccountProfileRow struct {
+	BeforeID                     string
+	BeforeUsername               string
+	BeforeDisplayName            string
+	BeforeDescription            pgtype.Text
+	BeforeRole                   string
+	BeforeStatus                 string
+	BeforeMustChangePassword     bool
+	BeforeImageGenerationEnabled bool
+	BeforeLastLoginAt            pgtype.Timestamptz
+	BeforeCreatedAt              pgtype.Timestamptz
+	BeforeUpdatedAt              pgtype.Timestamptz
+	ID                           string
+	Username                     string
+	DisplayName                  string
+	Description                  pgtype.Text
+	Role                         string
+	Status                       string
+	MustChangePassword           bool
+	ImageGenerationEnabled       bool
+	LastLoginAt                  pgtype.Timestamptz
+	CreatedAt                    pgtype.Timestamptz
+	UpdatedAt                    pgtype.Timestamptz
+	BlockedLastActiveSuperAdmin  bool
+}
+
+func (q *Queries) UpdateManagementSystemAccountProfile(ctx context.Context, arg UpdateManagementSystemAccountProfileParams) (UpdateManagementSystemAccountProfileRow, error) {
+	row := q.db.QueryRow(ctx, updateManagementSystemAccountProfile,
+		arg.SystemAccountID,
+		arg.HasRole,
+		arg.Role,
+		arg.HasDisplayName,
+		arg.DisplayName,
+		arg.HasDescription,
+		arg.Description,
+		arg.HasMustChangePassword,
+		arg.MustChangePassword,
+		arg.UpdatedAt,
+	)
+	var i UpdateManagementSystemAccountProfileRow
+	err := row.Scan(
+		&i.BeforeID,
+		&i.BeforeUsername,
+		&i.BeforeDisplayName,
+		&i.BeforeDescription,
+		&i.BeforeRole,
+		&i.BeforeStatus,
+		&i.BeforeMustChangePassword,
+		&i.BeforeImageGenerationEnabled,
+		&i.BeforeLastLoginAt,
+		&i.BeforeCreatedAt,
+		&i.BeforeUpdatedAt,
+		&i.ID,
+		&i.Username,
+		&i.DisplayName,
+		&i.Description,
+		&i.Role,
+		&i.Status,
+		&i.MustChangePassword,
+		&i.ImageGenerationEnabled,
+		&i.LastLoginAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.BlockedLastActiveSuperAdmin,
+	)
+	return i, err
+}
+
 const updateManagementSystemAccountStatus = `-- name: UpdateManagementSystemAccountStatus :one
 WITH locked_active_super_admins AS MATERIALIZED (
   SELECT id

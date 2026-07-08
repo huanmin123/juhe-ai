@@ -191,6 +191,45 @@ func TestManagementSystemAccountStatusUpdateSQLGuardsSessionsAndSuperAdmin(t *te
 	}
 }
 
+func TestManagementSystemAccountProfileUpdateSQLGuardsSuperAdminAndSafeFields(t *testing.T) {
+	source, err := os.ReadFile("queries/w3_management_system_accounts.sql")
+	if err != nil {
+		t.Fatalf("read system account write query: %v", err)
+	}
+	sql := querySection(t, string(source), "-- name: UpdateManagementSystemAccountProfile :one", "")
+	for _, want := range []string{
+		"WITH locked_active_super_admins AS MATERIALIZED",
+		"active_super_admin_guard AS MATERIALIZED",
+		"count(*) FILTER (WHERE id <> sqlc.arg(system_account_id)::text)::int AS other_active_super_admin_count",
+		"FROM active_super_admin_guard",
+		"FOR UPDATE OF system_accounts",
+		"CASE",
+		"WHEN sqlc.arg(has_display_name)::boolean THEN sqlc.arg(display_name)::text",
+		"WHEN sqlc.arg(has_description)::boolean THEN sqlc.narg(description)::text",
+		"WHEN sqlc.arg(has_role)::boolean THEN sqlc.arg(role)::text",
+		"WHEN profile_guard.next_role IN ('super_admin', 'admin') THEN false",
+		"WHEN sqlc.arg(has_must_change_password)::boolean THEN sqlc.arg(must_change_password)::boolean",
+		"profile_guard.blocked_last_active_super_admin = false",
+		"blocked_last_active_super_admin",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("profile update query missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		"SELECT *",
+		"password_hash",
+		"image_generation_enabled =",
+		"status = sqlc.arg",
+		"COALESCE",
+		"coalesce",
+	} {
+		if strings.Contains(sql, forbidden) {
+			t.Fatalf("profile update query should not contain %q", forbidden)
+		}
+	}
+}
+
 func TestManagementSystemAccountPasswordResetResultFromRowMapsBeforeAndAccount(t *testing.T) {
 	now := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
 	lastLoginAt := now.Add(-time.Hour)
@@ -225,6 +264,46 @@ func TestManagementSystemAccountPasswordResetResultFromRowMapsBeforeAndAccount(t
 		result.Account.DisplayName != "用户" ||
 		result.Account.MustChangePassword != true ||
 		result.RevokedSessionCount != 3 {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestManagementSystemAccountProfileUpdateResultFromRowMapsBeforeAccountAndGuard(t *testing.T) {
+	now := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
+	lastLoginAt := now.Add(-time.Hour)
+	result := managementSystemAccountProfileUpdateResultFromRow(postgresqueries.UpdateManagementSystemAccountProfileRow{
+		BeforeID:                     "sys_user",
+		BeforeUsername:               "user",
+		BeforeDisplayName:            "旧用户",
+		BeforeDescription:            pgtype.Text{String: "旧描述", Valid: true},
+		BeforeRole:                   "user",
+		BeforeStatus:                 "active",
+		BeforeMustChangePassword:     false,
+		BeforeImageGenerationEnabled: true,
+		BeforeLastLoginAt:            pgtype.Timestamptz{Time: lastLoginAt, Valid: true},
+		BeforeCreatedAt:              pgtype.Timestamptz{Time: now, Valid: true},
+		BeforeUpdatedAt:              pgtype.Timestamptz{Time: now, Valid: true},
+		ID:                           "sys_user",
+		Username:                     "user",
+		DisplayName:                  "新用户",
+		Description:                  pgtype.Text{},
+		Role:                         "admin",
+		Status:                       "active",
+		MustChangePassword:           true,
+		ImageGenerationEnabled:       true,
+		LastLoginAt:                  pgtype.Timestamptz{Time: lastLoginAt, Valid: true},
+		CreatedAt:                    pgtype.Timestamptz{Time: now, Valid: true},
+		UpdatedAt:                    pgtype.Timestamptz{Time: now.Add(time.Minute), Valid: true},
+		BlockedLastActiveSuperAdmin:  true,
+	})
+
+	if result.Before.DisplayName != "旧用户" ||
+		result.Before.Description != "旧描述" ||
+		result.Account.DisplayName != "新用户" ||
+		result.Account.Description != "" ||
+		result.Account.Role != "admin" ||
+		result.Account.MustChangePassword != true ||
+		!result.BlockedLastActiveSuperAdmin {
 		t.Fatalf("result = %+v", result)
 	}
 }
