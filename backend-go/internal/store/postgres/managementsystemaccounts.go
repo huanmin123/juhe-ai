@@ -59,6 +59,21 @@ func (s *Store) UpdateManagementSystemAccountStatus(ctx context.Context, input p
 	return managementSystemAccountStatusUpdateResultFromRow(row), true, nil
 }
 
+func (s *Store) UpdateManagementSystemAccountImageGeneration(ctx context.Context, input port.ManagementSystemAccountImageGenerationUpdateInput) (port.ManagementSystemAccountImageGenerationUpdateResult, bool, error) {
+	row, err := s.queries().UpdateManagementSystemAccountImageGeneration(ctx, postgresqueries.UpdateManagementSystemAccountImageGenerationParams{
+		SystemAccountID:        input.SystemAccountID,
+		ImageGenerationEnabled: input.ImageGenerationEnabled,
+		UpdatedAt:              pgtype.Timestamptz{Time: input.UpdatedAt.UTC(), Valid: true},
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return port.ManagementSystemAccountImageGenerationUpdateResult{}, false, nil
+	}
+	if err != nil {
+		return port.ManagementSystemAccountImageGenerationUpdateResult{}, false, fmt.Errorf("update management system account image generation: %w", err)
+	}
+	return managementSystemAccountImageGenerationUpdateResultFromRow(row), true, nil
+}
+
 func (s *Store) UpdateManagementSystemAccountProfile(ctx context.Context, input port.ManagementSystemAccountProfileUpdateInput) (port.ManagementSystemAccountProfileUpdateResult, bool, error) {
 	description := pgtype.Text{}
 	if input.Description != nil {
@@ -237,6 +252,39 @@ func managementSystemAccountStatusUpdateResultFromRow(row postgresqueries.Update
 	}
 }
 
+func managementSystemAccountImageGenerationUpdateResultFromRow(row postgresqueries.UpdateManagementSystemAccountImageGenerationRow) port.ManagementSystemAccountImageGenerationUpdateResult {
+	before := port.ManagementSystemAccountSummary{
+		ID:                     row.BeforeID,
+		Username:               row.BeforeUsername,
+		DisplayName:            row.BeforeDisplayName,
+		Description:            textValue(row.BeforeDescription),
+		Role:                   row.BeforeRole,
+		Status:                 row.BeforeStatus,
+		MustChangePassword:     row.BeforeMustChangePassword,
+		ImageGenerationEnabled: row.BeforeImageGenerationEnabled,
+		LastLoginAt:            timestamptzPtr(row.BeforeLastLoginAt),
+		CreatedAt:              timestamptzValue(row.BeforeCreatedAt),
+		UpdatedAt:              timestamptzValue(row.BeforeUpdatedAt),
+	}
+	account := port.ManagementSystemAccountSummary{
+		ID:                     row.ID,
+		Username:               row.Username,
+		DisplayName:            row.DisplayName,
+		Description:            textValue(row.Description),
+		Role:                   row.Role,
+		Status:                 row.Status,
+		MustChangePassword:     row.MustChangePassword,
+		ImageGenerationEnabled: row.ImageGenerationEnabled,
+		LastLoginAt:            timestamptzPtr(row.LastLoginAt),
+		CreatedAt:              timestamptzValue(row.CreatedAt),
+		UpdatedAt:              timestamptzValue(row.UpdatedAt),
+	}
+	return port.ManagementSystemAccountImageGenerationUpdateResult{
+		Before:  before,
+		Account: account,
+	}
+}
+
 func managementSystemAccountProfileUpdateResultFromRow(row postgresqueries.UpdateManagementSystemAccountProfileRow) port.ManagementSystemAccountProfileUpdateResult {
 	before := port.ManagementSystemAccountSummary{
 		ID:                     row.BeforeID,
@@ -281,4 +329,5 @@ func isManagementSystemAccountDisplayNameUniqueViolation(err error) bool {
 var _ port.ManagementSystemAccountOptionReader = (*Store)(nil)
 var _ port.ManagementSystemAccountPasswordResetter = (*Store)(nil)
 var _ port.ManagementSystemAccountStatusUpdater = (*Store)(nil)
+var _ port.ManagementSystemAccountImageGenerationUpdater = (*Store)(nil)
 var _ port.ManagementSystemAccountProfileUpdater = (*Store)(nil)

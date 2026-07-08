@@ -43,10 +43,27 @@ func TestValidateKeyAndTTL(t *testing.T) {
 	}
 }
 
+func TestSetRawValidatesInputBeforeRedisCall(t *testing.T) {
+	client := &Client{namespace: "juhe:w3"}
+	if err := client.SetRaw(t.Context(), "", []byte("value"), time.Second); err == nil {
+		t.Fatal("SetRaw() error = nil, want key error")
+	}
+	if err := client.SetRaw(t.Context(), "juhe-ai:test:key", []byte("value"), 0); err == nil {
+		t.Fatal("SetRaw() error = nil, want ttl error")
+	}
+}
+
 func TestGetDeleteValidatesKey(t *testing.T) {
 	client := &Client{namespace: "juhe:w3"}
 	if _, err := client.GetDelete(t.Context(), ""); err == nil {
 		t.Fatal("GetDelete() error = nil, want key error")
+	}
+}
+
+func TestGetRawValidatesInputBeforeRedisCall(t *testing.T) {
+	client := &Client{namespace: "juhe:w3"}
+	if _, err := client.GetRaw(t.Context(), ""); err == nil {
+		t.Fatal("GetRaw() error = nil, want key error")
 	}
 }
 

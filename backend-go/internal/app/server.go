@@ -11,6 +11,7 @@ import (
 	"juhe-ai/backend-go/internal/config"
 	"juhe-ai/backend-go/internal/httpapi"
 	"juhe-ai/backend-go/internal/jobs/queue"
+	"juhe-ai/backend-go/internal/modules/gatewaycache"
 	"juhe-ai/backend-go/internal/modules/managementaccounts"
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementauthorizationoptions"
@@ -67,6 +68,11 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		return err
 	}
 	cancel()
+	systemAccountInvalidator, closeSystemAccountInvalidator, err := newGatewaySystemAccountInvalidator(ctx, cfg, stateRedis, logger)
+	if err != nil {
+		return err
+	}
+	defer closeSystemAccountInvalidator()
 
 	publicAPIHandler, publicAPILogQueue, err := newPublicAPIHandler(cfg, logger, store, stateRedis)
 	if err != nil {
@@ -84,7 +90,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	}
 
 	publicSettingsService := publicsettings.NewService(store)
-	managementHandlers := newManagementAPIHandler(cfg, store, stateRedis, managementOperationLogQueue, logger)
+	managementHandlers := newManagementAPIHandler(cfg, store, stateRedis, managementOperationLogQueue, logger, systemAccountInvalidator)
 	router := httpapi.NewRouter(httpapi.RouterOptions{
 		Config:                                          cfg,
 		Logger:                                          logger,
@@ -208,6 +214,7 @@ func newManagementAPIHandler(
 	stateRedis *redisplatform.Client,
 	operationLogQueue operationLogEnqueueClient,
 	logger *slog.Logger,
+	systemAccountInvalidator managementsystemaccounts.SystemAccountInvalidator,
 ) managementAPIHandlers {
 	if !cfg.ManagementAPIEnabled {
 		return managementAPIHandlers{}
@@ -224,7 +231,10 @@ func newManagementAPIHandler(
 	routeStrategyService := managementroutestrategies.NewService(store)
 	groupService := managementgroups.NewService(store)
 	accountService := managementaccounts.NewService(store)
-	systemAccountService := managementsystemaccounts.NewService(store)
+	systemAccountService := managementsystemaccounts.NewServiceWithOptions(managementsystemaccounts.ServiceOptions{
+		Store:                    store,
+		SystemAccountInvalidator: systemAccountInvalidator,
+	})
 	authorizationOptionService := managementauthorizationoptions.NewService(store)
 	operationLogService := managementoperationlogs.NewService(store)
 	operationLogOptions := httpapi.ManagementOperationLogOptions{
@@ -276,6 +286,48 @@ func newManagementAPIHandler(
 
 type operationLogEnqueueClient interface {
 	Enqueue(ctx context.Context, taskType string, payload []byte, opts queue.EnqueueOptions) (queue.TaskInfo, error)
+}
+
+func newGatewaySystemAccountInvalidator(
+	ctx context.Context,
+	cfg config.Config,
+	stateRedis *redisplatform.Client,
+	logger *slog.Logger,
+) (managementsystemaccounts.SystemAccountInvalidator, func(), error) {
+	closeFn := func() {}
+	if !cfg.ManagementAPIEnabled {
+		return nil, closeFn, nil
+	}
+	if cfg.RedisCacheURL == "" {
+		if logger != nil {
+			logger.Warn("Go 管理 API 未配置 Redis cache，系统账户状态变更不会触发跨进程网关缓存失效")
+		}
+		return nil, closeFn, nil
+	}
+	if stateRedis == nil {
+		return nil, closeFn, fmt.Errorf("gateway system account invalidator requires state redis")
+	}
+	cacheRedis, err := redisplatform.NewClient(cfg.RedisCacheURL, cfg.RedisNamespace+":cache")
+	if err != nil {
+		return nil, closeFn, fmt.Errorf("JUHE_AI_REDIS_CACHE_URL 无效: %w", err)
+	}
+	closeFn = func() { _ = cacheRedis.Close() }
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := cacheRedis.Ping(pingCtx); err != nil {
+		closeFn()
+		return nil, func() {}, fmt.Errorf("网关缓存 Redis 不可用: %w", err)
+	}
+	invalidator, err := gatewaycache.NewSystemAccountInvalidator(gatewaycache.SystemAccountInvalidatorOptions{
+		Cache:     cacheRedis,
+		State:     stateRedis,
+		Namespace: cfg.RedisNamespace,
+	})
+	if err != nil {
+		closeFn()
+		return nil, func() {}, err
+	}
+	return invalidator, closeFn, nil
 }
 
 func newManagementOperationLogQueue(cfg config.Config) (*queue.Client, error) {

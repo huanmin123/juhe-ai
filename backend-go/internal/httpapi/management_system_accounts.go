@@ -28,6 +28,7 @@ type managementSystemAccountOptionService interface {
 type managementSystemAccountPatchService interface {
 	ResetPassword(ctx context.Context, input managementsystemaccounts.PasswordResetInput) (managementsystemaccounts.PasswordResetResult, error)
 	UpdateStatus(ctx context.Context, input managementsystemaccounts.StatusUpdateInput) (managementsystemaccounts.StatusUpdateResult, error)
+	UpdateImageGeneration(ctx context.Context, input managementsystemaccounts.ImageGenerationUpdateInput) (managementsystemaccounts.ImageGenerationUpdateResult, error)
 	UpdateProfile(ctx context.Context, input managementsystemaccounts.ProfileUpdateInput) (managementsystemaccounts.ProfileUpdateResult, error)
 }
 
@@ -49,6 +50,10 @@ func (s managementSystemAccountOptionServiceAdapter) ResetPassword(ctx context.C
 
 func (s managementSystemAccountOptionServiceAdapter) UpdateStatus(ctx context.Context, input managementsystemaccounts.StatusUpdateInput) (managementsystemaccounts.StatusUpdateResult, error) {
 	return s.service.UpdateStatus(ctx, input)
+}
+
+func (s managementSystemAccountOptionServiceAdapter) UpdateImageGeneration(ctx context.Context, input managementsystemaccounts.ImageGenerationUpdateInput) (managementsystemaccounts.ImageGenerationUpdateResult, error) {
+	return s.service.UpdateImageGeneration(ctx, input)
 }
 
 func (s managementSystemAccountOptionServiceAdapter) UpdateProfile(ctx context.Context, input managementsystemaccounts.ProfileUpdateInput) (managementsystemaccounts.ProfileUpdateResult, error) {
@@ -155,6 +160,27 @@ func newManagementSystemAccountPatchHandler(service managementSystemAccountPatch
 			writeData(w, http.StatusOK, result.Account)
 			return
 		}
+		if patch.action == managementSystemAccountPatchImageGeneration {
+			result, err := service.UpdateImageGeneration(r.Context(), managementsystemaccounts.ImageGenerationUpdateInput{
+				SystemAccountID:        chi.URLParam(r, "id"),
+				ImageGenerationEnabled: patch.imageGenerationEnabled,
+			})
+			if errors.Is(err, managementsystemaccounts.ErrImageGenerationUpdateInvalid) {
+				writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
+				return
+			}
+			if errors.Is(err, managementsystemaccounts.ErrSystemAccountNotFound) {
+				writeMessageError(w, http.StatusNotFound, "系统账户不存在")
+				return
+			}
+			if err != nil {
+				writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+				return
+			}
+			recordSystemAccountImageGenerationUpdateOperationLog(r, authContext, result, operationLogs)
+			writeData(w, http.StatusOK, result.Account)
+			return
+		}
 		if patch.action == managementSystemAccountPatchProfile {
 			result, err := service.UpdateProfile(r.Context(), managementsystemaccounts.ProfileUpdateInput{
 				SystemAccountID:    chi.URLParam(r, "id"),
@@ -221,20 +247,22 @@ func newManagementSystemAccountPatchHandler(service managementSystemAccountPatch
 type managementSystemAccountPatchAction string
 
 const (
-	managementSystemAccountPatchPassword managementSystemAccountPatchAction = "password"
-	managementSystemAccountPatchStatus   managementSystemAccountPatchAction = "status"
-	managementSystemAccountPatchProfile  managementSystemAccountPatchAction = "profile"
+	managementSystemAccountPatchPassword        managementSystemAccountPatchAction = "password"
+	managementSystemAccountPatchStatus          managementSystemAccountPatchAction = "status"
+	managementSystemAccountPatchImageGeneration managementSystemAccountPatchAction = "imageGeneration"
+	managementSystemAccountPatchProfile         managementSystemAccountPatchAction = "profile"
 )
 
 type managementSystemAccountPatchBody struct {
-	action             managementSystemAccountPatchAction
-	password           string
-	mustChangePassword *bool
-	status             string
-	displayName        *string
-	hasDescription     bool
-	description        *string
-	role               *string
+	action                 managementSystemAccountPatchAction
+	password               string
+	mustChangePassword     *bool
+	status                 string
+	imageGenerationEnabled bool
+	displayName            *string
+	hasDescription         bool
+	description            *string
+	role                   *string
 }
 
 func decodeManagementSystemAccountPatchBody(w http.ResponseWriter, r *http.Request) (managementSystemAccountPatchBody, bool) {
@@ -297,6 +325,24 @@ func decodeManagementSystemAccountPatchBody(w http.ResponseWriter, r *http.Reque
 		return managementSystemAccountPatchBody{
 			action: managementSystemAccountPatchStatus,
 			status: *status,
+		}, true
+	}
+	rawImageGenerationEnabled, exists := payload["imageGenerationEnabled"]
+	if exists {
+		for field := range payload {
+			if field != "imageGenerationEnabled" {
+				writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
+				return managementSystemAccountPatchBody{}, false
+			}
+		}
+		var imageGenerationEnabled *bool
+		if err := json.Unmarshal(rawImageGenerationEnabled, &imageGenerationEnabled); err != nil || imageGenerationEnabled == nil {
+			writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
+			return managementSystemAccountPatchBody{}, false
+		}
+		return managementSystemAccountPatchBody{
+			action:                 managementSystemAccountPatchImageGeneration,
+			imageGenerationEnabled: *imageGenerationEnabled,
 		}, true
 	}
 	if hasManagementSystemAccountProfilePatchFields(payload) {
@@ -508,6 +554,79 @@ func recordSystemAccountStatusUpdateOperationLog(
 		Changes:                       changes,
 		Metadata: map[string]any{
 			"revokedSessionCount": result.RevokedSessionCount,
+		},
+		Method:     r.Method,
+		Path:       r.URL.Path,
+		StatusCode: &statusCode,
+		ClientIP:   opts.clientIP.FromRequest(r),
+		UserAgent:  r.UserAgent(),
+		Viewers: []port.OperationLogViewerInput{
+			{
+				SystemAccountID:  result.Account.ID,
+				VisibilityReason: "admin_managed_my_resource",
+				DetailLevel:      "full",
+			},
+		},
+		CreatedAt: now().UTC(),
+	}
+	enqueueCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+	defer cancel()
+	if _, err := operationlogjob.EnqueueWrite(enqueueCtx, opts.client, input); err != nil && opts.logger != nil {
+		opts.logger.Warn("管理端操作日志入队失败",
+			slog.String("event", "operation_log_enqueue_failed"),
+			slog.String("operation_key", input.OperationKey),
+			slog.String("resource_id", input.ResourceID),
+			slog.String("request_id", input.TraceID),
+			slog.Any("error", err),
+		)
+	}
+}
+
+func recordSystemAccountImageGenerationUpdateOperationLog(
+	r *http.Request,
+	authContext managementauth.Context,
+	result managementsystemaccounts.ImageGenerationUpdateResult,
+	opts managementOperationLogOptions,
+) {
+	if opts.client == nil || !result.Changed {
+		return
+	}
+	now := opts.now
+	if now == nil {
+		now = time.Now
+	}
+	newLogID := opts.newLogID
+	if newLogID == nil {
+		newLogID = func() string {
+			return "oplog_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+		}
+	}
+	statusCode := http.StatusOK
+	input := port.OperationLogInput{
+		ID:                            newLogID(),
+		TraceID:                       requestIDFromContext(r.Context()),
+		ActorSystemAccountID:          authContext.SystemAccountID,
+		ActorUsername:                 authContext.Username,
+		ActorDisplayName:              authContext.DisplayName,
+		ActorRole:                     authContext.Role,
+		OperationScopeSystemAccountID: result.Account.ID,
+		Mode:                          "admin",
+		Module:                        "system_accounts",
+		Action:                        "update",
+		OperationKey:                  "system_accounts.update",
+		ResourceType:                  "system_account",
+		ResourceID:                    result.Account.ID,
+		ResourceName:                  result.Account.DisplayName,
+		Summary:                       "更新系统账户：" + result.Account.DisplayName,
+		DetailLevel:                   "full",
+		VisibilityScope:               "targeted",
+		Changes: []port.OperationLogChange{
+			{
+				Field:  "imageGenerationEnabled",
+				Label:  "支持图像生成",
+				Before: result.Before.ImageGenerationEnabled,
+				After:  result.Account.ImageGenerationEnabled,
+			},
 		},
 		Method:     r.Method,
 		Path:       r.URL.Path,

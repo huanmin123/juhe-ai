@@ -6,6 +6,7 @@ import (
 
 	"juhe-ai/backend-go/internal/config"
 	publicapicatalog "juhe-ai/backend-go/internal/modules/publicapi"
+	redisplatform "juhe-ai/backend-go/internal/platform/redis"
 )
 
 func TestNewPublicAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
@@ -66,7 +67,7 @@ func TestNewPublicAPIHandlersCoversCatalog(t *testing.T) {
 }
 
 func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
-	handlers := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil)
+	handlers := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil)
 	if handlers.AuthMiddleware != nil ||
 		handlers.AuthTouchMiddleware != nil ||
 		handlers.CaptchaHandler != nil ||
@@ -109,7 +110,7 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 }
 
 func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t *testing.T) {
-	handlers := newManagementAPIHandler(config.Config{ManagementAPIEnabled: true}, nil, nil, nil, nil)
+	handlers := newManagementAPIHandler(config.Config{ManagementAPIEnabled: true}, nil, nil, nil, nil, nil)
 	if handlers.AuthMiddleware == nil ||
 		handlers.AuthTouchMiddleware == nil ||
 		handlers.CaptchaHandler == nil ||
@@ -148,5 +149,37 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 		handlers.OperationLogsHandler == nil ||
 		handlers.MyOperationLogsHandler == nil {
 		t.Fatal("newManagementAPIHandler() returned nil middleware or handler while enabled")
+	}
+}
+
+func TestNewGatewaySystemAccountInvalidatorSkipsWhenDisabledOrCacheURLMissing(t *testing.T) {
+	invalidator, closeFn, err := newGatewaySystemAccountInvalidator(t.Context(), config.Config{}, nil, nil)
+	if err != nil {
+		t.Fatalf("newGatewaySystemAccountInvalidator() disabled error = %v", err)
+	}
+	closeFn()
+	if invalidator != nil {
+		t.Fatal("newGatewaySystemAccountInvalidator() returned invalidator while management API disabled")
+	}
+
+	invalidator, closeFn, err = newGatewaySystemAccountInvalidator(t.Context(), config.Config{ManagementAPIEnabled: true}, nil, nil)
+	if err != nil {
+		t.Fatalf("newGatewaySystemAccountInvalidator() missing cache url error = %v", err)
+	}
+	closeFn()
+	if invalidator != nil {
+		t.Fatal("newGatewaySystemAccountInvalidator() returned invalidator without Redis cache URL")
+	}
+}
+
+func TestNewGatewaySystemAccountInvalidatorRejectsInvalidCacheURL(t *testing.T) {
+	_, closeFn, err := newGatewaySystemAccountInvalidator(t.Context(), config.Config{
+		ManagementAPIEnabled: true,
+		RedisCacheURL:        "http://127.0.0.1:6379/0",
+		RedisNamespace:       "juhe-ai",
+	}, &redisplatform.Client{}, nil)
+	closeFn()
+	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_REDIS_CACHE_URL") {
+		t.Fatalf("newGatewaySystemAccountInvalidator() error = %v, want Redis cache URL error", err)
 	}
 }

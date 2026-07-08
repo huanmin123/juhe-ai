@@ -11,6 +11,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -25,8 +27,10 @@ import (
 	"juhe-ai/backend-go/internal/httpapi"
 	operationlogjob "juhe-ai/backend-go/internal/jobs/operationlog"
 	"juhe-ai/backend-go/internal/jobs/queue"
+	"juhe-ai/backend-go/internal/modules/gatewaycache"
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementsystemaccounts"
+	redisplatform "juhe-ai/backend-go/internal/platform/redis"
 	"juhe-ai/backend-go/internal/store/port"
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
 )
@@ -66,9 +70,30 @@ func TestW3ManagementSystemAccountsPatchPostgresRedisSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("redis connection string: %v", err)
 	}
-	redisOpts, err := queue.ParseRedisURL(redisURL)
+	redisQueueURL := w3RedisURLWithDB(t, redisURL, 0)
+	redisStateURL := w3RedisURLWithDB(t, redisURL, 1)
+	redisCacheURL := w3RedisURLWithDB(t, redisURL, 2)
+	redisOpts, err := queue.ParseRedisURL(redisQueueURL)
 	if err != nil {
 		t.Fatalf("parse redis url: %v", err)
+	}
+	stateRedis, err := redisplatform.NewClient(redisStateURL, "w3-system-account-patch:state")
+	if err != nil {
+		t.Fatalf("open state redis: %v", err)
+	}
+	defer func() { _ = stateRedis.Close() }()
+	cacheRedis, err := redisplatform.NewClient(redisCacheURL, "w3-system-account-patch:cache")
+	if err != nil {
+		t.Fatalf("open cache redis: %v", err)
+	}
+	defer func() { _ = cacheRedis.Close() }()
+	invalidator, err := gatewaycache.NewSystemAccountInvalidator(gatewaycache.SystemAccountInvalidatorOptions{
+		Cache:     cacheRedis,
+		State:     stateRedis,
+		Namespace: "w3-system-account-patch",
+	})
+	if err != nil {
+		t.Fatalf("create gateway cache invalidator: %v", err)
 	}
 
 	now := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
@@ -84,7 +109,7 @@ func TestW3ManagementSystemAccountsPatchPostgresRedisSmoke(t *testing.T) {
 	go func() {
 		err := app.RunIngestWorker(workerCtx, config.Config{
 			PostgresURL:     postgresURL,
-			RedisQueueURL:   redisURL,
+			RedisQueueURL:   redisQueueURL,
 			RedisNamespace:  "juhe-ai",
 			LogLevel:        "error",
 			ShutdownTimeout: time.Second,
@@ -132,8 +157,9 @@ func TestW3ManagementSystemAccountsPatchPostgresRedisSmoke(t *testing.T) {
 	}
 	logID := 0
 	service := managementsystemaccounts.NewServiceWithOptions(managementsystemaccounts.ServiceOptions{
-		Store: store,
-		Now:   func() time.Time { return now },
+		Store:                    store,
+		Now:                      func() time.Time { return now },
+		SystemAccountInvalidator: invalidator,
 	})
 	router := httpapiNewW3SystemAccountPatchRouter(t, cfg, authenticator, service, logClient, func() time.Time {
 		return now
@@ -176,6 +202,28 @@ func TestW3ManagementSystemAccountsPatchPostgresRedisSmoke(t *testing.T) {
 		t.Fatalf("status response = %+v", statusBody.Data)
 	}
 	assertW3SystemAccountPatchSessionCount(t, ctx, db, "sys_w3_patch_target", 0)
+	statusCacheVersion := assertW3GatewayCacheInvalidationRedisFacts(t, ctx, cacheRedis, stateRedis, gatewaycache.SystemAccountStatusChangedReason)
+
+	insertW3SystemAccountPatchTargetSessions(t, ctx, db, now.Add(2*time.Second), "image")
+	imageRec := serveW3SystemAccountPatchRequest(router, adminSessionToken, "sys_w3_patch_target", `{"imageGenerationEnabled":true}`, "req_w3_patch_image")
+	if imageRec.Code != http.StatusOK {
+		t.Fatalf("image generation update status = %d, body = %s", imageRec.Code, imageRec.Body.String())
+	}
+	var imageBody struct {
+		Data managementsystemaccounts.Summary `json:"data"`
+	}
+	if err := json.NewDecoder(imageRec.Body).Decode(&imageBody); err != nil {
+		t.Fatalf("decode image generation response: %v", err)
+	}
+	if !imageBody.Data.ImageGenerationEnabled {
+		t.Fatalf("image generation response = %+v", imageBody.Data)
+	}
+	assertW3SystemAccountPatchImageGeneration(t, ctx, db, true)
+	assertW3SystemAccountPatchSessionCount(t, ctx, db, "sys_w3_patch_target", 2)
+	imageCacheVersion := assertW3GatewayCacheInvalidationRedisFacts(t, ctx, cacheRedis, stateRedis, gatewaycache.SystemAccountImageGenerationChangedReason)
+	if imageCacheVersion == statusCacheVersion {
+		t.Fatalf("gateway API key validation cache version did not change after image update: %q", imageCacheVersion)
+	}
 
 	profileRec := serveW3SystemAccountPatchRequest(router, adminSessionToken, "sys_w3_patch_target", `{"displayName":"W3PatchRenamed","description":"更新说明"}`, "req_w3_patch_profile")
 	if profileRec.Code != http.StatusOK {
@@ -187,7 +235,7 @@ func TestW3ManagementSystemAccountsPatchPostgresRedisSmoke(t *testing.T) {
 	if err := json.NewDecoder(profileRec.Body).Decode(&profileBody); err != nil {
 		t.Fatalf("decode profile response: %v", err)
 	}
-	if profileBody.Data.DisplayName != "W3PatchRenamed" || profileBody.Data.Description != "更新说明" || profileBody.Data.Status != "disabled" {
+	if profileBody.Data.DisplayName != "W3PatchRenamed" || profileBody.Data.Description != "更新说明" || profileBody.Data.Status != "disabled" || !profileBody.Data.ImageGenerationEnabled {
 		t.Fatalf("profile response = %+v", profileBody.Data)
 	}
 
@@ -269,6 +317,16 @@ func serveW3SystemAccountPatchRequest(router http.Handler, token string, id stri
 	return rec
 }
 
+func w3RedisURLWithDB(t *testing.T, rawURL string, db int) string {
+	t.Helper()
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("parse redis url for db rewrite: %v", err)
+	}
+	parsed.Path = "/" + strconv.Itoa(db)
+	return parsed.String()
+}
+
 func assertW3SystemAccountPatchPassword(t *testing.T, ctx context.Context, db *sql.DB, password string) {
 	t.Helper()
 	var hash string
@@ -282,6 +340,63 @@ func assertW3SystemAccountPatchPassword(t *testing.T, ctx context.Context, db *s
 	if hash == "" || hash == password || !managementauth.VerifyPassword(password, hash) {
 		t.Fatalf("unexpected W3 patch target password hash %q", hash)
 	}
+}
+
+func assertW3SystemAccountPatchImageGeneration(t *testing.T, ctx context.Context, db *sql.DB, want bool) {
+	t.Helper()
+	var got bool
+	if err := db.QueryRowContext(ctx, `
+		SELECT image_generation_enabled
+		FROM juhe_business.system_accounts
+		WHERE id = 'sys_w3_patch_target'
+	`).Scan(&got); err != nil {
+		t.Fatalf("read W3 patch target image generation flag: %v", err)
+	}
+	if got != want {
+		t.Fatalf("W3 patch image generation enabled = %v, want %v", got, want)
+	}
+}
+
+func assertW3GatewayCacheInvalidationRedisFacts(
+	t *testing.T,
+	ctx context.Context,
+	cacheRedis *redisplatform.Client,
+	stateRedis *redisplatform.Client,
+	wantReason string,
+) string {
+	t.Helper()
+	versionKey, err := gatewaycache.SharedCacheVersionKey("w3-system-account-patch", gatewaycache.APIKeyValidationCacheName)
+	if err != nil {
+		t.Fatalf("build W3 gateway cache version key: %v", err)
+	}
+	versionValue, err := cacheRedis.GetRaw(ctx, versionKey)
+	if err != nil {
+		t.Fatalf("read W3 gateway API key validation cache version key %s: %v", versionKey, err)
+	}
+	if strings.TrimSpace(string(versionValue)) == "" {
+		t.Fatalf("W3 gateway API key validation cache version key %s is empty", versionKey)
+	}
+
+	stateKey, err := gatewaycache.RuntimeStateKey("w3-system-account-patch", gatewaycache.RuntimeInvalidationStoreName, "topic:"+gatewaycache.GatewayRuntimeCacheTopic)
+	if err != nil {
+		t.Fatalf("build W3 gateway runtime invalidation key: %v", err)
+	}
+	rawState, err := stateRedis.GetRaw(ctx, stateKey)
+	if err != nil {
+		t.Fatalf("read W3 gateway runtime invalidation key %s: %v", stateKey, err)
+	}
+	var state struct {
+		Version     string `json:"version"`
+		Reason      string `json:"reason"`
+		PublishedAt string `json:"publishedAt"`
+	}
+	if err := json.Unmarshal(rawState, &state); err != nil {
+		t.Fatalf("decode W3 gateway runtime invalidation state %s: %v", rawState, err)
+	}
+	if state.Version == "" || state.Reason != wantReason || state.PublishedAt == "" {
+		t.Fatalf("W3 gateway runtime invalidation state = %+v, want reason %q", state, wantReason)
+	}
+	return string(versionValue)
 }
 
 func assertW3SystemAccountPatchSessionCount(t *testing.T, ctx context.Context, db *sql.DB, accountID string, want int) {
@@ -381,7 +496,19 @@ func assertW3SystemAccountPatchOperationLogs(t *testing.T, ctx context.Context, 
 		t.Fatalf("status operation log metadata = %+v", statusMetadata)
 	}
 
-	profile := readW3SystemAccountPatchOperationLog(t, ctx, db, "oplog_w3_system_account_patch_3")
+	image := readW3SystemAccountPatchOperationLog(t, ctx, db, "oplog_w3_system_account_patch_3")
+	if image.OperationKey != "system_accounts.update" ||
+		image.Action != "update" ||
+		image.ResourceID != "sys_w3_patch_target" ||
+		image.TraceID != "req_w3_patch_image" {
+		t.Fatalf("image operation log = %+v", image)
+	}
+	imageChanges := decodeW3SystemAccountPatchChanges(t, image.ChangesJSON)
+	if len(imageChanges) != 1 || imageChanges[0].Field != "imageGenerationEnabled" || imageChanges[0].Before != false || imageChanges[0].After != true {
+		t.Fatalf("image operation log changes = %+v", imageChanges)
+	}
+
+	profile := readW3SystemAccountPatchOperationLog(t, ctx, db, "oplog_w3_system_account_patch_4")
 	if profile.OperationKey != "system_accounts.update" ||
 		profile.Action != "update" ||
 		profile.ResourceID != "sys_w3_patch_target" ||
@@ -408,8 +535,8 @@ func assertW3SystemAccountPatchOperationLogs(t *testing.T, ctx context.Context, 
 	`).Scan(&total); err != nil {
 		t.Fatalf("count W3 patch operation logs: %v", err)
 	}
-	if total != 3 {
-		t.Fatalf("W3 patch operation log count = %d, want 3", total)
+	if total != 4 {
+		t.Fatalf("W3 patch operation log count = %d, want 4", total)
 	}
 }
 

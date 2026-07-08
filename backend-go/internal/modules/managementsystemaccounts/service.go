@@ -25,20 +25,22 @@ const (
 )
 
 var (
-	ErrPasswordResetInvalid        = errors.New("management system account password reset invalid")
-	ErrPasswordResetWhitespace     = errors.New("management system account password reset whitespace")
-	ErrStatusUpdateInvalid         = errors.New("management system account status update invalid")
-	ErrProfileUpdateInvalid        = errors.New("management system account profile update invalid")
-	ErrProfileUpdateWhitespace     = errors.New("management system account profile update whitespace")
-	ErrProfileUpdateDisplayNameDup = errors.New("management system account profile display name exists")
-	ErrActiveSuperAdminRequired    = errors.New("management active super admin required")
-	ErrSystemAccountNotFound       = errors.New("management system account not found")
+	ErrPasswordResetInvalid         = errors.New("management system account password reset invalid")
+	ErrPasswordResetWhitespace      = errors.New("management system account password reset whitespace")
+	ErrStatusUpdateInvalid          = errors.New("management system account status update invalid")
+	ErrImageGenerationUpdateInvalid = errors.New("management system account image generation update invalid")
+	ErrProfileUpdateInvalid         = errors.New("management system account profile update invalid")
+	ErrProfileUpdateWhitespace      = errors.New("management system account profile update whitespace")
+	ErrProfileUpdateDisplayNameDup  = errors.New("management system account profile display name exists")
+	ErrActiveSuperAdminRequired     = errors.New("management active super admin required")
+	ErrSystemAccountNotFound        = errors.New("management system account not found")
 )
 
 type Service struct {
-	store        port.ManagementSystemAccountOptionReader
-	now          func() time.Time
-	hashPassword func(string) (string, error)
+	store                    port.ManagementSystemAccountOptionReader
+	now                      func() time.Time
+	hashPassword             func(string) (string, error)
+	systemAccountInvalidator SystemAccountInvalidator
 }
 
 type OptionListInput struct {
@@ -83,9 +85,15 @@ type Option struct {
 }
 
 type ServiceOptions struct {
-	Store        port.ManagementSystemAccountOptionReader
-	Now          func() time.Time
-	HashPassword func(string) (string, error)
+	Store                    port.ManagementSystemAccountOptionReader
+	Now                      func() time.Time
+	HashPassword             func(string) (string, error)
+	SystemAccountInvalidator SystemAccountInvalidator
+}
+
+type SystemAccountInvalidator interface {
+	InvalidateSystemAccountStatusChanged(ctx context.Context, systemAccountID string) error
+	InvalidateSystemAccountImageGenerationChanged(ctx context.Context, systemAccountID string) error
 }
 
 type PasswordResetInput struct {
@@ -109,6 +117,17 @@ type StatusUpdateResult struct {
 	Before              Summary
 	Account             Summary
 	RevokedSessionCount int
+}
+
+type ImageGenerationUpdateInput struct {
+	SystemAccountID        string
+	ImageGenerationEnabled bool
+}
+
+type ImageGenerationUpdateResult struct {
+	Before  Summary
+	Account Summary
+	Changed bool
 }
 
 type ProfileUpdateInput struct {
@@ -140,9 +159,10 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 		hashPassword = managementauth.HashPassword
 	}
 	return &Service{
-		store:        opts.Store,
-		now:          now,
-		hashPassword: hashPassword,
+		store:                    opts.Store,
+		now:                      now,
+		hashPassword:             hashPassword,
+		systemAccountInvalidator: opts.SystemAccountInvalidator,
 	}
 }
 
@@ -265,10 +285,52 @@ func (s *Service) UpdateStatus(ctx context.Context, input StatusUpdateInput) (St
 	if result.BlockedLastActiveSuperAdmin {
 		return StatusUpdateResult{}, ErrActiveSuperAdminRequired
 	}
+	if result.Before.Status != result.Account.Status && s.systemAccountInvalidator != nil {
+		if err := s.systemAccountInvalidator.InvalidateSystemAccountStatusChanged(ctx, systemAccountID); err != nil {
+			return StatusUpdateResult{}, fmt.Errorf("invalidate management system account status gateway cache: %w", err)
+		}
+	}
 	return StatusUpdateResult{
 		Before:              systemAccountSummaryFromPort(result.Before),
 		Account:             systemAccountSummaryFromPort(result.Account),
 		RevokedSessionCount: result.RevokedSessionCount,
+	}, nil
+}
+
+func (s *Service) UpdateImageGeneration(ctx context.Context, input ImageGenerationUpdateInput) (ImageGenerationUpdateResult, error) {
+	if s.store == nil {
+		return ImageGenerationUpdateResult{}, fmt.Errorf("management system account store is required")
+	}
+	updater, ok := s.store.(port.ManagementSystemAccountImageGenerationUpdater)
+	if !ok || updater == nil {
+		return ImageGenerationUpdateResult{}, fmt.Errorf("management system account image generation updater is required")
+	}
+	systemAccountID := strings.TrimSpace(input.SystemAccountID)
+	if systemAccountID == "" {
+		return ImageGenerationUpdateResult{}, ErrImageGenerationUpdateInvalid
+	}
+	result, found, err := updater.UpdateManagementSystemAccountImageGeneration(ctx, port.ManagementSystemAccountImageGenerationUpdateInput{
+		SystemAccountID:        systemAccountID,
+		ImageGenerationEnabled: input.ImageGenerationEnabled,
+		UpdatedAt:              s.now().UTC(),
+	})
+	if err != nil {
+		return ImageGenerationUpdateResult{}, err
+	}
+	if !found {
+		return ImageGenerationUpdateResult{}, ErrSystemAccountNotFound
+	}
+	if result.Before.ImageGenerationEnabled != result.Account.ImageGenerationEnabled && s.systemAccountInvalidator != nil {
+		if err := s.systemAccountInvalidator.InvalidateSystemAccountImageGenerationChanged(ctx, systemAccountID); err != nil {
+			return ImageGenerationUpdateResult{}, fmt.Errorf("invalidate management system account image gateway cache: %w", err)
+		}
+	}
+	before := systemAccountSummaryFromPort(result.Before)
+	account := systemAccountSummaryFromPort(result.Account)
+	return ImageGenerationUpdateResult{
+		Before:  before,
+		Account: account,
+		Changed: before.ImageGenerationEnabled != account.ImageGenerationEnabled,
 	}, nil
 }
 

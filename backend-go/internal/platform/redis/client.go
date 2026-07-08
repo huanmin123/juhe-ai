@@ -286,6 +286,13 @@ func (c *Client) Set(ctx context.Context, key string, value []byte, ttl time.Dur
 	return c.client.Set(ctx, c.Key(key), value, ttl).Err()
 }
 
+func (c *Client) SetRaw(ctx context.Context, key string, value []byte, ttl time.Duration) error {
+	if err := validateKeyAndTTL(key, ttl); err != nil {
+		return err
+	}
+	return c.client.Set(ctx, key, value, ttl).Err()
+}
+
 func (c *Client) SetPersistent(ctx context.Context, key string, value []byte) error {
 	if err := validateKey(key); err != nil {
 		return err
@@ -310,6 +317,20 @@ func (c *Client) Get(ctx context.Context, key string) ([]byte, error) {
 		return nil, err
 	}
 	value, err := c.client.Get(ctx, c.Key(key)).Bytes()
+	if errors.Is(err, goredis.Nil) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return value, nil
+}
+
+func (c *Client) GetRaw(ctx context.Context, key string) ([]byte, error) {
+	if err := validateKey(key); err != nil {
+		return nil, err
+	}
+	value, err := c.client.Get(ctx, key).Bytes()
 	if errors.Is(err, goredis.Nil) {
 		return nil, ErrNotFound
 	}

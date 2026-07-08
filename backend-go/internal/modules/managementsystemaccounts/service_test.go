@@ -345,6 +345,79 @@ func TestUpdateStatusNormalizesInputAndMapsResult(t *testing.T) {
 	}
 }
 
+func TestUpdateStatusInvalidatesGatewayCacheWhenStatusChanges(t *testing.T) {
+	now := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
+	invalidator := &systemAccountInvalidatorStub{}
+	store := &systemAccountOptionStoreStub{
+		statusFound: true,
+		statusResult: port.ManagementSystemAccountStatusUpdateResult{
+			Before:  port.ManagementSystemAccountSummary{ID: "sys_user", Status: "active", CreatedAt: now, UpdatedAt: now},
+			Account: port.ManagementSystemAccountSummary{ID: "sys_user", Status: "disabled", CreatedAt: now, UpdatedAt: now},
+		},
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		Store:                    store,
+		SystemAccountInvalidator: invalidator,
+	})
+
+	if _, err := service.UpdateStatus(context.Background(), StatusUpdateInput{SystemAccountID: " sys_user ", Status: "disabled"}); err != nil {
+		t.Fatalf("UpdateStatus() error = %v", err)
+	}
+
+	if invalidator.statusCalls != 1 || invalidator.statusIDs[0] != "sys_user" {
+		t.Fatalf("status invalidation = %d / %#v, want sys_user", invalidator.statusCalls, invalidator.statusIDs)
+	}
+	if invalidator.imageCalls != 0 {
+		t.Fatalf("image invalidation calls = %d, want 0", invalidator.imageCalls)
+	}
+}
+
+func TestUpdateStatusSkipsGatewayCacheInvalidationWhenStatusUnchanged(t *testing.T) {
+	now := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
+	invalidator := &systemAccountInvalidatorStub{}
+	store := &systemAccountOptionStoreStub{
+		statusFound: true,
+		statusResult: port.ManagementSystemAccountStatusUpdateResult{
+			Before:  port.ManagementSystemAccountSummary{ID: "sys_user", Status: "active", CreatedAt: now, UpdatedAt: now},
+			Account: port.ManagementSystemAccountSummary{ID: "sys_user", Status: "active", CreatedAt: now, UpdatedAt: now},
+		},
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		Store:                    store,
+		SystemAccountInvalidator: invalidator,
+	})
+
+	if _, err := service.UpdateStatus(context.Background(), StatusUpdateInput{SystemAccountID: "sys_user", Status: "active"}); err != nil {
+		t.Fatalf("UpdateStatus() error = %v", err)
+	}
+
+	if invalidator.statusCalls != 0 || invalidator.imageCalls != 0 {
+		t.Fatalf("invalidation calls = status %d image %d, want 0", invalidator.statusCalls, invalidator.imageCalls)
+	}
+}
+
+func TestUpdateStatusReturnsGatewayCacheInvalidationError(t *testing.T) {
+	want := errors.New("redis down")
+	now := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
+	store := &systemAccountOptionStoreStub{
+		statusFound: true,
+		statusResult: port.ManagementSystemAccountStatusUpdateResult{
+			Before:  port.ManagementSystemAccountSummary{ID: "sys_user", Status: "active", CreatedAt: now, UpdatedAt: now},
+			Account: port.ManagementSystemAccountSummary{ID: "sys_user", Status: "disabled", CreatedAt: now, UpdatedAt: now},
+		},
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		Store:                    store,
+		SystemAccountInvalidator: &systemAccountInvalidatorStub{statusErr: want},
+	})
+
+	_, err := service.UpdateStatus(context.Background(), StatusUpdateInput{SystemAccountID: "sys_user", Status: "disabled"})
+
+	if !errors.Is(err, want) {
+		t.Fatalf("UpdateStatus() error = %v, want %v", err, want)
+	}
+}
+
 func TestUpdateStatusRejectsInvalidInput(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -404,6 +477,183 @@ func TestUpdateStatusMapsStoreNotFoundBlockedAndErrors(t *testing.T) {
 				t.Fatalf("UpdateStatus() error = %v, want %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestUpdateStatusSkipsGatewayCacheInvalidationForBlockedAndStoreErrors(t *testing.T) {
+	want := errors.New("postgres down")
+	now := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name  string
+		store *systemAccountOptionStoreStub
+	}{
+		{name: "not found", store: &systemAccountOptionStoreStub{}},
+		{name: "store error", store: &systemAccountOptionStoreStub{statusErr: want}},
+		{
+			name: "last active super admin",
+			store: &systemAccountOptionStoreStub{
+				statusFound: true,
+				statusResult: port.ManagementSystemAccountStatusUpdateResult{
+					Before:                      port.ManagementSystemAccountSummary{ID: "sys_super", Role: "super_admin", Status: "active", CreatedAt: now, UpdatedAt: now},
+					Account:                     port.ManagementSystemAccountSummary{ID: "sys_super", Role: "super_admin", Status: "disabled", CreatedAt: now, UpdatedAt: now},
+					BlockedLastActiveSuperAdmin: true,
+				},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			invalidator := &systemAccountInvalidatorStub{}
+			service := NewServiceWithOptions(ServiceOptions{
+				Store:                    tt.store,
+				SystemAccountInvalidator: invalidator,
+			})
+
+			_, _ = service.UpdateStatus(context.Background(), StatusUpdateInput{SystemAccountID: "sys_user", Status: "disabled"})
+
+			if invalidator.statusCalls != 0 || invalidator.imageCalls != 0 {
+				t.Fatalf("invalidation calls = status %d image %d, want 0", invalidator.statusCalls, invalidator.imageCalls)
+			}
+		})
+	}
+}
+
+func TestUpdateImageGenerationNormalizesInputMapsResultAndInvalidatesGatewayCache(t *testing.T) {
+	now := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
+	updatedAt := now.Add(time.Minute)
+	invalidator := &systemAccountInvalidatorStub{}
+	store := &systemAccountOptionStoreStub{
+		imageFound: true,
+		imageResult: port.ManagementSystemAccountImageGenerationUpdateResult{
+			Before: port.ManagementSystemAccountSummary{
+				ID:                     "sys_user",
+				Username:               "user",
+				DisplayName:            "用户",
+				Status:                 "active",
+				ImageGenerationEnabled: false,
+				CreatedAt:              now,
+				UpdatedAt:              now,
+			},
+			Account: port.ManagementSystemAccountSummary{
+				ID:                     "sys_user",
+				Username:               "user",
+				DisplayName:            "用户",
+				Status:                 "active",
+				ImageGenerationEnabled: true,
+				CreatedAt:              now,
+				UpdatedAt:              updatedAt,
+			},
+		},
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		Store:                    store,
+		Now:                      func() time.Time { return updatedAt },
+		SystemAccountInvalidator: invalidator,
+	})
+
+	result, err := service.UpdateImageGeneration(context.Background(), ImageGenerationUpdateInput{SystemAccountID: " sys_user ", ImageGenerationEnabled: true})
+
+	if err != nil {
+		t.Fatalf("UpdateImageGeneration() error = %v", err)
+	}
+	if !store.imageCalled ||
+		store.imageInput.SystemAccountID != "sys_user" ||
+		!store.imageInput.ImageGenerationEnabled ||
+		!store.imageInput.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("image input = %+v", store.imageInput)
+	}
+	if !result.Changed ||
+		!result.Account.ImageGenerationEnabled ||
+		result.Account.UpdatedAt != updatedAt.Format(time.RFC3339Nano) {
+		t.Fatalf("result = %+v", result)
+	}
+	if invalidator.imageCalls != 1 || invalidator.imageIDs[0] != "sys_user" {
+		t.Fatalf("image invalidation = %d / %#v, want sys_user", invalidator.imageCalls, invalidator.imageIDs)
+	}
+	if invalidator.statusCalls != 0 {
+		t.Fatalf("status invalidation calls = %d, want 0", invalidator.statusCalls)
+	}
+}
+
+func TestUpdateImageGenerationSkipsGatewayCacheInvalidationWhenUnchanged(t *testing.T) {
+	now := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
+	invalidator := &systemAccountInvalidatorStub{}
+	store := &systemAccountOptionStoreStub{
+		imageFound: true,
+		imageResult: port.ManagementSystemAccountImageGenerationUpdateResult{
+			Before:  port.ManagementSystemAccountSummary{ID: "sys_user", ImageGenerationEnabled: true, CreatedAt: now, UpdatedAt: now},
+			Account: port.ManagementSystemAccountSummary{ID: "sys_user", ImageGenerationEnabled: true, CreatedAt: now, UpdatedAt: now},
+		},
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		Store:                    store,
+		SystemAccountInvalidator: invalidator,
+	})
+
+	result, err := service.UpdateImageGeneration(context.Background(), ImageGenerationUpdateInput{SystemAccountID: "sys_user", ImageGenerationEnabled: true})
+
+	if err != nil {
+		t.Fatalf("UpdateImageGeneration() error = %v", err)
+	}
+	if result.Changed {
+		t.Fatal("Changed = true, want false")
+	}
+	if invalidator.imageCalls != 0 || invalidator.statusCalls != 0 {
+		t.Fatalf("invalidation calls = image %d status %d, want 0", invalidator.imageCalls, invalidator.statusCalls)
+	}
+}
+
+func TestUpdateImageGenerationRejectsInvalidInputAndMapsErrors(t *testing.T) {
+	want := errors.New("postgres down")
+	tests := []struct {
+		name    string
+		input   ImageGenerationUpdateInput
+		store   *systemAccountOptionStoreStub
+		wantErr error
+	}{
+		{name: "missing id", input: ImageGenerationUpdateInput{}, store: &systemAccountOptionStoreStub{}, wantErr: ErrImageGenerationUpdateInvalid},
+		{name: "not found", input: ImageGenerationUpdateInput{SystemAccountID: "sys_user"}, store: &systemAccountOptionStoreStub{}, wantErr: ErrSystemAccountNotFound},
+		{name: "store error", input: ImageGenerationUpdateInput{SystemAccountID: "sys_user"}, store: &systemAccountOptionStoreStub{imageErr: want}, wantErr: want},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			invalidator := &systemAccountInvalidatorStub{}
+			service := NewServiceWithOptions(ServiceOptions{
+				Store:                    tt.store,
+				SystemAccountInvalidator: invalidator,
+			})
+
+			_, err := service.UpdateImageGeneration(context.Background(), tt.input)
+
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("UpdateImageGeneration() error = %v, want %v", err, tt.wantErr)
+			}
+			if invalidator.imageCalls != 0 || invalidator.statusCalls != 0 {
+				t.Fatalf("invalidation calls = image %d status %d, want 0", invalidator.imageCalls, invalidator.statusCalls)
+			}
+		})
+	}
+}
+
+func TestUpdateImageGenerationReturnsGatewayCacheInvalidationError(t *testing.T) {
+	want := errors.New("redis down")
+	now := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
+	store := &systemAccountOptionStoreStub{
+		imageFound: true,
+		imageResult: port.ManagementSystemAccountImageGenerationUpdateResult{
+			Before:  port.ManagementSystemAccountSummary{ID: "sys_user", ImageGenerationEnabled: false, CreatedAt: now, UpdatedAt: now},
+			Account: port.ManagementSystemAccountSummary{ID: "sys_user", ImageGenerationEnabled: true, CreatedAt: now, UpdatedAt: now},
+		},
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		Store:                    store,
+		SystemAccountInvalidator: &systemAccountInvalidatorStub{imageErr: want},
+	})
+
+	_, err := service.UpdateImageGeneration(context.Background(), ImageGenerationUpdateInput{SystemAccountID: "sys_user", ImageGenerationEnabled: true})
+
+	if !errors.Is(err, want) {
+		t.Fatalf("UpdateImageGeneration() error = %v, want %v", err, want)
 	}
 }
 
@@ -595,11 +845,37 @@ type systemAccountOptionStoreStub struct {
 	statusResult  port.ManagementSystemAccountStatusUpdateResult
 	statusFound   bool
 	statusErr     error
+	imageCalled   bool
+	imageInput    port.ManagementSystemAccountImageGenerationUpdateInput
+	imageResult   port.ManagementSystemAccountImageGenerationUpdateResult
+	imageFound    bool
+	imageErr      error
 	profileCalled bool
 	profileInput  port.ManagementSystemAccountProfileUpdateInput
 	profileResult port.ManagementSystemAccountProfileUpdateResult
 	profileFound  bool
 	profileErr    error
+}
+
+type systemAccountInvalidatorStub struct {
+	statusCalls int
+	statusIDs   []string
+	statusErr   error
+	imageCalls  int
+	imageIDs    []string
+	imageErr    error
+}
+
+func (s *systemAccountInvalidatorStub) InvalidateSystemAccountStatusChanged(_ context.Context, systemAccountID string) error {
+	s.statusCalls++
+	s.statusIDs = append(s.statusIDs, systemAccountID)
+	return s.statusErr
+}
+
+func (s *systemAccountInvalidatorStub) InvalidateSystemAccountImageGenerationChanged(_ context.Context, systemAccountID string) error {
+	s.imageCalls++
+	s.imageIDs = append(s.imageIDs, systemAccountID)
+	return s.imageErr
 }
 
 func (s *systemAccountOptionStoreStub) ListManagementSystemAccounts(_ context.Context, input port.ManagementSystemAccountListInput) (port.ManagementSystemAccountListResult, error) {
@@ -622,6 +898,12 @@ func (s *systemAccountOptionStoreStub) UpdateManagementSystemAccountStatus(_ con
 	s.statusCalled = true
 	s.statusInput = input
 	return s.statusResult, s.statusFound, s.statusErr
+}
+
+func (s *systemAccountOptionStoreStub) UpdateManagementSystemAccountImageGeneration(_ context.Context, input port.ManagementSystemAccountImageGenerationUpdateInput) (port.ManagementSystemAccountImageGenerationUpdateResult, bool, error) {
+	s.imageCalled = true
+	s.imageInput = input
+	return s.imageResult, s.imageFound, s.imageErr
 }
 
 func (s *systemAccountOptionStoreStub) UpdateManagementSystemAccountProfile(_ context.Context, input port.ManagementSystemAccountProfileUpdateInput) (port.ManagementSystemAccountProfileUpdateResult, bool, error) {

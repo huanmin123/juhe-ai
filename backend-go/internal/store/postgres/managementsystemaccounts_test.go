@@ -230,6 +230,40 @@ func TestManagementSystemAccountProfileUpdateSQLGuardsSuperAdminAndSafeFields(t 
 	}
 }
 
+func TestManagementSystemAccountImageGenerationUpdateSQLIsNarrow(t *testing.T) {
+	source, err := os.ReadFile("queries/w3_management_system_accounts.sql")
+	if err != nil {
+		t.Fatalf("read system account write query: %v", err)
+	}
+	sql := querySection(t, string(source), "-- name: UpdateManagementSystemAccountImageGeneration :one", "-- name: UpdateManagementSystemAccountProfile :one")
+	for _, want := range []string{
+		"WITH current_account AS",
+		"FOR UPDATE",
+		"image_generation_enabled = sqlc.arg(image_generation_enabled)::boolean",
+		"updated_at = sqlc.arg(updated_at)::timestamptz",
+		"current_account.image_generation_enabled AS before_image_generation_enabled",
+		"system_accounts.image_generation_enabled",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("image generation update query missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		"SELECT *",
+		"password_hash",
+		"status = sqlc.arg",
+		"role =",
+		"must_change_password =",
+		"DELETE FROM juhe_business.system_sessions",
+		"COALESCE",
+		"coalesce",
+	} {
+		if strings.Contains(sql, forbidden) {
+			t.Fatalf("image generation update query should not contain %q", forbidden)
+		}
+	}
+}
+
 func TestManagementSystemAccountPasswordResetResultFromRowMapsBeforeAndAccount(t *testing.T) {
 	now := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
 	lastLoginAt := now.Add(-time.Hour)
@@ -342,6 +376,41 @@ func TestManagementSystemAccountStatusUpdateResultFromRowMapsBeforeAccountAndGua
 		result.Account.Status != "disabled" ||
 		result.RevokedSessionCount != 2 ||
 		!result.BlockedLastActiveSuperAdmin {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestManagementSystemAccountImageGenerationUpdateResultFromRowMapsBeforeAndAccount(t *testing.T) {
+	now := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
+	lastLoginAt := now.Add(-time.Hour)
+	result := managementSystemAccountImageGenerationUpdateResultFromRow(postgresqueries.UpdateManagementSystemAccountImageGenerationRow{
+		BeforeID:                     "sys_user",
+		BeforeUsername:               "user",
+		BeforeDisplayName:            "用户",
+		BeforeDescription:            pgtype.Text{String: "描述", Valid: true},
+		BeforeRole:                   "user",
+		BeforeStatus:                 "active",
+		BeforeMustChangePassword:     false,
+		BeforeImageGenerationEnabled: false,
+		BeforeLastLoginAt:            pgtype.Timestamptz{Time: lastLoginAt, Valid: true},
+		BeforeCreatedAt:              pgtype.Timestamptz{Time: now, Valid: true},
+		BeforeUpdatedAt:              pgtype.Timestamptz{Time: now, Valid: true},
+		ID:                           "sys_user",
+		Username:                     "user",
+		DisplayName:                  "用户",
+		Description:                  pgtype.Text{String: "描述", Valid: true},
+		Role:                         "user",
+		Status:                       "active",
+		MustChangePassword:           false,
+		ImageGenerationEnabled:       true,
+		LastLoginAt:                  pgtype.Timestamptz{Time: lastLoginAt, Valid: true},
+		CreatedAt:                    pgtype.Timestamptz{Time: now, Valid: true},
+		UpdatedAt:                    pgtype.Timestamptz{Time: now.Add(time.Minute), Valid: true},
+	})
+
+	if result.Before.ImageGenerationEnabled ||
+		!result.Account.ImageGenerationEnabled ||
+		result.Account.UpdatedAt != now.Add(time.Minute) {
 		t.Fatalf("result = %+v", result)
 	}
 }

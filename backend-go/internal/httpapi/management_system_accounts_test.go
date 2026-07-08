@@ -493,8 +493,8 @@ func TestManagementSystemAccountStatusUpdateHandlerValidatesBody(t *testing.T) {
 			if rec.Code != http.StatusBadRequest {
 				t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
 			}
-			if service.statusCalled || service.resetCalled {
-				t.Fatalf("service should not be called, statusCalled=%v resetCalled=%v", service.statusCalled, service.resetCalled)
+			if service.statusCalled || service.resetCalled || service.imageCalled {
+				t.Fatalf("service should not be called, statusCalled=%v resetCalled=%v imageCalled=%v", service.statusCalled, service.resetCalled, service.imageCalled)
 			}
 		})
 	}
@@ -517,6 +517,163 @@ func TestManagementSystemAccountStatusUpdateHandlerMapsServiceErrors(t *testing.
 			service := &managementSystemAccountOptionServiceStub{statusErr: tt.err}
 			handler := newManagementSystemAccountPatchHandler(service)
 			req := managementSystemAccountPatchRequest("/__aisys__/api/system-accounts/sys_user", "sys_user", `{"status":"disabled"}`)
+			req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+				SystemAccountID: "sys_super",
+				Role:            "super_admin",
+			}))
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantCode {
+				t.Fatalf("status = %d, want %d", rec.Code, tt.wantCode)
+			}
+			var body map[string]string
+			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if body["message"] != tt.wantMsg {
+				t.Fatalf("message = %q, want %q", body["message"], tt.wantMsg)
+			}
+		})
+	}
+}
+
+func TestManagementSystemAccountImageGenerationUpdateHandlerWritesOperationLog(t *testing.T) {
+	queueStub := &operationLogQueueStub{}
+	service := &managementSystemAccountOptionServiceStub{
+		imageResult: managementsystemaccounts.ImageGenerationUpdateResult{
+			Before: managementsystemaccounts.Summary{
+				ID:                     "sys_user",
+				Username:               "user",
+				DisplayName:            "用户",
+				Role:                   "user",
+				Status:                 "active",
+				ImageGenerationEnabled: false,
+			},
+			Account: managementsystemaccounts.Summary{
+				ID:                     "sys_user",
+				Username:               "user",
+				DisplayName:            "用户",
+				Role:                   "user",
+				Status:                 "active",
+				ImageGenerationEnabled: true,
+			},
+			Changed: true,
+		},
+	}
+	handler := newManagementSystemAccountPatchHandler(
+		service,
+		newManagementOperationLogOptions(ManagementOperationLogOptions{
+			Config:   config.Config{TrustProxy: "false"},
+			Client:   queueStub,
+			NewLogID: func() string { return "oplog_update_image_generation" },
+		}),
+	)
+	req := managementSystemAccountPatchRequest(
+		"/__aisys__/api/system-accounts/sys_user",
+		"sys_user",
+		`{"imageGenerationEnabled":true}`,
+	)
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+		SystemAccountID: "sys_super",
+		Username:        "super",
+		DisplayName:     "超级管理员",
+		Role:            "super_admin",
+		SessionID:       "sess_super",
+	}))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", rec.Code, rec.Body.String())
+	}
+	if !service.imageCalled ||
+		service.imageInput.SystemAccountID != "sys_user" ||
+		!service.imageInput.ImageGenerationEnabled ||
+		service.profileCalled ||
+		service.statusCalled ||
+		service.resetCalled {
+		t.Fatalf("service inputs: imageCalled=%v imageInput=%+v profileCalled=%v statusCalled=%v resetCalled=%v", service.imageCalled, service.imageInput, service.profileCalled, service.statusCalled, service.resetCalled)
+	}
+	var body struct {
+		Data managementsystemaccounts.Summary `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Data.ID != "sys_user" || !body.Data.ImageGenerationEnabled {
+		t.Fatalf("body = %+v", body.Data)
+	}
+	if queueStub.calls != 1 || queueStub.taskType != operationlogjob.TaskTypeWrite {
+		t.Fatalf("operation log queue calls = %d taskType = %q", queueStub.calls, queueStub.taskType)
+	}
+	logInput, err := operationlogjob.DecodeWriteTaskPayload(queueStub.payload)
+	if err != nil {
+		t.Fatalf("decode operation log payload: %v", err)
+	}
+	if logInput.OperationKey != "system_accounts.update" ||
+		logInput.ActorSystemAccountID != "sys_super" ||
+		logInput.OperationScopeSystemAccountID != "sys_user" ||
+		logInput.ResourceID != "sys_user" ||
+		len(logInput.Changes) != 1 ||
+		logInput.Changes[0].Field != "imageGenerationEnabled" ||
+		logInput.Changes[0].Before != false ||
+		logInput.Changes[0].After != true {
+		t.Fatalf("operation log input = %+v", logInput)
+	}
+}
+
+func TestManagementSystemAccountImageGenerationUpdateHandlerValidatesBody(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "image and profile cannot mix", body: `{"imageGenerationEnabled":true,"displayName":"用户"}`},
+		{name: "image and status cannot mix", body: `{"imageGenerationEnabled":true,"status":"active"}`},
+		{name: "image null", body: `{"imageGenerationEnabled":null}`},
+		{name: "image string", body: `{"imageGenerationEnabled":"true"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &managementSystemAccountOptionServiceStub{}
+			handler := newManagementSystemAccountPatchHandler(service)
+			req := managementSystemAccountPatchRequest("/__aisys__/api/system-accounts/sys_user", "sys_user", tt.body)
+			req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+				SystemAccountID: "sys_super",
+				Role:            "super_admin",
+			}))
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
+			}
+			if service.imageCalled || service.profileCalled || service.statusCalled || service.resetCalled {
+				t.Fatalf("service should not be called, imageCalled=%v profileCalled=%v statusCalled=%v resetCalled=%v", service.imageCalled, service.profileCalled, service.statusCalled, service.resetCalled)
+			}
+		})
+	}
+}
+
+func TestManagementSystemAccountImageGenerationUpdateHandlerMapsServiceErrors(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		wantCode int
+		wantMsg  string
+	}{
+		{name: "invalid", err: managementsystemaccounts.ErrImageGenerationUpdateInvalid, wantCode: http.StatusBadRequest, wantMsg: "系统账户参数无效"},
+		{name: "not found", err: managementsystemaccounts.ErrSystemAccountNotFound, wantCode: http.StatusNotFound, wantMsg: "系统账户不存在"},
+		{name: "store error", err: errors.New("postgres password leaked"), wantCode: http.StatusInternalServerError, wantMsg: "服务器内部错误"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &managementSystemAccountOptionServiceStub{imageErr: tt.err}
+			handler := newManagementSystemAccountPatchHandler(service)
+			req := managementSystemAccountPatchRequest("/__aisys__/api/system-accounts/sys_user", "sys_user", `{"imageGenerationEnabled":true}`)
 			req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
 				SystemAccountID: "sys_super",
 				Role:            "super_admin",
@@ -659,8 +816,8 @@ func TestManagementSystemAccountProfileUpdateHandlerValidatesBody(t *testing.T) 
 			if rec.Code != http.StatusBadRequest {
 				t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
 			}
-			if service.profileCalled || service.statusCalled || service.resetCalled {
-				t.Fatalf("service should not be called, profileCalled=%v statusCalled=%v resetCalled=%v", service.profileCalled, service.statusCalled, service.resetCalled)
+			if service.profileCalled || service.statusCalled || service.resetCalled || service.imageCalled {
+				t.Fatalf("service should not be called, profileCalled=%v statusCalled=%v resetCalled=%v imageCalled=%v", service.profileCalled, service.statusCalled, service.resetCalled, service.imageCalled)
 			}
 		})
 	}
@@ -841,6 +998,10 @@ type managementSystemAccountOptionServiceStub struct {
 	statusInput   managementsystemaccounts.StatusUpdateInput
 	statusResult  managementsystemaccounts.StatusUpdateResult
 	statusErr     error
+	imageCalled   bool
+	imageInput    managementsystemaccounts.ImageGenerationUpdateInput
+	imageResult   managementsystemaccounts.ImageGenerationUpdateResult
+	imageErr      error
 	profileCalled bool
 	profileInput  managementsystemaccounts.ProfileUpdateInput
 	profileResult managementsystemaccounts.ProfileUpdateResult
@@ -869,6 +1030,12 @@ func (s *managementSystemAccountOptionServiceStub) UpdateStatus(_ context.Contex
 	s.statusCalled = true
 	s.statusInput = input
 	return s.statusResult, s.statusErr
+}
+
+func (s *managementSystemAccountOptionServiceStub) UpdateImageGeneration(_ context.Context, input managementsystemaccounts.ImageGenerationUpdateInput) (managementsystemaccounts.ImageGenerationUpdateResult, error) {
+	s.imageCalled = true
+	s.imageInput = input
+	return s.imageResult, s.imageErr
 }
 
 func (s *managementSystemAccountOptionServiceStub) UpdateProfile(_ context.Context, input managementsystemaccounts.ProfileUpdateInput) (managementsystemaccounts.ProfileUpdateResult, error) {

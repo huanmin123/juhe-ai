@@ -196,6 +196,21 @@ type ManagementSystemAccountStatusUpdater interface {
 	UpdateManagementSystemAccountStatus(ctx context.Context, input ManagementSystemAccountStatusUpdateInput) (ManagementSystemAccountStatusUpdateResult, bool, error)
 }
 
+type ManagementSystemAccountImageGenerationUpdateInput struct {
+	SystemAccountID        string
+	ImageGenerationEnabled bool
+	UpdatedAt              time.Time
+}
+
+type ManagementSystemAccountImageGenerationUpdateResult struct {
+	Before  ManagementSystemAccountSummary
+	Account ManagementSystemAccountSummary
+}
+
+type ManagementSystemAccountImageGenerationUpdater interface {
+	UpdateManagementSystemAccountImageGeneration(ctx context.Context, input ManagementSystemAccountImageGenerationUpdateInput) (ManagementSystemAccountImageGenerationUpdateResult, bool, error)
+}
+
 type ManagementSystemAccountProfileUpdateInput struct {
 	SystemAccountID       string
 	HasDisplayName        bool

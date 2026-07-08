@@ -1,0 +1,200 @@
+package gatewaycache
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/json"
+	"fmt"
+	"regexp"
+	"strings"
+	"time"
+)
+
+const (
+	redisRootPrefix = "juhe-ai:"
+
+	APIKeyValidationCacheName = "gateway:api-key-validation"
+
+	RuntimeInvalidationStoreName = "gateway_cache_invalidation"
+	GatewayRuntimeCacheTopic     = "gateway_runtime_cache"
+
+	SystemAccountStatusChangedReason          = "system_account_status_changed"
+	SystemAccountImageGenerationChangedReason = "system_account_image_generation_changed"
+
+	SharedCacheVersionTTL = 30 * 24 * time.Hour
+	RuntimeStateTTL       = 24 * time.Hour
+)
+
+var (
+	invalidNamespacePartChars = regexp.MustCompile(`[^a-zA-Z0-9_.:-]+`)
+	invalidRedisKeyPartChars  = regexp.MustCompile(`[^a-zA-Z0-9:_-]`)
+)
+
+type RawSetter interface {
+	SetRaw(ctx context.Context, key string, value []byte, ttl time.Duration) error
+}
+
+type VersionGenerator func(now time.Time) (string, error)
+
+type SystemAccountInvalidator struct {
+	cache      RawSetter
+	state      RawSetter
+	namespace  string
+	now        func() time.Time
+	newVersion VersionGenerator
+}
+
+type SystemAccountInvalidatorOptions struct {
+	Cache      RawSetter
+	State      RawSetter
+	Namespace  string
+	Now        func() time.Time
+	NewVersion VersionGenerator
+}
+
+type runtimeInvalidationState struct {
+	Version     string `json:"version"`
+	Reason      string `json:"reason"`
+	APIKeyID    string `json:"apiKeyId,omitempty"`
+	PublishedAt string `json:"publishedAt"`
+}
+
+func NewSystemAccountInvalidator(opts SystemAccountInvalidatorOptions) (*SystemAccountInvalidator, error) {
+	if opts.Cache == nil {
+		return nil, fmt.Errorf("gateway cache redis setter is required")
+	}
+	if opts.State == nil {
+		return nil, fmt.Errorf("gateway runtime state redis setter is required")
+	}
+	namespace, err := SanitizeNamespacePart(opts.Namespace)
+	if err != nil {
+		return nil, err
+	}
+	now := opts.Now
+	if now == nil {
+		now = time.Now
+	}
+	newVersion := opts.NewVersion
+	if newVersion == nil {
+		newVersion = GenerateVersion
+	}
+	return &SystemAccountInvalidator{
+		cache:      opts.Cache,
+		state:      opts.State,
+		namespace:  namespace,
+		now:        now,
+		newVersion: newVersion,
+	}, nil
+}
+
+func (i *SystemAccountInvalidator) InvalidateSystemAccountStatusChanged(ctx context.Context, _ string) error {
+	return i.invalidateGatewayRuntime(ctx, SystemAccountStatusChangedReason)
+}
+
+func (i *SystemAccountInvalidator) InvalidateSystemAccountImageGenerationChanged(ctx context.Context, _ string) error {
+	return i.invalidateGatewayRuntime(ctx, SystemAccountImageGenerationChangedReason)
+}
+
+func (i *SystemAccountInvalidator) invalidateGatewayRuntime(ctx context.Context, reason string) error {
+	if err := i.clearAPIKeyValidationCache(ctx); err != nil {
+		return err
+	}
+	return i.publishGatewayRuntimeInvalidation(ctx, reason)
+}
+
+func (i *SystemAccountInvalidator) clearAPIKeyValidationCache(ctx context.Context) error {
+	now := i.now().UTC()
+	version, err := i.newVersion(now)
+	if err != nil {
+		return fmt.Errorf("generate gateway api key validation cache version: %w", err)
+	}
+	key, err := SharedCacheVersionKey(i.namespace, APIKeyValidationCacheName)
+	if err != nil {
+		return err
+	}
+	if err := i.cache.SetRaw(ctx, key, []byte(version), SharedCacheVersionTTL); err != nil {
+		return fmt.Errorf("clear gateway api key validation shared cache: %w", err)
+	}
+	return nil
+}
+
+func (i *SystemAccountInvalidator) publishGatewayRuntimeInvalidation(ctx context.Context, reason string) error {
+	now := i.now().UTC()
+	version, err := i.newVersion(now)
+	if err != nil {
+		return fmt.Errorf("generate gateway runtime cache invalidation version: %w", err)
+	}
+	key, err := RuntimeStateKey(i.namespace, RuntimeInvalidationStoreName, "topic:"+GatewayRuntimeCacheTopic)
+	if err != nil {
+		return err
+	}
+	payload, err := json.Marshal(runtimeInvalidationState{
+		Version:     version,
+		Reason:      reason,
+		PublishedAt: nodeISOString(now),
+	})
+	if err != nil {
+		return fmt.Errorf("marshal gateway runtime cache invalidation state: %w", err)
+	}
+	if err := i.state.SetRaw(ctx, key, payload, RuntimeStateTTL); err != nil {
+		return fmt.Errorf("publish gateway runtime cache invalidation: %w", err)
+	}
+	return nil
+}
+
+func SharedCacheVersionKey(namespace string, cacheName string) (string, error) {
+	return RedisNamespacedKey(namespace, "juhe-ai:cache-version:"+SanitizeRedisKeyPart(cacheName))
+}
+
+func RuntimeStateKey(namespace string, storeName string, key string) (string, error) {
+	safeStoreName := SanitizeRedisKeyPart(storeName)
+	return RedisNamespacedKey(namespace, "juhe-ai:state:"+safeStoreName+":"+strings.TrimSpace(key))
+}
+
+func RedisNamespacedKey(namespace string, key string) (string, error) {
+	normalized := strings.TrimSpace(key)
+	if normalized == "" {
+		return "", fmt.Errorf("redis key is required")
+	}
+	safeNamespace, err := SanitizeNamespacePart(namespace)
+	if err != nil {
+		return "", err
+	}
+	namespacePrefix := redisRootPrefix + safeNamespace + ":"
+	if strings.HasPrefix(normalized, namespacePrefix) {
+		return normalized, nil
+	}
+	if strings.HasPrefix(normalized, redisRootPrefix) {
+		return namespacePrefix + strings.TrimPrefix(normalized, redisRootPrefix), nil
+	}
+	return namespacePrefix + normalized, nil
+}
+
+func SanitizeNamespacePart(value string) (string, error) {
+	normalized := invalidNamespacePartChars.ReplaceAllString(strings.TrimSpace(value), "_")
+	normalized = strings.Trim(normalized, "_")
+	if normalized == "" {
+		return "", fmt.Errorf("redis namespace is required")
+	}
+	return normalized, nil
+}
+
+func SanitizeRedisKeyPart(value string) string {
+	normalized := invalidRedisKeyPartChars.ReplaceAllString(strings.TrimSpace(value), "_")
+	if normalized == "" {
+		return "default"
+	}
+	return normalized
+}
+
+func GenerateVersion(now time.Time) (string, error) {
+	var suffix [8]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%d-%x", now.UTC().UnixMilli(), suffix[:]), nil
+}
+
+func nodeISOString(value time.Time) string {
+	return value.UTC().Format("2006-01-02T15:04:05.000Z")
+}
