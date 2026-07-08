@@ -264,6 +264,53 @@ func TestManagementSystemAccountImageGenerationUpdateSQLIsNarrow(t *testing.T) {
 	}
 }
 
+func TestManagementSystemAccountUpdateSQLSupportsMixedPatchAndGuardsSessions(t *testing.T) {
+	source, err := os.ReadFile("queries/w3_management_system_account_update.sql")
+	if err != nil {
+		t.Fatalf("read system account update query: %v", err)
+	}
+	sql := string(source)
+	for _, want := range []string{
+		"WITH locked_active_super_admins AS MATERIALIZED",
+		"active_super_admin_guard AS MATERIALIZED",
+		"FOR UPDATE OF system_accounts",
+		"WHEN sqlc.arg(has_display_name)::boolean THEN sqlc.arg(display_name)::text",
+		"WHEN sqlc.arg(has_description)::boolean THEN sqlc.narg(description)::text",
+		"WHEN sqlc.arg(has_role)::boolean THEN sqlc.arg(role)::text",
+		"WHEN sqlc.arg(has_status)::boolean THEN sqlc.arg(status)::text",
+		"WHEN sqlc.arg(has_image_generation_enabled)::boolean THEN sqlc.arg(image_generation_enabled)::boolean",
+		"WHEN next_account.next_role IN ('super_admin', 'admin') THEN false",
+		"WHEN sqlc.arg(has_must_change_password)::boolean THEN sqlc.arg(must_change_password)::boolean",
+		"WHEN sqlc.arg(has_password)::boolean THEN sqlc.arg(password_hash)::text",
+		"blocked_last_active_super_admin",
+		"DELETE FROM juhe_business.system_sessions",
+		"sqlc.arg(has_password)::boolean",
+		"sqlc.arg(has_status)::boolean",
+		"AND sqlc.arg(status)::text = 'disabled'",
+		"(SELECT count(*)::int FROM revoked_sessions) AS revoked_session_count",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("full update query missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		"SELECT *",
+		"COALESCE",
+		"coalesce",
+	} {
+		if strings.Contains(sql, forbidden) {
+			t.Fatalf("full update query should not contain %q", forbidden)
+		}
+	}
+	returningIndex := strings.Index(sql, "RETURNING")
+	if returningIndex < 0 {
+		t.Fatal("full update query missing RETURNING block")
+	}
+	if strings.Contains(sql[returningIndex:], "password_hash") {
+		t.Fatal("full update query must not return password_hash")
+	}
+}
+
 func TestManagementSystemAccountPasswordResetResultFromRowMapsBeforeAndAccount(t *testing.T) {
 	now := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
 	lastLoginAt := now.Add(-time.Hour)
@@ -298,6 +345,49 @@ func TestManagementSystemAccountPasswordResetResultFromRowMapsBeforeAndAccount(t
 		result.Account.DisplayName != "用户" ||
 		result.Account.MustChangePassword != true ||
 		result.RevokedSessionCount != 3 {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestManagementSystemAccountUpdateResultFromRowMapsBeforeAccountSessionsAndGuard(t *testing.T) {
+	now := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
+	lastLoginAt := now.Add(-time.Hour)
+	result := managementSystemAccountUpdateResultFromRow(postgresqueries.UpdateManagementSystemAccountRow{
+		BeforeID:                     "sys_user",
+		BeforeUsername:               "user",
+		BeforeDisplayName:            "旧用户",
+		BeforeDescription:            pgtype.Text{String: "旧描述", Valid: true},
+		BeforeRole:                   "user",
+		BeforeStatus:                 "active",
+		BeforeMustChangePassword:     false,
+		BeforeImageGenerationEnabled: false,
+		BeforeLastLoginAt:            pgtype.Timestamptz{Time: lastLoginAt, Valid: true},
+		BeforeCreatedAt:              pgtype.Timestamptz{Time: now, Valid: true},
+		BeforeUpdatedAt:              pgtype.Timestamptz{Time: now, Valid: true},
+		ID:                           "sys_user",
+		Username:                     "user",
+		DisplayName:                  "新用户",
+		Description:                  pgtype.Text{String: "新描述", Valid: true},
+		Role:                         "admin",
+		Status:                       "disabled",
+		MustChangePassword:           false,
+		ImageGenerationEnabled:       true,
+		LastLoginAt:                  pgtype.Timestamptz{Time: lastLoginAt, Valid: true},
+		CreatedAt:                    pgtype.Timestamptz{Time: now, Valid: true},
+		UpdatedAt:                    pgtype.Timestamptz{Time: now.Add(time.Minute), Valid: true},
+		RevokedSessionCount:          4,
+		BlockedLastActiveSuperAdmin:  true,
+	})
+
+	if result.Before.DisplayName != "旧用户" ||
+		result.Before.Description != "旧描述" ||
+		result.Account.DisplayName != "新用户" ||
+		result.Account.Description != "新描述" ||
+		result.Account.Role != "admin" ||
+		result.Account.Status != "disabled" ||
+		!result.Account.ImageGenerationEnabled ||
+		result.RevokedSessionCount != 4 ||
+		!result.BlockedLastActiveSuperAdmin {
 		t.Fatalf("result = %+v", result)
 	}
 }

@@ -147,6 +147,26 @@ type ProfileUpdateResult struct {
 	Changed bool
 }
 
+type UpdateInput struct {
+	SystemAccountID        string
+	DisplayName            *string
+	HasDescription         bool
+	Description            *string
+	Password               *string
+	Role                   *string
+	Status                 *string
+	MustChangePassword     *bool
+	ImageGenerationEnabled *bool
+}
+
+type UpdateResult struct {
+	Before              Summary
+	Account             Summary
+	Changed             bool
+	PasswordChanged     bool
+	RevokedSessionCount int
+}
+
 func NewService(store port.ManagementSystemAccountOptionReader) *Service {
 	return NewServiceWithOptions(ServiceOptions{Store: store})
 }
@@ -405,6 +425,110 @@ func (s *Service) UpdateProfile(ctx context.Context, input ProfileUpdateInput) (
 	}, nil
 }
 
+func (s *Service) Update(ctx context.Context, input UpdateInput) (UpdateResult, error) {
+	if s.store == nil {
+		return UpdateResult{}, fmt.Errorf("management system account store is required")
+	}
+	updater, ok := s.store.(port.ManagementSystemAccountUpdater)
+	if !ok || updater == nil {
+		return UpdateResult{}, fmt.Errorf("management system account updater is required")
+	}
+	systemAccountID := strings.TrimSpace(input.SystemAccountID)
+	if systemAccountID == "" || !updateHasField(input) {
+		return UpdateResult{}, ErrProfileUpdateInvalid
+	}
+	storeInput := port.ManagementSystemAccountUpdateInput{
+		SystemAccountID:           systemAccountID,
+		HasMustChangePassword:     input.MustChangePassword != nil,
+		HasImageGenerationEnabled: input.ImageGenerationEnabled != nil,
+		UpdatedAt:                 s.now().UTC(),
+	}
+	if input.DisplayName != nil {
+		displayName, err := normalizeSystemAccountDisplayName(*input.DisplayName)
+		if err != nil {
+			return UpdateResult{}, err
+		}
+		storeInput.HasDisplayName = true
+		storeInput.DisplayName = displayName
+	}
+	if input.HasDescription {
+		description, err := normalizeSystemAccountDescription(input.Description)
+		if err != nil {
+			return UpdateResult{}, err
+		}
+		storeInput.HasDescription = true
+		storeInput.Description = description
+	}
+	if input.Password != nil {
+		if utf8.RuneCountInString(*input.Password) < 4 {
+			return UpdateResult{}, ErrPasswordResetInvalid
+		}
+		if strings.ContainsFunc(*input.Password, unicode.IsSpace) {
+			return UpdateResult{}, ErrPasswordResetWhitespace
+		}
+		passwordHash, err := s.hashPassword(*input.Password)
+		if err != nil {
+			return UpdateResult{}, err
+		}
+		storeInput.HasPassword = true
+		storeInput.PasswordHash = passwordHash
+	}
+	if input.Role != nil {
+		if !validManagementSystemAccountProfileRole(*input.Role) {
+			return UpdateResult{}, ErrProfileUpdateInvalid
+		}
+		storeInput.HasRole = true
+		storeInput.Role = *input.Role
+	}
+	if input.Status != nil {
+		if !validSystemAccountStatus(*input.Status) {
+			return UpdateResult{}, ErrProfileUpdateInvalid
+		}
+		storeInput.HasStatus = true
+		storeInput.Status = *input.Status
+	}
+	if input.MustChangePassword != nil {
+		storeInput.MustChangePassword = *input.MustChangePassword
+	}
+	if input.ImageGenerationEnabled != nil {
+		storeInput.ImageGenerationEnabled = *input.ImageGenerationEnabled
+	}
+	result, found, err := updater.UpdateManagementSystemAccount(ctx, storeInput)
+	if errors.Is(err, port.ErrManagementSystemAccountDisplayNameExists) {
+		return UpdateResult{}, ErrProfileUpdateDisplayNameDup
+	}
+	if err != nil {
+		return UpdateResult{}, err
+	}
+	if !found {
+		return UpdateResult{}, ErrSystemAccountNotFound
+	}
+	if result.BlockedLastActiveSuperAdmin {
+		return UpdateResult{}, ErrActiveSuperAdminRequired
+	}
+	before := systemAccountSummaryFromPort(result.Before)
+	account := systemAccountSummaryFromPort(result.Account)
+	if s.systemAccountInvalidator != nil {
+		if before.Status != account.Status {
+			if err := s.systemAccountInvalidator.InvalidateSystemAccountStatusChanged(ctx, systemAccountID); err != nil {
+				return UpdateResult{}, fmt.Errorf("invalidate management system account status gateway cache: %w", err)
+			}
+		} else if before.ImageGenerationEnabled != account.ImageGenerationEnabled {
+			if err := s.systemAccountInvalidator.InvalidateSystemAccountImageGenerationChanged(ctx, systemAccountID); err != nil {
+				return UpdateResult{}, fmt.Errorf("invalidate management system account image gateway cache: %w", err)
+			}
+		}
+	}
+	passwordChanged := storeInput.HasPassword
+	return UpdateResult{
+		Before:              before,
+		Account:             account,
+		Changed:             passwordChanged || systemAccountSummaryChanged(before, account),
+		PasswordChanged:     passwordChanged,
+		RevokedSessionCount: result.RevokedSessionCount,
+	}, nil
+}
+
 func listPageSize(pageSize int) int {
 	if pageSize <= 0 {
 		return defaultListPageSize
@@ -483,6 +607,25 @@ func profileUpdateHasField(input ProfileUpdateInput) bool {
 		input.HasDescription ||
 		input.Role != nil ||
 		input.MustChangePassword != nil
+}
+
+func updateHasField(input UpdateInput) bool {
+	return input.DisplayName != nil ||
+		input.HasDescription ||
+		input.Password != nil ||
+		input.Role != nil ||
+		input.Status != nil ||
+		input.MustChangePassword != nil ||
+		input.ImageGenerationEnabled != nil
+}
+
+func systemAccountSummaryChanged(before Summary, account Summary) bool {
+	return before.DisplayName != account.DisplayName ||
+		before.Description != account.Description ||
+		before.Role != account.Role ||
+		before.Status != account.Status ||
+		before.MustChangePassword != account.MustChangePassword ||
+		before.ImageGenerationEnabled != account.ImageGenerationEnabled
 }
 
 func normalizeSystemAccountDisplayName(value string) (string, error) {

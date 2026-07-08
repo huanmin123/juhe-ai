@@ -16,6 +16,7 @@ import (
 	operationlogjob "juhe-ai/backend-go/internal/jobs/operationlog"
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementsystemaccounts"
+	"juhe-ai/backend-go/internal/store/port"
 )
 
 func TestManagementSystemAccountsHandlerRequiresAdminAndParsesQuery(t *testing.T) {
@@ -291,7 +292,7 @@ func TestManagementSystemAccountPasswordResetHandlerRejectsNonSuperAdmin(t *test
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", rec.Code)
 	}
-	if service.resetCalled {
+	if service.resetCalled || service.updateCalled {
 		t.Fatal("service should not be called for non-super admin")
 	}
 }
@@ -305,7 +306,7 @@ func TestManagementSystemAccountPasswordResetHandlerValidatesBody(t *testing.T) 
 		wantMsg  string
 	}{
 		{name: "username cannot change", body: `{"username":"new","password":"NewPass123"}`, wantCode: http.StatusBadRequest, wantMsg: "用户账户创建后不能修改"},
-		{name: "unsupported field", body: `{"password":"NewPass123","status":"disabled"}`, wantCode: http.StatusBadRequest, wantMsg: "系统账户参数无效"},
+		{name: "unknown field", body: `{"password":"NewPass123","unknown":true}`, wantCode: http.StatusBadRequest, wantMsg: "系统账户参数无效"},
 		{name: "must change password null", body: `{"password":"NewPass123","mustChangePassword":null}`, wantCode: http.StatusBadRequest, wantMsg: "系统账户参数无效"},
 		{name: "must change password string", body: `{"password":"NewPass123","mustChangePassword":"false"}`, wantCode: http.StatusBadRequest, wantMsg: "系统账户参数无效"},
 		{name: "password whitespace", body: `{"password":"New Pass123"}`, err: managementsystemaccounts.ErrPasswordResetWhitespace, wantCode: http.StatusBadRequest, wantMsg: "登录密码不能包含空格"},
@@ -471,10 +472,8 @@ func TestManagementSystemAccountStatusUpdateHandlerValidatesBody(t *testing.T) {
 		name string
 		body string
 	}{
-		{name: "password and status cannot mix", body: `{"password":"NewPass123","status":"disabled"}`},
-		{name: "status-only rejects full patch field", body: `{"status":"disabled","displayName":"用户"}`},
-		{name: "status-only rejects must change password", body: `{"status":"disabled","mustChangePassword":true}`},
 		{name: "status null", body: `{"status":null}`},
+		{name: "status number", body: `{"status":1}`},
 		{name: "empty object", body: `{}`},
 	}
 	for _, tt := range tests {
@@ -493,8 +492,8 @@ func TestManagementSystemAccountStatusUpdateHandlerValidatesBody(t *testing.T) {
 			if rec.Code != http.StatusBadRequest {
 				t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
 			}
-			if service.statusCalled || service.resetCalled || service.imageCalled {
-				t.Fatalf("service should not be called, statusCalled=%v resetCalled=%v imageCalled=%v", service.statusCalled, service.resetCalled, service.imageCalled)
+			if service.statusCalled || service.resetCalled || service.imageCalled || service.updateCalled {
+				t.Fatalf("service should not be called, statusCalled=%v resetCalled=%v imageCalled=%v updateCalled=%v", service.statusCalled, service.resetCalled, service.imageCalled, service.updateCalled)
 			}
 		})
 	}
@@ -630,10 +629,9 @@ func TestManagementSystemAccountImageGenerationUpdateHandlerValidatesBody(t *tes
 		name string
 		body string
 	}{
-		{name: "image and profile cannot mix", body: `{"imageGenerationEnabled":true,"displayName":"用户"}`},
-		{name: "image and status cannot mix", body: `{"imageGenerationEnabled":true,"status":"active"}`},
 		{name: "image null", body: `{"imageGenerationEnabled":null}`},
 		{name: "image string", body: `{"imageGenerationEnabled":"true"}`},
+		{name: "unknown field", body: `{"imageGenerationEnabled":true,"unknown":true}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -651,8 +649,8 @@ func TestManagementSystemAccountImageGenerationUpdateHandlerValidatesBody(t *tes
 			if rec.Code != http.StatusBadRequest {
 				t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
 			}
-			if service.imageCalled || service.profileCalled || service.statusCalled || service.resetCalled {
-				t.Fatalf("service should not be called, imageCalled=%v profileCalled=%v statusCalled=%v resetCalled=%v", service.imageCalled, service.profileCalled, service.statusCalled, service.resetCalled)
+			if service.imageCalled || service.profileCalled || service.statusCalled || service.resetCalled || service.updateCalled {
+				t.Fatalf("service should not be called, imageCalled=%v profileCalled=%v statusCalled=%v resetCalled=%v updateCalled=%v", service.imageCalled, service.profileCalled, service.statusCalled, service.resetCalled, service.updateCalled)
 			}
 		})
 	}
@@ -797,7 +795,6 @@ func TestManagementSystemAccountProfileUpdateHandlerValidatesBody(t *testing.T) 
 		{name: "description number", body: `{"description":123}`},
 		{name: "role null", body: `{"role":null}`},
 		{name: "must change password null", body: `{"mustChangePassword":null}`},
-		{name: "image generation not in profile slice", body: `{"displayName":"用户","imageGenerationEnabled":true}`},
 		{name: "unknown field", body: `{"displayName":"用户","unknown":true}`},
 	}
 	for _, tt := range tests {
@@ -816,8 +813,8 @@ func TestManagementSystemAccountProfileUpdateHandlerValidatesBody(t *testing.T) 
 			if rec.Code != http.StatusBadRequest {
 				t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
 			}
-			if service.profileCalled || service.statusCalled || service.resetCalled || service.imageCalled {
-				t.Fatalf("service should not be called, profileCalled=%v statusCalled=%v resetCalled=%v imageCalled=%v", service.profileCalled, service.statusCalled, service.resetCalled, service.imageCalled)
+			if service.profileCalled || service.statusCalled || service.resetCalled || service.imageCalled || service.updateCalled {
+				t.Fatalf("service should not be called, profileCalled=%v statusCalled=%v resetCalled=%v imageCalled=%v updateCalled=%v", service.profileCalled, service.statusCalled, service.resetCalled, service.imageCalled, service.updateCalled)
 			}
 		})
 	}
@@ -861,6 +858,128 @@ func TestManagementSystemAccountProfileUpdateHandlerMapsServiceErrors(t *testing
 				t.Fatalf("message = %q, want %q", body["message"], tt.wantMsg)
 			}
 		})
+	}
+}
+
+func TestManagementSystemAccountPatchHandlerAllowsMixedUpdateAndWritesSafeOperationLog(t *testing.T) {
+	queueStub := &operationLogQueueStub{}
+	service := &managementSystemAccountOptionServiceStub{
+		updateResult: managementsystemaccounts.UpdateResult{
+			Before: managementsystemaccounts.Summary{
+				ID:                     "sys_user",
+				Username:               "user",
+				DisplayName:            "旧名称",
+				Description:            "旧说明",
+				Role:                   "user",
+				Status:                 "active",
+				MustChangePassword:     false,
+				ImageGenerationEnabled: false,
+			},
+			Account: managementsystemaccounts.Summary{
+				ID:                     "sys_user",
+				Username:               "user",
+				DisplayName:            "新名称",
+				Description:            "新说明",
+				Role:                   "admin",
+				Status:                 "disabled",
+				MustChangePassword:     false,
+				ImageGenerationEnabled: true,
+			},
+			Changed:             true,
+			PasswordChanged:     true,
+			RevokedSessionCount: 3,
+		},
+	}
+	handler := newManagementSystemAccountPatchHandler(
+		service,
+		newManagementOperationLogOptions(ManagementOperationLogOptions{
+			Config:   config.Config{TrustProxy: "false"},
+			Client:   queueStub,
+			NewLogID: func() string { return "oplog_mixed_update" },
+		}),
+	)
+	req := managementSystemAccountPatchRequest(
+		"/__aisys__/api/system-accounts/sys_user",
+		"sys_user",
+		`{"displayName":"新名称","description":"新说明","role":"admin","status":"disabled","mustChangePassword":true,"imageGenerationEnabled":true,"password":"NewPass123"}`,
+	)
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+		SystemAccountID: "sys_super",
+		Username:        "super",
+		DisplayName:     "超级管理员",
+		Role:            "super_admin",
+		SessionID:       "sess_super",
+	}))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", rec.Code, rec.Body.String())
+	}
+	input := service.updateInput
+	if !service.updateCalled ||
+		input.SystemAccountID != "sys_user" ||
+		input.DisplayName == nil ||
+		*input.DisplayName != "新名称" ||
+		!input.HasDescription ||
+		input.Description == nil ||
+		*input.Description != "新说明" ||
+		input.Role == nil ||
+		*input.Role != "admin" ||
+		input.Status == nil ||
+		*input.Status != "disabled" ||
+		input.MustChangePassword == nil ||
+		!*input.MustChangePassword ||
+		input.ImageGenerationEnabled == nil ||
+		!*input.ImageGenerationEnabled ||
+		input.Password == nil ||
+		*input.Password != "NewPass123" {
+		t.Fatalf("update input = %+v", input)
+	}
+	if service.resetCalled || service.statusCalled || service.imageCalled || service.profileCalled {
+		t.Fatalf("legacy narrow methods should not be called directly: reset=%v status=%v image=%v profile=%v", service.resetCalled, service.statusCalled, service.imageCalled, service.profileCalled)
+	}
+	if queueStub.calls != 1 || queueStub.taskType != operationlogjob.TaskTypeWrite {
+		t.Fatalf("operation log queue calls = %d taskType = %q", queueStub.calls, queueStub.taskType)
+	}
+	if strings.Contains(string(queueStub.payload), "NewPass123") {
+		t.Fatal("operation log payload must not contain raw password")
+	}
+	logInput, err := operationlogjob.DecodeWriteTaskPayload(queueStub.payload)
+	if err != nil {
+		t.Fatalf("decode operation log payload: %v", err)
+	}
+	if logInput.OperationKey != "system_accounts.reset_password" ||
+		logInput.Action != "reset_password" ||
+		logInput.OperationScopeSystemAccountID != "sys_user" ||
+		len(logInput.Changes) != 6 {
+		t.Fatalf("operation log input = %+v", logInput)
+	}
+	fields := make(map[string]port.OperationLogChange, len(logInput.Changes))
+	for _, change := range logInput.Changes {
+		fields[change.Field] = change
+	}
+	if !fields["password"].Sensitive ||
+		fields["password"].After != "已重置" ||
+		fields["displayName"].After != "新名称" ||
+		fields["description"].After != "新说明" ||
+		fields["role"].After != "admin" ||
+		fields["status"].After != "disabled" ||
+		fields["imageGenerationEnabled"].After != true {
+		t.Fatalf("operation log changes = %+v", logInput.Changes)
+	}
+	var revokedSessionCount int
+	switch value := logInput.Metadata["revokedSessionCount"].(type) {
+	case float64:
+		revokedSessionCount = int(value)
+	case int:
+		revokedSessionCount = value
+	default:
+		t.Fatalf("revokedSessionCount metadata type = %T", value)
+	}
+	if revokedSessionCount != 3 {
+		t.Fatalf("revokedSessionCount metadata = %d, want 3", revokedSessionCount)
 	}
 }
 
@@ -1006,6 +1125,10 @@ type managementSystemAccountOptionServiceStub struct {
 	profileInput  managementsystemaccounts.ProfileUpdateInput
 	profileResult managementsystemaccounts.ProfileUpdateResult
 	profileErr    error
+	updateCalled  bool
+	updateInput   managementsystemaccounts.UpdateInput
+	updateResult  managementsystemaccounts.UpdateResult
+	updateErr     error
 	createCalled  bool
 	createInput   managementsystemaccounts.CreateInput
 	createResult  managementsystemaccounts.CreateResult
@@ -1046,6 +1169,68 @@ func (s *managementSystemAccountOptionServiceStub) UpdateProfile(_ context.Conte
 	s.profileCalled = true
 	s.profileInput = input
 	return s.profileResult, s.profileErr
+}
+
+func (s *managementSystemAccountOptionServiceStub) Update(_ context.Context, input managementsystemaccounts.UpdateInput) (managementsystemaccounts.UpdateResult, error) {
+	s.updateCalled = true
+	s.updateInput = input
+	if s.updateErr != nil || s.updateResult.Account.ID != "" {
+		return s.updateResult, s.updateErr
+	}
+	if input.Password != nil {
+		s.resetCalled = true
+		s.resetInput = managementsystemaccounts.PasswordResetInput{
+			SystemAccountID:    input.SystemAccountID,
+			Password:           *input.Password,
+			MustChangePassword: input.MustChangePassword,
+		}
+		return managementsystemaccounts.UpdateResult{
+			Before:              s.resetResult.Before,
+			Account:             s.resetResult.Account,
+			Changed:             true,
+			PasswordChanged:     true,
+			RevokedSessionCount: s.resetResult.RevokedSessionCount,
+		}, s.resetErr
+	}
+	if input.Status != nil {
+		s.statusCalled = true
+		s.statusInput = managementsystemaccounts.StatusUpdateInput{
+			SystemAccountID: input.SystemAccountID,
+			Status:          *input.Status,
+		}
+		return managementsystemaccounts.UpdateResult{
+			Before:              s.statusResult.Before,
+			Account:             s.statusResult.Account,
+			Changed:             s.statusResult.Before.Status != s.statusResult.Account.Status,
+			RevokedSessionCount: s.statusResult.RevokedSessionCount,
+		}, s.statusErr
+	}
+	if input.ImageGenerationEnabled != nil {
+		s.imageCalled = true
+		s.imageInput = managementsystemaccounts.ImageGenerationUpdateInput{
+			SystemAccountID:        input.SystemAccountID,
+			ImageGenerationEnabled: *input.ImageGenerationEnabled,
+		}
+		return managementsystemaccounts.UpdateResult{
+			Before:  s.imageResult.Before,
+			Account: s.imageResult.Account,
+			Changed: s.imageResult.Changed,
+		}, s.imageErr
+	}
+	s.profileCalled = true
+	s.profileInput = managementsystemaccounts.ProfileUpdateInput{
+		SystemAccountID:    input.SystemAccountID,
+		DisplayName:        input.DisplayName,
+		HasDescription:     input.HasDescription,
+		Description:        input.Description,
+		Role:               input.Role,
+		MustChangePassword: input.MustChangePassword,
+	}
+	return managementsystemaccounts.UpdateResult{
+		Before:  s.profileResult.Before,
+		Account: s.profileResult.Account,
+		Changed: s.profileResult.Changed,
+	}, s.profileErr
 }
 
 func (s *managementSystemAccountOptionServiceStub) Create(_ context.Context, input managementsystemaccounts.CreateInput) (managementsystemaccounts.CreateResult, error) {

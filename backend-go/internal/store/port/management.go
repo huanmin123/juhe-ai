@@ -235,6 +235,36 @@ type ManagementSystemAccountProfileUpdater interface {
 	UpdateManagementSystemAccountProfile(ctx context.Context, input ManagementSystemAccountProfileUpdateInput) (ManagementSystemAccountProfileUpdateResult, bool, error)
 }
 
+type ManagementSystemAccountUpdateInput struct {
+	SystemAccountID           string
+	HasDisplayName            bool
+	DisplayName               string
+	HasDescription            bool
+	Description               *string
+	HasPassword               bool
+	PasswordHash              string
+	HasRole                   bool
+	Role                      string
+	HasStatus                 bool
+	Status                    string
+	HasMustChangePassword     bool
+	MustChangePassword        bool
+	HasImageGenerationEnabled bool
+	ImageGenerationEnabled    bool
+	UpdatedAt                 time.Time
+}
+
+type ManagementSystemAccountUpdateResult struct {
+	Before                      ManagementSystemAccountSummary
+	Account                     ManagementSystemAccountSummary
+	RevokedSessionCount         int
+	BlockedLastActiveSuperAdmin bool
+}
+
+type ManagementSystemAccountUpdater interface {
+	UpdateManagementSystemAccount(ctx context.Context, input ManagementSystemAccountUpdateInput) (ManagementSystemAccountUpdateResult, bool, error)
+}
+
 type ManagementSystemAccountCreateInput struct {
 	ID                     string
 	Username               string

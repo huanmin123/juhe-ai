@@ -30,6 +30,7 @@ type managementSystemAccountPatchService interface {
 	UpdateStatus(ctx context.Context, input managementsystemaccounts.StatusUpdateInput) (managementsystemaccounts.StatusUpdateResult, error)
 	UpdateImageGeneration(ctx context.Context, input managementsystemaccounts.ImageGenerationUpdateInput) (managementsystemaccounts.ImageGenerationUpdateResult, error)
 	UpdateProfile(ctx context.Context, input managementsystemaccounts.ProfileUpdateInput) (managementsystemaccounts.ProfileUpdateResult, error)
+	Update(ctx context.Context, input managementsystemaccounts.UpdateInput) (managementsystemaccounts.UpdateResult, error)
 }
 
 type managementSystemAccountOptionServiceAdapter struct {
@@ -58,6 +59,10 @@ func (s managementSystemAccountOptionServiceAdapter) UpdateImageGeneration(ctx c
 
 func (s managementSystemAccountOptionServiceAdapter) UpdateProfile(ctx context.Context, input managementsystemaccounts.ProfileUpdateInput) (managementsystemaccounts.ProfileUpdateResult, error) {
 	return s.service.UpdateProfile(ctx, input)
+}
+
+func (s managementSystemAccountOptionServiceAdapter) Update(ctx context.Context, input managementsystemaccounts.UpdateInput) (managementsystemaccounts.UpdateResult, error) {
+	return s.service.Update(ctx, input)
 }
 
 func NewManagementSystemAccountsHandler(service *managementsystemaccounts.Service) http.Handler {
@@ -135,99 +140,29 @@ func newManagementSystemAccountPatchHandler(service managementSystemAccountPatch
 		if !ok {
 			return
 		}
-		if patch.action == managementSystemAccountPatchStatus {
-			result, err := service.UpdateStatus(r.Context(), managementsystemaccounts.StatusUpdateInput{
-				SystemAccountID: chi.URLParam(r, "id"),
-				Status:          patch.status,
-			})
-			if errors.Is(err, managementsystemaccounts.ErrStatusUpdateInvalid) {
-				writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
-				return
-			}
-			if errors.Is(err, managementsystemaccounts.ErrSystemAccountNotFound) {
-				writeMessageError(w, http.StatusNotFound, "系统账户不存在")
-				return
-			}
-			if errors.Is(err, managementsystemaccounts.ErrActiveSuperAdminRequired) {
-				writeMessageError(w, http.StatusConflict, "至少保留一个启用的超级管理员")
-				return
-			}
-			if err != nil {
-				writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
-				return
-			}
-			recordSystemAccountStatusUpdateOperationLog(r, authContext, result, operationLogs)
-			writeData(w, http.StatusOK, result.Account)
-			return
-		}
-		if patch.action == managementSystemAccountPatchImageGeneration {
-			result, err := service.UpdateImageGeneration(r.Context(), managementsystemaccounts.ImageGenerationUpdateInput{
-				SystemAccountID:        chi.URLParam(r, "id"),
-				ImageGenerationEnabled: patch.imageGenerationEnabled,
-			})
-			if errors.Is(err, managementsystemaccounts.ErrImageGenerationUpdateInvalid) {
-				writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
-				return
-			}
-			if errors.Is(err, managementsystemaccounts.ErrSystemAccountNotFound) {
-				writeMessageError(w, http.StatusNotFound, "系统账户不存在")
-				return
-			}
-			if err != nil {
-				writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
-				return
-			}
-			recordSystemAccountImageGenerationUpdateOperationLog(r, authContext, result, operationLogs)
-			writeData(w, http.StatusOK, result.Account)
-			return
-		}
-		if patch.action == managementSystemAccountPatchProfile {
-			result, err := service.UpdateProfile(r.Context(), managementsystemaccounts.ProfileUpdateInput{
-				SystemAccountID:    chi.URLParam(r, "id"),
-				DisplayName:        patch.displayName,
-				HasDescription:     patch.hasDescription,
-				Description:        patch.description,
-				Role:               patch.role,
-				MustChangePassword: patch.mustChangePassword,
-			})
-			if errors.Is(err, managementsystemaccounts.ErrProfileUpdateWhitespace) {
-				writeMessageError(w, http.StatusBadRequest, "用户名称不能包含空格")
-				return
-			}
-			if errors.Is(err, managementsystemaccounts.ErrProfileUpdateInvalid) {
-				writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
-				return
-			}
-			if errors.Is(err, managementsystemaccounts.ErrSystemAccountNotFound) {
-				writeMessageError(w, http.StatusNotFound, "系统账户不存在")
-				return
-			}
-			if errors.Is(err, managementsystemaccounts.ErrProfileUpdateDisplayNameDup) {
-				writeMessageError(w, http.StatusConflict, "用户名称已存在")
-				return
-			}
-			if errors.Is(err, managementsystemaccounts.ErrActiveSuperAdminRequired) {
-				writeMessageError(w, http.StatusConflict, "至少保留一个启用的超级管理员")
-				return
-			}
-			if err != nil {
-				writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
-				return
-			}
-			recordSystemAccountProfileUpdateOperationLog(r, authContext, result, operationLogs)
-			writeData(w, http.StatusOK, result.Account)
-			return
-		}
-		result, err := service.ResetPassword(r.Context(), managementsystemaccounts.PasswordResetInput{
-			SystemAccountID:    chi.URLParam(r, "id"),
-			Password:           patch.password,
-			MustChangePassword: patch.mustChangePassword,
+		result, err := service.Update(r.Context(), managementsystemaccounts.UpdateInput{
+			SystemAccountID:        chi.URLParam(r, "id"),
+			Password:               patch.password,
+			DisplayName:            patch.displayName,
+			HasDescription:         patch.hasDescription,
+			Description:            patch.description,
+			Role:                   patch.role,
+			Status:                 patch.status,
+			MustChangePassword:     patch.mustChangePassword,
+			ImageGenerationEnabled: patch.imageGenerationEnabled,
 		})
 		if errors.Is(err, managementsystemaccounts.ErrPasswordResetWhitespace) {
 			writeMessageError(w, http.StatusBadRequest, "登录密码不能包含空格")
 			return
 		}
-		if errors.Is(err, managementsystemaccounts.ErrPasswordResetInvalid) {
+		if errors.Is(err, managementsystemaccounts.ErrProfileUpdateWhitespace) {
+			writeMessageError(w, http.StatusBadRequest, "用户名称不能包含空格")
+			return
+		}
+		if errors.Is(err, managementsystemaccounts.ErrPasswordResetInvalid) ||
+			errors.Is(err, managementsystemaccounts.ErrProfileUpdateInvalid) ||
+			errors.Is(err, managementsystemaccounts.ErrStatusUpdateInvalid) ||
+			errors.Is(err, managementsystemaccounts.ErrImageGenerationUpdateInvalid) {
 			writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
 			return
 		}
@@ -235,11 +170,19 @@ func newManagementSystemAccountPatchHandler(service managementSystemAccountPatch
 			writeMessageError(w, http.StatusNotFound, "系统账户不存在")
 			return
 		}
+		if errors.Is(err, managementsystemaccounts.ErrProfileUpdateDisplayNameDup) {
+			writeMessageError(w, http.StatusConflict, "用户名称已存在")
+			return
+		}
+		if errors.Is(err, managementsystemaccounts.ErrActiveSuperAdminRequired) {
+			writeMessageError(w, http.StatusConflict, "至少保留一个启用的超级管理员")
+			return
+		}
 		if err != nil {
 			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
 			return
 		}
-		recordSystemAccountPasswordResetOperationLog(r, authContext, result, operationLogs)
+		recordSystemAccountUpdateOperationLog(r, authContext, result, operationLogs)
 		writeData(w, http.StatusOK, result.Account)
 	})
 }
@@ -255,10 +198,10 @@ const (
 
 type managementSystemAccountPatchBody struct {
 	action                 managementSystemAccountPatchAction
-	password               string
+	password               *string
 	mustChangePassword     *bool
-	status                 string
-	imageGenerationEnabled bool
+	status                 *string
+	imageGenerationEnabled *bool
 	displayName            *string
 	hasDescription         bool
 	description            *string
@@ -281,126 +224,69 @@ func decodeManagementSystemAccountPatchBody(w http.ResponseWriter, r *http.Reque
 		writeMessageError(w, http.StatusBadRequest, "用户账户创建后不能修改")
 		return managementSystemAccountPatchBody{}, false
 	}
-	rawPassword, exists := payload["password"]
-	if exists {
-		for field := range payload {
-			if field != "password" && field != "mustChangePassword" {
-				writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
-				return managementSystemAccountPatchBody{}, false
-			}
-		}
-		var password *string
-		if err := json.Unmarshal(rawPassword, &password); err != nil || password == nil {
-			writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
-			return managementSystemAccountPatchBody{}, false
-		}
-		var mustChangePassword *bool
-		if rawMustChangePassword, exists := payload["mustChangePassword"]; exists {
-			var value *bool
-			if err := json.Unmarshal(rawMustChangePassword, &value); err != nil || value == nil {
-				writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
-				return managementSystemAccountPatchBody{}, false
-			}
-			mustChangePassword = value
-		}
-		return managementSystemAccountPatchBody{
-			action:             managementSystemAccountPatchPassword,
-			password:           *password,
-			mustChangePassword: mustChangePassword,
-		}, true
+	if len(payload) == 0 {
+		writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
+		return managementSystemAccountPatchBody{}, false
 	}
-	rawStatus, exists := payload["status"]
-	if exists {
-		for field := range payload {
-			if field != "status" {
-				writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
-				return managementSystemAccountPatchBody{}, false
-			}
-		}
-		var status *string
-		if err := json.Unmarshal(rawStatus, &status); err != nil || status == nil {
-			writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
-			return managementSystemAccountPatchBody{}, false
-		}
-		return managementSystemAccountPatchBody{
-			action: managementSystemAccountPatchStatus,
-			status: *status,
-		}, true
-	}
-	rawImageGenerationEnabled, exists := payload["imageGenerationEnabled"]
-	if exists {
-		for field := range payload {
-			if field != "imageGenerationEnabled" {
-				writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
-				return managementSystemAccountPatchBody{}, false
-			}
-		}
-		var imageGenerationEnabled *bool
-		if err := json.Unmarshal(rawImageGenerationEnabled, &imageGenerationEnabled); err != nil || imageGenerationEnabled == nil {
-			writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
-			return managementSystemAccountPatchBody{}, false
-		}
-		return managementSystemAccountPatchBody{
-			action:                 managementSystemAccountPatchImageGeneration,
-			imageGenerationEnabled: *imageGenerationEnabled,
-		}, true
-	}
-	if hasManagementSystemAccountProfilePatchFields(payload) {
-		for field := range payload {
-			switch field {
-			case "displayName", "description", "role", "mustChangePassword":
-			default:
-				writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
-				return managementSystemAccountPatchBody{}, false
-			}
-		}
-		patch := managementSystemAccountPatchBody{action: managementSystemAccountPatchProfile}
-		if rawDisplayName, exists := payload["displayName"]; exists {
+	patch := managementSystemAccountPatchBody{action: managementSystemAccountPatchProfile}
+	for field, raw := range payload {
+		switch field {
+		case "password":
 			var value *string
-			if err := json.Unmarshal(rawDisplayName, &value); err != nil || value == nil {
+			if err := json.Unmarshal(raw, &value); err != nil || value == nil {
+				writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
+				return managementSystemAccountPatchBody{}, false
+			}
+			patch.password = value
+		case "status":
+			var value *string
+			if err := json.Unmarshal(raw, &value); err != nil || value == nil {
+				writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
+				return managementSystemAccountPatchBody{}, false
+			}
+			patch.status = value
+		case "imageGenerationEnabled":
+			var value *bool
+			if err := json.Unmarshal(raw, &value); err != nil || value == nil {
+				writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
+				return managementSystemAccountPatchBody{}, false
+			}
+			patch.imageGenerationEnabled = value
+		case "displayName":
+			var value *string
+			if err := json.Unmarshal(raw, &value); err != nil || value == nil {
 				writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
 				return managementSystemAccountPatchBody{}, false
 			}
 			patch.displayName = value
-		}
-		if rawDescription, exists := payload["description"]; exists {
+		case "description":
 			var value *string
-			if err := json.Unmarshal(rawDescription, &value); err != nil {
+			if err := json.Unmarshal(raw, &value); err != nil {
 				writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
 				return managementSystemAccountPatchBody{}, false
 			}
 			patch.hasDescription = true
 			patch.description = value
-		}
-		if rawRole, exists := payload["role"]; exists {
+		case "role":
 			var value *string
-			if err := json.Unmarshal(rawRole, &value); err != nil || value == nil {
+			if err := json.Unmarshal(raw, &value); err != nil || value == nil {
 				writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
 				return managementSystemAccountPatchBody{}, false
 			}
 			patch.role = value
-		}
-		if rawMustChangePassword, exists := payload["mustChangePassword"]; exists {
+		case "mustChangePassword":
 			var value *bool
-			if err := json.Unmarshal(rawMustChangePassword, &value); err != nil || value == nil {
+			if err := json.Unmarshal(raw, &value); err != nil || value == nil {
 				writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
 				return managementSystemAccountPatchBody{}, false
 			}
 			patch.mustChangePassword = value
-		}
-		return patch, true
-	}
-	writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
-	return managementSystemAccountPatchBody{}, false
-}
-
-func hasManagementSystemAccountProfilePatchFields(payload map[string]json.RawMessage) bool {
-	for _, field := range []string{"displayName", "description", "role", "mustChangePassword"} {
-		if _, exists := payload[field]; exists {
-			return true
+		default:
+			writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
+			return managementSystemAccountPatchBody{}, false
 		}
 	}
-	return false
+	return patch, true
 }
 
 func writeManagementSystemAccountPatchBodyError(w http.ResponseWriter, err error) {
@@ -415,6 +301,83 @@ func writeManagementSystemAccountPatchBodyError(w http.ResponseWriter, err error
 		return
 	}
 	writeMessageError(w, http.StatusBadRequest, "系统账户参数无效")
+}
+
+func recordSystemAccountUpdateOperationLog(
+	r *http.Request,
+	authContext managementauth.Context,
+	result managementsystemaccounts.UpdateResult,
+	opts managementOperationLogOptions,
+) {
+	if opts.client == nil || (!result.Changed && result.RevokedSessionCount == 0) {
+		return
+	}
+	now := opts.now
+	if now == nil {
+		now = time.Now
+	}
+	newLogID := opts.newLogID
+	if newLogID == nil {
+		newLogID = func() string {
+			return "oplog_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+		}
+	}
+	action := "update"
+	operationKey := "system_accounts.update"
+	summary := "更新系统账户：" + result.Account.DisplayName
+	if result.PasswordChanged {
+		action = "reset_password"
+		operationKey = "system_accounts.reset_password"
+		summary = "重置系统账户密码：" + result.Account.DisplayName
+	}
+	statusCode := http.StatusOK
+	input := port.OperationLogInput{
+		ID:                            newLogID(),
+		TraceID:                       requestIDFromContext(r.Context()),
+		ActorSystemAccountID:          authContext.SystemAccountID,
+		ActorUsername:                 authContext.Username,
+		ActorDisplayName:              authContext.DisplayName,
+		ActorRole:                     authContext.Role,
+		OperationScopeSystemAccountID: result.Account.ID,
+		Mode:                          "admin",
+		Module:                        "system_accounts",
+		Action:                        action,
+		OperationKey:                  operationKey,
+		ResourceType:                  "system_account",
+		ResourceID:                    result.Account.ID,
+		ResourceName:                  result.Account.DisplayName,
+		Summary:                       summary,
+		DetailLevel:                   "full",
+		VisibilityScope:               "targeted",
+		Changes:                       systemAccountUpdateChanges(result),
+		Metadata: map[string]any{
+			"revokedSessionCount": result.RevokedSessionCount,
+		},
+		Method:     r.Method,
+		Path:       r.URL.Path,
+		StatusCode: &statusCode,
+		ClientIP:   opts.clientIP.FromRequest(r),
+		UserAgent:  r.UserAgent(),
+		Viewers: []port.OperationLogViewerInput{
+			{
+				SystemAccountID:  result.Account.ID,
+				VisibilityReason: "admin_managed_my_resource",
+				DetailLevel:      "full",
+			},
+		},
+		CreatedAt: now().UTC(),
+	}
+	enqueueCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+	defer cancel()
+	if _, err := operationlogjob.EnqueueWrite(enqueueCtx, opts.client, input); err != nil && opts.logger != nil {
+		opts.logger.Warn("管理端操作日志入队失败",
+			slog.String("event", "operation_log_enqueue_failed"),
+			slog.String("operation_key", input.OperationKey),
+			slog.String("resource_id", input.ResourceID),
+			slog.String("request_id", input.TraceID),
+			slog.Any("error", err),
+		)
+	}
 }
 
 func recordSystemAccountPasswordResetOperationLog(
@@ -757,6 +720,67 @@ func systemAccountProfileUpdateChanges(result managementsystemaccounts.ProfileUp
 			Label:  "下次登录改密",
 			Before: result.Before.MustChangePassword,
 			After:  result.Account.MustChangePassword,
+		})
+	}
+	return changes
+}
+
+func systemAccountUpdateChanges(result managementsystemaccounts.UpdateResult) []port.OperationLogChange {
+	changes := make([]port.OperationLogChange, 0, 7)
+	if result.PasswordChanged {
+		changes = append(changes, port.OperationLogChange{
+			Field:     "password",
+			Label:     "登录密码",
+			After:     "已重置",
+			Sensitive: true,
+		})
+	}
+	if result.Before.DisplayName != result.Account.DisplayName {
+		changes = append(changes, port.OperationLogChange{
+			Field:  "displayName",
+			Label:  "用户名称",
+			Before: result.Before.DisplayName,
+			After:  result.Account.DisplayName,
+		})
+	}
+	if result.Before.Description != result.Account.Description {
+		changes = append(changes, port.OperationLogChange{
+			Field:  "description",
+			Label:  "说明",
+			Before: result.Before.Description,
+			After:  result.Account.Description,
+		})
+	}
+	if result.Before.Role != result.Account.Role {
+		changes = append(changes, port.OperationLogChange{
+			Field:  "role",
+			Label:  "角色",
+			Before: result.Before.Role,
+			After:  result.Account.Role,
+		})
+	}
+	if result.Before.Status != result.Account.Status {
+		changes = append(changes, port.OperationLogChange{
+			Field:  "status",
+			Label:  "状态",
+			Before: result.Before.Status,
+			After:  result.Account.Status,
+		})
+	}
+	if result.Before.MustChangePassword != result.Account.MustChangePassword {
+		changes = append(changes, port.OperationLogChange{
+			Field:  "mustChangePassword",
+			Label:  "下次登录改密",
+			Before: result.Before.MustChangePassword,
+			After:  result.Account.MustChangePassword,
+		})
+	}
+	if result.Before.ImageGenerationEnabled != result.Account.ImageGenerationEnabled {
+		changes = append(changes, port.OperationLogChange{
+			Field:  "imageGenerationEnabled",
+			Label:  "支持图像生成",
+			Before: result.Before.ImageGenerationEnabled,
+			After:  result.Account.ImageGenerationEnabled,
 		})
 	}
 	return changes

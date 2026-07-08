@@ -829,6 +829,218 @@ func TestUpdateProfileMapsStoreErrors(t *testing.T) {
 	}
 }
 
+func TestUpdateNormalizesMixedInputMapsResultAndInvalidatesStatusFirst(t *testing.T) {
+	now := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
+	updatedAt := now.Add(time.Minute)
+	displayName := "新名称"
+	description := "  新说明  "
+	password := "NewPass123"
+	role := "admin"
+	status := "disabled"
+	mustChangePassword := true
+	imageGenerationEnabled := true
+	invalidator := &systemAccountInvalidatorStub{}
+	store := &systemAccountOptionStoreStub{
+		updateFound: true,
+		updateResult: port.ManagementSystemAccountUpdateResult{
+			Before: port.ManagementSystemAccountSummary{
+				ID:                     "sys_user",
+				Username:               "user",
+				DisplayName:            "旧名称",
+				Description:            "旧说明",
+				Role:                   "user",
+				Status:                 "active",
+				MustChangePassword:     false,
+				ImageGenerationEnabled: false,
+				CreatedAt:              now,
+				UpdatedAt:              now,
+			},
+			Account: port.ManagementSystemAccountSummary{
+				ID:                     "sys_user",
+				Username:               "user",
+				DisplayName:            "新名称",
+				Description:            "新说明",
+				Role:                   "admin",
+				Status:                 "disabled",
+				MustChangePassword:     false,
+				ImageGenerationEnabled: true,
+				CreatedAt:              now,
+				UpdatedAt:              updatedAt,
+			},
+			RevokedSessionCount: 2,
+		},
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		Store:                    store,
+		Now:                      func() time.Time { return updatedAt },
+		SystemAccountInvalidator: invalidator,
+		HashPassword: func(value string) (string, error) {
+			if value != password {
+				t.Fatalf("hash password input = %q", value)
+			}
+			return "hashed-password", nil
+		},
+	})
+
+	result, err := service.Update(context.Background(), UpdateInput{
+		SystemAccountID:        " sys_user ",
+		DisplayName:            &displayName,
+		HasDescription:         true,
+		Description:            &description,
+		Password:               &password,
+		Role:                   &role,
+		Status:                 &status,
+		MustChangePassword:     &mustChangePassword,
+		ImageGenerationEnabled: &imageGenerationEnabled,
+	})
+
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	input := store.updateInput
+	if !store.updateCalled ||
+		input.SystemAccountID != "sys_user" ||
+		!input.HasDisplayName ||
+		input.DisplayName != "新名称" ||
+		!input.HasDescription ||
+		input.Description == nil ||
+		*input.Description != "新说明" ||
+		!input.HasPassword ||
+		input.PasswordHash != "hashed-password" ||
+		!input.HasRole ||
+		input.Role != "admin" ||
+		!input.HasStatus ||
+		input.Status != "disabled" ||
+		!input.HasMustChangePassword ||
+		!input.MustChangePassword ||
+		!input.HasImageGenerationEnabled ||
+		!input.ImageGenerationEnabled ||
+		!input.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("update input = %+v", input)
+	}
+	if !result.Changed ||
+		!result.PasswordChanged ||
+		result.RevokedSessionCount != 2 ||
+		result.Account.MustChangePassword ||
+		result.Account.Status != "disabled" ||
+		!result.Account.ImageGenerationEnabled {
+		t.Fatalf("result = %+v", result)
+	}
+	if invalidator.statusCalls != 1 || invalidator.statusIDs[0] != "sys_user" {
+		t.Fatalf("status invalidation = %d / %#v", invalidator.statusCalls, invalidator.statusIDs)
+	}
+	if invalidator.imageCalls != 0 {
+		t.Fatalf("image invalidation calls = %d, want 0", invalidator.imageCalls)
+	}
+}
+
+func TestUpdateInvalidatesImageWhenStatusUnchanged(t *testing.T) {
+	now := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
+	imageGenerationEnabled := true
+	invalidator := &systemAccountInvalidatorStub{}
+	store := &systemAccountOptionStoreStub{
+		updateFound: true,
+		updateResult: port.ManagementSystemAccountUpdateResult{
+			Before:  port.ManagementSystemAccountSummary{ID: "sys_user", Status: "active", ImageGenerationEnabled: false, CreatedAt: now, UpdatedAt: now},
+			Account: port.ManagementSystemAccountSummary{ID: "sys_user", Status: "active", ImageGenerationEnabled: true, CreatedAt: now, UpdatedAt: now},
+		},
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		Store:                    store,
+		SystemAccountInvalidator: invalidator,
+	})
+
+	if _, err := service.Update(context.Background(), UpdateInput{SystemAccountID: "sys_user", ImageGenerationEnabled: &imageGenerationEnabled}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	if invalidator.imageCalls != 1 || invalidator.imageIDs[0] != "sys_user" {
+		t.Fatalf("image invalidation = %d / %#v", invalidator.imageCalls, invalidator.imageIDs)
+	}
+	if invalidator.statusCalls != 0 {
+		t.Fatalf("status invalidation calls = %d, want 0", invalidator.statusCalls)
+	}
+}
+
+func TestUpdateRejectsInvalidInput(t *testing.T) {
+	spaceName := "bad user"
+	shortPassword := "abc"
+	spacePassword := "New Pass123"
+	invalidRole := "super_admin"
+	invalidStatus := "archived"
+	tests := []struct {
+		name    string
+		input   UpdateInput
+		wantErr error
+	}{
+		{name: "missing id", input: UpdateInput{DisplayName: stringPtr("用户")}, wantErr: ErrProfileUpdateInvalid},
+		{name: "no fields", input: UpdateInput{SystemAccountID: "sys_user"}, wantErr: ErrProfileUpdateInvalid},
+		{name: "display whitespace", input: UpdateInput{SystemAccountID: "sys_user", DisplayName: &spaceName}, wantErr: ErrProfileUpdateWhitespace},
+		{name: "short password", input: UpdateInput{SystemAccountID: "sys_user", Password: &shortPassword}, wantErr: ErrPasswordResetInvalid},
+		{name: "password whitespace", input: UpdateInput{SystemAccountID: "sys_user", Password: &spacePassword}, wantErr: ErrPasswordResetWhitespace},
+		{name: "invalid role", input: UpdateInput{SystemAccountID: "sys_user", Role: &invalidRole}, wantErr: ErrProfileUpdateInvalid},
+		{name: "invalid status", input: UpdateInput{SystemAccountID: "sys_user", Status: &invalidStatus}, wantErr: ErrProfileUpdateInvalid},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &systemAccountOptionStoreStub{}
+			service := NewServiceWithOptions(ServiceOptions{
+				Store:        store,
+				HashPassword: func(string) (string, error) { return "hash", nil },
+			})
+
+			_, err := service.Update(context.Background(), tt.input)
+
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("Update() error = %v, want %v", err, tt.wantErr)
+			}
+			if store.updateCalled {
+				t.Fatal("store should not be called for invalid update input")
+			}
+		})
+	}
+}
+
+func TestUpdateMapsStoreErrors(t *testing.T) {
+	want := errors.New("postgres down")
+	now := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name    string
+		store   *systemAccountOptionStoreStub
+		wantErr error
+	}{
+		{name: "not found", store: &systemAccountOptionStoreStub{}, wantErr: ErrSystemAccountNotFound},
+		{name: "duplicate display name", store: &systemAccountOptionStoreStub{updateErr: port.ErrManagementSystemAccountDisplayNameExists}, wantErr: ErrProfileUpdateDisplayNameDup},
+		{
+			name: "last active super admin",
+			store: &systemAccountOptionStoreStub{
+				updateFound: true,
+				updateResult: port.ManagementSystemAccountUpdateResult{
+					Before:                      port.ManagementSystemAccountSummary{ID: "sys_super", Role: "super_admin", Status: "active", CreatedAt: now, UpdatedAt: now},
+					Account:                     port.ManagementSystemAccountSummary{ID: "sys_super", Role: "super_admin", Status: "active", CreatedAt: now, UpdatedAt: now},
+					BlockedLastActiveSuperAdmin: true,
+				},
+			},
+			wantErr: ErrActiveSuperAdminRequired,
+		},
+		{name: "store error", store: &systemAccountOptionStoreStub{updateErr: want}, wantErr: want},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := NewServiceWithOptions(ServiceOptions{
+				Store:        tt.store,
+				HashPassword: func(string) (string, error) { return "hash", nil },
+			})
+
+			_, err := service.Update(context.Background(), UpdateInput{SystemAccountID: "sys_user", DisplayName: stringPtr("用户")})
+
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("Update() error = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 type systemAccountOptionStoreStub struct {
 	listInput     port.ManagementSystemAccountListInput
 	listResult    port.ManagementSystemAccountListResult
@@ -856,6 +1068,11 @@ type systemAccountOptionStoreStub struct {
 	profileResult port.ManagementSystemAccountProfileUpdateResult
 	profileFound  bool
 	profileErr    error
+	updateCalled  bool
+	updateInput   port.ManagementSystemAccountUpdateInput
+	updateResult  port.ManagementSystemAccountUpdateResult
+	updateFound   bool
+	updateErr     error
 	createCalled  bool
 	createInput   port.ManagementSystemAccountCreateInput
 	createResult  port.ManagementSystemAccountCreateResult
@@ -915,6 +1132,12 @@ func (s *systemAccountOptionStoreStub) UpdateManagementSystemAccountProfile(_ co
 	s.profileCalled = true
 	s.profileInput = input
 	return s.profileResult, s.profileFound, s.profileErr
+}
+
+func (s *systemAccountOptionStoreStub) UpdateManagementSystemAccount(_ context.Context, input port.ManagementSystemAccountUpdateInput) (port.ManagementSystemAccountUpdateResult, bool, error) {
+	s.updateCalled = true
+	s.updateInput = input
+	return s.updateResult, s.updateFound, s.updateErr
 }
 
 func (s *systemAccountOptionStoreStub) CreateManagementSystemAccount(_ context.Context, input port.ManagementSystemAccountCreateInput) (port.ManagementSystemAccountCreateResult, error) {

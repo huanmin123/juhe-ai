@@ -103,6 +103,41 @@ func (s *Store) UpdateManagementSystemAccountProfile(ctx context.Context, input 
 	return managementSystemAccountProfileUpdateResultFromRow(row), true, nil
 }
 
+func (s *Store) UpdateManagementSystemAccount(ctx context.Context, input port.ManagementSystemAccountUpdateInput) (port.ManagementSystemAccountUpdateResult, bool, error) {
+	description := pgtype.Text{}
+	if input.Description != nil {
+		description = pgtype.Text{String: *input.Description, Valid: true}
+	}
+	row, err := s.queries().UpdateManagementSystemAccount(ctx, postgresqueries.UpdateManagementSystemAccountParams{
+		SystemAccountID:           input.SystemAccountID,
+		HasDisplayName:            input.HasDisplayName,
+		DisplayName:               input.DisplayName,
+		HasDescription:            input.HasDescription,
+		Description:               description,
+		HasRole:                   input.HasRole,
+		Role:                      input.Role,
+		HasStatus:                 input.HasStatus,
+		Status:                    input.Status,
+		HasImageGenerationEnabled: input.HasImageGenerationEnabled,
+		ImageGenerationEnabled:    input.ImageGenerationEnabled,
+		HasMustChangePassword:     input.HasMustChangePassword,
+		MustChangePassword:        input.MustChangePassword,
+		HasPassword:               input.HasPassword,
+		PasswordHash:              input.PasswordHash,
+		UpdatedAt:                 pgtype.Timestamptz{Time: input.UpdatedAt.UTC(), Valid: true},
+	})
+	if isManagementSystemAccountDisplayNameUniqueViolation(err) {
+		return port.ManagementSystemAccountUpdateResult{}, false, port.ErrManagementSystemAccountDisplayNameExists
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return port.ManagementSystemAccountUpdateResult{}, false, nil
+	}
+	if err != nil {
+		return port.ManagementSystemAccountUpdateResult{}, false, fmt.Errorf("update management system account: %w", err)
+	}
+	return managementSystemAccountUpdateResultFromRow(row), true, nil
+}
+
 func listManagementSystemAccounts(ctx context.Context, q *postgresqueries.Queries, input port.ManagementSystemAccountListInput) (port.ManagementSystemAccountListResult, error) {
 	keyword := strings.ToLower(strings.TrimSpace(input.Keyword))
 	keywordUpper := ""
@@ -319,6 +354,41 @@ func managementSystemAccountProfileUpdateResultFromRow(row postgresqueries.Updat
 	}
 }
 
+func managementSystemAccountUpdateResultFromRow(row postgresqueries.UpdateManagementSystemAccountRow) port.ManagementSystemAccountUpdateResult {
+	before := port.ManagementSystemAccountSummary{
+		ID:                     row.BeforeID,
+		Username:               row.BeforeUsername,
+		DisplayName:            row.BeforeDisplayName,
+		Description:            textValue(row.BeforeDescription),
+		Role:                   row.BeforeRole,
+		Status:                 row.BeforeStatus,
+		MustChangePassword:     row.BeforeMustChangePassword,
+		ImageGenerationEnabled: row.BeforeImageGenerationEnabled,
+		LastLoginAt:            timestamptzPtr(row.BeforeLastLoginAt),
+		CreatedAt:              timestamptzValue(row.BeforeCreatedAt),
+		UpdatedAt:              timestamptzValue(row.BeforeUpdatedAt),
+	}
+	account := port.ManagementSystemAccountSummary{
+		ID:                     row.ID,
+		Username:               row.Username,
+		DisplayName:            row.DisplayName,
+		Description:            textValue(row.Description),
+		Role:                   row.Role,
+		Status:                 row.Status,
+		MustChangePassword:     row.MustChangePassword,
+		ImageGenerationEnabled: row.ImageGenerationEnabled,
+		LastLoginAt:            timestamptzPtr(row.LastLoginAt),
+		CreatedAt:              timestamptzValue(row.CreatedAt),
+		UpdatedAt:              timestamptzValue(row.UpdatedAt),
+	}
+	return port.ManagementSystemAccountUpdateResult{
+		Before:                      before,
+		Account:                     account,
+		RevokedSessionCount:         int(row.RevokedSessionCount),
+		BlockedLastActiveSuperAdmin: row.BlockedLastActiveSuperAdmin,
+	}
+}
+
 func isManagementSystemAccountDisplayNameUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) &&
@@ -331,3 +401,4 @@ var _ port.ManagementSystemAccountPasswordResetter = (*Store)(nil)
 var _ port.ManagementSystemAccountStatusUpdater = (*Store)(nil)
 var _ port.ManagementSystemAccountImageGenerationUpdater = (*Store)(nil)
 var _ port.ManagementSystemAccountProfileUpdater = (*Store)(nil)
+var _ port.ManagementSystemAccountUpdater = (*Store)(nil)
