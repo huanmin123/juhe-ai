@@ -66,11 +66,12 @@ export function applyOpenAIStreamUsageFallback(
   req: Request,
   usage: ParsedUsage,
   input: {
+    completed?: boolean
     outputReceived: boolean
     estimatedOutputTokens?: number
   }
 ): OpenAIStreamUsageFallbackResult {
-  if (!input.outputReceived || (positiveTokenCount(usage.inputTokens) && positiveTokenCount(usage.outputTokens))) {
+  if ((!input.outputReceived && input.completed !== true) || (positiveTokenCount(usage.inputTokens) && positiveTokenCount(usage.outputTokens))) {
     return { usage, estimated: false }
   }
 
@@ -88,7 +89,7 @@ export function applyOpenAIStreamUsageFallback(
     }
   }
 
-  if (!positiveTokenCount(nextUsage.outputTokens)) {
+  if (input.outputReceived && !positiveTokenCount(nextUsage.outputTokens)) {
     const outputTokens = Math.max(1, input.estimatedOutputTokens ?? 0)
     nextUsage.outputTokens = outputTokens
     estimatedOutputTokens = outputTokens

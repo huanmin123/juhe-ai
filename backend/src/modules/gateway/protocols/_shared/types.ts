@@ -20,6 +20,7 @@ export type GatewayProtocolClientErrorProtocol = 'openai' | 'anthropic' | 'gemin
 export type GatewayProtocolDefaultClientProfile = 'generic_openai' | 'generic_anthropic' | 'generic_gemini'
 
 export interface GatewayStreamUsageFallbackInput {
+  completed?: boolean
   outputReceived: boolean
   estimatedOutputTokens?: number
 }

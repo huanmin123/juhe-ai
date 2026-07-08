@@ -310,6 +310,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
   }
 
   const streamUsageFallback = applyGatewayProtocolStreamUsageFallbackForRequest(req, account, streamResult.usage, {
+    completed: streamResult.completed,
     outputReceived: streamResult.outputReceived,
     estimatedOutputTokens: streamResult.estimatedOutputTokens
   })
