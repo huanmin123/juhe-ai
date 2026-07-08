@@ -201,7 +201,7 @@ func TestManagementSystemAccountPasswordResetHandlerRequiresSuperAdminAndWritesS
 			RevokedSessionCount: 2,
 		},
 	}
-	handler := newManagementSystemAccountPasswordResetHandler(
+	handler := newManagementSystemAccountPatchHandler(
 		service,
 		newManagementOperationLogOptions(ManagementOperationLogOptions{
 			Config:   config.Config{TrustProxy: "false"},
@@ -210,7 +210,7 @@ func TestManagementSystemAccountPasswordResetHandlerRequiresSuperAdminAndWritesS
 		}),
 	)
 	mustChangePassword := true
-	req := managementSystemAccountPasswordResetRequest(
+	req := managementSystemAccountPatchRequest(
 		"/__aisys__/api/system-accounts/sys_user",
 		"sys_user",
 		`{"password":"NewPass123","mustChangePassword":true}`,
@@ -274,8 +274,8 @@ func TestManagementSystemAccountPasswordResetHandlerRequiresSuperAdminAndWritesS
 
 func TestManagementSystemAccountPasswordResetHandlerRejectsNonSuperAdmin(t *testing.T) {
 	service := &managementSystemAccountOptionServiceStub{}
-	handler := newManagementSystemAccountPasswordResetHandler(service)
-	req := managementSystemAccountPasswordResetRequest(
+	handler := newManagementSystemAccountPatchHandler(service)
+	req := managementSystemAccountPatchRequest(
 		"/__aisys__/api/system-accounts/sys_user",
 		"sys_user",
 		`{"password":"NewPass123"}`,
@@ -315,8 +315,8 @@ func TestManagementSystemAccountPasswordResetHandlerValidatesBody(t *testing.T) 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			service := &managementSystemAccountOptionServiceStub{resetErr: tt.err}
-			handler := newManagementSystemAccountPasswordResetHandler(service)
-			req := managementSystemAccountPasswordResetRequest("/__aisys__/api/system-accounts/sys_user", "sys_user", tt.body)
+			handler := newManagementSystemAccountPatchHandler(service)
+			req := managementSystemAccountPatchRequest("/__aisys__/api/system-accounts/sys_user", "sys_user", tt.body)
 			req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
 				SystemAccountID: "sys_super",
 				Role:            "super_admin",
@@ -352,8 +352,171 @@ func TestManagementSystemAccountPasswordResetHandlerMapsServiceErrors(t *testing
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			service := &managementSystemAccountOptionServiceStub{resetErr: tt.err}
-			handler := newManagementSystemAccountPasswordResetHandler(service)
-			req := managementSystemAccountPasswordResetRequest("/__aisys__/api/system-accounts/sys_user", "sys_user", `{"password":"NewPass123"}`)
+			handler := newManagementSystemAccountPatchHandler(service)
+			req := managementSystemAccountPatchRequest("/__aisys__/api/system-accounts/sys_user", "sys_user", `{"password":"NewPass123"}`)
+			req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+				SystemAccountID: "sys_super",
+				Role:            "super_admin",
+			}))
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantCode {
+				t.Fatalf("status = %d, want %d", rec.Code, tt.wantCode)
+			}
+			var body map[string]string
+			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if body["message"] != tt.wantMsg {
+				t.Fatalf("message = %q, want %q", body["message"], tt.wantMsg)
+			}
+		})
+	}
+}
+
+func TestManagementSystemAccountStatusUpdateHandlerWritesOperationLog(t *testing.T) {
+	queueStub := &operationLogQueueStub{}
+	service := &managementSystemAccountOptionServiceStub{
+		statusResult: managementsystemaccounts.StatusUpdateResult{
+			Before: managementsystemaccounts.Summary{
+				ID:          "sys_user",
+				Username:    "user",
+				DisplayName: "用户",
+				Role:        "user",
+				Status:      "active",
+			},
+			Account: managementsystemaccounts.Summary{
+				ID:          "sys_user",
+				Username:    "user",
+				DisplayName: "用户",
+				Role:        "user",
+				Status:      "disabled",
+			},
+			RevokedSessionCount: 2,
+		},
+	}
+	handler := newManagementSystemAccountPatchHandler(
+		service,
+		newManagementOperationLogOptions(ManagementOperationLogOptions{
+			Config:   config.Config{TrustProxy: "false"},
+			Client:   queueStub,
+			NewLogID: func() string { return "oplog_update_status" },
+		}),
+	)
+	req := managementSystemAccountPatchRequest(
+		"/__aisys__/api/system-accounts/sys_user",
+		"sys_user",
+		`{"status":"disabled"}`,
+	)
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+		SystemAccountID: "sys_super",
+		Username:        "super",
+		DisplayName:     "超级管理员",
+		Role:            "super_admin",
+		SessionID:       "sess_super",
+	}))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", rec.Code, rec.Body.String())
+	}
+	if !service.statusCalled ||
+		service.statusInput.SystemAccountID != "sys_user" ||
+		service.statusInput.Status != "disabled" ||
+		service.resetCalled {
+		t.Fatalf("service inputs: statusCalled=%v statusInput=%+v resetCalled=%v", service.statusCalled, service.statusInput, service.resetCalled)
+	}
+	var body struct {
+		Data managementsystemaccounts.Summary `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Data.ID != "sys_user" || body.Data.Status != "disabled" {
+		t.Fatalf("body = %+v", body.Data)
+	}
+	if queueStub.calls != 1 || queueStub.taskType != operationlogjob.TaskTypeWrite {
+		t.Fatalf("operation log queue calls = %d taskType = %q", queueStub.calls, queueStub.taskType)
+	}
+	if strings.Contains(string(queueStub.payload), "password") {
+		t.Fatal("status update operation log payload must not contain password fields")
+	}
+	logInput, err := operationlogjob.DecodeWriteTaskPayload(queueStub.payload)
+	if err != nil {
+		t.Fatalf("decode operation log payload: %v", err)
+	}
+	if logInput.OperationKey != "system_accounts.update" ||
+		logInput.ActorSystemAccountID != "sys_super" ||
+		logInput.OperationScopeSystemAccountID != "sys_user" ||
+		logInput.ResourceID != "sys_user" ||
+		len(logInput.Changes) != 1 ||
+		logInput.Changes[0].Field != "status" ||
+		logInput.Changes[0].Before != "active" ||
+		logInput.Changes[0].After != "disabled" {
+		t.Fatalf("operation log input = %+v", logInput)
+	}
+	if len(logInput.Viewers) != 1 ||
+		logInput.Viewers[0].SystemAccountID != "sys_user" ||
+		logInput.Viewers[0].VisibilityReason != "admin_managed_my_resource" {
+		t.Fatalf("operation log viewers = %+v", logInput.Viewers)
+	}
+}
+
+func TestManagementSystemAccountStatusUpdateHandlerValidatesBody(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "password and status cannot mix", body: `{"password":"NewPass123","status":"disabled"}`},
+		{name: "status-only rejects full patch field", body: `{"status":"disabled","displayName":"用户"}`},
+		{name: "status-only rejects must change password", body: `{"status":"disabled","mustChangePassword":true}`},
+		{name: "status null", body: `{"status":null}`},
+		{name: "empty object", body: `{}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &managementSystemAccountOptionServiceStub{}
+			handler := newManagementSystemAccountPatchHandler(service)
+			req := managementSystemAccountPatchRequest("/__aisys__/api/system-accounts/sys_user", "sys_user", tt.body)
+			req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+				SystemAccountID: "sys_super",
+				Role:            "super_admin",
+			}))
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
+			}
+			if service.statusCalled || service.resetCalled {
+				t.Fatalf("service should not be called, statusCalled=%v resetCalled=%v", service.statusCalled, service.resetCalled)
+			}
+		})
+	}
+}
+
+func TestManagementSystemAccountStatusUpdateHandlerMapsServiceErrors(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		wantCode int
+		wantMsg  string
+	}{
+		{name: "invalid status", err: managementsystemaccounts.ErrStatusUpdateInvalid, wantCode: http.StatusBadRequest, wantMsg: "系统账户参数无效"},
+		{name: "not found", err: managementsystemaccounts.ErrSystemAccountNotFound, wantCode: http.StatusNotFound, wantMsg: "系统账户不存在"},
+		{name: "last active super admin", err: managementsystemaccounts.ErrActiveSuperAdminRequired, wantCode: http.StatusConflict, wantMsg: "至少保留一个启用的超级管理员"},
+		{name: "store error", err: errors.New("postgres password leaked"), wantCode: http.StatusInternalServerError, wantMsg: "服务器内部错误"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &managementSystemAccountOptionServiceStub{statusErr: tt.err}
+			handler := newManagementSystemAccountPatchHandler(service)
+			req := managementSystemAccountPatchRequest("/__aisys__/api/system-accounts/sys_user", "sys_user", `{"status":"disabled"}`)
 			req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
 				SystemAccountID: "sys_super",
 				Role:            "super_admin",
@@ -431,11 +594,11 @@ func TestRouterRegistersW3ManagementSystemAccountPasswordResetWithTouchAuth(t *t
 		context: managementauth.Context{SystemAccountID: "sys_super", Username: "super", Role: "super_admin", SessionID: "sess_super"},
 	}
 	router := NewRouter(RouterOptions{
-		Config: config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
-		Logger: slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
-		ManagementSystemAccountPasswordResetHandler: newManagementSystemAccountPasswordResetHandler(service),
-		ManagementAPIAuthMiddleware:                 NewManagementAPIAuthMiddleware(readAuthenticator),
-		ManagementAPIAuthTouchMiddleware:            NewManagementAPIAuthTouchMiddleware(touchAuthenticator),
+		Config:                              config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
+		Logger:                              slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
+		ManagementSystemAccountPatchHandler: newManagementSystemAccountPatchHandler(service),
+		ManagementAPIAuthMiddleware:         NewManagementAPIAuthMiddleware(readAuthenticator),
+		ManagementAPIAuthTouchMiddleware:    NewManagementAPIAuthTouchMiddleware(touchAuthenticator),
 	})
 
 	req := httptest.NewRequest(http.MethodPatch, "/__aisys__/api/system-accounts/sys_user", strings.NewReader(`{"password":"NewPass123"}`))
@@ -494,18 +657,22 @@ func TestRouterDoesNotRegisterW2ManagementSystemAccountOptionsWhenDisabled(t *te
 }
 
 type managementSystemAccountOptionServiceStub struct {
-	listCalled  bool
-	listInput   managementsystemaccounts.ListInput
-	listResult  managementsystemaccounts.ListResult
-	listErr     error
-	called      bool
-	input       managementsystemaccounts.OptionListInput
-	options     []managementsystemaccounts.Option
-	err         error
-	resetCalled bool
-	resetInput  managementsystemaccounts.PasswordResetInput
-	resetResult managementsystemaccounts.PasswordResetResult
-	resetErr    error
+	listCalled   bool
+	listInput    managementsystemaccounts.ListInput
+	listResult   managementsystemaccounts.ListResult
+	listErr      error
+	called       bool
+	input        managementsystemaccounts.OptionListInput
+	options      []managementsystemaccounts.Option
+	err          error
+	resetCalled  bool
+	resetInput   managementsystemaccounts.PasswordResetInput
+	resetResult  managementsystemaccounts.PasswordResetResult
+	resetErr     error
+	statusCalled bool
+	statusInput  managementsystemaccounts.StatusUpdateInput
+	statusResult managementsystemaccounts.StatusUpdateResult
+	statusErr    error
 }
 
 func (s *managementSystemAccountOptionServiceStub) List(_ *http.Request, input managementsystemaccounts.ListInput) (managementsystemaccounts.ListResult, error) {
@@ -526,7 +693,13 @@ func (s *managementSystemAccountOptionServiceStub) ResetPassword(_ context.Conte
 	return s.resetResult, s.resetErr
 }
 
-func managementSystemAccountPasswordResetRequest(target string, systemAccountID string, body string) *http.Request {
+func (s *managementSystemAccountOptionServiceStub) UpdateStatus(_ context.Context, input managementsystemaccounts.StatusUpdateInput) (managementsystemaccounts.StatusUpdateResult, error) {
+	s.statusCalled = true
+	s.statusInput = input
+	return s.statusResult, s.statusErr
+}
+
+func managementSystemAccountPatchRequest(target string, systemAccountID string, body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPatch, target, strings.NewReader(body))
 	routeContext := chi.NewRouteContext()
 	routeContext.URLParams.Add("id", systemAccountID)

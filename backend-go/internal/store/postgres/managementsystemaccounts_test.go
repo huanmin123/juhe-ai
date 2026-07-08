@@ -151,6 +151,46 @@ func TestManagementSystemAccountPasswordResetSQLIsSingleStatementAndDoesNotRetur
 	}
 }
 
+func TestManagementSystemAccountStatusUpdateSQLGuardsSessionsAndSuperAdmin(t *testing.T) {
+	source, err := os.ReadFile("queries/w3_management_system_accounts.sql")
+	if err != nil {
+		t.Fatalf("read system account write query: %v", err)
+	}
+	sql := querySection(t, string(source), "-- name: UpdateManagementSystemAccountStatus :one", "")
+	for _, want := range []string{
+		"WITH locked_active_super_admins AS MATERIALIZED",
+		"active_super_admin_guard AS MATERIALIZED",
+		"count(*) FILTER (WHERE id <> sqlc.arg(system_account_id)::text)::int AS other_active_super_admin_count",
+		"FROM active_super_admin_guard",
+		"FOR UPDATE OF system_accounts",
+		"WHERE role = 'super_admin'",
+		"AND status = 'active'",
+		"FOR UPDATE",
+		"current_account.role = 'super_admin'",
+		"current_account.other_active_super_admin_count = 0 AS blocked_last_active_super_admin",
+		"blocked_last_active_super_admin",
+		"status = sqlc.arg(status)::text",
+		"updated_at = sqlc.arg(updated_at)::timestamptz",
+		"DELETE FROM juhe_business.system_sessions",
+		"AND sqlc.arg(status)::text = 'disabled'",
+		"(SELECT count(*)::int FROM revoked_sessions) AS revoked_session_count",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("status update query missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		"SELECT *",
+		"password_hash",
+		"COALESCE",
+		"coalesce",
+	} {
+		if strings.Contains(sql, forbidden) {
+			t.Fatalf("status update query should not contain %q", forbidden)
+		}
+	}
+}
+
 func TestManagementSystemAccountPasswordResetResultFromRowMapsBeforeAndAccount(t *testing.T) {
 	now := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
 	lastLoginAt := now.Add(-time.Hour)
@@ -185,6 +225,44 @@ func TestManagementSystemAccountPasswordResetResultFromRowMapsBeforeAndAccount(t
 		result.Account.DisplayName != "用户" ||
 		result.Account.MustChangePassword != true ||
 		result.RevokedSessionCount != 3 {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestManagementSystemAccountStatusUpdateResultFromRowMapsBeforeAccountAndGuard(t *testing.T) {
+	now := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
+	lastLoginAt := now.Add(-time.Hour)
+	result := managementSystemAccountStatusUpdateResultFromRow(postgresqueries.UpdateManagementSystemAccountStatusRow{
+		BeforeID:                     "sys_user",
+		BeforeUsername:               "user",
+		BeforeDisplayName:            "用户",
+		BeforeDescription:            pgtype.Text{String: "描述", Valid: true},
+		BeforeRole:                   "user",
+		BeforeStatus:                 "active",
+		BeforeMustChangePassword:     false,
+		BeforeImageGenerationEnabled: true,
+		BeforeLastLoginAt:            pgtype.Timestamptz{Time: lastLoginAt, Valid: true},
+		BeforeCreatedAt:              pgtype.Timestamptz{Time: now, Valid: true},
+		BeforeUpdatedAt:              pgtype.Timestamptz{Time: now, Valid: true},
+		ID:                           "sys_user",
+		Username:                     "user",
+		DisplayName:                  "用户",
+		Description:                  pgtype.Text{String: "描述", Valid: true},
+		Role:                         "user",
+		Status:                       "disabled",
+		MustChangePassword:           false,
+		ImageGenerationEnabled:       true,
+		LastLoginAt:                  pgtype.Timestamptz{Time: lastLoginAt, Valid: true},
+		CreatedAt:                    pgtype.Timestamptz{Time: now, Valid: true},
+		UpdatedAt:                    pgtype.Timestamptz{Time: now.Add(time.Minute), Valid: true},
+		RevokedSessionCount:          2,
+		BlockedLastActiveSuperAdmin:  true,
+	})
+
+	if result.Before.Status != "active" ||
+		result.Account.Status != "disabled" ||
+		result.RevokedSessionCount != 2 ||
+		!result.BlockedLastActiveSuperAdmin {
 		t.Fatalf("result = %+v", result)
 	}
 }

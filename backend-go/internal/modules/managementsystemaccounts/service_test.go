@@ -296,18 +296,134 @@ func TestResetPasswordMapsStoreNotFoundAndErrors(t *testing.T) {
 	}
 }
 
+func TestUpdateStatusNormalizesInputAndMapsResult(t *testing.T) {
+	now := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
+	updatedAt := now.Add(time.Minute)
+	store := &systemAccountOptionStoreStub{
+		statusFound: true,
+		statusResult: port.ManagementSystemAccountStatusUpdateResult{
+			Before: port.ManagementSystemAccountSummary{
+				ID:        "sys_user",
+				Username:  "user",
+				Role:      "user",
+				Status:    "active",
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+			Account: port.ManagementSystemAccountSummary{
+				ID:        "sys_user",
+				Username:  "user",
+				Role:      "user",
+				Status:    "disabled",
+				CreatedAt: now,
+				UpdatedAt: updatedAt,
+			},
+			RevokedSessionCount: 2,
+		},
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		Store: store,
+		Now:   func() time.Time { return updatedAt },
+	})
+
+	result, err := service.UpdateStatus(context.Background(), StatusUpdateInput{SystemAccountID: " sys_user ", Status: "disabled"})
+
+	if err != nil {
+		t.Fatalf("UpdateStatus() error = %v", err)
+	}
+	if !store.statusCalled ||
+		store.statusInput.SystemAccountID != "sys_user" ||
+		store.statusInput.Status != "disabled" ||
+		!store.statusInput.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("status input = %+v", store.statusInput)
+	}
+	if result.Before.Status != "active" ||
+		result.Account.Status != "disabled" ||
+		result.Account.UpdatedAt != updatedAt.Format(time.RFC3339Nano) ||
+		result.RevokedSessionCount != 2 {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestUpdateStatusRejectsInvalidInput(t *testing.T) {
+	tests := []struct {
+		name  string
+		input StatusUpdateInput
+	}{
+		{name: "missing id", input: StatusUpdateInput{Status: "disabled"}},
+		{name: "invalid status", input: StatusUpdateInput{SystemAccountID: "sys_user", Status: "archived"}},
+		{name: "empty status", input: StatusUpdateInput{SystemAccountID: "sys_user"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &systemAccountOptionStoreStub{}
+			service := NewService(store)
+
+			_, err := service.UpdateStatus(context.Background(), tt.input)
+
+			if !errors.Is(err, ErrStatusUpdateInvalid) {
+				t.Fatalf("UpdateStatus() error = %v, want %v", err, ErrStatusUpdateInvalid)
+			}
+			if store.statusCalled {
+				t.Fatal("store should not be called for invalid status update input")
+			}
+		})
+	}
+}
+
+func TestUpdateStatusMapsStoreNotFoundBlockedAndErrors(t *testing.T) {
+	want := errors.New("postgres down")
+	now := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name    string
+		store   *systemAccountOptionStoreStub
+		wantErr error
+	}{
+		{name: "not found", store: &systemAccountOptionStoreStub{}, wantErr: ErrSystemAccountNotFound},
+		{
+			name: "last active super admin",
+			store: &systemAccountOptionStoreStub{
+				statusFound: true,
+				statusResult: port.ManagementSystemAccountStatusUpdateResult{
+					Before:                      port.ManagementSystemAccountSummary{ID: "sys_super", Role: "super_admin", Status: "active", CreatedAt: now, UpdatedAt: now},
+					Account:                     port.ManagementSystemAccountSummary{ID: "sys_super", Role: "super_admin", Status: "active", CreatedAt: now, UpdatedAt: now},
+					BlockedLastActiveSuperAdmin: true,
+				},
+			},
+			wantErr: ErrActiveSuperAdminRequired,
+		},
+		{name: "store error", store: &systemAccountOptionStoreStub{statusErr: want}, wantErr: want},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := NewService(tt.store)
+
+			_, err := service.UpdateStatus(context.Background(), StatusUpdateInput{SystemAccountID: "sys_user", Status: "disabled"})
+
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("UpdateStatus() error = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 type systemAccountOptionStoreStub struct {
-	listInput   port.ManagementSystemAccountListInput
-	listResult  port.ManagementSystemAccountListResult
-	listErr     error
-	input       port.ManagementSystemAccountOptionListInput
-	options     []port.ManagementSystemAccountOption
-	err         error
-	resetCalled bool
-	resetInput  port.ManagementSystemAccountPasswordResetInput
-	resetResult port.ManagementSystemAccountPasswordResetResult
-	resetFound  bool
-	resetErr    error
+	listInput    port.ManagementSystemAccountListInput
+	listResult   port.ManagementSystemAccountListResult
+	listErr      error
+	input        port.ManagementSystemAccountOptionListInput
+	options      []port.ManagementSystemAccountOption
+	err          error
+	resetCalled  bool
+	resetInput   port.ManagementSystemAccountPasswordResetInput
+	resetResult  port.ManagementSystemAccountPasswordResetResult
+	resetFound   bool
+	resetErr     error
+	statusCalled bool
+	statusInput  port.ManagementSystemAccountStatusUpdateInput
+	statusResult port.ManagementSystemAccountStatusUpdateResult
+	statusFound  bool
+	statusErr    error
 }
 
 func (s *systemAccountOptionStoreStub) ListManagementSystemAccounts(_ context.Context, input port.ManagementSystemAccountListInput) (port.ManagementSystemAccountListResult, error) {
@@ -324,4 +440,10 @@ func (s *systemAccountOptionStoreStub) ResetManagementSystemAccountPassword(_ co
 	s.resetCalled = true
 	s.resetInput = input
 	return s.resetResult, s.resetFound, s.resetErr
+}
+
+func (s *systemAccountOptionStoreStub) UpdateManagementSystemAccountStatus(_ context.Context, input port.ManagementSystemAccountStatusUpdateInput) (port.ManagementSystemAccountStatusUpdateResult, bool, error) {
+	s.statusCalled = true
+	s.statusInput = input
+	return s.statusResult, s.statusFound, s.statusErr
 }

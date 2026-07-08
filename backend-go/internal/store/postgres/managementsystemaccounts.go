@@ -43,6 +43,21 @@ func (s *Store) ResetManagementSystemAccountPassword(ctx context.Context, input 
 	return managementSystemAccountPasswordResetResultFromRow(row), true, nil
 }
 
+func (s *Store) UpdateManagementSystemAccountStatus(ctx context.Context, input port.ManagementSystemAccountStatusUpdateInput) (port.ManagementSystemAccountStatusUpdateResult, bool, error) {
+	row, err := s.queries().UpdateManagementSystemAccountStatus(ctx, postgresqueries.UpdateManagementSystemAccountStatusParams{
+		SystemAccountID: input.SystemAccountID,
+		Status:          input.Status,
+		UpdatedAt:       pgtype.Timestamptz{Time: input.UpdatedAt.UTC(), Valid: true},
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return port.ManagementSystemAccountStatusUpdateResult{}, false, nil
+	}
+	if err != nil {
+		return port.ManagementSystemAccountStatusUpdateResult{}, false, fmt.Errorf("update management system account status: %w", err)
+	}
+	return managementSystemAccountStatusUpdateResultFromRow(row), true, nil
+}
+
 func listManagementSystemAccounts(ctx context.Context, q *postgresqueries.Queries, input port.ManagementSystemAccountListInput) (port.ManagementSystemAccountListResult, error) {
 	keyword := strings.ToLower(strings.TrimSpace(input.Keyword))
 	keywordUpper := ""
@@ -157,5 +172,41 @@ func managementSystemAccountPasswordResetResultFromRow(row postgresqueries.Reset
 	}
 }
 
+func managementSystemAccountStatusUpdateResultFromRow(row postgresqueries.UpdateManagementSystemAccountStatusRow) port.ManagementSystemAccountStatusUpdateResult {
+	before := port.ManagementSystemAccountSummary{
+		ID:                     row.BeforeID,
+		Username:               row.BeforeUsername,
+		DisplayName:            row.BeforeDisplayName,
+		Description:            textValue(row.BeforeDescription),
+		Role:                   row.BeforeRole,
+		Status:                 row.BeforeStatus,
+		MustChangePassword:     row.BeforeMustChangePassword,
+		ImageGenerationEnabled: row.BeforeImageGenerationEnabled,
+		LastLoginAt:            timestamptzPtr(row.BeforeLastLoginAt),
+		CreatedAt:              timestamptzValue(row.BeforeCreatedAt),
+		UpdatedAt:              timestamptzValue(row.BeforeUpdatedAt),
+	}
+	account := port.ManagementSystemAccountSummary{
+		ID:                     row.ID,
+		Username:               row.Username,
+		DisplayName:            row.DisplayName,
+		Description:            textValue(row.Description),
+		Role:                   row.Role,
+		Status:                 row.Status,
+		MustChangePassword:     row.MustChangePassword,
+		ImageGenerationEnabled: row.ImageGenerationEnabled,
+		LastLoginAt:            timestamptzPtr(row.LastLoginAt),
+		CreatedAt:              timestamptzValue(row.CreatedAt),
+		UpdatedAt:              timestamptzValue(row.UpdatedAt),
+	}
+	return port.ManagementSystemAccountStatusUpdateResult{
+		Before:                      before,
+		Account:                     account,
+		RevokedSessionCount:         int(row.RevokedSessionCount),
+		BlockedLastActiveSuperAdmin: row.BlockedLastActiveSuperAdmin,
+	}
+}
+
 var _ port.ManagementSystemAccountOptionReader = (*Store)(nil)
 var _ port.ManagementSystemAccountPasswordResetter = (*Store)(nil)
+var _ port.ManagementSystemAccountStatusUpdater = (*Store)(nil)

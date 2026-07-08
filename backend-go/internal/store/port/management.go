@@ -178,6 +178,23 @@ type ManagementSystemAccountPasswordResetter interface {
 	ResetManagementSystemAccountPassword(ctx context.Context, input ManagementSystemAccountPasswordResetInput) (ManagementSystemAccountPasswordResetResult, bool, error)
 }
 
+type ManagementSystemAccountStatusUpdateInput struct {
+	SystemAccountID string
+	Status          string
+	UpdatedAt       time.Time
+}
+
+type ManagementSystemAccountStatusUpdateResult struct {
+	Before                      ManagementSystemAccountSummary
+	Account                     ManagementSystemAccountSummary
+	RevokedSessionCount         int
+	BlockedLastActiveSuperAdmin bool
+}
+
+type ManagementSystemAccountStatusUpdater interface {
+	UpdateManagementSystemAccountStatus(ctx context.Context, input ManagementSystemAccountStatusUpdateInput) (ManagementSystemAccountStatusUpdateResult, bool, error)
+}
+
 type ManagementAuthorizationGranteeAccountOption struct {
 	ID          string
 	Username    string

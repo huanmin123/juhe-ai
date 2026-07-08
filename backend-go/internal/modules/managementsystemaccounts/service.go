@@ -24,9 +24,11 @@ const (
 )
 
 var (
-	ErrPasswordResetInvalid    = errors.New("management system account password reset invalid")
-	ErrPasswordResetWhitespace = errors.New("management system account password reset whitespace")
-	ErrSystemAccountNotFound   = errors.New("management system account not found")
+	ErrPasswordResetInvalid     = errors.New("management system account password reset invalid")
+	ErrPasswordResetWhitespace  = errors.New("management system account password reset whitespace")
+	ErrStatusUpdateInvalid      = errors.New("management system account status update invalid")
+	ErrActiveSuperAdminRequired = errors.New("management active super admin required")
+	ErrSystemAccountNotFound    = errors.New("management system account not found")
 )
 
 type Service struct {
@@ -89,6 +91,17 @@ type PasswordResetInput struct {
 }
 
 type PasswordResetResult struct {
+	Before              Summary
+	Account             Summary
+	RevokedSessionCount int
+}
+
+type StatusUpdateInput struct {
+	SystemAccountID string
+	Status          string
+}
+
+type StatusUpdateResult struct {
 	Before              Summary
 	Account             Summary
 	RevokedSessionCount int
@@ -207,6 +220,39 @@ func (s *Service) ResetPassword(ctx context.Context, input PasswordResetInput) (
 	}, nil
 }
 
+func (s *Service) UpdateStatus(ctx context.Context, input StatusUpdateInput) (StatusUpdateResult, error) {
+	if s.store == nil {
+		return StatusUpdateResult{}, fmt.Errorf("management system account store is required")
+	}
+	updater, ok := s.store.(port.ManagementSystemAccountStatusUpdater)
+	if !ok || updater == nil {
+		return StatusUpdateResult{}, fmt.Errorf("management system account status updater is required")
+	}
+	systemAccountID := strings.TrimSpace(input.SystemAccountID)
+	if systemAccountID == "" || !validSystemAccountStatus(input.Status) {
+		return StatusUpdateResult{}, ErrStatusUpdateInvalid
+	}
+	result, found, err := updater.UpdateManagementSystemAccountStatus(ctx, port.ManagementSystemAccountStatusUpdateInput{
+		SystemAccountID: systemAccountID,
+		Status:          input.Status,
+		UpdatedAt:       s.now().UTC(),
+	})
+	if err != nil {
+		return StatusUpdateResult{}, err
+	}
+	if !found {
+		return StatusUpdateResult{}, ErrSystemAccountNotFound
+	}
+	if result.BlockedLastActiveSuperAdmin {
+		return StatusUpdateResult{}, ErrActiveSuperAdminRequired
+	}
+	return StatusUpdateResult{
+		Before:              systemAccountSummaryFromPort(result.Before),
+		Account:             systemAccountSummaryFromPort(result.Account),
+		RevokedSessionCount: result.RevokedSessionCount,
+	}, nil
+}
+
 func listPageSize(pageSize int) int {
 	if pageSize <= 0 {
 		return defaultListPageSize
@@ -270,6 +316,10 @@ func effectiveMustChangePassword(role string, mustChangePassword bool) bool {
 		return false
 	}
 	return mustChangePassword
+}
+
+func validSystemAccountStatus(status string) bool {
+	return status == "active" || status == "disabled"
 }
 
 func formatTime(value time.Time) string {
