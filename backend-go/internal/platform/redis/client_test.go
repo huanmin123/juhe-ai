@@ -43,6 +43,13 @@ func TestValidateKeyAndTTL(t *testing.T) {
 	}
 }
 
+func TestGetDeleteValidatesKey(t *testing.T) {
+	client := &Client{namespace: "juhe:w3"}
+	if _, err := client.GetDelete(t.Context(), ""); err == nil {
+		t.Fatal("GetDelete() error = nil, want key error")
+	}
+}
+
 func TestFixedWindowScriptArgsSkipsDisabledLimits(t *testing.T) {
 	client := &Client{namespace: "juhe:w1"}
 	keys, args, err := client.fixedWindowScriptArgs([]FixedWindowLimit{

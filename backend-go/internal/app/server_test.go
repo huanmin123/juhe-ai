@@ -66,9 +66,10 @@ func TestNewPublicAPIHandlersCoversCatalog(t *testing.T) {
 }
 
 func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
-	handlers := newManagementAPIHandler(config.Config{}, nil, nil, nil)
+	handlers := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil)
 	if handlers.AuthMiddleware != nil ||
 		handlers.AuthTouchMiddleware != nil ||
+		handlers.CaptchaHandler != nil ||
 		handlers.CurrentUserHandler != nil ||
 		handlers.ProfileUpdateHandler != nil ||
 		handlers.PasswordChangeHandler != nil ||
@@ -106,9 +107,10 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 }
 
 func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t *testing.T) {
-	handlers := newManagementAPIHandler(config.Config{ManagementAPIEnabled: true}, nil, nil, nil)
+	handlers := newManagementAPIHandler(config.Config{ManagementAPIEnabled: true}, nil, nil, nil, nil)
 	if handlers.AuthMiddleware == nil ||
 		handlers.AuthTouchMiddleware == nil ||
+		handlers.CaptchaHandler == nil ||
 		handlers.CurrentUserHandler == nil ||
 		handlers.ProfileUpdateHandler == nil ||
 		handlers.PasswordChangeHandler == nil ||

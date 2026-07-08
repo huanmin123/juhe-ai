@@ -23,6 +23,7 @@ type RouterOptions struct {
 	PublicAPIHandler                                http.Handler
 	ManagementAPIAuthMiddleware                     func(http.Handler) http.Handler
 	ManagementAPIAuthTouchMiddleware                func(http.Handler) http.Handler
+	ManagementCaptchaHandler                        http.Handler
 	ManagementCurrentUserHandler                    http.Handler
 	ManagementProfileUpdateHandler                  http.Handler
 	ManagementPasswordChangeHandler                 http.Handler
@@ -89,7 +90,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 				panic("ManagementAPIAuthTouchMiddleware is required for management write routes when JUHE_AI_MANAGEMENT_API_ENABLED is true")
 			}
 			managementAPIWriteAuthMiddleware := opts.ManagementAPIAuthTouchMiddleware
-			if opts.ManagementCurrentUserHandler == nil &&
+			if opts.ManagementCaptchaHandler == nil &&
+				opts.ManagementCurrentUserHandler == nil &&
 				opts.ManagementProfileUpdateHandler == nil &&
 				opts.ManagementPasswordChangeHandler == nil &&
 				opts.ManagementLogoutHandler == nil &&
@@ -123,6 +125,9 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementOperationLogsHandler == nil &&
 				opts.ManagementMyOperationLogsHandler == nil {
 				panic("at least one management API handler is required when JUHE_AI_MANAGEMENT_API_ENABLED is true")
+			}
+			if opts.ManagementCaptchaHandler != nil {
+				system.Get("/auth/captcha", opts.ManagementCaptchaHandler.ServeHTTP)
 			}
 			if opts.ManagementCurrentUserHandler != nil {
 				system.Get("/auth/me", opts.ManagementCurrentUserHandler.ServeHTTP)

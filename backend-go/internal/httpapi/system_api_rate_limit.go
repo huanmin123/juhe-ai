@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -108,7 +109,7 @@ func NewRedisSystemAPIIPReadRateLimiter(client redisFixedWindowClient) SystemAPI
 
 func (m *systemAPIRateLimitMiddleware) handle(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/__aisys__/api/health" || !isReadMethod(r.Method) {
+		if !shouldApplySystemAPIIPReadRateLimit(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -283,6 +284,20 @@ func (l *fixedWindowRateLimiter) pruneLocked(now time.Time) {
 
 func isReadMethod(method string) bool {
 	return method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions
+}
+
+func shouldApplySystemAPIIPReadRateLimit(r *http.Request) bool {
+	if !isReadMethod(r.Method) {
+		return false
+	}
+	path := strings.TrimRight(r.URL.Path, "/")
+	if path == "" {
+		path = "/"
+	}
+	if path == "/__aisys__/api/health" {
+		return false
+	}
+	return path != "/__aisys__/api/auth/captcha"
 }
 
 func systemAPIIPReadRateLimitKey(clientIP string) string {

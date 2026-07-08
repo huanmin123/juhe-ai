@@ -254,6 +254,20 @@ func (c *Client) Get(ctx context.Context, key string) ([]byte, error) {
 	return value, nil
 }
 
+func (c *Client) GetDelete(ctx context.Context, key string) ([]byte, error) {
+	if err := validateKey(key); err != nil {
+		return nil, err
+	}
+	value, err := c.client.GetDel(ctx, c.Key(key)).Bytes()
+	if errors.Is(err, goredis.Nil) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return value, nil
+}
+
 func (c *Client) Incr(ctx context.Context, key string) (int64, error) {
 	return c.IncrWithTTL(ctx, key, 24*time.Hour)
 }
