@@ -27,6 +27,31 @@ type ManagementSessionRevoker interface {
 	RevokeManagementSessionByTokenHash(ctx context.Context, tokenHash string) error
 }
 
+type ManagementCurrentUserProfile struct {
+	ID                 string
+	Username           string
+	DisplayName        string
+	Role               string
+	MustChangePassword bool
+}
+
+type ManagementCurrentUserProfileUpdateInput struct {
+	SystemAccountID string
+	DisplayName     string
+	UpdatedAt       time.Time
+}
+
+type ManagementCurrentUserProfileUpdateResult struct {
+	Before  ManagementCurrentUserProfile
+	Account ManagementCurrentUserProfile
+}
+
+var ErrManagementProfileDisplayNameExists = errors.New("management profile display name exists")
+
+type ManagementCurrentUserProfileWriter interface {
+	UpdateManagementCurrentUserProfile(ctx context.Context, input ManagementCurrentUserProfileUpdateInput) (ManagementCurrentUserProfileUpdateResult, bool, error)
+}
+
 type ManagementProxyOption struct {
 	ID      string
 	Name    string

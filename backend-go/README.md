@@ -1,6 +1,6 @@
 # Go Backend
 
-> 当前 W0 Go 工程与 PG/Redis/Asynq 常规基线已落地，W1a 公开设置读接口 Go 实现中，W1b `/__aipublic__` 已补公开维护接口基础设施和四类资源纵切面；W2 已补管理端辅助路径的系统账户列表读 / options、授权候选 options、供应商 options / 模型 catalog / 默认测试模型偏好、策略路由 options、分组 options、账户 options、账户标签只读 / 删除 / PATCH、operation log 管理 / 个人读接口；W3 仅补 `GET /__aisys__/api/auth/me` 当前用户读切片和 `POST /__aisys__/api/auth/logout` 当前会话撤销切片。所有生产挂载仍默认关闭，未正式生产接管任何现有 Node 业务接口。
+> 当前 W0 Go 工程与 PG/Redis/Asynq 常规基线已落地，W1a 公开设置读接口 Go 实现中，W1b `/__aipublic__` 已补公开维护接口基础设施和四类资源纵切面；W2 已补管理端辅助路径的系统账户列表读 / options、授权候选 options、供应商 options / 模型 catalog / 默认测试模型偏好、策略路由 options、分组 options、账户 options、账户标签只读 / 删除 / PATCH、operation log 管理 / 个人读接口；W3 已补 `GET /__aisys__/api/auth/me` 当前用户读、`PATCH /__aisys__/api/auth/me` 当前用户资料更新和 `POST /__aisys__/api/auth/logout` 当前会话撤销切片。所有生产挂载仍默认关闭，未正式生产接管任何现有 Node 业务接口。
 > 本轮另补 `PUT /__aisys__/api/providers/{code}/default-test-model` 的 Go opt-in 实现，只覆盖当前系统账户默认测试模型偏好写入，不覆盖自定义模型 CRUD 或供应商管理写接口。
 
 本目录是 `juhe-ai` 后端从 Node.js 迁移到 Go 的新后端工程。迁移规则见 `docs/migration/README.md`。
@@ -17,7 +17,7 @@
 - W1b public group / public route strategy / public API Key / public account 四条资源纵切面：已提供 handler、service、store port、PostgreSQL sqlc query、integration smoke 和 shell E2E 代码；public API Key 采用 hash-only 存储，完整 key 只在新增响应返回一次，日志快照和 `query_string` 均脱敏；public account 上游凭据使用 `JUHE_AI_SECRET` 派生的 AES-GCM 加密，响应不回显 `apiKey` / `baseUrl` / `credentials`。
 - W2 管理端辅助接口当前已迁移路径：已覆盖 `system-accounts` 列表读、`system-accounts/options` 轻量下拉、authorization grantee accounts / teams / groups、providers options / models / default-test-model、route-strategies options、groups options / account-options、accounts options、accounts tags 只读 / 未绑定删除 / 独立 PATCH、operation-logs / my-operation-logs 列表与详情读接口。所有路径都复用管理端 session 鉴权和 `JUHE_AI_MANAGEMENT_API_ENABLED=false` 默认关闭的 router opt-in guard；只允许灰度验证，不代表生产接管。系统账户创建 / 更新 / 改密 / 登录 / 完整会话撤销、授权来源 / grant / 授权写接口、主账户写入 `tags`、OpenAI OAuth / 导入标签写路径、完整账号 summary 响应、operation log 保留清理和其他写接口 operation log 仍未迁移。详细边界见 `docs/migration/W2-管理端只读辅助接口迁移记录.md`。
 - W2 默认测试模型偏好写入：`PUT /__aisys__/api/providers/{code}/default-test-model` 已复用 provider model catalog 可见性校验和 `provider_default_test_models` upsert，只允许设置 active 文本生成模型，普通用户强制当前账户作用域，管理员可指定 `systemAccountId`；该接口仍受 `JUHE_AI_MANAGEMENT_API_ENABLED=false` 默认关闭门禁约束。
-- W3 当前用户读与当前会话登出切片：`GET /__aisys__/api/auth/me` 已复用 `juhe_ai_session` / SHA-256 token hash / `system_sessions` 读取能力，返回 `{ id, username, displayName, role, mustChangePassword }`；普通初始密码用户允许读取并返回 `mustChangePassword=true`，管理员有效值始终为 `false`。`POST /__aisys__/api/auth/logout` 不要求有效登录态，有 Cookie 时按当前 token hash 删除 `system_sessions` 对应行，成功后清除 `juhe_ai_session` Cookie。本切片不迁登录、验证码、改密、session 创建 / touch / 其他会话撤销、完整 Cookie 安全配置或系统账户写接口，详细边界见 `docs/migration/W3-登录与系统账户迁移记录.md`。
+- W3 当前用户读、资料更新与当前会话登出切片：`GET /__aisys__/api/auth/me` 已复用 `juhe_ai_session` / SHA-256 token hash / `system_sessions` 读取能力，返回 `{ id, username, displayName, role, mustChangePassword }`；普通初始密码用户允许读取并返回 `mustChangePassword=true`，管理员有效值始终为 `false`。`PATCH /__aisys__/api/auth/me` 走普通管理端 middleware，只允许当前用户修改 `displayName`，普通初始密码用户继续 403，显示名大小写不敏感唯一由 PG `idx_system_accounts_display_name_unique_lower` 保证，真实变更 best-effort 写 `auth.update_profile` 操作日志。`POST /__aisys__/api/auth/logout` 不要求有效登录态，有 Cookie 时按当前 token hash 删除 `system_sessions` 对应行，成功后清除 `juhe_ai_session` Cookie。本切片不迁登录、验证码、改密、session 创建 / touch / 其他会话撤销、完整 Cookie 安全配置或完整系统账户写接口，详细边界见 `docs/migration/W3-登录与系统账户迁移记录.md`。
 - 不接管任何现有 Node 业务接口，不删除 Node 旧实现。
 
 W1a / W1b / W2 / W3 当前已迁移路径仍是 Go 实现中，不是生产接管状态；W1b 生产 router 默认不注册 `/__aipublic__`，只有显式设置 `JUHE_AI_PUBLIC_API_ENABLED=true` 才会挂载，且这只表示可灰度验证。W2 / W3 生产 router 默认不注册 `/__aisys__/api/*` 已迁移后台路径，只有显式设置 `JUHE_AI_MANAGEMENT_API_ENABLED=true` 才会挂载；该开关也只表示可灰度验证，不代表反向代理切流、生产流量或 Node 删除已完成。真实 Docker/testcontainers shell E2E、真实 `w1a-public-settings-smoke`、真实 PG/Redis/Asynq integration、W2 前端 smoke、反向代理切流和 Node 删除证据还未完成。
@@ -85,7 +85,7 @@ $env:JUHE_AI_MANAGEMENT_API_ENABLED = 'true'
 go run ./cmd/juhe-ai server
 ```
 
-`JUHE_AI_MANAGEMENT_API_ENABLED=true` 只注册当前已迁移的 W2 管理端辅助路径和 W3 `GET /auth/me` 当前用户读、`POST /auth/logout` 当前会话撤销切片。当前可灰度验证的范围包括当前用户读取、当前会话登出、系统账户列表读 / options、授权候选 options、供应商 options / 模型 catalog / 默认测试模型偏好、策略路由 options、分组 options、账户 options、账户标签只读 / 删除 / PATCH、operation log 管理 / 个人读接口；登录、验证码、改密、系统账户写接口 / 完整会话撤销、授权来源 / grant / 授权写接口、主账户写入 `tags`、OAuth / 导入标签写路径、operation log 保留清理和生产单 owner 切流仍未迁移。
+`JUHE_AI_MANAGEMENT_API_ENABLED=true` 只注册当前已迁移的 W2 管理端辅助路径和 W3 `GET /auth/me` 当前用户读、`PATCH /auth/me` 当前用户资料更新、`POST /auth/logout` 当前会话撤销切片。当前可灰度验证的范围包括当前用户读取、当前用户显示名更新、当前会话登出、系统账户列表读 / options、授权候选 options、供应商 options / 模型 catalog / 默认测试模型偏好、策略路由 options、分组 options、账户 options、账户标签只读 / 删除 / PATCH、operation log 管理 / 个人读接口；登录、验证码、改密、系统账户完整写接口 / 完整会话撤销、授权来源 / grant / 授权写接口、主账户写入 `tags`、OAuth / 导入标签写路径、operation log 保留清理和生产单 owner 切流仍未迁移。
 
 启动 W1b public API log ingest worker 需要 PostgreSQL 和 Redis queue：
 

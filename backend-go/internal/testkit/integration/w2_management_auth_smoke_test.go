@@ -75,15 +75,27 @@ func TestW2ManagementAuthPostgresSmoke(t *testing.T) {
 		t.Fatalf("auth context = %+v", authContext)
 	}
 
+	cfg := config.Config{
+		Host:                 "127.0.0.1",
+		Port:                 3000,
+		ManagementAPIEnabled: true,
+		TrustProxy:           "false",
+	}
+	operationLogQueue := &w2OperationLogQueueStub{}
 	router := httpapi.NewRouter(httpapi.RouterOptions{
-		Config: config.Config{
-			Host:                 "127.0.0.1",
-			Port:                 3000,
-			ManagementAPIEnabled: true,
-		},
-		Logger:                        slog.Default(),
-		ManagementAPIAuthMiddleware:   httpapi.NewManagementAPIAuthMiddleware(authenticator),
-		ManagementCurrentUserHandler:  httpapi.NewManagementCurrentUserHandler(authenticator),
+		Config:                       cfg,
+		Logger:                       slog.Default(),
+		ManagementAPIAuthMiddleware:  httpapi.NewManagementAPIAuthMiddleware(authenticator),
+		ManagementCurrentUserHandler: httpapi.NewManagementCurrentUserHandler(authenticator),
+		ManagementProfileUpdateHandler: httpapi.NewManagementProfileUpdateHandlerWithOperationLog(
+			managementauth.NewProfileService(store),
+			httpapi.ManagementOperationLogOptions{
+				Config:   cfg,
+				Client:   operationLogQueue,
+				Now:      func() time.Time { return now },
+				NewLogID: func() string { return "oplog_w2_profile" },
+			},
+		),
 		ManagementLogoutHandler:       httpapi.NewManagementLogoutHandler(authenticator),
 		ManagementProxyOptionsHandler: httpapi.NewManagementProxyOptionsHandler(managementproxies.NewService(store)),
 	})
@@ -99,6 +111,7 @@ func TestW2ManagementAuthPostgresSmoke(t *testing.T) {
 		Data struct {
 			ID                 string `json:"id"`
 			Username           string `json:"username"`
+			DisplayName        string `json:"displayName"`
 			Role               string `json:"role"`
 			MustChangePassword bool   `json:"mustChangePassword"`
 		} `json:"data"`
@@ -106,8 +119,83 @@ func TestW2ManagementAuthPostgresSmoke(t *testing.T) {
 	if err := json.NewDecoder(currentUserRec.Body).Decode(&currentUserBody); err != nil {
 		t.Fatalf("decode current user response: %v", err)
 	}
-	if currentUserBody.Data.ID != "sys_w2_proxy_options" || currentUserBody.Data.Username != "w2-proxy-options" || currentUserBody.Data.Role != "admin" || currentUserBody.Data.MustChangePassword {
+	if currentUserBody.Data.ID != "sys_w2_proxy_options" ||
+		currentUserBody.Data.Username != "w2-proxy-options" ||
+		currentUserBody.Data.DisplayName != "W2 Proxy Options" ||
+		currentUserBody.Data.Role != "admin" ||
+		currentUserBody.Data.MustChangePassword {
 		t.Fatalf("current user = %+v", currentUserBody.Data)
+	}
+
+	profileReq := httptest.NewRequest(http.MethodPatch, "/__aisys__/api/auth/me", strings.NewReader(`{"displayName":"W2ProfileRenamed"}`))
+	profileReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
+	profileRec := httptest.NewRecorder()
+	router.ServeHTTP(profileRec, profileReq)
+	if profileRec.Code != http.StatusOK {
+		t.Fatalf("profile update status = %d, body = %s", profileRec.Code, profileRec.Body.String())
+	}
+	var profileBody struct {
+		Data struct {
+			ID          string `json:"id"`
+			Username    string `json:"username"`
+			DisplayName string `json:"displayName"`
+			Role        string `json:"role"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(profileRec.Body).Decode(&profileBody); err != nil {
+		t.Fatalf("decode profile response: %v", err)
+	}
+	if profileBody.Data.ID != "sys_w2_proxy_options" || profileBody.Data.DisplayName != "W2ProfileRenamed" || profileBody.Data.Role != "admin" {
+		t.Fatalf("profile response = %+v", profileBody.Data)
+	}
+	var savedDisplayName string
+	if err := db.QueryRowContext(ctx, `
+		SELECT display_name
+		FROM juhe_business.system_accounts
+		WHERE id = 'sys_w2_proxy_options'
+	`).Scan(&savedDisplayName); err != nil {
+		t.Fatalf("read updated profile display name: %v", err)
+	}
+	if savedDisplayName != "W2ProfileRenamed" {
+		t.Fatalf("saved display name = %q, want W2ProfileRenamed", savedDisplayName)
+	}
+	if operationLogQueue.decodeErr != nil {
+		t.Fatalf("decode profile operation log: %v", operationLogQueue.decodeErr)
+	}
+	if len(operationLogQueue.logs) != 1 {
+		t.Fatalf("operation logs = %d, want 1", len(operationLogQueue.logs))
+	}
+	profileLog := operationLogQueue.logs[0]
+	if profileLog.OperationKey != "auth.update_profile" ||
+		profileLog.Module != "system_accounts" ||
+		profileLog.Action != "update" ||
+		profileLog.ResourceType != "system_account" ||
+		profileLog.ResourceID != "sys_w2_proxy_options" ||
+		profileLog.ResourceName != "W2ProfileRenamed" ||
+		profileLog.Summary != "修改显示名称：W2ProfileRenamed" {
+		t.Fatalf("profile operation log = %+v", profileLog)
+	}
+	if len(profileLog.Changes) != 1 || profileLog.Changes[0].Field != "displayName" || profileLog.Changes[0].Label != "显示名称" {
+		t.Fatalf("profile operation log changes = %+v", profileLog.Changes)
+	}
+
+	renamedUserReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/auth/me", nil)
+	renamedUserReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
+	renamedUserRec := httptest.NewRecorder()
+	router.ServeHTTP(renamedUserRec, renamedUserReq)
+	if renamedUserRec.Code != http.StatusOK {
+		t.Fatalf("renamed current user status = %d, body = %s", renamedUserRec.Code, renamedUserRec.Body.String())
+	}
+	var renamedUserBody struct {
+		Data struct {
+			DisplayName string `json:"displayName"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(renamedUserRec.Body).Decode(&renamedUserBody); err != nil {
+		t.Fatalf("decode renamed current user response: %v", err)
+	}
+	if renamedUserBody.Data.DisplayName != "W2ProfileRenamed" {
+		t.Fatalf("renamed current user = %+v", renamedUserBody.Data)
 	}
 
 	mustChangeReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/auth/me", nil)
@@ -144,6 +232,21 @@ func TestW2ManagementAuthPostgresSmoke(t *testing.T) {
 	}
 	if mustChangeProtectedBody["code"] != managementauth.ErrorCodeMustChangePassword {
 		t.Fatalf("must change protected body = %+v", mustChangeProtectedBody)
+	}
+
+	mustChangeProfileReq := httptest.NewRequest(http.MethodPatch, "/__aisys__/api/auth/me", strings.NewReader(`{"displayName":"BlockedProfile"}`))
+	mustChangeProfileReq.Header.Set("Cookie", "juhe_ai_session="+mustChangeSessionToken)
+	mustChangeProfileRec := httptest.NewRecorder()
+	router.ServeHTTP(mustChangeProfileRec, mustChangeProfileReq)
+	if mustChangeProfileRec.Code != http.StatusForbidden {
+		t.Fatalf("must change profile status = %d, want 403, body = %s", mustChangeProfileRec.Code, mustChangeProfileRec.Body.String())
+	}
+	var mustChangeProfileBody map[string]string
+	if err := json.NewDecoder(mustChangeProfileRec.Body).Decode(&mustChangeProfileBody); err != nil {
+		t.Fatalf("decode must change profile response: %v", err)
+	}
+	if mustChangeProfileBody["code"] != managementauth.ErrorCodeMustChangePassword {
+		t.Fatalf("must change profile body = %+v", mustChangeProfileBody)
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/proxies/options?keyword=Al&limit=2", nil)

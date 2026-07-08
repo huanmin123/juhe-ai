@@ -70,3 +70,73 @@ func (q *Queries) RevokeManagementSessionByTokenHash(ctx context.Context, tokenH
 	_, err := q.db.Exec(ctx, revokeManagementSessionByTokenHash, tokenHash)
 	return err
 }
+
+const updateManagementCurrentUserProfile = `-- name: UpdateManagementCurrentUserProfile :one
+WITH current_account AS (
+  SELECT
+    id,
+    display_name,
+    status,
+    role,
+    must_change_password
+  FROM juhe_business.system_accounts
+  WHERE id = $1::text
+  FOR UPDATE
+), updated_account AS (
+  UPDATE juhe_business.system_accounts AS system_accounts
+  SET
+    display_name = $2::text,
+    updated_at = $3::timestamptz
+  FROM current_account
+  WHERE system_accounts.id = current_account.id
+    AND current_account.status = 'active'
+    AND (
+      current_account.role IN ('super_admin', 'admin')
+      OR current_account.must_change_password = false
+    )
+  RETURNING
+    current_account.display_name AS previous_display_name,
+    system_accounts.id,
+    system_accounts.username,
+    system_accounts.display_name,
+    system_accounts.role,
+    system_accounts.must_change_password
+)
+SELECT
+  previous_display_name,
+  id,
+  username,
+  display_name,
+  role,
+  must_change_password
+FROM updated_account
+`
+
+type UpdateManagementCurrentUserProfileParams struct {
+	SystemAccountID string
+	DisplayName     string
+	UpdatedAt       pgtype.Timestamptz
+}
+
+type UpdateManagementCurrentUserProfileRow struct {
+	PreviousDisplayName string
+	ID                  string
+	Username            string
+	DisplayName         string
+	Role                string
+	MustChangePassword  bool
+}
+
+func (q *Queries) UpdateManagementCurrentUserProfile(ctx context.Context, arg UpdateManagementCurrentUserProfileParams) (UpdateManagementCurrentUserProfileRow, error) {
+	row := q.db.QueryRow(ctx, updateManagementCurrentUserProfile, arg.SystemAccountID, arg.DisplayName, arg.UpdatedAt)
+	var i UpdateManagementCurrentUserProfileRow
+	err := row.Scan(
+		&i.PreviousDisplayName,
+		&i.ID,
+		&i.Username,
+		&i.DisplayName,
+		&i.Role,
+		&i.MustChangePassword,
+	)
+	return i, err
+}

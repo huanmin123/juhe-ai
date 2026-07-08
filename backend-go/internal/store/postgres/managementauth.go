@@ -6,6 +6,8 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"juhe-ai/backend-go/internal/store/port"
 	"juhe-ai/backend-go/internal/store/postgres/postgresqueries"
@@ -33,6 +35,24 @@ func (s *Store) RevokeManagementSessionByTokenHash(ctx context.Context, tokenHas
 	return nil
 }
 
+func (s *Store) UpdateManagementCurrentUserProfile(ctx context.Context, input port.ManagementCurrentUserProfileUpdateInput) (port.ManagementCurrentUserProfileUpdateResult, bool, error) {
+	row, err := s.queries().UpdateManagementCurrentUserProfile(ctx, postgresqueries.UpdateManagementCurrentUserProfileParams{
+		SystemAccountID: input.SystemAccountID,
+		DisplayName:     input.DisplayName,
+		UpdatedAt:       pgtype.Timestamptz{Time: input.UpdatedAt.UTC(), Valid: true},
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return port.ManagementCurrentUserProfileUpdateResult{}, false, nil
+	}
+	if isManagementProfileDisplayNameUniqueViolation(err) {
+		return port.ManagementCurrentUserProfileUpdateResult{}, false, port.ErrManagementProfileDisplayNameExists
+	}
+	if err != nil {
+		return port.ManagementCurrentUserProfileUpdateResult{}, false, fmt.Errorf("update management current user profile: %w", err)
+	}
+	return managementProfileUpdateResultFromRow(row), true, nil
+}
+
 func managementSessionFromRow(row postgresqueries.FindManagementSessionByTokenHashRow) (port.ManagementSessionAccount, error) {
 	if !row.ExpiresAt.Valid {
 		return port.ManagementSessionAccount{}, fmt.Errorf("management session expires_at is null")
@@ -54,5 +74,34 @@ func managementSessionFromRow(row postgresqueries.FindManagementSessionByTokenHa
 	}, nil
 }
 
+func managementProfileUpdateResultFromRow(row postgresqueries.UpdateManagementCurrentUserProfileRow) port.ManagementCurrentUserProfileUpdateResult {
+	before := port.ManagementCurrentUserProfile{
+		ID:                 row.ID,
+		Username:           row.Username,
+		DisplayName:        row.PreviousDisplayName,
+		Role:               row.Role,
+		MustChangePassword: row.MustChangePassword,
+	}
+	account := port.ManagementCurrentUserProfile{
+		ID:                 row.ID,
+		Username:           row.Username,
+		DisplayName:        row.DisplayName,
+		Role:               row.Role,
+		MustChangePassword: row.MustChangePassword,
+	}
+	return port.ManagementCurrentUserProfileUpdateResult{
+		Before:  before,
+		Account: account,
+	}
+}
+
+func isManagementProfileDisplayNameUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) &&
+		pgErr.Code == "23505" &&
+		pgErr.ConstraintName == "idx_system_accounts_display_name_unique_lower"
+}
+
 var _ port.ManagementSessionReader = (*Store)(nil)
 var _ port.ManagementSessionRevoker = (*Store)(nil)
+var _ port.ManagementCurrentUserProfileWriter = (*Store)(nil)
