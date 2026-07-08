@@ -50,6 +50,69 @@ func TestGetDeleteValidatesKey(t *testing.T) {
 	}
 }
 
+func TestDeleteValidatesKey(t *testing.T) {
+	client := &Client{namespace: "juhe:w3"}
+	if err := client.Delete(t.Context(), ""); err == nil {
+		t.Fatal("Delete() error = nil, want key error")
+	}
+}
+
+func TestFailureLockScriptArgs(t *testing.T) {
+	client := &Client{namespace: "juhe:w3"}
+	keys, args, err := client.failureLockScriptArgs([]FailureLockScope{
+		{CounterKey: "disabled", LockKey: "disabled-lock", Threshold: 0, Window: time.Minute, Lock: time.Minute},
+		{CounterKey: ":auth_login_guard:ip:abc:count:", LockKey: ":auth_login_guard:ip:abc:lock:", Threshold: 10, Window: 10 * time.Minute, Lock: 15 * time.Minute},
+	})
+	if err != nil {
+		t.Fatalf("failureLockScriptArgs() error = %v", err)
+	}
+	wantKeys := []string{
+		"juhe:w3:auth_login_guard:ip:abc:count",
+		"juhe:w3:auth_login_guard:ip:abc:lock",
+	}
+	if len(keys) != len(wantKeys) {
+		t.Fatalf("keys length = %d, want %d: %#v", len(keys), len(wantKeys), keys)
+	}
+	for i := range wantKeys {
+		if keys[i] != wantKeys[i] {
+			t.Fatalf("keys[%d] = %q, want %q", i, keys[i], wantKeys[i])
+		}
+	}
+	wantArgs := []interface{}{"10", "600000", "900000"}
+	if len(args) != len(wantArgs) {
+		t.Fatalf("args length = %d, want %d: %#v", len(args), len(wantArgs), args)
+	}
+	for i := range wantArgs {
+		if args[i] != wantArgs[i] {
+			t.Fatalf("args[%d] = %#v, want %#v", i, args[i], wantArgs[i])
+		}
+	}
+}
+
+func TestFailureLockScriptArgsValidatesEnabledScopes(t *testing.T) {
+	client := &Client{namespace: "juhe:w3"}
+	if _, _, err := client.failureLockScriptArgs([]FailureLockScope{
+		{CounterKey: "", LockKey: "lock", Threshold: 1, Window: time.Minute, Lock: time.Minute},
+	}); err == nil {
+		t.Fatal("failureLockScriptArgs() error = nil, want counter key error")
+	}
+	if _, _, err := client.failureLockScriptArgs([]FailureLockScope{
+		{CounterKey: "count", LockKey: "", Threshold: 1, Window: time.Minute, Lock: time.Minute},
+	}); err == nil {
+		t.Fatal("failureLockScriptArgs() error = nil, want lock key error")
+	}
+	if _, _, err := client.failureLockScriptArgs([]FailureLockScope{
+		{CounterKey: "count", LockKey: "lock", Threshold: 1, Window: 0, Lock: time.Minute},
+	}); err == nil {
+		t.Fatal("failureLockScriptArgs() error = nil, want window error")
+	}
+	if _, _, err := client.failureLockScriptArgs([]FailureLockScope{
+		{CounterKey: "count", LockKey: "lock", Threshold: 1, Window: time.Minute, Lock: 0},
+	}); err == nil {
+		t.Fatal("failureLockScriptArgs() error = nil, want lock ttl error")
+	}
+}
+
 func TestFixedWindowScriptArgsSkipsDisabledLimits(t *testing.T) {
 	client := &Client{namespace: "juhe:w1"}
 	keys, args, err := client.fixedWindowScriptArgs([]FixedWindowLimit{

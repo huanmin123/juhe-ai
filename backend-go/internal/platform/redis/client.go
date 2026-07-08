@@ -65,6 +65,57 @@ end
 return {1, 0}
 `)
 
+var failureLockScript = goredis.NewScript(`
+local blocked_index = 0
+local blocked_retry_ms = 0
+local scope_count = #KEYS / 2
+
+for index = 1, scope_count do
+  local lock_key = KEYS[(index - 1) * 2 + 2]
+  local lock_ms = tonumber(ARGV[(index - 1) * 3 + 3])
+  local ttl = redis.call("PTTL", lock_key)
+  if ttl == -1 then
+    ttl = lock_ms
+    redis.call("PEXPIRE", lock_key, ttl)
+  end
+  if ttl > 0 and blocked_index == 0 then
+    blocked_index = index
+    blocked_retry_ms = ttl
+  end
+end
+
+if blocked_index > 0 then
+  return {0, math.ceil(blocked_retry_ms / 1000), blocked_index}
+end
+
+for index = 1, scope_count do
+  local counter_key = KEYS[(index - 1) * 2 + 1]
+  local lock_key = KEYS[(index - 1) * 2 + 2]
+  local threshold = tonumber(ARGV[(index - 1) * 3 + 1])
+  local window_ms = tonumber(ARGV[(index - 1) * 3 + 2])
+  local lock_ms = tonumber(ARGV[(index - 1) * 3 + 3])
+  if threshold ~= nil and threshold > 0 then
+    local value = redis.call("INCR", counter_key)
+    if value == 1 or redis.call("PTTL", counter_key) < 0 then
+      redis.call("PEXPIRE", counter_key, window_ms)
+    end
+    if value >= threshold then
+      redis.call("SET", lock_key, "1", "PX", lock_ms)
+      if blocked_index == 0 then
+        blocked_index = index
+        blocked_retry_ms = lock_ms
+      end
+    end
+  end
+end
+
+if blocked_index > 0 then
+  return {0, math.ceil(blocked_retry_ms / 1000), blocked_index}
+end
+
+return {1, 0, 0}
+`)
+
 var penaltyWindowRateLimitScript = goredis.NewScript(`
 local now_ms = tonumber(ARGV[1])
 local rule_count = tonumber(ARGV[2])
@@ -155,6 +206,20 @@ type FixedWindowLimit struct {
 type FixedWindowDecision struct {
 	Allowed           bool
 	RetryAfterSeconds int
+}
+
+type FailureLockScope struct {
+	CounterKey string
+	LockKey    string
+	Threshold  int
+	Window     time.Duration
+	Lock       time.Duration
+}
+
+type FailureLockDecision struct {
+	Allowed           bool
+	RetryAfterSeconds int
+	BlockedIndex      int
 }
 
 type PenaltyWindowLimit struct {
@@ -268,6 +333,13 @@ func (c *Client) GetDelete(ctx context.Context, key string) ([]byte, error) {
 	return value, nil
 }
 
+func (c *Client) Delete(ctx context.Context, key string) error {
+	if err := validateKey(key); err != nil {
+		return err
+	}
+	return c.client.Del(ctx, c.Key(key)).Err()
+}
+
 func (c *Client) Incr(ctx context.Context, key string) (int64, error) {
 	return c.IncrWithTTL(ctx, key, 24*time.Hour)
 }
@@ -313,6 +385,85 @@ func (c *Client) AllowFixedWindow(ctx context.Context, limits []FixedWindowLimit
 		Allowed:           allowedValue == 1,
 		RetryAfterSeconds: max(0, int(retryAfter)),
 	}, nil
+}
+
+func (c *Client) RecordFailureWithLock(ctx context.Context, scopes []FailureLockScope) (FailureLockDecision, error) {
+	keys, args, err := c.failureLockScriptArgs(scopes)
+	if err != nil {
+		return FailureLockDecision{}, err
+	}
+	if len(keys) == 0 {
+		return FailureLockDecision{Allowed: true}, nil
+	}
+
+	values, err := failureLockScript.Run(ctx, c.client, keys, args...).Slice()
+	if err != nil {
+		return FailureLockDecision{}, err
+	}
+	if len(values) != 3 {
+		return FailureLockDecision{}, fmt.Errorf("unexpected failure-lock redis result length: %d", len(values))
+	}
+	allowedValue, err := redisInt64(values[0])
+	if err != nil {
+		return FailureLockDecision{}, fmt.Errorf("parse failure-lock allowed value: %w", err)
+	}
+	retryAfter, err := redisInt64(values[1])
+	if err != nil {
+		return FailureLockDecision{}, fmt.Errorf("parse failure-lock retry-after value: %w", err)
+	}
+	blockedIndex, err := redisInt64(values[2])
+	if err != nil {
+		return FailureLockDecision{}, fmt.Errorf("parse failure-lock blocked index value: %w", err)
+	}
+	return FailureLockDecision{
+		Allowed:           allowedValue == 1,
+		RetryAfterSeconds: max(0, int(retryAfter)),
+		BlockedIndex:      max(0, int(blockedIndex)),
+	}, nil
+}
+
+func (c *Client) CheckFailureLocks(ctx context.Context, scopes []FailureLockScope) (FailureLockDecision, error) {
+	lockKeys := make([]string, 0, len(scopes))
+	lockTTLs := make([]time.Duration, 0, len(scopes))
+	for _, item := range scopes {
+		if item.Threshold <= 0 {
+			continue
+		}
+		if err := validateKeyAndTTL(item.CounterKey, item.Window); err != nil {
+			return FailureLockDecision{}, err
+		}
+		if err := validateKeyAndTTL(item.LockKey, item.Lock); err != nil {
+			return FailureLockDecision{}, err
+		}
+		lockKeys = append(lockKeys, c.Key(item.LockKey))
+		lockTTLs = append(lockTTLs, item.Lock)
+	}
+	if len(lockKeys) == 0 {
+		return FailureLockDecision{Allowed: true}, nil
+	}
+	for index, lockKey := range lockKeys {
+		ttl, err := c.client.PTTL(ctx, lockKey).Result()
+		if err != nil {
+			return FailureLockDecision{}, err
+		}
+		if ttl == -1 {
+			ttl = lockTTLs[index]
+			if ttl <= 0 {
+				ttl = time.Second
+			}
+			if err := c.client.PExpire(ctx, lockKey, ttl).Err(); err != nil {
+				return FailureLockDecision{}, err
+			}
+		}
+		if ttl > 0 {
+			return FailureLockDecision{
+				Allowed:           false,
+				RetryAfterSeconds: int(math.Ceil(float64(ttl) / float64(time.Second))),
+				BlockedIndex:      index + 1,
+			}, nil
+		}
+	}
+	return FailureLockDecision{Allowed: true}, nil
 }
 
 func (c *Client) AllowPenaltyWindow(ctx context.Context, limits []PenaltyWindowLimit) (PenaltyWindowDecision, error) {
@@ -366,6 +517,29 @@ func (c *Client) fixedWindowScriptArgs(limits []FixedWindowLimit) ([]string, []i
 		args = append(args,
 			strconv.Itoa(item.Limit),
 			strconv.FormatInt(item.Window.Milliseconds(), 10),
+		)
+	}
+	return keys, args, nil
+}
+
+func (c *Client) failureLockScriptArgs(scopes []FailureLockScope) ([]string, []interface{}, error) {
+	keys := make([]string, 0, len(scopes)*2)
+	args := make([]interface{}, 0, len(scopes)*3)
+	for _, item := range scopes {
+		if item.Threshold <= 0 {
+			continue
+		}
+		if err := validateKeyAndTTL(item.CounterKey, item.Window); err != nil {
+			return nil, nil, err
+		}
+		if err := validateKeyAndTTL(item.LockKey, item.Lock); err != nil {
+			return nil, nil, err
+		}
+		keys = append(keys, c.Key(item.CounterKey), c.Key(item.LockKey))
+		args = append(args,
+			strconv.Itoa(item.Threshold),
+			strconv.FormatInt(item.Window.Milliseconds(), 10),
+			strconv.FormatInt(item.Lock.Milliseconds(), 10),
 		)
 	}
 	return keys, args, nil

@@ -11,6 +11,119 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const completeManagementLogin = `-- name: CompleteManagementLogin :one
+WITH updated_account AS (
+  UPDATE juhe_business.system_accounts
+  SET
+    last_login_at = $1::timestamptz,
+    updated_at = $1::timestamptz
+  WHERE id = $2::text
+    AND status = 'active'
+    AND password_hash = $3::text
+  RETURNING
+    id,
+    username,
+    display_name,
+    description,
+    role,
+    status,
+    must_change_password,
+    image_generation_enabled,
+    last_login_at,
+    created_at,
+    updated_at
+), inserted_session AS (
+  INSERT INTO juhe_business.system_sessions (
+    id,
+    system_account_id,
+    token_hash,
+    expires_at,
+    created_at,
+    last_seen_at
+  )
+  SELECT
+    $4::text,
+    updated_account.id,
+    $5::text,
+    $6::timestamptz,
+    $1::timestamptz,
+    $1::timestamptz
+  FROM updated_account
+  RETURNING
+    id AS session_id,
+    expires_at AS session_expires_at
+)
+SELECT
+  updated_account.id,
+  updated_account.username,
+  updated_account.display_name,
+  updated_account.description,
+  updated_account.role,
+  updated_account.status,
+  updated_account.must_change_password,
+  updated_account.image_generation_enabled,
+  updated_account.last_login_at,
+  updated_account.created_at,
+  updated_account.updated_at,
+  inserted_session.session_id,
+  inserted_session.session_expires_at
+FROM updated_account
+CROSS JOIN inserted_session
+`
+
+type CompleteManagementLoginParams struct {
+	LoggedInAt           pgtype.Timestamptz
+	SystemAccountID      string
+	VerifiedPasswordHash string
+	SessionID            string
+	TokenHash            string
+	ExpiresAt            pgtype.Timestamptz
+}
+
+type CompleteManagementLoginRow struct {
+	ID                     string
+	Username               string
+	DisplayName            string
+	Description            pgtype.Text
+	Role                   string
+	Status                 string
+	MustChangePassword     bool
+	ImageGenerationEnabled bool
+	LastLoginAt            pgtype.Timestamptz
+	CreatedAt              pgtype.Timestamptz
+	UpdatedAt              pgtype.Timestamptz
+	SessionID              string
+	SessionExpiresAt       pgtype.Timestamptz
+}
+
+func (q *Queries) CompleteManagementLogin(ctx context.Context, arg CompleteManagementLoginParams) (CompleteManagementLoginRow, error) {
+	row := q.db.QueryRow(ctx, completeManagementLogin,
+		arg.LoggedInAt,
+		arg.SystemAccountID,
+		arg.VerifiedPasswordHash,
+		arg.SessionID,
+		arg.TokenHash,
+		arg.ExpiresAt,
+	)
+	var i CompleteManagementLoginRow
+	err := row.Scan(
+		&i.ID,
+		&i.Username,
+		&i.DisplayName,
+		&i.Description,
+		&i.Role,
+		&i.Status,
+		&i.MustChangePassword,
+		&i.ImageGenerationEnabled,
+		&i.LastLoginAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.SessionID,
+		&i.SessionExpiresAt,
+	)
+	return i, err
+}
+
 const findManagementSessionByTokenHash = `-- name: FindManagementSessionByTokenHash :one
 SELECT
   ss.id,

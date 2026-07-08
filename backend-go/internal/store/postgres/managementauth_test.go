@@ -98,6 +98,47 @@ func TestManagementPasswordAccountFromRow(t *testing.T) {
 	}
 }
 
+func TestManagementLoginSessionResultFromRow(t *testing.T) {
+	createdAt := time.Date(2026, 7, 8, 10, 0, 0, 0, time.FixedZone("test", 8*3600))
+	updatedAt := createdAt.Add(time.Hour)
+	lastLoginAt := createdAt.Add(2 * time.Hour)
+	sessionExpiresAt := createdAt.Add(14 * 24 * time.Hour)
+
+	result, err := managementLoginSessionResultFromRow(postgresqueries.CompleteManagementLoginRow{
+		ID:                     "sys_user",
+		Username:               "user",
+		DisplayName:            "用户",
+		Description:            pgtype.Text{String: "说明", Valid: true},
+		Role:                   "user",
+		Status:                 "active",
+		MustChangePassword:     true,
+		ImageGenerationEnabled: true,
+		LastLoginAt:            pgtype.Timestamptz{Time: lastLoginAt, Valid: true},
+		CreatedAt:              pgtype.Timestamptz{Time: createdAt, Valid: true},
+		UpdatedAt:              pgtype.Timestamptz{Time: updatedAt, Valid: true},
+		SessionID:              "sess_login",
+		SessionExpiresAt:       pgtype.Timestamptz{Time: sessionExpiresAt, Valid: true},
+	})
+	if err != nil {
+		t.Fatalf("managementLoginSessionResultFromRow() error = %v", err)
+	}
+	if result.Account.ID != "sys_user" ||
+		result.Account.Description != "说明" ||
+		!result.Account.MustChangePassword ||
+		result.Account.LastLoginAt == nil ||
+		!result.Account.LastLoginAt.Equal(lastLoginAt.UTC()) ||
+		result.SessionID != "sess_login" ||
+		!result.SessionExpiresAt.Equal(sessionExpiresAt.UTC()) {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestManagementLoginSessionResultFromRowRejectsMissingSessionExpiry(t *testing.T) {
+	if _, err := managementLoginSessionResultFromRow(postgresqueries.CompleteManagementLoginRow{}); err == nil {
+		t.Fatal("managementLoginSessionResultFromRow() error = nil, want missing session expiry error")
+	}
+}
+
 func TestManagementProfileDisplayNameUniqueViolation(t *testing.T) {
 	err := &pgconn.PgError{Code: "23505", ConstraintName: "idx_system_accounts_display_name_unique_lower"}
 	if !isManagementProfileDisplayNameUniqueViolation(err) {
@@ -161,6 +202,24 @@ func TestManagementAuthSQLSourceGuards(t *testing.T) {
 	if !strings.Contains(credentialQuery, "password_hash") ||
 		!strings.Contains(credentialQuery, "where lower(username) = lower(sqlc.arg(username)::text)") {
 		t.Fatal("password credential SQL must read password_hash only through username credential lookup")
+	}
+	loginQuery := managementAuthSQLBlock(t, normalized, "CompleteManagementLogin")
+	if !strings.Contains(loginQuery, "update juhe_business.system_accounts") ||
+		!strings.Contains(loginQuery, "last_login_at = sqlc.arg(logged_in_at)::timestamptz") ||
+		!strings.Contains(loginQuery, "updated_at = sqlc.arg(logged_in_at)::timestamptz") ||
+		!strings.Contains(loginQuery, "and status = 'active'") ||
+		!strings.Contains(loginQuery, "and password_hash = sqlc.arg(verified_password_hash)::text") {
+		t.Fatal("login SQL must update last_login_at and updated_at only for active account with the verified password hash")
+	}
+	if !strings.Contains(loginQuery, "insert into juhe_business.system_sessions") ||
+		!strings.Contains(loginQuery, "sqlc.arg(token_hash)::text") ||
+		!strings.Contains(loginQuery, "sqlc.arg(expires_at)::timestamptz") ||
+		!strings.Contains(loginQuery, "sqlc.arg(logged_in_at)::timestamptz") {
+		t.Fatal("login SQL must insert session token_hash, expiry, created_at and last_seen_at")
+	}
+	loginReturningIndex := strings.Index(loginQuery, "select")
+	if loginReturningIndex < 0 || strings.Contains(loginQuery[loginReturningIndex:], "password_hash") {
+		t.Fatal("login SQL must not return password_hash")
 	}
 	passwordUpdateQuery := managementAuthSQLBlock(t, normalized, "UpdateManagementCurrentUserPassword")
 	if !strings.Contains(passwordUpdateQuery, "password_hash = sqlc.arg(password_hash)::text") ||

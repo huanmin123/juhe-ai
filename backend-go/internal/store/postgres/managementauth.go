@@ -62,6 +62,28 @@ func (s *Store) FindManagementSystemAccountPasswordByUsername(ctx context.Contex
 	}, true, nil
 }
 
+func (s *Store) CompleteManagementLogin(ctx context.Context, input port.ManagementLoginSessionInput) (port.ManagementLoginSessionResult, bool, error) {
+	row, err := s.queries().CompleteManagementLogin(ctx, postgresqueries.CompleteManagementLoginParams{
+		LoggedInAt:           pgtype.Timestamptz{Time: input.LoggedInAt.UTC(), Valid: true},
+		SystemAccountID:      input.SystemAccountID,
+		VerifiedPasswordHash: input.VerifiedPasswordHash,
+		SessionID:            input.SessionID,
+		TokenHash:            input.TokenHash,
+		ExpiresAt:            pgtype.Timestamptz{Time: input.ExpiresAt.UTC(), Valid: true},
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return port.ManagementLoginSessionResult{}, false, nil
+	}
+	if err != nil {
+		return port.ManagementLoginSessionResult{}, false, fmt.Errorf("complete management login: %w", err)
+	}
+	result, err := managementLoginSessionResultFromRow(row)
+	if err != nil {
+		return port.ManagementLoginSessionResult{}, false, err
+	}
+	return result, true, nil
+}
+
 func (s *Store) UpdateManagementCurrentUserProfile(ctx context.Context, input port.ManagementCurrentUserProfileUpdateInput) (port.ManagementCurrentUserProfileUpdateResult, bool, error) {
 	row, err := s.queries().UpdateManagementCurrentUserProfile(ctx, postgresqueries.UpdateManagementCurrentUserProfileParams{
 		SystemAccountID: input.SystemAccountID,
@@ -163,6 +185,29 @@ func managementPasswordAccountFromRow(row postgresqueries.UpdateManagementCurren
 	}
 }
 
+func managementLoginSessionResultFromRow(row postgresqueries.CompleteManagementLoginRow) (port.ManagementLoginSessionResult, error) {
+	if !row.SessionExpiresAt.Valid {
+		return port.ManagementLoginSessionResult{}, fmt.Errorf("management login session expires_at is null")
+	}
+	return port.ManagementLoginSessionResult{
+		Account: port.ManagementSystemAccountSummary{
+			ID:                     row.ID,
+			Username:               row.Username,
+			DisplayName:            row.DisplayName,
+			Description:            textValue(row.Description),
+			Role:                   row.Role,
+			Status:                 row.Status,
+			MustChangePassword:     row.MustChangePassword,
+			ImageGenerationEnabled: row.ImageGenerationEnabled,
+			LastLoginAt:            timestamptzPtr(row.LastLoginAt),
+			CreatedAt:              timestamptzValue(row.CreatedAt),
+			UpdatedAt:              timestamptzValue(row.UpdatedAt),
+		},
+		SessionID:        row.SessionID,
+		SessionExpiresAt: row.SessionExpiresAt.Time.UTC(),
+	}, nil
+}
+
 func isManagementProfileDisplayNameUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) &&
@@ -175,3 +220,4 @@ var _ port.ManagementSessionRevoker = (*Store)(nil)
 var _ port.ManagementSessionToucher = (*Store)(nil)
 var _ port.ManagementCurrentUserProfileWriter = (*Store)(nil)
 var _ port.ManagementCurrentUserPasswordChanger = (*Store)(nil)
+var _ port.ManagementLoginStore = (*Store)(nil)

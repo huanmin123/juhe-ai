@@ -98,6 +98,87 @@ func TestTrustProxyConfigRejectsInvalidValues(t *testing.T) {
 	}
 }
 
+func TestCookieSameSiteConfig(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		want  string
+	}{
+		{value: "", want: "lax"},
+		{value: "lax", want: "lax"},
+		{value: "strict", want: "strict"},
+		{value: "none", want: "none"},
+		{value: " LAX ", want: "lax"},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			cfg := Config{CookieSameSite: tc.value}
+			got, err := cfg.CookieSameSiteMode()
+			if err != nil {
+				t.Fatalf("CookieSameSiteMode() error = %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("CookieSameSiteMode() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestConfigRejectsInvalidCookieSameSite(t *testing.T) {
+	cfg := Config{
+		Host:            "127.0.0.1",
+		Port:            3000,
+		RedisNamespace:  "juhe-ai",
+		CookieSameSite:  "invalid",
+		ShutdownTimeout: time.Second,
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() error = nil, want invalid cookie same-site error")
+	}
+}
+
+func TestConfigRequiresSecureCookieForSameSiteNone(t *testing.T) {
+	cfg := Config{
+		Host:            "127.0.0.1",
+		Port:            3000,
+		RedisNamespace:  "juhe-ai",
+		CookieSameSite:  "none",
+		ShutdownTimeout: time.Second,
+	}
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_COOKIE_SECURE") {
+		t.Fatalf("Validate() error = %v, want secure cookie dependency error", err)
+	}
+
+	cfg.CookieSecure = true
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestLoadDefaultsSecureCookieInProduction(t *testing.T) {
+	t.Setenv("JUHE_AI_ENV", "production")
+
+	cfg, err := Load(LoadOptions{LoadDotEnv: false})
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.CookieSecure {
+		t.Fatal("CookieSecure = false, want production default true")
+	}
+}
+
+func TestLoadAllowsExplicitCookieSecureOverrideInProduction(t *testing.T) {
+	t.Setenv("JUHE_AI_ENV", "production")
+	t.Setenv("JUHE_AI_COOKIE_SECURE", "false")
+
+	cfg, err := Load(LoadOptions{LoadDotEnv: false})
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.CookieSecure {
+		t.Fatal("CookieSecure = true, want explicit false override")
+	}
+}
+
 func TestConfigRejectsInvalidPort(t *testing.T) {
 	cfg := Config{Host: "127.0.0.1", Port: 70000, RedisNamespace: "juhe-ai", ShutdownTimeout: time.Second}
 	if err := cfg.Validate(); err == nil {
@@ -206,24 +287,47 @@ func TestConfigPublicAPIEnabledRequiresRuntimeDependencies(t *testing.T) {
 }
 
 func TestConfigManagementAPIEnabledRequiresRuntimeDependencies(t *testing.T) {
-	cfg := Config{
+	base := Config{
 		Host:                 "127.0.0.1",
 		Port:                 3000,
 		RedisNamespace:       "juhe-ai",
 		TrustProxy:           "false",
 		ManagementAPIEnabled: true,
+		RedisStateURL:        "redis://127.0.0.1:6379/1",
+		RedisQueueURL:        "redis://127.0.0.1:6379/2",
 		ShutdownTimeout:      time.Second,
 	}
-	err := cfg.Validate()
-	if err == nil {
-		t.Fatal("Validate() error = nil, want management API dependency error")
-	}
-	if got := err.Error(); !strings.Contains(got, "JUHE_AI_REDIS_QUEUE_URL") {
-		t.Fatalf("Validate() error = %q, want queue url dependency error", got)
+
+	for _, tc := range []struct {
+		name string
+		edit func(*Config)
+		want string
+	}{
+		{
+			name: "state redis",
+			edit: func(cfg *Config) { cfg.RedisStateURL = "" },
+			want: "JUHE_AI_REDIS_STATE_URL",
+		},
+		{
+			name: "queue redis",
+			edit: func(cfg *Config) { cfg.RedisQueueURL = "" },
+			want: "JUHE_AI_REDIS_QUEUE_URL",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := base
+			tc.edit(&cfg)
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("Validate() error = nil, want management API dependency error")
+			}
+			if got := err.Error(); !strings.Contains(got, tc.want) {
+				t.Fatalf("Validate() error = %q, want contains %q", got, tc.want)
+			}
+		})
 	}
 
-	cfg.RedisQueueURL = "redis://127.0.0.1:6379/2"
-	if err := cfg.Validate(); err != nil {
+	if err := base.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}
 }
@@ -248,6 +352,7 @@ func TestLoadParsesPublicAPIEnv(t *testing.T) {
 
 func TestLoadParsesManagementAPIEnv(t *testing.T) {
 	t.Setenv("JUHE_AI_MANAGEMENT_API_ENABLED", "true")
+	t.Setenv("JUHE_AI_REDIS_STATE_URL", "redis://127.0.0.1:6379/1")
 	t.Setenv("JUHE_AI_REDIS_QUEUE_URL", "redis://127.0.0.1:6379/2")
 
 	cfg, err := Load(LoadOptions{LoadDotEnv: false})

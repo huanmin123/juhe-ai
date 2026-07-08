@@ -36,6 +36,65 @@ FROM juhe_business.system_accounts
 WHERE lower(username) = lower(sqlc.arg(username)::text)
 LIMIT 1;
 
+-- name: CompleteManagementLogin :one
+WITH updated_account AS (
+  UPDATE juhe_business.system_accounts
+  SET
+    last_login_at = sqlc.arg(logged_in_at)::timestamptz,
+    updated_at = sqlc.arg(logged_in_at)::timestamptz
+  WHERE id = sqlc.arg(system_account_id)::text
+    AND status = 'active'
+    AND password_hash = sqlc.arg(verified_password_hash)::text
+  RETURNING
+    id,
+    username,
+    display_name,
+    description,
+    role,
+    status,
+    must_change_password,
+    image_generation_enabled,
+    last_login_at,
+    created_at,
+    updated_at
+), inserted_session AS (
+  INSERT INTO juhe_business.system_sessions (
+    id,
+    system_account_id,
+    token_hash,
+    expires_at,
+    created_at,
+    last_seen_at
+  )
+  SELECT
+    sqlc.arg(session_id)::text,
+    updated_account.id,
+    sqlc.arg(token_hash)::text,
+    sqlc.arg(expires_at)::timestamptz,
+    sqlc.arg(logged_in_at)::timestamptz,
+    sqlc.arg(logged_in_at)::timestamptz
+  FROM updated_account
+  RETURNING
+    id AS session_id,
+    expires_at AS session_expires_at
+)
+SELECT
+  updated_account.id,
+  updated_account.username,
+  updated_account.display_name,
+  updated_account.description,
+  updated_account.role,
+  updated_account.status,
+  updated_account.must_change_password,
+  updated_account.image_generation_enabled,
+  updated_account.last_login_at,
+  updated_account.created_at,
+  updated_account.updated_at,
+  inserted_session.session_id,
+  inserted_session.session_expires_at
+FROM updated_account
+CROSS JOIN inserted_session;
+
 -- name: UpdateManagementCurrentUserProfile :one
 WITH current_account AS (
   SELECT

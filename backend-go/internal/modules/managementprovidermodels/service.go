@@ -245,20 +245,6 @@ func (s *Service) optionProviderCodes(ctx context.Context, protocol string) ([]s
 	return dedupeStrings(codes), nil
 }
 
-func (s *Service) expandProviderCodes(ctx context.Context, providerCodes []string) ([]string, []string, error) {
-	builtInCodes := []string{}
-	customCodes := []string{}
-	for _, providerCode := range providerCodes {
-		builtIn, custom, err := s.sourceProviderCodes(ctx, providerCode)
-		if err != nil {
-			return nil, nil, err
-		}
-		builtInCodes = append(builtInCodes, builtIn...)
-		customCodes = append(customCodes, custom...)
-	}
-	return dedupeStrings(builtInCodes), dedupeStrings(customCodes), nil
-}
-
 func optionSourceProviderCodes(providerCodes []string) ([]string, []string) {
 	builtInCodes := make([]string, 0, len(providerCodes))
 	customCodes := make([]string, 0, len(providerCodes))

@@ -95,6 +95,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementAPIAuthMiddleware:                     managementHandlers.AuthMiddleware,
 		ManagementAPIAuthTouchMiddleware:                managementHandlers.AuthTouchMiddleware,
 		ManagementCaptchaHandler:                        managementHandlers.CaptchaHandler,
+		ManagementLoginHandler:                          managementHandlers.LoginHandler,
 		ManagementCurrentUserHandler:                    managementHandlers.CurrentUserHandler,
 		ManagementProfileUpdateHandler:                  managementHandlers.ProfileUpdateHandler,
 		ManagementPasswordChangeHandler:                 managementHandlers.PasswordChangeHandler,
@@ -163,6 +164,7 @@ type managementAPIHandlers struct {
 	AuthMiddleware                        func(http.Handler) http.Handler
 	AuthTouchMiddleware                   func(http.Handler) http.Handler
 	CaptchaHandler                        http.Handler
+	LoginHandler                          http.Handler
 	CurrentUserHandler                    http.Handler
 	ProfileUpdateHandler                  http.Handler
 	PasswordChangeHandler                 http.Handler
@@ -210,6 +212,8 @@ func newManagementAPIHandler(
 	}
 	authenticator := managementauth.NewAuthenticator(managementauth.AuthenticatorOptions{Store: store})
 	captchaService := managementauth.NewCaptchaService(stateRedis)
+	loginGuardService := managementauth.NewLoginGuardService(stateRedis)
+	loginService := managementauth.NewLoginService(store, captchaService, loginGuardService)
 	profileService := managementauth.NewProfileService(store)
 	passwordService := managementauth.NewPasswordService(store)
 	proxyService := managementproxies.NewService(store)
@@ -230,6 +234,7 @@ func newManagementAPIHandler(
 		AuthMiddleware:                        httpapi.NewManagementAPIAuthMiddleware(authenticator),
 		AuthTouchMiddleware:                   httpapi.NewManagementAPIAuthTouchMiddleware(authenticator),
 		CaptchaHandler:                        httpapi.NewManagementCaptchaHandler(captchaService, cfg),
+		LoginHandler:                          httpapi.NewManagementLoginHandler(loginService, cfg),
 		CurrentUserHandler:                    httpapi.NewManagementCurrentUserHandler(authenticator),
 		ProfileUpdateHandler:                  httpapi.NewManagementProfileUpdateHandlerWithOperationLog(profileService, operationLogOptions),
 		PasswordChangeHandler:                 httpapi.NewManagementPasswordChangeHandler(authenticator, passwordService),

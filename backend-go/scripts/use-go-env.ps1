@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 
-$GoRoot = 'E:\gosdk\go1.26.4'
+$GoRoot = 'E:\gosdk\go1.26.5'
 $W64DevkitBin = 'E:\tools\w64devkit-2.8.0\w64devkit\bin'
 $GoCliBin = 'C:\Users\Administrator\go\bin'
 
@@ -17,7 +17,7 @@ $existingPath = @($env:Path -split ';' | Where-Object { $_ -and ($pathPrefix -no
 $env:Path = (($pathPrefix + $existingPath) -join ';')
 
 $goVersion = (& go version)
-if ($goVersion -notmatch 'go1\.26\.4') {
+if ($goVersion -notmatch 'go1\.26\.5') {
     throw "Unexpected Go version: $goVersion"
 }
 

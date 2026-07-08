@@ -381,19 +381,6 @@ func tagUpdateAccountFromPort(row port.ManagementAccountTagUpdateAccount) TagUpd
 	}
 }
 
-func tagsFromPort(rows []port.ManagementAccountTag) []Tag {
-	tags := make([]Tag, 0, len(rows))
-	for _, row := range rows {
-		tags = append(tags, Tag{
-			ID:        row.ID,
-			Name:      row.Name,
-			CreatedAt: row.CreatedAt.UTC().Format(time.RFC3339Nano),
-			UpdatedAt: row.UpdatedAt.UTC().Format(time.RFC3339Nano),
-		})
-	}
-	return tags
-}
-
 func tagUpdateTagsFromPort(rows []port.ManagementAccountTag) []TagUpdateTag {
 	tags := make([]TagUpdateTag, 0, len(rows))
 	for _, row := range rows {

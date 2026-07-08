@@ -9,6 +9,8 @@
 - Go 原生优先：能用标准库稳定解决的问题，不为“方便”引入重型框架。
 - 不手写通用基础设施：路由、配置解析、SQL 类型生成、数据库迁移、Redis 客户端、异步任务、测试容器、指标和安全扫描使用成熟工具。
 - 不复制 Node 复杂度：不把事件循环规避、SQLite 单写者、IPC pending、本地队列胶水迁到 Go。
+- 不复制 Node 补偿代码：旧数据、旧字段、旧状态或历史部署不符合当前契约时，Go 运行路径默认 fail-fast / 明确报错；不新增长期 fallback、自动补偿、静默修复或双结构兼容。确需修复历史数据时只记录离线 SQL、离线脚本或重建步骤。
+- 善用 Go 语言能力：泛型、接口组合、反射、代码生成和模板化测试可以用于收敛重复 DTO 映射、字段校验、响应 envelope、option 解析和 store adapter 样板；使用前必须保证可读、可测、错误显式，且第三方库 / 反射细节不穿透业务 service。
 - 依赖不穿透业务：第三方库只允许出现在 `internal/platform/`、`internal/store/`、`internal/jobs/`、`internal/httpapi/`、`internal/testkit/` 等基础设施层；模块 service 和业务 port 使用项目自定义类型。
 - 每个依赖必须有替换边界：外部库升级、替换或下线时，只改 adapter / platform 层，不改业务模块。
 
@@ -104,7 +106,7 @@ W0 当前只表示工程和基础设施 PoC 的版本基线；后续升级依赖
 
 | 类型 | 当前版本 / 模块 | 验证状态 |
 | --- | --- | --- |
-| Go | `go1.26.4 windows/amd64` | `go test ./...`、`go test -race ./...`、`go vet ./...` 已通过 |
+| Go | `go1.26.5 windows/amd64` | `go test ./...`、`go test -race ./...`、`go vet ./...` 已通过 |
 | Windows C 工具链 | w64devkit `2.8.0`，GCC `16.1.0` | 用于 Windows race，已替换旧 MinGW race 失败路径 |
 | Router | `github.com/go-chi/chi/v5 v5.3.0` | W0 health / metrics 路由已通过 smoke |
 | ResponseWriter 包装 | `github.com/felixge/httpsnoop v1.0.4` | W1b HTTP shell / capture 用于保留底层 writer 可选接口组合，已覆盖 499、`Unwrap` / `ResponseController.Flush`、`Flush` 和 `ReadFrom` 契约测试 |

@@ -27,6 +27,8 @@ type Config struct {
 	PublicAPIEnabled     bool          `env:"JUHE_AI_PUBLIC_API_ENABLED" envDefault:"false"`
 	ManagementAPIEnabled bool          `env:"JUHE_AI_MANAGEMENT_API_ENABLED" envDefault:"false"`
 	TrustProxy           string        `env:"JUHE_AI_TRUST_PROXY" envDefault:"false"`
+	CookieSecure         bool          `env:"JUHE_AI_COOKIE_SECURE" envDefault:"false"`
+	CookieSameSite       string        `env:"JUHE_AI_COOKIE_SAME_SITE" envDefault:"lax"`
 	MetricsEnabled       bool          `env:"JUHE_AI_METRICS_ENABLED" envDefault:"false"`
 	PprofEnabled         bool          `env:"JUHE_AI_PPROF_ENABLED" envDefault:"false"`
 	ShutdownTimeout      time.Duration `env:"JUHE_AI_SHUTDOWN_TIMEOUT" envDefault:"15s"`
@@ -51,12 +53,19 @@ func Load(opts LoadOptions) (Config, error) {
 	if err := env.Parse(&cfg); err != nil {
 		return Config{}, fmt.Errorf("读取 Go 后端环境变量失败: %w", err)
 	}
+	applyProductionCookieDefaults(&cfg)
 
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
 
 	return cfg, nil
+}
+
+func applyProductionCookieDefaults(cfg *Config) {
+	if strings.EqualFold(strings.TrimSpace(cfg.Env), "production") && os.Getenv("JUHE_AI_COOKIE_SECURE") == "" {
+		cfg.CookieSecure = true
+	}
 }
 
 func (cfg Config) Validate() error {
@@ -74,6 +83,12 @@ func (cfg Config) Validate() error {
 	}
 	if _, err := cfg.TrustProxyConfig(); err != nil {
 		return err
+	}
+	if _, err := cfg.CookieSameSiteMode(); err != nil {
+		return err
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.CookieSameSite), "none") && !cfg.CookieSecure {
+		return fmt.Errorf("JUHE_AI_COOKIE_SAME_SITE=none 时必须启用 JUHE_AI_COOKIE_SECURE=true")
 	}
 	if err := validatePublicAPIConfig(cfg); err != nil {
 		return err
@@ -111,6 +126,19 @@ func (cfg Config) TrustProxyConfig() (TrustProxyConfig, error) {
 		return TrustProxyConfig{}, nil
 	}
 	return TrustProxyConfig{Enabled: true, Hops: hops}, nil
+}
+
+func (cfg Config) CookieSameSiteMode() (string, error) {
+	value := strings.ToLower(strings.TrimSpace(cfg.CookieSameSite))
+	if value == "" {
+		value = "lax"
+	}
+	switch value {
+	case "lax", "strict", "none":
+		return value, nil
+	default:
+		return "", fmt.Errorf("JUHE_AI_COOKIE_SAME_SITE 只能配置为 lax、strict 或 none")
+	}
 }
 
 func validateDistinctRedisURLs(cfg Config) error {
@@ -163,6 +191,9 @@ func validatePublicAPIConfig(cfg Config) error {
 func validateManagementAPIConfig(cfg Config) error {
 	if !cfg.ManagementAPIEnabled {
 		return nil
+	}
+	if strings.TrimSpace(cfg.RedisStateURL) == "" {
+		return fmt.Errorf("启用 JUHE_AI_MANAGEMENT_API_ENABLED 时 JUHE_AI_REDIS_STATE_URL 不能为空")
 	}
 	if strings.TrimSpace(cfg.RedisQueueURL) == "" {
 		return fmt.Errorf("启用 JUHE_AI_MANAGEMENT_API_ENABLED 时 JUHE_AI_REDIS_QUEUE_URL 不能为空")

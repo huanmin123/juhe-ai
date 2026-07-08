@@ -70,6 +70,7 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 	if handlers.AuthMiddleware != nil ||
 		handlers.AuthTouchMiddleware != nil ||
 		handlers.CaptchaHandler != nil ||
+		handlers.LoginHandler != nil ||
 		handlers.CurrentUserHandler != nil ||
 		handlers.ProfileUpdateHandler != nil ||
 		handlers.PasswordChangeHandler != nil ||
@@ -111,6 +112,7 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 	if handlers.AuthMiddleware == nil ||
 		handlers.AuthTouchMiddleware == nil ||
 		handlers.CaptchaHandler == nil ||
+		handlers.LoginHandler == nil ||
 		handlers.CurrentUserHandler == nil ||
 		handlers.ProfileUpdateHandler == nil ||
 		handlers.PasswordChangeHandler == nil ||

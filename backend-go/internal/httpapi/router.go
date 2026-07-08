@@ -24,6 +24,7 @@ type RouterOptions struct {
 	ManagementAPIAuthMiddleware                     func(http.Handler) http.Handler
 	ManagementAPIAuthTouchMiddleware                func(http.Handler) http.Handler
 	ManagementCaptchaHandler                        http.Handler
+	ManagementLoginHandler                          http.Handler
 	ManagementCurrentUserHandler                    http.Handler
 	ManagementProfileUpdateHandler                  http.Handler
 	ManagementPasswordChangeHandler                 http.Handler
@@ -91,6 +92,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			managementAPIWriteAuthMiddleware := opts.ManagementAPIAuthTouchMiddleware
 			if opts.ManagementCaptchaHandler == nil &&
+				opts.ManagementLoginHandler == nil &&
 				opts.ManagementCurrentUserHandler == nil &&
 				opts.ManagementProfileUpdateHandler == nil &&
 				opts.ManagementPasswordChangeHandler == nil &&
@@ -128,6 +130,9 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementCaptchaHandler != nil {
 				system.Get("/auth/captcha", opts.ManagementCaptchaHandler.ServeHTTP)
+			}
+			if opts.ManagementLoginHandler != nil {
+				system.Post("/auth/login", opts.ManagementLoginHandler.ServeHTTP)
 			}
 			if opts.ManagementCurrentUserHandler != nil {
 				system.Get("/auth/me", opts.ManagementCurrentUserHandler.ServeHTTP)

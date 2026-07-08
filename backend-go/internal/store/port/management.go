@@ -28,9 +28,9 @@ type ManagementSessionRevoker interface {
 }
 
 type ManagementSessionTouchInput struct {
-	SessionID  string
-	TouchedAt  time.Time
-	Cutoff     time.Time
+	SessionID string
+	TouchedAt time.Time
+	Cutoff    time.Time
 }
 
 type ManagementSessionToucher interface {
@@ -79,6 +79,26 @@ type ManagementCurrentUserPasswordChanger interface {
 	FindManagementSystemAccountPasswordByUsername(ctx context.Context, username string) (ManagementSystemAccountPasswordCredential, bool, error)
 	UpdateManagementCurrentUserPassword(ctx context.Context, input ManagementCurrentUserPasswordUpdateInput) (ManagementSystemAccountSummary, bool, error)
 	RevokeOtherManagementSessionsForAccount(ctx context.Context, systemAccountID string, keepSessionID string) error
+}
+
+type ManagementLoginSessionInput struct {
+	SystemAccountID      string
+	VerifiedPasswordHash string
+	SessionID            string
+	TokenHash            string
+	LoggedInAt           time.Time
+	ExpiresAt            time.Time
+}
+
+type ManagementLoginSessionResult struct {
+	Account          ManagementSystemAccountSummary
+	SessionID        string
+	SessionExpiresAt time.Time
+}
+
+type ManagementLoginStore interface {
+	FindManagementSystemAccountPasswordByUsername(ctx context.Context, username string) (ManagementSystemAccountPasswordCredential, bool, error)
+	CompleteManagementLogin(ctx context.Context, input ManagementLoginSessionInput) (ManagementLoginSessionResult, bool, error)
 }
 
 type ManagementProxyOption struct {
