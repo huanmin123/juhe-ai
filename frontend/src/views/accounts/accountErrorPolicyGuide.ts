@@ -64,7 +64,7 @@ export const accountErrorPolicyGuideSources: AccountErrorPolicyGuideSource[] = [
   {
     key: 'audit',
     name: '原始审计日志',
-    where: '找到失败请求，查看上游尝试的状态码、响应体和错误摘要',
+    where: '找到失败请求，查看请求链路的状态码、响应体和错误摘要',
     note: '最接近真实客户端链路，适合生产问题取样'
   },
   {

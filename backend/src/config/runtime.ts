@@ -82,9 +82,6 @@ export interface RuntimeConfig {
     upstreamAgentMaxFreeSockets: number
     upstreamAgentMaxTotalSockets: number
   }
-  audit: {
-    fullBodyCaptureEnabled: boolean
-  }
   modelCheck: {
     probeRetryDelayMs: number
   }
@@ -298,9 +295,6 @@ export const runtimeConfig: RuntimeConfig = {
     upstreamAgentMaxSockets: numberConfig('JUHE_AI_GATEWAY_UPSTREAM_AGENT_MAX_SOCKETS', 2048, 64, 20000),
     upstreamAgentMaxFreeSockets: numberConfig('JUHE_AI_GATEWAY_UPSTREAM_AGENT_MAX_FREE_SOCKETS', 512, 16, 5000),
     upstreamAgentMaxTotalSockets: numberConfig('JUHE_AI_GATEWAY_UPSTREAM_AGENT_MAX_TOTAL_SOCKETS', 8192, 64, 50000)
-  },
-  audit: {
-    fullBodyCaptureEnabled: booleanConfig('JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED', true)
   },
   modelCheck: {
     probeRetryDelayMs: numberConfig('JUHE_AI_MODEL_CHECK_PROBE_RETRY_DELAY_MS', defaultModelCheckProbeRetryDelayMs, 0, 300000)

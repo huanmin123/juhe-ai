@@ -31,12 +31,19 @@
         </a-descriptions>
 
         <a-tabs>
-          <a-tab-pane key="attempts" tab="上游尝试">
+          <a-tab-pane key="attempts" tab="请求链路">
+            <a-alert
+              v-if="requestChainHasOnlyMetadata"
+              class="request-chain-alert"
+              type="warning"
+              show-icon
+              message="当前记录没有保存客户端请求、上游请求、上游响应或返回客户端的原始请求/响应。"
+            />
             <ResponsiveDataList
               table-class="audit-detail-table"
               size="small"
-              :columns="attemptColumns"
-              :data-source="detail.attempts"
+              :columns="requestChainColumns"
+              :data-source="requestChainRows"
               row-key="id"
               :pagination="false"
               :table-scroll-enabled="false"
@@ -45,53 +52,72 @@
               :lock-body-scroll="false"
             >
               <template #bodyCell="{ column, record }">
-                <template v-if="column.key === 'success'">
-                  <a-tag :color="record.success ? 'green' : 'red'">{{ record.success ? '成功' : '失败' }}</a-tag>
+                <template v-if="column.key === 'step'">
+                  <div class="chain-step-cell">
+                    <a-tag>{{ record.phaseText }}</a-tag>
+                    <span>{{ record.title }}</span>
+                  </div>
                 </template>
                 <template v-else-if="column.key === 'account'">
                   <span class="attempt-account-cell">{{ displayName(record.accountName, record.accountId) }}</span>
                 </template>
-                <template v-else-if="column.key === 'startedAt'">
-                  <span class="detail-time-cell muted-cell">{{ formatDateTime(record.startedAt) }}</span>
+                <template v-else-if="column.key === 'status'">
+                  <a-tag :color="record.success === undefined ? 'default' : record.success ? 'green' : 'red'">{{ record.statusText }}</a-tag>
+                </template>
+                <template v-else-if="column.key === 'time'">
+                  <span class="detail-time-cell muted-cell">{{ record.time ? formatDateTime(record.time) : '-' }}</span>
                 </template>
                 <template v-else-if="column.key === 'duration'">
                   {{ formatDuration(record.durationMs) }}
                 </template>
+                <template v-else-if="column.key === 'size'">
+                  {{ record.sizeBytes === undefined ? '-' : formatBytes(record.sizeBytes) }}
+                </template>
+                <template v-else-if="column.key === 'captureStatus'">
+                  <a-tooltip v-if="record.payload" :title="payloadCaptureStatusDescription(record.payload)">
+                    <a-tag>{{ captureStatusText(record.captureStatus) }}</a-tag>
+                  </a-tooltip>
+                  <span v-else class="muted-cell">-</span>
+                </template>
                 <template v-else-if="column.key === 'url'">
-                  <span class="url-cell">{{ record.upstreamUrl || '-' }}</span>
+                  <span class="url-cell">{{ record.url || '-' }}</span>
                 </template>
                 <template v-else-if="column.key === 'error'">
                   <span class="error-cell">{{ record.errorMessage || '-' }}</span>
+                </template>
+                <template v-else-if="column.key === 'actions'">
+                  <RowActions :actions="requestChainActions(record)" @action-click="handleRequestChainAction(record)" />
                 </template>
               </template>
               <template #card="{ record }">
                 <article class="payload-mobile-card">
                   <div class="payload-mobile-card-head">
-                    <a-tag :color="record.success ? 'green' : 'red'">{{ record.success ? '成功' : '失败' }}</a-tag>
-                    <span>{{ formatDuration(record.durationMs) }}</span>
+                    <a-tag>{{ record.phaseText }}</a-tag>
+                    <span>{{ record.sizeBytes === undefined ? '-' : formatBytes(record.sizeBytes) }}</span>
                   </div>
                   <div class="payload-mobile-card-grid">
-                    <span>序号</span>
-                    <strong>{{ record.attemptIndex }}</strong>
+                    <span>步骤</span>
+                    <strong>{{ record.title }}</strong>
                     <span>AI账户</span>
                     <strong>{{ displayName(record.accountName, record.accountId) }}</strong>
                     <span>状态码</span>
-                    <strong>{{ record.upstreamStatusCode ?? '-' }}</strong>
+                    <strong>{{ record.statusText }}</strong>
                     <span>时间</span>
-                    <strong>{{ formatDateTime(record.startedAt) }}</strong>
+                    <strong>{{ record.time ? formatDateTime(record.time) : '-' }}</strong>
                     <span>上游 URL</span>
-                    <strong>{{ record.upstreamUrl }}</strong>
+                    <strong>{{ record.url || '-' }}</strong>
                   </div>
+                  <RowActions :actions="requestChainActions(record)" variant="button" @action-click="handleRequestChainAction(record)" />
                 </article>
               </template>
             </ResponsiveDataList>
           </a-tab-pane>
-          <a-tab-pane key="payloads" tab="原始内容">
+          <a-tab-pane key="payloads" tab="原始请求">
             <ResponsiveDataList
               table-class="audit-payload-table"
               size="small"
               :columns="payloadColumns"
-              :data-source="detail.payloads"
+              :data-source="orderedPayloads"
               row-key="id"
               :pagination="false"
               :table-scroll-enabled="false"
@@ -210,7 +236,13 @@ import ReadonlyCodeViewer from '@/components/ReadonlyCodeViewer.vue'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
-import type { AuditLogDetail, AuditLogPayloadDetail } from '@/types/domain'
+import type {
+  AuditLogAttemptSummary,
+  AuditLogDetail,
+  AuditLogPayloadDetail,
+  AuditLogPayloadSummary,
+  AuditPayloadPartType
+} from '@/types/domain'
 import {
   captureStatusText,
   displayAuditGroupName,
@@ -224,7 +256,7 @@ import {
   prettyJson,
   trafficSourceText
 } from './auditLogFormatters'
-import { auditAttemptColumns, auditPayloadColumns } from './auditLogTableColumns'
+import { auditPayloadColumns } from './auditLogTableColumns'
 import {
   payloadBodyHashMissingText,
   payloadBodyUnavailableText,
@@ -248,13 +280,280 @@ const emit = defineEmits<{
   (event: 'update:open', value: boolean): void
 }>()
 
-const attemptColumns = auditAttemptColumns
+interface RequestChainRow {
+  id: string
+  sequenceText: string
+  phaseText: string
+  title: string
+  partType: AuditPayloadPartType
+  accountId?: string
+  accountName?: string
+  success?: boolean
+  statusText: string
+  time?: string
+  durationMs?: number
+  sizeBytes?: number
+  captureStatus?: string
+  url?: string
+  errorMessage?: string
+  payload?: AuditLogPayloadSummary
+}
+
+const requestChainColumns = [
+  { title: '#', dataIndex: 'sequenceText', width: 48 },
+  { title: '步骤', key: 'step', width: 170 },
+  { title: 'AI账户', key: 'account', width: 130 },
+  { title: '状态', key: 'status', width: 82 },
+  { title: '时间', key: 'time', width: 132 },
+  { title: '耗时', key: 'duration', width: 70 },
+  { title: '大小', key: 'size', width: 78 },
+  { title: '捕获', key: 'captureStatus', width: 82 },
+  { title: '目标 / 错误', key: 'url', width: 240 },
+  { title: '原始请求', key: 'actions', width: 74 }
+]
+
 const payloadColumns = auditPayloadColumns
 const payloadContentTab = ref<'headers' | 'body'>('body')
 const payloadCodeViewer = ref<{
   copyDisplayText: () => Promise<void>
   openSearch: () => Promise<void>
 }>()
+
+const orderedPayloads = computed(() => {
+  const payloads = props.detail?.payloads ?? []
+  return [...payloads].sort(compareAuditPayloadForDisplay)
+})
+
+const requestChainHasOnlyMetadata = computed(() => {
+  const payloads = props.detail?.payloads ?? []
+  return payloads.length === 0 || payloads.every((payload) => payload.partType === 'gateway_metadata')
+})
+
+const requestChainRows = computed<RequestChainRow[]>(() => {
+  const detail = props.detail
+  if (!detail) return []
+
+  const payloads = [...detail.payloads].sort((left, right) => left.sequenceIndex - right.sequenceIndex)
+  const attemptById = new Map(detail.attempts.map((attempt) => [attempt.id, attempt]))
+  const payloadsByAttemptPart = new Map<string, AuditLogPayloadSummary[]>()
+  const payloadsByPart = new Map<AuditPayloadPartType, AuditLogPayloadSummary[]>()
+
+  for (const payload of payloads) {
+    if (payload.partType === 'gateway_metadata') continue
+    if (payload.attemptId) {
+      const key = attemptPartKey(payload.attemptId, payload.partType)
+      const bucket = payloadsByAttemptPart.get(key) ?? []
+      bucket.push(payload)
+      payloadsByAttemptPart.set(key, bucket)
+      continue
+    }
+    const bucket = payloadsByPart.get(payload.partType) ?? []
+    bucket.push(payload)
+    payloadsByPart.set(payload.partType, bucket)
+  }
+
+  const usedPayloadIds = new Set<string>()
+  const rows: RequestChainRow[] = []
+  const nextSequence = () => String(rows.length + 1)
+  const takePayload = (partType: AuditPayloadPartType, attemptId?: string): AuditLogPayloadSummary | undefined => {
+    const bucket = attemptId
+      ? payloadsByAttemptPart.get(attemptPartKey(attemptId, partType))
+      : payloadsByPart.get(partType)
+    const payload = bucket?.shift()
+    if (payload) usedPayloadIds.add(payload.id)
+    return payload
+  }
+
+  const clientPayload = takePayload('client_request')
+  rows.push(createClientRequestRow(detail, clientPayload, nextSequence()))
+
+  const attempts = [...detail.attempts].sort((left, right) => left.attemptIndex - right.attemptIndex)
+  for (const attempt of attempts) {
+    const upstreamRequest = takePayload('upstream_request', attempt.id)
+    rows.push(createUpstreamRequestRow(attempt, upstreamRequest, nextSequence()))
+
+    const upstreamResponse = takePayload('upstream_response', attempt.id)
+    rows.push(createUpstreamResponseRow(attempt, upstreamResponse, nextSequence()))
+  }
+
+  const gatewayPayload = takePayload(detail.success ? 'gateway_response' : 'gateway_error')
+    ?? takePayload('gateway_response')
+    ?? takePayload('gateway_error')
+  rows.push(createGatewayResultRow(detail, gatewayPayload, nextSequence()))
+
+  for (const payload of payloads) {
+    if (payload.partType === 'gateway_metadata' || usedPayloadIds.has(payload.id)) continue
+    rows.push(createPayloadOnlyRow(detail, payload, attemptById.get(payload.attemptId ?? ''), nextSequence()))
+  }
+
+  return rows
+})
+
+function compareAuditPayloadForDisplay(left: AuditLogPayloadSummary, right: AuditLogPayloadSummary): number {
+  const leftMetadata = left.partType === 'gateway_metadata' ? 1 : 0
+  const rightMetadata = right.partType === 'gateway_metadata' ? 1 : 0
+  if (leftMetadata !== rightMetadata) return leftMetadata - rightMetadata
+  return left.sequenceIndex - right.sequenceIndex
+}
+
+function attemptPartKey(attemptId: string, partType: AuditPayloadPartType): string {
+  return `${attemptId}:${partType}`
+}
+
+function createClientRequestRow(
+  detail: AuditLogDetail,
+  payload: AuditLogPayloadSummary | undefined,
+  sequenceText: string
+): RequestChainRow {
+  const target = auditDetailPath(detail)
+  return {
+    id: payload?.id ?? `client-request:${detail.id}`,
+    sequenceText,
+    phaseText: payloadPartText('client_request'),
+    title: `${detail.method} ${target}`,
+    partType: 'client_request',
+    statusText: '收到请求',
+    time: payload?.createdAt ?? detail.startedAt,
+    sizeBytes: payload?.sizeBytes,
+    captureStatus: payload?.captureStatus,
+    url: target,
+    payload
+  }
+}
+
+function createUpstreamRequestRow(
+  attempt: AuditLogAttemptSummary,
+  payload: AuditLogPayloadSummary | undefined,
+  sequenceText: string
+): RequestChainRow {
+  return {
+    id: payload?.id ?? `upstream-request:${attempt.id}`,
+    sequenceText,
+    phaseText: payloadPartText('upstream_request'),
+    title: `第 ${attempt.attemptIndex} 次上游请求`,
+    partType: 'upstream_request',
+    accountId: attempt.accountId,
+    accountName: attempt.accountName,
+    statusText: '已发起',
+    time: payload?.createdAt ?? attempt.startedAt,
+    sizeBytes: payload?.sizeBytes,
+    captureStatus: payload?.captureStatus,
+    url: attempt.upstreamUrl,
+    payload
+  }
+}
+
+function createUpstreamResponseRow(
+  attempt: AuditLogAttemptSummary,
+  payload: AuditLogPayloadSummary | undefined,
+  sequenceText: string
+): RequestChainRow {
+  return {
+    id: payload?.id ?? `upstream-response:${attempt.id}`,
+    sequenceText,
+    phaseText: payloadPartText('upstream_response'),
+    title: `第 ${attempt.attemptIndex} 次上游响应`,
+    partType: 'upstream_response',
+    accountId: attempt.accountId,
+    accountName: attempt.accountName,
+    success: attempt.success,
+    statusText: upstreamAttemptStatusText(attempt),
+    time: payload?.createdAt ?? attempt.endedAt ?? attempt.startedAt,
+    durationMs: attempt.durationMs,
+    sizeBytes: payload?.sizeBytes,
+    captureStatus: payload?.captureStatus,
+    url: attempt.errorMessage || attempt.upstreamUrl,
+    errorMessage: attempt.errorMessage,
+    payload
+  }
+}
+
+function createGatewayResultRow(
+  detail: AuditLogDetail,
+  payload: AuditLogPayloadSummary | undefined,
+  sequenceText: string
+): RequestChainRow {
+  const partType = payload?.partType ?? (detail.success ? 'gateway_response' : 'gateway_error')
+  return {
+    id: payload?.id ?? `gateway-result:${detail.id}`,
+    sequenceText,
+    phaseText: payloadPartText(partType),
+    title: detail.success ? '返回客户端' : '网关错误',
+    partType,
+    accountId: detail.accountId,
+    accountName: detail.accountName,
+    success: detail.success,
+    statusText: gatewayStatusText(detail),
+    time: payload?.createdAt ?? detail.endedAt,
+    durationMs: detail.durationMs,
+    sizeBytes: payload?.sizeBytes,
+    captureStatus: payload?.captureStatus,
+    url: detail.errorMessage || auditDetailPath(detail),
+    errorMessage: detail.errorMessage,
+    payload
+  }
+}
+
+function createPayloadOnlyRow(
+  detail: AuditLogDetail,
+  payload: AuditLogPayloadSummary,
+  attempt: AuditLogAttemptSummary | undefined,
+  sequenceText: string
+): RequestChainRow {
+  return {
+    id: payload.id,
+    sequenceText,
+    phaseText: payloadPartText(payload.partType),
+    title: payloadPartText(payload.partType),
+    partType: payload.partType,
+    accountId: attempt?.accountId ?? detail.accountId,
+    accountName: attempt?.accountName ?? detail.accountName,
+    success: payload.partType === 'upstream_response' ? attempt?.success : undefined,
+    statusText: payloadOnlyStatusText(payload, attempt),
+    time: payload.createdAt,
+    durationMs: attempt?.durationMs,
+    sizeBytes: payload.sizeBytes,
+    captureStatus: payload.captureStatus,
+    url: attempt?.errorMessage || attempt?.upstreamUrl || detail.errorMessage || auditDetailPath(detail),
+    errorMessage: attempt?.errorMessage ?? detail.errorMessage,
+    payload
+  }
+}
+
+function upstreamAttemptStatusText(attempt: AuditLogAttemptSummary): string {
+  if (attempt.upstreamStatusCode !== undefined) return String(attempt.upstreamStatusCode)
+  return attempt.success ? '成功' : '失败'
+}
+
+function gatewayStatusText(detail: AuditLogDetail): string {
+  if (detail.finalStatusCode !== undefined) return String(detail.finalStatusCode)
+  return outcomeText(detail.auditOutcome)
+}
+
+function payloadOnlyStatusText(
+  payload: AuditLogPayloadSummary,
+  attempt: AuditLogAttemptSummary | undefined
+): string {
+  if (payload.partType === 'upstream_response' && attempt) return upstreamAttemptStatusText(attempt)
+  if (payload.partType === 'gateway_response') return '返回'
+  if (payload.partType === 'gateway_error') return '错误'
+  return '已捕获'
+}
+
+function auditDetailPath(detail: AuditLogDetail): string {
+  return detail.queryString ? `${detail.path}?${detail.queryString}` : detail.path
+}
+
+function readablePayload(record?: AuditLogPayloadSummary): boolean {
+  return Boolean(record && (record.hasHeaders || record.hasBody))
+}
+
+function payloadActionLabel(record: AuditPayloadRow): string {
+  if (!record.hasBody && record.hasHeaders) return '查看 Headers'
+  if (record.partType === 'upstream_response' || record.partType === 'gateway_response') return '查看原始响应'
+  if (record.partType === 'gateway_error') return '查看原始错误'
+  return '查看原始请求'
+}
 
 const selectedPayloadCurrentText = computed(() => {
   const payload = props.selectedPayload
@@ -270,7 +569,7 @@ const selectedPayloadViewerContentType = computed(() => payloadContentTab.value 
   : props.selectedPayload?.contentType)
 const selectedPayloadEmptyText = computed(() => {
   const payload = props.selectedPayload
-  if (!payload) return '未选择原始内容'
+  if (!payload) return '未选择原始请求'
   if (payloadContentTab.value === 'headers') {
     if (payload.headersStorageStatus === 'file_missing') {
       return 'Headers 文件缺失：数据库仍有 blob 引用，但 data/audit/blobs 下没有对应文件。'
@@ -313,12 +612,29 @@ async function openSelectedPayloadSearch(): Promise<void> {
   await payloadCodeViewer.value?.openSearch()
 }
 
+function requestChainActions(record: RequestChainRow): RowActionItem[] {
+  return [
+    {
+      key: 'payload',
+      label: record.payload ? payloadActionLabel(record.payload) : '未捕获',
+      icon: 'detail',
+      tone: 'info',
+      disabled: !readablePayload(record.payload) || props.payloadLoadingId === record.payload?.id
+    }
+  ]
+}
+
+function handleRequestChainAction(record: RequestChainRow): void {
+  if (!readablePayload(record.payload) || !record.payload) return
+  emit('load-payload', record.payload.id)
+}
+
 function payloadActions(record: AuditPayloadRow): RowActionItem[] {
   const hasReadablePayload = record.hasHeaders || record.hasBody
   return [
     {
       key: 'payload',
-      label: record.hasBody ? '查看原文' : record.hasHeaders ? '查看 Headers' : '无原文',
+      label: hasReadablePayload ? payloadActionLabel(record) : '无原文',
       icon: 'detail',
       tone: 'info',
       disabled: !hasReadablePayload || props.payloadLoadingId === record.id
@@ -340,6 +656,26 @@ function payloadActions(record: AuditPayloadRow): RowActionItem[] {
   display: inline-flex;
   flex-wrap: wrap;
   gap: 4px;
+}
+
+.request-chain-alert {
+  margin-bottom: 12px;
+}
+
+.chain-step-cell {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.chain-step-cell .ant-tag {
+  width: fit-content;
+  margin-inline-end: 0;
+}
+
+.chain-step-cell span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 :deep(.audit-detail-table .ant-table-cell) {

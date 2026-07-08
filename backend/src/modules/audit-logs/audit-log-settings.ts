@@ -1,5 +1,3 @@
-import { runtimeConfig } from '../../config/runtime.js'
-
 export interface AuditLogSettings {
   enabled: boolean
   fullBodyCaptureEnabled: boolean
@@ -34,10 +32,5 @@ export const fixedAuditLogSettings: AuditLogSettings = Object.freeze({
 })
 
 export function readAuditLogSettings(): AuditLogSettings {
-  return runtimeConfig.audit.fullBodyCaptureEnabled
-    ? fixedAuditLogSettings
-    : {
-        ...fixedAuditLogSettings,
-        fullBodyCaptureEnabled: false
-      }
+  return fixedAuditLogSettings
 }

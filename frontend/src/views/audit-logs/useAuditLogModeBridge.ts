@@ -43,7 +43,7 @@ export function useAuditLogModeBridge(input: {
     }
   })
   const toolbarSearchPlaceholder = computed(() => input.viewMode.value === 'search'
-    ? '搜索最近1小时审计原始内容'
+    ? '搜索最近1小时审计原始请求'
     : '搜索 traceId')
   const toolbarFilterTitle = computed(() => input.viewMode.value === 'search' ? '最近内容搜索' : '审计筛选')
   const toolbarActiveFilterCount = computed(() => input.viewMode.value === 'search' ? input.hotSearchActiveFilterCount.value : input.activeFilterCount.value)
