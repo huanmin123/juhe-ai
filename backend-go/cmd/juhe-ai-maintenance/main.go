@@ -73,6 +73,21 @@ func main() {
 			return maintenance.RunW1bPublicAPISmoke(ctx, cfg, cmd.OutOrStdout())
 		},
 	})
+	root.AddCommand(&cobra.Command{
+		Use:   "w2-operation-logs-smoke",
+		Short: "Run W2 operation logs management API opt-in smoke checks",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load(config.LoadOptions{LoadDotEnv: true})
+			if err != nil {
+				return err
+			}
+
+			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+
+			return maintenance.RunW2OperationLogsSmoke(ctx, cfg, cmd.OutOrStdout())
+		},
+	})
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
