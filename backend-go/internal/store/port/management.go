@@ -23,6 +23,10 @@ type ManagementSessionReader interface {
 	FindManagementSessionByTokenHash(ctx context.Context, tokenHash string) (ManagementSessionAccount, bool, error)
 }
 
+type ManagementSessionRevoker interface {
+	RevokeManagementSessionByTokenHash(ctx context.Context, tokenHash string) error
+}
+
 type ManagementProxyOption struct {
 	ID      string
 	Name    string

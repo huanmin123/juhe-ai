@@ -23,6 +23,7 @@ type RouterOptions struct {
 	PublicAPIHandler                                http.Handler
 	ManagementAPIAuthMiddleware                     func(http.Handler) http.Handler
 	ManagementCurrentUserHandler                    http.Handler
+	ManagementLogoutHandler                         http.Handler
 	ManagementProxyOptionsHandler                   http.Handler
 	ManagementSystemAccountsHandler                 http.Handler
 	ManagementSystemAccountOptionsHandler           http.Handler
@@ -82,6 +83,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				panic("ManagementAPIAuthMiddleware is required when JUHE_AI_MANAGEMENT_API_ENABLED is true")
 			}
 			if opts.ManagementCurrentUserHandler == nil &&
+				opts.ManagementLogoutHandler == nil &&
 				opts.ManagementProxyOptionsHandler == nil &&
 				opts.ManagementSystemAccountsHandler == nil &&
 				opts.ManagementSystemAccountOptionsHandler == nil &&
@@ -115,6 +117,9 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementCurrentUserHandler != nil {
 				system.Get("/auth/me", opts.ManagementCurrentUserHandler.ServeHTTP)
+			}
+			if opts.ManagementLogoutHandler != nil {
+				system.Post("/auth/logout", opts.ManagementLogoutHandler.ServeHTTP)
 			}
 			if opts.ManagementProxyOptionsHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/proxies/options", opts.ManagementProxyOptionsHandler.ServeHTTP)

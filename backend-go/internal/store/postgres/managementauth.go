@@ -26,6 +26,13 @@ func (s *Store) FindManagementSessionByTokenHash(ctx context.Context, tokenHash 
 	return session, true, nil
 }
 
+func (s *Store) RevokeManagementSessionByTokenHash(ctx context.Context, tokenHash string) error {
+	if err := s.queries().RevokeManagementSessionByTokenHash(ctx, tokenHash); err != nil {
+		return fmt.Errorf("revoke management session by token hash: %w", err)
+	}
+	return nil
+}
+
 func managementSessionFromRow(row postgresqueries.FindManagementSessionByTokenHashRow) (port.ManagementSessionAccount, error) {
 	if !row.ExpiresAt.Valid {
 		return port.ManagementSessionAccount{}, fmt.Errorf("management session expires_at is null")
@@ -48,3 +55,4 @@ func managementSessionFromRow(row postgresqueries.FindManagementSessionByTokenHa
 }
 
 var _ port.ManagementSessionReader = (*Store)(nil)
+var _ port.ManagementSessionRevoker = (*Store)(nil)

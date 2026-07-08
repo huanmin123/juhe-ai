@@ -29,13 +29,15 @@ type Context struct {
 }
 
 type Authenticator struct {
-	store port.ManagementSessionReader
-	now   func() time.Time
+	store   port.ManagementSessionReader
+	revoker port.ManagementSessionRevoker
+	now     func() time.Time
 }
 
 type AuthenticatorOptions struct {
-	Store port.ManagementSessionReader
-	Now   func() time.Time
+	Store   port.ManagementSessionReader
+	Revoker port.ManagementSessionRevoker
+	Now     func() time.Time
 }
 
 type AuthError struct {
@@ -53,7 +55,13 @@ func NewAuthenticator(opts AuthenticatorOptions) *Authenticator {
 	if now == nil {
 		now = time.Now
 	}
-	return &Authenticator{store: opts.Store, now: now}
+	revoker := opts.Revoker
+	if revoker == nil {
+		if storeRevoker, ok := opts.Store.(port.ManagementSessionRevoker); ok {
+			revoker = storeRevoker
+		}
+	}
+	return &Authenticator{store: opts.Store, revoker: revoker, now: now}
 }
 
 func HashSessionToken(token string) string {
@@ -69,9 +77,10 @@ func ParseCookie(cookieHeader string) map[string]string {
 			continue
 		}
 		decoded, err := url.PathUnescape(value)
-		if err == nil {
-			value = decoded
+		if err != nil {
+			continue
 		}
+		value = decoded
 		result[name] = value
 	}
 	return result
@@ -83,6 +92,17 @@ func (a *Authenticator) AuthenticateCookie(ctx context.Context, cookieHeader str
 
 func (a *Authenticator) AuthenticateCookieForCurrentUser(ctx context.Context, cookieHeader string) (Context, error) {
 	return a.authenticateCookie(ctx, cookieHeader, false)
+}
+
+func (a *Authenticator) LogoutCookie(ctx context.Context, cookieHeader string) error {
+	if a == nil || a.revoker == nil {
+		return errors.New("management auth session revoker is required")
+	}
+	token := strings.TrimSpace(ParseCookie(cookieHeader)[SessionCookieName])
+	if token == "" {
+		return nil
+	}
+	return a.revoker.RevokeManagementSessionByTokenHash(ctx, HashSessionToken(token))
 }
 
 func (a *Authenticator) authenticateCookie(ctx context.Context, cookieHeader string, requirePasswordChangeCompleted bool) (Context, error) {

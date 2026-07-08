@@ -29,6 +29,13 @@ func TestParseCookieReadsSessionCookie(t *testing.T) {
 	}
 }
 
+func TestParseCookieSkipsMalformedEncodedCookie(t *testing.T) {
+	cookies := ParseCookie("theme=dark; juhe_ai_session=session-token%ZZ")
+	if _, ok := cookies[SessionCookieName]; ok {
+		t.Fatalf("session cookie = %q, want skipped", cookies[SessionCookieName])
+	}
+}
+
 func TestAuthenticateCookie(t *testing.T) {
 	reader := &managementSessionReaderStub{
 		record: activeManagementSession("session-token", "admin"),
@@ -115,6 +122,42 @@ func TestAuthenticateCookieForCurrentUserAllowsMustChangePassword(t *testing.T) 
 	}
 }
 
+func TestLogoutCookieRevokesSessionToken(t *testing.T) {
+	revoker := &managementSessionRevokerStub{}
+	authenticator := NewAuthenticator(AuthenticatorOptions{Revoker: revoker})
+
+	if err := authenticator.LogoutCookie(context.Background(), "theme=dark; juhe_ai_session=session-token"); err != nil {
+		t.Fatalf("LogoutCookie() error = %v", err)
+	}
+	if revoker.tokenHash != HashSessionToken("session-token") {
+		t.Fatalf("tokenHash = %q", revoker.tokenHash)
+	}
+}
+
+func TestLogoutCookieAllowsMissingSessionCookie(t *testing.T) {
+	revoker := &managementSessionRevokerStub{}
+	authenticator := NewAuthenticator(AuthenticatorOptions{Revoker: revoker})
+
+	if err := authenticator.LogoutCookie(context.Background(), "theme=dark"); err != nil {
+		t.Fatalf("LogoutCookie() error = %v", err)
+	}
+	if revoker.called {
+		t.Fatal("LogoutCookie() revoked a session for missing cookie")
+	}
+}
+
+func TestLogoutCookieUsesStoreRevokerWhenAvailable(t *testing.T) {
+	store := &managementSessionStoreStub{}
+	authenticator := NewAuthenticator(AuthenticatorOptions{Store: store})
+
+	if err := authenticator.LogoutCookie(context.Background(), "juhe_ai_session=session-token"); err != nil {
+		t.Fatalf("LogoutCookie() error = %v", err)
+	}
+	if store.managementSessionRevokerStub.tokenHash != HashSessionToken("session-token") {
+		t.Fatalf("tokenHash = %q", store.managementSessionRevokerStub.tokenHash)
+	}
+}
+
 func activeManagementSession(token string, role string) port.ManagementSessionAccount {
 	return port.ManagementSessionAccount{
 		SessionID:          "sess_admin",
@@ -158,4 +201,21 @@ type managementSessionReaderStub struct {
 func (s *managementSessionReaderStub) FindManagementSessionByTokenHash(_ context.Context, tokenHash string) (port.ManagementSessionAccount, bool, error) {
 	s.tokenHash = tokenHash
 	return s.record, s.found, s.err
+}
+
+type managementSessionRevokerStub struct {
+	called    bool
+	tokenHash string
+	err       error
+}
+
+func (s *managementSessionRevokerStub) RevokeManagementSessionByTokenHash(_ context.Context, tokenHash string) error {
+	s.called = true
+	s.tokenHash = tokenHash
+	return s.err
+}
+
+type managementSessionStoreStub struct {
+	managementSessionReaderStub
+	managementSessionRevokerStub
 }

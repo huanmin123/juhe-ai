@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -83,6 +84,7 @@ func TestW2ManagementAuthPostgresSmoke(t *testing.T) {
 		Logger:                        slog.Default(),
 		ManagementAPIAuthMiddleware:   httpapi.NewManagementAPIAuthMiddleware(authenticator),
 		ManagementCurrentUserHandler:  httpapi.NewManagementCurrentUserHandler(authenticator),
+		ManagementLogoutHandler:       httpapi.NewManagementLogoutHandler(authenticator),
 		ManagementProxyOptionsHandler: httpapi.NewManagementProxyOptionsHandler(managementproxies.NewService(store)),
 	})
 
@@ -165,6 +167,37 @@ func TestW2ManagementAuthPostgresSmoke(t *testing.T) {
 	router.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/__aisys__/api/proxies/options", nil))
 	if unauthorized.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthorized status = %d, want 401", unauthorized.Code)
+	}
+
+	logoutReq := httptest.NewRequest(http.MethodPost, "/__aisys__/api/auth/logout", nil)
+	logoutReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
+	logoutRec := httptest.NewRecorder()
+	router.ServeHTTP(logoutRec, logoutReq)
+	if logoutRec.Code != http.StatusOK {
+		t.Fatalf("logout status = %d, body = %s", logoutRec.Code, logoutRec.Body.String())
+	}
+	var logoutBody struct {
+		Data struct {
+			LoggedOut bool `json:"loggedOut"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(logoutRec.Body).Decode(&logoutBody); err != nil {
+		t.Fatalf("decode logout response: %v", err)
+	}
+	if !logoutBody.Data.LoggedOut {
+		t.Fatalf("logout response = %+v", logoutBody.Data)
+	}
+	setCookie := logoutRec.Header().Get("Set-Cookie")
+	if !strings.Contains(setCookie, "juhe_ai_session=") || !strings.Contains(setCookie, "Max-Age=0") || !strings.Contains(setCookie, "Path=/") {
+		t.Fatalf("logout Set-Cookie = %q", setCookie)
+	}
+
+	revokedReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/proxies/options", nil)
+	revokedReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
+	revokedRec := httptest.NewRecorder()
+	router.ServeHTTP(revokedRec, revokedReq)
+	if revokedRec.Code != http.StatusUnauthorized {
+		t.Fatalf("revoked session status = %d, want 401, body = %s", revokedRec.Code, revokedRec.Body.String())
 	}
 }
 

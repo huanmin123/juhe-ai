@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"juhe-ai/backend-go/internal/config"
@@ -181,6 +182,89 @@ func TestManagementCurrentUserHandlerRedactsUnexpectedErrors(t *testing.T) {
 	}
 }
 
+func TestManagementLogoutHandlerRevokesSessionAndClearsCookie(t *testing.T) {
+	authenticator := &managementLogoutAuthenticatorStub{}
+	handler := NewManagementLogoutHandler(authenticator)
+
+	req := httptest.NewRequest(http.MethodPost, "/__aisys__/api/auth/logout", nil)
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if authenticator.cookieHeader != "juhe_ai_session=session-token" {
+		t.Fatalf("cookie header = %q", authenticator.cookieHeader)
+	}
+	var body struct {
+		Data managementLogoutResponse `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !body.Data.LoggedOut {
+		t.Fatalf("body = %+v", body)
+	}
+	setCookie := rec.Header().Get("Set-Cookie")
+	if !strings.Contains(setCookie, "juhe_ai_session=") || !strings.Contains(setCookie, "Max-Age=0") || !strings.Contains(setCookie, "Path=/") || !strings.Contains(setCookie, "HttpOnly") {
+		t.Fatalf("Set-Cookie = %q", setCookie)
+	}
+}
+
+func TestManagementLogoutHandlerAllowsMissingCookie(t *testing.T) {
+	authenticator := &managementLogoutAuthenticatorStub{}
+	handler := NewManagementLogoutHandler(authenticator)
+
+	req := httptest.NewRequest(http.MethodPost, "/__aisys__/api/auth/logout", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if authenticator.cookieHeader != "" {
+		t.Fatalf("cookie header = %q", authenticator.cookieHeader)
+	}
+	var body struct {
+		Data managementLogoutResponse `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !body.Data.LoggedOut {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
+func TestManagementLogoutHandlerRedactsUnexpectedErrors(t *testing.T) {
+	handler := NewManagementLogoutHandler(&managementLogoutAuthenticatorStub{
+		err: errors.New("postgres password leaked"),
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/__aisys__/api/auth/logout", nil)
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	var body map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["message"] != "服务器内部错误" {
+		t.Fatalf("body = %+v", body)
+	}
+	if rec.Header().Get("Set-Cookie") != "" {
+		t.Fatalf("Set-Cookie = %q, want empty on revoke failure", rec.Header().Get("Set-Cookie"))
+	}
+}
+
 func TestRouterRegistersManagementCurrentUserWhenEnabled(t *testing.T) {
 	authenticator := &managementCurrentUserAuthenticatorStub{
 		context: managementauth.Context{
@@ -231,6 +315,50 @@ func TestRouterDoesNotRegisterManagementCurrentUserWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestRouterRegistersManagementLogoutWhenEnabled(t *testing.T) {
+	authenticator := &managementLogoutAuthenticatorStub{}
+	router := NewRouter(RouterOptions{
+		Config:                       config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
+		ManagementAPIAuthMiddleware:  NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{}),
+		ManagementLogoutHandler:      NewManagementLogoutHandler(authenticator),
+		ManagementCurrentUserHandler: NewManagementCurrentUserHandler(&managementCurrentUserAuthenticatorStub{}),
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/__aisys__/api/auth/logout", nil)
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+	if authenticator.cookieHeader != "juhe_ai_session=session-token" {
+		t.Fatalf("cookie header = %q", authenticator.cookieHeader)
+	}
+}
+
+func TestRouterDoesNotRegisterManagementLogoutWhenDisabled(t *testing.T) {
+	router := NewRouter(RouterOptions{
+		Config:                       config.Config{Host: "127.0.0.1", Port: 3000},
+		ManagementAPIAuthMiddleware:  NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{}),
+		ManagementLogoutHandler:      NewManagementLogoutHandler(&managementLogoutAuthenticatorStub{}),
+		ManagementCurrentUserHandler: NewManagementCurrentUserHandler(&managementCurrentUserAuthenticatorStub{}),
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/__aisys__/api/auth/logout", nil)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 while JUHE_AI_MANAGEMENT_API_ENABLED=false", rec.Code)
+	}
+}
+
 type managementAPIAuthenticatorStub struct {
 	cookieHeader string
 	context      managementauth.Context
@@ -251,4 +379,14 @@ type managementCurrentUserAuthenticatorStub struct {
 func (s *managementCurrentUserAuthenticatorStub) AuthenticateCookieForCurrentUser(_ context.Context, cookieHeader string) (managementauth.Context, error) {
 	s.cookieHeader = cookieHeader
 	return s.context, s.err
+}
+
+type managementLogoutAuthenticatorStub struct {
+	cookieHeader string
+	err          error
+}
+
+func (s *managementLogoutAuthenticatorStub) LogoutCookie(_ context.Context, cookieHeader string) error {
+	s.cookieHeader = cookieHeader
+	return s.err
 }

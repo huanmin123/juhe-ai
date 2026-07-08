@@ -15,3 +15,7 @@ INNER JOIN juhe_business.system_accounts AS sa
   ON sa.id = ss.system_account_id
 WHERE ss.token_hash = $1
 LIMIT 1;
+
+-- name: RevokeManagementSessionByTokenHash :exec
+DELETE FROM juhe_business.system_sessions
+WHERE token_hash = $1;

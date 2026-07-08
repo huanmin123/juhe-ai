@@ -60,3 +60,13 @@ func (q *Queries) FindManagementSessionByTokenHash(ctx context.Context, tokenHas
 	)
 	return i, err
 }
+
+const revokeManagementSessionByTokenHash = `-- name: RevokeManagementSessionByTokenHash :exec
+DELETE FROM juhe_business.system_sessions
+WHERE token_hash = $1
+`
+
+func (q *Queries) RevokeManagementSessionByTokenHash(ctx context.Context, tokenHash string) error {
+	_, err := q.db.Exec(ctx, revokeManagementSessionByTokenHash, tokenHash)
+	return err
+}
