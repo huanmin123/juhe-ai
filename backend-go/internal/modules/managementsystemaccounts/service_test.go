@@ -4,9 +4,89 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"juhe-ai/backend-go/internal/store/port"
 )
+
+func TestListNormalizesInputAndMapsSummaries(t *testing.T) {
+	createdAt := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
+	lastLoginAt := createdAt.Add(time.Minute)
+	store := &systemAccountOptionStoreStub{
+		listResult: port.ManagementSystemAccountListResult{
+			Items: []port.ManagementSystemAccountSummary{{
+				ID:                     "sys_admin",
+				Username:               "admin",
+				DisplayName:            "管理员",
+				Description:            "系统管理员",
+				Role:                   "admin",
+				Status:                 "active",
+				MustChangePassword:     true,
+				ImageGenerationEnabled: true,
+				LastLoginAt:            &lastLoginAt,
+				CreatedAt:              createdAt,
+				UpdatedAt:              createdAt.Add(time.Hour),
+			}},
+			HasMore: true,
+		},
+	}
+	service := NewService(store)
+
+	result, err := service.List(context.Background(), ListInput{
+		Keyword:  " 管理 ",
+		Page:     2,
+		PageSize: 500,
+	})
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if store.listInput.Keyword != "管理" || store.listInput.Limit != 101 || store.listInput.Offset != 100 {
+		t.Fatalf("store list input = %+v", store.listInput)
+	}
+	if result.Page != 2 || result.PageSize != 100 || result.Total != 102 || !result.HasMore {
+		t.Fatalf("pagination = page %d size %d total %d hasMore %v", result.Page, result.PageSize, result.Total, result.HasMore)
+	}
+	if len(result.Items) != 1 {
+		t.Fatalf("items = %+v", result.Items)
+	}
+	got := result.Items[0]
+	if got.ID != "sys_admin" ||
+		got.Description != "系统管理员" ||
+		got.Role != "admin" ||
+		got.MustChangePassword ||
+		!got.ImageGenerationEnabled ||
+		got.LastLoginAt != lastLoginAt.Format(time.RFC3339Nano) ||
+		got.CreatedAt != createdAt.Format(time.RFC3339Nano) {
+		t.Fatalf("summary = %+v", got)
+	}
+}
+
+func TestListDefaultsAndClampsPageToWindow(t *testing.T) {
+	store := &systemAccountOptionStoreStub{}
+	service := NewService(store)
+
+	result, err := service.List(context.Background(), ListInput{Page: 999, PageSize: -1})
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if store.listInput.Limit != 21 || store.listInput.Offset != 980 {
+		t.Fatalf("store list input = %+v", store.listInput)
+	}
+	if result.Page != 50 || result.PageSize != 20 {
+		t.Fatalf("pagination = page %d size %d", result.Page, result.PageSize)
+	}
+}
+
+func TestListReturnsStoreError(t *testing.T) {
+	want := errors.New("postgres down")
+	service := NewService(&systemAccountOptionStoreStub{listErr: want})
+
+	_, err := service.List(context.Background(), ListInput{})
+
+	if !errors.Is(err, want) {
+		t.Fatalf("List() error = %v, want %v", err, want)
+	}
+}
 
 func TestOptionsNormalizesInputAndMapsOptions(t *testing.T) {
 	store := &systemAccountOptionStoreStub{
@@ -62,9 +142,17 @@ func TestOptionsReturnsStoreError(t *testing.T) {
 }
 
 type systemAccountOptionStoreStub struct {
-	input   port.ManagementSystemAccountOptionListInput
-	options []port.ManagementSystemAccountOption
-	err     error
+	listInput  port.ManagementSystemAccountListInput
+	listResult port.ManagementSystemAccountListResult
+	listErr    error
+	input      port.ManagementSystemAccountOptionListInput
+	options    []port.ManagementSystemAccountOption
+	err        error
+}
+
+func (s *systemAccountOptionStoreStub) ListManagementSystemAccounts(_ context.Context, input port.ManagementSystemAccountListInput) (port.ManagementSystemAccountListResult, error) {
+	s.listInput = input
+	return s.listResult, s.listErr
 }
 
 func (s *systemAccountOptionStoreStub) ListManagementSystemAccountOptions(_ context.Context, input port.ManagementSystemAccountOptionListInput) ([]port.ManagementSystemAccountOption, error) {

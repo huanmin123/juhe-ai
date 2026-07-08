@@ -14,6 +14,89 @@ import (
 	"juhe-ai/backend-go/internal/modules/managementsystemaccounts"
 )
 
+func TestManagementSystemAccountsHandlerRequiresAdminAndParsesQuery(t *testing.T) {
+	service := &managementSystemAccountOptionServiceStub{
+		listResult: managementsystemaccounts.ListResult{
+			Items: []managementsystemaccounts.Summary{{
+				ID:          "sys_user",
+				Username:    "user",
+				DisplayName: "用户",
+				Role:        "user",
+				Status:      "active",
+				CreatedAt:   "2026-07-08T10:00:00Z",
+				UpdatedAt:   "2026-07-08T10:00:00Z",
+			}},
+			Page:     3,
+			PageSize: 25,
+			Total:    51,
+			HasMore:  true,
+		},
+	}
+	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
+	})(newManagementSystemAccountsHandler(service))
+
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/system-accounts?page=3&pageSize=25&keyword=%20%E7%94%A8%E6%88%B7%20", nil)
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if service.listInput.Keyword != "用户" || service.listInput.Page != 3 || service.listInput.PageSize != 25 {
+		t.Fatalf("service list input = %+v", service.listInput)
+	}
+	var body struct {
+		Data managementsystemaccounts.ListResult `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Data.Items) != 1 || body.Data.Items[0].ID != "sys_user" || body.Data.Total != 51 || !body.Data.HasMore {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
+func TestManagementSystemAccountsHandlerRejectsOrdinaryUser(t *testing.T) {
+	service := &managementSystemAccountOptionServiceStub{}
+	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_user", Username: "user", Role: "user", SessionID: "sess_user"},
+	})(newManagementSystemAccountsHandler(service))
+
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/system-accounts", nil)
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+	if service.listCalled {
+		t.Fatal("service should not be called for ordinary user")
+	}
+}
+
+func TestManagementSystemAccountsHandlerRedactsStoreErrors(t *testing.T) {
+	handler := newManagementSystemAccountsHandler(&managementSystemAccountOptionServiceStub{listErr: errors.New("postgres password leaked")})
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/system-accounts", nil)
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{SystemAccountID: "sys_admin", Role: "admin"}))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	var body map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["message"] != "服务器内部错误" {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
 func TestManagementSystemAccountOptionsHandlerRequiresAdminAndParsesQuery(t *testing.T) {
 	service := &managementSystemAccountOptionServiceStub{
 		options: []managementsystemaccounts.Option{{
@@ -93,20 +176,36 @@ func TestManagementSystemAccountOptionsHandlerRedactsStoreErrors(t *testing.T) {
 
 func TestRouterRegistersW2ManagementSystemAccountOptions(t *testing.T) {
 	service := &managementSystemAccountOptionServiceStub{
+		listResult: managementsystemaccounts.ListResult{
+			Items: []managementsystemaccounts.Summary{{ID: "sys_user", Username: "user", DisplayName: "用户", Role: "user", Status: "active"}},
+		},
 		options: []managementsystemaccounts.Option{{ID: "sys_user", Username: "user", DisplayName: "用户", Status: "active"}},
 	}
 	router := NewRouter(RouterOptions{
 		Config:                                config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
 		Logger:                                slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
+		ManagementSystemAccountsHandler:       newManagementSystemAccountsHandler(service),
 		ManagementSystemAccountOptionsHandler: newManagementSystemAccountOptionsHandler(service),
 		ManagementAPIAuthMiddleware: NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
 			context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
 		}),
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/system-accounts/options?limit=50", nil)
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/system-accounts?page=1&pageSize=20", nil)
 	req.Header.Set("Cookie", "juhe_ai_session=session-token")
 	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("list Cache-Control = %q, want no-store", got)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/__aisys__/api/system-accounts/options?limit=50", nil)
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
@@ -121,15 +220,25 @@ func TestRouterDoesNotRegisterW2ManagementSystemAccountOptionsWhenDisabled(t *te
 	router := NewRouter(RouterOptions{
 		Config:                                config.Config{Host: "127.0.0.1", Port: 3000},
 		Logger:                                slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
+		ManagementSystemAccountsHandler:       newManagementSystemAccountsHandler(&managementSystemAccountOptionServiceStub{}),
 		ManagementSystemAccountOptionsHandler: newManagementSystemAccountOptionsHandler(&managementSystemAccountOptionServiceStub{}),
 		ManagementAPIAuthMiddleware: NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
 			context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
 		}),
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/system-accounts/options", nil)
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/system-accounts", nil)
 	req.Header.Set("Cookie", "juhe_ai_session=session-token")
 	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("list status = %d, want 404 while JUHE_AI_MANAGEMENT_API_ENABLED=false", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/__aisys__/api/system-accounts/options", nil)
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusNotFound {
@@ -138,10 +247,20 @@ func TestRouterDoesNotRegisterW2ManagementSystemAccountOptionsWhenDisabled(t *te
 }
 
 type managementSystemAccountOptionServiceStub struct {
-	called  bool
-	input   managementsystemaccounts.OptionListInput
-	options []managementsystemaccounts.Option
-	err     error
+	listCalled bool
+	listInput  managementsystemaccounts.ListInput
+	listResult managementsystemaccounts.ListResult
+	listErr    error
+	called     bool
+	input      managementsystemaccounts.OptionListInput
+	options    []managementsystemaccounts.Option
+	err        error
+}
+
+func (s *managementSystemAccountOptionServiceStub) List(_ *http.Request, input managementsystemaccounts.ListInput) (managementsystemaccounts.ListResult, error) {
+	s.listCalled = true
+	s.listInput = input
+	return s.listResult, s.listErr
 }
 
 func (s *managementSystemAccountOptionServiceStub) Options(_ *http.Request, input managementsystemaccounts.OptionListInput) ([]managementsystemaccounts.Option, error) {

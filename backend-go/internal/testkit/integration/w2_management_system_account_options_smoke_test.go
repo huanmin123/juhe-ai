@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -104,6 +105,14 @@ func TestW2ManagementSystemAccountOptionsPostgresSmoke(t *testing.T) {
 		t.Fatalf("ids options = %+v", ids)
 	}
 
+	listResult, err := service.List(ctx, managementsystemaccounts.ListInput{Keyword: "READONLY", Page: 1, PageSize: 1})
+	if err != nil {
+		t.Fatalf("list system accounts: %v", err)
+	}
+	if len(listResult.Items) != 1 || listResult.Items[0].ID != "sys_w2_option_readonly" || listResult.Items[0].Username != "readonly" || listResult.Items[0].Role != "admin" {
+		t.Fatalf("list result = %+v", listResult)
+	}
+
 	authenticator := managementauth.NewAuthenticator(managementauth.AuthenticatorOptions{
 		Store: store,
 		Now:   func() time.Time { return now },
@@ -116,15 +125,36 @@ func TestW2ManagementSystemAccountOptionsPostgresSmoke(t *testing.T) {
 		},
 		Logger:                                slog.Default(),
 		ManagementAPIAuthMiddleware:           httpapi.NewManagementAPIAuthMiddleware(authenticator),
+		ManagementSystemAccountsHandler:       httpapi.NewManagementSystemAccountsHandler(service),
 		ManagementSystemAccountOptionsHandler: httpapi.NewManagementSystemAccountOptionsHandler(service),
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/system-accounts/options?keyword=Readonly&limit=1", nil)
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/system-accounts?keyword=readonly&page=1&pageSize=1", nil)
 	req.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+		t.Fatalf("list status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "hash") {
+		t.Fatalf("system account list leaked password hash: %s", rec.Body.String())
+	}
+	var listBody struct {
+		Data managementsystemaccounts.ListResult `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&listBody); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if len(listBody.Data.Items) != 1 || listBody.Data.Items[0].ID != "sys_w2_option_readonly" || listBody.Data.Items[0].DisplayName == "" || listBody.Data.Page != 1 || listBody.Data.PageSize != 1 {
+		t.Fatalf("system account list response = %+v", listBody.Data)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/__aisys__/api/system-accounts/options?keyword=Readonly&limit=1", nil)
+	req.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("options status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	var body struct {
 		Data []managementsystemaccounts.Option `json:"data"`

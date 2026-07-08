@@ -94,6 +94,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		PublicAPIHandler:                                publicAPIHandler,
 		ManagementAPIAuthMiddleware:                     managementHandlers.AuthMiddleware,
 		ManagementProxyOptionsHandler:                   managementHandlers.ProxyOptionsHandler,
+		ManagementSystemAccountsHandler:                 managementHandlers.SystemAccountsHandler,
 		ManagementSystemAccountOptionsHandler:           managementHandlers.SystemAccountOptionsHandler,
 		ManagementAuthorizationGranteeAccountsHandler:   managementHandlers.AuthorizationGranteeAccountsHandler,
 		ManagementMyAuthorizationGranteeAccountsHandler: managementHandlers.MyAuthorizationGranteeAccountsHandler,
@@ -155,6 +156,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 type managementAPIHandlers struct {
 	AuthMiddleware                        func(http.Handler) http.Handler
 	ProxyOptionsHandler                   http.Handler
+	SystemAccountsHandler                 http.Handler
 	SystemAccountOptionsHandler           http.Handler
 	AuthorizationGranteeAccountsHandler   http.Handler
 	MyAuthorizationGranteeAccountsHandler http.Handler
@@ -211,6 +213,7 @@ func newManagementAPIHandler(
 	return managementAPIHandlers{
 		AuthMiddleware:                        httpapi.NewManagementAPIAuthMiddleware(authenticator),
 		ProxyOptionsHandler:                   httpapi.NewManagementProxyOptionsHandler(proxyService),
+		SystemAccountsHandler:                 httpapi.NewManagementSystemAccountsHandler(systemAccountService),
 		SystemAccountOptionsHandler:           httpapi.NewManagementSystemAccountOptionsHandler(systemAccountService),
 		AuthorizationGranteeAccountsHandler:   httpapi.NewManagementAuthorizationGranteeAccountsHandler(authorizationOptionService),
 		MyAuthorizationGranteeAccountsHandler: httpapi.NewManagementMyAuthorizationGranteeAccountsHandler(authorizationOptionService),

@@ -7,6 +7,8 @@ package postgresqueries
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const listManagementSystemAccountOptions = `-- name: ListManagementSystemAccountOptions :many
@@ -70,6 +72,98 @@ func (q *Queries) ListManagementSystemAccountOptions(ctx context.Context, arg Li
 			&i.Username,
 			&i.DisplayName,
 			&i.Status,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listManagementSystemAccounts = `-- name: ListManagementSystemAccounts :many
+SELECT
+  id,
+  username,
+  display_name,
+  description,
+  role,
+  status,
+  must_change_password,
+  image_generation_enabled,
+  last_login_at,
+  created_at,
+  updated_at
+FROM juhe_business.system_accounts
+WHERE (
+    $1::text = ''
+    OR lower(username) = $1::text
+    OR lower(display_name) = $1::text
+    OR (
+      lower(username) COLLATE "C" >= $1::text
+      AND lower(username) COLLATE "C" < $2::text
+      AND starts_with(lower(username), $1::text)
+    )
+    OR (
+      lower(display_name) COLLATE "C" >= $1::text
+      AND lower(display_name) COLLATE "C" < $2::text
+      AND starts_with(lower(display_name), $1::text)
+    )
+  )
+ORDER BY updated_at DESC, id DESC
+LIMIT $4::int
+OFFSET $3::int
+`
+
+type ListManagementSystemAccountsParams struct {
+	Keyword      string
+	KeywordUpper string
+	RowOffset    int32
+	RowLimit     int32
+}
+
+type ListManagementSystemAccountsRow struct {
+	ID                     string
+	Username               string
+	DisplayName            string
+	Description            pgtype.Text
+	Role                   string
+	Status                 string
+	MustChangePassword     bool
+	ImageGenerationEnabled bool
+	LastLoginAt            pgtype.Timestamptz
+	CreatedAt              pgtype.Timestamptz
+	UpdatedAt              pgtype.Timestamptz
+}
+
+func (q *Queries) ListManagementSystemAccounts(ctx context.Context, arg ListManagementSystemAccountsParams) ([]ListManagementSystemAccountsRow, error) {
+	rows, err := q.db.Query(ctx, listManagementSystemAccounts,
+		arg.Keyword,
+		arg.KeywordUpper,
+		arg.RowOffset,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListManagementSystemAccountsRow
+	for rows.Next() {
+		var i ListManagementSystemAccountsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Username,
+			&i.DisplayName,
+			&i.Description,
+			&i.Role,
+			&i.Status,
+			&i.MustChangePassword,
+			&i.ImageGenerationEnabled,
+			&i.LastLoginAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}

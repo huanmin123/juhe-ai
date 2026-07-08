@@ -29,7 +29,7 @@ func TestManagementSystemAccountOptionsSQLIsLightweight(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read system account options query: %v", err)
 	}
-	sql := string(source)
+	sql := querySection(t, string(source), "-- name: ListManagementSystemAccountOptions :many", "")
 	for _, want := range []string{
 		"SELECT id, username, display_name, status",
 		"FROM juhe_business.system_accounts",
@@ -60,6 +60,51 @@ func TestManagementSystemAccountOptionsSQLIsLightweight(t *testing.T) {
 	} {
 		if strings.Contains(sql, forbidden) {
 			t.Fatalf("system account options query should not contain %q", forbidden)
+		}
+	}
+}
+
+func TestManagementSystemAccountListSQLUsesSafeFieldsAndStablePagination(t *testing.T) {
+	source, err := os.ReadFile("queries/w2_management_system_account_options.sql")
+	if err != nil {
+		t.Fatalf("read system account options query: %v", err)
+	}
+	sql := querySection(t, string(source), "-- name: ListManagementSystemAccounts :many", "-- name: ListManagementSystemAccountOptions :many")
+	for _, want := range []string{
+		"id",
+		"username",
+		"display_name",
+		"description",
+		"role",
+		"status",
+		"must_change_password",
+		"image_generation_enabled",
+		"last_login_at",
+		"created_at",
+		"updated_at",
+		"FROM juhe_business.system_accounts",
+		"lower(username)",
+		"lower(display_name)",
+		"starts_with(lower(username), sqlc.arg(keyword)::text)",
+		"starts_with(lower(display_name), sqlc.arg(keyword)::text)",
+		"ORDER BY updated_at DESC, id DESC",
+		"LIMIT sqlc.arg(row_limit)::int",
+		"OFFSET sqlc.arg(row_offset)::int",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("system account list query missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		"SELECT *",
+		"password_hash",
+		"LIKE",
+		"ILIKE",
+		"COUNT(",
+		"count(",
+	} {
+		if strings.Contains(sql, forbidden) {
+			t.Fatalf("system account list query should not contain %q", forbidden)
 		}
 	}
 }

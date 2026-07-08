@@ -46,6 +46,31 @@ type ManagementSystemAccountOption struct {
 	Status      string
 }
 
+type ManagementSystemAccountSummary struct {
+	ID                     string
+	Username               string
+	DisplayName            string
+	Description            string
+	Role                   string
+	Status                 string
+	MustChangePassword     bool
+	ImageGenerationEnabled bool
+	LastLoginAt            *time.Time
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+}
+
+type ManagementSystemAccountListInput struct {
+	Keyword string
+	Limit   int
+	Offset  int
+}
+
+type ManagementSystemAccountListResult struct {
+	Items   []ManagementSystemAccountSummary
+	HasMore bool
+}
+
 type ManagementSystemAccountOptionListInput struct {
 	IDs     []string
 	Keyword string
@@ -53,6 +78,7 @@ type ManagementSystemAccountOptionListInput struct {
 }
 
 type ManagementSystemAccountOptionReader interface {
+	ListManagementSystemAccounts(ctx context.Context, input ManagementSystemAccountListInput) (ManagementSystemAccountListResult, error)
 	ListManagementSystemAccountOptions(ctx context.Context, input ManagementSystemAccountOptionListInput) ([]ManagementSystemAccountOption, error)
 }
 
