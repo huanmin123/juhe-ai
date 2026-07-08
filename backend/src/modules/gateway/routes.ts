@@ -83,7 +83,7 @@ import {
   type OpenAIGatewayTrafficSource
 } from './usage/traffic-source.js'
 import { resolveOpenAIGatewayRequestLane } from './protocols/openai-v1/request-lane.js'
-import { forgetOpenAIAccountForSession } from './runtime/session-affinity.service.js'
+import { forgetOpenAIAccountForSessionAsync } from './runtime/session-affinity.service.js'
 import { gatewayProtocolClientErrorProtocolForRequest } from './protocols/registry.js'
 import {
   normalRouteLatencyDegradationScope,
@@ -172,7 +172,7 @@ export async function handleOpenAIGatewayRequest(
     }
     const binding = activeDownstreamSessionAffinity
     activeDownstreamSessionAffinity = undefined
-    forgetOpenAIAccountForSession(binding.key, binding.accountId)
+    void forgetOpenAIAccountForSessionAsync(binding.key, binding.accountId)
   }
   req.once('aborted', () => {
     auditCapture.markClientAborted()
@@ -452,7 +452,7 @@ export async function handleOpenAIGatewayRequest(
       }
       const speedFirstRouteOverrideActive = normalRouteLatencyDegradationApplied === true || speedFirstRetryCandidateAccountIds !== undefined
       if (speedFirstRouteOverrideActive) {
-        forgetOpenAIAccountForSession(sessionAffinityKey)
+        await forgetOpenAIAccountForSessionAsync(sessionAffinityKey)
       }
       const dispatchSessionAffinityKey = speedFirstRouteOverrideActive ? undefined : sessionAffinityKey
       let upstreamResult: Awaited<ReturnType<typeof fetchFirstAvailableUpstream>>

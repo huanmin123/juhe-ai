@@ -44,7 +44,7 @@ import {
 } from '../response/failure-dispatch.js'
 import { type UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import { buildGatewayUpstreamUrlsForAccount } from '../../providers/drivers/registry.js'
-import { rememberOpenAIAccountForSession } from '../runtime/session-affinity.service.js'
+import { rememberOpenAIAccountForSessionAsync } from '../runtime/session-affinity.service.js'
 import { performUpstreamRequestAttempt } from './upstream-attempts.js'
 import { type UpstreamAttempt } from '../upstream/attempt.js'
 import { recordFailedUpstreamAttempt, type GatewayUsageContext } from '../usage/records.js'
@@ -392,7 +392,7 @@ export async function fetchFirstAvailableUpstream(
                   status: response.status
                 }
                 if (response.ok) {
-                  rememberOpenAIAccountForSession(sessionAffinityKey, account.id, {
+                  await rememberOpenAIAccountForSessionAsync(sessionAffinityKey, account.id, {
                     systemAccountId: usageContext.systemAccountId,
                     apiKeyId: usageContext.apiKeyId,
                     groupId: usageContext.groupId

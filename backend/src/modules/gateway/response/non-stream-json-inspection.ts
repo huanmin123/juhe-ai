@@ -17,7 +17,7 @@ import {
   parseGatewayProtocolUsageFromJsonBufferForRequest
 } from '../protocols/registry.js'
 import {
-  forgetOpenAIAccountForSession
+  forgetOpenAIAccountForSessionAsync
 } from '../runtime/session-affinity.service.js'
 import {
   recordGatewayAccountFailureForPrecheck,
@@ -140,7 +140,7 @@ export async function inspectBufferedGatewayJsonResponse(input: {
   const usage = parseGatewayProtocolUsageFromJsonBufferForRequest(input.req, input.account, input.responseBody)
   const message = decision.upstreamErrorMessage ?? decision.rewriteMessage ?? `JSON 响应命中检查策略：${decision.policyName ?? decision.policyId ?? '未命名策略'}`
   const errorCode = decision.rewriteErrorCode ?? decision.upstreamErrorCode ?? 'response_inspection_matched'
-  forgetOpenAIAccountForSession(input.sessionAffinityKey, input.account.id)
+  await forgetOpenAIAccountForSessionAsync(input.sessionAffinityKey, input.account.id)
   input.auditCapture.completeAttempt(input.auditAttemptId, {
     statusCode: input.upstreamResponse.status,
     responseHeaders: input.upstreamResponse.headers,
@@ -272,7 +272,7 @@ async function finalizeBufferedJsonProtocolFailure(
 ): Promise<UpstreamResponseHandlingResult> {
   const responsePayload = gatewayErrorPayload(failure.message, 'upstream_response_error', failure.errorCode)
   const usage = parseGatewayProtocolUsageFromJsonBufferForRequest(input.req, input.account, input.responseBody)
-  forgetOpenAIAccountForSession(input.sessionAffinityKey, input.account.id)
+  await forgetOpenAIAccountForSessionAsync(input.sessionAffinityKey, input.account.id)
   input.auditCapture.completeAttempt(input.auditAttemptId, {
     statusCode: input.upstreamResponse.status,
     responseHeaders: input.upstreamResponse.headers,

@@ -3,9 +3,11 @@ import type { Request } from 'express'
 
 import { runtimeConfig } from '../../../config/runtime.js'
 import { createAppCache } from '../../../shared/cache.js'
+import { errorLogFields, logger } from '../../../shared/logger.js'
+import { getRedisClient, type RedisCommandClient } from '../../../shared/redis-client.js'
+import { redisNamespacedKey } from '../../../shared/redis-namespace.js'
 import {
   getAccountCurrentConcurrency,
-  loadAccountCurrentConcurrencyByIds,
   loadAccountCurrentConcurrencyByIdsAsync,
   loadAccountInFlightStatsByIds,
   loadAccountInFlightStatsByIdsAsync
@@ -27,6 +29,11 @@ interface SessionBinding {
   accountId: string
   scope?: OpenAIGatewaySessionAffinityScope
   trafficMigrationPreferred?: boolean
+}
+
+interface RedisSessionBindingRecord {
+  binding: SessionBinding
+  rawValue: string
 }
 
 interface TrafficMigrationPreference {
@@ -51,6 +58,57 @@ interface HighConcurrencyCandidate {
 
 const sessionAffinityTtlMs = 60 * 60 * 1000
 const trafficMigrationPreferenceTtlMs = sessionAffinityTtlMs
+const redisSessionAffinityIndexTtlPaddingMs = 60_000
+const redisMissingBindingExpectedValue = ''
+const redisSetSessionAffinityBindingScript = `
+local current = redis.call('GET', KEYS[1])
+local expected = ARGV[1]
+if expected == '' then
+  if current then
+    return 0
+  end
+elseif current ~= expected then
+  return 0
+end
+local new_value = ARGV[2]
+local binding_ttl_ms = ARGV[3]
+local index_ttl_ms = ARGV[4]
+local expires_at = ARGV[5]
+local old_index_count = tonumber(ARGV[6])
+local session_key = ARGV[7]
+for i = 1, old_index_count do
+  redis.call('ZREM', KEYS[1 + i], session_key)
+end
+redis.call('SET', KEYS[1], new_value, 'PX', binding_ttl_ms)
+for i = old_index_count + 2, #KEYS do
+  redis.call('ZADD', KEYS[i], expires_at, session_key)
+  redis.call('PEXPIRE', KEYS[i], index_ttl_ms)
+end
+return 1
+`
+const redisDeleteSessionAffinityBindingScript = `
+local current = redis.call('GET', KEYS[1])
+if current ~= ARGV[1] then
+  return 0
+end
+redis.call('DEL', KEYS[1])
+for i = 2, #KEYS do
+  redis.call('ZREM', KEYS[i], ARGV[2])
+end
+return 1
+`
+const redisRefreshSessionAffinityBindingScript = `
+local current = redis.call('GET', KEYS[1])
+if current ~= ARGV[1] then
+  return 0
+end
+redis.call('PEXPIRE', KEYS[1], ARGV[2])
+for i = 2, #KEYS do
+  redis.call('ZADD', KEYS[i], ARGV[3], ARGV[4])
+  redis.call('PEXPIRE', KEYS[i], ARGV[5])
+end
+return 1
+`
 
 const sessionAffinityCache = createAppCache<string, SessionBinding>({
   name: 'gateway:openai-session-affinity',
@@ -85,6 +143,10 @@ export interface OpenAIAccountDispatchOrderingOptions {
   schedulingPolicy?: GroupSchedulingPolicy
   modelPriority?: GatewayAccountModelPriority
   trafficMigrationScope?: Partial<OpenAIGatewaySessionAffinityScope>
+}
+
+interface TrafficMigrationPreferenceWriteOptions {
+  throwOnRedisError?: boolean
 }
 
 export function resolveOpenAIGatewaySessionAffinityKey(req: Request, input: {
@@ -141,27 +203,41 @@ export async function orderOpenAIAccountsBySessionAffinityAsync(
   sessionAffinityKey?: string,
   options: OpenAIAccountDispatchOrderingOptions = {}
 ): Promise<OpenAIAccountSecret[]> {
-  if (options.groupType !== 'high_concurrency') {
+  if (runtimeConfig.cacheDriver !== 'redis' && options.groupType !== 'high_concurrency') {
     return orderOpenAIAccountsBySessionAffinity(accounts, sessionAffinityKey, options)
   }
   const modelOrderedAccounts = orderOpenAIAccountsByModelPriority(accounts, options.modelPriority)
-  const trafficMigrationPreference = trafficMigrationPreferenceForAccounts(modelOrderedAccounts, options.trafficMigrationScope)
+  const trafficMigrationPreference = runtimeConfig.cacheDriver === 'redis'
+    ? await trafficMigrationPreferenceForAccountsAsync(modelOrderedAccounts, options.trafficMigrationScope)
+    : trafficMigrationPreferenceForAccounts(modelOrderedAccounts, options.trafficMigrationScope)
+  const sessionBinding = runtimeConfig.cacheDriver === 'redis'
+    ? await getRedisSessionAffinityBindingForOrdering(sessionAffinityKey)
+    : sessionAffinityKey
+      ? sessionAffinityCache.get(sessionAffinityKey)
+      : undefined
   const sessionTrafficMigrationTargetAccountId = trafficMigrationPreference
     ? undefined
-    : sessionTrafficMigrationTargetForAccounts(modelOrderedAccounts, sessionAffinityKey)
+    : sessionTrafficMigrationTargetForAccountsFromBinding(modelOrderedAccounts, sessionBinding)
   const trafficMigrationTargetAccountId = trafficMigrationPreference?.targetAccountId ?? sessionTrafficMigrationTargetAccountId
   const preferenceOrderedAccounts = orderOpenAIAccountsByTrafficMigrationPreference(
     modelOrderedAccounts,
     trafficMigrationTargetAccountId,
     options.modelPriority
   )
-  return orderOpenAIHighConcurrencyAccountsAsync(
-    preferenceOrderedAccounts,
-    sessionAffinityKey,
-    options.schedulingPolicy,
-    trafficMigrationTargetAccountId,
-    options.modelPriority
-  )
+  if (options.groupType === 'high_concurrency') {
+    return orderOpenAIHighConcurrencyAccountsAsync(
+      preferenceOrderedAccounts,
+      sessionAffinityKey,
+      options.schedulingPolicy,
+      trafficMigrationTargetAccountId,
+      options.modelPriority,
+      sessionBinding
+    )
+  }
+  if (trafficMigrationTargetAccountId) {
+    return preferenceOrderedAccounts
+  }
+  return orderOpenAIPersonalAccountsBySessionBinding(preferenceOrderedAccounts, sessionBinding, options.modelPriority)
 }
 
 export function areOpenAIHighConcurrencyAccountsHardBusy(accounts: OpenAIAccountSecret[], options: OpenAIAccountDispatchOrderingOptions = {}): boolean {
@@ -239,6 +315,20 @@ function orderOpenAIPersonalAccountsBySessionAffinity(
     return accounts
   }
   const binding = sessionAffinityCache.get(sessionAffinityKey)
+  return orderOpenAIPersonalAccountsBySessionBinding(accounts, binding, modelPriority)
+}
+
+function orderOpenAIPersonalAccountsBySessionBinding(
+  accounts: OpenAIAccountSecret[],
+  binding: SessionBinding | undefined,
+  modelPriority?: GatewayAccountModelPriority
+): OpenAIAccountSecret[] {
+  if (accounts.some((account) => account.superPriorityEnabled)) {
+    return accounts
+  }
+  if (accounts.length < 2) {
+    return accounts
+  }
   if (!binding) {
     return accounts
   }
@@ -342,7 +432,8 @@ async function orderOpenAIHighConcurrencyAccountsAsync(
   sessionAffinityKey: string | undefined,
   policyInput: GroupSchedulingPolicy | undefined,
   trafficMigrationTargetAccountId?: string,
-  modelPriority?: GatewayAccountModelPriority
+  modelPriority?: GatewayAccountModelPriority,
+  sessionBinding?: SessionBinding
 ): Promise<OpenAIAccountSecret[]> {
   if (runtimeConfig.runtimeStateDriver !== 'redis') {
     return orderOpenAIHighConcurrencyAccounts(accounts, sessionAffinityKey, policyInput, trafficMigrationTargetAccountId, modelPriority)
@@ -354,9 +445,13 @@ async function orderOpenAIHighConcurrencyAccountsAsync(
   if (policy.fastFirstEnabled === false) {
     return trafficMigrationTargetAccountId
       ? await orderOpenAIHighConcurrencyHardBusyLastAsync(accounts)
-      : orderOpenAIPersonalAccountsBySessionAffinity(accounts, sessionAffinityKey, modelPriority)
+      : orderOpenAIPersonalAccountsBySessionBinding(
+          accounts,
+          sessionBinding ?? (runtimeConfig.cacheDriver !== 'redis' && sessionAffinityKey ? sessionAffinityCache.get(sessionAffinityKey) : undefined),
+          modelPriority
+        )
   }
-  const binding = sessionAffinityKey ? sessionAffinityCache.get(sessionAffinityKey) : undefined
+  const binding = sessionBinding ?? (runtimeConfig.cacheDriver !== 'redis' && sessionAffinityKey ? sessionAffinityCache.get(sessionAffinityKey) : undefined)
   const inFlightStats = await loadAccountInFlightStatsByIdsAsync(gatewayAccountConcurrencyAccountIds(accounts), {
     slowRequestThresholdMs: policy.slowRequestThresholdMs ?? DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY.slowRequestThresholdMs,
     firstOutputSlowThresholdMs: policy.firstOutputSlowThresholdMs ?? DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY.firstOutputSlowThresholdMs
@@ -400,11 +495,15 @@ function orderOpenAIHighConcurrencyHardBusyLast(accounts: OpenAIAccountSecret[])
   if (accounts.length < 2) {
     return accounts
   }
-  const currentConcurrencyByAccount = loadAccountCurrentConcurrencyByIds(gatewayAccountConcurrencyAccountIds(accounts))
+  const inFlightStats = loadAccountInFlightStatsByIds(gatewayAccountConcurrencyAccountIds(accounts), {
+    slowRequestThresholdMs: DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY.slowRequestThresholdMs,
+    firstOutputSlowThresholdMs: DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY.firstOutputSlowThresholdMs
+  })
   const available: OpenAIAccountSecret[] = []
   const hardBusy: OpenAIAccountSecret[] = []
   for (const account of accounts) {
-    if (accountCurrentConcurrency(account, currentConcurrencyByAccount.get(gatewayAccountConcurrencyAccountId(account))) >= accountHardConcurrencyLimit(account)) {
+    const runtimeStats = inFlightStats.get(gatewayAccountConcurrencyAccountId(account))
+    if (accountCurrentConcurrency(account, runtimeStats?.currentConcurrency) >= accountHardConcurrencyLimit(account)) {
       hardBusy.push(account)
     } else {
       available.push(account)
@@ -479,7 +578,44 @@ export function rememberOpenAIAccountForSession(sessionAffinityKey: string | und
   if (!sessionAffinityKey) {
     return
   }
+  if (shouldUseRedisSessionAffinity()) {
+    void rememberOpenAIAccountForSessionAsync(sessionAffinityKey, accountId, scope)
+    return
+  }
   if (!canUseProcessLocalSessionAffinity()) return
+  rememberOpenAIAccountForSessionLocal(sessionAffinityKey, accountId, scope)
+}
+
+export async function rememberOpenAIAccountForSessionAsync(sessionAffinityKey: string | undefined, accountId: string, scope?: OpenAIGatewaySessionAffinityScope): Promise<void> {
+  if (!sessionAffinityKey) {
+    return
+  }
+  if (!shouldUseRedisSessionAffinity()) {
+    rememberOpenAIAccountForSession(sessionAffinityKey, accountId, scope)
+    return
+  }
+  try {
+    let previous = await getRedisSessionAffinityRecord(sessionAffinityKey, { refreshTtl: false })
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const written = await setRedisSessionAffinityBinding(sessionAffinityKey, {
+        accountId,
+        scope,
+        ...(previous?.binding.accountId === accountId && previous.binding.trafficMigrationPreferred ? { trafficMigrationPreferred: true } : {})
+      }, previous)
+      if (written) {
+        return
+      }
+      previous = await getRedisSessionAffinityRecord(sessionAffinityKey, { refreshTtl: false })
+    }
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'redis_openai_session_affinity_remember_failed',
+      accountId
+    }), 'Redis 会话亲和绑定写入失败，已跳过本次亲和记录')
+  }
+}
+
+function rememberOpenAIAccountForSessionLocal(sessionAffinityKey: string, accountId: string, scope?: OpenAIGatewaySessionAffinityScope): void {
   const previous = sessionAffinityCache.get(sessionAffinityKey)
   setSessionAffinityBinding(sessionAffinityKey, {
     accountId,
@@ -499,6 +635,10 @@ export function rememberOpenAIAccountTrafficMigrationPreference(
   if (!source || !target || !key || source === target) {
     return
   }
+  if (shouldUseRedisSessionAffinity()) {
+    void rememberOpenAIAccountTrafficMigrationPreferenceAsync(source, target, scope)
+    return
+  }
   if (!canUseProcessLocalSessionAffinity()) return
   trafficMigrationPreferenceCache.set(key, {
     sourceAccountId: source,
@@ -506,8 +646,48 @@ export function rememberOpenAIAccountTrafficMigrationPreference(
   })
 }
 
+export async function rememberOpenAIAccountTrafficMigrationPreferenceAsync(
+  sourceAccountId: string,
+  targetAccountId: string,
+  scope?: Partial<OpenAIGatewaySessionAffinityScope>,
+  options: TrafficMigrationPreferenceWriteOptions = {}
+): Promise<void> {
+  const source = stringValue(sourceAccountId)
+  const target = stringValue(targetAccountId)
+  const key = trafficMigrationPreferenceScopeKey(scope)
+  if (!source || !target || !key || source === target) {
+    return
+  }
+  if (!shouldUseRedisSessionAffinity()) {
+    rememberOpenAIAccountTrafficMigrationPreference(source, target, scope)
+    return
+  }
+  try {
+    await setRedisTrafficMigrationPreference(key, {
+      sourceAccountId: source,
+      targetAccountId: target
+    })
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'redis_openai_traffic_migration_preference_write_failed',
+      sourceAccountId: source,
+      targetAccountId: target
+    }), 'Redis 流量迁移偏向写入失败，已跳过本次偏向记录')
+    if (options.throwOnRedisError === true) {
+      throw error
+    }
+  }
+}
+
 export function forgetOpenAIAccountForSession(sessionAffinityKey: string | undefined, accountId?: string): void {
   if (!sessionAffinityKey) {
+    return
+  }
+  if (shouldUseRedisSessionAffinity()) {
+    logger.warn({
+      event: 'redis_openai_session_affinity_sync_forget_ignored',
+      accountId
+    }, 'Redis cache driver 下必须使用异步会话亲和清理入口')
     return
   }
   if (!canUseProcessLocalSessionAffinity()) return
@@ -519,6 +699,31 @@ export function forgetOpenAIAccountForSession(sessionAffinityKey: string | undef
     return
   }
   sessionAffinityCache.delete(sessionAffinityKey)
+}
+
+export async function forgetOpenAIAccountForSessionAsync(sessionAffinityKey: string | undefined, accountId?: string): Promise<void> {
+  if (!sessionAffinityKey) {
+    return
+  }
+  if (!shouldUseRedisSessionAffinity()) {
+    forgetOpenAIAccountForSession(sessionAffinityKey, accountId)
+    return
+  }
+  try {
+    const record = await getRedisSessionAffinityRecord(sessionAffinityKey, { refreshTtl: false })
+    if (!record) {
+      return
+    }
+    if (accountId && record.binding.accountId !== accountId) {
+      return
+    }
+    await deleteRedisSessionAffinityBinding(sessionAffinityKey, record)
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'redis_openai_session_affinity_forget_failed',
+      accountId
+    }), 'Redis 会话亲和绑定清理失败，已跳过本次清理')
+  }
 }
 
 export function migrateOpenAIAccountSessionAffinity(
@@ -550,6 +755,27 @@ export function migrateOpenAIAccountSessionAffinity(
     migratedSessionCount += 1
   }
   return { migratedSessionCount }
+}
+
+export async function migrateOpenAIAccountSessionAffinityAsync(
+  sourceAccountId: string,
+  targetAccountId: string,
+  scope?: Partial<OpenAIGatewaySessionAffinityScope>,
+  options: { preferMigratedSessions?: boolean } = {}
+): Promise<{ migratedSessionCount: number }> {
+  if (!shouldUseRedisSessionAffinity()) {
+    return migrateOpenAIAccountSessionAffinity(sourceAccountId, targetAccountId, scope, options)
+  }
+  try {
+    return await migrateRedisOpenAIAccountSessionAffinity(sourceAccountId, targetAccountId, scope, options)
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'redis_openai_session_affinity_migration_failed',
+      sourceAccountId,
+      targetAccountId
+    }), 'Redis 会话亲和迁移失败')
+    throw error
+  }
 }
 
 function setSessionAffinityBinding(key: string, binding: SessionBinding): void {
@@ -605,6 +831,298 @@ function sessionAffinityMigrationCandidateKeys(sourceAccountId: string, scope?: 
     return [...(sessionAffinityKeysByAccountSystemScope.get(accountSystemScopeIndexKey(sourceAccountId, systemAccountId)) ?? [])]
   }
   return [...(sessionAffinityKeysByAccountId.get(sourceAccountId) ?? [])]
+}
+
+async function migrateRedisOpenAIAccountSessionAffinity(
+  sourceAccountId: string,
+  targetAccountId: string,
+  scope?: Partial<OpenAIGatewaySessionAffinityScope>,
+  options: { preferMigratedSessions?: boolean } = {}
+): Promise<{ migratedSessionCount: number }> {
+  const source = stringValue(sourceAccountId)
+  const target = stringValue(targetAccountId)
+  if (!source || !target || source === target) {
+    return { migratedSessionCount: 0 }
+  }
+  let migratedSessionCount = 0
+  const candidateKeys = await redisSessionAffinityMigrationCandidateKeys(source, scope)
+  for (const key of candidateKeys) {
+    const record = await getRedisSessionAffinityRecord(key, { refreshTtl: false })
+    if (!record) {
+      continue
+    }
+    const binding = record.binding
+    if (binding.accountId !== source) {
+      continue
+    }
+    if (scope && !sessionBindingMatchesScope(binding, scope)) {
+      continue
+    }
+    const migrated = await setRedisSessionAffinityBinding(key, {
+      accountId: target,
+      scope: binding.scope,
+      ...(options.preferMigratedSessions === true ? { trafficMigrationPreferred: true } : {})
+    }, record)
+    if (migrated) {
+      migratedSessionCount += 1
+    }
+  }
+  return { migratedSessionCount }
+}
+
+async function redisSessionAffinityMigrationCandidateKeys(
+  sourceAccountId: string,
+  scope?: Partial<OpenAIGatewaySessionAffinityScope>
+): Promise<string[]> {
+  const systemAccountId = scope?.systemAccountId
+  const apiKeyId = scope?.apiKeyId
+  const indexKey = systemAccountId && apiKeyId
+    ? redisSessionAffinityAccountSystemApiKeyIndexKey(sourceAccountId, systemAccountId, apiKeyId)
+    : systemAccountId
+      ? redisSessionAffinityAccountSystemIndexKey(sourceAccountId, systemAccountId)
+      : redisSessionAffinityAccountIndexKey(sourceAccountId)
+  const now = Date.now()
+  const client = await redisSessionAffinityClient()
+  await client.sendCommand(['ZREMRANGEBYSCORE', indexKey, '-inf', String(now - 1)])
+  return stringArrayRedisResult(await client.sendCommand(['ZRANGEBYSCORE', indexKey, String(now), '+inf']))
+}
+
+async function getRedisSessionAffinityBindingForOrdering(sessionAffinityKey: string | undefined): Promise<SessionBinding | undefined> {
+  if (!sessionAffinityKey) {
+    return undefined
+  }
+  try {
+    return await getRedisSessionAffinityBinding(sessionAffinityKey, { refreshTtl: true })
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'redis_openai_session_affinity_read_failed'
+    }), 'Redis 会话亲和绑定读取失败，已跳过本次亲和排序')
+    return undefined
+  }
+}
+
+async function getRedisSessionAffinityBinding(
+  sessionAffinityKey: string,
+  options: { refreshTtl: boolean }
+): Promise<SessionBinding | undefined> {
+  return (await getRedisSessionAffinityRecord(sessionAffinityKey, options))?.binding
+}
+
+async function getRedisSessionAffinityRecord(
+  sessionAffinityKey: string,
+  options: { refreshTtl: boolean }
+): Promise<RedisSessionBindingRecord | undefined> {
+  const client = await redisSessionAffinityClient()
+  const key = redisSessionAffinityBindingKey(sessionAffinityKey)
+  const rawValue = await client.get(key)
+  if (rawValue === null) {
+    return undefined
+  }
+  const binding = parseRedisSessionBinding(rawValue)
+  if (!binding) {
+    await client.del(key)
+    return undefined
+  }
+  const record = { binding, rawValue }
+  if (options.refreshTtl) {
+    await refreshRedisSessionAffinityBinding(client, sessionAffinityKey, record)
+  }
+  return record
+}
+
+async function setRedisSessionAffinityBinding(
+  sessionAffinityKey: string,
+  binding: SessionBinding,
+  previous?: RedisSessionBindingRecord
+): Promise<boolean> {
+  const client = await redisSessionAffinityClient()
+  const priorRecord = previous ?? await getRedisSessionAffinityRecord(sessionAffinityKey, { refreshTtl: false })
+  const oldIndexKeys = priorRecord ? redisSessionAffinityIndexKeysForBinding(priorRecord.binding) : []
+  const newIndexKeys = redisSessionAffinityIndexKeysForBinding(binding)
+  const keys = [
+    redisSessionAffinityBindingKey(sessionAffinityKey),
+    ...oldIndexKeys,
+    ...newIndexKeys
+  ]
+  const result = await client.eval(redisSetSessionAffinityBindingScript, {
+    keys,
+    arguments: [
+      priorRecord?.rawValue ?? redisMissingBindingExpectedValue,
+      JSON.stringify(binding),
+      String(sessionAffinityTtlMs),
+      String(sessionAffinityTtlMs + redisSessionAffinityIndexTtlPaddingMs),
+      String(Date.now() + sessionAffinityTtlMs),
+      String(oldIndexKeys.length),
+      sessionAffinityKey
+    ]
+  })
+  return redisBooleanResult(result)
+}
+
+async function deleteRedisSessionAffinityBinding(
+  sessionAffinityKey: string,
+  record: RedisSessionBindingRecord
+): Promise<boolean> {
+  const client = await redisSessionAffinityClient()
+  const result = await client.eval(redisDeleteSessionAffinityBindingScript, {
+    keys: [
+      redisSessionAffinityBindingKey(sessionAffinityKey),
+      ...redisSessionAffinityIndexKeysForBinding(record.binding)
+    ],
+    arguments: [record.rawValue, sessionAffinityKey]
+  })
+  return redisBooleanResult(result)
+}
+
+async function refreshRedisSessionAffinityBinding(
+  client: RedisCommandClient,
+  sessionAffinityKey: string,
+  record: RedisSessionBindingRecord
+): Promise<boolean> {
+  const result = await client.eval(redisRefreshSessionAffinityBindingScript, {
+    keys: [
+      redisSessionAffinityBindingKey(sessionAffinityKey),
+      ...redisSessionAffinityIndexKeysForBinding(record.binding)
+    ],
+    arguments: [
+      record.rawValue,
+      String(sessionAffinityTtlMs),
+      String(Date.now() + sessionAffinityTtlMs),
+      sessionAffinityKey,
+      String(sessionAffinityTtlMs + redisSessionAffinityIndexTtlPaddingMs)
+    ]
+  })
+  return redisBooleanResult(result)
+}
+
+function redisSessionAffinityIndexKeysForBinding(binding: SessionBinding): string[] {
+  const keys = [redisSessionAffinityAccountIndexKey(binding.accountId)]
+  if (binding.scope?.systemAccountId) {
+    keys.push(redisSessionAffinityAccountSystemIndexKey(binding.accountId, binding.scope.systemAccountId))
+    if (binding.scope.apiKeyId) {
+      keys.push(redisSessionAffinityAccountSystemApiKeyIndexKey(binding.accountId, binding.scope.systemAccountId, binding.scope.apiKeyId))
+    }
+  }
+  return keys
+}
+
+function parseRedisSessionBinding(rawValue: string): SessionBinding | undefined {
+  try {
+    const parsed = JSON.parse(rawValue) as Record<string, unknown>
+    const accountId = stringValue(parsed.accountId)
+    if (!accountId) {
+      return undefined
+    }
+    const scope = parseRedisSessionBindingScope(parsed.scope)
+    return {
+      accountId,
+      ...(scope ? { scope } : {}),
+      ...(parsed.trafficMigrationPreferred === true ? { trafficMigrationPreferred: true } : {})
+    }
+  } catch {
+    return undefined
+  }
+}
+
+function parseRedisSessionBindingScope(value: unknown): OpenAIGatewaySessionAffinityScope | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return undefined
+  }
+  const record = value as Record<string, unknown>
+  const systemAccountId = stringValue(record.systemAccountId)
+  const groupId = stringValue(record.groupId)
+  if (!systemAccountId || !groupId) {
+    return undefined
+  }
+  const apiKeyId = stringValue(record.apiKeyId)
+  return {
+    systemAccountId,
+    ...(apiKeyId ? { apiKeyId } : {}),
+    groupId
+  }
+}
+
+async function setRedisTrafficMigrationPreference(scopeKey: string, preference: TrafficMigrationPreference): Promise<void> {
+  await (await redisSessionAffinityClient()).set(
+    redisTrafficMigrationPreferenceKey(scopeKey),
+    JSON.stringify(preference),
+    { PX: trafficMigrationPreferenceTtlMs }
+  )
+}
+
+async function getRedisTrafficMigrationPreference(scopeKey: string): Promise<TrafficMigrationPreference | undefined> {
+  const client = await redisSessionAffinityClient()
+  const key = redisTrafficMigrationPreferenceKey(scopeKey)
+  const rawValue = await client.get(key)
+  if (rawValue === null) {
+    return undefined
+  }
+  const preference = parseRedisTrafficMigrationPreference(rawValue)
+  if (!preference) {
+    await client.del(key)
+    return undefined
+  }
+  await client.sendCommand(['PEXPIRE', key, String(trafficMigrationPreferenceTtlMs)])
+  return preference
+}
+
+async function deleteRedisTrafficMigrationPreference(scopeKey: string): Promise<void> {
+  await (await redisSessionAffinityClient()).del(redisTrafficMigrationPreferenceKey(scopeKey))
+}
+
+function parseRedisTrafficMigrationPreference(rawValue: string): TrafficMigrationPreference | undefined {
+  try {
+    const parsed = JSON.parse(rawValue) as Record<string, unknown>
+    const sourceAccountId = stringValue(parsed.sourceAccountId)
+    const targetAccountId = stringValue(parsed.targetAccountId)
+    return sourceAccountId && targetAccountId
+      ? { sourceAccountId, targetAccountId }
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function redisSessionAffinityClient(): Promise<RedisCommandClient> {
+  const redisUrl = runtimeConfig.redis.cacheUrl
+  if (!redisUrl) {
+    throw new Error('JUHE_AI_REDIS_CACHE_URL 在 Redis cache driver 下必须配置')
+  }
+  return getRedisClient(redisUrl)
+}
+
+function redisSessionAffinityBindingKey(sessionAffinityKey: string): string {
+  return `${redisNamespacedKey('juhe-ai:session-affinity:binding:')}${redisSessionAffinityKeyPart(sessionAffinityKey)}`
+}
+
+function redisSessionAffinityAccountIndexKey(accountId: string): string {
+  return `${redisNamespacedKey('juhe-ai:session-affinity:index:account:')}${redisSessionAffinityKeyPart(accountId)}`
+}
+
+function redisSessionAffinityAccountSystemIndexKey(accountId: string, systemAccountId: string): string {
+  return `${redisNamespacedKey('juhe-ai:session-affinity:index:account-system:')}${redisSessionAffinityKeyPart(accountId)}:${redisSessionAffinityKeyPart(systemAccountId)}`
+}
+
+function redisSessionAffinityAccountSystemApiKeyIndexKey(accountId: string, systemAccountId: string, apiKeyId: string): string {
+  return `${redisNamespacedKey('juhe-ai:session-affinity:index:account-system-api-key:')}${redisSessionAffinityKeyPart(accountId)}:${redisSessionAffinityKeyPart(systemAccountId)}:${redisSessionAffinityKeyPart(apiKeyId)}`
+}
+
+function redisTrafficMigrationPreferenceKey(scopeKey: string): string {
+  return `${redisNamespacedKey('juhe-ai:traffic-migration-preference:')}${redisSessionAffinityKeyPart(scopeKey)}`
+}
+
+function redisSessionAffinityKeyPart(value: string): string {
+  return encodeURIComponent(value.trim()) || 'default'
+}
+
+function stringArrayRedisResult(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map((item) => String(item ?? '')).filter(Boolean)
+    : []
+}
+
+function redisBooleanResult(value: unknown): boolean {
+  return value === 1 || value === '1' || value === true
 }
 
 function addSetValue(map: Map<string, Set<string>>, key: string, value: string): void {
@@ -670,12 +1188,52 @@ function trafficMigrationPreferenceForAccounts(
     : undefined
 }
 
+async function trafficMigrationPreferenceForAccountsAsync(
+  accounts: OpenAIAccountSecret[],
+  scope?: Partial<OpenAIGatewaySessionAffinityScope>
+): Promise<TrafficMigrationPreference | undefined> {
+  if (accounts.length < 2) {
+    return undefined
+  }
+  try {
+    const scopedPreference = await trafficMigrationPreferenceForScopeAsync(scope)
+    if (!scopedPreference) {
+      return undefined
+    }
+    const { key, preference } = scopedPreference
+    if (accounts.some((account) => account.id === preference.sourceAccountId)) {
+      await deleteRedisTrafficMigrationPreference(key)
+      return undefined
+    }
+    return accounts.some((account) => account.id === preference.targetAccountId)
+      ? preference
+      : undefined
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'redis_openai_traffic_migration_preference_read_failed'
+    }), 'Redis 流量迁移偏向读取失败，已跳过本次偏向排序')
+    return undefined
+  }
+}
+
 function trafficMigrationPreferenceForScope(
   scope?: Partial<OpenAIGatewaySessionAffinityScope>
 ): { key: string; preference: TrafficMigrationPreference } | undefined {
   if (!canUseProcessLocalSessionAffinity()) return undefined
   for (const key of trafficMigrationPreferenceScopeKeys(scope)) {
     const preference = trafficMigrationPreferenceCache.get(key)
+    if (preference) {
+      return { key, preference }
+    }
+  }
+  return undefined
+}
+
+async function trafficMigrationPreferenceForScopeAsync(
+  scope?: Partial<OpenAIGatewaySessionAffinityScope>
+): Promise<{ key: string; preference: TrafficMigrationPreference } | undefined> {
+  for (const key of trafficMigrationPreferenceScopeKeys(scope)) {
+    const preference = await getRedisTrafficMigrationPreference(key)
     if (preference) {
       return { key, preference }
     }
@@ -692,6 +1250,16 @@ function sessionTrafficMigrationTargetForAccounts(
     return undefined
   }
   const binding = sessionAffinityCache.get(sessionAffinityKey)
+  if (!binding?.trafficMigrationPreferred) {
+    return undefined
+  }
+  return sessionTrafficMigrationTargetForAccountsFromBinding(accounts, binding)
+}
+
+function sessionTrafficMigrationTargetForAccountsFromBinding(
+  accounts: OpenAIAccountSecret[],
+  binding?: SessionBinding
+): string | undefined {
   if (!binding?.trafficMigrationPreferred) {
     return undefined
   }
@@ -799,6 +1367,10 @@ function canUseProcessLocalSessionAffinity(): boolean {
   if (runtimeConfig.cacheDriver !== 'redis') return true
   clearSessionAffinityIndexes()
   return false
+}
+
+function shouldUseRedisSessionAffinity(): boolean {
+  return runtimeConfig.cacheDriver === 'redis'
 }
 
 function canSessionAffinityPromoteOver(

@@ -414,6 +414,13 @@ function assertStrictRedisCacheBoundaries(): void {
 
   const sessionAffinitySource = source('modules/gateway/runtime/session-affinity.service.ts')
   assert.match(functionBody(sessionAffinitySource, 'canUseProcessLocalSessionAffinity'), /runtimeConfig\.cacheDriver !== 'redis'[\s\S]*clearSessionAffinityIndexes\(\)[\s\S]*return false/, 'Redis cache driver 下 session affinity 本机索引必须禁用并清空')
+  assert.match(functionBody(sessionAffinitySource, 'rememberOpenAIAccountForSessionAsync'), /getRedisSessionAffinityRecord[\s\S]*setRedisSessionAffinityBinding[\s\S]*if \(written\)/, 'Redis cache driver 下会话亲和成功绑定必须写入共享 Redis 绑定并处理 CAS 冲突')
+  assert.match(sessionAffinitySource, /redisSetSessionAffinityBindingScript[\s\S]*redis\.call\('GET', KEYS\[1\]\)[\s\S]*redis\.call\('SET', KEYS\[1\], new_value, 'PX', binding_ttl_ms\)[\s\S]*redis\.call\('ZADD', KEYS\[i\], expires_at, session_key\)/, 'Redis cache driver 下会话亲和 binding 与反查索引必须通过 Lua 原子写入')
+  assert.match(sessionAffinitySource, /redisDeleteSessionAffinityBindingScript[\s\S]*if current ~= ARGV\[1\][\s\S]*redis\.call\('DEL', KEYS\[1\]\)[\s\S]*redis\.call\('ZREM', KEYS\[i\], ARGV\[2\]\)/, 'Redis cache driver 下会话亲和删除必须通过 expected raw value 原子清理 binding 与索引')
+  assert.doesNotMatch(functionBody(sessionAffinitySource, 'forgetOpenAIAccountForSession'), /void forgetOpenAIAccountForSessionAsync/, 'Redis cache driver 下生产路径不能通过同步会话亲和清理入口 fire-and-forget')
+  assert.match(sessionAffinitySource, /async function migrateOpenAIAccountSessionAffinityAsync[\s\S]*migrateRedisOpenAIAccountSessionAffinity/, 'Redis cache driver 下手动迁移会话亲和必须走 Redis 反查索引')
+  assert.match(functionBody(sessionAffinitySource, 'orderOpenAIAccountsBySessionAffinityAsync'), /getRedisSessionAffinityBindingForOrdering[\s\S]*orderOpenAIPersonalAccountsBySessionBinding/, 'Redis cache driver 下调度排序必须读取共享 Redis 会话绑定')
+  assert.match(functionBody(source('modules/db-service/db-service-ipc.ts'), 'migrateOpenAIAccountTrafficRuntimeLocal'), /await sessionAffinity\.migrateOpenAIAccountSessionAffinityAsync[\s\S]*await sessionAffinity\.rememberOpenAIAccountTrafficMigrationPreferenceAsync\([\s\S]*throwOnRedisError:\s*true/, 'DB service 运行态流量迁移必须等待 Redis 会话迁移和偏向写入完成')
   assert.match(functionBody(sessionAffinitySource, 'accountCurrentConcurrency'), /runtimeCurrentConcurrency \?\? account\.currentConcurrency/, '高并发异步排序必须优先使用 Redis runtime 并发值，不得被账号对象旧 currentConcurrency 覆盖')
   assert.match(functionBody(sessionAffinitySource, 'orderOpenAIHighConcurrencyAccountsAsync'), /trafficMigrationTargetAccountId[\s\S]*await orderOpenAIHighConcurrencyHardBusyLastAsync\(accounts\)/, '高并发异步排序的流量迁移 hard-busy 分支必须读取 Redis 并发状态')
 
