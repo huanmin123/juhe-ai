@@ -1,4 +1,4 @@
-// Curated from official OpenAI model, pricing, and web search docs on 2026-07-09.
+// Curated from official OpenAI model, pricing, Codex model catalog, and web search docs on 2026-07-09.
 // Values follow LiteLLM/model-price-repo field names: token prices are USD per token.
 // Current GPT-5 family model prices.
 
@@ -9,6 +9,7 @@ export const openAIGPT5ModelPricingData = [
     mode: "chat",
     catalog_order: 0,
     release_date: "2026-06-26",
+    max_input_tokens: 372000,
     input_cost_per_token: 0.000005,
     output_cost_per_token: 0.00003,
     cache_creation_input_token_cost: 0.00000625,
@@ -22,6 +23,7 @@ export const openAIGPT5ModelPricingData = [
     mode: "chat",
     catalog_order: 1,
     release_date: "2026-06-26",
+    max_input_tokens: 372000,
     input_cost_per_token: 0.0000025,
     output_cost_per_token: 0.000015,
     cache_creation_input_token_cost: 0.000003125,
@@ -35,6 +37,7 @@ export const openAIGPT5ModelPricingData = [
     mode: "chat",
     catalog_order: 2,
     release_date: "2026-06-26",
+    max_input_tokens: 372000,
     input_cost_per_token: 0.000001,
     output_cost_per_token: 0.000006,
     cache_creation_input_token_cost: 0.00000125,
