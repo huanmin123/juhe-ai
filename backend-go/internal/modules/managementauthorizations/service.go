@@ -58,6 +58,7 @@ type Service struct {
 	createStore              port.ManagementResourceAuthorizationCreator
 	updateStore              port.ManagementResourceAuthorizationUpdater
 	returnStore              port.ManagementResourceAuthorizationReturner
+	resourceReturnStore      port.ManagementResourceAuthorizationResourceReturner
 	revokeStore              port.ManagementResourceAuthorizationRevoker
 	expirySweepStore         port.ManagementResourceAuthorizationExpirySweeper
 	usageStore               port.ManagementAuthorizationUsageOverviewReader
@@ -79,6 +80,7 @@ type ServiceOptions struct {
 	Store                    port.ManagementResourceAuthorizationCreator
 	UpdateStore              port.ManagementResourceAuthorizationUpdater
 	ReturnStore              port.ManagementResourceAuthorizationReturner
+	ResourceReturnStore      port.ManagementResourceAuthorizationResourceReturner
 	RevokeStore              port.ManagementResourceAuthorizationRevoker
 	ExpirySweepStore         port.ManagementResourceAuthorizationExpirySweeper
 	UsageStore               port.ManagementAuthorizationUsageOverviewReader
@@ -264,6 +266,13 @@ type ReturnInput struct {
 	ActorSystemAccountID   string
 }
 
+type ResourceReturnInput struct {
+	ResourceType           string
+	ResourceID             string
+	GranteeSystemAccountID string
+	ActorSystemAccountID   string
+}
+
 type UpdateInput struct {
 	AuthorizationID       string
 	ActorSystemAccountID  string
@@ -315,6 +324,12 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 	if returnStore == nil {
 		if candidate, ok := opts.Store.(port.ManagementResourceAuthorizationReturner); ok {
 			returnStore = candidate
+		}
+	}
+	resourceReturnStore := opts.ResourceReturnStore
+	if resourceReturnStore == nil {
+		if candidate, ok := opts.Store.(port.ManagementResourceAuthorizationResourceReturner); ok {
+			resourceReturnStore = candidate
 		}
 	}
 	listStore := opts.ListStore
@@ -377,6 +392,7 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 		createStore:              opts.Store,
 		updateStore:              updateStore,
 		returnStore:              returnStore,
+		resourceReturnStore:      resourceReturnStore,
 		revokeStore:              revokeStore,
 		expirySweepStore:         expirySweepStore,
 		usageStore:               usageStore,
@@ -790,6 +806,39 @@ func (s *Service) Return(ctx context.Context, input ReturnInput) (Summary, bool,
 	}
 	row, found, err := s.returnStore.ReturnManagementResourceAuthorizationForGrantee(ctx, port.ManagementResourceAuthorizationReturnInput{
 		AuthorizationID:        authorizationID,
+		GranteeSystemAccountID: granteeSystemAccountID,
+		ActorSystemAccountID:   actor,
+		ReturnedAt:             now,
+	})
+	if err != nil {
+		return Summary{}, false, err
+	}
+	if !found {
+		return Summary{}, false, nil
+	}
+	if s.authorizationInvalidator != nil {
+		if err := s.authorizationInvalidator.InvalidateAuthorizationChanged(ctx, ResourceAuthorizationReturnedReason); err != nil {
+			return Summary{}, false, err
+		}
+	}
+	return row, true, nil
+}
+
+func (s *Service) ReturnByResource(ctx context.Context, input ResourceReturnInput) (Summary, bool, error) {
+	if s.resourceReturnStore == nil {
+		return Summary{}, false, fmt.Errorf("management resource authorization resource returner is required")
+	}
+	now := s.now().UTC()
+	resourceType := strings.TrimSpace(input.ResourceType)
+	resourceID := strings.TrimSpace(input.ResourceID)
+	granteeSystemAccountID := strings.TrimSpace(input.GranteeSystemAccountID)
+	actor := strings.TrimSpace(input.ActorSystemAccountID)
+	if (resourceType != "account" && resourceType != "group") || resourceID == "" || granteeSystemAccountID == "" || actor == "" {
+		return Summary{}, false, ErrAuthorizationReturnInvalid
+	}
+	row, found, err := s.resourceReturnStore.ReturnManagementResourceAuthorizationForGranteeByResource(ctx, port.ManagementResourceAuthorizationReturnResourceInput{
+		ResourceType:           resourceType,
+		ResourceID:             resourceID,
 		GranteeSystemAccountID: granteeSystemAccountID,
 		ActorSystemAccountID:   actor,
 		ReturnedAt:             now,

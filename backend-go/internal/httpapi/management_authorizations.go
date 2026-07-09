@@ -56,6 +56,10 @@ type managementAuthorizationReturnService interface {
 	Return(r *http.Request, input managementauthorizations.ReturnInput) (managementauthorizations.Summary, bool, error)
 }
 
+type managementAuthorizationResourceReturnService interface {
+	ReturnByResource(r *http.Request, input managementauthorizations.ResourceReturnInput) (managementauthorizations.Summary, bool, error)
+}
+
 type managementAuthorizationRevokeService interface {
 	Revoke(r *http.Request, input managementauthorizations.RevokeInput) (managementauthorizations.Summary, bool, error)
 }
@@ -94,6 +98,10 @@ func (s managementAuthorizationServiceAdapter) Get(r *http.Request, input manage
 
 func (s managementAuthorizationServiceAdapter) Return(r *http.Request, input managementauthorizations.ReturnInput) (managementauthorizations.Summary, bool, error) {
 	return s.service.Return(r.Context(), input)
+}
+
+func (s managementAuthorizationServiceAdapter) ReturnByResource(r *http.Request, input managementauthorizations.ResourceReturnInput) (managementauthorizations.Summary, bool, error) {
+	return s.service.ReturnByResource(r.Context(), input)
 }
 
 func (s managementAuthorizationServiceAdapter) Revoke(r *http.Request, input managementauthorizations.RevokeInput) (managementauthorizations.Summary, bool, error) {
@@ -172,6 +180,22 @@ func NewManagementMyAuthorizationReturnHandler(service *managementauthorizations
 	return newManagementAuthorizationReturnHandler(managementAuthorizationServiceAdapter{service: service}, managementAuthorizationScopeSelf)
 }
 
+func NewManagementAccountAuthorizationReturnHandler(service *managementauthorizations.Service) http.Handler {
+	return newManagementResourceAuthorizationReturnHandler(managementAuthorizationServiceAdapter{service: service}, managementAuthorizationScopeAdmin, "account")
+}
+
+func NewManagementMyAccountAuthorizationReturnHandler(service *managementauthorizations.Service) http.Handler {
+	return newManagementResourceAuthorizationReturnHandler(managementAuthorizationServiceAdapter{service: service}, managementAuthorizationScopeSelf, "account")
+}
+
+func NewManagementGroupAuthorizationReturnHandler(service *managementauthorizations.Service) http.Handler {
+	return newManagementResourceAuthorizationReturnHandler(managementAuthorizationServiceAdapter{service: service}, managementAuthorizationScopeAdmin, "group")
+}
+
+func NewManagementMyGroupAuthorizationReturnHandler(service *managementauthorizations.Service) http.Handler {
+	return newManagementResourceAuthorizationReturnHandler(managementAuthorizationServiceAdapter{service: service}, managementAuthorizationScopeSelf, "group")
+}
+
 func NewManagementAuthorizationRevokeHandler(service *managementauthorizations.Service) http.Handler {
 	return newManagementAuthorizationRevokeHandler(managementAuthorizationServiceAdapter{service: service}, managementAuthorizationScopeAdmin)
 }
@@ -240,6 +264,42 @@ func NewManagementMyAuthorizationReturnHandlerWithOperationLog(service *manageme
 	return newManagementAuthorizationReturnHandler(
 		managementAuthorizationServiceAdapter{service: service},
 		managementAuthorizationScopeSelf,
+		newManagementOperationLogOptions(opts),
+	)
+}
+
+func NewManagementAccountAuthorizationReturnHandlerWithOperationLog(service *managementauthorizations.Service, opts ManagementOperationLogOptions) http.Handler {
+	return newManagementResourceAuthorizationReturnHandler(
+		managementAuthorizationServiceAdapter{service: service},
+		managementAuthorizationScopeAdmin,
+		"account",
+		newManagementOperationLogOptions(opts),
+	)
+}
+
+func NewManagementMyAccountAuthorizationReturnHandlerWithOperationLog(service *managementauthorizations.Service, opts ManagementOperationLogOptions) http.Handler {
+	return newManagementResourceAuthorizationReturnHandler(
+		managementAuthorizationServiceAdapter{service: service},
+		managementAuthorizationScopeSelf,
+		"account",
+		newManagementOperationLogOptions(opts),
+	)
+}
+
+func NewManagementGroupAuthorizationReturnHandlerWithOperationLog(service *managementauthorizations.Service, opts ManagementOperationLogOptions) http.Handler {
+	return newManagementResourceAuthorizationReturnHandler(
+		managementAuthorizationServiceAdapter{service: service},
+		managementAuthorizationScopeAdmin,
+		"group",
+		newManagementOperationLogOptions(opts),
+	)
+}
+
+func NewManagementMyGroupAuthorizationReturnHandlerWithOperationLog(service *managementauthorizations.Service, opts ManagementOperationLogOptions) http.Handler {
+	return newManagementResourceAuthorizationReturnHandler(
+		managementAuthorizationServiceAdapter{service: service},
+		managementAuthorizationScopeSelf,
+		"group",
 		newManagementOperationLogOptions(opts),
 	)
 }
@@ -700,6 +760,55 @@ func newManagementAuthorizationReturnHandler(service managementAuthorizationRetu
 	})
 }
 
+func newManagementResourceAuthorizationReturnHandler(service managementAuthorizationResourceReturnService, scope managementAuthorizationScope, resourceType string, logOptions ...managementOperationLogOptions) http.Handler {
+	operationLogs := effectiveManagementOperationLogOptions(logOptions)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authContext, ok := ManagementAuthContextFromRequest(r)
+		if !ok || strings.TrimSpace(authContext.SystemAccountID) == "" {
+			writeMessageError(w, http.StatusUnauthorized, "未登录")
+			return
+		}
+		if service == nil {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		if scope == managementAuthorizationScopeAdmin && !managementauth.IsAdminRole(authContext.Role) {
+			writeMessageError(w, http.StatusForbidden, "需要管理员权限")
+			return
+		}
+		granteeSystemAccountID, validScope := managementAuthorizationGranteeScope(authContext, r.URL.Query(), scope)
+		if !validScope {
+			writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
+			return
+		}
+		resourceID := strings.TrimSpace(chi.URLParam(r, "id"))
+		if resourceID == "" {
+			writeMessageError(w, http.StatusBadRequest, managementResourceAuthorizationReturnInvalidMessage(resourceType))
+			return
+		}
+		result, found, err := service.ReturnByResource(r, managementauthorizations.ResourceReturnInput{
+			ResourceType:           resourceType,
+			ResourceID:             resourceID,
+			GranteeSystemAccountID: granteeSystemAccountID,
+			ActorSystemAccountID:   authContext.SystemAccountID,
+		})
+		if errors.Is(err, managementauthorizations.ErrAuthorizationReturnInvalid) {
+			writeMessageError(w, http.StatusBadRequest, managementResourceAuthorizationReturnInvalidMessage(resourceType))
+			return
+		}
+		if err != nil {
+			writeMessageError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if !found {
+			writeMessageError(w, http.StatusNotFound, managementResourceAuthorizationReturnNotFoundMessage(resourceType))
+			return
+		}
+		recordResourceAuthorizationReturnOperationLog(r, authContext, scope, resourceType, result, operationLogs)
+		w.WriteHeader(http.StatusNoContent)
+	})
+}
+
 func newManagementAuthorizationRevokeHandler(service managementAuthorizationRevokeService, scope managementAuthorizationScope, logOptions ...managementOperationLogOptions) http.Handler {
 	operationLogs := effectiveManagementOperationLogOptions(logOptions)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -825,6 +934,34 @@ func managementAuthorizationQuerySystemAccountID(values url.Values) (string, boo
 		}
 	}
 	return selected, true
+}
+
+func managementResourceAuthorizationReturnInvalidMessage(resourceType string) string {
+	if resourceType == "group" {
+		return "授权分组 ID 不合法"
+	}
+	return "授权账户 ID 不合法"
+}
+
+func managementResourceAuthorizationReturnNotFoundMessage(resourceType string) string {
+	if resourceType == "group" {
+		return "授权分组不存在或不可归还"
+	}
+	return "授权账户不存在或不可归还"
+}
+
+func managementResourceAuthorizationReturnOperationKey(resourceType string) string {
+	if resourceType == "group" {
+		return "groups.return_authorization"
+	}
+	return "accounts.return_authorization"
+}
+
+func managementResourceAuthorizationReturnChangeLabel(resourceType string) string {
+	if resourceType == "group" {
+		return "归还授权分组"
+	}
+	return "归还授权账户"
 }
 
 func parseManagementAuthorizationListQuery(w http.ResponseWriter, values url.Values, scope managementAuthorizationScope) (managementauthorizations.ListInput, bool) {
@@ -1582,6 +1719,83 @@ func recordAuthorizationReturnOperationLog(
 		Changes: []port.OperationLogChange{{
 			Field:  "returned",
 			Label:  "归还授权",
+			Before: false,
+			After:  true,
+		}},
+		Targets:    managementAuthorizationOperationTargets(result),
+		Viewers:    managementAuthorizationOperationViewers(result),
+		Method:     r.Method,
+		Path:       r.URL.Path,
+		StatusCode: &statusCode,
+		ClientIP:   opts.clientIP.FromRequest(r),
+		UserAgent:  r.UserAgent(),
+		CreatedAt:  now().UTC(),
+	}
+	enqueueCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+	defer cancel()
+	if _, err := operationlogjob.EnqueueWrite(enqueueCtx, opts.client, input); err != nil && opts.logger != nil {
+		opts.logger.Warn("管理端操作日志入队失败",
+			slog.String("event", "operation_log_enqueue_failed"),
+			slog.String("operation_key", input.OperationKey),
+			slog.String("resource_id", input.ResourceID),
+			slog.String("request_id", input.TraceID),
+			slog.Any("error", err),
+		)
+	}
+}
+
+func recordResourceAuthorizationReturnOperationLog(
+	r *http.Request,
+	authContext managementauth.Context,
+	scope managementAuthorizationScope,
+	resourceType string,
+	result managementauthorizations.Summary,
+	opts managementOperationLogOptions,
+) {
+	if opts.client == nil {
+		return
+	}
+	now := opts.now
+	if now == nil {
+		now = time.Now
+	}
+	newLogID := opts.newLogID
+	if newLogID == nil {
+		newLogID = func() string {
+			return "oplog_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+		}
+	}
+	statusCode := http.StatusNoContent
+	mode := "self"
+	if scope == managementAuthorizationScopeAdmin {
+		mode = "admin"
+	}
+	resourceName := result.ResourceName
+	if resourceName == "" {
+		resourceName = result.ResourceID
+	}
+	changeLabel := managementResourceAuthorizationReturnChangeLabel(resourceType)
+	input := port.OperationLogInput{
+		ID:                            newLogID(),
+		TraceID:                       requestIDFromContext(r.Context()),
+		ActorSystemAccountID:          authContext.SystemAccountID,
+		ActorUsername:                 authContext.Username,
+		ActorDisplayName:              authContext.DisplayName,
+		ActorRole:                     authContext.Role,
+		OperationScopeSystemAccountID: result.GranteeSystemAccountID,
+		Mode:                          mode,
+		Module:                        "authorizations",
+		Action:                        "return",
+		OperationKey:                  managementResourceAuthorizationReturnOperationKey(resourceType),
+		ResourceType:                  "authorization",
+		ResourceID:                    result.ID,
+		ResourceName:                  resourceName,
+		Summary:                       changeLabel + "：" + resourceName,
+		DetailLevel:                   "full",
+		VisibilityScope:               "targeted",
+		Changes: []port.OperationLogChange{{
+			Field:  "returned",
+			Label:  changeLabel,
 			Before: false,
 			After:  true,
 		}},

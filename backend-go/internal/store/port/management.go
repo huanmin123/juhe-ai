@@ -776,6 +776,18 @@ type ManagementResourceAuthorizationReturner interface {
 	ReturnManagementResourceAuthorizationForGrantee(ctx context.Context, input ManagementResourceAuthorizationReturnInput) (ManagementResourceAuthorizationSummary, bool, error)
 }
 
+type ManagementResourceAuthorizationReturnResourceInput struct {
+	ResourceType           string
+	ResourceID             string
+	GranteeSystemAccountID string
+	ActorSystemAccountID   string
+	ReturnedAt             time.Time
+}
+
+type ManagementResourceAuthorizationResourceReturner interface {
+	ReturnManagementResourceAuthorizationForGranteeByResource(ctx context.Context, input ManagementResourceAuthorizationReturnResourceInput) (ManagementResourceAuthorizationSummary, bool, error)
+}
+
 type ManagementResourceAuthorizationUpdateInput struct {
 	AuthorizationID        string
 	ActorSystemAccountID   string

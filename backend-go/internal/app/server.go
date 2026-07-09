@@ -145,6 +145,10 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyAuthorizationExpireUpdateHandler:      managementHandlers.MyAuthorizationExpireUpdateHandler,
 		ManagementAuthorizationReturnHandler:              managementHandlers.AuthorizationReturnHandler,
 		ManagementMyAuthorizationReturnHandler:            managementHandlers.MyAuthorizationReturnHandler,
+		ManagementAccountAuthorizationReturnHandler:       managementHandlers.AccountAuthorizationReturnHandler,
+		ManagementMyAccountAuthorizationReturnHandler:     managementHandlers.MyAccountAuthorizationReturnHandler,
+		ManagementGroupAuthorizationReturnHandler:         managementHandlers.GroupAuthorizationReturnHandler,
+		ManagementMyGroupAuthorizationReturnHandler:       managementHandlers.MyGroupAuthorizationReturnHandler,
 		ManagementAuthorizationRevokeHandler:              managementHandlers.AuthorizationRevokeHandler,
 		ManagementMyAuthorizationRevokeHandler:            managementHandlers.MyAuthorizationRevokeHandler,
 		ManagementProviderOptionsHandler:                  managementHandlers.ProviderOptionsHandler,
@@ -244,6 +248,10 @@ type managementAPIHandlers struct {
 	MyAuthorizationExpireUpdateHandler      http.Handler
 	AuthorizationReturnHandler              http.Handler
 	MyAuthorizationReturnHandler            http.Handler
+	AccountAuthorizationReturnHandler       http.Handler
+	MyAccountAuthorizationReturnHandler     http.Handler
+	GroupAuthorizationReturnHandler         http.Handler
+	MyGroupAuthorizationReturnHandler       http.Handler
 	AuthorizationRevokeHandler              http.Handler
 	MyAuthorizationRevokeHandler            http.Handler
 	ProviderOptionsHandler                  http.Handler
@@ -365,6 +373,10 @@ func newManagementAPIHandler(
 		MyAuthorizationExpireUpdateHandler:      httpapi.NewManagementMyAuthorizationExpireUpdateHandlerWithOperationLog(authorizationService, operationLogOptions),
 		AuthorizationReturnHandler:              httpapi.NewManagementAuthorizationReturnHandlerWithOperationLog(authorizationService, operationLogOptions),
 		MyAuthorizationReturnHandler:            httpapi.NewManagementMyAuthorizationReturnHandlerWithOperationLog(authorizationService, operationLogOptions),
+		AccountAuthorizationReturnHandler:       httpapi.NewManagementAccountAuthorizationReturnHandlerWithOperationLog(authorizationService, operationLogOptions),
+		MyAccountAuthorizationReturnHandler:     httpapi.NewManagementMyAccountAuthorizationReturnHandlerWithOperationLog(authorizationService, operationLogOptions),
+		GroupAuthorizationReturnHandler:         httpapi.NewManagementGroupAuthorizationReturnHandlerWithOperationLog(authorizationService, operationLogOptions),
+		MyGroupAuthorizationReturnHandler:       httpapi.NewManagementMyGroupAuthorizationReturnHandlerWithOperationLog(authorizationService, operationLogOptions),
 		AuthorizationRevokeHandler:              httpapi.NewManagementAuthorizationRevokeHandlerWithOperationLog(authorizationService, operationLogOptions),
 		MyAuthorizationRevokeHandler:            httpapi.NewManagementMyAuthorizationRevokeHandlerWithOperationLog(authorizationService, operationLogOptions),
 		ProviderOptionsHandler:                  httpapi.NewManagementProviderOptionsHandler(providerService),

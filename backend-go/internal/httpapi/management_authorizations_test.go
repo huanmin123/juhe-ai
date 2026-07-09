@@ -819,6 +819,220 @@ func TestManagementMyAuthorizationReturnHandlerUsesSelfScope(t *testing.T) {
 	}
 }
 
+func TestManagementResourceAuthorizationReturnHandlerReturnsAndWritesOperationLog(t *testing.T) {
+	createdAt := time.Date(2026, 7, 9, 10, 30, 0, 0, time.UTC)
+	queueStub := &operationLogQueueStub{}
+	service := &managementAuthorizationCreateServiceStub{
+		resourceReturnFound: true,
+		resourceReturnResult: managementauthorizations.Summary{
+			ID:                             "rauthgrant_main",
+			ResourceType:                   "account",
+			ResourceID:                     "acct_owner",
+			ResourceName:                   "主账号",
+			ResourceOwnerSystemAccountID:   "sys_owner",
+			ResourceOwnerSystemAccountName: "资源归属人",
+			GranteeType:                    "system_account",
+			GranteeSystemAccountID:         "sys_grantee",
+			GranteeSystemAccountName:       "被授权人",
+			Scope:                          "use",
+			Status:                         "returned",
+			AuthorizationSources:           []port.ManagementResourceAuthorizationSourceSummary{},
+			Usage:                          port.ManagementAccountUsageSummary{},
+			CreatedBy:                      "sys_owner",
+			CreatedAt:                      createdAt,
+			UpdatedAt:                      createdAt,
+		},
+	}
+	handler := newManagementResourceAuthorizationReturnHandler(
+		service,
+		managementAuthorizationScopeAdmin,
+		"account",
+		newManagementOperationLogOptions(ManagementOperationLogOptions{
+			Config:   config.Config{TrustProxy: "false"},
+			Client:   queueStub,
+			Now:      func() time.Time { return createdAt },
+			NewLogID: func() string { return "oplog_account_authorization_return" },
+		}),
+	)
+	req := httptest.NewRequest(http.MethodPost, "/__aisys__/api/accounts/acct_authorized/return-authorization?systemAccountId=sys_grantee", nil)
+	req.RemoteAddr = "127.0.0.1:23456"
+	req = managementAuthorizationRequestWithURLParam(req, "id", "acct_authorized")
+	req = req.WithContext(context.WithValue(req.Context(), requestIDKey, "req_account_authorization_return"))
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+		SystemAccountID: "sys_admin",
+		Username:        "admin",
+		DisplayName:     "管理员",
+		Role:            "admin",
+		SessionID:       "sess_admin",
+	}))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body = %s", rec.Code, rec.Body.String())
+	}
+	if !service.resourceReturnCalled ||
+		service.resourceReturnInput.ResourceType != "account" ||
+		service.resourceReturnInput.ResourceID != "acct_authorized" ||
+		service.resourceReturnInput.GranteeSystemAccountID != "sys_grantee" ||
+		service.resourceReturnInput.ActorSystemAccountID != "sys_admin" {
+		t.Fatalf("resource return input = %+v", service.resourceReturnInput)
+	}
+	if queueStub.calls != 1 {
+		t.Fatalf("operation log queue calls = %d, want 1", queueStub.calls)
+	}
+	logInput, err := operationlogjob.DecodeWriteTaskPayload(queueStub.payload)
+	if err != nil {
+		t.Fatalf("DecodeWriteTaskPayload() error = %v", err)
+	}
+	if logInput.ID != "oplog_account_authorization_return" ||
+		logInput.TraceID != "req_account_authorization_return" ||
+		logInput.ActorSystemAccountID != "sys_admin" ||
+		logInput.OperationScopeSystemAccountID != "sys_grantee" ||
+		logInput.Mode != "admin" ||
+		logInput.OperationKey != "accounts.return_authorization" ||
+		logInput.ResourceType != "authorization" ||
+		logInput.ResourceID != "rauthgrant_main" ||
+		logInput.ResourceName != "主账号" ||
+		logInput.Summary != "归还授权账户：主账号" ||
+		logInput.Method != http.MethodPost ||
+		logInput.Path != "/__aisys__/api/accounts/acct_authorized/return-authorization" ||
+		logInput.ClientIP != "127.0.0.1" ||
+		!logInput.CreatedAt.Equal(createdAt) {
+		t.Fatalf("operation log input = %+v", logInput)
+	}
+	if logInput.StatusCode == nil || *logInput.StatusCode != http.StatusNoContent {
+		t.Fatalf("status code = %+v, want 204", logInput.StatusCode)
+	}
+	if len(logInput.Changes) != 1 ||
+		logInput.Changes[0].Field != "returned" ||
+		logInput.Changes[0].Label != "归还授权账户" ||
+		logInput.Changes[0].After != true {
+		t.Fatalf("changes = %+v", logInput.Changes)
+	}
+}
+
+func TestManagementMyResourceAuthorizationReturnHandlerUsesSelfScope(t *testing.T) {
+	service := &managementAuthorizationCreateServiceStub{
+		resourceReturnFound: true,
+		resourceReturnResult: managementauthorizations.Summary{
+			ID:                           "rauthgrant_group",
+			ResourceType:                 "group",
+			ResourceID:                   "grp_owner",
+			ResourceOwnerSystemAccountID: "sys_owner",
+			GranteeType:                  "system_account",
+			GranteeSystemAccountID:       "sys_grantee",
+			Scope:                        "use",
+			Status:                       "returned",
+			AuthorizationSources:         []port.ManagementResourceAuthorizationSourceSummary{},
+			Usage:                        port.ManagementAccountUsageSummary{},
+			CreatedBy:                    "sys_owner",
+			CreatedAt:                    time.Date(2026, 7, 9, 10, 30, 0, 0, time.UTC),
+			UpdatedAt:                    time.Date(2026, 7, 9, 10, 30, 0, 0, time.UTC),
+		},
+	}
+	handler := newManagementResourceAuthorizationReturnHandler(service, managementAuthorizationScopeSelf, "group")
+	req := httptest.NewRequest(http.MethodPost, "/__aisys__/api/my-groups/grp_authorized/return-authorization?systemAccountId=sys_other", nil)
+	req = managementAuthorizationRequestWithURLParam(req, "id", "grp_authorized")
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+		SystemAccountID: "sys_grantee",
+		Username:        "grantee",
+		Role:            "user",
+		SessionID:       "sess_grantee",
+	}))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body = %s", rec.Code, rec.Body.String())
+	}
+	if !service.resourceReturnCalled ||
+		service.resourceReturnInput.ResourceType != "group" ||
+		service.resourceReturnInput.ResourceID != "grp_authorized" ||
+		service.resourceReturnInput.GranteeSystemAccountID != "sys_grantee" ||
+		service.resourceReturnInput.ActorSystemAccountID != "sys_grantee" {
+		t.Fatalf("resource return input = %+v", service.resourceReturnInput)
+	}
+}
+
+func TestManagementResourceAuthorizationReturnHandlerErrors(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		resourceType string
+		scope        managementAuthorizationScope
+		auth         managementauth.Context
+		query        string
+		urlParam     string
+		found        bool
+		wantCode     int
+		wantMsg      string
+	}{
+		{
+			name:         "account not found",
+			resourceType: "account",
+			scope:        managementAuthorizationScopeAdmin,
+			auth:         managementauth.Context{SystemAccountID: "sys_admin", Role: "admin"},
+			query:        "?systemAccountId=sys_grantee",
+			urlParam:     "acct_missing",
+			wantCode:     http.StatusNotFound,
+			wantMsg:      "授权账户不存在或不可归还",
+		},
+		{
+			name:         "group invalid query",
+			resourceType: "group",
+			scope:        managementAuthorizationScopeAdmin,
+			auth:         managementauth.Context{SystemAccountID: "sys_admin", Role: "admin"},
+			query:        "?systemAccountId=",
+			urlParam:     "grp_authorized",
+			wantCode:     http.StatusBadRequest,
+			wantMsg:      "查询参数不合法",
+		},
+		{
+			name:         "admin route requires admin",
+			resourceType: "account",
+			scope:        managementAuthorizationScopeAdmin,
+			auth:         managementauth.Context{SystemAccountID: "sys_user", Role: "user"},
+			urlParam:     "acct_authorized",
+			wantCode:     http.StatusForbidden,
+			wantMsg:      "需要管理员权限",
+		},
+		{
+			name:         "empty resource id",
+			resourceType: "group",
+			scope:        managementAuthorizationScopeSelf,
+			auth:         managementauth.Context{SystemAccountID: "sys_grantee", Role: "user"},
+			wantCode:     http.StatusBadRequest,
+			wantMsg:      "授权分组 ID 不合法",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &managementAuthorizationCreateServiceStub{resourceReturnFound: tt.found}
+			handler := newManagementResourceAuthorizationReturnHandler(service, tt.scope, tt.resourceType)
+			req := httptest.NewRequest(http.MethodPost, "/__aisys__/api/resources/"+tt.urlParam+"/return-authorization"+tt.query, nil)
+			if tt.urlParam != "" {
+				req = managementAuthorizationRequestWithURLParam(req, "id", tt.urlParam)
+			}
+			req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, tt.auth))
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantCode {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, tt.wantCode, rec.Body.String())
+			}
+			var body map[string]string
+			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if body["message"] != tt.wantMsg {
+				t.Fatalf("message = %q, want %q", body["message"], tt.wantMsg)
+			}
+		})
+	}
+}
+
 func TestManagementAuthorizationRevokeHandlerRevokesAndWritesOperationLog(t *testing.T) {
 	createdAt := time.Date(2026, 7, 9, 12, 30, 0, 0, time.UTC)
 	queueStub := &operationLogQueueStub{}
@@ -1578,6 +1792,22 @@ func TestRouterRegistersW4ManagementAuthorizationListDetailCreateUpdateExpireRet
 			CreatedAt:                    time.Date(2026, 7, 9, 9, 30, 0, 0, time.UTC),
 			UpdatedAt:                    time.Date(2026, 7, 9, 9, 30, 0, 0, time.UTC),
 		},
+		resourceReturnFound: true,
+		resourceReturnResult: managementauthorizations.Summary{
+			ID:                           "rauthgrant_resource",
+			ResourceType:                 "account",
+			ResourceID:                   "acct_owner",
+			ResourceOwnerSystemAccountID: "sys_owner",
+			GranteeType:                  "system_account",
+			GranteeSystemAccountID:       "sys_grantee",
+			Scope:                        "use",
+			Status:                       "returned",
+			AuthorizationSources:         []port.ManagementResourceAuthorizationSourceSummary{},
+			Usage:                        port.ManagementAccountUsageSummary{},
+			CreatedBy:                    "sys_owner",
+			CreatedAt:                    time.Date(2026, 7, 9, 10, 30, 0, 0, time.UTC),
+			UpdatedAt:                    time.Date(2026, 7, 9, 10, 30, 0, 0, time.UTC),
+		},
 		revokeFound: true,
 		revokeResult: managementauthorizations.Summary{
 			ID:                           "rauthgrant_main",
@@ -1680,6 +1910,10 @@ func TestRouterRegistersW4ManagementAuthorizationListDetailCreateUpdateExpireRet
 		ManagementMyAuthorizationExpireUpdateHandler:      newManagementAuthorizationExpireUpdateHandler(service, managementAuthorizationScopeSelf),
 		ManagementAuthorizationReturnHandler:              newManagementAuthorizationReturnHandler(service, managementAuthorizationScopeAdmin),
 		ManagementMyAuthorizationReturnHandler:            newManagementAuthorizationReturnHandler(service, managementAuthorizationScopeSelf),
+		ManagementAccountAuthorizationReturnHandler:       newManagementResourceAuthorizationReturnHandler(service, managementAuthorizationScopeAdmin, "account"),
+		ManagementMyAccountAuthorizationReturnHandler:     newManagementResourceAuthorizationReturnHandler(service, managementAuthorizationScopeSelf, "account"),
+		ManagementGroupAuthorizationReturnHandler:         newManagementResourceAuthorizationReturnHandler(service, managementAuthorizationScopeAdmin, "group"),
+		ManagementMyGroupAuthorizationReturnHandler:       newManagementResourceAuthorizationReturnHandler(service, managementAuthorizationScopeSelf, "group"),
 		ManagementAuthorizationRevokeHandler:              newManagementAuthorizationRevokeHandler(service, managementAuthorizationScopeAdmin),
 		ManagementMyAuthorizationRevokeHandler:            newManagementAuthorizationRevokeHandler(service, managementAuthorizationScopeSelf),
 		ManagementAPIAuthMiddleware:                       NewManagementAPIAuthMiddleware(readAuthenticator),
@@ -1736,6 +1970,26 @@ func TestRouterRegistersW4ManagementAuthorizationListDetailCreateUpdateExpireRet
 		{
 			method: http.MethodDelete,
 			path:   "/__aisys__/api/my-authorizations/rauthgrant_main/return",
+			status: http.StatusNoContent,
+		},
+		{
+			method: http.MethodPost,
+			path:   "/__aisys__/api/accounts/acct_authorized/return-authorization?systemAccountId=sys_grantee",
+			status: http.StatusNoContent,
+		},
+		{
+			method: http.MethodPost,
+			path:   "/__aisys__/api/my-accounts/acct_authorized/return-authorization",
+			status: http.StatusNoContent,
+		},
+		{
+			method: http.MethodPost,
+			path:   "/__aisys__/api/groups/grp_authorized/return-authorization?systemAccountId=sys_grantee",
+			status: http.StatusNoContent,
+		},
+		{
+			method: http.MethodPost,
+			path:   "/__aisys__/api/my-groups/grp_authorized/return-authorization",
 			status: http.StatusNoContent,
 		},
 		{
@@ -1796,47 +2050,52 @@ func TestRouterRegistersW4ManagementAuthorizationListDetailCreateUpdateExpireRet
 }
 
 type managementAuthorizationCreateServiceStub struct {
-	called          bool
-	input           managementauthorizations.CreateInput
-	result          managementauthorizations.Summary
-	err             error
-	getCalled       bool
-	getInput        managementauthorizations.GetInput
-	getResult       managementauthorizations.Detail
-	getFound        bool
-	getErr          error
-	updateCalled    bool
-	updateInput     managementauthorizations.UpdateInput
-	updateResult    managementauthorizations.Summary
-	updateFound     bool
-	updateErr       error
-	returnCalled    bool
-	returnInput     managementauthorizations.ReturnInput
-	returnResult    managementauthorizations.Summary
-	returnFound     bool
-	returnErr       error
-	revokeCalled    bool
-	revokeInput     managementauthorizations.RevokeInput
-	revokeResult    managementauthorizations.Summary
-	revokeFound     bool
-	revokeErr       error
-	listCalled      bool
-	listInput       managementauthorizations.ListInput
-	listResult      managementauthorizations.ListResult
-	listErr         error
-	teamUsageCalled bool
-	teamUsageInput  managementauthorizations.UsageOverviewInput
-	teamUsageResult managementauthorizations.TeamUsageOverview
-	teamUsageErr    error
-	userUsageCalled bool
-	userUsageInput  managementauthorizations.UsageOverviewInput
-	userUsageResult managementauthorizations.UserUsageOverview
-	userUsageErr    error
-	usageCalled     bool
-	usageInput      managementauthorizations.UsageDetailInput
-	usageResult     managementauthorizations.UsageDetail
-	usageFound      bool
-	usageErr        error
+	called               bool
+	input                managementauthorizations.CreateInput
+	result               managementauthorizations.Summary
+	err                  error
+	getCalled            bool
+	getInput             managementauthorizations.GetInput
+	getResult            managementauthorizations.Detail
+	getFound             bool
+	getErr               error
+	updateCalled         bool
+	updateInput          managementauthorizations.UpdateInput
+	updateResult         managementauthorizations.Summary
+	updateFound          bool
+	updateErr            error
+	returnCalled         bool
+	returnInput          managementauthorizations.ReturnInput
+	returnResult         managementauthorizations.Summary
+	returnFound          bool
+	returnErr            error
+	resourceReturnCalled bool
+	resourceReturnInput  managementauthorizations.ResourceReturnInput
+	resourceReturnResult managementauthorizations.Summary
+	resourceReturnFound  bool
+	resourceReturnErr    error
+	revokeCalled         bool
+	revokeInput          managementauthorizations.RevokeInput
+	revokeResult         managementauthorizations.Summary
+	revokeFound          bool
+	revokeErr            error
+	listCalled           bool
+	listInput            managementauthorizations.ListInput
+	listResult           managementauthorizations.ListResult
+	listErr              error
+	teamUsageCalled      bool
+	teamUsageInput       managementauthorizations.UsageOverviewInput
+	teamUsageResult      managementauthorizations.TeamUsageOverview
+	teamUsageErr         error
+	userUsageCalled      bool
+	userUsageInput       managementauthorizations.UsageOverviewInput
+	userUsageResult      managementauthorizations.UserUsageOverview
+	userUsageErr         error
+	usageCalled          bool
+	usageInput           managementauthorizations.UsageDetailInput
+	usageResult          managementauthorizations.UsageDetail
+	usageFound           bool
+	usageErr             error
 }
 
 func (s *managementAuthorizationCreateServiceStub) Create(_ *http.Request, input managementauthorizations.CreateInput) (managementauthorizations.Summary, error) {
@@ -1911,6 +2170,15 @@ func (s *managementAuthorizationCreateServiceStub) Return(_ *http.Request, input
 	return s.returnResult, s.returnFound, nil
 }
 
+func (s *managementAuthorizationCreateServiceStub) ReturnByResource(_ *http.Request, input managementauthorizations.ResourceReturnInput) (managementauthorizations.Summary, bool, error) {
+	s.resourceReturnCalled = true
+	s.resourceReturnInput = input
+	if s.resourceReturnErr != nil {
+		return managementauthorizations.Summary{}, false, s.resourceReturnErr
+	}
+	return s.resourceReturnResult, s.resourceReturnFound, nil
+}
+
 func (s *managementAuthorizationCreateServiceStub) Revoke(_ *http.Request, input managementauthorizations.RevokeInput) (managementauthorizations.Summary, bool, error) {
 	s.revokeCalled = true
 	s.revokeInput = input
@@ -1930,5 +2198,6 @@ var _ managementAuthorizationCreateService = (*managementAuthorizationCreateServ
 var _ managementAuthorizationGetService = (*managementAuthorizationCreateServiceStub)(nil)
 var _ managementAuthorizationListService = (*managementAuthorizationCreateServiceStub)(nil)
 var _ managementAuthorizationRevokeService = (*managementAuthorizationCreateServiceStub)(nil)
+var _ managementAuthorizationResourceReturnService = (*managementAuthorizationCreateServiceStub)(nil)
 var _ managementAuthorizationReturnService = (*managementAuthorizationCreateServiceStub)(nil)
 var _ managementAuthorizationUpdateService = (*managementAuthorizationCreateServiceStub)(nil)

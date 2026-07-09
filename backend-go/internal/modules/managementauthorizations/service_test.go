@@ -480,6 +480,108 @@ func TestServiceReturnValidatesInputAndSkipsInvalidationWhenNotFound(t *testing.
 	}
 }
 
+func TestServiceReturnByResourceNormalizesInputAndInvalidatesAuthorizationCache(t *testing.T) {
+	now := time.Date(2026, 7, 9, 10, 30, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		name         string
+		resourceType string
+		resourceID   string
+	}{
+		{name: "account", resourceType: "account", resourceID: "acct_authorized"},
+		{name: "group", resourceType: "group", resourceID: "grp_authorized"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &authorizationResourceReturnStoreStub{
+				found: true,
+				result: Summary{
+					ID:                           "rauthgrant_main",
+					ResourceType:                 tt.resourceType,
+					ResourceID:                   tt.resourceID,
+					ResourceOwnerSystemAccountID: "sys_owner",
+					GranteeType:                  "system_account",
+					GranteeSystemAccountID:       "sys_grantee",
+					Scope:                        "use",
+					Status:                       "returned",
+					AuthorizationSources:         []port.ManagementResourceAuthorizationSourceSummary{},
+					Usage:                        port.ManagementAccountUsageSummary{},
+					CreatedBy:                    "sys_owner",
+					CreatedAt:                    now,
+					UpdatedAt:                    now,
+				},
+			}
+			invalidator := &authorizationInvalidatorStub{}
+			service := NewServiceWithOptions(ServiceOptions{
+				ResourceReturnStore:      store,
+				Now:                      func() time.Time { return now },
+				AuthorizationInvalidator: invalidator,
+			})
+
+			got, found, err := service.ReturnByResource(context.Background(), ResourceReturnInput{
+				ResourceType:           " " + tt.resourceType + " ",
+				ResourceID:             " " + tt.resourceID + " ",
+				GranteeSystemAccountID: " sys_grantee ",
+				ActorSystemAccountID:   " sys_admin ",
+			})
+
+			if err != nil {
+				t.Fatalf("ReturnByResource() error = %v", err)
+			}
+			if !found || got.ID != "rauthgrant_main" {
+				t.Fatalf("ReturnByResource() = (%+v, %v), want returned summary", got, found)
+			}
+			if !store.called ||
+				store.input.ResourceType != tt.resourceType ||
+				store.input.ResourceID != tt.resourceID ||
+				store.input.GranteeSystemAccountID != "sys_grantee" ||
+				store.input.ActorSystemAccountID != "sys_admin" ||
+				!store.input.ReturnedAt.Equal(now) {
+				t.Fatalf("store input = %+v", store.input)
+			}
+			if invalidator.calls != 1 || invalidator.reason != ResourceAuthorizationReturnedReason {
+				t.Fatalf("invalidator calls=%d reason=%q", invalidator.calls, invalidator.reason)
+			}
+		})
+	}
+}
+
+func TestServiceReturnByResourceValidatesInputAndSkipsInvalidationWhenNotFound(t *testing.T) {
+	now := time.Date(2026, 7, 9, 10, 30, 0, 0, time.UTC)
+	store := &authorizationResourceReturnStoreStub{}
+	invalidator := &authorizationInvalidatorStub{}
+	service := NewServiceWithOptions(ServiceOptions{
+		ResourceReturnStore:      store,
+		Now:                      func() time.Time { return now },
+		AuthorizationInvalidator: invalidator,
+	})
+
+	if _, _, err := service.ReturnByResource(context.Background(), ResourceReturnInput{
+		ResourceType:           "account",
+		GranteeSystemAccountID: "sys_grantee",
+		ActorSystemAccountID:   "sys_admin",
+	}); !errors.Is(err, ErrAuthorizationReturnInvalid) {
+		t.Fatalf("ReturnByResource() error = %v, want invalid input", err)
+	}
+	if store.called {
+		t.Fatal("store was called for invalid resource return input")
+	}
+
+	_, found, err := service.ReturnByResource(context.Background(), ResourceReturnInput{
+		ResourceType:           "group",
+		ResourceID:             "grp_missing",
+		GranteeSystemAccountID: "sys_grantee",
+		ActorSystemAccountID:   "sys_admin",
+	})
+	if err != nil {
+		t.Fatalf("ReturnByResource() missing error = %v", err)
+	}
+	if found {
+		t.Fatal("ReturnByResource() found missing authorization")
+	}
+	if invalidator.calls != 0 {
+		t.Fatalf("invalidator calls = %d, want 0", invalidator.calls)
+	}
+}
+
 func TestServiceRevokeNormalizesScopeAndInvalidatesAuthorizationCache(t *testing.T) {
 	now := time.Date(2026, 7, 9, 12, 30, 0, 0, time.UTC)
 	store := &authorizationRevokeStoreStub{
@@ -1179,6 +1281,23 @@ func (s *authorizationReturnStoreStub) ReturnManagementResourceAuthorizationForG
 	return s.result, s.found, nil
 }
 
+type authorizationResourceReturnStoreStub struct {
+	called bool
+	input  port.ManagementResourceAuthorizationReturnResourceInput
+	result Summary
+	found  bool
+	err    error
+}
+
+func (s *authorizationResourceReturnStoreStub) ReturnManagementResourceAuthorizationForGranteeByResource(_ context.Context, input port.ManagementResourceAuthorizationReturnResourceInput) (port.ManagementResourceAuthorizationSummary, bool, error) {
+	s.called = true
+	s.input = input
+	if s.err != nil {
+		return port.ManagementResourceAuthorizationSummary{}, false, s.err
+	}
+	return s.result, s.found, nil
+}
+
 type authorizationUpdateStoreStub struct {
 	called bool
 	input  port.ManagementResourceAuthorizationUpdateInput
@@ -1353,6 +1472,7 @@ var _ port.ManagementResourceAuthorizationGetter = (*authorizationGetStoreStub)(
 var _ port.ManagementResourceAuthorizationLister = (*authorizationListStoreStub)(nil)
 var _ port.ManagementResourceAuthorizationRevoker = (*authorizationRevokeStoreStub)(nil)
 var _ port.ManagementResourceAuthorizationReturner = (*authorizationReturnStoreStub)(nil)
+var _ port.ManagementResourceAuthorizationResourceReturner = (*authorizationResourceReturnStoreStub)(nil)
 var _ port.ManagementResourceAuthorizationUpdater = (*authorizationUpdateStoreStub)(nil)
 var _ port.ManagementResourceAuthorizationExpirySweeper = (*authorizationExpirySweepStoreStub)(nil)
 var _ port.ManagementUsageStatsTimezoneReader = (*authorizationUsageStatsTimezoneStoreStub)(nil)

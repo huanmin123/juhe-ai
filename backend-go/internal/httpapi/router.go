@@ -66,6 +66,10 @@ type RouterOptions struct {
 	ManagementMyAuthorizationExpireUpdateHandler      http.Handler
 	ManagementAuthorizationReturnHandler              http.Handler
 	ManagementMyAuthorizationReturnHandler            http.Handler
+	ManagementAccountAuthorizationReturnHandler       http.Handler
+	ManagementMyAccountAuthorizationReturnHandler     http.Handler
+	ManagementGroupAuthorizationReturnHandler         http.Handler
+	ManagementMyGroupAuthorizationReturnHandler       http.Handler
 	ManagementAuthorizationRevokeHandler              http.Handler
 	ManagementMyAuthorizationRevokeHandler            http.Handler
 	ManagementProviderOptionsHandler                  http.Handler
@@ -164,6 +168,10 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyAuthorizationExpireUpdateHandler == nil &&
 				opts.ManagementAuthorizationReturnHandler == nil &&
 				opts.ManagementMyAuthorizationReturnHandler == nil &&
+				opts.ManagementAccountAuthorizationReturnHandler == nil &&
+				opts.ManagementMyAccountAuthorizationReturnHandler == nil &&
+				opts.ManagementGroupAuthorizationReturnHandler == nil &&
+				opts.ManagementMyGroupAuthorizationReturnHandler == nil &&
 				opts.ManagementAuthorizationRevokeHandler == nil &&
 				opts.ManagementMyAuthorizationRevokeHandler == nil &&
 				opts.ManagementProviderOptionsHandler == nil &&
@@ -319,6 +327,18 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementMyAuthorizationReturnHandler != nil {
 				system.With(managementAPIWriteAuthMiddleware).Delete("/my-authorizations/{id}/return", opts.ManagementMyAuthorizationReturnHandler.ServeHTTP)
 			}
+			if opts.ManagementAccountAuthorizationReturnHandler != nil {
+				system.With(managementAPIWriteAuthMiddleware).Post("/accounts/{id}/return-authorization", opts.ManagementAccountAuthorizationReturnHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountAuthorizationReturnHandler != nil {
+				system.With(managementAPIWriteAuthMiddleware).Post("/my-accounts/{id}/return-authorization", opts.ManagementMyAccountAuthorizationReturnHandler.ServeHTTP)
+			}
+			if opts.ManagementGroupAuthorizationReturnHandler != nil {
+				system.With(managementAPIWriteAuthMiddleware).Post("/groups/{id}/return-authorization", opts.ManagementGroupAuthorizationReturnHandler.ServeHTTP)
+			}
+			if opts.ManagementMyGroupAuthorizationReturnHandler != nil {
+				system.With(managementAPIWriteAuthMiddleware).Post("/my-groups/{id}/return-authorization", opts.ManagementMyGroupAuthorizationReturnHandler.ServeHTTP)
+			}
 			if opts.ManagementAuthorizationRevokeHandler != nil {
 				system.With(managementAPIWriteAuthMiddleware).Delete("/authorizations/{id}", opts.ManagementAuthorizationRevokeHandler.ServeHTTP)
 			}
@@ -438,6 +458,10 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAuthorizationExpireUpdateHandler != nil ||
 		opts.ManagementAuthorizationReturnHandler != nil ||
 		opts.ManagementMyAuthorizationReturnHandler != nil ||
+		opts.ManagementAccountAuthorizationReturnHandler != nil ||
+		opts.ManagementMyAccountAuthorizationReturnHandler != nil ||
+		opts.ManagementGroupAuthorizationReturnHandler != nil ||
+		opts.ManagementMyGroupAuthorizationReturnHandler != nil ||
 		opts.ManagementAuthorizationRevokeHandler != nil ||
 		opts.ManagementMyAuthorizationRevokeHandler != nil ||
 		opts.ManagementProviderDefaultTestModelHandler != nil ||

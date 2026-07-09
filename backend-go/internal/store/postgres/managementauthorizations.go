@@ -1298,41 +1298,7 @@ func (s *Store) ReturnManagementResourceAuthorizationForGrantee(ctx context.Cont
 		return port.ManagementResourceAuthorizationSummary{}, false, nil
 	}
 
-	if _, err := tx.Exec(ctx, `
-UPDATE juhe_business.resource_authorization_grants
-SET status = 'returned',
-    revoked_by = $1,
-    revoked_at = $2,
-    updated_at = $2
-WHERE id = $3
-`, input.ActorSystemAccountID, now, grant.ID); err != nil {
-		return port.ManagementResourceAuthorizationSummary{}, false, fmt.Errorf("return resource authorization grant: %w", err)
-	}
-	if _, err := tx.Exec(ctx, `
-UPDATE juhe_business.resource_authorization_sources
-SET status = 'revoked',
-    ended_at = COALESCE(ended_at, $1),
-    ended_reason = COALESCE(ended_reason, 'grantee_returned'),
-    revoked_by = $2,
-    revoked_at = $1,
-    updated_at = $1
-WHERE authorization_id = $3
-  AND source_type = 'manual'
-  AND status IN ('active', 'superseded')
-`, now, input.ActorSystemAccountID, runtimeAuthorization.ID); err != nil {
-		return port.ManagementResourceAuthorizationSummary{}, false, fmt.Errorf("return manual resource authorization source: %w", err)
-	}
-	if err := refreshManagementResourceAuthorizationEffectiveSourceWithOptionsTx(ctx, tx, runtimeAuthorization.ID, input.ActorSystemAccountID, now, managementAuthorizationEffectiveSourceRefreshOptions{
-		noActiveSourceReason:              "grantee_returned",
-		preserveExpiredWhenNoActiveSource: false,
-		terminalStatus:                    "returned",
-	}); err != nil {
-		return port.ManagementResourceAuthorizationSummary{}, false, err
-	}
-	if err := markAllGroupAccountStatsDirtyIfPresentTx(ctx, tx, "resource_authorization_returned", now); err != nil {
-		return port.ManagementResourceAuthorizationSummary{}, false, err
-	}
-	summary, err := managementAuthorizationSummaryByGrantIDTx(ctx, tx, grant.ID)
+	summary, err := returnManagementResourceAuthorizationGrantTx(ctx, tx, grant, runtimeAuthorization, input.ActorSystemAccountID, now)
 	if err != nil {
 		return port.ManagementResourceAuthorizationSummary{}, false, err
 	}
@@ -1341,6 +1307,56 @@ WHERE authorization_id = $3
 			return port.ManagementResourceAuthorizationSummary{}, false, fmt.Errorf("commit management resource authorization return tx rolled back: %w", err)
 		}
 		return port.ManagementResourceAuthorizationSummary{}, false, fmt.Errorf("commit management resource authorization return tx: %w", err)
+	}
+	committed = true
+	return summary, true, nil
+}
+
+func (s *Store) ReturnManagementResourceAuthorizationForGranteeByResource(ctx context.Context, input port.ManagementResourceAuthorizationReturnResourceInput) (port.ManagementResourceAuthorizationSummary, bool, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return port.ManagementResourceAuthorizationSummary{}, false, fmt.Errorf("begin management resource authorization resource return tx: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = tx.Rollback(rollbackCtx)
+		}
+	}()
+
+	now := input.ReturnedAt.UTC()
+	runtimeAuthorization, found, err := findManagementRuntimeAuthorizationForResourceReturnTx(ctx, tx, input.ResourceType, input.ResourceID, input.GranteeSystemAccountID)
+	if err != nil {
+		return port.ManagementResourceAuthorizationSummary{}, false, err
+	}
+	if !found || runtimeAuthorization.ResourceOwnerSystemAccountID == input.GranteeSystemAccountID {
+		return port.ManagementResourceAuthorizationSummary{}, false, nil
+	}
+	hasManualSource, err := hasActiveManagementManualAuthorizationSourceTx(ctx, tx, runtimeAuthorization.ID)
+	if err != nil {
+		return port.ManagementResourceAuthorizationSummary{}, false, err
+	}
+	if !hasManualSource {
+		return port.ManagementResourceAuthorizationSummary{}, false, nil
+	}
+	grant, found, err := findReturnableManagementDirectGrantForRuntimeAuthorizationTx(ctx, tx, runtimeAuthorization, input.GranteeSystemAccountID)
+	if err != nil {
+		return port.ManagementResourceAuthorizationSummary{}, false, err
+	}
+	if !found {
+		return port.ManagementResourceAuthorizationSummary{}, false, nil
+	}
+	summary, err := returnManagementResourceAuthorizationGrantTx(ctx, tx, grant, runtimeAuthorization, input.ActorSystemAccountID, now)
+	if err != nil {
+		return port.ManagementResourceAuthorizationSummary{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		if errors.Is(err, pgx.ErrTxCommitRollback) {
+			return port.ManagementResourceAuthorizationSummary{}, false, fmt.Errorf("commit management resource authorization resource return tx rolled back: %w", err)
+		}
+		return port.ManagementResourceAuthorizationSummary{}, false, fmt.Errorf("commit management resource authorization resource return tx: %w", err)
 	}
 	committed = true
 	return summary, true, nil
@@ -1961,6 +1977,100 @@ FOR UPDATE OF grant_row
 	return row, true, nil
 }
 
+func findReturnableManagementDirectGrantForRuntimeAuthorizationTx(ctx context.Context, tx pgx.Tx, runtimeAuthorization postgresqueries.JuheBusinessResourceAuthorization, granteeSystemAccountID string) (postgresqueries.JuheBusinessResourceAuthorizationGrant, bool, error) {
+	var row postgresqueries.JuheBusinessResourceAuthorizationGrant
+	err := tx.QueryRow(ctx, `
+SELECT id, resource_type, resource_id, resource_owner_system_account_id,
+  grantee_type, grantee_system_account_id, grantee_team_id, scope,
+  status, remark, expires_at, limits_json, created_by,
+  created_at, revoked_by, revoked_at, updated_at
+FROM juhe_business.resource_authorization_grants
+WHERE resource_type = $1
+  AND resource_id = $2
+  AND resource_owner_system_account_id = $3
+  AND grantee_type = 'system_account'
+  AND grantee_system_account_id = $4
+  AND status NOT IN ('revoked', 'returned')
+LIMIT 1
+FOR UPDATE
+`, runtimeAuthorization.ResourceType, runtimeAuthorization.ResourceID, runtimeAuthorization.ResourceOwnerSystemAccountID, granteeSystemAccountID).Scan(
+		&row.ID,
+		&row.ResourceType,
+		&row.ResourceID,
+		&row.ResourceOwnerSystemAccountID,
+		&row.GranteeType,
+		&row.GranteeSystemAccountID,
+		&row.GranteeTeamID,
+		&row.Scope,
+		&row.Status,
+		&row.Remark,
+		&row.ExpiresAt,
+		&row.LimitsJson,
+		&row.CreatedBy,
+		&row.CreatedAt,
+		&row.RevokedBy,
+		&row.RevokedAt,
+		&row.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return postgresqueries.JuheBusinessResourceAuthorizationGrant{}, false, nil
+	}
+	if err != nil {
+		return postgresqueries.JuheBusinessResourceAuthorizationGrant{}, false, fmt.Errorf("find returnable resource authorization grant by runtime authorization: %w", err)
+	}
+	return row, true, nil
+}
+
+func findManagementRuntimeAuthorizationForResourceReturnTx(ctx context.Context, tx pgx.Tx, resourceType string, resourceID string, granteeSystemAccountID string) (postgresqueries.JuheBusinessResourceAuthorization, bool, error) {
+	switch resourceType {
+	case "account":
+		var authorizationID string
+		err := tx.QueryRow(ctx, `
+SELECT authorization_instance_authorization_id
+FROM juhe_business.accounts
+WHERE id = $1
+  AND system_account_id = $2
+  AND deleted_at IS NULL
+  AND authorization_instance_authorization_id IS NOT NULL
+LIMIT 1
+`, resourceID, granteeSystemAccountID).Scan(&authorizationID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return postgresqueries.JuheBusinessResourceAuthorization{}, false, nil
+		}
+		if err != nil {
+			return postgresqueries.JuheBusinessResourceAuthorization{}, false, fmt.Errorf("find account authorization instance for return: %w", err)
+		}
+		row, err := findManagementRuntimeAuthorizationByColumnsTx(ctx, tx, `
+WHERE id = $1
+  AND grantee_system_account_id = $2
+LIMIT 1
+`, authorizationID, granteeSystemAccountID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return postgresqueries.JuheBusinessResourceAuthorization{}, false, nil
+		}
+		if err != nil {
+			return postgresqueries.JuheBusinessResourceAuthorization{}, false, err
+		}
+		return row, true, nil
+	case "group":
+		row, err := findManagementRuntimeAuthorizationByColumnsTx(ctx, tx, `
+WHERE resource_type = 'group'
+  AND resource_id = $1
+  AND grantee_system_account_id = $2
+LIMIT 1
+`, resourceID, granteeSystemAccountID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return postgresqueries.JuheBusinessResourceAuthorization{}, false, nil
+		}
+		if err != nil {
+			return postgresqueries.JuheBusinessResourceAuthorization{}, false, err
+		}
+		return row, true, nil
+	default:
+		return postgresqueries.JuheBusinessResourceAuthorization{}, false, nil
+	}
+}
+
 func findManagementRuntimeAuthorizationForDirectGrantTx(ctx context.Context, tx pgx.Tx, grant postgresqueries.JuheBusinessResourceAuthorizationGrant) (postgresqueries.JuheBusinessResourceAuthorization, bool, error) {
 	granteeSystemAccountID := textValue(grant.GranteeSystemAccountID)
 	if granteeSystemAccountID == "" {
@@ -1999,6 +2109,48 @@ LIMIT 1
 		return false, fmt.Errorf("find active manual authorization source: %w", err)
 	}
 	return id != "", nil
+}
+
+func returnManagementResourceAuthorizationGrantTx(ctx context.Context, tx pgx.Tx, grant postgresqueries.JuheBusinessResourceAuthorizationGrant, runtimeAuthorization postgresqueries.JuheBusinessResourceAuthorization, actorSystemAccountID string, now time.Time) (port.ManagementResourceAuthorizationSummary, error) {
+	if _, err := tx.Exec(ctx, `
+UPDATE juhe_business.resource_authorization_grants
+SET status = 'returned',
+    revoked_by = $1,
+    revoked_at = $2,
+    updated_at = $2
+WHERE id = $3
+`, actorSystemAccountID, now, grant.ID); err != nil {
+		return port.ManagementResourceAuthorizationSummary{}, fmt.Errorf("return resource authorization grant: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+UPDATE juhe_business.resource_authorization_sources
+SET status = 'revoked',
+    ended_at = COALESCE(ended_at, $1),
+    ended_reason = COALESCE(ended_reason, 'grantee_returned'),
+    revoked_by = $2,
+    revoked_at = $1,
+    updated_at = $1
+WHERE authorization_id = $3
+  AND source_type = 'manual'
+  AND status IN ('active', 'superseded')
+`, now, actorSystemAccountID, runtimeAuthorization.ID); err != nil {
+		return port.ManagementResourceAuthorizationSummary{}, fmt.Errorf("return manual resource authorization source: %w", err)
+	}
+	if err := refreshManagementResourceAuthorizationEffectiveSourceWithOptionsTx(ctx, tx, runtimeAuthorization.ID, actorSystemAccountID, now, managementAuthorizationEffectiveSourceRefreshOptions{
+		noActiveSourceReason:              "grantee_returned",
+		preserveExpiredWhenNoActiveSource: false,
+		terminalStatus:                    "returned",
+	}); err != nil {
+		return port.ManagementResourceAuthorizationSummary{}, err
+	}
+	if err := markAllGroupAccountStatsDirtyIfPresentTx(ctx, tx, "resource_authorization_returned", now); err != nil {
+		return port.ManagementResourceAuthorizationSummary{}, err
+	}
+	summary, err := managementAuthorizationSummaryByGrantIDTx(ctx, tx, grant.ID)
+	if err != nil {
+		return port.ManagementResourceAuthorizationSummary{}, err
+	}
+	return summary, nil
 }
 
 func managementAuthorizationResourceOwnerTx(ctx context.Context, tx pgx.Tx, resourceType string, resourceID string) (string, bool, error) {

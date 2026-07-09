@@ -355,6 +355,38 @@ func TestManagementResourceAuthorizationRevokeQueryKeepsTeamGrantScope(t *testin
 	}
 }
 
+func TestManagementResourceAuthorizationReturnByResourceKeepsDirectUserGrantScope(t *testing.T) {
+	source, err := os.ReadFile("managementauthorizations.go")
+	if err != nil {
+		t.Fatalf("read management authorizations store: %v", err)
+	}
+	code := string(source)
+	for _, want := range []string{
+		"func (s *Store) ReturnManagementResourceAuthorizationForGranteeByResource",
+		"func findManagementRuntimeAuthorizationForResourceReturnTx",
+		"FROM juhe_business.accounts",
+		"AND system_account_id = $2",
+		"AND deleted_at IS NULL",
+		"AND authorization_instance_authorization_id IS NOT NULL",
+		"WHERE resource_type = 'group'",
+		"AND grantee_system_account_id = $2",
+		"func findReturnableManagementDirectGrantForRuntimeAuthorizationTx",
+		"grantee_type = 'system_account'",
+		"status NOT IN ('revoked', 'returned')",
+		"hasActiveManagementManualAuthorizationSourceTx(ctx, tx, runtimeAuthorization.ID)",
+		"returnManagementResourceAuthorizationGrantTx(ctx, tx, grant, runtimeAuthorization",
+		"markAllGroupAccountStatsDirtyIfPresentTx(ctx, tx, \"resource_authorization_returned\", now)",
+	} {
+		if !strings.Contains(code, want) {
+			t.Fatalf("resource return implementation missing %q", want)
+		}
+	}
+	if strings.Contains(code, "ReturnManagementResourceAuthorizationForGranteeByResource(ctx context.Context") &&
+		strings.Contains(code, "revokeAllManagementTeamSourcesTx(ctx, tx") {
+		t.Fatal("resource return must not call whole-team source revoke helper")
+	}
+}
+
 func TestManagementResourceAuthorizationExpirySweepQueryUsesGrantExpiryIndex(t *testing.T) {
 	query := managementResourceAuthorizationExpirySweepQuery()
 	for _, want := range []string{
