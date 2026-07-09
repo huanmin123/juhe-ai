@@ -185,7 +185,7 @@ export async function testOpenAIAccount(
     requestBody = testRequest.body
     const requestBodyText = JSON.stringify(requestBody)
     requestUrl = testRequest.path
-    const request = createGatewayTestRequest(requestUrl, requestBody, requestBodyText, account.type === 'oauth', input.signal, clientCompatibility)
+    const request = createGatewayTestRequest(requestUrl, requestBody, requestBodyText, account.type === 'oauth', input.signal, clientCompatibility, testRequest.headers)
     const response = new MemoryGatewayResponse(startedAt)
     let diagnosticLastAttempt: UpstreamAttempt | undefined
     const context: RequestContext = {
@@ -211,6 +211,7 @@ export async function testOpenAIAccount(
       trafficSource: input.trafficSource ?? 'manual_account_test',
       settingsOverride: input.gatewaySettingsOverride,
       disableAccountStateMutation: input.disableAccountStateMutation ?? true,
+      ignoreAccountRuntimeSuppression: true,
       onUpstreamAttemptDiagnostic: (lastAttempt) => {
         diagnosticLastAttempt = lastAttempt
       }

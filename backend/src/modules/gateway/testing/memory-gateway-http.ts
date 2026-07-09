@@ -32,7 +32,8 @@ export function createGatewayTestRequest(
   rawBodyText: string,
   isOAuth: boolean,
   signal?: AbortSignal,
-  clientCompatibility?: AccountClientCompatibility
+  clientCompatibility?: AccountClientCompatibility,
+  extraHeaders?: IncomingHttpHeaders
 ): Request {
   const stream = body.stream === true || /:streamGenerateContent\b/i.test(path)
   const headers: IncomingHttpHeaders = {
@@ -47,6 +48,11 @@ export function createGatewayTestRequest(
       thread_id: 'account-test-thread',
       turn_id: `account-test-turn-${turnNonce}`
     })
+  }
+  for (const [name, value] of Object.entries(extraHeaders ?? {})) {
+    if (value !== undefined) {
+      headers[name.toLowerCase()] = value
+    }
   }
   return createMemoryGatewayRequestFromAdapterInput({
     method: 'POST',

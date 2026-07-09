@@ -10,6 +10,16 @@
       </div>
     </a-space>
     <a-space class="header-actions" align="center">
+      <a-tooltip title="帮助">
+        <button
+          class="help-trigger"
+          type="button"
+          aria-label="打开帮助"
+          @click="$emit('open-help')"
+        >
+          <QuestionCircleOutlined />
+        </button>
+      </a-tooltip>
       <a-tooltip :title="hasNewAnnouncements ? '有新公告' : '公告'">
         <button
           class="announcement-trigger"
@@ -50,7 +60,7 @@
 </template>
 
 <script setup lang="ts">
-import { BellOutlined, DownOutlined, MenuOutlined } from '@ant-design/icons-vue'
+import { BellOutlined, DownOutlined, MenuOutlined, QuestionCircleOutlined } from '@ant-design/icons-vue'
 import type { MenuProps } from 'ant-design-vue'
 
 defineProps<{
@@ -67,6 +77,7 @@ defineProps<{
 }>()
 
 defineEmits<{
+  (event: 'open-help'): void
   (event: 'open-announcements'): void
   (event: 'open-sidebar'): void
   (event: 'user-menu-click', menuEvent: Parameters<NonNullable<MenuProps['onClick']>>[0]): void
@@ -93,6 +104,7 @@ defineEmits<{
   flex: 0 0 auto;
 }
 
+.help-trigger,
 .announcement-trigger {
   position: relative;
   width: 40px;
@@ -111,15 +123,23 @@ defineEmits<{
     transform 0.2s ease;
 }
 
+.help-trigger:hover,
+.help-trigger:focus-visible,
 .announcement-trigger:hover,
 .announcement-trigger:focus-visible {
   color: #1677ff;
   background: #eff6ff;
 }
 
+.help-trigger:focus-visible,
 .announcement-trigger:focus-visible {
   outline: 2px solid rgba(22, 119, 255, 0.28);
   outline-offset: 2px;
+}
+
+.help-trigger {
+  font-size: 20px;
+  line-height: 1;
 }
 
 .announcement-trigger.active {

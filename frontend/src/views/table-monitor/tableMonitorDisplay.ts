@@ -6,6 +6,7 @@ import type { DatabaseStorageSnapshotSummary, MonitoredDatabaseRole, TableStorag
 export const tableMonitorColumns = [
   { title: '库', key: 'databaseRole', width: 168, fixed: 'left' },
   { title: '表名', key: 'tableName', width: 240, fixed: 'left' },
+  { title: '状态', key: 'tableState', width: 132 },
   { title: '行数', key: 'rowCount', align: 'right', width: 120 },
   { title: '表大小', key: 'tableBytes', align: 'right', width: 120 },
   { title: '索引大小', key: 'indexBytes', align: 'right', width: 120 },
@@ -15,7 +16,7 @@ export const tableMonitorColumns = [
   { title: '采样时间', key: 'sampledAt', width: 190 }
 ]
 
-export const tableMonitorDatabaseRoles: MonitoredDatabaseRole[] = ['business', 'dataset', 'usage-catalog', 'stats', 'codex-context-state']
+export const tableMonitorDatabaseRoles: MonitoredDatabaseRole[] = ['business', 'dataset', 'usage-catalog', 'stats', 'archive', 'codex-context-state']
 
 export function tableMonitorRowKey(row: TableStorageSnapshotSummary) {
   return `${row.databaseRole}:${row.tableName}`
@@ -27,6 +28,7 @@ export function databaseRoleLabel(role: MonitoredDatabaseRole) {
     dataset: '数据集目录库',
     'usage-catalog': '使用记录目录库',
     stats: '统计结果库',
+    archive: '归档库',
     'codex-context-state': 'Responses 状态库'
   }[role]
 }
@@ -37,6 +39,7 @@ export function databaseRoleDetailLabel(role: MonitoredDatabaseRole) {
     dataset: '数据集目录库',
     'usage-catalog': '使用记录目录库',
     stats: '统计结果库',
+    archive: '分区归档表所在的 PostgreSQL 归档 schema',
     'codex-context-state': 'Responses 桥接状态索引库'
   }[role]
 }
@@ -47,8 +50,30 @@ export function databaseRoleColor(role: MonitoredDatabaseRole) {
     dataset: 'orange',
     'usage-catalog': 'cyan',
     stats: 'purple',
+    archive: 'magenta',
     'codex-context-state': 'geekblue'
   }[role]
+}
+
+export function tableStateLabel(row: TableStorageSnapshotSummary) {
+  if (row.isArchive) return '归档表'
+  if (row.isPartition) return '分区子表'
+  if (row.tableKind === 'partitioned_table') return '分区父表'
+  if (row.tableKind === 'materialized_view') return '物化视图'
+  return '普通表'
+}
+
+export function tableStateColor(row: TableStorageSnapshotSummary) {
+  if (row.isArchive) return 'magenta'
+  if (row.isPartition) return 'cyan'
+  if (row.tableKind === 'partitioned_table') return 'blue'
+  if (row.tableKind === 'materialized_view') return 'purple'
+  return 'default'
+}
+
+export function formatRatioPercent(value?: unknown) {
+  const numericValue = numberValue(value)
+  return numericValue === undefined ? '-' : `${(numericValue * 100).toFixed(1)}%`
 }
 
 export function totalDatabaseBytes(database?: DatabaseStorageSnapshotSummary): number | undefined {
@@ -105,7 +130,7 @@ export function buildTableMonitorHistoryChartOption(input: {
 }): EChartsOption {
   const buckets = [...new Set(input.rows.map((row) => row.sampledAt))].sort()
   return {
-    color: ['#1677ff', '#fa8c16', '#13c2c2', '#722ed1', '#2f54eb'],
+    color: ['#1677ff', '#fa8c16', '#13c2c2', '#722ed1', '#eb2f96', '#2f54eb'],
     tooltip: {
       trigger: 'axis',
       formatter: (params: unknown) => historyTooltip(params)

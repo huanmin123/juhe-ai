@@ -14,8 +14,8 @@ export function payloadCaptureStatusDescription(record: AuditPayloadRow): string
   const suffix = `当前可读：${available}。`
   if (record.captureStatus === 'complete') {
     return record.hasBody || record.hasHeaders
-      ? `已保存捕获到的原始内容。${suffix}`
-      : `该部分没有可保存的原始内容。${suffix}`
+      ? `已保存捕获到的原始请求。${suffix}`
+      : `该部分没有可保存的原始请求。${suffix}`
   }
   if (record.captureStatus === 'summary_only') {
     return `正文超过全量保存限制，已保存摘要和原始 Body SHA256。${suffix}`
@@ -24,13 +24,13 @@ export function payloadCaptureStatusDescription(record: AuditPayloadRow): string
     return `正文未保存，只保留大小和 Body SHA256。${suffix}`
   }
   if (record.captureStatus === 'overflow') {
-    return `请求超过审计活跃捕获上限，原始内容未完整保存。${suffix}`
+    return `请求超过审计活跃捕获上限，原始请求未完整保存。${suffix}`
   }
   if (record.captureStatus === 'dropped') {
-    return `原始内容被审计保护裁剪，只保留大小、状态和仍可用的部分。${suffix}`
+    return `原始请求被审计保护裁剪，只保留大小、状态和仍可用的部分。${suffix}`
   }
   if (record.captureStatus === 'expired') {
-    return `原始内容已按保留策略过期。${suffix}`
+    return `原始请求已按保留策略过期。${suffix}`
   }
   return suffix
 }

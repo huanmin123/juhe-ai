@@ -1003,7 +1003,7 @@ async function deletePostgresAccountUsageDataBatch(
   await client.transaction(async (tx) => {
     await subtractPostgresAccountUsageRowsOnce(tx, rows, input, updatedAt)
     await deletePostgresUsageRecordCatalogRowsByUsageIds(tx, usageIds)
-    const result = await tx.execute('DELETE FROM juhe_usage.usage_records WHERE id = ANY(?::text[])', [usageIds])
+    const result = await deletePostgresUsageRecordsByPartitionKeys(tx, rows)
     deletedRows = changed(result)
     await markPostgresUsageCleanupRowsDeleted(tx, usageIds, updatedAt)
   })
@@ -1586,6 +1586,18 @@ function changed(result: { changes?: number | bigint }): number {
 
 function uniqueNonEmpty(values: Array<string | null | undefined>): string[] {
   return [...new Set(values.map((value) => value?.trim()).filter((value): value is string => Boolean(value)))]
+}
+
+async function deletePostgresUsageRecordsByPartitionKeys(client: DatabaseClient, rows: UsageStatsRecordRow[]): Promise<{ changes?: number | bigint }> {
+  const keys = rows
+    .map((row) => ({ createdAt: row.created_at?.trim(), id: row.id?.trim() }))
+    .filter((row): row is { createdAt: string; id: string } => Boolean(row.createdAt && row.id))
+  if (!keys.length) return { changes: 0 }
+  const placeholders = keys.map(() => '(?, ?)').join(', ')
+  return client.execute(`
+    DELETE FROM juhe_usage.usage_records
+    WHERE (created_at, id) IN (${placeholders})
+  `, keys.flatMap((row) => [row.createdAt, row.id]))
 }
 
 function parseStringArrayJson(value: unknown): string[] {

@@ -1,4 +1,4 @@
-import type { Dayjs } from 'dayjs'
+import dayjs, { type Dayjs } from 'dayjs'
 
 import type { UsageRecordListParams } from '@/api/client'
 import { formatDateKey, normalizeDayjsDateRange, parseDateKey } from '@/shared/dateRange'
@@ -29,10 +29,11 @@ export type UsageRecordsPageState = {
 export const usageRecordsPageSize = 20
 
 export function defaultUsageRecordsPageState(trafficSourceFilter: UsageRecordTrafficSource | 'all' = 'all'): UsageRecordsPageState {
+  const today = formatDateKey(dayjs())
   return {
     accountNameFilter: '',
     clientIpFilter: '',
-    dateRangeFilter: undefined,
+    dateRangeFilter: [today, today],
     groupFilter: undefined,
     modelFilter: '',
     pagination: { current: 1, pageSize: usageRecordsPageSize },

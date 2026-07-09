@@ -461,7 +461,7 @@
 
 <script setup lang="ts">
 import { DeleteOutlined, HolderOutlined, InfoCircleOutlined, PlusOutlined } from '@ant-design/icons-vue'
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import type { TablePaginationConfig } from 'ant-design-vue'
 
 import type { RouteStrategyMutationPayload } from '@/api/domains/routeStrategies'
@@ -481,6 +481,7 @@ import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime, formatNumber } from '@/shared/formatters'
 import type { GroupSelection } from '@/shared/groupLabelCache'
 import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
+import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type {
   ApiKeyHybridLevelRoute,
   ApiKeyHybridQualityInspectionFailureAction,
@@ -592,6 +593,11 @@ const page = ref(initialPageState.pagination.current)
 const pageSize = ref(initialPageState.pagination.pageSize)
 const groupOptionsRaw = ref<GroupOptionSummary[]>([])
 const groupOptionsLoading = ref(false)
+const groupOptionsCache = createShortLivedQueryCache<GroupOptionSummary[]>({ ttlMs: 10_000 })
+let groupOptionsRequestToken = 0
+let groupOptionsLoadingKey: string | undefined
+let groupOptionsLoadingPromise: Promise<void> | undefined
+let groupOptionsSearchTimer: ReturnType<typeof window.setTimeout> | undefined
 
 const routeStrategyScopeParams = computed(() => {
   const systemAccountId = scopedSystemAccountId(systemAccountFilter.value)
@@ -792,6 +798,8 @@ onMounted(() => {
   void loadRouteStrategies()
 })
 
+onBeforeUnmount(clearGroupOptionsSearchTimer)
+
 async function loadRouteStrategies() {
   loading.value = true
   try {
@@ -836,7 +844,7 @@ function resetFilters() {
   systemAccountFilterSelection.value = defaults.systemAccountFilterSelection
   statusFilter.value = defaults.statusFilter
   modeFilter.value = defaults.modeFilter
-  groupOptionsRaw.value = []
+  resetGroupOptions()
   resetSystemAccountOptionsSearch()
   page.value = defaults.pagination.current
   pageSize.value = defaults.pagination.pageSize
@@ -848,7 +856,7 @@ function handleSystemAccountFilterChange() {
   if (systemAccountFilter.value === allSystemAccountsValue) {
     systemAccountFilterSelection.value = undefined
   }
-  groupOptionsRaw.value = []
+  resetGroupOptions()
   resetSystemAccountOptionsSearch()
   page.value = 1
   void loadRouteStrategies()
@@ -942,7 +950,7 @@ function openCreate() {
   form.groupBindings = [createBindingRow()]
   form.normal = defaultNormalRoutingForm()
   form.hybrid = defaultHybridRoutingForm()
-  groupOptionsRaw.value = []
+  resetGroupOptions()
   void loadGroupOptions()
   modalOpen.value = true
 }
@@ -979,7 +987,7 @@ function fillEditForm(record: RouteStrategySummary, fallbackSystemAccountId?: st
   form.hybrid = hybridRoutingFormFromConfig(record.hybridRoutingConfig)
   normalizeBindingRowsForMode()
   if (record.mode === 'hybrid_smart') normalizeHybridLevelRouteRanges()
-  groupOptionsRaw.value = []
+  resetGroupOptions()
   void loadGroupOptions('', record.groupBindings.map((binding) => binding.groupId))
   modalOpen.value = true
   if (record.mode === 'hybrid_smart') void loadModelOptions()
@@ -1190,27 +1198,97 @@ function routeStrategyOperationScopeParams(record?: Pick<RouteStrategyListItem |
   return systemAccountId ? { systemAccountId } : undefined
 }
 
-async function loadGroupOptions(keywordInput = '', selectedIds?: string[]) {
+function resetGroupOptions() {
+  clearGroupOptionsSearchTimer()
+  groupOptionsRequestToken += 1
+  groupOptionsLoadingKey = undefined
+  groupOptionsLoadingPromise = undefined
+  groupOptionsRaw.value = []
+  groupOptionsLoading.value = false
+}
+
+async function loadGroupOptions(keywordInput = '', selectedIds: string[] = []) {
   const operationScopeParams = routeStrategyOperationScopeParams()
   if (isManagementView.value && !operationScopeParams?.systemAccountId) {
+    groupOptionsRequestToken += 1
+    groupOptionsLoadingKey = undefined
+    groupOptionsLoadingPromise = undefined
     groupOptionsRaw.value = []
     groupOptionsLoading.value = false
     return
   }
-  groupOptionsLoading.value = true
-  try {
-    groupOptionsRaw.value = await groupsApi.options({
-      ids: selectedIds,
-      keyword: keywordInput.trim() || undefined,
-      limit: 100,
-      manageableOnly: true,
-      systemAccountId: operationScopeParams?.systemAccountId
-    })
-  } catch (error) {
-    message.error(extractApiErrorMessage(error, '分组选项加载失败'))
-  } finally {
-    groupOptionsLoading.value = false
+  const keyword = keywordInput.trim() || undefined
+  const normalizedSelectedIds = [...new Set(selectedIds.map((id) => id.trim()).filter(Boolean))]
+  const requestKey = groupOptionsRequestKey(operationScopeParams?.systemAccountId, keyword, normalizedSelectedIds)
+  if (groupOptionsLoadingKey === requestKey && groupOptionsLoadingPromise) {
+    return groupOptionsLoadingPromise
   }
+  const requestToken = ++groupOptionsRequestToken
+  const cachedGroups = groupOptionsCache.get(requestKey)
+  if (cachedGroups) {
+    groupOptionsLoadingKey = undefined
+    groupOptionsLoadingPromise = undefined
+    groupOptionsRaw.value = cachedGroups
+    groupOptionsLoading.value = false
+    return
+  }
+  groupOptionsLoading.value = true
+  groupOptionsLoadingKey = requestKey
+  groupOptionsLoadingPromise = (async () => {
+    try {
+      const windowGroups = await groupsApi.options({
+        keyword,
+        limit: 50,
+        manageableOnly: true,
+        systemAccountId: operationScopeParams?.systemAccountId
+      })
+      if (requestToken !== groupOptionsRequestToken) return
+      const missingSelectedIds = normalizedSelectedIds.filter((id) => !windowGroups.some((group) => group.id === id))
+      if (!missingSelectedIds.length) {
+        groupOptionsCache.set(requestKey, windowGroups)
+        groupOptionsRaw.value = windowGroups
+        return
+      }
+      const selectedGroups = await groupsApi.options({
+        ids: missingSelectedIds,
+        limit: missingSelectedIds.length,
+        manageableOnly: true,
+        systemAccountId: operationScopeParams?.systemAccountId
+      })
+      if (requestToken !== groupOptionsRequestToken) return
+      const mergedGroups = mergeGroupOptionsById(selectedGroups, windowGroups)
+      groupOptionsCache.set(requestKey, mergedGroups)
+      groupOptionsRaw.value = mergedGroups
+    } catch (error) {
+      if (requestToken !== groupOptionsRequestToken) return
+      message.error(extractApiErrorMessage(error, '分组选项加载失败'))
+    } finally {
+      if (groupOptionsLoadingKey === requestKey) {
+        groupOptionsLoadingKey = undefined
+        groupOptionsLoadingPromise = undefined
+      }
+      if (requestToken === groupOptionsRequestToken) {
+        groupOptionsLoading.value = false
+      }
+    }
+  })()
+  return groupOptionsLoadingPromise
+}
+
+function mergeGroupOptionsById(leading: GroupOptionSummary[], trailing: GroupOptionSummary[]): GroupOptionSummary[] {
+  const merged = new Map<string, GroupOptionSummary>()
+  for (const group of [...leading, ...trailing]) {
+    merged.set(group.id, group)
+  }
+  return [...merged.values()]
+}
+
+function groupOptionsRequestKey(systemAccountId: string | undefined, keyword: string | undefined, selectedIds: string[]): string {
+  return JSON.stringify([
+    isManagementView.value ? `management:${systemAccountId ?? ''}` : 'self',
+    keyword ?? '',
+    selectedIds
+  ])
 }
 
 function handleGroupOptionsDropdown(open: boolean) {
@@ -1218,7 +1296,18 @@ function handleGroupOptionsDropdown(open: boolean) {
 }
 
 function handleGroupOptionsSearch(value: string) {
-  void loadGroupOptions(value)
+  clearGroupOptionsSearchTimer()
+  groupOptionsSearchTimer = window.setTimeout(() => {
+    groupOptionsSearchTimer = undefined
+    void loadGroupOptions(value)
+  }, 250)
+}
+
+function clearGroupOptionsSearchTimer() {
+  if (groupOptionsSearchTimer && typeof window !== 'undefined') {
+    window.clearTimeout(groupOptionsSearchTimer)
+    groupOptionsSearchTimer = undefined
+  }
 }
 
 function handleModelOptionsDropdown(open: boolean) {

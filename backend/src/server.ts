@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs'
+import http from 'node:http'
 import { basename, resolve } from 'node:path'
 
 import cors from 'cors'
@@ -6,6 +7,7 @@ import express, { type NextFunction, type Request, type Response } from 'express
 
 import { startBackgroundWorkerSupervisor } from './modules/background/background-worker-supervisor.js'
 import { createDbServiceHttpProxy } from './modules/db-service/db-service-http-proxy.js'
+import { getDbServiceState } from './modules/db-service/db-service-ipc.js'
 import { startDbServiceSupervisor } from './modules/db-service/db-service-supervisor.js'
 import { handleGatewayDbServiceUnavailable, openAIGatewayRouter } from './modules/gateway/routes.js'
 import {
@@ -36,6 +38,7 @@ const frontendAssetsPath = resolve(frontendDistPath, 'assets')
 const systemPrefix = '/__aisys__'
 const systemApiPrefix = `${systemPrefix}/api`
 const publicApiPrefix = '/__aipublic__'
+const helpPrefix = `${systemPrefix}/help`
 const gatewayRawBodyLimit = gatewayRawBodyHardLimit
 const httpListenBacklog = 8192
 const dbServiceHttpProxy = createDbServiceHttpProxy()
@@ -132,6 +135,7 @@ app.use(systemApiPrefix, dbServiceHttpProxy)
 app.use(publicApiPrefix, dbServiceHttpProxy)
 
 if (existsSync(frontendIndexPath)) {
+  app.use(helpPrefix, requireHelpSession)
   app.get(systemPrefix, (req, res, next) => {
     if (req.path !== systemPrefix) {
       next()
@@ -160,6 +164,184 @@ if (existsSync(frontendIndexPath)) {
     res.setHeader('Cache-Control', 'no-cache')
     res.sendFile(frontendIndexPath)
   })
+}
+
+interface HelpCurrentUser {
+  id: string
+  username: string
+  displayName: string
+  role: string
+  mustChangePassword?: boolean
+}
+
+async function requireHelpSession(req: Request, res: Response, next: NextFunction): Promise<void> {
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    res.status(405).json({ message: '帮助文档只支持读取' })
+    return
+  }
+
+  let user: HelpCurrentUser | undefined
+  try {
+    user = await readHelpCurrentUser(req)
+  } catch (error) {
+    getRequestLogger().warn({
+      event: 'help_auth_check_failed',
+      err: error instanceof Error ? error : undefined,
+      errorMessage: error instanceof Error ? undefined : String(error),
+      method: req.method,
+      path: req.path,
+      originalUrl: sanitizeUrlForLog(req.originalUrl)
+    }, '帮助文档登录态校验失败')
+    res.status(503).json({ message: '登录态校验暂不可用，请稍后重试' })
+    return
+  }
+
+  if (!user) {
+    redirectHelpRequestToLogin(req, res)
+    return
+  }
+
+  const requestPath = pathnameFromOriginalUrl(req.originalUrl)
+  if (requestPath === helpPrefix) {
+    res.redirect(302, `${helpPrefix}/`)
+    return
+  }
+  if (requestPath === `${helpPrefix}/`) {
+    res.redirect(302, `${helpPrefix}/${isManagementRole(user.role) ? 'admin' : 'user'}/`)
+    return
+  }
+  if (isAdminHelpPath(requestPath) && !isManagementRole(user.role)) {
+    res.redirect(302, `${helpPrefix}/user/`)
+    return
+  }
+
+  next()
+}
+
+function readHelpCurrentUser(req: Request): Promise<HelpCurrentUser | undefined> {
+  const state = getDbServiceState()
+  if (!state.ready || !state.httpHost || !state.httpPort) {
+    return Promise.reject(new Error('DB service 未就绪'))
+  }
+
+  return new Promise((resolveUser, rejectUser) => {
+    let settled = false
+    const finish = (error: Error | undefined, user?: HelpCurrentUser): void => {
+      if (settled) return
+      settled = true
+      if (error) {
+        rejectUser(error)
+        return
+      }
+      resolveUser(user)
+    }
+
+    const upstream = http.request({
+      host: state.httpHost,
+      port: state.httpPort,
+      method: 'GET',
+      path: `${systemApiPrefix}/auth/me`,
+      headers: helpAuthRequestHeaders(req)
+    }, (upstreamResponse) => {
+      const statusCode = upstreamResponse.statusCode ?? 500
+      const chunks: Buffer[] = []
+      let bodyBytes = 0
+      upstreamResponse.on('data', (chunk: Buffer) => {
+        bodyBytes += chunk.length
+        if (bodyBytes > 64 * 1024) {
+          upstream.destroy(new Error('帮助文档登录态响应过大'))
+          return
+        }
+        chunks.push(Buffer.from(chunk))
+      })
+      upstreamResponse.on('end', () => {
+        if (statusCode === 401 || statusCode === 403) {
+          finish(undefined)
+          return
+        }
+        if (statusCode < 200 || statusCode >= 300) {
+          finish(new Error(`DB service 登录态校验返回 HTTP ${statusCode}`))
+          return
+        }
+        const payload = parseHelpAuthPayload(Buffer.concat(chunks).toString('utf8'))
+        finish(undefined, payload)
+      })
+    })
+
+    upstream.setTimeout(5000, () => {
+      upstream.destroy(new Error('帮助文档登录态校验超时'))
+    })
+    upstream.on('error', (error) => finish(error))
+    upstream.end()
+  })
+}
+
+function helpAuthRequestHeaders(req: Request): http.OutgoingHttpHeaders {
+  const headers: http.OutgoingHttpHeaders = {
+    accept: 'application/json',
+    cookie: req.headers.cookie ?? '',
+    host: req.headers.host,
+    'x-forwarded-for': appendHelpForwardedFor(req),
+    'x-forwarded-host': req.headers.host,
+    'x-forwarded-proto': req.protocol
+  }
+  const traceId = getTraceId()
+  if (traceId) {
+    headers['x-trace-id'] = traceId
+  }
+  return headers
+}
+
+function appendHelpForwardedFor(req: Request): string | undefined {
+  const current = headerText(req.headers['x-forwarded-for'])
+  const remoteAddress = req.ip || req.socket.remoteAddress
+  if (!remoteAddress) {
+    return current
+  }
+  return current ? `${current}, ${remoteAddress}` : remoteAddress
+}
+
+function headerText(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value.join(', ') : value
+}
+
+function parseHelpAuthPayload(text: string): HelpCurrentUser | undefined {
+  try {
+    const payload = JSON.parse(text) as { data?: Partial<HelpCurrentUser> }
+    const user = payload.data
+    if (!user || typeof user.id !== 'string' || typeof user.username !== 'string' || typeof user.displayName !== 'string' || typeof user.role !== 'string') {
+      return undefined
+    }
+    return {
+      id: user.id,
+      username: user.username,
+      displayName: user.displayName,
+      role: user.role,
+      mustChangePassword: Boolean(user.mustChangePassword)
+    }
+  } catch {
+    return undefined
+  }
+}
+
+function redirectHelpRequestToLogin(req: Request, res: Response): void {
+  res.redirect(302, `${systemPrefix}/login?redirect=${encodeURIComponent(req.originalUrl)}`)
+}
+
+function pathnameFromOriginalUrl(originalUrl: string): string {
+  try {
+    return new URL(originalUrl, 'http://127.0.0.1').pathname.replace(/\/index\.html$/, '/')
+  } catch {
+    return originalUrl.split('?')[0]?.replace(/\/index\.html$/, '/') ?? originalUrl
+  }
+}
+
+function isAdminHelpPath(pathname: string): boolean {
+  return pathname === `${helpPrefix}/admin` || pathname.startsWith(`${helpPrefix}/admin/`)
+}
+
+function isManagementRole(role: string | undefined): boolean {
+  return role === 'super_admin' || role === 'admin'
 }
 
 app.use(systemPrefix, (_req, res) => {

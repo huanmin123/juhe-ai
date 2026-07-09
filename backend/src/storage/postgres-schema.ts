@@ -40,6 +40,11 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
   },
   {
     schemaName: 'juhe_business',
+    source: 'api-keys-pg-drop-obsolete-indexes',
+    sql: 'DROP INDEX IF EXISTS idx_api_keys_name_lookup; DROP INDEX IF EXISTS idx_api_keys_system_account_name_lookup'
+  },
+  {
+    schemaName: 'juhe_business',
     source: 'accounts-pg-prefix-indexes',
     sql: 'CREATE INDEX IF NOT EXISTS idx_accounts_name_c_lookup ON accounts((name COLLATE "C"), id) WHERE deleted_at IS NULL'
   },
@@ -70,33 +75,13 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
   },
   {
     schemaName: 'juhe_usage',
-    source: 'usage-catalog-pg-prefix-indexes',
-    sql: 'CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_trace_c_created_sort ON usage_record_shard_entries((trace_id COLLATE "C"), created_at DESC, usage_id DESC)'
+    source: 'usage-records-pg-prefix-indexes',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_usage_records_system_trace_c_created_sort ON usage_records(system_account_id, (trace_id COLLATE "C"), created_at DESC, id DESC)'
   },
   {
     schemaName: 'juhe_usage',
-    source: 'usage-catalog-pg-prefix-indexes',
-    sql: 'CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_trace_c_created_sort ON usage_record_shard_entries(system_account_id, (trace_id COLLATE "C"), created_at DESC, usage_id DESC)'
-  },
-  {
-    schemaName: 'juhe_usage',
-    source: 'usage-catalog-pg-prefix-indexes',
-    sql: 'CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_client_ip_c_created_sort ON usage_record_shard_entries((client_ip COLLATE "C"), created_at DESC, usage_id DESC)'
-  },
-  {
-    schemaName: 'juhe_usage',
-    source: 'usage-catalog-pg-prefix-indexes',
-    sql: 'CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_client_ip_c_created_sort ON usage_record_shard_entries(system_account_id, (client_ip COLLATE "C"), created_at DESC, usage_id DESC)'
-  },
-  {
-    schemaName: 'juhe_usage',
-    source: 'usage-catalog-pg-list-indexes',
-    sql: 'CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_traffic_created_sort ON usage_record_shard_entries(system_account_id, traffic_source, created_at DESC, usage_id DESC) INCLUDE (account_id, shard_key)'
-  },
-  {
-    schemaName: 'juhe_dataset',
-    source: 'dataset-log-pg-prefix-indexes',
-    sql: 'CREATE INDEX IF NOT EXISTS idx_audit_logs_trace_c_created_sort ON audit_logs((trace_id COLLATE "C"), created_at DESC, id DESC)'
+    source: 'usage-catalog-pg-drop-obsolete-indexes',
+    sql: 'DROP INDEX IF EXISTS idx_usage_record_shard_entries_trace_c_created_sort; DROP INDEX IF EXISTS idx_usage_record_shard_entries_system_trace_c_created_sort; DROP INDEX IF EXISTS idx_usage_record_shard_entries_client_ip_c_created_sort; DROP INDEX IF EXISTS idx_usage_record_shard_entries_system_client_ip_c_created_sort; DROP INDEX IF EXISTS idx_usage_record_shard_entries_system_traffic_created_sort'
   },
   {
     schemaName: 'juhe_dataset',
@@ -106,22 +91,7 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
   {
     schemaName: 'juhe_dataset',
     source: 'dataset-log-pg-prefix-indexes',
-    sql: 'CREATE INDEX IF NOT EXISTS idx_audit_logs_client_ip_c_created_sort ON audit_logs((client_ip COLLATE "C"), created_at DESC, id DESC)'
-  },
-  {
-    schemaName: 'juhe_dataset',
-    source: 'dataset-log-pg-prefix-indexes',
     sql: 'CREATE INDEX IF NOT EXISTS idx_audit_logs_system_client_ip_c_created_sort ON audit_logs(system_account_id, (client_ip COLLATE "C"), created_at DESC, id DESC)'
-  },
-  {
-    schemaName: 'juhe_dataset',
-    source: 'dataset-log-pg-prefix-indexes',
-    sql: 'CREATE INDEX IF NOT EXISTS idx_public_api_logs_trace_c_created_sort ON public_api_logs((trace_id COLLATE "C"), created_at DESC, id DESC)'
-  },
-  {
-    schemaName: 'juhe_dataset',
-    source: 'dataset-log-pg-prefix-indexes',
-    sql: 'CREATE INDEX IF NOT EXISTS idx_public_api_logs_client_ip_c_created_sort ON public_api_logs((client_ip COLLATE "C"), created_at DESC, id DESC)'
   },
   {
     schemaName: 'juhe_dataset',
@@ -132,6 +102,11 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
     schemaName: 'juhe_dataset',
     source: 'dataset-log-pg-prefix-indexes',
     sql: 'CREATE INDEX IF NOT EXISTS idx_operation_logs_trace_c_created ON operation_logs((trace_id COLLATE "C"), created_at DESC, id DESC)'
+  },
+  {
+    schemaName: 'juhe_dataset',
+    source: 'dataset-log-pg-drop-obsolete-indexes',
+    sql: 'DROP INDEX IF EXISTS idx_audit_logs_trace_c_created_sort; DROP INDEX IF EXISTS idx_audit_logs_client_ip_c_created_sort; DROP INDEX IF EXISTS idx_public_api_logs_trace_c_created_sort; DROP INDEX IF EXISTS idx_public_api_logs_client_ip_c_created_sort; DROP INDEX IF EXISTS idx_audit_logs_trace_id; DROP INDEX IF EXISTS idx_audit_logs_outcome_created; DROP INDEX IF EXISTS idx_audit_logs_status_created; DROP INDEX IF EXISTS idx_audit_logs_path_created; DROP INDEX IF EXISTS idx_audit_logs_model_created; DROP INDEX IF EXISTS idx_audit_logs_upstream_model_created; DROP INDEX IF EXISTS idx_audit_logs_client_ip_created; DROP INDEX IF EXISTS idx_audit_logs_api_key_created; DROP INDEX IF EXISTS idx_audit_logs_group_created; DROP INDEX IF EXISTS idx_audit_logs_account_created; DROP INDEX IF EXISTS idx_audit_logs_traffic_source_created; DROP INDEX IF EXISTS idx_public_api_logs_trace_id; DROP INDEX IF EXISTS idx_public_api_logs_path_created; DROP INDEX IF EXISTS idx_public_api_logs_status_created; DROP INDEX IF EXISTS idx_public_api_logs_success_created; DROP INDEX IF EXISTS idx_public_api_logs_client_ip_created'
   }
 ]
 
@@ -363,9 +338,18 @@ function transformSqliteStatementToPostgres(sql: string, schemaName: PostgresSch
       : match
   })
   transformed = transformed.replace(/\bTEXT\b/gi, 'text')
+  transformed = transformUsageRecordsTableForPostgres(transformed, schemaName)
   transformed = transformed.replace(/[ \t]+\n/g, '\n')
   transformed = transformed.replace(/\n{3,}/g, '\n\n')
   return transformed
+}
+
+function transformUsageRecordsTableForPostgres(sql: string, schemaName: PostgresSchemaName): string {
+  if (schemaName !== 'juhe_usage') return sql
+  if (!/^CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+usage_records\s*\(/i.test(sql.trim())) return sql
+  return sql
+    .replace(/\bid\s+text\s+PRIMARY\s+KEY\b/i, 'id text NOT NULL')
+    .replace(/\n\s*\)\s*$/i, ',\n      PRIMARY KEY (created_at, id)\n    ) PARTITION BY RANGE (created_at)')
 }
 
 function orderSchemaStatements(statements: PostgresSchemaStatement[]): PostgresSchemaStatement[] {

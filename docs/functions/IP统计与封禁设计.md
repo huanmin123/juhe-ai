@@ -182,17 +182,12 @@ client_ip_usage_range_windows
 
 `active_days` 不能在请求路径 `COUNT(DISTINCT stat_date)`；应由 worker 在刷新范围窗口时基于 `client_ip_stats_daily` 维护。平均首 token 和平均总耗时由 worker 写入 `average_first_token_ms` / `average_duration_ms`，请求路径只读当前页窗口行，不为了平均值扫描明细或大范围汇总窗口。
 
-排序索引按页面热点建立：
+排序索引按页面热点建立。当前白名单只优化默认请求量排序、窗口过期清理和 IP 明细定位；成本、Token、错误率、活跃天数、最后使用等低频排序不再各自维护大索引，避免窗口表索引体积随指标数量线性放大。
 
 ```text
-idx_client_ip_range_cost ON client_ip_usage_range_windows(start_date, end_date, total_cost_usd DESC, ip_hash)
-idx_client_ip_range_tokens ON client_ip_usage_range_windows(start_date, end_date, input_tokens DESC, output_tokens DESC, ip_hash)
-idx_client_ip_range_total_tokens ON client_ip_usage_range_windows(start_date, end_date, (input_tokens + output_tokens) DESC, ip_hash)
 idx_client_ip_range_requests ON client_ip_usage_range_windows(start_date, end_date, request_count DESC, ip_hash)
-idx_client_ip_range_error_rate ON client_ip_usage_range_windows(start_date, end_date, (CASE WHEN request_count > 0 THEN CAST(error_count AS REAL) / request_count ELSE 0 END) DESC, ip_hash)
-idx_client_ip_range_active_days ON client_ip_usage_range_windows(start_date, end_date, active_days DESC, ip_hash)
-idx_client_ip_range_last_used ON client_ip_usage_range_windows(start_date, end_date, last_used_at DESC, ip_hash)
 idx_client_ip_range_end ON client_ip_usage_range_windows(end_date)
+idx_client_ip_account_range_requests ON client_ip_account_usage_range_windows(ip_hash, start_date, end_date, request_count DESC, account_id)
 ```
 
 ### client_ip_account_stats_daily

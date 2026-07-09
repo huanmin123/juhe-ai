@@ -31,9 +31,11 @@ if (process.env.JUHE_API_KEY_MANAGEMENT_DRIVER_CHILD === 'postgres') {
 const tempRoot = mkdtempSync(join(tmpdir(), 'juhe-api-key-management-driver-'))
 try {
   process.env.JUHE_AI_RUNTIME_MODE = 'standalone'
+  process.env.JUHE_AI_PROCESS_ROLE = 'db-service'
   process.env.JUHE_AI_DATABASE_DRIVER = 'sqlite'
   process.env.JUHE_AI_CACHE_DRIVER = 'memory'
   process.env.JUHE_AI_RUNTIME_STATE_DRIVER = 'memory'
+  process.env.JUHE_AI_SQLITE_READ_WORKER_POOL_SIZE = '2'
   process.env.JUHE_AI_DATABASE_PATH = join(tempRoot, 'business.sqlite3')
   process.env.JUHE_AI_DATASET_DATABASE_PATH = join(tempRoot, 'dataset.sqlite3')
   process.env.JUHE_AI_USAGE_CATALOG_DATABASE_PATH = join(tempRoot, 'usage-catalog.sqlite3')
@@ -42,6 +44,8 @@ try {
   process.env.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT = join(tempRoot, 'codex-context')
 
   const repositories = await import('../../storage/repositories.js')
+  const { getBusinessDatabase } = await import('../../storage/database.js')
+  getBusinessDatabase()
   await assertApiKeyManagementAsync(repositories)
 
   if (process.env.JUHE_API_KEY_MANAGEMENT_POSTGRES_URL) {
@@ -276,6 +280,12 @@ async function seedActiveGatewayAccountForGroup(
 }
 
 async function closeStorage(): Promise<void> {
+  try {
+    const readWorkerPool = await import('../../storage/sqlite-read-worker-pool.js')
+    await readWorkerPool.closeSqliteReadWorkerPool().catch(() => undefined)
+  } catch {
+    // The regression may fail before the SQLite read worker pool is imported.
+  }
   try {
     const databaseModule = await import('../../storage/database.js')
     databaseModule.closeStorageDatabases()

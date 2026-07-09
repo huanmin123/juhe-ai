@@ -2,9 +2,9 @@
 
 ## 范围
 
-本文记录 Claude Code 作为下游客户端工具接入本项目 Anthropic native 网关时的兼容边界。Claude Code 在这里是客户端画像，不是供应商、协议档案或账户类型。
+本文记录 Claude Code 作为下游客户端工具接入本项目 Anthropic native 网关时的兼容边界。Claude Code 在这里是客户端画像，不是供应商、协议档案或账户类型。OpenAI-compatible 客户端通过混合供应商账户桥接到 Anthropic Messages 时，也可以显式声明该画像，让桥接后的上游请求满足 Claude Code-compatible 代理的风控形态。
 
-本设计只处理 Claude Code 使用本地 API Key 调用本项目，再由本项目调度 Anthropic API Key 账号直连 Anthropic Messages 的路径。Claude Code OAuth、Setup Token、Claude 订阅账号、token exchange、token refresh、TLS 指纹伪装、5h 窗口和会话额度都不纳入本文范围。
+本设计主要处理 Claude Code 使用本地 API Key 调用本项目，再由本项目调度 Anthropic API Key 账号直连 Anthropic Messages 的路径；同时记录显式 OpenAI Chat / Responses -> Anthropic Messages bridge 下的 Claude Code-compatible 请求补齐。Claude Code OAuth、Setup Token、Claude 订阅账号、token exchange、token refresh、TLS 指纹伪装、5h 窗口和会话额度都不纳入本文范围。
 
 ## 结论
 
@@ -35,7 +35,7 @@ $env:CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY = "1"
 x-juhe-client-profile: claude_code
 ```
 
-该 header 只服务网关识别、审计和后续客户端专属策略。真实官方 Claude Code 不会发送这个本地 header；上游请求必须过滤该 header。
+该 header 只服务网关识别、审计和后续客户端专属策略。真实官方 Claude Code 不会发送这个本地 header；上游请求必须过滤该 header。对 opencode 等 OpenAI-compatible 客户端，应通过其 provider 配置的 `options.headers` 发送该 header；顶层 `headers` 配置在 opencode 1.1.11 中不会透传。
 
 抓包或验证模型发现时不要设置会关闭必要请求的粗粒度禁用项；如需降低非必要联网，优先使用 `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1`、`DISABLE_TELEMETRY=1`、`DISABLE_ERROR_REPORTING=1` 等明确开关。
 
@@ -57,7 +57,7 @@ Claude Code 的模型配置支持官方模型 ID，也支持客户端别名。�
 
 - CLI 先发 `HEAD /` 探测根地址，随后发 `POST /v1/messages`；mock 回归里还观察到 `POST /v1/messages?beta=true`。
 - 本地认证使用 `x-api-key`，不带 `Authorization`。
-- 请求头包含 `anthropic-version: 2023-06-01`、`user-agent: claude-cli/2.1.181 (external, sdk-cli)`、`x-claude-code-session-id`，以及多个 `anthropic-beta`，其中包含 `claude-code-20250219`。
+- 请求头包含 `anthropic-version: 2023-06-01`、`user-agent: claude-cli/2.1.201 (external, sdk-cli)`、`x-claude-code-session-id`，以及多个 `anthropic-beta`，其中包含 `claude-code-20250219`、`interleaved-thinking-2025-05-14` 和 `effort-2025-11-24`；部分模型场景还可能由真实 CLI 自带 `mid-conversation-system-2026-04-07`，网关按客户端原值透传合并。
 - 请求体不是最小 Messages：`system` 是数组，`tools` 默认有 3 个，`thinking` 可为 `{ "type": "adaptive" }`，并带 `context_management`、`output_config`、`metadata.user_id`、`max_tokens: 32000` 和大段系统提示。
 - CLI 会发流式请求，也可能补一个非流式请求；本项目应原样透传 Anthropic native JSON / SSE，而不是转换成 OpenAI Responses。
 
@@ -83,7 +83,7 @@ type ClientProfile =
 type AccountClientCompatibility = 'openai_standard' | 'codex_responses'
 ```
 
-Anthropic 账户不展示 Codex Responses 兼容选项。Claude Code 不写入 `accounts.client_compatibility`，也不影响 Anthropic API Key 账号的创建、导入、测试和调度边界；运行时请求侧 `requestClientCompatibility = claude_code` 只用于账号能力筛选和 Anthropic native 请求策略。
+Anthropic 账户不展示 Codex Responses 兼容选项。Claude Code 不写入 `accounts.client_compatibility`，也不影响 Anthropic API Key 账号的创建、导入和调度边界；运行时请求侧 `requestClientCompatibility = claude_code` 只用于账号能力筛选和 Anthropic native 请求策略。账户测试是健康探针例外：Anthropic Messages 账户测试会使用无工具 Claude Code 请求形态，验证这类第三方 Claude Code-compatible 上游能通过测试后进入可调度状态。
 
 ### 识别条件
 
@@ -100,7 +100,7 @@ Anthropic 账户不展示 Codex Responses 兼容选项。Claude Code 不写入 `
 - Anthropic 协议：`generic_anthropic`
 - OpenAI 协议：`generic_openai` 或已有 Codex 精确命中逻辑
 
-`x-juhe-client-profile: claude_code` 和 Claude Code 多信号都只在 Anthropic Messages 协议下生效，对 OpenAI / GPT / Codex 请求无效，不能把 OpenAI 请求升级为 Claude Code。单个 `User-Agent` 或单个 beta header 不足以升级画像，避免把普通 Anthropic SDK 或兼容客户端误判。
+`x-juhe-client-profile: claude_code` 和 Claude Code 多信号只在 Anthropic Messages 目标下生效。原生 Anthropic `/v1/messages` 会识别为 Claude Code 客户端画像；OpenAI Chat / Responses 请求不会在入口层升级为 Claude Code，但当它通过显式混合供应商模型映射桥接到上游 Anthropic Messages 时，可以使用该 header 触发上游 Messages 的 Claude Code-compatible header / query / body 补齐。单个 `User-Agent` 或单个 beta header 不足以升级画像，避免把普通 Anthropic SDK 或兼容客户端误判。
 
 ### 请求侧影响
 
@@ -109,14 +109,15 @@ Claude Code 画像当前只影响：
 - 审计元数据中的 `clientProfile`、`clientProfileSource`、`downstreamProtocol` 和 `upstreamAdapter`。
 - 后续客户端专属策略的门控条件。
 - 本地 header 过滤：`x-juhe-client-profile` 不透传上游。
+- 上游请求头补齐：仅在 `requestClientCompatibility = claude_code`、显式 `x-juhe-client-profile: claude_code` 或官方 CLI 多信号命中时，为目标上游 `POST /v1/messages` 补齐 Claude Code 请求特征。若上游请求缺少或不是 `claude-cli/` User-Agent，补 `claude-cli/2.1.201 (external, sdk-cli)`；`anthropic-beta` 合并 `claude-code-20250219`、`interleaved-thinking-2025-05-14` 和 `effort-2025-11-24`，并保留客户端已有 beta；缺少 `x-claude-code-session-id` 时为本次请求补齐；上游 URL 缺少 `beta=true` 时补齐该查询参数。
 
 它当前不影响：
 
 - Anthropic API Key 上游认证方式。
 - `anthropic-version` 默认值。
-- `anthropic-beta` 注入逻辑。
 - 模型映射、账号候选筛选、并发、代理、分组授权或 API Key 额度。
 - 账号持久状态写入。
+- 请求体语义：真实 Claude Code 带来的 `system`、`tools`、`thinking`、`context_management`、`output_config` 和 `metadata` 原样透传。原生 Anthropic 合成 `claude_code` 画像请求不伪造 Claude Code system prompt、工具 schema 或 thinking body。显式 OpenAI -> Anthropic Messages bridge 是例外：为满足 Claude Code-compatible 代理对上游 body 的风控校验，桥接层会补最小 envelope：`system` 数组前缀、`metadata.user_id`、`thinking: { type: "adaptive" }` 和 `output_config: { effort: "high" }`；不额外伪造 Bash / Edit / Read 等工具列表，opencode / OpenAI function tools 继续按普通 bridge 转成 Anthropic tools，也不覆盖客户端显式 `max_tokens`。如果上游不接受工具字段，错误应原样进入网关上游错误路径。
 
 ### 返回侧影响
 
@@ -133,6 +134,7 @@ Claude Code 当前沿用 Anthropic native 响应透传：
 | 能力 | 落点 | 说明 |
 | --- | --- | --- |
 | 画像识别 | `backend/src/modules/gateway/client-profiles/strategy.ts` | 通过协议档案、显式 header 或真实 Claude Code 多信号识别 `claude_code` |
+| 画像请求补齐 | `backend/src/modules/gateway/protocols/anthropic-v1/client-compatibility.ts`、`backend/src/modules/providers/drivers/_shared/openai-anthropic-bridge.ts` | 原生 Anthropic 只补齐 `User-Agent`、`anthropic-beta`、`x-claude-code-session-id` 和 `?beta=true`；显式 OpenAI -> Anthropic Messages bridge 额外补最小 Claude Code-compatible body envelope，不生成 Claude Code 工具 schema，OpenAI function tools 继续走普通 Anthropic tools 转换 |
 | 本地认证 | `request/pre-auth.ts` | 继续支持 Bearer 和 `x-api-key` 本地 API Key |
 | 上游认证 | `upstream/request.ts` | Anthropic API Key adapter 写入账号 `x-api-key` |
 | 本地画像 header 过滤 | `upstream/request.ts` | `x-juhe-client-profile` 不透传上游 |
@@ -146,7 +148,8 @@ Claude Code 当前沿用 Anthropic native 响应透传：
 - 禁止把 Claude Code OAuth access token 当作 Anthropic API Key 保存。
 - 禁止把 Claude Code 画像写入 `clientCompatibility`。
 - 禁止根据 `authentication_error`、`rate_limit_error`、HTTP 429 / 5xx 或错误文案临时切到 Claude Code 行为。
-- 禁止对所有 Anthropic API Key 请求默认追加 Claude Code 专属 `anthropic-beta`、User-Agent 或伪装 header。
+- 禁止对所有 Anthropic API Key 请求默认追加 Claude Code 专属 `anthropic-beta`、User-Agent 或伪装 header；这些补齐只能在 `claude_code` 画像下触发。
+- 禁止为原生 Anthropic 合成 Claude Code 画像请求伪造 Claude Code system prompt、工具 schema、thinking body 或 OAuth 伪装字段；`x-claude-code-session-id` 只作为画像 header 补齐，不引入持久会话状态。显式 OpenAI -> Anthropic Messages bridge 只允许补最小 body envelope；不允许伪造 Claude Code 工具列表、OAuth 字段、TLS 指纹或订阅账号状态，也不允许为了画像兼容静默丢弃 opencode / OpenAI function tools。
 - 禁止把 Codex 的 `response.failed`、turn 级避让或 Responses 请求体归一化复用给 Claude Code。
 - 禁止在普通 Anthropic native 路径里实现 Claude Code OAuth token refresh。
 
@@ -158,7 +161,10 @@ Claude Code 当前沿用 Anthropic native 响应透传：
 - 未带画像 header 的 Anthropic `/v1/messages` 仍识别为 `generic_anthropic`。
 - OpenAI `/v1/responses` 即使带 `x-juhe-client-profile: claude_code` 也不能识别为 `claude_code`。
 - Claude Code 画像请求上游仍只收到账号 `x-api-key`，不能收到本地 Bearer、下游 `x-api-key` 或 `x-juhe-client-profile`。
-- Anthropic API Key 请求不默认注入 Claude Code 专属 `anthropic-beta` 或 User-Agent。
+- 普通 Anthropic API Key 请求不默认注入 Claude Code 专属 `anthropic-beta` 或 User-Agent。
+- Claude Code 画像请求缺少专属 User-Agent、`anthropic-beta` 或 `?beta=true` 时应在上游请求侧补齐；客户端已有 Claude Code User-Agent 和 beta 时应保留并去重合并。
+- opencode 等 OpenAI-compatible 客户端通过混合供应商账户桥接到 Anthropic Messages 时，`x-juhe-client-profile: claude_code` 应触发上游 `/v1/messages?beta=true`、Claude Code header 和最小 body envelope；未带该 header 的普通桥接不得默认注入 Claude Code 画像。
+- Anthropic 账户测试应使用无工具 Claude Code 健康探针：显式 `x-juhe-client-profile: claude_code`、`x-claude-code-session-id`、`system` 数组、`thinking: { type: "adaptive" }`、`output_config: { effort: "high" }`、`metadata.user_id`、`max_tokens: 32000` 和 `tools: []`；不得伪造 Bash / Edit / Read 工具列表。
 - 账号异常处理仍走统一上游失败、确认、半开、冷却复测和账户错误策略；不得按状态码或错误类型直接判死账号。
 - 官方 Claude Code CLI 抓包作为可选验证项；抓包时必须隔离用户级 Claude settings，否则可能被已有 `ANTHROPIC_BASE_URL` / token 设置覆盖而命中其他上游。
 - 开启模型发现时，本地 `/v1/models` 应返回 Anthropic 形态模型目录；`/v1/messages/count_tokens` 应能通过同一套本地认证和账号调度链路转发。

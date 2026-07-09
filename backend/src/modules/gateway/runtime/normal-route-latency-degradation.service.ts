@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto'
 
 import { createRuntimeStateStore } from '../../../shared/runtime-state-store.js'
 import type { RouteStrategySpeedFirstConfig } from '../../../domain/types.js'
-import { preserveGatewayAccountDispatchPriorityTiers } from './account-dispatch-priority-order.js'
 import { gatewayAccountRuntimeKey, runtimeAccountIdFromKey, type SuppressibleGatewayAccount } from './account-runtime-keys.js'
 import type { GatewayAccountModelPriority } from '../dispatch/model-filter.js'
 
@@ -77,7 +76,7 @@ export async function orderGatewayAccountsByNormalRouteLatencyDegradationAsync<T
   accounts: T[],
   scope: NormalRouteLatencyDegradationScope | undefined,
   config: RouteStrategySpeedFirstConfig | undefined,
-  modelPriority?: GatewayAccountModelPriority
+  _modelPriority?: GatewayAccountModelPriority
 ): Promise<NormalRouteLatencyDegradationOrderResult<T>> {
   if (!scope || !config || accounts.length === 0) {
     return {
@@ -124,9 +123,7 @@ export async function orderGatewayAccountsByNormalRouteLatencyDegradationAsync<T
   }
 
   return {
-    accounts: preserveGatewayAccountDispatchPriorityTiers(accounts, [...normalAccounts, ...degradedAccounts], {
-      modelRankByAccountId: modelPriority?.rankByAccountId
-    }),
+    accounts: [...normalAccounts, ...degradedAccounts],
     applied: true,
     degradedAccountIds,
     bypassedAllDegraded: false

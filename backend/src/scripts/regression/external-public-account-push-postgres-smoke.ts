@@ -6,8 +6,8 @@ import { closeRedisClients } from '../../shared/redis-client.js'
 import { closePostgresPool, getPostgresPool } from '../../storage/postgres-client.js'
 import {
   addPublicApiKeyAsync,
-  addPublicGroup,
-  addPublicWelfareAccount,
+  addPublicGroupAsync,
+  addPublicWelfareAccountAsync,
   deletePublicApiKeyAsync,
   deletePublicGroupAsync,
   deletePublicWelfareAccountAsync,
@@ -41,7 +41,7 @@ let routeStrategyId: string | undefined
 try {
   await cleanupSmokeRows()
 
-  const createdAccount = await addPublicWelfareAccount({
+  const createdAccount = await addPublicWelfareAccountAsync({
     targetUsername,
     targetDisplayName,
     targetGroupName: initialGroupName,
@@ -85,7 +85,7 @@ try {
   assert.equal(updatedAccount.account.name, updatedAccountName, 'PG 公开账号修改应返回新名称')
   assert.equal(updatedAccount.account.status, 'active', 'PG 公开账号修改应更新状态')
 
-  const createdGroup = await addPublicGroup({
+  const createdGroup = await addPublicGroupAsync({
     targetUsername,
     name: extraGroupName,
     providerCode: GPT_VENDOR_CODE,

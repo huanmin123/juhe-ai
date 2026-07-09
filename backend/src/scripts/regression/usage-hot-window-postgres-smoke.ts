@@ -37,7 +37,7 @@ try {
     yieldToEventLoop: async () => {}
   })
   assert.equal(refreshed.skipped, false, '首次 PG 热用量窗口刷新不应跳过')
-  assert.deepEqual(refreshed.stages.map((stage) => stage.name), ['usage_overview_windows'], 'PG 热刷新只应执行轻量概览窗口，范围窗口交给独立低频任务')
+  assert.deepEqual(refreshed.stages.map((stage) => stage.name), ['usage_overview_windows', 'usage_scope_range_windows'], 'PG 热刷新应同时更新概览窗口和今天结束的账号范围窗口')
 
   const overviewRow = await client.one<{ request_count: string | number }>(`
     SELECT request_count
@@ -57,7 +57,18 @@ try {
       AND start_date = ?
       AND end_date = ?
   `, [systemAccountId, accountId, previousEndDate, previousEndDate])
-  assert.equal(Number(previousWindow?.request_count), 99, 'PG 热刷新不应删除范围窗口')
+  assert.equal(Number(previousWindow?.request_count), 99, 'PG 热刷新不应删除历史结束日期范围窗口')
+
+  const todayWindow = await client.one<{ request_count: string | number }>(`
+    SELECT request_count
+    FROM juhe_stats.usage_scope_range_windows
+    WHERE system_account_id = ?
+      AND scope_type = 'account'
+      AND scope_id = ?
+      AND start_date = ?
+      AND end_date = ?
+  `, [systemAccountId, accountId, today, today])
+  assert.equal(Number(todayWindow?.request_count), 11, 'PG 热刷新应发布今天结束的账号范围窗口')
 
   const skipped = await refreshHotUsageWindowSnapshots({
     skipIfUnchanged: true,
@@ -69,6 +80,7 @@ try {
   console.log(JSON.stringify({
     message: '热用量窗口 PG smoke 通过',
     overviewRequestCount: Number(overviewRow?.request_count),
+    todayRangeRequestCount: Number(todayWindow?.request_count),
     skipped: skipped.skipped === true
   }))
 } finally {

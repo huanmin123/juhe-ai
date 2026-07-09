@@ -41,6 +41,7 @@ const snapshotRetentionMaxDays = 30
 const operationLogRetentionMaxDays = 3650
 const publicApiLogRetentionMaxDays = 365
 const modelCheckRetentionMaxDays = 365
+const expiredDeletedAccountCleanupDbServiceTimeoutMs = 60_000
 let postgresDataRetentionDispatchRunning = false
 
 interface PostgresRetentionPolicy {
@@ -384,12 +385,16 @@ function cutoffMonthKey(now: number, retentionMonths: number, timezone: string):
 }
 
 export async function runAuditHotRetentionCleanup(): Promise<void> {
+  if (runtimeConfig.databaseDriver === 'postgres') return
   await cleanupExpiredAuditHotRetentionData()
 }
 
 export async function runExpiredDeletedAccountCleanup(): Promise<void> {
   try {
-    const summary = await requestBackgroundWorkerDbService({ type: 'cleanup_expired_deleted_accounts' })
+    const summary = await requestBackgroundWorkerDbService(
+      { type: 'cleanup_expired_deleted_accounts' },
+      { timeoutMs: expiredDeletedAccountCleanupDbServiceTimeoutMs }
+    )
     if (!summary) {
       throw new Error('DB service 未返回逻辑删除 AI 账户清理结果')
     }

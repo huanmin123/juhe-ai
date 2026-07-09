@@ -18,7 +18,7 @@
     @mobile-refresh="$emit('mobile-refresh')"
   >
     <template #emptyText>
-      <a-empty class="page-empty-card" description="当前条件下没有使用记录。" />
+      <a-empty class="page-empty-card" :description="emptyDescription" />
     </template>
     <template #bodyCell="{ column, record }">
       <template v-if="column.key === 'traceId'">
@@ -140,7 +140,7 @@ import {
 
 type TraceTarget = 'audit' | 'runtime'
 
-defineProps<{
+withDefaults(defineProps<{
   columns: Array<Record<string, any>>
   isManagementView: boolean
   loading: boolean
@@ -149,7 +149,10 @@ defineProps<{
   mobileRecords: UsageRecordSummary[]
   pagination: Record<string, any> | false
   records: UsageRecordSummary[]
-}>()
+  emptyDescription?: string
+}>(), {
+  emptyDescription: '当前条件下没有使用记录。'
+})
 
 const emit = defineEmits<{
   (event: 'change', ...args: unknown[]): void

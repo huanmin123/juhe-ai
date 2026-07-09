@@ -11,8 +11,10 @@ import { runtimeConfig } from '../config/runtime.js'
 import {
   findGroupRowForAccess,
   findGroupRowForAccessAsync,
+  findGroupRowForAccessInClientAsync,
   listGroupOptionRowsForAccess,
   listGroupOptionRowsForAccessAsync,
+  listGroupOptionRowsForAccessInClientAsync,
   listGroupRowsForAccess,
   listGroupRowsForAccessAsync,
   listGroupRowsPageForAccess,
@@ -117,6 +119,10 @@ export async function listGroupOptionsAsync(access?: AccessScope, options?: Grou
   return buildGroupOptionSummariesAsync(await listGroupOptionRowsForAccessAsync(access, options), access)
 }
 
+export async function listGroupOptionsInClientAsync(client: DatabaseClient, access?: AccessScope, options?: GroupOptionListOptions): Promise<GroupOptionSummary[]> {
+  return buildGroupOptionSummariesInClientAsync(client, await listGroupOptionRowsForAccessInClientAsync(client, access, options), access)
+}
+
 export function listAccountGroupOptions(access?: AccessScope, options?: GroupOptionListOptions): AccountGroupOptionSummary[] {
   return listAccountGroupOptionsReadOnly(access, options)
 }
@@ -184,6 +190,11 @@ export async function findGroupSummaryAsync(id: string, access?: AccessScope): P
   return row ? (await buildGroupSummariesAsync([row], access))[0] : undefined
 }
 
+export async function findGroupSummaryInClientAsync(client: DatabaseClient, id: string, access?: AccessScope): Promise<GroupSummary | undefined> {
+  const row = await findGroupRowForAccessInClientAsync(client, access, id)
+  return row ? (await buildGroupSummariesInClientAsync(client, [row], access))[0] : undefined
+}
+
 export function buildGroupOptionSummaries(rows: GroupListRow[], access?: AccessScope): GroupOptionSummary[] {
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   const hasAuthorizedRows = rows.some((row) => row.access_type === 'authorized')
@@ -214,10 +225,14 @@ export function buildGroupOptionSummaries(rows: GroupListRow[], access?: AccessS
 }
 
 export async function buildGroupOptionSummariesAsync(rows: GroupListRow[], access?: AccessScope): Promise<GroupOptionSummary[]> {
+  const client = await getGroupSummaryDatabaseClient()
+  return buildGroupOptionSummariesInClientAsync(client, rows, access)
+}
+
+async function buildGroupOptionSummariesInClientAsync(client: DatabaseClient, rows: GroupListRow[], access?: AccessScope): Promise<GroupOptionSummary[]> {
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   const hasAuthorizedRows = rows.some((row) => row.access_type === 'authorized')
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
-  const client = await getGroupSummaryDatabaseClient()
   const accountNames = shouldIncludeSystemAccountFields || hasAuthorizedRows
     ? await loadSystemAccountNameMapByIdsAsync(client, rows.map((row) => row.system_account_id))
     : new Map<string, string>()
@@ -316,6 +331,17 @@ async function buildGroupSummariesAsync(rows: GroupListRow[], access?: AccessSco
     usageStatsTimezoneAsync(),
     getGroupSummaryDatabaseClient()
   ])
+  return buildGroupSummariesInClientAsync(client, rows, access, options, timezone)
+}
+
+async function buildGroupSummariesInClientAsync(
+  client: DatabaseClient,
+  rows: GroupListRow[],
+  access?: AccessScope,
+  options: BuildGroupSummaryOptions = {},
+  timezoneInput?: string
+): Promise<GroupSummary[]> {
+  const timezone = timezoneInput ?? await usageStatsTimezoneAsync()
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   const includeAccountIds = options.includeAccountIds !== false
   const groupIds = rows.map((row) => row.id)

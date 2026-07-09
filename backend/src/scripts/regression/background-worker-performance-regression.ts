@@ -45,7 +45,7 @@ try {
   const statsDatabase = databaseModule.getStatsDatabase()
   const today = usageStatsRepository.normalizeDefaultUsageStatsRange().endDate
   const dates = usageStatsWindowHelpers.fixedUsageStatsDateKeys(usageStatsHelpers.usageStatsTimezone(), today)
-  const rangeCount = dates.length * (dates.length + 1) / 2
+  const rangeCount = usageStatsWindowHelpers.hotUsageStatsRanges(usageStatsHelpers.usageStatsTimezone(), today).length
   const expectedWindowRows = rangeCount * simulatedScopeCount
   seedUsageStatsDaily(dates)
 
@@ -63,8 +63,8 @@ try {
   const usageLoop = usageMonitor.stop()
   const windowRows = Number((statsDatabase.prepare('SELECT COUNT(*) AS count FROM usage_scope_range_windows').get() as { count?: number }).count ?? 0)
 
-  assert.equal(windowRows, expectedWindowRows, 'usage scope 范围窗口应完整生成模拟数据')
-  assert.ok(yieldCount >= rangeCount * 2, 'usage scope 范围窗口构建和发布都应按日期区间 yield')
+  assert.equal(windowRows, expectedWindowRows, 'usage scope 范围窗口应完整生成热窗口模拟数据')
+  assert.ok(yieldCount >= rangeCount * 2, 'usage scope 范围窗口构建和发布都应按热窗口 yield')
   assert.ok(usageLoop.ticks > 0, 'usage scope 范围窗口刷新期间事件循环应持续推进')
   assert.ok(
     usageLoop.maxGapMs < maxAllowedEventLoopGapMs,

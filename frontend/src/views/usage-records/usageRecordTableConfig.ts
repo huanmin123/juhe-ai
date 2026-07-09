@@ -18,9 +18,9 @@ export function usageRecordTableColumns(input: {
     { title: '状态码', dataIndex: 'statusCode', key: 'statusCode', width: 110 },
     { title: '请求来源', key: 'trafficSource', width: 110 },
     { title: 'Token 用量', key: 'tokens', width: 150 },
-    { title: '成本', key: 'cost', width: 110, sorter: true, sortOrder: input.columnSortOrder('costUsd') },
-    { title: '首 token', dataIndex: 'firstTokenMs', key: 'firstTokenMs', width: 100, sorter: true, sortOrder: input.columnSortOrder('firstTokenMs') },
-    { title: '总耗时', dataIndex: 'durationMs', key: 'durationMs', width: 100, sorter: true, sortOrder: input.columnSortOrder('durationMs') },
+    { title: '成本', key: 'cost', width: 110 },
+    { title: '首 token', dataIndex: 'firstTokenMs', key: 'firstTokenMs', width: 100 },
+    { title: '总耗时', dataIndex: 'durationMs', key: 'durationMs', width: 100 },
     { title: '时间', dataIndex: 'createdAt', key: 'createdAt', width: 180, sorter: true, sortOrder: input.columnSortOrder('createdAt') },
     { title: 'API Key', dataIndex: 'apiKeyName', key: 'apiKey', width: 170 },
     { title: '分组', dataIndex: 'groupName', key: 'group', width: 150 },
@@ -44,8 +44,7 @@ export function normalizeUsageRecordTableSorter(sorter: unknown): { field: Usage
 }
 
 export function usageRecordSortFieldFromColumn(value: unknown): UsageRecordSortField | undefined {
-  if (value === 'cost') return 'costUsd'
-  if (value === 'costUsd' || value === 'firstTokenMs' || value === 'durationMs' || value === 'createdAt') return value
+  if (value === 'createdAt') return value
   return undefined
 }
 

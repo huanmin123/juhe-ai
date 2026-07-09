@@ -72,7 +72,8 @@ assertRoleBlockContainsOnly('ops-worker', [
   'api-key-availability-schedule-status-sync',
   'account-availability-schedule-status-sync',
   'resource-authorization-expiry-sweep',
-  'expired-deleted-account-cleanup'
+  'expired-deleted-account-cleanup',
+  'normal-route-speed-first-recovery-probe'
 ])
 assert(backgroundJobsSource.includes('const localProcessEventLoopSample = buildProcessEventLoopSample()'), 'system-metrics-sample 本地事件循环样本必须使用当前 workerRole')
 

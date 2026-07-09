@@ -98,6 +98,18 @@ export async function listGroupOptionRowsForAccessAsync(access?: AccessScope, op
   return (await queryGroupRowsForAccessAsync(access, pagination, listOptions)).rows
 }
 
+export async function listGroupOptionRowsForAccessInClientAsync(
+  client: DatabaseClient,
+  access?: AccessScope,
+  options?: GroupOptionListOptions
+): Promise<GroupListRow[]> {
+  const listOptions = normalizeGroupOptionListOptions(options)
+  const pagination = options
+    ? { limit: listOptions.pageSize, offset: (listOptions.page - 1) * listOptions.pageSize }
+    : undefined
+  return (await queryGroupRowsForAccessInClientAsync(client, access, pagination, listOptions)).rows
+}
+
 export async function listGroupRowsPageForAccessAsync(access: AccessScope | undefined, options?: GroupListOptions): Promise<GroupRowsPage> {
   const listOptions = normalizeGroupListOptions(options)
   const rows = (await queryGroupRowsForAccessAsync(access, {
@@ -189,6 +201,15 @@ function queryGroupRowsForAccess(access?: AccessScope, pagination?: { limit: num
 
 async function queryGroupRowsForAccessAsync(access?: AccessScope, pagination?: { limit: number; offset: number }, options: Pick<NormalizedGroupListOptions, 'ids' | 'keyword' | 'providerCode' | 'manageableOnly' | 'preferDefault'> = { ids: [], manageableOnly: false, preferDefault: false }): Promise<{ rows: GroupListRow[] }> {
   const client = await getGroupReadDatabaseClient()
+  return queryGroupRowsForAccessInClientAsync(client, access, pagination, options)
+}
+
+async function queryGroupRowsForAccessInClientAsync(
+  client: DatabaseClient,
+  access?: AccessScope,
+  pagination?: { limit: number; offset: number },
+  options: Pick<NormalizedGroupListOptions, 'ids' | 'keyword' | 'providerCode' | 'manageableOnly' | 'preferDefault'> = { ids: [], manageableOnly: false, preferDefault: false }
+): Promise<{ rows: GroupListRow[] }> {
   const groupsTable = groupTable(client, 'groups')
   const resourceAuthorizationsTable = groupTable(client, 'resource_authorizations')
   const groupAuthorizationSettingsTable = groupTable(client, 'group_authorization_settings')
@@ -287,6 +308,10 @@ export function findGroupRowForAccess(access: AccessScope | undefined, groupId: 
 
 export async function findGroupRowForAccessAsync(access: AccessScope | undefined, groupId: string): Promise<GroupListRow | undefined> {
   const client = await getGroupReadDatabaseClient()
+  return findGroupRowForAccessInClientAsync(client, access, groupId)
+}
+
+export async function findGroupRowForAccessInClientAsync(client: DatabaseClient, access: AccessScope | undefined, groupId: string): Promise<GroupListRow | undefined> {
   const groupsTable = groupTable(client, 'groups')
   const resourceAuthorizationsTable = groupTable(client, 'resource_authorizations')
   const groupAuthorizationSettingsTable = groupTable(client, 'group_authorization_settings')

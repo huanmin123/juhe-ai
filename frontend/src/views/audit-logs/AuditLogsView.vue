@@ -120,6 +120,7 @@ import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
 import type {
+  AuditLogListResult,
   AuditLogSummary,
   AuditOutcome,
   AuditTrafficSource
@@ -134,7 +135,7 @@ import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/pr
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
-import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
+import { selectedSystemAccountId } from '@/utils/systemAccountFilter'
 import AuditLogList from './AuditLogList.vue'
 import {
   displayAuditGroupName,
@@ -214,7 +215,7 @@ const defaultAuditLogsPageState = (): AuditLogsPageState => ({
   pagination: { current: 1, pageSize },
   pathFilter: '',
   statusCodeFilter: '',
-  systemAccountFilter: allSystemAccountsValue,
+  systemAccountFilter: '',
   systemAccountSelection: undefined,
   traceIdFilter: '',
   trafficSourceFilter: 'all',
@@ -249,6 +250,7 @@ const {
   resetSearch: resetAccountOptionsSearch
 } = useAuditLogAccountOptions({
   accountSelection,
+  selectedSystemAccountId: () => selectedSystemAccountId(systemAccountFilter.value, true),
   selectedAccountId: () => accountIdFilter.value
 })
 const {
@@ -340,6 +342,11 @@ watch(hotSearchRecords, rememberAuditRecordGroupLabels, { immediate: true })
 watch(detail, (nextDetail) => {
   rememberGroupLabel(nextDetail?.groupId, nextDetail?.groupName)
 })
+watch(systemAccountFilter, () => {
+  accountIdFilter.value = ''
+  accountSelection.value = undefined
+  resetAccountOptionsSearch()
+})
 
 function applyFilters(): void {
   clearRouteTraceIdForManualState()
@@ -350,13 +357,13 @@ function applyFilters(): void {
 function applyPageState(state: AuditLogsPageState): void {
   traceIdFilter.value = state.traceIdFilter
   hotSearchKeywordFilter.value = state.hotSearchKeywordFilter
+  systemAccountFilter.value = state.systemAccountFilter
+  systemAccountSelection.value = state.systemAccountSelection
   accountIdFilter.value = state.accountIdFilter
   accountSelection.value = state.accountSelection
   outcomeFilter.value = state.outcomeFilter
   pathFilter.value = state.pathFilter
   statusCodeFilter.value = state.statusCodeFilter
-  systemAccountFilter.value = state.systemAccountFilter
-  systemAccountSelection.value = state.systemAccountSelection
   trafficSourceFilter.value = state.trafficSourceFilter
   viewMode.value = state.viewMode === 'search' ? 'search' : 'list'
   pagination.current = state.pagination.current
@@ -404,12 +411,25 @@ function resetFilters(): void {
   void loadData()
 }
 
-function fetchRecords(pageState: { current: number; pageSize: number }) {
-  return api.auditLogs.list(auditLogRequestParams(pageState))
+async function fetchRecords(pageState: { current: number; pageSize: number }) {
+  if (!selectedSystemAccountId(systemAccountFilter.value, true)) {
+    return emptyAuditLogListResult(pageState)
+  }
+  return await api.auditLogs.list(auditLogRequestParams(pageState))
 }
 
 function auditLogRequestParams(pageState: { current: number; pageSize: number }) {
   return auditLogListParams(currentFilterValues.value, pageState)
+}
+
+function emptyAuditLogListResult(pageState: { current: number; pageSize: number }): AuditLogListResult {
+  return {
+    items: [],
+    total: 0,
+    hasMore: false,
+    page: pageState.current,
+    pageSize: pageState.pageSize
+  }
 }
 
 function rememberAuditRecordGroupLabels(items: AuditLogSummary[]): void {

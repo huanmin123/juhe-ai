@@ -20,6 +20,10 @@ import {
 } from '../../../../domain/provider-protocol.js'
 import type { DispatchAccountSecret } from '../../../../storage/openai-account-selector.types.js'
 import { isGatewayProtocolNativeRequest } from '../../../gateway/protocols/registry.js'
+import {
+  anthropicClaudeCodePathAndQueryForRequest,
+  applyAnthropicClientCompatibilityHeaders
+} from '../../../gateway/protocols/anthropic-v1/client-compatibility.js'
 import { buildAnthropicUpstreamUrl, buildAnthropicUpstreamUrlsForAccount } from '../../../gateway/protocols/anthropic-v1/route-helpers.js'
 import {
   buildOpenAIModelMappedJsonBody,
@@ -116,7 +120,9 @@ export const anthropicProviderDriver: ProviderDriver = {
     }
     const bridgePath = openAIToAnthropicBridgeUpstreamPath(req)
     if (account.type === 'api_key' && bridgePath && shouldUseOpenAIToAnthropicBridge(req, account)) {
-      return [buildAnthropicUpstreamUrl(account.baseUrl, bridgePath)]
+      return [buildAnthropicUpstreamUrl(account.baseUrl, anthropicClaudeCodePathAndQueryForRequest(req, bridgePath, {
+        targetPathAndQuery: bridgePath
+      }))]
     }
     return buildAnthropicUpstreamUrlsForAccount(account, req)
   },
@@ -131,6 +137,9 @@ export const anthropicProviderDriver: ProviderDriver = {
     if (betaHeader) {
       headers.set('anthropic-beta', betaHeader)
     }
+    applyAnthropicClientCompatibilityHeaders(req, headers, {
+      requestClientCompatibility: context?.requestClientCompatibility
+    })
     if (!headers.get('content-type') && req.method !== 'GET' && req.method !== 'HEAD') {
       headers.set('content-type', 'application/json')
     }
@@ -151,11 +160,18 @@ export const anthropicProviderDriver: ProviderDriver = {
     }
     if (shouldUseOpenAIToAnthropicBridge(req, account)) {
       prepareOpenAIToAnthropicBridgeHeaders(headers, req)
+      const bridgePath = openAIToAnthropicBridgeUpstreamPath(req)
+      applyAnthropicClientCompatibilityHeaders(req, headers, {
+        requestClientCompatibility: context?.requestClientCompatibility,
+        targetPathAndQuery: bridgePath
+      })
       return {
         headers,
         body: await buildOpenAIToAnthropicBridgeBody(req, {
           guidanceProviderName: guidanceProviderNameForAccount(account),
           modelOverride: openAIToAnthropicBridgeUpstreamModel(req, account),
+          requestClientCompatibility: context?.requestClientCompatibility,
+          targetPathAndQuery: bridgePath,
           fileResolver: openAICompatibleFilesResolverForGatewayRequest(req),
           fileSearchExecutor: openAICompatibleFileSearchExecutorForGatewayRequest(req),
           codeInterpreterExecutor: openAICompatibleCodeInterpreterExecutorForGatewayRequest(req),

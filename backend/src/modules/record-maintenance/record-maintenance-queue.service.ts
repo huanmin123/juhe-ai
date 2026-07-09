@@ -100,6 +100,9 @@ const recordMaintenanceRedisStreamKey = 'juhe-ai:queue:record-maintenance'
 const recordMaintenanceRedisStreamGroup = 'juhe-ai:record-maintenance-writers'
 const recordMaintenanceRedisConsumerErrorRetryMs = 1000
 const recordMaintenanceRedisStopWaitMs = 2000
+const auditRetainedDataCleanupBatchPauseMs = 10
+const auditRetainedDataCleanupBatchSizeLimit = 100
+const auditRetainedDataCleanupMaxBatchesLimit = 3
 const minimumUsageRecordCleanupAgeMs = 24 * 60 * 60 * 1000
 
 export interface RecordMaintenanceEnqueueResult {
@@ -638,6 +641,16 @@ function spawnTemporaryMaintenanceWorker(runId: string, job: RecordMaintenanceJo
       ...process.env,
       JUHE_AI_PROCESS_ROLE: 'worker',
       JUHE_AI_WORKER_ROLE: 'temporary-maintenance-worker',
+      JUHE_AI_RUNTIME_MODE: runtimeConfig.runtimeMode,
+      JUHE_AI_DATABASE_DRIVER: runtimeConfig.databaseDriver,
+      JUHE_AI_CACHE_DRIVER: runtimeConfig.cacheDriver,
+      JUHE_AI_RUNTIME_STATE_DRIVER: runtimeConfig.runtimeStateDriver,
+      JUHE_AI_QUEUE_DRIVER: runtimeConfig.queueDriver,
+      JUHE_AI_POSTGRES_URL: runtimeConfig.postgres.url,
+      JUHE_AI_REDIS_CACHE_URL: runtimeConfig.redis.cacheUrl,
+      JUHE_AI_REDIS_STATE_URL: runtimeConfig.redis.stateUrl,
+      JUHE_AI_REDIS_QUEUE_URL: runtimeConfig.redis.queueUrl,
+      JUHE_AI_REDIS_NAMESPACE: runtimeConfig.redis.namespace,
       JUHE_AI_DATABASE_PATH: runtimeConfig.databasePath,
       JUHE_AI_DATASET_DATABASE_PATH: runtimeConfig.datasetDatabasePath,
       JUHE_AI_USAGE_CATALOG_DATABASE_PATH: usageCatalogDatabasePath(),
@@ -915,10 +928,11 @@ async function cleanupUsageRecordsBefore(input: { cutoffAt: string; batchSize: n
     deletedRows += batch.deletedRows
     hasMore = batch.hasMore
     blockedReason = batch.blockedReason ?? blockedReason
-    if (batch.deletedRows > 0) {
+    const changed = batch.deletedRows > 0 || Number(batch.droppedPartitions ?? 0) > 0
+    if (changed) {
       batches += 1
     }
-    if (batch.deletedRows === 0 || !batch.hasMore) {
+    if (!changed || !batch.hasMore) {
       break
     }
   }
@@ -1012,8 +1026,8 @@ async function cleanupAuditRetainedData(input: Extract<RecordMaintenanceJob, { t
   let auditLogs = 0
   let batches = 0
   let hasMore = false
-  const batchSize = positiveBatchSize(input.batchSize)
-  const maxBatches = normalizeMaxBatches(input.maxBatches)
+  const batchSize = Math.min(positiveBatchSize(input.batchSize), auditRetainedDataCleanupBatchSizeLimit)
+  const maxBatches = Math.min(normalizeMaxBatches(input.maxBatches), auditRetainedDataCleanupMaxBatchesLimit)
   for (let index = 0; index < maxBatches; index += 1) {
     const deleted = await cleanupAuditLogsByRetentionAsync({
       successHotCutoffCreatedAt: cutoffHoursIso(nowMs, input.successHotRetentionHours),
@@ -1031,6 +1045,7 @@ async function cleanupAuditRetainedData(input: Extract<RecordMaintenanceJob, { t
     if (deleted < batchSize) {
       break
     }
+    await delay(auditRetainedDataCleanupBatchPauseMs)
   }
   return {
     nowAt: input.nowAt,

@@ -24,6 +24,7 @@ import {
 } from '../../modules/gateway/protocols/anthropic-v1/response-semantics.js'
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
 import { logger } from '../../shared/logger.js'
+import { closeSqliteReadWorkerPool } from '../../storage/sqlite-read-worker-pool.js'
 
 interface AnthropicUpstreamHit {
   rawUrl: string
@@ -31,9 +32,11 @@ interface AnthropicUpstreamHit {
   method: string
   authorization: string
   xApiKey: string
+  userAgent: string
   clientProfileHeader: string
   anthropicVersion: string
   anthropicBeta: string
+  claudeCodeSessionId: string
   bodyText: string
 }
 
@@ -52,7 +55,8 @@ const tempRoot = resolve(tmpdir(), `juhe-ai-anthropic-gateway-mock-ai-${Date.now
 runtimeConfig.databasePath = join(tempRoot, 'anthropic-gateway-mock-ai.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
-runtimeConfig.secret = 'anthropic-gateway-mock-ai-secret'
+// Do not override runtimeConfig.secret here: crypto.ts captures the initial secret during module import,
+// and SQLite read workers receive runtimeConfig.secret through env.
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'db-service'
@@ -160,7 +164,10 @@ try {
     await assertAnthropicGroupRejectsOpenAIResponses(baseUrl, apiKey.key)
     assertAnthropicSignatureDeltaIsNotOutput()
     if (truthyEnv('JUHE_RUN_CLAUDE_CODE_CLI_MOCK')) {
-      await assertOfficialClaudeCodeCliMockCapture(baseUrl, apiKey.key)
+      await assertOfficialClaudeCodeCliMockCapture(baseUrl, upstreamBaseUrl)
+    }
+    if (truthyEnv('JUHE_RUN_REAL_ANTHROPIC_UPSTREAM')) {
+      await assertRealAnthropicGatewayViaClaudeCode(baseUrl)
     }
 
     console.log('anthropic gateway mock ai regression passed')
@@ -175,7 +182,8 @@ try {
   auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   databaseModule.closeStorageDatabases()
-  rmSync(tempRoot, { recursive: true, force: true })
+  await closeSqliteReadWorkerPool()
+  await removeTempRootForTest(tempRoot)
 }
 
 function assertAnthropicSignatureDeltaIsNotOutput(): void {
@@ -209,14 +217,40 @@ function withFixtureProfile<Input extends { providerCode?: string; providerProto
   }
 }
 
-async function assertOfficialClaudeCodeCliMockCapture(baseUrl: string, localApiKey: string): Promise<void> {
+async function assertOfficialClaudeCodeCliMockCapture(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
+  const expectedUpstreamApiKey = 'sk-ant-claude-cli'
+  const group = repositories.createGroup({
+    name: 'Claude Code CLI 抓包隔离分组',
+    providerCode: ANTHROPIC_PROVIDER_CODE,
+    enabled: true
+  }, access)
+  repositories.createAccount({
+    providerCode: ANTHROPIC_PROVIDER_CODE,
+    name: 'Claude Code CLI 抓包隔离账户',
+    type: 'api_key',
+    credentials: {
+      api_key: expectedUpstreamApiKey,
+      base_url: upstreamBaseUrl,
+      supported_endpoint_modes: ['messages_json', 'messages_sse', 'message_token_counting']
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true
+  }, access)
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
+    name: 'Claude Code CLI 抓包隔离 Key',
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+    status: 'active'
+  }, access)
+  assert(apiKey.key, 'Claude Code CLI 抓包隔离 API Key 未返回明文密钥')
+
   upstreamHits.length = 0
   gatewayIncomingHits.length = 0
   let output: string
   try {
     output = await runClaudeCodeCli({
       gatewayBaseUrl: baseUrl,
-      localApiKey,
+      localApiKey: apiKey.key,
       model: 'claude-haiku-4-5',
       prompt: 'Reply with exactly: anthropic json ok'
     })
@@ -227,11 +261,12 @@ async function assertOfficialClaudeCodeCliMockCapture(baseUrl: string, localApiK
   const incomingMessages = gatewayIncomingHits.filter((hit) => hit.path.split('?', 1)[0].endsWith('/messages'))
   assert(incomingMessages.length > 0, 'Claude Code CLI 应命中本地 /v1/messages')
   assert(incomingMessages.some((hit) => hit.authorizationPresent || hit.xApiKeyPresent), 'Claude Code CLI 请求应携带本地网关 API Key')
-  const upstreamMessages = upstreamHits.filter((hit) => hit.path === '/v1/messages')
+  const upstreamMessages = upstreamHits.filter((hit) => hit.path === '/v1/messages' && hit.xApiKey === expectedUpstreamApiKey)
   assert(upstreamMessages.length > 0, 'Claude Code CLI 应通过网关命中 Anthropic mock /v1/messages')
   assert(upstreamMessages.some((hit) => hit.rawUrl === '/v1/messages?beta=true'), '网关转发 Claude Code CLI 请求时应保留 ?beta=true 查询参数')
-  assert(upstreamMessages.every((hit) => hit.xApiKey === 'sk-ant-upstream'), '网关转发 Claude Code CLI 请求时应使用上游 Anthropic API Key')
+  assert(upstreamMessages.every((hit) => hit.xApiKey === expectedUpstreamApiKey), '网关转发 Claude Code CLI 请求时应使用隔离账户的上游 Anthropic API Key')
   assert(upstreamMessages.every((hit) => hit.authorization === ''), '网关转发 Anthropic 请求时不应透传客户端 Authorization')
+  assert(upstreamMessages.every((hit) => hit.userAgent.startsWith('claude-cli/')), '网关转发真实 Claude Code CLI 请求时应保留客户端 User-Agent')
   console.log(JSON.stringify({
     claudeCodeCliMockCapture: {
       output: output.trim().slice(0, 300),
@@ -251,9 +286,72 @@ async function assertOfficialClaudeCodeCliMockCapture(baseUrl: string, localApiK
         method: hit.method,
         xApiKey: hit.xApiKey,
         authorizationPresent: Boolean(hit.authorization),
+        userAgent: hit.userAgent,
         anthropicVersion: hit.anthropicVersion,
         anthropicBeta: hit.anthropicBeta,
         bodyBytes: Buffer.byteLength(hit.bodyText, 'utf8')
+      }))
+    }
+  }, null, 2))
+}
+
+async function assertRealAnthropicGatewayViaClaudeCode(baseUrl: string): Promise<void> {
+  const upstreamApiKey = process.env.JUHE_REAL_ANTHROPIC_API_KEY?.trim()
+  assert(upstreamApiKey, '真实 Anthropic 上游 smoke 需要 JUHE_REAL_ANTHROPIC_API_KEY')
+  const upstreamBaseUrl = process.env.JUHE_REAL_ANTHROPIC_BASE_URL?.trim() || 'https://www.micuapi.ai'
+  const model = process.env.JUHE_REAL_ANTHROPIC_MODEL?.trim() || 'claude-sonnet-4-6'
+  const expectedText = process.env.JUHE_REAL_ANTHROPIC_EXPECTED_TEXT?.trim() || 'juhe gateway micu ok'
+  const group = repositories.createGroup({
+    name: 'Anthropic 真实上游 smoke 分组',
+    providerCode: ANTHROPIC_PROVIDER_CODE,
+    enabled: true
+  }, access)
+  repositories.createAccount({
+    providerCode: ANTHROPIC_PROVIDER_CODE,
+    name: 'Anthropic 真实上游 smoke 账户',
+    type: 'api_key',
+    credentials: {
+      api_key: upstreamApiKey,
+      base_url: upstreamBaseUrl,
+      supported_endpoint_modes: ['messages_json', 'messages_sse', 'message_token_counting']
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true
+  }, access)
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
+    name: 'Anthropic 真实上游 smoke Key',
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+    status: 'active'
+  }, access)
+  assert(apiKey.key, 'Anthropic 真实上游 smoke API Key 未返回明文密钥')
+
+  gatewayIncomingHits.length = 0
+  const output = await runClaudeCodeCli({
+    gatewayBaseUrl: baseUrl,
+    localApiKey: apiKey.key,
+    model,
+    prompt: `Reply exactly: ${expectedText}`
+  })
+  assert.match(output, new RegExp(escapeRegExp(expectedText)), `真实上游 smoke 应返回预期文本，实际输出：${output.slice(0, 500)}`)
+  const incomingMessages = gatewayIncomingHits.filter((hit) => hit.path.split('?', 1)[0].endsWith('/messages'))
+  assert(incomingMessages.length > 0, '真实上游 smoke 应通过本地网关收到 Claude Code /v1/messages 请求')
+  assert(incomingMessages.some((hit) => hit.xApiKeyPresent), '真实上游 smoke 的 Claude Code 请求应携带本地网关 x-api-key')
+  assert(incomingMessages.some((hit) => hit.userAgent?.startsWith('claude-cli/')), '真实上游 smoke 应由真实 Claude Code CLI 发起')
+  console.log(JSON.stringify({
+    realAnthropicGatewaySmoke: {
+      upstreamBaseUrl,
+      model,
+      output: output.trim().slice(0, 300),
+      incomingRequests: incomingMessages.map((hit) => ({
+        path: hit.path,
+        method: hit.method,
+        authorizationPresent: hit.authorizationPresent,
+        xApiKeyPresent: hit.xApiKeyPresent,
+        userAgent: hit.userAgent,
+        anthropicVersion: hit.anthropicVersion,
+        anthropicBeta: hit.anthropicBeta,
+        bodySummary: hit.bodySummary
       }))
     }
   }, null, 2))
@@ -279,6 +377,7 @@ function summarizeUpstreamHitForError(hit: AnthropicUpstreamHit): Record<string,
     method: hit.method,
     xApiKey: hit.xApiKey,
     authorizationPresent: Boolean(hit.authorization),
+    userAgent: hit.userAgent,
     anthropicVersion: hit.anthropicVersion,
     anthropicBeta: hit.anthropicBeta,
     bodyBytes: Buffer.byteLength(hit.bodyText, 'utf8')
@@ -419,8 +518,14 @@ async function assertClaudeCodeClientProfileHeader(baseUrl: string, localApiKey:
   assertAnthropicUpstreamHit(upstreamHits[0], {
     path: '/v1/messages',
     method: 'POST',
-    bodyIncludes: 'hello claude code profile'
+    bodyIncludes: 'hello claude code profile',
+    rawUrl: '/v1/messages?beta=true',
+    userAgent: /^claude-cli\/2\.1\.201 \(external, sdk-cli\)$/,
+    anthropicBeta: 'claude-code-20250219,interleaved-thinking-2025-05-14,effort-2025-11-24',
+    expectsClaudeCodeSession: true
   })
+  assert(!upstreamHits[0].bodyText.includes('"tools"'), '合成 Claude Code 画像不应伪造工具 schema')
+  assert(!upstreamHits[0].bodyText.includes('"thinking"'), '合成 Claude Code 画像不应伪造 thinking 请求体')
 }
 
 async function assertAnthropicBetaHeaderForwardsClientValue(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
@@ -564,13 +669,23 @@ async function assertAnthropicCountTokensUnsupportedDoesNotPoisonMessages(baseUr
   assert(upstreamHits.some((hit) => hit.path === '/v1/messages/count_tokens' && hit.xApiKey === 'sk-ant-count-unsupported'), 'Count Tokens 不支持场景应先命中 mock 上游 404')
 
   upstreamHits.length = 0
-  const messageResult = await postAnthropicMessage(baseUrl, apiKey.key, 'messages should still work after unsupported count_tokens')
+  const prompt = 'messages should still work after unsupported count_tokens'
+  const messageResult = await postAnthropicMessage(baseUrl, apiKey.key, prompt)
   assert.equal(messageResult.status, 200, `count_tokens 不支持不应污染账号健康，普通 messages 应继续成功，实际 HTTP ${messageResult.status}: ${messageResult.text}`)
-  assert.equal(upstreamHits.length, 1, 'count_tokens 不支持后普通 messages 应继续调度同一账户')
-  assertAnthropicUpstreamHit(upstreamHits[0], {
+  const currentMessageHits = upstreamHits.filter((hit) => (
+    hit.path === '/v1/messages'
+    && hit.xApiKey === 'sk-ant-count-unsupported'
+    && hit.bodyText.includes(prompt)
+  ))
+  assert.equal(
+    currentMessageHits.length,
+    1,
+    `count_tokens 不支持后普通 messages 应继续调度同一账户；upstream=${JSON.stringify(upstreamHits.map(summarizeUpstreamHitForError))}`
+  )
+  assertAnthropicUpstreamHit(currentMessageHits[0], {
     path: '/v1/messages',
     method: 'POST',
-    bodyIncludes: 'messages should still work after unsupported count_tokens',
+    bodyIncludes: prompt,
     xApiKey: 'sk-ant-count-unsupported'
   })
 }
@@ -623,13 +738,23 @@ async function assertAnthropicModelNotFoundDoesNotPoisonMessages(baseUrl: string
   )
 
   upstreamHits.length = 0
-  const messageResult = await postAnthropicMessage(baseUrl, apiKey.key, 'messages should still work after model_not_found')
+  const prompt = 'messages should still work after model_not_found'
+  const messageResult = await postAnthropicMessage(baseUrl, apiKey.key, prompt)
   assert.equal(messageResult.status, 200, `model_not_found 不应污染账号健康，普通 messages 应继续成功，实际 HTTP ${messageResult.status}: ${messageResult.text}`)
-  assert.equal(upstreamHits.length, 1, 'model_not_found 后普通 messages 应继续调度同一账户')
-  assertAnthropicUpstreamHit(upstreamHits[0], {
+  const currentMessageHits = upstreamHits.filter((hit) => (
+    hit.path === '/v1/messages'
+    && hit.xApiKey === 'sk-ant-model-not-found'
+    && hit.bodyText.includes(prompt)
+  ))
+  assert.equal(
+    currentMessageHits.length,
+    1,
+    `model_not_found 后普通 messages 应继续调度同一账户；upstream=${JSON.stringify(upstreamHits.map(summarizeUpstreamHitForError))}`
+  )
+  assertAnthropicUpstreamHit(currentMessageHits[0], {
     path: '/v1/messages',
     method: 'POST',
-    bodyIncludes: 'messages should still work after model_not_found',
+    bodyIncludes: prompt,
     xApiKey: 'sk-ant-model-not-found'
   })
 }
@@ -1211,8 +1336,7 @@ function runClaudeCodeCli(input: {
     '--model',
     input.model,
     '--max-budget-usd',
-    '1',
-    input.prompt
+    '1'
   ]
   const command = process.platform === 'win32' ? process.env.ComSpec || 'cmd.exe' : 'npx'
   const args = process.platform === 'win32'
@@ -1255,7 +1379,7 @@ function runClaudeCodeCli(input: {
     }, 120_000)
     child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk))
     child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk))
-    child.stdin.end()
+    child.stdin.end(`${input.prompt}\n`)
     child.on('error', (error) => {
       clearTimeout(timeout)
       rejectOnce(error)
@@ -1297,26 +1421,71 @@ function sanitizeSecretText(value: string): string {
   return value.replace(/sk-[A-Za-z0-9_-]+/g, 'sk-***')
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
 function truthyEnv(name: string): boolean {
   const value = process.env[name]
   return value !== undefined && ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase())
 }
 
+async function removeTempRootForTest(path: string): Promise<void> {
+  const maxAttempts = 30
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      rmSync(path, { recursive: true, force: true })
+      return
+    } catch (error) {
+      if (!isWindowsTempCleanupBusyError(error) || attempt >= maxAttempts) {
+        console.warn(`Anthropic mock 回归临时目录清理失败: ${error instanceof Error ? error.message : String(error)}`)
+        return
+      }
+      await sleep(200)
+    }
+  }
+}
+
+function isWindowsTempCleanupBusyError(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && (error as { code?: unknown }).code === 'EBUSY'
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms))
+}
+
 function assertAnthropicUpstreamHit(hit: AnthropicUpstreamHit | undefined, input: {
+  rawUrl?: string
   path: string
   method: string
   bodyIncludes: string
   xApiKey?: string
   anthropicBeta?: string
+  userAgent?: string | RegExp
+  expectsClaudeCodeSession?: boolean
 }): void {
   assert(hit, '缺少 Anthropic mock 上游命中记录')
+  if (input.rawUrl !== undefined) {
+    assert.equal(hit.rawUrl, input.rawUrl)
+  }
   assert.equal(hit.path, input.path)
   assert.equal(hit.method, input.method)
   assert.equal(hit.xApiKey, input.xApiKey ?? 'sk-ant-upstream', '上游 x-api-key 应替换为账户 API Key')
   assert.equal(hit.authorization, '', 'Anthropic 上游不应收到本地 Authorization/Bearer')
   assert.equal(hit.clientProfileHeader, '', 'Anthropic 上游不应收到本地客户端画像 header')
   assert.equal(hit.anthropicVersion, '2023-06-01', '缺省 Anthropic-Version 应按官方默认版本补齐')
-  assert.equal(hit.anthropicBeta, input.anthropicBeta ?? '', 'Anthropic beta 头只应透传客户端显式 header')
+  assert.equal(hit.anthropicBeta, input.anthropicBeta ?? '', 'Anthropic beta 头应按当前画像边界处理')
+  if (input.expectsClaudeCodeSession) {
+    assert.notEqual(hit.claudeCodeSessionId, '', 'Claude Code 画像请求应补齐上游 session header')
+  }
+  if (input.userAgent instanceof RegExp) {
+    assert.match(hit.userAgent, input.userAgent, '上游 User-Agent 不符合预期')
+  } else if (input.userAgent !== undefined) {
+    assert.equal(hit.userAgent, input.userAgent, '上游 User-Agent 不符合预期')
+  }
   assert.match(hit.bodyText, new RegExp(input.bodyIncludes.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
 }
 
@@ -1350,9 +1519,11 @@ function createAnthropicMockUpstream(): http.Server {
         method: req.method ?? '',
         authorization: String(req.headers.authorization ?? ''),
         xApiKey: String(req.headers['x-api-key'] ?? ''),
+        userAgent: String(req.headers['user-agent'] ?? ''),
         clientProfileHeader: String(req.headers[gatewayClientProfileHeader] ?? ''),
         anthropicVersion: String(req.headers['anthropic-version'] ?? ''),
         anthropicBeta: String(req.headers['anthropic-beta'] ?? ''),
+        claudeCodeSessionId: String(req.headers['x-claude-code-session-id'] ?? ''),
         bodyText
       })
       if (path === '/v1/messages/count_tokens') {

@@ -2,6 +2,7 @@ import type { Request } from 'express'
 
 import type { OpenAIAccountSecret } from '../../../../storage/repositories.js'
 import type { ProviderModelCatalogItem } from '../../../model-pricing/model-catalog.service.js'
+import { anthropicClaudeCodePathAndQueryForRequest } from './client-compatibility.js'
 
 export type AnthropicUpstreamAccount = OpenAIAccountSecret
 
@@ -26,7 +27,7 @@ export function buildAnthropicUpstreamUrlsForAccount(account: AnthropicUpstreamA
   if (!isSupportedAnthropicRequest(req)) {
     return []
   }
-  return [buildAnthropicUpstreamUrl(account.baseUrl, req.originalUrl)]
+  return [buildAnthropicUpstreamUrl(account.baseUrl, anthropicClaudeCodePathAndQueryForRequest(req))]
 }
 
 export function buildAnthropicUpstreamUrl(baseUrl: string, pathAndQuery: string): string {

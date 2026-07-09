@@ -16,6 +16,19 @@ assert.match(recordMaintenanceQueueSource, /background_worker_db_service_request
 assert.match(recordMaintenanceQueueSource, /await spawnTemporaryMaintenanceWorker\(run\.runId, job\)/, 'Redis Stream 数据维护消息必须等临时 worker 成功退出后才能 ACK')
 assert.match(recordMaintenanceQueueSource, /function spawnTemporaryMaintenanceWorker[\s\S]*Promise<void>[\s\S]*child\.once\('exit'[\s\S]*code === 0[\s\S]*settle\(\)[\s\S]*settle\(new Error/, '临时维护 worker 非 0 退出必须让父任务失败，消息保持 pending 等待重投')
 assert.match(recordMaintenanceQueueSource, /job\.type === 'usage_records_cleanup' \|\| job\.type === 'non_business_data_cleanup' \|\| job\.type === 'audit_retained_data_cleanup'/, '使用记录清理、非业务数据清理和审计保留清理必须走临时维护 worker，不能阻塞主 ingest-worker 消费')
+for (const token of [
+  'JUHE_AI_RUNTIME_MODE: runtimeConfig.runtimeMode',
+  'JUHE_AI_DATABASE_DRIVER: runtimeConfig.databaseDriver',
+  'JUHE_AI_CACHE_DRIVER: runtimeConfig.cacheDriver',
+  'JUHE_AI_RUNTIME_STATE_DRIVER: runtimeConfig.runtimeStateDriver',
+  'JUHE_AI_QUEUE_DRIVER: runtimeConfig.queueDriver',
+  'JUHE_AI_POSTGRES_URL: runtimeConfig.postgres.url',
+  'JUHE_AI_REDIS_CACHE_URL: runtimeConfig.redis.cacheUrl',
+  'JUHE_AI_REDIS_STATE_URL: runtimeConfig.redis.stateUrl',
+  'JUHE_AI_REDIS_QUEUE_URL: runtimeConfig.redis.queueUrl'
+]) {
+  assert(recordMaintenanceQueueSource.includes(token), `临时维护 worker 子进程必须显式继承运行驱动配置：${token}`)
+}
 assert.match(temporaryMaintenanceWorkerSource, /job\.type === 'usage_records_cleanup' \|\| job\.type === 'non_business_data_cleanup' \|\| job\.type === 'audit_retained_data_cleanup'/, '临时维护 worker runner 必须允许审计保留清理任务')
 
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')

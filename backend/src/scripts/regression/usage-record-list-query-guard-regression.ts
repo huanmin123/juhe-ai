@@ -44,10 +44,11 @@ interface UsageRecordListResult {
   hasMore: boolean
   page: number
   pageSize: number
+  requiresSystemAccountSelection?: boolean
 }
 
 try {
-  const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
+  const access = { systemAccountId: 'sys_admin', role: 'admin' as const, systemAccountFilterId: 'sys_admin' }
   const group = repositories.createGroup({
     name: '使用记录查询防护分组',
     providerCode: 'gpt',
@@ -438,7 +439,7 @@ try {
     /lower\(accounts\.name\)/,
     'PG 使用记录账号关键词预解析不能折叠账号名称大小写'
   )
-  const postgresListRowsFunction = usageRecordsRepositorySource.match(/async function loadUsageRecordRowsByEntriesAsync[\s\S]*?\n}\n\nfunction listUsageRecordRowsFromShards/)?.[0] ?? ''
+  const postgresListRowsFunction = usageRecordsRepositorySource.match(/async function listPostgresUsageRecordRows[\s\S]*?\n}\n\nfunction listUsageRecordRowsFromShards/)?.[0] ?? ''
   assert.doesNotMatch(postgresListRowsFunction, /SELECT\s+ur\.\*/i, 'PG 使用记录列表回表不应 SELECT ur.* 拉取详情快照大字段')
   assert.doesNotMatch(postgresListRowsFunction, /request_snapshot_json|response_snapshot_json/i, 'PG 使用记录列表不应读取请求或响应快照字段')
   const businessSchemaSource = readFileSync(resolve('src/storage/schema/business-schema.ts'), 'utf8')
@@ -499,41 +500,45 @@ try {
     ORDER BY source_accounts.name ASC, instance_accounts.id ASC
     LIMIT ?
   `, ['授权使用记录账户A', '授权使用记录账户A\uffff', grantee.id, 10], ['idx_accounts_authorization_instance_source_owner_lookup', 'idx_accounts_authorization_instance_source'])
-  assertDatasetQueryPlanUsesIndex(`
-    SELECT usage_id
-    FROM usage_record_shard_entries ue
-    WHERE ue.trace_id >= ? AND ue.trace_id < ?
-    ORDER BY ue.created_at DESC, ue.usage_id DESC
-    LIMIT ?
-  `, ['trace-usage-list-query-guard-', 'trace-usage-list-query-guard-\uffff', 10], 'idx_usage_record_shard_entries_trace_created_sort')
-  assertDatasetQueryPlanUsesIndex(`
-    SELECT usage_id
-    FROM usage_record_shard_entries ue
-    WHERE ue.system_account_id = ? AND ue.trace_id >= ? AND ue.trace_id < ?
-    ORDER BY ue.created_at DESC, ue.usage_id DESC
-    LIMIT ?
-  `, ['sys_admin', 'trace-usage-list-query-guard-', 'trace-usage-list-query-guard-\uffff', 10], 'idx_usage_record_shard_entries_system_trace_created_sort')
+  const usageCatalogSchemaSource = readFileSync(resolve('src/storage/schema/usage-catalog-schema.ts'), 'utf8')
+  assert.doesNotMatch(
+    usageCatalogSchemaSource,
+    /CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_trace_created_sort\b/,
+    '使用记录目录库不应继续创建全局 trace 索引'
+  )
+  assert.match(
+    usageCatalogSchemaSource,
+    /idx_usage_record_shard_entries_system_trace_created_sort/,
+    '使用记录目录库只保留用户维度 trace 兜底索引'
+  )
+  const usageShardSource = readFileSync(resolve('src/storage/usage-record-shards.ts'), 'utf8')
+  for (const obsoleteIndex of [
+    'idx_usage_records_model_created_sort',
+    'idx_usage_records_client_ip_created_sort',
+    'idx_usage_records_first_token_sort',
+    'idx_usage_records_duration_sort',
+    'idx_usage_records_cost_sort'
+  ]) {
+    assert.doesNotMatch(
+      usageShardSource,
+      new RegExp(`CREATE INDEX IF NOT EXISTS ${obsoleteIndex}\\b`),
+      `usage_records 不应继续创建 ${obsoleteIndex}`
+    )
+  }
   assertQueryPlanUsesIndex(`
     SELECT id
     FROM usage_records ur
-    WHERE ur.model = ?
+    WHERE ur.system_account_id = ? AND ur.trace_id >= ? AND ur.trace_id < ?
     ORDER BY ur.created_at DESC, ur.id DESC
     LIMIT ?
-  `, ['gpt-5.5', 10], 'idx_usage_records_model_created_sort')
+  `, ['sys_admin', 'trace-usage-list-query-guard-', 'trace-usage-list-query-guard-\uffff', 10], 'idx_usage_records_system_account_trace_created_sort')
   assertQueryPlanUsesIndex(`
     SELECT id
     FROM usage_records ur
     WHERE ur.system_account_id = ? AND ur.model = ?
     ORDER BY ur.created_at DESC, ur.id DESC
     LIMIT ?
-  `, ['sys_admin', 'gpt-5.5', 10], 'idx_usage_records_system_account_model_created_sort')
-  assertQueryPlanUsesIndex(`
-    SELECT id
-    FROM usage_records ur
-    WHERE ur.group_id = ?
-    ORDER BY ur.created_at DESC, ur.id DESC
-    LIMIT ?
-  `, [group.id, 10], 'idx_usage_records_group_created_sort')
+  `, ['sys_admin', 'gpt-5.5', 10], 'idx_usage_records_system_account_created_sort')
   assertQueryPlanUsesIndex(`
     SELECT id
     FROM usage_records ur
@@ -544,17 +549,10 @@ try {
   assertQueryPlanUsesIndex(`
     SELECT id
     FROM usage_records ur
-    WHERE ur.client_ip >= ? AND ur.client_ip < ?
-    ORDER BY ur.created_at DESC, ur.id DESC
-    LIMIT ?
-  `, ['127.0.0.', '127.0.0.\uffff', 10], 'idx_usage_records_client_ip_created_sort')
-  assertQueryPlanUsesIndex(`
-    SELECT id
-    FROM usage_records ur
     WHERE ur.system_account_id = ? AND ur.client_ip >= ? AND ur.client_ip < ?
     ORDER BY ur.created_at DESC, ur.id DESC
     LIMIT ?
-  `, ['sys_admin', '127.0.0.', '127.0.0.\uffff', 10], 'idx_usage_records_system_account_client_ip_created_sort')
+  `, ['sys_admin', '127.0.0.', '127.0.0.\uffff', 10], 'idx_usage_records_system_account_created_sort')
 
   const admin = repositories.listSystemAccounts().find((systemAccount) => systemAccount.username === 'admin')
   assert(admin, '使用记录路由回归需要默认管理员')
@@ -564,8 +562,8 @@ try {
   await listen(routeServer)
   try {
     const routeBaseUrl = `http://127.0.0.1:${serverAddress(routeServer).port}`
-    const routeDefaultWindowInsideAt = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString()
-    const routeDefaultWindowOutsideAt = new Date(Date.now() - 45 * 24 * 60 * 60 * 1000).toISOString()
+    const routeDefaultWindowInsideAt = new Date().toISOString()
+    const routeDefaultWindowOutsideAt = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
     const routeDefaultWindowModel = `route-default-window-model-${Date.now()}`
     const routeDefaultWindowInsideId = usageRecordShards.generateUsageRecordId(routeDefaultWindowInsideAt, 'inside')
     const routeDefaultWindowOutsideId = usageRecordShards.generateUsageRecordId(routeDefaultWindowOutsideAt, 'outside')
@@ -604,14 +602,22 @@ try {
 
     const routeDefaultWindow = await getEnvelope<UsageRecordListResult>(
       routeBaseUrl,
+      `/__aisys__/api/usage-records?systemAccountId=sys_admin&model=${encodeURIComponent(routeDefaultWindowModel)}&page=1&pageSize=20`,
+      sessionCookie(admin.id)
+    )
+    assert.deepEqual(routeDefaultWindow.items.map((item) => item.id), [routeDefaultWindowInsideId], '使用记录路由未传日期时应默认限制今天')
+
+    const routeWithoutSystemAccount = await getEnvelope<UsageRecordListResult>(
+      routeBaseUrl,
       `/__aisys__/api/usage-records?model=${encodeURIComponent(routeDefaultWindowModel)}&page=1&pageSize=20`,
       sessionCookie(admin.id)
     )
-    assert.deepEqual(routeDefaultWindow.items.map((item) => item.id), [routeDefaultWindowInsideId], '使用记录路由未传日期时应默认限制最近 31 天')
+    assert.equal(routeWithoutSystemAccount.requiresSystemAccountSelection, true, '管理员使用记录路由未指定系统账户时应要求先选用户')
+    assert.equal(routeWithoutSystemAccount.items.length, 0, '管理员使用记录路由未指定系统账户时不应返回全局列表')
 
     const routePageClamp = await getEnvelope<UsageRecordListResult>(
       routeBaseUrl,
-      `/__aisys__/api/usage-records?model=${encodeURIComponent(routeDefaultWindowModel)}&page=999999&pageSize=1`,
+      `/__aisys__/api/usage-records?systemAccountId=sys_admin&model=${encodeURIComponent(routeDefaultWindowModel)}&page=999999&pageSize=1`,
       sessionCookie(admin.id)
     )
     assert.equal(routePageClamp.page, 1000, '使用记录路由页码应在 1000 以内')

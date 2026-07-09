@@ -33,7 +33,6 @@
             :filter-option="false"
             :loading="systemAccountsLoading"
             :selected-principal="systemAccountSelection"
-            include-all
             @update:value="handleSystemAccountUpdate"
             @update:selected-principal="emit('update:systemAccountSelection', $event)"
             @change="emit('system-account-change')"
@@ -152,7 +151,6 @@
           :filter-option="false"
           :loading="systemAccountsLoading"
           :selected-principal="systemAccountSelection"
-          include-all
           @update:value="handleSystemAccountUpdate"
           @update:selected-principal="emit('update:systemAccountSelection', $event)"
           @change="emit('system-account-change')"

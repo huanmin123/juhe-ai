@@ -5,6 +5,7 @@ import { cleanupDeletedAccountRelatedRecordDataAsync } from '../../storage/accou
 import { cleanupDeletedApiKeyRelatedRecordDataAsync } from '../../storage/api-key-record-cleanup.js'
 import { createPostgresDatabaseClient } from '../../storage/database-client.js'
 import { closePostgresPool, getPostgresPool } from '../../storage/postgres-client.js'
+import { ensurePostgresUsageRecordPartitions } from '../../storage/postgres-usage-record-partitions.js'
 import { GLOBAL_STATS_SCOPE_ID, GLOBAL_STATS_SYSTEM_ACCOUNT_ID } from '../../storage/usage-stats-types.js'
 
 assert.equal(runtimeConfig.databaseDriver, 'postgres', 'PG 记录清理 smoke 需要 JUHE_AI_DATABASE_DRIVER=postgres')
@@ -30,6 +31,7 @@ const client = createPostgresDatabaseClient(pool)
 
 try {
   now = await cleanupEligibleUsageCreatedAt()
+  await ensurePostgresUsageRecordPartitions(client, [now])
   await seedApiKeyRows()
   const apiKeyCleanup = await cleanupDeletedApiKeyRelatedRecordDataAsync({ apiKeyId, systemAccountId })
   pendingGlobalStatsSmokeUsageIds.delete(`usage_${apiKeyId}`)

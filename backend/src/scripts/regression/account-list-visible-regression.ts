@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -24,12 +24,14 @@ const [
   { accountsRouter },
   { forceSelfAccessScope, requireAdmin, requireAuth },
   { requestContextMiddleware },
+  accessScope,
   databaseModule,
   repositories
 ] = await Promise.all([
   import('../../modules/accounts/accounts.routes.js'),
   import('../../modules/auth/auth.middleware.js'),
   import('../../shared/request-context.js'),
+  import('../../storage/access-scope.js'),
   import('../../storage/database.js'),
   import('../../storage/repositories.js')
 ])
@@ -73,6 +75,13 @@ interface SeedState {
 let server: ReturnType<typeof app.listen> | undefined
 
 try {
+  assert.equal(
+    accessScope.scopedSystemAccountId({ systemAccountId: 'sys_admin', role: 'super_admin', systemAccountFilterId: 'all' }),
+    undefined,
+    '管理员 systemAccountFilterId=all 应归一成无系统账户筛选'
+  )
+  assertPostgresAccountListScopeUsesManageableScope()
+
   const seed = seedData()
   server = app.listen(0, '127.0.0.1')
   await onceListening(server)
@@ -200,4 +209,20 @@ async function closeServer(listeningServer?: ReturnType<typeof app.listen>): Pro
       }
     })
   })
+}
+
+function assertPostgresAccountListScopeUsesManageableScope(): void {
+  const source = readFileSync(new URL('../../storage/account-summary.repository.ts', import.meta.url), 'utf8')
+  const postgresListFunction = source.match(/async function listAccountRowsPageAsync[\s\S]*?return \{ rows \}/)
+  assert(postgresListFunction, '应能定位 PostgreSQL 账户列表分页函数')
+  assert.match(
+    postgresListFunction[0],
+    /const ownerSystemAccountId = manageableSystemAccountId\(access\)/,
+    'PostgreSQL 管理端账户列表应使用 manageableSystemAccountId，管理员全部视图不能被当前账号收窄'
+  )
+  assert.doesNotMatch(
+    postgresListFunction[0],
+    /const viewerSystemAccountId = userVisibleSystemAccountId\(access\)/,
+    'PostgreSQL 管理端账户列表不能使用 userVisibleSystemAccountId 作为 owner 范围'
+  )
 }

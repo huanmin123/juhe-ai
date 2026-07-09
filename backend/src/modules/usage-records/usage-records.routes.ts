@@ -36,10 +36,8 @@ usageRecordsRouter.get('/:id', async (req, res, next) => {
   }
 })
 
-const usageRecordSortFields = new Set<UsageRecordSortField>(['createdAt', 'firstTokenMs', 'durationMs', 'costUsd'])
+const usageRecordSortFields = new Set<UsageRecordSortField>(['createdAt'])
 const usageRecordTrafficSources = new Set<UsageRecordTrafficSource>(['gateway', 'manual_account_test', 'runtime_recovery_probe', 'cooldown_retest', 'hybrid_scoring', 'hybrid_quality_scoring'])
-const usageRecordDefaultLookbackDays = 31
-const dayMs = 24 * 60 * 60 * 1000
 
 export type UsageRecordResponse = UsageRecordSummary & {
   costBreakdown?: ProviderCostBreakdown
@@ -152,7 +150,7 @@ async function parseListOptionsAsync(query: Record<string, unknown>): Promise<Us
   const rawPageSize = finiteNumberQueryValue(query.pageSize)
   const rawStatusCode = finiteNumberQueryValue(query.statusCode)
   const traceId = optionalQueryText(query.traceId)
-  const createdAtRange = dateRangeQueryValue(query.startDate, query.endDate, timezone, Boolean(traceId))
+  const createdAtRange = dateRangeQueryValue(query.startDate, query.endDate, timezone)
   const sortBy = typeof query.sortBy === 'string' && usageRecordSortFields.has(query.sortBy as UsageRecordSortField)
     ? query.sortBy as UsageRecordSortField
     : undefined
@@ -211,11 +209,10 @@ function dateRangeQueryValue(startValue: unknown, endValue: unknown, timezone: s
 
 function defaultUsageRecordDateRange(timezone: string): { startAt?: string; endAt?: string } {
   const today = new Date()
-  const startDate = dateKey(new Date(today.getTime() - (usageRecordDefaultLookbackDays - 1) * dayMs), timezone)
-  const endDate = dateKey(today, timezone)
+  const todayKey = dateKey(today, timezone)
   return {
-    startAt: startOfDateKeyIso(startDate, timezone),
-    endAt: startOfDateKeyIso(nextDateKey(endDate), timezone)
+    startAt: startOfDateKeyIso(todayKey, timezone),
+    endAt: startOfDateKeyIso(nextDateKey(todayKey), timezone)
   }
 }
 

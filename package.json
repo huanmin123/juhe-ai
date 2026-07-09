@@ -52,6 +52,7 @@
     "test:account-list-visible": "pnpm --filter juhe-ai-backend test:account-list-visible",
     "test:account-options-lightweight": "pnpm --filter juhe-ai-backend test:account-options-lightweight",
     "test:performance-system-api-smoke": "pnpm --filter juhe-ai-backend test:performance-system-api-smoke",
+    "benchmark:production-system-api-read": "pnpm --filter juhe-ai-backend benchmark:production-system-api-read",
     "test:account-name-uniqueness": "pnpm --filter juhe-ai-backend test:account-name-uniqueness",
     "test:gemini-gateway-mock-ai": "pnpm --filter juhe-ai-backend test:gemini-gateway-mock-ai",
     "test:anthropic-gateway-mock-ai": "pnpm --filter juhe-ai-backend test:anthropic-gateway-mock-ai",

@@ -330,19 +330,34 @@ try {
   assert(capturedCalls.some((call) => /\busage_window\.scope_id\s+IN\s*\(/i.test(call.sql)), '账号用量关键词窗口查询应使用 scope_id 命中预解析账号')
   assert(capturedCalls.some((call) => /\busage_window\.scope_id\s+IN\s*\(/i.test(call.sql) && call.params.includes(selectedAccount.id)), '账号用量手动选择补入应使用 scope_id 命中选中账号')
   assert(capturedCalls.some((call) => /\bAND\s+0\s+=\s+1\b/i.test(call.sql)), '账号用量关键词无匹配时应避免扫描窗口表')
+  assert(capturedCalls.every((call) => /\busage_window\.window_key\s*=\s*\?/i.test(call.sql)), '账号用量窗口查询必须使用 window_key 命中范围窗口索引')
   for (const call of capturedCalls) {
     assert(!/\bLIKE\s+\?/i.test(call.sql), '账号用量窗口查询不应拼入业务字段 LIKE')
     assert(!/\baccount_usage_business\.accounts\b/i.test(call.sql), '账号用量关键词窗口查询不应在统计结果库查询内挂业务库账号表')
     assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '账号用量窗口查询不应接收前导通配符参数')
   }
+  const pendingRangeRequest = databaseModule.getStatsDatabase()
+    .prepare(`
+      SELECT status, window_key
+      FROM usage_range_window_requests
+      WHERE domain = 'usage_scope'
+        AND system_account_id = ?
+        AND scope_type = 'account'
+        AND scope_id = '*'
+        AND start_date = ?
+        AND end_date = ?
+      LIMIT 1
+    `)
+    .get(GLOBAL_STATS_SYSTEM_ACCOUNT_ID, range.startDate, range.endDate) as { status?: string; window_key?: string } | undefined
+  assert.equal(pendingRangeRequest?.status, 'pending', '自定义非热账号用量范围应登记后台按需窗口请求')
+  assert.equal(pendingRangeRequest?.window_key, `${range.startDate}:${range.endDate}`, '按需窗口请求应由生成列写入 window_key')
 
   assertQueryPlanUsesIndex(`
     SELECT scope_id
     FROM usage_scope_range_windows usage_window
     WHERE usage_window.system_account_id = ?
       AND usage_window.scope_type = ?
-      AND usage_window.start_date = ?
-      AND usage_window.end_date = ?
+      AND usage_window.window_key = ?
       AND (
         usage_window.request_count > 0
         OR usage_window.input_tokens > 0
@@ -353,7 +368,7 @@ try {
       )
     ORDER BY usage_window.request_count DESC, usage_window.total_cost_usd DESC, (usage_window.input_tokens + usage_window.output_tokens) DESC, usage_window.last_used_at DESC, usage_window.scope_id ASC
     LIMIT ?
-  `, [GLOBAL_STATS_SYSTEM_ACCOUNT_ID, 'account', range.startDate, range.endDate, 10], 'idx_usage_scope_range_windows_account_usage_order')
+  `, [GLOBAL_STATS_SYSTEM_ACCOUNT_ID, 'account', `${range.startDate}:${range.endDate}`, 10], 'idx_usage_scope_range_windows_account_usage_order')
 
   console.log('账号用量查询防护回归通过：关键词先解析账号 ID，手动选中账户按窗口 scope_id 补入，窗口查询不再接收前导通配符，并使用范围窗口排序索引')
 } finally {

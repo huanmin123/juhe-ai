@@ -5,6 +5,8 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { fixedAuditLogSettings, readAuditLogSettings } from '../../modules/audit-logs/audit-log-settings.js'
 
 const auditDesignDoc = readFileSync(new URL('../../../../docs/functions/原始审计日志设计.md', import.meta.url), 'utf8')
+const runtimeSource = readFileSync(new URL('../../config/runtime.ts', import.meta.url), 'utf8')
+const dockerCompose = readFileSync(new URL('../../../../docker/compose.yml', import.meta.url), 'utf8')
 const performanceCompose = readFileSync(new URL('../../../../docker/compose.performance.yml', import.meta.url), 'utf8')
 const dockerEntrypoint = readFileSync(new URL('../../../../docker/entrypoint.sh', import.meta.url), 'utf8')
 const settingsSource = readFileSync(new URL('../../modules/audit-logs/audit-log-settings.ts', import.meta.url), 'utf8')
@@ -33,11 +35,13 @@ assert(auditDesignDoc.includes('| `queueMaxBytes` | `256MB` |'), '原始审计�
 assert(auditDesignDoc.includes('| `successHotRetentionHours` | `1` |'), '原始审计日志设计文档必须声明成功请求 1 小时热保留')
 assert(!settingsSource.includes('successSampleRate: 0.02'), '审计设置模块不能按高性能模式降级成功审计长期采样率')
 assert(!settingsSource.includes('successHotRetentionHours: 0'), '审计设置模块不能按高性能模式关闭成功审计热窗口')
-assert(performanceCompose.includes('JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED: ${JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED:-true}'), '高性能 Docker Compose 默认不能关闭审计正文捕获')
+assert(!runtimeSource.includes('JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED'), '运行时配置不能再读取审计正文捕获环境变量')
+assert(!dockerCompose.includes('JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED'), '轻量 Docker Compose 不能再暴露审计正文捕获环境变量')
+assert(!performanceCompose.includes('JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED'), '高性能 Docker Compose 不能再暴露审计正文捕获环境变量')
 assert(performanceCompose.includes('JUHE_AI_POSTGRES_STATEMENT_TIMEOUT_MS: ${JUHE_AI_POSTGRES_STATEMENT_TIMEOUT_MS:-30000}'), '高性能 Docker Compose 必须传递 PostgreSQL statement_timeout')
 assert(performanceCompose.includes('JUHE_AI_POSTGRES_LOCK_TIMEOUT_MS: ${JUHE_AI_POSTGRES_LOCK_TIMEOUT_MS:-2000}'), '高性能 Docker Compose 必须传递 PostgreSQL lock_timeout')
 assert(performanceCompose.includes('JUHE_AI_POSTGRES_IDLE_IN_TRANSACTION_TIMEOUT_MS: ${JUHE_AI_POSTGRES_IDLE_IN_TRANSACTION_TIMEOUT_MS:-30000}'), '高性能 Docker Compose 必须传递 PostgreSQL idle_in_transaction_session_timeout')
-assert(dockerEntrypoint.includes('JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED="${JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED:-true}"'), 'Docker entrypoint 默认不能关闭审计正文捕获')
+assert(!dockerEntrypoint.includes('JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED'), 'Docker entrypoint 不能再导出审计正文捕获环境变量')
 assert(!auditDesignDoc.includes('Number.MAX_SAFE_INTEGER'), '原始审计日志设计文档不能再把 worker 队列描述为无限制')
 assert(!auditDesignDoc.includes('fullBodyCapture'), '原始审计日志设计文档不应再暴露临时全量捕获字段')
 

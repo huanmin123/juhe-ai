@@ -28,10 +28,10 @@ import { requestQuotaLimitsSchema } from '../request-quota-limit.schema.js'
 import { apiKeyAvailabilityScheduleSchema } from '../api-keys/api-key-availability-schedule.schema.js'
 import { getExternalIntegrationSourceContext, requireExternalIntegrationSource } from './external-source-auth.middleware.js'
 import {
-  addPublicWelfareAccount,
+  addPublicWelfareAccountAsync,
   deletePublicWelfareAccountAsync,
   addPublicApiKeyAsync,
-  addPublicGroup,
+  addPublicGroupAsync,
   deletePublicApiKeyAsync,
   deletePublicGroupAsync,
   listPublicApiKeysAsync,
@@ -397,7 +397,7 @@ externalIntegrationsRouter.post(
       return
     }
     try {
-      res.status(201).json(ok(await addPublicGroup(parsed.data)))
+      res.status(201).json(ok(await addPublicGroupAsync(parsed.data)))
     } catch (error) {
       const message = error instanceof Error ? error.message : '分组新增失败'
       res.status(message.includes('已存在') ? 409 : 400).json(badRequest(message))
@@ -608,7 +608,7 @@ externalIntegrationsRouter.post(
     }
 
     try {
-      const result = await addPublicWelfareAccount(parsed.data)
+      const result = await addPublicWelfareAccountAsync(parsed.data)
       await recordPublicWelfareAccountWriteOperation(context, result, req, 201)
       res.status(201).json(ok(result))
     } catch (error) {

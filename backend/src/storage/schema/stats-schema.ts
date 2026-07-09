@@ -766,6 +766,7 @@ export function applyStatsSchema(database: DatabaseSync): void {
           scope_id TEXT NOT NULL DEFAULT '',
           start_date TEXT NOT NULL,
           end_date TEXT NOT NULL,
+          window_key TEXT GENERATED ALWAYS AS (start_date || ':' || end_date) STORED,
           request_count INTEGER NOT NULL DEFAULT 0,
           success_count INTEGER NOT NULL DEFAULT 0,
           error_count INTEGER NOT NULL DEFAULT 0,
@@ -791,6 +792,47 @@ export function applyStatsSchema(database: DatabaseSync): void {
           last_error_at TEXT,
           updated_at TEXT NOT NULL,
           PRIMARY KEY (system_account_id, scope_type, scope_id, start_date, end_date)
+        );
+
+    CREATE TABLE IF NOT EXISTS usage_range_window_requests (
+          id TEXT PRIMARY KEY,
+          domain TEXT NOT NULL,
+          system_account_id TEXT NOT NULL,
+          scope_type TEXT NOT NULL,
+          scope_id TEXT NOT NULL DEFAULT '',
+          start_date TEXT NOT NULL,
+          end_date TEXT NOT NULL,
+          window_key TEXT GENERATED ALWAYS AS (start_date || ':' || end_date) STORED,
+          status TEXT NOT NULL DEFAULT 'pending',
+          requested_count INTEGER NOT NULL DEFAULT 1,
+          last_requested_at TEXT NOT NULL,
+          last_processed_at TEXT,
+          error_message TEXT,
+          expires_at TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE (domain, system_account_id, scope_type, scope_id, start_date, end_date),
+          CHECK (status IN ('pending', 'processing', 'completed', 'failed'))
+        );
+
+    CREATE TABLE IF NOT EXISTS data_archive_manifests (
+          id TEXT PRIMARY KEY,
+          domain TEXT NOT NULL,
+          database_role TEXT NOT NULL,
+          source_table TEXT NOT NULL,
+          archive_action TEXT NOT NULL,
+          storage_uri TEXT NOT NULL,
+          partition_name TEXT,
+          range_start TEXT,
+          range_end TEXT,
+          row_count INTEGER NOT NULL DEFAULT 0,
+          size_bytes INTEGER,
+          status TEXT NOT NULL DEFAULT 'archived',
+          manifest_json TEXT NOT NULL DEFAULT '{}',
+          archived_at TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          CHECK (status IN ('archived', 'deleted'))
         );
 
     CREATE TABLE IF NOT EXISTS client_ip_registry (
@@ -1194,6 +1236,10 @@ export function applyStatsSchema(database: DatabaseSync): void {
           database_role TEXT NOT NULL,
           table_name TEXT NOT NULL,
           sampled_at TEXT NOT NULL,
+          table_kind TEXT NOT NULL DEFAULT 'table',
+          parent_table_name TEXT,
+          is_partition INTEGER NOT NULL DEFAULT 0,
+          is_archive INTEGER NOT NULL DEFAULT 0,
           row_count INTEGER,
           table_bytes BIGINT,
           index_bytes BIGINT,
@@ -1366,31 +1412,32 @@ export function applyStatsSchema(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_usage_quota_hourly_windows_updated ON usage_quota_hourly_windows(updated_at);
 
-    CREATE INDEX IF NOT EXISTS idx_usage_scope_range_windows_lookup ON usage_scope_range_windows(system_account_id, scope_type, scope_id, start_date, end_date);
+    CREATE INDEX IF NOT EXISTS idx_usage_scope_range_windows_lookup ON usage_scope_range_windows(system_account_id, scope_type, scope_id, window_key);
 
-    CREATE INDEX IF NOT EXISTS idx_usage_scope_range_windows_range_lookup ON usage_scope_range_windows(system_account_id, scope_type, start_date, end_date, scope_id);
+    CREATE INDEX IF NOT EXISTS idx_usage_scope_range_windows_range_lookup ON usage_scope_range_windows(system_account_id, scope_type, window_key, scope_id);
 
-    CREATE INDEX IF NOT EXISTS idx_usage_scope_range_windows_request_count ON usage_scope_range_windows(system_account_id, scope_type, start_date, end_date, request_count DESC, scope_id);
+    DROP INDEX IF EXISTS idx_usage_scope_range_windows_request_count;
+    DROP INDEX IF EXISTS idx_usage_scope_range_windows_success_count;
+    DROP INDEX IF EXISTS idx_usage_scope_range_windows_error_count;
+    DROP INDEX IF EXISTS idx_usage_scope_range_windows_error_rate;
+    DROP INDEX IF EXISTS idx_usage_scope_range_windows_total_tokens;
+    DROP INDEX IF EXISTS idx_usage_scope_range_windows_total_cost;
+    DROP INDEX IF EXISTS idx_usage_scope_range_windows_active_days;
+    DROP INDEX IF EXISTS idx_usage_scope_range_windows_last_used;
 
-    CREATE INDEX IF NOT EXISTS idx_usage_scope_range_windows_account_usage_order ON usage_scope_range_windows(system_account_id, scope_type, start_date, end_date, request_count DESC, total_cost_usd DESC, (input_tokens + output_tokens) DESC, last_used_at DESC, scope_id);
-
-    CREATE INDEX IF NOT EXISTS idx_usage_scope_range_windows_success_count ON usage_scope_range_windows(system_account_id, scope_type, start_date, end_date, success_count DESC, scope_id);
-
-    CREATE INDEX IF NOT EXISTS idx_usage_scope_range_windows_error_count ON usage_scope_range_windows(system_account_id, scope_type, start_date, end_date, error_count DESC, scope_id);
-
-    CREATE INDEX IF NOT EXISTS idx_usage_scope_range_windows_error_rate ON usage_scope_range_windows(system_account_id, scope_type, start_date, end_date, (CASE WHEN request_count > 0 THEN CAST(error_count AS REAL) / request_count ELSE 0 END) DESC, scope_id);
-
-    CREATE INDEX IF NOT EXISTS idx_usage_scope_range_windows_total_tokens ON usage_scope_range_windows(system_account_id, scope_type, start_date, end_date, (input_tokens + output_tokens) DESC, scope_id);
-
-    CREATE INDEX IF NOT EXISTS idx_usage_scope_range_windows_total_cost ON usage_scope_range_windows(system_account_id, scope_type, start_date, end_date, total_cost_usd DESC, scope_id);
-
-    CREATE INDEX IF NOT EXISTS idx_usage_scope_range_windows_active_days ON usage_scope_range_windows(system_account_id, scope_type, start_date, end_date, active_days DESC, scope_id);
-
-    CREATE INDEX IF NOT EXISTS idx_usage_scope_range_windows_last_used ON usage_scope_range_windows(system_account_id, scope_type, start_date, end_date, last_used_at DESC, scope_id);
+    CREATE INDEX IF NOT EXISTS idx_usage_scope_range_windows_account_usage_order ON usage_scope_range_windows(system_account_id, scope_type, window_key, request_count DESC, total_cost_usd DESC, (input_tokens + output_tokens) DESC, last_used_at DESC, scope_id);
 
     CREATE INDEX IF NOT EXISTS idx_usage_scope_range_windows_end ON usage_scope_range_windows(end_date);
 
     CREATE INDEX IF NOT EXISTS idx_usage_scope_range_windows_end_start ON usage_scope_range_windows(end_date, start_date);
+
+    CREATE INDEX IF NOT EXISTS idx_usage_range_window_requests_pending ON usage_range_window_requests(status, domain, updated_at, id);
+
+    CREATE INDEX IF NOT EXISTS idx_usage_range_window_requests_expires ON usage_range_window_requests(expires_at, domain, status);
+
+    CREATE INDEX IF NOT EXISTS idx_data_archive_manifests_domain_time ON data_archive_manifests(domain, archived_at DESC, id DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_data_archive_manifests_source ON data_archive_manifests(database_role, source_table, status, archived_at DESC);
 
     CREATE INDEX IF NOT EXISTS idx_client_ip_registry_bucket ON client_ip_registry(bucket_no, ip_hash);
 
@@ -1402,23 +1449,16 @@ export function applyStatsSchema(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_client_ip_stats_daily_date ON client_ip_stats_daily(stat_date, ip_hash);
 
-    CREATE INDEX IF NOT EXISTS idx_client_ip_range_cost ON client_ip_usage_range_windows(start_date, end_date, total_cost_usd DESC, ip_hash);
-
-    CREATE INDEX IF NOT EXISTS idx_client_ip_range_tokens ON client_ip_usage_range_windows(start_date, end_date, input_tokens DESC, output_tokens DESC, ip_hash);
-
-    CREATE INDEX IF NOT EXISTS idx_client_ip_range_total_tokens ON client_ip_usage_range_windows(start_date, end_date, (input_tokens + output_tokens) DESC, ip_hash);
+    DROP INDEX IF EXISTS idx_client_ip_range_cost;
+    DROP INDEX IF EXISTS idx_client_ip_range_tokens;
+    DROP INDEX IF EXISTS idx_client_ip_range_total_tokens;
+    DROP INDEX IF EXISTS idx_client_ip_range_success;
+    DROP INDEX IF EXISTS idx_client_ip_range_errors;
+    DROP INDEX IF EXISTS idx_client_ip_range_error_rate;
+    DROP INDEX IF EXISTS idx_client_ip_range_active_days;
+    DROP INDEX IF EXISTS idx_client_ip_range_last_used;
 
     CREATE INDEX IF NOT EXISTS idx_client_ip_range_requests ON client_ip_usage_range_windows(start_date, end_date, request_count DESC, ip_hash);
-
-    CREATE INDEX IF NOT EXISTS idx_client_ip_range_success ON client_ip_usage_range_windows(start_date, end_date, success_count DESC, ip_hash);
-
-    CREATE INDEX IF NOT EXISTS idx_client_ip_range_errors ON client_ip_usage_range_windows(start_date, end_date, error_count DESC, ip_hash);
-
-    CREATE INDEX IF NOT EXISTS idx_client_ip_range_error_rate ON client_ip_usage_range_windows(start_date, end_date, (CASE WHEN request_count > 0 THEN CAST(error_count AS REAL) / request_count ELSE 0 END) DESC, ip_hash);
-
-    CREATE INDEX IF NOT EXISTS idx_client_ip_range_active_days ON client_ip_usage_range_windows(start_date, end_date, active_days DESC, ip_hash);
-
-    CREATE INDEX IF NOT EXISTS idx_client_ip_range_last_used ON client_ip_usage_range_windows(start_date, end_date, last_used_at DESC, ip_hash);
 
     CREATE INDEX IF NOT EXISTS idx_client_ip_range_end ON client_ip_usage_range_windows(end_date);
 
@@ -1428,21 +1468,15 @@ export function applyStatsSchema(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_client_ip_account_daily_ip_date ON client_ip_account_stats_daily(ip_hash, stat_date, account_id);
 
+    DROP INDEX IF EXISTS idx_client_ip_account_range_success;
+    DROP INDEX IF EXISTS idx_client_ip_account_range_errors;
+    DROP INDEX IF EXISTS idx_client_ip_account_range_error_rate;
+    DROP INDEX IF EXISTS idx_client_ip_account_range_tokens;
+    DROP INDEX IF EXISTS idx_client_ip_account_range_cost;
+    DROP INDEX IF EXISTS idx_client_ip_account_range_active_days;
+    DROP INDEX IF EXISTS idx_client_ip_account_range_last_used;
+
     CREATE INDEX IF NOT EXISTS idx_client_ip_account_range_requests ON client_ip_account_usage_range_windows(ip_hash, start_date, end_date, request_count DESC, account_id);
-
-    CREATE INDEX IF NOT EXISTS idx_client_ip_account_range_success ON client_ip_account_usage_range_windows(ip_hash, start_date, end_date, success_count DESC, account_id);
-
-    CREATE INDEX IF NOT EXISTS idx_client_ip_account_range_errors ON client_ip_account_usage_range_windows(ip_hash, start_date, end_date, error_count DESC, account_id);
-
-    CREATE INDEX IF NOT EXISTS idx_client_ip_account_range_error_rate ON client_ip_account_usage_range_windows(ip_hash, start_date, end_date, (CASE WHEN request_count > 0 THEN CAST(error_count AS REAL) / request_count ELSE 0 END) DESC, account_id);
-
-    CREATE INDEX IF NOT EXISTS idx_client_ip_account_range_tokens ON client_ip_account_usage_range_windows(ip_hash, start_date, end_date, (input_tokens + output_tokens) DESC, account_id);
-
-    CREATE INDEX IF NOT EXISTS idx_client_ip_account_range_cost ON client_ip_account_usage_range_windows(ip_hash, start_date, end_date, total_cost_usd DESC, account_id);
-
-    CREATE INDEX IF NOT EXISTS idx_client_ip_account_range_active_days ON client_ip_account_usage_range_windows(ip_hash, start_date, end_date, active_days DESC, account_id);
-
-    CREATE INDEX IF NOT EXISTS idx_client_ip_account_range_last_used ON client_ip_account_usage_range_windows(ip_hash, start_date, end_date, last_used_at DESC, account_id);
 
     CREATE INDEX IF NOT EXISTS idx_client_ip_account_range_dirty_updated ON client_ip_account_range_window_dirty_ips(updated_at ASC, ip_hash);
 
@@ -1489,6 +1523,10 @@ export function applyStatsSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_table_storage_snapshots_latest ON table_storage_snapshots(database_role, table_name, sampled_at DESC);
 
     CREATE INDEX IF NOT EXISTS idx_table_storage_snapshots_latest_id ON table_storage_snapshots(database_role, table_name, sampled_at DESC, id DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_table_storage_snapshots_partition ON table_storage_snapshots(database_role, parent_table_name, sampled_at DESC, table_name) WHERE is_partition = 1;
+
+    CREATE INDEX IF NOT EXISTS idx_table_storage_snapshots_archive ON table_storage_snapshots(is_archive, sampled_at DESC, database_role, table_name) WHERE is_archive = 1;
 
     CREATE INDEX IF NOT EXISTS idx_table_storage_snapshots_time ON table_storage_snapshots(sampled_at DESC);
   `)

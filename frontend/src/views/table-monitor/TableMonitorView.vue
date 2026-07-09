@@ -101,7 +101,7 @@
           :loading="loading"
           :pagination="tablePagination"
           :row-key="tableMonitorRowKey"
-          :scroll-x="1180"
+          :scroll-x="1320"
           :table-scroll-enabled="false"
           :lock-body-scroll="false"
           class="table-monitor-table"
@@ -119,7 +119,11 @@
             <template v-else-if="column.key === 'tableName'">
               <span class="table-name-cell">
                 <span class="mono-cell">{{ record.tableName }}</span>
+                <span v-if="record.parentTableName" class="table-parent-cell">{{ record.parentTableName }}</span>
               </span>
+            </template>
+            <template v-else-if="column.key === 'tableState'">
+              <a-tag :color="tableStateColor(record)">{{ tableStateLabel(record) }}</a-tag>
             </template>
             <template v-else-if="column.key === 'rowCount'">
               {{ formatInteger(record.rowCount) }}
@@ -129,6 +133,7 @@
             </template>
             <template v-else-if="column.key === 'indexBytes'">
               {{ formatBytes(record.indexBytes) }}
+              <span class="index-ratio">{{ formatRatioPercent(record.indexToTableRatio) }}</span>
             </template>
             <template v-else-if="column.key === 'totalBytes'">
               <strong>{{ formatBytes(record.totalBytes) }}</strong>
@@ -149,7 +154,10 @@
             <article class="table-monitor-mobile-card">
               <div class="mobile-card-head">
                 <span class="mono-cell">{{ record.tableName }}</span>
-                <a-tag :color="databaseRoleColor(record.databaseRole)">{{ databaseRoleLabel(record.databaseRole) }}</a-tag>
+                <span class="mobile-card-tags">
+                  <a-tag :color="databaseRoleColor(record.databaseRole)">{{ databaseRoleLabel(record.databaseRole) }}</a-tag>
+                  <a-tag :color="tableStateColor(record)">{{ tableStateLabel(record) }}</a-tag>
+                </span>
               </div>
               <div class="mobile-list-meta-grid">
                 <div class="mobile-list-meta-item">
@@ -159,6 +167,10 @@
                 <div class="mobile-list-meta-item">
                   <span>总大小</span>
                   <strong>{{ formatBytes(record.totalBytes) }}</strong>
+                </div>
+                <div class="mobile-list-meta-item">
+                  <span>索引/表</span>
+                  <strong>{{ formatRatioPercent(record.indexToTableRatio) }}</strong>
                 </div>
                 <div class="mobile-list-meta-item">
                   <span>1 小时增长</span>
@@ -214,11 +226,14 @@ import {
   formatGrowthBytes,
   formatGrowthRows,
   formatInteger,
+  formatRatioPercent,
   growthColor,
   matchesTableNameKeyword,
   tableMonitorColumns,
   tableMonitorDatabaseRoles,
   tableMonitorRowKey,
+  tableStateColor,
+  tableStateLabel,
   totalDatabaseBytes
 } from './tableMonitorDisplay'
 
@@ -539,9 +554,21 @@ function resizeHistoryChart() {
 .table-name-cell {
   display: inline-flex;
   max-width: 100%;
-  align-items: center;
+  flex-direction: column;
+  align-items: flex-start;
   gap: 8px;
   color: #0f172a;
+}
+
+.table-parent-cell,
+.index-ratio {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.index-ratio {
+  display: block;
+  margin-top: 2px;
 }
 
 .table-monitor-mobile-card {
@@ -561,6 +588,13 @@ function resizeHistoryChart() {
   align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
+}
+
+.mobile-card-tags {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
 }
 
 .growth-rows {

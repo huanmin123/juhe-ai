@@ -1200,16 +1200,17 @@ async function migrateOpenAIAccountTrafficRuntimeLocal(
   input: OpenAIAccountTrafficMigrationRuntimeRequest
 ): Promise<OpenAIAccountTrafficMigrationRuntimeResult> {
   const sessionAffinity = await import('../gateway/runtime/session-affinity.service.js')
-  const affinityResult = sessionAffinity.migrateOpenAIAccountSessionAffinity(
+  const affinityResult = await sessionAffinity.migrateOpenAIAccountSessionAffinityAsync(
     input.sourceAccountId,
     input.targetAccountId,
     input.affinityScope,
     { preferMigratedSessions: input.preferMigratedSessions === true }
   )
-  sessionAffinity.rememberOpenAIAccountTrafficMigrationPreference(
+  await sessionAffinity.rememberOpenAIAccountTrafficMigrationPreferenceAsync(
     input.sourceAccountId,
     input.targetAccountId,
-    input.preferenceScope
+    input.preferenceScope,
+    { throwOnRedisError: true }
   )
   return affinityResult
 }

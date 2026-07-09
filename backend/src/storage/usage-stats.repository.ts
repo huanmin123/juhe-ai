@@ -1490,7 +1490,7 @@ export type UsageRankSnapshotStageName =
   | 'usage_scope_range_windows'
   | 'authorization_usage_range_windows'
 
-const hotUsageWindowStageNames = ['usage_overview_windows'] as const satisfies readonly UsageRankSnapshotStageName[]
+const hotUsageWindowStageNames = ['usage_overview_windows', 'usage_scope_range_windows'] as const satisfies readonly UsageRankSnapshotStageName[]
 
 type UsageRankSnapshotSourceTable =
   | 'usage_stats_totals'

@@ -1,3 +1,4 @@
+import { runtimeConfig } from '../config/runtime.js'
 import { getDatasetDatabase } from './database.js'
 import {
   auditPayloadBodyDetail,
@@ -39,7 +40,6 @@ import type {
 import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { loadAccountNameMap, loadGroupNameMap, loadSystemAccountNameMapByIds } from './repository-lookups.js'
 import { optionalString } from './value-utils.js'
-import { runtimeConfig } from '../config/runtime.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
@@ -313,6 +313,7 @@ export async function getAuditLogPayloadReadOnly(
   payloadId: string,
   options: AuditLogPayloadReadOptions = {}
 ): Promise<AuditLogPayloadDetail | undefined> {
+  assertAuditPayloadSqliteOnly('getAuditLogPayloadReadOnly')
   const row = getDatasetDatabase()
     .prepare(`
       SELECT *
@@ -337,6 +338,12 @@ export async function getAuditLogPayloadReadOnly(
       bodyNextOffset: bodyWindow.nextOffset,
       bodyTruncated: bodyWindow.truncated
     }
+  }
+}
+
+function assertAuditPayloadSqliteOnly(operation: string): void {
+  if (runtimeConfig.databaseDriver !== 'sqlite') {
+    throw new Error(`${operation} 仅支持 SQLite 本地读取；PostgreSQL 模式必须使用 getAuditLogPayload 的 async driver 路径`)
   }
 }
 

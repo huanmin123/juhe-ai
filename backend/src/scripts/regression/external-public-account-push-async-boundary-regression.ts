@@ -13,6 +13,8 @@ const requiredRouteTokens = [
   'listPublicRouteStrategiesAsync',
   'listPublicApiKeysAsync',
   'listPublicWelfareAccountsAsync',
+  'addPublicGroupAsync',
+  'addPublicWelfareAccountAsync',
   'addPublicRouteStrategyAsync',
   'updatePublicRouteStrategyAsync',
   'deletePublicRouteStrategyAsync',
@@ -36,6 +38,8 @@ for (const token of [
   'listPublicRouteStrategies',
   'listPublicApiKeys',
   'listPublicWelfareAccounts',
+  'addPublicGroup',
+  'addPublicWelfareAccount',
   'addPublicRouteStrategy',
   'updatePublicRouteStrategy',
   'deletePublicRouteStrategy',
@@ -52,7 +56,8 @@ for (const token of [
 assert.doesNotMatch(routesSource, /\bcreateOperationLog\(/, '公开推送操作日志不能回退同步写入')
 
 const requiredServiceTokens = [
-  'export async function addPublicGroup',
+  'export async function addPublicGroupAsync',
+  'export async function addPublicWelfareAccountAsync',
   'export async function updatePublicGroupAsync',
   'export async function deletePublicGroupAsync',
   'export async function listPublicGroupsAsync',
@@ -62,9 +67,9 @@ const requiredServiceTokens = [
   'export async function listPublicApiKeysAsync',
   'export async function deletePublicWelfareAccountAsync',
   'export async function listPublicWelfareAccountsAsync',
-  'createAccountAsync',
+  'createAccountInClientAsync',
   'createApiKeyRecordAsync',
-  'createGroupAsync',
+  'createGroupInClientAsync',
   'deleteAccountWithRelatedCleanupAsync',
   'deleteApiKeyWithRelatedCleanupAsync',
   'deleteGroupAsync',
@@ -83,6 +88,9 @@ const requiredServiceTokens = [
   'findPublicApiKeyOwnerByIdAsync',
   'findTargetAccountByIdAsync',
   'findTargetAccountAsync',
+  'ensureTargetSystemAccountInClientAsync',
+  'ensureTargetGroupInClientAsync',
+  'findExistingTargetGroupInClientAsync',
   'resolvePublicAccountGroupFilterAsync',
   'juhe_business.accounts',
   'juhe_business.groups',
@@ -93,6 +101,17 @@ const requiredServiceTokens = [
 for (const token of requiredServiceTokens) {
   assert(serviceSource.includes(token), `公开推送服务必须固定 async/PG 路径：${token}`)
 }
+
+assert.match(
+  serviceSource,
+  /async function writePublicWelfareAccountAsync[\s\S]*?client\.transaction\(async \(tx\)[\s\S]*?ensureTargetSystemAccountInClientAsync\(tx[\s\S]*?ensureTargetGroupInClientAsync\(tx[\s\S]*?createAccountInClientAsync\(tx/,
+  '公开账号新增 PG 路径必须在同一个事务内创建目标用户、目标分组和账号'
+)
+assert.match(
+  serviceSource,
+  /export async function addPublicGroupAsync[\s\S]*?client\.transaction\(async \(tx\)[\s\S]*?ensureTargetSystemAccountInClientAsync\(tx[\s\S]*?findExistingTargetGroupInClientAsync\(tx[\s\S]*?createGroupInClientAsync\(tx/,
+  '公开分组新增 PG 路径必须在同一个事务内创建目标用户和分组'
+)
 
 for (const token of [
   'export async function listPublicRouteStrategiesAsync',
@@ -118,7 +137,10 @@ for (const token of [
   'resolvePublicOwnedResourceTargetAsync',
   'resolvePublicGroupAsync',
   'resolveAccountListGroupIdAsync',
-  'findExistingTargetGroupAsync'
+  'findExistingTargetGroupAsync',
+  'ensureTargetSystemAccountInClientAsync',
+  'ensureTargetGroupInClientAsync',
+  'findExistingTargetGroupInClientAsync'
 ]) {
   assert(targetSource.includes(token), `公开推送目标解析必须提供 async helper：${token}`)
 }

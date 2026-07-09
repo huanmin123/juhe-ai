@@ -40,6 +40,7 @@ export interface RuntimeConfig {
     poolMax: number
     writeMaxConcurrency: number
     writeQueueMaxItems: number
+    connectionTimeoutMs: number
     statementTimeoutMs: number
     lockTimeoutMs: number
     idleInTransactionSessionTimeoutMs: number
@@ -80,9 +81,6 @@ export interface RuntimeConfig {
     upstreamAgentMaxSockets: number
     upstreamAgentMaxFreeSockets: number
     upstreamAgentMaxTotalSockets: number
-  }
-  audit: {
-    fullBodyCaptureEnabled: boolean
   }
   modelCheck: {
     probeRetryDelayMs: number
@@ -254,6 +252,7 @@ export const runtimeConfig: RuntimeConfig = {
     poolMax: numberConfig('JUHE_AI_DB_POOL_MAX', 50, 1, 500),
     writeMaxConcurrency: numberConfig('JUHE_AI_DB_WRITE_MAX_CONCURRENCY', 100, 1, 1000),
     writeQueueMaxItems: numberConfig('JUHE_AI_DB_WRITE_QUEUE_MAX_ITEMS', 50000, 100, 1000000),
+    connectionTimeoutMs: numberConfig('JUHE_AI_POSTGRES_CONNECTION_TIMEOUT_MS', 10000, 100, 3600000),
     statementTimeoutMs: numberConfig('JUHE_AI_POSTGRES_STATEMENT_TIMEOUT_MS', 30000, 0, 3600000),
     lockTimeoutMs: numberConfig('JUHE_AI_POSTGRES_LOCK_TIMEOUT_MS', 2000, 0, 60000),
     idleInTransactionSessionTimeoutMs: numberConfig('JUHE_AI_POSTGRES_IDLE_IN_TRANSACTION_TIMEOUT_MS', 30000, 0, 3600000)
@@ -296,9 +295,6 @@ export const runtimeConfig: RuntimeConfig = {
     upstreamAgentMaxSockets: numberConfig('JUHE_AI_GATEWAY_UPSTREAM_AGENT_MAX_SOCKETS', 2048, 64, 20000),
     upstreamAgentMaxFreeSockets: numberConfig('JUHE_AI_GATEWAY_UPSTREAM_AGENT_MAX_FREE_SOCKETS', 512, 16, 5000),
     upstreamAgentMaxTotalSockets: numberConfig('JUHE_AI_GATEWAY_UPSTREAM_AGENT_MAX_TOTAL_SOCKETS', 8192, 64, 50000)
-  },
-  audit: {
-    fullBodyCaptureEnabled: booleanConfig('JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED', true)
   },
   modelCheck: {
     probeRetryDelayMs: numberConfig('JUHE_AI_MODEL_CHECK_PROBE_RETRY_DELAY_MS', defaultModelCheckProbeRetryDelayMs, 0, 300000)

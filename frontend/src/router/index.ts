@@ -387,7 +387,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/audit-logs/AuditLogsView.vue'),
     meta: {
       title: '审计日志',
-      description: '按 traceId 追溯原始请求、上游尝试、响应头和完整 payload，成功请求最近 1 小时全量热保留，之后按采样保存。',
+      description: '按 traceId 追溯原始请求、请求链路、响应头和完整 payload，成功请求最近 1 小时全量热保留，之后按采样保存。',
       menuGroup: 'log-management',
       menuGroupTitle: '日志管理',
       viewScope: 'admin',

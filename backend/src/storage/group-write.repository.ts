@@ -135,6 +135,11 @@ export function createGroup(input: Record<string, unknown>, access?: AccessScope
 }
 
 export async function createGroupAsync(input: Record<string, unknown>, access?: AccessScope): Promise<GroupSummary> {
+  const client = await getGroupWriteDatabaseClient()
+  return client.transaction(async (tx) => createGroupInClientAsync(tx, input, access))
+}
+
+export async function createGroupInClientAsync(client: DatabaseClient, input: Record<string, unknown>, access?: AccessScope): Promise<GroupSummary> {
   assertKnownInputKeys(input, groupCreateInputKeys, '分组创建参数')
   const now = nowIso()
   const systemAccountId = writeSystemAccountId(access)
@@ -157,11 +162,9 @@ export async function createGroupAsync(input: Record<string, unknown>, access?: 
     accountIds: [],
     accountStats: emptyGroupAccountStats()
   }
-  const client = await getGroupWriteDatabaseClient()
   try {
-    await client.transaction(async (tx) => {
-      await tx.execute(`
-        INSERT INTO ${groupWriteTable(tx, 'groups')} (
+    await client.execute(`
+        INSERT INTO ${groupWriteTable(client, 'groups')} (
           id, system_account_id, name, provider_code, description, enabled, is_default, group_type, scheduling_policy_json,
           created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
@@ -177,7 +180,6 @@ export async function createGroupAsync(input: Record<string, unknown>, access?: 
         now,
         now
       ])
-    })
   } catch (error) {
     if (isDuplicateGroupNameError(error)) {
       throw new Error(`同一供应商下分组名称已存在：${group.name}`)

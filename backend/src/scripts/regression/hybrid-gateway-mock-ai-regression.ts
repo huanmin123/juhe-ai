@@ -94,6 +94,7 @@ const [
   auditLogQueue,
   hybridAffinity,
   hybridScoring,
+  usageRecordShards,
   redisClientModule
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
@@ -106,12 +107,14 @@ const [
   import('../../modules/audit-logs/audit-log-queue.service.js'),
   import('../../modules/gateway/hybrid/affinity.service.js'),
   import('../../modules/gateway/hybrid/scoring.service.js'),
+  import('../../storage/usage-record-shards.js'),
   import('../../shared/redis-client.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 const upstreamHits: HybridMockHit[] = []
 let scoringFailoverFailureConsumed = false
+let regressionCompleted = false
 
 const app = express()
 app.use(requestContextMiddleware)
@@ -441,6 +444,11 @@ try {
       expectedTargetHits: 0
     })
     usageRecordQueue.flushAllUsageRecordQueue()
+    assertHybridGatewayFailureUsageMetadata({
+      apiKeyId: qualityUnavailableApiKey.id,
+      expectedErrorCode: 'hybrid_scoring_fallback_unavailable',
+      expectedOwnerSystemAccountId: access.systemAccountId
+    })
     const qualityScoringUsageCount = qualityScoringUsageRecordCount()
     assert(qualityScoringUsageCount >= 5, `质量评分使用记录数量不足，期望至少 5，实际 ${qualityScoringUsageCount}`)
 
@@ -452,6 +460,7 @@ try {
       qualityScoringUsageCount,
       routeModels: levelRoutes.map((route) => `${route.minLevel}-${route.maxLevel}:${route.targetModel}`)
     }, null, 2))
+    regressionCompleted = true
   } finally {
     await closeServer(appServer)
     await closeServer(upstreamServer)
@@ -469,7 +478,10 @@ try {
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   databaseModule.closeStorageDatabases()
   await redisClientModule.closeRedisClients()
-  rmSync(tempRoot, { recursive: true, force: true })
+  const tempCleanupSkipped = await removeTempRootWithRetry()
+  if (regressionCompleted && tempCleanupSkipped) {
+    process.exit(0)
+  }
 }
 
 function registerHybridCustomModels(): void {
@@ -816,6 +828,42 @@ function qualityScoringUsageRecordCount(): number {
   return usageTrafficSourceRecordCount('hybrid_quality_scoring')
 }
 
+function assertHybridGatewayFailureUsageMetadata(input: {
+  apiKeyId: string
+  expectedErrorCode: string
+  expectedOwnerSystemAccountId: string
+}): void {
+  const rows = databaseModule.getUsageCatalogDatabase()
+    .prepare(`
+      SELECT usage_id, created_at
+      FROM usage_record_shard_entries
+      WHERE api_key_id = ? AND traffic_source = 'gateway' AND success = 0
+      ORDER BY created_at DESC, usage_id DESC
+      LIMIT 8
+    `)
+    .all(input.apiKeyId) as unknown as Array<{ usage_id?: string; created_at?: string }>
+  for (const row of rows) {
+    if (!row.usage_id) continue
+    const usage = usageRecordShards.queryUsageRecordShardById<{
+      error_code?: string | null
+      group_id?: string | null
+      group_owner_system_account_id?: string | null
+      group_access_type?: string | null
+    }>(
+      row.usage_id,
+      'SELECT error_code, group_id, group_owner_system_account_id, group_access_type FROM usage_records WHERE id = ?',
+      [row.usage_id],
+      row.created_at
+    )
+    if (usage?.error_code !== input.expectedErrorCode) continue
+    assert(usage.group_id, '混合路由失败 usage 应保留分组 ID')
+    assert.equal(usage.group_owner_system_account_id, input.expectedOwnerSystemAccountId, '混合路由失败 usage 应写入分组归属系统账户')
+    assert.equal(usage.group_access_type, 'owner', '混合路由失败 usage 应写入分组访问类型')
+    return
+  }
+  assert.fail(`未找到错误码 ${input.expectedErrorCode} 的混合路由失败 usage 记录`)
+}
+
 function usageTrafficSourceRecordCount(trafficSource: string): number {
   const database = databaseModule.getUsageCatalogDatabase()
   const tableName = sqliteTableExists('usage_record_shard_entries')
@@ -1039,4 +1087,34 @@ function closeServer(server: http.Server | undefined): Promise<void> {
       else resolvePromise()
     })
   })
+}
+
+async function removeTempRootWithRetry(): Promise<boolean> {
+  let lastError: unknown
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    try {
+      rmSync(tempRoot, { recursive: true, force: true })
+      return false
+    } catch (error) {
+      lastError = error
+      await delay(100 * (attempt + 1))
+    }
+  }
+  if (isBusyTempCleanupError(lastError)) {
+    return true
+  }
+  throw lastError
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms))
+}
+
+function isBusyTempCleanupError(error: unknown): boolean {
+  return Boolean(
+    error
+    && typeof error === 'object'
+    && 'code' in error
+    && (error.code === 'EBUSY' || error.code === 'EPERM')
+  )
 }

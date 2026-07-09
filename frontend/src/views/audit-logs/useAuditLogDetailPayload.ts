@@ -63,7 +63,7 @@ export function useAuditLogDetailPayload() {
       }
     } catch (error) {
       console.error(error)
-      message.error('加载原始内容失败')
+      message.error('加载原始请求失败')
     } finally {
       if (requestId === payloadRequestId) {
         payloadLoadingId.value = ''

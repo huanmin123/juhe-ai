@@ -2119,6 +2119,14 @@ async function runSingleGatewayAccountPrecheck(state: PrecheckState, timeoutMs: 
       accountId,
       access
     }, { timeoutMs: 10_000 }),
+    findOpenAIAccountForGroup: (groupId, accountId, systemAccountId, options) => requestGatewayDbService({
+      type: 'find_openai_account_for_group',
+      groupId,
+      accountId,
+      systemAccountId,
+      includeUnavailable: options?.includeUnavailable,
+      ignoreAvailability: options?.ignoreAvailability
+    }, { timeoutMs: 10_000 }),
     gatewaySettingsOverride: diagnosticAccountTestGatewaySettingsOverride(state.settings, timeoutMs)
   })
 }

@@ -22,7 +22,7 @@ import {
   recordGatewayAccountFailureForPrecheck,
   suppressGatewayAccountLocally
 } from '../runtime/account-side-effects.service.js'
-import { forgetOpenAIAccountForSession } from '../runtime/session-affinity.service.js'
+import { forgetOpenAIAccountForSessionAsync } from '../runtime/session-affinity.service.js'
 import {
   isEffectiveOpenAIStreamRequest,
   isUpstreamRequestAbortedError,
@@ -232,7 +232,7 @@ export async function handleFailedUpstreamResponse(
     return { action: 'retry', lastAttempt }
   }
 
-  forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
+  await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
 
   const accountStateMutationEnabled = input.accountStateMutationEnabled !== false
   const isolateAccountApiKeyFailure = hasAlternativeAccountApiKeys(account)
@@ -324,7 +324,7 @@ export async function handleUpstreamRequestError(
 
   if (isUpstreamRequestAbortedError(error) || signal?.aborted) {
     let lastAttempt = input.lastAttempt
-    forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
+    await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
     if (shouldRecordAbortedUpstreamAttempt(error)) {
       const statusCode = lastAttempt?.accountId === account.id && lastAttempt.upstreamUrl === upstreamUrl
         ? lastAttempt.status
@@ -426,7 +426,7 @@ export async function handleUpstreamRequestError(
       endpoint: requestEndpoint(req)
     })
   }
-  forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
+  await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
   const accountStateMutationEnabled = input.accountStateMutationEnabled !== false
   const isolateAccountApiKeyFailure = hasAlternativeAccountApiKeys(account)
   if (accountStateMutationEnabled && usageContext.trafficSource === 'gateway' && isRealUpstreamUrl(upstreamUrl)) {

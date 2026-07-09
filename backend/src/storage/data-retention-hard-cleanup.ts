@@ -76,6 +76,7 @@ const nonBusinessStatsCleanupTables: HardCleanupTableRule[] = [
   { databaseRole: 'stats', tableName: 'ai_performance_summary_windows', timeColumnName: 'end_date', cutoffKey: 'date' },
   { databaseRole: 'stats', tableName: 'usage_quota_hourly_windows', timeColumnName: 'updated_at', cutoffKey: 'iso' },
   { databaseRole: 'stats', tableName: 'usage_scope_range_windows', timeColumnName: 'end_date', cutoffKey: 'date' },
+  { databaseRole: 'stats', tableName: 'usage_range_window_requests', timeColumnName: 'expires_at', cutoffKey: 'iso' },
   { databaseRole: 'stats', tableName: 'client_ip_registry', timeColumnName: 'last_seen_at', cutoffKey: 'iso' },
   { databaseRole: 'stats', tableName: 'client_ip_stats_daily', timeColumnName: 'stat_date', cutoffKey: 'date' },
   { databaseRole: 'stats', tableName: 'client_ip_usage_range_windows', timeColumnName: 'end_date', cutoffKey: 'date' },

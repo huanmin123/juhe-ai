@@ -114,6 +114,14 @@ const anthropicRequest = createAnthropicTestRequest({
 })
 assert.equal(anthropicRequest.path, '/v1/messages', 'Anthropic Messages 测试应使用 Messages 路径')
 assert.equal(anthropicRequest.body.stream, false, 'Messages JSON 测试应保持非流式')
+assert.equal(anthropicRequest.headers?.['x-juhe-client-profile'], 'claude_code', 'Anthropic 账户测试应显式声明 Claude Code 画像')
+assert.equal(typeof anthropicRequest.headers?.['x-claude-code-session-id'], 'string', 'Anthropic 账户测试应携带 Claude Code session header')
+assert.equal(anthropicRequest.body.max_tokens, 32000, 'Anthropic 账户测试应使用 Claude Code 形态的 max_tokens')
+assert.equal(Array.isArray(anthropicRequest.body.tools), true, 'Anthropic 账户测试应保留无工具 tools=[] 形态')
+assert.deepEqual(anthropicRequest.body.thinking, { type: 'adaptive' }, 'Anthropic 账户测试应使用 Claude Code thinking body')
+assert.deepEqual(anthropicRequest.body.output_config, { effort: 'high' }, 'Anthropic 账户测试应使用 Claude Code output_config')
+assert.equal(Array.isArray(anthropicRequest.body.system), true, 'Anthropic 账户测试应使用 Claude Code system block 数组')
+assert.match(JSON.stringify(anthropicRequest.body), /Claude Agent SDK/, 'Anthropic 账户测试应使用真实 Claude Code SDK system 文案')
 
 const geminiRequest = createGeminiTestRequest({
   fallbackModel: 'gemini-2.5-pro',

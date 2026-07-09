@@ -141,14 +141,16 @@ try {
     await assertTransientSlowThenFastDoesNotDegrade(baseUrl, speedScenario)
     await assertNonStreamSlowFirstByteRetriesAndDegrades(baseUrl, speedScenario)
     await assertCostFirstRouteUnaffected(baseUrl, costScenario)
-    await assertSpeedFirstDoesNotCrossPriorityTier(baseUrl, priorityScenario)
+    await assertSpeedFirstCanCrossPriorityPreference(baseUrl, priorityScenario)
     await assertBackgroundProbeRestoresPrimary(baseUrl, speedScenario)
     await assertBulkFastTrafficAfterRecovery(baseUrl, speedScenario)
+    await assertSpeedFirstCutoverDoesNotPersistSubstituteAffinity(baseUrl, speedScenario)
     await assertResponsesSlowFirstByteUsesObservationAndConfirmedCutover(baseUrl, speedScenario)
+    await assertSpeedFirstDoesNotCutoverToAlreadyDegradedCandidate(baseUrl, speedScenario)
     await assertAllDegradedBypassKeepsOriginalOrder(baseUrl, speedScenario)
     await assertStreamSlowFirstByteRetriesBeforeDownstreamOutput(baseUrl, speedScenario)
 
-    console.log('普通路由速度优先 Mock AI 回归通过：偶发慢后快样本清理、Chat/Responses 首字慢延迟切号、批量混合请求、降级后置、成本优先隔离、后台探针恢复、全部降级旁路和流式首字确认切号均生效')
+    console.log('普通路由速度优先 Mock AI 回归通过：偶发慢后快样本清理、Chat/Responses 首字慢延迟切号、跨账户偏好覆盖、替补亲和回归、批量混合请求、降级后置、成本优先隔离、后台探针恢复、已降级候选不切换、全部降级旁路和流式首字确认切号均生效')
   } finally {
     await closeServer(appServer)
     await closeServer(upstreamServer)
@@ -288,27 +290,29 @@ async function assertCostFirstRouteUnaffected(baseUrl: string, scenario: CostFir
   assert.equal(countHits(hits, 'sk-speed-primary', '/v1/chat/completions'), 0, '速度优先降级状态不应污染成本优先路由')
 }
 
-async function assertSpeedFirstDoesNotCrossPriorityTier(baseUrl: string, scenario: SpeedFirstScenario): Promise<void> {
+async function assertSpeedFirstCanCrossPriorityPreference(baseUrl: string, scenario: SpeedFirstScenario): Promise<void> {
   const scope = latencyDegradation.normalRouteLatencyDegradationScope({
     systemAccountId: access.systemAccountId,
     routeStrategyId: scenario.routeStrategyId,
     groupId: scenario.groupId
   })
-  assert(scope, '优先级层切号保护测试需要有效普通路由速度优先 scope')
-  await latencyDegradation.recordNormalRouteFirstByteSlowAsync({ id: scenario.primaryAccountId }, scope, speedFirstConfig)
+  assert(scope, '账户偏好覆盖测试需要有效普通路由速度优先 scope')
+  await latencyDegradation.clearNormalRouteLatencyDegradationForRouteStrategyAsync(scenario.routeStrategyId)
   await latencyDegradation.recordNormalRouteFirstByteSlowAsync({ id: scenario.primaryAccountId }, scope, speedFirstConfig)
   setAccountPhase('sk-priority-super', 'slow_first_byte')
   setAccountPhase('sk-priority-normal', 'fast')
   const hitStart = upstreamHits.length
   const startedAt = Date.now()
-  const response = await postChat(baseUrl, scenario.apiKey, 'speed first must not cross priority tier', false)
-  assert.equal(response.status, 200, `唯一超级优先账号慢时请求仍应成功，实际 HTTP ${response.status}: ${response.text}`)
-  assert.match(response.text, /late mock ai body/, '唯一超级优先账号慢时不应切到普通优先级账号')
-  assert(Date.now() - startedAt >= speedFirstConfig.firstByteThresholdMs - 2_500, '唯一超级优先账号慢时应继续等待当前账号而不是立即跨层切号')
+  const response = await postChat(baseUrl, scenario.apiKey, 'speed first may cross account preference', false)
+  assert.equal(response.status, 200, `超级优先账号确认慢时请求应切号成功，实际 HTTP ${response.status}: ${response.text}`)
+  assert.match(response.text, /mock ai chat sk-priority-normal/, '超级优先账号确认慢后应切到未降级普通优先级账号')
+  assert(Date.now() - startedAt >= speedFirstConfig.firstByteThresholdMs - 2_500, '当前请求应在首字阈值确认慢后再切到普通优先级账号')
   const hits = upstreamHits.slice(hitStart)
-  assert.equal(countHits(hits, 'sk-priority-super', '/v1/chat/completions'), 1, '唯一超级优先账号慢时应命中超级优先账号')
-  assert.equal(countHits(hits, 'sk-priority-normal', '/v1/chat/completions'), 0, '速度优先不得跨到普通优先级账号')
+  assert.equal(countHits(hits, 'sk-priority-super', '/v1/chat/completions'), 1, '确认慢请求应先命中超级优先账号')
+  assert.equal(countHits(hits, 'sk-priority-normal', '/v1/chat/completions'), 1, '速度优先应允许切到普通优先级账号')
   await latencyDegradation.clearNormalRouteLatencyDegradationForRouteStrategyAsync(scenario.routeStrategyId)
+  setAccountPhase('sk-priority-super', 'fast')
+  setAccountPhase('sk-priority-normal', 'fast')
 }
 
 async function assertBackgroundProbeRestoresPrimary(baseUrl: string, scenario: SpeedFirstScenario): Promise<void> {
@@ -380,6 +384,49 @@ async function assertBulkFastTrafficAfterRecovery(baseUrl: string, scenario: Spe
   assert.equal(countHits(hits, 'sk-speed-secondary', '/v1/chat/completions'), 0, '恢复后批量请求不应误切副号')
 }
 
+async function assertSpeedFirstCutoverDoesNotPersistSubstituteAffinity(baseUrl: string, scenario: SpeedFirstScenario): Promise<void> {
+  await latencyDegradation.clearNormalRouteLatencyDegradationForRouteStrategyAsync(scenario.routeStrategyId)
+  const scope = latencyDegradation.normalRouteLatencyDegradationScope({
+    systemAccountId: access.systemAccountId,
+    routeStrategyId: scenario.routeStrategyId,
+    groupId: scenario.groupId
+  })
+  assert(scope, '速度切号亲和回归测试需要有效普通路由速度优先 scope')
+  await latencyDegradation.recordNormalRouteFirstByteSlowAsync({ id: scenario.primaryAccountId }, scope, speedFirstConfig)
+  setAccountPhase('sk-speed-primary', 'slow_first_byte')
+  setAccountPhase('sk-speed-secondary', 'fast')
+
+  const sessionId = `speed-first-cutover-affinity-${Date.now()}`
+  const cutoverHitStart = upstreamHits.length
+  const startedAt = Date.now()
+  const cutoverResponse = await postChat(baseUrl, scenario.apiKey, 'speed cutover should not persist substitute affinity', false, { sessionId })
+  assert.equal(cutoverResponse.status, 200, `速度切号请求应成功，实际 HTTP ${cutoverResponse.status}: ${cutoverResponse.text}`)
+  assert.match(cutoverResponse.text, /mock ai chat sk-speed-secondary/, '确认慢切号后应由副号返回')
+  assert(Date.now() - startedAt >= speedFirstConfig.firstByteThresholdMs - 2_500, '速度切号应等待首字阈值确认慢后发生')
+  const cutoverHits = upstreamHits.slice(cutoverHitStart)
+  assert.equal(countHits(cutoverHits, 'sk-speed-primary', '/v1/chat/completions'), 1, '速度切号请求应先命中主号')
+  assert.equal(countHits(cutoverHits, 'sk-speed-secondary', '/v1/chat/completions'), 1, '速度切号请求应再命中副号')
+
+  setAccountPhase('sk-speed-primary', 'fast')
+  setAccountPhase('sk-speed-secondary', 'fast')
+  const candidateAccount = repositories.findOpenAIAccountForGroup(scenario.groupId, scenario.primaryAccountId, access.systemAccountId, { ignoreAvailability: true })
+  assert(candidateAccount, '速度切号亲和回归应能读取主号网关候选账户')
+  for (let index = 1; index <= speedFirstConfig.recoverySuccessCount; index += 1) {
+    const recovery = await latencyDegradation.recordNormalRouteFirstByteSuccessAsync(candidateAccount, scope, speedFirstConfig, 100)
+    assert.equal(recovery?.cleared, index >= speedFirstConfig.recoverySuccessCount, `第 ${index} 次恢复成功后的清理状态不符合预期`)
+  }
+
+  const recoveryHitStart = upstreamHits.length
+  const recoveryResponse = await postChat(baseUrl, scenario.apiKey, 'speed cutover affinity after recovery', false, { sessionId })
+  assert.equal(recoveryResponse.status, 200, `速度降级恢复后同 session 请求应成功，实际 HTTP ${recoveryResponse.status}: ${recoveryResponse.text}`)
+  assert.match(recoveryResponse.text, /mock ai chat sk-speed-primary/, '速度降级恢复后同 session 应回到账户配置主号')
+  const recoveryHits = upstreamHits.slice(recoveryHitStart)
+  assert.equal(countHits(recoveryHits, 'sk-speed-primary', '/v1/chat/completions'), 1, '恢复后同 session 应命中主号')
+  assert.equal(countHits(recoveryHits, 'sk-speed-secondary', '/v1/chat/completions'), 0, '恢复后不应被速度切号副号亲和粘住')
+
+  await latencyDegradation.clearNormalRouteLatencyDegradationForRouteStrategyAsync(scenario.routeStrategyId)
+}
+
 async function assertResponsesSlowFirstByteUsesObservationAndConfirmedCutover(baseUrl: string, scenario: SpeedFirstScenario): Promise<void> {
   await latencyDegradation.clearNormalRouteLatencyDegradationForRouteStrategyAsync(scenario.routeStrategyId)
   setAccountPhase('sk-speed-primary', 'slow_first_byte')
@@ -411,6 +458,38 @@ async function assertResponsesSlowFirstByteUsesObservationAndConfirmedCutover(ba
   const bulkHits = upstreamHits.slice(bulkHitStart)
   assert.equal(countHits(bulkHits, 'sk-speed-primary', '/v1/responses'), 0, 'Responses 降级后批量请求不应回打慢主号')
   assert.equal(countHits(bulkHits, 'sk-speed-secondary', '/v1/responses'), 30, 'Responses 降级后批量请求应全部命中副号')
+
+  await latencyDegradation.clearNormalRouteLatencyDegradationForRouteStrategyAsync(scenario.routeStrategyId)
+  setAccountPhase('sk-speed-primary', 'fast')
+  setAccountPhase('sk-speed-secondary', 'fast')
+}
+
+async function assertSpeedFirstDoesNotCutoverToAlreadyDegradedCandidate(baseUrl: string, scenario: SpeedFirstScenario): Promise<void> {
+  await latencyDegradation.clearNormalRouteLatencyDegradationForRouteStrategyAsync(scenario.routeStrategyId)
+  const scope = latencyDegradation.normalRouteLatencyDegradationScope({
+    systemAccountId: access.systemAccountId,
+    routeStrategyId: scenario.routeStrategyId,
+    groupId: scenario.groupId
+  })
+  assert(scope, '已降级候选阻断切号测试需要有效普通路由速度优先 scope')
+  await latencyDegradation.recordNormalRouteFirstByteSlowAsync({ id: scenario.secondaryAccountId }, scope, speedFirstConfig)
+  await latencyDegradation.recordNormalRouteFirstByteSlowAsync({ id: scenario.secondaryAccountId }, scope, speedFirstConfig)
+  await latencyDegradation.recordNormalRouteFirstByteSlowAsync({ id: scenario.primaryAccountId }, scope, speedFirstConfig)
+
+  setAccountPhase('sk-speed-primary', 'slow_first_byte')
+  setAccountPhase('sk-speed-secondary', 'fast')
+  const hitStart = upstreamHits.length
+  const startedAt = Date.now()
+  const response = await postChat(baseUrl, scenario.apiKey, 'degraded remaining candidate should not receive speed cutover', false)
+  assert.equal(response.status, 200, `剩余候选已降级时应继续等待当前主号成功，实际 HTTP ${response.status}: ${response.text}`)
+  assert.match(response.text, /late mock ai body/, '剩余候选已降级时不应切到已降级副号，应返回当前主号慢响应')
+  assert(Date.now() - startedAt >= speedFirstConfig.firstByteThresholdMs - 2_500, '已降级候选阻断切号应等待首字阈值确认后继续当前响应')
+  const hits = upstreamHits.slice(hitStart)
+  assert.equal(countHits(hits, 'sk-speed-primary', '/v1/chat/completions'), 1, '已降级候选阻断切号请求应先命中主号')
+  assert.equal(countHits(hits, 'sk-speed-secondary', '/v1/chat/completions'), 0, '已降级副号不应作为当前请求速度切换目标')
+  const candidates = await listSpeedProbeCandidates(scenario)
+  assert(candidates.some((candidate) => candidate.accountId === scenario.primaryAccountId), '当前主号确认慢后应进入恢复探针候选')
+  assert(candidates.some((candidate) => candidate.accountId === scenario.secondaryAccountId), '已降级副号应保持恢复探针候选状态')
 
   await latencyDegradation.clearNormalRouteLatencyDegradationForRouteStrategyAsync(scenario.routeStrategyId)
   setAccountPhase('sk-speed-primary', 'fast')
@@ -634,7 +713,13 @@ interface ChatResponseResult {
   stream: boolean
 }
 
-async function postChat(baseUrl: string, apiKey: string, content: string, stream: boolean): Promise<ChatResponseResult> {
+async function postChat(
+  baseUrl: string,
+  apiKey: string,
+  content: string,
+  stream: boolean,
+  options: { sessionId?: string } = {}
+): Promise<ChatResponseResult> {
   const response = await fetch(`${baseUrl}/v1/chat/completions`, {
     method: 'POST',
     headers: {
@@ -646,7 +731,8 @@ async function postChat(baseUrl: string, apiKey: string, content: string, stream
       model,
       messages: [{ role: 'user', content }],
       stream,
-      max_tokens: 16
+      max_tokens: 16,
+      ...(options.sessionId ? { session_id: options.sessionId } : {})
     })
   })
   return {

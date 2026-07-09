@@ -21,7 +21,7 @@ const overviewQuerySchema = z.object({
 })
 
 const historyQuerySchema = z.object({
-  databaseRole: z.enum(['business', 'dataset', 'usage-catalog', 'stats', 'codex-context-state']),
+  databaseRole: z.enum(['business', 'dataset', 'usage-catalog', 'stats', 'archive', 'codex-context-state']),
   tableName: z.string().trim().min(1),
   startAt: z.string().trim().optional(),
   endAt: z.string().trim().optional(),

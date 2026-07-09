@@ -12,6 +12,8 @@ export interface RedisCommandClient {
 }
 
 const redisClients = new Map<string, Promise<RedisCommandClient>>()
+const redisClientConnectTimeoutMs = 10000
+const redisClientCloseTimeoutMs = 2000
 
 export function getRedisClient(url: string): Promise<RedisCommandClient> {
   const normalizedUrl = normalizeRedisUrl(url)
@@ -21,8 +23,13 @@ export function getRedisClient(url: string): Promise<RedisCommandClient> {
     redisClients.delete(normalizedUrl)
     throw error
   })
+  clientPromise.catch(() => undefined)
   redisClients.set(normalizedUrl, clientPromise)
   return clientPromise
+}
+
+export function hasRedisClient(url: string): boolean {
+  return redisClients.has(normalizeRedisUrl(url))
 }
 
 export function createDedicatedRedisClient(url: string): Promise<RedisCommandClient> {
@@ -32,15 +39,29 @@ export function createDedicatedRedisClient(url: string): Promise<RedisCommandCli
 export async function closeRedisClients(): Promise<void> {
   const clientPromises = Array.from(redisClients.values())
   redisClients.clear()
-  const settledClients = await Promise.allSettled(clientPromises)
+  const settledClients = await Promise.allSettled(
+    clientPromises.map((clientPromise) =>
+      withTimeout(clientPromise, redisClientCloseTimeoutMs, 'Redis client close wait timeout')
+    )
+  )
   for (const settledClient of settledClients) {
     if (settledClient.status !== 'fulfilled') continue
-    const client = settledClient.value
-    if (client.quit) {
-      await client.quit().catch(() => undefined)
-    } else {
-      client.destroy?.()
-    }
+    await closeRedisClient(settledClient.value)
+  }
+}
+
+async function closeRedisClient(client: RedisCommandClient): Promise<void> {
+  if (!client.quit) {
+    client.destroy?.()
+    return
+  }
+  const timedOut = Symbol('redis-close-timeout')
+  const result = await Promise.race([
+    client.quit().then(() => undefined, () => undefined),
+    timeoutResult(timedOut, redisClientCloseTimeoutMs)
+  ])
+  if (result === timedOut) {
+    client.destroy?.()
   }
 }
 
@@ -49,14 +70,46 @@ async function createRedisClient(url: string): Promise<RedisCommandClient> {
   const client = createClient({
     url,
     socket: {
+      connectTimeout: 10000,
       reconnectStrategy: (retries) => Math.min(5000, 250 + retries * 250)
     }
   }) as unknown as RedisCommandClient
   client.on('error', () => {
     // node-redis emits connection errors; command promises still reject for callers.
   })
-  await client.connect()
+  try {
+    await withTimeout(client.connect(), redisClientConnectTimeoutMs, 'Redis connect timeout')
+  } catch (error) {
+    client.destroy?.()
+    throw error
+  }
   return client
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error(message)), timeoutMs)
+      })
+    ])
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout)
+    }
+    promise.catch(() => undefined)
+  }
+}
+
+function timeoutResult<T>(value: T, timeoutMs: number): Promise<T> {
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      resolve(value)
+    }, timeoutMs)
+    timeout.unref?.()
+  })
 }
 
 function normalizeRedisUrl(url: string): string {

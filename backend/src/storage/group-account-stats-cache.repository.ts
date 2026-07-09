@@ -103,6 +103,9 @@ export async function refreshDirtyGroupAccountStatsCacheWithWriter(
   writer: GroupAccountStatsDirtyStateWriter,
   limit = 1000
 ): Promise<number> {
+  if (runtimeConfig.databaseDriver !== 'sqlite') {
+    throw new Error('refreshDirtyGroupAccountStatsCacheWithWriter 仅支持 SQLite 本地刷新；PostgreSQL 模式必须使用 refreshDirtyGroupAccountStatsCacheAsync')
+  }
   const businessDatabase = getBusinessDatabase()
   const statsDatabase = getStatsDatabase()
   const normalizedLimit = Math.max(1, Math.min(groupAccountStatsFullRefreshBatchLimit, Math.trunc(limit)))

@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto'
+
 import type { AccountClientCompatibility } from '../../domain/types.js'
 import type { AccountSupportedEndpointMode } from '../../domain/types.js'
 import {
@@ -11,6 +13,10 @@ const gatewayTestPath = '/v1/responses'
 const gatewayChatCompletionsPath = '/v1/chat/completions'
 const gatewayAnthropicMessagesPath = '/v1/messages'
 const gatewayGeminiVersionPrefix = '/v1beta'
+const gatewayClientProfileHeader = 'x-juhe-client-profile'
+const claudeCodeVersion = '2.1.201'
+const claudeCodeBuildId = 'eb7'
+const claudeCodeDeviceId = '7cfe24060ed291eb6ea9b7a6edf6947d14da82a0068470a6fc9cf8c147b252dc'
 export const accountTestModelsPath = '/v1/models'
 
 export type AccountTestRequestInput = {
@@ -26,6 +32,7 @@ export type AccountTestRequest = {
   path: string
   body: Record<string, unknown>
   model: string
+  headers?: Record<string, string>
 }
 
 export function createOpenAITestRequest(input: AccountTestRequestInput): AccountTestRequest {
@@ -54,18 +61,13 @@ export function createAnthropicTestRequest(input: {
   const mode = input.testEndpointMode ?? preferredAnthropicTestEndpointMode(modes)
   const stream = mode === 'messages_sse'
   const model = stringValue(input.explicitModel) || input.fallbackModel
+  const sessionId = randomUUID()
   return {
     path: gatewayAnthropicMessagesPath,
-    body: {
-      model,
-      messages: [
-        {
-          role: 'user',
-          content: input.prompt
-        }
-      ],
-      max_tokens: 1,
-      stream
+    body: createAnthropicClaudeCodeAccountTestPayload(model, input.prompt, stream, sessionId),
+    headers: {
+      [gatewayClientProfileHeader]: 'claude_code',
+      'x-claude-code-session-id': sessionId
     },
     model
   }
@@ -167,6 +169,74 @@ export function createGeminiGenerateContentTestPayload(prompt: string): Record<s
       maxOutputTokens: 1
     }
   }
+}
+
+function createAnthropicClaudeCodeAccountTestPayload(
+  model: string,
+  prompt: string,
+  stream: boolean,
+  sessionId: string
+): Record<string, unknown> {
+  return {
+    model,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: accountTestSystemReminder()
+          },
+          {
+            type: 'text',
+            text: `${prompt}\n`,
+            cache_control: { type: 'ephemeral' }
+          }
+        ]
+      }
+    ],
+    system: [
+      {
+        type: 'text',
+        text: `x-anthropic-billing-header: cc_version=${claudeCodeVersion}.${claudeCodeBuildId}; cc_entrypoint=sdk-cli;`
+      },
+      {
+        type: 'text',
+        text: "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+        cache_control: { type: 'ephemeral' }
+      },
+      {
+        type: 'text',
+        text: `CWD: ${process.cwd()}\nDate: ${new Date().toISOString().slice(0, 10)}`
+      }
+    ],
+    tools: [],
+    max_tokens: 32000,
+    thinking: { type: 'adaptive' },
+    output_config: { effort: 'high' },
+    metadata: {
+      user_id: JSON.stringify({
+        device_id: claudeCodeDeviceId,
+        account_uuid: '',
+        session_id: sessionId
+      })
+    },
+    stream
+  }
+}
+
+function accountTestSystemReminder(): string {
+  return [
+    '<system-reminder>',
+    "As you answer the user's questions, you can use the following context:",
+    '# currentDate',
+    `Today's date is ${new Date().toISOString().slice(0, 10)}.`,
+    '',
+    '      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.',
+    '</system-reminder>',
+    '',
+    ''
+  ].join('\n')
 }
 
 function geminiModelPath(model: string): string {

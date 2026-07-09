@@ -8,6 +8,7 @@ import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 
 type UseAuditLogAccountOptionsParams = {
   accountSelection: Ref<AccountSelection | undefined>
+  selectedSystemAccountId: () => string | undefined
   selectedAccountId: () => string
 }
 
@@ -51,8 +52,14 @@ export function useAuditLogAccountOptions(params: UseAuditLogAccountOptionsParam
   async function load(nextKeyword = keyword.value, force = false): Promise<void> {
     keyword.value = nextKeyword
     const requestKeyword = nextKeyword.trim() || undefined
+    const systemAccountId = params.selectedSystemAccountId()
+    if (!systemAccountId) {
+      options.value = []
+      params.accountSelection.value = undefined
+      return
+    }
     const selectedIds = [params.selectedAccountId()].filter(Boolean)
-    const requestKey = JSON.stringify([requestKeyword ?? '', selectedIds])
+    const requestKey = JSON.stringify([systemAccountId, requestKeyword ?? '', selectedIds])
     if (!force && loadingKey === requestKey && loadingPromise) {
       return loadingPromise
     }
@@ -72,7 +79,7 @@ export function useAuditLogAccountOptions(params: UseAuditLogAccountOptionsParam
     loadingKey = requestKey
     loadingPromise = (async () => {
       try {
-        let nextOptions = await api.accounts.options({ keyword: requestKeyword, limit: 50 })
+        let nextOptions = await api.accounts.options({ systemAccountId, keyword: requestKeyword, limit: 50 })
         nextOptions = await ensureSelectedAccountOption(nextOptions)
         cache.set(requestKey, nextOptions)
         if (currentRequestSeq !== requestSeq) return
@@ -100,7 +107,7 @@ export function useAuditLogAccountOptions(params: UseAuditLogAccountOptionsParam
     const missingIds = selectedIds.filter((id) => !currentOptions.some((account) => account.id === id))
     if (!missingIds.length) return currentOptions
     try {
-      const selectedOptions = await api.accounts.options({ ids: missingIds, limit: 50 })
+      const selectedOptions = await api.accounts.options({ systemAccountId: params.selectedSystemAccountId(), ids: missingIds, limit: 50 })
       return mergeOptionsById(selectedOptions, currentOptions)
     } catch {
       return currentOptions

@@ -24,16 +24,22 @@ import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
-export type MonitoredDatabaseRole = 'business' | 'dataset' | 'usage-catalog' | 'stats' | 'codex-context-state'
+export type MonitoredDatabaseRole = 'business' | 'dataset' | 'usage-catalog' | 'stats' | 'archive' | 'codex-context-state'
 type SnapshotNumberValue = number | string | null
 
 export interface TableStorageSnapshotSummary {
   databaseRole: MonitoredDatabaseRole
   tableName: string
   sampledAt: string
+  tableKind?: string
+  parentTableName?: string
+  isPartition?: boolean
+  isArchive?: boolean
   rowCount?: number
   tableBytes?: number
   indexBytes?: number
+  indexToTableRatio?: number
+  indexToTotalRatio?: number
   totalBytes?: number
   pageCount?: number
   indexCount: number
@@ -65,6 +71,8 @@ export interface TableStorageOverview {
   tables: TableStorageSnapshotSummary[]
 }
 
+type TableStorageOverviewInput = { startAt?: string; endAt?: string; limit?: number }
+
 export interface CollectTableStorageSnapshotOptions {
   tableScanMode?: 'full' | 'cursor' | 'none'
   maxTablesPerDatabase?: number
@@ -92,14 +100,19 @@ interface PreparedTableMonitorTarget {
   cursorTableName?: string
 }
 
+type PostgresMonitoredSchemaName = 'juhe_business' | 'juhe_dataset' | 'juhe_usage' | 'juhe_stats' | 'juhe_archive' | 'juhe_codex_context'
+
 interface PostgresMonitoredSchemaTarget {
   role: MonitoredDatabaseRole
-  schemaName: 'juhe_business' | 'juhe_dataset' | 'juhe_usage' | 'juhe_stats' | 'juhe_codex_context'
+  schemaName: PostgresMonitoredSchemaName
   databasePath: string
 }
 
 interface PostgresTableStorageCatalogRow {
   table_name: string
+  table_kind: string | null
+  parent_table_name: string | null
+  is_partition: number | string | boolean | null
   row_count: number | string | null
   table_bytes: number | string | null
   index_bytes: number | string | null
@@ -129,6 +142,10 @@ interface LatestTableSnapshotRow {
   database_role: MonitoredDatabaseRole
   table_name: string
   sampled_at: string
+  table_kind: string | null
+  parent_table_name: string | null
+  is_partition: SnapshotNumberValue
+  is_archive: SnapshotNumberValue
   row_count: SnapshotNumberValue
   table_bytes: SnapshotNumberValue
   index_bytes: SnapshotNumberValue
@@ -159,15 +176,18 @@ interface LatestDatabaseSnapshotRow {
 
 export const tableMonitorSampleRetentionDays = 30
 const defaultTableStorageHistoryLimit = 720
-const monitoredDatabaseRoles: MonitoredDatabaseRole[] = ['business', 'dataset', 'usage-catalog', 'stats', 'codex-context-state']
+const tableStorageOverviewCacheTtlMs = 30_000
+const monitoredDatabaseRoles: MonitoredDatabaseRole[] = ['business', 'dataset', 'usage-catalog', 'stats', 'archive', 'codex-context-state']
 const statsSchemaName = 'juhe_stats'
 const postgresMonitoredSchemaTargets: PostgresMonitoredSchemaTarget[] = [
   { role: 'business', schemaName: 'juhe_business', databasePath: 'postgres:juhe_business' },
   { role: 'dataset', schemaName: 'juhe_dataset', databasePath: 'postgres:juhe_dataset' },
   { role: 'usage-catalog', schemaName: 'juhe_usage', databasePath: 'postgres:juhe_usage' },
   { role: 'stats', schemaName: 'juhe_stats', databasePath: 'postgres:juhe_stats' },
+  { role: 'archive', schemaName: 'juhe_archive', databasePath: 'postgres:juhe_archive' },
   { role: 'codex-context-state', schemaName: 'juhe_codex_context', databasePath: 'postgres:juhe_codex_context' }
 ]
+let tableStorageOverviewCache: { key: string; cachedAtMs: number; value: TableStorageOverview } | undefined
 
 export function collectTableStorageSnapshot(sampledAt = nowIso(), options: CollectTableStorageSnapshotOptions = {}): CollectTableStorageSnapshotResult {
   const tableScanMode = options.tableScanMode ?? 'cursor'
@@ -246,7 +266,7 @@ export async function collectTableStorageSnapshotAsync(sampledAt = nowIso(), opt
   })
 }
 
-export function getTableStorageOverview(input: { startAt?: string; endAt?: string; limit?: number } = {}): TableStorageOverview {
+export function getTableStorageOverview(input: TableStorageOverviewInput = {}): TableStorageOverview {
   const database = getStatsDatabase()
   const range = normalizeDateRange(input.startAt, input.endAt)
   const databaseSnapshotStatement = database
@@ -291,15 +311,23 @@ export function getTableStorageOverview(input: { startAt?: string; endAt?: strin
   }
 }
 
-export async function getTableStorageOverviewAsync(input: { startAt?: string; endAt?: string; limit?: number } = {}): Promise<TableStorageOverview> {
+export async function getTableStorageOverviewAsync(input: TableStorageOverviewInput = {}): Promise<TableStorageOverview> {
+  const cachedOverview = getCachedTableStorageOverview(input)
+  if (cachedOverview) return cachedOverview
+
+  let overview: TableStorageOverview
   if (sqliteReadWorkerPoolEnabled()) {
-    return requestSqliteReadWorker({
+    overview = await requestSqliteReadWorker({
       type: 'get_table_storage_overview_read_only',
       input
     })
+    setCachedTableStorageOverview(input, overview)
+    return overview
   }
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return getTableStorageOverview(input)
+    overview = getTableStorageOverview(input)
+    setCachedTableStorageOverview(input, overview)
+    return overview
   }
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const range = normalizeDateRange(input.startAt, input.endAt)
@@ -317,21 +345,27 @@ export async function getTableStorageOverviewAsync(input: { startAt?: string; en
     .sort(compareDatabaseSnapshotsByRole)
   const sampledAt = databases.map((row) => row.sampled_at).sort().at(-1)
   const tables = await client.query<LatestTableSnapshotRow>(`
-    SELECT ${tableStorageSnapshotSelectColumns('ranked')}
-    FROM (
-      SELECT
-        ${tableStorageSnapshotSelectColumns()},
-        ROW_NUMBER() OVER (
-          PARTITION BY database_role, table_name
-          ORDER BY sampled_at DESC, id DESC
-        ) AS rank
+    WITH table_keys AS (
+      SELECT database_role, table_name
       FROM ${statsTable(client, 'table_storage_snapshots')}
       WHERE sampled_at >= ?
         AND sampled_at <= ?
-    ) ranked
-    WHERE ranked.rank = 1
-  `, [range.startAt, range.endAt])
-  return {
+      GROUP BY database_role, table_name
+    )
+    SELECT ${tableStorageSnapshotSelectColumns('latest')}
+    FROM table_keys key
+    CROSS JOIN LATERAL (
+      SELECT ${tableStorageSnapshotSelectColumns()}
+      FROM ${statsTable(client, 'table_storage_snapshots')} latest
+      WHERE latest.database_role = key.database_role
+        AND latest.table_name = key.table_name
+        AND latest.sampled_at >= ?
+        AND latest.sampled_at <= ?
+      ORDER BY latest.sampled_at DESC, latest.id DESC
+      LIMIT 1
+    ) latest
+  `, [range.startAt, range.endAt, range.startAt, range.endAt])
+  overview = {
     sampledAt,
     databases: databases.map(databaseSnapshotFromRow),
     tables: tables
@@ -339,6 +373,32 @@ export async function getTableStorageOverviewAsync(input: { startAt?: string; en
       .slice(0, normalizeLimit(input.limit ?? 200))
       .map(tableSnapshotFromRow)
   }
+  setCachedTableStorageOverview(input, overview)
+  return overview
+}
+
+function getCachedTableStorageOverview(input: TableStorageOverviewInput): TableStorageOverview | undefined {
+  const key = tableStorageOverviewCacheKey(input)
+  const cached = tableStorageOverviewCache
+  if (!cached || cached.key !== key) return undefined
+  if (Date.now() - cached.cachedAtMs > tableStorageOverviewCacheTtlMs) return undefined
+  return cached.value
+}
+
+function setCachedTableStorageOverview(input: TableStorageOverviewInput, value: TableStorageOverview): void {
+  tableStorageOverviewCache = {
+    key: tableStorageOverviewCacheKey(input),
+    cachedAtMs: Date.now(),
+    value
+  }
+}
+
+function tableStorageOverviewCacheKey(input: TableStorageOverviewInput): string {
+  return JSON.stringify({
+    startAt: input.startAt ?? '',
+    endAt: input.endAt ?? '',
+    limit: input.limit ?? ''
+  })
 }
 
 export function listTableStorageHistory(input: {
@@ -535,6 +595,9 @@ function collectTargetTableRows(
       databaseRole: target.role,
       tableName,
       sampledAt,
+      tableKind: 'table',
+      isPartition: false,
+      isArchive: false,
       rowCount,
       tableBytes,
       indexBytes,
@@ -587,6 +650,9 @@ function collectAggregateTargetTableRows(
       databaseRole: target.role,
       tableName,
       sampledAt,
+      tableKind: 'table',
+      isPartition: false,
+      isArchive: false,
       rowCount,
       tableBytes: hasDbstat ? tableBytes : undefined,
       indexBytes: hasDbstat ? indexBytes : undefined,
@@ -655,9 +721,9 @@ function databaseStorageStats(target: MonitoredDatabaseTarget): { pageSize?: num
 function insertTableSnapshots(database: DatabaseSync, target: MonitoredDatabaseTarget, sampledAt: string, tables: TableStorageSnapshotSummary[]): void {
   const insert = database.prepare(`
     INSERT INTO table_storage_snapshots (
-      id, database_role, table_name, sampled_at, row_count, table_bytes, index_bytes, total_bytes,
+      id, database_role, table_name, sampled_at, table_kind, parent_table_name, is_partition, is_archive, row_count, table_bytes, index_bytes, total_bytes,
       page_count, index_count, growth_bytes_1h, growth_rows_1h, growth_bytes_24h, growth_rows_24h, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
   for (const table of tables) {
     insert.run(
@@ -665,6 +731,10 @@ function insertTableSnapshots(database: DatabaseSync, target: MonitoredDatabaseT
       target.role,
       table.tableName,
       sampledAt,
+      table.tableKind ?? 'table',
+      table.parentTableName ?? null,
+      table.isPartition ? 1 : 0,
+      table.isArchive ? 1 : 0,
       table.rowCount ?? null,
       table.tableBytes ?? null,
       table.indexBytes ?? null,
@@ -765,6 +835,13 @@ async function listPostgresSchemaTables(client: DatabaseClient, schemaName: Post
   return await client.query<PostgresTableStorageCatalogRow>(`
     SELECT
       c.relname AS table_name,
+      CASE c.relkind
+        WHEN 'p' THEN 'partitioned_table'
+        WHEN 'm' THEN 'materialized_view'
+        ELSE 'table'
+      END AS table_kind,
+      parent.relname AS parent_table_name,
+      (parent.oid IS NOT NULL)::integer AS is_partition,
       GREATEST(COALESCE(s.n_live_tup::double precision, c.reltuples, 0), 0)::bigint AS row_count,
       pg_relation_size(c.oid)::bigint AS table_bytes,
       pg_indexes_size(c.oid)::bigint AS index_bytes,
@@ -772,6 +849,8 @@ async function listPostgresSchemaTables(client: DatabaseClient, schemaName: Post
       COALESCE(i.index_count, 0)::integer AS index_count
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
+    LEFT JOIN pg_inherits inh ON inh.inhrelid = c.oid
+    LEFT JOIN pg_class parent ON parent.oid = inh.inhparent
     LEFT JOIN pg_stat_all_tables s ON s.relid = c.oid
     LEFT JOIN (
       SELECT indrelid, COUNT(*)::integer AS index_count
@@ -814,6 +893,10 @@ async function collectPostgresTargetTableRows(
       databaseRole: target.role,
       tableName,
       sampledAt,
+      tableKind: row?.table_kind ?? 'table',
+      parentTableName: row?.parent_table_name ?? undefined,
+      isPartition: booleanFromSnapshot(row?.is_partition),
+      isArchive: target.role === 'archive',
       rowCount,
       tableBytes,
       indexBytes,
@@ -868,6 +951,10 @@ async function insertPostgresTableSnapshots(client: DatabaseClient, sampledAt: s
     'database_role',
     'table_name',
     'sampled_at',
+    'table_kind',
+    'parent_table_name',
+    'is_partition',
+    'is_archive',
     'row_count',
     'table_bytes',
     'index_bytes',
@@ -885,6 +972,10 @@ async function insertPostgresTableSnapshots(client: DatabaseClient, sampledAt: s
     table.databaseRole,
     table.tableName,
     sampledAt,
+    table.tableKind ?? 'table',
+    table.parentTableName ?? null,
+    table.isPartition ? 1 : 0,
+    table.isArchive ? 1 : 0,
     table.rowCount ?? null,
     table.tableBytes ?? null,
     table.indexBytes ?? null,
@@ -906,6 +997,10 @@ async function insertPostgresTableSnapshots(client: DatabaseClient, sampledAt: s
       INSERT INTO ${statsTable(client, 'table_storage_snapshots')} (${columns.map((column) => client.dialect.quoteIdentifier(column)).join(', ')})
       VALUES ${placeholders}
       ON CONFLICT(database_role, table_name, sampled_at) DO UPDATE SET
+        table_kind = excluded.table_kind,
+        parent_table_name = excluded.parent_table_name,
+        is_partition = excluded.is_partition,
+        is_archive = excluded.is_archive,
         row_count = excluded.row_count,
         table_bytes = excluded.table_bytes,
         index_bytes = excluded.index_bytes,
@@ -1135,6 +1230,10 @@ function tableStorageSnapshotSelectColumns(alias?: string): string {
     'database_role',
     'table_name',
     'sampled_at',
+    'table_kind',
+    'parent_table_name',
+    'is_partition',
+    'is_archive',
     'row_count',
     'table_bytes',
     'index_bytes',
@@ -1290,14 +1389,23 @@ function databaseSnapshotFromRow(row: LatestDatabaseSnapshotRow): DatabaseStorag
 }
 
 function tableSnapshotFromRow(row: LatestTableSnapshotRow): TableStorageSnapshotSummary {
+  const tableBytes = optionalNumber(row.table_bytes)
+  const indexBytes = optionalNumber(row.index_bytes)
+  const totalBytes = optionalNumber(row.total_bytes)
   return {
     databaseRole: row.database_role,
     tableName: row.table_name,
     sampledAt: row.sampled_at,
+    tableKind: row.table_kind ?? undefined,
+    parentTableName: row.parent_table_name ?? undefined,
+    isPartition: booleanFromSnapshot(row.is_partition),
+    isArchive: booleanFromSnapshot(row.is_archive),
     rowCount: optionalNumber(row.row_count),
-    tableBytes: optionalNumber(row.table_bytes),
-    indexBytes: optionalNumber(row.index_bytes),
-    totalBytes: optionalNumber(row.total_bytes),
+    tableBytes,
+    indexBytes,
+    indexToTableRatio: ratio(indexBytes, tableBytes),
+    indexToTotalRatio: ratio(indexBytes, totalBytes),
+    totalBytes,
     pageCount: optionalNumber(row.page_count),
     indexCount: Number(row.index_count ?? 0),
     growthBytes1h: optionalNumber(row.growth_bytes_1h),
@@ -1307,9 +1415,21 @@ function tableSnapshotFromRow(row: LatestTableSnapshotRow): TableStorageSnapshot
   }
 }
 
+function booleanFromSnapshot(value: SnapshotNumberValue | boolean | undefined): boolean {
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'number') return value !== 0
+  if (typeof value === 'string') return value === '1' || value.toLowerCase() === 'true'
+  return false
+}
+
 function optionalNumber(value: number | string | null | undefined): number | undefined {
   const numberValue = typeof value === 'string' ? Number(value) : value
   return typeof numberValue === 'number' && Number.isFinite(numberValue) ? numberValue : undefined
+}
+
+function ratio(numerator: number | undefined, denominator: number | undefined): number | undefined {
+  if (numerator === undefined || denominator === undefined || denominator <= 0) return undefined
+  return numerator / denominator
 }
 
 function numericDelta(current: number | undefined, previous: number | string | null | undefined): number | undefined {

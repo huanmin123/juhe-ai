@@ -164,7 +164,7 @@ async function assertPostgresCollectorWritesSnapshots(): Promise<void> {
     tableScanMode: 'full',
     maxTablesPerDatabase: 100
   })
-  assert.equal(result.databaseSnapshots, 5, 'PG 采样应只写入 PostgreSQL 五个逻辑 schema 快照')
+  assert.equal(result.databaseSnapshots, 6, 'PG 采样应写入 PostgreSQL 业务、数据集、使用记录、统计、归档和状态六个逻辑 schema 快照')
   assert(result.tableSnapshots >= 1, 'PG 采样应写入表级快照')
 
   const history = await listTableStorageHistoryAsync({
@@ -209,19 +209,25 @@ async function assertTableMonitorExplainPlans(): Promise<void> {
   await assertIndexedPlan(
     '表监控 overview 表快照 PG 查询',
     `
-      SELECT table_name
-      FROM (
-        SELECT
-          table_name,
-          ROW_NUMBER() OVER (
-            PARTITION BY database_role, table_name
-            ORDER BY sampled_at DESC, id DESC
-          ) AS rank
+      WITH table_keys AS (
+        SELECT database_role, table_name
         FROM juhe_stats.table_storage_snapshots
         WHERE sampled_at >= $1
           AND sampled_at <= $2
-      ) ranked
-      WHERE ranked.rank = 1
+        GROUP BY database_role, table_name
+      )
+      SELECT latest.table_name
+      FROM table_keys key
+      CROSS JOIN LATERAL (
+        SELECT table_name
+        FROM juhe_stats.table_storage_snapshots latest
+        WHERE latest.database_role = key.database_role
+          AND latest.table_name = key.table_name
+          AND latest.sampled_at >= $1
+          AND latest.sampled_at <= $2
+        ORDER BY latest.sampled_at DESC, latest.id DESC
+        LIMIT 1
+      ) latest
     `,
     [startAt, endAt],
     ['idx_table_storage_snapshots_time', 'idx_table_storage_snapshots_latest_id']

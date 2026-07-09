@@ -35,7 +35,7 @@ import {
   responseInspectionAuditMetadata
 } from '../audit/metadata.js'
 import {
-  forgetOpenAIAccountForSession
+  forgetOpenAIAccountForSessionAsync
 } from '../runtime/session-affinity.service.js'
 import {
   isOpenAIJsonResponseContentType,
@@ -178,7 +178,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
   const defaultClientProfile = gatewayProtocolDefaultClientProfileForRequest(req, account)
   if (!upstreamResponse.body) {
     const errorMessage = '上游响应体为空'
-    forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
+    await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
     auditCapture.completeAttempt(auditAttemptId, {
       statusCode: upstreamResponse.status,
       responseHeaders: upstreamResponse.headers,
@@ -283,7 +283,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     )
   } catch (error) {
     if (isUpstreamRequestAbortedError(error) || signal.aborted) {
-      forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
+      await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
       await recordClientAbortedUpstreamAttempt(req, {
         ...usageContext,
         account,
@@ -310,6 +310,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
   }
 
   const streamUsageFallback = applyGatewayProtocolStreamUsageFallbackForRequest(req, account, streamResult.usage, {
+    completed: streamResult.completed,
     outputReceived: streamResult.outputReceived,
     estimatedOutputTokens: streamResult.estimatedOutputTokens
   })
@@ -357,7 +358,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
   if (!streamResult.completed) {
     const speedFirstFirstByteCutover = input.firstByteDeadlineMs !== undefined && isFirstByteTimeoutStreamResult(streamResult)
     const requestSnapshot = usageRequestSnapshotWithBodyOmission(usageContext.requestSnapshot, streamResult.bodyOmission)
-    forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
+    await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
     await recordCompletedUpstreamAttempt(req, {
       ...usageContext,
       account,
@@ -638,7 +639,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
   try {
     if (!upstreamResponse.body) {
       const errorMessage = '上游响应体为空'
-      forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
+      await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
       auditCapture.completeAttempt(auditAttemptId, {
         statusCode: upstreamResponse.status,
         responseHeaders: upstreamResponse.headers,
@@ -844,7 +845,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
       && !res.destroyed
     ) {
       const errorMessage = error.message
-      forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
+      await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
       auditCapture.completeAttempt(auditAttemptId, {
         statusCode: upstreamResponse.status,
         responseHeaders: upstreamResponse.headers,
@@ -930,7 +931,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         captureTruncated: error.partialResult.captureTruncated,
         errorMessage
       }, '上游非流式响应正文已输出后中断，下游连接已按网络失败关闭')
-      forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
+      await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
       if (accountStateMutationEnabled !== false) {
         const runtimeReason = `上游非流式响应正文中断：${errorMessage}`
         const localSuppression = suppressGatewayAccountLocally(account, settings, runtimeReason)

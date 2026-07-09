@@ -279,6 +279,8 @@ function bufferToArrayBuffer(buffer: Buffer): ArrayBuffer {
 }
 
 class FetchGatewayUpstreamResponse implements GatewayUpstreamResponse {
+  private decodedBody: AsyncIterable<Uint8Array> | null | undefined
+
   constructor(
     private readonly response: Response,
     private readonly options: { timeoutMs?: number; signal?: AbortSignal }
@@ -297,9 +299,13 @@ class FetchGatewayUpstreamResponse implements GatewayUpstreamResponse {
   }
 
   get body(): AsyncIterable<Uint8Array> | null {
-    return this.response.body
+    if (this.decodedBody !== undefined) {
+      return this.decodedBody
+    }
+    this.decodedBody = this.response.body
       ? fetchReadableStreamBody(this.response.body, this.options)
       : null
+    return this.decodedBody
   }
 }
 

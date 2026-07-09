@@ -113,6 +113,7 @@ interface OpenAIGatewayRequestPreflightOptions {
   trafficSource?: OpenAIGatewayTrafficSource
   settingsOverride?: Partial<GatewaySettings>
   requestLane?: OpenAIGatewayRequestLane
+  ignoreAccountRuntimeSuppression?: boolean
 }
 
 interface PrepareOpenAIGatewayDispatchContextInput {
@@ -143,6 +144,7 @@ export interface OpenAIGatewayDispatchContext {
   apiKeyRecord?: GatewayApiKeyRow
   groupFallbackApiKeyRecord?: GatewayApiKeyRow
   hybridRoute?: HybridGatewayRuntimeRoute
+  normalRouteLatencyDegradationApplied?: boolean
   codexTurnAccountAvoidanceApplied?: boolean
   codexTurnAvoidedAccountIds?: string[]
   releaseClientIpConcurrency: () => void
@@ -231,6 +233,23 @@ export async function prepareOpenAIGatewayDispatchContext(
     endpoint,
     requestSnapshot
   })
+  const currentGroupUsageContext = (input: { groupId?: string; groupAccess?: GroupUsageAccessMetadata } = {}): GatewayFailureUsageContext => buildGatewayUsageContext({
+    traceId,
+    clientIp,
+    identity: {
+      systemAccountId,
+      apiKeyId,
+      groupId: input.groupId ?? groupId
+    },
+    trafficSource,
+    groupUsageFields: input.groupAccess
+      ? groupUsageMetadata(input.groupAccess)
+      : runtimeGroupAccess
+        ? groupUsageMetadata(runtimeGroupAccess)
+        : undefined,
+    endpoint,
+    requestSnapshot
+  })
   const clientIpErrorCircuit = await inspectClientIpErrorCircuitAsync({
     systemAccountId,
     apiKeyId,
@@ -242,7 +261,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     req,
     res,
     auditCapture,
-    usageContext: baseUsageContext,
+    usageContext: currentGroupUsageContext(),
     startedAt,
     circuit: clientIpErrorCircuit,
     systemAccountId,
@@ -256,7 +275,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     req,
     res,
     auditCapture,
-    usageContext: baseUsageContext,
+    usageContext: currentGroupUsageContext(),
     startedAt,
     apiKeyUnavailable
   })) {
@@ -268,7 +287,7 @@ export async function prepareOpenAIGatewayDispatchContext(
       req,
       res,
       auditCapture,
-      usageContext: baseUsageContext,
+      usageContext: currentGroupUsageContext(),
       startedAt,
       systemAccountId,
       apiKeyId,
@@ -336,7 +355,7 @@ export async function prepareOpenAIGatewayDispatchContext(
         req,
         res,
         auditCapture,
-        usageContext: { ...baseUsageContext, groupId },
+        usageContext: currentGroupUsageContext({ groupId, groupAccess: runtimeGroupAccess }),
         startedAt,
         circuit: targetClientIpErrorCircuit,
         systemAccountId,
@@ -362,7 +381,7 @@ export async function prepareOpenAIGatewayDispatchContext(
         req,
         res,
         auditCapture,
-        usageContext: baseUsageContext,
+        usageContext: currentGroupUsageContext(),
         startedAt,
         statusCode: normalRoute.statusCode,
         responsePayload,
@@ -412,7 +431,7 @@ export async function prepareOpenAIGatewayDispatchContext(
         req,
         res,
         auditCapture,
-        usageContext: baseUsageContext,
+        usageContext: currentGroupUsageContext(),
         startedAt,
         statusCode,
         responsePayload,
@@ -466,7 +485,7 @@ export async function prepareOpenAIGatewayDispatchContext(
         req,
         res,
         auditCapture,
-        usageContext: { ...baseUsageContext, groupId },
+        usageContext: currentGroupUsageContext({ groupId, groupAccess: runtimeGroupAccess }),
         startedAt,
         circuit: targetClientIpErrorCircuit,
         systemAccountId,
@@ -724,6 +743,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     clientStrategy,
     requestLane,
     signal,
+    ignoreAccountRuntimeSuppression: options.ignoreAccountRuntimeSuppression === true,
     attemptFallback: (reason) => prepareApiKeyGroupFallbackDispatchContext({
       req,
       res,
@@ -791,6 +811,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     apiKeyRecord,
     groupFallbackApiKeyRecord,
     hybridRoute: selectedHybridRoute,
+    normalRouteLatencyDegradationApplied: dispatchPreparation.normalRouteLatencyDegradationApplied,
     codexTurnAccountAvoidanceApplied: dispatchPreparation.codexTurnAccountAvoidanceApplied,
     codexTurnAvoidedAccountIds: dispatchPreparation.codexTurnAvoidedAccountIds,
     releaseClientIpConcurrency: dispatchPreparation.releaseClientIpConcurrency

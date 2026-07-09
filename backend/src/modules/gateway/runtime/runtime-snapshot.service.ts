@@ -5,7 +5,7 @@ import { loadAccountCurrentConcurrencyByIdsAsync } from '../../../shared/account
 import { requestServerAccountConcurrencySnapshot, requestServerAccountRuntimeSnapshot } from '../../db-service/db-service-ipc.js'
 
 type AccountConcurrencySnapshot = Record<string, number>
-type AccountRuntimeAvailabilitySnapshot = Record<string, AccountRuntimeAvailability>
+export type AccountRuntimeAvailabilitySnapshot = Record<string, AccountRuntimeAvailability>
 type AccountRuntimeSnapshot = {
   accountConcurrency?: AccountConcurrencySnapshot
   accountRuntimeAvailability?: AccountRuntimeAvailabilitySnapshot
@@ -77,14 +77,12 @@ export async function applyServerAccountConcurrencyToAccountList<T extends { ite
 
 export async function applyServerAccountRuntimeToAccount(account: AccountSummary): Promise<AccountSummary> {
   if (runtimeConfig.runtimeStateDriver === 'redis') {
-    const [concurrency, runtime] = await Promise.all([
-      loadRedisAccountConcurrencySnapshot([accountConcurrencySnapshotId(account)]),
-      loadServerAccountRuntimeSnapshot()
-    ])
+    const runtimeAvailability = peekServerAccountRuntimeAvailabilitySnapshot()
+    const concurrency = await loadRedisAccountConcurrencySnapshot([accountConcurrencySnapshotId(account)])
     const withConcurrency = concurrency
       ? applyAccountConcurrency(account, concurrency)
       : markAccountConcurrencyUnavailable(account)
-    return applyAccountRuntimeAvailability(withConcurrency, runtime?.accountRuntimeAvailability)
+    return applyAccountRuntimeAvailability(withConcurrency, runtimeAvailability)
   }
   const runtime = await loadServerAccountRuntimeSnapshot()
   if (!runtime?.accountConcurrency && !runtime?.accountRuntimeAvailability) {
@@ -137,6 +135,17 @@ async function loadServerAccountRuntimeSnapshot(): Promise<AccountRuntimeSnapsho
   return await loadCachedServerRuntimeSnapshot(accountRuntimeSnapshotCache, () => requestServerAccountRuntimeSnapshot(80))
 }
 
+export async function loadServerAccountRuntimeAvailabilitySnapshot(): Promise<AccountRuntimeAvailabilitySnapshot | undefined> {
+  return (await loadServerAccountRuntimeSnapshot())?.accountRuntimeAvailability
+}
+
+export function peekServerAccountRuntimeAvailabilitySnapshot(): AccountRuntimeAvailabilitySnapshot | undefined {
+  return peekCachedServerRuntimeSnapshot(
+    accountRuntimeSnapshotCache,
+    () => requestServerAccountRuntimeSnapshot(80)
+  )?.accountRuntimeAvailability
+}
+
 async function loadCachedServerRuntimeSnapshot<T>(
   cache: RuntimeSnapshotCache<T>,
   loader: () => Promise<T | undefined>
@@ -160,6 +169,21 @@ async function loadCachedServerRuntimeSnapshot<T>(
       cache.refresh = undefined
     })
   return await cache.refresh
+}
+
+function peekCachedServerRuntimeSnapshot<T>(
+  cache: RuntimeSnapshotCache<T>,
+  loader: () => Promise<T | undefined>
+): T | undefined {
+  if (runtimeConfig.processRole !== 'db-service') {
+    return undefined
+  }
+  const now = Date.now()
+  const ageMs = now - cache.updatedAtMs
+  if (!cache.value || ageMs > serverRuntimeSnapshotCacheTtlMs) {
+    scheduleServerRuntimeSnapshotRefresh(cache, loader, now)
+  }
+  return cache.value && ageMs <= serverRuntimeSnapshotMaxStaleMs ? cache.value : undefined
 }
 
 function scheduleServerRuntimeSnapshotRefresh<T>(
@@ -194,11 +218,8 @@ async function refreshServerRuntimeSnapshotCache<T>(
 async function applyRedisAccountRuntimeToAccountList<T extends { items: AccountSummary[] }>(
   result: T
 ): Promise<T & { runtimeSnapshot: AccountRuntimeSnapshotStatus }> {
-  const [concurrency, runtime] = await Promise.all([
-    loadRedisAccountConcurrencySnapshot(accountConcurrencySnapshotIds(result.items)),
-    loadServerAccountRuntimeSnapshot()
-  ])
-  const runtimeAvailability = runtime?.accountRuntimeAvailability
+  const runtimeAvailability = peekServerAccountRuntimeAvailabilitySnapshot()
+  const concurrency = await loadRedisAccountConcurrencySnapshot(accountConcurrencySnapshotIds(result.items))
   return {
     ...result,
     runtimeSnapshot: {
