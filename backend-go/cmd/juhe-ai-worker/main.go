@@ -109,6 +109,36 @@ func main() {
 	usageRangeWindowCommand.Flags().StringVar(&usageRangeWindowOptions.Timezone, "timezone", "", "override usageStatsTimezone for local smoke; empty reads system settings")
 	root.AddCommand(usageRangeWindowCommand)
 
+	gatewayQuotaSnapshotOptions := app.GatewayQuotaSnapshotBuildWorkerOptions{
+		Interval:     time.Minute,
+		InitialDelay: 37 * time.Second,
+	}
+	gatewayQuotaSnapshotCommand := &cobra.Command{
+		Use:   "gateway-quota-snapshot-build",
+		Short: "Build gateway quota snapshot from PostgreSQL aggregates",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load(config.LoadOptions{LoadDotEnv: true})
+			if err != nil {
+				return err
+			}
+
+			logger, err := logging.New(cfg.LogLevel, cmd.ErrOrStderr())
+			if err != nil {
+				return err
+			}
+
+			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+
+			return app.RunGatewayQuotaSnapshotBuildWorker(ctx, cfg, logger, gatewayQuotaSnapshotOptions)
+		},
+	}
+	gatewayQuotaSnapshotCommand.Flags().DurationVar(&gatewayQuotaSnapshotOptions.Interval, "interval", gatewayQuotaSnapshotOptions.Interval, "build interval")
+	gatewayQuotaSnapshotCommand.Flags().DurationVar(&gatewayQuotaSnapshotOptions.InitialDelay, "initial-delay", gatewayQuotaSnapshotOptions.InitialDelay, "initial delay before the first build")
+	gatewayQuotaSnapshotCommand.Flags().BoolVar(&gatewayQuotaSnapshotOptions.RunOnce, "run-once", false, "run one build and exit")
+	gatewayQuotaSnapshotCommand.Flags().StringVar(&gatewayQuotaSnapshotOptions.Timezone, "timezone", "", "override usageStatsTimezone for local smoke; empty reads system settings")
+	root.AddCommand(gatewayQuotaSnapshotCommand)
+
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}

@@ -135,3 +135,44 @@ func TestRunAuthorizationUsageRangeWindowRefreshWorkerValidatesInitialDelay(t *t
 		t.Fatalf("RunAuthorizationUsageRangeWindowRefreshWorker() error = %v, want invalid initial delay", err)
 	}
 }
+
+func TestRunGatewayQuotaSnapshotBuildWorkerRequiresPostgresURL(t *testing.T) {
+	cfg := config.Config{
+		ShutdownTimeout: time.Second,
+	}
+
+	err := RunGatewayQuotaSnapshotBuildWorker(context.Background(), cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), GatewayQuotaSnapshotBuildWorkerOptions{RunOnce: true})
+	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_POSTGRES_URL") {
+		t.Fatalf("RunGatewayQuotaSnapshotBuildWorker() error = %v, want missing postgres url", err)
+	}
+}
+
+func TestRunGatewayQuotaSnapshotBuildWorkerValidatesInterval(t *testing.T) {
+	cfg := config.Config{
+		PostgresURL:     "postgres://juhe_ai:password@127.0.0.1:5432/juhe_ai?sslmode=disable",
+		ShutdownTimeout: time.Second,
+	}
+
+	err := RunGatewayQuotaSnapshotBuildWorker(context.Background(), cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), GatewayQuotaSnapshotBuildWorkerOptions{
+		Interval: -time.Second,
+		RunOnce:  true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "构建间隔") {
+		t.Fatalf("RunGatewayQuotaSnapshotBuildWorker() error = %v, want invalid interval", err)
+	}
+}
+
+func TestRunGatewayQuotaSnapshotBuildWorkerValidatesInitialDelay(t *testing.T) {
+	cfg := config.Config{
+		PostgresURL:     "postgres://juhe_ai:password@127.0.0.1:5432/juhe_ai?sslmode=disable",
+		ShutdownTimeout: time.Second,
+	}
+
+	err := RunGatewayQuotaSnapshotBuildWorker(context.Background(), cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), GatewayQuotaSnapshotBuildWorkerOptions{
+		InitialDelay: -time.Second,
+		RunOnce:      true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "初始延迟") {
+		t.Fatalf("RunGatewayQuotaSnapshotBuildWorker() error = %v, want invalid initial delay", err)
+	}
+}
