@@ -2,6 +2,9 @@ import type { ModelCheckOptions } from '@/types/domain'
 
 export const modelCheckFallbackOptions: ModelCheckOptions = {
   supportedModels: [
+    { value: 'gpt-5.6-sol', label: 'gpt-5.6-sol' },
+    { value: 'gpt-5.6-terra', label: 'gpt-5.6-terra' },
+    { value: 'gpt-5.6-luna', label: 'gpt-5.6-luna' },
     { value: 'gpt-5.5', label: 'gpt-5.5' },
     { value: 'gpt-5.4', label: 'gpt-5.4' },
     { value: 'claude-opus-4-8', label: 'claude-opus-4-8' },
@@ -17,7 +20,7 @@ export const modelCheckFallbackOptions: ModelCheckOptions = {
     { value: 'full', label: '强诊断完整检测', description: '准确优先，不以成本和耗时为约束' }
   ],
   trustedComparison: { enabledByDefault: false, available: true, message: '可信对比默认关闭；选择可信账户后会额外消耗该账户额度。' },
-  defaultModel: 'gpt-5.5',
+  defaultModel: 'gpt-5.6-sol',
   defaultProfile: 'full'
 }
 

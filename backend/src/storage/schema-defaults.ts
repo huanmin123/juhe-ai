@@ -107,12 +107,12 @@ export const DEFAULT_GLOBAL_SETTINGS = [
   ['appIcon', '/__aisys__/brand-icon.svg']
 ] as const
 
-export const DEFAULT_OPENAI_SUPPORTED_MODELS = ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-image-2'] as const
+export const DEFAULT_OPENAI_SUPPORTED_MODELS = ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-image-2'] as const
 export const DEFAULT_ANTHROPIC_SUPPORTED_MODELS = ['claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5'] as const
 export const DEFAULT_GEMINI_SUPPORTED_MODELS = ['gemini-3.5-flash', 'gemini-3.1-pro-preview', 'gemini-2.5-pro', 'gemini-2.5-flash'] as const
 export const DEFAULT_DEEPSEEK_SUPPORTED_MODELS = ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-ai-v4-flash', 'deepseek-ai-v4-pro'] as const
 export const DEFAULT_GLM_SUPPORTED_MODELS = ['glm-5.2', 'glm-5.1', 'glm-5', 'glm-5-turbo', 'glm-4.7-flashx', 'glm-4.7-flash'] as const
-export const DEFAULT_HYBRID_SUPPORTED_MODELS = ['gpt-5.5', 'claude-opus-4-8', 'gemini-3.5-flash', 'deepseek-v4-flash', 'glm-5.2'] as const
+export const DEFAULT_HYBRID_SUPPORTED_MODELS = ['gpt-5.6-sol', 'claude-opus-4-8', 'gemini-3.5-flash', 'deepseek-v4-flash', 'glm-5.2'] as const
 
 export const GPT_PROVIDER_SEED = {
   id: GPT_VENDOR_CODE,
@@ -341,7 +341,7 @@ export const GPT_OPENAI_V1_PROFILE_SEED = {
   protocolCode: OPENAI_PROTOCOL_CODE,
   protocolVersion: OPENAI_PROTOCOL_VERSION,
   baseUrl: 'https://api.openai.com/v1',
-  defaultTestModel: 'gpt-5.5',
+  defaultTestModel: 'gpt-5.6-sol',
   accountTypes: ['oauth', 'api_key'],
   capabilities: ['responses', 'chat'],
   endpointFamilies: [OPENAI_CHAT_COMPLETIONS_FAMILY, OPENAI_RESPONSES_FAMILY]
@@ -356,7 +356,7 @@ export const OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_SEED = {
   protocolCode: OPENAI_PROTOCOL_CODE,
   protocolVersion: OPENAI_PROTOCOL_VERSION,
   baseUrl: 'https://api.openai.com/v1',
-  defaultTestModel: 'gpt-5.5',
+  defaultTestModel: 'gpt-5.6-sol',
   accountTypes: ['api_key'],
   capabilities: ['responses', 'chat', 'passthrough'],
   endpointFamilies: [OPENAI_CHAT_COMPLETIONS_FAMILY, OPENAI_RESPONSES_FAMILY]

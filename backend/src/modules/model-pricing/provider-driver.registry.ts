@@ -133,6 +133,9 @@ function buildOpenAIModelCandidates(model: string): string[] {
   const withoutDate = model.replace(modelDateSuffixPattern, '')
   if (withoutDate !== model) candidates.add(withoutDate)
 
+  if (model.startsWith('gpt-5.6-sol-')) candidates.add('gpt-5.6-sol')
+  if (model.startsWith('gpt-5.6-terra-')) candidates.add('gpt-5.6-terra')
+  if (model.startsWith('gpt-5.6-luna-')) candidates.add('gpt-5.6-luna')
   if (model.startsWith('gpt-5.5-')) candidates.add('gpt-5.5')
   if (model.startsWith('gpt-5-search-api-')) candidates.add('gpt-5-search-api')
   if (model.startsWith('gpt-5.4-mini-')) candidates.add('gpt-5.4-mini')
@@ -309,6 +312,9 @@ function inferOpenAIModelReleaseDate(model: string, helpers: ModelPricingProvide
 }
 
 const openAIModelReleaseDates = new Map<string, string>([
+  ['gpt-5.6-sol', '2026-06-26'],
+  ['gpt-5.6-terra', '2026-06-26'],
+  ['gpt-5.6-luna', '2026-06-26'],
   ['gpt-5.5', '2026-04-23'],
   ['gpt-5.5-pro', '2026-04-23'],
   ['gpt-image-2', '2026-04-21'],

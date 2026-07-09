@@ -146,11 +146,11 @@ INSERT INTO juhe_business.provider_protocol_profiles (
 ) VALUES
   ('profile_openai_openai_v1', 'openai', 'OpenAI Compatible / OpenAI v1',
     '通用 OpenAI-compatible 供应商的 OpenAI v1 协议档案',
-    true, 'openai', 'v1', 'https://api.openai.com/v1', 'gpt-5.5',
+    true, 'openai', 'v1', 'https://api.openai.com/v1', 'gpt-5.6-sol',
     '["api_key"]', '["responses","chat","passthrough"]', now(), now()),
   ('profile_gpt_openai_v1', 'gpt', 'GPT / OpenAI v1',
     'GPT 供应商的 OpenAI v1 协议档案，支持 OAuth 与 API Key 两种账户接入方式',
-    true, 'openai', 'v1', 'https://api.openai.com/v1', 'gpt-5.5',
+    true, 'openai', 'v1', 'https://api.openai.com/v1', 'gpt-5.6-sol',
     '["oauth","api_key"]', '["responses","chat"]', now(), now()),
   ('profile_deepseek_openai_v1', 'deepseek', 'DeepSeek / OpenAI v1',
     'DeepSeek OpenAI-compatible Chat Completions 协议档案',

@@ -91,6 +91,12 @@ INSERT INTO juhe_business.provider_model_catalog (
   max_input_tokens, max_output_tokens, max_tokens,
   supports_prompt_caching, supports_service_tier, source, created_at, updated_at
 ) VALUES
+  ('provider_model_gpt_gpt_5_6_sol', 'gpt', 'gpt-5.6-sol', 'chat', 0, '2026-06-26', '["chat_completions","responses"]',
+    5, 30, 0.5, 6.25, NULL, NULL, NULL, NULL, NULL, NULL, true, true, 'node-pricing-snapshot', now(), now()),
+  ('provider_model_gpt_gpt_5_6_terra', 'gpt', 'gpt-5.6-terra', 'chat', 1, '2026-06-26', '["chat_completions","responses"]',
+    2.5, 15, 0.25, 3.125, NULL, NULL, NULL, NULL, NULL, NULL, true, true, 'node-pricing-snapshot', now(), now()),
+  ('provider_model_gpt_gpt_5_6_luna', 'gpt', 'gpt-5.6-luna', 'chat', 2, '2026-06-26', '["chat_completions","responses"]',
+    1, 6, 0.1, 1.25, NULL, NULL, NULL, NULL, NULL, NULL, true, true, 'node-pricing-snapshot', now(), now()),
   ('provider_model_gpt_gpt_5_5', 'gpt', 'gpt-5.5', 'chat', 10, '2026-04-23', '["chat_completions","responses"]',
     5, 30, 0.5, NULL, NULL, NULL, NULL, 1050000, 128000, 128000, true, true, 'node-pricing-snapshot', now(), now()),
   ('provider_model_gpt_gpt_5_4', 'gpt', 'gpt-5.4', 'chat', 20, '2026-03-05', '["chat_completions","responses"]',

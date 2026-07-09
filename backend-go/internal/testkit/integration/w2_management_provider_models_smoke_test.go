@@ -73,8 +73,8 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list provider models: %v", err)
 	}
-	if findW2ProviderModel(models, "gpt-5.5") == nil {
-		t.Fatalf("seeded gpt-5.5 model missing: %+v", models)
+	if findW2ProviderModel(models, "gpt-5.6-sol") == nil {
+		t.Fatalf("seeded gpt-5.6-sol model missing: %+v", models)
 	}
 	if personal := findW2ProviderModel(models, "w2-personal-model"); personal == nil || personal.Scope != "personal" || personal.SystemAccountID != "sys_w2_proxy_options" {
 		t.Fatalf("personal model missing or wrong scope: %+v", personal)
@@ -98,8 +98,8 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list provider model options: %v", err)
 	}
-	if findW2ProviderModelOption(options, "gpt", "gpt-5.5") == nil {
-		t.Fatalf("gpt-5.5 model option missing: %+v", options)
+	if findW2ProviderModelOption(options, "gpt", "gpt-5.6-sol") == nil {
+		t.Fatalf("gpt-5.6-sol model option missing: %+v", options)
 	}
 
 	saved, err := service.SetDefaultTestModel(ctx, managementprovidermodels.DefaultTestModelInput{
@@ -173,7 +173,7 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 		t.Fatalf("HTTP provider model options response missing personal model: %+v", optionsBody.Data)
 	}
 
-	putReq := httptest.NewRequest(http.MethodPut, "/__aisys__/api/providers/gpt/default-test-model?systemAccountId=sys_w2_proxy_options", strings.NewReader(`{"model":"gpt-5.5"}`))
+	putReq := httptest.NewRequest(http.MethodPut, "/__aisys__/api/providers/gpt/default-test-model?systemAccountId=sys_w2_proxy_options", strings.NewReader(`{"model":"gpt-5.6-sol"}`))
 	putReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
 	putRec := httptest.NewRecorder()
 	router.ServeHTTP(putRec, putReq)
@@ -186,14 +186,14 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 	if err := json.NewDecoder(putRec.Body).Decode(&putBody); err != nil {
 		t.Fatalf("decode default test model response: %v", err)
 	}
-	if putBody.Data.DefaultTestModel != "gpt-5.5" {
+	if putBody.Data.DefaultTestModel != "gpt-5.6-sol" {
 		t.Fatalf("default test model response = %+v", putBody.Data)
 	}
 	providerOptions, err = providerService.Options(ctx, managementproviders.OptionListInput{SystemAccountID: "sys_w2_proxy_options"})
 	if err != nil {
 		t.Fatalf("list provider options after HTTP default model set: %v", err)
 	}
-	if provider := findProviderOption(providerOptions, "gpt"); provider == nil || provider.DefaultTestModel != "gpt-5.5" {
+	if provider := findProviderOption(providerOptions, "gpt"); provider == nil || provider.DefaultTestModel != "gpt-5.6-sol" {
 		t.Fatalf("provider default model preference was not updated by HTTP PUT: %+v", provider)
 	}
 

@@ -178,7 +178,7 @@ async function assertRepositoryBarrelAsync(): Promise<void> {
   const repositories = await import('../../storage/repositories.js')
   const providers = await repositories.listProvidersAsync()
   assert.ok(providers.some((provider) => provider.code === GPT_VENDOR_CODE), '统一 repository 出口应暴露异步供应商读取')
-  assert.ok((await repositories.findProviderDefaultSupportedModelsAsync(GPT_VENDOR_CODE)).includes('gpt-5.5'), '统一 repository 出口应暴露默认支持模型读取')
+  assert.ok((await repositories.findProviderDefaultSupportedModelsAsync(GPT_VENDOR_CODE)).includes('gpt-5.6-sol'), '统一 repository 出口应暴露默认支持模型读取')
 }
 
 async function assertProviderRepositoryAsync(repository: typeof import('../../storage/provider.repository.js')): Promise<void> {
@@ -190,7 +190,7 @@ async function assertProviderRepositoryAsync(repository: typeof import('../../st
   assert.equal(gpt.enabled, true, 'GPT 供应商应启用')
   assert.equal(gpt.protocolCode, OPENAI_PROTOCOL_CODE, 'GPT 默认协议应为 OpenAI')
   assert.equal(gpt.protocolVersion, OPENAI_PROTOCOL_VERSION, 'GPT 默认协议版本应为 OpenAI v1')
-  assert.ok(gpt.defaultSupportedModels.includes('gpt-5.5'), 'GPT 应返回默认支持模型')
+  assert.ok(gpt.defaultSupportedModels.includes('gpt-5.6-sol'), 'GPT 应返回默认支持模型')
   assert.ok(gpt.protocolProfiles.length >= 1, 'GPT 应包含协议档案')
   assert.ok(gpt.protocolProfiles.some((profile) => profile.endpointFamilies.some((family) => family.code === 'responses')), 'GPT 协议档案应包含 Responses endpoint family')
 
@@ -212,7 +212,7 @@ async function assertProviderRepositoryAsync(repository: typeof import('../../st
 
   const defaultModel = await repository.findProviderDefaultTestModelAsync(GPT_VENDOR_CODE)
   assert.ok(defaultModel, '应能读取供应商默认测试模型')
-  assert.ok((await repository.findProviderDefaultSupportedModelsAsync(GPT_VENDOR_CODE)).includes('gpt-5.5'), '应能读取供应商默认支持模型')
+  assert.ok((await repository.findProviderDefaultSupportedModelsAsync(GPT_VENDOR_CODE)).includes('gpt-5.6-sol'), '应能读取供应商默认支持模型')
   assert.equal(await repository.findProviderDefaultTestModelAsync(ANTHROPIC_PROVIDER_CODE), 'claude-opus-4-8', 'Anthropic 默认测试模型应使用 Opus 4.8')
 
   const defaultProfile = await repository.defaultProviderProtocolProfileAsync(GPT_VENDOR_CODE)

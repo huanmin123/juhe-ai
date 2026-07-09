@@ -42,10 +42,10 @@ INSERT INTO juhe_business.providers (
 ) VALUES
   ('openai', 'openai', 'OpenAI 兼容', NULL,
     '通用 OpenAI-compatible 供应商，用于接入兼容 OpenAI v1 协议的上游服务，默认只提供 API Key 透传能力',
-    true, '["gpt-5.5","gpt-5.4","gpt-5.4-mini","gpt-image-2"]', now(), now()),
+    true, '["gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna","gpt-5.5","gpt-5.4","gpt-5.4-mini","gpt-image-2"]', now(), now()),
   ('gpt', 'gpt', 'GPT', 'openai',
     'GPT 官方供应商，继承通用 OpenAI-compatible 能力，并启用 OAuth、Codex Responses 等 GPT 专属能力',
-    true, '["gpt-5.5","gpt-5.4","gpt-5.4-mini","gpt-image-2"]', now(), now()),
+    true, '["gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna","gpt-5.5","gpt-5.4","gpt-5.4-mini","gpt-image-2"]', now(), now()),
   ('deepseek', 'deepseek', 'DeepSeek', NULL,
     'DeepSeek 官方供应商，支持 OpenAI-compatible v1 Chat Completions 直连，也支持 Anthropic v1 Messages 档案兼容 Claude Code',
     true, '["deepseek-v4-flash","deepseek-v4-pro","deepseek-ai-v4-flash","deepseek-ai-v4-pro"]', now(), now()),
@@ -60,7 +60,7 @@ INSERT INTO juhe_business.providers (
     true, '["glm-5.2","glm-5.1","glm-5","glm-5-turbo","glm-4.7-flashx","glm-4.7-flash"]', now(), now()),
   ('hybrid', 'hybrid', '混合供应商', NULL,
     '混合供应商账户用于创建真实上游账户，并在账户内配置允许的下游协议入口和上游模型映射；不指向其他账户、分组或 API Key',
-    true, '["gpt-5.5","claude-opus-4-8","gemini-3.5-flash","deepseek-v4-flash","glm-5.2"]', now(), now())
+    true, '["gpt-5.6-sol","claude-opus-4-8","gemini-3.5-flash","deepseek-v4-flash","glm-5.2"]', now(), now())
 ON CONFLICT (code) DO UPDATE SET
   id = EXCLUDED.id,
   name = EXCLUDED.name,
@@ -76,11 +76,11 @@ INSERT INTO juhe_business.provider_protocol_profiles (
 ) VALUES
   ('profile_openai_openai_v1', 'openai', 'OpenAI 兼容 / OpenAI v1',
     '通用 OpenAI-compatible 供应商的 OpenAI v1 协议档案，仅承载 API Key 透传、模型目录和通用协议策略',
-    true, 'openai', 'v1', 'https://api.openai.com/v1', 'gpt-5.5',
+    true, 'openai', 'v1', 'https://api.openai.com/v1', 'gpt-5.6-sol',
     '["api_key"]', '["responses","chat","passthrough"]', now(), now()),
   ('profile_gpt_openai_v1', 'gpt', 'GPT / OpenAI v1',
     'GPT 供应商的 OpenAI v1 协议档案，支持 OAuth 与 API Key 两种账户创建方式',
-    true, 'openai', 'v1', 'https://api.openai.com/v1', 'gpt-5.5',
+    true, 'openai', 'v1', 'https://api.openai.com/v1', 'gpt-5.6-sol',
     '["oauth","api_key"]', '["responses","chat"]', now(), now()),
   ('profile_deepseek_anthropic_v1', 'deepseek', 'DeepSeek / Anthropic v1',
     'DeepSeek 供应商的 Anthropic v1 Messages 协议档案，承载 Claude Code 使用的 /v1/messages 与 /v1/models 直连',

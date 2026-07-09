@@ -524,14 +524,14 @@ assert.equal(genericOpenAIModelPricingList.length, openAIModelPricingList.length
 assert.equal(genericOpenAIModelPricingList[0]?.providerCode, OPENAI_COMPATIBLE_PROVIDER_CODE, '通用供应商模型目录应保留 openai providerCode')
 assert.equal(openAIModelPricingList[0]?.providerCode, GPT_VENDOR_CODE, 'GPT 子供应商模型目录应保留 gpt providerCode')
 assert.deepEqual(openAIModelPricingList.slice(0, 8).map((item) => item.model), [
+  'gpt-5.6-sol',
+  'gpt-5.6-terra',
+  'gpt-5.6-luna',
   'gpt-5.5',
   'gpt-5.5-2026-04-23',
   'gpt-5.5-pro',
   'gpt-5.5-pro-2026-04-23',
-  'gpt-image-2',
-  'gpt-image-2-2026-04-21',
-  'gpt-5.4-mini',
-  'gpt-5.4-mini-2026-03-17'
+  'gpt-image-2'
 ], 'GPT/OpenAI 价格目录首屏应按官方当前模型从新到旧排序')
 const anthropicModelPricingList = listProviderModelPricing(ANTHROPIC_PROVIDER_CODE)
 assert(anthropicModelPricingList.length > 0, 'Anthropic 供应商应暴露 Anthropic 内置模型价格目录')
@@ -811,6 +811,9 @@ for (let index = 1; index < openAIModelPricingList.length; index += 1) {
   )
 }
 for (const id of [
+  'gpt-5.6-sol',
+  'gpt-5.6-terra',
+  'gpt-5.6-luna',
   'gpt-5.3-codex',
   'gpt-5.2',
   'gpt-5.2-2025-12-11',
@@ -856,6 +859,9 @@ assert.deepEqual(openAIModelPricingById.get('gpt-5.3-codex')?.supportedApiProtoc
 assert.deepEqual(openAIModelPricingById.get('gpt-5.2-codex')?.supportedApiProtocols, ['responses'])
 assert.deepEqual(openAIModelPricingById.get('gpt-image-1')?.supportedApiProtocols, ['images'])
 assert.deepEqual(openAIModelPricingById.get('gpt-4o-mini-tts')?.supportedApiProtocols, ['audio'])
+assert.equal(openAIModelPricingById.get('gpt-5.6-sol')?.releaseDate, '2026-06-26')
+assert.equal(openAIModelPricingById.get('gpt-5.6-terra')?.releaseDate, '2026-06-26')
+assert.equal(openAIModelPricingById.get('gpt-5.6-luna')?.releaseDate, '2026-06-26')
 assert.equal(openAIModelPricingById.get('gpt-5.5')?.releaseDate, '2026-04-23')
 assert.equal(openAIModelPricingById.get('gpt-5.4-mini')?.releaseDate, '2026-03-17')
 assert.equal(openAIModelPricingById.get('gpt-5.3-codex')?.releaseDate, '2026-02-01')
@@ -863,6 +869,18 @@ assert.equal(openAIModelPricingById.get('gpt-5.2')?.releaseDate, '2025-12-11')
 assert.equal(openAIModelPricingById.get('gpt-5-search-api')?.releaseDate, '2025-08-07')
 assert.equal(openAIModelPricingById.get('gpt-4.1')?.releaseDate, '2025-04-14')
 assert.equal(openAIModelPricingById.get('babbage-002')?.releaseDate, '2024-01-04')
+assert.equal(openAIModelPricingById.get('gpt-5.6-sol')?.inputUsdPer1M, 5)
+assert.equal(openAIModelPricingById.get('gpt-5.6-sol')?.outputUsdPer1M, 30)
+assert.equal(openAIModelPricingById.get('gpt-5.6-sol')?.cachedInputUsdPer1M, 0.5)
+assert.equal(openAIModelPricingById.get('gpt-5.6-sol')?.cacheWriteUsdPer1M, 6.25)
+assert.equal(openAIModelPricingById.get('gpt-5.6-terra')?.inputUsdPer1M, 2.5)
+assert.equal(openAIModelPricingById.get('gpt-5.6-terra')?.outputUsdPer1M, 15)
+assert.equal(openAIModelPricingById.get('gpt-5.6-terra')?.cachedInputUsdPer1M, 0.25)
+assert.equal(openAIModelPricingById.get('gpt-5.6-terra')?.cacheWriteUsdPer1M, 3.125)
+assert.equal(openAIModelPricingById.get('gpt-5.6-luna')?.inputUsdPer1M, 1)
+assert.equal(openAIModelPricingById.get('gpt-5.6-luna')?.outputUsdPer1M, 6)
+assert.equal(openAIModelPricingById.get('gpt-5.6-luna')?.cachedInputUsdPer1M, 0.1)
+assert.equal(openAIModelPricingById.get('gpt-5.6-luna')?.cacheWriteUsdPer1M, 1.25)
 
 assert.equal(estimateProviderCostUsd({
   providerCode: GPT_VENDOR_CODE,
@@ -884,6 +902,22 @@ assert.equal(estimateProviderCostUsd({
   inputTokens: 1000,
   outputTokens: 200
 }), 0.0008)
+assert.equal(estimateProviderCostUsd({
+  providerCode: GPT_VENDOR_CODE,
+  model: 'gpt-5.6-luna',
+  inputTokens: 1000,
+  outputTokens: 200,
+  cacheReadTokens: 300,
+  cacheWriteTokens: 40
+}), 0.00198)
+assert.equal(buildProviderCostBreakdown({
+  providerCode: GPT_VENDOR_CODE,
+  model: 'gpt-5.6-terra',
+  inputTokens: 1000,
+  outputTokens: 200,
+  cacheReadTokens: 300,
+  cacheWriteTokens: 40
+})?.cacheWriteUsdPer1M, 3.125)
 
 const gpt55ImageInputAsNormalTokensCost = estimateProviderCostUsd({
   providerCode: GPT_VENDOR_CODE,

@@ -199,7 +199,7 @@ const currentRun = ref<ModelCheckRunDetail>()
 const form = reactive<ModelCheckRunPayload>({
   targetType: 'account',
   targetId: '',
-  model: 'gpt-5.5',
+  model: modelCheckFallbackOptions.defaultModel,
   profile: 'full',
   trustedComparison: false,
   trustedComparisonAccountId: undefined
