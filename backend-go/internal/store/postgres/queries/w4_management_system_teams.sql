@@ -19,6 +19,50 @@ RETURNING
   created_at,
   updated_at;
 
+-- name: FindManagementSystemTeamForUpdate :one
+SELECT
+  teams.id,
+  teams.name,
+  teams.description,
+  teams.status,
+  teams.created_by,
+  teams.created_at,
+  teams.updated_at
+FROM juhe_business.system_teams AS teams
+WHERE teams.id = sqlc.arg(team_id)::text
+  AND (
+    sqlc.arg(system_account_id)::text = ''
+    OR EXISTS (
+      SELECT 1
+      FROM juhe_business.system_team_members AS scoped_members
+      WHERE scoped_members.team_id = teams.id
+        AND scoped_members.system_account_id = sqlc.arg(system_account_id)::text
+        AND scoped_members.status = 'active'
+    )
+  )
+LIMIT 1
+FOR UPDATE OF teams;
+
+-- name: UpdateManagementSystemTeam :one
+UPDATE juhe_business.system_teams
+SET
+  name = CASE WHEN sqlc.arg(has_name)::bool THEN sqlc.arg(name)::text ELSE name END,
+  description = CASE
+    WHEN sqlc.arg(has_description)::bool THEN sqlc.narg(description)::text
+    ELSE description
+  END,
+  status = CASE WHEN sqlc.arg(has_status)::bool THEN sqlc.arg(status)::text ELSE status END,
+  updated_at = sqlc.arg(updated_at)::timestamptz
+WHERE id = sqlc.arg(team_id)::text
+RETURNING
+  id,
+  name,
+  description,
+  status,
+  created_by,
+  created_at,
+  updated_at;
+
 -- name: ListManagementSystemTeams :many
 SELECT
   teams.id,

@@ -24,6 +24,7 @@ type managementSystemTeamService interface {
 	List(ctx context.Context, input managementsystemteams.ListInput) (managementsystemteams.ListResult, error)
 	Detail(ctx context.Context, teamID string, systemAccountID string) (managementsystemteams.Detail, bool, error)
 	Create(ctx context.Context, input managementsystemteams.CreateInput) (managementsystemteams.Summary, error)
+	Update(ctx context.Context, input managementsystemteams.UpdateInput) (managementsystemteams.UpdateResult, bool, error)
 }
 
 func NewManagementSystemTeamsHandler(service *managementsystemteams.Service) http.Handler {
@@ -36,6 +37,10 @@ func NewManagementMySystemTeamsHandler(service *managementsystemteams.Service) h
 
 func NewManagementSystemTeamCreateHandlerWithOperationLog(service *managementsystemteams.Service, opts ManagementOperationLogOptions) http.Handler {
 	return newManagementSystemTeamCreateHandler(service, newManagementOperationLogOptions(opts))
+}
+
+func NewManagementSystemTeamPatchHandlerWithOperationLog(service *managementsystemteams.Service, opts ManagementOperationLogOptions) http.Handler {
+	return newManagementSystemTeamPatchHandler(service, newManagementOperationLogOptions(opts))
 }
 
 type managementSystemTeamScope string
@@ -141,6 +146,71 @@ func newManagementSystemTeamCreateHandler(service managementSystemTeamService, o
 	})
 }
 
+func newManagementSystemTeamPatchHandler(service managementSystemTeamService, opts managementOperationLogOptions) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authContext, ok := ManagementAuthContextFromRequest(r)
+		if !ok || strings.TrimSpace(authContext.SystemAccountID) == "" {
+			writeMessageError(w, http.StatusUnauthorized, "未登录")
+			return
+		}
+		if !managementauth.IsAdminRole(authContext.Role) {
+			writeMessageError(w, http.StatusForbidden, "需要管理员权限")
+			return
+		}
+		if service == nil {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		systemAccountID, validScope := managementSystemTeamScopedSystemAccountID(authContext, r.URL.Query(), managementSystemTeamScopeAdmin)
+		if !validScope {
+			writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
+			return
+		}
+		teamID := strings.TrimSpace(chi.URLParam(r, "id"))
+		if teamID == "" {
+			writeMessageError(w, http.StatusBadRequest, "团队 ID 不合法")
+			return
+		}
+		payload, ok := decodeManagementSystemTeamPatchPayload(w, r)
+		if !ok {
+			return
+		}
+
+		result, found, err := service.Update(r.Context(), managementsystemteams.UpdateInput{
+			TeamID:          teamID,
+			SystemAccountID: systemAccountID,
+			Name:            payload.Name,
+			HasDescription:  payload.HasDescription,
+			Description:     payload.Description,
+			Status:          payload.Status,
+			UpdatedBy:       authContext.SystemAccountID,
+		})
+		if errors.Is(err, managementsystemteams.ErrSystemTeamUpdateInvalid) {
+			writeMessageError(w, http.StatusBadRequest, "团队参数不合法")
+			return
+		}
+		if errors.Is(err, managementsystemteams.ErrSystemTeamNameExists) {
+			writeMessageError(w, http.StatusConflict, "团队名称已存在")
+			return
+		}
+		if err != nil {
+			if isManagementSystemTeamUserFacingError(err) {
+				writeMessageError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			writeMessageError(w, http.StatusInternalServerError, "更新团队失败")
+			return
+		}
+		if !found {
+			writeMessageError(w, http.StatusNotFound, "团队不存在")
+			return
+		}
+
+		recordSystemTeamUpdateOperationLog(r, authContext, result, opts)
+		writeData(w, http.StatusOK, result.Team)
+	})
+}
+
 func managementSystemTeamScopedSystemAccountID(authContext managementauth.Context, values url.Values, scope managementSystemTeamScope) (string, bool) {
 	switch scope {
 	case managementSystemTeamScopeSelf:
@@ -182,6 +252,13 @@ type managementSystemTeamCreatePayload struct {
 	Name        string
 	Description *string
 	Status      string
+}
+
+type managementSystemTeamPatchPayload struct {
+	Name           *string
+	HasDescription bool
+	Description    *string
+	Status         *string
 }
 
 func decodeManagementSystemTeamCreatePayload(w http.ResponseWriter, r *http.Request) (managementSystemTeamCreatePayload, bool) {
@@ -234,6 +311,55 @@ func decodeManagementSystemTeamCreatePayload(w http.ResponseWriter, r *http.Requ
 		return managementSystemTeamCreatePayload{}, false
 	}
 	return managementSystemTeamCreatePayload{Name: name, Description: description, Status: status}, true
+}
+
+func decodeManagementSystemTeamPatchPayload(w http.ResponseWriter, r *http.Request) (managementSystemTeamPatchPayload, bool) {
+	var payload map[string]any
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	if err := decoder.Decode(&payload); err != nil || payload == nil {
+		writeMessageError(w, http.StatusBadRequest, "请求体无效")
+		return managementSystemTeamPatchPayload{}, false
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		writeMessageError(w, http.StatusBadRequest, "请求体无效")
+		return managementSystemTeamPatchPayload{}, false
+	}
+
+	result := managementSystemTeamPatchPayload{}
+	for field, raw := range payload {
+		switch field {
+		case "name":
+			text, ok := raw.(string)
+			if !ok || strings.TrimSpace(text) == "" {
+				writeMessageError(w, http.StatusBadRequest, "团队参数不合法")
+				return managementSystemTeamPatchPayload{}, false
+			}
+			result.Name = &text
+		case "description":
+			result.HasDescription = true
+			if raw == nil {
+				continue
+			}
+			text, ok := raw.(string)
+			if !ok {
+				writeMessageError(w, http.StatusBadRequest, "团队参数不合法")
+				return managementSystemTeamPatchPayload{}, false
+			}
+			result.Description = &text
+		case "status":
+			text, ok := raw.(string)
+			if !ok || (text != "active" && text != "disabled") {
+				writeMessageError(w, http.StatusBadRequest, "团队参数不合法")
+				return managementSystemTeamPatchPayload{}, false
+			}
+			result.Status = &text
+		default:
+			writeMessageError(w, http.StatusBadRequest, "团队参数不合法")
+			return managementSystemTeamPatchPayload{}, false
+		}
+	}
+	return result, true
 }
 
 func validManagementScopeQuery(r *http.Request) bool {
@@ -315,4 +441,114 @@ func recordSystemTeamCreateOperationLog(
 			slog.Any("error", err),
 		)
 	}
+}
+
+func recordSystemTeamUpdateOperationLog(
+	r *http.Request,
+	authContext managementauth.Context,
+	result managementsystemteams.UpdateResult,
+	opts managementOperationLogOptions,
+) {
+	if opts.client == nil {
+		return
+	}
+	now := opts.now
+	if now == nil {
+		now = time.Now
+	}
+	newLogID := opts.newLogID
+	if newLogID == nil {
+		newLogID = func() string {
+			return "oplog_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+		}
+	}
+	statusCode := http.StatusOK
+	input := port.OperationLogInput{
+		ID:                            newLogID(),
+		TraceID:                       requestIDFromContext(r.Context()),
+		ActorSystemAccountID:          authContext.SystemAccountID,
+		ActorUsername:                 authContext.Username,
+		ActorDisplayName:              authContext.DisplayName,
+		ActorRole:                     authContext.Role,
+		OperationScopeSystemAccountID: authContext.SystemAccountID,
+		Mode:                          "admin",
+		Module:                        "system_teams",
+		Action:                        "update",
+		OperationKey:                  "system_teams.update",
+		ResourceType:                  "system_team",
+		ResourceID:                    result.Team.ID,
+		ResourceName:                  result.Team.Name,
+		Summary:                       "更新系统团队：" + result.Team.Name,
+		DetailLevel:                   "full",
+		VisibilityScope:               "targeted",
+		Changes:                       systemTeamUpdateOperationChanges(result.Before, result.Team.Summary),
+		Metadata: map[string]any{
+			"authorizationChanged": result.AuthorizationChanged,
+		},
+		Method:     r.Method,
+		Path:       r.URL.Path,
+		StatusCode: &statusCode,
+		ClientIP:   opts.clientIP.FromRequest(r),
+		UserAgent:  r.UserAgent(),
+		Viewers:    systemTeamUpdateOperationViewers(authContext.SystemAccountID, result.Team.Members),
+		CreatedAt:  now().UTC(),
+	}
+	enqueueCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+	defer cancel()
+	if _, err := operationlogjob.EnqueueWrite(enqueueCtx, opts.client, input); err != nil && opts.logger != nil {
+		opts.logger.Warn("管理端操作日志入队失败",
+			slog.String("event", "operation_log_enqueue_failed"),
+			slog.String("operation_key", input.OperationKey),
+			slog.String("resource_id", input.ResourceID),
+			slog.String("request_id", input.TraceID),
+			slog.Any("error", err),
+		)
+	}
+}
+
+func systemTeamUpdateOperationChanges(before managementsystemteams.Summary, after managementsystemteams.Summary) []port.OperationLogChange {
+	changes := make([]port.OperationLogChange, 0, 3)
+	if before.Name != after.Name {
+		changes = append(changes, port.OperationLogChange{Field: "name", Label: "团队名称", Before: before.Name, After: after.Name})
+	}
+	if before.Description != after.Description {
+		changes = append(changes, port.OperationLogChange{Field: "description", Label: "说明", Before: before.Description, After: after.Description})
+	}
+	if before.Status != after.Status {
+		changes = append(changes, port.OperationLogChange{Field: "status", Label: "状态", Before: before.Status, After: after.Status})
+	}
+	return changes
+}
+
+func systemTeamUpdateOperationViewers(actorSystemAccountID string, members []managementsystemteams.MemberSummary) []port.OperationLogViewerInput {
+	viewers := make([]port.OperationLogViewerInput, 0, len(members)+1)
+	seen := map[string]struct{}{}
+	addViewer := func(systemAccountID string, reason string) {
+		systemAccountID = strings.TrimSpace(systemAccountID)
+		if systemAccountID == "" {
+			return
+		}
+		if _, ok := seen[systemAccountID]; ok {
+			return
+		}
+		seen[systemAccountID] = struct{}{}
+		viewers = append(viewers, port.OperationLogViewerInput{
+			SystemAccountID:  systemAccountID,
+			VisibilityReason: reason,
+			DetailLevel:      "full",
+		})
+	}
+	addViewer(actorSystemAccountID, "team_updater")
+	for _, member := range members {
+		addViewer(member.SystemAccountID, "team_member")
+	}
+	return viewers
+}
+
+func isManagementSystemTeamUserFacingError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "授权团队") || strings.Contains(message, "不能授权给资源所有者自己")
 }

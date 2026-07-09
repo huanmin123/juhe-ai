@@ -248,6 +248,215 @@ func TestCreateMapsStoreErrors(t *testing.T) {
 	}
 }
 
+func TestUpdateNormalizesInputMapsDetailAndInvalidatesAuthorization(t *testing.T) {
+	now := time.Date(2026, 7, 9, 10, 0, 0, 0, time.UTC)
+	joinedAt := now.Add(-time.Hour)
+	store := &teamStoreStub{
+		updateFound: true,
+		updateResult: port.ManagementSystemTeamUpdateResult{
+			Before: port.ManagementSystemTeamSummary{
+				ID:          "team_ops",
+				Name:        "运维团队",
+				Description: "旧说明",
+				Status:      "active",
+				CreatedBy:   "sys_admin",
+				CreatedAt:   joinedAt,
+				UpdatedAt:   joinedAt,
+			},
+			Team: port.ManagementSystemTeamDetail{
+				ManagementSystemTeamSummary: port.ManagementSystemTeamSummary{
+					ID:          "team_ops",
+					Name:        "新运维团队",
+					Description: "新说明",
+					Status:      "disabled",
+					CreatedBy:   "sys_admin",
+					CreatedAt:   joinedAt,
+					UpdatedAt:   now,
+				},
+				Members: []port.ManagementSystemTeamMemberSummary{{
+					ID:              "teammem_1",
+					TeamID:          "team_ops",
+					SystemAccountID: "sys_user",
+					MemberRole:      "member",
+					Status:          "active",
+					JoinedAt:        joinedAt,
+					CreatedAt:       joinedAt,
+					UpdatedAt:       now,
+				}},
+			},
+			AuthorizationChanged: true,
+		},
+	}
+	invalidator := &authorizationInvalidatorStub{}
+	service := NewServiceWithOptions(ServiceOptions{
+		Store:                    store,
+		Now:                      func() time.Time { return now },
+		AuthorizationInvalidator: invalidator,
+	})
+	name := " 新运维团队 "
+	description := " 新说明 "
+	status := "disabled"
+
+	result, found, err := service.Update(context.Background(), UpdateInput{
+		TeamID:          " team_ops ",
+		SystemAccountID: " sys_owner ",
+		Name:            &name,
+		HasDescription:  true,
+		Description:     &description,
+		Status:          &status,
+		UpdatedBy:       " sys_admin ",
+	})
+
+	if err != nil || !found {
+		t.Fatalf("Update() found=%v error=%v", found, err)
+	}
+	if !store.updateCalled ||
+		store.updateInput.TeamID != "team_ops" ||
+		store.updateInput.SystemAccountID != "sys_owner" ||
+		!store.updateInput.HasName ||
+		store.updateInput.Name != "新运维团队" ||
+		!store.updateInput.HasDescription ||
+		store.updateInput.Description == nil ||
+		*store.updateInput.Description != "新说明" ||
+		!store.updateInput.HasStatus ||
+		store.updateInput.Status != "disabled" ||
+		store.updateInput.UpdatedBy != "sys_admin" ||
+		!store.updateInput.UpdatedAt.Equal(now) {
+		t.Fatalf("store update input = %+v", store.updateInput)
+	}
+	if result.Team.ID != "team_ops" ||
+		result.Team.Name != "新运维团队" ||
+		result.Team.Status != "disabled" ||
+		len(result.Team.Members) != 1 ||
+		result.Before.Name != "运维团队" ||
+		!result.AuthorizationChanged {
+		t.Fatalf("result = %+v", result)
+	}
+	if invalidator.calls != 1 || invalidator.reason != TeamAuthorizationChangedReason {
+		t.Fatalf("invalidator calls=%d reason=%q", invalidator.calls, invalidator.reason)
+	}
+}
+
+func TestUpdateAllowsClearingDescriptionWithoutInvalidation(t *testing.T) {
+	now := time.Date(2026, 7, 9, 10, 0, 0, 0, time.UTC)
+	store := &teamStoreStub{
+		updateFound: true,
+		updateResult: port.ManagementSystemTeamUpdateResult{
+			Before: port.ManagementSystemTeamSummary{ID: "team_ops", Name: "团队", Status: "active", CreatedAt: now, UpdatedAt: now},
+			Team: port.ManagementSystemTeamDetail{
+				ManagementSystemTeamSummary: port.ManagementSystemTeamSummary{ID: "team_ops", Name: "团队", Status: "active", CreatedAt: now, UpdatedAt: now},
+			},
+		},
+	}
+	invalidator := &authorizationInvalidatorStub{}
+	service := NewServiceWithOptions(ServiceOptions{Store: store, Now: func() time.Time { return now }, AuthorizationInvalidator: invalidator})
+
+	result, found, err := service.Update(context.Background(), UpdateInput{
+		TeamID:         "team_ops",
+		HasDescription: true,
+		Description:    nil,
+		UpdatedBy:      "sys_admin",
+	})
+
+	if err != nil || !found {
+		t.Fatalf("Update() found=%v error=%v", found, err)
+	}
+	if !store.updateInput.HasDescription || store.updateInput.Description != nil {
+		t.Fatalf("description input = %+v", store.updateInput)
+	}
+	if invalidator.calls != 0 {
+		t.Fatalf("invalidator calls = %d, want 0", invalidator.calls)
+	}
+	if result.Team.Description != "" {
+		t.Fatalf("result description = %q", result.Team.Description)
+	}
+}
+
+func TestUpdateRejectsInvalidInput(t *testing.T) {
+	longName := strings.Repeat("名", maxTeamNameRunes+1)
+	longDescription := strings.Repeat("说明", maxTeamDescriptionRunes)
+	tests := []struct {
+		name  string
+		input UpdateInput
+	}{
+		{name: "missing id", input: UpdateInput{UpdatedBy: "sys_admin"}},
+		{name: "missing updater", input: UpdateInput{TeamID: "team_ops"}},
+		{name: "blank name", input: UpdateInput{TeamID: "team_ops", Name: stringPtr(" "), UpdatedBy: "sys_admin"}},
+		{name: "long name", input: UpdateInput{TeamID: "team_ops", Name: &longName, UpdatedBy: "sys_admin"}},
+		{name: "invalid status", input: UpdateInput{TeamID: "team_ops", Status: stringPtr("archived"), UpdatedBy: "sys_admin"}},
+		{name: "long description", input: UpdateInput{TeamID: "team_ops", HasDescription: true, Description: &longDescription, UpdatedBy: "sys_admin"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &teamStoreStub{}
+			service := NewServiceWithOptions(ServiceOptions{Store: store})
+
+			_, _, err := service.Update(context.Background(), tt.input)
+
+			if !errors.Is(err, ErrSystemTeamUpdateInvalid) {
+				t.Fatalf("Update() error = %v, want %v", err, ErrSystemTeamUpdateInvalid)
+			}
+			if store.updateCalled {
+				t.Fatal("store should not be called for invalid input")
+			}
+		})
+	}
+}
+
+func TestUpdateMapsStoreErrorsAndNotFound(t *testing.T) {
+	storeErr := errors.New("postgres down")
+	tests := []struct {
+		name      string
+		found     bool
+		err       error
+		wantFound bool
+		wantErr   error
+	}{
+		{name: "not found", found: false, err: nil, wantFound: false, wantErr: nil},
+		{name: "duplicate name", found: true, err: port.ErrManagementSystemTeamNameExists, wantFound: false, wantErr: ErrSystemTeamNameExists},
+		{name: "store error", found: true, err: storeErr, wantFound: false, wantErr: storeErr},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := NewServiceWithOptions(ServiceOptions{
+				Store: &teamStoreStub{updateFound: tt.found, updateErr: tt.err},
+			})
+
+			_, found, err := service.Update(context.Background(), UpdateInput{TeamID: "team_ops", UpdatedBy: "sys_admin"})
+
+			if found != tt.wantFound {
+				t.Fatalf("found = %v, want %v", found, tt.wantFound)
+			}
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("Update() error = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestUpdateReturnsInvalidationErrorAfterWrite(t *testing.T) {
+	now := time.Date(2026, 7, 9, 10, 0, 0, 0, time.UTC)
+	want := errors.New("redis down")
+	service := NewServiceWithOptions(ServiceOptions{
+		Store: &teamStoreStub{
+			updateFound: true,
+			updateResult: port.ManagementSystemTeamUpdateResult{
+				Before:               port.ManagementSystemTeamSummary{ID: "team_ops", Name: "团队", Status: "active", CreatedAt: now, UpdatedAt: now},
+				Team:                 port.ManagementSystemTeamDetail{ManagementSystemTeamSummary: port.ManagementSystemTeamSummary{ID: "team_ops", Name: "团队", Status: "disabled", CreatedAt: now, UpdatedAt: now}},
+				AuthorizationChanged: true,
+			},
+		},
+		AuthorizationInvalidator: &authorizationInvalidatorStub{err: want},
+	})
+	status := "disabled"
+
+	_, found, err := service.Update(context.Background(), UpdateInput{TeamID: "team_ops", Status: &status, UpdatedBy: "sys_admin"})
+
+	if !found || !errors.Is(err, want) {
+		t.Fatalf("Update() found=%v error=%v, want %v", found, err, want)
+	}
+}
+
 type teamStoreStub struct {
 	called                bool
 	input                 port.ManagementSystemTeamCreateInput
@@ -263,6 +472,11 @@ type teamStoreStub struct {
 	detailResult          port.ManagementSystemTeamDetail
 	detailFound           bool
 	detailErr             error
+	updateCalled          bool
+	updateInput           port.ManagementSystemTeamUpdateInput
+	updateResult          port.ManagementSystemTeamUpdateResult
+	updateFound           bool
+	updateErr             error
 }
 
 func (s *teamStoreStub) CreateManagementSystemTeam(_ context.Context, input port.ManagementSystemTeamCreateInput) (port.ManagementSystemTeamSummary, error) {
@@ -282,4 +496,26 @@ func (s *teamStoreStub) FindManagementSystemTeam(_ context.Context, teamID strin
 	s.detailTeamID = teamID
 	s.detailSystemAccountID = systemAccountID
 	return s.detailResult, s.detailFound, s.detailErr
+}
+
+func (s *teamStoreStub) UpdateManagementSystemTeam(_ context.Context, input port.ManagementSystemTeamUpdateInput) (port.ManagementSystemTeamUpdateResult, bool, error) {
+	s.updateCalled = true
+	s.updateInput = input
+	return s.updateResult, s.updateFound, s.updateErr
+}
+
+type authorizationInvalidatorStub struct {
+	calls  int
+	reason string
+	err    error
+}
+
+func (s *authorizationInvalidatorStub) InvalidateAuthorizationChanged(_ context.Context, reason string) error {
+	s.calls++
+	s.reason = reason
+	return s.err
+}
+
+func stringPtr(value string) *string {
+	return &value
 }

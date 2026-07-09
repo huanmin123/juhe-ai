@@ -117,6 +117,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementSystemTeamsHandler:                    managementHandlers.SystemTeamsHandler,
 		ManagementMySystemTeamsHandler:                  managementHandlers.MySystemTeamsHandler,
 		ManagementSystemTeamCreateHandler:               managementHandlers.SystemTeamCreateHandler,
+		ManagementSystemTeamPatchHandler:                managementHandlers.SystemTeamPatchHandler,
 		ManagementAuthorizationGranteeAccountsHandler:   managementHandlers.AuthorizationGranteeAccountsHandler,
 		ManagementMyAuthorizationGranteeAccountsHandler: managementHandlers.MyAuthorizationGranteeAccountsHandler,
 		ManagementAuthorizationGranteeTeamsHandler:      managementHandlers.AuthorizationGranteeTeamsHandler,
@@ -193,6 +194,7 @@ type managementAPIHandlers struct {
 	SystemTeamsHandler                    http.Handler
 	MySystemTeamsHandler                  http.Handler
 	SystemTeamCreateHandler               http.Handler
+	SystemTeamPatchHandler                http.Handler
 	AuthorizationGranteeAccountsHandler   http.Handler
 	MyAuthorizationGranteeAccountsHandler http.Handler
 	AuthorizationGranteeTeamsHandler      http.Handler
@@ -221,13 +223,18 @@ type managementAPIHandlers struct {
 	MyOperationLogsHandler                http.Handler
 }
 
+type managementAPIInvalidator interface {
+	managementsystemaccounts.SystemAccountInvalidator
+	managementsystemteams.AuthorizationInvalidator
+}
+
 func newManagementAPIHandler(
 	cfg config.Config,
 	store *postgresstore.Store,
 	stateRedis *redisplatform.Client,
 	operationLogQueue operationLogEnqueueClient,
 	logger *slog.Logger,
-	systemAccountInvalidator managementsystemaccounts.SystemAccountInvalidator,
+	systemAccountInvalidator managementAPIInvalidator,
 ) managementAPIHandlers {
 	if !cfg.ManagementAPIEnabled {
 		return managementAPIHandlers{}
@@ -250,7 +257,10 @@ func newManagementAPIHandler(
 		Secret:                   cfg.Secret,
 		SystemAccountInvalidator: systemAccountInvalidator,
 	})
-	systemTeamService := managementsystemteams.NewService(store)
+	systemTeamService := managementsystemteams.NewServiceWithOptions(managementsystemteams.ServiceOptions{
+		Store:                    store,
+		AuthorizationInvalidator: systemAccountInvalidator,
+	})
 	authorizationOptionService := managementauthorizationoptions.NewService(store)
 	operationLogService := managementoperationlogs.NewService(store)
 	operationLogOptions := httpapi.ManagementOperationLogOptions{
@@ -277,6 +287,7 @@ func newManagementAPIHandler(
 		SystemTeamsHandler:                    httpapi.NewManagementSystemTeamsHandler(systemTeamService),
 		MySystemTeamsHandler:                  httpapi.NewManagementMySystemTeamsHandler(systemTeamService),
 		SystemTeamCreateHandler:               httpapi.NewManagementSystemTeamCreateHandlerWithOperationLog(systemTeamService, operationLogOptions),
+		SystemTeamPatchHandler:                httpapi.NewManagementSystemTeamPatchHandlerWithOperationLog(systemTeamService, operationLogOptions),
 		AuthorizationGranteeAccountsHandler:   httpapi.NewManagementAuthorizationGranteeAccountsHandler(authorizationOptionService),
 		MyAuthorizationGranteeAccountsHandler: httpapi.NewManagementMyAuthorizationGranteeAccountsHandler(authorizationOptionService),
 		AuthorizationGranteeTeamsHandler:      httpapi.NewManagementAuthorizationGranteeTeamsHandler(authorizationOptionService),
@@ -315,7 +326,7 @@ func newGatewaySystemAccountInvalidator(
 	cfg config.Config,
 	stateRedis *redisplatform.Client,
 	logger *slog.Logger,
-) (managementsystemaccounts.SystemAccountInvalidator, func(), error) {
+) (managementAPIInvalidator, func(), error) {
 	closeFn := func() {}
 	if !cfg.ManagementAPIEnabled {
 		return nil, closeFn, nil

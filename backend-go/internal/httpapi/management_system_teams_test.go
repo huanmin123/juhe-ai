@@ -334,6 +334,191 @@ func TestManagementSystemTeamCreateHandlerMapsServiceErrors(t *testing.T) {
 	}
 }
 
+func TestManagementSystemTeamPatchHandlerUpdatesAndWritesOperationLog(t *testing.T) {
+	queueStub := &operationLogQueueStub{}
+	name := "新运维团队"
+	status := "disabled"
+	service := &managementSystemTeamServiceStub{
+		updateFound: true,
+		updateResult: managementsystemteams.UpdateResult{
+			Before: managementsystemteams.Summary{
+				ID:          "team_ops",
+				Name:        "运维团队",
+				Description: "负责稳定性",
+				Status:      "active",
+			},
+			Team: managementsystemteams.Detail{
+				Summary: managementsystemteams.Summary{
+					ID:          "team_ops",
+					Name:        "新运维团队",
+					Description: "负责稳定性",
+					Status:      "disabled",
+					CreatedBy:   "sys_admin",
+				},
+				Members: []managementsystemteams.MemberSummary{{
+					SystemAccountID: "sys_member",
+					Status:          "active",
+				}},
+			},
+			AuthorizationChanged: true,
+		},
+	}
+	handler := newManagementSystemTeamPatchHandler(
+		service,
+		newManagementOperationLogOptions(ManagementOperationLogOptions{
+			Config:   config.Config{TrustProxy: "false"},
+			Client:   queueStub,
+			NewLogID: func() string { return "oplog_update_team" },
+		}),
+	)
+	req := httptest.NewRequest(http.MethodPatch, "/__aisys__/api/system-teams/team_ops?systemAccountId=sys_owner", strings.NewReader(`{"name":"新运维团队","status":"disabled"}`))
+	req = withSystemTeamRouteParam(req, "team_ops")
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+		SystemAccountID: "sys_admin",
+		Username:        "admin",
+		DisplayName:     "管理员",
+		Role:            "admin",
+		SessionID:       "sess_admin",
+	}))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", rec.Code, rec.Body.String())
+	}
+	if !service.updateCalled ||
+		service.updateInput.TeamID != "team_ops" ||
+		service.updateInput.SystemAccountID != "sys_owner" ||
+		service.updateInput.Name == nil ||
+		*service.updateInput.Name != name ||
+		service.updateInput.Status == nil ||
+		*service.updateInput.Status != status ||
+		service.updateInput.UpdatedBy != "sys_admin" {
+		t.Fatalf("update input = %+v", service.updateInput)
+	}
+	var body struct {
+		Data managementsystemteams.Detail `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Data.ID != "team_ops" || body.Data.Name != "新运维团队" || body.Data.Status != "disabled" {
+		t.Fatalf("response = %+v", body.Data)
+	}
+	if queueStub.calls != 1 || queueStub.taskType != operationlogjob.TaskTypeWrite {
+		t.Fatalf("operation log queue calls = %d taskType = %q", queueStub.calls, queueStub.taskType)
+	}
+	logInput, err := operationlogjob.DecodeWriteTaskPayload(queueStub.payload)
+	if err != nil {
+		t.Fatalf("decode operation log payload: %v", err)
+	}
+	if logInput.OperationKey != "system_teams.update" ||
+		logInput.Action != "update" ||
+		logInput.ResourceID != "team_ops" ||
+		logInput.StatusCode == nil ||
+		*logInput.StatusCode != http.StatusOK {
+		t.Fatalf("operation log input = %+v", logInput)
+	}
+	if len(logInput.Changes) != 2 || logInput.Changes[0].Field != "name" || logInput.Changes[1].Field != "status" {
+		t.Fatalf("operation log changes = %+v", logInput.Changes)
+	}
+	if len(logInput.Viewers) != 2 ||
+		logInput.Viewers[0].SystemAccountID != "sys_admin" ||
+		logInput.Viewers[1].SystemAccountID != "sys_member" {
+		t.Fatalf("operation log viewers = %+v", logInput.Viewers)
+	}
+}
+
+func TestManagementSystemTeamPatchHandlerValidatesBody(t *testing.T) {
+	tests := []struct {
+		name     string
+		target   string
+		body     string
+		wantCode int
+		wantMsg  string
+	}{
+		{name: "syntax error", target: "/__aisys__/api/system-teams/team_ops", body: `{"name":`, wantCode: http.StatusBadRequest, wantMsg: "请求体无效"},
+		{name: "trailing json", target: "/__aisys__/api/system-teams/team_ops", body: `{"name":"团队"} true`, wantCode: http.StatusBadRequest, wantMsg: "请求体无效"},
+		{name: "blank name", target: "/__aisys__/api/system-teams/team_ops", body: `{"name":"   "}`, wantCode: http.StatusBadRequest, wantMsg: "团队参数不合法"},
+		{name: "bad description", target: "/__aisys__/api/system-teams/team_ops", body: `{"description":1}`, wantCode: http.StatusBadRequest, wantMsg: "团队参数不合法"},
+		{name: "bad status", target: "/__aisys__/api/system-teams/team_ops", body: `{"status":"archived"}`, wantCode: http.StatusBadRequest, wantMsg: "团队参数不合法"},
+		{name: "unknown field", target: "/__aisys__/api/system-teams/team_ops", body: `{"extra":true}`, wantCode: http.StatusBadRequest, wantMsg: "团队参数不合法"},
+		{name: "blank scope query", target: "/__aisys__/api/system-teams/team_ops?systemAccountId=", body: `{}`, wantCode: http.StatusBadRequest, wantMsg: "查询参数不合法"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &managementSystemTeamServiceStub{}
+			handler := newManagementSystemTeamPatchHandler(service, managementOperationLogOptions{})
+			req := httptest.NewRequest(http.MethodPatch, tt.target, strings.NewReader(tt.body))
+			req = withSystemTeamRouteParam(req, "team_ops")
+			req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+				SystemAccountID: "sys_admin",
+				Role:            "admin",
+			}))
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantCode {
+				t.Fatalf("status = %d, want %d, body = %s", rec.Code, tt.wantCode, rec.Body.String())
+			}
+			var body map[string]string
+			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if body["message"] != tt.wantMsg {
+				t.Fatalf("message = %q, want %q", body["message"], tt.wantMsg)
+			}
+			if service.updateCalled {
+				t.Fatal("service should not be called for invalid request")
+			}
+		})
+	}
+}
+
+func TestManagementSystemTeamPatchHandlerMapsServiceErrors(t *testing.T) {
+	tests := []struct {
+		name        string
+		found       bool
+		err         error
+		wantCode    int
+		wantMessage string
+	}{
+		{name: "invalid", found: true, err: managementsystemteams.ErrSystemTeamUpdateInvalid, wantCode: http.StatusBadRequest, wantMessage: "团队参数不合法"},
+		{name: "duplicate name", found: true, err: managementsystemteams.ErrSystemTeamNameExists, wantCode: http.StatusConflict, wantMessage: "团队名称已存在"},
+		{name: "not found", found: false, err: nil, wantCode: http.StatusNotFound, wantMessage: "团队不存在"},
+		{name: "fanout limit", found: true, err: errors.New("授权团队最多支持 20 个成员，请先移除部分成员后再继续"), wantCode: http.StatusBadRequest, wantMessage: "授权团队最多支持 20 个成员，请先移除部分成员后再继续"},
+		{name: "store error", found: true, err: errors.New("postgres down"), wantCode: http.StatusInternalServerError, wantMessage: "更新团队失败"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &managementSystemTeamServiceStub{updateFound: tt.found, updateErr: tt.err}
+			handler := newManagementSystemTeamPatchHandler(service, managementOperationLogOptions{})
+			req := httptest.NewRequest(http.MethodPatch, "/__aisys__/api/system-teams/team_ops", strings.NewReader(`{"status":"disabled"}`))
+			req = withSystemTeamRouteParam(req, "team_ops")
+			req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+				SystemAccountID: "sys_admin",
+				Role:            "admin",
+			}))
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantCode {
+				t.Fatalf("status = %d, want %d, body = %s", rec.Code, tt.wantCode, rec.Body.String())
+			}
+			var body map[string]string
+			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if body["message"] != tt.wantMessage {
+				t.Fatalf("message = %q, want %q", body["message"], tt.wantMessage)
+			}
+		})
+	}
+}
+
 func TestRouterRegistersW4ManagementSystemTeamCreate(t *testing.T) {
 	service := &managementSystemTeamServiceStub{
 		result: managementsystemteams.Summary{ID: "team_ops", Name: "运维团队", Status: "active", CreatedBy: "sys_admin"},
@@ -363,6 +548,41 @@ func TestRouterRegistersW4ManagementSystemTeamCreate(t *testing.T) {
 	}
 	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
 		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+	if readAuthenticator.cookieHeader != "" || touchAuthenticator.touchCookieHeader == "" {
+		t.Fatalf("auth headers read=%q touch=%q", readAuthenticator.cookieHeader, touchAuthenticator.touchCookieHeader)
+	}
+}
+
+func TestRouterRegistersW4ManagementSystemTeamPatch(t *testing.T) {
+	service := &managementSystemTeamServiceStub{
+		updateFound: true,
+		updateResult: managementsystemteams.UpdateResult{
+			Team: managementsystemteams.Detail{Summary: managementsystemteams.Summary{ID: "team_ops", Name: "运维团队", Status: "disabled"}},
+		},
+	}
+	readAuthenticator := &managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_read"},
+	}
+	touchAuthenticator := &managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_touch"},
+	}
+	router := NewRouter(RouterOptions{
+		Config:                           config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
+		Logger:                           slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
+		ManagementSystemTeamPatchHandler: newManagementSystemTeamPatchHandler(service, managementOperationLogOptions{}),
+		ManagementAPIAuthMiddleware:      NewManagementAPIAuthMiddleware(readAuthenticator),
+		ManagementAPIAuthTouchMiddleware: NewManagementAPIAuthTouchMiddleware(touchAuthenticator),
+	})
+
+	req := httptest.NewRequest(http.MethodPatch, "/__aisys__/api/system-teams/team_ops", strings.NewReader(`{"status":"disabled"}`))
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 	}
 	if readAuthenticator.cookieHeader != "" || touchAuthenticator.touchCookieHeader == "" {
 		t.Fatalf("auth headers read=%q touch=%q", readAuthenticator.cookieHeader, touchAuthenticator.touchCookieHeader)
@@ -435,6 +655,11 @@ type managementSystemTeamServiceStub struct {
 	detailResult          managementsystemteams.Detail
 	detailFound           bool
 	detailErr             error
+	updateCalled          bool
+	updateInput           managementsystemteams.UpdateInput
+	updateResult          managementsystemteams.UpdateResult
+	updateFound           bool
+	updateErr             error
 }
 
 func (s *managementSystemTeamServiceStub) List(_ context.Context, input managementsystemteams.ListInput) (managementsystemteams.ListResult, error) {
@@ -454,6 +679,12 @@ func (s *managementSystemTeamServiceStub) Create(_ context.Context, input manage
 	s.called = true
 	s.input = input
 	return s.result, s.err
+}
+
+func (s *managementSystemTeamServiceStub) Update(_ context.Context, input managementsystemteams.UpdateInput) (managementsystemteams.UpdateResult, bool, error) {
+	s.updateCalled = true
+	s.updateInput = input
+	return s.updateResult, s.updateFound, s.updateErr
 }
 
 func withSystemTeamRouteParam(req *http.Request, teamID string) *http.Request {

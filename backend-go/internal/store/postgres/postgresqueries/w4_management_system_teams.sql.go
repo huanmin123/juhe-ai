@@ -131,6 +131,51 @@ func (q *Queries) FindManagementSystemTeam(ctx context.Context, arg FindManageme
 	return i, err
 }
 
+const findManagementSystemTeamForUpdate = `-- name: FindManagementSystemTeamForUpdate :one
+SELECT
+  teams.id,
+  teams.name,
+  teams.description,
+  teams.status,
+  teams.created_by,
+  teams.created_at,
+  teams.updated_at
+FROM juhe_business.system_teams AS teams
+WHERE teams.id = $1::text
+  AND (
+    $2::text = ''
+    OR EXISTS (
+      SELECT 1
+      FROM juhe_business.system_team_members AS scoped_members
+      WHERE scoped_members.team_id = teams.id
+        AND scoped_members.system_account_id = $2::text
+        AND scoped_members.status = 'active'
+    )
+  )
+LIMIT 1
+FOR UPDATE OF teams
+`
+
+type FindManagementSystemTeamForUpdateParams struct {
+	TeamID          string
+	SystemAccountID string
+}
+
+func (q *Queries) FindManagementSystemTeamForUpdate(ctx context.Context, arg FindManagementSystemTeamForUpdateParams) (JuheBusinessSystemTeam, error) {
+	row := q.db.QueryRow(ctx, findManagementSystemTeamForUpdate, arg.TeamID, arg.SystemAccountID)
+	var i JuheBusinessSystemTeam
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.Status,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const listManagementSystemTeamMemberCounts = `-- name: ListManagementSystemTeamMemberCounts :many
 SELECT
   team_id,
@@ -325,4 +370,60 @@ func (q *Queries) ListManagementSystemTeams(ctx context.Context, arg ListManagem
 		return nil, err
 	}
 	return items, nil
+}
+
+const updateManagementSystemTeam = `-- name: UpdateManagementSystemTeam :one
+UPDATE juhe_business.system_teams
+SET
+  name = CASE WHEN $1::bool THEN $2::text ELSE name END,
+  description = CASE
+    WHEN $3::bool THEN $4::text
+    ELSE description
+  END,
+  status = CASE WHEN $5::bool THEN $6::text ELSE status END,
+  updated_at = $7::timestamptz
+WHERE id = $8::text
+RETURNING
+  id,
+  name,
+  description,
+  status,
+  created_by,
+  created_at,
+  updated_at
+`
+
+type UpdateManagementSystemTeamParams struct {
+	HasName        bool
+	Name           string
+	HasDescription bool
+	Description    pgtype.Text
+	HasStatus      bool
+	Status         string
+	UpdatedAt      pgtype.Timestamptz
+	TeamID         string
+}
+
+func (q *Queries) UpdateManagementSystemTeam(ctx context.Context, arg UpdateManagementSystemTeamParams) (JuheBusinessSystemTeam, error) {
+	row := q.db.QueryRow(ctx, updateManagementSystemTeam,
+		arg.HasName,
+		arg.Name,
+		arg.HasDescription,
+		arg.Description,
+		arg.HasStatus,
+		arg.Status,
+		arg.UpdatedAt,
+		arg.TeamID,
+	)
+	var i JuheBusinessSystemTeam
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.Status,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }

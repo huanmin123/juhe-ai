@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -14,6 +15,11 @@ import (
 )
 
 const maxManagementSystemTeamMembersPerTeam = 500
+
+const (
+	maxManagementSystemTeamAuthorizationMembersPerTeam = 20
+	maxManagementSystemTeamActiveGrantCount            = 20
+)
 
 func (s *Store) ListManagementSystemTeams(ctx context.Context, input port.ManagementSystemTeamListInput) (port.ManagementSystemTeamListResult, error) {
 	keyword := strings.TrimSpace(input.Keyword)
@@ -111,6 +117,97 @@ func (s *Store) CreateManagementSystemTeam(ctx context.Context, input port.Manag
 	}, nil
 }
 
+func (s *Store) UpdateManagementSystemTeam(ctx context.Context, input port.ManagementSystemTeamUpdateInput) (port.ManagementSystemTeamUpdateResult, bool, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return port.ManagementSystemTeamUpdateResult{}, false, fmt.Errorf("begin update management system team tx: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = tx.Rollback(rollbackCtx)
+		}
+	}()
+
+	q := s.queries().WithTx(tx)
+	teamID := strings.TrimSpace(input.TeamID)
+	systemAccountID := strings.TrimSpace(input.SystemAccountID)
+	beforeRow, err := q.FindManagementSystemTeamForUpdate(ctx, postgresqueries.FindManagementSystemTeamForUpdateParams{
+		TeamID:          teamID,
+		SystemAccountID: systemAccountID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return port.ManagementSystemTeamUpdateResult{}, false, nil
+	}
+	if err != nil {
+		return port.ManagementSystemTeamUpdateResult{}, false, fmt.Errorf("find management system team for update: %w", err)
+	}
+	before := managementSystemTeamSummaryFromTeamRow(beforeRow, 0)
+
+	description := pgtype.Text{}
+	if input.Description != nil {
+		description = pgtype.Text{String: *input.Description, Valid: true}
+	}
+	updatedRow, err := q.UpdateManagementSystemTeam(ctx, postgresqueries.UpdateManagementSystemTeamParams{
+		TeamID:         teamID,
+		HasName:        input.HasName,
+		Name:           input.Name,
+		HasDescription: input.HasDescription,
+		Description:    description,
+		HasStatus:      input.HasStatus,
+		Status:         input.Status,
+		UpdatedAt:      pgTimestamptz(input.UpdatedAt),
+	})
+	if err != nil {
+		if isPGUniqueViolation(err) && strings.Contains(err.Error(), "idx_system_teams_name_unique") {
+			return port.ManagementSystemTeamUpdateResult{}, false, port.ErrManagementSystemTeamNameExists
+		}
+		return port.ManagementSystemTeamUpdateResult{}, false, fmt.Errorf("update management system team: %w", err)
+	}
+
+	authorizationChanged := false
+	if beforeRow.Status != "disabled" && updatedRow.Status == "disabled" {
+		if err := revokeAllManagementTeamSourcesTx(ctx, tx, teamID, strings.TrimSpace(input.UpdatedBy), input.UpdatedAt, "team_disabled"); err != nil {
+			return port.ManagementSystemTeamUpdateResult{}, false, err
+		}
+		authorizationChanged = true
+	}
+	if beforeRow.Status == "disabled" && updatedRow.Status == "active" {
+		if err := reactivateManagementTeamGrantSourcesTx(ctx, tx, teamID, strings.TrimSpace(input.UpdatedBy), input.UpdatedAt); err != nil {
+			return port.ManagementSystemTeamUpdateResult{}, false, err
+		}
+		authorizationChanged = true
+	}
+	if authorizationChanged {
+		if err := markAllGroupAccountStatsDirtyIfPresentTx(ctx, tx, "team_authorization_changed", input.UpdatedAt); err != nil {
+			return port.ManagementSystemTeamUpdateResult{}, false, err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		if errors.Is(err, pgx.ErrTxCommitRollback) {
+			return port.ManagementSystemTeamUpdateResult{}, false, fmt.Errorf("commit update management system team tx rolled back: %w", err)
+		}
+		return port.ManagementSystemTeamUpdateResult{}, false, fmt.Errorf("commit update management system team tx: %w", err)
+	}
+	committed = true
+
+	team, found, err := s.FindManagementSystemTeam(ctx, teamID, systemAccountID)
+	if err != nil {
+		return port.ManagementSystemTeamUpdateResult{}, false, err
+	}
+	if !found {
+		return port.ManagementSystemTeamUpdateResult{}, false, fmt.Errorf("find updated management system team: not found")
+	}
+	return port.ManagementSystemTeamUpdateResult{
+		Before:               before,
+		Team:                 team,
+		AuthorizationChanged: authorizationChanged,
+	}, true, nil
+}
+
 func (s *Store) managementSystemTeamMemberCounts(ctx context.Context, teamIDs []string) (map[string]int, error) {
 	counts := make(map[string]int, len(teamIDs))
 	if len(teamIDs) == 0 {
@@ -124,6 +221,473 @@ func (s *Store) managementSystemTeamMemberCounts(ctx context.Context, teamIDs []
 		counts[row.TeamID] = int(row.ActiveMemberCount)
 	}
 	return counts, nil
+}
+
+func revokeAllManagementTeamSourcesTx(ctx context.Context, tx pgx.Tx, teamID string, actor string, now time.Time, reason string) error {
+	limit := maxManagementSystemTeamAuthorizationMembersPerTeam*maxManagementSystemTeamActiveGrantCount + 1
+	rows, err := tx.Query(ctx, `
+SELECT DISTINCT authorization_id
+FROM juhe_business.resource_authorization_sources
+WHERE source_type = 'team'
+  AND source_team_id = $1
+  AND status = 'active'
+ORDER BY authorization_id ASC
+LIMIT $2
+`, teamID, limit)
+	if err != nil {
+		return fmt.Errorf("list active team authorization sources: %w", err)
+	}
+	defer rows.Close()
+
+	authorizationIDs := make([]string, 0)
+	for rows.Next() {
+		var authorizationID string
+		if err := rows.Scan(&authorizationID); err != nil {
+			return fmt.Errorf("scan active team authorization source: %w", err)
+		}
+		authorizationIDs = append(authorizationIDs, authorizationID)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate active team authorization sources: %w", err)
+	}
+	if len(authorizationIDs) > maxManagementSystemTeamAuthorizationMembersPerTeam*maxManagementSystemTeamActiveGrantCount {
+		return fmt.Errorf("授权团队来源展开超过当前系统上限，请先拆分团队或回收部分授权")
+	}
+	for _, authorizationID := range authorizationIDs {
+		if _, err := tx.Exec(ctx, `
+UPDATE juhe_business.resource_authorization_sources
+SET status = 'revoked',
+    ended_at = COALESCE(ended_at, $1),
+    ended_reason = COALESCE(ended_reason, $2),
+    revoked_by = $3,
+    revoked_at = $1,
+    updated_at = $1
+WHERE authorization_id = $4
+  AND source_type = 'team'
+  AND source_team_id = $5
+  AND status = 'active'
+`, now.UTC(), reason, actor, authorizationID, teamID); err != nil {
+			return fmt.Errorf("revoke team authorization source: %w", err)
+		}
+		if err := refreshManagementResourceAuthorizationEffectiveSourceTx(ctx, tx, authorizationID, actor, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func reactivateManagementTeamGrantSourcesTx(ctx context.Context, tx pgx.Tx, teamID string, actor string, now time.Time) error {
+	memberRows, err := activeManagementTeamMemberIDsTx(ctx, tx, teamID)
+	if err != nil {
+		return err
+	}
+	for _, systemAccountID := range memberRows {
+		if err := applyActiveManagementTeamGrantsToMemberTx(ctx, tx, teamID, systemAccountID, actor, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func activeManagementTeamMemberIDsTx(ctx context.Context, tx pgx.Tx, teamID string) ([]string, error) {
+	limit := maxManagementSystemTeamAuthorizationMembersPerTeam + 1
+	rows, err := tx.Query(ctx, `
+SELECT members.system_account_id
+FROM juhe_business.system_team_members AS members
+INNER JOIN juhe_business.system_accounts AS accounts
+  ON accounts.id = members.system_account_id
+WHERE members.team_id = $1
+  AND members.status = 'active'
+  AND accounts.status = 'active'
+ORDER BY members.joined_at ASC, members.id ASC
+LIMIT $2
+`, teamID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list active management team members: %w", err)
+	}
+	defer rows.Close()
+
+	memberIDs := make([]string, 0)
+	for rows.Next() {
+		var systemAccountID string
+		if err := rows.Scan(&systemAccountID); err != nil {
+			return nil, fmt.Errorf("scan active management team member: %w", err)
+		}
+		memberIDs = append(memberIDs, systemAccountID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate active management team members: %w", err)
+	}
+	if len(memberIDs) > maxManagementSystemTeamAuthorizationMembersPerTeam {
+		return nil, fmt.Errorf("授权团队最多支持 %d 个成员，请先移除部分成员后再继续", maxManagementSystemTeamAuthorizationMembersPerTeam)
+	}
+	return memberIDs, nil
+}
+
+type managementTeamGrantRow struct {
+	resourceType                 string
+	resourceID                   string
+	resourceOwnerSystemAccountID string
+	remark                       pgtype.Text
+	expiresAt                    pgtype.Timestamptz
+	limitsJSON                   pgtype.Text
+}
+
+func activeManagementTeamGrantRowsTx(ctx context.Context, tx pgx.Tx, teamID string) ([]managementTeamGrantRow, error) {
+	limit := maxManagementSystemTeamActiveGrantCount + 1
+	rows, err := tx.Query(ctx, `
+SELECT resource_type, resource_id, resource_owner_system_account_id, remark, expires_at, limits_json
+FROM juhe_business.resource_authorization_grants
+WHERE grantee_type = 'team'
+  AND grantee_team_id = $1
+  AND status = 'active'
+ORDER BY created_at ASC, id ASC
+LIMIT $2
+`, teamID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list active management team grants: %w", err)
+	}
+	defer rows.Close()
+
+	grants := make([]managementTeamGrantRow, 0)
+	for rows.Next() {
+		var grant managementTeamGrantRow
+		if err := rows.Scan(&grant.resourceType, &grant.resourceID, &grant.resourceOwnerSystemAccountID, &grant.remark, &grant.expiresAt, &grant.limitsJSON); err != nil {
+			return nil, fmt.Errorf("scan active management team grant: %w", err)
+		}
+		grants = append(grants, grant)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate active management team grants: %w", err)
+	}
+	if len(grants) > maxManagementSystemTeamActiveGrantCount {
+		return nil, fmt.Errorf("单个授权团队最多支持 %d 条有效授权，请先回收或停用部分授权", maxManagementSystemTeamActiveGrantCount)
+	}
+	return grants, nil
+}
+
+func applyActiveManagementTeamGrantsToMemberTx(ctx context.Context, tx pgx.Tx, teamID string, systemAccountID string, actor string, now time.Time) error {
+	grants, err := activeManagementTeamGrantRowsTx(ctx, tx, teamID)
+	if err != nil {
+		return err
+	}
+	for _, grant := range grants {
+		if grant.resourceOwnerSystemAccountID == systemAccountID {
+			continue
+		}
+		if err := upsertManagementTeamAuthorizationForUserTx(ctx, tx, managementTeamAuthorizationUpsertInput{
+			resourceType:                 grant.resourceType,
+			resourceID:                   grant.resourceID,
+			resourceOwnerSystemAccountID: grant.resourceOwnerSystemAccountID,
+			granteeSystemAccountID:       systemAccountID,
+			sourceTeamID:                 teamID,
+			remark:                       grant.remark,
+			expiresAt:                    grant.expiresAt,
+			limitsJSON:                   grant.limitsJSON,
+			actor:                        actor,
+			now:                          now,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type managementTeamAuthorizationUpsertInput struct {
+	resourceType                 string
+	resourceID                   string
+	resourceOwnerSystemAccountID string
+	granteeSystemAccountID       string
+	sourceTeamID                 string
+	remark                       pgtype.Text
+	expiresAt                    pgtype.Timestamptz
+	limitsJSON                   pgtype.Text
+	actor                        string
+	now                          time.Time
+}
+
+func upsertManagementTeamAuthorizationForUserTx(ctx context.Context, tx pgx.Tx, input managementTeamAuthorizationUpsertInput) error {
+	if input.granteeSystemAccountID == input.resourceOwnerSystemAccountID {
+		return fmt.Errorf("不能授权给资源所有者自己")
+	}
+	now := input.now.UTC()
+	var authorizationID string
+	err := tx.QueryRow(ctx, `
+SELECT id
+FROM juhe_business.resource_authorizations
+WHERE resource_type = $1
+  AND resource_id = $2
+  AND grantee_system_account_id = $3
+LIMIT 1
+`, input.resourceType, input.resourceID, input.granteeSystemAccountID).Scan(&authorizationID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		authorizationID = prefixedUUID("rauth")
+		if _, err := tx.Exec(ctx, `
+INSERT INTO juhe_business.resource_authorizations (
+  id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id,
+  scope, status, effective_source_type, effective_source_team_id, activated_at,
+  last_source_changed_at, remark, expires_at, limits_json, created_by, created_at,
+  revoked_by, revoked_at, revoked_reason, updated_at
+) VALUES (
+  $1, $2, $3, $4, $5,
+  'use', CASE WHEN $10::timestamptz IS NOT NULL AND $10::timestamptz <= $9 THEN 'expired' ELSE 'active' END,
+  'team', $6, $9,
+  $9, $7::text, $10, $11::text, $8, $9,
+  CASE WHEN $10::timestamptz IS NOT NULL AND $10::timestamptz <= $9 THEN $8 ELSE NULL END,
+  CASE WHEN $10::timestamptz IS NOT NULL AND $10::timestamptz <= $9 THEN $9 ELSE NULL END,
+  CASE WHEN $10::timestamptz IS NOT NULL AND $10::timestamptz <= $9 THEN 'authorization_expired' ELSE NULL END,
+  $9
+)
+`, authorizationID, input.resourceType, input.resourceID, input.resourceOwnerSystemAccountID, input.granteeSystemAccountID, input.sourceTeamID, input.remark, input.actor, now, input.expiresAt, input.limitsJSON); err != nil {
+			return fmt.Errorf("insert team resource authorization: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("find team resource authorization: %w", err)
+	} else if _, err := tx.Exec(ctx, `
+UPDATE juhe_business.resource_authorizations
+SET resource_owner_system_account_id = $1,
+    status = CASE WHEN $6::timestamptz IS NOT NULL AND $6::timestamptz <= $5 THEN 'expired' ELSE 'active' END,
+    effective_source_type = 'team',
+    effective_source_team_id = $2,
+    activated_at = COALESCE(activated_at, $5),
+    last_source_changed_at = $5,
+    remark = COALESCE($3::text, remark),
+    expires_at = $6::timestamptz,
+    limits_json = $7::text,
+    revoked_by = CASE WHEN $6::timestamptz IS NOT NULL AND $6::timestamptz <= $5 THEN COALESCE(revoked_by, $4) ELSE NULL END,
+    revoked_at = CASE WHEN $6::timestamptz IS NOT NULL AND $6::timestamptz <= $5 THEN COALESCE(revoked_at, $5) ELSE NULL END,
+    revoked_reason = CASE WHEN $6::timestamptz IS NOT NULL AND $6::timestamptz <= $5 THEN 'authorization_expired' ELSE NULL END,
+    updated_at = $5
+WHERE id = $8
+`, input.resourceOwnerSystemAccountID, input.sourceTeamID, input.remark, input.actor, now, input.expiresAt, input.limitsJSON, authorizationID); err != nil {
+		return fmt.Errorf("update team resource authorization: %w", err)
+	}
+
+	if err := upsertManagementTeamAuthorizationSourceTx(ctx, tx, authorizationID, input.sourceTeamID, input.actor, now); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+UPDATE juhe_business.resource_authorization_sources
+SET status = 'superseded',
+    ended_at = COALESCE(ended_at, $1),
+    ended_reason = COALESCE(ended_reason, 'covered_by_team'),
+    updated_at = $1
+WHERE authorization_id = $2
+  AND source_type = 'manual'
+  AND status = 'active'
+`, now, authorizationID); err != nil {
+		return fmt.Errorf("supersede manual authorization source: %w", err)
+	}
+	return refreshManagementResourceAuthorizationEffectiveSourceTx(ctx, tx, authorizationID, input.actor, now)
+}
+
+func upsertManagementTeamAuthorizationSourceTx(ctx context.Context, tx pgx.Tx, authorizationID string, sourceTeamID string, actor string, now time.Time) error {
+	var sourceID string
+	err := tx.QueryRow(ctx, `
+SELECT id
+FROM juhe_business.resource_authorization_sources
+WHERE authorization_id = $1
+  AND source_type = 'team'
+  AND source_team_id = $2
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+`, authorizationID, sourceTeamID).Scan(&sourceID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		if _, err := tx.Exec(ctx, `
+INSERT INTO juhe_business.resource_authorization_sources (
+  id, authorization_id, source_type, source_team_id, status,
+  activated_at, ended_at, ended_reason, created_by, created_at,
+  revoked_by, revoked_at, updated_at
+) VALUES (
+  $1, $2, 'team', $3, 'active',
+  $5, NULL, NULL, $4, $5,
+  NULL, NULL, $5
+)
+`, prefixedUUID("rauthsrc"), authorizationID, sourceTeamID, actor, now.UTC()); err != nil {
+			return fmt.Errorf("insert team authorization source: %w", err)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("find team authorization source: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+UPDATE juhe_business.resource_authorization_sources
+SET status = 'active',
+    activated_at = COALESCE(activated_at, $1),
+    ended_at = NULL,
+    ended_reason = NULL,
+    revoked_by = NULL,
+    revoked_at = NULL,
+    updated_at = $1
+WHERE id = $2
+`, now.UTC(), sourceID); err != nil {
+		return fmt.Errorf("reactivate team authorization source: %w", err)
+	}
+	return nil
+}
+
+func refreshManagementResourceAuthorizationEffectiveSourceTx(ctx context.Context, tx pgx.Tx, authorizationID string, actor string, now time.Time) error {
+	now = now.UTC()
+	var activeTeamSourceID string
+	err := tx.QueryRow(ctx, `
+SELECT ras.source_team_id
+FROM juhe_business.resource_authorization_sources AS ras
+INNER JOIN juhe_business.resource_authorizations AS ra
+  ON ra.id = ras.authorization_id
+INNER JOIN juhe_business.resource_authorization_grants AS trg
+  ON trg.resource_type = ra.resource_type
+  AND trg.resource_id = ra.resource_id
+  AND trg.grantee_type = 'team'
+  AND trg.grantee_team_id = ras.source_team_id
+  AND trg.status = 'active'
+  AND (trg.expires_at IS NULL OR trg.expires_at > $1)
+WHERE ras.authorization_id = $2
+  AND ras.source_type = 'team'
+  AND ras.status = 'active'
+ORDER BY ras.activated_at ASC, ras.created_at ASC, ras.id ASC
+LIMIT 1
+`, now, authorizationID).Scan(&activeTeamSourceID)
+	if err == nil {
+		if _, err := tx.Exec(ctx, `
+UPDATE juhe_business.resource_authorizations
+SET status = CASE
+      WHEN expires_at IS NOT NULL AND expires_at <= $1 THEN 'expired'
+      WHEN status = 'paused' THEN 'paused'
+      ELSE 'active'
+    END,
+    effective_source_type = 'team',
+    effective_source_team_id = $2,
+    revoked_by = CASE WHEN expires_at IS NOT NULL AND expires_at <= $1 THEN COALESCE(revoked_by, $3) ELSE NULL END,
+    revoked_at = CASE WHEN expires_at IS NOT NULL AND expires_at <= $1 THEN COALESCE(revoked_at, $1) ELSE NULL END,
+    revoked_reason = CASE WHEN expires_at IS NOT NULL AND expires_at <= $1 THEN 'authorization_expired' ELSE NULL END,
+    last_source_changed_at = $1,
+    updated_at = $1
+WHERE id = $4
+`, now, activeTeamSourceID, actor, authorizationID); err != nil {
+			return fmt.Errorf("refresh active team authorization source: %w", err)
+		}
+		return nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("find active team authorization source: %w", err)
+	}
+
+	var pausedTeamSourceID string
+	err = tx.QueryRow(ctx, `
+SELECT ras.source_team_id
+FROM juhe_business.resource_authorization_sources AS ras
+INNER JOIN juhe_business.resource_authorizations AS ra
+  ON ra.id = ras.authorization_id
+INNER JOIN juhe_business.resource_authorization_grants AS trg
+  ON trg.resource_type = ra.resource_type
+  AND trg.resource_id = ra.resource_id
+  AND trg.grantee_type = 'team'
+  AND trg.grantee_team_id = ras.source_team_id
+  AND trg.status = 'paused'
+WHERE ras.authorization_id = $1
+  AND ras.source_type = 'team'
+  AND ras.status = 'active'
+ORDER BY ras.activated_at ASC, ras.created_at ASC, ras.id ASC
+LIMIT 1
+`, authorizationID).Scan(&pausedTeamSourceID)
+	if err == nil {
+		if _, err := tx.Exec(ctx, `
+UPDATE juhe_business.resource_authorizations
+SET status = CASE
+      WHEN expires_at IS NOT NULL AND expires_at <= $1 THEN 'expired'
+      ELSE 'paused'
+    END,
+    effective_source_type = 'team',
+    effective_source_team_id = $2,
+    revoked_by = CASE WHEN expires_at IS NOT NULL AND expires_at <= $1 THEN COALESCE(revoked_by, $3) ELSE NULL END,
+    revoked_at = CASE WHEN expires_at IS NOT NULL AND expires_at <= $1 THEN COALESCE(revoked_at, $1) ELSE NULL END,
+    revoked_reason = CASE WHEN expires_at IS NOT NULL AND expires_at <= $1 THEN 'authorization_expired' ELSE 'authorization_paused' END,
+    last_source_changed_at = $1,
+    updated_at = $1
+WHERE id = $4
+`, now, pausedTeamSourceID, actor, authorizationID); err != nil {
+			return fmt.Errorf("refresh paused team authorization source: %w", err)
+		}
+		return nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("find paused team authorization source: %w", err)
+	}
+
+	var manualSourceID string
+	err = tx.QueryRow(ctx, `
+SELECT id
+FROM juhe_business.resource_authorization_sources
+WHERE authorization_id = $1
+  AND source_type = 'manual'
+  AND status = 'active'
+ORDER BY activated_at ASC, created_at ASC, id ASC
+LIMIT 1
+`, authorizationID).Scan(&manualSourceID)
+	if err == nil {
+		if _, err := tx.Exec(ctx, `
+UPDATE juhe_business.resource_authorizations
+SET status = CASE
+      WHEN expires_at IS NOT NULL AND expires_at <= $1 THEN 'expired'
+      WHEN status = 'paused' THEN 'paused'
+      ELSE 'active'
+    END,
+    effective_source_type = 'manual',
+    effective_source_team_id = NULL,
+    revoked_by = CASE WHEN expires_at IS NOT NULL AND expires_at <= $1 THEN COALESCE(revoked_by, $2) ELSE NULL END,
+    revoked_at = CASE WHEN expires_at IS NOT NULL AND expires_at <= $1 THEN COALESCE(revoked_at, $1) ELSE NULL END,
+    revoked_reason = CASE WHEN expires_at IS NOT NULL AND expires_at <= $1 THEN 'authorization_expired' ELSE NULL END,
+    last_source_changed_at = $1,
+    updated_at = $1
+WHERE id = $3
+`, now, actor, authorizationID); err != nil {
+			return fmt.Errorf("refresh manual authorization source: %w", err)
+		}
+		return nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("find manual authorization source: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, `
+UPDATE juhe_business.resource_authorizations
+SET status = CASE WHEN expires_at IS NOT NULL AND expires_at <= $1 THEN 'expired' ELSE 'revoked' END,
+    effective_source_type = NULL,
+    effective_source_team_id = NULL,
+    revoked_by = COALESCE(revoked_by, $2),
+    revoked_at = COALESCE(revoked_at, $1),
+    revoked_reason = CASE
+      WHEN expires_at IS NOT NULL AND expires_at <= $1 THEN 'authorization_expired'
+      ELSE COALESCE(revoked_reason, 'no_active_source')
+    END,
+    last_source_changed_at = $1,
+    updated_at = $1
+WHERE id = $3
+`, now, actor, authorizationID); err != nil {
+		return fmt.Errorf("refresh empty authorization source: %w", err)
+	}
+	return nil
+}
+
+func markAllGroupAccountStatsDirtyIfPresentTx(ctx context.Context, tx pgx.Tx, reason string, now time.Time) error {
+	var tableName pgtype.Text
+	if err := tx.QueryRow(ctx, `SELECT to_regclass('juhe_business.group_account_stats_dirty')::text`).Scan(&tableName); err != nil {
+		return fmt.Errorf("check group account stats dirty table: %w", err)
+	}
+	if !tableName.Valid || tableName.String == "" {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `
+INSERT INTO juhe_business.group_account_stats_dirty (group_id, reason, updated_at)
+VALUES ('__all__', $1, $2)
+ON CONFLICT (group_id) DO UPDATE SET
+  reason = excluded.reason,
+  updated_at = excluded.updated_at
+`, reason, now.UTC()); err != nil {
+		return fmt.Errorf("mark all group account stats dirty: %w", err)
+	}
+	return nil
 }
 
 func managementSystemTeamIDsFromListRows(rows []postgresqueries.JuheBusinessSystemTeam) []string {
@@ -143,6 +707,10 @@ func managementSystemTeamIDsFromListRows(rows []postgresqueries.JuheBusinessSyst
 }
 
 func managementSystemTeamSummaryFromListRow(row postgresqueries.JuheBusinessSystemTeam, activeMemberCount int) port.ManagementSystemTeamSummary {
+	return managementSystemTeamSummaryFromTeamRow(row, activeMemberCount)
+}
+
+func managementSystemTeamSummaryFromTeamRow(row postgresqueries.JuheBusinessSystemTeam, activeMemberCount int) port.ManagementSystemTeamSummary {
 	return port.ManagementSystemTeamSummary{
 		ID:                row.ID,
 		Name:              row.Name,
@@ -189,3 +757,4 @@ func managementSystemTeamMemberFromRow(row postgresqueries.ListManagementSystemT
 
 var _ port.ManagementSystemTeamCreator = (*Store)(nil)
 var _ port.ManagementSystemTeamReader = (*Store)(nil)
+var _ port.ManagementSystemTeamUpdater = (*Store)(nil)

@@ -197,6 +197,12 @@ type JuheBusinessGroupAccount struct {
 	UpdatedAt                 pgtype.Timestamptz
 }
 
+type JuheBusinessGroupAccountStatsDirty struct {
+	GroupID   string
+	Reason    pgtype.Text
+	UpdatedAt pgtype.Timestamptz
+}
+
 type JuheBusinessGroupAuthorizationSetting struct {
 	AuthorizationID      string
 	SystemAccountID      string
@@ -329,6 +335,12 @@ type JuheBusinessProxyProfile struct {
 	LastTestedAt      pgtype.Timestamptz
 	CreatedAt         pgtype.Timestamptz
 	UpdatedAt         pgtype.Timestamptz
+}
+
+type JuheBusinessRequestQuotaHourlyWindowConfig struct {
+	WindowHours int32
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
 }
 
 type JuheBusinessResourceAuthorization struct {

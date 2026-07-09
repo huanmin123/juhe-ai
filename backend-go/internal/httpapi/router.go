@@ -39,6 +39,7 @@ type RouterOptions struct {
 	ManagementSystemTeamsHandler                    http.Handler
 	ManagementMySystemTeamsHandler                  http.Handler
 	ManagementSystemTeamCreateHandler               http.Handler
+	ManagementSystemTeamPatchHandler                http.Handler
 	ManagementAuthorizationGranteeAccountsHandler   http.Handler
 	ManagementMyAuthorizationGranteeAccountsHandler http.Handler
 	ManagementAuthorizationGranteeTeamsHandler      http.Handler
@@ -114,6 +115,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementSystemTeamsHandler == nil &&
 				opts.ManagementMySystemTeamsHandler == nil &&
 				opts.ManagementSystemTeamCreateHandler == nil &&
+				opts.ManagementSystemTeamPatchHandler == nil &&
 				opts.ManagementAuthorizationGranteeAccountsHandler == nil &&
 				opts.ManagementMyAuthorizationGranteeAccountsHandler == nil &&
 				opts.ManagementAuthorizationGranteeTeamsHandler == nil &&
@@ -191,6 +193,9 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementSystemTeamCreateHandler != nil {
 				system.With(managementAPIWriteAuthMiddleware).Post("/system-teams", opts.ManagementSystemTeamCreateHandler.ServeHTTP)
+			}
+			if opts.ManagementSystemTeamPatchHandler != nil {
+				system.With(managementAPIWriteAuthMiddleware).Patch("/system-teams/{id}", opts.ManagementSystemTeamPatchHandler.ServeHTTP)
 			}
 			if opts.ManagementAuthorizationGranteeAccountsHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/authorization-options/grantee-accounts", opts.ManagementAuthorizationGranteeAccountsHandler.ServeHTTP)
@@ -312,6 +317,7 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementSystemAccountPatchHandler != nil ||
 		opts.ManagementSystemAccountCreateHandler != nil ||
 		opts.ManagementSystemTeamCreateHandler != nil ||
+		opts.ManagementSystemTeamPatchHandler != nil ||
 		opts.ManagementProviderDefaultTestModelHandler != nil ||
 		opts.ManagementAccountTagDeleteHandler != nil ||
 		opts.ManagementMyAccountTagDeleteHandler != nil ||

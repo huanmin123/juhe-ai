@@ -16,17 +16,22 @@ import (
 const (
 	maxTeamNameRunes        = 100
 	maxTeamDescriptionRunes = 200
+
+	TeamAuthorizationChangedReason = "team_authorization_changed"
 )
 
 var (
 	ErrSystemTeamCreateInvalid = errors.New("management system team create invalid")
 	ErrSystemTeamReadInvalid   = errors.New("management system team read invalid")
+	ErrSystemTeamUpdateInvalid = errors.New("management system team update invalid")
+	ErrSystemTeamNotFound      = errors.New("management system team not found")
 	ErrSystemTeamNameExists    = errors.New("management system team name exists")
 )
 
 type Service struct {
-	store any
-	now   func() time.Time
+	store                    any
+	now                      func() time.Time
+	authorizationInvalidator AuthorizationInvalidator
 }
 
 type ListInput struct {
@@ -49,6 +54,22 @@ type CreateInput struct {
 	Description *string
 	Status      string
 	CreatedBy   string
+}
+
+type UpdateInput struct {
+	TeamID          string
+	SystemAccountID string
+	Name            *string
+	HasDescription  bool
+	Description     *string
+	Status          *string
+	UpdatedBy       string
+}
+
+type UpdateResult struct {
+	Before               Summary `json:"before"`
+	Team                 Detail  `json:"team"`
+	AuthorizationChanged bool    `json:"authorizationChanged"`
 }
 
 type Summary struct {
@@ -83,8 +104,13 @@ type MemberSummary struct {
 }
 
 type ServiceOptions struct {
-	Store any
-	Now   func() time.Time
+	Store                    any
+	Now                      func() time.Time
+	AuthorizationInvalidator AuthorizationInvalidator
+}
+
+type AuthorizationInvalidator interface {
+	InvalidateAuthorizationChanged(ctx context.Context, reason string) error
 }
 
 func NewService(store port.ManagementSystemTeamCreator) *Service {
@@ -96,7 +122,7 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 	if now == nil {
 		now = time.Now
 	}
-	return &Service{store: opts.Store, now: now}
+	return &Service{store: opts.Store, now: now, authorizationInvalidator: opts.AuthorizationInvalidator}
 }
 
 func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error) {
@@ -192,10 +218,89 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Summary, error
 	return summaryFromPort(row), nil
 }
 
+func (s *Service) Update(ctx context.Context, input UpdateInput) (UpdateResult, bool, error) {
+	updater, ok := s.store.(port.ManagementSystemTeamUpdater)
+	if !ok || updater == nil {
+		return UpdateResult{}, false, fmt.Errorf("management system team updater is required")
+	}
+	teamID := strings.TrimSpace(input.TeamID)
+	updatedBy := strings.TrimSpace(input.UpdatedBy)
+	if teamID == "" || updatedBy == "" {
+		return UpdateResult{}, false, ErrSystemTeamUpdateInvalid
+	}
+
+	storeInput := port.ManagementSystemTeamUpdateInput{
+		TeamID:          teamID,
+		SystemAccountID: strings.TrimSpace(input.SystemAccountID),
+		UpdatedBy:       updatedBy,
+		UpdatedAt:       s.now().UTC(),
+	}
+	if input.Name != nil {
+		name := strings.TrimSpace(*input.Name)
+		if name == "" || utf8.RuneCountInString(name) > maxTeamNameRunes {
+			return UpdateResult{}, false, ErrSystemTeamUpdateInvalid
+		}
+		storeInput.HasName = true
+		storeInput.Name = name
+	}
+	if input.HasDescription {
+		if input.Description != nil {
+			description := strings.TrimSpace(*input.Description)
+			if description != "" {
+				if utf8.RuneCountInString(description) > maxTeamDescriptionRunes {
+					return UpdateResult{}, false, ErrSystemTeamUpdateInvalid
+				}
+				storeInput.Description = &description
+			}
+		}
+		storeInput.HasDescription = true
+	}
+	if input.Status != nil {
+		status := normalizeTeamUpdateStatus(*input.Status)
+		if status == "" {
+			return UpdateResult{}, false, ErrSystemTeamUpdateInvalid
+		}
+		storeInput.HasStatus = true
+		storeInput.Status = status
+	}
+
+	row, found, err := updater.UpdateManagementSystemTeam(ctx, storeInput)
+	if err != nil {
+		if errors.Is(err, port.ErrManagementSystemTeamNameExists) {
+			return UpdateResult{}, false, ErrSystemTeamNameExists
+		}
+		return UpdateResult{}, false, err
+	}
+	if !found {
+		return UpdateResult{}, false, nil
+	}
+	if row.AuthorizationChanged && s.authorizationInvalidator != nil {
+		if err := s.authorizationInvalidator.InvalidateAuthorizationChanged(ctx, TeamAuthorizationChangedReason); err != nil {
+			return UpdateResult{}, true, err
+		}
+	}
+	return UpdateResult{
+		Before:               summaryFromPort(row.Before),
+		Team:                 detailFromPort(row.Team),
+		AuthorizationChanged: row.AuthorizationChanged,
+	}, true, nil
+}
+
 func normalizeTeamStatus(status string) string {
 	switch status {
 	case "":
 		return "active"
+	case "active":
+		return "active"
+	case "disabled":
+		return "disabled"
+	default:
+		return ""
+	}
+}
+
+func normalizeTeamUpdateStatus(status string) string {
+	switch strings.TrimSpace(status) {
 	case "active":
 		return "active"
 	case "disabled":

@@ -47,3 +47,34 @@ func TestW4ResourceAuthorizationGrantSourceMigrationMatchesCurrentContract(t *te
 		}
 	}
 }
+
+func TestW4AuthorizationQuotaAndStatsStateMigrationMatchesCurrentContract(t *testing.T) {
+	source, err := os.ReadFile("../../../db/migrations/000019_w4_authorization_quota_and_stats_state.sql")
+	if err != nil {
+		t.Fatalf("read W4 authorization quota migration: %v", err)
+	}
+	sql := string(source)
+	for _, want := range []string{
+		"CREATE TABLE IF NOT EXISTS juhe_business.request_quota_hourly_window_configs",
+		"window_hours integer PRIMARY KEY CHECK (window_hours BETWEEN 1 AND 720)",
+		"CREATE TABLE IF NOT EXISTS juhe_business.group_account_stats_dirty",
+		"group_id text PRIMARY KEY",
+		"idx_group_account_stats_dirty_updated",
+		"(1, NOW(), NOW())",
+		"(720, NOW(), NOW())",
+		"ON CONFLICT DO NOTHING",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("W4 authorization quota migration missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		"DROP TABLE",
+		"DELETE FROM juhe_business.request_quota_hourly_window_configs",
+		"DELETE FROM juhe_business.group_account_stats_dirty",
+	} {
+		if strings.Contains(sql, forbidden) {
+			t.Fatalf("W4 authorization quota migration should not contain destructive statement %q", forbidden)
+		}
+	}
+}

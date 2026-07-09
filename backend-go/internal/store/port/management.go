@@ -399,6 +399,29 @@ type ManagementSystemTeamCreator interface {
 	CreateManagementSystemTeam(ctx context.Context, input ManagementSystemTeamCreateInput) (ManagementSystemTeamSummary, error)
 }
 
+type ManagementSystemTeamUpdateInput struct {
+	TeamID          string
+	SystemAccountID string
+	HasName         bool
+	Name            string
+	HasDescription  bool
+	Description     *string
+	HasStatus       bool
+	Status          string
+	UpdatedBy       string
+	UpdatedAt       time.Time
+}
+
+type ManagementSystemTeamUpdateResult struct {
+	Before               ManagementSystemTeamSummary
+	Team                 ManagementSystemTeamDetail
+	AuthorizationChanged bool
+}
+
+type ManagementSystemTeamUpdater interface {
+	UpdateManagementSystemTeam(ctx context.Context, input ManagementSystemTeamUpdateInput) (ManagementSystemTeamUpdateResult, bool, error)
+}
+
 type ManagementSystemTeamReader interface {
 	ListManagementSystemTeams(ctx context.Context, input ManagementSystemTeamListInput) (ManagementSystemTeamListResult, error)
 	FindManagementSystemTeam(ctx context.Context, teamID string, systemAccountID string) (ManagementSystemTeamDetail, bool, error)
