@@ -2,6 +2,7 @@ import type { UsageRecordSummary } from '@/types/domain'
 import {
   usageRecordCostAmountRows,
   usageRecordCostDetailTitle,
+  usageRecordHasCostDetails,
   usageRecordCostPriceRows,
   usageRecordCostTokenRows
 } from '../../views/usage-records/usageRecordCostDetails'
@@ -142,6 +143,55 @@ assertArrayEqual(rowTexts(usageRecordCostPriceRows(openAICostRecord)), [
   '缓存读单价 $0.1000 / 1M Token'
 ], 'OpenAI 普通文本记录只展示输入、输出和缓存读单价')
 
+const openAICacheWriteCostRecord = usageRecordFixture({
+  providerCode: 'openai',
+  usageSemantic: 'openai',
+  inputTokens: 1000,
+  outputTokens: 250,
+  cacheReadTokens: 125,
+  cacheWriteTokens: 80,
+  cacheWrite1hTokens: 0,
+  costBreakdown: {
+    inputCostUsd: 0.001,
+    outputCostUsd: 0.0025,
+    cacheReadCostUsd: 0.000125,
+    cacheWriteCostUsd: 0.0001,
+    inputUsdPer1M: 1,
+    outputUsdPer1M: 10,
+    cacheReadUsdPer1M: 0.1,
+    cacheWriteUsdPer1M: 1.25,
+    accountChargeUsd: 0.003725,
+    multiplier: 1
+  }
+})
+assertEqual(usageRecordCostDetailTitle(openAICacheWriteCostRecord), '成本明细（OpenAI 兼容口径）', 'OpenAI 兼容成本明细标题应标注兼容口径')
+assertEqual(
+  usageRecordCostDetailTitle(usageRecordFixture({ providerCode: 'openai-compatible' })),
+  '成本明细（OpenAI 兼容口径）',
+  'OpenAI-compatible 驱动别名也应按 OpenAI 兼容口径展示'
+)
+assertArrayEqual(rowTexts(usageRecordCostTokenRows(openAICacheWriteCostRecord)), [
+  '缓存写入 Tokens 80'
+], 'OpenAI 兼容记录有缓存写入时应在成本明细展示缓存写入 Tokens')
+assertArrayIncludes(rowTexts(usageRecordCostAmountRows(openAICacheWriteCostRecord)), [
+  '缓存写入成本 $0.000100',
+  '合计成本 $0.003725'
+], 'OpenAI 兼容记录有缓存写入成本时应展示缓存写入成本')
+assertArrayIncludes(rowTexts(usageRecordCostPriceRows(openAICacheWriteCostRecord)), [
+  '缓存写入单价 $1.2500 / 1M Token'
+], 'OpenAI 兼容记录有缓存写入单价时应展示缓存写入单价')
+
+const openAICacheWriteTokenOnlyRecord = usageRecordFixture({
+  providerCode: 'openai',
+  usageSemantic: 'openai',
+  cacheWriteTokens: 42,
+  cacheWrite1hTokens: 0
+})
+assertArrayEqual(rowTexts(usageRecordCostTokenRows(openAICacheWriteTokenOnlyRecord)), [
+  '缓存写入 Tokens 42'
+], '没有成本拆解但有缓存写入 Token 时仍应生成成本明细 Token 行')
+assertTrue(usageRecordHasCostDetails(openAICacheWriteTokenOnlyRecord), '没有成本拆解但有缓存写入 Token 时仍应展示成本明细浮层')
+
 console.log('使用记录 Token 与成本明细 formatter 回归通过：列表三项展示和供应商成本明细均符合预期')
 
 function usageRecordFixture(overrides: Partial<UsageRecordSummary>): UsageRecordSummary {
@@ -175,6 +225,12 @@ function assertArrayIncludes(actual: string[], expectedItems: string[], message:
   const missing = expectedItems.filter((item) => !actual.includes(item))
   if (missing.length) {
     throw new Error(`${message}：缺少 ${JSON.stringify(missing)}，实际 ${JSON.stringify(actual)}`)
+  }
+}
+
+function assertTrue(actual: boolean, message: string): void {
+  if (!actual) {
+    throw new Error(`${message}：实际 false，期望 true`)
   }
 }
 

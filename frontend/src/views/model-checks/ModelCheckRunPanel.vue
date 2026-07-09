@@ -93,6 +93,7 @@
       :status-text="terminalStatusText"
       :submitting="submitting"
       :visible="terminalVisible"
+      :waiting-text="terminalWaitingText"
       @stop="emit('stop')"
     />
   </a-card>
@@ -134,6 +135,7 @@ defineProps<{
   terminalStatusColor: string
   terminalStatusText: string
   terminalVisible: boolean
+  terminalWaitingText: string
   trustedComparisonAccountId?: string
 }>()
 

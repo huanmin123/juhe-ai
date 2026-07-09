@@ -24,6 +24,7 @@
       :terminal-status-color="terminalStatusColor"
       :terminal-status-text="terminalStatusText"
       :terminal-visible="terminalVisible"
+      :terminal-waiting-text="terminalWaitingText"
       :trusted-comparison-account-id="selectValueOrUndefined(form.trustedComparisonAccountId)"
       @comparison-dropdown-visible-change="handleComparisonDropdownVisibleChange"
       @comparison-search="handleComparisonSearch"
@@ -96,7 +97,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { message } from '@/lib/antd'
 
 import { usePageStateCache } from '@/composables/usePageStateCache'
@@ -127,7 +128,6 @@ import type {
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import {
   checkStatusText,
-  formatClockTime,
   formatModelCheckDuration as formatDuration,
   levelText,
   progressItemTitle,
@@ -140,6 +140,14 @@ import {
   modelCheckModelsForAccount,
   sameModelCheckAccountProfile
 } from './modelCheckProviderCapabilities'
+import {
+  appendModelCheckTerminalLine,
+  ModelCheckSessionBusyError,
+  modelCheckRunSession,
+  reconcileModelCheckRunSessionWithActiveRun,
+  startModelCheckRunSession,
+  stopModelCheckRunSession
+} from './modelCheckRunSession'
 import type { ModelCheckTerminalLine } from './ModelCheckTerminal.vue'
 import ModelCheckRunPanel from './ModelCheckRunPanel.vue'
 import ModelCheckRunHistoryList from './ModelCheckRunHistoryList.vue'
@@ -188,12 +196,11 @@ const {
   selectedIds: () => [systemAccountFilter.value]
 })
 const optionsLoading = ref(false)
-const submitting = ref(false)
+const submitting = computed(() => modelCheckRunSession.submitting)
 const detailLoading = ref(false)
 const detailOpen = ref(false)
-const terminalVisible = ref(false)
-const terminalLines = ref<ModelCheckTerminalLine[]>([])
-let modelCheckAbortController: AbortController | undefined
+const terminalVisible = computed(() => modelCheckRunSession.terminalVisible)
+const terminalLines = computed(() => modelCheckRunSession.terminalLines)
 const options = ref<ModelCheckOptions>(modelCheckFallbackOptions)
 const currentRun = ref<ModelCheckRunDetail>()
 const form = reactive<ModelCheckRunPayload>({
@@ -306,10 +313,9 @@ const runModelOptions = computed(() => {
 })
 const viewportWidth = ref(window.innerWidth)
 const detailDescriptionColumns = computed(() => (viewportWidth.value < 900 ? 1 : 2))
-const terminalStatusText = computed(() => submitting.value ? '运行中' : terminalLines.value.length ? '最近一次' : '待开始')
+const terminalStatusText = computed(() => submitting.value ? modelCheckRunSession.detached ? '后台运行' : '运行中' : terminalLines.value.length ? '最近一次' : '待开始')
 const terminalStatusColor = computed(() => submitting.value ? 'blue' : terminalLines.value.length ? 'green' : 'default')
-let terminalLineId = 0
-let modelCheckAbortReason: 'manual' | 'deactivated' | 'unmount' | undefined
+const terminalWaitingText = computed(() => modelCheckRunSession.detached ? '后端检测继续运行，旧进度流不会回放' : '等待下一个检测事件')
 
 async function loadOptions() {
   optionsLoading.value = true
@@ -359,6 +365,10 @@ function clearIncompatibleComparisonAccount() {
 }
 
 async function submitRun() {
+  if (modelCheckRunSession.submitting) {
+    message.warning('当前已有模型检测正在运行，请等待完成或先手动停止')
+    return
+  }
   const targetId = form.targetId.trim()
   const trustedComparisonAccountId = form.trustedComparisonAccountId?.trim()
   if (!targetId) {
@@ -374,12 +384,7 @@ async function submitRun() {
     message.warning('可信对比账户不能和检测目标相同')
     return
   }
-  stopCurrentModelCheck(false)
-  const controller = new AbortController()
-  modelCheckAbortController = controller
-  submitting.value = true
   detailOpen.value = false
-  resetTerminal()
   currentRun.value = undefined
   try {
     const payload: ModelCheckRunPayload = {
@@ -390,36 +395,42 @@ async function submitRun() {
       trustedComparison: Boolean(trustedComparisonAccountId),
       trustedComparisonAccountId: trustedComparisonAccountId || undefined
     }
-    appendTerminalLine('info', `juhe-ai model-check --account "${targetOptionText(targetId)}" --model ${form.model}${trustedComparisonAccountId ? ` --trusted-account "${comparisonOptionText(trustedComparisonAccountId)}"` : ''}`)
-    appendTerminalLine('muted', '已连接系统 API，等待后端返回检测进度流')
-    currentRun.value = await modelChecksApi.runStream(payload, {
-      signal: controller.signal,
-      onProgress: handleModelCheckProgress
-    }, modelCheckScopeParams.value)
-    appendTerminalLine('success', `检测报告已生成：${levelText(currentRun.value.level)}，${currentRun.value.score}/${currentRun.value.maxScore}，${currentRun.value.message || '-'}`)
-    message.success('模型检测完成')
+    currentRun.value = await startModelCheckRunSession({
+      commandText: `juhe-ai model-check --account "${targetOptionText(targetId)}" --model ${form.model}${trustedComparisonAccountId ? ` --trusted-account "${comparisonOptionText(trustedComparisonAccountId)}"` : ''}`,
+      onProgress: handleModelCheckProgress,
+      run: (signal, onProgress) => modelChecksApi.runStream(payload, {
+        signal,
+        onProgress
+      }, modelCheckScopeParams.value)
+    })
+    if (currentRun.value.status === 'completed') {
+      appendTerminalLine('success', `检测报告已生成：${levelText(currentRun.value.level)}，${currentRun.value.score}/${currentRun.value.maxScore}，${currentRun.value.message || '-'}`)
+      message.success('模型检测完成')
+    } else if (currentRun.value.status === 'canceled') {
+      appendTerminalLine('warning', '检测已停止')
+      message.info('模型检测已停止')
+    } else {
+      appendTerminalLine('error', `检测结束：${statusText(currentRun.value.status)}，${currentRun.value.errorMessage || currentRun.value.message || '-'}`)
+      message.error('模型检测未完成')
+    }
     await reloadRuns()
   } catch (error) {
     console.error(error)
+    if (error instanceof ModelCheckSessionBusyError) {
+      message.warning(error.message)
+      return
+    }
     const errorMessage = extractApiErrorMessage(error, '模型检测提交失败')
-    if (controller.signal.aborted) {
-      if (modelCheckAbortReason !== 'deactivated' && modelCheckAbortReason !== 'unmount') {
-        appendTerminalLine('warning', '检测已停止')
-        message.info('模型检测已停止')
-      }
+    if (isAbortError(error)) {
+      appendTerminalLine('warning', '检测已停止')
+      message.info('模型检测已停止')
     } else {
       appendTerminalLine('error', errorMessage)
       message.error(errorMessage)
     }
-    if (!controller.signal.aborted) {
+    if (!isAbortError(error)) {
       await loadRuns()
     }
-  } finally {
-    if (modelCheckAbortController === controller) {
-      modelCheckAbortController = undefined
-    }
-    modelCheckAbortReason = undefined
-    submitting.value = false
   }
 }
 
@@ -473,26 +484,31 @@ function resetRunForm() {
   ensureRunModelMatchesTarget()
 }
 
-function resetTerminal() {
-  terminalVisible.value = true
-  terminalLines.value = []
-  terminalLineId = 0
-}
-
-function stopCurrentModelCheck(appendLog = true, reason: 'manual' | 'deactivated' | 'unmount' = 'manual') {
-  if (modelCheckAbortController && !modelCheckAbortController.signal.aborted) {
-    modelCheckAbortReason = reason
-    modelCheckAbortController.abort()
-    if (appendLog) {
-      appendTerminalLine('warning', '已请求停止当前检测')
+async function syncActiveModelCheckRun() {
+  try {
+    const active = await modelChecksApi.active(modelCheckScopeParams.value)
+    reconcileModelCheckRunSessionWithActiveRun(active)
+    if (!active && modelCheckRunSession.terminalLines.length) {
+      await loadRuns()
     }
+  } catch (error) {
+    console.error(error)
   }
 }
 
+function stopCurrentModelCheck(appendLog = true) {
+  void stopModelCheckRunSession({
+    appendLog,
+    stopRequest: () => modelChecksApi.stop(modelCheckScopeParams.value)
+  })
+}
+
 function clearTerminal() {
-  stopCurrentModelCheck(false)
-  terminalLines.value = []
-  terminalVisible.value = false
+  if (modelCheckRunSession.submitting) {
+    stopCurrentModelCheck(false)
+  }
+  modelCheckRunSession.terminalLines = []
+  modelCheckRunSession.terminalVisible = false
 }
 
 function defaultModelChecksPageState(): ModelChecksPageState {
@@ -568,12 +584,7 @@ function snapshotPageState(): ModelChecksPageState {
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 
 function appendTerminalLine(level: ModelCheckTerminalLine['level'], text: string) {
-  terminalLines.value.push({
-    id: ++terminalLineId,
-    time: formatClockTime(new Date()),
-    level,
-    text
-  })
+  appendModelCheckTerminalLine(level, text)
 }
 
 function handleModelCheckProgress(event: ModelCheckProgressEvent) {
@@ -641,19 +652,18 @@ function updateViewportWidth() {
   viewportWidth.value = window.innerWidth
 }
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError'
+}
+
 onMounted(async () => {
   updateViewportWidth()
   window.addEventListener('resize', updateViewportWidth)
-  await Promise.all([loadOptions(), loadRuns()])
-})
-
-onDeactivated(() => {
-  stopCurrentModelCheck(false, 'deactivated')
+  await Promise.all([loadOptions(), loadRuns(), syncActiveModelCheckRun()])
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', updateViewportWidth)
-  stopCurrentModelCheck(false, 'unmount')
 })
 </script>
 

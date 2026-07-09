@@ -29,6 +29,65 @@ export function extractOpenAIUsage(value: unknown): ParsedUsage {
   const cacheReadTokens = numberValue(responsesInputDetails?.cached_tokens)
     ?? numberValue(chatInputDetails?.cached_tokens)
     ?? numberValue(usage.prompt_cache_hit_tokens)
+  const responsesCacheCreation = objectValue(responsesInputDetails?.cache_creation)
+  const chatCacheCreation = objectValue(chatInputDetails?.cache_creation)
+  const rootCacheCreation = objectValue(usage.cache_creation)
+  const cacheWrite5mTokens = firstNumberValue(
+    responsesInputDetails?.cache_write_5m_tokens,
+    responsesInputDetails?.cache_write_5m_input_tokens,
+    responsesInputDetails?.cache_creation_5m_tokens,
+    responsesInputDetails?.cache_creation_5m_input_tokens,
+    responsesCacheCreation?.ephemeral_5m_input_tokens,
+    chatInputDetails?.cache_write_5m_tokens,
+    chatInputDetails?.cache_write_5m_input_tokens,
+    chatInputDetails?.cache_creation_5m_tokens,
+    chatInputDetails?.cache_creation_5m_input_tokens,
+    chatCacheCreation?.ephemeral_5m_input_tokens,
+    usage.cache_write_5m_tokens,
+    usage.cache_write_5m_input_tokens,
+    usage.cache_creation_5m_tokens,
+    usage.cache_creation_5m_input_tokens,
+    usage.cache_creation_5_m_tokens,
+    usage.claude_cache_creation_5m_tokens,
+    usage.claude_cache_creation_5_m_tokens,
+    rootCacheCreation?.ephemeral_5m_input_tokens
+  )
+  const cacheWrite1hTokens = firstNumberValue(
+    responsesInputDetails?.cache_write_1h_tokens,
+    responsesInputDetails?.cache_write_1h_input_tokens,
+    responsesInputDetails?.cache_creation_1h_tokens,
+    responsesInputDetails?.cache_creation_1h_input_tokens,
+    responsesCacheCreation?.ephemeral_1h_input_tokens,
+    chatInputDetails?.cache_write_1h_tokens,
+    chatInputDetails?.cache_write_1h_input_tokens,
+    chatInputDetails?.cache_creation_1h_tokens,
+    chatInputDetails?.cache_creation_1h_input_tokens,
+    chatCacheCreation?.ephemeral_1h_input_tokens,
+    usage.cache_write_1h_tokens,
+    usage.cache_write_1h_input_tokens,
+    usage.cache_creation_1h_tokens,
+    usage.cache_creation_1h_input_tokens,
+    usage.cache_creation_1_h_tokens,
+    usage.claude_cache_creation_1h_tokens,
+    usage.claude_cache_creation_1_h_tokens,
+    rootCacheCreation?.ephemeral_1h_input_tokens
+  )
+  const cacheWriteDetailTokens = sumDefined(cacheWrite5mTokens, cacheWrite1hTokens)
+  const cacheWriteTokens = firstNumberValue(
+    responsesInputDetails?.cache_write_tokens,
+    responsesInputDetails?.cache_write_input_tokens,
+    responsesInputDetails?.cache_creation_tokens,
+    responsesInputDetails?.cache_creation_input_tokens,
+    chatInputDetails?.cache_write_tokens,
+    chatInputDetails?.cache_write_input_tokens,
+    chatInputDetails?.cache_creation_tokens,
+    chatInputDetails?.cache_creation_input_tokens,
+    usage.cache_write_tokens,
+    usage.cache_write_input_tokens,
+    usage.cache_creation_tokens,
+    usage.cache_creation_input_tokens,
+    cacheWriteDetailTokens
+  )
   const outputDetails = objectValue(usage.output_tokens_details) ?? objectValue(usage.completion_tokens_details)
   const inputImageTokens = numberValue(responsesInputDetails?.image_tokens)
     ?? numberValue(chatInputDetails?.image_tokens)
@@ -38,7 +97,7 @@ export function extractOpenAIUsage(value: unknown): ParsedUsage {
   const outputAudioTokens = numberValue(outputDetails?.audio_tokens)
   const thinkingTokens = numberValue(outputDetails?.reasoning_tokens)
   const outputImageCount = outputImageCountValue(usage)
-  return { inputTokens, outputTokens, cacheReadTokens, inputImageTokens, outputImageTokens, inputAudioTokens, outputAudioTokens, thinkingTokens, outputImageCount }
+  return { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, cacheWrite1hTokens, inputImageTokens, outputImageTokens, inputAudioTokens, outputAudioTokens, thinkingTokens, outputImageCount }
 }
 
 function extractJsonObjectPropertyFromTextFragment(text: string, propertyName: string): string | undefined {
@@ -122,4 +181,18 @@ function objectValue(value: unknown): Record<string, unknown> | undefined {
 function numberValue(value: unknown): number | undefined {
   const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
   return Number.isFinite(number) && number >= 0 ? Math.trunc(number) : undefined
+}
+
+function firstNumberValue(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    const number = numberValue(value)
+    if (number !== undefined) return number
+  }
+  return undefined
+}
+
+function sumDefined(...values: Array<number | undefined>): number | undefined {
+  const defined = values.filter((value): value is number => value !== undefined)
+  if (!defined.length) return undefined
+  return defined.reduce((sum, value) => sum + value, 0)
 }

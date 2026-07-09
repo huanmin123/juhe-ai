@@ -1,7 +1,7 @@
 <template>
   <span class="cost-cell-wrap">
     <span class="cost-cell">{{ formatCost(displayCostUsd) }}</span>
-    <a-popover v-if="costBreakdown" trigger="hover" placement="right" overlay-class-name="cost-popover">
+    <a-popover v-if="hasCostDetails" trigger="hover" placement="right" overlay-class-name="cost-popover">
       <template #content>
         <div class="cost-detail-panel">
           <div class="cost-detail-title">{{ detailTitle }}</div>
@@ -37,6 +37,7 @@ import type { UsageRecordSummary } from '@/types/domain'
 import {
   usageRecordCostAmountRows,
   usageRecordCostDetailTitle,
+  usageRecordHasCostDetails,
   usageRecordCostPriceRows,
   usageRecordCostTokenRows
 } from './usageRecordCostDetails'
@@ -52,6 +53,7 @@ const detailTitle = computed(() => usageRecordCostDetailTitle(props.record))
 const tokenDetailRows = computed(() => usageRecordCostTokenRows(props.record))
 const costAmountRows = computed(() => usageRecordCostAmountRows(props.record))
 const unitPriceRows = computed(() => usageRecordCostPriceRows(props.record))
+const hasCostDetails = computed(() => usageRecordHasCostDetails(props.record))
 </script>
 
 <style scoped>

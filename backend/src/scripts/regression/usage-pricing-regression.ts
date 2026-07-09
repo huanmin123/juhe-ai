@@ -41,7 +41,8 @@ const responsesUsage = parseOpenAIUsageFromJsonBuffer(jsonBuffer({
     input_tokens: 1000,
     output_tokens: 200,
     input_tokens_details: {
-      cached_tokens: 300
+      cached_tokens: 300,
+      cache_write_tokens: 40
     },
     output_tokens_details: {
       reasoning_tokens: 12
@@ -52,6 +53,7 @@ assert.deepEqual(defined(responsesUsage), {
   inputTokens: 1000,
   outputTokens: 200,
   cacheReadTokens: 300,
+  cacheWriteTokens: 40,
   thinkingTokens: 12
 })
 
@@ -60,7 +62,8 @@ const chatUsage = parseOpenAIUsageFromJsonBuffer(jsonBuffer({
     prompt_tokens: '1200',
     completion_tokens: 150,
     prompt_tokens_details: {
-      cached_tokens: 400
+      cached_tokens: 400,
+      cache_creation_input_tokens: '50'
     },
     completion_tokens_details: {
       reasoning_tokens: 10
@@ -71,7 +74,55 @@ assert.deepEqual(defined(chatUsage), {
   inputTokens: 1200,
   outputTokens: 150,
   cacheReadTokens: 400,
+  cacheWriteTokens: 50,
   thinkingTokens: 10
+})
+
+const openAICompatibleCacheCreationUsage = parseOpenAIUsageFromJsonBuffer(jsonBuffer({
+  usage: {
+    input_tokens: 800,
+    output_tokens: 40,
+    cache_creation: {
+      ephemeral_5m_input_tokens: 30,
+      ephemeral_1h_input_tokens: 10
+    }
+  }
+}))
+assert.deepEqual(defined(openAICompatibleCacheCreationUsage), {
+  inputTokens: 800,
+  outputTokens: 40,
+  cacheWriteTokens: 40,
+  cacheWrite1hTokens: 10
+})
+
+const openAICompatibleCacheWriteInputUsage = parseOpenAIUsageFromJsonBuffer(jsonBuffer({
+  usage: {
+    input_tokens: 600,
+    output_tokens: 30,
+    input_tokens_details: {
+      cache_write_input_tokens: 12
+    }
+  }
+}))
+assert.deepEqual(defined(openAICompatibleCacheWriteInputUsage), {
+  inputTokens: 600,
+  outputTokens: 30,
+  cacheWriteTokens: 12
+})
+
+const openAICompatibleClaudeCacheCreationUsage = parseOpenAIUsageFromJsonBuffer(jsonBuffer({
+  usage: {
+    input_tokens: 700,
+    output_tokens: 20,
+    claude_cache_creation_5_m_tokens: '6',
+    claude_cache_creation_1_h_tokens: 4
+  }
+}))
+assert.deepEqual(defined(openAICompatibleClaudeCacheCreationUsage), {
+  inputTokens: 700,
+  outputTokens: 20,
+  cacheWriteTokens: 10,
+  cacheWrite1hTokens: 4
 })
 
 const deepSeekUsage = parseOpenAIUsageFromJsonBuffer(jsonBuffer({
@@ -140,7 +191,7 @@ const responsesStreamInspection = inspectOpenAIStreamText([
   'data: {"type":"response.output_text.delta","delta":"hi"}',
   '',
   'event: response.completed',
-  'data: {"type":"response.completed","response":{"usage":{"input_tokens":1000,"output_tokens":200,"input_tokens_details":{"cached_tokens":300},"output_tokens_details":{"reasoning_tokens":12}}}}',
+  'data: {"type":"response.completed","response":{"usage":{"input_tokens":1000,"output_tokens":200,"input_tokens_details":{"cached_tokens":300,"cache_write_tokens":40},"output_tokens_details":{"reasoning_tokens":12}}}}',
   ''
 ].join('\n'))
 assert.equal(responsesStreamInspection.terminalReceived, true)
@@ -151,7 +202,7 @@ assert.deepEqual(defined(responsesStreamInspection.usage), defined(responsesUsag
 const chatStreamInspection = inspectOpenAIStreamText([
   'data: {"id":"chatcmpl-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hi"}}]}',
   '',
-  'data: {"id":"chatcmpl-test","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":1200,"completion_tokens":150,"prompt_tokens_details":{"cached_tokens":400},"completion_tokens_details":{"reasoning_tokens":10}}}',
+  'data: {"id":"chatcmpl-test","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":1200,"completion_tokens":150,"prompt_tokens_details":{"cached_tokens":400,"cache_creation_input_tokens":"50"},"completion_tokens_details":{"reasoning_tokens":10}}}',
   '',
   'data: [DONE]',
   ''
