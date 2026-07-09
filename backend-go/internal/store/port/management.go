@@ -139,6 +139,34 @@ type ManagementProxyOption struct {
 	Enabled bool
 }
 
+type ManagementProxySummary struct {
+	ID              string
+	Name            string
+	Description     *string
+	Type            string
+	Host            string
+	Port            int
+	Username        *string
+	Enabled         bool
+	TestStatus      string
+	LatencyMs       *int
+	OutboundIP      *string
+	OutboundRegion  *string
+	LastTestMessage *string
+	LastTestedAt    *time.Time
+}
+
+type ManagementProxyListInput struct {
+	Keyword string
+	Limit   int
+	Offset  int
+}
+
+type ManagementProxyListResult struct {
+	Items   []ManagementProxySummary
+	HasMore bool
+}
+
 type ManagementProxyOptionListInput struct {
 	Keyword string
 	Limit   int
@@ -146,6 +174,11 @@ type ManagementProxyOptionListInput struct {
 
 type ManagementProxyOptionReader interface {
 	ListManagementProxyOptions(ctx context.Context, input ManagementProxyOptionListInput) ([]ManagementProxyOption, error)
+}
+
+type ManagementProxyReader interface {
+	ManagementProxyOptionReader
+	ListManagementProxies(ctx context.Context, input ManagementProxyListInput) (ManagementProxyListResult, error)
 }
 
 type ManagementSystemAccountOption struct {

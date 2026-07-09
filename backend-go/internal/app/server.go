@@ -110,6 +110,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementLogoutHandler:                           managementHandlers.LogoutHandler,
 		ManagementSessionListHandler:                      managementHandlers.SessionListHandler,
 		ManagementSessionRevokeHandler:                    managementHandlers.SessionRevokeHandler,
+		ManagementProxiesHandler:                          managementHandlers.ProxiesHandler,
 		ManagementProxyOptionsHandler:                     managementHandlers.ProxyOptionsHandler,
 		ManagementSystemAccountsHandler:                   managementHandlers.SystemAccountsHandler,
 		ManagementSystemAccountOptionsHandler:             managementHandlers.SystemAccountOptionsHandler,
@@ -213,6 +214,7 @@ type managementAPIHandlers struct {
 	LogoutHandler                           http.Handler
 	SessionListHandler                      http.Handler
 	SessionRevokeHandler                    http.Handler
+	ProxiesHandler                          http.Handler
 	ProxyOptionsHandler                     http.Handler
 	SystemAccountsHandler                   http.Handler
 	SystemAccountOptionsHandler             http.Handler
@@ -346,6 +348,7 @@ func newManagementAPIHandler(
 		LogoutHandler:                           httpapi.NewManagementLogoutHandler(authenticator, cfg),
 		SessionListHandler:                      httpapi.NewManagementSessionListHandler(sessionService),
 		SessionRevokeHandler:                    httpapi.NewManagementSessionRevokeHandler(sessionService, cfg),
+		ProxiesHandler:                          httpapi.NewManagementProxiesHandler(proxyService),
 		ProxyOptionsHandler:                     httpapi.NewManagementProxyOptionsHandler(proxyService),
 		SystemAccountsHandler:                   httpapi.NewManagementSystemAccountsHandler(systemAccountService),
 		SystemAccountOptionsHandler:             httpapi.NewManagementSystemAccountOptionsHandler(systemAccountService),

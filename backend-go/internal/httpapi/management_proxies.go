@@ -6,10 +6,12 @@ import (
 	"strconv"
 	"strings"
 
+	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementproxies"
 )
 
 type managementProxyOptionService interface {
+	List(r *http.Request, input managementproxies.ListInput) (managementproxies.ListResult, error)
 	Options(r *http.Request, input managementproxies.OptionListInput) ([]managementproxies.Option, error)
 }
 
@@ -21,8 +23,36 @@ func (s managementProxyOptionServiceAdapter) Options(r *http.Request, input mana
 	return s.service.Options(r.Context(), input)
 }
 
+func (s managementProxyOptionServiceAdapter) List(r *http.Request, input managementproxies.ListInput) (managementproxies.ListResult, error) {
+	return s.service.List(r.Context(), input)
+}
+
+func NewManagementProxiesHandler(service *managementproxies.Service) http.Handler {
+	return newManagementProxiesHandler(managementProxyOptionServiceAdapter{service: service})
+}
+
 func NewManagementProxyOptionsHandler(service *managementproxies.Service) http.Handler {
 	return newManagementProxyOptionsHandler(managementProxyOptionServiceAdapter{service: service})
+}
+
+func newManagementProxiesHandler(service managementProxyOptionService) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authContext, ok := ManagementAuthContextFromRequest(r)
+		if !ok || strings.TrimSpace(authContext.SystemAccountID) == "" {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		if !managementauth.IsAdminRole(authContext.Role) {
+			writeMessageError(w, http.StatusForbidden, "需要管理员权限")
+			return
+		}
+		result, err := service.List(r, parseManagementProxyListQuery(r.URL.Query()))
+		if err != nil {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		writeData(w, http.StatusOK, result)
+	})
 }
 
 func newManagementProxyOptionsHandler(service managementProxyOptionService) http.Handler {
@@ -35,6 +65,14 @@ func newManagementProxyOptionsHandler(service managementProxyOptionService) http
 		}
 		writeData(w, http.StatusOK, options)
 	})
+}
+
+func parseManagementProxyListQuery(values url.Values) managementproxies.ListInput {
+	return managementproxies.ListInput{
+		Keyword:  firstManagementQueryText(values, "keyword"),
+		Page:     managementIntegerQueryValue(values, "page"),
+		PageSize: managementIntegerQueryValue(values, "pageSize"),
+	}
 }
 
 func parseManagementProxyOptionListQuery(values url.Values) managementproxies.OptionListInput {

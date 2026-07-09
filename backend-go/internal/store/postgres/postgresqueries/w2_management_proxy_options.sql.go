@@ -7,7 +7,104 @@ package postgresqueries
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
+
+const listManagementProxies = `-- name: ListManagementProxies :many
+SELECT
+  id,
+  name,
+  description,
+  type,
+  host,
+  port,
+  username,
+  enabled,
+  test_status,
+  latency_ms,
+  outbound_ip,
+  outbound_region,
+  last_test_message,
+  last_tested_at
+FROM juhe_business.proxy_profiles
+WHERE (
+  $1::boolean = false
+  OR (
+    name COLLATE "C" >= $2::text
+    AND name COLLATE "C" < $3::text
+    AND starts_with(name, $2::text)
+  )
+)
+ORDER BY updated_at DESC, id DESC
+LIMIT $5::int OFFSET $4::int
+`
+
+type ListManagementProxiesParams struct {
+	HasKeyword   bool
+	Keyword      string
+	KeywordUpper string
+	RowOffset    int32
+	RowLimit     int32
+}
+
+type ListManagementProxiesRow struct {
+	ID              string
+	Name            string
+	Description     pgtype.Text
+	Type            string
+	Host            string
+	Port            int32
+	Username        pgtype.Text
+	Enabled         bool
+	TestStatus      string
+	LatencyMs       pgtype.Int4
+	OutboundIp      pgtype.Text
+	OutboundRegion  pgtype.Text
+	LastTestMessage pgtype.Text
+	LastTestedAt    pgtype.Timestamptz
+}
+
+func (q *Queries) ListManagementProxies(ctx context.Context, arg ListManagementProxiesParams) ([]ListManagementProxiesRow, error) {
+	rows, err := q.db.Query(ctx, listManagementProxies,
+		arg.HasKeyword,
+		arg.Keyword,
+		arg.KeywordUpper,
+		arg.RowOffset,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListManagementProxiesRow
+	for rows.Next() {
+		var i ListManagementProxiesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Description,
+			&i.Type,
+			&i.Host,
+			&i.Port,
+			&i.Username,
+			&i.Enabled,
+			&i.TestStatus,
+			&i.LatencyMs,
+			&i.OutboundIp,
+			&i.OutboundRegion,
+			&i.LastTestMessage,
+			&i.LastTestedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
 
 const listManagementProxyOptions = `-- name: ListManagementProxyOptions :many
 SELECT id, name, type, enabled

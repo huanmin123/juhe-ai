@@ -31,6 +31,7 @@ type RouterOptions struct {
 	ManagementLogoutHandler                           http.Handler
 	ManagementSessionListHandler                      http.Handler
 	ManagementSessionRevokeHandler                    http.Handler
+	ManagementProxiesHandler                          http.Handler
 	ManagementProxyOptionsHandler                     http.Handler
 	ManagementSystemAccountsHandler                   http.Handler
 	ManagementSystemAccountOptionsHandler             http.Handler
@@ -143,6 +144,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementLogoutHandler == nil &&
 				opts.ManagementSessionListHandler == nil &&
 				opts.ManagementSessionRevokeHandler == nil &&
+				opts.ManagementProxiesHandler == nil &&
 				opts.ManagementProxyOptionsHandler == nil &&
 				opts.ManagementSystemAccountsHandler == nil &&
 				opts.ManagementSystemAccountOptionsHandler == nil &&
@@ -234,6 +236,9 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if !opts.Config.ManagementAPIEnabled {
 				return
+			}
+			if opts.ManagementProxiesHandler != nil {
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/proxies", opts.ManagementProxiesHandler.ServeHTTP)
 			}
 			if opts.ManagementProxyOptionsHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/proxies/options", opts.ManagementProxyOptionsHandler.ServeHTTP)
