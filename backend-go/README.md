@@ -21,7 +21,7 @@
 - W4 团队与统一授权切片：`GET /__aisys__/api/system-teams`、`GET /__aisys__/api/system-teams/{id}`、`GET /__aisys__/api/my-teams`、`GET /__aisys__/api/my-teams/{id}`、`POST /__aisys__/api/system-teams`、`PATCH /__aisys__/api/system-teams/{id}`、`POST /__aisys__/api/system-teams/{id}/members`、`DELETE /__aisys__/api/system-teams/{id}/members/{memberId}`、`GET /__aisys__/api/authorizations`、`GET /__aisys__/api/authorizations/{id}`、`GET /__aisys__/api/authorizations/{id}/usage`、`GET /__aisys__/api/my-authorizations`、`GET /__aisys__/api/my-authorizations/{id}`、`GET /__aisys__/api/my-authorizations/{id}/usage`、`GET /__aisys__/api/authorizations/usage/team-details`、`GET /__aisys__/api/my-authorizations/usage/team-details`、`GET /__aisys__/api/authorizations/usage/user-details`、`GET /__aisys__/api/my-authorizations/usage/user-details`、`POST /__aisys__/api/authorizations`、`POST /__aisys__/api/my-authorizations`、`PATCH /__aisys__/api/authorizations/{id}`、`PATCH /__aisys__/api/my-authorizations/{id}`、`PATCH /__aisys__/api/authorizations/{id}/expire`、`PATCH /__aisys__/api/my-authorizations/{id}/expire`、`DELETE /__aisys__/api/authorizations/{id}/return`、`DELETE /__aisys__/api/my-authorizations/{id}/return`、`POST /__aisys__/api/accounts/{id}/return-authorization`、`POST /__aisys__/api/my-accounts/{id}/return-authorization`、`POST /__aisys__/api/groups/{id}/return-authorization`、`POST /__aisys__/api/my-groups/{id}/return-authorization`、`DELETE /__aisys__/api/authorizations/{id}` 和 `DELETE /__aisys__/api/my-authorizations/{id}` 已进入 Go opt-in；授权列表以 `resource_authorization_grants` 为分页主表并返回轻量 DTO / `sourceSummary`，不触发到期扫描；授权详情按 grant ID 只读当前关系、limits、source 明细和基础 usage 空对象；授权 team/user usage overview 和授权用量明细只读 `juhe_stats.authorization_*_usage_range_windows` 预聚合窗口，不扫描明细，不实时汇总；授权创建 / 普通更新 / 有效期更新 / grant ID 归还 / 账号分组资源页归还 / 回收写 grant、source、runtime authorization、stats dirty 和授权缓存失效；`juhe-ai-worker authorization-expiry-sweep` 已按 grant 到期索引 fixed window + `FOR UPDATE SKIP LOCKED` 标记 `authorization_expired` 并刷新 runtime；`juhe-ai-worker authorization-usage-range-windows-refresh` 已按 `usageStatsTimezone` 刷新授权 hot range window，只从授权日汇总表写入 range window，不读取 `usage_records`；`juhe-ai-worker gateway-quota-snapshot-build` 已按 Node 当前快照 scope 构建 API Key / 授权成本快照，只读取统计预聚合表和额度小时窗口，不扫描明细，并可通过 `--publish-runtime-state` 写入 Node 兼容 Redis runtime state 供 Node gateway Redis 模式消费。该切片不覆盖批量到期扫描真实部署 / supervisor 接管、授权用量窗口真实 PG smoke / 生产部署接管、网关配额快照真实 PG/Redis 生产部署 smoke、浏览器连接真实 Go 后端的前端团队 / 统一授权页 smoke、生产切流或 Node `/system-teams` / `/authorizations` 删除，详细边界见 `../docs/migration/W4-团队与统一授权迁移记录.md`。
 - 不接管任何现有 Node 业务接口，不删除 Node 旧实现。
 
-W1a / W1b / W2 / W3 / W4 当前已迁移路径仍是 Go 实现中，不是生产接管状态；W1b 生产 router 默认不注册 `/__aipublic__`，只有显式设置 `JUHE_AI_PUBLIC_API_ENABLED=true` 才会挂载，且这只表示可灰度验证。W2 / W3 / W4 生产 router 默认不注册 `/__aisys__/api/*` 已迁移后台路径，只有显式设置 `JUHE_AI_MANAGEMENT_API_ENABLED=true` 才会挂载；该开关也只表示可灰度验证，不代表反向代理切流、生产流量或 Node 删除已完成。真实 Docker/testcontainers shell E2E、真实 `w1a-public-settings-smoke`、真实 PG/Redis/Asynq integration、W2 前端 smoke、W3/W4 浏览器连接真实 Go 后端的前端 smoke、反向代理切流和 Node 删除证据还未完成。
+W1a / W1b / W2 / W3 / W4 当前已迁移路径仍是 Go 实现中，不是生产接管状态；W1b 生产 router 默认不注册 `/__aipublic__`，只有显式设置 `JUHE_AI_PUBLIC_API_ENABLED=true` 才会挂载，且这只表示可灰度验证。W2 / W3 / W4 生产 router 默认不注册 `/__aisys__/api/*` 已迁移后台路径，只有显式设置 `JUHE_AI_MANAGEMENT_API_ENABLED=true` 才会挂载；如仅灰度验证 W3 当前用户会话列表 / 撤销，可单独设置 `JUHE_AI_MANAGEMENT_AUTH_SESSIONS_ENABLED=true` 只注册 `GET /auth/sessions` 和 `DELETE /auth/sessions/{id}`，不注册 W2 / W4 或其他 W3 管理路径。这些开关都只表示可灰度验证，不代表反向代理切流、生产流量或 Node 删除已完成。真实 Docker/testcontainers shell E2E、真实 `w1a-public-settings-smoke`、真实 PG/Redis/Asynq integration、W2 前端 smoke、W3/W4 浏览器连接真实 Go 后端的前端 smoke、反向代理切流和 Node 删除证据还未完成。
 
 ## 当前 Windows 工具链
 
@@ -64,6 +64,7 @@ $env:JUHE_AI_REDIS_NAMESPACE = 'juhe-ai'
 $env:JUHE_AI_TRUST_PROXY = 'false'
 $env:JUHE_AI_PUBLIC_API_ENABLED = 'false'
 $env:JUHE_AI_MANAGEMENT_API_ENABLED = 'false'
+$env:JUHE_AI_MANAGEMENT_AUTH_SESSIONS_ENABLED = 'false'
 goose -dir db/migrations postgres $env:JUHE_AI_POSTGRES_URL up
 go run ./cmd/juhe-ai server
 ```
@@ -87,6 +88,16 @@ go run ./cmd/juhe-ai server
 ```
 
 `JUHE_AI_MANAGEMENT_API_ENABLED=true` 注册当前已迁移的 W2 管理端辅助路径、W3 auth / system account 切片和 W4 团队 / 授权列表 / 授权详情 / 授权 team/user usage overview / 授权用量明细 / 授权创建 / 授权更新 / 授权有效期更新 / grant ID 授权归还 / 账号分组资源页归还 / 授权回收切片。当前可灰度验证的范围包括验证码发放、登录小闭环、当前用户读取、当前用户显示名更新、当前用户改密、当前会话登出、系统账户列表 / 创建 / 更新 / options、授权候选 options、供应商 options / 模型 catalog / 默认测试模型偏好、策略路由 options、分组 options、账户 options、账户标签只读 / 删除 / PATCH、operation log 管理 / 个人读接口、系统团队读写、团队成员维护、授权列表 / 详情 / team/user usage overview / 用量明细 / 创建 / 更新 / 有效期更新 / grant ID 归还 / 账号分组资源页归还 / 回收；批量到期扫描由 `juhe-ai-worker authorization-expiry-sweep` 子命令提供，授权用量 range window 刷新由 `juhe-ai-worker authorization-usage-range-windows-refresh` 子命令提供，网关配额快照构建由 `juhe-ai-worker gateway-quota-snapshot-build` 子命令提供，三者都不由管理 HTTP router 暴露。已迁移管理写接口会按 Node 写模式执行 `last_seen_at` 60 秒节流 touch，读接口和 logout 不 touch。`POST /auth/login` 依赖 PostgreSQL + Redis state，不允许回退 SQLite、进程内验证码或进程内失败锁定；`JUHE_AI_ENV=production` 且未显式配置 `JUHE_AI_COOKIE_SECURE` 时 Go 默认签发 Secure Cookie。完整会话管理生产接管、安全日志、前端真实 Go 后端 smoke、批量到期扫描真实部署 / supervisor 接管、授权用量窗口真实 PG smoke / 生产部署接管、网关配额快照生产 gateway 消费、主账户写入 `tags`、OAuth / 导入标签写路径、operation log 保留清理、生产单 owner 切流和 Node `/auth` / `/system-accounts` / `/system-teams` / `/authorizations` 删除仍未完成。
+
+只灰度挂载 W3 当前用户会话列表 / 撤销时，可以保持总管理开关关闭并启用窄开关：
+
+```powershell
+$env:JUHE_AI_MANAGEMENT_API_ENABLED = 'false'
+$env:JUHE_AI_MANAGEMENT_AUTH_SESSIONS_ENABLED = 'true'
+go run ./cmd/juhe-ai server
+```
+
+`JUHE_AI_MANAGEMENT_AUTH_SESSIONS_ENABLED=true` 只注册 `GET /__aisys__/api/auth/sessions` 和 `DELETE /__aisys__/api/auth/sessions/{id}`，仍要求 PostgreSQL 和 Redis state；它不会注册 captcha、login、auth/me、logout、系统账户、W2 辅助接口或 W4 团队 / 授权接口。撤销会话仍走写鉴权 touch middleware；列表不 touch session。
 
 启动 W1b public API log ingest worker 需要 PostgreSQL 和 Redis queue：
 

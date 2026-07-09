@@ -290,14 +290,22 @@ func newManagementAPIHandler(
 	logger *slog.Logger,
 	systemAccountInvalidator managementAPIInvalidator,
 ) managementAPIHandlers {
-	if !cfg.ManagementAPIEnabled {
+	if !cfg.ManagementAPIEnabled && !cfg.ManagementAuthSessionsEnabled {
 		return managementAPIHandlers{}
 	}
 	authenticator := managementauth.NewAuthenticator(managementauth.AuthenticatorOptions{Store: store})
+	sessionService := managementauth.NewSessionService(store)
+	if !cfg.ManagementAPIEnabled {
+		return managementAPIHandlers{
+			AuthMiddleware:       httpapi.NewManagementAPIAuthMiddleware(authenticator),
+			AuthTouchMiddleware:  httpapi.NewManagementAPIAuthTouchMiddleware(authenticator),
+			SessionListHandler:   httpapi.NewManagementSessionListHandler(sessionService),
+			SessionRevokeHandler: httpapi.NewManagementSessionRevokeHandler(sessionService, cfg),
+		}
+	}
 	captchaService := managementauth.NewCaptchaService(stateRedis)
 	loginGuardService := managementauth.NewLoginGuardService(stateRedis)
 	loginService := managementauth.NewLoginService(store, captchaService, loginGuardService)
-	sessionService := managementauth.NewSessionService(store)
 	profileService := managementauth.NewProfileService(store)
 	passwordService := managementauth.NewPasswordService(store)
 	proxyService := managementproxies.NewService(store)

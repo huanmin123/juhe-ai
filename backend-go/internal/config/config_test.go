@@ -332,6 +332,31 @@ func TestConfigManagementAPIEnabledRequiresRuntimeDependencies(t *testing.T) {
 	}
 }
 
+func TestConfigManagementAuthSessionsEnabledRequiresOnlyStateRedis(t *testing.T) {
+	base := Config{
+		Host:                          "127.0.0.1",
+		Port:                          3000,
+		RedisNamespace:                "juhe-ai",
+		TrustProxy:                    "false",
+		ManagementAuthSessionsEnabled: true,
+		RedisStateURL:                 "redis://127.0.0.1:6379/1",
+		ShutdownTimeout:               time.Second,
+	}
+
+	if err := base.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	base.RedisStateURL = ""
+	err := base.Validate()
+	if err == nil {
+		t.Fatal("Validate() error = nil, want state redis dependency error")
+	}
+	if got := err.Error(); !strings.Contains(got, "JUHE_AI_REDIS_STATE_URL") {
+		t.Fatalf("Validate() error = %q, want contains JUHE_AI_REDIS_STATE_URL", got)
+	}
+}
+
 func TestLoadParsesPublicAPIEnv(t *testing.T) {
 	t.Setenv("JUHE_AI_PUBLIC_API_ENABLED", "true")
 	t.Setenv("JUHE_AI_REDIS_STATE_URL", "redis://127.0.0.1:6379/1")
@@ -361,5 +386,18 @@ func TestLoadParsesManagementAPIEnv(t *testing.T) {
 	}
 	if !cfg.ManagementAPIEnabled {
 		t.Fatal("ManagementAPIEnabled = false, want true")
+	}
+}
+
+func TestLoadParsesManagementAuthSessionsEnv(t *testing.T) {
+	t.Setenv("JUHE_AI_MANAGEMENT_AUTH_SESSIONS_ENABLED", "true")
+	t.Setenv("JUHE_AI_REDIS_STATE_URL", "redis://127.0.0.1:6379/1")
+
+	cfg, err := Load(LoadOptions{LoadDotEnv: false})
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.ManagementAuthSessionsEnabled {
+		t.Fatal("ManagementAuthSessionsEnabled = false, want true")
 	}
 }

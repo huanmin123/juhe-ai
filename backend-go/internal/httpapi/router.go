@@ -117,15 +117,25 @@ func NewRouter(opts RouterOptions) http.Handler {
 			publicSettingsHandler := NewPublicSettingsHandler(*opts.PublicSettingsService, opts.Logger)
 			system.Get("/settings/public", publicSettingsHandler.ServeHTTP)
 		}
-		if opts.Config.ManagementAPIEnabled {
+		if opts.Config.ManagementAPIEnabled || opts.Config.ManagementAuthSessionsEnabled {
 			if opts.ManagementAPIAuthMiddleware == nil {
-				panic("ManagementAPIAuthMiddleware is required when JUHE_AI_MANAGEMENT_API_ENABLED is true")
+				panic("ManagementAPIAuthMiddleware is required when Go management routes are enabled")
 			}
-			if managementWriteRoutesConfigured(opts) && opts.ManagementAPIAuthTouchMiddleware == nil {
-				panic("ManagementAPIAuthTouchMiddleware is required for management write routes when JUHE_AI_MANAGEMENT_API_ENABLED is true")
+			writeRoutesConfigured := managementWriteRoutesConfigured(opts)
+			if !opts.Config.ManagementAPIEnabled {
+				writeRoutesConfigured = opts.ManagementSessionRevokeHandler != nil
+			}
+			if writeRoutesConfigured && opts.ManagementAPIAuthTouchMiddleware == nil {
+				panic("ManagementAPIAuthTouchMiddleware is required for Go management write routes")
 			}
 			managementAPIWriteAuthMiddleware := opts.ManagementAPIAuthTouchMiddleware
-			if opts.ManagementCaptchaHandler == nil &&
+			if !opts.Config.ManagementAPIEnabled &&
+				opts.ManagementSessionListHandler == nil &&
+				opts.ManagementSessionRevokeHandler == nil {
+				panic("at least one management auth session handler is required when JUHE_AI_MANAGEMENT_AUTH_SESSIONS_ENABLED is true")
+			}
+			if opts.Config.ManagementAPIEnabled &&
+				opts.ManagementCaptchaHandler == nil &&
 				opts.ManagementLoginHandler == nil &&
 				opts.ManagementCurrentUserHandler == nil &&
 				opts.ManagementProfileUpdateHandler == nil &&
@@ -196,29 +206,34 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyOperationLogsHandler == nil {
 				panic("at least one management API handler is required when JUHE_AI_MANAGEMENT_API_ENABLED is true")
 			}
-			if opts.ManagementCaptchaHandler != nil {
-				system.Get("/auth/captcha", opts.ManagementCaptchaHandler.ServeHTTP)
-			}
-			if opts.ManagementLoginHandler != nil {
-				system.Post("/auth/login", opts.ManagementLoginHandler.ServeHTTP)
-			}
-			if opts.ManagementCurrentUserHandler != nil {
-				system.Get("/auth/me", opts.ManagementCurrentUserHandler.ServeHTTP)
-			}
-			if opts.ManagementProfileUpdateHandler != nil {
-				system.With(managementAPIWriteAuthMiddleware).Patch("/auth/me", opts.ManagementProfileUpdateHandler.ServeHTTP)
-			}
-			if opts.ManagementPasswordChangeHandler != nil {
-				system.Post("/auth/change-password", opts.ManagementPasswordChangeHandler.ServeHTTP)
-			}
-			if opts.ManagementLogoutHandler != nil {
-				system.Post("/auth/logout", opts.ManagementLogoutHandler.ServeHTTP)
+			if opts.Config.ManagementAPIEnabled {
+				if opts.ManagementCaptchaHandler != nil {
+					system.Get("/auth/captcha", opts.ManagementCaptchaHandler.ServeHTTP)
+				}
+				if opts.ManagementLoginHandler != nil {
+					system.Post("/auth/login", opts.ManagementLoginHandler.ServeHTTP)
+				}
+				if opts.ManagementCurrentUserHandler != nil {
+					system.Get("/auth/me", opts.ManagementCurrentUserHandler.ServeHTTP)
+				}
+				if opts.ManagementProfileUpdateHandler != nil {
+					system.With(managementAPIWriteAuthMiddleware).Patch("/auth/me", opts.ManagementProfileUpdateHandler.ServeHTTP)
+				}
+				if opts.ManagementPasswordChangeHandler != nil {
+					system.Post("/auth/change-password", opts.ManagementPasswordChangeHandler.ServeHTTP)
+				}
+				if opts.ManagementLogoutHandler != nil {
+					system.Post("/auth/logout", opts.ManagementLogoutHandler.ServeHTTP)
+				}
 			}
 			if opts.ManagementSessionListHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/auth/sessions", opts.ManagementSessionListHandler.ServeHTTP)
 			}
 			if opts.ManagementSessionRevokeHandler != nil {
 				system.With(managementAPIWriteAuthMiddleware).Delete("/auth/sessions/{id}", opts.ManagementSessionRevokeHandler.ServeHTTP)
+			}
+			if !opts.Config.ManagementAPIEnabled {
+				return
 			}
 			if opts.ManagementProxyOptionsHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/proxies/options", opts.ManagementProxyOptionsHandler.ServeHTTP)

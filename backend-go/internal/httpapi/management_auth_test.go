@@ -510,6 +510,94 @@ func TestRouterRegistersManagementSessionRevokeWithTouchAndClearsCurrentCookie(t
 	}
 }
 
+func TestRouterRegistersOnlyManagementSessionsWhenSessionSwitchEnabled(t *testing.T) {
+	readAuthenticator := &managementAPIAuthenticatorStub{
+		context: managementauth.Context{
+			SystemAccountID: "sys_user",
+			Username:        "user",
+			DisplayName:     "用户",
+			Role:            "user",
+			SessionID:       "sess_current",
+		},
+	}
+	touchAuthenticator := &managementAPIAuthenticatorStub{
+		context: managementauth.Context{
+			SystemAccountID: "sys_user",
+			Username:        "user",
+			DisplayName:     "用户",
+			Role:            "user",
+			SessionID:       "sess_current",
+		},
+	}
+	service := &managementSessionServiceStub{
+		listResult: managementauth.SessionListResult{
+			Items: []managementauth.SessionSummary{{ID: "sess_current", Current: true}},
+			Total: 1,
+		},
+		revokeResult: managementauth.SessionRevokeResult{ID: "sess_other", Revoked: true},
+	}
+	router := NewRouter(RouterOptions{
+		Config:                           config.Config{Host: "127.0.0.1", Port: 3000, ManagementAuthSessionsEnabled: true},
+		ManagementAPIAuthMiddleware:      NewManagementAPIAuthMiddleware(readAuthenticator),
+		ManagementAPIAuthTouchMiddleware: NewManagementAPIAuthTouchMiddleware(touchAuthenticator),
+		ManagementSessionListHandler:     newManagementSessionListHandler(service),
+		ManagementSessionRevokeHandler:   newManagementSessionRevokeHandler(service, config.Config{}),
+		ManagementCurrentUserHandler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			writeData(w, http.StatusOK, map[string]string{"unexpected": "current-user"})
+		}),
+		ManagementProxyOptionsHandler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			writeData(w, http.StatusOK, map[string]string{"unexpected": "proxy-options"})
+		}),
+	})
+
+	listReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/auth/sessions", nil)
+	listReq.Header.Set("Cookie", "juhe_ai_session=session-token")
+	listRec := httptest.NewRecorder()
+	router.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("session list status = %d, body = %s", listRec.Code, listRec.Body.String())
+	}
+	if readAuthenticator.cookieHeader != "juhe_ai_session=session-token" || touchAuthenticator.touchCookieHeader != "" {
+		t.Fatalf("session list auth headers read=%q touch=%q", readAuthenticator.cookieHeader, touchAuthenticator.touchCookieHeader)
+	}
+	if service.listCalls != 1 || service.revokeCalls != 0 {
+		t.Fatalf("service calls after list: list=%d revoke=%d", service.listCalls, service.revokeCalls)
+	}
+
+	revokeReq := httptest.NewRequest(http.MethodDelete, "/__aisys__/api/auth/sessions/sess_other", nil)
+	revokeReq.Header.Set("Cookie", "juhe_ai_session=session-token")
+	revokeRec := httptest.NewRecorder()
+	router.ServeHTTP(revokeRec, revokeReq)
+	if revokeRec.Code != http.StatusOK {
+		t.Fatalf("session revoke status = %d, body = %s", revokeRec.Code, revokeRec.Body.String())
+	}
+	if touchAuthenticator.touchCookieHeader != "juhe_ai_session=session-token" {
+		t.Fatalf("session revoke touch cookie header = %q", touchAuthenticator.touchCookieHeader)
+	}
+	if service.revokeInput.SessionID != "sess_other" || service.revokeCalls != 1 {
+		t.Fatalf("revoke input = %+v calls=%d", service.revokeInput, service.revokeCalls)
+	}
+
+	for _, tc := range []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodGet, path: "/__aisys__/api/auth/captcha"},
+		{method: http.MethodPost, path: "/__aisys__/api/auth/login"},
+		{method: http.MethodGet, path: "/__aisys__/api/auth/me"},
+		{method: http.MethodPost, path: "/__aisys__/api/auth/logout"},
+		{method: http.MethodGet, path: "/__aisys__/api/proxies/options"},
+		{method: http.MethodPost, path: "/__aisys__/api/system-accounts"},
+	} {
+		req := httptest.NewRequest(tc.method, tc.path, nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%s %s status = %d, want 404 while only management auth sessions are enabled", tc.method, tc.path, rec.Code)
+		}
+	}
+}
+
 func TestManagementSessionRevokeHandlerMapsNotFound(t *testing.T) {
 	service := &managementSessionServiceStub{revokeErr: managementauth.ErrSessionNotFound}
 	router := NewRouter(RouterOptions{

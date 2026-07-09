@@ -133,6 +133,49 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 	}
 }
 
+func TestNewManagementAPIHandlerSessionSwitchOnlyReturnsSessionHandlers(t *testing.T) {
+	handlers := newManagementAPIHandler(config.Config{ManagementAuthSessionsEnabled: true}, nil, nil, nil, nil, nil)
+	if handlers.AuthMiddleware == nil ||
+		handlers.AuthTouchMiddleware == nil ||
+		handlers.SessionListHandler == nil ||
+		handlers.SessionRevokeHandler == nil {
+		t.Fatal("newManagementAPIHandler() did not return auth/session handlers while session switch enabled")
+	}
+	if handlers.CaptchaHandler != nil ||
+		handlers.LoginHandler != nil ||
+		handlers.CurrentUserHandler != nil ||
+		handlers.ProfileUpdateHandler != nil ||
+		handlers.PasswordChangeHandler != nil ||
+		handlers.LogoutHandler != nil ||
+		handlers.ProxyOptionsHandler != nil ||
+		handlers.SystemAccountsHandler != nil ||
+		handlers.SystemAccountOptionsHandler != nil ||
+		handlers.SystemAccountPatchHandler != nil ||
+		handlers.SystemAccountCreateHandler != nil ||
+		handlers.SystemTeamsHandler != nil ||
+		handlers.MySystemTeamsHandler != nil ||
+		handlers.SystemTeamCreateHandler != nil ||
+		handlers.SystemTeamPatchHandler != nil ||
+		handlers.SystemTeamMembersAddHandler != nil ||
+		handlers.SystemTeamMemberDeleteHandler != nil ||
+		handlers.AuthorizationGranteeAccountsHandler != nil ||
+		handlers.AuthorizationListHandler != nil ||
+		handlers.AuthorizationCreateHandler != nil ||
+		handlers.AuthorizationReturnHandler != nil ||
+		handlers.AuthorizationRevokeHandler != nil ||
+		handlers.ProviderOptionsHandler != nil ||
+		handlers.ProviderModelOptionsHandler != nil ||
+		handlers.ProviderModelsHandler != nil ||
+		handlers.ProviderDefaultTestModelHandler != nil ||
+		handlers.RouteStrategyOptionsHandler != nil ||
+		handlers.GroupOptionsHandler != nil ||
+		handlers.AccountOptionsHandler != nil ||
+		handlers.AccountTagsHandler != nil ||
+		handlers.OperationLogsHandler != nil {
+		t.Fatal("newManagementAPIHandler() returned non-session management handlers while only session switch enabled")
+	}
+}
+
 func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t *testing.T) {
 	handlers := newManagementAPIHandler(config.Config{ManagementAPIEnabled: true}, nil, nil, nil, nil, nil)
 	if handlers.AuthMiddleware == nil ||
