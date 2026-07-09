@@ -583,6 +583,28 @@ type ManagementResourceAuthorizationSummary struct {
 	UpdatedAt                      time.Time                                      `json:"updatedAt"`
 }
 
+type ManagementResourceAuthorizationListInput struct {
+	ActorSystemAccountID         string
+	CanAccessAll                 bool
+	ScopedSystemAccountID        string
+	ResourceType                 string
+	ResourceID                   string
+	ResourceOwnerSystemAccountID string
+	GranteeSystemAccountID       string
+	TeamID                       string
+	Status                       string
+	Direction                    string
+	SourceType                   string
+	Keyword                      string
+	Limit                        int
+	Offset                       int
+}
+
+type ManagementResourceAuthorizationListResult struct {
+	Items   []ManagementResourceAuthorizationSummary
+	HasMore bool
+}
+
 type ManagementResourceAuthorizationCreateInput struct {
 	ResourceType                    string
 	ResourceID                      string
@@ -603,6 +625,10 @@ type ManagementResourceAuthorizationCreateInput struct {
 
 type ManagementResourceAuthorizationCreator interface {
 	CreateManagementResourceAuthorization(ctx context.Context, input ManagementResourceAuthorizationCreateInput) (ManagementResourceAuthorizationSummary, error)
+}
+
+type ManagementResourceAuthorizationLister interface {
+	ListManagementResourceAuthorizations(ctx context.Context, input ManagementResourceAuthorizationListInput) (ManagementResourceAuthorizationListResult, error)
 }
 
 type ManagementResourceAuthorizationReturnInput struct {

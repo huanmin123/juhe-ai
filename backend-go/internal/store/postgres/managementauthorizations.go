@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,6 +16,240 @@ import (
 	"juhe-ai/backend-go/internal/store/port"
 	"juhe-ai/backend-go/internal/store/postgres/postgresqueries"
 )
+
+func (s *Store) ListManagementResourceAuthorizations(ctx context.Context, input port.ManagementResourceAuthorizationListInput) (port.ManagementResourceAuthorizationListResult, error) {
+	limit := input.Limit
+	if limit <= 0 {
+		return port.ManagementResourceAuthorizationListResult{}, nil
+	}
+	query, args := managementResourceAuthorizationListQuery(input)
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return port.ManagementResourceAuthorizationListResult{}, fmt.Errorf("list management resource authorizations: %w", err)
+	}
+	defer rows.Close()
+	items := make([]port.ManagementResourceAuthorizationSummary, 0, limit)
+	for rows.Next() {
+		var row managementAuthorizationSummaryRow
+		if err := rows.Scan(
+			&row.Grant.ID,
+			&row.Grant.ResourceType,
+			&row.Grant.ResourceID,
+			&row.Grant.ResourceOwnerSystemAccountID,
+			&row.Grant.GranteeType,
+			&row.Grant.GranteeSystemAccountID,
+			&row.Grant.GranteeTeamID,
+			&row.Grant.Scope,
+			&row.Grant.Status,
+			&row.Grant.Remark,
+			&row.Grant.ExpiresAt,
+			&row.Grant.LimitsJson,
+			&row.Grant.CreatedBy,
+			&row.Grant.CreatedAt,
+			&row.Grant.RevokedBy,
+			&row.Grant.RevokedAt,
+			&row.Grant.UpdatedAt,
+			&row.AccountName,
+			&row.GroupName,
+			&row.AccountExpiresAt,
+			&row.OwnerDisplayName,
+			&row.GranteeDisplayName,
+			&row.GranteeUsername,
+			&row.TeamName,
+		); err != nil {
+			return port.ManagementResourceAuthorizationListResult{}, fmt.Errorf("scan management resource authorization: %w", err)
+		}
+		summary, err := managementAuthorizationSummaryFromRow(row)
+		if err != nil {
+			return port.ManagementResourceAuthorizationListResult{}, err
+		}
+		items = append(items, summary)
+	}
+	if err := rows.Err(); err != nil {
+		return port.ManagementResourceAuthorizationListResult{}, fmt.Errorf("iterate management resource authorizations: %w", err)
+	}
+	pageSize := max(0, limit-1)
+	hasMore := len(items) > pageSize
+	if hasMore {
+		items = items[:pageSize]
+	}
+	return port.ManagementResourceAuthorizationListResult{Items: items, HasMore: hasMore}, nil
+}
+
+func managementResourceAuthorizationListQuery(input port.ManagementResourceAuthorizationListInput) (string, []any) {
+	args := []any{}
+	clauses := []string{}
+	addArg := func(value any) string {
+		args = append(args, value)
+		return "$" + strconv.Itoa(len(args))
+	}
+	addClause := func(clause string) {
+		clauses = append(clauses, clause)
+	}
+
+	if resourceType := strings.TrimSpace(input.ResourceType); resourceType != "" {
+		addClause("rag.resource_type = " + addArg(resourceType))
+	}
+	if resourceID := strings.TrimSpace(input.ResourceID); resourceID != "" {
+		addClause("rag.resource_id = " + addArg(resourceID))
+	}
+	if granteeID := strings.TrimSpace(input.GranteeSystemAccountID); granteeID != "" {
+		addClause("rag.grantee_type = " + addArg("system_account"))
+		addClause("rag.grantee_system_account_id = " + addArg(granteeID))
+	}
+	if status := strings.TrimSpace(input.Status); status != "" {
+		addClause("rag.status = " + addArg(status))
+	}
+	if sourceType := strings.TrimSpace(input.SourceType); sourceType == "manual" {
+		addClause("rag.grantee_type = " + addArg("system_account"))
+	} else if sourceType == "team" {
+		addClause("rag.grantee_type = " + addArg("team"))
+	}
+	if teamID := strings.TrimSpace(input.TeamID); teamID != "" {
+		if !input.CanAccessAll {
+			addClause(`EXISTS (
+  SELECT 1
+  FROM juhe_business.system_team_members AS stm_team_scope
+  WHERE stm_team_scope.team_id = ` + addArg(teamID) + `
+    AND stm_team_scope.system_account_id = ` + addArg(strings.TrimSpace(input.ActorSystemAccountID)) + `
+    AND stm_team_scope.status = 'active'
+)`)
+		}
+		addClause("rag.grantee_type = " + addArg("team"))
+		addClause("rag.grantee_team_id = " + addArg(teamID))
+	}
+	if ownerID := strings.TrimSpace(input.ResourceOwnerSystemAccountID); ownerID != "" {
+		addClause("rag.resource_owner_system_account_id = " + addArg(ownerID))
+	}
+	if keyword := strings.TrimSpace(input.Keyword); keyword != "" {
+		addClause(managementResourceAuthorizationKeywordClause(keyword, addArg))
+	}
+
+	scopeSystemAccountID := strings.TrimSpace(input.ScopedSystemAccountID)
+	if scopeSystemAccountID != "" {
+		addClause(managementResourceAuthorizationVisibleToAccountClause(scopeSystemAccountID, addArg))
+	} else if !input.CanAccessAll {
+		addClause(managementResourceAuthorizationVisibleToAccountClause(strings.TrimSpace(input.ActorSystemAccountID), addArg))
+	}
+
+	directionSystemAccountID := scopeSystemAccountID
+	if directionSystemAccountID == "" && !input.CanAccessAll {
+		directionSystemAccountID = strings.TrimSpace(input.ActorSystemAccountID)
+	}
+	if direction := strings.TrimSpace(input.Direction); direction != "" && directionSystemAccountID != "" {
+		if direction == "outbound" {
+			addClause("rag.resource_owner_system_account_id = " + addArg(directionSystemAccountID))
+		} else if direction == "inbound" {
+			accountArg := addArg(directionSystemAccountID)
+			teamArg := addArg(directionSystemAccountID)
+			addClause(`(rag.grantee_system_account_id = ` + accountArg + ` OR EXISTS (
+  SELECT 1
+  FROM juhe_business.system_team_members AS stm_direction
+  WHERE stm_direction.team_id = rag.grantee_team_id
+    AND stm_direction.system_account_id = ` + teamArg + `
+    AND stm_direction.status = 'active'
+))`)
+		}
+	}
+
+	where := ""
+	if len(clauses) > 0 {
+		where = "WHERE " + strings.Join(clauses, "\n  AND ")
+	}
+	limitArg := addArg(max(0, input.Limit))
+	offsetArg := addArg(max(0, input.Offset))
+	query := `
+SELECT rag.id, rag.resource_type, rag.resource_id, rag.resource_owner_system_account_id, rag.grantee_type,
+  rag.grantee_system_account_id, rag.grantee_team_id, rag.scope, rag.status, rag.remark, rag.expires_at,
+  rag.limits_json, rag.created_by, rag.created_at, rag.revoked_by, rag.revoked_at, rag.updated_at,
+  COALESCE(accounts.name, authorization_instance.name) AS account_name,
+  groups.name AS group_name,
+  accounts.account_expires_at,
+  owner_accounts.display_name AS owner_display_name,
+  grantee_accounts.display_name AS grantee_display_name,
+  grantee_accounts.username AS grantee_username,
+  teams.name AS team_name
+FROM juhe_business.resource_authorization_grants AS rag
+LEFT JOIN juhe_business.accounts AS accounts
+  ON accounts.id = rag.resource_id
+  AND rag.resource_type = 'account'
+LEFT JOIN LATERAL (
+  SELECT authorization_instances.name
+  FROM juhe_business.resource_authorizations AS resource_runtime
+  INNER JOIN juhe_business.accounts AS authorization_instances
+    ON authorization_instances.authorization_instance_authorization_id = resource_runtime.id
+  WHERE resource_runtime.resource_type = 'account'
+    AND resource_runtime.resource_id = rag.resource_id
+  ORDER BY resource_runtime.created_at ASC, resource_runtime.id ASC
+  LIMIT 1
+) AS authorization_instance ON rag.resource_type = 'account'
+LEFT JOIN juhe_business.groups AS groups
+  ON groups.id = rag.resource_id
+  AND rag.resource_type = 'group'
+LEFT JOIN juhe_business.system_accounts AS owner_accounts
+  ON owner_accounts.id = rag.resource_owner_system_account_id
+LEFT JOIN juhe_business.system_accounts AS grantee_accounts
+  ON grantee_accounts.id = rag.grantee_system_account_id
+LEFT JOIN juhe_business.system_teams AS teams
+  ON teams.id = rag.grantee_team_id
+` + where + `
+ORDER BY rag.created_at DESC, rag.id DESC
+LIMIT ` + limitArg + ` OFFSET ` + offsetArg
+	return query, args
+}
+
+func managementResourceAuthorizationVisibleToAccountClause(systemAccountID string, addArg func(any) string) string {
+	ownerArg := addArg(systemAccountID)
+	granteeArg := addArg(systemAccountID)
+	teamArg := addArg(systemAccountID)
+	return `(rag.resource_owner_system_account_id = ` + ownerArg + ` OR rag.grantee_system_account_id = ` + granteeArg + ` OR EXISTS (
+  SELECT 1
+  FROM juhe_business.system_team_members AS stm_scope
+  WHERE stm_scope.team_id = rag.grantee_team_id
+    AND stm_scope.system_account_id = ` + teamArg + `
+    AND stm_scope.status = 'active'
+))`
+}
+
+func managementResourceAuthorizationKeywordClause(keyword string, addArg func(any) string) string {
+	upperBound := textPrefixUpperBound(keyword)
+	matchText := func(expression string) string {
+		lowerArg := addArg(keyword)
+		upperArg := addArg(upperBound)
+		prefixArg := addArg(keyword)
+		return `(` + expression + ` COLLATE "C" >= ` + lowerArg + ` AND ` + expression + ` COLLATE "C" < ` + upperArg + ` AND starts_with(` + expression + `, ` + prefixArg + `))`
+	}
+	return `(
+  ` + matchText("rag.id") + `
+  OR ` + matchText("rag.resource_id") + `
+  OR ` + matchText("rag.remark") + `
+  OR ` + matchText("owner_accounts.username") + `
+  OR ` + matchText("owner_accounts.display_name") + `
+  OR (
+    rag.grantee_type = 'system_account'
+    AND (
+      ` + matchText("grantee_accounts.username") + `
+      OR ` + matchText("grantee_accounts.display_name") + `
+    )
+  )
+  OR (
+    rag.grantee_type = 'team'
+    AND ` + matchText("teams.name") + `
+  )
+  OR (
+    rag.resource_type = 'account'
+    AND ` + matchText("accounts.name") + `
+  )
+  OR (
+    rag.resource_type = 'account'
+    AND ` + matchText("authorization_instance.name") + `
+  )
+  OR (
+    rag.resource_type = 'group'
+    AND ` + matchText("groups.name") + `
+  )
+)`
+}
 
 func (s *Store) CreateManagementResourceAuthorization(ctx context.Context, input port.ManagementResourceAuthorizationCreateInput) (port.ManagementResourceAuthorizationSummary, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
@@ -1366,4 +1601,5 @@ func timePtrFromTimestamptz(value pgtype.Timestamptz) *time.Time {
 }
 
 var _ port.ManagementResourceAuthorizationCreator = (*Store)(nil)
+var _ port.ManagementResourceAuthorizationLister = (*Store)(nil)
 var _ port.ManagementResourceAuthorizationReturner = (*Store)(nil)

@@ -4,6 +4,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"juhe-ai/backend-go/internal/store/port"
 )
 
 func TestW4ResourceAuthorizationGrantSourceMigrationMatchesCurrentContract(t *testing.T) {
@@ -77,4 +79,59 @@ func TestW4AuthorizationQuotaAndStatsStateMigrationMatchesCurrentContract(t *tes
 			t.Fatalf("W4 authorization quota migration should not contain destructive statement %q", forbidden)
 		}
 	}
+}
+
+func TestManagementResourceAuthorizationListQueryScopesAndFilters(t *testing.T) {
+	query, args := managementResourceAuthorizationListQuery(port.ManagementResourceAuthorizationListInput{
+		ActorSystemAccountID:         "sys_actor",
+		CanAccessAll:                 false,
+		ResourceType:                 "account",
+		ResourceID:                   "acct_main",
+		ResourceOwnerSystemAccountID: "sys_owner",
+		GranteeSystemAccountID:       "sys_grantee",
+		TeamID:                       "team_ops",
+		Status:                       "active",
+		Direction:                    "inbound",
+		SourceType:                   "team",
+		Keyword:                      "授权",
+		Limit:                        6,
+		Offset:                       12,
+	})
+
+	for _, want := range []string{
+		"FROM juhe_business.resource_authorization_grants AS rag",
+		"LEFT JOIN LATERAL",
+		"rag.resource_type =",
+		"rag.resource_owner_system_account_id =",
+		"rag.grantee_system_account_id =",
+		"rag.grantee_team_id =",
+		`COLLATE "C"`,
+		"starts_with(",
+		"juhe_business.system_team_members AS stm_scope",
+		"juhe_business.system_team_members AS stm_direction",
+		"ORDER BY rag.created_at DESC, rag.id DESC",
+		"LIMIT",
+		"OFFSET",
+	} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("list query missing %q:\n%s", want, query)
+		}
+	}
+	if len(args) < 2 || args[len(args)-2] != 6 || args[len(args)-1] != 12 {
+		t.Fatalf("pagination args = %v, want last args 6, 12", args)
+	}
+	for _, want := range []any{"sys_actor", "acct_main", "sys_owner", "sys_grantee", "team_ops", "授权"} {
+		if !containsQueryArg(args, want) {
+			t.Fatalf("query args missing %v: %v", want, args)
+		}
+	}
+}
+
+func containsQueryArg(args []any, want any) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
 }

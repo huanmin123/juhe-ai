@@ -22,6 +22,9 @@ import (
 
 const (
 	maxRemarkRunes                            = 200
+	defaultAuthorizationListPageSize          = 50
+	maxAuthorizationListPageSize              = 500
+	maxAuthorizationListWindowRows            = 1001
 	maxRequestQuotaHourlyWindowHours          = 24 * 30
 	maxRequestQuotaAmountUSD                  = 9_007_199_254_740_991
 	quotaAmountPrecision                int64 = 1_000_000
@@ -30,11 +33,13 @@ const (
 )
 
 var (
+	ErrAuthorizationListInvalid   = errors.New("management authorization list invalid")
 	ErrAuthorizationCreateInvalid = errors.New("management authorization create invalid")
 	ErrAuthorizationReturnInvalid = errors.New("management authorization return invalid")
 )
 
 type Service struct {
+	listStore                port.ManagementResourceAuthorizationLister
 	createStore              port.ManagementResourceAuthorizationCreator
 	returnStore              port.ManagementResourceAuthorizationReturner
 	now                      func() time.Time
@@ -47,11 +52,87 @@ type AuthorizationInvalidator interface {
 }
 
 type ServiceOptions struct {
+	ListStore                port.ManagementResourceAuthorizationLister
 	Store                    port.ManagementResourceAuthorizationCreator
 	ReturnStore              port.ManagementResourceAuthorizationReturner
 	Now                      func() time.Time
 	Secret                   string
 	AuthorizationInvalidator AuthorizationInvalidator
+}
+
+type ListInput struct {
+	ActorSystemAccountID         string
+	ActorRole                    string
+	ScopedSystemAccountID        string
+	ResourceType                 string
+	ResourceID                   string
+	ResourceOwnerSystemAccountID string
+	GranteeSystemAccountID       string
+	TeamID                       string
+	Status                       string
+	Direction                    string
+	SourceType                   string
+	Keyword                      string
+	Page                         int
+	PageSize                     int
+}
+
+type ListResult struct {
+	Items    []ListItem `json:"items"`
+	Total    int        `json:"total"`
+	HasMore  bool       `json:"hasMore"`
+	Page     int        `json:"page"`
+	PageSize int        `json:"pageSize"`
+}
+
+type ListItem struct {
+	ID                             string        `json:"id"`
+	ResourceType                   string        `json:"resourceType"`
+	ResourceID                     string        `json:"resourceId"`
+	ResourceName                   string        `json:"resourceName,omitempty"`
+	ResourceOwnerSystemAccountID   string        `json:"resourceOwnerSystemAccountId"`
+	ResourceOwnerSystemAccountName string        `json:"resourceOwnerSystemAccountName,omitempty"`
+	GranteeType                    string        `json:"granteeType,omitempty"`
+	GranteeSystemAccountID         string        `json:"granteeSystemAccountId,omitempty"`
+	GranteeSystemAccountName       string        `json:"granteeSystemAccountName,omitempty"`
+	GranteeUsername                string        `json:"granteeUsername,omitempty"`
+	GranteeTeamID                  string        `json:"granteeTeamId,omitempty"`
+	GranteeTeamName                string        `json:"granteeTeamName,omitempty"`
+	Scope                          string        `json:"scope"`
+	Status                         string        `json:"status"`
+	Remark                         string        `json:"remark,omitempty"`
+	ExpiresAt                      *time.Time    `json:"expiresAt,omitempty"`
+	EffectiveSourceType            string        `json:"effectiveSourceType,omitempty"`
+	EffectiveSourceTeamID          string        `json:"effectiveSourceTeamId,omitempty"`
+	EffectiveSourceTeamName        string        `json:"effectiveSourceTeamName,omitempty"`
+	ActivatedAt                    *time.Time    `json:"activatedAt,omitempty"`
+	LastSourceChangedAt            *time.Time    `json:"lastSourceChangedAt,omitempty"`
+	LastUsedAt                     *time.Time    `json:"lastUsedAt,omitempty"`
+	CreatedBy                      string        `json:"createdBy"`
+	CreatedAt                      time.Time     `json:"createdAt"`
+	RevokedBy                      string        `json:"revokedBy,omitempty"`
+	RevokedAt                      *time.Time    `json:"revokedAt,omitempty"`
+	RevokedReason                  string        `json:"revokedReason,omitempty"`
+	UpdatedAt                      time.Time     `json:"updatedAt"`
+	Permissions                    Permissions   `json:"permissions"`
+	SourceSummary                  SourceSummary `json:"sourceSummary"`
+}
+
+type Permissions struct {
+	CanEdit      bool `json:"canEdit"`
+	CanAuthorize bool `json:"canAuthorize"`
+}
+
+type SourceSummary struct {
+	ActiveSourceCount int              `json:"activeSourceCount"`
+	HasManual         bool             `json:"hasManual"`
+	HasTeam           bool             `json:"hasTeam"`
+	TeamSources       []TeamSourceItem `json:"teamSources"`
+}
+
+type TeamSourceItem struct {
+	SourceTeamID   string `json:"sourceTeamId"`
+	SourceTeamName string `json:"sourceTeamName,omitempty"`
 }
 
 type CreateInput struct {
@@ -93,13 +174,87 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 			returnStore = candidate
 		}
 	}
+	listStore := opts.ListStore
+	if listStore == nil {
+		if candidate, ok := opts.Store.(port.ManagementResourceAuthorizationLister); ok {
+			listStore = candidate
+		}
+	}
 	return &Service{
+		listStore:                listStore,
 		createStore:              opts.Store,
 		returnStore:              returnStore,
 		now:                      now,
 		secret:                   opts.Secret,
 		authorizationInvalidator: opts.AuthorizationInvalidator,
 	}
+}
+
+func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error) {
+	if s.listStore == nil {
+		return ListResult{}, fmt.Errorf("management resource authorization lister is required")
+	}
+	actor := strings.TrimSpace(input.ActorSystemAccountID)
+	if actor == "" {
+		return ListResult{}, ErrAuthorizationListInvalid
+	}
+	resourceType := normalizeResourceType(input.ResourceType)
+	if strings.TrimSpace(input.ResourceType) != "" && resourceType == "" {
+		return ListResult{}, ErrAuthorizationListInvalid
+	}
+	status := normalizeAuthorizationStatus(input.Status)
+	if strings.TrimSpace(input.Status) != "" && strings.TrimSpace(input.Status) != "all" && status == "" {
+		return ListResult{}, ErrAuthorizationListInvalid
+	}
+	direction := normalizeAuthorizationDirection(input.Direction)
+	if strings.TrimSpace(input.Direction) != "" && strings.TrimSpace(input.Direction) != "all" && direction == "" {
+		return ListResult{}, ErrAuthorizationListInvalid
+	}
+	sourceType := normalizeAuthorizationSourceType(input.SourceType)
+	if strings.TrimSpace(input.SourceType) != "" && strings.TrimSpace(input.SourceType) != "all" && sourceType == "" {
+		return ListResult{}, ErrAuthorizationListInvalid
+	}
+	keyword := strings.TrimSpace(input.Keyword)
+	if utf8.RuneCountInString(keyword) > 120 {
+		return ListResult{}, ErrAuthorizationListInvalid
+	}
+	pageSize := authorizationListPageSize(input.PageSize)
+	page := authorizationListPage(input.Page, pageSize)
+	canAccessAll := isAdminRole(input.ActorRole)
+	scopedSystemAccountID := strings.TrimSpace(input.ScopedSystemAccountID)
+	if !canAccessAll {
+		scopedSystemAccountID = actor
+	}
+	result, err := s.listStore.ListManagementResourceAuthorizations(ctx, port.ManagementResourceAuthorizationListInput{
+		ActorSystemAccountID:         actor,
+		CanAccessAll:                 canAccessAll,
+		ScopedSystemAccountID:        scopedSystemAccountID,
+		ResourceType:                 resourceType,
+		ResourceID:                   strings.TrimSpace(input.ResourceID),
+		ResourceOwnerSystemAccountID: strings.TrimSpace(input.ResourceOwnerSystemAccountID),
+		GranteeSystemAccountID:       strings.TrimSpace(input.GranteeSystemAccountID),
+		TeamID:                       strings.TrimSpace(input.TeamID),
+		Status:                       status,
+		Direction:                    direction,
+		SourceType:                   sourceType,
+		Keyword:                      keyword,
+		Limit:                        pageSize + 1,
+		Offset:                       (page - 1) * pageSize,
+	})
+	if err != nil {
+		return ListResult{}, err
+	}
+	items := make([]ListItem, 0, len(result.Items))
+	for _, row := range result.Items {
+		items = append(items, listItemFromSummary(row, canManageAuthorizationResourceOwner(row.ResourceOwnerSystemAccountID, canAccessAll, scopedSystemAccountID)))
+	}
+	return ListResult{
+		Items:    items,
+		Total:    authorizationPagedTotalUpperBound(page, pageSize, len(items), result.HasMore),
+		HasMore:  result.HasMore,
+		Page:     page,
+		PageSize: pageSize,
+	}, nil
 }
 
 func (s *Service) Create(ctx context.Context, input CreateInput) (Summary, error) {
@@ -232,6 +387,141 @@ func normalizeGranteeType(value string) string {
 	default:
 		return ""
 	}
+}
+
+func normalizeAuthorizationStatus(value string) string {
+	switch strings.TrimSpace(value) {
+	case "active", "paused", "expired", "revoked", "returned":
+		return strings.TrimSpace(value)
+	default:
+		return ""
+	}
+}
+
+func normalizeAuthorizationDirection(value string) string {
+	switch strings.TrimSpace(value) {
+	case "outbound", "inbound":
+		return strings.TrimSpace(value)
+	default:
+		return ""
+	}
+}
+
+func normalizeAuthorizationSourceType(value string) string {
+	switch strings.TrimSpace(value) {
+	case "manual", "team":
+		return strings.TrimSpace(value)
+	default:
+		return ""
+	}
+}
+
+func isAdminRole(role string) bool {
+	return role == "admin" || role == "super_admin"
+}
+
+func authorizationListPageSize(value int) int {
+	if value <= 0 {
+		return defaultAuthorizationListPageSize
+	}
+	if value > maxAuthorizationListPageSize {
+		return maxAuthorizationListPageSize
+	}
+	return value
+}
+
+func authorizationListPage(value int, pageSize int) int {
+	if value <= 0 {
+		return 1
+	}
+	maxPage := max(1, (maxAuthorizationListWindowRows-1)/max(1, pageSize))
+	if value > maxPage {
+		return maxPage
+	}
+	return value
+}
+
+func authorizationPagedTotalUpperBound(page int, pageSize int, itemCount int, hasMore bool) int {
+	base := (max(1, page)-1)*max(0, pageSize) + itemCount
+	if hasMore {
+		return base + 1
+	}
+	return base
+}
+
+func canManageAuthorizationResourceOwner(ownerSystemAccountID string, canAccessAll bool, scopedSystemAccountID string) bool {
+	if scopedSystemAccountID != "" {
+		return scopedSystemAccountID == ownerSystemAccountID
+	}
+	return canAccessAll
+}
+
+func listItemFromSummary(summary Summary, canManage bool) ListItem {
+	item := ListItem{
+		ID:                             summary.ID,
+		ResourceType:                   summary.ResourceType,
+		ResourceID:                     summary.ResourceID,
+		ResourceName:                   summary.ResourceName,
+		ResourceOwnerSystemAccountID:   summary.ResourceOwnerSystemAccountID,
+		ResourceOwnerSystemAccountName: summary.ResourceOwnerSystemAccountName,
+		GranteeType:                    summary.GranteeType,
+		GranteeSystemAccountID:         summary.GranteeSystemAccountID,
+		GranteeSystemAccountName:       summary.GranteeSystemAccountName,
+		GranteeUsername:                summary.GranteeUsername,
+		GranteeTeamID:                  summary.GranteeTeamID,
+		GranteeTeamName:                summary.GranteeTeamName,
+		Scope:                          summary.Scope,
+		Status:                         summary.Status,
+		Remark:                         summary.Remark,
+		ExpiresAt:                      summary.ExpiresAt,
+		EffectiveSourceType:            summary.EffectiveSourceType,
+		EffectiveSourceTeamID:          summary.EffectiveSourceTeamID,
+		EffectiveSourceTeamName:        summary.EffectiveSourceTeamName,
+		ActivatedAt:                    summary.ActivatedAt,
+		LastSourceChangedAt:            summary.LastSourceChangedAt,
+		LastUsedAt:                     summary.LastUsedAt,
+		CreatedBy:                      summary.CreatedBy,
+		CreatedAt:                      summary.CreatedAt,
+		RevokedBy:                      summary.RevokedBy,
+		RevokedAt:                      summary.RevokedAt,
+		RevokedReason:                  summary.RevokedReason,
+		UpdatedAt:                      summary.UpdatedAt,
+		Permissions: Permissions{
+			CanEdit:      canManage,
+			CanAuthorize: canManage,
+		},
+		SourceSummary: sourceSummary(summary.AuthorizationSources, canManage),
+	}
+	if !canManage {
+		item.EffectiveSourceTeamID = ""
+		item.EffectiveSourceTeamName = ""
+		item.CreatedBy = ""
+		item.RevokedBy = ""
+	}
+	return item
+}
+
+func sourceSummary(sources []port.ManagementResourceAuthorizationSourceSummary, canManage bool) SourceSummary {
+	result := SourceSummary{TeamSources: []TeamSourceItem{}}
+	for _, source := range sources {
+		if source.Status != "active" {
+			continue
+		}
+		result.ActiveSourceCount++
+		if source.SourceType == "manual" {
+			result.HasManual = true
+		}
+		if source.SourceType == "team" {
+			result.HasTeam = true
+			if canManage && strings.TrimSpace(source.SourceTeamID) != "" {
+				result.TeamSources = append(result.TeamSources, TeamSourceItem{
+					SourceTeamID:   source.SourceTeamID,
+					SourceTeamName: source.SourceTeamName,
+				})
+			}
+		}
+	}
+	return result
 }
 
 func parseServerDateTime(value string) (time.Time, error) {

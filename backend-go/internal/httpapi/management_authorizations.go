@@ -31,6 +31,10 @@ type managementAuthorizationCreateService interface {
 	Create(r *http.Request, input managementauthorizations.CreateInput) (managementauthorizations.Summary, error)
 }
 
+type managementAuthorizationListService interface {
+	List(r *http.Request, input managementauthorizations.ListInput) (managementauthorizations.ListResult, error)
+}
+
 type managementAuthorizationReturnService interface {
 	Return(r *http.Request, input managementauthorizations.ReturnInput) (managementauthorizations.Summary, bool, error)
 }
@@ -43,8 +47,20 @@ func (s managementAuthorizationServiceAdapter) Create(r *http.Request, input man
 	return s.service.Create(r.Context(), input)
 }
 
+func (s managementAuthorizationServiceAdapter) List(r *http.Request, input managementauthorizations.ListInput) (managementauthorizations.ListResult, error) {
+	return s.service.List(r.Context(), input)
+}
+
 func (s managementAuthorizationServiceAdapter) Return(r *http.Request, input managementauthorizations.ReturnInput) (managementauthorizations.Summary, bool, error) {
 	return s.service.Return(r.Context(), input)
+}
+
+func NewManagementAuthorizationListHandler(service *managementauthorizations.Service) http.Handler {
+	return newManagementAuthorizationListHandler(managementAuthorizationServiceAdapter{service: service}, managementAuthorizationScopeAdmin)
+}
+
+func NewManagementMyAuthorizationListHandler(service *managementauthorizations.Service) http.Handler {
+	return newManagementAuthorizationListHandler(managementAuthorizationServiceAdapter{service: service}, managementAuthorizationScopeSelf)
 }
 
 func NewManagementAuthorizationCreateHandler(service *managementauthorizations.Service) http.Handler {
@@ -93,6 +109,46 @@ func NewManagementMyAuthorizationReturnHandlerWithOperationLog(service *manageme
 		managementAuthorizationScopeSelf,
 		newManagementOperationLogOptions(opts),
 	)
+}
+
+func newManagementAuthorizationListHandler(service managementAuthorizationListService, scope managementAuthorizationScope) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authContext, ok := ManagementAuthContextFromRequest(r)
+		if !ok || strings.TrimSpace(authContext.SystemAccountID) == "" {
+			writeMessageError(w, http.StatusUnauthorized, "未登录")
+			return
+		}
+		if service == nil {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		if scope == managementAuthorizationScopeAdmin && !managementauth.IsAdminRole(authContext.Role) {
+			writeMessageError(w, http.StatusForbidden, "需要管理员权限")
+			return
+		}
+		scopedSystemAccountID, validScope := managementAuthorizationListScope(authContext, r.URL.Query(), scope)
+		if !validScope {
+			writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
+			return
+		}
+		input, ok := parseManagementAuthorizationListQuery(w, r.URL.Query(), scope)
+		if !ok {
+			return
+		}
+		input.ActorSystemAccountID = authContext.SystemAccountID
+		input.ActorRole = authContext.Role
+		input.ScopedSystemAccountID = scopedSystemAccountID
+		result, err := service.List(r, input)
+		if errors.Is(err, managementauthorizations.ErrAuthorizationListInvalid) {
+			writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
+			return
+		}
+		if err != nil {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		writeData(w, http.StatusOK, result)
+	})
 }
 
 func newManagementAuthorizationCreateHandler(service managementAuthorizationCreateService, scope managementAuthorizationScope, logOptions ...managementOperationLogOptions) http.Handler {
@@ -228,6 +284,17 @@ func managementAuthorizationOwnerScope(authContext managementauth.Context, value
 	}
 }
 
+func managementAuthorizationListScope(authContext managementauth.Context, values url.Values, scope managementAuthorizationScope) (string, bool) {
+	switch scope {
+	case managementAuthorizationScopeSelf:
+		return authContext.SystemAccountID, true
+	case managementAuthorizationScopeAdmin:
+		return managementAuthorizationQuerySystemAccountID(values)
+	default:
+		return "", false
+	}
+}
+
 func managementAuthorizationGranteeScope(authContext managementauth.Context, values url.Values, scope managementAuthorizationScope) (string, bool) {
 	switch scope {
 	case managementAuthorizationScopeSelf:
@@ -265,6 +332,105 @@ func managementAuthorizationQuerySystemAccountID(values url.Values) (string, boo
 		}
 	}
 	return selected, true
+}
+
+func parseManagementAuthorizationListQuery(w http.ResponseWriter, values url.Values, scope managementAuthorizationScope) (managementauthorizations.ListInput, bool) {
+	resourceType, err := optionalQueryEnum(values, "resourceType", []string{"account", "group"})
+	if err != nil {
+		writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
+		return managementauthorizations.ListInput{}, false
+	}
+	status, err := optionalQueryEnum(values, "status", []string{"all", "active", "paused", "expired", "revoked", "returned"})
+	if err != nil {
+		writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
+		return managementauthorizations.ListInput{}, false
+	}
+	direction, err := optionalQueryEnum(values, "direction", []string{"all", "outbound", "inbound"})
+	if err != nil {
+		writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
+		return managementauthorizations.ListInput{}, false
+	}
+	sourceType, err := optionalQueryEnum(values, "sourceType", []string{"all", "manual", "team"})
+	if err != nil {
+		writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
+		return managementauthorizations.ListInput{}, false
+	}
+	keyword, err := optionalQueryString(values, "keyword", 0, 120)
+	if err != nil {
+		writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
+		return managementauthorizations.ListInput{}, false
+	}
+	resourceID, err := optionalQueryString(values, "resourceId", 1, 160)
+	if err != nil {
+		writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
+		return managementauthorizations.ListInput{}, false
+	}
+	ownerID, err := optionalQueryString(values, "resourceOwnerSystemAccountId", 1, 160)
+	if err != nil {
+		writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
+		return managementauthorizations.ListInput{}, false
+	}
+	granteeID, err := optionalQueryString(values, "granteeSystemAccountId", 1, 160)
+	if err != nil {
+		writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
+		return managementauthorizations.ListInput{}, false
+	}
+	teamID, err := optionalQueryString(values, "teamId", 1, 160)
+	if err != nil {
+		writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
+		return managementauthorizations.ListInput{}, false
+	}
+	page, err := optionalQueryInt(values, "page", 1, 0)
+	if err != nil {
+		writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
+		return managementauthorizations.ListInput{}, false
+	}
+	pageSize, err := optionalQueryInt(values, "pageSize", 1, 500)
+	if err != nil {
+		writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
+		return managementauthorizations.ListInput{}, false
+	}
+	if !validateManagementAuthorizationListDate(values, "startDate", w) || !validateManagementAuthorizationListDate(values, "endDate", w) {
+		return managementauthorizations.ListInput{}, false
+	}
+	if status == "all" {
+		status = ""
+	}
+	if sourceType == "all" {
+		sourceType = ""
+	}
+	if direction == "all" || scope == managementAuthorizationScopeAdmin {
+		direction = ""
+	}
+	return managementauthorizations.ListInput{
+		ResourceType:                 resourceType,
+		ResourceID:                   resourceID,
+		ResourceOwnerSystemAccountID: ownerID,
+		GranteeSystemAccountID:       granteeID,
+		TeamID:                       teamID,
+		Status:                       status,
+		Direction:                    direction,
+		SourceType:                   sourceType,
+		Keyword:                      keyword,
+		Page:                         page,
+		PageSize:                     pageSize,
+	}, true
+}
+
+func validateManagementAuthorizationListDate(values url.Values, key string, w http.ResponseWriter) bool {
+	value, err := optionalQueryString(values, key, 1, 10)
+	if err != nil {
+		writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
+		return false
+	}
+	if value == "" {
+		return true
+	}
+	if _, err := time.Parse("2006-01-02", value); err != nil {
+		writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
+		return false
+	}
+	return true
 }
 
 type managementAuthorizationCreatePayload struct {

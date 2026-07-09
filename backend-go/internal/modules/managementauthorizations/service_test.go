@@ -304,6 +304,105 @@ func TestServiceReturnValidatesInputAndSkipsInvalidationWhenNotFound(t *testing.
 	}
 }
 
+func TestServiceListNormalizesScopeAndRedactsNonOwnerSourceDetails(t *testing.T) {
+	createdAt := time.Date(2026, 7, 9, 10, 30, 0, 0, time.UTC)
+	store := &authorizationListStoreStub{
+		result: port.ManagementResourceAuthorizationListResult{
+			Items: []port.ManagementResourceAuthorizationSummary{{
+				ID:                           "rauthgrant_team",
+				ResourceType:                 "account",
+				ResourceID:                   "acct_main",
+				ResourceName:                 "主账号",
+				ResourceOwnerSystemAccountID: "sys_owner",
+				GranteeType:                  "team",
+				GranteeTeamID:                "team_ops",
+				GranteeTeamName:              "运维团队",
+				Scope:                        "use",
+				Status:                       "active",
+				EffectiveSourceType:          "team",
+				EffectiveSourceTeamID:        "team_ops",
+				EffectiveSourceTeamName:      "运维团队",
+				AuthorizationSources: []port.ManagementResourceAuthorizationSourceSummary{{
+					ID:             "rauthgrant_team",
+					SourceType:     "team",
+					SourceTeamID:   "team_ops",
+					SourceTeamName: "运维团队",
+					Status:         "active",
+					CreatedAt:      createdAt,
+					UpdatedAt:      createdAt,
+				}},
+				CreatedBy: "sys_owner",
+				CreatedAt: createdAt,
+				UpdatedAt: createdAt,
+			}},
+			HasMore: true,
+		},
+	}
+	service := NewServiceWithOptions(ServiceOptions{ListStore: store})
+
+	got, err := service.List(context.Background(), ListInput{
+		ActorSystemAccountID:  " sys_grantee ",
+		ActorRole:             "user",
+		ScopedSystemAccountID: "sys_other",
+		ResourceType:          " account ",
+		Status:                "active",
+		Direction:             "inbound",
+		SourceType:            "team",
+		Keyword:               "  主  ",
+		Page:                  2,
+		PageSize:              1,
+	})
+
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if !store.called ||
+		store.input.ActorSystemAccountID != "sys_grantee" ||
+		store.input.ScopedSystemAccountID != "sys_grantee" ||
+		store.input.CanAccessAll ||
+		store.input.ResourceType != "account" ||
+		store.input.Status != "active" ||
+		store.input.Direction != "inbound" ||
+		store.input.SourceType != "team" ||
+		store.input.Keyword != "主" ||
+		store.input.Limit != 2 ||
+		store.input.Offset != 1 {
+		t.Fatalf("store input = %+v", store.input)
+	}
+	if got.Page != 2 || got.PageSize != 1 || got.Total != 3 || !got.HasMore || len(got.Items) != 1 {
+		t.Fatalf("list result = %+v", got)
+	}
+	item := got.Items[0]
+	if item.Permissions.CanEdit || item.Permissions.CanAuthorize ||
+		item.EffectiveSourceTeamID != "" ||
+		item.EffectiveSourceTeamName != "" ||
+		item.CreatedBy != "" {
+		t.Fatalf("non-owner item was not redacted: %+v", item)
+	}
+	if item.SourceSummary.ActiveSourceCount != 1 ||
+		!item.SourceSummary.HasTeam ||
+		len(item.SourceSummary.TeamSources) != 0 {
+		t.Fatalf("source summary = %+v", item.SourceSummary)
+	}
+}
+
+func TestServiceListValidatesInput(t *testing.T) {
+	service := NewServiceWithOptions(ServiceOptions{ListStore: &authorizationListStoreStub{}})
+	longKeyword := strings.Repeat("字", 121)
+	for _, input := range []ListInput{
+		{ActorSystemAccountID: "", ResourceType: "account"},
+		{ActorSystemAccountID: "sys_actor", ResourceType: "invalid"},
+		{ActorSystemAccountID: "sys_actor", Status: "deleted"},
+		{ActorSystemAccountID: "sys_actor", Direction: "sideways"},
+		{ActorSystemAccountID: "sys_actor", SourceType: "api"},
+		{ActorSystemAccountID: "sys_actor", Keyword: longKeyword},
+	} {
+		if _, err := service.List(context.Background(), input); !errors.Is(err, ErrAuthorizationListInvalid) {
+			t.Fatalf("List(%+v) error = %v, want invalid input", input, err)
+		}
+	}
+}
+
 type authorizationCreateStoreStub struct {
 	called bool
 	input  port.ManagementResourceAuthorizationCreateInput
@@ -337,6 +436,22 @@ func (s *authorizationReturnStoreStub) ReturnManagementResourceAuthorizationForG
 	return s.result, s.found, nil
 }
 
+type authorizationListStoreStub struct {
+	called bool
+	input  port.ManagementResourceAuthorizationListInput
+	result port.ManagementResourceAuthorizationListResult
+	err    error
+}
+
+func (s *authorizationListStoreStub) ListManagementResourceAuthorizations(_ context.Context, input port.ManagementResourceAuthorizationListInput) (port.ManagementResourceAuthorizationListResult, error) {
+	s.called = true
+	s.input = input
+	if s.err != nil {
+		return port.ManagementResourceAuthorizationListResult{}, s.err
+	}
+	return s.result, nil
+}
+
 type authorizationInvalidatorStub struct {
 	calls  int
 	reason string
@@ -350,5 +465,6 @@ func (s *authorizationInvalidatorStub) InvalidateAuthorizationChanged(_ context.
 }
 
 var _ port.ManagementResourceAuthorizationCreator = (*authorizationCreateStoreStub)(nil)
+var _ port.ManagementResourceAuthorizationLister = (*authorizationListStoreStub)(nil)
 var _ port.ManagementResourceAuthorizationReturner = (*authorizationReturnStoreStub)(nil)
 var _ AuthorizationInvalidator = (*authorizationInvalidatorStub)(nil)

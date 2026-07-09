@@ -43,22 +43,22 @@
 | `W1b-外部维护公开接口迁移记录.md` | `/__aipublic__` 外部维护接口契约、Go 迁移范围、Node 对照命令和删除门禁 |
 | `W2-管理端只读辅助接口迁移记录.md` | 管理端只读辅助接口与账号标签只读 / 未绑定删除 / 独立 PATCH 契约、Go 当前实现范围、权限边界、系统账户轻量下拉、authorization grantee accounts / grantee teams / grantee groups、分组授权组只读 union、账户授权账户只读 union、主账户标签写路径 / 完整 summary / operation log 缺口和删除门禁 |
 | `W3-登录与系统账户迁移记录.md` | 登录、当前用户、会话、登出、改密、验证码和系统账户写接口迁移记录；当前固定 `GET /auth/captcha` 验证码发放 / 校验基础、`POST /auth/login` 登录 / session 创建小切片、`GET /auth/me` 只读切片、`PATCH /auth/me` 当前用户资料更新切片、`POST /auth/change-password` 当前用户改密切片、`POST /auth/logout` 当前会话撤销切片、`GET /auth/sessions` 当前用户会话列表、`DELETE /auth/sessions/{id}` 当前用户单条会话撤销、`POST /system-accounts` 创建切片、`PATCH /system-accounts/{id}` 完整 mixed partial update 和后续拆分门禁 |
-| `W4-团队与统一授权迁移记录.md` | 团队与统一授权迁移记录；当前固定团队列表 / 详情读接口、`POST /system-teams` 团队创建、`PATCH /system-teams/{id}` 团队更新、`POST /system-teams/{id}/members` 成员新增、`DELETE /system-teams/{id}/members/{memberId}` 成员移除、`POST /authorizations` 和 `POST /my-authorizations` 授权创建、`DELETE /authorizations/{id}/return` 和 `DELETE /my-authorizations/{id}/return` 授权归还 Go opt-in 灰度能力、授权来源 / grant / 额度窗口 / 统计脏标记 PostgreSQL schema 基线和授权缓存失效，后续继续拆授权列表 / 更新 / 回收 / 到期和删除门禁 |
+| `W4-团队与统一授权迁移记录.md` | 团队与统一授权迁移记录；当前固定团队列表 / 详情读接口、`POST /system-teams` 团队创建、`PATCH /system-teams/{id}` 团队更新、`POST /system-teams/{id}/members` 成员新增、`DELETE /system-teams/{id}/members/{memberId}` 成员移除、`GET /authorizations` 和 `GET /my-authorizations` 授权列表、`POST /authorizations` 和 `POST /my-authorizations` 授权创建、`DELETE /authorizations/{id}/return` 和 `DELETE /my-authorizations/{id}/return` 授权归还 Go opt-in 灰度能力、授权来源 / grant / 额度窗口 / 统计脏标记 PostgreSQL schema 基线和授权缓存失效，后续继续拆授权详情 / usage、更新 / 回收 / 到期和删除门禁 |
 | `测试与验收策略.md` | 单模块、系统、网关、性能、安全和发布验收 |
 | `开发构建部署调整.md` | 开发环境、命令、包结构、部署脚本和平台差异 |
 | `迁移文档示例.md` | 后续新增单模块迁移记录时的参考格式 |
 
 ## 4. 维护规则
 
-- 任何 Go 迁移任务开始前，先确认本目录和 `docs/plans/计划-0081-Node转Go渐进减法迁移.md`。
+- 任何 Go 迁移任务开始前，先确认本目录和 `../plans/计划-0081-Node转Go渐进减法迁移.md`。
 - 每迁移一个模块，必须更新 [模块迁移顺序与减法清单](模块迁移顺序与减法清单.md) 的状态、Node 删除证据和测试结果。
 - 影响 Go 目录结构、并发模型、进程模型或存储 owner 时，更新 [Go 后端架构基线](Go后端架构基线.md)。
 - 影响 Go 框架、日志、配置、SQL、job、测试、观测、安全扫描或外部依赖时，先更新 [Go 技术选型与依赖基线](Go技术选型与依赖基线.md)，再改代码。
 - 影响系统指标、Prometheus、pprof、worker lag、队列状态、PG/Redis/Asynq 观测或前端系统监控契约时，先更新 [Go 迁移指标与观测规划](Go迁移指标与观测规划.md) 和 [Go 系统指标字段迁移清单](Go系统指标字段迁移清单.md)，不能把 Node `eventLoopLagMs` / `db-service` 字段模拟成 Go 指标。
 - 影响 PostgreSQL、Redis、SQLite 移除、数据导入导出或存储部署时，更新 [存储目标与 SQLite 移除](存储目标与SQLite移除.md)。
-- 影响本地启动、安装、构建、发布包、Docker、服务化或回滚方式时，更新 [开发构建部署调整](开发构建部署调整.md)，并同步 `docs/develop/` 或 `docs/deploy/` 对应当前手册。
-- 影响公开 API、管理 API、权限、安全、统计、存储或网关语义时，同步更新 `docs/functions/` 下对应功能文档。
-- 影响当前真实架构事实时，同步更新 `docs/architecture/架构总览.md` 和 `docs/architecture/backend/README.md`。
+- 影响本地启动、安装、构建、发布包、Docker、服务化或回滚方式时，更新 [开发构建部署调整](开发构建部署调整.md)，并同步 `../develop/` 或 `../deploy/` 对应当前手册。
+- 影响公开 API、管理 API、权限、安全、统计、存储或网关语义时，同步更新 `../functions/` 下对应功能文档。
+- 影响当前真实架构事实时，同步更新 `../architecture/架构总览.md` 和 `../architecture/backend/README.md`。
 
 ## 5. 边界说明
 
