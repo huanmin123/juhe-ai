@@ -25,6 +25,10 @@ const (
 	defaultAuthorizationListPageSize          = 50
 	maxAuthorizationListPageSize              = 500
 	maxAuthorizationListWindowRows            = 1001
+	defaultAuthorizationUsagePageSize         = 20
+	maxAuthorizationUsagePageSize             = 200
+	maxAuthorizationUsageListWindowRows       = 1001
+	maxAuthorizationUsageRangeDays            = 31
 	maxRequestQuotaHourlyWindowHours          = 24 * 30
 	maxRequestQuotaAmountUSD                  = 9_007_199_254_740_991
 	quotaAmountPrecision                int64 = 1_000_000
@@ -40,6 +44,7 @@ var (
 	ErrAuthorizationUpdateInvalid = errors.New("management authorization update invalid")
 	ErrAuthorizationReturnInvalid = errors.New("management authorization return invalid")
 	ErrAuthorizationRevokeInvalid = errors.New("management authorization revoke invalid")
+	ErrAuthorizationUsageInvalid  = errors.New("management authorization usage invalid")
 )
 
 type Service struct {
@@ -49,6 +54,7 @@ type Service struct {
 	updateStore              port.ManagementResourceAuthorizationUpdater
 	returnStore              port.ManagementResourceAuthorizationReturner
 	revokeStore              port.ManagementResourceAuthorizationRevoker
+	usageStore               port.ManagementAuthorizationUsageOverviewReader
 	now                      func() time.Time
 	secret                   string
 	authorizationInvalidator AuthorizationInvalidator
@@ -65,6 +71,7 @@ type ServiceOptions struct {
 	UpdateStore              port.ManagementResourceAuthorizationUpdater
 	ReturnStore              port.ManagementResourceAuthorizationReturner
 	RevokeStore              port.ManagementResourceAuthorizationRevoker
+	UsageStore               port.ManagementAuthorizationUsageOverviewReader
 	Now                      func() time.Time
 	Secret                   string
 	AuthorizationInvalidator AuthorizationInvalidator
@@ -93,6 +100,42 @@ type ListResult struct {
 	HasMore  bool       `json:"hasMore"`
 	Page     int        `json:"page"`
 	PageSize int        `json:"pageSize"`
+}
+
+type UsageOverviewInput struct {
+	ActorSystemAccountID   string
+	ActorRole              string
+	ScopedSystemAccountID  string
+	ResourceType           string
+	ResourceID             string
+	TeamID                 string
+	GranteeSystemAccountID string
+	StartDate              string
+	EndDate                string
+	Page                   int
+	PageSize               int
+}
+
+type TeamUsageOverview struct {
+	Range     port.ManagementAccountUsageStatsRange      `json:"range"`
+	Summary   port.ManagementAccountUsageSummary         `json:"summary"`
+	Rows      []port.ManagementAuthorizationTeamUsageRow `json:"rows"`
+	TeamCount int                                        `json:"teamCount"`
+	Total     int                                        `json:"total"`
+	Page      int                                        `json:"page"`
+	PageSize  int                                        `json:"pageSize"`
+	HasMore   bool                                       `json:"hasMore"`
+}
+
+type UserUsageOverview struct {
+	Range     port.ManagementAccountUsageStatsRange      `json:"range"`
+	Summary   port.ManagementAccountUsageSummary         `json:"summary"`
+	Rows      []port.ManagementAuthorizationUserUsageRow `json:"rows"`
+	UserCount int                                        `json:"userCount"`
+	Total     int                                        `json:"total"`
+	Page      int                                        `json:"page"`
+	PageSize  int                                        `json:"pageSize"`
+	HasMore   bool                                       `json:"hasMore"`
 }
 
 type Detail struct {
@@ -241,6 +284,12 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 			revokeStore = candidate
 		}
 	}
+	usageStore := opts.UsageStore
+	if usageStore == nil {
+		if candidate, ok := opts.Store.(port.ManagementAuthorizationUsageOverviewReader); ok {
+			usageStore = candidate
+		}
+	}
 	return &Service{
 		listStore:                listStore,
 		getStore:                 getStore,
@@ -248,6 +297,7 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 		updateStore:              updateStore,
 		returnStore:              returnStore,
 		revokeStore:              revokeStore,
+		usageStore:               usageStore,
 		now:                      now,
 		secret:                   opts.Secret,
 		authorizationInvalidator: opts.AuthorizationInvalidator,
@@ -319,6 +369,91 @@ func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error)
 		Page:     page,
 		PageSize: pageSize,
 	}, nil
+}
+
+func (s *Service) TeamUsageOverview(ctx context.Context, input UsageOverviewInput) (TeamUsageOverview, error) {
+	if s.usageStore == nil {
+		return TeamUsageOverview{}, fmt.Errorf("management authorization usage overview reader is required")
+	}
+	storeInput, usageRange, page, pageSize, err := s.authorizationUsageOverviewStoreInput(input)
+	if err != nil {
+		return TeamUsageOverview{}, err
+	}
+	result, err := s.usageStore.ListManagementAuthorizationTeamUsageOverview(ctx, storeInput)
+	if err != nil {
+		return TeamUsageOverview{}, err
+	}
+	total := authorizationPagedTotalUpperBound(page, pageSize, len(result.Rows), result.HasMore)
+	return TeamUsageOverview{
+		Range:     usageRange,
+		Summary:   result.Summary,
+		Rows:      result.Rows,
+		TeamCount: total,
+		Total:     total,
+		Page:      page,
+		PageSize:  pageSize,
+		HasMore:   result.HasMore,
+	}, nil
+}
+
+func (s *Service) UserUsageOverview(ctx context.Context, input UsageOverviewInput) (UserUsageOverview, error) {
+	if s.usageStore == nil {
+		return UserUsageOverview{}, fmt.Errorf("management authorization usage overview reader is required")
+	}
+	storeInput, usageRange, page, pageSize, err := s.authorizationUsageOverviewStoreInput(input)
+	if err != nil {
+		return UserUsageOverview{}, err
+	}
+	result, err := s.usageStore.ListManagementAuthorizationUserUsageOverview(ctx, storeInput)
+	if err != nil {
+		return UserUsageOverview{}, err
+	}
+	total := authorizationPagedTotalUpperBound(page, pageSize, len(result.Rows), result.HasMore)
+	return UserUsageOverview{
+		Range:     usageRange,
+		Summary:   result.Summary,
+		Rows:      result.Rows,
+		UserCount: total,
+		Total:     total,
+		Page:      page,
+		PageSize:  pageSize,
+		HasMore:   result.HasMore,
+	}, nil
+}
+
+func (s *Service) authorizationUsageOverviewStoreInput(input UsageOverviewInput) (port.ManagementAuthorizationUsageOverviewInput, port.ManagementAccountUsageStatsRange, int, int, error) {
+	actor := strings.TrimSpace(input.ActorSystemAccountID)
+	if actor == "" {
+		return port.ManagementAuthorizationUsageOverviewInput{}, port.ManagementAccountUsageStatsRange{}, 0, 0, ErrAuthorizationUsageInvalid
+	}
+	resourceType := normalizeResourceType(input.ResourceType)
+	if strings.TrimSpace(input.ResourceType) != "" && resourceType == "" {
+		return port.ManagementAuthorizationUsageOverviewInput{}, port.ManagementAccountUsageStatsRange{}, 0, 0, ErrAuthorizationUsageInvalid
+	}
+	pageSize := authorizationUsagePageSize(input.PageSize)
+	page := authorizationUsagePage(input.Page, pageSize)
+	usageRange, err := s.normalizeAuthorizationUsageRange(input.StartDate, input.EndDate)
+	if err != nil {
+		return port.ManagementAuthorizationUsageOverviewInput{}, port.ManagementAccountUsageStatsRange{}, 0, 0, err
+	}
+	canAccessAll := isAdminRole(input.ActorRole)
+	scopedSystemAccountID := strings.TrimSpace(input.ScopedSystemAccountID)
+	if !canAccessAll {
+		scopedSystemAccountID = actor
+	}
+	return port.ManagementAuthorizationUsageOverviewInput{
+		ActorSystemAccountID:   actor,
+		CanAccessAll:           canAccessAll,
+		ScopedSystemAccountID:  scopedSystemAccountID,
+		ResourceType:           resourceType,
+		ResourceID:             strings.TrimSpace(input.ResourceID),
+		TeamID:                 strings.TrimSpace(input.TeamID),
+		GranteeSystemAccountID: strings.TrimSpace(input.GranteeSystemAccountID),
+		StartDate:              usageRange.StartDate,
+		EndDate:                usageRange.EndDate,
+		Limit:                  pageSize + 1,
+		Offset:                 (page - 1) * pageSize,
+	}, usageRange, page, pageSize, nil
 }
 
 func (s *Service) Get(ctx context.Context, input GetInput) (Detail, bool, error) {
@@ -643,6 +778,89 @@ func authorizationListPage(value int, pageSize int) int {
 		return maxPage
 	}
 	return value
+}
+
+func authorizationUsagePageSize(value int) int {
+	if value <= 0 {
+		return defaultAuthorizationUsagePageSize
+	}
+	if value > maxAuthorizationUsagePageSize {
+		return maxAuthorizationUsagePageSize
+	}
+	return value
+}
+
+func authorizationUsagePage(value int, pageSize int) int {
+	if value <= 0 {
+		return 1
+	}
+	maxPage := max(1, (maxAuthorizationUsageListWindowRows-1)/max(1, pageSize))
+	if value > maxPage {
+		return maxPage
+	}
+	return value
+}
+
+func (s *Service) normalizeAuthorizationUsageRange(startDate string, endDate string) (port.ManagementAccountUsageStatsRange, error) {
+	todayText := s.now().In(time.Local).Format("2006-01-02")
+	today, _ := time.Parse("2006-01-02", todayText)
+	earliestSupported := today.AddDate(0, 0, -(maxAuthorizationUsageRangeDays - 1))
+	end, err := parseOptionalDateKey(endDate)
+	if err != nil {
+		return port.ManagementAccountUsageStatsRange{}, ErrAuthorizationUsageInvalid
+	}
+	if end == nil {
+		end = &today
+	}
+	endValue := *end
+	if endValue.After(today) {
+		endValue = today
+	}
+	if endValue.Before(earliestSupported) {
+		endValue = earliestSupported
+	}
+
+	start, err := parseOptionalDateKey(startDate)
+	if err != nil {
+		return port.ManagementAccountUsageStatsRange{}, ErrAuthorizationUsageInvalid
+	}
+	if start == nil {
+		start = &today
+	}
+	startValue := *start
+	if startValue.After(today) {
+		startValue = today
+	}
+	if startValue.Before(earliestSupported) {
+		startValue = earliestSupported
+	}
+	if startValue.After(endValue) {
+		startValue = endValue
+	}
+	earliestStart := endValue.AddDate(0, 0, -(maxAuthorizationUsageRangeDays - 1))
+	if startValue.Before(earliestStart) {
+		startValue = earliestStart
+	}
+
+	days := int(endValue.Sub(startValue).Hours()/24) + 1
+	return port.ManagementAccountUsageStatsRange{
+		StartDate: startValue.Format("2006-01-02"),
+		EndDate:   endValue.Format("2006-01-02"),
+		Days:      days,
+		MaxDays:   maxAuthorizationUsageRangeDays,
+	}, nil
+}
+
+func parseOptionalDateKey(value string) (*time.Time, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil, nil
+	}
+	parsed, err := time.Parse("2006-01-02", trimmed)
+	if err != nil {
+		return nil, err
+	}
+	return &parsed, nil
 }
 
 func authorizationPagedTotalUpperBound(page int, pageSize int, itemCount int, hasMore bool) int {

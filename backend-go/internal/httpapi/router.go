@@ -15,73 +15,77 @@ import (
 )
 
 type RouterOptions struct {
-	Config                                          config.Config
-	Logger                                          *slog.Logger
-	PublicSettingsService                           *publicsettings.Service
-	SystemAPIIPRateLimitReader                      port.SystemAPIIPRateLimitReader
-	SystemAPIIPReadRateLimiter                      SystemAPIIPReadRateLimiter
-	PublicAPIHandler                                http.Handler
-	ManagementAPIAuthMiddleware                     func(http.Handler) http.Handler
-	ManagementAPIAuthTouchMiddleware                func(http.Handler) http.Handler
-	ManagementCaptchaHandler                        http.Handler
-	ManagementLoginHandler                          http.Handler
-	ManagementCurrentUserHandler                    http.Handler
-	ManagementProfileUpdateHandler                  http.Handler
-	ManagementPasswordChangeHandler                 http.Handler
-	ManagementLogoutHandler                         http.Handler
-	ManagementSessionListHandler                    http.Handler
-	ManagementSessionRevokeHandler                  http.Handler
-	ManagementProxyOptionsHandler                   http.Handler
-	ManagementSystemAccountsHandler                 http.Handler
-	ManagementSystemAccountOptionsHandler           http.Handler
-	ManagementSystemAccountPatchHandler             http.Handler
-	ManagementSystemAccountCreateHandler            http.Handler
-	ManagementSystemTeamsHandler                    http.Handler
-	ManagementMySystemTeamsHandler                  http.Handler
-	ManagementSystemTeamCreateHandler               http.Handler
-	ManagementSystemTeamPatchHandler                http.Handler
-	ManagementSystemTeamMembersAddHandler           http.Handler
-	ManagementSystemTeamMemberDeleteHandler         http.Handler
-	ManagementAuthorizationGranteeAccountsHandler   http.Handler
-	ManagementMyAuthorizationGranteeAccountsHandler http.Handler
-	ManagementAuthorizationGranteeTeamsHandler      http.Handler
-	ManagementMyAuthorizationGranteeTeamsHandler    http.Handler
-	ManagementAuthorizationGranteeGroupsHandler     http.Handler
-	ManagementMyAuthorizationGranteeGroupsHandler   http.Handler
-	ManagementAuthorizationListHandler              http.Handler
-	ManagementMyAuthorizationListHandler            http.Handler
-	ManagementAuthorizationDetailHandler            http.Handler
-	ManagementMyAuthorizationDetailHandler          http.Handler
-	ManagementAuthorizationCreateHandler            http.Handler
-	ManagementMyAuthorizationCreateHandler          http.Handler
-	ManagementAuthorizationUpdateHandler            http.Handler
-	ManagementMyAuthorizationUpdateHandler          http.Handler
-	ManagementAuthorizationExpireUpdateHandler      http.Handler
-	ManagementMyAuthorizationExpireUpdateHandler    http.Handler
-	ManagementAuthorizationReturnHandler            http.Handler
-	ManagementMyAuthorizationReturnHandler          http.Handler
-	ManagementAuthorizationRevokeHandler            http.Handler
-	ManagementMyAuthorizationRevokeHandler          http.Handler
-	ManagementProviderOptionsHandler                http.Handler
-	ManagementProviderModelOptionsHandler           http.Handler
-	ManagementProviderModelsHandler                 http.Handler
-	ManagementProviderDefaultTestModelHandler       http.Handler
-	ManagementRouteStrategyOptionsHandler           http.Handler
-	ManagementMyRouteStrategyOptionsHandler         http.Handler
-	ManagementGroupOptionsHandler                   http.Handler
-	ManagementMyGroupOptionsHandler                 http.Handler
-	ManagementGroupAccountOptionsHandler            http.Handler
-	ManagementMyGroupAccountOptionsHandler          http.Handler
-	ManagementAccountOptionsHandler                 http.Handler
-	ManagementMyAccountOptionsHandler               http.Handler
-	ManagementAccountTagsHandler                    http.Handler
-	ManagementMyAccountTagsHandler                  http.Handler
-	ManagementAccountTagDeleteHandler               http.Handler
-	ManagementMyAccountTagDeleteHandler             http.Handler
-	ManagementAccountTagUpdateHandler               http.Handler
-	ManagementMyAccountTagUpdateHandler             http.Handler
-	ManagementOperationLogsHandler                  http.Handler
-	ManagementMyOperationLogsHandler                http.Handler
+	Config                                            config.Config
+	Logger                                            *slog.Logger
+	PublicSettingsService                             *publicsettings.Service
+	SystemAPIIPRateLimitReader                        port.SystemAPIIPRateLimitReader
+	SystemAPIIPReadRateLimiter                        SystemAPIIPReadRateLimiter
+	PublicAPIHandler                                  http.Handler
+	ManagementAPIAuthMiddleware                       func(http.Handler) http.Handler
+	ManagementAPIAuthTouchMiddleware                  func(http.Handler) http.Handler
+	ManagementCaptchaHandler                          http.Handler
+	ManagementLoginHandler                            http.Handler
+	ManagementCurrentUserHandler                      http.Handler
+	ManagementProfileUpdateHandler                    http.Handler
+	ManagementPasswordChangeHandler                   http.Handler
+	ManagementLogoutHandler                           http.Handler
+	ManagementSessionListHandler                      http.Handler
+	ManagementSessionRevokeHandler                    http.Handler
+	ManagementProxyOptionsHandler                     http.Handler
+	ManagementSystemAccountsHandler                   http.Handler
+	ManagementSystemAccountOptionsHandler             http.Handler
+	ManagementSystemAccountPatchHandler               http.Handler
+	ManagementSystemAccountCreateHandler              http.Handler
+	ManagementSystemTeamsHandler                      http.Handler
+	ManagementMySystemTeamsHandler                    http.Handler
+	ManagementSystemTeamCreateHandler                 http.Handler
+	ManagementSystemTeamPatchHandler                  http.Handler
+	ManagementSystemTeamMembersAddHandler             http.Handler
+	ManagementSystemTeamMemberDeleteHandler           http.Handler
+	ManagementAuthorizationGranteeAccountsHandler     http.Handler
+	ManagementMyAuthorizationGranteeAccountsHandler   http.Handler
+	ManagementAuthorizationGranteeTeamsHandler        http.Handler
+	ManagementMyAuthorizationGranteeTeamsHandler      http.Handler
+	ManagementAuthorizationGranteeGroupsHandler       http.Handler
+	ManagementMyAuthorizationGranteeGroupsHandler     http.Handler
+	ManagementAuthorizationListHandler                http.Handler
+	ManagementMyAuthorizationListHandler              http.Handler
+	ManagementAuthorizationTeamUsageOverviewHandler   http.Handler
+	ManagementMyAuthorizationTeamUsageOverviewHandler http.Handler
+	ManagementAuthorizationUserUsageOverviewHandler   http.Handler
+	ManagementMyAuthorizationUserUsageOverviewHandler http.Handler
+	ManagementAuthorizationDetailHandler              http.Handler
+	ManagementMyAuthorizationDetailHandler            http.Handler
+	ManagementAuthorizationCreateHandler              http.Handler
+	ManagementMyAuthorizationCreateHandler            http.Handler
+	ManagementAuthorizationUpdateHandler              http.Handler
+	ManagementMyAuthorizationUpdateHandler            http.Handler
+	ManagementAuthorizationExpireUpdateHandler        http.Handler
+	ManagementMyAuthorizationExpireUpdateHandler      http.Handler
+	ManagementAuthorizationReturnHandler              http.Handler
+	ManagementMyAuthorizationReturnHandler            http.Handler
+	ManagementAuthorizationRevokeHandler              http.Handler
+	ManagementMyAuthorizationRevokeHandler            http.Handler
+	ManagementProviderOptionsHandler                  http.Handler
+	ManagementProviderModelOptionsHandler             http.Handler
+	ManagementProviderModelsHandler                   http.Handler
+	ManagementProviderDefaultTestModelHandler         http.Handler
+	ManagementRouteStrategyOptionsHandler             http.Handler
+	ManagementMyRouteStrategyOptionsHandler           http.Handler
+	ManagementGroupOptionsHandler                     http.Handler
+	ManagementMyGroupOptionsHandler                   http.Handler
+	ManagementGroupAccountOptionsHandler              http.Handler
+	ManagementMyGroupAccountOptionsHandler            http.Handler
+	ManagementAccountOptionsHandler                   http.Handler
+	ManagementMyAccountOptionsHandler                 http.Handler
+	ManagementAccountTagsHandler                      http.Handler
+	ManagementMyAccountTagsHandler                    http.Handler
+	ManagementAccountTagDeleteHandler                 http.Handler
+	ManagementMyAccountTagDeleteHandler               http.Handler
+	ManagementAccountTagUpdateHandler                 http.Handler
+	ManagementMyAccountTagUpdateHandler               http.Handler
+	ManagementOperationLogsHandler                    http.Handler
+	ManagementMyOperationLogsHandler                  http.Handler
 }
 
 func NewRouter(opts RouterOptions) http.Handler {
@@ -142,6 +146,10 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyAuthorizationGranteeGroupsHandler == nil &&
 				opts.ManagementAuthorizationListHandler == nil &&
 				opts.ManagementMyAuthorizationListHandler == nil &&
+				opts.ManagementAuthorizationTeamUsageOverviewHandler == nil &&
+				opts.ManagementMyAuthorizationTeamUsageOverviewHandler == nil &&
+				opts.ManagementAuthorizationUserUsageOverviewHandler == nil &&
+				opts.ManagementMyAuthorizationUserUsageOverviewHandler == nil &&
 				opts.ManagementAuthorizationDetailHandler == nil &&
 				opts.ManagementMyAuthorizationDetailHandler == nil &&
 				opts.ManagementAuthorizationCreateHandler == nil &&
@@ -258,6 +266,18 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementMyAuthorizationListHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/my-authorizations", opts.ManagementMyAuthorizationListHandler.ServeHTTP)
+			}
+			if opts.ManagementAuthorizationTeamUsageOverviewHandler != nil {
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/authorizations/usage/team-details", opts.ManagementAuthorizationTeamUsageOverviewHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAuthorizationTeamUsageOverviewHandler != nil {
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/my-authorizations/usage/team-details", opts.ManagementMyAuthorizationTeamUsageOverviewHandler.ServeHTTP)
+			}
+			if opts.ManagementAuthorizationUserUsageOverviewHandler != nil {
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/authorizations/usage/user-details", opts.ManagementAuthorizationUserUsageOverviewHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAuthorizationUserUsageOverviewHandler != nil {
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/my-authorizations/usage/user-details", opts.ManagementMyAuthorizationUserUsageOverviewHandler.ServeHTTP)
 			}
 			if opts.ManagementAuthorizationDetailHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/authorizations/{id}", opts.ManagementAuthorizationDetailHandler.ServeHTTP)

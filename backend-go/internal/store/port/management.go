@@ -516,19 +516,27 @@ type ManagementRequestQuotaLimits struct {
 }
 
 type ManagementAccountUsageSummary struct {
-	RequestCount       int64   `json:"requestCount"`
-	InputTokens        int64   `json:"inputTokens"`
-	OutputTokens       int64   `json:"outputTokens"`
-	CacheReadTokens    int64   `json:"cacheReadTokens"`
-	CacheReadCost      float64 `json:"cacheReadCost"`
-	CacheWriteTokens   int64   `json:"cacheWriteTokens"`
-	CacheWrite1hTokens int64   `json:"cacheWrite1hTokens"`
-	CacheWriteCost     float64 `json:"cacheWriteCost"`
-	ThinkingTokens     int64   `json:"thinkingTokens"`
-	InputImageTokens   int64   `json:"inputImageTokens"`
-	OutputImageTokens  int64   `json:"outputImageTokens"`
-	TotalTokens        int64   `json:"totalTokens"`
-	TotalCost          float64 `json:"totalCost"`
+	RequestCount       int64      `json:"requestCount"`
+	InputTokens        int64      `json:"inputTokens"`
+	OutputTokens       int64      `json:"outputTokens"`
+	CacheReadTokens    int64      `json:"cacheReadTokens"`
+	CacheReadCost      float64    `json:"cacheReadCost"`
+	CacheWriteTokens   int64      `json:"cacheWriteTokens"`
+	CacheWrite1hTokens int64      `json:"cacheWrite1hTokens"`
+	CacheWriteCost     float64    `json:"cacheWriteCost"`
+	ThinkingTokens     int64      `json:"thinkingTokens"`
+	InputImageTokens   int64      `json:"inputImageTokens"`
+	OutputImageTokens  int64      `json:"outputImageTokens"`
+	TotalTokens        int64      `json:"totalTokens"`
+	TotalCost          float64    `json:"totalCost"`
+	LastUsedAt         *time.Time `json:"lastUsedAt,omitempty"`
+}
+
+type ManagementAccountUsageStatsRange struct {
+	StartDate string `json:"startDate"`
+	EndDate   string `json:"endDate"`
+	Days      int    `json:"days"`
+	MaxDays   int    `json:"maxDays"`
 }
 
 type ManagementResourceAuthorizationSourceSummary struct {
@@ -604,6 +612,71 @@ type ManagementResourceAuthorizationListInput struct {
 type ManagementResourceAuthorizationListResult struct {
 	Items   []ManagementResourceAuthorizationSummary
 	HasMore bool
+}
+
+type ManagementAuthorizationUsageOverviewInput struct {
+	ActorSystemAccountID   string
+	CanAccessAll           bool
+	ScopedSystemAccountID  string
+	ResourceType           string
+	ResourceID             string
+	TeamID                 string
+	GranteeSystemAccountID string
+	StartDate              string
+	EndDate                string
+	Limit                  int
+	Offset                 int
+}
+
+type ManagementAuthorizationTeamUsageRow struct {
+	ID                            string                        `json:"id"`
+	TeamID                        string                        `json:"teamId"`
+	TeamName                      string                        `json:"teamName"`
+	Status                        string                        `json:"status"`
+	ResourceType                  string                        `json:"resourceType,omitempty"`
+	ResourceID                    string                        `json:"resourceId,omitempty"`
+	ResourceName                  string                        `json:"resourceName,omitempty"`
+	AccountID                     string                        `json:"accountId,omitempty"`
+	AccountName                   string                        `json:"accountName,omitempty"`
+	AccountOwnerSystemAccountID   string                        `json:"accountOwnerSystemAccountId,omitempty"`
+	AccountOwnerSystemAccountName string                        `json:"accountOwnerSystemAccountName,omitempty"`
+	Usage                         ManagementAccountUsageSummary `json:"usage"`
+	LastUsedAt                    *time.Time                    `json:"lastUsedAt,omitempty"`
+}
+
+type ManagementAuthorizationTeamUsageOverviewResult struct {
+	Summary ManagementAccountUsageSummary
+	Rows    []ManagementAuthorizationTeamUsageRow
+	HasMore bool
+}
+
+type ManagementAuthorizationUserUsageRow struct {
+	ID                            string                        `json:"id"`
+	SystemAccountID               string                        `json:"systemAccountId"`
+	UserName                      string                        `json:"userName"`
+	Username                      string                        `json:"username,omitempty"`
+	TeamNames                     []string                      `json:"teamNames,omitempty"`
+	ResourceType                  string                        `json:"resourceType,omitempty"`
+	ResourceID                    string                        `json:"resourceId,omitempty"`
+	ResourceName                  string                        `json:"resourceName,omitempty"`
+	AccountID                     string                        `json:"accountId,omitempty"`
+	AccountName                   string                        `json:"accountName,omitempty"`
+	AccountOwnerSystemAccountID   string                        `json:"accountOwnerSystemAccountId,omitempty"`
+	AccountOwnerSystemAccountName string                        `json:"accountOwnerSystemAccountName,omitempty"`
+	SourceLabels                  []string                      `json:"sourceLabels"`
+	Usage                         ManagementAccountUsageSummary `json:"usage"`
+	LastUsedAt                    *time.Time                    `json:"lastUsedAt,omitempty"`
+}
+
+type ManagementAuthorizationUserUsageOverviewResult struct {
+	Summary ManagementAccountUsageSummary
+	Rows    []ManagementAuthorizationUserUsageRow
+	HasMore bool
+}
+
+type ManagementAuthorizationUsageOverviewReader interface {
+	ListManagementAuthorizationTeamUsageOverview(ctx context.Context, input ManagementAuthorizationUsageOverviewInput) (ManagementAuthorizationTeamUsageOverviewResult, error)
+	ListManagementAuthorizationUserUsageOverview(ctx context.Context, input ManagementAuthorizationUsageOverviewInput) (ManagementAuthorizationUserUsageOverviewResult, error)
 }
 
 type ManagementResourceAuthorizationGetInput struct {

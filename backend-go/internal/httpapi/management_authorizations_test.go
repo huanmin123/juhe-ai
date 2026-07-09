@@ -1111,6 +1111,112 @@ func TestManagementMyAuthorizationListHandlerUsesSelfScopeAndDirection(t *testin
 	}
 }
 
+func TestManagementAuthorizationUsageOverviewHandlersParseQueryAndScope(t *testing.T) {
+	service := &managementAuthorizationCreateServiceStub{
+		teamUsageResult: managementauthorizations.TeamUsageOverview{
+			Range:     port.ManagementAccountUsageStatsRange{StartDate: "2026-07-01", EndDate: "2026-07-09", Days: 9, MaxDays: 31},
+			Summary:   port.ManagementAccountUsageSummary{RequestCount: 3},
+			Rows:      []port.ManagementAuthorizationTeamUsageRow{{ID: "team_ops:account:acct_main", TeamID: "team_ops", Usage: port.ManagementAccountUsageSummary{RequestCount: 2}}},
+			TeamCount: 1,
+			Total:     1,
+			Page:      2,
+			PageSize:  1,
+		},
+		userUsageResult: managementauthorizations.UserUsageOverview{
+			Range:     port.ManagementAccountUsageStatsRange{StartDate: "2026-07-01", EndDate: "2026-07-09", Days: 9, MaxDays: 31},
+			Summary:   port.ManagementAccountUsageSummary{RequestCount: 4},
+			Rows:      []port.ManagementAuthorizationUserUsageRow{{ID: "sys_grantee:group:grp_main", SystemAccountID: "sys_grantee", SourceLabels: []string{"全部授权来源"}}},
+			UserCount: 1,
+			Total:     1,
+			Page:      1,
+			PageSize:  20,
+		},
+	}
+	teamHandler := newManagementAuthorizationTeamUsageOverviewHandler(service, managementAuthorizationScopeAdmin)
+	teamReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/authorizations/usage/team-details?systemAccountId=sys_owner&resourceType=account&resourceId=acct_main&teamId=team_ops&startDate=2026-07-01&endDate=2026-07-09&page=2&pageSize=1", nil)
+	teamReq = teamReq.WithContext(context.WithValue(teamReq.Context(), managementAuthContextKey, managementauth.Context{
+		SystemAccountID: "sys_admin",
+		Username:        "admin",
+		Role:            "admin",
+		SessionID:       "sess_admin",
+	}))
+	teamRec := httptest.NewRecorder()
+
+	teamHandler.ServeHTTP(teamRec, teamReq)
+
+	if teamRec.Code != http.StatusOK {
+		t.Fatalf("team status = %d, want 200; body = %s", teamRec.Code, teamRec.Body.String())
+	}
+	if !service.teamUsageCalled ||
+		service.teamUsageInput.ActorSystemAccountID != "sys_admin" ||
+		service.teamUsageInput.ActorRole != "admin" ||
+		service.teamUsageInput.ScopedSystemAccountID != "sys_owner" ||
+		service.teamUsageInput.ResourceType != "account" ||
+		service.teamUsageInput.ResourceID != "acct_main" ||
+		service.teamUsageInput.TeamID != "team_ops" ||
+		service.teamUsageInput.StartDate != "2026-07-01" ||
+		service.teamUsageInput.EndDate != "2026-07-09" ||
+		service.teamUsageInput.Page != 2 ||
+		service.teamUsageInput.PageSize != 1 {
+		t.Fatalf("team usage input = %+v", service.teamUsageInput)
+	}
+	var teamBody struct {
+		Data managementauthorizations.TeamUsageOverview `json:"data"`
+	}
+	if err := json.NewDecoder(teamRec.Body).Decode(&teamBody); err != nil {
+		t.Fatalf("decode team usage response: %v", err)
+	}
+	if teamBody.Data.Rows[0].ID != "team_ops:account:acct_main" || teamBody.Data.Summary.RequestCount != 3 {
+		t.Fatalf("team usage response = %+v", teamBody.Data)
+	}
+
+	userHandler := newManagementAuthorizationUserUsageOverviewHandler(service, managementAuthorizationScopeSelf)
+	userReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/my-authorizations/usage/user-details?systemAccountId=sys_owner&resourceType=group&granteeSystemAccountId=sys_grantee", nil)
+	userReq = userReq.WithContext(context.WithValue(userReq.Context(), managementAuthContextKey, managementauth.Context{
+		SystemAccountID: "sys_grantee",
+		Username:        "grantee",
+		Role:            "user",
+		SessionID:       "sess_grantee",
+	}))
+	userRec := httptest.NewRecorder()
+
+	userHandler.ServeHTTP(userRec, userReq)
+
+	if userRec.Code != http.StatusOK {
+		t.Fatalf("user status = %d, want 200; body = %s", userRec.Code, userRec.Body.String())
+	}
+	if !service.userUsageCalled ||
+		service.userUsageInput.ActorSystemAccountID != "sys_grantee" ||
+		service.userUsageInput.ActorRole != "user" ||
+		service.userUsageInput.ScopedSystemAccountID != "sys_grantee" ||
+		service.userUsageInput.ResourceType != "group" ||
+		service.userUsageInput.GranteeSystemAccountID != "sys_grantee" {
+		t.Fatalf("user usage input = %+v", service.userUsageInput)
+	}
+}
+
+func TestManagementAuthorizationUsageOverviewHandlerRejectsInvalidQuery(t *testing.T) {
+	service := &managementAuthorizationCreateServiceStub{}
+	handler := newManagementAuthorizationTeamUsageOverviewHandler(service, managementAuthorizationScopeAdmin)
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/authorizations/usage/team-details?resourceType=invalid", nil)
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+		SystemAccountID: "sys_admin",
+		Username:        "admin",
+		Role:            "admin",
+		SessionID:       "sess_admin",
+	}))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+	}
+	if service.teamUsageCalled {
+		t.Fatal("service should not be called for invalid query")
+	}
+}
+
 func TestManagementAuthorizationListHandlerRejectsInvalidQuery(t *testing.T) {
 	tests := []string{
 		"/__aisys__/api/authorizations?systemAccountId=",
@@ -1358,6 +1464,18 @@ func TestRouterRegistersW4ManagementAuthorizationListDetailCreateUpdateExpireRet
 			Page:     1,
 			PageSize: 50,
 		},
+		teamUsageResult: managementauthorizations.TeamUsageOverview{
+			Range:    port.ManagementAccountUsageStatsRange{StartDate: "2026-07-09", EndDate: "2026-07-09", Days: 1, MaxDays: 31},
+			Rows:     []port.ManagementAuthorizationTeamUsageRow{},
+			Page:     1,
+			PageSize: 20,
+		},
+		userUsageResult: managementauthorizations.UserUsageOverview{
+			Range:    port.ManagementAccountUsageStatsRange{StartDate: "2026-07-09", EndDate: "2026-07-09", Days: 1, MaxDays: 31},
+			Rows:     []port.ManagementAuthorizationUserUsageRow{},
+			Page:     1,
+			PageSize: 20,
+		},
 		getFound: true,
 		getResult: managementauthorizations.Detail{
 			Summary: managementauthorizations.Summary{
@@ -1383,24 +1501,28 @@ func TestRouterRegistersW4ManagementAuthorizationListDetailCreateUpdateExpireRet
 		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_touch"},
 	}
 	router := NewRouter(RouterOptions{
-		Config:                                       config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
-		Logger:                                       slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
-		ManagementAuthorizationListHandler:           newManagementAuthorizationListHandler(service, managementAuthorizationScopeAdmin),
-		ManagementMyAuthorizationListHandler:         newManagementAuthorizationListHandler(service, managementAuthorizationScopeSelf),
-		ManagementAuthorizationDetailHandler:         newManagementAuthorizationDetailHandler(service, managementAuthorizationScopeAdmin),
-		ManagementMyAuthorizationDetailHandler:       newManagementAuthorizationDetailHandler(service, managementAuthorizationScopeSelf),
-		ManagementAuthorizationCreateHandler:         newManagementAuthorizationCreateHandler(service, managementAuthorizationScopeAdmin),
-		ManagementMyAuthorizationCreateHandler:       newManagementAuthorizationCreateHandler(service, managementAuthorizationScopeSelf),
-		ManagementAuthorizationUpdateHandler:         newManagementAuthorizationUpdateHandler(service, managementAuthorizationScopeAdmin),
-		ManagementMyAuthorizationUpdateHandler:       newManagementAuthorizationUpdateHandler(service, managementAuthorizationScopeSelf),
-		ManagementAuthorizationExpireUpdateHandler:   newManagementAuthorizationExpireUpdateHandler(service, managementAuthorizationScopeAdmin),
-		ManagementMyAuthorizationExpireUpdateHandler: newManagementAuthorizationExpireUpdateHandler(service, managementAuthorizationScopeSelf),
-		ManagementAuthorizationReturnHandler:         newManagementAuthorizationReturnHandler(service, managementAuthorizationScopeAdmin),
-		ManagementMyAuthorizationReturnHandler:       newManagementAuthorizationReturnHandler(service, managementAuthorizationScopeSelf),
-		ManagementAuthorizationRevokeHandler:         newManagementAuthorizationRevokeHandler(service, managementAuthorizationScopeAdmin),
-		ManagementMyAuthorizationRevokeHandler:       newManagementAuthorizationRevokeHandler(service, managementAuthorizationScopeSelf),
-		ManagementAPIAuthMiddleware:                  NewManagementAPIAuthMiddleware(readAuthenticator),
-		ManagementAPIAuthTouchMiddleware:             NewManagementAPIAuthTouchMiddleware(touchAuthenticator),
+		Config:                               config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
+		Logger:                               slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
+		ManagementAuthorizationListHandler:   newManagementAuthorizationListHandler(service, managementAuthorizationScopeAdmin),
+		ManagementMyAuthorizationListHandler: newManagementAuthorizationListHandler(service, managementAuthorizationScopeSelf),
+		ManagementAuthorizationTeamUsageOverviewHandler:   newManagementAuthorizationTeamUsageOverviewHandler(service, managementAuthorizationScopeAdmin),
+		ManagementMyAuthorizationTeamUsageOverviewHandler: newManagementAuthorizationTeamUsageOverviewHandler(service, managementAuthorizationScopeSelf),
+		ManagementAuthorizationUserUsageOverviewHandler:   newManagementAuthorizationUserUsageOverviewHandler(service, managementAuthorizationScopeAdmin),
+		ManagementMyAuthorizationUserUsageOverviewHandler: newManagementAuthorizationUserUsageOverviewHandler(service, managementAuthorizationScopeSelf),
+		ManagementAuthorizationDetailHandler:              newManagementAuthorizationDetailHandler(service, managementAuthorizationScopeAdmin),
+		ManagementMyAuthorizationDetailHandler:            newManagementAuthorizationDetailHandler(service, managementAuthorizationScopeSelf),
+		ManagementAuthorizationCreateHandler:              newManagementAuthorizationCreateHandler(service, managementAuthorizationScopeAdmin),
+		ManagementMyAuthorizationCreateHandler:            newManagementAuthorizationCreateHandler(service, managementAuthorizationScopeSelf),
+		ManagementAuthorizationUpdateHandler:              newManagementAuthorizationUpdateHandler(service, managementAuthorizationScopeAdmin),
+		ManagementMyAuthorizationUpdateHandler:            newManagementAuthorizationUpdateHandler(service, managementAuthorizationScopeSelf),
+		ManagementAuthorizationExpireUpdateHandler:        newManagementAuthorizationExpireUpdateHandler(service, managementAuthorizationScopeAdmin),
+		ManagementMyAuthorizationExpireUpdateHandler:      newManagementAuthorizationExpireUpdateHandler(service, managementAuthorizationScopeSelf),
+		ManagementAuthorizationReturnHandler:              newManagementAuthorizationReturnHandler(service, managementAuthorizationScopeAdmin),
+		ManagementMyAuthorizationReturnHandler:            newManagementAuthorizationReturnHandler(service, managementAuthorizationScopeSelf),
+		ManagementAuthorizationRevokeHandler:              newManagementAuthorizationRevokeHandler(service, managementAuthorizationScopeAdmin),
+		ManagementMyAuthorizationRevokeHandler:            newManagementAuthorizationRevokeHandler(service, managementAuthorizationScopeSelf),
+		ManagementAPIAuthMiddleware:                       NewManagementAPIAuthMiddleware(readAuthenticator),
+		ManagementAPIAuthTouchMiddleware:                  NewManagementAPIAuthTouchMiddleware(touchAuthenticator),
 	})
 
 	for _, item := range []struct {
@@ -1488,8 +1610,12 @@ func TestRouterRegistersW4ManagementAuthorizationListDetailCreateUpdateExpireRet
 	touchAuthenticator.touchCookieHeader = ""
 	for _, path := range []string{
 		"/__aisys__/api/authorizations?systemAccountId=all",
+		"/__aisys__/api/authorizations/usage/team-details?systemAccountId=all",
+		"/__aisys__/api/authorizations/usage/user-details?systemAccountId=all",
 		"/__aisys__/api/authorizations/rauthgrant_main?systemAccountId=all",
 		"/__aisys__/api/my-authorizations",
+		"/__aisys__/api/my-authorizations/usage/team-details",
+		"/__aisys__/api/my-authorizations/usage/user-details",
 		"/__aisys__/api/my-authorizations/rauthgrant_main",
 	} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
@@ -1507,34 +1633,42 @@ func TestRouterRegistersW4ManagementAuthorizationListDetailCreateUpdateExpireRet
 }
 
 type managementAuthorizationCreateServiceStub struct {
-	called       bool
-	input        managementauthorizations.CreateInput
-	result       managementauthorizations.Summary
-	err          error
-	getCalled    bool
-	getInput     managementauthorizations.GetInput
-	getResult    managementauthorizations.Detail
-	getFound     bool
-	getErr       error
-	updateCalled bool
-	updateInput  managementauthorizations.UpdateInput
-	updateResult managementauthorizations.Summary
-	updateFound  bool
-	updateErr    error
-	returnCalled bool
-	returnInput  managementauthorizations.ReturnInput
-	returnResult managementauthorizations.Summary
-	returnFound  bool
-	returnErr    error
-	revokeCalled bool
-	revokeInput  managementauthorizations.RevokeInput
-	revokeResult managementauthorizations.Summary
-	revokeFound  bool
-	revokeErr    error
-	listCalled   bool
-	listInput    managementauthorizations.ListInput
-	listResult   managementauthorizations.ListResult
-	listErr      error
+	called          bool
+	input           managementauthorizations.CreateInput
+	result          managementauthorizations.Summary
+	err             error
+	getCalled       bool
+	getInput        managementauthorizations.GetInput
+	getResult       managementauthorizations.Detail
+	getFound        bool
+	getErr          error
+	updateCalled    bool
+	updateInput     managementauthorizations.UpdateInput
+	updateResult    managementauthorizations.Summary
+	updateFound     bool
+	updateErr       error
+	returnCalled    bool
+	returnInput     managementauthorizations.ReturnInput
+	returnResult    managementauthorizations.Summary
+	returnFound     bool
+	returnErr       error
+	revokeCalled    bool
+	revokeInput     managementauthorizations.RevokeInput
+	revokeResult    managementauthorizations.Summary
+	revokeFound     bool
+	revokeErr       error
+	listCalled      bool
+	listInput       managementauthorizations.ListInput
+	listResult      managementauthorizations.ListResult
+	listErr         error
+	teamUsageCalled bool
+	teamUsageInput  managementauthorizations.UsageOverviewInput
+	teamUsageResult managementauthorizations.TeamUsageOverview
+	teamUsageErr    error
+	userUsageCalled bool
+	userUsageInput  managementauthorizations.UsageOverviewInput
+	userUsageResult managementauthorizations.UserUsageOverview
+	userUsageErr    error
 }
 
 func (s *managementAuthorizationCreateServiceStub) Create(_ *http.Request, input managementauthorizations.CreateInput) (managementauthorizations.Summary, error) {
@@ -1553,6 +1687,24 @@ func (s *managementAuthorizationCreateServiceStub) List(_ *http.Request, input m
 		return managementauthorizations.ListResult{}, s.listErr
 	}
 	return s.listResult, nil
+}
+
+func (s *managementAuthorizationCreateServiceStub) TeamUsageOverview(_ *http.Request, input managementauthorizations.UsageOverviewInput) (managementauthorizations.TeamUsageOverview, error) {
+	s.teamUsageCalled = true
+	s.teamUsageInput = input
+	if s.teamUsageErr != nil {
+		return managementauthorizations.TeamUsageOverview{}, s.teamUsageErr
+	}
+	return s.teamUsageResult, nil
+}
+
+func (s *managementAuthorizationCreateServiceStub) UserUsageOverview(_ *http.Request, input managementauthorizations.UsageOverviewInput) (managementauthorizations.UserUsageOverview, error) {
+	s.userUsageCalled = true
+	s.userUsageInput = input
+	if s.userUsageErr != nil {
+		return managementauthorizations.UserUsageOverview{}, s.userUsageErr
+	}
+	return s.userUsageResult, nil
 }
 
 func (s *managementAuthorizationCreateServiceStub) Get(_ *http.Request, input managementauthorizations.GetInput) (managementauthorizations.Detail, bool, error) {

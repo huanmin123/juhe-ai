@@ -81,6 +81,37 @@ func TestW4AuthorizationQuotaAndStatsStateMigrationMatchesCurrentContract(t *tes
 	}
 }
 
+func TestW4AuthorizationUsageWindowMigrationMatchesCurrentContract(t *testing.T) {
+	source, err := os.ReadFile("../../../db/migrations/000020_w4_authorization_usage_windows.sql")
+	if err != nil {
+		t.Fatalf("read W4 authorization usage migration: %v", err)
+	}
+	sql := string(source)
+	for _, want := range []string{
+		"CREATE TABLE IF NOT EXISTS juhe_stats.authorization_team_usage_summary_daily",
+		"CREATE TABLE IF NOT EXISTS juhe_stats.authorization_team_usage_range_windows",
+		"CREATE TABLE IF NOT EXISTS juhe_stats.authorization_user_usage_summary_daily",
+		"CREATE TABLE IF NOT EXISTS juhe_stats.authorization_user_usage_range_windows",
+		"PRIMARY KEY (system_account_id, start_date, end_date, team_filter_id, resource_filter_type, resource_filter_id)",
+		"PRIMARY KEY (system_account_id, start_date, end_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id)",
+		"idx_authorization_team_usage_range_sort",
+		"idx_authorization_user_usage_range_sort",
+		"last_used_at timestamptz",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("W4 authorization usage migration missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		"DROP TABLE",
+		"juhe_usage.usage_records",
+	} {
+		if strings.Contains(sql, forbidden) {
+			t.Fatalf("W4 authorization usage migration should not contain %q", forbidden)
+		}
+	}
+}
+
 func TestManagementResourceAuthorizationListQueryScopesAndFilters(t *testing.T) {
 	query, args := managementResourceAuthorizationListQuery(port.ManagementResourceAuthorizationListInput{
 		AuthorizationID:              "rauthgrant_main",
@@ -125,6 +156,62 @@ func TestManagementResourceAuthorizationListQueryScopesAndFilters(t *testing.T) 
 	for _, want := range []any{"rauthgrant_main", "sys_actor", "acct_main", "sys_owner", "sys_grantee", "team_ops", "授权"} {
 		if !containsQueryArg(args, want) {
 			t.Fatalf("query args missing %v: %v", want, args)
+		}
+	}
+}
+
+func TestManagementAuthorizationUsageOverviewQueriesReadRangeWindowsOnly(t *testing.T) {
+	input := port.ManagementAuthorizationUsageOverviewInput{
+		ActorSystemAccountID:   "sys_admin",
+		CanAccessAll:           true,
+		ScopedSystemAccountID:  "sys_owner",
+		ResourceType:           "account",
+		ResourceID:             "acct_main",
+		TeamID:                 "team_ops",
+		GranteeSystemAccountID: "sys_grantee",
+		StartDate:              "2026-07-01",
+		EndDate:                "2026-07-09",
+		Limit:                  21,
+		Offset:                 40,
+	}
+	teamQuery, teamArgs := managementAuthorizationTeamUsageOverviewQuery(input)
+	userQuery, userArgs := managementAuthorizationUserUsageOverviewQuery(input)
+	for label, query := range map[string]string{"team": teamQuery, "user": userQuery} {
+		for _, want := range []string{
+			"WITH page_rows AS",
+			"juhe_stats.authorization_" + label + "_usage_range_windows",
+			"report.system_account_id",
+			"report.start_date",
+			"report.end_date",
+			"ORDER BY report.total_cost_usd DESC",
+			"LIMIT",
+			"OFFSET",
+			"juhe_business.accounts",
+			"juhe_business.groups",
+		} {
+			if !strings.Contains(query, want) {
+				t.Fatalf("%s usage query missing %q:\n%s", label, want, query)
+			}
+		}
+		for _, forbidden := range []string{
+			"juhe_usage.usage_records",
+			"usage_records",
+			"GROUP BY",
+			"SUM(",
+		} {
+			if strings.Contains(query, forbidden) {
+				t.Fatalf("%s usage query should not contain %q:\n%s", label, forbidden, query)
+			}
+		}
+	}
+	for _, want := range []any{"sys_owner", "2026-07-01", "2026-07-09", "team_ops", "account", "acct_main", 21, 40} {
+		if !containsQueryArg(teamArgs, want) {
+			t.Fatalf("team usage args missing %v: %v", want, teamArgs)
+		}
+	}
+	for _, want := range []any{"sys_owner", "2026-07-01", "2026-07-09", "team_ops", "sys_grantee", "account", "acct_main", 21, 40} {
+		if !containsQueryArg(userArgs, want) {
+			t.Fatalf("user usage args missing %v: %v", want, userArgs)
 		}
 	}
 }

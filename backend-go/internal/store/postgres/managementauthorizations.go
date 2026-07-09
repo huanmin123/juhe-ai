@@ -70,6 +70,133 @@ func (s *Store) FindManagementResourceAuthorization(ctx context.Context, input p
 	return summary, true, nil
 }
 
+func (s *Store) ListManagementAuthorizationTeamUsageOverview(ctx context.Context, input port.ManagementAuthorizationUsageOverviewInput) (port.ManagementAuthorizationTeamUsageOverviewResult, error) {
+	limit := input.Limit
+	if limit <= 0 {
+		return port.ManagementAuthorizationTeamUsageOverviewResult{}, nil
+	}
+	summary, err := s.findManagementAuthorizationTeamUsageSummary(ctx, input)
+	if err != nil {
+		return port.ManagementAuthorizationTeamUsageOverviewResult{}, err
+	}
+	query, args := managementAuthorizationTeamUsageOverviewQuery(input)
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return port.ManagementAuthorizationTeamUsageOverviewResult{}, fmt.Errorf("list management authorization team usage overview: %w", err)
+	}
+	defer rows.Close()
+	items := make([]port.ManagementAuthorizationTeamUsageRow, 0, limit)
+	for rows.Next() {
+		item, err := scanManagementAuthorizationTeamUsageRow(rows)
+		if err != nil {
+			return port.ManagementAuthorizationTeamUsageOverviewResult{}, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return port.ManagementAuthorizationTeamUsageOverviewResult{}, fmt.Errorf("iterate management authorization team usage overview: %w", err)
+	}
+	pageSize := max(0, limit-1)
+	hasMore := len(items) > pageSize
+	if hasMore {
+		items = items[:pageSize]
+	}
+	return port.ManagementAuthorizationTeamUsageOverviewResult{Summary: summary, Rows: items, HasMore: hasMore}, nil
+}
+
+func (s *Store) ListManagementAuthorizationUserUsageOverview(ctx context.Context, input port.ManagementAuthorizationUsageOverviewInput) (port.ManagementAuthorizationUserUsageOverviewResult, error) {
+	limit := input.Limit
+	if limit <= 0 {
+		return port.ManagementAuthorizationUserUsageOverviewResult{}, nil
+	}
+	summary, err := s.findManagementAuthorizationUserUsageSummary(ctx, input)
+	if err != nil {
+		return port.ManagementAuthorizationUserUsageOverviewResult{}, err
+	}
+	query, args := managementAuthorizationUserUsageOverviewQuery(input)
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return port.ManagementAuthorizationUserUsageOverviewResult{}, fmt.Errorf("list management authorization user usage overview: %w", err)
+	}
+	defer rows.Close()
+	items := make([]port.ManagementAuthorizationUserUsageRow, 0, limit)
+	for rows.Next() {
+		item, err := scanManagementAuthorizationUserUsageRow(rows)
+		if err != nil {
+			return port.ManagementAuthorizationUserUsageOverviewResult{}, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return port.ManagementAuthorizationUserUsageOverviewResult{}, fmt.Errorf("iterate management authorization user usage overview: %w", err)
+	}
+	pageSize := max(0, limit-1)
+	hasMore := len(items) > pageSize
+	if hasMore {
+		items = items[:pageSize]
+	}
+	return port.ManagementAuthorizationUserUsageOverviewResult{Summary: summary, Rows: items, HasMore: hasMore}, nil
+}
+
+func (s *Store) findManagementAuthorizationTeamUsageSummary(ctx context.Context, input port.ManagementAuthorizationUsageOverviewInput) (port.ManagementAccountUsageSummary, error) {
+	systemAccountID := managementAuthorizationUsageSystemAccountID(input)
+	resourceType, resourceID := managementAuthorizationUsageSummaryResourceFilter(input)
+	summary, err := scanManagementAuthorizationUsageSummary(s.pool.QueryRow(ctx, `
+SELECT request_count, input_tokens, output_tokens, cache_read_tokens,
+  CAST(cache_read_cost_usd AS double precision) AS cache_read_cost_usd,
+  cache_write_tokens, cache_write_1h_tokens,
+  CAST(cache_write_cost_usd AS double precision) AS cache_write_cost_usd,
+  thinking_tokens, input_image_tokens, output_image_tokens,
+  CAST(total_cost_usd AS double precision) AS total_cost_usd,
+  last_used_at
+FROM juhe_stats.authorization_team_usage_range_windows
+WHERE system_account_id = $1
+  AND start_date = $2
+  AND end_date = $3
+  AND team_filter_id = $4
+  AND resource_filter_type = $5
+  AND resource_filter_id = $6
+LIMIT 1
+`, systemAccountID, input.StartDate, input.EndDate, strings.TrimSpace(input.TeamID), resourceType, resourceID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return port.ManagementAccountUsageSummary{}, nil
+	}
+	if err != nil {
+		return port.ManagementAccountUsageSummary{}, fmt.Errorf("find management authorization team usage summary: %w", err)
+	}
+	return summary, nil
+}
+
+func (s *Store) findManagementAuthorizationUserUsageSummary(ctx context.Context, input port.ManagementAuthorizationUsageOverviewInput) (port.ManagementAccountUsageSummary, error) {
+	systemAccountID := managementAuthorizationUsageSystemAccountID(input)
+	resourceType, resourceID := managementAuthorizationUsageSummaryResourceFilter(input)
+	summary, err := scanManagementAuthorizationUsageSummary(s.pool.QueryRow(ctx, `
+SELECT request_count, input_tokens, output_tokens, cache_read_tokens,
+  CAST(cache_read_cost_usd AS double precision) AS cache_read_cost_usd,
+  cache_write_tokens, cache_write_1h_tokens,
+  CAST(cache_write_cost_usd AS double precision) AS cache_write_cost_usd,
+  thinking_tokens, input_image_tokens, output_image_tokens,
+  CAST(total_cost_usd AS double precision) AS total_cost_usd,
+  last_used_at
+FROM juhe_stats.authorization_user_usage_range_windows
+WHERE system_account_id = $1
+  AND start_date = $2
+  AND end_date = $3
+  AND team_filter_id = $4
+  AND grantee_filter_system_account_id = $5
+  AND resource_filter_type = $6
+  AND resource_filter_id = $7
+LIMIT 1
+`, systemAccountID, input.StartDate, input.EndDate, strings.TrimSpace(input.TeamID), strings.TrimSpace(input.GranteeSystemAccountID), resourceType, resourceID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return port.ManagementAccountUsageSummary{}, nil
+	}
+	if err != nil {
+		return port.ManagementAccountUsageSummary{}, fmt.Errorf("find management authorization user usage summary: %w", err)
+	}
+	return summary, nil
+}
+
 func managementResourceAuthorizationListQuery(input port.ManagementResourceAuthorizationListInput) (string, []any) {
 	args := []any{}
 	clauses := []string{}
@@ -193,6 +320,226 @@ LEFT JOIN juhe_business.system_teams AS teams
 ORDER BY rag.created_at DESC, rag.id DESC
 LIMIT ` + limitArg + ` OFFSET ` + offsetArg
 	return query, args
+}
+
+func managementAuthorizationTeamUsageOverviewQuery(input port.ManagementAuthorizationUsageOverviewInput) (string, []any) {
+	args := []any{}
+	addArg := func(value any) string {
+		args = append(args, value)
+		return "$" + strconv.Itoa(len(args))
+	}
+	systemAccountIDArg := addArg(managementAuthorizationUsageSystemAccountID(input))
+	startDateArg := addArg(strings.TrimSpace(input.StartDate))
+	endDateArg := addArg(strings.TrimSpace(input.EndDate))
+	teamID := strings.TrimSpace(input.TeamID)
+	teamIDArg := addArg(teamID)
+	resourcePredicate := managementAuthorizationUsageResourcePredicate(input, addArg)
+	limitArg := addArg(max(0, input.Limit))
+	offsetArg := addArg(max(0, input.Offset))
+	query := `
+WITH page_rows AS (
+  SELECT report.team_filter_id,
+    report.resource_filter_type,
+    report.resource_filter_id,
+    report.request_count,
+    report.input_tokens,
+    report.output_tokens,
+    report.cache_read_tokens,
+    CAST(report.cache_read_cost_usd AS double precision) AS cache_read_cost_usd,
+    report.cache_write_tokens,
+    report.cache_write_1h_tokens,
+    CAST(report.cache_write_cost_usd AS double precision) AS cache_write_cost_usd,
+    report.thinking_tokens,
+    report.input_image_tokens,
+    report.output_image_tokens,
+    CAST(report.total_cost_usd AS double precision) AS total_cost_usd,
+    report.last_used_at
+  FROM juhe_stats.authorization_team_usage_range_windows AS report
+  WHERE report.system_account_id = ` + systemAccountIDArg + `
+    AND report.start_date = ` + startDateArg + `
+    AND report.end_date = ` + endDateArg + `
+    AND report.team_filter_id <> ''
+    AND (` + teamIDArg + ` = '' OR report.team_filter_id = ` + teamIDArg + `)
+    AND ` + resourcePredicate + `
+  ORDER BY report.total_cost_usd DESC, report.request_count DESC, report.last_used_at DESC,
+    report.team_filter_id ASC, report.resource_filter_type ASC, report.resource_filter_id ASC
+  LIMIT ` + limitArg + ` OFFSET ` + offsetArg + `
+)
+SELECT page_rows.team_filter_id,
+  page_rows.resource_filter_type,
+  page_rows.resource_filter_id,
+  page_rows.request_count,
+  page_rows.input_tokens,
+  page_rows.output_tokens,
+  page_rows.cache_read_tokens,
+  page_rows.cache_read_cost_usd,
+  page_rows.cache_write_tokens,
+  page_rows.cache_write_1h_tokens,
+  page_rows.cache_write_cost_usd,
+  page_rows.thinking_tokens,
+  page_rows.input_image_tokens,
+  page_rows.output_image_tokens,
+  page_rows.total_cost_usd,
+  page_rows.last_used_at,
+  COALESCE(teams.name, '') AS team_name,
+  COALESCE(teams.status, 'active') AS team_status,
+  COALESCE(accounts.name, groups.name, '') AS resource_name,
+  CASE WHEN page_rows.resource_filter_type = 'account' THEN page_rows.resource_filter_id ELSE '' END AS account_id,
+  CASE WHEN page_rows.resource_filter_type = 'account' THEN COALESCE(accounts.name, '') ELSE '' END AS account_name,
+  COALESCE(accounts.system_account_id, groups.system_account_id, '') AS owner_system_account_id,
+  COALESCE(owner_accounts.display_name, '') AS owner_system_account_name
+FROM page_rows
+LEFT JOIN juhe_business.system_teams AS teams
+  ON teams.id = page_rows.team_filter_id
+LEFT JOIN juhe_business.accounts AS accounts
+  ON accounts.id = page_rows.resource_filter_id
+  AND page_rows.resource_filter_type = 'account'
+  AND accounts.deleted_at IS NULL
+LEFT JOIN juhe_business.groups AS groups
+  ON groups.id = page_rows.resource_filter_id
+  AND page_rows.resource_filter_type = 'group'
+LEFT JOIN juhe_business.system_accounts AS owner_accounts
+  ON owner_accounts.id = COALESCE(accounts.system_account_id, groups.system_account_id)
+ORDER BY page_rows.total_cost_usd DESC, page_rows.request_count DESC, page_rows.last_used_at DESC,
+  page_rows.team_filter_id ASC, page_rows.resource_filter_type ASC, page_rows.resource_filter_id ASC`
+	return query, args
+}
+
+func managementAuthorizationUserUsageOverviewQuery(input port.ManagementAuthorizationUsageOverviewInput) (string, []any) {
+	args := []any{}
+	addArg := func(value any) string {
+		args = append(args, value)
+		return "$" + strconv.Itoa(len(args))
+	}
+	systemAccountIDArg := addArg(managementAuthorizationUsageSystemAccountID(input))
+	startDateArg := addArg(strings.TrimSpace(input.StartDate))
+	endDateArg := addArg(strings.TrimSpace(input.EndDate))
+	teamIDArg := addArg(strings.TrimSpace(input.TeamID))
+	granteeID := strings.TrimSpace(input.GranteeSystemAccountID)
+	granteeIDArg := addArg(granteeID)
+	resourcePredicate := managementAuthorizationUsageResourcePredicate(input, addArg)
+	limitArg := addArg(max(0, input.Limit))
+	offsetArg := addArg(max(0, input.Offset))
+	query := `
+WITH page_rows AS (
+  SELECT report.team_filter_id,
+    report.grantee_filter_system_account_id,
+    report.resource_filter_type,
+    report.resource_filter_id,
+    report.request_count,
+    report.input_tokens,
+    report.output_tokens,
+    report.cache_read_tokens,
+    CAST(report.cache_read_cost_usd AS double precision) AS cache_read_cost_usd,
+    report.cache_write_tokens,
+    report.cache_write_1h_tokens,
+    CAST(report.cache_write_cost_usd AS double precision) AS cache_write_cost_usd,
+    report.thinking_tokens,
+    report.input_image_tokens,
+    report.output_image_tokens,
+    CAST(report.total_cost_usd AS double precision) AS total_cost_usd,
+    report.last_used_at
+  FROM juhe_stats.authorization_user_usage_range_windows AS report
+  WHERE report.system_account_id = ` + systemAccountIDArg + `
+    AND report.start_date = ` + startDateArg + `
+    AND report.end_date = ` + endDateArg + `
+    AND report.team_filter_id = ` + teamIDArg + `
+    AND report.grantee_filter_system_account_id <> ''
+    AND (` + granteeIDArg + ` = '' OR report.grantee_filter_system_account_id = ` + granteeIDArg + `)
+    AND ` + resourcePredicate + `
+  ORDER BY report.total_cost_usd DESC, report.request_count DESC, report.last_used_at DESC,
+    report.grantee_filter_system_account_id ASC, report.resource_filter_type ASC, report.resource_filter_id ASC
+  LIMIT ` + limitArg + ` OFFSET ` + offsetArg + `
+)
+SELECT page_rows.team_filter_id,
+  page_rows.grantee_filter_system_account_id,
+  page_rows.resource_filter_type,
+  page_rows.resource_filter_id,
+  page_rows.request_count,
+  page_rows.input_tokens,
+  page_rows.output_tokens,
+  page_rows.cache_read_tokens,
+  page_rows.cache_read_cost_usd,
+  page_rows.cache_write_tokens,
+  page_rows.cache_write_1h_tokens,
+  page_rows.cache_write_cost_usd,
+  page_rows.thinking_tokens,
+  page_rows.input_image_tokens,
+  page_rows.output_image_tokens,
+  page_rows.total_cost_usd,
+  page_rows.last_used_at,
+  COALESCE(grantee_accounts.display_name, '') AS user_name,
+  COALESCE(grantee_accounts.username, '') AS username,
+  CASE
+    WHEN page_rows.team_filter_id <> '' THEN ARRAY[COALESCE(filter_team.name, '')]::text[]
+    ELSE COALESCE(memberships.team_names, ARRAY[]::text[])
+  END AS team_names,
+  COALESCE(accounts.name, groups.name, '') AS resource_name,
+  CASE WHEN page_rows.resource_filter_type = 'account' THEN page_rows.resource_filter_id ELSE '' END AS account_id,
+  CASE WHEN page_rows.resource_filter_type = 'account' THEN COALESCE(accounts.name, '') ELSE '' END AS account_name,
+  COALESCE(accounts.system_account_id, groups.system_account_id, '') AS owner_system_account_id,
+  COALESCE(owner_accounts.display_name, '') AS owner_system_account_name
+FROM page_rows
+LEFT JOIN juhe_business.system_accounts AS grantee_accounts
+  ON grantee_accounts.id = page_rows.grantee_filter_system_account_id
+LEFT JOIN juhe_business.system_teams AS filter_team
+  ON filter_team.id = page_rows.team_filter_id
+LEFT JOIN LATERAL (
+  SELECT ARRAY_AGG(team_lookup.name ORDER BY team_lookup.name ASC, team_lookup.id ASC) AS team_names
+  FROM juhe_business.system_team_members AS member_lookup
+  INNER JOIN juhe_business.system_teams AS team_lookup
+    ON team_lookup.id = member_lookup.team_id
+  WHERE member_lookup.system_account_id = page_rows.grantee_filter_system_account_id
+    AND member_lookup.status = 'active'
+    AND team_lookup.status = 'active'
+) AS memberships ON true
+LEFT JOIN juhe_business.accounts AS accounts
+  ON accounts.id = page_rows.resource_filter_id
+  AND page_rows.resource_filter_type = 'account'
+  AND accounts.deleted_at IS NULL
+LEFT JOIN juhe_business.groups AS groups
+  ON groups.id = page_rows.resource_filter_id
+  AND page_rows.resource_filter_type = 'group'
+LEFT JOIN juhe_business.system_accounts AS owner_accounts
+  ON owner_accounts.id = COALESCE(accounts.system_account_id, groups.system_account_id)
+ORDER BY page_rows.total_cost_usd DESC, page_rows.request_count DESC, page_rows.last_used_at DESC,
+  page_rows.grantee_filter_system_account_id ASC, page_rows.resource_filter_type ASC, page_rows.resource_filter_id ASC`
+	return query, args
+}
+
+func managementAuthorizationUsageSystemAccountID(input port.ManagementAuthorizationUsageOverviewInput) string {
+	scopedID := strings.TrimSpace(input.ScopedSystemAccountID)
+	if scopedID != "" {
+		return scopedID
+	}
+	if input.CanAccessAll {
+		return "global"
+	}
+	return strings.TrimSpace(input.ActorSystemAccountID)
+}
+
+func managementAuthorizationUsageSummaryResourceFilter(input port.ManagementAuthorizationUsageOverviewInput) (string, string) {
+	resourceType := strings.TrimSpace(input.ResourceType)
+	if resourceType == "" {
+		return "all", ""
+	}
+	resourceID := ""
+	if strings.TrimSpace(input.ResourceID) != "" {
+		resourceID = strings.TrimSpace(input.ResourceID)
+	}
+	return resourceType, resourceID
+}
+
+func managementAuthorizationUsageResourcePredicate(input port.ManagementAuthorizationUsageOverviewInput, addArg func(any) string) string {
+	resourceType := strings.TrimSpace(input.ResourceType)
+	resourceID := strings.TrimSpace(input.ResourceID)
+	if resourceType == "" {
+		return "report.resource_filter_type IN ('account', 'group') AND report.resource_filter_id <> ''"
+	}
+	if resourceID == "" {
+		return "report.resource_filter_type = " + addArg(resourceType) + " AND report.resource_filter_id <> ''"
+	}
+	return "report.resource_filter_type = " + addArg(resourceType) + " AND report.resource_filter_id = " + addArg(resourceID)
 }
 
 func managementResourceAuthorizationVisibleToAccountClause(systemAccountID string, addArg func(any) string) string {
@@ -1951,6 +2298,171 @@ type managementAuthorizationSummaryRow struct {
 
 type managementAuthorizationSummaryScanner interface {
 	Scan(dest ...any) error
+}
+
+func scanManagementAuthorizationUsageSummary(scanner managementAuthorizationSummaryScanner) (port.ManagementAccountUsageSummary, error) {
+	var usage port.ManagementAccountUsageSummary
+	var lastUsedAt pgtype.Timestamptz
+	if err := scanner.Scan(
+		&usage.RequestCount,
+		&usage.InputTokens,
+		&usage.OutputTokens,
+		&usage.CacheReadTokens,
+		&usage.CacheReadCost,
+		&usage.CacheWriteTokens,
+		&usage.CacheWrite1hTokens,
+		&usage.CacheWriteCost,
+		&usage.ThinkingTokens,
+		&usage.InputImageTokens,
+		&usage.OutputImageTokens,
+		&usage.TotalCost,
+		&lastUsedAt,
+	); err != nil {
+		return port.ManagementAccountUsageSummary{}, err
+	}
+	usage.TotalTokens = usage.InputTokens + usage.OutputTokens + usage.CacheReadTokens + usage.CacheWriteTokens + usage.CacheWrite1hTokens + usage.ThinkingTokens + usage.InputImageTokens + usage.OutputImageTokens
+	usage.LastUsedAt = timePtrFromTimestamptz(lastUsedAt)
+	return usage, nil
+}
+
+func scanManagementAuthorizationTeamUsageRow(scanner managementAuthorizationSummaryScanner) (port.ManagementAuthorizationTeamUsageRow, error) {
+	var (
+		teamID                 string
+		resourceType           string
+		resourceID             string
+		teamName               string
+		teamStatus             string
+		resourceName           string
+		accountID              string
+		accountName            string
+		ownerSystemAccountID   string
+		ownerSystemAccountName string
+	)
+	usage, lastUsedAt, err := scanManagementAuthorizationUsageRowPrefix(scanner,
+		&teamID,
+		&resourceType,
+		&resourceID,
+		&teamName,
+		&teamStatus,
+		&resourceName,
+		&accountID,
+		&accountName,
+		&ownerSystemAccountID,
+		&ownerSystemAccountName,
+	)
+	if err != nil {
+		return port.ManagementAuthorizationTeamUsageRow{}, fmt.Errorf("scan management authorization team usage row: %w", err)
+	}
+	return port.ManagementAuthorizationTeamUsageRow{
+		ID:                            strings.Join([]string{teamID, resourceType, resourceID}, ":"),
+		TeamID:                        teamID,
+		TeamName:                      teamName,
+		Status:                        teamStatus,
+		ResourceType:                  resourceType,
+		ResourceID:                    resourceID,
+		ResourceName:                  resourceName,
+		AccountID:                     accountID,
+		AccountName:                   accountName,
+		AccountOwnerSystemAccountID:   ownerSystemAccountID,
+		AccountOwnerSystemAccountName: ownerSystemAccountName,
+		Usage:                         usage,
+		LastUsedAt:                    lastUsedAt,
+	}, nil
+}
+
+func scanManagementAuthorizationUserUsageRow(scanner managementAuthorizationSummaryScanner) (port.ManagementAuthorizationUserUsageRow, error) {
+	var (
+		teamID                 string
+		systemAccountID        string
+		resourceType           string
+		resourceID             string
+		userName               string
+		username               string
+		teamNames              []string
+		resourceName           string
+		accountID              string
+		accountName            string
+		ownerSystemAccountID   string
+		ownerSystemAccountName string
+	)
+	usage, lastUsedAt, err := scanManagementAuthorizationUsageRowPrefix(scanner,
+		&teamID,
+		&systemAccountID,
+		&resourceType,
+		&resourceID,
+		&userName,
+		&username,
+		&teamNames,
+		&resourceName,
+		&accountID,
+		&accountName,
+		&ownerSystemAccountID,
+		&ownerSystemAccountName,
+	)
+	if err != nil {
+		return port.ManagementAuthorizationUserUsageRow{}, fmt.Errorf("scan management authorization user usage row: %w", err)
+	}
+	sourceLabels := []string{"全部授权来源"}
+	if teamID != "" {
+		sourceLabels = []string{"团队授权"}
+	}
+	return port.ManagementAuthorizationUserUsageRow{
+		ID:                            strings.Join([]string{systemAccountID, resourceType, resourceID}, ":"),
+		SystemAccountID:               systemAccountID,
+		UserName:                      userName,
+		Username:                      username,
+		TeamNames:                     teamNames,
+		ResourceType:                  resourceType,
+		ResourceID:                    resourceID,
+		ResourceName:                  resourceName,
+		AccountID:                     accountID,
+		AccountName:                   accountName,
+		AccountOwnerSystemAccountID:   ownerSystemAccountID,
+		AccountOwnerSystemAccountName: ownerSystemAccountName,
+		SourceLabels:                  sourceLabels,
+		Usage:                         usage,
+		LastUsedAt:                    lastUsedAt,
+	}, nil
+}
+
+func scanManagementAuthorizationUsageRowPrefix(scanner managementAuthorizationSummaryScanner, extraDest ...any) (port.ManagementAccountUsageSummary, *time.Time, error) {
+	var usage port.ManagementAccountUsageSummary
+	var lastUsedAt pgtype.Timestamptz
+	dest := []any{
+		extraDest[0],
+		extraDest[1],
+		extraDest[2],
+	}
+	if len(extraDest) > 10 {
+		dest = append(dest, extraDest[3])
+	}
+	dest = append(dest,
+		&usage.RequestCount,
+		&usage.InputTokens,
+		&usage.OutputTokens,
+		&usage.CacheReadTokens,
+		&usage.CacheReadCost,
+		&usage.CacheWriteTokens,
+		&usage.CacheWrite1hTokens,
+		&usage.CacheWriteCost,
+		&usage.ThinkingTokens,
+		&usage.InputImageTokens,
+		&usage.OutputImageTokens,
+		&usage.TotalCost,
+		&lastUsedAt,
+	)
+	if len(extraDest) > 10 {
+		dest = append(dest, extraDest[4:]...)
+	} else {
+		dest = append(dest, extraDest[3:]...)
+	}
+	if err := scanner.Scan(dest...); err != nil {
+		return port.ManagementAccountUsageSummary{}, nil, err
+	}
+	usage.TotalTokens = usage.InputTokens + usage.OutputTokens + usage.CacheReadTokens + usage.CacheWriteTokens + usage.CacheWrite1hTokens + usage.ThinkingTokens + usage.InputImageTokens + usage.OutputImageTokens
+	lastUsedAtPtr := timePtrFromTimestamptz(lastUsedAt)
+	usage.LastUsedAt = lastUsedAtPtr
+	return usage, lastUsedAtPtr, nil
 }
 
 func scanManagementAuthorizationSummary(scanner managementAuthorizationSummaryScanner) (port.ManagementResourceAuthorizationSummary, error) {
