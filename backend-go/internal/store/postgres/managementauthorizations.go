@@ -30,36 +30,7 @@ func (s *Store) ListManagementResourceAuthorizations(ctx context.Context, input 
 	defer rows.Close()
 	items := make([]port.ManagementResourceAuthorizationSummary, 0, limit)
 	for rows.Next() {
-		var row managementAuthorizationSummaryRow
-		if err := rows.Scan(
-			&row.Grant.ID,
-			&row.Grant.ResourceType,
-			&row.Grant.ResourceID,
-			&row.Grant.ResourceOwnerSystemAccountID,
-			&row.Grant.GranteeType,
-			&row.Grant.GranteeSystemAccountID,
-			&row.Grant.GranteeTeamID,
-			&row.Grant.Scope,
-			&row.Grant.Status,
-			&row.Grant.Remark,
-			&row.Grant.ExpiresAt,
-			&row.Grant.LimitsJson,
-			&row.Grant.CreatedBy,
-			&row.Grant.CreatedAt,
-			&row.Grant.RevokedBy,
-			&row.Grant.RevokedAt,
-			&row.Grant.UpdatedAt,
-			&row.AccountName,
-			&row.GroupName,
-			&row.AccountExpiresAt,
-			&row.OwnerDisplayName,
-			&row.GranteeDisplayName,
-			&row.GranteeUsername,
-			&row.TeamName,
-		); err != nil {
-			return port.ManagementResourceAuthorizationListResult{}, fmt.Errorf("scan management resource authorization: %w", err)
-		}
-		summary, err := managementAuthorizationSummaryFromRow(row)
+		summary, err := scanManagementAuthorizationSummary(rows)
 		if err != nil {
 			return port.ManagementResourceAuthorizationListResult{}, err
 		}
@@ -76,6 +47,29 @@ func (s *Store) ListManagementResourceAuthorizations(ctx context.Context, input 
 	return port.ManagementResourceAuthorizationListResult{Items: items, HasMore: hasMore}, nil
 }
 
+func (s *Store) FindManagementResourceAuthorization(ctx context.Context, input port.ManagementResourceAuthorizationGetInput) (port.ManagementResourceAuthorizationSummary, bool, error) {
+	authorizationID := strings.TrimSpace(input.AuthorizationID)
+	if authorizationID == "" {
+		return port.ManagementResourceAuthorizationSummary{}, false, nil
+	}
+	query, args := managementResourceAuthorizationListQuery(port.ManagementResourceAuthorizationListInput{
+		AuthorizationID:       authorizationID,
+		ActorSystemAccountID:  input.ActorSystemAccountID,
+		CanAccessAll:          input.CanAccessAll,
+		ScopedSystemAccountID: input.ScopedSystemAccountID,
+		Limit:                 1,
+		Offset:                0,
+	})
+	summary, err := scanManagementAuthorizationSummary(s.pool.QueryRow(ctx, query, args...))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return port.ManagementResourceAuthorizationSummary{}, false, nil
+	}
+	if err != nil {
+		return port.ManagementResourceAuthorizationSummary{}, false, fmt.Errorf("find management resource authorization: %w", err)
+	}
+	return summary, true, nil
+}
+
 func managementResourceAuthorizationListQuery(input port.ManagementResourceAuthorizationListInput) (string, []any) {
 	args := []any{}
 	clauses := []string{}
@@ -87,6 +81,9 @@ func managementResourceAuthorizationListQuery(input port.ManagementResourceAutho
 		clauses = append(clauses, clause)
 	}
 
+	if authorizationID := strings.TrimSpace(input.AuthorizationID); authorizationID != "" {
+		addClause("rag.id = " + addArg(authorizationID))
+	}
 	if resourceType := strings.TrimSpace(input.ResourceType); resourceType != "" {
 		addClause("rag.resource_type = " + addArg(resourceType))
 	}
@@ -1398,9 +1395,45 @@ type managementAuthorizationSummaryRow struct {
 	TeamName           pgtype.Text
 }
 
-func managementAuthorizationSummaryByGrantIDTx(ctx context.Context, tx pgx.Tx, grantID string) (port.ManagementResourceAuthorizationSummary, error) {
+type managementAuthorizationSummaryScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanManagementAuthorizationSummary(scanner managementAuthorizationSummaryScanner) (port.ManagementResourceAuthorizationSummary, error) {
 	var row managementAuthorizationSummaryRow
-	err := tx.QueryRow(ctx, `
+	if err := scanner.Scan(
+		&row.Grant.ID,
+		&row.Grant.ResourceType,
+		&row.Grant.ResourceID,
+		&row.Grant.ResourceOwnerSystemAccountID,
+		&row.Grant.GranteeType,
+		&row.Grant.GranteeSystemAccountID,
+		&row.Grant.GranteeTeamID,
+		&row.Grant.Scope,
+		&row.Grant.Status,
+		&row.Grant.Remark,
+		&row.Grant.ExpiresAt,
+		&row.Grant.LimitsJson,
+		&row.Grant.CreatedBy,
+		&row.Grant.CreatedAt,
+		&row.Grant.RevokedBy,
+		&row.Grant.RevokedAt,
+		&row.Grant.UpdatedAt,
+		&row.AccountName,
+		&row.GroupName,
+		&row.AccountExpiresAt,
+		&row.OwnerDisplayName,
+		&row.GranteeDisplayName,
+		&row.GranteeUsername,
+		&row.TeamName,
+	); err != nil {
+		return port.ManagementResourceAuthorizationSummary{}, fmt.Errorf("scan management resource authorization: %w", err)
+	}
+	return managementAuthorizationSummaryFromRow(row)
+}
+
+func managementAuthorizationSummaryByGrantIDTx(ctx context.Context, tx pgx.Tx, grantID string) (port.ManagementResourceAuthorizationSummary, error) {
+	summary, err := scanManagementAuthorizationSummary(tx.QueryRow(ctx, `
 SELECT rag.id, rag.resource_type, rag.resource_id, rag.resource_owner_system_account_id, rag.grantee_type,
   rag.grantee_system_account_id, rag.grantee_team_id, rag.scope, rag.status, rag.remark, rag.expires_at,
   rag.limits_json, rag.created_by, rag.created_at, rag.revoked_by, rag.revoked_at, rag.updated_at,
@@ -1426,36 +1459,11 @@ LEFT JOIN juhe_business.system_teams AS teams
   ON teams.id = rag.grantee_team_id
 WHERE rag.id = $1
 LIMIT 1
-`, grantID).Scan(
-		&row.Grant.ID,
-		&row.Grant.ResourceType,
-		&row.Grant.ResourceID,
-		&row.Grant.ResourceOwnerSystemAccountID,
-		&row.Grant.GranteeType,
-		&row.Grant.GranteeSystemAccountID,
-		&row.Grant.GranteeTeamID,
-		&row.Grant.Scope,
-		&row.Grant.Status,
-		&row.Grant.Remark,
-		&row.Grant.ExpiresAt,
-		&row.Grant.LimitsJson,
-		&row.Grant.CreatedBy,
-		&row.Grant.CreatedAt,
-		&row.Grant.RevokedBy,
-		&row.Grant.RevokedAt,
-		&row.Grant.UpdatedAt,
-		&row.AccountName,
-		&row.GroupName,
-		&row.AccountExpiresAt,
-		&row.OwnerDisplayName,
-		&row.GranteeDisplayName,
-		&row.GranteeUsername,
-		&row.TeamName,
-	)
+`, grantID))
 	if err != nil {
 		return port.ManagementResourceAuthorizationSummary{}, fmt.Errorf("find created resource authorization summary: %w", err)
 	}
-	return managementAuthorizationSummaryFromRow(row)
+	return summary, nil
 }
 
 func managementAuthorizationSummaryFromRow(row managementAuthorizationSummaryRow) (port.ManagementResourceAuthorizationSummary, error) {
@@ -1601,5 +1609,6 @@ func timePtrFromTimestamptz(value pgtype.Timestamptz) *time.Time {
 }
 
 var _ port.ManagementResourceAuthorizationCreator = (*Store)(nil)
+var _ port.ManagementResourceAuthorizationGetter = (*Store)(nil)
 var _ port.ManagementResourceAuthorizationLister = (*Store)(nil)
 var _ port.ManagementResourceAuthorizationReturner = (*Store)(nil)

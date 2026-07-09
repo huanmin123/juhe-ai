@@ -403,6 +403,103 @@ func TestServiceListValidatesInput(t *testing.T) {
 	}
 }
 
+func TestServiceGetNormalizesScopeAndRedactsNonOwnerDetail(t *testing.T) {
+	createdAt := time.Date(2026, 7, 9, 11, 30, 0, 0, time.UTC)
+	endedAt := createdAt.Add(time.Hour)
+	store := &authorizationGetStoreStub{
+		result: port.ManagementResourceAuthorizationSummary{
+			ID:                           "rauthgrant_team",
+			ResourceType:                 "account",
+			ResourceID:                   "acct_main",
+			ResourceName:                 "主账号",
+			ResourceOwnerSystemAccountID: "sys_owner",
+			GranteeType:                  "team",
+			GranteeTeamID:                "team_ops",
+			GranteeTeamName:              "运维团队",
+			Scope:                        "use",
+			Status:                       "active",
+			EffectiveSourceType:          "team",
+			EffectiveSourceTeamID:        "team_ops",
+			EffectiveSourceTeamName:      "运维团队",
+			AuthorizationSources: []port.ManagementResourceAuthorizationSourceSummary{{
+				ID:              "ras_team",
+				AuthorizationID: "rauth_runtime",
+				SourceType:      "team",
+				SourceTeamID:    "team_ops",
+				SourceTeamName:  "运维团队",
+				Status:          "active",
+				ActivatedAt:     &createdAt,
+				EndedAt:         &endedAt,
+				EndedReason:     "team_disabled",
+				CreatedBy:       "sys_owner",
+				CreatedAt:       createdAt,
+				RevokedBy:       "sys_admin",
+				RevokedAt:       &endedAt,
+				UpdatedAt:       endedAt,
+			}},
+			CreatedBy: "sys_owner",
+			CreatedAt: createdAt,
+			RevokedBy: "sys_admin",
+			UpdatedAt: createdAt,
+		},
+		found: true,
+	}
+	service := NewServiceWithOptions(ServiceOptions{GetStore: store})
+
+	got, found, err := service.Get(context.Background(), GetInput{
+		AuthorizationID:       " rauthgrant_team ",
+		ActorSystemAccountID:  " sys_viewer ",
+		ActorRole:             "user",
+		ScopedSystemAccountID: "sys_other",
+	})
+
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if !found {
+		t.Fatal("Get() found = false, want true")
+	}
+	if !store.called ||
+		store.input.AuthorizationID != "rauthgrant_team" ||
+		store.input.ActorSystemAccountID != "sys_viewer" ||
+		store.input.ScopedSystemAccountID != "sys_viewer" ||
+		store.input.CanAccessAll {
+		t.Fatalf("store input = %+v", store.input)
+	}
+	if got.Permissions.CanEdit || got.Permissions.CanAuthorize ||
+		got.EffectiveSourceTeamID != "" ||
+		got.EffectiveSourceTeamName != "" ||
+		got.CreatedBy != "" ||
+		got.RevokedBy != "" {
+		t.Fatalf("non-owner detail was not redacted: %+v", got)
+	}
+	if len(got.AuthorizationSources) != 1 {
+		t.Fatalf("authorization sources = %+v", got.AuthorizationSources)
+	}
+	source := got.AuthorizationSources[0]
+	if source.SourceTeamID != "" ||
+		source.CreatedBy != "" ||
+		source.RevokedBy != "" ||
+		source.EndedAt != nil ||
+		source.RevokedAt != nil ||
+		source.SourceTeamName != "运维团队" ||
+		source.EndedReason != "team_disabled" {
+		t.Fatalf("sanitized source = %+v", source)
+	}
+}
+
+func TestServiceGetValidatesInput(t *testing.T) {
+	service := NewServiceWithOptions(ServiceOptions{GetStore: &authorizationGetStoreStub{}})
+	for _, input := range []GetInput{
+		{AuthorizationID: "", ActorSystemAccountID: "sys_actor"},
+		{AuthorizationID: "rauthgrant_main", ActorSystemAccountID: ""},
+	} {
+		if _, _, err := service.Get(context.Background(), input); !errors.Is(err, ErrAuthorizationListInvalid) {
+			t.Fatalf("Get(%+v) error = %v, want invalid input", input, err)
+		}
+	}
+}
+
 type authorizationCreateStoreStub struct {
 	called bool
 	input  port.ManagementResourceAuthorizationCreateInput
@@ -452,6 +549,23 @@ func (s *authorizationListStoreStub) ListManagementResourceAuthorizations(_ cont
 	return s.result, nil
 }
 
+type authorizationGetStoreStub struct {
+	called bool
+	input  port.ManagementResourceAuthorizationGetInput
+	result port.ManagementResourceAuthorizationSummary
+	found  bool
+	err    error
+}
+
+func (s *authorizationGetStoreStub) FindManagementResourceAuthorization(_ context.Context, input port.ManagementResourceAuthorizationGetInput) (port.ManagementResourceAuthorizationSummary, bool, error) {
+	s.called = true
+	s.input = input
+	if s.err != nil {
+		return port.ManagementResourceAuthorizationSummary{}, false, s.err
+	}
+	return s.result, s.found, nil
+}
+
 type authorizationInvalidatorStub struct {
 	calls  int
 	reason string
@@ -465,6 +579,7 @@ func (s *authorizationInvalidatorStub) InvalidateAuthorizationChanged(_ context.
 }
 
 var _ port.ManagementResourceAuthorizationCreator = (*authorizationCreateStoreStub)(nil)
+var _ port.ManagementResourceAuthorizationGetter = (*authorizationGetStoreStub)(nil)
 var _ port.ManagementResourceAuthorizationLister = (*authorizationListStoreStub)(nil)
 var _ port.ManagementResourceAuthorizationReturner = (*authorizationReturnStoreStub)(nil)
 var _ AuthorizationInvalidator = (*authorizationInvalidatorStub)(nil)

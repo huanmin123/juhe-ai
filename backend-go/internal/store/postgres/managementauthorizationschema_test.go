@@ -83,6 +83,7 @@ func TestW4AuthorizationQuotaAndStatsStateMigrationMatchesCurrentContract(t *tes
 
 func TestManagementResourceAuthorizationListQueryScopesAndFilters(t *testing.T) {
 	query, args := managementResourceAuthorizationListQuery(port.ManagementResourceAuthorizationListInput{
+		AuthorizationID:              "rauthgrant_main",
 		ActorSystemAccountID:         "sys_actor",
 		CanAccessAll:                 false,
 		ResourceType:                 "account",
@@ -101,6 +102,7 @@ func TestManagementResourceAuthorizationListQueryScopesAndFilters(t *testing.T) 
 	for _, want := range []string{
 		"FROM juhe_business.resource_authorization_grants AS rag",
 		"LEFT JOIN LATERAL",
+		"rag.id =",
 		"rag.resource_type =",
 		"rag.resource_owner_system_account_id =",
 		"rag.grantee_system_account_id =",
@@ -120,7 +122,7 @@ func TestManagementResourceAuthorizationListQueryScopesAndFilters(t *testing.T) 
 	if len(args) < 2 || args[len(args)-2] != 6 || args[len(args)-1] != 12 {
 		t.Fatalf("pagination args = %v, want last args 6, 12", args)
 	}
-	for _, want := range []any{"sys_actor", "acct_main", "sys_owner", "sys_grantee", "team_ops", "授权"} {
+	for _, want := range []any{"rauthgrant_main", "sys_actor", "acct_main", "sys_owner", "sys_grantee", "team_ops", "授权"} {
 		if !containsQueryArg(args, want) {
 			t.Fatalf("query args missing %v: %v", want, args)
 		}

@@ -40,6 +40,7 @@ var (
 
 type Service struct {
 	listStore                port.ManagementResourceAuthorizationLister
+	getStore                 port.ManagementResourceAuthorizationGetter
 	createStore              port.ManagementResourceAuthorizationCreator
 	returnStore              port.ManagementResourceAuthorizationReturner
 	now                      func() time.Time
@@ -53,6 +54,7 @@ type AuthorizationInvalidator interface {
 
 type ServiceOptions struct {
 	ListStore                port.ManagementResourceAuthorizationLister
+	GetStore                 port.ManagementResourceAuthorizationGetter
 	Store                    port.ManagementResourceAuthorizationCreator
 	ReturnStore              port.ManagementResourceAuthorizationReturner
 	Now                      func() time.Time
@@ -83,6 +85,11 @@ type ListResult struct {
 	HasMore  bool       `json:"hasMore"`
 	Page     int        `json:"page"`
 	PageSize int        `json:"pageSize"`
+}
+
+type Detail struct {
+	Summary
+	Permissions Permissions `json:"permissions"`
 }
 
 type ListItem struct {
@@ -157,6 +164,13 @@ type ReturnInput struct {
 	ActorSystemAccountID   string
 }
 
+type GetInput struct {
+	AuthorizationID       string
+	ActorSystemAccountID  string
+	ActorRole             string
+	ScopedSystemAccountID string
+}
+
 type Summary = port.ManagementResourceAuthorizationSummary
 
 func NewService(store port.ManagementResourceAuthorizationCreator) *Service {
@@ -180,8 +194,15 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 			listStore = candidate
 		}
 	}
+	getStore := opts.GetStore
+	if getStore == nil {
+		if candidate, ok := opts.Store.(port.ManagementResourceAuthorizationGetter); ok {
+			getStore = candidate
+		}
+	}
 	return &Service{
 		listStore:                listStore,
+		getStore:                 getStore,
 		createStore:              opts.Store,
 		returnStore:              returnStore,
 		now:                      now,
@@ -255,6 +276,32 @@ func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error)
 		Page:     page,
 		PageSize: pageSize,
 	}, nil
+}
+
+func (s *Service) Get(ctx context.Context, input GetInput) (Detail, bool, error) {
+	if s.getStore == nil {
+		return Detail{}, false, fmt.Errorf("management resource authorization getter is required")
+	}
+	authorizationID := strings.TrimSpace(input.AuthorizationID)
+	actor := strings.TrimSpace(input.ActorSystemAccountID)
+	if authorizationID == "" || actor == "" {
+		return Detail{}, false, ErrAuthorizationListInvalid
+	}
+	canAccessAll := isAdminRole(input.ActorRole)
+	scopedSystemAccountID := strings.TrimSpace(input.ScopedSystemAccountID)
+	if !canAccessAll {
+		scopedSystemAccountID = actor
+	}
+	row, found, err := s.getStore.FindManagementResourceAuthorization(ctx, port.ManagementResourceAuthorizationGetInput{
+		AuthorizationID:       authorizationID,
+		ActorSystemAccountID:  actor,
+		CanAccessAll:          canAccessAll,
+		ScopedSystemAccountID: scopedSystemAccountID,
+	})
+	if err != nil || !found {
+		return Detail{}, found, err
+	}
+	return detailFromSummary(row, canManageAuthorizationResourceOwner(row.ResourceOwnerSystemAccountID, canAccessAll, scopedSystemAccountID)), true, nil
 }
 
 func (s *Service) Create(ctx context.Context, input CreateInput) (Summary, error) {
@@ -499,6 +546,44 @@ func listItemFromSummary(summary Summary, canManage bool) ListItem {
 		item.RevokedBy = ""
 	}
 	return item
+}
+
+func detailFromSummary(summary Summary, canManage bool) Detail {
+	if !canManage {
+		summary.EffectiveSourceTeamID = ""
+		summary.EffectiveSourceTeamName = ""
+		summary.AuthorizationSources = sanitizeAuthorizationSourcesForViewer(summary.AuthorizationSources)
+		summary.CreatedBy = ""
+		summary.RevokedBy = ""
+	}
+	return Detail{
+		Summary: summary,
+		Permissions: Permissions{
+			CanEdit:      canManage,
+			CanAuthorize: canManage,
+		},
+	}
+}
+
+func sanitizeAuthorizationSourcesForViewer(sources []port.ManagementResourceAuthorizationSourceSummary) []port.ManagementResourceAuthorizationSourceSummary {
+	if sources == nil {
+		return nil
+	}
+	out := make([]port.ManagementResourceAuthorizationSourceSummary, 0, len(sources))
+	for _, source := range sources {
+		out = append(out, port.ManagementResourceAuthorizationSourceSummary{
+			ID:              source.ID,
+			AuthorizationID: source.AuthorizationID,
+			SourceType:      source.SourceType,
+			SourceTeamName:  source.SourceTeamName,
+			Status:          source.Status,
+			ActivatedAt:     source.ActivatedAt,
+			EndedReason:     source.EndedReason,
+			CreatedAt:       source.CreatedAt,
+			UpdatedAt:       source.UpdatedAt,
+		})
+	}
+	return out
 }
 
 func sourceSummary(sources []port.ManagementResourceAuthorizationSourceSummary, canManage bool) SourceSummary {

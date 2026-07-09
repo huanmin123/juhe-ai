@@ -584,6 +584,7 @@ type ManagementResourceAuthorizationSummary struct {
 }
 
 type ManagementResourceAuthorizationListInput struct {
+	AuthorizationID              string
 	ActorSystemAccountID         string
 	CanAccessAll                 bool
 	ScopedSystemAccountID        string
@@ -603,6 +604,13 @@ type ManagementResourceAuthorizationListInput struct {
 type ManagementResourceAuthorizationListResult struct {
 	Items   []ManagementResourceAuthorizationSummary
 	HasMore bool
+}
+
+type ManagementResourceAuthorizationGetInput struct {
+	AuthorizationID       string
+	ActorSystemAccountID  string
+	CanAccessAll          bool
+	ScopedSystemAccountID string
 }
 
 type ManagementResourceAuthorizationCreateInput struct {
@@ -629,6 +637,10 @@ type ManagementResourceAuthorizationCreator interface {
 
 type ManagementResourceAuthorizationLister interface {
 	ListManagementResourceAuthorizations(ctx context.Context, input ManagementResourceAuthorizationListInput) (ManagementResourceAuthorizationListResult, error)
+}
+
+type ManagementResourceAuthorizationGetter interface {
+	FindManagementResourceAuthorization(ctx context.Context, input ManagementResourceAuthorizationGetInput) (ManagementResourceAuthorizationSummary, bool, error)
 }
 
 type ManagementResourceAuthorizationReturnInput struct {

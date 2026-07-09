@@ -50,6 +50,8 @@ type RouterOptions struct {
 	ManagementMyAuthorizationGranteeGroupsHandler   http.Handler
 	ManagementAuthorizationListHandler              http.Handler
 	ManagementMyAuthorizationListHandler            http.Handler
+	ManagementAuthorizationDetailHandler            http.Handler
+	ManagementMyAuthorizationDetailHandler          http.Handler
 	ManagementAuthorizationCreateHandler            http.Handler
 	ManagementMyAuthorizationCreateHandler          http.Handler
 	ManagementAuthorizationReturnHandler            http.Handler
@@ -134,6 +136,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyAuthorizationGranteeGroupsHandler == nil &&
 				opts.ManagementAuthorizationListHandler == nil &&
 				opts.ManagementMyAuthorizationListHandler == nil &&
+				opts.ManagementAuthorizationDetailHandler == nil &&
+				opts.ManagementMyAuthorizationDetailHandler == nil &&
 				opts.ManagementAuthorizationCreateHandler == nil &&
 				opts.ManagementMyAuthorizationCreateHandler == nil &&
 				opts.ManagementAuthorizationReturnHandler == nil &&
@@ -242,6 +246,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementMyAuthorizationListHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/my-authorizations", opts.ManagementMyAuthorizationListHandler.ServeHTTP)
+			}
+			if opts.ManagementAuthorizationDetailHandler != nil {
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/authorizations/{id}", opts.ManagementAuthorizationDetailHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAuthorizationDetailHandler != nil {
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/my-authorizations/{id}", opts.ManagementMyAuthorizationDetailHandler.ServeHTTP)
 			}
 			if opts.ManagementAuthorizationCreateHandler != nil {
 				system.With(managementAPIWriteAuthMiddleware).Post("/authorizations", opts.ManagementAuthorizationCreateHandler.ServeHTTP)

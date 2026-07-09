@@ -35,6 +35,10 @@ type managementAuthorizationListService interface {
 	List(r *http.Request, input managementauthorizations.ListInput) (managementauthorizations.ListResult, error)
 }
 
+type managementAuthorizationGetService interface {
+	Get(r *http.Request, input managementauthorizations.GetInput) (managementauthorizations.Detail, bool, error)
+}
+
 type managementAuthorizationReturnService interface {
 	Return(r *http.Request, input managementauthorizations.ReturnInput) (managementauthorizations.Summary, bool, error)
 }
@@ -51,6 +55,10 @@ func (s managementAuthorizationServiceAdapter) List(r *http.Request, input manag
 	return s.service.List(r.Context(), input)
 }
 
+func (s managementAuthorizationServiceAdapter) Get(r *http.Request, input managementauthorizations.GetInput) (managementauthorizations.Detail, bool, error) {
+	return s.service.Get(r.Context(), input)
+}
+
 func (s managementAuthorizationServiceAdapter) Return(r *http.Request, input managementauthorizations.ReturnInput) (managementauthorizations.Summary, bool, error) {
 	return s.service.Return(r.Context(), input)
 }
@@ -61,6 +69,14 @@ func NewManagementAuthorizationListHandler(service *managementauthorizations.Ser
 
 func NewManagementMyAuthorizationListHandler(service *managementauthorizations.Service) http.Handler {
 	return newManagementAuthorizationListHandler(managementAuthorizationServiceAdapter{service: service}, managementAuthorizationScopeSelf)
+}
+
+func NewManagementAuthorizationDetailHandler(service *managementauthorizations.Service) http.Handler {
+	return newManagementAuthorizationDetailHandler(managementAuthorizationServiceAdapter{service: service}, managementAuthorizationScopeAdmin)
+}
+
+func NewManagementMyAuthorizationDetailHandler(service *managementauthorizations.Service) http.Handler {
+	return newManagementAuthorizationDetailHandler(managementAuthorizationServiceAdapter{service: service}, managementAuthorizationScopeSelf)
 }
 
 func NewManagementAuthorizationCreateHandler(service *managementauthorizations.Service) http.Handler {
@@ -145,6 +161,53 @@ func newManagementAuthorizationListHandler(service managementAuthorizationListSe
 		}
 		if err != nil {
 			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		writeData(w, http.StatusOK, result)
+	})
+}
+
+func newManagementAuthorizationDetailHandler(service managementAuthorizationGetService, scope managementAuthorizationScope) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authContext, ok := ManagementAuthContextFromRequest(r)
+		if !ok || strings.TrimSpace(authContext.SystemAccountID) == "" {
+			writeMessageError(w, http.StatusUnauthorized, "未登录")
+			return
+		}
+		if service == nil {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		if scope == managementAuthorizationScopeAdmin && !managementauth.IsAdminRole(authContext.Role) {
+			writeMessageError(w, http.StatusForbidden, "需要管理员权限")
+			return
+		}
+		scopedSystemAccountID, validScope := managementAuthorizationListScope(authContext, r.URL.Query(), scope)
+		if !validScope {
+			writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
+			return
+		}
+		authorizationID := strings.TrimSpace(chi.URLParam(r, "id"))
+		if authorizationID == "" {
+			writeMessageError(w, http.StatusBadRequest, "授权记录 ID 不合法")
+			return
+		}
+		result, found, err := service.Get(r, managementauthorizations.GetInput{
+			AuthorizationID:       authorizationID,
+			ActorSystemAccountID:  authContext.SystemAccountID,
+			ActorRole:             authContext.Role,
+			ScopedSystemAccountID: scopedSystemAccountID,
+		})
+		if errors.Is(err, managementauthorizations.ErrAuthorizationListInvalid) {
+			writeMessageError(w, http.StatusBadRequest, "授权记录 ID 不合法")
+			return
+		}
+		if err != nil {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		if !found {
+			writeMessageError(w, http.StatusNotFound, "授权记录不存在")
 			return
 		}
 		writeData(w, http.StatusOK, result)
