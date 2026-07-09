@@ -1,0 +1,489 @@
+package managementauthorizations
+
+import (
+	"bytes"
+	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"math"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"juhe-ai/backend-go/internal/store/port"
+)
+
+const (
+	maxRemarkRunes                           = 200
+	maxRequestQuotaHourlyWindowHours         = 24 * 30
+	maxRequestQuotaAmountUSD                 = 9_007_199_254_740_991
+	quotaAmountPrecision               int64 = 1_000_000
+	ResourceAuthorizationCreatedReason       = "resource_authorization_created"
+)
+
+var (
+	ErrAuthorizationCreateInvalid = errors.New("management authorization create invalid")
+)
+
+type Service struct {
+	store                    port.ManagementResourceAuthorizationCreator
+	now                      func() time.Time
+	secret                   string
+	authorizationInvalidator AuthorizationInvalidator
+}
+
+type AuthorizationInvalidator interface {
+	InvalidateAuthorizationChanged(ctx context.Context, reason string) error
+}
+
+type ServiceOptions struct {
+	Store                    port.ManagementResourceAuthorizationCreator
+	Now                      func() time.Time
+	Secret                   string
+	AuthorizationInvalidator AuthorizationInvalidator
+}
+
+type CreateInput struct {
+	ResourceType                 string
+	ResourceID                   string
+	ResourceOwnerSystemAccountID string
+	GranteeType                  string
+	GranteeID                    string
+	TargetGroupID                string
+	Remark                       string
+	HasRemark                    bool
+	ExpiresAt                    string
+	HasExpiresAt                 bool
+	Limits                       map[string]any
+	HasLimits                    bool
+	ActorSystemAccountID         string
+}
+
+type Summary = port.ManagementResourceAuthorizationSummary
+
+func NewService(store port.ManagementResourceAuthorizationCreator) *Service {
+	return NewServiceWithOptions(ServiceOptions{Store: store})
+}
+
+func NewServiceWithOptions(opts ServiceOptions) *Service {
+	now := opts.Now
+	if now == nil {
+		now = time.Now
+	}
+	return &Service{
+		store:                    opts.Store,
+		now:                      now,
+		secret:                   opts.Secret,
+		authorizationInvalidator: opts.AuthorizationInvalidator,
+	}
+}
+
+func (s *Service) Create(ctx context.Context, input CreateInput) (Summary, error) {
+	if s.store == nil {
+		return Summary{}, fmt.Errorf("management resource authorization creator is required")
+	}
+	now := s.now().UTC()
+	resourceType := normalizeResourceType(input.ResourceType)
+	resourceID := strings.TrimSpace(input.ResourceID)
+	ownerID := strings.TrimSpace(input.ResourceOwnerSystemAccountID)
+	granteeType := normalizeGranteeType(input.GranteeType)
+	granteeID := strings.TrimSpace(input.GranteeID)
+	actor := strings.TrimSpace(input.ActorSystemAccountID)
+	if resourceType == "" || resourceID == "" || ownerID == "" || granteeType == "" || granteeID == "" || actor == "" {
+		return Summary{}, ErrAuthorizationCreateInvalid
+	}
+
+	targetGroupID := strings.TrimSpace(input.TargetGroupID)
+	if resourceType == "account" && granteeType == "system_account" && targetGroupID == "" {
+		return Summary{}, fmt.Errorf("授权 AI 账户给个人时必须选择目标分组")
+	}
+	if targetGroupID != "" && (resourceType != "account" || granteeType != "system_account") {
+		return Summary{}, fmt.Errorf("只有授权 AI 账户给个人时可以指定目标分组")
+	}
+
+	remark := strings.TrimSpace(input.Remark)
+	hasRemark := input.HasRemark && remark != ""
+	if utf8.RuneCountInString(remark) > maxRemarkRunes {
+		return Summary{}, ErrAuthorizationCreateInvalid
+	}
+
+	var expiresAt *time.Time
+	if input.HasExpiresAt {
+		parsed, err := parseServerDateTime(input.ExpiresAt)
+		if err != nil {
+			return Summary{}, err
+		}
+		if !parsed.After(now) {
+			return Summary{}, fmt.Errorf("授权到期时间不能早于当前时间")
+		}
+		expiresAt = &parsed
+	}
+
+	limits, limitsJSON, hourlyWindowHours, err := normalizeRequestQuotaLimits(input.Limits, input.HasLimits)
+	if err != nil {
+		return Summary{}, err
+	}
+	secretJSON, err := s.encryptJSON(map[string]any{})
+	if err != nil {
+		return Summary{}, fmt.Errorf("encrypt authorization instance credential: %w", err)
+	}
+
+	storeInput := port.ManagementResourceAuthorizationCreateInput{
+		ResourceType:                    resourceType,
+		ResourceID:                      resourceID,
+		ResourceOwnerSystemAccountID:    ownerID,
+		GranteeType:                     granteeType,
+		GranteeID:                       granteeID,
+		TargetGroupID:                   targetGroupID,
+		Remark:                          remark,
+		HasRemark:                       hasRemark,
+		ExpiresAt:                       expiresAt,
+		Limits:                          limits,
+		LimitsJSON:                      limitsJSON,
+		LimitHourlyWindowHours:          hourlyWindowHours,
+		AuthorizationInstanceSecretJSON: secretJSON,
+		ActorSystemAccountID:            actor,
+		CreatedAt:                       now,
+	}
+	row, err := s.store.CreateManagementResourceAuthorization(ctx, storeInput)
+	if err != nil {
+		return Summary{}, err
+	}
+	if s.authorizationInvalidator != nil {
+		if err := s.authorizationInvalidator.InvalidateAuthorizationChanged(ctx, ResourceAuthorizationCreatedReason); err != nil {
+			return Summary{}, err
+		}
+	}
+	return row, nil
+}
+
+func normalizeResourceType(value string) string {
+	switch strings.TrimSpace(value) {
+	case "account":
+		return "account"
+	case "group":
+		return "group"
+	default:
+		return ""
+	}
+}
+
+func normalizeGranteeType(value string) string {
+	switch strings.TrimSpace(value) {
+	case "system_account":
+		return "system_account"
+	case "team":
+		return "team"
+	default:
+		return ""
+	}
+}
+
+func parseServerDateTime(value string) (time.Time, error) {
+	text := strings.TrimSpace(value)
+	if text == "" {
+		return time.Time{}, fmt.Errorf("过期时间格式不正确")
+	}
+	if !serverDateTimePattern(text) {
+		return time.Time{}, fmt.Errorf("过期时间格式不正确")
+	}
+	parsed, err := time.Parse("2006-01-02T15:04:05.000Z", text)
+	if err != nil {
+		parsed, err = time.Parse("2006-01-02T15:04:05Z", text)
+	}
+	if err != nil {
+		return time.Time{}, fmt.Errorf("过期时间格式不正确")
+	}
+	return parsed.UTC(), nil
+}
+
+func serverDateTimePattern(value string) bool {
+	if len(value) != len("2006-01-02T15:04:05Z") && len(value) != len("2006-01-02T15:04:05.000Z") {
+		return false
+	}
+	for index, char := range value {
+		switch index {
+		case 4, 7:
+			if char != '-' {
+				return false
+			}
+		case 10:
+			if char != 'T' {
+				return false
+			}
+		case 13, 16:
+			if char != ':' {
+				return false
+			}
+		case 19:
+			if len(value) == len("2006-01-02T15:04:05Z") {
+				if char != 'Z' {
+					return false
+				}
+			} else if char != '.' {
+				return false
+			}
+		case 23:
+			if len(value) == len("2006-01-02T15:04:05.000Z") && char != 'Z' {
+				return false
+			}
+		default:
+			if char < '0' || char > '9' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func normalizeRequestQuotaLimits(value map[string]any, hasValue bool) (port.ManagementRequestQuotaLimits, *string, int, error) {
+	if !hasValue {
+		return port.ManagementRequestQuotaLimits{}, nil, 0, nil
+	}
+	if value == nil {
+		return port.ManagementRequestQuotaLimits{}, nil, 0, fmt.Errorf("请求额度限制参数无效")
+	}
+	allowed := map[string]bool{
+		"hourly":  true,
+		"daily":   true,
+		"weekly":  true,
+		"monthly": true,
+		"total":   true,
+	}
+	for key := range value {
+		if !allowed[key] {
+			return port.ManagementRequestQuotaLimits{}, nil, 0, fmt.Errorf("请求额度限制包含不支持字段：%s", key)
+		}
+	}
+	limits := port.ManagementRequestQuotaLimits{}
+	var hourlyWindowHours int
+	if item, exists := value["hourly"]; exists {
+		limit, err := normalizeHourlyQuotaLimit(item)
+		if err != nil {
+			return port.ManagementRequestQuotaLimits{}, nil, 0, err
+		}
+		limits.Hourly = &limit
+		hourlyWindowHours = limit.Hours
+	}
+	for _, key := range []string{"daily", "weekly", "monthly", "total"} {
+		item, exists := value[key]
+		if !exists {
+			continue
+		}
+		limit, err := normalizeQuotaLimit(item, quotaLimitLabel(key))
+		if err != nil {
+			return port.ManagementRequestQuotaLimits{}, nil, 0, err
+		}
+		switch key {
+		case "daily":
+			limits.Daily = &limit
+		case "weekly":
+			limits.Weekly = &limit
+		case "monthly":
+			limits.Monthly = &limit
+		case "total":
+			limits.Total = &limit
+		}
+	}
+	if !hasEnabledRequestQuotaLimit(limits) {
+		return port.ManagementRequestQuotaLimits{}, nil, 0, nil
+	}
+	jsonText, err := marshalQuotaLimits(limits)
+	if err != nil {
+		return port.ManagementRequestQuotaLimits{}, nil, 0, err
+	}
+	return limits, &jsonText, hourlyWindowHours, nil
+}
+
+func normalizeHourlyQuotaLimit(value any) (port.ManagementRequestHourlyQuotaLimit, error) {
+	fields, ok := value.(map[string]any)
+	if !ok || fields == nil {
+		return port.ManagementRequestHourlyQuotaLimit{}, fmt.Errorf("小时额度参数无效")
+	}
+	if err := assertQuotaLimitKeys(fields, map[string]bool{"enabled": true, "limit": true, "hours": true}, "小时额度"); err != nil {
+		return port.ManagementRequestHourlyQuotaLimit{}, err
+	}
+	if enabled, ok := fields["enabled"].(bool); !ok || !enabled {
+		return port.ManagementRequestHourlyQuotaLimit{}, fmt.Errorf("小时额度启用状态必须为 true")
+	}
+	amount, err := positiveAmount(fields["limit"], "小时额度")
+	if err != nil {
+		return port.ManagementRequestHourlyQuotaLimit{}, err
+	}
+	hours, err := positiveInteger(fields["hours"], "小时额度窗口")
+	if err != nil {
+		return port.ManagementRequestHourlyQuotaLimit{}, err
+	}
+	return port.ManagementRequestHourlyQuotaLimit{Enabled: true, Hours: hours, Limit: amount}, nil
+}
+
+func normalizeQuotaLimit(value any, label string) (port.ManagementRequestQuotaLimit, error) {
+	fields, ok := value.(map[string]any)
+	if !ok || fields == nil {
+		return port.ManagementRequestQuotaLimit{}, fmt.Errorf("%s参数无效", label)
+	}
+	if err := assertQuotaLimitKeys(fields, map[string]bool{"enabled": true, "limit": true}, label); err != nil {
+		return port.ManagementRequestQuotaLimit{}, err
+	}
+	if enabled, ok := fields["enabled"].(bool); !ok || !enabled {
+		return port.ManagementRequestQuotaLimit{}, fmt.Errorf("%s启用状态必须为 true", label)
+	}
+	amount, err := positiveAmount(fields["limit"], label)
+	if err != nil {
+		return port.ManagementRequestQuotaLimit{}, err
+	}
+	return port.ManagementRequestQuotaLimit{Enabled: true, Limit: amount}, nil
+}
+
+func assertQuotaLimitKeys(value map[string]any, allowed map[string]bool, label string) error {
+	for key := range value {
+		if !allowed[key] {
+			return fmt.Errorf("%s包含不支持字段：%s", label, key)
+		}
+	}
+	return nil
+}
+
+func positiveInteger(value any, label string) (int, error) {
+	number, ok := jsonNumber(value)
+	if !ok || math.Trunc(number) != number {
+		return 0, fmt.Errorf("%s必须是数字", label)
+	}
+	if number <= 0 || number > maxRequestQuotaHourlyWindowHours {
+		return 0, fmt.Errorf("%s必须在 1-%d 之间", label, maxRequestQuotaHourlyWindowHours)
+	}
+	return int(number), nil
+}
+
+func positiveAmount(value any, label string) (float64, error) {
+	number, ok := jsonNumber(value)
+	if !ok || math.IsNaN(number) || math.IsInf(number, 0) || number <= 0 || number > maxRequestQuotaAmountUSD {
+		return 0, fmt.Errorf("%s金额必须是大于 0 的数字", label)
+	}
+	scaled := number * float64(quotaAmountPrecision)
+	if math.Round(scaled) != scaled {
+		return 0, fmt.Errorf("%s金额最多支持 6 位小数", label)
+	}
+	return math.Round(scaled) / float64(quotaAmountPrecision), nil
+}
+
+func jsonNumber(value any) (float64, bool) {
+	switch typed := value.(type) {
+	case json.Number:
+		number, err := typed.Float64()
+		return number, err == nil
+	case float64:
+		return typed, true
+	case float32:
+		return float64(typed), true
+	case int:
+		return float64(typed), true
+	case int64:
+		return float64(typed), true
+	case int32:
+		return float64(typed), true
+	default:
+		return 0, false
+	}
+}
+
+func quotaLimitLabel(key string) string {
+	switch key {
+	case "daily":
+		return "日额度"
+	case "weekly":
+		return "周额度"
+	case "monthly":
+		return "月额度"
+	case "total":
+		return "总额度"
+	default:
+		return "额度"
+	}
+}
+
+func hasEnabledRequestQuotaLimit(value port.ManagementRequestQuotaLimits) bool {
+	return value.Hourly != nil ||
+		value.Daily != nil ||
+		value.Weekly != nil ||
+		value.Monthly != nil ||
+		value.Total != nil
+}
+
+func marshalQuotaLimits(value port.ManagementRequestQuotaLimits) (string, error) {
+	out := map[string]any{}
+	if value.Hourly != nil {
+		out["hourly"] = value.Hourly
+	}
+	if value.Daily != nil {
+		out["daily"] = value.Daily
+	}
+	if value.Weekly != nil {
+		out["weekly"] = value.Weekly
+	}
+	if value.Monthly != nil {
+		out["monthly"] = value.Monthly
+	}
+	if value.Total != nil {
+		out["total"] = value.Total
+	}
+	ordered := bytes.NewBufferString("{")
+	wrote := false
+	for _, key := range []string{"hourly", "daily", "weekly", "monthly", "total"} {
+		item, exists := out[key]
+		if !exists {
+			continue
+		}
+		if wrote {
+			ordered.WriteByte(',')
+		}
+		valueBytes, err := json.Marshal(item)
+		if err != nil {
+			return "", err
+		}
+		keyBytes, _ := json.Marshal(key)
+		ordered.Write(keyBytes)
+		ordered.WriteByte(':')
+		ordered.Write(valueBytes)
+		wrote = true
+	}
+	ordered.WriteByte('}')
+	return ordered.String(), nil
+}
+
+func (s *Service) encryptJSON(value map[string]any) (string, error) {
+	secret := strings.TrimSpace(s.secret)
+	if secret == "" {
+		secret = "juhe-ai-go-development-secret"
+	}
+	key := sha256.Sum256([]byte(secret))
+	block, err := aes.NewCipher(key[:])
+	if err != nil {
+		return "", err
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, aead.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", err
+	}
+	plain, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	sealed := aead.Seal(nil, nonce, plain, nil)
+	tagSize := aead.Overhead()
+	ciphertext := sealed[:len(sealed)-tagSize]
+	tag := sealed[len(sealed)-tagSize:]
+	encode := base64.RawURLEncoding.EncodeToString
+	return "v1:" + encode(nonce) + ":" + encode(tag) + ":" + encode(ciphertext), nil
+}

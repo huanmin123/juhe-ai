@@ -48,6 +48,8 @@ type RouterOptions struct {
 	ManagementMyAuthorizationGranteeTeamsHandler    http.Handler
 	ManagementAuthorizationGranteeGroupsHandler     http.Handler
 	ManagementMyAuthorizationGranteeGroupsHandler   http.Handler
+	ManagementAuthorizationCreateHandler            http.Handler
+	ManagementMyAuthorizationCreateHandler          http.Handler
 	ManagementProviderOptionsHandler                http.Handler
 	ManagementProviderModelOptionsHandler           http.Handler
 	ManagementProviderModelsHandler                 http.Handler
@@ -126,6 +128,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyAuthorizationGranteeTeamsHandler == nil &&
 				opts.ManagementAuthorizationGranteeGroupsHandler == nil &&
 				opts.ManagementMyAuthorizationGranteeGroupsHandler == nil &&
+				opts.ManagementAuthorizationCreateHandler == nil &&
+				opts.ManagementMyAuthorizationCreateHandler == nil &&
 				opts.ManagementProviderOptionsHandler == nil &&
 				opts.ManagementProviderModelOptionsHandler == nil &&
 				opts.ManagementProviderModelsHandler == nil &&
@@ -224,6 +228,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementMyAuthorizationGranteeGroupsHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/my-authorization-options/grantee-groups", opts.ManagementMyAuthorizationGranteeGroupsHandler.ServeHTTP)
+			}
+			if opts.ManagementAuthorizationCreateHandler != nil {
+				system.With(managementAPIWriteAuthMiddleware).Post("/authorizations", opts.ManagementAuthorizationCreateHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAuthorizationCreateHandler != nil {
+				system.With(managementAPIWriteAuthMiddleware).Post("/my-authorizations", opts.ManagementMyAuthorizationCreateHandler.ServeHTTP)
 			}
 			if opts.ManagementProviderOptionsHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/providers/options", opts.ManagementProviderOptionsHandler.ServeHTTP)
@@ -330,6 +340,8 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementSystemTeamPatchHandler != nil ||
 		opts.ManagementSystemTeamMembersAddHandler != nil ||
 		opts.ManagementSystemTeamMemberDeleteHandler != nil ||
+		opts.ManagementAuthorizationCreateHandler != nil ||
+		opts.ManagementMyAuthorizationCreateHandler != nil ||
 		opts.ManagementProviderDefaultTestModelHandler != nil ||
 		opts.ManagementAccountTagDeleteHandler != nil ||
 		opts.ManagementMyAccountTagDeleteHandler != nil ||

@@ -496,6 +496,115 @@ type ManagementAuthorizationOptionReader interface {
 	ListManagementAuthorizationGranteeGroups(ctx context.Context, input ManagementAuthorizationGranteeGroupOptionListInput) ([]ManagementAuthorizationGranteeGroupOption, error)
 }
 
+type ManagementRequestQuotaLimit struct {
+	Enabled bool    `json:"enabled"`
+	Limit   float64 `json:"limit"`
+}
+
+type ManagementRequestHourlyQuotaLimit struct {
+	Enabled bool    `json:"enabled"`
+	Hours   int     `json:"hours"`
+	Limit   float64 `json:"limit"`
+}
+
+type ManagementRequestQuotaLimits struct {
+	Hourly  *ManagementRequestHourlyQuotaLimit `json:"hourly,omitempty"`
+	Daily   *ManagementRequestQuotaLimit       `json:"daily,omitempty"`
+	Weekly  *ManagementRequestQuotaLimit       `json:"weekly,omitempty"`
+	Monthly *ManagementRequestQuotaLimit       `json:"monthly,omitempty"`
+	Total   *ManagementRequestQuotaLimit       `json:"total,omitempty"`
+}
+
+type ManagementAccountUsageSummary struct {
+	RequestCount       int64   `json:"requestCount"`
+	InputTokens        int64   `json:"inputTokens"`
+	OutputTokens       int64   `json:"outputTokens"`
+	CacheReadTokens    int64   `json:"cacheReadTokens"`
+	CacheReadCost      float64 `json:"cacheReadCost"`
+	CacheWriteTokens   int64   `json:"cacheWriteTokens"`
+	CacheWrite1hTokens int64   `json:"cacheWrite1hTokens"`
+	CacheWriteCost     float64 `json:"cacheWriteCost"`
+	ThinkingTokens     int64   `json:"thinkingTokens"`
+	InputImageTokens   int64   `json:"inputImageTokens"`
+	OutputImageTokens  int64   `json:"outputImageTokens"`
+	TotalTokens        int64   `json:"totalTokens"`
+	TotalCost          float64 `json:"totalCost"`
+}
+
+type ManagementResourceAuthorizationSourceSummary struct {
+	ID              string     `json:"id"`
+	AuthorizationID string     `json:"authorizationId"`
+	SourceType      string     `json:"sourceType"`
+	SourceTeamID    string     `json:"sourceTeamId,omitempty"`
+	SourceTeamName  string     `json:"sourceTeamName,omitempty"`
+	Status          string     `json:"status"`
+	ActivatedAt     *time.Time `json:"activatedAt,omitempty"`
+	EndedAt         *time.Time `json:"endedAt,omitempty"`
+	EndedReason     string     `json:"endedReason,omitempty"`
+	CreatedBy       string     `json:"createdBy"`
+	CreatedAt       time.Time  `json:"createdAt"`
+	RevokedBy       string     `json:"revokedBy,omitempty"`
+	RevokedAt       *time.Time `json:"revokedAt,omitempty"`
+	UpdatedAt       time.Time  `json:"updatedAt"`
+}
+
+type ManagementResourceAuthorizationSummary struct {
+	ID                             string                                         `json:"id"`
+	ResourceType                   string                                         `json:"resourceType"`
+	ResourceID                     string                                         `json:"resourceId"`
+	ResourceName                   string                                         `json:"resourceName,omitempty"`
+	ResourceOwnerSystemAccountID   string                                         `json:"resourceOwnerSystemAccountId"`
+	ResourceOwnerSystemAccountName string                                         `json:"resourceOwnerSystemAccountName,omitempty"`
+	GranteeType                    string                                         `json:"granteeType,omitempty"`
+	GranteeSystemAccountID         string                                         `json:"granteeSystemAccountId,omitempty"`
+	GranteeSystemAccountName       string                                         `json:"granteeSystemAccountName,omitempty"`
+	GranteeUsername                string                                         `json:"granteeUsername,omitempty"`
+	GranteeTeamID                  string                                         `json:"granteeTeamId,omitempty"`
+	GranteeTeamName                string                                         `json:"granteeTeamName,omitempty"`
+	Scope                          string                                         `json:"scope"`
+	Status                         string                                         `json:"status"`
+	Remark                         string                                         `json:"remark,omitempty"`
+	ExpiresAt                      *time.Time                                     `json:"expiresAt,omitempty"`
+	Limits                         ManagementRequestQuotaLimits                   `json:"limits,omitempty"`
+	ResourceAccountExpiresAt       *time.Time                                     `json:"resourceAccountExpiresAt,omitempty"`
+	EffectiveSourceType            string                                         `json:"effectiveSourceType,omitempty"`
+	EffectiveSourceTeamID          string                                         `json:"effectiveSourceTeamId,omitempty"`
+	EffectiveSourceTeamName        string                                         `json:"effectiveSourceTeamName,omitempty"`
+	ActivatedAt                    *time.Time                                     `json:"activatedAt,omitempty"`
+	LastSourceChangedAt            *time.Time                                     `json:"lastSourceChangedAt,omitempty"`
+	AuthorizationSources           []ManagementResourceAuthorizationSourceSummary `json:"authorizationSources"`
+	Usage                          ManagementAccountUsageSummary                  `json:"usage"`
+	LastUsedAt                     *time.Time                                     `json:"lastUsedAt,omitempty"`
+	CreatedBy                      string                                         `json:"createdBy"`
+	CreatedAt                      time.Time                                      `json:"createdAt"`
+	RevokedBy                      string                                         `json:"revokedBy,omitempty"`
+	RevokedAt                      *time.Time                                     `json:"revokedAt,omitempty"`
+	RevokedReason                  string                                         `json:"revokedReason,omitempty"`
+	UpdatedAt                      time.Time                                      `json:"updatedAt"`
+}
+
+type ManagementResourceAuthorizationCreateInput struct {
+	ResourceType                    string
+	ResourceID                      string
+	ResourceOwnerSystemAccountID    string
+	GranteeType                     string
+	GranteeID                       string
+	TargetGroupID                   string
+	Remark                          string
+	HasRemark                       bool
+	ExpiresAt                       *time.Time
+	Limits                          ManagementRequestQuotaLimits
+	LimitsJSON                      *string
+	LimitHourlyWindowHours          int
+	AuthorizationInstanceSecretJSON string
+	ActorSystemAccountID            string
+	CreatedAt                       time.Time
+}
+
+type ManagementResourceAuthorizationCreator interface {
+	CreateManagementResourceAuthorization(ctx context.Context, input ManagementResourceAuthorizationCreateInput) (ManagementResourceAuthorizationSummary, error)
+}
+
 type ManagementProviderEndpointFamily struct {
 	Code        string
 	Name        string

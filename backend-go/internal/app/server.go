@@ -15,6 +15,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/managementaccounts"
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementauthorizationoptions"
+	"juhe-ai/backend-go/internal/modules/managementauthorizations"
 	"juhe-ai/backend-go/internal/modules/managementgroups"
 	"juhe-ai/backend-go/internal/modules/managementoperationlogs"
 	"juhe-ai/backend-go/internal/modules/managementprovidermodels"
@@ -126,6 +127,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyAuthorizationGranteeTeamsHandler:    managementHandlers.MyAuthorizationGranteeTeamsHandler,
 		ManagementAuthorizationGranteeGroupsHandler:     managementHandlers.AuthorizationGranteeGroupsHandler,
 		ManagementMyAuthorizationGranteeGroupsHandler:   managementHandlers.MyAuthorizationGranteeGroupsHandler,
+		ManagementAuthorizationCreateHandler:            managementHandlers.AuthorizationCreateHandler,
+		ManagementMyAuthorizationCreateHandler:          managementHandlers.MyAuthorizationCreateHandler,
 		ManagementProviderOptionsHandler:                managementHandlers.ProviderOptionsHandler,
 		ManagementProviderModelOptionsHandler:           managementHandlers.ProviderModelOptionsHandler,
 		ManagementProviderModelsHandler:                 managementHandlers.ProviderModelsHandler,
@@ -205,6 +208,8 @@ type managementAPIHandlers struct {
 	MyAuthorizationGranteeTeamsHandler    http.Handler
 	AuthorizationGranteeGroupsHandler     http.Handler
 	MyAuthorizationGranteeGroupsHandler   http.Handler
+	AuthorizationCreateHandler            http.Handler
+	MyAuthorizationCreateHandler          http.Handler
 	ProviderOptionsHandler                http.Handler
 	ProviderModelOptionsHandler           http.Handler
 	ProviderModelsHandler                 http.Handler
@@ -230,6 +235,7 @@ type managementAPIHandlers struct {
 type managementAPIInvalidator interface {
 	managementsystemaccounts.SystemAccountInvalidator
 	managementsystemteams.AuthorizationInvalidator
+	managementauthorizations.AuthorizationInvalidator
 }
 
 func newManagementAPIHandler(
@@ -263,6 +269,11 @@ func newManagementAPIHandler(
 	})
 	systemTeamService := managementsystemteams.NewServiceWithOptions(managementsystemteams.ServiceOptions{
 		Store:                    store,
+		AuthorizationInvalidator: systemAccountInvalidator,
+	})
+	authorizationService := managementauthorizations.NewServiceWithOptions(managementauthorizations.ServiceOptions{
+		Store:                    store,
+		Secret:                   cfg.Secret,
 		AuthorizationInvalidator: systemAccountInvalidator,
 	})
 	authorizationOptionService := managementauthorizationoptions.NewService(store)
@@ -300,6 +311,8 @@ func newManagementAPIHandler(
 		MyAuthorizationGranteeTeamsHandler:    httpapi.NewManagementMyAuthorizationGranteeTeamsHandler(authorizationOptionService),
 		AuthorizationGranteeGroupsHandler:     httpapi.NewManagementAuthorizationGranteeGroupsHandler(authorizationOptionService),
 		MyAuthorizationGranteeGroupsHandler:   httpapi.NewManagementMyAuthorizationGranteeGroupsHandler(authorizationOptionService),
+		AuthorizationCreateHandler:            httpapi.NewManagementAuthorizationCreateHandlerWithOperationLog(authorizationService, operationLogOptions),
+		MyAuthorizationCreateHandler:          httpapi.NewManagementMyAuthorizationCreateHandlerWithOperationLog(authorizationService, operationLogOptions),
 		ProviderOptionsHandler:                httpapi.NewManagementProviderOptionsHandler(providerService),
 		ProviderModelOptionsHandler:           httpapi.NewManagementProviderModelOptionsHandler(providerModelService),
 		ProviderModelsHandler:                 httpapi.NewManagementProviderModelsHandler(providerModelService),
