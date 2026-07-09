@@ -113,6 +113,21 @@ export interface ModelCheckRunListResult {
   hasMore: boolean
 }
 
+export interface ActiveModelCheckRunSummary {
+  runId?: string
+  traceId?: string
+  targetId?: string
+  targetName?: string
+  model?: string
+  startedAt: string
+  stopRequested: boolean
+}
+
+export interface ModelCheckStopResult {
+  stopped: boolean
+  active: ActiveModelCheckRunSummary | null
+}
+
 export type ModelCheckProgressEvent = {
   type: 'run_started'
   message: string

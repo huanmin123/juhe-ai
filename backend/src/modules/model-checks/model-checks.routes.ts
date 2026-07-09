@@ -10,8 +10,18 @@ import {
   getModelCheckRun,
   listModelCheckRunPage,
   ModelCheckRequestError,
-  runModelCheck
+  runModelCheck,
+  type ModelCheckProgressEvent
 } from './model-checks.service.js'
+import {
+  activeModelCheckConflictMessage,
+  activeModelCheckRetryAfterSeconds,
+  getActiveModelCheckRun,
+  finishActiveModelCheckRun,
+  stopActiveModelCheckRun,
+  tryStartActiveModelCheckRun,
+  updateActiveModelCheckRun
+} from './model-checks-active-runs.js'
 
 export const modelChecksRouter = Router()
 export const modelCheckHttpRunDeadlineMs = 25_000
@@ -36,6 +46,33 @@ modelChecksRouter.get('/options', (req, res, next) => {
   }
 })
 
+modelChecksRouter.get('/run/active', (req, res, next) => {
+  try {
+    const scopeQuery = parseRequestScopeQuery(req.query)
+    if (!scopeQuery.success) {
+      res.status(400).json(badRequest(scopeQuery.message))
+      return
+    }
+    res.json(ok(getActiveModelCheckRun(getRequestAccessScope(scopeQuery.data.systemAccountId)) ?? null))
+  } catch (error) {
+    next(error)
+  }
+})
+
+modelChecksRouter.post('/run/stop', (req, res, next) => {
+  try {
+    const scopeQuery = parseRequestScopeQuery(req.query)
+    if (!scopeQuery.success) {
+      res.status(400).json(badRequest(scopeQuery.message))
+      return
+    }
+    const active = stopActiveModelCheckRun(getRequestAccessScope(scopeQuery.data.systemAccountId))
+    res.json(ok({ stopped: Boolean(active), active: active ?? null }))
+  } catch (error) {
+    next(error)
+  }
+})
+
 modelChecksRouter.post('/run', async (req, res, next) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
@@ -47,29 +84,46 @@ modelChecksRouter.post('/run', async (req, res, next) => {
     res.status(400).json(badRequest(parsed.error.issues[0]?.message ?? '模型检测参数无效'))
     return
   }
+  const access = getRequestAccessScope(scopeQuery.data.systemAccountId)
+  const activeRun = tryStartActiveModelCheckRun(access)
+  if (!activeRun.acquired) {
+    res.setHeader('Retry-After', String(activeModelCheckRetryAfterSeconds))
+    res.status(409).json({ message: activeModelCheckConflictMessage, active: activeRun.active })
+    return
+  }
   const releaseDiagnosticSlot = tryAcquireDiagnosticTaskSlot()
   if (!releaseDiagnosticSlot) {
+    finishActiveModelCheckRun(activeRun.key, activeRun.controller)
     res.setHeader('Retry-After', String(diagnosticTaskRetryAfterSeconds))
     res.status(503).json({ message: diagnosticTaskBusyMessage })
     return
   }
-  const abortController = new AbortController()
+  const clientAbortController = new AbortController()
   const deadlineSignal = AbortSignal.timeout(modelCheckHttpRunDeadlineMs)
-  const signal = AbortSignal.any([abortController.signal, deadlineSignal])
-  req.once('aborted', () => abortController.abort())
+  const signal = AbortSignal.any([activeRun.controller.signal, clientAbortController.signal, deadlineSignal])
+  req.once('aborted', () => {
+    clientAbortController.abort()
+    activeRun.controller.abort()
+  })
   res.once('close', () => {
     if (!res.writableEnded) {
-      abortController.abort()
+      clientAbortController.abort()
+      activeRun.controller.abort()
     }
   })
   try {
-    const result = await runModelCheck(parsed.data, getRequestAccessScope(scopeQuery.data.systemAccountId), signal)
-    if (abortController.signal.aborted || res.writableEnded) {
+    const result = await runModelCheck(
+      parsed.data,
+      access,
+      signal,
+      activeModelCheckProgressUpdater(activeRun.key)
+    )
+    if (clientAbortController.signal.aborted || res.writableEnded) {
       return
     }
     res.json(ok(result))
   } catch (error) {
-    if (abortController.signal.aborted || res.writableEnded) {
+    if (clientAbortController.signal.aborted || res.writableEnded) {
       return
     }
     if (error instanceof ModelCheckRequestError) {
@@ -79,6 +133,7 @@ modelChecksRouter.post('/run', async (req, res, next) => {
     next(error)
   } finally {
     releaseDiagnosticSlot()
+    finishActiveModelCheckRun(activeRun.key, activeRun.controller)
   }
 })
 
@@ -94,18 +149,30 @@ modelChecksRouter.post('/run/stream', async (req, res) => {
     return
   }
 
+  const access = getRequestAccessScope(scopeQuery.data.systemAccountId)
+  const activeRun = tryStartActiveModelCheckRun(access)
+  if (!activeRun.acquired) {
+    res.setHeader('Retry-After', String(activeModelCheckRetryAfterSeconds))
+    res.status(409).json({ message: activeModelCheckConflictMessage, active: activeRun.active })
+    return
+  }
+
   const releaseDiagnosticSlot = tryAcquireDiagnosticTaskSlot()
   if (!releaseDiagnosticSlot) {
+    finishActiveModelCheckRun(activeRun.key, activeRun.controller)
     res.setHeader('Retry-After', String(diagnosticTaskRetryAfterSeconds))
     res.status(503).json({ message: diagnosticTaskBusyMessage })
     return
   }
 
-  const abortController = new AbortController()
-  req.once('aborted', () => abortController.abort())
+  const clientAbortController = new AbortController()
+  const signal = activeRun.controller.signal
+  req.once('aborted', () => {
+    clientAbortController.abort()
+  })
   res.once('close', () => {
     if (!res.writableEnded) {
-      abortController.abort()
+      clientAbortController.abort()
     }
   })
   res.writeHead(200, {
@@ -116,30 +183,34 @@ modelChecksRouter.post('/run/stream', async (req, res) => {
   })
   res.write(': connected\n\n')
   const heartbeat = setInterval(() => {
-    if (abortController.signal.aborted || res.writableEnded) return
+    if (clientAbortController.signal.aborted || res.writableEnded) return
     res.write(': heartbeat\n\n')
   }, modelCheckStreamHeartbeatMs)
   heartbeat.unref()
 
   const writeEvent = (event: string, data: unknown): void => {
-    if (abortController.signal.aborted || res.writableEnded) return
+    if (clientAbortController.signal.aborted || res.writableEnded) return
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+  }
+  const progressReporter = (event: ModelCheckProgressEvent): void => {
+    activeModelCheckProgressUpdater(activeRun.key)(event)
+    writeEvent('progress', event)
   }
 
   try {
     const result = await runModelCheck(
       parsed.data,
-      getRequestAccessScope(scopeQuery.data.systemAccountId),
-      abortController.signal,
-      (event) => writeEvent('progress', event)
+      access,
+      signal,
+      progressReporter
     )
-    if (abortController.signal.aborted || res.writableEnded) {
+    if (clientAbortController.signal.aborted || res.writableEnded) {
       return
     }
     writeEvent('complete', result)
     res.end()
   } catch (error) {
-    if (abortController.signal.aborted || res.writableEnded) {
+    if (clientAbortController.signal.aborted || res.writableEnded) {
       return
     }
     if (error instanceof ModelCheckRequestError) {
@@ -152,6 +223,7 @@ modelChecksRouter.post('/run/stream', async (req, res) => {
   } finally {
     clearInterval(heartbeat)
     releaseDiagnosticSlot()
+    finishActiveModelCheckRun(activeRun.key, activeRun.controller)
   }
 })
 
@@ -180,3 +252,23 @@ modelChecksRouter.get('/runs/:id', async (req, res, next) => {
     next(error)
   }
 })
+
+function activeModelCheckProgressUpdater(key: string): (event: ModelCheckProgressEvent) => void {
+  return (event) => {
+    if (event.type === 'run_started') {
+      updateActiveModelCheckRun(key, {
+        targetId: event.targetId,
+        targetName: event.targetName,
+        model: event.model
+      })
+      return
+    }
+    if (event.type === 'run_created') {
+      updateActiveModelCheckRun(key, {
+        runId: event.runId,
+        traceId: event.traceId,
+        startedAt: event.startedAt
+      })
+    }
+  }
+}

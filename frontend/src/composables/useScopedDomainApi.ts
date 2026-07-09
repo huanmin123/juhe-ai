@@ -128,12 +128,18 @@ export function useScopedModelChecksApi(isManagementView: Ref<boolean>) {
     options: (params?: ModelCheckScopeParams) => isManagementView.value
       ? api.modelChecks.options(params)
       : api.myModelChecks.options(),
+    active: (params?: ModelCheckScopeParams) => isManagementView.value
+      ? api.modelChecks.active(params)
+      : api.myModelChecks.active(),
     run: (payload: ModelCheckRunPayload, params?: ModelCheckScopeParams) => isManagementView.value
       ? api.modelChecks.run(payload, params)
       : api.myModelChecks.run(payload),
     runStream: (payload: ModelCheckRunPayload, options?: ModelCheckStreamOptions, params?: ModelCheckScopeParams) => isManagementView.value
       ? api.modelChecks.runStream(payload, options, params)
       : api.myModelChecks.runStream(payload, options),
+    stop: (params?: ModelCheckScopeParams) => isManagementView.value
+      ? api.modelChecks.stop(params)
+      : api.myModelChecks.stop(),
     list: (params?: ModelCheckListParams) => isManagementView.value
       ? api.modelChecks.list(params)
       : api.myModelChecks.list(params),

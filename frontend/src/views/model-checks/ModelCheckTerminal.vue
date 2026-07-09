@@ -19,7 +19,7 @@
       <div v-if="submitting" class="terminal-line terminal-line-muted">
         <span class="terminal-time">[{{ terminalNow }}]</span>
         <span class="terminal-prompt">_</span>
-        <span class="terminal-text terminal-cursor">等待下一个检测事件</span>
+        <span class="terminal-text terminal-cursor">{{ waitingText }}</span>
       </div>
     </div>
   </div>
@@ -41,13 +41,16 @@ import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { formatClockTime } from './modelCheckFormatters'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   visible: boolean
   submitting: boolean
   lines: ModelCheckTerminalLine[]
   statusText: string
   statusColor: string
-}>()
+  waitingText?: string
+}>(), {
+  waitingText: '等待下一个检测事件'
+})
 
 defineEmits<{
   stop: []

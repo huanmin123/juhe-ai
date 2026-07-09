@@ -14,6 +14,12 @@ export function usageRecordCostDetailTitle(record: UsageRecordSummary): string {
   return label ? `成本明细（${label}口径）` : '成本明细'
 }
 
+export function usageRecordHasCostDetails(record: UsageRecordSummary): boolean {
+  return usageRecordCostTokenRows(record).length > 0
+    || usageRecordCostAmountRows(record).length > 0
+    || usageRecordCostPriceRows(record).length > 0
+}
+
 export function usageRecordCostTokenRows(record: UsageRecordSummary): UsageRecordCostDetailRow[] {
   const family = usageRecordCostProviderFamily(record)
   const rows: UsageRecordCostDetailRow[] = []
@@ -109,8 +115,12 @@ export function usageRecordCostProviderFamily(record: UsageRecordSummary): Usage
   if (usageSemantic === 'gemini' || providerCode === 'gemini') return 'gemini'
   if (providerCode === 'deepseek') return 'deepseek'
   if (providerCode === 'glm') return 'glm'
-  if (usageSemantic === 'openai' || providerCode === 'openai' || providerCode === 'gpt') return 'openai'
+  if (isOpenAICompatibleFamily(usageSemantic) || isOpenAICompatibleFamily(providerCode)) return 'openai'
   return 'generic'
+}
+
+function isOpenAICompatibleFamily(value: string): boolean {
+  return value === 'openai' || value === 'openai-compatible' || value === 'gpt'
 }
 
 function usageRecordCostProviderLabel(record: UsageRecordSummary): string {
