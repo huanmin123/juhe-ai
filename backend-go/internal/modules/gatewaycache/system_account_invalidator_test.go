@@ -148,6 +148,41 @@ func TestSystemAccountInvalidatorAuthorizationChangedWritesRuntimeAndQuotaTopics
 	assertRuntimeStateCall(t, state.calls[1], "juhe-ai:test-ns:state:gateway_cache_invalidation:topic:authorization_quota_cache", "quota-version", TeamAuthorizationChangedReason, "", "2026-07-09T01:02:03.456Z")
 }
 
+func TestSystemAccountInvalidatorProxyChangedWritesRuntimeTopic(t *testing.T) {
+	cache := &rawSetRecorder{}
+	state := &rawSetRecorder{}
+	invalidator, err := NewSystemAccountInvalidator(SystemAccountInvalidatorOptions{
+		Cache:      cache,
+		State:      state,
+		Namespace:  "test-ns",
+		Now:        func() time.Time { return time.Unix(0, 0).UTC() },
+		NewVersion: versionSequence("proxy-version"),
+	})
+	if err != nil {
+		t.Fatalf("NewSystemAccountInvalidator() error = %v", err)
+	}
+
+	if err := invalidator.InvalidateProxyChanged(context.Background(), ProxyUpdatedReason); err != nil {
+		t.Fatalf("InvalidateProxyChanged() error = %v", err)
+	}
+
+	if len(cache.calls) != 0 {
+		t.Fatalf("cache calls = %d, want 0 for proxy invalidation", len(cache.calls))
+	}
+	if len(state.calls) != 1 {
+		t.Fatalf("state calls = %d, want 1", len(state.calls))
+	}
+	assertRuntimeStateCall(
+		t,
+		state.calls[0],
+		"juhe-ai:test-ns:state:gateway_cache_invalidation:topic:gateway_runtime_cache",
+		"proxy-version",
+		ProxyUpdatedReason,
+		"",
+		"1970-01-01T00:00:00.000Z",
+	)
+}
+
 func TestSystemAccountInvalidatorAPIKeyQuotaChangedCarriesAPIKeyID(t *testing.T) {
 	state := &rawSetRecorder{}
 	invalidator, err := NewSystemAccountInvalidator(SystemAccountInvalidatorOptions{

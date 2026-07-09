@@ -80,6 +80,9 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 		handlers.SessionRevokeHandler != nil ||
 		handlers.ProxiesHandler != nil ||
 		handlers.ProxyOptionsHandler != nil ||
+		handlers.ProxyCreateHandler != nil ||
+		handlers.ProxyUpdateHandler != nil ||
+		handlers.ProxyDeleteHandler != nil ||
 		handlers.SystemAccountsHandler != nil ||
 		handlers.SystemAccountOptionsHandler != nil ||
 		handlers.SystemAccountPatchHandler != nil ||
@@ -151,6 +154,9 @@ func TestNewManagementAPIHandlerSessionSwitchOnlyReturnsSessionHandlers(t *testi
 		handlers.LogoutHandler != nil ||
 		handlers.ProxiesHandler != nil ||
 		handlers.ProxyOptionsHandler != nil ||
+		handlers.ProxyCreateHandler != nil ||
+		handlers.ProxyUpdateHandler != nil ||
+		handlers.ProxyDeleteHandler != nil ||
 		handlers.SystemAccountsHandler != nil ||
 		handlers.SystemAccountOptionsHandler != nil ||
 		handlers.SystemAccountPatchHandler != nil ||
@@ -194,6 +200,9 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 		handlers.SessionRevokeHandler == nil ||
 		handlers.ProxiesHandler == nil ||
 		handlers.ProxyOptionsHandler == nil ||
+		handlers.ProxyCreateHandler == nil ||
+		handlers.ProxyUpdateHandler == nil ||
+		handlers.ProxyDeleteHandler == nil ||
 		handlers.SystemAccountsHandler == nil ||
 		handlers.SystemAccountOptionsHandler == nil ||
 		handlers.SystemAccountPatchHandler == nil ||

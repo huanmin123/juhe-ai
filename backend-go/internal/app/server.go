@@ -112,6 +112,9 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementSessionRevokeHandler:                    managementHandlers.SessionRevokeHandler,
 		ManagementProxiesHandler:                          managementHandlers.ProxiesHandler,
 		ManagementProxyOptionsHandler:                     managementHandlers.ProxyOptionsHandler,
+		ManagementProxyCreateHandler:                      managementHandlers.ProxyCreateHandler,
+		ManagementProxyUpdateHandler:                      managementHandlers.ProxyUpdateHandler,
+		ManagementProxyDeleteHandler:                      managementHandlers.ProxyDeleteHandler,
 		ManagementSystemAccountsHandler:                   managementHandlers.SystemAccountsHandler,
 		ManagementSystemAccountOptionsHandler:             managementHandlers.SystemAccountOptionsHandler,
 		ManagementSystemAccountPatchHandler:               managementHandlers.SystemAccountPatchHandler,
@@ -220,6 +223,9 @@ type managementAPIHandlers struct {
 	SessionRevokeHandler                    http.Handler
 	ProxiesHandler                          http.Handler
 	ProxyOptionsHandler                     http.Handler
+	ProxyCreateHandler                      http.Handler
+	ProxyUpdateHandler                      http.Handler
+	ProxyDeleteHandler                      http.Handler
 	SystemAccountsHandler                   http.Handler
 	SystemAccountOptionsHandler             http.Handler
 	SystemAccountPatchHandler               http.Handler
@@ -291,6 +297,7 @@ type managementAPIInvalidator interface {
 	managementsystemteams.AuthorizationInvalidator
 	managementauthorizations.AuthorizationInvalidator
 	managementprovidermodels.CustomProviderModelInvalidator
+	managementproxies.ProxyInvalidator
 }
 
 func newManagementAPIHandler(
@@ -319,7 +326,11 @@ func newManagementAPIHandler(
 	loginService := managementauth.NewLoginService(store, captchaService, loginGuardService)
 	profileService := managementauth.NewProfileService(store)
 	passwordService := managementauth.NewPasswordService(store)
-	proxyService := managementproxies.NewService(store)
+	proxyService := managementproxies.NewServiceWithOptions(managementproxies.ServiceOptions{
+		Store:       store,
+		Secret:      cfg.Secret,
+		Invalidator: systemAccountInvalidator,
+	})
 	providerService := managementproviders.NewService(store)
 	providerModelService := managementprovidermodels.NewServiceWithOptions(managementprovidermodels.ServiceOptions{
 		Store:       store,
@@ -362,6 +373,9 @@ func newManagementAPIHandler(
 		SessionRevokeHandler:                    httpapi.NewManagementSessionRevokeHandler(sessionService, cfg),
 		ProxiesHandler:                          httpapi.NewManagementProxiesHandler(proxyService),
 		ProxyOptionsHandler:                     httpapi.NewManagementProxyOptionsHandler(proxyService),
+		ProxyCreateHandler:                      httpapi.NewManagementProxyCreateHandlerWithOperationLog(proxyService, operationLogOptions),
+		ProxyUpdateHandler:                      httpapi.NewManagementProxyUpdateHandlerWithOperationLog(proxyService, operationLogOptions),
+		ProxyDeleteHandler:                      httpapi.NewManagementProxyDeleteHandlerWithOperationLog(proxyService, operationLogOptions),
 		SystemAccountsHandler:                   httpapi.NewManagementSystemAccountsHandler(systemAccountService),
 		SystemAccountOptionsHandler:             httpapi.NewManagementSystemAccountOptionsHandler(systemAccountService),
 		SystemAccountPatchHandler:               httpapi.NewManagementSystemAccountPatchHandlerWithOperationLog(systemAccountService, operationLogOptions),

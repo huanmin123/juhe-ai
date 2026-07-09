@@ -202,6 +202,13 @@ func validateManagementAPIConfig(cfg Config) error {
 	if strings.TrimSpace(cfg.RedisQueueURL) == "" {
 		return fmt.Errorf("启用 JUHE_AI_MANAGEMENT_API_ENABLED 时 JUHE_AI_REDIS_QUEUE_URL 不能为空")
 	}
+	secret := strings.TrimSpace(cfg.Secret)
+	if secret == "" {
+		return fmt.Errorf("启用 JUHE_AI_MANAGEMENT_API_ENABLED 时 JUHE_AI_SECRET 不能为空")
+	}
+	if len([]rune(secret)) < 32 {
+		return fmt.Errorf("JUHE_AI_SECRET 至少需要 32 个字符")
+	}
 	return nil
 }
 

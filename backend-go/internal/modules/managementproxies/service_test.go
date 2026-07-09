@@ -3,6 +3,7 @@ package managementproxies
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -165,13 +166,251 @@ func TestOptionsReturnsStoreError(t *testing.T) {
 	}
 }
 
+func TestCreateEncryptsPasswordAndInvalidates(t *testing.T) {
+	description := "  说明  "
+	username := "  proxy-user  "
+	password := "  secret with spaces  "
+	enabled := false
+	now := time.Date(2026, 7, 10, 9, 0, 0, 0, time.UTC)
+	codec := &proxyCredentialCodecStub{encrypted: "v1:encrypted"}
+	invalidator := &proxyInvalidatorStub{}
+	store := &proxyOptionStoreStub{
+		createResult: port.ManagementProxySummary{
+			ID:          "proxy_fixed",
+			Name:        "代理 A",
+			Description: stringPtr("说明"),
+			Type:        "socks5h",
+			Host:        "proxy.example.com",
+			Port:        1080,
+			Username:    stringPtr("proxy-user"),
+			Enabled:     false,
+			TestStatus:  "unknown",
+		},
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		Store:       store,
+		Now:         func() time.Time { return now },
+		NewID:       func(prefix string) string { return prefix + "_fixed" },
+		Codec:       codec,
+		Invalidator: invalidator,
+	})
+
+	result, err := service.Create(context.Background(), CreateInput{
+		SystemAccountID: "sys_admin",
+		Name:            "  代理 A  ",
+		Description:     &description,
+		Type:            "socks5h",
+		Host:            "  proxy.example.com  ",
+		Port:            1080,
+		Username:        &username,
+		Password:        &password,
+		Enabled:         &enabled,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if store.createInput.ID != "proxy_fixed" ||
+		store.createInput.SystemAccountID != "sys_admin" ||
+		store.createInput.Name != "代理 A" ||
+		store.createInput.Description == nil ||
+		*store.createInput.Description != "说明" ||
+		store.createInput.Username == nil ||
+		*store.createInput.Username != "proxy-user" ||
+		store.createInput.PasswordEncrypted == nil ||
+		*store.createInput.PasswordEncrypted != "v1:encrypted" ||
+		store.createInput.Enabled ||
+		!store.createInput.CreatedAt.Equal(now) ||
+		!store.createInput.UpdatedAt.Equal(now) {
+		t.Fatalf("create input = %+v", store.createInput)
+	}
+	if codec.password != password {
+		t.Fatalf("encrypted password = %q, want original value with spaces", codec.password)
+	}
+	if !result.PasswordSet || result.Proxy.ID != "proxy_fixed" {
+		t.Fatalf("result = %+v", result)
+	}
+	if len(invalidator.reasons) != 1 || invalidator.reasons[0] != ProxyCreatedReason {
+		t.Fatalf("invalidation reasons = %+v", invalidator.reasons)
+	}
+}
+
+func TestUpdatePreservesPasswordAndResetsTestStateForConnectionChange(t *testing.T) {
+	oldPasswordEncrypted := "v1:old"
+	latencyMs := 88
+	lastTestedAt := time.Date(2026, 7, 10, 8, 0, 0, 0, time.UTC)
+	store := &proxyOptionStoreStub{
+		findResult: port.ManagementProxySummary{
+			ID:                "proxy_a",
+			Name:              "代理 A",
+			Type:              "http",
+			Host:              "old.example.com",
+			Port:              8080,
+			Username:          stringPtr("user"),
+			PasswordEncrypted: &oldPasswordEncrypted,
+			Enabled:           true,
+			TestStatus:        "passed",
+			LatencyMs:         &latencyMs,
+			LastTestedAt:      &lastTestedAt,
+		},
+		findFound: true,
+		updateResult: port.ManagementProxySummary{
+			ID:         "proxy_a",
+			Name:       "代理 A",
+			Type:       "http",
+			Host:       "new.example.com",
+			Port:       8080,
+			Username:   stringPtr("user"),
+			Enabled:    true,
+			TestStatus: "unknown",
+		},
+		updateFound: true,
+	}
+	invalidator := &proxyInvalidatorStub{}
+	service := NewServiceWithOptions(ServiceOptions{
+		Store:       store,
+		Now:         func() time.Time { return time.Date(2026, 7, 10, 9, 0, 0, 0, time.UTC) },
+		Invalidator: invalidator,
+	})
+	host := " new.example.com "
+
+	result, err := service.Update(context.Background(), UpdateInput{ID: "proxy_a", Host: &host})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if store.updateInput.PasswordEncrypted == nil ||
+		*store.updateInput.PasswordEncrypted != oldPasswordEncrypted ||
+		!store.updateInput.ResetTestState ||
+		store.updateInput.Host != "new.example.com" {
+		t.Fatalf("update input = %+v", store.updateInput)
+	}
+	if !result.Changed || result.PasswordChanged || !result.ResetTestState {
+		t.Fatalf("result = %+v", result)
+	}
+	if len(invalidator.reasons) != 1 || invalidator.reasons[0] != ProxyUpdatedReason {
+		t.Fatalf("invalidation reasons = %+v", invalidator.reasons)
+	}
+}
+
+func TestUpdatePasswordEncryptsAndResetsTestState(t *testing.T) {
+	codec := &proxyCredentialCodecStub{encrypted: "v1:new"}
+	store := &proxyOptionStoreStub{
+		findResult: port.ManagementProxySummary{
+			ID:         "proxy_a",
+			Name:       "代理 A",
+			Type:       "http",
+			Host:       "proxy.example.com",
+			Port:       8080,
+			Enabled:    true,
+			TestStatus: "passed",
+		},
+		findFound: true,
+		updateResult: port.ManagementProxySummary{
+			ID:         "proxy_a",
+			Name:       "代理 A",
+			Type:       "http",
+			Host:       "proxy.example.com",
+			Port:       8080,
+			Enabled:    true,
+			TestStatus: "unknown",
+		},
+		updateFound: true,
+	}
+	service := NewServiceWithOptions(ServiceOptions{Store: store, Codec: codec})
+	password := "  updated secret  "
+
+	result, err := service.Update(context.Background(), UpdateInput{ID: "proxy_a", Password: &password})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if store.updateInput.PasswordEncrypted == nil ||
+		*store.updateInput.PasswordEncrypted != "v1:new" ||
+		!store.updateInput.ResetTestState {
+		t.Fatalf("update input = %+v", store.updateInput)
+	}
+	if codec.password != password {
+		t.Fatalf("encrypted password = %q, want original value", codec.password)
+	}
+	if !result.PasswordChanged || !result.ResetTestState {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestDeleteRejectsBoundProxyWithWindowMessage(t *testing.T) {
+	store := &proxyOptionStoreStub{
+		findResult: port.ManagementProxySummary{ID: "proxy_a", Name: "代理 A"},
+		findFound:  true,
+		bindings: []port.ManagementProxyAccountBinding{
+			{ID: "acct_1", Name: "账户 1"},
+			{ID: "acct_2", Name: "账户 2"},
+			{ID: "acct_3", Name: "账户 3"},
+			{ID: "acct_4", Name: "账户 4"},
+		},
+		deleteResult: true,
+	}
+	service := NewServiceWithOptions(ServiceOptions{Store: store})
+
+	_, err := service.Delete(context.Background(), DeleteInput{ID: "proxy_a"})
+	if err == nil {
+		t.Fatal("Delete() error = nil, want in-use error")
+	}
+	message, ok := InUseMessage(err)
+	if !ok || !strings.Contains(message, "至少 4 个账户") || !strings.Contains(message, "账户 1、账户 2、账户 3 等") {
+		t.Fatalf("in-use message = %q ok=%v", message, ok)
+	}
+	if store.deleteCalled {
+		t.Fatal("DeleteManagementProxy should not be called while proxy is bound")
+	}
+	if store.bindingsInput.Limit != proxyUsageWindowLimit {
+		t.Fatalf("bindings input = %+v", store.bindingsInput)
+	}
+}
+
+func TestDeleteRemovesProxyAndInvalidates(t *testing.T) {
+	invalidator := &proxyInvalidatorStub{}
+	store := &proxyOptionStoreStub{
+		findResult:   port.ManagementProxySummary{ID: "proxy_a", Name: "代理 A"},
+		findFound:    true,
+		deleteResult: true,
+	}
+	service := NewServiceWithOptions(ServiceOptions{Store: store, Invalidator: invalidator})
+
+	result, err := service.Delete(context.Background(), DeleteInput{ID: " proxy_a "})
+	if err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if !result.Deleted || result.Before.ID != "proxy_a" || !store.deleteCalled || store.deleteID != "proxy_a" {
+		t.Fatalf("result = %+v deleteID=%q called=%v", result, store.deleteID, store.deleteCalled)
+	}
+	if len(invalidator.reasons) != 1 || invalidator.reasons[0] != ProxyDeletedReason {
+		t.Fatalf("invalidation reasons = %+v", invalidator.reasons)
+	}
+}
+
 type proxyOptionStoreStub struct {
-	listInput  port.ManagementProxyListInput
-	input      port.ManagementProxyOptionListInput
-	listResult port.ManagementProxyListResult
-	options    []port.ManagementProxyOption
-	listErr    error
-	err        error
+	listInput     port.ManagementProxyListInput
+	input         port.ManagementProxyOptionListInput
+	listResult    port.ManagementProxyListResult
+	options       []port.ManagementProxyOption
+	listErr       error
+	err           error
+	findID        string
+	findResult    port.ManagementProxySummary
+	findFound     bool
+	findErr       error
+	createInput   port.ManagementProxyCreateInput
+	createResult  port.ManagementProxySummary
+	createErr     error
+	updateInput   port.ManagementProxyUpdateInput
+	updateResult  port.ManagementProxySummary
+	updateFound   bool
+	updateErr     error
+	bindingsInput port.ManagementProxyAccountBindingListInput
+	bindings      []port.ManagementProxyAccountBinding
+	bindingsErr   error
+	deleteCalled  bool
+	deleteID      string
+	deleteResult  bool
+	deleteErr     error
 }
 
 func (s *proxyOptionStoreStub) ListManagementProxies(_ context.Context, input port.ManagementProxyListInput) (port.ManagementProxyListResult, error) {
@@ -182,4 +421,59 @@ func (s *proxyOptionStoreStub) ListManagementProxies(_ context.Context, input po
 func (s *proxyOptionStoreStub) ListManagementProxyOptions(_ context.Context, input port.ManagementProxyOptionListInput) ([]port.ManagementProxyOption, error) {
 	s.input = input
 	return s.options, s.err
+}
+
+func (s *proxyOptionStoreStub) FindManagementProxy(_ context.Context, id string) (port.ManagementProxySummary, bool, error) {
+	s.findID = id
+	return s.findResult, s.findFound, s.findErr
+}
+
+func (s *proxyOptionStoreStub) CreateManagementProxy(_ context.Context, input port.ManagementProxyCreateInput) (port.ManagementProxySummary, error) {
+	s.createInput = input
+	return s.createResult, s.createErr
+}
+
+func (s *proxyOptionStoreStub) UpdateManagementProxy(_ context.Context, input port.ManagementProxyUpdateInput) (port.ManagementProxySummary, bool, error) {
+	s.updateInput = input
+	return s.updateResult, s.updateFound, s.updateErr
+}
+
+func (s *proxyOptionStoreStub) ListManagementProxyAccountBindings(_ context.Context, input port.ManagementProxyAccountBindingListInput) ([]port.ManagementProxyAccountBinding, error) {
+	s.bindingsInput = input
+	return s.bindings, s.bindingsErr
+}
+
+func (s *proxyOptionStoreStub) DeleteManagementProxy(_ context.Context, id string) (bool, error) {
+	s.deleteCalled = true
+	s.deleteID = id
+	return s.deleteResult, s.deleteErr
+}
+
+type proxyCredentialCodecStub struct {
+	encrypted string
+	password  string
+	err       error
+}
+
+func (s *proxyCredentialCodecStub) EncryptJSON(value map[string]any) (string, error) {
+	password, _ := value["password"].(string)
+	s.password = password
+	if s.err != nil {
+		return "", s.err
+	}
+	return s.encrypted, nil
+}
+
+type proxyInvalidatorStub struct {
+	reasons []string
+	err     error
+}
+
+func (s *proxyInvalidatorStub) InvalidateProxyChanged(_ context.Context, reason string) error {
+	s.reasons = append(s.reasons, reason)
+	return s.err
+}
+
+func stringPtr(value string) *string {
+	return &value
 }

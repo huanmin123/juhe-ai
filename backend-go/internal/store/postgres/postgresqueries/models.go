@@ -42,6 +42,7 @@ type JuheBusinessAccount struct {
 	AuthorizationInstanceSourceAccountID      pgtype.Text
 	AuthorizationInstanceAuthorizationID      pgtype.Text
 	AuthorizationInstanceOwnerSystemAccountID pgtype.Text
+	ProxyProfileID                            pgtype.Text
 }
 
 type JuheBusinessAccountModelMapping struct {

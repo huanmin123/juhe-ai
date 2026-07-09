@@ -25,6 +25,9 @@ const (
 	TeamAuthorizationChangedReason            = "team_authorization_changed"
 	CustomProviderModelSavedReason            = "custom_provider_model_saved"
 	CustomProviderModelDeletedReason          = "custom_provider_model_deleted"
+	ProxyCreatedReason                        = "proxy_created"
+	ProxyUpdatedReason                        = "proxy_updated"
+	ProxyDeletedReason                        = "proxy_deleted"
 
 	SharedCacheVersionTTL = 30 * 24 * time.Hour
 	RuntimeStateTTL       = 24 * time.Hour
@@ -125,6 +128,14 @@ func (i *SystemAccountInvalidator) InvalidateCustomProviderModelChanged(ctx cont
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
 		return fmt.Errorf("gateway custom provider model invalidation reason is required")
+	}
+	return i.publishGatewayCacheInvalidation(ctx, GatewayRuntimeCacheTopic, reason, runtimeInvalidationFields{})
+}
+
+func (i *SystemAccountInvalidator) InvalidateProxyChanged(ctx context.Context, reason string) error {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return fmt.Errorf("gateway proxy invalidation reason is required")
 	}
 	return i.publishGatewayCacheInvalidation(ctx, GatewayRuntimeCacheTopic, reason, runtimeInvalidationFields{})
 }

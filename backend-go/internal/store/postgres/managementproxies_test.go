@@ -4,6 +4,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestManagementProxyListLimit(t *testing.T) {
@@ -29,7 +31,7 @@ func TestManagementProxyOptionsSQLIncludesPagedListGuard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read proxy query: %v", err)
 	}
-	sql := string(source)
+	sql := querySection(t, string(source), "-- name: ListManagementProxies :many", "-- name: FindManagementProxy :one")
 	for _, want := range []string{
 		"-- name: ListManagementProxies :many",
 		"description",
@@ -55,5 +57,59 @@ func TestManagementProxyOptionsSQLIncludesPagedListGuard(t *testing.T) {
 		if strings.Contains(sql, forbidden) {
 			t.Fatalf("proxy list query should not include %q", forbidden)
 		}
+	}
+}
+
+func TestManagementProxyCRUDSQLUsesFixedBindingWindow(t *testing.T) {
+	source, err := os.ReadFile("queries/w2_management_proxy_options.sql")
+	if err != nil {
+		t.Fatalf("read proxy query: %v", err)
+	}
+	sql := string(source)
+	for _, marker := range []string{
+		"-- name: FindManagementProxy :one",
+		"-- name: CreateManagementProxy :one",
+		"-- name: UpdateManagementProxy :one",
+		"-- name: DeleteManagementProxy :execrows",
+		"-- name: ListManagementProxyAccountBindings :many",
+	} {
+		if !strings.Contains(sql, marker) {
+			t.Fatalf("proxy CRUD SQL missing %q", marker)
+		}
+	}
+	updateSQL := querySection(t, sql, "-- name: UpdateManagementProxy :one", "-- name: DeleteManagementProxy :execrows")
+	for _, want := range []string{
+		"password_encrypted = sqlc.narg(password_encrypted)::text",
+		"test_status = CASE WHEN sqlc.arg(reset_test_state)::bool THEN 'unknown' ELSE test_status END",
+		"last_tested_at = CASE WHEN sqlc.arg(reset_test_state)::bool THEN NULL ELSE last_tested_at END",
+	} {
+		if !strings.Contains(updateSQL, want) {
+			t.Fatalf("proxy update SQL missing %q", want)
+		}
+	}
+	bindingSQL := querySection(t, sql, "-- name: ListManagementProxyAccountBindings :many", "")
+	for _, want := range []string{
+		"WHERE proxy_profile_id = sqlc.arg(proxy_id)::text",
+		"AND deleted_at IS NULL",
+		"ORDER BY id ASC",
+		"LIMIT sqlc.arg(row_limit)::int",
+	} {
+		if !strings.Contains(bindingSQL, want) {
+			t.Fatalf("proxy binding SQL missing %q", want)
+		}
+	}
+	if strings.Contains(bindingSQL, "COUNT(") {
+		t.Fatal("proxy binding SQL must not perform exact count")
+	}
+}
+
+func TestManagementProxyDuplicateNameError(t *testing.T) {
+	for _, constraint := range []string{"idx_proxy_profiles_name_unique", "idx_proxy_profiles_name_unique_lower"} {
+		if !managementProxyDuplicateNameError(&pgconn.PgError{Code: "23505", ConstraintName: constraint}) {
+			t.Fatalf("constraint %q was not recognized", constraint)
+		}
+	}
+	if managementProxyDuplicateNameError(&pgconn.PgError{Code: "23505", ConstraintName: "other_unique"}) {
+		t.Fatal("unrelated unique violation should not be recognized")
 	}
 }

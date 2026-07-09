@@ -140,20 +140,27 @@ type ManagementProxyOption struct {
 }
 
 type ManagementProxySummary struct {
-	ID              string
-	Name            string
-	Description     *string
-	Type            string
-	Host            string
-	Port            int
-	Username        *string
-	Enabled         bool
-	TestStatus      string
-	LatencyMs       *int
-	OutboundIP      *string
-	OutboundRegion  *string
-	LastTestMessage *string
-	LastTestedAt    *time.Time
+	ID                string
+	SystemAccountID   string
+	Name              string
+	Description       *string
+	Type              string
+	Host              string
+	Port              int
+	Username          *string
+	PasswordEncrypted *string
+	Enabled           bool
+	TestStatus        string
+	LatencyMs         *int
+	OutboundIP        *string
+	OutboundRegion    *string
+	LastTestMessage   *string
+	LastTestedAt      *time.Time
+}
+
+type ManagementProxyAccountBinding struct {
+	ID   string
+	Name string
 }
 
 type ManagementProxyListInput struct {
@@ -172,6 +179,40 @@ type ManagementProxyOptionListInput struct {
 	Limit   int
 }
 
+type ManagementProxyCreateInput struct {
+	ID                string
+	SystemAccountID   string
+	Name              string
+	Description       *string
+	Type              string
+	Host              string
+	Port              int
+	Username          *string
+	PasswordEncrypted *string
+	Enabled           bool
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+type ManagementProxyUpdateInput struct {
+	ID                string
+	Name              string
+	Description       *string
+	Type              string
+	Host              string
+	Port              int
+	Username          *string
+	PasswordEncrypted *string
+	Enabled           bool
+	ResetTestState    bool
+	UpdatedAt         time.Time
+}
+
+type ManagementProxyAccountBindingListInput struct {
+	ProxyID string
+	Limit   int
+}
+
 type ManagementProxyOptionReader interface {
 	ListManagementProxyOptions(ctx context.Context, input ManagementProxyOptionListInput) ([]ManagementProxyOption, error)
 }
@@ -179,6 +220,17 @@ type ManagementProxyOptionReader interface {
 type ManagementProxyReader interface {
 	ManagementProxyOptionReader
 	ListManagementProxies(ctx context.Context, input ManagementProxyListInput) (ManagementProxyListResult, error)
+}
+
+var ErrManagementProxyNameExists = errors.New("management proxy name exists")
+
+type ManagementProxyWriter interface {
+	ManagementProxyReader
+	FindManagementProxy(ctx context.Context, id string) (ManagementProxySummary, bool, error)
+	ListManagementProxyAccountBindings(ctx context.Context, input ManagementProxyAccountBindingListInput) ([]ManagementProxyAccountBinding, error)
+	CreateManagementProxy(ctx context.Context, input ManagementProxyCreateInput) (ManagementProxySummary, error)
+	UpdateManagementProxy(ctx context.Context, input ManagementProxyUpdateInput) (ManagementProxySummary, bool, error)
+	DeleteManagementProxy(ctx context.Context, id string) (bool, error)
 }
 
 type ManagementSystemAccountOption struct {

@@ -11,6 +11,202 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const createManagementProxy = `-- name: CreateManagementProxy :one
+INSERT INTO juhe_business.proxy_profiles (
+  id,
+  system_account_id,
+  name,
+  description,
+  type,
+  host,
+  port,
+  username,
+  password_encrypted,
+  enabled,
+  test_status,
+  created_at,
+  updated_at
+) VALUES (
+  $1::text,
+  $2::text,
+  $3::text,
+  $4::text,
+  $5::text,
+  $6::text,
+  $7::int,
+  $8::text,
+  $9::text,
+  $10::bool,
+  'unknown',
+  $11::timestamptz,
+  $12::timestamptz
+)
+RETURNING
+  id,
+  system_account_id,
+  name,
+  description,
+  type,
+  host,
+  port,
+  username,
+  enabled,
+  test_status,
+  latency_ms,
+  outbound_ip,
+  outbound_region,
+  last_test_message,
+  last_tested_at
+`
+
+type CreateManagementProxyParams struct {
+	ID                string
+	SystemAccountID   string
+	Name              string
+	Description       pgtype.Text
+	Type              string
+	Host              string
+	Port              int32
+	Username          pgtype.Text
+	PasswordEncrypted pgtype.Text
+	Enabled           bool
+	CreatedAt         pgtype.Timestamptz
+	UpdatedAt         pgtype.Timestamptz
+}
+
+type CreateManagementProxyRow struct {
+	ID              string
+	SystemAccountID string
+	Name            string
+	Description     pgtype.Text
+	Type            string
+	Host            string
+	Port            int32
+	Username        pgtype.Text
+	Enabled         bool
+	TestStatus      string
+	LatencyMs       pgtype.Int4
+	OutboundIp      pgtype.Text
+	OutboundRegion  pgtype.Text
+	LastTestMessage pgtype.Text
+	LastTestedAt    pgtype.Timestamptz
+}
+
+func (q *Queries) CreateManagementProxy(ctx context.Context, arg CreateManagementProxyParams) (CreateManagementProxyRow, error) {
+	row := q.db.QueryRow(ctx, createManagementProxy,
+		arg.ID,
+		arg.SystemAccountID,
+		arg.Name,
+		arg.Description,
+		arg.Type,
+		arg.Host,
+		arg.Port,
+		arg.Username,
+		arg.PasswordEncrypted,
+		arg.Enabled,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	var i CreateManagementProxyRow
+	err := row.Scan(
+		&i.ID,
+		&i.SystemAccountID,
+		&i.Name,
+		&i.Description,
+		&i.Type,
+		&i.Host,
+		&i.Port,
+		&i.Username,
+		&i.Enabled,
+		&i.TestStatus,
+		&i.LatencyMs,
+		&i.OutboundIp,
+		&i.OutboundRegion,
+		&i.LastTestMessage,
+		&i.LastTestedAt,
+	)
+	return i, err
+}
+
+const deleteManagementProxy = `-- name: DeleteManagementProxy :execrows
+DELETE FROM juhe_business.proxy_profiles
+WHERE id = $1::text
+`
+
+func (q *Queries) DeleteManagementProxy(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteManagementProxy, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const findManagementProxy = `-- name: FindManagementProxy :one
+SELECT
+  id,
+  system_account_id,
+  name,
+  description,
+  type,
+  host,
+  port,
+  username,
+  password_encrypted,
+  enabled,
+  test_status,
+  latency_ms,
+  outbound_ip,
+  outbound_region,
+  last_test_message,
+  last_tested_at
+FROM juhe_business.proxy_profiles
+WHERE id = $1::text
+LIMIT 1
+`
+
+type FindManagementProxyRow struct {
+	ID                string
+	SystemAccountID   string
+	Name              string
+	Description       pgtype.Text
+	Type              string
+	Host              string
+	Port              int32
+	Username          pgtype.Text
+	PasswordEncrypted pgtype.Text
+	Enabled           bool
+	TestStatus        string
+	LatencyMs         pgtype.Int4
+	OutboundIp        pgtype.Text
+	OutboundRegion    pgtype.Text
+	LastTestMessage   pgtype.Text
+	LastTestedAt      pgtype.Timestamptz
+}
+
+func (q *Queries) FindManagementProxy(ctx context.Context, id string) (FindManagementProxyRow, error) {
+	row := q.db.QueryRow(ctx, findManagementProxy, id)
+	var i FindManagementProxyRow
+	err := row.Scan(
+		&i.ID,
+		&i.SystemAccountID,
+		&i.Name,
+		&i.Description,
+		&i.Type,
+		&i.Host,
+		&i.Port,
+		&i.Username,
+		&i.PasswordEncrypted,
+		&i.Enabled,
+		&i.TestStatus,
+		&i.LatencyMs,
+		&i.OutboundIp,
+		&i.OutboundRegion,
+		&i.LastTestMessage,
+		&i.LastTestedAt,
+	)
+	return i, err
+}
+
 const listManagementProxies = `-- name: ListManagementProxies :many
 SELECT
   id,
@@ -106,6 +302,45 @@ func (q *Queries) ListManagementProxies(ctx context.Context, arg ListManagementP
 	return items, nil
 }
 
+const listManagementProxyAccountBindings = `-- name: ListManagementProxyAccountBindings :many
+SELECT id, name
+FROM juhe_business.accounts
+WHERE proxy_profile_id = $1::text
+  AND deleted_at IS NULL
+ORDER BY id ASC
+LIMIT $2::int
+`
+
+type ListManagementProxyAccountBindingsParams struct {
+	ProxyID  string
+	RowLimit int32
+}
+
+type ListManagementProxyAccountBindingsRow struct {
+	ID   string
+	Name string
+}
+
+func (q *Queries) ListManagementProxyAccountBindings(ctx context.Context, arg ListManagementProxyAccountBindingsParams) ([]ListManagementProxyAccountBindingsRow, error) {
+	rows, err := q.db.Query(ctx, listManagementProxyAccountBindings, arg.ProxyID, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListManagementProxyAccountBindingsRow
+	for rows.Next() {
+		var i ListManagementProxyAccountBindingsRow
+		if err := rows.Scan(&i.ID, &i.Name); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listManagementProxyOptions = `-- name: ListManagementProxyOptions :many
 SELECT id, name, type, enabled
 FROM juhe_business.proxy_profiles
@@ -117,7 +352,7 @@ WHERE enabled = true
       AND name COLLATE "C" < $3::text
       AND starts_with(name, $2::text)
     )
-  )
+)
 ORDER BY name ASC, updated_at DESC, id ASC
 LIMIT $4::int
 `
@@ -164,4 +399,108 @@ func (q *Queries) ListManagementProxyOptions(ctx context.Context, arg ListManage
 		return nil, err
 	}
 	return items, nil
+}
+
+const updateManagementProxy = `-- name: UpdateManagementProxy :one
+UPDATE juhe_business.proxy_profiles
+SET
+  name = $1::text,
+  description = $2::text,
+  type = $3::text,
+  host = $4::text,
+  port = $5::int,
+  username = $6::text,
+  password_encrypted = $7::text,
+  enabled = $8::bool,
+  test_status = CASE WHEN $9::bool THEN 'unknown' ELSE test_status END,
+  latency_ms = CASE WHEN $9::bool THEN NULL ELSE latency_ms END,
+  outbound_ip = CASE WHEN $9::bool THEN NULL ELSE outbound_ip END,
+  outbound_region = CASE WHEN $9::bool THEN NULL ELSE outbound_region END,
+  last_test_message = CASE WHEN $9::bool THEN NULL ELSE last_test_message END,
+  last_tested_at = CASE WHEN $9::bool THEN NULL ELSE last_tested_at END,
+  updated_at = $10::timestamptz
+WHERE id = $11::text
+RETURNING
+  id,
+  system_account_id,
+  name,
+  description,
+  type,
+  host,
+  port,
+  username,
+  enabled,
+  test_status,
+  latency_ms,
+  outbound_ip,
+  outbound_region,
+  last_test_message,
+  last_tested_at
+`
+
+type UpdateManagementProxyParams struct {
+	Name              string
+	Description       pgtype.Text
+	Type              string
+	Host              string
+	Port              int32
+	Username          pgtype.Text
+	PasswordEncrypted pgtype.Text
+	Enabled           bool
+	ResetTestState    bool
+	UpdatedAt         pgtype.Timestamptz
+	ID                string
+}
+
+type UpdateManagementProxyRow struct {
+	ID              string
+	SystemAccountID string
+	Name            string
+	Description     pgtype.Text
+	Type            string
+	Host            string
+	Port            int32
+	Username        pgtype.Text
+	Enabled         bool
+	TestStatus      string
+	LatencyMs       pgtype.Int4
+	OutboundIp      pgtype.Text
+	OutboundRegion  pgtype.Text
+	LastTestMessage pgtype.Text
+	LastTestedAt    pgtype.Timestamptz
+}
+
+func (q *Queries) UpdateManagementProxy(ctx context.Context, arg UpdateManagementProxyParams) (UpdateManagementProxyRow, error) {
+	row := q.db.QueryRow(ctx, updateManagementProxy,
+		arg.Name,
+		arg.Description,
+		arg.Type,
+		arg.Host,
+		arg.Port,
+		arg.Username,
+		arg.PasswordEncrypted,
+		arg.Enabled,
+		arg.ResetTestState,
+		arg.UpdatedAt,
+		arg.ID,
+	)
+	var i UpdateManagementProxyRow
+	err := row.Scan(
+		&i.ID,
+		&i.SystemAccountID,
+		&i.Name,
+		&i.Description,
+		&i.Type,
+		&i.Host,
+		&i.Port,
+		&i.Username,
+		&i.Enabled,
+		&i.TestStatus,
+		&i.LatencyMs,
+		&i.OutboundIp,
+		&i.OutboundRegion,
+		&i.LastTestMessage,
+		&i.LastTestedAt,
+	)
+	return i, err
 }
