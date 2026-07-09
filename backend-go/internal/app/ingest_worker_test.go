@@ -95,6 +95,47 @@ func TestRunAuthorizationExpirySweepWorkerValidatesInterval(t *testing.T) {
 	}
 }
 
+func TestRunOperationLogRetentionCleanupWorkerRequiresPostgresURL(t *testing.T) {
+	cfg := config.Config{
+		ShutdownTimeout: time.Second,
+	}
+
+	err := RunOperationLogRetentionCleanupWorker(context.Background(), cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), OperationLogRetentionCleanupWorkerOptions{RunOnce: true})
+	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_POSTGRES_URL") {
+		t.Fatalf("RunOperationLogRetentionCleanupWorker() error = %v, want missing postgres url", err)
+	}
+}
+
+func TestRunOperationLogRetentionCleanupWorkerValidatesInterval(t *testing.T) {
+	cfg := config.Config{
+		PostgresURL:     "postgres://juhe_ai:password@127.0.0.1:5432/juhe_ai?sslmode=disable",
+		ShutdownTimeout: time.Second,
+	}
+
+	err := RunOperationLogRetentionCleanupWorker(context.Background(), cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), OperationLogRetentionCleanupWorkerOptions{
+		Interval: -time.Second,
+		RunOnce:  true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "清理间隔") {
+		t.Fatalf("RunOperationLogRetentionCleanupWorker() error = %v, want invalid interval", err)
+	}
+}
+
+func TestRunOperationLogRetentionCleanupWorkerValidatesInitialDelay(t *testing.T) {
+	cfg := config.Config{
+		PostgresURL:     "postgres://juhe_ai:password@127.0.0.1:5432/juhe_ai?sslmode=disable",
+		ShutdownTimeout: time.Second,
+	}
+
+	err := RunOperationLogRetentionCleanupWorker(context.Background(), cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), OperationLogRetentionCleanupWorkerOptions{
+		InitialDelay: -time.Second,
+		RunOnce:      true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "初始延迟") {
+		t.Fatalf("RunOperationLogRetentionCleanupWorker() error = %v, want invalid initial delay", err)
+	}
+}
+
 func TestRunAuthorizationUsageRangeWindowRefreshWorkerRequiresPostgresURL(t *testing.T) {
 	cfg := config.Config{
 		ShutdownTimeout: time.Second,

@@ -296,6 +296,40 @@ func (s *Store) GetOperationLogDetail(ctx context.Context, input port.OperationL
 	}, true, nil
 }
 
+func (s *Store) GetOperationLogRetentionDays(ctx context.Context) (int, bool, error) {
+	raw, err := s.queries().GetOperationLogRetentionDays(ctx)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("读取操作日志保留天数失败: %w", err)
+	}
+	var value int
+	if err := json.Unmarshal([]byte(raw), &value); err != nil {
+		return 0, false, fmt.Errorf("operationLogRetentionDays JSON 无效: %w", err)
+	}
+	return value, true, nil
+}
+
+func (s *Store) CleanupOperationLogsBefore(ctx context.Context, input port.OperationLogCleanupInput) (int64, error) {
+	cutoff := input.CutoffCreatedAt
+	if cutoff.IsZero() {
+		return 0, fmt.Errorf("操作日志保留清理 cutoff_created_at 不能为空")
+	}
+	limit := input.Limit
+	if limit <= 0 {
+		return 0, fmt.Errorf("操作日志保留清理 limit 必须大于 0")
+	}
+	deleted, err := s.queries().CleanupOperationLogsBefore(ctx, postgresqueries.CleanupOperationLogsBeforeParams{
+		CutoffCreatedAt: pgTimestamptz(cutoff.UTC()),
+		RowLimit:        int32(limit),
+	})
+	if err != nil {
+		return 0, fmt.Errorf("按保留期清理操作日志失败: %w", err)
+	}
+	return deleted, nil
+}
+
 func normalizeOperationLogInput(input port.OperationLogInput) (port.OperationLogInput, error) {
 	input.ID = strings.TrimSpace(input.ID)
 	input.TraceID = strings.TrimSpace(input.TraceID)
@@ -895,3 +929,4 @@ func isOperationLogAdminRole(role string) bool {
 
 var _ port.OperationLogStore = (*Store)(nil)
 var _ port.OperationLogReader = (*Store)(nil)
+var _ port.OperationLogRetentionCleaner = (*Store)(nil)

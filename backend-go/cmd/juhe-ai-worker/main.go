@@ -79,6 +79,38 @@ func main() {
 	expirySweepCommand.Flags().BoolVar(&expirySweepOptions.RunOnce, "run-once", false, "run one sweep and exit")
 	root.AddCommand(expirySweepCommand)
 
+	operationLogRetentionCleanupOptions := app.OperationLogRetentionCleanupWorkerOptions{
+		Interval:     10 * time.Minute,
+		InitialDelay: 13 * time.Minute,
+	}
+	operationLogRetentionCleanupCommand := &cobra.Command{
+		Use:   "operation-log-retention-cleanup",
+		Short: "Run operation log retention cleanup worker",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load(config.LoadOptions{LoadDotEnv: true})
+			if err != nil {
+				return err
+			}
+
+			logger, err := logging.New(cfg.LogLevel, cmd.ErrOrStderr())
+			if err != nil {
+				return err
+			}
+
+			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+
+			return app.RunOperationLogRetentionCleanupWorker(ctx, cfg, logger, operationLogRetentionCleanupOptions)
+		},
+	}
+	operationLogRetentionCleanupCommand.Flags().IntVar(&operationLogRetentionCleanupOptions.RetentionDays, "retention-days", 0, "override operation log retention days; 0 reads system settings")
+	operationLogRetentionCleanupCommand.Flags().IntVar(&operationLogRetentionCleanupOptions.BatchSize, "batch-size", 0, "operation logs to delete per batch; 0 uses the service default")
+	operationLogRetentionCleanupCommand.Flags().IntVar(&operationLogRetentionCleanupOptions.MaxBatches, "max-batches", 0, "maximum cleanup batches per run; 0 uses the service default")
+	operationLogRetentionCleanupCommand.Flags().DurationVar(&operationLogRetentionCleanupOptions.Interval, "interval", operationLogRetentionCleanupOptions.Interval, "cleanup interval")
+	operationLogRetentionCleanupCommand.Flags().DurationVar(&operationLogRetentionCleanupOptions.InitialDelay, "initial-delay", operationLogRetentionCleanupOptions.InitialDelay, "initial delay before the first cleanup")
+	operationLogRetentionCleanupCommand.Flags().BoolVar(&operationLogRetentionCleanupOptions.RunOnce, "run-once", false, "run one cleanup and exit")
+	root.AddCommand(operationLogRetentionCleanupCommand)
+
 	usageRangeWindowOptions := app.AuthorizationUsageRangeWindowRefreshWorkerOptions{
 		Interval:     6 * time.Hour,
 		InitialDelay: 43 * time.Minute,

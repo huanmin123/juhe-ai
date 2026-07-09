@@ -56,6 +56,10 @@ func TestOperationLogSQLGuards(t *testing.T) {
 		`ol.trace_id COLLATE "C"`,
 		"operation_log_viewers AS visible",
 		"GetVisibleOperationLogDetail",
+		"CleanupOperationLogsBefore",
+		"created_at < sqlc.arg(cutoff_created_at)::timestamptz",
+		"ORDER BY created_at ASC, id ASC",
+		"LIMIT sqlc.arg(row_limit)::int",
 	} {
 		if !strings.Contains(sql, want) {
 			t.Fatalf("operation log sql missing %q", want)

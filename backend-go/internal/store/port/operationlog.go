@@ -153,3 +153,13 @@ type OperationLogReader interface {
 	ListVisibleOperationLogs(ctx context.Context, input OperationLogVisibleListInput) (OperationLogListResult, error)
 	GetOperationLogDetail(ctx context.Context, input OperationLogDetailInput) (OperationLogDetail, bool, error)
 }
+
+type OperationLogCleanupInput struct {
+	CutoffCreatedAt time.Time
+	Limit           int
+}
+
+type OperationLogRetentionCleaner interface {
+	GetOperationLogRetentionDays(ctx context.Context) (int, bool, error)
+	CleanupOperationLogsBefore(ctx context.Context, input OperationLogCleanupInput) (int64, error)
+}

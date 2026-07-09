@@ -11,6 +11,31 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const cleanupOperationLogsBefore = `-- name: CleanupOperationLogsBefore :execrows
+WITH stale_operation_logs AS (
+  SELECT id
+  FROM juhe_dataset.operation_logs
+  WHERE created_at < $1::timestamptz
+  ORDER BY created_at ASC, id ASC
+  LIMIT $2::int
+)
+DELETE FROM juhe_dataset.operation_logs
+WHERE id IN (SELECT id FROM stale_operation_logs)
+`
+
+type CleanupOperationLogsBeforeParams struct {
+	CutoffCreatedAt pgtype.Timestamptz
+	RowLimit        int32
+}
+
+func (q *Queries) CleanupOperationLogsBefore(ctx context.Context, arg CleanupOperationLogsBeforeParams) (int64, error) {
+	result, err := q.db.Exec(ctx, cleanupOperationLogsBefore, arg.CutoffCreatedAt, arg.RowLimit)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getOperationLogDetail = `-- name: GetOperationLogDetail :one
 SELECT ol.id, ol.trace_id, ol.actor_system_account_id, ol.actor_username, ol.actor_display_name, ol.actor_role, ol.operation_scope_system_account_id, ol.mode, ol.module, ol.action, ol.operation_key, ol.resource_type, ol.resource_id, ol.resource_name, ol.summary, ol.detail_level, ol.visibility_scope, ol.changes_json, ol.metadata_json, ol.method, ol.path, ol.status_code, ol.client_ip, ol.user_agent, ol.created_at
 FROM juhe_dataset.operation_logs AS ol
@@ -49,6 +74,21 @@ func (q *Queries) GetOperationLogDetail(ctx context.Context, id string) (JuheDat
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const getOperationLogRetentionDays = `-- name: GetOperationLogRetentionDays :one
+SELECT value_json
+FROM juhe_business.system_settings
+WHERE system_account_id = 'sys_admin'
+  AND key = 'operationLogRetentionDays'
+LIMIT 1
+`
+
+func (q *Queries) GetOperationLogRetentionDays(ctx context.Context) (string, error) {
+	row := q.db.QueryRow(ctx, getOperationLogRetentionDays)
+	var value_json string
+	err := row.Scan(&value_json)
+	return value_json, err
 }
 
 const getOperationLogViewerDetailLevel = `-- name: GetOperationLogViewerDetailLevel :one

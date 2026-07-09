@@ -295,3 +295,21 @@ WHERE operation_log_id = sqlc.arg(operation_log_id)::text
   AND system_account_id = sqlc.arg(system_account_id)::text
 ORDER BY CASE WHEN detail_level = 'full' THEN 0 ELSE 1 END ASC
 LIMIT 1;
+
+-- name: GetOperationLogRetentionDays :one
+SELECT value_json
+FROM juhe_business.system_settings
+WHERE system_account_id = 'sys_admin'
+  AND key = 'operationLogRetentionDays'
+LIMIT 1;
+
+-- name: CleanupOperationLogsBefore :execrows
+WITH stale_operation_logs AS (
+  SELECT id
+  FROM juhe_dataset.operation_logs
+  WHERE created_at < sqlc.arg(cutoff_created_at)::timestamptz
+  ORDER BY created_at ASC, id ASC
+  LIMIT sqlc.arg(row_limit)::int
+)
+DELETE FROM juhe_dataset.operation_logs
+WHERE id IN (SELECT id FROM stale_operation_logs);
