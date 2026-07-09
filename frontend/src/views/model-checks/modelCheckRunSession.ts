@@ -16,15 +16,15 @@ export class ModelCheckSessionBusyError extends Error {
   }
 }
 
-export const modelCheckRunSession = reactive({
-  ...readStoredModelCheckRunSessionState()
-})
-
 export const modelCheckRunSessionStorageTtlMs = 12 * 60 * 60 * 1000
 
 const modelCheckRunSessionStorageKey = 'juhe-ai:model-check-run-session:v1'
 const modelCheckTerminalRestoredText = '已恢复本地终端记录；旧进度流不会回放，后端检测完成后可在历史记录中查看报告'
 const modelCheckTerminalInactiveText = '本地终端记录已恢复，但后端没有运行中的检测任务；请刷新历史记录查看最终报告'
+
+export const modelCheckRunSession = reactive({
+  ...readStoredModelCheckRunSessionState()
+})
 
 let terminalLineId = maxTerminalLineId(modelCheckRunSession.terminalLines)
 let activeAbortController: AbortController | undefined
