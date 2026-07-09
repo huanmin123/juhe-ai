@@ -21,19 +21,22 @@ import (
 )
 
 const (
-	maxRemarkRunes                           = 200
-	maxRequestQuotaHourlyWindowHours         = 24 * 30
-	maxRequestQuotaAmountUSD                 = 9_007_199_254_740_991
-	quotaAmountPrecision               int64 = 1_000_000
-	ResourceAuthorizationCreatedReason       = "resource_authorization_created"
+	maxRemarkRunes                            = 200
+	maxRequestQuotaHourlyWindowHours          = 24 * 30
+	maxRequestQuotaAmountUSD                  = 9_007_199_254_740_991
+	quotaAmountPrecision                int64 = 1_000_000
+	ResourceAuthorizationCreatedReason        = "resource_authorization_created"
+	ResourceAuthorizationReturnedReason       = "resource_authorization_returned"
 )
 
 var (
 	ErrAuthorizationCreateInvalid = errors.New("management authorization create invalid")
+	ErrAuthorizationReturnInvalid = errors.New("management authorization return invalid")
 )
 
 type Service struct {
-	store                    port.ManagementResourceAuthorizationCreator
+	createStore              port.ManagementResourceAuthorizationCreator
+	returnStore              port.ManagementResourceAuthorizationReturner
 	now                      func() time.Time
 	secret                   string
 	authorizationInvalidator AuthorizationInvalidator
@@ -45,6 +48,7 @@ type AuthorizationInvalidator interface {
 
 type ServiceOptions struct {
 	Store                    port.ManagementResourceAuthorizationCreator
+	ReturnStore              port.ManagementResourceAuthorizationReturner
 	Now                      func() time.Time
 	Secret                   string
 	AuthorizationInvalidator AuthorizationInvalidator
@@ -66,6 +70,12 @@ type CreateInput struct {
 	ActorSystemAccountID         string
 }
 
+type ReturnInput struct {
+	AuthorizationID        string
+	GranteeSystemAccountID string
+	ActorSystemAccountID   string
+}
+
 type Summary = port.ManagementResourceAuthorizationSummary
 
 func NewService(store port.ManagementResourceAuthorizationCreator) *Service {
@@ -77,8 +87,15 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 	if now == nil {
 		now = time.Now
 	}
+	returnStore := opts.ReturnStore
+	if returnStore == nil {
+		if candidate, ok := opts.Store.(port.ManagementResourceAuthorizationReturner); ok {
+			returnStore = candidate
+		}
+	}
 	return &Service{
-		store:                    opts.Store,
+		createStore:              opts.Store,
+		returnStore:              returnStore,
 		now:                      now,
 		secret:                   opts.Secret,
 		authorizationInvalidator: opts.AuthorizationInvalidator,
@@ -86,7 +103,7 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 }
 
 func (s *Service) Create(ctx context.Context, input CreateInput) (Summary, error) {
-	if s.store == nil {
+	if s.createStore == nil {
 		return Summary{}, fmt.Errorf("management resource authorization creator is required")
 	}
 	now := s.now().UTC()
@@ -152,7 +169,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Summary, error
 		ActorSystemAccountID:            actor,
 		CreatedAt:                       now,
 	}
-	row, err := s.store.CreateManagementResourceAuthorization(ctx, storeInput)
+	row, err := s.createStore.CreateManagementResourceAuthorization(ctx, storeInput)
 	if err != nil {
 		return Summary{}, err
 	}
@@ -162,6 +179,37 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Summary, error
 		}
 	}
 	return row, nil
+}
+
+func (s *Service) Return(ctx context.Context, input ReturnInput) (Summary, bool, error) {
+	if s.returnStore == nil {
+		return Summary{}, false, fmt.Errorf("management resource authorization returner is required")
+	}
+	now := s.now().UTC()
+	authorizationID := strings.TrimSpace(input.AuthorizationID)
+	granteeSystemAccountID := strings.TrimSpace(input.GranteeSystemAccountID)
+	actor := strings.TrimSpace(input.ActorSystemAccountID)
+	if authorizationID == "" || granteeSystemAccountID == "" || actor == "" {
+		return Summary{}, false, ErrAuthorizationReturnInvalid
+	}
+	row, found, err := s.returnStore.ReturnManagementResourceAuthorizationForGrantee(ctx, port.ManagementResourceAuthorizationReturnInput{
+		AuthorizationID:        authorizationID,
+		GranteeSystemAccountID: granteeSystemAccountID,
+		ActorSystemAccountID:   actor,
+		ReturnedAt:             now,
+	})
+	if err != nil {
+		return Summary{}, false, err
+	}
+	if !found {
+		return Summary{}, false, nil
+	}
+	if s.authorizationInvalidator != nil {
+		if err := s.authorizationInvalidator.InvalidateAuthorizationChanged(ctx, ResourceAuthorizationReturnedReason); err != nil {
+			return Summary{}, false, err
+		}
+	}
+	return row, true, nil
 }
 
 func normalizeResourceType(value string) string {

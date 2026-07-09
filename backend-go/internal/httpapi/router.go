@@ -50,6 +50,8 @@ type RouterOptions struct {
 	ManagementMyAuthorizationGranteeGroupsHandler   http.Handler
 	ManagementAuthorizationCreateHandler            http.Handler
 	ManagementMyAuthorizationCreateHandler          http.Handler
+	ManagementAuthorizationReturnHandler            http.Handler
+	ManagementMyAuthorizationReturnHandler          http.Handler
 	ManagementProviderOptionsHandler                http.Handler
 	ManagementProviderModelOptionsHandler           http.Handler
 	ManagementProviderModelsHandler                 http.Handler
@@ -130,6 +132,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyAuthorizationGranteeGroupsHandler == nil &&
 				opts.ManagementAuthorizationCreateHandler == nil &&
 				opts.ManagementMyAuthorizationCreateHandler == nil &&
+				opts.ManagementAuthorizationReturnHandler == nil &&
+				opts.ManagementMyAuthorizationReturnHandler == nil &&
 				opts.ManagementProviderOptionsHandler == nil &&
 				opts.ManagementProviderModelOptionsHandler == nil &&
 				opts.ManagementProviderModelsHandler == nil &&
@@ -234,6 +238,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementMyAuthorizationCreateHandler != nil {
 				system.With(managementAPIWriteAuthMiddleware).Post("/my-authorizations", opts.ManagementMyAuthorizationCreateHandler.ServeHTTP)
+			}
+			if opts.ManagementAuthorizationReturnHandler != nil {
+				system.With(managementAPIWriteAuthMiddleware).Delete("/authorizations/{id}/return", opts.ManagementAuthorizationReturnHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAuthorizationReturnHandler != nil {
+				system.With(managementAPIWriteAuthMiddleware).Delete("/my-authorizations/{id}/return", opts.ManagementMyAuthorizationReturnHandler.ServeHTTP)
 			}
 			if opts.ManagementProviderOptionsHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/providers/options", opts.ManagementProviderOptionsHandler.ServeHTTP)
@@ -342,6 +352,8 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementSystemTeamMemberDeleteHandler != nil ||
 		opts.ManagementAuthorizationCreateHandler != nil ||
 		opts.ManagementMyAuthorizationCreateHandler != nil ||
+		opts.ManagementAuthorizationReturnHandler != nil ||
+		opts.ManagementMyAuthorizationReturnHandler != nil ||
 		opts.ManagementProviderDefaultTestModelHandler != nil ||
 		opts.ManagementAccountTagDeleteHandler != nil ||
 		opts.ManagementMyAccountTagDeleteHandler != nil ||

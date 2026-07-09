@@ -217,6 +217,93 @@ func TestServiceCreateDoesNotInvalidateWhenStoreFails(t *testing.T) {
 	}
 }
 
+func TestServiceReturnTrimsInputAndInvalidatesAuthorizationCache(t *testing.T) {
+	now := time.Date(2026, 7, 9, 9, 30, 0, 0, time.UTC)
+	store := &authorizationReturnStoreStub{
+		found: true,
+		result: Summary{
+			ID:                           "rauthgrant_main",
+			ResourceType:                 "account",
+			ResourceID:                   "acct_main",
+			ResourceOwnerSystemAccountID: "sys_owner",
+			GranteeType:                  "system_account",
+			GranteeSystemAccountID:       "sys_grantee",
+			Scope:                        "use",
+			Status:                       "returned",
+			AuthorizationSources:         []port.ManagementResourceAuthorizationSourceSummary{},
+			Usage:                        port.ManagementAccountUsageSummary{},
+			CreatedBy:                    "sys_owner",
+			CreatedAt:                    now,
+			UpdatedAt:                    now,
+		},
+	}
+	invalidator := &authorizationInvalidatorStub{}
+	service := NewServiceWithOptions(ServiceOptions{
+		ReturnStore:              store,
+		Now:                      func() time.Time { return now },
+		AuthorizationInvalidator: invalidator,
+	})
+
+	got, found, err := service.Return(context.Background(), ReturnInput{
+		AuthorizationID:        " rauthgrant_main ",
+		GranteeSystemAccountID: " sys_grantee ",
+		ActorSystemAccountID:   " sys_admin ",
+	})
+
+	if err != nil {
+		t.Fatalf("Return() error = %v", err)
+	}
+	if !found || got.ID != "rauthgrant_main" {
+		t.Fatalf("Return() = (%+v, %v), want returned summary", got, found)
+	}
+	if !store.called ||
+		store.input.AuthorizationID != "rauthgrant_main" ||
+		store.input.GranteeSystemAccountID != "sys_grantee" ||
+		store.input.ActorSystemAccountID != "sys_admin" ||
+		!store.input.ReturnedAt.Equal(now) {
+		t.Fatalf("store input = %+v", store.input)
+	}
+	if invalidator.calls != 1 || invalidator.reason != ResourceAuthorizationReturnedReason {
+		t.Fatalf("invalidator calls=%d reason=%q", invalidator.calls, invalidator.reason)
+	}
+}
+
+func TestServiceReturnValidatesInputAndSkipsInvalidationWhenNotFound(t *testing.T) {
+	now := time.Date(2026, 7, 9, 9, 30, 0, 0, time.UTC)
+	store := &authorizationReturnStoreStub{}
+	invalidator := &authorizationInvalidatorStub{}
+	service := NewServiceWithOptions(ServiceOptions{
+		ReturnStore:              store,
+		Now:                      func() time.Time { return now },
+		AuthorizationInvalidator: invalidator,
+	})
+
+	if _, _, err := service.Return(context.Background(), ReturnInput{
+		GranteeSystemAccountID: "sys_grantee",
+		ActorSystemAccountID:   "sys_admin",
+	}); !errors.Is(err, ErrAuthorizationReturnInvalid) {
+		t.Fatalf("Return() error = %v, want invalid input", err)
+	}
+	if store.called {
+		t.Fatal("store was called for invalid return input")
+	}
+
+	_, found, err := service.Return(context.Background(), ReturnInput{
+		AuthorizationID:        "rauthgrant_missing",
+		GranteeSystemAccountID: "sys_grantee",
+		ActorSystemAccountID:   "sys_admin",
+	})
+	if err != nil {
+		t.Fatalf("Return() missing error = %v", err)
+	}
+	if found {
+		t.Fatal("Return() found missing authorization")
+	}
+	if invalidator.calls != 0 {
+		t.Fatalf("invalidator calls = %d, want 0", invalidator.calls)
+	}
+}
+
 type authorizationCreateStoreStub struct {
 	called bool
 	input  port.ManagementResourceAuthorizationCreateInput
@@ -233,6 +320,23 @@ func (s *authorizationCreateStoreStub) CreateManagementResourceAuthorization(_ c
 	return s.result, nil
 }
 
+type authorizationReturnStoreStub struct {
+	called bool
+	input  port.ManagementResourceAuthorizationReturnInput
+	result Summary
+	found  bool
+	err    error
+}
+
+func (s *authorizationReturnStoreStub) ReturnManagementResourceAuthorizationForGrantee(_ context.Context, input port.ManagementResourceAuthorizationReturnInput) (port.ManagementResourceAuthorizationSummary, bool, error) {
+	s.called = true
+	s.input = input
+	if s.err != nil {
+		return port.ManagementResourceAuthorizationSummary{}, false, s.err
+	}
+	return s.result, s.found, nil
+}
+
 type authorizationInvalidatorStub struct {
 	calls  int
 	reason string
@@ -246,4 +350,5 @@ func (s *authorizationInvalidatorStub) InvalidateAuthorizationChanged(_ context.
 }
 
 var _ port.ManagementResourceAuthorizationCreator = (*authorizationCreateStoreStub)(nil)
+var _ port.ManagementResourceAuthorizationReturner = (*authorizationReturnStoreStub)(nil)
 var _ AuthorizationInvalidator = (*authorizationInvalidatorStub)(nil)

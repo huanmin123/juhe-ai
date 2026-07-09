@@ -605,6 +605,17 @@ type ManagementResourceAuthorizationCreator interface {
 	CreateManagementResourceAuthorization(ctx context.Context, input ManagementResourceAuthorizationCreateInput) (ManagementResourceAuthorizationSummary, error)
 }
 
+type ManagementResourceAuthorizationReturnInput struct {
+	AuthorizationID        string
+	GranteeSystemAccountID string
+	ActorSystemAccountID   string
+	ReturnedAt             time.Time
+}
+
+type ManagementResourceAuthorizationReturner interface {
+	ReturnManagementResourceAuthorizationForGrantee(ctx context.Context, input ManagementResourceAuthorizationReturnInput) (ManagementResourceAuthorizationSummary, bool, error)
+}
+
 type ManagementProviderEndpointFamily struct {
 	Code        string
 	Name        string

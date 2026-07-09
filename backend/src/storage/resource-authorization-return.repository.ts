@@ -273,7 +273,7 @@ function findReturnableDirectGrantForGrantee(authorizationId: string, granteeSys
         AND runtime_authorization.resource_id = grant_row.resource_id
         AND runtime_authorization.resource_owner_system_account_id = grant_row.resource_owner_system_account_id
         AND runtime_authorization.grantee_system_account_id = grant_row.grantee_system_account_id
-      WHERE runtime_authorization.id = ?
+      WHERE grant_row.id = ?
         AND grant_row.grantee_type = 'system_account'
         AND grant_row.grantee_system_account_id = ?
         AND grant_row.status NOT IN ('revoked', 'returned')
@@ -321,7 +321,7 @@ async function findReturnableDirectGrantForGranteeAsync(authorizationId: string,
       AND runtime_authorization.resource_id = grant_row.resource_id
       AND runtime_authorization.resource_owner_system_account_id = grant_row.resource_owner_system_account_id
       AND runtime_authorization.grantee_system_account_id = grant_row.grantee_system_account_id
-    WHERE runtime_authorization.id = ?
+    WHERE grant_row.id = ?
       AND grant_row.grantee_type = 'system_account'
       AND grant_row.grantee_system_account_id = ?
       AND grant_row.status NOT IN ('revoked', 'returned')

@@ -919,8 +919,25 @@ WHERE id = $2
 	return nil
 }
 
+type managementAuthorizationEffectiveSourceRefreshOptions struct {
+	noActiveSourceReason              string
+	preserveExpiredWhenNoActiveSource bool
+	terminalStatus                    string
+}
+
 func refreshManagementResourceAuthorizationEffectiveSourceTx(ctx context.Context, tx pgx.Tx, authorizationID string, actor string, now time.Time) error {
+	return refreshManagementResourceAuthorizationEffectiveSourceWithOptionsTx(ctx, tx, authorizationID, actor, now, managementAuthorizationEffectiveSourceRefreshOptions{
+		preserveExpiredWhenNoActiveSource: true,
+		terminalStatus:                    "revoked",
+	})
+}
+
+func refreshManagementResourceAuthorizationEffectiveSourceWithOptionsTx(ctx context.Context, tx pgx.Tx, authorizationID string, actor string, now time.Time, options managementAuthorizationEffectiveSourceRefreshOptions) error {
 	now = now.UTC()
+	terminalStatus := options.terminalStatus
+	if terminalStatus == "" {
+		terminalStatus = "revoked"
+	}
 	var activeTeamSourceID string
 	err := tx.QueryRow(ctx, `
 SELECT ras.source_team_id
@@ -1042,21 +1059,31 @@ WHERE id = $3
 		return fmt.Errorf("find manual authorization source: %w", err)
 	}
 
+	preserveExpired := 0
+	if options.preserveExpiredWhenNoActiveSource {
+		preserveExpired = 1
+	}
+	noActiveSourceReason := strings.TrimSpace(options.noActiveSourceReason)
+	hasNoActiveSourceReason := 0
+	if noActiveSourceReason != "" {
+		hasNoActiveSourceReason = 1
+	}
 	if _, err := tx.Exec(ctx, `
 UPDATE juhe_business.resource_authorizations
-SET status = CASE WHEN expires_at IS NOT NULL AND expires_at <= $1 THEN 'expired' ELSE 'revoked' END,
+SET status = CASE WHEN $1 = 1 AND expires_at IS NOT NULL AND expires_at <= $2 THEN 'expired' ELSE $3 END,
     effective_source_type = NULL,
     effective_source_team_id = NULL,
-    revoked_by = COALESCE(revoked_by, $2),
-    revoked_at = COALESCE(revoked_at, $1),
+    revoked_by = CASE WHEN $4 = 1 THEN $5 ELSE COALESCE(revoked_by, $5) END,
+    revoked_at = CASE WHEN $4 = 1 THEN $2 ELSE COALESCE(revoked_at, $2) END,
     revoked_reason = CASE
-      WHEN expires_at IS NOT NULL AND expires_at <= $1 THEN 'authorization_expired'
+      WHEN $1 = 1 AND expires_at IS NOT NULL AND expires_at <= $2 THEN 'authorization_expired'
+      WHEN $4 = 1 THEN $6
       ELSE COALESCE(revoked_reason, 'no_active_source')
     END,
-    last_source_changed_at = $1,
-    updated_at = $1
-WHERE id = $3
-`, now, actor, authorizationID); err != nil {
+    last_source_changed_at = $2,
+    updated_at = $2
+WHERE id = $7
+`, preserveExpired, now, terminalStatus, hasNoActiveSourceReason, actor, noActiveSourceReason, authorizationID); err != nil {
 		return fmt.Errorf("refresh empty authorization source: %w", err)
 	}
 	return nil

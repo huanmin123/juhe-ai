@@ -129,6 +129,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyAuthorizationGranteeGroupsHandler:   managementHandlers.MyAuthorizationGranteeGroupsHandler,
 		ManagementAuthorizationCreateHandler:            managementHandlers.AuthorizationCreateHandler,
 		ManagementMyAuthorizationCreateHandler:          managementHandlers.MyAuthorizationCreateHandler,
+		ManagementAuthorizationReturnHandler:            managementHandlers.AuthorizationReturnHandler,
+		ManagementMyAuthorizationReturnHandler:          managementHandlers.MyAuthorizationReturnHandler,
 		ManagementProviderOptionsHandler:                managementHandlers.ProviderOptionsHandler,
 		ManagementProviderModelOptionsHandler:           managementHandlers.ProviderModelOptionsHandler,
 		ManagementProviderModelsHandler:                 managementHandlers.ProviderModelsHandler,
@@ -210,6 +212,8 @@ type managementAPIHandlers struct {
 	MyAuthorizationGranteeGroupsHandler   http.Handler
 	AuthorizationCreateHandler            http.Handler
 	MyAuthorizationCreateHandler          http.Handler
+	AuthorizationReturnHandler            http.Handler
+	MyAuthorizationReturnHandler          http.Handler
 	ProviderOptionsHandler                http.Handler
 	ProviderModelOptionsHandler           http.Handler
 	ProviderModelsHandler                 http.Handler
@@ -313,6 +317,8 @@ func newManagementAPIHandler(
 		MyAuthorizationGranteeGroupsHandler:   httpapi.NewManagementMyAuthorizationGranteeGroupsHandler(authorizationOptionService),
 		AuthorizationCreateHandler:            httpapi.NewManagementAuthorizationCreateHandlerWithOperationLog(authorizationService, operationLogOptions),
 		MyAuthorizationCreateHandler:          httpapi.NewManagementMyAuthorizationCreateHandlerWithOperationLog(authorizationService, operationLogOptions),
+		AuthorizationReturnHandler:            httpapi.NewManagementAuthorizationReturnHandlerWithOperationLog(authorizationService, operationLogOptions),
+		MyAuthorizationReturnHandler:          httpapi.NewManagementMyAuthorizationReturnHandlerWithOperationLog(authorizationService, operationLogOptions),
 		ProviderOptionsHandler:                httpapi.NewManagementProviderOptionsHandler(providerService),
 		ProviderModelOptionsHandler:           httpapi.NewManagementProviderModelOptionsHandler(providerModelService),
 		ProviderModelsHandler:                 httpapi.NewManagementProviderModelsHandler(providerModelService),
