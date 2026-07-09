@@ -111,6 +111,14 @@ func NewManagementMyAuthorizationUpdateHandler(service *managementauthorizations
 	return newManagementAuthorizationUpdateHandler(managementAuthorizationServiceAdapter{service: service}, managementAuthorizationScopeSelf)
 }
 
+func NewManagementAuthorizationExpireUpdateHandler(service *managementauthorizations.Service) http.Handler {
+	return newManagementAuthorizationExpireUpdateHandler(managementAuthorizationServiceAdapter{service: service}, managementAuthorizationScopeAdmin)
+}
+
+func NewManagementMyAuthorizationExpireUpdateHandler(service *managementauthorizations.Service) http.Handler {
+	return newManagementAuthorizationExpireUpdateHandler(managementAuthorizationServiceAdapter{service: service}, managementAuthorizationScopeSelf)
+}
+
 func NewManagementAuthorizationReturnHandler(service *managementauthorizations.Service) http.Handler {
 	return newManagementAuthorizationReturnHandler(managementAuthorizationServiceAdapter{service: service}, managementAuthorizationScopeAdmin)
 }
@@ -153,6 +161,22 @@ func NewManagementAuthorizationUpdateHandlerWithOperationLog(service *management
 
 func NewManagementMyAuthorizationUpdateHandlerWithOperationLog(service *managementauthorizations.Service, opts ManagementOperationLogOptions) http.Handler {
 	return newManagementAuthorizationUpdateHandler(
+		managementAuthorizationServiceAdapter{service: service},
+		managementAuthorizationScopeSelf,
+		newManagementOperationLogOptions(opts),
+	)
+}
+
+func NewManagementAuthorizationExpireUpdateHandlerWithOperationLog(service *managementauthorizations.Service, opts ManagementOperationLogOptions) http.Handler {
+	return newManagementAuthorizationExpireUpdateHandler(
+		managementAuthorizationServiceAdapter{service: service},
+		managementAuthorizationScopeAdmin,
+		newManagementOperationLogOptions(opts),
+	)
+}
+
+func NewManagementMyAuthorizationExpireUpdateHandlerWithOperationLog(service *managementauthorizations.Service, opts ManagementOperationLogOptions) http.Handler {
+	return newManagementAuthorizationExpireUpdateHandler(
 		managementAuthorizationServiceAdapter{service: service},
 		managementAuthorizationScopeSelf,
 		newManagementOperationLogOptions(opts),
@@ -391,6 +415,64 @@ func newManagementAuthorizationUpdateHandler(service managementAuthorizationUpda
 			return
 		}
 		recordAuthorizationUpdateOperationLog(r, authContext, scope, result, payload, operationLogs)
+		writeData(w, http.StatusOK, result)
+	})
+}
+
+func newManagementAuthorizationExpireUpdateHandler(service managementAuthorizationUpdateService, scope managementAuthorizationScope, logOptions ...managementOperationLogOptions) http.Handler {
+	operationLogs := effectiveManagementOperationLogOptions(logOptions)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authContext, ok := ManagementAuthContextFromRequest(r)
+		if !ok || strings.TrimSpace(authContext.SystemAccountID) == "" {
+			writeMessageError(w, http.StatusUnauthorized, "未登录")
+			return
+		}
+		if service == nil {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		if scope == managementAuthorizationScopeAdmin && !managementauth.IsAdminRole(authContext.Role) {
+			writeMessageError(w, http.StatusForbidden, "需要管理员权限")
+			return
+		}
+		scopedSystemAccountID, validScope := managementAuthorizationOwnerScope(authContext, r.URL.Query(), scope)
+		if !validScope {
+			writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
+			return
+		}
+		authorizationID := strings.TrimSpace(chi.URLParam(r, "id"))
+		if authorizationID == "" {
+			writeMessageError(w, http.StatusBadRequest, "授权记录 ID 不合法")
+			return
+		}
+		payload, ok := decodeManagementAuthorizationExpireUpdatePayload(w, r)
+		if !ok {
+			return
+		}
+		result, found, err := service.Update(r, managementauthorizations.UpdateInput{
+			AuthorizationID:       authorizationID,
+			ActorSystemAccountID:  authContext.SystemAccountID,
+			ActorRole:             authContext.Role,
+			ScopedSystemAccountID: scopedSystemAccountID,
+			HasExpiresAt:          true,
+			ExpiresAt:             payload.ExpiresAt,
+			HasLimits:             payload.HasLimits,
+			Limits:                payload.Limits,
+			LimitsIsNull:          payload.LimitsIsNull,
+		})
+		if errors.Is(err, managementauthorizations.ErrAuthorizationUpdateInvalid) {
+			writeMessageError(w, http.StatusBadRequest, "修改授权参数不合法")
+			return
+		}
+		if err != nil {
+			writeMessageError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if !found {
+			writeMessageError(w, http.StatusNotFound, "授权记录不存在")
+			return
+		}
+		recordAuthorizationExpireUpdateOperationLog(r, authContext, scope, result, payload, operationLogs)
 		writeData(w, http.StatusOK, result)
 	})
 }
@@ -693,6 +775,13 @@ type managementAuthorizationUpdatePayload struct {
 	LimitsIsNull bool
 }
 
+type managementAuthorizationExpireUpdatePayload struct {
+	ExpiresAt    *string
+	HasLimits    bool
+	Limits       map[string]any
+	LimitsIsNull bool
+}
+
 func decodeManagementAuthorizationCreatePayload(w http.ResponseWriter, r *http.Request) (managementAuthorizationCreatePayload, bool) {
 	decoder := json.NewDecoder(r.Body)
 	decoder.UseNumber()
@@ -833,6 +922,58 @@ func decodeManagementAuthorizationUpdatePayload(w http.ResponseWriter, r *http.R
 	if !payload.HasStatus && !payload.HasExpiresAt && !payload.HasLimits {
 		writeMessageError(w, http.StatusBadRequest, message)
 		return managementAuthorizationUpdatePayload{}, false
+	}
+	return payload, true
+}
+
+func decodeManagementAuthorizationExpireUpdatePayload(w http.ResponseWriter, r *http.Request) (managementAuthorizationExpireUpdatePayload, bool) {
+	const message = "修改授权参数不合法"
+	decoder := json.NewDecoder(r.Body)
+	decoder.UseNumber()
+	var raw map[string]json.RawMessage
+	if err := decoder.Decode(&raw); err != nil {
+		writeMessageError(w, http.StatusBadRequest, message)
+		return managementAuthorizationExpireUpdatePayload{}, false
+	}
+	if err := decoder.Decode(&struct{}{}); err == nil {
+		writeMessageError(w, http.StatusBadRequest, message)
+		return managementAuthorizationExpireUpdatePayload{}, false
+	}
+	allowed := map[string]bool{
+		"expiresAt": true,
+		"limits":    true,
+	}
+	for key := range raw {
+		if !allowed[key] {
+			writeMessageError(w, http.StatusBadRequest, message)
+			return managementAuthorizationExpireUpdatePayload{}, false
+		}
+	}
+	rawExpiresAt, exists := raw["expiresAt"]
+	if !exists {
+		writeMessageError(w, http.StatusBadRequest, message)
+		return managementAuthorizationExpireUpdatePayload{}, false
+	}
+	var payload managementAuthorizationExpireUpdatePayload
+	if !bytes.Equal(bytes.TrimSpace(rawExpiresAt), []byte("null")) {
+		var text string
+		if err := json.Unmarshal(rawExpiresAt, &text); err != nil {
+			writeMessageError(w, http.StatusBadRequest, message)
+			return managementAuthorizationExpireUpdatePayload{}, false
+		}
+		payload.ExpiresAt = &text
+	}
+	if rawLimits, exists := raw["limits"]; exists {
+		payload.HasLimits = true
+		if bytes.Equal(bytes.TrimSpace(rawLimits), []byte("null")) {
+			payload.LimitsIsNull = true
+		} else {
+			limits, ok := rawObjectFieldWithMessage(w, rawLimits, message)
+			if !ok {
+				return managementAuthorizationExpireUpdatePayload{}, false
+			}
+			payload.Limits = limits
+		}
 	}
 	return payload, true
 }
@@ -1023,6 +1164,96 @@ func recordAuthorizationUpdateOperationLog(
 		ResourceID:                    result.ID,
 		ResourceName:                  resourceName,
 		Summary:                       "更新资源授权：" + resourceName + " -> " + managementAuthorizationGranteeName(result),
+		DetailLevel:                   "full",
+		VisibilityScope:               "targeted",
+		Changes:                       changes,
+		Targets:                       managementAuthorizationOperationTargets(result),
+		Viewers:                       managementAuthorizationOperationViewers(result),
+		Method:                        r.Method,
+		Path:                          r.URL.Path,
+		StatusCode:                    &statusCode,
+		ClientIP:                      opts.clientIP.FromRequest(r),
+		UserAgent:                     r.UserAgent(),
+		CreatedAt:                     now().UTC(),
+	}
+	enqueueCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+	defer cancel()
+	if _, err := operationlogjob.EnqueueWrite(enqueueCtx, opts.client, input); err != nil && opts.logger != nil {
+		opts.logger.Warn("管理端操作日志入队失败",
+			slog.String("event", "operation_log_enqueue_failed"),
+			slog.String("operation_key", input.OperationKey),
+			slog.String("resource_id", input.ResourceID),
+			slog.String("request_id", input.TraceID),
+			slog.Any("error", err),
+		)
+	}
+}
+
+func recordAuthorizationExpireUpdateOperationLog(
+	r *http.Request,
+	authContext managementauth.Context,
+	scope managementAuthorizationScope,
+	result managementauthorizations.Summary,
+	payload managementAuthorizationExpireUpdatePayload,
+	opts managementOperationLogOptions,
+) {
+	if opts.client == nil {
+		return
+	}
+	now := opts.now
+	if now == nil {
+		now = time.Now
+	}
+	newLogID := opts.newLogID
+	if newLogID == nil {
+		newLogID = func() string {
+			return "oplog_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+		}
+	}
+	statusCode := http.StatusOK
+	mode := managementAuthorizationOperationMode(authContext, result.ResourceOwnerSystemAccountID)
+	if scope == managementAuthorizationScopeSelf {
+		mode = "self"
+	}
+	resourceName := result.ResourceName
+	if resourceName == "" {
+		resourceName = result.ResourceID
+	}
+	changes := []port.OperationLogChange{
+		{
+			Field: "status",
+			Label: "状态",
+			After: result.Status,
+		},
+		{
+			Field: "expiresAt",
+			Label: "过期时间",
+			After: result.ExpiresAt,
+		},
+	}
+	if payload.HasLimits {
+		changes = append(changes, port.OperationLogChange{
+			Field: "limits",
+			Label: "额度限制",
+			After: result.Limits,
+		})
+	}
+	input := port.OperationLogInput{
+		ID:                            newLogID(),
+		TraceID:                       requestIDFromContext(r.Context()),
+		ActorSystemAccountID:          authContext.SystemAccountID,
+		ActorUsername:                 authContext.Username,
+		ActorDisplayName:              authContext.DisplayName,
+		ActorRole:                     authContext.Role,
+		OperationScopeSystemAccountID: result.ResourceOwnerSystemAccountID,
+		Mode:                          mode,
+		Module:                        "authorizations",
+		Action:                        "update_expire",
+		OperationKey:                  "authorizations.update_expire",
+		ResourceType:                  "authorization",
+		ResourceID:                    result.ID,
+		ResourceName:                  resourceName,
+		Summary:                       "更新授权有效期：" + resourceName + " -> " + managementAuthorizationGranteeName(result),
 		DetailLevel:                   "full",
 		VisibilityScope:               "targeted",
 		Changes:                       changes,

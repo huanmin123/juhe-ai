@@ -475,6 +475,209 @@ func TestManagementAuthorizationUpdateHandlerRejectsInvalidOrMissingRecord(t *te
 	}
 }
 
+func TestManagementAuthorizationExpireUpdateHandlerUpdatesAndWritesOperationLog(t *testing.T) {
+	updatedAt := time.Date(2026, 7, 9, 13, 30, 0, 0, time.UTC)
+	expiresAt := time.Date(2027, 1, 2, 3, 4, 5, 0, time.UTC)
+	queueStub := &operationLogQueueStub{}
+	service := &managementAuthorizationCreateServiceStub{
+		updateFound: true,
+		updateResult: managementauthorizations.Summary{
+			ID:                             "rauthgrant_main",
+			ResourceType:                   "account",
+			ResourceID:                     "acct_main",
+			ResourceName:                   "主账号",
+			ResourceOwnerSystemAccountID:   "sys_owner",
+			ResourceOwnerSystemAccountName: "资源归属人",
+			GranteeType:                    "system_account",
+			GranteeSystemAccountID:         "sys_grantee",
+			GranteeSystemAccountName:       "被授权人",
+			Scope:                          "use",
+			Status:                         "paused",
+			ExpiresAt:                      &expiresAt,
+			Limits: port.ManagementRequestQuotaLimits{
+				Hourly: &port.ManagementRequestHourlyQuotaLimit{Enabled: true, Hours: 3, Limit: 1},
+			},
+			AuthorizationSources: []port.ManagementResourceAuthorizationSourceSummary{},
+			Usage:                port.ManagementAccountUsageSummary{},
+			CreatedBy:            "sys_owner",
+			CreatedAt:            updatedAt,
+			UpdatedAt:            updatedAt,
+		},
+	}
+	handler := newManagementAuthorizationExpireUpdateHandler(
+		service,
+		managementAuthorizationScopeAdmin,
+		newManagementOperationLogOptions(ManagementOperationLogOptions{
+			Config:   config.Config{TrustProxy: "false"},
+			Client:   queueStub,
+			Now:      func() time.Time { return updatedAt },
+			NewLogID: func() string { return "oplog_authorization_update_expire" },
+		}),
+	)
+	req := httptest.NewRequest(http.MethodPatch, "/__aisys__/api/authorizations/rauthgrant_main/expire?systemAccountId=sys_owner", strings.NewReader(`{
+		"expiresAt":"2027-01-02T03:04:05.000Z",
+		"limits":{"hourly":{"enabled":true,"hours":3,"limit":1}}
+	}`))
+	req.RemoteAddr = "127.0.0.1:42345"
+	req = managementAuthorizationRequestWithURLParam(req, "id", "rauthgrant_main")
+	req = req.WithContext(context.WithValue(req.Context(), requestIDKey, "req_authorization_update_expire"))
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+		SystemAccountID: "sys_admin",
+		Username:        "admin",
+		DisplayName:     "管理员",
+		Role:            "admin",
+		SessionID:       "sess_admin",
+	}))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if !service.updateCalled ||
+		service.updateInput.AuthorizationID != "rauthgrant_main" ||
+		service.updateInput.ActorSystemAccountID != "sys_admin" ||
+		service.updateInput.ActorRole != "admin" ||
+		service.updateInput.ScopedSystemAccountID != "sys_owner" ||
+		service.updateInput.HasStatus ||
+		!service.updateInput.HasExpiresAt ||
+		service.updateInput.ExpiresAt == nil ||
+		*service.updateInput.ExpiresAt != "2027-01-02T03:04:05.000Z" ||
+		!service.updateInput.HasLimits ||
+		service.updateInput.LimitsIsNull ||
+		service.updateInput.Limits == nil {
+		t.Fatalf("update input = %+v", service.updateInput)
+	}
+	if queueStub.calls != 1 {
+		t.Fatalf("operation log queue calls = %d, want 1", queueStub.calls)
+	}
+	logInput, err := operationlogjob.DecodeWriteTaskPayload(queueStub.payload)
+	if err != nil {
+		t.Fatalf("DecodeWriteTaskPayload() error = %v", err)
+	}
+	if logInput.ID != "oplog_authorization_update_expire" ||
+		logInput.TraceID != "req_authorization_update_expire" ||
+		logInput.ActorSystemAccountID != "sys_admin" ||
+		logInput.OperationScopeSystemAccountID != "sys_owner" ||
+		logInput.Mode != "admin" ||
+		logInput.Module != "authorizations" ||
+		logInput.Action != "update_expire" ||
+		logInput.OperationKey != "authorizations.update_expire" ||
+		logInput.ResourceType != "authorization" ||
+		logInput.ResourceID != "rauthgrant_main" ||
+		logInput.ResourceName != "主账号" ||
+		logInput.Summary != "更新授权有效期：主账号 -> 被授权人" ||
+		logInput.Method != http.MethodPatch ||
+		logInput.Path != "/__aisys__/api/authorizations/rauthgrant_main/expire" ||
+		logInput.ClientIP != "127.0.0.1" ||
+		!logInput.CreatedAt.Equal(updatedAt) {
+		t.Fatalf("operation log input = %+v", logInput)
+	}
+	if logInput.StatusCode == nil || *logInput.StatusCode != http.StatusOK {
+		t.Fatalf("status code = %+v, want 200", logInput.StatusCode)
+	}
+	if len(logInput.Changes) != 3 ||
+		logInput.Changes[0].Field != "status" ||
+		logInput.Changes[1].Field != "expiresAt" ||
+		logInput.Changes[2].Field != "limits" {
+		t.Fatalf("changes = %+v", logInput.Changes)
+	}
+}
+
+func TestManagementMyAuthorizationExpireUpdateHandlerUsesSelfScope(t *testing.T) {
+	service := &managementAuthorizationCreateServiceStub{
+		updateFound: true,
+		updateResult: managementauthorizations.Summary{
+			ID:                           "rauthgrant_main",
+			ResourceType:                 "group",
+			ResourceID:                   "grp_owner",
+			ResourceOwnerSystemAccountID: "sys_owner",
+			GranteeType:                  "team",
+			GranteeTeamID:                "team_ops",
+			Scope:                        "use",
+			Status:                       "active",
+			AuthorizationSources:         []port.ManagementResourceAuthorizationSourceSummary{},
+			Usage:                        port.ManagementAccountUsageSummary{},
+			CreatedAt:                    time.Date(2026, 7, 9, 13, 30, 0, 0, time.UTC),
+			UpdatedAt:                    time.Date(2026, 7, 9, 13, 30, 0, 0, time.UTC),
+		},
+	}
+	handler := newManagementAuthorizationExpireUpdateHandler(service, managementAuthorizationScopeSelf)
+	req := httptest.NewRequest(http.MethodPatch, "/__aisys__/api/my-authorizations/rauthgrant_main/expire?systemAccountId=sys_other", strings.NewReader(`{"expiresAt":null,"limits":null}`))
+	req = managementAuthorizationRequestWithURLParam(req, "id", "rauthgrant_main")
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+		SystemAccountID: "sys_owner",
+		Username:        "owner",
+		Role:            "user",
+		SessionID:       "sess_owner",
+	}))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if !service.updateCalled ||
+		service.updateInput.AuthorizationID != "rauthgrant_main" ||
+		service.updateInput.ActorSystemAccountID != "sys_owner" ||
+		service.updateInput.ActorRole != "user" ||
+		service.updateInput.ScopedSystemAccountID != "sys_owner" ||
+		service.updateInput.HasStatus ||
+		!service.updateInput.HasExpiresAt ||
+		service.updateInput.ExpiresAt != nil ||
+		!service.updateInput.HasLimits ||
+		!service.updateInput.LimitsIsNull {
+		t.Fatalf("update input = %+v", service.updateInput)
+	}
+}
+
+func TestManagementAuthorizationExpireUpdateHandlerRejectsInvalidOrMissingRecord(t *testing.T) {
+	tests := []struct {
+		name     string
+		id       string
+		body     string
+		found    bool
+		wantCode int
+		wantMsg  string
+	}{
+		{name: "empty id", id: " ", body: `{"expiresAt":null}`, found: true, wantCode: http.StatusBadRequest, wantMsg: "授权记录 ID 不合法"},
+		{name: "missing expiresAt", id: "rauthgrant_main", body: `{"limits":null}`, found: true, wantCode: http.StatusBadRequest, wantMsg: "修改授权参数不合法"},
+		{name: "unknown field", id: "rauthgrant_main", body: `{"expiresAt":null,"status":"paused"}`, found: true, wantCode: http.StatusBadRequest, wantMsg: "修改授权参数不合法"},
+		{name: "invalid limits", id: "rauthgrant_main", body: `{"expiresAt":null,"limits":[]}`, found: true, wantCode: http.StatusBadRequest, wantMsg: "修改授权参数不合法"},
+		{name: "missing", id: "rauthgrant_missing", body: `{"expiresAt":null}`, found: false, wantCode: http.StatusNotFound, wantMsg: "授权记录不存在"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &managementAuthorizationCreateServiceStub{updateFound: tt.found}
+			handler := newManagementAuthorizationExpireUpdateHandler(service, managementAuthorizationScopeAdmin)
+			req := httptest.NewRequest(http.MethodPatch, "/__aisys__/api/authorizations/"+url.PathEscape(tt.id)+"/expire", strings.NewReader(tt.body))
+			req = managementAuthorizationRequestWithURLParam(req, "id", tt.id)
+			req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+				SystemAccountID: "sys_admin",
+				Username:        "admin",
+				Role:            "admin",
+				SessionID:       "sess_admin",
+			}))
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantCode {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, tt.wantCode, rec.Body.String())
+			}
+			var body map[string]string
+			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if body["message"] != tt.wantMsg {
+				t.Fatalf("message = %q, want %q", body["message"], tt.wantMsg)
+			}
+		})
+	}
+}
+
 func TestManagementAuthorizationReturnHandlerReturnsAndWritesOperationLog(t *testing.T) {
 	createdAt := time.Date(2026, 7, 9, 9, 30, 0, 0, time.UTC)
 	queueStub := &operationLogQueueStub{}
@@ -1082,7 +1285,7 @@ func TestManagementAuthorizationDetailHandlerRejectsInvalidOrMissingRecord(t *te
 	}
 }
 
-func TestRouterRegistersW4ManagementAuthorizationListDetailCreateUpdateReturnAndRevoke(t *testing.T) {
+func TestRouterRegistersW4ManagementAuthorizationListDetailCreateUpdateExpireReturnAndRevoke(t *testing.T) {
 	service := &managementAuthorizationCreateServiceStub{
 		result: managementauthorizations.Summary{
 			ID:                           "rauthgrant_main",
@@ -1180,22 +1383,24 @@ func TestRouterRegistersW4ManagementAuthorizationListDetailCreateUpdateReturnAnd
 		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_touch"},
 	}
 	router := NewRouter(RouterOptions{
-		Config:                                 config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
-		Logger:                                 slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
-		ManagementAuthorizationListHandler:     newManagementAuthorizationListHandler(service, managementAuthorizationScopeAdmin),
-		ManagementMyAuthorizationListHandler:   newManagementAuthorizationListHandler(service, managementAuthorizationScopeSelf),
-		ManagementAuthorizationDetailHandler:   newManagementAuthorizationDetailHandler(service, managementAuthorizationScopeAdmin),
-		ManagementMyAuthorizationDetailHandler: newManagementAuthorizationDetailHandler(service, managementAuthorizationScopeSelf),
-		ManagementAuthorizationCreateHandler:   newManagementAuthorizationCreateHandler(service, managementAuthorizationScopeAdmin),
-		ManagementMyAuthorizationCreateHandler: newManagementAuthorizationCreateHandler(service, managementAuthorizationScopeSelf),
-		ManagementAuthorizationUpdateHandler:   newManagementAuthorizationUpdateHandler(service, managementAuthorizationScopeAdmin),
-		ManagementMyAuthorizationUpdateHandler: newManagementAuthorizationUpdateHandler(service, managementAuthorizationScopeSelf),
-		ManagementAuthorizationReturnHandler:   newManagementAuthorizationReturnHandler(service, managementAuthorizationScopeAdmin),
-		ManagementMyAuthorizationReturnHandler: newManagementAuthorizationReturnHandler(service, managementAuthorizationScopeSelf),
-		ManagementAuthorizationRevokeHandler:   newManagementAuthorizationRevokeHandler(service, managementAuthorizationScopeAdmin),
-		ManagementMyAuthorizationRevokeHandler: newManagementAuthorizationRevokeHandler(service, managementAuthorizationScopeSelf),
-		ManagementAPIAuthMiddleware:            NewManagementAPIAuthMiddleware(readAuthenticator),
-		ManagementAPIAuthTouchMiddleware:       NewManagementAPIAuthTouchMiddleware(touchAuthenticator),
+		Config:                                       config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
+		Logger:                                       slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
+		ManagementAuthorizationListHandler:           newManagementAuthorizationListHandler(service, managementAuthorizationScopeAdmin),
+		ManagementMyAuthorizationListHandler:         newManagementAuthorizationListHandler(service, managementAuthorizationScopeSelf),
+		ManagementAuthorizationDetailHandler:         newManagementAuthorizationDetailHandler(service, managementAuthorizationScopeAdmin),
+		ManagementMyAuthorizationDetailHandler:       newManagementAuthorizationDetailHandler(service, managementAuthorizationScopeSelf),
+		ManagementAuthorizationCreateHandler:         newManagementAuthorizationCreateHandler(service, managementAuthorizationScopeAdmin),
+		ManagementMyAuthorizationCreateHandler:       newManagementAuthorizationCreateHandler(service, managementAuthorizationScopeSelf),
+		ManagementAuthorizationUpdateHandler:         newManagementAuthorizationUpdateHandler(service, managementAuthorizationScopeAdmin),
+		ManagementMyAuthorizationUpdateHandler:       newManagementAuthorizationUpdateHandler(service, managementAuthorizationScopeSelf),
+		ManagementAuthorizationExpireUpdateHandler:   newManagementAuthorizationExpireUpdateHandler(service, managementAuthorizationScopeAdmin),
+		ManagementMyAuthorizationExpireUpdateHandler: newManagementAuthorizationExpireUpdateHandler(service, managementAuthorizationScopeSelf),
+		ManagementAuthorizationReturnHandler:         newManagementAuthorizationReturnHandler(service, managementAuthorizationScopeAdmin),
+		ManagementMyAuthorizationReturnHandler:       newManagementAuthorizationReturnHandler(service, managementAuthorizationScopeSelf),
+		ManagementAuthorizationRevokeHandler:         newManagementAuthorizationRevokeHandler(service, managementAuthorizationScopeAdmin),
+		ManagementMyAuthorizationRevokeHandler:       newManagementAuthorizationRevokeHandler(service, managementAuthorizationScopeSelf),
+		ManagementAPIAuthMiddleware:                  NewManagementAPIAuthMiddleware(readAuthenticator),
+		ManagementAPIAuthTouchMiddleware:             NewManagementAPIAuthTouchMiddleware(touchAuthenticator),
 	})
 
 	for _, item := range []struct {
@@ -1226,6 +1431,18 @@ func TestRouterRegistersW4ManagementAuthorizationListDetailCreateUpdateReturnAnd
 			method: http.MethodPatch,
 			path:   "/__aisys__/api/my-authorizations/rauthgrant_main",
 			body:   `{"status":"paused"}`,
+			status: http.StatusOK,
+		},
+		{
+			method: http.MethodPatch,
+			path:   "/__aisys__/api/authorizations/rauthgrant_main/expire?systemAccountId=sys_owner",
+			body:   `{"expiresAt":null}`,
+			status: http.StatusOK,
+		},
+		{
+			method: http.MethodPatch,
+			path:   "/__aisys__/api/my-authorizations/rauthgrant_main/expire",
+			body:   `{"expiresAt":null}`,
 			status: http.StatusOK,
 		},
 		{

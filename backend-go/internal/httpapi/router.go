@@ -56,6 +56,8 @@ type RouterOptions struct {
 	ManagementMyAuthorizationCreateHandler          http.Handler
 	ManagementAuthorizationUpdateHandler            http.Handler
 	ManagementMyAuthorizationUpdateHandler          http.Handler
+	ManagementAuthorizationExpireUpdateHandler      http.Handler
+	ManagementMyAuthorizationExpireUpdateHandler    http.Handler
 	ManagementAuthorizationReturnHandler            http.Handler
 	ManagementMyAuthorizationReturnHandler          http.Handler
 	ManagementAuthorizationRevokeHandler            http.Handler
@@ -146,6 +148,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyAuthorizationCreateHandler == nil &&
 				opts.ManagementAuthorizationUpdateHandler == nil &&
 				opts.ManagementMyAuthorizationUpdateHandler == nil &&
+				opts.ManagementAuthorizationExpireUpdateHandler == nil &&
+				opts.ManagementMyAuthorizationExpireUpdateHandler == nil &&
 				opts.ManagementAuthorizationReturnHandler == nil &&
 				opts.ManagementMyAuthorizationReturnHandler == nil &&
 				opts.ManagementAuthorizationRevokeHandler == nil &&
@@ -273,6 +277,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementMyAuthorizationUpdateHandler != nil {
 				system.With(managementAPIWriteAuthMiddleware).Patch("/my-authorizations/{id}", opts.ManagementMyAuthorizationUpdateHandler.ServeHTTP)
 			}
+			if opts.ManagementAuthorizationExpireUpdateHandler != nil {
+				system.With(managementAPIWriteAuthMiddleware).Patch("/authorizations/{id}/expire", opts.ManagementAuthorizationExpireUpdateHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAuthorizationExpireUpdateHandler != nil {
+				system.With(managementAPIWriteAuthMiddleware).Patch("/my-authorizations/{id}/expire", opts.ManagementMyAuthorizationExpireUpdateHandler.ServeHTTP)
+			}
 			if opts.ManagementAuthorizationReturnHandler != nil {
 				system.With(managementAPIWriteAuthMiddleware).Delete("/authorizations/{id}/return", opts.ManagementAuthorizationReturnHandler.ServeHTTP)
 			}
@@ -394,6 +404,8 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAuthorizationCreateHandler != nil ||
 		opts.ManagementAuthorizationUpdateHandler != nil ||
 		opts.ManagementMyAuthorizationUpdateHandler != nil ||
+		opts.ManagementAuthorizationExpireUpdateHandler != nil ||
+		opts.ManagementMyAuthorizationExpireUpdateHandler != nil ||
 		opts.ManagementAuthorizationReturnHandler != nil ||
 		opts.ManagementMyAuthorizationReturnHandler != nil ||
 		opts.ManagementAuthorizationRevokeHandler != nil ||
