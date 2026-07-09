@@ -17,9 +17,12 @@ const (
 
 	RuntimeInvalidationStoreName = "gateway_cache_invalidation"
 	GatewayRuntimeCacheTopic     = "gateway_runtime_cache"
+	AuthorizationQuotaCacheTopic = "authorization_quota_cache"
+	APIKeyQuotaCacheTopic        = "api_key_quota_cache"
 
 	SystemAccountStatusChangedReason          = "system_account_status_changed"
 	SystemAccountImageGenerationChangedReason = "system_account_image_generation_changed"
+	TeamAuthorizationChangedReason            = "team_authorization_changed"
 
 	SharedCacheVersionTTL = 30 * 24 * time.Hour
 	RuntimeStateTTL       = 24 * time.Hour
@@ -95,11 +98,32 @@ func (i *SystemAccountInvalidator) InvalidateSystemAccountImageGenerationChanged
 	return i.invalidateGatewayRuntime(ctx, SystemAccountImageGenerationChangedReason)
 }
 
+func (i *SystemAccountInvalidator) InvalidateAuthorizationChanged(ctx context.Context, reason string) error {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return fmt.Errorf("gateway authorization invalidation reason is required")
+	}
+	if err := i.publishGatewayCacheInvalidation(ctx, GatewayRuntimeCacheTopic, reason, runtimeInvalidationFields{}); err != nil {
+		return err
+	}
+	return i.publishGatewayCacheInvalidation(ctx, AuthorizationQuotaCacheTopic, reason, runtimeInvalidationFields{})
+}
+
+func (i *SystemAccountInvalidator) InvalidateAPIKeyQuotaChanged(ctx context.Context, apiKeyID string, reason string) error {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return fmt.Errorf("gateway api key quota invalidation reason is required")
+	}
+	return i.publishGatewayCacheInvalidation(ctx, APIKeyQuotaCacheTopic, reason, runtimeInvalidationFields{
+		APIKeyID: strings.TrimSpace(apiKeyID),
+	})
+}
+
 func (i *SystemAccountInvalidator) invalidateGatewayRuntime(ctx context.Context, reason string) error {
 	if err := i.clearAPIKeyValidationCache(ctx); err != nil {
 		return err
 	}
-	return i.publishGatewayRuntimeInvalidation(ctx, reason)
+	return i.publishGatewayCacheInvalidation(ctx, GatewayRuntimeCacheTopic, reason, runtimeInvalidationFields{})
 }
 
 func (i *SystemAccountInvalidator) clearAPIKeyValidationCache(ctx context.Context) error {
@@ -118,26 +142,31 @@ func (i *SystemAccountInvalidator) clearAPIKeyValidationCache(ctx context.Contex
 	return nil
 }
 
-func (i *SystemAccountInvalidator) publishGatewayRuntimeInvalidation(ctx context.Context, reason string) error {
+type runtimeInvalidationFields struct {
+	APIKeyID string
+}
+
+func (i *SystemAccountInvalidator) publishGatewayCacheInvalidation(ctx context.Context, topic string, reason string, fields runtimeInvalidationFields) error {
 	now := i.now().UTC()
 	version, err := i.newVersion(now)
 	if err != nil {
-		return fmt.Errorf("generate gateway runtime cache invalidation version: %w", err)
+		return fmt.Errorf("generate gateway cache invalidation version: %w", err)
 	}
-	key, err := RuntimeStateKey(i.namespace, RuntimeInvalidationStoreName, "topic:"+GatewayRuntimeCacheTopic)
+	key, err := RuntimeStateKey(i.namespace, RuntimeInvalidationStoreName, "topic:"+SanitizeRedisKeyPart(topic))
 	if err != nil {
 		return err
 	}
 	payload, err := json.Marshal(runtimeInvalidationState{
 		Version:     version,
 		Reason:      reason,
+		APIKeyID:    strings.TrimSpace(fields.APIKeyID),
 		PublishedAt: nodeISOString(now),
 	})
 	if err != nil {
-		return fmt.Errorf("marshal gateway runtime cache invalidation state: %w", err)
+		return fmt.Errorf("marshal gateway cache invalidation state: %w", err)
 	}
 	if err := i.state.SetRaw(ctx, key, payload, RuntimeStateTTL); err != nil {
-		return fmt.Errorf("publish gateway runtime cache invalidation: %w", err)
+		return fmt.Errorf("publish gateway cache invalidation: %w", err)
 	}
 	return nil
 }
