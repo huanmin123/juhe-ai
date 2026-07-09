@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert'
 
 import type { AccountSummary, AccountUsageSummary } from '../../domain/types.js'
 import { accountSummaryWithEffectiveAvailability } from '../../domain/account-effective-availability.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { testOpenAIAccount } from '../../modules/accounts/account-test.service.js'
 
 const emptyUsage: AccountUsageSummary = {
@@ -23,9 +24,14 @@ const emptyUsage: AccountUsageSummary = {
 const account: AccountSummary = accountSummaryWithEffectiveAvailability({
   id: 'acct_limited_diagnostics',
   providerCode: 'gpt',
+  providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+  protocolCode: 'openai',
+  protocolVersion: 'v1',
   name: '授权账户脱敏回归',
   type: 'api_key',
-  credentials: {},
+  credentials: {
+    supported_endpoint_modes: ['responses_sse']
+  },
   status: 'active',
   concurrencyLimit: 1,
   currentConcurrency: 0,

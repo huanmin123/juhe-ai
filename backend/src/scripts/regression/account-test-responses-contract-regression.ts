@@ -21,6 +21,7 @@ mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
 const seenResponsesPayloads: Record<string, unknown>[] = []
+const providerDefaultTestModel = 'gpt-5.6-sol'
 
 const [
   { preferredSystemAccountTestModelAsync, testOpenAIAccount },
@@ -29,7 +30,8 @@ const [
   databaseModule,
   repositories,
   { createAccountTestTask },
-  { upsertProviderDefaultTestModelPreferenceAsync }
+  { upsertProviderDefaultTestModelPreferenceAsync },
+  { closeSqliteReadWorkerPool }
 ] = await Promise.all([
   import('../../modules/accounts/account-test.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
@@ -37,7 +39,8 @@ const [
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../storage/account-test-tasks.repository.js'),
-  import('../../storage/provider-default-test-model.repository.js')
+  import('../../storage/provider-default-test-model.repository.js'),
+  import('../../storage/sqlite-read-worker-pool.js')
 ])
 
 let mockOpenAIServer: http.Server | undefined
@@ -113,7 +116,7 @@ try {
   }, access)
   assert.equal(account.clientCompatibility, 'codex_responses', 'GPT API Key 账户创建时默认应使用 Codex Responses 兼容')
 
-  assert.equal(await preferredSystemAccountTestModelAsync(account), 'gpt-5.5', '无手动成功测试模型时，系统复测应使用供应商默认测试模型')
+  assert.equal(await preferredSystemAccountTestModelAsync(account), providerDefaultTestModel, '无手动成功测试模型时，系统复测应使用供应商默认测试模型')
   repositories.recordAccountSuccessfulTestModel(account.id, 'gpt-5.4', access)
   const accountWithSuccessfulModel = repositories.findAccountSummary(account.id, access)
   assert.equal(accountWithSuccessfulModel?.lastSuccessfulTestModel, 'gpt-5.4', '手动测试成功模型应写入账户')
@@ -144,8 +147,8 @@ try {
   await flushGatewayAccountSideEffects()
   flushAllUsageRecordQueue()
   assert.equal(defaultModelTested.success, true, `默认模型账户测试应成功：${defaultModelTested.message}`)
-  assert.equal(defaultModelTested.model, 'gpt-5.5', '未显式指定测试模型时，应使用供应商默认测试模型而不是最近真实请求模型')
-  assert.equal(seenResponsesPayloads.at(-1)?.model, 'gpt-5.5', '未显式指定测试模型时，上游请求应使用供应商默认测试模型')
+  assert.equal(defaultModelTested.model, providerDefaultTestModel, '未显式指定测试模型时，应使用供应商默认测试模型而不是最近真实请求模型')
+  assert.equal(seenResponsesPayloads.at(-1)?.model, providerDefaultTestModel, '未显式指定测试模型时，上游请求应使用供应商默认测试模型')
 
   await upsertProviderDefaultTestModelPreferenceAsync({
     systemAccountId: admin.id,
@@ -174,6 +177,7 @@ try {
 } finally {
   setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   await closeServer(mockOpenAIServer)
+  await closeSqliteReadWorkerPool().catch(() => undefined)
   try {
     databaseModule.closeStorageDatabases()
   } catch {

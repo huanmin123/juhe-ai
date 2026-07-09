@@ -147,7 +147,7 @@ assert.deepEqual(geminiRequest.body, {
 
 const requestSource = readFileSync(resolve('src/modules/accounts/account-test-request.ts'), 'utf8')
 assert.doesNotMatch(requestSource, /handleOpenAIGatewayRequest|findAccountForTest|flushGatewayAccountSideEffects/, '测试请求 payload 模块不能依赖真实网关编排或账号解析')
-const openAITestRequestInputSource = requestSource.match(/export type AccountTestRequestInput[\s\S]*?\n}\n/)?.[0] ?? ''
+const openAITestRequestInputSource = requestSource.match(/export type AccountTestRequestInput\s*=\s*\{[\s\S]*?\r?\n}\r?\n/)?.[0] ?? ''
 assert.doesNotMatch(openAITestRequestInputSource, /requestShape|supportedEndpointModes|providerProtocolProfileId/, 'OpenAI 测试请求模块只按本次 testEndpointMode 构造请求，不从真实请求或供应商档案改写')
 assert.match(openAITestRequestInputSource, /testEndpointMode:\s*AccountSupportedEndpointMode/, 'OpenAI 测试请求输入必须显式接收本次测试 endpoint mode')
 const serviceSource = readFileSync(resolve('src/modules/accounts/account-test.service.ts'), 'utf8')
@@ -157,6 +157,11 @@ assert.match(serviceSource, /handleOpenAIGatewayRequest/, '真实网关测试编
 assert.match(serviceSource, /candidateAccounts:\s*\[resolved\.account\]/, '测试服务仍应固定候选账号')
 assert.match(serviceSource, /disableSessionAffinity:\s*true/, '测试服务仍应禁用 session affinity')
 assert.match(serviceSource, /trafficSource:\s*input\.trafficSource\s*\?\?\s*'manual_account_test'/, '测试服务仍应保留 manual_account_test 默认来源')
+assert.match(serviceSource, /resolveOpenAIRequestModelMapping/, '账户测试必须解析本次真实请求命中的模型映射')
+assert.match(serviceSource, /modelMappingApplied/, '账户测试结果必须返回是否命中模型映射，便于前端终端诊断')
+assert.match(serviceSource, /upstreamModel/, '账户测试结果必须返回实际上游模型，避免把请求模型误认为上游模型')
+assert.match(serviceSource, /sourceEndpointFamily/, '账户测试结果必须返回映射下游协议入口')
+assert.match(serviceSource, /upstreamEndpointFamily/, '账户测试结果必须返回映射上游协议入口')
 const taskQueueSource = readFileSync(resolve('src/modules/accounts/account-test-task-queue.service.ts'), 'utf8')
 assert.doesNotMatch(taskQueueSource, /requestShape:/, '管理端手动账号测试不得透传真实请求形态')
 assert.doesNotMatch(taskQueueSource, /task\.clientCompatibility/, '管理端手动账号测试任务不得使用客户端画像作为测试请求形态')

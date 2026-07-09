@@ -658,6 +658,11 @@ export interface AccountTestResult {
   errorCode?: string
   message: string
   model?: string
+  upstreamModel?: string
+  modelMappingApplied?: boolean
+  modelMappingSource?: string
+  sourceEndpointFamily?: AccountModelMappingSourceEndpointFamily
+  upstreamEndpointFamily?: AccountModelMappingUpstreamEndpointFamily
   requestUrl?: string
   requestBody?: unknown
   responseHeaders?: Record<string, string | string[]>

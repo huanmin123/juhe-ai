@@ -5,6 +5,7 @@ import type { AccountBatchTestItem, AccountTestEndpointMode } from './accountTes
 import { accountProviderProtocolKind } from './accountProviderCapabilities'
 import { accountEndpointModeLabel, accountTestEndpointModesForAccount } from './accountEndpointModes'
 import { accountTypeText } from './accountBasicFormatters'
+import { accountModelMappingEndpointFamilyText } from './accountModelMappingProtocolMatrix'
 import {
   formatAccountTestDuration,
   formatErrorPolicyAction,
@@ -130,7 +131,7 @@ export function accountTestSingleOutputLines(options: SingleAccountTestOutputOpt
     text: options.result.statusCode && options.result.statusCode >= 200 && options.result.statusCode < 300 ? '已连接到 API' : 'API 返回错误',
     tone: options.result.success ? 'success' : 'error'
   })
-  lines.push({ text: `使用模型：${options.result.model || options.model}`, tone: 'success' })
+  lines.push(...accountTestModelMappingOutputLines(options.result, options.model))
   const diagnosticParts = splitAccountDiagnosticMessage(options.result.message)
   const traceId = options.result.traceId || diagnosticParts.traceId
   if (traceId) {
@@ -163,6 +164,25 @@ export function accountTestSingleOutputLines(options: SingleAccountTestOutputOpt
     text: `${completionText}  总耗时：${formatAccountTestDuration(options.result.durationMs)}${firstTokenText}`,
     tone: options.result.success ? 'success' : 'error'
   })
+  return lines
+}
+
+function accountTestModelMappingOutputLines(result: AccountTestResult, fallbackModel: string): AccountTestOutputLine[] {
+  const requestModel = result.model || fallbackModel
+  const lines: AccountTestOutputLine[] = [
+    { text: `请求模型：${requestModel}`, tone: 'success' }
+  ]
+  if (result.modelMappingApplied && result.upstreamModel) {
+    const sourceEndpointFamily = result.sourceEndpointFamily ? accountModelMappingEndpointFamilyText(result.sourceEndpointFamily) : '当前请求'
+    const upstreamEndpointFamily = result.upstreamEndpointFamily ? accountModelMappingEndpointFamilyText(result.upstreamEndpointFamily) : '上游'
+    lines.push({
+      text: `模型映射：${sourceEndpointFamily} / ${requestModel} -> ${upstreamEndpointFamily} / ${result.upstreamModel}`,
+      tone: 'warning'
+    })
+    lines.push({ text: `实际上游模型：${result.upstreamModel}`, tone: 'success' })
+  } else if (result.upstreamModel && result.upstreamModel !== requestModel) {
+    lines.push({ text: `实际上游模型：${result.upstreamModel}`, tone: 'success' })
+  }
   return lines
 }
 

@@ -374,6 +374,11 @@ export interface AccountTestResult {
   errorCode?: string
   message: string
   model?: string
+  upstreamModel?: string
+  modelMappingApplied?: boolean
+  modelMappingSource?: string
+  sourceEndpointFamily?: AccountModelMapping['sourceEndpointFamily']
+  upstreamEndpointFamily?: AccountModelMapping['upstreamEndpointFamily']
   requestUrl?: string
   requestBody?: unknown
   responseHeaders?: Record<string, string | string[]>

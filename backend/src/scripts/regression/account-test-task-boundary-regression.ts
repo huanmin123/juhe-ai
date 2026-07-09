@@ -46,6 +46,10 @@ const runManualAccountTestFailurePrecheckQueueItemSource = accountTestTaskQueueS
   accountTestTaskQueueSource.indexOf('async function runManualAccountTestFailurePrecheckQueueItem'),
   accountTestTaskQueueSource.indexOf('async function openAIDraftAccountSecret')
 )
+const prepareAccountDraftTestSnapshotAsyncSource = accountDraftTestServiceSource.slice(
+  accountDraftTestServiceSource.indexOf('export async function prepareAccountDraftTestSnapshotAsync'),
+  accountDraftTestServiceSource.indexOf('function prepareAccountDraftTestSnapshotResolved')
+)
 
 assert.equal(
   accountTestDispatchRoutesSource.includes('testOpenAIAccount('),
@@ -327,6 +331,10 @@ assert.doesNotMatch(
   ].join('\n'),
   /\b(?:savedAccountDraftTestSnapshot|prepareAccountDraftTestSnapshot|accountCreateStatusFromActivationTest|getAccountTestTaskRecord)\(/,
   '账号测试 HTTP 路由不得调用同步草稿准备、激活校验或任务读取入口，避免 PostgreSQL 模式回退 SQLite'
+)
+assert(
+  prepareAccountDraftTestSnapshotAsyncSource.includes('prepareAccountDraftTestSnapshotResolvedAsync'),
+  '异步草稿测试快照必须走异步解析，模型映射不能回退到 SQLite 同步模型目录读取'
 )
 assert(
   dbServiceHandlersSource.includes('findAccountForTestAsync(operation.accountId, operation.access)')
