@@ -44,6 +44,18 @@ type JuheBusinessAccount struct {
 	AuthorizationInstanceOwnerSystemAccountID pgtype.Text
 }
 
+type JuheBusinessAccountModelMapping struct {
+	AccountID              string
+	ProviderCode           string
+	SourceModel            string
+	SourceEndpointFamily   string
+	UpstreamModel          string
+	UpstreamEndpointFamily string
+	Enabled                bool
+	CreatedAt              pgtype.Timestamptz
+	UpdatedAt              pgtype.Timestamptz
+}
+
 type JuheBusinessAccountNameSearchDocument struct {
 	AccountID       string
 	SystemAccountID string

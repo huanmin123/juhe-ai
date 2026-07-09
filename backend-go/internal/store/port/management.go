@@ -957,6 +957,11 @@ type ManagementProviderModelCatalogItem struct {
 	SupportsPromptCaching bool
 	SupportsServiceTier   bool
 	CatalogVisible        bool
+	PricingNotes          string
+	CapabilityNotes       string
+	Notes                 string
+	CreatedBy             string
+	UpdatedBy             string
 	Source                string
 	CreatedAt             time.Time
 	UpdatedAt             time.Time
@@ -980,6 +985,62 @@ type ManagementProviderDefaultTestModelInput struct {
 	Model           string
 }
 
+type ManagementProviderDefaultTestModelClearInput struct {
+	ProviderCode    string
+	SystemAccountID string
+	Model           string
+}
+
+type ManagementCustomProviderModelSaveInput struct {
+	ID                    string
+	ProviderCode          string
+	Model                 string
+	Scope                 string
+	SystemAccountID       string
+	Status                string
+	Mode                  string
+	SupportedAPIProtocols []string
+	PricingModel          string
+	ReleaseDate           string
+	ShutdownDate          string
+	ContextWindowTokens   *int
+	MaxOutputTokens       *int
+	InputUSDPer1M         *float64
+	OutputUSDPer1M        *float64
+	CachedInputUSDPer1M   *float64
+	CacheWriteUSDPer1M    *float64
+	ImageInputUSDPer1M    *float64
+	ImageOutputUSDPer1M   *float64
+	AudioInputUSDPer1M    *float64
+	AudioOutputUSDPer1M   *float64
+	OutputUSDPerImage     *float64
+	PricingNotes          string
+	CapabilityNotes       string
+	Notes                 string
+	ActorSystemAccountID  string
+}
+
+type ManagementCustomProviderModelScopeInput struct {
+	ProviderCode    string
+	Scope           string
+	SystemAccountID string
+	Model           string
+}
+
+type ManagementCustomProviderModelBindingInput struct {
+	ProviderCode    string
+	Model           string
+	Scope           string
+	SystemAccountID string
+}
+
+type ManagementCustomProviderModelBindingSummary struct {
+	SupportedModelAccountCount  int
+	MappingSourceAccountCount   int
+	MappingUpstreamAccountCount int
+	TotalAccountCount           int
+}
+
 type ManagementProviderModelCatalogReader interface {
 	FindManagementProviderModelProvider(ctx context.Context, code string) (ManagementProviderModelProvider, bool, error)
 	ListManagementEnabledModelProviderCodes(ctx context.Context) ([]string, error)
@@ -989,6 +1050,15 @@ type ManagementProviderModelCatalogReader interface {
 
 type ManagementProviderDefaultTestModelWriter interface {
 	SetManagementProviderDefaultTestModel(ctx context.Context, input ManagementProviderDefaultTestModelInput) (ManagementProviderDefaultTestModelPreference, error)
+	ClearManagementProviderDefaultTestModelIfModel(ctx context.Context, input ManagementProviderDefaultTestModelClearInput) (bool, error)
+}
+
+type ManagementCustomProviderModelWriter interface {
+	FindManagementCustomProviderModel(ctx context.Context, id string) (ManagementProviderModelCatalogItem, bool, error)
+	FindManagementCustomProviderModelByScope(ctx context.Context, input ManagementCustomProviderModelScopeInput) (ManagementProviderModelCatalogItem, bool, error)
+	SaveManagementCustomProviderModel(ctx context.Context, input ManagementCustomProviderModelSaveInput) (ManagementProviderModelCatalogItem, error)
+	DeleteManagementCustomProviderModel(ctx context.Context, id string) (bool, error)
+	GetManagementCustomProviderModelBindingSummary(ctx context.Context, input ManagementCustomProviderModelBindingInput) (ManagementCustomProviderModelBindingSummary, error)
 }
 
 type ManagementRouteStrategyOption struct {

@@ -78,6 +78,9 @@ type RouterOptions struct {
 	ManagementProviderModelOptionsHandler             http.Handler
 	ManagementProviderModelsHandler                   http.Handler
 	ManagementProviderDefaultTestModelHandler         http.Handler
+	ManagementProviderCustomModelCreateHandler        http.Handler
+	ManagementProviderCustomModelUpdateHandler        http.Handler
+	ManagementProviderCustomModelDeleteHandler        http.Handler
 	ManagementRouteStrategyOptionsHandler             http.Handler
 	ManagementMyRouteStrategyOptionsHandler           http.Handler
 	ManagementGroupOptionsHandler                     http.Handler
@@ -192,6 +195,9 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementProviderModelOptionsHandler == nil &&
 				opts.ManagementProviderModelsHandler == nil &&
 				opts.ManagementProviderDefaultTestModelHandler == nil &&
+				opts.ManagementProviderCustomModelCreateHandler == nil &&
+				opts.ManagementProviderCustomModelUpdateHandler == nil &&
+				opts.ManagementProviderCustomModelDeleteHandler == nil &&
 				opts.ManagementRouteStrategyOptionsHandler == nil &&
 				opts.ManagementMyRouteStrategyOptionsHandler == nil &&
 				opts.ManagementGroupOptionsHandler == nil &&
@@ -382,6 +388,15 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementProviderDefaultTestModelHandler != nil {
 				system.With(managementAPIWriteAuthMiddleware).Put("/providers/{code}/default-test-model", opts.ManagementProviderDefaultTestModelHandler.ServeHTTP)
 			}
+			if opts.ManagementProviderCustomModelCreateHandler != nil {
+				system.With(managementAPIWriteAuthMiddleware).Post("/providers/{code}/models", opts.ManagementProviderCustomModelCreateHandler.ServeHTTP)
+			}
+			if opts.ManagementProviderCustomModelUpdateHandler != nil {
+				system.With(managementAPIWriteAuthMiddleware).Patch("/providers/{code}/models/{id}", opts.ManagementProviderCustomModelUpdateHandler.ServeHTTP)
+			}
+			if opts.ManagementProviderCustomModelDeleteHandler != nil {
+				system.With(managementAPIWriteAuthMiddleware).Delete("/providers/{code}/models/{id}", opts.ManagementProviderCustomModelDeleteHandler.ServeHTTP)
+			}
 			if opts.ManagementRouteStrategyOptionsHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/route-strategies/options", opts.ManagementRouteStrategyOptionsHandler.ServeHTTP)
 			}
@@ -490,6 +505,9 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementAuthorizationRevokeHandler != nil ||
 		opts.ManagementMyAuthorizationRevokeHandler != nil ||
 		opts.ManagementProviderDefaultTestModelHandler != nil ||
+		opts.ManagementProviderCustomModelCreateHandler != nil ||
+		opts.ManagementProviderCustomModelUpdateHandler != nil ||
+		opts.ManagementProviderCustomModelDeleteHandler != nil ||
 		opts.ManagementAccountTagDeleteHandler != nil ||
 		opts.ManagementMyAccountTagDeleteHandler != nil ||
 		opts.ManagementAccountTagUpdateHandler != nil ||

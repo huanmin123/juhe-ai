@@ -139,3 +139,26 @@ func TestManagementProviderModelCatalogItemFromRowDecodesOptionalFields(t *testi
 		t.Fatalf("protocols = %+v", item.SupportedAPIProtocols)
 	}
 }
+
+func TestManagementCustomProviderModelBindingSummaryScopesMappingsByProvider(t *testing.T) {
+	source, err := os.ReadFile("queries/w2_management_provider_models.sql")
+	if err != nil {
+		t.Fatalf("read provider model query: %v", err)
+	}
+	sql := string(source)
+	start := strings.Index(sql, "-- name: GetManagementCustomProviderModelBindingSummary :one")
+	end := strings.Index(sql, "-- name: ClearManagementProviderDefaultTestModelIfModel :execrows")
+	if start < 0 || end <= start {
+		t.Fatalf("provider model SQL missing binding summary query")
+	}
+	bindingSQL := sql[start:end]
+	for _, want := range []string{
+		"WHERE asm.provider_code = sqlc.arg(provider_code)",
+		"WHERE amm.source_model = sqlc.arg(model)\n    AND amm.provider_code = sqlc.arg(provider_code)",
+		"WHERE amm.upstream_model = sqlc.arg(model)\n    AND amm.provider_code = sqlc.arg(provider_code)",
+	} {
+		if !strings.Contains(bindingSQL, want) {
+			t.Fatalf("binding summary SQL missing provider-scoped filter %q in:\n%s", want, bindingSQL)
+		}
+	}
+}

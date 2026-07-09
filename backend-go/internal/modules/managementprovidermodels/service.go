@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 
 	"juhe-ai/backend-go/internal/store/port"
 )
@@ -18,17 +21,34 @@ const (
 	protocolOpenAI    = "openai"
 	protocolAnthropic = "anthropic"
 	protocolGemini    = "gemini"
+
+	CustomProviderModelSavedReason   = "custom_provider_model_saved"
+	CustomProviderModelDeletedReason = "custom_provider_model_deleted"
 )
 
 var ErrProviderNotFound = errors.New("provider not found")
+var ErrCustomProviderModelNotFound = errors.New("custom provider model not found")
 
 type Store interface {
 	port.ManagementProviderModelCatalogReader
 	port.ManagementProviderDefaultTestModelWriter
+	port.ManagementCustomProviderModelWriter
+}
+
+type CustomProviderModelInvalidator interface {
+	InvalidateCustomProviderModelChanged(ctx context.Context, reason string) error
+}
+
+type ServiceOptions struct {
+	Store       Store
+	Invalidator CustomProviderModelInvalidator
+	NewID       func(prefix string) string
 }
 
 type Service struct {
-	store Store
+	store       Store
+	invalidator CustomProviderModelInvalidator
+	newID       func(prefix string) string
 }
 
 type ModelOptionListInput struct {
@@ -47,6 +67,79 @@ type DefaultTestModelInput struct {
 	ProviderCode    string
 	SystemAccountID string
 	Model           string
+}
+
+type CustomModelMutation struct {
+	Invalid               bool
+	Scope                 OptionalString
+	Model                 OptionalString
+	Status                OptionalString
+	Mode                  OptionalString
+	SupportedAPIProtocols OptionalStringList
+	PricingModel          OptionalString
+	ReleaseDate           OptionalString
+	ShutdownDate          OptionalString
+	ContextWindowTokens   OptionalInt
+	MaxOutputTokens       OptionalInt
+	InputUSDPer1M         OptionalFloat
+	OutputUSDPer1M        OptionalFloat
+	CachedInputUSDPer1M   OptionalFloat
+	CacheWriteUSDPer1M    OptionalFloat
+	ImageInputUSDPer1M    OptionalFloat
+	ImageOutputUSDPer1M   OptionalFloat
+	AudioInputUSDPer1M    OptionalFloat
+	AudioOutputUSDPer1M   OptionalFloat
+	OutputUSDPerImage     OptionalFloat
+	PricingNotes          OptionalString
+	CapabilityNotes       OptionalString
+	Notes                 OptionalString
+}
+
+type OptionalString struct {
+	Set   bool
+	Value string
+}
+
+type OptionalStringList struct {
+	Set   bool
+	Value []string
+}
+
+type OptionalInt struct {
+	Set   bool
+	Value *int
+}
+
+type OptionalFloat struct {
+	Set   bool
+	Value *float64
+}
+
+type CustomModelCreateInput struct {
+	ProviderCode          string
+	ActorSystemAccountID  string
+	ActorRole             string
+	TargetSystemAccountID string
+	Fields                CustomModelMutation
+}
+
+type CustomModelUpdateInput struct {
+	ProviderCode         string
+	ID                   string
+	ActorSystemAccountID string
+	ActorRole            string
+	Fields               CustomModelMutation
+}
+
+type CustomModelDeleteInput struct {
+	ProviderCode         string
+	ID                   string
+	ActorSystemAccountID string
+	ActorRole            string
+}
+
+type CustomModelDeleteResult struct {
+	Deleted bool `json:"deleted"`
 }
 
 type ModelOption struct {
@@ -77,6 +170,60 @@ func DefaultTestModelValidationMessage(err error) (string, bool) {
 		return "默认测试模型参数无效", true
 	}
 	return validationErr.Message, true
+}
+
+type CustomModelValidationError struct {
+	Message string
+}
+
+func (e *CustomModelValidationError) Error() string {
+	return e.Message
+}
+
+type CustomModelForbiddenError struct {
+	Message string
+}
+
+func (e *CustomModelForbiddenError) Error() string {
+	return e.Message
+}
+
+type CustomModelBoundError struct {
+	Message string
+}
+
+func (e *CustomModelBoundError) Error() string {
+	return e.Message
+}
+
+func CustomModelValidationMessage(err error) (string, bool) {
+	var validationErr *CustomModelValidationError
+	if !errors.As(err, &validationErr) {
+		return "", false
+	}
+	if strings.TrimSpace(validationErr.Message) == "" {
+		return "自定义模型参数无效", true
+	}
+	return validationErr.Message, true
+}
+
+func CustomModelForbiddenMessage(err error) (string, bool) {
+	var forbiddenErr *CustomModelForbiddenError
+	if !errors.As(err, &forbiddenErr) {
+		return "", false
+	}
+	if strings.TrimSpace(forbiddenErr.Message) == "" {
+		return "无权操作该自定义模型", true
+	}
+	return forbiddenErr.Message, true
+}
+
+func CustomModelBoundMessage(err error) (string, bool) {
+	var boundErr *CustomModelBoundError
+	if !errors.As(err, &boundErr) {
+		return "", false
+	}
+	return boundErr.Message, true
 }
 
 type ModelCatalogItem struct {
@@ -118,7 +265,17 @@ type ModelCatalogItem struct {
 }
 
 func NewService(store Store) *Service {
-	return &Service{store: store}
+	return NewServiceWithOptions(ServiceOptions{Store: store})
+}
+
+func NewServiceWithOptions(opts ServiceOptions) *Service {
+	newID := opts.NewID
+	if newID == nil {
+		newID = func(prefix string) string {
+			return prefix + "_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+		}
+	}
+	return &Service{store: opts.Store, invalidator: opts.Invalidator, newID: newID}
 }
 
 func (s *Service) ModelOptions(ctx context.Context, input ModelOptionListInput) ([]ModelOption, error) {
@@ -229,6 +386,159 @@ func (s *Service) SetDefaultTestModel(ctx context.Context, input DefaultTestMode
 	}, nil
 }
 
+func (s *Service) CreateCustomModel(ctx context.Context, input CustomModelCreateInput) (ModelCatalogItem, error) {
+	if s.store == nil {
+		return ModelCatalogItem{}, fmt.Errorf("management provider model store is required")
+	}
+	providerCode := strings.TrimSpace(input.ProviderCode)
+	provider, found, err := s.store.FindManagementProviderModelProvider(ctx, providerCode)
+	if err != nil {
+		return ModelCatalogItem{}, err
+	}
+	if !found {
+		return ModelCatalogItem{}, ErrProviderNotFound
+	}
+	if input.Fields.Invalid {
+		return ModelCatalogItem{}, &CustomModelValidationError{Message: "自定义模型参数无效"}
+	}
+	actorSystemAccountID := strings.TrimSpace(input.ActorSystemAccountID)
+	scope, err := createCustomModelScope(input.Fields.Scope)
+	if err != nil {
+		return ModelCatalogItem{}, err
+	}
+	ownerSystemAccountID := ""
+	if scope == "personal" {
+		if isAdminRole(input.ActorRole) {
+			ownerSystemAccountID = strings.TrimSpace(input.TargetSystemAccountID)
+		} else {
+			ownerSystemAccountID = actorSystemAccountID
+		}
+	}
+	saveInput, err := customModelSaveInputFromCreate(provider.Code, scope, ownerSystemAccountID, actorSystemAccountID, input.Fields)
+	if err != nil {
+		return ModelCatalogItem{}, err
+	}
+	if scope == "global" && !isAdminRole(input.ActorRole) {
+		return ModelCatalogItem{}, &CustomModelForbiddenError{Message: "只有管理员可以创建全局模型"}
+	}
+	if scope == "personal" && ownerSystemAccountID == "" {
+		return ModelCatalogItem{}, &CustomModelValidationError{Message: "请选择模型归属的系统账户"}
+	}
+	if err := s.validateCustomModelPricing(ctx, saveInput, ownerSystemAccountID); err != nil {
+		return ModelCatalogItem{}, err
+	}
+	existing, found, err := s.store.FindManagementCustomProviderModelByScope(ctx, port.ManagementCustomProviderModelScopeInput{
+		ProviderCode:    saveInput.ProviderCode,
+		Scope:           saveInput.Scope,
+		SystemAccountID: saveInput.SystemAccountID,
+		Model:           saveInput.Model,
+	})
+	if err != nil {
+		return ModelCatalogItem{}, err
+	}
+	if found {
+		saveInput.ID = existing.ID
+	} else if strings.TrimSpace(saveInput.ID) == "" {
+		saveInput.ID = s.newID("custom_model")
+	}
+	saved, err := s.store.SaveManagementCustomProviderModel(ctx, saveInput)
+	if err != nil {
+		return ModelCatalogItem{}, &CustomModelValidationError{Message: "自定义模型保存失败"}
+	}
+	if err := s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason); err != nil {
+		return ModelCatalogItem{}, err
+	}
+	return catalogItemFromPort(saved), nil
+}
+
+func (s *Service) UpdateCustomModel(ctx context.Context, input CustomModelUpdateInput) (ModelCatalogItem, error) {
+	if s.store == nil {
+		return ModelCatalogItem{}, fmt.Errorf("management provider model store is required")
+	}
+	existing, found, err := s.store.FindManagementCustomProviderModel(ctx, strings.TrimSpace(input.ID))
+	if err != nil {
+		return ModelCatalogItem{}, err
+	}
+	if !found || strings.TrimSpace(existing.ProviderCode) != strings.TrimSpace(input.ProviderCode) {
+		return ModelCatalogItem{}, ErrCustomProviderModelNotFound
+	}
+	if !canMutateCustomProviderModel(existing.Scope, existing.SystemAccountID, input.ActorSystemAccountID, input.ActorRole) {
+		return ModelCatalogItem{}, &CustomModelForbiddenError{Message: "无权修改该自定义模型"}
+	}
+	if input.Fields.Invalid || !customModelMutationHasAnyField(input.Fields) {
+		return ModelCatalogItem{}, &CustomModelValidationError{Message: "自定义模型参数无效"}
+	}
+	saveInput := customModelSaveInputFromExisting(existing, strings.TrimSpace(input.ActorSystemAccountID))
+	if err := applyCustomModelPatch(&saveInput, input.Fields); err != nil {
+		return ModelCatalogItem{}, err
+	}
+	if err := s.validateCustomModelPricing(ctx, saveInput, saveInput.SystemAccountID); err != nil {
+		return ModelCatalogItem{}, err
+	}
+	saved, err := s.store.SaveManagementCustomProviderModel(ctx, saveInput)
+	if err != nil {
+		return ModelCatalogItem{}, &CustomModelValidationError{Message: "自定义模型保存失败"}
+	}
+	if err := s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason); err != nil {
+		return ModelCatalogItem{}, err
+	}
+	if saved.Status != "active" {
+		if _, err := s.store.ClearManagementProviderDefaultTestModelIfModel(ctx, port.ManagementProviderDefaultTestModelClearInput{
+			ProviderCode:    saved.ProviderCode,
+			SystemAccountID: saved.SystemAccountID,
+			Model:           saved.Model,
+		}); err != nil {
+			return ModelCatalogItem{}, err
+		}
+	}
+	return catalogItemFromPort(saved), nil
+}
+
+func (s *Service) DeleteCustomModel(ctx context.Context, input CustomModelDeleteInput) (CustomModelDeleteResult, error) {
+	if s.store == nil {
+		return CustomModelDeleteResult{}, fmt.Errorf("management provider model store is required")
+	}
+	existing, found, err := s.store.FindManagementCustomProviderModel(ctx, strings.TrimSpace(input.ID))
+	if err != nil {
+		return CustomModelDeleteResult{}, err
+	}
+	if !found || strings.TrimSpace(existing.ProviderCode) != strings.TrimSpace(input.ProviderCode) {
+		return CustomModelDeleteResult{}, ErrCustomProviderModelNotFound
+	}
+	if !canMutateCustomProviderModel(existing.Scope, existing.SystemAccountID, input.ActorSystemAccountID, input.ActorRole) {
+		return CustomModelDeleteResult{}, &CustomModelForbiddenError{Message: "无权删除该自定义模型"}
+	}
+	bindings, err := s.store.GetManagementCustomProviderModelBindingSummary(ctx, port.ManagementCustomProviderModelBindingInput{
+		ProviderCode:    existing.ProviderCode,
+		Model:           existing.Model,
+		Scope:           existing.Scope,
+		SystemAccountID: existing.SystemAccountID,
+	})
+	if err != nil {
+		return CustomModelDeleteResult{}, err
+	}
+	if bindings.TotalAccountCount > 0 {
+		return CustomModelDeleteResult{}, &CustomModelBoundError{Message: customProviderModelBoundMessage(bindings)}
+	}
+	deleted, err := s.store.DeleteManagementCustomProviderModel(ctx, existing.ID)
+	if err != nil {
+		return CustomModelDeleteResult{}, err
+	}
+	if deleted {
+		if err := s.invalidateCustomProviderModel(ctx, CustomProviderModelDeletedReason); err != nil {
+			return CustomModelDeleteResult{}, err
+		}
+		if _, err := s.store.ClearManagementProviderDefaultTestModelIfModel(ctx, port.ManagementProviderDefaultTestModelClearInput{
+			ProviderCode:    existing.ProviderCode,
+			SystemAccountID: existing.SystemAccountID,
+			Model:           existing.Model,
+		}); err != nil {
+			return CustomModelDeleteResult{}, err
+		}
+	}
+	return CustomModelDeleteResult{Deleted: deleted}, nil
+}
+
 func (s *Service) optionProviderCodes(ctx context.Context, protocol string) ([]string, error) {
 	protocolCode, protocolVersion, ok := protocolFilter(strings.TrimSpace(protocol))
 	if ok {
@@ -297,6 +607,389 @@ func protocolFilter(protocol string) (string, string, bool) {
 	default:
 		return "", "", false
 	}
+}
+
+var customProviderModelAPIProtocols = map[string]struct{}{
+	"chat_completions":        {},
+	"responses":               {},
+	"messages":                {},
+	"message_token_counting":  {},
+	"generate_content":        {},
+	"stream_generate_content": {},
+	"count_tokens":            {},
+	"embed_content":           {},
+	"completions":             {},
+	"images":                  {},
+	"audio":                   {},
+	"realtime":                {},
+}
+
+func createCustomModelScope(scope OptionalString) (string, error) {
+	if !scope.Set {
+		return "personal", nil
+	}
+	value := strings.TrimSpace(scope.Value)
+	if value != "personal" && value != "global" {
+		return "", &CustomModelValidationError{Message: "自定义模型参数无效"}
+	}
+	return value, nil
+}
+
+func customModelSaveInputFromCreate(
+	providerCode string,
+	scope string,
+	systemAccountID string,
+	actorSystemAccountID string,
+	fields CustomModelMutation,
+) (port.ManagementCustomProviderModelSaveInput, error) {
+	model := strings.TrimSpace(fields.Model.Value)
+	if !fields.Model.Set || model == "" {
+		return port.ManagementCustomProviderModelSaveInput{}, &CustomModelValidationError{Message: "自定义模型参数无效"}
+	}
+	status := "active"
+	if fields.Status.Set {
+		status = strings.TrimSpace(fields.Status.Value)
+	}
+	if !validCustomModelStatus(status) {
+		return port.ManagementCustomProviderModelSaveInput{}, &CustomModelValidationError{Message: "自定义模型参数无效"}
+	}
+	saveInput := port.ManagementCustomProviderModelSaveInput{
+		ProviderCode:         strings.TrimSpace(providerCode),
+		Model:                model,
+		Scope:                scope,
+		SystemAccountID:      strings.TrimSpace(systemAccountID),
+		Status:               status,
+		ActorSystemAccountID: strings.TrimSpace(actorSystemAccountID),
+	}
+	if err := applyCustomModelMutableFields(&saveInput, fields, true); err != nil {
+		return port.ManagementCustomProviderModelSaveInput{}, err
+	}
+	return saveInput, nil
+}
+
+func customModelSaveInputFromExisting(item port.ManagementProviderModelCatalogItem, actorSystemAccountID string) port.ManagementCustomProviderModelSaveInput {
+	return port.ManagementCustomProviderModelSaveInput{
+		ID:                    item.ID,
+		ProviderCode:          item.ProviderCode,
+		Model:                 item.Model,
+		Scope:                 item.Scope,
+		SystemAccountID:       item.SystemAccountID,
+		Status:                item.Status,
+		Mode:                  item.Mode,
+		SupportedAPIProtocols: append([]string(nil), item.SupportedAPIProtocols...),
+		PricingModel:          item.PricingModel,
+		ReleaseDate:           item.ReleaseDate,
+		ShutdownDate:          item.ShutdownDate,
+		ContextWindowTokens:   cloneIntPtr(item.ContextWindowTokens),
+		MaxOutputTokens:       cloneIntPtr(item.MaxOutputTokens),
+		InputUSDPer1M:         cloneFloatPtr(item.InputUSDPer1M),
+		OutputUSDPer1M:        cloneFloatPtr(item.OutputUSDPer1M),
+		CachedInputUSDPer1M:   cloneFloatPtr(item.CachedInputUSDPer1M),
+		CacheWriteUSDPer1M:    cloneFloatPtr(item.CacheWriteUSDPer1M),
+		ImageInputUSDPer1M:    cloneFloatPtr(item.ImageInputUSDPer1M),
+		ImageOutputUSDPer1M:   cloneFloatPtr(item.ImageOutputUSDPer1M),
+		AudioInputUSDPer1M:    cloneFloatPtr(item.AudioInputUSDPer1M),
+		AudioOutputUSDPer1M:   cloneFloatPtr(item.AudioOutputUSDPer1M),
+		OutputUSDPerImage:     cloneFloatPtr(item.OutputUSDPerImage),
+		PricingNotes:          item.PricingNotes,
+		CapabilityNotes:       item.CapabilityNotes,
+		Notes:                 item.Notes,
+		ActorSystemAccountID:  strings.TrimSpace(actorSystemAccountID),
+	}
+}
+
+func applyCustomModelPatch(input *port.ManagementCustomProviderModelSaveInput, fields CustomModelMutation) error {
+	if fields.Scope.Set {
+		if _, err := createCustomModelScope(fields.Scope); err != nil {
+			return err
+		}
+	}
+	if fields.Model.Set {
+		model := strings.TrimSpace(fields.Model.Value)
+		if model == "" {
+			return &CustomModelValidationError{Message: "自定义模型参数无效"}
+		}
+		if model != strings.TrimSpace(input.Model) {
+			return &CustomModelValidationError{Message: "模型 ID 创建后不能修改"}
+		}
+	}
+	return applyCustomModelMutableFields(input, fields, false)
+}
+
+func applyCustomModelMutableFields(input *port.ManagementCustomProviderModelSaveInput, fields CustomModelMutation, create bool) error {
+	if fields.Status.Set {
+		status := strings.TrimSpace(fields.Status.Value)
+		if !validCustomModelStatus(status) {
+			return &CustomModelValidationError{Message: "自定义模型参数无效"}
+		}
+		input.Status = status
+	}
+	if input.Status == "" {
+		input.Status = "active"
+	}
+	if fields.Mode.Set {
+		mode := strings.TrimSpace(fields.Mode.Value)
+		if mode != "" && mode != "text" && mode != "image" && mode != "audio" {
+			return &CustomModelValidationError{Message: "自定义模型参数无效"}
+		}
+		input.Mode = mode
+	}
+	if fields.SupportedAPIProtocols.Set {
+		protocols, err := normalizeCustomModelProtocols(fields.SupportedAPIProtocols.Value)
+		if err != nil {
+			return err
+		}
+		input.SupportedAPIProtocols = protocols
+	} else if create {
+		input.SupportedAPIProtocols = []string{}
+	}
+	if fields.PricingModel.Set {
+		input.PricingModel = strings.TrimSpace(fields.PricingModel.Value)
+	}
+	if fields.ReleaseDate.Set {
+		input.ReleaseDate = strings.TrimSpace(fields.ReleaseDate.Value)
+	}
+	if fields.ShutdownDate.Set {
+		input.ShutdownDate = strings.TrimSpace(fields.ShutdownDate.Value)
+	}
+	if err := validateOptionalCustomModelDate(input.ReleaseDate); err != nil {
+		return err
+	}
+	if err := validateOptionalCustomModelDate(input.ShutdownDate); err != nil {
+		return err
+	}
+	if fields.ContextWindowTokens.Set {
+		if err := validateOptionalNonnegativeInt(fields.ContextWindowTokens.Value); err != nil {
+			return err
+		}
+		input.ContextWindowTokens = cloneIntPtr(fields.ContextWindowTokens.Value)
+	}
+	if fields.MaxOutputTokens.Set {
+		if err := validateOptionalNonnegativeInt(fields.MaxOutputTokens.Value); err != nil {
+			return err
+		}
+		input.MaxOutputTokens = cloneIntPtr(fields.MaxOutputTokens.Value)
+	}
+	if err := applyOptionalCustomModelFloat(&input.InputUSDPer1M, fields.InputUSDPer1M); err != nil {
+		return err
+	}
+	if err := applyOptionalCustomModelFloat(&input.OutputUSDPer1M, fields.OutputUSDPer1M); err != nil {
+		return err
+	}
+	if err := applyOptionalCustomModelFloat(&input.CachedInputUSDPer1M, fields.CachedInputUSDPer1M); err != nil {
+		return err
+	}
+	if err := applyOptionalCustomModelFloat(&input.CacheWriteUSDPer1M, fields.CacheWriteUSDPer1M); err != nil {
+		return err
+	}
+	if err := applyOptionalCustomModelFloat(&input.ImageInputUSDPer1M, fields.ImageInputUSDPer1M); err != nil {
+		return err
+	}
+	if err := applyOptionalCustomModelFloat(&input.ImageOutputUSDPer1M, fields.ImageOutputUSDPer1M); err != nil {
+		return err
+	}
+	if err := applyOptionalCustomModelFloat(&input.AudioInputUSDPer1M, fields.AudioInputUSDPer1M); err != nil {
+		return err
+	}
+	if err := applyOptionalCustomModelFloat(&input.AudioOutputUSDPer1M, fields.AudioOutputUSDPer1M); err != nil {
+		return err
+	}
+	if err := applyOptionalCustomModelFloat(&input.OutputUSDPerImage, fields.OutputUSDPerImage); err != nil {
+		return err
+	}
+	if fields.PricingNotes.Set {
+		input.PricingNotes = strings.TrimSpace(fields.PricingNotes.Value)
+	}
+	if fields.CapabilityNotes.Set {
+		input.CapabilityNotes = strings.TrimSpace(fields.CapabilityNotes.Value)
+	}
+	if fields.Notes.Set {
+		input.Notes = strings.TrimSpace(fields.Notes.Value)
+	}
+	return nil
+}
+
+func customModelMutationHasAnyField(fields CustomModelMutation) bool {
+	return fields.Scope.Set ||
+		fields.Model.Set ||
+		fields.Status.Set ||
+		fields.Mode.Set ||
+		fields.SupportedAPIProtocols.Set ||
+		fields.PricingModel.Set ||
+		fields.ReleaseDate.Set ||
+		fields.ShutdownDate.Set ||
+		fields.ContextWindowTokens.Set ||
+		fields.MaxOutputTokens.Set ||
+		fields.InputUSDPer1M.Set ||
+		fields.OutputUSDPer1M.Set ||
+		fields.CachedInputUSDPer1M.Set ||
+		fields.CacheWriteUSDPer1M.Set ||
+		fields.ImageInputUSDPer1M.Set ||
+		fields.ImageOutputUSDPer1M.Set ||
+		fields.AudioInputUSDPer1M.Set ||
+		fields.AudioOutputUSDPer1M.Set ||
+		fields.OutputUSDPerImage.Set ||
+		fields.PricingNotes.Set ||
+		fields.CapabilityNotes.Set ||
+		fields.Notes.Set
+}
+
+func validCustomModelStatus(status string) bool {
+	return status == "draft" || status == "active" || status == "disabled"
+}
+
+func normalizeCustomModelProtocols(values []string) ([]string, error) {
+	output := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		protocol := strings.TrimSpace(value)
+		if _, ok := customProviderModelAPIProtocols[protocol]; !ok {
+			return nil, &CustomModelValidationError{Message: "自定义模型参数无效"}
+		}
+		if _, exists := seen[protocol]; exists {
+			continue
+		}
+		seen[protocol] = struct{}{}
+		output = append(output, protocol)
+	}
+	return output, nil
+}
+
+func validateOptionalCustomModelDate(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	if len(value) != 10 || value[4] != '-' || value[7] != '-' {
+		return &CustomModelValidationError{Message: "自定义模型参数无效"}
+	}
+	for index, char := range value {
+		if index == 4 || index == 7 {
+			continue
+		}
+		if char < '0' || char > '9' {
+			return &CustomModelValidationError{Message: "自定义模型参数无效"}
+		}
+	}
+	return nil
+}
+
+func validateOptionalNonnegativeInt(value *int) error {
+	if value == nil {
+		return nil
+	}
+	if *value < 0 {
+		return &CustomModelValidationError{Message: "自定义模型参数无效"}
+	}
+	if *value > math.MaxInt32 {
+		return &CustomModelValidationError{Message: "自定义模型参数无效"}
+	}
+	return nil
+}
+
+func applyOptionalCustomModelFloat(target **float64, value OptionalFloat) error {
+	if !value.Set {
+		return nil
+	}
+	if value.Value != nil && *value.Value < 0 {
+		return &CustomModelValidationError{Message: "自定义模型参数无效"}
+	}
+	*target = cloneFloatPtr(value.Value)
+	return nil
+}
+
+func (s *Service) validateCustomModelPricing(ctx context.Context, input port.ManagementCustomProviderModelSaveInput, ownerSystemAccountID string) error {
+	hasDirectPriceConfigured := customModelSaveInputHasDirectPrice(input)
+	pricingModel := strings.TrimSpace(input.PricingModel)
+	if hasDirectPriceConfigured && pricingModel != "" {
+		return &CustomModelValidationError{Message: "自定义模型不能同时配置直接价格和 pricingModel"}
+	}
+	if input.Status == "active" && !hasDirectPriceConfigured && pricingModel == "" {
+		return &CustomModelValidationError{Message: "启用的自定义模型必须配置价格或 pricingModel"}
+	}
+	if pricingModel == "" {
+		return nil
+	}
+	if strings.TrimSpace(input.Model) == pricingModel {
+		return &CustomModelValidationError{Message: "pricingModel 不能指向当前模型自身"}
+	}
+	builtInCodes, customCodes, err := s.sourceProviderCodes(ctx, input.ProviderCode)
+	if err != nil {
+		return err
+	}
+	catalog, err := s.store.ListManagementProviderModelCatalog(ctx, port.ManagementProviderModelCatalogListInput{
+		BuiltInProviderCodes: builtInCodes,
+		CustomProviderCodes:  customCodes,
+		SystemAccountID:      strings.TrimSpace(ownerSystemAccountID),
+		IncludeInactive:      true,
+	})
+	if err != nil {
+		return err
+	}
+	var target *port.ManagementProviderModelCatalogItem
+	for index := range catalog {
+		if strings.TrimSpace(catalog[index].Model) == pricingModel {
+			target = &catalog[index]
+			break
+		}
+	}
+	if target == nil {
+		return &CustomModelValidationError{Message: "pricingModel 不存在：" + pricingModel}
+	}
+	if strings.TrimSpace(target.PricingModel) != "" {
+		return &CustomModelValidationError{Message: "pricingModel 只能指向有直接价格的模型，不能递归指向另一个 pricingModel"}
+	}
+	if !hasDirectPrice(*target) {
+		return &CustomModelValidationError{Message: "pricingModel 缺少直接价格：" + pricingModel}
+	}
+	return nil
+}
+
+func customModelSaveInputHasDirectPrice(input port.ManagementCustomProviderModelSaveInput) bool {
+	return input.InputUSDPer1M != nil ||
+		input.OutputUSDPer1M != nil ||
+		input.CachedInputUSDPer1M != nil ||
+		input.CacheWriteUSDPer1M != nil ||
+		input.ImageInputUSDPer1M != nil ||
+		input.ImageOutputUSDPer1M != nil ||
+		input.AudioInputUSDPer1M != nil ||
+		input.AudioOutputUSDPer1M != nil ||
+		input.OutputUSDPerImage != nil
+}
+
+func canMutateCustomProviderModel(scope string, ownerSystemAccountID string, actorSystemAccountID string, actorRole string) bool {
+	if scope == "global" {
+		return isAdminRole(actorRole)
+	}
+	actorID := strings.TrimSpace(actorSystemAccountID)
+	return actorID != "" && (isAdminRole(actorRole) || actorID == strings.TrimSpace(ownerSystemAccountID))
+}
+
+func isAdminRole(role string) bool {
+	return role == "admin" || role == "super_admin"
+}
+
+func customProviderModelBoundMessage(bindings port.ManagementCustomProviderModelBindingSummary) string {
+	parts := []string{}
+	if bindings.SupportedModelAccountCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d 个账户支持模型", bindings.SupportedModelAccountCount))
+	}
+	if bindings.MappingSourceAccountCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d 个账户映射下游模型", bindings.MappingSourceAccountCount))
+	}
+	if bindings.MappingUpstreamAccountCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d 个账户映射上游模型", bindings.MappingUpstreamAccountCount))
+	}
+	if len(parts) == 0 {
+		return "模型已绑定 AI 账户，不能删除"
+	}
+	return "模型已绑定 AI 账户，不能删除；请先从" + strings.Join(parts, "、") + "中移除后再删除"
+}
+
+func (s *Service) invalidateCustomProviderModel(ctx context.Context, reason string) error {
+	if s.invalidator == nil {
+		return nil
+	}
+	return s.invalidator.InvalidateCustomProviderModelChanged(ctx, reason)
 }
 
 type mergeKeyFunc func(port.ManagementProviderModelCatalogItem) string
@@ -522,6 +1215,9 @@ func catalogItemFromPort(item port.ManagementProviderModelCatalogItem) ModelCata
 		SupportsPromptCaching: item.SupportsPromptCaching,
 		SupportsServiceTier:   item.SupportsServiceTier,
 		CatalogVisible:        item.CatalogVisible,
+		PricingNotes:          item.PricingNotes,
+		CapabilityNotes:       item.CapabilityNotes,
+		Notes:                 item.Notes,
 		Source:                item.Source,
 	}
 	if item.Scope != "built_in" {

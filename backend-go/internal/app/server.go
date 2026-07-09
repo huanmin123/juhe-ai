@@ -157,6 +157,9 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementProviderModelOptionsHandler:             managementHandlers.ProviderModelOptionsHandler,
 		ManagementProviderModelsHandler:                   managementHandlers.ProviderModelsHandler,
 		ManagementProviderDefaultTestModelHandler:         managementHandlers.ProviderDefaultTestModelHandler,
+		ManagementProviderCustomModelCreateHandler:        managementHandlers.ProviderCustomModelCreateHandler,
+		ManagementProviderCustomModelUpdateHandler:        managementHandlers.ProviderCustomModelUpdateHandler,
+		ManagementProviderCustomModelDeleteHandler:        managementHandlers.ProviderCustomModelDeleteHandler,
 		ManagementRouteStrategyOptionsHandler:             managementHandlers.RouteStrategyOptionsHandler,
 		ManagementMyRouteStrategyOptionsHandler:           managementHandlers.MyRouteStrategyOptionsHandler,
 		ManagementGroupOptionsHandler:                     managementHandlers.GroupOptionsHandler,
@@ -262,6 +265,9 @@ type managementAPIHandlers struct {
 	ProviderModelOptionsHandler             http.Handler
 	ProviderModelsHandler                   http.Handler
 	ProviderDefaultTestModelHandler         http.Handler
+	ProviderCustomModelCreateHandler        http.Handler
+	ProviderCustomModelUpdateHandler        http.Handler
+	ProviderCustomModelDeleteHandler        http.Handler
 	RouteStrategyOptionsHandler             http.Handler
 	MyRouteStrategyOptionsHandler           http.Handler
 	GroupOptionsHandler                     http.Handler
@@ -284,6 +290,7 @@ type managementAPIInvalidator interface {
 	managementsystemaccounts.SystemAccountInvalidator
 	managementsystemteams.AuthorizationInvalidator
 	managementauthorizations.AuthorizationInvalidator
+	managementprovidermodels.CustomProviderModelInvalidator
 }
 
 func newManagementAPIHandler(
@@ -314,7 +321,10 @@ func newManagementAPIHandler(
 	passwordService := managementauth.NewPasswordService(store)
 	proxyService := managementproxies.NewService(store)
 	providerService := managementproviders.NewService(store)
-	providerModelService := managementprovidermodels.NewService(store)
+	providerModelService := managementprovidermodels.NewServiceWithOptions(managementprovidermodels.ServiceOptions{
+		Store:       store,
+		Invalidator: systemAccountInvalidator,
+	})
 	routeStrategyService := managementroutestrategies.NewService(store)
 	groupService := managementgroups.NewService(store)
 	accountService := managementaccounts.NewService(store)
@@ -397,6 +407,9 @@ func newManagementAPIHandler(
 		ProviderModelOptionsHandler:             httpapi.NewManagementProviderModelOptionsHandler(providerModelService),
 		ProviderModelsHandler:                   httpapi.NewManagementProviderModelsHandler(providerModelService),
 		ProviderDefaultTestModelHandler:         httpapi.NewManagementProviderDefaultTestModelHandler(providerModelService),
+		ProviderCustomModelCreateHandler:        httpapi.NewManagementProviderCustomModelCreateHandler(providerModelService),
+		ProviderCustomModelUpdateHandler:        httpapi.NewManagementProviderCustomModelUpdateHandler(providerModelService),
+		ProviderCustomModelDeleteHandler:        httpapi.NewManagementProviderCustomModelDeleteHandler(providerModelService),
 		RouteStrategyOptionsHandler:             httpapi.NewManagementRouteStrategyOptionsHandler(routeStrategyService),
 		MyRouteStrategyOptionsHandler:           httpapi.NewManagementMyRouteStrategyOptionsHandler(routeStrategyService),
 		GroupOptionsHandler:                     httpapi.NewManagementGroupOptionsHandler(groupService),

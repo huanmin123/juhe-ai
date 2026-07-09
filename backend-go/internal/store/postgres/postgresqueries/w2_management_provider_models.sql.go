@@ -11,6 +11,274 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const clearManagementProviderDefaultTestModelIfModel = `-- name: ClearManagementProviderDefaultTestModelIfModel :execrows
+DELETE FROM juhe_business.provider_default_test_models
+WHERE provider_code = $1
+  AND model = $2
+  AND (
+    $3::text = ''
+    OR system_account_id = $3
+  )
+`
+
+type ClearManagementProviderDefaultTestModelIfModelParams struct {
+	ProviderCode    string
+	Model           string
+	SystemAccountID string
+}
+
+func (q *Queries) ClearManagementProviderDefaultTestModelIfModel(ctx context.Context, arg ClearManagementProviderDefaultTestModelIfModelParams) (int64, error) {
+	result, err := q.db.Exec(ctx, clearManagementProviderDefaultTestModelIfModel, arg.ProviderCode, arg.Model, arg.SystemAccountID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteManagementCustomProviderModel = `-- name: DeleteManagementCustomProviderModel :execrows
+DELETE FROM juhe_business.custom_provider_models
+WHERE id = $1
+`
+
+func (q *Queries) DeleteManagementCustomProviderModel(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteManagementCustomProviderModel, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const findManagementCustomProviderModel = `-- name: FindManagementCustomProviderModel :one
+SELECT
+  id,
+  provider_code,
+  model,
+  scope,
+  system_account_id,
+  status,
+  mode,
+  supported_api_protocols_json,
+  pricing_model,
+  release_date,
+  shutdown_date,
+  context_window_tokens,
+  max_output_tokens,
+  input_usd_per_1m,
+  output_usd_per_1m,
+  cached_input_usd_per_1m,
+  cache_write_usd_per_1m,
+  image_input_usd_per_1m,
+  image_output_usd_per_1m,
+  audio_input_usd_per_1m,
+  audio_output_usd_per_1m,
+  output_usd_per_image,
+  pricing_notes,
+  capability_notes,
+  notes,
+  created_by,
+  updated_by,
+  created_at,
+  updated_at
+FROM juhe_business.custom_provider_models
+WHERE id = $1
+LIMIT 1
+`
+
+type FindManagementCustomProviderModelRow struct {
+	ID                        string
+	ProviderCode              string
+	Model                     string
+	Scope                     string
+	SystemAccountID           pgtype.Text
+	Status                    string
+	Mode                      pgtype.Text
+	SupportedApiProtocolsJson string
+	PricingModel              pgtype.Text
+	ReleaseDate               pgtype.Text
+	ShutdownDate              pgtype.Text
+	ContextWindowTokens       pgtype.Int4
+	MaxOutputTokens           pgtype.Int4
+	InputUsdPer1m             pgtype.Float8
+	OutputUsdPer1m            pgtype.Float8
+	CachedInputUsdPer1m       pgtype.Float8
+	CacheWriteUsdPer1m        pgtype.Float8
+	ImageInputUsdPer1m        pgtype.Float8
+	ImageOutputUsdPer1m       pgtype.Float8
+	AudioInputUsdPer1m        pgtype.Float8
+	AudioOutputUsdPer1m       pgtype.Float8
+	OutputUsdPerImage         pgtype.Float8
+	PricingNotes              pgtype.Text
+	CapabilityNotes           pgtype.Text
+	Notes                     pgtype.Text
+	CreatedBy                 string
+	UpdatedBy                 pgtype.Text
+	CreatedAt                 pgtype.Timestamptz
+	UpdatedAt                 pgtype.Timestamptz
+}
+
+func (q *Queries) FindManagementCustomProviderModel(ctx context.Context, id string) (FindManagementCustomProviderModelRow, error) {
+	row := q.db.QueryRow(ctx, findManagementCustomProviderModel, id)
+	var i FindManagementCustomProviderModelRow
+	err := row.Scan(
+		&i.ID,
+		&i.ProviderCode,
+		&i.Model,
+		&i.Scope,
+		&i.SystemAccountID,
+		&i.Status,
+		&i.Mode,
+		&i.SupportedApiProtocolsJson,
+		&i.PricingModel,
+		&i.ReleaseDate,
+		&i.ShutdownDate,
+		&i.ContextWindowTokens,
+		&i.MaxOutputTokens,
+		&i.InputUsdPer1m,
+		&i.OutputUsdPer1m,
+		&i.CachedInputUsdPer1m,
+		&i.CacheWriteUsdPer1m,
+		&i.ImageInputUsdPer1m,
+		&i.ImageOutputUsdPer1m,
+		&i.AudioInputUsdPer1m,
+		&i.AudioOutputUsdPer1m,
+		&i.OutputUsdPerImage,
+		&i.PricingNotes,
+		&i.CapabilityNotes,
+		&i.Notes,
+		&i.CreatedBy,
+		&i.UpdatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const findManagementCustomProviderModelByScope = `-- name: FindManagementCustomProviderModelByScope :one
+SELECT
+  id,
+  provider_code,
+  model,
+  scope,
+  system_account_id,
+  status,
+  mode,
+  supported_api_protocols_json,
+  pricing_model,
+  release_date,
+  shutdown_date,
+  context_window_tokens,
+  max_output_tokens,
+  input_usd_per_1m,
+  output_usd_per_1m,
+  cached_input_usd_per_1m,
+  cache_write_usd_per_1m,
+  image_input_usd_per_1m,
+  image_output_usd_per_1m,
+  audio_input_usd_per_1m,
+  audio_output_usd_per_1m,
+  output_usd_per_image,
+  pricing_notes,
+  capability_notes,
+  notes,
+  created_by,
+  updated_by,
+  created_at,
+  updated_at
+FROM juhe_business.custom_provider_models
+WHERE provider_code = $1
+  AND model = $2
+  AND (
+    ($3::text = 'global' AND scope = 'global' AND system_account_id IS NULL)
+    OR (
+      $3::text = 'personal'
+      AND scope = 'personal'
+      AND system_account_id = $4
+    )
+  )
+LIMIT 1
+`
+
+type FindManagementCustomProviderModelByScopeParams struct {
+	ProviderCode    string
+	Model           string
+	Scope           string
+	SystemAccountID pgtype.Text
+}
+
+type FindManagementCustomProviderModelByScopeRow struct {
+	ID                        string
+	ProviderCode              string
+	Model                     string
+	Scope                     string
+	SystemAccountID           pgtype.Text
+	Status                    string
+	Mode                      pgtype.Text
+	SupportedApiProtocolsJson string
+	PricingModel              pgtype.Text
+	ReleaseDate               pgtype.Text
+	ShutdownDate              pgtype.Text
+	ContextWindowTokens       pgtype.Int4
+	MaxOutputTokens           pgtype.Int4
+	InputUsdPer1m             pgtype.Float8
+	OutputUsdPer1m            pgtype.Float8
+	CachedInputUsdPer1m       pgtype.Float8
+	CacheWriteUsdPer1m        pgtype.Float8
+	ImageInputUsdPer1m        pgtype.Float8
+	ImageOutputUsdPer1m       pgtype.Float8
+	AudioInputUsdPer1m        pgtype.Float8
+	AudioOutputUsdPer1m       pgtype.Float8
+	OutputUsdPerImage         pgtype.Float8
+	PricingNotes              pgtype.Text
+	CapabilityNotes           pgtype.Text
+	Notes                     pgtype.Text
+	CreatedBy                 string
+	UpdatedBy                 pgtype.Text
+	CreatedAt                 pgtype.Timestamptz
+	UpdatedAt                 pgtype.Timestamptz
+}
+
+func (q *Queries) FindManagementCustomProviderModelByScope(ctx context.Context, arg FindManagementCustomProviderModelByScopeParams) (FindManagementCustomProviderModelByScopeRow, error) {
+	row := q.db.QueryRow(ctx, findManagementCustomProviderModelByScope,
+		arg.ProviderCode,
+		arg.Model,
+		arg.Scope,
+		arg.SystemAccountID,
+	)
+	var i FindManagementCustomProviderModelByScopeRow
+	err := row.Scan(
+		&i.ID,
+		&i.ProviderCode,
+		&i.Model,
+		&i.Scope,
+		&i.SystemAccountID,
+		&i.Status,
+		&i.Mode,
+		&i.SupportedApiProtocolsJson,
+		&i.PricingModel,
+		&i.ReleaseDate,
+		&i.ShutdownDate,
+		&i.ContextWindowTokens,
+		&i.MaxOutputTokens,
+		&i.InputUsdPer1m,
+		&i.OutputUsdPer1m,
+		&i.CachedInputUsdPer1m,
+		&i.CacheWriteUsdPer1m,
+		&i.ImageInputUsdPer1m,
+		&i.ImageOutputUsdPer1m,
+		&i.AudioInputUsdPer1m,
+		&i.AudioOutputUsdPer1m,
+		&i.OutputUsdPerImage,
+		&i.PricingNotes,
+		&i.CapabilityNotes,
+		&i.Notes,
+		&i.CreatedBy,
+		&i.UpdatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const findManagementProviderModelProvider = `-- name: FindManagementProviderModelProvider :one
 SELECT code, enabled, parent_code
 FROM juhe_business.providers
@@ -28,6 +296,97 @@ func (q *Queries) FindManagementProviderModelProvider(ctx context.Context, code 
 	row := q.db.QueryRow(ctx, findManagementProviderModelProvider, code)
 	var i FindManagementProviderModelProviderRow
 	err := row.Scan(&i.Code, &i.Enabled, &i.ParentCode)
+	return i, err
+}
+
+const getManagementCustomProviderModelBindingSummary = `-- name: GetManagementCustomProviderModelBindingSummary :one
+WITH account_owner_scope AS (
+  SELECT $1::text AS scope, $2::text AS system_account_id
+),
+supported_model_accounts AS (
+  SELECT asm.account_id
+  FROM juhe_business.account_supported_models AS asm
+  INNER JOIN juhe_business.accounts AS accounts
+    ON accounts.id = asm.account_id
+    AND accounts.deleted_at IS NULL
+  CROSS JOIN account_owner_scope
+  WHERE asm.provider_code = $3
+    AND asm.model = $4
+    AND (
+      account_owner_scope.scope = 'global'
+      OR accounts.system_account_id = account_owner_scope.system_account_id
+    )
+),
+mapping_source_accounts AS (
+  SELECT amm.account_id
+  FROM juhe_business.account_model_mappings AS amm
+  INNER JOIN juhe_business.accounts AS accounts
+    ON accounts.id = amm.account_id
+    AND accounts.deleted_at IS NULL
+  CROSS JOIN account_owner_scope
+  WHERE amm.source_model = $4
+    AND amm.provider_code = $3
+    AND (
+      account_owner_scope.scope = 'global'
+      OR accounts.system_account_id = account_owner_scope.system_account_id
+    )
+),
+mapping_upstream_accounts AS (
+  SELECT amm.account_id
+  FROM juhe_business.account_model_mappings AS amm
+  INNER JOIN juhe_business.accounts AS accounts
+    ON accounts.id = amm.account_id
+    AND accounts.deleted_at IS NULL
+  CROSS JOIN account_owner_scope
+  WHERE amm.upstream_model = $4
+    AND amm.provider_code = $3
+    AND (
+      account_owner_scope.scope = 'global'
+      OR accounts.system_account_id = account_owner_scope.system_account_id
+    )
+),
+all_bound_accounts AS (
+  SELECT account_id FROM supported_model_accounts
+  UNION
+  SELECT account_id FROM mapping_source_accounts
+  UNION
+  SELECT account_id FROM mapping_upstream_accounts
+)
+SELECT
+  (SELECT COUNT(DISTINCT account_id) FROM supported_model_accounts)::integer AS supported_model_account_count,
+  (SELECT COUNT(DISTINCT account_id) FROM mapping_source_accounts)::integer AS mapping_source_account_count,
+  (SELECT COUNT(DISTINCT account_id) FROM mapping_upstream_accounts)::integer AS mapping_upstream_account_count,
+  (SELECT COUNT(DISTINCT account_id) FROM all_bound_accounts)::integer AS total_account_count
+`
+
+type GetManagementCustomProviderModelBindingSummaryParams struct {
+	Scope           string
+	SystemAccountID string
+	ProviderCode    string
+	Model           string
+}
+
+type GetManagementCustomProviderModelBindingSummaryRow struct {
+	SupportedModelAccountCount  int32
+	MappingSourceAccountCount   int32
+	MappingUpstreamAccountCount int32
+	TotalAccountCount           int32
+}
+
+func (q *Queries) GetManagementCustomProviderModelBindingSummary(ctx context.Context, arg GetManagementCustomProviderModelBindingSummaryParams) (GetManagementCustomProviderModelBindingSummaryRow, error) {
+	row := q.db.QueryRow(ctx, getManagementCustomProviderModelBindingSummary,
+		arg.Scope,
+		arg.SystemAccountID,
+		arg.ProviderCode,
+		arg.Model,
+	)
+	var i GetManagementCustomProviderModelBindingSummaryRow
+	err := row.Scan(
+		&i.SupportedModelAccountCount,
+		&i.MappingSourceAccountCount,
+		&i.MappingUpstreamAccountCount,
+		&i.TotalAccountCount,
+	)
 	return i, err
 }
 
@@ -129,6 +488,11 @@ SELECT
   supports_prompt_caching,
   supports_service_tier,
   catalog_visible,
+  NULL::text AS pricing_notes,
+  NULL::text AS capability_notes,
+  NULL::text AS notes,
+  ''::text AS created_by,
+  NULL::text AS updated_by,
   source,
   created_at,
   updated_at
@@ -172,6 +536,11 @@ SELECT
   (cached_input_usd_per_1m IS NOT NULL) AS supports_prompt_caching,
   false AS supports_service_tier,
   true AS catalog_visible,
+  pricing_notes,
+  capability_notes,
+  notes,
+  created_by,
+  updated_by,
   CASE WHEN scope = 'global' THEN 'custom-global' ELSE 'custom-personal' END AS source,
   created_at,
   updated_at
@@ -226,6 +595,11 @@ type ListManagementProviderModelCatalogRow struct {
 	SupportsPromptCaching     bool
 	SupportsServiceTier       bool
 	CatalogVisible            bool
+	PricingNotes              pgtype.Text
+	CapabilityNotes           pgtype.Text
+	Notes                     pgtype.Text
+	CreatedBy                 string
+	UpdatedBy                 pgtype.Text
 	Source                    string
 	CreatedAt                 pgtype.Timestamptz
 	UpdatedAt                 pgtype.Timestamptz
@@ -275,6 +649,11 @@ func (q *Queries) ListManagementProviderModelCatalog(ctx context.Context, arg Li
 			&i.SupportsPromptCaching,
 			&i.SupportsServiceTier,
 			&i.CatalogVisible,
+			&i.PricingNotes,
+			&i.CapabilityNotes,
+			&i.Notes,
+			&i.CreatedBy,
+			&i.UpdatedBy,
 			&i.Source,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -287,4 +666,206 @@ func (q *Queries) ListManagementProviderModelCatalog(ctx context.Context, arg Li
 		return nil, err
 	}
 	return items, nil
+}
+
+const upsertManagementCustomProviderModel = `-- name: UpsertManagementCustomProviderModel :one
+INSERT INTO juhe_business.custom_provider_models (
+  id, provider_code, model, scope, system_account_id, status,
+  mode, supported_api_protocols_json, pricing_model,
+  release_date, shutdown_date, context_window_tokens, max_output_tokens,
+  input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m,
+  image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
+  output_usd_per_image, currency, pricing_notes, capability_notes, notes,
+  created_by, updated_by, created_at, updated_at
+) VALUES (
+  $1, $2, $3, $4, $5, $6,
+  $7, $8, $9,
+  $10, $11, $12, $13,
+  $14, $15, $16, $17,
+  $18, $19, $20, $21,
+  $22, 'USD', $23, $24, $25,
+  $26, $26, now(), now()
+)
+ON CONFLICT (id) DO UPDATE SET
+  provider_code = EXCLUDED.provider_code,
+  model = EXCLUDED.model,
+  scope = EXCLUDED.scope,
+  system_account_id = EXCLUDED.system_account_id,
+  status = EXCLUDED.status,
+  mode = EXCLUDED.mode,
+  supported_api_protocols_json = EXCLUDED.supported_api_protocols_json,
+  pricing_model = EXCLUDED.pricing_model,
+  release_date = EXCLUDED.release_date,
+  shutdown_date = EXCLUDED.shutdown_date,
+  context_window_tokens = EXCLUDED.context_window_tokens,
+  max_output_tokens = EXCLUDED.max_output_tokens,
+  input_usd_per_1m = EXCLUDED.input_usd_per_1m,
+  output_usd_per_1m = EXCLUDED.output_usd_per_1m,
+  cached_input_usd_per_1m = EXCLUDED.cached_input_usd_per_1m,
+  cache_write_usd_per_1m = EXCLUDED.cache_write_usd_per_1m,
+  image_input_usd_per_1m = EXCLUDED.image_input_usd_per_1m,
+  image_output_usd_per_1m = EXCLUDED.image_output_usd_per_1m,
+  audio_input_usd_per_1m = EXCLUDED.audio_input_usd_per_1m,
+  audio_output_usd_per_1m = EXCLUDED.audio_output_usd_per_1m,
+  output_usd_per_image = EXCLUDED.output_usd_per_image,
+  pricing_notes = EXCLUDED.pricing_notes,
+  capability_notes = EXCLUDED.capability_notes,
+  notes = EXCLUDED.notes,
+  updated_by = EXCLUDED.updated_by,
+  updated_at = EXCLUDED.updated_at
+RETURNING
+  id,
+  provider_code,
+  model,
+  scope,
+  system_account_id,
+  status,
+  mode,
+  supported_api_protocols_json,
+  pricing_model,
+  release_date,
+  shutdown_date,
+  context_window_tokens,
+  max_output_tokens,
+  input_usd_per_1m,
+  output_usd_per_1m,
+  cached_input_usd_per_1m,
+  cache_write_usd_per_1m,
+  image_input_usd_per_1m,
+  image_output_usd_per_1m,
+  audio_input_usd_per_1m,
+  audio_output_usd_per_1m,
+  output_usd_per_image,
+  pricing_notes,
+  capability_notes,
+  notes,
+  created_by,
+  updated_by,
+  created_at,
+  updated_at
+`
+
+type UpsertManagementCustomProviderModelParams struct {
+	ID                        string
+	ProviderCode              string
+	Model                     string
+	Scope                     string
+	SystemAccountID           pgtype.Text
+	Status                    string
+	Mode                      pgtype.Text
+	SupportedApiProtocolsJson string
+	PricingModel              pgtype.Text
+	ReleaseDate               pgtype.Text
+	ShutdownDate              pgtype.Text
+	ContextWindowTokens       pgtype.Int4
+	MaxOutputTokens           pgtype.Int4
+	InputUsdPer1m             pgtype.Float8
+	OutputUsdPer1m            pgtype.Float8
+	CachedInputUsdPer1m       pgtype.Float8
+	CacheWriteUsdPer1m        pgtype.Float8
+	ImageInputUsdPer1m        pgtype.Float8
+	ImageOutputUsdPer1m       pgtype.Float8
+	AudioInputUsdPer1m        pgtype.Float8
+	AudioOutputUsdPer1m       pgtype.Float8
+	OutputUsdPerImage         pgtype.Float8
+	PricingNotes              pgtype.Text
+	CapabilityNotes           pgtype.Text
+	Notes                     pgtype.Text
+	ActorSystemAccountID      string
+}
+
+type UpsertManagementCustomProviderModelRow struct {
+	ID                        string
+	ProviderCode              string
+	Model                     string
+	Scope                     string
+	SystemAccountID           pgtype.Text
+	Status                    string
+	Mode                      pgtype.Text
+	SupportedApiProtocolsJson string
+	PricingModel              pgtype.Text
+	ReleaseDate               pgtype.Text
+	ShutdownDate              pgtype.Text
+	ContextWindowTokens       pgtype.Int4
+	MaxOutputTokens           pgtype.Int4
+	InputUsdPer1m             pgtype.Float8
+	OutputUsdPer1m            pgtype.Float8
+	CachedInputUsdPer1m       pgtype.Float8
+	CacheWriteUsdPer1m        pgtype.Float8
+	ImageInputUsdPer1m        pgtype.Float8
+	ImageOutputUsdPer1m       pgtype.Float8
+	AudioInputUsdPer1m        pgtype.Float8
+	AudioOutputUsdPer1m       pgtype.Float8
+	OutputUsdPerImage         pgtype.Float8
+	PricingNotes              pgtype.Text
+	CapabilityNotes           pgtype.Text
+	Notes                     pgtype.Text
+	CreatedBy                 string
+	UpdatedBy                 pgtype.Text
+	CreatedAt                 pgtype.Timestamptz
+	UpdatedAt                 pgtype.Timestamptz
+}
+
+func (q *Queries) UpsertManagementCustomProviderModel(ctx context.Context, arg UpsertManagementCustomProviderModelParams) (UpsertManagementCustomProviderModelRow, error) {
+	row := q.db.QueryRow(ctx, upsertManagementCustomProviderModel,
+		arg.ID,
+		arg.ProviderCode,
+		arg.Model,
+		arg.Scope,
+		arg.SystemAccountID,
+		arg.Status,
+		arg.Mode,
+		arg.SupportedApiProtocolsJson,
+		arg.PricingModel,
+		arg.ReleaseDate,
+		arg.ShutdownDate,
+		arg.ContextWindowTokens,
+		arg.MaxOutputTokens,
+		arg.InputUsdPer1m,
+		arg.OutputUsdPer1m,
+		arg.CachedInputUsdPer1m,
+		arg.CacheWriteUsdPer1m,
+		arg.ImageInputUsdPer1m,
+		arg.ImageOutputUsdPer1m,
+		arg.AudioInputUsdPer1m,
+		arg.AudioOutputUsdPer1m,
+		arg.OutputUsdPerImage,
+		arg.PricingNotes,
+		arg.CapabilityNotes,
+		arg.Notes,
+		arg.ActorSystemAccountID,
+	)
+	var i UpsertManagementCustomProviderModelRow
+	err := row.Scan(
+		&i.ID,
+		&i.ProviderCode,
+		&i.Model,
+		&i.Scope,
+		&i.SystemAccountID,
+		&i.Status,
+		&i.Mode,
+		&i.SupportedApiProtocolsJson,
+		&i.PricingModel,
+		&i.ReleaseDate,
+		&i.ShutdownDate,
+		&i.ContextWindowTokens,
+		&i.MaxOutputTokens,
+		&i.InputUsdPer1m,
+		&i.OutputUsdPer1m,
+		&i.CachedInputUsdPer1m,
+		&i.CacheWriteUsdPer1m,
+		&i.ImageInputUsdPer1m,
+		&i.ImageOutputUsdPer1m,
+		&i.AudioInputUsdPer1m,
+		&i.AudioOutputUsdPer1m,
+		&i.OutputUsdPerImage,
+		&i.PricingNotes,
+		&i.CapabilityNotes,
+		&i.Notes,
+		&i.CreatedBy,
+		&i.UpdatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }

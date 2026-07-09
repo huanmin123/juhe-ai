@@ -220,11 +220,184 @@ func TestManagementProviderDefaultTestModelHandlerErrors(t *testing.T) {
 	}
 }
 
+func TestManagementProviderCustomModelCreateHandlerParsesBodyAndTargetScope(t *testing.T) {
+	service := &managementProviderModelServiceStub{
+		customModelResult: managementprovidermodels.ModelCatalogItem{ID: "custom_model_1", ProviderCode: "gpt", Model: "custom-chat", Scope: "personal", Status: "active"},
+	}
+	handler := chi.NewRouter()
+	handler.With(NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
+	})).Post("/__aisys__/api/providers/{code}/models", newManagementProviderCustomModelCreateHandler(service).ServeHTTP)
+
+	req := httptest.NewRequest(http.MethodPost, "/__aisys__/api/providers/gpt/models?systemAccountId=sys_user", strings.NewReader(`{
+		"model":" custom-chat ",
+		"supportedApiProtocols":["responses"],
+		"inputUsdPer1M":1.25,
+		"pricingNotes":" 说明 "
+	}`))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if service.createInput.ProviderCode != "gpt" ||
+		service.createInput.ActorSystemAccountID != "sys_admin" ||
+		service.createInput.TargetSystemAccountID != "sys_user" ||
+		!service.createInput.Fields.Model.Set ||
+		service.createInput.Fields.Model.Value != " custom-chat " ||
+		service.createInput.Fields.InputUSDPer1M.Value == nil ||
+		*service.createInput.Fields.InputUSDPer1M.Value != 1.25 {
+		t.Fatalf("create input = %+v", service.createInput)
+	}
+	var body struct {
+		Data managementprovidermodels.ModelCatalogItem `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Data.ID != "custom_model_1" {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
+func TestManagementProviderCustomModelHandlersMapErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		method     string
+		target     string
+		body       string
+		err        error
+		wantStatus int
+		wantMsg    string
+	}{
+		{
+			name:       "create invalid body",
+			method:     http.MethodPost,
+			target:     "/__aisys__/api/providers/gpt/models",
+			body:       `{"model":null}`,
+			wantStatus: http.StatusBadRequest,
+			wantMsg:    "自定义模型参数无效",
+		},
+		{
+			name:       "create provider not found before invalid body",
+			method:     http.MethodPost,
+			target:     "/__aisys__/api/providers/missing/models",
+			body:       `{"unknown":true}`,
+			err:        managementprovidermodels.ErrProviderNotFound,
+			wantStatus: http.StatusNotFound,
+			wantMsg:    "供应商不存在",
+		},
+		{
+			name:       "create provider not found before non object body",
+			method:     http.MethodPost,
+			target:     "/__aisys__/api/providers/missing/models",
+			body:       `[]`,
+			err:        managementprovidermodels.ErrProviderNotFound,
+			wantStatus: http.StatusNotFound,
+			wantMsg:    "供应商不存在",
+		},
+		{
+			name:       "create int overflow",
+			method:     http.MethodPost,
+			target:     "/__aisys__/api/providers/gpt/models",
+			body:       `{"model":"custom-chat","maxOutputTokens":2147483648}`,
+			wantStatus: http.StatusBadRequest,
+			wantMsg:    "自定义模型参数无效",
+		},
+		{
+			name:       "update not found",
+			method:     http.MethodPatch,
+			target:     "/__aisys__/api/providers/gpt/models/custom_model_1",
+			body:       `{"status":"disabled"}`,
+			err:        managementprovidermodels.ErrCustomProviderModelNotFound,
+			wantStatus: http.StatusNotFound,
+			wantMsg:    "自定义模型不存在",
+		},
+		{
+			name:       "update not found before empty patch",
+			method:     http.MethodPatch,
+			target:     "/__aisys__/api/providers/gpt/models/missing",
+			body:       `{}`,
+			err:        managementprovidermodels.ErrCustomProviderModelNotFound,
+			wantStatus: http.StatusNotFound,
+			wantMsg:    "自定义模型不存在",
+		},
+		{
+			name:       "update forbidden",
+			method:     http.MethodPatch,
+			target:     "/__aisys__/api/providers/gpt/models/custom_model_1",
+			body:       `{"status":"disabled"}`,
+			err:        &managementprovidermodels.CustomModelForbiddenError{Message: "无权修改该自定义模型"},
+			wantStatus: http.StatusForbidden,
+			wantMsg:    "无权修改该自定义模型",
+		},
+		{
+			name:       "update forbidden before empty patch",
+			method:     http.MethodPatch,
+			target:     "/__aisys__/api/providers/gpt/models/custom_model_1",
+			body:       `{}`,
+			err:        &managementprovidermodels.CustomModelForbiddenError{Message: "无权修改该自定义模型"},
+			wantStatus: http.StatusForbidden,
+			wantMsg:    "无权修改该自定义模型",
+		},
+		{
+			name:       "update forbidden before null body",
+			method:     http.MethodPatch,
+			target:     "/__aisys__/api/providers/gpt/models/custom_model_1",
+			body:       `null`,
+			err:        &managementprovidermodels.CustomModelForbiddenError{Message: "无权修改该自定义模型"},
+			wantStatus: http.StatusForbidden,
+			wantMsg:    "无权修改该自定义模型",
+		},
+		{
+			name:       "delete bound",
+			method:     http.MethodDelete,
+			target:     "/__aisys__/api/providers/gpt/models/custom_model_1",
+			err:        &managementprovidermodels.CustomModelBoundError{Message: "模型已绑定 AI 账户，不能删除；请先从1 个账户支持模型中移除后再删除"},
+			wantStatus: http.StatusConflict,
+			wantMsg:    "模型已绑定 AI 账户，不能删除；请先从1 个账户支持模型中移除后再删除",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &managementProviderModelServiceStub{err: tt.err}
+			router := chi.NewRouter()
+			router.With(NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+				context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
+			})).Post("/__aisys__/api/providers/{code}/models", newManagementProviderCustomModelCreateHandler(service).ServeHTTP)
+			router.With(NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+				context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
+			})).Patch("/__aisys__/api/providers/{code}/models/{id}", newManagementProviderCustomModelUpdateHandler(service).ServeHTTP)
+			router.With(NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+				context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
+			})).Delete("/__aisys__/api/providers/{code}/models/{id}", newManagementProviderCustomModelDeleteHandler(service).ServeHTTP)
+
+			req := httptest.NewRequest(tt.method, tt.target, strings.NewReader(tt.body))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+			}
+			var body map[string]string
+			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if body["message"] != tt.wantMsg {
+				t.Fatalf("message = %q, want %q", body["message"], tt.wantMsg)
+			}
+		})
+	}
+}
+
 func TestRouterRegistersW2ManagementProviderModelHandlers(t *testing.T) {
 	service := &managementProviderModelServiceStub{
 		modelOptions:           []managementprovidermodels.ModelOption{{ProviderCode: "gpt", Model: "gpt-5.5"}},
 		models:                 []managementprovidermodels.ModelCatalogItem{{ProviderCode: "gpt", Model: "gpt-5.5", Scope: "built_in", Status: "active"}},
 		defaultTestModelResult: managementprovidermodels.DefaultTestModelResult{ProviderCode: "gpt", DefaultTestModel: "gpt-5.5"},
+		customModelResult:      managementprovidermodels.ModelCatalogItem{ID: "custom_model_1", ProviderCode: "gpt", Model: "custom-chat", Scope: "personal", Status: "active"},
+		deleteResult:           managementprovidermodels.CustomModelDeleteResult{Deleted: true},
 	}
 	readAuthenticator := &managementAPIAuthenticatorStub{
 		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_read"},
@@ -237,9 +410,12 @@ func TestRouterRegistersW2ManagementProviderModelHandlers(t *testing.T) {
 		Logger:                                slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
 		ManagementProviderModelOptionsHandler: newManagementProviderModelOptionsHandler(service),
 		ManagementProviderModelsHandler:       newManagementProviderModelsHandler(service),
-		ManagementProviderDefaultTestModelHandler: newManagementProviderDefaultTestModelHandler(service),
-		ManagementAPIAuthMiddleware:               NewManagementAPIAuthMiddleware(readAuthenticator),
-		ManagementAPIAuthTouchMiddleware:          NewManagementAPIAuthTouchMiddleware(touchAuthenticator),
+		ManagementProviderDefaultTestModelHandler:  newManagementProviderDefaultTestModelHandler(service),
+		ManagementProviderCustomModelCreateHandler: newManagementProviderCustomModelCreateHandler(service),
+		ManagementProviderCustomModelUpdateHandler: newManagementProviderCustomModelUpdateHandler(service),
+		ManagementProviderCustomModelDeleteHandler: newManagementProviderCustomModelDeleteHandler(service),
+		ManagementAPIAuthMiddleware:                NewManagementAPIAuthMiddleware(readAuthenticator),
+		ManagementAPIAuthTouchMiddleware:           NewManagementAPIAuthTouchMiddleware(touchAuthenticator),
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/providers/models/options", nil)
@@ -270,6 +446,30 @@ func TestRouterRegistersW2ManagementProviderModelHandlers(t *testing.T) {
 	}
 	if readAuthenticator.cookieHeader == "" || touchAuthenticator.touchCookieHeader == "" {
 		t.Fatalf("auth headers read=%q touch=%q", readAuthenticator.cookieHeader, touchAuthenticator.touchCookieHeader)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/__aisys__/api/providers/gpt/models", strings.NewReader(`{"model":"custom-chat","inputUsdPer1M":1}`))
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("custom create status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPatch, "/__aisys__/api/providers/gpt/models/custom_model_1", strings.NewReader(`{"status":"disabled"}`))
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("custom update status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/__aisys__/api/providers/gpt/models/custom_model_1", nil)
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("custom delete status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -306,9 +506,14 @@ type managementProviderModelServiceStub struct {
 	modelOptionsInput      managementprovidermodels.ModelOptionListInput
 	modelsInput            managementprovidermodels.ModelListInput
 	defaultTestModelInput  managementprovidermodels.DefaultTestModelInput
+	createInput            managementprovidermodels.CustomModelCreateInput
+	updateInput            managementprovidermodels.CustomModelUpdateInput
+	deleteInput            managementprovidermodels.CustomModelDeleteInput
 	modelOptions           []managementprovidermodels.ModelOption
 	models                 []managementprovidermodels.ModelCatalogItem
 	defaultTestModelResult managementprovidermodels.DefaultTestModelResult
+	customModelResult      managementprovidermodels.ModelCatalogItem
+	deleteResult           managementprovidermodels.CustomModelDeleteResult
 	err                    error
 }
 
@@ -325,4 +530,31 @@ func (s *managementProviderModelServiceStub) Models(_ *http.Request, input manag
 func (s *managementProviderModelServiceStub) SetDefaultTestModel(_ *http.Request, input managementprovidermodels.DefaultTestModelInput) (managementprovidermodels.DefaultTestModelResult, error) {
 	s.defaultTestModelInput = input
 	return s.defaultTestModelResult, s.err
+}
+
+func (s *managementProviderModelServiceStub) CreateCustomModel(_ *http.Request, input managementprovidermodels.CustomModelCreateInput) (managementprovidermodels.ModelCatalogItem, error) {
+	s.createInput = input
+	if s.err != nil {
+		return s.customModelResult, s.err
+	}
+	if input.Fields.Invalid {
+		return managementprovidermodels.ModelCatalogItem{}, &managementprovidermodels.CustomModelValidationError{Message: "自定义模型参数无效"}
+	}
+	return s.customModelResult, s.err
+}
+
+func (s *managementProviderModelServiceStub) UpdateCustomModel(_ *http.Request, input managementprovidermodels.CustomModelUpdateInput) (managementprovidermodels.ModelCatalogItem, error) {
+	s.updateInput = input
+	if s.err != nil {
+		return s.customModelResult, s.err
+	}
+	if input.Fields.Invalid {
+		return managementprovidermodels.ModelCatalogItem{}, &managementprovidermodels.CustomModelValidationError{Message: "自定义模型参数无效"}
+	}
+	return s.customModelResult, s.err
+}
+
+func (s *managementProviderModelServiceStub) DeleteCustomModel(_ *http.Request, input managementprovidermodels.CustomModelDeleteInput) (managementprovidermodels.CustomModelDeleteResult, error) {
+	s.deleteInput = input
+	return s.deleteResult, s.err
 }
