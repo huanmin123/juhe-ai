@@ -29,6 +29,8 @@ type RouterOptions struct {
 	ManagementProfileUpdateHandler                  http.Handler
 	ManagementPasswordChangeHandler                 http.Handler
 	ManagementLogoutHandler                         http.Handler
+	ManagementSessionListHandler                    http.Handler
+	ManagementSessionRevokeHandler                  http.Handler
 	ManagementProxyOptionsHandler                   http.Handler
 	ManagementSystemAccountsHandler                 http.Handler
 	ManagementSystemAccountOptionsHandler           http.Handler
@@ -99,6 +101,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementProfileUpdateHandler == nil &&
 				opts.ManagementPasswordChangeHandler == nil &&
 				opts.ManagementLogoutHandler == nil &&
+				opts.ManagementSessionListHandler == nil &&
+				opts.ManagementSessionRevokeHandler == nil &&
 				opts.ManagementProxyOptionsHandler == nil &&
 				opts.ManagementSystemAccountsHandler == nil &&
 				opts.ManagementSystemAccountOptionsHandler == nil &&
@@ -149,6 +153,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementLogoutHandler != nil {
 				system.Post("/auth/logout", opts.ManagementLogoutHandler.ServeHTTP)
+			}
+			if opts.ManagementSessionListHandler != nil {
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/auth/sessions", opts.ManagementSessionListHandler.ServeHTTP)
+			}
+			if opts.ManagementSessionRevokeHandler != nil {
+				system.With(managementAPIWriteAuthMiddleware).Delete("/auth/sessions/{id}", opts.ManagementSessionRevokeHandler.ServeHTTP)
 			}
 			if opts.ManagementProxyOptionsHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/proxies/options", opts.ManagementProxyOptionsHandler.ServeHTTP)
@@ -281,6 +291,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 
 func managementWriteRoutesConfigured(opts RouterOptions) bool {
 	return opts.ManagementProfileUpdateHandler != nil ||
+		opts.ManagementSessionRevokeHandler != nil ||
 		opts.ManagementSystemAccountPatchHandler != nil ||
 		opts.ManagementSystemAccountCreateHandler != nil ||
 		opts.ManagementProviderDefaultTestModelHandler != nil ||

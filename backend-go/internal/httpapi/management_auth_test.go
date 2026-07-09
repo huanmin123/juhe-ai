@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"juhe-ai/backend-go/internal/config"
 	"juhe-ai/backend-go/internal/modules/managementauth"
@@ -380,6 +381,165 @@ func TestRouterRegistersManagementLogoutWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestRouterRegistersManagementSessionListWithReadAuth(t *testing.T) {
+	authenticator := &managementAPIAuthenticatorStub{
+		context: managementauth.Context{
+			SystemAccountID: "sys_user",
+			Username:        "user",
+			DisplayName:     "用户",
+			Role:            "user",
+			SessionID:       "sess_current",
+		},
+	}
+	service := &managementSessionServiceStub{
+		listResult: managementauth.SessionListResult{
+			Items: []managementauth.SessionSummary{
+				{
+					ID:         "sess_current",
+					Current:    true,
+					CreatedAt:  time.Date(2026, 7, 9, 8, 0, 0, 0, time.UTC).Format(time.RFC3339Nano),
+					LastSeenAt: time.Date(2026, 7, 9, 9, 0, 0, 0, time.UTC).Format(time.RFC3339Nano),
+					ExpiresAt:  time.Date(2026, 7, 10, 8, 0, 0, 0, time.UTC).Format(time.RFC3339Nano),
+				},
+			},
+			Total:    1,
+			Page:     2,
+			PageSize: 10,
+		},
+	}
+	router := NewRouter(RouterOptions{
+		Config:                       config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
+		ManagementAPIAuthMiddleware:  NewManagementAPIAuthMiddleware(authenticator),
+		ManagementSessionListHandler: newManagementSessionListHandler(service),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/auth/sessions?page=2&pageSize=10", nil)
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if authenticator.cookieHeader != "juhe_ai_session=session-token" || authenticator.touchCookieHeader != "" {
+		t.Fatalf("auth headers read=%q touch=%q", authenticator.cookieHeader, authenticator.touchCookieHeader)
+	}
+	if service.listInput.SystemAccountID != "sys_user" ||
+		service.listInput.CurrentSessionID != "sess_current" ||
+		service.listInput.Page != 2 ||
+		service.listInput.PageSize != 10 {
+		t.Fatalf("list input = %+v", service.listInput)
+	}
+	var body struct {
+		Data managementauth.SessionListResult `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Data.Items) != 1 || !body.Data.Items[0].Current || body.Data.Items[0].ID != "sess_current" {
+		t.Fatalf("body = %+v", body.Data)
+	}
+}
+
+func TestManagementSessionListHandlerMapsInvalidPagination(t *testing.T) {
+	service := &managementSessionServiceStub{}
+	router := NewRouter(RouterOptions{
+		Config: config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
+		ManagementAPIAuthMiddleware: NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+			context: managementauth.Context{SystemAccountID: "sys_user", Username: "user", Role: "user", SessionID: "sess_current"},
+		}),
+		ManagementSessionListHandler: newManagementSessionListHandler(service),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/auth/sessions?page=abc", nil)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if service.listCalls != 0 {
+		t.Fatalf("list calls = %d, want 0", service.listCalls)
+	}
+}
+
+func TestRouterRegistersManagementSessionRevokeWithTouchAndClearsCurrentCookie(t *testing.T) {
+	authenticator := &managementAPIAuthenticatorStub{
+		context: managementauth.Context{
+			SystemAccountID: "sys_user",
+			Username:        "user",
+			DisplayName:     "用户",
+			Role:            "user",
+			SessionID:       "sess_current",
+		},
+	}
+	service := &managementSessionServiceStub{
+		revokeResult: managementauth.SessionRevokeResult{ID: "sess_current", Revoked: true, Current: true},
+	}
+	router := NewRouter(RouterOptions{
+		Config:                           config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true, CookieSecure: true, CookieSameSite: "none"},
+		ManagementAPIAuthMiddleware:      NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{}),
+		ManagementAPIAuthTouchMiddleware: NewManagementAPIAuthTouchMiddleware(authenticator),
+		ManagementSessionRevokeHandler:   newManagementSessionRevokeHandler(service, config.Config{CookieSecure: true, CookieSameSite: "none"}),
+	})
+
+	req := httptest.NewRequest(http.MethodDelete, "/__aisys__/api/auth/sessions/sess_current", nil)
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if authenticator.touchCookieHeader != "juhe_ai_session=session-token" {
+		t.Fatalf("touch cookie header = %q", authenticator.touchCookieHeader)
+	}
+	if service.revokeInput.SystemAccountID != "sys_user" ||
+		service.revokeInput.CurrentSessionID != "sess_current" ||
+		service.revokeInput.SessionID != "sess_current" {
+		t.Fatalf("revoke input = %+v", service.revokeInput)
+	}
+	setCookie := rec.Header().Get("Set-Cookie")
+	for _, part := range []string{"juhe_ai_session=", "Max-Age=0", "Path=/", "HttpOnly", "Secure", "SameSite=None"} {
+		if !strings.Contains(setCookie, part) {
+			t.Fatalf("Set-Cookie = %q, want contains %q", setCookie, part)
+		}
+	}
+}
+
+func TestManagementSessionRevokeHandlerMapsNotFound(t *testing.T) {
+	service := &managementSessionServiceStub{revokeErr: managementauth.ErrSessionNotFound}
+	router := NewRouter(RouterOptions{
+		Config: config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
+		ManagementAPIAuthMiddleware: NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+			context: managementauth.Context{SystemAccountID: "sys_user", Username: "user", Role: "user", SessionID: "sess_current"},
+		}),
+		ManagementAPIAuthTouchMiddleware: NewManagementAPIAuthTouchMiddleware(&managementAPIAuthenticatorStub{
+			context: managementauth.Context{SystemAccountID: "sys_user", Username: "user", Role: "user", SessionID: "sess_current"},
+		}),
+		ManagementSessionRevokeHandler: newManagementSessionRevokeHandler(service, config.Config{}),
+	})
+
+	req := httptest.NewRequest(http.MethodDelete, "/__aisys__/api/auth/sessions/sess_missing", nil)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["message"] != "会话不存在" {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
 func TestRouterUsesTouchMiddlewareOnlyForManagementWriteRoutes(t *testing.T) {
 	readAuthenticator := &managementAPIAuthenticatorStub{
 		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_read"},
@@ -506,4 +666,27 @@ type managementLogoutAuthenticatorStub struct {
 func (s *managementLogoutAuthenticatorStub) LogoutCookie(_ context.Context, cookieHeader string) error {
 	s.cookieHeader = cookieHeader
 	return s.err
+}
+
+type managementSessionServiceStub struct {
+	listCalls    int
+	listInput    managementauth.SessionListInput
+	listResult   managementauth.SessionListResult
+	listErr      error
+	revokeCalls  int
+	revokeInput  managementauth.SessionRevokeInput
+	revokeResult managementauth.SessionRevokeResult
+	revokeErr    error
+}
+
+func (s *managementSessionServiceStub) List(_ context.Context, input managementauth.SessionListInput) (managementauth.SessionListResult, error) {
+	s.listCalls++
+	s.listInput = input
+	return s.listResult, s.listErr
+}
+
+func (s *managementSessionServiceStub) Revoke(_ context.Context, input managementauth.SessionRevokeInput) (managementauth.SessionRevokeResult, error) {
+	s.revokeCalls++
+	s.revokeInput = input
+	return s.revokeResult, s.revokeErr
 }

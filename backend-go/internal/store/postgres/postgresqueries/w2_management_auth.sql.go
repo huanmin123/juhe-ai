@@ -204,6 +204,64 @@ func (q *Queries) FindManagementSystemAccountPasswordByUsername(ctx context.Cont
 	return i, err
 }
 
+const listManagementSessionsForAccount = `-- name: ListManagementSessionsForAccount :many
+SELECT
+  id,
+  expires_at,
+  created_at,
+  last_seen_at
+FROM juhe_business.system_sessions
+WHERE system_account_id = $1::text
+  AND expires_at > $2::timestamptz
+ORDER BY last_seen_at DESC, created_at DESC, id DESC
+LIMIT $4::int
+OFFSET $3::int
+`
+
+type ListManagementSessionsForAccountParams struct {
+	SystemAccountID string
+	NowAt           pgtype.Timestamptz
+	OffsetRows      int32
+	LimitRows       int32
+}
+
+type ListManagementSessionsForAccountRow struct {
+	ID         string
+	ExpiresAt  pgtype.Timestamptz
+	CreatedAt  pgtype.Timestamptz
+	LastSeenAt pgtype.Timestamptz
+}
+
+func (q *Queries) ListManagementSessionsForAccount(ctx context.Context, arg ListManagementSessionsForAccountParams) ([]ListManagementSessionsForAccountRow, error) {
+	rows, err := q.db.Query(ctx, listManagementSessionsForAccount,
+		arg.SystemAccountID,
+		arg.NowAt,
+		arg.OffsetRows,
+		arg.LimitRows,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListManagementSessionsForAccountRow
+	for rows.Next() {
+		var i ListManagementSessionsForAccountRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ExpiresAt,
+			&i.CreatedAt,
+			&i.LastSeenAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const revokeManagementSessionByTokenHash = `-- name: RevokeManagementSessionByTokenHash :exec
 DELETE FROM juhe_business.system_sessions
 WHERE token_hash = $1
@@ -212,6 +270,25 @@ WHERE token_hash = $1
 func (q *Queries) RevokeManagementSessionByTokenHash(ctx context.Context, tokenHash string) error {
 	_, err := q.db.Exec(ctx, revokeManagementSessionByTokenHash, tokenHash)
 	return err
+}
+
+const revokeManagementSessionForAccount = `-- name: RevokeManagementSessionForAccount :execrows
+DELETE FROM juhe_business.system_sessions
+WHERE system_account_id = $1::text
+  AND id = $2::text
+`
+
+type RevokeManagementSessionForAccountParams struct {
+	SystemAccountID string
+	SessionID       string
+}
+
+func (q *Queries) RevokeManagementSessionForAccount(ctx context.Context, arg RevokeManagementSessionForAccountParams) (int64, error) {
+	result, err := q.db.Exec(ctx, revokeManagementSessionForAccount, arg.SystemAccountID, arg.SessionID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const revokeOtherManagementSessionsForAccount = `-- name: RevokeOtherManagementSessionsForAccount :exec
