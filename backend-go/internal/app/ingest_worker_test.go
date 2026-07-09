@@ -94,3 +94,44 @@ func TestRunAuthorizationExpirySweepWorkerValidatesInterval(t *testing.T) {
 		t.Fatalf("RunAuthorizationExpirySweepWorker() error = %v, want invalid interval", err)
 	}
 }
+
+func TestRunAuthorizationUsageRangeWindowRefreshWorkerRequiresPostgresURL(t *testing.T) {
+	cfg := config.Config{
+		ShutdownTimeout: time.Second,
+	}
+
+	err := RunAuthorizationUsageRangeWindowRefreshWorker(context.Background(), cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), AuthorizationUsageRangeWindowRefreshWorkerOptions{RunOnce: true})
+	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_POSTGRES_URL") {
+		t.Fatalf("RunAuthorizationUsageRangeWindowRefreshWorker() error = %v, want missing postgres url", err)
+	}
+}
+
+func TestRunAuthorizationUsageRangeWindowRefreshWorkerValidatesInterval(t *testing.T) {
+	cfg := config.Config{
+		PostgresURL:     "postgres://juhe_ai:password@127.0.0.1:5432/juhe_ai?sslmode=disable",
+		ShutdownTimeout: time.Second,
+	}
+
+	err := RunAuthorizationUsageRangeWindowRefreshWorker(context.Background(), cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), AuthorizationUsageRangeWindowRefreshWorkerOptions{
+		Interval: -time.Second,
+		RunOnce:  true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "刷新间隔") {
+		t.Fatalf("RunAuthorizationUsageRangeWindowRefreshWorker() error = %v, want invalid interval", err)
+	}
+}
+
+func TestRunAuthorizationUsageRangeWindowRefreshWorkerValidatesInitialDelay(t *testing.T) {
+	cfg := config.Config{
+		PostgresURL:     "postgres://juhe_ai:password@127.0.0.1:5432/juhe_ai?sslmode=disable",
+		ShutdownTimeout: time.Second,
+	}
+
+	err := RunAuthorizationUsageRangeWindowRefreshWorker(context.Background(), cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), AuthorizationUsageRangeWindowRefreshWorkerOptions{
+		InitialDelay: -time.Second,
+		RunOnce:      true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "初始延迟") {
+		t.Fatalf("RunAuthorizationUsageRangeWindowRefreshWorker() error = %v, want invalid initial delay", err)
+	}
+}

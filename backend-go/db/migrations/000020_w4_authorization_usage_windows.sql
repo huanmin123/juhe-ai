@@ -117,6 +117,8 @@ CREATE TABLE IF NOT EXISTS juhe_stats.authorization_user_usage_range_windows (
 
 CREATE INDEX IF NOT EXISTS idx_authorization_team_usage_summary_daily_lookup
   ON juhe_stats.authorization_team_usage_summary_daily(system_account_id, stat_date, team_filter_id, resource_filter_type, resource_filter_id);
+CREATE INDEX IF NOT EXISTS idx_authorization_team_usage_summary_daily_date
+  ON juhe_stats.authorization_team_usage_summary_daily(stat_date);
 CREATE INDEX IF NOT EXISTS idx_authorization_team_usage_summary_daily_updated
   ON juhe_stats.authorization_team_usage_summary_daily(updated_at);
 CREATE INDEX IF NOT EXISTS idx_authorization_team_usage_range_lookup
@@ -127,6 +129,8 @@ CREATE INDEX IF NOT EXISTS idx_authorization_team_usage_range_end
   ON juhe_stats.authorization_team_usage_range_windows(end_date);
 CREATE INDEX IF NOT EXISTS idx_authorization_user_usage_summary_daily_lookup
   ON juhe_stats.authorization_user_usage_summary_daily(system_account_id, stat_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id);
+CREATE INDEX IF NOT EXISTS idx_authorization_user_usage_summary_daily_date
+  ON juhe_stats.authorization_user_usage_summary_daily(stat_date);
 CREATE INDEX IF NOT EXISTS idx_authorization_user_usage_summary_daily_updated
   ON juhe_stats.authorization_user_usage_summary_daily(updated_at);
 CREATE INDEX IF NOT EXISTS idx_authorization_user_usage_range_lookup

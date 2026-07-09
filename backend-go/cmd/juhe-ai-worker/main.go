@@ -79,6 +79,36 @@ func main() {
 	expirySweepCommand.Flags().BoolVar(&expirySweepOptions.RunOnce, "run-once", false, "run one sweep and exit")
 	root.AddCommand(expirySweepCommand)
 
+	usageRangeWindowOptions := app.AuthorizationUsageRangeWindowRefreshWorkerOptions{
+		Interval:     6 * time.Hour,
+		InitialDelay: 43 * time.Minute,
+	}
+	usageRangeWindowCommand := &cobra.Command{
+		Use:   "authorization-usage-range-windows-refresh",
+		Short: "Run authorization usage range window refresh worker",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load(config.LoadOptions{LoadDotEnv: true})
+			if err != nil {
+				return err
+			}
+
+			logger, err := logging.New(cfg.LogLevel, cmd.ErrOrStderr())
+			if err != nil {
+				return err
+			}
+
+			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+
+			return app.RunAuthorizationUsageRangeWindowRefreshWorker(ctx, cfg, logger, usageRangeWindowOptions)
+		},
+	}
+	usageRangeWindowCommand.Flags().DurationVar(&usageRangeWindowOptions.Interval, "interval", usageRangeWindowOptions.Interval, "refresh interval")
+	usageRangeWindowCommand.Flags().DurationVar(&usageRangeWindowOptions.InitialDelay, "initial-delay", usageRangeWindowOptions.InitialDelay, "initial delay before the first refresh")
+	usageRangeWindowCommand.Flags().BoolVar(&usageRangeWindowOptions.RunOnce, "run-once", false, "run one refresh and exit")
+	usageRangeWindowCommand.Flags().StringVar(&usageRangeWindowOptions.Timezone, "timezone", "", "override usageStatsTimezone for local smoke; empty reads system settings")
+	root.AddCommand(usageRangeWindowCommand)
+
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}

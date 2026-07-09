@@ -96,6 +96,8 @@ func TestW4AuthorizationUsageWindowMigrationMatchesCurrentContract(t *testing.T)
 		"PRIMARY KEY (system_account_id, start_date, end_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id)",
 		"idx_authorization_team_usage_range_sort",
 		"idx_authorization_user_usage_range_sort",
+		"idx_authorization_team_usage_summary_daily_date",
+		"idx_authorization_user_usage_summary_daily_date",
 		"last_used_at timestamptz",
 	} {
 		if !strings.Contains(sql, want) {
@@ -212,6 +214,57 @@ func TestManagementAuthorizationUsageOverviewQueriesReadRangeWindowsOnly(t *test
 	for _, want := range []any{"sys_owner", "2026-07-01", "2026-07-09", "team_ops", "sys_grantee", "account", "acct_main", 21, 40} {
 		if !containsQueryArg(userArgs, want) {
 			t.Fatalf("user usage args missing %v: %v", want, userArgs)
+		}
+	}
+}
+
+func TestManagementAuthorizationUsageRangeRefreshQueriesReadDailySummariesOnly(t *testing.T) {
+	teamDelete := managementAuthorizationTeamUsageRangeRefreshDeleteQuery()
+	userDelete := managementAuthorizationUserUsageRangeRefreshDeleteQuery()
+	teamInsert := managementAuthorizationTeamUsageRangeRefreshInsertQuery()
+	userInsert := managementAuthorizationUserUsageRangeRefreshInsertQuery()
+
+	for label, query := range map[string]string{
+		"team delete": teamDelete,
+		"user delete": userDelete,
+	} {
+		for _, want := range []string{
+			"DELETE FROM juhe_stats.authorization_",
+			"WHERE end_date = $1",
+			"AND start_date = $2",
+		} {
+			if !strings.Contains(query, want) {
+				t.Fatalf("%s query missing %q:\n%s", label, want, query)
+			}
+		}
+	}
+	for label, query := range map[string]string{
+		"team insert": teamInsert,
+		"user insert": userInsert,
+	} {
+		for _, want := range []string{
+			"INSERT INTO juhe_stats.authorization_",
+			"usage_range_windows",
+			"FROM juhe_stats.authorization_",
+			"usage_summary_daily",
+			"WHERE stat_date >= $4",
+			"AND stat_date <= $5",
+			"GROUP BY",
+			"HAVING COALESCE(SUM(request_count), 0) > 0",
+			"MAX(last_used_at)",
+		} {
+			if !strings.Contains(query, want) {
+				t.Fatalf("%s query missing %q:\n%s", label, want, query)
+			}
+		}
+		for _, forbidden := range []string{
+			"juhe_usage.usage_records",
+			"FROM usage_records",
+			"JOIN usage_records",
+		} {
+			if strings.Contains(query, forbidden) {
+				t.Fatalf("%s query should not contain %q:\n%s", label, forbidden, query)
+			}
 		}
 	}
 }

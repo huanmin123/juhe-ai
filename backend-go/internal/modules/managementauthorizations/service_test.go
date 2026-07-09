@@ -643,6 +643,99 @@ func TestServiceExpireDueDoesNotInvalidateWhenStoreFails(t *testing.T) {
 	}
 }
 
+func TestServiceRefreshUsageRangeWindowsBuildsHotRanges(t *testing.T) {
+	now := time.Date(2026, 7, 9, 13, 30, 0, 0, time.UTC)
+	store := &authorizationUsageRangeWindowStoreStub{
+		result: port.ManagementAuthorizationUsageRangeWindowRefreshResult{
+			Ranges:   5,
+			TeamRows: 3,
+			UserRows: 4,
+		},
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		UsageRangeWindowStore: store,
+		Now:                   func() time.Time { return now },
+	})
+
+	got, err := service.RefreshUsageRangeWindows(context.Background(), UsageRangeWindowRefreshInput{Timezone: "UTC"})
+
+	if err != nil {
+		t.Fatalf("RefreshUsageRangeWindows() error = %v", err)
+	}
+	wantRanges := []port.ManagementAccountUsageStatsRange{
+		{StartDate: "2026-07-09", EndDate: "2026-07-09", Days: 1, MaxDays: fixedUsageStatsRangeWindowDays},
+		{StartDate: "2026-07-08", EndDate: "2026-07-08", Days: 1, MaxDays: fixedUsageStatsRangeWindowDays},
+		{StartDate: "2026-07-03", EndDate: "2026-07-09", Days: 7, MaxDays: fixedUsageStatsRangeWindowDays},
+		{StartDate: "2026-06-09", EndDate: "2026-07-09", Days: 31, MaxDays: fixedUsageStatsRangeWindowDays},
+		{StartDate: "2026-07-01", EndDate: "2026-07-09", Days: 9, MaxDays: fixedUsageStatsRangeWindowDays},
+	}
+	assertUsageRangesEqual(t, got.Ranges, wantRanges)
+	assertUsageRangesEqual(t, store.input.Ranges, wantRanges)
+	if got.RangeCount != 5 || got.TeamRows != 3 || got.UserRows != 4 || got.Today != "2026-07-09" || got.Timezone != "UTC" {
+		t.Fatalf("RefreshUsageRangeWindows() = %+v", got)
+	}
+	if !store.called || !store.input.RefreshedAt.Equal(now) {
+		t.Fatalf("store input = %+v", store.input)
+	}
+}
+
+func TestServiceRefreshUsageRangeWindowsUsesTimezoneStore(t *testing.T) {
+	now := time.Date(2026, 7, 8, 16, 30, 0, 0, time.UTC)
+	store := &authorizationUsageRangeWindowStoreStub{
+		result: port.ManagementAuthorizationUsageRangeWindowRefreshResult{Ranges: 5},
+	}
+	timezoneStore := &authorizationUsageStatsTimezoneStoreStub{timezone: "Asia/Shanghai", found: true}
+	service := NewServiceWithOptions(ServiceOptions{
+		UsageStatsTimezoneStore: timezoneStore,
+		UsageRangeWindowStore:   store,
+		Now:                     func() time.Time { return now },
+	})
+
+	got, err := service.RefreshUsageRangeWindows(context.Background(), UsageRangeWindowRefreshInput{})
+
+	if err != nil {
+		t.Fatalf("RefreshUsageRangeWindows() error = %v", err)
+	}
+	if !timezoneStore.called {
+		t.Fatal("timezone store was not called")
+	}
+	if got.Today != "2026-07-09" || got.Timezone != "Asia/Shanghai" {
+		t.Fatalf("RefreshUsageRangeWindows() today/timezone = %q/%q", got.Today, got.Timezone)
+	}
+	if len(store.input.Ranges) == 0 || store.input.Ranges[0].StartDate != "2026-07-09" {
+		t.Fatalf("store ranges = %+v", store.input.Ranges)
+	}
+}
+
+func TestServiceRefreshUsageRangeWindowsRejectsInvalidTimezone(t *testing.T) {
+	store := &authorizationUsageRangeWindowStoreStub{}
+	service := NewServiceWithOptions(ServiceOptions{
+		UsageRangeWindowStore: store,
+		Now:                   func() time.Time { return time.Date(2026, 7, 9, 13, 30, 0, 0, time.UTC) },
+	})
+
+	_, err := service.RefreshUsageRangeWindows(context.Background(), UsageRangeWindowRefreshInput{Timezone: "Invalid/Timezone"})
+
+	if err == nil || !strings.Contains(err.Error(), "usageStatsTimezone") {
+		t.Fatalf("RefreshUsageRangeWindows() error = %v, want invalid timezone", err)
+	}
+	if store.called {
+		t.Fatal("store was called for invalid timezone")
+	}
+}
+
+func assertUsageRangesEqual(t *testing.T, got []port.ManagementAccountUsageStatsRange, want []port.ManagementAccountUsageStatsRange) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("ranges length = %d, want %d: %+v", len(got), len(want), got)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("range[%d] = %+v, want %+v", index, got[index], want[index])
+		}
+	}
+}
+
 func TestServiceListNormalizesScopeAndRedactsNonOwnerSourceDetails(t *testing.T) {
 	createdAt := time.Date(2026, 7, 9, 10, 30, 0, 0, time.UTC)
 	store := &authorizationListStoreStub{
@@ -1136,6 +1229,37 @@ func (s *authorizationExpirySweepStoreStub) ExpireDueManagementResourceAuthoriza
 	return s.result, nil
 }
 
+type authorizationUsageStatsTimezoneStoreStub struct {
+	called   bool
+	timezone string
+	found    bool
+	err      error
+}
+
+func (s *authorizationUsageStatsTimezoneStoreStub) GetManagementUsageStatsTimezone(_ context.Context) (string, bool, error) {
+	s.called = true
+	if s.err != nil {
+		return "", false, s.err
+	}
+	return s.timezone, s.found, nil
+}
+
+type authorizationUsageRangeWindowStoreStub struct {
+	called bool
+	input  port.ManagementAuthorizationUsageRangeWindowRefreshInput
+	result port.ManagementAuthorizationUsageRangeWindowRefreshResult
+	err    error
+}
+
+func (s *authorizationUsageRangeWindowStoreStub) RefreshManagementAuthorizationUsageRangeWindows(_ context.Context, input port.ManagementAuthorizationUsageRangeWindowRefreshInput) (port.ManagementAuthorizationUsageRangeWindowRefreshResult, error) {
+	s.called = true
+	s.input = input
+	if s.err != nil {
+		return port.ManagementAuthorizationUsageRangeWindowRefreshResult{}, s.err
+	}
+	return s.result, nil
+}
+
 type authorizationListStoreStub struct {
 	called bool
 	input  port.ManagementResourceAuthorizationListInput
@@ -1231,6 +1355,8 @@ var _ port.ManagementResourceAuthorizationRevoker = (*authorizationRevokeStoreSt
 var _ port.ManagementResourceAuthorizationReturner = (*authorizationReturnStoreStub)(nil)
 var _ port.ManagementResourceAuthorizationUpdater = (*authorizationUpdateStoreStub)(nil)
 var _ port.ManagementResourceAuthorizationExpirySweeper = (*authorizationExpirySweepStoreStub)(nil)
+var _ port.ManagementUsageStatsTimezoneReader = (*authorizationUsageStatsTimezoneStoreStub)(nil)
+var _ port.ManagementAuthorizationUsageRangeWindowRefresher = (*authorizationUsageRangeWindowStoreStub)(nil)
 var _ port.ManagementAuthorizationUsageOverviewReader = (*authorizationUsageStoreStub)(nil)
 var _ port.ManagementResourceAuthorizationUsageReader = (*authorizationUsageStoreStub)(nil)
 var _ AuthorizationInvalidator = (*authorizationInvalidatorStub)(nil)

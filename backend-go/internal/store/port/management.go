@@ -709,6 +709,25 @@ type ManagementResourceAuthorizationUsageReader interface {
 	FindManagementResourceAuthorizationUsage(ctx context.Context, input ManagementResourceAuthorizationUsageInput) (ManagementResourceAuthorizationUsageResult, bool, error)
 }
 
+type ManagementUsageStatsTimezoneReader interface {
+	GetManagementUsageStatsTimezone(ctx context.Context) (string, bool, error)
+}
+
+type ManagementAuthorizationUsageRangeWindowRefreshInput struct {
+	Ranges      []ManagementAccountUsageStatsRange
+	RefreshedAt time.Time
+}
+
+type ManagementAuthorizationUsageRangeWindowRefreshResult struct {
+	Ranges   int
+	TeamRows int64
+	UserRows int64
+}
+
+type ManagementAuthorizationUsageRangeWindowRefresher interface {
+	RefreshManagementAuthorizationUsageRangeWindows(ctx context.Context, input ManagementAuthorizationUsageRangeWindowRefreshInput) (ManagementAuthorizationUsageRangeWindowRefreshResult, error)
+}
+
 type ManagementResourceAuthorizationGetInput struct {
 	AuthorizationID       string
 	ActorSystemAccountID  string

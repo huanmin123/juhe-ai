@@ -31,6 +31,8 @@ const (
 	maxAuthorizationUsageListWindowRows            = 1001
 	maxAuthorizationUsageRangeDays                 = 31
 	defaultAuthorizationExpirySweepBatchSize       = 20
+	defaultUsageStatsTimezone                      = "UTC"
+	fixedUsageStatsRangeWindowDays                 = 31
 	maxRequestQuotaHourlyWindowHours               = 24 * 30
 	maxRequestQuotaAmountUSD                       = 9_007_199_254_740_991
 	quotaAmountPrecision                     int64 = 1_000_000
@@ -60,6 +62,8 @@ type Service struct {
 	expirySweepStore         port.ManagementResourceAuthorizationExpirySweeper
 	usageStore               port.ManagementAuthorizationUsageOverviewReader
 	usageDetailStore         port.ManagementResourceAuthorizationUsageReader
+	usageStatsTimezoneStore  port.ManagementUsageStatsTimezoneReader
+	usageRangeWindowStore    port.ManagementAuthorizationUsageRangeWindowRefresher
 	now                      func() time.Time
 	secret                   string
 	authorizationInvalidator AuthorizationInvalidator
@@ -79,6 +83,8 @@ type ServiceOptions struct {
 	ExpirySweepStore         port.ManagementResourceAuthorizationExpirySweeper
 	UsageStore               port.ManagementAuthorizationUsageOverviewReader
 	UsageDetailStore         port.ManagementResourceAuthorizationUsageReader
+	UsageStatsTimezoneStore  port.ManagementUsageStatsTimezoneReader
+	UsageRangeWindowStore    port.ManagementAuthorizationUsageRangeWindowRefresher
 	Now                      func() time.Time
 	Secret                   string
 	AuthorizationInvalidator AuthorizationInvalidator
@@ -132,6 +138,21 @@ type UsageDetailInput struct {
 	EndDate               string
 	Page                  int
 	PageSize              int
+}
+
+type UsageRangeWindowRefreshInput struct {
+	Now      time.Time
+	Timezone string
+}
+
+type UsageRangeWindowRefreshResult struct {
+	Ranges      []port.ManagementAccountUsageStatsRange `json:"ranges"`
+	RangeCount  int                                     `json:"rangeCount"`
+	TeamRows    int64                                   `json:"teamRows"`
+	UserRows    int64                                   `json:"userRows"`
+	Today       string                                  `json:"today"`
+	Timezone    string                                  `json:"timezone"`
+	RefreshedAt time.Time                               `json:"refreshedAt"`
 }
 
 type TeamUsageOverview struct {
@@ -338,6 +359,18 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 			usageDetailStore = candidate
 		}
 	}
+	usageStatsTimezoneStore := opts.UsageStatsTimezoneStore
+	if usageStatsTimezoneStore == nil {
+		if candidate, ok := opts.Store.(port.ManagementUsageStatsTimezoneReader); ok {
+			usageStatsTimezoneStore = candidate
+		}
+	}
+	usageRangeWindowStore := opts.UsageRangeWindowStore
+	if usageRangeWindowStore == nil {
+		if candidate, ok := opts.Store.(port.ManagementAuthorizationUsageRangeWindowRefresher); ok {
+			usageRangeWindowStore = candidate
+		}
+	}
 	return &Service{
 		listStore:                listStore,
 		getStore:                 getStore,
@@ -348,6 +381,8 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 		expirySweepStore:         expirySweepStore,
 		usageStore:               usageStore,
 		usageDetailStore:         usageDetailStore,
+		usageStatsTimezoneStore:  usageStatsTimezoneStore,
+		usageRangeWindowStore:    usageRangeWindowStore,
 		now:                      now,
 		secret:                   opts.Secret,
 		authorizationInvalidator: opts.AuthorizationInvalidator,
@@ -833,6 +868,144 @@ func (s *Service) ExpireDue(ctx context.Context, input ExpirySweepInput) (Expiry
 		}
 	}
 	return ExpirySweepResult{Expired: result.Expired}, nil
+}
+
+func (s *Service) RefreshUsageRangeWindows(ctx context.Context, input UsageRangeWindowRefreshInput) (UsageRangeWindowRefreshResult, error) {
+	if s.usageRangeWindowStore == nil {
+		return UsageRangeWindowRefreshResult{}, fmt.Errorf("management authorization usage range window refresher is required")
+	}
+	now := input.Now
+	if now.IsZero() {
+		now = s.now()
+	}
+	timezone, location, err := s.usageRangeWindowTimezone(ctx, input.Timezone)
+	if err != nil {
+		return UsageRangeWindowRefreshResult{}, err
+	}
+	today := usageStatsDateKey(now, location)
+	ranges := hotUsageStatsRangesForToday(today)
+	if len(ranges) == 0 {
+		return UsageRangeWindowRefreshResult{
+			Ranges:      []port.ManagementAccountUsageStatsRange{},
+			RangeCount:  0,
+			Today:       today,
+			Timezone:    timezone,
+			RefreshedAt: now.UTC(),
+		}, nil
+	}
+	refreshedAt := now.UTC()
+	result, err := s.usageRangeWindowStore.RefreshManagementAuthorizationUsageRangeWindows(ctx, port.ManagementAuthorizationUsageRangeWindowRefreshInput{
+		Ranges:      ranges,
+		RefreshedAt: refreshedAt,
+	})
+	if err != nil {
+		return UsageRangeWindowRefreshResult{}, err
+	}
+	return UsageRangeWindowRefreshResult{
+		Ranges:      ranges,
+		RangeCount:  result.Ranges,
+		TeamRows:    result.TeamRows,
+		UserRows:    result.UserRows,
+		Today:       today,
+		Timezone:    timezone,
+		RefreshedAt: refreshedAt,
+	}, nil
+}
+
+func (s *Service) usageRangeWindowTimezone(ctx context.Context, input string) (string, *time.Location, error) {
+	timezone := strings.TrimSpace(input)
+	if timezone == "" && s.usageStatsTimezoneStore != nil {
+		value, found, err := s.usageStatsTimezoneStore.GetManagementUsageStatsTimezone(ctx)
+		if err != nil {
+			return "", nil, err
+		}
+		if found {
+			timezone = strings.TrimSpace(value)
+		}
+	}
+	if timezone == "" {
+		timezone = defaultUsageStatsTimezone
+	}
+	location, err := time.LoadLocation(timezone)
+	if err != nil {
+		return "", nil, fmt.Errorf("系统设置 usageStatsTimezone 无效: %w", err)
+	}
+	return timezone, location, nil
+}
+
+func usageStatsDateKey(now time.Time, location *time.Location) string {
+	if location == nil {
+		location = time.UTC
+	}
+	year, month, day := now.In(location).Date()
+	return fmt.Sprintf("%04d-%02d-%02d", year, int(month), day)
+}
+
+func hotUsageStatsRangesForToday(today string) []port.ManagementAccountUsageStatsRange {
+	endDate, ok := parseUsageStatsDateKey(today)
+	if !ok {
+		return nil
+	}
+	fixedStartDate := endDate.AddDate(0, 0, -(fixedUsageStatsRangeWindowDays - 1))
+	monthStartDate := time.Date(endDate.Year(), endDate.Month(), 1, 0, 0, 0, 0, time.UTC)
+	candidates := []struct {
+		start time.Time
+		end   time.Time
+	}{
+		{start: endDate, end: endDate},
+		{start: endDate.AddDate(0, 0, -1), end: endDate.AddDate(0, 0, -1)},
+		{start: endDate.AddDate(0, 0, -6), end: endDate},
+		{start: fixedStartDate, end: endDate},
+		{start: laterUsageStatsDate(monthStartDate, fixedStartDate), end: endDate},
+	}
+	seen := map[string]bool{}
+	ranges := make([]port.ManagementAccountUsageStatsRange, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.end.Before(fixedStartDate) || candidate.start.After(endDate) {
+			continue
+		}
+		start := laterUsageStatsDate(candidate.start, fixedStartDate)
+		end := candidate.end
+		if start.After(end) {
+			continue
+		}
+		startKey := formatUsageStatsDateKey(start)
+		endKey := formatUsageStatsDateKey(end)
+		key := startKey + ":" + endKey
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		ranges = append(ranges, port.ManagementAccountUsageStatsRange{
+			StartDate: startKey,
+			EndDate:   endKey,
+			Days:      int(end.Sub(start).Hours()/24) + 1,
+			MaxDays:   fixedUsageStatsRangeWindowDays,
+		})
+	}
+	return ranges
+}
+
+func parseUsageStatsDateKey(value string) (time.Time, bool) {
+	parsed, err := time.Parse("2006-01-02", strings.TrimSpace(value))
+	if err != nil {
+		return time.Time{}, false
+	}
+	if formatUsageStatsDateKey(parsed) != strings.TrimSpace(value) {
+		return time.Time{}, false
+	}
+	return parsed, true
+}
+
+func formatUsageStatsDateKey(value time.Time) string {
+	return value.Format("2006-01-02")
+}
+
+func laterUsageStatsDate(left time.Time, right time.Time) time.Time {
+	if right.After(left) {
+		return right
+	}
+	return left
 }
 
 func normalizeResourceType(value string) string {

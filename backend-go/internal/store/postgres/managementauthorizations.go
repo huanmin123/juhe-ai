@@ -158,6 +158,84 @@ func (s *Store) FindManagementResourceAuthorizationUsage(ctx context.Context, in
 	return result, true, err
 }
 
+func (s *Store) GetManagementUsageStatsTimezone(ctx context.Context) (string, bool, error) {
+	var valueJSON string
+	err := s.pool.QueryRow(ctx, `
+SELECT value_json
+FROM juhe_business.system_settings
+WHERE system_account_id = 'sys_admin'
+  AND key = 'usageStatsTimezone'
+LIMIT 1
+`).Scan(&valueJSON)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("get management usage stats timezone: %w", err)
+	}
+	var timezone string
+	if err := json.Unmarshal([]byte(valueJSON), &timezone); err != nil {
+		return "", false, fmt.Errorf("management usageStatsTimezone json is invalid: %w", err)
+	}
+	return strings.TrimSpace(timezone), strings.TrimSpace(timezone) != "", nil
+}
+
+func (s *Store) RefreshManagementAuthorizationUsageRangeWindows(ctx context.Context, input port.ManagementAuthorizationUsageRangeWindowRefreshInput) (port.ManagementAuthorizationUsageRangeWindowRefreshResult, error) {
+	refreshedAt := input.RefreshedAt
+	if refreshedAt.IsZero() {
+		refreshedAt = time.Now()
+	}
+	refreshedAt = refreshedAt.UTC()
+	result := port.ManagementAuthorizationUsageRangeWindowRefreshResult{}
+	for _, usageRange := range input.Ranges {
+		startDate := strings.TrimSpace(usageRange.StartDate)
+		endDate := strings.TrimSpace(usageRange.EndDate)
+		if startDate == "" || endDate == "" {
+			return port.ManagementAuthorizationUsageRangeWindowRefreshResult{}, fmt.Errorf("authorization usage range window start_date/end_date is required")
+		}
+		teamRows, userRows, err := s.refreshManagementAuthorizationUsageRangeWindow(ctx, startDate, endDate, refreshedAt)
+		if err != nil {
+			return port.ManagementAuthorizationUsageRangeWindowRefreshResult{}, err
+		}
+		result.Ranges++
+		result.TeamRows += teamRows
+		result.UserRows += userRows
+	}
+	return result, nil
+}
+
+func (s *Store) refreshManagementAuthorizationUsageRangeWindow(ctx context.Context, startDate string, endDate string, refreshedAt time.Time) (int64, int64, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return 0, 0, fmt.Errorf("begin authorization usage range window refresh: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+	if _, err := tx.Exec(ctx, managementAuthorizationTeamUsageRangeRefreshDeleteQuery(), endDate, startDate); err != nil {
+		return 0, 0, fmt.Errorf("delete authorization team usage range window: %w", err)
+	}
+	if _, err := tx.Exec(ctx, managementAuthorizationUserUsageRangeRefreshDeleteQuery(), endDate, startDate); err != nil {
+		return 0, 0, fmt.Errorf("delete authorization user usage range window: %w", err)
+	}
+	teamTag, err := tx.Exec(ctx, managementAuthorizationTeamUsageRangeRefreshInsertQuery(), startDate, endDate, refreshedAt, startDate, endDate)
+	if err != nil {
+		return 0, 0, fmt.Errorf("insert authorization team usage range window: %w", err)
+	}
+	userTag, err := tx.Exec(ctx, managementAuthorizationUserUsageRangeRefreshInsertQuery(), startDate, endDate, refreshedAt, startDate, endDate)
+	if err != nil {
+		return 0, 0, fmt.Errorf("insert authorization user usage range window: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, 0, fmt.Errorf("commit authorization usage range window refresh: %w", err)
+	}
+	committed = true
+	return teamTag.RowsAffected(), userTag.RowsAffected(), nil
+}
+
 func (s *Store) findManagementResourceAuthorizationDirectUsage(ctx context.Context, summary port.ManagementResourceAuthorizationSummary, input port.ManagementResourceAuthorizationUsageInput) (port.ManagementResourceAuthorizationUsageResult, error) {
 	granteeID := strings.TrimSpace(summary.GranteeSystemAccountID)
 	if granteeID == "" {
@@ -483,6 +561,117 @@ LEFT JOIN juhe_business.system_teams AS teams
 ORDER BY rag.created_at DESC, rag.id DESC
 LIMIT ` + limitArg + ` OFFSET ` + offsetArg
 	return query, args
+}
+
+func managementAuthorizationTeamUsageRangeRefreshDeleteQuery() string {
+	return `
+DELETE FROM juhe_stats.authorization_team_usage_range_windows
+WHERE end_date = $1
+  AND start_date = $2
+`
+}
+
+func managementAuthorizationUserUsageRangeRefreshDeleteQuery() string {
+	return `
+DELETE FROM juhe_stats.authorization_user_usage_range_windows
+WHERE end_date = $1
+  AND start_date = $2
+`
+}
+
+func managementAuthorizationTeamUsageRangeRefreshInsertQuery() string {
+	return `
+INSERT INTO juhe_stats.authorization_team_usage_range_windows (
+  system_account_id, start_date, end_date, team_filter_id, resource_filter_type, resource_filter_id,
+  request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd,
+  thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, last_used_at, updated_at
+)
+SELECT
+  system_account_id,
+  $1,
+  $2,
+  team_filter_id,
+  resource_filter_type,
+  resource_filter_id,
+  COALESCE(SUM(request_count), 0),
+  COALESCE(SUM(input_tokens), 0),
+  COALESCE(SUM(output_tokens), 0),
+  COALESCE(SUM(cache_read_tokens), 0),
+  COALESCE(SUM(cache_read_cost_usd), 0),
+  COALESCE(SUM(cache_write_tokens), 0),
+  COALESCE(SUM(cache_write_1h_tokens), 0),
+  COALESCE(SUM(cache_write_cost_usd), 0),
+  COALESCE(SUM(thinking_tokens), 0),
+  COALESCE(SUM(input_image_tokens), 0),
+  COALESCE(SUM(output_image_tokens), 0),
+  COALESCE(SUM(total_cost_usd), 0),
+  MAX(last_used_at),
+  $3
+FROM juhe_stats.authorization_team_usage_summary_daily
+WHERE stat_date >= $4
+  AND stat_date <= $5
+GROUP BY system_account_id, team_filter_id, resource_filter_type, resource_filter_id
+HAVING COALESCE(SUM(request_count), 0) > 0
+  OR COALESCE(SUM(input_tokens), 0) > 0
+  OR COALESCE(SUM(output_tokens), 0) > 0
+  OR COALESCE(SUM(cache_read_tokens), 0) > 0
+  OR COALESCE(SUM(cache_read_cost_usd), 0) > 0
+  OR COALESCE(SUM(cache_write_tokens), 0) > 0
+  OR COALESCE(SUM(cache_write_1h_tokens), 0) > 0
+  OR COALESCE(SUM(cache_write_cost_usd), 0) > 0
+  OR COALESCE(SUM(thinking_tokens), 0) > 0
+  OR COALESCE(SUM(input_image_tokens), 0) > 0
+  OR COALESCE(SUM(output_image_tokens), 0) > 0
+  OR COALESCE(SUM(total_cost_usd), 0) > 0
+`
+}
+
+func managementAuthorizationUserUsageRangeRefreshInsertQuery() string {
+	return `
+INSERT INTO juhe_stats.authorization_user_usage_range_windows (
+  system_account_id, start_date, end_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id,
+  request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd,
+  thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, last_used_at, updated_at
+)
+SELECT
+  system_account_id,
+  $1,
+  $2,
+  team_filter_id,
+  grantee_filter_system_account_id,
+  resource_filter_type,
+  resource_filter_id,
+  COALESCE(SUM(request_count), 0),
+  COALESCE(SUM(input_tokens), 0),
+  COALESCE(SUM(output_tokens), 0),
+  COALESCE(SUM(cache_read_tokens), 0),
+  COALESCE(SUM(cache_read_cost_usd), 0),
+  COALESCE(SUM(cache_write_tokens), 0),
+  COALESCE(SUM(cache_write_1h_tokens), 0),
+  COALESCE(SUM(cache_write_cost_usd), 0),
+  COALESCE(SUM(thinking_tokens), 0),
+  COALESCE(SUM(input_image_tokens), 0),
+  COALESCE(SUM(output_image_tokens), 0),
+  COALESCE(SUM(total_cost_usd), 0),
+  MAX(last_used_at),
+  $3
+FROM juhe_stats.authorization_user_usage_summary_daily
+WHERE stat_date >= $4
+  AND stat_date <= $5
+GROUP BY system_account_id, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id
+HAVING COALESCE(SUM(request_count), 0) > 0
+  OR COALESCE(SUM(input_tokens), 0) > 0
+  OR COALESCE(SUM(output_tokens), 0) > 0
+  OR COALESCE(SUM(cache_read_tokens), 0) > 0
+  OR COALESCE(SUM(cache_read_cost_usd), 0) > 0
+  OR COALESCE(SUM(cache_write_tokens), 0) > 0
+  OR COALESCE(SUM(cache_write_1h_tokens), 0) > 0
+  OR COALESCE(SUM(cache_write_cost_usd), 0) > 0
+  OR COALESCE(SUM(thinking_tokens), 0) > 0
+  OR COALESCE(SUM(input_image_tokens), 0) > 0
+  OR COALESCE(SUM(output_image_tokens), 0) > 0
+  OR COALESCE(SUM(total_cost_usd), 0) > 0
+`
 }
 
 func managementAuthorizationTeamUsageOverviewQuery(input port.ManagementAuthorizationUsageOverviewInput) (string, []any) {
