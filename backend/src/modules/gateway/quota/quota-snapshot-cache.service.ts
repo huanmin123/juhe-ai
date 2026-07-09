@@ -103,9 +103,13 @@ export function clearGatewayQuotaSnapshot(): void {
   clearSharedGatewayQuotaSnapshotMemo()
 }
 
-export function invalidateGatewayAuthorizationQuotaSnapshot(): void {
+export function invalidateGatewayAuthorizationQuotaSnapshot(metadata: { publishedAt?: string } = {}): void {
+  const publishedAtMs = Date.parse(metadata.publishedAt ?? '')
   authorizationSnapshotInvalidated = true
-  authorizationSnapshotInvalidatedAtMs = Date.now()
+  authorizationSnapshotInvalidatedAtMs = Math.max(
+    authorizationSnapshotInvalidatedAtMs,
+    Number.isFinite(publishedAtMs) ? publishedAtMs : Date.now()
+  )
   authorizationSnapshotComplete = false
   authorizationSnapshotVersion += 1
   authorizationSnapshot.clear()

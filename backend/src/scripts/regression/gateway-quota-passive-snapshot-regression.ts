@@ -372,12 +372,16 @@ function assertAuthorizationQuotaInvalidationSourcesConnected(): void {
   const dbServiceTypesSource = readFileSync(new URL('../../modules/db-service/db-service-types.ts', import.meta.url), 'utf8')
   const authorizationQuotaSource = readFileSync(new URL('../../modules/gateway/quota/authorization-quota.service.ts', import.meta.url), 'utf8')
   const cacheSource = readFileSync(new URL('../../modules/gateway/quota/quota-snapshot-cache.service.ts', import.meta.url), 'utf8')
+  const runtimeInvalidationSource = readFileSync(new URL('../../shared/gateway-cache-invalidation.ts', import.meta.url), 'utf8')
+  const runtimeApplyBlock = sourceFunctionBlock(runtimeInvalidationSource, 'function applyRuntimeStateCacheInvalidation')
   assert(dbServiceTypesSource.includes("type: 'authorization_quota_cache_invalidate'"), 'DB service 子进程消息类型必须包含授权配额缓存失效')
   assert(dbServiceIpcSource.includes('registerAuthorizationQuotaCacheInvalidator(notifyServerAuthorizationQuotaCacheInvalidated)'), 'DB service 必须把授权配额失效器注册到跨进程通知链路')
   assert(dbServiceIpcSource.includes("sendDbServiceChildMessage({ type: 'authorization_quota_cache_invalidate' })"), 'DB service 角色必须把授权配额失效转发给 server')
   assert(dbServiceIpcSource.includes('authorizationQuota.clearAuthorizationQuotaCache()'), 'server 收到授权配额失效后必须清空运行时授权配额缓存')
   assert(dbServiceIpcSource.includes('invalidateGatewayAuthorizationQuotaSnapshot()'), 'server 收到授权配额失效后必须同步让授权配额快照失效')
   assert(cacheSource.includes('authorizationSnapshotInvalidated'), '授权配额快照缓存必须有独立失效标记，避免误伤 API Key 成本快照')
+  assert(runtimeApplyBlock.includes('handler({ publishedAt: state.publishedAt })'), 'Redis runtime state 授权失效必须把事件 publishedAt 传给快照失效器')
+  assert(cacheSource.includes("Date.parse(metadata.publishedAt ?? '')"), '授权快照失效时间必须优先使用跨运行时事件 publishedAt，不能使用本机观察时间')
   assert(authorizationQuotaSource.includes('gatewayAuthorizationQuotaSnapshotVersion()'), '授权配额快照缓存版本必须参与 server 运行时缓存 key，避免复用旧决策')
 }
 
