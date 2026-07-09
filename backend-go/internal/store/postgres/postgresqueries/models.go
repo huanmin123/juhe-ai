@@ -354,6 +354,42 @@ type JuheBusinessResourceAuthorization struct {
 	UpdatedAt                    pgtype.Timestamptz
 }
 
+type JuheBusinessResourceAuthorizationGrant struct {
+	ID                           string
+	ResourceType                 string
+	ResourceID                   string
+	ResourceOwnerSystemAccountID string
+	GranteeType                  string
+	GranteeSystemAccountID       pgtype.Text
+	GranteeTeamID                pgtype.Text
+	Scope                        string
+	Status                       string
+	Remark                       pgtype.Text
+	ExpiresAt                    pgtype.Timestamptz
+	LimitsJson                   pgtype.Text
+	CreatedBy                    string
+	CreatedAt                    pgtype.Timestamptz
+	RevokedBy                    pgtype.Text
+	RevokedAt                    pgtype.Timestamptz
+	UpdatedAt                    pgtype.Timestamptz
+}
+
+type JuheBusinessResourceAuthorizationSource struct {
+	ID              string
+	AuthorizationID string
+	SourceType      string
+	SourceTeamID    pgtype.Text
+	Status          string
+	ActivatedAt     pgtype.Timestamptz
+	EndedAt         pgtype.Timestamptz
+	EndedReason     pgtype.Text
+	CreatedBy       string
+	CreatedAt       pgtype.Timestamptz
+	RevokedBy       pgtype.Text
+	RevokedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
+}
+
 type JuheBusinessRouteStrategy struct {
 	ID              string
 	SystemAccountID string
