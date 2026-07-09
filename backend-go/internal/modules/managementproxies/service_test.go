@@ -234,6 +234,100 @@ func TestCreateEncryptsPasswordAndInvalidates(t *testing.T) {
 	}
 }
 
+func TestWriteOperationsReturnSuccessWhenInvalidationFails(t *testing.T) {
+	wantErr := errors.New("redis down")
+
+	t.Run("create", func(t *testing.T) {
+		invalidator := &proxyInvalidatorStub{err: wantErr}
+		store := &proxyOptionStoreStub{
+			createResult: port.ManagementProxySummary{
+				ID:      "proxy_a",
+				Name:    "代理 A",
+				Type:    "http",
+				Host:    "proxy.example.com",
+				Port:    8080,
+				Enabled: true,
+			},
+		}
+		service := NewServiceWithOptions(ServiceOptions{Store: store, Invalidator: invalidator})
+
+		result, err := service.Create(context.Background(), CreateInput{
+			SystemAccountID: "sys_admin",
+			Name:            "代理 A",
+			Type:            "http",
+			Host:            "proxy.example.com",
+			Port:            8080,
+		})
+		if err != nil {
+			t.Fatalf("Create() error = %v", err)
+		}
+		if result.Proxy.ID != "proxy_a" {
+			t.Fatalf("result = %+v", result)
+		}
+		if len(invalidator.reasons) != 1 || invalidator.reasons[0] != ProxyCreatedReason {
+			t.Fatalf("invalidation reasons = %+v", invalidator.reasons)
+		}
+	})
+
+	t.Run("update", func(t *testing.T) {
+		invalidator := &proxyInvalidatorStub{err: wantErr}
+		store := &proxyOptionStoreStub{
+			findResult: port.ManagementProxySummary{
+				ID:      "proxy_a",
+				Name:    "代理 A",
+				Type:    "http",
+				Host:    "old.example.com",
+				Port:    8080,
+				Enabled: true,
+			},
+			findFound: true,
+			updateResult: port.ManagementProxySummary{
+				ID:      "proxy_a",
+				Name:    "代理 A",
+				Type:    "http",
+				Host:    "new.example.com",
+				Port:    8080,
+				Enabled: true,
+			},
+			updateFound: true,
+		}
+		service := NewServiceWithOptions(ServiceOptions{Store: store, Invalidator: invalidator})
+		host := "new.example.com"
+
+		result, err := service.Update(context.Background(), UpdateInput{ID: "proxy_a", Host: &host})
+		if err != nil {
+			t.Fatalf("Update() error = %v", err)
+		}
+		if result.Proxy.Host != "new.example.com" {
+			t.Fatalf("result = %+v", result)
+		}
+		if len(invalidator.reasons) != 1 || invalidator.reasons[0] != ProxyUpdatedReason {
+			t.Fatalf("invalidation reasons = %+v", invalidator.reasons)
+		}
+	})
+
+	t.Run("delete", func(t *testing.T) {
+		invalidator := &proxyInvalidatorStub{err: wantErr}
+		store := &proxyOptionStoreStub{
+			findResult:   port.ManagementProxySummary{ID: "proxy_a", Name: "代理 A"},
+			findFound:    true,
+			deleteResult: true,
+		}
+		service := NewServiceWithOptions(ServiceOptions{Store: store, Invalidator: invalidator})
+
+		result, err := service.Delete(context.Background(), DeleteInput{ID: "proxy_a"})
+		if err != nil {
+			t.Fatalf("Delete() error = %v", err)
+		}
+		if !result.Deleted {
+			t.Fatalf("result = %+v", result)
+		}
+		if len(invalidator.reasons) != 1 || invalidator.reasons[0] != ProxyDeletedReason {
+			t.Fatalf("invalidation reasons = %+v", invalidator.reasons)
+		}
+	})
+}
+
 func TestUpdatePreservesPasswordAndResetsTestStateForConnectionChange(t *testing.T) {
 	oldPasswordEncrypted := "v1:old"
 	latencyMs := 88

@@ -149,10 +149,8 @@ func TestSystemAccountInvalidatorAuthorizationChangedWritesRuntimeAndQuotaTopics
 }
 
 func TestSystemAccountInvalidatorProxyChangedWritesRuntimeTopic(t *testing.T) {
-	cache := &rawSetRecorder{}
 	state := &rawSetRecorder{}
 	invalidator, err := NewSystemAccountInvalidator(SystemAccountInvalidatorOptions{
-		Cache:      cache,
 		State:      state,
 		Namespace:  "test-ns",
 		Now:        func() time.Time { return time.Unix(0, 0).UTC() },
@@ -166,9 +164,6 @@ func TestSystemAccountInvalidatorProxyChangedWritesRuntimeTopic(t *testing.T) {
 		t.Fatalf("InvalidateProxyChanged() error = %v", err)
 	}
 
-	if len(cache.calls) != 0 {
-		t.Fatalf("cache calls = %d, want 0 for proxy invalidation", len(cache.calls))
-	}
 	if len(state.calls) != 1 {
 		t.Fatalf("state calls = %d, want 1", len(state.calls))
 	}

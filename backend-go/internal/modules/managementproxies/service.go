@@ -381,9 +381,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (CreateResult, 
 	if err != nil {
 		return CreateResult{}, err
 	}
-	if err := s.invalidate(ctx, ProxyCreatedReason); err != nil {
-		return CreateResult{}, err
-	}
+	s.invalidate(ctx, ProxyCreatedReason)
 	return CreateResult{Proxy: proxySummaryFromPort(created), PasswordSet: passwordSet}, nil
 }
 
@@ -483,9 +481,7 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (UpdateResult, 
 	if !found {
 		return UpdateResult{}, ErrProxyNotFound
 	}
-	if err := s.invalidate(ctx, ProxyUpdatedReason); err != nil {
-		return UpdateResult{}, err
-	}
+	s.invalidate(ctx, ProxyUpdatedReason)
 	before := proxySummaryFromPort(current)
 	after := proxySummaryFromPort(updated)
 	return UpdateResult{
@@ -527,9 +523,7 @@ func (s *Service) Delete(ctx context.Context, input DeleteInput) (DeleteResult, 
 	if !deleted {
 		return DeleteResult{}, ErrProxyNotFound
 	}
-	if err := s.invalidate(ctx, ProxyDeletedReason); err != nil {
-		return DeleteResult{}, err
-	}
+	s.invalidate(ctx, ProxyDeletedReason)
 	return DeleteResult{Before: proxySummaryFromPort(current), Deleted: true}, nil
 }
 
@@ -555,11 +549,11 @@ func (s *Service) encryptPassword(password string) (*string, error) {
 	return &encrypted, nil
 }
 
-func (s *Service) invalidate(ctx context.Context, reason string) error {
+func (s *Service) invalidate(ctx context.Context, reason string) {
 	if s.invalidator == nil {
-		return nil
+		return
 	}
-	return s.invalidator.InvalidateProxyChanged(ctx, reason)
+	_ = s.invalidator.InvalidateProxyChanged(ctx, reason)
 }
 
 func normalizeListPageSize(value int) int {

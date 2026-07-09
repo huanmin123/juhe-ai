@@ -68,9 +68,6 @@ type runtimeInvalidationState struct {
 }
 
 func NewSystemAccountInvalidator(opts SystemAccountInvalidatorOptions) (*SystemAccountInvalidator, error) {
-	if opts.Cache == nil {
-		return nil, fmt.Errorf("gateway cache redis setter is required")
-	}
 	if opts.State == nil {
 		return nil, fmt.Errorf("gateway runtime state redis setter is required")
 	}
@@ -148,6 +145,9 @@ func (i *SystemAccountInvalidator) invalidateGatewayRuntime(ctx context.Context,
 }
 
 func (i *SystemAccountInvalidator) clearAPIKeyValidationCache(ctx context.Context) error {
+	if i.cache == nil {
+		return fmt.Errorf("gateway cache redis setter is required")
+	}
 	now := i.now().UTC()
 	version, err := i.newVersion(now)
 	if err != nil {

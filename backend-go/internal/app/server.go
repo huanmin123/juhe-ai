@@ -457,25 +457,27 @@ func newGatewaySystemAccountInvalidator(
 	if !cfg.ManagementAPIEnabled {
 		return nil, closeFn, nil
 	}
-	if cfg.RedisCacheURL == "" {
-		if logger != nil {
-			logger.Warn("Go 管理 API 未配置 Redis cache，系统账户状态变更不会触发跨进程网关缓存失效")
-		}
-		return nil, closeFn, nil
-	}
 	if stateRedis == nil {
 		return nil, closeFn, fmt.Errorf("gateway system account invalidator requires state redis")
 	}
-	cacheRedis, err := redisplatform.NewClient(cfg.RedisCacheURL, cfg.RedisNamespace+":cache")
-	if err != nil {
-		return nil, closeFn, fmt.Errorf("JUHE_AI_REDIS_CACHE_URL 无效: %w", err)
-	}
-	closeFn = func() { _ = cacheRedis.Close() }
-	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	if err := cacheRedis.Ping(pingCtx); err != nil {
-		closeFn()
-		return nil, func() {}, fmt.Errorf("网关缓存 Redis 不可用: %w", err)
+	var cacheRedis *redisplatform.Client
+	if cfg.RedisCacheURL == "" {
+		if logger != nil {
+			logger.Warn("Go 管理 API 未配置 Redis cache，系统账户状态变更不会触发 API Key 校验缓存版本刷新")
+		}
+	} else {
+		var err error
+		cacheRedis, err = redisplatform.NewClient(cfg.RedisCacheURL, cfg.RedisNamespace+":cache")
+		if err != nil {
+			return nil, closeFn, fmt.Errorf("JUHE_AI_REDIS_CACHE_URL 无效: %w", err)
+		}
+		closeFn = func() { _ = cacheRedis.Close() }
+		pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		if err := cacheRedis.Ping(pingCtx); err != nil {
+			closeFn()
+			return nil, func() {}, fmt.Errorf("网关缓存 Redis 不可用: %w", err)
+		}
 	}
 	invalidator, err := gatewaycache.NewSystemAccountInvalidator(gatewaycache.SystemAccountInvalidatorOptions{
 		Cache:     cacheRedis,

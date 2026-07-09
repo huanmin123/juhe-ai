@@ -258,7 +258,7 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 	}
 }
 
-func TestNewGatewaySystemAccountInvalidatorSkipsWhenDisabledOrCacheURLMissing(t *testing.T) {
+func TestNewGatewaySystemAccountInvalidatorSkipsOnlyWhenDisabled(t *testing.T) {
 	invalidator, closeFn, err := newGatewaySystemAccountInvalidator(t.Context(), config.Config{}, nil, nil)
 	if err != nil {
 		t.Fatalf("newGatewaySystemAccountInvalidator() disabled error = %v", err)
@@ -268,13 +268,27 @@ func TestNewGatewaySystemAccountInvalidatorSkipsWhenDisabledOrCacheURLMissing(t 
 		t.Fatal("newGatewaySystemAccountInvalidator() returned invalidator while management API disabled")
 	}
 
-	invalidator, closeFn, err = newGatewaySystemAccountInvalidator(t.Context(), config.Config{ManagementAPIEnabled: true}, nil, nil)
+	invalidator, closeFn, err = newGatewaySystemAccountInvalidator(t.Context(), config.Config{
+		ManagementAPIEnabled: true,
+		RedisNamespace:       "juhe-ai",
+	}, &redisplatform.Client{}, nil)
 	if err != nil {
 		t.Fatalf("newGatewaySystemAccountInvalidator() missing cache url error = %v", err)
 	}
 	closeFn()
-	if invalidator != nil {
-		t.Fatal("newGatewaySystemAccountInvalidator() returned invalidator without Redis cache URL")
+	if invalidator == nil {
+		t.Fatal("newGatewaySystemAccountInvalidator() returned nil invalidator without Redis cache URL")
+	}
+}
+
+func TestNewGatewaySystemAccountInvalidatorRequiresStateRedis(t *testing.T) {
+	_, closeFn, err := newGatewaySystemAccountInvalidator(t.Context(), config.Config{
+		ManagementAPIEnabled: true,
+		RedisNamespace:       "juhe-ai",
+	}, nil, nil)
+	closeFn()
+	if err == nil || !strings.Contains(err.Error(), "state redis") {
+		t.Fatalf("newGatewaySystemAccountInvalidator() error = %v, want state redis error", err)
 	}
 }
 
