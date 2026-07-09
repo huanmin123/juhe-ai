@@ -74,6 +74,19 @@
     />
     <DisplayNameModal v-model:open="displayNameModalOpen" :form="displayNameForm" :saving="displayNameSaving" @ok="handleUpdateDisplayName" />
     <ChangePasswordModal v-model:open="passwordModalOpen" :forced="mustChangePassword" :form="passwordForm" :require-old-password="requireOldPasswordForPasswordChange" :saving="passwordSaving" @ok="handleChangePassword" />
+    <SessionManagementModal
+      v-model:open="sessionModalOpen"
+      :has-more="authSessionPagination.hasMore"
+      :loading="authSessionsLoading"
+      :page="authSessionPagination.page"
+      :page-size="authSessionPagination.pageSize"
+      :revoking-session-id="authSessionRevokingId"
+      :sessions="authSessions"
+      :total="authSessionPagination.total"
+      @page-change="handleAuthSessionPageChange"
+      @refresh="loadAuthSessions({ notifyError: true })"
+      @revoke="handleRevokeAuthSession"
+    />
   </a-layout>
 </template>
 
@@ -108,7 +121,7 @@ import { computed, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch
 import { isNavigationFailure, useRoute, useRouter } from 'vue-router'
 
 import { api } from '@/api/client'
-import { authState, changePassword, logout, updateProfile } from '@/composables/useAuth'
+import { authState, changePassword, clearAuthState, logout, updateProfile } from '@/composables/useAuth'
 import { appBrand, loadAppBrandSettings, syncDocumentTitle } from '@/composables/useAppBrand'
 import {
   appMenuMode,
@@ -121,12 +134,13 @@ import {
 import { menuRoutes, recoverRouteAssetLoadError } from '@/router'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { isAdminRole, systemAccountRoleLabel } from '@/shared/systemAccountRoles'
-import type { PublishedAnnouncementSummary } from '@/types/domain'
+import type { AuthSessionSummary, PublishedAnnouncementSummary } from '@/types/domain'
 import AnnouncementModal from './AnnouncementModal.vue'
 import AppHeader from './AppHeader.vue'
 import AppSidebar from './AppSidebar.vue'
 import ChangePasswordModal from './ChangePasswordModal.vue'
 import DisplayNameModal from './DisplayNameModal.vue'
+import SessionManagementModal from './SessionManagementModal.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -139,6 +153,11 @@ const displayNameForm = reactive({ displayName: '' })
 const passwordModalOpen = ref(false)
 const passwordSaving = ref(false)
 const passwordForm = reactive({ oldPassword: '', newPassword: '', confirmPassword: '' })
+const sessionModalOpen = ref(false)
+const authSessionsLoading = ref(false)
+const authSessionRevokingId = ref<string>()
+const authSessions = ref<AuthSessionSummary[]>([])
+const authSessionPagination = reactive({ page: 1, pageSize: 20, total: 0, hasMore: false })
 const whitespacePattern = /\s/
 const keepAliveMax = 48
 const announcementModalOpen = ref(false)
@@ -147,6 +166,7 @@ const announcements = ref<PublishedAnnouncementSummary[]>([])
 let announcementsRefreshTimer: number | undefined
 let announcementsRefreshRunning = false
 let announcementsRequestId = 0
+let authSessionRequestId = 0
 const pendingRoutePath = ref<string>()
 const routePrefetches = new Map<string, Promise<unknown>>()
 let routeNavigationSeq = 0
@@ -161,6 +181,10 @@ interface AnnouncementLoadResult {
 }
 
 interface AnnouncementMarkReadOptions {
+  notifyError?: boolean
+}
+
+interface AuthSessionLoadOptions {
   notifyError?: boolean
 }
 
@@ -368,6 +392,10 @@ async function handleUserMenuClick(event: Parameters<NonNullable<MenuProps['onCl
     openPasswordModal()
     return
   }
+  if (event.key === 'sessions') {
+    openSessionModal()
+    return
+  }
   if (event.key === 'logout') {
     await logout()
     await router.replace('/login')
@@ -463,6 +491,87 @@ async function markAnnouncementsViewed(visibleAnnouncements = announcements.valu
       message.error(extractApiErrorMessage(error, '记录公告已读失败'))
     }
   }
+}
+
+function openSessionModal() {
+  authSessionPagination.page = 1
+  sessionModalOpen.value = true
+  void loadAuthSessions({ notifyError: true })
+}
+
+async function loadAuthSessions(options: AuthSessionLoadOptions = {}): Promise<void> {
+  const requestUserKey = currentAnnouncementUserKey()
+  if (!requestUserKey || mustChangePassword.value) {
+    resetAuthSessions()
+    return
+  }
+  const requestId = ++authSessionRequestId
+  authSessionsLoading.value = true
+  try {
+    const result = await api.auth.sessions({
+      page: authSessionPagination.page,
+      pageSize: authSessionPagination.pageSize
+    })
+    if (requestId !== authSessionRequestId || requestUserKey !== currentAnnouncementUserKey()) {
+      return
+    }
+    authSessions.value = result.items
+    authSessionPagination.total = result.total
+    authSessionPagination.hasMore = result.hasMore
+    authSessionPagination.page = result.page
+    authSessionPagination.pageSize = result.pageSize
+  } catch (error) {
+    if (requestId !== authSessionRequestId || requestUserKey !== currentAnnouncementUserKey()) {
+      return
+    }
+    console.error(error)
+    if (options.notifyError) {
+      message.error(extractApiErrorMessage(error, '加载会话失败'))
+    }
+  } finally {
+    if (requestId === authSessionRequestId) {
+      authSessionsLoading.value = false
+    }
+  }
+}
+
+async function handleAuthSessionPageChange(page: number) {
+  authSessionPagination.page = page
+  await loadAuthSessions({ notifyError: true })
+}
+
+async function handleRevokeAuthSession(session: AuthSessionSummary) {
+  if (authSessionRevokingId.value) return
+  authSessionRevokingId.value = session.id
+  try {
+    const result = await api.auth.revokeSession(session.id)
+    if (result.current) {
+      message.success('当前会话已撤销，请重新登录')
+      sessionModalOpen.value = false
+      resetAuthSessions()
+      clearAuthState()
+      await router.replace('/login')
+      return
+    }
+    message.success('会话已撤销')
+    await loadAuthSessions({ notifyError: true })
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '撤销会话失败'))
+  } finally {
+    authSessionRevokingId.value = undefined
+  }
+}
+
+function resetAuthSessions() {
+  authSessionRequestId += 1
+  authSessions.value = []
+  authSessionsLoading.value = false
+  authSessionRevokingId.value = undefined
+  authSessionPagination.page = 1
+  authSessionPagination.pageSize = 20
+  authSessionPagination.total = 0
+  authSessionPagination.hasMore = false
 }
 
 async function switchMenuMode() {
@@ -663,6 +772,8 @@ watch(
       announcementsRequestId += 1
       announcements.value = []
       announcementsLoading.value = false
+      resetAuthSessions()
+      sessionModalOpen.value = false
     }
     if (route.meta.viewScope === 'admin' || route.meta.viewScope === 'self') {
       setMenuModeFromRoute(user, route.meta.viewScope)

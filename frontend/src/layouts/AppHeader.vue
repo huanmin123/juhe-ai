@@ -51,6 +51,7 @@
             <a-menu-divider v-if="canSwitchMenuMode" />
             <a-menu-item key="display-name">修改名称</a-menu-item>
             <a-menu-item key="password">修改密码</a-menu-item>
+            <a-menu-item key="sessions">会话管理</a-menu-item>
             <a-menu-item key="logout" danger>退出登录</a-menu-item>
           </a-menu>
         </template>

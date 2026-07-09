@@ -32,7 +32,8 @@
     "test:gateway-traffic-source-formatters": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/gateway-traffic-source-formatters-regression.ts",
     "test:usage-stats-provider-display": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/usage-stats-provider-display-regression.ts",
     "test:authorization-search-scheduler": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/authorization-search-scheduler-regression.ts",
-    "test:authorization-user-usage-route-filters": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/authorization-user-usage-route-filters-regression.ts"
+    "test:authorization-user-usage-route-filters": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/authorization-user-usage-route-filters-regression.ts",
+    "test:w3-auth-system-account-smoke": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/w3-auth-system-account-smoke-regression.ts"
   },
   "dependencies": {
     "@ant-design/icons-vue": "^7.0.1",
