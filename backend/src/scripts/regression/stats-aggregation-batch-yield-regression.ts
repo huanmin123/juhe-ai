@@ -54,6 +54,13 @@ assert(
   'usage 聚合后必须通过防抖热窗口刷新发布今日概览和范围窗口'
 )
 assert(
+  backgroundJobsSource.includes('scheduleHotUsageWindowsAfterAggregation(result.processed)')
+    && backgroundJobsSource.includes('function scheduleHotUsageWindowsAfterAggregation(processed: number): void')
+    && backgroundJobsSource.includes('void refreshHotUsageWindowsAfterAggregation(processed).catch')
+    && !backgroundJobsSource.includes('await refreshHotUsageWindowsAfterAggregation(result.processed)'),
+  'usage 聚合主链路不能同步等待热窗口刷新，避免热窗口刷新慢或失败阻塞在线聚合'
+)
+assert(
   usageStatsRepositorySource.includes('aggregateUsageStatsRecords(database, rows, updatedAt, aggregationContext)')
     && usageStatsWritersSource.includes('export function aggregateUsageStatsRecords')
     && usageStatsWritersSource.includes('addAggregatedUsageStatsEntry')

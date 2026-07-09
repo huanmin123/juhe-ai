@@ -204,13 +204,22 @@ async function runUsageStatsAggregation(): Promise<void> {
       maxRunMs: usageStatsAggregationMaxRunMs,
       safeCreatedBefore: safety.safeCreatedBefore
     }, Math.max(10_000, usageStatsAggregationMaxRunMs + 5_000))
-    await refreshHotUsageWindowsAfterAggregation(result.processed)
+    scheduleHotUsageWindowsAfterAggregation(result.processed)
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_usage_stats_aggregation_failed' }), '用量统计聚合失败')
     throw error
   } finally {
     usageStatsAggregationRunning = false
   }
+}
+
+function scheduleHotUsageWindowsAfterAggregation(processed: number): void {
+  void refreshHotUsageWindowsAfterAggregation(processed).catch((error) => {
+    logger.error(errorLogFields(error, {
+      event: 'background_usage_hot_window_refresh_schedule_failed',
+      processed
+    }), '热用量窗口刷新调度失败')
+  })
 }
 
 async function refreshHotUsageWindowsAfterAggregation(processed: number): Promise<void> {
