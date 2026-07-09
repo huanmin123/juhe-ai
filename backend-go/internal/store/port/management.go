@@ -340,6 +340,34 @@ type ManagementAuthorizationGranteeTeamOption struct {
 	Status string
 }
 
+type ManagementSystemTeamSummary struct {
+	ID                string
+	Name              string
+	Description       string
+	Status            string
+	MemberCount       int
+	ActiveMemberCount int
+	CreatedBy         string
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+type ManagementSystemTeamCreateInput struct {
+	ID          string
+	Name        string
+	Description *string
+	Status      string
+	CreatedBy   string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+var ErrManagementSystemTeamNameExists = errors.New("management system team name exists")
+
+type ManagementSystemTeamCreator interface {
+	CreateManagementSystemTeam(ctx context.Context, input ManagementSystemTeamCreateInput) (ManagementSystemTeamSummary, error)
+}
+
 type ManagementAuthorizationPrincipalOptionListInput struct {
 	IDs     []string
 	Keyword string

@@ -36,6 +36,7 @@ type RouterOptions struct {
 	ManagementSystemAccountOptionsHandler           http.Handler
 	ManagementSystemAccountPatchHandler             http.Handler
 	ManagementSystemAccountCreateHandler            http.Handler
+	ManagementSystemTeamCreateHandler               http.Handler
 	ManagementAuthorizationGranteeAccountsHandler   http.Handler
 	ManagementMyAuthorizationGranteeAccountsHandler http.Handler
 	ManagementAuthorizationGranteeTeamsHandler      http.Handler
@@ -108,6 +109,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementSystemAccountOptionsHandler == nil &&
 				opts.ManagementSystemAccountPatchHandler == nil &&
 				opts.ManagementSystemAccountCreateHandler == nil &&
+				opts.ManagementSystemTeamCreateHandler == nil &&
 				opts.ManagementAuthorizationGranteeAccountsHandler == nil &&
 				opts.ManagementMyAuthorizationGranteeAccountsHandler == nil &&
 				opts.ManagementAuthorizationGranteeTeamsHandler == nil &&
@@ -174,6 +176,9 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementSystemAccountCreateHandler != nil {
 				system.With(managementAPIWriteAuthMiddleware).Post("/system-accounts", opts.ManagementSystemAccountCreateHandler.ServeHTTP)
+			}
+			if opts.ManagementSystemTeamCreateHandler != nil {
+				system.With(managementAPIWriteAuthMiddleware).Post("/system-teams", opts.ManagementSystemTeamCreateHandler.ServeHTTP)
 			}
 			if opts.ManagementAuthorizationGranteeAccountsHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/authorization-options/grantee-accounts", opts.ManagementAuthorizationGranteeAccountsHandler.ServeHTTP)
@@ -294,6 +299,7 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementSessionRevokeHandler != nil ||
 		opts.ManagementSystemAccountPatchHandler != nil ||
 		opts.ManagementSystemAccountCreateHandler != nil ||
+		opts.ManagementSystemTeamCreateHandler != nil ||
 		opts.ManagementProviderDefaultTestModelHandler != nil ||
 		opts.ManagementAccountTagDeleteHandler != nil ||
 		opts.ManagementMyAccountTagDeleteHandler != nil ||

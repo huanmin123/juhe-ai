@@ -22,6 +22,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/managementproxies"
 	"juhe-ai/backend-go/internal/modules/managementroutestrategies"
 	"juhe-ai/backend-go/internal/modules/managementsystemaccounts"
+	"juhe-ai/backend-go/internal/modules/managementsystemteams"
 	"juhe-ai/backend-go/internal/modules/publicaccounts"
 	publicapicatalog "juhe-ai/backend-go/internal/modules/publicapi"
 	publicapiauth "juhe-ai/backend-go/internal/modules/publicapi/auth"
@@ -113,6 +114,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementSystemAccountOptionsHandler:           managementHandlers.SystemAccountOptionsHandler,
 		ManagementSystemAccountPatchHandler:             managementHandlers.SystemAccountPatchHandler,
 		ManagementSystemAccountCreateHandler:            managementHandlers.SystemAccountCreateHandler,
+		ManagementSystemTeamCreateHandler:               managementHandlers.SystemTeamCreateHandler,
 		ManagementAuthorizationGranteeAccountsHandler:   managementHandlers.AuthorizationGranteeAccountsHandler,
 		ManagementMyAuthorizationGranteeAccountsHandler: managementHandlers.MyAuthorizationGranteeAccountsHandler,
 		ManagementAuthorizationGranteeTeamsHandler:      managementHandlers.AuthorizationGranteeTeamsHandler,
@@ -186,6 +188,7 @@ type managementAPIHandlers struct {
 	SystemAccountOptionsHandler           http.Handler
 	SystemAccountPatchHandler             http.Handler
 	SystemAccountCreateHandler            http.Handler
+	SystemTeamCreateHandler               http.Handler
 	AuthorizationGranteeAccountsHandler   http.Handler
 	MyAuthorizationGranteeAccountsHandler http.Handler
 	AuthorizationGranteeTeamsHandler      http.Handler
@@ -243,6 +246,7 @@ func newManagementAPIHandler(
 		Secret:                   cfg.Secret,
 		SystemAccountInvalidator: systemAccountInvalidator,
 	})
+	systemTeamService := managementsystemteams.NewService(store)
 	authorizationOptionService := managementauthorizationoptions.NewService(store)
 	operationLogService := managementoperationlogs.NewService(store)
 	operationLogOptions := httpapi.ManagementOperationLogOptions{
@@ -266,6 +270,7 @@ func newManagementAPIHandler(
 		SystemAccountOptionsHandler:           httpapi.NewManagementSystemAccountOptionsHandler(systemAccountService),
 		SystemAccountPatchHandler:             httpapi.NewManagementSystemAccountPatchHandlerWithOperationLog(systemAccountService, operationLogOptions),
 		SystemAccountCreateHandler:            httpapi.NewManagementSystemAccountCreateHandlerWithOperationLog(systemAccountService, operationLogOptions),
+		SystemTeamCreateHandler:               httpapi.NewManagementSystemTeamCreateHandlerWithOperationLog(systemTeamService, operationLogOptions),
 		AuthorizationGranteeAccountsHandler:   httpapi.NewManagementAuthorizationGranteeAccountsHandler(authorizationOptionService),
 		MyAuthorizationGranteeAccountsHandler: httpapi.NewManagementMyAuthorizationGranteeAccountsHandler(authorizationOptionService),
 		AuthorizationGranteeTeamsHandler:      httpapi.NewManagementAuthorizationGranteeTeamsHandler(authorizationOptionService),
