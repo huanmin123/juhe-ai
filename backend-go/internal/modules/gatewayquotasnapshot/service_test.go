@@ -138,6 +138,45 @@ func TestServiceBuildMatchesNodeSnapshotScopes(t *testing.T) {
 	}
 }
 
+func TestServiceBuildRequiresStore(t *testing.T) {
+	service := NewService(nil)
+	if _, err := service.Build(context.Background(), BuildInput{Timezone: "UTC"}); err == nil {
+		t.Fatal("Build() error = nil, want missing store error")
+	}
+}
+
+func TestServiceBuildPreservesIncompleteCostWindow(t *testing.T) {
+	store := &snapshotStoreStub{
+		apiKeys: port.GatewayQuotaSnapshotRows[port.GatewayQuotaSnapshotAPIKeyRow]{
+			Rows: []port.GatewayQuotaSnapshotAPIKeyRow{{
+				ID:              "key_incomplete",
+				SystemAccountID: "sys_incomplete",
+				Limits: port.ManagementRequestQuotaLimits{
+					Daily: &port.ManagementRequestQuotaLimit{Enabled: true, Limit: 100},
+				},
+			}},
+			Complete: false,
+		},
+		authorizations:     port.GatewayQuotaSnapshotRows[port.GatewayQuotaSnapshotAuthorizationRow]{Complete: true},
+		teamAuthorizations: port.GatewayQuotaSnapshotRows[port.GatewayQuotaSnapshotTeamAuthorizationRow]{Complete: true},
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		Store: store,
+		Now:   func() time.Time { return time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC) },
+	})
+
+	snapshot, err := service.Build(context.Background(), BuildInput{Timezone: "UTC"})
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+	if snapshot.CostEntriesComplete {
+		t.Fatal("cost entries complete = true, want false from bounded API Key window")
+	}
+	if !snapshot.AuthorizationEntriesComplete {
+		t.Fatal("authorization entries complete = false, want true")
+	}
+}
+
 func TestServiceBuildSkipsTeamAccountQuotaWithoutInstanceAccount(t *testing.T) {
 	store := &snapshotStoreStub{
 		apiKeys: port.GatewayQuotaSnapshotRows[port.GatewayQuotaSnapshotAPIKeyRow]{Complete: true},

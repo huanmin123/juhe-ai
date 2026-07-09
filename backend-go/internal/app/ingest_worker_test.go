@@ -147,6 +147,22 @@ func TestRunGatewayQuotaSnapshotBuildWorkerRequiresPostgresURL(t *testing.T) {
 	}
 }
 
+func TestRunGatewayQuotaSnapshotBuildWorkerRequiresRedisStateURLWhenPublishing(t *testing.T) {
+	cfg := config.Config{
+		PostgresURL:     "postgres://juhe_ai:password@127.0.0.1:5432/juhe_ai?sslmode=disable",
+		RedisNamespace:  "juhe-ai",
+		ShutdownTimeout: time.Second,
+	}
+
+	err := RunGatewayQuotaSnapshotBuildWorker(context.Background(), cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), GatewayQuotaSnapshotBuildWorkerOptions{
+		RunOnce:             true,
+		PublishRuntimeState: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_REDIS_STATE_URL") {
+		t.Fatalf("RunGatewayQuotaSnapshotBuildWorker() error = %v, want missing redis state url", err)
+	}
+}
+
 func TestRunGatewayQuotaSnapshotBuildWorkerValidatesInterval(t *testing.T) {
 	cfg := config.Config{
 		PostgresURL:     "postgres://juhe_ai:password@127.0.0.1:5432/juhe_ai?sslmode=disable",
@@ -174,5 +190,23 @@ func TestRunGatewayQuotaSnapshotBuildWorkerValidatesInitialDelay(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "初始延迟") {
 		t.Fatalf("RunGatewayQuotaSnapshotBuildWorker() error = %v, want invalid initial delay", err)
+	}
+}
+
+func TestRunGatewayQuotaSnapshotBuildWorkerValidatesSnapshotTTLWhenPublishing(t *testing.T) {
+	cfg := config.Config{
+		PostgresURL:     "postgres://juhe_ai:password@127.0.0.1:5432/juhe_ai?sslmode=disable",
+		RedisStateURL:   "redis://127.0.0.1:6379/1",
+		RedisNamespace:  "juhe-ai",
+		ShutdownTimeout: time.Second,
+	}
+
+	err := RunGatewayQuotaSnapshotBuildWorker(context.Background(), cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), GatewayQuotaSnapshotBuildWorkerOptions{
+		RunOnce:             true,
+		PublishRuntimeState: true,
+		SnapshotTTL:         -time.Second,
+	})
+	if err == nil || !strings.Contains(err.Error(), "Redis TTL") {
+		t.Fatalf("RunGatewayQuotaSnapshotBuildWorker() error = %v, want invalid redis ttl", err)
 	}
 }

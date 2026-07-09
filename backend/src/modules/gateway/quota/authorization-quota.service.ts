@@ -9,7 +9,14 @@ import { getPostgresPool } from '../../../storage/postgres-client.js'
 import { chunkValues, sqlPlaceholders } from '../../../storage/query-utils.js'
 import type { GroupUsageAccessMetadata, OpenAIAccountSecret } from '../../../storage/repositories.js'
 import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from '../../../storage/request-quota-limits.js'
-import { gatewayAuthorizationQuotaSnapshotVersion, isGatewayAuthorizationSnapshotIncomplete, readGatewayAuthorizationQuotaSnapshot } from './quota-snapshot-cache.service.js'
+import {
+  gatewayAuthorizationQuotaSnapshotVersion,
+  hasGatewayQuotaSnapshotAsync,
+  isGatewayAuthorizationSnapshotIncomplete,
+  isGatewayAuthorizationSnapshotIncompleteAsync,
+  readGatewayAuthorizationQuotaSnapshot,
+  readGatewayAuthorizationQuotaSnapshotAsync
+} from './quota-snapshot-cache.service.js'
 import {
   isRequestQuotaExceeded,
   loadRequestQuotaCostsBatch,
@@ -117,6 +124,24 @@ export async function checkGatewayAuthorizationQuotaAsync(input: {
     return sharedCached
   }
   if (runtimeConfig.cacheDriver === 'redis' && runtimeConfig.processRole === 'server') {
+    const snapshotInput = {
+      groupAuthorizationId: input.groupAccess.groupAuthorizationId,
+      groupAuthorizationQuotaLimited: input.groupAccess.groupAuthorizationQuotaLimited,
+      accountAuthorizationId: input.account?.accountAuthorizationId,
+      accountAuthorizationQuotaLimited: input.account?.accountAuthorizationQuotaLimited
+    }
+    const snapshotAvailable = await hasGatewayQuotaSnapshotAsync()
+    const snapshotNeedsFallback = snapshotAvailable
+      ? await authorizationQuotaSnapshotNeedsDbFallbackAsync(snapshotInput)
+      : true
+    if (!snapshotNeedsFallback) {
+      const decision = await authorizationQuotaDecisionFromSnapshotAsync(snapshotInput)
+      await setAuthorizationQuotaCacheEntryAsync(cacheKey, {
+        ...decision,
+        checkedAtMs: Date.now()
+      })
+      return decision
+    }
     try {
       const dbService = await import('../../db-service/db-service-ipc.js')
       const decision = await dbService.requestDbService({
@@ -133,8 +158,10 @@ export async function checkGatewayAuthorizationQuotaAsync(input: {
       logger.warn(errorLogFields(error, {
         event: 'gateway_authorization_quota_redis_exact_check_failed',
         groupAuthorizationId: input.groupAccess.groupAuthorizationId,
-        accountAuthorizationId: input.account?.accountAuthorizationId
-      }), 'Redis 模式授权配额精确补判失败，按保护策略拒绝请求')
+        accountAuthorizationId: input.account?.accountAuthorizationId,
+        snapshotAvailable,
+        snapshotNeedsFallback
+      }), 'Redis 模式授权配额共享快照未命中且精确补判失败，按保护策略拒绝请求')
       return { allowed: false, message: AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE }
     }
   }
@@ -265,6 +292,46 @@ export async function checkGatewayAuthorizationQuotaBatchAsync(input: {
       output.set(accountId, decision)
     }
     if (runtimeConfig.cacheDriver === 'redis') {
+      const snapshotAvailable = await hasGatewayQuotaSnapshotAsync()
+      if (snapshotAvailable) {
+        const snapshotDecisionsByCacheKey = new Map<string, AuthorizationQuotaDecision>()
+        const stillMissingAccounts: OpenAIAccountSecret[] = []
+        for (const account of missingAccounts) {
+          const cacheKey = missingCacheKeys.get(account.id)
+          if (!cacheKey) continue
+          const snapshotInput = {
+            groupAuthorizationId: input.groupAccess.groupAuthorizationId,
+            groupAuthorizationQuotaLimited: input.groupAccess.groupAuthorizationQuotaLimited,
+            accountAuthorizationId: account.accountAuthorizationId,
+            accountAuthorizationQuotaLimited: account.accountAuthorizationQuotaLimited
+          }
+          if (await authorizationQuotaSnapshotNeedsDbFallbackAsync(snapshotInput)) {
+            stillMissingAccounts.push(account)
+            continue
+          }
+          const decision = await authorizationQuotaDecisionFromSnapshotAsync(snapshotInput)
+          snapshotDecisionsByCacheKey.set(cacheKey, decision)
+          await setAuthorizationQuotaCacheEntryAsync(cacheKey, {
+            ...decision,
+            checkedAtMs: Date.now()
+          })
+        }
+        for (const [accountId, cacheKey] of missingCacheKeys.entries()) {
+          const decision = snapshotDecisionsByCacheKey.get(cacheKey)
+          if (decision) {
+            output.set(accountId, decision)
+          }
+        }
+        missingAccounts.splice(0, missingAccounts.length, ...stillMissingAccounts)
+        if (!missingAccounts.length) {
+          input.accounts.forEach((account) => {
+            if (!output.has(account.id)) {
+              output.set(account.id, { allowed: true })
+            }
+          })
+          return output
+        }
+      }
       try {
         const dbService = await import('../../db-service/db-service-ipc.js')
         const decisions = await dbService.requestDbService({
@@ -1014,6 +1081,29 @@ function authorizationQuotaSnapshotNeedsDbFallback(input: {
   )
 }
 
+async function authorizationQuotaSnapshotNeedsDbFallbackAsync(input: {
+  groupAuthorizationId?: string
+  groupAuthorizationQuotaLimited?: boolean
+  accountAuthorizationId?: string
+  accountAuthorizationQuotaLimited?: boolean
+}): Promise<boolean> {
+  if (!await isGatewayAuthorizationSnapshotIncompleteAsync()) {
+    return false
+  }
+  if (
+    input.groupAuthorizationId
+    && input.groupAuthorizationQuotaLimited
+    && !(await readGatewayAuthorizationQuotaSnapshotAsync('group_authorization', input.groupAuthorizationId))
+  ) {
+    return true
+  }
+  return Boolean(
+    input.accountAuthorizationId
+    && input.accountAuthorizationQuotaLimited
+    && !(await readGatewayAuthorizationQuotaSnapshotAsync('account_authorization', input.accountAuthorizationId))
+  )
+}
+
 function authorizationQuotaDecisionFromSnapshot(input: {
   groupAuthorizationId?: string
   groupAuthorizationQuotaLimited?: boolean
@@ -1032,6 +1122,30 @@ function authorizationQuotaDecisionFromSnapshot(input: {
     return accountDecision
   }
   if (input.accountAuthorizationId && input.accountAuthorizationQuotaLimited && !accountDecision && isGatewayAuthorizationSnapshotIncomplete()) {
+    return { allowed: false, message: AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE }
+  }
+  return { allowed: true }
+}
+
+async function authorizationQuotaDecisionFromSnapshotAsync(input: {
+  groupAuthorizationId?: string
+  groupAuthorizationQuotaLimited?: boolean
+  accountAuthorizationId?: string
+  accountAuthorizationQuotaLimited?: boolean
+}): Promise<AuthorizationQuotaDecision> {
+  const groupDecision = await readGatewayAuthorizationQuotaSnapshotAsync('group_authorization', input.groupAuthorizationId)
+  if (groupDecision && !groupDecision.allowed) {
+    return groupDecision
+  }
+  const snapshotIncomplete = await isGatewayAuthorizationSnapshotIncompleteAsync()
+  if (input.groupAuthorizationId && input.groupAuthorizationQuotaLimited && !groupDecision && snapshotIncomplete) {
+    return { allowed: false, message: AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE }
+  }
+  const accountDecision = await readGatewayAuthorizationQuotaSnapshotAsync('account_authorization', input.accountAuthorizationId)
+  if (accountDecision && !accountDecision.allowed) {
+    return accountDecision
+  }
+  if (input.accountAuthorizationId && input.accountAuthorizationQuotaLimited && !accountDecision && snapshotIncomplete) {
     return { allowed: false, message: AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE }
   }
   return { allowed: true }

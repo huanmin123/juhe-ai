@@ -14,7 +14,12 @@ import {
   requestQuotaCostKey,
   requestQuotaCostKeyAsync
 } from './request-quota-checker.js'
-import { isGatewayQuotaCostSnapshotIncomplete, readGatewayQuotaCostsSnapshot } from './quota-snapshot-cache.service.js'
+import {
+  isGatewayQuotaCostSnapshotIncomplete,
+  isGatewayQuotaCostSnapshotIncompleteAsync,
+  readGatewayQuotaCostsSnapshot,
+  readGatewayQuotaCostsSnapshotAsync
+} from './quota-snapshot-cache.service.js'
 
 export const API_KEY_QUOTA_EXCEEDED_MESSAGE = '额度已用完，请联系管理员提升额度'
 
@@ -163,6 +168,24 @@ export async function checkGatewayApiKeyQuotaAsync(apiKey: GatewayApiKeyRow): Pr
     return sharedCached
   }
   if (runtimeConfig.cacheDriver === 'redis' && runtimeConfig.processRole === 'server') {
+    const costs = await readGatewayQuotaCostsSnapshotAsync({
+      systemAccountId: apiKey.system_account_id,
+      scopeType: 'api_key',
+      scopeId: apiKey.id,
+      hourlyWindowHours: quotaLimits.hourly?.hours
+    })
+    if (costs) {
+      const passiveDecision: ApiKeyQuotaCacheEntry = {
+        allowed: !isRequestQuotaExceeded(quotaLimits, costs),
+        checkedAtMs: Date.now()
+      }
+      if (!passiveDecision.allowed) {
+        passiveDecision.message = API_KEY_QUOTA_EXCEEDED_MESSAGE
+      }
+      await setApiKeyQuotaCacheEntryAsync(apiKey.id, cacheKey, passiveDecision)
+      return passiveDecision
+    }
+    const snapshotIncomplete = await isGatewayQuotaCostSnapshotIncompleteAsync()
     try {
       const dbService = await import('../../db-service/db-service-ipc.js')
       const decision = await dbService.requestDbService({ type: 'check_api_key_quota', apiKey }, { timeoutMs: 1000 })
@@ -175,8 +198,9 @@ export async function checkGatewayApiKeyQuotaAsync(apiKey: GatewayApiKeyRow): Pr
       logger.warn(errorLogFields(error, {
         event: 'gateway_api_key_quota_redis_exact_check_failed',
         apiKeyId: apiKey.id,
-        systemAccountId: apiKey.system_account_id
-      }), 'Redis 模式 API Key 配额精确补判失败，按保护策略拒绝请求')
+        systemAccountId: apiKey.system_account_id,
+        snapshotIncomplete
+      }), 'Redis 模式 API Key 配额共享快照未命中且精确补判失败，按保护策略拒绝请求')
       return { allowed: false, message: API_KEY_QUOTA_EXCEEDED_MESSAGE }
     }
   }

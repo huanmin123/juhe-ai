@@ -341,6 +341,8 @@ try {
 function assertGatewayQuotaSnapshotSourcesBounded(): void {
   const repositorySource = readFileSync(new URL('../../storage/gateway-quota-snapshot.repository.ts', import.meta.url), 'utf8')
   const cacheSource = readFileSync(new URL('../../modules/gateway/quota/quota-snapshot-cache.service.ts', import.meta.url), 'utf8')
+  const apiKeyQuotaSource = readFileSync(new URL('../../modules/gateway/quota/api-key-quota.service.ts', import.meta.url), 'utf8')
+  const authorizationQuotaSource = readFileSync(new URL('../../modules/gateway/quota/authorization-quota.service.ts', import.meta.url), 'utf8')
   const apiKeyRowsBody = sourceFunctionBlock(repositorySource, 'function loadApiKeyQuotaSnapshotRows')
   const authorizationRowsBody = sourceFunctionBlock(repositorySource, 'function loadAuthorizationQuotaSnapshotRows')
   const teamRowsBody = sourceFunctionBlock(repositorySource, 'function loadTeamAuthorizationQuotaSnapshotRows')
@@ -357,6 +359,12 @@ function assertGatewayQuotaSnapshotSourcesBounded(): void {
   assert(teamRowsBody.includes('rows.slice(0, maxGatewayQuotaSnapshotAuthorizationEntries)'), '团队授权额度快照发送前必须限制 IPC payload 大小')
   assert(!teamRowsBody.includes('OFFSET ?'), '团队授权额度快照构建禁止通过 OFFSET 循环读取全表')
   assert(!cacheSource.includes('.slice(0,'), 'server 接收完整额度快照时不应二次截断导致误 429')
+  assert(cacheSource.includes("createRuntimeStateStore('gateway_quota_snapshot')"), 'Redis 模式必须通过 runtime state 读取 Go worker 发布的网关额度快照')
+  assert(sourceFunctionBlock(cacheSource, 'async function readGatewayQuotaCostsSnapshotAsync').includes('sharedSnapshotCostEntries.get'), 'Redis 模式 API Key 额度快照必须读取 runtime state shared snapshot')
+  assert(sourceFunctionBlock(cacheSource, 'async function readGatewayAuthorizationQuotaSnapshotAsync').includes('sharedSnapshotAuthorizationEntries.get'), 'Redis 模式授权额度快照必须读取 runtime state shared snapshot')
+  assert(sourceFunctionBlock(apiKeyQuotaSource, 'export async function checkGatewayApiKeyQuotaAsync').includes('readGatewayQuotaCostsSnapshotAsync'), 'Redis 模式 API Key 额度检查必须先消费共享快照再 fallback')
+  assert(sourceFunctionBlock(authorizationQuotaSource, 'export async function checkGatewayAuthorizationQuotaAsync').includes('authorizationQuotaDecisionFromSnapshotAsync'), 'Redis 模式单授权额度检查必须先消费共享快照再 fallback')
+  assert(sourceFunctionBlock(authorizationQuotaSource, 'export async function checkGatewayAuthorizationQuotaBatchAsync').includes('authorizationQuotaDecisionFromSnapshotAsync'), 'Redis 模式批量授权额度检查必须先消费共享快照再 fallback')
 }
 
 function assertAuthorizationQuotaInvalidationSourcesConnected(): void {

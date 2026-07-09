@@ -137,6 +137,8 @@ func main() {
 	gatewayQuotaSnapshotCommand.Flags().DurationVar(&gatewayQuotaSnapshotOptions.InitialDelay, "initial-delay", gatewayQuotaSnapshotOptions.InitialDelay, "initial delay before the first build")
 	gatewayQuotaSnapshotCommand.Flags().BoolVar(&gatewayQuotaSnapshotOptions.RunOnce, "run-once", false, "run one build and exit")
 	gatewayQuotaSnapshotCommand.Flags().StringVar(&gatewayQuotaSnapshotOptions.Timezone, "timezone", "", "override usageStatsTimezone for local smoke; empty reads system settings")
+	gatewayQuotaSnapshotCommand.Flags().BoolVar(&gatewayQuotaSnapshotOptions.PublishRuntimeState, "publish-runtime-state", false, "publish the built snapshot to Redis runtime state for gateway consumption")
+	gatewayQuotaSnapshotCommand.Flags().DurationVar(&gatewayQuotaSnapshotOptions.SnapshotTTL, "snapshot-ttl", 0, "Redis runtime state snapshot TTL; 0 uses the service default")
 	root.AddCommand(gatewayQuotaSnapshotCommand)
 
 	if err := root.Execute(); err != nil {

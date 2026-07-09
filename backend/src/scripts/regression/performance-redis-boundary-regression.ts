@@ -228,6 +228,7 @@ function assertRuntimeStateStoreCallsites(): void {
       'modules/auth/login-guard.service.ts:auth_login_guard',
       'modules/gateway/client-profiles/codex-turn-retry.service.ts:gateway-codex-turn-retry',
       'modules/gateway/hybrid/affinity.service.ts:gateway-hybrid-route-affinity',
+      'modules/gateway/quota/quota-snapshot-cache.service.ts:gateway_quota_snapshot',
       'modules/gateway/runtime/client-ip-account-avoidance.service.ts:gateway-client-ip-account-avoidance',
       'modules/gateway/runtime/client-ip-error-circuit.service.ts:gateway-client-ip-error-circuit',
       'modules/gateway/runtime/normal-route-latency-degradation.service.ts:gateway-normal-route-latency-degradation',
@@ -378,14 +379,19 @@ function assertStrictRedisCacheBoundaries(): void {
   assert.match(functionBody(quotaSnapshotSource, 'replaceGatewayQuotaSnapshot'), /runtimeConfig\.cacheDriver === 'redis'[\s\S]*clearGatewayQuotaSnapshot\(\)[\s\S]*return[\s\S]*costSnapshot\.set/, 'Redis cache driver 下 quota snapshot 不得装入本机 Map')
   assert.match(functionBody(quotaSnapshotSource, 'readGatewayQuotaCostsSnapshot'), /runtimeConfig\.cacheDriver === 'redis'\) return undefined/, 'Redis cache driver 下 API Key 配额不得读取本机 cost snapshot')
   assert.match(functionBody(quotaSnapshotSource, 'readGatewayAuthorizationQuotaSnapshot'), /runtimeConfig\.cacheDriver === 'redis'\) return undefined/, 'Redis cache driver 下授权配额不得读取本机 authorization snapshot')
+  assert.match(functionBody(quotaSnapshotSource, 'runtimeState'), /createRuntimeStateStore\('gateway_quota_snapshot'\)/, 'Redis cache driver 下 quota snapshot 只能通过 runtime state 共享快照，不得使用本机 Map 作为事实源')
+  assert.match(functionBody(quotaSnapshotSource, 'readGatewayQuotaCostsSnapshotAsync'), /readSharedGatewayQuotaSnapshot[\s\S]*sharedSnapshotCostEntries\.get/, 'Redis cache driver 下 API Key 配额 async 快照读取必须来自共享 runtime state memo')
+  assert.doesNotMatch(functionBody(quotaSnapshotSource, 'readGatewayQuotaCostsSnapshotAsync'), /costSnapshot\.get/, 'Redis cache driver 下 API Key 配额 async 快照读取不得回落本机 costSnapshot')
+  assert.match(functionBody(quotaSnapshotSource, 'readGatewayAuthorizationQuotaSnapshotAsync'), /readSharedGatewayQuotaSnapshot[\s\S]*sharedSnapshotAuthorizationEntries\.get/, 'Redis cache driver 下授权配额 async 快照读取必须来自共享 runtime state memo')
+  assert.doesNotMatch(functionBody(quotaSnapshotSource, 'readGatewayAuthorizationQuotaSnapshotAsync'), /authorizationSnapshot\.get/, 'Redis cache driver 下授权配额 async 快照读取不得回落本机 authorizationSnapshot')
 
   const apiKeyQuotaSource = source('modules/gateway/quota/api-key-quota.service.ts')
-  assert.match(functionBody(apiKeyQuotaSource, 'checkGatewayApiKeyQuotaAsync'), /runtimeConfig\.cacheDriver === 'redis' && runtimeConfig\.processRole === 'server'[\s\S]*requestDbService\(\{ type: 'check_api_key_quota'[\s\S]*gateway_api_key_quota_redis_exact_check_failed/, 'Redis cache driver 下 API Key 配额 shared cache miss 必须走 DB service 精确判定，不能用本机 snapshot')
+  assert.match(functionBody(apiKeyQuotaSource, 'checkGatewayApiKeyQuotaAsync'), /runtimeConfig\.cacheDriver === 'redis' && runtimeConfig\.processRole === 'server'[\s\S]*readGatewayQuotaCostsSnapshotAsync[\s\S]*requestDbService\(\{ type: 'check_api_key_quota'[\s\S]*gateway_api_key_quota_redis_exact_check_failed/, 'Redis cache driver 下 API Key 配额 shared cache miss 必须先读 runtime state snapshot，未命中再走 DB service 精确判定')
   assert.match(functionBody(apiKeyQuotaSource, 'setApiKeyQuotaCacheEntry'), /runtimeConfig\.cacheDriver === 'redis'[\s\S]*apiKeyQuotaCacheKeysById\.clear\(\)[\s\S]*return[\s\S]*addApiKeyQuotaCacheIndex/, 'Redis cache driver 下 API Key quota 不得维护本地 key 索引')
 
   const authorizationQuotaSource = source('modules/gateway/quota/authorization-quota.service.ts')
-  assert.match(functionBody(authorizationQuotaSource, 'checkGatewayAuthorizationQuotaAsync'), /runtimeConfig\.cacheDriver === 'redis' && runtimeConfig\.processRole === 'server'[\s\S]*requestDbService\(\{[\s\S]*type: 'check_authorization_quota'[\s\S]*gateway_authorization_quota_redis_exact_check_failed/, 'Redis cache driver 下授权配额 shared cache miss 必须走 DB service 精确判定，不能用本机 snapshot')
-  assert.match(functionBody(authorizationQuotaSource, 'checkGatewayAuthorizationQuotaBatchAsync'), /runtimeConfig\.cacheDriver === 'redis'[\s\S]*type: 'check_authorization_quota_batch'[\s\S]*gateway_authorization_quota_batch_redis_exact_check_failed/, 'Redis cache driver 下授权配额批量 shared cache miss 必须走 DB service 精确判定')
+  assert.match(functionBody(authorizationQuotaSource, 'checkGatewayAuthorizationQuotaAsync'), /runtimeConfig\.cacheDriver === 'redis' && runtimeConfig\.processRole === 'server'[\s\S]*hasGatewayQuotaSnapshotAsync[\s\S]*authorizationQuotaDecisionFromSnapshotAsync[\s\S]*requestDbService\(\{[\s\S]*type: 'check_authorization_quota'[\s\S]*gateway_authorization_quota_redis_exact_check_failed/, 'Redis cache driver 下授权配额 shared cache miss 必须先读 runtime state snapshot，未命中再走 DB service 精确判定')
+  assert.match(functionBody(authorizationQuotaSource, 'checkGatewayAuthorizationQuotaBatchAsync'), /runtimeConfig\.cacheDriver === 'redis'[\s\S]*hasGatewayQuotaSnapshotAsync[\s\S]*authorizationQuotaDecisionFromSnapshotAsync[\s\S]*type: 'check_authorization_quota_batch'[\s\S]*gateway_authorization_quota_batch_redis_exact_check_failed/, 'Redis cache driver 下授权配额批量 shared cache miss 必须先读 runtime state snapshot，未命中再走 DB service 精确判定')
 
   const localSuppressionSource = source('modules/gateway/runtime/account-local-suppression-store.ts')
   assert.match(functionBody(localSuppressionSource, 'canUseProcessLocalAccountRuntimeState'), /runtimeConfig\.runtimeStateDriver !== 'redis'[\s\S]*localAccountSuppressions\.clear\(\)[\s\S]*localAccountDegradations\.clear\(\)[\s\S]*return false/, 'Redis runtime state 下账号本机 suppression/degradation 必须禁用并清空')
