@@ -54,7 +54,7 @@ try {
   const accountRun = await runModelCheck({
     targetType: 'account',
     targetId: account.id,
-    model: 'gpt-5.5',
+    model: 'gpt-5.6-sol',
     profile: 'full',
     trustedComparison: false
   }, { systemAccountId: 'sys_admin', role: 'admin' }, undefined, (event) => {
@@ -70,9 +70,9 @@ try {
   assert(!accountRun.checks.some((item) => item.itemType === 'model_catalog'), '模型检测报告不应再包含本地模型目录检测项')
   assert(!progressItemKeys.some((itemKey) => itemKey.endsWith('.model_catalog')), '模型检测进度不应再执行本地模型目录探针')
 
-  usageRecordQueue.flushUsageRecordQueue({ drain: true, retryOnFailure: false })
+  await usageRecordQueue.flushUsageRecordQueueAsync({ drain: true, retryOnFailure: false })
   const runTraceIds = new Set(accountRun.checks.map((check) => check.traceId).filter((traceId): traceId is string => Boolean(traceId)))
-  const usageRows = repositories.listUsageRecords({ systemAccountId: 'sys_admin', role: 'admin' }, {
+  const usageRows = repositories.listUsageRecords({ systemAccountId: 'sys_admin', systemAccountFilterId: 'sys_admin', role: 'admin' }, {
     page: 1,
     pageSize: 200
   }).items.filter((row) => runTraceIds.has(row.traceId))
@@ -125,6 +125,9 @@ function createMockUpstream(): http.Server {
           object: 'list',
           data: [
             { id: 'gpt-5.5', object: 'model', created: 0, owned_by: 'mock' },
+            { id: 'gpt-5.6-sol', object: 'model', created: 0, owned_by: 'mock' },
+            { id: 'gpt-5.6-terra', object: 'model', created: 0, owned_by: 'mock' },
+            { id: 'gpt-5.6-luna', object: 'model', created: 0, owned_by: 'mock' },
             { id: 'gpt-5.4', object: 'model', created: 0, owned_by: 'mock' }
           ]
         })
@@ -133,7 +136,7 @@ function createMockUpstream(): http.Server {
       if (req.method === 'POST' && url.pathname === '/v1/responses') {
         const outputText = outputForProbe(body)
         if (body.stream === true) {
-          sendStream(res, String(body.model ?? 'gpt-5.5'), outputText)
+          sendStream(res, String(body.model ?? 'gpt-5.6-sol'), outputText)
         } else {
           sendJson(res, responsePayload(body, outputText))
         }
@@ -151,7 +154,7 @@ function responsePayload(body: Record<string, unknown>, outputText: string): Rec
     id: 'resp_model_check_full_profile',
     object: 'response',
     status: 'completed',
-    model: String(body.model ?? 'gpt-5.5'),
+    model: String(body.model ?? 'gpt-5.6-sol'),
     output: hasTool
       ? [{
           type: 'function_call',

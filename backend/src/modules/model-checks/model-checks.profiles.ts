@@ -31,11 +31,26 @@ export interface ModelCheckProtocolProfile {
   defaultModel: string
 }
 
-const gptModels = ['gpt-5.5', 'gpt-5.4'] as const
+const gptModels = ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4'] as const
 const anthropicModels = ['claude-opus-4-8', 'claude-opus-4-7'] as const
 const glmModels = ['glm-5.2', 'glm-5.1'] as const
 const deepSeekModels = ['deepseek-v4-flash', 'deepseek-v4-pro'] as const
 const geminiModels = ['gemini-3.5-flash', 'gemini-3.1-pro-preview'] as const
+const preferredPairedModels = new Map<string, string>([
+  ['gpt-5.6-sol', 'gpt-5.6-terra'],
+  ['gpt-5.6-terra', 'gpt-5.6-sol'],
+  ['gpt-5.6-luna', 'gpt-5.6-terra'],
+  ['gpt-5.5', 'gpt-5.4'],
+  ['gpt-5.4', 'gpt-5.5'],
+  ['claude-opus-4-8', 'claude-opus-4-7'],
+  ['claude-opus-4-7', 'claude-opus-4-8'],
+  ['glm-5.2', 'glm-5.1'],
+  ['glm-5.1', 'glm-5.2'],
+  ['deepseek-v4-flash', 'deepseek-v4-pro'],
+  ['deepseek-v4-pro', 'deepseek-v4-flash'],
+  ['gemini-3.5-flash', 'gemini-3.1-pro-preview'],
+  ['gemini-3.1-pro-preview', 'gemini-3.5-flash']
+])
 
 export const modelCheckProtocolProfiles: readonly ModelCheckProtocolProfile[] = [
   {
@@ -125,9 +140,9 @@ export const supportedModels = uniqueStrings(modelCheckProtocolProfiles.flatMap(
 export const supportedModelSet = new Set<string>(supportedModels)
 export type SupportedModel = string
 
-export const defaultModel = modelCheckProtocolProfiles[0]?.defaultModel ?? 'gpt-5.5'
+export const defaultModel = modelCheckProtocolProfiles[0]?.defaultModel ?? 'gpt-5.6-sol'
 export const defaultProfile = 'full'
-export const probeSetVersion = 'multi-provider-model-check-v3-token-target-context'
+export const probeSetVersion = 'multi-provider-model-check-v4-gpt56-preview'
 export const distributionSampleCount = 5
 export const modelCheckSupportedProtocolLabel = 'OpenAI Responses / OpenAI Chat Completions / Anthropic Messages / Gemini native'
 
@@ -161,6 +176,8 @@ export function isModelCheckSupportedAccountProfile(account: ProviderProtocolPro
 }
 
 export function pairedModelForProfile(profile: ModelCheckProtocolProfile, model: string): string | undefined {
+  const preferred = preferredPairedModels.get(model)
+  if (preferred && profile.models.includes(preferred)) return preferred
   return profile.models.find((item) => item !== model)
 }
 

@@ -8,7 +8,9 @@ import {
   GEMINI_NATIVE_V1BETA_PROFILE_ID,
   GEMINI_PROVIDER_CODE,
   GLM_GENERAL_OPENAI_V1_PROFILE_ID,
-  GLM_PROVIDER_CODE
+  GLM_PROVIDER_CODE,
+  GPT_OPENAI_V1_PROFILE_ID,
+  GPT_VENDOR_CODE
 } from '../../domain/provider-protocol.js'
 import {
   buildLongContextPrompt,
@@ -21,16 +23,31 @@ import { longContextProbeDefinitions } from '../../modules/model-checks/model-ch
 import { parseModelCheckProbeResponse } from '../../modules/model-checks/model-checks-response-parsing.js'
 import {
   findModelCheckProfileForAccountModel,
+  pairedModelForProfile,
   supportedModels
 } from '../../modules/model-checks/model-checks.profiles.js'
 import { hasFunctionCall } from '../../modules/model-checks/model-checks-parsing.js'
 import { estimateTokenCountFromText } from '../../modules/gateway/protocols/openai-v1/stream-events.js'
 
+assert(supportedModels.includes('gpt-5.6-sol'), '应注册 GPT-5.6 Sol 完整模型 ID gpt-5.6-sol')
+assert(supportedModels.includes('gpt-5.6-terra'), '应注册 GPT-5.6 Terra 完整模型 ID gpt-5.6-terra')
+assert(supportedModels.includes('gpt-5.6-luna'), '应注册 GPT-5.6 Luna 完整模型 ID gpt-5.6-luna')
 assert(supportedModels.includes('claude-opus-4-8'), '应注册 Anthropic 完整模型 ID claude-opus-4-8')
 assert(supportedModels.includes('glm-5.2'), '应注册 GLM 完整模型 ID glm-5.2')
 assert(supportedModels.includes('deepseek-v4-flash'), '应注册 DeepSeek 完整模型 ID deepseek-v4-flash')
 assert(supportedModels.includes('gemini-3.5-flash'), '应注册 Gemini 完整模型 ID gemini-3.5-flash')
 assert(!supportedModels.includes('opus-4-8'), '不应注册 Anthropic 缩写模型 ID opus-4-8')
+
+const gptProfile = findModelCheckProfileForAccountModel({
+  providerCode: GPT_VENDOR_CODE,
+  providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
+}, 'gpt-5.6-sol')
+assert.equal(gptProfile?.protocol, 'openai_responses', 'GPT profile 应走 OpenAI Responses 检测')
+assert.equal(gptProfile?.defaultModel, 'gpt-5.6-sol', 'GPT profile 默认检测模型应跟随当前官方主模型')
+assert.equal(gptProfile ? pairedModelForProfile(gptProfile, 'gpt-5.6-sol') : undefined, 'gpt-5.6-terra', 'Sol 辅助对照应优先使用 Terra')
+assert.equal(gptProfile ? pairedModelForProfile(gptProfile, 'gpt-5.6-terra') : undefined, 'gpt-5.6-sol', 'Terra 辅助对照应优先使用 Sol')
+assert.equal(gptProfile ? pairedModelForProfile(gptProfile, 'gpt-5.6-luna') : undefined, 'gpt-5.6-terra', 'Luna 辅助对照应优先使用 Terra')
+assert.equal(gptProfile ? pairedModelForProfile(gptProfile, 'gpt-5.5') : undefined, 'gpt-5.4', '旧 GPT 5.5 辅助对照应保留 5.4')
 
 const glmProfile = findModelCheckProfileForAccountModel({
   providerCode: GLM_PROVIDER_CODE,
@@ -140,7 +157,7 @@ assert.equal(longContextTargets.get('context_8k'), 8_000, '8k 长上下文窗口
 assert.equal(longContextTargets.get('context_20k'), 20_000, '20k 长上下文窗口应按统一估算器生成到 20000 输入 token')
 assert.equal(longContextTargets.get('context_60k'), 60_000, '60k 长上下文窗口应按统一估算器生成到 60000 输入 token')
 
-const openAiLongContextRequest = createModelCheckLongContextRequest('openai_responses', 'gpt-5.5', longContextProbeDefinitions[2])
+const openAiLongContextRequest = createModelCheckLongContextRequest('openai_responses', 'gpt-5.6-sol', longContextProbeDefinitions[2])
 assert.equal(openAiLongContextRequest.path, '/v1/responses')
 assert.equal(openAiLongContextRequest.body.max_output_tokens, 48)
 
