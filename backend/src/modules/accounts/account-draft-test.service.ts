@@ -25,7 +25,8 @@ import {
   listProviders,
   listProvidersAsync,
   normalizeAccountCredentialsForWrite,
-  normalizeAccountModelMappingsForProvider
+  normalizeAccountModelMappingsForProvider,
+  normalizeAccountModelMappingsForProviderAsync
 } from '../../storage/repositories.js'
 import type { RequestAccessScope } from '../auth/request-context.js'
 import { hashStableValue } from '../deduplication/deduplication.service.js'
@@ -128,7 +129,7 @@ export async function prepareAccountDraftTestSnapshotAsync(input: {
   draftAccountId?: string
 }): Promise<{ account: AccountSummary; draftAccount: AccountTestDraftSnapshot }> {
   const group = await findGroupSummaryAsync(input.accountInput.groupId, input.requestAccess)
-  return prepareAccountDraftTestSnapshotResolved(input, group, await listProvidersAsync())
+  return await prepareAccountDraftTestSnapshotResolvedAsync(input, group, await listProvidersAsync())
 }
 
 function prepareAccountDraftTestSnapshotResolved(
@@ -186,6 +187,109 @@ function prepareAccountDraftTestSnapshotResolved(
   const availabilitySchedule = accountAvailabilityScheduleFromRequest({ availabilitySchedule: accountInput.availabilitySchedule })
   const availabilityScheduleJson = accountAvailabilityScheduleJson(availabilitySchedule) ?? undefined
   const account = draftTestAccountSummary({
+    id: input.draftAccountId,
+    account: accountInput,
+    availabilitySchedule,
+    clientCompatibility,
+    credentials,
+    groupName: group.name,
+    ownerSystemAccountId,
+    defaultSupportedModels: provider.defaultSupportedModels,
+    providerProtocolProfileId: providerProfile.id,
+    protocolCode: providerProfile.protocolCode,
+    protocolVersion: providerProfile.protocolVersion
+  })
+  assertDraftEndpointModesCompatible(providerProfile, {
+    modes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[],
+    modelMappings: account.modelMappings,
+    accountType: accountInput.type,
+    clientCompatibility
+  })
+  return {
+    account,
+    draftAccount: {
+      id: account.id,
+      ownerSystemAccountId,
+      groupId: accountInput.groupId,
+      groupName: group.name,
+      providerCode: accountInput.providerCode,
+      providerProtocolProfileId: providerProfile.id,
+      protocolCode: providerProfile.protocolCode,
+      protocolVersion: providerProfile.protocolVersion,
+      name: account.name,
+      type: accountInput.type,
+      credentials,
+      concurrencyLimit: account.concurrencyLimit,
+      priority: account.priority,
+      superPriorityEnabled: account.superPriorityEnabled,
+      fallbackEnabled: account.fallbackEnabled,
+      clientCompatibility,
+      supportedModels: account.supportedModels,
+      modelMappings: account.modelMappings,
+      proxyProfileId: account.proxyProfileId,
+      accountExpiresAt: account.accountExpiresAt,
+      availabilitySchedule,
+      availabilityScheduleJson,
+      notes: account.notes
+    }
+  }
+}
+
+async function prepareAccountDraftTestSnapshotResolvedAsync(
+  input: {
+    accountInput: AccountDraftTestAccountRequest
+    requestAccess: RequestAccessScope
+    draftAccountId?: string
+  },
+  group: ReturnType<typeof findGroupSummary>,
+  providers: ReturnType<typeof listProviders>
+): Promise<{ account: AccountSummary; draftAccount: AccountTestDraftSnapshot }> {
+  const accountInput = input.accountInput
+  if (!group || group.providerCode !== accountInput.providerCode || group.permissions?.canManageAccounts === false) {
+    throw new Error('账户分组无效')
+  }
+  const provider = providers.find((item) => item.code === accountInput.providerCode)
+  const providerProtocolProfileId = optionalText(accountInput.providerProtocolProfileId)
+  if (!providerProtocolProfileId) {
+    throw new Error('账户 providerProtocolProfileId 不能为空')
+  }
+  const providerProfile = provider?.protocolProfiles.find((item) => item.id === providerProtocolProfileId)
+  if (!provider || !providerProfile || !providerProfile.accountTypes.includes(accountInput.type as AccountSummary['type'])) {
+    throw new Error(`供应商 ${accountInput.providerCode} 不支持账户类型 ${accountInput.type}`)
+  }
+  if (!provider.enabled) {
+    throw new Error(`供应商已停用：${accountInput.providerCode}`)
+  }
+  if (!isGatewaySupportedProtocolProfile(providerProfile)) {
+    throw new Error('当前仅支持测试 OpenAI 或 Anthropic 协议账户')
+  }
+  const ownerSystemAccountId = group.ownerSystemAccountId
+    ?? group.systemAccountId
+    ?? input.requestAccess.systemAccountFilterId
+    ?? input.requestAccess.systemAccountId
+  if (!ownerSystemAccountId) {
+    throw new Error('账户分组缺少归属用户，无法测试')
+  }
+  const clientCompatibility = isAnthropicProtocolProfile(providerProfile)
+    ? 'openai_standard' as const
+    : normalizeOpenAIAccountClientCompatibility(
+        accountInput.providerCode,
+        accountInput.type,
+        undefined,
+        'openai_standard',
+        providerProfile
+      )
+  const credentials = normalizeAccountCredentialsForWrite(accountInput.type, draftAccountCredentials(accountInput, providerProfile.baseUrl), {
+    providerCode: accountInput.providerCode,
+    accountType: accountInput.type,
+    clientCompatibility,
+    providerProtocolProfileId: providerProfile.id,
+    protocolCode: providerProfile.protocolCode,
+    protocolVersion: providerProfile.protocolVersion
+  })
+  const availabilitySchedule = accountAvailabilityScheduleFromRequest({ availabilitySchedule: accountInput.availabilitySchedule })
+  const availabilityScheduleJson = accountAvailabilityScheduleJson(availabilitySchedule) ?? undefined
+  const account = await draftTestAccountSummaryAsync({
     id: input.draftAccountId,
     account: accountInput,
     availabilitySchedule,
@@ -785,6 +889,77 @@ function draftTestAccountSummary(input: {
   }
 }
 
+async function draftTestAccountSummaryAsync(input: {
+  id?: string
+  account: AccountDraftTestAccountRequest
+  availabilitySchedule: ReturnType<typeof accountAvailabilityScheduleFromRequest>
+  clientCompatibility: AccountSummary['clientCompatibility']
+  credentials: Record<string, unknown>
+  groupName?: string
+  ownerSystemAccountId: string
+  defaultSupportedModels: string[]
+  providerProtocolProfileId: string
+  protocolCode: string
+  protocolVersion: string
+}): Promise<AccountSummary> {
+  const usage = emptyAccountUsageSummary()
+  const supportedModels = draftSupportedModels(input.account.providerCode, input.account.supportedModels, input.defaultSupportedModels)
+  const modelMappings = await normalizeDraftAccountModelMappingsAsync(input.account.modelMappings, input.account.providerCode, input.ownerSystemAccountId, {
+    providerCode: input.account.providerCode,
+    providerProtocolProfileId: input.providerProtocolProfileId,
+    protocolCode: input.protocolCode,
+    protocolVersion: input.protocolVersion
+  }, input.credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]) ?? []
+  assertAccountModelMappingUpstreamsAllowedBySupportedModels(modelMappings, supportedModels)
+  return {
+    id: input.id ?? newId('acctdraft'),
+    systemAccountId: input.ownerSystemAccountId,
+    ownerSystemAccountId: input.ownerSystemAccountId,
+    providerCode: input.account.providerCode,
+    providerProtocolProfileId: input.providerProtocolProfileId,
+    protocolCode: input.protocolCode,
+    protocolVersion: input.protocolVersion,
+    name: input.account.name,
+    notes: optionalText(input.account.notes),
+    type: input.account.type,
+    credentials: input.credentials,
+    status: 'active',
+    concurrencyLimit: input.account.concurrencyLimit ?? 20,
+    currentConcurrency: 0,
+    priority: input.account.priority ?? 0,
+    superPriorityEnabled: input.account.superPriorityEnabled ?? false,
+    fallbackEnabled: input.account.fallbackEnabled ?? false,
+    clientCompatibility: input.clientCompatibility,
+    supportedModels,
+    modelMappings,
+    proxyProfileId: optionalText(input.account.proxyProfileId),
+    schedulable: true,
+    availabilitySchedule: input.availabilitySchedule,
+    accountExpiresAt: optionalText(input.account.accountExpiresAt),
+    todayUsage: usage,
+    usage,
+    accessType: 'owner',
+    boundGroupId: input.account.groupId,
+    boundGroupName: input.groupName,
+    groupBindStatus: 'bound',
+    permissions: {
+      canUse: true,
+      canEdit: true,
+      canDelete: true,
+      canAuthorize: false,
+      canViewCredentials: true,
+      canManageAccounts: true,
+      canBindToApiKey: true
+    },
+    effectiveAvailability: {
+      available: true,
+      status: 'available',
+      label: '草稿测试',
+      color: 'blue'
+    }
+  }
+}
+
 function emptyAccountUsageSummary(): AccountSummary['usage'] {
   return {
     requestCount: 0,
@@ -828,6 +1003,23 @@ function normalizeDraftAccountModelMappings(
   supportedEndpointModes: readonly AccountSupportedEndpointMode[] | undefined
 ): AccountSummary['modelMappings'] {
   return normalizeAccountModelMappingsForProvider(value ?? [], providerCode, ownerSystemAccountId, providerProfile, {
+    supportedEndpointModes
+  }) ?? []
+}
+
+async function normalizeDraftAccountModelMappingsAsync(
+  value: unknown,
+  providerCode: string,
+  ownerSystemAccountId: string,
+  providerProfile: {
+    providerCode?: string
+    providerProtocolProfileId?: string
+    protocolCode?: string
+    protocolVersion?: string
+  },
+  supportedEndpointModes: readonly AccountSupportedEndpointMode[] | undefined
+): Promise<AccountSummary['modelMappings']> {
+  return await normalizeAccountModelMappingsForProviderAsync(value ?? [], providerCode, ownerSystemAccountId, providerProfile, {
     supportedEndpointModes
   }) ?? []
 }

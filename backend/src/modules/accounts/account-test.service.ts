@@ -30,6 +30,10 @@ import {
   parseOpenAIUpstreamMessage
 } from '../gateway/protocols/openai-v1/response-parsing.js'
 import {
+  resolveOpenAIRequestModelMapping,
+  type ResolvedOpenAIModelMapping
+} from '../gateway/protocols/openai-v1/model-mapping.js'
+import {
   parseAnthropicUpstreamMessage,
   parseAnthropicStreamFailureMessage,
   extractAnthropicResponseOutputText
@@ -133,6 +137,7 @@ export async function testOpenAIAccount(
   let testRequest: ReturnType<typeof createAnthropicTestRequest> | ReturnType<typeof createGeminiTestRequest> | ReturnType<typeof createOpenAITestRequest> | undefined
   let requestBody: Record<string, unknown> | undefined
   let requestUrl: string | undefined
+  let modelMapping: ResolvedOpenAIModelMapping | undefined
   // 非 OpenAI v1 账户不使用 OpenAI 的 clientCompatibility 规范化，避免写入无意义的 OpenAI 格式值
   const accountClientCompatibility = anthropicProtocol || geminiProtocol
     ? 'openai_standard' as const
@@ -186,6 +191,7 @@ export async function testOpenAIAccount(
     const requestBodyText = JSON.stringify(requestBody)
     requestUrl = testRequest.path
     const request = createGatewayTestRequest(requestUrl, requestBody, requestBodyText, account.type === 'oauth', input.signal, clientCompatibility, testRequest.headers)
+    modelMapping = resolveOpenAIRequestModelMapping(request, resolved.account)
     const response = new MemoryGatewayResponse(startedAt)
     let diagnosticLastAttempt: UpstreamAttempt | undefined
     const context: RequestContext = {
@@ -269,6 +275,7 @@ export async function testOpenAIAccount(
         ? accountTestSuccessMessage(account, responseTruncated, requestUrl)
         : proxyFailureMessage || upstreamMessage || streamFailureMessage || accountTestHttpFailureMessage(diagnosticStatusCode, response.statusCode),
       model: testRequest?.model,
+      ...accountTestModelMappingFields(modelMapping),
       testEndpointMode,
       requestUrl,
       requestBody,
@@ -302,6 +309,7 @@ export async function testOpenAIAccount(
       success: false,
       message,
       model: testRequest?.model,
+      ...accountTestModelMappingFields(modelMapping),
       testEndpointMode,
       requestUrl,
       requestBody,
@@ -462,6 +470,11 @@ function accountTestResultWithDiagnosticsMode(result: AccountTestResult, limited
     errorCode: result.errorCode,
     message,
     model: result.model,
+    upstreamModel: result.upstreamModel,
+    modelMappingApplied: result.modelMappingApplied,
+    modelMappingSource: result.modelMappingSource,
+    sourceEndpointFamily: result.sourceEndpointFamily,
+    upstreamEndpointFamily: result.upstreamEndpointFamily,
     testEndpointMode: result.testEndpointMode,
     responseText: result.success ? undefined : message,
     responseTruncated: result.success ? result.responseTruncated : undefined,
@@ -471,6 +484,23 @@ function accountTestResultWithDiagnosticsMode(result: AccountTestResult, limited
     accountStatusChanged: result.accountStatusChanged,
     accountStatus: result.accountStatus,
     accountFailureEligible: result.accountFailureEligible
+  }
+}
+
+function accountTestModelMappingFields(
+  mapping: ResolvedOpenAIModelMapping | undefined
+): Pick<AccountTestResult, 'upstreamModel' | 'modelMappingApplied' | 'modelMappingSource' | 'sourceEndpointFamily' | 'upstreamEndpointFamily'> {
+  if (!mapping) {
+    return {
+      modelMappingApplied: false
+    }
+  }
+  return {
+    upstreamModel: mapping.upstreamModel,
+    modelMappingApplied: true,
+    modelMappingSource: mapping.runtimeSource ?? 'account',
+    sourceEndpointFamily: mapping.sourceEndpointFamily,
+    upstreamEndpointFamily: mapping.upstreamEndpointFamily
   }
 }
 

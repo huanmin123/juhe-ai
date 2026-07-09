@@ -97,6 +97,31 @@ assertLineIncludes(successLines, 'API Key sk-a...good 测试结果：通过，HT
 assertLineIncludes(successLines, 'API Key sk-b...fail 测试结果：失败，HTTP 401，耗时 0.12s，错误码 invalid_api_key，invalid api key', 'Key 池输出应展示失败 Key 的前后缀和结果')
 assertLineIncludes(successLines, 'pong', '成功输出应展示返回内容')
 assertLineIncludes(successLines, '✓ 测试完成！  总耗时：1.2s，首 token：0.32s', '成功输出应展示总耗时和首 token')
+const mappedResult = resultFixture(apiKeyAccount, {
+  success: false,
+  statusCode: 400,
+  message: '上游模型不存在',
+  model: 'gpt-5.5',
+  upstreamModel: 'gpt-5.6-terra',
+  modelMappingApplied: true,
+  sourceEndpointFamily: 'responses',
+  upstreamEndpointFamily: 'responses',
+  responseText: 'model not found',
+  durationMs: 280,
+  testEndpointMode: 'responses_sse'
+})
+const mappedLines = accountTestSingleOutputLines({
+  account: apiKeyAccount,
+  testEndpointMode: 'responses_sse',
+  selectedEndpointModeText: 'Responses API (Streaming)',
+  model: 'gpt-5.5',
+  providerLabel: () => 'OpenAI',
+  result: mappedResult,
+  running: false
+})
+assertLineIncludes(mappedLines, '请求模型：gpt-5.5', '命中模型映射时应先展示用户请求模型')
+assertLineIncludes(mappedLines, '模型映射：Responses / gpt-5.5 -> Responses / gpt-5.6-terra', '命中模型映射时应展示协议和模型改写关系')
+assertLineIncludes(mappedLines, '实际上游模型：gpt-5.6-terra', '命中模型映射时应展示实际上游模型')
 const draftTestPayload = draftApiKeyPayload(['sk-a-draft-good', 'sk-b-draft-fail'])
 const draftRuntimeDetails = draftApiKeyTestRuntimeDetailsForPayload({ account: draftTestPayload, result: successResult }, draftTestPayload)
 assertEqual(draftRuntimeDetails?.length, 2, '草稿 Key 池测试结果应映射到每个输入 Key')
