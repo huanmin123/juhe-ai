@@ -302,6 +302,34 @@ func TestManagementResourceAuthorizationRevokeQueryKeepsTeamGrantScope(t *testin
 	}
 }
 
+func TestManagementResourceAuthorizationExpirySweepQueryUsesGrantExpiryIndex(t *testing.T) {
+	query := managementResourceAuthorizationExpirySweepQuery()
+	for _, want := range []string{
+		"FROM juhe_business.resource_authorization_grants",
+		"WHERE status IN ('active', 'paused')",
+		"expires_at IS NOT NULL",
+		"expires_at <= $1",
+		"ORDER BY expires_at ASC, updated_at ASC, id ASC",
+		"LIMIT $2",
+		"FOR UPDATE SKIP LOCKED",
+	} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("expiry sweep query missing %q:\n%s", want, query)
+		}
+	}
+	for _, forbidden := range []string{
+		"juhe_usage.usage_records",
+		"usage_records",
+		"SUM(",
+		"GROUP BY",
+		"resource_authorizations AS",
+	} {
+		if strings.Contains(query, forbidden) {
+			t.Fatalf("expiry sweep query should not contain %q:\n%s", forbidden, query)
+		}
+	}
+}
+
 func TestManagementResourceAuthorizationUpdateQueryKeepsRuntimeScope(t *testing.T) {
 	source, err := os.ReadFile("managementauthorizations.go")
 	if err != nil {

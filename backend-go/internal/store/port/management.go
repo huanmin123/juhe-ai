@@ -788,6 +788,19 @@ type ManagementResourceAuthorizationRevoker interface {
 	RevokeManagementResourceAuthorization(ctx context.Context, input ManagementResourceAuthorizationRevokeInput) (ManagementResourceAuthorizationSummary, bool, error)
 }
 
+type ManagementResourceAuthorizationExpirySweepInput struct {
+	Limit     int
+	ExpiredAt time.Time
+}
+
+type ManagementResourceAuthorizationExpirySweepResult struct {
+	Expired int
+}
+
+type ManagementResourceAuthorizationExpirySweeper interface {
+	ExpireDueManagementResourceAuthorizations(ctx context.Context, input ManagementResourceAuthorizationExpirySweepInput) (ManagementResourceAuthorizationExpirySweepResult, error)
+}
+
 type ManagementProviderEndpointFamily struct {
 	Code        string
 	Name        string

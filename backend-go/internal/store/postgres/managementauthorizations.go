@@ -17,6 +17,8 @@ import (
 	"juhe-ai/backend-go/internal/store/postgres/postgresqueries"
 )
 
+const managementResourceAuthorizationExpiredReason = "authorization_expired"
+
 func (s *Store) ListManagementResourceAuthorizations(ctx context.Context, input port.ManagementResourceAuthorizationListInput) (port.ManagementResourceAuthorizationListResult, error) {
 	limit := input.Limit
 	if limit <= 0 {
@@ -1225,6 +1227,122 @@ WHERE id = $3
 	}
 	committed = true
 	return summary, true, nil
+}
+
+func (s *Store) ExpireDueManagementResourceAuthorizations(ctx context.Context, input port.ManagementResourceAuthorizationExpirySweepInput) (port.ManagementResourceAuthorizationExpirySweepResult, error) {
+	if input.Limit <= 0 {
+		return port.ManagementResourceAuthorizationExpirySweepResult{}, nil
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return port.ManagementResourceAuthorizationExpirySweepResult{}, fmt.Errorf("begin management resource authorization expiry sweep tx: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = tx.Rollback(rollbackCtx)
+		}
+	}()
+
+	now := input.ExpiredAt.UTC()
+	rows, err := tx.Query(ctx, managementResourceAuthorizationExpirySweepQuery(), now, input.Limit)
+	if err != nil {
+		return port.ManagementResourceAuthorizationExpirySweepResult{}, fmt.Errorf("list due resource authorization grants: %w", err)
+	}
+	dueGrants := make([]postgresqueries.JuheBusinessResourceAuthorizationGrant, 0, input.Limit)
+	for rows.Next() {
+		var row postgresqueries.JuheBusinessResourceAuthorizationGrant
+		if err := rows.Scan(
+			&row.ID,
+			&row.ResourceType,
+			&row.ResourceID,
+			&row.ResourceOwnerSystemAccountID,
+			&row.GranteeType,
+			&row.GranteeSystemAccountID,
+			&row.GranteeTeamID,
+			&row.Scope,
+			&row.Status,
+			&row.Remark,
+			&row.ExpiresAt,
+			&row.LimitsJson,
+			&row.CreatedBy,
+			&row.CreatedAt,
+			&row.RevokedBy,
+			&row.RevokedAt,
+			&row.UpdatedAt,
+		); err != nil {
+			rows.Close()
+			return port.ManagementResourceAuthorizationExpirySweepResult{}, fmt.Errorf("scan due resource authorization grant: %w", err)
+		}
+		dueGrants = append(dueGrants, row)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return port.ManagementResourceAuthorizationExpirySweepResult{}, fmt.Errorf("iterate due resource authorization grants: %w", err)
+	}
+	rows.Close()
+
+	expired := 0
+	for _, grant := range dueGrants {
+		tag, err := tx.Exec(ctx, `
+UPDATE juhe_business.resource_authorization_grants
+SET status = 'expired',
+    revoked_at = COALESCE(revoked_at, $1),
+    updated_at = $1
+WHERE id = $2
+  AND status IN ('active', 'paused')
+`, now, grant.ID)
+		if err != nil {
+			return port.ManagementResourceAuthorizationExpirySweepResult{}, fmt.Errorf("expire resource authorization grant: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			continue
+		}
+		actor := textValue(grant.RevokedBy)
+		if actor == "" {
+			actor = grant.CreatedBy
+		}
+		grant.Status = "expired"
+		if !grant.RevokedAt.Valid {
+			grant.RevokedAt = pgTimestamptz(now)
+		}
+		grant.UpdatedAt = pgTimestamptz(now)
+		if err := syncManagementGrantRuntimeAfterUpdateTx(ctx, tx, grant, actor, now, 0); err != nil {
+			return port.ManagementResourceAuthorizationExpirySweepResult{}, err
+		}
+		expired++
+	}
+	if expired > 0 {
+		if err := markAllGroupAccountStatsDirtyIfPresentTx(ctx, tx, managementResourceAuthorizationExpiredReason, now); err != nil {
+			return port.ManagementResourceAuthorizationExpirySweepResult{}, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		if errors.Is(err, pgx.ErrTxCommitRollback) {
+			return port.ManagementResourceAuthorizationExpirySweepResult{}, fmt.Errorf("commit management resource authorization expiry sweep tx rolled back: %w", err)
+		}
+		return port.ManagementResourceAuthorizationExpirySweepResult{}, fmt.Errorf("commit management resource authorization expiry sweep tx: %w", err)
+	}
+	committed = true
+	return port.ManagementResourceAuthorizationExpirySweepResult{Expired: expired}, nil
+}
+
+func managementResourceAuthorizationExpirySweepQuery() string {
+	return `
+SELECT id, resource_type, resource_id, resource_owner_system_account_id,
+  grantee_type, grantee_system_account_id, grantee_team_id, scope,
+  status, remark, expires_at, limits_json, created_by,
+  created_at, revoked_by, revoked_at, updated_at
+FROM juhe_business.resource_authorization_grants
+WHERE status IN ('active', 'paused')
+  AND expires_at IS NOT NULL
+  AND expires_at <= $1
+ORDER BY expires_at ASC, updated_at ASC, id ASC
+LIMIT $2
+FOR UPDATE SKIP LOCKED
+`
 }
 
 func findUpdatableManagementGrantTx(ctx context.Context, tx pgx.Tx, input port.ManagementResourceAuthorizationUpdateInput) (postgresqueries.JuheBusinessResourceAuthorizationGrant, bool, error) {
@@ -2962,4 +3080,5 @@ var _ port.ManagementResourceAuthorizationLister = (*Store)(nil)
 var _ port.ManagementResourceAuthorizationRevoker = (*Store)(nil)
 var _ port.ManagementResourceAuthorizationReturner = (*Store)(nil)
 var _ port.ManagementResourceAuthorizationUpdater = (*Store)(nil)
+var _ port.ManagementResourceAuthorizationExpirySweeper = (*Store)(nil)
 var _ port.ManagementResourceAuthorizationUsageReader = (*Store)(nil)

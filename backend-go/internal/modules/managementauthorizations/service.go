@@ -21,22 +21,24 @@ import (
 )
 
 const (
-	maxRemarkRunes                                = 200
-	defaultAuthorizationListPageSize              = 50
-	maxAuthorizationListPageSize                  = 500
-	maxAuthorizationListWindowRows                = 1001
-	defaultAuthorizationUsagePageSize             = 20
-	defaultAuthorizationUsageDetailPageSize       = 200
-	maxAuthorizationUsagePageSize                 = 200
-	maxAuthorizationUsageListWindowRows           = 1001
-	maxAuthorizationUsageRangeDays                = 31
-	maxRequestQuotaHourlyWindowHours              = 24 * 30
-	maxRequestQuotaAmountUSD                      = 9_007_199_254_740_991
-	quotaAmountPrecision                    int64 = 1_000_000
-	ResourceAuthorizationCreatedReason            = "resource_authorization_created"
-	ResourceAuthorizationUpdatedReason            = "resource_authorization_updated"
-	ResourceAuthorizationReturnedReason           = "resource_authorization_returned"
-	ResourceAuthorizationRevokedReason            = "resource_authorization_revoked"
+	maxRemarkRunes                                 = 200
+	defaultAuthorizationListPageSize               = 50
+	maxAuthorizationListPageSize                   = 500
+	maxAuthorizationListWindowRows                 = 1001
+	defaultAuthorizationUsagePageSize              = 20
+	defaultAuthorizationUsageDetailPageSize        = 200
+	maxAuthorizationUsagePageSize                  = 200
+	maxAuthorizationUsageListWindowRows            = 1001
+	maxAuthorizationUsageRangeDays                 = 31
+	defaultAuthorizationExpirySweepBatchSize       = 20
+	maxRequestQuotaHourlyWindowHours               = 24 * 30
+	maxRequestQuotaAmountUSD                       = 9_007_199_254_740_991
+	quotaAmountPrecision                     int64 = 1_000_000
+	ResourceAuthorizationCreatedReason             = "resource_authorization_created"
+	ResourceAuthorizationUpdatedReason             = "resource_authorization_updated"
+	ResourceAuthorizationReturnedReason            = "resource_authorization_returned"
+	ResourceAuthorizationRevokedReason             = "resource_authorization_revoked"
+	ResourceAuthorizationExpiredReason             = "authorization_expired"
 )
 
 var (
@@ -55,6 +57,7 @@ type Service struct {
 	updateStore              port.ManagementResourceAuthorizationUpdater
 	returnStore              port.ManagementResourceAuthorizationReturner
 	revokeStore              port.ManagementResourceAuthorizationRevoker
+	expirySweepStore         port.ManagementResourceAuthorizationExpirySweeper
 	usageStore               port.ManagementAuthorizationUsageOverviewReader
 	usageDetailStore         port.ManagementResourceAuthorizationUsageReader
 	now                      func() time.Time
@@ -73,6 +76,7 @@ type ServiceOptions struct {
 	UpdateStore              port.ManagementResourceAuthorizationUpdater
 	ReturnStore              port.ManagementResourceAuthorizationReturner
 	RevokeStore              port.ManagementResourceAuthorizationRevoker
+	ExpirySweepStore         port.ManagementResourceAuthorizationExpirySweeper
 	UsageStore               port.ManagementAuthorizationUsageOverviewReader
 	UsageDetailStore         port.ManagementResourceAuthorizationUsageReader
 	Now                      func() time.Time
@@ -260,6 +264,14 @@ type RevokeInput struct {
 	ScopedSystemAccountID string
 }
 
+type ExpirySweepInput struct {
+	Limit int
+}
+
+type ExpirySweepResult struct {
+	Expired int `json:"expired"`
+}
+
 type GetInput struct {
 	AuthorizationID       string
 	ActorSystemAccountID  string
@@ -308,6 +320,12 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 			revokeStore = candidate
 		}
 	}
+	expirySweepStore := opts.ExpirySweepStore
+	if expirySweepStore == nil {
+		if candidate, ok := opts.Store.(port.ManagementResourceAuthorizationExpirySweeper); ok {
+			expirySweepStore = candidate
+		}
+	}
 	usageStore := opts.UsageStore
 	if usageStore == nil {
 		if candidate, ok := opts.Store.(port.ManagementAuthorizationUsageOverviewReader); ok {
@@ -327,6 +345,7 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 		updateStore:              updateStore,
 		returnStore:              returnStore,
 		revokeStore:              revokeStore,
+		expirySweepStore:         expirySweepStore,
 		usageStore:               usageStore,
 		usageDetailStore:         usageDetailStore,
 		now:                      now,
@@ -788,6 +807,32 @@ func (s *Service) Revoke(ctx context.Context, input RevokeInput) (Summary, bool,
 		}
 	}
 	return row, true, nil
+}
+
+func (s *Service) ExpireDue(ctx context.Context, input ExpirySweepInput) (ExpirySweepResult, error) {
+	if s.expirySweepStore == nil {
+		return ExpirySweepResult{}, fmt.Errorf("management resource authorization expiry sweeper is required")
+	}
+	limit := input.Limit
+	if limit == 0 {
+		limit = defaultAuthorizationExpirySweepBatchSize
+	}
+	if limit < 0 {
+		limit = 1
+	}
+	result, err := s.expirySweepStore.ExpireDueManagementResourceAuthorizations(ctx, port.ManagementResourceAuthorizationExpirySweepInput{
+		Limit:     limit,
+		ExpiredAt: s.now().UTC(),
+	})
+	if err != nil {
+		return ExpirySweepResult{}, err
+	}
+	if result.Expired > 0 && s.authorizationInvalidator != nil {
+		if err := s.authorizationInvalidator.InvalidateAuthorizationChanged(ctx, ResourceAuthorizationExpiredReason); err != nil {
+			return ExpirySweepResult{}, err
+		}
+	}
+	return ExpirySweepResult{Expired: result.Expired}, nil
 }
 
 func normalizeResourceType(value string) string {

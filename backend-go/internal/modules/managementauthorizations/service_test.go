@@ -568,6 +568,81 @@ func TestServiceRevokeValidatesInputAndSkipsInvalidationWhenNotFound(t *testing.
 	}
 }
 
+func TestServiceExpireDueUsesDefaultBatchAndInvalidatesAuthorizationCache(t *testing.T) {
+	now := time.Date(2026, 7, 9, 13, 30, 0, 0, time.UTC)
+	store := &authorizationExpirySweepStoreStub{
+		result: port.ManagementResourceAuthorizationExpirySweepResult{Expired: 2},
+	}
+	invalidator := &authorizationInvalidatorStub{}
+	service := NewServiceWithOptions(ServiceOptions{
+		ExpirySweepStore:         store,
+		Now:                      func() time.Time { return now },
+		AuthorizationInvalidator: invalidator,
+	})
+
+	got, err := service.ExpireDue(context.Background(), ExpirySweepInput{})
+
+	if err != nil {
+		t.Fatalf("ExpireDue() error = %v", err)
+	}
+	if got.Expired != 2 {
+		t.Fatalf("ExpireDue() = %+v, want expired 2", got)
+	}
+	if !store.called ||
+		store.input.Limit != defaultAuthorizationExpirySweepBatchSize ||
+		!store.input.ExpiredAt.Equal(now) {
+		t.Fatalf("store input = %+v", store.input)
+	}
+	if invalidator.calls != 1 || invalidator.reason != ResourceAuthorizationExpiredReason {
+		t.Fatalf("invalidator calls=%d reason=%q", invalidator.calls, invalidator.reason)
+	}
+}
+
+func TestServiceExpireDueNormalizesNegativeLimitAndSkipsInvalidationWhenEmpty(t *testing.T) {
+	now := time.Date(2026, 7, 9, 13, 30, 0, 0, time.UTC)
+	store := &authorizationExpirySweepStoreStub{}
+	invalidator := &authorizationInvalidatorStub{}
+	service := NewServiceWithOptions(ServiceOptions{
+		ExpirySweepStore:         store,
+		Now:                      func() time.Time { return now },
+		AuthorizationInvalidator: invalidator,
+	})
+
+	got, err := service.ExpireDue(context.Background(), ExpirySweepInput{Limit: -10})
+
+	if err != nil {
+		t.Fatalf("ExpireDue() error = %v", err)
+	}
+	if got.Expired != 0 {
+		t.Fatalf("ExpireDue() = %+v, want expired 0", got)
+	}
+	if !store.called || store.input.Limit != 1 {
+		t.Fatalf("store input = %+v, want limit 1", store.input)
+	}
+	if invalidator.calls != 0 {
+		t.Fatalf("invalidator calls = %d, want 0", invalidator.calls)
+	}
+}
+
+func TestServiceExpireDueDoesNotInvalidateWhenStoreFails(t *testing.T) {
+	storeErr := errors.New("store failed")
+	store := &authorizationExpirySweepStoreStub{err: storeErr}
+	invalidator := &authorizationInvalidatorStub{}
+	service := NewServiceWithOptions(ServiceOptions{
+		ExpirySweepStore:         store,
+		AuthorizationInvalidator: invalidator,
+	})
+
+	_, err := service.ExpireDue(context.Background(), ExpirySweepInput{Limit: 5})
+
+	if !errors.Is(err, storeErr) {
+		t.Fatalf("ExpireDue() error = %v, want store error", err)
+	}
+	if invalidator.calls != 0 {
+		t.Fatalf("invalidator calls = %d, want 0", invalidator.calls)
+	}
+}
+
 func TestServiceListNormalizesScopeAndRedactsNonOwnerSourceDetails(t *testing.T) {
 	createdAt := time.Date(2026, 7, 9, 10, 30, 0, 0, time.UTC)
 	store := &authorizationListStoreStub{
@@ -1045,6 +1120,22 @@ func (s *authorizationRevokeStoreStub) RevokeManagementResourceAuthorization(_ c
 	return s.result, s.found, nil
 }
 
+type authorizationExpirySweepStoreStub struct {
+	called bool
+	input  port.ManagementResourceAuthorizationExpirySweepInput
+	result port.ManagementResourceAuthorizationExpirySweepResult
+	err    error
+}
+
+func (s *authorizationExpirySweepStoreStub) ExpireDueManagementResourceAuthorizations(_ context.Context, input port.ManagementResourceAuthorizationExpirySweepInput) (port.ManagementResourceAuthorizationExpirySweepResult, error) {
+	s.called = true
+	s.input = input
+	if s.err != nil {
+		return port.ManagementResourceAuthorizationExpirySweepResult{}, s.err
+	}
+	return s.result, nil
+}
+
 type authorizationListStoreStub struct {
 	called bool
 	input  port.ManagementResourceAuthorizationListInput
@@ -1139,6 +1230,7 @@ var _ port.ManagementResourceAuthorizationLister = (*authorizationListStoreStub)
 var _ port.ManagementResourceAuthorizationRevoker = (*authorizationRevokeStoreStub)(nil)
 var _ port.ManagementResourceAuthorizationReturner = (*authorizationReturnStoreStub)(nil)
 var _ port.ManagementResourceAuthorizationUpdater = (*authorizationUpdateStoreStub)(nil)
+var _ port.ManagementResourceAuthorizationExpirySweeper = (*authorizationExpirySweepStoreStub)(nil)
 var _ port.ManagementAuthorizationUsageOverviewReader = (*authorizationUsageStoreStub)(nil)
 var _ port.ManagementResourceAuthorizationUsageReader = (*authorizationUsageStoreStub)(nil)
 var _ AuthorizationInvalidator = (*authorizationInvalidatorStub)(nil)
