@@ -352,6 +352,37 @@ type ManagementSystemTeamSummary struct {
 	UpdatedAt         time.Time
 }
 
+type ManagementSystemTeamMemberSummary struct {
+	ID                string
+	TeamID            string
+	SystemAccountID   string
+	SystemAccountName string
+	Username          string
+	MemberRole        string
+	Status            string
+	JoinedAt          time.Time
+	RemovedAt         *time.Time
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+type ManagementSystemTeamDetail struct {
+	ManagementSystemTeamSummary
+	Members []ManagementSystemTeamMemberSummary
+}
+
+type ManagementSystemTeamListInput struct {
+	SystemAccountID string
+	Keyword         string
+	Limit           int
+	Offset          int
+}
+
+type ManagementSystemTeamListResult struct {
+	Items   []ManagementSystemTeamSummary
+	HasMore bool
+}
+
 type ManagementSystemTeamCreateInput struct {
 	ID          string
 	Name        string
@@ -366,6 +397,11 @@ var ErrManagementSystemTeamNameExists = errors.New("management system team name 
 
 type ManagementSystemTeamCreator interface {
 	CreateManagementSystemTeam(ctx context.Context, input ManagementSystemTeamCreateInput) (ManagementSystemTeamSummary, error)
+}
+
+type ManagementSystemTeamReader interface {
+	ListManagementSystemTeams(ctx context.Context, input ManagementSystemTeamListInput) (ManagementSystemTeamListResult, error)
+	FindManagementSystemTeam(ctx context.Context, teamID string, systemAccountID string) (ManagementSystemTeamDetail, bool, error)
 }
 
 type ManagementAuthorizationPrincipalOptionListInput struct {

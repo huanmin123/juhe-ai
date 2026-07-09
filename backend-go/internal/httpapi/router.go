@@ -36,6 +36,8 @@ type RouterOptions struct {
 	ManagementSystemAccountOptionsHandler           http.Handler
 	ManagementSystemAccountPatchHandler             http.Handler
 	ManagementSystemAccountCreateHandler            http.Handler
+	ManagementSystemTeamsHandler                    http.Handler
+	ManagementMySystemTeamsHandler                  http.Handler
 	ManagementSystemTeamCreateHandler               http.Handler
 	ManagementAuthorizationGranteeAccountsHandler   http.Handler
 	ManagementMyAuthorizationGranteeAccountsHandler http.Handler
@@ -109,6 +111,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementSystemAccountOptionsHandler == nil &&
 				opts.ManagementSystemAccountPatchHandler == nil &&
 				opts.ManagementSystemAccountCreateHandler == nil &&
+				opts.ManagementSystemTeamsHandler == nil &&
+				opts.ManagementMySystemTeamsHandler == nil &&
 				opts.ManagementSystemTeamCreateHandler == nil &&
 				opts.ManagementAuthorizationGranteeAccountsHandler == nil &&
 				opts.ManagementMyAuthorizationGranteeAccountsHandler == nil &&
@@ -176,6 +180,14 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementSystemAccountCreateHandler != nil {
 				system.With(managementAPIWriteAuthMiddleware).Post("/system-accounts", opts.ManagementSystemAccountCreateHandler.ServeHTTP)
+			}
+			if opts.ManagementSystemTeamsHandler != nil {
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/system-teams", opts.ManagementSystemTeamsHandler.ServeHTTP)
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/system-teams/{id}", opts.ManagementSystemTeamsHandler.ServeHTTP)
+			}
+			if opts.ManagementMySystemTeamsHandler != nil {
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/my-teams", opts.ManagementMySystemTeamsHandler.ServeHTTP)
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/my-teams/{id}", opts.ManagementMySystemTeamsHandler.ServeHTTP)
 			}
 			if opts.ManagementSystemTeamCreateHandler != nil {
 				system.With(managementAPIWriteAuthMiddleware).Post("/system-teams", opts.ManagementSystemTeamCreateHandler.ServeHTTP)

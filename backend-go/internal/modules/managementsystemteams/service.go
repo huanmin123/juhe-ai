@@ -20,12 +20,28 @@ const (
 
 var (
 	ErrSystemTeamCreateInvalid = errors.New("management system team create invalid")
+	ErrSystemTeamReadInvalid   = errors.New("management system team read invalid")
 	ErrSystemTeamNameExists    = errors.New("management system team name exists")
 )
 
 type Service struct {
-	store port.ManagementSystemTeamCreator
+	store any
 	now   func() time.Time
+}
+
+type ListInput struct {
+	SystemAccountID string
+	Keyword         string
+	Page            int
+	PageSize        int
+}
+
+type ListResult struct {
+	Items    []Summary `json:"items"`
+	Total    int       `json:"total"`
+	HasMore  bool      `json:"hasMore"`
+	Page     int       `json:"page"`
+	PageSize int       `json:"pageSize"`
 }
 
 type CreateInput struct {
@@ -47,8 +63,27 @@ type Summary struct {
 	UpdatedAt         string `json:"updatedAt"`
 }
 
+type Detail struct {
+	Summary
+	Members []MemberSummary `json:"members"`
+}
+
+type MemberSummary struct {
+	ID                string `json:"id"`
+	TeamID            string `json:"teamId"`
+	SystemAccountID   string `json:"systemAccountId"`
+	SystemAccountName string `json:"systemAccountName,omitempty"`
+	Username          string `json:"username,omitempty"`
+	MemberRole        string `json:"memberRole"`
+	Status            string `json:"status"`
+	JoinedAt          string `json:"joinedAt"`
+	RemovedAt         string `json:"removedAt,omitempty"`
+	CreatedAt         string `json:"createdAt"`
+	UpdatedAt         string `json:"updatedAt"`
+}
+
 type ServiceOptions struct {
-	Store port.ManagementSystemTeamCreator
+	Store any
 	Now   func() time.Time
 }
 
@@ -64,8 +99,54 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 	return &Service{store: opts.Store, now: now}
 }
 
+func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error) {
+	reader, ok := s.store.(port.ManagementSystemTeamReader)
+	if !ok || reader == nil {
+		return ListResult{}, fmt.Errorf("management system team reader is required")
+	}
+	pageSize := listPageSize(input.PageSize)
+	page := listPage(input.Page, pageSize)
+	result, err := reader.ListManagementSystemTeams(ctx, port.ManagementSystemTeamListInput{
+		SystemAccountID: strings.TrimSpace(input.SystemAccountID),
+		Keyword:         strings.TrimSpace(input.Keyword),
+		Limit:           pageSize + 1,
+		Offset:          (page - 1) * pageSize,
+	})
+	if err != nil {
+		return ListResult{}, err
+	}
+	items := make([]Summary, 0, len(result.Items))
+	for _, row := range result.Items {
+		items = append(items, summaryFromPort(row))
+	}
+	return ListResult{
+		Items:    items,
+		Total:    pagedTotalUpperBound(page, pageSize, len(items), result.HasMore),
+		HasMore:  result.HasMore,
+		Page:     page,
+		PageSize: pageSize,
+	}, nil
+}
+
+func (s *Service) Detail(ctx context.Context, teamID string, systemAccountID string) (Detail, bool, error) {
+	reader, ok := s.store.(port.ManagementSystemTeamReader)
+	if !ok || reader == nil {
+		return Detail{}, false, fmt.Errorf("management system team reader is required")
+	}
+	id := strings.TrimSpace(teamID)
+	if id == "" {
+		return Detail{}, false, ErrSystemTeamReadInvalid
+	}
+	row, ok, err := reader.FindManagementSystemTeam(ctx, id, strings.TrimSpace(systemAccountID))
+	if err != nil || !ok {
+		return Detail{}, ok, err
+	}
+	return detailFromPort(row), true, nil
+}
+
 func (s *Service) Create(ctx context.Context, input CreateInput) (Summary, error) {
-	if s.store == nil {
+	creator, ok := s.store.(port.ManagementSystemTeamCreator)
+	if !ok || creator == nil {
 		return Summary{}, fmt.Errorf("management system team creator is required")
 	}
 	name := strings.TrimSpace(input.Name)
@@ -93,7 +174,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Summary, error
 	}
 
 	now := s.now().UTC()
-	row, err := s.store.CreateManagementSystemTeam(ctx, port.ManagementSystemTeamCreateInput{
+	row, err := creator.CreateManagementSystemTeam(ctx, port.ManagementSystemTeamCreateInput{
 		ID:          "team_" + strings.ReplaceAll(uuid.NewString(), "-", ""),
 		Name:        name,
 		Description: description,
@@ -124,6 +205,34 @@ func normalizeTeamStatus(status string) string {
 	}
 }
 
+func listPageSize(value int) int {
+	if value <= 0 {
+		return 20
+	}
+	if value > 100 {
+		return 100
+	}
+	return value
+}
+
+func listPage(value int, pageSize int) int {
+	if value <= 0 {
+		return 1
+	}
+	if value > 1000 {
+		return 1000
+	}
+	return value
+}
+
+func pagedTotalUpperBound(page int, pageSize int, itemCount int, hasMore bool) int {
+	base := (page-1)*pageSize + itemCount
+	if hasMore {
+		return base + 1
+	}
+	return base
+}
+
 func summaryFromPort(row port.ManagementSystemTeamSummary) Summary {
 	return Summary{
 		ID:                row.ID,
@@ -133,6 +242,34 @@ func summaryFromPort(row port.ManagementSystemTeamSummary) Summary {
 		MemberCount:       row.MemberCount,
 		ActiveMemberCount: row.ActiveMemberCount,
 		CreatedBy:         row.CreatedBy,
+		CreatedAt:         row.CreatedAt.UTC().Format(time.RFC3339Nano),
+		UpdatedAt:         row.UpdatedAt.UTC().Format(time.RFC3339Nano),
+	}
+}
+
+func detailFromPort(row port.ManagementSystemTeamDetail) Detail {
+	members := make([]MemberSummary, 0, len(row.Members))
+	for _, member := range row.Members {
+		members = append(members, memberFromPort(member))
+	}
+	return Detail{Summary: summaryFromPort(row.ManagementSystemTeamSummary), Members: members}
+}
+
+func memberFromPort(row port.ManagementSystemTeamMemberSummary) MemberSummary {
+	removedAt := ""
+	if row.RemovedAt != nil {
+		removedAt = row.RemovedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return MemberSummary{
+		ID:                row.ID,
+		TeamID:            row.TeamID,
+		SystemAccountID:   row.SystemAccountID,
+		SystemAccountName: row.SystemAccountName,
+		Username:          row.Username,
+		MemberRole:        row.MemberRole,
+		Status:            row.Status,
+		JoinedAt:          row.JoinedAt.UTC().Format(time.RFC3339Nano),
+		RemovedAt:         removedAt,
 		CreatedAt:         row.CreatedAt.UTC().Format(time.RFC3339Nano),
 		UpdatedAt:         row.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	}

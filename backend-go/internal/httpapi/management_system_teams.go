@@ -7,9 +7,11 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
 	operationlogjob "juhe-ai/backend-go/internal/jobs/operationlog"
@@ -19,11 +21,75 @@ import (
 )
 
 type managementSystemTeamService interface {
+	List(ctx context.Context, input managementsystemteams.ListInput) (managementsystemteams.ListResult, error)
+	Detail(ctx context.Context, teamID string, systemAccountID string) (managementsystemteams.Detail, bool, error)
 	Create(ctx context.Context, input managementsystemteams.CreateInput) (managementsystemteams.Summary, error)
+}
+
+func NewManagementSystemTeamsHandler(service *managementsystemteams.Service) http.Handler {
+	return newManagementSystemTeamsHandler(service, managementSystemTeamScopeAdmin)
+}
+
+func NewManagementMySystemTeamsHandler(service *managementsystemteams.Service) http.Handler {
+	return newManagementSystemTeamsHandler(service, managementSystemTeamScopeSelf)
 }
 
 func NewManagementSystemTeamCreateHandlerWithOperationLog(service *managementsystemteams.Service, opts ManagementOperationLogOptions) http.Handler {
 	return newManagementSystemTeamCreateHandler(service, newManagementOperationLogOptions(opts))
+}
+
+type managementSystemTeamScope string
+
+const (
+	managementSystemTeamScopeAdmin managementSystemTeamScope = "admin"
+	managementSystemTeamScopeSelf  managementSystemTeamScope = "self"
+)
+
+func newManagementSystemTeamsHandler(service managementSystemTeamService, scope managementSystemTeamScope) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authContext, ok := ManagementAuthContextFromRequest(r)
+		if !ok || strings.TrimSpace(authContext.SystemAccountID) == "" {
+			writeMessageError(w, http.StatusUnauthorized, "未登录")
+			return
+		}
+		if scope == managementSystemTeamScopeAdmin && !managementauth.IsAdminRole(authContext.Role) {
+			writeMessageError(w, http.StatusForbidden, "需要管理员权限")
+			return
+		}
+		if service == nil {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		systemAccountID, validScope := managementSystemTeamScopedSystemAccountID(authContext, r.URL.Query(), scope)
+		if !validScope {
+			writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
+			return
+		}
+		teamID := strings.TrimSpace(chi.URLParam(r, "id"))
+		if teamID != "" {
+			result, found, err := service.Detail(r.Context(), teamID, systemAccountID)
+			if errors.Is(err, managementsystemteams.ErrSystemTeamReadInvalid) {
+				writeMessageError(w, http.StatusBadRequest, "团队 ID 不合法")
+				return
+			}
+			if err != nil {
+				writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+				return
+			}
+			if !found {
+				writeMessageError(w, http.StatusNotFound, "团队不存在")
+				return
+			}
+			writeData(w, http.StatusOK, result)
+			return
+		}
+		result, err := service.List(r.Context(), managementSystemTeamListInput(systemAccountID, r.URL.Query()))
+		if err != nil {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		writeData(w, http.StatusOK, result)
+	})
 }
 
 func newManagementSystemTeamCreateHandler(service managementSystemTeamService, opts managementOperationLogOptions) http.Handler {
@@ -73,6 +139,43 @@ func newManagementSystemTeamCreateHandler(service managementSystemTeamService, o
 		recordSystemTeamCreateOperationLog(r, authContext, result, opts)
 		writeData(w, http.StatusCreated, result)
 	})
+}
+
+func managementSystemTeamScopedSystemAccountID(authContext managementauth.Context, values url.Values, scope managementSystemTeamScope) (string, bool) {
+	switch scope {
+	case managementSystemTeamScopeSelf:
+		return authContext.SystemAccountID, true
+	case managementSystemTeamScopeAdmin:
+		rawValues, exists := values["systemAccountId"]
+		if !exists {
+			return "", true
+		}
+		var selected string
+		for _, raw := range rawValues {
+			value := strings.TrimSpace(raw)
+			if value == "" {
+				return "", false
+			}
+			if value == "all" {
+				continue
+			}
+			if selected == "" {
+				selected = value
+			}
+		}
+		return selected, true
+	default:
+		return "", false
+	}
+}
+
+func managementSystemTeamListInput(systemAccountID string, values url.Values) managementsystemteams.ListInput {
+	return managementsystemteams.ListInput{
+		SystemAccountID: systemAccountID,
+		Keyword:         firstManagementQueryText(values, "keyword"),
+		Page:            managementIntegerQueryValue(values, "page"),
+		PageSize:        managementIntegerQueryValue(values, "pageSize"),
+	}
 }
 
 type managementSystemTeamCreatePayload struct {

@@ -114,6 +114,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementSystemAccountOptionsHandler:           managementHandlers.SystemAccountOptionsHandler,
 		ManagementSystemAccountPatchHandler:             managementHandlers.SystemAccountPatchHandler,
 		ManagementSystemAccountCreateHandler:            managementHandlers.SystemAccountCreateHandler,
+		ManagementSystemTeamsHandler:                    managementHandlers.SystemTeamsHandler,
+		ManagementMySystemTeamsHandler:                  managementHandlers.MySystemTeamsHandler,
 		ManagementSystemTeamCreateHandler:               managementHandlers.SystemTeamCreateHandler,
 		ManagementAuthorizationGranteeAccountsHandler:   managementHandlers.AuthorizationGranteeAccountsHandler,
 		ManagementMyAuthorizationGranteeAccountsHandler: managementHandlers.MyAuthorizationGranteeAccountsHandler,
@@ -188,6 +190,8 @@ type managementAPIHandlers struct {
 	SystemAccountOptionsHandler           http.Handler
 	SystemAccountPatchHandler             http.Handler
 	SystemAccountCreateHandler            http.Handler
+	SystemTeamsHandler                    http.Handler
+	MySystemTeamsHandler                  http.Handler
 	SystemTeamCreateHandler               http.Handler
 	AuthorizationGranteeAccountsHandler   http.Handler
 	MyAuthorizationGranteeAccountsHandler http.Handler
@@ -270,6 +274,8 @@ func newManagementAPIHandler(
 		SystemAccountOptionsHandler:           httpapi.NewManagementSystemAccountOptionsHandler(systemAccountService),
 		SystemAccountPatchHandler:             httpapi.NewManagementSystemAccountPatchHandlerWithOperationLog(systemAccountService, operationLogOptions),
 		SystemAccountCreateHandler:            httpapi.NewManagementSystemAccountCreateHandlerWithOperationLog(systemAccountService, operationLogOptions),
+		SystemTeamsHandler:                    httpapi.NewManagementSystemTeamsHandler(systemTeamService),
+		MySystemTeamsHandler:                  httpapi.NewManagementMySystemTeamsHandler(systemTeamService),
 		SystemTeamCreateHandler:               httpapi.NewManagementSystemTeamCreateHandlerWithOperationLog(systemTeamService, operationLogOptions),
 		AuthorizationGranteeAccountsHandler:   httpapi.NewManagementAuthorizationGranteeAccountsHandler(authorizationOptionService),
 		MyAuthorizationGranteeAccountsHandler: httpapi.NewManagementMyAuthorizationGranteeAccountsHandler(authorizationOptionService),

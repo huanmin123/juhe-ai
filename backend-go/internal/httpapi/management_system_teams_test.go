@@ -10,11 +10,139 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
+
 	"juhe-ai/backend-go/internal/config"
 	operationlogjob "juhe-ai/backend-go/internal/jobs/operationlog"
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementsystemteams"
 )
+
+func TestManagementSystemTeamsHandlerListsAdminScope(t *testing.T) {
+	service := &managementSystemTeamServiceStub{
+		listResult: managementsystemteams.ListResult{
+			Items: []managementsystemteams.Summary{{
+				ID:                "team_ops",
+				Name:              "运维团队",
+				Status:            "active",
+				MemberCount:       2,
+				ActiveMemberCount: 2,
+				CreatedBy:         "sys_admin",
+				CreatedAt:         "2026-07-09T10:00:00Z",
+				UpdatedAt:         "2026-07-09T11:00:00Z",
+			}},
+			Total:    3,
+			HasMore:  true,
+			Page:     2,
+			PageSize: 1,
+		},
+	}
+	handler := newManagementSystemTeamsHandler(service, managementSystemTeamScopeAdmin)
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/system-teams?systemAccountId=sys_user&keyword=%E8%BF%90%E7%BB%B4&page=2&pageSize=1", nil)
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+		SystemAccountID: "sys_admin",
+		Role:            "admin",
+	}))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", rec.Code, rec.Body.String())
+	}
+	if !service.listCalled ||
+		service.listInput.SystemAccountID != "sys_user" ||
+		service.listInput.Keyword != "运维" ||
+		service.listInput.Page != 2 ||
+		service.listInput.PageSize != 1 {
+		t.Fatalf("list input = %+v", service.listInput)
+	}
+	var body struct {
+		Data managementsystemteams.ListResult `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.Data.Items) != 1 || body.Data.Items[0].ID != "team_ops" || body.Data.Total != 3 || !body.Data.HasMore {
+		t.Fatalf("response = %+v", body.Data)
+	}
+}
+
+func TestManagementSystemTeamsHandlerMyDetailForcesSelfScope(t *testing.T) {
+	service := &managementSystemTeamServiceStub{
+		detailFound: true,
+		detailResult: managementsystemteams.Detail{
+			Summary: managementsystemteams.Summary{
+				ID:        "team_ops",
+				Name:      "运维团队",
+				Status:    "active",
+				CreatedBy: "sys_admin",
+			},
+			Members: []managementsystemteams.MemberSummary{{
+				ID:              "teammem_1",
+				TeamID:          "team_ops",
+				SystemAccountID: "sys_user",
+				MemberRole:      "member",
+				Status:          "active",
+			}},
+		},
+	}
+	handler := newManagementSystemTeamsHandler(service, managementSystemTeamScopeSelf)
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/my-teams/team_ops?systemAccountId=sys_other", nil)
+	req = withSystemTeamRouteParam(req, "team_ops")
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+		SystemAccountID: "sys_user",
+		Role:            "user",
+	}))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", rec.Code, rec.Body.String())
+	}
+	if !service.detailCalled || service.detailTeamID != "team_ops" || service.detailSystemAccountID != "sys_user" {
+		t.Fatalf("detail args team=%q systemAccount=%q", service.detailTeamID, service.detailSystemAccountID)
+	}
+}
+
+func TestManagementSystemTeamsHandlerRejectsOrdinaryUserForAdminScope(t *testing.T) {
+	service := &managementSystemTeamServiceStub{}
+	handler := newManagementSystemTeamsHandler(service, managementSystemTeamScopeAdmin)
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/system-teams", nil)
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+		SystemAccountID: "sys_user",
+		Role:            "user",
+	}))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+	if service.listCalled || service.detailCalled {
+		t.Fatal("service should not be called for ordinary user")
+	}
+}
+
+func TestManagementSystemTeamsHandlerMapsDetailNotFound(t *testing.T) {
+	service := &managementSystemTeamServiceStub{}
+	handler := newManagementSystemTeamsHandler(service, managementSystemTeamScopeAdmin)
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/system-teams/team_missing", nil)
+	req = withSystemTeamRouteParam(req, "team_missing")
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+		SystemAccountID: "sys_admin",
+		Role:            "admin",
+	}))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
 
 func TestManagementSystemTeamCreateHandlerRequiresAdminAndWritesOperationLog(t *testing.T) {
 	queueStub := &operationLogQueueStub{}
@@ -241,6 +369,34 @@ func TestRouterRegistersW4ManagementSystemTeamCreate(t *testing.T) {
 	}
 }
 
+func TestRouterRegistersW4ManagementSystemTeamsReadWithoutTouch(t *testing.T) {
+	service := &managementSystemTeamServiceStub{
+		listResult: managementsystemteams.ListResult{Items: []managementsystemteams.Summary{{ID: "team_ops", Name: "运维团队", Status: "active"}}},
+	}
+	readAuthenticator := &managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_read"},
+	}
+	router := NewRouter(RouterOptions{
+		Config:                       config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
+		Logger:                       slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
+		ManagementSystemTeamsHandler: newManagementSystemTeamsHandler(service, managementSystemTeamScopeAdmin),
+		ManagementAPIAuthMiddleware:  NewManagementAPIAuthMiddleware(readAuthenticator),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/system-teams", nil)
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if readAuthenticator.cookieHeader == "" || readAuthenticator.touchCookieHeader != "" {
+		t.Fatalf("auth headers read=%q touch=%q", readAuthenticator.cookieHeader, readAuthenticator.touchCookieHeader)
+	}
+}
+
 func TestRouterDoesNotRegisterW4ManagementSystemTeamCreateWhenDisabled(t *testing.T) {
 	router := NewRouter(RouterOptions{
 		Config:                            config.Config{Host: "127.0.0.1", Port: 3000},
@@ -265,14 +421,43 @@ func TestRouterDoesNotRegisterW4ManagementSystemTeamCreateWhenDisabled(t *testin
 }
 
 type managementSystemTeamServiceStub struct {
-	called bool
-	input  managementsystemteams.CreateInput
-	result managementsystemteams.Summary
-	err    error
+	called                bool
+	input                 managementsystemteams.CreateInput
+	result                managementsystemteams.Summary
+	err                   error
+	listCalled            bool
+	listInput             managementsystemteams.ListInput
+	listResult            managementsystemteams.ListResult
+	listErr               error
+	detailCalled          bool
+	detailTeamID          string
+	detailSystemAccountID string
+	detailResult          managementsystemteams.Detail
+	detailFound           bool
+	detailErr             error
+}
+
+func (s *managementSystemTeamServiceStub) List(_ context.Context, input managementsystemteams.ListInput) (managementsystemteams.ListResult, error) {
+	s.listCalled = true
+	s.listInput = input
+	return s.listResult, s.listErr
+}
+
+func (s *managementSystemTeamServiceStub) Detail(_ context.Context, teamID string, systemAccountID string) (managementsystemteams.Detail, bool, error) {
+	s.detailCalled = true
+	s.detailTeamID = teamID
+	s.detailSystemAccountID = systemAccountID
+	return s.detailResult, s.detailFound, s.detailErr
 }
 
 func (s *managementSystemTeamServiceStub) Create(_ context.Context, input managementsystemteams.CreateInput) (managementsystemteams.Summary, error) {
 	s.called = true
 	s.input = input
 	return s.result, s.err
+}
+
+func withSystemTeamRouteParam(req *http.Request, teamID string) *http.Request {
+	routeContext := chi.NewRouteContext()
+	routeContext.URLParams.Add("id", teamID)
+	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeContext))
 }
