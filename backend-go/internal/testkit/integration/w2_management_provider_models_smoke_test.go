@@ -76,6 +76,9 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 	if findW2ProviderModel(models, "gpt-5.6-sol") == nil {
 		t.Fatalf("seeded gpt-5.6-sol model missing: %+v", models)
 	}
+	assertW2ProviderModelPricing(t, findW2ProviderModel(models, "gpt-5.6-sol"), "2026-06-26", 372000, 0.5, 6.25)
+	assertW2ProviderModelPricing(t, findW2ProviderModel(models, "gpt-5.6-terra"), "2026-06-26", 372000, 0.25, 3.125)
+	assertW2ProviderModelPricing(t, findW2ProviderModel(models, "gpt-5.6-luna"), "2026-06-26", 372000, 0.1, 1.25)
 	if personal := findW2ProviderModel(models, "w2-personal-model"); personal == nil || personal.Scope != "personal" || personal.SystemAccountID != "sys_w2_proxy_options" {
 		t.Fatalf("personal model missing or wrong scope: %+v", personal)
 	}
@@ -248,6 +251,25 @@ func findW2ProviderModelOption(items []managementprovidermodels.ModelOption, pro
 		}
 	}
 	return nil
+}
+
+func assertW2ProviderModelPricing(t *testing.T, item *managementprovidermodels.ModelCatalogItem, releaseDate string, maxInputTokens int, cachedInputUSDPer1M float64, cacheWriteUSDPer1M float64) {
+	t.Helper()
+	if item == nil {
+		t.Fatalf("provider model missing")
+	}
+	if item.ReleaseDate != releaseDate {
+		t.Fatalf("%s release date = %q, want %q", item.Model, item.ReleaseDate, releaseDate)
+	}
+	if item.MaxInputTokens == nil || *item.MaxInputTokens != maxInputTokens {
+		t.Fatalf("%s max input tokens = %v, want %d", item.Model, item.MaxInputTokens, maxInputTokens)
+	}
+	if item.CachedInputUSDPer1M == nil || *item.CachedInputUSDPer1M != cachedInputUSDPer1M {
+		t.Fatalf("%s cached input price = %v, want %v", item.Model, item.CachedInputUSDPer1M, cachedInputUSDPer1M)
+	}
+	if item.CacheWriteUSDPer1M == nil || *item.CacheWriteUSDPer1M != cacheWriteUSDPer1M {
+		t.Fatalf("%s cache write price = %v, want %v", item.Model, item.CacheWriteUSDPer1M, cacheWriteUSDPer1M)
+	}
 }
 
 func stringPtr(value string) *string {
