@@ -157,6 +157,44 @@ func TestManagementResourceAuthorizationRevokeQueryKeepsTeamGrantScope(t *testin
 	}
 }
 
+func TestManagementResourceAuthorizationUpdateQueryKeepsRuntimeScope(t *testing.T) {
+	source, err := os.ReadFile("managementauthorizations.go")
+	if err != nil {
+		t.Fatalf("read management authorizations store: %v", err)
+	}
+	code := string(source)
+	for _, want := range []string{
+		"func (s *Store) UpdateManagementResourceAuthorization",
+		"func findUpdatableManagementGrantTx",
+		"FOR UPDATE",
+		"nextManagementAuthorizationGrantStatus",
+		"到期授权恢复时请同时调整过期时间",
+		"markAllGroupAccountStatsDirtyIfPresentTx(ctx, tx, \"resource_authorization_updated\", now)",
+		"func syncManagementUserGrantRuntimeAfterUpdateTx",
+		"func syncManagementTeamGrantRuntimeAfterUpdateTx",
+		"func updateManagementTeamGrantSourceRuntimesTx",
+		"if grant.LimitsJson.Valid {",
+		"LimitsJSON:                   limitsJSON",
+		"AND ras.source_team_id = $3",
+		"AND ras.status = 'active'",
+		"WHEN $2 = 'paused' THEN 'authorization_paused'",
+		"refreshManagementResourceAuthorizationEffectiveSourceTx(ctx, tx, authorizationID, actor, now)",
+		"revokeManagementTeamGrantSourcesForGrantTx(ctx, tx, grant.ResourceType, grant.ResourceID, teamID, actor, now)",
+	} {
+		if !strings.Contains(code, want) {
+			t.Fatalf("update implementation missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		"expireDueResourceAuthorizations",
+		"revokeAllManagementTeamSourcesTx(ctx, tx",
+	} {
+		if strings.Contains(code, forbidden) {
+			t.Fatalf("update implementation should not contain %q", forbidden)
+		}
+	}
+}
+
 func containsQueryArg(args []any, want any) bool {
 	for _, arg := range args {
 		if arg == want {

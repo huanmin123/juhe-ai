@@ -29,6 +29,7 @@ const (
 	maxRequestQuotaAmountUSD                  = 9_007_199_254_740_991
 	quotaAmountPrecision                int64 = 1_000_000
 	ResourceAuthorizationCreatedReason        = "resource_authorization_created"
+	ResourceAuthorizationUpdatedReason        = "resource_authorization_updated"
 	ResourceAuthorizationReturnedReason       = "resource_authorization_returned"
 	ResourceAuthorizationRevokedReason        = "resource_authorization_revoked"
 )
@@ -36,6 +37,7 @@ const (
 var (
 	ErrAuthorizationListInvalid   = errors.New("management authorization list invalid")
 	ErrAuthorizationCreateInvalid = errors.New("management authorization create invalid")
+	ErrAuthorizationUpdateInvalid = errors.New("management authorization update invalid")
 	ErrAuthorizationReturnInvalid = errors.New("management authorization return invalid")
 	ErrAuthorizationRevokeInvalid = errors.New("management authorization revoke invalid")
 )
@@ -44,6 +46,7 @@ type Service struct {
 	listStore                port.ManagementResourceAuthorizationLister
 	getStore                 port.ManagementResourceAuthorizationGetter
 	createStore              port.ManagementResourceAuthorizationCreator
+	updateStore              port.ManagementResourceAuthorizationUpdater
 	returnStore              port.ManagementResourceAuthorizationReturner
 	revokeStore              port.ManagementResourceAuthorizationRevoker
 	now                      func() time.Time
@@ -59,6 +62,7 @@ type ServiceOptions struct {
 	ListStore                port.ManagementResourceAuthorizationLister
 	GetStore                 port.ManagementResourceAuthorizationGetter
 	Store                    port.ManagementResourceAuthorizationCreator
+	UpdateStore              port.ManagementResourceAuthorizationUpdater
 	ReturnStore              port.ManagementResourceAuthorizationReturner
 	RevokeStore              port.ManagementResourceAuthorizationRevoker
 	Now                      func() time.Time
@@ -168,6 +172,20 @@ type ReturnInput struct {
 	ActorSystemAccountID   string
 }
 
+type UpdateInput struct {
+	AuthorizationID       string
+	ActorSystemAccountID  string
+	ActorRole             string
+	ScopedSystemAccountID string
+	HasStatus             bool
+	Status                string
+	HasExpiresAt          bool
+	ExpiresAt             *string
+	HasLimits             bool
+	Limits                map[string]any
+	LimitsIsNull          bool
+}
+
 type RevokeInput struct {
 	AuthorizationID       string
 	ActorSystemAccountID  string
@@ -211,6 +229,12 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 			getStore = candidate
 		}
 	}
+	updateStore := opts.UpdateStore
+	if updateStore == nil {
+		if candidate, ok := opts.Store.(port.ManagementResourceAuthorizationUpdater); ok {
+			updateStore = candidate
+		}
+	}
 	revokeStore := opts.RevokeStore
 	if revokeStore == nil {
 		if candidate, ok := opts.Store.(port.ManagementResourceAuthorizationRevoker); ok {
@@ -221,6 +245,7 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 		listStore:                listStore,
 		getStore:                 getStore,
 		createStore:              opts.Store,
+		updateStore:              updateStore,
 		returnStore:              returnStore,
 		revokeStore:              revokeStore,
 		now:                      now,
@@ -399,6 +424,84 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Summary, error
 		}
 	}
 	return row, nil
+}
+
+func (s *Service) Update(ctx context.Context, input UpdateInput) (Summary, bool, error) {
+	if s.updateStore == nil {
+		return Summary{}, false, fmt.Errorf("management resource authorization updater is required")
+	}
+	now := s.now().UTC()
+	authorizationID := strings.TrimSpace(input.AuthorizationID)
+	actor := strings.TrimSpace(input.ActorSystemAccountID)
+	if authorizationID == "" || actor == "" {
+		return Summary{}, false, ErrAuthorizationUpdateInvalid
+	}
+	if !input.HasStatus && !input.HasExpiresAt && !input.HasLimits {
+		return Summary{}, false, ErrAuthorizationUpdateInvalid
+	}
+	status := ""
+	if input.HasStatus {
+		status = strings.TrimSpace(input.Status)
+		if status != "active" && status != "paused" {
+			return Summary{}, false, ErrAuthorizationUpdateInvalid
+		}
+	}
+	var expiresAt *time.Time
+	if input.HasExpiresAt && input.ExpiresAt != nil {
+		rawExpiresAt := strings.TrimSpace(*input.ExpiresAt)
+		if rawExpiresAt == "" {
+			return Summary{}, false, ErrAuthorizationUpdateInvalid
+		}
+		parsed, err := parseServerDateTime(rawExpiresAt)
+		if err != nil {
+			return Summary{}, false, err
+		}
+		if !parsed.After(now) {
+			return Summary{}, false, fmt.Errorf("授权到期时间不能早于当前时间")
+		}
+		expiresAt = &parsed
+	}
+	var limitsJSON *string
+	hourlyWindowHours := 0
+	if input.HasLimits && !input.LimitsIsNull {
+		_, normalizedLimitsJSON, normalizedHourlyWindowHours, err := normalizeRequestQuotaLimits(input.Limits, true)
+		if err != nil {
+			return Summary{}, false, err
+		}
+		limitsJSON = normalizedLimitsJSON
+		hourlyWindowHours = normalizedHourlyWindowHours
+	}
+	canAccessAll := isAdminRole(input.ActorRole)
+	scopedSystemAccountID := strings.TrimSpace(input.ScopedSystemAccountID)
+	if !canAccessAll {
+		scopedSystemAccountID = actor
+	}
+	row, found, err := s.updateStore.UpdateManagementResourceAuthorization(ctx, port.ManagementResourceAuthorizationUpdateInput{
+		AuthorizationID:        authorizationID,
+		ActorSystemAccountID:   actor,
+		CanAccessAll:           canAccessAll,
+		ScopedSystemAccountID:  scopedSystemAccountID,
+		HasStatus:              input.HasStatus,
+		Status:                 status,
+		HasExpiresAt:           input.HasExpiresAt,
+		ExpiresAt:              expiresAt,
+		HasLimits:              input.HasLimits,
+		LimitsJSON:             limitsJSON,
+		LimitHourlyWindowHours: hourlyWindowHours,
+		UpdatedAt:              now,
+	})
+	if err != nil {
+		return Summary{}, false, err
+	}
+	if !found {
+		return Summary{}, false, nil
+	}
+	if s.authorizationInvalidator != nil {
+		if err := s.authorizationInvalidator.InvalidateAuthorizationChanged(ctx, ResourceAuthorizationUpdatedReason); err != nil {
+			return Summary{}, false, err
+		}
+	}
+	return row, true, nil
 }
 
 func (s *Service) Return(ctx context.Context, input ReturnInput) (Summary, bool, error) {

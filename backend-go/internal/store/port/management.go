@@ -654,6 +654,25 @@ type ManagementResourceAuthorizationReturner interface {
 	ReturnManagementResourceAuthorizationForGrantee(ctx context.Context, input ManagementResourceAuthorizationReturnInput) (ManagementResourceAuthorizationSummary, bool, error)
 }
 
+type ManagementResourceAuthorizationUpdateInput struct {
+	AuthorizationID        string
+	ActorSystemAccountID   string
+	CanAccessAll           bool
+	ScopedSystemAccountID  string
+	HasStatus              bool
+	Status                 string
+	HasExpiresAt           bool
+	ExpiresAt              *time.Time
+	HasLimits              bool
+	LimitsJSON             *string
+	LimitHourlyWindowHours int
+	UpdatedAt              time.Time
+}
+
+type ManagementResourceAuthorizationUpdater interface {
+	UpdateManagementResourceAuthorization(ctx context.Context, input ManagementResourceAuthorizationUpdateInput) (ManagementResourceAuthorizationSummary, bool, error)
+}
+
 type ManagementResourceAuthorizationRevokeInput struct {
 	AuthorizationID       string
 	ActorSystemAccountID  string

@@ -268,6 +268,213 @@ func TestManagementAuthorizationCreateHandlerRedactsInvalidServiceErrors(t *test
 	}
 }
 
+func TestManagementAuthorizationUpdateHandlerUpdatesAndWritesOperationLog(t *testing.T) {
+	updatedAt := time.Date(2026, 7, 9, 10, 30, 0, 0, time.UTC)
+	queueStub := &operationLogQueueStub{}
+	service := &managementAuthorizationCreateServiceStub{
+		updateFound: true,
+		updateResult: managementauthorizations.Summary{
+			ID:                             "rauthgrant_main",
+			ResourceType:                   "account",
+			ResourceID:                     "acct_main",
+			ResourceName:                   "主账号",
+			ResourceOwnerSystemAccountID:   "sys_owner",
+			ResourceOwnerSystemAccountName: "资源归属人",
+			GranteeType:                    "system_account",
+			GranteeSystemAccountID:         "sys_grantee",
+			GranteeSystemAccountName:       "被授权人",
+			Scope:                          "use",
+			Status:                         "paused",
+			Limits: port.ManagementRequestQuotaLimits{
+				Daily: &port.ManagementRequestQuotaLimit{Enabled: true, Limit: 10},
+			},
+			AuthorizationSources: []port.ManagementResourceAuthorizationSourceSummary{},
+			Usage:                port.ManagementAccountUsageSummary{},
+			CreatedBy:            "sys_owner",
+			CreatedAt:            updatedAt,
+			UpdatedAt:            updatedAt,
+		},
+	}
+	handler := newManagementAuthorizationUpdateHandler(
+		service,
+		managementAuthorizationScopeAdmin,
+		newManagementOperationLogOptions(ManagementOperationLogOptions{
+			Config:   config.Config{TrustProxy: "false"},
+			Client:   queueStub,
+			Now:      func() time.Time { return updatedAt },
+			NewLogID: func() string { return "oplog_authorization_update" },
+		}),
+	)
+	req := httptest.NewRequest(http.MethodPatch, "/__aisys__/api/authorizations/rauthgrant_main?systemAccountId=sys_owner", strings.NewReader(`{
+		"status":"paused",
+		"expiresAt":null,
+		"limits":{"daily":{"enabled":true,"limit":10}}
+	}`))
+	req.RemoteAddr = "127.0.0.1:22345"
+	req = managementAuthorizationRequestWithURLParam(req, "id", "rauthgrant_main")
+	req = req.WithContext(context.WithValue(req.Context(), requestIDKey, "req_authorization_update"))
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+		SystemAccountID: "sys_admin",
+		Username:        "admin",
+		DisplayName:     "管理员",
+		Role:            "admin",
+		SessionID:       "sess_admin",
+	}))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if !service.updateCalled ||
+		service.updateInput.AuthorizationID != "rauthgrant_main" ||
+		service.updateInput.ActorSystemAccountID != "sys_admin" ||
+		service.updateInput.ActorRole != "admin" ||
+		service.updateInput.ScopedSystemAccountID != "sys_owner" ||
+		!service.updateInput.HasStatus ||
+		service.updateInput.Status != "paused" ||
+		!service.updateInput.HasExpiresAt ||
+		service.updateInput.ExpiresAt != nil ||
+		!service.updateInput.HasLimits ||
+		service.updateInput.LimitsIsNull ||
+		service.updateInput.Limits == nil {
+		t.Fatalf("update input = %+v", service.updateInput)
+	}
+	var body struct {
+		Data managementauthorizations.Summary `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Data.ID != "rauthgrant_main" || body.Data.Status != "paused" {
+		t.Fatalf("response data = %+v", body.Data)
+	}
+	if queueStub.calls != 1 {
+		t.Fatalf("operation log queue calls = %d, want 1", queueStub.calls)
+	}
+	logInput, err := operationlogjob.DecodeWriteTaskPayload(queueStub.payload)
+	if err != nil {
+		t.Fatalf("DecodeWriteTaskPayload() error = %v", err)
+	}
+	if logInput.ID != "oplog_authorization_update" ||
+		logInput.TraceID != "req_authorization_update" ||
+		logInput.ActorSystemAccountID != "sys_admin" ||
+		logInput.OperationScopeSystemAccountID != "sys_owner" ||
+		logInput.Mode != "admin" ||
+		logInput.Module != "authorizations" ||
+		logInput.Action != "update" ||
+		logInput.OperationKey != "authorizations.update" ||
+		logInput.ResourceType != "authorization" ||
+		logInput.ResourceID != "rauthgrant_main" ||
+		logInput.ResourceName != "主账号" ||
+		logInput.Summary != "更新资源授权：主账号 -> 被授权人" ||
+		logInput.Method != http.MethodPatch ||
+		logInput.Path != "/__aisys__/api/authorizations/rauthgrant_main" ||
+		logInput.ClientIP != "127.0.0.1" ||
+		!logInput.CreatedAt.Equal(updatedAt) {
+		t.Fatalf("operation log input = %+v", logInput)
+	}
+	if logInput.StatusCode == nil || *logInput.StatusCode != http.StatusOK {
+		t.Fatalf("status code = %+v, want 200", logInput.StatusCode)
+	}
+	if len(logInput.Changes) != 3 ||
+		logInput.Changes[0].Field != "status" ||
+		logInput.Changes[1].Field != "expiresAt" ||
+		logInput.Changes[2].Field != "limits" {
+		t.Fatalf("changes = %+v", logInput.Changes)
+	}
+}
+
+func TestManagementMyAuthorizationUpdateHandlerUsesSelfScope(t *testing.T) {
+	service := &managementAuthorizationCreateServiceStub{
+		updateFound: true,
+		updateResult: managementauthorizations.Summary{
+			ID:                           "rauthgrant_main",
+			ResourceType:                 "group",
+			ResourceID:                   "grp_owner",
+			ResourceOwnerSystemAccountID: "sys_owner",
+			GranteeType:                  "team",
+			GranteeTeamID:                "team_ops",
+			Scope:                        "use",
+			Status:                       "active",
+			AuthorizationSources:         []port.ManagementResourceAuthorizationSourceSummary{},
+			Usage:                        port.ManagementAccountUsageSummary{},
+			CreatedAt:                    time.Date(2026, 7, 9, 10, 30, 0, 0, time.UTC),
+			UpdatedAt:                    time.Date(2026, 7, 9, 10, 30, 0, 0, time.UTC),
+		},
+	}
+	handler := newManagementAuthorizationUpdateHandler(service, managementAuthorizationScopeSelf)
+	req := httptest.NewRequest(http.MethodPatch, "/__aisys__/api/my-authorizations/rauthgrant_main?systemAccountId=sys_other", strings.NewReader(`{"limits":null}`))
+	req = managementAuthorizationRequestWithURLParam(req, "id", "rauthgrant_main")
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+		SystemAccountID: "sys_owner",
+		Username:        "owner",
+		Role:            "user",
+		SessionID:       "sess_owner",
+	}))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if !service.updateCalled ||
+		service.updateInput.AuthorizationID != "rauthgrant_main" ||
+		service.updateInput.ActorSystemAccountID != "sys_owner" ||
+		service.updateInput.ActorRole != "user" ||
+		service.updateInput.ScopedSystemAccountID != "sys_owner" ||
+		!service.updateInput.HasLimits ||
+		!service.updateInput.LimitsIsNull {
+		t.Fatalf("update input = %+v", service.updateInput)
+	}
+}
+
+func TestManagementAuthorizationUpdateHandlerRejectsInvalidOrMissingRecord(t *testing.T) {
+	tests := []struct {
+		name     string
+		id       string
+		body     string
+		found    bool
+		wantCode int
+		wantMsg  string
+	}{
+		{name: "empty id", id: " ", body: `{"status":"paused"}`, found: true, wantCode: http.StatusBadRequest, wantMsg: "授权记录 ID 不合法"},
+		{name: "empty payload", id: "rauthgrant_main", body: `{}`, found: true, wantCode: http.StatusBadRequest, wantMsg: "修改授权参数不合法"},
+		{name: "unknown field", id: "rauthgrant_main", body: `{"status":"paused","remark":"x"}`, found: true, wantCode: http.StatusBadRequest, wantMsg: "修改授权参数不合法"},
+		{name: "missing", id: "rauthgrant_missing", body: `{"status":"paused"}`, found: false, wantCode: http.StatusNotFound, wantMsg: "授权记录不存在"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &managementAuthorizationCreateServiceStub{updateFound: tt.found}
+			handler := newManagementAuthorizationUpdateHandler(service, managementAuthorizationScopeAdmin)
+			req := httptest.NewRequest(http.MethodPatch, "/__aisys__/api/authorizations/"+url.PathEscape(tt.id), strings.NewReader(tt.body))
+			req = managementAuthorizationRequestWithURLParam(req, "id", tt.id)
+			req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+				SystemAccountID: "sys_admin",
+				Username:        "admin",
+				Role:            "admin",
+				SessionID:       "sess_admin",
+			}))
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantCode {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, tt.wantCode, rec.Body.String())
+			}
+			var body map[string]string
+			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if body["message"] != tt.wantMsg {
+				t.Fatalf("message = %q, want %q", body["message"], tt.wantMsg)
+			}
+		})
+	}
+}
+
 func TestManagementAuthorizationReturnHandlerReturnsAndWritesOperationLog(t *testing.T) {
 	createdAt := time.Date(2026, 7, 9, 9, 30, 0, 0, time.UTC)
 	queueStub := &operationLogQueueStub{}
@@ -875,7 +1082,7 @@ func TestManagementAuthorizationDetailHandlerRejectsInvalidOrMissingRecord(t *te
 	}
 }
 
-func TestRouterRegistersW4ManagementAuthorizationListDetailCreateReturnAndRevoke(t *testing.T) {
+func TestRouterRegistersW4ManagementAuthorizationListDetailCreateUpdateReturnAndRevoke(t *testing.T) {
 	service := &managementAuthorizationCreateServiceStub{
 		result: managementauthorizations.Summary{
 			ID:                           "rauthgrant_main",
@@ -893,6 +1100,22 @@ func TestRouterRegistersW4ManagementAuthorizationListDetailCreateReturnAndRevoke
 			CreatedBy:                    "sys_admin",
 			CreatedAt:                    time.Date(2026, 7, 9, 8, 30, 0, 0, time.UTC),
 			UpdatedAt:                    time.Date(2026, 7, 9, 8, 30, 0, 0, time.UTC),
+		},
+		updateFound: true,
+		updateResult: managementauthorizations.Summary{
+			ID:                           "rauthgrant_main",
+			ResourceType:                 "account",
+			ResourceID:                   "acct_main",
+			ResourceOwnerSystemAccountID: "sys_owner",
+			GranteeType:                  "system_account",
+			GranteeSystemAccountID:       "sys_grantee",
+			Scope:                        "use",
+			Status:                       "paused",
+			AuthorizationSources:         []port.ManagementResourceAuthorizationSourceSummary{},
+			Usage:                        port.ManagementAccountUsageSummary{},
+			CreatedBy:                    "sys_owner",
+			CreatedAt:                    time.Date(2026, 7, 9, 10, 30, 0, 0, time.UTC),
+			UpdatedAt:                    time.Date(2026, 7, 9, 10, 30, 0, 0, time.UTC),
 		},
 		returnFound: true,
 		returnResult: managementauthorizations.Summary{
@@ -965,6 +1188,8 @@ func TestRouterRegistersW4ManagementAuthorizationListDetailCreateReturnAndRevoke
 		ManagementMyAuthorizationDetailHandler: newManagementAuthorizationDetailHandler(service, managementAuthorizationScopeSelf),
 		ManagementAuthorizationCreateHandler:   newManagementAuthorizationCreateHandler(service, managementAuthorizationScopeAdmin),
 		ManagementMyAuthorizationCreateHandler: newManagementAuthorizationCreateHandler(service, managementAuthorizationScopeSelf),
+		ManagementAuthorizationUpdateHandler:   newManagementAuthorizationUpdateHandler(service, managementAuthorizationScopeAdmin),
+		ManagementMyAuthorizationUpdateHandler: newManagementAuthorizationUpdateHandler(service, managementAuthorizationScopeSelf),
 		ManagementAuthorizationReturnHandler:   newManagementAuthorizationReturnHandler(service, managementAuthorizationScopeAdmin),
 		ManagementMyAuthorizationReturnHandler: newManagementAuthorizationReturnHandler(service, managementAuthorizationScopeSelf),
 		ManagementAuthorizationRevokeHandler:   newManagementAuthorizationRevokeHandler(service, managementAuthorizationScopeAdmin),
@@ -990,6 +1215,18 @@ func TestRouterRegistersW4ManagementAuthorizationListDetailCreateReturnAndRevoke
 			path:   "/__aisys__/api/my-authorizations",
 			body:   `{"resourceType":"group","resourceId":"grp_owner","granteeType":"team","granteeId":"team_ops"}`,
 			status: http.StatusCreated,
+		},
+		{
+			method: http.MethodPatch,
+			path:   "/__aisys__/api/authorizations/rauthgrant_main?systemAccountId=sys_owner",
+			body:   `{"status":"paused"}`,
+			status: http.StatusOK,
+		},
+		{
+			method: http.MethodPatch,
+			path:   "/__aisys__/api/my-authorizations/rauthgrant_main",
+			body:   `{"status":"paused"}`,
+			status: http.StatusOK,
 		},
 		{
 			method: http.MethodDelete,
@@ -1062,6 +1299,11 @@ type managementAuthorizationCreateServiceStub struct {
 	getResult    managementauthorizations.Detail
 	getFound     bool
 	getErr       error
+	updateCalled bool
+	updateInput  managementauthorizations.UpdateInput
+	updateResult managementauthorizations.Summary
+	updateFound  bool
+	updateErr    error
 	returnCalled bool
 	returnInput  managementauthorizations.ReturnInput
 	returnResult managementauthorizations.Summary
@@ -1105,6 +1347,15 @@ func (s *managementAuthorizationCreateServiceStub) Get(_ *http.Request, input ma
 	return s.getResult, s.getFound, nil
 }
 
+func (s *managementAuthorizationCreateServiceStub) Update(_ *http.Request, input managementauthorizations.UpdateInput) (managementauthorizations.Summary, bool, error) {
+	s.updateCalled = true
+	s.updateInput = input
+	if s.updateErr != nil {
+		return managementauthorizations.Summary{}, false, s.updateErr
+	}
+	return s.updateResult, s.updateFound, nil
+}
+
 func (s *managementAuthorizationCreateServiceStub) Return(_ *http.Request, input managementauthorizations.ReturnInput) (managementauthorizations.Summary, bool, error) {
 	s.returnCalled = true
 	s.returnInput = input
@@ -1134,3 +1385,4 @@ var _ managementAuthorizationGetService = (*managementAuthorizationCreateService
 var _ managementAuthorizationListService = (*managementAuthorizationCreateServiceStub)(nil)
 var _ managementAuthorizationRevokeService = (*managementAuthorizationCreateServiceStub)(nil)
 var _ managementAuthorizationReturnService = (*managementAuthorizationCreateServiceStub)(nil)
+var _ managementAuthorizationUpdateService = (*managementAuthorizationCreateServiceStub)(nil)

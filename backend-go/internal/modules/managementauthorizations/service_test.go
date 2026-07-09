@@ -217,6 +217,182 @@ func TestServiceCreateDoesNotInvalidateWhenStoreFails(t *testing.T) {
 	}
 }
 
+func TestServiceUpdateNormalizesInputAndInvalidatesAuthorizationCache(t *testing.T) {
+	now := time.Date(2026, 7, 9, 10, 30, 0, 0, time.UTC)
+	store := &authorizationUpdateStoreStub{
+		found: true,
+		result: Summary{
+			ID:                           "rauthgrant_main",
+			ResourceType:                 "account",
+			ResourceID:                   "acct_main",
+			ResourceOwnerSystemAccountID: "sys_owner",
+			GranteeType:                  "system_account",
+			GranteeSystemAccountID:       "sys_grantee",
+			Scope:                        "use",
+			Status:                       "paused",
+			AuthorizationSources:         []port.ManagementResourceAuthorizationSourceSummary{},
+			Usage:                        port.ManagementAccountUsageSummary{},
+			CreatedBy:                    "sys_owner",
+			CreatedAt:                    now,
+			UpdatedAt:                    now,
+		},
+	}
+	invalidator := &authorizationInvalidatorStub{}
+	service := NewServiceWithOptions(ServiceOptions{
+		UpdateStore:              store,
+		Now:                      func() time.Time { return now },
+		AuthorizationInvalidator: invalidator,
+	})
+	expiresAt := "2026-07-10T00:00:00.000Z"
+
+	got, found, err := service.Update(context.Background(), UpdateInput{
+		AuthorizationID:       " rauthgrant_main ",
+		ActorSystemAccountID:  " sys_admin ",
+		ActorRole:             "admin",
+		ScopedSystemAccountID: " sys_owner ",
+		HasStatus:             true,
+		Status:                " paused ",
+		HasExpiresAt:          true,
+		ExpiresAt:             &expiresAt,
+		HasLimits:             true,
+		Limits: map[string]any{
+			"hourly": map[string]any{"enabled": true, "hours": float64(12), "limit": float64(3.25)},
+			"total":  map[string]any{"enabled": true, "limit": float64(99)},
+		},
+	})
+
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if !found || got.ID != "rauthgrant_main" {
+		t.Fatalf("Update() = (%+v, %v), want updated summary", got, found)
+	}
+	if !store.called ||
+		store.input.AuthorizationID != "rauthgrant_main" ||
+		store.input.ActorSystemAccountID != "sys_admin" ||
+		!store.input.CanAccessAll ||
+		store.input.ScopedSystemAccountID != "sys_owner" ||
+		!store.input.HasStatus ||
+		store.input.Status != "paused" ||
+		!store.input.HasExpiresAt ||
+		!store.input.HasLimits ||
+		!store.input.UpdatedAt.Equal(now) {
+		t.Fatalf("store input = %+v", store.input)
+	}
+	if store.input.ExpiresAt == nil || !store.input.ExpiresAt.Equal(time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("expiresAt = %+v", store.input.ExpiresAt)
+	}
+	wantJSON := `{"hourly":{"enabled":true,"hours":12,"limit":3.25},"total":{"enabled":true,"limit":99}}`
+	if store.input.LimitsJSON == nil || *store.input.LimitsJSON != wantJSON {
+		t.Fatalf("limits json = %+v, want %s", store.input.LimitsJSON, wantJSON)
+	}
+	if store.input.LimitHourlyWindowHours != 12 {
+		t.Fatalf("hourly window = %d, want 12", store.input.LimitHourlyWindowHours)
+	}
+	if invalidator.calls != 1 || invalidator.reason != ResourceAuthorizationUpdatedReason {
+		t.Fatalf("invalidator calls=%d reason=%q", invalidator.calls, invalidator.reason)
+	}
+}
+
+func TestServiceUpdateValidatesInputAndScopesNonAdmin(t *testing.T) {
+	now := time.Date(2026, 7, 9, 10, 30, 0, 0, time.UTC)
+	store := &authorizationUpdateStoreStub{
+		found: true,
+		result: Summary{
+			ID:                           "rauthgrant_main",
+			ResourceType:                 "group",
+			ResourceID:                   "grp_owner",
+			ResourceOwnerSystemAccountID: "sys_owner",
+			GranteeType:                  "team",
+			GranteeTeamID:                "team_ops",
+			Scope:                        "use",
+			Status:                       "active",
+			AuthorizationSources:         []port.ManagementResourceAuthorizationSourceSummary{},
+			Usage:                        port.ManagementAccountUsageSummary{},
+			CreatedAt:                    now,
+			UpdatedAt:                    now,
+		},
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		UpdateStore: store,
+		Now:         func() time.Time { return now },
+	})
+
+	if _, _, err := service.Update(context.Background(), UpdateInput{
+		AuthorizationID:      "rauthgrant_main",
+		ActorSystemAccountID: "sys_owner",
+	}); !errors.Is(err, ErrAuthorizationUpdateInvalid) {
+		t.Fatalf("Update() error = %v, want invalid input", err)
+	}
+	if _, _, err := service.Update(context.Background(), UpdateInput{
+		AuthorizationID:      "rauthgrant_main",
+		ActorSystemAccountID: "sys_owner",
+		HasStatus:            true,
+		Status:               "revoked",
+	}); !errors.Is(err, ErrAuthorizationUpdateInvalid) {
+		t.Fatalf("Update() bad status error = %v, want invalid input", err)
+	}
+	pastExpiresAt := "2026-07-08T00:00:00.000Z"
+	if _, _, err := service.Update(context.Background(), UpdateInput{
+		AuthorizationID:      "rauthgrant_main",
+		ActorSystemAccountID: "sys_owner",
+		HasExpiresAt:         true,
+		ExpiresAt:            &pastExpiresAt,
+	}); err == nil || !strings.Contains(err.Error(), "授权到期时间不能早于当前时间") {
+		t.Fatalf("Update() past expiresAt error = %v", err)
+	}
+
+	got, found, err := service.Update(context.Background(), UpdateInput{
+		AuthorizationID:       "rauthgrant_main",
+		ActorSystemAccountID:  " sys_owner ",
+		ActorRole:             "user",
+		ScopedSystemAccountID: "sys_other",
+		HasLimits:             true,
+		LimitsIsNull:          true,
+	})
+	if err != nil {
+		t.Fatalf("Update() clear limits error = %v", err)
+	}
+	if !found || got.ID != "rauthgrant_main" {
+		t.Fatalf("Update() clear limits = (%+v, %v), want summary", got, found)
+	}
+	if !store.called ||
+		store.input.ScopedSystemAccountID != "sys_owner" ||
+		store.input.CanAccessAll ||
+		!store.input.HasLimits ||
+		store.input.LimitsJSON != nil {
+		t.Fatalf("store input = %+v", store.input)
+	}
+}
+
+func TestServiceUpdateSkipsInvalidationWhenNotFound(t *testing.T) {
+	now := time.Date(2026, 7, 9, 10, 30, 0, 0, time.UTC)
+	store := &authorizationUpdateStoreStub{}
+	invalidator := &authorizationInvalidatorStub{}
+	service := NewServiceWithOptions(ServiceOptions{
+		UpdateStore:              store,
+		Now:                      func() time.Time { return now },
+		AuthorizationInvalidator: invalidator,
+	})
+
+	_, found, err := service.Update(context.Background(), UpdateInput{
+		AuthorizationID:      "rauthgrant_missing",
+		ActorSystemAccountID: "sys_owner",
+		ActorRole:            "admin",
+		HasStatus:            true,
+		Status:               "paused",
+	})
+	if err != nil {
+		t.Fatalf("Update() missing error = %v", err)
+	}
+	if found {
+		t.Fatal("Update() found missing authorization")
+	}
+	if invalidator.calls != 0 {
+		t.Fatalf("invalidator calls = %d, want 0", invalidator.calls)
+	}
+}
+
 func TestServiceReturnTrimsInputAndInvalidatesAuthorizationCache(t *testing.T) {
 	now := time.Date(2026, 7, 9, 9, 30, 0, 0, time.UTC)
 	store := &authorizationReturnStoreStub{
@@ -621,6 +797,23 @@ func (s *authorizationReturnStoreStub) ReturnManagementResourceAuthorizationForG
 	return s.result, s.found, nil
 }
 
+type authorizationUpdateStoreStub struct {
+	called bool
+	input  port.ManagementResourceAuthorizationUpdateInput
+	result Summary
+	found  bool
+	err    error
+}
+
+func (s *authorizationUpdateStoreStub) UpdateManagementResourceAuthorization(_ context.Context, input port.ManagementResourceAuthorizationUpdateInput) (port.ManagementResourceAuthorizationSummary, bool, error) {
+	s.called = true
+	s.input = input
+	if s.err != nil {
+		return port.ManagementResourceAuthorizationSummary{}, false, s.err
+	}
+	return s.result, s.found, nil
+}
+
 type authorizationRevokeStoreStub struct {
 	called bool
 	input  port.ManagementResourceAuthorizationRevokeInput
@@ -688,4 +881,5 @@ var _ port.ManagementResourceAuthorizationGetter = (*authorizationGetStoreStub)(
 var _ port.ManagementResourceAuthorizationLister = (*authorizationListStoreStub)(nil)
 var _ port.ManagementResourceAuthorizationRevoker = (*authorizationRevokeStoreStub)(nil)
 var _ port.ManagementResourceAuthorizationReturner = (*authorizationReturnStoreStub)(nil)
+var _ port.ManagementResourceAuthorizationUpdater = (*authorizationUpdateStoreStub)(nil)
 var _ AuthorizationInvalidator = (*authorizationInvalidatorStub)(nil)

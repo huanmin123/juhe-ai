@@ -350,6 +350,108 @@ func (s *Store) CreateManagementResourceAuthorization(ctx context.Context, input
 	return summary, nil
 }
 
+func (s *Store) UpdateManagementResourceAuthorization(ctx context.Context, input port.ManagementResourceAuthorizationUpdateInput) (port.ManagementResourceAuthorizationSummary, bool, error) {
+	if strings.TrimSpace(input.AuthorizationID) == "" || strings.TrimSpace(input.ActorSystemAccountID) == "" {
+		return port.ManagementResourceAuthorizationSummary{}, false, nil
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return port.ManagementResourceAuthorizationSummary{}, false, fmt.Errorf("begin management resource authorization update tx: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = tx.Rollback(rollbackCtx)
+		}
+	}()
+
+	now := input.UpdatedAt.UTC()
+	actor := strings.TrimSpace(input.ActorSystemAccountID)
+	grant, found, err := findUpdatableManagementGrantTx(ctx, tx, input)
+	if err != nil {
+		return port.ManagementResourceAuthorizationSummary{}, false, err
+	}
+	if !found {
+		return port.ManagementResourceAuthorizationSummary{}, false, nil
+	}
+
+	nextExpiresAt := grant.ExpiresAt
+	if input.HasExpiresAt {
+		nextExpiresAt = pgTimestamptzPtr(input.ExpiresAt)
+	}
+	if err := validateManagementAuthorizationExpiresAtTx(ctx, tx, grant.ResourceType, grant.ResourceID, timePtrFromTimestamptz(nextExpiresAt), now); err != nil {
+		return port.ManagementResourceAuthorizationSummary{}, false, err
+	}
+	requestedStatus := ""
+	if input.HasStatus {
+		requestedStatus = strings.TrimSpace(input.Status)
+	}
+	if grant.Status == "expired" && requestedStatus == "active" && !input.HasExpiresAt {
+		return port.ManagementResourceAuthorizationSummary{}, false, fmt.Errorf("到期授权恢复时请同时调整过期时间")
+	}
+
+	nextLimitsJSON := grant.LimitsJson
+	if input.HasLimits {
+		nextLimitsJSON = pgTextFromStringPtr(input.LimitsJSON)
+	}
+	nextStatus := nextManagementAuthorizationGrantStatus(grant.Status, requestedStatus, input.HasExpiresAt, nextExpiresAt, now)
+	nextRevokedBy := grant.RevokedBy
+	nextRevokedAt := grant.RevokedAt
+	if nextStatus == "active" || nextStatus == "paused" {
+		nextRevokedBy = pgtype.Text{}
+		nextRevokedAt = pgtype.Timestamptz{}
+	} else {
+		if !nextRevokedBy.Valid {
+			nextRevokedBy = pgTextFromString(actor)
+		}
+		if !nextRevokedAt.Valid {
+			nextRevokedAt = pgTimestamptz(now)
+		}
+	}
+	if _, err := tx.Exec(ctx, `
+UPDATE juhe_business.resource_authorization_grants
+SET status = $1,
+    expires_at = $2,
+    revoked_by = $3::text,
+    revoked_at = $4,
+    limits_json = $5::text,
+    updated_at = $6
+WHERE id = $7
+`, nextStatus, nextExpiresAt, nextRevokedBy, nextRevokedAt, nextLimitsJSON, now, grant.ID); err != nil {
+		return port.ManagementResourceAuthorizationSummary{}, false, fmt.Errorf("update resource authorization grant: %w", err)
+	}
+	grant.Status = nextStatus
+	grant.ExpiresAt = nextExpiresAt
+	grant.RevokedBy = nextRevokedBy
+	grant.RevokedAt = nextRevokedAt
+	grant.LimitsJson = nextLimitsJSON
+	grant.UpdatedAt = pgTimestamptz(now)
+
+	if err := rememberManagementRequestQuotaHourlyWindowTx(ctx, tx, input.LimitHourlyWindowHours, now); err != nil {
+		return port.ManagementResourceAuthorizationSummary{}, false, err
+	}
+	if err := syncManagementGrantRuntimeAfterUpdateTx(ctx, tx, grant, actor, now, input.LimitHourlyWindowHours); err != nil {
+		return port.ManagementResourceAuthorizationSummary{}, false, err
+	}
+	if err := markAllGroupAccountStatsDirtyIfPresentTx(ctx, tx, "resource_authorization_updated", now); err != nil {
+		return port.ManagementResourceAuthorizationSummary{}, false, err
+	}
+	summary, err := managementAuthorizationSummaryByGrantIDTx(ctx, tx, grant.ID)
+	if err != nil {
+		return port.ManagementResourceAuthorizationSummary{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		if errors.Is(err, pgx.ErrTxCommitRollback) {
+			return port.ManagementResourceAuthorizationSummary{}, false, fmt.Errorf("commit management resource authorization update tx rolled back: %w", err)
+		}
+		return port.ManagementResourceAuthorizationSummary{}, false, fmt.Errorf("commit management resource authorization update tx: %w", err)
+	}
+	committed = true
+	return summary, true, nil
+}
+
 func (s *Store) ReturnManagementResourceAuthorizationForGrantee(ctx context.Context, input port.ManagementResourceAuthorizationReturnInput) (port.ManagementResourceAuthorizationSummary, bool, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -505,6 +607,251 @@ WHERE id = $3
 	}
 	committed = true
 	return summary, true, nil
+}
+
+func findUpdatableManagementGrantTx(ctx context.Context, tx pgx.Tx, input port.ManagementResourceAuthorizationUpdateInput) (postgresqueries.JuheBusinessResourceAuthorizationGrant, bool, error) {
+	args := []any{strings.TrimSpace(input.AuthorizationID)}
+	ownerClause := ""
+	ownerID := strings.TrimSpace(input.ScopedSystemAccountID)
+	if ownerID == "" && !input.CanAccessAll {
+		ownerID = strings.TrimSpace(input.ActorSystemAccountID)
+	}
+	if ownerID != "" {
+		args = append(args, ownerID)
+		ownerClause = fmt.Sprintf("  AND resource_owner_system_account_id = $%d\n", len(args))
+	}
+	var row postgresqueries.JuheBusinessResourceAuthorizationGrant
+	err := tx.QueryRow(ctx, `
+SELECT id, resource_type, resource_id, resource_owner_system_account_id,
+  grantee_type, grantee_system_account_id, grantee_team_id, scope,
+  status, remark, expires_at, limits_json, created_by,
+  created_at, revoked_by, revoked_at, updated_at
+FROM juhe_business.resource_authorization_grants
+WHERE id = $1
+`+ownerClause+`LIMIT 1
+FOR UPDATE
+`, args...).Scan(
+		&row.ID,
+		&row.ResourceType,
+		&row.ResourceID,
+		&row.ResourceOwnerSystemAccountID,
+		&row.GranteeType,
+		&row.GranteeSystemAccountID,
+		&row.GranteeTeamID,
+		&row.Scope,
+		&row.Status,
+		&row.Remark,
+		&row.ExpiresAt,
+		&row.LimitsJson,
+		&row.CreatedBy,
+		&row.CreatedAt,
+		&row.RevokedBy,
+		&row.RevokedAt,
+		&row.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return postgresqueries.JuheBusinessResourceAuthorizationGrant{}, false, nil
+	}
+	if err != nil {
+		return postgresqueries.JuheBusinessResourceAuthorizationGrant{}, false, fmt.Errorf("find updatable resource authorization grant: %w", err)
+	}
+	return row, true, nil
+}
+
+func nextManagementAuthorizationGrantStatus(currentStatus string, requestedStatus string, hasExpiresAtInput bool, expiresAt pgtype.Timestamptz, now time.Time) string {
+	if expiresAt.Valid && !expiresAt.Time.After(now.UTC()) {
+		return "expired"
+	}
+	switch requestedStatus {
+	case "active", "paused", "revoked", "returned":
+		return requestedStatus
+	}
+	if currentStatus == "expired" && hasExpiresAtInput {
+		return "active"
+	}
+	if currentStatus == "paused" {
+		return "paused"
+	}
+	return currentStatus
+}
+
+func syncManagementGrantRuntimeAfterUpdateTx(ctx context.Context, tx pgx.Tx, grant postgresqueries.JuheBusinessResourceAuthorizationGrant, actor string, now time.Time, hourlyWindowHours int) error {
+	switch grant.GranteeType {
+	case "system_account":
+		return syncManagementUserGrantRuntimeAfterUpdateTx(ctx, tx, grant, actor, now, hourlyWindowHours)
+	case "team":
+		return syncManagementTeamGrantRuntimeAfterUpdateTx(ctx, tx, grant, actor, now)
+	default:
+		return nil
+	}
+}
+
+func syncManagementUserGrantRuntimeAfterUpdateTx(ctx context.Context, tx pgx.Tx, grant postgresqueries.JuheBusinessResourceAuthorizationGrant, actor string, now time.Time, hourlyWindowHours int) error {
+	granteeSystemAccountID := textValue(grant.GranteeSystemAccountID)
+	if granteeSystemAccountID == "" {
+		return nil
+	}
+	if grant.Status == "active" {
+		_, err := upsertManagementManualAuthorizationForUserTx(ctx, tx, managementAuthorizationCreateInputFromGrant(grant, actor, now, hourlyWindowHours), grant.ResourceOwnerSystemAccountID, now)
+		return err
+	}
+	runtimeAuthorization, found, err := findManagementRuntimeAuthorizationForDirectGrantTx(ctx, tx, grant)
+	if err != nil || !found {
+		return err
+	}
+	if grant.Status == "paused" || grant.Status == "expired" {
+		if _, err := tx.Exec(ctx, `
+UPDATE juhe_business.resource_authorizations
+SET status = $1,
+    expires_at = $2,
+    limits_json = $3::text,
+    revoked_by = CASE WHEN $1 = 'expired' THEN COALESCE(revoked_by, $4) ELSE NULL END,
+    revoked_at = CASE WHEN $1 = 'expired' THEN COALESCE(revoked_at, $5) ELSE NULL END,
+    revoked_reason = CASE WHEN $1 = 'expired' THEN 'authorization_expired' ELSE 'authorization_paused' END,
+    updated_at = $5
+WHERE id = $6
+`, grant.Status, grant.ExpiresAt, grant.LimitsJson, actor, now.UTC(), runtimeAuthorization.ID); err != nil {
+			return fmt.Errorf("update direct resource authorization runtime: %w", err)
+		}
+		return refreshManagementResourceAuthorizationEffectiveSourceTx(ctx, tx, runtimeAuthorization.ID, actor, now)
+	}
+	endedReason := "authorization_revoked"
+	terminalStatus := "revoked"
+	if grant.Status == "returned" {
+		endedReason = "grantee_returned"
+		terminalStatus = "returned"
+	}
+	if _, err := tx.Exec(ctx, `
+UPDATE juhe_business.resource_authorization_sources
+SET status = 'revoked',
+    ended_at = COALESCE(ended_at, $1),
+    ended_reason = COALESCE(ended_reason, $2),
+    revoked_by = $3,
+    revoked_at = $1,
+    updated_at = $1
+WHERE authorization_id = $4
+  AND source_type = 'manual'
+  AND status IN ('active', 'superseded')
+`, now.UTC(), endedReason, actor, runtimeAuthorization.ID); err != nil {
+		return fmt.Errorf("finish manual authorization source: %w", err)
+	}
+	return refreshManagementResourceAuthorizationEffectiveSourceWithOptionsTx(ctx, tx, runtimeAuthorization.ID, actor, now, managementAuthorizationEffectiveSourceRefreshOptions{
+		noActiveSourceReason:              endedReason,
+		preserveExpiredWhenNoActiveSource: false,
+		terminalStatus:                    terminalStatus,
+	})
+}
+
+func syncManagementTeamGrantRuntimeAfterUpdateTx(ctx context.Context, tx pgx.Tx, grant postgresqueries.JuheBusinessResourceAuthorizationGrant, actor string, now time.Time) error {
+	teamID := textValue(grant.GranteeTeamID)
+	if teamID == "" {
+		return nil
+	}
+	if grant.Status == "revoked" || grant.Status == "returned" {
+		return revokeManagementTeamGrantSourcesForGrantTx(ctx, tx, grant.ResourceType, grant.ResourceID, teamID, actor, now)
+	}
+	if grant.Status == "active" {
+		members, err := activeManagementTeamMemberIDsTx(ctx, tx, teamID)
+		if err != nil {
+			return err
+		}
+		for _, memberID := range managementAuthorizationNonOwnerMemberIDs(members, grant.ResourceOwnerSystemAccountID) {
+			if err := upsertManagementTeamAuthorizationForUserTx(ctx, tx, managementTeamAuthorizationUpsertInput{
+				resourceType:                 grant.ResourceType,
+				resourceID:                   grant.ResourceID,
+				resourceOwnerSystemAccountID: grant.ResourceOwnerSystemAccountID,
+				granteeSystemAccountID:       memberID,
+				sourceTeamID:                 teamID,
+				remark:                       grant.Remark,
+				expiresAt:                    grant.ExpiresAt,
+				limitsJSON:                   grant.LimitsJson,
+				actor:                        actor,
+				now:                          now,
+			}); err != nil {
+				return err
+			}
+		}
+	}
+	if grant.Status == "active" || grant.Status == "paused" || grant.Status == "expired" {
+		return updateManagementTeamGrantSourceRuntimesTx(ctx, tx, grant, teamID, actor, now)
+	}
+	return nil
+}
+
+func updateManagementTeamGrantSourceRuntimesTx(ctx context.Context, tx pgx.Tx, grant postgresqueries.JuheBusinessResourceAuthorizationGrant, teamID string, actor string, now time.Time) error {
+	limit := maxManagementSystemTeamAuthorizationMembersPerTeam + 1
+	rows, err := tx.Query(ctx, `
+SELECT ras.authorization_id
+FROM juhe_business.resource_authorization_sources AS ras
+INNER JOIN juhe_business.resource_authorizations AS ra
+  ON ra.id = ras.authorization_id
+WHERE ra.resource_type = $1
+  AND ra.resource_id = $2
+  AND ras.source_type = 'team'
+  AND ras.source_team_id = $3
+  AND ras.status = 'active'
+ORDER BY ras.authorization_id ASC
+LIMIT $4
+`, grant.ResourceType, grant.ResourceID, teamID, limit)
+	if err != nil {
+		return fmt.Errorf("list resource team authorization runtimes: %w", err)
+	}
+	defer rows.Close()
+
+	authorizationIDs := make([]string, 0)
+	for rows.Next() {
+		var authorizationID string
+		if err := rows.Scan(&authorizationID); err != nil {
+			return fmt.Errorf("scan resource team authorization runtime: %w", err)
+		}
+		authorizationIDs = append(authorizationIDs, authorizationID)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate resource team authorization runtimes: %w", err)
+	}
+	if len(authorizationIDs) > maxManagementSystemTeamAuthorizationMembersPerTeam {
+		return fmt.Errorf("授权团队最多支持 %d 个成员，请先移除部分成员后再继续", maxManagementSystemTeamAuthorizationMembersPerTeam)
+	}
+	for _, authorizationID := range authorizationIDs {
+		if _, err := tx.Exec(ctx, `
+UPDATE juhe_business.resource_authorizations
+SET expires_at = $1,
+    revoked_by = CASE WHEN $2 = 'expired' THEN COALESCE(revoked_by, $3) ELSE NULL END,
+    revoked_at = CASE WHEN $2 = 'expired' THEN COALESCE(revoked_at, $4) ELSE NULL END,
+    revoked_reason = CASE WHEN $2 = 'expired' THEN 'authorization_expired' WHEN $2 = 'paused' THEN 'authorization_paused' ELSE NULL END,
+    limits_json = $5::text,
+    updated_at = $4
+WHERE id = $6
+`, grant.ExpiresAt, grant.Status, actor, now.UTC(), grant.LimitsJson, authorizationID); err != nil {
+			return fmt.Errorf("update resource team authorization runtime: %w", err)
+		}
+		if err := refreshManagementResourceAuthorizationEffectiveSourceTx(ctx, tx, authorizationID, actor, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func managementAuthorizationCreateInputFromGrant(grant postgresqueries.JuheBusinessResourceAuthorizationGrant, actor string, now time.Time, hourlyWindowHours int) port.ManagementResourceAuthorizationCreateInput {
+	var limitsJSON *string
+	if grant.LimitsJson.Valid {
+		value := grant.LimitsJson.String
+		limitsJSON = &value
+	}
+	return port.ManagementResourceAuthorizationCreateInput{
+		ResourceType:                 grant.ResourceType,
+		ResourceID:                   grant.ResourceID,
+		ResourceOwnerSystemAccountID: grant.ResourceOwnerSystemAccountID,
+		GranteeType:                  "system_account",
+		GranteeID:                    textValue(grant.GranteeSystemAccountID),
+		Remark:                       textValue(grant.Remark),
+		HasRemark:                    grant.Remark.Valid,
+		ExpiresAt:                    timePtrFromTimestamptz(grant.ExpiresAt),
+		LimitsJSON:                   limitsJSON,
+		LimitHourlyWindowHours:       hourlyWindowHours,
+		ActorSystemAccountID:         actor,
+		CreatedAt:                    now,
+	}
 }
 
 func findRevocableManagementGrantTx(ctx context.Context, tx pgx.Tx, input port.ManagementResourceAuthorizationRevokeInput) (postgresqueries.JuheBusinessResourceAuthorizationGrant, bool, error) {
@@ -1820,3 +2167,4 @@ var _ port.ManagementResourceAuthorizationGetter = (*Store)(nil)
 var _ port.ManagementResourceAuthorizationLister = (*Store)(nil)
 var _ port.ManagementResourceAuthorizationRevoker = (*Store)(nil)
 var _ port.ManagementResourceAuthorizationReturner = (*Store)(nil)
+var _ port.ManagementResourceAuthorizationUpdater = (*Store)(nil)
