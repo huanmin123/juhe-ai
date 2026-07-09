@@ -435,6 +435,213 @@ WHERE authorization_id = $3
 	return summary, true, nil
 }
 
+func (s *Store) RevokeManagementResourceAuthorization(ctx context.Context, input port.ManagementResourceAuthorizationRevokeInput) (port.ManagementResourceAuthorizationSummary, bool, error) {
+	if strings.TrimSpace(input.AuthorizationID) == "" || strings.TrimSpace(input.ActorSystemAccountID) == "" {
+		return port.ManagementResourceAuthorizationSummary{}, false, nil
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return port.ManagementResourceAuthorizationSummary{}, false, fmt.Errorf("begin management resource authorization revoke tx: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = tx.Rollback(rollbackCtx)
+		}
+	}()
+
+	now := input.RevokedAt.UTC()
+	actor := strings.TrimSpace(input.ActorSystemAccountID)
+	grant, found, err := findRevocableManagementGrantTx(ctx, tx, input)
+	if err != nil {
+		return port.ManagementResourceAuthorizationSummary{}, false, err
+	}
+	if !found {
+		return port.ManagementResourceAuthorizationSummary{}, false, nil
+	}
+	if _, err := tx.Exec(ctx, `
+UPDATE juhe_business.resource_authorization_grants
+SET status = 'revoked',
+    revoked_by = $1,
+    revoked_at = $2,
+    updated_at = $2
+WHERE id = $3
+`, actor, now, grant.ID); err != nil {
+		return port.ManagementResourceAuthorizationSummary{}, false, fmt.Errorf("revoke resource authorization grant: %w", err)
+	}
+	switch grant.GranteeType {
+	case "system_account":
+		runtimeAuthorization, found, err := findManagementRuntimeAuthorizationForDirectGrantTx(ctx, tx, grant)
+		if err != nil {
+			return port.ManagementResourceAuthorizationSummary{}, false, err
+		}
+		if found {
+			if err := revokeManagementManualGrantSourcesTx(ctx, tx, runtimeAuthorization.ID, actor, now); err != nil {
+				return port.ManagementResourceAuthorizationSummary{}, false, err
+			}
+		}
+	case "team":
+		teamID := textValue(grant.GranteeTeamID)
+		if teamID != "" {
+			if err := revokeManagementTeamGrantSourcesForGrantTx(ctx, tx, grant.ResourceType, grant.ResourceID, teamID, actor, now); err != nil {
+				return port.ManagementResourceAuthorizationSummary{}, false, err
+			}
+		}
+	}
+	if err := markAllGroupAccountStatsDirtyIfPresentTx(ctx, tx, "resource_authorization_revoked", now); err != nil {
+		return port.ManagementResourceAuthorizationSummary{}, false, err
+	}
+	summary, err := managementAuthorizationSummaryByGrantIDTx(ctx, tx, grant.ID)
+	if err != nil {
+		return port.ManagementResourceAuthorizationSummary{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		if errors.Is(err, pgx.ErrTxCommitRollback) {
+			return port.ManagementResourceAuthorizationSummary{}, false, fmt.Errorf("commit management resource authorization revoke tx rolled back: %w", err)
+		}
+		return port.ManagementResourceAuthorizationSummary{}, false, fmt.Errorf("commit management resource authorization revoke tx: %w", err)
+	}
+	committed = true
+	return summary, true, nil
+}
+
+func findRevocableManagementGrantTx(ctx context.Context, tx pgx.Tx, input port.ManagementResourceAuthorizationRevokeInput) (postgresqueries.JuheBusinessResourceAuthorizationGrant, bool, error) {
+	args := []any{strings.TrimSpace(input.AuthorizationID)}
+	ownerClause := ""
+	ownerID := strings.TrimSpace(input.ScopedSystemAccountID)
+	if ownerID == "" && !input.CanAccessAll {
+		ownerID = strings.TrimSpace(input.ActorSystemAccountID)
+	}
+	if ownerID != "" {
+		args = append(args, ownerID)
+		ownerClause = fmt.Sprintf("  AND resource_owner_system_account_id = $%d\n", len(args))
+	}
+	var row postgresqueries.JuheBusinessResourceAuthorizationGrant
+	err := tx.QueryRow(ctx, `
+SELECT id, resource_type, resource_id, resource_owner_system_account_id,
+  grantee_type, grantee_system_account_id, grantee_team_id, scope,
+  status, remark, expires_at, limits_json, created_by,
+  created_at, revoked_by, revoked_at, updated_at
+FROM juhe_business.resource_authorization_grants
+WHERE id = $1
+`+ownerClause+`LIMIT 1
+FOR UPDATE
+`, args...).Scan(
+		&row.ID,
+		&row.ResourceType,
+		&row.ResourceID,
+		&row.ResourceOwnerSystemAccountID,
+		&row.GranteeType,
+		&row.GranteeSystemAccountID,
+		&row.GranteeTeamID,
+		&row.Scope,
+		&row.Status,
+		&row.Remark,
+		&row.ExpiresAt,
+		&row.LimitsJson,
+		&row.CreatedBy,
+		&row.CreatedAt,
+		&row.RevokedBy,
+		&row.RevokedAt,
+		&row.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return postgresqueries.JuheBusinessResourceAuthorizationGrant{}, false, nil
+	}
+	if err != nil {
+		return postgresqueries.JuheBusinessResourceAuthorizationGrant{}, false, fmt.Errorf("find revocable resource authorization grant: %w", err)
+	}
+	return row, true, nil
+}
+
+func revokeManagementManualGrantSourcesTx(ctx context.Context, tx pgx.Tx, authorizationID string, actor string, now time.Time) error {
+	if _, err := tx.Exec(ctx, `
+UPDATE juhe_business.resource_authorization_sources
+SET status = 'revoked',
+    ended_at = COALESCE(ended_at, $1),
+    ended_reason = COALESCE(ended_reason, 'authorization_revoked'),
+    revoked_by = $2,
+    revoked_at = $1,
+    updated_at = $1
+WHERE authorization_id = $3
+  AND source_type = 'manual'
+  AND status IN ('active', 'superseded')
+`, now.UTC(), actor, authorizationID); err != nil {
+		return fmt.Errorf("revoke manual authorization source: %w", err)
+	}
+	if err := refreshManagementResourceAuthorizationEffectiveSourceWithOptionsTx(ctx, tx, authorizationID, actor, now, managementAuthorizationEffectiveSourceRefreshOptions{
+		noActiveSourceReason:              "authorization_revoked",
+		preserveExpiredWhenNoActiveSource: false,
+		terminalStatus:                    "revoked",
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func revokeManagementTeamGrantSourcesForGrantTx(ctx context.Context, tx pgx.Tx, resourceType string, resourceID string, teamID string, actor string, now time.Time) error {
+	limit := maxManagementSystemTeamAuthorizationMembersPerTeam + 1
+	rows, err := tx.Query(ctx, `
+SELECT ras.authorization_id
+FROM juhe_business.resource_authorization_sources AS ras
+INNER JOIN juhe_business.resource_authorizations AS ra
+  ON ra.id = ras.authorization_id
+WHERE ras.source_type = 'team'
+  AND ras.source_team_id = $1
+  AND ras.status = 'active'
+  AND ra.resource_type = $2
+  AND ra.resource_id = $3
+ORDER BY ras.authorization_id ASC
+LIMIT $4
+`, teamID, resourceType, resourceID, limit)
+	if err != nil {
+		return fmt.Errorf("list active resource team authorization sources: %w", err)
+	}
+	defer rows.Close()
+
+	authorizationIDs := make([]string, 0)
+	for rows.Next() {
+		var authorizationID string
+		if err := rows.Scan(&authorizationID); err != nil {
+			return fmt.Errorf("scan active resource team authorization source: %w", err)
+		}
+		authorizationIDs = append(authorizationIDs, authorizationID)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate active resource team authorization sources: %w", err)
+	}
+	if len(authorizationIDs) > maxManagementSystemTeamAuthorizationMembersPerTeam {
+		return fmt.Errorf("授权团队最多支持 %d 个成员，请先移除部分成员后再继续", maxManagementSystemTeamAuthorizationMembersPerTeam)
+	}
+	for _, authorizationID := range authorizationIDs {
+		if _, err := tx.Exec(ctx, `
+UPDATE juhe_business.resource_authorization_sources
+SET status = 'revoked',
+    ended_at = COALESCE(ended_at, $1),
+    ended_reason = COALESCE(ended_reason, 'team_revoked'),
+    revoked_by = $2,
+    revoked_at = $1,
+    updated_at = $1
+WHERE authorization_id = $3
+  AND source_type = 'team'
+  AND source_team_id = $4
+  AND status = 'active'
+`, now.UTC(), actor, authorizationID, teamID); err != nil {
+			return fmt.Errorf("revoke resource team authorization source: %w", err)
+		}
+		if err := refreshManagementResourceAuthorizationEffectiveSourceWithOptionsTx(ctx, tx, authorizationID, actor, now, managementAuthorizationEffectiveSourceRefreshOptions{
+			noActiveSourceReason:              "authorization_revoked",
+			preserveExpiredWhenNoActiveSource: false,
+			terminalStatus:                    "revoked",
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func findReturnableManagementDirectGrantForGranteeTx(ctx context.Context, tx pgx.Tx, authorizationID string, granteeSystemAccountID string) (postgresqueries.JuheBusinessResourceAuthorizationGrant, bool, error) {
 	var row postgresqueries.JuheBusinessResourceAuthorizationGrant
 	err := tx.QueryRow(ctx, `
@@ -1611,4 +1818,5 @@ func timePtrFromTimestamptz(value pgtype.Timestamptz) *time.Time {
 var _ port.ManagementResourceAuthorizationCreator = (*Store)(nil)
 var _ port.ManagementResourceAuthorizationGetter = (*Store)(nil)
 var _ port.ManagementResourceAuthorizationLister = (*Store)(nil)
+var _ port.ManagementResourceAuthorizationRevoker = (*Store)(nil)
 var _ port.ManagementResourceAuthorizationReturner = (*Store)(nil)

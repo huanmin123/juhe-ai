@@ -30,12 +30,14 @@ const (
 	quotaAmountPrecision                int64 = 1_000_000
 	ResourceAuthorizationCreatedReason        = "resource_authorization_created"
 	ResourceAuthorizationReturnedReason       = "resource_authorization_returned"
+	ResourceAuthorizationRevokedReason        = "resource_authorization_revoked"
 )
 
 var (
 	ErrAuthorizationListInvalid   = errors.New("management authorization list invalid")
 	ErrAuthorizationCreateInvalid = errors.New("management authorization create invalid")
 	ErrAuthorizationReturnInvalid = errors.New("management authorization return invalid")
+	ErrAuthorizationRevokeInvalid = errors.New("management authorization revoke invalid")
 )
 
 type Service struct {
@@ -43,6 +45,7 @@ type Service struct {
 	getStore                 port.ManagementResourceAuthorizationGetter
 	createStore              port.ManagementResourceAuthorizationCreator
 	returnStore              port.ManagementResourceAuthorizationReturner
+	revokeStore              port.ManagementResourceAuthorizationRevoker
 	now                      func() time.Time
 	secret                   string
 	authorizationInvalidator AuthorizationInvalidator
@@ -57,6 +60,7 @@ type ServiceOptions struct {
 	GetStore                 port.ManagementResourceAuthorizationGetter
 	Store                    port.ManagementResourceAuthorizationCreator
 	ReturnStore              port.ManagementResourceAuthorizationReturner
+	RevokeStore              port.ManagementResourceAuthorizationRevoker
 	Now                      func() time.Time
 	Secret                   string
 	AuthorizationInvalidator AuthorizationInvalidator
@@ -164,6 +168,13 @@ type ReturnInput struct {
 	ActorSystemAccountID   string
 }
 
+type RevokeInput struct {
+	AuthorizationID       string
+	ActorSystemAccountID  string
+	ActorRole             string
+	ScopedSystemAccountID string
+}
+
 type GetInput struct {
 	AuthorizationID       string
 	ActorSystemAccountID  string
@@ -200,11 +211,18 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 			getStore = candidate
 		}
 	}
+	revokeStore := opts.RevokeStore
+	if revokeStore == nil {
+		if candidate, ok := opts.Store.(port.ManagementResourceAuthorizationRevoker); ok {
+			revokeStore = candidate
+		}
+	}
 	return &Service{
 		listStore:                listStore,
 		getStore:                 getStore,
 		createStore:              opts.Store,
 		returnStore:              returnStore,
+		revokeStore:              revokeStore,
 		now:                      now,
 		secret:                   opts.Secret,
 		authorizationInvalidator: opts.AuthorizationInvalidator,
@@ -408,6 +426,42 @@ func (s *Service) Return(ctx context.Context, input ReturnInput) (Summary, bool,
 	}
 	if s.authorizationInvalidator != nil {
 		if err := s.authorizationInvalidator.InvalidateAuthorizationChanged(ctx, ResourceAuthorizationReturnedReason); err != nil {
+			return Summary{}, false, err
+		}
+	}
+	return row, true, nil
+}
+
+func (s *Service) Revoke(ctx context.Context, input RevokeInput) (Summary, bool, error) {
+	if s.revokeStore == nil {
+		return Summary{}, false, fmt.Errorf("management resource authorization revoker is required")
+	}
+	now := s.now().UTC()
+	authorizationID := strings.TrimSpace(input.AuthorizationID)
+	actor := strings.TrimSpace(input.ActorSystemAccountID)
+	if authorizationID == "" || actor == "" {
+		return Summary{}, false, ErrAuthorizationRevokeInvalid
+	}
+	canAccessAll := isAdminRole(input.ActorRole)
+	scopedSystemAccountID := strings.TrimSpace(input.ScopedSystemAccountID)
+	if !canAccessAll {
+		scopedSystemAccountID = actor
+	}
+	row, found, err := s.revokeStore.RevokeManagementResourceAuthorization(ctx, port.ManagementResourceAuthorizationRevokeInput{
+		AuthorizationID:       authorizationID,
+		ActorSystemAccountID:  actor,
+		CanAccessAll:          canAccessAll,
+		ScopedSystemAccountID: scopedSystemAccountID,
+		RevokedAt:             now,
+	})
+	if err != nil {
+		return Summary{}, false, err
+	}
+	if !found {
+		return Summary{}, false, nil
+	}
+	if s.authorizationInvalidator != nil {
+		if err := s.authorizationInvalidator.InvalidateAuthorizationChanged(ctx, ResourceAuthorizationRevokedReason); err != nil {
 			return Summary{}, false, err
 		}
 	}

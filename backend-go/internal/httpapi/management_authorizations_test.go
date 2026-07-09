@@ -409,6 +409,193 @@ func TestManagementMyAuthorizationReturnHandlerUsesSelfScope(t *testing.T) {
 	}
 }
 
+func TestManagementAuthorizationRevokeHandlerRevokesAndWritesOperationLog(t *testing.T) {
+	createdAt := time.Date(2026, 7, 9, 12, 30, 0, 0, time.UTC)
+	queueStub := &operationLogQueueStub{}
+	service := &managementAuthorizationCreateServiceStub{
+		revokeFound: true,
+		revokeResult: managementauthorizations.Summary{
+			ID:                             "rauthgrant_main",
+			ResourceType:                   "account",
+			ResourceID:                     "acct_main",
+			ResourceName:                   "主账号",
+			ResourceOwnerSystemAccountID:   "sys_owner",
+			ResourceOwnerSystemAccountName: "资源归属人",
+			GranteeType:                    "system_account",
+			GranteeSystemAccountID:         "sys_grantee",
+			GranteeSystemAccountName:       "被授权人",
+			Scope:                          "use",
+			Status:                         "revoked",
+			AuthorizationSources:           []port.ManagementResourceAuthorizationSourceSummary{},
+			Usage:                          port.ManagementAccountUsageSummary{},
+			CreatedBy:                      "sys_owner",
+			CreatedAt:                      createdAt,
+			UpdatedAt:                      createdAt,
+		},
+	}
+	handler := newManagementAuthorizationRevokeHandler(
+		service,
+		managementAuthorizationScopeAdmin,
+		newManagementOperationLogOptions(ManagementOperationLogOptions{
+			Config:   config.Config{TrustProxy: "false"},
+			Client:   queueStub,
+			Now:      func() time.Time { return createdAt },
+			NewLogID: func() string { return "oplog_authorization_revoke" },
+		}),
+	)
+	req := httptest.NewRequest(http.MethodDelete, "/__aisys__/api/authorizations/rauthgrant_main?systemAccountId=sys_owner", nil)
+	req.RemoteAddr = "127.0.0.1:34567"
+	req = managementAuthorizationRequestWithURLParam(req, "id", "rauthgrant_main")
+	req = req.WithContext(context.WithValue(req.Context(), requestIDKey, "req_authorization_revoke"))
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+		SystemAccountID: "sys_admin",
+		Username:        "admin",
+		DisplayName:     "管理员",
+		Role:            "admin",
+		SessionID:       "sess_admin",
+	}))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if !service.revokeCalled ||
+		service.revokeInput.AuthorizationID != "rauthgrant_main" ||
+		service.revokeInput.ActorSystemAccountID != "sys_admin" ||
+		service.revokeInput.ActorRole != "admin" ||
+		service.revokeInput.ScopedSystemAccountID != "sys_owner" {
+		t.Fatalf("revoke input = %+v", service.revokeInput)
+	}
+	var body struct {
+		Data managementauthorizations.Summary `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Data.ID != "rauthgrant_main" || body.Data.Status != "revoked" {
+		t.Fatalf("response data = %+v", body.Data)
+	}
+	if queueStub.calls != 1 {
+		t.Fatalf("operation log queue calls = %d, want 1", queueStub.calls)
+	}
+	logInput, err := operationlogjob.DecodeWriteTaskPayload(queueStub.payload)
+	if err != nil {
+		t.Fatalf("DecodeWriteTaskPayload() error = %v", err)
+	}
+	if logInput.ID != "oplog_authorization_revoke" ||
+		logInput.TraceID != "req_authorization_revoke" ||
+		logInput.ActorSystemAccountID != "sys_admin" ||
+		logInput.OperationScopeSystemAccountID != "sys_owner" ||
+		logInput.Mode != "admin" ||
+		logInput.Module != "authorizations" ||
+		logInput.Action != "revoke" ||
+		logInput.OperationKey != "authorizations.revoke" ||
+		logInput.ResourceType != "authorization" ||
+		logInput.ResourceID != "rauthgrant_main" ||
+		logInput.ResourceName != "主账号" ||
+		logInput.Summary != "回收资源授权：主账号 -> 被授权人" ||
+		logInput.Method != http.MethodDelete ||
+		logInput.Path != "/__aisys__/api/authorizations/rauthgrant_main" ||
+		logInput.ClientIP != "127.0.0.1" ||
+		!logInput.CreatedAt.Equal(createdAt) {
+		t.Fatalf("operation log input = %+v", logInput)
+	}
+	if logInput.StatusCode == nil || *logInput.StatusCode != http.StatusOK {
+		t.Fatalf("status code = %+v, want 200", logInput.StatusCode)
+	}
+	if len(logInput.Changes) != 1 ||
+		logInput.Changes[0].Field != "revoked" ||
+		logInput.Changes[0].After != true {
+		t.Fatalf("changes = %+v", logInput.Changes)
+	}
+}
+
+func TestManagementMyAuthorizationRevokeHandlerUsesSelfScope(t *testing.T) {
+	service := &managementAuthorizationCreateServiceStub{
+		revokeFound: true,
+		revokeResult: managementauthorizations.Summary{
+			ID:                           "rauthgrant_main",
+			ResourceType:                 "group",
+			ResourceID:                   "grp_owner",
+			ResourceOwnerSystemAccountID: "sys_owner",
+			GranteeType:                  "team",
+			GranteeTeamID:                "team_ops",
+			Scope:                        "use",
+			Status:                       "revoked",
+			AuthorizationSources:         []port.ManagementResourceAuthorizationSourceSummary{},
+			Usage:                        port.ManagementAccountUsageSummary{},
+			CreatedAt:                    time.Date(2026, 7, 9, 12, 30, 0, 0, time.UTC),
+			UpdatedAt:                    time.Date(2026, 7, 9, 12, 30, 0, 0, time.UTC),
+		},
+	}
+	handler := newManagementAuthorizationRevokeHandler(service, managementAuthorizationScopeSelf)
+	req := httptest.NewRequest(http.MethodDelete, "/__aisys__/api/my-authorizations/rauthgrant_main?systemAccountId=sys_other", nil)
+	req = managementAuthorizationRequestWithURLParam(req, "id", "rauthgrant_main")
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+		SystemAccountID: "sys_owner",
+		Username:        "owner",
+		Role:            "user",
+		SessionID:       "sess_owner",
+	}))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if !service.revokeCalled ||
+		service.revokeInput.AuthorizationID != "rauthgrant_main" ||
+		service.revokeInput.ActorSystemAccountID != "sys_owner" ||
+		service.revokeInput.ActorRole != "user" ||
+		service.revokeInput.ScopedSystemAccountID != "sys_owner" {
+		t.Fatalf("revoke input = %+v", service.revokeInput)
+	}
+}
+
+func TestManagementAuthorizationRevokeHandlerRejectsInvalidOrMissingRecord(t *testing.T) {
+	tests := []struct {
+		name     string
+		id       string
+		found    bool
+		wantCode int
+		wantMsg  string
+	}{
+		{name: "empty id", id: " ", found: true, wantCode: http.StatusBadRequest, wantMsg: "授权记录 ID 不合法"},
+		{name: "missing", id: "rauthgrant_missing", found: false, wantCode: http.StatusNotFound, wantMsg: "授权记录不存在"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &managementAuthorizationCreateServiceStub{revokeFound: tt.found}
+			handler := newManagementAuthorizationRevokeHandler(service, managementAuthorizationScopeAdmin)
+			req := httptest.NewRequest(http.MethodDelete, "/__aisys__/api/authorizations/"+url.PathEscape(tt.id), nil)
+			req = managementAuthorizationRequestWithURLParam(req, "id", tt.id)
+			req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+				SystemAccountID: "sys_admin",
+				Username:        "admin",
+				Role:            "admin",
+				SessionID:       "sess_admin",
+			}))
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantCode {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, tt.wantCode, rec.Body.String())
+			}
+			var body map[string]string
+			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if body["message"] != tt.wantMsg {
+				t.Fatalf("message = %q, want %q", body["message"], tt.wantMsg)
+			}
+		})
+	}
+}
+
 func TestManagementAuthorizationListHandlerParsesAdminQueryAndResponds(t *testing.T) {
 	createdAt := time.Date(2026, 7, 9, 10, 30, 0, 0, time.UTC)
 	service := &managementAuthorizationCreateServiceStub{
@@ -688,7 +875,7 @@ func TestManagementAuthorizationDetailHandlerRejectsInvalidOrMissingRecord(t *te
 	}
 }
 
-func TestRouterRegistersW4ManagementAuthorizationListDetailCreateAndReturn(t *testing.T) {
+func TestRouterRegistersW4ManagementAuthorizationListDetailCreateReturnAndRevoke(t *testing.T) {
 	service := &managementAuthorizationCreateServiceStub{
 		result: managementauthorizations.Summary{
 			ID:                           "rauthgrant_main",
@@ -722,6 +909,22 @@ func TestRouterRegistersW4ManagementAuthorizationListDetailCreateAndReturn(t *te
 			CreatedBy:                    "sys_owner",
 			CreatedAt:                    time.Date(2026, 7, 9, 9, 30, 0, 0, time.UTC),
 			UpdatedAt:                    time.Date(2026, 7, 9, 9, 30, 0, 0, time.UTC),
+		},
+		revokeFound: true,
+		revokeResult: managementauthorizations.Summary{
+			ID:                           "rauthgrant_main",
+			ResourceType:                 "account",
+			ResourceID:                   "acct_main",
+			ResourceOwnerSystemAccountID: "sys_owner",
+			GranteeType:                  "system_account",
+			GranteeSystemAccountID:       "sys_grantee",
+			Scope:                        "use",
+			Status:                       "revoked",
+			AuthorizationSources:         []port.ManagementResourceAuthorizationSourceSummary{},
+			Usage:                        port.ManagementAccountUsageSummary{},
+			CreatedBy:                    "sys_owner",
+			CreatedAt:                    time.Date(2026, 7, 9, 12, 30, 0, 0, time.UTC),
+			UpdatedAt:                    time.Date(2026, 7, 9, 12, 30, 0, 0, time.UTC),
 		},
 		listResult: managementauthorizations.ListResult{
 			Items:    []managementauthorizations.ListItem{},
@@ -764,6 +967,8 @@ func TestRouterRegistersW4ManagementAuthorizationListDetailCreateAndReturn(t *te
 		ManagementMyAuthorizationCreateHandler: newManagementAuthorizationCreateHandler(service, managementAuthorizationScopeSelf),
 		ManagementAuthorizationReturnHandler:   newManagementAuthorizationReturnHandler(service, managementAuthorizationScopeAdmin),
 		ManagementMyAuthorizationReturnHandler: newManagementAuthorizationReturnHandler(service, managementAuthorizationScopeSelf),
+		ManagementAuthorizationRevokeHandler:   newManagementAuthorizationRevokeHandler(service, managementAuthorizationScopeAdmin),
+		ManagementMyAuthorizationRevokeHandler: newManagementAuthorizationRevokeHandler(service, managementAuthorizationScopeSelf),
 		ManagementAPIAuthMiddleware:            NewManagementAPIAuthMiddleware(readAuthenticator),
 		ManagementAPIAuthTouchMiddleware:       NewManagementAPIAuthTouchMiddleware(touchAuthenticator),
 	})
@@ -795,6 +1000,16 @@ func TestRouterRegistersW4ManagementAuthorizationListDetailCreateAndReturn(t *te
 			method: http.MethodDelete,
 			path:   "/__aisys__/api/my-authorizations/rauthgrant_main/return",
 			status: http.StatusNoContent,
+		},
+		{
+			method: http.MethodDelete,
+			path:   "/__aisys__/api/authorizations/rauthgrant_main?systemAccountId=sys_owner",
+			status: http.StatusOK,
+		},
+		{
+			method: http.MethodDelete,
+			path:   "/__aisys__/api/my-authorizations/rauthgrant_main",
+			status: http.StatusOK,
 		},
 	} {
 		req := httptest.NewRequest(item.method, item.path, strings.NewReader(item.body))
@@ -852,6 +1067,11 @@ type managementAuthorizationCreateServiceStub struct {
 	returnResult managementauthorizations.Summary
 	returnFound  bool
 	returnErr    error
+	revokeCalled bool
+	revokeInput  managementauthorizations.RevokeInput
+	revokeResult managementauthorizations.Summary
+	revokeFound  bool
+	revokeErr    error
 	listCalled   bool
 	listInput    managementauthorizations.ListInput
 	listResult   managementauthorizations.ListResult
@@ -894,6 +1114,15 @@ func (s *managementAuthorizationCreateServiceStub) Return(_ *http.Request, input
 	return s.returnResult, s.returnFound, nil
 }
 
+func (s *managementAuthorizationCreateServiceStub) Revoke(_ *http.Request, input managementauthorizations.RevokeInput) (managementauthorizations.Summary, bool, error) {
+	s.revokeCalled = true
+	s.revokeInput = input
+	if s.revokeErr != nil {
+		return managementauthorizations.Summary{}, false, s.revokeErr
+	}
+	return s.revokeResult, s.revokeFound, nil
+}
+
 func managementAuthorizationRequestWithURLParam(req *http.Request, key string, value string) *http.Request {
 	routeContext := chi.NewRouteContext()
 	routeContext.URLParams.Add(key, value)
@@ -903,4 +1132,5 @@ func managementAuthorizationRequestWithURLParam(req *http.Request, key string, v
 var _ managementAuthorizationCreateService = (*managementAuthorizationCreateServiceStub)(nil)
 var _ managementAuthorizationGetService = (*managementAuthorizationCreateServiceStub)(nil)
 var _ managementAuthorizationListService = (*managementAuthorizationCreateServiceStub)(nil)
+var _ managementAuthorizationRevokeService = (*managementAuthorizationCreateServiceStub)(nil)
 var _ managementAuthorizationReturnService = (*managementAuthorizationCreateServiceStub)(nil)

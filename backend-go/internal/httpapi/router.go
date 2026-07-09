@@ -56,6 +56,8 @@ type RouterOptions struct {
 	ManagementMyAuthorizationCreateHandler          http.Handler
 	ManagementAuthorizationReturnHandler            http.Handler
 	ManagementMyAuthorizationReturnHandler          http.Handler
+	ManagementAuthorizationRevokeHandler            http.Handler
+	ManagementMyAuthorizationRevokeHandler          http.Handler
 	ManagementProviderOptionsHandler                http.Handler
 	ManagementProviderModelOptionsHandler           http.Handler
 	ManagementProviderModelsHandler                 http.Handler
@@ -142,6 +144,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyAuthorizationCreateHandler == nil &&
 				opts.ManagementAuthorizationReturnHandler == nil &&
 				opts.ManagementMyAuthorizationReturnHandler == nil &&
+				opts.ManagementAuthorizationRevokeHandler == nil &&
+				opts.ManagementMyAuthorizationRevokeHandler == nil &&
 				opts.ManagementProviderOptionsHandler == nil &&
 				opts.ManagementProviderModelOptionsHandler == nil &&
 				opts.ManagementProviderModelsHandler == nil &&
@@ -264,6 +268,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementMyAuthorizationReturnHandler != nil {
 				system.With(managementAPIWriteAuthMiddleware).Delete("/my-authorizations/{id}/return", opts.ManagementMyAuthorizationReturnHandler.ServeHTTP)
+			}
+			if opts.ManagementAuthorizationRevokeHandler != nil {
+				system.With(managementAPIWriteAuthMiddleware).Delete("/authorizations/{id}", opts.ManagementAuthorizationRevokeHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAuthorizationRevokeHandler != nil {
+				system.With(managementAPIWriteAuthMiddleware).Delete("/my-authorizations/{id}", opts.ManagementMyAuthorizationRevokeHandler.ServeHTTP)
 			}
 			if opts.ManagementProviderOptionsHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/providers/options", opts.ManagementProviderOptionsHandler.ServeHTTP)

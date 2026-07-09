@@ -129,6 +129,34 @@ func TestManagementResourceAuthorizationListQueryScopesAndFilters(t *testing.T) 
 	}
 }
 
+func TestManagementResourceAuthorizationRevokeQueryKeepsTeamGrantScope(t *testing.T) {
+	source, err := os.ReadFile("managementauthorizations.go")
+	if err != nil {
+		t.Fatalf("read management authorizations store: %v", err)
+	}
+	code := string(source)
+	for _, want := range []string{
+		"func (s *Store) RevokeManagementResourceAuthorization",
+		"UPDATE juhe_business.resource_authorization_grants",
+		"SET status = 'revoked'",
+		"markAllGroupAccountStatsDirtyIfPresentTx(ctx, tx, \"resource_authorization_revoked\", now)",
+		"func revokeManagementTeamGrantSourcesForGrantTx",
+		"AND ra.resource_type = $2",
+		"AND ra.resource_id = $3",
+		"ended_reason = COALESCE(ended_reason, 'team_revoked')",
+		"noActiveSourceReason:              \"authorization_revoked\"",
+		"preserveExpiredWhenNoActiveSource: false",
+	} {
+		if !strings.Contains(code, want) {
+			t.Fatalf("revoke implementation missing %q", want)
+		}
+	}
+	if strings.Contains(code, "RevokeManagementResourceAuthorization(ctx context.Context") &&
+		strings.Contains(code, "revokeAllManagementTeamSourcesTx(ctx, tx") {
+		t.Fatal("authorization revoke must not call whole-team source revoke helper")
+	}
+}
+
 func containsQueryArg(args []any, want any) bool {
 	for _, arg := range args {
 		if arg == want {

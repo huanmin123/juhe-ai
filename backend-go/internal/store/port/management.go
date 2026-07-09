@@ -654,6 +654,18 @@ type ManagementResourceAuthorizationReturner interface {
 	ReturnManagementResourceAuthorizationForGrantee(ctx context.Context, input ManagementResourceAuthorizationReturnInput) (ManagementResourceAuthorizationSummary, bool, error)
 }
 
+type ManagementResourceAuthorizationRevokeInput struct {
+	AuthorizationID       string
+	ActorSystemAccountID  string
+	CanAccessAll          bool
+	ScopedSystemAccountID string
+	RevokedAt             time.Time
+}
+
+type ManagementResourceAuthorizationRevoker interface {
+	RevokeManagementResourceAuthorization(ctx context.Context, input ManagementResourceAuthorizationRevokeInput) (ManagementResourceAuthorizationSummary, bool, error)
+}
+
 type ManagementProviderEndpointFamily struct {
 	Code        string
 	Name        string

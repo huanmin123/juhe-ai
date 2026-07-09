@@ -43,6 +43,10 @@ type managementAuthorizationReturnService interface {
 	Return(r *http.Request, input managementauthorizations.ReturnInput) (managementauthorizations.Summary, bool, error)
 }
 
+type managementAuthorizationRevokeService interface {
+	Revoke(r *http.Request, input managementauthorizations.RevokeInput) (managementauthorizations.Summary, bool, error)
+}
+
 type managementAuthorizationServiceAdapter struct {
 	service *managementauthorizations.Service
 }
@@ -61,6 +65,10 @@ func (s managementAuthorizationServiceAdapter) Get(r *http.Request, input manage
 
 func (s managementAuthorizationServiceAdapter) Return(r *http.Request, input managementauthorizations.ReturnInput) (managementauthorizations.Summary, bool, error) {
 	return s.service.Return(r.Context(), input)
+}
+
+func (s managementAuthorizationServiceAdapter) Revoke(r *http.Request, input managementauthorizations.RevokeInput) (managementauthorizations.Summary, bool, error) {
+	return s.service.Revoke(r.Context(), input)
 }
 
 func NewManagementAuthorizationListHandler(service *managementauthorizations.Service) http.Handler {
@@ -95,6 +103,14 @@ func NewManagementMyAuthorizationReturnHandler(service *managementauthorizations
 	return newManagementAuthorizationReturnHandler(managementAuthorizationServiceAdapter{service: service}, managementAuthorizationScopeSelf)
 }
 
+func NewManagementAuthorizationRevokeHandler(service *managementauthorizations.Service) http.Handler {
+	return newManagementAuthorizationRevokeHandler(managementAuthorizationServiceAdapter{service: service}, managementAuthorizationScopeAdmin)
+}
+
+func NewManagementMyAuthorizationRevokeHandler(service *managementauthorizations.Service) http.Handler {
+	return newManagementAuthorizationRevokeHandler(managementAuthorizationServiceAdapter{service: service}, managementAuthorizationScopeSelf)
+}
+
 func NewManagementAuthorizationCreateHandlerWithOperationLog(service *managementauthorizations.Service, opts ManagementOperationLogOptions) http.Handler {
 	return newManagementAuthorizationCreateHandler(
 		managementAuthorizationServiceAdapter{service: service},
@@ -121,6 +137,22 @@ func NewManagementAuthorizationReturnHandlerWithOperationLog(service *management
 
 func NewManagementMyAuthorizationReturnHandlerWithOperationLog(service *managementauthorizations.Service, opts ManagementOperationLogOptions) http.Handler {
 	return newManagementAuthorizationReturnHandler(
+		managementAuthorizationServiceAdapter{service: service},
+		managementAuthorizationScopeSelf,
+		newManagementOperationLogOptions(opts),
+	)
+}
+
+func NewManagementAuthorizationRevokeHandlerWithOperationLog(service *managementauthorizations.Service, opts ManagementOperationLogOptions) http.Handler {
+	return newManagementAuthorizationRevokeHandler(
+		managementAuthorizationServiceAdapter{service: service},
+		managementAuthorizationScopeAdmin,
+		newManagementOperationLogOptions(opts),
+	)
+}
+
+func NewManagementMyAuthorizationRevokeHandlerWithOperationLog(service *managementauthorizations.Service, opts ManagementOperationLogOptions) http.Handler {
+	return newManagementAuthorizationRevokeHandler(
 		managementAuthorizationServiceAdapter{service: service},
 		managementAuthorizationScopeSelf,
 		newManagementOperationLogOptions(opts),
@@ -316,6 +348,55 @@ func newManagementAuthorizationReturnHandler(service managementAuthorizationRetu
 		}
 		recordAuthorizationReturnOperationLog(r, authContext, scope, result, operationLogs)
 		w.WriteHeader(http.StatusNoContent)
+	})
+}
+
+func newManagementAuthorizationRevokeHandler(service managementAuthorizationRevokeService, scope managementAuthorizationScope, logOptions ...managementOperationLogOptions) http.Handler {
+	operationLogs := effectiveManagementOperationLogOptions(logOptions)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authContext, ok := ManagementAuthContextFromRequest(r)
+		if !ok || strings.TrimSpace(authContext.SystemAccountID) == "" {
+			writeMessageError(w, http.StatusUnauthorized, "未登录")
+			return
+		}
+		if service == nil {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		if scope == managementAuthorizationScopeAdmin && !managementauth.IsAdminRole(authContext.Role) {
+			writeMessageError(w, http.StatusForbidden, "需要管理员权限")
+			return
+		}
+		scopedSystemAccountID, validScope := managementAuthorizationOwnerScope(authContext, r.URL.Query(), scope)
+		if !validScope {
+			writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
+			return
+		}
+		authorizationID := strings.TrimSpace(chi.URLParam(r, "id"))
+		if authorizationID == "" {
+			writeMessageError(w, http.StatusBadRequest, "授权记录 ID 不合法")
+			return
+		}
+		result, found, err := service.Revoke(r, managementauthorizations.RevokeInput{
+			AuthorizationID:       authorizationID,
+			ActorSystemAccountID:  authContext.SystemAccountID,
+			ActorRole:             authContext.Role,
+			ScopedSystemAccountID: scopedSystemAccountID,
+		})
+		if errors.Is(err, managementauthorizations.ErrAuthorizationRevokeInvalid) {
+			writeMessageError(w, http.StatusBadRequest, "授权记录 ID 不合法")
+			return
+		}
+		if err != nil {
+			writeMessageError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if !found {
+			writeMessageError(w, http.StatusNotFound, "授权记录不存在")
+			return
+		}
+		recordAuthorizationRevokeOperationLog(r, authContext, scope, result, operationLogs)
+		writeData(w, http.StatusOK, result)
 	})
 }
 
@@ -744,6 +825,81 @@ func recordAuthorizationReturnOperationLog(
 		Changes: []port.OperationLogChange{{
 			Field:  "returned",
 			Label:  "归还授权",
+			Before: false,
+			After:  true,
+		}},
+		Targets:    managementAuthorizationOperationTargets(result),
+		Viewers:    managementAuthorizationOperationViewers(result),
+		Method:     r.Method,
+		Path:       r.URL.Path,
+		StatusCode: &statusCode,
+		ClientIP:   opts.clientIP.FromRequest(r),
+		UserAgent:  r.UserAgent(),
+		CreatedAt:  now().UTC(),
+	}
+	enqueueCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+	defer cancel()
+	if _, err := operationlogjob.EnqueueWrite(enqueueCtx, opts.client, input); err != nil && opts.logger != nil {
+		opts.logger.Warn("管理端操作日志入队失败",
+			slog.String("event", "operation_log_enqueue_failed"),
+			slog.String("operation_key", input.OperationKey),
+			slog.String("resource_id", input.ResourceID),
+			slog.String("request_id", input.TraceID),
+			slog.Any("error", err),
+		)
+	}
+}
+
+func recordAuthorizationRevokeOperationLog(
+	r *http.Request,
+	authContext managementauth.Context,
+	scope managementAuthorizationScope,
+	result managementauthorizations.Summary,
+	opts managementOperationLogOptions,
+) {
+	if opts.client == nil {
+		return
+	}
+	now := opts.now
+	if now == nil {
+		now = time.Now
+	}
+	newLogID := opts.newLogID
+	if newLogID == nil {
+		newLogID = func() string {
+			return "oplog_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+		}
+	}
+	statusCode := http.StatusOK
+	mode := managementAuthorizationOperationMode(authContext, result.ResourceOwnerSystemAccountID)
+	if scope == managementAuthorizationScopeSelf {
+		mode = "self"
+	}
+	resourceName := result.ResourceName
+	if resourceName == "" {
+		resourceName = result.ResourceID
+	}
+	input := port.OperationLogInput{
+		ID:                            newLogID(),
+		TraceID:                       requestIDFromContext(r.Context()),
+		ActorSystemAccountID:          authContext.SystemAccountID,
+		ActorUsername:                 authContext.Username,
+		ActorDisplayName:              authContext.DisplayName,
+		ActorRole:                     authContext.Role,
+		OperationScopeSystemAccountID: result.ResourceOwnerSystemAccountID,
+		Mode:                          mode,
+		Module:                        "authorizations",
+		Action:                        "revoke",
+		OperationKey:                  "authorizations.revoke",
+		ResourceType:                  "authorization",
+		ResourceID:                    result.ID,
+		ResourceName:                  resourceName,
+		Summary:                       "回收资源授权：" + resourceName + " -> " + managementAuthorizationGranteeName(result),
+		DetailLevel:                   "full",
+		VisibilityScope:               "targeted",
+		Changes: []port.OperationLogChange{{
+			Field:  "revoked",
+			Label:  "回收状态",
 			Before: false,
 			After:  true,
 		}},

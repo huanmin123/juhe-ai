@@ -304,6 +304,94 @@ func TestServiceReturnValidatesInputAndSkipsInvalidationWhenNotFound(t *testing.
 	}
 }
 
+func TestServiceRevokeNormalizesScopeAndInvalidatesAuthorizationCache(t *testing.T) {
+	now := time.Date(2026, 7, 9, 12, 30, 0, 0, time.UTC)
+	store := &authorizationRevokeStoreStub{
+		found: true,
+		result: Summary{
+			ID:                           "rauthgrant_main",
+			ResourceType:                 "account",
+			ResourceID:                   "acct_main",
+			ResourceOwnerSystemAccountID: "sys_owner",
+			GranteeType:                  "system_account",
+			GranteeSystemAccountID:       "sys_grantee",
+			Scope:                        "use",
+			Status:                       "revoked",
+			AuthorizationSources:         []port.ManagementResourceAuthorizationSourceSummary{},
+			Usage:                        port.ManagementAccountUsageSummary{},
+			CreatedBy:                    "sys_owner",
+			CreatedAt:                    now,
+			UpdatedAt:                    now,
+		},
+	}
+	invalidator := &authorizationInvalidatorStub{}
+	service := NewServiceWithOptions(ServiceOptions{
+		RevokeStore:              store,
+		Now:                      func() time.Time { return now },
+		AuthorizationInvalidator: invalidator,
+	})
+
+	got, found, err := service.Revoke(context.Background(), RevokeInput{
+		AuthorizationID:       " rauthgrant_main ",
+		ActorSystemAccountID:  " sys_owner ",
+		ActorRole:             "user",
+		ScopedSystemAccountID: "sys_other",
+	})
+
+	if err != nil {
+		t.Fatalf("Revoke() error = %v", err)
+	}
+	if !found || got.ID != "rauthgrant_main" {
+		t.Fatalf("Revoke() = (%+v, %v), want revoked summary", got, found)
+	}
+	if !store.called ||
+		store.input.AuthorizationID != "rauthgrant_main" ||
+		store.input.ActorSystemAccountID != "sys_owner" ||
+		store.input.ScopedSystemAccountID != "sys_owner" ||
+		store.input.CanAccessAll ||
+		!store.input.RevokedAt.Equal(now) {
+		t.Fatalf("store input = %+v", store.input)
+	}
+	if invalidator.calls != 1 || invalidator.reason != ResourceAuthorizationRevokedReason {
+		t.Fatalf("invalidator calls=%d reason=%q", invalidator.calls, invalidator.reason)
+	}
+}
+
+func TestServiceRevokeValidatesInputAndSkipsInvalidationWhenNotFound(t *testing.T) {
+	now := time.Date(2026, 7, 9, 12, 30, 0, 0, time.UTC)
+	store := &authorizationRevokeStoreStub{}
+	invalidator := &authorizationInvalidatorStub{}
+	service := NewServiceWithOptions(ServiceOptions{
+		RevokeStore:              store,
+		Now:                      func() time.Time { return now },
+		AuthorizationInvalidator: invalidator,
+	})
+
+	if _, _, err := service.Revoke(context.Background(), RevokeInput{
+		ActorSystemAccountID: "sys_owner",
+	}); !errors.Is(err, ErrAuthorizationRevokeInvalid) {
+		t.Fatalf("Revoke() error = %v, want invalid input", err)
+	}
+	if store.called {
+		t.Fatal("store was called for invalid revoke input")
+	}
+
+	_, found, err := service.Revoke(context.Background(), RevokeInput{
+		AuthorizationID:      "rauthgrant_missing",
+		ActorSystemAccountID: "sys_owner",
+		ActorRole:            "admin",
+	})
+	if err != nil {
+		t.Fatalf("Revoke() missing error = %v", err)
+	}
+	if found {
+		t.Fatal("Revoke() found missing authorization")
+	}
+	if invalidator.calls != 0 {
+		t.Fatalf("invalidator calls = %d, want 0", invalidator.calls)
+	}
+}
+
 func TestServiceListNormalizesScopeAndRedactsNonOwnerSourceDetails(t *testing.T) {
 	createdAt := time.Date(2026, 7, 9, 10, 30, 0, 0, time.UTC)
 	store := &authorizationListStoreStub{
@@ -533,6 +621,23 @@ func (s *authorizationReturnStoreStub) ReturnManagementResourceAuthorizationForG
 	return s.result, s.found, nil
 }
 
+type authorizationRevokeStoreStub struct {
+	called bool
+	input  port.ManagementResourceAuthorizationRevokeInput
+	result Summary
+	found  bool
+	err    error
+}
+
+func (s *authorizationRevokeStoreStub) RevokeManagementResourceAuthorization(_ context.Context, input port.ManagementResourceAuthorizationRevokeInput) (port.ManagementResourceAuthorizationSummary, bool, error) {
+	s.called = true
+	s.input = input
+	if s.err != nil {
+		return port.ManagementResourceAuthorizationSummary{}, false, s.err
+	}
+	return s.result, s.found, nil
+}
+
 type authorizationListStoreStub struct {
 	called bool
 	input  port.ManagementResourceAuthorizationListInput
@@ -581,5 +686,6 @@ func (s *authorizationInvalidatorStub) InvalidateAuthorizationChanged(_ context.
 var _ port.ManagementResourceAuthorizationCreator = (*authorizationCreateStoreStub)(nil)
 var _ port.ManagementResourceAuthorizationGetter = (*authorizationGetStoreStub)(nil)
 var _ port.ManagementResourceAuthorizationLister = (*authorizationListStoreStub)(nil)
+var _ port.ManagementResourceAuthorizationRevoker = (*authorizationRevokeStoreStub)(nil)
 var _ port.ManagementResourceAuthorizationReturner = (*authorizationReturnStoreStub)(nil)
 var _ AuthorizationInvalidator = (*authorizationInvalidatorStub)(nil)
