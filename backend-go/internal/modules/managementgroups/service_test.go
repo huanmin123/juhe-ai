@@ -12,17 +12,18 @@ func TestServiceOptionsNormalizesInputAndMapsOwnerOptions(t *testing.T) {
 	store := &groupOptionStoreStub{
 		options: []port.ManagementGroupOption{
 			{
-				ID:                     "group_default",
-				SystemAccountID:        "sys_admin",
-				SystemAccountName:      "管理员",
-				OwnerSystemAccountID:   "sys_admin",
-				OwnerSystemAccountName: "管理员",
-				Name:                   "默认分组",
-				ProviderCode:           "openai",
-				Enabled:                true,
-				IsDefault:              true,
-				GroupType:              "high_concurrency",
-				SchedulingPolicy:       map[string]any{"mode": "balanced_fast"},
+				ID:                                 "group_default",
+				SystemAccountID:                    "sys_admin",
+				SystemAccountName:                  "管理员",
+				OwnerSystemAccountID:               "sys_admin",
+				OwnerSystemAccountName:             "管理员",
+				Name:                               "默认分组",
+				ProviderCode:                       "openai",
+				Enabled:                            true,
+				IsDefault:                          true,
+				GroupType:                          "high_concurrency",
+				SchedulingPolicy:                   map[string]any{"mode": "balanced_fast"},
+				HasActiveManualAuthorizationSource: true,
 			},
 		},
 	}
@@ -74,23 +75,54 @@ func TestServiceOptionsNormalizesInputAndMapsOwnerOptions(t *testing.T) {
 	}
 }
 
+func TestServiceOptionsKeepsAuthorizedGroupReturnPermissionFalseWithoutManualSource(t *testing.T) {
+	store := &groupOptionStoreStub{
+		options: []port.ManagementGroupOption{
+			{
+				ID:                   "group_team_authorized",
+				OwnerSystemAccountID: "sys_owner",
+				Name:                 "团队授权分组",
+				ProviderCode:         "openai",
+				Enabled:              true,
+				GroupType:            "personal",
+				AccessType:           "authorized",
+				GroupAuthorizationID: "auth_group_team",
+				AuthorizationStatus:  "active",
+			},
+		},
+	}
+	service := NewService(store)
+
+	options, err := service.Options(context.Background(), OptionListInput{SystemAccountID: "sys_user"})
+	if err != nil {
+		t.Fatalf("Options() error = %v", err)
+	}
+	if len(options) != 1 {
+		t.Fatalf("options = %+v", options)
+	}
+	if options[0].Permissions.CanReturnAuthorization {
+		t.Fatalf("authorized permissions = %+v, want canReturnAuthorization=false without active manual source", options[0].Permissions)
+	}
+}
+
 func TestServiceOptionsMapsAuthorizedOptions(t *testing.T) {
 	expiresAt := time.Now().Add(time.Hour)
 	store := &groupOptionStoreStub{
 		options: []port.ManagementGroupOption{
 			{
-				ID:                     "group_authorized",
-				OwnerSystemAccountID:   "sys_owner",
-				OwnerSystemAccountName: "所有者",
-				Name:                   "授权分组",
-				ProviderCode:           "openai",
-				Enabled:                true,
-				GroupType:              "personal",
-				AccessType:             "authorized",
-				GroupAuthorizationID:   "auth_group_1",
-				AuthorizationStatus:    "active",
-				AuthorizationExpiresAt: &expiresAt,
-				AuthorizationLimits:    map[string]any{"daily": map[string]any{"limit": float64(100)}},
+				ID:                                 "group_authorized",
+				OwnerSystemAccountID:               "sys_owner",
+				OwnerSystemAccountName:             "所有者",
+				Name:                               "授权分组",
+				ProviderCode:                       "openai",
+				Enabled:                            true,
+				GroupType:                          "personal",
+				AccessType:                         "authorized",
+				GroupAuthorizationID:               "auth_group_1",
+				AuthorizationStatus:                "active",
+				AuthorizationExpiresAt:             &expiresAt,
+				AuthorizationLimits:                map[string]any{"daily": map[string]any{"limit": float64(100)}},
+				HasActiveManualAuthorizationSource: true,
 			},
 		},
 	}
@@ -123,6 +155,7 @@ func TestServiceOptionsMapsAuthorizedOptions(t *testing.T) {
 		got.Permissions.CanViewCredentials ||
 		!got.Permissions.CanUse ||
 		!got.Permissions.CanEdit ||
+		!got.Permissions.CanReturnAuthorization ||
 		!got.Permissions.CanBindToAPIKey {
 		t.Fatalf("authorized permissions = %+v", got.Permissions)
 	}
@@ -262,8 +295,41 @@ func TestServiceAccountOptionsMapsAuthorizedAccountIDsEmpty(t *testing.T) {
 		got.AuthorizationStatus != "paused" ||
 		got.OwnerSystemAccountName != "所有者" ||
 		len(got.AccountIDs) != 0 ||
-		got.Permissions.CanBindToAPIKey {
+		got.Permissions.CanBindToAPIKey ||
+		got.Permissions.CanReturnAuthorization {
 		t.Fatalf("authorized account option = %+v", got)
+	}
+}
+
+func TestServiceAccountOptionsMapsAuthorizedReturnPermission(t *testing.T) {
+	store := &groupOptionStoreStub{
+		accountOptions: []port.ManagementGroupAccountOption{
+			{
+				ID:                                 "group_authorized",
+				OwnerSystemAccountID:               "sys_owner",
+				Name:                               "授权分组",
+				ProviderCode:                       "openai",
+				Enabled:                            true,
+				GroupType:                          "personal",
+				AccessType:                         "authorized",
+				GroupAuthorizationID:               "auth_group_1",
+				AuthorizationStatus:                "active",
+				HasActiveManualAuthorizationSource: true,
+			},
+		},
+	}
+	service := NewService(store)
+
+	options, err := service.AccountOptions(context.Background(), OptionListInput{SystemAccountID: "sys_user"})
+	if err != nil {
+		t.Fatalf("AccountOptions() error = %v", err)
+	}
+	if len(options) != 1 {
+		t.Fatalf("options = %d, want 1", len(options))
+	}
+	got := options[0]
+	if !got.Permissions.CanReturnAuthorization {
+		t.Fatalf("authorized account permissions = %+v", got.Permissions)
 	}
 }
 

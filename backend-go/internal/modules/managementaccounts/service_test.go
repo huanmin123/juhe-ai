@@ -14,19 +14,20 @@ func TestServiceOptionsNormalizesInputAndMapsOwnerOptions(t *testing.T) {
 	store := &accountOptionStoreStub{
 		options: []port.ManagementAccountOption{
 			{
-				ID:                        "acct_main",
-				SystemAccountID:           "sys_user",
-				SystemAccountName:         "用户",
-				OwnerSystemAccountID:      "sys_user",
-				OwnerSystemAccountName:    "用户",
-				ProviderCode:              "openai",
-				ProviderProtocolProfileID: "profile_openai_openai_v1",
-				ProtocolCode:              "openai",
-				ProtocolVersion:           "v1",
-				Name:                      "主账号",
-				Type:                      "api_key",
-				Status:                    "active",
-				AccountExpiresAt:          &expiresAt,
+				ID:                                 "acct_main",
+				SystemAccountID:                    "sys_user",
+				SystemAccountName:                  "用户",
+				OwnerSystemAccountID:               "sys_user",
+				OwnerSystemAccountName:             "用户",
+				ProviderCode:                       "openai",
+				ProviderProtocolProfileID:          "profile_openai_openai_v1",
+				ProtocolCode:                       "openai",
+				ProtocolVersion:                    "v1",
+				Name:                               "主账号",
+				Type:                               "api_key",
+				Status:                             "active",
+				AccountExpiresAt:                   &expiresAt,
+				HasActiveManualAuthorizationSource: true,
 			},
 		},
 	}
@@ -90,6 +91,39 @@ func TestServiceOptionsNormalizesInputAndMapsOwnerOptions(t *testing.T) {
 	}
 }
 
+func TestServiceOptionsKeepsAuthorizedReturnPermissionFalseWithoutManualSource(t *testing.T) {
+	store := &accountOptionStoreStub{
+		options: []port.ManagementAccountOption{
+			{
+				ID:                        "acct_authorized",
+				OwnerSystemAccountID:      "sys_owner",
+				ProviderCode:              "openai",
+				ProviderProtocolProfileID: "profile_openai_openai_v1",
+				ProtocolCode:              "openai",
+				ProtocolVersion:           "v1",
+				Name:                      "团队授权账户",
+				Type:                      "api_key",
+				Status:                    "active",
+				AccessType:                "authorized",
+				AccountAuthorizationID:    "auth_account_team",
+				AuthorizationStatus:       "active",
+			},
+		},
+	}
+	service := NewService(store)
+
+	options, err := service.Options(context.Background(), OptionListInput{SystemAccountID: "sys_viewer"})
+	if err != nil {
+		t.Fatalf("Options() error = %v", err)
+	}
+	if len(options) != 1 {
+		t.Fatalf("options = %+v", options)
+	}
+	if options[0].Permissions.CanReturnAuthorization {
+		t.Fatalf("authorized permissions = %+v, want canReturnAuthorization=false without active manual source", options[0].Permissions)
+	}
+}
+
 func TestServiceOptionsDefaults(t *testing.T) {
 	store := &accountOptionStoreStub{}
 	service := NewService(store)
@@ -123,6 +157,7 @@ func TestServiceOptionsMapsAuthorizedOptions(t *testing.T) {
 				AuthorizationExpiresAt:               &expiresAt,
 				AuthorizationInstanceSourceAccountID: "acct_source",
 				AuthorizationInstanceOwnerSystemAccountID: "sys_owner",
+				HasActiveManualAuthorizationSource:        true,
 			},
 		},
 	}
@@ -154,6 +189,7 @@ func TestServiceOptionsMapsAuthorizedOptions(t *testing.T) {
 		got.Permissions.CanViewCredentials ||
 		got.Permissions.CanManageAccounts ||
 		got.Permissions.CanBindToAPIKey ||
+		!got.Permissions.CanReturnAuthorization ||
 		!got.Permissions.CanUse {
 		t.Fatalf("authorized permissions = %+v", got.Permissions)
 	}

@@ -196,12 +196,12 @@ func ownerPermissions() ResourcePermissions {
 	}
 }
 
-func authorizedGroupPermissions(canBindToAPIKey bool) ResourcePermissions {
+func authorizedGroupPermissions(canBindToAPIKey bool, canReturnAuthorization bool) ResourcePermissions {
 	return ResourcePermissions{
 		CanUse:                 true,
 		CanEdit:                true,
 		CanDelete:              false,
-		CanReturnAuthorization: false,
+		CanReturnAuthorization: canReturnAuthorization,
 		CanAuthorize:           false,
 		CanViewCredentials:     false,
 		CanManageAccounts:      false,
@@ -213,14 +213,20 @@ func groupPermissions(row port.ManagementGroupOption) ResourcePermissions {
 	if groupAccessType(row.AccessType) != "authorized" {
 		return ownerPermissions()
 	}
-	return authorizedGroupPermissions(canBindAuthorizedGroup(row.Enabled, row.AuthorizationStatus, row.AuthorizationExpiresAt))
+	return authorizedGroupPermissions(
+		canBindAuthorizedGroup(row.Enabled, row.AuthorizationStatus, row.AuthorizationExpiresAt),
+		row.HasActiveManualAuthorizationSource,
+	)
 }
 
 func groupAccountPermissions(row port.ManagementGroupAccountOption) ResourcePermissions {
 	if groupAccessType(row.AccessType) != "authorized" {
 		return ownerPermissions()
 	}
-	return authorizedGroupPermissions(canBindAuthorizedGroup(row.Enabled, row.AuthorizationStatus, row.AuthorizationExpiresAt))
+	return authorizedGroupPermissions(
+		canBindAuthorizedGroup(row.Enabled, row.AuthorizationStatus, row.AuthorizationExpiresAt),
+		row.HasActiveManualAuthorizationSource,
+	)
 }
 
 func canBindAuthorizedGroup(enabled bool, status string, expiresAt *time.Time) bool {

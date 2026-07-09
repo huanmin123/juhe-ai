@@ -80,7 +80,8 @@ account_rows AS (
     NULL::text AS authorization_status,
     NULL::timestamptz AS authorization_expires_at,
     NULL::text AS authorization_instance_source_account_id,
-    NULL::text AS authorization_instance_owner_system_account_id
+    NULL::text AS authorization_instance_owner_system_account_id,
+    false AS has_active_manual_authorization_source
   FROM juhe_business.accounts AS accounts
   LEFT JOIN juhe_business.system_accounts AS system_accounts
     ON system_accounts.id = accounts.system_account_id
@@ -184,7 +185,14 @@ account_rows AS (
     resource_authorizations.status AS authorization_status,
     resource_authorizations.expires_at AS authorization_expires_at,
     accounts.authorization_instance_source_account_id,
-    COALESCE(accounts.authorization_instance_owner_system_account_id, resource_authorizations.resource_owner_system_account_id) AS authorization_instance_owner_system_account_id
+    COALESCE(accounts.authorization_instance_owner_system_account_id, resource_authorizations.resource_owner_system_account_id) AS authorization_instance_owner_system_account_id,
+    EXISTS (
+      SELECT 1
+      FROM juhe_business.resource_authorization_sources AS returnable_sources
+      WHERE returnable_sources.authorization_id = resource_authorizations.id
+        AND returnable_sources.source_type = 'manual'
+        AND returnable_sources.status = 'active'
+    ) AS has_active_manual_authorization_source
   FROM juhe_business.accounts AS accounts
   INNER JOIN juhe_business.resource_authorizations AS resource_authorizations
     ON resource_authorizations.id = accounts.authorization_instance_authorization_id
@@ -234,7 +242,8 @@ SELECT
   account_rows.authorization_expires_at,
   account_rows.authorization_instance_source_account_id,
   account_rows.authorization_instance_owner_system_account_id,
-  account_rows.account_expires_at
+  account_rows.account_expires_at,
+  account_rows.has_active_manual_authorization_source
 FROM account_rows
 WHERE true
   AND (
@@ -346,6 +355,7 @@ type ListManagementAccountOptionsRow struct {
 	AuthorizationInstanceSourceAccountID      pgtype.Text
 	AuthorizationInstanceOwnerSystemAccountID pgtype.Text
 	AccountExpiresAt                          pgtype.Timestamptz
+	HasActiveManualAuthorizationSource        bool
 }
 
 func (q *Queries) ListManagementAccountOptions(ctx context.Context, arg ListManagementAccountOptionsParams) ([]ListManagementAccountOptionsRow, error) {
@@ -394,6 +404,7 @@ func (q *Queries) ListManagementAccountOptions(ctx context.Context, arg ListMana
 			&i.AuthorizationInstanceSourceAccountID,
 			&i.AuthorizationInstanceOwnerSystemAccountID,
 			&i.AccountExpiresAt,
+			&i.HasActiveManualAuthorizationSource,
 		); err != nil {
 			return nil, err
 		}

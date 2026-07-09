@@ -563,3 +563,115 @@ type JuheDatasetPublicApiLog struct {
 	EndedAt               pgtype.Timestamptz
 	CreatedAt             pgtype.Timestamptz
 }
+
+type JuheStatsAuthorizationTeamUsageRangeWindow struct {
+	SystemAccountID    string
+	StartDate          string
+	EndDate            string
+	TeamFilterID       string
+	ResourceFilterType string
+	ResourceFilterID   string
+	RequestCount       int64
+	InputTokens        int64
+	OutputTokens       int64
+	CacheReadTokens    int64
+	CacheReadCostUsd   pgtype.Numeric
+	CacheWriteTokens   int64
+	CacheWrite1hTokens int64
+	CacheWriteCostUsd  pgtype.Numeric
+	ThinkingTokens     int64
+	InputImageTokens   int64
+	OutputImageTokens  int64
+	TotalCostUsd       pgtype.Numeric
+	LastUsedAt         pgtype.Timestamptz
+	UpdatedAt          pgtype.Timestamptz
+}
+
+type JuheStatsAuthorizationTeamUsageSummaryDaily struct {
+	SystemAccountID    string
+	StatDate           string
+	TeamFilterID       string
+	ResourceFilterType string
+	ResourceFilterID   string
+	RowCount           int64
+	RequestCount       int64
+	SuccessCount       int64
+	ErrorCount         int64
+	InputTokens        int64
+	OutputTokens       int64
+	CacheReadTokens    int64
+	CacheReadCostUsd   pgtype.Numeric
+	CacheWriteTokens   int64
+	CacheWrite1hTokens int64
+	CacheWriteCostUsd  pgtype.Numeric
+	ThinkingTokens     int64
+	InputImageTokens   int64
+	OutputImageTokens  int64
+	TotalCostUsd       pgtype.Numeric
+	DurationMsSum      int64
+	DurationMsCount    int64
+	DurationMsMax      int64
+	FirstTokenMsSum    int64
+	FirstTokenMsCount  int64
+	FirstTokenMsMax    int64
+	LastUsedAt         pgtype.Timestamptz
+	LastErrorAt        pgtype.Timestamptz
+	UpdatedAt          pgtype.Timestamptz
+}
+
+type JuheStatsAuthorizationUserUsageRangeWindow struct {
+	SystemAccountID              string
+	StartDate                    string
+	EndDate                      string
+	TeamFilterID                 string
+	GranteeFilterSystemAccountID string
+	ResourceFilterType           string
+	ResourceFilterID             string
+	RequestCount                 int64
+	InputTokens                  int64
+	OutputTokens                 int64
+	CacheReadTokens              int64
+	CacheReadCostUsd             pgtype.Numeric
+	CacheWriteTokens             int64
+	CacheWrite1hTokens           int64
+	CacheWriteCostUsd            pgtype.Numeric
+	ThinkingTokens               int64
+	InputImageTokens             int64
+	OutputImageTokens            int64
+	TotalCostUsd                 pgtype.Numeric
+	LastUsedAt                   pgtype.Timestamptz
+	UpdatedAt                    pgtype.Timestamptz
+}
+
+type JuheStatsAuthorizationUserUsageSummaryDaily struct {
+	SystemAccountID              string
+	StatDate                     string
+	TeamFilterID                 string
+	GranteeFilterSystemAccountID string
+	ResourceFilterType           string
+	ResourceFilterID             string
+	RowCount                     int64
+	RequestCount                 int64
+	SuccessCount                 int64
+	ErrorCount                   int64
+	InputTokens                  int64
+	OutputTokens                 int64
+	CacheReadTokens              int64
+	CacheReadCostUsd             pgtype.Numeric
+	CacheWriteTokens             int64
+	CacheWrite1hTokens           int64
+	CacheWriteCostUsd            pgtype.Numeric
+	ThinkingTokens               int64
+	InputImageTokens             int64
+	OutputImageTokens            int64
+	TotalCostUsd                 pgtype.Numeric
+	DurationMsSum                int64
+	DurationMsCount              int64
+	DurationMsMax                int64
+	FirstTokenMsSum              int64
+	FirstTokenMsCount            int64
+	FirstTokenMsMax              int64
+	LastUsedAt                   pgtype.Timestamptz
+	LastErrorAt                  pgtype.Timestamptz
+	UpdatedAt                    pgtype.Timestamptz
+}

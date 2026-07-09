@@ -189,7 +189,7 @@ func (s *Service) Options(ctx context.Context, input OptionListInput) ([]Option,
 			AuthorizationInstanceSourceAccountID: row.AuthorizationInstanceSourceAccountID,
 			AuthorizationInstanceOwnerSystemAccountID: row.AuthorizationInstanceOwnerSystemAccountID,
 			AccountExpiresAt: formatOptionalTime(row.AccountExpiresAt),
-			Permissions:      accountPermissions(accessType),
+			Permissions:      accountPermissions(accessType, row.HasActiveManualAuthorizationSource),
 		})
 	}
 	return items, nil
@@ -405,12 +405,12 @@ func ownerPermissions() ResourcePermissions {
 	}
 }
 
-func authorizedAccountPermissions() ResourcePermissions {
+func authorizedAccountPermissions(canReturnAuthorization bool) ResourcePermissions {
 	return ResourcePermissions{
 		CanUse:                 true,
 		CanEdit:                false,
 		CanDelete:              false,
-		CanReturnAuthorization: false,
+		CanReturnAuthorization: canReturnAuthorization,
 		CanAuthorize:           false,
 		CanViewCredentials:     false,
 		CanManageAccounts:      false,
@@ -418,9 +418,9 @@ func authorizedAccountPermissions() ResourcePermissions {
 	}
 }
 
-func accountPermissions(accessType string) ResourcePermissions {
+func accountPermissions(accessType string, canReturnAuthorization bool) ResourcePermissions {
 	if accessType == "authorized" {
-		return authorizedAccountPermissions()
+		return authorizedAccountPermissions(canReturnAuthorization)
 	}
 	return ownerPermissions()
 }

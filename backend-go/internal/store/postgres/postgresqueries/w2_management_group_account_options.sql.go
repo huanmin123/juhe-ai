@@ -77,7 +77,8 @@ WITH group_rows AS (
     NULL::text AS group_authorization_id,
     NULL::text AS authorization_status,
     NULL::timestamptz AS authorization_expires_at,
-    NULL::text AS authorization_limits_json
+    NULL::text AS authorization_limits_json,
+    false AS has_active_manual_authorization_source
   FROM juhe_business.groups AS groups
   LEFT JOIN juhe_business.system_accounts AS system_accounts
     ON system_accounts.id = groups.system_account_id
@@ -110,7 +111,14 @@ WITH group_rows AS (
     resource_authorizations.id AS group_authorization_id,
     resource_authorizations.status AS authorization_status,
     resource_authorizations.expires_at AS authorization_expires_at,
-    resource_authorizations.limits_json::text AS authorization_limits_json
+    resource_authorizations.limits_json::text AS authorization_limits_json,
+    EXISTS (
+      SELECT 1
+      FROM juhe_business.resource_authorization_sources AS returnable_sources
+      WHERE returnable_sources.authorization_id = resource_authorizations.id
+        AND returnable_sources.source_type = 'manual'
+        AND returnable_sources.status = 'active'
+    ) AS has_active_manual_authorization_source
   FROM juhe_business.resource_authorizations AS resource_authorizations
   INNER JOIN juhe_business.groups AS groups
     ON groups.id = resource_authorizations.resource_id
@@ -142,7 +150,8 @@ SELECT
   group_rows.group_authorization_id,
   group_rows.authorization_status,
   group_rows.authorization_expires_at,
-  group_rows.authorization_limits_json
+  group_rows.authorization_limits_json,
+  group_rows.has_active_manual_authorization_source
 FROM group_rows
 WHERE true
   AND (
@@ -186,20 +195,21 @@ type ListManagementGroupAccountOptionsParams struct {
 }
 
 type ListManagementGroupAccountOptionsRow struct {
-	ID                      string
-	SystemAccountID         string
-	SystemAccountName       pgtype.Text
-	Name                    string
-	ProviderCode            string
-	Enabled                 bool
-	IsDefault               bool
-	GroupType               string
-	SchedulingPolicyJson    pgtype.Text
-	AccessType              string
-	GroupAuthorizationID    pgtype.Text
-	AuthorizationStatus     pgtype.Text
-	AuthorizationExpiresAt  pgtype.Timestamptz
-	AuthorizationLimitsJson pgtype.Text
+	ID                                 string
+	SystemAccountID                    string
+	SystemAccountName                  pgtype.Text
+	Name                               string
+	ProviderCode                       string
+	Enabled                            bool
+	IsDefault                          bool
+	GroupType                          string
+	SchedulingPolicyJson               pgtype.Text
+	AccessType                         string
+	GroupAuthorizationID               pgtype.Text
+	AuthorizationStatus                pgtype.Text
+	AuthorizationExpiresAt             pgtype.Timestamptz
+	AuthorizationLimitsJson            pgtype.Text
+	HasActiveManualAuthorizationSource bool
 }
 
 func (q *Queries) ListManagementGroupAccountOptions(ctx context.Context, arg ListManagementGroupAccountOptionsParams) ([]ListManagementGroupAccountOptionsRow, error) {
@@ -236,6 +246,7 @@ func (q *Queries) ListManagementGroupAccountOptions(ctx context.Context, arg Lis
 			&i.AuthorizationStatus,
 			&i.AuthorizationExpiresAt,
 			&i.AuthorizationLimitsJson,
+			&i.HasActiveManualAuthorizationSource,
 		); err != nil {
 			return nil, err
 		}

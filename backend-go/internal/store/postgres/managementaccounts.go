@@ -87,7 +87,8 @@ func listManagementAccountOptions(ctx context.Context, q *postgresqueries.Querie
 			AuthorizationExpiresAt:               timestamptzPtr(row.AuthorizationExpiresAt),
 			AuthorizationInstanceSourceAccountID: textValue(row.AuthorizationInstanceSourceAccountID),
 			AuthorizationInstanceOwnerSystemAccountID: textValue(row.AuthorizationInstanceOwnerSystemAccountID),
-			AccountExpiresAt: timestamptzPtr(row.AccountExpiresAt),
+			AccountExpiresAt:                   timestamptzPtr(row.AccountExpiresAt),
+			HasActiveManualAuthorizationSource: row.HasActiveManualAuthorizationSource,
 		}
 		if input.IncludeSystemAccountFields {
 			option.SystemAccountID = row.SystemAccountID

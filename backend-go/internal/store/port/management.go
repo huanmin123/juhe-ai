@@ -973,42 +973,44 @@ type ManagementRouteStrategyOptionReader interface {
 }
 
 type ManagementGroupOption struct {
-	ID                     string
-	SystemAccountID        string
-	SystemAccountName      string
-	OwnerSystemAccountID   string
-	OwnerSystemAccountName string
-	Name                   string
-	ProviderCode           string
-	Enabled                bool
-	IsDefault              bool
-	GroupType              string
-	SchedulingPolicy       map[string]any
-	AccessType             string
-	GroupAuthorizationID   string
-	AuthorizationStatus    string
-	AuthorizationExpiresAt *time.Time
-	AuthorizationLimits    map[string]any
+	ID                                 string
+	SystemAccountID                    string
+	SystemAccountName                  string
+	OwnerSystemAccountID               string
+	OwnerSystemAccountName             string
+	Name                               string
+	ProviderCode                       string
+	Enabled                            bool
+	IsDefault                          bool
+	GroupType                          string
+	SchedulingPolicy                   map[string]any
+	AccessType                         string
+	GroupAuthorizationID               string
+	AuthorizationStatus                string
+	AuthorizationExpiresAt             *time.Time
+	AuthorizationLimits                map[string]any
+	HasActiveManualAuthorizationSource bool
 }
 
 type ManagementGroupAccountOption struct {
-	ID                     string
-	SystemAccountID        string
-	SystemAccountName      string
-	OwnerSystemAccountID   string
-	OwnerSystemAccountName string
-	Name                   string
-	ProviderCode           string
-	Enabled                bool
-	IsDefault              bool
-	GroupType              string
-	SchedulingPolicy       map[string]any
-	AccessType             string
-	GroupAuthorizationID   string
-	AuthorizationStatus    string
-	AuthorizationExpiresAt *time.Time
-	AuthorizationLimits    map[string]any
-	AccountIDs             []string
+	ID                                 string
+	SystemAccountID                    string
+	SystemAccountName                  string
+	OwnerSystemAccountID               string
+	OwnerSystemAccountName             string
+	Name                               string
+	ProviderCode                       string
+	Enabled                            bool
+	IsDefault                          bool
+	GroupType                          string
+	SchedulingPolicy                   map[string]any
+	AccessType                         string
+	GroupAuthorizationID               string
+	AuthorizationStatus                string
+	AuthorizationExpiresAt             *time.Time
+	AuthorizationLimits                map[string]any
+	HasActiveManualAuthorizationSource bool
+	AccountIDs                         []string
 }
 
 type ManagementGroupOptionListInput struct {
@@ -1047,6 +1049,7 @@ type ManagementAccountOption struct {
 	AuthorizationInstanceSourceAccountID      string
 	AuthorizationInstanceOwnerSystemAccountID string
 	AccountExpiresAt                          *time.Time
+	HasActiveManualAuthorizationSource        bool
 }
 
 type ManagementAccountOptionListInput struct {

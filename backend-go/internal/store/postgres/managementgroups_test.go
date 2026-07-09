@@ -1,6 +1,8 @@
 package postgres
 
 import (
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -71,6 +73,33 @@ func TestManagementGroupAuthorizationLimits(t *testing.T) {
 
 	if _, err := managementGroupAuthorizationLimits("group_authorized", pgtype.Text{String: `{"daily":`, Valid: true}); err == nil {
 		t.Fatal("invalid limits error = nil")
+	}
+}
+
+func TestManagementGroupOptionsSQLMarksReturnableManualAuthorization(t *testing.T) {
+	for _, path := range []string{
+		"queries/w2_management_group_options.sql",
+		"queries/w2_management_group_account_options.sql",
+	} {
+		t.Run(path, func(t *testing.T) {
+			source, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read group options query: %v", err)
+			}
+			sql := string(source)
+			for _, want := range []string{
+				"false AS has_active_manual_authorization_source",
+				"FROM juhe_business.resource_authorization_sources AS returnable_sources",
+				"returnable_sources.authorization_id = resource_authorizations.id",
+				"returnable_sources.source_type = 'manual'",
+				"returnable_sources.status = 'active'",
+				"group_rows.has_active_manual_authorization_source",
+			} {
+				if !strings.Contains(sql, want) {
+					t.Fatalf("group options query missing %q", want)
+				}
+			}
+		})
 	}
 }
 

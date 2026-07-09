@@ -82,6 +82,12 @@ func TestManagementAccountOptionsSQLUsesNameSearchIndex(t *testing.T) {
 		"resource_authorizations.resource_type = 'account'",
 		"resource_authorizations.grantee_system_account_id = sqlc.arg(system_account_id)::text",
 		"resource_authorizations.status IN ('active', 'paused', 'expired')",
+		"false AS has_active_manual_authorization_source",
+		"FROM juhe_business.resource_authorization_sources AS returnable_sources",
+		"returnable_sources.authorization_id = resource_authorizations.id",
+		"returnable_sources.source_type = 'manual'",
+		"returnable_sources.status = 'active'",
+		"account_rows.has_active_manual_authorization_source",
 	} {
 		if !strings.Contains(sql, want) {
 			t.Fatalf("account options query missing %q", want)
