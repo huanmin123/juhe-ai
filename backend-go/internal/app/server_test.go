@@ -111,6 +111,7 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 		handlers.MyGroupAuthorizationReturnHandler != nil ||
 		handlers.AuthorizationRevokeHandler != nil ||
 		handlers.MyAuthorizationRevokeHandler != nil ||
+		handlers.ProvidersHandler != nil ||
 		handlers.ProviderOptionsHandler != nil ||
 		handlers.ProviderModelOptionsHandler != nil ||
 		handlers.ProviderModelsHandler != nil ||
@@ -165,6 +166,7 @@ func TestNewManagementAPIHandlerSessionSwitchOnlyReturnsSessionHandlers(t *testi
 		handlers.AuthorizationCreateHandler != nil ||
 		handlers.AuthorizationReturnHandler != nil ||
 		handlers.AuthorizationRevokeHandler != nil ||
+		handlers.ProvidersHandler != nil ||
 		handlers.ProviderOptionsHandler != nil ||
 		handlers.ProviderModelOptionsHandler != nil ||
 		handlers.ProviderModelsHandler != nil ||
@@ -223,6 +225,7 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 		handlers.MyGroupAuthorizationReturnHandler == nil ||
 		handlers.AuthorizationRevokeHandler == nil ||
 		handlers.MyAuthorizationRevokeHandler == nil ||
+		handlers.ProvidersHandler == nil ||
 		handlers.ProviderOptionsHandler == nil ||
 		handlers.ProviderModelOptionsHandler == nil ||
 		handlers.ProviderModelsHandler == nil ||

@@ -1,6 +1,8 @@
 package postgres
 
 import (
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -39,7 +41,7 @@ func TestManagementProviderOptionFromRowUsesPreferredDefaultProfile(t *testing.T
 	if err != nil {
 		t.Fatalf("managementProviderProfilesByProvider() error = %v", err)
 	}
-	option, err := managementProviderOptionFromRow(postgresqueries.ListManagementProviderOptionProvidersRow{
+	option, err := managementProviderOptionFromRow(managementProviderRow{
 		ID:                         "provider_gemini",
 		Code:                       "gemini",
 		Name:                       "Gemini",
@@ -59,6 +61,36 @@ func TestManagementProviderOptionFromRowUsesPreferredDefaultProfile(t *testing.T
 	}
 	if option.ProtocolProfiles[1].DefaultTestModel != "gemini-custom" {
 		t.Fatalf("default profile preference was not applied to profile: %+v", option.ProtocolProfiles)
+	}
+}
+
+func TestManagementProviderSQLKeepsListAndOptionsFiltersSeparate(t *testing.T) {
+	source, err := os.ReadFile("queries/w2_management_provider_options.sql")
+	if err != nil {
+		t.Fatalf("read provider option query: %v", err)
+	}
+	sql := string(source)
+	listStart := strings.Index(sql, "-- name: ListManagementProviders :many")
+	optionStart := strings.Index(sql, "-- name: ListManagementProviderOptionProviders :many")
+	if listStart < 0 || optionStart < 0 || optionStart <= listStart {
+		t.Fatalf("provider SQL missing list/options queries")
+	}
+	listSQL := sql[listStart:optionStart]
+	optionSQL := sql[optionStart:]
+	for _, want := range []string{
+		"FROM juhe_business.providers",
+		"ORDER BY name ASC, code ASC",
+		"LIMIT 50",
+	} {
+		if !strings.Contains(listSQL, want) {
+			t.Fatalf("provider list SQL missing %q", want)
+		}
+	}
+	if strings.Contains(listSQL, "WHERE enabled = true") {
+		t.Fatalf("provider list SQL must include disabled providers: %s", listSQL)
+	}
+	if !strings.Contains(optionSQL, "WHERE enabled = true") {
+		t.Fatalf("provider options SQL must keep enabled filter")
 	}
 }
 

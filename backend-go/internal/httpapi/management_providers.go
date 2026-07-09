@@ -9,6 +9,7 @@ import (
 )
 
 type managementProviderOptionService interface {
+	List(r *http.Request, input managementproviders.ListInput) ([]managementproviders.Option, error)
 	Options(r *http.Request, input managementproviders.OptionListInput) ([]managementproviders.Option, error)
 }
 
@@ -20,8 +21,36 @@ func (s managementProviderOptionServiceAdapter) Options(r *http.Request, input m
 	return s.service.Options(r.Context(), input)
 }
 
+func (s managementProviderOptionServiceAdapter) List(r *http.Request, input managementproviders.ListInput) ([]managementproviders.Option, error) {
+	return s.service.List(r.Context(), input)
+}
+
+func NewManagementProvidersHandler(service *managementproviders.Service) http.Handler {
+	return newManagementProvidersHandler(managementProviderOptionServiceAdapter{service: service})
+}
+
 func NewManagementProviderOptionsHandler(service *managementproviders.Service) http.Handler {
 	return newManagementProviderOptionsHandler(managementProviderOptionServiceAdapter{service: service})
+}
+
+func newManagementProvidersHandler(service managementProviderOptionService) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authContext, ok := ManagementAuthContextFromRequest(r)
+		if !ok {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		if !managementauth.IsAdminRole(authContext.Role) {
+			writeMessageError(w, http.StatusForbidden, "需要管理员权限")
+			return
+		}
+		providers, err := service.List(r, managementProviderListInput(r, authContext))
+		if err != nil {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		writeData(w, http.StatusOK, providers)
+	})
 }
 
 func newManagementProviderOptionsHandler(service managementProviderOptionService) http.Handler {
@@ -34,6 +63,12 @@ func newManagementProviderOptionsHandler(service managementProviderOptionService
 		}
 		writeData(w, http.StatusOK, options)
 	})
+}
+
+func managementProviderListInput(r *http.Request, authContext managementauth.Context) managementproviders.ListInput {
+	return managementproviders.ListInput{
+		SystemAccountID: managementScopedSystemAccountID(authContext, r.URL.Query()),
+	}
 }
 
 func managementProviderOptionListInput(r *http.Request) managementproviders.OptionListInput {

@@ -212,6 +212,51 @@ func (q *Queries) ListManagementProviderOptionProviders(ctx context.Context) ([]
 	return items, nil
 }
 
+const listManagementProviders = `-- name: ListManagementProviders :many
+SELECT id, code, name, parent_code, description, enabled, default_supported_models_json
+FROM juhe_business.providers
+ORDER BY name ASC, code ASC
+LIMIT 50
+`
+
+type ListManagementProvidersRow struct {
+	ID                         string
+	Code                       string
+	Name                       string
+	ParentCode                 pgtype.Text
+	Description                pgtype.Text
+	Enabled                    bool
+	DefaultSupportedModelsJson string
+}
+
+func (q *Queries) ListManagementProviders(ctx context.Context) ([]ListManagementProvidersRow, error) {
+	rows, err := q.db.Query(ctx, listManagementProviders)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListManagementProvidersRow
+	for rows.Next() {
+		var i ListManagementProvidersRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Code,
+			&i.Name,
+			&i.ParentCode,
+			&i.Description,
+			&i.Enabled,
+			&i.DefaultSupportedModelsJson,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const upsertManagementProviderDefaultTestModelPreference = `-- name: UpsertManagementProviderDefaultTestModelPreference :one
 INSERT INTO juhe_business.provider_default_test_models (
   system_account_id, provider_code, model, created_at, updated_at

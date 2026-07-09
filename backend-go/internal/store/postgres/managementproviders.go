@@ -17,8 +17,30 @@ const (
 	glmCodingProfileID    = "profile_glm_coding_openai_v1"
 )
 
+type managementProviderRow struct {
+	ID                         string
+	Code                       string
+	Name                       string
+	ParentCode                 pgtype.Text
+	Description                pgtype.Text
+	Enabled                    bool
+	DefaultSupportedModelsJson string
+}
+
+func (s *Store) ListManagementProviders(ctx context.Context, input port.ManagementProviderListInput) ([]port.ManagementProviderOption, error) {
+	return listManagementProviders(ctx, s.queries(), input)
+}
+
 func (s *Store) ListManagementProviderOptions(ctx context.Context, input port.ManagementProviderOptionListInput) ([]port.ManagementProviderOption, error) {
 	return listManagementProviderOptions(ctx, s.queries(), input)
+}
+
+func listManagementProviders(ctx context.Context, q *postgresqueries.Queries, input port.ManagementProviderListInput) ([]port.ManagementProviderOption, error) {
+	rows, err := q.ListManagementProviders(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list management providers: %w", err)
+	}
+	return managementProviderOptionsFromRows(ctx, q, managementProviderRowsFromProviderRows(rows), strings.TrimSpace(input.SystemAccountID))
 }
 
 func listManagementProviderOptions(ctx context.Context, q *postgresqueries.Queries, input port.ManagementProviderOptionListInput) ([]port.ManagementProviderOption, error) {
@@ -26,6 +48,10 @@ func listManagementProviderOptions(ctx context.Context, q *postgresqueries.Queri
 	if err != nil {
 		return nil, fmt.Errorf("list management provider options: %w", err)
 	}
+	return managementProviderOptionsFromRows(ctx, q, managementProviderRowsFromOptionRows(providerRows), strings.TrimSpace(input.SystemAccountID))
+}
+
+func managementProviderOptionsFromRows(ctx context.Context, q *postgresqueries.Queries, providerRows []managementProviderRow, systemAccountID string) ([]port.ManagementProviderOption, error) {
 	providerCodes := make([]string, 0, len(providerRows))
 	for _, row := range providerRows {
 		providerCodes = append(providerCodes, row.Code)
@@ -59,7 +85,6 @@ func listManagementProviderOptions(ctx context.Context, q *postgresqueries.Queri
 	}
 
 	preferences := map[string]string{}
-	systemAccountID := strings.TrimSpace(input.SystemAccountID)
 	if systemAccountID != "" {
 		preferenceRows, err := q.ListManagementProviderDefaultTestModelPreferences(ctx, postgresqueries.ListManagementProviderDefaultTestModelPreferencesParams{
 			SystemAccountID: systemAccountID,
@@ -86,6 +111,38 @@ func listManagementProviderOptions(ctx context.Context, q *postgresqueries.Queri
 		options = append(options, option)
 	}
 	return options, nil
+}
+
+func managementProviderRowsFromProviderRows(rows []postgresqueries.ListManagementProvidersRow) []managementProviderRow {
+	items := make([]managementProviderRow, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, managementProviderRow{
+			ID:                         row.ID,
+			Code:                       row.Code,
+			Name:                       row.Name,
+			ParentCode:                 row.ParentCode,
+			Description:                row.Description,
+			Enabled:                    row.Enabled,
+			DefaultSupportedModelsJson: row.DefaultSupportedModelsJson,
+		})
+	}
+	return items
+}
+
+func managementProviderRowsFromOptionRows(rows []postgresqueries.ListManagementProviderOptionProvidersRow) []managementProviderRow {
+	items := make([]managementProviderRow, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, managementProviderRow{
+			ID:                         row.ID,
+			Code:                       row.Code,
+			Name:                       row.Name,
+			ParentCode:                 row.ParentCode,
+			Description:                row.Description,
+			Enabled:                    row.Enabled,
+			DefaultSupportedModelsJson: row.DefaultSupportedModelsJson,
+		})
+	}
+	return items
 }
 
 func managementProviderProfilesByProvider(
@@ -122,7 +179,7 @@ func managementProviderProfilesByProvider(
 }
 
 func managementProviderOptionFromRow(
-	row postgresqueries.ListManagementProviderOptionProvidersRow,
+	row managementProviderRow,
 	profiles []port.ManagementProviderProtocolProfile,
 	preferredModel string,
 ) (port.ManagementProviderOption, error) {
@@ -229,4 +286,5 @@ func providerTextValue(value pgtype.Text) string {
 	return value.String
 }
 
+var _ port.ManagementProviderReader = (*Store)(nil)
 var _ port.ManagementProviderOptionReader = (*Store)(nil)

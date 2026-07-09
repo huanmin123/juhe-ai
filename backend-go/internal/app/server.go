@@ -152,6 +152,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyGroupAuthorizationReturnHandler:       managementHandlers.MyGroupAuthorizationReturnHandler,
 		ManagementAuthorizationRevokeHandler:              managementHandlers.AuthorizationRevokeHandler,
 		ManagementMyAuthorizationRevokeHandler:            managementHandlers.MyAuthorizationRevokeHandler,
+		ManagementProvidersHandler:                        managementHandlers.ProvidersHandler,
 		ManagementProviderOptionsHandler:                  managementHandlers.ProviderOptionsHandler,
 		ManagementProviderModelOptionsHandler:             managementHandlers.ProviderModelOptionsHandler,
 		ManagementProviderModelsHandler:                   managementHandlers.ProviderModelsHandler,
@@ -256,6 +257,7 @@ type managementAPIHandlers struct {
 	MyGroupAuthorizationReturnHandler       http.Handler
 	AuthorizationRevokeHandler              http.Handler
 	MyAuthorizationRevokeHandler            http.Handler
+	ProvidersHandler                        http.Handler
 	ProviderOptionsHandler                  http.Handler
 	ProviderModelOptionsHandler             http.Handler
 	ProviderModelsHandler                   http.Handler
@@ -390,6 +392,7 @@ func newManagementAPIHandler(
 		MyGroupAuthorizationReturnHandler:       httpapi.NewManagementMyGroupAuthorizationReturnHandlerWithOperationLog(authorizationService, operationLogOptions),
 		AuthorizationRevokeHandler:              httpapi.NewManagementAuthorizationRevokeHandlerWithOperationLog(authorizationService, operationLogOptions),
 		MyAuthorizationRevokeHandler:            httpapi.NewManagementMyAuthorizationRevokeHandlerWithOperationLog(authorizationService, operationLogOptions),
+		ProvidersHandler:                        httpapi.NewManagementProvidersHandler(providerService),
 		ProviderOptionsHandler:                  httpapi.NewManagementProviderOptionsHandler(providerService),
 		ProviderModelOptionsHandler:             httpapi.NewManagementProviderModelOptionsHandler(providerModelService),
 		ProviderModelsHandler:                   httpapi.NewManagementProviderModelsHandler(providerModelService),

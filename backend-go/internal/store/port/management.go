@@ -904,12 +904,21 @@ type ManagementProviderOption struct {
 	ProtocolProfiles         []ManagementProviderProtocolProfile
 }
 
+type ManagementProviderListInput struct {
+	SystemAccountID string
+}
+
 type ManagementProviderOptionListInput struct {
 	SystemAccountID string
 }
 
 type ManagementProviderOptionReader interface {
 	ListManagementProviderOptions(ctx context.Context, input ManagementProviderOptionListInput) ([]ManagementProviderOption, error)
+}
+
+type ManagementProviderReader interface {
+	ManagementProviderOptionReader
+	ListManagementProviders(ctx context.Context, input ManagementProviderListInput) ([]ManagementProviderOption, error)
 }
 
 type ManagementProviderModelProvider struct {

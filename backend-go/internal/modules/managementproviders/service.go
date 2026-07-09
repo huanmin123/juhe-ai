@@ -9,7 +9,11 @@ import (
 )
 
 type Service struct {
-	store port.ManagementProviderOptionReader
+	store port.ManagementProviderReader
+}
+
+type ListInput struct {
+	SystemAccountID string
 }
 
 type OptionListInput struct {
@@ -55,8 +59,21 @@ type Option struct {
 	ProtocolProfiles         []ProtocolProfile `json:"protocolProfiles"`
 }
 
-func NewService(store port.ManagementProviderOptionReader) *Service {
+func NewService(store port.ManagementProviderReader) *Service {
 	return &Service{store: store}
+}
+
+func (s *Service) List(ctx context.Context, input ListInput) ([]Option, error) {
+	if s.store == nil {
+		return nil, fmt.Errorf("management provider store is required")
+	}
+	rows, err := s.store.ListManagementProviders(ctx, port.ManagementProviderListInput{
+		SystemAccountID: strings.TrimSpace(input.SystemAccountID),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return providerOptionsFromPort(rows), nil
 }
 
 func (s *Service) Options(ctx context.Context, input OptionListInput) ([]Option, error) {
@@ -69,11 +86,15 @@ func (s *Service) Options(ctx context.Context, input OptionListInput) ([]Option,
 	if err != nil {
 		return nil, err
 	}
+	return providerOptionsFromPort(rows), nil
+}
+
+func providerOptionsFromPort(rows []port.ManagementProviderOption) []Option {
 	items := make([]Option, 0, len(rows))
 	for _, row := range rows {
 		items = append(items, providerOptionFromPort(row))
 	}
-	return items, nil
+	return items
 }
 
 func providerOptionFromPort(row port.ManagementProviderOption) Option {

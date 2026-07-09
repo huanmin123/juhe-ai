@@ -1,3 +1,9 @@
+-- name: ListManagementProviders :many
+SELECT id, code, name, parent_code, description, enabled, default_supported_models_json
+FROM juhe_business.providers
+ORDER BY name ASC, code ASC
+LIMIT 50;
+
 -- name: ListManagementProviderOptionProviders :many
 SELECT id, code, name, parent_code, description, enabled, default_supported_models_json
 FROM juhe_business.providers

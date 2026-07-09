@@ -65,10 +65,39 @@ func TestServiceOptionsMapsProviderDefinitions(t *testing.T) {
 	}
 }
 
+func TestServiceListUsesAllProviders(t *testing.T) {
+	store := &providerOptionStoreStub{
+		providers: []port.ManagementProviderOption{
+			{ID: "provider_disabled", Code: "disabled", Name: "Disabled", Enabled: false},
+			{ID: "provider_gpt", Code: "gpt", Name: "GPT", Enabled: true},
+		},
+	}
+	service := NewService(store)
+
+	providers, err := service.List(context.Background(), ListInput{SystemAccountID: " sys_admin "})
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+
+	if store.listInput.SystemAccountID != "sys_admin" {
+		t.Fatalf("store list input = %+v", store.listInput)
+	}
+	if len(providers) != 2 || providers[0].Code != "disabled" || providers[0].Enabled {
+		t.Fatalf("providers = %+v, want disabled provider preserved", providers)
+	}
+}
+
 type providerOptionStoreStub struct {
-	input   port.ManagementProviderOptionListInput
-	options []port.ManagementProviderOption
-	err     error
+	listInput port.ManagementProviderListInput
+	input     port.ManagementProviderOptionListInput
+	providers []port.ManagementProviderOption
+	options   []port.ManagementProviderOption
+	err       error
+}
+
+func (s *providerOptionStoreStub) ListManagementProviders(_ context.Context, input port.ManagementProviderListInput) ([]port.ManagementProviderOption, error) {
+	s.listInput = input
+	return s.providers, s.err
 }
 
 func (s *providerOptionStoreStub) ListManagementProviderOptions(_ context.Context, input port.ManagementProviderOptionListInput) ([]port.ManagementProviderOption, error) {
