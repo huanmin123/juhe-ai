@@ -16,14 +16,17 @@ import (
 const (
 	maxTeamNameRunes        = 100
 	maxTeamDescriptionRunes = 200
+	maxTeamMemberBatchSize  = 20
 
 	TeamAuthorizationChangedReason = "team_authorization_changed"
+	TeamMembersChangedReason       = "team_members_changed"
 )
 
 var (
 	ErrSystemTeamCreateInvalid = errors.New("management system team create invalid")
 	ErrSystemTeamReadInvalid   = errors.New("management system team read invalid")
 	ErrSystemTeamUpdateInvalid = errors.New("management system team update invalid")
+	ErrSystemTeamMemberInvalid = errors.New("management system team member invalid")
 	ErrSystemTeamNotFound      = errors.New("management system team not found")
 	ErrSystemTeamNameExists    = errors.New("management system team name exists")
 )
@@ -70,6 +73,31 @@ type UpdateResult struct {
 	Before               Summary `json:"before"`
 	Team                 Detail  `json:"team"`
 	AuthorizationChanged bool    `json:"authorizationChanged"`
+}
+
+type AddMembersInput struct {
+	TeamID           string
+	SystemAccountID  string
+	SystemAccountIDs []string
+	CreatedBy        string
+}
+
+type AddMembersResult struct {
+	Before Detail `json:"before"`
+	Team   Detail `json:"team"`
+}
+
+type RemoveMemberInput struct {
+	TeamID          string
+	MemberID        string
+	SystemAccountID string
+	UpdatedBy       string
+}
+
+type RemoveMemberResult struct {
+	Before        Detail        `json:"before"`
+	Team          Detail        `json:"team"`
+	RemovedMember MemberSummary `json:"removedMember"`
 }
 
 type Summary struct {
@@ -286,6 +314,82 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (UpdateResult, 
 	}, true, nil
 }
 
+func (s *Service) AddMembers(ctx context.Context, input AddMembersInput) (AddMembersResult, bool, error) {
+	manager, ok := s.store.(port.ManagementSystemTeamMemberManager)
+	if !ok || manager == nil {
+		return AddMembersResult{}, false, fmt.Errorf("management system team member manager is required")
+	}
+	teamID := strings.TrimSpace(input.TeamID)
+	createdBy := strings.TrimSpace(input.CreatedBy)
+	if teamID == "" || createdBy == "" {
+		return AddMembersResult{}, false, ErrSystemTeamMemberInvalid
+	}
+	systemAccountIDs, err := normalizeSystemAccountIDs(input.SystemAccountIDs)
+	if err != nil {
+		return AddMembersResult{}, false, err
+	}
+	now := s.now().UTC()
+	row, found, err := manager.AddManagementSystemTeamMembers(ctx, port.ManagementSystemTeamMemberAddInput{
+		TeamID:           teamID,
+		SystemAccountID:  strings.TrimSpace(input.SystemAccountID),
+		SystemAccountIDs: systemAccountIDs,
+		CreatedBy:        createdBy,
+		UpdatedAt:        now,
+	})
+	if err != nil {
+		return AddMembersResult{}, false, err
+	}
+	if !found {
+		return AddMembersResult{}, false, nil
+	}
+	if s.authorizationInvalidator != nil {
+		if err := s.authorizationInvalidator.InvalidateAuthorizationChanged(ctx, TeamMembersChangedReason); err != nil {
+			return AddMembersResult{}, true, err
+		}
+	}
+	return AddMembersResult{
+		Before: detailFromPort(row.Before),
+		Team:   detailFromPort(row.Team),
+	}, true, nil
+}
+
+func (s *Service) RemoveMember(ctx context.Context, input RemoveMemberInput) (RemoveMemberResult, bool, error) {
+	manager, ok := s.store.(port.ManagementSystemTeamMemberManager)
+	if !ok || manager == nil {
+		return RemoveMemberResult{}, false, fmt.Errorf("management system team member manager is required")
+	}
+	teamID := strings.TrimSpace(input.TeamID)
+	memberID := strings.TrimSpace(input.MemberID)
+	updatedBy := strings.TrimSpace(input.UpdatedBy)
+	if teamID == "" || memberID == "" || updatedBy == "" {
+		return RemoveMemberResult{}, false, ErrSystemTeamMemberInvalid
+	}
+	now := s.now().UTC()
+	row, found, err := manager.RemoveManagementSystemTeamMember(ctx, port.ManagementSystemTeamMemberRemoveInput{
+		TeamID:          teamID,
+		MemberID:        memberID,
+		SystemAccountID: strings.TrimSpace(input.SystemAccountID),
+		UpdatedBy:       updatedBy,
+		UpdatedAt:       now,
+	})
+	if err != nil {
+		return RemoveMemberResult{}, false, err
+	}
+	if !found {
+		return RemoveMemberResult{}, false, nil
+	}
+	if s.authorizationInvalidator != nil {
+		if err := s.authorizationInvalidator.InvalidateAuthorizationChanged(ctx, TeamMembersChangedReason); err != nil {
+			return RemoveMemberResult{}, true, err
+		}
+	}
+	return RemoveMemberResult{
+		Before:        detailFromPort(row.Before),
+		Team:          detailFromPort(row.Team),
+		RemovedMember: memberFromPort(row.RemovedMember),
+	}, true, nil
+}
+
 func normalizeTeamStatus(status string) string {
 	switch status {
 	case "":
@@ -308,6 +412,29 @@ func normalizeTeamUpdateStatus(status string) string {
 	default:
 		return ""
 	}
+}
+
+func normalizeSystemAccountIDs(values []string) ([]string, error) {
+	if len(values) == 0 {
+		return nil, ErrSystemTeamMemberInvalid
+	}
+	if len(values) > maxTeamMemberBatchSize {
+		return nil, ErrSystemTeamMemberInvalid
+	}
+	ids := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		id := strings.TrimSpace(value)
+		if id == "" {
+			return nil, ErrSystemTeamMemberInvalid
+		}
+		if _, ok := seen[id]; ok {
+			return nil, ErrSystemTeamMemberInvalid
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return ids, nil
 }
 
 func listPageSize(value int) int {

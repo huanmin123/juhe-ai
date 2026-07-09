@@ -208,6 +208,188 @@ func (s *Store) UpdateManagementSystemTeam(ctx context.Context, input port.Manag
 	}, true, nil
 }
 
+func (s *Store) AddManagementSystemTeamMembers(ctx context.Context, input port.ManagementSystemTeamMemberAddInput) (port.ManagementSystemTeamMemberAddResult, bool, error) {
+	teamID := strings.TrimSpace(input.TeamID)
+	systemAccountID := strings.TrimSpace(input.SystemAccountID)
+	before, _, err := s.FindManagementSystemTeam(ctx, teamID, systemAccountID)
+	if err != nil {
+		return port.ManagementSystemTeamMemberAddResult{}, false, err
+	}
+
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return port.ManagementSystemTeamMemberAddResult{}, false, fmt.Errorf("begin add management system team members tx: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = tx.Rollback(rollbackCtx)
+		}
+	}()
+
+	q := s.queries().WithTx(tx)
+	if _, err := q.FindActiveManagementSystemTeamForUpdate(ctx, postgresqueries.FindActiveManagementSystemTeamForUpdateParams{
+		TeamID:          teamID,
+		SystemAccountID: systemAccountID,
+	}); errors.Is(err, pgx.ErrNoRows) {
+		return port.ManagementSystemTeamMemberAddResult{}, false, nil
+	} else if err != nil {
+		return port.ManagementSystemTeamMemberAddResult{}, false, fmt.Errorf("find active management system team for member add: %w", err)
+	}
+
+	existingActiveMemberIDs, err := activeManagementTeamMemberIDsForLimitTx(ctx, tx, teamID)
+	if err != nil {
+		return port.ManagementSystemTeamMemberAddResult{}, false, err
+	}
+	existingActiveMemberSet := make(map[string]struct{}, len(existingActiveMemberIDs))
+	for _, id := range existingActiveMemberIDs {
+		existingActiveMemberSet[id] = struct{}{}
+	}
+	nextActiveMemberCount := len(existingActiveMemberSet)
+	for _, id := range input.SystemAccountIDs {
+		if _, ok := existingActiveMemberSet[id]; ok {
+			continue
+		}
+		nextActiveMemberCount++
+	}
+	if nextActiveMemberCount > maxManagementSystemTeamAuthorizationMembersPerTeam {
+		return port.ManagementSystemTeamMemberAddResult{}, false, fmt.Errorf("授权团队最多支持 %d 个成员，请先移除部分成员后再添加", maxManagementSystemTeamAuthorizationMembersPerTeam)
+	}
+
+	now := input.UpdatedAt.UTC()
+	for _, systemAccountID := range input.SystemAccountIDs {
+		if err := assertActiveManagementSystemAccountTx(ctx, tx, systemAccountID); err != nil {
+			return port.ManagementSystemTeamMemberAddResult{}, false, err
+		}
+		memberID, memberStatus, found, err := latestManagementTeamMemberTx(ctx, tx, teamID, systemAccountID)
+		if err != nil {
+			return port.ManagementSystemTeamMemberAddResult{}, false, err
+		}
+		if found && memberStatus == "active" {
+			continue
+		}
+		if found {
+			if _, err := tx.Exec(ctx, `
+UPDATE juhe_business.system_team_members
+SET status = 'active',
+    joined_at = $1,
+    removed_at = NULL,
+    updated_at = $1
+WHERE id = $2
+`, now, memberID); err != nil {
+				return port.ManagementSystemTeamMemberAddResult{}, false, fmt.Errorf("reactivate management system team member: %w", err)
+			}
+		} else if _, err := tx.Exec(ctx, `
+INSERT INTO juhe_business.system_team_members (
+  id, team_id, system_account_id, member_role, status, joined_at, removed_at,
+  created_by, created_at, updated_at
+) VALUES (
+  $1, $2, $3, 'member', 'active', $5, NULL,
+  $4, $5, $5
+)
+`, prefixedUUID("teammem"), teamID, systemAccountID, strings.TrimSpace(input.CreatedBy), now); err != nil {
+			return port.ManagementSystemTeamMemberAddResult{}, false, fmt.Errorf("insert management system team member: %w", err)
+		}
+		if err := applyActiveManagementTeamGrantsToMemberTx(ctx, tx, teamID, systemAccountID, strings.TrimSpace(input.CreatedBy), now); err != nil {
+			return port.ManagementSystemTeamMemberAddResult{}, false, err
+		}
+	}
+
+	if err := markAllGroupAccountStatsDirtyIfPresentTx(ctx, tx, "team_members_changed", now); err != nil {
+		return port.ManagementSystemTeamMemberAddResult{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		if errors.Is(err, pgx.ErrTxCommitRollback) {
+			return port.ManagementSystemTeamMemberAddResult{}, false, fmt.Errorf("commit add management system team members tx rolled back: %w", err)
+		}
+		return port.ManagementSystemTeamMemberAddResult{}, false, fmt.Errorf("commit add management system team members tx: %w", err)
+	}
+	committed = true
+
+	team, found, err := s.FindManagementSystemTeam(ctx, teamID, systemAccountID)
+	if err != nil {
+		return port.ManagementSystemTeamMemberAddResult{}, false, err
+	}
+	if !found {
+		return port.ManagementSystemTeamMemberAddResult{}, false, fmt.Errorf("find added management system team: not found")
+	}
+	return port.ManagementSystemTeamMemberAddResult{Before: before, Team: team}, true, nil
+}
+
+func (s *Store) RemoveManagementSystemTeamMember(ctx context.Context, input port.ManagementSystemTeamMemberRemoveInput) (port.ManagementSystemTeamMemberRemoveResult, bool, error) {
+	teamID := strings.TrimSpace(input.TeamID)
+	systemAccountID := strings.TrimSpace(input.SystemAccountID)
+	before, _, err := s.FindManagementSystemTeam(ctx, teamID, systemAccountID)
+	if err != nil {
+		return port.ManagementSystemTeamMemberRemoveResult{}, false, err
+	}
+
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return port.ManagementSystemTeamMemberRemoveResult{}, false, fmt.Errorf("begin remove management system team member tx: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = tx.Rollback(rollbackCtx)
+		}
+	}()
+
+	removedMember, found, err := activeManagementTeamMemberForAccessTx(ctx, tx, teamID, strings.TrimSpace(input.MemberID), systemAccountID)
+	if err != nil {
+		return port.ManagementSystemTeamMemberRemoveResult{}, false, err
+	}
+	if !found {
+		return port.ManagementSystemTeamMemberRemoveResult{}, false, nil
+	}
+	now := input.UpdatedAt.UTC()
+	if _, err := tx.Exec(ctx, `
+UPDATE juhe_business.system_team_members
+SET status = 'removed',
+    removed_at = $1,
+    updated_at = $1
+WHERE id = $2
+`, now, strings.TrimSpace(input.MemberID)); err != nil {
+		return port.ManagementSystemTeamMemberRemoveResult{}, false, fmt.Errorf("remove management system team member: %w", err)
+	}
+	if err := revokeManagementTeamSourcesForMemberTx(ctx, tx, teamID, removedMember.SystemAccountID, strings.TrimSpace(input.UpdatedBy), now); err != nil {
+		return port.ManagementSystemTeamMemberRemoveResult{}, false, err
+	}
+	if err := markAllGroupAccountStatsDirtyIfPresentTx(ctx, tx, "team_members_changed", now); err != nil {
+		return port.ManagementSystemTeamMemberRemoveResult{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		if errors.Is(err, pgx.ErrTxCommitRollback) {
+			return port.ManagementSystemTeamMemberRemoveResult{}, false, fmt.Errorf("commit remove management system team member tx rolled back: %w", err)
+		}
+		return port.ManagementSystemTeamMemberRemoveResult{}, false, fmt.Errorf("commit remove management system team member tx: %w", err)
+	}
+	committed = true
+
+	team, found, err := s.FindManagementSystemTeam(ctx, teamID, systemAccountID)
+	if err != nil {
+		return port.ManagementSystemTeamMemberRemoveResult{}, false, err
+	}
+	if !found {
+		team, found, err = s.FindManagementSystemTeam(ctx, teamID, "")
+		if err != nil {
+			return port.ManagementSystemTeamMemberRemoveResult{}, false, err
+		}
+	}
+	if !found {
+		return port.ManagementSystemTeamMemberRemoveResult{}, false, fmt.Errorf("find removed management system team: not found")
+	}
+	return port.ManagementSystemTeamMemberRemoveResult{
+		Before:        before,
+		Team:          team,
+		RemovedMember: removedMember,
+	}, true, nil
+}
+
 func (s *Store) managementSystemTeamMemberCounts(ctx context.Context, teamIDs []string) (map[string]int, error) {
 	counts := make(map[string]int, len(teamIDs))
 	if len(teamIDs) == 0 {
@@ -221,6 +403,160 @@ func (s *Store) managementSystemTeamMemberCounts(ctx context.Context, teamIDs []
 		counts[row.TeamID] = int(row.ActiveMemberCount)
 	}
 	return counts, nil
+}
+
+func activeManagementTeamMemberIDsForLimitTx(ctx context.Context, tx pgx.Tx, teamID string) ([]string, error) {
+	limit := maxManagementSystemTeamAuthorizationMembersPerTeam + 1
+	rows, err := tx.Query(ctx, `
+SELECT system_account_id
+FROM juhe_business.system_team_members
+WHERE team_id = $1
+  AND status = 'active'
+ORDER BY system_account_id ASC
+LIMIT $2
+`, teamID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list active management team member ids: %w", err)
+	}
+	defer rows.Close()
+
+	ids := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan active management team member id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate active management team member ids: %w", err)
+	}
+	if len(ids) > maxManagementSystemTeamAuthorizationMembersPerTeam {
+		return nil, fmt.Errorf("授权团队最多支持 %d 个成员，请先移除部分成员后再添加", maxManagementSystemTeamAuthorizationMembersPerTeam)
+	}
+	return ids, nil
+}
+
+func assertActiveManagementSystemAccountTx(ctx context.Context, tx pgx.Tx, systemAccountID string) error {
+	var status string
+	err := tx.QueryRow(ctx, `
+SELECT status
+FROM juhe_business.system_accounts
+WHERE id = $1
+LIMIT 1
+`, systemAccountID).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("团队成员不存在或已停用")
+	}
+	if err != nil {
+		return fmt.Errorf("find management system account for team member: %w", err)
+	}
+	if status != "active" {
+		return fmt.Errorf("团队成员不存在或已停用")
+	}
+	return nil
+}
+
+func latestManagementTeamMemberTx(ctx context.Context, tx pgx.Tx, teamID string, systemAccountID string) (string, string, bool, error) {
+	var memberID string
+	var status string
+	err := tx.QueryRow(ctx, `
+SELECT id, status
+FROM juhe_business.system_team_members
+WHERE team_id = $1
+  AND system_account_id = $2
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+FOR UPDATE
+`, teamID, systemAccountID).Scan(&memberID, &status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", false, nil
+	}
+	if err != nil {
+		return "", "", false, fmt.Errorf("find latest management system team member: %w", err)
+	}
+	return memberID, status, true, nil
+}
+
+func activeManagementTeamMemberForAccessTx(ctx context.Context, tx pgx.Tx, teamID string, memberID string, systemAccountID string) (port.ManagementSystemTeamMemberSummary, bool, error) {
+	row := struct {
+		ID                string
+		TeamID            string
+		SystemAccountID   string
+		SystemAccountName string
+		Username          string
+		MemberRole        string
+		Status            string
+		JoinedAt          pgtype.Timestamptz
+		RemovedAt         pgtype.Timestamptz
+		CreatedAt         pgtype.Timestamptz
+		UpdatedAt         pgtype.Timestamptz
+	}{}
+	err := tx.QueryRow(ctx, `
+SELECT
+  members.id,
+  members.team_id,
+  members.system_account_id,
+  accounts.display_name AS system_account_name,
+  accounts.username,
+  members.member_role,
+  members.status,
+  members.joined_at,
+  members.removed_at,
+  members.created_at,
+  members.updated_at
+FROM juhe_business.system_team_members AS members
+INNER JOIN juhe_business.system_teams AS teams
+  ON teams.id = members.team_id
+INNER JOIN juhe_business.system_accounts AS accounts
+  ON accounts.id = members.system_account_id
+WHERE members.id = $1
+  AND members.team_id = $2
+  AND members.status = 'active'
+  AND (
+    $3::text = ''
+    OR EXISTS (
+      SELECT 1
+      FROM juhe_business.system_team_members AS scoped_members
+      WHERE scoped_members.team_id = teams.id
+        AND scoped_members.system_account_id = $3::text
+        AND scoped_members.status = 'active'
+    )
+  )
+LIMIT 1
+FOR UPDATE OF members
+`, memberID, teamID, systemAccountID).Scan(
+		&row.ID,
+		&row.TeamID,
+		&row.SystemAccountID,
+		&row.SystemAccountName,
+		&row.Username,
+		&row.MemberRole,
+		&row.Status,
+		&row.JoinedAt,
+		&row.RemovedAt,
+		&row.CreatedAt,
+		&row.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return port.ManagementSystemTeamMemberSummary{}, false, nil
+	}
+	if err != nil {
+		return port.ManagementSystemTeamMemberSummary{}, false, fmt.Errorf("find active management system team member for access: %w", err)
+	}
+	return port.ManagementSystemTeamMemberSummary{
+		ID:                row.ID,
+		TeamID:            row.TeamID,
+		SystemAccountID:   row.SystemAccountID,
+		SystemAccountName: row.SystemAccountName,
+		Username:          row.Username,
+		MemberRole:        row.MemberRole,
+		Status:            row.Status,
+		JoinedAt:          timestamptzValue(row.JoinedAt),
+		RemovedAt:         timestamptzPtr(row.RemovedAt),
+		CreatedAt:         timestamptzValue(row.CreatedAt),
+		UpdatedAt:         timestamptzValue(row.UpdatedAt),
+	}, true, nil
 }
 
 func revokeAllManagementTeamSourcesTx(ctx context.Context, tx pgx.Tx, teamID string, actor string, now time.Time, reason string) error {
@@ -268,6 +604,62 @@ WHERE authorization_id = $4
   AND status = 'active'
 `, now.UTC(), reason, actor, authorizationID, teamID); err != nil {
 			return fmt.Errorf("revoke team authorization source: %w", err)
+		}
+		if err := refreshManagementResourceAuthorizationEffectiveSourceTx(ctx, tx, authorizationID, actor, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func revokeManagementTeamSourcesForMemberTx(ctx context.Context, tx pgx.Tx, teamID string, systemAccountID string, actor string, now time.Time) error {
+	limit := maxManagementSystemTeamActiveGrantCount + 1
+	rows, err := tx.Query(ctx, `
+SELECT ras.authorization_id
+FROM juhe_business.resource_authorization_sources AS ras
+INNER JOIN juhe_business.resource_authorizations AS ra
+  ON ra.id = ras.authorization_id
+WHERE ras.source_type = 'team'
+  AND ras.source_team_id = $1
+  AND ras.status = 'active'
+  AND ra.grantee_system_account_id = $2
+ORDER BY ras.authorization_id ASC
+LIMIT $3
+`, teamID, systemAccountID, limit)
+	if err != nil {
+		return fmt.Errorf("list active member team authorization sources: %w", err)
+	}
+	defer rows.Close()
+
+	authorizationIDs := make([]string, 0)
+	for rows.Next() {
+		var authorizationID string
+		if err := rows.Scan(&authorizationID); err != nil {
+			return fmt.Errorf("scan active member team authorization source: %w", err)
+		}
+		authorizationIDs = append(authorizationIDs, authorizationID)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate active member team authorization sources: %w", err)
+	}
+	if len(authorizationIDs) > maxManagementSystemTeamActiveGrantCount {
+		return fmt.Errorf("单个授权团队最多支持 %d 条有效授权，请先回收或停用部分授权", maxManagementSystemTeamActiveGrantCount)
+	}
+	for _, authorizationID := range authorizationIDs {
+		if _, err := tx.Exec(ctx, `
+UPDATE juhe_business.resource_authorization_sources
+SET status = 'revoked',
+    ended_at = COALESCE(ended_at, $1),
+    ended_reason = COALESCE(ended_reason, 'member_removed'),
+    revoked_by = $2,
+    revoked_at = $1,
+    updated_at = $1
+WHERE authorization_id = $3
+  AND source_type = 'team'
+  AND source_team_id = $4
+  AND status = 'active'
+`, now.UTC(), actor, authorizationID, teamID); err != nil {
+			return fmt.Errorf("revoke member team authorization source: %w", err)
 		}
 		if err := refreshManagementResourceAuthorizationEffectiveSourceTx(ctx, tx, authorizationID, actor, now); err != nil {
 			return err
@@ -758,3 +1150,4 @@ func managementSystemTeamMemberFromRow(row postgresqueries.ListManagementSystemT
 var _ port.ManagementSystemTeamCreator = (*Store)(nil)
 var _ port.ManagementSystemTeamReader = (*Store)(nil)
 var _ port.ManagementSystemTeamUpdater = (*Store)(nil)
+var _ port.ManagementSystemTeamMemberManager = (*Store)(nil)

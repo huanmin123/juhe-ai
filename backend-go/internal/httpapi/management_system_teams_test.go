@@ -519,6 +519,147 @@ func TestManagementSystemTeamPatchHandlerMapsServiceErrors(t *testing.T) {
 	}
 }
 
+func TestManagementSystemTeamMembersAddHandlerAddsAndWritesOperationLog(t *testing.T) {
+	queueStub := &operationLogQueueStub{}
+	service := &managementSystemTeamServiceStub{
+		addFound: true,
+		addResult: managementsystemteams.AddMembersResult{
+			Before: managementsystemteams.Detail{
+				Summary: managementsystemteams.Summary{ID: "team_ops", Name: "运维团队", Status: "active"},
+				Members: []managementsystemteams.MemberSummary{{
+					SystemAccountID:   "sys_old",
+					SystemAccountName: "旧成员",
+					Status:            "active",
+				}},
+			},
+			Team: managementsystemteams.Detail{
+				Summary: managementsystemteams.Summary{ID: "team_ops", Name: "运维团队", Status: "active"},
+				Members: []managementsystemteams.MemberSummary{{
+					SystemAccountID:   "sys_old",
+					SystemAccountName: "旧成员",
+					Status:            "active",
+				}, {
+					SystemAccountID:   "sys_new",
+					SystemAccountName: "新成员",
+					Status:            "active",
+				}},
+			},
+		},
+	}
+	handler := newManagementSystemTeamMembersAddHandler(
+		service,
+		newManagementOperationLogOptions(ManagementOperationLogOptions{
+			Config:   config.Config{TrustProxy: "false"},
+			Client:   queueStub,
+			NewLogID: func() string { return "oplog_add_team_member" },
+		}),
+	)
+	req := httptest.NewRequest(http.MethodPost, "/__aisys__/api/system-teams/team_ops/members?systemAccountId=sys_owner", strings.NewReader(`{"systemAccountIds":["sys_new"]}`))
+	req = withSystemTeamRouteParam(req, "team_ops")
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+		SystemAccountID: "sys_admin",
+		Username:        "admin",
+		DisplayName:     "管理员",
+		Role:            "admin",
+		SessionID:       "sess_admin",
+	}))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", rec.Code, rec.Body.String())
+	}
+	if !service.addCalled ||
+		service.addInput.TeamID != "team_ops" ||
+		service.addInput.SystemAccountID != "sys_owner" ||
+		len(service.addInput.SystemAccountIDs) != 1 ||
+		service.addInput.SystemAccountIDs[0] != "sys_new" ||
+		service.addInput.CreatedBy != "sys_admin" {
+		t.Fatalf("add input = %+v", service.addInput)
+	}
+	logInput, err := operationlogjob.DecodeWriteTaskPayload(queueStub.payload)
+	if err != nil {
+		t.Fatalf("decode operation log payload: %v", err)
+	}
+	if logInput.OperationKey != "system_teams.add_members" ||
+		logInput.Action != "add_members" ||
+		logInput.ResourceID != "team_ops" ||
+		len(logInput.Changes) != 1 ||
+		logInput.Changes[0].Field != "members" ||
+		logInput.Changes[0].After != "新成员" ||
+		len(logInput.Targets) != 2 {
+		t.Fatalf("operation log input = %+v", logInput)
+	}
+}
+
+func TestManagementSystemTeamMemberDeleteHandlerRemovesAndWritesOperationLog(t *testing.T) {
+	queueStub := &operationLogQueueStub{}
+	service := &managementSystemTeamServiceStub{
+		removeFound: true,
+		removeResult: managementsystemteams.RemoveMemberResult{
+			Team: managementsystemteams.Detail{
+				Summary: managementsystemteams.Summary{ID: "team_ops", Name: "运维团队", Status: "active"},
+				Members: []managementsystemteams.MemberSummary{{
+					SystemAccountID:   "sys_old",
+					SystemAccountName: "旧成员",
+					Status:            "active",
+				}},
+			},
+			RemovedMember: managementsystemteams.MemberSummary{
+				ID:                "teammem_new",
+				SystemAccountID:   "sys_new",
+				SystemAccountName: "新成员",
+				Status:            "active",
+			},
+		},
+	}
+	handler := newManagementSystemTeamMemberDeleteHandler(
+		service,
+		newManagementOperationLogOptions(ManagementOperationLogOptions{
+			Config:   config.Config{TrustProxy: "false"},
+			Client:   queueStub,
+			NewLogID: func() string { return "oplog_remove_team_member" },
+		}),
+	)
+	req := httptest.NewRequest(http.MethodDelete, "/__aisys__/api/system-teams/team_ops/members/teammem_new?systemAccountId=sys_owner", nil)
+	req = withSystemTeamMemberRouteParam(req, "team_ops", "teammem_new")
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+		SystemAccountID: "sys_admin",
+		Username:        "admin",
+		DisplayName:     "管理员",
+		Role:            "admin",
+		SessionID:       "sess_admin",
+	}))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", rec.Code, rec.Body.String())
+	}
+	if !service.removeCalled ||
+		service.removeInput.TeamID != "team_ops" ||
+		service.removeInput.MemberID != "teammem_new" ||
+		service.removeInput.SystemAccountID != "sys_owner" ||
+		service.removeInput.UpdatedBy != "sys_admin" {
+		t.Fatalf("remove input = %+v", service.removeInput)
+	}
+	logInput, err := operationlogjob.DecodeWriteTaskPayload(queueStub.payload)
+	if err != nil {
+		t.Fatalf("decode operation log payload: %v", err)
+	}
+	if logInput.OperationKey != "system_teams.remove_member" ||
+		logInput.Action != "remove_member" ||
+		logInput.ResourceID != "team_ops" ||
+		len(logInput.Changes) != 1 ||
+		logInput.Changes[0].Field != "member" ||
+		logInput.Changes[0].Before != "新成员" ||
+		len(logInput.Targets) != 2 {
+		t.Fatalf("operation log input = %+v", logInput)
+	}
+}
+
 func TestRouterRegistersW4ManagementSystemTeamCreate(t *testing.T) {
 	service := &managementSystemTeamServiceStub{
 		result: managementsystemteams.Summary{ID: "team_ops", Name: "运维团队", Status: "active", CreatedBy: "sys_admin"},
@@ -576,6 +717,72 @@ func TestRouterRegistersW4ManagementSystemTeamPatch(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodPatch, "/__aisys__/api/system-teams/team_ops", strings.NewReader(`{"status":"disabled"}`))
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if readAuthenticator.cookieHeader != "" || touchAuthenticator.touchCookieHeader == "" {
+		t.Fatalf("auth headers read=%q touch=%q", readAuthenticator.cookieHeader, touchAuthenticator.touchCookieHeader)
+	}
+}
+
+func TestRouterRegistersW4ManagementSystemTeamMembersAdd(t *testing.T) {
+	service := &managementSystemTeamServiceStub{
+		addFound:  true,
+		addResult: managementsystemteams.AddMembersResult{Team: managementsystemteams.Detail{Summary: managementsystemteams.Summary{ID: "team_ops", Name: "运维团队", Status: "active"}}},
+	}
+	readAuthenticator := &managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_read"},
+	}
+	touchAuthenticator := &managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_touch"},
+	}
+	router := NewRouter(RouterOptions{
+		Config:                                config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
+		Logger:                                slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
+		ManagementSystemTeamMembersAddHandler: newManagementSystemTeamMembersAddHandler(service, managementOperationLogOptions{}),
+		ManagementAPIAuthMiddleware:           NewManagementAPIAuthMiddleware(readAuthenticator),
+		ManagementAPIAuthTouchMiddleware:      NewManagementAPIAuthTouchMiddleware(touchAuthenticator),
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/__aisys__/api/system-teams/team_ops/members", strings.NewReader(`{"systemAccountIds":["sys_new"]}`))
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if readAuthenticator.cookieHeader != "" || touchAuthenticator.touchCookieHeader == "" {
+		t.Fatalf("auth headers read=%q touch=%q", readAuthenticator.cookieHeader, touchAuthenticator.touchCookieHeader)
+	}
+}
+
+func TestRouterRegistersW4ManagementSystemTeamMemberDelete(t *testing.T) {
+	service := &managementSystemTeamServiceStub{
+		removeFound:  true,
+		removeResult: managementsystemteams.RemoveMemberResult{Team: managementsystemteams.Detail{Summary: managementsystemteams.Summary{ID: "team_ops", Name: "运维团队", Status: "active"}}},
+	}
+	readAuthenticator := &managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_read"},
+	}
+	touchAuthenticator := &managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_touch"},
+	}
+	router := NewRouter(RouterOptions{
+		Config:                                  config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
+		Logger:                                  slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
+		ManagementSystemTeamMemberDeleteHandler: newManagementSystemTeamMemberDeleteHandler(service, managementOperationLogOptions{}),
+		ManagementAPIAuthMiddleware:             NewManagementAPIAuthMiddleware(readAuthenticator),
+		ManagementAPIAuthTouchMiddleware:        NewManagementAPIAuthTouchMiddleware(touchAuthenticator),
+	})
+
+	req := httptest.NewRequest(http.MethodDelete, "/__aisys__/api/system-teams/team_ops/members/teammem_new", nil)
 	req.Header.Set("Cookie", "juhe_ai_session=session-token")
 	rec := httptest.NewRecorder()
 
@@ -660,6 +867,16 @@ type managementSystemTeamServiceStub struct {
 	updateResult          managementsystemteams.UpdateResult
 	updateFound           bool
 	updateErr             error
+	addCalled             bool
+	addInput              managementsystemteams.AddMembersInput
+	addResult             managementsystemteams.AddMembersResult
+	addFound              bool
+	addErr                error
+	removeCalled          bool
+	removeInput           managementsystemteams.RemoveMemberInput
+	removeResult          managementsystemteams.RemoveMemberResult
+	removeFound           bool
+	removeErr             error
 }
 
 func (s *managementSystemTeamServiceStub) List(_ context.Context, input managementsystemteams.ListInput) (managementsystemteams.ListResult, error) {
@@ -687,8 +904,27 @@ func (s *managementSystemTeamServiceStub) Update(_ context.Context, input manage
 	return s.updateResult, s.updateFound, s.updateErr
 }
 
+func (s *managementSystemTeamServiceStub) AddMembers(_ context.Context, input managementsystemteams.AddMembersInput) (managementsystemteams.AddMembersResult, bool, error) {
+	s.addCalled = true
+	s.addInput = input
+	return s.addResult, s.addFound, s.addErr
+}
+
+func (s *managementSystemTeamServiceStub) RemoveMember(_ context.Context, input managementsystemteams.RemoveMemberInput) (managementsystemteams.RemoveMemberResult, bool, error) {
+	s.removeCalled = true
+	s.removeInput = input
+	return s.removeResult, s.removeFound, s.removeErr
+}
+
 func withSystemTeamRouteParam(req *http.Request, teamID string) *http.Request {
 	routeContext := chi.NewRouteContext()
 	routeContext.URLParams.Add("id", teamID)
+	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeContext))
+}
+
+func withSystemTeamMemberRouteParam(req *http.Request, teamID string, memberID string) *http.Request {
+	routeContext := chi.NewRouteContext()
+	routeContext.URLParams.Add("id", teamID)
+	routeContext.URLParams.Add("memberId", memberID)
 	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeContext))
 }

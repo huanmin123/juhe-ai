@@ -43,6 +43,31 @@ WHERE teams.id = sqlc.arg(team_id)::text
 LIMIT 1
 FOR UPDATE OF teams;
 
+-- name: FindActiveManagementSystemTeamForUpdate :one
+SELECT
+  teams.id,
+  teams.name,
+  teams.description,
+  teams.status,
+  teams.created_by,
+  teams.created_at,
+  teams.updated_at
+FROM juhe_business.system_teams AS teams
+WHERE teams.id = sqlc.arg(team_id)::text
+  AND teams.status = 'active'
+  AND (
+    sqlc.arg(system_account_id)::text = ''
+    OR EXISTS (
+      SELECT 1
+      FROM juhe_business.system_team_members AS scoped_members
+      WHERE scoped_members.team_id = teams.id
+        AND scoped_members.system_account_id = sqlc.arg(system_account_id)::text
+        AND scoped_members.status = 'active'
+    )
+  )
+LIMIT 1
+FOR UPDATE OF teams;
+
 -- name: UpdateManagementSystemTeam :one
 UPDATE juhe_business.system_teams
 SET

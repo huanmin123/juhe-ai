@@ -40,6 +40,8 @@ type RouterOptions struct {
 	ManagementMySystemTeamsHandler                  http.Handler
 	ManagementSystemTeamCreateHandler               http.Handler
 	ManagementSystemTeamPatchHandler                http.Handler
+	ManagementSystemTeamMembersAddHandler           http.Handler
+	ManagementSystemTeamMemberDeleteHandler         http.Handler
 	ManagementAuthorizationGranteeAccountsHandler   http.Handler
 	ManagementMyAuthorizationGranteeAccountsHandler http.Handler
 	ManagementAuthorizationGranteeTeamsHandler      http.Handler
@@ -116,6 +118,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMySystemTeamsHandler == nil &&
 				opts.ManagementSystemTeamCreateHandler == nil &&
 				opts.ManagementSystemTeamPatchHandler == nil &&
+				opts.ManagementSystemTeamMembersAddHandler == nil &&
+				opts.ManagementSystemTeamMemberDeleteHandler == nil &&
 				opts.ManagementAuthorizationGranteeAccountsHandler == nil &&
 				opts.ManagementMyAuthorizationGranteeAccountsHandler == nil &&
 				opts.ManagementAuthorizationGranteeTeamsHandler == nil &&
@@ -196,6 +200,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementSystemTeamPatchHandler != nil {
 				system.With(managementAPIWriteAuthMiddleware).Patch("/system-teams/{id}", opts.ManagementSystemTeamPatchHandler.ServeHTTP)
+			}
+			if opts.ManagementSystemTeamMembersAddHandler != nil {
+				system.With(managementAPIWriteAuthMiddleware).Post("/system-teams/{id}/members", opts.ManagementSystemTeamMembersAddHandler.ServeHTTP)
+			}
+			if opts.ManagementSystemTeamMemberDeleteHandler != nil {
+				system.With(managementAPIWriteAuthMiddleware).Delete("/system-teams/{id}/members/{memberId}", opts.ManagementSystemTeamMemberDeleteHandler.ServeHTTP)
 			}
 			if opts.ManagementAuthorizationGranteeAccountsHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/authorization-options/grantee-accounts", opts.ManagementAuthorizationGranteeAccountsHandler.ServeHTTP)
@@ -318,6 +328,8 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementSystemAccountCreateHandler != nil ||
 		opts.ManagementSystemTeamCreateHandler != nil ||
 		opts.ManagementSystemTeamPatchHandler != nil ||
+		opts.ManagementSystemTeamMembersAddHandler != nil ||
+		opts.ManagementSystemTeamMemberDeleteHandler != nil ||
 		opts.ManagementProviderDefaultTestModelHandler != nil ||
 		opts.ManagementAccountTagDeleteHandler != nil ||
 		opts.ManagementMyAccountTagDeleteHandler != nil ||

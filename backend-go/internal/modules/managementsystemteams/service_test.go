@@ -457,6 +457,148 @@ func TestUpdateReturnsInvalidationErrorAfterWrite(t *testing.T) {
 	}
 }
 
+func TestAddMembersNormalizesInputMapsDetailAndInvalidatesAuthorization(t *testing.T) {
+	now := time.Date(2026, 7, 9, 10, 0, 0, 0, time.UTC)
+	store := &teamStoreStub{
+		addFound: true,
+		addResult: port.ManagementSystemTeamMemberAddResult{
+			Before: port.ManagementSystemTeamDetail{
+				ManagementSystemTeamSummary: port.ManagementSystemTeamSummary{ID: "team_ops", Name: "运维团队", Status: "active", CreatedAt: now, UpdatedAt: now},
+				Members: []port.ManagementSystemTeamMemberSummary{{
+					SystemAccountID: "sys_old",
+					MemberRole:      "member",
+					Status:          "active",
+					JoinedAt:        now,
+					CreatedAt:       now,
+					UpdatedAt:       now,
+				}},
+			},
+			Team: port.ManagementSystemTeamDetail{
+				ManagementSystemTeamSummary: port.ManagementSystemTeamSummary{ID: "team_ops", Name: "运维团队", Status: "active", CreatedAt: now, UpdatedAt: now},
+				Members: []port.ManagementSystemTeamMemberSummary{{
+					SystemAccountID: "sys_old",
+					MemberRole:      "member",
+					Status:          "active",
+					JoinedAt:        now,
+					CreatedAt:       now,
+					UpdatedAt:       now,
+				}, {
+					SystemAccountID: "sys_new",
+					MemberRole:      "member",
+					Status:          "active",
+					JoinedAt:        now,
+					CreatedAt:       now,
+					UpdatedAt:       now,
+				}},
+			},
+		},
+	}
+	invalidator := &authorizationInvalidatorStub{}
+	service := NewServiceWithOptions(ServiceOptions{Store: store, Now: func() time.Time { return now }, AuthorizationInvalidator: invalidator})
+
+	result, found, err := service.AddMembers(context.Background(), AddMembersInput{
+		TeamID:           " team_ops ",
+		SystemAccountID:  " sys_owner ",
+		SystemAccountIDs: []string{" sys_new "},
+		CreatedBy:        " sys_admin ",
+	})
+
+	if err != nil || !found {
+		t.Fatalf("AddMembers() found=%v error=%v", found, err)
+	}
+	if !store.addCalled ||
+		store.addInput.TeamID != "team_ops" ||
+		store.addInput.SystemAccountID != "sys_owner" ||
+		len(store.addInput.SystemAccountIDs) != 1 ||
+		store.addInput.SystemAccountIDs[0] != "sys_new" ||
+		store.addInput.CreatedBy != "sys_admin" ||
+		!store.addInput.UpdatedAt.Equal(now) {
+		t.Fatalf("store add input = %+v", store.addInput)
+	}
+	if len(result.Before.Members) != 1 || len(result.Team.Members) != 2 {
+		t.Fatalf("result = %+v", result)
+	}
+	if invalidator.calls != 1 || invalidator.reason != TeamMembersChangedReason {
+		t.Fatalf("invalidator calls=%d reason=%q", invalidator.calls, invalidator.reason)
+	}
+}
+
+func TestAddMembersRejectsInvalidInput(t *testing.T) {
+	tests := []struct {
+		name  string
+		input AddMembersInput
+	}{
+		{name: "missing team", input: AddMembersInput{SystemAccountIDs: []string{"sys_user"}, CreatedBy: "sys_admin"}},
+		{name: "missing creator", input: AddMembersInput{TeamID: "team_ops", SystemAccountIDs: []string{"sys_user"}}},
+		{name: "empty ids", input: AddMembersInput{TeamID: "team_ops", CreatedBy: "sys_admin"}},
+		{name: "blank id", input: AddMembersInput{TeamID: "team_ops", SystemAccountIDs: []string{" "}, CreatedBy: "sys_admin"}},
+		{name: "duplicate ids", input: AddMembersInput{TeamID: "team_ops", SystemAccountIDs: []string{"sys_user", " sys_user "}, CreatedBy: "sys_admin"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &teamStoreStub{}
+			service := NewServiceWithOptions(ServiceOptions{Store: store})
+
+			_, _, err := service.AddMembers(context.Background(), tt.input)
+
+			if !errors.Is(err, ErrSystemTeamMemberInvalid) {
+				t.Fatalf("AddMembers() error = %v, want %v", err, ErrSystemTeamMemberInvalid)
+			}
+			if store.addCalled {
+				t.Fatal("store should not be called for invalid input")
+			}
+		})
+	}
+}
+
+func TestRemoveMemberNormalizesInputMapsRemovedMemberAndInvalidatesAuthorization(t *testing.T) {
+	now := time.Date(2026, 7, 9, 10, 0, 0, 0, time.UTC)
+	store := &teamStoreStub{
+		removeFound: true,
+		removeResult: port.ManagementSystemTeamMemberRemoveResult{
+			Team: port.ManagementSystemTeamDetail{
+				ManagementSystemTeamSummary: port.ManagementSystemTeamSummary{ID: "team_ops", Name: "运维团队", Status: "active", CreatedAt: now, UpdatedAt: now},
+			},
+			RemovedMember: port.ManagementSystemTeamMemberSummary{
+				ID:              "teammem_old",
+				SystemAccountID: "sys_old",
+				MemberRole:      "member",
+				Status:          "active",
+				JoinedAt:        now,
+				CreatedAt:       now,
+				UpdatedAt:       now,
+			},
+		},
+	}
+	invalidator := &authorizationInvalidatorStub{}
+	service := NewServiceWithOptions(ServiceOptions{Store: store, Now: func() time.Time { return now }, AuthorizationInvalidator: invalidator})
+
+	result, found, err := service.RemoveMember(context.Background(), RemoveMemberInput{
+		TeamID:          " team_ops ",
+		MemberID:        " teammem_old ",
+		SystemAccountID: " sys_owner ",
+		UpdatedBy:       " sys_admin ",
+	})
+
+	if err != nil || !found {
+		t.Fatalf("RemoveMember() found=%v error=%v", found, err)
+	}
+	if !store.removeCalled ||
+		store.removeInput.TeamID != "team_ops" ||
+		store.removeInput.MemberID != "teammem_old" ||
+		store.removeInput.SystemAccountID != "sys_owner" ||
+		store.removeInput.UpdatedBy != "sys_admin" ||
+		!store.removeInput.UpdatedAt.Equal(now) {
+		t.Fatalf("store remove input = %+v", store.removeInput)
+	}
+	if result.Team.ID != "team_ops" || result.RemovedMember.SystemAccountID != "sys_old" {
+		t.Fatalf("result = %+v", result)
+	}
+	if invalidator.calls != 1 || invalidator.reason != TeamMembersChangedReason {
+		t.Fatalf("invalidator calls=%d reason=%q", invalidator.calls, invalidator.reason)
+	}
+}
+
 type teamStoreStub struct {
 	called                bool
 	input                 port.ManagementSystemTeamCreateInput
@@ -477,6 +619,16 @@ type teamStoreStub struct {
 	updateResult          port.ManagementSystemTeamUpdateResult
 	updateFound           bool
 	updateErr             error
+	addCalled             bool
+	addInput              port.ManagementSystemTeamMemberAddInput
+	addResult             port.ManagementSystemTeamMemberAddResult
+	addFound              bool
+	addErr                error
+	removeCalled          bool
+	removeInput           port.ManagementSystemTeamMemberRemoveInput
+	removeResult          port.ManagementSystemTeamMemberRemoveResult
+	removeFound           bool
+	removeErr             error
 }
 
 func (s *teamStoreStub) CreateManagementSystemTeam(_ context.Context, input port.ManagementSystemTeamCreateInput) (port.ManagementSystemTeamSummary, error) {
@@ -502,6 +654,18 @@ func (s *teamStoreStub) UpdateManagementSystemTeam(_ context.Context, input port
 	s.updateCalled = true
 	s.updateInput = input
 	return s.updateResult, s.updateFound, s.updateErr
+}
+
+func (s *teamStoreStub) AddManagementSystemTeamMembers(_ context.Context, input port.ManagementSystemTeamMemberAddInput) (port.ManagementSystemTeamMemberAddResult, bool, error) {
+	s.addCalled = true
+	s.addInput = input
+	return s.addResult, s.addFound, s.addErr
+}
+
+func (s *teamStoreStub) RemoveManagementSystemTeamMember(_ context.Context, input port.ManagementSystemTeamMemberRemoveInput) (port.ManagementSystemTeamMemberRemoveResult, bool, error) {
+	s.removeCalled = true
+	s.removeInput = input
+	return s.removeResult, s.removeFound, s.removeErr
 }
 
 type authorizationInvalidatorStub struct {

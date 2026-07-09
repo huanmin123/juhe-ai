@@ -118,6 +118,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMySystemTeamsHandler:                  managementHandlers.MySystemTeamsHandler,
 		ManagementSystemTeamCreateHandler:               managementHandlers.SystemTeamCreateHandler,
 		ManagementSystemTeamPatchHandler:                managementHandlers.SystemTeamPatchHandler,
+		ManagementSystemTeamMembersAddHandler:           managementHandlers.SystemTeamMembersAddHandler,
+		ManagementSystemTeamMemberDeleteHandler:         managementHandlers.SystemTeamMemberDeleteHandler,
 		ManagementAuthorizationGranteeAccountsHandler:   managementHandlers.AuthorizationGranteeAccountsHandler,
 		ManagementMyAuthorizationGranteeAccountsHandler: managementHandlers.MyAuthorizationGranteeAccountsHandler,
 		ManagementAuthorizationGranteeTeamsHandler:      managementHandlers.AuthorizationGranteeTeamsHandler,
@@ -195,6 +197,8 @@ type managementAPIHandlers struct {
 	MySystemTeamsHandler                  http.Handler
 	SystemTeamCreateHandler               http.Handler
 	SystemTeamPatchHandler                http.Handler
+	SystemTeamMembersAddHandler           http.Handler
+	SystemTeamMemberDeleteHandler         http.Handler
 	AuthorizationGranteeAccountsHandler   http.Handler
 	MyAuthorizationGranteeAccountsHandler http.Handler
 	AuthorizationGranteeTeamsHandler      http.Handler
@@ -288,6 +292,8 @@ func newManagementAPIHandler(
 		MySystemTeamsHandler:                  httpapi.NewManagementMySystemTeamsHandler(systemTeamService),
 		SystemTeamCreateHandler:               httpapi.NewManagementSystemTeamCreateHandlerWithOperationLog(systemTeamService, operationLogOptions),
 		SystemTeamPatchHandler:                httpapi.NewManagementSystemTeamPatchHandlerWithOperationLog(systemTeamService, operationLogOptions),
+		SystemTeamMembersAddHandler:           httpapi.NewManagementSystemTeamMembersAddHandlerWithOperationLog(systemTeamService, operationLogOptions),
+		SystemTeamMemberDeleteHandler:         httpapi.NewManagementSystemTeamMemberDeleteHandlerWithOperationLog(systemTeamService, operationLogOptions),
 		AuthorizationGranteeAccountsHandler:   httpapi.NewManagementAuthorizationGranteeAccountsHandler(authorizationOptionService),
 		MyAuthorizationGranteeAccountsHandler: httpapi.NewManagementMyAuthorizationGranteeAccountsHandler(authorizationOptionService),
 		AuthorizationGranteeTeamsHandler:      httpapi.NewManagementAuthorizationGranteeTeamsHandler(authorizationOptionService),

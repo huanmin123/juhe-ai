@@ -422,6 +422,38 @@ type ManagementSystemTeamUpdater interface {
 	UpdateManagementSystemTeam(ctx context.Context, input ManagementSystemTeamUpdateInput) (ManagementSystemTeamUpdateResult, bool, error)
 }
 
+type ManagementSystemTeamMemberAddInput struct {
+	TeamID           string
+	SystemAccountID  string
+	SystemAccountIDs []string
+	CreatedBy        string
+	UpdatedAt        time.Time
+}
+
+type ManagementSystemTeamMemberAddResult struct {
+	Before ManagementSystemTeamDetail
+	Team   ManagementSystemTeamDetail
+}
+
+type ManagementSystemTeamMemberRemoveInput struct {
+	TeamID          string
+	MemberID        string
+	SystemAccountID string
+	UpdatedBy       string
+	UpdatedAt       time.Time
+}
+
+type ManagementSystemTeamMemberRemoveResult struct {
+	Before        ManagementSystemTeamDetail
+	Team          ManagementSystemTeamDetail
+	RemovedMember ManagementSystemTeamMemberSummary
+}
+
+type ManagementSystemTeamMemberManager interface {
+	AddManagementSystemTeamMembers(ctx context.Context, input ManagementSystemTeamMemberAddInput) (ManagementSystemTeamMemberAddResult, bool, error)
+	RemoveManagementSystemTeamMember(ctx context.Context, input ManagementSystemTeamMemberRemoveInput) (ManagementSystemTeamMemberRemoveResult, bool, error)
+}
+
 type ManagementSystemTeamReader interface {
 	ListManagementSystemTeams(ctx context.Context, input ManagementSystemTeamListInput) (ManagementSystemTeamListResult, error)
 	FindManagementSystemTeam(ctx context.Context, teamID string, systemAccountID string) (ManagementSystemTeamDetail, bool, error)

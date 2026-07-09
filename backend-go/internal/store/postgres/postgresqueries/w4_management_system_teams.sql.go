@@ -66,6 +66,52 @@ func (q *Queries) CreateManagementSystemTeam(ctx context.Context, arg CreateMana
 	return i, err
 }
 
+const findActiveManagementSystemTeamForUpdate = `-- name: FindActiveManagementSystemTeamForUpdate :one
+SELECT
+  teams.id,
+  teams.name,
+  teams.description,
+  teams.status,
+  teams.created_by,
+  teams.created_at,
+  teams.updated_at
+FROM juhe_business.system_teams AS teams
+WHERE teams.id = $1::text
+  AND teams.status = 'active'
+  AND (
+    $2::text = ''
+    OR EXISTS (
+      SELECT 1
+      FROM juhe_business.system_team_members AS scoped_members
+      WHERE scoped_members.team_id = teams.id
+        AND scoped_members.system_account_id = $2::text
+        AND scoped_members.status = 'active'
+    )
+  )
+LIMIT 1
+FOR UPDATE OF teams
+`
+
+type FindActiveManagementSystemTeamForUpdateParams struct {
+	TeamID          string
+	SystemAccountID string
+}
+
+func (q *Queries) FindActiveManagementSystemTeamForUpdate(ctx context.Context, arg FindActiveManagementSystemTeamForUpdateParams) (JuheBusinessSystemTeam, error) {
+	row := q.db.QueryRow(ctx, findActiveManagementSystemTeamForUpdate, arg.TeamID, arg.SystemAccountID)
+	var i JuheBusinessSystemTeam
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.Status,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const findManagementSystemTeam = `-- name: FindManagementSystemTeam :one
 SELECT
   teams.id,
