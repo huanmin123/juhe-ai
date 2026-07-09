@@ -760,6 +760,127 @@ func TestServiceUsageOverviewValidatesInput(t *testing.T) {
 	}
 }
 
+func TestServiceUsageDetailNormalizesScopeRangePaginationAndRedacts(t *testing.T) {
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	createdAt := time.Date(2026, 7, 9, 11, 30, 0, 0, time.UTC)
+	store := &authorizationUsageStoreStub{
+		detailFound: true,
+		detailResult: port.ManagementResourceAuthorizationUsageResult{
+			Summary: port.ManagementResourceAuthorizationSummary{
+				ID:                           "rauthgrant_team",
+				ResourceType:                 "account",
+				ResourceID:                   "acct_main",
+				ResourceOwnerSystemAccountID: "sys_owner",
+				GranteeType:                  "team",
+				GranteeTeamID:                "team_ops",
+				Scope:                        "use",
+				Status:                       "active",
+				EffectiveSourceType:          "team",
+				EffectiveSourceTeamID:        "team_ops",
+				EffectiveSourceTeamName:      "运维团队",
+				AuthorizationSources: []port.ManagementResourceAuthorizationSourceSummary{{
+					ID:              "ras_team",
+					AuthorizationID: "rauth_runtime",
+					SourceType:      "team",
+					SourceTeamID:    "team_ops",
+					SourceTeamName:  "运维团队",
+					Status:          "active",
+					CreatedBy:       "sys_owner",
+					CreatedAt:       createdAt,
+					UpdatedAt:       createdAt,
+				}},
+				Usage:     port.ManagementAccountUsageSummary{RequestCount: 9},
+				CreatedBy: "sys_owner",
+				CreatedAt: createdAt,
+				UpdatedAt: createdAt,
+			},
+			UsageBySystemAccount: []port.ManagementResourceAuthorizationUsageDetail{{
+				SystemAccountID:               "sys_grantee",
+				SystemAccountName:             "被授权人",
+				ManagementAccountUsageSummary: port.ManagementAccountUsageSummary{RequestCount: 5},
+				RangeUsage:                    port.ManagementAccountUsageSummary{RequestCount: 5},
+			}},
+			UsageBySystemAccountTotal:   3,
+			UsageBySystemAccountHasMore: true,
+		},
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		UsageDetailStore: store,
+		Now:              func() time.Time { return now },
+	})
+
+	got, found, err := service.UsageDetail(context.Background(), UsageDetailInput{
+		AuthorizationID:       " rauthgrant_team ",
+		ActorSystemAccountID:  " sys_viewer ",
+		ActorRole:             "user",
+		ScopedSystemAccountID: "sys_other",
+		StartDate:             "2026-06-01",
+		EndDate:               "2026-07-10",
+		Page:                  2,
+		PageSize:              1,
+	})
+	if err != nil {
+		t.Fatalf("UsageDetail() error = %v", err)
+	}
+	if !found {
+		t.Fatal("UsageDetail() found = false, want true")
+	}
+	if !store.detailCalled ||
+		store.detailInput.AuthorizationID != "rauthgrant_team" ||
+		store.detailInput.ActorSystemAccountID != "sys_viewer" ||
+		store.detailInput.ScopedSystemAccountID != "sys_viewer" ||
+		store.detailInput.CanAccessAll ||
+		store.detailInput.StartDate != "2026-06-09" ||
+		store.detailInput.EndDate != "2026-07-09" ||
+		store.detailInput.Limit != 2 ||
+		store.detailInput.Offset != 1 {
+		t.Fatalf("detail input = %+v", store.detailInput)
+	}
+	if got.UsageRange.Days != 31 ||
+		got.UsageBySystemAccountTotal != 3 ||
+		got.UsageBySystemAccountPage != 2 ||
+		got.UsageBySystemAccountPageSize != 1 ||
+		!got.UsageBySystemAccountHasMore ||
+		got.Usage.RequestCount != 9 ||
+		got.UsageBySystemAccount[0].RequestCount != 5 {
+		t.Fatalf("usage detail = %+v", got)
+	}
+	if got.Permissions.CanEdit ||
+		got.EffectiveSourceTeamID != "" ||
+		got.CreatedBy != "" ||
+		got.AuthorizationSources[0].SourceTeamID != "" {
+		t.Fatalf("non-owner usage detail was not redacted: %+v", got)
+	}
+}
+
+func TestServiceUsageDetailUsesDefaultPageSizeAndValidatesInput(t *testing.T) {
+	store := &authorizationUsageStoreStub{detailFound: true}
+	service := NewServiceWithOptions(ServiceOptions{
+		UsageDetailStore: store,
+		Now:              func() time.Time { return time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC) },
+	})
+	if _, _, err := service.UsageDetail(context.Background(), UsageDetailInput{
+		AuthorizationID:      "rauthgrant_main",
+		ActorSystemAccountID: "sys_admin",
+		ActorRole:            "admin",
+	}); err != nil {
+		t.Fatalf("UsageDetail() error = %v", err)
+	}
+	if store.detailInput.Limit != defaultAuthorizationUsageDetailPageSize+1 {
+		t.Fatalf("detail default limit = %d", store.detailInput.Limit)
+	}
+	for _, input := range []UsageDetailInput{
+		{AuthorizationID: "", ActorSystemAccountID: "sys_actor"},
+		{AuthorizationID: "rauthgrant_main", ActorSystemAccountID: ""},
+		{AuthorizationID: "rauthgrant_main", ActorSystemAccountID: "sys_actor", StartDate: "bad-date"},
+		{AuthorizationID: "rauthgrant_main", ActorSystemAccountID: "sys_actor", EndDate: "2026-99-99"},
+	} {
+		if _, _, err := service.UsageDetail(context.Background(), input); !errors.Is(err, ErrAuthorizationUsageInvalid) {
+			t.Fatalf("UsageDetail(%+v) error = %v, want invalid input", input, err)
+		}
+	}
+}
+
 func TestServiceGetNormalizesScopeAndRedactsNonOwnerDetail(t *testing.T) {
 	createdAt := time.Date(2026, 7, 9, 11, 30, 0, 0, time.UTC)
 	endedAt := createdAt.Add(time.Hour)
@@ -958,14 +1079,19 @@ func (s *authorizationGetStoreStub) FindManagementResourceAuthorization(_ contex
 }
 
 type authorizationUsageStoreStub struct {
-	teamCalled bool
-	teamInput  port.ManagementAuthorizationUsageOverviewInput
-	teamResult port.ManagementAuthorizationTeamUsageOverviewResult
-	teamErr    error
-	userCalled bool
-	userInput  port.ManagementAuthorizationUsageOverviewInput
-	userResult port.ManagementAuthorizationUserUsageOverviewResult
-	userErr    error
+	teamCalled   bool
+	teamInput    port.ManagementAuthorizationUsageOverviewInput
+	teamResult   port.ManagementAuthorizationTeamUsageOverviewResult
+	teamErr      error
+	userCalled   bool
+	userInput    port.ManagementAuthorizationUsageOverviewInput
+	userResult   port.ManagementAuthorizationUserUsageOverviewResult
+	userErr      error
+	detailCalled bool
+	detailInput  port.ManagementResourceAuthorizationUsageInput
+	detailResult port.ManagementResourceAuthorizationUsageResult
+	detailFound  bool
+	detailErr    error
 }
 
 func (s *authorizationUsageStoreStub) ListManagementAuthorizationTeamUsageOverview(_ context.Context, input port.ManagementAuthorizationUsageOverviewInput) (port.ManagementAuthorizationTeamUsageOverviewResult, error) {
@@ -984,6 +1110,15 @@ func (s *authorizationUsageStoreStub) ListManagementAuthorizationUserUsageOvervi
 		return port.ManagementAuthorizationUserUsageOverviewResult{}, s.userErr
 	}
 	return s.userResult, nil
+}
+
+func (s *authorizationUsageStoreStub) FindManagementResourceAuthorizationUsage(_ context.Context, input port.ManagementResourceAuthorizationUsageInput) (port.ManagementResourceAuthorizationUsageResult, bool, error) {
+	s.detailCalled = true
+	s.detailInput = input
+	if s.detailErr != nil {
+		return port.ManagementResourceAuthorizationUsageResult{}, false, s.detailErr
+	}
+	return s.detailResult, s.detailFound, nil
 }
 
 type authorizationInvalidatorStub struct {
@@ -1005,4 +1140,5 @@ var _ port.ManagementResourceAuthorizationRevoker = (*authorizationRevokeStoreSt
 var _ port.ManagementResourceAuthorizationReturner = (*authorizationReturnStoreStub)(nil)
 var _ port.ManagementResourceAuthorizationUpdater = (*authorizationUpdateStoreStub)(nil)
 var _ port.ManagementAuthorizationUsageOverviewReader = (*authorizationUsageStoreStub)(nil)
+var _ port.ManagementResourceAuthorizationUsageReader = (*authorizationUsageStoreStub)(nil)
 var _ AuthorizationInvalidator = (*authorizationInvalidatorStub)(nil)

@@ -138,6 +138,111 @@ func (s *Store) ListManagementAuthorizationUserUsageOverview(ctx context.Context
 	return port.ManagementAuthorizationUserUsageOverviewResult{Summary: summary, Rows: items, HasMore: hasMore}, nil
 }
 
+func (s *Store) FindManagementResourceAuthorizationUsage(ctx context.Context, input port.ManagementResourceAuthorizationUsageInput) (port.ManagementResourceAuthorizationUsageResult, bool, error) {
+	summary, found, err := s.FindManagementResourceAuthorization(ctx, port.ManagementResourceAuthorizationGetInput{
+		AuthorizationID:       input.AuthorizationID,
+		ActorSystemAccountID:  input.ActorSystemAccountID,
+		CanAccessAll:          input.CanAccessAll,
+		ScopedSystemAccountID: input.ScopedSystemAccountID,
+	})
+	if err != nil || !found {
+		return port.ManagementResourceAuthorizationUsageResult{}, found, err
+	}
+	if summary.GranteeType == "team" {
+		result, err := s.findManagementResourceAuthorizationTeamUsage(ctx, summary, input)
+		return result, true, err
+	}
+	result, err := s.findManagementResourceAuthorizationDirectUsage(ctx, summary, input)
+	return result, true, err
+}
+
+func (s *Store) findManagementResourceAuthorizationDirectUsage(ctx context.Context, summary port.ManagementResourceAuthorizationSummary, input port.ManagementResourceAuthorizationUsageInput) (port.ManagementResourceAuthorizationUsageResult, error) {
+	granteeID := strings.TrimSpace(summary.GranteeSystemAccountID)
+	if granteeID == "" {
+		return emptyManagementResourceAuthorizationUsageResult(summary, input), nil
+	}
+	var systemAccountID string
+	var systemAccountName string
+	var username string
+	err := s.pool.QueryRow(ctx, `
+SELECT ra.grantee_system_account_id,
+  COALESCE(system_accounts.display_name, '') AS system_account_name,
+  COALESCE(system_accounts.username, '') AS username
+FROM juhe_business.resource_authorizations AS ra
+LEFT JOIN juhe_business.system_accounts AS system_accounts
+  ON system_accounts.id = ra.grantee_system_account_id
+WHERE ra.resource_type = $1
+  AND ra.resource_id = $2
+  AND ra.resource_owner_system_account_id = $3
+  AND ra.grantee_system_account_id = $4
+LIMIT 1
+`, summary.ResourceType, summary.ResourceID, summary.ResourceOwnerSystemAccountID, granteeID).Scan(&systemAccountID, &systemAccountName, &username)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return emptyManagementResourceAuthorizationUsageResult(summary, input), nil
+	}
+	if err != nil {
+		return port.ManagementResourceAuthorizationUsageResult{}, fmt.Errorf("find management resource authorization direct usage runtime: %w", err)
+	}
+	usage, err := s.findManagementResourceAuthorizationUserUsageSummary(ctx, summary, systemAccountID, "", input)
+	if err != nil {
+		return port.ManagementResourceAuthorizationUsageResult{}, err
+	}
+	summary.Usage = usage
+	summary.LastUsedAt = usage.LastUsedAt
+	page, _ := managementResourceAuthorizationUsagePage(input)
+	rows := []port.ManagementResourceAuthorizationUsageDetail{}
+	if page == 1 {
+		rows = append(rows, managementResourceAuthorizationUsageDetail(systemAccountID, systemAccountName, username, usage))
+	}
+	return port.ManagementResourceAuthorizationUsageResult{
+		Summary:                     summary,
+		UsageBySystemAccount:        rows,
+		UsageBySystemAccountTotal:   1,
+		UsageBySystemAccountHasMore: false,
+	}, nil
+}
+
+func (s *Store) findManagementResourceAuthorizationTeamUsage(ctx context.Context, summary port.ManagementResourceAuthorizationSummary, input port.ManagementResourceAuthorizationUsageInput) (port.ManagementResourceAuthorizationUsageResult, error) {
+	teamID := strings.TrimSpace(summary.GranteeTeamID)
+	if teamID == "" || input.Limit <= 0 {
+		return emptyManagementResourceAuthorizationUsageResult(summary, input), nil
+	}
+	usage, err := s.findManagementResourceAuthorizationTeamUsageSummary(ctx, summary, teamID, input)
+	if err != nil {
+		return port.ManagementResourceAuthorizationUsageResult{}, err
+	}
+	summary.Usage = usage
+	summary.LastUsedAt = usage.LastUsedAt
+	query, args := managementResourceAuthorizationTeamUsageDetailQuery(summary, input)
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return port.ManagementResourceAuthorizationUsageResult{}, fmt.Errorf("list management resource authorization team usage detail: %w", err)
+	}
+	defer rows.Close()
+	items := make([]port.ManagementResourceAuthorizationUsageDetail, 0, input.Limit)
+	for rows.Next() {
+		item, err := scanManagementResourceAuthorizationUsageDetail(rows)
+		if err != nil {
+			return port.ManagementResourceAuthorizationUsageResult{}, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return port.ManagementResourceAuthorizationUsageResult{}, fmt.Errorf("iterate management resource authorization team usage detail: %w", err)
+	}
+	_, pageSize := managementResourceAuthorizationUsagePage(input)
+	hasMore := len(items) > pageSize
+	if hasMore {
+		items = items[:pageSize]
+	}
+	return port.ManagementResourceAuthorizationUsageResult{
+		Summary:                     summary,
+		UsageBySystemAccount:        items,
+		UsageBySystemAccountTotal:   managementResourceAuthorizationUsageTotal(input, len(items), hasMore),
+		UsageBySystemAccountHasMore: hasMore,
+	}, nil
+}
+
 func (s *Store) findManagementAuthorizationTeamUsageSummary(ctx context.Context, input port.ManagementAuthorizationUsageOverviewInput) (port.ManagementAccountUsageSummary, error) {
 	systemAccountID := managementAuthorizationUsageSystemAccountID(input)
 	resourceType, resourceID := managementAuthorizationUsageSummaryResourceFilter(input)
@@ -195,6 +300,62 @@ LIMIT 1
 		return port.ManagementAccountUsageSummary{}, fmt.Errorf("find management authorization user usage summary: %w", err)
 	}
 	return summary, nil
+}
+
+func (s *Store) findManagementResourceAuthorizationTeamUsageSummary(ctx context.Context, summary port.ManagementResourceAuthorizationSummary, teamID string, input port.ManagementResourceAuthorizationUsageInput) (port.ManagementAccountUsageSummary, error) {
+	usage, err := scanManagementAuthorizationUsageSummary(s.pool.QueryRow(ctx, `
+SELECT request_count, input_tokens, output_tokens, cache_read_tokens,
+  CAST(cache_read_cost_usd AS double precision) AS cache_read_cost_usd,
+  cache_write_tokens, cache_write_1h_tokens,
+  CAST(cache_write_cost_usd AS double precision) AS cache_write_cost_usd,
+  thinking_tokens, input_image_tokens, output_image_tokens,
+  CAST(total_cost_usd AS double precision) AS total_cost_usd,
+  last_used_at
+FROM juhe_stats.authorization_team_usage_range_windows
+WHERE system_account_id = $1
+  AND start_date = $2
+  AND end_date = $3
+  AND team_filter_id = $4
+  AND resource_filter_type = $5
+  AND resource_filter_id = $6
+LIMIT 1
+`, strings.TrimSpace(summary.ResourceOwnerSystemAccountID), input.StartDate, input.EndDate, teamID, summary.ResourceType, summary.ResourceID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return port.ManagementAccountUsageSummary{}, nil
+	}
+	if err != nil {
+		return port.ManagementAccountUsageSummary{}, fmt.Errorf("find management resource authorization team usage summary: %w", err)
+	}
+	return usage, nil
+}
+
+func (s *Store) findManagementResourceAuthorizationUserUsageSummary(ctx context.Context, summary port.ManagementResourceAuthorizationSummary, granteeID string, teamID string, input port.ManagementResourceAuthorizationUsageInput) (port.ManagementAccountUsageSummary, error) {
+	systemAccountID := managementResourceAuthorizationUsageStatsSystemAccountID(summary.ResourceType, summary.ResourceOwnerSystemAccountID, granteeID)
+	usage, err := scanManagementAuthorizationUsageSummary(s.pool.QueryRow(ctx, `
+SELECT request_count, input_tokens, output_tokens, cache_read_tokens,
+  CAST(cache_read_cost_usd AS double precision) AS cache_read_cost_usd,
+  cache_write_tokens, cache_write_1h_tokens,
+  CAST(cache_write_cost_usd AS double precision) AS cache_write_cost_usd,
+  thinking_tokens, input_image_tokens, output_image_tokens,
+  CAST(total_cost_usd AS double precision) AS total_cost_usd,
+  last_used_at
+FROM juhe_stats.authorization_user_usage_range_windows
+WHERE system_account_id = $1
+  AND start_date = $2
+  AND end_date = $3
+  AND team_filter_id = $4
+  AND grantee_filter_system_account_id = $5
+  AND resource_filter_type = $6
+  AND resource_filter_id = $7
+LIMIT 1
+`, systemAccountID, input.StartDate, input.EndDate, strings.TrimSpace(teamID), strings.TrimSpace(granteeID), summary.ResourceType, summary.ResourceID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return port.ManagementAccountUsageSummary{}, nil
+	}
+	if err != nil {
+		return port.ManagementAccountUsageSummary{}, fmt.Errorf("find management resource authorization user usage summary: %w", err)
+	}
+	return usage, nil
 }
 
 func managementResourceAuthorizationListQuery(input port.ManagementResourceAuthorizationListInput) (string, []any) {
@@ -507,6 +668,71 @@ ORDER BY page_rows.total_cost_usd DESC, page_rows.request_count DESC, page_rows.
 	return query, args
 }
 
+func managementResourceAuthorizationTeamUsageDetailQuery(summary port.ManagementResourceAuthorizationSummary, input port.ManagementResourceAuthorizationUsageInput) (string, []any) {
+	args := []any{}
+	addArg := func(value any) string {
+		args = append(args, value)
+		return "$" + strconv.Itoa(len(args))
+	}
+	teamIDArg := addArg(strings.TrimSpace(summary.GranteeTeamID))
+	resourceTypeArg := addArg(strings.TrimSpace(summary.ResourceType))
+	resourceIDArg := addArg(strings.TrimSpace(summary.ResourceID))
+	ownerIDArg := addArg(strings.TrimSpace(summary.ResourceOwnerSystemAccountID))
+	startDateArg := addArg(strings.TrimSpace(input.StartDate))
+	endDateArg := addArg(strings.TrimSpace(input.EndDate))
+	limitArg := addArg(max(0, input.Limit))
+	offsetArg := addArg(max(0, input.Offset))
+	query := `
+WITH page_rows AS (
+  SELECT DISTINCT ra.id,
+    ra.grantee_system_account_id,
+    ra.created_at
+  FROM juhe_business.resource_authorizations AS ra
+  INNER JOIN juhe_business.resource_authorization_sources AS ras
+    ON ras.authorization_id = ra.id
+    AND ras.source_type = 'team'
+    AND ras.source_team_id = ` + teamIDArg + `
+  WHERE ra.resource_type = ` + resourceTypeArg + `
+    AND ra.resource_id = ` + resourceIDArg + `
+    AND ra.resource_owner_system_account_id = ` + ownerIDArg + `
+  ORDER BY ra.created_at ASC, ra.id ASC
+  LIMIT ` + limitArg + ` OFFSET ` + offsetArg + `
+)
+SELECT page_rows.grantee_system_account_id,
+  COALESCE(system_accounts.display_name, '') AS system_account_name,
+  COALESCE(system_accounts.username, '') AS username,
+  COALESCE(usage_windows.request_count, 0) AS request_count,
+  COALESCE(usage_windows.input_tokens, 0) AS input_tokens,
+  COALESCE(usage_windows.output_tokens, 0) AS output_tokens,
+  COALESCE(usage_windows.cache_read_tokens, 0) AS cache_read_tokens,
+  CAST(COALESCE(usage_windows.cache_read_cost_usd, 0) AS double precision) AS cache_read_cost_usd,
+  COALESCE(usage_windows.cache_write_tokens, 0) AS cache_write_tokens,
+  COALESCE(usage_windows.cache_write_1h_tokens, 0) AS cache_write_1h_tokens,
+  CAST(COALESCE(usage_windows.cache_write_cost_usd, 0) AS double precision) AS cache_write_cost_usd,
+  COALESCE(usage_windows.thinking_tokens, 0) AS thinking_tokens,
+  COALESCE(usage_windows.input_image_tokens, 0) AS input_image_tokens,
+  COALESCE(usage_windows.output_image_tokens, 0) AS output_image_tokens,
+  CAST(COALESCE(usage_windows.total_cost_usd, 0) AS double precision) AS total_cost_usd,
+  usage_windows.last_used_at
+FROM page_rows
+LEFT JOIN juhe_business.system_accounts AS system_accounts
+  ON system_accounts.id = page_rows.grantee_system_account_id
+LEFT JOIN juhe_stats.authorization_user_usage_range_windows AS usage_windows
+  ON usage_windows.system_account_id = CASE
+    WHEN ` + resourceTypeArg + ` = 'account' THEN page_rows.grantee_system_account_id
+    ELSE ` + ownerIDArg + `
+  END
+  AND usage_windows.start_date = ` + startDateArg + `
+  AND usage_windows.end_date = ` + endDateArg + `
+  AND usage_windows.team_filter_id = ` + teamIDArg + `
+  AND usage_windows.grantee_filter_system_account_id = page_rows.grantee_system_account_id
+  AND usage_windows.resource_filter_type = ` + resourceTypeArg + `
+  AND usage_windows.resource_filter_id = ` + resourceIDArg + `
+ORDER BY usage_windows.last_used_at DESC NULLS LAST,
+  page_rows.grantee_system_account_id ASC`
+	return query, args
+}
+
 func managementAuthorizationUsageSystemAccountID(input port.ManagementAuthorizationUsageOverviewInput) string {
 	scopedID := strings.TrimSpace(input.ScopedSystemAccountID)
 	if scopedID != "" {
@@ -540,6 +766,51 @@ func managementAuthorizationUsageResourcePredicate(input port.ManagementAuthoriz
 		return "report.resource_filter_type = " + addArg(resourceType) + " AND report.resource_filter_id <> ''"
 	}
 	return "report.resource_filter_type = " + addArg(resourceType) + " AND report.resource_filter_id = " + addArg(resourceID)
+}
+
+func managementResourceAuthorizationUsageStatsSystemAccountID(resourceType string, resourceOwnerSystemAccountID string, granteeSystemAccountID string) string {
+	if strings.TrimSpace(resourceType) == "account" && strings.TrimSpace(granteeSystemAccountID) != "" {
+		return strings.TrimSpace(granteeSystemAccountID)
+	}
+	return strings.TrimSpace(resourceOwnerSystemAccountID)
+}
+
+func managementResourceAuthorizationUsageDetail(systemAccountID string, systemAccountName string, username string, usage port.ManagementAccountUsageSummary) port.ManagementResourceAuthorizationUsageDetail {
+	return port.ManagementResourceAuthorizationUsageDetail{
+		SystemAccountID:               strings.TrimSpace(systemAccountID),
+		SystemAccountName:             strings.TrimSpace(systemAccountName),
+		Username:                      strings.TrimSpace(username),
+		ManagementAccountUsageSummary: usage,
+		RangeUsage:                    usage,
+	}
+}
+
+func emptyManagementResourceAuthorizationUsageResult(summary port.ManagementResourceAuthorizationSummary, input port.ManagementResourceAuthorizationUsageInput) port.ManagementResourceAuthorizationUsageResult {
+	summary.Usage = port.ManagementAccountUsageSummary{}
+	summary.LastUsedAt = nil
+	return port.ManagementResourceAuthorizationUsageResult{
+		Summary:                     summary,
+		UsageBySystemAccount:        []port.ManagementResourceAuthorizationUsageDetail{},
+		UsageBySystemAccountTotal:   0,
+		UsageBySystemAccountHasMore: false,
+	}
+}
+
+func managementResourceAuthorizationUsagePage(input port.ManagementResourceAuthorizationUsageInput) (int, int) {
+	pageSize := max(0, input.Limit-1)
+	if pageSize == 0 {
+		return 1, 0
+	}
+	return max(1, input.Offset/pageSize+1), pageSize
+}
+
+func managementResourceAuthorizationUsageTotal(input port.ManagementResourceAuthorizationUsageInput, itemCount int, hasMore bool) int {
+	page, pageSize := managementResourceAuthorizationUsagePage(input)
+	base := (page-1)*pageSize + itemCount
+	if hasMore {
+		return base + 1
+	}
+	return base
 }
 
 func managementResourceAuthorizationVisibleToAccountClause(systemAccountID string, addArg func(any) string) string {
@@ -2425,6 +2696,17 @@ func scanManagementAuthorizationUserUsageRow(scanner managementAuthorizationSumm
 	}, nil
 }
 
+func scanManagementResourceAuthorizationUsageDetail(scanner managementAuthorizationSummaryScanner) (port.ManagementResourceAuthorizationUsageDetail, error) {
+	var systemAccountID string
+	var systemAccountName string
+	var username string
+	usage, _, err := scanManagementAuthorizationUsageRowPrefix(scanner, &systemAccountID, &systemAccountName, &username)
+	if err != nil {
+		return port.ManagementResourceAuthorizationUsageDetail{}, fmt.Errorf("scan management resource authorization usage detail: %w", err)
+	}
+	return managementResourceAuthorizationUsageDetail(systemAccountID, systemAccountName, username, usage), nil
+}
+
 func scanManagementAuthorizationUsageRowPrefix(scanner managementAuthorizationSummaryScanner, extraDest ...any) (port.ManagementAccountUsageSummary, *time.Time, error) {
 	var usage port.ManagementAccountUsageSummary
 	var lastUsedAt pgtype.Timestamptz
@@ -2680,3 +2962,4 @@ var _ port.ManagementResourceAuthorizationLister = (*Store)(nil)
 var _ port.ManagementResourceAuthorizationRevoker = (*Store)(nil)
 var _ port.ManagementResourceAuthorizationReturner = (*Store)(nil)
 var _ port.ManagementResourceAuthorizationUpdater = (*Store)(nil)
+var _ port.ManagementResourceAuthorizationUsageReader = (*Store)(nil)

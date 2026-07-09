@@ -679,6 +679,36 @@ type ManagementAuthorizationUsageOverviewReader interface {
 	ListManagementAuthorizationUserUsageOverview(ctx context.Context, input ManagementAuthorizationUsageOverviewInput) (ManagementAuthorizationUserUsageOverviewResult, error)
 }
 
+type ManagementResourceAuthorizationUsageDetail struct {
+	SystemAccountID   string `json:"systemAccountId"`
+	SystemAccountName string `json:"systemAccountName,omitempty"`
+	Username          string `json:"username,omitempty"`
+	ManagementAccountUsageSummary
+	RangeUsage ManagementAccountUsageSummary `json:"rangeUsage"`
+}
+
+type ManagementResourceAuthorizationUsageResult struct {
+	Summary                     ManagementResourceAuthorizationSummary
+	UsageBySystemAccount        []ManagementResourceAuthorizationUsageDetail
+	UsageBySystemAccountTotal   int
+	UsageBySystemAccountHasMore bool
+}
+
+type ManagementResourceAuthorizationUsageInput struct {
+	AuthorizationID       string
+	ActorSystemAccountID  string
+	CanAccessAll          bool
+	ScopedSystemAccountID string
+	StartDate             string
+	EndDate               string
+	Limit                 int
+	Offset                int
+}
+
+type ManagementResourceAuthorizationUsageReader interface {
+	FindManagementResourceAuthorizationUsage(ctx context.Context, input ManagementResourceAuthorizationUsageInput) (ManagementResourceAuthorizationUsageResult, bool, error)
+}
+
 type ManagementResourceAuthorizationGetInput struct {
 	AuthorizationID       string
 	ActorSystemAccountID  string

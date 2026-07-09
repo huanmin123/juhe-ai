@@ -216,6 +216,64 @@ func TestManagementAuthorizationUsageOverviewQueriesReadRangeWindowsOnly(t *test
 	}
 }
 
+func TestManagementResourceAuthorizationUsageDetailQueryReadsRangeWindowsOnly(t *testing.T) {
+	summary := port.ManagementResourceAuthorizationSummary{
+		ID:                           "rauthgrant_team",
+		ResourceType:                 "account",
+		ResourceID:                   "acct_main",
+		ResourceOwnerSystemAccountID: "sys_owner",
+		GranteeType:                  "team",
+		GranteeTeamID:                "team_ops",
+	}
+	input := port.ManagementResourceAuthorizationUsageInput{
+		AuthorizationID:      "rauthgrant_team",
+		ActorSystemAccountID: "sys_admin",
+		CanAccessAll:         true,
+		StartDate:            "2026-07-01",
+		EndDate:              "2026-07-09",
+		Limit:                201,
+		Offset:               400,
+	}
+	query, args := managementResourceAuthorizationTeamUsageDetailQuery(summary, input)
+	for _, want := range []string{
+		"WITH page_rows AS",
+		"juhe_business.resource_authorizations AS ra",
+		"juhe_business.resource_authorization_sources AS ras",
+		"juhe_stats.authorization_user_usage_range_windows",
+		"usage_windows.system_account_id = CASE",
+		"usage_windows.team_filter_id",
+		"usage_windows.grantee_filter_system_account_id",
+		"ORDER BY usage_windows.last_used_at DESC NULLS LAST",
+		"LIMIT",
+		"OFFSET",
+	} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("usage detail query missing %q:\n%s", want, query)
+		}
+	}
+	for _, forbidden := range []string{
+		"juhe_usage.usage_records",
+		"usage_records",
+		"GROUP BY",
+		"SUM(",
+	} {
+		if strings.Contains(query, forbidden) {
+			t.Fatalf("usage detail query should not contain %q:\n%s", forbidden, query)
+		}
+	}
+	for _, want := range []any{"team_ops", "account", "acct_main", "sys_owner", "2026-07-01", "2026-07-09", 201, 400} {
+		if !containsQueryArg(args, want) {
+			t.Fatalf("usage detail args missing %v: %v", want, args)
+		}
+	}
+	if got := managementResourceAuthorizationUsageStatsSystemAccountID("account", "sys_owner", "sys_grantee"); got != "sys_grantee" {
+		t.Fatalf("account usage stats system account id = %q", got)
+	}
+	if got := managementResourceAuthorizationUsageStatsSystemAccountID("group", "sys_owner", "sys_grantee"); got != "sys_owner" {
+		t.Fatalf("group usage stats system account id = %q", got)
+	}
+}
+
 func TestManagementResourceAuthorizationRevokeQueryKeepsTeamGrantScope(t *testing.T) {
 	source, err := os.ReadFile("managementauthorizations.go")
 	if err != nil {

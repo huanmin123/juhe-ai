@@ -1217,6 +1217,142 @@ func TestManagementAuthorizationUsageOverviewHandlerRejectsInvalidQuery(t *testi
 	}
 }
 
+func TestManagementAuthorizationUsageHandlerParsesQueryAndScope(t *testing.T) {
+	createdAt := time.Date(2026, 7, 9, 11, 30, 0, 0, time.UTC)
+	service := &managementAuthorizationCreateServiceStub{
+		usageFound: true,
+		usageResult: managementauthorizations.UsageDetail{
+			Detail: managementauthorizations.Detail{
+				Summary: managementauthorizations.Summary{
+					ID:                           "rauthgrant_main",
+					ResourceType:                 "account",
+					ResourceID:                   "acct_main",
+					ResourceOwnerSystemAccountID: "sys_owner",
+					GranteeType:                  "system_account",
+					GranteeSystemAccountID:       "sys_grantee",
+					Scope:                        "use",
+					Status:                       "active",
+					AuthorizationSources:         []port.ManagementResourceAuthorizationSourceSummary{},
+					Usage:                        port.ManagementAccountUsageSummary{RequestCount: 8},
+					CreatedAt:                    createdAt,
+					UpdatedAt:                    createdAt,
+				},
+				Permissions: managementauthorizations.Permissions{CanEdit: true, CanAuthorize: true},
+			},
+			UsageBySystemAccount: []port.ManagementResourceAuthorizationUsageDetail{{
+				SystemAccountID:               "sys_grantee",
+				ManagementAccountUsageSummary: port.ManagementAccountUsageSummary{RequestCount: 8},
+				RangeUsage:                    port.ManagementAccountUsageSummary{RequestCount: 8},
+			}},
+			UsageBySystemAccountTotal:    1,
+			UsageBySystemAccountPage:     2,
+			UsageBySystemAccountPageSize: 5,
+			UsageRange:                   port.ManagementAccountUsageStatsRange{StartDate: "2026-07-01", EndDate: "2026-07-09", Days: 9, MaxDays: 31},
+		},
+	}
+	handler := newManagementAuthorizationUsageHandler(service, managementAuthorizationScopeAdmin)
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/authorizations/rauthgrant_main/usage?systemAccountId=sys_owner&startDate=2026-07-01&endDate=2026-07-09&page=2&pageSize=5", nil)
+	req = managementAuthorizationRequestWithURLParam(req, "id", "rauthgrant_main")
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+		SystemAccountID: "sys_admin",
+		Username:        "admin",
+		Role:            "admin",
+		SessionID:       "sess_admin",
+	}))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if !service.usageCalled ||
+		service.usageInput.AuthorizationID != "rauthgrant_main" ||
+		service.usageInput.ActorSystemAccountID != "sys_admin" ||
+		service.usageInput.ActorRole != "admin" ||
+		service.usageInput.ScopedSystemAccountID != "sys_owner" ||
+		service.usageInput.StartDate != "2026-07-01" ||
+		service.usageInput.EndDate != "2026-07-09" ||
+		service.usageInput.Page != 2 ||
+		service.usageInput.PageSize != 5 {
+		t.Fatalf("usage input = %+v", service.usageInput)
+	}
+	var body struct {
+		Data managementauthorizations.UsageDetail `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode usage response: %v", err)
+	}
+	if body.Data.ID != "rauthgrant_main" || body.Data.UsageBySystemAccount[0].RequestCount != 8 || body.Data.UsageRange.Days != 9 {
+		t.Fatalf("usage response = %+v", body.Data)
+	}
+
+	selfHandler := newManagementAuthorizationUsageHandler(service, managementAuthorizationScopeSelf)
+	selfReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/my-authorizations/rauthgrant_main/usage?systemAccountId=sys_owner", nil)
+	selfReq = managementAuthorizationRequestWithURLParam(selfReq, "id", "rauthgrant_main")
+	selfReq = selfReq.WithContext(context.WithValue(selfReq.Context(), managementAuthContextKey, managementauth.Context{
+		SystemAccountID: "sys_grantee",
+		Username:        "grantee",
+		Role:            "user",
+		SessionID:       "sess_grantee",
+	}))
+	selfRec := httptest.NewRecorder()
+
+	selfHandler.ServeHTTP(selfRec, selfReq)
+
+	if selfRec.Code != http.StatusOK {
+		t.Fatalf("self status = %d, want 200; body = %s", selfRec.Code, selfRec.Body.String())
+	}
+	if service.usageInput.ActorSystemAccountID != "sys_grantee" ||
+		service.usageInput.ActorRole != "user" ||
+		service.usageInput.ScopedSystemAccountID != "sys_grantee" {
+		t.Fatalf("self usage input = %+v", service.usageInput)
+	}
+}
+
+func TestManagementAuthorizationUsageHandlerRejectsInvalidQueryOrMissingRecord(t *testing.T) {
+	tests := []struct {
+		name     string
+		target   string
+		id       string
+		found    bool
+		wantCode int
+		wantMsg  string
+	}{
+		{name: "invalid query", target: "/__aisys__/api/authorizations/rauthgrant_main/usage?page=0", id: "rauthgrant_main", found: true, wantCode: http.StatusBadRequest, wantMsg: "查询参数不合法"},
+		{name: "empty id", target: "/__aisys__/api/authorizations/%20/usage", id: " ", found: true, wantCode: http.StatusBadRequest, wantMsg: "授权记录 ID 不合法"},
+		{name: "missing", target: "/__aisys__/api/authorizations/rauthgrant_missing/usage", id: "rauthgrant_missing", found: false, wantCode: http.StatusNotFound, wantMsg: "授权记录不存在"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &managementAuthorizationCreateServiceStub{usageFound: tt.found}
+			handler := newManagementAuthorizationUsageHandler(service, managementAuthorizationScopeAdmin)
+			req := httptest.NewRequest(http.MethodGet, tt.target, nil)
+			req = managementAuthorizationRequestWithURLParam(req, "id", tt.id)
+			req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+				SystemAccountID: "sys_admin",
+				Username:        "admin",
+				Role:            "admin",
+				SessionID:       "sess_admin",
+			}))
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantCode {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, tt.wantCode, rec.Body.String())
+			}
+			var body map[string]string
+			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if body["message"] != tt.wantMsg {
+				t.Fatalf("message = %q, want %q", body["message"], tt.wantMsg)
+			}
+		})
+	}
+}
+
 func TestManagementAuthorizationListHandlerRejectsInvalidQuery(t *testing.T) {
 	tests := []string{
 		"/__aisys__/api/authorizations?systemAccountId=",
@@ -1476,6 +1612,29 @@ func TestRouterRegistersW4ManagementAuthorizationListDetailCreateUpdateExpireRet
 			Page:     1,
 			PageSize: 20,
 		},
+		usageFound: true,
+		usageResult: managementauthorizations.UsageDetail{
+			Detail: managementauthorizations.Detail{
+				Summary: managementauthorizations.Summary{
+					ID:                           "rauthgrant_main",
+					ResourceType:                 "account",
+					ResourceID:                   "acct_main",
+					ResourceOwnerSystemAccountID: "sys_owner",
+					GranteeType:                  "system_account",
+					GranteeSystemAccountID:       "sys_grantee",
+					Scope:                        "use",
+					Status:                       "active",
+					AuthorizationSources:         []port.ManagementResourceAuthorizationSourceSummary{},
+					Usage:                        port.ManagementAccountUsageSummary{},
+					CreatedAt:                    time.Date(2026, 7, 9, 11, 30, 0, 0, time.UTC),
+					UpdatedAt:                    time.Date(2026, 7, 9, 11, 30, 0, 0, time.UTC),
+				},
+			},
+			UsageBySystemAccount:         []port.ManagementResourceAuthorizationUsageDetail{},
+			UsageBySystemAccountPage:     1,
+			UsageBySystemAccountPageSize: 200,
+			UsageRange:                   port.ManagementAccountUsageStatsRange{StartDate: "2026-07-09", EndDate: "2026-07-09", Days: 1, MaxDays: 31},
+		},
 		getFound: true,
 		getResult: managementauthorizations.Detail{
 			Summary: managementauthorizations.Summary{
@@ -1509,6 +1668,8 @@ func TestRouterRegistersW4ManagementAuthorizationListDetailCreateUpdateExpireRet
 		ManagementMyAuthorizationTeamUsageOverviewHandler: newManagementAuthorizationTeamUsageOverviewHandler(service, managementAuthorizationScopeSelf),
 		ManagementAuthorizationUserUsageOverviewHandler:   newManagementAuthorizationUserUsageOverviewHandler(service, managementAuthorizationScopeAdmin),
 		ManagementMyAuthorizationUserUsageOverviewHandler: newManagementAuthorizationUserUsageOverviewHandler(service, managementAuthorizationScopeSelf),
+		ManagementAuthorizationUsageHandler:               newManagementAuthorizationUsageHandler(service, managementAuthorizationScopeAdmin),
+		ManagementMyAuthorizationUsageHandler:             newManagementAuthorizationUsageHandler(service, managementAuthorizationScopeSelf),
 		ManagementAuthorizationDetailHandler:              newManagementAuthorizationDetailHandler(service, managementAuthorizationScopeAdmin),
 		ManagementMyAuthorizationDetailHandler:            newManagementAuthorizationDetailHandler(service, managementAuthorizationScopeSelf),
 		ManagementAuthorizationCreateHandler:              newManagementAuthorizationCreateHandler(service, managementAuthorizationScopeAdmin),
@@ -1612,10 +1773,12 @@ func TestRouterRegistersW4ManagementAuthorizationListDetailCreateUpdateExpireRet
 		"/__aisys__/api/authorizations?systemAccountId=all",
 		"/__aisys__/api/authorizations/usage/team-details?systemAccountId=all",
 		"/__aisys__/api/authorizations/usage/user-details?systemAccountId=all",
+		"/__aisys__/api/authorizations/rauthgrant_main/usage?systemAccountId=all",
 		"/__aisys__/api/authorizations/rauthgrant_main?systemAccountId=all",
 		"/__aisys__/api/my-authorizations",
 		"/__aisys__/api/my-authorizations/usage/team-details",
 		"/__aisys__/api/my-authorizations/usage/user-details",
+		"/__aisys__/api/my-authorizations/rauthgrant_main/usage",
 		"/__aisys__/api/my-authorizations/rauthgrant_main",
 	} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
@@ -1669,6 +1832,11 @@ type managementAuthorizationCreateServiceStub struct {
 	userUsageInput  managementauthorizations.UsageOverviewInput
 	userUsageResult managementauthorizations.UserUsageOverview
 	userUsageErr    error
+	usageCalled     bool
+	usageInput      managementauthorizations.UsageDetailInput
+	usageResult     managementauthorizations.UsageDetail
+	usageFound      bool
+	usageErr        error
 }
 
 func (s *managementAuthorizationCreateServiceStub) Create(_ *http.Request, input managementauthorizations.CreateInput) (managementauthorizations.Summary, error) {
@@ -1705,6 +1873,15 @@ func (s *managementAuthorizationCreateServiceStub) UserUsageOverview(_ *http.Req
 		return managementauthorizations.UserUsageOverview{}, s.userUsageErr
 	}
 	return s.userUsageResult, nil
+}
+
+func (s *managementAuthorizationCreateServiceStub) UsageDetail(_ *http.Request, input managementauthorizations.UsageDetailInput) (managementauthorizations.UsageDetail, bool, error) {
+	s.usageCalled = true
+	s.usageInput = input
+	if s.usageErr != nil {
+		return managementauthorizations.UsageDetail{}, false, s.usageErr
+	}
+	return s.usageResult, s.usageFound, nil
 }
 
 func (s *managementAuthorizationCreateServiceStub) Get(_ *http.Request, input managementauthorizations.GetInput) (managementauthorizations.Detail, bool, error) {

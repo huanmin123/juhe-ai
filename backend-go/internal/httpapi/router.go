@@ -54,6 +54,8 @@ type RouterOptions struct {
 	ManagementMyAuthorizationTeamUsageOverviewHandler http.Handler
 	ManagementAuthorizationUserUsageOverviewHandler   http.Handler
 	ManagementMyAuthorizationUserUsageOverviewHandler http.Handler
+	ManagementAuthorizationUsageHandler               http.Handler
+	ManagementMyAuthorizationUsageHandler             http.Handler
 	ManagementAuthorizationDetailHandler              http.Handler
 	ManagementMyAuthorizationDetailHandler            http.Handler
 	ManagementAuthorizationCreateHandler              http.Handler
@@ -150,6 +152,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyAuthorizationTeamUsageOverviewHandler == nil &&
 				opts.ManagementAuthorizationUserUsageOverviewHandler == nil &&
 				opts.ManagementMyAuthorizationUserUsageOverviewHandler == nil &&
+				opts.ManagementAuthorizationUsageHandler == nil &&
+				opts.ManagementMyAuthorizationUsageHandler == nil &&
 				opts.ManagementAuthorizationDetailHandler == nil &&
 				opts.ManagementMyAuthorizationDetailHandler == nil &&
 				opts.ManagementAuthorizationCreateHandler == nil &&
@@ -278,6 +282,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementMyAuthorizationUserUsageOverviewHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/my-authorizations/usage/user-details", opts.ManagementMyAuthorizationUserUsageOverviewHandler.ServeHTTP)
+			}
+			if opts.ManagementAuthorizationUsageHandler != nil {
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/authorizations/{id}/usage", opts.ManagementAuthorizationUsageHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAuthorizationUsageHandler != nil {
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/my-authorizations/{id}/usage", opts.ManagementMyAuthorizationUsageHandler.ServeHTTP)
 			}
 			if opts.ManagementAuthorizationDetailHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/authorizations/{id}", opts.ManagementAuthorizationDetailHandler.ServeHTTP)
