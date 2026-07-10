@@ -32,7 +32,6 @@ const (
 
 type mutationGuardConfig struct {
 	operationKey string
-	scope        func(*http.Request) string
 	fingerprint  func(http.ResponseWriter, *http.Request) (any, error)
 }
 
@@ -66,13 +65,9 @@ func (s *mutationGuardStore) Middleware(config mutationGuardConfig) func(http.Ha
 			if authContext, ok := ManagementAuthContextFromRequest(r); ok && strings.TrimSpace(authContext.SystemAccountID) != "" {
 				actor = strings.TrimSpace(authContext.SystemAccountID)
 			}
-			operationScope := ""
-			if config.scope != nil {
-				operationScope = config.scope(r)
-			}
 			key := strings.Join([]string{
 				actor,
-				operationScope,
+				"",
 				strings.ToUpper(r.Method),
 				config.operationKey,
 				hashMutationStableValue(fingerprint),
@@ -206,27 +201,43 @@ func managementProxyCreateMutationGuardConfig() mutationGuardConfig {
 }
 
 func managementGroupCreateMutationGuardConfig(scope managementGroupOptionScope) mutationGuardConfig {
-	operationScope := func(r *http.Request) string {
-		if scope != managementGroupScopeAdmin {
-			return ""
-		}
-		return firstManagementQueryText(r.URL.Query(), "systemAccountId")
-	}
 	return mutationGuardConfig{
 		operationKey: "groups.create",
-		scope:        operationScope,
 		fingerprint: func(w http.ResponseWriter, r *http.Request) (any, error) {
-			fields, err := mutationJSONFields(w, r)
+			fields, err := managementGroupCreateMutationJSONFields(w, r)
 			if err != nil {
 				return nil, err
 			}
+			ownerSystemAccountID := ""
+			if authContext, ok := ManagementAuthContextFromRequest(r); ok {
+				ownerSystemAccountID = strings.TrimSpace(authContext.SystemAccountID)
+			}
+			if scope == managementGroupScopeAdmin {
+				selectedSystemAccountID := firstManagementQueryText(r.URL.Query(), "systemAccountId")
+				if selectedSystemAccountID != "" && selectedSystemAccountID != "all" {
+					ownerSystemAccountID = selectedSystemAccountID
+				}
+			}
 			return map[string]any{
-				"owner":        operationScope(r),
+				"owner":        ownerSystemAccountID,
 				"providerCode": mutationStringField(fields, "providerCode"),
 				"name":         mutationStringField(fields, "name"),
 			}, nil
 		},
 	}
+}
+
+func managementGroupCreateMutationJSONFields(w http.ResponseWriter, r *http.Request) (map[string]json.RawMessage, error) {
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+	_ = r.Body.Close()
+	r.Body = io.NopCloser(bytes.NewReader(raw))
+	if trimmed := bytes.TrimSpace(raw); len(trimmed) > 0 && trimmed[0] == '[' {
+		return map[string]json.RawMessage{}, nil
+	}
+	return decodeMutationJSONFields(raw)
 }
 
 func mutationJSONFields(w http.ResponseWriter, r *http.Request) (map[string]json.RawMessage, error) {
@@ -236,6 +247,10 @@ func mutationJSONFields(w http.ResponseWriter, r *http.Request) (map[string]json
 	}
 	_ = r.Body.Close()
 	r.Body = io.NopCloser(bytes.NewReader(raw))
+	return decodeMutationJSONFields(raw)
+}
+
+func decodeMutationJSONFields(raw []byte) (map[string]json.RawMessage, error) {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	var fields map[string]json.RawMessage
 	if err := decoder.Decode(&fields); err != nil {

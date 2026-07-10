@@ -103,7 +103,7 @@ func TestManagementGroupCreateHandlerCreatesTargetedGroupAndOperationLog(t *test
 		logInput.ResourceID != "grp_created" ||
 		logInput.ResourceName != "高并发分组" ||
 		logInput.VisibilityScope != "targeted" ||
-		logInput.Path != "/__aisys__/api/groups/" ||
+		logInput.Path != "/__aisys__/api/groups" ||
 		len(logInput.Changes) != 4 ||
 		len(logInput.Viewers) != 1 ||
 		logInput.Viewers[0].SystemAccountID != "sys_user" ||
@@ -167,10 +167,10 @@ func TestManagementMyGroupCreateHandlerForcesSelfScope(t *testing.T) {
 		t.Fatalf("decode self operation log: %v", err)
 	}
 	if logInput.ActorSystemAccountID != "sys_admin" ||
-		logInput.ActorRole != "user" ||
+		logInput.ActorRole != "admin" ||
 		logInput.OperationScopeSystemAccountID != "sys_admin" ||
 		logInput.Mode != "self" ||
-		logInput.Path != "/__aisys__/api/my-groups/" {
+		logInput.Path != "/__aisys__/api/my-groups" {
 		t.Fatalf("self operation log = %+v", logInput)
 	}
 }
@@ -605,7 +605,7 @@ func TestRouterRegistersW5ManagementGroupCreateRoutes(t *testing.T) {
 	}
 }
 
-func TestRouterW5ManagementGroupCreateUsesRawNodeScopeForDuplicateGuard(t *testing.T) {
+func TestRouterW5ManagementGroupCreateRejectsDuplicateEffectiveOwnerSubmission(t *testing.T) {
 	authenticator := &managementAPIAuthenticatorStub{
 		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
 	}
@@ -635,19 +635,11 @@ func TestRouterW5ManagementGroupCreateUsesRawNodeScopeForDuplicateGuard(t *testi
 	second.Header.Set("Content-Type", "application/json")
 	secondRec := httptest.NewRecorder()
 	router.ServeHTTP(secondRec, second)
-	if secondRec.Code != http.StatusCreated {
-		t.Fatalf("second status = %d, want 201 for distinct raw scope; body = %s", secondRec.Code, secondRec.Body.String())
+	if secondRec.Code != http.StatusConflict {
+		t.Fatalf("second status = %d, want 409; body = %s", secondRec.Code, secondRec.Body.String())
 	}
-	duplicate := httptest.NewRequest(http.MethodPost, "/__aisys__/api/groups?systemAccountId=all", strings.NewReader(`{"name":"新分组","providerCode":"openai"}`))
-	duplicate.Header.Set("Cookie", "juhe_ai_session=session-token")
-	duplicate.Header.Set("Content-Type", "application/json")
-	duplicateRec := httptest.NewRecorder()
-	router.ServeHTTP(duplicateRec, duplicate)
-	if duplicateRec.Code != http.StatusConflict {
-		t.Fatalf("duplicate status = %d, want 409; body = %s", duplicateRec.Code, duplicateRec.Body.String())
-	}
-	if createCalls != 2 {
-		t.Fatalf("create calls = %d, want 2", createCalls)
+	if createCalls != 1 {
+		t.Fatalf("create calls = %d, want 1", createCalls)
 	}
 }
 
@@ -734,6 +726,14 @@ func TestRouterW5ManagementGroupCreateMatchesExpressJSONBoundary(t *testing.T) {
 			body:        `"group"`,
 			wantStatus:  http.StatusBadRequest,
 			wantMessage: "请求体无效",
+		},
+		{
+			name:              "array json reaches group validation",
+			contentType:       "application/json",
+			body:              `[]`,
+			wantStatus:        http.StatusBadRequest,
+			wantMessage:       "分组参数无效",
+			wantAuthTouchCall: true,
 		},
 		{
 			name:              "empty json body becomes empty object",

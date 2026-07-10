@@ -536,10 +536,6 @@ func recordManagementGroupCreateOperationLog(
 	if scope == managementGroupScopeAdmin {
 		mode = "admin"
 	}
-	actorRole := authContext.Role
-	if scope == managementGroupScopeSelf {
-		actorRole = "user"
-	}
 	statusCode := http.StatusCreated
 	input := port.OperationLogInput{
 		ID:                            newLogID(),
@@ -547,7 +543,7 @@ func recordManagementGroupCreateOperationLog(
 		ActorSystemAccountID:          authContext.SystemAccountID,
 		ActorUsername:                 authContext.Username,
 		ActorDisplayName:              authContext.DisplayName,
-		ActorRole:                     actorRole,
+		ActorRole:                     authContext.Role,
 		OperationScopeSystemAccountID: ownerSystemAccountID,
 		Mode:                          mode,
 		Module:                        "groups",
@@ -566,7 +562,7 @@ func recordManagementGroupCreateOperationLog(
 			{Field: "enabled", Label: "启用状态", Before: nil, After: result.Enabled},
 		},
 		Method:     r.Method,
-		Path:       managementGroupCreateOperationPath(scope),
+		Path:       r.URL.Path,
 		StatusCode: &statusCode,
 		ClientIP:   opts.clientIP.FromRequest(r),
 		UserAgent:  r.UserAgent(),
@@ -578,13 +574,6 @@ func recordManagementGroupCreateOperationLog(
 		CreatedAt: now().UTC(),
 	}
 	enqueueManagementOperationLog(r.Context(), opts, input)
-}
-
-func managementGroupCreateOperationPath(scope managementGroupOptionScope) string {
-	if scope == managementGroupScopeSelf {
-		return "/__aisys__/api/my-groups/"
-	}
-	return "/__aisys__/api/groups/"
 }
 
 func managementGroupOptionListInput(
