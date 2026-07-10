@@ -79,10 +79,12 @@ export function accountCreatePayloadWithActivationTest(
   if (!activationTest || !isActivationTestForPayload(activationTest, payload, fallbackName)) {
     return payload
   }
+  const defaultTestModel = successfulTestModelForSupportedModels(activationTest, payload.supportedModels)
   return {
     ...payload,
     status: 'active',
-    activationTestTaskId: activationTest.taskId
+    activationTestTaskId: activationTest.taskId,
+    ...(defaultTestModel ? { defaultTestModel } : {})
   }
 }
 
@@ -94,6 +96,15 @@ export function accountUpdateActivationTestTaskId(
   return isUpdateActivationTestForPayload(activationTest, payload, fallbackName)
     ? activationTest?.taskId
     : undefined
+}
+
+export function accountUpdateDefaultTestModel(
+  payload: AccountSavePayload,
+  activationTest: SuccessfulDraftActivationTest | undefined,
+  fallbackName: string
+): string | undefined {
+  if (!isUpdateActivationTestForPayload(activationTest, payload, fallbackName)) return undefined
+  return successfulTestModelForSupportedModels(activationTest, payload.supportedModels)
 }
 
 function isActivationTestForPayload(
@@ -145,6 +156,14 @@ function savedUpdateTestTarget(payload: AccountDraftTestAccountPayload): Record<
     proxyProfileId: payload.proxyProfileId,
     credentials: payload.credentials
   }
+}
+
+function successfulTestModelForSupportedModels(
+  activationTest: SuccessfulDraftActivationTest | undefined,
+  supportedModels: string[]
+): string | undefined {
+  const model = activationTest?.model.trim()
+  return model && supportedModels.includes(model) ? model : undefined
 }
 
 function stablePayloadFingerprint(value: unknown): string {

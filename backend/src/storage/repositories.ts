@@ -1206,7 +1206,12 @@ function normalizedAccountDefaultTestModelInput(value: unknown, supportedModels:
   return model
 }
 
-export function updateAccountDefaultTestModel(accountId: string, model: string, access?: AccessScope): AccountSummary | undefined {
+export function updateAccountDefaultTestModel(
+  accountId: string,
+  model: string,
+  access?: AccessScope,
+  ensureSupportedModel = false
+): AccountSummary | undefined {
   const normalizedModel = optionalString(model)?.trim()
   const current = findAccountSummary(accountId, access)
   if (!current?.permissions?.canUse) {
@@ -1216,7 +1221,50 @@ export function updateAccountDefaultTestModel(accountId: string, model: string, 
     return current
   }
   if (!accountSupportsDefaultTestModel(current, normalizedModel)) {
-    return current
+    if (
+      !ensureSupportedModel
+      || !current.permissions?.canEdit
+      || current.accessType === 'authorized'
+      || current.accountAuthorizationId
+    ) {
+      return current
+    }
+    const systemAccountId = current.ownerSystemAccountId ?? current.systemAccountId
+    if (!systemAccountId) {
+      throw new Error('账户归属数据异常，请清理后再编辑')
+    }
+    const supportedModels = normalizeAccountSupportedModelsForProvider(
+      [normalizedModel],
+      current.providerCode,
+      systemAccountId
+    ) ?? []
+    if (!supportedModels.includes(normalizedModel)) {
+      return current
+    }
+    const database = getBusinessDatabase()
+    const ownsTransaction = beginDatabaseTransaction(database)
+    try {
+      database.prepare(`
+        INSERT OR IGNORE INTO account_supported_models (account_id, provider_code, model, created_at)
+        VALUES (?, ?, ?, ?)
+      `).run(accountId, current.providerCode, normalizedModel, nowIso())
+      const result = database.prepare(`
+        UPDATE accounts
+        SET default_test_model = ?,
+            updated_at = ?
+        WHERE id = ?
+          AND deleted_at IS NULL
+      `).run(normalizedModel, nowIso(), accountId)
+      commitDatabaseTransaction(database, ownsTransaction)
+      if (Number(result.changes ?? 0) > 0) {
+        invalidateAccountLookupCache(accountId)
+        invalidateGatewayRuntimeAfterBusinessWrite('account_test_model_updated')
+      }
+      return findAccountSummary(accountId, access)
+    } catch (error) {
+      rollbackDatabaseTransaction(database, ownsTransaction)
+      throw error
+    }
   }
   const result = getBusinessDatabase()
     .prepare(`
@@ -1234,9 +1282,14 @@ export function updateAccountDefaultTestModel(accountId: string, model: string, 
   return findAccountSummary(accountId, access)
 }
 
-export async function updateAccountDefaultTestModelAsync(accountId: string, model: string, access?: AccessScope): Promise<AccountSummary | undefined> {
+export async function updateAccountDefaultTestModelAsync(
+  accountId: string,
+  model: string,
+  access?: AccessScope,
+  ensureSupportedModel = false
+): Promise<AccountSummary | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return updateAccountDefaultTestModel(accountId, model, access)
+    return updateAccountDefaultTestModel(accountId, model, access, ensureSupportedModel)
   }
   const normalizedModel = optionalString(model)?.trim()
   const current = await findAccountSummaryAsync(accountId, access)
@@ -1247,7 +1300,44 @@ export async function updateAccountDefaultTestModelAsync(accountId: string, mode
     return current
   }
   if (!accountSupportsDefaultTestModel(current, normalizedModel)) {
-    return current
+    if (
+      !ensureSupportedModel
+      || !current.permissions?.canEdit
+      || current.accessType === 'authorized'
+      || current.accountAuthorizationId
+    ) {
+      return current
+    }
+    const systemAccountId = current.ownerSystemAccountId ?? current.systemAccountId
+    if (!systemAccountId) {
+      throw new Error('账户归属数据异常，请清理后再编辑')
+    }
+    const supportedModels = await normalizeAccountSupportedModelsForProviderAsync(
+      [normalizedModel],
+      current.providerCode,
+      systemAccountId
+    ) ?? []
+    if (!supportedModels.includes(normalizedModel)) {
+      return current
+    }
+    const client = createPostgresDatabaseClient(await getPostgresPool())
+    await client.transaction(async (tx) => {
+      await tx.execute(`
+        INSERT INTO ${accountWriteTable(tx, 'account_supported_models')} (account_id, provider_code, model, created_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT (account_id, model) DO NOTHING
+      `, [accountId, current.providerCode, normalizedModel, nowIso()])
+      await tx.execute(`
+        UPDATE ${accountWriteTable(tx, 'accounts')}
+        SET default_test_model = ?,
+            updated_at = ?
+        WHERE id = ?
+          AND deleted_at IS NULL
+      `, [normalizedModel, nowIso(), accountId])
+    })
+    invalidateAccountLookupCache(accountId)
+    invalidateGatewayRuntimeAfterBusinessWrite('account_test_model_updated')
+    return findAccountSummaryAsync(accountId, access)
   }
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const result = await client.execute(`
@@ -1867,9 +1957,11 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   const nextSupportedModels = hasSupportedModelsInput
     ? unchangedSupportedModelsInput ?? normalizeAccountSupportedModelsForProvider(input.supportedModels, current.providerCode, systemAccountId) ?? []
     : current.supportedModels ?? []
-  const nextDefaultTestModel = current.defaultTestModel && nextSupportedModels.includes(current.defaultTestModel)
-    ? current.defaultTestModel
-    : undefined
+  const nextDefaultTestModel = hasOwnInput(input, 'defaultTestModel')
+    ? normalizedAccountDefaultTestModelInput(input.defaultTestModel, nextSupportedModels)
+    : current.defaultTestModel && nextSupportedModels.includes(current.defaultTestModel)
+      ? current.defaultTestModel
+      : undefined
   const hasModelMappingsInput = hasOwnInput(input, 'modelMappings')
   const unchangedModelMappingsInput = hasModelMappingsInput
     ? normalizeModelMappingsIfUnchanged(input.modelMappings, current.modelMappings)
@@ -2184,9 +2276,11 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
   const nextSupportedModels = hasSupportedModelsInput
     ? unchangedSupportedModelsInput ?? await normalizeAccountSupportedModelsForProviderAsync(input.supportedModels, current.providerCode, systemAccountId) ?? []
     : current.supportedModels ?? []
-  const nextDefaultTestModel = current.defaultTestModel && nextSupportedModels.includes(current.defaultTestModel)
-    ? current.defaultTestModel
-    : undefined
+  const nextDefaultTestModel = hasOwnInput(input, 'defaultTestModel')
+    ? normalizedAccountDefaultTestModelInput(input.defaultTestModel, nextSupportedModels)
+    : current.defaultTestModel && nextSupportedModels.includes(current.defaultTestModel)
+      ? current.defaultTestModel
+      : undefined
   const hasModelMappingsInput = hasOwnInput(input, 'modelMappings')
   const unchangedModelMappingsInput = hasModelMappingsInput
     ? normalizeModelMappingsIfUnchanged(input.modelMappings, current.modelMappings)

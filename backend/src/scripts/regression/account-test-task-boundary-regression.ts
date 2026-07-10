@@ -14,6 +14,8 @@ const accountTestSessionRoutesSource = readFileSync(resolve(backendSrc, 'modules
 const accountTestStatusRoutesSource = readFileSync(resolve(backendSrc, 'modules/accounts/account-test-status.routes.ts'), 'utf8')
 const accountTestTaskQueueSource = readFileSync(resolve(backendSrc, 'modules/accounts/account-test-task-queue.service.ts'), 'utf8')
 const accountTestServiceSource = readFileSync(resolve(backendSrc, 'modules/accounts/account-test.service.ts'), 'utf8')
+const gatewayFinalizationSource = readFileSync(resolve(backendSrc, 'modules/gateway/response/finalization.ts'), 'utf8')
+const gatewayRoutesSource = readFileSync(resolve(backendSrc, 'modules/gateway/routes.ts'), 'utf8')
 const accountTestTaskRepositorySource = readFileSync(resolve(backendSrc, 'storage/account-test-tasks.repository.ts'), 'utf8')
 const accountDraftTestServiceSource = readFileSync(resolve(backendSrc, 'modules/accounts/account-draft-test.service.ts'), 'utf8')
 const dbServiceHandlersSource = readFileSync(resolve(backendSrc, 'modules/db-service/db-service-handlers.ts'), 'utf8')
@@ -39,13 +41,29 @@ const accountTestRuntimeCallSources = [
   source: readFileSync(resolve(backendSrc, relativePath), 'utf8')
 }))
 const accountTestQueueItemSource = interfaceBody(accountTestTaskQueueSource, 'AccountTestQueueItem')
-const runOpenAIAccountTestWithSideEffectsSource = accountTestTaskQueueSource.slice(
-  accountTestTaskQueueSource.indexOf('async function runOpenAIAccountTestWithSideEffects'),
-  accountTestTaskQueueSource.indexOf('function enqueueManualAccountTestFailurePrecheck')
+const runOpenAIAccountTestWithoutStateMutationSource = accountTestTaskQueueSource.slice(
+  accountTestTaskQueueSource.indexOf('async function runOpenAIAccountTestWithoutStateMutation'),
+  accountTestTaskQueueSource.indexOf('interface AccountApiKeyPoolEntryTestResult')
 )
-const runManualAccountTestFailurePrecheckQueueItemSource = accountTestTaskQueueSource.slice(
-  accountTestTaskQueueSource.indexOf('async function runManualAccountTestFailurePrecheckQueueItem'),
-  accountTestTaskQueueSource.indexOf('async function openAIDraftAccountSecret')
+const openAIDraftAccountSecretSource = accountTestTaskQueueSource.slice(
+  accountTestTaskQueueSource.indexOf('async function openAIDraftAccountSecret'),
+  accountTestTaskQueueSource.indexOf('async function draftProxyProfile')
+)
+const finalizedSuccessRuntimeSource = gatewayFinalizationSource.slice(
+  gatewayFinalizationSource.indexOf('if (upstreamResponse.ok) {', gatewayFinalizationSource.indexOf('export async function finalizeHandledUpstreamResponse')),
+  gatewayFinalizationSource.indexOf('await recordCompletedUpstreamAttempt', gatewayFinalizationSource.indexOf('export async function finalizeHandledUpstreamResponse'))
+)
+const confirmCurrentClientIpAccountAvoidanceAfterFinalFailureSource = gatewayRoutesSource.slice(
+  gatewayRoutesSource.indexOf('async function confirmCurrentClientIpAccountAvoidanceAfterFinalFailure'),
+  gatewayRoutesSource.indexOf('function once(', gatewayRoutesSource.indexOf('async function confirmCurrentClientIpAccountAvoidanceAfterFinalFailure'))
+)
+const rememberCodexTurnFailureWhenClientRetryIsVisibleSource = gatewayRoutesSource.slice(
+  gatewayRoutesSource.indexOf('async function rememberCodexTurnFailureWhenClientRetryIsVisible'),
+  gatewayRoutesSource.indexOf('async function recordKnownClientIpRequestError', gatewayRoutesSource.indexOf('async function rememberCodexTurnFailureWhenClientRetryIsVisible'))
+)
+const recordKnownClientIpRequestErrorSource = gatewayRoutesSource.slice(
+  gatewayRoutesSource.indexOf('async function recordKnownClientIpRequestError'),
+  gatewayRoutesSource.indexOf('function clientIpRequestErrorSample', gatewayRoutesSource.indexOf('async function recordKnownClientIpRequestError'))
 )
 const prepareAccountDraftTestSnapshotAsyncSource = accountDraftTestServiceSource.slice(
   accountDraftTestServiceSource.indexOf('export async function prepareAccountDraftTestSnapshotAsync'),
@@ -72,9 +90,11 @@ assert(
 assert(
   accountTestDispatchRoutesSource.includes("router.put('/:id/default-test-model'")
     && accountTestDispatchRoutesSource.includes('accountDefaultTestModelSchema.safeParse(req.body)')
-    && accountTestDispatchRoutesSource.includes('updateAccountDefaultTestModelAsync(account.id, model, requestAccess)')
+    && accountTestDispatchRoutesSource.includes('ensureSupportedModel = parsed.data.ensureSupportedModel === true')
+    && accountTestDispatchRoutesSource.includes('updateAccountDefaultTestModelAsync(')
+    && accountTestDispatchRoutesSource.includes('ensureSupportedModel')
     && accountTestDispatchRoutesSource.includes('(account.supportedModels ?? []).includes(model)'),
-  '账户测试弹窗默认模型应通过账户级接口按账户支持模型校验后持久化'
+  '账户测试弹窗默认模型应通过账户级接口持久化，编辑草稿成功模型允许原子追加到支持模型'
 )
 assert(
   accountTestDispatchRoutesSource.includes('dispatchAccountTestTasks([task.id])'),
@@ -213,8 +233,8 @@ assert.doesNotMatch(
   '账号测试任务成功不能自动改写账户默认模型，避免批量测试覆盖每个账户的独立偏好'
 )
 assert(
-  runOpenAIAccountTestWithSideEffectsSource.includes('findAccountForTest: loadAccountForTestViaDbService')
-    && runOpenAIAccountTestWithSideEffectsSource.includes('findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService'),
+  runOpenAIAccountTestWithoutStateMutationSource.includes('findAccountForTest: loadAccountForTestViaDbService')
+    && runOpenAIAccountTestWithoutStateMutationSource.includes('findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService'),
   '真实账号测试应同时通过 DB service 读取账号详情和分组候选账号，避免 PostgreSQL 模式回退 SQLite'
 )
 assert(
@@ -240,12 +260,8 @@ assert(
   '手动账号测试后台 worker 应使用系统设置控制并发，默认 100'
 )
 assert(
-  accountTestTaskQueueSource.includes('recordOperationLogAsync'),
-  '账号测试状态变更操作日志必须走 async 设置读取入口'
-)
-assert(
-  !accountTestTaskQueueSource.includes('recordOperationLog({'),
-  '账号测试队列不得重新调用同步操作日志入口'
+  !accountTestTaskQueueSource.includes('recordOperationLog'),
+  '人工账号测试不修改账户状态，因此队列不应记录测试状态变更操作日志'
 )
 assert(
   accountTestTaskQueueSource.includes("type: 'account_test_task_maintenance'")
@@ -264,34 +280,48 @@ assert.doesNotMatch(
   /\b(accountId|credentials|draftAccount|apiKey|proxyUrl|access)\b/,
   '手动账号测试本地执行队列不得保存账号、凭据、草稿、代理或权限上下文'
 )
-assert.equal(
-  runOpenAIAccountTestWithSideEffectsSource.includes('markAccountTestTemporaryUnavailable'),
-  false,
-  '账号测试失败不应在主测试函数内直接写临时不可调用，应先进入事前确认'
+assert(
+  runOpenAIAccountTestWithoutStateMutationSource.includes('disableAccountStateMutation: true'),
+  '人工账号测试必须通过统一网关链路执行，但必须关闭账户状态写入'
 )
 assert(
-  accountTestTaskQueueSource.includes('manualAccountTestFailurePrecheckQueue')
-    && accountTestTaskQueueSource.includes('enqueueManualAccountTestFailurePrecheck(account, access, result')
-    && accountTestTaskQueueSource.includes("trafficSource: 'cooldown_retest'")
-    && accountTestTaskQueueSource.includes('getAccountPrecheckMutationStateAsync')
-    && accountTestTaskQueueSource.includes('await manualAccountTestFailurePrecheckSkipReason')
-    && accountTestTaskQueueSource.includes('await getAccountPrecheckMutationStateAsync'),
-  '账号测试失败应进入事前确认队列，确认失败后才允许写临时不可调用，并需要通过 async 入口跳过已被更新的旧确认'
+  openAIDraftAccountSecretSource.includes('accountApiKeyEntries(credentials)[0]')
+    && !openAIDraftAccountSecretSource.includes('selectAccountRuntimeApiKeyEntry'),
+  '创建或编辑草稿的人工测试只能无状态读取 Key，不能推进真实账户的轮换计数'
 )
 assert(
-  runManualAccountTestFailurePrecheckQueueItemSource.includes('findAccountForTest: loadAccountForTestViaDbService')
-    && runManualAccountTestFailurePrecheckQueueItemSource.includes('findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService'),
-  '账号测试失败事前确认应同时通过 DB service 读取账号详情和分组候选账号，避免 PostgreSQL 模式回退 SQLite'
+  finalizedSuccessRuntimeSource.includes("if (usageContext.trafficSource !== 'manual_account_test') {")
+    && finalizedSuccessRuntimeSource.includes('recordGatewayUpstreamBucketSuccessAsync(account)')
+    && finalizedSuccessRuntimeSource.includes('recordClientIpErrorCircuitSuccessAsync({')
+    && finalizedSuccessRuntimeSource.includes('confirmClientIpAccountAvoidanceAfterSuccessAsync('),
+  '人工账号测试成功不能清理生产上游桶、客户端 IP 熔断或账号回避运行态'
+)
+assert.match(
+  gatewayFinalizationSource,
+  /usageContext\.trafficSource !== 'manual_account_test'\s*&& shouldRememberCodexTurnStreamFailure/,
+  '人工账号测试的流式失败不能写入 Codex turn 账号回避运行态'
+)
+assert.match(
+  gatewayFinalizationSource,
+  /if \(usageContext\.trafficSource !== 'manual_account_test'\) \{\s*const clientIpAvoidanceResult = await confirmClientIpAccountAvoidanceAfterFinalFailureAsync/,
+  '人工账号测试的最终流式失败不能确认客户端 IP 账号回避运行态'
+)
+assert(
+  confirmCurrentClientIpAccountAvoidanceAfterFinalFailureSource.includes("if (preflight.usageContext.trafficSource === 'manual_account_test')"),
+  '人工账号测试的路由最终失败不能确认客户端 IP 账号回避运行态'
+)
+assert(
+  rememberCodexTurnFailureWhenClientRetryIsVisibleSource.includes("input.usageContext.trafficSource === 'manual_account_test'"),
+  '人工账号测试的客户端可见重试失败不能写入 Codex turn 账号回避运行态'
+)
+assert(
+  recordKnownClientIpRequestErrorSource.includes("if (usageContext.trafficSource === 'manual_account_test')"),
+  '人工账号测试的本地请求错误不能写入客户端 IP 错误熔断运行态'
 )
 assert.doesNotMatch(
-  runManualAccountTestFailurePrecheckQueueItemSource,
-  /\bmodel\s*:/,
-  '账号测试失败事前确认应交给统一解析器选择模型，不能自行维护另一套优先级'
-)
-assert.doesNotMatch(
-  runManualAccountTestFailurePrecheckQueueItemSource,
-  /testEndpointMode:\s*item\.testEndpointMode/,
-  '账号测试失败事前确认不能复用本次手动失败的接口形态'
+  accountTestTaskQueueSource,
+  /manualAccountTestFailurePrecheck|mark_account_test_temporary_unavailable|clear_account_failure_state|record_account_api_key_(success|failure)/,
+  '人工账号测试成功或失败都不能恢复、降级或改写账户及 API Key 运行态'
 )
 assert(
   accountTestSessionRoutesSource.includes("router.post('/test-sessions'")

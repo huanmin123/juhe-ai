@@ -79,7 +79,8 @@ try {
     account: {
       ...accountInput,
       status: 'active',
-      activationTestTaskId: task.id
+      activationTestTaskId: task.id,
+      defaultTestModel: draftChatUpstreamModel
     },
     providerBaseUrl: 'https://api.openai.com/v1',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
@@ -99,7 +100,8 @@ try {
           apiKeys: ['sk-api-key-draft-changed']
         }),
         status: 'active',
-        activationTestTaskId: task.id
+        activationTestTaskId: task.id,
+        defaultTestModel: draftChatUpstreamModel
       },
       providerBaseUrl: 'https://api.openai.com/v1',
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
@@ -270,7 +272,8 @@ function createCompletedDraftActivationTask(input: {
     type: task.type,
     success: true,
     statusCode: 200,
-    message: 'API Key 草稿测试成功'
+    message: 'API Key 草稿测试成功',
+    model: draftChatUpstreamModel
   }
   assert(accountTestTasks.completeAccountTestTask(task.id, result), 'API Key 草稿测试任务应能完成')
   return task

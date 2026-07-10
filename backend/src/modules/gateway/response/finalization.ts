@@ -449,7 +449,10 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
         uncommittedResponseBody: streamResult.uncommittedResponseBody
       }
     }
-    if (shouldRememberCodexTurnStreamFailure(streamResult, clientStrategy)) {
+    if (
+      usageContext.trafficSource !== 'manual_account_test'
+      && shouldRememberCodexTurnStreamFailure(streamResult, clientStrategy)
+    ) {
       const codexTurnFailure = await rememberCodexTurnStreamFailureAsync(clientStrategy, account.id, {
         errorCode: streamResult.responseInspection?.upstreamErrorCode ?? streamResult.errorCode,
         message: streamResult.message
@@ -473,27 +476,29 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       clientErrorProtocol,
       clientStrategy
     )
-    const clientIpAvoidanceResult = await confirmClientIpAccountAvoidanceAfterFinalFailureAsync(
-      clientIpAccountAvoidanceTracker,
-      settings
-    )
-    if (clientIpAvoidanceResult.confirmedAccountIds.length > 0) {
-      getRequestLogger().warn({
-        event: 'gateway_client_ip_account_failure_confirmed_after_stream_failure',
-        accountId: account.id,
-        confirmedAccountIds: clientIpAvoidanceResult.confirmedAccountIds,
-        systemAccountId: usageContext.systemAccountId,
-        apiKeyId: usageContext.apiKeyId,
-        groupId: usageContext.groupId,
-        clientIp: usageContext.clientIp
-      }, '流式失败已返回客户端，客户端 IP 级账号回避状态已立即确认')
-      auditCapture.addGatewayMetadata({
-        label: 'client_ip_account_avoidance_update',
-        metadata: {
-          reason: 'stream_failure_finalized_to_client',
-          confirmedAccountIds: clientIpAvoidanceResult.confirmedAccountIds
-        }
-      })
+    if (usageContext.trafficSource !== 'manual_account_test') {
+      const clientIpAvoidanceResult = await confirmClientIpAccountAvoidanceAfterFinalFailureAsync(
+        clientIpAccountAvoidanceTracker,
+        settings
+      )
+      if (clientIpAvoidanceResult.confirmedAccountIds.length > 0) {
+        getRequestLogger().warn({
+          event: 'gateway_client_ip_account_failure_confirmed_after_stream_failure',
+          accountId: account.id,
+          confirmedAccountIds: clientIpAvoidanceResult.confirmedAccountIds,
+          systemAccountId: usageContext.systemAccountId,
+          apiKeyId: usageContext.apiKeyId,
+          groupId: usageContext.groupId,
+          clientIp: usageContext.clientIp
+        }, '流式失败已返回客户端，客户端 IP 级账号回避状态已立即确认')
+        auditCapture.addGatewayMetadata({
+          label: 'client_ip_account_avoidance_update',
+          metadata: {
+            reason: 'stream_failure_finalized_to_client',
+            confirmedAccountIds: clientIpAvoidanceResult.confirmedAccountIds
+          }
+        })
+      }
     }
     auditCapture.finalize({
       outcome: 'stream_failed',
@@ -1290,68 +1295,70 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
     clientIpAccountAvoidanceTracker
   } = input
   if (upstreamResponse.ok) {
-    const clearedProxyFailure = await recordGatewayUpstreamBucketSuccessAsync(account)
-    if (clearedProxyFailure) {
-      getRequestLogger().info({
-        event: 'gateway_upstream_failure_bucket_recovered',
-        accountId: account.id,
-        accountName: account.name
-      }, '上游桶运行态失败已按成功响应恢复')
-      auditCapture.addGatewayMetadata({
-        label: 'upstream_bucket_health',
-        metadata: {
-          recovered: true
-        }
+    if (usageContext.trafficSource !== 'manual_account_test') {
+      const clearedProxyFailure = await recordGatewayUpstreamBucketSuccessAsync(account)
+      if (clearedProxyFailure) {
+        getRequestLogger().info({
+          event: 'gateway_upstream_failure_bucket_recovered',
+          accountId: account.id,
+          accountName: account.name
+        }, '上游桶运行态失败已按成功响应恢复')
+        auditCapture.addGatewayMetadata({
+          label: 'upstream_bucket_health',
+          metadata: {
+            recovered: true
+          }
+        })
+      }
+      const clearedClientIpErrorCircuit = await recordClientIpErrorCircuitSuccessAsync({
+        systemAccountId: usageContext.systemAccountId,
+        apiKeyId: usageContext.apiKeyId,
+        groupId: usageContext.groupId,
+        clientIp: usageContext.clientIp,
+        endpoint: usageContext.endpoint
       })
+      if (clearedClientIpErrorCircuit) {
+        getRequestLogger().info({
+          event: 'gateway_client_ip_error_circuit_recovered',
+          accountId: account.id,
+          systemAccountId: usageContext.systemAccountId,
+          apiKeyId: usageContext.apiKeyId,
+          groupId: usageContext.groupId,
+          clientIp: usageContext.clientIp
+        }, '客户端 IP 级错误熔断状态已按成功响应恢复')
+        auditCapture.addGatewayMetadata({
+          label: 'client_ip_error_circuit',
+          metadata: {
+            recovered: true
+          }
+        })
+      }
+      const clientIpAvoidanceResult = await confirmClientIpAccountAvoidanceAfterSuccessAsync(
+        clientIpAccountAvoidanceTracker,
+        account.id,
+        settings
+      )
+      if (clientIpAvoidanceResult.confirmedAccountIds.length > 0 || clientIpAvoidanceResult.cleared) {
+        getRequestLogger().info({
+          event: 'gateway_client_ip_account_failure_confirmed',
+          accountId: account.id,
+          confirmedAccountIds: clientIpAvoidanceResult.confirmedAccountIds,
+          clearedAccountId: clientIpAvoidanceResult.cleared ? clientIpAvoidanceResult.clearedAccountId : undefined
+        }, '客户端 IP 级账号回避状态已按成功响应更新')
+        auditCapture.addGatewayMetadata({
+          label: 'client_ip_account_avoidance_update',
+          metadata: {
+            confirmedAccountIds: clientIpAvoidanceResult.confirmedAccountIds,
+            clearedAccountId: clientIpAvoidanceResult.cleared ? clientIpAvoidanceResult.clearedAccountId : undefined
+          }
+        })
+      }
     }
     if (input.accountStateMutationEnabled !== false) {
       await applyAccountErrorHandlingWithCacheInvalidation(account, {
         success: true,
         settings,
         trafficSource: usageContext.trafficSource
-      })
-    }
-    const clearedClientIpErrorCircuit = await recordClientIpErrorCircuitSuccessAsync({
-      systemAccountId: usageContext.systemAccountId,
-      apiKeyId: usageContext.apiKeyId,
-      groupId: usageContext.groupId,
-      clientIp: usageContext.clientIp,
-      endpoint: usageContext.endpoint
-    })
-    if (clearedClientIpErrorCircuit) {
-      getRequestLogger().info({
-        event: 'gateway_client_ip_error_circuit_recovered',
-        accountId: account.id,
-        systemAccountId: usageContext.systemAccountId,
-        apiKeyId: usageContext.apiKeyId,
-        groupId: usageContext.groupId,
-        clientIp: usageContext.clientIp
-      }, '客户端 IP 级错误熔断状态已按成功响应恢复')
-      auditCapture.addGatewayMetadata({
-        label: 'client_ip_error_circuit',
-        metadata: {
-          recovered: true
-        }
-      })
-    }
-    const clientIpAvoidanceResult = await confirmClientIpAccountAvoidanceAfterSuccessAsync(
-      clientIpAccountAvoidanceTracker,
-      account.id,
-      settings
-    )
-    if (clientIpAvoidanceResult.confirmedAccountIds.length > 0 || clientIpAvoidanceResult.cleared) {
-      getRequestLogger().info({
-        event: 'gateway_client_ip_account_failure_confirmed',
-        accountId: account.id,
-        confirmedAccountIds: clientIpAvoidanceResult.confirmedAccountIds,
-        clearedAccountId: clientIpAvoidanceResult.cleared ? clientIpAvoidanceResult.clearedAccountId : undefined
-      }, '客户端 IP 级账号回避状态已按成功响应更新')
-      auditCapture.addGatewayMetadata({
-        label: 'client_ip_account_avoidance_update',
-        metadata: {
-          confirmedAccountIds: clientIpAvoidanceResult.confirmedAccountIds,
-          clearedAccountId: clientIpAvoidanceResult.cleared ? clientIpAvoidanceResult.clearedAccountId : undefined
-        }
       })
     }
     if (input.accountStateMutationEnabled !== false && (account.streamFailureCount > 0 || account.streamFailureWindowStartedAt || account.lastErrorMessage)) {

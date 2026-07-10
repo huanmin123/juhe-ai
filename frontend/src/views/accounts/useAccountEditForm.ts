@@ -46,6 +46,7 @@ import { accountFormApiKeyRuntimeChanged, normalizedAccountApiKeys } from './acc
 import type { AccountSavePayload } from './accountSavePayload'
 import {
   accountCreatePayloadWithActivationTest as applyActivationTestToCreatePayload,
+  accountUpdateDefaultTestModel as updateDefaultTestModelForPayload,
   accountUpdateActivationTestTaskId as updateActivationTestTaskIdForPayload
 } from './accountEditFormPayload'
 import { buildAccountDraftTestPayload } from './accountDraftTestPayload'
@@ -196,6 +197,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     saving
   } = useAccountEditSaveFlow({
     accountCreatePayloadWithActivationTest,
+    accountUpdateDefaultTestModel,
     accountUpdateActivationTestTaskId,
     accountAdvancedDetailLoaded,
     accountErrorPolicyRules,
@@ -801,6 +803,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
 
   function accountUpdateActivationTestTaskId(payload: AccountSavePayload): string | undefined {
     return updateActivationTestTaskIdForPayload(payload, options.successfulSavedDraftUpdateTest?.value, form.name.trim())
+  }
+
+  function accountUpdateDefaultTestModel(payload: AccountSavePayload): string | undefined {
+    return updateDefaultTestModelForPayload(payload, options.successfulSavedDraftUpdateTest?.value, form.name.trim())
   }
 
   function isApiKeyRuntimeChanged(): boolean {

@@ -71,7 +71,8 @@ try {
     type: task.type,
     success: true,
     statusCode: 200,
-    message: 'OAuth 草稿测试成功'
+    message: 'OAuth 草稿测试成功',
+    model: 'gpt-5.5'
   }
   assert(accountTestTasks.completeAccountTestTask(task.id, result), 'OAuth 草稿测试任务应能完成')
 
@@ -176,6 +177,7 @@ function oauthCreateActivationRequest(input: {
     concurrencyLimit: 20,
     priority: 0,
     supportedModels: ['gpt-5.5'],
+    defaultTestModel: 'gpt-5.5',
     modelMappings: []
   }
 }

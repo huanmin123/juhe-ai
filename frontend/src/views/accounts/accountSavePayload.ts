@@ -36,6 +36,7 @@ export type AccountSavePayload = {
   concurrencyLimit: number
   priority: number
   supportedModels: string[]
+  defaultTestModel?: string
   modelMappings: AccountFormModel['modelMappings']
   tags: string[]
   proxyProfileId?: string | null
@@ -56,6 +57,7 @@ export type AccountOAuthCreateCommonPayload = {
   concurrencyLimit: number
   priority: number
   supportedModels: string[]
+  defaultTestModel?: string
   modelMappings: AccountFormModel['modelMappings']
   tags: string[]
   proxyProfileId?: string
@@ -184,6 +186,7 @@ export function buildAccountUpdatePayload(payload: AccountSavePayload): AccountU
     concurrencyLimit: payload.concurrencyLimit,
     priority: payload.priority,
     supportedModels: payload.supportedModels,
+    defaultTestModel: payload.defaultTestModel,
     modelMappings: payload.modelMappings,
     tags: payload.tags,
     proxyProfileId: payload.proxyProfileId,

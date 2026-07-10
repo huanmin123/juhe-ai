@@ -48,6 +48,7 @@ export const accountUpdateSchema = z.object({
   credentials: z.record(z.unknown()).optional(),
   activationTestTaskId: z.string().trim().min(1).optional(),
   supportedModels: z.array(z.string().trim().min(1)).min(1).max(500).optional(),
+  defaultTestModel: z.string().trim().min(1).optional(),
   modelMappings: z.array(accountModelMappingSchema).max(500).optional(),
   tags: z.array(z.string().trim()).max(24).optional(),
   status: z.enum(['active', 'pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']).optional(),
@@ -92,7 +93,8 @@ export const accountTestSchema = z.object({
 }).strict().optional()
 
 export const accountDefaultTestModelSchema = z.object({
-  model: z.string().trim().min(1)
+  model: z.string().trim().min(1),
+  ensureSupportedModel: z.boolean().optional()
 }).strict()
 
 export const accountDraftTestSchema = z.object({

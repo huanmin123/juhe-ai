@@ -117,8 +117,7 @@ try {
 
   const group = await postEnvelope<{ id: string; name: string }>(backendBaseUrl, '/groups', cookie, {
     name: `批量测试 mock AI 分组 ${Date.now()}`,
-    providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
+    providerCode: 'gpt'
   })
   const accounts: AccountSummary[] = []
   for (let index = 0; index < batchSize; index += 1) {
@@ -145,6 +144,12 @@ try {
   assert.equal(summaries.filter((item) => item.success).length, batchSize, 'mock AI 批量测试应全部通过')
   for (let index = 0; index < batchSize; index += 1) {
     assert.equal(mockState.hitsByKey.get(`batch-${index + 1}`), 1, `账号 ${index + 1} 应真实命中 mock 上游一次`)
+    const preservedAccount = await getEnvelope<AccountSummary>(backendBaseUrl, `/accounts/${accounts[index].id}`, cookie)
+    assert.equal(preservedAccount.status, 'pending_test', `账号 ${index + 1} 批量测试成功后仍应保持待测试`)
+    assert.equal(preservedAccount.schedulable, false, `账号 ${index + 1} 批量测试成功后仍应不可调度`)
+    assert.equal(preservedAccount.cooldownUntil, accounts[index].cooldownUntil, `账号 ${index + 1} 批量测试成功后不能改写冷却`)
+    assert.equal(preservedAccount.lastErrorCode, accounts[index].lastErrorCode, `账号 ${index + 1} 批量测试成功后不能改写错误码`)
+    assert.equal(preservedAccount.lastErrorMessage, accounts[index].lastErrorMessage, `账号 ${index + 1} 批量测试成功后不能改写错误信息`)
   }
   assert.equal(mockState.maxInFlight, batchSize, `默认账号测试后台并发 100 不应限制 ${batchSize} 个直接提交任务，实际 mock 上游最大并发 ${mockState.maxInFlight}`)
 
@@ -170,7 +175,10 @@ try {
 
 async function runBatchAccountTestItem(baseUrl: string, cookie: string, account: AccountSummary): Promise<BatchTaskSummary> {
   const submittedAt = Date.now()
-  const task = await postEnvelope<AccountTestTask>(baseUrl, `/accounts/${account.id}/test`, cookie, { model: 'gpt-5.5' })
+  const task = await postEnvelope<AccountTestTask>(baseUrl, `/accounts/${account.id}/test`, cookie, {
+    model: 'gpt-5.5',
+    testEndpointMode: 'responses_sse'
+  })
   const statuses = [`0ms:${task.status}:${task.message ?? ''}`]
   let latest = task
   while (Date.now() - submittedAt <= accountTestTaskMaxWaitMs) {

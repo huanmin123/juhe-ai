@@ -95,8 +95,7 @@ try {
 
   const group = await postEnvelope<{ id: string; name: string }>(backendBaseUrl, '/groups', cookie, {
     name: `账号测试边界 mock 分组 ${Date.now()}`,
-    providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
+    providerCode: 'gpt'
   })
   const context: TestContext = {
     backendBaseUrl,
@@ -127,9 +126,10 @@ try {
   const precheckRecoverTask = await submitAccountTest(context, precheckRecoverAccount)
   const precheckRecoverFinished = await waitForTask(context, precheckRecoverTask.id, 20_000, (task) => task.status === 'failed')
   assert.equal(precheckRecoverFinished.status, 'failed', '前三次真实请求均失败时账号测试任务应失败')
-  await waitForCondition(10_000, () => (mockState.hitsByKey.get('precheck-recover') ?? 0) >= 4, '等待失败事前确认请求')
+  await sleep(500)
+  assert.equal(mockState.hitsByKey.get('precheck-recover'), 3, '人工测试失败后不应再发起会修改账户状态的确认探针')
   const precheckRecoveredAccount = await getAccount(context, precheckRecoverAccount.id)
-  assert.equal(precheckRecoveredAccount.status, 'active', '账号测试失败后事前确认恢复时不应把账号改为临时不可调用')
+  assert.equal(precheckRecoveredAccount.status, 'active', '人工测试失败不能把账号改为临时不可调用')
 
   const timeoutAccount = await createMockAccount(context, '真实超时账号', 'sk-timeout-always')
   const queuedAccount = await createMockAccount(context, '排队不计时账号', 'sk-queued-fast')
@@ -159,7 +159,11 @@ try {
   assert.equal(canceledRunning.status, 'canceled', 'session 取消应中断 running 任务')
   assert.equal(canceledQueued.status, 'canceled', 'session 取消应剔除 queued 任务')
   assert.equal(mockState.hitsByKey.get('cancel-queued') ?? 0, 0, '被 session 取消的 queued 任务不应再命中 mock AI')
-  await waitForCondition(5_000, () => (mockState.abortedByKey.get('cancel-running') ?? 0) >= 1, '等待 running 任务取消 abort 上游请求')
+  const afterCancelAccount = await createMockAccount(context, '取消后立即测试账号', 'sk-after-cancel-fast')
+  const afterCancelTask = await submitAccountTest(context, afterCancelAccount)
+  const afterCancelFinished = await waitForTask(context, afterCancelTask.id, 10_000, (task) => task.status === 'success')
+  assert.equal(afterCancelFinished.status, 'success', '取消 A 账户测试后应立即释放队列并允许 B 账户测试')
+  assert.equal(mockState.hitsByKey.get('after-cancel-fast'), 1, '取消后提交的 B 账户应真实命中 mock AI')
 
   const staleSession = await createTestSession(context)
   const staleAccount = await createMockAccount(context, '心跳过期账号', 'sk-stale-session')
@@ -177,7 +181,7 @@ try {
       '测试失败后事前确认恢复不改账号状态',
       'running 60s 总超时失败',
       'queued 超过运行任务耗时不计超时且后续成功',
-      'session 取消 running/queued',
+      'session 取消 running/queued 后立即释放队列给其他账户',
       'session heartbeat 过期自动取消'
     ],
     hitsByKey: Object.fromEntries(mockState.hitsByKey),
@@ -222,6 +226,7 @@ async function cancelTestSession(context: TestContext, sessionId: string): Promi
 async function submitAccountTest(context: TestContext, account: AccountSummary, testSessionId?: string): Promise<AccountTestTask> {
   return postEnvelope<AccountTestTask>(context.backendBaseUrl, `/accounts/${account.id}/test`, context.cookie, {
     model: 'gpt-5.5',
+    testEndpointMode: 'responses_sse',
     testSessionId
   })
 }
@@ -249,17 +254,6 @@ async function waitForTask(
     latest = await getTask(context, taskId)
   }
   throw new Error(`等待任务 ${taskId} 超时，最后状态：${latest.status} ${latest.message ?? ''}`)
-}
-
-async function waitForCondition(timeoutMs: number, done: () => boolean, message: string): Promise<void> {
-  const startedAt = Date.now()
-  while (Date.now() - startedAt <= timeoutMs) {
-    if (done()) {
-      return
-    }
-    await sleep(pollIntervalMs)
-  }
-  throw new Error(`${message} 超时`)
 }
 
 function startBackendServer(port: number): ChildProcess {

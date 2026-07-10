@@ -206,6 +206,7 @@ interface RouteAccountCreatePayload {
   clientCompatibility?: AccountSummary['clientCompatibility']
   status?: 'active' | 'pending_test'
   activationTestTaskId?: string
+  defaultTestModel?: string
 }
 
 interface ApiEnvelope<T> {
@@ -245,7 +246,8 @@ async function assertRouteCreateActivation(input: {
   const realSuccessCreateResponse = await postJson<AccountSummary>(input.baseUrl, '/__aisys__/api/my-accounts', input.cookie, {
     ...realSuccessDraftPayload,
     status: 'active',
-    activationTestTaskId: successDraftTask.id
+    activationTestTaskId: successDraftTask.id,
+    defaultTestModel: successDraftTask.result?.model
   })
   assert.equal(realSuccessCreateResponse.status, 201, `真实成功草稿测试应允许创建正常账户：${responseMessage(realSuccessCreateResponse.body)}`)
   assert.equal(realSuccessCreateResponse.body.data?.status, 'active', '真实成功草稿测试创建的账户应为正常状态')
@@ -264,7 +266,8 @@ async function assertRouteCreateActivation(input: {
   assert.equal(savedUpdateTask.result?.success, true, `已保存账户编辑快照测试应成功：${savedUpdateTask.result?.message ?? ''}`)
   const updateAfterTestResponse = await patchJson<AccountSummary>(input.baseUrl, `/__aisys__/api/my-accounts/${realSuccessAccount.id}`, input.cookie, {
     credentials: savedUpdateDraftPayload.credentials,
-    activationTestTaskId: savedUpdateTask.id
+    activationTestTaskId: savedUpdateTask.id,
+    defaultTestModel: savedUpdateTask.result?.model
   })
   assert.equal(updateAfterTestResponse.status, 200, `已保存账户更换 API Key 测试通过后应允许保存：${responseMessage(updateAfterTestResponse.body)}`)
   assert.equal(updateAfterTestResponse.body.data?.status, 'active', '已保存账户更换 API Key 测试通过后应保持正常状态')
@@ -273,7 +276,8 @@ async function assertRouteCreateActivation(input: {
 
   const updateChangedAfterTestResponse = await patchJson<AccountSummary>(input.baseUrl, `/__aisys__/api/my-accounts/${realSuccessAccount.id}`, input.cookie, {
     credentials: { api_key: 'sk-update-changed-after-test', base_url: input.mockBaseUrl },
-    activationTestTaskId: savedUpdateTask.id
+    activationTestTaskId: savedUpdateTask.id,
+    defaultTestModel: savedUpdateTask.result?.model
   })
   assert.equal(updateChangedAfterTestResponse.status, 400, '测试通过后再次更换 API Key 应要求重新测试')
   assert.match(responseMessage(updateChangedAfterTestResponse.body), /重新测试/, '测试后 API Key 变化应提示重新测试')
@@ -297,15 +301,15 @@ async function assertRouteCreateActivation(input: {
     body: { model: 'gpt-5.5', testEndpointMode: 'responses_sse' }
   })
   assert.equal(manualTestResult.success, true, `待测试账户真实手动测试应通过：${manualTestResult.message}`)
-  assert.equal(manualTestResult.accountStatusChanged, true, '待测试账户测试成功后应报告状态变化')
-  assert.equal(manualTestResult.accountStatus, 'active', '待测试账户测试成功后结果状态应为正常')
-  const manualRestored = repositories.findAccountSummary(realPendingAccount.id, { systemAccountId: input.ownerSystemAccountId, role: 'user' })
-  assert.equal(manualRestored?.status, 'active', '待测试账户真实手动测试通过后应恢复正常')
-  assert.equal(manualRestored?.schedulable, true, '待测试账户真实手动测试通过后应参与调度')
+  assert.equal(manualTestResult.accountStatusChanged, false, '待测试账户测试成功后不应报告状态变化')
+  assert.equal(manualTestResult.accountStatus, 'pending_test', '待测试账户测试成功后结果应保留原状态')
+  const manualPreserved = repositories.findAccountSummary(realPendingAccount.id, { systemAccountId: input.ownerSystemAccountId, role: 'user' })
+  assert.equal(manualPreserved?.status, 'pending_test', '待测试账户真实手动测试通过后不能自动恢复正常')
+  assert.equal(manualPreserved?.schedulable, false, '待测试账户真实手动测试通过后不能自动参与调度')
   assert.equal(
     repositories.listOpenAIAccountsForGroup(input.groupId, input.ownerSystemAccountId).some((account) => account.id === realPendingAccount.id),
-    true,
-    '待测试账户真实手动测试通过后应进入网关调度候选'
+    false,
+    '待测试账户真实手动测试通过后仍不能进入网关调度候选'
   )
 
   const editSnapshotPayload = routeAccountPayload(input.groupId, '编辑弹框快照测试账户', 'sk-edit-saved-should-not-be-used', input.mockBaseUrl)
@@ -326,10 +330,10 @@ async function assertRouteCreateActivation(input: {
     }
   })
   assert.equal(editSnapshotResult.success, true, `编辑弹框快照测试应通过：${editSnapshotResult.message}`)
-  assert.equal(editSnapshotResult.accountStatusChanged, true, '编辑弹框快照测试成功后应报告状态变化')
-  assert.equal(editSnapshotResult.accountStatus, 'active', '编辑弹框快照测试成功后结果状态应为正常')
-  const editSnapshotRestored = repositories.findAccountSummary(editSnapshotAccount.id, { systemAccountId: input.ownerSystemAccountId, role: 'user' })
-  assert.equal(editSnapshotRestored?.status, 'active', '编辑弹框快照测试通过后应直接恢复已保存账户状态')
+  assert.equal(editSnapshotResult.accountStatusChanged, false, '编辑弹框快照测试成功后不应报告状态变化')
+  assert.equal(editSnapshotResult.accountStatus, 'pending_test', '编辑弹框快照测试成功后结果应保留原状态')
+  const editSnapshotPreserved = repositories.findAccountSummary(editSnapshotAccount.id, { systemAccountId: input.ownerSystemAccountId, role: 'user' })
+  assert.equal(editSnapshotPreserved?.status, 'pending_test', '编辑弹框快照测试通过后不能直接恢复已保存账户状态')
   const editSnapshotRequests = mockOpenAIRequests.slice(beforeEditSnapshotRequestCount)
   assert(
     editSnapshotRequests.some((request) => request.authorization?.includes('sk-edit-current-input-test')),
@@ -364,7 +368,8 @@ async function assertRouteCreateActivation(input: {
   const mismatchResponse = await postJson<AccountSummary>(input.baseUrl, '/__aisys__/api/my-accounts', input.cookie, {
     ...changedPayload,
     status: 'active',
-    activationTestTaskId: mismatchTaskId
+    activationTestTaskId: mismatchTaskId,
+    defaultTestModel: 'gpt-5.5'
   })
   assert.equal(mismatchResponse.status, 400, '草稿测试后修改账户内容不应允许创建正常账户')
   assert.match(responseMessage(mismatchResponse.body), /内容已变化/, '草稿测试内容变化应提示重新测试')
@@ -378,7 +383,8 @@ async function assertRouteCreateActivation(input: {
   const successResponse = await postJson<AccountSummary>(input.baseUrl, '/__aisys__/api/my-accounts', input.cookie, {
     ...successPayload,
     status: 'active',
-    activationTestTaskId: successTaskId
+    activationTestTaskId: successTaskId,
+    defaultTestModel: 'gpt-5.5'
   })
   assert.equal(successResponse.status, 201, `成功且内容一致的草稿测试应允许创建正常账户：${responseMessage(successResponse.body)}`)
   assert.equal(successResponse.body.data?.status, 'active', '成功草稿测试创建的账户应为正常状态')
@@ -434,7 +440,8 @@ function createDraftActivationTask(input: {
     type: task.type,
     success: input.success,
     statusCode: input.success ? 200 : 401,
-    message: input.success ? '草稿测试成功' : '草稿测试失败'
+    message: input.success ? '草稿测试成功' : '草稿测试失败',
+    model: 'gpt-5.5'
   }
   assert(accountTestTasks.completeAccountTestTask(task.id, result), '草稿测试任务应能完成')
   return task.id

@@ -1,4 +1,4 @@
-import type { AccountSummary, GroupOptionSummary, ProviderDefinition, ProviderModelPricing, ProxyProfileOptionSummary, SystemAccountPrincipalSummary } from '@/types/domain'
+import type { AccountSummary, GroupOptionSummary, ProviderDefinition, ProxyProfileOptionSummary, SystemAccountPrincipalSummary } from '@/types/domain'
 import { groupLabelForId } from '@/shared/groupLabelCache'
 import { principalLabelForId, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { proxySelectOptionLabel } from '@/shared/proxyLabelCache'
@@ -12,25 +12,13 @@ export type SelectOption = {
 }
 
 export function buildTestModelOptions(
-  providerModels: ProviderModelPricing[],
   account?: AccountSummary | AccountSummary[],
   providerDefaultModel = '',
   systemDefaultModel = ''
 ): SelectOption[] {
-  const restrictedModels = restrictedTestModelsForAccountSelection(account)
+  const supportedModels = supportedTestModelsForAccountSelection(account)
   const preferredModels = preferredTestModelsForAccountSelection(account, providerDefaultModel, systemDefaultModel)
-  if (restrictedModels) {
-    return selectOptions(prioritizeTestModels(restrictedModels, preferredModels))
-  }
-  const useProviderModels = isGatewaySupportedTestSelection(account)
-  const providerModelValues = useProviderModels
-    ? providerModels.map((item) => item.model)
-    : []
-  const models = [
-    ...preferredModels,
-    ...providerModelValues
-  ]
-  return selectOptions(models)
+  return selectOptions(prioritizeTestModels(supportedModels, preferredModels))
 }
 
 export function defaultTestModelForAccountSelection(
@@ -38,12 +26,9 @@ export function defaultTestModelForAccountSelection(
   providerDefaultModel = '',
   systemDefaultModel = ''
 ): string {
-  const restrictedModels = restrictedTestModelsForAccountSelection(account)
+  const supportedModels = supportedTestModelsForAccountSelection(account)
   const preferredModels = preferredTestModelsForAccountSelection(account, providerDefaultModel, systemDefaultModel)
-  if (restrictedModels) {
-    return prioritizeTestModels(restrictedModels, preferredModels)[0] ?? ''
-  }
-  return preferredModels[0] ?? ''
+  return prioritizeTestModels(supportedModels, preferredModels)[0] ?? ''
 }
 
 export function providerDefaultTestModelForAccountSelection(providers: ProviderDefinition[], account: AccountSummary | AccountSummary[] | undefined): string {
@@ -91,12 +76,13 @@ function normalizeAccountSupportedModels(account: AccountSummary | AccountSummar
   return uniqueTextList(normalizeAccounts(account).flatMap((item) => item.supportedModels ?? []))
 }
 
-function restrictedTestModelsForAccountSelection(account: AccountSummary | AccountSummary[] | undefined): string[] | undefined {
-  const restrictedModelLists = normalizeAccounts(account)
+function supportedTestModelsForAccountSelection(account: AccountSummary | AccountSummary[] | undefined): string[] {
+  const accounts = normalizeAccounts(account)
+  const supportedModelLists = accounts
     .map((item) => normalizeAccountSupportedModels(item))
     .filter((models) => models.length > 0)
-  if (!restrictedModelLists.length) return undefined
-  const [firstModels, ...otherModelLists] = restrictedModelLists
+  if (!supportedModelLists.length) return []
+  const [firstModels, ...otherModelLists] = supportedModelLists
   return firstModels.filter((model) => otherModelLists.every((models) => models.includes(model)))
 }
 

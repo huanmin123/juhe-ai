@@ -53,6 +53,18 @@ export function accountTestErrorMessage(account: AccountSummary, result: Account
   return `${account.name}: ${result.message}`
 }
 
+export function successfulAccountDefaultTestModel(
+  account: Pick<AccountSummary, 'supportedModels'>,
+  result: Pick<AccountTestResult, 'model' | 'success'>
+): string | undefined {
+  if (!result.success) return undefined
+  const model = result.model?.trim()
+  if (!model) return undefined
+  return (account.supportedModels ?? []).some((supportedModel) => supportedModel.trim() === model)
+    ? model
+    : undefined
+}
+
 export function stoppedAccountTestMessage(account: AccountSummary): string {
   return `${account.name}: 已停止测试`
 }

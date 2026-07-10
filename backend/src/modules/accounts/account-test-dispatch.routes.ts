@@ -41,12 +41,18 @@ export function registerAccountTestDispatchRoutes(router: Router): void {
       return
     }
     const model = parsed.data.model
-    if (!(account.supportedModels ?? []).includes(model)) {
+    const ensureSupportedModel = parsed.data.ensureSupportedModel === true
+    if (!(account.supportedModels ?? []).includes(model) && !ensureSupportedModel) {
       res.status(400).json(badRequest(`模型不在当前账户支持模型列表中：${model}`))
       return
     }
     try {
-      const updated = await updateAccountDefaultTestModelAsync(account.id, model, requestAccess)
+      const updated = await updateAccountDefaultTestModelAsync(
+        account.id,
+        model,
+        requestAccess,
+        ensureSupportedModel
+      )
       if (!updated || updated.defaultTestModel !== model) {
         res.status(400).json(badRequest('账户默认测试模型保存失败'))
         return

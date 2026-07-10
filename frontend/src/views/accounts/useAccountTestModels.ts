@@ -2,7 +2,7 @@ import { message } from '@/lib/antd'
 import { computed, ref, type ComputedRef } from 'vue'
 
 import { api } from '@/api/client'
-import type { AccountSummary, ProviderDefinition, ProviderModelPricing } from '@/types/domain'
+import type { AccountSummary, ProviderDefinition } from '@/types/domain'
 import {
   buildTestModelOptions,
   defaultTestModelForAccountSelection,
@@ -23,9 +23,6 @@ type UseAccountTestModelsInput = {
 
 export function useAccountTestModels(input: UseAccountTestModelsInput) {
   const testModelsLoading = ref(false)
-  const testModelsLoadingProviderCode = ref('')
-  const providerModels = ref<ProviderModelPricing[]>([])
-  const providerModelsRequestKey = ref('')
   const scopedProviders = ref<ProviderDefinition[]>([])
   const scopedProvidersRequestKey = ref('')
   const modelRequestId = ref(0)
@@ -51,7 +48,6 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     input.testTargetAccountSelection.value
   ))
   const testModelOptions = computed(() => buildTestModelOptions(
-    providerModels.value,
     input.testTargetAccountSelection.value,
     providerDefaultTestModel.value,
     providerSystemDefaultTestModel.value
@@ -69,9 +65,6 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     if (!isGatewaySupportedTestTarget.value) {
       modelRequestId.value += 1
       testModelsLoading.value = false
-      testModelsLoadingProviderCode.value = ''
-      providerModels.value = []
-      providerModelsRequestKey.value = ''
       scopedProviders.value = []
       scopedProvidersRequestKey.value = ''
       input.testForm.model = nextTestModel(input.testForm.model, testModelOptions.value, defaultTestModel.value)
@@ -81,38 +74,28 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     if (!providerCode) {
       modelRequestId.value += 1
       testModelsLoading.value = false
-      testModelsLoadingProviderCode.value = ''
-      providerModels.value = []
-      providerModelsRequestKey.value = ''
       scopedProviders.value = []
       scopedProvidersRequestKey.value = ''
       input.testForm.model = nextTestModel(input.testForm.model, testModelOptions.value, defaultTestModel.value)
       return
     }
     const requestKey = testTargetRequestKey.value
-    if (providerModelsRequestKey.value !== requestKey) {
-      providerModels.value = []
-      providerModelsRequestKey.value = requestKey
+    if (scopedProvidersRequestKey.value !== requestKey) {
       scopedProviders.value = []
-      scopedProvidersRequestKey.value = requestKey
+      scopedProvidersRequestKey.value = ''
     }
-    if (providerModels.value.length && scopedProviders.value.length) return
+    if (scopedProvidersRequestKey.value === requestKey) return
     const requestId = modelRequestId.value + 1
-    const requestProviderCode = providerCode
     const requestScopeParams = testTargetScopeParams.value
     const requestInitialModel = input.testForm.model
     const requestInitialDefaultModel = defaultTestModel.value
     modelRequestId.value = requestId
     testModelsLoading.value = true
-    testModelsLoadingProviderCode.value = requestKey
     try {
-      const [models, providers] = await Promise.all([
-        api.providers.models(requestProviderCode, requestScopeParams),
-        api.providers.options(requestScopeParams)
-      ])
+      const providers = await api.providers.options(requestScopeParams)
       if (!isCurrentModelRequest(requestId, requestKey)) return
-      providerModels.value = models
       scopedProviders.value = providers
+      scopedProvidersRequestKey.value = requestKey
       const shouldApplyScopedDefault = input.testForm.model === requestInitialModel
         && (!requestInitialModel || requestInitialModel === requestInitialDefaultModel)
       input.testForm.model = nextTestModel(
@@ -124,11 +107,10 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
       if (!isCurrentModelRequest(requestId, requestKey)) return
       console.error(error)
       input.testForm.model = nextTestModel(input.testForm.model, testModelOptions.value, defaultTestModel.value)
-      message.warning('测试模型列表加载失败，已使用默认模型')
+      message.warning('默认测试模型信息加载失败，已使用账户支持模型')
     } finally {
       if (modelRequestId.value === requestId) {
         testModelsLoading.value = false
-        testModelsLoadingProviderCode.value = ''
       }
     }
   }
@@ -136,7 +118,6 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
   function isCurrentModelRequest(requestId: number, requestKey: string): boolean {
     return (
       modelRequestId.value === requestId &&
-      providerModelsRequestKey.value === requestKey &&
       testTargetRequestKey.value === requestKey
     )
   }

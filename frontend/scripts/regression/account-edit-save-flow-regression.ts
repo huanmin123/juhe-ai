@@ -4,7 +4,10 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { buildAccountDraftTestPayload } from '../../src/views/accounts/accountDraftTestPayload'
-import { accountCreatePayloadWithActivationTest } from '../../src/views/accounts/accountEditFormPayload'
+import {
+  accountCreatePayloadWithActivationTest,
+  accountUpdateDefaultTestModel
+} from '../../src/views/accounts/accountEditFormPayload'
 import type { AccountFormModel } from '../../src/views/accounts/accountFormTypes'
 import { buildAccountSavePayload, validateAccountSaveForm } from '../../src/views/accounts/accountSavePayload'
 import { FALLBACK_PROVIDERS } from '../../src/views/accounts/accountOptions'
@@ -52,8 +55,9 @@ assertNotIncludes(savePayloadSource, "!editingId && form.type === 'api_key' && a
 assertIncludes(editModalSource, 'const confirmButtonProps = computed(() => ({', '账户弹窗应统一计算确定按钮状态')
 assertIncludes(editModalSource, 'disabled: Boolean(props.okButtonProps.disabled) || props.loading || props.testLoading', '账户测试运行期间不应允许保存成未激活账户')
 assertIncludes(editModalSource, 'v-bind="confirmButtonProps"', '账户弹窗确定按钮应使用测试运行保护后的按钮属性')
-assertIncludes(testModalSource, 'syncDraftActivationTestFromTask(latestTask, activationDraftPayload)', '草稿测试任务轮询拿到成功结果时应立即记录可激活任务')
-assertIncludes(testModalSource, "successfulDraftActivationTest.value = { taskId: task.id, account: activationDraftPayload }", '成功草稿测试应绑定测试任务与创建表单快照')
+assertIncludes(testModalSource, 'syncDraftActivationTestFromTask(latestTask, account, activationDraftPayload)', '草稿测试任务轮询拿到成功结果时应立即记录可激活任务')
+assertIncludes(testModalSource, 'model: successfulModel', '成功草稿测试应绑定测试任务、创建表单快照和实际成功模型')
+assertIncludes(saveFlowSource, 'await accountDefaultTestModelSaveQueue.whenIdle(options.editingId.value)', '编辑保存应等待同一账户的成功模型持久化完成，保证后点击的表单保存最后生效')
 assertIncludes(savePayloadSource, 'supported_endpoint_modes?: AccountFormModel', 'OAuth 创建 payload 应允许透传接口能力限制')
 assertIncludes(savePayloadSource, 'credentialsPatch.supported_endpoint_modes', 'OAuth 创建 common payload 应把接口能力写入 credentialsPatch')
 assertIncludes(savePayloadSource, 'accountModelMappingProtocolValidationMessage', '前端保存校验必须复用模型映射协议矩阵 helper')
@@ -99,6 +103,7 @@ for (const marker of [
   'createOAuthAccountFromUnifiedForm(options.accountCreatePayloadWithActivationTest(payload))',
   "created?.status === 'active' ? 'OAuth 账户已创建并启用'",
   "options.form.oauthMode === 'refresh_token' && activationPayload.activationTestTaskId",
+  'commonPayload.defaultTestModel = activationPayload.defaultTestModel',
   'commonPayload.activationTestTaskId = activationPayload.activationTestTaskId',
   'api.accounts.update',
   'api.myAccounts.update',
@@ -217,11 +222,22 @@ function assertApiKeyDraftActivationPayload(): void {
   }], '草稿测试 payload 应保留 Chat Completions 同协议模型别名')
   const activatedPayload = accountCreatePayloadWithActivationTest(savePayload, {
     taskId: 'accttest_api_key_activation',
-    account: draftPayload
+    account: draftPayload,
+    model: 'gpt-5.5'
   }, form.name.trim())
 
   assert.equal(activatedPayload.status, 'active', 'API Key 新增账户成功草稿测试后保存 payload 应创建为正常状态')
   assert.equal(activatedPayload.activationTestTaskId, 'accttest_api_key_activation', 'API Key 新增账户成功草稿测试后保存 payload 应携带测试任务')
+  assert.equal(activatedPayload.defaultTestModel, 'gpt-5.5', 'API Key 新增账户成功草稿测试后应把成功模型作为账户默认测试模型')
+  assert.equal(
+    accountUpdateDefaultTestModel(savePayload, {
+      taskId: 'accttest_api_key_activation',
+      account: draftPayload,
+      model: 'gpt-5.5'
+    }, form.name.trim()),
+    'gpt-5.5',
+    '编辑账户测试成功后保存 payload 应继续携带已立即持久化的成功模型'
+  )
 }
 
 function assertApiKeyRuntimeChangeDetection(): void {

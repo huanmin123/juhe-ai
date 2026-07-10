@@ -54,6 +54,7 @@ export interface AccountCreateDraftActivationRequest extends Omit<AccountDraftTe
   groupId?: string | null
   status?: AccountStatus
   activationTestTaskId?: string
+  defaultTestModel?: string
 }
 
 export function savedAccountDraftTestSnapshot(
@@ -408,6 +409,7 @@ export async function assertAccountUpdateActivationTestMatchesAsync(input: {
   if (task.status !== 'success' || task.result?.success !== true || !task.draftAccount) {
     throw new Error('账户测试尚未成功，不能保存新的 API Key')
   }
+  assertSuccessfulTestModelMatchesRequestedDefault(input.update.defaultTestModel, task)
   if (task.draftAccount.stateTargetAccountId !== input.currentAccount.id) {
     throw new Error('账户测试任务不是当前账户的编辑测试，请重新测试')
   }
@@ -483,6 +485,7 @@ function assertActivationTestTaskMatchesCreate(input: {
   if (task.status !== 'success' || task.result?.success !== true || !task.draftAccount) {
     throw new Error('账户草稿测试尚未成功，不能直接创建为正常状态')
   }
+  assertSuccessfulTestModelMatchesRequestedDefault(input.account.defaultTestModel, task)
   const ownerSystemAccountId = input.group.ownerSystemAccountId
     ?? input.group.systemAccountId
     ?? input.requestAccess.systemAccountFilterId
@@ -525,6 +528,7 @@ async function assertActivationTestTaskMatchesCreateAsync(input: {
   if (task.status !== 'success' || task.result?.success !== true || !task.draftAccount) {
     throw new Error('账户草稿测试尚未成功，不能直接创建为正常状态')
   }
+  assertSuccessfulTestModelMatchesRequestedDefault(input.account.defaultTestModel, task)
   const ownerSystemAccountId = input.group.ownerSystemAccountId
     ?? input.group.systemAccountId
     ?? input.requestAccess.systemAccountFilterId
@@ -825,6 +829,17 @@ function accountDraftRequestFromCreate(account: AccountCreateDraftActivationRequ
     accountExpiresAt: account.accountExpiresAt,
     availabilitySchedule: account.availabilitySchedule,
     notes: account.notes
+  }
+}
+
+function assertSuccessfulTestModelMatchesRequestedDefault(
+  requestedDefaultTestModel: unknown,
+  task: Pick<AccountTestTaskRecord, 'result'>
+): void {
+  const testedModel = optionalText(task.result?.model)
+  const requestedModel = optionalText(requestedDefaultTestModel)
+  if (!testedModel || requestedModel !== testedModel) {
+    throw new Error('账户默认测试模型必须使用本次成功测试的模型')
   }
 }
 

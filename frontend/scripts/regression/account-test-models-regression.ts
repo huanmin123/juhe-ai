@@ -3,13 +3,14 @@ import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import type { AccountSummary, AccountUsageSummary, ProviderDefinition, ProviderModelPricing } from '../../src/types/domain'
+import type { AccountSummary, AccountTestResult, AccountUsageSummary, ProviderDefinition } from '../../src/types/domain'
 import {
   buildTestModelOptions,
   defaultTestModelForAccountSelection
 } from '../../src/views/accounts/accountDerivedState'
 import { createAccountDefaultTestModelSaveQueue } from '../../src/views/accounts/accountDefaultTestModelSaveQueue'
 import { defaultAccountForm } from '../../src/views/accounts/accountFormDefaults'
+import { successfulAccountDefaultTestModel } from '../../src/views/accounts/accountTestFlow'
 import { useResponsivePagedList } from '../../src/composables/useResponsivePagedList'
 
 const currentDir = dirname(fileURLToPath(import.meta.url))
@@ -20,27 +21,32 @@ const accountTestModelsPath = resolve(frontendRoot, 'src/views/accounts/useAccou
 const accountsViewPath = resolve(frontendRoot, 'src/views/accounts/AccountsView.vue')
 const accountListDataPath = resolve(frontendRoot, 'src/views/accounts/useAccountListData.ts')
 const accountDraftTestPayloadPath = resolve(frontendRoot, 'src/views/accounts/accountDraftTestPayload.ts')
+const accountEditTestActionPath = resolve(frontendRoot, 'src/views/accounts/useAccountEditTestAction.ts')
 
 const accountTestModalSource = readFileSync(accountTestModalPath, 'utf8')
 const accountTestModelsSource = readFileSync(accountTestModelsPath, 'utf8')
 const accountsViewSource = readFileSync(accountsViewPath, 'utf8')
 const accountListDataSource = readFileSync(accountListDataPath, 'utf8')
 const accountDraftTestPayloadSource = readFileSync(accountDraftTestPayloadPath, 'utf8')
+const accountEditTestActionSource = readFileSync(accountEditTestActionPath, 'utf8')
 const detachActiveAccountTestRunStart = accountTestModalSource.indexOf('function detachActiveAccountTestRun')
 const detachActiveAccountTestRunSource = accountTestModalSource.slice(
   detachActiveAccountTestRunStart,
   accountTestModalSource.indexOf('function cancelAccountTestRun(', detachActiveAccountTestRunStart)
 )
+const updateAccountTestModelStart = accountTestModalSource.indexOf('function updateAccountTestModel')
+const updateAccountTestModelSource = accountTestModalSource.slice(
+  updateAccountTestModelStart,
+  accountTestModalSource.indexOf('function enqueueAccountDefaultTestModelSave', updateAccountTestModelStart)
+)
 
 assertIncludes(accountTestModalSource, "import { useAccountTestModels } from './useAccountTestModels'", '账户测试弹窗应通过模型 composable 获取测试模型能力')
 assertIncludes(accountTestModelsSource, 'export function useAccountTestModels', '模型 composable 应导出 useAccountTestModels')
-assertIncludes(accountTestModelsSource, 'api.providers.models(requestProviderCode, requestScopeParams)', '模型 composable 应按当前测试账户作用域加载供应商模型列表')
+assertNotIncludes(accountTestModelsSource, 'api.providers.models(', '账户测试模型下拉只能使用账户 supportedModels，不能加载供应商模型目录并集')
 assertIncludes(accountTestModelsSource, 'api.providers.options(requestScopeParams)', '模型 composable 应按当前测试账户作用域加载用户默认和系统默认')
-assertIncludes(accountTestModalSource, 'accountDefaultTestModelSaveQueue.enqueue(account, normalizedModel, {', '账户默认模型保存应使用跨组件共享的按账户串行队列')
+assertIncludes(accountTestModalSource, 'accountDefaultTestModelSaveQueue.enqueue(account, model, {', '测试成功后的账户默认模型保存应使用跨组件共享的按账户串行队列')
 assertNotIncludes(accountTestModalSource, 'accountDefaultModelSaveRequestIds', '账户默认模型不能只靠请求 ID 忽略乱序响应，后端写入也必须串行')
-assertIncludes(accountTestModalSource, "testMode.value !== 'single'", '批量测试切换模型不能覆盖每个账户的默认偏好')
-assertIncludes(accountTestModalSource, 'draftTestMode.value', '草稿测试切换模型不能写入已保存账户偏好')
-assertIncludes(accountTestModalSource, 'api.myAccounts.setDefaultTestModel(targetAccount.id, targetModel)', '用户侧账户弹窗应调用个人账户默认模型接口')
+assertIncludes(accountTestModalSource, 'api.myAccounts.setDefaultTestModel(targetAccount.id, targetModel, ensureSupportedModel)', '用户侧账户弹窗应调用个人账户默认模型接口')
 assertNotIncludes(accountTestModalSource, 'api.providers.setDefaultTestModel', '账户测试弹窗不能修改供应商级个人默认模型')
 assertIncludes(accountTestModalSource, 'interface AccountTestRunContext', '账户测试弹窗应为每次测试创建独立运行上下文')
 assertIncludes(accountTestModalSource, 'const run = beginAccountTestRun()', '单账户和批量测试应绑定当前运行上下文')
@@ -65,11 +71,23 @@ assertIncludes(accountTestModelsSource, 'buildTestModelOptions', '模型 composa
 assertIncludes(accountTestModelsSource, 'providerDefaultTestModelForAccountSelection', '模型 composable 应负责供应商默认测试模型推导')
 assertIncludes(accountTestModelsSource, 'providerSystemDefaultTestModelForAccountSelection', '模型 composable 应保留系统协议档案默认模型')
 assertIncludes(accountTestModelsSource, 'nextTestModel', '模型 composable 应负责测试模型回落选择')
-assertIncludes(accountTestModelsSource, 'providerModelsRequestKey.value === requestKey', '模型 composable 缓存必须按供应商和系统账户共同校验')
+assertIncludes(accountTestModelsSource, 'scopedProvidersRequestKey.value === requestKey', '模型 composable 的默认模型信息缓存必须按供应商和系统账户共同校验')
 assertIncludes(accountTestModelsSource, 'if (!providerCode)', '模型 composable 应在没有唯一供应商时停止加载模型目录')
 assertIncludes(accountTestModelsSource, 'testTargetRequestKey.value === requestKey', '模型 composable 应按当前测试目标和系统账户校验请求是否仍有效')
 assertIncludes(accountTestModalSource, 'function updateAccountTestModel(model: string)', '账户测试弹窗应区分用户手动切换模型和程序默认赋值')
-assertIncludes(accountsViewSource, '@update:model="updateAccountTestModel"', '账户页应把测试模型选择事件交给持久化处理')
+assertIncludes(updateAccountTestModelSource, 'testForm.model = model.trim()', '切换测试模型只能更新本次测试输入')
+assertNotIncludes(updateAccountTestModelSource, 'enqueueAccountDefaultTestModelSave', '切换测试模型本身不能提前写入账户偏好')
+assertIncludes(accountTestModalSource, 'await persistSuccessfulSingleAccountTestModel(account, result, activeDraftMode)', '已保存单账户测试成功后应把实际成功模型固化为该账户默认')
+assertIncludes(accountTestModalSource, 'await accountDefaultTestModelSaveQueue.whenIdle(account.id)', '测试成功返回前应等待该账户默认模型持久化完成')
+assertIncludes(accountTestModalSource, "if (activeDraftMode === 'create') return", '只有新增草稿测试成功时不能立即写入账户默认模型')
+assertIncludes(accountEditTestActionSource, 'openSavedDraftTestModal(draftAccount, draftPayload)', '编辑草稿测试应直接使用当前表单支持模型')
+assertIncludes(accountTestModalSource, "enqueueAccountDefaultTestModelSave(account, model, activeDraftMode === 'saved')", '编辑草稿测试成功后应要求后端原子追加成功模型')
+assertIncludes(accountTestModalSource, 'ensureSupportedModel', '编辑草稿成功模型持久化必须通过后端追加语义，不能提交旧支持模型整表')
+assertNotIncludes(accountTestModalSource, 'supportedModelsWithSuccessfulSavedDraftModel', '前端不能基于旧账户快照替换完整支持模型列表')
+assertNotIncludes(accountTestModalSource, 'api.accounts.update(', '测试成功持久化不能通过通用账户更新覆盖完整支持模型列表')
+assertIncludes(accountTestModalSource, 'successfulSavedDraftUpdateTest.value = {', '编辑草稿测试成功后应保留激活任务快照')
+assertIncludes(accountTestModalSource, 'model: successfulModel', '新增和编辑草稿测试快照都必须记录实际成功模型')
+assertIncludes(accountsViewSource, '@update:model="updateAccountTestModel"', '账户页应把测试模型选择事件交给当前测试输入处理')
 assertNotIncludes(accountsViewSource, 'v-model:model="testForm.model"', '账户页不应继续仅通过临时 v-model 保存测试模型')
 assertIncludes(accountsViewSource, 'applyAccountDefaultTestModel,', '账户页应把账户级乐观更新回写列表')
 assertIncludes(accountListDataSource, 'account.id === id', '账户列表更新默认测试模型时必须只命中当前账户 ID')
@@ -91,12 +109,16 @@ assertNotIncludes(accountTestModelsSource, 'GPT_VENDOR_CODE', '模型 composable
 assertNotIncludes(accountTestModelsSource, 'preferredDefaultProviderCode', '模型 composable 不应在混合供应商选择时回落到默认供应商模型目录')
 
 assertDeepEqual(
-  optionValues(buildTestModelOptions([
-    providerModel('gpt-5.4-mini'),
-    providerModel('gpt-5.5')
-  ], accountFixture(), 'gpt-5.4-mini')),
+  optionValues(buildTestModelOptions(accountFixture({
+    supportedModels: ['gpt-5.4-mini', 'gpt-5.5']
+  }), 'gpt-5.4-mini')),
   ['gpt-5.4-mini', 'gpt-5.5'],
-  '未限制模型的账户测试下拉应合并供应商默认模型和模型目录'
+  '账户测试下拉只能使用当前账户支持模型'
+)
+assertDeepEqual(
+  optionValues(buildTestModelOptions(accountFixture(), 'gpt-5.4-mini')),
+  [],
+  '账户没有支持模型时不能用供应商模型目录补齐测试下拉'
 )
 
 const limitedAccount = accountFixture({
@@ -104,11 +126,7 @@ const limitedAccount = accountFixture({
   defaultTestModel: 'gpt-5.4'
 })
 assertDeepEqual(
-  optionValues(buildTestModelOptions([
-    providerModel('gpt-5.4-mini'),
-    providerModel('gpt-5.5'),
-    providerModel('gpt-4.1')
-  ], limitedAccount, 'gpt-5.5', 'gpt-5.4')),
+  optionValues(buildTestModelOptions(limitedAccount, 'gpt-5.5', 'gpt-5.4')),
   ['gpt-5.4', 'gpt-5.5'],
   '账户默认测试模型应在该账户支持模型列表中优先显示'
 )
@@ -122,10 +140,7 @@ const limitedAccountWithoutPreference = accountFixture({
   supportedModels: ['gpt-5.4', 'gpt-5.5']
 })
 assertDeepEqual(
-  optionValues(buildTestModelOptions([
-    providerModel('gpt-5.4-mini'),
-    providerModel('gpt-4.1')
-  ], limitedAccountWithoutPreference, 'gpt-5.5', 'gpt-5.4')),
+  optionValues(buildTestModelOptions(limitedAccountWithoutPreference, 'gpt-5.5', 'gpt-5.4')),
   ['gpt-5.5', 'gpt-5.4'],
   '账户没有偏好时应先使用当前用户默认，再使用系统默认'
 )
@@ -158,9 +173,6 @@ assertDeepEqual(
 
 assertDeepEqual(
   optionValues(buildTestModelOptions([
-    providerModel('gpt-5.4-mini'),
-    providerModel('gpt-5.5')
-  ], [
     accountFixture({ id: 'acct_batch_limited_a', supportedModels: ['gpt-5.5', 'gpt-5.4'], defaultTestModel: 'gpt-5.5' }),
     accountFixture({ id: 'acct_batch_limited_b', supportedModels: ['gpt-5.5', 'gpt-4.1'], defaultTestModel: 'gpt-5.5' }),
     accountFixture({ id: 'acct_batch_unrestricted' })
@@ -187,6 +199,30 @@ assert.equal(
   '批量账户偏好不一致时不能任选某个账户偏好覆盖其他账户'
 )
 
+const successfulModelResult: AccountTestResult = {
+  accountId: accountA.id,
+  accountName: accountA.name,
+  providerCode: accountA.providerCode,
+  type: accountA.type,
+  success: true,
+  message: '测试成功',
+  model: 'gpt-5.5'
+}
+assert.equal(
+  successfulAccountDefaultTestModel(accountA, successfulModelResult),
+  'gpt-5.5',
+  '已保存单账户测试成功后应采用实际成功模型'
+)
+assert.equal(
+  successfulAccountDefaultTestModel(accountA, { ...successfulModelResult, success: false }),
+  undefined,
+  '测试失败不能修改账户默认测试模型'
+)
+assert.equal(
+  successfulAccountDefaultTestModel(accountA, { ...successfulModelResult, model: 'gpt-unsupported' }),
+  undefined,
+  '成功结果模型不属于账户支持模型时不能写入账户默认'
+)
 let resolveStalePage: ((value: {
   items: Array<{ id: string }>
   page: number
@@ -314,13 +350,13 @@ const queuedAccount = accountFixture({
 })
 saveQueue.enqueue(queuedAccount, 'gpt-5.5')
 saveQueue.enqueue(queuedAccount, 'gpt-5.6')
-assert.deepEqual(savedModels, ['gpt-5.5'], '同一账户快速切换时只能先发送第一笔写入')
+assert.deepEqual(savedModels, ['gpt-5.5'], '同一账户连续测试成功时只能先发送第一笔写入')
 pendingSaves[0]?.resolve('gpt-5.5')
 await waitFor(() => savedModels.length === 2)
-assert.deepEqual(savedModels, ['gpt-5.5', 'gpt-5.6'], '第一笔完成后才允许发送同账户最新选择')
+assert.deepEqual(savedModels, ['gpt-5.5', 'gpt-5.6'], '第一笔完成后才允许发送同账户最新成功模型')
 pendingSaves[1]?.resolve('gpt-5.6')
 await saveQueue.whenIdle(queuedAccount.id)
-assert.equal(appliedModels.at(-1), 'gpt-5.6', '同一账户串行写入后，界面和后端应以最后选择为准')
+assert.equal(appliedModels.at(-1), 'gpt-5.6', '同一账户串行写入后，界面和后端应以最后成功模型为准')
 
 const failedModels: Array<string | undefined> = []
 const failedQueue = createAccountDefaultTestModelSaveQueue({
@@ -332,7 +368,7 @@ const failedQueue = createAccountDefaultTestModelSaveQueue({
 })
 failedQueue.enqueue(queuedAccount, 'gpt-5.5')
 await failedQueue.whenIdle(queuedAccount.id)
-assert.equal(failedModels.at(-1), 'gpt-5.4', '最新选择保存失败时应回退最后已持久化模型')
+assert.equal(failedModels.at(-1), 'gpt-5.4', '最新成功模型保存失败时应回退最后已持久化模型')
 
 const lostResponseSavedModels: string[] = []
 const lostResponsePendingSaves: Array<{
@@ -354,7 +390,7 @@ await waitFor(() => lostResponseSavedModels.length === 2)
 assert.deepEqual(
   lostResponseSavedModels,
   ['gpt-5.5', 'gpt-5.4'],
-  '被取代请求响应丢失时也必须补写最终选择，即使最终选择等于队列已知持久值'
+  '被取代请求响应丢失时也必须补写最终成功模型，即使最终模型等于队列已知持久值'
 )
 lostResponsePendingSaves[1]?.resolve('gpt-5.4')
 await lostResponseQueue.whenIdle(queuedAccount.id)
@@ -380,7 +416,7 @@ await waitFor(() => sameModelLoopWrites.length === 2)
 assert.deepEqual(
   sameModelLoopWrites,
   ['gpt-5.5', 'gpt-5.5'],
-  'X→Y→X 时旧 X 请求失败也不能清除最后一次 X 意图，必须按选择版本补写'
+  '连续成功模型 X→Y→X 时旧 X 请求失败也不能清除最后一次 X 意图，必须按版本补写'
 )
 sameModelLoopPending[1]?.resolve('gpt-5.5')
 await sameModelLoopQueue.whenIdle(queuedAccount.id)
@@ -404,7 +440,7 @@ componentRebuildQueue.subscribe((_accountId, model, phase) => {
 assert.equal(
   componentRebuildEvents.at(-1),
   'new:optimistic:gpt-5.5',
-  '账户页重建后，新组件应立即接管并重放在途账户选择'
+  '账户页重建后，新组件应立即接管并重放在途成功模型'
 )
 resolveComponentRebuildSave?.('gpt-5.5')
 await componentRebuildQueue.whenIdle(queuedAccount.id)
@@ -414,7 +450,7 @@ assert.equal(
   '旧组件卸载后，保存完成结果必须继续同步到新组件'
 )
 
-console.log('账户测试模型回归通过：账户偏好隔离、用户和系统默认回退、弹窗持久化边界正确')
+console.log('账户测试模型回归通过：下拉仅使用账户支持模型，只有成功结果按账户隔离持久化')
 
 function assertIncludes(source: string, expected: string, message: string): void {
   if (!source.includes(expected)) {
@@ -464,18 +500,6 @@ function accountFixture(overrides: Partial<AccountSummary> = {}): AccountSummary
     todayUsage: emptyUsage(),
     usage: emptyUsage(),
     ...overrides
-  }
-}
-
-function providerModel(model: string): ProviderModelPricing {
-  return {
-    providerCode: 'gpt',
-    model,
-    source: 'built-in',
-    scope: 'built_in',
-    status: 'active',
-    supportsPromptCaching: false,
-    supportsServiceTier: false
   }
 }
 

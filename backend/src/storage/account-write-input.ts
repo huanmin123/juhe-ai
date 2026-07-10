@@ -27,6 +27,7 @@ export const accountUpdateInputKeys = new Set([
   'name',
   'credentials',
   'supportedModels',
+  'defaultTestModel',
   'modelMappings',
   'tags',
   'status',

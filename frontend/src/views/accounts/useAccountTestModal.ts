@@ -12,6 +12,7 @@ import {
   buildAccountTestPayload,
   batchTestSummary,
   failedAccountTestResult,
+  successfulAccountDefaultTestModel,
   stoppedAccountTestMessage
 } from './accountTestFlow'
 import { isAuthorizedAccount } from './accountFormatters'
@@ -63,6 +64,7 @@ interface UseAccountTestModalOptions {
 export interface SuccessfulDraftActivationTest {
   taskId: string
   account: AccountDraftTestPayload['account']
+  model: string
 }
 
 const accountTestSessionHeartbeatIntervalMs = 2000
@@ -191,27 +193,24 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   }
 
   function updateAccountTestModel(model: string): void {
-    const normalizedModel = model.trim()
-    testForm.model = normalizedModel
-    const account = testingAccount.value
-    if (
-      !normalizedModel
-      || testMode.value !== 'single'
-      || draftTestMode.value
-      || !account
-      || !(account.supportedModels ?? []).includes(normalizedModel)
-    ) {
-      return
-    }
-    accountDefaultTestModelSaveQueue.enqueue(account, normalizedModel, {
+    testForm.model = model.trim()
+  }
+
+  function enqueueAccountDefaultTestModelSave(
+    account: AccountSummary,
+    model: string,
+    ensureSupportedModel = false
+  ): void {
+    accountDefaultTestModelSaveQueue.enqueue(account, model, {
       persist: async (targetAccount, targetModel) => {
         const result = options.isManagementView.value
           ? await api.accounts.setDefaultTestModel(
             targetAccount.id,
             targetModel,
-            accountOperationScopeParams(targetAccount, options.accountScopeParams.value)
+            accountOperationScopeParams(targetAccount, options.accountScopeParams.value),
+            ensureSupportedModel
           )
-          : await api.myAccounts.setDefaultTestModel(targetAccount.id, targetModel)
+          : await api.myAccounts.setDefaultTestModel(targetAccount.id, targetModel, ensureSupportedModel)
         return result.defaultTestModel
       },
       onLatestFailure: (error) => {
@@ -222,6 +221,18 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
         console.error(error)
       }
     })
+  }
+
+  async function persistSuccessfulSingleAccountTestModel(
+    account: AccountSummary,
+    result: AccountTestResult,
+    activeDraftMode: AccountTestDraftMode | undefined
+  ): Promise<void> {
+    if (activeDraftMode === 'create') return
+    const model = successfulAccountDefaultTestModel(account, result)
+    if (!model) return
+    enqueueAccountDefaultTestModelSave(account, model, activeDraftMode === 'saved')
+    await accountDefaultTestModelSaveQueue.whenIdle(account.id)
   }
 
   function applyAccountDefaultTestModel(
@@ -312,18 +323,29 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
       const result = await waitForSubmittedAccountTestResult(run, task, account, payload, (latestTask) => {
         if (!isActiveAccountTestRun(run)) return
         activeSingleTestTask.value = latestTask
-        syncDraftActivationTestFromTask(latestTask, activationDraftPayload)
-        syncSavedDraftUpdateTestFromTask(latestTask, savedDraftUpdatePayload)
+        syncDraftActivationTestFromTask(latestTask, account, activationDraftPayload)
+        syncSavedDraftUpdateTestFromTask(latestTask, account, savedDraftUpdatePayload)
       })
       if (!isActiveAccountTestRun(run)) return
       testResult.value = result
       syncDraftApiKeyTestSnapshot(draftPayload, result)
       if (result.success) {
-        if (activationDraftPayload) {
-          successfulDraftActivationTest.value = { taskId: task.id, account: activationDraftPayload }
+        const successfulModel = successfulAccountDefaultTestModel(account, result)
+        await persistSuccessfulSingleAccountTestModel(account, result, activeDraftMode)
+        if (!isActiveAccountTestRun(run)) return
+        if (activationDraftPayload && successfulModel) {
+          successfulDraftActivationTest.value = {
+            taskId: task.id,
+            account: activationDraftPayload,
+            model: successfulModel
+          }
         }
-        if (savedDraftUpdatePayload) {
-          successfulSavedDraftUpdateTest.value = { taskId: task.id, account: savedDraftUpdatePayload }
+        if (savedDraftUpdatePayload && successfulModel) {
+          successfulSavedDraftUpdateTest.value = {
+            taskId: task.id,
+            account: savedDraftUpdatePayload,
+            model: successfulModel
+          }
         }
         message.success(accountTestSuccessMessage(account, result))
       } else {
@@ -649,19 +671,29 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     return draftTestMode.value === 'saved' ? activeDraftTestPayload(account) : undefined
   }
 
-  function syncDraftActivationTestFromTask(task: AccountTestTask, activationDraftPayload: AccountDraftTestPayload['account'] | undefined): void {
+  function syncDraftActivationTestFromTask(
+    task: AccountTestTask,
+    account: AccountSummary,
+    activationDraftPayload: AccountDraftTestPayload['account'] | undefined
+  ): void {
     if (!activationDraftPayload) return
-    if (task.status === 'success' && task.result?.success === true) {
-      successfulDraftActivationTest.value = { taskId: task.id, account: activationDraftPayload }
+    const model = task.result ? successfulAccountDefaultTestModel(account, task.result) : undefined
+    if (task.status === 'success' && model) {
+      successfulDraftActivationTest.value = { taskId: task.id, account: activationDraftPayload, model }
     } else if (task.status === 'failed' || task.status === 'canceled') {
       successfulDraftActivationTest.value = undefined
     }
   }
 
-  function syncSavedDraftUpdateTestFromTask(task: AccountTestTask, savedDraftUpdatePayload: AccountDraftTestPayload['account'] | undefined): void {
+  function syncSavedDraftUpdateTestFromTask(
+    task: AccountTestTask,
+    account: AccountSummary,
+    savedDraftUpdatePayload: AccountDraftTestPayload['account'] | undefined
+  ): void {
     if (!savedDraftUpdatePayload) return
-    if (task.status === 'success' && task.result?.success === true) {
-      successfulSavedDraftUpdateTest.value = { taskId: task.id, account: savedDraftUpdatePayload }
+    const model = task.result ? successfulAccountDefaultTestModel(account, task.result) : undefined
+    if (task.status === 'success' && model) {
+      successfulSavedDraftUpdateTest.value = { taskId: task.id, account: savedDraftUpdatePayload, model }
     } else if (task.status === 'failed' || task.status === 'canceled') {
       successfulSavedDraftUpdateTest.value = undefined
     }

@@ -372,8 +372,8 @@ function assertStrictRedisCacheBoundaries(): void {
   assert.match(functionBody(accountApiKeyRotationSource, 'selectAccountRuntimeApiKeyEntryAsync'), /runtimeConfig\.runtimeStateDriver !== 'redis'[\s\S]*selectAccountRuntimeApiKeyEntry[\s\S]*selectWeightedApiKeyWithRedisCounter[\s\S]*selectRoundRobinApiKeyWithRedisCounter/, '高性能账户 API Key 轮换必须通过 Redis 计数器共享状态')
   assert.match(functionBody(accountApiKeyRotationSource, 'assertSyncAccountApiKeyRotationAllowed'), /runtimeConfig\.runtimeStateDriver !== 'redis'[\s\S]*throw new Error\('高性能模式账户 API Key 轮换禁止使用本机同步状态/, '高性能账户 API Key 同步轮换必须 fail-fast')
   const accountTestQueueSource = source('modules/accounts/account-test-task-queue.service.ts')
-  assert.doesNotMatch(accountTestQueueSource, /\bselectAccountRuntimeApiKey\b/, '手动账号测试草稿 API Key 选择禁止使用同步轮换入口')
-  assert.match(functionBody(accountTestQueueSource, 'openAIDraftAccountSecret'), /await selectAccountRuntimeApiKeyEntryAsync[\s\S]*selectedApiKeyFingerprint[\s\S]*selectedApiKeyEntry\?\.fingerprint/, '手动账号测试草稿 API Key 选择必须使用异步运行态入口并固定本次测试 Key')
+  assert.doesNotMatch(functionBody(accountTestQueueSource, 'openAIDraftAccountSecret'), /\bselectAccountRuntimeApiKeyEntry(?:Async)?\b/, '手动账号测试草稿 API Key 选择不能推进本机或 Redis 轮换状态')
+  assert.match(functionBody(accountTestQueueSource, 'openAIDraftAccountSecret'), /accountApiKeyEntries\(credentials\)\[0\][\s\S]*selectedApiKeyFingerprint[\s\S]*selectedApiKeyEntry\?\.fingerprint/, '手动账号测试草稿应无状态固定本次测试 Key')
 
   const quotaSnapshotSource = source('modules/gateway/quota/quota-snapshot-cache.service.ts')
   assert.match(functionBody(quotaSnapshotSource, 'replaceGatewayQuotaSnapshot'), /runtimeConfig\.cacheDriver === 'redis'[\s\S]*clearGatewayQuotaSnapshot\(\)[\s\S]*return[\s\S]*costSnapshot\.set/, 'Redis cache driver 下 quota snapshot 不得装入本机 Map')

@@ -40,7 +40,11 @@ export const accountsApi = {
   update: (id: string, payload: Record<string, unknown>, params?: ListParams) => unwrap<AccountSummary>(http.patch(`/accounts/${id}`, payload, { params })),
   updateTags: (id: string, payload: { tags: string[] }, params?: ListParams) => unwrap<AccountTagsUpdateResult>(http.patch(`/accounts/${id}/tags`, payload, { params })),
   updateAuthorizedDispatch: (id: string, payload: { status?: 'active' | 'disabled'; priority?: number; superPriorityEnabled?: boolean; fallbackEnabled?: boolean; clearFailureState?: boolean }, params?: ListParams) => unwrap<AccountSummary>(http.patch(`/accounts/${id}/authorized-dispatch`, payload, { params })),
-  setDefaultTestModel: (id: string, model: string, params?: ListParams) => unwrap<AccountDefaultTestModelResult>(http.put(`/accounts/${id}/default-test-model`, { model }, { params })),
+  setDefaultTestModel: (id: string, model: string, params?: ListParams, ensureSupportedModel = false) => unwrap<AccountDefaultTestModelResult>(http.put(
+    `/accounts/${id}/default-test-model`,
+    { model, ...(ensureSupportedModel ? { ensureSupportedModel: true } : {}) },
+    { params }
+  )),
   bindGroup: (id: string, payload: { groupId: string }, params?: ListParams) => unwrap<AccountSummary>(http.post(`/accounts/${id}/group`, payload, { params })),
   migrateTraffic: (id: string, payload: { targetAccountId: string; sourceStatus?: AccountTrafficMigrationSourceStatus }, params?: ListParams) => unwrap<AccountTrafficMigrationResult>(http.post(`/accounts/${id}/traffic-migration`, payload, { params })),
   test: (id: string, payload?: AccountTestPayload, params?: ListParams, options?: RequestControlOptions) => unwrap<AccountTestTask>(http.post(`/accounts/${id}/test`, payload ?? {}, { params, signal: options?.signal })),
@@ -71,7 +75,10 @@ export const myAccountsApi = {
   update: (id: string, payload: Record<string, unknown>) => unwrap<AccountSummary>(http.patch(`/my-accounts/${id}`, payload)),
   updateTags: (id: string, payload: { tags: string[] }) => unwrap<AccountTagsUpdateResult>(http.patch(`/my-accounts/${id}/tags`, payload)),
   updateAuthorizedDispatch: (id: string, payload: { status?: 'active' | 'disabled'; priority?: number; superPriorityEnabled?: boolean; fallbackEnabled?: boolean; clearFailureState?: boolean }) => unwrap<AccountSummary>(http.patch(`/my-accounts/${id}/authorized-dispatch`, payload)),
-  setDefaultTestModel: (id: string, model: string) => unwrap<AccountDefaultTestModelResult>(http.put(`/my-accounts/${id}/default-test-model`, { model })),
+  setDefaultTestModel: (id: string, model: string, ensureSupportedModel = false) => unwrap<AccountDefaultTestModelResult>(http.put(
+    `/my-accounts/${id}/default-test-model`,
+    { model, ...(ensureSupportedModel ? { ensureSupportedModel: true } : {}) }
+  )),
   bindGroup: (id: string, payload: { groupId: string }) => unwrap<AccountSummary>(http.post(`/my-accounts/${id}/group`, payload)),
   migrateTraffic: (id: string, payload: { targetAccountId: string; sourceStatus?: AccountTrafficMigrationSourceStatus }) => unwrap<AccountTrafficMigrationResult>(http.post(`/my-accounts/${id}/traffic-migration`, payload)),
   test: (id: string, payload?: AccountTestPayload, options?: RequestControlOptions) => unwrap<AccountTestTask>(http.post(`/my-accounts/${id}/test`, payload ?? {}, { signal: options?.signal })),

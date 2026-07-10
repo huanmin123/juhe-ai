@@ -10,6 +10,7 @@ import type { AccountResponseInspectionRuleForm } from './accountResponseInspect
 import { isAuthorizedAccount } from './accountFormatters'
 import { buildOAuthCreatePayload } from './accountOAuthPayload'
 import type { AccountScopeParams } from './accountOperationScope'
+import { accountDefaultTestModelSaveQueue } from './accountDefaultTestModelSaveQueue'
 import {
   ACCOUNT_API_KEY_BATCH_CREATE_LIMIT,
   buildAccountSavePayload,
@@ -40,6 +41,7 @@ type ReadonlyValue<T> = {
 
 interface UseAccountEditSaveFlowOptions {
   accountCreatePayloadWithActivationTest: (payload: AccountSavePayload) => AccountSavePayload & { status?: 'active'; activationTestTaskId?: string }
+  accountUpdateDefaultTestModel: (payload: AccountSavePayload) => string | undefined
   accountUpdateActivationTestTaskId: (payload: AccountSavePayload) => string | undefined
   accountAdvancedDetailLoaded: ReadonlyValue<boolean>
   accountErrorPolicyRules: Ref<AccountErrorPolicyRuleForm[]>
@@ -113,14 +115,21 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
 
     try {
       if (options.editingId.value) {
+        await accountDefaultTestModelSaveQueue.whenIdle(options.editingId.value)
         const updatePayload = buildAccountUpdatePayload(payload)
+        const activationTestTaskId = options.accountUpdateActivationTestTaskId(payload)
+        const defaultTestModel = options.accountUpdateDefaultTestModel(payload)
+        if (activationTestTaskId) {
+          updatePayload.activationTestTaskId = activationTestTaskId
+        }
+        if (defaultTestModel) {
+          updatePayload.defaultTestModel = defaultTestModel
+        }
         if (options.isApiKeyRuntimeChanged()) {
-          const activationTestTaskId = options.accountUpdateActivationTestTaskId(payload)
           if (!activationTestTaskId) {
             message.warning('更换 API Key 或 Base URL 后请先测试通过，再保存账户')
             return
           }
-          updatePayload.activationTestTaskId = activationTestTaskId
         }
         if (options.isManagementView.value) {
           await api.accounts.update(options.editingId.value, updatePayload, options.editingAccountScopeParams())
@@ -280,6 +289,9 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       errorPolicyRules: options.accountErrorPolicyRules.value,
       responseInspectionRules: options.accountResponseInspectionRules.value
     })
+    if (activationPayload.defaultTestModel) {
+      commonPayload.defaultTestModel = activationPayload.defaultTestModel
+    }
     if (options.form.oauthMode === 'refresh_token' && activationPayload.activationTestTaskId) {
       commonPayload.status = 'active'
       commonPayload.activationTestTaskId = activationPayload.activationTestTaskId

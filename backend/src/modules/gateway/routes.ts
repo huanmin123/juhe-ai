@@ -1106,6 +1106,9 @@ async function confirmCurrentClientIpAccountAvoidanceAfterFinalFailure(
   auditCapture: ReturnType<typeof createAuditCapture>,
   reason: string
 ): Promise<void> {
+  if (preflight.usageContext.trafficSource === 'manual_account_test') {
+    return
+  }
   const result = await confirmClientIpAccountAvoidanceAfterFinalFailureAsync(
     preflight.clientIpAccountAvoidanceTracker,
     preflight.activeGatewaySettings
@@ -1394,13 +1397,15 @@ async function sendPreCommitStreamRetryExhaustedResponse(input: {
 
 async function rememberCodexTurnFailureWhenClientRetryIsVisible(input: {
   auditCapture: ReturnType<typeof createAuditCapture>
+  usageContext: GatewayFailureUsageContext
   clientStrategy?: OpenAIGatewayDispatchContext['clientStrategy']
   accountId?: string
   errorCode?: string
   message: string
 }): Promise<void> {
   if (
-    input.errorCode !== gatewayStreamClientRetryErrorCode
+    input.usageContext.trafficSource === 'manual_account_test'
+    || input.errorCode !== gatewayStreamClientRetryErrorCode
     || !input.accountId
     || input.clientStrategy?.allowCodexTurnAccountAvoidance !== true
   ) {
@@ -1429,6 +1434,9 @@ async function recordKnownClientIpRequestError(
   usageContext: GatewayFailureUsageContext,
   auditCapture: ReturnType<typeof createAuditCapture>
 ): Promise<void> {
+  if (usageContext.trafficSource === 'manual_account_test') {
+    return
+  }
   const sample = clientIpRequestErrorSample(error)
   if (!sample) {
     return
