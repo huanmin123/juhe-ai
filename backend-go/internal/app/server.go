@@ -187,6 +187,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyAccountTagDeleteHandler:               managementHandlers.MyAccountTagDeleteHandler,
 		ManagementAccountTagUpdateHandler:                 managementHandlers.AccountTagUpdateHandler,
 		ManagementMyAccountTagUpdateHandler:               managementHandlers.MyAccountTagUpdateHandler,
+		ManagementSystemSettingsHandler:                   managementHandlers.SystemSettingsHandler,
+		ManagementSystemSettingsUpdateHandler:             managementHandlers.SystemSettingsUpdateHandler,
 		ManagementGlobalSettingsHandler:                   managementHandlers.GlobalSettingsHandler,
 		ManagementGlobalSettingsUpdateHandler:             managementHandlers.GlobalSettingsUpdateHandler,
 		ManagementOperationLogsHandler:                    managementHandlers.OperationLogsHandler,
@@ -303,6 +305,8 @@ type managementAPIHandlers struct {
 	MyAccountTagDeleteHandler               http.Handler
 	AccountTagUpdateHandler                 http.Handler
 	MyAccountTagUpdateHandler               http.Handler
+	SystemSettingsHandler                   http.Handler
+	SystemSettingsUpdateHandler             http.Handler
 	GlobalSettingsHandler                   http.Handler
 	GlobalSettingsUpdateHandler             http.Handler
 	OperationLogsHandler                    http.Handler
@@ -318,6 +322,7 @@ type managementAPIInvalidator interface {
 	managementprovidermodels.CustomProviderModelInvalidator
 	managementproxies.ProxyInvalidator
 	managementsettings.GlobalSettingsCacheInvalidator
+	managementsettings.SystemSettingsInvalidator
 }
 
 type gatewayCacheInvalidator interface {
@@ -385,6 +390,11 @@ func newManagementAPIHandler(
 	globalSettingsUpdateService := managementsettings.NewServiceWithOptions(managementsettings.ServiceOptions{
 		Store:                          store,
 		GlobalSettingsCacheInvalidator: systemAccountInvalidator,
+	})
+	systemSettingsService := managementsettings.NewSystemServiceWithOptions(managementsettings.SystemServiceOptions{
+		Store:       store,
+		Invalidator: systemAccountInvalidator,
+		Logger:      logger,
 	})
 	operationLogOptions := httpapi.ManagementOperationLogOptions{
 		Config:         cfg,
@@ -471,6 +481,8 @@ func newManagementAPIHandler(
 		MyAccountTagDeleteHandler:               httpapi.NewManagementMyAccountTagDeleteHandler(accountService),
 		AccountTagUpdateHandler:                 httpapi.NewManagementAccountTagUpdateHandlerWithOperationLog(accountService, operationLogOptions),
 		MyAccountTagUpdateHandler:               httpapi.NewManagementMyAccountTagUpdateHandlerWithOperationLog(accountService, operationLogOptions),
+		SystemSettingsHandler:                   httpapi.NewManagementSystemSettingsHandler(systemSettingsService),
+		SystemSettingsUpdateHandler:             httpapi.NewManagementSystemSettingsUpdateHandlerWithOperationLog(systemSettingsService, operationLogOptions),
 		GlobalSettingsHandler:                   httpapi.NewManagementGlobalSettingsHandler(&globalSettingsService),
 		GlobalSettingsUpdateHandler:             httpapi.NewManagementGlobalSettingsUpdateHandlerWithOperationLog(globalSettingsUpdateService, operationLogOptions),
 		OperationLogsHandler:                    httpapi.NewManagementOperationLogsHandler(operationLogService),

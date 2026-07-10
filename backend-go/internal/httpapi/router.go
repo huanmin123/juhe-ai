@@ -100,6 +100,8 @@ type RouterOptions struct {
 	ManagementMyAccountTagDeleteHandler               http.Handler
 	ManagementAccountTagUpdateHandler                 http.Handler
 	ManagementMyAccountTagUpdateHandler               http.Handler
+	ManagementSystemSettingsHandler                   http.Handler
+	ManagementSystemSettingsUpdateHandler             http.Handler
 	ManagementGlobalSettingsHandler                   http.Handler
 	ManagementGlobalSettingsUpdateHandler             http.Handler
 	ManagementOperationLogsHandler                    http.Handler
@@ -255,6 +257,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyAccountTagDeleteHandler == nil &&
 				opts.ManagementAccountTagUpdateHandler == nil &&
 				opts.ManagementMyAccountTagUpdateHandler == nil &&
+				opts.ManagementSystemSettingsHandler == nil &&
+				opts.ManagementSystemSettingsUpdateHandler == nil &&
 				opts.ManagementGlobalSettingsHandler == nil &&
 				opts.ManagementGlobalSettingsUpdateHandler == nil &&
 				opts.ManagementOperationLogsHandler == nil &&
@@ -501,11 +505,19 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementMyAccountTagUpdateHandler != nil {
 				system.With(managementAPIWriteRateLimitMiddleware).Patch("/my-accounts/{id}/tags", opts.ManagementMyAccountTagUpdateHandler.ServeHTTP)
 			}
+			if opts.ManagementSystemSettingsHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/settings", opts.ManagementSystemSettingsHandler.ServeHTTP)
+			}
+			if opts.ManagementSystemSettingsUpdateHandler != nil {
+				system.With(managementSettingsJSONBodyMiddleware, managementAPIWriteRateLimitMiddleware).
+					Patch("/settings", opts.ManagementSystemSettingsUpdateHandler.ServeHTTP)
+			}
 			if opts.ManagementGlobalSettingsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/settings/global", opts.ManagementGlobalSettingsHandler.ServeHTTP)
 			}
 			if opts.ManagementGlobalSettingsUpdateHandler != nil {
-				system.With(managementAPIWriteRateLimitMiddleware).Patch("/settings/global", opts.ManagementGlobalSettingsUpdateHandler.ServeHTTP)
+				system.With(managementSettingsJSONBodyMiddleware, managementAPIWriteRateLimitMiddleware).
+					Patch("/settings/global", opts.ManagementGlobalSettingsUpdateHandler.ServeHTTP)
 			}
 			if opts.ManagementOperationLogsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/operation-logs", opts.ManagementOperationLogsHandler.ServeHTTP)
@@ -630,6 +642,8 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAccountTagDeleteHandler != nil ||
 		opts.ManagementAccountTagUpdateHandler != nil ||
 		opts.ManagementMyAccountTagUpdateHandler != nil ||
+		opts.ManagementSystemSettingsHandler != nil ||
+		opts.ManagementSystemSettingsUpdateHandler != nil ||
 		opts.ManagementGlobalSettingsHandler != nil ||
 		opts.ManagementGlobalSettingsUpdateHandler != nil ||
 		opts.ManagementOperationLogsHandler != nil ||
@@ -673,5 +687,6 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAccountTagDeleteHandler != nil ||
 		opts.ManagementAccountTagUpdateHandler != nil ||
 		opts.ManagementMyAccountTagUpdateHandler != nil ||
+		opts.ManagementSystemSettingsUpdateHandler != nil ||
 		opts.ManagementGlobalSettingsUpdateHandler != nil
 }
