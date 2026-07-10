@@ -95,17 +95,17 @@ func (s *Service) Build(ctx context.Context, input BuildInput) (Snapshot, error)
 	if s.store == nil {
 		return Snapshot{}, fmt.Errorf("gateway quota snapshot store is required")
 	}
-	now := input.Now
-	if now.IsZero() {
-		now = s.now()
+	buildStartedAt := input.Now
+	if buildStartedAt.IsZero() {
+		buildStartedAt = s.now()
 	}
 	timezone, location, err := s.usageStatsTimezone(ctx, input.Timezone)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	statDate := dateKey(now, location)
-	statWeek := weekKey(now, location)
-	statMonth := monthKey(now, location)
+	statDate := dateKey(buildStartedAt, location)
+	statWeek := weekKey(buildStartedAt, location)
+	statMonth := monthKey(buildStartedAt, location)
 
 	apiKeyWindow, err := s.store.ListGatewayQuotaSnapshotAPIKeys(ctx, GatewayQuotaSnapshotCostPageSize)
 	if err != nil {
@@ -192,8 +192,9 @@ func (s *Service) Build(ctx context.Context, input BuildInput) (Snapshot, error)
 		})
 	}
 
+	buildCompletedAt := s.now().UTC()
 	return Snapshot{
-		GeneratedAt:                  formatGeneratedAt(now),
+		GeneratedAt:                  formatGeneratedAt(buildCompletedAt),
 		CostEntries:                  costEntries,
 		AuthorizationEntries:         authorizationEntries,
 		CostEntriesComplete:          apiKeyWindow.Complete,

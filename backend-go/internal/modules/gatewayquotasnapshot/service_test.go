@@ -138,6 +138,72 @@ func TestServiceBuildMatchesNodeSnapshotScopes(t *testing.T) {
 	}
 }
 
+func TestServiceBuildUsesCompletionTimeForGeneratedAtAndStartTimeForStatWindows(t *testing.T) {
+	buildStartedAt := time.Date(2026, 5, 31, 23, 59, 59, 0, time.UTC)
+	buildCompletedAt := time.Date(2026, 6, 1, 0, 0, 1, 0, time.UTC)
+	store := &snapshotStoreStub{
+		apiKeys: port.GatewayQuotaSnapshotRows[port.GatewayQuotaSnapshotAPIKeyRow]{
+			Rows: []port.GatewayQuotaSnapshotAPIKeyRow{{
+				ID:              "key_clock",
+				SystemAccountID: "sys_clock",
+				Limits: port.ManagementRequestQuotaLimits{
+					Daily: &port.ManagementRequestQuotaLimit{Enabled: true, Limit: 100},
+				},
+			}},
+			Complete: true,
+		},
+		authorizations:     port.GatewayQuotaSnapshotRows[port.GatewayQuotaSnapshotAuthorizationRow]{Complete: true},
+		teamAuthorizations: port.GatewayQuotaSnapshotRows[port.GatewayQuotaSnapshotTeamAuthorizationRow]{Complete: true},
+		costs: map[string]port.GatewayQuotaCosts{
+			"sys_clock\x00api_key\x00key_clock\x002026-05-31\x002026-05-25\x002026-05\x00": {
+				Daily: 7,
+			},
+		},
+	}
+	clockValues := []time.Time{buildStartedAt, buildCompletedAt}
+	clockIndex := 0
+	service := NewServiceWithOptions(ServiceOptions{
+		Store: store,
+		Now: func() time.Time {
+			if clockIndex >= len(clockValues) {
+				t.Fatalf("now() calls = %d, want at most %d", clockIndex+1, len(clockValues))
+				return time.Time{}
+			}
+			if clockIndex == 1 && len(store.costInputs) != 1 {
+				t.Fatalf("completion time requested before snapshot reads completed; cost inputs = %+v", store.costInputs)
+			}
+			value := clockValues[clockIndex]
+			clockIndex++
+			return value
+		},
+	})
+
+	snapshot, err := service.Build(context.Background(), BuildInput{Timezone: "UTC"})
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+	if clockIndex != len(clockValues) {
+		t.Fatalf("now() calls = %d, want %d", clockIndex, len(clockValues))
+	}
+	if snapshot.GeneratedAt != "2026-06-01T00:00:01.000Z" {
+		t.Fatalf("generated at = %q, want build completion time", snapshot.GeneratedAt)
+	}
+	if snapshot.StatDate != "2026-05-31" ||
+		snapshot.StatWeek != "2026-05-25" ||
+		snapshot.StatMonth != "2026-05" {
+		t.Fatalf("stat date/week/month = %q/%q/%q, want build start windows", snapshot.StatDate, snapshot.StatWeek, snapshot.StatMonth)
+	}
+	if len(store.costInputs) != 1 {
+		t.Fatalf("cost inputs = %+v, want one", store.costInputs)
+	}
+	costInput := store.costInputs[0]
+	if costInput.StatDate != "2026-05-31" ||
+		costInput.StatWeek != "2026-05-25" ||
+		costInput.StatMonth != "2026-05" {
+		t.Fatalf("cost input date/week/month = %q/%q/%q, want build start windows", costInput.StatDate, costInput.StatWeek, costInput.StatMonth)
+	}
+}
+
 func TestServiceBuildRequiresStore(t *testing.T) {
 	service := NewService(nil)
 	if _, err := service.Build(context.Background(), BuildInput{Timezone: "UTC"}); err == nil {
