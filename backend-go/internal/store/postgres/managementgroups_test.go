@@ -175,6 +175,16 @@ func TestManagementGroupCreateDependencyError(t *testing.T) {
 			providerExists:      true,
 			want:                port.ErrManagementGroupProviderDisabled,
 		},
+		{
+			name: "missing provider takes priority over missing system account",
+			want: port.ErrManagementGroupProviderNotFound,
+		},
+		{
+			name:            "disabled provider takes priority over missing system account",
+			providerExists:  true,
+			providerEnabled: false,
+			want:            port.ErrManagementGroupProviderDisabled,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

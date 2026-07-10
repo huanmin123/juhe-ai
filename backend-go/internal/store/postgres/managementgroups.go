@@ -306,12 +306,12 @@ func managementGroupCreateDependencyError(
 	providerEnabled bool,
 ) error {
 	switch {
-	case !systemAccountExists:
-		return port.ErrManagementGroupSystemAccountNotFound
 	case !providerExists:
 		return port.ErrManagementGroupProviderNotFound
 	case !providerEnabled:
 		return port.ErrManagementGroupProviderDisabled
+	case !systemAccountExists:
+		return port.ErrManagementGroupSystemAccountNotFound
 	default:
 		return nil
 	}
