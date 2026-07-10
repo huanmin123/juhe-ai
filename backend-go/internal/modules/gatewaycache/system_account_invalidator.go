@@ -16,6 +16,7 @@ const (
 	APIKeyValidationCacheName = "gateway:api-key-validation"
 	GlobalSettingsCacheName   = "settings:global"
 	SystemSettingsCacheName   = "settings:system"
+	GroupLookupCacheName      = "lookup:group"
 
 	RuntimeInvalidationStoreName = "gateway_cache_invalidation"
 	GatewayRuntimeCacheTopic     = "gateway_runtime_cache"
@@ -177,6 +178,25 @@ func (i *SystemAccountInvalidator) InvalidateSystemSettingsCache(ctx context.Con
 	}
 	if err := i.cache.SetRaw(ctx, key, []byte(version), SharedCacheVersionTTL); err != nil {
 		return fmt.Errorf("clear system settings shared cache: %w", err)
+	}
+	return nil
+}
+
+func (i *SystemAccountInvalidator) InvalidateGroupLookupCache(ctx context.Context) error {
+	if i.cache == nil {
+		return fmt.Errorf("gateway cache redis setter is required")
+	}
+	now := i.now().UTC()
+	version, err := i.newVersion(now)
+	if err != nil {
+		return fmt.Errorf("generate group lookup cache version: %w", err)
+	}
+	key, err := SharedCacheVersionKey(i.namespace, GroupLookupCacheName)
+	if err != nil {
+		return err
+	}
+	if err := i.cache.SetRaw(ctx, key, []byte(version), SharedCacheVersionTTL); err != nil {
+		return fmt.Errorf("clear group lookup shared cache: %w", err)
 	}
 	return nil
 }
