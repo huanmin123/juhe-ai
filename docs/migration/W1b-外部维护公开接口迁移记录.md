@@ -152,7 +152,7 @@ go run ./cmd/juhe-ai-maintenance w1b-public-api-smoke
 
 - `list`：`targetUsername` 必填；可选 `targetGroupName`、`providerCode`、`providerProtocolProfileId`、`groupId`、`keyword`、`type`、`status`、`schedulable=all|enabled|disabled|cooling`、`page`、`pageSize`。按 `targetGroupName` 或 `providerProtocolProfileId` 筛选时必须同时带 `providerCode`。
 - `add`：`targetUsername`、`targetGroupName`、`providerCode`、`providerProtocolProfileId`、`name`、`type=api_key`、`baseUrl`、`apiKey` 必填；可选 `targetDisplayName`、`supportedModels`、`status`、`concurrencyLimit=1..100000`、`priority=0..100000`、`availabilitySchedule|null`、`notes`。`supportedModels` 省略时继承 `providers.default_supported_models_json`；显式非空数组按 trim、去空、去重后的结果写入；显式 `[]` 或 provider 默认值最终为空时返回 HTTP `400 { message: "账户支持模型不能为空，请至少选择一个该 Base URL 支持的模型" }`。
-- `update`：`accountId` 必填；`targetUsername`、`targetGroupName`、`providerCode`、`providerProtocolProfileId`、`type` 只作为防误改校验；至少提交一个变更字段。`supportedModels` 省略或标准化后与当前集合无序等价时不重写模型绑定，也不修改账户 `default_test_model`；集合实际变化时，新集合不再包含现有默认测试模型则在同一事务清为 `NULL`，仍包含则保留。
+- `update`：`accountId` 必填；`targetUsername`、`targetGroupName`、`providerCode`、`providerProtocolProfileId`、`type` 只作为防误改校验；至少提交一个变更字段。`supportedModels` 省略或标准化后与当前集合无序等价时不校验模型目录、不重写模型绑定；每次账户更新都按最终模型集合自愈 `default_test_model`，不再包含现有默认测试模型时同事务清为 `NULL`，仍包含时保留。
 - `del`：`accountId` 必填；可选归属、防误删校验字段。
 - 响应不返回 `credentials`、上游 `apiKey`、`baseUrl`、OAuth token、代理密码、加密字段、凭据指纹或账户 `default_test_model`。`clientCompatibility` 是只读派生摘要，不作为入参。
 
@@ -340,7 +340,7 @@ public group、public route strategy、public API Key 与 public account 作为�
 
 BUG-0035 的公开账户默认模型同步修复已通过 HTTP 三态、service 默认继承 / 最终非空、provider 默认 JSON 联表、GPT-5.6 seed 静态 guard、全量 Go、目标包 race、vet、tidy diff 和 integration 包编译。真实 PostgreSQL 写入和 Docker shell E2E 因本机 Docker 未运行输出 `SKIP`，仍待健康环境复跑。
 
-BUG-0043 的账户默认测试模型一致性修复已通过 `sqlc generate`、service/store/HTTP/app 目标测试、目标 race、全量 Go、vet/tidy、integration 编译，以及 Node 公开账号 async 边界和账户测试 Responses 契约回归。真实 `TestW1bPublicAccountsPostgresSmoke` 已增加省略、无序等价、包含和排除默认模型场景，但本机 Docker 未运行输出 `SKIP`，仍待健康环境复跑。
+BUG-0043 的账户默认测试模型一致性修复已同步 Node 提交 `4f32fe11e`：每次账户更新都按最终模型集合自愈无效 `default_test_model`，`SupportedModelsChanged` 继续只控制目录校验和模型绑定重写。已通过 `sqlc generate`、store / public account 目标测试、目标 race、全量 Go、vet/tidy 和 integration 编译。真实 `TestW1bPublicAccountsPostgresSmoke` 已覆盖备注更新自愈、无序等价自愈、包含和排除默认模型，但本机 Docker 未运行输出 `SKIP`，仍待健康环境复跑。
 
 | 层级 | 建议命令 / 验证方式 | 必须覆盖 |
 | --- | --- | --- |
