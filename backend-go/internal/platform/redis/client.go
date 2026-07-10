@@ -65,6 +65,53 @@ end
 return {1, 0}
 `)
 
+var namedFixedWindowRateLimitScript = goredis.NewScript(`
+local now_ms = tonumber(ARGV[1])
+local bucket_count = tonumber(ARGV[2])
+local pending_counts = {}
+local pending_resets = {}
+
+for index = 1, bucket_count do
+  local offset = 3 + (index - 1) * 3
+  local store_name = ARGV[offset]
+  local window_ms = tonumber(ARGV[offset + 1])
+  local limit = tonumber(ARGV[offset + 2])
+  if limit > 0 then
+    local raw = redis.call('GET', KEYS[index])
+    local count = 0
+    local reset_at_ms = now_ms + window_ms
+    if raw then
+      local separator = string.find(raw, ':')
+      if separator then
+        count = tonumber(string.sub(raw, 1, separator - 1)) or 0
+        reset_at_ms = tonumber(string.sub(raw, separator + 1)) or reset_at_ms
+      end
+    end
+    if reset_at_ms <= now_ms then
+      count = 0
+      reset_at_ms = now_ms + window_ms
+    end
+    if count >= limit then
+      return {0, math.max(1, math.ceil((reset_at_ms - now_ms) / 1000)), store_name, limit}
+    end
+    pending_counts[index] = count + 1
+    pending_resets[index] = reset_at_ms
+  end
+end
+
+for index = 1, bucket_count do
+  local offset = 3 + (index - 1) * 3
+  local limit = tonumber(ARGV[offset + 2])
+  if limit > 0 then
+    local reset_at_ms = pending_resets[index]
+    local ttl_ms = math.max(1, reset_at_ms - now_ms)
+    redis.call('SET', KEYS[index], tostring(pending_counts[index]) .. ':' .. tostring(reset_at_ms), 'PX', ttl_ms)
+  end
+end
+
+return {1, 0, '', 0}
+`)
+
 var failureLockScript = goredis.NewScript(`
 local blocked_index = 0
 local blocked_retry_ms = 0
@@ -206,6 +253,20 @@ type FixedWindowLimit struct {
 type FixedWindowDecision struct {
 	Allowed           bool
 	RetryAfterSeconds int
+}
+
+type NamedFixedWindowLimit struct {
+	RawKey    string
+	StoreName string
+	Limit     int
+	Window    time.Duration
+}
+
+type NamedFixedWindowDecision struct {
+	Allowed           bool
+	RetryAfterSeconds int
+	StoreName         string
+	Limit             int
 }
 
 type FailureLockScope struct {
@@ -408,6 +469,26 @@ func (c *Client) AllowFixedWindow(ctx context.Context, limits []FixedWindowLimit
 	}, nil
 }
 
+func (c *Client) AllowNamedFixedWindowRaw(
+	ctx context.Context,
+	now time.Time,
+	limits []NamedFixedWindowLimit,
+) (NamedFixedWindowDecision, error) {
+	keys, args, err := namedFixedWindowRawScriptArgs(now, limits)
+	if err != nil {
+		return NamedFixedWindowDecision{}, err
+	}
+	if len(keys) == 0 {
+		return NamedFixedWindowDecision{Allowed: true}, nil
+	}
+
+	values, err := namedFixedWindowRateLimitScript.Run(ctx, c.client, keys, args...).Slice()
+	if err != nil {
+		return NamedFixedWindowDecision{}, err
+	}
+	return parseNamedFixedWindowDecision(values)
+}
+
 func (c *Client) RecordFailureWithLock(ctx context.Context, scopes []FailureLockScope) (FailureLockDecision, error) {
 	keys, args, err := c.failureLockScriptArgs(scopes)
 	if err != nil {
@@ -543,6 +624,47 @@ func (c *Client) fixedWindowScriptArgs(limits []FixedWindowLimit) ([]string, []i
 	return keys, args, nil
 }
 
+func namedFixedWindowRawScriptArgs(
+	now time.Time,
+	limits []NamedFixedWindowLimit,
+) ([]string, []interface{}, error) {
+	keys := make([]string, 0, len(limits))
+	bucketArgs := make([]interface{}, 0, len(limits)*3)
+	for _, item := range limits {
+		if strings.TrimSpace(item.RawKey) == "" {
+			return nil, nil, fmt.Errorf("named fixed-window raw key is required")
+		}
+		if err := validateKey(item.RawKey); err != nil {
+			return nil, nil, fmt.Errorf("named fixed-window raw key: %w", err)
+		}
+		if strings.TrimSpace(item.StoreName) == "" {
+			return nil, nil, fmt.Errorf("named fixed-window store name is required")
+		}
+		windowMs := item.Window.Milliseconds()
+		if item.Window <= 0 || windowMs <= 0 {
+			return nil, nil, fmt.Errorf("named fixed-window window must be at least 1ms")
+		}
+
+		keys = append(keys, item.RawKey)
+		bucketArgs = append(bucketArgs,
+			item.StoreName,
+			strconv.FormatInt(windowMs, 10),
+			strconv.Itoa(item.Limit),
+		)
+	}
+	if len(keys) == 0 {
+		return nil, nil, nil
+	}
+
+	args := make([]interface{}, 0, 2+len(bucketArgs))
+	args = append(args,
+		strconv.FormatInt(now.UnixMilli(), 10),
+		strconv.Itoa(len(keys)),
+	)
+	args = append(args, bucketArgs...)
+	return keys, args, nil
+}
+
 func (c *Client) failureLockScriptArgs(scopes []FailureLockScope) ([]string, []interface{}, error) {
 	keys := make([]string, 0, len(scopes)*2)
 	args := make([]interface{}, 0, len(scopes)*3)
@@ -630,6 +752,40 @@ func (c *Client) penaltyWindowScriptArgs(limits []PenaltyWindowLimit) ([]string,
 	return keys, args, nil
 }
 
+func parseNamedFixedWindowDecision(values []interface{}) (NamedFixedWindowDecision, error) {
+	if len(values) != 4 {
+		return NamedFixedWindowDecision{}, fmt.Errorf("unexpected named fixed-window redis result length: %d", len(values))
+	}
+
+	allowedValue, err := redisInt64(values[0])
+	if err != nil {
+		return NamedFixedWindowDecision{}, fmt.Errorf("parse named fixed-window allowed value: %w", err)
+	}
+	if allowedValue == 1 {
+		return NamedFixedWindowDecision{Allowed: true}, nil
+	}
+
+	retryAfter, err := redisInt64(values[1])
+	if err != nil {
+		return NamedFixedWindowDecision{}, fmt.Errorf("parse named fixed-window retry-after value: %w", err)
+	}
+	storeName, err := redisString(values[2])
+	if err != nil {
+		return NamedFixedWindowDecision{}, fmt.Errorf("parse named fixed-window store name: %w", err)
+	}
+	limit, err := redisInt64(values[3])
+	if err != nil {
+		return NamedFixedWindowDecision{}, fmt.Errorf("parse named fixed-window limit value: %w", err)
+	}
+
+	return NamedFixedWindowDecision{
+		Allowed:           false,
+		RetryAfterSeconds: max(1, int(retryAfter)),
+		StoreName:         storeName,
+		Limit:             int(limit),
+	}, nil
+}
+
 func redisInt64(value interface{}) (int64, error) {
 	switch typed := value.(type) {
 	case int64:
@@ -642,6 +798,17 @@ func redisInt64(value interface{}) (int64, error) {
 		return strconv.ParseInt(string(typed), 10, 64)
 	default:
 		return 0, fmt.Errorf("unexpected redis integer type %T", value)
+	}
+}
+
+func redisString(value interface{}) (string, error) {
+	switch typed := value.(type) {
+	case string:
+		return typed, nil
+	case []byte:
+		return string(typed), nil
+	default:
+		return "", fmt.Errorf("unexpected redis string type %T", value)
 	}
 }
 

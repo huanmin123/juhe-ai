@@ -289,12 +289,12 @@ func TestRouterRequiresIPRateLimiterWhenReaderConfigured(t *testing.T) {
 }
 
 func TestRedisSystemAPIIPRateLimiterBuildsFixedWindows(t *testing.T) {
-	client := &redisFixedWindowClientStub{
-		decision: redisplatform.FixedWindowDecision{Allowed: true},
+	client := &redisNamedFixedWindowClientStub{
+		decision: redisplatform.NamedFixedWindowDecision{Allowed: true},
 	}
-	limiter := NewRedisSystemAPIIPRateLimiter(client)
+	limiter := NewRedisSystemAPIIPRateLimiter(client, "prod")
 
-	decision, err := limiter.AllowSystemAPIIP(context.Background(), "client-key", SystemAPIIPRateLimitSettings{
+	decision, err := limiter.AllowSystemAPIIP(context.Background(), "Dcrbt8ScQUB86sw6a4y9lU90s2pYENU29jFmc9v5TQI", SystemAPIIPRateLimitSettings{
 		PerMinute:         600,
 		BurstPer10Seconds: 120,
 	})
@@ -308,12 +308,17 @@ func TestRedisSystemAPIIPRateLimiterBuildsFixedWindows(t *testing.T) {
 	if got, want := len(client.limits), 2; got != want {
 		t.Fatalf("limits length = %d, want %d", got, want)
 	}
-	if client.limits[0].Key != "system-api:ip:client-key:minute" ||
+	if client.now.IsZero() {
+		t.Fatal("named fixed-window call time is zero")
+	}
+	if client.limits[0].RawKey != "juhe-ai:prod:rate-limit:fixed:41dTIyDMu1nP5mpOUVS6c6ZNGJ5CAQsoc2I6JpT_aDI:Dcrbt8ScQUB86sw6a4y9lU90s2pYENU29jFmc9v5TQI" ||
+		client.limits[0].StoreName != systemAPIIPMinuteStoreName ||
 		client.limits[0].Limit != 600 ||
 		client.limits[0].Window != rateLimitMinuteWindow {
 		t.Fatalf("minute limit = %+v", client.limits[0])
 	}
-	if client.limits[1].Key != "system-api:ip:client-key:burst" ||
+	if client.limits[1].RawKey != "juhe-ai:prod:rate-limit:fixed:ii6fGoFyElvaaI-0WV-5Mm_LVh2q_VRZBDpBy-sH2DY:Dcrbt8ScQUB86sw6a4y9lU90s2pYENU29jFmc9v5TQI" ||
+		client.limits[1].StoreName != systemAPIIPBurstStoreName ||
 		client.limits[1].Limit != 120 ||
 		client.limits[1].Window != rateLimitBurstWindow {
 		t.Fatalf("burst limit = %+v", client.limits[1])
@@ -321,12 +326,12 @@ func TestRedisSystemAPIIPRateLimiterBuildsFixedWindows(t *testing.T) {
 }
 
 func TestRedisSystemAPIAuthenticatedRateLimiterBuildsMinuteWindow(t *testing.T) {
-	client := &redisFixedWindowClientStub{
-		decision: redisplatform.FixedWindowDecision{Allowed: true},
+	client := &redisNamedFixedWindowClientStub{
+		decision: redisplatform.NamedFixedWindowDecision{Allowed: true},
 	}
-	limiter := NewRedisSystemAPIAuthenticatedRateLimiter(client)
+	limiter := NewRedisSystemAPIAuthenticatedRateLimiter(client, "prod")
 
-	decision, err := limiter.AllowSystemAPIAuthenticated(context.Background(), "account-key", 300)
+	decision, err := limiter.AllowSystemAPIAuthenticated(context.Background(), "gr6HyV1J8eb_89OxHG1bnxmW1I3M-EbzVh9jw5CWcyo", 300)
 
 	if err != nil {
 		t.Fatalf("AllowSystemAPIAuthenticated() error = %v", err)
@@ -337,7 +342,8 @@ func TestRedisSystemAPIAuthenticatedRateLimiterBuildsMinuteWindow(t *testing.T) 
 	if got, want := len(client.limits), 1; got != want {
 		t.Fatalf("limits length = %d, want %d", got, want)
 	}
-	if client.limits[0].Key != "system-api:user:account-key:minute" ||
+	if client.limits[0].RawKey != "juhe-ai:prod:rate-limit:fixed:F8sE7Xk8PQq8T1yS4c4jan1dCyjkgKIry2P87MLyTHk:gr6HyV1J8eb_89OxHG1bnxmW1I3M-EbzVh9jw5CWcyo" ||
+		client.limits[0].StoreName != systemAPIUserMinuteStoreName ||
 		client.limits[0].Limit != 300 ||
 		client.limits[0].Window != rateLimitMinuteWindow {
 		t.Fatalf("minute limit = %+v", client.limits[0])
@@ -364,6 +370,15 @@ func TestSystemAPIMethodClassForMatchesNodeContract(t *testing.T) {
 				t.Fatalf("systemAPIMethodClassFor(%q) = %q, want %q", tc.method, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestSystemAPIRateLimitIdentityKeyMatchesNodeContract(t *testing.T) {
+	if got, want := systemAPIIPRateLimitKey("203.0.113.10", systemAPIMethodRead), "Dcrbt8ScQUB86sw6a4y9lU90s2pYENU29jFmc9v5TQI"; got != want {
+		t.Fatalf("IP rate-limit key = %q, want %q", got, want)
+	}
+	if got, want := systemAPIAuthenticatedRateLimitKey("sys_user", systemAPIMethodWrite), "gr6HyV1J8eb_89OxHG1bnxmW1I3M-EbzVh9jw5CWcyo"; got != want {
+		t.Fatalf("user rate-limit key = %q, want %q", got, want)
 	}
 }
 
@@ -440,13 +455,19 @@ func (s *publicSettingsRateLimiterStub) AllowSystemAPIIP(_ context.Context, key 
 	return s.decision, s.err
 }
 
-type redisFixedWindowClientStub struct {
-	limits   []redisplatform.FixedWindowLimit
-	decision redisplatform.FixedWindowDecision
+type redisNamedFixedWindowClientStub struct {
+	now      time.Time
+	limits   []redisplatform.NamedFixedWindowLimit
+	decision redisplatform.NamedFixedWindowDecision
 	err      error
 }
 
-func (s *redisFixedWindowClientStub) AllowFixedWindow(_ context.Context, limits []redisplatform.FixedWindowLimit) (redisplatform.FixedWindowDecision, error) {
-	s.limits = append([]redisplatform.FixedWindowLimit(nil), limits...)
+func (s *redisNamedFixedWindowClientStub) AllowNamedFixedWindowRaw(
+	_ context.Context,
+	now time.Time,
+	limits []redisplatform.NamedFixedWindowLimit,
+) (redisplatform.NamedFixedWindowDecision, error) {
+	s.now = now
+	s.limits = append([]redisplatform.NamedFixedWindowLimit(nil), limits...)
 	return s.decision, s.err
 }

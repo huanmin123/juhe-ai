@@ -133,7 +133,7 @@ func smokeW1aPublicSettingsRoute(
 		Logger:                   slog.New(slog.NewTextHandler(io.Discard, nil)),
 		PublicSettingsService:    &service,
 		SystemAPIRateLimitReader: store,
-		SystemAPIIPRateLimiter:   httpapi.NewRedisSystemAPIIPRateLimiter(stateRedis),
+		SystemAPIIPRateLimiter:   httpapi.NewRedisSystemAPIIPRateLimiter(stateRedis, cfg.RedisNamespace),
 	})
 
 	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/__aisys__/api/settings/public", nil)
@@ -196,8 +196,8 @@ func smokeW1aRedisRateLimit(ctx context.Context, cfg config.Config, stateRedis *
 	}
 	defer func() { _ = peer.Close() }()
 
-	limiterA := httpapi.NewRedisSystemAPIIPRateLimiter(stateRedis)
-	limiterB := httpapi.NewRedisSystemAPIIPRateLimiter(peer)
+	limiterA := httpapi.NewRedisSystemAPIIPRateLimiter(stateRedis, cfg.RedisNamespace)
+	limiterB := httpapi.NewRedisSystemAPIIPRateLimiter(peer, cfg.RedisNamespace)
 	settings := httpapi.SystemAPIIPRateLimitSettings{
 		PerMinute:         1,
 		BurstPer10Seconds: 1,

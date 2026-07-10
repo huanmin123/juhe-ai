@@ -2,6 +2,7 @@ package redis
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -164,6 +165,204 @@ func TestFixedWindowScriptArgsValidatesEnabledLimits(t *testing.T) {
 		{Key: "minute", Limit: 1, Window: 0},
 	}); err == nil {
 		t.Fatal("fixedWindowScriptArgs() error = nil, want window error")
+	}
+}
+
+func TestNamedFixedWindowRawScriptArgs(t *testing.T) {
+	now := time.UnixMilli(1_752_125_678_901).UTC()
+	keys, args, err := namedFixedWindowRawScriptArgs(now, []NamedFixedWindowLimit{
+		{
+			RawKey:    "juhe-ai:rate-limit:fixed:disabled-hash:key-hash",
+			StoreName: "system_api_disabled",
+			Limit:     0,
+			Window:    time.Second,
+		},
+		{
+			RawKey:    "juhe-ai:rate-limit:fixed:minute-hash:key-hash",
+			StoreName: "system_api_ip_minute",
+			Limit:     600,
+			Window:    time.Minute,
+		},
+		{
+			RawKey:    "another-namespace:rate-limit:fixed:burst-hash:key-hash",
+			StoreName: "system_api_ip_burst",
+			Limit:     120,
+			Window:    10 * time.Second,
+		},
+	})
+	if err != nil {
+		t.Fatalf("namedFixedWindowRawScriptArgs() error = %v", err)
+	}
+
+	wantKeys := []string{
+		"juhe-ai:rate-limit:fixed:disabled-hash:key-hash",
+		"juhe-ai:rate-limit:fixed:minute-hash:key-hash",
+		"another-namespace:rate-limit:fixed:burst-hash:key-hash",
+	}
+	if !reflect.DeepEqual(keys, wantKeys) {
+		t.Fatalf("keys = %#v, want %#v", keys, wantKeys)
+	}
+	wantArgs := []interface{}{
+		"1752125678901",
+		"3",
+		"system_api_disabled",
+		"1000",
+		"0",
+		"system_api_ip_minute",
+		"60000",
+		"600",
+		"system_api_ip_burst",
+		"10000",
+		"120",
+	}
+	if !reflect.DeepEqual(args, wantArgs) {
+		t.Fatalf("args = %#v, want %#v", args, wantArgs)
+	}
+}
+
+func TestAllowNamedFixedWindowRawAllowsEmptyLimitsWithoutRedisCall(t *testing.T) {
+	client := &Client{namespace: "must-not-be-used"}
+	decision, err := client.AllowNamedFixedWindowRaw(t.Context(), time.UnixMilli(1), nil)
+	if err != nil {
+		t.Fatalf("AllowNamedFixedWindowRaw() error = %v", err)
+	}
+	if !decision.Allowed {
+		t.Fatalf("AllowNamedFixedWindowRaw() decision = %+v, want allowed", decision)
+	}
+}
+
+func TestNamedFixedWindowRawScriptArgsValidatesLimits(t *testing.T) {
+	tests := []struct {
+		name  string
+		limit NamedFixedWindowLimit
+	}{
+		{
+			name: "raw key",
+			limit: NamedFixedWindowLimit{
+				StoreName: "system_api_ip_minute",
+				Limit:     0,
+				Window:    time.Minute,
+			},
+		},
+		{
+			name: "blank raw key",
+			limit: NamedFixedWindowLimit{
+				RawKey:    " ",
+				StoreName: "system_api_ip_minute",
+				Limit:     1,
+				Window:    time.Minute,
+			},
+		},
+		{
+			name: "store name",
+			limit: NamedFixedWindowLimit{
+				RawKey: "raw:key",
+				Limit:  0,
+				Window: time.Minute,
+			},
+		},
+		{
+			name: "blank store name",
+			limit: NamedFixedWindowLimit{
+				RawKey:    "raw:key",
+				StoreName: " ",
+				Limit:     1,
+				Window:    time.Minute,
+			},
+		},
+		{
+			name: "zero window",
+			limit: NamedFixedWindowLimit{
+				RawKey:    "raw:key",
+				StoreName: "system_api_ip_minute",
+				Limit:     0,
+			},
+		},
+		{
+			name: "sub-millisecond window",
+			limit: NamedFixedWindowLimit{
+				RawKey:    "raw:key",
+				StoreName: "system_api_ip_minute",
+				Limit:     1,
+				Window:    time.Nanosecond,
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, _, err := namedFixedWindowRawScriptArgs(time.UnixMilli(1), []NamedFixedWindowLimit{
+				test.limit,
+			}); err == nil {
+				t.Fatal("namedFixedWindowRawScriptArgs() error = nil, want validation error")
+			}
+		})
+	}
+}
+
+func TestParseNamedFixedWindowDecision(t *testing.T) {
+	allowed, err := parseNamedFixedWindowDecision([]interface{}{
+		int64(1),
+		int64(0),
+		"",
+		int64(0),
+	})
+	if err != nil {
+		t.Fatalf("parseNamedFixedWindowDecision() allowed error = %v", err)
+	}
+	if want := (NamedFixedWindowDecision{Allowed: true}); allowed != want {
+		t.Fatalf("allowed decision = %+v, want %+v", allowed, want)
+	}
+
+	blocked, err := parseNamedFixedWindowDecision([]interface{}{
+		"0",
+		"7",
+		[]byte("system_api_ip_burst"),
+		"120",
+	})
+	if err != nil {
+		t.Fatalf("parseNamedFixedWindowDecision() blocked error = %v", err)
+	}
+	wantBlocked := NamedFixedWindowDecision{
+		Allowed:           false,
+		RetryAfterSeconds: 7,
+		StoreName:         "system_api_ip_burst",
+		Limit:             120,
+	}
+	if blocked != wantBlocked {
+		t.Fatalf("blocked decision = %+v, want %+v", blocked, wantBlocked)
+	}
+
+	minimumRetry, err := parseNamedFixedWindowDecision([]interface{}{
+		int64(0),
+		int64(0),
+		"system_api_ip_minute",
+		int64(600),
+	})
+	if err != nil {
+		t.Fatalf("parseNamedFixedWindowDecision() minimum retry error = %v", err)
+	}
+	if minimumRetry.RetryAfterSeconds != 1 {
+		t.Fatalf("minimum retry-after = %d, want 1", minimumRetry.RetryAfterSeconds)
+	}
+}
+
+func TestParseNamedFixedWindowDecisionRejectsMalformedResults(t *testing.T) {
+	tests := []struct {
+		name   string
+		values []interface{}
+	}{
+		{name: "length", values: []interface{}{int64(1)}},
+		{name: "allowed", values: []interface{}{"invalid", int64(0), "", int64(0)}},
+		{name: "retry after", values: []interface{}{int64(0), "invalid", "store", int64(1)}},
+		{name: "store name", values: []interface{}{int64(0), int64(1), int64(2), int64(1)}},
+		{name: "limit", values: []interface{}{int64(0), int64(1), "store", "invalid"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := parseNamedFixedWindowDecision(test.values); err == nil {
+				t.Fatal("parseNamedFixedWindowDecision() error = nil, want parse error")
+			}
+		})
 	}
 }
 

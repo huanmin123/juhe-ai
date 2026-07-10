@@ -3,7 +3,7 @@ package httpapi
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
+	"encoding/base64"
 	"log/slog"
 	"math"
 	"net/http"
@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"juhe-ai/backend-go/internal/modules/gatewaycache"
 	redisplatform "juhe-ai/backend-go/internal/platform/redis"
 	"juhe-ai/backend-go/internal/store/port"
 )
@@ -20,6 +21,10 @@ const (
 	systemAPISettingsCacheTTL = 60 * time.Second
 	rateLimitMinuteWindow     = time.Minute
 	rateLimitBurstWindow      = 10 * time.Second
+
+	systemAPIIPMinuteStoreName   = "system_api_ip_minute"
+	systemAPIIPBurstStoreName    = "system_api_ip_burst"
+	systemAPIUserMinuteStoreName = "system_api_user_minute"
 )
 
 type systemAPIIPRateLimitMiddleware struct {
@@ -78,16 +83,18 @@ type inMemorySystemAPIAuthenticatedRateLimiter struct {
 	minuteLimiter fixedWindowRateLimiter
 }
 
-type redisFixedWindowClient interface {
-	AllowFixedWindow(context.Context, []redisplatform.FixedWindowLimit) (redisplatform.FixedWindowDecision, error)
+type redisNamedFixedWindowClient interface {
+	AllowNamedFixedWindowRaw(context.Context, time.Time, []redisplatform.NamedFixedWindowLimit) (redisplatform.NamedFixedWindowDecision, error)
 }
 
 type redisSystemAPIIPRateLimiter struct {
-	client redisFixedWindowClient
+	client    redisNamedFixedWindowClient
+	namespace string
 }
 
 type redisSystemAPIAuthenticatedRateLimiter struct {
-	client redisFixedWindowClient
+	client    redisNamedFixedWindowClient
+	namespace string
 }
 
 type fixedWindowRateLimiter struct {
@@ -159,18 +166,18 @@ func NewInMemorySystemAPIAuthenticatedRateLimiter() SystemAPIAuthenticatedRateLi
 	}
 }
 
-func NewRedisSystemAPIIPRateLimiter(client redisFixedWindowClient) SystemAPIIPRateLimiter {
+func NewRedisSystemAPIIPRateLimiter(client redisNamedFixedWindowClient, namespace string) SystemAPIIPRateLimiter {
 	if client == nil {
 		return nil
 	}
-	return &redisSystemAPIIPRateLimiter{client: client}
+	return &redisSystemAPIIPRateLimiter{client: client, namespace: namespace}
 }
 
-func NewRedisSystemAPIAuthenticatedRateLimiter(client redisFixedWindowClient) SystemAPIAuthenticatedRateLimiter {
+func NewRedisSystemAPIAuthenticatedRateLimiter(client redisNamedFixedWindowClient, namespace string) SystemAPIAuthenticatedRateLimiter {
 	if client == nil {
 		return nil
 	}
-	return &redisSystemAPIAuthenticatedRateLimiter{client: client}
+	return &redisSystemAPIAuthenticatedRateLimiter{client: client, namespace: namespace}
 }
 
 func (m *systemAPIIPRateLimitMiddleware) handle(next http.Handler) http.Handler {
@@ -332,9 +339,17 @@ func (l *redisSystemAPIIPRateLimiter) AllowSystemAPIIP(
 	key string,
 	settings SystemAPIIPRateLimitSettings,
 ) (SystemAPIRateLimitDecision, error) {
-	decision, err := l.client.AllowFixedWindow(ctx, []redisplatform.FixedWindowLimit{
-		{Key: "system-api:ip:" + key + ":minute", Limit: settings.PerMinute, Window: rateLimitMinuteWindow},
-		{Key: "system-api:ip:" + key + ":burst", Limit: settings.BurstPer10Seconds, Window: rateLimitBurstWindow},
+	minuteKey, err := systemAPIRedisFixedWindowKey(l.namespace, systemAPIIPMinuteStoreName, key)
+	if err != nil {
+		return SystemAPIRateLimitDecision{}, err
+	}
+	burstKey, err := systemAPIRedisFixedWindowKey(l.namespace, systemAPIIPBurstStoreName, key)
+	if err != nil {
+		return SystemAPIRateLimitDecision{}, err
+	}
+	decision, err := l.client.AllowNamedFixedWindowRaw(ctx, time.Now(), []redisplatform.NamedFixedWindowLimit{
+		{RawKey: minuteKey, StoreName: systemAPIIPMinuteStoreName, Limit: settings.PerMinute, Window: rateLimitMinuteWindow},
+		{RawKey: burstKey, StoreName: systemAPIIPBurstStoreName, Limit: settings.BurstPer10Seconds, Window: rateLimitBurstWindow},
 	})
 	if err != nil {
 		return SystemAPIRateLimitDecision{}, err
@@ -350,8 +365,12 @@ func (l *redisSystemAPIAuthenticatedRateLimiter) AllowSystemAPIAuthenticated(
 	key string,
 	limit int,
 ) (SystemAPIRateLimitDecision, error) {
-	decision, err := l.client.AllowFixedWindow(ctx, []redisplatform.FixedWindowLimit{
-		{Key: "system-api:user:" + key + ":minute", Limit: limit, Window: rateLimitMinuteWindow},
+	minuteKey, err := systemAPIRedisFixedWindowKey(l.namespace, systemAPIUserMinuteStoreName, key)
+	if err != nil {
+		return SystemAPIRateLimitDecision{}, err
+	}
+	decision, err := l.client.AllowNamedFixedWindowRaw(ctx, time.Now(), []redisplatform.NamedFixedWindowLimit{
+		{RawKey: minuteKey, StoreName: systemAPIUserMinuteStoreName, Limit: limit, Window: rateLimitMinuteWindow},
 	})
 	if err != nil {
 		return SystemAPIRateLimitDecision{}, err
@@ -474,8 +493,19 @@ func systemAPIAuthenticatedRateLimitKey(systemAccountID string, methodClass syst
 }
 
 func systemAPIRateLimitKey(identity string, methodClass systemAPIMethodClass) string {
-	sum := sha256.Sum256([]byte(identity + "\x00" + string(methodClass)))
-	return hex.EncodeToString(sum[:])
+	return systemAPIRedisKeyHash(identity + ":" + string(methodClass))
+}
+
+func systemAPIRedisFixedWindowKey(namespace string, storeName string, identityHash string) (string, error) {
+	return gatewaycache.RedisNamespacedKey(
+		namespace,
+		"juhe-ai:rate-limit:fixed:"+systemAPIRedisKeyHash(storeName)+":"+identityHash,
+	)
+}
+
+func systemAPIRedisKeyHash(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
 func writeSystemAPIRateLimitResponse(w http.ResponseWriter, decision SystemAPIRateLimitDecision) {
