@@ -10,7 +10,7 @@ import {
   createGroupAsync,
   deleteAccountAsync,
   deleteGroupAsync,
-  updateAccountDefaultTestModelAsync
+  updateAccountHealthCheckModelAsync
 } from '../../storage/repositories.js'
 import {
   accountTestTaskCancelMessageAsync,
@@ -129,7 +129,7 @@ try {
     supportedModels: ['gpt-5.6-sol']
   }, accountAccess)
   createdAccountIds.push(storedAccount.id)
-  const firstEnsuredModel = await updateAccountDefaultTestModelAsync(
+  const firstEnsuredModel = await updateAccountHealthCheckModelAsync(
     storedAccount.id,
     'gpt-5.6-terra',
     accountAccess,
@@ -137,7 +137,7 @@ try {
   )
   assert(firstEnsuredModel?.supportedModels?.includes('gpt-5.6-sol'), 'PG 原子追加不能删除账户原支持模型')
   assert(firstEnsuredModel?.supportedModels?.includes('gpt-5.6-terra'), 'PG 应追加第一个成功模型')
-  const secondEnsuredModel = await updateAccountDefaultTestModelAsync(
+  const secondEnsuredModel = await updateAccountHealthCheckModelAsync(
     storedAccount.id,
     'gpt-5.6-luna',
     accountAccess,
@@ -145,7 +145,7 @@ try {
   )
   assert(secondEnsuredModel?.supportedModels?.includes('gpt-5.6-terra'), 'PG 连续追加第二个模型不能删除第一个成功模型')
   assert(secondEnsuredModel?.supportedModels?.includes('gpt-5.6-luna'), 'PG 应追加第二个成功模型')
-  assert.equal(secondEnsuredModel?.defaultTestModel, 'gpt-5.6-luna', 'PG 连续测试后应保存最后成功模型')
+  assert.equal(secondEnsuredModel?.healthCheckModel, 'gpt-5.6-luna', 'PG 连续更新后应保存最后检查模型')
 
   console.log(JSON.stringify({
     message: '账号测试任务 PG smoke 通过',

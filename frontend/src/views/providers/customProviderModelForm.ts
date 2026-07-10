@@ -2,6 +2,8 @@ import type {
   ProviderModelApiProtocol,
   ProviderModelMode,
   ProviderModelPricing,
+  ProviderModelReasoningEffort,
+  ProviderModelServiceTier,
   CustomProviderModelScope,
   ProviderModelStatus,
   ProviderModelUpsertPayload
@@ -23,6 +25,9 @@ export interface CustomModelForm {
   status: ProviderModelStatus
   mode: ProviderModelMode
   supportedApiProtocols: ProviderModelApiProtocol[]
+  supportedServiceTiers: ProviderModelServiceTier[]
+  supportedReasoningEfforts: ProviderModelReasoningEffort[]
+  defaultReasoningEffort?: ProviderModelReasoningEffort
   pricingTemplateModel?: string
   releaseDate?: string
   shutdownDate?: string
@@ -44,8 +49,25 @@ export const emptyCustomModelForm: CustomModelForm = {
   model: '',
   status: 'active',
   mode: 'text',
-  supportedApiProtocols: ['responses', 'chat_completions']
+  supportedApiProtocols: ['responses', 'chat_completions'],
+  supportedServiceTiers: [],
+  supportedReasoningEfforts: []
 }
+
+export const customModelServiceTierOptions: Array<{ label: string; value: ProviderModelServiceTier }> = [
+  { label: '优先（Priority）', value: 'priority' },
+  { label: '弹性（Flex）', value: 'flex' }
+]
+
+export const customModelReasoningEffortOptions: Array<{ label: string; value: ProviderModelReasoningEffort }> = [
+  { label: '不思考（None）', value: 'none' },
+  { label: '最少（Minimal）', value: 'minimal' },
+  { label: '低（Low）', value: 'low' },
+  { label: '中（Medium）', value: 'medium' },
+  { label: '高（High）', value: 'high' },
+  { label: '更高（XHigh）', value: 'xhigh' },
+  { label: '最大（Max）', value: 'max' }
+]
 
 export function createCustomModelFormFromPricing(
   record: ProviderModelPricing,
@@ -58,6 +80,12 @@ export function createCustomModelFormFromPricing(
     status: record.status ?? 'active',
     mode: categoryFromModeOrModel(record.mode, record.model),
     supportedApiProtocols: [...(record.supportedApiProtocols ?? [])],
+    supportedServiceTiers: normalizeServiceTiers(record.supportedServiceTiers),
+    supportedReasoningEfforts: normalizeReasoningEfforts(record.supportedReasoningEfforts),
+    defaultReasoningEffort: normalizedDefaultReasoningEffort(
+      record.defaultReasoningEffort,
+      record.supportedReasoningEfforts
+    ),
     releaseDate: record.releaseDate,
     shutdownDate: record.shutdownDate,
     contextWindowTokens: record.contextWindowTokens,
@@ -83,11 +111,12 @@ export function createCustomModelFormFromPricing(
 
 export function buildCustomModelPayload(
   form: CustomModelForm,
-  category: ModelCategoryKey
+  category: ModelCategoryKey,
+  options: { includeGptCapabilities?: boolean } = {}
 ): ProviderModelUpsertPayload | undefined {
   const model = form.model.trim()
   if (!model) return undefined
-  return {
+  const payload: ProviderModelUpsertPayload = {
     scope: form.scope,
     model,
     status: form.status,
@@ -100,6 +129,35 @@ export function buildCustomModelPayload(
     maxOutputTokens: numberToNull(form.maxOutputTokens),
     ...buildCustomModelDirectPricePayload(form, category)
   }
+  if (options.includeGptCapabilities) {
+    const supportedReasoningEfforts = category === 'text'
+      ? normalizeReasoningEfforts(form.supportedReasoningEfforts)
+      : []
+    payload.supportedServiceTiers = category === 'text'
+      ? normalizeServiceTiers(form.supportedServiceTiers)
+      : []
+    payload.supportedReasoningEfforts = supportedReasoningEfforts
+    payload.defaultReasoningEffort = normalizedDefaultReasoningEffort(
+      form.defaultReasoningEffort,
+      supportedReasoningEfforts
+    ) ?? null
+  }
+  return payload
+}
+
+export function clearCustomModelGptCapabilities(form: CustomModelForm): void {
+  form.supportedServiceTiers = []
+  form.supportedReasoningEfforts = []
+  form.defaultReasoningEffort = undefined
+}
+
+export function normalizeCustomModelDefaultReasoningEffort(form: CustomModelForm): void {
+  form.supportedServiceTiers = normalizeServiceTiers(form.supportedServiceTiers)
+  form.supportedReasoningEfforts = normalizeReasoningEfforts(form.supportedReasoningEfforts)
+  form.defaultReasoningEffort = normalizedDefaultReasoningEffort(
+    form.defaultReasoningEffort,
+    form.supportedReasoningEfforts
+  )
 }
 
 export function applyPricingTemplateToCustomModelForm(
@@ -154,4 +212,47 @@ function trimToNull(value: unknown): string | null {
 
 function numberToNull(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function normalizeServiceTiers(value: unknown): ProviderModelServiceTier[] {
+  if (!Array.isArray(value)) return []
+  return uniqueAllowedValues(value, new Set<ProviderModelServiceTier>(['priority', 'flex']))
+}
+
+function normalizeReasoningEfforts(value: unknown): ProviderModelReasoningEffort[] {
+  if (!Array.isArray(value)) return []
+  return uniqueAllowedValues(value, new Set<ProviderModelReasoningEffort>([
+    'none',
+    'minimal',
+    'low',
+    'medium',
+    'high',
+    'xhigh',
+    'max'
+  ]))
+}
+
+function normalizedDefaultReasoningEffort(
+  value: unknown,
+  supportedReasoningEfforts: unknown
+): ProviderModelReasoningEffort | undefined {
+  const supported = normalizeReasoningEfforts(supportedReasoningEfforts)
+  return typeof value === 'string' && supported.includes(value as ProviderModelReasoningEffort)
+    ? value as ProviderModelReasoningEffort
+    : undefined
+}
+
+function uniqueAllowedValues<TValue extends string>(
+  values: unknown[],
+  allowed: ReadonlySet<TValue>
+): TValue[] {
+  const output: TValue[] = []
+  const seen = new Set<TValue>()
+  for (const value of values) {
+    if (typeof value !== 'string' || !allowed.has(value as TValue) || seen.has(value as TValue)) continue
+    const normalized = value as TValue
+    seen.add(normalized)
+    output.push(normalized)
+  }
+  return output
 }

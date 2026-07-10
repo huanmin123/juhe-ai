@@ -2,19 +2,8 @@ import type { AccountDraftTestAccountPayload } from '@/api/client'
 import type { AccountSummary, AccountTestResult, AccountTestTask } from '@/types/domain'
 import { draftApiKeyTestRuntimeDetailsForPayload } from '../../views/accounts/accountDraftApiKeyTestRuntime'
 import {
-  accountTestBatchCounts,
-  accountTestBatchItemJson,
-  accountTestBatchItemMessage,
-  accountTestBatchItemModelText,
-  accountTestBatchItemStatusColor,
-  accountTestBatchItemStatusText,
-  accountTestBatchOutputLines,
-  accountTestBatchResultSnapshot,
-  accountTestBatchStatusColor,
-  accountTestBatchStatusText,
   accountTestSingleOutputLines
 } from '../../views/accounts/accountTestDisplayFormatters'
-import type { AccountBatchTestItem } from '../../views/accounts/accountTestFlow'
 
 const apiKeyAccount = accountFixture({
   id: 'account_test_display_api_key',
@@ -221,85 +210,23 @@ const failedResult = resultFixture(failedAccount, {
   message: '上游 500',
   responseText: 'upstream failed',
   durationMs: 600,
-  testEndpointMode: 'responses_sse'
+  testEndpointMode: 'responses_sse',
+  accountStatusChanged: true,
+  accountStatus: 'error'
 })
-const batchItems: AccountBatchTestItem[] = [
-  {
-    account: apiKeyAccount,
-    status: 'success',
-    result: successResult,
-    startedAt: 1000,
-    finishedAt: 2234
-  },
-  {
-    account: failedAccount,
-    status: 'failed',
-    result: failedResult,
-    message: '上游 500',
-    startedAt: 2000,
-    finishedAt: 2600
-  },
-  {
-    account: oauthAccount,
-    status: 'stopped',
-    message: '已停止测试'
-  }
-]
-const batchCounts = accountTestBatchCounts(batchItems)
-assertEqual(batchCounts.total, 3, '批量计数应包含全部账户')
-assertEqual(batchCounts.completed, 3, '批量计数应把 success/failed/stopped 视为完成')
-assertEqual(batchCounts.success, 1, '批量计数应包含成功数')
-assertEqual(batchCounts.failed, 1, '批量计数应包含失败数')
-assertEqual(batchCounts.stopped, 1, '批量计数应包含停止数')
-assertEqual(accountTestBatchStatusColor(batchCounts, false), 'red', '批量状态颜色应优先展示失败')
-assertEqual(accountTestBatchStatusText(batchCounts, false), '成功 1，失败 1', '批量状态文案应展示成功和失败数')
-const batchLines = accountTestBatchOutputLines({
-  batchItems,
-  counts: batchCounts,
+const failedLines = accountTestSingleOutputLines({
+  account: failedAccount,
+  testEndpointMode: 'responses_sse',
+  selectedEndpointModeText: 'Responses API (Streaming)',
   model: 'gpt-5.1',
+  providerLabel: () => 'OpenAI',
+  result: failedResult,
   running: false
 })
-assertLineIncludes(batchLines, '批量测试账号：3 个', '批量输出应展示账户数量')
-assertLineIncludes(batchLines, '测试完成：成功 1 个，失败 1 个，已停止 1 个', '批量输出应展示完成摘要')
-assertLineIncludes(batchLines, '失败摘要：', '批量输出应展示失败摘要标题')
-assertLineIncludes(batchLines, '失败账户: 上游 500', '批量输出应展示失败账户消息')
+assertLineIncludes(failedLines, 'upstream failed', '失败输出应展示诊断响应')
+assertLineExcludes(failedLines, '账号状态：', '人工测试结果不应展示或暗示账户状态变更')
 
-assertEqual(accountTestBatchItemStatusColor(batchItems[1]!), 'red', '失败行状态颜色应为 red')
-assertEqual(accountTestBatchItemStatusText(batchItems[1]!), '失败', '失败行状态文案应为失败')
-assertEqual(accountTestBatchItemModelText(batchItems[0]!, 'gpt-5.1'), 'gpt-5.1', '批量行应优先展示结果模型')
-assertEqual(
-  accountTestBatchItemModelText({ account: apiKeyAccount, status: 'failed', result: mappedResult }, 'gpt-5.5'),
-  'gpt-5.5 -> gpt-5.6-terra',
-  '批量行命中模型映射时应同时展示请求模型和实际上游模型'
-)
-assertEqual(
-  accountTestBatchItemModelText({
-    account: apiKeyAccount,
-    status: 'success',
-    result: resultFixture(apiKeyAccount, {
-      model: 'gpt-5.5',
-      upstreamModel: 'gpt-5.5',
-      modelMappingApplied: true
-    })
-  }, 'gpt-5.5'),
-  'gpt-5.5 -> gpt-5.5',
-  '批量行映射前后模型名相同时也应明确展示命中映射'
-)
-assertEqual(accountTestBatchItemMessage(batchItems[2]!), '已停止测试', '批量行应优先展示显式消息')
-
-const batchSnapshot = accountTestBatchResultSnapshot({
-  batchItems,
-  model: 'gpt-5.1'
-})
-assertEqual(batchSnapshot.summary.completed, 3, '批量快照应展示完成数')
-assertEqual(batchSnapshot.summary.failed, 1, '批量快照应展示失败数')
-assertEqual(batchSnapshot.results[1]?.accountId, failedAccount.id, '批量快照应保留账户 ID')
-assertEqual(batchSnapshot.results[1]?.message, '上游 500', '批量快照应保留行消息')
-const itemSnapshot = JSON.parse(accountTestBatchItemJson(batchItems[0]!)) as { accountId?: string; result?: { traceId?: string } }
-assertEqual(itemSnapshot.accountId, apiKeyAccount.id, '单行复制 JSON 应保留账户 ID')
-assertEqual(itemSnapshot.result?.traceId, 'trace_test_display', '单行复制 JSON 应保留测试结果')
-
-console.log('账户测试展示 formatter 回归通过：单账号输出、OAuth 运行窗口、批量状态、批量摘要和 JSON 快照均符合预期')
+console.log('账户测试展示 formatter 回归通过：单账号输出、OAuth 运行窗口和零状态副作用展示均符合预期')
 
 function accountFixture(overrides: Partial<AccountSummary> = {}): AccountSummary {
   return {

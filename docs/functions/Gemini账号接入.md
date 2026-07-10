@@ -92,7 +92,7 @@ type GeminiAccountType = 'api_key'
 
 前端创建流程仍按“供应商 -> 接入类型 -> 凭据与调度配置”展开。
 
-| 页面接入类型 | 底层 `accounts.type` | 协议档案 | 凭据字段 | 默认测试模型 |
+| 页面接入类型 | 底层 `accounts.type` | 协议档案 | 凭据字段 | 默认检查模型 |
 | --- | --- | --- | --- | --- |
 | Gemini API Key | `api_key` | `profile_gemini_native_v1beta` | `api_key`、`base_url`、`supported_endpoint_modes` | `gemini-3.5-flash` |
 | Gemini OpenAI Chat API Key | `api_key` | `profile_gemini_openai_chat_v1beta` | `api_key`、`base_url`、`supported_endpoint_modes`、可选同协议 `modelMappings` | `gemini-3.5-flash` |
@@ -311,10 +311,10 @@ Gemini 账户测试必须复用真实网关链路。
 测试要求：
 
 - 测试路径使用 `/v1beta/models/{model}:generateContent`。
-- 默认测试模型优先使用本地 Gemini 目录中最新可用 Flash 模型，初始可用 `gemini-3.5-flash`；如果用户账号不支持该模型，允许在表单选择其他 Gemini 模型。
+- 新建账户的检查模型按“个人默认 > 管理员系统默认 > 协议档案默认”初始化；用户可在表单支持模型中选择其他 Gemini 文本模型作为账户检查模型。
 - 测试请求必须走账户绑定代理。
-- 测试失败不直接把正常账户写成 `temporary_unavailable`，仍遵循当前事前确认和冷却复测规则。
-- `pending_test` 账户测试失败继续保持待测试，测试成功才进入正常调度。
+- 人工测试成功或失败都不改写账户状态、检查模型、调度、冷却或最近错误。
+- `pending_test` 账户由后台检查成功后进入正常调度，人工测试不负责激活。
 - 停用账户测试只保留诊断，不自动恢复停用状态。
 
 ## 易遗漏风险矩阵

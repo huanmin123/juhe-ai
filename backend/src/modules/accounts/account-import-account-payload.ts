@@ -13,7 +13,7 @@ export interface AccountImportCreatePayloadAccount {
   superPriorityEnabled?: boolean
   fallbackEnabled?: boolean
   supportedModels?: string[]
-  defaultTestModel?: string
+  healthCheckModel?: string
   modelMappings?: AccountModelMapping[]
   tags?: string[]
   accountExpiresAt?: string
@@ -45,7 +45,7 @@ export function buildAccountImportCreatePayload(
   if (account.superPriorityEnabled !== undefined) payload.superPriorityEnabled = account.superPriorityEnabled
   if (account.fallbackEnabled !== undefined) payload.fallbackEnabled = account.fallbackEnabled
   if (account.supportedModels !== undefined) payload.supportedModels = account.supportedModels
-  if (account.defaultTestModel !== undefined) payload.defaultTestModel = account.defaultTestModel
+  if (account.healthCheckModel !== undefined) payload.healthCheckModel = account.healthCheckModel
   if (account.modelMappings !== undefined) payload.modelMappings = account.modelMappings
   if (account.tags !== undefined) payload.tags = account.tags
   if (account.accountExpiresAt !== undefined) payload.accountExpiresAt = account.accountExpiresAt

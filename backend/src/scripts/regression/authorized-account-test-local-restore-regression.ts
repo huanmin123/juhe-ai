@@ -137,6 +137,12 @@ try {
     credentials: { api_key: 'sk-authorized-local-restore', base_url: mockBaseUrl },
     groupId: ownerSourceGroup.id
   }, ownerAccess)
+  repositories.recordAccountHealthCheckSuccess(ownerAccount.id, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  })
   repositories.createResourceAuthorization({
     resourceType: 'account',
     resourceId: ownerAccount.id,
@@ -147,7 +153,14 @@ try {
   }, ownerAccess)
   const granteeAccount = authorizedInstanceForSource(ownerAccount.id, granteeAccess)
   assert(repositories.setAccountGroup(granteeAccount.id, granteeGroup.id, granteeAccess), '授权实例账户绑定到被授权用户分组失败')
-  const cooled = repositories.markAccountTestTemporaryUnavailable(granteeAccount, '模拟授权账户测试失败', granteeAccess)
+  repositories.recordAccountHealthCheckSuccess(granteeAccount.id, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  })
+  const activeGranteeAccount = authorizedInstanceForSource(ownerAccount.id, granteeAccess)
+  const cooled = repositories.markAccountTestTemporaryUnavailable(activeGranteeAccount, '模拟授权账户测试失败', granteeAccess)
   assert.equal(cooled?.status, 'temporary_unavailable', '授权账户测试失败应写入被授权实例临时不可调用')
   assert.equal(repositories.findAccountSummary(ownerAccount.id, ownerAccess)?.status, 'active', '实例临时不可调用不应改变所有者原账户')
 
@@ -213,6 +226,7 @@ try {
     credentials: { api_key: 'sk-authorized-local-failure', base_url: mockBaseUrl },
     groupId: ownerSourceGroup.id
   }, ownerAccess)
+  activateAccountAfterBackgroundCheck(failingOwnerAccount.id)
   repositories.createResourceAuthorization({
     resourceType: 'account',
     resourceId: failingOwnerAccount.id,
@@ -223,6 +237,7 @@ try {
   }, ownerAccess)
   const failingGranteeAccount = authorizedInstanceForSource(failingOwnerAccount.id, granteeAccess)
   assert(repositories.setAccountGroup(failingGranteeAccount.id, granteeGroup.id, granteeAccess), '失败授权实例账户绑定到被授权用户分组失败')
+  activateAccountAfterBackgroundCheck(failingGranteeAccount.id)
 
   const failureResult = await withWorkerRole(() => submitAccountTestAndWait<AccountTestResult>({
     baseUrl: appBaseUrl,
@@ -291,6 +306,7 @@ try {
     credentials: { api_key: 'sk-authorized-local-error-success', base_url: mockBaseUrl },
     groupId: ownerSourceGroup.id
   }, ownerAccess)
+  activateAccountAfterBackgroundCheck(errorOwnerAccount.id)
   repositories.createResourceAuthorization({
     resourceType: 'account',
     resourceId: errorOwnerAccount.id,
@@ -301,6 +317,7 @@ try {
   }, ownerAccess)
   const errorGranteeAccount = authorizedInstanceForSource(errorOwnerAccount.id, granteeAccess)
   assert(repositories.setAccountGroup(errorGranteeAccount.id, granteeGroup.id, granteeAccess), '异常授权实例账户绑定到被授权用户分组失败')
+  activateAccountAfterBackgroundCheck(errorGranteeAccount.id)
   assert(errorGranteeAccount.accountAuthorizationId, '异常授权实例应带有稳定授权 ID')
   const disabledByFailure = repositories.markAuthorizedAccountBindingDisabledByFailure({
     accountId: errorGranteeAccount.id,
@@ -418,6 +435,16 @@ function authorizedInstanceForSource(sourceAccountId: string, access: { systemAc
 
 function sessionCookie(systemAccountId: string): string {
   return `juhe_ai_session=${repositories.createSession(systemAccountId, 1).token}`
+}
+
+function activateAccountAfterBackgroundCheck(accountId: string): void {
+  const changed = repositories.recordAccountHealthCheckSuccess(accountId, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  })
+  assert.equal(changed, true, `后台健康检查激活账户失败：${accountId}`)
 }
 
 async function withWorkerRole<T>(action: () => Promise<T>): Promise<T> {

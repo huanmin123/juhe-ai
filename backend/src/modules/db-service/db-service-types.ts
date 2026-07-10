@@ -608,6 +608,12 @@ export type DbServiceOperation =
     type: 'mark_account_test_temporary_unavailable'
     accountId: string
     reason: string
+    healthCheckGuard?: {
+      configRevision: number
+      checkedAt: string
+      failureCount: number
+      observedAt: string
+    }
     access?: {
       systemAccountId: string
       role: 'super_admin' | 'admin' | 'user'
@@ -644,6 +650,7 @@ export type DbServiceOperation =
       jitterMinutes: number
       failureThreshold: number
       statusCode?: number
+      expectedConfigRevision?: number
     }
   }
   | {
@@ -656,6 +663,9 @@ export type DbServiceOperation =
       statusCode?: number
       errorCode?: string
       errorMessage?: string
+      countTowardsThreshold?: boolean
+      expectedConfigRevision?: number
+      observedAt?: string
     }
   }
   | {
@@ -871,7 +881,7 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'list_accounts_due_for_health_check' } ? AccountSummary[] :
   T extends { type: 'find_account_for_health_check' } ? AccountSummary | undefined :
   T extends { type: 'record_account_health_check_success' } ? { changed: boolean } :
-  T extends { type: 'record_account_health_check_failure' } ? { changed: boolean; failureCount: number; reachedThreshold: boolean; nextHealthCheckAt: string; errorCode: string; errorMessage: string } :
+  T extends { type: 'record_account_health_check_failure' } ? { changed: boolean; failureCount: number; reachedThreshold: boolean; checkedAt: string; nextHealthCheckAt: string; errorCode: string; errorMessage: string } :
   T extends { type: 'list_accounts_due_for_cooldown_retest' } ? AccountSummary[] :
   T extends { type: 'find_account_for_cooldown_retest' } ? AccountSummary | undefined :
   T extends { type: 'record_cooldown_account_retest_failure' } ? { changed: boolean; failureCount: number; action: string; cooldownUntil?: string; backoffSeconds?: number; backoffMinutes?: number; recoveryStage?: string; fastThresholdSeconds?: number; maxPauseSeconds?: number; maxRecoverySeconds?: number; longTermIntervalSeconds?: number; maxedFailureCount?: number; observationStartedAt?: string; observationElapsedSeconds?: number; errorCode: string; errorMessage: string } :

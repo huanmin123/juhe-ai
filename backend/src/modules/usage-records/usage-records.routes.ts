@@ -37,7 +37,7 @@ usageRecordsRouter.get('/:id', async (req, res, next) => {
 })
 
 const usageRecordSortFields = new Set<UsageRecordSortField>(['createdAt'])
-const usageRecordTrafficSources = new Set<UsageRecordTrafficSource>(['gateway', 'manual_account_test', 'runtime_recovery_probe', 'cooldown_retest', 'hybrid_scoring', 'hybrid_quality_scoring'])
+const usageRecordTrafficSources = new Set<UsageRecordTrafficSource>(['gateway', 'manual_account_test', 'account_health_check', 'runtime_recovery_probe', 'cooldown_retest', 'hybrid_scoring', 'hybrid_quality_scoring'])
 
 export type UsageRecordResponse = UsageRecordSummary & {
   costBreakdown?: ProviderCostBreakdown

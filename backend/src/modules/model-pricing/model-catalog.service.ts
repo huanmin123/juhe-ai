@@ -107,7 +107,7 @@ export interface CodexModelListItem {
   use_responses_lite: boolean
   auto_review_model_override: null
   tool_mode: null
-  multi_agent_version: null
+  multi_agent_version: 'v2' | null
 }
 
 export interface CodexModelsListResponse {
@@ -480,7 +480,10 @@ function modelCatalogCacheKey(options: ModelCatalogListOptions): string {
 function cloneProviderModelCatalogItems(items: ProviderModelCatalogItem[]): ProviderModelCatalogItem[] {
   return items.map((item) => ({
     ...item,
-    supportedApiProtocols: [...item.supportedApiProtocols]
+    supportedApiProtocols: [...item.supportedApiProtocols],
+    supportedServiceTiers: [...item.supportedServiceTiers],
+    supportedReasoningEfforts: [...item.supportedReasoningEfforts],
+    codexSupportedReasoningLevels: [...item.codexSupportedReasoningLevels]
   }))
 }
 
@@ -550,7 +553,11 @@ function toCustomCatalogItem(item: CustomProviderModelRecord): ProviderModelCata
     outputUsdPerImage: item.outputUsdPerImage,
     maxOutputTokens: item.maxOutputTokens,
     supportsPromptCaching: item.cachedInputUsdPer1M !== undefined,
-    supportsServiceTier: false,
+    supportedServiceTiers: [...item.supportedServiceTiers],
+    supportedReasoningEfforts: [...item.supportedReasoningEfforts],
+    defaultReasoningEffort: item.defaultReasoningEffort,
+    codexSupportedReasoningLevels: [],
+    supportsServiceTier: item.supportedServiceTiers.length > 0,
     catalogVisible: true,
     source: item.scope === 'global' ? 'custom-global' : 'custom-personal',
     scope: item.scope,
@@ -568,23 +575,30 @@ function toCustomCatalogItem(item: CustomProviderModelRecord): ProviderModelCata
 
 function buildCodexModelInfo(item: ProviderModelCatalogItem, index: number): CodexModelListItem {
   const contextWindow = codexContextWindow(item)
+  const supportedReasoningLevels = item.codexSupportedReasoningLevels.map((effort) => ({
+    effort,
+    description: codexReasoningLevelDescription(effort)
+  }))
+  const serviceTiers = item.supportedServiceTiers.map((tier) => ({
+    id: tier,
+    name: tier === 'priority' ? 'Fast' : 'Flex',
+    description: tier === 'priority' ? 'Priority processing' : 'Flex processing'
+  }))
   return {
     slug: item.model,
     display_name: item.model,
     description: item.capabilityNotes || item.pricingNotes || item.notes || null,
-    default_reasoning_level: 'medium',
-    supported_reasoning_levels: [
-      { effort: 'minimal', description: 'Minimal' },
-      { effort: 'low', description: 'Low' },
-      { effort: 'medium', description: 'Medium' },
-      { effort: 'high', description: 'High' }
-    ],
+    default_reasoning_level: item.codexDefaultReasoningLevel
+      ?? item.defaultReasoningEffort
+      ?? supportedReasoningLevels[0]?.effort
+      ?? 'medium',
+    supported_reasoning_levels: supportedReasoningLevels,
     shell_type: 'shell_command',
     visibility: 'list',
     supported_in_api: true,
     priority: index,
-    additional_speed_tiers: [],
-    service_tiers: [],
+    additional_speed_tiers: item.supportedServiceTiers.includes('priority') ? ['fast'] : [],
+    service_tiers: serviceTiers,
     default_service_tier: null,
     availability_nux: null,
     upgrade: null,
@@ -609,7 +623,30 @@ function buildCodexModelInfo(item: ProviderModelCatalogItem, index: number): Cod
     use_responses_lite: false,
     auto_review_model_override: null,
     tool_mode: null,
-    multi_agent_version: null
+    multi_agent_version: item.codexMultiAgentVersion ?? null
+  }
+}
+
+function codexReasoningLevelDescription(level: string): string {
+  switch (level) {
+    case 'none':
+      return 'None'
+    case 'minimal':
+      return 'Minimal'
+    case 'low':
+      return 'Low'
+    case 'medium':
+      return 'Medium'
+    case 'high':
+      return 'High'
+    case 'xhigh':
+      return 'Extra High'
+    case 'max':
+      return 'Max'
+    case 'ultra':
+      return 'Ultra'
+    default:
+      return level
   }
 }
 

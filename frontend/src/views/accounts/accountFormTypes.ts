@@ -1,6 +1,14 @@
 import type { Dayjs } from 'dayjs'
 
-import type { AccountClientCompatibility, AccountModelMapping, AccountStatus, AccountSupportedEndpointMode, AccountType } from '@/types/domain'
+import type {
+  AccountClientCompatibility,
+  AccountGptReasoningEffortOverride,
+  AccountGptServiceTierOverride,
+  AccountModelMapping,
+  AccountStatus,
+  AccountSupportedEndpointMode,
+  AccountType
+} from '@/types/domain'
 import type { GroupSelection } from '@/shared/groupLabelCache'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import type { AccountAvailabilityScheduleForm } from './accountAvailabilitySchedule'
@@ -27,6 +35,9 @@ export interface AccountFormModel {
   clientCompatibility: AccountClientCompatibility
   supportedEndpointModes: AccountSupportedEndpointMode[]
   supportedModels: string[]
+  healthCheckModel: string
+  serviceTierOverride: AccountGptServiceTierOverride
+  reasoningEffortOverride: AccountGptReasoningEffortOverride
   modelMappings: AccountModelMapping[]
   tags: string[]
   proxyProfileId?: string

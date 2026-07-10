@@ -198,11 +198,13 @@ export async function handleFailedUpstreamResponse(
     headers: response.headers,
     bodyText: diagnosticResponseBodyText
   })
-  persistOpenAICodexHeadersIfNeeded(
-    account,
-    response.headers,
-    usageContext.trafficSource === 'gateway' ? 'gateway_error' : usageContext.trafficSource
-  )
+  if (input.accountStateMutationEnabled !== false) {
+    persistOpenAICodexHeadersIfNeeded(
+      account,
+      response.headers,
+      usageContext.trafficSource === 'gateway' ? 'gateway_error' : usageContext.trafficSource
+    )
+  }
 
   const failureInput: AccountFailureInput = {
     success: false,

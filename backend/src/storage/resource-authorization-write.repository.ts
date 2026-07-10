@@ -1207,6 +1207,7 @@ async function ensureAccountAuthorizationInstanceAsync(client: DatabaseClient, a
             cooldown_retest_last_status_code = NULL,
             stream_failure_count = 0,
             stream_failure_window_started_at = NULL,
+            health_check_model = ?,
             authorization_instance_source_account_id = ?,
             authorization_instance_owner_system_account_id = ?,
             deleted_at = NULL,
@@ -1220,6 +1221,7 @@ async function ensureAccountAuthorizationInstanceAsync(client: DatabaseClient, a
         source.protocol_version,
         restoredName,
         source.type,
+        source.health_check_model,
         authorization.resource_id,
         authorization.resource_owner_system_account_id,
         now,
@@ -1248,10 +1250,10 @@ async function ensureAccountAuthorizationInstanceAsync(client: DatabaseClient, a
         proxy_profile_id, concurrency_limit,
         priority, super_priority_enabled, fallback_enabled, schedulable, notes, account_expires_at,
         cooldown_until, last_error_code, last_error_message,
-        cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at,
+        cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at, health_check_model,
         authorization_instance_source_account_id, authorization_instance_authorization_id, authorization_instance_owner_system_account_id,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL, ?, ?, ?, ?, ?, ?, 1, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL, ?, ?, ?, ?, ?, ?, 1, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?, ?, ?, ?, ?, ?)
     `, [
       id,
       authorization.grantee_system_account_id,
@@ -1268,6 +1270,7 @@ async function ensureAccountAuthorizationInstanceAsync(client: DatabaseClient, a
       0,
       0,
       0,
+      source.health_check_model,
       authorization.resource_id,
       authorization.id,
       authorization.resource_owner_system_account_id,

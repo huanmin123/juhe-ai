@@ -1,4 +1,10 @@
-import type { AccountSummary, ProviderDefinition, ProviderModelApiProtocol } from '@/types/domain'
+import type {
+  AccountSummary,
+  ProviderDefinition,
+  ProviderModelApiProtocol,
+  ProviderModelReasoningEffort,
+  ProviderModelServiceTier
+} from '@/types/domain'
 import { formatServerDateTimeInput } from './accountFormatters'
 import { validateAccountErrorPolicyRules } from './accountErrorPolicyPayload'
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
@@ -24,6 +30,11 @@ import {
   OPENAI_RESPONSES_FAMILY,
   isOpenAIProtocolProfile
 } from '@/shared/providerProtocol'
+import {
+  accountGptRequestOverrideCapabilities,
+  isAccountGptReasoningEffortOverrideAvailable,
+  isAccountGptServiceTierOverrideAvailable
+} from './accountGptRequestOverrides'
 
 export const ACCOUNT_API_KEY_BATCH_CREATE_LIMIT = 50
 
@@ -36,7 +47,7 @@ export type AccountSavePayload = {
   concurrencyLimit: number
   priority: number
   supportedModels: string[]
-  defaultTestModel?: string
+  healthCheckModel: string
   modelMappings: AccountFormModel['modelMappings']
   tags: string[]
   proxyProfileId?: string | null
@@ -46,9 +57,7 @@ export type AccountSavePayload = {
   notes: string
 }
 
-export type AccountUpdatePayload = Omit<AccountSavePayload, 'providerCode' | 'providerProtocolProfileId' | 'type'> & {
-  activationTestTaskId?: string
-}
+export type AccountUpdatePayload = Omit<AccountSavePayload, 'providerCode' | 'providerProtocolProfileId' | 'type'>
 
 export type AccountOAuthCreateCommonPayload = {
   providerProtocolProfileId?: string
@@ -57,7 +66,7 @@ export type AccountOAuthCreateCommonPayload = {
   concurrencyLimit: number
   priority: number
   supportedModels: string[]
-  defaultTestModel?: string
+  healthCheckModel: string
   modelMappings: AccountFormModel['modelMappings']
   tags: string[]
   proxyProfileId?: string
@@ -65,11 +74,11 @@ export type AccountOAuthCreateCommonPayload = {
   availabilitySchedule?: AccountAvailabilitySchedulePayload | null
   credentialsPatch?: {
     supported_endpoint_modes?: AccountFormModel['supportedEndpointModes']
+    service_tier_override?: Exclude<AccountFormModel['serviceTierOverride'], ''>
+    reasoning_effort_override?: Exclude<AccountFormModel['reasoningEffortOverride'], ''>
     error_handling_rules?: unknown
     response_inspection_rules?: unknown
   }
-  status?: 'active'
-  activationTestTaskId?: string
   notes?: string
 }
 
@@ -106,6 +115,15 @@ export function validateAccountSaveForm(input: {
   if (!editingId && form.type === 'oauth' && form.oauthMode === 'refresh_token' && !form.refreshToken.trim()) return '请填写 Refresh Token'
   const supportedModels = normalizeSupportedModels(form.supportedModels)
   if (!supportedModels.length) return '请选择支持模型'
+  const healthCheckModel = form.healthCheckModel.trim()
+  if (!healthCheckModel) return '请选择检查模型'
+  if (!supportedModels.includes(healthCheckModel)) return '检查模型必须从账户支持模型中选择'
+  const requestOverrideValidation = validateAccountGptRequestOverrides(
+    form,
+    supportedModels,
+    input.mappingUpstreamModelOptions ?? []
+  )
+  if (requestOverrideValidation) return requestOverrideValidation
   const tagValidation = validateAccountTags(form.tags)
   if (tagValidation) return tagValidation
   const scheduleValidation = validateAccountAvailabilityScheduleForm(form.availabilitySchedule)
@@ -138,6 +156,9 @@ export function validateAccountSaveForm(input: {
 type ModelMappingProtocolOption = {
   value: string
   supportedApiProtocols?: ProviderModelApiProtocol[]
+  supportedServiceTiers?: ProviderModelServiceTier[]
+  supportedReasoningEfforts?: ProviderModelReasoningEffort[]
+  defaultReasoningEffort?: ProviderModelReasoningEffort
 }
 
 function resolveFormProviderProfile(form: AccountFormModel, providers: ProviderDefinition[] = FALLBACK_PROVIDERS): {
@@ -169,6 +190,7 @@ export function buildAccountSavePayload(input: {
     concurrencyLimit: input.form.concurrencyLimit,
     priority: input.form.priority,
     supportedModels: normalizeSupportedModels(input.form.supportedModels),
+    healthCheckModel: input.form.healthCheckModel.trim(),
     modelMappings: normalizeAccountModelMappings(input.form.modelMappings),
     tags: normalizeAccountTags(input.form.tags),
     proxyProfileId: saveProxyProfileId(input.form.proxyProfileId, Boolean(input.editingId)),
@@ -186,7 +208,7 @@ export function buildAccountUpdatePayload(payload: AccountSavePayload): AccountU
     concurrencyLimit: payload.concurrencyLimit,
     priority: payload.priority,
     supportedModels: payload.supportedModels,
-    defaultTestModel: payload.defaultTestModel,
+    healthCheckModel: payload.healthCheckModel,
     modelMappings: payload.modelMappings,
     tags: payload.tags,
     proxyProfileId: payload.proxyProfileId,
@@ -212,6 +234,7 @@ export function buildOAuthCreateCommonPayload(input: {
     concurrencyLimit: input.form.concurrencyLimit,
     priority: input.form.priority,
     supportedModels: normalizeSupportedModels(input.form.supportedModels),
+    healthCheckModel: input.form.healthCheckModel.trim(),
     modelMappings: normalizeAccountModelMappings(input.form.modelMappings),
     tags: normalizeAccountTags(input.form.tags),
     proxyProfileId: input.form.proxyProfileId,
@@ -222,6 +245,12 @@ export function buildOAuthCreateCommonPayload(input: {
   const credentialsPatch: NonNullable<AccountOAuthCreateCommonPayload['credentialsPatch']> = {}
   if (Array.isArray(credentials.supported_endpoint_modes)) {
     credentialsPatch.supported_endpoint_modes = [...credentials.supported_endpoint_modes] as AccountFormModel['supportedEndpointModes']
+  }
+  if (typeof credentials.service_tier_override === 'string') {
+    credentialsPatch.service_tier_override = credentials.service_tier_override as Exclude<AccountFormModel['serviceTierOverride'], ''>
+  }
+  if (typeof credentials.reasoning_effort_override === 'string') {
+    credentialsPatch.reasoning_effort_override = credentials.reasoning_effort_override as Exclude<AccountFormModel['reasoningEffortOverride'], ''>
   }
   if (Object.prototype.hasOwnProperty.call(credentials, 'error_handling_rules')) {
     credentialsPatch.error_handling_rules = credentials.error_handling_rules
@@ -280,6 +309,28 @@ function normalizeSupportedModels(value: AccountFormModel['supportedModels']): s
     output.push(model)
   }
   return output
+}
+
+function validateAccountGptRequestOverrides(
+  form: AccountFormModel,
+  supportedModels: string[],
+  modelOptions: ModelMappingProtocolOption[]
+): string | undefined {
+  if (form.providerCode !== 'gpt') return undefined
+  const capabilities = accountGptRequestOverrideCapabilities({
+    accountType: form.type,
+    modelOptions,
+    supportedModels
+  })
+  if (!isAccountGptServiceTierOverrideAvailable(form.serviceTierOverride, capabilities)) {
+    return form.type === 'oauth' && form.serviceTierOverride === 'flex'
+      ? 'GPT OAuth 账户不支持 Flex 服务等级'
+      : '所选支持模型没有共同支持当前服务等级覆盖'
+  }
+  if (!isAccountGptReasoningEffortOverrideAvailable(form.reasoningEffortOverride, capabilities)) {
+    return '所选支持模型没有共同支持当前思考级别覆盖'
+  }
+  return undefined
 }
 
 function validateAccountTags(value: AccountFormModel['tags']): string | undefined {

@@ -68,7 +68,8 @@ try {
       api_key: `sk-${marker}`,
       base_url: 'https://example.invalid/v1'
     },
-    supportedModels: ['gpt-5-mini']
+    supportedModels: ['gpt-5-mini'],
+    healthCheckModel: 'gpt-5-mini'
   }, cookie, 201)
   createdAccountIds.push(createdAccount.id)
   assert.equal(createdAccount.boundGroupId, groupA.id, 'PG smoke 新建账户应先绑定 A 分组')

@@ -4,6 +4,16 @@ export type ProviderModelScope = 'built_in' | 'global' | 'personal'
 export type CustomProviderModelScope = Exclude<ProviderModelScope, 'built_in'>
 export type ProviderModelStatus = 'draft' | 'active' | 'disabled'
 export type ProviderModelMode = 'text' | 'image' | 'audio'
+export type ProviderModelServiceTier = 'priority' | 'flex'
+export type ProviderModelReasoningEffort =
+  | 'none'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max'
+export type ProviderModelCodexReasoningLevel = ProviderModelReasoningEffort | 'ultra'
 export type ProviderModelApiProtocol =
   | 'chat_completions'
   | 'responses'
@@ -29,8 +39,8 @@ export interface ProviderDefinition {
   protocolCode: string
   protocolVersion: string
   baseUrl: string
-  defaultTestModel: string
-  systemDefaultTestModel?: string
+  defaultHealthCheckModel: string
+  systemDefaultHealthCheckModel?: string
   defaultSupportedModels: string[]
   accountTypes: AccountType[]
   capabilities: string[]
@@ -52,7 +62,7 @@ export interface ProviderProtocolProfileDefinition {
   protocolCode: string
   protocolVersion: string
   baseUrl: string
-  defaultTestModel: string
+  defaultHealthCheckModel: string
   accountTypes: AccountType[]
   capabilities: string[]
   endpointFamilies: ProtocolEndpointFamilyDefinition[]
@@ -87,6 +97,12 @@ export interface ProviderModelPricing {
   maxTokens?: number
   supportsPromptCaching: boolean
   supportsServiceTier: boolean
+  supportedServiceTiers?: ProviderModelServiceTier[]
+  supportedReasoningEfforts?: ProviderModelReasoningEffort[]
+  defaultReasoningEffort?: ProviderModelReasoningEffort
+  codexSupportedReasoningLevels?: ProviderModelCodexReasoningLevel[]
+  codexDefaultReasoningLevel?: ProviderModelCodexReasoningLevel
+  codexMultiAgentVersion?: 'v2'
   pricingNotes?: string
   capabilityNotes?: string
   notes?: string
@@ -99,11 +115,14 @@ export interface ProviderModelOption {
   providerCode: ProviderCode
   model: string
   supportedApiProtocols?: ProviderModelApiProtocol[]
+  supportedServiceTiers?: ProviderModelServiceTier[]
+  supportedReasoningEfforts?: ProviderModelReasoningEffort[]
+  defaultReasoningEffort?: ProviderModelReasoningEffort
 }
 
-export interface ProviderDefaultTestModelResult {
+export interface ProviderDefaultHealthCheckModelResult {
   providerCode: ProviderCode
-  defaultTestModel: string
+  defaultHealthCheckModel: string
 }
 
 export interface ProviderModelsParams {
@@ -118,6 +137,9 @@ export interface ProviderModelUpsertPayload {
   status?: ProviderModelStatus
   mode?: ProviderModelMode | null
   supportedApiProtocols?: ProviderModelApiProtocol[]
+  supportedServiceTiers?: ProviderModelServiceTier[]
+  supportedReasoningEfforts?: ProviderModelReasoningEffort[]
+  defaultReasoningEffort?: ProviderModelReasoningEffort | null
   pricingModel?: null
   releaseDate?: string | null
   shutdownDate?: string | null

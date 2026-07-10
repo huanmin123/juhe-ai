@@ -21,7 +21,7 @@ export function buildTestModelOptions(
   return selectOptions(prioritizeTestModels(supportedModels, preferredModels))
 }
 
-export function defaultTestModelForAccountSelection(
+export function defaultHealthCheckModelForAccountSelection(
   account: AccountSummary | AccountSummary[] | undefined,
   providerDefaultModel = '',
   systemDefaultModel = ''
@@ -31,13 +31,13 @@ export function defaultTestModelForAccountSelection(
   return prioritizeTestModels(supportedModels, preferredModels)[0] ?? ''
 }
 
-export function providerDefaultTestModelForAccountSelection(providers: ProviderDefinition[], account: AccountSummary | AccountSummary[] | undefined): string {
+export function providerDefaultHealthCheckModelForAccountSelection(providers: ProviderDefinition[], account: AccountSummary | AccountSummary[] | undefined): string {
   const providerCode = providerCodeForAccountSelection(account)
   if (!providerCode) return ''
-  return providers.find((provider) => provider.code === providerCode)?.defaultTestModel?.trim() ?? ''
+  return providers.find((provider) => provider.code === providerCode)?.defaultHealthCheckModel?.trim() ?? ''
 }
 
-export function providerSystemDefaultTestModelForAccountSelection(providers: ProviderDefinition[], account: AccountSummary | AccountSummary[] | undefined): string {
+export function providerSystemDefaultHealthCheckModelForAccountSelection(providers: ProviderDefinition[], account: AccountSummary | AccountSummary[] | undefined): string {
   const providerCode = providerCodeForAccountSelection(account)
   if (!providerCode) return ''
   const provider = providers.find((item) => item.code === providerCode)
@@ -45,12 +45,12 @@ export function providerSystemDefaultTestModelForAccountSelection(providers: Pro
   const profileIds = [...new Set(normalizeAccounts(account).map((item) => item.providerProtocolProfileId).filter(Boolean))]
   if (profileIds.length === 1) {
     const profile = provider.protocolProfiles.find((item) => item.id === profileIds[0])
-    if (profile?.defaultTestModel?.trim()) return profile.defaultTestModel.trim()
+    if (profile?.defaultHealthCheckModel?.trim()) return profile.defaultHealthCheckModel.trim()
   }
-  return provider.systemDefaultTestModel?.trim()
+  return provider.systemDefaultHealthCheckModel?.trim()
     || provider.protocolProfiles
       .find((item) => item.id === provider.defaultProtocolProfileId)
-      ?.defaultTestModel
+      ?.defaultHealthCheckModel
       ?.trim()
     || ''
 }
@@ -91,16 +91,16 @@ function preferredTestModelsForAccountSelection(
   systemDefaultModel: string
 ): string[] {
   return uniqueTextList([
-    accountDefaultTestModelForSelection(account),
+    accountHealthCheckModelForSelection(account),
     providerDefaultModel,
     systemDefaultModel
   ])
 }
 
-function accountDefaultTestModelForSelection(account: AccountSummary | AccountSummary[] | undefined): string {
+function accountHealthCheckModelForSelection(account: AccountSummary | AccountSummary[] | undefined): string {
   const accounts = normalizeAccounts(account)
   if (!accounts.length) return ''
-  const models = accounts.map((item) => item.defaultTestModel?.trim() ?? '')
+  const models = accounts.map((item) => item.healthCheckModel?.trim() ?? '')
   if (models.some((model) => !model)) return ''
   const uniqueModels = [...new Set(models)]
   return uniqueModels.length === 1 ? uniqueModels[0] : ''

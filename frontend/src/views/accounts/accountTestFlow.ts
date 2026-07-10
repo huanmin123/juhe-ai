@@ -7,23 +7,10 @@ import {
 } from './accountEndpointModes'
 
 export type AccountTestEndpointMode = 'account_default' | AccountSupportedEndpointMode
-export type AccountTestMode = 'single' | 'batch'
-
-export type AccountBatchTestStatus = 'pending' | 'queued' | 'running' | 'success' | 'failed' | 'stopped'
 
 export type AccountTestForm = {
   model: string
   testEndpointMode: AccountTestEndpointMode
-}
-
-export interface AccountBatchTestItem {
-  account: AccountSummary
-  status: AccountBatchTestStatus
-  taskId?: string
-  result?: AccountTestResult
-  message?: string
-  startedAt?: number
-  finishedAt?: number
 }
 
 export function buildAccountTestPayload(
@@ -51,18 +38,6 @@ export function accountTestSuccessMessage(account: AccountSummary, result: Accou
 
 export function accountTestErrorMessage(account: AccountSummary, result: AccountTestResult): string {
   return `${account.name}: ${result.message}`
-}
-
-export function successfulAccountDefaultTestModel(
-  account: Pick<AccountSummary, 'supportedModels'>,
-  result: Pick<AccountTestResult, 'model' | 'success'>
-): string | undefined {
-  if (!result.success) return undefined
-  const model = result.model?.trim()
-  if (!model) return undefined
-  return (account.supportedModels ?? []).some((supportedModel) => supportedModel.trim() === model)
-    ? model
-    : undefined
 }
 
 export function stoppedAccountTestMessage(account: AccountSummary): string {
@@ -100,17 +75,4 @@ export function effectiveAccountTestEndpointMode(
   if (testEndpointMode !== 'account_default') return testEndpointMode
   return accountTestEndpointModesForAccount(account, draftAccount)[0]
     ?? defaultAccountTestEndpointModeForSelection(account, draftAccount)
-}
-
-export function nextTestModel(currentModel: string, modelOptions: Array<{ value: string }>, defaultModel: string): string {
-  if (!modelOptions.length) return currentModel || defaultModel
-  return modelOptions.some((item) => item.value === currentModel) ? currentModel : defaultModel
-}
-
-export function batchTestSummary(total: number, successCount: number): { success: boolean; message: string } {
-  const failedCount = total - successCount
-  if (failedCount === 0) {
-    return { success: true, message: `批量测试完成，${successCount} 个账户全部通过` }
-  }
-  return { success: false, message: `批量测试完成，成功 ${successCount} 个，失败 ${failedCount} 个` }
 }

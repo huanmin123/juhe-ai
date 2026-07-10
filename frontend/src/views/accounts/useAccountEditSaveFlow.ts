@@ -10,7 +10,6 @@ import type { AccountResponseInspectionRuleForm } from './accountResponseInspect
 import { isAuthorizedAccount } from './accountFormatters'
 import { buildOAuthCreatePayload } from './accountOAuthPayload'
 import type { AccountScopeParams } from './accountOperationScope'
-import { accountDefaultTestModelSaveQueue } from './accountDefaultTestModelSaveQueue'
 import {
   ACCOUNT_API_KEY_BATCH_CREATE_LIMIT,
   buildAccountSavePayload,
@@ -40,14 +39,10 @@ type ReadonlyValue<T> = {
 }
 
 interface UseAccountEditSaveFlowOptions {
-  accountCreatePayloadWithActivationTest: (payload: AccountSavePayload) => AccountSavePayload & { status?: 'active'; activationTestTaskId?: string }
-  accountUpdateDefaultTestModel: (payload: AccountSavePayload) => string | undefined
-  accountUpdateActivationTestTaskId: (payload: AccountSavePayload) => string | undefined
   accountAdvancedDetailLoaded: ReadonlyValue<boolean>
   accountErrorPolicyRules: Ref<AccountErrorPolicyRuleForm[]>
   accountResponseInspectionRules: Ref<AccountResponseInspectionRuleForm[]>
   accounts: ReadonlyValue<AccountSummary[]>
-  clearSuccessfulDraftActivationTest: () => void
   createScopeParams: ComputedRef<AccountScopeParams>
   editingAccountDetail: Ref<AccountSummary | undefined>
   editingAccountScopeParams: () => AccountScopeParams
@@ -55,7 +50,6 @@ interface UseAccountEditSaveFlowOptions {
   editingId: Ref<string | undefined>
   extractApiErrorMessage: (error: unknown, fallback: string) => string
   form: AccountFormModel
-  isApiKeyRuntimeChanged: () => boolean
   isManagementView: ComputedRef<boolean>
   loadData: () => Promise<void>
   mappingAnthropicSourceModelOptions: ReadonlyValue<AccountModelSelectOption[]>
@@ -79,10 +73,6 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
     }
 
     if (options.editingId.value && !options.accountAdvancedDetailLoaded.value) {
-      if (options.isApiKeyRuntimeChanged()) {
-        message.warning('更换 API Key 或 Base URL 后请先点击测试，测试通过后再保存账户')
-        return
-      }
       await saveBasicAccountEdit()
       return
     }
@@ -115,22 +105,7 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
 
     try {
       if (options.editingId.value) {
-        await accountDefaultTestModelSaveQueue.whenIdle(options.editingId.value)
         const updatePayload = buildAccountUpdatePayload(payload)
-        const activationTestTaskId = options.accountUpdateActivationTestTaskId(payload)
-        const defaultTestModel = options.accountUpdateDefaultTestModel(payload)
-        if (activationTestTaskId) {
-          updatePayload.activationTestTaskId = activationTestTaskId
-        }
-        if (defaultTestModel) {
-          updatePayload.defaultTestModel = defaultTestModel
-        }
-        if (options.isApiKeyRuntimeChanged()) {
-          if (!activationTestTaskId) {
-            message.warning('更换 API Key 或 Base URL 后请先测试通过，再保存账户')
-            return
-          }
-        }
         if (options.isManagementView.value) {
           await api.accounts.update(options.editingId.value, updatePayload, options.editingAccountScopeParams())
         } else {
@@ -139,14 +114,13 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
         invalidateAccountDetailOptions(options.editingId.value, options.editingAccountScopeParams())
         message.success('账户已更新')
       } else if (options.form.type === 'oauth') {
-        const created = await createOAuthAccountFromUnifiedForm(options.accountCreatePayloadWithActivationTest(payload))
-        message.success(created?.status === 'active' ? 'OAuth 账户已创建并启用' : 'OAuth 账户已创建，需测试通过后参与调度')
+        const created = await createOAuthAccountFromUnifiedForm()
+        message.success(created?.status === 'active' ? 'OAuth 账户已创建并启用' : 'OAuth 账户已创建，等待后台检查')
       } else {
-        const created = await createApiKeyAccount(options.accountCreatePayloadWithActivationTest(payload))
-        message.success(created?.status === 'active' ? '账户已创建并启用' : '账户已创建，需测试通过后参与调度')
+        const created = await createApiKeyAccount(payload)
+        message.success(created?.status === 'active' ? '账户已创建并启用' : '账户已创建，等待后台检查')
       }
       invalidateAccountTagOptions(options.editingId.value ? options.editingAccountScopeParams() : options.createScopeParams.value)
-      options.clearSuccessfulDraftActivationTest()
       options.modalOpen.value = false
       await options.loadData()
     } catch (error) {
@@ -254,6 +228,11 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       message.warning('请选择支持模型')
       return
     }
+    const healthCheckModel = options.form.healthCheckModel.trim()
+    if (!healthCheckModel || !supportedModels.includes(healthCheckModel)) {
+      message.warning('检查模型必须从账户支持模型中选择')
+      return
+    }
     const payload: AccountBasicEditPayload = {
       name: options.form.name.trim(),
       concurrencyLimit: Math.trunc(concurrencyLimit),
@@ -262,6 +241,7 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       tags: normalizeFormTagNames(options.form.tags),
       notes: options.form.notes,
       supportedModels,
+      healthCheckModel,
       credentials: buildBasicEditCredentialsPatch(options.form)
     }
     try {
@@ -281,7 +261,7 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
     }
   }
 
-  async function createOAuthAccountFromUnifiedForm(activationPayload: AccountSavePayload & { status?: 'active'; activationTestTaskId?: string }): Promise<AccountSummary> {
+  async function createOAuthAccountFromUnifiedForm(): Promise<AccountSummary> {
     const commonPayload = buildOAuthCreateCommonPayload({
       accounts: options.accounts.value,
       editingId: options.editingId.value,
@@ -289,13 +269,6 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       errorPolicyRules: options.accountErrorPolicyRules.value,
       responseInspectionRules: options.accountResponseInspectionRules.value
     })
-    if (activationPayload.defaultTestModel) {
-      commonPayload.defaultTestModel = activationPayload.defaultTestModel
-    }
-    if (options.form.oauthMode === 'refresh_token' && activationPayload.activationTestTaskId) {
-      commonPayload.status = 'active'
-      commonPayload.activationTestTaskId = activationPayload.activationTestTaskId
-    }
 
     const payload = buildOAuthCreatePayload({
       commonPayload,
@@ -354,6 +327,7 @@ type AccountBasicEditPayload = {
   tags: string[]
   notes: string
   supportedModels: string[]
+  healthCheckModel: string
   credentials: Record<string, unknown>
 }
 

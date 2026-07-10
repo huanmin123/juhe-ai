@@ -190,7 +190,7 @@ function accountSummaryFromUpstreamAccount(account: UpstreamAccount): AccountSum
     clientCompatibility: account.clientCompatibility,
     supportedModels: account.supportedModels,
     modelMappings: account.modelMappings,
-    defaultTestModel: account.defaultTestModel,
+    healthCheckModel: account.healthCheckModel?.trim() || account.supportedModels?.[0]?.trim() || '',
     proxyProfileId: account.proxyProfileId,
     proxyProfileUnavailable: account.proxyProfileUnavailable,
     proxyProfileErrorMessage: account.proxyProfileErrorMessage,

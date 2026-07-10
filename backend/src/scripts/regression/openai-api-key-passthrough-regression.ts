@@ -10,6 +10,7 @@ import {
   isOpenAIModelsRequest
 } from '../../modules/gateway/protocols/openai-v1/route-helpers.js'
 import { buildGatewayUpstreamRequestParts, buildGatewayUpstreamUrlsForAccount } from '../../modules/providers/drivers/registry.js'
+import { applyGptAccountRequestOverrides } from '../../modules/providers/drivers/gpt/request-overrides.js'
 import { buildUpstreamHeaders, buildUpstreamRequestBody, isEffectiveOpenAIStreamRequest } from '../../modules/gateway/upstream/request.js'
 import {
   createGatewayRequestBodyState,
@@ -58,6 +59,7 @@ const apiKeyAccount: OpenAIAccountSecret = {
   superPriorityEnabled: false,
   fallbackEnabled: false,
   clientCompatibility: 'openai_standard',
+  healthCheckModel: 'gpt-5.4',
   baseUrl: 'https://api.openai.com/v1',
   streamFailureCount: 0,
   credentials: {}
@@ -65,7 +67,13 @@ const apiKeyAccount: OpenAIAccountSecret = {
 
 async function main(): Promise<void> {
   testRawBodyPassthrough()
+  testGptAccountRequestOverridePureFunction()
   await testOpenAIStandardRequestPartsPassthrough()
+  await testGptResponsesRequestOverrides()
+  await testGptChatRequestOverrides()
+  await testGptCompactRequestOverrides()
+  await testGptRequestOverridesAfterResponsesToChatBridge()
+  await testGptLargeRequestOverrides()
   await testCodexCompatibleAccountKeepsStandardResponsesPassthrough()
   await testCodexResponsesCompatibilityRequestParts()
   await testCodexResponsesCompatibilityKeepsExplicitToolSettings()
@@ -85,6 +93,81 @@ async function main(): Promise<void> {
   await testDeferredInvalidJsonMarkedWithoutWorkerParse()
   await testDeferredInvalidJsonPrimitiveMarkedWithoutWorkerParse()
   console.log('OpenAI API Key passthrough regression passed')
+}
+
+function testGptAccountRequestOverridePureFunction(): void {
+  const responsesInput = {
+    service_tier: 'flex',
+    reasoning_effort: 'low',
+    reasoning: {
+      effort: 'medium',
+      summary: 'detailed'
+    }
+  }
+  const responsesOutput = applyGptAccountRequestOverrides(responsesInput, {
+    credentials: {
+      service_tier_override: 'priority',
+      reasoning_effort_override: 'max'
+    },
+    endpointFamily: 'responses'
+  })
+  assert.equal(responsesOutput.service_tier, 'priority')
+  assert.deepEqual(responsesOutput.reasoning, {
+    effort: 'max',
+    summary: 'detailed'
+  })
+  assert.equal(responsesOutput.reasoning_effort, undefined)
+  assert.equal(responsesInput.service_tier, 'flex', '纯函数不能修改输入对象')
+  assert.deepEqual(responsesInput.reasoning, {
+    effort: 'medium',
+    summary: 'detailed'
+  }, '纯函数不能修改输入 reasoning')
+
+  const chatOutput = applyGptAccountRequestOverrides({
+    service_tier: 'priority',
+    reasoning: { effort: 'low' },
+    reasoning_effort: 'high'
+  }, {
+    credentials: {
+      service_tier_override: 'default',
+      reasoning_effort_override: 'none'
+    },
+    endpointFamily: 'chat_completions'
+  })
+  assert.equal(chatOutput.service_tier, undefined)
+  assert.equal(chatOutput.reasoning_effort, 'none')
+  assert.equal(chatOutput.reasoning, undefined)
+
+  const flexOutput = applyGptAccountRequestOverrides({
+    service_tier: 'priority'
+  }, {
+    credentials: {
+      service_tier_override: 'flex'
+    },
+    endpointFamily: 'responses'
+  })
+  assert.equal(flexOutput.service_tier, 'flex')
+
+  const compactOutput = applyGptAccountRequestOverrides({
+    service_tier: 'flex',
+    reasoning: { effort: 'low', summary: 'auto' }
+  }, {
+    credentials: {
+      service_tier_override: 'priority',
+      reasoning_effort_override: 'max'
+    },
+    endpointFamily: 'responses',
+    compact: true
+  })
+  assert.equal(compactOutput.service_tier, 'priority')
+  assert.deepEqual(compactOutput.reasoning, { effort: 'low', summary: 'auto' }, 'compact 不应用 reasoning 覆盖')
+
+  assert.throws(() => applyGptAccountRequestOverrides({}, {
+    credentials: {
+      reasoning_effort_override: 'ultra'
+    },
+    endpointFamily: 'responses'
+  }), /reasoning_effort_override/, 'Ultra 不能作为账户 wire reasoning effort')
 }
 
 function testRawBodyPassthrough(): void {
@@ -107,6 +190,131 @@ async function testOpenAIStandardRequestPartsPassthrough(): Promise<void> {
   assert.ok(Buffer.isBuffer(parts.body))
   assert.equal(Buffer.compare(parts.body, rawBody), 0)
   assert.equal(parts.headers.get('authorization'), 'Bearer sk-upstream')
+}
+
+async function testGptResponsesRequestOverrides(): Promise<void> {
+  const rawBody = Buffer.from(JSON.stringify({
+    model: 'gpt-5.6-sol',
+    input: 'hello',
+    service_tier: 'flex',
+    reasoning_effort: 'low',
+    reasoning: {
+      effort: 'medium',
+      summary: 'detailed'
+    }
+  }))
+  const req = createRequest(undefined, { 'content-type': 'application/json' }, rawBody, '/v1/responses')
+  const parts = await buildGatewayUpstreamRequestParts(req, {
+    ...apiKeyAccount,
+    credentials: {
+      service_tier_override: 'priority',
+      reasoning_effort_override: 'max'
+    }
+  }, testIdentity)
+  const body = parseJsonBuffer(parts.body)
+
+  assert.equal(body.service_tier, 'priority')
+  assert.deepEqual(body.reasoning, {
+    effort: 'max',
+    summary: 'detailed'
+  })
+  assert.equal(body.reasoning_effort, undefined)
+}
+
+async function testGptChatRequestOverrides(): Promise<void> {
+  const rawBody = Buffer.from(JSON.stringify({
+    model: 'gpt-5.6-luna',
+    messages: [{ role: 'user', content: 'hello' }],
+    service_tier: 'priority',
+    reasoning: { effort: 'high' },
+    reasoning_effort: 'high'
+  }))
+  const req = createRequest(undefined, { 'content-type': 'application/json' }, rawBody, '/v1/chat/completions')
+  const parts = await buildGatewayUpstreamRequestParts(req, {
+    ...apiKeyAccount,
+    credentials: {
+      service_tier_override: 'default',
+      reasoning_effort_override: 'none'
+    }
+  }, testIdentity)
+  const body = parseJsonBuffer(parts.body)
+
+  assert.equal(body.service_tier, undefined)
+  assert.equal(body.reasoning_effort, 'none')
+  assert.equal(body.reasoning, undefined)
+}
+
+async function testGptCompactRequestOverrides(): Promise<void> {
+  const rawBody = Buffer.from(JSON.stringify({
+    model: 'gpt-5.6-terra',
+    input: [],
+    service_tier: 'flex',
+    reasoning: { effort: 'low', summary: 'auto' }
+  }))
+  const req = createRequest(undefined, { 'content-type': 'application/json' }, rawBody, '/v1/responses/compact')
+  const parts = await buildGatewayUpstreamRequestParts(req, {
+    ...apiKeyAccount,
+    credentials: {
+      service_tier_override: 'priority',
+      reasoning_effort_override: 'max'
+    }
+  }, testIdentity)
+  const body = parseJsonBuffer(parts.body)
+
+  assert.equal(body.service_tier, 'priority')
+  assert.deepEqual(body.reasoning, { effort: 'low', summary: 'auto' }, 'API Key compact 只能应用 service tier')
+}
+
+async function testGptRequestOverridesAfterResponsesToChatBridge(): Promise<void> {
+  const requestBody = {
+    model: 'gpt-client-alias',
+    input: 'hello',
+    service_tier: 'flex',
+    reasoning: { effort: 'low' }
+  }
+  const rawBody = Buffer.from(JSON.stringify(requestBody))
+  const req = createRequest(requestBody, { 'content-type': 'application/json' }, rawBody, '/v1/responses')
+  const parts = await buildGatewayUpstreamRequestParts(req, {
+    ...apiKeyAccount,
+    credentials: {
+      service_tier_override: 'priority',
+      reasoning_effort_override: 'high'
+    },
+    modelMappings: [{
+      sourceModel: 'gpt-client-alias',
+      sourceEndpointFamily: 'responses',
+      upstreamModel: 'gpt-5.6-terra',
+      upstreamEndpointFamily: 'chat_completions',
+      enabled: true
+    }]
+  }, testIdentity)
+  const body = parseJsonBuffer(parts.body)
+
+  assert.equal(body.model, 'gpt-5.6-terra')
+  assert.equal(body.service_tier, 'priority')
+  assert.equal(body.reasoning_effort, 'high')
+  assert.equal(body.reasoning, undefined)
+}
+
+async function testGptLargeRequestOverrides(): Promise<void> {
+  const clientInput = 'x'.repeat(gatewayJsonBodyInlineParseMaxBytes + 1024)
+  const rawBody = Buffer.from(JSON.stringify({
+    model: 'gpt-5.6-sol',
+    input: clientInput,
+    service_tier: 'flex'
+  }))
+  assert.ok(rawBody.length > gatewayJsonBodyInlineParseMaxBytes)
+  const req = createRequest(undefined, { 'content-type': 'application/json' }, rawBody, '/v1/responses')
+  const parts = await buildGatewayUpstreamRequestParts(req, {
+    ...apiKeyAccount,
+    credentials: {
+      service_tier_override: 'priority'
+    }
+  }, testIdentity)
+  const body = parseJsonBuffer(parts.body)
+
+  assert.equal(body.input, clientInput)
+  assert.equal(body.service_tier, 'priority')
 }
 
 async function testCodexCompatibleAccountKeepsStandardResponsesPassthrough(): Promise<void> {
@@ -414,6 +622,9 @@ function modelCatalogItem(model: string): Parameters<typeof buildOpenAIModelsRes
     mode: 'text',
     supportedApiProtocols: ['responses'],
     supportsPromptCaching: false,
+    supportedServiceTiers: [],
+    supportedReasoningEfforts: [],
+    codexSupportedReasoningLevels: [],
     supportsServiceTier: false,
     source: 'regression',
     scope: 'built_in',

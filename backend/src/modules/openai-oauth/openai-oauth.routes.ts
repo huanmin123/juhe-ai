@@ -5,7 +5,6 @@ import { z } from 'zod'
 import { badRequest, ok } from '../../shared/http.js'
 import { ProxyProfileUnavailableError, clearAccountFailureStateAsync, createAccountAsync, findAccountForTestAsync, findGroupSummaryAsync, listProvidersAsync, resolveProxyUrlForProfileAsync, updateAccountAsync } from '../../storage/repositories.js'
 import { GPT_VENDOR_CODE, isGptVendorCode, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
-import type { AccountStatus } from '../../domain/types.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
@@ -14,7 +13,7 @@ import { operationMode, recordOperationLogAsync, resolveOperationOwner, runLogge
 import { sanitizeAccountCredentialCarrierResponse, sanitizeAccountResponse } from '../accounts/account-response-sanitizer.js'
 import { accountErrorPolicyValidationMessage, validateAccountErrorHandlingRules } from '../accounts/account-error-policy-validation.js'
 import { accountResponseInspectionPolicyValidationMessage, validateAccountResponseInspectionRules } from '../accounts/account-response-inspection-policy-validation.js'
-import { accountCreateStatusFromActivationTestAsync } from '../accounts/account-draft-test.service.js'
+import { assertAccountGptRequestOverridesSupportedAsync } from '../accounts/account-gpt-request-overrides.validation.js'
 import {
   buildOpenAIOAuthCredentials,
   exchangeOpenAIAuthCode,
@@ -31,6 +30,8 @@ export const openAIOAuthRouter = Router()
 const authUrlSchema = z.object({}).strict()
 const oauthCredentialsPatchSchema = z.object({
   supported_endpoint_modes: z.array(z.string().trim().min(1)).max(20).optional(),
+  service_tier_override: z.enum(['default', 'priority']).optional(),
+  reasoning_effort_override: z.enum(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']).optional(),
   error_handling_rules: z.unknown().optional(),
   response_inspection_rules: z.unknown().optional()
 }).strict()
@@ -53,7 +54,7 @@ const createFromCodeSchema = z.object({
   priority: z.number().int().optional(),
   fallbackEnabled: z.boolean().optional(),
   supportedModels: z.array(z.string().trim().min(1)).min(1).max(500).optional(),
-  defaultTestModel: z.string().trim().min(1).optional(),
+  healthCheckModel: z.string().trim().min(1).optional(),
   modelMappings: z.array(accountModelMappingSchema).max(500).optional(),
   tags: z.array(z.string().trim()).max(24).optional(),
   proxyProfileId: z.string().optional(),
@@ -72,15 +73,13 @@ const createFromRefreshTokenSchema = z.object({
   priority: z.number().int().optional(),
   fallbackEnabled: z.boolean().optional(),
   supportedModels: z.array(z.string().trim().min(1)).min(1).max(500).optional(),
-  defaultTestModel: z.string().trim().min(1).optional(),
+  healthCheckModel: z.string().trim().min(1).optional(),
   modelMappings: z.array(accountModelMappingSchema).max(500).optional(),
   tags: z.array(z.string().trim()).max(24).optional(),
   proxyProfileId: z.string().optional(),
   accountExpiresAt: z.string().nullable().optional(),
   availabilitySchedule: z.record(z.string(), z.unknown()).nullable().optional(),
   credentialsPatch: oauthCredentialsPatchSchema.optional(),
-  status: z.enum(['active', 'pending_test']).optional(),
-  activationTestTaskId: z.string().trim().min(1).optional(),
   notes: z.string().optional()
 }).strict()
 
@@ -145,6 +144,13 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
   }
 
   try {
+    await assertAccountGptRequestOverridesSupportedAsync({
+      providerCode: GPT_VENDOR_CODE,
+      accountType: 'oauth',
+      credentials: safeOAuthCredentialsPatch(parsed.data.credentialsPatch),
+      supportedModels: parsed.data.supportedModels ?? providerProfile.provider.defaultSupportedModels,
+      systemAccountId: requestAccess?.systemAccountFilterId ?? requestAccess?.systemAccountId
+    })
     const { code, state } = extractCodeAndState(parsed.data)
     const tokenInfo = await exchangeOpenAIAuthCode({
       sessionId: parsed.data.sessionId,
@@ -164,7 +170,7 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
         priority: parsed.data.priority,
         fallbackEnabled: parsed.data.fallbackEnabled,
         supportedModels: parsed.data.supportedModels,
-        defaultTestModel: parsed.data.defaultTestModel,
+        healthCheckModel: parsed.data.healthCheckModel,
         modelMappings: parsed.data.modelMappings,
         tags: parsed.data.tags,
         proxyProfileId: parsed.data.proxyProfileId,
@@ -201,8 +207,7 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
     owner: normalizedText(queryField(req, 'systemAccountId')),
     name: normalizedText(bodyField(req, 'name')),
     refreshToken: sensitiveFingerprint(bodyField(req, 'refreshToken')),
-    status: normalizedText(bodyField(req, 'status')),
-    activationTestTaskId: normalizedText(bodyField(req, 'activationTestTaskId'))
+    status: 'pending_test'
   })
 }), async (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
@@ -231,20 +236,14 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
     res.status(400).json(badRequest(errorPolicyValidationMessage))
     return
   }
-  let createStatus: AccountStatus
   try {
-    createStatus = await openAIOAuthRefreshCreateStatus({
-      data: parsed.data,
-      group,
-      providerProfile: providerProfile.profile,
-      requestAccess
+    await assertAccountGptRequestOverridesSupportedAsync({
+      providerCode: GPT_VENDOR_CODE,
+      accountType: 'oauth',
+      credentials: safeOAuthCredentialsPatch(parsed.data.credentialsPatch),
+      supportedModels: parsed.data.supportedModels ?? providerProfile.provider.defaultSupportedModels,
+      systemAccountId: requestAccess?.systemAccountFilterId ?? requestAccess?.systemAccountId
     })
-  } catch (error) {
-    res.status(400).json(badRequest(error instanceof Error ? error.message : 'OpenAI OAuth 账户创建测试状态无效'))
-    return
-  }
-
-  try {
     const tokenInfo = await refreshOpenAIOAuthToken({
       refreshToken: parsed.data.refreshToken,
       proxyUrl: await resolveProxyUrlForProfileAsync(parsed.data.proxyProfileId)
@@ -256,18 +255,18 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
         name: parsed.data.name ?? tokenInfo.email ?? 'OpenAI OAuth Account',
         type: 'oauth',
         credentials: buildSafeOpenAIOAuthCredentials(tokenInfo, parsed.data.credentialsPatch, { refreshToken: parsed.data.refreshToken }),
-        status: createStatus,
+        status: 'pending_test',
         concurrencyLimit: parsed.data.concurrencyLimit,
         priority: parsed.data.priority,
         fallbackEnabled: parsed.data.fallbackEnabled,
         supportedModels: parsed.data.supportedModels,
-        defaultTestModel: parsed.data.defaultTestModel,
+        healthCheckModel: parsed.data.healthCheckModel,
         modelMappings: parsed.data.modelMappings,
         tags: parsed.data.tags,
         proxyProfileId: parsed.data.proxyProfileId,
         accountExpiresAt: parsed.data.accountExpiresAt,
         availabilitySchedule: parsed.data.availabilitySchedule,
-        schedulable: createStatus === 'active',
+        schedulable: false,
         groupId: parsed.data.groupId,
         notes: parsed.data.notes
       }, requestAccess)
@@ -417,10 +416,11 @@ openAIOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async (re
   }
 })
 
-type OpenAIOAuthProviderProfile = Awaited<ReturnType<typeof listProvidersAsync>>[number]['protocolProfiles'][number]
+type OpenAIOAuthProvider = Awaited<ReturnType<typeof listProvidersAsync>>[number]
+type OpenAIOAuthProviderProfile = OpenAIOAuthProvider['protocolProfiles'][number]
 
 type OpenAIOAuthProviderProfileResult =
-  | { ok: true; profile: OpenAIOAuthProviderProfile }
+  | { ok: true; provider: OpenAIOAuthProvider; profile: OpenAIOAuthProviderProfile }
   | { ok: false; message: string }
 
 async function resolveOpenAIOAuthProviderProfile(providerProtocolProfileId: string): Promise<OpenAIOAuthProviderProfileResult> {
@@ -442,13 +442,19 @@ async function resolveOpenAIOAuthProviderProfile(providerProtocolProfileId: stri
   if (!isOpenAIProtocolProfile(profile) || !profile.accountTypes.includes('oauth')) {
     return { ok: false, message: `供应商协议档案 ${profile.name} 不支持 OpenAI OAuth` }
   }
-  return { ok: true, profile }
+  return { ok: true, provider, profile }
 }
 
 function safeOAuthCredentialsPatch(patch?: z.infer<typeof oauthCredentialsPatchSchema>): Record<string, unknown> {
   const output: Record<string, unknown> = {}
   if (patch?.supported_endpoint_modes !== undefined) {
     output.supported_endpoint_modes = patch.supported_endpoint_modes
+  }
+  if (patch?.service_tier_override !== undefined) {
+    output.service_tier_override = patch.service_tier_override
+  }
+  if (patch?.reasoning_effort_override !== undefined) {
+    output.reasoning_effort_override = patch.reasoning_effort_override
   }
   if (patch?.error_handling_rules !== undefined) {
     output.error_handling_rules = patch.error_handling_rules
@@ -469,52 +475,6 @@ function oauthCredentialsPatchValidationMessage(patch?: z.infer<typeof oauthCred
     if (responseInspectionMessage) return responseInspectionMessage
   }
   return undefined
-}
-
-async function openAIOAuthRefreshCreateStatus(input: {
-  data: z.infer<typeof createFromRefreshTokenSchema>
-  group?: Awaited<ReturnType<typeof findGroupSummaryAsync>>
-  providerProfile: OpenAIOAuthProviderProfile
-  requestAccess?: AccessScope
-}): Promise<AccountStatus> {
-  return await accountCreateStatusFromActivationTestAsync({
-    account: {
-      providerCode: GPT_VENDOR_CODE,
-      providerProtocolProfileId: input.providerProfile.id,
-      name: input.data.name ?? 'OpenAI OAuth Account',
-      type: 'oauth',
-      credentials: openAIOAuthRefreshActivationCredentials(input.data.refreshToken, input.data.credentialsPatch),
-      status: input.data.status,
-      activationTestTaskId: input.data.activationTestTaskId,
-      concurrencyLimit: input.data.concurrencyLimit,
-      priority: input.data.priority,
-      fallbackEnabled: input.data.fallbackEnabled,
-      supportedModels: input.data.supportedModels,
-      defaultTestModel: input.data.defaultTestModel,
-      modelMappings: input.data.modelMappings,
-      proxyProfileId: input.data.proxyProfileId,
-      groupId: input.data.groupId,
-      accountExpiresAt: input.data.accountExpiresAt,
-      availabilitySchedule: input.data.availabilitySchedule,
-      notes: input.data.notes
-    },
-    providerBaseUrl: input.providerProfile.baseUrl,
-    providerProtocolProfileId: input.providerProfile.id,
-    protocolCode: input.providerProfile.protocolCode,
-    protocolVersion: input.providerProfile.protocolVersion,
-    group: input.group,
-    requestAccess: input.requestAccess
-  })
-}
-
-function openAIOAuthRefreshActivationCredentials(
-  refreshToken: string,
-  patch?: z.infer<typeof oauthCredentialsPatchSchema>
-): Record<string, unknown> {
-  return {
-    refresh_token: refreshToken,
-    ...safeOAuthCredentialsPatch(patch)
-  }
 }
 
 export function buildSafeOpenAIOAuthCredentials(
@@ -542,10 +502,7 @@ async function updateOpenAIOAuthAccountCredentials(
   fallback?: { refreshToken?: string },
   access?: AccessScope
 ): Promise<NonNullable<Awaited<ReturnType<typeof updateAccountAsync>>>> {
-  const credentials = {
-    ...account.credentials,
-    ...buildOpenAIOAuthCredentials(tokenInfo, fallback)
-  }
+  const credentials = buildReauthorizedOpenAIOAuthCredentials(account.credentials, tokenInfo, fallback)
   const updated = await updateAccountAsync(account.id, {
     credentials
   }, access)
@@ -556,6 +513,17 @@ async function updateOpenAIOAuthAccountCredentials(
     return await clearAccountFailureStateAsync(account.id, access) ?? updated
   }
   return updated
+}
+
+export function buildReauthorizedOpenAIOAuthCredentials(
+  currentCredentials: Record<string, unknown>,
+  tokenInfo: OpenAITokenInfo,
+  fallback?: { refreshToken?: string }
+): Record<string, unknown> {
+  return {
+    ...currentCredentials,
+    ...buildOpenAIOAuthCredentials(tokenInfo, fallback)
+  }
 }
 
 function isBlockedOpenAIOAuthErrorAccount(account: NonNullable<Awaited<ReturnType<typeof findEditableOpenAIOAuthAccount>>>): boolean {
@@ -603,8 +571,10 @@ function buildOAuthCreateLog(
       safeChange('name', '名称', undefined, account.name),
       safeChange('type', '账户类型', undefined, account.type),
       safeChange('credentials', 'OAuth 凭据', undefined, account.credentials),
+      safeChange('serviceTierOverride', '服务等级覆盖', undefined, account.credentials.service_tier_override),
+      safeChange('reasoningEffortOverride', '思考级别覆盖', undefined, account.credentials.reasoning_effort_override),
       safeChange('supportedModels', '支持模型', undefined, account.supportedModels),
-      safeChange('defaultTestModel', '默认测试模型', undefined, account.defaultTestModel),
+      safeChange('healthCheckModel', '检查模型', undefined, account.healthCheckModel),
       safeChange('modelMappings', '模型映射', undefined, account.modelMappings),
       safeChange('tags', '标签', undefined, account.tags),
       safeChange('groupId', '绑定分组', undefined, account.boundGroupId),
@@ -638,6 +608,8 @@ function buildOAuthUpdateLog(
     summary: `${summaryPrefix}：${resourceName}`,
     changes: [
       safeChange('credentials', 'OAuth 凭据', before.credentials, after.credentials),
+      safeChange('serviceTierOverride', '服务等级覆盖', before.credentials.service_tier_override, after.credentials.service_tier_override),
+      safeChange('reasoningEffortOverride', '思考级别覆盖', before.credentials.reasoning_effort_override, after.credentials.reasoning_effort_override),
       safeChange('status', '状态', before.status, after.status),
       safeChange('cooldownUntil', '冷却结束时间', before.cooldownUntil, afterRecord.cooldownUntil),
       safeChange('lastErrorCode', '异常类型', before.lastErrorCode, afterRecord.lastErrorCode),

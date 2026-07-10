@@ -70,6 +70,7 @@ import {
   emptyUsage,
   type ParsedUsage
 } from '../usage/types.js'
+import { isAccountDiagnosticTrafficSource } from '../usage/traffic-source.js'
 import {
   applyGatewayProtocolStreamUsageFallbackForRequest,
   extractGatewayProtocolJsonSemanticFramesForRequest,
@@ -450,7 +451,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       }
     }
     if (
-      usageContext.trafficSource !== 'manual_account_test'
+      !isAccountDiagnosticTrafficSource(usageContext.trafficSource)
       && shouldRememberCodexTurnStreamFailure(streamResult, clientStrategy)
     ) {
       const codexTurnFailure = await rememberCodexTurnStreamFailureAsync(clientStrategy, account.id, {
@@ -476,7 +477,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       clientErrorProtocol,
       clientStrategy
     )
-    if (usageContext.trafficSource !== 'manual_account_test') {
+    if (!isAccountDiagnosticTrafficSource(usageContext.trafficSource)) {
       const clientIpAvoidanceResult = await confirmClientIpAccountAvoidanceAfterFinalFailureAsync(
         clientIpAccountAvoidanceTracker,
         settings
@@ -1295,7 +1296,7 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
     clientIpAccountAvoidanceTracker
   } = input
   if (upstreamResponse.ok) {
-    if (usageContext.trafficSource !== 'manual_account_test') {
+    if (!isAccountDiagnosticTrafficSource(usageContext.trafficSource)) {
       const clearedProxyFailure = await recordGatewayUpstreamBucketSuccessAsync(account)
       if (clearedProxyFailure) {
         getRequestLogger().info({

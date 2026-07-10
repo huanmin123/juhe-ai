@@ -3,6 +3,8 @@ import type {
   ProviderModelApiProtocol,
   ProviderModelMode,
   ProviderModelPricing,
+  ProviderModelReasoningEffort,
+  ProviderModelServiceTier,
   ProviderModelStatus
 } from '@/types/domain'
 import {
@@ -167,6 +169,41 @@ export function modelStatusColor(status?: string): string {
 
 export function formatApiProtocol(protocol?: string): string {
   return apiProtocolLabels[protocol ?? ''] ?? protocol ?? '-'
+}
+
+export function formatModelServiceTier(value: ProviderModelServiceTier): string {
+  return value === 'priority' ? 'Priority' : 'Flex'
+}
+
+export function formatModelReasoningEffort(value: ProviderModelReasoningEffort | 'ultra'): string {
+  if (value === 'none') return 'None'
+  if (value === 'minimal') return 'Minimal'
+  if (value === 'low') return 'Low'
+  if (value === 'medium') return 'Medium'
+  if (value === 'high') return 'High'
+  if (value === 'xhigh') return 'XHigh'
+  if (value === 'max') return 'Max'
+  return 'Ultra'
+}
+
+export function formatModelRequestCapabilities(item: ProviderModelPricing): string {
+  const parts: string[] = []
+  if (item.supportedServiceTiers?.length) {
+    parts.push(`服务等级 ${item.supportedServiceTiers.map(formatModelServiceTier).join(' / ')}`)
+  }
+  if (item.supportedReasoningEfforts?.length) {
+    const defaultEffort = item.defaultReasoningEffort
+      ? `，默认 ${formatModelReasoningEffort(item.defaultReasoningEffort)}`
+      : ''
+    parts.push(`思考 ${item.supportedReasoningEfforts.map(formatModelReasoningEffort).join(' / ')}${defaultEffort}`)
+  }
+  if (item.codexSupportedReasoningLevels?.length) {
+    parts.push(`Codex ${item.codexSupportedReasoningLevels.map(formatModelReasoningEffort).join(' / ')}`)
+  }
+  if (item.codexMultiAgentVersion) {
+    parts.push(`多代理 ${item.codexMultiAgentVersion}`)
+  }
+  return parts.join('；') || '-'
 }
 
 export function getApiProtocolTagColor(protocol?: string): string {

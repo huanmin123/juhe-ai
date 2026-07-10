@@ -14,6 +14,8 @@ const apiKeyAccountCredentialKeys = new Set([
   'api_key_weights',
   'base_url',
   'supported_endpoint_modes',
+  'service_tier_override',
+  'reasoning_effort_override',
   'error_handling_rules',
   'response_inspection_rules'
 ])
@@ -30,6 +32,8 @@ const oauthAccountCredentialKeys = new Set([
   'plan_type',
   'base_url',
   'supported_endpoint_modes',
+  'service_tier_override',
+  'reasoning_effort_override',
   'error_handling_rules',
   'response_inspection_rules'
 ])
@@ -107,6 +111,7 @@ function normalizeApiKeyAccountCredentials(
     }
   }
   normalizeAccountCredentialPolicies(input, credentials)
+  normalizeGptAccountRequestOverrides(input, credentials, endpointModeDefaults)
   assertAccountCredentialsJsonSize(credentials)
   return credentials
 }
@@ -186,6 +191,7 @@ function normalizeOAuthAccountCredentials(
   copyOptionalCredentialText(input, credentials, 'chatgpt_user_id', 'OpenAI chatgpt_user_id', accountCredentialMetadataMaxBytes)
   copyOptionalCredentialText(input, credentials, 'plan_type', 'OpenAI plan_type', accountCredentialMetadataMaxBytes)
   normalizeAccountCredentialPolicies(input, credentials)
+  normalizeGptAccountRequestOverrides(input, credentials, endpointModeDefaults)
   assertAccountCredentialsJsonSize(credentials)
   return credentials
 }
@@ -205,6 +211,46 @@ function normalizeAccountCredentialPolicies(input: Record<string, unknown>, cred
   if (Object.prototype.hasOwnProperty.call(input, 'response_inspection_rules')) {
     credentials.response_inspection_rules = normalizeAccountResponseInspectionRules(input.response_inspection_rules)
   }
+}
+
+function normalizeGptAccountRequestOverrides(
+  input: Record<string, unknown>,
+  credentials: Record<string, unknown>,
+  context: AccountEndpointModeDefaultContext
+): void {
+  const hasServiceTier = Object.prototype.hasOwnProperty.call(input, 'service_tier_override')
+  const hasReasoningEffort = Object.prototype.hasOwnProperty.call(input, 'reasoning_effort_override')
+  if (!hasServiceTier && !hasReasoningEffort) return
+  if (context.providerCode !== 'gpt') {
+    throw new Error('只有 GPT 账户支持服务等级和思考级别覆盖')
+  }
+  const serviceTier = optionalCredentialEnum(
+    input.service_tier_override,
+    '服务等级覆盖',
+    new Set(['default', 'priority', 'flex'])
+  )
+  if (context.accountType === 'oauth' && serviceTier === 'flex') {
+    throw new Error('OpenAI OAuth 账户不支持 Flex 服务等级覆盖')
+  }
+  const reasoningEffort = optionalCredentialEnum(
+    input.reasoning_effort_override,
+    '思考级别覆盖',
+    new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+  )
+  if (serviceTier) credentials.service_tier_override = serviceTier
+  if (reasoningEffort) credentials.reasoning_effort_override = reasoningEffort
+}
+
+function optionalCredentialEnum<TValue extends string>(
+  value: unknown,
+  label: string,
+  allowedValues: ReadonlySet<TValue>
+): TValue | undefined {
+  if (value === undefined || value === null || value === '') return undefined
+  if (typeof value !== 'string' || !allowedValues.has(value as TValue)) {
+    throw new Error(`${label}无效`)
+  }
+  return value as TValue
 }
 
 function requiredCredentialTextInput(value: unknown, label: string, maxBytes: number): string {

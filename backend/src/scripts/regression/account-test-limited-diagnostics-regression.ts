@@ -39,6 +39,8 @@ const account: AccountSummary = accountSummaryWithEffectiveAvailability({
   superPriorityEnabled: false,
   fallbackEnabled: false,
   clientCompatibility: 'openai_standard',
+  supportedModels: ['gpt-5.5'],
+  healthCheckModel: 'gpt-5.5',
   schedulable: true,
   todayUsage: emptyUsage,
   usage: emptyUsage,

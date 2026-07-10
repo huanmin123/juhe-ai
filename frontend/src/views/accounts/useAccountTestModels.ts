@@ -1,152 +1,206 @@
-import { message } from '@/lib/antd'
-import { computed, ref, type ComputedRef } from 'vue'
+import { ref, type ComputedRef } from 'vue'
 
 import { api } from '@/api/client'
-import type { AccountSummary, ProviderDefinition } from '@/types/domain'
-import {
-  buildTestModelOptions,
-  defaultTestModelForAccountSelection,
-  isGatewaySupportedTestSelection,
-  providerCodeForAccountSelection,
-  providerDefaultTestModelForAccountSelection,
-  providerSystemDefaultTestModelForAccountSelection
-} from './accountDerivedState'
+import type {
+  AccountSupportedEndpointMode,
+  AccountSummary,
+  ProviderModelApiProtocol
+} from '@/types/domain'
+import type {
+  AccountTestModelOption,
+  AccountTestOptions
+} from '@/api/domains/accounts'
 import { accountOperationScopeParams } from './accountOperationScope'
-import { type AccountTestForm, nextTestModel } from './accountTestFlow'
+import { accountTestEndpointModesForAccount } from './accountEndpointModes'
+import type { AccountTestEndpointMode, AccountTestForm } from './accountTestFlow'
 
 type UseAccountTestModelsInput = {
   accountScopeParams: ComputedRef<{ systemAccountId: string } | undefined>
-  providers: ComputedRef<ProviderDefinition[]>
+  isManagementView: ComputedRef<boolean>
   testForm: AccountTestForm
-  testTargetAccountSelection: ComputedRef<AccountSummary | AccountSummary[] | undefined>
 }
 
 export function useAccountTestModels(input: UseAccountTestModelsInput) {
+  const testModelOptions = ref<AccountTestModelOption[]>([])
   const testModelsLoading = ref(false)
-  const scopedProviders = ref<ProviderDefinition[]>([])
-  const scopedProvidersRequestKey = ref('')
-  const modelRequestId = ref(0)
-  const testTargetProviderCode = computed(() => providerCodeForAccountSelection(input.testTargetAccountSelection.value))
-  const testTargetScopeParams = computed(() => accountSelectionScopeParams(
-    input.testTargetAccountSelection.value,
-    input.accountScopeParams.value
-  ))
-  const testTargetRequestKey = computed(() => (
-    `${testTargetProviderCode.value}\u0001${testTargetScopeParams.value?.systemAccountId ?? ''}`
-  ))
-  const providersForSelection = computed(() => (
-    scopedProvidersRequestKey.value === testTargetRequestKey.value && scopedProviders.value.length
-      ? scopedProviders.value
-      : input.providers.value
-  ))
-  const providerDefaultTestModel = computed(() => providerDefaultTestModelForAccountSelection(
-    providersForSelection.value,
-    input.testTargetAccountSelection.value
-  ))
-  const providerSystemDefaultTestModel = computed(() => providerSystemDefaultTestModelForAccountSelection(
-    providersForSelection.value,
-    input.testTargetAccountSelection.value
-  ))
-  const testModelOptions = computed(() => buildTestModelOptions(
-    input.testTargetAccountSelection.value,
-    providerDefaultTestModel.value,
-    providerSystemDefaultTestModel.value
-  ))
-  const defaultTestModel = computed(() => (
-    defaultTestModelForAccountSelection(
-      input.testTargetAccountSelection.value,
-      providerDefaultTestModel.value,
-      providerSystemDefaultTestModel.value
-    )
-  ))
-  const isGatewaySupportedTestTarget = computed(() => isGatewaySupportedTestSelection(input.testTargetAccountSelection.value))
+  const testModelReadonly = ref(false)
+  const testEndpointModes = ref<AccountSupportedEndpointMode[]>([])
+  let modelRequestToken = 0
+  let selectableAccount: AccountSummary | undefined
 
-  async function loadTestModels(): Promise<void> {
-    if (!isGatewaySupportedTestTarget.value) {
-      modelRequestId.value += 1
-      testModelsLoading.value = false
-      scopedProviders.value = []
-      scopedProvidersRequestKey.value = ''
-      input.testForm.model = nextTestModel(input.testForm.model, testModelOptions.value, defaultTestModel.value)
-      return
-    }
-    const providerCode = testTargetProviderCode.value
-    if (!providerCode) {
-      modelRequestId.value += 1
-      testModelsLoading.value = false
-      scopedProviders.value = []
-      scopedProvidersRequestKey.value = ''
-      input.testForm.model = nextTestModel(input.testForm.model, testModelOptions.value, defaultTestModel.value)
-      return
-    }
-    const requestKey = testTargetRequestKey.value
-    if (scopedProvidersRequestKey.value !== requestKey) {
-      scopedProviders.value = []
-      scopedProvidersRequestKey.value = ''
-    }
-    if (scopedProvidersRequestKey.value === requestKey) return
-    const requestId = modelRequestId.value + 1
-    const requestScopeParams = testTargetScopeParams.value
-    const requestInitialModel = input.testForm.model
-    const requestInitialDefaultModel = defaultTestModel.value
-    modelRequestId.value = requestId
+  async function loadSavedAccountTestOptions(account: AccountSummary): Promise<AccountTestOptions | undefined> {
+    const requestToken = nextModelRequestToken()
+    selectableAccount = undefined
     testModelsLoading.value = true
+    testModelReadonly.value = false
+    testModelOptions.value = []
+    testEndpointModes.value = []
+    input.testForm.model = ''
+    input.testForm.testEndpointMode = 'account_default'
     try {
-      const providers = await api.providers.options(requestScopeParams)
-      if (!isCurrentModelRequest(requestId, requestKey)) return
-      scopedProviders.value = providers
-      scopedProvidersRequestKey.value = requestKey
-      const shouldApplyScopedDefault = input.testForm.model === requestInitialModel
-        && (!requestInitialModel || requestInitialModel === requestInitialDefaultModel)
-      input.testForm.model = nextTestModel(
-        shouldApplyScopedDefault ? '' : input.testForm.model,
-        testModelOptions.value,
-        defaultTestModel.value
-      )
-    } catch (error) {
-      if (!isCurrentModelRequest(requestId, requestKey)) return
-      console.error(error)
-      input.testForm.model = nextTestModel(input.testForm.model, testModelOptions.value, defaultTestModel.value)
-      message.warning('默认测试模型信息加载失败，已使用账户支持模型')
+      const response = input.isManagementView.value
+        ? await api.accounts.testOptions(
+          account.id,
+          accountOperationScopeParams(account, input.accountScopeParams.value)
+        )
+        : await api.myAccounts.testOptions(account.id)
+      if (!isCurrentModelRequest(requestToken) || response.accountId !== account.id) return undefined
+      selectableAccount = account
+      testModelOptions.value = normalizeModelOptions(response.models)
+      const defaultModel = response.defaultModel.trim()
+      input.testForm.model = testModelOptions.value.some((option) => option.value === defaultModel)
+        ? defaultModel
+        : testModelOptions.value[0]?.value ?? ''
+      refreshSelectableEndpointModes()
+      return response
     } finally {
-      if (modelRequestId.value === requestId) {
+      if (isCurrentModelRequest(requestToken)) {
         testModelsLoading.value = false
       }
     }
   }
 
-  function isCurrentModelRequest(requestId: number, requestKey: string): boolean {
-    return (
-      modelRequestId.value === requestId &&
-      testTargetRequestKey.value === requestKey
-    )
+  function useFixedTestModel(model: string, endpointModes: AccountSupportedEndpointMode[]): void {
+    nextModelRequestToken()
+    selectableAccount = undefined
+    const normalizedModel = model.trim()
+    testModelsLoading.value = false
+    testModelReadonly.value = true
+    testModelOptions.value = normalizedModel
+      ? [{ label: normalizedModel, value: normalizedModel, supportedApiProtocols: [] }]
+      : []
+    testEndpointModes.value = normalizeEndpointModes(endpointModes)
+    input.testForm.model = normalizedModel
+    input.testForm.testEndpointMode = testEndpointModes.value[0] ?? 'account_default'
   }
 
-  function defaultModelForSelection(account: AccountSummary | AccountSummary[] | undefined): string {
-    const providers = providersForSelection.value
-    return defaultTestModelForAccountSelection(
-      account,
-      providerDefaultTestModelForAccountSelection(providers, account),
-      providerSystemDefaultTestModelForAccountSelection(providers, account)
-    )
+  function restoreTestSelection(
+    model: string,
+    endpointMode: AccountTestEndpointMode,
+    fallbackEndpointModes: AccountSupportedEndpointMode[] = []
+  ): void {
+    const normalizedModel = model.trim()
+    if (normalizedModel) {
+      input.testForm.model = normalizedModel
+      if (testModelOptions.value.some((option) => option.value === normalizedModel)) {
+        refreshSelectableEndpointModes()
+      } else if (fallbackEndpointModes.length) {
+        testEndpointModes.value = normalizeEndpointModes(fallbackEndpointModes)
+      }
+    }
+    if (
+      endpointMode !== 'account_default'
+      && testEndpointModes.value.includes(endpointMode)
+    ) {
+      input.testForm.testEndpointMode = endpointMode
+    }
+  }
+
+  function updateSelectableTestModel(model: string): void {
+    if (testModelReadonly.value) return
+    const normalizedModel = model.trim()
+    if (!testModelOptions.value.some((option) => option.value === normalizedModel)) return
+    input.testForm.model = normalizedModel
+    refreshSelectableEndpointModes()
+  }
+
+  function resetTestModels(): void {
+    nextModelRequestToken()
+    selectableAccount = undefined
+    testModelsLoading.value = false
+    testModelReadonly.value = false
+    testModelOptions.value = []
+    testEndpointModes.value = []
+    input.testForm.model = ''
+    input.testForm.testEndpointMode = 'account_default'
+  }
+
+  function nextModelRequestToken(): number {
+    modelRequestToken += 1
+    return modelRequestToken
+  }
+
+  function isCurrentModelRequest(requestToken: number): boolean {
+    return requestToken === modelRequestToken
+  }
+
+  function refreshSelectableEndpointModes(): void {
+    if (!selectableAccount) return
+    const selectedOption = testModelOptions.value.find((option) => option.value === input.testForm.model)
+    testEndpointModes.value = endpointModesForModel(selectableAccount, selectedOption?.supportedApiProtocols ?? [])
+    if (
+      input.testForm.testEndpointMode === 'account_default'
+      || !testEndpointModes.value.includes(input.testForm.testEndpointMode)
+    ) {
+      input.testForm.testEndpointMode = testEndpointModes.value[0] ?? 'account_default'
+    }
   }
 
   return {
-    defaultModelForSelection,
-    loadTestModels,
+    loadSavedAccountTestOptions,
+    resetTestModels,
+    restoreTestSelection,
+    testEndpointModes,
     testModelOptions,
-    testModelsLoading
+    testModelReadonly,
+    testModelsLoading,
+    updateSelectableTestModel,
+    useFixedTestModel
   }
 }
 
-function accountSelectionScopeParams(
-  selection: AccountSummary | AccountSummary[] | undefined,
-  fallback?: { systemAccountId: string }
-): { systemAccountId: string } | undefined {
-  const accounts = Array.isArray(selection) ? selection : selection ? [selection] : []
-  if (!accounts.length) return fallback
-  const scopeIds = [...new Set(accounts
-    .map((account) => accountOperationScopeParams(account, fallback)?.systemAccountId)
-    .filter((systemAccountId): systemAccountId is string => Boolean(systemAccountId)))]
-  return scopeIds.length === 1 ? { systemAccountId: scopeIds[0] } : fallback
+function normalizeModelOptions(options: AccountTestOptions['models']): AccountTestModelOption[] {
+  const values = new Set<string>()
+  const output: AccountTestModelOption[] = []
+  for (const option of options) {
+    const value = option.model.trim()
+    if (!value || values.has(value)) continue
+    values.add(value)
+    output.push({
+      label: value,
+      value,
+      supportedApiProtocols: [...new Set(option.supportedApiProtocols)]
+    })
+  }
+  return output
+}
+
+function normalizeEndpointModes(modes: AccountSupportedEndpointMode[]): AccountSupportedEndpointMode[] {
+  return [...new Set(modes)]
+}
+
+function endpointModesForModel(
+  account: AccountSummary,
+  supportedApiProtocols: ProviderModelApiProtocol[]
+): AccountSupportedEndpointMode[] {
+  const accountModes = accountTestEndpointModesForAccount(account)
+  const protocolModes = normalizeEndpointModes(
+    supportedApiProtocols.flatMap((protocol) => endpointModesForProtocol(protocol))
+  )
+  if (!protocolModes.length) return accountModes
+  const supportedModes = new Set(protocolModes)
+  return accountModes.filter((mode) => supportedModes.has(mode))
+}
+
+function endpointModesForProtocol(protocol: ProviderModelApiProtocol): AccountSupportedEndpointMode[] {
+  switch (protocol) {
+    case 'chat_completions':
+      return ['chat_sse', 'chat_json']
+    case 'responses':
+      return ['responses_sse', 'responses_json']
+    case 'messages':
+      return ['messages_sse', 'messages_json']
+    case 'message_token_counting':
+      return ['message_token_counting']
+    case 'generate_content':
+      return ['generate_content_json']
+    case 'stream_generate_content':
+      return ['generate_content_sse']
+    case 'count_tokens':
+      return ['count_tokens']
+    case 'embed_content':
+      return ['embed_content']
+    default:
+      return []
+  }
 }

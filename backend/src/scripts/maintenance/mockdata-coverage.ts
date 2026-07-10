@@ -109,7 +109,7 @@ function assertUsageCoverage(): void {
     imageTokenRows += scalar(database, "SELECT COUNT(*) AS value FROM usage_records WHERE id LIKE 'mockdata_%' AND (COALESCE(input_image_tokens, 0) > 0 OR COALESCE(output_image_tokens, 0) > 0)")
     modelMappingRows += scalar(database, "SELECT COUNT(*) AS value FROM usage_records WHERE id LIKE 'mockdata_%' AND model_mapping_applied = 1")
   }
-  assertPresent('使用记录来源覆盖不完整', trafficSources, ['gateway', 'manual_account_test', 'runtime_recovery_probe', 'cooldown_retest', 'hybrid_scoring', 'hybrid_quality_scoring'])
+  assertPresent('使用记录来源覆盖不完整', trafficSources, ['gateway', 'manual_account_test', 'account_health_check', 'runtime_recovery_probe', 'cooldown_retest', 'hybrid_scoring', 'hybrid_quality_scoring'])
   assertPresent('使用记录端点覆盖不完整', endpoints, ['GET /v1/models', 'POST /v1/responses', 'POST /v1/chat/completions', 'POST /v1/images/generations'])
   assertMinimum('图片 token 使用记录样本缺失', imageTokenRows, 1)
   assertMinimum('模型映射使用记录样本缺失', modelMappingRows, 1)

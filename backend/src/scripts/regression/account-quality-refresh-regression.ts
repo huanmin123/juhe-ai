@@ -85,6 +85,18 @@ try {
     groupId: group.id,
     status: 'active'
   }, access))
+  const businessDatabase = databaseModule.getBusinessDatabase()
+  const activateAccount = businessDatabase.prepare(`
+    UPDATE accounts
+    SET status = 'active',
+        schedulable = 1,
+        last_error_code = NULL,
+        last_error_message = NULL
+    WHERE id = ?
+  `)
+  for (const activeAccount of [account, staleAccount, failureCandidateAccount, ...batchAccounts]) {
+    activateAccount.run(activeAccount.id)
+  }
   const nowDate = new Date()
   const now = nowDate.toISOString()
   const statMinute = minuteKey(nowDate, usageStatsTimezone())

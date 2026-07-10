@@ -45,7 +45,7 @@ const [
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../storage/sqlite-read-worker-pool.js'),
-  import('../../storage/provider-default-test-model.repository.js'),
+  import('../../storage/provider-default-health-check-model.repository.js'),
   import('../../storage/provider.repository.js'),
   import('../../storage/account-test-tasks.repository.js'),
   import('../../modules/model-pricing/model-catalog.service.js'),
@@ -72,7 +72,9 @@ try {
       base_url: 'https://api.openai.com/v1'
     },
     groupId: group.id,
-    status: 'active'
+    status: 'active',
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5'
   }, access)
   const expiredAccount = repositories.createAccount({
     providerCode: 'gpt',
@@ -84,8 +86,18 @@ try {
       base_url: 'https://api.openai.com/v1'
     },
     groupId: group.id,
-    status: 'active'
+    status: 'active',
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5'
   }, access)
+  for (const accountId of [account.id, expiredAccount.id]) {
+    assert(repositories.recordAccountHealthCheckSuccess(accountId, {
+      intervalHours: 12,
+      jitterMinutes: 0,
+      failureThreshold: 3,
+      statusCode: 200
+    }), `SQLite read worker 种子账户后台检查应成功：${accountId}`)
+  }
   const routeStrategy = repositories.createRouteStrategy({
     name: 'SQLite read worker 路由策略',
     mode: 'normal',
@@ -279,11 +291,11 @@ try {
   assert((await providerRepository.listOpenAIProtocolProviderCodesAsync()).includes('gpt'), 'OpenAI 协议供应商 async 读应由 read worker 返回真实数据')
   assert((await providerRepository.listOpenAIProtocolProfileIdsAsync()).includes(GPT_OPENAI_V1_PROFILE_ID), 'OpenAI 协议档案 async 读应由 read worker 返回真实数据')
   assert.equal(await providerRepository.isOpenAIProtocolProviderCodeAsync('gpt'), true, '供应商协议判定 async 读应由 read worker 返回真实数据')
-  assert.equal(typeof await providerRepository.findProviderDefaultTestModelAsync('gpt', 'sys_admin'), 'string', '供应商默认测试模型 async 读应由 read worker 返回真实数据')
+  assert.equal(typeof await providerRepository.findProviderDefaultHealthCheckModelAsync('gpt', 'sys_admin'), 'string', '供应商默认检查模型 async 读应由 read worker 返回真实数据')
   assert((await providerRepository.findProviderDefaultSupportedModelsAsync('gpt')).length > 0, '供应商默认模型池 async 读应由 read worker 返回真实数据')
   assert.equal((await providerRepository.findProviderProtocolProfileAsync(GPT_OPENAI_V1_PROFILE_ID))?.id, GPT_OPENAI_V1_PROFILE_ID, '供应商协议档案详情 async 读应由 read worker 返回真实数据')
   assert.equal((await providerRepository.defaultProviderProtocolProfileAsync('gpt'))?.id, GPT_OPENAI_V1_PROFILE_ID, '供应商默认协议档案 async 读应由 read worker 返回真实数据')
-  assert.equal((await providerDefaultTestModels.listProviderDefaultTestModelPreferencesAsync('sys_admin', ['gpt'])).size, 0, '供应商默认测试模型偏好 async 读应支持 read worker 空结果')
+  assert.equal((await providerDefaultTestModels.listProviderDefaultHealthCheckModelPreferencesAsync('sys_admin', ['gpt'])).size, 0, '供应商默认检查模型偏好 async 读应支持 read worker 空结果')
   assert((await modelCatalogService.listProviderModelCatalogAsync({ providerCode: 'gpt', systemAccountId: 'sys_admin', includeUnpriced: true })).length > 0, '供应商模型目录 async 读应由 read worker 返回真实数据')
   assert.equal(typeof (await repositories.listGlobalSettingsAsync()).appName, 'string', '全局设置 async 读应由 read worker 返回真实数据')
   assert.equal(typeof (await repositories.getSettingsAsync()).defaultTemporaryUnschedulableMinutes, 'number', '系统设置 async 读应由 read worker 返回真实数据')

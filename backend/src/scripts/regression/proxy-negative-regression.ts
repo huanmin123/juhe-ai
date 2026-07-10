@@ -185,21 +185,32 @@ async function main(): Promise<void> {
         base_url: upstreamBaseUrl
       },
       supportedModels: [proxyRegressionModel],
+      healthCheckModel: proxyRegressionModel,
       groupId: group.id
     }
-    const activationTask = await submitDraftAccountTestAndWait(baseUrl, adminCookie, accountPayload)
-    assert(activationTask.result?.success === true, `代理负向账户草稿测试应先通过：${activationTask.result?.message ?? activationTask.message ?? ''}`)
-    const account = await postEnvelope<AccountSummary>(baseUrl, '/__aisys__/api/accounts', adminCookie, {
-      ...accountPayload,
-      status: 'active',
-      activationTestTaskId: activationTask.id,
-      defaultTestModel: activationTask.result?.model
-    })
-    assert(account.status === 'active' && account.schedulable === true, '草稿测试通过后创建的代理负向账户应为正常可调度')
+    const manualDraftTask = await submitDraftAccountTestAndWait(baseUrl, adminCookie, accountPayload)
+    assert(manualDraftTask.result?.success === true, `代理负向账户草稿人工测试应通过：${manualDraftTask.result?.message ?? manualDraftTask.message ?? ''}`)
+    const createdAccount = await postEnvelope<AccountSummary>(baseUrl, '/__aisys__/api/accounts', adminCookie, accountPayload)
+    assert(createdAccount.status === 'pending_test' && createdAccount.schedulable === false, '草稿人工测试成功不能激活新账户')
+    assert(repositories.recordAccountHealthCheckSuccess(createdAccount.id, {
+      intervalHours: 12,
+      jitterMinutes: 0,
+      failureThreshold: 3,
+      statusCode: 200
+    }), '后台检查成功应激活代理负向账户')
+    const account = repositories.findAccountSummary(createdAccount.id, adminAccess)
+    assert(account?.status === 'active' && account.schedulable === true, '后台检查成功后代理负向账户应正常可调度')
     const proxiedAccount = await patchEnvelope<AccountSummary>(baseUrl, `/__aisys__/api/accounts/${account.id}`, adminCookie, {
       proxyProfileId: proxy.id
     })
     assert(proxiedAccount.proxyProfileId === proxy.id, '代理负向账户应成功绑定代理')
+    assert(proxiedAccount.status === 'pending_test', '代理变更后账户应重新进入待测试')
+    assert(repositories.recordAccountHealthCheckSuccess(account.id, {
+      intervalHours: 12,
+      jitterMinutes: 0,
+      failureThreshold: 3,
+      statusCode: 200
+    }), '代理变更后的后台检查成功应恢复账户')
     directUpstreamHitCount = 0
     const routeStrategy = await postEnvelope<RouteStrategySummary>(baseUrl, '/__aisys__/api/route-strategies', adminCookie, {
       name: '代理负向回归普通路由',
@@ -357,8 +368,7 @@ async function login(baseUrl: string): Promise<string> {
 
 async function submitDraftAccountTestAndWait(baseUrl: string, cookie: string, account: Record<string, unknown>): Promise<AccountTestTask<AccountTestResult>> {
   const task = await postEnvelope<AccountTestTask<AccountTestResult>>(baseUrl, '/__aisys__/api/accounts/test-draft', cookie, {
-    account,
-    model: proxyRegressionModel
+    account
   })
   return await waitForAccountTestTask(baseUrl, cookie, task.id)
 }

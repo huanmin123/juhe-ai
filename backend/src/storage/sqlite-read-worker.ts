@@ -63,11 +63,11 @@ import {
   listOperationLogs,
   listOperationLogsForViewer
 } from './operation-log-read.repository.js'
-import { listProviderDefaultTestModelPreferenceEntriesReadOnly } from './provider-default-test-model.repository.js'
+import { listProviderDefaultHealthCheckModelPreferenceEntriesReadOnly } from './provider-default-health-check-model.repository.js'
 import {
   defaultProviderProtocolProfile,
   findProviderDefaultSupportedModels,
-  findProviderDefaultTestModel,
+  findProviderDefaultHealthCheckModel,
   findProviderProtocolProfile,
   isProtocolProviderCode,
   listOpenAIProtocolProfileIds,
@@ -379,16 +379,16 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
       return listOpenAIProtocolProfileIds()
     case 'is_protocol_provider_code_read_only':
       return isProtocolProviderCode(operation.providerCode, operation.protocolCode, operation.protocolVersion)
-    case 'find_provider_default_test_model_read_only':
-      return findProviderDefaultTestModel(operation.providerCode, operation.systemAccountId)
+    case 'find_provider_default_health_check_model_read_only':
+      return findProviderDefaultHealthCheckModel(operation.providerCode, operation.systemAccountId)
     case 'find_provider_default_supported_models_read_only':
       return findProviderDefaultSupportedModels(operation.providerCode)
     case 'find_provider_protocol_profile_read_only':
       return findProviderProtocolProfile(operation.profileId)
     case 'default_provider_protocol_profile_read_only':
       return defaultProviderProtocolProfile(operation.providerCode)
-    case 'list_provider_default_test_model_preferences_read_only':
-      return listProviderDefaultTestModelPreferenceEntriesReadOnly(operation.systemAccountId, operation.providerCodes)
+    case 'list_provider_default_health_check_model_preferences_read_only':
+      return listProviderDefaultHealthCheckModelPreferenceEntriesReadOnly(operation.systemAccountId, operation.providerCodes)
     case 'list_global_settings_read_only':
       return listGlobalSettingsReadOnly()
     case 'get_settings_read_only':

@@ -54,7 +54,7 @@ export function accountSummaryFromGatewayPrecheckAccount(
     clientCompatibility: account.clientCompatibility,
     supportedModels: account.supportedModels,
     modelMappings: account.modelMappings,
-    defaultTestModel: account.defaultTestModel,
+    healthCheckModel: account.healthCheckModel?.trim() || '',
     proxyProfileId: account.proxyProfileId,
     schedulable: true,
     cooldownUntil: account.cooldownUntil,

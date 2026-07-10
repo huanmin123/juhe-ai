@@ -5,7 +5,7 @@ import { getBusinessDatabase, nowIso } from './database.js'
 import { getPostgresPool } from './postgres-client.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
-export interface ProviderDefaultTestModelPreference {
+export interface ProviderDefaultHealthCheckModelPreference {
   systemAccountId: string
   providerCode: ProviderCode
   model: string
@@ -13,7 +13,7 @@ export interface ProviderDefaultTestModelPreference {
   updatedAt: string
 }
 
-interface ProviderDefaultTestModelPreferenceRow {
+interface ProviderDefaultHealthCheckModelPreferenceRow {
   system_account_id: string
   provider_code: ProviderCode
   model: string
@@ -23,13 +23,13 @@ interface ProviderDefaultTestModelPreferenceRow {
 
 const businessSchemaName = 'juhe_business'
 
-export function findProviderDefaultTestModelPreference(providerCode: string, systemAccountId?: string): string | undefined {
+export function findProviderDefaultHealthCheckModelPreference(providerCode: string, systemAccountId?: string): string | undefined {
   const normalized = normalizePreferenceKey(providerCode, systemAccountId)
   if (!normalized) return undefined
   const row = getBusinessDatabase()
     .prepare(`
       SELECT model
-      FROM provider_default_test_models
+      FROM provider_default_health_check_models
       WHERE system_account_id = ?
         AND provider_code = ?
       LIMIT 1
@@ -38,13 +38,13 @@ export function findProviderDefaultTestModelPreference(providerCode: string, sys
   return normalizeModel(row?.model)
 }
 
-export async function findProviderDefaultTestModelPreferenceAsync(providerCode: string, systemAccountId?: string): Promise<string | undefined> {
+export async function findProviderDefaultHealthCheckModelPreferenceAsync(providerCode: string, systemAccountId?: string): Promise<string | undefined> {
   const normalized = normalizePreferenceKey(providerCode, systemAccountId)
   if (!normalized) return undefined
-  const client = await getProviderDefaultTestModelDatabaseClient()
+  const client = await getProviderDefaultHealthCheckModelDatabaseClient()
   const row = await client.one<{ model?: string | null }>(`
     SELECT model
-    FROM ${providerDefaultTestModelTable(client)}
+    FROM ${providerDefaultHealthCheckModelTable(client)}
     WHERE system_account_id = ?
       AND provider_code = ?
     LIMIT 1
@@ -52,30 +52,30 @@ export async function findProviderDefaultTestModelPreferenceAsync(providerCode: 
   return normalizeModel(row?.model)
 }
 
-export async function listProviderDefaultTestModelPreferencesAsync(
+export async function listProviderDefaultHealthCheckModelPreferencesAsync(
   systemAccountId: string | undefined,
   providerCodes: string[] = []
 ): Promise<Map<string, string>> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     const entries = sqliteReadWorkerPoolEnabled()
       ? await requestSqliteReadWorker({
-        type: 'list_provider_default_test_model_preferences_read_only',
+        type: 'list_provider_default_health_check_model_preferences_read_only',
         systemAccountId,
         providerCodes
       })
-      : listProviderDefaultTestModelPreferenceEntriesReadOnly(systemAccountId, providerCodes)
+      : listProviderDefaultHealthCheckModelPreferenceEntriesReadOnly(systemAccountId, providerCodes)
     return new Map(entries)
   }
   const normalizedSystemAccountId = normalizeText(systemAccountId)
   if (!normalizedSystemAccountId) return new Map()
   const normalizedProviderCodes = [...new Set(providerCodes.map((code) => normalizeText(code)).filter(Boolean))]
-  const client = await getProviderDefaultTestModelDatabaseClient()
+  const client = await getProviderDefaultHealthCheckModelDatabaseClient()
   const providerFilter = normalizedProviderCodes.length
     ? `AND provider_code IN (${client.dialect.bindPlaceholders(normalizedProviderCodes.length)})`
     : ''
-  const rows = await client.query<Pick<ProviderDefaultTestModelPreferenceRow, 'provider_code' | 'model'>>(`
+  const rows = await client.query<Pick<ProviderDefaultHealthCheckModelPreferenceRow, 'provider_code' | 'model'>>(`
     SELECT provider_code, model
-    FROM ${providerDefaultTestModelTable(client)}
+    FROM ${providerDefaultHealthCheckModelTable(client)}
     WHERE system_account_id = ?
       ${providerFilter}
     ORDER BY provider_code ASC
@@ -85,7 +85,7 @@ export async function listProviderDefaultTestModelPreferencesAsync(
     .filter((entry): entry is readonly [string, string] => Boolean(entry[0] && entry[1])))
 }
 
-export function listProviderDefaultTestModelPreferenceEntriesReadOnly(
+export function listProviderDefaultHealthCheckModelPreferenceEntriesReadOnly(
   systemAccountId: string | undefined,
   providerCodes: string[] = []
 ): Array<[string, string]> {
@@ -98,30 +98,30 @@ export function listProviderDefaultTestModelPreferenceEntriesReadOnly(
   const rows = getBusinessDatabase()
     .prepare(`
       SELECT provider_code, model
-      FROM provider_default_test_models
+      FROM provider_default_health_check_models
       WHERE system_account_id = ?
         ${providerFilter}
       ORDER BY provider_code ASC
     `)
-    .all(normalizedSystemAccountId, ...normalizedProviderCodes) as Array<Pick<ProviderDefaultTestModelPreferenceRow, 'provider_code' | 'model'>>
+    .all(normalizedSystemAccountId, ...normalizedProviderCodes) as Array<Pick<ProviderDefaultHealthCheckModelPreferenceRow, 'provider_code' | 'model'>>
   return rows
     .map((row) => [normalizeText(row.provider_code), normalizeModel(row.model)] as [string, string | undefined])
     .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1]))
 }
 
-export async function upsertProviderDefaultTestModelPreferenceAsync(input: {
+export async function upsertProviderDefaultHealthCheckModelPreferenceAsync(input: {
   systemAccountId: string
   providerCode: string
   model: string
-}): Promise<ProviderDefaultTestModelPreference> {
+}): Promise<ProviderDefaultHealthCheckModelPreference> {
   const systemAccountId = requiredText(input.systemAccountId, '系统账户')
   const providerCode = requiredText(input.providerCode, '供应商')
-  const model = requiredText(input.model, '默认测试模型')
+  const model = requiredText(input.model, '默认检查模型')
   const now = nowIso()
-  const client = await getProviderDefaultTestModelDatabaseClient()
+  const client = await getProviderDefaultHealthCheckModelDatabaseClient()
   if (client.driver === 'postgres') {
     await client.execute(`
-      INSERT INTO ${providerDefaultTestModelTable(client)} (
+      INSERT INTO ${providerDefaultHealthCheckModelTable(client)} (
         system_account_id, provider_code, model, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?)
       ON CONFLICT (system_account_id, provider_code) DO UPDATE
@@ -130,7 +130,7 @@ export async function upsertProviderDefaultTestModelPreferenceAsync(input: {
     `, [systemAccountId, providerCode, model, now, now])
   } else {
     await client.execute(`
-      INSERT INTO ${providerDefaultTestModelTable(client)} (
+      INSERT INTO ${providerDefaultHealthCheckModelTable(client)} (
         system_account_id, provider_code, model, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(system_account_id, provider_code) DO UPDATE SET
@@ -138,14 +138,14 @@ export async function upsertProviderDefaultTestModelPreferenceAsync(input: {
         updated_at = excluded.updated_at
     `, [systemAccountId, providerCode, model, now, now])
   }
-  const saved = await findProviderDefaultTestModelPreferenceRecordAsync(providerCode, systemAccountId)
+  const saved = await findProviderDefaultHealthCheckModelPreferenceRecordAsync(providerCode, systemAccountId)
   if (!saved) {
-    throw new Error('默认测试模型保存失败')
+    throw new Error('默认检查模型保存失败')
   }
   return saved
 }
 
-export async function clearProviderDefaultTestModelPreferenceIfModelAsync(input: {
+export async function clearProviderDefaultHealthCheckModelPreferenceIfModelAsync(input: {
   systemAccountId?: string
   providerCode: string
   model: string
@@ -154,17 +154,17 @@ export async function clearProviderDefaultTestModelPreferenceIfModelAsync(input:
   const providerCode = normalizeText(input.providerCode)
   const model = normalizeModel(input.model)
   if (!providerCode || !model) return false
-  const client = await getProviderDefaultTestModelDatabaseClient()
+  const client = await getProviderDefaultHealthCheckModelDatabaseClient()
   if (!systemAccountId) {
     const result = await client.execute(`
-      DELETE FROM ${providerDefaultTestModelTable(client)}
+      DELETE FROM ${providerDefaultHealthCheckModelTable(client)}
       WHERE provider_code = ?
         AND model = ?
     `, [providerCode, model])
     return Number(result.changes ?? 0) > 0
   }
   const result = await client.execute(`
-    DELETE FROM ${providerDefaultTestModelTable(client)}
+    DELETE FROM ${providerDefaultHealthCheckModelTable(client)}
     WHERE system_account_id = ?
       AND provider_code = ?
       AND model = ?
@@ -172,16 +172,16 @@ export async function clearProviderDefaultTestModelPreferenceIfModelAsync(input:
   return Number(result.changes ?? 0) > 0
 }
 
-async function findProviderDefaultTestModelPreferenceRecordAsync(
+async function findProviderDefaultHealthCheckModelPreferenceRecordAsync(
   providerCodeInput: string,
   systemAccountIdInput?: string
-): Promise<ProviderDefaultTestModelPreference | undefined> {
+): Promise<ProviderDefaultHealthCheckModelPreference | undefined> {
   const normalized = normalizePreferenceKey(providerCodeInput, systemAccountIdInput)
   if (!normalized) return undefined
-  const client = await getProviderDefaultTestModelDatabaseClient()
-  const row = await client.one<ProviderDefaultTestModelPreferenceRow>(`
+  const client = await getProviderDefaultHealthCheckModelDatabaseClient()
+  const row = await client.one<ProviderDefaultHealthCheckModelPreferenceRow>(`
     SELECT system_account_id, provider_code, model, created_at, updated_at
-    FROM ${providerDefaultTestModelTable(client)}
+    FROM ${providerDefaultHealthCheckModelTable(client)}
     WHERE system_account_id = ?
       AND provider_code = ?
     LIMIT 1
@@ -189,7 +189,7 @@ async function findProviderDefaultTestModelPreferenceRecordAsync(
   return row ? preferenceFromRow(row) : undefined
 }
 
-function preferenceFromRow(row: ProviderDefaultTestModelPreferenceRow): ProviderDefaultTestModelPreference {
+function preferenceFromRow(row: ProviderDefaultHealthCheckModelPreferenceRow): ProviderDefaultHealthCheckModelPreference {
   return {
     systemAccountId: row.system_account_id,
     providerCode: row.provider_code,
@@ -224,15 +224,15 @@ function normalizeModel(value: unknown): string | undefined {
   return normalized || undefined
 }
 
-async function getProviderDefaultTestModelDatabaseClient(): Promise<DatabaseClient> {
+async function getProviderDefaultHealthCheckModelDatabaseClient(): Promise<DatabaseClient> {
   if (runtimeConfig.databaseDriver === 'postgres') {
     return createPostgresDatabaseClient(await getPostgresPool())
   }
   return createSqliteDatabaseClient(getBusinessDatabase())
 }
 
-function providerDefaultTestModelTable(client: DatabaseClient): string {
+function providerDefaultHealthCheckModelTable(client: DatabaseClient): string {
   return client.driver === 'postgres'
-    ? client.dialect.qualifyTable(businessSchemaName, 'provider_default_test_models')
-    : client.dialect.quoteIdentifier('provider_default_test_models')
+    ? client.dialect.qualifyTable(businessSchemaName, 'provider_default_health_check_models')
+    : client.dialect.quoteIdentifier('provider_default_health_check_models')
 }

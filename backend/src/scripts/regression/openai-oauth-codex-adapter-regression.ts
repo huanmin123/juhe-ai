@@ -44,6 +44,9 @@ const identity = {
 async function main(): Promise<void> {
   await testResponsesBodyNormalization()
   await testCompactBodyNormalization()
+  await testOAuthAccountRequestOverrides()
+  await testOAuthCompactRequestOverrides()
+  await testOAuthFlexRequestOverrideRejection()
   await testHeaderAllowlistAndDefaults()
   await testSessionIsolation()
   await testInvalidBodyRejection()
@@ -55,6 +58,78 @@ async function main(): Promise<void> {
   testOAuthEffectiveStreamSemantics()
   testApiKeyPassthroughUnchanged()
   console.log('OpenAI OAuth Codex adapter regression passed')
+}
+
+async function testOAuthAccountRequestOverrides(): Promise<void> {
+  const req = createRequest('/v1/responses', {
+    model: 'gpt-5.6-sol',
+    input: [],
+    service_tier: 'auto',
+    reasoning_effort: 'low',
+    reasoning: {
+      effort: 'medium',
+      summary: 'detailed'
+    }
+  })
+  const parts = await buildOpenAIOAuthCodexRequestParts(req, req.headers, {
+    ...account,
+    credentials: {
+      ...account.credentials,
+      service_tier_override: 'priority',
+      reasoning_effort_override: 'max'
+    }
+  }, identity)
+  const body = parseBody(parts.body)
+
+  assert.equal(body.service_tier, 'priority')
+  assert.deepEqual(body.reasoning, {
+    effort: 'max',
+    summary: 'detailed'
+  })
+  assert.equal(body.reasoning_effort, undefined)
+}
+
+async function testOAuthCompactRequestOverrides(): Promise<void> {
+  const req = createRequest('/v1/responses/compact', {
+    model: 'gpt-5.6-terra',
+    input: [],
+    service_tier: 'auto',
+    reasoning: {
+      effort: 'low',
+      summary: 'auto'
+    }
+  })
+  const parts = await buildOpenAIOAuthCodexRequestParts(req, req.headers, {
+    ...account,
+    credentials: {
+      ...account.credentials,
+      service_tier_override: 'priority',
+      reasoning_effort_override: 'max'
+    }
+  }, identity)
+  const body = parseBody(parts.body)
+
+  assert.equal(body.service_tier, 'priority')
+  assert.equal(body.reasoning, undefined, 'OAuth compact 按既有契约删除 reasoning，不能伪装为已应用覆盖')
+}
+
+async function testOAuthFlexRequestOverrideRejection(): Promise<void> {
+  const req = createRequest('/v1/responses', {
+    model: 'gpt-5.6-sol',
+    input: []
+  })
+  await assert.rejects(async () => {
+    await buildOpenAIOAuthCodexRequestParts(req, req.headers, {
+      ...account,
+      credentials: {
+        ...account.credentials,
+        service_tier_override: 'flex'
+      }
+    }, identity)
+  }, (error: unknown) => (
+    error instanceof OpenAIOAuthCodexAdapterError
+    && error.message === '当前 OAuth 上游适配器不支持服务等级 flex'
+  ))
 }
 
 async function testResponsesBodyNormalization(): Promise<void> {

@@ -1,21 +1,30 @@
-import type { AccountDraftTestAccountPayload } from '@/api/client'
-import type { AccountSummary, ProviderModelApiProtocol, ProviderModelPricing } from '@/types/domain'
+import type {
+  AccountSummary,
+  ProviderModelApiProtocol,
+  ProviderModelPricing,
+  ProviderModelReasoningEffort,
+  ProviderModelServiceTier
+} from '@/types/domain'
 import { asString } from './accountBasicFormatters'
 import type { AccountFormModel } from './accountFormTypes'
-import type { AccountSavePayload } from './accountSavePayload'
-import type { SuccessfulDraftActivationTest } from './useAccountTestModal'
 
 export interface AccountModelSelectOption {
   label: string
   value: string
   supportedApiProtocols?: ProviderModelApiProtocol[]
+  supportedServiceTiers?: ProviderModelServiceTier[]
+  supportedReasoningEfforts?: ProviderModelReasoningEffort[]
+  defaultReasoningEffort?: ProviderModelReasoningEffort
 }
 
 export function providerModelsToOptions(models: ProviderModelPricing[]): AccountModelSelectOption[] {
   return models.map((item) => ({
     label: item.model,
     value: item.model,
-    supportedApiProtocols: item.supportedApiProtocols
+    supportedApiProtocols: item.supportedApiProtocols,
+    supportedServiceTiers: item.supportedServiceTiers,
+    supportedReasoningEfforts: item.supportedReasoningEfforts,
+    defaultReasoningEffort: item.defaultReasoningEffort
   }))
 }
 
@@ -69,116 +78,4 @@ export function accountApiKeyWeightsForForm(credentials: Record<string, unknown>
     const value = Number(rawWeights[index] ?? 1)
     return Number.isInteger(value) ? Math.min(100, Math.max(1, value)) : 1
   })
-}
-
-export function accountCreatePayloadWithActivationTest(
-  payload: AccountSavePayload,
-  activationTest: SuccessfulDraftActivationTest | undefined,
-  fallbackName: string
-): AccountSavePayload & { status?: 'active'; activationTestTaskId?: string } {
-  if (!activationTest || !isActivationTestForPayload(activationTest, payload, fallbackName)) {
-    return payload
-  }
-  const defaultTestModel = successfulTestModelForSupportedModels(activationTest, payload.supportedModels)
-  return {
-    ...payload,
-    status: 'active',
-    activationTestTaskId: activationTest.taskId,
-    ...(defaultTestModel ? { defaultTestModel } : {})
-  }
-}
-
-export function accountUpdateActivationTestTaskId(
-  payload: AccountSavePayload,
-  activationTest: SuccessfulDraftActivationTest | undefined,
-  fallbackName: string
-): string | undefined {
-  return isUpdateActivationTestForPayload(activationTest, payload, fallbackName)
-    ? activationTest?.taskId
-    : undefined
-}
-
-export function accountUpdateDefaultTestModel(
-  payload: AccountSavePayload,
-  activationTest: SuccessfulDraftActivationTest | undefined,
-  fallbackName: string
-): string | undefined {
-  if (!isUpdateActivationTestForPayload(activationTest, payload, fallbackName)) return undefined
-  return successfulTestModelForSupportedModels(activationTest, payload.supportedModels)
-}
-
-function isActivationTestForPayload(
-  activationTest: SuccessfulDraftActivationTest | undefined,
-  payload: AccountSavePayload,
-  fallbackName: string
-): boolean {
-  if (!activationTest) return false
-  return stablePayloadFingerprint(activationTest.account) === stablePayloadFingerprint(accountDraftPayloadFromSavePayload(payload, fallbackName))
-}
-
-function isUpdateActivationTestForPayload(
-  activationTest: SuccessfulDraftActivationTest | undefined,
-  payload: AccountSavePayload,
-  fallbackName: string
-): boolean {
-  if (!activationTest) return false
-  return stablePayloadFingerprint(savedUpdateTestTarget(activationTest.account)) === stablePayloadFingerprint(savedUpdateTestTarget(accountDraftPayloadFromSavePayload(payload, fallbackName)))
-}
-
-function accountDraftPayloadFromSavePayload(
-  payload: AccountSavePayload,
-  fallbackName: string
-): AccountDraftTestAccountPayload {
-  return {
-    providerCode: payload.providerCode,
-    providerProtocolProfileId: payload.providerProtocolProfileId,
-    name: payload.name ?? fallbackName,
-    type: payload.type,
-    credentials: payload.credentials,
-    concurrencyLimit: payload.concurrencyLimit,
-    priority: payload.priority,
-    supportedModels: payload.supportedModels,
-    modelMappings: payload.modelMappings,
-    proxyProfileId: payload.proxyProfileId,
-    groupId: payload.groupId ?? '',
-    accountExpiresAt: payload.accountExpiresAt,
-    availabilitySchedule: payload.availabilitySchedule as AccountDraftTestAccountPayload['availabilitySchedule'],
-    notes: payload.notes
-  }
-}
-
-function savedUpdateTestTarget(payload: AccountDraftTestAccountPayload): Record<string, unknown> {
-  return {
-    providerCode: payload.providerCode,
-    providerProtocolProfileId: payload.providerProtocolProfileId,
-    type: payload.type,
-    groupId: payload.groupId,
-    proxyProfileId: payload.proxyProfileId,
-    credentials: payload.credentials
-  }
-}
-
-function successfulTestModelForSupportedModels(
-  activationTest: SuccessfulDraftActivationTest | undefined,
-  supportedModels: string[]
-): string | undefined {
-  const model = activationTest?.model.trim()
-  return model && supportedModels.includes(model) ? model : undefined
-}
-
-function stablePayloadFingerprint(value: unknown): string {
-  return JSON.stringify(stablePayloadValue(value))
-}
-
-function stablePayloadValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stablePayloadValue)
-  if (!value || typeof value !== 'object') return value
-  const output: Record<string, unknown> = {}
-  for (const key of Object.keys(value).sort()) {
-    const item = (value as Record<string, unknown>)[key]
-    if (item !== undefined) {
-      output[key] = stablePayloadValue(item)
-    }
-  }
-  return output
 }

@@ -94,6 +94,7 @@ export function trafficSourceText(record: UsageRecordSummary): string {
   return {
     gateway: '网关请求',
     manual_account_test: '账号测试',
+    account_health_check: '健康检查',
     runtime_recovery_probe: '运行态恢复探针',
     cooldown_retest: '恢复探活',
     hybrid_scoring: '混合评分',
@@ -105,6 +106,7 @@ export function trafficSourceColor(record: UsageRecordSummary): string {
   if (record.trafficSource === 'hybrid_quality_scoring') return 'purple'
   if (record.trafficSource === 'hybrid_scoring') return 'blue'
   if (record.trafficSource === 'runtime_recovery_probe') return 'orange'
+  if (record.trafficSource === 'account_health_check') return 'green'
   if (record.trafficSource === 'cooldown_retest') return 'gold'
   if (record.trafficSource === 'manual_account_test') return 'cyan'
   return 'default'

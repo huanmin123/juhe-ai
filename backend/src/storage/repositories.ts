@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from 'node:util'
+
 import type { AccountClientCompatibility, AccountGroupBindStatus, AccountModelMapping, AccountStatus, AccountSummary, AccountSupportedEndpointMode, AccountType, AccountUsageStatsOverview, AccountUsageStatsRange, ProviderCode, ResourceAuthorizationListResult, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary } from '../domain/types.js'
 import { deriveOpenAIAccountClientCompatibility, normalizeOpenAIAccountClientCompatibility } from '../domain/account-client-compatibility.js'
 import { assertOpenAIEndpointModesCompatible } from '../domain/openai-endpoint-modes.js'
@@ -127,7 +129,14 @@ export {
 } from './group-summary.repository.js'
 import { invalidateGroupAccountIdsCache } from './group-read-loaders.js'
 import { loadOpenAICodexUsageSnapshotsByAccountIds } from './oauth-usage-loaders.js'
-import { findProviderDefaultSupportedModels, findProviderDefaultSupportedModelsAsync, listOpenAIProtocolProfileIds, listOpenAIProtocolProfileIdsAsync } from './provider.repository.js'
+import {
+  findProviderDefaultHealthCheckModel,
+  findProviderDefaultHealthCheckModelAsync,
+  findProviderDefaultSupportedModels,
+  findProviderDefaultSupportedModelsAsync,
+  listOpenAIProtocolProfileIds,
+  listOpenAIProtocolProfileIdsAsync
+} from './provider.repository.js'
 import { requireEnabledProviderProtocolProfile, requireEnabledProviderProtocolProfileAsync } from './provider.repository.js'
 import { getPostgresPool } from './postgres-client.js'
 import { ProxyProfileUnavailableError, resolveEnabledProxyProfileId } from './proxy.repository.js'
@@ -342,7 +351,7 @@ interface OpenAIOAuthRefreshCandidateRow {
   cooldown_until: string | null
   last_error_code: string | null
   last_error_message: string | null
-  default_test_model: string | null
+  health_check_model: string
 }
 
 export type { AccountListOptions, AccountOptionListOptions, AccountListSchedulableFilter, AccountListSortDirection, AccountListSortField } from './account-list-options.js'
@@ -493,8 +502,8 @@ export {
   defaultProviderProtocolProfileAsync,
   findProviderDefaultSupportedModels,
   findProviderDefaultSupportedModelsAsync,
-  findProviderDefaultTestModel,
-  findProviderDefaultTestModelAsync,
+  findProviderDefaultHealthCheckModel,
+  findProviderDefaultHealthCheckModelAsync,
   findProviderProtocolProfile,
   findProviderProtocolProfileAsync,
   isOpenAIProtocolProviderCode,
@@ -1193,20 +1202,35 @@ export async function findAccountForTestAsync(accountId: string, access?: Access
   }
 }
 
-function accountSupportsDefaultTestModel(account: Pick<AccountSummary, 'supportedModels'>, model: string): boolean {
+function accountSupportsHealthCheckModel(account: Pick<AccountSummary, 'supportedModels'>, model: string): boolean {
   return (account.supportedModels ?? []).some((supportedModel) => supportedModel.trim() === model)
 }
 
-function normalizedAccountDefaultTestModelInput(value: unknown, supportedModels: readonly string[]): string | undefined {
+function normalizedAccountHealthCheckModelInput(value: unknown, supportedModels: readonly string[]): string {
   const model = optionalString(value)
-  if (!model) return undefined
+  if (!model) {
+    throw new Error('账户检查模型不能为空')
+  }
   if (!supportedModels.includes(model)) {
-    throw new Error('账户默认测试模型必须属于账户支持模型')
+    throw new Error('账户检查模型必须属于账户支持模型')
   }
   return model
 }
 
-export function updateAccountDefaultTestModel(
+function accountConnectionConfigurationChanged(input: {
+  current: Pick<AccountSummary, 'credentials' | 'proxyProfileId'>
+  credentials: Record<string, unknown>
+  nextProxyProfileId?: string
+  credentialsInputPresent: boolean
+}): boolean {
+  if (input.current.proxyProfileId !== input.nextProxyProfileId) return true
+  if (!input.credentialsInputPresent) return false
+  return ['api_key', 'api_keys', 'base_url'].some((key) => (
+    !isDeepStrictEqual(input.current.credentials?.[key], input.credentials[key])
+  ))
+}
+
+export function updateAccountHealthCheckModel(
   accountId: string,
   model: string,
   access?: AccessScope,
@@ -1220,7 +1244,10 @@ export function updateAccountDefaultTestModel(
   if (!normalizedModel) {
     return current
   }
-  if (!accountSupportsDefaultTestModel(current, normalizedModel)) {
+  if (current.healthCheckModel === normalizedModel) {
+    return current
+  }
+  if (!accountSupportsHealthCheckModel(current, normalizedModel)) {
     if (
       !ensureSupportedModel
       || !current.permissions?.canEdit
@@ -1250,7 +1277,9 @@ export function updateAccountDefaultTestModel(
       `).run(accountId, current.providerCode, normalizedModel, nowIso())
       const result = database.prepare(`
         UPDATE accounts
-        SET default_test_model = ?,
+        SET health_check_model = ?,
+            next_health_check_at = NULL,
+            config_revision = config_revision + 1,
             updated_at = ?
         WHERE id = ?
           AND deleted_at IS NULL
@@ -1258,7 +1287,7 @@ export function updateAccountDefaultTestModel(
       commitDatabaseTransaction(database, ownsTransaction)
       if (Number(result.changes ?? 0) > 0) {
         invalidateAccountLookupCache(accountId)
-        invalidateGatewayRuntimeAfterBusinessWrite('account_test_model_updated')
+        invalidateGatewayRuntimeAfterBusinessWrite('account_health_check_model_updated')
       }
       return findAccountSummary(accountId, access)
     } catch (error) {
@@ -1269,7 +1298,9 @@ export function updateAccountDefaultTestModel(
   const result = getBusinessDatabase()
     .prepare(`
       UPDATE accounts
-      SET default_test_model = ?,
+      SET health_check_model = ?,
+          next_health_check_at = NULL,
+          config_revision = config_revision + 1,
           updated_at = ?
       WHERE id = ?
         AND deleted_at IS NULL
@@ -1277,19 +1308,19 @@ export function updateAccountDefaultTestModel(
     .run(normalizedModel, nowIso(), accountId)
   if (Number(result.changes ?? 0) > 0) {
     invalidateAccountLookupCache(accountId)
-    invalidateGatewayRuntimeAfterBusinessWrite('account_test_model_updated')
+    invalidateGatewayRuntimeAfterBusinessWrite('account_health_check_model_updated')
   }
   return findAccountSummary(accountId, access)
 }
 
-export async function updateAccountDefaultTestModelAsync(
+export async function updateAccountHealthCheckModelAsync(
   accountId: string,
   model: string,
   access?: AccessScope,
   ensureSupportedModel = false
 ): Promise<AccountSummary | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return updateAccountDefaultTestModel(accountId, model, access, ensureSupportedModel)
+    return updateAccountHealthCheckModel(accountId, model, access, ensureSupportedModel)
   }
   const normalizedModel = optionalString(model)?.trim()
   const current = await findAccountSummaryAsync(accountId, access)
@@ -1299,7 +1330,10 @@ export async function updateAccountDefaultTestModelAsync(
   if (!normalizedModel) {
     return current
   }
-  if (!accountSupportsDefaultTestModel(current, normalizedModel)) {
+  if (current.healthCheckModel === normalizedModel) {
+    return current
+  }
+  if (!accountSupportsHealthCheckModel(current, normalizedModel)) {
     if (
       !ensureSupportedModel
       || !current.permissions?.canEdit
@@ -1329,27 +1363,31 @@ export async function updateAccountDefaultTestModelAsync(
       `, [accountId, current.providerCode, normalizedModel, nowIso()])
       await tx.execute(`
         UPDATE ${accountWriteTable(tx, 'accounts')}
-        SET default_test_model = ?,
+        SET health_check_model = ?,
+            next_health_check_at = NULL,
+            config_revision = config_revision + 1,
             updated_at = ?
         WHERE id = ?
           AND deleted_at IS NULL
       `, [normalizedModel, nowIso(), accountId])
     })
     invalidateAccountLookupCache(accountId)
-    invalidateGatewayRuntimeAfterBusinessWrite('account_test_model_updated')
+    invalidateGatewayRuntimeAfterBusinessWrite('account_health_check_model_updated')
     return findAccountSummaryAsync(accountId, access)
   }
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const result = await client.execute(`
     UPDATE ${accountWriteTable(client, 'accounts')}
-    SET default_test_model = ?,
+    SET health_check_model = ?,
+        next_health_check_at = NULL,
+        config_revision = config_revision + 1,
         updated_at = ?
     WHERE id = ?
       AND deleted_at IS NULL
   `, [normalizedModel, nowIso(), accountId])
   if (Number(result.changes ?? 0) > 0) {
     invalidateAccountLookupCache(accountId)
-    invalidateGatewayRuntimeAfterBusinessWrite('account_test_model_updated')
+    invalidateGatewayRuntimeAfterBusinessWrite('account_health_check_model_updated')
   }
   return findAccountSummaryAsync(accountId, access)
 }
@@ -1367,7 +1405,7 @@ export function listOpenAIOAuthAccountsDueForAccessTokenRefresh(input: {
       SELECT id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted,
         proxy_profile_id, concurrency_limit, priority,
         super_priority_enabled, fallback_enabled, client_compatibility, schedulable, account_expires_at, cooldown_until,
-        last_error_code, last_error_message, default_test_model
+        last_error_code, last_error_message, health_check_model
       FROM accounts
       WHERE authorization_instance_authorization_id IS NULL
         AND deleted_at IS NULL
@@ -1400,7 +1438,7 @@ export async function listOpenAIOAuthAccountsDueForAccessTokenRefreshAsync(input
     SELECT id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted,
       proxy_profile_id, concurrency_limit, priority,
       super_priority_enabled, fallback_enabled, client_compatibility, schedulable, account_expires_at, cooldown_until,
-      last_error_code, last_error_message, default_test_model
+      last_error_code, last_error_message, health_check_model
     FROM ${accountWriteTable(client, 'accounts')}
     WHERE authorization_instance_authorization_id IS NULL
       AND deleted_at IS NULL
@@ -1425,7 +1463,7 @@ export function listOpenAIOAuthStoppedRefreshExceptionAccounts(input: {
       SELECT id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted,
         proxy_profile_id, concurrency_limit, priority,
         super_priority_enabled, fallback_enabled, schedulable, account_expires_at, cooldown_until,
-        last_error_code, last_error_message, default_test_model
+        last_error_code, last_error_message, health_check_model
       FROM accounts
       WHERE authorization_instance_authorization_id IS NULL
         AND provider_protocol_profile_id = ?
@@ -1464,7 +1502,7 @@ function openAIOAuthRefreshCandidateSummaries(rows: OpenAIOAuthRefreshCandidateR
       { protocolCode: row.protocol_code, protocolVersion: row.protocol_version }
     ),
     supportedModels: [],
-    defaultTestModel: optionalString(row.default_test_model),
+    healthCheckModel: row.health_check_model.trim(),
     proxyProfileId: row.proxy_profile_id ?? undefined,
     schedulable: row.schedulable === 1,
     accountExpiresAt: row.account_expires_at ?? undefined,
@@ -1520,9 +1558,15 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   }) ?? []
   assertAccountSupportedModelsRequired(supportedModels)
   assertAccountModelMappingUpstreamsAllowedBySupportedModels(modelMappings, supportedModels)
-  const defaultTestModel = normalizedAccountDefaultTestModelInput(input.defaultTestModel, supportedModels)
+  const healthCheckModel = normalizedAccountHealthCheckModelInput(
+    input.healthCheckModel
+      ?? findProviderDefaultHealthCheckModel(providerCode, systemAccountId)
+      ?? providerProfile.defaultHealthCheckModel,
+    supportedModels
+  )
   const tagNames = normalizeAccountTagNamesInput(input.tags) ?? []
-  const initialStatus = normalizedAccountStatusInput(input.status, 'pending_test')
+  const requestedStatus = normalizedAccountStatusInput(input.status, 'pending_test')
+  const initialStatus: AccountStatus = requestedStatus === 'disabled' ? 'disabled' : 'pending_test'
   const expiredByPackage = isAccountExpired(accountExpiresAt)
   const nextStatus = expiredByPackage ? 'disabled' : accountStatusForScheduleMutation({
     requestedStatus: initialStatus,
@@ -1548,9 +1592,6 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     accountType,
     clientCompatibility
   })
-  if (nextStatus !== 'active' && (createSuperPriorityEnabled || createFallbackEnabled)) {
-    throw new Error('只有正常状态的账户可以设置超级优先或降级备用')
-  }
   if (createSuperPriorityEnabled && createFallbackEnabled) {
     throw new Error('超级优先和降级备用不能同时开启')
   }
@@ -1577,7 +1618,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     supportedModels,
     modelMappings,
     tags: tagNames.map((name) => ({ id: '', name })),
-    defaultTestModel,
+    healthCheckModel,
     proxyProfileId,
     schedulable: expiredByPackage || accountStatusForcesSchedulableOff(nextStatus) ? false : createSchedulable,
     availabilitySchedule,
@@ -1587,7 +1628,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     lastErrorMessage: expiredByPackage
       ? '账户套餐已过期，已自动停用'
       : initialStatus === 'pending_test'
-        ? '账户创建后需测试通过才能参与调度'
+        ? '账户已保存，等待后台激活检查'
         : initialCooldownUntil ? '创建时设置为临时不可调用' : undefined,
     cooldownRetestFailureCount: 0,
     cooldownRetestObservationStartedAt: initialObservationStartedAt,
@@ -1612,7 +1653,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
           id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
           oauth_access_token_expires_at, oauth_refresh_token_present, proxy_profile_id, concurrency_limit,
           priority, super_priority_enabled, fallback_enabled, client_compatibility, schedulable, availability_schedule_json, availability_schedule_next_check_at, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
-          default_test_model, cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
+          health_check_model, cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
@@ -1644,7 +1685,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
         account.cooldownUntil ?? null,
         account.lastErrorCode ?? null,
         account.lastErrorMessage ?? null,
-        account.defaultTestModel ?? null,
+        account.healthCheckModel,
         account.cooldownRetestObservationStartedAt ?? null,
         0,
         null,
@@ -1739,9 +1780,15 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
   }) ?? []
   assertAccountSupportedModelsRequired(supportedModels)
   assertAccountModelMappingUpstreamsAllowedBySupportedModels(modelMappings, supportedModels)
-  const defaultTestModel = normalizedAccountDefaultTestModelInput(input.defaultTestModel, supportedModels)
+  const healthCheckModel = normalizedAccountHealthCheckModelInput(
+    input.healthCheckModel
+      ?? await findProviderDefaultHealthCheckModelAsync(providerCode, systemAccountId)
+      ?? providerProfile.defaultHealthCheckModel,
+    supportedModels
+  )
   const tagNames = normalizeAccountTagNamesInput(input.tags) ?? []
-  const initialStatus = normalizedAccountStatusInput(input.status, 'pending_test')
+  const requestedStatus = normalizedAccountStatusInput(input.status, 'pending_test')
+  const initialStatus: AccountStatus = requestedStatus === 'disabled' ? 'disabled' : 'pending_test'
   const expiredByPackage = isAccountExpired(accountExpiresAt)
   const nextStatus = expiredByPackage ? 'disabled' : accountStatusForScheduleMutation({
     requestedStatus: initialStatus,
@@ -1768,9 +1815,6 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
     accountType,
     clientCompatibility
   })
-  if (nextStatus !== 'active' && (createSuperPriorityEnabled || createFallbackEnabled)) {
-    throw new Error('只有正常状态的账户可以设置超级优先或降级备用')
-  }
   if (createSuperPriorityEnabled && createFallbackEnabled) {
     throw new Error('超级优先和降级备用不能同时开启')
   }
@@ -1800,7 +1844,7 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
     supportedModels,
     modelMappings,
     tags: tagNames.map((name) => ({ id: '', name })),
-    defaultTestModel,
+    healthCheckModel,
     proxyProfileId,
     schedulable: expiredByPackage || accountStatusForcesSchedulableOff(nextStatus) ? false : createSchedulable,
     availabilitySchedule,
@@ -1810,7 +1854,7 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
     lastErrorMessage: expiredByPackage
       ? '账户套餐已过期，已自动停用'
       : initialStatus === 'pending_test'
-        ? '账户创建后需测试通过才能参与调度'
+        ? '账户已保存，等待后台激活检查'
         : initialCooldownUntil ? '创建时设置为临时不可调用' : undefined,
     cooldownRetestFailureCount: 0,
     cooldownRetestObservationStartedAt: initialObservationStartedAt,
@@ -1832,7 +1876,7 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
           id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
           oauth_access_token_expires_at, oauth_refresh_token_present, proxy_profile_id, concurrency_limit,
           priority, super_priority_enabled, fallback_enabled, client_compatibility, schedulable, availability_schedule_json, availability_schedule_next_check_at, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
-          default_test_model, cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
+          health_check_model, cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         account.id,
@@ -1863,7 +1907,7 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
         account.cooldownUntil ?? null,
         account.lastErrorCode ?? null,
         account.lastErrorMessage ?? null,
-        account.defaultTestModel ?? null,
+        account.healthCheckModel,
         account.cooldownRetestObservationStartedAt ?? null,
         0,
         null,
@@ -1957,11 +2001,10 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   const nextSupportedModels = hasSupportedModelsInput
     ? unchangedSupportedModelsInput ?? normalizeAccountSupportedModelsForProvider(input.supportedModels, current.providerCode, systemAccountId) ?? []
     : current.supportedModels ?? []
-  const nextDefaultTestModel = hasOwnInput(input, 'defaultTestModel')
-    ? normalizedAccountDefaultTestModelInput(input.defaultTestModel, nextSupportedModels)
-    : current.defaultTestModel && nextSupportedModels.includes(current.defaultTestModel)
-      ? current.defaultTestModel
-      : undefined
+  const nextHealthCheckModel = normalizedAccountHealthCheckModelInput(
+    hasOwnInput(input, 'healthCheckModel') ? input.healthCheckModel : current.healthCheckModel,
+    nextSupportedModels
+  )
   const hasModelMappingsInput = hasOwnInput(input, 'modelMappings')
   const unchangedModelMappingsInput = hasModelMappingsInput
     ? normalizeModelMappingsIfUnchanged(input.modelMappings, current.modelMappings)
@@ -1983,20 +2026,39 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     : current.availabilitySchedule
   const hasPriorityInput = hasOwnInput(input, 'priority')
   const hasNotesInput = hasOwnInput(input, 'notes')
+  const nextProxyProfileId = hasOwnInput(input, 'proxyProfileId')
+    ? globalProxyProfileId(normalizeNullableIdInput(input.proxyProfileId, '代理配置'))
+    : current.proxyProfileId
+  const requiresBackgroundRecheck = accountConnectionConfigurationChanged({
+    current,
+    credentials,
+    nextProxyProfileId,
+    credentialsInputPresent: hasOwnInput(input, 'credentials')
+  })
+  const endpointModesChanged = hasOwnInput(input, 'credentials')
+    && !isDeepStrictEqual(
+      current.credentials?.supported_endpoint_modes,
+      credentials.supported_endpoint_modes
+    )
+  const requiresHealthCheckSchedule = requiresBackgroundRecheck
+    || hasSupportedModelsInput
+    || hasOwnInput(input, 'healthCheckModel')
+    || hasModelMappingsInput
+    || endpointModesChanged
 
   const hasStatusInput = hasOwnInput(input, 'status')
   const requestedStatus = hasStatusInput ? normalizedAccountStatusInput(input.status, current.status) : current.status
   if (hasStatusInput && current.status === 'error' && requestedStatus !== 'error') {
     throw new Error('异常账户不能通过编辑切换状态，请使用恢复异常')
   }
-  if (hasStatusInput && current.status === 'pending_test' && requestedStatus !== 'pending_test') {
-    throw new Error('待测试账户需手动测试通过后才能参与调度')
+  if (hasStatusInput && current.status === 'pending_test' && requestedStatus !== 'pending_test' && requestedStatus !== 'disabled') {
+    throw new Error('待检查账户只能由后台激活检查恢复')
   }
   if (hasStatusInput && requestedStatus === 'active' && (current.status === 'pending_test' || isCoolingAccountStatus(current.status) || current.status === 'error')) {
-    throw new Error('待测试、临时不可调用、限流中或异常账户不能通过启用账户恢复，请使用账户测试、恢复正常或恢复异常')
+    throw new Error('待检查、临时不可调用、限流中或异常账户不能通过启用账户恢复，请等待后台检查或使用恢复异常')
   }
   const updateNowMs = Date.now()
-  const nextStatus = expiredByPackage
+  const scheduledStatus = expiredByPackage
     ? 'disabled'
     : hasAvailabilityScheduleInput
       ? accountStatusForScheduleMutation({
@@ -2005,12 +2067,15 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         now: new Date(updateNowMs)
       })
       : requestedStatus
+  const nextStatus = requiresBackgroundRecheck && scheduledStatus !== 'disabled'
+    ? 'pending_test'
+    : scheduledStatus
   let nextCooldownUntil = current.cooldownUntil
   let nextLastErrorCode = current.lastErrorCode
   let nextLastErrorMessage = current.lastErrorMessage
   let nextCooldownRetestObservationStartedAt = current.cooldownRetestObservationStartedAt
   let clearCooldownRetestState = false
-  if (hasStatusInput) {
+  if (hasStatusInput || requiresBackgroundRecheck) {
     if (nextStatus === 'active') {
       nextCooldownUntil = undefined
       nextLastErrorCode = undefined
@@ -2020,7 +2085,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     } else if (nextStatus === 'pending_test') {
       nextCooldownUntil = undefined
       nextLastErrorCode = undefined
-      nextLastErrorMessage = '账户需测试通过后才能参与调度'
+      nextLastErrorMessage = '账户配置已保存，等待后台检查'
       nextCooldownRetestObservationStartedAt = undefined
       clearCooldownRetestState = true
     } else if (nextStatus === 'disabled' || nextStatus === 'error') {
@@ -2052,18 +2117,12 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     input.superPriorityEnabled,
     current.superPriorityEnabled
   )
-  if (hasSuperPriorityInput && requestedSuperPriority && nextStatus !== 'active' && !current.superPriorityEnabled) {
-    throw new Error('只有正常状态的账户可以设置超级优先')
-  }
   let nextSuperPriorityEnabled = requestedSuperPriority
   const hasFallbackInput = hasOwnInput(input, 'fallbackEnabled')
   const requestedFallback = normalizeFallbackInput(
     input.fallbackEnabled,
     current.fallbackEnabled
   )
-  if (hasFallbackInput && requestedFallback && nextStatus !== 'active' && !current.fallbackEnabled) {
-    throw new Error('只有正常状态的账户可以设置降级备用')
-  }
   if (hasSuperPriorityInput && requestedSuperPriority && hasFallbackInput && requestedFallback) {
     throw new Error('超级优先和降级备用不能同时开启')
   }
@@ -2094,12 +2153,11 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     fallbackEnabled: nextFallbackEnabled,
     clientCompatibility: nextClientCompatibility,
     supportedModels: nextSupportedModels,
-    defaultTestModel: nextDefaultTestModel,
+    healthCheckModel: nextHealthCheckModel,
     modelMappings: nextModelMappings,
     tags: hasTagsInput ? nextTagNames.map((name) => ({ id: '', name })) : current.tags ?? [],
-    proxyProfileId: hasOwnInput(input, 'proxyProfileId')
-      ? globalProxyProfileId(normalizeNullableIdInput(input.proxyProfileId, '代理配置'))
-      : current.proxyProfileId,
+    proxyProfileId: nextProxyProfileId,
+    configRevision: (current.configRevision ?? 1) + 1,
     schedulable: expiredByPackage || accountStatusForcesSchedulableOff(nextStatus)
       ? false
       : hasStatusInput && nextStatus !== 'disabled'
@@ -2134,7 +2192,8 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
             oauth_access_token_expires_at = ?, oauth_refresh_token_present = ?,
             proxy_profile_id = ?, concurrency_limit = ?,
             priority = ?, super_priority_enabled = ?, fallback_enabled = ?, client_compatibility = ?, schedulable = ?, availability_schedule_json = ?, availability_schedule_next_check_at = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?,
-            cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, default_test_model = ?, updated_at = ?
+            cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, health_check_model = ?,
+            config_revision = config_revision + 1, updated_at = ?
         WHERE id = ? AND system_account_id = ?
       `)
       .run(
@@ -2163,11 +2222,30 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         next.cooldownRetestObservationStartedAt ?? null,
         next.cooldownRetestLastAt ?? null,
         next.cooldownRetestLastStatusCode ?? null,
-        next.defaultTestModel ?? null,
+        next.healthCheckModel,
         updatedAt,
         id,
         systemAccountId
     )
+    if (Number(result.changes ?? 0) > 0 && requiresHealthCheckSchedule) {
+      database.prepare(`
+        UPDATE accounts
+        SET next_health_check_at = NULL,
+            health_check_failure_count = CASE WHEN ? = 1 THEN 0 ELSE health_check_failure_count END,
+            last_health_check_status_code = CASE WHEN ? = 1 THEN NULL ELSE last_health_check_status_code END,
+            last_health_check_error_code = CASE WHEN ? = 1 THEN NULL ELSE last_health_check_error_code END,
+            last_health_check_error_message = CASE WHEN ? = 1 THEN NULL ELSE last_health_check_error_message END
+        WHERE id = ?
+          AND system_account_id = ?
+      `).run(
+        requiresBackgroundRecheck ? 1 : 0,
+        requiresBackgroundRecheck ? 1 : 0,
+        requiresBackgroundRecheck ? 1 : 0,
+        requiresBackgroundRecheck ? 1 : 0,
+        id,
+        systemAccountId
+      )
+    }
     if (Number(result.changes ?? 0) > 0 && next.name !== current.name) {
       replaceAccountNameSearchTerms(database, id, systemAccountId, next.name, updatedAt)
       renamedAuthorizationInstanceIds = syncAccountAuthorizationInstanceNamesForSourceAccount(database, id, next.name, updatedAt)
@@ -2276,11 +2354,10 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
   const nextSupportedModels = hasSupportedModelsInput
     ? unchangedSupportedModelsInput ?? await normalizeAccountSupportedModelsForProviderAsync(input.supportedModels, current.providerCode, systemAccountId) ?? []
     : current.supportedModels ?? []
-  const nextDefaultTestModel = hasOwnInput(input, 'defaultTestModel')
-    ? normalizedAccountDefaultTestModelInput(input.defaultTestModel, nextSupportedModels)
-    : current.defaultTestModel && nextSupportedModels.includes(current.defaultTestModel)
-      ? current.defaultTestModel
-      : undefined
+  const nextHealthCheckModel = normalizedAccountHealthCheckModelInput(
+    hasOwnInput(input, 'healthCheckModel') ? input.healthCheckModel : current.healthCheckModel,
+    nextSupportedModels
+  )
   const hasModelMappingsInput = hasOwnInput(input, 'modelMappings')
   const unchangedModelMappingsInput = hasModelMappingsInput
     ? normalizeModelMappingsIfUnchanged(input.modelMappings, current.modelMappings)
@@ -2302,20 +2379,40 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
     : current.availabilitySchedule
   const hasPriorityInput = hasOwnInput(input, 'priority')
   const hasNotesInput = hasOwnInput(input, 'notes')
+  const requestedProxyProfileId = hasOwnInput(input, 'proxyProfileId')
+    ? normalizeNullableIdInput(input.proxyProfileId, '代理配置')
+    : current.proxyProfileId
+  const proxyProfileId = await resolveEnabledProxyProfileIdForAccountWriteAsync(client, requestedProxyProfileId)
+  const requiresBackgroundRecheck = accountConnectionConfigurationChanged({
+    current,
+    credentials,
+    nextProxyProfileId: proxyProfileId,
+    credentialsInputPresent: hasOwnInput(input, 'credentials')
+  })
+  const endpointModesChanged = hasOwnInput(input, 'credentials')
+    && !isDeepStrictEqual(
+      current.credentials?.supported_endpoint_modes,
+      credentials.supported_endpoint_modes
+    )
+  const requiresHealthCheckSchedule = requiresBackgroundRecheck
+    || hasSupportedModelsInput
+    || hasOwnInput(input, 'healthCheckModel')
+    || hasModelMappingsInput
+    || endpointModesChanged
 
   const hasStatusInput = hasOwnInput(input, 'status')
   const requestedStatus = hasStatusInput ? normalizedAccountStatusInput(input.status, current.status) : current.status
   if (hasStatusInput && current.status === 'error' && requestedStatus !== 'error') {
     throw new Error('异常账户不能通过编辑切换状态，请使用恢复异常')
   }
-  if (hasStatusInput && current.status === 'pending_test' && requestedStatus !== 'pending_test') {
-    throw new Error('待测试账户需手动测试通过后才能参与调度')
+  if (hasStatusInput && current.status === 'pending_test' && requestedStatus !== 'pending_test' && requestedStatus !== 'disabled') {
+    throw new Error('待检查账户只能由后台激活检查恢复')
   }
   if (hasStatusInput && requestedStatus === 'active' && (current.status === 'pending_test' || isCoolingAccountStatus(current.status) || current.status === 'error')) {
-    throw new Error('待测试、临时不可调用、限流中或异常账户不能通过启用账户恢复，请使用账户测试、恢复正常或恢复异常')
+    throw new Error('待检查、临时不可调用、限流中或异常账户不能通过启用账户恢复，请等待后台检查或使用恢复异常')
   }
   const updateNowMs = Date.now()
-  const nextStatus = expiredByPackage
+  const scheduledStatus = expiredByPackage
     ? 'disabled'
     : hasAvailabilityScheduleInput
       ? accountStatusForScheduleMutation({
@@ -2324,12 +2421,15 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
         now: new Date(updateNowMs)
       })
       : requestedStatus
+  const nextStatus = requiresBackgroundRecheck && scheduledStatus !== 'disabled'
+    ? 'pending_test'
+    : scheduledStatus
   let nextCooldownUntil = current.cooldownUntil
   let nextLastErrorCode = current.lastErrorCode
   let nextLastErrorMessage = current.lastErrorMessage
   let nextCooldownRetestObservationStartedAt = current.cooldownRetestObservationStartedAt
   let clearCooldownRetestState = false
-  if (hasStatusInput) {
+  if (hasStatusInput || requiresBackgroundRecheck) {
     if (nextStatus === 'active') {
       nextCooldownUntil = undefined
       nextLastErrorCode = undefined
@@ -2339,7 +2439,7 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
     } else if (nextStatus === 'pending_test') {
       nextCooldownUntil = undefined
       nextLastErrorCode = undefined
-      nextLastErrorMessage = '账户需测试通过后才能参与调度'
+      nextLastErrorMessage = '账户配置已保存，等待后台检查'
       nextCooldownRetestObservationStartedAt = undefined
       clearCooldownRetestState = true
     } else if (nextStatus === 'disabled' || nextStatus === 'error') {
@@ -2371,18 +2471,12 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
     input.superPriorityEnabled,
     current.superPriorityEnabled
   )
-  if (hasSuperPriorityInput && requestedSuperPriority && nextStatus !== 'active' && !current.superPriorityEnabled) {
-    throw new Error('只有正常状态的账户可以设置超级优先')
-  }
   let nextSuperPriorityEnabled = requestedSuperPriority
   const hasFallbackInput = hasOwnInput(input, 'fallbackEnabled')
   const requestedFallback = normalizeFallbackInput(
     input.fallbackEnabled,
     current.fallbackEnabled
   )
-  if (hasFallbackInput && requestedFallback && nextStatus !== 'active' && !current.fallbackEnabled) {
-    throw new Error('只有正常状态的账户可以设置降级备用')
-  }
   let nextFallbackEnabled = requestedFallback
   if (hasSuperPriorityInput && requestedSuperPriority && hasFallbackInput && requestedFallback) {
     throw new Error('超级优先和降级备用不能同时开启')
@@ -2401,10 +2495,6 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
   })
 
   const requestedSchedulable = normalizeOptionalBooleanInput(input, 'schedulable', current.schedulable, '账户是否参与调度')
-  const requestedProxyProfileId = hasOwnInput(input, 'proxyProfileId')
-    ? normalizeNullableIdInput(input.proxyProfileId, '代理配置')
-    : current.proxyProfileId
-  const proxyProfileId = await resolveEnabledProxyProfileIdForAccountWriteAsync(client, requestedProxyProfileId)
   const next: AccountSummary = accountSummaryWithEffectiveAvailability({
     ...current,
     name: normalizeOptionalAccountNameInput(input, current.name),
@@ -2417,10 +2507,11 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
     fallbackEnabled: nextFallbackEnabled,
     clientCompatibility: nextClientCompatibility,
     supportedModels: nextSupportedModels,
-    defaultTestModel: nextDefaultTestModel,
+    healthCheckModel: nextHealthCheckModel,
     modelMappings: nextModelMappings,
     tags: hasTagsInput ? nextTagNames.map((name) => ({ id: '', name })) : current.tags ?? [],
     proxyProfileId,
+    configRevision: (current.configRevision ?? 1) + 1,
     schedulable: expiredByPackage || accountStatusForcesSchedulableOff(nextStatus)
       ? false
       : hasStatusInput && nextStatus !== 'disabled'
@@ -2454,7 +2545,8 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
             oauth_access_token_expires_at = ?, oauth_refresh_token_present = ?,
             proxy_profile_id = ?, concurrency_limit = ?,
             priority = ?, super_priority_enabled = ?, fallback_enabled = ?, client_compatibility = ?, schedulable = ?, availability_schedule_json = ?, availability_schedule_next_check_at = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?,
-            cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, default_test_model = ?, updated_at = ?
+            cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, health_check_model = ?,
+            config_revision = config_revision + 1, updated_at = ?
         WHERE id = ?
           AND system_account_id = ?
           AND deleted_at IS NULL
@@ -2484,7 +2576,7 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
         nextCooldownRetestObservationStartedAt ?? null,
         next.cooldownRetestLastAt ?? null,
         next.cooldownRetestLastStatusCode ?? null,
-        next.defaultTestModel ?? null,
+        next.healthCheckModel,
         updatedAt,
         id,
         systemAccountId
@@ -2493,6 +2585,25 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
         return
       }
       updated = true
+      if (requiresHealthCheckSchedule) {
+        await tx.execute(`
+          UPDATE ${accountWriteTable(tx, 'accounts')}
+          SET next_health_check_at = NULL,
+              health_check_failure_count = CASE WHEN ? = 1 THEN 0 ELSE health_check_failure_count END,
+              last_health_check_status_code = CASE WHEN ? = 1 THEN NULL ELSE last_health_check_status_code END,
+              last_health_check_error_code = CASE WHEN ? = 1 THEN NULL ELSE last_health_check_error_code END,
+              last_health_check_error_message = CASE WHEN ? = 1 THEN NULL ELSE last_health_check_error_message END
+          WHERE id = ?
+            AND system_account_id = ?
+        `, [
+          requiresBackgroundRecheck ? 1 : 0,
+          requiresBackgroundRecheck ? 1 : 0,
+          requiresBackgroundRecheck ? 1 : 0,
+          requiresBackgroundRecheck ? 1 : 0,
+          id,
+          systemAccountId
+        ])
+      }
       if (next.name !== current.name) {
         await replaceAccountNameSearchTermsAsync(tx, id, systemAccountId, next.name, updatedAt)
         renamedAuthorizationInstanceIds = await syncAccountAuthorizationInstanceNamesForSourceAccountAsync(tx, id, next.name, updatedAt)
