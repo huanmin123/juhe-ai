@@ -97,7 +97,9 @@ func (q *Queries) GetManagementAccountTagUpdateAccount(ctx context.Context, arg 
 
 const incrementManagementAccountConfigRevision = `-- name: IncrementManagementAccountConfigRevision :execrows
 UPDATE juhe_business.accounts
-SET config_revision = config_revision + 1
+SET
+  config_revision = config_revision + 1,
+  updated_at = now()
 WHERE id = $1::text
   AND system_account_id = $2::text
   AND deleted_at IS NULL
