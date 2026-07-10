@@ -4,9 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
+	"errors"
 	"log/slog"
 	"math"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,12 +28,17 @@ const (
 	systemAPIIPMinuteStoreName   = "system_api_ip_minute"
 	systemAPIIPBurstStoreName    = "system_api_ip_burst"
 	systemAPIUserMinuteStoreName = "system_api_user_minute"
+
+	systemAPIClientIPAllowlistCacheTTL        = 30 * time.Second
+	systemAPIClientIPAllowlistCacheMaxEntries = 5000
+	systemAPIClientIPAllowlistCacheTrimTarget = 4500
 )
 
 type systemAPIIPRateLimitMiddleware struct {
 	reader        port.SystemAPIRateLimitReader
 	limiter       SystemAPIIPRateLimiter
 	clientIPs     clientIPResolver
+	allowlist     *systemAPIClientIPAllowlistInspector
 	logger        *slog.Logger
 	settingsCache systemAPIRateLimitSettingsCache
 }
@@ -39,6 +47,8 @@ type systemAPIAuthenticatedRateLimitMiddleware struct {
 	reader        port.SystemAPIRateLimitReader
 	limiter       SystemAPIAuthenticatedRateLimiter
 	methodClass   systemAPIMethodClass
+	clientIPs     clientIPResolver
+	allowlist     *systemAPIClientIPAllowlistInspector
 	logger        *slog.Logger
 	settingsCache systemAPIRateLimitSettingsCache
 }
@@ -56,6 +66,20 @@ type systemAPIRateLimitSettingsCache struct {
 	expiresAt time.Time
 }
 
+type systemAPIClientIPAllowlistInspector struct {
+	reader        port.SystemAPIClientIPAllowlistReader
+	versionReader SystemAPIClientIPAllowlistVersionReader
+	mu            sync.Mutex
+	version       string
+	versionLoaded bool
+	entries       map[string]systemAPIClientIPAllowlistCacheEntry
+}
+
+type systemAPIClientIPAllowlistCacheEntry struct {
+	allowlisted bool
+	expiresAt   time.Time
+}
+
 type SystemAPIIPRateLimitSettings struct {
 	PerMinute         int
 	BurstPer10Seconds int
@@ -67,6 +91,14 @@ type SystemAPIIPRateLimiter interface {
 
 type SystemAPIAuthenticatedRateLimiter interface {
 	AllowSystemAPIAuthenticated(ctx context.Context, key string, limit int) (SystemAPIRateLimitDecision, error)
+}
+
+type SystemAPIClientIPAllowlistVersionReader interface {
+	SystemAPIClientIPAllowlistVersion(ctx context.Context) (string, error)
+}
+
+type SystemAPIClientIPAllowlistVersionStore interface {
+	GetRaw(ctx context.Context, key string) ([]byte, error)
 }
 
 type SystemAPIRateLimitDecision struct {
@@ -97,6 +129,11 @@ type redisSystemAPIAuthenticatedRateLimiter struct {
 	namespace string
 }
 
+type redisSystemAPIClientIPAllowlistVersionReader struct {
+	client SystemAPIClientIPAllowlistVersionStore
+	key    string
+}
+
 type fixedWindowRateLimiter struct {
 	mu      sync.Mutex
 	window  time.Duration
@@ -112,6 +149,7 @@ func newSystemAPIIPRateLimitMiddleware(
 	reader port.SystemAPIRateLimitReader,
 	limiter SystemAPIIPRateLimiter,
 	clientIPs clientIPResolver,
+	allowlist *systemAPIClientIPAllowlistInspector,
 	logger *slog.Logger,
 ) func(http.Handler) http.Handler {
 	if limiter == nil {
@@ -121,6 +159,7 @@ func newSystemAPIIPRateLimitMiddleware(
 		reader:    reader,
 		limiter:   limiter,
 		clientIPs: clientIPs,
+		allowlist: allowlist,
 		logger:    logger,
 	}
 	return middleware.handle
@@ -130,6 +169,8 @@ func newSystemAPIAuthenticatedRateLimitMiddleware(
 	reader port.SystemAPIRateLimitReader,
 	limiter SystemAPIAuthenticatedRateLimiter,
 	methodClass systemAPIMethodClass,
+	clientIPs clientIPResolver,
+	allowlist *systemAPIClientIPAllowlistInspector,
 	logger *slog.Logger,
 ) func(http.Handler) http.Handler {
 	if limiter == nil {
@@ -139,9 +180,25 @@ func newSystemAPIAuthenticatedRateLimitMiddleware(
 		reader:      reader,
 		limiter:     limiter,
 		methodClass: methodClass,
+		clientIPs:   clientIPs,
+		allowlist:   allowlist,
 		logger:      logger,
 	}
 	return middleware.handle
+}
+
+func newSystemAPIClientIPAllowlistInspector(
+	reader port.SystemAPIClientIPAllowlistReader,
+	versionReader SystemAPIClientIPAllowlistVersionReader,
+) *systemAPIClientIPAllowlistInspector {
+	if reader == nil {
+		return nil
+	}
+	return &systemAPIClientIPAllowlistInspector{
+		reader:        reader,
+		versionReader: versionReader,
+		entries:       map[string]systemAPIClientIPAllowlistCacheEntry{},
+	}
 }
 
 func NewInMemorySystemAPIIPRateLimiter() SystemAPIIPRateLimiter {
@@ -180,6 +237,23 @@ func NewRedisSystemAPIAuthenticatedRateLimiter(client redisNamedFixedWindowClien
 	return &redisSystemAPIAuthenticatedRateLimiter{client: client, namespace: namespace}
 }
 
+func NewRedisSystemAPIClientIPAllowlistVersionReader(
+	client SystemAPIClientIPAllowlistVersionStore,
+	namespace string,
+) (SystemAPIClientIPAllowlistVersionReader, error) {
+	if client == nil {
+		return nil, nil
+	}
+	key, err := gatewaycache.SharedCacheVersionKey(namespace, "gateway:client-ip-policy-by-ip")
+	if err != nil {
+		return nil, err
+	}
+	return &redisSystemAPIClientIPAllowlistVersionReader{
+		client: client,
+		key:    key,
+	}, nil
+}
+
 func (m *systemAPIIPRateLimitMiddleware) handle(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !shouldApplySystemAPIIPRateLimit(r) {
@@ -202,6 +276,10 @@ func (m *systemAPIIPRateLimitMiddleware) handle(next http.Handler) http.Handler 
 
 		methodClass := systemAPIMethodClassFor(r.Method)
 		clientIP := m.clientIPs.FromRequest(r)
+		if systemAPIClientIPRateLimitAllowlisted(r, clientIP, m.allowlist, m.logger) {
+			next.ServeHTTP(w, r)
+			return
+		}
 		decision, err := m.limiter.AllowSystemAPIIP(
 			r.Context(),
 			systemAPIIPRateLimitKey(clientIP, methodClass),
@@ -250,6 +328,11 @@ func (m *systemAPIAuthenticatedRateLimitMiddleware) handle(next http.Handler) ht
 			return
 		}
 
+		clientIP := m.clientIPs.FromRequest(r)
+		if systemAPIClientIPRateLimitAllowlisted(r, clientIP, m.allowlist, m.logger) {
+			next.ServeHTTP(w, r)
+			return
+		}
 		decision, err := m.limiter.AllowSystemAPIAuthenticated(
 			r.Context(),
 			systemAPIAuthenticatedRateLimitKey(authContext.SystemAccountID, m.methodClass),
@@ -274,6 +357,127 @@ func (m *systemAPIAuthenticatedRateLimitMiddleware) handle(next http.Handler) ht
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (i *systemAPIClientIPAllowlistInspector) allowlisted(
+	ctx context.Context,
+	clientIP string,
+	now time.Time,
+) (bool, error) {
+	ipHash, ok := systemAPIClientIPPolicyHash(clientIP)
+	if !ok {
+		return false, nil
+	}
+	if err := i.refreshVersion(ctx); err != nil {
+		return false, err
+	}
+
+	i.mu.Lock()
+	if entry, exists := i.entries[ipHash]; exists && now.Before(entry.expiresAt) {
+		i.mu.Unlock()
+		return entry.allowlisted, nil
+	}
+	delete(i.entries, ipHash)
+	i.mu.Unlock()
+
+	policy, allowlisted, err := i.reader.FindSystemAPIClientIPAllowlistPolicy(ctx, ipHash, now)
+	if err != nil {
+		return false, err
+	}
+
+	expiresAt := now.Add(systemAPIClientIPAllowlistCacheTTL)
+	if allowlisted && policy.ExpiresAt != nil && policy.ExpiresAt.Before(expiresAt) {
+		expiresAt = *policy.ExpiresAt
+	}
+	i.mu.Lock()
+	i.entries[ipHash] = systemAPIClientIPAllowlistCacheEntry{
+		allowlisted: allowlisted,
+		expiresAt:   expiresAt,
+	}
+	i.trimLocked(now)
+	i.mu.Unlock()
+	return allowlisted, nil
+}
+
+func (i *systemAPIClientIPAllowlistInspector) refreshVersion(ctx context.Context) error {
+	if i.versionReader == nil {
+		return nil
+	}
+	version, err := i.versionReader.SystemAPIClientIPAllowlistVersion(ctx)
+	if err != nil {
+		return err
+	}
+	i.mu.Lock()
+	if !i.versionLoaded {
+		i.version = version
+		i.versionLoaded = true
+	} else if version != i.version {
+		i.version = version
+		i.entries = map[string]systemAPIClientIPAllowlistCacheEntry{}
+	}
+	i.mu.Unlock()
+	return nil
+}
+
+func (i *systemAPIClientIPAllowlistInspector) trimLocked(now time.Time) {
+	if len(i.entries) <= systemAPIClientIPAllowlistCacheMaxEntries {
+		return
+	}
+	for key, entry := range i.entries {
+		if !entry.expiresAt.After(now) || len(i.entries) > systemAPIClientIPAllowlistCacheTrimTarget {
+			delete(i.entries, key)
+		}
+		if len(i.entries) <= systemAPIClientIPAllowlistCacheTrimTarget {
+			break
+		}
+	}
+}
+
+func systemAPIClientIPRateLimitAllowlisted(
+	r *http.Request,
+	clientIP string,
+	inspector *systemAPIClientIPAllowlistInspector,
+	logger *slog.Logger,
+) bool {
+	if inspector == nil {
+		return false
+	}
+	allowlisted, err := inspector.allowlisted(r.Context(), clientIP, time.Now())
+	if err == nil {
+		return allowlisted
+	}
+	if logger != nil {
+		logger.Warn("后台系统 API 白名单检查失败，本次请求继续执行限流",
+			slog.String("path", r.URL.Path),
+			slog.String("method", r.Method),
+			slog.String("client_ip", clientIP),
+			slog.String("request_id", requestIDFromContext(r.Context())),
+			slog.Any("error", err),
+		)
+	}
+	return false
+}
+
+func systemAPIClientIPPolicyHash(clientIP string) (string, bool) {
+	addr, err := netip.ParseAddr(strings.TrimSpace(clientIP))
+	if err != nil || !addr.Is4() {
+		return "", false
+	}
+	sum := sha256.Sum256([]byte("client-ip:" + addr.String()))
+	return hex.EncodeToString(sum[:]), true
+}
+
+func (r *redisSystemAPIClientIPAllowlistVersionReader) SystemAPIClientIPAllowlistVersion(
+	ctx context.Context,
+) (string, error) {
+	raw, err := r.client.GetRaw(ctx, r.key)
+	if errors.Is(err, redisplatform.ErrNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(raw)), nil
 }
 
 func (c *systemAPIRateLimitSettingsCache) current(

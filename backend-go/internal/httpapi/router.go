@@ -19,6 +19,8 @@ type RouterOptions struct {
 	Logger                                            *slog.Logger
 	PublicSettingsService                             *publicsettings.Service
 	SystemAPIRateLimitReader                          port.SystemAPIRateLimitReader
+	SystemAPIClientIPAllowlistReader                  port.SystemAPIClientIPAllowlistReader
+	SystemAPIClientIPAllowlistVersionReader           SystemAPIClientIPAllowlistVersionReader
 	SystemAPIIPRateLimiter                            SystemAPIIPRateLimiter
 	SystemAPIAuthenticatedRateLimiter                 SystemAPIAuthenticatedRateLimiter
 	PublicAPIHandler                                  http.Handler
@@ -117,6 +119,10 @@ func NewRouter(opts RouterOptions) http.Handler {
 	r.Use(requestIDMiddleware)
 	r.Use(recoverMiddleware(opts.Logger))
 	clientIPs := newClientIPResolver(opts.Config)
+	systemAPIClientIPAllowlist := newSystemAPIClientIPAllowlistInspector(
+		opts.SystemAPIClientIPAllowlistReader,
+		opts.SystemAPIClientIPAllowlistVersionReader,
+	)
 	mutationGuards := newMutationGuardStore()
 
 	health := NewHealthHandler(opts.Config, opts.Logger)
@@ -128,6 +134,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.SystemAPIRateLimitReader,
 				opts.SystemAPIIPRateLimiter,
 				clientIPs,
+				systemAPIClientIPAllowlist,
 				opts.Logger,
 			))
 		}
@@ -162,6 +169,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 						opts.SystemAPIRateLimitReader,
 						opts.SystemAPIAuthenticatedRateLimiter,
 						systemAPIMethodRead,
+						clientIPs,
+						systemAPIClientIPAllowlist,
 						opts.Logger,
 					),
 				)
@@ -172,6 +181,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 							opts.SystemAPIRateLimitReader,
 							opts.SystemAPIAuthenticatedRateLimiter,
 							systemAPIMethodWrite,
+							clientIPs,
+							systemAPIClientIPAllowlist,
 							opts.Logger,
 						),
 					)

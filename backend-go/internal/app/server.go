@@ -72,6 +72,24 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		return err
 	}
 	cancel()
+
+	var systemAPIClientIPAllowlistVersionReader httpapi.SystemAPIClientIPAllowlistVersionReader
+	var systemAPIClientIPAllowlistCacheRedis *redisplatform.Client
+	if cfg.RedisCacheURL != "" {
+		systemAPIClientIPAllowlistCacheRedis, err = redisplatform.NewClient(cfg.RedisCacheURL, cfg.RedisNamespace+":cache")
+		if err != nil {
+			return fmt.Errorf("JUHE_AI_REDIS_CACHE_URL 无效: %w", err)
+		}
+		defer func() { _ = systemAPIClientIPAllowlistCacheRedis.Close() }()
+		systemAPIClientIPAllowlistVersionReader, err = httpapi.NewRedisSystemAPIClientIPAllowlistVersionReader(
+			systemAPIClientIPAllowlistCacheRedis,
+			cfg.RedisNamespace,
+		)
+		if err != nil {
+			return err
+		}
+	}
+
 	systemAccountInvalidator, closeSystemAccountInvalidator, err := newGatewaySystemAccountInvalidator(ctx, cfg, stateRedis, logger)
 	if err != nil {
 		return err
@@ -106,6 +124,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		Logger:                                            logger,
 		PublicSettingsService:                             &publicSettingsService,
 		SystemAPIRateLimitReader:                          store,
+		SystemAPIClientIPAllowlistReader:                  store,
+		SystemAPIClientIPAllowlistVersionReader:           systemAPIClientIPAllowlistVersionReader,
 		SystemAPIIPRateLimiter:                            httpapi.NewRedisSystemAPIIPRateLimiter(stateRedis, cfg.RedisNamespace),
 		SystemAPIAuthenticatedRateLimiter:                 httpapi.NewRedisSystemAPIAuthenticatedRateLimiter(stateRedis, cfg.RedisNamespace),
 		PublicAPIHandler:                                  publicAPIHandler,
