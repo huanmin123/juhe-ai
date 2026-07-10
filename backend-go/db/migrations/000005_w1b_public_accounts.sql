@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS juhe_business.accounts (
   cooldown_until timestamptz,
   last_error_code text,
   last_error_message text,
+  default_test_model text,
   deleted_at timestamptz,
   deleted_by text,
   created_at timestamptz NOT NULL,
