@@ -71,6 +71,7 @@ docs/bug/
 
 | 编号 | 标题 | 状态 | 严重程度 | 模块 | 文档 |
 | --- | --- | --- | --- | --- | --- |
+| BUG-0052 | Go Redis namespace 默认值偏离 Node | 已修复（待真实环境验证） | P1 | 后端 / Go / Redis / 配置 / 管理接口 / 运行态 | [问题-0052-GoRedisNamespace默认值偏离Node.md](问题-0052-GoRedisNamespace默认值偏离Node.md) |
 | BUG-0051 | Go 账户标签更新未刷新修改时间 | 已修复（待真实环境验证） | P2 | 后端 / Go / 管理接口 / AI 账户 / 标签 / PostgreSQL | [问题-0051-Go账户标签更新未刷新修改时间.md](问题-0051-Go账户标签更新未刷新修改时间.md) |
 | BUG-0050 | Go 公开账户字段出现误判连接变更 | 已修复（待真实环境验证） | P1 | 后端 / Go / 公开接口 / AI 账户 / 健康检查 / PostgreSQL | [问题-0050-Go公开账户字段出现误判连接变更.md](问题-0050-Go公开账户字段出现误判连接变更.md) |
 | BUG-0049 | Go 管理 API 缺少 Redis cache 仍启动 | 已修复（待真实环境验证） | P1 | 后端 / Go / 管理接口 / Redis cache / 网关缓存失效 / 部署 | [问题-0049-Go管理API缺少RedisCache仍启动.md](问题-0049-Go管理API缺少RedisCache仍启动.md) |
