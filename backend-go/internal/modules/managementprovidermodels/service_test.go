@@ -449,7 +449,7 @@ func TestServiceCreateCustomModelPersistsPersonalModelAndInvalidates(t *testing.
 			SupportedAPIProtocols:     OptionalStringList{Set: true, Value: []string{"responses", "responses"}},
 			SupportedServiceTiers:     OptionalStringList{Set: true, Value: []string{"priority", "flex"}},
 			SupportedReasoningEfforts: OptionalStringList{Set: true, Value: []string{"low", "high", "high"}},
-			DefaultReasoningEffort:    OptionalString{Set: true, Value: " high "},
+			DefaultReasoningEffort:    OptionalString{Set: true, Value: "high"},
 			InputUSDPer1M:             OptionalFloat{Set: true, Value: &price},
 			PricingNotes:              OptionalString{Set: true, Value: " 计费说明 "},
 		},
@@ -538,6 +538,12 @@ func TestServiceCreateCustomModelValidatesGPTRequestCapabilities(t *testing.T) {
 			wantMessage:  "自定义模型参数无效",
 		},
 		{
+			name:         "reject whitespace padded service tier",
+			providerCode: "gpt",
+			serviceTiers: []string{" priority "},
+			wantMessage:  "自定义模型参数无效",
+		},
+		{
 			name:         "reject codex ultra as wire effort",
 			providerCode: "gpt",
 			efforts:      []string{"ultra"},
@@ -548,6 +554,19 @@ func TestServiceCreateCustomModelValidatesGPTRequestCapabilities(t *testing.T) {
 			providerCode: "gpt",
 			efforts:      []string{"low", "low", "low", "low", "low", "low", "low", "low"},
 			wantMessage:  "自定义模型参数无效",
+		},
+		{
+			name:         "reject whitespace padded reasoning effort",
+			providerCode: "gpt",
+			efforts:      []string{" high "},
+			wantMessage:  "自定义模型参数无效",
+		},
+		{
+			name:          "reject whitespace padded default reasoning effort",
+			providerCode:  "gpt",
+			efforts:       []string{"high"},
+			defaultEffort: OptionalString{Set: true, Value: " high "},
+			wantMessage:   "自定义模型参数无效",
 		},
 		{
 			name:          "reject default outside supported efforts",

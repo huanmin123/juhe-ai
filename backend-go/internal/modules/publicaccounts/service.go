@@ -1032,7 +1032,7 @@ func updateAccountStatus(current port.PublicAccountStatus, requested string) (st
 	switch strings.TrimSpace(requested) {
 	case StatusActive:
 		if current == port.PublicAccountStatusPendingTest {
-			return "", fmt.Errorf("%w: 待测试账号不能通过公开接口直接启用", ErrInvalidStatusTransition)
+			return "", fmt.Errorf("%w: 待检查账户只能由后台激活检查恢复", ErrInvalidStatusTransition)
 		}
 		return StatusActive, nil
 	case StatusDisabled:
