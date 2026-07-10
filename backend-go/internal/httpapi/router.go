@@ -475,14 +475,14 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementGroupCreateHandler != nil {
 				system.With(
-					managementSettingsJSONBodyMiddleware,
+					managementGroupCreateJSONBodyMiddleware,
 					managementAPIWriteRateLimitMiddleware,
 					mutationGuards.Middleware(managementGroupCreateMutationGuardConfig(managementGroupScopeAdmin)),
 				).Post("/groups", opts.ManagementGroupCreateHandler.ServeHTTP)
 			}
 			if opts.ManagementMyGroupCreateHandler != nil {
 				system.With(
-					managementSettingsJSONBodyMiddleware,
+					managementGroupCreateJSONBodyMiddleware,
 					managementAPIWriteRateLimitMiddleware,
 					mutationGuards.Middleware(managementGroupCreateMutationGuardConfig(managementGroupScopeSelf)),
 				).Post("/my-groups", opts.ManagementMyGroupCreateHandler.ServeHTTP)
