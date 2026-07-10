@@ -311,6 +311,28 @@ func (s *Store) GetOperationLogRetentionDays(ctx context.Context) (int, bool, er
 	return value, true, nil
 }
 
+func (s *Store) OperationLogMaxChangesPerRecord(ctx context.Context) (int, error) {
+	raw, err := s.queries().GetOperationLogMaxChangesPerRecord(ctx)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, fmt.Errorf("系统设置缺少字段：operationLogMaxChangesPerRecord")
+	}
+	if err != nil {
+		return 0, fmt.Errorf("读取操作日志最大变更数失败: %w", err)
+	}
+	return parseOperationLogMaxChangesPerRecord(raw)
+}
+
+func parseOperationLogMaxChangesPerRecord(raw string) (int, error) {
+	var value int
+	if err := json.Unmarshal([]byte(raw), &value); err != nil {
+		return 0, fmt.Errorf("operationLogMaxChangesPerRecord JSON 无效: %w", err)
+	}
+	if value < 1 || value > 500 {
+		return 0, fmt.Errorf("系统设置 operationLogMaxChangesPerRecord 必须在 1 到 500 之间")
+	}
+	return value, nil
+}
+
 func (s *Store) CleanupOperationLogsBefore(ctx context.Context, input port.OperationLogCleanupInput) (int64, error) {
 	cutoff := input.CutoffCreatedAt
 	if cutoff.IsZero() {

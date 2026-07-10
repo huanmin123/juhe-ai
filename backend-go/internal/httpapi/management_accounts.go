@@ -59,19 +59,25 @@ func (s managementAccountOptionServiceAdapter) UpdateTags(r *http.Request, input
 }
 
 type ManagementOperationLogOptions struct {
-	Config   config.Config
-	Logger   *slog.Logger
-	Client   operationlogjob.EnqueueClient
-	Now      func() time.Time
-	NewLogID func() string
+	Config         config.Config
+	Logger         *slog.Logger
+	Client         operationlogjob.EnqueueClient
+	SettingsReader OperationLogSettingsReader
+	Now            func() time.Time
+	NewLogID       func() string
+}
+
+type OperationLogSettingsReader interface {
+	OperationLogMaxChangesPerRecord(ctx context.Context) (int, error)
 }
 
 type managementOperationLogOptions struct {
-	logger   *slog.Logger
-	client   operationlogjob.EnqueueClient
-	clientIP clientIPResolver
-	now      func() time.Time
-	newLogID func() string
+	logger         *slog.Logger
+	client         operationlogjob.EnqueueClient
+	settingsReader OperationLogSettingsReader
+	clientIP       clientIPResolver
+	now            func() time.Time
+	newLogID       func() string
 }
 
 func NewManagementAccountOptionsHandler(service *managementaccounts.Service) http.Handler {
@@ -316,11 +322,12 @@ func newManagementOperationLogOptions(opts ManagementOperationLogOptions) manage
 		}
 	}
 	return managementOperationLogOptions{
-		logger:   opts.Logger,
-		client:   opts.Client,
-		clientIP: newClientIPResolver(opts.Config),
-		now:      now,
-		newLogID: newLogID,
+		logger:         opts.Logger,
+		client:         opts.Client,
+		settingsReader: opts.SettingsReader,
+		clientIP:       newClientIPResolver(opts.Config),
+		now:            now,
+		newLogID:       newLogID,
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -19,7 +20,14 @@ import (
 	"juhe-ai/backend-go/internal/store/port"
 )
 
-const managementGlobalSettingsMaxBodyBytes = 1 << 20
+const (
+	managementGlobalSettingsMaxBodyBytes         = 1 << 20
+	defaultOperationLogMaxChangesPerRecord       = 100
+	managementOperationLogSafeStringMaxRunes     = 200
+	managementOperationLogSafeSerializedMaxRunes = 500
+	managementOperationLogMaxChangesPerRecordMin = 1
+	managementOperationLogMaxChangesPerRecordMax = 500
+)
 
 type managementGlobalSettingsUpdateService interface {
 	Update(ctx context.Context, input managementsettings.UpdateInput) (managementsettings.UpdateResult, error)
@@ -198,7 +206,12 @@ func recordGlobalSettingsUpdateOperationLog(
 	if opts.client == nil {
 		return
 	}
-	changes := globalSettingsUpdateOperationChanges(result)
+	operationCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+	defer cancel()
+	changes, ok := sanitizedGlobalSettingsUpdateOperationChanges(operationCtx, result, opts)
+	if !ok {
+		return
+	}
 	now := opts.now
 	if now == nil {
 		now = time.Now
@@ -235,9 +248,7 @@ func recordGlobalSettingsUpdateOperationLog(
 		UserAgent:            r.UserAgent(),
 		CreatedAt:            now().UTC(),
 	}
-	enqueueCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
-	defer cancel()
-	if _, err := operationlogjob.EnqueueWrite(enqueueCtx, opts.client, input); err != nil && opts.logger != nil {
+	if _, err := operationlogjob.EnqueueWrite(operationCtx, opts.client, input); err != nil && opts.logger != nil {
 		opts.logger.Warn("管理端操作日志入队失败",
 			slog.String("event", "operation_log_enqueue_failed"),
 			slog.String("operation_key", input.OperationKey),
@@ -246,6 +257,112 @@ func recordGlobalSettingsUpdateOperationLog(
 			slog.Any("error", err),
 		)
 	}
+}
+
+func sanitizedGlobalSettingsUpdateOperationChanges(
+	ctx context.Context,
+	result managementsettings.UpdateResult,
+	opts managementOperationLogOptions,
+) ([]port.OperationLogChange, bool) {
+	maxChanges, err := operationLogMaxChangesPerRecord(ctx, opts)
+	if err != nil {
+		if opts.logger != nil {
+			opts.logger.Warn("管理端操作日志入队失败",
+				slog.String("event", "operation_log_enqueue_failed"),
+				slog.String("operation_key", "settings.update_global"),
+				slog.String("resource_id", "global"),
+				slog.Any("error", err),
+			)
+		}
+		return nil, false
+	}
+	return sanitizeManagementOperationLogChanges(globalSettingsUpdateOperationChanges(result), maxChanges), true
+}
+
+func operationLogMaxChangesPerRecord(ctx context.Context, opts managementOperationLogOptions) (int, error) {
+	if opts.settingsReader == nil {
+		return defaultOperationLogMaxChangesPerRecord, nil
+	}
+	value, err := opts.settingsReader.OperationLogMaxChangesPerRecord(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if value < managementOperationLogMaxChangesPerRecordMin || value > managementOperationLogMaxChangesPerRecordMax {
+		return 0, fmt.Errorf("系统设置 operationLogMaxChangesPerRecord 必须在 1 到 500 之间")
+	}
+	return value, nil
+}
+
+func sanitizeManagementOperationLogChanges(changes []port.OperationLogChange, maxChanges int) []port.OperationLogChange {
+	normalized := make([]port.OperationLogChange, 0, len(changes))
+	for _, change := range changes {
+		normalized = append(normalized, sanitizeManagementOperationLogChange(change))
+	}
+	if len(normalized) <= maxChanges {
+		return normalized
+	}
+	truncated := append([]port.OperationLogChange{}, normalized[:maxChanges]...)
+	truncated = append(truncated, port.OperationLogChange{
+		Field: "__truncated__",
+		Label: "其余变更",
+		After: fmt.Sprintf("还有 %d 项变更未展开", len(normalized)-maxChanges),
+	})
+	return truncated
+}
+
+func sanitizeManagementOperationLogChange(change port.OperationLogChange) port.OperationLogChange {
+	if change.Sensitive {
+		return port.OperationLogChange{
+			Field:     change.Field,
+			Label:     change.Label,
+			Before:    sensitiveOperationLogValue(change.Before),
+			After:     sensitiveOperationLogValueAfter(change.After),
+			Sensitive: true,
+		}
+	}
+	change.Before = normalizeManagementOperationLogSafeValue(change.Before)
+	change.After = normalizeManagementOperationLogSafeValue(change.After)
+	return change
+}
+
+func normalizeManagementOperationLogSafeValue(value any) any {
+	if value == nil {
+		return nil
+	}
+	if text, ok := value.(string); ok {
+		return truncateRunes(text, managementOperationLogSafeStringMaxRunes)
+	}
+	switch value.(type) {
+	case bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
+		return value
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return truncateRunes(fmt.Sprint(value), managementOperationLogSafeSerializedMaxRunes)
+	}
+	return truncateRunes(string(data), managementOperationLogSafeSerializedMaxRunes)
+}
+
+func sensitiveOperationLogValue(value any) string {
+	if value == nil || value == "" || value == "未设置" {
+		return "未设置"
+	}
+	return "已设置"
+}
+
+func sensitiveOperationLogValueAfter(value any) string {
+	if value == nil || value == "" || value == "未设置" {
+		return "未设置"
+	}
+	return "已变更"
+}
+
+func truncateRunes(value string, maxRunes int) string {
+	runes := []rune(value)
+	if len(runes) <= maxRunes {
+		return value
+	}
+	return string(runes[:maxRunes]) + "..."
 }
 
 func globalSettingsUpdateOperationChanges(result managementsettings.UpdateResult) []port.OperationLogChange {

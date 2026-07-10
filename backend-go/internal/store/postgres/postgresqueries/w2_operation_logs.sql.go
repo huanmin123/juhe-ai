@@ -76,6 +76,21 @@ func (q *Queries) GetOperationLogDetail(ctx context.Context, id string) (JuheDat
 	return i, err
 }
 
+const getOperationLogMaxChangesPerRecord = `-- name: GetOperationLogMaxChangesPerRecord :one
+SELECT value_json
+FROM juhe_business.system_settings
+WHERE system_account_id = 'sys_admin'
+  AND key = 'operationLogMaxChangesPerRecord'
+LIMIT 1
+`
+
+func (q *Queries) GetOperationLogMaxChangesPerRecord(ctx context.Context) (string, error) {
+	row := q.db.QueryRow(ctx, getOperationLogMaxChangesPerRecord)
+	var value_json string
+	err := row.Scan(&value_json)
+	return value_json, err
+}
+
 const getOperationLogRetentionDays = `-- name: GetOperationLogRetentionDays :one
 SELECT value_json
 FROM juhe_business.system_settings

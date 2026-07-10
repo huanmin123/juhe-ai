@@ -138,11 +138,12 @@ func TestW5ManagementGlobalSettingsPatchPostgresRedisSmoke(t *testing.T) {
 		ManagementGlobalSettingsUpdateHandler: httpapi.NewManagementGlobalSettingsUpdateHandlerWithOperationLog(
 			updateService,
 			httpapi.ManagementOperationLogOptions{
-				Config:   cfg,
-				Logger:   slog.Default(),
-				Client:   operationLogs,
-				Now:      func() time.Time { return now },
-				NewLogID: func() string { return "oplog_w5_management_global_settings_patch" },
+				Config:         cfg,
+				Logger:         slog.Default(),
+				Client:         operationLogs,
+				SettingsReader: store,
+				Now:            func() time.Time { return now },
+				NewLogID:       func() string { return "oplog_w5_management_global_settings_patch" },
 			},
 		),
 	})

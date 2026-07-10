@@ -321,6 +321,98 @@ func TestManagementGlobalSettingsUpdateHandlerEnqueuesOperationLogWithActualChan
 	}
 }
 
+func TestManagementGlobalSettingsUpdateHandlerSanitizesOperationLogChanges(t *testing.T) {
+	longBefore := strings.Repeat("旧", 205)
+	longAfter := strings.Repeat("新", 205)
+	queueStub := &managementGlobalSettingsOperationLogQueueStub{}
+	settingsReader := &managementGlobalSettingsOperationLogSettingsReaderStub{maxChanges: 1}
+	service := &managementGlobalSettingsUpdateServiceStub{
+		result: managementsettings.UpdateResult{
+			Before: managementsettings.Settings{
+				AppName: longBefore,
+				AppIcon: "/old-icon.svg",
+			},
+			Settings: managementsettings.Settings{
+				AppName: longAfter,
+				AppIcon: "/new-icon.svg",
+			},
+		},
+	}
+	handler := newManagementGlobalSettingsUpdateHandler(
+		service,
+		newManagementOperationLogOptions(ManagementOperationLogOptions{
+			Client:         queueStub,
+			SettingsReader: settingsReader,
+			NewLogID:       func() string { return "oplog_settings_sanitized" },
+		}),
+	)
+	req := managementGlobalSettingsUpdateRequest("admin", `{"appName":"新名称","appIcon":"/new-icon.svg"}`)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if settingsReader.calls != 1 {
+		t.Fatalf("settings reader calls = %d, want 1", settingsReader.calls)
+	}
+	if queueStub.calls != 1 {
+		t.Fatalf("queue calls = %d, want 1", queueStub.calls)
+	}
+	logInput, err := operationlogjob.DecodeWriteTaskPayload(queueStub.payload)
+	if err != nil {
+		t.Fatalf("DecodeWriteTaskPayload() error = %v", err)
+	}
+	if len(logInput.Changes) != 2 {
+		t.Fatalf("changes = %+v, want one visible change plus truncation marker", logInput.Changes)
+	}
+	change := logInput.Changes[0]
+	wantBefore := strings.Repeat("旧", 200) + "..."
+	wantAfter := strings.Repeat("新", 200) + "..."
+	if change.Field != "appName" || change.Before != wantBefore || change.After != wantAfter {
+		t.Fatalf("sanitized change = %+v", change)
+	}
+	truncated := logInput.Changes[1]
+	if truncated.Field != "__truncated__" ||
+		truncated.Label != "其余变更" ||
+		truncated.After != "还有 1 项变更未展开" {
+		t.Fatalf("truncated marker = %+v", truncated)
+	}
+}
+
+func TestManagementGlobalSettingsUpdateHandlerSkipsOperationLogWhenSettingsReadFails(t *testing.T) {
+	queueStub := &managementGlobalSettingsOperationLogQueueStub{}
+	settingsReader := &managementGlobalSettingsOperationLogSettingsReaderStub{err: errors.New("settings down")}
+	service := &managementGlobalSettingsUpdateServiceStub{
+		result: managementsettings.UpdateResult{
+			Before:   managementsettings.Settings{AppName: "旧名称", AppIcon: "/old.svg"},
+			Settings: managementsettings.Settings{AppName: "新名称", AppIcon: "/new.svg"},
+		},
+	}
+	handler := newManagementGlobalSettingsUpdateHandler(
+		service,
+		newManagementOperationLogOptions(ManagementOperationLogOptions{
+			Client:         queueStub,
+			SettingsReader: settingsReader,
+		}),
+	)
+	req := managementGlobalSettingsUpdateRequest("admin", `{"appName":"新名称"}`)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if settingsReader.calls != 1 {
+		t.Fatalf("settings reader calls = %d, want 1", settingsReader.calls)
+	}
+	if queueStub.calls != 0 {
+		t.Fatalf("queue calls = %d, want 0 after settings read failure", queueStub.calls)
+	}
+}
+
 func TestManagementGlobalSettingsUpdateHandlerKeepsSuccessWhenOperationLogQueueFails(t *testing.T) {
 	queueStub := &managementGlobalSettingsOperationLogQueueStub{err: errors.New("redis down")}
 	service := &managementGlobalSettingsUpdateServiceStub{
@@ -686,4 +778,18 @@ func (s *managementGlobalSettingsOperationLogQueueStub) Enqueue(_ context.Contex
 	s.payload = append([]byte(nil), payload...)
 	s.options = opts
 	return queue.TaskInfo{ID: "task_settings", Queue: opts.Queue, Type: taskType}, s.err
+}
+
+type managementGlobalSettingsOperationLogSettingsReaderStub struct {
+	calls      int
+	maxChanges int
+	err        error
+}
+
+func (s *managementGlobalSettingsOperationLogSettingsReaderStub) OperationLogMaxChangesPerRecord(context.Context) (int, error) {
+	s.calls++
+	if s.err != nil {
+		return 0, s.err
+	}
+	return s.maxChanges, nil
 }

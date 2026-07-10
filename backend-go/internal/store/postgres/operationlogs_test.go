@@ -57,6 +57,8 @@ func TestOperationLogSQLGuards(t *testing.T) {
 		"operation_log_viewers AS visible",
 		"GetVisibleOperationLogDetail",
 		"CleanupOperationLogsBefore",
+		"GetOperationLogMaxChangesPerRecord",
+		"operationLogMaxChangesPerRecord",
 		"created_at < sqlc.arg(cutoff_created_at)::timestamptz",
 		"ORDER BY created_at ASC, id ASC",
 		"LIMIT sqlc.arg(row_limit)::int",
@@ -73,6 +75,23 @@ func TestOperationLogSQLGuards(t *testing.T) {
 	} {
 		if strings.Contains(strings.ToUpper(sql), forbidden) {
 			t.Fatalf("operation log sql contains forbidden scan/sort pattern %q", forbidden)
+		}
+	}
+}
+
+func TestParseOperationLogMaxChangesPerRecord(t *testing.T) {
+	for _, raw := range []string{"1", "100", "500"} {
+		value, err := parseOperationLogMaxChangesPerRecord(raw)
+		if err != nil {
+			t.Fatalf("parseOperationLogMaxChangesPerRecord(%q) error = %v", raw, err)
+		}
+		if value < 1 || value > 500 {
+			t.Fatalf("parseOperationLogMaxChangesPerRecord(%q) = %d", raw, value)
+		}
+	}
+	for _, raw := range []string{"0", "501", "1.5", `"100"`, "invalid"} {
+		if _, err := parseOperationLogMaxChangesPerRecord(raw); err == nil {
+			t.Fatalf("parseOperationLogMaxChangesPerRecord(%q) error = nil", raw)
 		}
 	}
 }

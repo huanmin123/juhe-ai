@@ -387,9 +387,10 @@ func newManagementAPIHandler(
 		GlobalSettingsCacheInvalidator: systemAccountInvalidator,
 	})
 	operationLogOptions := httpapi.ManagementOperationLogOptions{
-		Config: cfg,
-		Logger: logger,
-		Client: operationLogQueue,
+		Config:         cfg,
+		Logger:         logger,
+		Client:         operationLogQueue,
+		SettingsReader: store,
 	}
 	return managementAPIHandlers{
 		AuthMiddleware:                          httpapi.NewManagementAPIAuthMiddleware(authenticator),

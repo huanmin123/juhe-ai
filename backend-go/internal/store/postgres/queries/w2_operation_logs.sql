@@ -303,6 +303,13 @@ WHERE system_account_id = 'sys_admin'
   AND key = 'operationLogRetentionDays'
 LIMIT 1;
 
+-- name: GetOperationLogMaxChangesPerRecord :one
+SELECT value_json
+FROM juhe_business.system_settings
+WHERE system_account_id = 'sys_admin'
+  AND key = 'operationLogMaxChangesPerRecord'
+LIMIT 1;
+
 -- name: CleanupOperationLogsBefore :execrows
 WITH stale_operation_logs AS (
   SELECT id
