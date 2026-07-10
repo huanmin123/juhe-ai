@@ -37,6 +37,13 @@ func TestNodeCompatibleRedisKeys(t *testing.T) {
 	if groupLookupVersionKey != "juhe-ai:juhe-ai:cache-version:lookup:group" {
 		t.Fatalf("group lookup version key = %q", groupLookupVersionKey)
 	}
+	groupAccountIDsVersionKey, err := SharedCacheVersionKey("juhe-ai", GroupAccountIDsCacheName)
+	if err != nil {
+		t.Fatalf("group account IDs SharedCacheVersionKey() error = %v", err)
+	}
+	if groupAccountIDsVersionKey != "juhe-ai:juhe-ai:cache-version:lookup:group-account-ids" {
+		t.Fatalf("group account IDs version key = %q", groupAccountIDsVersionKey)
+	}
 
 	stateKey, err := RuntimeStateKey("juhe-ai", RuntimeInvalidationStoreName, "topic:"+GatewayRuntimeCacheTopic)
 	if err != nil {
@@ -398,6 +405,66 @@ func TestSystemAccountInvalidatorInvalidateGroupLookupCachePropagatesSetError(t 
 
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("InvalidateGroupLookupCache() error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestSystemAccountInvalidatorInvalidateGroupAccountIDsCacheWritesNodeCompatibleVersion(t *testing.T) {
+	cache := &rawSetRecorder{}
+	invalidator, err := NewSystemAccountInvalidator(SystemAccountInvalidatorOptions{
+		Cache:      cache,
+		State:      &rawSetRecorder{},
+		Namespace:  "test-ns",
+		Now:        func() time.Time { return time.Date(2026, 7, 11, 8, 9, 10, 123*int(time.Millisecond), time.UTC) },
+		NewVersion: versionSequence("group-account-ids-version"),
+	})
+	if err != nil {
+		t.Fatalf("NewSystemAccountInvalidator() error = %v", err)
+	}
+
+	if err := invalidator.InvalidateGroupAccountIDsCache(context.Background()); err != nil {
+		t.Fatalf("InvalidateGroupAccountIDsCache() error = %v", err)
+	}
+
+	if len(cache.calls) != 1 {
+		t.Fatalf("cache calls = %d, want 1", len(cache.calls))
+	}
+	if cache.calls[0].key != "juhe-ai:test-ns:cache-version:lookup:group-account-ids" {
+		t.Fatalf("cache key = %q", cache.calls[0].key)
+	}
+	if string(cache.calls[0].value) != "group-account-ids-version" {
+		t.Fatalf("cache version = %q", string(cache.calls[0].value))
+	}
+	if cache.calls[0].ttl != SharedCacheVersionTTL {
+		t.Fatalf("cache ttl = %v, want %v", cache.calls[0].ttl, SharedCacheVersionTTL)
+	}
+}
+
+func TestSystemAccountInvalidatorInvalidateGroupAccountIDsCachePropagatesErrors(t *testing.T) {
+	withoutCache, err := NewSystemAccountInvalidator(SystemAccountInvalidatorOptions{
+		State:      &rawSetRecorder{},
+		Namespace:  "test-ns",
+		NewVersion: versionSequence("unused"),
+	})
+	if err != nil {
+		t.Fatalf("NewSystemAccountInvalidator() error = %v", err)
+	}
+	if err := withoutCache.InvalidateGroupAccountIDsCache(context.Background()); err == nil ||
+		err.Error() != "gateway cache redis setter is required" {
+		t.Fatalf("missing cache error = %v", err)
+	}
+
+	wantErr := errors.New("group account IDs cache redis down")
+	withError, err := NewSystemAccountInvalidator(SystemAccountInvalidatorOptions{
+		Cache:      &rawSetRecorder{err: wantErr},
+		State:      &rawSetRecorder{},
+		Namespace:  "test-ns",
+		NewVersion: versionSequence("group-account-ids-version"),
+	})
+	if err != nil {
+		t.Fatalf("NewSystemAccountInvalidator() error = %v", err)
+	}
+	if err := withError.InvalidateGroupAccountIDsCache(context.Background()); !errors.Is(err, wantErr) {
+		t.Fatalf("InvalidateGroupAccountIDsCache() error = %v, want %v", err, wantErr)
 	}
 }
 
