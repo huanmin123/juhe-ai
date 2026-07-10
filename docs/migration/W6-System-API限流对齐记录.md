@@ -6,6 +6,7 @@
 
 - 鉴权前的客户端 IP read / write limiter。
 - 已认证管理业务路由鉴权后的系统账户 read / write limiter。
+- 两层 limiter 共用客户端 IP allowlist 判定；命中 active、未过期的 allowlist policy 时不消耗任一 bucket。
 
 该能力随当前 Go 管理 API opt-in 路由使用，生产 server 同时注入两层 Redis limiter。它只对齐已经迁移并在 Go router 中注册的管理业务路由，不代表 system API 已达到 100% Node 等价，也不代表生产接管或 Node 限流代码可以删除。
 
@@ -52,6 +53,15 @@ Go 当前 system API 链路按以下顺序执行：
 - 超限统一返回 `429`，设置 `Retry-After`，响应文案为 `请求过于频繁，请稍后重试`。
 - 系统设置读取或 limiter 执行失败按内部错误处理，不把依赖错误详情暴露给客户端。
 
+## 客户端 IP 白名单
+
+- 只对规范化 IPv4 生成 `SHA-256("client-ip:" + ip)` 十六进制 hash；未知地址和 IPv6 不命中 allowlist。
+- PostgreSQL 查询联结 `juhe_stats.client_ip_registry` 与 `juhe_stats.client_ip_policies`，只接受 `policy_type=allowlist`、`status=active` 且未过期的最新 policy。
+- IP limiter 和 authenticated user limiter 共用同一个 allowlist inspector。命中后继续执行鉴权和业务 handler，但跳过两层 limiter bucket。
+- positive / negative 判定都在进程内缓存 30 秒，最多 5000 项，超限收敛至 4500 项；positive cache 不会超过 policy 自身到期时间。
+- 配置 `JUHE_AI_REDIS_CACHE_URL` 时，Go 读取 `gateway:client-ip-policy-by-ip` shared cache version；版本变化立即清空本地判定缓存。未配置 cache Redis 时保留 30 秒本地缓存上界。
+- policy 查询或 shared cache version 读取失败时记录 warning，不绕过限流，继续执行正常 bucket 判断。
+
 ## 验证
 
 ```powershell
@@ -59,6 +69,7 @@ Set-Location backend-go
 . .\scripts\use-go-env.ps1
 go test ./internal/store/postgres -run TestW1PublicSettingsMigrationSeedsAllSystemAPIRateLimits -count=1
 go test ./internal/httpapi -run TestSystemAPIRateLimitSettingsCacheRefreshesAfterTTL -count=1
+go test ./internal/httpapi -run 'SystemAPI.*Allowlist|ClientIP.*Allowlist' -count=1
 go test ./internal/httpapi ./internal/store/postgres ./internal/app -count=1
 go test -race ./internal/httpapi ./internal/store/postgres ./internal/app -count=1
 go test -v -tags=integration ./internal/testkit/integration -run TestW0PostgresMigrationSmoke -count=1
@@ -77,6 +88,7 @@ go test -v -tags=integration ./internal/testkit/integration -run TestW0PostgresM
 - health 唯一跳过、captcha 纳入、`/auth/*` 与 `settings/public` 跳过用户 limiter。
 - 用户 limiter 位于业务鉴权后，管理业务读 / 写鉴权路由分类正确。
 - Redis / 进程内实现、设置 60 秒缓存及到期刷新、fresh DB migration 六项默认设置值的非 Docker schema guard。
+- allowlist 命中 / 未命中、两层 bucket bypass、鉴权不绕过、IPv4 hash、30 秒缓存、policy expiry、shared cache version 失效和读取失败继续限流。
 - `429`、`Retry-After` 和中文文案。
 - 生产 server 同时注入两层 Redis limiter，缺失已认证 limiter 时已注册管理业务路由 fail-fast。
 
@@ -84,14 +96,15 @@ go test -v -tags=integration ./internal/testkit/integration -run TestW0PostgresM
 
 当前实现不能标记为完整 Node 等价，至少还存在以下差异：
 
-- Node 的 IP limiter 和 authenticated user limiter 都会检查 client IP allowlist；Go 当前尚未迁移该 allowlist bypass。白名单 IP 在 Go 中仍会消耗两层 limiter bucket。
-- Node 在全局 `requireAuth` 后挂载 authenticated user limiter，因此已认证但未命中业务路由的 404 也会经过用户 limiter；Go 当前只在已注册管理业务路由上挂载用户 limiter，未知路由不会进入该层。
+- Node 在全局 `requireAuth` 后、业务 router 前挂载 authenticated user limiter，因此已认证未知路径和错误 method 都会按实际 method 消耗用户 bucket；Go 当前按精确路由和 method 挂载，未知路径和 method mismatch 不进入用户层。
+- Go 只迁移了 system API limiter 所需的 allowlist 消费能力；`/ip-stats` 列表、详情以及 `blacklist`、`allowlist`、`unblock`、`unallowlist` 管理路由尚未迁移。
 - 本轮只对齐已迁移、已注册的管理业务路由；未迁移或未注册的 system API 不属于本轮用户 limiter 覆盖证据。
 
 满足以下条件前，不得删除 Node system API limiter：
 
-- Go 补齐两层 client IP allowlist bypass，并有 allowlist 命中 / 未命中回归。
-- 明确并对齐 authenticated 404 的用户 limiter 归属，或先更新正式契约和测试预期。
+- 保持 allowlist 命中 / 未命中、两层 bypass、鉴权不绕过、读取失败继续限流、policy expiry 和 shared cache version 失效回归通过。
+- 明确并对齐已认证未知路径和错误 method 的用户 limiter 归属，或先更新正式契约和测试预期。
 - 所有计划接管的 system API 已迁移、已注册并通过 read / write 分类与鉴权顺序测试。
-- 真实 PostgreSQL + Redis、可信反向代理客户端 IP、生产配置缓存、两层 Redis limiter 和 `429 Retry-After` smoke 通过。
+- IP policy 管理 API 完成迁移，或明确生产共存期由 Node 单 owner 写 policy、Go 只消费。
+- 真实 PostgreSQL policy 查询、Redis limiter bucket、Redis cache version、Node 写 policy 后 Go 缓存失效、policy expiry、可信反向代理客户端 IP 和 `429 Retry-After` smoke 通过。
 - 反向代理完成单 owner 切流，并取得 Node limiter 入口删除和静态搜索证据。
