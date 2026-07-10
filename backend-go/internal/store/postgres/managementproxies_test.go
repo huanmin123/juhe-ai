@@ -68,6 +68,7 @@ func TestManagementProxyCRUDSQLUsesFixedBindingWindow(t *testing.T) {
 	sql := string(source)
 	for _, marker := range []string{
 		"-- name: FindManagementProxy :one",
+		"-- name: FindManagementProxyForUpdate :one",
 		"-- name: CreateManagementProxy :one",
 		"-- name: UpdateManagementProxy :one",
 		"-- name: DeleteManagementProxy :execrows",
@@ -76,6 +77,10 @@ func TestManagementProxyCRUDSQLUsesFixedBindingWindow(t *testing.T) {
 		if !strings.Contains(sql, marker) {
 			t.Fatalf("proxy CRUD SQL missing %q", marker)
 		}
+	}
+	lockSQL := querySection(t, sql, "-- name: FindManagementProxyForUpdate :one", "-- name: ListManagementProxyOptions :many")
+	if !strings.Contains(lockSQL, "FOR UPDATE") {
+		t.Fatal("proxy update must lock the current row before merging a partial patch")
 	}
 	updateSQL := querySection(t, sql, "-- name: UpdateManagementProxy :one", "-- name: DeleteManagementProxy :execrows")
 	for _, want := range []string{
@@ -111,5 +116,14 @@ func TestManagementProxyDuplicateNameError(t *testing.T) {
 	}
 	if managementProxyDuplicateNameError(&pgconn.PgError{Code: "23505", ConstraintName: "other_unique"}) {
 		t.Fatal("unrelated unique violation should not be recognized")
+	}
+}
+
+func TestManagementProxyInUseError(t *testing.T) {
+	if !managementProxyInUseError(&pgconn.PgError{Code: "23503", ConstraintName: "accounts_proxy_profile_id_fkey"}) {
+		t.Fatal("proxy account foreign key violation was not recognized")
+	}
+	if managementProxyInUseError(&pgconn.PgError{Code: "23503", ConstraintName: "other_foreign_key"}) {
+		t.Fatal("unrelated foreign key violation should not be recognized")
 	}
 }

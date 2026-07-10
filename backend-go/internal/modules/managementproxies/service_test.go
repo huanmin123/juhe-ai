@@ -281,13 +281,23 @@ func TestWriteOperationsReturnSuccessWhenInvalidationFails(t *testing.T) {
 				Enabled: true,
 			},
 			findFound: true,
-			updateResult: port.ManagementProxySummary{
-				ID:      "proxy_a",
-				Name:    "代理 A",
-				Type:    "http",
-				Host:    "new.example.com",
-				Port:    8080,
-				Enabled: true,
+			updateResult: port.ManagementProxyUpdateResult{
+				Before: port.ManagementProxySummary{
+					ID:      "proxy_a",
+					Name:    "代理 A",
+					Type:    "http",
+					Host:    "old.example.com",
+					Port:    8080,
+					Enabled: true,
+				},
+				Proxy: port.ManagementProxySummary{
+					ID:      "proxy_a",
+					Name:    "代理 A",
+					Type:    "http",
+					Host:    "new.example.com",
+					Port:    8080,
+					Enabled: true,
+				},
 			},
 			updateFound: true,
 		}
@@ -347,15 +357,31 @@ func TestUpdatePreservesPasswordAndResetsTestStateForConnectionChange(t *testing
 			LastTestedAt:      &lastTestedAt,
 		},
 		findFound: true,
-		updateResult: port.ManagementProxySummary{
-			ID:         "proxy_a",
-			Name:       "代理 A",
-			Type:       "http",
-			Host:       "new.example.com",
-			Port:       8080,
-			Username:   stringPtr("user"),
-			Enabled:    true,
-			TestStatus: "unknown",
+		updateResult: port.ManagementProxyUpdateResult{
+			Before: port.ManagementProxySummary{
+				ID:                "proxy_a",
+				Name:              "代理 A",
+				Type:              "http",
+				Host:              "old.example.com",
+				Port:              8080,
+				Username:          stringPtr("user"),
+				PasswordEncrypted: &oldPasswordEncrypted,
+				Enabled:           true,
+				TestStatus:        "passed",
+				LatencyMs:         &latencyMs,
+				LastTestedAt:      &lastTestedAt,
+			},
+			Proxy: port.ManagementProxySummary{
+				ID:         "proxy_a",
+				Name:       "代理 A",
+				Type:       "http",
+				Host:       "new.example.com",
+				Port:       8080,
+				Username:   stringPtr("user"),
+				Enabled:    true,
+				TestStatus: "unknown",
+			},
+			ResetTestState: true,
 		},
 		updateFound: true,
 	}
@@ -371,10 +397,10 @@ func TestUpdatePreservesPasswordAndResetsTestStateForConnectionChange(t *testing
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
-	if store.updateInput.PasswordEncrypted == nil ||
-		*store.updateInput.PasswordEncrypted != oldPasswordEncrypted ||
-		!store.updateInput.ResetTestState ||
-		store.updateInput.Host != "new.example.com" {
+	if store.updateInput.PasswordEncrypted != nil ||
+		store.updateInput.PasswordEncryptedWasChanged ||
+		store.updateInput.Host == nil ||
+		*store.updateInput.Host != "new.example.com" {
 		t.Fatalf("update input = %+v", store.updateInput)
 	}
 	if !result.Changed || result.PasswordChanged || !result.ResetTestState {
@@ -382,6 +408,47 @@ func TestUpdatePreservesPasswordAndResetsTestStateForConnectionChange(t *testing
 	}
 	if len(invalidator.reasons) != 1 || invalidator.reasons[0] != ProxyUpdatedReason {
 		t.Fatalf("invalidation reasons = %+v", invalidator.reasons)
+	}
+}
+
+func TestUpdateDoesNotUseUnlockedPreRead(t *testing.T) {
+	store := &proxyOptionStoreStub{
+		findErr: errors.New("unlocked pre-read must not be used"),
+		updateResult: port.ManagementProxyUpdateResult{
+			Before: port.ManagementProxySummary{
+				ID:         "proxy_a",
+				Name:       "代理 A",
+				Type:       "http",
+				Host:       "old.example.com",
+				Port:       8080,
+				Enabled:    true,
+				TestStatus: "passed",
+			},
+			Proxy: port.ManagementProxySummary{
+				ID:         "proxy_a",
+				Name:       "代理 A",
+				Type:       "http",
+				Host:       "new.example.com",
+				Port:       8080,
+				Enabled:    true,
+				TestStatus: "unknown",
+			},
+			ResetTestState: true,
+		},
+		updateFound: true,
+	}
+	service := NewServiceWithOptions(ServiceOptions{Store: store})
+	host := "new.example.com"
+
+	result, err := service.Update(context.Background(), UpdateInput{ID: "proxy_a", Host: &host})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if result.Proxy.Host != "new.example.com" {
+		t.Fatalf("result = %+v", result)
+	}
+	if store.findID != "" {
+		t.Fatalf("FindManagementProxy() id = %q, want no unlocked pre-read", store.findID)
 	}
 }
 
@@ -398,14 +465,26 @@ func TestUpdatePasswordEncryptsAndResetsTestState(t *testing.T) {
 			TestStatus: "passed",
 		},
 		findFound: true,
-		updateResult: port.ManagementProxySummary{
-			ID:         "proxy_a",
-			Name:       "代理 A",
-			Type:       "http",
-			Host:       "proxy.example.com",
-			Port:       8080,
-			Enabled:    true,
-			TestStatus: "unknown",
+		updateResult: port.ManagementProxyUpdateResult{
+			Before: port.ManagementProxySummary{
+				ID:         "proxy_a",
+				Name:       "代理 A",
+				Type:       "http",
+				Host:       "proxy.example.com",
+				Port:       8080,
+				Enabled:    true,
+				TestStatus: "passed",
+			},
+			Proxy: port.ManagementProxySummary{
+				ID:         "proxy_a",
+				Name:       "代理 A",
+				Type:       "http",
+				Host:       "proxy.example.com",
+				Port:       8080,
+				Enabled:    true,
+				TestStatus: "unknown",
+			},
+			ResetTestState: true,
 		},
 		updateFound: true,
 	}
@@ -418,7 +497,7 @@ func TestUpdatePasswordEncryptsAndResetsTestState(t *testing.T) {
 	}
 	if store.updateInput.PasswordEncrypted == nil ||
 		*store.updateInput.PasswordEncrypted != "v1:new" ||
-		!store.updateInput.ResetTestState {
+		!store.updateInput.PasswordEncryptedWasChanged {
 		t.Fatalf("update input = %+v", store.updateInput)
 	}
 	if codec.password != password {
@@ -480,6 +559,22 @@ func TestDeleteRemovesProxyAndInvalidates(t *testing.T) {
 	}
 }
 
+func TestDeleteMapsConcurrentBindingConflict(t *testing.T) {
+	store := &proxyOptionStoreStub{
+		findResult: port.ManagementProxySummary{ID: "proxy_a", Name: "代理 A"},
+		findFound:  true,
+		deleteErr:  port.ErrManagementProxyInUse,
+	}
+	service := NewServiceWithOptions(ServiceOptions{Store: store})
+
+	_, err := service.Delete(context.Background(), DeleteInput{ID: "proxy_a"})
+
+	message, ok := InUseMessage(err)
+	if !ok || !strings.Contains(message, "至少 1 个账户") {
+		t.Fatalf("InUseMessage() = %q ok=%v, want concurrent binding conflict", message, ok)
+	}
+}
+
 type proxyOptionStoreStub struct {
 	listInput     port.ManagementProxyListInput
 	input         port.ManagementProxyOptionListInput
@@ -495,7 +590,7 @@ type proxyOptionStoreStub struct {
 	createResult  port.ManagementProxySummary
 	createErr     error
 	updateInput   port.ManagementProxyUpdateInput
-	updateResult  port.ManagementProxySummary
+	updateResult  port.ManagementProxyUpdateResult
 	updateFound   bool
 	updateErr     error
 	bindingsInput port.ManagementProxyAccountBindingListInput
@@ -527,7 +622,7 @@ func (s *proxyOptionStoreStub) CreateManagementProxy(_ context.Context, input po
 	return s.createResult, s.createErr
 }
 
-func (s *proxyOptionStoreStub) UpdateManagementProxy(_ context.Context, input port.ManagementProxyUpdateInput) (port.ManagementProxySummary, bool, error) {
+func (s *proxyOptionStoreStub) UpdateManagementProxy(_ context.Context, input port.ManagementProxyUpdateInput) (port.ManagementProxyUpdateResult, bool, error) {
 	s.updateInput = input
 	return s.updateResult, s.updateFound, s.updateErr
 }

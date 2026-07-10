@@ -48,6 +48,28 @@ FROM juhe_business.proxy_profiles
 WHERE id = sqlc.arg(id)::text
 LIMIT 1;
 
+-- name: FindManagementProxyForUpdate :one
+SELECT
+  id,
+  system_account_id,
+  name,
+  description,
+  type,
+  host,
+  port,
+  username,
+  password_encrypted,
+  enabled,
+  test_status,
+  latency_ms,
+  outbound_ip,
+  outbound_region,
+  last_test_message,
+  last_tested_at
+FROM juhe_business.proxy_profiles
+WHERE id = sqlc.arg(id)::text
+FOR UPDATE;
+
 -- name: ListManagementProxyOptions :many
 SELECT id, name, type, enabled
 FROM juhe_business.proxy_profiles

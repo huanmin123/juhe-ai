@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -30,13 +31,40 @@ func (s *Store) CreateManagementProxy(ctx context.Context, input port.Management
 	return createManagementProxy(ctx, s.queries(), input)
 }
 
-func (s *Store) UpdateManagementProxy(ctx context.Context, input port.ManagementProxyUpdateInput) (port.ManagementProxySummary, bool, error) {
-	return updateManagementProxy(ctx, s.queries(), input)
+func (s *Store) UpdateManagementProxy(ctx context.Context, input port.ManagementProxyUpdateInput) (port.ManagementProxyUpdateResult, bool, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return port.ManagementProxyUpdateResult{}, false, fmt.Errorf("begin management proxy update tx: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = tx.Rollback(rollbackCtx)
+		}
+	}()
+
+	result, found, err := updateManagementProxy(ctx, s.queries().WithTx(tx), input)
+	if err != nil || !found {
+		return result, found, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		if errors.Is(err, pgx.ErrTxCommitRollback) {
+			return port.ManagementProxyUpdateResult{}, false, fmt.Errorf("commit management proxy update tx rolled back: %w", err)
+		}
+		return port.ManagementProxyUpdateResult{}, false, fmt.Errorf("commit management proxy update tx: %w", err)
+	}
+	committed = true
+	return result, found, nil
 }
 
 func (s *Store) DeleteManagementProxy(ctx context.Context, id string) (bool, error) {
 	rows, err := s.queries().DeleteManagementProxy(ctx, strings.TrimSpace(id))
 	if err != nil {
+		if managementProxyInUseError(err) {
+			return false, port.ErrManagementProxyInUse
+		}
 		return false, fmt.Errorf("delete management proxy: %w", err)
 	}
 	return rows > 0, nil
@@ -112,30 +140,78 @@ func updateManagementProxy(
 	ctx context.Context,
 	q *postgresqueries.Queries,
 	input port.ManagementProxyUpdateInput,
-) (port.ManagementProxySummary, bool, error) {
+) (port.ManagementProxyUpdateResult, bool, error) {
+	current, err := q.FindManagementProxyForUpdate(ctx, strings.TrimSpace(input.ID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return port.ManagementProxyUpdateResult{}, false, nil
+		}
+		return port.ManagementProxyUpdateResult{}, false, fmt.Errorf("lock management proxy for update: %w", err)
+	}
+	nextName := current.Name
+	if input.Name != nil {
+		nextName = *input.Name
+	}
+	nextDescription := textPtr(current.Description)
+	if input.Description.Set {
+		nextDescription = input.Description.Value
+	}
+	nextType := current.Type
+	if input.Type != nil {
+		nextType = *input.Type
+	}
+	nextHost := current.Host
+	if input.Host != nil {
+		nextHost = *input.Host
+	}
+	nextPort := int(current.Port)
+	if input.Port != nil {
+		nextPort = *input.Port
+	}
+	nextUsername := textPtr(current.Username)
+	if input.Username.Set {
+		nextUsername = input.Username.Value
+	}
+	nextPasswordEncrypted := textPtr(current.PasswordEncrypted)
+	if input.PasswordEncryptedWasChanged {
+		nextPasswordEncrypted = input.PasswordEncrypted
+	}
+	nextEnabled := current.Enabled
+	if input.Enabled != nil {
+		nextEnabled = *input.Enabled
+	}
+	resetTestState := nextType != current.Type ||
+		nextHost != current.Host ||
+		nextPort != int(current.Port) ||
+		!postgresStringPtrEqual(nextUsername, textPtr(current.Username)) ||
+		input.PasswordEncryptedWasChanged
 	row, err := q.UpdateManagementProxy(ctx, postgresqueries.UpdateManagementProxyParams{
 		ID:                input.ID,
-		Name:              input.Name,
-		Description:       pgTextFromStringPtr(input.Description),
-		Type:              input.Type,
-		Host:              input.Host,
-		Port:              int32(input.Port),
-		Username:          pgTextFromStringPtr(input.Username),
-		PasswordEncrypted: pgTextFromStringPtr(input.PasswordEncrypted),
-		Enabled:           input.Enabled,
-		ResetTestState:    input.ResetTestState,
+		Name:              nextName,
+		Description:       pgTextFromStringPtr(nextDescription),
+		Type:              nextType,
+		Host:              nextHost,
+		Port:              int32(nextPort),
+		Username:          pgTextFromStringPtr(nextUsername),
+		PasswordEncrypted: pgTextFromStringPtr(nextPasswordEncrypted),
+		Enabled:           nextEnabled,
+		ResetTestState:    resetTestState,
 		UpdatedAt:         pgTimestamptz(input.UpdatedAt),
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return port.ManagementProxySummary{}, false, nil
+			return port.ManagementProxyUpdateResult{}, false, nil
 		}
 		if managementProxyDuplicateNameError(err) {
-			return port.ManagementProxySummary{}, false, port.ErrManagementProxyNameExists
+			return port.ManagementProxyUpdateResult{}, false, port.ErrManagementProxyNameExists
 		}
-		return port.ManagementProxySummary{}, false, fmt.Errorf("update management proxy: %w", err)
+		return port.ManagementProxyUpdateResult{}, false, fmt.Errorf("update management proxy: %w", err)
 	}
-	return managementProxySummaryFromUpdateRow(row), true, nil
+	return port.ManagementProxyUpdateResult{
+		Before:         managementProxySummaryFromFindForUpdateRow(current),
+		Proxy:          managementProxySummaryFromUpdateRow(row),
+		ResetTestState: resetTestState,
+	}, true, nil
 }
 
 func listManagementProxyOptions(ctx context.Context, q *postgresqueries.Queries, input port.ManagementProxyOptionListInput) ([]port.ManagementProxyOption, error) {
@@ -228,6 +304,27 @@ func managementProxySummaryFromFindRow(row postgresqueries.FindManagementProxyRo
 	return item
 }
 
+func managementProxySummaryFromFindForUpdateRow(row postgresqueries.FindManagementProxyForUpdateRow) port.ManagementProxySummary {
+	return port.ManagementProxySummary{
+		ID:                row.ID,
+		SystemAccountID:   row.SystemAccountID,
+		Name:              row.Name,
+		Description:       textPtr(row.Description),
+		Type:              row.Type,
+		Host:              row.Host,
+		Port:              int(row.Port),
+		Username:          textPtr(row.Username),
+		PasswordEncrypted: textPtr(row.PasswordEncrypted),
+		Enabled:           row.Enabled,
+		TestStatus:        row.TestStatus,
+		LatencyMs:         intPtrFromInt4(row.LatencyMs),
+		OutboundIP:        textPtr(row.OutboundIp),
+		OutboundRegion:    textPtr(row.OutboundRegion),
+		LastTestMessage:   textPtr(row.LastTestMessage),
+		LastTestedAt:      timePtrFromTimestamptz(row.LastTestedAt),
+	}
+}
+
 func managementProxySummaryFromCreateRow(row postgresqueries.CreateManagementProxyRow) port.ManagementProxySummary {
 	return port.ManagementProxySummary{
 		ID:              row.ID,
@@ -274,6 +371,20 @@ func managementProxyDuplicateNameError(err error) bool {
 		pgErr.Code == "23505" &&
 		(pgErr.ConstraintName == "idx_proxy_profiles_name_unique" ||
 			pgErr.ConstraintName == "idx_proxy_profiles_name_unique_lower")
+}
+
+func managementProxyInUseError(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) &&
+		pgErr.Code == "23503" &&
+		pgErr.ConstraintName == "accounts_proxy_profile_id_fkey"
+}
+
+func postgresStringPtrEqual(left *string, right *string) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 func normalizeManagementProxyListLimit(value int) int {

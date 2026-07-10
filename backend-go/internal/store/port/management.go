@@ -195,17 +195,28 @@ type ManagementProxyCreateInput struct {
 }
 
 type ManagementProxyUpdateInput struct {
-	ID                string
-	Name              string
-	Description       *string
-	Type              string
-	Host              string
-	Port              int
-	Username          *string
-	PasswordEncrypted *string
-	Enabled           bool
-	ResetTestState    bool
-	UpdatedAt         time.Time
+	ID                          string
+	Name                        *string
+	Description                 ManagementProxyNullableTextPatch
+	Type                        *string
+	Host                        *string
+	Port                        *int
+	Username                    ManagementProxyNullableTextPatch
+	PasswordEncrypted           *string
+	PasswordEncryptedWasChanged bool
+	Enabled                     *bool
+	UpdatedAt                   time.Time
+}
+
+type ManagementProxyNullableTextPatch struct {
+	Set   bool
+	Value *string
+}
+
+type ManagementProxyUpdateResult struct {
+	Before         ManagementProxySummary
+	Proxy          ManagementProxySummary
+	ResetTestState bool
 }
 
 type ManagementProxyAccountBindingListInput struct {
@@ -223,13 +234,14 @@ type ManagementProxyReader interface {
 }
 
 var ErrManagementProxyNameExists = errors.New("management proxy name exists")
+var ErrManagementProxyInUse = errors.New("management proxy in use")
 
 type ManagementProxyWriter interface {
 	ManagementProxyReader
 	FindManagementProxy(ctx context.Context, id string) (ManagementProxySummary, bool, error)
 	ListManagementProxyAccountBindings(ctx context.Context, input ManagementProxyAccountBindingListInput) ([]ManagementProxyAccountBinding, error)
 	CreateManagementProxy(ctx context.Context, input ManagementProxyCreateInput) (ManagementProxySummary, error)
-	UpdateManagementProxy(ctx context.Context, input ManagementProxyUpdateInput) (ManagementProxySummary, bool, error)
+	UpdateManagementProxy(ctx context.Context, input ManagementProxyUpdateInput) (ManagementProxyUpdateResult, bool, error)
 	DeleteManagementProxy(ctx context.Context, id string) (bool, error)
 }
 

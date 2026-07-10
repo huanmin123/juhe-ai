@@ -207,6 +207,72 @@ func (q *Queries) FindManagementProxy(ctx context.Context, id string) (FindManag
 	return i, err
 }
 
+const findManagementProxyForUpdate = `-- name: FindManagementProxyForUpdate :one
+SELECT
+  id,
+  system_account_id,
+  name,
+  description,
+  type,
+  host,
+  port,
+  username,
+  password_encrypted,
+  enabled,
+  test_status,
+  latency_ms,
+  outbound_ip,
+  outbound_region,
+  last_test_message,
+  last_tested_at
+FROM juhe_business.proxy_profiles
+WHERE id = $1::text
+FOR UPDATE
+`
+
+type FindManagementProxyForUpdateRow struct {
+	ID                string
+	SystemAccountID   string
+	Name              string
+	Description       pgtype.Text
+	Type              string
+	Host              string
+	Port              int32
+	Username          pgtype.Text
+	PasswordEncrypted pgtype.Text
+	Enabled           bool
+	TestStatus        string
+	LatencyMs         pgtype.Int4
+	OutboundIp        pgtype.Text
+	OutboundRegion    pgtype.Text
+	LastTestMessage   pgtype.Text
+	LastTestedAt      pgtype.Timestamptz
+}
+
+func (q *Queries) FindManagementProxyForUpdate(ctx context.Context, id string) (FindManagementProxyForUpdateRow, error) {
+	row := q.db.QueryRow(ctx, findManagementProxyForUpdate, id)
+	var i FindManagementProxyForUpdateRow
+	err := row.Scan(
+		&i.ID,
+		&i.SystemAccountID,
+		&i.Name,
+		&i.Description,
+		&i.Type,
+		&i.Host,
+		&i.Port,
+		&i.Username,
+		&i.PasswordEncrypted,
+		&i.Enabled,
+		&i.TestStatus,
+		&i.LatencyMs,
+		&i.OutboundIp,
+		&i.OutboundRegion,
+		&i.LastTestMessage,
+		&i.LastTestedAt,
+	)
+	return i, err
+}
+
 const listManagementProxies = `-- name: ListManagementProxies :many
 SELECT
   id,

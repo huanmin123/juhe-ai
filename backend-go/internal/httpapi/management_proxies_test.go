@@ -476,6 +476,55 @@ func TestRouterRegistersManagementProxyWriteHandlersWithTouchMiddleware(t *testi
 	}
 }
 
+func TestRouterProxyCreateRejectsDuplicateSubmission(t *testing.T) {
+	authenticator := &managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
+	}
+	service := &managementProxyOptionServiceStub{
+		createResult: managementproxies.CreateResult{
+			Proxy: managementproxies.Summary{
+				ID:         "proxy_a",
+				Name:       "代理 A",
+				Type:       "http",
+				Host:       "proxy.example.com",
+				Port:       8080,
+				Enabled:    true,
+				TestStatus: "unknown",
+			},
+		},
+	}
+	router := NewRouter(RouterOptions{
+		Config:                           config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
+		Logger:                           slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
+		ManagementProxyCreateHandler:     newManagementProxyCreateHandler(service, managementOperationLogOptions{}),
+		ManagementAPIAuthMiddleware:      NewManagementAPIAuthMiddleware(authenticator),
+		ManagementAPIAuthTouchMiddleware: NewManagementAPIAuthTouchMiddleware(authenticator),
+	})
+	body := `{"name":"  代理 A  ","type":"http","host":"proxy.example.com","port":8080,"password":"secret"}`
+
+	first := httptest.NewRecorder()
+	firstReq := httptest.NewRequest(http.MethodPost, "/__aisys__/api/proxies", strings.NewReader(body))
+	firstReq.Header.Set("Cookie", "juhe_ai_session=session-token")
+	router.ServeHTTP(first, firstReq)
+	if first.Code != http.StatusCreated {
+		t.Fatalf("first status = %d, want 201; body = %s", first.Code, first.Body.String())
+	}
+
+	second := httptest.NewRecorder()
+	secondReq := httptest.NewRequest(http.MethodPost, "/__aisys__/api/proxies", strings.NewReader(body))
+	secondReq.Header.Set("Cookie", "juhe_ai_session=session-token")
+	router.ServeHTTP(second, secondReq)
+	if second.Code != http.StatusConflict {
+		t.Fatalf("second status = %d, want 409; body = %s", second.Code, second.Body.String())
+	}
+	if !strings.Contains(second.Body.String(), "该操作刚刚已处理") {
+		t.Fatalf("second body = %s", second.Body.String())
+	}
+	if service.createCount != 1 {
+		t.Fatalf("create count = %d, want 1", service.createCount)
+	}
+}
+
 func TestRouterDoesNotRegisterW2ManagementProxyOptionsWhenDisabled(t *testing.T) {
 	router := NewRouter(RouterOptions{
 		Config:                        config.Config{Host: "127.0.0.1", Port: 3000},
@@ -575,6 +624,7 @@ type managementProxyOptionServiceStub struct {
 	listErr      error
 	err          error
 	createCalled bool
+	createCount  int
 	createInput  managementproxies.CreateInput
 	createResult managementproxies.CreateResult
 	createErr    error
@@ -601,6 +651,7 @@ func (s *managementProxyOptionServiceStub) Options(_ *http.Request, input manage
 
 func (s *managementProxyOptionServiceStub) Create(_ *http.Request, input managementproxies.CreateInput) (managementproxies.CreateResult, error) {
 	s.createCalled = true
+	s.createCount++
 	s.createInput = input
 	return s.createResult, s.createErr
 }

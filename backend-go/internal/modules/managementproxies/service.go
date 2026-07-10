@@ -390,90 +390,85 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (UpdateResult, 
 	if err != nil {
 		return UpdateResult{}, err
 	}
-	current, found, err := writer.FindManagementProxy(ctx, strings.TrimSpace(input.ID))
-	if err != nil {
-		return UpdateResult{}, err
-	}
-	if !found {
-		return UpdateResult{}, ErrProxyNotFound
-	}
-	nextName := current.Name
+	proxyID := strings.TrimSpace(input.ID)
+	var nextName *string
 	if input.Name != nil {
-		nextName, err = normalizedRequiredText(*input.Name, "代理名称不能为空")
+		value, err := normalizedRequiredText(*input.Name, "代理名称不能为空")
 		if err != nil {
 			return UpdateResult{}, err
 		}
+		nextName = &value
 	}
-	nextDescription := current.Description
+	nextDescription := port.ManagementProxyNullableTextPatch{}
 	if input.Description.Set {
-		nextDescription, err = normalizeOptionalText(input.Description.Value, "代理描述", maxDescriptionRunes)
+		value, err := normalizeOptionalText(input.Description.Value, "代理描述", maxDescriptionRunes)
 		if err != nil {
 			return UpdateResult{}, err
 		}
+		nextDescription = port.ManagementProxyNullableTextPatch{Set: true, Value: value}
 	}
-	nextType := current.Type
+	var nextType *string
 	if input.Type != nil {
-		nextType, err = normalizedProxyType(*input.Type)
+		value, err := normalizedProxyType(*input.Type)
 		if err != nil {
 			return UpdateResult{}, err
 		}
+		nextType = &value
 	}
-	nextHost := current.Host
+	var nextHost *string
 	if input.Host != nil {
-		nextHost, err = normalizedRequiredText(*input.Host, "代理主机不能为空")
+		value, err := normalizedRequiredText(*input.Host, "代理主机不能为空")
 		if err != nil {
 			return UpdateResult{}, err
 		}
+		nextHost = &value
 	}
-	nextPort := current.Port
+	var nextPort *int
 	if input.Port != nil {
-		nextPort, err = normalizedProxyPort(*input.Port)
+		value, err := normalizedProxyPort(*input.Port)
 		if err != nil {
 			return UpdateResult{}, err
 		}
+		nextPort = &value
 	}
-	nextUsername := current.Username
+	nextUsername := port.ManagementProxyNullableTextPatch{}
 	if input.Username.Set {
-		nextUsername, err = normalizeOptionalText(input.Username.Value, "代理用户名", 0)
+		value, err := normalizeOptionalText(input.Username.Value, "代理用户名", 0)
 		if err != nil {
 			return UpdateResult{}, err
 		}
-	}
-	nextEnabled := current.Enabled
-	if input.Enabled != nil {
-		nextEnabled = *input.Enabled
+		nextUsername = port.ManagementProxyNullableTextPatch{Set: true, Value: value}
 	}
 	password, passwordChanged, err := normalizeProxyPassword(input.Password)
 	if err != nil {
 		return UpdateResult{}, err
 	}
-	nextEncrypted := current.PasswordEncrypted
+	var nextEncrypted *string
 	if passwordChanged {
 		nextEncrypted, err = s.encryptPassword(password)
 		if err != nil {
 			return UpdateResult{}, err
 		}
 	}
-	resetTestState := nextType != current.Type ||
-		nextHost != current.Host ||
-		nextPort != current.Port ||
-		!stringPtrEqual(nextUsername, current.Username) ||
-		passwordChanged
-	updated, found, err := writer.UpdateManagementProxy(ctx, port.ManagementProxyUpdateInput{
-		ID:                strings.TrimSpace(input.ID),
-		Name:              nextName,
-		Description:       nextDescription,
-		Type:              nextType,
-		Host:              nextHost,
-		Port:              nextPort,
-		Username:          nextUsername,
-		PasswordEncrypted: nextEncrypted,
-		Enabled:           nextEnabled,
-		ResetTestState:    resetTestState,
-		UpdatedAt:         s.now().UTC(),
+	result, found, err := writer.UpdateManagementProxy(ctx, port.ManagementProxyUpdateInput{
+		ID:                          proxyID,
+		Name:                        nextName,
+		Description:                 nextDescription,
+		Type:                        nextType,
+		Host:                        nextHost,
+		Port:                        nextPort,
+		Username:                    nextUsername,
+		PasswordEncrypted:           nextEncrypted,
+		PasswordEncryptedWasChanged: passwordChanged,
+		Enabled:                     input.Enabled,
+		UpdatedAt:                   s.now().UTC(),
 	})
 	if errors.Is(err, port.ErrManagementProxyNameExists) {
-		return UpdateResult{}, &NameExistsError{Name: nextName}
+		name := ""
+		if nextName != nil {
+			name = *nextName
+		}
+		return UpdateResult{}, &NameExistsError{Name: name}
 	}
 	if err != nil {
 		return UpdateResult{}, err
@@ -482,14 +477,14 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (UpdateResult, 
 		return UpdateResult{}, ErrProxyNotFound
 	}
 	s.invalidate(ctx, ProxyUpdatedReason)
-	before := proxySummaryFromPort(current)
-	after := proxySummaryFromPort(updated)
+	before := proxySummaryFromPort(result.Before)
+	after := proxySummaryFromPort(result.Proxy)
 	return UpdateResult{
 		Before:          before,
 		Proxy:           after,
 		Changed:         proxySummaryChanged(before, after) || passwordChanged,
 		PasswordChanged: passwordChanged,
-		ResetTestState:  resetTestState,
+		ResetTestState:  result.ResetTestState,
 	}, nil
 }
 
@@ -517,6 +512,9 @@ func (s *Service) Delete(ctx context.Context, input DeleteInput) (DeleteResult, 
 		return DeleteResult{}, proxyInUseError(bindings)
 	}
 	deleted, err := writer.DeleteManagementProxy(ctx, proxyID)
+	if errors.Is(err, port.ErrManagementProxyInUse) {
+		return DeleteResult{}, &InUseError{AccountCount: 1, AccountCountIsLowerBound: true}
+	}
 	if err != nil {
 		return DeleteResult{}, err
 	}

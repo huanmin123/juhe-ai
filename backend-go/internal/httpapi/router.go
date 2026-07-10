@@ -107,6 +107,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 	r.Use(requestIDMiddleware)
 	r.Use(recoverMiddleware(opts.Logger))
 	clientIPs := newClientIPResolver(opts.Config)
+	mutationGuards := newMutationGuardStore()
 
 	health := NewHealthHandler(opts.Config, opts.Logger)
 	r.Get("/__aisys__/health", health.ServeHTTP)
@@ -258,7 +259,10 @@ func NewRouter(opts RouterOptions) http.Handler {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/proxies/options", opts.ManagementProxyOptionsHandler.ServeHTTP)
 			}
 			if opts.ManagementProxyCreateHandler != nil {
-				system.With(managementAPIWriteAuthMiddleware).Post("/proxies", opts.ManagementProxyCreateHandler.ServeHTTP)
+				system.With(
+					managementAPIWriteAuthMiddleware,
+					mutationGuards.Middleware(managementProxyCreateMutationGuardConfig()),
+				).Post("/proxies", opts.ManagementProxyCreateHandler.ServeHTTP)
 			}
 			if opts.ManagementProxyUpdateHandler != nil {
 				system.With(managementAPIWriteAuthMiddleware).Patch("/proxies/{id}", opts.ManagementProxyUpdateHandler.ServeHTTP)
