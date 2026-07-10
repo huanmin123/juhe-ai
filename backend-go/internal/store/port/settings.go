@@ -3,6 +3,8 @@ package port
 import (
 	"context"
 	"time"
+
+	"juhe-ai/backend-go/internal/systemsettings"
 )
 
 type PublicGlobalSettings struct {
@@ -27,6 +29,24 @@ type ManagementGlobalSettingsUpdateResult struct {
 
 type ManagementGlobalSettingsWriter interface {
 	UpdateGlobalSettings(ctx context.Context, input ManagementGlobalSettingsUpdateInput) (ManagementGlobalSettingsUpdateResult, error)
+}
+
+type ManagementSystemSettingsUpdateInput struct {
+	Patch     systemsettings.Patch
+	UpdatedAt time.Time
+}
+
+type ManagementSystemSettingsUpdateResult struct {
+	Before   systemsettings.Snapshot
+	Settings systemsettings.Snapshot
+}
+
+type ManagementSystemSettingsReader interface {
+	ManagementSystemSettings(ctx context.Context) (systemsettings.Snapshot, error)
+}
+
+type ManagementSystemSettingsWriter interface {
+	UpdateManagementSystemSettings(ctx context.Context, input ManagementSystemSettingsUpdateInput) (ManagementSystemSettingsUpdateResult, error)
 }
 
 type SystemAPIRateLimitSettings struct {
