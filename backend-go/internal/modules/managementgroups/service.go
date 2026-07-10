@@ -25,7 +25,9 @@ const (
 type Service struct {
 	store                   port.ManagementGroupOptionReader
 	listStore               port.ManagementGroupListReader
+	detailStore             port.ManagementGroupDetailReader
 	usageStatsTimezoneStore port.ManagementUsageStatsTimezoneReader
+	accountConcurrency      AccountConcurrencyReader
 	invalidator             RuntimeInvalidator
 	logger                  *slog.Logger
 	now                     func() time.Time
@@ -35,7 +37,9 @@ type Service struct {
 type ServiceOptions struct {
 	Store                   port.ManagementGroupOptionReader
 	ListStore               port.ManagementGroupListReader
+	DetailStore             port.ManagementGroupDetailReader
 	UsageStatsTimezoneStore port.ManagementUsageStatsTimezoneReader
+	AccountConcurrency      AccountConcurrencyReader
 	Invalidator             RuntimeInvalidator
 	Logger                  *slog.Logger
 	Now                     func() time.Time
@@ -271,6 +275,12 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 			listStore = candidate
 		}
 	}
+	detailStore := opts.DetailStore
+	if detailStore == nil {
+		if candidate, ok := opts.Store.(port.ManagementGroupDetailReader); ok {
+			detailStore = candidate
+		}
+	}
 	usageStatsTimezoneStore := opts.UsageStatsTimezoneStore
 	if usageStatsTimezoneStore == nil {
 		if candidate, ok := opts.Store.(port.ManagementUsageStatsTimezoneReader); ok {
@@ -282,7 +292,9 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 	return &Service{
 		store:                   opts.Store,
 		listStore:               listStore,
+		detailStore:             detailStore,
 		usageStatsTimezoneStore: usageStatsTimezoneStore,
+		accountConcurrency:      opts.AccountConcurrency,
 		invalidator:             opts.Invalidator,
 		logger:                  opts.Logger,
 		now:                     now,
