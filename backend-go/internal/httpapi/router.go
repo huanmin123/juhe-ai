@@ -100,6 +100,7 @@ type RouterOptions struct {
 	ManagementMyAccountTagDeleteHandler               http.Handler
 	ManagementAccountTagUpdateHandler                 http.Handler
 	ManagementMyAccountTagUpdateHandler               http.Handler
+	ManagementGlobalSettingsHandler                   http.Handler
 	ManagementOperationLogsHandler                    http.Handler
 	ManagementMyOperationLogsHandler                  http.Handler
 	ManagementStatsUsageWindowHandler                 http.Handler
@@ -253,6 +254,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyAccountTagDeleteHandler == nil &&
 				opts.ManagementAccountTagUpdateHandler == nil &&
 				opts.ManagementMyAccountTagUpdateHandler == nil &&
+				opts.ManagementGlobalSettingsHandler == nil &&
 				opts.ManagementOperationLogsHandler == nil &&
 				opts.ManagementMyOperationLogsHandler == nil &&
 				opts.ManagementStatsUsageWindowHandler == nil &&
@@ -497,6 +499,9 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementMyAccountTagUpdateHandler != nil {
 				system.With(managementAPIWriteRateLimitMiddleware).Patch("/my-accounts/{id}/tags", opts.ManagementMyAccountTagUpdateHandler.ServeHTTP)
 			}
+			if opts.ManagementGlobalSettingsHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/settings/global", opts.ManagementGlobalSettingsHandler.ServeHTTP)
+			}
 			if opts.ManagementOperationLogsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/operation-logs", opts.ManagementOperationLogsHandler.ServeHTTP)
 				system.With(managementAPIReadRateLimitMiddleware).Get("/operation-logs/{id}", opts.ManagementOperationLogsHandler.ServeHTTP)
@@ -620,6 +625,7 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAccountTagDeleteHandler != nil ||
 		opts.ManagementAccountTagUpdateHandler != nil ||
 		opts.ManagementMyAccountTagUpdateHandler != nil ||
+		opts.ManagementGlobalSettingsHandler != nil ||
 		opts.ManagementOperationLogsHandler != nil ||
 		opts.ManagementMyOperationLogsHandler != nil ||
 		opts.ManagementStatsUsageWindowHandler != nil ||

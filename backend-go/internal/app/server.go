@@ -180,6 +180,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyAccountTagDeleteHandler:               managementHandlers.MyAccountTagDeleteHandler,
 		ManagementAccountTagUpdateHandler:                 managementHandlers.AccountTagUpdateHandler,
 		ManagementMyAccountTagUpdateHandler:               managementHandlers.MyAccountTagUpdateHandler,
+		ManagementGlobalSettingsHandler:                   managementHandlers.GlobalSettingsHandler,
 		ManagementOperationLogsHandler:                    managementHandlers.OperationLogsHandler,
 		ManagementMyOperationLogsHandler:                  managementHandlers.MyOperationLogsHandler,
 		ManagementStatsUsageWindowHandler:                 managementHandlers.StatsUsageWindowHandler,
@@ -294,6 +295,7 @@ type managementAPIHandlers struct {
 	MyAccountTagDeleteHandler               http.Handler
 	AccountTagUpdateHandler                 http.Handler
 	MyAccountTagUpdateHandler               http.Handler
+	GlobalSettingsHandler                   http.Handler
 	OperationLogsHandler                    http.Handler
 	MyOperationLogsHandler                  http.Handler
 	StatsUsageWindowHandler                 http.Handler
@@ -364,6 +366,7 @@ func newManagementAPIHandler(
 	authorizationOptionService := managementauthorizationoptions.NewService(store)
 	operationLogService := managementoperationlogs.NewService(store)
 	statsService := managementstats.NewService(store)
+	globalSettingsService := publicsettings.NewService(store)
 	operationLogOptions := httpapi.ManagementOperationLogOptions{
 		Config: cfg,
 		Logger: logger,
@@ -448,6 +451,7 @@ func newManagementAPIHandler(
 		MyAccountTagDeleteHandler:               httpapi.NewManagementMyAccountTagDeleteHandler(accountService),
 		AccountTagUpdateHandler:                 httpapi.NewManagementAccountTagUpdateHandlerWithOperationLog(accountService, operationLogOptions),
 		MyAccountTagUpdateHandler:               httpapi.NewManagementMyAccountTagUpdateHandlerWithOperationLog(accountService, operationLogOptions),
+		GlobalSettingsHandler:                   httpapi.NewManagementGlobalSettingsHandler(&globalSettingsService),
 		OperationLogsHandler:                    httpapi.NewManagementOperationLogsHandler(operationLogService),
 		MyOperationLogsHandler:                  httpapi.NewManagementMyOperationLogsHandler(operationLogService),
 		StatsUsageWindowHandler:                 httpapi.NewManagementStatsUsageWindowHandler(statsService),
