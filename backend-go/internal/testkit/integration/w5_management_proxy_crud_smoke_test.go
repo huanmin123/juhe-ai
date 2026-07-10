@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -65,9 +66,11 @@ func TestW5ManagementProxyCRUDPostgresSmoke(t *testing.T) {
 	defer store.Close()
 
 	secret := "w5-management-proxy-crud-secret-0001"
+	probe := &w5ProxyTestProbe{}
 	service := managementproxies.NewServiceWithOptions(managementproxies.ServiceOptions{
 		Store:  store,
 		Secret: secret,
+		Probe:  probe,
 	})
 	authenticator := managementauth.NewAuthenticator(managementauth.AuthenticatorOptions{
 		Store: store,
@@ -85,6 +88,7 @@ func TestW5ManagementProxyCRUDPostgresSmoke(t *testing.T) {
 		ManagementProxyCreateHandler:     httpapi.NewManagementProxyCreateHandler(service),
 		ManagementProxyUpdateHandler:     httpapi.NewManagementProxyUpdateHandler(service),
 		ManagementProxyDeleteHandler:     httpapi.NewManagementProxyDeleteHandler(service),
+		ManagementProxyTestHandler:       httpapi.NewManagementProxyTestHandler(service),
 	})
 
 	initialPassword := " proxy secret with spaces "
@@ -111,6 +115,29 @@ func TestW5ManagementProxyCRUDPostgresSmoke(t *testing.T) {
 		t.Fatalf("create response = %+v", createBody.Data)
 	}
 	assertW5ProxyEncryptedPassword(t, ctx, db, createBody.Data.ID, secret, initialPassword)
+
+	testRec := serveW5ProxyCRUDRequest(router, http.MethodPost, "/__aisys__/api/proxies/"+createBody.Data.ID+"/test", sessionToken, "")
+	if testRec.Code != http.StatusOK {
+		t.Fatalf("test status = %d, body = %s", testRec.Code, testRec.Body.String())
+	}
+	var testBody struct {
+		Data managementproxies.ProxyTestReport `json:"data"`
+	}
+	if err := json.NewDecoder(testRec.Body).Decode(&testBody); err != nil {
+		t.Fatalf("decode test response: %v", err)
+	}
+	if testBody.Data.ProxyID != createBody.Data.ID ||
+		testBody.Data.Status != "warning" ||
+		testBody.Data.OutboundIP == nil ||
+		*testBody.Data.OutboundIP != "203.0.113.10" ||
+		testBody.Data.BaseLatencyMs == nil {
+		t.Fatalf("test response = %+v", testBody.Data)
+	}
+	if strings.Contains(testRec.Body.String(), initialPassword) || strings.Contains(testRec.Body.String(), "password_encrypted") {
+		t.Fatalf("test response leaked sensitive data: %s", testRec.Body.String())
+	}
+	assertW5ProxyTestState(t, ctx, db, createBody.Data.ID, testBody.Data)
+	probe.assertUsedProxyURL(t, initialPassword)
 
 	_, err = db.ExecContext(ctx, `
 		UPDATE juhe_business.proxy_profiles
@@ -169,6 +196,86 @@ func TestW5ManagementProxyCRUDPostgresSmoke(t *testing.T) {
 	}
 	if remaining != 0 {
 		t.Fatalf("deleted W5 proxy count = %d, want 0", remaining)
+	}
+}
+
+type w5ProxyTestProbe struct {
+	mu        sync.Mutex
+	proxyURLs []string
+}
+
+func (p *w5ProxyTestProbe) Probe(_ context.Context, input managementproxies.ProxyProbeInput) (managementproxies.ProxyProbeResult, error) {
+	p.mu.Lock()
+	p.proxyURLs = append(p.proxyURLs, input.ProxyURL)
+	p.mu.Unlock()
+	if input.TargetURL == "http://ip-api.com/json/?lang=zh-CN" {
+		return managementproxies.ProxyProbeResult{
+			StatusCode: http.StatusOK,
+			LatencyMs:  10,
+			Body:       `{"status":"success","query":"203.0.113.10","countryCode":"US"}`,
+		}, nil
+	}
+	return managementproxies.ProxyProbeResult{
+		StatusCode: http.StatusUnauthorized,
+		LatencyMs:  25,
+	}, nil
+}
+
+func (p *w5ProxyTestProbe) assertUsedProxyURL(t *testing.T, forbiddenPlaintext string) {
+	t.Helper()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.proxyURLs) == 0 {
+		t.Fatal("proxy test probe was not called")
+	}
+	for _, proxyURL := range p.proxyURLs {
+		if strings.Contains(proxyURL, forbiddenPlaintext) {
+			t.Fatalf("proxy URL leaked raw plaintext credential: %q", proxyURL)
+		}
+		if !strings.HasPrefix(proxyURL, "socks5h://proxy-user:") {
+			t.Fatalf("proxy URL = %q, want socks5h URL with userinfo", proxyURL)
+		}
+	}
+}
+
+func assertW5ProxyTestState(
+	t *testing.T,
+	ctx context.Context,
+	db *sql.DB,
+	proxyID string,
+	report managementproxies.ProxyTestReport,
+) {
+	t.Helper()
+	var (
+		testStatus      string
+		latencyMs       sql.NullInt64
+		outboundIP      sql.NullString
+		outboundRegion  sql.NullString
+		lastTestMessage sql.NullString
+		lastTestedAt    sql.NullTime
+	)
+	if err := db.QueryRowContext(ctx, `
+		SELECT test_status, latency_ms, outbound_ip, outbound_region, last_test_message, last_tested_at
+		FROM juhe_business.proxy_profiles
+		WHERE id = $1
+	`, proxyID).Scan(&testStatus, &latencyMs, &outboundIP, &outboundRegion, &lastTestMessage, &lastTestedAt); err != nil {
+		t.Fatalf("read W5 proxy test state: %v", err)
+	}
+	if testStatus != report.Status ||
+		!latencyMs.Valid ||
+		report.BaseLatencyMs == nil ||
+		int(latencyMs.Int64) != *report.BaseLatencyMs ||
+		!outboundIP.Valid ||
+		report.OutboundIP == nil ||
+		outboundIP.String != *report.OutboundIP ||
+		!outboundRegion.Valid ||
+		report.OutboundRegion == nil ||
+		outboundRegion.String != *report.OutboundRegion ||
+		!lastTestMessage.Valid ||
+		lastTestMessage.String != report.Message ||
+		!lastTestedAt.Valid {
+		t.Fatalf("persisted test state status=%q latency=%+v outbound=%+v/%+v message=%+v tested=%+v report=%+v",
+			testStatus, latencyMs, outboundIP, outboundRegion, lastTestMessage, lastTestedAt, report)
 	}
 }
 

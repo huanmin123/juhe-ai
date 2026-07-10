@@ -115,6 +115,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementProxyCreateHandler:                      managementHandlers.ProxyCreateHandler,
 		ManagementProxyUpdateHandler:                      managementHandlers.ProxyUpdateHandler,
 		ManagementProxyDeleteHandler:                      managementHandlers.ProxyDeleteHandler,
+		ManagementProxyTestHandler:                        managementHandlers.ProxyTestHandler,
 		ManagementSystemAccountsHandler:                   managementHandlers.SystemAccountsHandler,
 		ManagementSystemAccountOptionsHandler:             managementHandlers.SystemAccountOptionsHandler,
 		ManagementSystemAccountPatchHandler:               managementHandlers.SystemAccountPatchHandler,
@@ -226,6 +227,7 @@ type managementAPIHandlers struct {
 	ProxyCreateHandler                      http.Handler
 	ProxyUpdateHandler                      http.Handler
 	ProxyDeleteHandler                      http.Handler
+	ProxyTestHandler                        http.Handler
 	SystemAccountsHandler                   http.Handler
 	SystemAccountOptionsHandler             http.Handler
 	SystemAccountPatchHandler               http.Handler
@@ -376,6 +378,7 @@ func newManagementAPIHandler(
 		ProxyCreateHandler:                      httpapi.NewManagementProxyCreateHandlerWithOperationLog(proxyService, operationLogOptions),
 		ProxyUpdateHandler:                      httpapi.NewManagementProxyUpdateHandlerWithOperationLog(proxyService, operationLogOptions),
 		ProxyDeleteHandler:                      httpapi.NewManagementProxyDeleteHandlerWithOperationLog(proxyService, operationLogOptions),
+		ProxyTestHandler:                        httpapi.NewManagementProxyTestHandlerWithOperationLog(proxyService, operationLogOptions),
 		SystemAccountsHandler:                   httpapi.NewManagementSystemAccountsHandler(systemAccountService),
 		SystemAccountOptionsHandler:             httpapi.NewManagementSystemAccountOptionsHandler(systemAccountService),
 		SystemAccountPatchHandler:               httpapi.NewManagementSystemAccountPatchHandlerWithOperationLog(systemAccountService, operationLogOptions),

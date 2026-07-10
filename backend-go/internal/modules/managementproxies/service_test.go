@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -575,31 +576,331 @@ func TestDeleteMapsConcurrentBindingConflict(t *testing.T) {
 	}
 }
 
+func TestTestBuildsReportAndPersistsState(t *testing.T) {
+	testedAt := time.Date(2026, 7, 10, 10, 30, 0, 0, time.UTC)
+	encrypted := "v1:encrypted"
+	staleOutboundIP := "198.51.100.5"
+	staleOutboundRegion := "旧地区"
+	latencyMs := 105
+	outboundIP := "203.0.113.10"
+	outboundRegion := "美国"
+	message := "代理可用，存在 1 项告警"
+	store := &proxyOptionStoreStub{
+		findResult: port.ManagementProxySummary{
+			ID:                "proxy_a",
+			Name:              "代理 A",
+			Type:              "http",
+			Host:              "proxy.example.com",
+			Port:              8080,
+			Username:          stringPtr("proxy-user"),
+			PasswordEncrypted: &encrypted,
+			Enabled:           false,
+			TestStatus:        "unknown",
+			OutboundIP:        &staleOutboundIP,
+			OutboundRegion:    &staleOutboundRegion,
+		},
+		findFound: true,
+		providers: []port.ManagementProviderOption{
+			{Code: "openai", Name: "OpenAI", Enabled: true, BaseURL: "https://api.openai.com/v1"},
+			{Code: "vendor", Name: "Vendor", Enabled: true, BaseURL: "https://vendor.example.com"},
+			{Code: "disabled", Name: "Disabled", Enabled: false, BaseURL: "https://disabled.example.com"},
+		},
+		testStateResult: port.ManagementProxySummary{
+			ID:              "proxy_a",
+			Name:            "代理 A",
+			Type:            "http",
+			Host:            "proxy.example.com",
+			Port:            8080,
+			Enabled:         false,
+			TestStatus:      "warning",
+			LatencyMs:       &latencyMs,
+			OutboundIP:      &outboundIP,
+			OutboundRegion:  &outboundRegion,
+			LastTestMessage: &message,
+			LastTestedAt:    &testedAt,
+		},
+		testStateFound: true,
+	}
+	probe := &proxyProbeStub{
+		results: map[string]ProxyProbeResult{
+			"http://ip-api.com/json/?lang=zh-CN": {
+				StatusCode: 200,
+				LatencyMs:  50,
+				Body:       `{"status":"success","query":"203.0.113.10","country":"United States","countryCode":"US","regionName":"CA","city":"San Francisco"}`,
+			},
+			"https://api.openai.com/v1": {
+				StatusCode: 200,
+				LatencyMs:  120,
+			},
+			"https://vendor.example.com": {
+				StatusCode: 401,
+				LatencyMs:  90,
+			},
+		},
+	}
+	codec := &proxyCredentialCodecStub{
+		decrypted: map[string]any{"password": "p@ss word"},
+	}
+	invalidator := &proxyInvalidatorStub{}
+	service := NewServiceWithOptions(ServiceOptions{
+		Store:       store,
+		Codec:       codec,
+		Probe:       probe,
+		Now:         func() time.Time { return testedAt },
+		Invalidator: invalidator,
+	})
+
+	result, err := service.Test(context.Background(), TestInput{ID: "proxy_a"})
+	if err != nil {
+		t.Fatalf("Test() error = %v", err)
+	}
+	report := result.Report
+	if report.ProxyID != "proxy_a" ||
+		report.ProxyName != "代理 A" ||
+		report.Status != "warning" ||
+		report.Score != 90 ||
+		report.Grade != "A" ||
+		report.PassedCount != 2 ||
+		report.WarningCount != 1 ||
+		report.FailedCount != 0 ||
+		report.BaseLatencyMs == nil ||
+		*report.BaseLatencyMs != 105 ||
+		report.OutboundIP == nil ||
+		*report.OutboundIP != "203.0.113.10" ||
+		report.OutboundRegion == nil ||
+		*report.OutboundRegion == "" ||
+		report.Message != message ||
+		report.TestedAt != testedAt.Format(time.RFC3339Nano) {
+		t.Fatalf("report = %+v", report)
+	}
+	if len(report.Items) != 3 ||
+		report.Items[0].Name != "基础连通性" ||
+		report.Items[0].Status != "passed" ||
+		report.Items[1].HTTPStatus == nil ||
+		*report.Items[1].HTTPStatus != 200 ||
+		report.Items[2].Status != "warning" {
+		t.Fatalf("items = %+v", report.Items)
+	}
+	if store.testStateInput.ID != "proxy_a" ||
+		store.testStateInput.TestStatus != "warning" ||
+		store.testStateInput.LatencyMs == nil ||
+		*store.testStateInput.LatencyMs != 105 ||
+		!store.testStateInput.OutboundIP.Set ||
+		store.testStateInput.OutboundIP.Value == nil ||
+		*store.testStateInput.OutboundIP.Value != "203.0.113.10" ||
+		!store.testStateInput.OutboundRegion.Set ||
+		store.testStateInput.LastTestMessage != message ||
+		!store.testStateInput.LastTestedAt.Equal(testedAt) {
+		t.Fatalf("test state input = %+v", store.testStateInput)
+	}
+	if len(probe.inputs) != 3 {
+		t.Fatalf("probe inputs = %+v", probe.inputs)
+	}
+	for _, input := range probe.inputs {
+		if input.ProxyURL != "http://proxy-user:p%40ss%20word@proxy.example.com:8080" {
+			t.Fatalf("proxy URL = %q", input.ProxyURL)
+		}
+		if strings.Contains(input.ProxyURL, "v1:encrypted") {
+			t.Fatalf("proxy URL leaked encrypted credential: %q", input.ProxyURL)
+		}
+	}
+	if result.Before.OutboundIP == nil ||
+		*result.Before.OutboundIP != staleOutboundIP ||
+		result.Proxy.TestStatus != "warning" {
+		t.Fatalf("result = %+v", result)
+	}
+	if len(invalidator.reasons) != 1 || invalidator.reasons[0] != ProxyTestStateUpdatedReason {
+		t.Fatalf("invalidation reasons = %+v", invalidator.reasons)
+	}
+}
+
+func TestTestPreservesStoredOutboundWhenProbeCannotResolveIt(t *testing.T) {
+	testedAt := time.Date(2026, 7, 10, 11, 0, 0, 0, time.UTC)
+	staleOutboundIP := "198.51.100.5"
+	staleOutboundRegion := "旧地区"
+	store := &proxyOptionStoreStub{
+		findResult: port.ManagementProxySummary{
+			ID:             "proxy_a",
+			Name:           "代理 A",
+			Type:           "http",
+			Host:           "proxy.example.com",
+			Port:           8080,
+			OutboundIP:     &staleOutboundIP,
+			OutboundRegion: &staleOutboundRegion,
+		},
+		findFound: true,
+		providers: []port.ManagementProviderOption{
+			{Code: "openai", Name: "OpenAI", Enabled: true, BaseURL: "https://api.openai.com/v1"},
+		},
+		testStateResult: port.ManagementProxySummary{
+			ID:             "proxy_a",
+			Name:           "代理 A",
+			Type:           "http",
+			Host:           "proxy.example.com",
+			Port:           8080,
+			TestStatus:     "passed",
+			OutboundIP:     &staleOutboundIP,
+			OutboundRegion: &staleOutboundRegion,
+			LastTestedAt:   &testedAt,
+		},
+		testStateFound: true,
+	}
+	probe := &proxyProbeStub{
+		results: map[string]ProxyProbeResult{
+			"https://api.openai.com/v1": {StatusCode: 204, LatencyMs: 20},
+		},
+		errs: map[string]error{
+			"http://ip-api.com/json/?lang=zh-CN": errors.New("outbound unavailable"),
+			"https://ipwho.is/":                  errors.New("outbound unavailable"),
+			"https://api.ip.sb/geoip":            errors.New("outbound unavailable"),
+			"https://ipinfo.io/json":             errors.New("outbound unavailable"),
+			"https://api.ipify.org?format=json":  errors.New("outbound unavailable"),
+			"http://httpbin.org/ip":              errors.New("outbound unavailable"),
+		},
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		Store: store,
+		Probe: probe,
+		Now:   func() time.Time { return testedAt },
+	})
+
+	result, err := service.Test(context.Background(), TestInput{ID: "proxy_a"})
+	if err != nil {
+		t.Fatalf("Test() error = %v", err)
+	}
+	if result.Report.OutboundIP != nil || result.Report.OutboundRegion != nil {
+		t.Fatalf("report outbound = %v / %v, want omitted", result.Report.OutboundIP, result.Report.OutboundRegion)
+	}
+	if store.testStateInput.OutboundIP.Set || store.testStateInput.OutboundRegion.Set {
+		t.Fatalf("test state input = %+v, want stored outbound preserved", store.testStateInput)
+	}
+}
+
+func TestTestReturnsNotFoundBeforeProbing(t *testing.T) {
+	store := &proxyOptionStoreStub{}
+	probe := &proxyProbeStub{}
+	service := NewServiceWithOptions(ServiceOptions{Store: store, Probe: probe})
+
+	_, err := service.Test(context.Background(), TestInput{ID: "missing"})
+
+	if !errors.Is(err, ErrProxyNotFound) {
+		t.Fatalf("Test() error = %v, want ErrProxyNotFound", err)
+	}
+	if len(probe.inputs) != 0 {
+		t.Fatalf("probe inputs = %+v, want none", probe.inputs)
+	}
+}
+
+func TestTestStartsDeadlineBeforeListingProviders(t *testing.T) {
+	store := &proxyOptionStoreStub{
+		findResult: port.ManagementProxySummary{
+			ID:      "proxy_a",
+			Name:    "代理 A",
+			Type:    "http",
+			Host:    "proxy.example.com",
+			Port:    8080,
+			Enabled: true,
+		},
+		findFound: true,
+		testStateResult: port.ManagementProxySummary{
+			ID:         "proxy_a",
+			Name:       "代理 A",
+			Type:       "http",
+			Host:       "proxy.example.com",
+			Port:       8080,
+			Enabled:    true,
+			TestStatus: "failed",
+		},
+		testStateFound: true,
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		Store: store,
+		Probe: &proxyProbeStub{},
+	})
+
+	if _, err := service.Test(context.Background(), TestInput{ID: "proxy_a"}); err != nil {
+		t.Fatalf("Test() error = %v", err)
+	}
+	if !store.providerDeadlineSet {
+		t.Fatal("ListManagementProviders() context has no manual test deadline")
+	}
+}
+
+func TestProviderProbeTimeoutUsesProbeTimeoutMessage(t *testing.T) {
+	targetURL := "https://api.openai.com/v1"
+	service := NewServiceWithOptions(ServiceOptions{
+		Probe: &proxyProbeStub{
+			errs: map[string]error{targetURL: context.DeadlineExceeded},
+		},
+	})
+
+	item := service.testProvider(context.Background(), "http://proxy.example.com:8080", port.ManagementProviderOption{
+		Code:    "openai",
+		Name:    "OpenAI",
+		Enabled: true,
+		BaseURL: targetURL,
+	})
+
+	if item.Message != "代理检测请求超时" {
+		t.Fatalf("message = %q, want per-probe timeout message", item.Message)
+	}
+}
+
+func TestProxyURLIgnoresPasswordWithoutUsername(t *testing.T) {
+	encrypted := "v1:encrypted"
+	service := NewServiceWithOptions(ServiceOptions{
+		Codec: &proxyCredentialCodecStub{
+			decrypted: map[string]any{"password": "secret"},
+		},
+	})
+
+	got, err := service.proxyURL(port.ManagementProxySummary{
+		Type:              "http",
+		Host:              "proxy.example.com",
+		Port:              8080,
+		PasswordEncrypted: &encrypted,
+	})
+	if err != nil {
+		t.Fatalf("proxyURL() error = %v", err)
+	}
+	if got != "http://proxy.example.com:8080" {
+		t.Fatalf("proxyURL() = %q, want password ignored without username", got)
+	}
+}
+
 type proxyOptionStoreStub struct {
-	listInput     port.ManagementProxyListInput
-	input         port.ManagementProxyOptionListInput
-	listResult    port.ManagementProxyListResult
-	options       []port.ManagementProxyOption
-	listErr       error
-	err           error
-	findID        string
-	findResult    port.ManagementProxySummary
-	findFound     bool
-	findErr       error
-	createInput   port.ManagementProxyCreateInput
-	createResult  port.ManagementProxySummary
-	createErr     error
-	updateInput   port.ManagementProxyUpdateInput
-	updateResult  port.ManagementProxyUpdateResult
-	updateFound   bool
-	updateErr     error
-	bindingsInput port.ManagementProxyAccountBindingListInput
-	bindings      []port.ManagementProxyAccountBinding
-	bindingsErr   error
-	deleteCalled  bool
-	deleteID      string
-	deleteResult  bool
-	deleteErr     error
+	listInput           port.ManagementProxyListInput
+	input               port.ManagementProxyOptionListInput
+	listResult          port.ManagementProxyListResult
+	options             []port.ManagementProxyOption
+	listErr             error
+	err                 error
+	findID              string
+	findResult          port.ManagementProxySummary
+	findFound           bool
+	findErr             error
+	createInput         port.ManagementProxyCreateInput
+	createResult        port.ManagementProxySummary
+	createErr           error
+	updateInput         port.ManagementProxyUpdateInput
+	updateResult        port.ManagementProxyUpdateResult
+	updateFound         bool
+	updateErr           error
+	bindingsInput       port.ManagementProxyAccountBindingListInput
+	bindings            []port.ManagementProxyAccountBinding
+	bindingsErr         error
+	deleteCalled        bool
+	deleteID            string
+	deleteResult        bool
+	deleteErr           error
+	providerInput       port.ManagementProviderListInput
+	providers           []port.ManagementProviderOption
+	providerErr         error
+	providerDeadlineSet bool
+	testStateInput      port.ManagementProxyTestStateInput
+	testStateResult     port.ManagementProxySummary
+	testStateFound      bool
+	testStateErr        error
 }
 
 func (s *proxyOptionStoreStub) ListManagementProxies(_ context.Context, input port.ManagementProxyListInput) (port.ManagementProxyListResult, error) {
@@ -638,9 +939,21 @@ func (s *proxyOptionStoreStub) DeleteManagementProxy(_ context.Context, id strin
 	return s.deleteResult, s.deleteErr
 }
 
+func (s *proxyOptionStoreStub) ListManagementProviders(ctx context.Context, input port.ManagementProviderListInput) ([]port.ManagementProviderOption, error) {
+	s.providerInput = input
+	_, s.providerDeadlineSet = ctx.Deadline()
+	return s.providers, s.providerErr
+}
+
+func (s *proxyOptionStoreStub) UpdateManagementProxyTestState(_ context.Context, input port.ManagementProxyTestStateInput) (port.ManagementProxySummary, bool, error) {
+	s.testStateInput = input
+	return s.testStateResult, s.testStateFound, s.testStateErr
+}
+
 type proxyCredentialCodecStub struct {
 	encrypted string
 	password  string
+	decrypted map[string]any
 	err       error
 }
 
@@ -651,6 +964,30 @@ func (s *proxyCredentialCodecStub) EncryptJSON(value map[string]any) (string, er
 		return "", s.err
 	}
 	return s.encrypted, nil
+}
+
+func (s *proxyCredentialCodecStub) DecryptJSON(_ string) (map[string]any, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.decrypted, nil
+}
+
+type proxyProbeStub struct {
+	mu      sync.Mutex
+	inputs  []ProxyProbeInput
+	results map[string]ProxyProbeResult
+	errs    map[string]error
+}
+
+func (s *proxyProbeStub) Probe(_ context.Context, input ProxyProbeInput) (ProxyProbeResult, error) {
+	s.mu.Lock()
+	s.inputs = append(s.inputs, input)
+	s.mu.Unlock()
+	if err := s.errs[input.TargetURL]; err != nil {
+		return ProxyProbeResult{}, err
+	}
+	return s.results[input.TargetURL], nil
 }
 
 type proxyInvalidatorStub struct {

@@ -108,6 +108,34 @@ func TestManagementProxyCRUDSQLUsesFixedBindingWindow(t *testing.T) {
 	}
 }
 
+func TestManagementProxyTestStateSQLPreservesOutboundWhenUnset(t *testing.T) {
+	source, err := os.ReadFile("queries/w2_management_proxy_options.sql")
+	if err != nil {
+		t.Fatalf("read proxy query: %v", err)
+	}
+	sql := querySection(t, string(source), "-- name: UpdateManagementProxyTestState :one", "-- name: DeleteManagementProxy :execrows")
+	for _, want := range []string{
+		"-- name: UpdateManagementProxyTestState :one",
+		"test_status = sqlc.arg(test_status)::text",
+		"latency_ms = sqlc.narg(latency_ms)::int",
+		"outbound_ip = CASE WHEN sqlc.arg(set_outbound_ip)::bool THEN sqlc.narg(outbound_ip)::text ELSE outbound_ip END",
+		"outbound_region = CASE WHEN sqlc.arg(set_outbound_region)::bool THEN sqlc.narg(outbound_region)::text ELSE outbound_region END",
+		"last_test_message = sqlc.arg(last_test_message)::text",
+		"last_tested_at = sqlc.arg(last_tested_at)::timestamptz",
+		"updated_at = sqlc.arg(updated_at)::timestamptz",
+		"WHERE id = sqlc.arg(id)::text",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("proxy test state SQL missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"COUNT(", "password_encrypted"} {
+		if strings.Contains(sql, forbidden) {
+			t.Fatalf("proxy test state SQL should not include %q", forbidden)
+		}
+	}
+}
+
 func TestManagementProxyDuplicateNameError(t *testing.T) {
 	for _, constraint := range []string{"idx_proxy_profiles_name_unique", "idx_proxy_profiles_name_unique_lower"} {
 		if !managementProxyDuplicateNameError(&pgconn.PgError{Code: "23505", ConstraintName: constraint}) {

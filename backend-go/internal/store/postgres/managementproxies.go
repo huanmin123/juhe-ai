@@ -59,6 +59,28 @@ func (s *Store) UpdateManagementProxy(ctx context.Context, input port.Management
 	return result, found, nil
 }
 
+func (s *Store) UpdateManagementProxyTestState(ctx context.Context, input port.ManagementProxyTestStateInput) (port.ManagementProxySummary, bool, error) {
+	row, err := s.queries().UpdateManagementProxyTestState(ctx, postgresqueries.UpdateManagementProxyTestStateParams{
+		ID:                strings.TrimSpace(input.ID),
+		TestStatus:        input.TestStatus,
+		LatencyMs:         pgInt4Ptr(input.LatencyMs),
+		SetOutboundIp:     input.OutboundIP.Set,
+		OutboundIp:        pgTextFromStringPtr(input.OutboundIP.Value),
+		SetOutboundRegion: input.OutboundRegion.Set,
+		OutboundRegion:    pgTextFromStringPtr(input.OutboundRegion.Value),
+		LastTestMessage:   input.LastTestMessage,
+		LastTestedAt:      pgTimestamptz(input.LastTestedAt),
+		UpdatedAt:         pgTimestamptz(input.UpdatedAt),
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return port.ManagementProxySummary{}, false, nil
+		}
+		return port.ManagementProxySummary{}, false, fmt.Errorf("update management proxy test state: %w", err)
+	}
+	return managementProxySummaryFromUpdateTestStateRow(row), true, nil
+}
+
 func (s *Store) DeleteManagementProxy(ctx context.Context, id string) (bool, error) {
 	rows, err := s.queries().DeleteManagementProxy(ctx, strings.TrimSpace(id))
 	if err != nil {
@@ -346,6 +368,26 @@ func managementProxySummaryFromCreateRow(row postgresqueries.CreateManagementPro
 }
 
 func managementProxySummaryFromUpdateRow(row postgresqueries.UpdateManagementProxyRow) port.ManagementProxySummary {
+	return port.ManagementProxySummary{
+		ID:              row.ID,
+		SystemAccountID: row.SystemAccountID,
+		Name:            row.Name,
+		Description:     textPtr(row.Description),
+		Type:            row.Type,
+		Host:            row.Host,
+		Port:            int(row.Port),
+		Username:        textPtr(row.Username),
+		Enabled:         row.Enabled,
+		TestStatus:      row.TestStatus,
+		LatencyMs:       intPtrFromInt4(row.LatencyMs),
+		OutboundIP:      textPtr(row.OutboundIp),
+		OutboundRegion:  textPtr(row.OutboundRegion),
+		LastTestMessage: textPtr(row.LastTestMessage),
+		LastTestedAt:    timePtrFromTimestamptz(row.LastTestedAt),
+	}
+}
+
+func managementProxySummaryFromUpdateTestStateRow(row postgresqueries.UpdateManagementProxyTestStateRow) port.ManagementProxySummary {
 	return port.ManagementProxySummary{
 		ID:              row.ID,
 		SystemAccountID: row.SystemAccountID,

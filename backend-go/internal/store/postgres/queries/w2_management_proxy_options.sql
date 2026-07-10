@@ -168,6 +168,34 @@ RETURNING
   last_test_message,
   last_tested_at;
 
+-- name: UpdateManagementProxyTestState :one
+UPDATE juhe_business.proxy_profiles
+SET
+  test_status = sqlc.arg(test_status)::text,
+  latency_ms = sqlc.narg(latency_ms)::int,
+  outbound_ip = CASE WHEN sqlc.arg(set_outbound_ip)::bool THEN sqlc.narg(outbound_ip)::text ELSE outbound_ip END,
+  outbound_region = CASE WHEN sqlc.arg(set_outbound_region)::bool THEN sqlc.narg(outbound_region)::text ELSE outbound_region END,
+  last_test_message = sqlc.arg(last_test_message)::text,
+  last_tested_at = sqlc.arg(last_tested_at)::timestamptz,
+  updated_at = sqlc.arg(updated_at)::timestamptz
+WHERE id = sqlc.arg(id)::text
+RETURNING
+  id,
+  system_account_id,
+  name,
+  description,
+  type,
+  host,
+  port,
+  username,
+  enabled,
+  test_status,
+  latency_ms,
+  outbound_ip,
+  outbound_region,
+  last_test_message,
+  last_tested_at;
+
 -- name: DeleteManagementProxy :execrows
 DELETE FROM juhe_business.proxy_profiles
 WHERE id = sqlc.arg(id)::text;

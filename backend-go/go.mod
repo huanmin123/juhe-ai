@@ -18,6 +18,7 @@ require (
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.43.0
 	github.com/testcontainers/testcontainers-go/modules/redis v0.43.0
 	golang.org/x/crypto v0.52.0
+	golang.org/x/net v0.55.0
 	golang.org/x/text v0.37.0
 )
 

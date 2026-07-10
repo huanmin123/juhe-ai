@@ -36,6 +36,7 @@ type RouterOptions struct {
 	ManagementProxyCreateHandler                      http.Handler
 	ManagementProxyUpdateHandler                      http.Handler
 	ManagementProxyDeleteHandler                      http.Handler
+	ManagementProxyTestHandler                        http.Handler
 	ManagementSystemAccountsHandler                   http.Handler
 	ManagementSystemAccountOptionsHandler             http.Handler
 	ManagementSystemAccountPatchHandler               http.Handler
@@ -157,6 +158,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementProxyCreateHandler == nil &&
 				opts.ManagementProxyUpdateHandler == nil &&
 				opts.ManagementProxyDeleteHandler == nil &&
+				opts.ManagementProxyTestHandler == nil &&
 				opts.ManagementSystemAccountsHandler == nil &&
 				opts.ManagementSystemAccountOptionsHandler == nil &&
 				opts.ManagementSystemAccountPatchHandler == nil &&
@@ -269,6 +271,9 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementProxyDeleteHandler != nil {
 				system.With(managementAPIWriteAuthMiddleware).Delete("/proxies/{id}", opts.ManagementProxyDeleteHandler.ServeHTTP)
+			}
+			if opts.ManagementProxyTestHandler != nil {
+				system.With(managementAPIWriteAuthMiddleware).Post("/proxies/{id}/test", opts.ManagementProxyTestHandler.ServeHTTP)
 			}
 			if opts.ManagementSystemAccountsHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/system-accounts", opts.ManagementSystemAccountsHandler.ServeHTTP)
@@ -506,6 +511,7 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementProxyCreateHandler != nil ||
 		opts.ManagementProxyUpdateHandler != nil ||
 		opts.ManagementProxyDeleteHandler != nil ||
+		opts.ManagementProxyTestHandler != nil ||
 		opts.ManagementSystemAccountPatchHandler != nil ||
 		opts.ManagementSystemAccountCreateHandler != nil ||
 		opts.ManagementSystemTeamCreateHandler != nil ||

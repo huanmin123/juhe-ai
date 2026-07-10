@@ -570,3 +570,97 @@ func (q *Queries) UpdateManagementProxy(ctx context.Context, arg UpdateManagemen
 	)
 	return i, err
 }
+
+const updateManagementProxyTestState = `-- name: UpdateManagementProxyTestState :one
+UPDATE juhe_business.proxy_profiles
+SET
+  test_status = $1::text,
+  latency_ms = $2::int,
+  outbound_ip = CASE WHEN $3::bool THEN $4::text ELSE outbound_ip END,
+  outbound_region = CASE WHEN $5::bool THEN $6::text ELSE outbound_region END,
+  last_test_message = $7::text,
+  last_tested_at = $8::timestamptz,
+  updated_at = $9::timestamptz
+WHERE id = $10::text
+RETURNING
+  id,
+  system_account_id,
+  name,
+  description,
+  type,
+  host,
+  port,
+  username,
+  enabled,
+  test_status,
+  latency_ms,
+  outbound_ip,
+  outbound_region,
+  last_test_message,
+  last_tested_at
+`
+
+type UpdateManagementProxyTestStateParams struct {
+	TestStatus        string
+	LatencyMs         pgtype.Int4
+	SetOutboundIp     bool
+	OutboundIp        pgtype.Text
+	SetOutboundRegion bool
+	OutboundRegion    pgtype.Text
+	LastTestMessage   string
+	LastTestedAt      pgtype.Timestamptz
+	UpdatedAt         pgtype.Timestamptz
+	ID                string
+}
+
+type UpdateManagementProxyTestStateRow struct {
+	ID              string
+	SystemAccountID string
+	Name            string
+	Description     pgtype.Text
+	Type            string
+	Host            string
+	Port            int32
+	Username        pgtype.Text
+	Enabled         bool
+	TestStatus      string
+	LatencyMs       pgtype.Int4
+	OutboundIp      pgtype.Text
+	OutboundRegion  pgtype.Text
+	LastTestMessage pgtype.Text
+	LastTestedAt    pgtype.Timestamptz
+}
+
+func (q *Queries) UpdateManagementProxyTestState(ctx context.Context, arg UpdateManagementProxyTestStateParams) (UpdateManagementProxyTestStateRow, error) {
+	row := q.db.QueryRow(ctx, updateManagementProxyTestState,
+		arg.TestStatus,
+		arg.LatencyMs,
+		arg.SetOutboundIp,
+		arg.OutboundIp,
+		arg.SetOutboundRegion,
+		arg.OutboundRegion,
+		arg.LastTestMessage,
+		arg.LastTestedAt,
+		arg.UpdatedAt,
+		arg.ID,
+	)
+	var i UpdateManagementProxyTestStateRow
+	err := row.Scan(
+		&i.ID,
+		&i.SystemAccountID,
+		&i.Name,
+		&i.Description,
+		&i.Type,
+		&i.Host,
+		&i.Port,
+		&i.Username,
+		&i.Enabled,
+		&i.TestStatus,
+		&i.LatencyMs,
+		&i.OutboundIp,
+		&i.OutboundRegion,
+		&i.LastTestMessage,
+		&i.LastTestedAt,
+	)
+	return i, err
+}

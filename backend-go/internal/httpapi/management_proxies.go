@@ -1,11 +1,13 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -33,6 +35,11 @@ type managementProxyMutationService interface {
 	Delete(r *http.Request, input managementproxies.DeleteInput) (managementproxies.DeleteResult, error)
 }
 
+type managementProxyTestService interface {
+	Find(r *http.Request, id string) (managementproxies.Summary, bool, error)
+	Test(r *http.Request, input managementproxies.TestInput) (managementproxies.TestResult, error)
+}
+
 type managementProxyOptionServiceAdapter struct {
 	service *managementproxies.Service
 }
@@ -55,6 +62,14 @@ func (s managementProxyOptionServiceAdapter) Update(r *http.Request, input manag
 
 func (s managementProxyOptionServiceAdapter) Delete(r *http.Request, input managementproxies.DeleteInput) (managementproxies.DeleteResult, error) {
 	return s.service.Delete(r.Context(), input)
+}
+
+func (s managementProxyOptionServiceAdapter) Find(r *http.Request, id string) (managementproxies.Summary, bool, error) {
+	return s.service.Find(r.Context(), id)
+}
+
+func (s managementProxyOptionServiceAdapter) Test(r *http.Request, input managementproxies.TestInput) (managementproxies.TestResult, error) {
+	return s.service.Test(r.Context(), input)
 }
 
 func NewManagementProxiesHandler(service *managementproxies.Service) http.Handler {
@@ -87,6 +102,14 @@ func NewManagementProxyDeleteHandler(service *managementproxies.Service) http.Ha
 
 func NewManagementProxyDeleteHandlerWithOperationLog(service *managementproxies.Service, opts ManagementOperationLogOptions) http.Handler {
 	return newManagementProxyDeleteHandler(managementProxyOptionServiceAdapter{service: service}, newManagementOperationLogOptions(opts))
+}
+
+func NewManagementProxyTestHandler(service *managementproxies.Service) http.Handler {
+	return newManagementProxyTestHandler(managementProxyOptionServiceAdapter{service: service}, managementOperationLogOptions{}, sharedManagementDiagnosticTaskLimiter())
+}
+
+func NewManagementProxyTestHandlerWithOperationLog(service *managementproxies.Service, opts ManagementOperationLogOptions) http.Handler {
+	return newManagementProxyTestHandler(managementProxyOptionServiceAdapter{service: service}, newManagementOperationLogOptions(opts), sharedManagementDiagnosticTaskLimiter())
 }
 
 func newManagementProxiesHandler(service managementProxyOptionService) http.Handler {
@@ -172,6 +195,95 @@ func newManagementProxyDeleteHandler(service managementProxyMutationService, log
 		recordProxyDeleteOperationLog(r, authContext, result, logOptions)
 		w.WriteHeader(http.StatusNoContent)
 	})
+}
+
+func newManagementProxyTestHandler(service managementProxyTestService, logOptions managementOperationLogOptions, limiter diagnosticTaskLimiter) http.Handler {
+	if limiter == nil {
+		limiter = sharedManagementDiagnosticTaskLimiter()
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authContext, allowed := requireManagementProxyAdmin(w, r)
+		if !allowed {
+			return
+		}
+		if !validateOptionalManagementProxyTestJSONBody(w, r) {
+			return
+		}
+		proxyID := chi.URLParam(r, "id")
+		before, found, err := service.Find(r, proxyID)
+		if err != nil {
+			writeManagementProxyTestError(w, err)
+			return
+		}
+		if !found {
+			writeMessageError(w, http.StatusNotFound, "代理不存在")
+			return
+		}
+		release, acquired := limiter.TryAcquire()
+		if !acquired {
+			w.Header().Set("Retry-After", "1")
+			writeMessageError(w, http.StatusServiceUnavailable, "诊断任务繁忙，请稍后重试")
+			return
+		}
+		defer release()
+		result, err := service.Test(r, managementproxies.TestInput{ID: proxyID})
+		if err != nil {
+			if errors.Is(err, managementproxies.ErrProxyNotFound) {
+				writeMessageError(w, http.StatusNotFound, "代理不存在")
+				return
+			}
+			writeManagementProxyTestError(w, err)
+			return
+		}
+		result.Before = before
+		recordProxyTestOperationLog(r, authContext, result, logOptions)
+		writeData(w, http.StatusOK, result.Report)
+	})
+}
+
+func validateOptionalManagementProxyTestJSONBody(w http.ResponseWriter, r *http.Request) bool {
+	contentType := strings.TrimSpace(r.Header.Get("Content-Type"))
+	if contentType == "" {
+		return true
+	}
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil || (mediaType != "application/json" && !strings.HasSuffix(mediaType, "+json")) {
+		return true
+	}
+	reader := http.MaxBytesReader(w, r.Body, 256*1024)
+	body, err := io.ReadAll(reader)
+	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeMessageError(w, http.StatusRequestEntityTooLarge, "请求体过大")
+			return false
+		}
+		writeMessageError(w, http.StatusBadRequest, "请求参数无效")
+		return false
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return true
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		writeMessageError(w, http.StatusBadRequest, "请求参数无效")
+		return false
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		writeMessageError(w, http.StatusBadRequest, "请求参数无效")
+		return false
+	}
+	return true
+}
+
+func writeManagementProxyTestError(w http.ResponseWriter, err error) {
+	message := strings.TrimSpace(err.Error())
+	if message == "" {
+		message = "代理检测失败"
+	}
+	writeMessageError(w, http.StatusBadGateway, message)
 }
 
 func requireManagementProxyAdmin(w http.ResponseWriter, r *http.Request) (managementauth.Context, bool) {
@@ -559,6 +671,30 @@ func recordProxyDeleteOperationLog(
 	})
 }
 
+func recordProxyTestOperationLog(
+	r *http.Request,
+	authContext managementauth.Context,
+	result managementproxies.TestResult,
+	opts managementOperationLogOptions,
+) {
+	changes := make([]port.OperationLogChange, 0, 6)
+	changes = appendProxyChange(changes, "testStatus", "检测状态", result.Before.TestStatus, result.Proxy.TestStatus)
+	changes = appendProxyChange(changes, "latencyMs", "延迟", proxyOperationLogIntValue(result.Before.LatencyMs), proxyOperationLogIntValue(result.Proxy.LatencyMs))
+	changes = appendProxyChange(changes, "outboundIp", "出口 IP", proxyOperationLogTextValue(result.Before.OutboundIP), proxyOperationLogTextValue(result.Proxy.OutboundIP))
+	changes = appendProxyChange(changes, "outboundRegion", "出口地区", proxyOperationLogTextValue(result.Before.OutboundRegion), proxyOperationLogTextValue(result.Proxy.OutboundRegion))
+	changes = appendProxyChange(changes, "lastTestMessage", "检测消息", proxyOperationLogTextValue(result.Before.LastTestMessage), proxyOperationLogTextValue(result.Proxy.LastTestMessage))
+	changes = appendProxyChange(changes, "lastTestedAt", "检测时间", proxyOperationLogTimeValue(result.Before.LastTestedAt), proxyOperationLogTimeValue(result.Proxy.LastTestedAt))
+	recordProxyOperationLog(r, authContext, opts, proxyOperationLogRecord{
+		statusCode:   http.StatusOK,
+		action:       "test",
+		operationKey: "proxies.test",
+		resourceID:   result.Report.ProxyID,
+		resourceName: result.Report.ProxyName,
+		summary:      "检测代理：" + result.Report.ProxyName,
+		changes:      changes,
+	})
+}
+
 type proxyOperationLogRecord struct {
 	statusCode   int
 	action       string
@@ -651,4 +787,18 @@ func proxyOperationLogTextValue(value *string) any {
 		return nil
 	}
 	return *value
+}
+
+func proxyOperationLogIntValue(value *int) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
+func proxyOperationLogTimeValue(value *time.Time) any {
+	if value == nil {
+		return nil
+	}
+	return value.UTC().Format(time.RFC3339Nano)
 }

@@ -17,6 +17,7 @@ import (
 	operationlogjob "juhe-ai/backend-go/internal/jobs/operationlog"
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementproxies"
+	"juhe-ai/backend-go/internal/store/port"
 )
 
 func TestManagementProxyOptionsHandler(t *testing.T) {
@@ -201,6 +202,8 @@ func TestManagementProxyCreateHandlerCreatesAndWritesSafeOperationLog(t *testing
 	createdAt := time.Date(2026, 7, 10, 9, 30, 0, 0, time.UTC)
 	queueStub := &operationLogQueueStub{}
 	service := &managementProxyOptionServiceStub{
+		findResult: managementproxies.Summary{ID: "proxy_a", Name: "代理 A", TestStatus: "unknown"},
+		findFound:  true,
 		createResult: managementproxies.CreateResult{
 			Proxy: managementproxies.Summary{
 				ID:         "proxy_a",
@@ -362,6 +365,257 @@ func TestManagementProxyDeleteHandlerReturnsConflictWhenInUse(t *testing.T) {
 	}
 }
 
+func TestManagementProxyTestHandlerReturnsReportAndWritesOperationLog(t *testing.T) {
+	loggedAt := time.Date(2026, 7, 10, 10, 30, 0, 0, time.UTC)
+	latencyBefore := 999
+	latencyAfter := 105
+	statusCode := 401
+	service := &managementProxyOptionServiceStub{
+		findResult: managementproxies.Summary{
+			ID:              "proxy_a",
+			Name:            "代理 A",
+			Type:            "http",
+			Host:            "proxy.example.com",
+			Port:            8080,
+			TestStatus:      "unknown",
+			LatencyMs:       &latencyBefore,
+			OutboundIP:      stringPtr("198.51.100.5"),
+			OutboundRegion:  stringPtr("旧地区"),
+			LastTestMessage: stringPtr("旧消息"),
+		},
+		findFound: true,
+		testResult: managementproxies.TestResult{
+			Before: managementproxies.Summary{
+				ID:              "proxy_a",
+				Name:            "代理 A",
+				Type:            "http",
+				Host:            "proxy.example.com",
+				Port:            8080,
+				TestStatus:      "unknown",
+				LatencyMs:       &latencyBefore,
+				OutboundIP:      stringPtr("198.51.100.5"),
+				OutboundRegion:  stringPtr("旧地区"),
+				LastTestMessage: stringPtr("旧消息"),
+			},
+			Proxy: managementproxies.Summary{
+				ID:              "proxy_a",
+				Name:            "代理 A",
+				Type:            "http",
+				Host:            "proxy.example.com",
+				Port:            8080,
+				TestStatus:      "warning",
+				LatencyMs:       &latencyAfter,
+				OutboundIP:      stringPtr("203.0.113.10"),
+				OutboundRegion:  stringPtr("美国"),
+				LastTestMessage: stringPtr("代理可用，存在 1 项告警"),
+				LastTestedAt:    &loggedAt,
+			},
+			Report: managementproxies.ProxyTestReport{
+				ProxyID:        "proxy_a",
+				ProxyName:      "代理 A",
+				Status:         "warning",
+				Score:          90,
+				Grade:          "A",
+				PassedCount:    2,
+				WarningCount:   1,
+				BaseLatencyMs:  &latencyAfter,
+				OutboundIP:     stringPtr("203.0.113.10"),
+				OutboundRegion: stringPtr("美国"),
+				TestedAt:       loggedAt.Format(time.RFC3339Nano),
+				Message:        "代理可用，存在 1 项告警",
+				Items: []managementproxies.ProxyTestItem{
+					{Name: "基础连通性", Status: "passed", LatencyMs: &latencyAfter, Message: "全部供应商默认地址可达"},
+					{Name: "OpenAI", Status: "warning", HTTPStatus: &statusCode, Message: "HTTP 401（目标可达，但鉴权或方法受限）", TargetURL: stringPtr("https://api.openai.com/v1")},
+				},
+			},
+		},
+	}
+	queueStub := &operationLogQueueStub{}
+	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+		context: managementauth.Context{
+			SystemAccountID: "sys_admin",
+			Username:        "admin",
+			DisplayName:     "管理员",
+			Role:            "admin",
+			SessionID:       "sess_admin",
+		},
+	})(newManagementProxyTestHandler(
+		service,
+		newManagementOperationLogOptions(ManagementOperationLogOptions{
+			Config:   config.Config{TrustProxy: "false"},
+			Client:   queueStub,
+			Now:      func() time.Time { return loggedAt },
+			NewLogID: func() string { return "oplog_proxy_test" },
+		}),
+		&diagnosticTaskLimiterStub{},
+	))
+	req := httptest.NewRequest(http.MethodPost, "/__aisys__/api/proxies/proxy_a/test", nil)
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	req = req.WithContext(context.WithValue(req.Context(), requestIDKey, "req_proxy_test"))
+	req = managementProxyRequestWithID(req, "proxy_a")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if !service.testCalled || service.testInput.ID != "proxy_a" {
+		t.Fatalf("test input = %+v called=%v", service.testInput, service.testCalled)
+	}
+	bodyText := rec.Body.String()
+	for _, forbidden := range []string{"password", "password_encrypted", "proxyUrl", "proxy-user"} {
+		if strings.Contains(bodyText, forbidden) {
+			t.Fatalf("test response leaked %q: %s", forbidden, bodyText)
+		}
+	}
+	var body struct {
+		Data managementproxies.ProxyTestReport `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Data.ProxyID != "proxy_a" || body.Data.Status != "warning" || body.Data.BaseLatencyMs == nil || *body.Data.BaseLatencyMs != 105 {
+		t.Fatalf("body = %+v", body.Data)
+	}
+	logInput, err := operationlogjob.DecodeWriteTaskPayload(queueStub.payload)
+	if err != nil {
+		t.Fatalf("decode operation log: %v", err)
+	}
+	if logInput.OperationKey != "proxies.test" ||
+		logInput.Action != "test" ||
+		logInput.ResourceType != "proxy" ||
+		logInput.ResourceID != "proxy_a" ||
+		logInput.VisibilityScope != "admin_only" ||
+		logInput.StatusCode == nil ||
+		*logInput.StatusCode != http.StatusOK {
+		t.Fatalf("operation log = %+v", logInput)
+	}
+	for _, want := range []string{"testStatus", "latencyMs", "outboundIp", "outboundRegion", "lastTestMessage", "lastTestedAt"} {
+		if !operationLogContainsChange(logInput.Changes, want) {
+			t.Fatalf("operation log changes = %+v, missing %s", logInput.Changes, want)
+		}
+	}
+}
+
+func TestManagementProxyTestHandlerReturnsBusyBeforeService(t *testing.T) {
+	service := &managementProxyOptionServiceStub{
+		findResult: managementproxies.Summary{ID: "proxy_a", Name: "代理 A"},
+		findFound:  true,
+	}
+	handler := newManagementProxyTestHandler(service, managementOperationLogOptions{}, &diagnosticTaskLimiterStub{busy: true})
+	req := httptest.NewRequest(http.MethodPost, "/__aisys__/api/proxies/proxy_a/test", nil)
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{SystemAccountID: "sys_admin", Role: "admin"}))
+	req = managementProxyRequestWithID(req, "proxy_a")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body = %s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("Retry-After") != "1" || !strings.Contains(rec.Body.String(), "诊断任务繁忙，请稍后重试") {
+		t.Fatalf("headers = %+v body = %s", rec.Header(), rec.Body.String())
+	}
+	if service.testCalled {
+		t.Fatal("service should not be called while diagnostic limiter is busy")
+	}
+}
+
+func TestManagementDiagnosticTaskLimiterIsShared(t *testing.T) {
+	first := sharedManagementDiagnosticTaskLimiter()
+	second := sharedManagementDiagnosticTaskLimiter()
+
+	if first != second {
+		t.Fatal("default management diagnostic handlers must share one limiter")
+	}
+}
+
+func TestManagementProxyTestHandlerReturnsNotFoundBeforeBusy(t *testing.T) {
+	service := &managementProxyOptionServiceStub{}
+	handler := newManagementProxyTestHandler(service, managementOperationLogOptions{}, &diagnosticTaskLimiterStub{busy: true})
+	req := httptest.NewRequest(http.MethodPost, "/__aisys__/api/proxies/missing/test", nil)
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{SystemAccountID: "sys_admin", Role: "admin"}))
+	req = managementProxyRequestWithID(req, "missing")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "代理不存在") {
+		t.Fatalf("status = %d body = %s, want 404 before busy response", rec.Code, rec.Body.String())
+	}
+	if service.testCalled {
+		t.Fatal("service test should not be called for missing proxy")
+	}
+}
+
+func TestManagementProxyTestHandlerValidatesJSONBodyBeforeLookup(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int
+	}{
+		{name: "invalid", body: `{"invalid":`, wantStatus: http.StatusBadRequest},
+		{name: "too large", body: `"` + strings.Repeat("x", 256*1024) + `"`, wantStatus: http.StatusRequestEntityTooLarge},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &managementProxyOptionServiceStub{findFound: true}
+			handler := newManagementProxyTestHandler(service, managementOperationLogOptions{}, &diagnosticTaskLimiterStub{})
+			req := httptest.NewRequest(http.MethodPost, "/__aisys__/api/proxies/proxy_a/test", strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{SystemAccountID: "sys_admin", Role: "admin"}))
+			req = managementProxyRequestWithID(req, "proxy_a")
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			if service.findCalled || service.testCalled {
+				t.Fatalf("service calls find=%v test=%v, want body rejection first", service.findCalled, service.testCalled)
+			}
+		})
+	}
+}
+
+func TestManagementProxyTestHandlerMapsNotFoundAndProbeError(t *testing.T) {
+	tests := []struct {
+		name       string
+		findFound  bool
+		err        error
+		wantStatus int
+		wantText   string
+	}{
+		{name: "not found", findFound: false, wantStatus: http.StatusNotFound, wantText: "代理不存在"},
+		{name: "probe failed", findFound: true, err: errors.New("upstream refused"), wantStatus: http.StatusBadGateway, wantText: "upstream refused"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &managementProxyOptionServiceStub{
+				findResult: managementproxies.Summary{ID: "proxy_a", Name: "代理 A"},
+				findFound:  tt.findFound,
+				testErr:    tt.err,
+			}
+			handler := newManagementProxyTestHandler(service, managementOperationLogOptions{}, &diagnosticTaskLimiterStub{})
+			req := httptest.NewRequest(http.MethodPost, "/__aisys__/api/proxies/proxy_a/test", nil)
+			req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{SystemAccountID: "sys_admin", Role: "admin"}))
+			req = managementProxyRequestWithID(req, "proxy_a")
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), tt.wantText) {
+				t.Fatalf("body = %s, want %q", rec.Body.String(), tt.wantText)
+			}
+		})
+	}
+}
+
 func TestRouterDoesNotRegisterW2ManagementProxyOptionsBeforeTakeover(t *testing.T) {
 	router := NewRouter(RouterOptions{
 		Config: config.Config{Host: "127.0.0.1", Port: 3000},
@@ -437,6 +691,8 @@ func TestRouterRegistersManagementProxyWriteHandlersWithTouchMiddleware(t *testi
 		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_touch"},
 	}
 	service := &managementProxyOptionServiceStub{
+		findResult: managementproxies.Summary{ID: "proxy_a", Name: "代理 A", TestStatus: "unknown"},
+		findFound:  true,
 		createResult: managementproxies.CreateResult{
 			Proxy: managementproxies.Summary{
 				ID:         "proxy_a",
@@ -448,11 +704,25 @@ func TestRouterRegistersManagementProxyWriteHandlersWithTouchMiddleware(t *testi
 				TestStatus: "unknown",
 			},
 		},
+		testResult: managementproxies.TestResult{
+			Before: managementproxies.Summary{ID: "proxy_a", Name: "代理 A", TestStatus: "unknown"},
+			Proxy:  managementproxies.Summary{ID: "proxy_a", Name: "代理 A", TestStatus: "passed"},
+			Report: managementproxies.ProxyTestReport{
+				ProxyID:   "proxy_a",
+				ProxyName: "代理 A",
+				Status:    "passed",
+				Score:     100,
+				Grade:     "A",
+				TestedAt:  time.Date(2026, 7, 10, 10, 30, 0, 0, time.UTC).Format(time.RFC3339Nano),
+				Message:   "代理质量检测通过",
+			},
+		},
 	}
 	router := NewRouter(RouterOptions{
 		Config:                           config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
 		Logger:                           slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
 		ManagementProxyCreateHandler:     newManagementProxyCreateHandler(service, managementOperationLogOptions{}),
+		ManagementProxyTestHandler:       newManagementProxyTestHandler(service, managementOperationLogOptions{}, &diagnosticTaskLimiterStub{}),
 		ManagementAPIAuthMiddleware:      NewManagementAPIAuthMiddleware(readAuthenticator),
 		ManagementAPIAuthTouchMiddleware: NewManagementAPIAuthTouchMiddleware(touchAuthenticator),
 	})
@@ -473,6 +743,21 @@ func TestRouterRegistersManagementProxyWriteHandlersWithTouchMiddleware(t *testi
 	}
 	if readAuthenticator.cookieHeader != "" || touchAuthenticator.touchCookieHeader == "" {
 		t.Fatalf("auth headers read=%q touch=%q", readAuthenticator.cookieHeader, touchAuthenticator.touchCookieHeader)
+	}
+
+	readAuthenticator.cookieHeader = ""
+	touchAuthenticator.touchCookieHeader = ""
+	req = httptest.NewRequest(http.MethodPost, "/__aisys__/api/proxies/proxy_a/test", nil)
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec = httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("test status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if readAuthenticator.cookieHeader != "" || touchAuthenticator.touchCookieHeader == "" {
+		t.Fatalf("test auth headers read=%q touch=%q", readAuthenticator.cookieHeader, touchAuthenticator.touchCookieHeader)
 	}
 }
 
@@ -636,6 +921,15 @@ type managementProxyOptionServiceStub struct {
 	deleteInput  managementproxies.DeleteInput
 	deleteResult managementproxies.DeleteResult
 	deleteErr    error
+	findCalled   bool
+	findID       string
+	findResult   managementproxies.Summary
+	findFound    bool
+	findErr      error
+	testCalled   bool
+	testInput    managementproxies.TestInput
+	testResult   managementproxies.TestResult
+	testErr      error
 }
 
 func (s *managementProxyOptionServiceStub) List(_ *http.Request, input managementproxies.ListInput) (managementproxies.ListResult, error) {
@@ -668,10 +962,43 @@ func (s *managementProxyOptionServiceStub) Delete(_ *http.Request, input managem
 	return s.deleteResult, s.deleteErr
 }
 
+func (s *managementProxyOptionServiceStub) Test(_ *http.Request, input managementproxies.TestInput) (managementproxies.TestResult, error) {
+	s.testCalled = true
+	s.testInput = input
+	return s.testResult, s.testErr
+}
+
+func (s *managementProxyOptionServiceStub) Find(_ *http.Request, id string) (managementproxies.Summary, bool, error) {
+	s.findCalled = true
+	s.findID = id
+	return s.findResult, s.findFound, s.findErr
+}
+
 func managementProxyRequestWithID(req *http.Request, proxyID string) *http.Request {
 	routeContext := chi.NewRouteContext()
 	routeContext.URLParams.Add("id", proxyID)
 	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeContext))
+}
+
+func operationLogContainsChange(changes []port.OperationLogChange, field string) bool {
+	for _, change := range changes {
+		if change.Field == field {
+			return true
+		}
+	}
+	return false
+}
+
+type diagnosticTaskLimiterStub struct {
+	busy     bool
+	releases int
+}
+
+func (s *diagnosticTaskLimiterStub) TryAcquire() (func(), bool) {
+	if s.busy {
+		return nil, false
+	}
+	return func() { s.releases++ }, true
 }
 
 func stringPtr(value string) *string {

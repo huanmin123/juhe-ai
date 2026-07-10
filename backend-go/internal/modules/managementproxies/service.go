@@ -30,30 +30,40 @@ const (
 	proxyUsagePreviewLimit = 3
 	proxyUsageWindowLimit  = proxyUsagePreviewLimit + 1
 
-	ProxyCreatedReason = "proxy_created"
-	ProxyUpdatedReason = "proxy_updated"
-	ProxyDeletedReason = "proxy_deleted"
+	ProxyCreatedReason          = "proxy_created"
+	ProxyUpdatedReason          = "proxy_updated"
+	ProxyDeletedReason          = "proxy_deleted"
+	ProxyTestStateUpdatedReason = "proxy_test_state_updated"
 )
 
 type Service struct {
 	store       port.ManagementProxyReader
+	providers   ProviderReader
 	now         func() time.Time
 	newID       func(prefix string) string
 	codec       CredentialCodec
+	probe       ProxyProbe
 	invalidator ProxyInvalidator
 }
 
 type ServiceOptions struct {
-	Store       port.ManagementProxyReader
-	Now         func() time.Time
-	NewID       func(prefix string) string
-	Codec       CredentialCodec
-	Secret      string
-	Invalidator ProxyInvalidator
+	Store          port.ManagementProxyReader
+	ProviderReader ProviderReader
+	Now            func() time.Time
+	NewID          func(prefix string) string
+	Codec          CredentialCodec
+	Probe          ProxyProbe
+	Secret         string
+	Invalidator    ProxyInvalidator
 }
 
 type CredentialCodec interface {
 	EncryptJSON(value map[string]any) (string, error)
+	DecryptJSON(value string) (map[string]any, error)
+}
+
+type ProviderReader interface {
+	ListManagementProviders(ctx context.Context, input port.ManagementProviderListInput) ([]port.ManagementProviderOption, error)
 }
 
 type ProxyInvalidator interface {
@@ -249,11 +259,23 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 		}
 		codec = newAESGCMCredentialCodec(secret)
 	}
+	providers := opts.ProviderReader
+	if providers == nil {
+		if candidate, ok := opts.Store.(ProviderReader); ok {
+			providers = candidate
+		}
+	}
+	probe := opts.Probe
+	if probe == nil {
+		probe = newDefaultProxyProbe()
+	}
 	return &Service{
 		store:       opts.Store,
+		providers:   providers,
 		now:         now,
 		newID:       newID,
 		codec:       codec,
+		probe:       probe,
 		invalidator: opts.Invalidator,
 	}
 }
@@ -310,6 +332,18 @@ func (s *Service) Options(ctx context.Context, input OptionListInput) ([]Option,
 		})
 	}
 	return items, nil
+}
+
+func (s *Service) Find(ctx context.Context, id string) (Summary, bool, error) {
+	writer, err := s.proxyWriter()
+	if err != nil {
+		return Summary{}, false, err
+	}
+	row, found, err := writer.FindManagementProxy(ctx, strings.TrimSpace(id))
+	if err != nil || !found {
+		return Summary{}, found, err
+	}
+	return proxySummaryFromPort(row), true, nil
 }
 
 func (s *Service) Create(ctx context.Context, input CreateInput) (CreateResult, error) {
@@ -747,4 +781,42 @@ func (c aesGCMCredentialCodec) EncryptJSON(value map[string]any) (string, error)
 	tag := sealed[len(sealed)-tagSize:]
 	encode := base64.RawURLEncoding.EncodeToString
 	return "v1:" + encode(nonce) + ":" + encode(tag) + ":" + encode(ciphertext), nil
+}
+
+func (c aesGCMCredentialCodec) DecryptJSON(value string) (map[string]any, error) {
+	parts := strings.Split(value, ":")
+	if len(parts) != 4 || parts[0] != "v1" {
+		return nil, fmt.Errorf("unsupported encrypted credential format")
+	}
+	decode := base64.RawURLEncoding.DecodeString
+	nonce, err := decode(parts[1])
+	if err != nil {
+		return nil, err
+	}
+	tag, err := decode(parts[2])
+	if err != nil {
+		return nil, err
+	}
+	ciphertext, err := decode(parts[3])
+	if err != nil {
+		return nil, err
+	}
+	block, err := aes.NewCipher(c.key[:])
+	if err != nil {
+		return nil, err
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	sealed := append(append([]byte{}, ciphertext...), tag...)
+	plain, err := aead.Open(nil, nonce, sealed, nil)
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	if err := json.Unmarshal(plain, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }

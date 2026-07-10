@@ -213,6 +213,17 @@ type ManagementProxyNullableTextPatch struct {
 	Value *string
 }
 
+type ManagementProxyTestStateInput struct {
+	ID              string
+	TestStatus      string
+	LatencyMs       *int
+	OutboundIP      ManagementProxyNullableTextPatch
+	OutboundRegion  ManagementProxyNullableTextPatch
+	LastTestMessage string
+	LastTestedAt    time.Time
+	UpdatedAt       time.Time
+}
+
 type ManagementProxyUpdateResult struct {
 	Before         ManagementProxySummary
 	Proxy          ManagementProxySummary
@@ -242,6 +253,7 @@ type ManagementProxyWriter interface {
 	ListManagementProxyAccountBindings(ctx context.Context, input ManagementProxyAccountBindingListInput) ([]ManagementProxyAccountBinding, error)
 	CreateManagementProxy(ctx context.Context, input ManagementProxyCreateInput) (ManagementProxySummary, error)
 	UpdateManagementProxy(ctx context.Context, input ManagementProxyUpdateInput) (ManagementProxyUpdateResult, bool, error)
+	UpdateManagementProxyTestState(ctx context.Context, input ManagementProxyTestStateInput) (ManagementProxySummary, bool, error)
 	DeleteManagementProxy(ctx context.Context, id string) (bool, error)
 }
 
