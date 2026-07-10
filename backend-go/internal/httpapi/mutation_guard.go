@@ -200,6 +200,33 @@ func managementProxyCreateMutationGuardConfig() mutationGuardConfig {
 	}
 }
 
+func managementGroupCreateMutationGuardConfig(scope managementGroupOptionScope) mutationGuardConfig {
+	return mutationGuardConfig{
+		operationKey: "groups.create",
+		fingerprint: func(w http.ResponseWriter, r *http.Request) (any, error) {
+			fields, err := mutationJSONFields(w, r)
+			if err != nil {
+				return nil, err
+			}
+			ownerSystemAccountID := ""
+			if authContext, ok := ManagementAuthContextFromRequest(r); ok {
+				ownerSystemAccountID = strings.TrimSpace(authContext.SystemAccountID)
+			}
+			if scope == managementGroupScopeAdmin {
+				selectedSystemAccountID := firstManagementQueryText(r.URL.Query(), "systemAccountId")
+				if selectedSystemAccountID != "" && selectedSystemAccountID != "all" {
+					ownerSystemAccountID = selectedSystemAccountID
+				}
+			}
+			return map[string]any{
+				"owner":        ownerSystemAccountID,
+				"providerCode": mutationStringField(fields, "providerCode"),
+				"name":         mutationStringField(fields, "name"),
+			}, nil
+		},
+	}
+}
+
 func mutationJSONFields(w http.ResponseWriter, r *http.Request) (map[string]json.RawMessage, error) {
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {

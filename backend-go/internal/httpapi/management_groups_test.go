@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"juhe-ai/backend-go/internal/config"
@@ -279,6 +280,105 @@ func TestRouterRegistersW2ManagementGroupOptions(t *testing.T) {
 		if got := rec.Header().Get("Cache-Control"); got != "no-store" {
 			t.Fatalf("%s Cache-Control = %q, want no-store", path, got)
 		}
+	}
+}
+
+func TestRouterRegistersW5ManagementGroupCreateRoutes(t *testing.T) {
+	authenticator := &managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
+	}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeData(w, http.StatusCreated, map[string]string{"id": "grp_created"})
+	})
+	router := NewRouter(RouterOptions{
+		Config:                           config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
+		Logger:                           slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
+		ManagementGroupCreateHandler:     handler,
+		ManagementMyGroupCreateHandler:   handler,
+		ManagementAPIAuthMiddleware:      NewManagementAPIAuthMiddleware(authenticator),
+		ManagementAPIAuthTouchMiddleware: NewManagementAPIAuthTouchMiddleware(authenticator),
+	})
+
+	for index, path := range []string{"/__aisys__/api/groups", "/__aisys__/api/my-groups"} {
+		body := `{"name":"新分组 ` + string(rune('A'+index)) + `","providerCode":"openai"}`
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		req.Header.Set("Cookie", "juhe_ai_session=session-token")
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("%s status = %d, want 201; body = %s", path, rec.Code, rec.Body.String())
+		}
+		if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+			t.Fatalf("%s Cache-Control = %q, want no-store", path, got)
+		}
+	}
+}
+
+func TestRouterW5ManagementGroupCreateRejectsDuplicateEffectiveOwnerSubmission(t *testing.T) {
+	authenticator := &managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
+	}
+	createCalls := 0
+	router := NewRouter(RouterOptions{
+		Config: config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
+		Logger: slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
+		ManagementGroupCreateHandler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			createCalls++
+			writeData(w, http.StatusCreated, map[string]string{"id": "grp_created"})
+		}),
+		ManagementAPIAuthMiddleware:      NewManagementAPIAuthMiddleware(authenticator),
+		ManagementAPIAuthTouchMiddleware: NewManagementAPIAuthTouchMiddleware(authenticator),
+	})
+
+	first := httptest.NewRequest(http.MethodPost, "/__aisys__/api/groups", strings.NewReader(`{"name":" 新分组 ","providerCode":" openai "}`))
+	first.Header.Set("Cookie", "juhe_ai_session=session-token")
+	firstRec := httptest.NewRecorder()
+	router.ServeHTTP(firstRec, first)
+	if firstRec.Code != http.StatusCreated {
+		t.Fatalf("first status = %d, want 201; body = %s", firstRec.Code, firstRec.Body.String())
+	}
+
+	second := httptest.NewRequest(http.MethodPost, "/__aisys__/api/groups?systemAccountId=all", strings.NewReader(`{"name":"新分组","providerCode":"openai"}`))
+	second.Header.Set("Cookie", "juhe_ai_session=session-token")
+	secondRec := httptest.NewRecorder()
+	router.ServeHTTP(secondRec, second)
+	if secondRec.Code != http.StatusConflict {
+		t.Fatalf("second status = %d, want 409; body = %s", secondRec.Code, secondRec.Body.String())
+	}
+	if createCalls != 1 {
+		t.Fatalf("create calls = %d, want 1", createCalls)
+	}
+}
+
+func TestRouterW5ManagementGroupCreateEnforcesBodyLimitBeforeHandler(t *testing.T) {
+	authenticator := &managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
+	}
+	createCalls := 0
+	router := NewRouter(RouterOptions{
+		Config: config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
+		Logger: slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
+		ManagementGroupCreateHandler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			createCalls++
+			writeData(w, http.StatusCreated, map[string]string{"id": "grp_created"})
+		}),
+		ManagementAPIAuthMiddleware:      NewManagementAPIAuthMiddleware(authenticator),
+		ManagementAPIAuthTouchMiddleware: NewManagementAPIAuthTouchMiddleware(authenticator),
+	})
+	body := `{"name":"` + strings.Repeat("x", 256<<10) + `","providerCode":"openai"}`
+	req := httptest.NewRequest(http.MethodPost, "/__aisys__/api/groups", strings.NewReader(body))
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413; body = %s", rec.Code, rec.Body.String())
+	}
+	if createCalls != 0 {
+		t.Fatalf("create calls = %d, want 0", createCalls)
 	}
 }
 
