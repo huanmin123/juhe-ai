@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -263,6 +265,91 @@ func TestServiceUpdateUsesStoreConflictNameForProviderOnlyPatch(t *testing.T) {
 	}
 }
 
+func TestServiceUpdateKeepsCommittedOwnerWriteWhenInvalidationFails(t *testing.T) {
+	now := time.Date(2026, time.July, 11, 8, 30, 0, 0, time.UTC)
+	store := managementGroupUpdateStoreStub{
+		managementGroupDetailStoreStub: managementGroupDetailStoreStub{
+			managementGroupListStoreStub: managementGroupListStoreStub{
+				timezone:      "UTC",
+				timezoneFound: true,
+			},
+			row: port.ManagementGroupListRow{
+				ID:              "grp_owner",
+				SystemAccountID: "sys_owner",
+				Name:            "更新后",
+				ProviderCode:    "openai",
+				Enabled:         false,
+				GroupType:       "personal",
+				AccessType:      "owner",
+			},
+			found: true,
+		},
+		updateResult: port.ManagementGroupUpdateResult{
+			Before: port.ManagementGroupMutationSummary{
+				ID:           "grp_owner",
+				Name:         "更新前",
+				ProviderCode: "openai",
+				Enabled:      true,
+				GroupType:    "personal",
+			},
+			After: port.ManagementGroupMutationSummary{
+				ID:           "grp_owner",
+				Name:         "更新后",
+				ProviderCode: "openai",
+				Enabled:      false,
+				GroupType:    "personal",
+			},
+			AccessType:               "owner",
+			OwnerSystemAccountID:     "sys_owner",
+			EffectiveSystemAccountID: "sys_owner",
+		},
+	}
+	invalidator := &managementGroupUpdateInvalidatorStub{
+		runtimeErr: errors.New("runtime redis down"),
+		lookupErr:  errors.New("lookup redis down"),
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		Store:              &store,
+		ListStore:          &store,
+		DetailStore:        &store,
+		AccountConcurrency: &managementGroupAccountConcurrencyStub{values: map[string]int{}},
+		Invalidator:        invalidator,
+		Logger:             slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Now:                func() time.Time { return now },
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result, err := service.Update(ctx, UpdateInput{
+		ActorSystemAccountID: "sys_owner",
+		ActorRole:            "user",
+		SelfOnly:             true,
+		GroupID:              "grp_owner",
+		HasEnabled:           true,
+		Enabled:              false,
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v, want committed write success", err)
+	}
+	if result.Group.ID != "grp_owner" || result.Group.Enabled {
+		t.Fatalf("Update() group = %+v", result.Group)
+	}
+	if invalidator.lookupCalls != 1 || len(invalidator.runtimeReasons) != 1 {
+		t.Fatalf(
+			"invalidation calls lookup=%d runtime=%#v",
+			invalidator.lookupCalls,
+			invalidator.runtimeReasons,
+		)
+	}
+	if invalidator.lookupContextErr != nil || invalidator.runtimeContextErr != nil {
+		t.Fatalf(
+			"invalidation contexts lookup=%v runtime=%v, want detached contexts",
+			invalidator.lookupContextErr,
+			invalidator.runtimeContextErr,
+		)
+	}
+}
+
 type managementGroupUpdateStoreStub struct {
 	managementGroupDetailStoreStub
 	updateInput  port.ManagementGroupUpdateInput
@@ -281,18 +368,24 @@ func (s *managementGroupUpdateStoreStub) UpdateManagementGroup(
 }
 
 type managementGroupUpdateInvalidatorStub struct {
-	runtimeReasons []string
-	lookupCalls    int
+	runtimeReasons    []string
+	runtimeErr        error
+	runtimeContextErr error
+	lookupCalls       int
+	lookupErr         error
+	lookupContextErr  error
 }
 
-func (s *managementGroupUpdateInvalidatorStub) InvalidateGatewayRuntime(_ context.Context, reason string) error {
+func (s *managementGroupUpdateInvalidatorStub) InvalidateGatewayRuntime(ctx context.Context, reason string) error {
 	s.runtimeReasons = append(s.runtimeReasons, reason)
-	return nil
+	s.runtimeContextErr = ctx.Err()
+	return s.runtimeErr
 }
 
-func (s *managementGroupUpdateInvalidatorStub) InvalidateGroupLookupCache(context.Context) error {
+func (s *managementGroupUpdateInvalidatorStub) InvalidateGroupLookupCache(ctx context.Context) error {
 	s.lookupCalls++
-	return nil
+	s.lookupContextErr = ctx.Err()
+	return s.lookupErr
 }
 
 func mustSchedulingPolicyJSON(t *testing.T, input SchedulingPolicyInput) string {

@@ -194,6 +194,8 @@ func TestManagementMyGroupUpdateHandlerKeepsRealActorRoleAndIgnoresScopeQuery(t 
 
 func TestManagementGroupUpdateHandlerRejectsInvalidBodies(t *testing.T) {
 	tests := []string{
+		``,
+		`{"name":`,
 		`{}`,
 		`[]`,
 		`"value"`,
@@ -224,6 +226,35 @@ func TestManagementGroupUpdateHandlerRejectsInvalidBodies(t *testing.T) {
 				t.Fatalf("status=%d calls=%d body=%s", rec.Code, service.calls, rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestManagementGroupUpdateHandlerDoesNotLogFailedMutation(t *testing.T) {
+	queueStub := &operationLogQueueStub{}
+	service := &managementGroupUpdateServiceStub{err: managementgroups.ErrGroupNotFound}
+	handler := newManagementGroupUpdateHandler(
+		service,
+		managementGroupScopeSelf,
+		newManagementOperationLogOptions(ManagementOperationLogOptions{
+			Client: queueStub,
+		}),
+	)
+	req := httptest.NewRequest(
+		http.MethodPatch,
+		"/__aisys__/api/my-groups/grp_missing",
+		strings.NewReader(`{"enabled":false}`),
+	)
+	req = requestWithManagementGroupDetailID(req, "grp_missing")
+	req = requestWithManagementAuthContext(req, managementauth.Context{
+		SystemAccountID: "sys_user",
+		Role:            "user",
+	})
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound || queueStub.calls != 0 {
+		t.Fatalf("status=%d queue calls=%d body=%s", rec.Code, queueStub.calls, rec.Body.String())
 	}
 }
 
@@ -306,6 +337,190 @@ func TestRouterRegistersW5ManagementGroupUpdateRoutesAndTransportBoundary(t *tes
 	if rec.Code != http.StatusRequestEntityTooLarge ||
 		!strings.Contains(rec.Body.String(), "请求体过大") {
 		t.Fatalf("oversized status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRouterW5ManagementGroupUpdateUsesWriteAuthAndRateLimits(t *testing.T) {
+	readAuthenticator := &managementAPIAuthenticatorStub{
+		context: managementauth.Context{
+			SystemAccountID: "sys_admin",
+			Role:            "admin",
+			SessionID:       "sess_read",
+		},
+	}
+	touchAuthenticator := &managementAPIAuthenticatorStub{
+		context: managementauth.Context{
+			SystemAccountID: "sys_admin",
+			Role:            "admin",
+			SessionID:       "sess_touch",
+		},
+	}
+	ipLimiter := &publicSettingsRateLimiterStub{
+		decision: SystemAPIRateLimitDecision{Allowed: true},
+	}
+	userLimiter := &systemAPIAuthenticatedRateLimiterStub{
+		decision: SystemAPIRateLimitDecision{Allowed: true},
+	}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeData(w, http.StatusOK, map[string]string{"id": "grp_1"})
+	})
+	router := NewRouter(RouterOptions{
+		Config: config.Config{
+			Host:                 "127.0.0.1",
+			Port:                 3000,
+			ManagementAPIEnabled: true,
+		},
+		Logger: slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
+		SystemAPIRateLimitReader: systemAPIRateLimitReaderStub{
+			settings: port.SystemAPIRateLimitSettings{
+				IPWritePerMinute:         180,
+				IPWriteBurstPer10Seconds: 40,
+				UserWritePerMinute:       120,
+			},
+		},
+		SystemAPIIPRateLimiter:            ipLimiter,
+		SystemAPIAuthenticatedRateLimiter: userLimiter,
+		ManagementAPIAuthMiddleware:       NewManagementAPIAuthMiddleware(readAuthenticator),
+		ManagementAPIAuthTouchMiddleware:  NewManagementAPIAuthTouchMiddleware(touchAuthenticator),
+		ManagementGroupUpdateHandler:      handler,
+		ManagementMyGroupUpdateHandler:    handler,
+	})
+
+	for _, path := range []string{"/__aisys__/api/groups/grp_1", "/__aisys__/api/my-groups/grp_1"} {
+		req := httptest.NewRequest(http.MethodPatch, path, strings.NewReader(`{"enabled":false}`))
+		req.Header.Set("Cookie", "juhe_ai_session=session-token")
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf(
+				"%s status=%d cache=%q body=%s",
+				path,
+				rec.Code,
+				rec.Header().Get("Cache-Control"),
+				rec.Body.String(),
+			)
+		}
+	}
+	if touchAuthenticator.touchCookieHeader != "juhe_ai_session=session-token" {
+		t.Fatalf("touch auth cookie = %q", touchAuthenticator.touchCookieHeader)
+	}
+	if readAuthenticator.cookieHeader != "" {
+		t.Fatalf("read auth cookie = %q, want empty for PATCH", readAuthenticator.cookieHeader)
+	}
+	if ipLimiter.calls != 2 ||
+		ipLimiter.settings.PerMinute != 180 ||
+		ipLimiter.settings.BurstPer10Seconds != 40 {
+		t.Fatalf("IP limiter calls=%d settings=%+v", ipLimiter.calls, ipLimiter.settings)
+	}
+	if userLimiter.calls != 2 || userLimiter.limit != 120 {
+		t.Fatalf("user limiter calls=%d limit=%d", userLimiter.calls, userLimiter.limit)
+	}
+}
+
+func TestRouterW5ManagementGroupUpdateParsesJSONBeforeAuthAndUserLimit(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int
+		wantText   string
+	}{
+		{
+			name:       "malformed",
+			body:       `{"enabled":`,
+			wantStatus: http.StatusBadRequest,
+			wantText:   "请求体无效",
+		},
+		{
+			name:       "oversized",
+			body:       `{"description":"` + strings.Repeat("x", managementGroupCreateMaxBodyBytes) + `"}`,
+			wantStatus: http.StatusRequestEntityTooLarge,
+			wantText:   "请求体过大",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			readAuthenticator := &managementAPIAuthenticatorStub{}
+			touchAuthenticator := &managementAPIAuthenticatorStub{
+				err: &managementauth.AuthError{
+					StatusCode: http.StatusUnauthorized,
+					Message:    "请先登录",
+				},
+			}
+			ipLimiter := &publicSettingsRateLimiterStub{
+				decision: SystemAPIRateLimitDecision{Allowed: true},
+			}
+			userLimiter := &systemAPIAuthenticatedRateLimiterStub{
+				decision: SystemAPIRateLimitDecision{Allowed: true},
+			}
+			router := NewRouter(RouterOptions{
+				Config: config.Config{
+					Host:                 "127.0.0.1",
+					Port:                 3000,
+					ManagementAPIEnabled: true,
+				},
+				Logger: slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
+				SystemAPIRateLimitReader: systemAPIRateLimitReaderStub{
+					settings: port.SystemAPIRateLimitSettings{
+						IPWritePerMinute:         180,
+						IPWriteBurstPer10Seconds: 40,
+						UserWritePerMinute:       120,
+					},
+				},
+				SystemAPIIPRateLimiter:            ipLimiter,
+				SystemAPIAuthenticatedRateLimiter: userLimiter,
+				ManagementAPIAuthMiddleware:       NewManagementAPIAuthMiddleware(readAuthenticator),
+				ManagementAPIAuthTouchMiddleware:  NewManagementAPIAuthTouchMiddleware(touchAuthenticator),
+				ManagementGroupUpdateHandler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					writeData(w, http.StatusOK, map[string]string{"id": "grp_1"})
+				}),
+			})
+
+			req := httptest.NewRequest(
+				http.MethodPatch,
+				"/__aisys__/api/groups/grp_1",
+				strings.NewReader(tt.body),
+			)
+			req.Header.Set("Cookie", "juhe_ai_session=session-token")
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus || !strings.Contains(rec.Body.String(), tt.wantText) {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			if ipLimiter.calls != 1 {
+				t.Fatalf("IP limiter calls=%d, want 1 before parser", ipLimiter.calls)
+			}
+			if touchAuthenticator.touchCookieHeader != "" || userLimiter.calls != 0 {
+				t.Fatalf(
+					"touch=%q user limiter calls=%d, want parser rejection before auth/user limit",
+					touchAuthenticator.touchCookieHeader,
+					userLimiter.calls,
+				)
+			}
+		})
+	}
+}
+
+func TestRouterDoesNotRegisterW5ManagementGroupUpdateWhenDisabled(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeData(w, http.StatusOK, map[string]string{"id": "grp_1"})
+	})
+	router := NewRouter(RouterOptions{
+		Config:                         config.Config{Host: "127.0.0.1", Port: 3000},
+		ManagementGroupUpdateHandler:   handler,
+		ManagementMyGroupUpdateHandler: handler,
+	})
+
+	for _, path := range []string{"/__aisys__/api/groups/grp_1", "/__aisys__/api/my-groups/grp_1"} {
+		req := httptest.NewRequest(http.MethodPatch, path, strings.NewReader(`{"enabled":false}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%s status=%d body=%s", path, rec.Code, rec.Body.String())
+		}
 	}
 }
 
