@@ -101,6 +101,8 @@ type RouterOptions struct {
 	ManagementMyAccountTagUpdateHandler               http.Handler
 	ManagementOperationLogsHandler                    http.Handler
 	ManagementMyOperationLogsHandler                  http.Handler
+	ManagementStatsUsageWindowHandler                 http.Handler
+	ManagementMyStatsUsageWindowHandler               http.Handler
 }
 
 func NewRouter(opts RouterOptions) http.Handler {
@@ -222,7 +224,9 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementAccountTagUpdateHandler == nil &&
 				opts.ManagementMyAccountTagUpdateHandler == nil &&
 				opts.ManagementOperationLogsHandler == nil &&
-				opts.ManagementMyOperationLogsHandler == nil {
+				opts.ManagementMyOperationLogsHandler == nil &&
+				opts.ManagementStatsUsageWindowHandler == nil &&
+				opts.ManagementMyStatsUsageWindowHandler == nil {
 				panic("at least one management API handler is required when JUHE_AI_MANAGEMENT_API_ENABLED is true")
 			}
 			if opts.Config.ManagementAPIEnabled {
@@ -470,6 +474,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementMyOperationLogsHandler != nil {
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/my-operation-logs", opts.ManagementMyOperationLogsHandler.ServeHTTP)
 				system.With(opts.ManagementAPIAuthMiddleware).Get("/my-operation-logs/{id}", opts.ManagementMyOperationLogsHandler.ServeHTTP)
+			}
+			if opts.ManagementStatsUsageWindowHandler != nil {
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/stats/usage-window", opts.ManagementStatsUsageWindowHandler.ServeHTTP)
+			}
+			if opts.ManagementMyStatsUsageWindowHandler != nil {
+				system.With(opts.ManagementAPIAuthMiddleware).Get("/my-stats/usage-window", opts.ManagementMyStatsUsageWindowHandler.ServeHTTP)
 			}
 		}
 	})

@@ -22,6 +22,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/managementproviders"
 	"juhe-ai/backend-go/internal/modules/managementproxies"
 	"juhe-ai/backend-go/internal/modules/managementroutestrategies"
+	"juhe-ai/backend-go/internal/modules/managementstats"
 	"juhe-ai/backend-go/internal/modules/managementsystemaccounts"
 	"juhe-ai/backend-go/internal/modules/managementsystemteams"
 	"juhe-ai/backend-go/internal/modules/publicaccounts"
@@ -180,6 +181,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyAccountTagUpdateHandler:               managementHandlers.MyAccountTagUpdateHandler,
 		ManagementOperationLogsHandler:                    managementHandlers.OperationLogsHandler,
 		ManagementMyOperationLogsHandler:                  managementHandlers.MyOperationLogsHandler,
+		ManagementStatsUsageWindowHandler:                 managementHandlers.StatsUsageWindowHandler,
+		ManagementMyStatsUsageWindowHandler:               managementHandlers.MyStatsUsageWindowHandler,
 	})
 
 	server := &http.Server{
@@ -292,6 +295,8 @@ type managementAPIHandlers struct {
 	MyAccountTagUpdateHandler               http.Handler
 	OperationLogsHandler                    http.Handler
 	MyOperationLogsHandler                  http.Handler
+	StatsUsageWindowHandler                 http.Handler
+	MyStatsUsageWindowHandler               http.Handler
 }
 
 type managementAPIInvalidator interface {
@@ -357,6 +362,7 @@ func newManagementAPIHandler(
 	})
 	authorizationOptionService := managementauthorizationoptions.NewService(store)
 	operationLogService := managementoperationlogs.NewService(store)
+	statsService := managementstats.NewService(store)
 	operationLogOptions := httpapi.ManagementOperationLogOptions{
 		Config: cfg,
 		Logger: logger,
@@ -443,6 +449,8 @@ func newManagementAPIHandler(
 		MyAccountTagUpdateHandler:               httpapi.NewManagementMyAccountTagUpdateHandlerWithOperationLog(accountService, operationLogOptions),
 		OperationLogsHandler:                    httpapi.NewManagementOperationLogsHandler(operationLogService),
 		MyOperationLogsHandler:                  httpapi.NewManagementMyOperationLogsHandler(operationLogService),
+		StatsUsageWindowHandler:                 httpapi.NewManagementStatsUsageWindowHandler(statsService),
+		MyStatsUsageWindowHandler:               httpapi.NewManagementMyStatsUsageWindowHandler(statsService),
 	}
 }
 

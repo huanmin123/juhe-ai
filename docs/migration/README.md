@@ -24,9 +24,10 @@
 9. [W2 管理端只读辅助接口迁移记录](W2-管理端只读辅助接口迁移记录.md)：后台 options / catalog 接口和账号标签切片的当前契约、已迁移路径、系统账户轻量下拉、authorization grantee accounts / grantee teams / grantee groups、分组授权组只读 union、账户授权账户只读 union、账号标签 owner-only 只读 / 未绑定删除 / 独立 PATCH opt-in、主账户标签写路径和 operation log 缺口、接管门禁。
 10. [W3 登录与系统账户迁移记录](W3-登录与系统账户迁移记录.md)：登录、当前用户、会话、登出、改密、验证码和系统账户写接口的分块迁移记录；当前覆盖 `GET /auth/captcha` 验证码发放 / 校验基础、`POST /auth/login` 登录 / session 创建小切片、`GET /auth/me` 读切片、`PATCH /auth/me` 当前用户资料更新切片、`POST /auth/change-password` 当前用户改密切片、`POST /auth/logout` 当前会话撤销切片、`GET /auth/sessions` 当前用户会话列表、`DELETE /auth/sessions/{id}` 当前用户单条会话撤销、`POST /system-accounts` 创建切片，以及 `PATCH /system-accounts/{id}` 完整 mixed partial update。全部仍为 Go opt-in 灰度路径，不代表 W3、Node `/auth` 或 Node `/system-accounts` 已接管。
 11. [W4 团队与统一授权迁移记录](W4-团队与统一授权迁移记录.md)：系统团队、成员、授权 grant、授权来源展开和最终用户授权的分块迁移记录；当前覆盖 `GET /system-teams` / `GET /my-teams` 团队列表 / 详情读接口、`POST /system-teams` 团队创建、`PATCH /system-teams/{id}` 团队更新、`POST /system-teams/{id}/members` 成员新增、`DELETE /system-teams/{id}/members/{memberId}` 成员移除、`GET /authorizations` 和 `GET /my-authorizations` 授权列表、`GET /authorizations/{id}` 和 `GET /my-authorizations/{id}` 授权详情、`POST /authorizations` 和 `POST /my-authorizations` 授权创建、`PATCH /authorizations/{id}` 和 `PATCH /my-authorizations/{id}` 授权更新、`PATCH /authorizations/{id}/expire` 和 `PATCH /my-authorizations/{id}/expire` 授权有效期更新、`DELETE /authorizations/{id}/return` 和 `DELETE /my-authorizations/{id}/return` 授权归还、`DELETE /authorizations/{id}` 和 `DELETE /my-authorizations/{id}` 授权回收 Go opt-in 灰度能力、授权来源 / grant / 额度窗口 / 统计脏标记 PostgreSQL schema 基线和授权缓存失效，不代表 W4、Node `/system-teams` 或 Node `/authorizations` 已接管。
-12. [测试与验收策略](测试与验收策略.md)：契约测试、回归矩阵、性能验证和网关专项验收。
-13. [开发构建部署调整](开发构建部署调整.md)：本地开发、构建、发布包、Docker 和常驻运行的迁移安排。
-14. [迁移文档示例](迁移文档示例.md)：后续单模块迁移记录的写法示例。
+12. [W6 记录与统计读接口迁移记录](W6-记录与统计读接口迁移记录.md)：记录、日志和统计只读接口迁移记录；当前仅覆盖管理侧 / 个人侧 `usage-window` 固定 31 天窗口 Go opt-in。
+13. [测试与验收策略](测试与验收策略.md)：契约测试、回归矩阵、性能验证和网关专项验收。
+14. [开发构建部署调整](开发构建部署调整.md)：本地开发、构建、发布包、Docker 和常驻运行的迁移安排。
+15. [迁移文档示例](迁移文档示例.md)：后续单模块迁移记录的写法示例。
 
 ## 3. 目录职责
 
@@ -44,6 +45,7 @@
 | `W2-管理端只读辅助接口迁移记录.md` | 管理端只读辅助接口与账号标签只读 / 未绑定删除 / 独立 PATCH 契约、Go 当前实现范围、权限边界、系统账户轻量下拉、authorization grantee accounts / grantee teams / grantee groups、分组授权组只读 union、账户授权账户只读 union、主账户标签写路径 / 完整 summary / operation log 缺口和删除门禁 |
 | `W3-登录与系统账户迁移记录.md` | 登录、当前用户、会话、登出、改密、验证码和系统账户写接口迁移记录；当前固定 `GET /auth/captcha` 验证码发放 / 校验基础、`POST /auth/login` 登录 / session 创建小切片、`GET /auth/me` 只读切片、`PATCH /auth/me` 当前用户资料更新切片、`POST /auth/change-password` 当前用户改密切片、`POST /auth/logout` 当前会话撤销切片、`GET /auth/sessions` 当前用户会话列表、`DELETE /auth/sessions/{id}` 当前用户单条会话撤销、`POST /system-accounts` 创建切片、`PATCH /system-accounts/{id}` 完整 mixed partial update 和后续拆分门禁 |
 | `W4-团队与统一授权迁移记录.md` | 团队与统一授权迁移记录；当前固定团队列表 / 详情读接口、`POST /system-teams` 团队创建、`PATCH /system-teams/{id}` 团队更新、`POST /system-teams/{id}/members` 成员新增、`DELETE /system-teams/{id}/members/{memberId}` 成员移除、`GET /authorizations` 和 `GET /my-authorizations` 授权列表、`GET /authorizations/{id}` 和 `GET /my-authorizations/{id}` 授权详情、`GET /authorizations/usage/team-details` / `user-details` 与 `my-authorizations` 对应 usage overview、`POST /authorizations` 和 `POST /my-authorizations` 授权创建、`PATCH /authorizations/{id}` 和 `PATCH /my-authorizations/{id}` 授权更新、`PATCH /authorizations/{id}/expire` 和 `PATCH /my-authorizations/{id}/expire` 授权有效期更新、`DELETE /authorizations/{id}/return` 和 `DELETE /my-authorizations/{id}/return` 授权归还、`DELETE /authorizations/{id}` 和 `DELETE /my-authorizations/{id}` 授权回收 Go opt-in 灰度能力、授权来源 / grant / 额度窗口 / 统计脏标记 / usage window PostgreSQL schema 基线和授权缓存失效，后续继续拆 `:id/usage` 明细、usage window 刷新 worker、批量到期扫描 worker 和删除门禁 |
+| `W6-记录与统计读接口迁移记录.md` | W6 记录、日志和统计只读接口迁移记录；当前固定管理侧 / 个人侧 `usage-window` 权限、时区、31 天窗口、无明细扫描和删除门禁 |
 | `测试与验收策略.md` | 单模块、系统、网关、性能、安全和发布验收 |
 | `开发构建部署调整.md` | 开发环境、命令、包结构、部署脚本和平台差异 |
 | `迁移文档示例.md` | 后续新增单模块迁移记录时的参考格式 |

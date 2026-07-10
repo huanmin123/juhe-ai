@@ -133,7 +133,9 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 		handlers.AccountTagUpdateHandler != nil ||
 		handlers.MyAccountTagUpdateHandler != nil ||
 		handlers.OperationLogsHandler != nil ||
-		handlers.MyOperationLogsHandler != nil {
+		handlers.MyOperationLogsHandler != nil ||
+		handlers.StatsUsageWindowHandler != nil ||
+		handlers.MyStatsUsageWindowHandler != nil {
 		t.Fatal("newManagementAPIHandler() returned middleware or handler while disabled")
 	}
 }
@@ -181,7 +183,9 @@ func TestNewManagementAPIHandlerSessionSwitchOnlyReturnsSessionHandlers(t *testi
 		handlers.GroupOptionsHandler != nil ||
 		handlers.AccountOptionsHandler != nil ||
 		handlers.AccountTagsHandler != nil ||
-		handlers.OperationLogsHandler != nil {
+		handlers.OperationLogsHandler != nil ||
+		handlers.StatsUsageWindowHandler != nil ||
+		handlers.MyStatsUsageWindowHandler != nil {
 		t.Fatal("newManagementAPIHandler() returned non-session management handlers while only session switch enabled")
 	}
 }
@@ -253,7 +257,9 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 		handlers.AccountTagUpdateHandler == nil ||
 		handlers.MyAccountTagUpdateHandler == nil ||
 		handlers.OperationLogsHandler == nil ||
-		handlers.MyOperationLogsHandler == nil {
+		handlers.MyOperationLogsHandler == nil ||
+		handlers.StatsUsageWindowHandler == nil ||
+		handlers.MyStatsUsageWindowHandler == nil {
 		t.Fatal("newManagementAPIHandler() returned nil middleware or handler while enabled")
 	}
 }
