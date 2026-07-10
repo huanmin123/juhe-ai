@@ -35,6 +35,25 @@ func (q *Queries) ClearManagementProviderDefaultHealthCheckModelIfModel(ctx cont
 	return result.RowsAffected(), nil
 }
 
+const clearManagementProviderSystemDefaultHealthCheckModelIfModel = `-- name: ClearManagementProviderSystemDefaultHealthCheckModelIfModel :execrows
+DELETE FROM juhe_business.provider_system_default_health_check_models
+WHERE provider_code = $1
+  AND model = $2
+`
+
+type ClearManagementProviderSystemDefaultHealthCheckModelIfModelParams struct {
+	ProviderCode string
+	Model        string
+}
+
+func (q *Queries) ClearManagementProviderSystemDefaultHealthCheckModelIfModel(ctx context.Context, arg ClearManagementProviderSystemDefaultHealthCheckModelIfModelParams) (int64, error) {
+	result, err := q.db.Exec(ctx, clearManagementProviderSystemDefaultHealthCheckModelIfModel, arg.ProviderCode, arg.Model)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteManagementCustomProviderModel = `-- name: DeleteManagementCustomProviderModel :execrows
 DELETE FROM juhe_business.custom_provider_models
 WHERE id = $1
@@ -58,6 +77,9 @@ SELECT
   status,
   mode,
   supported_api_protocols_json,
+  supported_service_tiers_json,
+  supported_reasoning_efforts_json,
+  default_reasoning_effort,
   pricing_model,
   release_date,
   shutdown_date,
@@ -85,35 +107,38 @@ LIMIT 1
 `
 
 type FindManagementCustomProviderModelRow struct {
-	ID                        string
-	ProviderCode              string
-	Model                     string
-	Scope                     string
-	SystemAccountID           pgtype.Text
-	Status                    string
-	Mode                      pgtype.Text
-	SupportedApiProtocolsJson string
-	PricingModel              pgtype.Text
-	ReleaseDate               pgtype.Text
-	ShutdownDate              pgtype.Text
-	ContextWindowTokens       pgtype.Int4
-	MaxOutputTokens           pgtype.Int4
-	InputUsdPer1m             pgtype.Float8
-	OutputUsdPer1m            pgtype.Float8
-	CachedInputUsdPer1m       pgtype.Float8
-	CacheWriteUsdPer1m        pgtype.Float8
-	ImageInputUsdPer1m        pgtype.Float8
-	ImageOutputUsdPer1m       pgtype.Float8
-	AudioInputUsdPer1m        pgtype.Float8
-	AudioOutputUsdPer1m       pgtype.Float8
-	OutputUsdPerImage         pgtype.Float8
-	PricingNotes              pgtype.Text
-	CapabilityNotes           pgtype.Text
-	Notes                     pgtype.Text
-	CreatedBy                 string
-	UpdatedBy                 pgtype.Text
-	CreatedAt                 pgtype.Timestamptz
-	UpdatedAt                 pgtype.Timestamptz
+	ID                            string
+	ProviderCode                  string
+	Model                         string
+	Scope                         string
+	SystemAccountID               pgtype.Text
+	Status                        string
+	Mode                          pgtype.Text
+	SupportedApiProtocolsJson     string
+	SupportedServiceTiersJson     string
+	SupportedReasoningEffortsJson string
+	DefaultReasoningEffort        pgtype.Text
+	PricingModel                  pgtype.Text
+	ReleaseDate                   pgtype.Text
+	ShutdownDate                  pgtype.Text
+	ContextWindowTokens           pgtype.Int4
+	MaxOutputTokens               pgtype.Int4
+	InputUsdPer1m                 pgtype.Float8
+	OutputUsdPer1m                pgtype.Float8
+	CachedInputUsdPer1m           pgtype.Float8
+	CacheWriteUsdPer1m            pgtype.Float8
+	ImageInputUsdPer1m            pgtype.Float8
+	ImageOutputUsdPer1m           pgtype.Float8
+	AudioInputUsdPer1m            pgtype.Float8
+	AudioOutputUsdPer1m           pgtype.Float8
+	OutputUsdPerImage             pgtype.Float8
+	PricingNotes                  pgtype.Text
+	CapabilityNotes               pgtype.Text
+	Notes                         pgtype.Text
+	CreatedBy                     string
+	UpdatedBy                     pgtype.Text
+	CreatedAt                     pgtype.Timestamptz
+	UpdatedAt                     pgtype.Timestamptz
 }
 
 func (q *Queries) FindManagementCustomProviderModel(ctx context.Context, id string) (FindManagementCustomProviderModelRow, error) {
@@ -128,6 +153,9 @@ func (q *Queries) FindManagementCustomProviderModel(ctx context.Context, id stri
 		&i.Status,
 		&i.Mode,
 		&i.SupportedApiProtocolsJson,
+		&i.SupportedServiceTiersJson,
+		&i.SupportedReasoningEffortsJson,
+		&i.DefaultReasoningEffort,
 		&i.PricingModel,
 		&i.ReleaseDate,
 		&i.ShutdownDate,
@@ -163,6 +191,9 @@ SELECT
   status,
   mode,
   supported_api_protocols_json,
+  supported_service_tiers_json,
+  supported_reasoning_efforts_json,
+  default_reasoning_effort,
   pricing_model,
   release_date,
   shutdown_date,
@@ -206,35 +237,38 @@ type FindManagementCustomProviderModelByScopeParams struct {
 }
 
 type FindManagementCustomProviderModelByScopeRow struct {
-	ID                        string
-	ProviderCode              string
-	Model                     string
-	Scope                     string
-	SystemAccountID           pgtype.Text
-	Status                    string
-	Mode                      pgtype.Text
-	SupportedApiProtocolsJson string
-	PricingModel              pgtype.Text
-	ReleaseDate               pgtype.Text
-	ShutdownDate              pgtype.Text
-	ContextWindowTokens       pgtype.Int4
-	MaxOutputTokens           pgtype.Int4
-	InputUsdPer1m             pgtype.Float8
-	OutputUsdPer1m            pgtype.Float8
-	CachedInputUsdPer1m       pgtype.Float8
-	CacheWriteUsdPer1m        pgtype.Float8
-	ImageInputUsdPer1m        pgtype.Float8
-	ImageOutputUsdPer1m       pgtype.Float8
-	AudioInputUsdPer1m        pgtype.Float8
-	AudioOutputUsdPer1m       pgtype.Float8
-	OutputUsdPerImage         pgtype.Float8
-	PricingNotes              pgtype.Text
-	CapabilityNotes           pgtype.Text
-	Notes                     pgtype.Text
-	CreatedBy                 string
-	UpdatedBy                 pgtype.Text
-	CreatedAt                 pgtype.Timestamptz
-	UpdatedAt                 pgtype.Timestamptz
+	ID                            string
+	ProviderCode                  string
+	Model                         string
+	Scope                         string
+	SystemAccountID               pgtype.Text
+	Status                        string
+	Mode                          pgtype.Text
+	SupportedApiProtocolsJson     string
+	SupportedServiceTiersJson     string
+	SupportedReasoningEffortsJson string
+	DefaultReasoningEffort        pgtype.Text
+	PricingModel                  pgtype.Text
+	ReleaseDate                   pgtype.Text
+	ShutdownDate                  pgtype.Text
+	ContextWindowTokens           pgtype.Int4
+	MaxOutputTokens               pgtype.Int4
+	InputUsdPer1m                 pgtype.Float8
+	OutputUsdPer1m                pgtype.Float8
+	CachedInputUsdPer1m           pgtype.Float8
+	CacheWriteUsdPer1m            pgtype.Float8
+	ImageInputUsdPer1m            pgtype.Float8
+	ImageOutputUsdPer1m           pgtype.Float8
+	AudioInputUsdPer1m            pgtype.Float8
+	AudioOutputUsdPer1m           pgtype.Float8
+	OutputUsdPerImage             pgtype.Float8
+	PricingNotes                  pgtype.Text
+	CapabilityNotes               pgtype.Text
+	Notes                         pgtype.Text
+	CreatedBy                     string
+	UpdatedBy                     pgtype.Text
+	CreatedAt                     pgtype.Timestamptz
+	UpdatedAt                     pgtype.Timestamptz
 }
 
 func (q *Queries) FindManagementCustomProviderModelByScope(ctx context.Context, arg FindManagementCustomProviderModelByScopeParams) (FindManagementCustomProviderModelByScopeRow, error) {
@@ -254,6 +288,9 @@ func (q *Queries) FindManagementCustomProviderModelByScope(ctx context.Context, 
 		&i.Status,
 		&i.Mode,
 		&i.SupportedApiProtocolsJson,
+		&i.SupportedServiceTiersJson,
+		&i.SupportedReasoningEffortsJson,
+		&i.DefaultReasoningEffort,
 		&i.PricingModel,
 		&i.ReleaseDate,
 		&i.ShutdownDate,
@@ -470,6 +507,12 @@ SELECT
   release_date,
   shutdown_date,
   supported_api_protocols_json,
+  supported_service_tiers_json,
+  supported_reasoning_efforts_json,
+  default_reasoning_effort,
+  codex_supported_reasoning_levels_json,
+  codex_default_reasoning_level,
+  codex_multi_agent_version,
   pricing_model,
   context_window_tokens,
   max_input_tokens,
@@ -486,7 +529,7 @@ SELECT
   audio_output_usd_per_1m,
   output_usd_per_image,
   supports_prompt_caching,
-  supports_service_tier,
+  (jsonb_array_length(supported_service_tiers_json::jsonb) > 0) AS supports_service_tier,
   catalog_visible,
   NULL::text AS pricing_notes,
   NULL::text AS capability_notes,
@@ -518,6 +561,12 @@ SELECT
   release_date,
   shutdown_date,
   supported_api_protocols_json,
+  supported_service_tiers_json,
+  supported_reasoning_efforts_json,
+  default_reasoning_effort,
+  '[]'::text AS codex_supported_reasoning_levels_json,
+  NULL::text AS codex_default_reasoning_level,
+  NULL::text AS codex_multi_agent_version,
   pricing_model,
   context_window_tokens,
   NULL::integer AS max_input_tokens,
@@ -534,7 +583,7 @@ SELECT
   audio_output_usd_per_1m,
   output_usd_per_image,
   (cached_input_usd_per_1m IS NOT NULL) AS supports_prompt_caching,
-  false AS supports_service_tier,
+  (jsonb_array_length(supported_service_tiers_json::jsonb) > 0) AS supports_service_tier,
   true AS catalog_visible,
   pricing_notes,
   capability_notes,
@@ -566,43 +615,49 @@ type ListManagementProviderModelCatalogParams struct {
 }
 
 type ListManagementProviderModelCatalogRow struct {
-	ID                        string
-	ProviderCode              string
-	Model                     string
-	Scope                     string
-	SystemAccountID           pgtype.Text
-	Status                    string
-	Mode                      pgtype.Text
-	CatalogOrder              pgtype.Int4
-	ReleaseDate               pgtype.Text
-	ShutdownDate              pgtype.Text
-	SupportedApiProtocolsJson string
-	PricingModel              pgtype.Text
-	ContextWindowTokens       pgtype.Int4
-	MaxInputTokens            pgtype.Int4
-	MaxOutputTokens           pgtype.Int4
-	MaxTokens                 pgtype.Int4
-	InputUsdPer1m             pgtype.Float8
-	OutputUsdPer1m            pgtype.Float8
-	CachedInputUsdPer1m       pgtype.Float8
-	CacheWriteUsdPer1m        pgtype.Float8
-	CacheWrite1hUsdPer1m      pgtype.Float8
-	ImageInputUsdPer1m        pgtype.Float8
-	ImageOutputUsdPer1m       pgtype.Float8
-	AudioInputUsdPer1m        pgtype.Float8
-	AudioOutputUsdPer1m       pgtype.Float8
-	OutputUsdPerImage         pgtype.Float8
-	SupportsPromptCaching     bool
-	SupportsServiceTier       bool
-	CatalogVisible            bool
-	PricingNotes              pgtype.Text
-	CapabilityNotes           pgtype.Text
-	Notes                     pgtype.Text
-	CreatedBy                 string
-	UpdatedBy                 pgtype.Text
-	Source                    string
-	CreatedAt                 pgtype.Timestamptz
-	UpdatedAt                 pgtype.Timestamptz
+	ID                                string
+	ProviderCode                      string
+	Model                             string
+	Scope                             string
+	SystemAccountID                   pgtype.Text
+	Status                            string
+	Mode                              pgtype.Text
+	CatalogOrder                      pgtype.Int4
+	ReleaseDate                       pgtype.Text
+	ShutdownDate                      pgtype.Text
+	SupportedApiProtocolsJson         string
+	SupportedServiceTiersJson         string
+	SupportedReasoningEffortsJson     string
+	DefaultReasoningEffort            pgtype.Text
+	CodexSupportedReasoningLevelsJson string
+	CodexDefaultReasoningLevel        pgtype.Text
+	CodexMultiAgentVersion            pgtype.Text
+	PricingModel                      pgtype.Text
+	ContextWindowTokens               pgtype.Int4
+	MaxInputTokens                    pgtype.Int4
+	MaxOutputTokens                   pgtype.Int4
+	MaxTokens                         pgtype.Int4
+	InputUsdPer1m                     pgtype.Float8
+	OutputUsdPer1m                    pgtype.Float8
+	CachedInputUsdPer1m               pgtype.Float8
+	CacheWriteUsdPer1m                pgtype.Float8
+	CacheWrite1hUsdPer1m              pgtype.Float8
+	ImageInputUsdPer1m                pgtype.Float8
+	ImageOutputUsdPer1m               pgtype.Float8
+	AudioInputUsdPer1m                pgtype.Float8
+	AudioOutputUsdPer1m               pgtype.Float8
+	OutputUsdPerImage                 pgtype.Float8
+	SupportsPromptCaching             bool
+	SupportsServiceTier               bool
+	CatalogVisible                    bool
+	PricingNotes                      pgtype.Text
+	CapabilityNotes                   pgtype.Text
+	Notes                             pgtype.Text
+	CreatedBy                         string
+	UpdatedBy                         pgtype.Text
+	Source                            string
+	CreatedAt                         pgtype.Timestamptz
+	UpdatedAt                         pgtype.Timestamptz
 }
 
 func (q *Queries) ListManagementProviderModelCatalog(ctx context.Context, arg ListManagementProviderModelCatalogParams) ([]ListManagementProviderModelCatalogRow, error) {
@@ -631,6 +686,12 @@ func (q *Queries) ListManagementProviderModelCatalog(ctx context.Context, arg Li
 			&i.ReleaseDate,
 			&i.ShutdownDate,
 			&i.SupportedApiProtocolsJson,
+			&i.SupportedServiceTiersJson,
+			&i.SupportedReasoningEffortsJson,
+			&i.DefaultReasoningEffort,
+			&i.CodexSupportedReasoningLevelsJson,
+			&i.CodexDefaultReasoningLevel,
+			&i.CodexMultiAgentVersion,
 			&i.PricingModel,
 			&i.ContextWindowTokens,
 			&i.MaxInputTokens,
@@ -671,7 +732,8 @@ func (q *Queries) ListManagementProviderModelCatalog(ctx context.Context, arg Li
 const upsertManagementCustomProviderModel = `-- name: UpsertManagementCustomProviderModel :one
 INSERT INTO juhe_business.custom_provider_models (
   id, provider_code, model, scope, system_account_id, status,
-  mode, supported_api_protocols_json, pricing_model,
+  mode, supported_api_protocols_json, supported_service_tiers_json,
+  supported_reasoning_efforts_json, default_reasoning_effort, pricing_model,
   release_date, shutdown_date, context_window_tokens, max_output_tokens,
   input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m,
   image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
@@ -680,11 +742,12 @@ INSERT INTO juhe_business.custom_provider_models (
 ) VALUES (
   $1, $2, $3, $4, $5, $6,
   $7, $8, $9,
-  $10, $11, $12, $13,
-  $14, $15, $16, $17,
-  $18, $19, $20, $21,
-  $22, 'USD', $23, $24, $25,
-  $26, $26, now(), now()
+  $10, $11, $12,
+  $13, $14, $15, $16,
+  $17, $18, $19, $20,
+  $21, $22, $23, $24,
+  $25, 'USD', $26, $27, $28,
+  $29, $29, now(), now()
 )
 ON CONFLICT (id) DO UPDATE SET
   provider_code = EXCLUDED.provider_code,
@@ -694,6 +757,9 @@ ON CONFLICT (id) DO UPDATE SET
   status = EXCLUDED.status,
   mode = EXCLUDED.mode,
   supported_api_protocols_json = EXCLUDED.supported_api_protocols_json,
+  supported_service_tiers_json = EXCLUDED.supported_service_tiers_json,
+  supported_reasoning_efforts_json = EXCLUDED.supported_reasoning_efforts_json,
+  default_reasoning_effort = EXCLUDED.default_reasoning_effort,
   pricing_model = EXCLUDED.pricing_model,
   release_date = EXCLUDED.release_date,
   shutdown_date = EXCLUDED.shutdown_date,
@@ -722,6 +788,9 @@ RETURNING
   status,
   mode,
   supported_api_protocols_json,
+  supported_service_tiers_json,
+  supported_reasoning_efforts_json,
+  default_reasoning_effort,
   pricing_model,
   release_date,
   shutdown_date,
@@ -746,64 +815,70 @@ RETURNING
 `
 
 type UpsertManagementCustomProviderModelParams struct {
-	ID                        string
-	ProviderCode              string
-	Model                     string
-	Scope                     string
-	SystemAccountID           pgtype.Text
-	Status                    string
-	Mode                      pgtype.Text
-	SupportedApiProtocolsJson string
-	PricingModel              pgtype.Text
-	ReleaseDate               pgtype.Text
-	ShutdownDate              pgtype.Text
-	ContextWindowTokens       pgtype.Int4
-	MaxOutputTokens           pgtype.Int4
-	InputUsdPer1m             pgtype.Float8
-	OutputUsdPer1m            pgtype.Float8
-	CachedInputUsdPer1m       pgtype.Float8
-	CacheWriteUsdPer1m        pgtype.Float8
-	ImageInputUsdPer1m        pgtype.Float8
-	ImageOutputUsdPer1m       pgtype.Float8
-	AudioInputUsdPer1m        pgtype.Float8
-	AudioOutputUsdPer1m       pgtype.Float8
-	OutputUsdPerImage         pgtype.Float8
-	PricingNotes              pgtype.Text
-	CapabilityNotes           pgtype.Text
-	Notes                     pgtype.Text
-	ActorSystemAccountID      string
+	ID                            string
+	ProviderCode                  string
+	Model                         string
+	Scope                         string
+	SystemAccountID               pgtype.Text
+	Status                        string
+	Mode                          pgtype.Text
+	SupportedApiProtocolsJson     string
+	SupportedServiceTiersJson     string
+	SupportedReasoningEffortsJson string
+	DefaultReasoningEffort        pgtype.Text
+	PricingModel                  pgtype.Text
+	ReleaseDate                   pgtype.Text
+	ShutdownDate                  pgtype.Text
+	ContextWindowTokens           pgtype.Int4
+	MaxOutputTokens               pgtype.Int4
+	InputUsdPer1m                 pgtype.Float8
+	OutputUsdPer1m                pgtype.Float8
+	CachedInputUsdPer1m           pgtype.Float8
+	CacheWriteUsdPer1m            pgtype.Float8
+	ImageInputUsdPer1m            pgtype.Float8
+	ImageOutputUsdPer1m           pgtype.Float8
+	AudioInputUsdPer1m            pgtype.Float8
+	AudioOutputUsdPer1m           pgtype.Float8
+	OutputUsdPerImage             pgtype.Float8
+	PricingNotes                  pgtype.Text
+	CapabilityNotes               pgtype.Text
+	Notes                         pgtype.Text
+	ActorSystemAccountID          string
 }
 
 type UpsertManagementCustomProviderModelRow struct {
-	ID                        string
-	ProviderCode              string
-	Model                     string
-	Scope                     string
-	SystemAccountID           pgtype.Text
-	Status                    string
-	Mode                      pgtype.Text
-	SupportedApiProtocolsJson string
-	PricingModel              pgtype.Text
-	ReleaseDate               pgtype.Text
-	ShutdownDate              pgtype.Text
-	ContextWindowTokens       pgtype.Int4
-	MaxOutputTokens           pgtype.Int4
-	InputUsdPer1m             pgtype.Float8
-	OutputUsdPer1m            pgtype.Float8
-	CachedInputUsdPer1m       pgtype.Float8
-	CacheWriteUsdPer1m        pgtype.Float8
-	ImageInputUsdPer1m        pgtype.Float8
-	ImageOutputUsdPer1m       pgtype.Float8
-	AudioInputUsdPer1m        pgtype.Float8
-	AudioOutputUsdPer1m       pgtype.Float8
-	OutputUsdPerImage         pgtype.Float8
-	PricingNotes              pgtype.Text
-	CapabilityNotes           pgtype.Text
-	Notes                     pgtype.Text
-	CreatedBy                 string
-	UpdatedBy                 pgtype.Text
-	CreatedAt                 pgtype.Timestamptz
-	UpdatedAt                 pgtype.Timestamptz
+	ID                            string
+	ProviderCode                  string
+	Model                         string
+	Scope                         string
+	SystemAccountID               pgtype.Text
+	Status                        string
+	Mode                          pgtype.Text
+	SupportedApiProtocolsJson     string
+	SupportedServiceTiersJson     string
+	SupportedReasoningEffortsJson string
+	DefaultReasoningEffort        pgtype.Text
+	PricingModel                  pgtype.Text
+	ReleaseDate                   pgtype.Text
+	ShutdownDate                  pgtype.Text
+	ContextWindowTokens           pgtype.Int4
+	MaxOutputTokens               pgtype.Int4
+	InputUsdPer1m                 pgtype.Float8
+	OutputUsdPer1m                pgtype.Float8
+	CachedInputUsdPer1m           pgtype.Float8
+	CacheWriteUsdPer1m            pgtype.Float8
+	ImageInputUsdPer1m            pgtype.Float8
+	ImageOutputUsdPer1m           pgtype.Float8
+	AudioInputUsdPer1m            pgtype.Float8
+	AudioOutputUsdPer1m           pgtype.Float8
+	OutputUsdPerImage             pgtype.Float8
+	PricingNotes                  pgtype.Text
+	CapabilityNotes               pgtype.Text
+	Notes                         pgtype.Text
+	CreatedBy                     string
+	UpdatedBy                     pgtype.Text
+	CreatedAt                     pgtype.Timestamptz
+	UpdatedAt                     pgtype.Timestamptz
 }
 
 func (q *Queries) UpsertManagementCustomProviderModel(ctx context.Context, arg UpsertManagementCustomProviderModelParams) (UpsertManagementCustomProviderModelRow, error) {
@@ -816,6 +891,9 @@ func (q *Queries) UpsertManagementCustomProviderModel(ctx context.Context, arg U
 		arg.Status,
 		arg.Mode,
 		arg.SupportedApiProtocolsJson,
+		arg.SupportedServiceTiersJson,
+		arg.SupportedReasoningEffortsJson,
+		arg.DefaultReasoningEffort,
 		arg.PricingModel,
 		arg.ReleaseDate,
 		arg.ShutdownDate,
@@ -845,6 +923,9 @@ func (q *Queries) UpsertManagementCustomProviderModel(ctx context.Context, arg U
 		&i.Status,
 		&i.Mode,
 		&i.SupportedApiProtocolsJson,
+		&i.SupportedServiceTiersJson,
+		&i.SupportedReasoningEffortsJson,
+		&i.DefaultReasoningEffort,
 		&i.PricingModel,
 		&i.ReleaseDate,
 		&i.ShutdownDate,

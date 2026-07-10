@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"slices"
 	"strings"
 	"testing"
 
@@ -16,8 +17,25 @@ func TestServiceModelOptionsUsesProtocolScopeAndDedupe(t *testing.T) {
 			"openai:v1": {"gpt"},
 		},
 		catalog: []port.ManagementProviderModelCatalogItem{
-			{ProviderCode: "gpt", Model: "gpt-5.5", Scope: "built_in", Status: "active", SupportedAPIProtocols: []string{"chat_completions"}},
-			{ProviderCode: "gpt", Model: "gpt-5.5", Scope: "global", Status: "active", SupportedAPIProtocols: []string{"responses"}},
+			{
+				ProviderCode: "gpt", Model: "gpt-5.5", Scope: "built_in", Status: "active",
+				SupportedAPIProtocols:     []string{"chat_completions"},
+				SupportedServiceTiers:     []string{"priority", "priority"},
+				SupportedReasoningEfforts: []string{"low"},
+				DefaultReasoningEffort:    "ultra",
+			},
+			{
+				ProviderCode: "gpt", Model: "gpt-5.5", Scope: "global", Status: "active",
+				SupportedAPIProtocols:     []string{"responses"},
+				SupportedServiceTiers:     []string{"flex", "priority"},
+				SupportedReasoningEfforts: []string{"high"},
+				DefaultReasoningEffort:    " max ",
+			},
+			{
+				ProviderCode: "gpt", Model: "gpt-5.5", Scope: "personal", Status: "active",
+				SupportedReasoningEfforts: []string{"max", "high"},
+				DefaultReasoningEffort:    "low",
+			},
 		},
 	}
 	service := NewService(store)
@@ -38,6 +56,15 @@ func TestServiceModelOptionsUsesProtocolScopeAndDedupe(t *testing.T) {
 	}
 	if len(options[0].SupportedAPIProtocols) != 2 || options[0].SupportedAPIProtocols[0] != "chat_completions" || options[0].SupportedAPIProtocols[1] != "responses" {
 		t.Fatalf("protocols = %+v", options[0].SupportedAPIProtocols)
+	}
+	if !slices.Equal(options[0].SupportedServiceTiers, []string{"priority", "flex"}) {
+		t.Fatalf("service tiers = %+v", options[0].SupportedServiceTiers)
+	}
+	if !slices.Equal(options[0].SupportedReasoningEfforts, []string{"low", "high", "max"}) {
+		t.Fatalf("reasoning efforts = %+v", options[0].SupportedReasoningEfforts)
+	}
+	if options[0].DefaultReasoningEffort != "max" {
+		t.Fatalf("default reasoning effort = %q, want first valid candidate max", options[0].DefaultReasoningEffort)
 	}
 	if store.catalogInput.SystemAccountID != "sys_user" || store.catalogInput.IncludeInactive {
 		t.Fatalf("catalog input = %+v", store.catalogInput)
@@ -107,6 +134,48 @@ func TestServiceModelsMergesScopesAndFiltersUnpriced(t *testing.T) {
 	}
 	if !store.catalogInput.IncludeInactive || store.catalogInput.SystemAccountID != "sys_user" {
 		t.Fatalf("catalog input = %+v", store.catalogInput)
+	}
+}
+
+func TestCatalogItemFromPortMapsRequestAndCodexCapabilities(t *testing.T) {
+	builtIn := catalogItemFromPort(port.ManagementProviderModelCatalogItem{
+		ProviderCode:                  "gpt",
+		Model:                         "gpt-5.6-sol",
+		Scope:                         "built_in",
+		Status:                        "active",
+		SupportedServiceTiers:         []string{"priority", "priority"},
+		SupportedReasoningEfforts:     []string{"low", "high", "high", "max"},
+		DefaultReasoningEffort:        " high ",
+		CodexSupportedReasoningLevels: []string{"low", "high", "ultra", "ultra"},
+		CodexDefaultReasoningLevel:    " low ",
+		CodexMultiAgentVersion:        " v2 ",
+		SupportsServiceTier:           false,
+	})
+	if !slices.Equal(builtIn.SupportedServiceTiers, []string{"priority"}) ||
+		!slices.Equal(builtIn.SupportedReasoningEfforts, []string{"low", "high", "max"}) ||
+		builtIn.DefaultReasoningEffort != "high" ||
+		!builtIn.SupportsServiceTier {
+		t.Fatalf("built-in request capabilities = %+v", builtIn)
+	}
+	if !slices.Equal(builtIn.CodexSupportedReasoningLevels, []string{"low", "high", "ultra"}) ||
+		builtIn.CodexDefaultReasoningLevel != "low" ||
+		builtIn.CodexMultiAgentVersion != "v2" {
+		t.Fatalf("built-in Codex capabilities = %+v", builtIn)
+	}
+
+	custom := catalogItemFromPort(port.ManagementProviderModelCatalogItem{
+		ProviderCode:                  "gpt",
+		Model:                         "custom-model",
+		Scope:                         "personal",
+		Status:                        "active",
+		CodexSupportedReasoningLevels: []string{"ultra"},
+		CodexDefaultReasoningLevel:    "ultra",
+		CodexMultiAgentVersion:        "v2",
+		SupportsServiceTier:           true,
+	})
+	if custom.SupportsServiceTier || len(custom.CodexSupportedReasoningLevels) != 0 ||
+		custom.CodexDefaultReasoningLevel != "" || custom.CodexMultiAgentVersion != "" {
+		t.Fatalf("custom capabilities = %+v, want derived false and empty Codex fields", custom)
 	}
 }
 
@@ -315,10 +384,13 @@ func TestServiceCreateCustomModelPersistsPersonalModelAndInvalidates(t *testing.
 		ActorRole:             "admin",
 		TargetSystemAccountID: " sys_user ",
 		Fields: CustomModelMutation{
-			Model:                 OptionalString{Set: true, Value: " custom-chat "},
-			SupportedAPIProtocols: OptionalStringList{Set: true, Value: []string{"responses", "responses"}},
-			InputUSDPer1M:         OptionalFloat{Set: true, Value: &price},
-			PricingNotes:          OptionalString{Set: true, Value: " 计费说明 "},
+			Model:                     OptionalString{Set: true, Value: " custom-chat "},
+			SupportedAPIProtocols:     OptionalStringList{Set: true, Value: []string{"responses", "responses"}},
+			SupportedServiceTiers:     OptionalStringList{Set: true, Value: []string{"priority", "priority", "flex"}},
+			SupportedReasoningEfforts: OptionalStringList{Set: true, Value: []string{"low", "high", "high"}},
+			DefaultReasoningEffort:    OptionalString{Set: true, Value: " high "},
+			InputUSDPer1M:             OptionalFloat{Set: true, Value: &price},
+			PricingNotes:              OptionalString{Set: true, Value: " 计费说明 "},
 		},
 	})
 	if err != nil {
@@ -333,7 +405,14 @@ func TestServiceCreateCustomModelPersistsPersonalModelAndInvalidates(t *testing.
 		store.saveInput.SystemAccountID != "sys_user" ||
 		store.saveInput.Status != "active" ||
 		len(store.saveInput.SupportedAPIProtocols) != 1 ||
-		store.saveInput.SupportedAPIProtocols[0] != "responses" {
+		store.saveInput.SupportedAPIProtocols[0] != "responses" ||
+		len(store.saveInput.SupportedServiceTiers) != 2 ||
+		store.saveInput.SupportedServiceTiers[0] != "priority" ||
+		store.saveInput.SupportedServiceTiers[1] != "flex" ||
+		len(store.saveInput.SupportedReasoningEfforts) != 2 ||
+		store.saveInput.SupportedReasoningEfforts[0] != "low" ||
+		store.saveInput.SupportedReasoningEfforts[1] != "high" ||
+		store.saveInput.DefaultReasoningEffort != "high" {
 		t.Fatalf("save input = %+v", store.saveInput)
 	}
 	if invalidator.reason != CustomProviderModelSavedReason {
@@ -371,6 +450,195 @@ func TestServiceCreateCustomModelIgnoresInvalidationFailure(t *testing.T) {
 	}
 	if invalidator.calls != 1 || invalidator.reason != CustomProviderModelSavedReason {
 		t.Fatalf("invalidation calls=%d reason=%q", invalidator.calls, invalidator.reason)
+	}
+}
+
+func TestServiceCreateCustomModelValidatesGPTRequestCapabilities(t *testing.T) {
+	price := 1.25
+	tests := []struct {
+		name          string
+		providerCode  string
+		mode          OptionalString
+		serviceTiers  []string
+		efforts       []string
+		defaultEffort OptionalString
+		wantMessage   string
+	}{
+		{
+			name:         "reject unknown service tier",
+			providerCode: "gpt",
+			serviceTiers: []string{"fast"},
+			wantMessage:  "自定义模型参数无效",
+		},
+		{
+			name:         "reject codex ultra as wire effort",
+			providerCode: "gpt",
+			efforts:      []string{"ultra"},
+			wantMessage:  "自定义模型参数无效",
+		},
+		{
+			name:          "reject default outside supported efforts",
+			providerCode:  "gpt",
+			efforts:       []string{"low"},
+			defaultEffort: OptionalString{Set: true, Value: "high"},
+			wantMessage:   "默认思考级别必须属于模型支持的思考级别",
+		},
+		{
+			name:         "reject non gpt capabilities",
+			providerCode: "anthropic",
+			serviceTiers: []string{"priority"},
+			wantMessage:  "只有 GPT 文本模型可以配置服务等级和思考级别",
+		},
+		{
+			name:         "reject image capabilities",
+			providerCode: "gpt",
+			mode:         OptionalString{Set: true, Value: "image"},
+			efforts:      []string{"high"},
+			wantMessage:  "只有 GPT 文本模型可以配置服务等级和思考级别",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &providerModelStoreStub{
+				providers: map[string]port.ManagementProviderModelProvider{
+					tt.providerCode: {Code: tt.providerCode, Enabled: true},
+				},
+			}
+			_, err := NewService(store).CreateCustomModel(context.Background(), CustomModelCreateInput{
+				ProviderCode:         tt.providerCode,
+				ActorSystemAccountID: "sys_user",
+				ActorRole:            "user",
+				Fields: CustomModelMutation{
+					Model:                     OptionalString{Set: true, Value: "custom-chat"},
+					Mode:                      tt.mode,
+					SupportedServiceTiers:     OptionalStringList{Set: true, Value: tt.serviceTiers},
+					SupportedReasoningEfforts: OptionalStringList{Set: true, Value: tt.efforts},
+					DefaultReasoningEffort:    tt.defaultEffort,
+					InputUSDPer1M:             OptionalFloat{Set: true, Value: &price},
+				},
+			})
+			message, ok := CustomModelValidationMessage(err)
+			if !ok || message != tt.wantMessage {
+				t.Fatalf("error = %v, message = %q, want %q", err, message, tt.wantMessage)
+			}
+		})
+	}
+}
+
+func TestServiceCreateCustomModelAllowsExplicitCapabilityClearsOutsideGPTText(t *testing.T) {
+	price := 1.25
+	for _, input := range []struct {
+		name         string
+		providerCode string
+		mode         string
+	}{
+		{name: "non gpt", providerCode: "anthropic"},
+		{name: "gpt image", providerCode: "gpt", mode: "image"},
+		{name: "gpt audio", providerCode: "gpt", mode: "audio"},
+	} {
+		t.Run(input.name, func(t *testing.T) {
+			store := &providerModelStoreStub{
+				providers: map[string]port.ManagementProviderModelProvider{
+					input.providerCode: {Code: input.providerCode, Enabled: true},
+				},
+			}
+			result, err := NewService(store).CreateCustomModel(context.Background(), CustomModelCreateInput{
+				ProviderCode:         input.providerCode,
+				ActorSystemAccountID: "sys_user",
+				ActorRole:            "user",
+				Fields: CustomModelMutation{
+					Model:                     OptionalString{Set: true, Value: "custom-model"},
+					Mode:                      OptionalString{Set: input.mode != "", Value: input.mode},
+					SupportedServiceTiers:     OptionalStringList{Set: true, Value: []string{}},
+					SupportedReasoningEfforts: OptionalStringList{Set: true, Value: []string{}},
+					DefaultReasoningEffort:    OptionalString{Set: true},
+					InputUSDPer1M:             OptionalFloat{Set: true, Value: &price},
+				},
+			})
+			if err != nil {
+				t.Fatalf("CreateCustomModel() error = %v", err)
+			}
+			if result.SupportsServiceTier ||
+				len(store.saveInput.SupportedServiceTiers) != 0 ||
+				len(store.saveInput.SupportedReasoningEfforts) != 0 ||
+				store.saveInput.DefaultReasoningEffort != "" {
+				t.Fatalf("result=%+v save=%+v", result, store.saveInput)
+			}
+		})
+	}
+}
+
+func TestServiceUpdateCustomModelClonesAndValidatesRequestCapabilities(t *testing.T) {
+	price := 1.25
+	existing := port.ManagementProviderModelCatalogItem{
+		ID:                        "custom_model_1",
+		ProviderCode:              "gpt",
+		Model:                     "custom-chat",
+		Scope:                     "personal",
+		SystemAccountID:           "sys_user",
+		Status:                    "active",
+		Mode:                      "text",
+		SupportedServiceTiers:     []string{"priority"},
+		SupportedReasoningEfforts: []string{"low", "high"},
+		DefaultReasoningEffort:    "high",
+		InputUSDPer1M:             &price,
+	}
+	store := &providerModelStoreStub{
+		customByID: map[string]port.ManagementProviderModelCatalogItem{"custom_model_1": existing},
+	}
+	service := NewService(store)
+
+	_, err := service.UpdateCustomModel(context.Background(), CustomModelUpdateInput{
+		ProviderCode:         "gpt",
+		ID:                   "custom_model_1",
+		ActorSystemAccountID: "sys_user",
+		ActorRole:            "user",
+		Fields:               CustomModelMutation{Notes: OptionalString{Set: true, Value: "updated"}},
+	})
+	if err != nil {
+		t.Fatalf("UpdateCustomModel() clone error = %v", err)
+	}
+	if !slices.Equal(store.saveInput.SupportedServiceTiers, []string{"priority"}) ||
+		!slices.Equal(store.saveInput.SupportedReasoningEfforts, []string{"low", "high"}) ||
+		store.saveInput.DefaultReasoningEffort != "high" {
+		t.Fatalf("cloned save input = %+v", store.saveInput)
+	}
+
+	_, err = service.UpdateCustomModel(context.Background(), CustomModelUpdateInput{
+		ProviderCode:         "gpt",
+		ID:                   "custom_model_1",
+		ActorSystemAccountID: "sys_user",
+		ActorRole:            "user",
+		Fields: CustomModelMutation{
+			SupportedReasoningEfforts: OptionalStringList{Set: true, Value: []string{"low"}},
+		},
+	})
+	message, ok := CustomModelValidationMessage(err)
+	if !ok || message != "默认思考级别必须属于模型支持的思考级别" {
+		t.Fatalf("default membership message = %q, %v; err = %v", message, ok, err)
+	}
+
+	_, err = service.UpdateCustomModel(context.Background(), CustomModelUpdateInput{
+		ProviderCode:         "gpt",
+		ID:                   "custom_model_1",
+		ActorSystemAccountID: "sys_user",
+		ActorRole:            "user",
+		Fields: CustomModelMutation{
+			Mode:                      OptionalString{Set: true, Value: "image"},
+			SupportedServiceTiers:     OptionalStringList{Set: true, Value: []string{}},
+			SupportedReasoningEfforts: OptionalStringList{Set: true, Value: []string{}},
+			DefaultReasoningEffort:    OptionalString{Set: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpdateCustomModel() clear error = %v", err)
+	}
+	if store.saveInput.Mode != "image" ||
+		len(store.saveInput.SupportedServiceTiers) != 0 ||
+		len(store.saveInput.SupportedReasoningEfforts) != 0 ||
+		store.saveInput.DefaultReasoningEffort != "" {
+		t.Fatalf("cleared save input = %+v", store.saveInput)
 	}
 }
 
@@ -821,32 +1089,35 @@ func (s *providerModelStoreStub) SaveManagementCustomProviderModel(_ context.Con
 		return s.saveResult, nil
 	}
 	return port.ManagementProviderModelCatalogItem{
-		ID:                    input.ID,
-		ProviderCode:          input.ProviderCode,
-		Model:                 input.Model,
-		Scope:                 input.Scope,
-		SystemAccountID:       input.SystemAccountID,
-		Status:                input.Status,
-		Mode:                  input.Mode,
-		SupportedAPIProtocols: append([]string(nil), input.SupportedAPIProtocols...),
-		PricingModel:          input.PricingModel,
-		ContextWindowTokens:   input.ContextWindowTokens,
-		MaxOutputTokens:       input.MaxOutputTokens,
-		InputUSDPer1M:         input.InputUSDPer1M,
-		OutputUSDPer1M:        input.OutputUSDPer1M,
-		CachedInputUSDPer1M:   input.CachedInputUSDPer1M,
-		CacheWriteUSDPer1M:    input.CacheWriteUSDPer1M,
-		ImageInputUSDPer1M:    input.ImageInputUSDPer1M,
-		ImageOutputUSDPer1M:   input.ImageOutputUSDPer1M,
-		AudioInputUSDPer1M:    input.AudioInputUSDPer1M,
-		AudioOutputUSDPer1M:   input.AudioOutputUSDPer1M,
-		OutputUSDPerImage:     input.OutputUSDPerImage,
-		SupportsPromptCaching: input.CachedInputUSDPer1M != nil,
-		CatalogVisible:        true,
-		PricingNotes:          input.PricingNotes,
-		CapabilityNotes:       input.CapabilityNotes,
-		Notes:                 input.Notes,
-		Source:                "custom-" + input.Scope,
+		ID:                        input.ID,
+		ProviderCode:              input.ProviderCode,
+		Model:                     input.Model,
+		Scope:                     input.Scope,
+		SystemAccountID:           input.SystemAccountID,
+		Status:                    input.Status,
+		Mode:                      input.Mode,
+		SupportedAPIProtocols:     append([]string(nil), input.SupportedAPIProtocols...),
+		SupportedServiceTiers:     append([]string(nil), input.SupportedServiceTiers...),
+		SupportedReasoningEfforts: append([]string(nil), input.SupportedReasoningEfforts...),
+		DefaultReasoningEffort:    input.DefaultReasoningEffort,
+		PricingModel:              input.PricingModel,
+		ContextWindowTokens:       input.ContextWindowTokens,
+		MaxOutputTokens:           input.MaxOutputTokens,
+		InputUSDPer1M:             input.InputUSDPer1M,
+		OutputUSDPer1M:            input.OutputUSDPer1M,
+		CachedInputUSDPer1M:       input.CachedInputUSDPer1M,
+		CacheWriteUSDPer1M:        input.CacheWriteUSDPer1M,
+		ImageInputUSDPer1M:        input.ImageInputUSDPer1M,
+		ImageOutputUSDPer1M:       input.ImageOutputUSDPer1M,
+		AudioInputUSDPer1M:        input.AudioInputUSDPer1M,
+		AudioOutputUSDPer1M:       input.AudioOutputUSDPer1M,
+		OutputUSDPerImage:         input.OutputUSDPerImage,
+		SupportsPromptCaching:     input.CachedInputUSDPer1M != nil,
+		CatalogVisible:            true,
+		PricingNotes:              input.PricingNotes,
+		CapabilityNotes:           input.CapabilityNotes,
+		Notes:                     input.Notes,
+		Source:                    "custom-" + input.Scope,
 	}, nil
 }
 

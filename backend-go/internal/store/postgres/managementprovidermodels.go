@@ -36,6 +36,14 @@ func (s *Store) ClearManagementProviderDefaultHealthCheckModelIfModel(ctx contex
 	return clearManagementProviderDefaultHealthCheckModelIfModel(ctx, s.queries(), input)
 }
 
+func (s *Store) SetManagementProviderSystemDefaultHealthCheckModel(ctx context.Context, input port.ManagementProviderSystemDefaultHealthCheckModelInput) (port.ManagementProviderDefaultHealthCheckModelPreference, error) {
+	return setManagementProviderSystemDefaultHealthCheckModel(ctx, s.queries(), input)
+}
+
+func (s *Store) ClearManagementProviderSystemDefaultHealthCheckModelIfModel(ctx context.Context, input port.ManagementProviderSystemDefaultHealthCheckModelClearInput) (bool, error) {
+	return clearManagementProviderSystemDefaultHealthCheckModelIfModel(ctx, s.queries(), input)
+}
+
 func (s *Store) FindManagementCustomProviderModel(ctx context.Context, id string) (port.ManagementProviderModelCatalogItem, bool, error) {
 	return findManagementCustomProviderModel(ctx, s.queries(), id)
 }
@@ -159,6 +167,39 @@ func clearManagementProviderDefaultHealthCheckModelIfModel(
 	return rows > 0, nil
 }
 
+func setManagementProviderSystemDefaultHealthCheckModel(
+	ctx context.Context,
+	q *postgresqueries.Queries,
+	input port.ManagementProviderSystemDefaultHealthCheckModelInput,
+) (port.ManagementProviderDefaultHealthCheckModelPreference, error) {
+	row, err := q.UpsertManagementProviderSystemDefaultHealthCheckModel(ctx, postgresqueries.UpsertManagementProviderSystemDefaultHealthCheckModelParams{
+		ProviderCode: input.ProviderCode,
+		Model:        input.Model,
+	})
+	if err != nil {
+		return port.ManagementProviderDefaultHealthCheckModelPreference{}, fmt.Errorf("set management provider system default health check model: %w", err)
+	}
+	return port.ManagementProviderDefaultHealthCheckModelPreference{
+		ProviderCode: row.ProviderCode,
+		Model:        row.Model,
+	}, nil
+}
+
+func clearManagementProviderSystemDefaultHealthCheckModelIfModel(
+	ctx context.Context,
+	q *postgresqueries.Queries,
+	input port.ManagementProviderSystemDefaultHealthCheckModelClearInput,
+) (bool, error) {
+	rows, err := q.ClearManagementProviderSystemDefaultHealthCheckModelIfModel(ctx, postgresqueries.ClearManagementProviderSystemDefaultHealthCheckModelIfModelParams{
+		ProviderCode: input.ProviderCode,
+		Model:        input.Model,
+	})
+	if err != nil {
+		return false, fmt.Errorf("clear management provider system default health check model if model: %w", err)
+	}
+	return rows > 0, nil
+}
+
 func findManagementCustomProviderModel(
 	ctx context.Context,
 	q *postgresqueries.Queries,
@@ -211,33 +252,44 @@ func saveManagementCustomProviderModel(
 	if err != nil {
 		return port.ManagementProviderModelCatalogItem{}, fmt.Errorf("marshal management custom provider model protocols: %w", err)
 	}
+	serviceTiersJSON, err := json.Marshal(input.SupportedServiceTiers)
+	if err != nil {
+		return port.ManagementProviderModelCatalogItem{}, fmt.Errorf("marshal management custom provider model service tiers: %w", err)
+	}
+	reasoningEffortsJSON, err := json.Marshal(input.SupportedReasoningEfforts)
+	if err != nil {
+		return port.ManagementProviderModelCatalogItem{}, fmt.Errorf("marshal management custom provider model reasoning efforts: %w", err)
+	}
 	row, err := q.UpsertManagementCustomProviderModel(ctx, postgresqueries.UpsertManagementCustomProviderModelParams{
-		ID:                        input.ID,
-		ProviderCode:              input.ProviderCode,
-		Model:                     input.Model,
-		Scope:                     input.Scope,
-		SystemAccountID:           pgTextFromString(input.SystemAccountID),
-		Status:                    input.Status,
-		Mode:                      pgTextFromString(input.Mode),
-		SupportedApiProtocolsJson: string(protocolsJSON),
-		PricingModel:              pgTextFromString(input.PricingModel),
-		ReleaseDate:               pgTextFromString(input.ReleaseDate),
-		ShutdownDate:              pgTextFromString(input.ShutdownDate),
-		ContextWindowTokens:       pgInt4Ptr(input.ContextWindowTokens),
-		MaxOutputTokens:           pgInt4Ptr(input.MaxOutputTokens),
-		InputUsdPer1m:             pgFloat8Ptr(input.InputUSDPer1M),
-		OutputUsdPer1m:            pgFloat8Ptr(input.OutputUSDPer1M),
-		CachedInputUsdPer1m:       pgFloat8Ptr(input.CachedInputUSDPer1M),
-		CacheWriteUsdPer1m:        pgFloat8Ptr(input.CacheWriteUSDPer1M),
-		ImageInputUsdPer1m:        pgFloat8Ptr(input.ImageInputUSDPer1M),
-		ImageOutputUsdPer1m:       pgFloat8Ptr(input.ImageOutputUSDPer1M),
-		AudioInputUsdPer1m:        pgFloat8Ptr(input.AudioInputUSDPer1M),
-		AudioOutputUsdPer1m:       pgFloat8Ptr(input.AudioOutputUSDPer1M),
-		OutputUsdPerImage:         pgFloat8Ptr(input.OutputUSDPerImage),
-		PricingNotes:              pgTextFromString(input.PricingNotes),
-		CapabilityNotes:           pgTextFromString(input.CapabilityNotes),
-		Notes:                     pgTextFromString(input.Notes),
-		ActorSystemAccountID:      input.ActorSystemAccountID,
+		ID:                            input.ID,
+		ProviderCode:                  input.ProviderCode,
+		Model:                         input.Model,
+		Scope:                         input.Scope,
+		SystemAccountID:               pgTextFromString(input.SystemAccountID),
+		Status:                        input.Status,
+		Mode:                          pgTextFromString(input.Mode),
+		SupportedApiProtocolsJson:     string(protocolsJSON),
+		SupportedServiceTiersJson:     string(serviceTiersJSON),
+		SupportedReasoningEffortsJson: string(reasoningEffortsJSON),
+		DefaultReasoningEffort:        pgTextFromString(input.DefaultReasoningEffort),
+		PricingModel:                  pgTextFromString(input.PricingModel),
+		ReleaseDate:                   pgTextFromString(input.ReleaseDate),
+		ShutdownDate:                  pgTextFromString(input.ShutdownDate),
+		ContextWindowTokens:           pgInt4Ptr(input.ContextWindowTokens),
+		MaxOutputTokens:               pgInt4Ptr(input.MaxOutputTokens),
+		InputUsdPer1m:                 pgFloat8Ptr(input.InputUSDPer1M),
+		OutputUsdPer1m:                pgFloat8Ptr(input.OutputUSDPer1M),
+		CachedInputUsdPer1m:           pgFloat8Ptr(input.CachedInputUSDPer1M),
+		CacheWriteUsdPer1m:            pgFloat8Ptr(input.CacheWriteUSDPer1M),
+		ImageInputUsdPer1m:            pgFloat8Ptr(input.ImageInputUSDPer1M),
+		ImageOutputUsdPer1m:           pgFloat8Ptr(input.ImageOutputUSDPer1M),
+		AudioInputUsdPer1m:            pgFloat8Ptr(input.AudioInputUSDPer1M),
+		AudioOutputUsdPer1m:           pgFloat8Ptr(input.AudioOutputUSDPer1M),
+		OutputUsdPerImage:             pgFloat8Ptr(input.OutputUSDPerImage),
+		PricingNotes:                  pgTextFromString(input.PricingNotes),
+		CapabilityNotes:               pgTextFromString(input.CapabilityNotes),
+		Notes:                         pgTextFromString(input.Notes),
+		ActorSystemAccountID:          input.ActorSystemAccountID,
 	})
 	if err != nil {
 		return port.ManagementProviderModelCatalogItem{}, fmt.Errorf("save management custom provider model: %w", err)
@@ -280,77 +332,98 @@ func managementProviderModelCatalogItemFromRow(row postgresqueries.ListManagemen
 	if err != nil {
 		return port.ManagementProviderModelCatalogItem{}, err
 	}
+	serviceTiers, err := decodeProviderStringArray(row.SupportedServiceTiersJson, "provider model supported_service_tiers_json")
+	if err != nil {
+		return port.ManagementProviderModelCatalogItem{}, err
+	}
+	reasoningEfforts, err := decodeProviderStringArray(row.SupportedReasoningEffortsJson, "provider model supported_reasoning_efforts_json")
+	if err != nil {
+		return port.ManagementProviderModelCatalogItem{}, err
+	}
+	codexReasoningLevels, err := decodeProviderStringArray(row.CodexSupportedReasoningLevelsJson, "provider model codex_supported_reasoning_levels_json")
+	if err != nil {
+		return port.ManagementProviderModelCatalogItem{}, err
+	}
 	return port.ManagementProviderModelCatalogItem{
-		ID:                    row.ID,
-		ProviderCode:          row.ProviderCode,
-		Model:                 row.Model,
-		Scope:                 row.Scope,
-		SystemAccountID:       textValue(row.SystemAccountID),
-		Status:                row.Status,
-		Mode:                  textValue(row.Mode),
-		CatalogOrder:          int4Ptr(row.CatalogOrder),
-		ReleaseDate:           textValue(row.ReleaseDate),
-		ShutdownDate:          textValue(row.ShutdownDate),
-		SupportedAPIProtocols: protocols,
-		PricingModel:          textValue(row.PricingModel),
-		ContextWindowTokens:   int4Ptr(row.ContextWindowTokens),
-		MaxInputTokens:        int4Ptr(row.MaxInputTokens),
-		MaxOutputTokens:       int4Ptr(row.MaxOutputTokens),
-		MaxTokens:             int4Ptr(row.MaxTokens),
-		InputUSDPer1M:         float8Ptr(row.InputUsdPer1m),
-		OutputUSDPer1M:        float8Ptr(row.OutputUsdPer1m),
-		CachedInputUSDPer1M:   float8Ptr(row.CachedInputUsdPer1m),
-		CacheWriteUSDPer1M:    float8Ptr(row.CacheWriteUsdPer1m),
-		CacheWrite1hUSDPer1M:  float8Ptr(row.CacheWrite1hUsdPer1m),
-		ImageInputUSDPer1M:    float8Ptr(row.ImageInputUsdPer1m),
-		ImageOutputUSDPer1M:   float8Ptr(row.ImageOutputUsdPer1m),
-		AudioInputUSDPer1M:    float8Ptr(row.AudioInputUsdPer1m),
-		AudioOutputUSDPer1M:   float8Ptr(row.AudioOutputUsdPer1m),
-		OutputUSDPerImage:     float8Ptr(row.OutputUsdPerImage),
-		SupportsPromptCaching: row.SupportsPromptCaching,
-		SupportsServiceTier:   row.SupportsServiceTier,
-		CatalogVisible:        row.CatalogVisible,
-		PricingNotes:          textValue(row.PricingNotes),
-		CapabilityNotes:       textValue(row.CapabilityNotes),
-		Notes:                 textValue(row.Notes),
-		CreatedBy:             row.CreatedBy,
-		UpdatedBy:             textValue(row.UpdatedBy),
-		Source:                row.Source,
-		CreatedAt:             timestamptzValue(row.CreatedAt),
-		UpdatedAt:             timestamptzValue(row.UpdatedAt),
+		ID:                            row.ID,
+		ProviderCode:                  row.ProviderCode,
+		Model:                         row.Model,
+		Scope:                         row.Scope,
+		SystemAccountID:               textValue(row.SystemAccountID),
+		Status:                        row.Status,
+		Mode:                          textValue(row.Mode),
+		CatalogOrder:                  int4Ptr(row.CatalogOrder),
+		ReleaseDate:                   textValue(row.ReleaseDate),
+		ShutdownDate:                  textValue(row.ShutdownDate),
+		SupportedAPIProtocols:         protocols,
+		SupportedServiceTiers:         serviceTiers,
+		SupportedReasoningEfforts:     reasoningEfforts,
+		DefaultReasoningEffort:        textValue(row.DefaultReasoningEffort),
+		CodexSupportedReasoningLevels: codexReasoningLevels,
+		CodexDefaultReasoningLevel:    textValue(row.CodexDefaultReasoningLevel),
+		CodexMultiAgentVersion:        textValue(row.CodexMultiAgentVersion),
+		PricingModel:                  textValue(row.PricingModel),
+		ContextWindowTokens:           int4Ptr(row.ContextWindowTokens),
+		MaxInputTokens:                int4Ptr(row.MaxInputTokens),
+		MaxOutputTokens:               int4Ptr(row.MaxOutputTokens),
+		MaxTokens:                     int4Ptr(row.MaxTokens),
+		InputUSDPer1M:                 float8Ptr(row.InputUsdPer1m),
+		OutputUSDPer1M:                float8Ptr(row.OutputUsdPer1m),
+		CachedInputUSDPer1M:           float8Ptr(row.CachedInputUsdPer1m),
+		CacheWriteUSDPer1M:            float8Ptr(row.CacheWriteUsdPer1m),
+		CacheWrite1hUSDPer1M:          float8Ptr(row.CacheWrite1hUsdPer1m),
+		ImageInputUSDPer1M:            float8Ptr(row.ImageInputUsdPer1m),
+		ImageOutputUSDPer1M:           float8Ptr(row.ImageOutputUsdPer1m),
+		AudioInputUSDPer1M:            float8Ptr(row.AudioInputUsdPer1m),
+		AudioOutputUSDPer1M:           float8Ptr(row.AudioOutputUsdPer1m),
+		OutputUSDPerImage:             float8Ptr(row.OutputUsdPerImage),
+		SupportsPromptCaching:         row.SupportsPromptCaching,
+		SupportsServiceTier:           len(serviceTiers) > 0,
+		CatalogVisible:                row.CatalogVisible,
+		PricingNotes:                  textValue(row.PricingNotes),
+		CapabilityNotes:               textValue(row.CapabilityNotes),
+		Notes:                         textValue(row.Notes),
+		CreatedBy:                     row.CreatedBy,
+		UpdatedBy:                     textValue(row.UpdatedBy),
+		Source:                        row.Source,
+		CreatedAt:                     timestamptzValue(row.CreatedAt),
+		UpdatedAt:                     timestamptzValue(row.UpdatedAt),
 	}, nil
 }
 
 type managementCustomProviderModelData struct {
-	ID                        string
-	ProviderCode              string
-	Model                     string
-	Scope                     string
-	SystemAccountID           pgtype.Text
-	Status                    string
-	Mode                      pgtype.Text
-	SupportedApiProtocolsJson string
-	PricingModel              pgtype.Text
-	ReleaseDate               pgtype.Text
-	ShutdownDate              pgtype.Text
-	ContextWindowTokens       pgtype.Int4
-	MaxOutputTokens           pgtype.Int4
-	InputUsdPer1m             pgtype.Float8
-	OutputUsdPer1m            pgtype.Float8
-	CachedInputUsdPer1m       pgtype.Float8
-	CacheWriteUsdPer1m        pgtype.Float8
-	ImageInputUsdPer1m        pgtype.Float8
-	ImageOutputUsdPer1m       pgtype.Float8
-	AudioInputUsdPer1m        pgtype.Float8
-	AudioOutputUsdPer1m       pgtype.Float8
-	OutputUsdPerImage         pgtype.Float8
-	PricingNotes              pgtype.Text
-	CapabilityNotes           pgtype.Text
-	Notes                     pgtype.Text
-	CreatedBy                 string
-	UpdatedBy                 pgtype.Text
-	CreatedAt                 pgtype.Timestamptz
-	UpdatedAt                 pgtype.Timestamptz
+	ID                            string
+	ProviderCode                  string
+	Model                         string
+	Scope                         string
+	SystemAccountID               pgtype.Text
+	Status                        string
+	Mode                          pgtype.Text
+	SupportedApiProtocolsJson     string
+	SupportedServiceTiersJson     string
+	SupportedReasoningEffortsJson string
+	DefaultReasoningEffort        pgtype.Text
+	PricingModel                  pgtype.Text
+	ReleaseDate                   pgtype.Text
+	ShutdownDate                  pgtype.Text
+	ContextWindowTokens           pgtype.Int4
+	MaxOutputTokens               pgtype.Int4
+	InputUsdPer1m                 pgtype.Float8
+	OutputUsdPer1m                pgtype.Float8
+	CachedInputUsdPer1m           pgtype.Float8
+	CacheWriteUsdPer1m            pgtype.Float8
+	ImageInputUsdPer1m            pgtype.Float8
+	ImageOutputUsdPer1m           pgtype.Float8
+	AudioInputUsdPer1m            pgtype.Float8
+	AudioOutputUsdPer1m           pgtype.Float8
+	OutputUsdPerImage             pgtype.Float8
+	PricingNotes                  pgtype.Text
+	CapabilityNotes               pgtype.Text
+	Notes                         pgtype.Text
+	CreatedBy                     string
+	UpdatedBy                     pgtype.Text
+	CreatedAt                     pgtype.Timestamptz
+	UpdatedAt                     pgtype.Timestamptz
 }
 
 func managementCustomProviderModelFromData(row managementCustomProviderModelData) (port.ManagementProviderModelCatalogItem, error) {
@@ -358,142 +431,162 @@ func managementCustomProviderModelFromData(row managementCustomProviderModelData
 	if err != nil {
 		return port.ManagementProviderModelCatalogItem{}, err
 	}
+	serviceTiers, err := decodeProviderStringArray(row.SupportedServiceTiersJson, "custom provider model supported_service_tiers_json")
+	if err != nil {
+		return port.ManagementProviderModelCatalogItem{}, err
+	}
+	reasoningEfforts, err := decodeProviderStringArray(row.SupportedReasoningEffortsJson, "custom provider model supported_reasoning_efforts_json")
+	if err != nil {
+		return port.ManagementProviderModelCatalogItem{}, err
+	}
 	return port.ManagementProviderModelCatalogItem{
-		ID:                    row.ID,
-		ProviderCode:          row.ProviderCode,
-		Model:                 row.Model,
-		Scope:                 row.Scope,
-		SystemAccountID:       textValue(row.SystemAccountID),
-		Status:                row.Status,
-		Mode:                  textValue(row.Mode),
-		ReleaseDate:           textValue(row.ReleaseDate),
-		ShutdownDate:          textValue(row.ShutdownDate),
-		SupportedAPIProtocols: protocols,
-		PricingModel:          textValue(row.PricingModel),
-		ContextWindowTokens:   int4Ptr(row.ContextWindowTokens),
-		MaxOutputTokens:       int4Ptr(row.MaxOutputTokens),
-		InputUSDPer1M:         float8Ptr(row.InputUsdPer1m),
-		OutputUSDPer1M:        float8Ptr(row.OutputUsdPer1m),
-		CachedInputUSDPer1M:   float8Ptr(row.CachedInputUsdPer1m),
-		CacheWriteUSDPer1M:    float8Ptr(row.CacheWriteUsdPer1m),
-		ImageInputUSDPer1M:    float8Ptr(row.ImageInputUsdPer1m),
-		ImageOutputUSDPer1M:   float8Ptr(row.ImageOutputUsdPer1m),
-		AudioInputUSDPer1M:    float8Ptr(row.AudioInputUsdPer1m),
-		AudioOutputUSDPer1M:   float8Ptr(row.AudioOutputUsdPer1m),
-		OutputUSDPerImage:     float8Ptr(row.OutputUsdPerImage),
-		SupportsPromptCaching: row.CachedInputUsdPer1m.Valid,
-		SupportsServiceTier:   false,
-		CatalogVisible:        true,
-		PricingNotes:          textValue(row.PricingNotes),
-		CapabilityNotes:       textValue(row.CapabilityNotes),
-		Notes:                 textValue(row.Notes),
-		CreatedBy:             row.CreatedBy,
-		UpdatedBy:             textValue(row.UpdatedBy),
-		Source:                customProviderModelSource(row.Scope),
-		CreatedAt:             timestamptzValue(row.CreatedAt),
-		UpdatedAt:             timestamptzValue(row.UpdatedAt),
+		ID:                        row.ID,
+		ProviderCode:              row.ProviderCode,
+		Model:                     row.Model,
+		Scope:                     row.Scope,
+		SystemAccountID:           textValue(row.SystemAccountID),
+		Status:                    row.Status,
+		Mode:                      textValue(row.Mode),
+		ReleaseDate:               textValue(row.ReleaseDate),
+		ShutdownDate:              textValue(row.ShutdownDate),
+		SupportedAPIProtocols:     protocols,
+		SupportedServiceTiers:     serviceTiers,
+		SupportedReasoningEfforts: reasoningEfforts,
+		DefaultReasoningEffort:    textValue(row.DefaultReasoningEffort),
+		PricingModel:              textValue(row.PricingModel),
+		ContextWindowTokens:       int4Ptr(row.ContextWindowTokens),
+		MaxOutputTokens:           int4Ptr(row.MaxOutputTokens),
+		InputUSDPer1M:             float8Ptr(row.InputUsdPer1m),
+		OutputUSDPer1M:            float8Ptr(row.OutputUsdPer1m),
+		CachedInputUSDPer1M:       float8Ptr(row.CachedInputUsdPer1m),
+		CacheWriteUSDPer1M:        float8Ptr(row.CacheWriteUsdPer1m),
+		ImageInputUSDPer1M:        float8Ptr(row.ImageInputUsdPer1m),
+		ImageOutputUSDPer1M:       float8Ptr(row.ImageOutputUsdPer1m),
+		AudioInputUSDPer1M:        float8Ptr(row.AudioInputUsdPer1m),
+		AudioOutputUSDPer1M:       float8Ptr(row.AudioOutputUsdPer1m),
+		OutputUSDPerImage:         float8Ptr(row.OutputUsdPerImage),
+		SupportsPromptCaching:     row.CachedInputUsdPer1m.Valid,
+		SupportsServiceTier:       len(serviceTiers) > 0,
+		CatalogVisible:            true,
+		PricingNotes:              textValue(row.PricingNotes),
+		CapabilityNotes:           textValue(row.CapabilityNotes),
+		Notes:                     textValue(row.Notes),
+		CreatedBy:                 row.CreatedBy,
+		UpdatedBy:                 textValue(row.UpdatedBy),
+		Source:                    customProviderModelSource(row.Scope),
+		CreatedAt:                 timestamptzValue(row.CreatedAt),
+		UpdatedAt:                 timestamptzValue(row.UpdatedAt),
 	}, nil
 }
 
 func customProviderModelDataFromFindRow(row postgresqueries.FindManagementCustomProviderModelRow) managementCustomProviderModelData {
 	return managementCustomProviderModelData{
-		ID:                        row.ID,
-		ProviderCode:              row.ProviderCode,
-		Model:                     row.Model,
-		Scope:                     row.Scope,
-		SystemAccountID:           row.SystemAccountID,
-		Status:                    row.Status,
-		Mode:                      row.Mode,
-		SupportedApiProtocolsJson: row.SupportedApiProtocolsJson,
-		PricingModel:              row.PricingModel,
-		ReleaseDate:               row.ReleaseDate,
-		ShutdownDate:              row.ShutdownDate,
-		ContextWindowTokens:       row.ContextWindowTokens,
-		MaxOutputTokens:           row.MaxOutputTokens,
-		InputUsdPer1m:             row.InputUsdPer1m,
-		OutputUsdPer1m:            row.OutputUsdPer1m,
-		CachedInputUsdPer1m:       row.CachedInputUsdPer1m,
-		CacheWriteUsdPer1m:        row.CacheWriteUsdPer1m,
-		ImageInputUsdPer1m:        row.ImageInputUsdPer1m,
-		ImageOutputUsdPer1m:       row.ImageOutputUsdPer1m,
-		AudioInputUsdPer1m:        row.AudioInputUsdPer1m,
-		AudioOutputUsdPer1m:       row.AudioOutputUsdPer1m,
-		OutputUsdPerImage:         row.OutputUsdPerImage,
-		PricingNotes:              row.PricingNotes,
-		CapabilityNotes:           row.CapabilityNotes,
-		Notes:                     row.Notes,
-		CreatedBy:                 row.CreatedBy,
-		UpdatedBy:                 row.UpdatedBy,
-		CreatedAt:                 row.CreatedAt,
-		UpdatedAt:                 row.UpdatedAt,
+		ID:                            row.ID,
+		ProviderCode:                  row.ProviderCode,
+		Model:                         row.Model,
+		Scope:                         row.Scope,
+		SystemAccountID:               row.SystemAccountID,
+		Status:                        row.Status,
+		Mode:                          row.Mode,
+		SupportedApiProtocolsJson:     row.SupportedApiProtocolsJson,
+		SupportedServiceTiersJson:     row.SupportedServiceTiersJson,
+		SupportedReasoningEffortsJson: row.SupportedReasoningEffortsJson,
+		DefaultReasoningEffort:        row.DefaultReasoningEffort,
+		PricingModel:                  row.PricingModel,
+		ReleaseDate:                   row.ReleaseDate,
+		ShutdownDate:                  row.ShutdownDate,
+		ContextWindowTokens:           row.ContextWindowTokens,
+		MaxOutputTokens:               row.MaxOutputTokens,
+		InputUsdPer1m:                 row.InputUsdPer1m,
+		OutputUsdPer1m:                row.OutputUsdPer1m,
+		CachedInputUsdPer1m:           row.CachedInputUsdPer1m,
+		CacheWriteUsdPer1m:            row.CacheWriteUsdPer1m,
+		ImageInputUsdPer1m:            row.ImageInputUsdPer1m,
+		ImageOutputUsdPer1m:           row.ImageOutputUsdPer1m,
+		AudioInputUsdPer1m:            row.AudioInputUsdPer1m,
+		AudioOutputUsdPer1m:           row.AudioOutputUsdPer1m,
+		OutputUsdPerImage:             row.OutputUsdPerImage,
+		PricingNotes:                  row.PricingNotes,
+		CapabilityNotes:               row.CapabilityNotes,
+		Notes:                         row.Notes,
+		CreatedBy:                     row.CreatedBy,
+		UpdatedBy:                     row.UpdatedBy,
+		CreatedAt:                     row.CreatedAt,
+		UpdatedAt:                     row.UpdatedAt,
 	}
 }
 
 func customProviderModelDataFromScopeRow(row postgresqueries.FindManagementCustomProviderModelByScopeRow) managementCustomProviderModelData {
 	return managementCustomProviderModelData{
-		ID:                        row.ID,
-		ProviderCode:              row.ProviderCode,
-		Model:                     row.Model,
-		Scope:                     row.Scope,
-		SystemAccountID:           row.SystemAccountID,
-		Status:                    row.Status,
-		Mode:                      row.Mode,
-		SupportedApiProtocolsJson: row.SupportedApiProtocolsJson,
-		PricingModel:              row.PricingModel,
-		ReleaseDate:               row.ReleaseDate,
-		ShutdownDate:              row.ShutdownDate,
-		ContextWindowTokens:       row.ContextWindowTokens,
-		MaxOutputTokens:           row.MaxOutputTokens,
-		InputUsdPer1m:             row.InputUsdPer1m,
-		OutputUsdPer1m:            row.OutputUsdPer1m,
-		CachedInputUsdPer1m:       row.CachedInputUsdPer1m,
-		CacheWriteUsdPer1m:        row.CacheWriteUsdPer1m,
-		ImageInputUsdPer1m:        row.ImageInputUsdPer1m,
-		ImageOutputUsdPer1m:       row.ImageOutputUsdPer1m,
-		AudioInputUsdPer1m:        row.AudioInputUsdPer1m,
-		AudioOutputUsdPer1m:       row.AudioOutputUsdPer1m,
-		OutputUsdPerImage:         row.OutputUsdPerImage,
-		PricingNotes:              row.PricingNotes,
-		CapabilityNotes:           row.CapabilityNotes,
-		Notes:                     row.Notes,
-		CreatedBy:                 row.CreatedBy,
-		UpdatedBy:                 row.UpdatedBy,
-		CreatedAt:                 row.CreatedAt,
-		UpdatedAt:                 row.UpdatedAt,
+		ID:                            row.ID,
+		ProviderCode:                  row.ProviderCode,
+		Model:                         row.Model,
+		Scope:                         row.Scope,
+		SystemAccountID:               row.SystemAccountID,
+		Status:                        row.Status,
+		Mode:                          row.Mode,
+		SupportedApiProtocolsJson:     row.SupportedApiProtocolsJson,
+		SupportedServiceTiersJson:     row.SupportedServiceTiersJson,
+		SupportedReasoningEffortsJson: row.SupportedReasoningEffortsJson,
+		DefaultReasoningEffort:        row.DefaultReasoningEffort,
+		PricingModel:                  row.PricingModel,
+		ReleaseDate:                   row.ReleaseDate,
+		ShutdownDate:                  row.ShutdownDate,
+		ContextWindowTokens:           row.ContextWindowTokens,
+		MaxOutputTokens:               row.MaxOutputTokens,
+		InputUsdPer1m:                 row.InputUsdPer1m,
+		OutputUsdPer1m:                row.OutputUsdPer1m,
+		CachedInputUsdPer1m:           row.CachedInputUsdPer1m,
+		CacheWriteUsdPer1m:            row.CacheWriteUsdPer1m,
+		ImageInputUsdPer1m:            row.ImageInputUsdPer1m,
+		ImageOutputUsdPer1m:           row.ImageOutputUsdPer1m,
+		AudioInputUsdPer1m:            row.AudioInputUsdPer1m,
+		AudioOutputUsdPer1m:           row.AudioOutputUsdPer1m,
+		OutputUsdPerImage:             row.OutputUsdPerImage,
+		PricingNotes:                  row.PricingNotes,
+		CapabilityNotes:               row.CapabilityNotes,
+		Notes:                         row.Notes,
+		CreatedBy:                     row.CreatedBy,
+		UpdatedBy:                     row.UpdatedBy,
+		CreatedAt:                     row.CreatedAt,
+		UpdatedAt:                     row.UpdatedAt,
 	}
 }
 
 func customProviderModelDataFromUpsertRow(row postgresqueries.UpsertManagementCustomProviderModelRow) managementCustomProviderModelData {
 	return managementCustomProviderModelData{
-		ID:                        row.ID,
-		ProviderCode:              row.ProviderCode,
-		Model:                     row.Model,
-		Scope:                     row.Scope,
-		SystemAccountID:           row.SystemAccountID,
-		Status:                    row.Status,
-		Mode:                      row.Mode,
-		SupportedApiProtocolsJson: row.SupportedApiProtocolsJson,
-		PricingModel:              row.PricingModel,
-		ReleaseDate:               row.ReleaseDate,
-		ShutdownDate:              row.ShutdownDate,
-		ContextWindowTokens:       row.ContextWindowTokens,
-		MaxOutputTokens:           row.MaxOutputTokens,
-		InputUsdPer1m:             row.InputUsdPer1m,
-		OutputUsdPer1m:            row.OutputUsdPer1m,
-		CachedInputUsdPer1m:       row.CachedInputUsdPer1m,
-		CacheWriteUsdPer1m:        row.CacheWriteUsdPer1m,
-		ImageInputUsdPer1m:        row.ImageInputUsdPer1m,
-		ImageOutputUsdPer1m:       row.ImageOutputUsdPer1m,
-		AudioInputUsdPer1m:        row.AudioInputUsdPer1m,
-		AudioOutputUsdPer1m:       row.AudioOutputUsdPer1m,
-		OutputUsdPerImage:         row.OutputUsdPerImage,
-		PricingNotes:              row.PricingNotes,
-		CapabilityNotes:           row.CapabilityNotes,
-		Notes:                     row.Notes,
-		CreatedBy:                 row.CreatedBy,
-		UpdatedBy:                 row.UpdatedBy,
-		CreatedAt:                 row.CreatedAt,
-		UpdatedAt:                 row.UpdatedAt,
+		ID:                            row.ID,
+		ProviderCode:                  row.ProviderCode,
+		Model:                         row.Model,
+		Scope:                         row.Scope,
+		SystemAccountID:               row.SystemAccountID,
+		Status:                        row.Status,
+		Mode:                          row.Mode,
+		SupportedApiProtocolsJson:     row.SupportedApiProtocolsJson,
+		SupportedServiceTiersJson:     row.SupportedServiceTiersJson,
+		SupportedReasoningEffortsJson: row.SupportedReasoningEffortsJson,
+		DefaultReasoningEffort:        row.DefaultReasoningEffort,
+		PricingModel:                  row.PricingModel,
+		ReleaseDate:                   row.ReleaseDate,
+		ShutdownDate:                  row.ShutdownDate,
+		ContextWindowTokens:           row.ContextWindowTokens,
+		MaxOutputTokens:               row.MaxOutputTokens,
+		InputUsdPer1m:                 row.InputUsdPer1m,
+		OutputUsdPer1m:                row.OutputUsdPer1m,
+		CachedInputUsdPer1m:           row.CachedInputUsdPer1m,
+		CacheWriteUsdPer1m:            row.CacheWriteUsdPer1m,
+		ImageInputUsdPer1m:            row.ImageInputUsdPer1m,
+		ImageOutputUsdPer1m:           row.ImageOutputUsdPer1m,
+		AudioInputUsdPer1m:            row.AudioInputUsdPer1m,
+		AudioOutputUsdPer1m:           row.AudioOutputUsdPer1m,
+		OutputUsdPerImage:             row.OutputUsdPerImage,
+		PricingNotes:                  row.PricingNotes,
+		CapabilityNotes:               row.CapabilityNotes,
+		Notes:                         row.Notes,
+		CreatedBy:                     row.CreatedBy,
+		UpdatedBy:                     row.UpdatedBy,
+		CreatedAt:                     row.CreatedAt,
+		UpdatedAt:                     row.UpdatedAt,
 	}
 }
 

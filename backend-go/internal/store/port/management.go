@@ -1005,43 +1005,49 @@ type ManagementProviderModelProvider struct {
 }
 
 type ManagementProviderModelCatalogItem struct {
-	ID                    string
-	ProviderCode          string
-	Model                 string
-	Scope                 string
-	SystemAccountID       string
-	Status                string
-	Mode                  string
-	CatalogOrder          *int
-	ReleaseDate           string
-	ShutdownDate          string
-	SupportedAPIProtocols []string
-	PricingModel          string
-	ContextWindowTokens   *int
-	MaxInputTokens        *int
-	MaxOutputTokens       *int
-	MaxTokens             *int
-	InputUSDPer1M         *float64
-	OutputUSDPer1M        *float64
-	CachedInputUSDPer1M   *float64
-	CacheWriteUSDPer1M    *float64
-	CacheWrite1hUSDPer1M  *float64
-	ImageInputUSDPer1M    *float64
-	ImageOutputUSDPer1M   *float64
-	AudioInputUSDPer1M    *float64
-	AudioOutputUSDPer1M   *float64
-	OutputUSDPerImage     *float64
-	SupportsPromptCaching bool
-	SupportsServiceTier   bool
-	CatalogVisible        bool
-	PricingNotes          string
-	CapabilityNotes       string
-	Notes                 string
-	CreatedBy             string
-	UpdatedBy             string
-	Source                string
-	CreatedAt             time.Time
-	UpdatedAt             time.Time
+	ID                            string
+	ProviderCode                  string
+	Model                         string
+	Scope                         string
+	SystemAccountID               string
+	Status                        string
+	Mode                          string
+	CatalogOrder                  *int
+	ReleaseDate                   string
+	ShutdownDate                  string
+	SupportedAPIProtocols         []string
+	SupportedServiceTiers         []string
+	SupportedReasoningEfforts     []string
+	DefaultReasoningEffort        string
+	CodexSupportedReasoningLevels []string
+	CodexDefaultReasoningLevel    string
+	CodexMultiAgentVersion        string
+	PricingModel                  string
+	ContextWindowTokens           *int
+	MaxInputTokens                *int
+	MaxOutputTokens               *int
+	MaxTokens                     *int
+	InputUSDPer1M                 *float64
+	OutputUSDPer1M                *float64
+	CachedInputUSDPer1M           *float64
+	CacheWriteUSDPer1M            *float64
+	CacheWrite1hUSDPer1M          *float64
+	ImageInputUSDPer1M            *float64
+	ImageOutputUSDPer1M           *float64
+	AudioInputUSDPer1M            *float64
+	AudioOutputUSDPer1M           *float64
+	OutputUSDPerImage             *float64
+	SupportsPromptCaching         bool
+	SupportsServiceTier           bool
+	CatalogVisible                bool
+	PricingNotes                  string
+	CapabilityNotes               string
+	Notes                         string
+	CreatedBy                     string
+	UpdatedBy                     string
+	Source                        string
+	CreatedAt                     time.Time
+	UpdatedAt                     time.Time
 }
 
 type ManagementProviderModelCatalogListInput struct {
@@ -1062,39 +1068,52 @@ type ManagementProviderDefaultHealthCheckModelInput struct {
 	Model           string
 }
 
+type ManagementProviderSystemDefaultHealthCheckModelInput struct {
+	ProviderCode string
+	Model        string
+}
+
 type ManagementProviderDefaultHealthCheckModelClearInput struct {
 	ProviderCode    string
 	SystemAccountID string
 	Model           string
 }
 
+type ManagementProviderSystemDefaultHealthCheckModelClearInput struct {
+	ProviderCode string
+	Model        string
+}
+
 type ManagementCustomProviderModelSaveInput struct {
-	ID                    string
-	ProviderCode          string
-	Model                 string
-	Scope                 string
-	SystemAccountID       string
-	Status                string
-	Mode                  string
-	SupportedAPIProtocols []string
-	PricingModel          string
-	ReleaseDate           string
-	ShutdownDate          string
-	ContextWindowTokens   *int
-	MaxOutputTokens       *int
-	InputUSDPer1M         *float64
-	OutputUSDPer1M        *float64
-	CachedInputUSDPer1M   *float64
-	CacheWriteUSDPer1M    *float64
-	ImageInputUSDPer1M    *float64
-	ImageOutputUSDPer1M   *float64
-	AudioInputUSDPer1M    *float64
-	AudioOutputUSDPer1M   *float64
-	OutputUSDPerImage     *float64
-	PricingNotes          string
-	CapabilityNotes       string
-	Notes                 string
-	ActorSystemAccountID  string
+	ID                        string
+	ProviderCode              string
+	Model                     string
+	Scope                     string
+	SystemAccountID           string
+	Status                    string
+	Mode                      string
+	SupportedAPIProtocols     []string
+	SupportedServiceTiers     []string
+	SupportedReasoningEfforts []string
+	DefaultReasoningEffort    string
+	PricingModel              string
+	ReleaseDate               string
+	ShutdownDate              string
+	ContextWindowTokens       *int
+	MaxOutputTokens           *int
+	InputUSDPer1M             *float64
+	OutputUSDPer1M            *float64
+	CachedInputUSDPer1M       *float64
+	CacheWriteUSDPer1M        *float64
+	ImageInputUSDPer1M        *float64
+	ImageOutputUSDPer1M       *float64
+	AudioInputUSDPer1M        *float64
+	AudioOutputUSDPer1M       *float64
+	OutputUSDPerImage         *float64
+	PricingNotes              string
+	CapabilityNotes           string
+	Notes                     string
+	ActorSystemAccountID      string
 }
 
 type ManagementCustomProviderModelScopeInput struct {
@@ -1128,6 +1147,8 @@ type ManagementProviderModelCatalogReader interface {
 type ManagementProviderDefaultHealthCheckModelWriter interface {
 	SetManagementProviderDefaultHealthCheckModel(ctx context.Context, input ManagementProviderDefaultHealthCheckModelInput) (ManagementProviderDefaultHealthCheckModelPreference, error)
 	ClearManagementProviderDefaultHealthCheckModelIfModel(ctx context.Context, input ManagementProviderDefaultHealthCheckModelClearInput) (bool, error)
+	SetManagementProviderSystemDefaultHealthCheckModel(ctx context.Context, input ManagementProviderSystemDefaultHealthCheckModelInput) (ManagementProviderDefaultHealthCheckModelPreference, error)
+	ClearManagementProviderSystemDefaultHealthCheckModelIfModel(ctx context.Context, input ManagementProviderSystemDefaultHealthCheckModelClearInput) (bool, error)
 }
 
 type ManagementCustomProviderModelWriter interface {

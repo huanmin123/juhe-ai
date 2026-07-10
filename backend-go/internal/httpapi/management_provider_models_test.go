@@ -18,7 +18,13 @@ import (
 
 func TestManagementProviderModelOptionsHandlerParsesScopeAndProtocol(t *testing.T) {
 	service := &managementProviderModelServiceStub{
-		modelOptions: []managementprovidermodels.ModelOption{{ProviderCode: "gpt", Model: "gpt-5.5"}},
+		modelOptions: []managementprovidermodels.ModelOption{{
+			ProviderCode:              "gpt",
+			Model:                     "gpt-5.5",
+			SupportedServiceTiers:     []string{"priority"},
+			SupportedReasoningEfforts: []string{"low", "high"},
+			DefaultReasoningEffort:    "high",
+		}},
 	}
 	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
 		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
@@ -43,6 +49,12 @@ func TestManagementProviderModelOptionsHandlerParsesScopeAndProtocol(t *testing.
 	if len(body.Data) != 1 || body.Data[0].Model != "gpt-5.5" {
 		t.Fatalf("body = %+v", body)
 	}
+	if len(body.Data[0].SupportedServiceTiers) != 1 ||
+		body.Data[0].SupportedServiceTiers[0] != "priority" ||
+		len(body.Data[0].SupportedReasoningEfforts) != 2 ||
+		body.Data[0].DefaultReasoningEffort != "high" {
+		t.Fatalf("capability body = %+v", body.Data[0])
+	}
 }
 
 func TestManagementProviderModelOptionsHandlerUsesSelfScopeForOrdinaryUser(t *testing.T) {
@@ -65,7 +77,19 @@ func TestManagementProviderModelOptionsHandlerUsesSelfScopeForOrdinaryUser(t *te
 
 func TestManagementProviderModelsHandlerParsesQueryAndProvider(t *testing.T) {
 	service := &managementProviderModelServiceStub{
-		models: []managementprovidermodels.ModelCatalogItem{{ProviderCode: "gpt", Model: "gpt-5.5", Scope: "built_in", Status: "active"}},
+		models: []managementprovidermodels.ModelCatalogItem{{
+			ProviderCode:                  "gpt",
+			Model:                         "gpt-5.6-sol",
+			Scope:                         "built_in",
+			Status:                        "active",
+			SupportedServiceTiers:         []string{"priority"},
+			SupportedReasoningEfforts:     []string{"low", "high", "max"},
+			DefaultReasoningEffort:        "high",
+			CodexSupportedReasoningLevels: []string{"low", "high", "ultra"},
+			CodexDefaultReasoningLevel:    "low",
+			CodexMultiAgentVersion:        "v2",
+			SupportsServiceTier:           true,
+		}},
 	}
 	handler := chi.NewRouter()
 	handler.With(NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
@@ -84,6 +108,22 @@ func TestManagementProviderModelsHandlerParsesQueryAndProvider(t *testing.T) {
 		!service.modelsInput.IncludeInactive ||
 		!service.modelsInput.IncludeUnpriced {
 		t.Fatalf("input = %+v", service.modelsInput)
+	}
+	var body struct {
+		Data []managementprovidermodels.ModelCatalogItem `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Data) != 1 ||
+		len(body.Data[0].SupportedServiceTiers) != 1 ||
+		len(body.Data[0].SupportedReasoningEfforts) != 3 ||
+		body.Data[0].DefaultReasoningEffort != "high" ||
+		len(body.Data[0].CodexSupportedReasoningLevels) != 3 ||
+		body.Data[0].CodexDefaultReasoningLevel != "low" ||
+		body.Data[0].CodexMultiAgentVersion != "v2" ||
+		!body.Data[0].SupportsServiceTier {
+		t.Fatalf("body = %+v", body)
 	}
 }
 
@@ -240,6 +280,9 @@ func TestManagementProviderCustomModelCreateHandlerParsesBodyAndTargetScope(t *t
 	req := httptest.NewRequest(http.MethodPost, "/__aisys__/api/providers/gpt/models?systemAccountId=sys_user", strings.NewReader(`{
 		"model":" custom-chat ",
 		"supportedApiProtocols":["responses"],
+		"supportedServiceTiers":["priority","flex"],
+		"supportedReasoningEfforts":["low","high"],
+		"defaultReasoningEffort":"high",
 		"inputUsdPer1M":1.25,
 		"pricingNotes":" 说明 "
 	}`))
@@ -255,7 +298,13 @@ func TestManagementProviderCustomModelCreateHandlerParsesBodyAndTargetScope(t *t
 		!service.createInput.Fields.Model.Set ||
 		service.createInput.Fields.Model.Value != " custom-chat " ||
 		service.createInput.Fields.InputUSDPer1M.Value == nil ||
-		*service.createInput.Fields.InputUSDPer1M.Value != 1.25 {
+		*service.createInput.Fields.InputUSDPer1M.Value != 1.25 ||
+		!service.createInput.Fields.SupportedServiceTiers.Set ||
+		len(service.createInput.Fields.SupportedServiceTiers.Value) != 2 ||
+		!service.createInput.Fields.SupportedReasoningEfforts.Set ||
+		len(service.createInput.Fields.SupportedReasoningEfforts.Value) != 2 ||
+		!service.createInput.Fields.DefaultReasoningEffort.Set ||
+		service.createInput.Fields.DefaultReasoningEffort.Value != "high" {
 		t.Fatalf("create input = %+v", service.createInput)
 	}
 	var body struct {
@@ -266,6 +315,61 @@ func TestManagementProviderCustomModelCreateHandlerParsesBodyAndTargetScope(t *t
 	}
 	if body.Data.ID != "custom_model_1" {
 		t.Fatalf("body = %+v", body)
+	}
+}
+
+func TestManagementProviderCustomModelUpdateHandlerParsesCapabilityClears(t *testing.T) {
+	service := &managementProviderModelServiceStub{
+		customModelResult: managementprovidermodels.ModelCatalogItem{
+			ID:                            "custom_model_1",
+			ProviderCode:                  "gpt",
+			Model:                         "custom-image",
+			Scope:                         "personal",
+			Status:                        "active",
+			SupportedServiceTiers:         []string{},
+			SupportedReasoningEfforts:     []string{},
+			CodexSupportedReasoningLevels: []string{},
+		},
+	}
+	handler := chi.NewRouter()
+	handler.With(NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_user", Username: "user", Role: "user", SessionID: "sess_user"},
+	})).Patch("/__aisys__/api/providers/{code}/models/{id}", newManagementProviderCustomModelUpdateHandler(service).ServeHTTP)
+
+	req := httptest.NewRequest(http.MethodPatch, "/__aisys__/api/providers/gpt/models/custom_model_1", strings.NewReader(`{
+		"mode":"image",
+		"supportedServiceTiers":[],
+		"supportedReasoningEfforts":[],
+		"defaultReasoningEffort":null
+	}`))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	fields := service.updateInput.Fields
+	if !fields.SupportedServiceTiers.Set || len(fields.SupportedServiceTiers.Value) != 0 ||
+		!fields.SupportedReasoningEfforts.Set || len(fields.SupportedReasoningEfforts.Value) != 0 ||
+		!fields.DefaultReasoningEffort.Set || fields.DefaultReasoningEffort.Value != "" {
+		t.Fatalf("update fields = %+v", fields)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	data, ok := body["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("body = %+v", body)
+	}
+	if tiers, ok := data["supportedServiceTiers"].([]any); !ok || len(tiers) != 0 {
+		t.Fatalf("supportedServiceTiers = %#v", data["supportedServiceTiers"])
+	}
+	if efforts, ok := data["supportedReasoningEfforts"].([]any); !ok || len(efforts) != 0 {
+		t.Fatalf("supportedReasoningEfforts = %#v", data["supportedReasoningEfforts"])
+	}
+	if levels, ok := data["codexSupportedReasoningLevels"].([]any); !ok || len(levels) != 0 {
+		t.Fatalf("codexSupportedReasoningLevels = %#v", data["codexSupportedReasoningLevels"])
 	}
 }
 
@@ -310,6 +414,14 @@ func TestManagementProviderCustomModelHandlersMapErrors(t *testing.T) {
 			method:     http.MethodPost,
 			target:     "/__aisys__/api/providers/gpt/models",
 			body:       `{"model":"custom-chat","maxOutputTokens":2147483648}`,
+			wantStatus: http.StatusBadRequest,
+			wantMsg:    "自定义模型参数无效",
+		},
+		{
+			name:       "create rejects empty default reasoning effort",
+			method:     http.MethodPost,
+			target:     "/__aisys__/api/providers/gpt/models",
+			body:       `{"model":"custom-chat","defaultReasoningEffort":""}`,
 			wantStatus: http.StatusBadRequest,
 			wantMsg:    "自定义模型参数无效",
 		},

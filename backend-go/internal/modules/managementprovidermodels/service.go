@@ -64,35 +64,39 @@ type ModelListInput struct {
 }
 
 type DefaultHealthCheckModelInput struct {
-	ProviderCode    string
-	SystemAccountID string
-	Model           string
+	ProviderCode         string
+	ActorSystemAccountID string
+	ActorRole            string
+	Model                string
 }
 
 type CustomModelMutation struct {
-	Invalid               bool
-	Scope                 OptionalString
-	Model                 OptionalString
-	Status                OptionalString
-	Mode                  OptionalString
-	SupportedAPIProtocols OptionalStringList
-	PricingModel          OptionalString
-	ReleaseDate           OptionalString
-	ShutdownDate          OptionalString
-	ContextWindowTokens   OptionalInt
-	MaxOutputTokens       OptionalInt
-	InputUSDPer1M         OptionalFloat
-	OutputUSDPer1M        OptionalFloat
-	CachedInputUSDPer1M   OptionalFloat
-	CacheWriteUSDPer1M    OptionalFloat
-	ImageInputUSDPer1M    OptionalFloat
-	ImageOutputUSDPer1M   OptionalFloat
-	AudioInputUSDPer1M    OptionalFloat
-	AudioOutputUSDPer1M   OptionalFloat
-	OutputUSDPerImage     OptionalFloat
-	PricingNotes          OptionalString
-	CapabilityNotes       OptionalString
-	Notes                 OptionalString
+	Invalid                   bool
+	Scope                     OptionalString
+	Model                     OptionalString
+	Status                    OptionalString
+	Mode                      OptionalString
+	SupportedAPIProtocols     OptionalStringList
+	SupportedServiceTiers     OptionalStringList
+	SupportedReasoningEfforts OptionalStringList
+	DefaultReasoningEffort    OptionalString
+	PricingModel              OptionalString
+	ReleaseDate               OptionalString
+	ShutdownDate              OptionalString
+	ContextWindowTokens       OptionalInt
+	MaxOutputTokens           OptionalInt
+	InputUSDPer1M             OptionalFloat
+	OutputUSDPer1M            OptionalFloat
+	CachedInputUSDPer1M       OptionalFloat
+	CacheWriteUSDPer1M        OptionalFloat
+	ImageInputUSDPer1M        OptionalFloat
+	ImageOutputUSDPer1M       OptionalFloat
+	AudioInputUSDPer1M        OptionalFloat
+	AudioOutputUSDPer1M       OptionalFloat
+	OutputUSDPerImage         OptionalFloat
+	PricingNotes              OptionalString
+	CapabilityNotes           OptionalString
+	Notes                     OptionalString
 }
 
 type OptionalString struct {
@@ -143,9 +147,12 @@ type CustomModelDeleteResult struct {
 }
 
 type ModelOption struct {
-	ProviderCode          string   `json:"providerCode"`
-	Model                 string   `json:"model"`
-	SupportedAPIProtocols []string `json:"supportedApiProtocols,omitempty"`
+	ProviderCode              string   `json:"providerCode"`
+	Model                     string   `json:"model"`
+	SupportedAPIProtocols     []string `json:"supportedApiProtocols,omitempty"`
+	SupportedServiceTiers     []string `json:"supportedServiceTiers,omitempty"`
+	SupportedReasoningEfforts []string `json:"supportedReasoningEfforts,omitempty"`
+	DefaultReasoningEffort    string   `json:"defaultReasoningEffort,omitempty"`
 }
 
 type DefaultHealthCheckModelResult struct {
@@ -227,41 +234,47 @@ func CustomModelBoundMessage(err error) (string, bool) {
 }
 
 type ModelCatalogItem struct {
-	ID                    string   `json:"id,omitempty"`
-	ProviderCode          string   `json:"providerCode"`
-	Model                 string   `json:"model"`
-	Scope                 string   `json:"scope"`
-	Status                string   `json:"status"`
-	SystemAccountID       string   `json:"systemAccountId,omitempty"`
-	PricingModel          string   `json:"pricingModel,omitempty"`
-	Mode                  string   `json:"mode,omitempty"`
-	CatalogOrder          *int     `json:"catalogOrder,omitempty"`
-	ReleaseDate           string   `json:"releaseDate,omitempty"`
-	ShutdownDate          string   `json:"shutdownDate,omitempty"`
-	ContextWindowTokens   *int     `json:"contextWindowTokens,omitempty"`
-	SupportedAPIProtocols []string `json:"supportedApiProtocols"`
-	InputUSDPer1M         *float64 `json:"inputUsdPer1M,omitempty"`
-	OutputUSDPer1M        *float64 `json:"outputUsdPer1M,omitempty"`
-	CachedInputUSDPer1M   *float64 `json:"cachedInputUsdPer1M,omitempty"`
-	CacheWriteUSDPer1M    *float64 `json:"cacheWriteUsdPer1M,omitempty"`
-	CacheWrite1hUSDPer1M  *float64 `json:"cacheWrite1hUsdPer1M,omitempty"`
-	ImageInputUSDPer1M    *float64 `json:"imageInputUsdPer1M,omitempty"`
-	ImageOutputUSDPer1M   *float64 `json:"imageOutputUsdPer1M,omitempty"`
-	AudioInputUSDPer1M    *float64 `json:"audioInputUsdPer1M,omitempty"`
-	AudioOutputUSDPer1M   *float64 `json:"audioOutputUsdPer1M,omitempty"`
-	OutputUSDPerImage     *float64 `json:"outputUsdPerImage,omitempty"`
-	MaxInputTokens        *int     `json:"maxInputTokens,omitempty"`
-	MaxOutputTokens       *int     `json:"maxOutputTokens,omitempty"`
-	MaxTokens             *int     `json:"maxTokens,omitempty"`
-	SupportsPromptCaching bool     `json:"supportsPromptCaching"`
-	SupportsServiceTier   bool     `json:"supportsServiceTier"`
-	CatalogVisible        bool     `json:"catalogVisible"`
-	PricingNotes          string   `json:"pricingNotes,omitempty"`
-	CapabilityNotes       string   `json:"capabilityNotes,omitempty"`
-	Notes                 string   `json:"notes,omitempty"`
-	CreatedAt             string   `json:"createdAt,omitempty"`
-	UpdatedAt             string   `json:"updatedAt,omitempty"`
-	Source                string   `json:"source"`
+	ID                            string   `json:"id,omitempty"`
+	ProviderCode                  string   `json:"providerCode"`
+	Model                         string   `json:"model"`
+	Scope                         string   `json:"scope"`
+	Status                        string   `json:"status"`
+	SystemAccountID               string   `json:"systemAccountId,omitempty"`
+	PricingModel                  string   `json:"pricingModel,omitempty"`
+	Mode                          string   `json:"mode,omitempty"`
+	CatalogOrder                  *int     `json:"catalogOrder,omitempty"`
+	ReleaseDate                   string   `json:"releaseDate,omitempty"`
+	ShutdownDate                  string   `json:"shutdownDate,omitempty"`
+	ContextWindowTokens           *int     `json:"contextWindowTokens,omitempty"`
+	SupportedAPIProtocols         []string `json:"supportedApiProtocols"`
+	SupportedServiceTiers         []string `json:"supportedServiceTiers"`
+	SupportedReasoningEfforts     []string `json:"supportedReasoningEfforts"`
+	DefaultReasoningEffort        string   `json:"defaultReasoningEffort,omitempty"`
+	CodexSupportedReasoningLevels []string `json:"codexSupportedReasoningLevels"`
+	CodexDefaultReasoningLevel    string   `json:"codexDefaultReasoningLevel,omitempty"`
+	CodexMultiAgentVersion        string   `json:"codexMultiAgentVersion,omitempty"`
+	InputUSDPer1M                 *float64 `json:"inputUsdPer1M,omitempty"`
+	OutputUSDPer1M                *float64 `json:"outputUsdPer1M,omitempty"`
+	CachedInputUSDPer1M           *float64 `json:"cachedInputUsdPer1M,omitempty"`
+	CacheWriteUSDPer1M            *float64 `json:"cacheWriteUsdPer1M,omitempty"`
+	CacheWrite1hUSDPer1M          *float64 `json:"cacheWrite1hUsdPer1M,omitempty"`
+	ImageInputUSDPer1M            *float64 `json:"imageInputUsdPer1M,omitempty"`
+	ImageOutputUSDPer1M           *float64 `json:"imageOutputUsdPer1M,omitempty"`
+	AudioInputUSDPer1M            *float64 `json:"audioInputUsdPer1M,omitempty"`
+	AudioOutputUSDPer1M           *float64 `json:"audioOutputUsdPer1M,omitempty"`
+	OutputUSDPerImage             *float64 `json:"outputUsdPerImage,omitempty"`
+	MaxInputTokens                *int     `json:"maxInputTokens,omitempty"`
+	MaxOutputTokens               *int     `json:"maxOutputTokens,omitempty"`
+	MaxTokens                     *int     `json:"maxTokens,omitempty"`
+	SupportsPromptCaching         bool     `json:"supportsPromptCaching"`
+	SupportsServiceTier           bool     `json:"supportsServiceTier"`
+	CatalogVisible                bool     `json:"catalogVisible"`
+	PricingNotes                  string   `json:"pricingNotes,omitempty"`
+	CapabilityNotes               string   `json:"capabilityNotes,omitempty"`
+	Notes                         string   `json:"notes,omitempty"`
+	CreatedAt                     string   `json:"createdAt,omitempty"`
+	UpdatedAt                     string   `json:"updatedAt,omitempty"`
+	Source                        string   `json:"source"`
 }
 
 func NewService(store Store) *Service {
@@ -345,17 +358,22 @@ func (s *Service) SetDefaultHealthCheckModel(ctx context.Context, input DefaultH
 		return DefaultHealthCheckModelResult{}, fmt.Errorf("management provider model store is required")
 	}
 	providerCode := strings.TrimSpace(input.ProviderCode)
-	systemAccountID := strings.TrimSpace(input.SystemAccountID)
+	actorSystemAccountID := strings.TrimSpace(input.ActorSystemAccountID)
 	model := strings.TrimSpace(input.Model)
-	if systemAccountID == "" {
+	if actorSystemAccountID == "" {
 		return DefaultHealthCheckModelResult{}, &DefaultHealthCheckModelValidationError{Message: "请选择要设置默认检查模型的系统账户"}
 	}
 	if model == "" {
 		return DefaultHealthCheckModelResult{}, &DefaultHealthCheckModelValidationError{Message: "默认检查模型参数无效"}
 	}
+	systemScope := isAdminRole(input.ActorRole)
+	catalogSystemAccountID := actorSystemAccountID
+	if systemScope {
+		catalogSystemAccountID = ""
+	}
 	models, err := s.Models(ctx, ModelListInput{
 		ProviderCode:    providerCode,
-		SystemAccountID: systemAccountID,
+		SystemAccountID: catalogSystemAccountID,
 		IncludeInactive: true,
 		IncludeUnpriced: true,
 	})
@@ -372,11 +390,19 @@ func (s *Service) SetDefaultHealthCheckModel(ctx context.Context, input DefaultH
 	if !isCatalogItemUsableForAccountTest(*selected) {
 		return DefaultHealthCheckModelResult{}, &DefaultHealthCheckModelValidationError{Message: "默认检查模型只能选择文本生成模型"}
 	}
-	saved, err := s.store.SetManagementProviderDefaultHealthCheckModel(ctx, port.ManagementProviderDefaultHealthCheckModelInput{
-		ProviderCode:    providerCode,
-		SystemAccountID: systemAccountID,
-		Model:           selected.Model,
-	})
+	var saved port.ManagementProviderDefaultHealthCheckModelPreference
+	if systemScope {
+		saved, err = s.store.SetManagementProviderSystemDefaultHealthCheckModel(ctx, port.ManagementProviderSystemDefaultHealthCheckModelInput{
+			ProviderCode: providerCode,
+			Model:        selected.Model,
+		})
+	} else {
+		saved, err = s.store.SetManagementProviderDefaultHealthCheckModel(ctx, port.ManagementProviderDefaultHealthCheckModelInput{
+			ProviderCode:    providerCode,
+			SystemAccountID: actorSystemAccountID,
+			Model:           selected.Model,
+		})
+	}
 	if err != nil {
 		return DefaultHealthCheckModelResult{}, err
 	}
@@ -479,15 +505,30 @@ func (s *Service) UpdateCustomModel(ctx context.Context, input CustomModelUpdate
 	}
 	s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason)
 	if saved.Status != "active" {
-		if _, err := s.store.ClearManagementProviderDefaultHealthCheckModelIfModel(ctx, port.ManagementProviderDefaultHealthCheckModelClearInput{
-			ProviderCode:    saved.ProviderCode,
-			SystemAccountID: saved.SystemAccountID,
-			Model:           saved.Model,
-		}); err != nil {
+		if err := s.clearDefaultHealthCheckModelReferences(ctx, saved); err != nil {
 			return ModelCatalogItem{}, err
 		}
 	}
 	return catalogItemFromPort(saved), nil
+}
+
+func (s *Service) clearDefaultHealthCheckModelReferences(ctx context.Context, model port.ManagementProviderModelCatalogItem) error {
+	if _, err := s.store.ClearManagementProviderDefaultHealthCheckModelIfModel(ctx, port.ManagementProviderDefaultHealthCheckModelClearInput{
+		ProviderCode:    model.ProviderCode,
+		SystemAccountID: model.SystemAccountID,
+		Model:           model.Model,
+	}); err != nil {
+		return err
+	}
+	if model.Scope == "global" {
+		if _, err := s.store.ClearManagementProviderSystemDefaultHealthCheckModelIfModel(ctx, port.ManagementProviderSystemDefaultHealthCheckModelClearInput{
+			ProviderCode: model.ProviderCode,
+			Model:        model.Model,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Service) DeleteCustomModel(ctx context.Context, input CustomModelDeleteInput) (CustomModelDeleteResult, error) {
@@ -522,11 +563,7 @@ func (s *Service) DeleteCustomModel(ctx context.Context, input CustomModelDelete
 	}
 	if deleted {
 		s.invalidateCustomProviderModel(ctx, CustomProviderModelDeletedReason)
-		if _, err := s.store.ClearManagementProviderDefaultHealthCheckModelIfModel(ctx, port.ManagementProviderDefaultHealthCheckModelClearInput{
-			ProviderCode:    existing.ProviderCode,
-			SystemAccountID: existing.SystemAccountID,
-			Model:           existing.Model,
-		}); err != nil {
+		if err := s.clearDefaultHealthCheckModelReferences(ctx, existing); err != nil {
 			return CustomModelDeleteResult{}, err
 		}
 	}
@@ -618,6 +655,21 @@ var customProviderModelAPIProtocols = map[string]struct{}{
 	"realtime":                {},
 }
 
+var customProviderModelServiceTiers = map[string]struct{}{
+	"priority": {},
+	"flex":     {},
+}
+
+var customProviderModelReasoningEfforts = map[string]struct{}{
+	"none":    {},
+	"minimal": {},
+	"low":     {},
+	"medium":  {},
+	"high":    {},
+	"xhigh":   {},
+	"max":     {},
+}
+
 func createCustomModelScope(scope OptionalString) (string, error) {
 	if !scope.Set {
 		return "personal", nil
@@ -663,32 +715,35 @@ func customModelSaveInputFromCreate(
 
 func customModelSaveInputFromExisting(item port.ManagementProviderModelCatalogItem, actorSystemAccountID string) port.ManagementCustomProviderModelSaveInput {
 	return port.ManagementCustomProviderModelSaveInput{
-		ID:                    item.ID,
-		ProviderCode:          item.ProviderCode,
-		Model:                 item.Model,
-		Scope:                 item.Scope,
-		SystemAccountID:       item.SystemAccountID,
-		Status:                item.Status,
-		Mode:                  item.Mode,
-		SupportedAPIProtocols: append([]string(nil), item.SupportedAPIProtocols...),
-		PricingModel:          item.PricingModel,
-		ReleaseDate:           item.ReleaseDate,
-		ShutdownDate:          item.ShutdownDate,
-		ContextWindowTokens:   cloneIntPtr(item.ContextWindowTokens),
-		MaxOutputTokens:       cloneIntPtr(item.MaxOutputTokens),
-		InputUSDPer1M:         cloneFloatPtr(item.InputUSDPer1M),
-		OutputUSDPer1M:        cloneFloatPtr(item.OutputUSDPer1M),
-		CachedInputUSDPer1M:   cloneFloatPtr(item.CachedInputUSDPer1M),
-		CacheWriteUSDPer1M:    cloneFloatPtr(item.CacheWriteUSDPer1M),
-		ImageInputUSDPer1M:    cloneFloatPtr(item.ImageInputUSDPer1M),
-		ImageOutputUSDPer1M:   cloneFloatPtr(item.ImageOutputUSDPer1M),
-		AudioInputUSDPer1M:    cloneFloatPtr(item.AudioInputUSDPer1M),
-		AudioOutputUSDPer1M:   cloneFloatPtr(item.AudioOutputUSDPer1M),
-		OutputUSDPerImage:     cloneFloatPtr(item.OutputUSDPerImage),
-		PricingNotes:          item.PricingNotes,
-		CapabilityNotes:       item.CapabilityNotes,
-		Notes:                 item.Notes,
-		ActorSystemAccountID:  strings.TrimSpace(actorSystemAccountID),
+		ID:                        item.ID,
+		ProviderCode:              item.ProviderCode,
+		Model:                     item.Model,
+		Scope:                     item.Scope,
+		SystemAccountID:           item.SystemAccountID,
+		Status:                    item.Status,
+		Mode:                      item.Mode,
+		SupportedAPIProtocols:     append([]string(nil), item.SupportedAPIProtocols...),
+		SupportedServiceTiers:     append([]string(nil), item.SupportedServiceTiers...),
+		SupportedReasoningEfforts: append([]string(nil), item.SupportedReasoningEfforts...),
+		DefaultReasoningEffort:    item.DefaultReasoningEffort,
+		PricingModel:              item.PricingModel,
+		ReleaseDate:               item.ReleaseDate,
+		ShutdownDate:              item.ShutdownDate,
+		ContextWindowTokens:       cloneIntPtr(item.ContextWindowTokens),
+		MaxOutputTokens:           cloneIntPtr(item.MaxOutputTokens),
+		InputUSDPer1M:             cloneFloatPtr(item.InputUSDPer1M),
+		OutputUSDPer1M:            cloneFloatPtr(item.OutputUSDPer1M),
+		CachedInputUSDPer1M:       cloneFloatPtr(item.CachedInputUSDPer1M),
+		CacheWriteUSDPer1M:        cloneFloatPtr(item.CacheWriteUSDPer1M),
+		ImageInputUSDPer1M:        cloneFloatPtr(item.ImageInputUSDPer1M),
+		ImageOutputUSDPer1M:       cloneFloatPtr(item.ImageOutputUSDPer1M),
+		AudioInputUSDPer1M:        cloneFloatPtr(item.AudioInputUSDPer1M),
+		AudioOutputUSDPer1M:       cloneFloatPtr(item.AudioOutputUSDPer1M),
+		OutputUSDPerImage:         cloneFloatPtr(item.OutputUSDPerImage),
+		PricingNotes:              item.PricingNotes,
+		CapabilityNotes:           item.CapabilityNotes,
+		Notes:                     item.Notes,
+		ActorSystemAccountID:      strings.TrimSpace(actorSystemAccountID),
 	}
 }
 
@@ -736,6 +791,33 @@ func applyCustomModelMutableFields(input *port.ManagementCustomProviderModelSave
 		input.SupportedAPIProtocols = protocols
 	} else if create {
 		input.SupportedAPIProtocols = []string{}
+	}
+	if fields.SupportedServiceTiers.Set {
+		serviceTiers, err := normalizeCustomModelCapabilityList(fields.SupportedServiceTiers.Value, customProviderModelServiceTiers)
+		if err != nil {
+			return err
+		}
+		input.SupportedServiceTiers = serviceTiers
+	} else if create {
+		input.SupportedServiceTiers = []string{}
+	}
+	if fields.SupportedReasoningEfforts.Set {
+		reasoningEfforts, err := normalizeCustomModelCapabilityList(fields.SupportedReasoningEfforts.Value, customProviderModelReasoningEfforts)
+		if err != nil {
+			return err
+		}
+		input.SupportedReasoningEfforts = reasoningEfforts
+	} else if create {
+		input.SupportedReasoningEfforts = []string{}
+	}
+	if fields.DefaultReasoningEffort.Set {
+		defaultReasoningEffort := strings.TrimSpace(fields.DefaultReasoningEffort.Value)
+		if defaultReasoningEffort != "" {
+			if _, ok := customProviderModelReasoningEfforts[defaultReasoningEffort]; !ok {
+				return &CustomModelValidationError{Message: "自定义模型参数无效"}
+			}
+		}
+		input.DefaultReasoningEffort = defaultReasoningEffort
 	}
 	if fields.PricingModel.Set {
 		input.PricingModel = strings.TrimSpace(fields.PricingModel.Value)
@@ -800,7 +882,7 @@ func applyCustomModelMutableFields(input *port.ManagementCustomProviderModelSave
 	if fields.Notes.Set {
 		input.Notes = strings.TrimSpace(fields.Notes.Value)
 	}
-	return nil
+	return validateCustomModelRequestCapabilities(*input)
 }
 
 func customModelMutationHasAnyField(fields CustomModelMutation) bool {
@@ -809,6 +891,9 @@ func customModelMutationHasAnyField(fields CustomModelMutation) bool {
 		fields.Status.Set ||
 		fields.Mode.Set ||
 		fields.SupportedAPIProtocols.Set ||
+		fields.SupportedServiceTiers.Set ||
+		fields.SupportedReasoningEfforts.Set ||
+		fields.DefaultReasoningEffort.Set ||
 		fields.PricingModel.Set ||
 		fields.ReleaseDate.Set ||
 		fields.ShutdownDate.Set ||
@@ -847,6 +932,47 @@ func normalizeCustomModelProtocols(values []string) ([]string, error) {
 		output = append(output, protocol)
 	}
 	return output, nil
+}
+
+func normalizeCustomModelCapabilityList(values []string, allowed map[string]struct{}) ([]string, error) {
+	output := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		normalized := strings.TrimSpace(value)
+		if _, ok := allowed[normalized]; !ok {
+			return nil, &CustomModelValidationError{Message: "自定义模型参数无效"}
+		}
+		if _, exists := seen[normalized]; exists {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		output = append(output, normalized)
+	}
+	return output, nil
+}
+
+func validateCustomModelRequestCapabilities(input port.ManagementCustomProviderModelSaveInput) error {
+	hasCapabilities := len(input.SupportedServiceTiers) > 0 ||
+		len(input.SupportedReasoningEfforts) > 0 ||
+		strings.TrimSpace(input.DefaultReasoningEffort) != ""
+	mode := strings.TrimSpace(input.Mode)
+	isGPTTextModel := strings.TrimSpace(input.ProviderCode) == "gpt" && (mode == "" || mode == "text")
+	if !isGPTTextModel {
+		if hasCapabilities {
+			return &CustomModelValidationError{Message: "只有 GPT 文本模型可以配置服务等级和思考级别"}
+		}
+		return nil
+	}
+	defaultReasoningEffort := strings.TrimSpace(input.DefaultReasoningEffort)
+	if defaultReasoningEffort == "" {
+		return nil
+	}
+	for _, effort := range input.SupportedReasoningEfforts {
+		if effort == defaultReasoningEffort {
+			return nil
+		}
+	}
+	return &CustomModelValidationError{Message: "默认思考级别必须属于模型支持的思考级别"}
 }
 
 func validateOptionalCustomModelDate(value string) error {
@@ -1156,6 +1282,7 @@ func hasDirectPrice(item port.ManagementProviderModelCatalogItem) bool {
 func dedupeModelOptions(items []port.ManagementProviderModelCatalogItem) []ModelOption {
 	result := []ModelOption{}
 	seen := map[string]int{}
+	defaultCandidates := [][]string{}
 	for _, item := range items {
 		providerCode := strings.TrimSpace(item.ProviderCode)
 		model := strings.TrimSpace(item.Model)
@@ -1164,55 +1291,114 @@ func dedupeModelOptions(items []port.ManagementProviderModelCatalogItem) []Model
 		}
 		key := strings.ToLower(providerCode) + "\n" + model
 		protocols := dedupeStrings(item.SupportedAPIProtocols)
+		serviceTiers := normalizeCatalogCapabilityList(item.SupportedServiceTiers, customProviderModelServiceTiers)
+		reasoningEfforts := normalizeCatalogCapabilityList(item.SupportedReasoningEfforts, customProviderModelReasoningEfforts)
+		defaultReasoningEffort := strings.TrimSpace(item.DefaultReasoningEffort)
+		if _, ok := customProviderModelReasoningEfforts[defaultReasoningEffort]; !ok {
+			defaultReasoningEffort = ""
+		}
 		if index, exists := seen[key]; exists {
 			result[index].SupportedAPIProtocols = dedupeStrings(append(result[index].SupportedAPIProtocols, protocols...))
+			result[index].SupportedServiceTiers = dedupeStrings(append(result[index].SupportedServiceTiers, serviceTiers...))
+			result[index].SupportedReasoningEfforts = dedupeStrings(append(result[index].SupportedReasoningEfforts, reasoningEfforts...))
+			if defaultReasoningEffort != "" {
+				defaultCandidates[index] = append(defaultCandidates[index], defaultReasoningEffort)
+			}
 			continue
 		}
 		seen[key] = len(result)
 		result = append(result, ModelOption{
-			ProviderCode:          providerCode,
-			Model:                 model,
-			SupportedAPIProtocols: protocols,
+			ProviderCode:              providerCode,
+			Model:                     model,
+			SupportedAPIProtocols:     protocols,
+			SupportedServiceTiers:     serviceTiers,
+			SupportedReasoningEfforts: reasoningEfforts,
 		})
+		defaultCandidates = append(defaultCandidates, nil)
+		if defaultReasoningEffort != "" {
+			defaultCandidates[len(defaultCandidates)-1] = append(defaultCandidates[len(defaultCandidates)-1], defaultReasoningEffort)
+		}
+	}
+	for index := range result {
+		supported := stringSet(result[index].SupportedReasoningEfforts)
+		for _, candidate := range defaultCandidates[index] {
+			if _, ok := supported[candidate]; ok {
+				result[index].DefaultReasoningEffort = candidate
+				break
+			}
+		}
 	}
 	return result
 }
 
+func normalizeCatalogCapabilityList(values []string, allowed map[string]struct{}) []string {
+	output := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		normalized := strings.TrimSpace(value)
+		if _, ok := allowed[normalized]; !ok {
+			continue
+		}
+		if _, exists := seen[normalized]; exists {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		output = append(output, normalized)
+	}
+	return output
+}
+
 func catalogItemFromPort(item port.ManagementProviderModelCatalogItem) ModelCatalogItem {
+	supportedServiceTiers := normalizeCatalogCapabilityList(item.SupportedServiceTiers, customProviderModelServiceTiers)
+	supportedReasoningEfforts := normalizeCatalogCapabilityList(item.SupportedReasoningEfforts, customProviderModelReasoningEfforts)
+	defaultReasoningEffort := strings.TrimSpace(item.DefaultReasoningEffort)
+	if !stringListContains(supportedReasoningEfforts, defaultReasoningEffort) {
+		defaultReasoningEffort = ""
+	}
 	output := ModelCatalogItem{
-		ID:                    item.ID,
-		ProviderCode:          item.ProviderCode,
-		Model:                 item.Model,
-		Scope:                 item.Scope,
-		Status:                item.Status,
-		SystemAccountID:       item.SystemAccountID,
-		PricingModel:          item.PricingModel,
-		Mode:                  item.Mode,
-		CatalogOrder:          cloneIntPtr(item.CatalogOrder),
-		ReleaseDate:           item.ReleaseDate,
-		ShutdownDate:          item.ShutdownDate,
-		ContextWindowTokens:   cloneIntPtr(item.ContextWindowTokens),
-		SupportedAPIProtocols: append([]string(nil), item.SupportedAPIProtocols...),
-		InputUSDPer1M:         cloneFloatPtr(item.InputUSDPer1M),
-		OutputUSDPer1M:        cloneFloatPtr(item.OutputUSDPer1M),
-		CachedInputUSDPer1M:   cloneFloatPtr(item.CachedInputUSDPer1M),
-		CacheWriteUSDPer1M:    cloneFloatPtr(item.CacheWriteUSDPer1M),
-		CacheWrite1hUSDPer1M:  cloneFloatPtr(item.CacheWrite1hUSDPer1M),
-		ImageInputUSDPer1M:    cloneFloatPtr(item.ImageInputUSDPer1M),
-		ImageOutputUSDPer1M:   cloneFloatPtr(item.ImageOutputUSDPer1M),
-		AudioInputUSDPer1M:    cloneFloatPtr(item.AudioInputUSDPer1M),
-		AudioOutputUSDPer1M:   cloneFloatPtr(item.AudioOutputUSDPer1M),
-		OutputUSDPerImage:     cloneFloatPtr(item.OutputUSDPerImage),
-		MaxInputTokens:        cloneIntPtr(item.MaxInputTokens),
-		MaxOutputTokens:       cloneIntPtr(item.MaxOutputTokens),
-		MaxTokens:             cloneIntPtr(item.MaxTokens),
-		SupportsPromptCaching: item.SupportsPromptCaching,
-		SupportsServiceTier:   item.SupportsServiceTier,
-		CatalogVisible:        item.CatalogVisible,
-		PricingNotes:          item.PricingNotes,
-		CapabilityNotes:       item.CapabilityNotes,
-		Notes:                 item.Notes,
-		Source:                item.Source,
+		ID:                        item.ID,
+		ProviderCode:              item.ProviderCode,
+		Model:                     item.Model,
+		Scope:                     item.Scope,
+		Status:                    item.Status,
+		SystemAccountID:           item.SystemAccountID,
+		PricingModel:              item.PricingModel,
+		Mode:                      item.Mode,
+		CatalogOrder:              cloneIntPtr(item.CatalogOrder),
+		ReleaseDate:               item.ReleaseDate,
+		ShutdownDate:              item.ShutdownDate,
+		ContextWindowTokens:       cloneIntPtr(item.ContextWindowTokens),
+		SupportedAPIProtocols:     dedupeStrings(item.SupportedAPIProtocols),
+		SupportedServiceTiers:     supportedServiceTiers,
+		SupportedReasoningEfforts: supportedReasoningEfforts,
+		DefaultReasoningEffort:    defaultReasoningEffort,
+		InputUSDPer1M:             cloneFloatPtr(item.InputUSDPer1M),
+		OutputUSDPer1M:            cloneFloatPtr(item.OutputUSDPer1M),
+		CachedInputUSDPer1M:       cloneFloatPtr(item.CachedInputUSDPer1M),
+		CacheWriteUSDPer1M:        cloneFloatPtr(item.CacheWriteUSDPer1M),
+		CacheWrite1hUSDPer1M:      cloneFloatPtr(item.CacheWrite1hUSDPer1M),
+		ImageInputUSDPer1M:        cloneFloatPtr(item.ImageInputUSDPer1M),
+		ImageOutputUSDPer1M:       cloneFloatPtr(item.ImageOutputUSDPer1M),
+		AudioInputUSDPer1M:        cloneFloatPtr(item.AudioInputUSDPer1M),
+		AudioOutputUSDPer1M:       cloneFloatPtr(item.AudioOutputUSDPer1M),
+		OutputUSDPerImage:         cloneFloatPtr(item.OutputUSDPerImage),
+		MaxInputTokens:            cloneIntPtr(item.MaxInputTokens),
+		MaxOutputTokens:           cloneIntPtr(item.MaxOutputTokens),
+		MaxTokens:                 cloneIntPtr(item.MaxTokens),
+		SupportsPromptCaching:     item.SupportsPromptCaching,
+		SupportsServiceTier:       len(supportedServiceTiers) > 0,
+		CatalogVisible:            item.CatalogVisible,
+		PricingNotes:              item.PricingNotes,
+		CapabilityNotes:           item.CapabilityNotes,
+		Notes:                     item.Notes,
+		Source:                    item.Source,
+	}
+	if item.Scope == "built_in" {
+		output.CodexSupportedReasoningLevels = dedupeStrings(item.CodexSupportedReasoningLevels)
+		output.CodexDefaultReasoningLevel = strings.TrimSpace(item.CodexDefaultReasoningLevel)
+		output.CodexMultiAgentVersion = strings.TrimSpace(item.CodexMultiAgentVersion)
+	} else {
+		output.CodexSupportedReasoningLevels = []string{}
 	}
 	if item.Scope != "built_in" {
 		output.CreatedAt = formatOptionalTime(item.CreatedAt)
@@ -1259,4 +1445,20 @@ func dedupeStrings(values []string) []string {
 		output = append(output, text)
 	}
 	return output
+}
+
+func stringSet(values []string) map[string]struct{} {
+	output := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		output[value] = struct{}{}
+	}
+	return output
+}
+
+func stringListContains(values []string, target string) bool {
+	if target == "" {
+		return false
+	}
+	_, ok := stringSet(values)[target]
+	return ok
 }

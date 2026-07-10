@@ -141,9 +141,10 @@ func newManagementProviderDefaultHealthCheckModelHandler(service managementProvi
 			return
 		}
 		result, err := service.SetDefaultHealthCheckModel(r, managementprovidermodels.DefaultHealthCheckModelInput{
-			ProviderCode:    chi.URLParam(r, "code"),
-			SystemAccountID: managementScopedSystemAccountID(authContext, r.URL.Query()),
-			Model:           payload.Model,
+			ProviderCode:         chi.URLParam(r, "code"),
+			ActorSystemAccountID: authContext.SystemAccountID,
+			ActorRole:            authContext.Role,
+			Model:                payload.Model,
 		})
 		if err != nil {
 			if errors.Is(err, managementprovidermodels.ErrProviderNotFound) {
@@ -313,6 +314,27 @@ func decodeManagementProviderCustomModelBody(w http.ResponseWriter, r *http.Requ
 				continue
 			}
 			fields.SupportedAPIProtocols = managementprovidermodels.OptionalStringList{Set: true, Value: value}
+		case "supportedServiceTiers":
+			value, ok := decodeManagementProviderCustomModelStringList(raw)
+			if !ok {
+				fields.Invalid = true
+				continue
+			}
+			fields.SupportedServiceTiers = managementprovidermodels.OptionalStringList{Set: true, Value: value}
+		case "supportedReasoningEfforts":
+			value, ok := decodeManagementProviderCustomModelStringList(raw)
+			if !ok {
+				fields.Invalid = true
+				continue
+			}
+			fields.SupportedReasoningEfforts = managementprovidermodels.OptionalStringList{Set: true, Value: value}
+		case "defaultReasoningEffort":
+			value, ok := decodeManagementProviderCustomModelNullableString(raw, false)
+			if !ok {
+				fields.Invalid = true
+				continue
+			}
+			fields.DefaultReasoningEffort = managementprovidermodels.OptionalString{Set: true, Value: value}
 		case "pricingModel":
 			value, ok := decodeManagementProviderCustomModelNullableString(raw, true)
 			if !ok {

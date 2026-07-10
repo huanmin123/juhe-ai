@@ -185,6 +185,21 @@ func TestManagementProviderMigrationsUseHealthCheckModelColumns(t *testing.T) {
 			t.Fatalf("provider options migration retains legacy contract %q", legacy)
 		}
 	}
+
+	providerModelsMigration, err := os.ReadFile("../../../db/migrations/000027_w2_provider_model_request_capabilities.sql")
+	if err != nil {
+		t.Fatalf("read provider model migration: %v", err)
+	}
+	providerModelsSQL := string(providerModelsMigration)
+	for _, want := range []string{
+		"supported_service_tiers_json text NOT NULL DEFAULT '[]'",
+		"supported_reasoning_efforts_json text NOT NULL DEFAULT '[]'",
+		"default_reasoning_effort text",
+	} {
+		if !strings.Contains(providerModelsSQL, want) {
+			t.Fatalf("provider model capability migration missing %q", want)
+		}
+	}
 }
 
 func TestDecodeProviderStringArrayTrimsDedupes(t *testing.T) {
@@ -201,21 +216,24 @@ func TestManagementProviderModelCatalogItemFromRowDecodesOptionalFields(t *testi
 	inputPrice := pgtype.Float8{Float64: 1.25, Valid: true}
 	maxInput := pgtype.Int4{Int32: 128000, Valid: true}
 	row := postgresqueries.ListManagementProviderModelCatalogRow{
-		ID:                        "custom_model_1",
-		ProviderCode:              "gpt",
-		Model:                     "gpt-custom",
-		Scope:                     "personal",
-		SystemAccountID:           pgtype.Text{String: "sys_user", Valid: true},
-		Status:                    "active",
-		Mode:                      pgtype.Text{String: "chat", Valid: true},
-		CatalogOrder:              pgtype.Int4{Int32: 10, Valid: true},
-		SupportedApiProtocolsJson: `[" chat_completions ","chat_completions","responses"]`,
-		ContextWindowTokens:       maxInput,
-		MaxInputTokens:            maxInput,
-		InputUsdPer1m:             inputPrice,
-		SupportsPromptCaching:     true,
-		CatalogVisible:            true,
-		Source:                    "custom-personal",
+		ID:                            "custom_model_1",
+		ProviderCode:                  "gpt",
+		Model:                         "gpt-custom",
+		Scope:                         "personal",
+		SystemAccountID:               pgtype.Text{String: "sys_user", Valid: true},
+		Status:                        "active",
+		Mode:                          pgtype.Text{String: "chat", Valid: true},
+		CatalogOrder:                  pgtype.Int4{Int32: 10, Valid: true},
+		SupportedApiProtocolsJson:     `[" chat_completions ","chat_completions","responses"]`,
+		SupportedServiceTiersJson:     `[" priority ","priority","flex"]`,
+		SupportedReasoningEffortsJson: `["low","high","high"]`,
+		DefaultReasoningEffort:        pgtype.Text{String: "high", Valid: true},
+		ContextWindowTokens:           maxInput,
+		MaxInputTokens:                maxInput,
+		InputUsdPer1m:                 inputPrice,
+		SupportsPromptCaching:         true,
+		CatalogVisible:                true,
+		Source:                        "custom-personal",
 	}
 
 	item, err := managementProviderModelCatalogItemFromRow(row)
@@ -230,6 +248,15 @@ func TestManagementProviderModelCatalogItemFromRowDecodesOptionalFields(t *testi
 	}
 	if len(item.SupportedAPIProtocols) != 2 || item.SupportedAPIProtocols[0] != "chat_completions" || item.SupportedAPIProtocols[1] != "responses" {
 		t.Fatalf("protocols = %+v", item.SupportedAPIProtocols)
+	}
+	if len(item.SupportedServiceTiers) != 2 || item.SupportedServiceTiers[0] != "priority" || item.SupportedServiceTiers[1] != "flex" {
+		t.Fatalf("service tiers = %+v", item.SupportedServiceTiers)
+	}
+	if len(item.SupportedReasoningEfforts) != 2 || item.SupportedReasoningEfforts[0] != "low" || item.SupportedReasoningEfforts[1] != "high" || item.DefaultReasoningEffort != "high" {
+		t.Fatalf("reasoning capabilities = %+v default=%q", item.SupportedReasoningEfforts, item.DefaultReasoningEffort)
+	}
+	if !item.SupportsServiceTier {
+		t.Fatalf("supports service tier must derive from exact tier array")
 	}
 }
 

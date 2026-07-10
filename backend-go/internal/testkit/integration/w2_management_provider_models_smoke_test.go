@@ -49,6 +49,9 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 	db := openSQLDB(t, postgresURL)
 	defer closeSQLDB(t, db)
 	runGooseMigrations(t, db)
+	assertW2ProviderModelRequestCapabilitiesRow(t, ctx, db, "gpt-5.6-sol", []string{"priority"}, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max", "ultra"}, "low", "v2")
+	assertW2ProviderModelRequestCapabilitiesRow(t, ctx, db, "gpt-5.6-terra", []string{"priority"}, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max", "ultra"}, "medium", "v2")
+	assertW2ProviderModelRequestCapabilitiesRow(t, ctx, db, "gpt-5.6-luna", []string{"priority"}, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max"}, "medium", "")
 
 	now := time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC)
 	insertW2ProxyOptionsFixture(t, ctx, db, now)
@@ -79,9 +82,13 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 	assertW2ProviderModelPricing(t, findW2ProviderModel(models, "gpt-5.6-sol"), "2026-06-26", 372000, 0.5, 6.25)
 	assertW2ProviderModelPricing(t, findW2ProviderModel(models, "gpt-5.6-terra"), "2026-06-26", 372000, 0.25, 3.125)
 	assertW2ProviderModelPricing(t, findW2ProviderModel(models, "gpt-5.6-luna"), "2026-06-26", 372000, 0.1, 1.25)
+	assertW2ProviderModelRequestCapabilities(t, findW2ProviderModel(models, "gpt-5.6-sol"), []string{"priority"}, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max", "ultra"}, "low", "v2")
+	assertW2ProviderModelRequestCapabilities(t, findW2ProviderModel(models, "gpt-5.6-terra"), []string{"priority"}, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max", "ultra"}, "medium", "v2")
+	assertW2ProviderModelRequestCapabilities(t, findW2ProviderModel(models, "gpt-5.6-luna"), []string{"priority"}, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max"}, "medium", "")
 	if personal := findW2ProviderModel(models, "w2-personal-model"); personal == nil || personal.Scope != "personal" || personal.SystemAccountID != "sys_w2_proxy_options" {
 		t.Fatalf("personal model missing or wrong scope: %+v", personal)
 	}
+	assertW2ProviderModelRequestCapabilities(t, findW2ProviderModel(models, "w2-personal-model"), []string{"priority", "flex"}, []string{"low", "high"}, "high", []string{}, "", "")
 
 	defaultModels, err := service.Models(ctx, managementprovidermodels.ModelListInput{
 		ProviderCode:    "gpt",
@@ -101,9 +108,10 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list provider model options: %v", err)
 	}
-	if findW2ProviderModelOption(options, "gpt", "gpt-5.6-sol") == nil {
-		t.Fatalf("gpt-5.6-sol model option missing: %+v", options)
-	}
+	assertW2ProviderModelOptionRequestCapabilities(t, findW2ProviderModelOption(options, "gpt", "gpt-5.6-sol"), []string{"priority"}, []string{"none", "low", "medium", "high", "xhigh", "max"}, "")
+	assertW2ProviderModelOptionRequestCapabilities(t, findW2ProviderModelOption(options, "gpt", "gpt-5.6-terra"), []string{"priority"}, []string{"none", "low", "medium", "high", "xhigh", "max"}, "")
+	assertW2ProviderModelOptionRequestCapabilities(t, findW2ProviderModelOption(options, "gpt", "gpt-5.6-luna"), []string{"priority"}, []string{"none", "low", "medium", "high", "xhigh", "max"}, "")
+	assertW2ProviderModelOptionRequestCapabilities(t, findW2ProviderModelOption(options, "gpt", "w2-personal-model"), []string{"priority", "flex"}, []string{"low", "high"}, "high")
 
 	saved, err := service.SetDefaultHealthCheckModel(ctx, managementprovidermodels.DefaultHealthCheckModelInput{
 		ProviderCode:    "gpt",
@@ -158,6 +166,9 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 	if findW2ProviderModel(modelsBody.Data, "w2-personal-model") == nil {
 		t.Fatalf("HTTP provider models response missing personal model: %+v", modelsBody.Data)
 	}
+	assertW2ProviderModelRequestCapabilities(t, findW2ProviderModel(modelsBody.Data, "gpt-5.6-sol"), []string{"priority"}, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max", "ultra"}, "low", "v2")
+	assertW2ProviderModelRequestCapabilities(t, findW2ProviderModel(modelsBody.Data, "gpt-5.6-terra"), []string{"priority"}, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max", "ultra"}, "medium", "v2")
+	assertW2ProviderModelRequestCapabilities(t, findW2ProviderModel(modelsBody.Data, "gpt-5.6-luna"), []string{"priority"}, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max"}, "medium", "")
 
 	optionsReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/providers/models/options?protocol=openai&systemAccountId=sys_w2_proxy_options", nil)
 	optionsReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
@@ -169,12 +180,18 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 	var optionsBody struct {
 		Data []managementprovidermodels.ModelOption `json:"data"`
 	}
-	if err := json.NewDecoder(optionsRec.Body).Decode(&optionsBody); err != nil {
+	optionsResponseBody := optionsRec.Body.Bytes()
+	if err := json.Unmarshal(optionsResponseBody, &optionsBody); err != nil {
 		t.Fatalf("decode model options response: %v", err)
 	}
-	if findW2ProviderModelOption(optionsBody.Data, "gpt", "w2-personal-model") == nil {
-		t.Fatalf("HTTP provider model options response missing personal model: %+v", optionsBody.Data)
-	}
+	assertW2ProviderModelOptionRequestCapabilities(t, findW2ProviderModelOption(optionsBody.Data, "gpt", "gpt-5.6-sol"), []string{"priority"}, []string{"none", "low", "medium", "high", "xhigh", "max"}, "")
+	assertW2ProviderModelOptionRequestCapabilities(t, findW2ProviderModelOption(optionsBody.Data, "gpt", "gpt-5.6-terra"), []string{"priority"}, []string{"none", "low", "medium", "high", "xhigh", "max"}, "")
+	assertW2ProviderModelOptionRequestCapabilities(t, findW2ProviderModelOption(optionsBody.Data, "gpt", "gpt-5.6-luna"), []string{"priority"}, []string{"none", "low", "medium", "high", "xhigh", "max"}, "")
+	assertW2ProviderModelOptionRequestCapabilities(t, findW2ProviderModelOption(optionsBody.Data, "gpt", "w2-personal-model"), []string{"priority", "flex"}, []string{"low", "high"}, "high")
+	assertW2ProviderModelOptionWireFields(t, optionsResponseBody, "gpt", "gpt-5.6-sol", "supportedServiceTiers", "supportedReasoningEfforts")
+	assertW2ProviderModelOptionWireFields(t, optionsResponseBody, "gpt", "gpt-5.6-terra", "supportedServiceTiers", "supportedReasoningEfforts")
+	assertW2ProviderModelOptionWireFields(t, optionsResponseBody, "gpt", "gpt-5.6-luna", "supportedServiceTiers", "supportedReasoningEfforts")
+	assertW2ProviderModelOptionWireFields(t, optionsResponseBody, "gpt", "w2-personal-model", "supportedServiceTiers", "supportedReasoningEfforts", "defaultReasoningEffort")
 
 	putReq := httptest.NewRequest(http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model?systemAccountId=sys_w2_proxy_options", strings.NewReader(`{"model":"gpt-5.6-sol"}`))
 	putReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
@@ -210,25 +227,38 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 func insertW2ProviderModelFixture(t *testing.T, ctx context.Context, db *sql.DB, now time.Time) {
 	t.Helper()
 	fixtures := []struct {
-		id              string
-		model           string
-		scope           string
-		systemAccountID *string
-		status          string
-		price           *float64
+		id                     string
+		model                  string
+		scope                  string
+		systemAccountID        *string
+		status                 string
+		price                  *float64
+		serviceTiers           string
+		reasoningEfforts       string
+		defaultReasoningEffort *string
 	}{
 		{id: "custom_model_w2_global", model: "w2-global-model", scope: "global", status: "active", price: float64Ptr(2)},
-		{id: "custom_model_w2_personal", model: "w2-personal-model", scope: "personal", systemAccountID: stringPtr("sys_w2_proxy_options"), status: "active", price: float64Ptr(3)},
+		{id: "custom_model_w2_personal", model: "w2-personal-model", scope: "personal", systemAccountID: stringPtr("sys_w2_proxy_options"), status: "active", price: float64Ptr(3), serviceTiers: `["priority","flex"]`, reasoningEfforts: `["low","high"]`, defaultReasoningEffort: stringPtr("high")},
 		{id: "custom_model_w2_unpriced", model: "w2-unpriced-model", scope: "personal", systemAccountID: stringPtr("sys_w2_proxy_options"), status: "active"},
 	}
 	for _, item := range fixtures {
+		serviceTiers := item.serviceTiers
+		if serviceTiers == "" {
+			serviceTiers = "[]"
+		}
+		reasoningEfforts := item.reasoningEfforts
+		if reasoningEfforts == "" {
+			reasoningEfforts = "[]"
+		}
 		_, err := db.ExecContext(ctx, `
 			INSERT INTO juhe_business.custom_provider_models (
 				id, provider_code, model, scope, system_account_id, status, mode,
-				supported_api_protocols_json, input_usd_per_1m, currency, created_by,
+				supported_api_protocols_json, supported_service_tiers_json,
+				supported_reasoning_efforts_json, default_reasoning_effort,
+				input_usd_per_1m, currency, created_by,
 				created_at, updated_at
-			) VALUES ($1, 'gpt', $2, $3, $4, $5, 'chat', '["chat_completions"]', $6, 'USD', 'sys_w2_proxy_options', $7, $8)
-		`, item.id, item.model, item.scope, item.systemAccountID, item.status, item.price, now, now)
+			) VALUES ($1, 'gpt', $2, $3, $4, $5, 'text', '["chat_completions"]', $6, $7, $8, $9, 'USD', 'sys_w2_proxy_options', $10, $11)
+		`, item.id, item.model, item.scope, item.systemAccountID, item.status, serviceTiers, reasoningEfforts, item.defaultReasoningEffort, item.price, now, now)
 		if err != nil {
 			t.Fatalf("insert provider model fixture %s: %v", item.id, err)
 		}
@@ -269,6 +299,168 @@ func assertW2ProviderModelPricing(t *testing.T, item *managementprovidermodels.M
 	}
 	if item.CacheWriteUSDPer1M == nil || *item.CacheWriteUSDPer1M != cacheWriteUSDPer1M {
 		t.Fatalf("%s cache write price = %v, want %v", item.Model, item.CacheWriteUSDPer1M, cacheWriteUSDPer1M)
+	}
+}
+
+func assertW2ProviderModelRequestCapabilities(
+	t *testing.T,
+	item *managementprovidermodels.ModelCatalogItem,
+	serviceTiers []string,
+	reasoningEfforts []string,
+	defaultReasoningEffort string,
+	codexReasoningLevels []string,
+	codexDefaultReasoningLevel string,
+	codexMultiAgentVersion string,
+) {
+	t.Helper()
+	if item == nil {
+		t.Fatalf("provider model missing")
+	}
+	if strings.Join(item.SupportedServiceTiers, ",") != strings.Join(serviceTiers, ",") {
+		t.Fatalf("%s service tiers = %v, want %v", item.Model, item.SupportedServiceTiers, serviceTiers)
+	}
+	if strings.Join(item.SupportedReasoningEfforts, ",") != strings.Join(reasoningEfforts, ",") {
+		t.Fatalf("%s reasoning efforts = %v, want %v", item.Model, item.SupportedReasoningEfforts, reasoningEfforts)
+	}
+	if item.DefaultReasoningEffort != defaultReasoningEffort {
+		t.Fatalf("%s default reasoning effort = %q, want %q", item.Model, item.DefaultReasoningEffort, defaultReasoningEffort)
+	}
+	if item.SupportsServiceTier != (len(serviceTiers) > 0) {
+		t.Fatalf("%s supportsServiceTier = %v, want %v", item.Model, item.SupportsServiceTier, len(serviceTiers) > 0)
+	}
+	if strings.Join(item.CodexSupportedReasoningLevels, ",") != strings.Join(codexReasoningLevels, ",") {
+		t.Fatalf("%s Codex reasoning levels = %v, want %v", item.Model, item.CodexSupportedReasoningLevels, codexReasoningLevels)
+	}
+	if item.CodexDefaultReasoningLevel != codexDefaultReasoningLevel {
+		t.Fatalf("%s Codex default reasoning level = %q, want %q", item.Model, item.CodexDefaultReasoningLevel, codexDefaultReasoningLevel)
+	}
+	if item.CodexMultiAgentVersion != codexMultiAgentVersion {
+		t.Fatalf("%s Codex multi-agent version = %q, want %q", item.Model, item.CodexMultiAgentVersion, codexMultiAgentVersion)
+	}
+}
+
+func assertW2ProviderModelOptionRequestCapabilities(
+	t *testing.T,
+	item *managementprovidermodels.ModelOption,
+	serviceTiers []string,
+	reasoningEfforts []string,
+	defaultReasoningEffort string,
+) {
+	t.Helper()
+	if item == nil {
+		t.Fatalf("provider model option missing")
+	}
+	if strings.Join(item.SupportedServiceTiers, ",") != strings.Join(serviceTiers, ",") {
+		t.Fatalf("%s option service tiers = %v, want %v", item.Model, item.SupportedServiceTiers, serviceTiers)
+	}
+	if strings.Join(item.SupportedReasoningEfforts, ",") != strings.Join(reasoningEfforts, ",") {
+		t.Fatalf("%s option reasoning efforts = %v, want %v", item.Model, item.SupportedReasoningEfforts, reasoningEfforts)
+	}
+	if item.DefaultReasoningEffort != defaultReasoningEffort {
+		t.Fatalf("%s option default reasoning effort = %q, want %q", item.Model, item.DefaultReasoningEffort, defaultReasoningEffort)
+	}
+}
+
+func assertW2ProviderModelOptionWireFields(t *testing.T, body []byte, providerCode string, model string, fields ...string) {
+	t.Helper()
+	var payload struct {
+		Data []map[string]json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode provider model option wire payload: %v", err)
+	}
+	for _, item := range payload.Data {
+		var actualProviderCode string
+		var actualModel string
+		if err := json.Unmarshal(item["providerCode"], &actualProviderCode); err != nil {
+			continue
+		}
+		if err := json.Unmarshal(item["model"], &actualModel); err != nil {
+			continue
+		}
+		if actualProviderCode != providerCode || actualModel != model {
+			continue
+		}
+		for _, field := range fields {
+			if _, ok := item[field]; !ok {
+				t.Fatalf("%s/%s option wire field %q missing: %s", providerCode, model, field, string(body))
+			}
+		}
+		return
+	}
+	t.Fatalf("%s/%s option missing from wire payload: %s", providerCode, model, string(body))
+}
+
+func assertW2ProviderModelRequestCapabilitiesRow(
+	t *testing.T,
+	ctx context.Context,
+	db *sql.DB,
+	model string,
+	serviceTiers []string,
+	reasoningEfforts []string,
+	defaultReasoningEffort string,
+	codexReasoningLevels []string,
+	codexDefaultReasoningLevel string,
+	codexMultiAgentVersion string,
+) {
+	t.Helper()
+	var serviceTiersJSON string
+	var reasoningEffortsJSON string
+	var defaultEffort sql.NullString
+	var codexReasoningLevelsJSON string
+	var codexDefaultLevel sql.NullString
+	var codexMultiAgent sql.NullString
+	if err := db.QueryRowContext(ctx, `
+		SELECT
+			supported_service_tiers_json,
+			supported_reasoning_efforts_json,
+			default_reasoning_effort,
+			codex_supported_reasoning_levels_json,
+			codex_default_reasoning_level,
+			codex_multi_agent_version
+		FROM juhe_business.provider_model_catalog
+		WHERE provider_code = 'gpt' AND model = $1
+	`, model).Scan(
+		&serviceTiersJSON,
+		&reasoningEffortsJSON,
+		&defaultEffort,
+		&codexReasoningLevelsJSON,
+		&codexDefaultLevel,
+		&codexMultiAgent,
+	); err != nil {
+		t.Fatalf("query %s request capabilities: %v", model, err)
+	}
+
+	var actualServiceTiers []string
+	if err := json.Unmarshal([]byte(serviceTiersJSON), &actualServiceTiers); err != nil {
+		t.Fatalf("decode %s service tiers: %v", model, err)
+	}
+	var actualReasoningEfforts []string
+	if err := json.Unmarshal([]byte(reasoningEffortsJSON), &actualReasoningEfforts); err != nil {
+		t.Fatalf("decode %s reasoning efforts: %v", model, err)
+	}
+	var actualCodexReasoningLevels []string
+	if err := json.Unmarshal([]byte(codexReasoningLevelsJSON), &actualCodexReasoningLevels); err != nil {
+		t.Fatalf("decode %s Codex reasoning levels: %v", model, err)
+	}
+
+	if strings.Join(actualServiceTiers, ",") != strings.Join(serviceTiers, ",") {
+		t.Fatalf("%s PG service tiers = %v, want %v", model, actualServiceTiers, serviceTiers)
+	}
+	if strings.Join(actualReasoningEfforts, ",") != strings.Join(reasoningEfforts, ",") {
+		t.Fatalf("%s PG reasoning efforts = %v, want %v", model, actualReasoningEfforts, reasoningEfforts)
+	}
+	if defaultEffort.String != defaultReasoningEffort {
+		t.Fatalf("%s PG default reasoning effort = %q, want %q", model, defaultEffort.String, defaultReasoningEffort)
+	}
+	if strings.Join(actualCodexReasoningLevels, ",") != strings.Join(codexReasoningLevels, ",") {
+		t.Fatalf("%s PG Codex reasoning levels = %v, want %v", model, actualCodexReasoningLevels, codexReasoningLevels)
+	}
+	if codexDefaultLevel.String != codexDefaultReasoningLevel {
+		t.Fatalf("%s PG Codex default reasoning level = %q, want %q", model, codexDefaultLevel.String, codexDefaultReasoningLevel)
+	}
+	if codexMultiAgent.String != codexMultiAgentVersion {
+		t.Fatalf("%s PG Codex multi-agent version = %q, want %q", model, codexMultiAgent.String, codexMultiAgentVersion)
 	}
 }
 
