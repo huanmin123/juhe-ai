@@ -513,7 +513,8 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 		if err != nil {
 			return err
 		}
-		if input.SupportedModels.Set() && !unorderedStringListsEqual(models, current.SupportedModels) {
+		supportedModelsChanged := input.SupportedModels.Set() && !unorderedStringListsEqual(models, current.SupportedModels)
+		if supportedModelsChanged {
 			if err := s.validateSupportedModelsInProviderCatalog(ctx, target.ID, current.ProviderCode, models); err != nil {
 				return err
 			}
@@ -529,6 +530,7 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 			CredentialFingerprint:    next.CredentialFingerprint,
 			CredentialMask:           next.CredentialMask,
 			SupportedModels:          next.SupportedModels,
+			SupportedModelsChanged:   supportedModelsChanged,
 			Schedulable:              next.Schedulable,
 			AvailabilityScheduleJSON: next.AvailabilityScheduleJSON,
 			ConcurrencyLimit:         next.ConcurrencyLimit,

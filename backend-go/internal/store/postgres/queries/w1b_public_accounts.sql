@@ -346,6 +346,13 @@ SET name = sqlc.arg(name),
     schedulable = sqlc.arg(schedulable),
     availability_schedule_json = sqlc.arg(availability_schedule_json),
     notes = sqlc.arg(notes),
+    default_test_model = CASE
+      WHEN sqlc.arg(supported_models_changed)::boolean
+        AND default_test_model IS NOT NULL
+        AND default_test_model <> ALL(COALESCE(sqlc.arg(supported_models)::text[], ARRAY[]::text[]))
+      THEN NULL
+      ELSE default_test_model
+    END,
     updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id)
   AND system_account_id = sqlc.arg(system_account_id)

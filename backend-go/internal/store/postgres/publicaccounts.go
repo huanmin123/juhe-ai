@@ -476,6 +476,8 @@ func publicAccountUpdate(ctx context.Context, q *postgresqueries.Queries, input 
 		Schedulable:              input.Schedulable,
 		AvailabilityScheduleJson: pgTextPtr(input.AvailabilityScheduleJSON),
 		Notes:                    pgTextPtr(input.Notes),
+		SupportedModelsChanged:   input.SupportedModelsChanged,
+		SupportedModels:          input.SupportedModels,
 		UpdatedAt:                pgTimestamptz(input.Now),
 		ID:                       input.ID,
 		SystemAccountID:          input.SystemAccountID,
@@ -489,8 +491,10 @@ func publicAccountUpdate(ctx context.Context, q *postgresqueries.Queries, input 
 		}
 		return port.PublicAccountSummary{}, false, fmt.Errorf("update public account: %w", err)
 	}
-	if err := replacePublicAccountSupportedModels(ctx, q, input.ID, input.ProviderCode, input.SupportedModels, input.Now); err != nil {
-		return port.PublicAccountSummary{}, false, err
+	if input.SupportedModelsChanged {
+		if err := replacePublicAccountSupportedModels(ctx, q, input.ID, input.ProviderCode, input.SupportedModels, input.Now); err != nil {
+			return port.PublicAccountSummary{}, false, err
+		}
 	}
 	if err := q.UpdatePublicAccountGroupBindingDispatch(ctx, postgresqueries.UpdatePublicAccountGroupBindingDispatchParams{
 		LocalPriority:   int32(input.Priority),

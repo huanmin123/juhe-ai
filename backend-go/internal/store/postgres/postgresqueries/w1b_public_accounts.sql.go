@@ -1075,9 +1075,16 @@ SET name = $1,
     schedulable = $8,
     availability_schedule_json = $9,
     notes = $10,
-    updated_at = $11
-WHERE id = $12
-  AND system_account_id = $13
+    default_test_model = CASE
+      WHEN $11::boolean
+        AND default_test_model IS NOT NULL
+        AND default_test_model <> ALL(COALESCE($12::text[], ARRAY[]::text[]))
+      THEN NULL
+      ELSE default_test_model
+    END,
+    updated_at = $13
+WHERE id = $14
+  AND system_account_id = $15
   AND deleted_at IS NULL
 RETURNING
   id,
@@ -1113,6 +1120,8 @@ type UpdatePublicAccountAllFieldsParams struct {
 	Schedulable              bool
 	AvailabilityScheduleJson pgtype.Text
 	Notes                    pgtype.Text
+	SupportedModelsChanged   bool
+	SupportedModels          []string
 	UpdatedAt                pgtype.Timestamptz
 	ID                       string
 	SystemAccountID          string
@@ -1153,6 +1162,8 @@ func (q *Queries) UpdatePublicAccountAllFields(ctx context.Context, arg UpdatePu
 		arg.Schedulable,
 		arg.AvailabilityScheduleJson,
 		arg.Notes,
+		arg.SupportedModelsChanged,
+		arg.SupportedModels,
 		arg.UpdatedAt,
 		arg.ID,
 		arg.SystemAccountID,

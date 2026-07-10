@@ -34,6 +34,32 @@ func TestFindPublicAccountProviderProfileQuerySelectsDefaultSupportedModels(t *t
 	}
 }
 
+func TestUpdatePublicAccountQueryClearsDefaultTestModelOnlyForChangedSupportedModels(t *testing.T) {
+	source, err := os.ReadFile("queries/w1b_public_accounts.sql")
+	if err != nil {
+		t.Fatalf("read public account query: %v", err)
+	}
+	sql := string(source)
+	start := strings.Index(sql, "-- name: UpdatePublicAccountAllFields :one")
+	end := strings.Index(sql, "-- name: UpdatePublicAccountGroupBindingDispatch :exec")
+	if start < 0 || end <= start {
+		t.Fatal("public account SQL missing update query")
+	}
+	query := sql[start:end]
+	for _, want := range []string{
+		"default_test_model = CASE",
+		"sqlc.arg(supported_models_changed)::boolean",
+		"default_test_model IS NOT NULL",
+		"default_test_model <> ALL(COALESCE(sqlc.arg(supported_models)::text[], ARRAY[]::text[]))",
+		"THEN NULL",
+		"ELSE default_test_model",
+	} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("public account update query missing %q in:\n%s", want, query)
+		}
+	}
+}
+
 func TestPublicAccountProviderProfileFromRowDecodesDefaultSupportedModels(t *testing.T) {
 	profile, err := publicAccountProviderProfileFromRow(postgresqueries.FindPublicAccountProviderProfileRow{
 		ID:                         "profile_gpt_openai_v1",

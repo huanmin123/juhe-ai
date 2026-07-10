@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -276,6 +277,53 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 	assertW1bPublicAccountStored(t, ctx, db, accountID, initialSecret, publicaccounts.StatusPendingTest, false)
 	assertW1bPublicAccountModels(t, ctx, db, accountID, w1bGPTDefaultSupportedModels)
 
+	setW1bPublicAccountDefaultTestModel(t, ctx, db, accountID, w1bUnknownModel)
+	preservedWithoutModelUpdate, err := service.Update(ctx, publicaccounts.UpdateInput{
+		AccountID: accountID,
+		Notes:     publicaccounts.NewOptionalString(ptrIntegrationString("仅更新备注"), true),
+	})
+	if err != nil {
+		t.Fatalf("update public account without supportedModels: %v", err)
+	}
+	assertW1bPublicAccountDefaultTestModel(t, ctx, db, accountID, w1bUnknownModel)
+	assertW1bPublicAccountResponseHidesDefaultTestModel(t, preservedWithoutModelUpdate)
+
+	equivalentModels := slices.Clone(w1bGPTDefaultSupportedModels)
+	slices.Reverse(equivalentModels)
+	preservedForEquivalentModels, err := service.Update(ctx, publicaccounts.UpdateInput{
+		AccountID:       accountID,
+		SupportedModels: publicaccounts.NewStringListValue(equivalentModels, true),
+	})
+	if err != nil {
+		t.Fatalf("update public account with equivalent supportedModels: %v", err)
+	}
+	assertW1bPublicAccountDefaultTestModel(t, ctx, db, accountID, w1bUnknownModel)
+	assertW1bPublicAccountModels(t, ctx, db, accountID, w1bGPTDefaultSupportedModels)
+	assertW1bPublicAccountResponseHidesDefaultTestModel(t, preservedForEquivalentModels)
+
+	setW1bPublicAccountDefaultTestModel(t, ctx, db, accountID, w1bValidBuiltInModel)
+	preservedForContainingModels, err := service.Update(ctx, publicaccounts.UpdateInput{
+		AccountID:       accountID,
+		SupportedModels: publicaccounts.NewStringListValue([]string{w1bValidBuiltInModel, "gpt-5.5"}, true),
+	})
+	if err != nil {
+		t.Fatalf("update public account with containing supportedModels: %v", err)
+	}
+	assertW1bPublicAccountDefaultTestModel(t, ctx, db, accountID, w1bValidBuiltInModel)
+	assertW1bPublicAccountModels(t, ctx, db, accountID, []string{w1bValidBuiltInModel, "gpt-5.5"})
+	assertW1bPublicAccountResponseHidesDefaultTestModel(t, preservedForContainingModels)
+
+	clearedForExcludingModels, err := service.Update(ctx, publicaccounts.UpdateInput{
+		AccountID:       accountID,
+		SupportedModels: publicaccounts.NewStringListValue([]string{"gpt-5.5"}, true),
+	})
+	if err != nil {
+		t.Fatalf("update public account with excluding supportedModels: %v", err)
+	}
+	assertW1bPublicAccountDefaultTestModel(t, ctx, db, accountID, "")
+	assertW1bPublicAccountModels(t, ctx, db, accountID, []string{"gpt-5.5"})
+	assertW1bPublicAccountResponseHidesDefaultTestModel(t, clearedForExcludingModels)
+
 	updatedSecret := "sk-fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
 	updatedBaseURL := "https://api.openai.com/v2"
 	updatedName := "公开账号更新"
@@ -440,6 +488,52 @@ func assertW1bPublicAccountName(t *testing.T, ctx context.Context, db *sql.DB, a
 	}
 	if got != want {
 		t.Fatalf("public account name = %q, want %q", got, want)
+	}
+}
+
+func setW1bPublicAccountDefaultTestModel(t *testing.T, ctx context.Context, db *sql.DB, accountID string, model string) {
+	t.Helper()
+
+	if _, err := db.ExecContext(ctx, `
+		UPDATE juhe_business.accounts
+		SET default_test_model = $2
+		WHERE id = $1 AND deleted_at IS NULL
+	`, accountID, model); err != nil {
+		t.Fatalf("set public account default test model: %v", err)
+	}
+}
+
+func assertW1bPublicAccountDefaultTestModel(t *testing.T, ctx context.Context, db *sql.DB, accountID string, want string) {
+	t.Helper()
+
+	var got sql.NullString
+	if err := db.QueryRowContext(ctx, `
+		SELECT default_test_model
+		FROM juhe_business.accounts
+		WHERE id = $1 AND deleted_at IS NULL
+	`, accountID).Scan(&got); err != nil {
+		t.Fatalf("read public account default test model: %v", err)
+	}
+	if want == "" {
+		if got.Valid {
+			t.Fatalf("default_test_model = %q, want NULL", got.String)
+		}
+		return
+	}
+	if !got.Valid || got.String != want {
+		t.Fatalf("default_test_model = %q valid=%v, want %q", got.String, got.Valid, want)
+	}
+}
+
+func assertW1bPublicAccountResponseHidesDefaultTestModel(t *testing.T, response publicaccounts.AccountResponse) {
+	t.Helper()
+
+	payload, err := json.Marshal(response)
+	if err != nil {
+		t.Fatalf("marshal public account response: %v", err)
+	}
+	if strings.Contains(string(payload), "defaultTestModel") || strings.Contains(string(payload), "default_test_model") {
+		t.Fatalf("public account response exposed default test model: %s", payload)
 	}
 }
 

@@ -537,6 +537,7 @@ type PublicAccountUpdateInput struct {
 	CredentialFingerprint    *string
 	CredentialMask           string
 	SupportedModels          []string
+	SupportedModelsChanged   bool
 	Schedulable              bool
 	AvailabilityScheduleJSON *string
 	ConcurrencyLimit         int

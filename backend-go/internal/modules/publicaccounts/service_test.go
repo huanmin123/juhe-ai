@@ -65,6 +65,17 @@ func TestServiceAddCreatesTargetGroupPendingTestAndDoesNotExposeCredentials(t *t
 	}
 }
 
+func TestPublicAccountSummaryDoesNotExposeDefaultTestModel(t *testing.T) {
+	summaryType := reflect.TypeOf(AccountSummary{})
+	for index := 0; index < summaryType.NumField(); index++ {
+		field := summaryType.Field(index)
+		jsonName := strings.Split(field.Tag.Get("json"), ",")[0]
+		if field.Name == "DefaultTestModel" || jsonName == "defaultTestModel" {
+			t.Fatalf("public account summary exposes default test model through field %s", field.Name)
+		}
+	}
+}
+
 func TestServiceAddUsesProviderDefaultSupportedModelsWhenOmitted(t *testing.T) {
 	store := newPublicAccountStoreFake()
 	service := newPublicAccountServiceForTest(store, nil)
@@ -431,6 +442,9 @@ func TestServiceUpdateOmittedSupportedModelsPreservesExistingNonEmptyModels(t *t
 	if store.updateCalls != 1 {
 		t.Fatalf("store update calls = %d, want 1", store.updateCalls)
 	}
+	if store.lastUpdateInput.SupportedModelsChanged {
+		t.Fatal("omitted supportedModels must not mark the model set as changed")
+	}
 	if response.Account == nil || !slices.Equal(response.Account.SupportedModels, wantModels) {
 		t.Fatalf("response account = %+v, want supported models %#v", response.Account, wantModels)
 	}
@@ -474,7 +488,47 @@ func TestServiceUpdateUnorderedEquivalentSupportedModelsSkipsCatalog(t *testing.
 	if store.updateCalls != 1 {
 		t.Fatalf("store update calls = %d, want 1", store.updateCalls)
 	}
-	wantModels := []string{"gpt-5.4-mini", "gpt-5.5"}
+	if store.lastUpdateInput.SupportedModelsChanged {
+		t.Fatal("unordered equivalent supportedModels must not mark the model set as changed")
+	}
+	wantModels := []string{"gpt-5.5", "gpt-5.4-mini"}
+	if response.Account == nil || !slices.Equal(response.Account.SupportedModels, wantModels) {
+		t.Fatalf("response account = %+v, want supported models %#v", response.Account, wantModels)
+	}
+}
+
+func TestServiceUpdateChangedSupportedModelsMarksStoreUpdate(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	reader := defaultProviderModelReaderStub()
+	service := newPublicAccountServiceForTest(store, reader)
+	created, err := service.Add(context.Background(), validPublicAccountAddInput(
+		"真实更新模型账号",
+		"gpt-5.5",
+		"gpt-5.4-mini",
+	))
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+
+	reader.resetCalls()
+	store.updateCalls = 0
+	response, err := service.Update(context.Background(), UpdateInput{
+		AccountID:       created.Account.ID,
+		SupportedModels: NewStringListValue([]string{"gpt-5.4-mini"}, true),
+	})
+	if err != nil {
+		t.Fatalf("update public account: %v", err)
+	}
+	if reader.calls != 1 {
+		t.Fatalf("provider model reader calls = %d, want 1", reader.calls)
+	}
+	if store.updateCalls != 1 {
+		t.Fatalf("store update calls = %d, want 1", store.updateCalls)
+	}
+	if !store.lastUpdateInput.SupportedModelsChanged {
+		t.Fatal("changed supportedModels must mark the model set as changed")
+	}
+	wantModels := []string{"gpt-5.4-mini"}
 	if response.Account == nil || !slices.Equal(response.Account.SupportedModels, wantModels) {
 		t.Fatalf("response account = %+v, want supported models %#v", response.Account, wantModels)
 	}
@@ -686,6 +740,7 @@ type publicAccountStoreFake struct {
 	accounts          map[string]port.PublicAccountSummary
 	createCalls       int
 	updateCalls       int
+	lastUpdateInput   port.PublicAccountUpdateInput
 }
 
 func newPublicAccountStoreFake() *publicAccountStoreFake {
@@ -844,6 +899,7 @@ func (s *publicAccountStoreFake) CreatePublicAccount(_ context.Context, input po
 
 func (s *publicAccountStoreFake) UpdatePublicAccount(_ context.Context, input port.PublicAccountUpdateInput) (port.PublicAccountSummary, bool, error) {
 	s.updateCalls++
+	s.lastUpdateInput = input
 	account, ok := s.accounts[input.ID]
 	if !ok {
 		return port.PublicAccountSummary{}, false, nil
@@ -853,7 +909,9 @@ func (s *publicAccountStoreFake) UpdatePublicAccount(_ context.Context, input po
 	account.CredentialsEncrypted = input.CredentialsEncrypted
 	account.CredentialFingerprint = input.CredentialFingerprint
 	account.CredentialMask = input.CredentialMask
-	account.SupportedModels = input.SupportedModels
+	if input.SupportedModelsChanged {
+		account.SupportedModels = input.SupportedModels
+	}
 	account.Schedulable = input.Schedulable
 	account.AvailabilityScheduleJSON = input.AvailabilityScheduleJSON
 	account.ConcurrencyLimit = input.ConcurrencyLimit

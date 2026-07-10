@@ -35,6 +35,7 @@ type JuheBusinessAccount struct {
 	CooldownUntil                             pgtype.Timestamptz
 	LastErrorCode                             pgtype.Text
 	LastErrorMessage                          pgtype.Text
+	DefaultTestModel                          pgtype.Text
 	DeletedAt                                 pgtype.Timestamptz
 	DeletedBy                                 pgtype.Text
 	CreatedAt                                 pgtype.Timestamptz
