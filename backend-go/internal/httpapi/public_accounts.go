@@ -91,7 +91,7 @@ func (h publicAccountHandler) add(w http.ResponseWriter, r *http.Request) {
 			Type:                      publicaccounts.AccountTypeAPIKey,
 			ClientCompatibility:       publicaccounts.DefaultClientCompat,
 			Status:                    mockPublicAccountAddStatus(input.Status),
-			SupportedModels:           input.SupportedModels,
+			SupportedModels:           input.SupportedModels.Value(),
 			BoundGroupID:              "mock_group_public",
 			BoundGroupName:            input.TargetGroupName,
 			Schedulable:               false,
@@ -303,7 +303,7 @@ func parsePublicAccountAddBody(r *http.Request) (publicaccounts.AddInput, error)
 	if err != nil {
 		return publicaccounts.AddInput{}, err
 	}
-	supportedModels, err := optionalBodyStringList(body, "supportedModels", 1, 120, 500)
+	supportedModels, err := optionalBodyStringListValue(body, "supportedModels", 1, 120, 500)
 	if err != nil {
 		return publicaccounts.AddInput{}, err
 	}

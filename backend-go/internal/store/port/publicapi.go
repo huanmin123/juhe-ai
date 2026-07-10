@@ -427,14 +427,15 @@ const (
 )
 
 type PublicAccountProviderProfile struct {
-	ID               string
-	ProviderCode     string
-	Name             string
-	Enabled          bool
-	ProviderEnabled  bool
-	ProtocolCode     string
-	ProtocolVersion  string
-	AccountTypesJSON string
+	ID                     string
+	ProviderCode           string
+	Name                   string
+	Enabled                bool
+	ProviderEnabled        bool
+	ProtocolCode           string
+	ProtocolVersion        string
+	AccountTypesJSON       string
+	DefaultSupportedModels []string
 }
 
 type PublicAccountGroupRef struct {

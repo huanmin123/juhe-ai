@@ -29,13 +29,14 @@ const (
 	StatusPendingTest = "pending_test"
 	StatusDisabled    = "disabled"
 
-	DefaultConcurrencyLimit  = 20
-	DefaultPriority          = 0
-	DefaultClientCompat      = "openai_standard"
-	defaultGroupType         = "personal"
-	defaultTargetDescription = "由公开接口自动创建"
-	defaultTargetPassword    = "go-public-auto-created-target-password-hash"
-	defaultCredentialSecret  = "juhe-ai-go-development-secret"
+	DefaultConcurrencyLimit               = 20
+	DefaultPriority                       = 0
+	DefaultClientCompat                   = "openai_standard"
+	defaultGroupType                      = "personal"
+	defaultTargetDescription              = "由公开接口自动创建"
+	defaultTargetPassword                 = "go-public-auto-created-target-password-hash"
+	defaultCredentialSecret               = "juhe-ai-go-development-secret"
+	invalidSupportedModelsRequiredMessage = "账户支持模型不能为空，请至少选择一个该 Base URL 支持的模型"
 )
 
 var (
@@ -154,7 +155,7 @@ type AddInput struct {
 	Type                      string
 	BaseURL                   string
 	APIKey                    string
-	SupportedModels           []string
+	SupportedModels           StringListValue
 	Status                    string
 	ConcurrencyLimit          *int
 	Priority                  *int
@@ -379,7 +380,11 @@ func (s *Service) addOnce(ctx context.Context, input AddInput) (AccountResponse,
 		if err != nil {
 			return err
 		}
-		models, err := normalizeSupportedModels(input.SupportedModels)
+		supportedModels := profile.DefaultSupportedModels
+		if input.SupportedModels.Set() {
+			supportedModels = input.SupportedModels.Value()
+		}
+		models, err := normalizeSupportedModels(supportedModels)
 		if err != nil {
 			return err
 		}
@@ -853,6 +858,9 @@ func normalizeSupportedModels(values []string) ([]string, error) {
 		}
 		seen[text] = struct{}{}
 		out = append(out, text)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%w: %s", ErrInvalidSupportedModels, invalidSupportedModelsRequiredMessage)
 	}
 	return out, nil
 }

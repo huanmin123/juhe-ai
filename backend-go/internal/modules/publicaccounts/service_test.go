@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -30,7 +31,7 @@ func TestServiceAddCreatesTargetGroupPendingTestAndDoesNotExposeCredentials(t *t
 		Type:                      AccountTypeAPIKey,
 		BaseURL:                   "https://api.openai.com/v1",
 		APIKey:                    "sk-public-account-secret-0123456789abcdef",
-		SupportedModels:           []string{"gpt-5.5", "gpt-5.5", "gpt-5.5-mini"},
+		SupportedModels:           NewStringListValue([]string{" gpt-5.5 ", "gpt-5.5", "gpt-5.5-mini"}, true),
 		Status:                    StatusActive,
 	})
 	if err != nil {
@@ -67,6 +68,120 @@ func TestServiceAddCreatesTargetGroupPendingTestAndDoesNotExposeCredentials(t *t
 	}
 }
 
+func TestServiceAddUsesProviderDefaultSupportedModelsWhenOmitted(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	service := NewService(Options{
+		Store:  store,
+		Now:    fixedPublicAccountNow,
+		NewID:  sequentialPublicAccountID(),
+		Secret: "public-account-test-secret",
+	})
+
+	response, err := service.Add(context.Background(), AddInput{
+		TargetUsername:            "admin",
+		TargetGroupName:           "福利",
+		ProviderCode:              "gpt",
+		ProviderProtocolProfileID: "profile_gpt_openai_v1",
+		Name:                      "默认模型账号",
+		Type:                      AccountTypeAPIKey,
+		BaseURL:                   "https://api.openai.com/v1",
+		APIKey:                    "sk-public-account-secret-0123456789abcdef",
+	})
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+	if response.Account == nil {
+		t.Fatal("response account is nil")
+	}
+	if got, want := response.Account.SupportedModels, defaultGPTSupportedModels; !slices.Equal(got, want) {
+		t.Fatalf("supported models = %#v, want %#v", got, want)
+	}
+}
+
+func TestServiceAddExplicitEmptySupportedModelsReturnsErrorWithoutCreatingAccount(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	service := NewService(Options{
+		Store:  store,
+		Now:    fixedPublicAccountNow,
+		NewID:  sequentialPublicAccountID(),
+		Secret: "public-account-test-secret",
+	})
+
+	_, err := service.Add(context.Background(), AddInput{
+		TargetUsername:            "admin",
+		TargetGroupName:           "福利",
+		ProviderCode:              "gpt",
+		ProviderProtocolProfileID: "profile_gpt_openai_v1",
+		Name:                      "空模型账号",
+		Type:                      AccountTypeAPIKey,
+		BaseURL:                   "https://api.openai.com/v1",
+		APIKey:                    "sk-public-account-secret-0123456789abcdef",
+		SupportedModels:           NewStringListValue([]string{}, true),
+	})
+	assertInvalidSupportedModelsRequired(t, err)
+	if len(store.accounts) != 0 {
+		t.Fatalf("created accounts = %d, want 0", len(store.accounts))
+	}
+}
+
+func TestServiceAddEmptyProviderDefaultSupportedModelsReturnsError(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	profileKey := "gpt|profile_gpt_openai_v1"
+	profile := store.profiles[profileKey]
+	profile.DefaultSupportedModels = nil
+	store.profiles[profileKey] = profile
+	service := NewService(Options{
+		Store:  store,
+		Now:    fixedPublicAccountNow,
+		NewID:  sequentialPublicAccountID(),
+		Secret: "public-account-test-secret",
+	})
+
+	_, err := service.Add(context.Background(), AddInput{
+		TargetUsername:            "admin",
+		TargetGroupName:           "福利",
+		ProviderCode:              "gpt",
+		ProviderProtocolProfileID: "profile_gpt_openai_v1",
+		Name:                      "默认空模型账号",
+		Type:                      AccountTypeAPIKey,
+		BaseURL:                   "https://api.openai.com/v1",
+		APIKey:                    "sk-public-account-secret-0123456789abcdef",
+	})
+	assertInvalidSupportedModelsRequired(t, err)
+	if len(store.accounts) != 0 {
+		t.Fatalf("created accounts = %d, want 0", len(store.accounts))
+	}
+}
+
+func TestServiceAddDuplicateNamePrecedesEmptySupportedModelsValidation(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	service := NewService(Options{
+		Store:  store,
+		Now:    fixedPublicAccountNow,
+		NewID:  sequentialPublicAccountID(),
+		Secret: "public-account-test-secret",
+	})
+	input := AddInput{
+		TargetUsername:            "admin",
+		TargetGroupName:           "福利",
+		ProviderCode:              "gpt",
+		ProviderProtocolProfileID: "profile_gpt_openai_v1",
+		Name:                      "重复账号",
+		Type:                      AccountTypeAPIKey,
+		BaseURL:                   "https://api.openai.com/v1",
+		APIKey:                    "sk-public-account-secret-0123456789abcdef",
+	}
+	if _, err := service.Add(context.Background(), input); err != nil {
+		t.Fatalf("seed public account: %v", err)
+	}
+
+	input.SupportedModels = NewStringListValue([]string{}, true)
+	_, err := service.Add(context.Background(), input)
+	if !errors.Is(err, ErrDuplicateAccountName) {
+		t.Fatalf("duplicate add error = %v, want ErrDuplicateAccountName", err)
+	}
+}
+
 func TestServiceUpdateRejectsPendingTestToActive(t *testing.T) {
 	store := newPublicAccountStoreFake()
 	service := NewService(Options{Store: store, Now: fixedPublicAccountNow, NewID: sequentialPublicAccountID(), Secret: "public-account-test-secret"})
@@ -91,6 +206,17 @@ func TestServiceUpdateRejectsPendingTestToActive(t *testing.T) {
 	})
 	if !errors.Is(err, ErrInvalidStatusTransition) {
 		t.Fatalf("update status error = %v, want ErrInvalidStatusTransition", err)
+	}
+}
+
+func assertInvalidSupportedModelsRequired(t *testing.T, err error) {
+	t.Helper()
+	if !errors.Is(err, ErrInvalidSupportedModels) {
+		t.Fatalf("add error = %v, want ErrInvalidSupportedModels", err)
+	}
+	want := ErrInvalidSupportedModels.Error() + ": " + invalidSupportedModelsRequiredMessage
+	if err.Error() != want {
+		t.Fatalf("add error = %q, want %q", err.Error(), want)
 	}
 }
 
@@ -121,6 +247,16 @@ func sequentialPublicAccountID() func(string) string {
 	}
 }
 
+var defaultGPTSupportedModels = []string{
+	"gpt-5.6-sol",
+	"gpt-5.6-terra",
+	"gpt-5.6-luna",
+	"gpt-5.5",
+	"gpt-5.4",
+	"gpt-5.4-mini",
+	"gpt-image-2",
+}
+
 type publicAccountStoreFake struct {
 	targetsByUsername map[string]port.PublicGroupTarget
 	targetsByID       map[string]port.PublicGroupTarget
@@ -135,14 +271,15 @@ func newPublicAccountStoreFake() *publicAccountStoreFake {
 		targetsByID:       map[string]port.PublicGroupTarget{},
 		profiles: map[string]port.PublicAccountProviderProfile{
 			"gpt|profile_gpt_openai_v1": {
-				ID:               "profile_gpt_openai_v1",
-				ProviderCode:     "gpt",
-				Name:             "GPT / OpenAI v1",
-				Enabled:          true,
-				ProviderEnabled:  true,
-				ProtocolCode:     "openai",
-				ProtocolVersion:  "v1",
-				AccountTypesJSON: `["oauth","api_key"]`,
+				ID:                     "profile_gpt_openai_v1",
+				ProviderCode:           "gpt",
+				Name:                   "GPT / OpenAI v1",
+				Enabled:                true,
+				ProviderEnabled:        true,
+				ProtocolCode:           "openai",
+				ProtocolVersion:        "v1",
+				AccountTypesJSON:       `["oauth","api_key"]`,
+				DefaultSupportedModels: append([]string(nil), defaultGPTSupportedModels...),
 			},
 		},
 		groups:   map[string]port.PublicAccountGroupRef{},

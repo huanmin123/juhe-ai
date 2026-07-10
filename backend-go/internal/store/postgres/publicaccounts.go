@@ -218,16 +218,29 @@ func publicAccountFindProviderProfile(ctx context.Context, q *postgresqueries.Qu
 	if err != nil {
 		return port.PublicAccountProviderProfile{}, false, fmt.Errorf("find public account provider profile: %w", err)
 	}
+	profile, err := publicAccountProviderProfileFromRow(row)
+	if err != nil {
+		return port.PublicAccountProviderProfile{}, false, err
+	}
+	return profile, true, nil
+}
+
+func publicAccountProviderProfileFromRow(row postgresqueries.FindPublicAccountProviderProfileRow) (port.PublicAccountProviderProfile, error) {
+	defaultSupportedModels, err := decodeProviderStringArray(row.DefaultSupportedModelsJson, "provider default_supported_models_json")
+	if err != nil {
+		return port.PublicAccountProviderProfile{}, err
+	}
 	return port.PublicAccountProviderProfile{
-		ID:               row.ID,
-		ProviderCode:     row.ProviderCode,
-		Name:             row.Name,
-		Enabled:          row.ProfileEnabled,
-		ProviderEnabled:  row.ProviderEnabled,
-		ProtocolCode:     row.ProtocolCode,
-		ProtocolVersion:  row.ProtocolVersion,
-		AccountTypesJSON: row.AccountTypesJson,
-	}, true, nil
+		ID:                     row.ID,
+		ProviderCode:           row.ProviderCode,
+		Name:                   row.Name,
+		Enabled:                row.ProfileEnabled,
+		ProviderEnabled:        row.ProviderEnabled,
+		ProtocolCode:           row.ProtocolCode,
+		ProtocolVersion:        row.ProtocolVersion,
+		AccountTypesJSON:       row.AccountTypesJson,
+		DefaultSupportedModels: defaultSupportedModels,
+	}, nil
 }
 
 func publicAccountFindExistingGroupByName(ctx context.Context, q *postgresqueries.Queries, systemAccountID string, providerCode string, name string) (port.PublicAccountGroupRef, bool, error) {

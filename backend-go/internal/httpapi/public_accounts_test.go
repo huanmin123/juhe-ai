@@ -1,11 +1,13 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -61,6 +63,7 @@ func TestPublicAccountHandlersAddThroughShellRedactsLogSecrets(t *testing.T) {
 	if service.addCalls != 1 || service.addInput.TargetUsername != "admin" || service.addInput.ProviderProtocolProfileID != "profile_gpt_openai_v1" || service.addInput.APIKey != secret {
 		t.Fatalf("add input = calls %d %+v", service.addCalls, service.addInput)
 	}
+	assertPublicAccountStringListValue(t, service.addInput.SupportedModels, true, []string{"gpt-5.5"})
 
 	var body map[string]any
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
@@ -87,6 +90,127 @@ func TestPublicAccountHandlersAddThroughShellRedactsLogSecrets(t *testing.T) {
 	}
 	if strings.Contains(fmt.Sprint(log.RequestData), secret) || strings.Contains(fmt.Sprint(log.ResponseData), secret) {
 		t.Fatalf("public api log leaked upstream secret: request=%#v response=%#v", log.RequestData, log.ResponseData)
+	}
+}
+
+func TestParsePublicAccountAddBodyPreservesSupportedModelsPresence(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantSet    bool
+		wantModels []string
+	}{
+		{
+			name:       "omitted",
+			body:       `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test"}`,
+			wantSet:    false,
+			wantModels: nil,
+		},
+		{
+			name:       "explicit empty array",
+			body:       `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test","supportedModels":[]}`,
+			wantSet:    true,
+			wantModels: nil,
+		},
+		{
+			name:       "non-empty array",
+			body:       `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test","supportedModels":[" gpt-5.5 ","gpt-5.5-mini"]}`,
+			wantSet:    true,
+			wantModels: []string{"gpt-5.5", "gpt-5.5-mini"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := newPublicAccountParserRequest(t, tt.body)
+			input, err := parsePublicAccountAddBody(req)
+			if err != nil {
+				t.Fatalf("parse add body: %v", err)
+			}
+			assertPublicAccountStringListValue(t, input.SupportedModels, tt.wantSet, tt.wantModels)
+		})
+	}
+}
+
+func TestPublicAccountHandlersAddPreservesSupportedModelsPresence(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		wantSet bool
+	}{
+		{
+			name:    "omitted",
+			body:    `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test"}`,
+			wantSet: false,
+		},
+		{
+			name:    "explicit empty array",
+			body:    `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test","supportedModels":[]}`,
+			wantSet: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &publicAccountServiceStub{}
+			router := newTestPublicAPIShell(
+				newPublicGroupAPIAuthStub(),
+				&publicAPIShellLimiterStub{decision: publicapiratelimit.Decision{Allowed: true}},
+				&publicAPIShellLogQueueStub{},
+				newPublicAccountHandlers(service),
+				time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC),
+			)
+
+			req := httptest.NewRequest(http.MethodPost, "/__aipublic__/account/add", strings.NewReader(tt.body))
+			req.Header.Set("Authorization", "Bearer juis_plain")
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusCreated {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+			}
+			if service.addCalls != 1 {
+				t.Fatalf("add calls = %d, want 1", service.addCalls)
+			}
+			assertPublicAccountStringListValue(t, service.addInput.SupportedModels, tt.wantSet, nil)
+		})
+	}
+}
+
+func TestPublicAccountHandlersAddReturnsSupportedModelsRequiredMessage(t *testing.T) {
+	service := &publicAccountServiceStub{
+		addErr: fmt.Errorf(
+			"%w: 账户支持模型不能为空，请至少选择一个该 Base URL 支持的模型",
+			publicaccounts.ErrInvalidSupportedModels,
+		),
+	}
+	router := newTestPublicAPIShell(
+		newPublicGroupAPIAuthStub(),
+		&publicAPIShellLimiterStub{decision: publicapiratelimit.Decision{Allowed: true}},
+		&publicAPIShellLogQueueStub{},
+		newPublicAccountHandlers(service),
+		time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC),
+	)
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/__aipublic__/account/add",
+		strings.NewReader(`{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test","supportedModels":[]}`),
+	)
+	req.Header.Set("Authorization", "Bearer juis_plain")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+	}
+	const want = "{\"message\":\"账户支持模型不能为空，请至少选择一个该 Base URL 支持的模型\"}\n"
+	if got := rec.Body.String(); got != want {
+		t.Fatalf("body = %q, want %q", got, want)
 	}
 }
 
@@ -325,4 +449,26 @@ func (s *publicAccountServiceStub) Delete(_ *http.Request, input publicaccounts.
 	s.deleteCalls++
 	s.deleteInput = input
 	return s.deleteResponse, s.deleteErr
+}
+
+func assertPublicAccountStringListValue(t *testing.T, value publicaccounts.StringListValue, wantSet bool, want []string) {
+	t.Helper()
+	if value.Set() != wantSet {
+		t.Fatalf("supportedModels Set() = %v, want %v", value.Set(), wantSet)
+	}
+	if got := value.Value(); !slices.Equal(got, want) {
+		t.Fatalf("supportedModels Value() = %#v, want %#v", got, want)
+	}
+}
+
+func newPublicAccountParserRequest(t *testing.T, body string) *http.Request {
+	t.Helper()
+	var requestBody map[string]any
+	decoder := json.NewDecoder(strings.NewReader(body))
+	decoder.UseNumber()
+	if err := decoder.Decode(&requestBody); err != nil {
+		t.Fatalf("decode parser request body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/__aipublic__/account/add", nil)
+	return req.WithContext(context.WithValue(req.Context(), publicAPIRequestBodyKey, requestBody))
 }

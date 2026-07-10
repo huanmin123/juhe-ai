@@ -121,7 +121,7 @@ func TestW1bPublicAccountsShellE2E(t *testing.T) {
 	})
 
 	initialSecret := "sk-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	addBody := `{"targetUsername":"admin","targetDisplayName":"管理员","targetGroupName":"账号分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"` + initialSecret + `","supportedModels":["gpt-5.5","gpt-5.5-codex"],"status":"active"}`
+	addBody := `{"targetUsername":"admin","targetDisplayName":"管理员","targetGroupName":"账号分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"` + initialSecret + `","status":"active"}`
 	addRec := serveW1bShellRequest(router, http.MethodPost, "/__aipublic__/account/add", token, "trace_account_add", addBody)
 	if addRec.Code != http.StatusCreated {
 		t.Fatalf("add status = %d, body = %s", addRec.Code, addRec.Body.String())
@@ -136,8 +136,28 @@ func TestW1bPublicAccountsShellE2E(t *testing.T) {
 	if addResponse.Data.Action != "created" || addResponse.Data.Account == nil || addResponse.Data.Account.Status != publicaccounts.StatusPendingTest || addResponse.Data.Account.Schedulable {
 		t.Fatalf("add response = %+v", addResponse.Data)
 	}
+	assertW1bPublicAccountModelList(t, addResponse.Data.Account.SupportedModels, w1bGPTDefaultSupportedModels)
 	accountID := addResponse.Data.Account.ID
 	assertW1bPublicAccountStored(t, ctx, db, accountID, initialSecret, publicaccounts.StatusPendingTest, false)
+	assertW1bPublicAccountModels(t, ctx, db, accountID, w1bGPTDefaultSupportedModels)
+
+	emptyModelsAccountName := "空模型账号"
+	emptyModelsBody := `{"targetUsername":"admin","targetGroupName":"账号分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"` + emptyModelsAccountName + `","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"` + initialSecret + `","supportedModels":[]}`
+	emptyModelsRec := serveW1bShellRequest(router, http.MethodPost, "/__aipublic__/account/add", token, "trace_account_add_empty_models", emptyModelsBody)
+	if emptyModelsRec.Code != http.StatusBadRequest {
+		t.Fatalf("explicit empty supportedModels status = %d, body = %s", emptyModelsRec.Code, emptyModelsRec.Body.String())
+	}
+	assertW1bPublicAccountResponseNoSecret(t, emptyModelsRec.Body.String(), initialSecret)
+	var emptyModelsResponse struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(emptyModelsRec.Body.Bytes(), &emptyModelsResponse); err != nil {
+		t.Fatalf("decode explicit empty supportedModels response: %v", err)
+	}
+	if emptyModelsResponse.Message != w1bInvalidSupportedModelsMessage {
+		t.Fatalf("explicit empty supportedModels message = %q, want %q", emptyModelsResponse.Message, w1bInvalidSupportedModelsMessage)
+	}
+	assertW1bPublicAccountNameCount(t, ctx, db, emptyModelsAccountName, 0)
 
 	listRec := serveW1bShellRequest(router, http.MethodGet, "/__aipublic__/account/list?targetUsername=admin&targetGroupName=%E8%B4%A6%E5%8F%B7%E5%88%86%E7%BB%84&providerCode=gpt&providerProtocolProfileId=profile_gpt_openai_v1&keyword="+w1bAccountShellSecretLikeKeyword+"&page=1&pageSize=10", token, "trace_account_list", "")
 	if listRec.Code != http.StatusOK {
@@ -204,7 +224,7 @@ func insertW1bAccountShellSourceAndToken(t *testing.T, ctx context.Context, db *
 		INSERT INTO juhe_business.external_integration_sources (
 			id, name, status, scopes_json, rate_limits_json, created_at, updated_at
 		) VALUES ($1, $2, 'active', $3, $4, $5, $6)
-	`, "extsrc_w1b_account_shell", "W1b Account Shell Source", scopes, `[{"windowSeconds":60,"maxRequests":4}]`, now, now)
+	`, "extsrc_w1b_account_shell", "W1b Account Shell Source", scopes, `[{"windowSeconds":60,"maxRequests":5}]`, now, now)
 	if err != nil {
 		t.Fatalf("insert account shell external integration source: %v", err)
 	}
@@ -299,8 +319,8 @@ func assertW1bAccountShellPublicAPILogs(t *testing.T, ctx context.Context, db *s
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate account shell public api logs: %v", err)
 	}
-	if len(logs) != 5 {
-		t.Fatalf("account shell public api log count = %d, want 5", len(logs))
+	if len(logs) != 6 {
+		t.Fatalf("account shell public api log count = %d, want 6", len(logs))
 	}
 
 	expected := []struct {
@@ -312,12 +332,14 @@ func assertW1bAccountShellPublicAPILogs(t *testing.T, ctx context.Context, db *s
 		success    bool
 		errorCode  string
 		action     string
+		message    string
 	}{
 		{id: "publog_w1b_account_shell_1", traceID: "trace_account_add", method: http.MethodPost, path: "/__aipublic__/account/add", statusCode: http.StatusCreated, success: true, action: "created"},
-		{id: "publog_w1b_account_shell_2", traceID: "trace_account_list", method: http.MethodGet, path: "/__aipublic__/account/list", statusCode: http.StatusOK, success: true},
-		{id: "publog_w1b_account_shell_3", traceID: "trace_account_update", method: http.MethodPost, path: "/__aipublic__/account/update", statusCode: http.StatusOK, success: true, action: "updated"},
-		{id: "publog_w1b_account_shell_4", traceID: "trace_account_delete", method: http.MethodPost, path: "/__aipublic__/account/del", statusCode: http.StatusOK, success: true, action: "deleted"},
-		{id: "publog_w1b_account_shell_5", traceID: "trace_account_limited", method: http.MethodGet, path: "/__aipublic__/account/list", statusCode: http.StatusTooManyRequests, success: false, errorCode: "external_source_rate_limited"},
+		{id: "publog_w1b_account_shell_2", traceID: "trace_account_add_empty_models", method: http.MethodPost, path: "/__aipublic__/account/add", statusCode: http.StatusBadRequest, success: false, message: w1bInvalidSupportedModelsMessage},
+		{id: "publog_w1b_account_shell_3", traceID: "trace_account_list", method: http.MethodGet, path: "/__aipublic__/account/list", statusCode: http.StatusOK, success: true},
+		{id: "publog_w1b_account_shell_4", traceID: "trace_account_update", method: http.MethodPost, path: "/__aipublic__/account/update", statusCode: http.StatusOK, success: true, action: "updated"},
+		{id: "publog_w1b_account_shell_5", traceID: "trace_account_delete", method: http.MethodPost, path: "/__aipublic__/account/del", statusCode: http.StatusOK, success: true, action: "deleted"},
+		{id: "publog_w1b_account_shell_6", traceID: "trace_account_limited", method: http.MethodGet, path: "/__aipublic__/account/list", statusCode: http.StatusTooManyRequests, success: false, errorCode: "external_source_rate_limited"},
 	}
 
 	for index, want := range expected {
@@ -355,7 +377,7 @@ func assertW1bAccountShellPublicAPILogs(t *testing.T, ctx context.Context, db *s
 				t.Fatalf("log[%d] query keyword = %#v, want redacted", index, requestData["query"])
 			}
 		}
-		if want.traceID == "trace_account_add" {
+		if want.traceID == "trace_account_add" || want.traceID == "trace_account_add_empty_models" {
 			if nestedStringFromW1bShellLog(t, requestData, "body", "apiKey") != "[redacted]" {
 				t.Fatalf("log[%d] add apiKey should be redacted: %#v", index, requestData["body"])
 			}
@@ -380,12 +402,15 @@ func assertW1bAccountShellPublicAPILogs(t *testing.T, ctx context.Context, db *s
 		if want.action != "" && nestedStringFromW1bShellLog(t, responseData, "body", "data", "account", "id") != accountID {
 			t.Fatalf("log[%d] response account id = %#v, want %s", index, responseData["body"], accountID)
 		}
+		if want.message != "" && nestedStringFromW1bShellLog(t, responseData, "body", "message") != want.message {
+			t.Fatalf("log[%d] response message = %#v, want %q", index, responseData["body"], want.message)
+		}
 		if want.errorCode != "" {
 			if nestedStringFromW1bShellLog(t, responseData, "body", "code") != want.errorCode {
 				t.Fatalf("log[%d] response code = %#v, want %s", index, responseData["body"], want.errorCode)
 			}
-			if got := intFromW1bShellLog(nestedValueFromW1bShellLog(t, responseData, "body", "details", "maxRequests")); got != 4 {
-				t.Fatalf("log[%d] maxRequests = %d, want 4", index, got)
+			if got := intFromW1bShellLog(nestedValueFromW1bShellLog(t, responseData, "body", "details", "maxRequests")); got != 5 {
+				t.Fatalf("log[%d] maxRequests = %d, want 5", index, got)
 			}
 		}
 		assertW1bShellLogNoSecret(t, row.requestJSON, row.responseJSON, row.errorMessage+"\n"+row.queryString, token)

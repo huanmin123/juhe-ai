@@ -26,6 +26,7 @@ SELECT
   profiles.name,
   profiles.enabled AS profile_enabled,
   providers.enabled AS provider_enabled,
+  providers.default_supported_models_json,
   profiles.protocol_code,
   profiles.protocol_version,
   profiles.account_types_json

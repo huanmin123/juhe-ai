@@ -14,7 +14,7 @@
 - 诊断端点基线：`/__aisys__/health`、`/__aisys__/api/health` 和受 `JUHE_AI_METRICS_ENABLED` 控制的 `/__aisys__/metrics`；pprof 只允许通过 `JUHE_AI_PPROF_ENABLED` 在受控 / loopback 场景启用。后续系统监控指标按 `../docs/migration/Go迁移指标与观测规划.md` 落地，不能沿用 Node event-loop / DB service / SQLite 文件指标。
 - W1a 公开设置读接口：`GET /__aisys__/api/settings/public`，读取 `juhe_business.global_settings`，返回 `{ data: { appName, appIcon } }`，并按 `system_settings` 读取限流配置，按 `JUHE_AI_TRUST_PROXY` 识别客户端 IP，生产 server 路径使用 Redis state 原子 minute / burst IP read rate limit。
 - W1b 外部维护公开接口基础设施：`internal/modules/publicapi` 固定 16 个 `/__aipublic__` method/path/scope、旧公开路径不进入 catalog、内置测试 token 常量；`internal/modules/publicapi/auth` 固定 Bearer 解析、token hash、source/token 状态与过期、scope 交集、auth error 和 `last_used_at` touch 判断；`internal/modules/publicapi/ratelimit` 映射 source/token 维度 penalty-window；`internal/modules/publicapilog` 提供公开接口日志 request / response snapshot、query string 脱敏、32KB 单侧预算、dropped / truncated / empty / complete 状态、499 和错误摘要构造；`internal/jobs/publicapilog` 提供 Asynq payload/enqueue/handler；`internal/jobs/worker` 和 `internal/app/ingest_worker.go` 提供 `juhe-ai-worker ingest` 日志消费 runtime；`internal/httpapi/public_api_shell.go` 提供 W1b HTTP shell / capture 契约测试组合，覆盖 499 客户端提前断开和底层 `ResponseWriter` 可选接口透传；`internal/config/config.go`、`internal/app/server.go` 和 `internal/httpapi/router.go` 提供 `JUHE_AI_PUBLIC_API_ENABLED=false` 默认关闭的生产 router opt-in guard；`cmd/juhe-ai-maintenance w1b-public-api-smoke` 提供本地 httptest 灰度 smoke，验证默认 guard、显式 opt-in mount、真实 PostgreSQL / Redis state / Redis queue、临时测试 token 和 worker 写入 public API log；`internal/store/port/publicapi.go` 固定不泄露 pgx/sqlc/Redis 类型的 auth/log store port；`internal/store/postgres/publicapi.go` 提供 PostgreSQL auth/log adapter。
-- W1b public group / public route strategy / public API Key / public account 四条资源纵切面：已提供 handler、service、store port、PostgreSQL sqlc query、integration smoke 和 shell E2E 代码；public API Key 采用 hash-only 存储，完整 key 只在新增响应返回一次，日志快照和 `query_string` 均脱敏；public account 上游凭据使用 `JUHE_AI_SECRET` 派生的 AES-GCM 加密，响应不回显 `apiKey` / `baseUrl` / `credentials`。
+- W1b public group / public route strategy / public API Key / public account 四条资源纵切面：已提供 handler、service、store port、PostgreSQL sqlc query、integration smoke 和 shell E2E 代码；public API Key 采用 hash-only 存储，完整 key 只在新增响应返回一次，日志快照和 `query_string` 均脱敏；public account 上游凭据使用 `JUHE_AI_SECRET` 派生的 AES-GCM 加密，响应不回显 `apiKey` / `baseUrl` / `credentials`。`account/add` 的 `supportedModels` 使用 presence 三态：省略时继承 `providers.default_supported_models_json`，显式非空数组使用调用方值，显式 `[]` 或最终默认值为空时返回 `账户支持模型不能为空，请至少选择一个该 Base URL 支持的模型`；重复名称冲突继续优先。provider profile SQL 联表默认模型 JSON，`gpt` / `openai` fresh seed 的 GPT-5.6 默认模型由静态 guard 固定，详见 `../docs/bug/问题-0035-Go公开账户默认模型语义漂移.md`。
 - W2 管理端辅助接口当前已迁移路径：已覆盖 `proxies` 分页列表读、`proxies/options` 轻量下拉、`system-accounts` 列表读、`system-accounts/options` 轻量下拉、authorization grantee accounts / teams / groups、providers 列表 / options / models / default-test-model、route-strategies options、groups options / account-options、accounts options、accounts tags 只读 / 未绑定删除 / 独立 PATCH、operation-logs / my-operation-logs 列表与详情读接口，以及 `juhe-ai-worker operation-log-retention-cleanup` 操作日志保留清理 worker。所有管理 HTTP 路径都复用管理端 session 鉴权和 `JUHE_AI_MANAGEMENT_API_ENABLED=false` 默认关闭的 router opt-in guard；worker 只允许显式命令灰度验证，不代表生产 supervisor 接管。系统账户创建 / 完整更新已在 W3 Go opt-in 覆盖但未生产接管；代理手动检测已在 W5 Go opt-in 覆盖但未生产接管；完整会话管理生产接管、授权来源 / grant / 授权写接口、主账户写入 `tags`、OpenAI OAuth / 导入标签写路径、完整账号 summary 响应和其他写接口 operation log 仍未迁移。详细边界见 `../docs/migration/W2-管理端只读辅助接口迁移记录.md`。
 - W5 代理管理写接口切片：`POST /__aisys__/api/proxies`、`PATCH /__aisys__/api/proxies/{id}`、`DELETE /__aisys__/api/proxies/{id}` 和 `POST /__aisys__/api/proxies/{id}/test` 已进入 Go opt-in。创建 / 更新使用 Node 兼容 AES-256-GCM `v1` 密文保存代理密码，密码不进入响应或操作日志明文；连接参数变化会重置最近检测缓存；删除只读取 4 条绑定账户窗口并在占用时返回 `409`；手动检测复刻 Node `ProxyTestReport`、诊断并发闸门、25 秒总 deadline、15 秒单次探测、512KB 响应体上限、出口信息保留语义和 `proxies.test` 操作日志；写入后发布 gateway runtime cache 失效。管理 API 启用时现在必须配置不少于 32 字符的稳定 `JUHE_AI_SECRET`。该切片不包含前端真实 Go 后端 smoke、生产切流、自动代理检测 worker 或 Node `/proxies` 删除。
 - W5 管理端全局品牌设置读取切片：`GET /__aisys__/api/settings/global` 已进入 Go opt-in，复用 W1a `publicsettings.Service`、`PublicSettingsReader` 和 PostgreSQL `global_settings` reader，只返回精确 `{ data: { appName, appIcon } }`。该路径要求管理登录且角色为 `admin` / `super_admin`，普通 `user` 返回 403；使用只读 session 鉴权，不 touch `last_seen_at`；进入 IP read 每分钟 `600` + 每 10 秒 burst `120` 和认证用户 read 每分钟 `300` 限流；响应为 `Cache-Control: no-store`。`appName` / `appIcon` 缺字段、非法存储值或 reader 错误统一返回通用 500，不泄露内部错误。默认 `JUHE_AI_MANAGEMENT_API_ENABLED=false` 时不注册。该切片明确不包含 `PATCH /settings/global`、`GET/PATCH /settings`、生产切流或 Node settings 删除，详细边界见 `../docs/migration/W5-管理端全局品牌设置读取记录.md`。
@@ -60,6 +60,26 @@ go build ./...
 golangci-lint run
 govulncheck ./...
 ```
+
+W1b 公开账户默认模型语义目标测试：
+
+```powershell
+go test ./internal/httpapi -run TestPublicAccount -count=1
+go test ./internal/modules/publicaccounts -run TestServiceAdd -count=1
+go test ./internal/store/postgres -run TestPublicAccount -count=1
+go test ./internal/httpapi ./internal/modules/publicaccounts ./internal/store/postgres -count=1
+```
+
+该矩阵固定 HTTP `StringListValue` 的省略 / 显式空 / 非空三态、service 默认继承和最终非空、重复名称优先、provider 默认 JSON 联表 / 解码，以及 `gpt` / `openai` 的 `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna` seed guard；目标包、全量 Go、目标包 race、vet、tidy diff 和 integration 包编译已通过。
+
+真实 PostgreSQL / Docker 验证：
+
+```powershell
+go test -v -tags=integration ./internal/testkit/integration -run TestW1bPublicAccountsPostgresSmoke -count=1
+go test -v -tags=integration ./internal/testkit/integration -run TestW1bPublicAccountsShellE2E -count=1
+```
+
+只有容器真实启动且测试不是 `SKIP`，才能记录默认模型继承、显式空数组 `400`、重复名称优先、真实模型写入、公开日志和响应白名单通过。本机 Docker 未运行，上述两个目标测试均按现有门禁输出 `SKIP`，不计真实 PostgreSQL / shell E2E 通过。
 
 启动 Go server 前必须先配置 PostgreSQL 和 Redis state，并显式执行 migration；Go 启动路径不会自动迁移 schema：
 
@@ -213,3 +233,5 @@ go run ./cmd/juhe-ai-maintenance w1b-public-api-smoke
 ```
 
 运行该命令前需要另一个进程已启动 `go run ./cmd/juhe-ai-worker ingest`，并连接同一 PostgreSQL 与 Redis queue。命令会临时创建内置测试 source/token fixture，通过本地 `httptest` 请求 `GET /__aipublic__/group/list`，等待 worker 把 public API log 写入 PostgreSQL，结束后清理临时 token。输出中的 `takeoverEvidence` 固定为 `false`，`productionTakeoverNotEvaluated` 固定为 `true`；通过不代表 Go server 已监听生产端口，也不代表 `/__aipublic__` 已切流或 Node 可以删除。
+
+该 maintenance smoke 不调用 `account/add`，不能替代 BUG-0035 的公开账户默认模型定向测试、PostgreSQL smoke 或 shell E2E。

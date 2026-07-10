@@ -416,6 +416,7 @@ SELECT
   profiles.name,
   profiles.enabled AS profile_enabled,
   providers.enabled AS provider_enabled,
+  providers.default_supported_models_json,
   profiles.protocol_code,
   profiles.protocol_version,
   profiles.account_types_json
@@ -433,14 +434,15 @@ type FindPublicAccountProviderProfileParams struct {
 }
 
 type FindPublicAccountProviderProfileRow struct {
-	ID               string
-	ProviderCode     string
-	Name             string
-	ProfileEnabled   bool
-	ProviderEnabled  bool
-	ProtocolCode     string
-	ProtocolVersion  string
-	AccountTypesJson string
+	ID                         string
+	ProviderCode               string
+	Name                       string
+	ProfileEnabled             bool
+	ProviderEnabled            bool
+	DefaultSupportedModelsJson string
+	ProtocolCode               string
+	ProtocolVersion            string
+	AccountTypesJson           string
 }
 
 func (q *Queries) FindPublicAccountProviderProfile(ctx context.Context, arg FindPublicAccountProviderProfileParams) (FindPublicAccountProviderProfileRow, error) {
@@ -452,6 +454,7 @@ func (q *Queries) FindPublicAccountProviderProfile(ctx context.Context, arg Find
 		&i.Name,
 		&i.ProfileEnabled,
 		&i.ProviderEnabled,
+		&i.DefaultSupportedModelsJson,
 		&i.ProtocolCode,
 		&i.ProtocolVersion,
 		&i.AccountTypesJson,

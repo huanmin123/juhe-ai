@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +19,18 @@ import (
 	"juhe-ai/backend-go/internal/modules/publicaccounts"
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
 )
+
+const w1bInvalidSupportedModelsMessage = "账户支持模型不能为空，请至少选择一个该 Base URL 支持的模型"
+
+var w1bGPTDefaultSupportedModels = []string{
+	"gpt-5.6-sol",
+	"gpt-5.6-terra",
+	"gpt-5.6-luna",
+	"gpt-5.5",
+	"gpt-5.4",
+	"gpt-5.4-mini",
+	"gpt-image-2",
+}
 
 func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 	testcontainers.SkipIfProviderIsNotHealthy(t)
@@ -71,7 +84,6 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 		Type:                      publicaccounts.AccountTypeAPIKey,
 		BaseURL:                   "https://api.openai.com/v1",
 		APIKey:                    initialSecret,
-		SupportedModels:           []string{"gpt-5.5", "gpt-5.5-codex"},
 		AvailabilitySchedule: publicaccounts.NewJSONValue(map[string]any{
 			"enabled": true,
 			"mode":    "always",
@@ -86,8 +98,34 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 	if created.Account.Status != publicaccounts.StatusPendingTest || created.Account.Schedulable {
 		t.Fatalf("created account status/schedulable = %s/%v", created.Account.Status, created.Account.Schedulable)
 	}
+	assertW1bPublicAccountModelList(t, created.Account.SupportedModels, w1bGPTDefaultSupportedModels)
 	accountID := created.Account.ID
 	assertW1bPublicAccountStored(t, ctx, db, accountID, initialSecret, publicaccounts.StatusPendingTest, false)
+	assertW1bPublicAccountModels(t, ctx, db, accountID, w1bGPTDefaultSupportedModels)
+
+	emptyModelsAccountName := "空模型账号"
+	if _, err := service.Add(ctx, publicaccounts.AddInput{
+		TargetUsername:            "admin",
+		TargetGroupName:           "账号分组",
+		ProviderCode:              "gpt",
+		ProviderProtocolProfileID: "profile_gpt_openai_v1",
+		Name:                      emptyModelsAccountName,
+		Type:                      publicaccounts.AccountTypeAPIKey,
+		BaseURL:                   "https://api.openai.com/v1",
+		APIKey:                    "sk-empty-models",
+		SupportedModels:           publicaccounts.NewStringListValue([]string{}, true),
+	}); err == nil {
+		t.Fatal("explicit empty supportedModels add error is nil")
+	} else {
+		if !errors.Is(err, publicaccounts.ErrInvalidSupportedModels) {
+			t.Fatalf("explicit empty supportedModels add err = %v, want ErrInvalidSupportedModels", err)
+		}
+		want := publicaccounts.ErrInvalidSupportedModels.Error() + ": " + w1bInvalidSupportedModelsMessage
+		if err.Error() != want {
+			t.Fatalf("explicit empty supportedModels add err = %q, want %q", err.Error(), want)
+		}
+	}
+	assertW1bPublicAccountNameCount(t, ctx, db, emptyModelsAccountName, 0)
 
 	if _, err := service.Add(ctx, publicaccounts.AddInput{
 		TargetUsername:            "admin",
@@ -231,10 +269,10 @@ func assertW1bPublicAccountModels(t *testing.T, ctx context.Context, db *sql.DB,
 	t.Helper()
 
 	rows, err := db.QueryContext(ctx, `
-		SELECT model_code
+		SELECT model
 		FROM juhe_business.account_supported_models
 		WHERE account_id = $1
-		ORDER BY position ASC, model_code ASC
+		ORDER BY model ASC
 	`, accountID)
 	if err != nil {
 		t.Fatalf("query public account models: %v", err)
@@ -252,8 +290,34 @@ func assertW1bPublicAccountModels(t *testing.T, ctx context.Context, db *sql.DB,
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate public account models: %v", err)
 	}
-	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("models = %v, want %v", got, want)
+	sortedWant := slices.Clone(want)
+	slices.Sort(sortedWant)
+	if !slices.Equal(got, sortedWant) {
+		t.Fatalf("models = %v, want %v", got, sortedWant)
+	}
+}
+
+func assertW1bPublicAccountModelList(t *testing.T, got []string, want []string) {
+	t.Helper()
+
+	if !slices.Equal(got, want) {
+		t.Fatalf("supported models = %v, want %v", got, want)
+	}
+}
+
+func assertW1bPublicAccountNameCount(t *testing.T, ctx context.Context, db *sql.DB, name string, want int) {
+	t.Helper()
+
+	var got int
+	if err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*)::int
+		FROM juhe_business.accounts
+		WHERE name = $1
+	`, name).Scan(&got); err != nil {
+		t.Fatalf("count public accounts named %q: %v", name, err)
+	}
+	if got != want {
+		t.Fatalf("public accounts named %q = %d, want %d", name, got, want)
 	}
 }
 
