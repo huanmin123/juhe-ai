@@ -67,8 +67,8 @@ export function defaultAccountForm(
 function defaultSupportedModelsForProvider(provider: ProviderDefinition | undefined): string[] {
   const output: string[] = []
   const seen = new Set<string>()
-  for (const item of provider?.defaultSupportedModels ?? []) {
-    const model = item.trim()
+  for (const item of [provider?.defaultTestModel, ...(provider?.defaultSupportedModels ?? [])]) {
+    const model = item?.trim() ?? ''
     if (!model || seen.has(model)) continue
     seen.add(model)
     output.push(model)

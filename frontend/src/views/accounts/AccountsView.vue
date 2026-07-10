@@ -118,7 +118,7 @@
     <AccountTestModal
       v-if="testModalOpen"
       v-model:open="testModalOpen"
-      v-model:model="testForm.model"
+      :model="testForm.model"
       :account="testingAccount"
       :accounts="batchTestingAccounts"
       :active-task="activeSingleTestTask"
@@ -135,6 +135,7 @@
       @copy-result="copyText"
       @run="runAccountTest"
       @stop="stopAccountTest"
+      @update:model="updateAccountTestModel"
     />
 
     <AccountEditModal
@@ -315,6 +316,7 @@ const {
   handleAccountTableChangeAndLoad,
   handleAccountSortChange,
   handleSystemAccountFilterChange: handleAccountListSystemAccountFilterChange,
+  applyProviderDefaultTestModel,
   removeLoadedAccount,
   resetFilters: resetAccountListFilters
 } = useAccountListData({
@@ -576,9 +578,11 @@ const {
   testResult,
   testRunning,
   draftTestingAccountPayload,
-  testingAccount
+  testingAccount,
+  updateAccountTestModel
 } = useAccountTestModal({
   accountScopeParams,
+  applyProviderDefaultTestModel,
   clearSelection,
   isManagementView,
   loadData,

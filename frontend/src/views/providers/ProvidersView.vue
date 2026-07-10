@@ -65,7 +65,7 @@
               <span>默认 Base URL</span>
               <strong class="mono-cell">{{ record.baseUrl }}</strong>
             </div>
-            <div v-if="isManagementView" class="mobile-list-meta-item mobile-list-meta-wide">
+            <div class="mobile-list-meta-item mobile-list-meta-wide">
               <span>默认测试模型</span>
               <strong class="mono-cell">{{ record.defaultTestModel }}</strong>
             </div>
@@ -454,12 +454,12 @@ async function reloadActiveProviderModels() {
   modelLoading.value = true
   modelLoadError.value = ''
   try {
-    if (isManagementView.value) {
-      const scopedProviders = await api.providers.list(modelProviderQueryParams())
-      const scopedProvider = scopedProviders.find((item) => item.code === provider.code)
-      if (scopedProvider) {
-        activeProvider.value = scopedProvider
-      }
+    const scopedProviders = isManagementView.value
+      ? await api.providers.list(modelProviderQueryParams())
+      : await api.providers.options()
+    const scopedProvider = scopedProviders.find((item) => item.code === provider.code)
+    if (scopedProvider) {
+      activeProvider.value = scopedProvider
     }
     providerModels.value = await api.providers.models(provider.code, modelCatalogQueryParams())
     selectedModelCategory.value = findFirstModelCategory(providerModels.value)

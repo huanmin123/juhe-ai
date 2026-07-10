@@ -257,6 +257,16 @@ assert(
     && runManualAccountTestFailurePrecheckQueueItemSource.includes('findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService'),
   '账号测试失败事前确认应同时通过 DB service 读取账号详情和分组候选账号，避免 PostgreSQL 模式回退 SQLite'
 )
+assert.match(
+  runManualAccountTestFailurePrecheckQueueItemSource,
+  /model:\s*await preferredSystemAccountTestModelAsync\(account\)/,
+  '账号测试失败事前确认只能使用账户健康测试模型，不能复用本次手动失败模型'
+)
+assert.doesNotMatch(
+  runManualAccountTestFailurePrecheckQueueItemSource,
+  /testEndpointMode:\s*item\.testEndpointMode/,
+  '账号测试失败事前确认不能复用本次手动失败的接口形态'
+)
 assert(
   accountTestSessionRoutesSource.includes("router.post('/test-sessions'")
     && accountTestSessionRoutesSource.includes("router.post('/test-sessions/:sessionId/heartbeat'")

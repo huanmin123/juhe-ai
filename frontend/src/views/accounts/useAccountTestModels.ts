@@ -13,6 +13,8 @@ import {
 import { type AccountTestForm, nextTestModel } from './accountTestFlow'
 
 type UseAccountTestModelsInput = {
+  accountScopeParams: ComputedRef<{ systemAccountId: string } | undefined>
+  applyProviderDefaultTestModel?: (providerCode: string, defaultTestModel: string) => void
   providers: ComputedRef<ProviderDefinition[]>
   testForm: AccountTestForm
   testTargetAccountSelection: ComputedRef<AccountSummary | AccountSummary[] | undefined>
@@ -24,6 +26,7 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
   const providerModels = ref<ProviderModelPricing[]>([])
   const providerModelsProviderCode = ref('')
   const modelRequestId = ref(0)
+  const defaultModelSaveRequestId = ref(0)
   const testTargetProviderCode = computed(() => providerCodeForAccountSelection(input.testTargetAccountSelection.value))
   const providerDefaultTestModel = computed(() => providerDefaultTestModelForAccountSelection(
     input.providers.value,
@@ -71,7 +74,7 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     testModelsLoading.value = true
     testModelsLoadingProviderCode.value = requestProviderCode
     try {
-      const models = await api.providers.models(requestProviderCode)
+      const models = await api.providers.models(requestProviderCode, input.accountScopeParams.value)
       if (!isCurrentModelRequest(requestId, requestProviderCode)) return
       providerModels.value = models
       input.testForm.model = nextTestModel(input.testForm.model || defaultTestModel.value, testModelOptions.value, defaultTestModel.value)
@@ -103,9 +106,27 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     )
   }
 
+  async function saveDefaultTestModel(model: string): Promise<void> {
+    const normalizedModel = model.trim()
+    const providerCode = testTargetProviderCode.value
+    if (!normalizedModel || !providerCode || !isGatewaySupportedTestTarget.value) return
+    const requestId = defaultModelSaveRequestId.value + 1
+    defaultModelSaveRequestId.value = requestId
+    try {
+      const result = await api.providers.setDefaultTestModel(providerCode, normalizedModel, input.accountScopeParams.value)
+      if (defaultModelSaveRequestId.value !== requestId || testTargetProviderCode.value !== providerCode) return
+      input.applyProviderDefaultTestModel?.(providerCode, result.defaultTestModel)
+    } catch (error) {
+      if (defaultModelSaveRequestId.value !== requestId) return
+      console.error(error)
+      message.warning('默认测试模型保存失败，下次打开可能仍会使用原默认模型')
+    }
+  }
+
   return {
     defaultModelForSelection,
     loadTestModels,
+    saveDefaultTestModel,
     testModelOptions,
     testModelsLoading
   }

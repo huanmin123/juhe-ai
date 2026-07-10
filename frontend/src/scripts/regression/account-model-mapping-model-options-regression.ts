@@ -1,8 +1,12 @@
+import { readFileSync } from 'node:fs'
+
 import {
   accountModelMappingEndpointFamilyProtocol,
   filterAccountModelMappingOptionsByEndpointFamily,
   type AccountModelMappingModelOption
 } from '../../views/accounts/accountModelMappingModelOptions'
+
+const accountEditModalSource = readFileSync(new URL('../../views/accounts/AccountEditModal.vue', import.meta.url), 'utf8')
 
 const options: AccountModelMappingModelOption[] = [
   { label: 'gpt-chat-only', value: 'gpt-chat-only', supportedApiProtocols: ['chat_completions'] },
@@ -41,6 +45,8 @@ assertDeepEqual(
 assertEqual(accountModelMappingEndpointFamilyProtocol('chat_completions'), 'chat_completions', 'Chat 协议映射错误')
 assertEqual(accountModelMappingEndpointFamilyProtocol('responses'), 'responses', 'Responses 协议映射错误')
 assertEqual(accountModelMappingEndpointFamilyProtocol('messages'), 'messages', 'Messages 协议映射错误')
+assertIncludes(accountEditModalSource, 'for (const item of props.form.supportedModels)', '账号模型别名右侧下拉只能从账户支持模型构建')
+assertNotIncludes(accountEditModalSource, 'buildAccountModelMappingUpstreamOptions', '账号模型别名右侧下拉不应合并整个供应商模型目录')
 
 console.log('账号模型别名协议模型选项回归通过')
 
@@ -59,5 +65,17 @@ function assertDeepEqual(actual: unknown, expected: unknown, message: string): v
   const expectedJson = JSON.stringify(expected)
   if (actualJson !== expectedJson) {
     throw new Error(`${message}，实际 ${actualJson}，预期 ${expectedJson}`)
+  }
+}
+
+function assertIncludes(source: string, expected: string, message: string): void {
+  if (!source.includes(expected)) {
+    throw new Error(`${message}，未找到 ${expected}`)
+  }
+}
+
+function assertNotIncludes(source: string, unexpected: string, message: string): void {
+  if (source.includes(unexpected)) {
+    throw new Error(`${message}，不应包含 ${unexpected}`)
   }
 }

@@ -92,6 +92,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
       : `共 ${formatNumber(total)} 个账户`,
     fetchPage: async (_loadOptions, pageState) => {
       const systemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
+      await loadAccountOptions(systemAccountId, Boolean(_loadOptions?.forceOptions))
       const accountList = await fetchAccountList(systemAccountId, pageState)
       return {
         items: accountList.items,
@@ -184,6 +185,17 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     return removeAccountItems((account) => account.id === accountId) > 0
   }
 
+  function applyProviderDefaultTestModel(providerCode: string, defaultTestModel: string): void {
+    const code = providerCode.trim()
+    const model = defaultTestModel.trim()
+    if (!code || !model) return
+    providers.value = providers.value.map((provider) => (
+      provider.code === code
+        ? providerWithDefaultTestModel(provider, model)
+        : provider
+    ))
+  }
+
   function snapshotPageState(): AccountsPageState {
     return {
       filters: { ...filters, tagIds: [...filters.tagIds], status: [...filters.status] },
@@ -208,7 +220,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     const requestRef: { current?: Promise<void> } = {}
     const request = (async () => {
       const [providerList, proxyList] = await Promise.all([
-        api.providers.options(),
+        api.providers.options(systemAccountId ? { systemAccountId } : undefined),
         api.proxies.options({ limit: 50 })
       ])
       if (currentScopeKey() !== scopeKey || accountOptionsInFlight.get(scopeKey) !== requestRef.current) {
@@ -277,8 +289,21 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     handleAccountSortChange,
     handleSystemAccountFilterChange,
     focusCreatedAccount,
+    applyProviderDefaultTestModel,
     removeLoadedAccount,
     resetAccountPagination,
     resetFilters
+  }
+}
+
+function providerWithDefaultTestModel(provider: ProviderDefinition, defaultTestModel: string): ProviderDefinition {
+  return {
+    ...provider,
+    defaultTestModel,
+    protocolProfiles: provider.protocolProfiles.map((profile) => (
+      profile.id === provider.defaultProtocolProfileId
+        ? { ...profile, defaultTestModel }
+        : profile
+    ))
   }
 }

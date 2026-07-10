@@ -301,8 +301,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     setFormGroup(nextGroup ? { id: nextGroup.id, name: nextGroup.name } : undefined)
   }
 
-  function openCreate() {
-    nextFormOpenRequestToken()
+  async function openCreate() {
+    const requestToken = nextFormOpenRequestToken()
     if (options.isManagementView.value && !options.accountScopeParams.value?.systemAccountId) {
       message.warning('请先在右侧选择目标系统账户，再创建 AI 账户')
       return
@@ -312,7 +312,13 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     editingScheduleFingerprint.value = undefined
     cloningScheduleFingerprint.value = undefined
     creatingAccountScopeParams.value = undefined
-    void options.loadAccountOptions(options.accountScopeParams.value?.systemAccountId)
+    try {
+      await options.loadAccountOptions(options.accountScopeParams.value?.systemAccountId, true)
+    } catch (error) {
+      console.error(error)
+      message.warning(options.extractApiErrorMessage(error, '供应商选项刷新失败，已使用当前缓存'))
+    }
+    if (!isCurrentFormOpenRequest(requestToken)) return
     resetForm('', '')
     accountAdvancedDetailLoaded.value = true
     accountAdvancedDetailLoading.value = false

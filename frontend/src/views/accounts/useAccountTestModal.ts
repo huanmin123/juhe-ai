@@ -54,6 +54,7 @@ import {
 
 interface UseAccountTestModalOptions {
   accountScopeParams: ComputedRef<{ systemAccountId: string } | undefined>
+  applyProviderDefaultTestModel?: (providerCode: string, defaultTestModel: string) => void
   clearSelection?: () => void
   isManagementView: ComputedRef<boolean>
   loadData: () => Promise<void>
@@ -91,9 +92,12 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   const {
     defaultModelForSelection,
     loadTestModels,
+    saveDefaultTestModel,
     testModelOptions,
     testModelsLoading
   } = useAccountTestModels({
+    accountScopeParams: options.accountScopeParams,
+    applyProviderDefaultTestModel: options.applyProviderDefaultTestModel,
     providers: options.providers,
     testForm,
     testTargetAccountSelection
@@ -186,6 +190,13 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
       return
     }
     await runSingleAccountTest()
+  }
+
+  function updateAccountTestModel(model: string): void {
+    const normalizedModel = model.trim()
+    testForm.model = normalizedModel
+    if (!normalizedModel) return
+    void saveDefaultTestModel(normalizedModel)
   }
 
   async function openBatchTestModal(accounts: AccountSummary[]) {
@@ -857,6 +868,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     testResult,
     testRunning,
     testingAccount,
+    updateAccountTestModel,
     draftTestingAccountPayload,
     draftApiKeyTestSnapshot,
     successfulDraftActivationTest
