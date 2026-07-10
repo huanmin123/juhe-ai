@@ -160,9 +160,10 @@ func TestManagementGlobalSettingsUpdateHandlerRejectsOrdinaryUser(t *testing.T) 
 
 func TestManagementGlobalSettingsUpdateHandlerStrictBodyValidation(t *testing.T) {
 	tests := []struct {
-		name    string
-		body    string
-		wantMsg string
+		name       string
+		body       string
+		wantStatus int
+		wantMsg    string
 	}{
 		{name: "empty body", body: "", wantMsg: "请求体无效"},
 		{name: "syntax error", body: `{"appName":`, wantMsg: "请求体无效"},
@@ -179,9 +180,10 @@ func TestManagementGlobalSettingsUpdateHandlerStrictBodyValidation(t *testing.T)
 		{name: "app icon non string", body: `{"appIcon":false}`, wantMsg: "appIcon 必须是非空字符串"},
 		{name: "app icon blank", body: `{"appIcon":" \n "}`, wantMsg: "appIcon 必须是非空字符串"},
 		{
-			name:    "oversized body",
-			body:    `{"appName":"` + strings.Repeat("x", managementGlobalSettingsMaxBodyBytes) + `"}`,
-			wantMsg: "请求体过大",
+			name:       "oversized body",
+			body:       `{"appName":"` + strings.Repeat("x", managementGlobalSettingsMaxBodyBytes) + `"}`,
+			wantStatus: http.StatusRequestEntityTooLarge,
+			wantMsg:    "请求体过大",
 		},
 	}
 	for _, tt := range tests {
@@ -193,8 +195,12 @@ func TestManagementGlobalSettingsUpdateHandlerStrictBodyValidation(t *testing.T)
 
 			handler.ServeHTTP(rec, req)
 
-			if rec.Code != http.StatusBadRequest {
-				t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+			wantStatus := tt.wantStatus
+			if wantStatus == 0 {
+				wantStatus = http.StatusBadRequest
+			}
+			if rec.Code != wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, wantStatus, rec.Body.String())
 			}
 			if service.called {
 				t.Fatal("management settings service should not be called for invalid body")

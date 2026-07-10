@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	managementGlobalSettingsMaxBodyBytes         = 1 << 20
+	managementGlobalSettingsMaxBodyBytes         = 256 << 10
 	defaultOperationLogMaxChangesPerRecord       = 100
 	managementOperationLogSafeStringMaxRunes     = 200
 	managementOperationLogSafeSerializedMaxRunes = 500
@@ -177,7 +177,7 @@ func decodeManagementGlobalSettingsString(w http.ResponseWriter, field string, r
 func writeManagementGlobalSettingsBodyError(w http.ResponseWriter, err error) {
 	var maxBytesErr *http.MaxBytesError
 	if errors.As(err, &maxBytesErr) {
-		writeMessageError(w, http.StatusBadRequest, "请求体过大")
+		writeMessageError(w, http.StatusRequestEntityTooLarge, "请求体过大")
 		return
 	}
 	var typeErr *json.UnmarshalTypeError
@@ -191,7 +191,7 @@ func writeManagementGlobalSettingsBodyError(w http.ResponseWriter, err error) {
 func writeManagementGlobalSettingsTrailingBodyError(w http.ResponseWriter, err error) {
 	var maxBytesErr *http.MaxBytesError
 	if errors.As(err, &maxBytesErr) {
-		writeMessageError(w, http.StatusBadRequest, "请求体过大")
+		writeMessageError(w, http.StatusRequestEntityTooLarge, "请求体过大")
 		return
 	}
 	writeMessageError(w, http.StatusBadRequest, "请求体无效")
