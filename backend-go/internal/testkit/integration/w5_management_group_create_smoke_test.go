@@ -791,7 +791,7 @@ func assertW5ManagementGroupOperationLogs(
 		"openai",
 		"personal",
 		true,
-		"/__aisys__/api/groups",
+		"/__aisys__/api/groups/",
 		now,
 	)
 	assertW5ManagementGroupOperationLogTarget(
@@ -829,7 +829,7 @@ func assertW5ManagementGroupOperationLogs(
 		"gpt",
 		"high_concurrency",
 		false,
-		"/__aisys__/api/my-groups",
+		"/__aisys__/api/my-groups/",
 		now,
 	)
 	assertW5ManagementGroupOperationLogTarget(

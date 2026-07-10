@@ -32,6 +32,7 @@ const (
 
 type mutationGuardConfig struct {
 	operationKey string
+	scope        func(*http.Request) string
 	fingerprint  func(http.ResponseWriter, *http.Request) (any, error)
 }
 
@@ -65,9 +66,13 @@ func (s *mutationGuardStore) Middleware(config mutationGuardConfig) func(http.Ha
 			if authContext, ok := ManagementAuthContextFromRequest(r); ok && strings.TrimSpace(authContext.SystemAccountID) != "" {
 				actor = strings.TrimSpace(authContext.SystemAccountID)
 			}
+			operationScope := ""
+			if config.scope != nil {
+				operationScope = config.scope(r)
+			}
 			key := strings.Join([]string{
 				actor,
-				"",
+				operationScope,
 				strings.ToUpper(r.Method),
 				config.operationKey,
 				hashMutationStableValue(fingerprint),
@@ -201,25 +206,22 @@ func managementProxyCreateMutationGuardConfig() mutationGuardConfig {
 }
 
 func managementGroupCreateMutationGuardConfig(scope managementGroupOptionScope) mutationGuardConfig {
+	operationScope := func(r *http.Request) string {
+		if scope != managementGroupScopeAdmin {
+			return ""
+		}
+		return firstManagementQueryText(r.URL.Query(), "systemAccountId")
+	}
 	return mutationGuardConfig{
 		operationKey: "groups.create",
+		scope:        operationScope,
 		fingerprint: func(w http.ResponseWriter, r *http.Request) (any, error) {
 			fields, err := mutationJSONFields(w, r)
 			if err != nil {
 				return nil, err
 			}
-			ownerSystemAccountID := ""
-			if authContext, ok := ManagementAuthContextFromRequest(r); ok {
-				ownerSystemAccountID = strings.TrimSpace(authContext.SystemAccountID)
-			}
-			if scope == managementGroupScopeAdmin {
-				selectedSystemAccountID := firstManagementQueryText(r.URL.Query(), "systemAccountId")
-				if selectedSystemAccountID != "" && selectedSystemAccountID != "all" {
-					ownerSystemAccountID = selectedSystemAccountID
-				}
-			}
 			return map[string]any{
-				"owner":        ownerSystemAccountID,
+				"owner":        operationScope(r),
 				"providerCode": mutationStringField(fields, "providerCode"),
 				"name":         mutationStringField(fields, "name"),
 			}, nil

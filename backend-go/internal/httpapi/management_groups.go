@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"math"
+	"mime"
 	"net/http"
 	"net/url"
 	"strings"
@@ -39,18 +40,56 @@ type managementGroupCreateService interface {
 
 func managementGroupCreateJSONBodyMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		isJSON, charsetSupported := managementGroupCreateJSONContentType(r.Header.Get("Content-Type"))
+		if !charsetSupported {
+			writeMessageError(w, http.StatusUnsupportedMediaType, "请求体无效")
+			return
+		}
+		if !isJSON {
+			_ = r.Body.Close()
+			r.Body = io.NopCloser(strings.NewReader("{}"))
+			r.ContentLength = 2
+			next.ServeHTTP(w, r)
+			return
+		}
 		limited := http.MaxBytesReader(w, r.Body, managementGroupCreateMaxBodyBytes)
 		body, err := io.ReadAll(limited)
 		if err != nil {
 			writeManagementGroupCreateBodyError(w, err)
 			return
 		}
-		if !json.Valid(body) {
-			writeMessageError(w, http.StatusBadRequest, "分组参数无效")
+		trimmed := bytes.TrimSpace(body)
+		if len(trimmed) == 0 {
+			body = []byte("{}")
+		} else if (trimmed[0] != '{' && trimmed[0] != '[') || !json.Valid(body) {
+			writeMessageError(w, http.StatusBadRequest, "请求体无效")
 			return
 		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
 		r.ContentLength = int64(len(body))
+		next.ServeHTTP(w, r)
+	})
+}
+
+func managementGroupCreateJSONContentType(value string) (isJSON bool, charsetSupported bool) {
+	if strings.TrimSpace(value) == "" {
+		return false, true
+	}
+	mediaType, params, err := mime.ParseMediaType(value)
+	if err != nil || !strings.EqualFold(mediaType, "application/json") {
+		return false, true
+	}
+	charset := strings.ToLower(strings.TrimSpace(params["charset"]))
+	return true, charset == "" || charset == "utf-8"
+}
+
+func managementGroupAdminRoleMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authContext, ok := ManagementAuthContextFromRequest(r)
+		if !ok || !managementauth.IsAdminRole(authContext.Role) {
+			writeMessageError(w, http.StatusForbidden, "需要管理员权限")
+			return
+		}
 		next.ServeHTTP(w, r)
 	})
 }
@@ -267,14 +306,17 @@ func decodeManagementGroupCreatePayload(
 	w http.ResponseWriter,
 	r *http.Request,
 ) (managementGroupCreatePayload, bool) {
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, managementGroupCreateMaxBodyBytes))
-	var raw map[string]json.RawMessage
-	if err := decoder.Decode(&raw); err != nil || raw == nil {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, managementGroupCreateMaxBodyBytes))
+	if err != nil {
 		writeManagementGroupCreateBodyError(w, err)
 		return managementGroupCreatePayload{}, false
 	}
-	var extra any
-	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+	if !json.Valid(body) {
+		writeManagementGroupCreateBodyError(w, nil)
+		return managementGroupCreatePayload{}, false
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil || raw == nil {
 		writeMessageError(w, http.StatusBadRequest, "分组参数无效")
 		return managementGroupCreatePayload{}, false
 	}
@@ -324,7 +366,6 @@ func decodeManagementGroupCreatePayload(
 			writeMessageError(w, http.StatusBadRequest, "分组参数无效")
 			return managementGroupCreatePayload{}, false
 		}
-		groupType = strings.TrimSpace(groupType)
 		if groupType != "personal" && groupType != "high_concurrency" {
 			writeMessageError(w, http.StatusBadRequest, "分组参数无效")
 			return managementGroupCreatePayload{}, false
@@ -441,7 +482,7 @@ func writeManagementGroupCreateBodyError(w http.ResponseWriter, err error) {
 		writeMessageError(w, http.StatusRequestEntityTooLarge, "请求体过大")
 		return
 	}
-	writeMessageError(w, http.StatusBadRequest, "分组参数无效")
+	writeMessageError(w, http.StatusBadRequest, "请求体无效")
 }
 
 func writeManagementGroupCreateError(w http.ResponseWriter, err error) bool {
@@ -495,6 +536,10 @@ func recordManagementGroupCreateOperationLog(
 	if scope == managementGroupScopeAdmin {
 		mode = "admin"
 	}
+	actorRole := authContext.Role
+	if scope == managementGroupScopeSelf {
+		actorRole = "user"
+	}
 	statusCode := http.StatusCreated
 	input := port.OperationLogInput{
 		ID:                            newLogID(),
@@ -502,7 +547,7 @@ func recordManagementGroupCreateOperationLog(
 		ActorSystemAccountID:          authContext.SystemAccountID,
 		ActorUsername:                 authContext.Username,
 		ActorDisplayName:              authContext.DisplayName,
-		ActorRole:                     authContext.Role,
+		ActorRole:                     actorRole,
 		OperationScopeSystemAccountID: ownerSystemAccountID,
 		Mode:                          mode,
 		Module:                        "groups",
@@ -521,7 +566,7 @@ func recordManagementGroupCreateOperationLog(
 			{Field: "enabled", Label: "启用状态", Before: nil, After: result.Enabled},
 		},
 		Method:     r.Method,
-		Path:       r.URL.Path,
+		Path:       managementGroupCreateOperationPath(scope),
 		StatusCode: &statusCode,
 		ClientIP:   opts.clientIP.FromRequest(r),
 		UserAgent:  r.UserAgent(),
@@ -533,6 +578,13 @@ func recordManagementGroupCreateOperationLog(
 		CreatedAt: now().UTC(),
 	}
 	enqueueManagementOperationLog(r.Context(), opts, input)
+}
+
+func managementGroupCreateOperationPath(scope managementGroupOptionScope) string {
+	if scope == managementGroupScopeSelf {
+		return "/__aisys__/api/my-groups/"
+	}
+	return "/__aisys__/api/groups/"
 }
 
 func managementGroupOptionListInput(

@@ -477,6 +477,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				system.With(
 					managementGroupCreateJSONBodyMiddleware,
 					managementAPIWriteRateLimitMiddleware,
+					managementGroupAdminRoleMiddleware,
 					mutationGuards.Middleware(managementGroupCreateMutationGuardConfig(managementGroupScopeAdmin)),
 				).Post("/groups", opts.ManagementGroupCreateHandler.ServeHTTP)
 			}
