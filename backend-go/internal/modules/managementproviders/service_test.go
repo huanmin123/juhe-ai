@@ -19,7 +19,8 @@ func TestServiceOptionsMapsProviderDefinitions(t *testing.T) {
 				ProtocolCode:             "openai",
 				ProtocolVersion:          "v1",
 				BaseURL:                  "https://api.openai.com/v1",
-				DefaultTestModel:         "gpt-5.5",
+				DefaultTestModel:         "gpt-5-user",
+				SystemDefaultTestModel:   "gpt-5-system",
 				DefaultSupportedModels:   []string{"gpt-5.5"},
 				AccountTypes:             []string{"oauth", "api_key"},
 				Capabilities:             []string{"responses", "chat"},
@@ -32,7 +33,7 @@ func TestServiceOptionsMapsProviderDefinitions(t *testing.T) {
 						ProtocolCode:     "openai",
 						ProtocolVersion:  "v1",
 						BaseURL:          "https://api.openai.com/v1",
-						DefaultTestModel: "gpt-5.5",
+						DefaultTestModel: "gpt-5-system",
 						AccountTypes:     []string{"oauth", "api_key"},
 						Capabilities:     []string{"responses", "chat"},
 						EndpointFamilies: []port.ManagementProviderEndpointFamily{
@@ -57,10 +58,12 @@ func TestServiceOptionsMapsProviderDefinitions(t *testing.T) {
 		t.Fatalf("options = %d, want 1", len(options))
 	}
 	got := options[0]
-	if got.Code != "gpt" || got.DefaultProtocolProfileID != "profile_gpt_openai_v1" || got.DefaultTestModel != "gpt-5.5" {
+	if got.Code != "gpt" || got.DefaultProtocolProfileID != "profile_gpt_openai_v1" ||
+		got.DefaultTestModel != "gpt-5-user" || got.SystemDefaultTestModel != "gpt-5-system" {
 		t.Fatalf("provider = %+v", got)
 	}
-	if len(got.ProtocolProfiles) != 1 || got.ProtocolProfiles[0].EndpointFamilies[0].Code != "chat_completions" {
+	if len(got.ProtocolProfiles) != 1 || got.ProtocolProfiles[0].DefaultTestModel != "gpt-5-system" ||
+		got.ProtocolProfiles[0].EndpointFamilies[0].Code != "chat_completions" {
 		t.Fatalf("profiles = %+v", got.ProtocolProfiles)
 	}
 }
@@ -69,7 +72,17 @@ func TestServiceListUsesAllProviders(t *testing.T) {
 	store := &providerOptionStoreStub{
 		providers: []port.ManagementProviderOption{
 			{ID: "provider_disabled", Code: "disabled", Name: "Disabled", Enabled: false},
-			{ID: "provider_gpt", Code: "gpt", Name: "GPT", Enabled: true},
+			{
+				ID:                     "provider_gpt",
+				Code:                   "gpt",
+				Name:                   "GPT",
+				Enabled:                true,
+				DefaultTestModel:       "gpt-5-user",
+				SystemDefaultTestModel: "gpt-5-system",
+				ProtocolProfiles: []port.ManagementProviderProtocolProfile{
+					{ID: "profile_gpt_openai_v1", DefaultTestModel: "gpt-5-system"},
+				},
+			},
 		},
 	}
 	service := NewService(store)
@@ -84,6 +97,11 @@ func TestServiceListUsesAllProviders(t *testing.T) {
 	}
 	if len(providers) != 2 || providers[0].Code != "disabled" || providers[0].Enabled {
 		t.Fatalf("providers = %+v, want disabled provider preserved", providers)
+	}
+	if providers[1].DefaultTestModel != "gpt-5-user" ||
+		providers[1].SystemDefaultTestModel != "gpt-5-system" ||
+		providers[1].ProtocolProfiles[0].DefaultTestModel != "gpt-5-system" {
+		t.Fatalf("provider contract = %+v", providers[1])
 	}
 }
 

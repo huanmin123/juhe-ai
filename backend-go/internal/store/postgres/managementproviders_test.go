@@ -11,7 +11,7 @@ import (
 	"juhe-ai/backend-go/internal/store/postgres/postgresqueries"
 )
 
-func TestManagementProviderOptionFromRowUsesPreferredDefaultProfile(t *testing.T) {
+func TestManagementProviderOptionFromRowKeepsSystemAndProtocolDefaults(t *testing.T) {
 	profilesByProvider, err := managementProviderProfilesByProvider([]postgresqueries.ListManagementProviderOptionProfilesRow{
 		{
 			ID:               "profile_gemini_openai_chat_v1beta",
@@ -48,7 +48,7 @@ func TestManagementProviderOptionFromRowUsesPreferredDefaultProfile(t *testing.T
 		Description:                pgtype.Text{String: "Google Gemini provider", Valid: true},
 		Enabled:                    true,
 		DefaultSupportedModelsJson: `["gemini-3.5-flash"]`,
-	}, profilesByProvider["gemini"], "gemini-custom")
+	}, profilesByProvider["gemini"], " gemini-custom ")
 	if err != nil {
 		t.Fatalf("managementProviderOptionFromRow() error = %v", err)
 	}
@@ -59,8 +59,42 @@ func TestManagementProviderOptionFromRowUsesPreferredDefaultProfile(t *testing.T
 	if option.ProtocolCode != "gemini" || option.DefaultTestModel != "gemini-custom" {
 		t.Fatalf("option = %+v", option)
 	}
-	if option.ProtocolProfiles[1].DefaultTestModel != "gemini-custom" {
-		t.Fatalf("default profile preference was not applied to profile: %+v", option.ProtocolProfiles)
+	if option.SystemDefaultTestModel != "gemini-3.5-flash" {
+		t.Fatalf("system default test model = %q, want protocol profile default", option.SystemDefaultTestModel)
+	}
+	if option.ProtocolProfiles[1].DefaultTestModel != "gemini-3.5-flash" {
+		t.Fatalf("protocol profile default was overwritten: %+v", option.ProtocolProfiles)
+	}
+}
+
+func TestManagementProviderOptionFromRowFallsBackToSystemDefault(t *testing.T) {
+	profiles := []port.ManagementProviderProtocolProfile{
+		{
+			ID:               "profile_gpt_openai_v1",
+			ProviderCode:     "gpt",
+			Enabled:          true,
+			ProtocolCode:     "openai",
+			ProtocolVersion:  "v1",
+			DefaultTestModel: "gpt-5-system",
+		},
+	}
+
+	option, err := managementProviderOptionFromRow(managementProviderRow{
+		ID:                         "provider_gpt",
+		Code:                       "gpt",
+		Name:                       "GPT",
+		Enabled:                    true,
+		DefaultSupportedModelsJson: `[]`,
+	}, profiles, " ")
+	if err != nil {
+		t.Fatalf("managementProviderOptionFromRow() error = %v", err)
+	}
+
+	if option.DefaultTestModel != "gpt-5-system" || option.SystemDefaultTestModel != "gpt-5-system" {
+		t.Fatalf("option = %+v", option)
+	}
+	if option.ProtocolProfiles[0].DefaultTestModel != "gpt-5-system" {
+		t.Fatalf("protocol profiles = %+v", option.ProtocolProfiles)
 	}
 }
 

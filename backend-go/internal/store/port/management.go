@@ -974,6 +974,7 @@ type ManagementProviderOption struct {
 	ProtocolVersion          string
 	BaseURL                  string
 	DefaultTestModel         string
+	SystemDefaultTestModel   string
 	DefaultSupportedModels   []string
 	AccountTypes             []string
 	Capabilities             []string

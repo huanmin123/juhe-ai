@@ -189,15 +189,7 @@ func managementProviderOptionFromRow(
 	}
 	profiles = append([]port.ManagementProviderProtocolProfile(nil), profiles...)
 	defaultProfile := preferredManagementProviderDefaultProfile(profiles)
-	if preferredModel != "" && defaultProfile != nil {
-		for index := range profiles {
-			if profiles[index].ID == defaultProfile.ID {
-				profiles[index].DefaultTestModel = preferredModel
-				defaultProfile = &profiles[index]
-				break
-			}
-		}
-	}
+	preferredModel = strings.TrimSpace(preferredModel)
 	option := port.ManagementProviderOption{
 		ID:                       row.ID,
 		Code:                     row.Code,
@@ -211,7 +203,8 @@ func managementProviderOptionFromRow(
 		ProtocolCode:             "",
 		ProtocolVersion:          "",
 		BaseURL:                  "",
-		DefaultTestModel:         strings.TrimSpace(preferredModel),
+		DefaultTestModel:         preferredModel,
+		SystemDefaultTestModel:   "",
 		AccountTypes:             []string{},
 		Capabilities:             []string{},
 	}
@@ -220,8 +213,9 @@ func managementProviderOptionFromRow(
 		option.ProtocolCode = defaultProfile.ProtocolCode
 		option.ProtocolVersion = defaultProfile.ProtocolVersion
 		option.BaseURL = defaultProfile.BaseURL
+		option.SystemDefaultTestModel = defaultProfile.DefaultTestModel
 		if option.DefaultTestModel == "" {
-			option.DefaultTestModel = defaultProfile.DefaultTestModel
+			option.DefaultTestModel = option.SystemDefaultTestModel
 		}
 		option.AccountTypes = append([]string(nil), defaultProfile.AccountTypes...)
 		option.Capabilities = append([]string(nil), defaultProfile.Capabilities...)

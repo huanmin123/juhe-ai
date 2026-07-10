@@ -53,6 +53,7 @@ type Option struct {
 	ProtocolVersion          string            `json:"protocolVersion"`
 	BaseURL                  string            `json:"baseUrl"`
 	DefaultTestModel         string            `json:"defaultTestModel"`
+	SystemDefaultTestModel   string            `json:"systemDefaultTestModel"`
 	DefaultSupportedModels   []string          `json:"defaultSupportedModels"`
 	AccountTypes             []string          `json:"accountTypes"`
 	Capabilities             []string          `json:"capabilities"`
@@ -110,6 +111,7 @@ func providerOptionFromPort(row port.ManagementProviderOption) Option {
 		ProtocolVersion:          row.ProtocolVersion,
 		BaseURL:                  row.BaseURL,
 		DefaultTestModel:         row.DefaultTestModel,
+		SystemDefaultTestModel:   row.SystemDefaultTestModel,
 		DefaultSupportedModels:   append([]string(nil), row.DefaultSupportedModels...),
 		AccountTypes:             append([]string(nil), row.AccountTypes...),
 		Capabilities:             append([]string(nil), row.Capabilities...),

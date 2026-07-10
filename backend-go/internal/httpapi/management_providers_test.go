@@ -16,7 +16,17 @@ import (
 func TestManagementProviderOptionsHandler(t *testing.T) {
 	service := &managementProviderOptionServiceStub{
 		options: []managementproviders.Option{
-			{ID: "provider_gpt", Code: "gpt", Name: "GPT", Enabled: true},
+			{
+				ID:                     "provider_gpt",
+				Code:                   "gpt",
+				Name:                   "GPT",
+				Enabled:                true,
+				DefaultTestModel:       "gpt-5-user",
+				SystemDefaultTestModel: "gpt-5-system",
+				ProtocolProfiles: []managementproviders.ProtocolProfile{
+					{ID: "profile_gpt_openai_v1", DefaultTestModel: "gpt-5-system"},
+				},
+			},
 		},
 	}
 	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
@@ -42,13 +52,28 @@ func TestManagementProviderOptionsHandler(t *testing.T) {
 	if len(body.Data) != 1 || body.Data[0].Code != "gpt" {
 		t.Fatalf("body = %+v", body)
 	}
+	if body.Data[0].DefaultTestModel != "gpt-5-user" ||
+		body.Data[0].SystemDefaultTestModel != "gpt-5-system" ||
+		body.Data[0].ProtocolProfiles[0].DefaultTestModel != "gpt-5-system" {
+		t.Fatalf("provider option contract = %+v", body.Data[0])
+	}
 }
 
 func TestManagementProvidersHandlerRequiresAdminAndIncludesDisabledProviders(t *testing.T) {
 	service := &managementProviderOptionServiceStub{
 		providers: []managementproviders.Option{
 			{ID: "provider_disabled", Code: "disabled", Name: "Disabled", Enabled: false},
-			{ID: "provider_gpt", Code: "gpt", Name: "GPT", Enabled: true},
+			{
+				ID:                     "provider_gpt",
+				Code:                   "gpt",
+				Name:                   "GPT",
+				Enabled:                true,
+				DefaultTestModel:       "gpt-5-user",
+				SystemDefaultTestModel: "gpt-5-system",
+				ProtocolProfiles: []managementproviders.ProtocolProfile{
+					{ID: "profile_gpt_openai_v1", DefaultTestModel: "gpt-5-system"},
+				},
+			},
 		},
 	}
 	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
@@ -73,6 +98,11 @@ func TestManagementProvidersHandlerRequiresAdminAndIncludesDisabledProviders(t *
 	}
 	if len(body.Data) != 2 || body.Data[0].Code != "disabled" || body.Data[0].Enabled {
 		t.Fatalf("body = %+v, want disabled provider preserved", body)
+	}
+	if body.Data[1].DefaultTestModel != "gpt-5-user" ||
+		body.Data[1].SystemDefaultTestModel != "gpt-5-system" ||
+		body.Data[1].ProtocolProfiles[0].DefaultTestModel != "gpt-5-system" {
+		t.Fatalf("provider contract = %+v", body.Data[1])
 	}
 }
 
