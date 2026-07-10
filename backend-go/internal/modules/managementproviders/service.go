@@ -53,7 +53,7 @@ type Option struct {
 	ProtocolVersion               string            `json:"protocolVersion"`
 	BaseURL                       string            `json:"baseUrl"`
 	DefaultHealthCheckModel       string            `json:"defaultHealthCheckModel"`
-	SystemDefaultHealthCheckModel string            `json:"systemDefaultHealthCheckModel"`
+	SystemDefaultHealthCheckModel string            `json:"systemDefaultHealthCheckModel,omitempty"`
 	DefaultSupportedModels        []string          `json:"defaultSupportedModels"`
 	AccountTypes                  []string          `json:"accountTypes"`
 	Capabilities                  []string          `json:"capabilities"`

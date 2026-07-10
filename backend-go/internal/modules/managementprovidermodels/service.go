@@ -796,6 +796,9 @@ func applyCustomModelMutableFields(input *port.ManagementCustomProviderModelSave
 		input.SupportedAPIProtocols = []string{}
 	}
 	if fields.SupportedServiceTiers.Set {
+		if len(fields.SupportedServiceTiers.Value) > 2 {
+			return &CustomModelValidationError{Message: "自定义模型参数无效"}
+		}
 		serviceTiers, err := normalizeCustomModelCapabilityList(fields.SupportedServiceTiers.Value, customProviderModelServiceTiers)
 		if err != nil {
 			return err
@@ -805,6 +808,9 @@ func applyCustomModelMutableFields(input *port.ManagementCustomProviderModelSave
 		input.SupportedServiceTiers = []string{}
 	}
 	if fields.SupportedReasoningEfforts.Set {
+		if len(fields.SupportedReasoningEfforts.Value) > 7 {
+			return &CustomModelValidationError{Message: "自定义模型参数无效"}
+		}
 		reasoningEfforts, err := normalizeCustomModelCapabilityList(fields.SupportedReasoningEfforts.Value, customProviderModelReasoningEfforts)
 		if err != nil {
 			return err

@@ -105,6 +105,18 @@ func TestManagementProvidersHandlerRequiresAdminAndIncludesDisabledProviders(t *
 		!strings.Contains(responseJSON, `"systemDefaultHealthCheckModel":"gpt-5-system"`) {
 		t.Fatalf("response missing provider health check model contract: %s", responseJSON)
 	}
+	var rawBody struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(responseJSON), &rawBody); err != nil {
+		t.Fatalf("decode raw provider response: %v", err)
+	}
+	if len(rawBody.Data) != 2 {
+		t.Fatalf("raw provider response = %+v", rawBody.Data)
+	}
+	if _, exists := rawBody.Data[0]["systemDefaultHealthCheckModel"]; exists {
+		t.Fatalf("unset system default health check model should be omitted: %s", responseJSON)
+	}
 	if strings.Contains(responseJSON, "defaultTestModel") || strings.Contains(responseJSON, "systemDefaultTestModel") {
 		t.Fatalf("response exposes legacy provider model fields: %s", responseJSON)
 	}

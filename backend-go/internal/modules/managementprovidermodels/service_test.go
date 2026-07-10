@@ -447,7 +447,7 @@ func TestServiceCreateCustomModelPersistsPersonalModelAndInvalidates(t *testing.
 		Fields: CustomModelMutation{
 			Model:                     OptionalString{Set: true, Value: " custom-chat "},
 			SupportedAPIProtocols:     OptionalStringList{Set: true, Value: []string{"responses", "responses"}},
-			SupportedServiceTiers:     OptionalStringList{Set: true, Value: []string{"priority", "priority", "flex"}},
+			SupportedServiceTiers:     OptionalStringList{Set: true, Value: []string{"priority", "flex"}},
 			SupportedReasoningEfforts: OptionalStringList{Set: true, Value: []string{"low", "high", "high"}},
 			DefaultReasoningEffort:    OptionalString{Set: true, Value: " high "},
 			InputUSDPer1M:             OptionalFloat{Set: true, Value: &price},
@@ -532,9 +532,21 @@ func TestServiceCreateCustomModelValidatesGPTRequestCapabilities(t *testing.T) {
 			wantMessage:  "自定义模型参数无效",
 		},
 		{
+			name:         "reject service tier raw length before dedupe",
+			providerCode: "gpt",
+			serviceTiers: []string{"priority", "priority", "priority"},
+			wantMessage:  "自定义模型参数无效",
+		},
+		{
 			name:         "reject codex ultra as wire effort",
 			providerCode: "gpt",
 			efforts:      []string{"ultra"},
+			wantMessage:  "自定义模型参数无效",
+		},
+		{
+			name:         "reject reasoning effort raw length before dedupe",
+			providerCode: "gpt",
+			efforts:      []string{"low", "low", "low", "low", "low", "low", "low", "low"},
 			wantMessage:  "自定义模型参数无效",
 		},
 		{
