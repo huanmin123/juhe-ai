@@ -1,10 +1,12 @@
 package managementgroups
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -16,6 +18,10 @@ const (
 	defaultListPageSize   = 50
 	maxListPageSize       = 500
 	maxListWindowRowCount = 1000
+
+	maxRequestQuotaHourlyWindowHours = 24 * 30
+	maxRequestQuotaAmountUSD         = 9007199254740991
+	requestQuotaAmountPrecision      = 1000000
 )
 
 var ErrGroupListInvalid = errors.New("management group list invalid")
@@ -27,6 +33,7 @@ type ListInput struct {
 	SelfOnly             bool
 	Page                 int
 	PageSize             int
+	PageSizeProvided     bool
 }
 
 type AuthorizationSourceSummary struct {
@@ -41,27 +48,27 @@ type RuntimeSnapshot struct {
 }
 
 type ListItem struct {
-	ID                         string                      `json:"id"`
-	SystemAccountID            string                      `json:"systemAccountId,omitempty"`
-	SystemAccountName          string                      `json:"systemAccountName,omitempty"`
-	OwnerSystemAccountID       string                      `json:"ownerSystemAccountId"`
-	OwnerSystemAccountName     string                      `json:"ownerSystemAccountName,omitempty"`
-	Name                       string                      `json:"name"`
-	ProviderCode               string                      `json:"providerCode"`
-	Description                *string                     `json:"description,omitempty"`
-	Enabled                    bool                        `json:"enabled"`
-	IsDefault                  bool                        `json:"isDefault"`
-	GroupType                  string                      `json:"groupType"`
-	SchedulingPolicy           *SchedulingPolicy           `json:"schedulingPolicy,omitempty"`
-	AccountStats               GroupAccountStats           `json:"accountStats"`
-	AccessType                 string                      `json:"accessType"`
-	GroupAuthorizationID       string                      `json:"groupAuthorizationId,omitempty"`
-	AuthorizationStatus        string                      `json:"authorizationStatus,omitempty"`
-	AuthorizationExpiresAt     *time.Time                  `json:"authorizationExpiresAt,omitempty"`
-	AuthorizationLimits        map[string]any              `json:"authorizationLimits,omitempty"`
-	Permissions                ResourcePermissions         `json:"permissions"`
-	AccountCount               int                         `json:"accountCount"`
-	AuthorizationSourceSummary *AuthorizationSourceSummary `json:"authorizationSourceSummary,omitempty"`
+	ID                         string                            `json:"id"`
+	SystemAccountID            string                            `json:"systemAccountId,omitempty"`
+	SystemAccountName          string                            `json:"systemAccountName,omitempty"`
+	OwnerSystemAccountID       string                            `json:"ownerSystemAccountId"`
+	OwnerSystemAccountName     string                            `json:"ownerSystemAccountName,omitempty"`
+	Name                       string                            `json:"name"`
+	ProviderCode               string                            `json:"providerCode"`
+	Description                *string                           `json:"description,omitempty"`
+	Enabled                    bool                              `json:"enabled"`
+	IsDefault                  bool                              `json:"isDefault"`
+	GroupType                  string                            `json:"groupType"`
+	SchedulingPolicy           *SchedulingPolicy                 `json:"schedulingPolicy,omitempty"`
+	AccountStats               GroupAccountStats                 `json:"accountStats"`
+	AccessType                 string                            `json:"accessType"`
+	GroupAuthorizationID       string                            `json:"groupAuthorizationId,omitempty"`
+	AuthorizationStatus        string                            `json:"authorizationStatus,omitempty"`
+	AuthorizationExpiresAt     *time.Time                        `json:"authorizationExpiresAt,omitempty"`
+	AuthorizationLimits        port.ManagementRequestQuotaLimits `json:"authorizationLimits"`
+	Permissions                ResourcePermissions               `json:"permissions"`
+	AccountCount               int                               `json:"accountCount"`
+	AuthorizationSourceSummary *AuthorizationSourceSummary       `json:"authorizationSourceSummary,omitempty"`
 }
 
 type ListResult struct {
@@ -81,7 +88,7 @@ func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error)
 	if err != nil {
 		return ListResult{}, err
 	}
-	pageSize := managementGroupListPageSize(input.PageSize)
+	pageSize := managementGroupListPageSize(input.PageSize, input.PageSizeProvided || input.PageSize != 0)
 	page := managementGroupListPage(input.Page, pageSize)
 	result, err := s.listStore.ListManagementGroups(ctx, port.ManagementGroupListInput{
 		SystemAccountID: systemAccountID,
@@ -252,11 +259,11 @@ func managementGroupListAdminRole(role string) bool {
 	return role == "admin" || role == "super_admin"
 }
 
-func managementGroupListPageSize(value int) int {
-	if value <= 0 {
+func managementGroupListPageSize(value int, provided bool) int {
+	if !provided {
 		return defaultListPageSize
 	}
-	return min(value, maxListPageSize)
+	return min(max(value, 1), maxListPageSize)
 }
 
 func managementGroupListPage(value int, pageSize int) int {
@@ -355,7 +362,6 @@ func managementGroupListItem(
 		item.GroupAuthorizationID = ""
 		item.AuthorizationStatus = ""
 		item.AuthorizationExpiresAt = nil
-		item.AuthorizationLimits = nil
 	}
 	return item, nil
 }
@@ -444,15 +450,118 @@ func summarizeManagementGroupAuthorizationSources(
 	return result
 }
 
-func parseManagementGroupAuthorizationLimits(value *string) (map[string]any, error) {
+func parseManagementGroupAuthorizationLimits(value *string) (port.ManagementRequestQuotaLimits, error) {
 	if value == nil || strings.TrimSpace(*value) == "" {
-		return nil, nil
+		return port.ManagementRequestQuotaLimits{}, nil
 	}
-	var limits map[string]any
-	if err := json.Unmarshal([]byte(*value), &limits); err != nil {
-		return nil, err
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(*value), &raw); err != nil {
+		return port.ManagementRequestQuotaLimits{}, err
+	}
+	if raw == nil {
+		return port.ManagementRequestQuotaLimits{}, nil
+	}
+	limits := port.ManagementRequestQuotaLimits{}
+	for key, encoded := range raw {
+		switch key {
+		case "hourly":
+			limit, err := parseManagementGroupHourlyQuotaLimit(encoded)
+			if err != nil {
+				return port.ManagementRequestQuotaLimits{}, err
+			}
+			limits.Hourly = limit
+		case "daily":
+			limit, err := parseManagementGroupQuotaLimit(encoded, "日额度")
+			if err != nil {
+				return port.ManagementRequestQuotaLimits{}, err
+			}
+			limits.Daily = limit
+		case "weekly":
+			limit, err := parseManagementGroupQuotaLimit(encoded, "周额度")
+			if err != nil {
+				return port.ManagementRequestQuotaLimits{}, err
+			}
+			limits.Weekly = limit
+		case "monthly":
+			limit, err := parseManagementGroupQuotaLimit(encoded, "月额度")
+			if err != nil {
+				return port.ManagementRequestQuotaLimits{}, err
+			}
+			limits.Monthly = limit
+		case "total":
+			limit, err := parseManagementGroupQuotaLimit(encoded, "总额度")
+			if err != nil {
+				return port.ManagementRequestQuotaLimits{}, err
+			}
+			limits.Total = limit
+		default:
+			return port.ManagementRequestQuotaLimits{}, fmt.Errorf("请求额度限制包含不支持字段: %s", key)
+		}
 	}
 	return limits, nil
+}
+
+func parseManagementGroupQuotaLimit(
+	value json.RawMessage,
+	label string,
+) (*port.ManagementRequestQuotaLimit, error) {
+	if isManagementGroupJSONNull(value) {
+		return nil, fmt.Errorf("%s参数无效", label)
+	}
+	var limit port.ManagementRequestQuotaLimit
+	decoder := json.NewDecoder(bytes.NewReader(value))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&limit); err != nil {
+		return nil, fmt.Errorf("%s参数无效: %w", label, err)
+	}
+	if !limit.Enabled {
+		return nil, fmt.Errorf("%s启用状态必须为 true", label)
+	}
+	if err := validateManagementGroupQuotaAmount(limit.Limit, label); err != nil {
+		return nil, err
+	}
+	return &limit, nil
+}
+
+func parseManagementGroupHourlyQuotaLimit(
+	value json.RawMessage,
+) (*port.ManagementRequestHourlyQuotaLimit, error) {
+	if isManagementGroupJSONNull(value) {
+		return nil, fmt.Errorf("小时额度参数无效")
+	}
+	var limit port.ManagementRequestHourlyQuotaLimit
+	decoder := json.NewDecoder(bytes.NewReader(value))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&limit); err != nil {
+		return nil, fmt.Errorf("小时额度参数无效: %w", err)
+	}
+	if !limit.Enabled {
+		return nil, fmt.Errorf("小时额度启用状态必须为 true")
+	}
+	if limit.Hours < 1 || limit.Hours > maxRequestQuotaHourlyWindowHours {
+		return nil, fmt.Errorf(
+			"小时额度窗口必须在 1-%d 之间",
+			maxRequestQuotaHourlyWindowHours,
+		)
+	}
+	if err := validateManagementGroupQuotaAmount(limit.Limit, "小时额度"); err != nil {
+		return nil, err
+	}
+	return &limit, nil
+}
+
+func validateManagementGroupQuotaAmount(value float64, label string) error {
+	if math.IsNaN(value) ||
+		math.IsInf(value, 0) ||
+		value <= 0 ||
+		value > maxRequestQuotaAmountUSD {
+		return fmt.Errorf("%s金额必须是大于 0 的数字", label)
+	}
+	scaled := value * requestQuotaAmountPrecision
+	if math.Round(scaled) != scaled {
+		return fmt.Errorf("%s金额最多支持 6 位小数", label)
+	}
+	return nil
 }
 
 func parseManagementGroupListSchedulingPolicy(value *string, groupType string) (*SchedulingPolicy, error) {
@@ -488,8 +597,12 @@ func parseManagementGroupListSchedulingPolicy(value *string, groupType string) (
 		return nil, fmt.Errorf("分组调度策略字段无效")
 	}
 	for _, key := range requiredKeys {
-		if _, exists := raw[key]; !exists {
+		value, exists := raw[key]
+		if !exists {
 			return nil, fmt.Errorf("分组调度策略缺少字段 %s", key)
+		}
+		if isManagementGroupJSONNull(value) {
+			return nil, fmt.Errorf("分组调度策略字段 %s 不能为空", key)
 		}
 	}
 	var policy SchedulingPolicy
@@ -512,6 +625,10 @@ func parseManagementGroupListSchedulingPolicy(value *string, groupType string) (
 		return nil, fmt.Errorf("分组调度策略无效")
 	}
 	return &policy, nil
+}
+
+func isManagementGroupJSONNull(value json.RawMessage) bool {
+	return bytes.Equal(bytes.TrimSpace(value), []byte("null"))
 }
 
 func canBindAuthorizedGroupAt(enabled bool, status string, expiresAt *time.Time, now time.Time) bool {

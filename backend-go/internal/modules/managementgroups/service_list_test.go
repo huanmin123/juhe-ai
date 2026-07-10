@@ -143,7 +143,7 @@ func TestServiceListMapsTargetAuthorizedRowsAndSourceSummary(t *testing.T) {
 	now := time.Date(2026, 7, 11, 8, 0, 0, 0, time.UTC)
 	expiredAt := now
 	policyJSON := validManagementGroupListPolicyJSON()
-	limitsJSON := `{"daily":{"requestCount":100}}`
+	limitsJSON := `{"daily":{"enabled":true,"limit":100}}`
 	store := &managementGroupListStoreStub{
 		page: port.ManagementGroupListPage{Rows: []port.ManagementGroupListRow{
 			{
@@ -242,7 +242,8 @@ func TestServiceListMapsTargetAuthorizedRowsAndSourceSummary(t *testing.T) {
 		authorized.AccountStats.Usage.RequestCount != 7 ||
 		authorized.GroupAuthorizationID != "rauthgrant_group" ||
 		authorized.AuthorizationStatus != "active" ||
-		authorized.AuthorizationLimits["daily"] == nil {
+		authorized.AuthorizationLimits.Daily == nil ||
+		authorized.AuthorizationLimits.Daily.Limit != 100 {
 		t.Fatalf("authorized item = %+v", authorized)
 	}
 	if authorized.Permissions.CanBindToAPIKey ||
@@ -336,27 +337,31 @@ func TestServiceListUsesProgressivePaginationBounds(t *testing.T) {
 		name         string
 		page         int
 		pageSize     int
+		pageSizeSet  bool
 		wantPage     int
 		wantPageSize int
 		wantOffset   int
 		wantLimit    int
 	}{
 		{name: "defaults", wantPage: 1, wantPageSize: 50, wantOffset: 0, wantLimit: 51},
-		{name: "negative defaults", page: -2, pageSize: -3, wantPage: 1, wantPageSize: 50, wantOffset: 0, wantLimit: 51},
+		{name: "negative values clamp", page: -2, pageSize: -3, wantPage: 1, wantPageSize: 1, wantOffset: 0, wantLimit: 2},
 		{name: "caps page size", page: 99, pageSize: 900, wantPage: 2, wantPageSize: 500, wantOffset: 500, wantLimit: 501},
 		{name: "floors max page", page: 999, pageSize: 333, wantPage: 3, wantPageSize: 333, wantOffset: 666, wantLimit: 334},
+		{name: "explicit zero page size clamps", page: 1, pageSizeSet: true, wantPage: 1, wantPageSize: 1, wantOffset: 0, wantLimit: 2},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			store := &managementGroupListStoreStub{}
 			service := NewServiceWithOptions(ServiceOptions{ListStore: store})
 
-			result, err := service.List(context.Background(), ListInput{
+			input := ListInput{
 				ActorSystemAccountID: "sys_admin",
 				ActorRole:            "admin",
 				Page:                 test.page,
 				PageSize:             test.pageSize,
-			})
+				PageSizeProvided:     test.pageSizeSet,
+			}
+			result, err := service.List(context.Background(), input)
 			if err != nil {
 				t.Fatalf("List() error = %v", err)
 			}
@@ -497,6 +502,91 @@ func TestServiceListRejectsMissingActorAndInvalidTimezoneOrStoredJSON(t *testing
 			t.Fatalf("List() error = %v, want authorization limits error", err)
 		}
 	})
+}
+
+func TestParseManagementGroupAuthorizationLimitsMatchesNodeContract(t *testing.T) {
+	t.Run("empty values return an empty object", func(t *testing.T) {
+		for _, value := range []*string{nil, stringPointer(""), stringPointer("null"), stringPointer("{}")} {
+			limits, err := parseManagementGroupAuthorizationLimits(value)
+			if err != nil {
+				t.Fatalf("parseManagementGroupAuthorizationLimits() error = %v", err)
+			}
+			if limits != (port.ManagementRequestQuotaLimits{}) {
+				t.Fatalf("limits = %+v, want empty", limits)
+			}
+		}
+	})
+
+	t.Run("valid limits are normalized", func(t *testing.T) {
+		value := `{
+			"hourly":{"enabled":true,"hours":24,"limit":1.25},
+			"daily":{"enabled":true,"limit":2.5},
+			"weekly":{"enabled":true,"limit":3},
+			"monthly":{"enabled":true,"limit":4},
+			"total":{"enabled":true,"limit":5}
+		}`
+		limits, err := parseManagementGroupAuthorizationLimits(&value)
+		if err != nil {
+			t.Fatalf("parseManagementGroupAuthorizationLimits() error = %v", err)
+		}
+		if limits.Hourly == nil ||
+			limits.Hourly.Hours != 24 ||
+			limits.Hourly.Limit != 1.25 ||
+			limits.Daily == nil ||
+			limits.Daily.Limit != 2.5 ||
+			limits.Weekly == nil ||
+			limits.Monthly == nil ||
+			limits.Total == nil {
+			t.Fatalf("limits = %+v", limits)
+		}
+	})
+
+	for _, test := range []struct {
+		name  string
+		value string
+	}{
+		{name: "unknown top level field", value: `{"daily":{"enabled":true,"limit":1},"extra":{}}`},
+		{name: "null quota", value: `{"daily":null}`},
+		{name: "disabled quota", value: `{"daily":{"enabled":false,"limit":1}}`},
+		{name: "unknown nested field", value: `{"daily":{"enabled":true,"limit":1,"extra":1}}`},
+		{name: "non positive amount", value: `{"daily":{"enabled":true,"limit":0}}`},
+		{name: "too precise amount", value: `{"daily":{"enabled":true,"limit":0.0000001}}`},
+		{name: "hour window below range", value: `{"hourly":{"enabled":true,"hours":0,"limit":1}}`},
+		{name: "hour window above range", value: `{"hourly":{"enabled":true,"hours":721,"limit":1}}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := parseManagementGroupAuthorizationLimits(&test.value); err == nil {
+				t.Fatalf("parseManagementGroupAuthorizationLimits(%s) error = nil", test.value)
+			}
+		})
+	}
+}
+
+func TestParseManagementGroupListSchedulingPolicyRejectsNullRequiredFields(t *testing.T) {
+	for _, key := range []string{
+		"fastFirstEnabled",
+		"fallbackOnQueueEnabled",
+		"breakAffinityOnSoftLimit",
+		"breakAffinityOnQueueWaitMs",
+		"clientIpConcurrencyLimit",
+		"imageLaneMaxConcurrency",
+	} {
+		t.Run(key, func(t *testing.T) {
+			var policy map[string]any
+			if err := json.Unmarshal([]byte(validManagementGroupListPolicyJSON()), &policy); err != nil {
+				t.Fatalf("decode valid policy: %v", err)
+			}
+			policy[key] = nil
+			encoded, err := json.Marshal(policy)
+			if err != nil {
+				t.Fatalf("encode policy: %v", err)
+			}
+			value := string(encoded)
+			if _, err := parseManagementGroupListSchedulingPolicy(&value, "high_concurrency"); err == nil {
+				t.Fatalf("null %s error = nil", key)
+			}
+		})
+	}
 }
 
 func assertManagementGroupListDoesNotExposeDetails(t *testing.T, result ListResult) {
