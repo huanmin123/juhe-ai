@@ -175,6 +175,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementProviderCustomModelDeleteHandler:        managementHandlers.ProviderCustomModelDeleteHandler,
 		ManagementRouteStrategyOptionsHandler:             managementHandlers.RouteStrategyOptionsHandler,
 		ManagementMyRouteStrategyOptionsHandler:           managementHandlers.MyRouteStrategyOptionsHandler,
+		ManagementGroupCreateHandler:                      managementHandlers.GroupCreateHandler,
+		ManagementMyGroupCreateHandler:                    managementHandlers.MyGroupCreateHandler,
 		ManagementGroupOptionsHandler:                     managementHandlers.GroupOptionsHandler,
 		ManagementMyGroupOptionsHandler:                   managementHandlers.MyGroupOptionsHandler,
 		ManagementGroupAccountOptionsHandler:              managementHandlers.GroupAccountOptionsHandler,
@@ -293,6 +295,8 @@ type managementAPIHandlers struct {
 	ProviderCustomModelDeleteHandler        http.Handler
 	RouteStrategyOptionsHandler             http.Handler
 	MyRouteStrategyOptionsHandler           http.Handler
+	GroupCreateHandler                      http.Handler
+	MyGroupCreateHandler                    http.Handler
 	GroupOptionsHandler                     http.Handler
 	MyGroupOptionsHandler                   http.Handler
 	GroupAccountOptionsHandler              http.Handler
@@ -367,7 +371,11 @@ func newManagementAPIHandler(
 		Invalidator: systemAccountInvalidator,
 	})
 	routeStrategyService := managementroutestrategies.NewService(store)
-	groupService := managementgroups.NewService(store)
+	groupService := managementgroups.NewServiceWithOptions(managementgroups.ServiceOptions{
+		Store:       store,
+		Invalidator: systemAccountInvalidator,
+		Logger:      logger,
+	})
 	accountService := managementaccounts.NewService(store)
 	systemAccountService := managementsystemaccounts.NewServiceWithOptions(managementsystemaccounts.ServiceOptions{
 		Store:                    store,
@@ -469,6 +477,8 @@ func newManagementAPIHandler(
 		ProviderCustomModelDeleteHandler:        httpapi.NewManagementProviderCustomModelDeleteHandler(providerModelService),
 		RouteStrategyOptionsHandler:             httpapi.NewManagementRouteStrategyOptionsHandler(routeStrategyService),
 		MyRouteStrategyOptionsHandler:           httpapi.NewManagementMyRouteStrategyOptionsHandler(routeStrategyService),
+		GroupCreateHandler:                      httpapi.NewManagementGroupCreateHandlerWithOperationLog(groupService, operationLogOptions),
+		MyGroupCreateHandler:                    httpapi.NewManagementMyGroupCreateHandlerWithOperationLog(groupService, operationLogOptions),
 		GroupOptionsHandler:                     httpapi.NewManagementGroupOptionsHandler(groupService),
 		MyGroupOptionsHandler:                   httpapi.NewManagementMyGroupOptionsHandler(groupService),
 		GroupAccountOptionsHandler:              httpapi.NewManagementGroupAccountOptionsHandler(groupService),
