@@ -9,6 +9,7 @@
 - 目标 Go owner：`backend-go/internal/modules/publicapi`、`backend-go/internal/modules/publicapi/auth`、`backend-go/internal/modules/publicapi/ratelimit`、`backend-go/internal/modules/publicapilog`、`backend-go/internal/modules/publicgroups`、`backend-go/internal/modules/publicroutestrategies`、`backend-go/internal/modules/publicapikeys`、`backend-go/internal/modules/publicaccounts`、`backend-go/internal/jobs/publicapilog`、`backend-go/internal/jobs/worker`、`backend-go/internal/app/server.go`、`backend-go/internal/app/ingest_worker.go`、`backend-go/internal/config/config.go`、`backend-go/internal/httpapi/router.go`、`backend-go/internal/httpapi/public_api_shell.go`、`backend-go/internal/httpapi/public_groups.go`、`backend-go/internal/httpapi/public_route_strategies.go`、`backend-go/internal/httpapi/public_api_keys.go`、`backend-go/internal/httpapi/public_accounts.go`、`backend-go/internal/store/port/publicapi.go`、`backend-go/internal/store/postgres/publicapi.go`、`backend-go/internal/store/postgres/publicgroups.go`、`backend-go/internal/store/postgres/publicroutestrategies.go`、`backend-go/internal/store/postgres/publicapikeys.go`、`backend-go/internal/store/postgres/publicaccounts.go`、`backend-go/internal/store/postgres/queries/w1b_public_groups.sql`、`backend-go/internal/store/postgres/queries/w1b_public_route_strategies.sql`、`backend-go/internal/store/postgres/queries/w1b_public_api_keys.sql`、`backend-go/internal/store/postgres/queries/w1b_public_accounts.sql`、`backend-go/db/migrations/000004_w1b_public_groups.sql`、`backend-go/db/migrations/000005_w1b_public_accounts.sql`、`backend-go/internal/platform/redis`、`backend-go/internal/maintenance/w1bpublicapismoke.go` 和 `backend-go/cmd/juhe-ai-maintenance` 已作为 W1b 基础设施、四类公开资源纵切面、opt-in 生产挂载 guard 和独立灰度 smoke 入口落地；account shell E2E 测试代码已补，Docker/testcontainers 环境真实 integration 与 shell E2E 复跑、反向代理切流和 Node 删除仍待完成
 - 关联计划：[PLAN-0081 Node 转 Go 渐进减法迁移](../plans/计划-0081-Node转Go渐进减法迁移.md)
 - 关联 bug：[BUG-0035 Go 公开账户默认模型语义漂移](../bug/问题-0035-Go公开账户默认模型语义漂移.md)
+- 关联 bug：[BUG-0043 Go 公开账户支持模型更新未清理默认测试模型](../bug/问题-0043-Go公开账户支持模型更新未清理默认测试模型.md)
 - 关联功能文档：[公开资源维护接口设计](../functions/公开资源维护接口设计.md)、[外部来源系统鉴权设计](../functions/外部来源系统鉴权设计.md)、[公开接口日志设计](../functions/公开接口日志设计.md)、[接口契约与权限矩阵](../functions/接口契约与权限矩阵.md)、[安全与日志策略](../functions/安全与日志策略.md)
 
 ## 当前契约
@@ -151,9 +152,9 @@ go run ./cmd/juhe-ai-maintenance w1b-public-api-smoke
 
 - `list`：`targetUsername` 必填；可选 `targetGroupName`、`providerCode`、`providerProtocolProfileId`、`groupId`、`keyword`、`type`、`status`、`schedulable=all|enabled|disabled|cooling`、`page`、`pageSize`。按 `targetGroupName` 或 `providerProtocolProfileId` 筛选时必须同时带 `providerCode`。
 - `add`：`targetUsername`、`targetGroupName`、`providerCode`、`providerProtocolProfileId`、`name`、`type=api_key`、`baseUrl`、`apiKey` 必填；可选 `targetDisplayName`、`supportedModels`、`status`、`concurrencyLimit=1..100000`、`priority=0..100000`、`availabilitySchedule|null`、`notes`。`supportedModels` 省略时继承 `providers.default_supported_models_json`；显式非空数组按 trim、去空、去重后的结果写入；显式 `[]` 或 provider 默认值最终为空时返回 HTTP `400 { message: "账户支持模型不能为空，请至少选择一个该 Base URL 支持的模型" }`。
-- `update`：`accountId` 必填；`targetUsername`、`targetGroupName`、`providerCode`、`providerProtocolProfileId`、`type` 只作为防误改校验；至少提交一个变更字段。
+- `update`：`accountId` 必填；`targetUsername`、`targetGroupName`、`providerCode`、`providerProtocolProfileId`、`type` 只作为防误改校验；至少提交一个变更字段。`supportedModels` 省略或标准化后与当前集合无序等价时不重写模型绑定，也不修改账户 `default_test_model`；集合实际变化时，新集合不再包含现有默认测试模型则在同一事务清为 `NULL`，仍包含则保留。
 - `del`：`accountId` 必填；可选归属、防误删校验字段。
-- 响应不返回 `credentials`、上游 `apiKey`、`baseUrl`、OAuth token、代理密码、加密字段或凭据指纹。`clientCompatibility` 是只读派生摘要，不作为入参。
+- 响应不返回 `credentials`、上游 `apiKey`、`baseUrl`、OAuth token、代理密码、加密字段、凭据指纹或账户 `default_test_model`。`clientCompatibility` 是只读派生摘要，不作为入参。
 
 ## 关键状态语义
 
@@ -217,7 +218,7 @@ go run ./cmd/juhe-ai-maintenance w1b-public-api-smoke
 - `backend-go/internal/platform/redis`：新增 Redis Lua penalty-window helper，保持阻断期间惩罚延长语义；现有 fixed-window 继续只服务 W1a 等固定窗口场景。
 - `backend-go/db/migrations/000003_w1b_public_api_foundation.sql`：新增 `juhe_business.external_integration_sources`、`juhe_business.external_integration_source_tokens` 和 `juhe_dataset.public_api_logs`，直接使用 PostgreSQL 原生 `timestamptz`、`boolean`、`bigint`。
 - `backend-go/db/migrations/000004_w1b_public_groups.sql`：新增 W1b public group、public route strategy 与 public API Key 纵切面需要的 `system_accounts`、`providers`、`groups`、`group_accounts`、`route_strategies`、`route_strategy_groups` 和 `api_keys` PostgreSQL schema / 索引 / provider seed；`group_accounts`、`route_strategy_groups`、`api_keys` 使用 owner 复合 FK 约束，避免跨系统账户错误绑定；`api_keys` 固定 hash / prefix / suffix 非空、hash 唯一、同 owner name 唯一、quota / schedule JSON object 约束和 schedule next-check 索引；down 为 no-op，按业务数据处理。
-- `backend-go/db/migrations/000005_w1b_public_accounts.sql`：新增 `protocols`、`provider_protocol_profiles`、`accounts`、`account_supported_models` 和 `group_accounts -> accounts` owner 复合 FK；seed 当前公开账号所需供应商协议档案；`accounts` 保存可逆加密凭据、凭据指纹、调度字段、冷却 / 错误摘要、软删除字段和列表索引。W1b 公开账户默认模型使用当前 provider seed 事实，`000008_w2_management_provider_options.sql` 中 `gpt` / `openai` 的 GPT-5.6 默认模型由静态 guard 固定。
+- `backend-go/db/migrations/000005_w1b_public_accounts.sql`：新增 `protocols`、`provider_protocol_profiles`、`accounts`、`account_supported_models` 和 `group_accounts -> accounts` owner 复合 FK；seed 当前公开账号所需供应商协议档案；`accounts` 保存可逆加密凭据、凭据指纹、调度字段、冷却 / 错误摘要、`default_test_model`、软删除字段和列表索引。W1b 公开账户默认模型使用当前 provider seed 事实，`000008_w2_management_provider_options.sql` 中 `gpt` / `openai` 的 GPT-5.6 默认模型由静态 guard 固定。
 - `backend-go/internal/store/port/publicapi.go`：固定 `PublicAPIAuthStore`、`PublicAPILogStore`、`PublicGroupStore` 和 `PublicGroupTransactor` port，业务层只接触 token hash、auth record、last_used touch、公开日志和分组业务 DTO，不暴露 pgx/sqlc/Redis 类型。
 - `backend-go/internal/store/postgres/publicapi.go`：新增 W1b auth token 点查、`last_used_at` touch 和公开接口日志 27 列幂等写入 adapter。
 - `backend-go/internal/store/postgres/publicgroups.go` 和 `backend-go/internal/store/postgres/queries/w1b_public_groups.sql`：新增 PostgreSQL public group store / sqlc query，覆盖事务、目标用户、provider、列表分页、同名唯一冲突、更新、删除、账号绑定计数和活跃策略路由唯一可用分组计数；停用 / 删除保护会在同一事务内按 route strategy ID 顺序锁定受影响的 active route strategy 行，再重新计算可用分组，避免同一策略下多个分组并发停用 / 删除后变成 0 个可用分组。
@@ -338,6 +339,8 @@ pnpm --filter juhe-ai-backend test:external-public-account-push-postgres-smoke
 public group、public route strategy、public API Key 与 public account 作为当前四条真实资源纵切面，已补 handler、service、PostgreSQL store/query 和 integration/shell 测试代码；当前可确认 handler/service/HTTP 非容器测试和 integration 包编译通过。真实 PostgreSQL / Redis / Asynq integration 和 shell E2E 需要 Docker/testcontainers 健康环境复跑，不能把 `SKIP` 当作通过：
 
 BUG-0035 的公开账户默认模型同步修复已通过 HTTP 三态、service 默认继承 / 最终非空、provider 默认 JSON 联表、GPT-5.6 seed 静态 guard、全量 Go、目标包 race、vet、tidy diff 和 integration 包编译。真实 PostgreSQL 写入和 Docker shell E2E 因本机 Docker 未运行输出 `SKIP`，仍待健康环境复跑。
+
+BUG-0043 的账户默认测试模型一致性修复已通过 `sqlc generate`、service/store/HTTP/app 目标测试、目标 race、全量 Go、vet/tidy、integration 编译，以及 Node 公开账号 async 边界和账户测试 Responses 契约回归。真实 `TestW1bPublicAccountsPostgresSmoke` 已增加省略、无序等价、包含和排除默认模型场景，但本机 Docker 未运行输出 `SKIP`，仍待健康环境复跑。
 
 | 层级 | 建议命令 / 验证方式 | 必须覆盖 |
 | --- | --- | --- |
