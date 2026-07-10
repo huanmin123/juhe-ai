@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 
 import { buildPostgresSchemaSql, collectPostgresSchemaStatements } from '../../storage/postgres-schema.js'
 
 const statements = collectPostgresSchemaStatements()
 const sql = buildPostgresSchemaSql()
+const goPublicAccountsMigration = readFileSync('../backend-go/db/migrations/000005_w1b_public_accounts.sql', 'utf8')
 const schemaNames = new Set(statements.map((statement) => statement.schemaName))
 const usageRecordsCreateSql = statements.find((statement) => statement.schemaName === 'juhe_usage' && /^CREATE TABLE IF NOT EXISTS usage_records\b/i.test(statement.sql))?.sql ?? ''
 
@@ -60,6 +62,8 @@ assert.match(sql, /CREATE TABLE IF NOT EXISTS route_strategies/, '应包含策�
 assert.match(sql, /CREATE TABLE IF NOT EXISTS route_strategy_groups/, '应包含策略路由分组绑定表 schema')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS accounts[\s\S]+default_test_model text/, 'AI 账户新建 schema 应直接包含账户级默认测试模型字段')
 assert.doesNotMatch(sql, /CREATE TABLE IF NOT EXISTS accounts[\s\S]+last_successful_test_model text/, 'AI 账户新建 schema 不应继续包含旧的最后成功测试模型字段')
+assert.match(goPublicAccountsMigration, /CREATE TABLE IF NOT EXISTS juhe_business\.accounts[\s\S]+default_test_model text/, 'Go 公开账户 baseline 应包含账户级默认测试模型字段')
+assert.doesNotMatch(goPublicAccountsMigration, /CREATE TABLE IF NOT EXISTS juhe_business\.accounts[\s\S]+last_successful_test_model text/, 'Go 公开账户 baseline 不应包含旧的最后成功测试模型字段')
 assert.match(sql, /route_strategy_id text NOT NULL/, 'api_keys 建表语句应强制绑定 route_strategy_id')
 assert.match(sql, /api_keys[\s\S]+is_default integer NOT NULL DEFAULT 0/, 'api_keys 建表语句应包含默认 API Key 标识')
 assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_route_default_unique ON api_keys\(route_strategy_id\) WHERE is_default = 1/, '默认 API Key 应按路由策略保持唯一')
