@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -378,6 +379,30 @@ func TestManagementGlobalSettingsUpdateHandlerSanitizesOperationLogChanges(t *te
 		truncated.Label != "其余变更" ||
 		truncated.After != "还有 1 项变更未展开" {
 		t.Fatalf("truncated marker = %+v", truncated)
+	}
+}
+
+func TestManagementOperationLogWritersUseSharedSanitizingEnqueue(t *testing.T) {
+	for _, file := range []string{
+		"management_accounts.go",
+		"management_authorizations.go",
+		"management_profile.go",
+		"management_proxies.go",
+		"management_system_accounts.go",
+		"management_system_account_create.go",
+		"management_system_teams.go",
+	} {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		source := string(data)
+		if !strings.Contains(source, "enqueueManagementOperationLog(") {
+			t.Fatalf("%s does not use shared operation log enqueue", file)
+		}
+		if strings.Contains(source, "operationlogjob.EnqueueWrite(") {
+			t.Fatalf("%s bypasses shared operation log sanitization", file)
+		}
 	}
 }
 

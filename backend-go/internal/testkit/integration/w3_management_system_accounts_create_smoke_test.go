@@ -412,7 +412,7 @@ func assertW3SystemAccountCreateOperationLog(t *testing.T, ctx context.Context, 
 	for _, change := range changes {
 		if change.Field == "password" {
 			foundPassword = true
-			if !change.Sensitive || change.After != "已设置" {
+			if !change.Sensitive || change.Before != "未设置" || change.After != "已变更" {
 				t.Fatalf("create password change = %+v", change)
 			}
 		}

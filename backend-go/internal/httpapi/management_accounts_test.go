@@ -512,16 +512,12 @@ func TestManagementAccountTagUpdateHandlerEnqueuesOperationLog(t *testing.T) {
 		logInput.Changes[0].Label != "标签" {
 		t.Fatalf("changes = %+v", logInput.Changes)
 	}
-	before, err := json.Marshal(logInput.Changes[0].Before)
-	if err != nil {
-		t.Fatalf("marshal before change: %v", err)
-	}
-	after, err := json.Marshal(logInput.Changes[0].After)
-	if err != nil {
-		t.Fatalf("marshal after change: %v", err)
-	}
-	if string(before) != `[{"id":"tag_old","name":"旧标签"}]` || string(after) != `[{"id":"tag_new","name":"主力"}]` {
-		t.Fatalf("change values before=%s after=%s", before, after)
+	before, beforeOK := logInput.Changes[0].Before.(string)
+	after, afterOK := logInput.Changes[0].After.(string)
+	if !beforeOK || !afterOK ||
+		before != `[{"id":"tag_old","name":"旧标签"}]` ||
+		after != `[{"id":"tag_new","name":"主力"}]` {
+		t.Fatalf("change values before=%#v after=%#v", logInput.Changes[0].Before, logInput.Changes[0].After)
 	}
 	if len(logInput.Viewers) != 1 ||
 		logInput.Viewers[0].SystemAccountID != "sys_user" ||

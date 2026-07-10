@@ -285,7 +285,7 @@ func TestManagementProxyCreateHandlerCreatesAndWritesSafeOperationLog(t *testing
 	foundPasswordChange := false
 	for _, change := range logInput.Changes {
 		if change.Field == "password" {
-			foundPasswordChange = change.Sensitive && change.After == "已设置"
+			foundPasswordChange = change.Sensitive && change.Before == "未设置" && change.After == "已变更"
 		}
 	}
 	if !foundPasswordChange {

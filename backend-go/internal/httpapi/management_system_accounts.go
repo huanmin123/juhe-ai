@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -14,7 +13,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	operationlogjob "juhe-ai/backend-go/internal/jobs/operationlog"
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementsystemaccounts"
 	"juhe-ai/backend-go/internal/store/port"
@@ -367,17 +365,7 @@ func recordSystemAccountUpdateOperationLog(
 		},
 		CreatedAt: now().UTC(),
 	}
-	enqueueCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
-	defer cancel()
-	if _, err := operationlogjob.EnqueueWrite(enqueueCtx, opts.client, input); err != nil && opts.logger != nil {
-		opts.logger.Warn("管理端操作日志入队失败",
-			slog.String("event", "operation_log_enqueue_failed"),
-			slog.String("operation_key", input.OperationKey),
-			slog.String("resource_id", input.ResourceID),
-			slog.String("request_id", input.TraceID),
-			slog.Any("error", err),
-		)
-	}
+	enqueueManagementOperationLog(r.Context(), opts, input)
 }
 
 func recordSystemAccountPasswordResetOperationLog(
@@ -451,17 +439,7 @@ func recordSystemAccountPasswordResetOperationLog(
 			After:  result.Account.MustChangePassword,
 		})
 	}
-	enqueueCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
-	defer cancel()
-	if _, err := operationlogjob.EnqueueWrite(enqueueCtx, opts.client, input); err != nil && opts.logger != nil {
-		opts.logger.Warn("管理端操作日志入队失败",
-			slog.String("event", "operation_log_enqueue_failed"),
-			slog.String("operation_key", input.OperationKey),
-			slog.String("resource_id", input.ResourceID),
-			slog.String("request_id", input.TraceID),
-			slog.Any("error", err),
-		)
-	}
+	enqueueManagementOperationLog(r.Context(), opts, input)
 }
 
 func recordSystemAccountStatusUpdateOperationLog(
@@ -532,17 +510,7 @@ func recordSystemAccountStatusUpdateOperationLog(
 		},
 		CreatedAt: now().UTC(),
 	}
-	enqueueCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
-	defer cancel()
-	if _, err := operationlogjob.EnqueueWrite(enqueueCtx, opts.client, input); err != nil && opts.logger != nil {
-		opts.logger.Warn("管理端操作日志入队失败",
-			slog.String("event", "operation_log_enqueue_failed"),
-			slog.String("operation_key", input.OperationKey),
-			slog.String("resource_id", input.ResourceID),
-			slog.String("request_id", input.TraceID),
-			slog.Any("error", err),
-		)
-	}
+	enqueueManagementOperationLog(r.Context(), opts, input)
 }
 
 func recordSystemAccountImageGenerationUpdateOperationLog(
@@ -605,17 +573,7 @@ func recordSystemAccountImageGenerationUpdateOperationLog(
 		},
 		CreatedAt: now().UTC(),
 	}
-	enqueueCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
-	defer cancel()
-	if _, err := operationlogjob.EnqueueWrite(enqueueCtx, opts.client, input); err != nil && opts.logger != nil {
-		opts.logger.Warn("管理端操作日志入队失败",
-			slog.String("event", "operation_log_enqueue_failed"),
-			slog.String("operation_key", input.OperationKey),
-			slog.String("resource_id", input.ResourceID),
-			slog.String("request_id", input.TraceID),
-			slog.Any("error", err),
-		)
-	}
+	enqueueManagementOperationLog(r.Context(), opts, input)
 }
 
 func recordSystemAccountProfileUpdateOperationLog(
@@ -675,17 +633,7 @@ func recordSystemAccountProfileUpdateOperationLog(
 		},
 		CreatedAt: now().UTC(),
 	}
-	enqueueCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
-	defer cancel()
-	if _, err := operationlogjob.EnqueueWrite(enqueueCtx, opts.client, input); err != nil && opts.logger != nil {
-		opts.logger.Warn("管理端操作日志入队失败",
-			slog.String("event", "operation_log_enqueue_failed"),
-			slog.String("operation_key", input.OperationKey),
-			slog.String("resource_id", input.ResourceID),
-			slog.String("request_id", input.TraceID),
-			slog.Any("error", err),
-		)
-	}
+	enqueueManagementOperationLog(r.Context(), opts, input)
 }
 
 func systemAccountProfileUpdateChanges(result managementsystemaccounts.ProfileUpdateResult) []port.OperationLogChange {

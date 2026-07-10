@@ -263,7 +263,8 @@ func TestManagementSystemAccountPasswordResetHandlerRequiresSuperAdminAndWritesS
 		len(logInput.Changes) == 0 ||
 		logInput.Changes[0].Field != "password" ||
 		!logInput.Changes[0].Sensitive ||
-		logInput.Changes[0].After != "已重置" {
+		logInput.Changes[0].Before != "未设置" ||
+		logInput.Changes[0].After != "已变更" {
 		t.Fatalf("operation log input = %+v", logInput)
 	}
 	if len(logInput.Viewers) != 1 ||
@@ -961,7 +962,8 @@ func TestManagementSystemAccountPatchHandlerAllowsMixedUpdateAndWritesSafeOperat
 		fields[change.Field] = change
 	}
 	if !fields["password"].Sensitive ||
-		fields["password"].After != "已重置" ||
+		fields["password"].Before != "未设置" ||
+		fields["password"].After != "已变更" ||
 		fields["displayName"].After != "新名称" ||
 		fields["description"].After != "新说明" ||
 		fields["role"].After != "admin" ||
@@ -1311,7 +1313,11 @@ func TestManagementSystemAccountCreateHandlerWritesOperationLog(t *testing.T) {
 	if logInput.OperationKey != "system_accounts.create" || logInput.Action != "create" || logInput.ResourceID != "sys_new" || logInput.StatusCode == nil || *logInput.StatusCode != http.StatusCreated {
 		t.Fatalf("operation log input = %+v", logInput)
 	}
-	if len(logInput.Changes) != 6 || logInput.Changes[5].Field != "password" || logInput.Changes[5].After != "已设置" || !logInput.Changes[5].Sensitive {
+	if len(logInput.Changes) != 6 ||
+		logInput.Changes[5].Field != "password" ||
+		logInput.Changes[5].Before != "未设置" ||
+		logInput.Changes[5].After != "已变更" ||
+		!logInput.Changes[5].Sensitive {
 		t.Fatalf("operation log changes = %+v", logInput.Changes)
 	}
 	if raw := string(queueStub.payload); strings.Contains(raw, "Secret123") {

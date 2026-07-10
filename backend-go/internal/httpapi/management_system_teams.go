@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -14,7 +13,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	operationlogjob "juhe-ai/backend-go/internal/jobs/operationlog"
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementsystemteams"
 	"juhe-ai/backend-go/internal/store/port"
@@ -597,17 +595,7 @@ func recordSystemTeamCreateOperationLog(
 		}},
 		CreatedAt: now().UTC(),
 	}
-	enqueueCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
-	defer cancel()
-	if _, err := operationlogjob.EnqueueWrite(enqueueCtx, opts.client, input); err != nil && opts.logger != nil {
-		opts.logger.Warn("管理端操作日志入队失败",
-			slog.String("event", "operation_log_enqueue_failed"),
-			slog.String("operation_key", input.OperationKey),
-			slog.String("resource_id", input.ResourceID),
-			slog.String("request_id", input.TraceID),
-			slog.Any("error", err),
-		)
-	}
+	enqueueManagementOperationLog(r.Context(), opts, input)
 }
 
 func recordSystemTeamUpdateOperationLog(
@@ -660,17 +648,7 @@ func recordSystemTeamUpdateOperationLog(
 		Viewers:    systemTeamUpdateOperationViewers(authContext.SystemAccountID, result.Team.Members),
 		CreatedAt:  now().UTC(),
 	}
-	enqueueCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
-	defer cancel()
-	if _, err := operationlogjob.EnqueueWrite(enqueueCtx, opts.client, input); err != nil && opts.logger != nil {
-		opts.logger.Warn("管理端操作日志入队失败",
-			slog.String("event", "operation_log_enqueue_failed"),
-			slog.String("operation_key", input.OperationKey),
-			slog.String("resource_id", input.ResourceID),
-			slog.String("request_id", input.TraceID),
-			slog.Any("error", err),
-		)
-	}
+	enqueueManagementOperationLog(r.Context(), opts, input)
 }
 
 func recordSystemTeamMembersAddOperationLog(
@@ -727,17 +705,7 @@ func recordSystemTeamMembersAddOperationLog(
 		Viewers:    systemTeamMemberOperationViewers(authContext.SystemAccountID, "team_member_adder", result.Team.Members, addedMembers),
 		CreatedAt:  now().UTC(),
 	}
-	enqueueCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
-	defer cancel()
-	if _, err := operationlogjob.EnqueueWrite(enqueueCtx, opts.client, input); err != nil && opts.logger != nil {
-		opts.logger.Warn("管理端操作日志入队失败",
-			slog.String("event", "operation_log_enqueue_failed"),
-			slog.String("operation_key", input.OperationKey),
-			slog.String("resource_id", input.ResourceID),
-			slog.String("request_id", input.TraceID),
-			slog.Any("error", err),
-		)
-	}
+	enqueueManagementOperationLog(r.Context(), opts, input)
 }
 
 func recordSystemTeamMemberRemoveOperationLog(
@@ -793,17 +761,7 @@ func recordSystemTeamMemberRemoveOperationLog(
 		Viewers:    systemTeamMemberOperationViewers(authContext.SystemAccountID, "team_member_remover", result.Team.Members, []managementsystemteams.MemberSummary{result.RemovedMember}),
 		CreatedAt:  now().UTC(),
 	}
-	enqueueCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
-	defer cancel()
-	if _, err := operationlogjob.EnqueueWrite(enqueueCtx, opts.client, input); err != nil && opts.logger != nil {
-		opts.logger.Warn("管理端操作日志入队失败",
-			slog.String("event", "operation_log_enqueue_failed"),
-			slog.String("operation_key", input.OperationKey),
-			slog.String("resource_id", input.ResourceID),
-			slog.String("request_id", input.TraceID),
-			slog.Any("error", err),
-		)
-	}
+	enqueueManagementOperationLog(r.Context(), opts, input)
 }
 
 func systemTeamUpdateOperationChanges(before managementsystemteams.Summary, after managementsystemteams.Summary) []port.OperationLogChange {

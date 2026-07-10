@@ -472,7 +472,11 @@ func assertW3SystemAccountPatchOperationLogs(t *testing.T, ctx context.Context, 
 		t.Fatalf("reset operation log leaked password: %s", reset.ChangesJSON)
 	}
 	resetChanges := decodeW3SystemAccountPatchChanges(t, reset.ChangesJSON)
-	if len(resetChanges) == 0 || resetChanges[0].Field != "password" || !resetChanges[0].Sensitive || resetChanges[0].After != "已重置" {
+	if len(resetChanges) == 0 ||
+		resetChanges[0].Field != "password" ||
+		!resetChanges[0].Sensitive ||
+		resetChanges[0].Before != "未设置" ||
+		resetChanges[0].After != "已变更" {
 		t.Fatalf("reset operation log changes = %+v", resetChanges)
 	}
 	resetMetadata := decodeW3SystemAccountPatchMetadata(t, reset.MetadataJSON)

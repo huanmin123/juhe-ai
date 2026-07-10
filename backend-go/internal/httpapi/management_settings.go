@@ -206,12 +206,6 @@ func recordGlobalSettingsUpdateOperationLog(
 	if opts.client == nil {
 		return
 	}
-	operationCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
-	defer cancel()
-	changes, ok := sanitizedGlobalSettingsUpdateOperationChanges(operationCtx, result, opts)
-	if !ok {
-		return
-	}
 	now := opts.now
 	if now == nil {
 		now = time.Now
@@ -240,7 +234,7 @@ func recordGlobalSettingsUpdateOperationLog(
 		Summary:              "更新全局品牌设置",
 		DetailLevel:          "summary",
 		VisibilityScope:      "all_users",
-		Changes:              changes,
+		Changes:              globalSettingsUpdateOperationChanges(result),
 		Method:               r.Method,
 		Path:                 r.URL.Path,
 		StatusCode:           &statusCode,
@@ -248,7 +242,26 @@ func recordGlobalSettingsUpdateOperationLog(
 		UserAgent:            r.UserAgent(),
 		CreatedAt:            now().UTC(),
 	}
-	if _, err := operationlogjob.EnqueueWrite(operationCtx, opts.client, input); err != nil && opts.logger != nil {
+	enqueueManagementOperationLog(r.Context(), opts, input)
+}
+
+func enqueueManagementOperationLog(
+	ctx context.Context,
+	opts managementOperationLogOptions,
+	input port.OperationLogInput,
+) {
+	if opts.client == nil {
+		return
+	}
+	operationCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+
+	maxChanges, err := operationLogMaxChangesPerRecord(operationCtx, opts)
+	if err == nil {
+		input.Changes = sanitizeManagementOperationLogChanges(input.Changes, maxChanges)
+		_, err = operationlogjob.EnqueueWrite(operationCtx, opts.client, input)
+	}
+	if err != nil && opts.logger != nil {
 		opts.logger.Warn("管理端操作日志入队失败",
 			slog.String("event", "operation_log_enqueue_failed"),
 			slog.String("operation_key", input.OperationKey),
@@ -257,26 +270,6 @@ func recordGlobalSettingsUpdateOperationLog(
 			slog.Any("error", err),
 		)
 	}
-}
-
-func sanitizedGlobalSettingsUpdateOperationChanges(
-	ctx context.Context,
-	result managementsettings.UpdateResult,
-	opts managementOperationLogOptions,
-) ([]port.OperationLogChange, bool) {
-	maxChanges, err := operationLogMaxChangesPerRecord(ctx, opts)
-	if err != nil {
-		if opts.logger != nil {
-			opts.logger.Warn("管理端操作日志入队失败",
-				slog.String("event", "operation_log_enqueue_failed"),
-				slog.String("operation_key", "settings.update_global"),
-				slog.String("resource_id", "global"),
-				slog.Any("error", err),
-			)
-		}
-		return nil, false
-	}
-	return sanitizeManagementOperationLogChanges(globalSettingsUpdateOperationChanges(result), maxChanges), true
 }
 
 func operationLogMaxChangesPerRecord(ctx context.Context, opts managementOperationLogOptions) (int, error) {
