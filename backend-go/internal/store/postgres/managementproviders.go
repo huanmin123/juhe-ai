@@ -97,6 +97,14 @@ func managementProviderOptionsFromRows(ctx context.Context, q *postgresqueries.Q
 			preferences[row.ProviderCode] = row.Model
 		}
 	}
+	systemDefaults := map[string]string{}
+	systemDefaultRows, err := q.ListManagementProviderSystemDefaultHealthCheckModels(ctx, providerCodes)
+	if err != nil {
+		return nil, fmt.Errorf("list management provider system default health check models: %w", err)
+	}
+	for _, row := range systemDefaultRows {
+		systemDefaults[row.ProviderCode] = row.Model
+	}
 
 	profilesByProvider, err := managementProviderProfilesByProvider(profileRows, familiesByProfile)
 	if err != nil {
@@ -104,7 +112,12 @@ func managementProviderOptionsFromRows(ctx context.Context, q *postgresqueries.Q
 	}
 	options := make([]port.ManagementProviderOption, 0, len(providerRows))
 	for _, row := range providerRows {
-		option, err := managementProviderOptionFromRow(row, profilesByProvider[row.Code], preferences[row.Code])
+		option, err := managementProviderOptionFromRow(
+			row,
+			profilesByProvider[row.Code],
+			preferences[row.Code],
+			systemDefaults[row.Code],
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -182,6 +195,7 @@ func managementProviderOptionFromRow(
 	row managementProviderRow,
 	profiles []port.ManagementProviderProtocolProfile,
 	preferredModel string,
+	systemDefaultModel string,
 ) (port.ManagementProviderOption, error) {
 	defaultSupportedModels, err := decodeProviderStringArray(row.DefaultSupportedModelsJson, "provider default_supported_models_json")
 	if err != nil {
@@ -190,6 +204,7 @@ func managementProviderOptionFromRow(
 	profiles = append([]port.ManagementProviderProtocolProfile(nil), profiles...)
 	defaultProfile := preferredManagementProviderDefaultProfile(profiles)
 	preferredModel = strings.TrimSpace(preferredModel)
+	systemDefaultModel = strings.TrimSpace(systemDefaultModel)
 	option := port.ManagementProviderOption{
 		ID:                            row.ID,
 		Code:                          row.Code,
@@ -204,7 +219,7 @@ func managementProviderOptionFromRow(
 		ProtocolVersion:               "",
 		BaseURL:                       "",
 		DefaultHealthCheckModel:       preferredModel,
-		SystemDefaultHealthCheckModel: "",
+		SystemDefaultHealthCheckModel: systemDefaultModel,
 		AccountTypes:                  []string{},
 		Capabilities:                  []string{},
 	}
@@ -213,9 +228,11 @@ func managementProviderOptionFromRow(
 		option.ProtocolCode = defaultProfile.ProtocolCode
 		option.ProtocolVersion = defaultProfile.ProtocolVersion
 		option.BaseURL = defaultProfile.BaseURL
-		option.SystemDefaultHealthCheckModel = defaultProfile.DefaultHealthCheckModel
 		if option.DefaultHealthCheckModel == "" {
 			option.DefaultHealthCheckModel = option.SystemDefaultHealthCheckModel
+		}
+		if option.DefaultHealthCheckModel == "" {
+			option.DefaultHealthCheckModel = defaultProfile.DefaultHealthCheckModel
 		}
 		option.AccountTypes = append([]string(nil), defaultProfile.AccountTypes...)
 		option.Capabilities = append([]string(nil), defaultProfile.Capabilities...)

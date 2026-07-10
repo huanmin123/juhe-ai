@@ -167,7 +167,7 @@ func TestManagementProviderModelsHandlerRedactsStoreErrors(t *testing.T) {
 	}
 }
 
-func TestManagementProviderDefaultHealthCheckModelHandlerParsesAdminTargetScope(t *testing.T) {
+func TestManagementProviderDefaultHealthCheckModelHandlerUsesSystemScopeForAdmin(t *testing.T) {
 	service := &managementProviderModelServiceStub{
 		defaultHealthCheckModelResult: managementprovidermodels.DefaultHealthCheckModelResult{ProviderCode: "gpt", DefaultHealthCheckModel: "gpt-5.5"},
 	}
@@ -184,7 +184,8 @@ func TestManagementProviderDefaultHealthCheckModelHandlerParsesAdminTargetScope(
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	if service.defaultHealthCheckModelInput.ProviderCode != "gpt" ||
-		service.defaultHealthCheckModelInput.SystemAccountID != "sys_user" ||
+		service.defaultHealthCheckModelInput.ActorSystemAccountID != "sys_admin" ||
+		service.defaultHealthCheckModelInput.ActorRole != "admin" ||
 		service.defaultHealthCheckModelInput.Model != " gpt-5.5 " {
 		t.Fatalf("input = %+v", service.defaultHealthCheckModelInput)
 	}
@@ -222,7 +223,8 @@ func TestManagementProviderDefaultHealthCheckModelHandlerUsesSelfScopeForOrdinar
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if service.defaultHealthCheckModelInput.SystemAccountID != "sys_user" {
+	if service.defaultHealthCheckModelInput.ActorSystemAccountID != "sys_user" ||
+		service.defaultHealthCheckModelInput.ActorRole != "user" {
 		t.Fatalf("input = %+v", service.defaultHealthCheckModelInput)
 	}
 }

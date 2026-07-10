@@ -67,15 +67,26 @@ func newManagementProviderOptionsHandler(service managementProviderOptionService
 
 func managementProviderListInput(r *http.Request, authContext managementauth.Context) managementproviders.ListInput {
 	return managementproviders.ListInput{
-		SystemAccountID: managementScopedSystemAccountID(authContext, r.URL.Query()),
+		SystemAccountID: managementProviderScopedSystemAccountID(authContext, r.URL.Query()),
 	}
 }
 
 func managementProviderOptionListInput(r *http.Request) managementproviders.OptionListInput {
 	authContext, _ := ManagementAuthContextFromRequest(r)
 	return managementproviders.OptionListInput{
-		SystemAccountID: managementScopedSystemAccountID(authContext, r.URL.Query()),
+		SystemAccountID: managementProviderScopedSystemAccountID(authContext, r.URL.Query()),
 	}
+}
+
+func managementProviderScopedSystemAccountID(authContext managementauth.Context, values url.Values) string {
+	if managementauth.IsAdminRole(authContext.Role) {
+		systemAccountID := firstManagementQueryText(values, "systemAccountId")
+		if systemAccountID == "" || systemAccountID == "all" {
+			return ""
+		}
+		return systemAccountID
+	}
+	return authContext.SystemAccountID
 }
 
 func managementScopedSystemAccountID(authContext managementauth.Context, values url.Values) string {

@@ -74,7 +74,7 @@ func TestW2ManagementProviderOptionsPostgresSmoke(t *testing.T) {
 		t.Fatalf("gpt provider = %+v", *gpt)
 	}
 	if gpt.DefaultHealthCheckModel != "gpt-5.6-sol" ||
-		gpt.SystemDefaultHealthCheckModel != "gpt-5.6-sol" ||
+		gpt.SystemDefaultHealthCheckModel != "" ||
 		gpt.ProtocolProfiles[0].DefaultHealthCheckModel != "gpt-5.6-sol" {
 		t.Fatalf("gpt provider health check model contract = %+v", *gpt)
 	}
@@ -118,7 +118,7 @@ func TestW2ManagementProviderOptionsPostgresSmoke(t *testing.T) {
 	}
 	if provider := findProviderOption(body.Data, "gpt"); provider == nil ||
 		provider.DefaultHealthCheckModel != "gpt-5.6-sol" ||
-		provider.SystemDefaultHealthCheckModel != "gpt-5.6-sol" ||
+		provider.SystemDefaultHealthCheckModel != "" ||
 		provider.ProtocolProfiles[0].DefaultHealthCheckModel != "gpt-5.6-sol" {
 		t.Fatalf("provider options response health check model contract = %+v", provider)
 	}

@@ -114,9 +114,10 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 	assertW2ProviderModelOptionRequestCapabilities(t, findW2ProviderModelOption(options, "gpt", "w2-personal-model"), []string{"priority", "flex"}, []string{"low", "high"}, "high")
 
 	saved, err := service.SetDefaultHealthCheckModel(ctx, managementprovidermodels.DefaultHealthCheckModelInput{
-		ProviderCode:    "gpt",
-		SystemAccountID: "sys_w2_proxy_options",
-		Model:           "w2-personal-model",
+		ProviderCode:         "gpt",
+		ActorSystemAccountID: "sys_w2_proxy_options",
+		ActorRole:            "user",
+		Model:                "w2-personal-model",
 	})
 	if err != nil {
 		t.Fatalf("set default health check model: %v", err)
@@ -128,7 +129,9 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list provider options after default model set: %v", err)
 	}
-	if provider := findProviderOption(providerOptions, "gpt"); provider == nil || provider.DefaultHealthCheckModel != "w2-personal-model" {
+	if provider := findProviderOption(providerOptions, "gpt"); provider == nil ||
+		provider.DefaultHealthCheckModel != "w2-personal-model" ||
+		provider.SystemDefaultHealthCheckModel != "" {
 		t.Fatalf("provider default health check model preference missing: %+v", provider)
 	}
 
@@ -213,8 +216,10 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list provider options after HTTP default model set: %v", err)
 	}
-	if provider := findProviderOption(providerOptions, "gpt"); provider == nil || provider.DefaultHealthCheckModel != "gpt-5.6-sol" {
-		t.Fatalf("provider default health check model preference was not updated by HTTP PUT: %+v", provider)
+	if provider := findProviderOption(providerOptions, "gpt"); provider == nil ||
+		provider.DefaultHealthCheckModel != "w2-personal-model" ||
+		provider.SystemDefaultHealthCheckModel != "gpt-5.6-sol" {
+		t.Fatalf("personal preference must override HTTP-updated system default: %+v", provider)
 	}
 
 	unauthorized := httptest.NewRecorder()

@@ -384,6 +384,9 @@ func (s *Service) SetDefaultHealthCheckModel(ctx context.Context, input DefaultH
 	if selected == nil {
 		return DefaultHealthCheckModelResult{}, &DefaultHealthCheckModelValidationError{Message: "模型不在当前用户可见目录中：" + model}
 	}
+	if systemScope && selected.Scope == "personal" {
+		return DefaultHealthCheckModelResult{}, &DefaultHealthCheckModelValidationError{Message: "系统默认检查模型不能选择个人模型"}
+	}
 	if !isActiveCatalogItem(*selected) {
 		return DefaultHealthCheckModelResult{}, &DefaultHealthCheckModelValidationError{Message: "只能把启用模型设置为默认检查模型"}
 	}

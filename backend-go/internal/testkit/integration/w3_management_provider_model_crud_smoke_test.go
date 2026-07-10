@@ -84,6 +84,7 @@ func TestW3ManagementProviderModelCRUDPostgresSmoke(t *testing.T) {
 
 	createRec := serveW3ProviderModelCRUDRequest(router, http.MethodPost, "/__aisys__/api/providers/gpt/models?systemAccountId=sys_w2_proxy_options", sessionToken, `{
 		"model":"w3-crud-model",
+		"scope":"global",
 		"mode":"text",
 		"supportedApiProtocols":["responses","chat_completions"],
 		"supportedServiceTiers":["priority","flex"],
@@ -103,7 +104,7 @@ func TestW3ManagementProviderModelCRUDPostgresSmoke(t *testing.T) {
 	if err := json.NewDecoder(createRec.Body).Decode(&createBody); err != nil {
 		t.Fatalf("decode create response: %v", err)
 	}
-	if createBody.Data.ID == "" || createBody.Data.Model != "w3-crud-model" || createBody.Data.Scope != "personal" || createBody.Data.SystemAccountID != "sys_w2_proxy_options" || createBody.Data.PricingNotes != "W3 CRUD 价格说明" {
+	if createBody.Data.ID == "" || createBody.Data.Model != "w3-crud-model" || createBody.Data.Scope != "global" || createBody.Data.SystemAccountID != "" || createBody.Data.PricingNotes != "W3 CRUD 价格说明" {
 		t.Fatalf("create response = %+v", createBody.Data)
 	}
 	assertW2ProviderModelRequestCapabilities(t, &createBody.Data, []string{"priority", "flex"}, []string{"low", "high"}, "high", []string{}, "", "")
@@ -301,13 +302,16 @@ func assertW3ProviderModelCRUDDefaultPreferenceCleared(t *testing.T, ctx context
 	t.Helper()
 	var count int
 	if err := db.QueryRowContext(ctx, `
-		SELECT COUNT(*)
-		FROM juhe_business.provider_default_health_check_models
-		WHERE system_account_id = 'sys_w2_proxy_options'
-		  AND provider_code = 'gpt'
-		  AND model = $1
+		SELECT
+		  (SELECT COUNT(*)
+		   FROM juhe_business.provider_default_health_check_models
+		   WHERE provider_code = 'gpt' AND model = $1)
+		  +
+		  (SELECT COUNT(*)
+		   FROM juhe_business.provider_system_default_health_check_models
+		   WHERE provider_code = 'gpt' AND model = $1)
 	`, model).Scan(&count); err != nil {
-		t.Fatalf("count provider default health check model preference for %s: %v", model, err)
+		t.Fatalf("count provider default health check model references for %s: %v", model, err)
 	}
 	if count != 0 {
 		t.Fatalf("default preference for %s count = %d, want 0", model, count)

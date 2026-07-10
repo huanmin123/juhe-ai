@@ -138,6 +138,58 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("add other public account: %v", err)
 	}
+	setW1bProviderSystemHealthCheckModel(t, ctx, db, "gpt", "gpt-5.5", now)
+	systemDefaultAccount, err := service.Add(ctx, publicaccounts.AddInput{
+		TargetUsername:            "admin",
+		TargetGroupName:           "账号分组",
+		ProviderCode:              "gpt",
+		ProviderProtocolProfileID: "profile_gpt_openai_v1",
+		Name:                      "系统默认检查模型账号",
+		Type:                      publicaccounts.AccountTypeAPIKey,
+		BaseURL:                   "https://api.openai.com/v1",
+		APIKey:                    "sk-system-default",
+		SupportedModels:           publicaccounts.NewStringListValue([]string{"gpt-5.5"}, true),
+	})
+	if err != nil {
+		t.Fatalf("add system default health check account: %v", err)
+	}
+	assertW1bPublicAccountHealthCheckModel(t, ctx, db, systemDefaultAccount.Account.ID, "gpt-5.5")
+
+	setW1bProviderHealthCheckModelPreference(t, ctx, db, created.Target.SystemAccountID, "gpt", w1bValidBuiltInModel, now)
+	personalDefaultAccount, err := service.Add(ctx, publicaccounts.AddInput{
+		TargetUsername:            "admin",
+		TargetGroupName:           "账号分组",
+		ProviderCode:              "gpt",
+		ProviderProtocolProfileID: "profile_gpt_openai_v1",
+		Name:                      "个人默认检查模型账号",
+		Type:                      publicaccounts.AccountTypeAPIKey,
+		BaseURL:                   "https://api.openai.com/v1",
+		APIKey:                    "sk-personal-default",
+		SupportedModels:           publicaccounts.NewStringListValue([]string{w1bValidBuiltInModel}, true),
+	})
+	if err != nil {
+		t.Fatalf("add personal default health check account: %v", err)
+	}
+	assertW1bPublicAccountHealthCheckModel(t, ctx, db, personalDefaultAccount.Account.ID, w1bValidBuiltInModel)
+
+	setW1bSystemAccountRole(t, ctx, db, created.Target.SystemAccountID, "admin")
+	adminRoleAccount, err := service.Add(ctx, publicaccounts.AddInput{
+		TargetUsername:            "admin",
+		TargetGroupName:           "账号分组",
+		ProviderCode:              "gpt",
+		ProviderProtocolProfileID: "profile_gpt_openai_v1",
+		Name:                      "管理员系统默认检查模型账号",
+		Type:                      publicaccounts.AccountTypeAPIKey,
+		BaseURL:                   "https://api.openai.com/v1",
+		APIKey:                    "sk-admin-system-default",
+		SupportedModels:           publicaccounts.NewStringListValue([]string{"gpt-5.5"}, true),
+	})
+	if err != nil {
+		t.Fatalf("add admin-role system default health check account: %v", err)
+	}
+	assertW1bPublicAccountHealthCheckModel(t, ctx, db, adminRoleAccount.Account.ID, "gpt-5.5")
+	setW1bSystemAccountRole(t, ctx, db, created.Target.SystemAccountID, "user")
+
 	insertW1bPublicAccountProviderModelFixture(
 		t,
 		ctx,
@@ -544,6 +596,39 @@ func setW1bProviderHealthCheckModelPreference(
 		    updated_at = EXCLUDED.updated_at
 	`, systemAccountID, providerCode, model, now); err != nil {
 		t.Fatalf("set provider health check model preference: %v", err)
+	}
+}
+
+func setW1bProviderSystemHealthCheckModel(
+	t *testing.T,
+	ctx context.Context,
+	db *sql.DB,
+	providerCode string,
+	model string,
+	now time.Time,
+) {
+	t.Helper()
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO juhe_business.provider_system_default_health_check_models (
+			provider_code, model, created_at, updated_at
+		) VALUES ($1, $2, $3, $4)
+		ON CONFLICT (provider_code) DO UPDATE SET
+			model = EXCLUDED.model,
+			updated_at = EXCLUDED.updated_at
+	`, providerCode, model, now, now)
+	if err != nil {
+		t.Fatalf("set provider system health check model: %v", err)
+	}
+}
+
+func setW1bSystemAccountRole(t *testing.T, ctx context.Context, db *sql.DB, systemAccountID string, role string) {
+	t.Helper()
+	if _, err := db.ExecContext(ctx, `
+		UPDATE juhe_business.system_accounts
+		SET role = $2, updated_at = now()
+		WHERE id = $1
+	`, systemAccountID, role); err != nil {
+		t.Fatalf("set system account role %s: %v", role, err)
 	}
 }
 

@@ -212,6 +212,38 @@ func (q *Queries) ListManagementProviderOptionProviders(ctx context.Context) ([]
 	return items, nil
 }
 
+const listManagementProviderSystemDefaultHealthCheckModels = `-- name: ListManagementProviderSystemDefaultHealthCheckModels :many
+SELECT provider_code, model
+FROM juhe_business.provider_system_default_health_check_models
+WHERE provider_code = ANY($1::text[])
+ORDER BY provider_code ASC
+`
+
+type ListManagementProviderSystemDefaultHealthCheckModelsRow struct {
+	ProviderCode string
+	Model        string
+}
+
+func (q *Queries) ListManagementProviderSystemDefaultHealthCheckModels(ctx context.Context, providerCodes []string) ([]ListManagementProviderSystemDefaultHealthCheckModelsRow, error) {
+	rows, err := q.db.Query(ctx, listManagementProviderSystemDefaultHealthCheckModels, providerCodes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListManagementProviderSystemDefaultHealthCheckModelsRow
+	for rows.Next() {
+		var i ListManagementProviderSystemDefaultHealthCheckModelsRow
+		if err := rows.Scan(&i.ProviderCode, &i.Model); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listManagementProviders = `-- name: ListManagementProviders :many
 SELECT id, code, name, parent_code, description, enabled, default_supported_models_json
 FROM juhe_business.providers
@@ -283,6 +315,35 @@ type UpsertManagementProviderDefaultHealthCheckModelPreferenceRow struct {
 func (q *Queries) UpsertManagementProviderDefaultHealthCheckModelPreference(ctx context.Context, arg UpsertManagementProviderDefaultHealthCheckModelPreferenceParams) (UpsertManagementProviderDefaultHealthCheckModelPreferenceRow, error) {
 	row := q.db.QueryRow(ctx, upsertManagementProviderDefaultHealthCheckModelPreference, arg.SystemAccountID, arg.ProviderCode, arg.Model)
 	var i UpsertManagementProviderDefaultHealthCheckModelPreferenceRow
+	err := row.Scan(&i.ProviderCode, &i.Model)
+	return i, err
+}
+
+const upsertManagementProviderSystemDefaultHealthCheckModel = `-- name: UpsertManagementProviderSystemDefaultHealthCheckModel :one
+INSERT INTO juhe_business.provider_system_default_health_check_models (
+  provider_code, model, created_at, updated_at
+) VALUES (
+  $1, $2, now(), now()
+)
+ON CONFLICT (provider_code) DO UPDATE SET
+  model = EXCLUDED.model,
+  updated_at = EXCLUDED.updated_at
+RETURNING provider_code, model
+`
+
+type UpsertManagementProviderSystemDefaultHealthCheckModelParams struct {
+	ProviderCode string
+	Model        string
+}
+
+type UpsertManagementProviderSystemDefaultHealthCheckModelRow struct {
+	ProviderCode string
+	Model        string
+}
+
+func (q *Queries) UpsertManagementProviderSystemDefaultHealthCheckModel(ctx context.Context, arg UpsertManagementProviderSystemDefaultHealthCheckModelParams) (UpsertManagementProviderSystemDefaultHealthCheckModelRow, error) {
+	row := q.db.QueryRow(ctx, upsertManagementProviderSystemDefaultHealthCheckModel, arg.ProviderCode, arg.Model)
+	var i UpsertManagementProviderSystemDefaultHealthCheckModelRow
 	err := row.Scan(&i.ProviderCode, &i.Model)
 	return i, err
 }

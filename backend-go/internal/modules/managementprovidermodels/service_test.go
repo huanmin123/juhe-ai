@@ -256,7 +256,7 @@ func TestServiceModelsReturnsProviderNotFound(t *testing.T) {
 	}
 }
 
-func TestServiceSetDefaultHealthCheckModelValidatesCatalogAndPersists(t *testing.T) {
+func TestServiceSetDefaultHealthCheckModelPersistsPersonalPreferenceForOrdinaryUser(t *testing.T) {
 	store := &providerModelStoreStub{
 		providers: map[string]port.ManagementProviderModelProvider{
 			"gpt": {Code: "gpt", Enabled: true},
@@ -268,9 +268,10 @@ func TestServiceSetDefaultHealthCheckModelValidatesCatalogAndPersists(t *testing
 	service := NewService(store)
 
 	result, err := service.SetDefaultHealthCheckModel(context.Background(), DefaultHealthCheckModelInput{
-		ProviderCode:    " gpt ",
-		SystemAccountID: " sys_user ",
-		Model:           " gpt-5.5 ",
+		ProviderCode:         " gpt ",
+		ActorSystemAccountID: " sys_user ",
+		ActorRole:            "user",
+		Model:                " gpt-5.5 ",
 	})
 	if err != nil {
 		t.Fatalf("SetDefaultHealthCheckModel() error = %v", err)
@@ -289,6 +290,65 @@ func TestServiceSetDefaultHealthCheckModelValidatesCatalogAndPersists(t *testing
 	}
 }
 
+func TestServiceSetDefaultHealthCheckModelPersistsSystemDefaultForAdmin(t *testing.T) {
+	store := &providerModelStoreStub{
+		providers: map[string]port.ManagementProviderModelProvider{
+			"gpt": {Code: "gpt", Enabled: true},
+		},
+		catalog: []port.ManagementProviderModelCatalogItem{
+			{ProviderCode: "gpt", Model: "gpt-5.6-sol", Scope: "built_in", Status: "active", Mode: "text", SupportedAPIProtocols: []string{"responses"}},
+			{ProviderCode: "gpt", Model: "admin-personal", Scope: "personal", SystemAccountID: "sys_admin", Status: "active", Mode: "text", SupportedAPIProtocols: []string{"responses"}},
+		},
+	}
+
+	result, err := NewService(store).SetDefaultHealthCheckModel(context.Background(), DefaultHealthCheckModelInput{
+		ProviderCode:         "gpt",
+		ActorSystemAccountID: "sys_admin",
+		ActorRole:            "admin",
+		Model:                "gpt-5.6-sol",
+	})
+	if err != nil {
+		t.Fatalf("SetDefaultHealthCheckModel() error = %v", err)
+	}
+	if result.DefaultHealthCheckModel != "gpt-5.6-sol" {
+		t.Fatalf("result = %+v", result)
+	}
+	if store.catalogInput.SystemAccountID != "" {
+		t.Fatalf("admin catalog scope = %q, want global scope", store.catalogInput.SystemAccountID)
+	}
+	if store.setDefaultInput.ProviderCode != "" {
+		t.Fatalf("admin must not write personal preference: %+v", store.setDefaultInput)
+	}
+	if store.setSystemDefaultInput.ProviderCode != "gpt" || store.setSystemDefaultInput.Model != "gpt-5.6-sol" {
+		t.Fatalf("system default input = %+v", store.setSystemDefaultInput)
+	}
+}
+
+func TestServiceSetDefaultHealthCheckModelRejectsPersonalModelForAdminSystemDefault(t *testing.T) {
+	store := &providerModelStoreStub{
+		providers: map[string]port.ManagementProviderModelProvider{
+			"gpt": {Code: "gpt", Enabled: true},
+		},
+		catalog: []port.ManagementProviderModelCatalogItem{
+			{ProviderCode: "gpt", Model: "admin-personal", Scope: "personal", SystemAccountID: "sys_admin", Status: "active", Mode: "text", SupportedAPIProtocols: []string{"responses"}},
+		},
+	}
+
+	_, err := NewService(store).SetDefaultHealthCheckModel(context.Background(), DefaultHealthCheckModelInput{
+		ProviderCode:         "gpt",
+		ActorSystemAccountID: "sys_admin",
+		ActorRole:            "admin",
+		Model:                "admin-personal",
+	})
+	message, ok := DefaultHealthCheckModelValidationMessage(err)
+	if !ok || message != "系统默认检查模型不能选择个人模型" {
+		t.Fatalf("validation message = %q, %v; err = %v", message, ok, err)
+	}
+	if store.setSystemDefaultInput.ProviderCode != "" {
+		t.Fatalf("system default write should not run: %+v", store.setSystemDefaultInput)
+	}
+}
+
 func TestServiceSetDefaultHealthCheckModelRejectsInvalidSelections(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -303,30 +363,30 @@ func TestServiceSetDefaultHealthCheckModelRejectsInvalidSelections(t *testing.T)
 		},
 		{
 			name:    "missing model",
-			input:   DefaultHealthCheckModelInput{ProviderCode: "gpt", SystemAccountID: "sys_user"},
+			input:   DefaultHealthCheckModelInput{ProviderCode: "gpt", ActorSystemAccountID: "sys_user", ActorRole: "user"},
 			wantMsg: "默认检查模型参数无效",
 		},
 		{
 			name:    "not visible",
-			input:   DefaultHealthCheckModelInput{ProviderCode: "gpt", SystemAccountID: "sys_user", Model: "missing"},
+			input:   DefaultHealthCheckModelInput{ProviderCode: "gpt", ActorSystemAccountID: "sys_user", ActorRole: "user", Model: "missing"},
 			catalog: []port.ManagementProviderModelCatalogItem{{ProviderCode: "gpt", Model: "gpt-5.5", Scope: "built_in", Status: "active"}},
 			wantMsg: "模型不在当前用户可见目录中：missing",
 		},
 		{
 			name:    "inactive",
-			input:   DefaultHealthCheckModelInput{ProviderCode: "gpt", SystemAccountID: "sys_user", Model: "draft-model"},
+			input:   DefaultHealthCheckModelInput{ProviderCode: "gpt", ActorSystemAccountID: "sys_user", ActorRole: "user", Model: "draft-model"},
 			catalog: []port.ManagementProviderModelCatalogItem{{ProviderCode: "gpt", Model: "draft-model", Scope: "global", Status: "draft"}},
 			wantMsg: "只能把启用模型设置为默认检查模型",
 		},
 		{
 			name:    "image model",
-			input:   DefaultHealthCheckModelInput{ProviderCode: "gpt", SystemAccountID: "sys_user", Model: "image-model"},
+			input:   DefaultHealthCheckModelInput{ProviderCode: "gpt", ActorSystemAccountID: "sys_user", ActorRole: "user", Model: "image-model"},
 			catalog: []port.ManagementProviderModelCatalogItem{{ProviderCode: "gpt", Model: "image-model", Scope: "built_in", Status: "active", Mode: "image", SupportedAPIProtocols: []string{"images"}}},
 			wantMsg: "默认检查模型只能选择文本生成模型",
 		},
 		{
 			name:    "unsupported protocol",
-			input:   DefaultHealthCheckModelInput{ProviderCode: "gpt", SystemAccountID: "sys_user", Model: "embed-model"},
+			input:   DefaultHealthCheckModelInput{ProviderCode: "gpt", ActorSystemAccountID: "sys_user", ActorRole: "user", Model: "embed-model"},
 			catalog: []port.ManagementProviderModelCatalogItem{{ProviderCode: "gpt", Model: "embed-model", Scope: "built_in", Status: "active", SupportedAPIProtocols: []string{"embed_content"}}},
 			wantMsg: "默认检查模型只能选择文本生成模型",
 		},
@@ -357,9 +417,10 @@ func TestServiceSetDefaultHealthCheckModelRejectsInvalidSelections(t *testing.T)
 
 func TestServiceSetDefaultHealthCheckModelReturnsProviderNotFound(t *testing.T) {
 	_, err := NewService(&providerModelStoreStub{}).SetDefaultHealthCheckModel(context.Background(), DefaultHealthCheckModelInput{
-		ProviderCode:    "missing",
-		SystemAccountID: "sys_user",
-		Model:           "gpt-5.5",
+		ProviderCode:         "missing",
+		ActorSystemAccountID: "sys_user",
+		ActorRole:            "user",
+		Model:                "gpt-5.5",
 	})
 	if err != ErrProviderNotFound {
 		t.Fatalf("SetDefaultHealthCheckModel() error = %v, want ErrProviderNotFound", err)
@@ -868,6 +929,40 @@ func TestServiceUpdateCustomModelRejectsModelChangeAndClearsDefaultWhenDisabled(
 	}
 }
 
+func TestServiceUpdateGlobalCustomModelClearsPersonalAndSystemDefaultsWhenDisabled(t *testing.T) {
+	price := 1.25
+	store := &providerModelStoreStub{customByID: map[string]port.ManagementProviderModelCatalogItem{
+		"custom_model_global": {
+			ID:            "custom_model_global",
+			ProviderCode:  "gpt",
+			Model:         "global-chat",
+			Scope:         "global",
+			Status:        "active",
+			InputUSDPer1M: &price,
+		},
+	}}
+
+	result, err := NewService(store).UpdateCustomModel(context.Background(), CustomModelUpdateInput{
+		ProviderCode:         "gpt",
+		ID:                   "custom_model_global",
+		ActorSystemAccountID: "sys_admin",
+		ActorRole:            "admin",
+		Fields:               CustomModelMutation{Status: OptionalString{Set: true, Value: "disabled"}},
+	})
+	if err != nil {
+		t.Fatalf("UpdateCustomModel() error = %v", err)
+	}
+	if result.Status != "disabled" {
+		t.Fatalf("result = %+v", result)
+	}
+	if store.clearInput.ProviderCode != "gpt" || store.clearInput.SystemAccountID != "" || store.clearInput.Model != "global-chat" {
+		t.Fatalf("personal default clear input = %+v", store.clearInput)
+	}
+	if store.clearSystemInput.ProviderCode != "gpt" || store.clearSystemInput.Model != "global-chat" {
+		t.Fatalf("system default clear input = %+v", store.clearSystemInput)
+	}
+}
+
 func TestServiceUpdateCustomModelIgnoresInvalidationFailure(t *testing.T) {
 	price := 1.25
 	existing := port.ManagementProviderModelCatalogItem{
@@ -1000,24 +1095,29 @@ func TestServiceDeleteCustomModelIgnoresInvalidationFailure(t *testing.T) {
 }
 
 type providerModelStoreStub struct {
-	providers        map[string]port.ManagementProviderModelProvider
-	enabledCodes     []string
-	protocolCodes    map[string][]string
-	catalog          []port.ManagementProviderModelCatalogItem
-	catalogInput     port.ManagementProviderModelCatalogListInput
-	setDefaultInput  port.ManagementProviderDefaultHealthCheckModelInput
-	setDefaultResult port.ManagementProviderDefaultHealthCheckModelPreference
-	setDefaultErr    error
-	customByID       map[string]port.ManagementProviderModelCatalogItem
-	customByScope    map[string]port.ManagementProviderModelCatalogItem
-	saveInput        port.ManagementCustomProviderModelSaveInput
-	saveResult       port.ManagementProviderModelCatalogItem
-	deleteID         string
-	deleteResult     bool
-	bindingInput     port.ManagementCustomProviderModelBindingInput
-	bindingSummary   port.ManagementCustomProviderModelBindingSummary
-	clearInput       port.ManagementProviderDefaultHealthCheckModelClearInput
-	clearErr         error
+	providers              map[string]port.ManagementProviderModelProvider
+	enabledCodes           []string
+	protocolCodes          map[string][]string
+	catalog                []port.ManagementProviderModelCatalogItem
+	catalogInput           port.ManagementProviderModelCatalogListInput
+	setDefaultInput        port.ManagementProviderDefaultHealthCheckModelInput
+	setDefaultResult       port.ManagementProviderDefaultHealthCheckModelPreference
+	setDefaultErr          error
+	setSystemDefaultInput  port.ManagementProviderSystemDefaultHealthCheckModelInput
+	setSystemDefaultResult port.ManagementProviderDefaultHealthCheckModelPreference
+	setSystemDefaultErr    error
+	customByID             map[string]port.ManagementProviderModelCatalogItem
+	customByScope          map[string]port.ManagementProviderModelCatalogItem
+	saveInput              port.ManagementCustomProviderModelSaveInput
+	saveResult             port.ManagementProviderModelCatalogItem
+	deleteID               string
+	deleteResult           bool
+	bindingInput           port.ManagementCustomProviderModelBindingInput
+	bindingSummary         port.ManagementCustomProviderModelBindingSummary
+	clearInput             port.ManagementProviderDefaultHealthCheckModelClearInput
+	clearErr               error
+	clearSystemInput       port.ManagementProviderSystemDefaultHealthCheckModelClearInput
+	clearSystemErr         error
 }
 
 func (s *providerModelStoreStub) FindManagementProviderModelProvider(_ context.Context, code string) (port.ManagementProviderModelProvider, bool, error) {
@@ -1069,6 +1169,28 @@ func (s *providerModelStoreStub) ClearManagementProviderDefaultHealthCheckModelI
 	s.clearInput = input
 	if s.clearErr != nil {
 		return false, s.clearErr
+	}
+	return true, nil
+}
+
+func (s *providerModelStoreStub) SetManagementProviderSystemDefaultHealthCheckModel(_ context.Context, input port.ManagementProviderSystemDefaultHealthCheckModelInput) (port.ManagementProviderDefaultHealthCheckModelPreference, error) {
+	s.setSystemDefaultInput = input
+	if s.setSystemDefaultErr != nil {
+		return port.ManagementProviderDefaultHealthCheckModelPreference{}, s.setSystemDefaultErr
+	}
+	if s.setSystemDefaultResult.ProviderCode != "" || s.setSystemDefaultResult.Model != "" {
+		return s.setSystemDefaultResult, nil
+	}
+	return port.ManagementProviderDefaultHealthCheckModelPreference{
+		ProviderCode: input.ProviderCode,
+		Model:        input.Model,
+	}, nil
+}
+
+func (s *providerModelStoreStub) ClearManagementProviderSystemDefaultHealthCheckModelIfModel(_ context.Context, input port.ManagementProviderSystemDefaultHealthCheckModelClearInput) (bool, error) {
+	s.clearSystemInput = input
+	if s.clearSystemErr != nil {
+		return false, s.clearSystemErr
 	}
 	return true, nil
 }

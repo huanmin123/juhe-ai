@@ -48,7 +48,7 @@ func TestManagementProviderOptionFromRowKeepsSystemAndProtocolHealthCheckDefault
 		Description:                pgtype.Text{String: "Google Gemini provider", Valid: true},
 		Enabled:                    true,
 		DefaultSupportedModelsJson: `["gemini-3.5-flash"]`,
-	}, profilesByProvider["gemini"], " gemini-custom ")
+	}, profilesByProvider["gemini"], " gemini-custom ", " gemini-system ")
 	if err != nil {
 		t.Fatalf("managementProviderOptionFromRow() error = %v", err)
 	}
@@ -59,8 +59,8 @@ func TestManagementProviderOptionFromRowKeepsSystemAndProtocolHealthCheckDefault
 	if option.ProtocolCode != "gemini" || option.DefaultHealthCheckModel != "gemini-custom" {
 		t.Fatalf("option = %+v", option)
 	}
-	if option.SystemDefaultHealthCheckModel != "gemini-3.5-flash" {
-		t.Fatalf("system default health check model = %q, want protocol profile default", option.SystemDefaultHealthCheckModel)
+	if option.SystemDefaultHealthCheckModel != "gemini-system" {
+		t.Fatalf("system default health check model = %q, want global default", option.SystemDefaultHealthCheckModel)
 	}
 	if option.ProtocolProfiles[1].DefaultHealthCheckModel != "gemini-3.5-flash" {
 		t.Fatalf("protocol profile default was overwritten: %+v", option.ProtocolProfiles)
@@ -85,7 +85,7 @@ func TestManagementProviderOptionFromRowFallsBackToSystemHealthCheckDefault(t *t
 		Name:                       "GPT",
 		Enabled:                    true,
 		DefaultSupportedModelsJson: `[]`,
-	}, profiles, " ")
+	}, profiles, " ", "gpt-5-system")
 	if err != nil {
 		t.Fatalf("managementProviderOptionFromRow() error = %v", err)
 	}
@@ -95,6 +95,33 @@ func TestManagementProviderOptionFromRowFallsBackToSystemHealthCheckDefault(t *t
 	}
 	if option.ProtocolProfiles[0].DefaultHealthCheckModel != "gpt-5-system" {
 		t.Fatalf("protocol profiles = %+v", option.ProtocolProfiles)
+	}
+}
+
+func TestManagementProviderOptionFromRowFallsBackToProtocolProfileWhenSystemDefaultMissing(t *testing.T) {
+	profiles := []port.ManagementProviderProtocolProfile{
+		{
+			ID:                      "profile_gpt_openai_v1",
+			ProviderCode:            "gpt",
+			Enabled:                 true,
+			DefaultHealthCheckModel: "gpt-profile-default",
+		},
+	}
+	option, err := managementProviderOptionFromRow(managementProviderRow{
+		ID:                         "provider_gpt",
+		Code:                       "gpt",
+		Name:                       "GPT",
+		Enabled:                    true,
+		DefaultSupportedModelsJson: `[]`,
+	}, profiles, "", "")
+	if err != nil {
+		t.Fatalf("managementProviderOptionFromRow() error = %v", err)
+	}
+	if option.DefaultHealthCheckModel != "gpt-profile-default" {
+		t.Fatalf("effective default = %q, want profile fallback", option.DefaultHealthCheckModel)
+	}
+	if option.SystemDefaultHealthCheckModel != "" {
+		t.Fatalf("system default = %q, want empty explicit global default", option.SystemDefaultHealthCheckModel)
 	}
 }
 
@@ -131,6 +158,9 @@ func TestManagementProviderSQLKeepsListAndOptionsFiltersSeparate(t *testing.T) {
 		"provider_default_health_check_models",
 		"ListManagementProviderDefaultHealthCheckModelPreferences",
 		"UpsertManagementProviderDefaultHealthCheckModelPreference",
+		"provider_system_default_health_check_models",
+		"ListManagementProviderSystemDefaultHealthCheckModels",
+		"UpsertManagementProviderSystemDefaultHealthCheckModel",
 	} {
 		if !strings.Contains(optionSQL, want) {
 			t.Fatalf("provider options SQL missing health check model contract %q", want)
@@ -183,6 +213,22 @@ func TestManagementProviderMigrationsUseHealthCheckModelColumns(t *testing.T) {
 	} {
 		if strings.Contains(providerOptionsSQL, legacy) {
 			t.Fatalf("provider options migration retains legacy contract %q", legacy)
+		}
+	}
+
+	systemDefaultMigration, err := os.ReadFile("../../../db/migrations/000028_w2_provider_system_default_health_check_models.sql")
+	if err != nil {
+		t.Fatalf("read provider system default health check model migration: %v", err)
+	}
+	systemDefaultSQL := string(systemDefaultMigration)
+	for _, want := range []string{
+		"CREATE TABLE IF NOT EXISTS juhe_business.provider_system_default_health_check_models",
+		"provider_code text PRIMARY KEY",
+		"model text NOT NULL",
+		"idx_provider_system_default_health_check_models_model",
+	} {
+		if !strings.Contains(systemDefaultSQL, want) {
+			t.Fatalf("provider system default migration missing %q", want)
 		}
 	}
 

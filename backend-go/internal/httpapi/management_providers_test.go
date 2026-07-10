@@ -167,6 +167,24 @@ func TestManagementProviderOptionsHandlerUsesSelfScopeForOrdinaryUser(t *testing
 	}
 }
 
+func TestManagementProviderOptionsHandlerUsesGlobalScopeForAdminWithoutTarget(t *testing.T) {
+	service := &managementProviderOptionServiceStub{}
+	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
+	})(newManagementProviderOptionsHandler(service))
+
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/providers/options", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if service.input.SystemAccountID != "" {
+		t.Fatalf("service input = %+v, want global scope", service.input)
+	}
+}
+
 func TestManagementProvidersHandlerRedactsStoreErrors(t *testing.T) {
 	service := &managementProviderOptionServiceStub{listErr: errors.New("postgres password leaked")}
 	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{

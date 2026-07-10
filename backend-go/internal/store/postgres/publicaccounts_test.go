@@ -27,10 +27,15 @@ func TestFindPublicAccountProviderProfileQuerySelectsEffectiveHealthCheckModel(t
 		"providers.default_supported_models_json",
 		"JOIN juhe_business.providers AS providers",
 		"ON providers.code = profiles.provider_code",
-		"LEFT JOIN juhe_business.provider_default_health_check_models AS health_check_defaults",
-		"health_check_defaults.system_account_id = sqlc.arg(system_account_id)",
-		"health_check_defaults.provider_code = profiles.provider_code",
-		"COALESCE(health_check_defaults.model, profiles.default_health_check_model) AS default_health_check_model",
+		"LEFT JOIN juhe_business.system_accounts AS target_system_account",
+		"target_system_account.role NOT IN ('admin', 'super_admin')",
+		"LEFT JOIN juhe_business.provider_default_health_check_models AS personal_health_check_defaults",
+		"personal_health_check_defaults.system_account_id = target_system_account.id",
+		"LEFT JOIN juhe_business.provider_system_default_health_check_models AS system_health_check_defaults",
+		"system_health_check_defaults.provider_code = profiles.provider_code",
+		"personal_health_check_defaults.model,",
+		"system_health_check_defaults.model,",
+		"profiles.default_health_check_model",
 	} {
 		if !strings.Contains(query, want) {
 			t.Fatalf("provider profile query missing %q in:\n%s", want, query)

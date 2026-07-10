@@ -426,16 +426,25 @@ SELECT
   profiles.enabled AS profile_enabled,
   providers.enabled AS provider_enabled,
   providers.default_supported_models_json,
-  COALESCE(health_check_defaults.model, profiles.default_health_check_model) AS default_health_check_model,
+  COALESCE(
+    personal_health_check_defaults.model,
+    system_health_check_defaults.model,
+    profiles.default_health_check_model
+  ) AS default_health_check_model,
   profiles.protocol_code,
   profiles.protocol_version,
   profiles.account_types_json
 FROM juhe_business.provider_protocol_profiles AS profiles
 JOIN juhe_business.providers AS providers
   ON providers.code = profiles.provider_code
-LEFT JOIN juhe_business.provider_default_health_check_models AS health_check_defaults
-  ON health_check_defaults.system_account_id = $1
-  AND health_check_defaults.provider_code = profiles.provider_code
+LEFT JOIN juhe_business.system_accounts AS target_system_account
+  ON target_system_account.id = $1
+LEFT JOIN juhe_business.provider_default_health_check_models AS personal_health_check_defaults
+  ON personal_health_check_defaults.system_account_id = target_system_account.id
+  AND target_system_account.role NOT IN ('admin', 'super_admin')
+  AND personal_health_check_defaults.provider_code = profiles.provider_code
+LEFT JOIN juhe_business.provider_system_default_health_check_models AS system_health_check_defaults
+  ON system_health_check_defaults.provider_code = profiles.provider_code
 WHERE profiles.provider_code = $2
   AND profiles.id = $3
 LIMIT 1
