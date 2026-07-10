@@ -44,6 +44,11 @@ var w1bGPTDefaultSupportedModels = []string{
 	"gpt-image-2",
 }
 
+type w1bPublicAccountModelBinding struct {
+	Model     string
+	CreatedAt time.Time
+}
+
 func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 	testcontainers.SkipIfProviderIsNotHealthy(t)
 
@@ -277,7 +282,10 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 	assertW1bPublicAccountStored(t, ctx, db, accountID, initialSecret, publicaccounts.StatusPendingTest, false)
 	assertW1bPublicAccountModels(t, ctx, db, accountID, w1bGPTDefaultSupportedModels)
 
+	// Make any unintended delete-and-reinsert use a different created_at value.
+	now = now.Add(time.Minute)
 	setW1bPublicAccountDefaultTestModel(t, ctx, db, accountID, w1bUnknownModel)
+	modelBindingsBeforeOmittedUpdate := readW1bPublicAccountModelBindings(t, ctx, db, accountID)
 	clearedWithoutModelUpdate, err := service.Update(ctx, publicaccounts.UpdateInput{
 		AccountID: accountID,
 		Notes:     publicaccounts.NewOptionalString(ptrIntegrationString("仅更新备注"), true),
@@ -287,11 +295,28 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 	}
 	assertW1bPublicAccountDefaultTestModel(t, ctx, db, accountID, "")
 	assertW1bPublicAccountModels(t, ctx, db, accountID, w1bGPTDefaultSupportedModels)
+	assertW1bPublicAccountModelBindingsUnchanged(t, ctx, db, accountID, modelBindingsBeforeOmittedUpdate)
 	assertW1bPublicAccountResponseHidesDefaultTestModel(t, clearedWithoutModelUpdate)
+
+	setW1bPublicAccountDefaultTestModel(t, ctx, db, accountID, w1bValidBuiltInModel)
+	modelBindingsBeforeValidDefaultUpdate := readW1bPublicAccountModelBindings(t, ctx, db, accountID)
+	preservedWithoutModelUpdate, err := service.Update(ctx, publicaccounts.UpdateInput{
+		AccountID: accountID,
+		Notes:     publicaccounts.NewOptionalString(ptrIntegrationString("仅更新备注并保留有效默认模型"), true),
+	})
+	if err != nil {
+		t.Fatalf("update public account with valid default test model: %v", err)
+	}
+	assertW1bPublicAccountDefaultTestModel(t, ctx, db, accountID, w1bValidBuiltInModel)
+	assertW1bPublicAccountModels(t, ctx, db, accountID, w1bGPTDefaultSupportedModels)
+	assertW1bPublicAccountModelBindingsUnchanged(t, ctx, db, accountID, modelBindingsBeforeValidDefaultUpdate)
+	assertW1bPublicAccountResponseHidesDefaultTestModel(t, preservedWithoutModelUpdate)
 
 	setW1bPublicAccountDefaultTestModel(t, ctx, db, accountID, w1bUnknownModel)
 	equivalentModels := slices.Clone(w1bGPTDefaultSupportedModels)
 	slices.Reverse(equivalentModels)
+	equivalentModels = append(equivalentModels, " "+w1bValidBuiltInModel+" ")
+	modelBindingsBeforeEquivalentUpdate := readW1bPublicAccountModelBindings(t, ctx, db, accountID)
 	clearedForEquivalentModels, err := service.Update(ctx, publicaccounts.UpdateInput{
 		AccountID:       accountID,
 		SupportedModels: publicaccounts.NewStringListValue(equivalentModels, true),
@@ -301,6 +326,7 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 	}
 	assertW1bPublicAccountDefaultTestModel(t, ctx, db, accountID, "")
 	assertW1bPublicAccountModels(t, ctx, db, accountID, w1bGPTDefaultSupportedModels)
+	assertW1bPublicAccountModelBindingsUnchanged(t, ctx, db, accountID, modelBindingsBeforeEquivalentUpdate)
 	assertW1bPublicAccountResponseHidesDefaultTestModel(t, clearedForEquivalentModels)
 
 	setW1bPublicAccountDefaultTestModel(t, ctx, db, accountID, w1bValidBuiltInModel)
@@ -536,6 +562,54 @@ func assertW1bPublicAccountResponseHidesDefaultTestModel(t *testing.T, response 
 	}
 	if strings.Contains(string(payload), "defaultTestModel") || strings.Contains(string(payload), "default_test_model") {
 		t.Fatalf("public account response exposed default test model: %s", payload)
+	}
+}
+
+func readW1bPublicAccountModelBindings(t *testing.T, ctx context.Context, db *sql.DB, accountID string) []w1bPublicAccountModelBinding {
+	t.Helper()
+
+	rows, err := db.QueryContext(ctx, `
+		SELECT model, created_at
+		FROM juhe_business.account_supported_models
+		WHERE account_id = $1
+		ORDER BY model ASC
+	`, accountID)
+	if err != nil {
+		t.Fatalf("query public account model bindings: %v", err)
+	}
+	defer rows.Close()
+
+	var bindings []w1bPublicAccountModelBinding
+	for rows.Next() {
+		var binding w1bPublicAccountModelBinding
+		if err := rows.Scan(&binding.Model, &binding.CreatedAt); err != nil {
+			t.Fatalf("scan public account model binding: %v", err)
+		}
+		bindings = append(bindings, binding)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate public account model bindings: %v", err)
+	}
+	return bindings
+}
+
+func assertW1bPublicAccountModelBindingsUnchanged(
+	t *testing.T,
+	ctx context.Context,
+	db *sql.DB,
+	accountID string,
+	before []w1bPublicAccountModelBinding,
+) {
+	t.Helper()
+
+	after := readW1bPublicAccountModelBindings(t, ctx, db, accountID)
+	if len(after) != len(before) {
+		t.Fatalf("public account model binding count = %d, want %d; before=%+v after=%+v", len(after), len(before), before, after)
+	}
+	for i := range before {
+		if after[i].Model != before[i].Model || !after[i].CreatedAt.Equal(before[i].CreatedAt) {
+			t.Fatalf("public account model bindings changed; before=%+v after=%+v", before, after)
+		}
 	}
 }
 
