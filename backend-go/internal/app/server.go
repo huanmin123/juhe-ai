@@ -118,7 +118,22 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	}
 
 	publicSettingsService := publicsettings.NewService(store)
-	managementHandlers := newManagementAPIHandler(cfg, store, stateRedis, managementOperationLogQueue, logger, systemAccountInvalidator)
+	var accountConcurrencyReader managementgroups.AccountConcurrencyReader
+	if cfg.ManagementAPIEnabled {
+		accountConcurrencyReader, err = redisplatform.NewAccountConcurrencyReader(stateRedis, cfg.RedisNamespace)
+		if err != nil {
+			return fmt.Errorf("初始化账号实时并发读取器失败: %w", err)
+		}
+	}
+	managementHandlers := newManagementAPIHandler(
+		cfg,
+		store,
+		stateRedis,
+		managementOperationLogQueue,
+		logger,
+		systemAccountInvalidator,
+		accountConcurrencyReader,
+	)
 	router := httpapi.NewRouter(httpapi.RouterOptions{
 		Config:                                            cfg,
 		Logger:                                            logger,
@@ -197,6 +212,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyRouteStrategyOptionsHandler:           managementHandlers.MyRouteStrategyOptionsHandler,
 		ManagementGroupListHandler:                        managementHandlers.GroupListHandler,
 		ManagementMyGroupListHandler:                      managementHandlers.MyGroupListHandler,
+		ManagementGroupDetailHandler:                      managementHandlers.GroupDetailHandler,
+		ManagementMyGroupDetailHandler:                    managementHandlers.MyGroupDetailHandler,
 		ManagementGroupCreateHandler:                      managementHandlers.GroupCreateHandler,
 		ManagementMyGroupCreateHandler:                    managementHandlers.MyGroupCreateHandler,
 		ManagementGroupOptionsHandler:                     managementHandlers.GroupOptionsHandler,
@@ -319,6 +336,8 @@ type managementAPIHandlers struct {
 	MyRouteStrategyOptionsHandler           http.Handler
 	GroupListHandler                        http.Handler
 	MyGroupListHandler                      http.Handler
+	GroupDetailHandler                      http.Handler
+	MyGroupDetailHandler                    http.Handler
 	GroupCreateHandler                      http.Handler
 	MyGroupCreateHandler                    http.Handler
 	GroupOptionsHandler                     http.Handler
@@ -365,6 +384,7 @@ func newManagementAPIHandler(
 	operationLogQueue operationLogEnqueueClient,
 	logger *slog.Logger,
 	systemAccountInvalidator managementAPIInvalidator,
+	accountConcurrencyReader managementgroups.AccountConcurrencyReader,
 ) managementAPIHandlers {
 	if !cfg.ManagementAPIEnabled && !cfg.ManagementAuthSessionsEnabled {
 		return managementAPIHandlers{}
@@ -398,7 +418,9 @@ func newManagementAPIHandler(
 	groupService := managementgroups.NewServiceWithOptions(managementgroups.ServiceOptions{
 		Store:                   store,
 		ListStore:               store,
+		DetailStore:             store,
 		UsageStatsTimezoneStore: store,
+		AccountConcurrency:      accountConcurrencyReader,
 		Invalidator:             systemAccountInvalidator,
 		Logger:                  logger,
 	})
@@ -505,6 +527,8 @@ func newManagementAPIHandler(
 		MyRouteStrategyOptionsHandler:           httpapi.NewManagementMyRouteStrategyOptionsHandler(routeStrategyService),
 		GroupListHandler:                        httpapi.NewManagementGroupListHandler(groupService),
 		MyGroupListHandler:                      httpapi.NewManagementMyGroupListHandler(groupService),
+		GroupDetailHandler:                      httpapi.NewManagementGroupDetailHandler(groupService),
+		MyGroupDetailHandler:                    httpapi.NewManagementMyGroupDetailHandler(groupService),
 		GroupCreateHandler:                      httpapi.NewManagementGroupCreateHandlerWithOperationLog(groupService, operationLogOptions),
 		MyGroupCreateHandler:                    httpapi.NewManagementMyGroupCreateHandlerWithOperationLog(groupService, operationLogOptions),
 		GroupOptionsHandler:                     httpapi.NewManagementGroupOptionsHandler(groupService),
