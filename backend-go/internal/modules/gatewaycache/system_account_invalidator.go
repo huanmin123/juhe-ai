@@ -15,6 +15,7 @@ const (
 
 	APIKeyValidationCacheName = "gateway:api-key-validation"
 	GlobalSettingsCacheName   = "settings:global"
+	SystemSettingsCacheName   = "settings:system"
 
 	RuntimeInvalidationStoreName = "gateway_cache_invalidation"
 	GatewayRuntimeCacheTopic     = "gateway_runtime_cache"
@@ -157,6 +158,25 @@ func (i *SystemAccountInvalidator) InvalidateGlobalSettingsCache(ctx context.Con
 	}
 	if err := i.cache.SetRaw(ctx, key, []byte(version), SharedCacheVersionTTL); err != nil {
 		return fmt.Errorf("clear global settings shared cache: %w", err)
+	}
+	return nil
+}
+
+func (i *SystemAccountInvalidator) InvalidateSystemSettingsCache(ctx context.Context) error {
+	if i.cache == nil {
+		return fmt.Errorf("gateway cache redis setter is required")
+	}
+	now := i.now().UTC()
+	version, err := i.newVersion(now)
+	if err != nil {
+		return fmt.Errorf("generate system settings cache version: %w", err)
+	}
+	key, err := SharedCacheVersionKey(i.namespace, SystemSettingsCacheName)
+	if err != nil {
+		return err
+	}
+	if err := i.cache.SetRaw(ctx, key, []byte(version), SharedCacheVersionTTL); err != nil {
+		return fmt.Errorf("clear system settings shared cache: %w", err)
 	}
 	return nil
 }
