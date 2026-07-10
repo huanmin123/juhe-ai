@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -119,8 +118,8 @@ func listManagementGroupDetailAuthorizationSources(
 
 func managementGroupDetailParams(input port.ManagementGroupDetailInput) postgresqueries.FindManagementGroupDetailParams {
 	return postgresqueries.FindManagementGroupDetailParams{
-		GroupID:         strings.TrimSpace(input.GroupID),
-		SystemAccountID: strings.TrimSpace(input.SystemAccountID),
+		GroupID:         input.GroupID,
+		SystemAccountID: input.SystemAccountID,
 	}
 }
 

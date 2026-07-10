@@ -199,9 +199,46 @@ func TestServiceDetailForcesSelfScopeAndStopsOnNotFound(t *testing.T) {
 		t.Fatalf("Detail() error = %v, want ErrGroupNotFound", err)
 	}
 	if store.detailInput.SystemAccountID != "sys_current" ||
+		store.findCalls != 1 ||
 		store.accountIDCalls != 0 ||
 		store.sourceCalls != 0 {
-		t.Fatalf("detail input=%+v account calls=%d source calls=%d", store.detailInput, store.accountIDCalls, store.sourceCalls)
+		t.Fatalf("detail input=%+v find calls=%d account calls=%d source calls=%d", store.detailInput, store.findCalls, store.accountIDCalls, store.sourceCalls)
+	}
+}
+
+func TestServiceDetailPreservesLookupKeysAndRejectsBlankGroupID(t *testing.T) {
+	store := &managementGroupDetailStoreStub{}
+	service := NewServiceWithOptions(ServiceOptions{
+		Store:              store,
+		AccountConcurrency: &managementGroupAccountConcurrencyStub{},
+	})
+
+	_, err := service.Detail(context.Background(), DetailInput{
+		ActorSystemAccountID: "sys_admin",
+		ActorRole:            "admin",
+		SystemAccountID:      "\u0085",
+		GroupID:              " grp_missing ",
+	})
+	if !errors.Is(err, ErrGroupNotFound) {
+		t.Fatalf("Detail() exact lookup error = %v, want ErrGroupNotFound", err)
+	}
+	if store.findCalls != 1 ||
+		store.detailInput.GroupID != " grp_missing " ||
+		store.detailInput.SystemAccountID != "\u0085" {
+		t.Fatalf("exact lookup calls=%d input=%+v", store.findCalls, store.detailInput)
+	}
+
+	for _, groupID := range []string{"", " \t\r\n"} {
+		store.findCalls = 0
+		store.detailInput = port.ManagementGroupDetailInput{}
+		_, err = service.Detail(context.Background(), DetailInput{
+			ActorSystemAccountID: "sys_admin",
+			ActorRole:            "admin",
+			GroupID:              groupID,
+		})
+		if !errors.Is(err, ErrGroupNotFound) || store.findCalls != 0 {
+			t.Fatalf("blank group %q error=%v find calls=%d input=%+v", groupID, err, store.findCalls, store.detailInput)
+		}
 	}
 }
 
@@ -277,6 +314,7 @@ type managementGroupDetailStoreStub struct {
 	detailInput    port.ManagementGroupDetailInput
 	row            port.ManagementGroupListRow
 	found          bool
+	findCalls      int
 	findErr        error
 	accountIDs     []string
 	accountIDCalls int
@@ -290,6 +328,7 @@ func (s *managementGroupDetailStoreStub) FindManagementGroupDetail(
 	_ context.Context,
 	input port.ManagementGroupDetailInput,
 ) (port.ManagementGroupListRow, bool, error) {
+	s.findCalls++
 	s.detailInput = input
 	return s.row, s.found, s.findErr
 }

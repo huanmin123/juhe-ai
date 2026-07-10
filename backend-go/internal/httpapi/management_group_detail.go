@@ -97,7 +97,7 @@ func managementGroupDetailSystemAccountID(values url.Values) (string, string, bo
 	if len(items) != 1 {
 		return "", "Expected string, received array", false
 	}
-	value := strings.TrimSpace(items[0])
+	value := strings.TrimFunc(items[0], managementGroupListECMAScriptWhitespace)
 	if value == "" {
 		return "", "系统账号 ID 不能为空", false
 	}

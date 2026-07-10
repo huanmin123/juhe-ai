@@ -171,4 +171,14 @@ INNER JOIN juhe_business.resource_authorization_sources AS authorization_sources
   ON authorization_sources.authorization_id = visible_authorization.id
 LEFT JOIN juhe_business.system_teams AS system_teams
   ON system_teams.id = authorization_sources.source_team_id
-ORDER BY authorization_sources.created_at ASC, authorization_sources.id ASC;
+ORDER BY
+  CASE authorization_sources.status
+    WHEN 'active' THEN 0
+    WHEN 'paused' THEN 1
+    WHEN 'expired' THEN 2
+    WHEN 'revoked' THEN 3
+    WHEN 'returned' THEN 4
+    ELSE 5
+  END ASC,
+  authorization_sources.created_at ASC,
+  authorization_sources.id ASC;

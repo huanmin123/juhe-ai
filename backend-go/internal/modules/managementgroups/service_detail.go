@@ -211,13 +211,16 @@ func (s *Service) Detail(ctx context.Context, input DetailInput) (DetailResult, 
 
 func managementGroupDetailScope(input DetailInput) (string, bool, error) {
 	actorSystemAccountID := strings.TrimSpace(input.ActorSystemAccountID)
-	if actorSystemAccountID == "" || strings.TrimSpace(input.GroupID) == "" {
+	if actorSystemAccountID == "" {
 		return "", false, ErrGroupListInvalid
+	}
+	if strings.TrimSpace(input.GroupID) == "" {
+		return "", false, ErrGroupNotFound
 	}
 	if input.SelfOnly || !managementGroupListAdminRole(input.ActorRole) {
 		return actorSystemAccountID, false, nil
 	}
-	systemAccountID := strings.TrimSpace(input.SystemAccountID)
+	systemAccountID := input.SystemAccountID
 	if systemAccountID == "all" {
 		systemAccountID = ""
 	}

@@ -67,6 +67,17 @@ func TestW5ManagementGroupDetailSQLUsesExactVisibilityAndCurrentTables(t *testin
 		"authorization_sources.revoked_by",
 		"authorization_sources.revoked_at",
 		"authorization_sources.updated_at",
+		`ORDER BY
+  CASE authorization_sources.status
+    WHEN 'active' THEN 0
+    WHEN 'paused' THEN 1
+    WHEN 'expired' THEN 2
+    WHEN 'revoked' THEN 3
+    WHEN 'returned' THEN 4
+    ELSE 5
+  END ASC,
+  authorization_sources.created_at ASC,
+  authorization_sources.id ASC`,
 	})
 	assertSQLExcludesAll(t, sourceSQL, []string{"usage_records", "COUNT(", "SUM(", "GROUP BY"})
 }
@@ -104,7 +115,7 @@ func TestFindManagementGroupDetailMapsAuthorizedRow(t *testing.T) {
 	if !found || row.ID != "group_1" || row.AccessType != "authorized" || row.AuthorizationStatus != "paused" {
 		t.Fatalf("detail = %#v, found = %v", row, found)
 	}
-	if len(q.detailCalls) != 1 || q.detailCalls[0].GroupID != "group_1" || q.detailCalls[0].SystemAccountID != "viewer" {
+	if len(q.detailCalls) != 1 || q.detailCalls[0].GroupID != " group_1 " || q.detailCalls[0].SystemAccountID != " viewer " {
 		t.Fatalf("detail calls = %#v", q.detailCalls)
 	}
 	if row.AuthorizationExpiresAt == nil || !row.AuthorizationExpiresAt.Equal(expiresAt.UTC()) {
@@ -115,6 +126,17 @@ func TestFindManagementGroupDetailMapsAuthorizedRow(t *testing.T) {
 	}
 	if !row.EffectiveUpdatedAt.Equal(updatedAt.UTC()) {
 		t.Fatalf("effective updated at = %v", row.EffectiveUpdatedAt)
+	}
+}
+
+func TestManagementGroupDetailParamsPreserveExactLookupKeys(t *testing.T) {
+	input := port.ManagementGroupDetailInput{
+		GroupID:         " group_1 ",
+		SystemAccountID: "\u0085",
+	}
+	got := managementGroupDetailParams(input)
+	if got.GroupID != input.GroupID || got.SystemAccountID != input.SystemAccountID {
+		t.Fatalf("params = %#v, want exact %#v", got, input)
 	}
 }
 

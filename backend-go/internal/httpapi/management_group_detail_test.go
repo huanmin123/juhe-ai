@@ -27,10 +27,10 @@ func TestManagementGroupDetailHandlerBuildsAdminScope(t *testing.T) {
 		wantMessage         string
 	}{
 		{name: "missing is global", wantStatus: http.StatusOK},
-		{name: "all is global", query: "?systemAccountId=%20all%20", wantStatus: http.StatusOK},
-		{name: "target", query: "?systemAccountId=%20sys_target%20", wantSystemAccountID: "sys_target", wantStatus: http.StatusOK},
+		{name: "all is global", query: "?systemAccountId=%EF%BB%BFall%E2%80%83", wantStatus: http.StatusOK},
+		{name: "target", query: "?systemAccountId=%EF%BB%BFsys_target%E2%80%A9", wantSystemAccountID: "sys_target", wantStatus: http.StatusOK},
 		{name: "empty", query: "?systemAccountId=", wantStatus: http.StatusBadRequest, wantMessage: "系统账号 ID 不能为空"},
-		{name: "blank", query: "?systemAccountId=%20%20", wantStatus: http.StatusBadRequest, wantMessage: "系统账号 ID 不能为空"},
+		{name: "blank", query: "?systemAccountId=%EF%BB%BF%E2%80%83", wantStatus: http.StatusBadRequest, wantMessage: "系统账号 ID 不能为空"},
 		{name: "duplicate", query: "?systemAccountId=a&systemAccountId=b", wantStatus: http.StatusBadRequest, wantMessage: "Expected string, received array"},
 	}
 	for _, tt := range tests {
@@ -65,6 +65,78 @@ func TestManagementGroupDetailHandlerBuildsAdminScope(t *testing.T) {
 				service.input.SelfOnly ||
 				service.input.GroupID != "grp_1" {
 				t.Fatalf("service input = %+v calls=%d", service.input, service.calls)
+			}
+		})
+	}
+}
+
+func TestManagementGroupDetailHandlerPreservesGroupIDAndNodeQueryErrorPriority(t *testing.T) {
+	tests := []struct {
+		name                string
+		groupID             string
+		query               string
+		serviceErr          error
+		wantStatus          int
+		wantCalls           int
+		wantGroupID         string
+		wantSystemAccountID string
+		wantMessage         string
+	}{
+		{
+			name:                "path id remains exact",
+			groupID:             " grp_1 ",
+			query:               "?systemAccountId=sys_target",
+			wantStatus:          http.StatusOK,
+			wantCalls:           1,
+			wantGroupID:         " grp_1 ",
+			wantSystemAccountID: "sys_target",
+		},
+		{
+			name:        "invalid query wins before missing path",
+			groupID:     " missing ",
+			query:       "?systemAccountId=%EF%BB%BF",
+			serviceErr:  managementgroups.ErrGroupNotFound,
+			wantStatus:  http.StatusBadRequest,
+			wantMessage: "系统账号 ID 不能为空",
+		},
+		{
+			name:                "non ecmascript whitespace remains a lookup",
+			groupID:             " missing ",
+			query:               "?systemAccountId=%C2%85",
+			serviceErr:          managementgroups.ErrGroupNotFound,
+			wantStatus:          http.StatusNotFound,
+			wantCalls:           1,
+			wantGroupID:         " missing ",
+			wantSystemAccountID: "\u0085",
+			wantMessage:         "分组不存在",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &managementGroupDetailServiceStub{
+				result: managementgroups.DetailResult{ID: "grp_1", AccountIDs: []string{}},
+				err:    tt.serviceErr,
+			}
+			handler := newManagementGroupDetailHandler(service, managementGroupScopeAdmin)
+			req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/groups/value"+tt.query, nil)
+			req = requestWithManagementGroupDetailID(req, tt.groupID)
+			req = requestWithManagementAuthContext(req, managementauth.Context{
+				SystemAccountID: "sys_admin",
+				Role:            "admin",
+			})
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus ||
+				service.calls != tt.wantCalls ||
+				(tt.wantMessage != "" && !strings.Contains(rec.Body.String(), tt.wantMessage)) {
+				t.Fatalf("status=%d calls=%d input=%+v body=%s", rec.Code, service.calls, service.input, rec.Body.String())
+			}
+			if service.calls > 0 &&
+				(service.input.GroupID != tt.wantGroupID ||
+					service.input.SystemAccountID != tt.wantSystemAccountID) {
+				t.Fatalf("service input = %+v", service.input)
 			}
 		})
 	}
