@@ -689,3 +689,18 @@ type JuheStatsAuthorizationUserUsageSummaryDaily struct {
 	LastErrorAt                  pgtype.Timestamptz
 	UpdatedAt                    pgtype.Timestamptz
 }
+
+type JuheStatsClientIpPolicy struct {
+	ID                        string
+	IpHash                    string
+	PolicyType                string
+	Status                    string
+	Reason                    pgtype.Text
+	ExpiresAt                 pgtype.Text
+	CreatedBySystemAccountID  string
+	CreatedAt                 string
+	UpdatedAt                 string
+	DisabledAt                pgtype.Text
+	DisabledBySystemAccountID pgtype.Text
+	DisabledReason            pgtype.Text
+}

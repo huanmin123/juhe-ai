@@ -61,3 +61,7 @@ type SystemAPIRateLimitSettings struct {
 type SystemAPIRateLimitReader interface {
 	SystemAPIRateLimitSettings(ctx context.Context) (SystemAPIRateLimitSettings, error)
 }
+
+type SystemAPIClientIPAllowlistReader interface {
+	SystemAPIClientIPAllowlisted(ctx context.Context, ipHash string, now time.Time) (bool, error)
+}

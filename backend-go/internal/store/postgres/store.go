@@ -23,6 +23,10 @@ type Reader interface {
 	ListBaselineSchemas(ctx context.Context, names []string) ([]string, error)
 }
 
+type systemAPIClientIPAllowlistQuerier interface {
+	SystemAPIClientIPAllowlisted(ctx context.Context, arg postgresqueries.SystemAPIClientIPAllowlistedParams) (bool, error)
+}
+
 type TxFunc func(ctx context.Context, q Reader) error
 
 func Open(ctx context.Context, rawURL string) (*Store, error) {
@@ -118,6 +122,26 @@ func (s *Store) SystemAPIRateLimitSettings(ctx context.Context) (port.SystemAPIR
 		UserReadPerMinute:        values["systemApiRateLimitUserReadPerMinute"],
 		UserWritePerMinute:       values["systemApiRateLimitUserWritePerMinute"],
 	}, nil
+}
+
+func (s *Store) SystemAPIClientIPAllowlisted(ctx context.Context, ipHash string, now time.Time) (bool, error) {
+	return systemAPIClientIPAllowlisted(ctx, s.queries(), ipHash, now)
+}
+
+func systemAPIClientIPAllowlisted(
+	ctx context.Context,
+	q systemAPIClientIPAllowlistQuerier,
+	ipHash string,
+	now time.Time,
+) (bool, error) {
+	allowlisted, err := q.SystemAPIClientIPAllowlisted(ctx, postgresqueries.SystemAPIClientIPAllowlistedParams{
+		IpHash: ipHash,
+		NowAt:  now.UTC().Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		return false, fmt.Errorf("check system api client IP allowlist: %w", err)
+	}
+	return allowlisted, nil
 }
 
 func (s *Store) queries() *postgresqueries.Queries {
