@@ -125,6 +125,8 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 		handlers.MyGroupListHandler != nil ||
 		handlers.GroupCreateHandler != nil ||
 		handlers.MyGroupCreateHandler != nil ||
+		handlers.GroupUpdateHandler != nil ||
+		handlers.MyGroupUpdateHandler != nil ||
 		handlers.GroupOptionsHandler != nil ||
 		handlers.MyGroupOptionsHandler != nil ||
 		handlers.GroupAccountOptionsHandler != nil ||
@@ -193,6 +195,8 @@ func TestNewManagementAPIHandlerSessionSwitchOnlyReturnsSessionHandlers(t *testi
 		handlers.MyGroupListHandler != nil ||
 		handlers.GroupCreateHandler != nil ||
 		handlers.MyGroupCreateHandler != nil ||
+		handlers.GroupUpdateHandler != nil ||
+		handlers.MyGroupUpdateHandler != nil ||
 		handlers.GroupOptionsHandler != nil ||
 		handlers.AccountOptionsHandler != nil ||
 		handlers.AccountTagsHandler != nil ||
@@ -266,6 +270,8 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 		handlers.MyGroupListHandler == nil ||
 		handlers.GroupCreateHandler == nil ||
 		handlers.MyGroupCreateHandler == nil ||
+		handlers.GroupUpdateHandler == nil ||
+		handlers.MyGroupUpdateHandler == nil ||
 		handlers.GroupOptionsHandler == nil ||
 		handlers.MyGroupOptionsHandler == nil ||
 		handlers.GroupAccountOptionsHandler == nil ||

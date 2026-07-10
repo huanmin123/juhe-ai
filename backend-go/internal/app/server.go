@@ -216,6 +216,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyGroupDetailHandler:                    managementHandlers.MyGroupDetailHandler,
 		ManagementGroupCreateHandler:                      managementHandlers.GroupCreateHandler,
 		ManagementMyGroupCreateHandler:                    managementHandlers.MyGroupCreateHandler,
+		ManagementGroupUpdateHandler:                      managementHandlers.GroupUpdateHandler,
+		ManagementMyGroupUpdateHandler:                    managementHandlers.MyGroupUpdateHandler,
 		ManagementGroupOptionsHandler:                     managementHandlers.GroupOptionsHandler,
 		ManagementMyGroupOptionsHandler:                   managementHandlers.MyGroupOptionsHandler,
 		ManagementGroupAccountOptionsHandler:              managementHandlers.GroupAccountOptionsHandler,
@@ -340,6 +342,8 @@ type managementAPIHandlers struct {
 	MyGroupDetailHandler                    http.Handler
 	GroupCreateHandler                      http.Handler
 	MyGroupCreateHandler                    http.Handler
+	GroupUpdateHandler                      http.Handler
+	MyGroupUpdateHandler                    http.Handler
 	GroupOptionsHandler                     http.Handler
 	MyGroupOptionsHandler                   http.Handler
 	GroupAccountOptionsHandler              http.Handler
@@ -531,6 +535,8 @@ func newManagementAPIHandler(
 		MyGroupDetailHandler:                    httpapi.NewManagementMyGroupDetailHandler(groupService),
 		GroupCreateHandler:                      httpapi.NewManagementGroupCreateHandlerWithOperationLog(groupService, operationLogOptions),
 		MyGroupCreateHandler:                    httpapi.NewManagementMyGroupCreateHandlerWithOperationLog(groupService, operationLogOptions),
+		GroupUpdateHandler:                      httpapi.NewManagementGroupUpdateHandlerWithOperationLog(groupService, operationLogOptions),
+		MyGroupUpdateHandler:                    httpapi.NewManagementMyGroupUpdateHandlerWithOperationLog(groupService, operationLogOptions),
 		GroupOptionsHandler:                     httpapi.NewManagementGroupOptionsHandler(groupService),
 		MyGroupOptionsHandler:                   httpapi.NewManagementMyGroupOptionsHandler(groupService),
 		GroupAccountOptionsHandler:              httpapi.NewManagementGroupAccountOptionsHandler(groupService),
