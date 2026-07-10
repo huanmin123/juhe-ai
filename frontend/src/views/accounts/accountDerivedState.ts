@@ -78,10 +78,9 @@ function normalizeAccountSupportedModels(account: AccountSummary | AccountSummar
 
 function supportedTestModelsForAccountSelection(account: AccountSummary | AccountSummary[] | undefined): string[] {
   const accounts = normalizeAccounts(account)
-  const supportedModelLists = accounts
-    .map((item) => normalizeAccountSupportedModels(item))
-    .filter((models) => models.length > 0)
-  if (!supportedModelLists.length) return []
+  if (!accounts.length) return []
+  const supportedModelLists = accounts.map((item) => normalizeAccountSupportedModels(item))
+  if (supportedModelLists.some((models) => models.length === 0)) return []
   const [firstModels, ...otherModelLists] = supportedModelLists
   return firstModels.filter((model) => otherModelLists.every((models) => models.includes(model)))
 }

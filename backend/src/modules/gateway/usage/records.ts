@@ -48,6 +48,8 @@ interface AccountUsageModelAccounting {
   pricingModel?: string
   modelMappingApplied: boolean
   modelMappingSource?: string
+  sourceEndpointFamily?: string
+  upstreamEndpointFamily?: string
 }
 
 export type UsageAccessFields = Pick<OpenAIAccountSecret,
@@ -169,6 +171,8 @@ export async function recordFailedUpstreamAttempt(
     pricingModel: modelAccounting.pricingModel,
     modelMappingApplied: modelAccounting.modelMappingApplied,
     modelMappingSource: modelAccounting.modelMappingSource,
+    sourceEndpointFamily: modelAccounting.sourceEndpointFamily,
+    upstreamEndpointFamily: modelAccounting.upstreamEndpointFamily,
     stream: requestStream(req),
     statusCode: input.statusCode,
     success: false,
@@ -236,6 +240,8 @@ export async function recordCompletedUpstreamAttempt(
     pricingModel: modelAccounting.pricingModel,
     modelMappingApplied: modelAccounting.modelMappingApplied,
     modelMappingSource: modelAccounting.modelMappingSource,
+    sourceEndpointFamily: modelAccounting.sourceEndpointFamily,
+    upstreamEndpointFamily: modelAccounting.upstreamEndpointFamily,
     stream: input.stream,
     statusCode: input.statusCode,
     success: input.success,
@@ -330,6 +336,8 @@ export async function recordHybridScoringAttempt(input: {
     pricingModel: modelAccounting.pricingModel,
     modelMappingApplied: modelAccounting.modelMappingApplied,
     modelMappingSource: modelAccounting.modelMappingSource,
+    sourceEndpointFamily: modelAccounting.sourceEndpointFamily,
+    upstreamEndpointFamily: modelAccounting.upstreamEndpointFamily,
     stream: false,
     statusCode: input.statusCode,
     success: input.success,
@@ -525,7 +533,9 @@ function accountUsageModelAccounting(
     upstreamModel,
     pricingModel: resolveUsagePricingModel(account, catalogSystemAccountId, upstreamModel, requestedModel),
     modelMappingApplied: resolved.modelMappingApplied,
-    modelMappingSource: resolved.modelMappingSource
+    modelMappingSource: resolved.modelMappingSource,
+    sourceEndpointFamily: resolved.sourceEndpointFamily,
+    upstreamEndpointFamily: resolved.upstreamEndpointFamily
   }
 }
 

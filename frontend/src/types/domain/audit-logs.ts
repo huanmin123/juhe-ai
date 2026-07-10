@@ -24,6 +24,8 @@ export interface AuditLogSummary {
   pricingModel?: string
   modelMappingApplied?: boolean
   modelMappingSource?: string
+  sourceEndpointFamily?: string
+  upstreamEndpointFamily?: string
   stream: boolean
   clientIp?: string
   userAgent?: string
@@ -59,6 +61,13 @@ export interface AuditLogAttemptSummary {
   groupName?: string
   proxyUrl?: string
   providerCode?: string
+  model?: string
+  upstreamModel?: string
+  pricingModel?: string
+  modelMappingApplied?: boolean
+  modelMappingSource?: string
+  sourceEndpointFamily?: string
+  upstreamEndpointFamily?: string
   upstreamMethod: string
   upstreamUrl: string
   upstreamStatusCode?: number

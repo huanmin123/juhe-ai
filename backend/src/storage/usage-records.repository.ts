@@ -68,6 +68,8 @@ export interface UsageRecordSummary {
   pricingModel?: string
   modelMappingApplied?: boolean
   modelMappingSource?: string
+  sourceEndpointFamily?: string
+  upstreamEndpointFamily?: string
   stream: boolean
   statusCode?: number
   success: boolean
@@ -154,6 +156,8 @@ export interface UsageRecordInput {
   pricingModel?: string
   modelMappingApplied?: boolean
   modelMappingSource?: string
+  sourceEndpointFamily?: string
+  upstreamEndpointFamily?: string
   stream?: boolean
   statusCode?: number
   success: boolean
@@ -642,6 +646,8 @@ function buildUsageRecordBatchWritePlan(
         input.pricingModel ?? null,
         input.modelMappingApplied ? 1 : 0,
         input.modelMappingSource ?? null,
+        input.sourceEndpointFamily ?? null,
+        input.upstreamEndpointFamily ?? null,
         input.stream ? 1 : 0,
         input.statusCode ?? null,
         input.success ? 1 : 0,
@@ -762,6 +768,8 @@ const postgresUsageRecordColumns = [
   'pricing_model',
   'model_mapping_applied',
   'model_mapping_source',
+  'source_endpoint_family',
+  'upstream_endpoint_family',
   'stream',
   'status_code',
   'success',
@@ -1299,6 +1307,8 @@ function loadUsageRecordRowsByEntries(entries: UsageRecordEntryRow[]): UsageReco
             ur.pricing_model,
             ur.model_mapping_applied,
             ur.model_mapping_source,
+            ur.source_endpoint_family,
+            ur.upstream_endpoint_family,
             ur.stream,
             ur.status_code,
             ur.success,
@@ -1357,6 +1367,8 @@ async function loadUsageRecordRowsByEntriesAsync(client: DatabaseClient, entries
         ur.pricing_model,
         ur.model_mapping_applied,
         ur.model_mapping_source,
+        ur.source_endpoint_family,
+        ur.upstream_endpoint_family,
         ur.stream,
         ur.status_code,
         ur.success,
@@ -1415,6 +1427,8 @@ async function listPostgresUsageRecordRows(
       ur.pricing_model,
       ur.model_mapping_applied,
       ur.model_mapping_source,
+      ur.source_endpoint_family,
+      ur.upstream_endpoint_family,
       ur.stream,
       ur.status_code,
       ur.success,
@@ -1498,6 +1512,8 @@ function listUsageRecordRowsFromShards(
           ur.pricing_model,
           ur.model_mapping_applied,
           ur.model_mapping_source,
+          ur.source_endpoint_family,
+          ur.upstream_endpoint_family,
           ur.stream,
           ur.status_code,
           ur.success,

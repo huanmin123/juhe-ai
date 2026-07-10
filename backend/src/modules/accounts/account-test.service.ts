@@ -2,8 +2,24 @@ import { normalizeOpenAIAccountClientCompatibility } from '../../domain/account-
 import { normalizeOpenAIEndpointModesForRuntime } from '../../domain/openai-endpoint-modes.js'
 import { normalizeAnthropicEndpointModesForRuntime } from '../../domain/anthropic-endpoint-modes.js'
 import { normalizeGeminiEndpointModesForRuntime } from '../../domain/gemini-endpoint-modes.js'
-import { isAnthropicProtocolProfile, isGeminiProtocolProfile, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
-import type { AccountClientCompatibility, AccountSummary, AccountSupportedEndpointMode, AccountTestResult } from '../../domain/types.js'
+import {
+  ANTHROPIC_MESSAGES_FAMILY,
+  GEMINI_GENERATE_CONTENT_FAMILY,
+  GEMINI_STREAM_GENERATE_CONTENT_FAMILY,
+  OPENAI_CHAT_COMPLETIONS_FAMILY,
+  OPENAI_RESPONSES_FAMILY,
+  isAnthropicProtocolProfile,
+  isGeminiProtocolProfile,
+  isOpenAIProtocolProfile
+} from '../../domain/provider-protocol.js'
+import type {
+  AccountClientCompatibility,
+  AccountModelMapping,
+  AccountModelMappingSourceEndpointFamily,
+  AccountSummary,
+  AccountSupportedEndpointMode,
+  AccountTestResult
+} from '../../domain/types.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { createTraceId, withRequestContext, type RequestContext } from '../../shared/request-context.js'
 import {
@@ -81,7 +97,8 @@ export async function testOpenAIAccountWithDiagnosticRetries(
   const startedAt = Date.now()
   const model = await resolveAccountTestModelAsync(account, {
     explicitModel: input.model,
-    systemAccountId: input.systemAccountId
+    systemAccountId: input.systemAccountId,
+    testEndpointMode: input.testEndpointMode
   })
   let lastResult: AccountTestResult | undefined
   for (let attemptIndex = 0; attemptIndex < accountDiagnosticRetryTimeoutMs.length; attemptIndex += 1) {
@@ -172,7 +189,8 @@ export async function testOpenAIAccount(
     })
     const model = await resolveAccountTestModelAsync(account, {
       explicitModel,
-      systemAccountId: input.systemAccountId
+      systemAccountId: input.systemAccountId,
+      sourceFamilies: [accountTestEndpointModeSourceFamily(testEndpointMode)]
     })
     testRequest = anthropicProtocol
       ? createAnthropicTestRequest({
@@ -344,13 +362,15 @@ async function loadAccountForTest(
 }
 
 export async function resolveAccountTestModelAsync(
-  account: Pick<AccountSummary, 'providerCode' | 'providerProtocolProfileId' | 'supportedModels' | 'defaultTestModel' | 'systemAccountId' | 'ownerSystemAccountId' | 'bindingSystemAccountId'>,
+  account: Pick<AccountSummary, 'providerCode' | 'providerProtocolProfileId' | 'supportedModels' | 'defaultTestModel' | 'systemAccountId' | 'ownerSystemAccountId' | 'bindingSystemAccountId' | 'modelMappings' | 'protocolCode' | 'protocolVersion' | 'type'>,
   input: {
     explicitModel?: string
     systemAccountId?: string
     providerCode?: string
     providerProtocolProfileId?: string
     supportedModels?: string[]
+    sourceFamilies?: AccountModelMappingSourceEndpointFamily[]
+    testEndpointMode?: AccountSupportedEndpointMode
   } = {}
 ): Promise<string> {
   const explicitModel = stringValue(input.explicitModel)
@@ -373,12 +393,29 @@ export async function resolveAccountTestModelAsync(
   )
   if (userDefaultModel) return userDefaultModel
 
+  const mappedSourceModel = preferredMappedSourceModelForAccount(
+    account,
+    input.sourceFamilies
+      ?? (input.testEndpointMode
+        ? [accountTestEndpointModeSourceFamily(input.testEndpointMode)]
+        : accountTestDefaultSourceFamilies(account))
+  )
+  if (mappedSourceModel) return mappedSourceModel
+
   const accountProfile = providerProtocolProfileId
     ? await findProviderProtocolProfileAsync(providerProtocolProfileId)
     : undefined
   const profile = accountProfile ?? await defaultProviderProtocolProfileAsync(providerCode)
   const systemDefaultModel = supportedAccountTestModel(profile?.defaultTestModel, supportedModels)
   return systemDefaultModel || supportedModels[0] || ''
+}
+
+export async function preferredSystemAccountTestModelAsync(
+  account: Pick<AccountSummary, 'providerCode' | 'providerProtocolProfileId' | 'supportedModels' | 'defaultTestModel' | 'systemAccountId' | 'ownerSystemAccountId' | 'bindingSystemAccountId' | 'modelMappings' | 'protocolCode' | 'protocolVersion' | 'type'>
+): Promise<string> {
+  return await resolveAccountTestModelAsync(account, {
+    sourceFamilies: accountTestDefaultSourceFamilies(account)
+  })
 }
 
 function sanitizeAccountTestResult(result: AccountTestResult): AccountTestResult {
@@ -640,6 +677,43 @@ async function resolveAccountTestCandidate(account: AccountSummary, input: { gro
       clientCompatibility: input.clientCompatibility
     } : resolvedCandidate
   }
+}
+
+function preferredMappedSourceModelForAccount(
+  account: Pick<AccountSummary, 'modelMappings' | 'supportedModels'>,
+  sourceFamilies: AccountModelMappingSourceEndpointFamily[]
+): string | undefined {
+  const supported = new Set((account.supportedModels ?? []).map((model) => stringValue(model)).filter(Boolean))
+  const sourceFamilySet = new Set(sourceFamilies)
+  const mapping = (account.modelMappings ?? []).find((item) => accountModelMappingUsableForTest(item, sourceFamilySet, supported))
+  return mapping?.sourceModel
+}
+
+function accountModelMappingUsableForTest(
+  mapping: AccountModelMapping,
+  sourceFamilies: Set<AccountModelMappingSourceEndpointFamily>,
+  supportedModels: Set<string>
+): boolean {
+  return mapping.enabled !== false
+    && sourceFamilies.has(mapping.sourceEndpointFamily)
+    && Boolean(stringValue(mapping.sourceModel))
+    && Boolean(stringValue(mapping.upstreamModel))
+    && (supportedModels.size === 0 || supportedModels.has(mapping.upstreamModel))
+}
+
+function accountTestDefaultSourceFamilies(account: Pick<AccountSummary, 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion' | 'type'>): AccountModelMappingSourceEndpointFamily[] {
+  if (isAnthropicProtocolProfile(account)) return [ANTHROPIC_MESSAGES_FAMILY]
+  if (isGeminiProtocolProfile(account)) return [GEMINI_STREAM_GENERATE_CONTENT_FAMILY, GEMINI_GENERATE_CONTENT_FAMILY]
+  if (account.type === 'oauth') return [OPENAI_RESPONSES_FAMILY]
+  return [OPENAI_CHAT_COMPLETIONS_FAMILY, OPENAI_RESPONSES_FAMILY]
+}
+
+function accountTestEndpointModeSourceFamily(mode: AccountSupportedEndpointMode): AccountModelMappingSourceEndpointFamily {
+  if (mode === 'chat_json' || mode === 'chat_sse') return OPENAI_CHAT_COMPLETIONS_FAMILY
+  if (mode === 'responses_json' || mode === 'responses_sse') return OPENAI_RESPONSES_FAMILY
+  if (mode === 'messages_json' || mode === 'messages_sse') return ANTHROPIC_MESSAGES_FAMILY
+  if (mode === 'generate_content_sse') return GEMINI_STREAM_GENERATE_CONTENT_FAMILY
+  return GEMINI_GENERATE_CONTENT_FAMILY
 }
 
 async function loadOpenAIAccountForGroup(

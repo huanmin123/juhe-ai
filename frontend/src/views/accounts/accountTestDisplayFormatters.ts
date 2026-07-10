@@ -169,18 +169,19 @@ export function accountTestSingleOutputLines(options: SingleAccountTestOutputOpt
 
 function accountTestModelMappingOutputLines(result: AccountTestResult, fallbackModel: string): AccountTestOutputLine[] {
   const requestModel = result.model || fallbackModel
+  const upstreamModel = result.upstreamModel || requestModel
   const lines: AccountTestOutputLine[] = [
     { text: `请求模型：${requestModel}`, tone: 'success' }
   ]
-  if (result.modelMappingApplied && result.upstreamModel) {
+  if (result.modelMappingApplied) {
     const sourceEndpointFamily = result.sourceEndpointFamily ? accountModelMappingEndpointFamilyText(result.sourceEndpointFamily) : '当前请求'
     const upstreamEndpointFamily = result.upstreamEndpointFamily ? accountModelMappingEndpointFamilyText(result.upstreamEndpointFamily) : '上游'
     lines.push({
-      text: `模型映射：${sourceEndpointFamily} / ${requestModel} -> ${upstreamEndpointFamily} / ${result.upstreamModel}`,
+      text: `模型映射：${sourceEndpointFamily} / ${requestModel} -> ${upstreamEndpointFamily} / ${upstreamModel}`,
       tone: 'warning'
     })
-    lines.push({ text: `实际上游模型：${result.upstreamModel}`, tone: 'success' })
-  } else if (result.upstreamModel && result.upstreamModel !== requestModel) {
+    lines.push({ text: `实际上游模型：${upstreamModel}`, tone: 'success' })
+  } else if (result.upstreamModel) {
     lines.push({ text: `实际上游模型：${result.upstreamModel}`, tone: 'success' })
   }
   return lines
@@ -306,6 +307,13 @@ export function accountTestDiagnosticAttemptWindowText(elapsedMs: number): strin
 }
 
 export function accountTestBatchItemModelText(item: AccountBatchTestItem, model: string): string {
+  if (item.result?.modelMappingApplied) {
+    const requestModel = item.result.model || model
+    return `${requestModel} -> ${item.result.upstreamModel || requestModel}`
+  }
+  if (item.result?.upstreamModel && item.result.upstreamModel !== (item.result.model || model)) {
+    return `${item.result.model || model} -> ${item.result.upstreamModel}`
+  }
   if (item.result?.model) return item.result.model
   return item.status === 'pending' ? `优先 ${model}` : model
 }

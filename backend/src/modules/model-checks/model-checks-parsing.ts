@@ -76,8 +76,21 @@ export function hasFunctionCall(payload: Record<string, unknown> | undefined, na
   })
 }
 
-export function buildModelMatchEvidence(actual: unknown, expected: string): {
+export function buildModelMatchEvidence(actual: unknown, expected: string, context: {
+  requestModel?: string
+  upstreamModel?: string
+  modelMappingApplied?: boolean
+  modelMappingSource?: string
+  sourceEndpointFamily?: string
+  upstreamEndpointFamily?: string
+} = {}): {
   expectedModel: string
+  requestModel?: string
+  upstreamModel?: string
+  modelMappingApplied?: boolean
+  modelMappingSource?: string
+  sourceEndpointFamily?: string
+  upstreamEndpointFamily?: string
   responseModel?: string
   matchedModel: boolean
   modelMismatch: boolean
@@ -86,16 +99,30 @@ export function buildModelMatchEvidence(actual: unknown, expected: string): {
   const matchedModel = modelMatches(text, expected)
   return {
     expectedModel: expected,
+    ...(context.requestModel ? { requestModel: context.requestModel } : {}),
+    ...(context.upstreamModel ? { upstreamModel: context.upstreamModel } : {}),
+    ...(context.modelMappingApplied !== undefined ? { modelMappingApplied: context.modelMappingApplied } : {}),
+    ...(context.modelMappingSource ? { modelMappingSource: context.modelMappingSource } : {}),
+    ...(context.sourceEndpointFamily ? { sourceEndpointFamily: context.sourceEndpointFamily } : {}),
+    ...(context.upstreamEndpointFamily ? { upstreamEndpointFamily: context.upstreamEndpointFamily } : {}),
     responseModel: text,
     matchedModel,
     modelMismatch: Boolean(text && !matchedModel)
   }
 }
 
-export function describeModelMismatch(evidence: { expectedModel: string; responseModel?: string; modelMismatch: boolean }): string | undefined {
-  return evidence.modelMismatch && evidence.responseModel
-    ? `上游返回模型 ${evidence.responseModel}，与请求模型 ${evidence.expectedModel} 不一致`
-    : undefined
+export function describeModelMismatch(evidence: {
+  expectedModel: string
+  requestModel?: string
+  upstreamModel?: string
+  responseModel?: string
+  modelMappingApplied?: boolean
+  modelMismatch: boolean
+}): string | undefined {
+  if (!evidence.modelMismatch || !evidence.responseModel) return undefined
+  return evidence.modelMappingApplied && evidence.requestModel
+    ? `上游返回模型 ${evidence.responseModel}，与映射上游模型 ${evidence.expectedModel} 不一致（请求模型 ${evidence.requestModel}）`
+    : `上游返回模型 ${evidence.responseModel}，与请求模型 ${evidence.expectedModel} 不一致`
 }
 
 export function hasModelMismatchEvidence(item: ModelCheckItemSummary): boolean {

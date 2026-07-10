@@ -1,5 +1,13 @@
 import {
+  ANTHROPIC_MESSAGES_FAMILY,
+  GEMINI_GENERATE_CONTENT_FAMILY,
+  GEMINI_STREAM_GENERATE_CONTENT_FAMILY,
+  OPENAI_CHAT_COMPLETIONS_FAMILY,
+  OPENAI_RESPONSES_FAMILY
+} from '../../domain/provider-protocol.js'
+import {
   isAdminRole,
+  type AccountModelMappingSourceEndpointFamily,
   type AccountSummary,
   type ModelCheckOptions,
   type ModelCheckRunDetail,
@@ -22,6 +30,7 @@ import {
 import type { AccessScope } from '../../storage/access-scope.js'
 import { currentSystemAccountId } from '../../storage/access-scope.js'
 import type { OpenAIGatewayRequestIdentity } from '../gateway/routes.js'
+import { resolveOpenAIAccountModelMapping } from '../gateway/protocols/openai-v1/model-mapping.js'
 import {
   defaultModel,
   defaultProfile,
@@ -145,6 +154,13 @@ export type ModelCheckProgressEvent = {
   statusCode: number
   success: boolean
   durationMs: number
+  requestModel?: string
+  expectedModel?: string
+  upstreamModel?: string
+  modelMappingApplied?: boolean
+  modelMappingSource?: string
+  sourceEndpointFamily?: string
+  upstreamEndpointFamily?: string
   responseModel?: string
   outputPreview?: string
 } | {
@@ -405,7 +421,7 @@ async function resolveAccountTargetAsync(accountId: string, model: string, acces
     }
     throw new ModelCheckRequestError(400, modelCheckUnsupportedProtocolMessage())
   }
-  if (!accountAllowsModel(account, model)) {
+  if (!accountAllowsModel(account, model, modelCheckProfile)) {
     throw new ModelCheckRequestError(400, `账户模型限制未包含 ${model}，请先在 AI 账户中配置完整模型 ID`)
   }
   if (account.status === 'disabled') {
@@ -497,9 +513,30 @@ function modelCheckModelsForAccountMessage(account: AccountSummary): string {
   return findModelCheckProfileForAccount(account)?.models.join('、') || supportedModels.join('、')
 }
 
-function accountAllowsModel(account: AccountSummary, model: string): boolean {
+function accountAllowsModel(account: AccountSummary, model: string, modelCheckProfile: ModelCheckProtocolProfile): boolean {
   const models = account.supportedModels?.map((item) => item.trim()).filter(Boolean) ?? []
-  return models.length === 0 || models.includes(model)
+  return models.length === 0 || models.includes(model) || mappedModelCheckSourceAllowed(account, model, models, modelCheckProfile)
+}
+
+function mappedModelCheckSourceAllowed(
+  account: AccountSummary,
+  model: string,
+  supportedModels: string[],
+  modelCheckProfile: ModelCheckProtocolProfile
+): boolean {
+  return modelCheckSourceEndpointFamilies(modelCheckProfile).some((sourceEndpointFamily) => {
+    const mapping = resolveOpenAIAccountModelMapping(account, model, sourceEndpointFamily)
+    return Boolean(mapping && supportedModels.includes(mapping.upstreamModel))
+  })
+}
+
+function modelCheckSourceEndpointFamilies(
+  profile: ModelCheckProtocolProfile
+): Array<'chat_completions' | 'responses' | 'messages' | 'generate_content' | 'stream_generate_content'> {
+  if (profile.protocol === 'openai_responses') return ['responses']
+  if (profile.protocol === 'openai_chat') return ['chat_completions']
+  if (profile.protocol === 'anthropic_messages') return ['messages']
+  return ['generate_content', 'stream_generate_content']
 }
 
 async function executeProbeSuite(target: ModelCheckTarget, model: SupportedModel, prefix: ModelCheckProbePrefix, signal?: AbortSignal, progress?: ModelCheckProgressReporter): Promise<ProbeSuiteResult> {
@@ -661,14 +698,45 @@ async function runModelCheckProbeRequest(
   signal?: AbortSignal,
   progress?: ModelCheckProgressReporter
 ): Promise<GatewayProbeResult> {
+  const resolvedRequest = resolveModelCheckProbeModelMapping(target, request)
   return await runGatewayProbe(target, {
     method: 'POST',
-    path: request.path,
+    path: resolvedRequest.path,
     itemKey,
-    body: request.body,
-    responseProtocol: request.responseProtocol,
-    expectedModel: request.expectedModel
+    body: resolvedRequest.body,
+    responseProtocol: resolvedRequest.responseProtocol,
+    requestModel: resolvedRequest.requestModel,
+    expectedModel: resolvedRequest.expectedModel,
+    upstreamModel: resolvedRequest.upstreamModel,
+    modelMappingApplied: resolvedRequest.modelMappingApplied,
+    modelMappingSource: resolvedRequest.modelMappingSource,
+    sourceEndpointFamily: resolvedRequest.sourceEndpointFamily,
+    upstreamEndpointFamily: resolvedRequest.upstreamEndpointFamily
   }, signal, progress)
+}
+
+function resolveModelCheckProbeModelMapping(target: ProbeTarget, request: ModelCheckProbeRequest): ModelCheckProbeRequest {
+  const requestModel = request.requestModel ?? request.expectedModel
+  const sourceEndpointFamily = request.sourceEndpointFamily ?? modelCheckProbeSourceEndpointFamily(request)
+  const mapping = resolveOpenAIAccountModelMapping(target.candidateAccounts?.[0], requestModel, sourceEndpointFamily)
+  const upstreamModel = mapping?.upstreamModel ?? request.upstreamModel ?? requestModel
+  return {
+    ...request,
+    requestModel,
+    expectedModel: upstreamModel,
+    upstreamModel,
+    modelMappingApplied: Boolean(mapping),
+    modelMappingSource: mapping ? mapping.runtimeSource ?? 'account' : request.modelMappingSource,
+    sourceEndpointFamily: mapping?.sourceEndpointFamily ?? sourceEndpointFamily,
+    upstreamEndpointFamily: mapping?.upstreamEndpointFamily ?? request.upstreamEndpointFamily
+  }
+}
+
+function modelCheckProbeSourceEndpointFamily(request: ModelCheckProbeRequest): AccountModelMappingSourceEndpointFamily {
+  if (request.responseProtocol === 'openai_responses') return OPENAI_RESPONSES_FAMILY
+  if (request.responseProtocol === 'openai_chat') return OPENAI_CHAT_COMPLETIONS_FAMILY
+  if (request.responseProtocol === 'anthropic_messages') return ANTHROPIC_MESSAGES_FAMILY
+  return request.body.stream === true ? GEMINI_STREAM_GENERATE_CONTENT_FAMILY : GEMINI_GENERATE_CONTENT_FAMILY
 }
 
 function pushProbeItem(items: ModelCheckItemCreateInput[], item: ModelCheckItemCreateInput, progress?: ModelCheckProgressReporter): void {

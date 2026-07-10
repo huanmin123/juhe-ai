@@ -5,6 +5,7 @@ import type {
   AccountSupportedEndpointMode,
   AccountTestResult,
   AccountTestSession,
+  AccountTestSessionDetail,
   AccountTestSessionStatus,
   AccountTestTask,
   AccountTestTaskStatus,
@@ -100,6 +101,13 @@ interface AccountTestSessionRow {
   updated_at: string
 }
 
+export class AccountTestSessionConflictError extends Error {
+  constructor(public readonly active: AccountTestSessionDetail) {
+    super('当前已有账户测试任务未完成，请先停止当前测试或等待完成')
+    this.name = 'AccountTestSessionConflictError'
+  }
+}
+
 export interface CreateAccountTestTaskInput {
   account: AccountSummary
   access: AccessScope
@@ -111,12 +119,17 @@ export interface CreateAccountTestTaskInput {
 }
 
 const accountTestTaskRetentionHours = 24
-const accountTestSessionStaleMs = 15_000
+const accountTestSessionIdleCompleteMs = 15_000
 const accountTestCleanupBatchSize = 200
 
 export function createAccountTestSession(access: AccessScope): AccountTestSession {
   if (!access) {
     throw new Error('缺少系统账户上下文')
+  }
+  completeIdleAccountTestSessionsForAccess(access)
+  const active = getActiveAccountTestSessionDetail(access)
+  if (active) {
+    throw new AccountTestSessionConflictError(active)
   }
   const now = nowIso()
   const id = newId('acctsess')
@@ -142,12 +155,37 @@ export function createAccountTestSession(access: AccessScope): AccountTestSessio
   return session
 }
 
+export function getActiveAccountTestSessionDetail(access: AccessScope): AccountTestSessionDetail | undefined {
+  if (!access) {
+    throw new Error('缺少系统账户上下文')
+  }
+  completeIdleAccountTestSessionsForAccess(access)
+  const row = getBusinessDatabase().prepare(`
+    SELECT s.*
+    FROM account_test_sessions s
+    WHERE s.status = 'running'
+      AND s.request_system_account_id = ?
+    ORDER BY s.updated_at DESC, s.created_at DESC, s.id DESC
+    LIMIT 1
+  `).get(access.systemAccountId) as unknown as AccountTestSessionRow | undefined
+  if (!row) return undefined
+  return accountTestSessionDetailFromRow(row, access, { ownerOnly: true })
+}
+
 export function getAccountTestSession(id: string, access?: AccessScope): AccountTestSession | undefined {
   const row = getAccountTestSessionRow(id)
   if (!row || !canReadAccountTestSession(row, access)) {
     return undefined
   }
   return accountTestSessionFromRow(row)
+}
+
+export function getAccountTestSessionDetail(id: string, access?: AccessScope): AccountTestSessionDetail | undefined {
+  const row = getAccountTestSessionRow(id)
+  if (!row || !canReadAccountTestSession(row, access)) {
+    return undefined
+  }
+  return accountTestSessionDetailFromRow(row, access)
 }
 
 export function heartbeatAccountTestSession(id: string, access?: AccessScope): AccountTestSession | undefined {
@@ -169,6 +207,15 @@ export function heartbeatAccountTestSession(id: string, access?: AccessScope): A
   return getAccountTestSession(row.id, access)
 }
 
+export function completeAccountTestSession(id: string, access?: AccessScope): AccountTestSession | undefined {
+  const row = getAccountTestSessionRow(id)
+  if (!row || !canReadAccountTestSession(row, access)) {
+    return undefined
+  }
+  completeAccountTestSessionIfSettled(row.id)
+  return getAccountTestSession(row.id, access)
+}
+
 export function cancelAccountTestSession(id: string, access?: AccessScope, message = '已停止测试'): { session: AccountTestSession; taskIds: string[] } | undefined {
   const row = getAccountTestSessionRow(id)
   if (!row || !canReadAccountTestSession(row, access)) {
@@ -179,21 +226,34 @@ export function cancelAccountTestSession(id: string, access?: AccessScope, messa
   return session ? { session, taskIds } : undefined
 }
 
-export function cancelExpiredAccountTestSessions(limit = 200): string[] {
-  const cutoff = new Date(Date.now() - accountTestSessionStaleMs).toISOString()
+export function completeIdleAccountTestSessions(limit = 200, access?: AccessScope): number {
+  const cutoff = new Date(Date.now() - accountTestSessionIdleCompleteMs).toISOString()
+  const scopeClause = access ? 'AND request_system_account_id = ?' : ''
   const rows = getBusinessDatabase().prepare(`
     SELECT *
     FROM account_test_sessions
     WHERE status = 'running'
       AND last_heartbeat_at < ?
+      ${scopeClause}
+      AND NOT EXISTS (
+        SELECT 1
+        FROM account_test_session_tasks st
+        JOIN account_test_tasks t ON t.id = st.task_id
+        WHERE st.session_id = account_test_sessions.id
+          AND t.status IN ('queued', 'running')
+      )
     ORDER BY last_heartbeat_at ASC, id ASC
     LIMIT ?
-  `).all(cutoff, Math.max(1, Math.trunc(limit))) as unknown as AccountTestSessionRow[]
-  const taskIds: string[] = []
+  `).all(...(access ? [cutoff, access.systemAccountId, Math.max(1, Math.trunc(limit))] : [cutoff, Math.max(1, Math.trunc(limit))])) as unknown as AccountTestSessionRow[]
+  let completed = 0
   for (const row of rows) {
-    taskIds.push(...cancelAccountTestSessionByRow(row, '前端测试窗口已关闭，任务已取消', 'expired'))
+    completed += completeAccountTestSessionIfSettled(row.id) ? 1 : 0
   }
-  return taskIds
+  return completed
+}
+
+function completeIdleAccountTestSessionsForAccess(access: AccessScope): number {
+  return completeIdleAccountTestSessions(accountTestCleanupBatchSize, access)
 }
 
 export function createAccountTestTask(input: CreateAccountTestTaskInput): AccountTestTask {
@@ -279,8 +339,7 @@ export function getAccountTestTaskRecord(id: string): AccountTestTaskRecord | un
 }
 
 export function listRunnableAccountTestTaskIds(limit = 100): string[] {
-  cancelExpiredAccountTestSessions()
-  const heartbeatCutoff = new Date(Date.now() - accountTestSessionStaleMs).toISOString()
+  completeIdleAccountTestSessions()
   const rows = getBusinessDatabase().prepare(`
     SELECT t.id
     FROM account_test_tasks t
@@ -289,20 +348,19 @@ export function listRunnableAccountTestTaskIds(limit = 100): string[] {
     WHERE t.status = 'queued'
       AND (
         st.session_id IS NULL
-        OR (s.status = 'running' AND s.last_heartbeat_at >= ?)
+        OR s.status = 'running'
       )
     ORDER BY t.queued_at ASC, t.id ASC
     LIMIT ?
-  `).all(heartbeatCutoff, Math.max(1, Math.trunc(limit))) as unknown as Array<{ id: string }>
+  `).all(Math.max(1, Math.trunc(limit))) as unknown as Array<{ id: string }>
   return rows.map((row) => row.id)
 }
 
 export function failExpiredQueuedAccountTestTasks(maxQueuedMs: number, limit = 200): string[] {
-  cancelExpiredAccountTestSessions()
+  completeIdleAccountTestSessions()
   const safeMaxQueuedMs = Math.max(1, Math.trunc(maxQueuedMs))
   const safeLimit = Math.max(1, Math.trunc(limit))
   const queuedCutoff = new Date(Date.now() - safeMaxQueuedMs).toISOString()
-  const heartbeatCutoff = new Date(Date.now() - accountTestSessionStaleMs).toISOString()
   const rows = getBusinessDatabase().prepare(`
     SELECT t.id
     FROM account_test_tasks t
@@ -313,11 +371,11 @@ export function failExpiredQueuedAccountTestTasks(maxQueuedMs: number, limit = 2
       AND t.queued_at < ?
       AND (
         st.session_id IS NULL
-        OR (s.status = 'running' AND s.last_heartbeat_at >= ?)
+        OR s.status = 'running'
       )
     ORDER BY t.queued_at ASC, t.id ASC
     LIMIT ?
-  `).all(queuedCutoff, heartbeatCutoff, safeLimit) as unknown as Array<{ id: string }>
+  `).all(queuedCutoff, safeLimit) as unknown as Array<{ id: string }>
   const taskIds = rows.map((row) => row.id)
   if (taskIds.length === 0) {
     return []
@@ -549,6 +607,11 @@ export async function createAccountTestSessionAsync(access: AccessScope): Promis
     throw new Error('缺少系统账户上下文')
   }
   const client = await accountTestTaskDatabaseClient()
+  await completeIdleAccountTestSessionsForAccessAsync(client, access)
+  const active = await getActiveAccountTestSessionDetailAsync(access)
+  if (active) {
+    throw new AccountTestSessionConflictError(active)
+  }
   const now = nowIso()
   const id = newId('acctsess')
   await client.execute(`
@@ -573,6 +636,27 @@ export async function createAccountTestSessionAsync(access: AccessScope): Promis
   return session
 }
 
+export async function getActiveAccountTestSessionDetailAsync(access: AccessScope): Promise<AccountTestSessionDetail | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return getActiveAccountTestSessionDetail(access)
+  }
+  if (!access) {
+    throw new Error('缺少系统账户上下文')
+  }
+  const client = await accountTestTaskDatabaseClient()
+  await completeIdleAccountTestSessionsForAccessAsync(client, access)
+  const row = await client.one<AccountTestSessionRow>(`
+    SELECT s.*
+    FROM ${accountTestTable(client, 'account_test_sessions')} s
+    WHERE s.status = 'running'
+      AND s.request_system_account_id = ?
+    ORDER BY s.updated_at DESC, s.created_at DESC, s.id DESC
+    LIMIT 1
+  `, [access.systemAccountId])
+  if (!row) return undefined
+  return accountTestSessionDetailFromRowAsync(client, row, access, { ownerOnly: true })
+}
+
 export async function getAccountTestSessionAsync(id: string, access?: AccessScope): Promise<AccountTestSession | undefined> {
   if (sqliteReadWorkerPoolEnabled()) {
     return requestSqliteReadWorker({
@@ -590,6 +674,18 @@ export async function getAccountTestSessionAsync(id: string, access?: AccessScop
     return undefined
   }
   return accountTestSessionFromRow(row)
+}
+
+export async function getAccountTestSessionDetailAsync(id: string, access?: AccessScope): Promise<AccountTestSessionDetail | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return getAccountTestSessionDetail(id, access)
+  }
+  const client = await accountTestTaskDatabaseClient()
+  const row = await getAccountTestSessionRowAsync(client, id)
+  if (!row || !canReadAccountTestSession(row, access)) {
+    return undefined
+  }
+  return accountTestSessionDetailFromRowAsync(client, row, access)
 }
 
 export async function heartbeatAccountTestSessionAsync(id: string, access?: AccessScope): Promise<AccountTestSession | undefined> {
@@ -615,6 +711,19 @@ export async function heartbeatAccountTestSessionAsync(id: string, access?: Acce
   return getAccountTestSessionAsync(row.id, access)
 }
 
+export async function completeAccountTestSessionAsync(id: string, access?: AccessScope): Promise<AccountTestSession | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return completeAccountTestSession(id, access)
+  }
+  const client = await accountTestTaskDatabaseClient()
+  const row = await getAccountTestSessionRowAsync(client, id)
+  if (!row || !canReadAccountTestSession(row, access)) {
+    return undefined
+  }
+  await completeAccountTestSessionIfSettledAsync(client, row.id)
+  return getAccountTestSessionAsync(row.id, access)
+}
+
 export async function cancelAccountTestSessionAsync(id: string, access?: AccessScope, message = '已停止测试'): Promise<{ session: AccountTestSession; taskIds: string[] } | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return cancelAccountTestSession(id, access, message)
@@ -629,25 +738,12 @@ export async function cancelAccountTestSessionAsync(id: string, access?: AccessS
   return session ? { session, taskIds } : undefined
 }
 
-export async function cancelExpiredAccountTestSessionsAsync(limit = 200): Promise<string[]> {
+export async function completeIdleAccountTestSessionsAsync(limit = 200): Promise<number> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return cancelExpiredAccountTestSessions(limit)
+    return completeIdleAccountTestSessions(limit)
   }
   const client = await accountTestTaskDatabaseClient()
-  const cutoff = new Date(Date.now() - accountTestSessionStaleMs).toISOString()
-  const rows = await client.query<AccountTestSessionRow>(`
-    SELECT *
-    FROM ${accountTestTable(client, 'account_test_sessions')}
-    WHERE status = 'running'
-      AND last_heartbeat_at < ?
-    ORDER BY last_heartbeat_at ASC, id ASC
-    LIMIT ?
-  `, [cutoff, Math.max(1, Math.trunc(limit))])
-  const taskIds: string[] = []
-  for (const row of rows) {
-    taskIds.push(...await cancelAccountTestSessionByRowAsync(client, row, '前端测试窗口已关闭，任务已取消', 'expired'))
-  }
-  return taskIds
+  return completeIdleAccountTestSessionsWithClientAsync(client, limit)
 }
 
 export async function createAccountTestTaskAsync(input: CreateAccountTestTaskInput): Promise<AccountTestTask> {
@@ -768,9 +864,8 @@ export async function listRunnableAccountTestTaskIdsAsync(limit = 100): Promise<
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listRunnableAccountTestTaskIds(limit)
   }
-  await cancelExpiredAccountTestSessionsAsync()
+  await completeIdleAccountTestSessionsAsync()
   const client = await accountTestTaskDatabaseClient()
-  const heartbeatCutoff = new Date(Date.now() - accountTestSessionStaleMs).toISOString()
   const rows = await client.query<{ id: string }>(`
     SELECT t.id
     FROM ${accountTestTable(client, 'account_test_tasks')} t
@@ -779,11 +874,11 @@ export async function listRunnableAccountTestTaskIdsAsync(limit = 100): Promise<
     WHERE t.status = 'queued'
       AND (
         st.session_id IS NULL
-        OR (s.status = 'running' AND s.last_heartbeat_at >= ?)
+        OR s.status = 'running'
       )
     ORDER BY t.queued_at ASC, t.id ASC
     LIMIT ?
-  `, [heartbeatCutoff, Math.max(1, Math.trunc(limit))])
+  `, [Math.max(1, Math.trunc(limit))])
   return rows.map((row) => row.id)
 }
 
@@ -791,12 +886,11 @@ export async function failExpiredQueuedAccountTestTasksAsync(maxQueuedMs: number
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return failExpiredQueuedAccountTestTasks(maxQueuedMs, limit)
   }
-  await cancelExpiredAccountTestSessionsAsync()
+  await completeIdleAccountTestSessionsAsync()
   const client = await accountTestTaskDatabaseClient()
   const safeMaxQueuedMs = Math.max(1, Math.trunc(maxQueuedMs))
   const safeLimit = Math.max(1, Math.trunc(limit))
   const queuedCutoff = new Date(Date.now() - safeMaxQueuedMs).toISOString()
-  const heartbeatCutoff = new Date(Date.now() - accountTestSessionStaleMs).toISOString()
   const rows = await client.query<{ id: string }>(`
     SELECT t.id
     FROM ${accountTestTable(client, 'account_test_tasks')} t
@@ -807,11 +901,11 @@ export async function failExpiredQueuedAccountTestTasksAsync(maxQueuedMs: number
       AND t.queued_at < ?
       AND (
         st.session_id IS NULL
-        OR (s.status = 'running' AND s.last_heartbeat_at >= ?)
+        OR s.status = 'running'
       )
     ORDER BY t.queued_at ASC, t.id ASC
     LIMIT ?
-  `, [queuedCutoff, heartbeatCutoff, safeLimit])
+  `, [queuedCutoff, safeLimit])
   const taskIds = rows.map((row) => row.id)
   if (taskIds.length === 0) {
     return []
@@ -1109,6 +1203,79 @@ async function getAccountTestSessionRowAsync(client: DatabaseClient, id: string)
   `, [normalizedId])
 }
 
+async function listAccountTestSessionTasksAsync(client: DatabaseClient, sessionId: string, access?: AccessScope, options: AccountTestReadOptions = {}): Promise<AccountTestTask[]> {
+  const rows = await client.query<AccountTestTaskRow>(`
+    SELECT t.*, st.session_id
+    FROM ${accountTestTable(client, 'account_test_session_tasks')} st
+    JOIN ${accountTestTable(client, 'account_test_tasks')} t ON t.id = st.task_id
+    WHERE st.session_id = ?
+    ORDER BY t.queued_at ASC, t.id ASC
+  `, [sessionId])
+  return rows
+    .filter((row) => canReadAccountTestTask(row, access, options))
+    .map(accountTestTaskFromRow)
+}
+
+async function accountTestSessionDetailFromRowAsync(client: DatabaseClient, row: AccountTestSessionRow, access?: AccessScope, options: AccountTestReadOptions = {}): Promise<AccountTestSessionDetail> {
+  return {
+    session: accountTestSessionFromRow(row),
+    tasks: await listAccountTestSessionTasksAsync(client, row.id, access, options)
+  }
+}
+
+async function completeAccountTestSessionIfSettledAsync(client: DatabaseClient, sessionId: string): Promise<boolean> {
+  const now = nowIso()
+  const result = await client.execute(`
+    UPDATE ${accountTestTable(client, 'account_test_sessions')}
+    SET status = 'completed',
+        finished_at = COALESCE(finished_at, ?),
+        updated_at = ?
+    WHERE id = ?
+      AND status = 'running'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM ${accountTestTable(client, 'account_test_session_tasks')} st
+        JOIN ${accountTestTable(client, 'account_test_tasks')} t ON t.id = st.task_id
+        WHERE st.session_id = ?
+          AND t.status IN ('queued', 'running')
+      )
+  `, [now, now, sessionId, sessionId])
+  return Number(result.changes ?? 0) > 0
+}
+
+async function completeIdleAccountTestSessionsWithClientAsync(client: DatabaseClient, limit = 200, access?: AccessScope): Promise<number> {
+  const cutoff = new Date(Date.now() - accountTestSessionIdleCompleteMs).toISOString()
+  const scopeClause = access ? 'AND request_system_account_id = ?' : ''
+  const params = access
+    ? [cutoff, access.systemAccountId, Math.max(1, Math.trunc(limit))]
+    : [cutoff, Math.max(1, Math.trunc(limit))]
+  const rows = await client.query<AccountTestSessionRow>(`
+    SELECT *
+    FROM ${accountTestTable(client, 'account_test_sessions')}
+    WHERE status = 'running'
+      AND last_heartbeat_at < ?
+      ${scopeClause}
+      AND NOT EXISTS (
+        SELECT 1
+        FROM ${accountTestTable(client, 'account_test_session_tasks')} st
+        JOIN ${accountTestTable(client, 'account_test_tasks')} t ON t.id = st.task_id
+        WHERE st.session_id = ${accountTestTable(client, 'account_test_sessions')}.id
+          AND t.status IN ('queued', 'running')
+      )
+    ORDER BY last_heartbeat_at ASC, id ASC
+    LIMIT ?
+  `, params)
+  let completed = 0
+  for (const row of rows) {
+    completed += await completeAccountTestSessionIfSettledAsync(client, row.id) ? 1 : 0
+  }
+  return completed
+}
+
+function completeIdleAccountTestSessionsForAccessAsync(client: DatabaseClient, access: AccessScope): Promise<number> {
+  return completeIdleAccountTestSessionsWithClientAsync(client, accountTestCleanupBatchSize, access)
+}
+
 async function assertUsableAccountTestSessionAsync(client: DatabaseClient, id: string, access: AccessScope): Promise<void> {
   const row = await getAccountTestSessionRowAsync(client, id)
   if (!row || !canReadAccountTestSession(row, access)) {
@@ -1208,9 +1375,14 @@ function getAccountTestSessionRow(id: string): AccountTestSessionRow | undefined
   `).get(normalizedId) as unknown as AccountTestSessionRow | undefined
 }
 
-function canReadAccountTestTask(row: AccountTestTaskRow, access?: AccessScope): boolean {
+interface AccountTestReadOptions {
+  ownerOnly?: boolean
+}
+
+function canReadAccountTestTask(row: AccountTestTaskRow, access?: AccessScope, options: AccountTestReadOptions = {}): boolean {
   if (!access) return true
   if (row.request_system_account_id !== access.systemAccountId) return false
+  if (options.ownerOnly) return true
   const rowFilterId = normalizedOptionalText(row.request_system_account_filter_id)
   const accessFilterId = normalizedOptionalText(access.systemAccountFilterId)
   return rowFilterId === accessFilterId
@@ -1260,6 +1432,46 @@ function accountTestSessionFromRow(row: AccountTestSessionRow): AccountTestSessi
     createdAt: row.created_at,
     updatedAt: row.updated_at
   }
+}
+
+function listAccountTestSessionTasks(sessionId: string, access?: AccessScope, options: AccountTestReadOptions = {}): AccountTestTask[] {
+  const rows = getBusinessDatabase().prepare(`
+    SELECT t.*, st.session_id
+    FROM account_test_session_tasks st
+    JOIN account_test_tasks t ON t.id = st.task_id
+    WHERE st.session_id = ?
+    ORDER BY t.queued_at ASC, t.id ASC
+  `).all(sessionId) as unknown as AccountTestTaskRow[]
+  return rows
+    .filter((row) => canReadAccountTestTask(row, access, options))
+    .map(accountTestTaskFromRow)
+}
+
+function accountTestSessionDetailFromRow(row: AccountTestSessionRow, access?: AccessScope, options: AccountTestReadOptions = {}): AccountTestSessionDetail {
+  return {
+    session: accountTestSessionFromRow(row),
+    tasks: listAccountTestSessionTasks(row.id, access, options)
+  }
+}
+
+function completeAccountTestSessionIfSettled(sessionId: string): boolean {
+  const now = nowIso()
+  const result = getBusinessDatabase().prepare(`
+    UPDATE account_test_sessions
+    SET status = 'completed',
+        finished_at = COALESCE(finished_at, ?),
+        updated_at = ?
+    WHERE id = ?
+      AND status = 'running'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM account_test_session_tasks st
+        JOIN account_test_tasks t ON t.id = st.task_id
+        WHERE st.session_id = ?
+          AND t.status IN ('queued', 'running')
+      )
+  `).run(now, now, sessionId, sessionId)
+  return Number(result.changes ?? 0) > 0
 }
 
 function accountTestSessionStatus(value: string): AccountTestSessionStatus {
@@ -1362,17 +1574,10 @@ function accountTestSessionCancelReason(row: AccountTestSessionRow): string | un
     return row.cancel_reason ?? '已停止测试'
   }
   if (row.status === 'expired') {
-    return row.cancel_reason ?? '前端测试窗口已关闭，任务已取消'
+    return row.cancel_reason ?? '账户测试会话已过期'
   }
   if (row.status !== 'running') {
     return row.cancel_reason ?? '账户测试会话已结束'
-  }
-  const heartbeatAt = Date.parse(row.last_heartbeat_at)
-  if (!Number.isFinite(heartbeatAt)) {
-    return '前端测试窗口已关闭，任务已取消'
-  }
-  if (Date.now() - heartbeatAt > accountTestSessionStaleMs) {
-    return '前端测试窗口已关闭，任务已取消'
   }
   return undefined
 }

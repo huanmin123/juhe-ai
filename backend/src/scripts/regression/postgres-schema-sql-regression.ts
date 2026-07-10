@@ -38,6 +38,8 @@ for (const schemaName of schemaNames) {
 
 assert.match(sql, /CREATE TABLE IF NOT EXISTS system_accounts/, '应包含业务库 schema')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS audit_logs/, '应包含数据集库 schema')
+assert.match(sql, /audit_logs[\s\S]+model_mapping_applied integer NOT NULL DEFAULT 0[\s\S]+model_mapping_source text[\s\S]+source_endpoint_family text[\s\S]+upstream_endpoint_family text/, 'PG 审计日志必须包含模型映射可观测字段')
+assert.match(sql, /audit_log_attempts[\s\S]+attempt_model_mapping_applied integer NOT NULL DEFAULT 0[\s\S]+attempt_model_mapping_source text[\s\S]+attempt_source_endpoint_family text[\s\S]+attempt_upstream_endpoint_family text/, 'PG 审计尝试表必须包含每次尝试的模型映射可观测字段')
 assert.match(sql, /audit_logs[\s\S]+raw_payload_bytes bigint NOT NULL DEFAULT 0[\s\S]+compressed_payload_bytes bigint NOT NULL DEFAULT 0[\s\S]+compression_saved_bytes bigint NOT NULL DEFAULT 0/, 'PG 审计日志 payload 字节累计字段必须使用 bigint')
 assert.match(sql, /audit_payload_blobs[\s\S]+raw_size_bytes bigint NOT NULL DEFAULT 0[\s\S]+compressed_size_bytes bigint NOT NULL DEFAULT 0/, 'PG 审计 payload blob 大小字段必须使用 bigint')
 assert.match(sql, /public_api_logs[\s\S]+request_size_bytes bigint NOT NULL DEFAULT 0[\s\S]+response_size_bytes bigint NOT NULL DEFAULT 0/, 'PG 公开接口日志请求/响应大小字段必须使用 bigint')
@@ -47,6 +49,7 @@ assert.match(sql, /CREATE TABLE IF NOT EXISTS usage_records/, '应包含使用�
 assert.match(usageRecordsCreateSql, /PRIMARY KEY \(created_at, id\)[\s\S]+\) PARTITION BY RANGE \(created_at\)/, 'PG 使用记录主表必须按 created_at 日范围分区，主键必须包含分区键')
 assert.doesNotMatch(usageRecordsCreateSql, /\bid text PRIMARY KEY\b/, 'PG 使用记录分区父表不能保留只包含 id 的主键')
 assert.match(sql, /usage_records[\s\S]+failure_attribution text/, '使用记录主表建表语句应直接包含失败归因字段')
+assert.match(sql, /usage_records[\s\S]+model_mapping_applied integer NOT NULL DEFAULT 0[\s\S]+model_mapping_source text[\s\S]+source_endpoint_family text[\s\S]+upstream_endpoint_family text/, 'PG 使用记录主表必须包含模型映射可观测字段')
 assert.match(sql, /usage_records[\s\S]+input_audio_tokens integer[\s\S]+output_audio_tokens integer[\s\S]+output_image_count integer/, '使用记录主表建表语句应包含音频 token 和输出图片数量字段')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS usage_stats_totals/, '应包含统计库 schema')
 assert.match(sql, /usage_stats_totals[\s\S]+request_count bigint NOT NULL DEFAULT 0[\s\S]+input_tokens bigint NOT NULL DEFAULT 0[\s\S]+duration_ms_sum bigint NOT NULL DEFAULT 0/, 'PG 统计累计字段必须使用 bigint，避免生产聚合溢出')

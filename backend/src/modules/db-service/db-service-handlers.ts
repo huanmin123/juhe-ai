@@ -4,10 +4,10 @@ import { runtimeConfig } from '../../config/runtime.js'
 import {
   accountTestTaskCancelMessage,
   accountTestTaskCancelMessageAsync,
-  cancelExpiredAccountTestSessions,
-  cancelExpiredAccountTestSessionsAsync,
   cleanupExpiredAccountTestTasks,
   cleanupExpiredAccountTestTasksAsync,
+  completeIdleAccountTestSessions,
+  completeIdleAccountTestSessionsAsync,
   completeAccountTestTask,
   completeAccountTestTaskAsync,
   failAccountTestTask,
@@ -1006,9 +1006,10 @@ async function handleAccountTestTaskMaintenanceAsync(
   operation: Extract<DbServiceOperation, { type: 'account_test_task_maintenance' }>
 ): Promise<{ taskIds: string[]; canceledTaskIds: string[]; expiredQueuedTaskIds: string[] }> {
   await cleanupExpiredAccountTestTasksAsync()
-  const canceledTaskIds = operation.action === 'start' || operation.action === 'sweep'
-    ? await cancelExpiredAccountTestSessionsAsync()
-    : []
+  if (operation.action === 'start' || operation.action === 'sweep') {
+    await completeIdleAccountTestSessionsAsync()
+  }
+  const canceledTaskIds: string[] = []
   const expiredQueuedTaskIds = operation.action === 'sweep'
     ? await failExpiredQueuedAccountTestTasksAsync(operation.maxQueuedMs ?? 10 * 60_000, operation.sweepLimit ?? 500)
     : []
@@ -1444,9 +1445,10 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       })
     case 'account_test_task_maintenance': {
       cleanupExpiredAccountTestTasks()
-      const canceledTaskIds = operation.action === 'start' || operation.action === 'sweep'
-        ? cancelExpiredAccountTestSessions()
-        : []
+      if (operation.action === 'start' || operation.action === 'sweep') {
+        completeIdleAccountTestSessions()
+      }
+      const canceledTaskIds: string[] = []
       const expiredQueuedTaskIds = operation.action === 'sweep'
         ? failExpiredQueuedAccountTestTasks(operation.maxQueuedMs ?? 10 * 60_000, operation.sweepLimit ?? 500)
         : []

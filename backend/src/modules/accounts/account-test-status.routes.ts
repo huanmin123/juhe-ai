@@ -3,7 +3,9 @@ import type { Router } from 'express'
 import { badRequest, ok } from '../../shared/http.js'
 import { queryTextList } from '../../shared/query-values.js'
 import {
+  getActiveAccountTestSessionDetailAsync,
   getAccountTestSessionAsync,
+  getAccountTestSessionDetailAsync,
   getAccountTestTaskAsync,
   listAccountTestTasksAsync
 } from '../../storage/account-test-tasks.repository.js'
@@ -11,6 +13,24 @@ import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 
 export function registerAccountTestStatusRoutes(router: Router): void {
+  router.get('/test-sessions/active', async (req, res, next) => {
+    const scopeQuery = parseRequestScopeQuery(req.query)
+    if (!scopeQuery.success) {
+      res.status(400).json(badRequest(scopeQuery.message))
+      return
+    }
+    try {
+      const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+      if (!requestAccess) {
+        res.status(403).json({ message: '缺少系统账户上下文' })
+        return
+      }
+      res.json(ok(await getActiveAccountTestSessionDetailAsync(requestAccess) ?? null))
+    } catch (error) {
+      next(error)
+    }
+  })
+
   router.get('/test-tasks', async (req, res, next) => {
     const scopeQuery = parseRequestScopeQuery(req.query)
     if (!scopeQuery.success) {
@@ -40,6 +60,25 @@ export function registerAccountTestStatusRoutes(router: Router): void {
         return
       }
       res.json(ok(session))
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  router.get('/test-sessions/:sessionId/tasks', async (req, res, next) => {
+    const scopeQuery = parseRequestScopeQuery(req.query)
+    if (!scopeQuery.success) {
+      res.status(400).json(badRequest(scopeQuery.message))
+      return
+    }
+    try {
+      const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+      const detail = await getAccountTestSessionDetailAsync(req.params.sessionId, requestAccess)
+      if (!detail) {
+        res.status(404).json({ message: '账户测试会话不存在' })
+        return
+      }
+      res.json(ok(detail.tasks))
     } catch (error) {
       next(error)
     }

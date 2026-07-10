@@ -42,6 +42,13 @@ export type GatewayProbeResult = {
   json?: Record<string, unknown>
   outputText?: string
   model?: string
+  requestModel?: string
+  expectedModel?: string
+  upstreamModel?: string
+  modelMappingApplied?: boolean
+  modelMappingSource?: string
+  sourceEndpointFamily?: string
+  upstreamEndpointFamily?: string
   usage?: Record<string, unknown>
   errorMessage?: string
   upstreamStatusCode?: number
@@ -126,7 +133,7 @@ export function evaluateBasicProtocolProbe(result: GatewayProbeResult, model: st
       expectedModel: model
     })
   }
-  const modelEvidence = buildModelMatchEvidence(result.model, model)
+  const modelEvidence = buildProbeModelMatchEvidence(result, result.model, model)
   const hasOutput = Boolean(result.outputText)
   const score = modelEvidence.modelMismatch
     ? (result.success ? 4 : 0) + (hasOutput ? 2 : 0)
@@ -162,7 +169,7 @@ export function evaluateProtocolStreamProbe(result: GatewayProbeResult, model: s
       firstTokenMs: result.firstTokenMs
     })
   }
-  const modelEvidence = buildModelMatchEvidence(result.model ?? modelFromSse(result.bodyText), model)
+  const modelEvidence = buildProbeModelMatchEvidence(result, result.model ?? modelFromSse(result.bodyText), model)
   const hasOutput = Boolean(result.outputText)
   const score = modelEvidence.modelMismatch
     ? (result.success ? 4 : 0) + (hasOutput ? 1 : 0)
@@ -186,7 +193,7 @@ export function evaluateStructuredOutputProbe(result: GatewayProbeResult, model:
   }
   const outputJson = parseFirstJsonObject(result.outputText)
   const valid = outputJson?.status === 'ok' && typeof outputJson.value === 'number'
-  const modelEvidence = buildModelMatchEvidence(result.model, model)
+  const modelEvidence = buildProbeModelMatchEvidence(result, result.model, model)
   const score = modelEvidence.modelMismatch
     ? (result.success ? 4 : 0) + (valid ? 1 : 0)
     : (result.success ? 8 : 0) + (modelEvidence.matchedModel ? 3 : 0) + (valid ? 4 : 0)
@@ -207,7 +214,7 @@ export function evaluateToolCallingProbe(result: GatewayProbeResult, model: stri
     })
   }
   const called = hasFunctionCall(result.json, 'record_model_check')
-  const modelEvidence = buildModelMatchEvidence(result.model, model)
+  const modelEvidence = buildProbeModelMatchEvidence(result, result.model, model)
   const score = modelEvidence.modelMismatch
     ? (result.success ? 4 : 0) + (called ? 1 : 0)
     : (result.success ? 8 : 0) + (modelEvidence.matchedModel ? 3 : 0) + (called ? 4 : 0)
@@ -249,7 +256,7 @@ export function evaluateUsageShapeProbe(results: GatewayProbeResult[], prefix: M
 
 export function evaluateBehaviorProbeSet(observations: BehaviorProbeObservation[], model: string, prefix: ModelCheckProbePrefix): ModelCheckItemCreateInput {
   const summaries = observations.map((observation) => {
-    const modelEvidence = buildModelMatchEvidence(observation.result.success ? observation.result.model : undefined, model)
+    const modelEvidence = buildProbeModelMatchEvidence(observation.result, observation.result.success ? observation.result.model : undefined, model)
     return {
       key: observation.definition.key,
       traceId: observation.result.traceId,
@@ -312,7 +319,7 @@ export function evaluateBehaviorProbeSet(observations: BehaviorProbeObservation[
 
 export function evaluateLongContextProbeSet(observations: LongContextProbeObservation[], model: string, prefix: ModelCheckProbePrefix): ModelCheckItemCreateInput {
   const summaries = observations.map((observation) => {
-    const modelEvidence = buildModelMatchEvidence(observation.result.success ? observation.result.model : undefined, model)
+    const modelEvidence = buildProbeModelMatchEvidence(observation.result, observation.result.success ? observation.result.model : undefined, model)
     return {
       key: observation.definition.key,
       targetInputTokens: observation.definition.targetInputTokens,
@@ -394,7 +401,7 @@ function longContextInputTokens(result: GatewayProbeResult): number | undefined 
 
 export function evaluateStabilityProbe(results: GatewayProbeResult[], model: string, prefix: ModelCheckProbePrefix): ModelCheckItemCreateInput {
   const observations = results.map((result) => {
-    const modelEvidence = buildModelMatchEvidence(result.success ? result.model : undefined, model)
+    const modelEvidence = buildProbeModelMatchEvidence(result, result.success ? result.model : undefined, model)
     return {
       traceId: result.traceId,
       ok: result.success && (result.outputText ?? '').toUpperCase().includes('VECTOR'),
@@ -460,8 +467,10 @@ export function evaluateCrossModelComparisonProbe(targetBasic: GatewayProbeResul
       pairedTraceId: pairedBasic.traceId
     })
   }
-  const targetEvidence = buildModelMatchEvidence(targetBasic?.model, model)
-  const pairedEvidence = buildModelMatchEvidence(pairedBasic.model, pairedModel)
+  const targetEvidence = targetBasic
+    ? buildProbeModelMatchEvidence(targetBasic, targetBasic.model, model)
+    : buildModelMatchEvidence(undefined, model)
+  const pairedEvidence = buildProbeModelMatchEvidence(pairedBasic, pairedBasic.model, pairedModel)
   const sameResponseModel = Boolean(
     targetEvidence.responseModel
     && pairedEvidence.responseModel
@@ -845,6 +854,32 @@ function requestFailureAggregate(totalProbeCount: number, scoringProbeCount: num
   }
 }
 
+function buildProbeModelMatchEvidence(result: GatewayProbeResult, actual: unknown, fallbackModel: string): ReturnType<typeof buildModelMatchEvidence> {
+  return buildModelMatchEvidence(actual, probeExpectedModel(result, fallbackModel), probeModelContext(result, fallbackModel))
+}
+
+function probeExpectedModel(result: GatewayProbeResult, fallbackModel: string): string {
+  return result.expectedModel ?? result.upstreamModel ?? fallbackModel
+}
+
+function probeModelContext(result: GatewayProbeResult, fallbackModel: string): {
+  requestModel?: string
+  upstreamModel?: string
+  modelMappingApplied?: boolean
+  modelMappingSource?: string
+  sourceEndpointFamily?: string
+  upstreamEndpointFamily?: string
+} {
+  return {
+    requestModel: result.requestModel ?? fallbackModel,
+    upstreamModel: result.upstreamModel,
+    modelMappingApplied: result.modelMappingApplied,
+    modelMappingSource: result.modelMappingSource,
+    sourceEndpointFamily: result.sourceEndpointFamily,
+    upstreamEndpointFamily: result.upstreamEndpointFamily
+  }
+}
+
 function requestFailureItem(
   itemKey: string,
   itemType: string,
@@ -889,6 +924,13 @@ function item(
   const evidenceSummary: Record<string, unknown> = {
     httpStatus: result.statusCode,
     success: result.success,
+    requestModel: result.requestModel,
+    expectedModel: result.expectedModel,
+    upstreamModel: result.upstreamModel,
+    modelMappingApplied: result.modelMappingApplied,
+    modelMappingSource: result.modelMappingSource,
+    sourceEndpointFamily: result.sourceEndpointFamily,
+    upstreamEndpointFamily: result.upstreamEndpointFamily,
     responseModel: result.model ?? evidenceResponseModel,
     firstTokenMs: result.firstTokenMs,
     upstreamStatusCode: result.upstreamStatusCode,
@@ -899,6 +941,13 @@ function item(
   }
   evidenceSummary.httpStatus = result.statusCode
   evidenceSummary.success = result.success
+  evidenceSummary.requestModel = result.requestModel
+  evidenceSummary.expectedModel = result.expectedModel
+  evidenceSummary.upstreamModel = result.upstreamModel
+  evidenceSummary.modelMappingApplied = result.modelMappingApplied
+  evidenceSummary.modelMappingSource = result.modelMappingSource
+  evidenceSummary.sourceEndpointFamily = result.sourceEndpointFamily
+  evidenceSummary.upstreamEndpointFamily = result.upstreamEndpointFamily
   evidenceSummary.responseModel = result.model ?? evidenceResponseModel
   evidenceSummary.firstTokenMs = result.firstTokenMs
   evidenceSummary.upstreamStatusCode = result.upstreamStatusCode

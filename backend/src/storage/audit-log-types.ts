@@ -1,4 +1,5 @@
 import type { AuditPayloadBlobStorageStatus } from './audit-log-payload-blobs.js'
+import type { AccountModelMappingSourceEndpointFamily, AccountModelMappingUpstreamEndpointFamily } from '../domain/types.js'
 
 export type { AuditPayloadBlobStorageStatus } from './audit-log-payload-blobs.js'
 
@@ -31,6 +32,13 @@ export interface AuditLogAttemptInput {
   groupId?: string
   proxyUrl?: string
   providerCode?: string
+  model?: string
+  upstreamModel?: string
+  pricingModel?: string
+  modelMappingApplied?: boolean
+  modelMappingSource?: string
+  sourceEndpointFamily?: AccountModelMappingSourceEndpointFamily
+  upstreamEndpointFamily?: AccountModelMappingUpstreamEndpointFamily
   upstreamMethod: string
   upstreamUrl: string
   upstreamStatusCode?: number
@@ -60,6 +68,8 @@ export interface AuditLogInput {
   pricingModel?: string
   modelMappingApplied?: boolean
   modelMappingSource?: string
+  sourceEndpointFamily?: AccountModelMappingSourceEndpointFamily
+  upstreamEndpointFamily?: AccountModelMappingUpstreamEndpointFamily
   stream?: boolean
   clientIp?: string
   userAgent?: string
@@ -102,6 +112,8 @@ export interface AuditLogSummary {
   pricingModel?: string
   modelMappingApplied?: boolean
   modelMappingSource?: string
+  sourceEndpointFamily?: AccountModelMappingSourceEndpointFamily
+  upstreamEndpointFamily?: AccountModelMappingUpstreamEndpointFamily
   stream: boolean
   clientIp?: string
   userAgent?: string
@@ -137,6 +149,13 @@ export interface AuditLogAttemptSummary {
   groupName?: string
   proxyUrl?: string
   providerCode?: string
+  model?: string
+  upstreamModel?: string
+  pricingModel?: string
+  modelMappingApplied?: boolean
+  modelMappingSource?: string
+  sourceEndpointFamily?: AccountModelMappingSourceEndpointFamily
+  upstreamEndpointFamily?: AccountModelMappingUpstreamEndpointFamily
   upstreamMethod: string
   upstreamUrl: string
   upstreamStatusCode?: number

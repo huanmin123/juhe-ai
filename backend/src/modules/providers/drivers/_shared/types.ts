@@ -4,6 +4,8 @@ import type { GatewayUpstreamResponse } from '../../../gateway/upstream/request.
 import type {
   AccountClientCompatibility,
   AccountModelMapping,
+  AccountModelMappingSourceEndpointFamily,
+  AccountModelMappingUpstreamEndpointFamily,
   ClientCompatibilityCapability,
   GatewayRequestEndpointFamily,
   AccountSupportedEndpointMode,
@@ -58,6 +60,8 @@ export interface ProviderUsageModelResolution {
   upstreamModel?: string
   modelMappingApplied: boolean
   modelMappingSource?: string
+  sourceEndpointFamily?: AccountModelMappingSourceEndpointFamily
+  upstreamEndpointFamily?: AccountModelMappingUpstreamEndpointFamily
 }
 
 export interface ProviderDriver {

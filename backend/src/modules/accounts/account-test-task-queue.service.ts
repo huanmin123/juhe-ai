@@ -491,7 +491,8 @@ async function testOpenAIDraftAccountWithDiagnosticRetries(
     systemAccountId: draft.ownerSystemAccountId,
     providerCode: draft.providerCode,
     providerProtocolProfileId: draft.providerProtocolProfileId,
-    supportedModels: draft.supportedModels
+    supportedModels: draft.supportedModels,
+    testEndpointMode: input.testEndpointMode
   })
   let candidateAccount: OpenAIAccountSecret | undefined
   let lastResult: AccountTestResult | undefined
@@ -624,7 +625,8 @@ async function runAccountApiKeyPoolTestIfNeeded(
     systemAccountId,
     providerCode: input.draftAccount?.providerCode,
     providerProtocolProfileId: input.draftAccount?.providerProtocolProfileId,
-    supportedModels: input.draftAccount?.supportedModels
+    supportedModels: input.draftAccount?.supportedModels,
+    testEndpointMode: input.testEndpointMode
   })
 
   input.onStatusMessage?.(accountApiKeyPoolProgressMessage(0, entries.length, 0, 0))

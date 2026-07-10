@@ -1,12 +1,19 @@
 import type { DistributionProbeDefinition, LongContextProbeDefinition } from './model-checks.probes.js'
 import type { ModelCheckProbeProtocol } from './model-checks.profiles.js'
+import type { AccountModelMappingSourceEndpointFamily, AccountModelMappingUpstreamEndpointFamily } from '../../domain/types.js'
 import { estimateTokenCountFromText } from '../gateway/protocols/openai-v1/stream-events.js'
 
 export interface ModelCheckProbeRequest {
   path: string
   body: Record<string, unknown>
   responseProtocol: ModelCheckProbeProtocol
+  requestModel?: string
   expectedModel: string
+  upstreamModel?: string
+  modelMappingApplied?: boolean
+  modelMappingSource?: string
+  sourceEndpointFamily?: AccountModelMappingSourceEndpointFamily
+  upstreamEndpointFamily?: AccountModelMappingUpstreamEndpointFamily
 }
 
 export function createModelCheckProbeRequest(

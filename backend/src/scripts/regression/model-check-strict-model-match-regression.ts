@@ -20,6 +20,8 @@ mkdirSync(tempRoot, { recursive: true })
 
 const responseModel = 'gpt-5.4-mini-2026-03-17'
 const targetModel = 'gpt-5.4'
+const mappedRequestModel = 'gpt-5.5'
+const mappedUpstreamModel = 'gpt-5.6-sol'
 const upstream = createMockUpstream()
 let stopGatewayJsonParseWorker: (() => Promise<void>) | undefined
 
@@ -28,10 +30,12 @@ try {
   const [
     { createMockGatewayFixture },
     { runModelCheck },
+    repositories,
     gatewayJsonParser
   ] = await Promise.all([
     import('../maintenance/mockdata/fixtures.js'),
     import('../../modules/model-checks/model-checks.service.js'),
+    import('../../storage/repositories.js'),
     import('../../modules/gateway/request/json-parser.js')
   ])
   stopGatewayJsonParseWorker = gatewayJsonParser.stopGatewayJsonParseWorker
@@ -40,11 +44,13 @@ try {
     label: '模型检测严格模型匹配',
     upstreamBaseUrl: `http://127.0.0.1:${serverPort(upstream)}/v1`,
     systemAccountId: 'sys_admin',
-    accountCount: 1,
+    accountCount: 2,
     createApiKey: false
   })
   const account = fixture.accounts[0]
+  const mappedAccount = fixture.accounts[1]
   assert(account, 'mock fixture should create an account')
+  assert(mappedAccount, 'mock fixture should create a mapped account')
 
   const detail = await runModelCheck({
     targetType: 'account',
@@ -67,7 +73,39 @@ try {
   )
   assert(!JSON.stringify(detail).includes('sk-mockdata'), '检测报告不应泄露上游 API Key')
 
-  console.log('模型检测严格模型匹配回归通过：gpt-5.4-mini 不会被误判为 gpt-5.4')
+  const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
+  repositories.updateAccount(mappedAccount.id, {
+    supportedModels: [mappedUpstreamModel],
+    modelMappings: [{
+      sourceModel: mappedRequestModel,
+      sourceEndpointFamily: 'responses',
+      upstreamModel: mappedUpstreamModel,
+      upstreamEndpointFamily: 'responses',
+      enabled: true
+    }]
+  }, access)
+  const mappedDetail = await runModelCheck({
+    targetType: 'account',
+    targetId: mappedAccount.id,
+    model: mappedRequestModel,
+    profile: 'full',
+    trustedComparison: false
+  }, access)
+  assert.equal(mappedDetail.status, 'completed')
+  assert.equal(
+    mappedDetail.checks.some((item) => item.itemKey.startsWith('target.') && item.evidenceSummary.modelMismatch === true),
+    false,
+    '合法模型映射不应被模型检测误判为返回模型不一致'
+  )
+  const mappedBasic = mappedDetail.checks.find((item) => item.itemKey === 'target.responses_basic')
+  assert(mappedBasic, '映射模型检测应生成基础 Responses 检测项')
+  assert.equal(mappedBasic.evidenceSummary.requestModel, mappedRequestModel, '模型检测证据应保留请求模型')
+  assert.equal(mappedBasic.evidenceSummary.upstreamModel, mappedUpstreamModel, '模型检测证据应保留实际上游模型')
+  assert.equal(mappedBasic.evidenceSummary.expectedModel, mappedUpstreamModel, '映射命中后应按实际上游模型校验返回模型')
+  assert.equal(mappedBasic.evidenceSummary.responseModel, mappedUpstreamModel, '映射命中后应保存上游返回模型')
+  assert.equal(mappedBasic.evidenceSummary.modelMappingApplied, true, '模型检测证据应明确标记模型映射已命中')
+
+  console.log('模型检测严格模型匹配回归通过：变体模型不会冒充目标模型，合法模型映射按实际上游模型校验')
 } finally {
   await stopGatewayJsonParseWorker?.()
   await closeServer(upstream)
@@ -91,10 +129,11 @@ function createMockUpstream(): http.Server {
       }
       if (req.method === 'POST' && url.pathname === '/v1/responses') {
         const outputText = outputForProbe(body)
+        const actualResponseModel = responseModelForBody(body)
         if (body.stream === true) {
-          sendStream(res, outputText)
+          sendStream(res, outputText, actualResponseModel)
         } else {
-          sendJson(res, responsePayload(body, outputText))
+          sendJson(res, responsePayload(body, outputText, actualResponseModel))
         }
         return
       }
@@ -104,13 +143,13 @@ function createMockUpstream(): http.Server {
   })
 }
 
-function responsePayload(body: Record<string, unknown>, outputText: string): Record<string, unknown> {
+function responsePayload(body: Record<string, unknown>, outputText: string, actualResponseModel: string): Record<string, unknown> {
   const hasTool = Array.isArray(body.tools)
   return {
     id: 'resp_model_check_strict_match',
     object: 'response',
     status: 'completed',
-    model: responseModel,
+    model: actualResponseModel,
     output: hasTool
       ? [{
           type: 'function_call',
@@ -131,7 +170,7 @@ function responsePayload(body: Record<string, unknown>, outputText: string): Rec
   }
 }
 
-function sendStream(res: http.ServerResponse, outputText: string): void {
+function sendStream(res: http.ServerResponse, outputText: string, actualResponseModel: string): void {
   res.writeHead(200, {
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-cache',
@@ -142,7 +181,7 @@ function sendStream(res: http.ServerResponse, outputText: string): void {
     type: 'response.completed',
     response: {
       status: 'completed',
-      model: responseModel,
+      model: actualResponseModel,
       usage: {
         input_tokens: 8,
         output_tokens: 3,
@@ -151,6 +190,10 @@ function sendStream(res: http.ServerResponse, outputText: string): void {
     }
   })}\n\n`)
   res.end()
+}
+
+function responseModelForBody(body: Record<string, unknown>): string {
+  return body.model === mappedUpstreamModel ? mappedUpstreamModel : responseModel
 }
 
 function outputForProbe(body: Record<string, unknown>): string {

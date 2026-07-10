@@ -3,8 +3,16 @@
     <span class="cost-cell">{{ formatCost(displayCostUsd) }}</span>
     <a-popover v-if="hasCostDetails" trigger="hover" placement="right" overlay-class-name="cost-popover">
       <template #content>
-        <div class="cost-detail-panel">
-          <div class="cost-detail-title">{{ detailTitle }}</div>
+          <div class="cost-detail-panel">
+            <div class="cost-detail-title">{{ detailTitle }}</div>
+          <template v-if="metadataRows.length">
+            <div class="cost-detail-section-title">模型口径</div>
+            <div v-for="row in metadataRows" :key="row.key" class="cost-detail-row">
+              <span>{{ row.label }}</span>
+              <span class="cost-detail-value">{{ row.value }}</span>
+            </div>
+          </template>
+          <div v-if="metadataRows.length && tokenDetailRows.length" class="cost-detail-divider"></div>
           <template v-if="tokenDetailRows.length">
             <div class="cost-detail-section-title">Token 明细</div>
             <div v-for="row in tokenDetailRows" :key="row.key" class="cost-detail-row">
@@ -38,6 +46,7 @@ import {
   usageRecordCostAmountRows,
   usageRecordCostDetailTitle,
   usageRecordHasCostDetails,
+  usageRecordCostMetadataRows,
   usageRecordCostPriceRows,
   usageRecordCostTokenRows
 } from './usageRecordCostDetails'
@@ -50,6 +59,7 @@ const props = defineProps<{
 const costBreakdown = computed(() => props.record.costBreakdown)
 const displayCostUsd = computed(() => props.record.costUsd ?? costBreakdown.value?.accountChargeUsd)
 const detailTitle = computed(() => usageRecordCostDetailTitle(props.record))
+const metadataRows = computed(() => usageRecordCostMetadataRows(props.record))
 const tokenDetailRows = computed(() => usageRecordCostTokenRows(props.record))
 const costAmountRows = computed(() => usageRecordCostAmountRows(props.record))
 const unitPriceRows = computed(() => usageRecordCostPriceRows(props.record))

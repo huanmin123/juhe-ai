@@ -129,7 +129,9 @@ export const hybridProviderDriver: ProviderDriver = {
     return {
       upstreamModel: mapping?.upstreamModel ?? requestedModel,
       modelMappingApplied: Boolean(mapping),
-      modelMappingSource: mapping ? mapping.runtimeSource ?? 'account' : undefined
+      modelMappingSource: mapping ? mapping.runtimeSource ?? 'account' : undefined,
+      sourceEndpointFamily: mapping?.sourceEndpointFamily,
+      upstreamEndpointFamily: mapping?.upstreamEndpointFamily
     }
   },
   buildUpstreamUrls(account, req) {

@@ -157,6 +157,13 @@ export type ModelCheckProgressEvent = {
   statusCode: number
   success: boolean
   durationMs: number
+  requestModel?: string
+  expectedModel?: string
+  upstreamModel?: string
+  modelMappingApplied?: boolean
+  modelMappingSource?: string
+  sourceEndpointFamily?: string
+  upstreamEndpointFamily?: string
   responseModel?: string
   outputPreview?: string
 } | {

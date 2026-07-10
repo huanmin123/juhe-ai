@@ -1,6 +1,12 @@
 import type { Request } from 'express'
 
-import type { AccountSummary, AccountTestResult, AccountUsageSummary } from '../../../domain/types.js'
+import type {
+  AccountModelMappingSourceEndpointFamily,
+  AccountModelMappingUpstreamEndpointFamily,
+  AccountSummary,
+  AccountTestResult,
+  AccountUsageSummary
+} from '../../../domain/types.js'
 import {
   requestModel
 } from '../request/metadata.js'
@@ -26,6 +32,11 @@ export interface CodexSwitchProbeResult {
   message: string
   traceId?: string
   model?: string
+  upstreamModel?: string
+  modelMappingApplied?: boolean
+  modelMappingSource?: string
+  sourceEndpointFamily?: AccountModelMappingSourceEndpointFamily
+  upstreamEndpointFamily?: AccountModelMappingUpstreamEndpointFamily
 }
 
 export async function probeCodexSwitchCandidateAccount(
@@ -126,7 +137,12 @@ function codexSwitchProbeResultFromAccountTest(
     errorCode: result.success ? undefined : result.errorCode ?? probeErrorCode(result.statusCode),
     message: result.success ? 'Codex 切号真实账号测试通过' : probeFailureMessage(result),
     traceId: result.traceId,
-    model: result.model
+    model: result.model,
+    upstreamModel: result.upstreamModel,
+    modelMappingApplied: result.modelMappingApplied,
+    modelMappingSource: result.modelMappingSource,
+    sourceEndpointFamily: result.sourceEndpointFamily,
+    upstreamEndpointFamily: result.upstreamEndpointFamily
   }
 }
 

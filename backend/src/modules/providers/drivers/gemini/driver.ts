@@ -81,7 +81,9 @@ export const geminiProviderDriver: ProviderDriver = {
       return {
         upstreamModel: mapping.upstreamModel,
         modelMappingApplied: true,
-        modelMappingSource: mapping.runtimeSource ?? 'account'
+        modelMappingSource: mapping.runtimeSource ?? 'account',
+        sourceEndpointFamily: mapping.sourceEndpointFamily,
+        upstreamEndpointFamily: mapping.upstreamEndpointFamily
       }
     }
     return {

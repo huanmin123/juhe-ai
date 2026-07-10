@@ -24,6 +24,7 @@ const backgroundIpcSource = readFileSync(resolve(backendSrc, 'modules/background
 const frontendAccountTestModalSource = readFileSync(resolve(projectRoot, 'frontend/src/views/accounts/useAccountTestModal.ts'), 'utf8')
 const frontendAccountTestTaskPollingSource = readFileSync(resolve(projectRoot, 'frontend/src/views/accounts/accountTestTaskPolling.ts'), 'utf8')
 const frontendAccountTestSessionClientSource = readFileSync(resolve(projectRoot, 'frontend/src/views/accounts/accountTestSessionClient.ts'), 'utf8')
+const frontendAccountTestRunSessionSource = readFileSync(resolve(projectRoot, 'frontend/src/views/accounts/accountTestRunSession.ts'), 'utf8')
 const frontendAccountBatchExecutionSource = readFileSync(resolve(projectRoot, 'frontend/src/views/accounts/accountBatchExecution.ts'), 'utf8')
 const frontendAccountTestModalComponentSource = readFileSync(resolve(projectRoot, 'frontend/src/views/accounts/AccountTestModal.vue'), 'utf8')
 const frontendAccountTestDisplayFormattersSource = readFileSync(resolve(projectRoot, 'frontend/src/views/accounts/accountTestDisplayFormatters.ts'), 'utf8')
@@ -326,8 +327,14 @@ assert.doesNotMatch(
 assert(
   accountTestSessionRoutesSource.includes("router.post('/test-sessions'")
     && accountTestSessionRoutesSource.includes("router.post('/test-sessions/:sessionId/heartbeat'")
+    && accountTestSessionRoutesSource.includes("router.post('/test-sessions/:sessionId/complete'")
     && accountTestSessionRoutesSource.includes("router.post('/test-sessions/:sessionId/cancel'"),
-  '账号测试应提供 session 创建、心跳和批量取消接口'
+  '账号测试应提供 session 创建、心跳、正常完成和手动批量取消接口'
+)
+assert(
+  accountTestSessionRoutesSource.includes('AccountTestSessionConflictError')
+    && accountTestSessionRoutesSource.includes('res.status(409).json'),
+  '同一用户存在未完成测试 session 时，后端应拒绝创建下一个测试并返回活动 session'
 )
 assert(
   !accountsRoutesSource.includes("accountsRouter.post('/test-sessions'")
@@ -337,14 +344,19 @@ assert(
   '账号测试 session 写入路由不应继续放在账户主路由文件中'
 )
 assert(
-  accountTestStatusRoutesSource.includes("router.get('/test-sessions/:sessionId'"),
-  '账号测试状态子路由应提供 session 查询接口'
+  accountTestStatusRoutesSource.includes("router.get('/test-sessions/active'")
+    && accountTestStatusRoutesSource.includes("router.get('/test-sessions/:sessionId'")
+    && accountTestStatusRoutesSource.includes("router.get('/test-sessions/:sessionId/tasks'"),
+  '账号测试状态子路由应提供活动 session、session 详情和 session 任务查询接口'
 )
 assert(
   accountTestTaskRepositorySource.includes('account_test_sessions')
-    && accountTestTaskRepositorySource.includes('cancelExpiredAccountTestSessions')
-    && accountTestTaskRepositorySource.includes('前端测试窗口已关闭，任务已取消'),
-  '账号测试任务应支持前端关闭后的 session 过期取消'
+    && accountTestTaskRepositorySource.includes('completeIdleAccountTestSessions')
+    && accountTestTaskRepositorySource.includes('getActiveAccountTestSessionDetail')
+    && !accountTestTaskRepositorySource.includes('cancelExpiredAccountTestSessions')
+    && !accountTestTaskRepositorySource.includes('accountTestSessionStaleMs')
+    && !accountTestTaskRepositorySource.includes('前端测试窗口已关闭，任务已取消'),
+  '账号测试 session 不应因前端心跳中断取消后台任务，只能在任务全部结束后空闲收口'
 )
 assert(
   accountTestTaskRepositorySource.includes('AND cancel_requested = 1')
@@ -493,25 +505,34 @@ assert(
 assert(
   frontendAccountTestModalSource.includes('createAccountTestSession')
     && frontendAccountTestModalSource.includes('startAccountTestSessionHeartbeat')
-    && frontendAccountTestModalSource.includes('cancelAccountTestRunSession'),
-  '前端测试弹窗应创建测试 session、保持心跳，并在停止或关闭时批量取消 session'
+    && frontendAccountTestModalSource.includes('cancelAccountTestRunSession')
+    && frontendAccountTestModalSource.includes('completeAccountTestRunSession'),
+  '前端测试弹窗应创建测试 session、保持心跳，显式停止或切换时取消旧 session，正常完成时结束 session'
 )
 assert(
   frontendAccountTestModalSource.includes('interface AccountTestRunContext')
     && frontendAccountTestModalSource.includes('activeTestRun === run')
     && frontendAccountTestModalSource.includes('detachActiveAccountTestRun()')
+    && frontendAccountTestModalSource.includes('let pendingTestRunDetach: Promise<void> | undefined')
+    && frontendAccountTestModalSource.includes('await previousDetach')
     && frontendAccountTestModalSource.includes('activeTestRun = undefined')
     && frontendAccountTestModalSource.includes('run.tasks.set(task.id, account)')
     && !frontendAccountTestModalSource.includes('const activeAccountTestTasks = new Map')
     && !frontendAccountTestModalSource.includes('let accountTestAbortController'),
-  '前端测试运行状态必须按弹窗运行隔离，关闭 A 后应立即允许 B 启动且旧 A 结果不能污染 B'
+  '前端测试运行状态必须按弹窗运行隔离，关闭 A 后应等待旧 session 取消再启动 B，且旧 A 结果不能污染 B'
 )
 assert(
-  frontendAccountTestModalSource.includes('beforeunload')
-    && frontendAccountTestModalSource.includes('sendCancelAccountTestSessionOnUnload')
-    && frontendAccountTestSessionClientSource.includes('navigator.sendBeacon')
-    && frontendAccountTestSessionClientSource.includes('keepalive: true'),
-  '前端刷新或关闭页面时应使用 sendBeacon / keepalive 兜底取消测试 session'
+  !frontendAccountTestModalSource.includes('beforeunload')
+    && !frontendAccountTestModalSource.includes('onDeactivated(stopAccountTest)')
+    && frontendAccountTestModalSource.includes('restoreAccountTestRunSession')
+    && frontendAccountTestModalSource.includes('persistAccountTestRunSession')
+    && frontendAccountTestModalSource.includes('completeAccountTestRunSession')
+    && !frontendAccountTestModalSource.includes('onBeforeUnmount(() => {\n    stopAccountTest()')
+    && !frontendAccountTestModalComponentSource.includes('停止并关闭')
+    && frontendAccountTestModalComponentSource.includes('停止测试')
+    && frontendAccountTestRunSessionSource.includes('window.sessionStorage')
+    && frontendAccountTestRunSessionSource.includes('12 * 60 * 60 * 1000'),
+  '前端刷新、切换菜单或关闭浏览器时不应取消后台 session，并应通过 sessionStorage 恢复 12 小时内的运行状态'
 )
 assert(
   frontendAccountTestSessionClientSource.includes('api.accounts.testDraft')

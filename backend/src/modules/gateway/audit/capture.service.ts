@@ -26,6 +26,10 @@ import {
   type OpenAIGatewayTrafficSource
 } from '../usage/traffic-source.js'
 import { OPENAI_PROTOCOL_CODE } from '../../../domain/provider-protocol.js'
+import type {
+  AccountModelMappingSourceEndpointFamily,
+  AccountModelMappingUpstreamEndpointFamily
+} from '../../../domain/types.js'
 import { resolveCatalogPricingModel } from '../../model-pricing/model-catalog.service.js'
 import { resolveGatewayUsageModel } from '../../providers/drivers/registry.js'
 import { gatewayRequestEndpointFamily } from '../protocols/openai-v1/model-mapping.js'
@@ -51,6 +55,8 @@ interface AuditGatewayContext {
   pricingModel?: string
   modelMappingApplied?: boolean
   modelMappingSource?: string
+  sourceEndpointFamily?: AccountModelMappingSourceEndpointFamily
+  upstreamEndpointFamily?: AccountModelMappingUpstreamEndpointFamily
   trafficSource?: OpenAIGatewayTrafficSource
 }
 
@@ -268,8 +274,10 @@ export class AuditCaptureContext {
   startAttempt(input: StartAttemptInput): string {
     if (!this.enabled) return ''
     const accountingRequest = input.requestForModelAccounting ?? this.req
+    const requestedModel = requestModel(accountingRequest)
+    const accounting = auditModelAccounting(input.account, requestedModel, this.gatewayContext.systemAccountId, gatewayRequestEndpointFamily(accountingRequest))
     this.bindContext({ providerCode: input.account.providerCode })
-    this.bindContext(auditModelAccounting(input.account, requestModel(accountingRequest), this.gatewayContext.systemAccountId, gatewayRequestEndpointFamily(accountingRequest)))
+    this.bindContext(accounting)
     const tempId = `attempt_${input.attemptIndex}_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`
     const startedAtMs = Date.now()
     const attempt: AuditLogAttemptInput = {
@@ -281,6 +289,13 @@ export class AuditCaptureContext {
       groupId: this.gatewayContext.groupId,
       proxyUrl: sanitizeUrlCredentialsForLog(input.account.proxyUrl),
       providerCode: input.account.providerCode,
+      model: requestedModel,
+      upstreamModel: accounting.upstreamModel,
+      pricingModel: accounting.pricingModel,
+      modelMappingApplied: accounting.modelMappingApplied,
+      modelMappingSource: accounting.modelMappingSource,
+      sourceEndpointFamily: accounting.sourceEndpointFamily,
+      upstreamEndpointFamily: accounting.upstreamEndpointFamily,
       upstreamMethod: input.method,
       upstreamUrl: sanitizeUrlCredentialsForLog(input.upstreamUrl) ?? 'unknown',
       startedAt: new Date(startedAtMs).toISOString()
@@ -344,8 +359,10 @@ export class AuditCaptureContext {
   recordFailedDispatchAttempt(input: FailedDispatchAttemptInput): string {
     if (!this.enabled) return ''
     const accountingRequest = input.requestForModelAccounting ?? this.req
+    const requestedModel = requestModel(accountingRequest)
+    const accounting = auditModelAccounting(input.account, requestedModel, this.gatewayContext.systemAccountId, gatewayRequestEndpointFamily(accountingRequest))
     this.bindContext({ providerCode: input.account.providerCode })
-    this.bindContext(auditModelAccounting(input.account, requestModel(accountingRequest), this.gatewayContext.systemAccountId, gatewayRequestEndpointFamily(accountingRequest)))
+    this.bindContext(accounting)
     const tempId = `attempt_${input.attemptIndex}_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`
     const endedAtMs = Date.now()
     const sanitizedUpstreamUrl = sanitizeUrlCredentialsForLog(input.upstreamUrl) ?? input.upstreamUrl.trim()
@@ -358,6 +375,13 @@ export class AuditCaptureContext {
       groupId: this.gatewayContext.groupId,
       proxyUrl: sanitizeUrlCredentialsForLog(input.account.proxyUrl),
       providerCode: input.account.providerCode,
+      model: requestedModel,
+      upstreamModel: accounting.upstreamModel,
+      pricingModel: accounting.pricingModel,
+      modelMappingApplied: accounting.modelMappingApplied,
+      modelMappingSource: accounting.modelMappingSource,
+      sourceEndpointFamily: accounting.sourceEndpointFamily,
+      upstreamEndpointFamily: accounting.upstreamEndpointFamily,
       upstreamMethod: input.method,
       upstreamUrl: sanitizedUpstreamUrl || 'unknown',
       upstreamStatusCode: input.statusCode,
@@ -439,6 +463,8 @@ export class AuditCaptureContext {
       pricingModel: this.gatewayContext.pricingModel,
       modelMappingApplied: this.gatewayContext.modelMappingApplied,
       modelMappingSource: this.gatewayContext.modelMappingSource,
+      sourceEndpointFamily: this.gatewayContext.sourceEndpointFamily,
+      upstreamEndpointFamily: this.gatewayContext.upstreamEndpointFamily,
       stream: requestStream(this.req),
       clientIp: this.clientIp,
       userAgent: this.req.header('user-agent'),
@@ -544,7 +570,7 @@ function auditModelAccounting(
   requestedModel: string | undefined,
   fallbackSystemAccountId: string | undefined,
   sourceEndpointFamily: ReturnType<typeof gatewayRequestEndpointFamily>
-): Pick<AuditGatewayContext, 'upstreamModel' | 'pricingModel' | 'modelMappingApplied' | 'modelMappingSource'> {
+): Pick<AuditGatewayContext, 'upstreamModel' | 'pricingModel' | 'modelMappingApplied' | 'modelMappingSource' | 'sourceEndpointFamily' | 'upstreamEndpointFamily'> {
   const resolved = resolveGatewayUsageModel(account, requestedModel, sourceEndpointFamily)
   const upstreamModel = resolved.upstreamModel ?? requestedModel
   const catalogSystemAccountId = account.accountOwnerSystemAccountId || fallbackSystemAccountId
@@ -558,7 +584,9 @@ function auditModelAccounting(
       })
       : undefined,
     modelMappingApplied: resolved.modelMappingApplied,
-    modelMappingSource: resolved.modelMappingSource
+    modelMappingSource: resolved.modelMappingSource,
+    sourceEndpointFamily: resolved.sourceEndpointFamily,
+    upstreamEndpointFamily: resolved.upstreamEndpointFamily
   }
 }
 

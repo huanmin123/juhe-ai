@@ -24,7 +24,7 @@ const seenResponsesPayloads: Record<string, unknown>[] = []
 const providerDefaultTestModel = 'gpt-5.6-sol'
 
 const [
-  { resolveAccountTestModelAsync, testOpenAIAccount },
+  { resolveAccountTestModelAsync, testOpenAIAccount, testOpenAIAccountWithDiagnosticRetries },
   { flushGatewayAccountSideEffects },
   { flushAllUsageRecordQueue, setDbServiceUsageRecordLocalWriteAllowedForTest },
   databaseModule,
@@ -180,6 +180,48 @@ try {
   assert.equal(defaultModelTested.model, providerDefaultTestModel, '未显式指定测试模型时，应使用供应商默认测试模型而不是最近真实请求模型')
   assert.equal(seenResponsesPayloads.at(-1)?.model, providerDefaultTestModel, '未显式指定测试模型时，上游请求应使用供应商默认测试模型')
 
+  const mappedSourceModel = 'gpt-5.5'
+  const mappedAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: '测试 Responses 模型映射账户',
+    type: 'api_key',
+    groupId: group.id,
+    supportedModels: [providerDefaultTestModel],
+    modelMappings: [
+      {
+        sourceModel: 'gpt-5.4',
+        sourceEndpointFamily: 'chat_completions',
+        upstreamModel: providerDefaultTestModel,
+        upstreamEndpointFamily: 'chat_completions',
+        enabled: true
+      },
+      {
+        sourceModel: mappedSourceModel,
+        sourceEndpointFamily: 'responses',
+        upstreamModel: providerDefaultTestModel,
+        upstreamEndpointFamily: 'responses',
+        enabled: true
+      }
+    ],
+    credentials: { api_key: 'sk-account-test-mapped-model', base_url: mockBaseUrl }
+  }, access)
+  assert.equal(
+    await resolveAccountTestModelAsync(mappedAccount, { sourceFamilies: ['responses'] }),
+    mappedSourceModel,
+    '系统复测应通过统一解析器优先使用可命中的映射左侧请求模型'
+  )
+  const mappedModelTested = await testOpenAIAccountWithDiagnosticRetries(mappedAccount, { testEndpointMode: 'responses_sse' })
+  await flushGatewayAccountSideEffects()
+  flushAllUsageRecordQueue()
+  assert.equal(mappedModelTested.success, true, `模型映射账户测试应成功：${mappedModelTested.message}`)
+  assert.equal(mappedModelTested.model, mappedSourceModel, '账户测试结果 model 应保留用户请求模型')
+  assert.equal(mappedModelTested.upstreamModel, providerDefaultTestModel, '账户测试结果应返回实际上游模型')
+  assert.equal(mappedModelTested.modelMappingApplied, true, '账户测试结果应明确标记模型映射已命中')
+  assert.equal(mappedModelTested.sourceEndpointFamily, 'responses', '账户测试结果应返回映射来源协议族')
+  assert.equal(mappedModelTested.upstreamEndpointFamily, 'responses', '账户测试结果应返回映射上游协议族')
+  assert.equal(seenResponsesPayloads.at(-1)?.model, providerDefaultTestModel, '模型映射账户的真实上游请求应改写为映射右侧模型')
+
   const bindingUser = repositories.createSystemAccount({
     username: 'account_test_binding_user',
     displayName: '账户测试授权绑定用户',
@@ -262,7 +304,7 @@ try {
   assert.equal(systemFallbackTested.success, true, `系统默认回退账户测试应成功：${systemFallbackTested.message}`)
   assert.equal(systemFallbackTested.model, providerDefaultTestModel, '用户默认不受账户支持时应回退账户协议档案系统默认')
 
-  console.log('账户测试 Responses 当前契约回归通过：显式 testEndpointMode 生效，API Key 测试不发送 max_output_tokens')
+  console.log('账户测试 Responses 当前契约回归通过：显式 testEndpointMode、模型映射、账户/用户/系统默认优先级和 API Key payload 均符合预期')
 } finally {
   setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   await closeServer(mockOpenAIServer)

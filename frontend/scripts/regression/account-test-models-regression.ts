@@ -22,6 +22,7 @@ const accountsViewPath = resolve(frontendRoot, 'src/views/accounts/AccountsView.
 const accountListDataPath = resolve(frontendRoot, 'src/views/accounts/useAccountListData.ts')
 const accountDraftTestPayloadPath = resolve(frontendRoot, 'src/views/accounts/accountDraftTestPayload.ts')
 const accountEditTestActionPath = resolve(frontendRoot, 'src/views/accounts/useAccountEditTestAction.ts')
+const accountTestRunSessionPath = resolve(frontendRoot, 'src/views/accounts/accountTestRunSession.ts')
 
 const accountTestModalSource = readFileSync(accountTestModalPath, 'utf8')
 const accountTestModelsSource = readFileSync(accountTestModelsPath, 'utf8')
@@ -29,6 +30,7 @@ const accountsViewSource = readFileSync(accountsViewPath, 'utf8')
 const accountListDataSource = readFileSync(accountListDataPath, 'utf8')
 const accountDraftTestPayloadSource = readFileSync(accountDraftTestPayloadPath, 'utf8')
 const accountEditTestActionSource = readFileSync(accountEditTestActionPath, 'utf8')
+const accountTestRunSessionSource = readFileSync(accountTestRunSessionPath, 'utf8')
 const detachActiveAccountTestRunStart = accountTestModalSource.indexOf('function detachActiveAccountTestRun')
 const detachActiveAccountTestRunSource = accountTestModalSource.slice(
   detachActiveAccountTestRunStart,
@@ -53,6 +55,8 @@ assertIncludes(accountTestModalSource, 'const run = beginAccountTestRun()', '单
 assertIncludes(accountTestModalSource, 'activeTestRun === run', '旧账户测试结果只能在仍是当前运行时更新界面')
 assertIncludes(accountTestModalSource, 'detachActiveAccountTestRun()', '关闭或切换测试弹窗时应立即脱离旧运行')
 assertIncludes(accountTestModalSource, 'activeTestRun = undefined', '关闭旧账户弹窗后应立即释放全局运行门闩')
+assertIncludes(accountTestModalSource, 'let pendingTestRunDetach: Promise<void> | undefined', '关闭 A 后打开 B 必须等待旧 session 取消完成')
+assertIncludes(detachActiveAccountTestRunSource, 'await previousDetach', '新账户弹窗不能在旧 session 取消完成前创建下一次测试 session')
 assertBefore(
   detachActiveAccountTestRunSource,
   'activeTestRun = undefined',
@@ -87,6 +91,10 @@ assertNotIncludes(accountTestModalSource, 'supportedModelsWithSuccessfulSavedDra
 assertNotIncludes(accountTestModalSource, 'api.accounts.update(', '测试成功持久化不能通过通用账户更新覆盖完整支持模型列表')
 assertIncludes(accountTestModalSource, 'successfulSavedDraftUpdateTest.value = {', '编辑草稿测试成功后应保留激活任务快照')
 assertIncludes(accountTestModalSource, 'model: successfulModel', '新增和编辑草稿测试快照都必须记录实际成功模型')
+assertNotIncludes(accountTestModalSource, 'beforeunload', '刷新或关闭页面时不应通过 unload 取消仍在后台执行的测试')
+assertIncludes(accountTestModalSource, 'restoreAccountTestRunSession', '刷新页面后应恢复当前用户自己的测试 session')
+assertIncludes(accountTestModalSource, 'persistAccountTestRunSession', '测试进度应写入当前页面会话以支持恢复')
+assertIncludes(accountTestRunSessionSource, 'window.sessionStorage', '测试运行快照应按浏览器 session 隔离存储')
 assertIncludes(accountsViewSource, '@update:model="updateAccountTestModel"', '账户页应把测试模型选择事件交给当前测试输入处理')
 assertNotIncludes(accountsViewSource, 'v-model:model="testForm.model"', '账户页不应继续仅通过临时 v-model 保存测试模型')
 assertIncludes(accountsViewSource, 'applyAccountDefaultTestModel,', '账户页应把账户级乐观更新回写列表')
@@ -174,11 +182,18 @@ assertDeepEqual(
 assertDeepEqual(
   optionValues(buildTestModelOptions([
     accountFixture({ id: 'acct_batch_limited_a', supportedModels: ['gpt-5.5', 'gpt-5.4'], defaultTestModel: 'gpt-5.5' }),
-    accountFixture({ id: 'acct_batch_limited_b', supportedModels: ['gpt-5.5', 'gpt-4.1'], defaultTestModel: 'gpt-5.5' }),
-    accountFixture({ id: 'acct_batch_unrestricted' })
+    accountFixture({ id: 'acct_batch_limited_b', supportedModels: ['gpt-5.5', 'gpt-4.1'], defaultTestModel: 'gpt-5.5' })
   ], 'gpt-5.4-mini')),
   ['gpt-5.5'],
-  '批量测试包含模型限制账户时，下拉应只展示所有受限账户共同支持的模型'
+  '批量测试下拉应只展示所有账户共同支持的模型'
+)
+assertDeepEqual(
+  optionValues(buildTestModelOptions([
+    accountFixture({ id: 'acct_batch_supported', supportedModels: ['gpt-5.5'] }),
+    accountFixture({ id: 'acct_batch_missing_supported_models' })
+  ], 'gpt-5.5')),
+  [],
+  '批量测试中任一账户没有支持模型时不能借用其他账户或供应商目录候选'
 )
 
 const accountA = accountFixture({

@@ -3,6 +3,7 @@ import {
   usageRecordCostAmountRows,
   usageRecordCostDetailTitle,
   usageRecordHasCostDetails,
+  usageRecordCostMetadataRows,
   usageRecordCostPriceRows,
   usageRecordCostTokenRows
 } from '../../views/usage-records/usageRecordCostDetails'
@@ -191,6 +192,24 @@ assertArrayEqual(rowTexts(usageRecordCostTokenRows(openAICacheWriteTokenOnlyReco
   '缓存写入 Tokens 42'
 ], '没有成本拆解但有缓存写入 Token 时仍应生成成本明细 Token 行')
 assertTrue(usageRecordHasCostDetails(openAICacheWriteTokenOnlyRecord), '没有成本拆解但有缓存写入 Token 时仍应展示成本明细浮层')
+
+const mappedCostRecord = usageRecordFixture({
+  model: 'gpt-5.5',
+  upstreamModel: 'gpt-5.6-terra',
+  pricingModel: 'gpt-5.6-terra',
+  modelMappingApplied: true,
+  modelMappingSource: 'account',
+  sourceEndpointFamily: 'responses',
+  upstreamEndpointFamily: 'responses'
+})
+assertArrayEqual(rowTexts(usageRecordCostMetadataRows(mappedCostRecord)), [
+  '请求模型 gpt-5.5',
+  '实际上游模型 gpt-5.6-terra',
+  '计价模型 gpt-5.6-terra',
+  '映射来源 账户配置',
+  '协议映射 responses -> responses'
+], '成本明细应展示请求模型、实际上游模型、计价模型、映射来源和协议族')
+assertTrue(usageRecordHasCostDetails(mappedCostRecord), '只有模型映射元数据时也应允许查看成本明细')
 
 console.log('使用记录 Token 与成本明细 formatter 回归通过：列表三项展示和供应商成本明细均符合预期')
 
