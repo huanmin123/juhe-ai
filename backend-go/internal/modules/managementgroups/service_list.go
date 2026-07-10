@@ -19,6 +19,8 @@ const (
 	maxListPageSize       = 500
 	maxListWindowRowCount = 1000
 
+	maxListAccountConcurrencyBatchSize = 100
+
 	maxRequestQuotaHourlyWindowHours = 24 * 30
 	maxRequestQuotaAmountUSD         = 9007199254740991
 	requestQuotaAmountPrecision      = 1000000
@@ -130,6 +132,9 @@ func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error)
 
 type managementGroupListEnrichment struct {
 	accountStatsByGroup       map[string]port.ManagementGroupAccountStatsRow
+	accountIDsByOwnedGroup    map[string][]string
+	currentConcurrencyByID    map[string]int
+	accountConcurrencyReady   bool
 	totalUsageByKey           map[string]port.ManagementAccountUsageSummary
 	todayUsageByKey           map[string]port.ManagementAccountUsageSummary
 	sourceSummaryByAuth       map[string]AuthorizationSourceSummary
@@ -143,10 +148,14 @@ func (s *Service) loadManagementGroupListEnrichment(
 	now time.Time,
 ) (managementGroupListEnrichment, error) {
 	groupIDs := make([]string, 0, len(rows))
+	ownedGroupIDs := make([]string, 0, len(rows))
 	usageInputs := make([]port.ManagementGroupUsageLookupInput, 0, len(rows))
 	authorizationIDs := make([]string, 0, len(rows))
 	enrichment := managementGroupListEnrichment{
 		accountStatsByGroup:       make(map[string]port.ManagementGroupAccountStatsRow, len(rows)),
+		accountIDsByOwnedGroup:    make(map[string][]string, len(rows)),
+		currentConcurrencyByID:    make(map[string]int),
+		accountConcurrencyReady:   true,
 		totalUsageByKey:           make(map[string]port.ManagementAccountUsageSummary, len(rows)),
 		todayUsageByKey:           make(map[string]port.ManagementAccountUsageSummary, len(rows)),
 		sourceSummaryByAuth:       make(map[string]AuthorizationSourceSummary),
@@ -172,6 +181,7 @@ func (s *Service) loadManagementGroupListEnrichment(
 			continue
 		}
 		groupID := strings.TrimSpace(row.ID)
+		ownedGroupIDs = append(ownedGroupIDs, groupID)
 		enrichment.usageKeyByOwnedGroupID[groupID] = groupID
 		usageInputs = append(usageInputs, port.ManagementGroupUsageLookupInput{
 			Key:             groupID,
@@ -179,6 +189,39 @@ func (s *Service) loadManagementGroupListEnrichment(
 			ScopeType:       "group",
 			ScopeID:         groupID,
 		})
+	}
+
+	if len(ownedGroupIDs) > 0 {
+		accountIDRows, err := s.listStore.ListManagementGroupAccountIDs(ctx, ownedGroupIDs)
+		if err != nil {
+			return managementGroupListEnrichment{}, err
+		}
+		accountIDs := make([]string, 0, len(accountIDRows))
+		for _, row := range accountIDRows {
+			groupID := strings.TrimSpace(row.GroupID)
+			accountID := strings.TrimSpace(row.AccountID)
+			if groupID == "" || accountID == "" {
+				continue
+			}
+			enrichment.accountIDsByOwnedGroup[groupID] = append(
+				enrichment.accountIDsByOwnedGroup[groupID],
+				accountID,
+			)
+			accountIDs = append(accountIDs, accountID)
+		}
+		accountIDs = uniqueStrings(accountIDs, len(accountIDs))
+		if len(accountIDs) > 0 {
+			if s.accountConcurrency == nil {
+				enrichment.accountConcurrencyReady = false
+			} else {
+				currentConcurrency, err := s.loadManagementGroupListAccountConcurrency(ctx, accountIDs, now)
+				if err != nil {
+					enrichment.accountConcurrencyReady = false
+				} else {
+					enrichment.currentConcurrencyByID = currentConcurrency
+				}
+			}
+		}
 	}
 
 	statsRows, err := s.listStore.ListManagementGroupAccountStats(ctx, groupIDs)
@@ -218,6 +261,29 @@ func (s *Service) loadManagementGroupListEnrichment(
 	}
 	enrichment.sourceSummaryByAuth = summarizeManagementGroupAuthorizationSources(sourceRows)
 	return enrichment, nil
+}
+
+func (s *Service) loadManagementGroupListAccountConcurrency(
+	ctx context.Context,
+	accountIDs []string,
+	now time.Time,
+) (map[string]int, error) {
+	result := make(map[string]int, len(accountIDs))
+	for start := 0; start < len(accountIDs); start += maxListAccountConcurrencyBatchSize {
+		end := min(start+maxListAccountConcurrencyBatchSize, len(accountIDs))
+		values, err := s.accountConcurrency.LoadAccountCurrentConcurrencyByIDs(
+			ctx,
+			accountIDs[start:end],
+			now,
+		)
+		if err != nil {
+			return nil, err
+		}
+		for accountID, value := range values {
+			result[accountID] = max(0, value)
+		}
+	}
+	return result, nil
 }
 
 func (s *Service) managementGroupListStatDate(ctx context.Context, now time.Time) (string, error) {
@@ -289,9 +355,22 @@ func managementGroupListResult(items []ListItem, page int, pageSize int, hasMore
 		Page:     page,
 		PageSize: pageSize,
 		RuntimeSnapshot: RuntimeSnapshot{
-			AccountConcurrencyAvailable: true,
+			AccountConcurrencyAvailable: managementGroupListAccountConcurrencyAvailable(items),
 		},
 	}
+}
+
+func managementGroupListAccountConcurrencyAvailable(items []ListItem) bool {
+	for _, item := range items {
+		if item.AccessType != "owner" ||
+			item.AccountStats.CurrentConcurrencyAvailable == nil {
+			continue
+		}
+		if !*item.AccountStats.CurrentConcurrencyAvailable {
+			return false
+		}
+	}
+	return true
 }
 
 func managementGroupListItem(
@@ -333,6 +412,22 @@ func managementGroupListItem(
 		accountCount = 0
 		isDefault = false
 	}
+	accountStats := managementGroupAccountStats(
+		statsRow,
+		enrichment.todayUsageByKey[usageKey],
+		enrichment.totalUsageByKey[usageKey],
+	)
+	if accessType != "authorized" {
+		accountIDs := enrichment.accountIDsByOwnedGroup[row.ID]
+		available := len(accountIDs) == 0 || enrichment.accountConcurrencyReady
+		accountStats.CurrentConcurrencyAvailable = &available
+		if len(accountIDs) > 0 && enrichment.accountConcurrencyReady {
+			accountStats.CurrentConcurrency = sumManagementGroupAccountConcurrency(
+				accountIDs,
+				enrichment.currentConcurrencyByID,
+			)
+		}
+	}
 	item := ListItem{
 		ID:                         row.ID,
 		OwnerSystemAccountID:       row.SystemAccountID,
@@ -344,7 +439,7 @@ func managementGroupListItem(
 		IsDefault:                  isDefault,
 		GroupType:                  groupType,
 		SchedulingPolicy:           schedulingPolicy,
-		AccountStats:               managementGroupAccountStats(statsRow, enrichment.todayUsageByKey[usageKey], enrichment.totalUsageByKey[usageKey]),
+		AccountStats:               accountStats,
 		AccessType:                 accessType,
 		GroupAuthorizationID:       row.GroupAuthorizationID,
 		AuthorizationStatus:        row.AuthorizationStatus,

@@ -142,16 +142,17 @@ type UsageSummary struct {
 }
 
 type GroupAccountStats struct {
-	Total              int          `json:"total"`
-	Available          int          `json:"available"`
-	Active             int          `json:"active"`
-	Disabled           int          `json:"disabled"`
-	Error              int          `json:"error"`
-	RateLimited        int          `json:"rateLimited"`
-	CurrentConcurrency int          `json:"currentConcurrency"`
-	ConcurrencyLimit   int          `json:"concurrencyLimit"`
-	TodayUsage         UsageSummary `json:"todayUsage"`
-	Usage              UsageSummary `json:"usage"`
+	Total                       int          `json:"total"`
+	Available                   int          `json:"available"`
+	Active                      int          `json:"active"`
+	Disabled                    int          `json:"disabled"`
+	Error                       int          `json:"error"`
+	RateLimited                 int          `json:"rateLimited"`
+	CurrentConcurrency          int          `json:"currentConcurrency"`
+	CurrentConcurrencyAvailable *bool        `json:"currentConcurrencyAvailable,omitempty"`
+	ConcurrencyLimit            int          `json:"concurrencyLimit"`
+	TodayUsage                  UsageSummary `json:"todayUsage"`
+	Usage                       UsageSummary `json:"usage"`
 }
 
 type Summary struct {

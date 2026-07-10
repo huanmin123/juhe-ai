@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -93,6 +94,10 @@ func TestListManagementGroupsUsesPageSizePlusOneAndMapsRows(t *testing.T) {
 func TestManagementGroupListBatchReadersUseBoundedArrayQueries(t *testing.T) {
 	lastUsedAt := "2026-07-11T01:02:03.456Z"
 	q := &managementGroupListQueriesStub{
+		accountIDRows: []postgresqueries.ListManagementGroupAccountIDsRow{
+			{GroupID: "group_1", AccountID: "account_1"},
+			{GroupID: "group_1", AccountID: "account_2"},
+		},
 		accountStatsRows: []postgresqueries.ListManagementGroupAccountStatsRow{
 			{
 				SystemAccountID:    "sys_owner",
@@ -147,6 +152,24 @@ func TestManagementGroupListBatchReadersUseBoundedArrayQueries(t *testing.T) {
 				SourceTeamName:  "Ops",
 			},
 		},
+	}
+
+	accountIDs, err := listManagementGroupAccountIDs(
+		context.Background(),
+		q,
+		[]string{" group_1 ", "", "group_1", "group_2"},
+	)
+	if err != nil {
+		t.Fatalf("listManagementGroupAccountIDs() error = %v", err)
+	}
+	if !reflect.DeepEqual(q.accountIDCalls, [][]string{{"group_1", "group_2"}}) {
+		t.Fatalf("account id calls = %#v", q.accountIDCalls)
+	}
+	if !reflect.DeepEqual(accountIDs, []port.ManagementGroupAccountIDRow{
+		{GroupID: "group_1", AccountID: "account_1"},
+		{GroupID: "group_1", AccountID: "account_2"},
+	}) {
+		t.Fatalf("account ids = %#v", accountIDs)
 	}
 
 	stats, err := listManagementGroupAccountStats(context.Background(), q, []string{" group_1 ", "", "group_1", "group_2"})
@@ -230,6 +253,14 @@ func TestManagementGroupUsageRejectsInvalidLastUsedAt(t *testing.T) {
 	}
 }
 
+func TestManagementGroupAccountIDReaderWrapsQueryErrors(t *testing.T) {
+	q := &managementGroupListQueriesStub{accountIDErr: errors.New("accounts failed")}
+	_, err := listManagementGroupAccountIDs(context.Background(), q, []string{"group_1"})
+	if err == nil || !strings.Contains(err.Error(), "list management group account ids") {
+		t.Fatalf("listManagementGroupAccountIDs() error = %v", err)
+	}
+}
+
 func TestManagementGroupUsageBatchIsBoundedAndKeepsArraysAligned(t *testing.T) {
 	inputs := make([]port.ManagementGroupUsageLookupInput, 0, maxManagementGroupListBatch+2)
 	for i := 0; i < maxManagementGroupListBatch+2; i++ {
@@ -266,6 +297,9 @@ type managementGroupListQueriesStub struct {
 	groupRows         []postgresqueries.ListManagementGroupsRow
 	groupErr          error
 	groupCalls        []postgresqueries.ListManagementGroupsParams
+	accountIDRows     []postgresqueries.ListManagementGroupAccountIDsRow
+	accountIDErr      error
+	accountIDCalls    [][]string
 	accountStatsRows  []postgresqueries.ListManagementGroupAccountStatsRow
 	accountStatsErr   error
 	accountStatsCalls [][]string
@@ -286,6 +320,14 @@ func (s *managementGroupListQueriesStub) ListManagementGroups(
 ) ([]postgresqueries.ListManagementGroupsRow, error) {
 	s.groupCalls = append(s.groupCalls, arg)
 	return s.groupRows, s.groupErr
+}
+
+func (s *managementGroupListQueriesStub) ListManagementGroupAccountIDs(
+	_ context.Context,
+	groupIDs []string,
+) ([]postgresqueries.ListManagementGroupAccountIDsRow, error) {
+	s.accountIDCalls = append(s.accountIDCalls, append([]string(nil), groupIDs...))
+	return s.accountIDRows, s.accountIDErr
 }
 
 func (s *managementGroupListQueriesStub) ListManagementGroupAccountStats(

@@ -1277,6 +1277,11 @@ type ManagementGroupAccountStatsRow struct {
 	ConcurrencyLimit   int
 }
 
+type ManagementGroupAccountIDRow struct {
+	GroupID   string
+	AccountID string
+}
+
 type ManagementGroupUsageLookupInput struct {
 	Key             string
 	SystemAccountID string
@@ -1355,6 +1360,10 @@ type ManagementGroupAccountStatsReader interface {
 	ListManagementGroupAccountStats(ctx context.Context, groupIDs []string) ([]ManagementGroupAccountStatsRow, error)
 }
 
+type ManagementGroupAccountIDReader interface {
+	ListManagementGroupAccountIDs(ctx context.Context, groupIDs []string) ([]ManagementGroupAccountIDRow, error)
+}
+
 type ManagementGroupUsageReader interface {
 	ListManagementGroupUsageTotals(ctx context.Context, inputs []ManagementGroupUsageLookupInput) ([]ManagementGroupUsageRow, error)
 	ListManagementGroupUsageDaily(ctx context.Context, statDate string, inputs []ManagementGroupUsageLookupInput) ([]ManagementGroupUsageRow, error)
@@ -1367,6 +1376,7 @@ type ManagementGroupAuthorizationSourceReader interface {
 type ManagementGroupListReader interface {
 	ManagementGroupListPageReader
 	ManagementGroupAccountStatsReader
+	ManagementGroupAccountIDReader
 	ManagementGroupUsageReader
 	ManagementGroupAuthorizationSourceReader
 }
