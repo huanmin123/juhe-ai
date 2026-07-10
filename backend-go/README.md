@@ -226,6 +226,7 @@ go run ./cmd/juhe-ai-maintenance w1a-public-settings-smoke
 
 ```powershell
 $env:JUHE_AI_POSTGRES_URL = 'postgres://juhe_ai:password@127.0.0.1:5432/juhe_ai?sslmode=disable'
+$env:JUHE_AI_REDIS_CACHE_URL = 'redis://127.0.0.1:6379/0'
 $env:JUHE_AI_REDIS_STATE_URL = 'redis://127.0.0.1:6379/1'
 $env:JUHE_AI_REDIS_QUEUE_URL = 'redis://127.0.0.1:6379/2'
 $env:JUHE_AI_REDIS_NAMESPACE = 'juhe-ai'
