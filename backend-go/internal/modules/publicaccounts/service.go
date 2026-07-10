@@ -168,6 +168,7 @@ type AddInput struct {
 	BaseURL                   string
 	APIKey                    string
 	SupportedModels           StringListValue
+	HealthCheckModel          *string
 	Status                    string
 	ConcurrencyLimit          *int
 	Priority                  *int
@@ -186,6 +187,7 @@ type UpdateInput struct {
 	BaseURL                   *string
 	APIKey                    *string
 	SupportedModels           StringListValue
+	HealthCheckModel          *string
 	Status                    *string
 	ConcurrencyLimit          *int
 	Priority                  *int
@@ -414,7 +416,11 @@ func (s *Service) addOnce(ctx context.Context, input AddInput) (AccountResponse,
 		if err := s.validateSupportedModelsInProviderCatalog(ctx, target.ID, input.ProviderCode, models); err != nil {
 			return err
 		}
-		healthCheckModel, err := normalizeAccountHealthCheckModel(profile.DefaultHealthCheckModel, models)
+		healthCheckModelSource := profile.DefaultHealthCheckModel
+		if input.HealthCheckModel != nil {
+			healthCheckModelSource = *input.HealthCheckModel
+		}
+		healthCheckModel, err := normalizeAccountHealthCheckModel(healthCheckModelSource, models)
 		if err != nil {
 			return err
 		}
@@ -505,21 +511,23 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 			}
 			next.AvailabilityScheduleJSON = scheduleJSON
 		}
+		credentialsChanged := false
 		if input.APIKey != nil || input.BaseURL != nil {
-			apiKey, baseURL, err := s.currentCredentials(current.CredentialsEncrypted)
+			credentials, currentAPIKey, currentBaseURL, err := s.currentCredentials(current.CredentialsEncrypted)
 			if err != nil {
 				return err
 			}
 			if input.APIKey != nil {
-				apiKey = *input.APIKey
+				credentials["api_key"] = *input.APIKey
 			}
 			if input.BaseURL != nil {
-				baseURL = *input.BaseURL
+				credentials["base_url"] = *input.BaseURL
 			}
-			credential, err := s.encryptedCredentials(apiKey, baseURL)
+			credential, err := s.encryptedCredentialMap(credentials)
 			if err != nil {
 				return err
 			}
+			credentialsChanged = credentials["api_key"] != currentAPIKey || credentials["base_url"] != currentBaseURL
 			next.CredentialsEncrypted = credential.Encrypted
 			next.CredentialFingerprint = credential.Fingerprint
 			next.CredentialMask = credential.Mask
@@ -537,10 +545,22 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 				return err
 			}
 		}
-		if _, err := normalizeAccountHealthCheckModel(current.HealthCheckModel, models); err != nil {
+		healthCheckModelSource := current.HealthCheckModel
+		if input.HealthCheckModel != nil {
+			healthCheckModelSource = *input.HealthCheckModel
+		}
+		healthCheckModel, err := normalizeAccountHealthCheckModel(healthCheckModelSource, models)
+		if err != nil {
 			return err
 		}
 		next.SupportedModels = models
+		healthCheckModelChanged := healthCheckModel != current.HealthCheckModel
+		next.HealthCheckModel = healthCheckModel
+		configurationChanged := credentialsChanged || supportedModelsChanged || healthCheckModelChanged
+		if configurationChanged && next.Status != port.PublicAccountStatusDisabled {
+			next.Status = port.PublicAccountStatusPendingTest
+			next.Schedulable = false
+		}
 		updated, ok, err := store.UpdatePublicAccount(ctx, port.PublicAccountUpdateInput{
 			ID:                       current.ID,
 			SystemAccountID:          current.SystemAccountID,
@@ -552,6 +572,9 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 			CredentialMask:           next.CredentialMask,
 			SupportedModels:          next.SupportedModels,
 			SupportedModelsChanged:   supportedModelsChanged,
+			HealthCheckModel:         next.HealthCheckModel,
+			HealthCheckModelChanged:  healthCheckModelChanged,
+			ConfigurationChanged:     configurationChanged,
 			Schedulable:              next.Schedulable,
 			AvailabilityScheduleJSON: next.AvailabilityScheduleJSON,
 			ConcurrencyLimit:         next.ConcurrencyLimit,
@@ -780,18 +803,26 @@ func (s *Service) assertAccountFilters(
 }
 
 func (s *Service) encryptedCredentials(apiKey string, baseURL string) (encryptedCredential, error) {
+	return s.encryptedCredentialMap(map[string]any{
+		"api_key":  apiKey,
+		"base_url": baseURL,
+	})
+}
+
+func (s *Service) encryptedCredentialMap(credentials map[string]any) (encryptedCredential, error) {
+	apiKey, _ := credentials["api_key"].(string)
 	apiKey = strings.TrimSpace(apiKey)
 	if apiKey == "" {
 		return encryptedCredential{}, ErrInvalidAPIKey
 	}
+	baseURL, _ := credentials["base_url"].(string)
 	baseURL, err := normalizeBaseURL(baseURL)
 	if err != nil {
 		return encryptedCredential{}, err
 	}
-	encrypted, err := s.codec.EncryptJSON(map[string]any{
-		"api_key":  apiKey,
-		"base_url": baseURL,
-	})
+	credentials["api_key"] = apiKey
+	credentials["base_url"] = baseURL
+	encrypted, err := s.codec.EncryptJSON(credentials)
 	if err != nil {
 		return encryptedCredential{}, fmt.Errorf("%w: %v", ErrCredentialCodecUnusable, err)
 	}
@@ -803,17 +834,22 @@ func (s *Service) encryptedCredentials(apiKey string, baseURL string) (encrypted
 	}, nil
 }
 
-func (s *Service) currentCredentials(encrypted string) (string, string, error) {
+func (s *Service) currentCredentials(encrypted string) (map[string]any, string, string, error) {
 	credentials, err := s.codec.DecryptJSON(encrypted)
 	if err != nil {
-		return "", "", fmt.Errorf("%w: %v", ErrCredentialCodecUnusable, err)
+		return nil, "", "", fmt.Errorf("%w: %v", ErrCredentialCodecUnusable, err)
 	}
 	apiKey, _ := credentials["api_key"].(string)
 	baseURL, _ := credentials["base_url"].(string)
 	if strings.TrimSpace(apiKey) == "" || strings.TrimSpace(baseURL) == "" {
-		return "", "", fmt.Errorf("%w: 当前账号凭据不完整", ErrInvalidCredentials)
+		return nil, "", "", fmt.Errorf("%w: 当前账号凭据不完整", ErrInvalidCredentials)
 	}
-	return apiKey, baseURL, nil
+	apiKey = strings.TrimSpace(apiKey)
+	baseURL, err = normalizeBaseURL(baseURL)
+	if err != nil {
+		return nil, "", "", err
+	}
+	return credentials, apiKey, baseURL, nil
 }
 
 func (s *Service) inTx(ctx context.Context, fn func(context.Context, port.PublicAccountStore) error) error {

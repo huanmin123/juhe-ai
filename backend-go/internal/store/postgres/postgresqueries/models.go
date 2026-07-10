@@ -44,6 +44,11 @@ type JuheBusinessAccount struct {
 	AuthorizationInstanceAuthorizationID      pgtype.Text
 	AuthorizationInstanceOwnerSystemAccountID pgtype.Text
 	ProxyProfileID                            pgtype.Text
+	NextHealthCheckAt                         pgtype.Timestamptz
+	HealthCheckFailureCount                   int32
+	LastHealthCheckStatusCode                 pgtype.Int4
+	LastHealthCheckErrorCode                  pgtype.Text
+	LastHealthCheckErrorMessage               pgtype.Text
 }
 
 type JuheBusinessAccountModelMapping struct {

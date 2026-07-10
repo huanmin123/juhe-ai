@@ -541,6 +541,9 @@ type PublicAccountUpdateInput struct {
 	CredentialMask           string
 	SupportedModels          []string
 	SupportedModelsChanged   bool
+	HealthCheckModel         string
+	HealthCheckModelChanged  bool
+	ConfigurationChanged     bool
 	Schedulable              bool
 	AvailabilityScheduleJSON *string
 	ConcurrencyLimit         int

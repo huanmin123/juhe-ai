@@ -1105,14 +1105,64 @@ SET name = $1,
     credentials_encrypted = $3,
     credential_fingerprint = $4,
     credential_mask = $5,
-    concurrency_limit = $6,
-    priority = $7,
-    schedulable = $8,
-    availability_schedule_json = $9,
-    notes = $10,
-    updated_at = $11
-WHERE id = $12
-  AND system_account_id = $13
+    health_check_model = $6,
+    concurrency_limit = $7,
+    priority = $8,
+    schedulable = $9,
+    availability_schedule_json = $10,
+    notes = $11,
+    cooldown_until = CASE
+      WHEN $12::boolean THEN NULL
+      ELSE cooldown_until
+    END,
+    last_error_code = CASE
+      WHEN $12::boolean THEN NULL
+      ELSE last_error_code
+    END,
+    last_error_message = CASE
+      WHEN $12::boolean AND $2::text = 'pending_test'
+        THEN '账户配置已保存，等待后台检查'
+      WHEN $12::boolean THEN NULL
+      ELSE last_error_message
+    END,
+    next_health_check_at = CASE
+      WHEN
+        ($12::boolean OR $13::boolean)
+        AND $2::text = 'pending_test'
+      THEN NULL
+      ELSE next_health_check_at
+    END,
+    health_check_failure_count = CASE
+      WHEN
+        ($12::boolean OR $13::boolean)
+        AND $2::text = 'pending_test'
+      THEN 0
+      ELSE health_check_failure_count
+    END,
+    last_health_check_status_code = CASE
+      WHEN
+        ($12::boolean OR $13::boolean)
+        AND $2::text = 'pending_test'
+      THEN NULL
+      ELSE last_health_check_status_code
+    END,
+    last_health_check_error_code = CASE
+      WHEN
+        ($12::boolean OR $13::boolean)
+        AND $2::text = 'pending_test'
+      THEN NULL
+      ELSE last_health_check_error_code
+    END,
+    last_health_check_error_message = CASE
+      WHEN
+        ($12::boolean OR $13::boolean)
+        AND $2::text = 'pending_test'
+      THEN NULL
+      ELSE last_health_check_error_message
+    END,
+    updated_at = $14
+WHERE id = $15
+  AND system_account_id = $16
   AND deleted_at IS NULL
 RETURNING
   id,
@@ -1144,11 +1194,14 @@ type UpdatePublicAccountAllFieldsParams struct {
 	CredentialsEncrypted     string
 	CredentialFingerprint    pgtype.Text
 	CredentialMask           string
+	HealthCheckModel         string
 	ConcurrencyLimit         int32
 	Priority                 int32
 	Schedulable              bool
 	AvailabilityScheduleJson pgtype.Text
 	Notes                    pgtype.Text
+	ConfigurationChanged     bool
+	HealthCheckModelChanged  bool
 	UpdatedAt                pgtype.Timestamptz
 	ID                       string
 	SystemAccountID          string
@@ -1185,11 +1238,14 @@ func (q *Queries) UpdatePublicAccountAllFields(ctx context.Context, arg UpdatePu
 		arg.CredentialsEncrypted,
 		arg.CredentialFingerprint,
 		arg.CredentialMask,
+		arg.HealthCheckModel,
 		arg.ConcurrencyLimit,
 		arg.Priority,
 		arg.Schedulable,
 		arg.AvailabilityScheduleJson,
 		arg.Notes,
+		arg.ConfigurationChanged,
+		arg.HealthCheckModelChanged,
 		arg.UpdatedAt,
 		arg.ID,
 		arg.SystemAccountID,

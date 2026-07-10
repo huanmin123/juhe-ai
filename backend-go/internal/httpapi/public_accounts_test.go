@@ -47,7 +47,7 @@ func TestPublicAccountHandlersAddThroughShellRedactsLogSecrets(t *testing.T) {
 	logQueue := &publicAPIShellLogQueueStub{}
 	router := newTestPublicAPIShell(authenticator, limiter, logQueue, newPublicAccountHandlers(service), time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC))
 
-	req := httptest.NewRequest(http.MethodPost, "/__aipublic__/account/add", strings.NewReader(`{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://user:password@api.openai.com/v1","apiKey":"`+secret+`","supportedModels":["gpt-5.5"]}`))
+	req := httptest.NewRequest(http.MethodPost, "/__aipublic__/account/add", strings.NewReader(`{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://user:password@api.openai.com/v1","apiKey":"`+secret+`","supportedModels":["gpt-5.5"],"healthCheckModel":"gpt-5.5"}`))
 	req.Header.Set("Authorization", "Bearer juis_plain")
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -64,6 +64,9 @@ func TestPublicAccountHandlersAddThroughShellRedactsLogSecrets(t *testing.T) {
 		t.Fatalf("add input = calls %d %+v", service.addCalls, service.addInput)
 	}
 	assertPublicAccountStringListValue(t, service.addInput.SupportedModels, true, []string{"gpt-5.5"})
+	if service.addInput.HealthCheckModel == nil || *service.addInput.HealthCheckModel != "gpt-5.5" {
+		t.Fatalf("health check model = %v, want gpt-5.5", service.addInput.HealthCheckModel)
+	}
 
 	var body map[string]any
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
@@ -171,6 +174,17 @@ func TestParsePublicAccountUpdateBodyPreservesSupportedModelsPresence(t *testing
 			}
 			assertPublicAccountStringListValue(t, input.SupportedModels, tt.wantSet, tt.wantModels)
 		})
+	}
+}
+
+func TestParsePublicAccountUpdateBodyAcceptsHealthCheckModelOnly(t *testing.T) {
+	req := newPublicAccountParserRequest(t, `{"accountId":"acct_1","healthCheckModel":" gpt-5.5 "}`)
+	input, err := parsePublicAccountUpdateBody(req)
+	if err != nil {
+		t.Fatalf("parse update body: %v", err)
+	}
+	if input.HealthCheckModel == nil || *input.HealthCheckModel != "gpt-5.5" {
+		t.Fatalf("health check model = %v, want gpt-5.5", input.HealthCheckModel)
 	}
 }
 
@@ -370,7 +384,6 @@ func TestPublicAccountHandlersRejectStrictAndNonCoercedFields(t *testing.T) {
 		body string
 	}{
 		{name: "add unknown credentials field", path: "/__aipublic__/account/add", body: `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test","credentials":{"apiKey":"sk-test"}}`},
-		{name: "add internal health check model field", path: "/__aipublic__/account/add", body: `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test","healthCheckModel":"gpt-5.5"}`},
 		{name: "add unsupported type", path: "/__aipublic__/account/add", body: `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"oauth","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test"}`},
 		{name: "add string concurrency", path: "/__aipublic__/account/add", body: `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test","concurrencyLimit":"20"}`},
 		{name: "update empty mutable", path: "/__aipublic__/account/update", body: `{"accountId":"acct_1"}`},

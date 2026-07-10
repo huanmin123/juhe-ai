@@ -43,7 +43,7 @@ func TestFindPublicAccountProviderProfileQuerySelectsEffectiveHealthCheckModel(t
 	}
 }
 
-func TestUpdatePublicAccountQueryPreservesHealthCheckModel(t *testing.T) {
+func TestUpdatePublicAccountQueryWritesAndReturnsHealthCheckModel(t *testing.T) {
 	source, err := os.ReadFile("queries/w1b_public_accounts.sql")
 	if err != nil {
 		t.Fatalf("read public account query: %v", err)
@@ -59,11 +59,43 @@ func TestUpdatePublicAccountQueryPreservesHealthCheckModel(t *testing.T) {
 	if whereIndex < 0 {
 		t.Fatalf("public account update query missing WHERE clause:\n%s", query)
 	}
-	if strings.Contains(query[:whereIndex], "health_check_model") {
-		t.Fatalf("public account update query must not directly modify health_check_model:\n%s", query)
+	if !strings.Contains(query[:whereIndex], "health_check_model = sqlc.arg(health_check_model)") {
+		t.Fatalf("public account update query must write health_check_model:\n%s", query)
 	}
 	if !strings.Contains(query[whereIndex:], "health_check_model") {
 		t.Fatalf("public account update query must return health_check_model:\n%s", query)
+	}
+}
+
+func TestUpdatePublicAccountQueryResetsDiagnosticsForConfigurationChanges(t *testing.T) {
+	source, err := os.ReadFile("queries/w1b_public_accounts.sql")
+	if err != nil {
+		t.Fatalf("read public account query: %v", err)
+	}
+	sql := string(source)
+	start := strings.Index(sql, "-- name: UpdatePublicAccountAllFields :one")
+	end := strings.Index(sql, "-- name: UpdatePublicAccountGroupBindingDispatch :exec")
+	if start < 0 || end <= start {
+		t.Fatal("public account SQL missing update query")
+	}
+	query := sql[start:end]
+	for _, want := range []string{
+		"sqlc.arg(configuration_changed)::boolean",
+		"sqlc.arg(health_check_model_changed)::boolean",
+		"sqlc.arg(status)::text = 'pending_test'",
+		"cooldown_until = CASE",
+		"last_error_code = CASE",
+		"last_error_message = CASE",
+		"账户配置已保存，等待后台检查",
+		"next_health_check_at = CASE",
+		"health_check_failure_count = CASE",
+		"last_health_check_status_code = CASE",
+		"last_health_check_error_code = CASE",
+		"last_health_check_error_message = CASE",
+	} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("public account update query missing %q in:\n%s", want, query)
+		}
 	}
 }
 
