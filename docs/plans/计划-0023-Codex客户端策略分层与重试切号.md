@@ -114,7 +114,7 @@ Codex 客户端最多自动重试 5 次，因此网关在同一 Codex turn 的�
 - 允许在调度候选账号排序时避让该 turn 已失败账号。
 - 允许在审计日志和使用记录里标记 `clientProfile = codex`、`codexTurnIdPresent = true`、`codexTurnRetryCount`、`turnAccountAvoided` 等诊断字段。
 - 禁止因为 Codex turn 失败直接写账号 `temporary_unavailable`，除非已输出后流熔断或账号错误策略本身另有明确命中。
-- 2026-05-21 运行补充：不再维护 Codex 终止类错误码白名单；可见输出前的可识别流式失败统一改写为 `upstream_retryable_error` 并参与 turn 级切号计数。`cyber_policy` 是输出后也允许改写的显式例外，原始错误码只保留在诊断记录中。
+- 2026-05-21 运行补充（2026-07-10 已替代）：不再维护 Codex 终止类错误码白名单；当前实现按下游实际写出边界处理，服务端候选耗尽后使用稳定网关码 `upstream_retryable_error`。`response.failed` 格式和 turn 级避让仍只属于 Codex Responses；不再为 `cyber_policy` 或其他上游错误码设置例外。
 - 状态丢失、解析失败或字段不完整时，系统必须回到普通 OpenAI 网关行为，而不是扩大匹配范围。
 
 ## 执行拆解
@@ -175,7 +175,7 @@ Codex 客户端最多自动重试 5 次，因此网关在同一 Codex turn 的�
 
 ## 风险与注意事项
 
-- 运行时已选择收紧路径：`response.failed/upstream_retryable_error` 只在 Codex profile 下启用；后续新增客户端不得复用这条策略，必须新增独立 profile。
+- 运行时已选择收紧路径：`response.failed` 事件格式和 turn 级避让只在 Codex profile 下启用；`upstream_retryable_error` 是通用候选耗尽网关码。后续新增客户端不得复用 Codex 事件格式，必须新增独立 profile 和协议事件。
 - Codex `x-codex-turn-metadata` 是 Codex 客户端行为，不是 OpenAI 官方所有客户端的通用行为；任何依赖它的逻辑都必须 guarded by `clientProfile = codex`。
 - 进程内 TTL 状态在重启后会丢失；这比误识别更安全，因为系统会回到普通错误行为。
 - 若同一 API Key 被多人共享，系统不能识别真实自然人，只能按本地 API Key / Codex turn 边界隔离。

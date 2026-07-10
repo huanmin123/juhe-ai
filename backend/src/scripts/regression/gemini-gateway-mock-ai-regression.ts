@@ -47,7 +47,7 @@ const tempRoot = resolve(tmpdir(), `juhe-ai-gemini-gateway-mock-ai-${Date.now()}
 runtimeConfig.databasePath = join(tempRoot, 'gemini-gateway-mock-ai.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
-runtimeConfig.secret = 'gemini-gateway-mock-ai-secret'
+// crypto.ts may already be loaded by static imports, so keep the captured runtime secret for this fixture.
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'db-service'
@@ -64,7 +64,8 @@ const [
   gatewayCache,
   usageRecordQueue,
   auditLogQueue,
-  providerDriverRegistry
+  providerDriverRegistry,
+  readWorkerPool
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
   import('../../shared/request-context.js'),
@@ -74,7 +75,8 @@ const [
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js'),
-  import('../../modules/providers/drivers/registry.js')
+  import('../../modules/providers/drivers/registry.js'),
+  import('../../storage/sqlite-read-worker-pool.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -466,6 +468,7 @@ try {
   auditLogQueue.clearAuditLogQueueForTest()
   auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
+  await readWorkerPool.closeSqliteReadWorkerPool().catch(() => undefined)
   databaseModule.closeStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })
 }
@@ -721,9 +724,10 @@ async function assertGeminiUpstreamError(baseUrl: string, localApiKey: string): 
     })
   })
   assert.equal(response.status, 503)
-  const body = await response.json() as { error?: { status?: string; message?: string } }
+  const body = await response.json() as { error?: { status?: string; message?: string; code?: string } }
   assert.equal(body.error?.status, 'UNAVAILABLE')
-  assert.match(body.error?.message ?? '', /没有可用的上游账户/)
+  assert.match(body.error?.message ?? '', /上游暂时不可用，请重试/)
+  assert.equal(body.error?.code, 'upstream_retryable_error')
   assert(upstreamHits.length >= 1, 'Gemini 上游错误用例必须命中 mock upstream')
   assert(upstreamHits.every((hit) => hit.rawUrl.includes('case=quota')), 'Gemini 上游错误重试必须保持原始查询参数')
 }

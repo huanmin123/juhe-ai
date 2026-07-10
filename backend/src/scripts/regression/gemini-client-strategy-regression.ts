@@ -5,6 +5,7 @@ import {
   gatewayClientProfileHeader,
   resolveOpenAIGatewayClientStrategy
 } from '../../modules/gateway/client-profiles/strategy.js'
+import { buildGatewayStreamFailureEventForProtocol } from '../../modules/gateway/response/responses.js'
 
 const baseIdentity = {
   systemAccountId: 'sys_a',
@@ -48,7 +49,8 @@ function main(): void {
   testGeminiCliHeaderDoesNotAffectOpenAIProtocol()
   testGeminiCliHeaderDoesNotAffectAnthropicProtocol()
   testGeminiStreamGenerateContentPathIsStream()
-  console.log('Gemini CLI 客户端画像回归通过：显式 header、真实 CLI User-Agent、Cloud Code 代理、通用 Gemini 隔离、SDK header 不误判、跨协议不污染均符合预期')
+  testGeminiCliRetryEventShape()
+  console.log('Gemini CLI 客户端画像回归通过：显式 header、真实 CLI User-Agent、通用 Gemini 隔离、跨协议不污染、Gemini SSE 可重试错误事件格式正确')
 }
 
 function testExplicitGeminiCliHeaderUsesGeminiProfile(): void {
@@ -63,7 +65,8 @@ function testExplicitGeminiCliHeaderUsesGeminiProfile(): void {
   assert.equal(strategy.clientProfileSource, 'explicit_header')
   assert.equal(strategy.downstreamProtocol, 'gemini_stream_generate_content_sse')
   assert.equal(strategy.upstreamAdapter, 'gemini_api_key')
-  assert.equal(strategy.allowCodexStreamClientRetry, false)
+  assert.equal(strategy.retryCoordination.preCommitFailureSignal, 'protocol_error_event')
+  assert.equal(strategy.retryCoordination.committedFailureSignal, 'protocol_error_event')
   assert.equal(strategy.allowCodexTurnAccountAvoidance, false)
 }
 
@@ -80,6 +83,8 @@ function testGeminiCliUserAgentSignatureUsesGeminiProfile(): void {
   assert.equal(strategy.clientProfileSource, 'gemini_cli_request_signature')
   assert.equal(strategy.downstreamProtocol, 'json')
   assert.equal(strategy.upstreamAdapter, 'gemini_api_key')
+  assert.equal(strategy.retryCoordination.preCommitFailureSignal, 'http_error')
+  assert.equal(strategy.retryCoordination.committedFailureSignal, 'disconnect')
 }
 
 function testCloudCodeProxyClientSignatureUsesGeminiProfile(): void {
@@ -93,6 +98,8 @@ function testCloudCodeProxyClientSignatureUsesGeminiProfile(): void {
   assert.equal(strategy.clientProfile, 'gemini_cli')
   assert.equal(strategy.clientProfileSource, 'gemini_cli_request_signature')
   assert.equal(strategy.downstreamProtocol, 'gemini_stream_generate_content_sse')
+  assert.equal(strategy.retryCoordination.preCommitFailureSignal, 'protocol_error_event')
+  assert.equal(strategy.retryCoordination.committedFailureSignal, 'protocol_error_event')
 }
 
 function testGenericGeminiWithoutCliSignals(): void {
@@ -107,6 +114,8 @@ function testGenericGeminiWithoutCliSignals(): void {
   assert.equal(strategy.clientProfileSource, 'default')
   assert.equal(strategy.downstreamProtocol, 'json')
   assert.equal(strategy.upstreamAdapter, 'gemini_api_key')
+  assert.equal(strategy.retryCoordination.preCommitFailureSignal, 'http_error')
+  assert.equal(strategy.retryCoordination.committedFailureSignal, 'disconnect')
 }
 
 function testSdkHeadersDoNotBecomeGeminiCli(): void {
@@ -121,6 +130,8 @@ function testSdkHeadersDoNotBecomeGeminiCli(): void {
   assert.equal(strategy.clientProfile, 'generic_gemini')
   assert.equal(strategy.clientProfileSource, 'default')
   assert.equal(strategy.downstreamProtocol, 'gemini_stream_generate_content_sse')
+  assert.equal(strategy.retryCoordination.preCommitFailureSignal, 'http_error')
+  assert.equal(strategy.retryCoordination.committedFailureSignal, 'disconnect')
 }
 
 function testGeminiCliHeaderDoesNotAffectOpenAIProtocol(): void {
@@ -159,6 +170,20 @@ function testGeminiStreamGenerateContentPathIsStream(): void {
 
   assert.equal(strategy.clientProfile, 'generic_gemini')
   assert.equal(strategy.downstreamProtocol, 'gemini_stream_generate_content_sse')
+}
+
+function testGeminiCliRetryEventShape(): void {
+  const event = buildGatewayStreamFailureEventForProtocol(
+    '上游流式响应在输出前失败，请重试',
+    'upstream_retryable_error',
+    'gemini',
+    'gemini_stream_generate_content_sse'
+  )?.toString('utf8')
+  assert(event, 'Gemini CLI stream 应能构造协议失败事件')
+  assert.match(event, /^event: error$/m)
+  assert.match(event, /"status":"UNAVAILABLE"/)
+  assert.match(event, /"code":"upstream_retryable_error"/)
+  assert.doesNotMatch(event, /response\.failed/)
 }
 
 function createRequest(path: string, body: Record<string, unknown>, headers: Record<string, string> = {}): Request {

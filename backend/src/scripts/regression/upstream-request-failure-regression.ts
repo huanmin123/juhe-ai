@@ -216,7 +216,8 @@ async function main(): Promise<void> {
     })
     const directTransportFailureText = await directTransportFailureResponse.text()
     assert.equal(directTransportFailureResponse.status, 503, `直连上游传输失败仍应返回统一网关错误，实际 HTTP ${directTransportFailureResponse.status}: ${directTransportFailureText}`)
-    assert.match(directTransportFailureText, /没有可用的上游账户/, `直连上游传输失败应返回网关统一错误：${directTransportFailureText}`)
+    assert.match(directTransportFailureText, /上游暂时不可用，请重试/, `直连上游传输失败应返回网关统一可重试错误：${directTransportFailureText}`)
+    assert.match(directTransportFailureText, /upstream_retryable_error/, `直连上游传输失败应返回稳定可重试码：${directTransportFailureText}`)
     assertAccountsRuntimeSuppressedActive(directTransportFailureAccounts, /上游账号请求异常/, '直连上游传输失败应进入运行态屏障')
     accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
 
@@ -251,7 +252,8 @@ async function main(): Promise<void> {
     const featureResponseText = await featureResponse.text()
 
     assert.equal(featureResponse.status, 503, `所有账号上游失败后应返回统一网关错误，实际 HTTP ${featureResponse.status}: ${featureResponseText}`)
-    assert.match(featureResponseText, /没有可用的上游账户/, `所有账号失败不应透传上游原文，应返回网关统一错误：${featureResponseText}`)
+    assert.match(featureResponseText, /上游暂时不可用，请重试/, `所有账号失败不应透传上游原文，应返回网关统一可重试错误：${featureResponseText}`)
+    assert.match(featureResponseText, /upstream_retryable_error/, `所有账号失败应返回稳定可重试码：${featureResponseText}`)
     assert.notEqual(featureResponseText, invalidRequestRejectedRequestBody, '所有账号失败不应把上游原始错误体透传给客户端')
     assert.equal(invalidRequestUpstreamHitCount, 3, `通用失败流水线应尝试三个账号后再失败，实际上游命中 ${invalidRequestUpstreamHitCount} 次`)
     assertAccountsActive([firstAccount, secondAccount, thirdAccount], '请求级 invalid_request 失败不应污染账号运行态')
@@ -295,7 +297,8 @@ async function main(): Promise<void> {
     const signatureResponseText = await signatureResponse.text()
 
     assert.equal(signatureResponse.status, 503, `多个账号返回相同上游错误也应走统一网关错误，实际 HTTP ${signatureResponse.status}: ${signatureResponseText}`)
-    assert.match(signatureResponseText, /没有可用的上游账户/, `相同上游错误失败不应返回上游原文：${signatureResponseText}`)
+    assert.match(signatureResponseText, /上游暂时不可用，请重试/, `相同上游错误失败不应返回上游原文：${signatureResponseText}`)
+    assert.match(signatureResponseText, /upstream_retryable_error/, `相同上游错误失败应返回稳定可重试码：${signatureResponseText}`)
     assert.notEqual(signatureResponseText, sameSignatureRejectedRequestBody, '相同上游错误失败不应保留上游原始错误体')
     assert.equal(sameSignatureUpstreamHitCount, 3, `同一错误应尝试全部三个账号，实际上游命中 ${sameSignatureUpstreamHitCount} 次`)
     assertAccountsActive([firstAccount, secondAccount, thirdAccount], '请求级相同上游错误不应逐个进入运行态屏障')
@@ -339,13 +342,13 @@ async function main(): Promise<void> {
     clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
 
     settingsRepository.updateSettings({
-      temporaryUnschedulableRetryAttempts: 2,
+      temporaryUnschedulableRetryAttempts: 3,
       temporaryUnschedulableRetryIntervalSeconds: 0
     })
     gatewayCache.clearGatewayRuntimeCache()
     assert.equal(
       (await gatewayCache.readCachedGatewaySettingsAsync()).temporaryUnschedulableRetryAttempts,
-      2,
+      3,
       '测试更新后的网关临时不可调度重试次数应立即生效'
     )
     currentScenario = 'same_account_retry_success'
@@ -386,12 +389,58 @@ async function main(): Promise<void> {
     const switchResponseText = await switchResponse.text()
 
     assert.equal(switchResponse.status, 200, `未知失败切到后续账号成功时应返回成功响应，实际 HTTP ${switchResponse.status}: ${switchResponseText}`)
-    assert.equal(unknownSwitchFirstAccountHitCount, 3, `未知失败应先按临时状态重试次数原地重试首账号，实际首账号命中 ${unknownSwitchFirstAccountHitCount} 次`)
+    assert.equal(unknownSwitchFirstAccountHitCount, 4, `未知失败应先消费 3 次请求级共享确认预算，实际首账号命中 ${unknownSwitchFirstAccountHitCount} 次`)
     assert.equal(unknownSwitchSecondAccountHitCount, 1, `未知失败切号场景后续账号应命中 1 次，实际 ${unknownSwitchSecondAccountHitCount}`)
     assert.equal(switchResponseText, unknownSwitchSuccessBody, `未知失败切号成功响应体异常：${switchResponseText}`)
     assertAccountsRuntimeSuppressedActive([firstAccount], /上游账号返回非成功状态：HTTP 502|temporary first account upstream error/, '未知失败切到后续账号成功后应保留首账号运行态屏障')
     assertAccountsActive([secondAccount], '未知失败切号成功账号应保持正常')
     restoreRegressionAccounts([firstAccount])
+    clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
+
+    currentScenario = 'shared_retry_budget_third_account_success'
+    const sharedRetryBudgetResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${apiKey.key}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'shared retry budget must not reset for every account' }],
+        stream: false
+      })
+    })
+    const sharedRetryBudgetResponseText = await sharedRetryBudgetResponse.text()
+    assert.equal(sharedRetryBudgetResponse.status, 200, `请求级共享确认预算耗尽后仍应继续扫描到第三账号成功，实际 HTTP ${sharedRetryBudgetResponse.status}: ${sharedRetryBudgetResponseText}`)
+    assert.equal(sharedRetryBudgetResponseText, thirdAccountSuccessBody, `请求级共享确认预算场景第三账号响应体异常：${sharedRetryBudgetResponseText}`)
+    assert.equal(sharedRetryBudgetFirstAccountHitCount, 4, `配置 3 次确认时首个持续失败账号应共命中 4 次，实际 ${sharedRetryBudgetFirstAccountHitCount}`)
+    assert.equal(sharedRetryBudgetSecondAccountHitCount, 1, `共享预算耗尽后第二个失败账号不应重新获得 3 次确认，实际 ${sharedRetryBudgetSecondAccountHitCount}`)
+    assert.equal(sharedRetryBudgetThirdAccountHitCount, 1, `共享预算耗尽后仍必须继续扫描第三账号，实际 ${sharedRetryBudgetThirdAccountHitCount}`)
+    assertAccountsRuntimeSuppressedActive([firstAccount, secondAccount], /shared retry budget account failed/, '共享预算场景失败账号应进入运行态屏障')
+    assertAccountsActive([thirdAccount], '共享预算场景成功账号应保持正常')
+    restoreRegressionAccounts([firstAccount, secondAccount])
+    clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
+
+    currentScenario = 'shared_retry_budget_across_stream_redispatch'
+    const sharedRetryBudgetStreamResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${apiKey.key}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'shared retry budget must survive stream redispatch' }],
+        stream: true
+      })
+    })
+    const sharedRetryBudgetStreamText = await sharedRetryBudgetStreamResponse.text()
+    assert.equal(sharedRetryBudgetStreamResponse.status, 200, `流式切号后共享确认预算仍应继续扫描到第三账号成功，实际 HTTP ${sharedRetryBudgetStreamResponse.status}: ${sharedRetryBudgetStreamText}`)
+    assert.match(sharedRetryBudgetStreamText, /ok after stream redispatch/, `流式切号后第三账号成功内容异常：${sharedRetryBudgetStreamText}`)
+    assert.equal(sharedRetryBudgetStreamFirstAccountHitCount, 4, `首账号应在前三次 HTTP 失败耗尽共享预算后第四次进入流内失败，实际 ${sharedRetryBudgetStreamFirstAccountHitCount}`)
+    assert.equal(sharedRetryBudgetStreamSecondAccountHitCount, 1, `流式重新进入调度后第二账号不应重新获得确认预算，实际 ${sharedRetryBudgetStreamSecondAccountHitCount}`)
+    assert.equal(sharedRetryBudgetStreamThirdAccountHitCount, 1, `流式重新进入调度后仍必须继续扫描第三账号，实际 ${sharedRetryBudgetStreamThirdAccountHitCount}`)
+    restoreRegressionAccounts([firstAccount, secondAccount])
     clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
 
     settingsRepository.updateSettings({
@@ -568,14 +617,15 @@ async function main(): Promise<void> {
     })
     const singleFailureResponseText = await singleFailureResponse.text()
     assert.equal(singleFailureResponse.status, 503, `单账号上游失败无后备账号时仍应返回统一网关错误，实际 HTTP ${singleFailureResponse.status}: ${singleFailureResponseText}`)
-    assert.match(singleFailureResponseText, /没有可用的上游账户/, `单账号上游失败网关响应应保持统一错误：${singleFailureResponseText}`)
+    assert.match(singleFailureResponseText, /上游暂时不可用，请重试/, `单账号上游失败网关响应应保持统一可重试错误：${singleFailureResponseText}`)
+    assert.match(singleFailureResponseText, /upstream_retryable_error/, `单账号上游失败应返回稳定可重试码：${singleFailureResponseText}`)
     assert.equal(singleFailureHitCount, 1, `单账号上游失败默认冷却场景应命中上游一次，实际 ${singleFailureHitCount}`)
     assertAccountsRuntimeSuppressedActive([singleFailureAccount], /上游账号返回非成功状态：HTTP 418|generic upstream failure/, '单账号普通上游失败应进入运行态屏障而不是立即写库')
 
     usageRecordQueue.flushAllUsageRecordQueue()
     assertAccountsActive([firstAccount, secondAccount, thirdAccount, fastFailAccount, cooldownRecoverAccount], '已恢复的主测试账号最终应保持正常')
 
-    console.log('上游失败回归通过：无效 JSON 由网关拒绝且不命中账号；普通上游失败会按临时状态配置原地重试，用尽后切号并进入运行态屏障；后续账号成功不掩盖前序账号屏障；全部失败返回统一网关错误；单账号本地屏蔽耗尽时会短等释放并恢复调度')
+    console.log('上游失败回归通过：普通上游失败按请求级共享确认预算吸收波动，预算不会按账号或流式重新调度重置，耗尽后仍扫描全部后续账号；失败账号保留运行态屏障，单账号本地屏蔽耗尽时会短等释放并恢复调度')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     auditLogQueue.flushAllAuditLogQueue()
@@ -599,6 +649,8 @@ type RegressionScenario =
   | 'invalid_request_switch_account_success'
   | 'same_account_retry_success'
   | 'unknown_failure_switch_account_success'
+  | 'shared_retry_budget_third_account_success'
+  | 'shared_retry_budget_across_stream_redispatch'
   | 'non_stream_first_byte_timeout_switch_account_success'
   | 'non_stream_body_interrupted_after_output_client_retry'
   | 'dispatch_loop_local_suppression_race'
@@ -616,6 +668,12 @@ let sameAccountRetryFirstAccountHitCount = 0
 let sameAccountRetrySecondAccountHitCount = 0
 let unknownSwitchFirstAccountHitCount = 0
 let unknownSwitchSecondAccountHitCount = 0
+let sharedRetryBudgetFirstAccountHitCount = 0
+let sharedRetryBudgetSecondAccountHitCount = 0
+let sharedRetryBudgetThirdAccountHitCount = 0
+let sharedRetryBudgetStreamFirstAccountHitCount = 0
+let sharedRetryBudgetStreamSecondAccountHitCount = 0
+let sharedRetryBudgetStreamThirdAccountHitCount = 0
 let nonStreamFirstByteTimeoutFirstAccountHitCount = 0
 let nonStreamFirstByteTimeoutSecondAccountHitCount = 0
 let nonStreamBodyInterruptedFirstAccountHitCount = 0
@@ -812,6 +870,51 @@ function createRejectedRequestUpstream(): http.Server {
       res.end(unknownSwitchSuccessBody)
       return
     }
+    if (currentScenario === 'shared_retry_budget_third_account_success') {
+      const authorization = String(req.headers.authorization ?? '')
+      if (authorization.includes('sk-request-failure-1')) {
+        sharedRetryBudgetFirstAccountHitCount += 1
+        res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({ error: { message: 'shared retry budget account failed', type: 'server_error', code: 'first_failed' } }))
+        return
+      }
+      if (authorization.includes('sk-request-failure-2')) {
+        sharedRetryBudgetSecondAccountHitCount += 1
+        res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({ error: { message: 'shared retry budget account failed', type: 'server_error', code: 'second_failed' } }))
+        return
+      }
+      sharedRetryBudgetThirdAccountHitCount += 1
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(thirdAccountSuccessBody)
+      return
+    }
+    if (currentScenario === 'shared_retry_budget_across_stream_redispatch') {
+      const authorization = String(req.headers.authorization ?? '')
+      if (authorization.includes('sk-request-failure-1')) {
+        sharedRetryBudgetStreamFirstAccountHitCount += 1
+        if (sharedRetryBudgetStreamFirstAccountHitCount < 4) {
+          res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: { message: 'stream redispatch budget warmup failure', type: 'server_error', code: 'warmup_failed' } }))
+          return
+        }
+        res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
+        res.end('event: error\ndata: {"type":"error","code":"stream_failed","message":"stream failed before downstream write"}\n\n')
+        return
+      }
+      if (authorization.includes('sk-request-failure-2')) {
+        sharedRetryBudgetStreamSecondAccountHitCount += 1
+        res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({ error: { message: 'second account should not receive a fresh retry budget', type: 'server_error', code: 'second_failed' } }))
+        return
+      }
+      sharedRetryBudgetStreamThirdAccountHitCount += 1
+      res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
+      res.write('data: {"id":"chatcmpl-stream-redispatch","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"ok after stream redispatch"},"finish_reason":null}]}\n\n')
+      res.write('data: {"id":"chatcmpl-stream-redispatch","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n')
+      res.end('data: [DONE]\n\n')
+      return
+    }
     if (currentScenario === 'same_account_retry_success') {
       const authorization = String(req.headers.authorization ?? '')
       if (authorization.includes('sk-request-failure-1')) {
@@ -911,6 +1014,12 @@ function totalUpstreamHitCount(): number {
     + sameAccountRetrySecondAccountHitCount
     + unknownSwitchFirstAccountHitCount
     + unknownSwitchSecondAccountHitCount
+    + sharedRetryBudgetFirstAccountHitCount
+    + sharedRetryBudgetSecondAccountHitCount
+    + sharedRetryBudgetThirdAccountHitCount
+    + sharedRetryBudgetStreamFirstAccountHitCount
+    + sharedRetryBudgetStreamSecondAccountHitCount
+    + sharedRetryBudgetStreamThirdAccountHitCount
     + nonStreamFirstByteTimeoutFirstAccountHitCount
     + nonStreamFirstByteTimeoutSecondAccountHitCount
     + nonStreamBodyInterruptedFirstAccountHitCount

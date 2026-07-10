@@ -1,6 +1,5 @@
 import type { OpenAIGatewayClientStrategyContext } from '../client-profiles/strategy.js'
 import {
-  isCodexRetryableAfterOutputResponseFailureCode,
   type ResponseInspectionDecision
 } from './inspection.js'
 import {
@@ -19,7 +18,6 @@ export type StreamServerRetryReason =
   | 'response_inspection'
   | 'upstream_protocol_failure'
   | 'pre_commit_stream_failure'
-  | 'codex_pre_commit_stream_failure'
   | 'speed_first_first_byte_timeout'
   | 'hybrid_quality'
 
@@ -54,32 +52,12 @@ function isServerRetryableSystemDefaultResponseInspectionDecision(
     && serverRetryableSystemDefaultResponseInspectionPolicyIds.has(decision.policyId ?? '')
 }
 
-export function shouldRetryCodexPreCommitStreamFailureOnServer(
-  streamResult: StreamPipeResult,
-  clientStrategy: OpenAIGatewayClientStrategyContext | undefined,
-  response: StreamRetryResponseState
-): boolean {
-  const retryableAfterOutput = isCodexRetryableAfterOutputResponseFailureCode(streamResult.responseInspection?.upstreamErrorCode ?? streamResult.errorCode)
-  return !streamResult.completed
-    && streamResult.downstreamBytesWritten === 0
-    && (!streamResult.outputReceived || retryableAfterOutput)
-    && clientStrategy?.allowCodexTurnAccountAvoidance === true
-    && (
-      streamResult.errorCode === gatewayStreamClientRetryErrorCode
-      || streamResult.responseInspection?.rewriteErrorCode === gatewayStreamClientRetryErrorCode
-    )
-    && !response.headersSent
-    && !response.writableEnded
-    && !response.destroyed
-}
-
 export function shouldRetryPreCommitStreamFailureOnServer(
   streamResult: StreamPipeResult,
   response: StreamRetryResponseState
 ): boolean {
   return !streamResult.completed
     && streamResult.downstreamBytesWritten === 0
-    && !streamResult.outputReceived
     && streamResult.errorCode !== undefined
     && !response.headersSent
     && !response.writableEnded
@@ -90,7 +68,7 @@ export function preCommitStreamServerRetryErrorCode(
   streamResult: StreamPipeResult,
   clientStrategy: OpenAIGatewayClientStrategyContext | undefined
 ): string | undefined {
-  return clientStrategy?.allowCodexStreamClientRetry === true
+  return clientStrategy?.retryCoordination.preCommitFailureSignal === 'protocol_error_event'
     ? gatewayStreamClientRetryErrorCode
     : gatewayStreamFailureCode(streamResult.message)
 }
@@ -106,9 +84,7 @@ export function shouldRememberCodexTurnStreamFailure(
   streamResult: StreamPipeResult,
   clientStrategy: OpenAIGatewayClientStrategyContext | undefined
 ): clientStrategy is OpenAIGatewayClientStrategyContext {
-  const retryableAfterOutput = isCodexRetryableAfterOutputResponseFailureCode(streamResult.responseInspection?.upstreamErrorCode ?? streamResult.errorCode)
   return !streamResult.completed
-    && (!streamResult.outputReceived || retryableAfterOutput)
     && clientStrategy?.allowCodexTurnAccountAvoidance === true
     && (
       streamResult.errorCode === gatewayStreamClientRetryErrorCode

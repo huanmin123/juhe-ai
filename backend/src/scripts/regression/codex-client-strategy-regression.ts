@@ -85,7 +85,8 @@ function testCodexTurnProfileRequiresPreciseTurnId(): void {
   assert.equal(strategy.codexTurn?.turnId, 'turn_a')
   assert.equal(strategy.codexTurn?.sessionId, 'session_a')
   assert.equal(strategy.codexTurn?.threadId, 'thread_a')
-  assert.equal(strategy.allowCodexStreamClientRetry, true)
+  assert.equal(strategy.retryCoordination.preCommitFailureSignal, 'protocol_error_event')
+  assert.equal(strategy.retryCoordination.committedFailureSignal, 'protocol_error_event')
   assert.equal(strategy.allowCodexTurnAccountAvoidance, true)
 }
 
@@ -106,7 +107,8 @@ function testSessionOnlyDoesNotBecomeCodex(): void {
   assert.equal(strategy.clientProfile, 'generic_openai')
   assert.equal(strategy.requestClientCompatibility, 'openai_standard')
   assert.equal(strategy.codexTurn, undefined)
-  assert.equal(strategy.allowCodexStreamClientRetry, false)
+  assert.equal(strategy.retryCoordination.preCommitFailureSignal, 'http_error')
+  assert.equal(strategy.retryCoordination.committedFailureSignal, 'disconnect')
 }
 
 function testInvalidTurnMetadataDoesNotBecomeCodex(): void {
@@ -145,7 +147,8 @@ function testNonCodexMetadataShapesDoNotFallback(): void {
     assert.equal(strategy.clientProfile, 'generic_openai', label)
     assert.equal(strategy.requestClientCompatibility, 'openai_standard', label)
     assert.equal(strategy.codexTurn, undefined, label)
-    assert.equal(strategy.allowCodexStreamClientRetry, false, label)
+    assert.equal(strategy.retryCoordination.preCommitFailureSignal, 'http_error', label)
+    assert.equal(strategy.retryCoordination.committedFailureSignal, 'disconnect', label)
     assert.equal(strategy.allowCodexTurnAccountAvoidance, false, label)
   }
 }
@@ -365,7 +368,8 @@ function testCodexCompactRequestUsesCodexProfile(): void {
   assert.equal(strategy.downstreamProtocol, 'json')
   assert.equal(strategy.codexCompactionExpected, true)
   assert.equal(strategy.codexTurn?.turnId, 'turn_compact')
-  assert.equal(strategy.allowCodexStreamClientRetry, true)
+  assert.equal(strategy.retryCoordination.preCommitFailureSignal, 'http_error')
+  assert.equal(strategy.retryCoordination.committedFailureSignal, 'disconnect')
   assert.equal(strategy.allowCodexTurnAccountAvoidance, true)
 }
 

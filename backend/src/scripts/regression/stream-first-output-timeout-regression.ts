@@ -434,8 +434,11 @@ async function main(): Promise<void> {
     assert(contextWindowResult.streamText.includes('upstream_retryable_error'), `未输出前 context_length_exceeded 应改写为可重试错误：${contextWindowResult.streamText}`)
 
     const nonCodexErrorEventResult = await requestGenericStreamFailureBeforeOutput(baseUrl, nonCodexErrorEventCredential.apiKey.key, 'generic-error-event-before-output')
-    assert(nonCodexErrorEventResult.streamText.includes('response.failed'), `普通客户端未输出前失败应返回普通失败事件：${nonCodexErrorEventResult.streamText}`)
-    assert(!nonCodexErrorEventResult.streamText.includes('upstream_retryable_error'), `普通客户端未输出前失败不应伪造客户端专用可重试错误：${nonCodexErrorEventResult.streamText}`)
+    assert.equal(nonCodexErrorEventResult.status, 503, `普通客户端未输出前且服务端候选耗尽时应返回 HTTP 503：${nonCodexErrorEventResult.status} ${nonCodexErrorEventResult.streamText}`)
+    assert(nonCodexErrorEventResult.contentType.includes('application/json'), `普通客户端未输出前应返回协议 JSON 错误：${nonCodexErrorEventResult.contentType}`)
+    assert(nonCodexErrorEventResult.streamText.includes('upstream_retryable_error'), `普通客户端未输出前应返回网关稳定可重试码：${nonCodexErrorEventResult.streamText}`)
+    assert(!nonCodexErrorEventResult.streamText.includes('response.failed'), `普通客户端未输出前不应伪造 Responses SSE 事件：${nonCodexErrorEventResult.streamText}`)
+    assert(!nonCodexErrorEventResult.streamText.includes('internal_server_error'), `普通客户端最终失败不应透出上游错误码：${nonCodexErrorEventResult.streamText}`)
 
     const overloadedNoBoundaryResult = await requestStreamFailureBeforeOutput(baseUrl, overloadedNoBoundaryCredential.apiKey.key, 'server-overloaded-before-output-no-boundary')
     assert(!overloadedNoBoundaryResult.streamText.includes('server_is_overloaded'), `EOF 尾包未输出前不应把原始容量错误发给客户端：${overloadedNoBoundaryResult.streamText}`)
@@ -472,7 +475,7 @@ async function main(): Promise<void> {
     assert(jsonResponseForStreamResult.text.includes('json response ok'), `stream:true 的明确 JSON 响应应原样返回：${jsonResponseForStreamResult.text}`)
     assert(!jsonResponseForStreamResult.text.includes('response.failed'), `stream:true 的明确 JSON 响应不应被 SSE 解析器追加失败事件：${jsonResponseForStreamResult.text}`)
 
-    console.log('流式超时回归通过：Codex 首段等待、首段后无新数据、碎片化 SSE 有原始字节时不误熔断、解析跳过后原样转发、图像大事件继续完成且审计不落正文、Image API 大图终止事件和无收尾边界识别、缺少终止事件未输出不计数、输出前流失败服务端优先切号、心跳刷新空闲计时、心跳-only 无有效输出触发服务端切号、容量错误/slow_down 专属兜底、未知 error 事件兜底、context_length_exceeded/cyber_policy 可重试改写、普通客户端不伪造专用可重试码、输出后真实网关流量不直接写账号流失败计数、output item 输出判定、顶层 code/message 非失败、stream:true 明确 JSON 响应和 EOF 尾包场景符合预期')
+    console.log('流式超时回归通过：Codex 首段等待、首段后无新数据、碎片化 SSE 有原始字节时不误熔断、解析跳过后原样转发、图像大事件继续完成且审计不落正文、Image API 大图终止事件和无收尾边界识别、缺少终止事件未输出不计数、输出前流失败服务端优先切号、心跳刷新空闲计时、心跳-only 无有效输出触发服务端切号、任意错误统一按写出边界兜底、未知 error 事件兜底、普通客户端候选耗尽返回 HTTP 503 稳定可重试码、输出后真实网关流量不直接写账号流失败计数、output item 输出判定、顶层 code/message 非失败、stream:true 明确 JSON 响应和 EOF 尾包场景符合预期')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -1330,7 +1333,7 @@ async function requestGenericStreamFailureBeforeOutput(
   baseUrl: string,
   apiKey: string,
   scenario: string
-): Promise<{ streamText: string; durationMs: number }> {
+): Promise<{ status: number; contentType: string; streamText: string; durationMs: number }> {
   settingsRepository.updateSettings({
     streamRequestTimeoutSeconds: 10,
     streamIdleTimeoutSeconds: 10,
@@ -1348,9 +1351,9 @@ async function requestGenericStreamFailureBeforeOutput(
       stream: true
     })
   })
-  assert.equal(response.status, 200)
-  assert(response.headers.get('content-type')?.includes('text/event-stream'), '网关应保持 SSE content-type')
   return {
+    status: response.status,
+    contentType: response.headers.get('content-type') ?? '',
     streamText: await response.text(),
     durationMs: Date.now() - startedAt
   }

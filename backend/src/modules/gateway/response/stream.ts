@@ -1,6 +1,7 @@
 import type { Response } from 'express'
 
 import { getRequestLogger } from '../../../shared/request-context.js'
+import type { OpenAIGatewayDownstreamProtocol } from '../client-profiles/strategy.js'
 import type { GatewaySettings } from '../policy/account-error-policy.service.js'
 import { downstreamConnectionClosedMessage } from './client-abort.js'
 import {
@@ -80,6 +81,7 @@ export interface StreamPipeOptions {
   retryBeforeDownstreamWriteUntilOutput?: boolean
   responseInspectionPolicies?: RuntimeResponseInspectionPolicy[]
   responseInspectionContext?: ResponseInspectionRuntimeContext
+  downstreamProtocol?: OpenAIGatewayDownstreamProtocol
   responseProtocol?: ResponseProtocolCode
   endpointFamily?: ResponseEndpointFamily
   firstByteTimeoutMs?: number
@@ -928,7 +930,13 @@ export async function pipeUpstreamStream(
         message
       }, '网关准备补发 response.failed')
       prepareDownstreamForWrite()
-      const failureEvent = await writeGatewayStreamFailureEventWithBackpressure(res, message, errorCode, gatewayErrorProtocol)
+      const failureEvent = await writeGatewayStreamFailureEventWithBackpressure(
+        res,
+        message,
+        errorCode,
+        gatewayErrorProtocol,
+        options.downstreamProtocol
+      )
       if (failureEvent) {
         if (!bodyCaptureOmitted) {
           responseCapture.push(failureEvent)
@@ -1024,7 +1032,13 @@ export async function pipeUpstreamStream(
       return finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
     }
     prepareDownstreamForWrite()
-    const failureEvent = await writeGatewayStreamFailureEventWithBackpressure(res, message, errorCode, gatewayErrorProtocol)
+    const failureEvent = await writeGatewayStreamFailureEventWithBackpressure(
+      res,
+      message,
+      errorCode,
+      gatewayErrorProtocol,
+      options.downstreamProtocol
+    )
     if (failureEvent) {
       if (!bodyCaptureOmitted) {
         responseCapture.push(failureEvent)
@@ -1380,9 +1394,10 @@ async function writeGatewayStreamFailureEventWithBackpressure(
   res: Response,
   message: string,
   code?: string,
-  protocol: GatewayErrorProtocol = 'openai'
+  protocol: GatewayErrorProtocol = 'openai',
+  downstreamProtocol?: OpenAIGatewayDownstreamProtocol
 ): Promise<Buffer | undefined> {
-  const buffer = writeGatewayStreamFailureEvent(res, message, code, protocol)
+  const buffer = writeGatewayStreamFailureEvent(res, message, code, protocol, downstreamProtocol)
   if (!buffer) {
     return undefined
   }

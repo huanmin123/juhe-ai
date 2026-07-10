@@ -12,6 +12,13 @@ export const gatewayClientProfileHeader = 'x-juhe-client-profile'
 export type OpenAIGatewayClientProfile = 'codex' | 'generic_openai' | 'claude_code' | 'generic_anthropic' | 'gemini_cli' | 'generic_gemini'
 export type OpenAIGatewayDownstreamProtocol = 'responses_sse' | 'chat_completions_sse' | 'messages_sse' | 'gemini_stream_generate_content_sse' | 'json' | 'unknown_stream'
 export type OpenAIGatewayUpstreamAdapter = 'openai_api_key' | 'openai_oauth_codex' | 'openai_mixed' | 'anthropic_api_key' | 'gemini_api_key'
+export type GatewayPreCommitFailureSignal = 'protocol_error_event' | 'http_error'
+export type GatewayCommittedFailureSignal = 'protocol_error_event' | 'disconnect'
+
+export interface GatewayClientRetryCoordination {
+  preCommitFailureSignal: GatewayPreCommitFailureSignal
+  committedFailureSignal: GatewayCommittedFailureSignal
+}
 
 export interface OpenAIGatewayClientStrategyIdentity {
   systemAccountId: string
@@ -40,7 +47,7 @@ export interface OpenAIGatewayClientStrategyContext {
   codexCompactionExpected: boolean
   codexTurn?: OpenAIGatewayCodexTurnContext
   clientProfileSource?: 'default' | 'explicit_header' | 'codex_turn_metadata' | 'claude_code_request_signature' | 'gemini_cli_request_signature'
-  allowCodexStreamClientRetry: boolean
+  retryCoordination: GatewayClientRetryCoordination
   allowCodexTurnAccountAvoidance: boolean
 }
 
@@ -80,15 +87,16 @@ export function resolveOpenAIGatewayClientStrategy(
     ? buildCodexTurnContext(req, identity, codexMetadata)
     : undefined
 
+  const clientProfile = codexTurn ? 'codex' : 'generic_openai'
   return {
-    clientProfile: codexTurn ? 'codex' : 'generic_openai',
+    clientProfile,
     requestClientCompatibility: codexTurn ? 'codex_responses' : 'openai_standard',
     downstreamProtocol,
     upstreamAdapter: 'openai_mixed',
     codexCompactionExpected: Boolean(codexTurn) && codexCompactionExpected,
     codexTurn,
     clientProfileSource: codexTurn ? 'codex_turn_metadata' : 'default',
-    allowCodexStreamClientRetry: Boolean(codexTurn),
+    retryCoordination: resolveGatewayClientRetryCoordination(clientProfile, downstreamProtocol),
     allowCodexTurnAccountAvoidance: Boolean(codexTurn)
   }
 }
@@ -100,14 +108,15 @@ export function resolveAnthropicGatewayClientStrategy(req: Request): OpenAIGatew
   const explicitClaudeCode = explicitProfile === 'claude_code' && supportedAnthropicShape
   const signatureClaudeCode = !explicitClaudeCode && supportedAnthropicShape && isClaudeCodeAnthropicRequestSignature(req)
   const claudeCode = explicitClaudeCode || signatureClaudeCode
+  const clientProfile = claudeCode ? 'claude_code' : 'generic_anthropic'
   return {
-    clientProfile: claudeCode ? 'claude_code' : 'generic_anthropic',
+    clientProfile,
     requestClientCompatibility: claudeCode ? 'claude_code' : 'anthropic_native',
     downstreamProtocol,
     upstreamAdapter: 'anthropic_api_key',
     codexCompactionExpected: false,
     clientProfileSource: explicitClaudeCode ? 'explicit_header' : signatureClaudeCode ? 'claude_code_request_signature' : 'default',
-    allowCodexStreamClientRetry: false,
+    retryCoordination: resolveGatewayClientRetryCoordination(clientProfile, downstreamProtocol),
     allowCodexTurnAccountAvoidance: false
   }
 }
@@ -119,16 +128,37 @@ export function resolveGeminiGatewayClientStrategy(req: Request): OpenAIGatewayC
   const explicitGeminiCli = explicitProfile === 'gemini_cli' && supportedGeminiShape
   const signatureGeminiCli = !explicitGeminiCli && supportedGeminiShape && isGeminiCliRequestSignature(req)
   const geminiCli = explicitGeminiCli || signatureGeminiCli
+  const clientProfile = geminiCli ? 'gemini_cli' : 'generic_gemini'
   return {
-    clientProfile: geminiCli ? 'gemini_cli' : 'generic_gemini',
+    clientProfile,
     requestClientCompatibility: 'openai_standard',
     downstreamProtocol,
     upstreamAdapter: 'gemini_api_key',
     codexCompactionExpected: false,
     clientProfileSource: explicitGeminiCli ? 'explicit_header' : signatureGeminiCli ? 'gemini_cli_request_signature' : 'default',
-    allowCodexStreamClientRetry: false,
+    retryCoordination: resolveGatewayClientRetryCoordination(clientProfile, downstreamProtocol),
     allowCodexTurnAccountAvoidance: false
   }
+}
+
+export function resolveGatewayClientRetryCoordination(
+  clientProfile: OpenAIGatewayClientProfile,
+  downstreamProtocol: OpenAIGatewayDownstreamProtocol
+): GatewayClientRetryCoordination {
+  const protocolEventSupported = (
+    (clientProfile === 'codex' && downstreamProtocol === 'responses_sse')
+    || (clientProfile === 'claude_code' && downstreamProtocol === 'messages_sse')
+    || (clientProfile === 'gemini_cli' && downstreamProtocol === 'gemini_stream_generate_content_sse')
+  )
+  return protocolEventSupported
+    ? {
+        preCommitFailureSignal: 'protocol_error_event',
+        committedFailureSignal: 'protocol_error_event'
+      }
+    : {
+        preCommitFailureSignal: 'http_error',
+        committedFailureSignal: 'disconnect'
+      }
 }
 
 export function resolveOpenAIGatewayDownstreamProtocol(req: Request): OpenAIGatewayDownstreamProtocol {
@@ -191,7 +221,8 @@ export function openAIGatewayClientStrategyAuditMetadata(
     codexThreadIdPresent: Boolean(strategy.codexTurn?.threadId),
     codexRawBodyHash: strategy.codexTurn?.rawBodyHash,
     codexTurnStateKey: strategy.codexTurn?.stateKey,
-    allowCodexStreamClientRetry: strategy.allowCodexStreamClientRetry,
+    preCommitFailureSignal: strategy.retryCoordination.preCommitFailureSignal,
+    committedFailureSignal: strategy.retryCoordination.committedFailureSignal,
     allowCodexTurnAccountAvoidance: strategy.allowCodexTurnAccountAvoidance
   }
 }

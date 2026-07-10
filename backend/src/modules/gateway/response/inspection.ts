@@ -164,10 +164,6 @@ export function responseInspectionFailurePayloadForDecision(
   return { errorCode, message }
 }
 
-export function isCodexRetryableAfterOutputResponseFailureCode(errorCode: string | undefined): boolean {
-  return errorCode === 'cyber_policy'
-}
-
 export function matchRuntimeResponseInspectionPolicy(
   frame: ResponseSemanticFrame,
   policies: RuntimeResponseInspectionPolicy[],

@@ -138,10 +138,10 @@ async function main(): Promise<void> {
     await assertCodexPreCommitFailureSwitchesAccountOnServer(baseUrl, codexSwitch, upstreamState)
     await assertCodexPreCommitFailureWalksCandidatesOnServer(baseUrl, latentCodexSwitch, upstreamState)
     await assertCodexPreCommitFailureReturnsRetryableWhenAllCandidatesFail(baseUrl, probeFailCodexSwitch, upstreamState)
-    await assertCodexTurnProbeFailureReturnsRetryableWithoutProbeDetails(baseUrl, turnProbeFailCodexSwitch, upstreamState)
+    await assertCodexTurnAvoidanceUsesFormalRequestWithoutProbe(baseUrl, turnProbeFailCodexSwitch, upstreamState)
     await assertCodexHttpNon2xxAllCandidatesReturnRetryableSse(baseUrl, httpFailCodex, upstreamState)
     await assertGenericPreCommitFailureSwitchesAccountOnServer(baseUrl, nonCodex, upstreamState)
-    await assertGenericPreCommitFailureReturnsOrdinaryFailureWhenAllCandidatesFail(baseUrl, nonCodexAllFail, upstreamState)
+    await assertGenericPreCommitFailureReturnsRetryableHttpWhenAllCandidatesFail(baseUrl, nonCodexAllFail, upstreamState)
     await assertGenericHttpNon2xxAllCandidatesReturnsGatewayJson(baseUrl, nonCodexHttpAllFail, upstreamState)
     await assertCodexContextWindowSingleRequestSwitchesAccountOnServer(baseUrl, contextWindow, upstreamState)
     await assertCodexCyberPolicySingleRequestSwitchesAccountOnServer(baseUrl, cyberPolicy, upstreamState)
@@ -172,7 +172,7 @@ async function main(): Promise<void> {
       freshUpstreamKey: nonCodexHttpAllFail.probeFailedUpstreamKey
     }])
 
-    console.log('Codex turn 切号 e2e 回归通过：临时库假账号、mock 上游、Codex/普通客户端输出前流失败均由服务端优先隐藏切号，账号耗尽时仅 Codex 返回客户端可重试 SSE，HTTP 非 2xx 建流前失败在 Codex profile 下也收口为可重试 SSE，context_length_exceeded 和 cyber_policy 均可服务端切号，client_aborted 会释放会话亲和，符合预期')
+    console.log('Codex turn 切号 e2e 回归通过：服务端优先隐藏切号并扫完候选，Codex turn 避让直接用正式请求验证备用账号且不执行同步探针，账号耗尽后 Codex 返回协议可重试 SSE、通用客户端返回可重试 HTTP 503，client_aborted 会释放会话亲和')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -188,6 +188,8 @@ async function main(): Promise<void> {
       await readWorkerPool.closeSqliteReadWorkerPool()
       databaseModule.getBusinessDatabase().close()
       databaseModule.closeStorageDatabases()
+      await delay(100)
+      await readWorkerPool.closeSqliteReadWorkerPool()
     } catch {
     }
     await removeTempRoot()
@@ -271,7 +273,7 @@ async function assertCodexPreCommitFailureReturnsRetryableWhenAllCandidatesFail(
   assert.equal(testProbeHitCount(upstreamState, seeded.probeFailedUpstreamKey) - beforeProbeHits, 0, '服务端隐藏重试耗尽前不应消耗 Codex turn 探针')
 }
 
-async function assertCodexTurnProbeFailureReturnsRetryableWithoutProbeDetails(
+async function assertCodexTurnAvoidanceUsesFormalRequestWithoutProbe(
   baseUrl: string,
   seeded: SeededProbeFailureGateway,
   upstreamState: MockUpstreamState
@@ -287,22 +289,18 @@ async function assertCodexTurnProbeFailureReturnsRetryableWithoutProbeDetails(
   const beforeProbeHits = testProbeHitCount(upstreamState, seeded.probeFailedUpstreamKey)
 
   const streamText = await requestResponsesStream(baseUrl, seeded.apiKey, {
-    scenario: 'codex-turn-probe-fail',
+    scenario: 'codex-turn-direct-formal-success',
     turnId,
     codex: true,
-    retryTag: 'turn-probe-exhausted'
+    retryTag: 'turn-direct-formal-request'
   })
-  assert(streamText.includes('response.failed'), `Codex turn 探针耗尽时应返回 SSE 失败事件：${streamText}`)
-  assert(streamText.includes('upstream_retryable_error'), `Codex turn 探针耗尽时应返回客户端可重试错误：${streamText}`)
-  assert(streamText.includes('上游流式响应在输出前失败，请重试'), `Codex turn 探针耗尽时应返回统一可重试文案：${streamText}`)
-  assert(!streamText.includes('codex_switch_probe_failed'), `Codex turn 探针耗尽不应向客户端暴露内部探针错误码：${streamText}`)
-  assert(!streamText.includes('Codex 切号失败'), `Codex turn 探针耗尽不应向客户端暴露内部探针摘要：${streamText}`)
-  assert(!streamText.includes('mock latent account real test failed'), `Codex turn 探针耗尽不应向客户端暴露上游探针错误：${streamText}`)
-  assert(!streamText.includes('response.completed'), `Codex turn 探针耗尽不应伪成功：${streamText}`)
+  assert(streamText.includes('response.completed'), `Codex turn 避让后应直接用正式请求验证备用账号并成功：${streamText}`)
+  assert(!streamText.includes('response.failed'), `正式请求成功时不应返回客户端失败事件：${streamText}`)
+  assert(!streamText.includes('upstream_retryable_error'), `正式请求成功时不应消耗客户端重试：${streamText}`)
 
   assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits, 0, 'Codex turn 避让后不应再次命中已失败账号')
-  assert.equal(hitCount(upstreamState, seeded.probeFailedUpstreamKey) - beforeProbeFailedHits, 0, 'Codex turn 探针失败后不应继续发起正式上游请求')
-  assert.equal(testProbeHitCount(upstreamState, seeded.probeFailedUpstreamKey) - beforeProbeHits, 1, 'Codex turn 应探测唯一备用账号并在失败后兜底')
+  assert.equal(hitCount(upstreamState, seeded.probeFailedUpstreamKey) - beforeProbeFailedHits, 1, 'Codex turn 避让后应直接向备用账号发起正式请求')
+  assert.equal(testProbeHitCount(upstreamState, seeded.probeFailedUpstreamKey) - beforeProbeHits, 0, 'Codex turn 正式请求热路径不应先执行同步账号探针')
 }
 
 async function assertCodexHttpNon2xxAllCandidatesReturnRetryableSse(
@@ -350,7 +348,7 @@ async function assertGenericPreCommitFailureSwitchesAccountOnServer(
   assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshHits, 1, '普通客户端本次请求应隐藏切到备用账号')
 }
 
-async function assertGenericPreCommitFailureReturnsOrdinaryFailureWhenAllCandidatesFail(
+async function assertGenericPreCommitFailureReturnsRetryableHttpWhenAllCandidatesFail(
   baseUrl: string,
   seeded: SeededProbeFailureGateway,
   upstreamState: MockUpstreamState
@@ -359,16 +357,18 @@ async function assertGenericPreCommitFailureReturnsOrdinaryFailureWhenAllCandida
   const beforeProbeFailedHits = hitCount(upstreamState, seeded.probeFailedUpstreamKey)
   const beforeProbeHits = testProbeHitCount(upstreamState, seeded.probeFailedUpstreamKey)
 
-  const streamText = await requestResponsesStream(baseUrl, seeded.apiKey, {
+  const result = await requestResponsesRaw(baseUrl, seeded.apiKey, {
     scenario: 'codex-missing-terminal-switch',
     turnId: 'non-codex-all-fail',
     codex: false,
     retryTag: 'server-retry-exhausted'
   })
-  assert(streamText.includes('response.failed'), `普通客户端全部账号耗尽时应返回普通 SSE 失败事件：${streamText}`)
-  assert(streamText.includes('upstream_stream_interrupted'), `普通客户端全部账号耗尽时应保留普通流失败码：${streamText}`)
-  assert(!streamText.includes('upstream_retryable_error'), `普通客户端全部账号耗尽时不应返回 Codex 专用可重试错误：${streamText}`)
-  assert(!streamText.includes('response.completed'), `普通客户端全部账号耗尽不应伪成功：${streamText}`)
+  assert.equal(result.status, 503, `普通客户端全部账号耗尽时应返回可重试 HTTP 503：${result.status} ${result.text}`)
+  assert(result.contentType.includes('application/json'), `普通客户端未提交下游时应返回协议 JSON 错误：${result.contentType}`)
+  assert(result.text.includes('upstream_retryable_error'), `普通客户端全部账号耗尽时应返回网关稳定可重试码：${result.text}`)
+  assert(!result.text.includes('response.failed'), `普通客户端全部账号耗尽时不应伪造 Responses SSE：${result.text}`)
+  assert(!result.text.includes('internal_server_error'), `普通客户端最终 HTTP 失败不应透出上游错误码：${result.text}`)
+  assert(!result.text.includes('mock upstream failed before output'), `普通客户端最终 HTTP 失败不应透出上游错误文案：${result.text}`)
 
   assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits, 1, '普通客户端全部失败场景应先命中首选死号')
   assert.equal(hitCount(upstreamState, seeded.probeFailedUpstreamKey) - beforeProbeFailedHits, 1, '普通客户端全部失败场景应隐藏重试唯一备用号')
@@ -393,7 +393,7 @@ async function assertGenericHttpNon2xxAllCandidatesReturnsGatewayJson(
   assert(result.contentType.includes('application/json'), `普通客户端 HTTP 非 2xx 全部账号耗尽时应返回 JSON：${result.contentType}`)
   assert(result.text.includes('service_unavailable'), `普通客户端 HTTP 非 2xx 全部账号耗尽时应返回网关统一错误：${result.text}`)
   assert(!result.text.includes('response.failed'), `普通客户端 HTTP 非 2xx 全部账号耗尽时不应伪造 SSE：${result.text}`)
-  assert(!result.text.includes('upstream_retryable_error'), `普通客户端 HTTP 非 2xx 全部账号耗尽时不应返回 Codex 专用可重试错误：${result.text}`)
+  assert(result.text.includes('upstream_retryable_error'), `普通客户端 HTTP 非 2xx 全部账号耗尽时应返回网关稳定可重试码：${result.text}`)
 
   assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits, 1, '普通客户端 HTTP 非 2xx 全部失败场景应先命中首选账号')
   assert.equal(hitCount(upstreamState, seeded.probeFailedUpstreamKey) - beforeProbeFailedHits, 1, '普通客户端 HTTP 非 2xx 全部失败场景应继续尝试唯一备用号')
@@ -823,6 +823,10 @@ function createMockOpenAIUpstream(state: MockUpstreamState): http.Server {
         sendCompletedStream(res)
         return
       }
+      if (scenario === 'codex-turn-direct-formal-success') {
+        sendCompletedStream(res)
+        return
+      }
       if (upstreamKey.endsWith('-fresh')) {
         sendCompletedStream(res)
         return
@@ -1208,6 +1212,7 @@ function resolveMockScenario(body: Record<string, unknown>): string {
     'client-abort-before-upstream-headers',
     'client-abort-before-terminal',
     'after-client-abort',
+    'codex-turn-direct-formal-success',
     'codex-http-non2xx-all-fail',
     'codex-missing-terminal-switch',
     'context-window-error',
@@ -1326,10 +1331,10 @@ function forceGroupAccountOrder(groupId: string, primaryAccountId: string, stick
 
 function assertCodexAccountScopedGuidanceIsNotClientRetryable(): void {
   const routesSource = readFileSync(new URL('../../modules/gateway/routes.ts', import.meta.url), 'utf8')
-  const retryPredicate = sourceFunctionBlock(routesSource, 'function shouldSendCodexDispatchExhaustedStreamRetry')
+  const retryPredicate = sourceFunctionBlock(routesSource, 'function shouldSendDispatchExhaustedProtocolRetry')
   assert(
     retryPredicate.includes('!error.agentGuidanceResponse'),
-    'Codex account-scoped agent guidance 不能进入 upstream_retryable_error SSE 分支，否则客户端会反复重试同一路径'
+    '账号范围的协议能力提示不能进入客户端可重试分支，否则客户端会反复重试同一路径'
   )
 }
 
