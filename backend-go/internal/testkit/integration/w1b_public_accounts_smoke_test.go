@@ -4,11 +4,17 @@ package integration
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -33,6 +39,7 @@ const (
 	w1bDisabledCustomModel            = "w1b-disabled-model"
 	w1bUnpricedCustomModel            = "w1b-unpriced-model"
 	w1bUnknownModel                   = "w1b-unknown-model"
+	w1bCredentialSecret               = "w1b-public-account-integration-secret"
 )
 
 var w1bGPTDefaultSupportedModels = []string{
@@ -48,6 +55,19 @@ var w1bGPTDefaultSupportedModels = []string{
 type w1bPublicAccountModelBinding struct {
 	Model     string
 	CreatedAt time.Time
+}
+
+type w1bPublicAccountRuntimeState struct {
+	Status                      string
+	Schedulable                 bool
+	CooldownUntil               sql.NullTime
+	LastErrorCode               sql.NullString
+	LastErrorMessage            sql.NullString
+	NextHealthCheckAt           sql.NullTime
+	HealthCheckFailureCount     int
+	LastHealthCheckStatusCode   sql.NullInt64
+	LastHealthCheckErrorCode    sql.NullString
+	LastHealthCheckErrorMessage sql.NullString
 }
 
 func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
@@ -89,7 +109,7 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 		ProviderModels: managementprovidermodels.NewService(store),
 		Now:            func() time.Time { return now },
 		NewID:          sequenceID("w1b_account"),
-		Secret:         "w1b-public-account-integration-secret",
+		Secret:         w1bCredentialSecret,
 	})
 
 	initialSecret := "sk-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -326,6 +346,46 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 		t.Fatalf("pending -> active err = %v, want ErrInvalidStatusTransition", err)
 	}
 
+	credentialExtensions := map[string]any{
+		"api_key":          initialSecret,
+		"base_url":         "https://api.openai.com/v1",
+		"service_tier":     "priority",
+		"reasoning_effort": "high",
+		"endpoint": map[string]any{
+			"path": "/responses",
+			"mode": "strict",
+		},
+		"error": map[string]any{
+			"code":   "fixture_error",
+			"policy": "retry",
+		},
+	}
+	setW1bPublicAccountCredentials(t, ctx, db, accountID, w1bCredentialSecret, credentialExtensions)
+	seedW1bPublicAccountRuntimeState(t, ctx, db, accountID, now)
+	partialUpdatedSecret := "sk-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	updatedCredentials, err := service.Update(ctx, publicaccounts.UpdateInput{
+		AccountID: accountID,
+		APIKey:    &partialUpdatedSecret,
+	})
+	if err != nil {
+		t.Fatalf("partially update public account credentials: %v", err)
+	}
+	if updatedCredentials.Account == nil ||
+		updatedCredentials.Account.Status != publicaccounts.StatusPendingTest ||
+		updatedCredentials.Account.Schedulable {
+		t.Fatalf("partially updated account = %+v", updatedCredentials.Account)
+	}
+	credentialExtensions["api_key"] = partialUpdatedSecret
+	assertW1bPublicAccountCredentials(
+		t,
+		ctx,
+		db,
+		accountID,
+		w1bCredentialSecret,
+		credentialExtensions,
+	)
+	assertW1bPublicAccountRuntimeReset(t, ctx, db, accountID)
+
 	invalidUpdatedName := "不应保存的账号名称"
 	invalidUpdatedSecret := "sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	if _, err := service.Update(ctx, publicaccounts.UpdateInput{
@@ -337,11 +397,13 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 		t.Fatalf("update with unknown supportedModels err = %v, want ErrInvalidSupportedModels", err)
 	}
 	assertW1bPublicAccountName(t, ctx, db, accountID, "公开账号")
-	assertW1bPublicAccountStored(t, ctx, db, accountID, initialSecret, publicaccounts.StatusPendingTest, false)
+	assertW1bPublicAccountStored(t, ctx, db, accountID, partialUpdatedSecret, publicaccounts.StatusPendingTest, false)
 	assertW1bPublicAccountModels(t, ctx, db, accountID, w1bGPTDefaultSupportedModels)
 
 	// Make any unintended delete-and-reinsert use a different created_at value.
 	now = now.Add(time.Minute)
+	seedW1bPublicAccountRuntimeState(t, ctx, db, accountID, now)
+	runtimeBeforeOmittedUpdate := readW1bPublicAccountRuntimeState(t, ctx, db, accountID)
 	modelBindingsBeforeOmittedUpdate := readW1bPublicAccountModelBindings(t, ctx, db, accountID)
 	preservedWithoutModelUpdate, err := service.Update(ctx, publicaccounts.UpdateInput{
 		AccountID: accountID,
@@ -354,6 +416,11 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 	assertW1bPublicAccountModels(t, ctx, db, accountID, w1bGPTDefaultSupportedModels)
 	assertW1bPublicAccountModelBindingsUnchanged(t, ctx, db, accountID, modelBindingsBeforeOmittedUpdate)
 	assertW1bPublicAccountResponseHidesHealthCheckModel(t, preservedWithoutModelUpdate)
+	assertW1bPublicAccountRuntimeState(
+		t,
+		readW1bPublicAccountRuntimeState(t, ctx, db, accountID),
+		runtimeBeforeOmittedUpdate,
+	)
 
 	setW1bPublicAccountHealthCheckModel(t, ctx, db, accountID, w1bUnknownModel)
 	modelBindingsBeforeInvalidHealthUpdate := readW1bPublicAccountModelBindings(t, ctx, db, accountID)
@@ -383,8 +450,14 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 	assertW1bPublicAccountModels(t, ctx, db, accountID, w1bGPTDefaultSupportedModels)
 	assertW1bPublicAccountModelBindingsUnchanged(t, ctx, db, accountID, modelBindingsBeforeEquivalentUpdate)
 	assertW1bPublicAccountResponseHidesHealthCheckModel(t, preservedForEquivalentModels)
+	assertW1bPublicAccountRuntimeState(
+		t,
+		readW1bPublicAccountRuntimeState(t, ctx, db, accountID),
+		runtimeBeforeOmittedUpdate,
+	)
 
 	setW1bPublicAccountHealthCheckModel(t, ctx, db, accountID, w1bValidBuiltInModel)
+	seedW1bPublicAccountRuntimeState(t, ctx, db, accountID, now)
 	preservedForContainingModels, err := service.Update(ctx, publicaccounts.UpdateInput{
 		AccountID:       accountID,
 		SupportedModels: publicaccounts.NewStringListValue([]string{w1bValidBuiltInModel, "gpt-5.5"}, true),
@@ -395,6 +468,7 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 	assertW1bPublicAccountHealthCheckModel(t, ctx, db, accountID, w1bValidBuiltInModel)
 	assertW1bPublicAccountModels(t, ctx, db, accountID, []string{w1bValidBuiltInModel, "gpt-5.5"})
 	assertW1bPublicAccountResponseHidesHealthCheckModel(t, preservedForContainingModels)
+	assertW1bPublicAccountRuntimeReset(t, ctx, db, accountID)
 
 	modelBindingsBeforeRejectedRemoval := readW1bPublicAccountModelBindings(t, ctx, db, accountID)
 	if _, err := service.Update(ctx, publicaccounts.UpdateInput{
@@ -407,6 +481,8 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 	assertW1bPublicAccountModels(t, ctx, db, accountID, []string{w1bValidBuiltInModel, "gpt-5.5"})
 	assertW1bPublicAccountModelBindingsUnchanged(t, ctx, db, accountID, modelBindingsBeforeRejectedRemoval)
 
+	seedW1bPublicAccountRuntimeState(t, ctx, db, accountID, now)
+	runtimeBeforeDisabledUpdate := readW1bPublicAccountRuntimeState(t, ctx, db, accountID)
 	updatedSecret := "sk-fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
 	updatedBaseURL := "https://api.openai.com/v2"
 	updatedName := "公开账号更新"
@@ -437,6 +513,11 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 	}
 	assertW1bPublicAccountStored(t, ctx, db, accountID, updatedSecret, publicaccounts.StatusDisabled, false)
 	assertW1bPublicAccountModels(t, ctx, db, accountID, []string{w1bValidBuiltInModel})
+	assertW1bPublicAccountDisabledRuntimeState(
+		t,
+		readW1bPublicAccountRuntimeState(t, ctx, db, accountID),
+		runtimeBeforeDisabledUpdate,
+	)
 
 	hybridModel := "w1b-hybrid-arbitrary-model"
 	setW1bProviderHealthCheckModelPreference(t, ctx, db, created.Target.SystemAccountID, "hybrid", hybridModel, now)
@@ -558,6 +639,248 @@ func assertW1bPublicAccountStored(t *testing.T, ctx context.Context, db *sql.DB,
 	if status != wantStatus || schedulable != wantSchedulable {
 		t.Fatalf("status/schedulable = %s/%v, want %s/%v", status, schedulable, wantStatus, wantSchedulable)
 	}
+}
+
+func setW1bPublicAccountCredentials(
+	t *testing.T,
+	ctx context.Context,
+	db *sql.DB,
+	accountID string,
+	secret string,
+	credentials map[string]any,
+) {
+	t.Helper()
+
+	encrypted := encryptW1bCredentials(t, secret, credentials)
+	if _, err := db.ExecContext(ctx, `
+		UPDATE juhe_business.accounts
+		SET credentials_encrypted = $2
+		WHERE id = $1 AND deleted_at IS NULL
+	`, accountID, encrypted); err != nil {
+		t.Fatalf("set public account credentials: %v", err)
+	}
+}
+
+func assertW1bPublicAccountCredentials(
+	t *testing.T,
+	ctx context.Context,
+	db *sql.DB,
+	accountID string,
+	secret string,
+	want map[string]any,
+) {
+	t.Helper()
+
+	var encrypted string
+	if err := db.QueryRowContext(ctx, `
+		SELECT credentials_encrypted
+		FROM juhe_business.accounts
+		WHERE id = $1 AND deleted_at IS NULL
+	`, accountID).Scan(&encrypted); err != nil {
+		t.Fatalf("read public account credentials: %v", err)
+	}
+	got := decryptW1bCredentials(t, secret, encrypted)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("credentials = %#v, want %#v", got, want)
+	}
+}
+
+func encryptW1bCredentials(t *testing.T, secret string, credentials map[string]any) string {
+	t.Helper()
+
+	key := sha256.Sum256([]byte(secret))
+	block, err := aes.NewCipher(key[:])
+	if err != nil {
+		t.Fatalf("create credential cipher: %v", err)
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatalf("create credential GCM: %v", err)
+	}
+	nonce := make([]byte, aead.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		t.Fatalf("create credential nonce: %v", err)
+	}
+	plain, err := json.Marshal(credentials)
+	if err != nil {
+		t.Fatalf("marshal credentials: %v", err)
+	}
+	sealed := aead.Seal(nil, nonce, plain, nil)
+	tagSize := aead.Overhead()
+	encode := base64.RawURLEncoding.EncodeToString
+	return "v1:" +
+		encode(nonce) + ":" +
+		encode(sealed[len(sealed)-tagSize:]) + ":" +
+		encode(sealed[:len(sealed)-tagSize])
+}
+
+func decryptW1bCredentials(t *testing.T, secret string, encrypted string) map[string]any {
+	t.Helper()
+
+	parts := strings.Split(encrypted, ":")
+	if len(parts) != 4 || parts[0] != "v1" {
+		t.Fatalf("credential format = %q", encrypted)
+	}
+	decode := base64.RawURLEncoding.DecodeString
+	nonce, err := decode(parts[1])
+	if err != nil {
+		t.Fatalf("decode credential nonce: %v", err)
+	}
+	tag, err := decode(parts[2])
+	if err != nil {
+		t.Fatalf("decode credential tag: %v", err)
+	}
+	ciphertext, err := decode(parts[3])
+	if err != nil {
+		t.Fatalf("decode credential ciphertext: %v", err)
+	}
+	key := sha256.Sum256([]byte(secret))
+	block, err := aes.NewCipher(key[:])
+	if err != nil {
+		t.Fatalf("create credential cipher: %v", err)
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatalf("create credential GCM: %v", err)
+	}
+	plain, err := aead.Open(nil, nonce, append(ciphertext, tag...), nil)
+	if err != nil {
+		t.Fatalf("decrypt credentials: %v", err)
+	}
+	var credentials map[string]any
+	if err := json.Unmarshal(plain, &credentials); err != nil {
+		t.Fatalf("unmarshal credentials: %v", err)
+	}
+	return credentials
+}
+
+func seedW1bPublicAccountRuntimeState(t *testing.T, ctx context.Context, db *sql.DB, accountID string, now time.Time) {
+	t.Helper()
+
+	if _, err := db.ExecContext(ctx, `
+		UPDATE juhe_business.accounts
+		SET status = 'active',
+		    schedulable = true,
+		    cooldown_until = $2,
+		    last_error_code = 'fixture_runtime_error',
+		    last_error_message = 'fixture runtime error',
+		    next_health_check_at = $3,
+		    health_check_failure_count = 3,
+		    last_health_check_status_code = 503,
+		    last_health_check_error_code = 'fixture_health_error',
+		    last_health_check_error_message = 'fixture health error'
+		WHERE id = $1 AND deleted_at IS NULL
+	`, accountID, now.Add(30*time.Minute), now.Add(10*time.Minute)); err != nil {
+		t.Fatalf("seed public account runtime state: %v", err)
+	}
+}
+
+func readW1bPublicAccountRuntimeState(
+	t *testing.T,
+	ctx context.Context,
+	db *sql.DB,
+	accountID string,
+) w1bPublicAccountRuntimeState {
+	t.Helper()
+
+	var state w1bPublicAccountRuntimeState
+	if err := db.QueryRowContext(ctx, `
+		SELECT
+		  status,
+		  schedulable,
+		  cooldown_until,
+		  last_error_code,
+		  last_error_message,
+		  next_health_check_at,
+		  health_check_failure_count,
+		  last_health_check_status_code,
+		  last_health_check_error_code,
+		  last_health_check_error_message
+		FROM juhe_business.accounts
+		WHERE id = $1 AND deleted_at IS NULL
+	`, accountID).Scan(
+		&state.Status,
+		&state.Schedulable,
+		&state.CooldownUntil,
+		&state.LastErrorCode,
+		&state.LastErrorMessage,
+		&state.NextHealthCheckAt,
+		&state.HealthCheckFailureCount,
+		&state.LastHealthCheckStatusCode,
+		&state.LastHealthCheckErrorCode,
+		&state.LastHealthCheckErrorMessage,
+	); err != nil {
+		t.Fatalf("read public account runtime state: %v", err)
+	}
+	return state
+}
+
+func assertW1bPublicAccountRuntimeReset(t *testing.T, ctx context.Context, db *sql.DB, accountID string) {
+	t.Helper()
+
+	got := readW1bPublicAccountRuntimeState(t, ctx, db, accountID)
+	if got.Status != publicaccounts.StatusPendingTest ||
+		got.Schedulable ||
+		got.CooldownUntil.Valid ||
+		got.LastErrorCode.Valid ||
+		!got.LastErrorMessage.Valid ||
+		got.LastErrorMessage.String != "账户配置已保存，等待后台检查" ||
+		got.NextHealthCheckAt.Valid ||
+		got.HealthCheckFailureCount != 0 ||
+		got.LastHealthCheckStatusCode.Valid ||
+		got.LastHealthCheckErrorCode.Valid ||
+		got.LastHealthCheckErrorMessage.Valid {
+		t.Fatalf("runtime state was not reset: %+v", got)
+	}
+}
+
+func assertW1bPublicAccountRuntimeState(
+	t *testing.T,
+	got w1bPublicAccountRuntimeState,
+	want w1bPublicAccountRuntimeState,
+) {
+	t.Helper()
+
+	if got.Status != want.Status ||
+		got.Schedulable != want.Schedulable ||
+		!equalW1bNullTime(got.CooldownUntil, want.CooldownUntil) ||
+		got.LastErrorCode != want.LastErrorCode ||
+		got.LastErrorMessage != want.LastErrorMessage ||
+		!equalW1bNullTime(got.NextHealthCheckAt, want.NextHealthCheckAt) ||
+		got.HealthCheckFailureCount != want.HealthCheckFailureCount ||
+		got.LastHealthCheckStatusCode != want.LastHealthCheckStatusCode ||
+		got.LastHealthCheckErrorCode != want.LastHealthCheckErrorCode ||
+		got.LastHealthCheckErrorMessage != want.LastHealthCheckErrorMessage {
+		t.Fatalf("runtime state = %+v, want %+v", got, want)
+	}
+}
+
+func assertW1bPublicAccountDisabledRuntimeState(
+	t *testing.T,
+	got w1bPublicAccountRuntimeState,
+	before w1bPublicAccountRuntimeState,
+) {
+	t.Helper()
+
+	if got.Status != publicaccounts.StatusDisabled ||
+		got.Schedulable ||
+		got.CooldownUntil.Valid ||
+		got.LastErrorCode.Valid ||
+		got.LastErrorMessage.Valid ||
+		!equalW1bNullTime(got.NextHealthCheckAt, before.NextHealthCheckAt) ||
+		got.HealthCheckFailureCount != before.HealthCheckFailureCount ||
+		got.LastHealthCheckStatusCode != before.LastHealthCheckStatusCode ||
+		got.LastHealthCheckErrorCode != before.LastHealthCheckErrorCode ||
+		got.LastHealthCheckErrorMessage != before.LastHealthCheckErrorMessage {
+		t.Fatalf("disabled runtime state = %+v, before %+v", got, before)
+	}
+}
+
+func equalW1bNullTime(left sql.NullTime, right sql.NullTime) bool {
+	if left.Valid != right.Valid {
+		return false
+	}
+	return !left.Valid || left.Time.Equal(right.Time)
 }
 
 func assertW1bPublicAccountName(t *testing.T, ctx context.Context, db *sql.DB, accountID string, want string) {
