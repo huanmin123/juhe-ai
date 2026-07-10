@@ -278,28 +278,30 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 	assertW1bPublicAccountModels(t, ctx, db, accountID, w1bGPTDefaultSupportedModels)
 
 	setW1bPublicAccountDefaultTestModel(t, ctx, db, accountID, w1bUnknownModel)
-	preservedWithoutModelUpdate, err := service.Update(ctx, publicaccounts.UpdateInput{
+	clearedWithoutModelUpdate, err := service.Update(ctx, publicaccounts.UpdateInput{
 		AccountID: accountID,
 		Notes:     publicaccounts.NewOptionalString(ptrIntegrationString("仅更新备注"), true),
 	})
 	if err != nil {
 		t.Fatalf("update public account without supportedModels: %v", err)
 	}
-	assertW1bPublicAccountDefaultTestModel(t, ctx, db, accountID, w1bUnknownModel)
-	assertW1bPublicAccountResponseHidesDefaultTestModel(t, preservedWithoutModelUpdate)
+	assertW1bPublicAccountDefaultTestModel(t, ctx, db, accountID, "")
+	assertW1bPublicAccountModels(t, ctx, db, accountID, w1bGPTDefaultSupportedModels)
+	assertW1bPublicAccountResponseHidesDefaultTestModel(t, clearedWithoutModelUpdate)
 
+	setW1bPublicAccountDefaultTestModel(t, ctx, db, accountID, w1bUnknownModel)
 	equivalentModels := slices.Clone(w1bGPTDefaultSupportedModels)
 	slices.Reverse(equivalentModels)
-	preservedForEquivalentModels, err := service.Update(ctx, publicaccounts.UpdateInput{
+	clearedForEquivalentModels, err := service.Update(ctx, publicaccounts.UpdateInput{
 		AccountID:       accountID,
 		SupportedModels: publicaccounts.NewStringListValue(equivalentModels, true),
 	})
 	if err != nil {
 		t.Fatalf("update public account with equivalent supportedModels: %v", err)
 	}
-	assertW1bPublicAccountDefaultTestModel(t, ctx, db, accountID, w1bUnknownModel)
+	assertW1bPublicAccountDefaultTestModel(t, ctx, db, accountID, "")
 	assertW1bPublicAccountModels(t, ctx, db, accountID, w1bGPTDefaultSupportedModels)
-	assertW1bPublicAccountResponseHidesDefaultTestModel(t, preservedForEquivalentModels)
+	assertW1bPublicAccountResponseHidesDefaultTestModel(t, clearedForEquivalentModels)
 
 	setW1bPublicAccountDefaultTestModel(t, ctx, db, accountID, w1bValidBuiltInModel)
 	preservedForContainingModels, err := service.Update(ctx, publicaccounts.UpdateInput{

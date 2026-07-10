@@ -476,7 +476,6 @@ func publicAccountUpdate(ctx context.Context, q *postgresqueries.Queries, input 
 		Schedulable:              input.Schedulable,
 		AvailabilityScheduleJson: pgTextPtr(input.AvailabilityScheduleJSON),
 		Notes:                    pgTextPtr(input.Notes),
-		SupportedModelsChanged:   input.SupportedModelsChanged,
 		SupportedModels:          input.SupportedModels,
 		UpdatedAt:                pgTimestamptz(input.Now),
 		ID:                       input.ID,

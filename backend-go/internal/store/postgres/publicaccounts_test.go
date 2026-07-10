@@ -34,7 +34,7 @@ func TestFindPublicAccountProviderProfileQuerySelectsDefaultSupportedModels(t *t
 	}
 }
 
-func TestUpdatePublicAccountQueryClearsDefaultTestModelOnlyForChangedSupportedModels(t *testing.T) {
+func TestUpdatePublicAccountQueryAlwaysClearsUnsupportedDefaultTestModel(t *testing.T) {
 	source, err := os.ReadFile("queries/w1b_public_accounts.sql")
 	if err != nil {
 		t.Fatalf("read public account query: %v", err)
@@ -48,7 +48,6 @@ func TestUpdatePublicAccountQueryClearsDefaultTestModelOnlyForChangedSupportedMo
 	query := sql[start:end]
 	for _, want := range []string{
 		"default_test_model = CASE",
-		"sqlc.arg(supported_models_changed)::boolean",
 		"default_test_model IS NOT NULL",
 		"default_test_model <> ALL(COALESCE(sqlc.arg(supported_models)::text[], ARRAY[]::text[]))",
 		"THEN NULL",
@@ -57,6 +56,9 @@ func TestUpdatePublicAccountQueryClearsDefaultTestModelOnlyForChangedSupportedMo
 		if !strings.Contains(query, want) {
 			t.Fatalf("public account update query missing %q in:\n%s", want, query)
 		}
+	}
+	if strings.Contains(query, "supported_models_changed") {
+		t.Fatalf("public account update query must not gate default model cleanup on supported_models_changed:\n%s", query)
 	}
 }
 
