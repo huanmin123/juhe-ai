@@ -299,6 +299,7 @@ func TestConfigManagementAPIEnabledRequiresRuntimeDependencies(t *testing.T) {
 		RedisNamespace:       "juhe-ai",
 		TrustProxy:           "false",
 		ManagementAPIEnabled: true,
+		RedisCacheURL:        "redis://127.0.0.1:6379/0",
 		RedisStateURL:        "redis://127.0.0.1:6379/1",
 		RedisQueueURL:        "redis://127.0.0.1:6379/2",
 		Secret:               "12345678901234567890123456789012",
@@ -314,6 +315,11 @@ func TestConfigManagementAPIEnabledRequiresRuntimeDependencies(t *testing.T) {
 			name: "state redis",
 			edit: func(cfg *Config) { cfg.RedisStateURL = "" },
 			want: "JUHE_AI_REDIS_STATE_URL",
+		},
+		{
+			name: "cache redis",
+			edit: func(cfg *Config) { cfg.RedisCacheURL = "" },
+			want: "JUHE_AI_REDIS_CACHE_URL",
 		},
 		{
 			name: "queue redis",
@@ -395,6 +401,7 @@ func TestLoadParsesPublicAPIEnv(t *testing.T) {
 
 func TestLoadParsesManagementAPIEnv(t *testing.T) {
 	t.Setenv("JUHE_AI_MANAGEMENT_API_ENABLED", "true")
+	t.Setenv("JUHE_AI_REDIS_CACHE_URL", "redis://127.0.0.1:6379/0")
 	t.Setenv("JUHE_AI_REDIS_STATE_URL", "redis://127.0.0.1:6379/1")
 	t.Setenv("JUHE_AI_REDIS_QUEUE_URL", "redis://127.0.0.1:6379/2")
 	t.Setenv("JUHE_AI_SECRET", "12345678901234567890123456789012")

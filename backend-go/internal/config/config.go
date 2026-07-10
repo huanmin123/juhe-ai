@@ -202,6 +202,9 @@ func validateManagementAPIConfig(cfg Config) error {
 	if !cfg.ManagementAPIEnabled {
 		return nil
 	}
+	if strings.TrimSpace(cfg.RedisCacheURL) == "" {
+		return fmt.Errorf("启用 JUHE_AI_MANAGEMENT_API_ENABLED 时 JUHE_AI_REDIS_CACHE_URL 不能为空")
+	}
 	if strings.TrimSpace(cfg.RedisQueueURL) == "" {
 		return fmt.Errorf("启用 JUHE_AI_MANAGEMENT_API_ENABLED 时 JUHE_AI_REDIS_QUEUE_URL 不能为空")
 	}

@@ -90,7 +90,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		}
 	}
 
-	systemAccountInvalidator, closeSystemAccountInvalidator, err := newGatewaySystemAccountInvalidator(ctx, cfg, stateRedis, logger)
+	systemAccountInvalidator, closeSystemAccountInvalidator, err := newGatewaySystemAccountInvalidator(ctx, cfg, stateRedis)
 	if err != nil {
 		return err
 	}
@@ -538,7 +538,6 @@ func newGatewaySystemAccountInvalidator(
 	ctx context.Context,
 	cfg config.Config,
 	stateRedis *redisplatform.Client,
-	logger *slog.Logger,
 ) (gatewayCacheInvalidator, func(), error) {
 	closeFn := func() {}
 	if !cfg.ManagementAPIEnabled && !cfg.PublicAPIEnabled {
@@ -549,12 +548,7 @@ func newGatewaySystemAccountInvalidator(
 	}
 	var cacheRedis *redisplatform.Client
 	if cfg.RedisCacheURL == "" {
-		if cfg.PublicAPIEnabled {
-			return nil, closeFn, fmt.Errorf("gateway API Key invalidator requires JUHE_AI_REDIS_CACHE_URL when public API is enabled")
-		}
-		if logger != nil {
-			logger.Warn("Go 管理 API 未配置 Redis cache，相关管理写操作不会触发共享缓存版本刷新")
-		}
+		return nil, closeFn, fmt.Errorf("gateway invalidator requires JUHE_AI_REDIS_CACHE_URL when management or public API is enabled")
 	} else {
 		var err error
 		cacheRedis, err = redisplatform.NewClient(cfg.RedisCacheURL, cfg.RedisNamespace+":cache")
