@@ -707,11 +707,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Summary, error
 	if err != nil {
 		return Summary{}, err
 	}
-	if s.authorizationInvalidator != nil {
-		if err := s.authorizationInvalidator.InvalidateAuthorizationChanged(ctx, ResourceAuthorizationCreatedReason); err != nil {
-			return Summary{}, err
-		}
-	}
+	s.invalidateAuthorizationChangedBestEffort(ctx, ResourceAuthorizationCreatedReason)
 	return row, nil
 }
 
@@ -785,11 +781,7 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (Summary, bool,
 	if !found {
 		return Summary{}, false, nil
 	}
-	if s.authorizationInvalidator != nil {
-		if err := s.authorizationInvalidator.InvalidateAuthorizationChanged(ctx, ResourceAuthorizationUpdatedReason); err != nil {
-			return Summary{}, false, err
-		}
-	}
+	s.invalidateAuthorizationChangedBestEffort(ctx, ResourceAuthorizationUpdatedReason)
 	return row, true, nil
 }
 
@@ -816,11 +808,7 @@ func (s *Service) Return(ctx context.Context, input ReturnInput) (Summary, bool,
 	if !found {
 		return Summary{}, false, nil
 	}
-	if s.authorizationInvalidator != nil {
-		if err := s.authorizationInvalidator.InvalidateAuthorizationChanged(ctx, ResourceAuthorizationReturnedReason); err != nil {
-			return Summary{}, false, err
-		}
-	}
+	s.invalidateAuthorizationChangedBestEffort(ctx, ResourceAuthorizationReturnedReason)
 	return row, true, nil
 }
 
@@ -849,11 +837,7 @@ func (s *Service) ReturnByResource(ctx context.Context, input ResourceReturnInpu
 	if !found {
 		return Summary{}, false, nil
 	}
-	if s.authorizationInvalidator != nil {
-		if err := s.authorizationInvalidator.InvalidateAuthorizationChanged(ctx, ResourceAuthorizationReturnedReason); err != nil {
-			return Summary{}, false, err
-		}
-	}
+	s.invalidateAuthorizationChangedBestEffort(ctx, ResourceAuthorizationReturnedReason)
 	return row, true, nil
 }
 
@@ -885,11 +869,7 @@ func (s *Service) Revoke(ctx context.Context, input RevokeInput) (Summary, bool,
 	if !found {
 		return Summary{}, false, nil
 	}
-	if s.authorizationInvalidator != nil {
-		if err := s.authorizationInvalidator.InvalidateAuthorizationChanged(ctx, ResourceAuthorizationRevokedReason); err != nil {
-			return Summary{}, false, err
-		}
-	}
+	s.invalidateAuthorizationChangedBestEffort(ctx, ResourceAuthorizationRevokedReason)
 	return row, true, nil
 }
 
@@ -911,12 +891,17 @@ func (s *Service) ExpireDue(ctx context.Context, input ExpirySweepInput) (Expiry
 	if err != nil {
 		return ExpirySweepResult{}, err
 	}
-	if result.Expired > 0 && s.authorizationInvalidator != nil {
-		if err := s.authorizationInvalidator.InvalidateAuthorizationChanged(ctx, ResourceAuthorizationExpiredReason); err != nil {
-			return ExpirySweepResult{}, err
-		}
+	if result.Expired > 0 {
+		s.invalidateAuthorizationChangedBestEffort(ctx, ResourceAuthorizationExpiredReason)
 	}
 	return ExpirySweepResult{Expired: result.Expired}, nil
+}
+
+func (s *Service) invalidateAuthorizationChangedBestEffort(ctx context.Context, reason string) {
+	if s.authorizationInvalidator == nil {
+		return
+	}
+	_ = s.authorizationInvalidator.InvalidateAuthorizationChanged(ctx, reason)
 }
 
 func (s *Service) RefreshUsageRangeWindows(ctx context.Context, input UsageRangeWindowRefreshInput) (UsageRangeWindowRefreshResult, error) {

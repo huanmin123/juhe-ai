@@ -745,6 +745,158 @@ func TestServiceExpireDueDoesNotInvalidateWhenStoreFails(t *testing.T) {
 	}
 }
 
+func TestServiceAuthorizationInvalidationFailureDoesNotOverrideSuccessfulWrite(t *testing.T) {
+	now := time.Date(2026, 7, 9, 14, 30, 0, 0, time.UTC)
+	invalidationErr := errors.New("invalidation failed")
+	type writeResult struct {
+		id      string
+		found   bool
+		expired int
+	}
+	tests := []struct {
+		name        string
+		wantReason  string
+		wantID      string
+		wantFound   bool
+		wantExpired int
+		run         func(*authorizationInvalidatorStub) (writeResult, error)
+	}{
+		{
+			name:       "create",
+			wantReason: ResourceAuthorizationCreatedReason,
+			wantID:     "rauthgrant_created",
+			wantFound:  true,
+			run: func(invalidator *authorizationInvalidatorStub) (writeResult, error) {
+				service := NewServiceWithOptions(ServiceOptions{
+					Store:                    &authorizationCreateStoreStub{result: Summary{ID: "rauthgrant_created"}},
+					Now:                      func() time.Time { return now },
+					AuthorizationInvalidator: invalidator,
+				})
+				result, err := service.Create(context.Background(), CreateInput{
+					ResourceType:                 "group",
+					ResourceID:                   "grp_owner",
+					ResourceOwnerSystemAccountID: "sys_owner",
+					GranteeType:                  "team",
+					GranteeID:                    "team_ops",
+					ActorSystemAccountID:         "sys_admin",
+				})
+				return writeResult{id: result.ID, found: err == nil}, err
+			},
+		},
+		{
+			name:       "update",
+			wantReason: ResourceAuthorizationUpdatedReason,
+			wantID:     "rauthgrant_updated",
+			wantFound:  true,
+			run: func(invalidator *authorizationInvalidatorStub) (writeResult, error) {
+				service := NewServiceWithOptions(ServiceOptions{
+					UpdateStore:              &authorizationUpdateStoreStub{result: Summary{ID: "rauthgrant_updated"}, found: true},
+					Now:                      func() time.Time { return now },
+					AuthorizationInvalidator: invalidator,
+				})
+				result, found, err := service.Update(context.Background(), UpdateInput{
+					AuthorizationID:      "rauthgrant_updated",
+					ActorSystemAccountID: "sys_admin",
+					ActorRole:            "admin",
+					HasStatus:            true,
+					Status:               "paused",
+				})
+				return writeResult{id: result.ID, found: found}, err
+			},
+		},
+		{
+			name:       "return",
+			wantReason: ResourceAuthorizationReturnedReason,
+			wantID:     "rauthgrant_returned",
+			wantFound:  true,
+			run: func(invalidator *authorizationInvalidatorStub) (writeResult, error) {
+				service := NewServiceWithOptions(ServiceOptions{
+					ReturnStore:              &authorizationReturnStoreStub{result: Summary{ID: "rauthgrant_returned"}, found: true},
+					Now:                      func() time.Time { return now },
+					AuthorizationInvalidator: invalidator,
+				})
+				result, found, err := service.Return(context.Background(), ReturnInput{
+					AuthorizationID:        "rauthgrant_returned",
+					GranteeSystemAccountID: "sys_grantee",
+					ActorSystemAccountID:   "sys_admin",
+				})
+				return writeResult{id: result.ID, found: found}, err
+			},
+		},
+		{
+			name:       "return by resource",
+			wantReason: ResourceAuthorizationReturnedReason,
+			wantID:     "rauthgrant_resource_returned",
+			wantFound:  true,
+			run: func(invalidator *authorizationInvalidatorStub) (writeResult, error) {
+				service := NewServiceWithOptions(ServiceOptions{
+					ResourceReturnStore:      &authorizationResourceReturnStoreStub{result: Summary{ID: "rauthgrant_resource_returned"}, found: true},
+					Now:                      func() time.Time { return now },
+					AuthorizationInvalidator: invalidator,
+				})
+				result, found, err := service.ReturnByResource(context.Background(), ResourceReturnInput{
+					ResourceType:           "account",
+					ResourceID:             "acct_authorized",
+					GranteeSystemAccountID: "sys_grantee",
+					ActorSystemAccountID:   "sys_admin",
+				})
+				return writeResult{id: result.ID, found: found}, err
+			},
+		},
+		{
+			name:       "revoke",
+			wantReason: ResourceAuthorizationRevokedReason,
+			wantID:     "rauthgrant_revoked",
+			wantFound:  true,
+			run: func(invalidator *authorizationInvalidatorStub) (writeResult, error) {
+				service := NewServiceWithOptions(ServiceOptions{
+					RevokeStore:              &authorizationRevokeStoreStub{result: Summary{ID: "rauthgrant_revoked"}, found: true},
+					Now:                      func() time.Time { return now },
+					AuthorizationInvalidator: invalidator,
+				})
+				result, found, err := service.Revoke(context.Background(), RevokeInput{
+					AuthorizationID:      "rauthgrant_revoked",
+					ActorSystemAccountID: "sys_admin",
+					ActorRole:            "admin",
+				})
+				return writeResult{id: result.ID, found: found}, err
+			},
+		},
+		{
+			name:        "expire due",
+			wantReason:  ResourceAuthorizationExpiredReason,
+			wantExpired: 2,
+			run: func(invalidator *authorizationInvalidatorStub) (writeResult, error) {
+				service := NewServiceWithOptions(ServiceOptions{
+					ExpirySweepStore:         &authorizationExpirySweepStoreStub{result: port.ManagementResourceAuthorizationExpirySweepResult{Expired: 2}},
+					Now:                      func() time.Time { return now },
+					AuthorizationInvalidator: invalidator,
+				})
+				result, err := service.ExpireDue(context.Background(), ExpirySweepInput{Limit: 2})
+				return writeResult{expired: result.Expired}, err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			invalidator := &authorizationInvalidatorStub{err: invalidationErr}
+
+			result, err := tt.run(invalidator)
+
+			if err != nil {
+				t.Fatalf("write error = %v, want nil despite invalidation error", err)
+			}
+			if result.id != tt.wantID || result.found != tt.wantFound || result.expired != tt.wantExpired {
+				t.Fatalf("write result = %+v, want id=%q found=%v expired=%d", result, tt.wantID, tt.wantFound, tt.wantExpired)
+			}
+			if invalidator.calls != 1 || invalidator.reason != tt.wantReason {
+				t.Fatalf("invalidator calls=%d reason=%q, want calls=1 reason=%q", invalidator.calls, invalidator.reason, tt.wantReason)
+			}
+		})
+	}
+}
+
 func TestServiceRefreshUsageRangeWindowsBuildsHotRanges(t *testing.T) {
 	now := time.Date(2026, 7, 9, 13, 30, 0, 0, time.UTC)
 	store := &authorizationUsageRangeWindowStoreStub{
