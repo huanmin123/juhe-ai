@@ -44,7 +44,7 @@ func newManagementProvidersHandler(service managementProviderOptionService) http
 			writeMessageError(w, http.StatusForbidden, "需要管理员权限")
 			return
 		}
-		providers, err := service.List(r, managementProviderListInput(r, authContext))
+		providers, err := service.List(r, managementProviderListInput())
 		if err != nil {
 			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
 			return
@@ -65,28 +65,17 @@ func newManagementProviderOptionsHandler(service managementProviderOptionService
 	})
 }
 
-func managementProviderListInput(r *http.Request, authContext managementauth.Context) managementproviders.ListInput {
+func managementProviderListInput() managementproviders.ListInput {
 	return managementproviders.ListInput{
-		SystemAccountID: managementProviderScopedSystemAccountID(authContext, r.URL.Query()),
+		SystemAccountID: "",
 	}
 }
 
 func managementProviderOptionListInput(r *http.Request) managementproviders.OptionListInput {
 	authContext, _ := ManagementAuthContextFromRequest(r)
 	return managementproviders.OptionListInput{
-		SystemAccountID: managementProviderScopedSystemAccountID(authContext, r.URL.Query()),
+		SystemAccountID: managementScopedSystemAccountID(authContext, r.URL.Query()),
 	}
-}
-
-func managementProviderScopedSystemAccountID(authContext managementauth.Context, values url.Values) string {
-	if managementauth.IsAdminRole(authContext.Role) {
-		systemAccountID := firstManagementQueryText(values, "systemAccountId")
-		if systemAccountID == "" || systemAccountID == "all" {
-			return ""
-		}
-		return systemAccountID
-	}
-	return authContext.SystemAccountID
 }
 
 func managementScopedSystemAccountID(authContext managementauth.Context, values url.Values) string {

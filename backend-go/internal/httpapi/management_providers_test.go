@@ -97,8 +97,8 @@ func TestManagementProvidersHandlerRequiresAdminAndIncludesDisabledProviders(t *
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if service.listInput.SystemAccountID != "sys_user" {
-		t.Fatalf("service list input = %+v", service.listInput)
+	if service.listInput.SystemAccountID != "" {
+		t.Fatalf("service list input = %+v, want global scope", service.listInput)
 	}
 	responseJSON := rec.Body.String()
 	if !strings.Contains(responseJSON, `"defaultHealthCheckModel":"gpt-5-user"`) ||
@@ -167,7 +167,7 @@ func TestManagementProviderOptionsHandlerUsesSelfScopeForOrdinaryUser(t *testing
 	}
 }
 
-func TestManagementProviderOptionsHandlerUsesGlobalScopeForAdminWithoutTarget(t *testing.T) {
+func TestManagementProviderOptionsHandlerUsesSelfScopeForAdminWithoutTarget(t *testing.T) {
 	service := &managementProviderOptionServiceStub{}
 	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
 		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
@@ -180,8 +180,8 @@ func TestManagementProviderOptionsHandlerUsesGlobalScopeForAdminWithoutTarget(t 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if service.input.SystemAccountID != "" {
-		t.Fatalf("service input = %+v, want global scope", service.input)
+	if service.input.SystemAccountID != "sys_admin" {
+		t.Fatalf("service input = %+v, want admin self scope", service.input)
 	}
 }
 
