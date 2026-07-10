@@ -23,19 +23,23 @@ const (
 )
 
 type Service struct {
-	store       port.ManagementGroupOptionReader
-	invalidator RuntimeInvalidator
-	logger      *slog.Logger
-	now         func() time.Time
-	newID       func(prefix string) string
+	store                   port.ManagementGroupOptionReader
+	listStore               port.ManagementGroupListReader
+	usageStatsTimezoneStore port.ManagementUsageStatsTimezoneReader
+	invalidator             RuntimeInvalidator
+	logger                  *slog.Logger
+	now                     func() time.Time
+	newID                   func(prefix string) string
 }
 
 type ServiceOptions struct {
-	Store       port.ManagementGroupOptionReader
-	Invalidator RuntimeInvalidator
-	Logger      *slog.Logger
-	Now         func() time.Time
-	NewID       func(prefix string) string
+	Store                   port.ManagementGroupOptionReader
+	ListStore               port.ManagementGroupListReader
+	UsageStatsTimezoneStore port.ManagementUsageStatsTimezoneReader
+	Invalidator             RuntimeInvalidator
+	Logger                  *slog.Logger
+	Now                     func() time.Time
+	NewID                   func(prefix string) string
 }
 
 type RuntimeInvalidator interface {
@@ -117,19 +121,20 @@ type SchedulingPolicy struct {
 }
 
 type UsageSummary struct {
-	RequestCount       int64   `json:"requestCount"`
-	InputTokens        int64   `json:"inputTokens"`
-	OutputTokens       int64   `json:"outputTokens"`
-	CacheReadTokens    int64   `json:"cacheReadTokens"`
-	CacheReadCost      float64 `json:"cacheReadCost"`
-	CacheWriteTokens   int64   `json:"cacheWriteTokens"`
-	CacheWrite1hTokens int64   `json:"cacheWrite1hTokens"`
-	CacheWriteCost     float64 `json:"cacheWriteCost"`
-	ThinkingTokens     int64   `json:"thinkingTokens"`
-	InputImageTokens   int64   `json:"inputImageTokens"`
-	OutputImageTokens  int64   `json:"outputImageTokens"`
-	TotalTokens        int64   `json:"totalTokens"`
-	TotalCost          float64 `json:"totalCost"`
+	RequestCount       int64      `json:"requestCount"`
+	InputTokens        int64      `json:"inputTokens"`
+	OutputTokens       int64      `json:"outputTokens"`
+	CacheReadTokens    int64      `json:"cacheReadTokens"`
+	CacheReadCost      float64    `json:"cacheReadCost"`
+	CacheWriteTokens   int64      `json:"cacheWriteTokens"`
+	CacheWrite1hTokens int64      `json:"cacheWrite1hTokens"`
+	CacheWriteCost     float64    `json:"cacheWriteCost"`
+	ThinkingTokens     int64      `json:"thinkingTokens"`
+	InputImageTokens   int64      `json:"inputImageTokens"`
+	OutputImageTokens  int64      `json:"outputImageTokens"`
+	TotalTokens        int64      `json:"totalTokens"`
+	TotalCost          float64    `json:"totalCost"`
+	LastUsedAt         *time.Time `json:"lastUsedAt,omitempty"`
 }
 
 type GroupAccountStats struct {
@@ -260,12 +265,28 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 			return prefix + "_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 		}
 	}
+	listStore := opts.ListStore
+	if listStore == nil {
+		if candidate, ok := opts.Store.(port.ManagementGroupListReader); ok {
+			listStore = candidate
+		}
+	}
+	usageStatsTimezoneStore := opts.UsageStatsTimezoneStore
+	if usageStatsTimezoneStore == nil {
+		if candidate, ok := opts.Store.(port.ManagementUsageStatsTimezoneReader); ok {
+			usageStatsTimezoneStore = candidate
+		} else if candidate, ok := opts.ListStore.(port.ManagementUsageStatsTimezoneReader); ok {
+			usageStatsTimezoneStore = candidate
+		}
+	}
 	return &Service{
-		store:       opts.Store,
-		invalidator: opts.Invalidator,
-		logger:      opts.Logger,
-		now:         now,
-		newID:       newID,
+		store:                   opts.Store,
+		listStore:               listStore,
+		usageStatsTimezoneStore: usageStatsTimezoneStore,
+		invalidator:             opts.Invalidator,
+		logger:                  opts.Logger,
+		now:                     now,
+		newID:                   newID,
 	}
 }
 
