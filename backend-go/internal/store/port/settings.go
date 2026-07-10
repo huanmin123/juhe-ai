@@ -1,6 +1,9 @@
 package port
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 type PublicGlobalSettings struct {
 	AppName string
@@ -9,6 +12,21 @@ type PublicGlobalSettings struct {
 
 type PublicSettingsReader interface {
 	PublicGlobalSettings(ctx context.Context) (PublicGlobalSettings, error)
+}
+
+type ManagementGlobalSettingsUpdateInput struct {
+	AppName   *string
+	AppIcon   *string
+	UpdatedAt time.Time
+}
+
+type ManagementGlobalSettingsUpdateResult struct {
+	Before   PublicGlobalSettings
+	Settings PublicGlobalSettings
+}
+
+type ManagementGlobalSettingsWriter interface {
+	UpdateGlobalSettings(ctx context.Context, input ManagementGlobalSettingsUpdateInput) (ManagementGlobalSettingsUpdateResult, error)
 }
 
 type SystemAPIRateLimitSettings struct {

@@ -16,6 +16,13 @@ func TestNodeCompatibleRedisKeys(t *testing.T) {
 	if versionKey != "juhe-ai:juhe-ai:cache-version:gateway:api-key-validation" {
 		t.Fatalf("version key = %q", versionKey)
 	}
+	globalSettingsVersionKey, err := SharedCacheVersionKey("juhe-ai", GlobalSettingsCacheName)
+	if err != nil {
+		t.Fatalf("global settings SharedCacheVersionKey() error = %v", err)
+	}
+	if globalSettingsVersionKey != "juhe-ai:juhe-ai:cache-version:settings:global" {
+		t.Fatalf("global settings version key = %q", globalSettingsVersionKey)
+	}
 
 	stateKey, err := RuntimeStateKey("juhe-ai", RuntimeInvalidationStoreName, "topic:"+GatewayRuntimeCacheTopic)
 	if err != nil {
@@ -236,6 +243,42 @@ func TestSystemAccountInvalidatorInvalidateAPIKeyValidationCacheWritesVersion(t 
 	}
 }
 
+func TestSystemAccountInvalidatorInvalidateGlobalSettingsCacheWritesNodeCompatibleVersion(t *testing.T) {
+	cache := &rawSetRecorder{}
+	state := &rawSetRecorder{}
+	now := time.Date(2026, 7, 10, 8, 9, 10, 123*int(time.Millisecond), time.UTC)
+	invalidator, err := NewSystemAccountInvalidator(SystemAccountInvalidatorOptions{
+		Cache:      cache,
+		State:      state,
+		Namespace:  "test-ns",
+		Now:        func() time.Time { return now },
+		NewVersion: versionSequence("global-settings-version"),
+	})
+	if err != nil {
+		t.Fatalf("NewSystemAccountInvalidator() error = %v", err)
+	}
+
+	if err := invalidator.InvalidateGlobalSettingsCache(context.Background()); err != nil {
+		t.Fatalf("InvalidateGlobalSettingsCache() error = %v", err)
+	}
+
+	if len(cache.calls) != 1 {
+		t.Fatalf("cache calls = %d, want 1", len(cache.calls))
+	}
+	if cache.calls[0].key != "juhe-ai:test-ns:cache-version:settings:global" {
+		t.Fatalf("cache key = %q", cache.calls[0].key)
+	}
+	if string(cache.calls[0].value) != "global-settings-version" {
+		t.Fatalf("cache version = %q, want %q", string(cache.calls[0].value), "global-settings-version")
+	}
+	if cache.calls[0].ttl != SharedCacheVersionTTL {
+		t.Fatalf("cache ttl = %v, want %v", cache.calls[0].ttl, SharedCacheVersionTTL)
+	}
+	if len(state.calls) != 0 {
+		t.Fatalf("state calls = %d, want 0", len(state.calls))
+	}
+}
+
 func TestSystemAccountInvalidatorInvalidateGatewayRuntimeTrimsReasonAndWritesPayload(t *testing.T) {
 	state := &rawSetRecorder{}
 	now := time.Date(2026, 7, 10, 8, 9, 10, 123*int(time.Millisecond), time.UTC)
@@ -294,13 +337,16 @@ func TestSystemAccountInvalidatorPublicInvalidationMethodsPropagateWriteErrors(t
 		Cache:      &rawSetRecorder{err: cacheErr},
 		State:      &rawSetRecorder{},
 		Namespace:  "test-ns",
-		NewVersion: versionSequence("cache-version"),
+		NewVersion: versionSequence("api-key-cache-version", "global-settings-cache-version"),
 	})
 	if err != nil {
 		t.Fatalf("NewSystemAccountInvalidator() cache error = %v", err)
 	}
 	if err := cacheInvalidator.InvalidateAPIKeyValidationCache(context.Background()); !errors.Is(err, cacheErr) {
 		t.Fatalf("InvalidateAPIKeyValidationCache() error = %v, want %v", err, cacheErr)
+	}
+	if err := cacheInvalidator.InvalidateGlobalSettingsCache(context.Background()); !errors.Is(err, cacheErr) {
+		t.Fatalf("InvalidateGlobalSettingsCache() error = %v, want %v", err, cacheErr)
 	}
 
 	stateErr := errors.New("state redis down")
