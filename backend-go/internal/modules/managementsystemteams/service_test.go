@@ -434,26 +434,43 @@ func TestUpdateMapsStoreErrorsAndNotFound(t *testing.T) {
 	}
 }
 
-func TestUpdateReturnsInvalidationErrorAfterWrite(t *testing.T) {
+func TestUpdateReturnsSuccessWhenInvalidationFailsAfterWrite(t *testing.T) {
 	now := time.Date(2026, 7, 9, 10, 0, 0, 0, time.UTC)
-	want := errors.New("redis down")
-	service := NewServiceWithOptions(ServiceOptions{
-		Store: &teamStoreStub{
-			updateFound: true,
-			updateResult: port.ManagementSystemTeamUpdateResult{
-				Before:               port.ManagementSystemTeamSummary{ID: "team_ops", Name: "团队", Status: "active", CreatedAt: now, UpdatedAt: now},
-				Team:                 port.ManagementSystemTeamDetail{ManagementSystemTeamSummary: port.ManagementSystemTeamSummary{ID: "team_ops", Name: "团队", Status: "disabled", CreatedAt: now, UpdatedAt: now}},
-				AuthorizationChanged: true,
-			},
+	store := &teamStoreStub{
+		updateFound: true,
+		updateResult: port.ManagementSystemTeamUpdateResult{
+			Before:               port.ManagementSystemTeamSummary{ID: "team_ops", Name: "团队", Status: "active", CreatedAt: now, UpdatedAt: now},
+			Team:                 port.ManagementSystemTeamDetail{ManagementSystemTeamSummary: port.ManagementSystemTeamSummary{ID: "team_ops", Name: "团队", Status: "disabled", CreatedAt: now, UpdatedAt: now}},
+			AuthorizationChanged: true,
 		},
-		AuthorizationInvalidator: &authorizationInvalidatorStub{err: want},
+	}
+	invalidator := &authorizationInvalidatorStub{
+		err: errors.New("redis down"),
+		onCall: func(reason string) {
+			if !store.updateCalled {
+				t.Fatal("invalidator called before update store returned")
+			}
+			if reason != TeamAuthorizationChangedReason {
+				t.Fatalf("invalidation reason = %q, want %q", reason, TeamAuthorizationChangedReason)
+			}
+		},
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		Store:                    store,
+		AuthorizationInvalidator: invalidator,
 	})
 	status := "disabled"
 
-	_, found, err := service.Update(context.Background(), UpdateInput{TeamID: "team_ops", Status: &status, UpdatedBy: "sys_admin"})
+	result, found, err := service.Update(context.Background(), UpdateInput{TeamID: "team_ops", Status: &status, UpdatedBy: "sys_admin"})
 
-	if !found || !errors.Is(err, want) {
-		t.Fatalf("Update() found=%v error=%v, want %v", found, err, want)
+	if err != nil || !found {
+		t.Fatalf("Update() found=%v error=%v, want successful write", found, err)
+	}
+	if result.Team.ID != "team_ops" || result.Team.Status != "disabled" || !result.AuthorizationChanged {
+		t.Fatalf("result = %+v", result)
+	}
+	if invalidator.calls != 1 || invalidator.reason != TeamAuthorizationChangedReason {
+		t.Fatalf("invalidator calls=%d reason=%q", invalidator.calls, invalidator.reason)
 	}
 }
 
@@ -551,6 +568,62 @@ func TestAddMembersRejectsInvalidInput(t *testing.T) {
 	}
 }
 
+func TestAddMembersReturnsSuccessWhenInvalidationFailsAfterWrite(t *testing.T) {
+	now := time.Date(2026, 7, 9, 10, 0, 0, 0, time.UTC)
+	store := &teamStoreStub{
+		addFound: true,
+		addResult: port.ManagementSystemTeamMemberAddResult{
+			Before: port.ManagementSystemTeamDetail{
+				ManagementSystemTeamSummary: port.ManagementSystemTeamSummary{ID: "team_ops", Name: "团队", Status: "active", CreatedAt: now, UpdatedAt: now},
+			},
+			Team: port.ManagementSystemTeamDetail{
+				ManagementSystemTeamSummary: port.ManagementSystemTeamSummary{ID: "team_ops", Name: "团队", Status: "active", CreatedAt: now, UpdatedAt: now},
+				Members: []port.ManagementSystemTeamMemberSummary{{
+					ID:              "teammem_new",
+					TeamID:          "team_ops",
+					SystemAccountID: "sys_new",
+					MemberRole:      "member",
+					Status:          "active",
+					JoinedAt:        now,
+					CreatedAt:       now,
+					UpdatedAt:       now,
+				}},
+			},
+		},
+	}
+	invalidator := &authorizationInvalidatorStub{
+		err: errors.New("redis down"),
+		onCall: func(reason string) {
+			if !store.addCalled {
+				t.Fatal("invalidator called before add members store returned")
+			}
+			if reason != TeamMembersChangedReason {
+				t.Fatalf("invalidation reason = %q, want %q", reason, TeamMembersChangedReason)
+			}
+		},
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		Store:                    store,
+		AuthorizationInvalidator: invalidator,
+	})
+
+	result, found, err := service.AddMembers(context.Background(), AddMembersInput{
+		TeamID:           "team_ops",
+		SystemAccountIDs: []string{"sys_new"},
+		CreatedBy:        "sys_admin",
+	})
+
+	if err != nil || !found {
+		t.Fatalf("AddMembers() found=%v error=%v, want successful write", found, err)
+	}
+	if result.Team.ID != "team_ops" || len(result.Team.Members) != 1 || result.Team.Members[0].SystemAccountID != "sys_new" {
+		t.Fatalf("result = %+v", result)
+	}
+	if invalidator.calls != 1 || invalidator.reason != TeamMembersChangedReason {
+		t.Fatalf("invalidator calls=%d reason=%q", invalidator.calls, invalidator.reason)
+	}
+}
+
 func TestRemoveMemberNormalizesInputMapsRemovedMemberAndInvalidatesAuthorization(t *testing.T) {
 	now := time.Date(2026, 7, 9, 10, 0, 0, 0, time.UTC)
 	store := &teamStoreStub{
@@ -592,6 +665,62 @@ func TestRemoveMemberNormalizesInputMapsRemovedMemberAndInvalidatesAuthorization
 		t.Fatalf("store remove input = %+v", store.removeInput)
 	}
 	if result.Team.ID != "team_ops" || result.RemovedMember.SystemAccountID != "sys_old" {
+		t.Fatalf("result = %+v", result)
+	}
+	if invalidator.calls != 1 || invalidator.reason != TeamMembersChangedReason {
+		t.Fatalf("invalidator calls=%d reason=%q", invalidator.calls, invalidator.reason)
+	}
+}
+
+func TestRemoveMemberReturnsSuccessWhenInvalidationFailsAfterWrite(t *testing.T) {
+	now := time.Date(2026, 7, 9, 10, 0, 0, 0, time.UTC)
+	store := &teamStoreStub{
+		removeFound: true,
+		removeResult: port.ManagementSystemTeamMemberRemoveResult{
+			Before: port.ManagementSystemTeamDetail{
+				ManagementSystemTeamSummary: port.ManagementSystemTeamSummary{ID: "team_ops", Name: "团队", Status: "active", CreatedAt: now, UpdatedAt: now},
+			},
+			Team: port.ManagementSystemTeamDetail{
+				ManagementSystemTeamSummary: port.ManagementSystemTeamSummary{ID: "team_ops", Name: "团队", Status: "active", CreatedAt: now, UpdatedAt: now},
+			},
+			RemovedMember: port.ManagementSystemTeamMemberSummary{
+				ID:              "teammem_old",
+				TeamID:          "team_ops",
+				SystemAccountID: "sys_old",
+				MemberRole:      "member",
+				Status:          "removed",
+				JoinedAt:        now,
+				CreatedAt:       now,
+				UpdatedAt:       now,
+			},
+		},
+	}
+	invalidator := &authorizationInvalidatorStub{
+		err: errors.New("redis down"),
+		onCall: func(reason string) {
+			if !store.removeCalled {
+				t.Fatal("invalidator called before remove member store returned")
+			}
+			if reason != TeamMembersChangedReason {
+				t.Fatalf("invalidation reason = %q, want %q", reason, TeamMembersChangedReason)
+			}
+		},
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		Store:                    store,
+		AuthorizationInvalidator: invalidator,
+	})
+
+	result, found, err := service.RemoveMember(context.Background(), RemoveMemberInput{
+		TeamID:    "team_ops",
+		MemberID:  "teammem_old",
+		UpdatedBy: "sys_admin",
+	})
+
+	if err != nil || !found {
+		t.Fatalf("RemoveMember() found=%v error=%v, want successful write", found, err)
+	}
+	if result.Team.ID != "team_ops" || result.RemovedMember.ID != "teammem_old" || result.RemovedMember.SystemAccountID != "sys_old" {
 		t.Fatalf("result = %+v", result)
 	}
 	if invalidator.calls != 1 || invalidator.reason != TeamMembersChangedReason {
@@ -672,11 +801,15 @@ type authorizationInvalidatorStub struct {
 	calls  int
 	reason string
 	err    error
+	onCall func(reason string)
 }
 
 func (s *authorizationInvalidatorStub) InvalidateAuthorizationChanged(_ context.Context, reason string) error {
 	s.calls++
 	s.reason = reason
+	if s.onCall != nil {
+		s.onCall(reason)
+	}
 	return s.err
 }
 

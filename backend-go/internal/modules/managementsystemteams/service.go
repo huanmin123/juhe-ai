@@ -303,9 +303,7 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (UpdateResult, 
 		return UpdateResult{}, false, nil
 	}
 	if row.AuthorizationChanged && s.authorizationInvalidator != nil {
-		if err := s.authorizationInvalidator.InvalidateAuthorizationChanged(ctx, TeamAuthorizationChangedReason); err != nil {
-			return UpdateResult{}, true, err
-		}
+		s.invalidateAuthorization(ctx, TeamAuthorizationChangedReason)
 	}
 	return UpdateResult{
 		Before:               summaryFromPort(row.Before),
@@ -342,11 +340,7 @@ func (s *Service) AddMembers(ctx context.Context, input AddMembersInput) (AddMem
 	if !found {
 		return AddMembersResult{}, false, nil
 	}
-	if s.authorizationInvalidator != nil {
-		if err := s.authorizationInvalidator.InvalidateAuthorizationChanged(ctx, TeamMembersChangedReason); err != nil {
-			return AddMembersResult{}, true, err
-		}
-	}
+	s.invalidateAuthorization(ctx, TeamMembersChangedReason)
 	return AddMembersResult{
 		Before: detailFromPort(row.Before),
 		Team:   detailFromPort(row.Team),
@@ -378,16 +372,19 @@ func (s *Service) RemoveMember(ctx context.Context, input RemoveMemberInput) (Re
 	if !found {
 		return RemoveMemberResult{}, false, nil
 	}
-	if s.authorizationInvalidator != nil {
-		if err := s.authorizationInvalidator.InvalidateAuthorizationChanged(ctx, TeamMembersChangedReason); err != nil {
-			return RemoveMemberResult{}, true, err
-		}
-	}
+	s.invalidateAuthorization(ctx, TeamMembersChangedReason)
 	return RemoveMemberResult{
 		Before:        detailFromPort(row.Before),
 		Team:          detailFromPort(row.Team),
 		RemovedMember: memberFromPort(row.RemovedMember),
 	}, true, nil
+}
+
+func (s *Service) invalidateAuthorization(ctx context.Context, reason string) {
+	if s.authorizationInvalidator == nil {
+		return
+	}
+	_ = s.authorizationInvalidator.InvalidateAuthorizationChanged(ctx, reason)
 }
 
 func normalizeTeamStatus(status string) string {
