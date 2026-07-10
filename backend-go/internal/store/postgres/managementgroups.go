@@ -3,9 +3,11 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"juhe-ai/backend-go/internal/store/port"
@@ -42,6 +44,68 @@ func (s *Store) ListManagementGroupOptions(ctx context.Context, input port.Manag
 
 func (s *Store) ListManagementGroupAccountOptions(ctx context.Context, input port.ManagementGroupOptionListInput) ([]port.ManagementGroupAccountOption, error) {
 	return listManagementGroupAccountOptions(ctx, s.queries(), input)
+}
+
+func (s *Store) CreateManagementGroup(ctx context.Context, input port.ManagementGroupCreateInput) (port.ManagementGroupSummary, error) {
+	return createManagementGroup(ctx, s.queries(), input)
+}
+
+func createManagementGroup(
+	ctx context.Context,
+	q *postgresqueries.Queries,
+	input port.ManagementGroupCreateInput,
+) (port.ManagementGroupSummary, error) {
+	row, err := q.CreateManagementGroup(ctx, postgresqueries.CreateManagementGroupParams{
+		SystemAccountID:      input.SystemAccountID,
+		ProviderCode:         input.ProviderCode,
+		ID:                   input.ID,
+		Name:                 input.Name,
+		Description:          pgTextPtr(input.Description),
+		Enabled:              input.Enabled,
+		GroupType:            input.GroupType,
+		SchedulingPolicyJson: pgTextPtr(input.SchedulingPolicyJSON),
+		CreatedAt:            pgTimestamptz(input.CreatedAt),
+		UpdatedAt:            pgTimestamptz(input.UpdatedAt),
+	})
+	if err != nil {
+		switch {
+		case managementGroupDuplicateNameError(err):
+			return port.ManagementGroupSummary{}, port.ErrManagementGroupNameExists
+		case managementGroupSystemAccountForeignKeyError(err):
+			return port.ManagementGroupSummary{}, port.ErrManagementGroupSystemAccountNotFound
+		case managementGroupProviderForeignKeyError(err):
+			return port.ManagementGroupSummary{}, port.ErrManagementGroupProviderNotFound
+		default:
+			return port.ManagementGroupSummary{}, fmt.Errorf("create management group: %w", err)
+		}
+	}
+	if dependencyErr := managementGroupCreateDependencyError(
+		row.SystemAccountExists,
+		row.ProviderExists,
+		row.ProviderEnabled,
+	); dependencyErr != nil {
+		return port.ManagementGroupSummary{}, dependencyErr
+	}
+	if !row.ID.Valid ||
+		!row.SystemAccountID.Valid ||
+		!row.Name.Valid ||
+		!row.ProviderCode.Valid ||
+		!row.Enabled.Valid ||
+		!row.IsDefault.Valid ||
+		!row.GroupType.Valid {
+		return port.ManagementGroupSummary{}, fmt.Errorf("create management group returned no inserted row")
+	}
+	return port.ManagementGroupSummary{
+		ID:                   row.ID.String,
+		SystemAccountID:      row.SystemAccountID.String,
+		Name:                 row.Name.String,
+		ProviderCode:         row.ProviderCode.String,
+		Description:          textPtr(row.Description),
+		Enabled:              row.Enabled.Bool,
+		IsDefault:            row.IsDefault.Bool,
+		GroupType:            row.GroupType.String,
+		SchedulingPolicyJSON: textPtr(row.SchedulingPolicyJson),
+	}, nil
 }
 
 func listManagementGroupOptions(ctx context.Context, q *postgresqueries.Queries, input port.ManagementGroupOptionListInput) ([]port.ManagementGroupOption, error) {
@@ -236,4 +300,44 @@ func managementGroupSchedulingPolicy(groupID string, groupType string, value pgt
 	return policy, nil
 }
 
+func managementGroupCreateDependencyError(
+	systemAccountExists bool,
+	providerExists bool,
+	providerEnabled bool,
+) error {
+	switch {
+	case !systemAccountExists:
+		return port.ErrManagementGroupSystemAccountNotFound
+	case !providerExists:
+		return port.ErrManagementGroupProviderNotFound
+	case !providerEnabled:
+		return port.ErrManagementGroupProviderDisabled
+	default:
+		return nil
+	}
+}
+
+func managementGroupDuplicateNameError(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) &&
+		pgErr.Code == "23505" &&
+		(pgErr.ConstraintName == "idx_groups_owner_provider_name_unique" ||
+			pgErr.ConstraintName == "idx_groups_owner_provider_name_unique_lower")
+}
+
+func managementGroupSystemAccountForeignKeyError(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) &&
+		pgErr.Code == "23503" &&
+		pgErr.ConstraintName == "groups_system_account_id_fkey"
+}
+
+func managementGroupProviderForeignKeyError(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) &&
+		pgErr.Code == "23503" &&
+		pgErr.ConstraintName == "groups_provider_code_fkey"
+}
+
 var _ port.ManagementGroupOptionReader = (*Store)(nil)
+var _ port.ManagementGroupCreator = (*Store)(nil)

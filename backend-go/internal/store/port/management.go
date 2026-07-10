@@ -1213,9 +1213,45 @@ type ManagementGroupOptionListInput struct {
 	PreferDefault              bool
 }
 
+type ManagementGroupCreateInput struct {
+	ID                   string
+	SystemAccountID      string
+	Name                 string
+	ProviderCode         string
+	Description          *string
+	Enabled              bool
+	GroupType            string
+	SchedulingPolicyJSON *string
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+}
+
+type ManagementGroupSummary struct {
+	ID                   string
+	SystemAccountID      string
+	Name                 string
+	ProviderCode         string
+	Description          *string
+	Enabled              bool
+	IsDefault            bool
+	GroupType            string
+	SchedulingPolicyJSON *string
+}
+
+var (
+	ErrManagementGroupSystemAccountNotFound = errors.New("management group system account not found")
+	ErrManagementGroupProviderNotFound      = errors.New("management group provider not found")
+	ErrManagementGroupProviderDisabled      = errors.New("management group provider disabled")
+	ErrManagementGroupNameExists            = errors.New("management group name exists")
+)
+
 type ManagementGroupOptionReader interface {
 	ListManagementGroupOptions(ctx context.Context, input ManagementGroupOptionListInput) ([]ManagementGroupOption, error)
 	ListManagementGroupAccountOptions(ctx context.Context, input ManagementGroupOptionListInput) ([]ManagementGroupAccountOption, error)
+}
+
+type ManagementGroupCreator interface {
+	CreateManagementGroup(ctx context.Context, input ManagementGroupCreateInput) (ManagementGroupSummary, error)
 }
 
 type ManagementAccountOption struct {

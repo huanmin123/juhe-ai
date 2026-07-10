@@ -1,7 +1,12 @@
 package managementgroups
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -333,12 +338,383 @@ func TestServiceAccountOptionsMapsAuthorizedReturnPermission(t *testing.T) {
 	}
 }
 
+func TestServiceCreatePersonalNormalizesDefaultsAndReturnsZeroSummary(t *testing.T) {
+	now := time.Date(2026, 7, 10, 20, 30, 0, 0, time.FixedZone("CST", 8*60*60))
+	store := &groupOptionStoreStub{}
+	service := NewServiceWithOptions(ServiceOptions{
+		Store: store,
+		Now:   func() time.Time { return now },
+		NewID: func(prefix string) string { return prefix + "_fixed" },
+	})
+	description := "   "
+	validPersonalPolicy := 10
+
+	result, err := service.Create(context.Background(), CreateInput{
+		SystemAccountID:  " sys_owner ",
+		Name:             " 个人分组 ",
+		ProviderCode:     " openai ",
+		Description:      &description,
+		SchedulingPolicy: &SchedulingPolicyInput{DefaultSoftConcurrency: &validPersonalPolicy},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if store.createCalls != 1 {
+		t.Fatalf("CreateManagementGroup() calls = %d, want 1", store.createCalls)
+	}
+	if store.createInput.ID != "grp_fixed" ||
+		store.createInput.SystemAccountID != "sys_owner" ||
+		store.createInput.Name != "个人分组" ||
+		store.createInput.ProviderCode != "openai" ||
+		store.createInput.Description != nil ||
+		!store.createInput.Enabled ||
+		store.createInput.GroupType != "personal" ||
+		store.createInput.SchedulingPolicyJSON != nil ||
+		!store.createInput.CreatedAt.Equal(now.UTC()) ||
+		!store.createInput.UpdatedAt.Equal(now.UTC()) {
+		t.Fatalf("create input = %+v", store.createInput)
+	}
+	if result.ID != "grp_fixed" ||
+		result.SystemAccountID != "" ||
+		result.Name != "个人分组" ||
+		result.ProviderCode != "openai" ||
+		result.Description != nil ||
+		!result.Enabled ||
+		result.IsDefault ||
+		result.GroupType != "personal" ||
+		result.SchedulingPolicy != nil ||
+		result.AccountIDs == nil ||
+		len(result.AccountIDs) != 0 ||
+		result.AccountStats != (GroupAccountStats{}) {
+		t.Fatalf("create result = %+v", result)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("Marshal(result) error = %v", err)
+	}
+	for _, field := range []string{
+		`"accountIds":[]`,
+		`"todayUsage":{"requestCount":0,"inputTokens":0,"outputTokens":0,"cacheReadTokens":0,"cacheReadCost":0,"cacheWriteTokens":0,"cacheWrite1hTokens":0,"cacheWriteCost":0,"thinkingTokens":0,"inputImageTokens":0,"outputImageTokens":0,"totalTokens":0,"totalCost":0}`,
+		`"usage":{"requestCount":0,"inputTokens":0,"outputTokens":0,"cacheReadTokens":0,"cacheReadCost":0,"cacheWriteTokens":0,"cacheWrite1hTokens":0,"cacheWriteCost":0,"thinkingTokens":0,"inputImageTokens":0,"outputImageTokens":0,"totalTokens":0,"totalCost":0}`,
+	} {
+		if !strings.Contains(string(encoded), field) {
+			t.Fatalf("result json = %s, missing %s", encoded, field)
+		}
+	}
+	if strings.Contains(string(encoded), "systemAccountId") || strings.Contains(string(encoded), "schedulingPolicy") {
+		t.Fatalf("personal result json = %s, want omitted scoped fields", encoded)
+	}
+}
+
+func TestServiceCreateHighConcurrencyWritesStableCompletePolicy(t *testing.T) {
+	now := time.Date(2026, 7, 10, 12, 45, 0, 0, time.UTC)
+	store := &groupOptionStoreStub{}
+	service := NewServiceWithOptions(ServiceOptions{
+		Store: store,
+		Now:   func() time.Time { return now },
+		NewID: func(prefix string) string { return prefix + "_high" },
+	})
+	description := " 高并发说明 "
+	enabled := false
+	defaultSoftConcurrency := 25
+	maxQueueWaitMs := 90000
+	clientIPConcurrencyLimit := 8
+	overflowMode := "queue"
+	imageLaneMaxConcurrency := 3
+
+	result, err := service.Create(context.Background(), CreateInput{
+		SystemAccountID:            "sys_admin",
+		IncludeSystemAccountFields: true,
+		Name:                       " 高并发分组 ",
+		ProviderCode:               " openai ",
+		Description:                &description,
+		Enabled:                    &enabled,
+		GroupType:                  "high_concurrency",
+		SchedulingPolicy: &SchedulingPolicyInput{
+			DefaultSoftConcurrency:          &defaultSoftConcurrency,
+			MaxQueueWaitMs:                  &maxQueueWaitMs,
+			ClientIPConcurrencyLimit:        &clientIPConcurrencyLimit,
+			ClientIPConcurrencyOverflowMode: &overflowMode,
+			ImageLaneMaxConcurrency:         &imageLaneMaxConcurrency,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	const wantPolicyJSON = `{"mode":"balanced_fast","defaultSoftConcurrency":25,"fastFirstEnabled":true,"fallbackOnQueueEnabled":true,"breakAffinityOnSoftLimit":true,"breakAffinityOnQueueWaitMs":0,"slowRequestThresholdMs":30000,"firstOutputSlowThresholdMs":15000,"recentTimeoutWindowSeconds":120,"recentTimeoutPenaltyThreshold":2,"maxQueueWaitMs":90000,"maxQueueSize":1000,"perApiKeyQueueLimit":1000,"clientIpConcurrencyLimit":8,"clientIpConcurrencyOverflowMode":"queue","imageLaneMaxConcurrency":3}`
+	if store.createInput.SchedulingPolicyJSON == nil || *store.createInput.SchedulingPolicyJSON != wantPolicyJSON {
+		t.Fatalf("scheduling policy json = %v, want %s", store.createInput.SchedulingPolicyJSON, wantPolicyJSON)
+	}
+	if store.createInput.Description == nil || *store.createInput.Description != "高并发说明" || store.createInput.Enabled {
+		t.Fatalf("create input = %+v", store.createInput)
+	}
+	if result.SystemAccountID != "sys_admin" ||
+		result.SchedulingPolicy == nil ||
+		result.SchedulingPolicy.Mode != "balanced_fast" ||
+		result.SchedulingPolicy.DefaultSoftConcurrency != 25 ||
+		result.SchedulingPolicy.MaxQueueWaitMs != 90000 ||
+		result.SchedulingPolicy.ClientIPConcurrencyLimit != 8 ||
+		result.SchedulingPolicy.ClientIPConcurrencyOverflowMode != "queue" ||
+		result.SchedulingPolicy.ImageLaneMaxConcurrency != 3 ||
+		result.Enabled {
+		t.Fatalf("create result = %+v", result)
+	}
+}
+
+func TestServiceCreateDefaultIDUsesGroupPrefixAndCompactUUID(t *testing.T) {
+	store := &groupOptionStoreStub{}
+	service := NewService(store)
+
+	result, err := service.Create(context.Background(), validCreateInput())
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if !strings.HasPrefix(result.ID, "grp_") ||
+		len(result.ID) != len("grp_")+32 ||
+		strings.Contains(result.ID, "-") {
+		t.Fatalf("group id = %q, want grp_ plus 32 UUID hex characters", result.ID)
+	}
+}
+
+func TestServiceCreateValidationErrorsSkipStore(t *testing.T) {
+	zero := 0
+	negative := -1
+	tooLargeQueueWait := 3600001
+	tooLargeImageLane := 1000001
+	invalidOverflow := "drop"
+	tests := []struct {
+		name  string
+		input CreateInput
+	}{
+		{
+			name:  "missing owner",
+			input: validCreateInput(),
+		},
+		{
+			name: "missing name",
+			input: func() CreateInput {
+				input := validCreateInput()
+				input.Name = " "
+				return input
+			}(),
+		},
+		{
+			name: "missing provider",
+			input: func() CreateInput {
+				input := validCreateInput()
+				input.ProviderCode = " "
+				return input
+			}(),
+		},
+		{
+			name: "invalid group type",
+			input: func() CreateInput {
+				input := validCreateInput()
+				input.GroupType = "shared"
+				return input
+			}(),
+		},
+		{
+			name: "group type is not trimmed",
+			input: func() CreateInput {
+				input := validCreateInput()
+				input.GroupType = " personal "
+				return input
+			}(),
+		},
+		{
+			name: "default soft concurrency below minimum",
+			input: func() CreateInput {
+				input := validCreateInput()
+				input.SchedulingPolicy = &SchedulingPolicyInput{DefaultSoftConcurrency: &zero}
+				return input
+			}(),
+		},
+		{
+			name: "queue wait above maximum",
+			input: func() CreateInput {
+				input := validCreateInput()
+				input.SchedulingPolicy = &SchedulingPolicyInput{MaxQueueWaitMs: &tooLargeQueueWait}
+				return input
+			}(),
+		},
+		{
+			name: "client ip concurrency below minimum",
+			input: func() CreateInput {
+				input := validCreateInput()
+				input.SchedulingPolicy = &SchedulingPolicyInput{ClientIPConcurrencyLimit: &negative}
+				return input
+			}(),
+		},
+		{
+			name: "invalid overflow mode",
+			input: func() CreateInput {
+				input := validCreateInput()
+				input.SchedulingPolicy = &SchedulingPolicyInput{ClientIPConcurrencyOverflowMode: &invalidOverflow}
+				return input
+			}(),
+		},
+		{
+			name: "overflow mode is not trimmed",
+			input: func() CreateInput {
+				input := validCreateInput()
+				mode := " queue "
+				input.SchedulingPolicy = &SchedulingPolicyInput{ClientIPConcurrencyOverflowMode: &mode}
+				return input
+			}(),
+		},
+		{
+			name: "image lane above maximum",
+			input: func() CreateInput {
+				input := validCreateInput()
+				input.SchedulingPolicy = &SchedulingPolicyInput{ImageLaneMaxConcurrency: &tooLargeImageLane}
+				return input
+			}(),
+		},
+	}
+	tests[0].input.SystemAccountID = ""
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &groupOptionStoreStub{}
+			service := NewService(store)
+
+			_, err := service.Create(context.Background(), tt.input)
+			if err == nil {
+				t.Fatal("Create() error = nil, want validation error")
+			}
+			if _, ok := ValidationMessage(err); !ok {
+				t.Fatalf("Create() error = %T %v, want ValidationError", err, err)
+			}
+			if store.createCalls != 0 {
+				t.Fatalf("CreateManagementGroup() calls = %d, want 0", store.createCalls)
+			}
+		})
+	}
+}
+
+func TestServiceCreateMapsStoreErrorsForHTTP(t *testing.T) {
+	tests := []struct {
+		name        string
+		storeErr    error
+		assertError func(*testing.T, error)
+	}{
+		{
+			name:     "system account missing",
+			storeErr: port.ErrManagementGroupSystemAccountNotFound,
+			assertError: func(t *testing.T, err error) {
+				if !errors.Is(err, ErrSystemAccountNotFound) {
+					t.Fatalf("Create() error = %v, want ErrSystemAccountNotFound", err)
+				}
+			},
+		},
+		{
+			name:     "provider missing",
+			storeErr: port.ErrManagementGroupProviderNotFound,
+			assertError: func(t *testing.T, err error) {
+				message, ok := ProviderNotFoundMessage(err)
+				if !ok || message != "不支持的供应商：openai" {
+					t.Fatalf("provider not found error = %T %v", err, err)
+				}
+			},
+		},
+		{
+			name:     "provider disabled",
+			storeErr: port.ErrManagementGroupProviderDisabled,
+			assertError: func(t *testing.T, err error) {
+				message, ok := ProviderDisabledMessage(err)
+				if !ok || message != "供应商已停用：openai" {
+					t.Fatalf("provider disabled error = %T %v", err, err)
+				}
+			},
+		},
+		{
+			name:     "name exists",
+			storeErr: port.ErrManagementGroupNameExists,
+			assertError: func(t *testing.T, err error) {
+				message, ok := NameExistsMessage(err)
+				if !ok || message != "同一供应商下分组名称已存在：测试分组" {
+					t.Fatalf("name exists error = %T %v", err, err)
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &groupOptionStoreStub{createErr: tt.storeErr}
+			service := NewService(store)
+
+			_, err := service.Create(context.Background(), validCreateInput())
+			if err == nil {
+				t.Fatal("Create() error = nil")
+			}
+			tt.assertError(t, err)
+		})
+	}
+}
+
+func TestServiceCreateInvalidatesDetachedAndIgnoresFailure(t *testing.T) {
+	store := &groupOptionStoreStub{}
+	invalidator := &groupRuntimeInvalidatorStub{err: errors.New("redis unavailable")}
+	var logs bytes.Buffer
+	service := NewServiceWithOptions(ServiceOptions{
+		Store:       store,
+		Invalidator: invalidator,
+		Logger:      slog.New(slog.NewJSONHandler(&logs, nil)),
+	})
+	requestCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result, err := service.Create(requestCtx, validCreateInput())
+	if err != nil {
+		t.Fatalf("Create() error = %v, want nil despite invalidation failure", err)
+	}
+	if result.ID == "" {
+		t.Fatalf("Create() result = %+v", result)
+	}
+	if invalidator.calls != 1 ||
+		invalidator.reason != GroupCreatedReason ||
+		invalidator.contextErr != nil {
+		t.Fatalf("invalidator = %+v", invalidator)
+	}
+	if !strings.Contains(logs.String(), "management_group_gateway_runtime_invalidation_failed") {
+		t.Fatalf("logs = %s", logs.String())
+	}
+}
+
+func TestServiceCreateStoreFailureSkipsInvalidation(t *testing.T) {
+	wantErr := errors.New("postgres unavailable")
+	store := &groupOptionStoreStub{createErr: wantErr}
+	invalidator := &groupRuntimeInvalidatorStub{}
+	service := NewServiceWithOptions(ServiceOptions{Store: store, Invalidator: invalidator})
+
+	_, err := service.Create(context.Background(), validCreateInput())
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Create() error = %v, want %v", err, wantErr)
+	}
+	if invalidator.calls != 0 {
+		t.Fatalf("invalidator calls = %d, want 0", invalidator.calls)
+	}
+}
+
+func validCreateInput() CreateInput {
+	return CreateInput{
+		SystemAccountID: "sys_owner",
+		Name:            "测试分组",
+		ProviderCode:    "openai",
+	}
+}
+
 type groupOptionStoreStub struct {
 	input          port.ManagementGroupOptionListInput
 	accountInput   port.ManagementGroupOptionListInput
 	options        []port.ManagementGroupOption
 	accountOptions []port.ManagementGroupAccountOption
 	err            error
+	createInput    port.ManagementGroupCreateInput
+	createResult   port.ManagementGroupSummary
+	createErr      error
+	createCalls    int
 }
 
 func (s *groupOptionStoreStub) ListManagementGroupOptions(_ context.Context, input port.ManagementGroupOptionListInput) ([]port.ManagementGroupOption, error) {
@@ -349,4 +725,40 @@ func (s *groupOptionStoreStub) ListManagementGroupOptions(_ context.Context, inp
 func (s *groupOptionStoreStub) ListManagementGroupAccountOptions(_ context.Context, input port.ManagementGroupOptionListInput) ([]port.ManagementGroupAccountOption, error) {
 	s.accountInput = input
 	return s.accountOptions, s.err
+}
+
+func (s *groupOptionStoreStub) CreateManagementGroup(_ context.Context, input port.ManagementGroupCreateInput) (port.ManagementGroupSummary, error) {
+	s.createCalls++
+	s.createInput = input
+	if s.createErr != nil {
+		return port.ManagementGroupSummary{}, s.createErr
+	}
+	if s.createResult.ID != "" {
+		return s.createResult, nil
+	}
+	return port.ManagementGroupSummary{
+		ID:                   input.ID,
+		SystemAccountID:      input.SystemAccountID,
+		Name:                 input.Name,
+		ProviderCode:         input.ProviderCode,
+		Description:          input.Description,
+		Enabled:              input.Enabled,
+		IsDefault:            false,
+		GroupType:            input.GroupType,
+		SchedulingPolicyJSON: input.SchedulingPolicyJSON,
+	}, nil
+}
+
+type groupRuntimeInvalidatorStub struct {
+	calls      int
+	reason     string
+	contextErr error
+	err        error
+}
+
+func (s *groupRuntimeInvalidatorStub) InvalidateGatewayRuntime(ctx context.Context, reason string) error {
+	s.calls++
+	s.reason = reason
+	s.contextErr = ctx.Err()
+	return s.err
 }

@@ -1,11 +1,15 @@
 package postgres
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+
+	"juhe-ai/backend-go/internal/store/port"
 )
 
 func TestManagementGroupOptionLimit(t *testing.T) {
@@ -100,6 +104,124 @@ func TestManagementGroupOptionsSQLMarksReturnableManualAuthorization(t *testing.
 				}
 			}
 		})
+	}
+}
+
+func TestManagementGroupCreateSQLIsBoundedAndUsesSingleInsert(t *testing.T) {
+	source, err := os.ReadFile("queries/w5_management_group_create.sql")
+	if err != nil {
+		t.Fatalf("read management group create query: %v", err)
+	}
+	sql := string(source)
+	for _, want := range []string{
+		"WHERE id = sqlc.arg(system_account_id)::text",
+		"FOR KEY SHARE",
+		"WHERE code = sqlc.arg(provider_code)::text",
+		"FOR SHARE",
+		"WHERE target_provider.enabled",
+		"false,",
+		"sqlc.narg(description)::text",
+		"sqlc.narg(scheduling_policy_json)::text",
+		"LEFT JOIN inserted ON true",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("management group create SQL missing %q", want)
+		}
+	}
+	if count := strings.Count(sql, "INSERT INTO juhe_business.groups"); count != 1 {
+		t.Fatalf("management group create INSERT count = %d, want 1", count)
+	}
+	for _, forbidden := range []string{
+		"COUNT(",
+		"juhe_business.group_accounts",
+		"juhe_stats.",
+		"juhe_dataset.",
+		"usage_records",
+	} {
+		if strings.Contains(sql, forbidden) {
+			t.Fatalf("management group create SQL should not contain %q", forbidden)
+		}
+	}
+}
+
+func TestManagementGroupCreateDependencyError(t *testing.T) {
+	tests := []struct {
+		name                string
+		systemAccountExists bool
+		providerExists      bool
+		providerEnabled     bool
+		want                error
+	}{
+		{
+			name:                "ready",
+			systemAccountExists: true,
+			providerExists:      true,
+			providerEnabled:     true,
+		},
+		{
+			name:            "missing system account",
+			providerExists:  true,
+			providerEnabled: true,
+			want:            port.ErrManagementGroupSystemAccountNotFound,
+		},
+		{
+			name:                "missing provider",
+			systemAccountExists: true,
+			want:                port.ErrManagementGroupProviderNotFound,
+		},
+		{
+			name:                "disabled provider",
+			systemAccountExists: true,
+			providerExists:      true,
+			want:                port.ErrManagementGroupProviderDisabled,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := managementGroupCreateDependencyError(
+				tt.systemAccountExists,
+				tt.providerExists,
+				tt.providerEnabled,
+			)
+			if tt.want == nil && err != nil {
+				t.Fatalf("dependency error = %v, want nil", err)
+			}
+			if tt.want != nil && !errors.Is(err, tt.want) {
+				t.Fatalf("dependency error = %v, want %v", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestManagementGroupCreateDatabaseErrorMapping(t *testing.T) {
+	for _, constraint := range []string{
+		"idx_groups_owner_provider_name_unique",
+		"idx_groups_owner_provider_name_unique_lower",
+	} {
+		if !managementGroupDuplicateNameError(&pgconn.PgError{Code: "23505", ConstraintName: constraint}) {
+			t.Fatalf("duplicate constraint %q was not recognized", constraint)
+		}
+	}
+	if managementGroupDuplicateNameError(&pgconn.PgError{Code: "23505", ConstraintName: "other_unique"}) {
+		t.Fatal("unrelated unique violation should not be recognized")
+	}
+	if !managementGroupSystemAccountForeignKeyError(&pgconn.PgError{
+		Code:           "23503",
+		ConstraintName: "groups_system_account_id_fkey",
+	}) {
+		t.Fatal("system account foreign key violation was not recognized")
+	}
+	if !managementGroupProviderForeignKeyError(&pgconn.PgError{
+		Code:           "23503",
+		ConstraintName: "groups_provider_code_fkey",
+	}) {
+		t.Fatal("provider foreign key violation was not recognized")
+	}
+	if managementGroupProviderForeignKeyError(&pgconn.PgError{
+		Code:           "23503",
+		ConstraintName: "other_foreign_key",
+	}) {
+		t.Fatal("unrelated foreign key violation should not be recognized")
 	}
 }
 
