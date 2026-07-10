@@ -445,9 +445,7 @@ func (s *Service) CreateCustomModel(ctx context.Context, input CustomModelCreate
 	if err != nil {
 		return ModelCatalogItem{}, &CustomModelValidationError{Message: "自定义模型保存失败"}
 	}
-	if err := s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason); err != nil {
-		return ModelCatalogItem{}, err
-	}
+	s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason)
 	return catalogItemFromPort(saved), nil
 }
 
@@ -479,9 +477,7 @@ func (s *Service) UpdateCustomModel(ctx context.Context, input CustomModelUpdate
 	if err != nil {
 		return ModelCatalogItem{}, &CustomModelValidationError{Message: "自定义模型保存失败"}
 	}
-	if err := s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason); err != nil {
-		return ModelCatalogItem{}, err
-	}
+	s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason)
 	if saved.Status != "active" {
 		if _, err := s.store.ClearManagementProviderDefaultTestModelIfModel(ctx, port.ManagementProviderDefaultTestModelClearInput{
 			ProviderCode:    saved.ProviderCode,
@@ -525,9 +521,7 @@ func (s *Service) DeleteCustomModel(ctx context.Context, input CustomModelDelete
 		return CustomModelDeleteResult{}, err
 	}
 	if deleted {
-		if err := s.invalidateCustomProviderModel(ctx, CustomProviderModelDeletedReason); err != nil {
-			return CustomModelDeleteResult{}, err
-		}
+		s.invalidateCustomProviderModel(ctx, CustomProviderModelDeletedReason)
 		if _, err := s.store.ClearManagementProviderDefaultTestModelIfModel(ctx, port.ManagementProviderDefaultTestModelClearInput{
 			ProviderCode:    existing.ProviderCode,
 			SystemAccountID: existing.SystemAccountID,
@@ -985,11 +979,11 @@ func customProviderModelBoundMessage(bindings port.ManagementCustomProviderModel
 	return "模型已绑定 AI 账户，不能删除；请先从" + strings.Join(parts, "、") + "中移除后再删除"
 }
 
-func (s *Service) invalidateCustomProviderModel(ctx context.Context, reason string) error {
+func (s *Service) invalidateCustomProviderModel(ctx context.Context, reason string) {
 	if s.invalidator == nil {
-		return nil
+		return
 	}
-	return s.invalidator.InvalidateCustomProviderModelChanged(ctx, reason)
+	_ = s.invalidator.InvalidateCustomProviderModelChanged(ctx, reason)
 }
 
 type mergeKeyFunc func(port.ManagementProviderModelCatalogItem) string

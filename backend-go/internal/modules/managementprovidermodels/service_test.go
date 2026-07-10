@@ -341,6 +341,39 @@ func TestServiceCreateCustomModelPersistsPersonalModelAndInvalidates(t *testing.
 	}
 }
 
+func TestServiceCreateCustomModelIgnoresInvalidationFailure(t *testing.T) {
+	price := 1.25
+	store := &providerModelStoreStub{
+		providers: map[string]port.ManagementProviderModelProvider{"gpt": {Code: "gpt", Enabled: true}},
+	}
+	invalidator := &customProviderModelInvalidatorStub{err: errors.New("invalidation failed")}
+	service := NewServiceWithOptions(ServiceOptions{
+		Store:       store,
+		Invalidator: invalidator,
+		NewID:       func(prefix string) string { return prefix + "_fixed" },
+	})
+
+	result, err := service.CreateCustomModel(context.Background(), CustomModelCreateInput{
+		ProviderCode:          "gpt",
+		ActorSystemAccountID:  "sys_admin",
+		ActorRole:             "admin",
+		TargetSystemAccountID: "sys_user",
+		Fields: CustomModelMutation{
+			Model:         OptionalString{Set: true, Value: "custom-chat"},
+			InputUSDPer1M: OptionalFloat{Set: true, Value: &price},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateCustomModel() error = %v, want nil", err)
+	}
+	if result.ID != "custom_model_fixed" || store.saveInput.Model != "custom-chat" {
+		t.Fatalf("result=%+v save=%+v", result, store.saveInput)
+	}
+	if invalidator.calls != 1 || invalidator.reason != CustomProviderModelSavedReason {
+		t.Fatalf("invalidation calls=%d reason=%q", invalidator.calls, invalidator.reason)
+	}
+}
+
 func TestServiceCreateCustomModelRejectsGlobalForOrdinaryUser(t *testing.T) {
 	price := 1.25
 	store := &providerModelStoreStub{
@@ -567,6 +600,41 @@ func TestServiceUpdateCustomModelRejectsModelChangeAndClearsDefaultWhenDisabled(
 	}
 }
 
+func TestServiceUpdateCustomModelIgnoresInvalidationFailure(t *testing.T) {
+	price := 1.25
+	existing := port.ManagementProviderModelCatalogItem{
+		ID:              "custom_model_1",
+		ProviderCode:    "gpt",
+		Model:           "custom-chat",
+		Scope:           "personal",
+		SystemAccountID: "sys_user",
+		Status:          "active",
+		InputUSDPer1M:   &price,
+	}
+	store := &providerModelStoreStub{
+		customByID: map[string]port.ManagementProviderModelCatalogItem{"custom_model_1": existing},
+	}
+	invalidator := &customProviderModelInvalidatorStub{err: errors.New("invalidation failed")}
+	service := NewServiceWithOptions(ServiceOptions{Store: store, Invalidator: invalidator})
+
+	result, err := service.UpdateCustomModel(context.Background(), CustomModelUpdateInput{
+		ProviderCode:         "gpt",
+		ID:                   "custom_model_1",
+		ActorSystemAccountID: "sys_user",
+		ActorRole:            "user",
+		Fields:               CustomModelMutation{Notes: OptionalString{Set: true, Value: "updated"}},
+	})
+	if err != nil {
+		t.Fatalf("UpdateCustomModel() error = %v, want nil", err)
+	}
+	if result.Notes != "updated" || store.saveInput.Notes != "updated" {
+		t.Fatalf("result=%+v save=%+v", result, store.saveInput)
+	}
+	if invalidator.calls != 1 || invalidator.reason != CustomProviderModelSavedReason {
+		t.Fatalf("invalidation calls=%d reason=%q", invalidator.calls, invalidator.reason)
+	}
+}
+
 func TestServiceDeleteCustomModelChecksBindingsAndInvalidates(t *testing.T) {
 	existing := port.ManagementProviderModelCatalogItem{
 		ID:              "custom_model_1",
@@ -627,6 +695,39 @@ func TestServiceDeleteCustomModelChecksBindingsAndInvalidates(t *testing.T) {
 	}
 	if invalidator.reason != CustomProviderModelDeletedReason {
 		t.Fatalf("invalidation should happen before clear error, reason = %q", invalidator.reason)
+	}
+}
+
+func TestServiceDeleteCustomModelIgnoresInvalidationFailure(t *testing.T) {
+	existing := port.ManagementProviderModelCatalogItem{
+		ID:              "custom_model_1",
+		ProviderCode:    "gpt",
+		Model:           "custom-chat",
+		Scope:           "personal",
+		SystemAccountID: "sys_user",
+		Status:          "disabled",
+	}
+	store := &providerModelStoreStub{
+		customByID:   map[string]port.ManagementProviderModelCatalogItem{"custom_model_1": existing},
+		deleteResult: true,
+	}
+	invalidator := &customProviderModelInvalidatorStub{err: errors.New("invalidation failed")}
+	service := NewServiceWithOptions(ServiceOptions{Store: store, Invalidator: invalidator})
+
+	result, err := service.DeleteCustomModel(context.Background(), CustomModelDeleteInput{
+		ProviderCode:         "gpt",
+		ID:                   "custom_model_1",
+		ActorSystemAccountID: "sys_user",
+		ActorRole:            "user",
+	})
+	if err != nil {
+		t.Fatalf("DeleteCustomModel() error = %v, want nil", err)
+	}
+	if !result.Deleted || store.deleteID != "custom_model_1" {
+		t.Fatalf("result=%+v delete=%q", result, store.deleteID)
+	}
+	if invalidator.calls != 1 || invalidator.reason != CustomProviderModelDeletedReason {
+		t.Fatalf("invalidation calls=%d reason=%q", invalidator.calls, invalidator.reason)
 	}
 }
 
@@ -765,9 +866,12 @@ func customProviderModelScopeKey(providerCode string, scope string, systemAccoun
 
 type customProviderModelInvalidatorStub struct {
 	reason string
+	err    error
+	calls  int
 }
 
 func (s *customProviderModelInvalidatorStub) InvalidateCustomProviderModelChanged(_ context.Context, reason string) error {
+	s.calls++
 	s.reason = reason
-	return nil
+	return s.err
 }
