@@ -475,12 +475,13 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 			next.AvailabilityScheduleJSON = scheduleJSON
 		}
 		if input.SupportedModels.Set() {
-			models, err := normalizeSupportedModels(input.SupportedModels.Value())
-			if err != nil {
-				return err
-			}
-			next.SupportedModels = models
+			next.SupportedModels = input.SupportedModels.Value()
 		}
+		models, err := normalizeSupportedModels(next.SupportedModels)
+		if err != nil {
+			return err
+		}
+		next.SupportedModels = models
 		if input.APIKey != nil || input.BaseURL != nil {
 			apiKey, baseURL, err := s.currentCredentials(current.CredentialsEncrypted)
 			if err != nil {

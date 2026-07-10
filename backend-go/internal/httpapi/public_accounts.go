@@ -507,7 +507,7 @@ func optionalPublicAccountJSONValue(body map[string]any, key string) (publicacco
 
 func optionalBodyStringList(body map[string]any, key string, minLen int, maxLen int, maxItems int) ([]string, error) {
 	value, ok := body[key]
-	if !ok || value == nil {
+	if !ok {
 		return nil, nil
 	}
 	items, ok := value.([]any)

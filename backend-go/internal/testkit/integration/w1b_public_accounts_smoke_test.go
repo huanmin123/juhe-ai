@@ -20,7 +20,10 @@ import (
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
 )
 
-const w1bInvalidSupportedModelsMessage = "账户支持模型不能为空，请至少选择一个该 Base URL 支持的模型"
+const (
+	w1bInvalidSupportedModelsMessage = "账户支持模型不能为空，请至少选择一个该 Base URL 支持的模型"
+	w1bDuplicateAccountNameMessage   = "账号已存在：公开账号"
+)
 
 var w1bGPTDefaultSupportedModels = []string{
 	"gpt-5.6-sol",
@@ -126,6 +129,21 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 		}
 	}
 	assertW1bPublicAccountNameCount(t, ctx, db, emptyModelsAccountName, 0)
+
+	if _, err := service.Add(ctx, publicaccounts.AddInput{
+		TargetUsername:            "admin",
+		TargetGroupName:           "账号分组",
+		ProviderCode:              "gpt",
+		ProviderProtocolProfileID: "profile_gpt_openai_v1",
+		Name:                      "公开账号",
+		Type:                      publicaccounts.AccountTypeAPIKey,
+		BaseURL:                   "https://api.openai.com/v1",
+		APIKey:                    "sk-duplicate-empty-models",
+		SupportedModels:           publicaccounts.NewStringListValue([]string{}, true),
+	}); !errors.Is(err, publicaccounts.ErrDuplicateAccountName) {
+		t.Fatalf("duplicate add with explicit empty supportedModels err = %v, want ErrDuplicateAccountName", err)
+	}
+	assertW1bPublicAccountNameCount(t, ctx, db, "公开账号", 1)
 
 	if _, err := service.Add(ctx, publicaccounts.AddInput{
 		TargetUsername:            "admin",

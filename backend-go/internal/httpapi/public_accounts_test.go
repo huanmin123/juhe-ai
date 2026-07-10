@@ -179,6 +179,50 @@ func TestPublicAccountHandlersAddPreservesSupportedModelsPresence(t *testing.T) 
 	}
 }
 
+func TestPublicAccountHandlersRejectNullSupportedModels(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		body string
+	}{
+		{
+			name: "add",
+			path: "/__aipublic__/account/add",
+			body: `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test","supportedModels":null}`,
+		},
+		{
+			name: "update",
+			path: "/__aipublic__/account/update",
+			body: `{"accountId":"acct_1","supportedModels":null}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &publicAccountServiceStub{}
+			router := newTestPublicAPIShell(
+				newPublicGroupAPIAuthStub(),
+				&publicAPIShellLimiterStub{decision: publicapiratelimit.Decision{Allowed: true}},
+				&publicAPIShellLogQueueStub{},
+				newPublicAccountHandlers(service),
+				time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC),
+			)
+
+			req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
+			req.Header.Set("Authorization", "Bearer juis_plain")
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+
+			router.ServeHTTP(rec, req)
+
+			assertPublicGroupMessageError(t, rec, http.StatusBadRequest, "supportedModels 必须是数组")
+			if service.addCalls != 0 || service.updateCalls != 0 {
+				t.Fatalf("service calls = add %d update %d, want 0", service.addCalls, service.updateCalls)
+			}
+		})
+	}
+}
+
 func TestPublicAccountHandlersAddReturnsSupportedModelsRequiredMessage(t *testing.T) {
 	service := &publicAccountServiceStub{
 		addErr: fmt.Errorf(

@@ -159,6 +159,23 @@ func TestW1bPublicAccountsShellE2E(t *testing.T) {
 	}
 	assertW1bPublicAccountNameCount(t, ctx, db, emptyModelsAccountName, 0)
 
+	duplicateEmptyModelsBody := `{"targetUsername":"admin","targetGroupName":"账号分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"` + initialSecret + `","supportedModels":[]}`
+	duplicateEmptyModelsRec := serveW1bShellRequest(router, http.MethodPost, "/__aipublic__/account/add", token, "trace_account_add_duplicate_empty_models", duplicateEmptyModelsBody)
+	if duplicateEmptyModelsRec.Code != http.StatusConflict {
+		t.Fatalf("duplicate add with explicit empty supportedModels status = %d, body = %s", duplicateEmptyModelsRec.Code, duplicateEmptyModelsRec.Body.String())
+	}
+	assertW1bPublicAccountResponseNoSecret(t, duplicateEmptyModelsRec.Body.String(), initialSecret)
+	var duplicateEmptyModelsResponse struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(duplicateEmptyModelsRec.Body.Bytes(), &duplicateEmptyModelsResponse); err != nil {
+		t.Fatalf("decode duplicate add with explicit empty supportedModels response: %v", err)
+	}
+	if duplicateEmptyModelsResponse.Message != w1bDuplicateAccountNameMessage {
+		t.Fatalf("duplicate add with explicit empty supportedModels message = %q, want %q", duplicateEmptyModelsResponse.Message, w1bDuplicateAccountNameMessage)
+	}
+	assertW1bPublicAccountNameCount(t, ctx, db, "公开账号", 1)
+
 	listRec := serveW1bShellRequest(router, http.MethodGet, "/__aipublic__/account/list?targetUsername=admin&targetGroupName=%E8%B4%A6%E5%8F%B7%E5%88%86%E7%BB%84&providerCode=gpt&providerProtocolProfileId=profile_gpt_openai_v1&keyword="+w1bAccountShellSecretLikeKeyword+"&page=1&pageSize=10", token, "trace_account_list", "")
 	if listRec.Code != http.StatusOK {
 		t.Fatalf("list status = %d, body = %s", listRec.Code, listRec.Body.String())
@@ -224,7 +241,7 @@ func insertW1bAccountShellSourceAndToken(t *testing.T, ctx context.Context, db *
 		INSERT INTO juhe_business.external_integration_sources (
 			id, name, status, scopes_json, rate_limits_json, created_at, updated_at
 		) VALUES ($1, $2, 'active', $3, $4, $5, $6)
-	`, "extsrc_w1b_account_shell", "W1b Account Shell Source", scopes, `[{"windowSeconds":60,"maxRequests":5}]`, now, now)
+	`, "extsrc_w1b_account_shell", "W1b Account Shell Source", scopes, `[{"windowSeconds":60,"maxRequests":6}]`, now, now)
 	if err != nil {
 		t.Fatalf("insert account shell external integration source: %v", err)
 	}
@@ -319,8 +336,8 @@ func assertW1bAccountShellPublicAPILogs(t *testing.T, ctx context.Context, db *s
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate account shell public api logs: %v", err)
 	}
-	if len(logs) != 6 {
-		t.Fatalf("account shell public api log count = %d, want 6", len(logs))
+	if len(logs) != 7 {
+		t.Fatalf("account shell public api log count = %d, want 7", len(logs))
 	}
 
 	expected := []struct {
@@ -336,10 +353,11 @@ func assertW1bAccountShellPublicAPILogs(t *testing.T, ctx context.Context, db *s
 	}{
 		{id: "publog_w1b_account_shell_1", traceID: "trace_account_add", method: http.MethodPost, path: "/__aipublic__/account/add", statusCode: http.StatusCreated, success: true, action: "created"},
 		{id: "publog_w1b_account_shell_2", traceID: "trace_account_add_empty_models", method: http.MethodPost, path: "/__aipublic__/account/add", statusCode: http.StatusBadRequest, success: false, message: w1bInvalidSupportedModelsMessage},
-		{id: "publog_w1b_account_shell_3", traceID: "trace_account_list", method: http.MethodGet, path: "/__aipublic__/account/list", statusCode: http.StatusOK, success: true},
-		{id: "publog_w1b_account_shell_4", traceID: "trace_account_update", method: http.MethodPost, path: "/__aipublic__/account/update", statusCode: http.StatusOK, success: true, action: "updated"},
-		{id: "publog_w1b_account_shell_5", traceID: "trace_account_delete", method: http.MethodPost, path: "/__aipublic__/account/del", statusCode: http.StatusOK, success: true, action: "deleted"},
-		{id: "publog_w1b_account_shell_6", traceID: "trace_account_limited", method: http.MethodGet, path: "/__aipublic__/account/list", statusCode: http.StatusTooManyRequests, success: false, errorCode: "external_source_rate_limited"},
+		{id: "publog_w1b_account_shell_3", traceID: "trace_account_add_duplicate_empty_models", method: http.MethodPost, path: "/__aipublic__/account/add", statusCode: http.StatusConflict, success: false, message: w1bDuplicateAccountNameMessage},
+		{id: "publog_w1b_account_shell_4", traceID: "trace_account_list", method: http.MethodGet, path: "/__aipublic__/account/list", statusCode: http.StatusOK, success: true},
+		{id: "publog_w1b_account_shell_5", traceID: "trace_account_update", method: http.MethodPost, path: "/__aipublic__/account/update", statusCode: http.StatusOK, success: true, action: "updated"},
+		{id: "publog_w1b_account_shell_6", traceID: "trace_account_delete", method: http.MethodPost, path: "/__aipublic__/account/del", statusCode: http.StatusOK, success: true, action: "deleted"},
+		{id: "publog_w1b_account_shell_7", traceID: "trace_account_limited", method: http.MethodGet, path: "/__aipublic__/account/list", statusCode: http.StatusTooManyRequests, success: false, errorCode: "external_source_rate_limited"},
 	}
 
 	for index, want := range expected {
@@ -377,7 +395,7 @@ func assertW1bAccountShellPublicAPILogs(t *testing.T, ctx context.Context, db *s
 				t.Fatalf("log[%d] query keyword = %#v, want redacted", index, requestData["query"])
 			}
 		}
-		if want.traceID == "trace_account_add" || want.traceID == "trace_account_add_empty_models" {
+		if want.traceID == "trace_account_add" || want.traceID == "trace_account_add_empty_models" || want.traceID == "trace_account_add_duplicate_empty_models" {
 			if nestedStringFromW1bShellLog(t, requestData, "body", "apiKey") != "[redacted]" {
 				t.Fatalf("log[%d] add apiKey should be redacted: %#v", index, requestData["body"])
 			}
@@ -409,8 +427,8 @@ func assertW1bAccountShellPublicAPILogs(t *testing.T, ctx context.Context, db *s
 			if nestedStringFromW1bShellLog(t, responseData, "body", "code") != want.errorCode {
 				t.Fatalf("log[%d] response code = %#v, want %s", index, responseData["body"], want.errorCode)
 			}
-			if got := intFromW1bShellLog(nestedValueFromW1bShellLog(t, responseData, "body", "details", "maxRequests")); got != 5 {
-				t.Fatalf("log[%d] maxRequests = %d, want 5", index, got)
+			if got := intFromW1bShellLog(nestedValueFromW1bShellLog(t, responseData, "body", "details", "maxRequests")); got != 6 {
+				t.Fatalf("log[%d] maxRequests = %d, want 6", index, got)
 			}
 		}
 		assertW1bShellLogNoSecret(t, row.requestJSON, row.responseJSON, row.errorMessage+"\n"+row.queryString, token)

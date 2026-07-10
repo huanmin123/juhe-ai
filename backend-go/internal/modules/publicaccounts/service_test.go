@@ -209,14 +209,88 @@ func TestServiceUpdateRejectsPendingTestToActive(t *testing.T) {
 	}
 }
 
+func TestServiceUpdateOmittedSupportedModelsRejectsExistingEmptyModelsWithoutUpdatingStore(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	service := NewService(Options{Store: store, Now: fixedPublicAccountNow, NewID: sequentialPublicAccountID(), Secret: "public-account-test-secret"})
+	created, err := service.Add(context.Background(), AddInput{
+		TargetUsername:            "admin",
+		TargetGroupName:           "福利",
+		ProviderCode:              "gpt",
+		ProviderProtocolProfileID: "profile_gpt_openai_v1",
+		Name:                      "旧空模型账号",
+		Type:                      AccountTypeAPIKey,
+		BaseURL:                   "https://api.openai.com/v1",
+		APIKey:                    "sk-public-account-secret-0123456789abcdef",
+	})
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+
+	account := store.accounts[created.Account.ID]
+	account.SupportedModels = nil
+	store.accounts[account.ID] = account
+
+	name := "仅修改名称"
+	_, err = service.Update(context.Background(), UpdateInput{
+		AccountID: account.ID,
+		Name:      &name,
+	})
+	assertInvalidSupportedModelsRequired(t, err)
+	if store.updateCalls != 0 {
+		t.Fatalf("store update calls = %d, want 0", store.updateCalls)
+	}
+	stored := store.accounts[account.ID]
+	if stored.Name != account.Name || len(stored.SupportedModels) != 0 {
+		t.Fatalf("stored account = %+v, want unchanged empty-model account", stored)
+	}
+}
+
+func TestServiceUpdateOmittedSupportedModelsPreservesExistingNonEmptyModels(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	service := NewService(Options{Store: store, Now: fixedPublicAccountNow, NewID: sequentialPublicAccountID(), Secret: "public-account-test-secret"})
+	wantModels := []string{"gpt-5.5", "gpt-5.4-mini"}
+	created, err := service.Add(context.Background(), AddInput{
+		TargetUsername:            "admin",
+		TargetGroupName:           "福利",
+		ProviderCode:              "gpt",
+		ProviderProtocolProfileID: "profile_gpt_openai_v1",
+		Name:                      "正常模型账号",
+		Type:                      AccountTypeAPIKey,
+		BaseURL:                   "https://api.openai.com/v1",
+		APIKey:                    "sk-public-account-secret-0123456789abcdef",
+		SupportedModels:           NewStringListValue(wantModels, true),
+	})
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+
+	name := "正常改名"
+	response, err := service.Update(context.Background(), UpdateInput{
+		AccountID: created.Account.ID,
+		Name:      &name,
+	})
+	if err != nil {
+		t.Fatalf("update public account: %v", err)
+	}
+	if store.updateCalls != 1 {
+		t.Fatalf("store update calls = %d, want 1", store.updateCalls)
+	}
+	if response.Account == nil || !slices.Equal(response.Account.SupportedModels, wantModels) {
+		t.Fatalf("response account = %+v, want supported models %#v", response.Account, wantModels)
+	}
+	if got := store.accounts[created.Account.ID].SupportedModels; !slices.Equal(got, wantModels) {
+		t.Fatalf("stored supported models = %#v, want %#v", got, wantModels)
+	}
+}
+
 func assertInvalidSupportedModelsRequired(t *testing.T, err error) {
 	t.Helper()
 	if !errors.Is(err, ErrInvalidSupportedModels) {
-		t.Fatalf("add error = %v, want ErrInvalidSupportedModels", err)
+		t.Fatalf("supported models error = %v, want ErrInvalidSupportedModels", err)
 	}
 	want := ErrInvalidSupportedModels.Error() + ": " + invalidSupportedModelsRequiredMessage
 	if err.Error() != want {
-		t.Fatalf("add error = %q, want %q", err.Error(), want)
+		t.Fatalf("supported models error = %q, want %q", err.Error(), want)
 	}
 }
 
@@ -263,6 +337,7 @@ type publicAccountStoreFake struct {
 	profiles          map[string]port.PublicAccountProviderProfile
 	groups            map[string]port.PublicAccountGroupRef
 	accounts          map[string]port.PublicAccountSummary
+	updateCalls       int
 }
 
 func newPublicAccountStoreFake() *publicAccountStoreFake {
@@ -408,6 +483,7 @@ func (s *publicAccountStoreFake) CreatePublicAccount(_ context.Context, input po
 }
 
 func (s *publicAccountStoreFake) UpdatePublicAccount(_ context.Context, input port.PublicAccountUpdateInput) (port.PublicAccountSummary, bool, error) {
+	s.updateCalls++
 	account, ok := s.accounts[input.ID]
 	if !ok {
 		return port.PublicAccountSummary{}, false, nil
