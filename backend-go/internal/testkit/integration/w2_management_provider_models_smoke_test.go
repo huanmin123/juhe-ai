@@ -49,6 +49,7 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 	db := openSQLDB(t, postgresURL)
 	defer closeSQLDB(t, db)
 	runGooseMigrations(t, db)
+	assertW2ProviderModelCatalogSnapshot(t, ctx, db)
 	assertW2ProviderModelRequestCapabilitiesRow(t, ctx, db, "gpt-5.6-sol", []string{"priority"}, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max", "ultra"}, "low", "v2")
 	assertW2ProviderModelRequestCapabilitiesRow(t, ctx, db, "gpt-5.6-terra", []string{"priority"}, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max", "ultra"}, "medium", "v2")
 	assertW2ProviderModelRequestCapabilitiesRow(t, ctx, db, "gpt-5.6-luna", []string{"priority"}, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max"}, "medium", "")
@@ -394,6 +395,83 @@ func assertW2ProviderModelOptionWireFields(t *testing.T, body []byte, providerCo
 		return
 	}
 	t.Fatalf("%s/%s option missing from wire payload: %s", providerCode, model, string(body))
+}
+
+func assertW2ProviderModelCatalogSnapshot(t *testing.T, ctx context.Context, db *sql.DB) {
+	t.Helper()
+	type counts struct {
+		total   int64
+		visible int64
+	}
+	wantCounts := map[string]counts{
+		"gpt":       {total: 81, visible: 81},
+		"anthropic": {total: 42, visible: 24},
+		"gemini":    {total: 10, visible: 10},
+		"deepseek":  {total: 6, visible: 6},
+		"glm":       {total: 18, visible: 17},
+	}
+
+	rows, err := db.QueryContext(ctx, `
+		SELECT
+			provider_code,
+			COUNT(*)::bigint,
+			COUNT(*) FILTER (WHERE catalog_visible)::bigint
+		FROM juhe_business.provider_model_catalog
+		WHERE provider_code IN ('gpt', 'anthropic', 'gemini', 'deepseek', 'glm')
+		GROUP BY provider_code
+	`)
+	if err != nil {
+		t.Fatalf("query provider model catalog snapshot counts: %v", err)
+	}
+	defer rows.Close()
+
+	actualCounts := make(map[string]counts, len(wantCounts))
+	for rows.Next() {
+		var providerCode string
+		var actual counts
+		if err := rows.Scan(&providerCode, &actual.total, &actual.visible); err != nil {
+			t.Fatalf("scan provider model catalog snapshot counts: %v", err)
+		}
+		actualCounts[providerCode] = actual
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate provider model catalog snapshot counts: %v", err)
+	}
+	if len(actualCounts) != len(wantCounts) {
+		t.Fatalf("provider model catalog snapshot provider count = %d, want %d: %+v", len(actualCounts), len(wantCounts), actualCounts)
+	}
+	for providerCode, want := range wantCounts {
+		if actualCounts[providerCode] != want {
+			t.Fatalf("%s provider model catalog counts = %+v, want %+v", providerCode, actualCounts[providerCode], want)
+		}
+	}
+
+	wantModels := []struct {
+		providerCode string
+		model        string
+	}{
+		{providerCode: "gpt", model: "gpt-4.1"},
+		{providerCode: "gpt", model: "o3"},
+		{providerCode: "anthropic", model: "claude-3-7-sonnet-latest"},
+		{providerCode: "gemini", model: "gemini-2.5-flash-lite"},
+		{providerCode: "deepseek", model: "deepseek-chat"},
+		{providerCode: "glm", model: "glm-4.7"},
+	}
+	for _, want := range wantModels {
+		var exists bool
+		if err := db.QueryRowContext(ctx, `
+			SELECT EXISTS (
+				SELECT 1
+				FROM juhe_business.provider_model_catalog
+				WHERE provider_code = $1 AND model = $2
+			)
+		`, want.providerCode, want.model).Scan(&exists); err != nil {
+			t.Fatalf("query provider model %s/%s: %v", want.providerCode, want.model, err)
+		}
+		if !exists {
+			t.Fatalf("provider model %s/%s missing after migrations", want.providerCode, want.model)
+		}
+	}
 }
 
 func assertW2ProviderModelRequestCapabilitiesRow(
