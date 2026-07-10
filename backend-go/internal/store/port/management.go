@@ -1213,6 +1213,71 @@ type ManagementGroupOptionListInput struct {
 	PreferDefault              bool
 }
 
+type ManagementGroupListInput struct {
+	SystemAccountID string
+	Limit           int
+	Offset          int
+}
+
+type ManagementGroupListRow struct {
+	ID                      string
+	SystemAccountID         string
+	SystemAccountName       string
+	Name                    string
+	ProviderCode            string
+	Description             *string
+	Enabled                 bool
+	IsDefault               bool
+	GroupType               string
+	SchedulingPolicyJSON    *string
+	AccessType              string
+	GroupAuthorizationID    string
+	AuthorizationStatus     string
+	AuthorizationExpiresAt  *time.Time
+	AuthorizationLimitsJSON *string
+	EffectiveUpdatedAt      time.Time
+}
+
+type ManagementGroupListPage struct {
+	Rows    []ManagementGroupListRow
+	HasMore bool
+}
+
+type ManagementGroupAccountStatsRow struct {
+	SystemAccountID    string
+	GroupID            string
+	Total              int
+	Available          int
+	Active             int
+	Disabled           int
+	Error              int
+	RateLimited        int
+	CurrentConcurrency int
+	ConcurrencyLimit   int
+}
+
+type ManagementGroupUsageLookupInput struct {
+	Key             string
+	SystemAccountID string
+	ScopeType       string
+	ScopeID         string
+}
+
+type ManagementGroupUsageRow struct {
+	Key             string
+	SystemAccountID string
+	ScopeType       string
+	ScopeID         string
+	Usage           ManagementAccountUsageSummary
+}
+
+type ManagementGroupAuthorizationSourceRow struct {
+	AuthorizationID string
+	SourceType      string
+	Status          string
+	SourceTeamName  string
+}
+
 type ManagementGroupCreateInput struct {
 	ID                   string
 	SystemAccountID      string
@@ -1248,6 +1313,30 @@ var (
 type ManagementGroupOptionReader interface {
 	ListManagementGroupOptions(ctx context.Context, input ManagementGroupOptionListInput) ([]ManagementGroupOption, error)
 	ListManagementGroupAccountOptions(ctx context.Context, input ManagementGroupOptionListInput) ([]ManagementGroupAccountOption, error)
+}
+
+type ManagementGroupListPageReader interface {
+	ListManagementGroups(ctx context.Context, input ManagementGroupListInput) (ManagementGroupListPage, error)
+}
+
+type ManagementGroupAccountStatsReader interface {
+	ListManagementGroupAccountStats(ctx context.Context, groupIDs []string) ([]ManagementGroupAccountStatsRow, error)
+}
+
+type ManagementGroupUsageReader interface {
+	ListManagementGroupUsageTotals(ctx context.Context, inputs []ManagementGroupUsageLookupInput) ([]ManagementGroupUsageRow, error)
+	ListManagementGroupUsageDaily(ctx context.Context, statDate string, inputs []ManagementGroupUsageLookupInput) ([]ManagementGroupUsageRow, error)
+}
+
+type ManagementGroupAuthorizationSourceReader interface {
+	ListManagementGroupAuthorizationSources(ctx context.Context, authorizationIDs []string) ([]ManagementGroupAuthorizationSourceRow, error)
+}
+
+type ManagementGroupListReader interface {
+	ManagementGroupListPageReader
+	ManagementGroupAccountStatsReader
+	ManagementGroupUsageReader
+	ManagementGroupAuthorizationSourceReader
 }
 
 type ManagementGroupCreator interface {

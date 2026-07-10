@@ -716,3 +716,88 @@ type JuheStatsClientIpRegistry struct {
 	CreatedAt      string
 	UpdatedAt      string
 }
+
+type JuheStatsGroupAccountStat struct {
+	SystemAccountID    string
+	GroupID            string
+	Total              int32
+	Available          int32
+	Active             int32
+	Disabled           int32
+	Error              int32
+	RateLimited        int32
+	CurrentConcurrency int32
+	ConcurrencyLimit   int32
+	UpdatedAt          string
+}
+
+type JuheStatsStatsJobState struct {
+	ScopeType        string
+	ScopeID          string
+	JobName          string
+	CursorCreatedAt  pgtype.Text
+	CursorID         pgtype.Text
+	LastSuccessAt    pgtype.Text
+	LastErrorMessage pgtype.Text
+	LagSeconds       pgtype.Int4
+	UpdatedAt        string
+}
+
+type JuheStatsUsageStatsDaily struct {
+	SystemAccountID    string
+	ScopeType          string
+	ScopeID            string
+	StatDate           string
+	RequestCount       int64
+	SuccessCount       int64
+	ErrorCount         int64
+	InputTokens        int64
+	OutputTokens       int64
+	CacheReadTokens    int64
+	CacheReadCostUsd   float64
+	CacheWriteTokens   int64
+	CacheWrite1hTokens int64
+	CacheWriteCostUsd  float64
+	ThinkingTokens     int64
+	InputImageTokens   int64
+	OutputImageTokens  int64
+	TotalCostUsd       float64
+	DurationMsSum      int64
+	DurationMsCount    int64
+	DurationMsMax      int64
+	FirstTokenMsSum    int64
+	FirstTokenMsCount  int64
+	FirstTokenMsMax    int64
+	LastUsedAt         pgtype.Text
+	LastErrorAt        pgtype.Text
+	UpdatedAt          string
+}
+
+type JuheStatsUsageStatsTotal struct {
+	SystemAccountID    string
+	ScopeType          string
+	ScopeID            string
+	RequestCount       int64
+	SuccessCount       int64
+	ErrorCount         int64
+	InputTokens        int64
+	OutputTokens       int64
+	CacheReadTokens    int64
+	CacheReadCostUsd   float64
+	CacheWriteTokens   int64
+	CacheWrite1hTokens int64
+	CacheWriteCostUsd  float64
+	ThinkingTokens     int64
+	InputImageTokens   int64
+	OutputImageTokens  int64
+	TotalCostUsd       float64
+	DurationMsSum      int64
+	DurationMsCount    int64
+	DurationMsMax      int64
+	FirstTokenMsSum    int64
+	FirstTokenMsCount  int64
+	FirstTokenMsMax    int64
+	LastUsedAt         pgtype.Text
+	LastErrorAt        pgtype.Text
+	UpdatedAt          string
+}
