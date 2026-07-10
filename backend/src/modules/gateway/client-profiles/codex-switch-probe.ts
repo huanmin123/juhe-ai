@@ -57,7 +57,10 @@ export async function probeCodexSwitchCandidateAccount(
 
   try {
     const accountTestService = await import('../../accounts/account-test.service.js')
-    const model = requestModel(input.req) || await accountTestService.preferredSystemAccountTestModelAsync(summary)
+    const model = await accountTestService.resolveAccountTestModelAsync(summary, {
+      explicitModel: requestModel(input.req),
+      systemAccountId: input.systemAccountId
+    })
     let lastResult: AccountTestResult | undefined
     for (let attemptIndex = 0; attemptIndex < accountDiagnosticRetryTimeoutMs.length; attemptIndex += 1) {
       const timeoutMs = accountDiagnosticRetryTimeoutMs[attemptIndex] ?? accountDiagnosticRetryTimeoutMs[accountDiagnosticRetryTimeoutMs.length - 1]
@@ -187,7 +190,7 @@ function accountSummaryFromUpstreamAccount(account: UpstreamAccount): AccountSum
     clientCompatibility: account.clientCompatibility,
     supportedModels: account.supportedModels,
     modelMappings: account.modelMappings,
-    lastSuccessfulTestModel: account.lastSuccessfulTestModel,
+    defaultTestModel: account.defaultTestModel,
     proxyProfileId: account.proxyProfileId,
     proxyProfileUnavailable: account.proxyProfileUnavailable,
     proxyProfileErrorMessage: account.proxyProfileErrorMessage,

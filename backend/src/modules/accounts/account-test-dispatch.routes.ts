@@ -3,18 +3,63 @@ import type { Router } from 'express'
 import { isAdminRole } from '../../domain/types.js'
 import { isGatewaySupportedProtocolProfile } from '../../domain/provider-protocol.js'
 import { badRequest, ok } from '../../shared/http.js'
-import { accountTestUnavailableMessage, findAccountForTestAsync } from '../../storage/repositories.js'
+import {
+  accountTestUnavailableMessage,
+  findAccountForTestAsync,
+  updateAccountDefaultTestModelAsync
+} from '../../storage/repositories.js'
 import {
   createAccountTestTaskAsync,
   failAccountTestTaskAsync,
 } from '../../storage/account-test-tasks.repository.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
-import { accountTestSchema } from './account-request.schemas.js'
+import { accountDefaultTestModelSchema, accountTestSchema } from './account-request.schemas.js'
 import { savedAccountDraftTestSnapshotAsync } from './account-draft-test.service.js'
 import { dispatchAccountTestTasks } from './account-test-task-queue.service.js'
 
 export function registerAccountTestDispatchRoutes(router: Router): void {
+  router.put('/:id/default-test-model', async (req, res) => {
+    const scopeQuery = parseRequestScopeQuery(req.query)
+    if (!scopeQuery.success) {
+      res.status(400).json(badRequest(scopeQuery.message))
+      return
+    }
+    const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+    if (!requestAccess) {
+      res.status(403).json({ message: '缺少系统账户上下文' })
+      return
+    }
+    const parsed = accountDefaultTestModelSchema.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json(badRequest('账户默认测试模型参数无效'))
+      return
+    }
+    const account = await findAccountForTestAsync(req.params.id, requestAccess)
+    if (!account) {
+      res.status(404).json({ message: '账户不存在' })
+      return
+    }
+    const model = parsed.data.model
+    if (!(account.supportedModels ?? []).includes(model)) {
+      res.status(400).json(badRequest(`模型不在当前账户支持模型列表中：${model}`))
+      return
+    }
+    try {
+      const updated = await updateAccountDefaultTestModelAsync(account.id, model, requestAccess)
+      if (!updated || updated.defaultTestModel !== model) {
+        res.status(400).json(badRequest('账户默认测试模型保存失败'))
+        return
+      }
+      res.json(ok({
+        accountId: updated.id,
+        defaultTestModel: updated.defaultTestModel
+      }))
+    } catch (error) {
+      res.status(400).json(badRequest(error instanceof Error ? error.message : '账户默认测试模型保存失败'))
+    }
+  })
+
   router.post('/:id/test', async (req, res) => {
     const scopeQuery = parseRequestScopeQuery(req.query)
     if (!scopeQuery.success) {

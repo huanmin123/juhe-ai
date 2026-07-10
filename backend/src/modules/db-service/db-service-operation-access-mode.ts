@@ -74,7 +74,6 @@ export const dbServiceOperationAccessModeByType = {
   update_account_test_task_message: 'write',
   is_account_test_task_cancel_requested: 'read',
   read_account_test_task_cancel_message: 'read',
-  record_account_successful_test_model: 'write',
   clear_gateway_runtime_cache: 'runtime',
   list_active_client_ip_policies: 'read',
   list_active_response_inspection_policies: 'read',

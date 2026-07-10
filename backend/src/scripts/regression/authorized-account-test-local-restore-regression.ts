@@ -33,6 +33,7 @@ const [
   { requestContextMiddleware },
   { flushAllUsageRecordQueue },
   { flushAllOperationLogQueue },
+  { closeSqliteReadWorkerPool },
   databaseModule,
   repositories
 ] = await Promise.all([
@@ -41,6 +42,7 @@ const [
   import('../../shared/request-context.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/operation-logs/operation-log-queue.service.js'),
+  import('../../storage/sqlite-read-worker-pool.js'),
   import('../../storage/database.js'),
   import('../../storage/repositories.js')
 ])
@@ -72,6 +74,7 @@ interface AccountTestResult {
 
 let appServer: ReturnType<typeof app.listen> | undefined
 let mockOpenAIServer: http.Server | undefined
+let failureMessageVariant: 'first' | 'second' = 'first'
 
 try {
   mockOpenAIServer = createMockOpenAIServer()
@@ -188,7 +191,7 @@ try {
     baseUrl: appBaseUrl,
     path: `/__aisys__/api/my-accounts/${granteeAccount.id}/test`,
     cookie: sessionCookie(grantee.id),
-    body: { model: 'gpt-5.5' }
+    body: { model: 'gpt-5.5', testEndpointMode: 'responses_sse' }
   }))
   assert.equal(result.success, true, `授权实例临时不可调用时手动测试应允许探活：${result.message}`)
   assert.equal(result.statusCode, 200, '授权实例探活成功应返回上游状态码')
@@ -225,7 +228,7 @@ try {
     baseUrl: appBaseUrl,
     path: `/__aisys__/api/accounts/${failingGranteeAccount.id}/test?systemAccountId=${encodeURIComponent(grantee.id)}`,
     cookie: sessionCookie(admin.id),
-    body: { model: 'gpt-5.5' }
+    body: { model: 'gpt-5.5', testEndpointMode: 'responses_sse' }
   }))
   assert.equal(failureResult.success, false, '授权账户测试收到上游失败时测试结果不应成功')
   assert.equal(failureResult.statusCode, 400, '授权账户测试应保留上游失败状态码用于诊断')
@@ -255,11 +258,12 @@ try {
     'account-test-url-password'
   ], '账户测试失败写入最近错误前应清理上游敏感串')
 
+  failureMessageVariant = 'second'
   const secondFailureResult = await withWorkerRole(() => submitAccountTestAndWait<AccountTestResult>({
     baseUrl: appBaseUrl,
     path: `/__aisys__/api/accounts/${failingGranteeAccount.id}/test?systemAccountId=${encodeURIComponent(grantee.id)}`,
     cookie: sessionCookie(admin.id),
-    body: { model: 'gpt-5.5' }
+    body: { model: 'gpt-5.5', testEndpointMode: 'responses_sse' }
   }))
   assert.equal(secondFailureResult.success, false, '再次测试失败时结果仍不应成功')
   assert.equal(secondFailureResult.accountStatusChanged, false, '再次测试失败也应先进入事前确认，不应由主测试直接写状态')
@@ -322,7 +326,7 @@ try {
     baseUrl: appBaseUrl,
     path: `/__aisys__/api/my-accounts/${errorGranteeAccount.id}/test`,
     cookie: sessionCookie(grantee.id),
-    body: { model: 'gpt-5.5' }
+    body: { model: 'gpt-5.5', testEndpointMode: 'responses_sse' }
   }))
   assert.equal(errorRecoveryResult.success, true, `授权实例异常时手动测试应允许进入探活：${errorRecoveryResult.message}`)
   assert.equal(errorRecoveryResult.statusCode, 200, '授权实例异常探活成功应返回上游状态码')
@@ -337,6 +341,7 @@ try {
   try {
     flushAllUsageRecordQueue()
     flushAllOperationLogQueue()
+    await closeSqliteReadWorkerPool()
     databaseModule.closeStorageDatabases()
   } catch {
   }
@@ -345,25 +350,41 @@ try {
 }
 
 function createMockOpenAIServer(): http.Server {
-  const failureCounts = new Map<string, number>()
   return http.createServer((req, res) => {
-    if (req.method !== 'POST' || req.url?.split('?', 1)[0] !== '/v1/responses') {
+    const requestPath = req.url?.split('?', 1)[0]
+    if (req.method !== 'POST' || (requestPath !== '/v1/responses' && requestPath !== '/v1/chat/completions')) {
       res.writeHead(404, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ error: { message: 'not found' } }))
       return
     }
     req.on('end', () => {
       if (req.headers.authorization?.includes('sk-authorized-local-failure')) {
-        const attempt = (failureCounts.get('sk-authorized-local-failure') ?? 0) + 1
-        failureCounts.set('sk-authorized-local-failure', attempt)
         res.writeHead(400, { 'content-type': 'application/json' })
         res.end(JSON.stringify({
           error: {
             code: 'key_switch_cooldown',
-            message: attempt <= 6
+            message: failureMessageVariant === 'first'
               ? '切换key需要冷却30秒 Authorization: Bearer account-test-bearer-token sk-account-test-secret-token client_secret=account-test-client-secret url=https://account-test-url-user:account-test-url-password@example.com/v1'
               : '第二次测试失败仍需保持最新错误 Authorization: Bearer second-account-test-bearer-token sk-second-account-test-secret-token client_secret=second-account-test-client-secret url=https://second-account-test-url-user:second-account-test-url-password@example.com/v1',
             type: 'invalid_request_error'
+          }
+        }))
+        return
+      }
+      if (requestPath === '/v1/chat/completions') {
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({
+          id: 'chatcmpl_authorized_local_restore',
+          object: 'chat.completion',
+          choices: [{
+            index: 0,
+            message: { role: 'assistant', content: 'OK' },
+            finish_reason: 'stop'
+          }],
+          usage: {
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            total_tokens: 2
           }
         }))
         return

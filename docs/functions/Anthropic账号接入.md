@@ -460,9 +460,9 @@ Anthropic 账户测试必须复用真实网关链路。
 测试要求：
 
 - 测试路径使用 `/v1/messages`。
-- 默认测试模型优先使用当前用户在供应商模型目录中手动设置的默认测试模型；没有个人偏好时使用供应商 `default_test_model`，并把本地 Anthropic 目录作为可选模型列表。目录落库以官方 Models API 返回值为准。
+- 默认测试模型统一按账户独立配置、当前用户在供应商模型目录中设置的个人默认、账户绑定协议档案 `default_test_model`、账户支持模型首项依次选择，并把本地 Anthropic 目录作为可选模型列表。目录落库以官方 Models API 返回值为准。
 - 测试请求必须带 `anthropic-version: 2023-06-01`，并通过 `x-juhe-client-profile: claude_code` 触发上游 Claude Code `User-Agent`、`anthropic-beta`、`x-claude-code-session-id` 和 `?beta=true` 补齐。
-- 测试成功后记录 `last_successful_test_model`。
+- 已保存账户只在单账户测试弹窗切换模型时写入该账户独立的 `default_test_model`；测试任务成功本身不自动改写该配置，避免批量测试覆盖多个账户偏好。
 - 测试失败不直接把正常账户写成 `temporary_unavailable`，仍遵循当前事前确认和冷却复测规则。
 - `pending_test` 账户测试失败继续保持待测试，测试成功才进入正常调度。
 - 停用账户测试只保留诊断，不自动恢复停用状态。

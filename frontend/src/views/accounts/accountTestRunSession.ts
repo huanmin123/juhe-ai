@@ -72,6 +72,7 @@ interface StoredAccountSummary {
   fallbackEnabled: boolean
   clientCompatibility: AccountSummary['clientCompatibility']
   supportedModels?: string[]
+  defaultTestModel?: string
   modelMappings?: AccountModelMapping[]
   proxyProfileId?: string
   proxyProfileUnavailable?: boolean
@@ -214,6 +215,7 @@ function storeAccountSummary(account: AccountSummary): StoredAccountSummary {
     fallbackEnabled: account.fallbackEnabled,
     clientCompatibility: account.clientCompatibility,
     supportedModels: account.supportedModels,
+    defaultTestModel: account.defaultTestModel,
     modelMappings: account.modelMappings,
     proxyProfileId: account.proxyProfileId,
     proxyProfileUnavailable: account.proxyProfileUnavailable,
@@ -247,6 +249,7 @@ function restoreAccountSummary(value: StoredAccountSummary): AccountSummary | un
     fallbackEnabled: value.fallbackEnabled === true,
     clientCompatibility: value.clientCompatibility,
     supportedModels: stringList(value.supportedModels),
+    defaultTestModel: optionalString(value.defaultTestModel),
     modelMappings: Array.isArray(value.modelMappings) ? value.modelMappings : undefined,
     proxyProfileId: optionalString(value.proxyProfileId),
     proxyProfileUnavailable: value.proxyProfileUnavailable === true,

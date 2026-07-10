@@ -61,6 +61,8 @@ assert.match(sql, /CREATE TABLE IF NOT EXISTS codex_context_sessions/, '应包�
 assert.match(sql, /codex_context_sessions[\s\S]+storage_offset_bytes bigint NOT NULL[\s\S]+raw_size_bytes bigint NOT NULL[\s\S]+compressed_size_bytes bigint NOT NULL/, 'PG Responses 桥接状态文件 offset/大小字段必须使用 bigint')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS route_strategies/, '应包含策略路由表 schema')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS route_strategy_groups/, '应包含策略路由分组绑定表 schema')
+assert.match(sql, /CREATE TABLE IF NOT EXISTS accounts[\s\S]+default_test_model text/, 'AI 账户新建 schema 应直接包含账户级默认测试模型字段')
+assert.doesNotMatch(sql, /CREATE TABLE IF NOT EXISTS accounts[\s\S]+last_successful_test_model text/, 'AI 账户新建 schema 不应继续包含旧的最后成功测试模型字段')
 assert.match(sql, /route_strategy_id text NOT NULL/, 'api_keys 建表语句应强制绑定 route_strategy_id')
 assert.match(sql, /api_keys[\s\S]+is_default integer NOT NULL DEFAULT 0/, 'api_keys 建表语句应包含默认 API Key 标识')
 assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_route_default_unique ON api_keys\(route_strategy_id\) WHERE is_default = 1/, '默认 API Key 应按路由策略保持唯一')

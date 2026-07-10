@@ -21,7 +21,7 @@ import { requestBackgroundWorkerDbService, sendAccountRuntimeClearToServer, send
 import { operationMode, recordOperationLogAsync, resolveOperationOwner, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 import { buildOpenAIOAuthCredentials, refreshOpenAIOAuthToken, shouldRefreshOpenAIOAuthCredentials } from '../openai-oauth/openai-oauth.service.js'
 import { isGatewaySupportedProtocolProfile } from '../../domain/provider-protocol.js'
-import { preferredSystemAccountTestModelAsync, testOpenAIAccount, testOpenAIAccountWithDiagnosticRetries } from './account-test.service.js'
+import { resolveAccountTestModelAsync, testOpenAIAccount, testOpenAIAccountWithDiagnosticRetries } from './account-test.service.js'
 import {
   type AccountDiagnosticAttemptProgress,
   accountDiagnosticAttemptProgress,
@@ -460,15 +460,6 @@ async function accountTestTaskCancelMessageViaDbService(taskId: string): Promise
   return result?.message ?? '已停止测试'
 }
 
-async function recordAccountSuccessfulTestModelViaDbService(accountId: string, model: string, access: AccessScope): Promise<void> {
-  await requestBackgroundWorkerDbService({
-    type: 'record_account_successful_test_model',
-    accountId,
-    model,
-    access
-  })
-}
-
 function accountDiagnosticAttemptMessage(progress: AccountDiagnosticAttemptProgress): string {
   return `真实请求测试中：第 ${progress.attemptNumber}/${progress.totalAttempts} 次，本次最多等待 ${formatDiagnosticTimeout(progress.timeoutMs)}，总上限 ${formatDiagnosticTimeout(progress.maxTotalTimeoutMs)}`
 }
@@ -522,6 +513,13 @@ async function testOpenAIDraftAccountWithDiagnosticRetries(
   }
 ): Promise<AccountTestResult> {
   const startedAt = Date.now()
+  const model = await resolveAccountTestModelAsync(account, {
+    explicitModel: input.model,
+    systemAccountId: draft.ownerSystemAccountId,
+    providerCode: draft.providerCode,
+    providerProtocolProfileId: draft.providerProtocolProfileId,
+    supportedModels: draft.supportedModels
+  })
   let candidateAccount: OpenAIAccountSecret | undefined
   let lastResult: AccountTestResult | undefined
   for (let attemptIndex = 0; attemptIndex < accountDiagnosticRetryTimeoutMs.length; attemptIndex += 1) {
@@ -533,7 +531,7 @@ async function testOpenAIDraftAccountWithDiagnosticRetries(
     try {
       candidateAccount = candidateAccount ?? await openAIDraftAccountSecret(draft, attemptSignal)
       result = await testOpenAIAccount(account, {
-        model: input.model,
+        model,
         groupId: draft.groupId,
         systemAccountId: draft.ownerSystemAccountId,
         testEndpointMode: input.testEndpointMode,
@@ -543,7 +541,7 @@ async function testOpenAIDraftAccountWithDiagnosticRetries(
         gatewaySettingsOverride: diagnosticAccountTestGatewaySettingsOverride(undefined, timeoutMs)
       })
     } catch (error) {
-      result = failedAccountTestResult(account, draftAccountTestErrorMessage(error, attemptSignal), input.model, {
+      result = failedAccountTestResult(account, draftAccountTestErrorMessage(error, attemptSignal), model, {
         accountFailureEligible: draftAccountTestFailureEligible(error, attemptSignal),
         durationMs: Date.now() - attemptStartedAt
       })
@@ -567,7 +565,7 @@ async function testOpenAIDraftAccountWithDiagnosticRetries(
       }, '账户草稿诊断请求未通过，将继续使用真实网关链路重试')
     }
   }
-  return accountTestResultWithTotalDuration(lastResult ?? failedAccountTestResult(account, '账户测试失败', input.model, {
+  return accountTestResultWithTotalDuration(lastResult ?? failedAccountTestResult(account, '账户测试失败', model, {
     accountFailureEligible: true
   }), startedAt)
 }
@@ -601,7 +599,7 @@ async function runOpenAIAccountTestWithSideEffects(
         testEndpointMode: input.testEndpointMode,
         signal: input.signal,
         diagnostics: input.diagnostics,
-        systemAccountId: access.systemAccountId,
+        systemAccountId: access.systemAccountFilterId ?? access.systemAccountId,
         onDiagnosticAttemptProgress: input.onDiagnosticAttemptProgress,
         findAccountForTest: loadAccountForTestViaDbService,
         findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService
@@ -629,7 +627,6 @@ async function runOpenAIAccountTestWithSideEffects(
   }
 
   if (result.success) {
-    await recordAccountSuccessfulTestModelViaDbService(account.id, result.model ?? '', access)
     clearAccountGatewayRuntimeAfterRestore(account, access)
   }
 
@@ -700,10 +697,17 @@ async function runAccountApiKeyPoolTestIfNeeded(
   if (!groupId || !systemAccountId) {
     return undefined
   }
+  const model = await resolveAccountTestModelAsync(account, {
+    explicitModel: input.model,
+    systemAccountId,
+    providerCode: input.draftAccount?.providerCode,
+    providerProtocolProfileId: input.draftAccount?.providerProtocolProfileId,
+    supportedModels: input.draftAccount?.supportedModels
+  })
 
   input.onStatusMessage?.(accountApiKeyPoolProgressMessage(0, entries.length, 0, 0))
   const itemResults = await runAccountApiKeyPoolEntryTests(account, baseCandidate, entries, {
-    model: input.model,
+    model,
     testEndpointMode: input.testEndpointMode,
     diagnostics: input.diagnostics,
     signal: input.signal,
@@ -724,7 +728,7 @@ async function runAccountApiKeyPoolTestIfNeeded(
       }), 'API Key 池测试结果写入运行态失败，本次仅返回测试结论')
     }
   }
-  const result = accountApiKeyPoolSummaryResult(account, input.model, itemResults, {
+  const result = accountApiKeyPoolSummaryResult(account, model, itemResults, {
     total: entries.length,
     persistedRuntime
   })
@@ -1032,7 +1036,6 @@ async function runManualAccountTestFailurePrecheckQueueItem(
   }
 
   const result = await testOpenAIAccountWithDiagnosticRetries(account, {
-    model: await preferredSystemAccountTestModelAsync(account),
     diagnostics: 'full',
     groupId: account.boundGroupId,
     systemAccountId: accountTestPrecheckSystemAccountId(account),

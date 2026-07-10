@@ -12,6 +12,7 @@ export type ResponsivePagedListResult<T> = {
 export type ResponsivePagedListLoadOptions = {
   append?: boolean
   quiet?: boolean
+  shouldApply?: () => boolean
 }
 
 type PaginationState = UnwrapNestedRefs<{ current: number; pageSize: number; total: number }>
@@ -29,6 +30,11 @@ type UseResponsivePagedListOptions<T, ExtraOptions extends Record<string, unknow
   initialPagination?: { current?: number; pageSize?: number; total?: number }
   showTotal: (total: number, range?: TableShowTotalRange, context?: TableShowTotalContext) => string
   fetchPage: (options: ResponsivePagedListLoadOptions & ExtraOptions, pagination: PaginationState) => Promise<ResponsivePagedListResult<T>>
+  transformItems?: (
+    nextItems: T[],
+    options: ResponsivePagedListLoadOptions & ExtraOptions,
+    result: ResponsivePagedListResult<T>
+  ) => T[]
   mergeItems?: (currentItems: T[], nextItems: T[], options: ResponsivePagedListLoadOptions & ExtraOptions) => T[]
   onLoaded?: (result: ResponsivePagedListResult<T>, options: ResponsivePagedListLoadOptions & ExtraOptions) => void
   onError?: (error: unknown) => void
@@ -84,6 +90,8 @@ export function useResponsivePagedList<T, ExtraOptions extends Record<string, un
     if (loadKey && inflightLoadPromise && inflightLoadKey === loadKey) {
       return inflightLoadPromise
     }
+    inflightLoadKey = ''
+    inflightLoadPromise = undefined
     const requestId = loadRequestId + 1
     loadRequestId = requestId
     if (!loadOptions.quiet) {
@@ -108,18 +116,18 @@ export function useResponsivePagedList<T, ExtraOptions extends Record<string, un
   async function executeLoadData(requestId: number, loadOptions: ResponsivePagedListLoadOptions & ExtraOptions): Promise<boolean> {
     try {
       const result = await options.fetchPage(loadOptions, pagination)
-      if (requestId !== loadRequestId) return false
+      if (requestId !== loadRequestId || loadOptions.shouldApply?.() === false) return false
       if (!loadOptions.append && result.page > 1 && result.items.length === 0 && result.hasMore === false) {
         pagination.current = 1
         const fallbackResult = await options.fetchPage(loadOptions, pagination)
-        if (requestId !== loadRequestId) return false
+        if (requestId !== loadRequestId || loadOptions.shouldApply?.() === false) return false
         applyPageResult(fallbackResult, loadOptions)
       } else {
         applyPageResult(result, loadOptions)
       }
       return true
     } catch (error) {
-      if (requestId !== loadRequestId) return false
+      if (requestId !== loadRequestId || loadOptions.shouldApply?.() === false) return false
       options.onError?.(error)
       return false
     } finally {
@@ -130,15 +138,16 @@ export function useResponsivePagedList<T, ExtraOptions extends Record<string, un
   }
 
   function applyPageResult(result: ResponsivePagedListResult<T>, loadOptions: ResponsivePagedListLoadOptions & ExtraOptions): void {
+    const transformedItems = options.transformItems?.(result.items, loadOptions, result) ?? result.items
     const nextItems = loadOptions.append
-      ? options.mergeItems?.(items.value, result.items, loadOptions) ?? [...items.value, ...result.items]
-      : result.items
+      ? options.mergeItems?.(items.value, transformedItems, loadOptions) ?? [...items.value, ...transformedItems]
+      : transformedItems
     const loadedCount = nextItems.length
     pagination.current = result.page
     pagination.pageSize = result.pageSize
     pagination.total = result.total
     hasMore.value = typeof result.hasMore === 'boolean' ? result.hasMore : loadedCount < result.total
-    currentPageCount.value = result.items.length
+    currentPageCount.value = transformedItems.length
     items.value = nextItems
     options.onLoaded?.(result, loadOptions)
   }
@@ -209,7 +218,7 @@ export function useResponsivePagedList<T, ExtraOptions extends Record<string, un
   }
 
   function requestKey(loadOptions: ResponsivePagedListLoadOptions & ExtraOptions): string | undefined {
-    if (!options.requestSignature) return undefined
+    if (!options.requestSignature || loadOptions.shouldApply) return undefined
     return stableKey({
       options: loadOptions,
       page: pagination.current,

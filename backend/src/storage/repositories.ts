@@ -342,7 +342,7 @@ interface OpenAIOAuthRefreshCandidateRow {
   cooldown_until: string | null
   last_error_code: string | null
   last_error_message: string | null
-  last_successful_test_model: string | null
+  default_test_model: string | null
 }
 
 export type { AccountListOptions, AccountOptionListOptions, AccountListSchedulableFilter, AccountListSortDirection, AccountListSortField } from './account-list-options.js'
@@ -1193,7 +1193,20 @@ export async function findAccountForTestAsync(accountId: string, access?: Access
   }
 }
 
-export function recordAccountSuccessfulTestModel(accountId: string, model: string, access?: AccessScope): AccountSummary | undefined {
+function accountSupportsDefaultTestModel(account: Pick<AccountSummary, 'supportedModels'>, model: string): boolean {
+  return (account.supportedModels ?? []).some((supportedModel) => supportedModel.trim() === model)
+}
+
+function normalizedAccountDefaultTestModelInput(value: unknown, supportedModels: readonly string[]): string | undefined {
+  const model = optionalString(value)
+  if (!model) return undefined
+  if (!supportedModels.includes(model)) {
+    throw new Error('账户默认测试模型必须属于账户支持模型')
+  }
+  return model
+}
+
+export function updateAccountDefaultTestModel(accountId: string, model: string, access?: AccessScope): AccountSummary | undefined {
   const normalizedModel = optionalString(model)?.trim()
   const current = findAccountSummary(accountId, access)
   if (!current?.permissions?.canUse) {
@@ -1202,10 +1215,13 @@ export function recordAccountSuccessfulTestModel(accountId: string, model: strin
   if (!normalizedModel) {
     return current
   }
+  if (!accountSupportsDefaultTestModel(current, normalizedModel)) {
+    return current
+  }
   const result = getBusinessDatabase()
     .prepare(`
       UPDATE accounts
-      SET last_successful_test_model = ?,
+      SET default_test_model = ?,
           updated_at = ?
       WHERE id = ?
         AND deleted_at IS NULL
@@ -1218,9 +1234,9 @@ export function recordAccountSuccessfulTestModel(accountId: string, model: strin
   return findAccountSummary(accountId, access)
 }
 
-export async function recordAccountSuccessfulTestModelAsync(accountId: string, model: string, access?: AccessScope): Promise<AccountSummary | undefined> {
+export async function updateAccountDefaultTestModelAsync(accountId: string, model: string, access?: AccessScope): Promise<AccountSummary | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return recordAccountSuccessfulTestModel(accountId, model, access)
+    return updateAccountDefaultTestModel(accountId, model, access)
   }
   const normalizedModel = optionalString(model)?.trim()
   const current = await findAccountSummaryAsync(accountId, access)
@@ -1230,10 +1246,13 @@ export async function recordAccountSuccessfulTestModelAsync(accountId: string, m
   if (!normalizedModel) {
     return current
   }
+  if (!accountSupportsDefaultTestModel(current, normalizedModel)) {
+    return current
+  }
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const result = await client.execute(`
     UPDATE ${accountWriteTable(client, 'accounts')}
-    SET last_successful_test_model = ?,
+    SET default_test_model = ?,
         updated_at = ?
     WHERE id = ?
       AND deleted_at IS NULL
@@ -1258,7 +1277,7 @@ export function listOpenAIOAuthAccountsDueForAccessTokenRefresh(input: {
       SELECT id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted,
         proxy_profile_id, concurrency_limit, priority,
         super_priority_enabled, fallback_enabled, client_compatibility, schedulable, account_expires_at, cooldown_until,
-        last_error_code, last_error_message, last_successful_test_model
+        last_error_code, last_error_message, default_test_model
       FROM accounts
       WHERE authorization_instance_authorization_id IS NULL
         AND deleted_at IS NULL
@@ -1291,7 +1310,7 @@ export async function listOpenAIOAuthAccountsDueForAccessTokenRefreshAsync(input
     SELECT id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted,
       proxy_profile_id, concurrency_limit, priority,
       super_priority_enabled, fallback_enabled, client_compatibility, schedulable, account_expires_at, cooldown_until,
-      last_error_code, last_error_message, last_successful_test_model
+      last_error_code, last_error_message, default_test_model
     FROM ${accountWriteTable(client, 'accounts')}
     WHERE authorization_instance_authorization_id IS NULL
       AND deleted_at IS NULL
@@ -1316,7 +1335,7 @@ export function listOpenAIOAuthStoppedRefreshExceptionAccounts(input: {
       SELECT id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted,
         proxy_profile_id, concurrency_limit, priority,
         super_priority_enabled, fallback_enabled, schedulable, account_expires_at, cooldown_until,
-        last_error_code, last_error_message, last_successful_test_model
+        last_error_code, last_error_message, default_test_model
       FROM accounts
       WHERE authorization_instance_authorization_id IS NULL
         AND provider_protocol_profile_id = ?
@@ -1355,7 +1374,7 @@ function openAIOAuthRefreshCandidateSummaries(rows: OpenAIOAuthRefreshCandidateR
       { protocolCode: row.protocol_code, protocolVersion: row.protocol_version }
     ),
     supportedModels: [],
-    lastSuccessfulTestModel: optionalString(row.last_successful_test_model),
+    defaultTestModel: optionalString(row.default_test_model),
     proxyProfileId: row.proxy_profile_id ?? undefined,
     schedulable: row.schedulable === 1,
     accountExpiresAt: row.account_expires_at ?? undefined,
@@ -1411,6 +1430,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   }) ?? []
   assertAccountSupportedModelsRequired(supportedModels)
   assertAccountModelMappingUpstreamsAllowedBySupportedModels(modelMappings, supportedModels)
+  const defaultTestModel = normalizedAccountDefaultTestModelInput(input.defaultTestModel, supportedModels)
   const tagNames = normalizeAccountTagNamesInput(input.tags) ?? []
   const initialStatus = normalizedAccountStatusInput(input.status, 'pending_test')
   const expiredByPackage = isAccountExpired(accountExpiresAt)
@@ -1467,7 +1487,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     supportedModels,
     modelMappings,
     tags: tagNames.map((name) => ({ id: '', name })),
-    lastSuccessfulTestModel: undefined,
+    defaultTestModel,
     proxyProfileId,
     schedulable: expiredByPackage || accountStatusForcesSchedulableOff(nextStatus) ? false : createSchedulable,
     availabilitySchedule,
@@ -1502,8 +1522,8 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
           id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
           oauth_access_token_expires_at, oauth_refresh_token_present, proxy_profile_id, concurrency_limit,
           priority, super_priority_enabled, fallback_enabled, client_compatibility, schedulable, availability_schedule_json, availability_schedule_next_check_at, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
-          cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          default_test_model, cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         account.id,
@@ -1534,6 +1554,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
         account.cooldownUntil ?? null,
         account.lastErrorCode ?? null,
         account.lastErrorMessage ?? null,
+        account.defaultTestModel ?? null,
         account.cooldownRetestObservationStartedAt ?? null,
         0,
         null,
@@ -1628,6 +1649,7 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
   }) ?? []
   assertAccountSupportedModelsRequired(supportedModels)
   assertAccountModelMappingUpstreamsAllowedBySupportedModels(modelMappings, supportedModels)
+  const defaultTestModel = normalizedAccountDefaultTestModelInput(input.defaultTestModel, supportedModels)
   const tagNames = normalizeAccountTagNamesInput(input.tags) ?? []
   const initialStatus = normalizedAccountStatusInput(input.status, 'pending_test')
   const expiredByPackage = isAccountExpired(accountExpiresAt)
@@ -1688,7 +1710,7 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
     supportedModels,
     modelMappings,
     tags: tagNames.map((name) => ({ id: '', name })),
-    lastSuccessfulTestModel: undefined,
+    defaultTestModel,
     proxyProfileId,
     schedulable: expiredByPackage || accountStatusForcesSchedulableOff(nextStatus) ? false : createSchedulable,
     availabilitySchedule,
@@ -1720,8 +1742,8 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
           id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
           oauth_access_token_expires_at, oauth_refresh_token_present, proxy_profile_id, concurrency_limit,
           priority, super_priority_enabled, fallback_enabled, client_compatibility, schedulable, availability_schedule_json, availability_schedule_next_check_at, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
-          cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          default_test_model, cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         account.id,
         systemAccountId,
@@ -1751,6 +1773,7 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
         account.cooldownUntil ?? null,
         account.lastErrorCode ?? null,
         account.lastErrorMessage ?? null,
+        account.defaultTestModel ?? null,
         account.cooldownRetestObservationStartedAt ?? null,
         0,
         null,
@@ -1844,6 +1867,9 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   const nextSupportedModels = hasSupportedModelsInput
     ? unchangedSupportedModelsInput ?? normalizeAccountSupportedModelsForProvider(input.supportedModels, current.providerCode, systemAccountId) ?? []
     : current.supportedModels ?? []
+  const nextDefaultTestModel = current.defaultTestModel && nextSupportedModels.includes(current.defaultTestModel)
+    ? current.defaultTestModel
+    : undefined
   const hasModelMappingsInput = hasOwnInput(input, 'modelMappings')
   const unchangedModelMappingsInput = hasModelMappingsInput
     ? normalizeModelMappingsIfUnchanged(input.modelMappings, current.modelMappings)
@@ -1976,6 +2002,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     fallbackEnabled: nextFallbackEnabled,
     clientCompatibility: nextClientCompatibility,
     supportedModels: nextSupportedModels,
+    defaultTestModel: nextDefaultTestModel,
     modelMappings: nextModelMappings,
     tags: hasTagsInput ? nextTagNames.map((name) => ({ id: '', name })) : current.tags ?? [],
     proxyProfileId: hasOwnInput(input, 'proxyProfileId')
@@ -2015,7 +2042,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
             oauth_access_token_expires_at = ?, oauth_refresh_token_present = ?,
             proxy_profile_id = ?, concurrency_limit = ?,
             priority = ?, super_priority_enabled = ?, fallback_enabled = ?, client_compatibility = ?, schedulable = ?, availability_schedule_json = ?, availability_schedule_next_check_at = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?,
-            cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, updated_at = ?
+            cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, default_test_model = ?, updated_at = ?
         WHERE id = ? AND system_account_id = ?
       `)
       .run(
@@ -2044,6 +2071,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         next.cooldownRetestObservationStartedAt ?? null,
         next.cooldownRetestLastAt ?? null,
         next.cooldownRetestLastStatusCode ?? null,
+        next.defaultTestModel ?? null,
         updatedAt,
         id,
         systemAccountId
@@ -2156,6 +2184,9 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
   const nextSupportedModels = hasSupportedModelsInput
     ? unchangedSupportedModelsInput ?? await normalizeAccountSupportedModelsForProviderAsync(input.supportedModels, current.providerCode, systemAccountId) ?? []
     : current.supportedModels ?? []
+  const nextDefaultTestModel = current.defaultTestModel && nextSupportedModels.includes(current.defaultTestModel)
+    ? current.defaultTestModel
+    : undefined
   const hasModelMappingsInput = hasOwnInput(input, 'modelMappings')
   const unchangedModelMappingsInput = hasModelMappingsInput
     ? normalizeModelMappingsIfUnchanged(input.modelMappings, current.modelMappings)
@@ -2292,6 +2323,7 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
     fallbackEnabled: nextFallbackEnabled,
     clientCompatibility: nextClientCompatibility,
     supportedModels: nextSupportedModels,
+    defaultTestModel: nextDefaultTestModel,
     modelMappings: nextModelMappings,
     tags: hasTagsInput ? nextTagNames.map((name) => ({ id: '', name })) : current.tags ?? [],
     proxyProfileId,
@@ -2328,7 +2360,7 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
             oauth_access_token_expires_at = ?, oauth_refresh_token_present = ?,
             proxy_profile_id = ?, concurrency_limit = ?,
             priority = ?, super_priority_enabled = ?, fallback_enabled = ?, client_compatibility = ?, schedulable = ?, availability_schedule_json = ?, availability_schedule_next_check_at = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?,
-            cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, updated_at = ?
+            cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, default_test_model = ?, updated_at = ?
         WHERE id = ?
           AND system_account_id = ?
           AND deleted_at IS NULL
@@ -2358,6 +2390,7 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
         nextCooldownRetestObservationStartedAt ?? null,
         next.cooldownRetestLastAt ?? null,
         next.cooldownRetestLastStatusCode ?? null,
+        next.defaultTestModel ?? null,
         updatedAt,
         id,
         systemAccountId

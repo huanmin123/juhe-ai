@@ -153,6 +153,7 @@ export interface ProviderDefinition {
   protocolVersion: string
   baseUrl: string
   defaultTestModel: string
+  systemDefaultTestModel?: string
   defaultSupportedModels: string[]
   accountTypes: AccountType[]
   capabilities: string[]
@@ -487,7 +488,7 @@ export interface AccountSummary {
   supportedModels?: string[]
   modelMappings?: AccountModelMapping[]
   tags?: AccountTagSummary[]
-  lastSuccessfulTestModel?: string
+  defaultTestModel?: string
   qualityScore?: number
   qualityState?: string
   qualityEwmaFirstTokenMs?: number

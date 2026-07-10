@@ -140,6 +140,8 @@ try {
         type: 'api_key',
         status: 'active',
         groupId: group.id,
+        supportedModels: ['gpt-5.5'],
+        defaultTestModel: 'gpt-5.5',
         credentials: { api_key: 'sk-import-active-to-pending', base_url: 'https://api.openai.com/v1' }
       }
     ]
@@ -150,9 +152,11 @@ try {
   const imported = repositories.findAccountSummary(importedId, access)
   assert.equal(imported?.status, 'pending_test', '导入 active 账户应落库为待测试')
   assert.equal(imported?.schedulable, false, '导入后待测试账户不得参与调度')
+  assert.equal(imported?.defaultTestModel, 'gpt-5.5', '导入应恢复账户级默认测试模型')
 
   const exportResult = accountExport.exportAccountsAsImportDocument({ accountIds: [importedId] }, access)
   assert.equal(exportResult.document.accounts[0]?.status, 'pending_test', '导出应保留待测试状态')
+  assert.equal(exportResult.document.accounts[0]?.defaultTestModel, 'gpt-5.5', '导出应保留账户级默认测试模型')
 
   mockOpenAIServer = createMockOpenAIServer()
   mockOpenAIServer.listen(0, '127.0.0.1')

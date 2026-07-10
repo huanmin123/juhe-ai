@@ -24,11 +24,12 @@ logger.level = 'silent'
 
 const restoreWorkerParentIpc = installWorkerParentIpcHarness()
 
-const [databaseModule, repositories, gatewayRuntimeCache, cooldownRetestService] = await Promise.all([
+const [databaseModule, repositories, gatewayRuntimeCache, cooldownRetestService, { closeSqliteReadWorkerPool }] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
-  import('../../modules/background/cooldown-account-retest.service.js')
+  import('../../modules/background/cooldown-account-retest.service.js'),
+  import('../../storage/sqlite-read-worker-pool.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -410,19 +411,39 @@ try {
 } finally {
   await closeServer(mockOpenAIServer)
   restoreWorkerParentIpc()
+  await closeSqliteReadWorkerPool()
   databaseModule.closeStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
 function createMockOpenAIServer(): http.Server {
   return http.createServer((req, res) => {
-    if (req.method !== 'POST' || req.url?.split('?', 1)[0] !== '/v1/responses') {
+    const requestPath = req.url?.split('?', 1)[0]
+    if (req.method !== 'POST' || (requestPath !== '/v1/responses' && requestPath !== '/v1/chat/completions')) {
       res.writeHead(404, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ error: { message: 'not found' } }))
       return
     }
     req.on('end', () => {
       mockOpenAIResponseHitCount += 1
+      if (requestPath === '/v1/chat/completions') {
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({
+          id: 'chatcmpl_cooldown_retest_probe_success',
+          object: 'chat.completion',
+          choices: [{
+            index: 0,
+            message: { role: 'assistant', content: 'OK' },
+            finish_reason: 'stop'
+          }],
+          usage: {
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            total_tokens: 2
+          }
+        }))
+        return
+      }
       const completedEvent = {
         type: 'response.completed',
         response: {

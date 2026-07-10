@@ -335,7 +335,7 @@ function candidateWindowRow(
     stream_failure_count: 0,
     stream_failure_window_started_at: null,
     account_expires_at: null,
-    last_successful_test_model: null,
+    default_test_model: null,
     quality_score: options.qualityScore ?? null,
     quality_state: null,
     quality_ewma_first_token_ms: null

@@ -48,6 +48,7 @@ export interface AccountExportAccount {
   superPriorityEnabled?: boolean
   fallbackEnabled?: boolean
   supportedModels?: string[]
+  defaultTestModel?: string
   modelMappings?: AccountModelMapping[]
   tags?: string[]
   accountExpiresAt?: string
@@ -222,6 +223,7 @@ function buildExportAccount(account: AccountSummary, proxyRef: string | undefine
     if (account.fallbackEnabled) output.fallbackEnabled = true
   }
   if (account.supportedModels?.length) output.supportedModels = [...account.supportedModels]
+  if (account.defaultTestModel) output.defaultTestModel = account.defaultTestModel
   if (account.modelMappings?.length) output.modelMappings = account.modelMappings.map((item) => ({ ...item }))
   if (account.tags?.length) output.tags = account.tags.map((tag) => tag.name).filter(Boolean)
   if (account.accountExpiresAt) output.accountExpiresAt = account.accountExpiresAt

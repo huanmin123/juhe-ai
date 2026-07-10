@@ -3,7 +3,7 @@ import { logger } from '../../shared/logger.js'
 import { createRetryQueue } from '../../shared/retry-queue.js'
 import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import type { AccessScope } from '../../storage/access-scope.js'
-import { preferredSystemAccountTestModelAsync, testOpenAIAccount } from '../accounts/account-test.service.js'
+import { testOpenAIAccount } from '../accounts/account-test.service.js'
 import type { OpenAIAccountSecret } from '../../storage/repositories.js'
 import {
   discardNormalRouteLatencyProbeCandidateAsync,
@@ -88,7 +88,6 @@ async function runNormalRouteSpeedFirstRecoveryProbeQueueItem(
   }
 
   const result = await testOpenAIAccount(account, {
-    model: await preferredSystemAccountTestModelAsync(account),
     diagnostics: 'limited',
     groupId: item.scope.groupId,
     systemAccountId: item.scope.systemAccountId,

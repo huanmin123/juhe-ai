@@ -529,7 +529,7 @@ async function assertActivationTestTaskMatchesCreateAsync(input: {
     ?? input.group.systemAccountId
     ?? input.requestAccess.systemAccountFilterId
     ?? input.requestAccess.systemAccountId
-  const expected = accountCreateActivationFingerprintSnapshot({
+  const expected = await accountCreateActivationFingerprintSnapshotAsync({
     account: input.account,
     providerBaseUrl: input.providerBaseUrl,
     providerProtocolProfileId: input.providerProtocolProfileId,
@@ -541,6 +541,73 @@ async function assertActivationTestTaskMatchesCreateAsync(input: {
   const actual = draftActivationFingerprintSnapshot(task.draftAccount)
   if (hashStableValue(expected) !== hashStableValue(actual)) {
     throw new Error('账户草稿测试内容已变化，请重新测试后再创建为正常状态')
+  }
+}
+
+async function accountCreateActivationFingerprintSnapshotAsync(input: {
+  account: AccountCreateDraftActivationRequest
+  providerBaseUrl: string
+  providerProtocolProfileId: string
+  protocolCode: string
+  protocolVersion: string
+  ownerSystemAccountId: string
+  defaultSupportedModels?: string[]
+}): Promise<Record<string, unknown>> {
+  const account = accountDraftRequestFromCreate(input.account)
+  const clientCompatibility = normalizeOpenAIAccountClientCompatibility(
+    account.providerCode,
+    account.type,
+    undefined,
+    'openai_standard',
+    {
+      providerCode: account.providerCode,
+      providerProtocolProfileId: input.providerProtocolProfileId,
+      protocolCode: input.protocolCode,
+      protocolVersion: input.protocolVersion
+    }
+  )
+  const credentials = normalizeAccountCredentialsForWrite(account.type, draftAccountCredentials(account, input.providerBaseUrl), {
+    providerCode: account.providerCode,
+    accountType: account.type,
+    clientCompatibility,
+    providerProtocolProfileId: input.providerProtocolProfileId,
+    protocolCode: input.protocolCode,
+    protocolVersion: input.protocolVersion
+  })
+  const availabilitySchedule = accountAvailabilityScheduleFromRequest({ availabilitySchedule: account.availabilitySchedule })
+  const supportedModels = draftSupportedModels(
+    account.providerCode,
+    account.supportedModels,
+    input.defaultSupportedModels ?? await findProviderDefaultSupportedModelsAsync(account.providerCode)
+  )
+  const modelMappings = await normalizeDraftAccountModelMappingsAsync(account.modelMappings, account.providerCode, input.ownerSystemAccountId, {
+    providerCode: account.providerCode,
+    providerProtocolProfileId: input.providerProtocolProfileId,
+    protocolCode: input.protocolCode,
+    protocolVersion: input.protocolVersion
+  }, credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]) ?? []
+  assertAccountModelMappingUpstreamsAllowedBySupportedModels(modelMappings, supportedModels)
+  return {
+    ownerSystemAccountId: input.ownerSystemAccountId,
+    groupId: account.groupId,
+    providerCode: account.providerCode,
+    providerProtocolProfileId: input.providerProtocolProfileId,
+    protocolCode: input.protocolCode,
+    protocolVersion: input.protocolVersion,
+    name: account.name,
+    type: account.type,
+    credentials,
+    concurrencyLimit: account.concurrencyLimit ?? 20,
+    priority: account.priority ?? 0,
+    superPriorityEnabled: account.superPriorityEnabled ?? false,
+    fallbackEnabled: account.fallbackEnabled ?? false,
+    clientCompatibility,
+    supportedModels,
+    modelMappings,
+    proxyProfileId: optionalText(account.proxyProfileId),
+    accountExpiresAt: optionalText(account.accountExpiresAt),
+    availabilityScheduleJson: accountAvailabilityScheduleJson(availabilitySchedule) ?? undefined,
+    notes: optionalText(account.notes)
   }
 }
 

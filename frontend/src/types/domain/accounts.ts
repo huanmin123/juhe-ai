@@ -198,6 +198,16 @@ export interface AccountTagSummary {
   updatedAt?: string
 }
 
+export interface AccountTagsUpdateResult {
+  id: string
+  tags: Array<Pick<AccountTagSummary, 'id' | 'name'>>
+}
+
+export interface AccountDefaultTestModelResult {
+  accountId: string
+  defaultTestModel: string
+}
+
 export interface AccountSummary {
   id: string
   systemAccountId?: string
@@ -223,7 +233,7 @@ export interface AccountSummary {
   supportedModels?: string[]
   modelMappings?: AccountModelMapping[]
   tags?: AccountTagSummary[]
-  lastSuccessfulTestModel?: string
+  defaultTestModel?: string
   qualityScore?: number
   qualityState?: string
   qualityEwmaFirstTokenMs?: number

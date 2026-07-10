@@ -1,7 +1,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, type ComputedRef } from 'vue'
 
 import { message } from '@/lib/antd'
-import { type AccountDraftTestPayload, type AccountTestPayload } from '@/api/client'
+import { api, type AccountDraftTestPayload, type AccountTestPayload } from '@/api/client'
 import type {
   AccountSummary,
   AccountTestResult,
@@ -22,6 +22,10 @@ import {
 } from './accountTestFlow'
 import { isAuthorizedAccount } from './accountFormatters'
 import { accountOperationScopeParams } from './accountOperationScope'
+import {
+  accountDefaultTestModelSaveQueue,
+  type AccountDefaultTestModelApplyPhase
+} from './accountDefaultTestModelSaveQueue'
 import { authorizedAccountUnavailableText, canTestAccount } from './accountRules'
 import { accountBatchTestChunkSize, runInFixedBatches } from './accountBatchExecution'
 import {
@@ -48,16 +52,21 @@ import { hasSingleProviderProfileForAccountSelection } from './accountDerivedSta
 import type { DraftApiKeyTestSnapshot } from './accountDraftApiKeyTestRuntime'
 import {
   type AccountTestRunSessionSnapshot,
+  clearAccountTestRunSession as clearStoredAccountTestRunSession,
   readAccountTestRunSession,
   writeAccountTestRunSession
 } from './accountTestRunSession'
 
 interface UseAccountTestModalOptions {
   accountScopeParams: ComputedRef<{ systemAccountId: string } | undefined>
-  applyProviderDefaultTestModel?: (providerCode: string, defaultTestModel: string) => void
+  applyAccountDefaultTestModel?: (
+    accountId: string,
+    defaultTestModel?: string,
+    phase?: AccountDefaultTestModelApplyPhase
+  ) => void
   clearSelection?: () => void
   isManagementView: ComputedRef<boolean>
-  loadData: () => Promise<void>
+  loadData: (options?: { shouldApply?: () => boolean }) => Promise<void>
   providers: ComputedRef<ProviderDefinition[]>
   draftApiKeyTestSnapshot?: { value: DraftApiKeyTestSnapshot | undefined }
   successfulDraftActivationTest?: { value: SuccessfulDraftActivationTest | undefined }
@@ -70,6 +79,14 @@ export interface SuccessfulDraftActivationTest {
 }
 
 const accountTestSessionHeartbeatIntervalMs = 2000
+
+interface AccountTestRunContext {
+  controller: AbortController
+  tasks: Map<string, AccountSummary>
+  sessionId?: string
+  sessionScopeParams?: { systemAccountId: string }
+  heartbeatTimer?: number
+}
 
 export function useAccountTestModal(options: UseAccountTestModalOptions) {
   const testModalOpen = ref(false)
@@ -92,25 +109,19 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   const {
     defaultModelForSelection,
     loadTestModels,
-    saveDefaultTestModel,
     testModelOptions,
     testModelsLoading
   } = useAccountTestModels({
     accountScopeParams: options.accountScopeParams,
-    applyProviderDefaultTestModel: options.applyProviderDefaultTestModel,
     providers: options.providers,
     testForm,
     testTargetAccountSelection
   })
 
-  let accountTestAbortController: AbortController | undefined
-  let activeAccountTestSessionId: string | undefined
-  let activeAccountTestSessionScopeParams: { systemAccountId: string } | undefined
-  let accountTestSessionHeartbeatTimer: number | undefined
-  const activeAccountTestTasks = new Map<string, AccountSummary>()
+  let activeTestRun: AccountTestRunContext | undefined
+  let pendingTestRunDetach: Promise<void> | undefined
 
   async function openTestModal(account: AccountSummary) {
-    if (showRunningAccountTestModal()) return
     if (!canTestAccount(account)) {
       if (!isGatewayTestableAccountProfile(account)) {
         message.warning('当前仅支持测试 OpenAI、Anthropic 或 Gemini 协议账户')
@@ -123,6 +134,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
       }
       return
     }
+    await detachActiveAccountTestRun()
     testMode.value = 'single'
     testingAccount.value = account
     batchTestingAccounts.value = []
@@ -140,11 +152,11 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   }
 
   async function openDraftTestModal(account: AccountSummary, draftPayload: AccountDraftTestPayload['account']) {
-    if (showRunningAccountTestModal()) return
     if (!isGatewayTestableAccountProfile(account)) {
       message.warning('当前仅支持测试 OpenAI、Anthropic 或 Gemini 协议账户')
       return
     }
+    await detachActiveAccountTestRun()
     testMode.value = 'single'
     testingAccount.value = account
     batchTestingAccounts.value = []
@@ -163,11 +175,11 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   }
 
   async function openSavedDraftTestModal(account: AccountSummary, draftPayload: AccountDraftTestPayload['account']) {
-    if (showRunningAccountTestModal()) return
     if (!isGatewayTestableAccountProfile(account)) {
       message.warning('当前仅支持测试 OpenAI、Anthropic 或 Gemini 协议账户')
       return
     }
+    await detachActiveAccountTestRun()
     testMode.value = 'single'
     testingAccount.value = account
     batchTestingAccounts.value = []
@@ -195,12 +207,55 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   function updateAccountTestModel(model: string): void {
     const normalizedModel = model.trim()
     testForm.model = normalizedModel
-    if (!normalizedModel) return
-    void saveDefaultTestModel(normalizedModel)
+    const account = testingAccount.value
+    if (
+      !normalizedModel
+      || testMode.value !== 'single'
+      || draftTestMode.value
+      || !account
+      || !(account.supportedModels ?? []).includes(normalizedModel)
+    ) {
+      return
+    }
+    accountDefaultTestModelSaveQueue.enqueue(account, normalizedModel, {
+      persist: async (targetAccount, targetModel) => {
+        const result = options.isManagementView.value
+          ? await api.accounts.setDefaultTestModel(
+            targetAccount.id,
+            targetModel,
+            accountOperationScopeParams(targetAccount, options.accountScopeParams.value)
+          )
+          : await api.myAccounts.setDefaultTestModel(targetAccount.id, targetModel)
+        return result.defaultTestModel
+      },
+      onLatestFailure: (error) => {
+        console.error(error)
+        message.warning('账户默认测试模型保存失败，已恢复原设置')
+      },
+      onSupersededFailure: (error) => {
+        console.error(error)
+      }
+    })
   }
 
+  function applyAccountDefaultTestModel(
+    accountId: string,
+    model: string | undefined,
+    phase: AccountDefaultTestModelApplyPhase
+  ): void {
+    if (testingAccount.value?.id === accountId) {
+      testingAccount.value = {
+        ...testingAccount.value,
+        defaultTestModel: model?.trim() || undefined
+      }
+    }
+    options.applyAccountDefaultTestModel?.(accountId, model, phase)
+  }
+  const unsubscribeAccountDefaultTestModelSaveQueue = accountDefaultTestModelSaveQueue.subscribe(
+    applyAccountDefaultTestModel
+  )
+
   async function openBatchTestModal(accounts: AccountSummary[]) {
-    if (showRunningAccountTestModal()) return
     const testableAccounts = accounts.filter(canTestAccount)
     if (!testableAccounts.length) {
       message.warning('请先选择可测试账户')
@@ -213,6 +268,14 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
       message.warning('批量测试一次只能选择同一供应商协议的账户，请按供应商或协议分批测试')
       return
     }
+    const batchScopeIds = [...new Set(testableAccounts
+      .map((account) => accountOperationScopeParams(account, options.accountScopeParams.value)?.systemAccountId)
+      .filter((systemAccountId): systemAccountId is string => Boolean(systemAccountId)))]
+    if (batchScopeIds.length > 1) {
+      message.warning('批量测试一次只能选择同一系统账户下的 AI 账户')
+      return
+    }
+    await detachActiveAccountTestRun()
     testMode.value = 'batch'
     testingAccount.value = undefined
     batchTestingAccounts.value = [...testableAccounts]
@@ -231,38 +294,45 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   async function runSingleAccountTest() {
     if (!testingAccount.value || testRunning.value) return
     testResult.value = undefined
-    testRunning.value = true
-    const controller = new AbortController()
-    accountTestAbortController = controller
+    const run = beginAccountTestRun()
     const startedAt = Date.now()
     const account = testingAccount.value
     const draftPayload = activeDraftTestPayload(account)
     const activationDraftPayload = activeActivationDraftTestPayload(account)
     const savedDraftUpdatePayload = activeSavedDraftUpdateTestPayload(account)
+    const activeDraftMode = draftTestMode.value
+    const taskScopeParams = accountTestTaskScopeParams(account, activeDraftMode, draftPayload)
+    const payload = buildAccountTestPayload({
+      model: testForm.model || defaultModelForSelection(account),
+      testEndpointMode: testForm.testEndpointMode
+    }, account, draftPayload)
     try {
-      const session = await createAccountTestSession(account)
-      startAccountTestSessionHeartbeat(session.id, accountTestTaskScopeParams(account))
-      persistAccountTestRunSession(true)
-      if (controller.signal.aborted) {
-        await cancelActiveAccountTestSession()
+      const session = await createAccountTestSession(taskScopeParams)
+      startAccountTestSessionHeartbeat(run, session.id, taskScopeParams)
+      persistAccountTestRunSession(run, true)
+      if (run.controller.signal.aborted) {
+        await cancelAccountTestRunSession(run)
         throw new DOMException('测试已停止', 'AbortError')
       }
-      const payload = buildAccountSpecificTestPayload(account)
-      const task = await submitAccountTest(account, payload, session.id)
-      activeSingleTestTask.value = task
-      activeAccountTestTasks.set(task.id, account)
-      persistAccountTestRunSession(true)
-      if (controller.signal.aborted) {
+      const task = await submitAccountTest(account, payload, session.id, activeDraftMode, draftPayload)
+      if (isActiveAccountTestRun(run)) {
+        activeSingleTestTask.value = task
+      }
+      run.tasks.set(task.id, account)
+      persistAccountTestRunSession(run, true)
+      if (run.controller.signal.aborted) {
         await cancelCreatedAccountTestTask(task.id, account)
-        activeAccountTestTasks.delete(task.id)
+        run.tasks.delete(task.id)
         throw new DOMException('测试已停止', 'AbortError')
       }
-      const result = await waitForSubmittedAccountTestResult(task, account, controller.signal, (latestTask) => {
+      const result = await waitForSubmittedAccountTestResult(run, task, account, payload, (latestTask) => {
+        if (!isActiveAccountTestRun(run)) return
         activeSingleTestTask.value = latestTask
         syncDraftActivationTestFromTask(latestTask, activationDraftPayload)
         syncSavedDraftUpdateTestFromTask(latestTask, savedDraftUpdatePayload)
-        persistAccountTestRunSession(true)
+        persistAccountTestRunSession(run, true)
       })
+      if (!isActiveAccountTestRun(run)) return
       testResult.value = result
       syncDraftApiKeyTestSnapshot(draftPayload, result)
       if (result.success) {
@@ -282,18 +352,21 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
         }
         message.error(accountTestErrorMessage(account, result))
       }
-      await options.loadData()
+      await options.loadData({ shouldApply: () => isActiveAccountTestRun(run) })
     } catch (error) {
       if (isAbortError(error)) {
-        message.info(stoppedAccountTestMessage(account))
+        if (isActiveAccountTestRun(run)) {
+          message.info(stoppedAccountTestMessage(account))
+        }
         return
       }
       console.error(error)
+      if (!isActiveAccountTestRun(run)) return
       const result = failedAccountTestResult({
         account,
         error,
-        model: testForm.model,
-        testEndpointMode: testForm.testEndpointMode,
+        model: payload.model ?? '',
+        testEndpointMode: payload.testEndpointMode ?? 'account_default',
         startedAt
       })
       testResult.value = result
@@ -306,19 +379,16 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
         successfulSavedDraftUpdateTest.value = undefined
       }
     } finally {
-      if (!controller.signal.aborted) {
-        await completeActiveAccountTestSession()
+      if (!run.controller.signal.aborted) {
+        await completeAccountTestRunSession(run)
       }
-      testRunning.value = false
-      persistAccountTestRunSession(false)
-      for (const taskId of [...activeAccountTestTasks.keys()]) {
-        activeAccountTestTasks.delete(taskId)
+      if (isActiveAccountTestRun(run)) {
+        persistAccountTestRunSession(run, false)
       }
-      stopAccountTestSessionHeartbeat()
-      clearActiveAccountTestSession()
-      if (accountTestAbortController === controller) {
-        accountTestAbortController = undefined
-      }
+      run.tasks.clear()
+      stopAccountTestSessionHeartbeat(run)
+      clearAccountTestRunSession(run)
+      finishAccountTestRun(run)
     }
   }
 
@@ -327,57 +397,67 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     if (!accounts.length || testRunning.value) return
     testResult.value = undefined
     batchTestItems.value = accounts.map((account) => ({ account, status: 'pending' }))
-    testRunning.value = true
-    const controller = new AbortController()
-    accountTestAbortController = controller
+    const run = beginAccountTestRun()
+    const formSnapshot: AccountTestForm = {
+      model: testForm.model,
+      testEndpointMode: testForm.testEndpointMode
+    }
     try {
-      const session = await createAccountTestSession()
-      startAccountTestSessionHeartbeat(session.id, options.accountScopeParams.value)
-      persistAccountTestRunSession(true)
-      if (controller.signal.aborted) {
-        await cancelActiveAccountTestSession()
+      const sessionScopeParams = options.accountScopeParams.value
+      const session = await createAccountTestSession(sessionScopeParams)
+      startAccountTestSessionHeartbeat(run, session.id, sessionScopeParams)
+      persistAccountTestRunSession(run, true)
+      if (run.controller.signal.aborted) {
+        await cancelAccountTestRunSession(run)
         throw new DOMException('测试已停止', 'AbortError')
       }
       await runInFixedBatches(accounts, accountBatchTestChunkSize, async (account, index) => {
-        await runBatchAccountTestItem(account, index, controller, session.id)
-      }, controller.signal)
+        await runBatchAccountTestItem(run, account, index, formSnapshot, session.id)
+      }, run.controller.signal)
 
-      if (controller.signal.aborted) {
-        markPendingBatchTestItemsStopped()
+      if (!isActiveAccountTestRun(run)) return
+      if (run.controller.signal.aborted) {
+        markPendingBatchTestItemsStopped(run)
         const completedCount = batchTestItems.value.filter((item) => item.status === 'success' || item.status === 'failed').length
         const stoppedCount = batchTestItems.value.filter((item) => item.status === 'stopped').length
         if (stoppedCount) {
           message.info(`批量测试已停止，已完成 ${completedCount} 个账户，已停止 ${stoppedCount} 个账户`)
         } else {
-          showBatchTestSummary(accounts.length)
+          showBatchTestSummary(run, accounts.length)
         }
       } else {
-        showBatchTestSummary(accounts.length)
+        showBatchTestSummary(run, accounts.length)
       }
-      await options.loadData()
+      await options.loadData({ shouldApply: () => isActiveAccountTestRun(run) })
     } catch (error) {
+      if (isAbortError(error)) return
       console.error(error)
-      message.error('批量测试失败')
+      if (isActiveAccountTestRun(run)) {
+        message.error('批量测试失败')
+      }
     } finally {
-      if (!controller.signal.aborted) {
-        await completeActiveAccountTestSession()
+      if (!run.controller.signal.aborted) {
+        await completeAccountTestRunSession(run)
       }
-      testRunning.value = false
-      persistAccountTestRunSession(false)
-      for (const taskId of [...activeAccountTestTasks.keys()]) {
-        activeAccountTestTasks.delete(taskId)
+      if (isActiveAccountTestRun(run)) {
+        persistAccountTestRunSession(run, false)
       }
-      stopAccountTestSessionHeartbeat()
-      clearActiveAccountTestSession()
-      if (accountTestAbortController === controller) {
-        accountTestAbortController = undefined
-      }
+      run.tasks.clear()
+      stopAccountTestSessionHeartbeat(run)
+      clearAccountTestRunSession(run)
+      finishAccountTestRun(run)
     }
   }
 
-  async function runBatchAccountTestItem(account: AccountSummary, index: number, controller: AbortController, sessionId: string): Promise<void> {
-    if (controller.signal.aborted) {
-      updateBatchTestItem(index, { status: 'stopped', message: '已停止测试', finishedAt: Date.now() })
+  async function runBatchAccountTestItem(
+    run: AccountTestRunContext,
+    account: AccountSummary,
+    index: number,
+    formSnapshot: AccountTestForm,
+    sessionId: string
+  ): Promise<void> {
+    if (run.controller.signal.aborted) {
+      updateBatchTestItem(run, index, { status: 'stopped', message: '已停止测试', finishedAt: Date.now() })
       return
     }
     const submittedAt = Date.now()
@@ -385,29 +465,35 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     if (currentItem && (currentItem.status === 'success' || currentItem.status === 'failed' || currentItem.status === 'stopped')) {
       return
     }
-    updateBatchTestItem(index, { status: 'queued', message: currentItem?.taskId ? '恢复后台测试任务' : '提交后台测试任务' })
-    const payload = buildAccountSpecificTestPayload(account)
+    updateBatchTestItem(run, index, {
+      status: 'queued',
+      message: currentItem?.taskId ? '恢复后台测试任务' : '提交后台测试任务'
+    })
+    const payload = buildAccountTestPayload({
+      ...formSnapshot,
+      model: formSnapshot.model || defaultModelForSelection(account)
+    }, account)
     let task: AccountTestTask | undefined
     try {
       task = currentItem?.taskId
-        ? await fetchAccountTestTask(currentItem.taskId, account, controller.signal)
+        ? await fetchAccountTestTask(currentItem.taskId, account, run.controller.signal)
         : await submitAccountTest(account, payload, sessionId)
-      activeAccountTestTasks.set(task.id, account)
-      if (controller.signal.aborted) {
+      run.tasks.set(task.id, account)
+      if (run.controller.signal.aborted) {
         await cancelCreatedAccountTestTask(task.id, account)
-        activeAccountTestTasks.delete(task.id)
-        updateBatchTestItem(index, { status: 'stopped', message: '已停止测试', finishedAt: Date.now() })
+        run.tasks.delete(task.id)
+        updateBatchTestItem(run, index, { status: 'stopped', message: '已停止测试', finishedAt: Date.now() })
         return
       }
-      updateBatchTestItem(index, {
+      updateBatchTestItem(run, index, {
         taskId: task.id,
         status: taskStatusToBatchStatus(task),
         message: task.message ?? '等待后台测试',
         startedAt: parseTaskTime(task.startedAt)
       })
-      const result = await waitForSubmittedAccountTestResult(task, account, controller.signal, (latestTask) => {
+      const result = await waitForSubmittedAccountTestResult(run, task, account, payload, (latestTask) => {
         const latestStartedAt = parseTaskTime(latestTask.startedAt)
-        updateBatchTestItem(index, {
+        updateBatchTestItem(run, index, {
           taskId: latestTask.id,
           status: taskStatusToBatchStatus(latestTask),
           message: latestTask.message ?? latestTask.result?.message,
@@ -415,23 +501,23 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
           startedAt: latestStartedAt ?? batchTestItems.value[index]?.startedAt,
           finishedAt: latestTask.finishedAt ? Date.parse(latestTask.finishedAt) : undefined
         })
-        persistAccountTestRunSession(true)
+        persistAccountTestRunSession(run, true)
       })
-      updateBatchTestItem(index, {
+      updateBatchTestItem(run, index, {
         status: result.success ? 'success' : 'failed',
         result,
         message: result.message,
         finishedAt: Date.now()
       })
-      persistAccountTestRunSession(true)
+      persistAccountTestRunSession(run, true)
     } catch (error) {
       if (isAbortError(error)) {
         if (task) {
           await cancelCreatedAccountTestTask(task.id, account)
-          activeAccountTestTasks.delete(task.id)
+          run.tasks.delete(task.id)
         }
-        updateBatchTestItem(index, { status: 'stopped', message: '已停止测试', finishedAt: Date.now() })
-        persistAccountTestRunSession(true)
+        updateBatchTestItem(run, index, { status: 'stopped', message: '已停止测试', finishedAt: Date.now() })
+        persistAccountTestRunSession(run, true)
         return
       }
       console.error(error)
@@ -439,40 +525,52 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
         account,
         error,
         model: payload.model ?? '',
-        testEndpointMode: payload.testEndpointMode ?? testForm.testEndpointMode,
+        testEndpointMode: payload.testEndpointMode ?? formSnapshot.testEndpointMode,
         startedAt: submittedAt
       })
-      updateBatchTestItem(index, {
+      updateBatchTestItem(run, index, {
         status: 'failed',
         result,
         message: result.message,
         finishedAt: Date.now()
       })
-      persistAccountTestRunSession(true)
+      persistAccountTestRunSession(run, true)
     } finally {
       if (task) {
-        activeAccountTestTasks.delete(task.id)
+        run.tasks.delete(task.id)
       }
     }
   }
 
   function stopAccountTest() {
-    if (!testRunning.value) return
-    accountTestAbortController?.abort()
-    stopAccountTestSessionHeartbeat()
-    void cancelActiveAccountTestSession().catch((error) => {
-      console.error(error)
-    })
-    for (const [taskId, account] of activeAccountTestTasks) {
-      void cancelAccountTestTask(taskId, account).catch((error) => {
-        console.error(error)
-      })
+    const run = activeTestRun
+    if (!run || !testRunning.value) return
+    if (testMode.value === 'batch') {
+      batchTestItems.value = batchTestItems.value.map((item) => (
+        item.status === 'pending' || item.status === 'queued' || item.status === 'running'
+          ? { ...item, status: 'stopped', message: '已停止测试', finishedAt: Date.now() }
+          : item
+      ))
+      message.info('批量测试已停止')
+    } else {
+      if (activeSingleTestTask.value?.status === 'queued' || activeSingleTestTask.value?.status === 'running') {
+        activeSingleTestTask.value = {
+          ...activeSingleTestTask.value,
+          status: 'canceled',
+          message: '已停止测试'
+        }
+      }
+      const account = testingAccount.value
+      if (account) {
+        message.info(stoppedAccountTestMessage(account))
+      }
     }
-    persistAccountTestRunSession(false)
+    persistAccountTestRunSession(run, false)
+    void detachActiveAccountTestRun()
   }
 
   function closeTestModal() {
-    persistAccountTestRunSession(testRunning.value)
+    void detachActiveAccountTestRun()
     testModalOpen.value = false
   }
 
@@ -480,45 +578,41 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     void restoreAccountTestRunSession()
   })
   onBeforeUnmount(() => {
-    stopAccountTestSessionHeartbeat()
+    unsubscribeAccountDefaultTestModelSaveQueue()
+    const run = activeTestRun
+    if (!run) return
+    persistAccountTestRunSession(run, true)
+    stopAccountTestSessionHeartbeat(run)
   })
 
-  function buildAccountSpecificTestPayload(account: AccountSummary) {
-    return buildAccountTestPayload({
-      ...testForm,
-      model: testForm.model || defaultModelForSelection(account)
-    }, account, activeDraftTestPayload(account))
-  }
-
-  async function createAccountTestSession(account?: AccountSummary) {
-    const scopeParams = account ? accountTestTaskScopeParams(account) : options.accountScopeParams.value
+  async function createAccountTestSession(scopeParams?: { systemAccountId: string }) {
     return createAccountTestSessionRequest({
       isManagementView: options.isManagementView.value,
       scopeParams
     })
   }
 
-  function startAccountTestSessionHeartbeat(sessionId: string, scopeParams?: { systemAccountId: string }) {
-    stopAccountTestSessionHeartbeat()
-    activeAccountTestSessionId = sessionId
-    activeAccountTestSessionScopeParams = scopeParams
-    accountTestSessionHeartbeatTimer = window.setInterval(() => {
+  function startAccountTestSessionHeartbeat(run: AccountTestRunContext, sessionId: string, scopeParams?: { systemAccountId: string }) {
+    stopAccountTestSessionHeartbeat(run)
+    run.sessionId = sessionId
+    run.sessionScopeParams = scopeParams
+    run.heartbeatTimer = window.setInterval(() => {
       void heartbeatAccountTestSession(sessionId, scopeParams).catch((error) => {
         console.error(error)
       })
     }, accountTestSessionHeartbeatIntervalMs)
   }
 
-  function stopAccountTestSessionHeartbeat() {
-    if (accountTestSessionHeartbeatTimer !== undefined) {
-      window.clearInterval(accountTestSessionHeartbeatTimer)
-      accountTestSessionHeartbeatTimer = undefined
+  function stopAccountTestSessionHeartbeat(run: AccountTestRunContext) {
+    if (run.heartbeatTimer !== undefined) {
+      window.clearInterval(run.heartbeatTimer)
+      run.heartbeatTimer = undefined
     }
   }
 
-  function clearActiveAccountTestSession() {
-    activeAccountTestSessionId = undefined
-    activeAccountTestSessionScopeParams = undefined
+  function clearAccountTestRunSession(run: AccountTestRunContext) {
+    run.sessionId = undefined
+    run.sessionScopeParams = undefined
   }
 
   function heartbeatAccountTestSession(sessionId: string, scopeParams?: { systemAccountId: string }) {
@@ -529,25 +623,25 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     })
   }
 
-  function cancelActiveAccountTestSession() {
-    const sessionId = activeAccountTestSessionId
+  function cancelAccountTestRunSession(run: AccountTestRunContext) {
+    const sessionId = run.sessionId
     if (!sessionId) {
       return Promise.resolve()
     }
     return cancelAccountTestSessionRequest({
       isManagementView: options.isManagementView.value,
-      scopeParams: activeAccountTestSessionScopeParams,
+      scopeParams: run.sessionScopeParams,
       sessionId
     })
   }
 
-  async function completeActiveAccountTestSession(): Promise<void> {
-    const sessionId = activeAccountTestSessionId
+  async function completeAccountTestRunSession(run: AccountTestRunContext): Promise<void> {
+    const sessionId = run.sessionId
     if (!sessionId) return
     try {
       await completeAccountTestSessionRequest({
         isManagementView: options.isManagementView.value,
-        scopeParams: activeAccountTestSessionScopeParams,
+        scopeParams: run.sessionScopeParams,
         sessionId
       })
     } catch (error) {
@@ -555,13 +649,13 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     }
   }
 
-  function persistAccountTestRunSession(running: boolean): void {
-    const sessionId = activeAccountTestSessionId
+  function persistAccountTestRunSession(run: AccountTestRunContext, running: boolean): void {
+    const sessionId = run.sessionId
     if (!sessionId) return
     writeAccountTestRunSession({
       sessionId,
       isManagementView: options.isManagementView.value,
-      scopeParams: activeAccountTestSessionScopeParams,
+      scopeParams: run.sessionScopeParams,
       mode: testMode.value,
       model: testForm.model,
       testEndpointMode: testForm.testEndpointMode,
@@ -587,7 +681,6 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     } catch (error) {
       console.error(error)
       testRunning.value = false
-      clearActiveAccountTestSession()
       message.warning('测试进度暂时无法恢复，后台任务仍会继续执行')
       return
     }
@@ -597,40 +690,47 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
       || activeDetail.session.status !== 'running'
     ) {
       testRunning.value = false
-      clearActiveAccountTestSession()
+      clearStoredAccountTestRunSession(options.isManagementView.value)
       return
     }
     applyAccountTestRunSessionSnapshot(snapshot, activeDetail.tasks)
     testModalOpen.value = true
-    testRunning.value = true
-    const controller = new AbortController()
-    accountTestAbortController = controller
-    startAccountTestSessionHeartbeat(activeDetail.session.id, snapshot.scopeParams)
-    persistAccountTestRunSession(true)
+    const run = beginAccountTestRun()
+    run.sessionId = activeDetail.session.id
+    run.sessionScopeParams = snapshot.scopeParams
+    for (const task of activeDetail.tasks) {
+      const account = task.accountId === testingAccount.value?.id
+        ? testingAccount.value
+        : batchTestingAccounts.value.find((candidate) => candidate.id === task.accountId)
+      if (account) {
+        run.tasks.set(task.id, account)
+      }
+    }
+    startAccountTestSessionHeartbeat(run, activeDetail.session.id, snapshot.scopeParams)
+    persistAccountTestRunSession(run, true)
     try {
       if (testMode.value === 'single') {
-        await resumeSingleAccountTest(activeDetail.tasks, controller)
+        await resumeSingleAccountTest(run, activeDetail.tasks)
       } else {
-        await resumeBatchAccountTest(controller, activeDetail.session.id)
+        await resumeBatchAccountTest(run, activeDetail.session.id)
       }
-      await options.loadData()
+      await options.loadData({ shouldApply: () => isActiveAccountTestRun(run) })
     } catch (error) {
       if (!isAbortError(error)) {
         console.error(error)
         message.warning('测试进度恢复中断，后台任务仍会继续执行')
       }
     } finally {
-      if (!controller.signal.aborted) {
-        await completeActiveAccountTestSession()
+      if (!run.controller.signal.aborted) {
+        await completeAccountTestRunSession(run)
       }
-      testRunning.value = false
-      persistAccountTestRunSession(false)
-      activeAccountTestTasks.clear()
-      stopAccountTestSessionHeartbeat()
-      clearActiveAccountTestSession()
-      if (accountTestAbortController === controller) {
-        accountTestAbortController = undefined
+      if (isActiveAccountTestRun(run)) {
+        persistAccountTestRunSession(run, false)
       }
+      run.tasks.clear()
+      stopAccountTestSessionHeartbeat(run)
+      clearAccountTestRunSession(run)
+      finishAccountTestRun(run)
     }
   }
 
@@ -664,8 +764,6 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     draftTestingAccountPayload.value = undefined
     draftTestMode.value = undefined
     draftApiKeyTestSnapshot.value = undefined
-    activeAccountTestSessionId = snapshot.sessionId
-    activeAccountTestSessionScopeParams = snapshot.scopeParams
     testRunning.value = snapshot.running
     testModalOpen.value = snapshot.running
   }
@@ -681,7 +779,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     return backendTasks[0]
   }
 
-  async function resumeSingleAccountTest(tasks: AccountTestTask[], controller: AbortController): Promise<void> {
+  async function resumeSingleAccountTest(run: AccountTestRunContext, tasks: AccountTestTask[]): Promise<void> {
     const account = testingAccount.value
     if (!account) return
     const task = mergeRestoredSingleTask(activeSingleTestTask.value, tasks)
@@ -696,31 +794,47 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
       return
     }
     activeSingleTestTask.value = task
-    activeAccountTestTasks.set(task.id, account)
-    const result = await waitForSubmittedAccountTestResult(task, account, controller.signal, (latestTask) => {
+    run.tasks.set(task.id, account)
+    const payload = buildAccountTestPayload({
+      model: testForm.model || defaultModelForSelection(account),
+      testEndpointMode: testForm.testEndpointMode
+    }, account)
+    const result = await waitForSubmittedAccountTestResult(run, task, account, payload, (latestTask) => {
+      if (!isActiveAccountTestRun(run)) return
       activeSingleTestTask.value = latestTask
-      persistAccountTestRunSession(true)
+      persistAccountTestRunSession(run, true)
     })
+    if (!isActiveAccountTestRun(run)) return
     testResult.value = result
-    persistAccountTestRunSession(true)
+    persistAccountTestRunSession(run, true)
   }
 
-  async function resumeBatchAccountTest(controller: AbortController, sessionId: string): Promise<void> {
+  async function resumeBatchAccountTest(run: AccountTestRunContext, sessionId: string): Promise<void> {
     const accounts = [...batchTestingAccounts.value]
+    const formSnapshot: AccountTestForm = {
+      model: testForm.model,
+      testEndpointMode: testForm.testEndpointMode
+    }
     await runInFixedBatches(accounts, accountBatchTestChunkSize, async (account, index) => {
-      await runBatchAccountTestItem(account, index, controller, sessionId)
-    }, controller.signal)
-    if (!controller.signal.aborted) {
-      showBatchTestSummary(accounts.length)
+      await runBatchAccountTestItem(run, account, index, formSnapshot, sessionId)
+    }, run.controller.signal)
+    if (!run.controller.signal.aborted) {
+      showBatchTestSummary(run, accounts.length)
     }
   }
 
-  function submitAccountTest(account: AccountSummary, payload: AccountTestPayload, sessionId: string): Promise<AccountTestTask> {
+  function submitAccountTest(
+    account: AccountSummary,
+    payload: AccountTestPayload,
+    sessionId: string,
+    activeDraftMode?: AccountTestDraftMode,
+    draftPayload?: AccountDraftTestPayload['account']
+  ): Promise<AccountTestTask> {
     return submitAccountTestTask({
       account,
       accountScopeParams: options.accountScopeParams.value,
-      draftMode: draftTestMode.value,
-      draftPayload: activeDraftTestPayload(account),
+      draftMode: activeDraftMode,
+      draftPayload,
       isManagementView: options.isManagementView.value,
       payload,
       sessionId
@@ -779,8 +893,12 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     draftApiKeyTestSnapshot.value = { account: draftPayload, result }
   }
 
-  function accountTestTaskScopeParams(account: AccountSummary): ReturnType<typeof accountOperationScopeParams> {
-    return draftTestMode.value === 'create' && activeDraftTestPayload(account)
+  function accountTestTaskScopeParams(
+    account: AccountSummary,
+    activeDraftMode = draftTestMode.value,
+    draftPayload = activeDraftTestPayload(account)
+  ): ReturnType<typeof accountOperationScopeParams> {
+    return activeDraftMode === 'create' && draftPayload
       ? options.accountScopeParams.value
       : accountOperationScopeParams(account, options.accountScopeParams.value)
   }
@@ -794,51 +912,47 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   }
 
   function waitForSubmittedAccountTestResult(
+    run: AccountTestRunContext,
     initialTask: AccountTestTask,
     account: AccountSummary,
-    signal: AbortSignal,
+    payload: AccountTestPayload,
     onUpdate?: (task: AccountTestTask) => void
   ): Promise<AccountTestResult> {
     return waitForAccountTestResult({
       account,
       cancelTask: cancelCreatedAccountTestTask,
-      currentTestEndpointMode: () => testForm.testEndpointMode,
-      currentModel: () => testForm.model,
+      currentTestEndpointMode: () => payload.testEndpointMode ?? 'account_default',
+      currentModel: () => payload.model ?? '',
       fetchTask: fetchAccountTestTask,
       initialTask,
       onTaskSettled: (taskId) => {
-        activeAccountTestTasks.delete(taskId)
+        run.tasks.delete(taskId)
       },
       onUpdate,
-      signal
+      signal: run.controller.signal
     })
   }
 
-  function updateBatchTestItem(index: number, patch: Partial<AccountBatchTestItem>) {
+  function updateBatchTestItem(run: AccountTestRunContext, index: number, patch: Partial<AccountBatchTestItem>) {
+    if (!isActiveAccountTestRun(run)) return
     const current = batchTestItems.value[index]
     if (!current) return
     if (current.status === 'stopped' && patch.status !== 'stopped') return
     batchTestItems.value[index] = { ...current, ...patch }
-    persistAccountTestRunSession(testRunning.value)
+    persistAccountTestRunSession(run, testRunning.value)
   }
 
-  function showRunningAccountTestModal(): boolean {
-    if (!testRunning.value) return false
-    testModalOpen.value = true
-    persistAccountTestRunSession(true)
-    message.warning('当前已有测试任务正在运行，请先手动停止后再开始新的测试')
-    return true
-  }
-
-  function markPendingBatchTestItemsStopped() {
+  function markPendingBatchTestItemsStopped(run: AccountTestRunContext) {
+    if (!isActiveAccountTestRun(run)) return
     batchTestItems.value = batchTestItems.value.map((item) => {
       if (item.status !== 'pending' && item.status !== 'queued' && item.status !== 'running') return item
       return { ...item, status: 'stopped', message: '已停止测试', finishedAt: Date.now() }
     })
-    persistAccountTestRunSession(testRunning.value)
+    persistAccountTestRunSession(run, testRunning.value)
   }
 
-  function showBatchTestSummary(total: number) {
+  function showBatchTestSummary(run: AccountTestRunContext, total: number) {
+    if (!isActiveAccountTestRun(run)) return
     const successCount = batchTestItems.value.filter((item) => item.status === 'success').length
     const summary = batchTestSummary(total, successCount)
     if (summary.success) {
@@ -846,6 +960,73 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
       options.clearSelection?.()
     } else {
       message.warning(summary.message)
+    }
+  }
+
+  function beginAccountTestRun(): AccountTestRunContext {
+    const run: AccountTestRunContext = {
+      controller: new AbortController(),
+      tasks: new Map()
+    }
+    activeTestRun = run
+    testRunning.value = true
+    return run
+  }
+
+  function isActiveAccountTestRun(run: AccountTestRunContext): boolean {
+    return activeTestRun === run
+  }
+
+  function finishAccountTestRun(run: AccountTestRunContext): void {
+    if (!isActiveAccountTestRun(run)) return
+    activeTestRun = undefined
+    testRunning.value = false
+  }
+
+  async function detachActiveAccountTestRun(): Promise<void> {
+    const previousDetach = pendingTestRunDetach
+    const run = activeTestRun
+    if (!run) {
+      await previousDetach
+      testRunning.value = false
+      return
+    }
+    persistAccountTestRunSession(run, false)
+    activeTestRun = undefined
+    testRunning.value = false
+    clearStoredAccountTestRunSession(options.isManagementView.value)
+    const detach = (async () => {
+      await previousDetach
+      await cancelAccountTestRun(run)
+    })()
+    pendingTestRunDetach = detach
+    try {
+      await detach
+    } finally {
+      if (pendingTestRunDetach === detach) {
+        pendingTestRunDetach = undefined
+      }
+    }
+  }
+
+  async function cancelAccountTestRun(run: AccountTestRunContext): Promise<void> {
+    run.controller.abort()
+    stopAccountTestSessionHeartbeat(run)
+    const cancellations: Promise<unknown>[] = [
+      cancelAccountTestRunSession(run)
+    ]
+    for (const [taskId, account] of run.tasks) {
+      cancellations.push(cancelAccountTestTask(taskId, account))
+    }
+    await Promise.all(cancellations.map(async (cancellation) => {
+      try {
+        await cancellation
+      } catch (error) {
+        console.error(error)
+      }
+    }))
+    if (run.sessionId) {
+      clearAccountTestRunSession(run)
     }
   }
 

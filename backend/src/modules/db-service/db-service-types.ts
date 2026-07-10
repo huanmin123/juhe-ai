@@ -799,16 +799,6 @@ export type DbServiceOperation =
     taskId: string
   }
   | {
-    type: 'record_account_successful_test_model'
-    accountId: string
-    model: string
-    access?: {
-      systemAccountId: string
-      role: 'super_admin' | 'admin' | 'user'
-      systemAccountFilterId?: string
-    }
-  }
-  | {
     type: 'clear_gateway_runtime_cache'
   }
   | {
@@ -908,7 +898,6 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'update_account_test_task_message' } ? AccountTestTaskRecord | undefined :
   T extends { type: 'is_account_test_task_cancel_requested' } ? { canceled: boolean } :
   T extends { type: 'read_account_test_task_cancel_message' } ? { message: string } :
-  T extends { type: 'record_account_successful_test_model' } ? { updated: boolean; accountStatus?: string } :
   T extends { type: 'clear_account_stream_failure_state' } ? { changed: boolean } :
   T extends { type: 'clear_gateway_runtime_cache' } ? { cleared: true } :
   T extends { type: 'list_active_client_ip_policies' } ? ActiveClientIpPolicy[] :

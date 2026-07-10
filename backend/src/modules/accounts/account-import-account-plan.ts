@@ -61,6 +61,7 @@ export interface NormalizedImportAccount {
   superPriorityEnabled?: boolean
   fallbackEnabled?: boolean
   supportedModels?: string[]
+  defaultTestModel?: string
   modelMappings?: AccountModelMapping[]
   tags?: string[]
   accountExpiresAt?: string
@@ -186,6 +187,7 @@ function prepareImportAccountPlan(
   source.superPriorityEnabled = optionalBooleanField(value, 'superPriorityEnabled', '账户 superPriorityEnabled', item.messages)
   source.fallbackEnabled = optionalBooleanField(value, 'fallbackEnabled', '账户 fallbackEnabled', item.messages)
   source.supportedModels = optionalStringArrayField(value, 'supportedModels', '账户 supportedModels', item.messages)
+  source.defaultTestModel = optionalTextField(value, 'defaultTestModel', '账户 defaultTestModel', item.messages)
   source.modelMappings = optionalModelMappingsField(value, 'modelMappings', '账户 modelMappings', item.messages)
   source.tags = optionalAccountTagsField(value, 'tags', '账户 tags', item.messages)
   source.accountExpiresAt = optionalDateTimeField(value, 'accountExpiresAt', '账户 accountExpiresAt', item.messages)

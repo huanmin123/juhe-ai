@@ -10,6 +10,10 @@ const accountTestTaskPollingPath = resolve(frontendRoot, 'src/views/accounts/acc
 
 const accountTestModalSource = readFileSync(accountTestModalPath, 'utf8')
 const accountTestTaskPollingSource = readFileSync(accountTestTaskPollingPath, 'utf8')
+const waitForSubmittedAccountTestResultSource = accountTestModalSource.slice(
+  accountTestModalSource.indexOf('function waitForSubmittedAccountTestResult'),
+  accountTestModalSource.indexOf('function updateBatchTestItem')
+)
 
 assertIncludes(accountTestModalSource, "import { waitForAccountTestResult } from './accountTestTaskPolling'", '账户测试弹窗应通过 task polling helper 等待后台任务结果')
 assertIncludes(accountTestTaskPollingSource, 'export async function waitForAccountTestResult', '任务轮询 helper 应导出后台测试任务结果等待函数')
@@ -27,7 +31,7 @@ assertNotIncludes(accountTestModalSource, 'accountTestTaskRemainingWaitMs', '账
 assertNotIncludes(accountTestModalSource, 'accountTestTaskMaxWaitMs', '账户测试弹窗不应直接判断任务最大等待时间')
 assertNotIncludes(accountTestModalSource, 'function accountTestTaskTimeoutResult', '账户测试弹窗不应直接构造任务超时结果')
 assertNotIncludes(accountTestModalSource, "task.status === 'success' || task.status === 'failed'", '账户测试弹窗不应直接判断轮询终态')
-assertNotIncludes(accountTestModalSource, "task.status === 'canceled'", '账户测试弹窗不应直接处理轮询取消终态')
+assertNotIncludes(waitForSubmittedAccountTestResultSource, "task.status === 'canceled'", '账户测试弹窗的轮询适配层不应直接处理取消终态')
 assertNotIncludes(accountTestModalSource, 'while (true)', '账户测试弹窗不应直接持有任务轮询主循环')
 
 console.log('账户测试任务轮询回归通过：轮询循环、超时结果和任务结束清理边界保持分离')

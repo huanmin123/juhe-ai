@@ -381,21 +381,15 @@ async function listProvidersForRequestAsync(systemAccountId?: string): Promise<P
     systemAccountId,
     providers.map((provider) => provider.code)
   )
-  if (!preferences.size) return providers
   return providers.map((provider) => providerWithDefaultTestModelPreference(provider, preferences.get(provider.code)))
 }
 
 function providerWithDefaultTestModelPreference(provider: ProviderDefinition, preferredModel?: string): ProviderDefinition {
   const model = preferredModel?.trim()
-  if (!model) return provider
   return {
     ...provider,
-    defaultTestModel: model,
-    protocolProfiles: provider.protocolProfiles.map((profile) => (
-      profile.id === provider.defaultProtocolProfileId
-        ? { ...profile, defaultTestModel: model }
-        : profile
-    ))
+    defaultTestModel: model || provider.defaultTestModel,
+    systemDefaultTestModel: provider.defaultTestModel
   }
 }
 

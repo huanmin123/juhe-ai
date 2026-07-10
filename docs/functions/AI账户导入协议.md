@@ -51,6 +51,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 - 导出只包含当前用户或管理员目标作用域内有权查看凭据和编辑的自有账户；授权账户实例不导出。
 - 如果账户绑定了可用代理，导出文件会同时写入 `proxies` 并通过账户 `proxyRef` 引用，便于再次导入时自动创建或复用代理。
 - 导出会保留账户标签为 `tags` 字符串数组；再次导入时会在目标系统账户维度自动创建缺失标签并绑定到账户。
+- 导出会保留账户级 `defaultTestModel`；再次导入时该值必须属于同一账户的 `supportedModels`，否则预览失败。
 - 导出必须为每个账户写出当前 `providerProtocolProfileId`，保证重新导入能还原到同一供应商协议档案；导入不得靠 `credentials.base_url`、供应商默认值或历史接入类型字段猜测档案。
 - 账户当前为 `pending_test` 时导出为 `status: "pending_test"`；账户当前为 `active` 且参与调度时导出为 `status: "active"`；其他运行态状态统一导出为 `status: "disabled"`。导入时 `active` 会按安全策略落成 `pending_test`，避免重新导入后直接参与调度。
 - 导出的 JSON 文件可以在“导入账户”弹窗中直接粘贴预览，再确认导入。
@@ -259,6 +260,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 | `superPriorityEnabled` | 否 | 超级优先开关。 |
 | `fallbackEnabled` | 否 | 降级备用开关。 |
 | `supportedModels` | 否 | 支持模型列表；省略时按供应商默认支持模型回填，最终必须非空。 |
+| `defaultTestModel` | 否 | 账户级默认测试模型；必须属于该账户最终的 `supportedModels`。 |
 | `modelMappings` | 否 | 账号模型映射列表；普通供应商账户只允许当前账号供应商模型目录内的同协议模型名改写，以及 OpenAI v1 的 Responses 到 Chat Completions 显式 bridge；混合供应商账户允许用该字段声明其他下游模型 / 协议入口到真实上游模型 / 协议的跨协议映射。条目包含 `sourceModel`、`sourceEndpointFamily`、`upstreamModel`、`upstreamEndpointFamily`、`enabled`。 |
 | `tags` | 否 | 账户标签字符串数组；导入时按目标系统账户自动创建缺失标签并绑定到当前账户。 |
 | `accountExpiresAt` | 否 | 账户过期时间。 |

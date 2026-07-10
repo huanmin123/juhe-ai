@@ -99,8 +99,9 @@ function assertAccountTestDefaultModelRuntimeBoundary(): void {
   const srcRoot = join(dirname(fileURLToPath(import.meta.url)), '../..')
   const accountTestServiceSource = readFileSync(join(srcRoot, 'modules/accounts/account-test.service.ts'), 'utf8')
   assert.ok(
-    accountTestServiceSource.includes('findProviderDefaultTestModelAsync')
-      && accountTestServiceSource.includes('await defaultAccountTestModelAsync'),
+    accountTestServiceSource.includes('listProviderDefaultTestModelPreferencesAsync')
+      && accountTestServiceSource.includes('findProviderProtocolProfileAsync')
+      && accountTestServiceSource.includes('export async function resolveAccountTestModelAsync'),
     '账号测试默认模型应提供 async 读取路径，避免 PG 模式回退 SQLite'
   )
   assert.ok(
@@ -140,8 +141,11 @@ function assertAccountTestDefaultModelRuntimeBoundary(): void {
     'modules/gateway/runtime/account-side-effects.service.ts'
   ]) {
     const source = readFileSync(join(srcRoot, relativePath), 'utf8')
-    assert.ok(source.includes('preferredSystemAccountTestModelAsync'), `${relativePath} 应使用 async 默认测试模型读取入口`)
-    assert.doesNotMatch(source, /\bpreferredSystemAccountTestModel\(/, `${relativePath} 不得在运行路径调用同步默认测试模型读取入口`)
+    assert.doesNotMatch(source, /preferredSystemAccountTestModelAsync/, `${relativePath} 应把模型优先级交给通用账号测试服务`)
+    assert.ok(
+      source.includes('testOpenAIAccount') || source.includes('resolveAccountTestModelAsync'),
+      `${relativePath} 应复用通用账号测试模型解析入口`
+    )
   }
 }
 
