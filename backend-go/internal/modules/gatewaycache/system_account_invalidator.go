@@ -137,11 +137,23 @@ func (i *SystemAccountInvalidator) InvalidateProxyChanged(ctx context.Context, r
 	return i.publishGatewayCacheInvalidation(ctx, GatewayRuntimeCacheTopic, reason, runtimeInvalidationFields{})
 }
 
-func (i *SystemAccountInvalidator) invalidateGatewayRuntime(ctx context.Context, reason string) error {
-	if err := i.clearAPIKeyValidationCache(ctx); err != nil {
-		return err
+func (i *SystemAccountInvalidator) InvalidateAPIKeyValidationCache(ctx context.Context) error {
+	return i.clearAPIKeyValidationCache(ctx)
+}
+
+func (i *SystemAccountInvalidator) InvalidateGatewayRuntime(ctx context.Context, reason string) error {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return fmt.Errorf("gateway runtime invalidation reason is required")
 	}
 	return i.publishGatewayCacheInvalidation(ctx, GatewayRuntimeCacheTopic, reason, runtimeInvalidationFields{})
+}
+
+func (i *SystemAccountInvalidator) invalidateGatewayRuntime(ctx context.Context, reason string) error {
+	if err := i.InvalidateAPIKeyValidationCache(ctx); err != nil {
+		return err
+	}
+	return i.InvalidateGatewayRuntime(ctx, reason)
 }
 
 func (i *SystemAccountInvalidator) clearAPIKeyValidationCache(ctx context.Context) error {

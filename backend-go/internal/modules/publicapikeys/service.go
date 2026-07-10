@@ -25,6 +25,9 @@ const (
 	maxSafeInteger      = 9007199254740991
 	defaultScheduleTZ   = "UTC"
 	scheduleModeWindows = "allow_windows"
+	apiKeyCreatedReason = "api_key_created"
+	apiKeyUpdatedReason = "api_key_updated"
+	apiKeyDeletedReason = "api_key_deleted"
 )
 
 var (
@@ -41,20 +44,28 @@ var (
 	ErrInvalidAvailabilitySchedule      = errors.New("public api key invalid availability schedule")
 )
 
+type APIKeyGatewayCacheInvalidator interface {
+	InvalidateAPIKeyValidationCache(ctx context.Context) error
+	InvalidateGatewayRuntime(ctx context.Context, reason string) error
+	InvalidateAPIKeyQuotaChanged(ctx context.Context, apiKeyID string, reason string) error
+}
+
 type Service struct {
-	store      port.PublicAPIKeyStore
-	transactor port.PublicAPIKeyTransactor
-	now        func() time.Time
-	newID      func(prefix string) string
-	newSecret  func() (string, error)
+	store       port.PublicAPIKeyStore
+	transactor  port.PublicAPIKeyTransactor
+	invalidator APIKeyGatewayCacheInvalidator
+	now         func() time.Time
+	newID       func(prefix string) string
+	newSecret   func() (string, error)
 }
 
 type Options struct {
-	Store      port.PublicAPIKeyStore
-	Transactor port.PublicAPIKeyTransactor
-	Now        func() time.Time
-	NewID      func(prefix string) string
-	NewSecret  func() (string, error)
+	Store       port.PublicAPIKeyStore
+	Transactor  port.PublicAPIKeyTransactor
+	Invalidator APIKeyGatewayCacheInvalidator
+	Now         func() time.Time
+	NewID       func(prefix string) string
+	NewSecret   func() (string, error)
 }
 
 type Target struct {
@@ -162,11 +173,12 @@ func NewService(opts Options) *Service {
 		newSecret = createAPIKeySecret
 	}
 	return &Service{
-		store:      opts.Store,
-		transactor: opts.Transactor,
-		now:        now,
-		newID:      newID,
-		newSecret:  newSecret,
+		store:       opts.Store,
+		transactor:  opts.Transactor,
+		invalidator: opts.Invalidator,
+		now:         now,
+		newID:       newID,
+		newSecret:   newSecret,
 	}
 }
 
@@ -241,6 +253,7 @@ func (s *Service) Add(ctx context.Context, input AddInput) (APIKeyResponse, erro
 
 func (s *Service) addOnce(ctx context.Context, input AddInput) (APIKeyResponse, error) {
 	var response APIKeyResponse
+	var apiKeyID string
 	err := s.inTx(ctx, func(ctx context.Context, store port.PublicAPIKeyStore) error {
 		target, err := s.requireTargetWithStore(ctx, store, input.TargetUsername)
 		if err != nil {
@@ -296,14 +309,20 @@ func (s *Service) addOnce(ctx context.Context, input AddInput) (APIKeyResponse, 
 		if err != nil {
 			return err
 		}
+		apiKeyID = created.ID
 		response = apiKeyResponse("created", target, created, secret, s.generatedAt())
 		return nil
 	})
-	return response, err
+	if err != nil {
+		return APIKeyResponse{}, err
+	}
+	s.invalidateAPIKeyCreated(ctx, apiKeyID)
+	return response, nil
 }
 
 func (s *Service) Update(ctx context.Context, input UpdateInput) (APIKeyResponse, error) {
 	var response APIKeyResponse
+	var apiKeyID string
 	err := s.inTx(ctx, func(ctx context.Context, store port.PublicAPIKeyStore) error {
 		current, target, err := s.apiKeyAndTargetForWrite(ctx, store, input.APIKeyID, input.TargetUsername)
 		if err != nil {
@@ -380,14 +399,22 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (APIKeyResponse
 		if !ok {
 			return ErrAPIKeyNotFound
 		}
+		apiKeyID = updated.ID
 		response = apiKeyResponse("updated", target, updated, "", s.generatedAt())
 		return nil
 	})
-	return response, err
+	if err != nil {
+		return APIKeyResponse{}, err
+	}
+	if err := s.invalidateAPIKeyChanged(ctx, apiKeyID, apiKeyUpdatedReason); err != nil {
+		return APIKeyResponse{}, err
+	}
+	return response, nil
 }
 
 func (s *Service) Delete(ctx context.Context, input DeleteInput) (APIKeyResponse, error) {
 	var response APIKeyResponse
+	var apiKeyID string
 	err := s.inTx(ctx, func(ctx context.Context, store port.PublicAPIKeyStore) error {
 		current, target, err := s.apiKeyAndTargetForWrite(ctx, store, input.APIKeyID, input.TargetUsername)
 		if err != nil {
@@ -403,10 +430,17 @@ func (s *Service) Delete(ctx context.Context, input DeleteInput) (APIKeyResponse
 		if !deleted {
 			return ErrAPIKeyNotFound
 		}
+		apiKeyID = current.ID
 		response = apiKeyResponse("deleted", target, current, "", s.generatedAt())
 		return nil
 	})
-	return response, err
+	if err != nil {
+		return APIKeyResponse{}, err
+	}
+	if err := s.invalidateAPIKeyChanged(ctx, apiKeyID, apiKeyDeletedReason); err != nil {
+		return APIKeyResponse{}, err
+	}
+	return response, nil
 }
 
 func (s *Service) requireTarget(ctx context.Context, username string) (port.PublicGroupTarget, error) {
@@ -483,6 +517,26 @@ func (s *Service) inTx(ctx context.Context, fn func(context.Context, port.Public
 		return s.transactor.PublicAPIKeyInTx(ctx, fn)
 	}
 	return fn(ctx, s.store)
+}
+
+func (s *Service) invalidateAPIKeyCreated(ctx context.Context, apiKeyID string) {
+	if s.invalidator == nil {
+		return
+	}
+	_ = s.invalidator.InvalidateGatewayRuntime(ctx, apiKeyCreatedReason)
+	_ = s.invalidator.InvalidateAPIKeyQuotaChanged(ctx, apiKeyID, apiKeyCreatedReason)
+}
+
+func (s *Service) invalidateAPIKeyChanged(ctx context.Context, apiKeyID string, reason string) error {
+	if s.invalidator == nil {
+		return nil
+	}
+	if err := s.invalidator.InvalidateAPIKeyValidationCache(ctx); err != nil {
+		return err
+	}
+	_ = s.invalidator.InvalidateGatewayRuntime(ctx, reason)
+	_ = s.invalidator.InvalidateAPIKeyQuotaChanged(ctx, apiKeyID, reason)
+	return nil
 }
 
 func normalizeListStatus(value string) string {

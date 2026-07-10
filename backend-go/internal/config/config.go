@@ -176,6 +176,9 @@ func validatePublicAPIConfig(cfg Config) error {
 	if strings.TrimSpace(cfg.RedisStateURL) == "" {
 		return fmt.Errorf("启用 JUHE_AI_PUBLIC_API_ENABLED 时 JUHE_AI_REDIS_STATE_URL 不能为空")
 	}
+	if strings.TrimSpace(cfg.RedisCacheURL) == "" {
+		return fmt.Errorf("启用 JUHE_AI_PUBLIC_API_ENABLED 时 JUHE_AI_REDIS_CACHE_URL 不能为空")
+	}
 	if strings.TrimSpace(cfg.RedisQueueURL) == "" {
 		return fmt.Errorf("启用 JUHE_AI_PUBLIC_API_ENABLED 时 JUHE_AI_REDIS_QUEUE_URL 不能为空")
 	}

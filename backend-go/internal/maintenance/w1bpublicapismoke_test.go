@@ -19,6 +19,7 @@ func TestRunW1bPublicAPISmokeRequiresDependencyConfig(t *testing.T) {
 	}
 	for _, name := range []string{
 		"JUHE_AI_POSTGRES_URL",
+		"JUHE_AI_REDIS_CACHE_URL",
 		"JUHE_AI_REDIS_STATE_URL",
 		"JUHE_AI_REDIS_QUEUE_URL",
 		"JUHE_AI_SECRET",
@@ -90,6 +91,7 @@ func TestWriteW1bPublicAPISmokeResultNeverClaimsTakeover(t *testing.T) {
 func TestMissingW1bPublicAPIConfigRequiresLongSecret(t *testing.T) {
 	missing := missingW1bPublicAPIConfig(config.Config{
 		PostgresURL:   "postgres://user:pass@127.0.0.1:5432/app",
+		RedisCacheURL: "redis://127.0.0.1:6379/0",
 		RedisStateURL: "redis://127.0.0.1:6379/1",
 		RedisQueueURL: "redis://127.0.0.1:6379/2",
 		Secret:        "short",

@@ -201,6 +201,122 @@ func TestSystemAccountInvalidatorAPIKeyQuotaChangedCarriesAPIKeyID(t *testing.T)
 	assertRuntimeStateCall(t, state.calls[0], "juhe-ai:test-ns:state:gateway_cache_invalidation:topic:api_key_quota_cache", "quota-version", "api_key_updated", "key_123", "1970-01-01T00:00:00.000Z")
 }
 
+func TestSystemAccountInvalidatorInvalidateAPIKeyValidationCacheWritesVersion(t *testing.T) {
+	cache := &rawSetRecorder{}
+	state := &rawSetRecorder{}
+	invalidator, err := NewSystemAccountInvalidator(SystemAccountInvalidatorOptions{
+		Cache:      cache,
+		State:      state,
+		Namespace:  "test-ns",
+		Now:        func() time.Time { return time.Unix(0, 0).UTC() },
+		NewVersion: versionSequence("cache-version"),
+	})
+	if err != nil {
+		t.Fatalf("NewSystemAccountInvalidator() error = %v", err)
+	}
+
+	if err := invalidator.InvalidateAPIKeyValidationCache(context.Background()); err != nil {
+		t.Fatalf("InvalidateAPIKeyValidationCache() error = %v", err)
+	}
+
+	if len(cache.calls) != 1 {
+		t.Fatalf("cache calls = %d, want 1", len(cache.calls))
+	}
+	if cache.calls[0].key != "juhe-ai:test-ns:cache-version:gateway:api-key-validation" {
+		t.Fatalf("cache key = %q", cache.calls[0].key)
+	}
+	if string(cache.calls[0].value) != "cache-version" {
+		t.Fatalf("cache version = %q, want %q", string(cache.calls[0].value), "cache-version")
+	}
+	if cache.calls[0].ttl != SharedCacheVersionTTL {
+		t.Fatalf("cache ttl = %v, want %v", cache.calls[0].ttl, SharedCacheVersionTTL)
+	}
+	if len(state.calls) != 0 {
+		t.Fatalf("state calls = %d, want 0", len(state.calls))
+	}
+}
+
+func TestSystemAccountInvalidatorInvalidateGatewayRuntimeTrimsReasonAndWritesPayload(t *testing.T) {
+	state := &rawSetRecorder{}
+	now := time.Date(2026, 7, 10, 8, 9, 10, 123*int(time.Millisecond), time.UTC)
+	invalidator, err := NewSystemAccountInvalidator(SystemAccountInvalidatorOptions{
+		State:      state,
+		Namespace:  "test-ns",
+		Now:        func() time.Time { return now },
+		NewVersion: versionSequence("runtime-version"),
+	})
+	if err != nil {
+		t.Fatalf("NewSystemAccountInvalidator() error = %v", err)
+	}
+
+	if err := invalidator.InvalidateGatewayRuntime(context.Background(), "  api_key_changed \t"); err != nil {
+		t.Fatalf("InvalidateGatewayRuntime() error = %v", err)
+	}
+
+	if len(state.calls) != 1 {
+		t.Fatalf("state calls = %d, want 1", len(state.calls))
+	}
+	assertRuntimeStateCall(
+		t,
+		state.calls[0],
+		"juhe-ai:test-ns:state:gateway_cache_invalidation:topic:gateway_runtime_cache",
+		"runtime-version",
+		"api_key_changed",
+		"",
+		"2026-07-10T08:09:10.123Z",
+	)
+}
+
+func TestSystemAccountInvalidatorInvalidateGatewayRuntimeRejectsBlankReason(t *testing.T) {
+	state := &rawSetRecorder{}
+	invalidator, err := NewSystemAccountInvalidator(SystemAccountInvalidatorOptions{
+		State:      state,
+		Namespace:  "test-ns",
+		NewVersion: versionSequence("runtime-version"),
+	})
+	if err != nil {
+		t.Fatalf("NewSystemAccountInvalidator() error = %v", err)
+	}
+
+	err = invalidator.InvalidateGatewayRuntime(context.Background(), " \t ")
+
+	if err == nil {
+		t.Fatal("InvalidateGatewayRuntime() error = nil, want non-nil")
+	}
+	if len(state.calls) != 0 {
+		t.Fatalf("state calls = %d, want 0", len(state.calls))
+	}
+}
+
+func TestSystemAccountInvalidatorPublicInvalidationMethodsPropagateWriteErrors(t *testing.T) {
+	cacheErr := errors.New("cache redis down")
+	cacheInvalidator, err := NewSystemAccountInvalidator(SystemAccountInvalidatorOptions{
+		Cache:      &rawSetRecorder{err: cacheErr},
+		State:      &rawSetRecorder{},
+		Namespace:  "test-ns",
+		NewVersion: versionSequence("cache-version"),
+	})
+	if err != nil {
+		t.Fatalf("NewSystemAccountInvalidator() cache error = %v", err)
+	}
+	if err := cacheInvalidator.InvalidateAPIKeyValidationCache(context.Background()); !errors.Is(err, cacheErr) {
+		t.Fatalf("InvalidateAPIKeyValidationCache() error = %v, want %v", err, cacheErr)
+	}
+
+	stateErr := errors.New("state redis down")
+	runtimeInvalidator, err := NewSystemAccountInvalidator(SystemAccountInvalidatorOptions{
+		State:      &rawSetRecorder{err: stateErr},
+		Namespace:  "test-ns",
+		NewVersion: versionSequence("runtime-version"),
+	})
+	if err != nil {
+		t.Fatalf("NewSystemAccountInvalidator() runtime error = %v", err)
+	}
+	if err := runtimeInvalidator.InvalidateGatewayRuntime(context.Background(), "api_key_changed"); !errors.Is(err, stateErr) {
+		t.Fatalf("InvalidateGatewayRuntime() error = %v, want %v", err, stateErr)
+	}
+}
+
 func TestSystemAccountInvalidatorPropagatesCacheClearErrorAndSkipsRuntimeState(t *testing.T) {
 	wantErr := errors.New("redis cache down")
 	cache := &rawSetRecorder{err: wantErr}

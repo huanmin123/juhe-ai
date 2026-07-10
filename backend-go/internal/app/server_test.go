@@ -50,7 +50,7 @@ func TestNewManagementOperationLogQueueRejectsInvalidQueueURLWhenEnabled(t *test
 }
 
 func TestNewPublicAPIHandlersCoversCatalog(t *testing.T) {
-	handlers, err := newPublicAPIHandlers(nil, "12345678901234567890123456789012")
+	handlers, err := newPublicAPIHandlers(nil, "12345678901234567890123456789012", nil)
 	if err != nil {
 		t.Fatalf("newPublicAPIHandlers() error = %v", err)
 	}
@@ -274,7 +274,7 @@ func TestNewGatewaySystemAccountInvalidatorSkipsOnlyWhenDisabled(t *testing.T) {
 	}
 	closeFn()
 	if invalidator != nil {
-		t.Fatal("newGatewaySystemAccountInvalidator() returned invalidator while management API disabled")
+		t.Fatal("newGatewaySystemAccountInvalidator() returned invalidator while management and public APIs were disabled")
 	}
 
 	invalidator, closeFn, err = newGatewaySystemAccountInvalidator(t.Context(), config.Config{
@@ -287,6 +287,17 @@ func TestNewGatewaySystemAccountInvalidatorSkipsOnlyWhenDisabled(t *testing.T) {
 	closeFn()
 	if invalidator == nil {
 		t.Fatal("newGatewaySystemAccountInvalidator() returned nil invalidator without Redis cache URL")
+	}
+}
+
+func TestNewGatewaySystemAccountInvalidatorRequiresCacheForPublicAPI(t *testing.T) {
+	_, closeFn, err := newGatewaySystemAccountInvalidator(t.Context(), config.Config{
+		PublicAPIEnabled: true,
+		RedisNamespace:   "juhe-ai",
+	}, &redisplatform.Client{}, nil)
+	closeFn()
+	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_REDIS_CACHE_URL") {
+		t.Fatalf("newGatewaySystemAccountInvalidator() error = %v, want public API cache Redis error", err)
 	}
 }
 

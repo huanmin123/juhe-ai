@@ -77,7 +77,13 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	}
 	defer closeSystemAccountInvalidator()
 
-	publicAPIHandler, publicAPILogQueue, err := newPublicAPIHandler(cfg, logger, store, stateRedis)
+	publicAPIHandler, publicAPILogQueue, err := newPublicAPIHandlerWithOptions(
+		cfg,
+		logger,
+		store,
+		stateRedis,
+		PublicAPIHandlerOptions{APIKeyInvalidator: systemAccountInvalidator},
+	)
 	if err != nil {
 		return err
 	}
@@ -310,6 +316,11 @@ type managementAPIInvalidator interface {
 	managementproxies.ProxyInvalidator
 }
 
+type gatewayCacheInvalidator interface {
+	managementAPIInvalidator
+	publicapikeys.APIKeyGatewayCacheInvalidator
+}
+
 func newManagementAPIHandler(
 	cfg config.Config,
 	store *postgresstore.Store,
@@ -468,9 +479,9 @@ func newGatewaySystemAccountInvalidator(
 	cfg config.Config,
 	stateRedis *redisplatform.Client,
 	logger *slog.Logger,
-) (managementAPIInvalidator, func(), error) {
+) (gatewayCacheInvalidator, func(), error) {
 	closeFn := func() {}
-	if !cfg.ManagementAPIEnabled {
+	if !cfg.ManagementAPIEnabled && !cfg.PublicAPIEnabled {
 		return nil, closeFn, nil
 	}
 	if stateRedis == nil {
@@ -478,6 +489,9 @@ func newGatewaySystemAccountInvalidator(
 	}
 	var cacheRedis *redisplatform.Client
 	if cfg.RedisCacheURL == "" {
+		if cfg.PublicAPIEnabled {
+			return nil, closeFn, fmt.Errorf("gateway API Key invalidator requires JUHE_AI_REDIS_CACHE_URL when public API is enabled")
+		}
 		if logger != nil {
 			logger.Warn("Go 管理 API 未配置 Redis cache，系统账户状态变更不会触发 API Key 校验缓存版本刷新")
 		}
@@ -533,8 +547,9 @@ func newPublicAPIHandler(
 }
 
 type PublicAPIHandlerOptions struct {
-	Now      func() time.Time
-	NewLogID func() string
+	Now               func() time.Time
+	NewLogID          func() string
+	APIKeyInvalidator publicapikeys.APIKeyGatewayCacheInvalidator
 }
 
 func NewPublicAPIHandler(
@@ -583,7 +598,7 @@ func newPublicAPIHandlerWithOptions(
 		return nil, nil, err
 	}
 
-	handlers, err := newPublicAPIHandlers(store, cfg.Secret)
+	handlers, err := newPublicAPIHandlers(store, cfg.Secret, opts.APIKeyInvalidator)
 	if err != nil {
 		_ = logQueue.Close()
 		return nil, nil, err
@@ -604,10 +619,18 @@ func newPublicAPIHandlerWithOptions(
 	return handler, logQueue, nil
 }
 
-func newPublicAPIHandlers(store *postgresstore.Store, credentialSecret string) (map[string]http.Handler, error) {
+func newPublicAPIHandlers(
+	store *postgresstore.Store,
+	credentialSecret string,
+	apiKeyInvalidator publicapikeys.APIKeyGatewayCacheInvalidator,
+) (map[string]http.Handler, error) {
 	groupService := publicgroups.NewService(publicgroups.Options{Store: store, Transactor: store})
 	routeStrategyService := publicroutestrategies.NewService(publicroutestrategies.Options{Store: store, Transactor: store})
-	apiKeyService := publicapikeys.NewService(publicapikeys.Options{Store: store, Transactor: store})
+	apiKeyService := publicapikeys.NewService(publicapikeys.Options{
+		Store:       store,
+		Transactor:  store,
+		Invalidator: apiKeyInvalidator,
+	})
 	providerModelService := managementprovidermodels.NewService(store)
 	accountService := publicaccounts.NewService(publicaccounts.Options{
 		Store:          store,

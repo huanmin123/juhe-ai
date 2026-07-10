@@ -66,6 +66,78 @@ func TestServiceAddCreatesHashOnlySecretAndNormalizesLimits(t *testing.T) {
 	}
 }
 
+func TestServiceAddInvalidatesRuntimeThenQuotaAfterTransaction(t *testing.T) {
+	events := []string{}
+	store := newPublicAPIKeyServiceStore()
+	store.transactionEvents = &events
+	invalidator := &apiKeyGatewayCacheInvalidatorRecorder{events: &events}
+	service := NewService(Options{
+		Store:       store,
+		Transactor:  store,
+		Invalidator: invalidator,
+		NewID:       fixedID("key_created"),
+		NewSecret:   fixedSecret("sk-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+	})
+
+	_, err := service.Add(context.Background(), AddInput{
+		TargetUsername:  "admin",
+		Name:            "公开 Key",
+		RouteStrategyID: "rts_active",
+	})
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	assertEventOrder(t, events, "transaction_committed", "runtime", "quota")
+	assertAPIKeyGatewayCacheCalls(t, invalidator.calls,
+		apiKeyGatewayCacheInvalidationCall{method: "runtime", reason: "api_key_created"},
+		apiKeyGatewayCacheInvalidationCall{method: "quota", apiKeyID: "key_created", reason: "api_key_created"},
+	)
+}
+
+func TestServiceAddGatewayRuntimeAndQuotaInvalidationAreBestEffort(t *testing.T) {
+	tests := []struct {
+		name       string
+		runtimeErr error
+		quotaErr   error
+	}{
+		{name: "runtime error", runtimeErr: errors.New("runtime invalidation failed")},
+		{name: "quota error", quotaErr: errors.New("quota invalidation failed")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newPublicAPIKeyServiceStore()
+			invalidator := &apiKeyGatewayCacheInvalidatorRecorder{
+				runtimeErr: tt.runtimeErr,
+				quotaErr:   tt.quotaErr,
+			}
+			service := NewService(Options{
+				Store:       store,
+				Transactor:  store,
+				Invalidator: invalidator,
+				NewID:       fixedID("key_created"),
+				NewSecret:   fixedSecret("sk-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+			})
+
+			response, err := service.Add(context.Background(), AddInput{
+				TargetUsername:  "admin",
+				Name:            "公开 Key",
+				RouteStrategyID: "rts_active",
+			})
+			if err != nil {
+				t.Fatalf("add: %v", err)
+			}
+			if response.APIKey == nil || response.APIKey.ID != "key_created" {
+				t.Fatalf("response = %+v", response)
+			}
+			assertAPIKeyGatewayCacheCalls(t, invalidator.calls,
+				apiKeyGatewayCacheInvalidationCall{method: "runtime", reason: "api_key_created"},
+				apiKeyGatewayCacheInvalidationCall{method: "quota", apiKeyID: "key_created", reason: "api_key_created"},
+			)
+		})
+	}
+}
+
 func TestServiceAddRequiresExistingActiveTargetAndRouteStrategy(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -168,6 +240,166 @@ func TestServiceUpdateAndDeleteProtectOwnershipAndDefaultKey(t *testing.T) {
 	}
 }
 
+func TestServiceUpdateInvalidatesValidationRuntimeAndQuotaForEverySuccessfulUpdate(t *testing.T) {
+	events := []string{}
+	store := newPublicAPIKeyServiceStore()
+	store.transactionEvents = &events
+	invalidator := &apiKeyGatewayCacheInvalidatorRecorder{events: &events}
+	service := NewService(Options{
+		Store:       store,
+		Transactor:  store,
+		Invalidator: invalidator,
+	})
+
+	response, err := service.Update(context.Background(), UpdateInput{APIKeyID: " key_normal "})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if response.APIKey == nil || response.APIKey.ID != "key_normal" {
+		t.Fatalf("response = %+v", response)
+	}
+
+	assertEventOrder(t, events, "transaction_committed", "validation", "runtime", "quota")
+	assertAPIKeyGatewayCacheCalls(t, invalidator.calls,
+		apiKeyGatewayCacheInvalidationCall{method: "validation"},
+		apiKeyGatewayCacheInvalidationCall{method: "runtime", reason: "api_key_updated"},
+		apiKeyGatewayCacheInvalidationCall{method: "quota", apiKeyID: "key_normal", reason: "api_key_updated"},
+	)
+}
+
+func TestServiceDeleteInvalidatesValidationRuntimeAndQuotaAfterTransaction(t *testing.T) {
+	events := []string{}
+	store := newPublicAPIKeyServiceStore()
+	store.transactionEvents = &events
+	invalidator := &apiKeyGatewayCacheInvalidatorRecorder{events: &events}
+	service := NewService(Options{
+		Store:       store,
+		Transactor:  store,
+		Invalidator: invalidator,
+	})
+
+	response, err := service.Delete(context.Background(), DeleteInput{APIKeyID: " key_normal "})
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if response.APIKey == nil || response.APIKey.ID != "key_normal" {
+		t.Fatalf("response = %+v", response)
+	}
+
+	assertEventOrder(t, events, "transaction_committed", "validation", "runtime", "quota")
+	assertAPIKeyGatewayCacheCalls(t, invalidator.calls,
+		apiKeyGatewayCacheInvalidationCall{method: "validation"},
+		apiKeyGatewayCacheInvalidationCall{method: "runtime", reason: "api_key_deleted"},
+		apiKeyGatewayCacheInvalidationCall{method: "quota", apiKeyID: "key_normal", reason: "api_key_deleted"},
+	)
+}
+
+func TestServiceUpdateAndDeletePropagateValidationInvalidationError(t *testing.T) {
+	wantErr := errors.New("validation invalidation failed")
+
+	t.Run("update", func(t *testing.T) {
+		events := []string{}
+		store := newPublicAPIKeyServiceStore()
+		store.transactionEvents = &events
+		invalidator := &apiKeyGatewayCacheInvalidatorRecorder{events: &events, validationErr: wantErr}
+		service := NewService(Options{
+			Store:       store,
+			Transactor:  store,
+			Invalidator: invalidator,
+		})
+		name := "事务已提交"
+
+		_, err := service.Update(context.Background(), UpdateInput{APIKeyID: "key_normal", Name: &name})
+
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("update error = %v, want %v", err, wantErr)
+		}
+		if store.keys["key_normal"].Name != name {
+			t.Fatalf("updated name = %q, want committed value %q", store.keys["key_normal"].Name, name)
+		}
+		assertEventOrder(t, events, "transaction_committed", "validation")
+		assertAPIKeyGatewayCacheCalls(t, invalidator.calls,
+			apiKeyGatewayCacheInvalidationCall{method: "validation"},
+		)
+	})
+
+	t.Run("delete", func(t *testing.T) {
+		events := []string{}
+		store := newPublicAPIKeyServiceStore()
+		store.transactionEvents = &events
+		invalidator := &apiKeyGatewayCacheInvalidatorRecorder{events: &events, validationErr: wantErr}
+		service := NewService(Options{
+			Store:       store,
+			Transactor:  store,
+			Invalidator: invalidator,
+		})
+
+		_, err := service.Delete(context.Background(), DeleteInput{APIKeyID: "key_normal"})
+
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("delete error = %v, want %v", err, wantErr)
+		}
+		if _, ok := store.keys["key_normal"]; ok {
+			t.Fatal("key_normal should remain deleted after validation invalidation failure")
+		}
+		assertEventOrder(t, events, "transaction_committed", "validation")
+		assertAPIKeyGatewayCacheCalls(t, invalidator.calls,
+			apiKeyGatewayCacheInvalidationCall{method: "validation"},
+		)
+	})
+}
+
+func TestServiceUpdateAndDeleteRuntimeAndQuotaInvalidationAreBestEffort(t *testing.T) {
+	tests := []struct {
+		name   string
+		reason string
+		run    func(*Service) (APIKeyResponse, error)
+	}{
+		{
+			name:   "update",
+			reason: "api_key_updated",
+			run: func(service *Service) (APIKeyResponse, error) {
+				return service.Update(context.Background(), UpdateInput{APIKeyID: "key_normal"})
+			},
+		},
+		{
+			name:   "delete",
+			reason: "api_key_deleted",
+			run: func(service *Service) (APIKeyResponse, error) {
+				return service.Delete(context.Background(), DeleteInput{APIKeyID: "key_normal"})
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newPublicAPIKeyServiceStore()
+			invalidator := &apiKeyGatewayCacheInvalidatorRecorder{
+				runtimeErr: errors.New("runtime invalidation failed"),
+				quotaErr:   errors.New("quota invalidation failed"),
+			}
+			service := NewService(Options{
+				Store:       store,
+				Transactor:  store,
+				Invalidator: invalidator,
+			})
+
+			response, err := tt.run(service)
+
+			if err != nil {
+				t.Fatalf("%s: %v", tt.name, err)
+			}
+			if response.APIKey == nil || response.APIKey.ID != "key_normal" {
+				t.Fatalf("response = %+v", response)
+			}
+			assertAPIKeyGatewayCacheCalls(t, invalidator.calls,
+				apiKeyGatewayCacheInvalidationCall{method: "validation"},
+				apiKeyGatewayCacheInvalidationCall{method: "runtime", reason: tt.reason},
+				apiKeyGatewayCacheInvalidationCall{method: "quota", apiKeyID: "key_normal", reason: tt.reason},
+			)
+		})
+	}
+}
+
 func TestServiceRejectsInvalidQuotaScheduleAndExpiresAt(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -228,6 +460,8 @@ type publicAPIKeyServiceStore struct {
 
 	createInput port.PublicAPIKeyCreateInput
 	updateInput port.PublicAPIKeyUpdateInput
+
+	transactionEvents *[]string
 }
 
 func newPublicAPIKeyServiceStore() *publicAPIKeyServiceStore {
@@ -257,7 +491,13 @@ func newPublicAPIKeyServiceStore() *publicAPIKeyServiceStore {
 }
 
 func (s *publicAPIKeyServiceStore) PublicAPIKeyInTx(ctx context.Context, fn func(ctx context.Context, store port.PublicAPIKeyStore) error) error {
-	return fn(ctx, s)
+	if err := fn(ctx, s); err != nil {
+		return err
+	}
+	if s.transactionEvents != nil {
+		*s.transactionEvents = append(*s.transactionEvents, "transaction_committed")
+	}
+	return nil
 }
 
 func (s *publicAPIKeyServiceStore) FindPublicAPIKeyTargetByUsername(_ context.Context, username string) (port.PublicGroupTarget, bool, error) {
@@ -333,6 +573,61 @@ func (s *publicAPIKeyServiceStore) DeletePublicAPIKey(_ context.Context, apiKeyI
 	}
 	delete(s.keys, apiKeyID)
 	return true, nil
+}
+
+type apiKeyGatewayCacheInvalidationCall struct {
+	method   string
+	apiKeyID string
+	reason   string
+}
+
+type apiKeyGatewayCacheInvalidatorRecorder struct {
+	calls         []apiKeyGatewayCacheInvalidationCall
+	events        *[]string
+	validationErr error
+	runtimeErr    error
+	quotaErr      error
+}
+
+func (r *apiKeyGatewayCacheInvalidatorRecorder) InvalidateAPIKeyValidationCache(context.Context) error {
+	r.record(apiKeyGatewayCacheInvalidationCall{method: "validation"})
+	return r.validationErr
+}
+
+func (r *apiKeyGatewayCacheInvalidatorRecorder) InvalidateGatewayRuntime(_ context.Context, reason string) error {
+	r.record(apiKeyGatewayCacheInvalidationCall{method: "runtime", reason: reason})
+	return r.runtimeErr
+}
+
+func (r *apiKeyGatewayCacheInvalidatorRecorder) InvalidateAPIKeyQuotaChanged(_ context.Context, apiKeyID string, reason string) error {
+	r.record(apiKeyGatewayCacheInvalidationCall{method: "quota", apiKeyID: apiKeyID, reason: reason})
+	return r.quotaErr
+}
+
+func (r *apiKeyGatewayCacheInvalidatorRecorder) record(call apiKeyGatewayCacheInvalidationCall) {
+	r.calls = append(r.calls, call)
+	if r.events != nil {
+		*r.events = append(*r.events, call.method)
+	}
+}
+
+func assertAPIKeyGatewayCacheCalls(t *testing.T, got []apiKeyGatewayCacheInvalidationCall, want ...apiKeyGatewayCacheInvalidationCall) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("cache invalidation calls = %+v, want %+v", got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("cache invalidation call[%d] = %+v, want %+v", index, got[index], want[index])
+		}
+	}
+}
+
+func assertEventOrder(t *testing.T, got []string, want ...string) {
+	t.Helper()
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("event order = %v, want %v", got, want)
+	}
 }
 
 func fixedID(id string) func(string) string {

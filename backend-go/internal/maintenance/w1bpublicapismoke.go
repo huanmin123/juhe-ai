@@ -21,8 +21,10 @@ import (
 	"juhe-ai/backend-go/internal/config"
 	"juhe-ai/backend-go/internal/httpapi"
 	"juhe-ai/backend-go/internal/jobs/queue"
+	"juhe-ai/backend-go/internal/modules/gatewaycache"
 	"juhe-ai/backend-go/internal/modules/publicapi"
 	publicapiauth "juhe-ai/backend-go/internal/modules/publicapi/auth"
+	"juhe-ai/backend-go/internal/modules/publicapikeys"
 	redisplatform "juhe-ai/backend-go/internal/platform/redis"
 	"juhe-ai/backend-go/internal/store/port"
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
@@ -190,6 +192,33 @@ func RunW1bPublicAPISmoke(ctx context.Context, cfg config.Config, out io.Writer)
 	defer func() { _ = stateRedis.Close() }()
 	checks["redisState"] = okW1bSmokeCheck()
 
+	cacheRedis, err := openW1bPublicAPISmokeCacheRedis(ctx, smokeCfg)
+	if err != nil {
+		checks["redisCache"] = failedW1bSmokeCheck("Redis cache 连接失败")
+		return writeW1bPublicAPISmokeResult(out, W1bPublicAPISmokeResult{
+			Checks:             checks,
+			PublicAPI:          &publicAPI,
+			TakeoverAssessment: assessment,
+		})
+	}
+	defer func() { _ = cacheRedis.Close() }()
+	checks["redisCache"] = okW1bSmokeCheck()
+
+	apiKeyInvalidator, err := gatewaycache.NewSystemAccountInvalidator(gatewaycache.SystemAccountInvalidatorOptions{
+		Cache:     cacheRedis,
+		State:     stateRedis,
+		Namespace: smokeCfg.RedisNamespace,
+	})
+	if err != nil {
+		checks["gatewayCacheInvalidator"] = failedW1bSmokeCheck("网关缓存失效器初始化失败")
+		return writeW1bPublicAPISmokeResult(out, W1bPublicAPISmokeResult{
+			Checks:             checks,
+			PublicAPI:          &publicAPI,
+			TakeoverAssessment: assessment,
+		})
+	}
+	checks["gatewayCacheInvalidator"] = okW1bSmokeCheck()
+
 	if err := smokeW1bPublicAPIQueue(ctx, smokeCfg.RedisQueueURL); err != nil {
 		checks["redisQueue"] = failedW1bSmokeCheck("Redis queue 连接失败")
 		return writeW1bPublicAPISmokeResult(out, W1bPublicAPISmokeResult{
@@ -220,7 +249,7 @@ func RunW1bPublicAPISmoke(ctx context.Context, cfg config.Config, out io.Writer)
 	}()
 	checks["smokeToken"] = okW1bSmokeCheck()
 
-	routeResult, err := smokeW1bPublicAPIRoute(ctx, smokeCfg, store, stateRedis, fixture)
+	routeResult, err := smokeW1bPublicAPIRoute(ctx, smokeCfg, store, stateRedis, apiKeyInvalidator, fixture)
 	if err != nil {
 		checks["publicAPIRoute"] = failedW1bSmokeCheck(err.Error())
 		return writeW1bPublicAPISmokeResult(out, W1bPublicAPISmokeResult{
@@ -310,6 +339,7 @@ func smokeW1bPublicAPIRoute(
 	cfg config.Config,
 	store *postgresstore.Store,
 	stateRedis *redisplatform.Client,
+	apiKeyInvalidator publicapikeys.APIKeyGatewayCacheInvalidator,
 	fixture w1bPublicAPISmokeFixture,
 ) (w1bPublicAPIRouteResult, error) {
 	logID := w1bPublicAPISmokeLogIDPrefix + uuidNoDash()
@@ -318,7 +348,10 @@ func smokeW1bPublicAPIRoute(
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		store,
 		stateRedis,
-		app.PublicAPIHandlerOptions{NewLogID: func() string { return logID }},
+		app.PublicAPIHandlerOptions{
+			NewLogID:          func() string { return logID },
+			APIKeyInvalidator: apiKeyInvalidator,
+		},
 	)
 	if err != nil {
 		return w1bPublicAPIRouteResult{}, fmt.Errorf("public API handler 初始化失败")
@@ -650,6 +683,20 @@ func openW1bPublicAPISmokeStateRedis(ctx context.Context, cfg config.Config) (*r
 	return stateRedis, nil
 }
 
+func openW1bPublicAPISmokeCacheRedis(ctx context.Context, cfg config.Config) (*redisplatform.Client, error) {
+	cacheRedis, err := redisplatform.NewClient(cfg.RedisCacheURL, cfg.RedisNamespace+":cache")
+	if err != nil {
+		return nil, err
+	}
+	pingCtx, cancel := context.WithTimeout(ctx, w1bPublicAPISmokeDependencyTimeout)
+	defer cancel()
+	if err := cacheRedis.Ping(pingCtx); err != nil {
+		_ = cacheRedis.Close()
+		return nil, err
+	}
+	return cacheRedis, nil
+}
+
 func smokeW1bPublicAPIQueue(ctx context.Context, rawURL string) error {
 	opts, err := queue.ParseRedisURL(rawURL)
 	if err != nil {
@@ -708,6 +755,9 @@ func missingW1bPublicAPIConfig(cfg config.Config) []string {
 	}
 	if cfg.RedisStateURL == "" {
 		missing = append(missing, "JUHE_AI_REDIS_STATE_URL")
+	}
+	if cfg.RedisCacheURL == "" {
+		missing = append(missing, "JUHE_AI_REDIS_CACHE_URL")
 	}
 	if cfg.RedisQueueURL == "" {
 		missing = append(missing, "JUHE_AI_REDIS_QUEUE_URL")
