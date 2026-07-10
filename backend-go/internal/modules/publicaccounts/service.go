@@ -505,8 +505,9 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 			}
 			next.AvailabilityScheduleJSON = scheduleJSON
 		}
+		connectionConfigurationChanged := false
 		if input.APIKey != nil || input.BaseURL != nil {
-			credentials, _, _, err := s.currentCredentials(current.CredentialsEncrypted)
+			credentials, currentAPIKey, currentBaseURL, err := s.currentCredentials(current.CredentialsEncrypted)
 			if err != nil {
 				return err
 			}
@@ -523,6 +524,9 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 			next.CredentialsEncrypted = credential.Encrypted
 			next.CredentialFingerprint = credential.Fingerprint
 			next.CredentialMask = credential.Mask
+			nextAPIKey, _ := credentials["api_key"].(string)
+			nextBaseURL, _ := credentials["base_url"].(string)
+			connectionConfigurationChanged = nextAPIKey != currentAPIKey || nextBaseURL != currentBaseURL
 		}
 		if input.SupportedModels.Set() {
 			next.SupportedModels = input.SupportedModels.Value()
@@ -543,12 +547,11 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 		}
 		next.SupportedModels = models
 		next.HealthCheckModel = healthCheckModel
-		configurationSubmitted := input.APIKey != nil || input.BaseURL != nil || input.SupportedModels.Set()
-		if configurationSubmitted && next.Status != port.PublicAccountStatusDisabled {
+		if connectionConfigurationChanged && next.Status != port.PublicAccountStatusDisabled {
 			next.Status = port.PublicAccountStatusPendingTest
 			next.Schedulable = false
 		}
-		resetFailureState := input.Status != nil || configurationSubmitted
+		resetFailureState := input.Status != nil || connectionConfigurationChanged
 		updated, ok, err := store.UpdatePublicAccount(ctx, port.PublicAccountUpdateInput{
 			ID:                       current.ID,
 			SystemAccountID:          current.SystemAccountID,
@@ -562,6 +565,8 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 			SupportedModelsChanged:   supportedModelsChanged,
 			HealthCheckModel:         next.HealthCheckModel,
 			ResetFailureState:        resetFailureState,
+			ScheduleHealthCheck:      connectionConfigurationChanged || input.SupportedModels.Set(),
+			ResetHealthDiagnostics:   connectionConfigurationChanged,
 			Schedulable:              next.Schedulable,
 			AvailabilityScheduleJSON: next.AvailabilityScheduleJSON,
 			ConcurrencyLimit:         next.ConcurrencyLimit,

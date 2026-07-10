@@ -572,73 +572,45 @@ func TestServiceUpdateCredentialPartialPreservesExtensionFields(t *testing.T) {
 			if !store.lastUpdateInput.ResetFailureState {
 				t.Fatal("credential submission must reset failure state")
 			}
+			if !store.lastUpdateInput.ScheduleHealthCheck || !store.lastUpdateInput.ResetHealthDiagnostics {
+				t.Fatal("changed credentials must schedule a health check and reset health diagnostics")
+			}
 		})
 	}
 }
 
-func TestServiceUpdateConfigurationChangeForcesPendingTest(t *testing.T) {
-	tests := []struct {
-		name   string
-		update func(accountID string) UpdateInput
-	}{
-		{
-			name: "credentials",
-			update: func(accountID string) UpdateInput {
-				apiKey := "sk-pending-test-updated-abcdef0123456789"
-				return UpdateInput{AccountID: accountID, APIKey: &apiKey}
-			},
-		},
-		{
-			name: "equivalent credentials",
-			update: func(accountID string) UpdateInput {
-				apiKey := "sk-public-account-secret-0123456789abcdef"
-				baseURL := "https://api.openai.com/v1"
-				return UpdateInput{AccountID: accountID, APIKey: &apiKey, BaseURL: &baseURL}
-			},
-		},
-		{
-			name: "supported models",
-			update: func(accountID string) UpdateInput {
-				return UpdateInput{
-					AccountID:       accountID,
-					SupportedModels: NewStringListValue([]string{"gpt-5.4-mini"}, true),
-				}
-			},
-		},
+func TestServiceUpdateEquivalentCredentialsPreservesActiveScheduling(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	service := newPublicAccountServiceForTest(store, nil)
+	created, err := service.Add(context.Background(), validPublicAccountAddInput(
+		"相同凭据账号",
+		"gpt-5.4-mini",
+	))
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
 	}
+	account := store.accounts[created.Account.ID]
+	account.Status = port.PublicAccountStatusActive
+	account.Schedulable = true
+	store.accounts[account.ID] = account
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			store := newPublicAccountStoreFake()
-			service := newPublicAccountServiceForTest(store, nil)
-			created, err := service.Add(context.Background(), validPublicAccountAddInput(
-				"配置重检账号",
-				"gpt-5.5",
-				"gpt-5.4-mini",
-			))
-			if err != nil {
-				t.Fatalf("add public account: %v", err)
-			}
-			account := store.accounts[created.Account.ID]
-			account.Status = port.PublicAccountStatusActive
-			account.Schedulable = true
-			store.accounts[account.ID] = account
-
-			response, err := service.Update(context.Background(), tt.update(account.ID))
-			if err != nil {
-				t.Fatalf("update public account: %v", err)
-			}
-			if response.Account == nil || response.Account.Status != StatusPendingTest || response.Account.Schedulable {
-				t.Fatalf("response account = %+v, want pending_test and unschedulable", response.Account)
-			}
-			if !store.lastUpdateInput.ResetFailureState {
-				t.Fatal("failure state reset flag = false, want true")
-			}
-			stored := store.accounts[account.ID]
-			if stored.Status != port.PublicAccountStatusPendingTest || stored.Schedulable {
-				t.Fatalf("stored account status/schedulable = %s/%v, want pending_test/false", stored.Status, stored.Schedulable)
-			}
-		})
+	apiKey := "sk-public-account-secret-0123456789abcdef"
+	baseURL := "https://api.openai.com/v1/"
+	response, err := service.Update(context.Background(), UpdateInput{
+		AccountID: account.ID,
+		APIKey:    &apiKey,
+		BaseURL:   &baseURL,
+	})
+	if err != nil {
+		t.Fatalf("update public account: %v", err)
+	}
+	if response.Account == nil || response.Account.Status != StatusActive || !response.Account.Schedulable {
+		t.Fatalf("response account = %+v, want active and schedulable", response.Account)
+	}
+	if store.lastUpdateInput.ResetFailureState ||
+		store.lastUpdateInput.ScheduleHealthCheck ||
+		store.lastUpdateInput.ResetHealthDiagnostics {
+		t.Fatalf("equivalent credentials produced update flags %+v", store.lastUpdateInput)
 	}
 }
 
@@ -672,6 +644,9 @@ func TestServiceUpdateConfigurationChangeKeepsExplicitDisabled(t *testing.T) {
 	}
 	if !store.lastUpdateInput.ResetFailureState {
 		t.Fatal("failure state reset flag = false, want true")
+	}
+	if !store.lastUpdateInput.ScheduleHealthCheck || !store.lastUpdateInput.ResetHealthDiagnostics {
+		t.Fatal("changed disabled credentials must schedule a health check and reset health diagnostics")
 	}
 }
 
@@ -710,6 +685,9 @@ func TestServiceUpdateNonConfigurationFieldsDoNotForcePendingTest(t *testing.T) 
 	}
 	if store.lastUpdateInput.ResetFailureState {
 		t.Fatal("non-configuration fields must not reset failure state")
+	}
+	if store.lastUpdateInput.ScheduleHealthCheck || store.lastUpdateInput.ResetHealthDiagnostics {
+		t.Fatal("non-configuration fields must not alter health check scheduling")
 	}
 }
 
@@ -834,13 +812,16 @@ func TestServiceUpdateUnorderedEquivalentSupportedModelsSkipsCatalog(t *testing.
 	if store.lastUpdateInput.SupportedModelsChanged {
 		t.Fatal("unordered equivalent supportedModels must not mark the model set as changed")
 	}
-	if !store.lastUpdateInput.ResetFailureState {
-		t.Fatal("submitted supportedModels must reset failure state even when the set is equivalent")
+	if store.lastUpdateInput.ResetFailureState {
+		t.Fatal("submitted supportedModels must preserve failure state when credentials are unchanged")
+	}
+	if !store.lastUpdateInput.ScheduleHealthCheck || store.lastUpdateInput.ResetHealthDiagnostics {
+		t.Fatal("submitted supportedModels must schedule a health check without resetting diagnostics")
 	}
 	wantModels := []string{"gpt-5.5", "gpt-5.4-mini"}
 	if response.Account == nil ||
-		response.Account.Status != StatusPendingTest ||
-		response.Account.Schedulable ||
+		response.Account.Status != StatusActive ||
+		!response.Account.Schedulable ||
 		!slices.Equal(response.Account.SupportedModels, wantModels) {
 		t.Fatalf("response account = %+v, want supported models %#v", response.Account, wantModels)
 	}
@@ -877,8 +858,11 @@ func TestServiceUpdateChangedSupportedModelsMarksStoreUpdate(t *testing.T) {
 	if !store.lastUpdateInput.SupportedModelsChanged {
 		t.Fatal("changed supportedModels must mark the model set as changed")
 	}
-	if !store.lastUpdateInput.ResetFailureState {
-		t.Fatal("changed supportedModels must reset failure state")
+	if store.lastUpdateInput.ResetFailureState {
+		t.Fatal("changed supportedModels must preserve failure state")
+	}
+	if !store.lastUpdateInput.ScheduleHealthCheck || store.lastUpdateInput.ResetHealthDiagnostics {
+		t.Fatal("changed supportedModels must schedule a health check without resetting diagnostics")
 	}
 	wantModels := []string{"gpt-5.4-mini"}
 	if response.Account == nil || !slices.Equal(response.Account.SupportedModels, wantModels) {

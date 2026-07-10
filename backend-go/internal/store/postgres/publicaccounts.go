@@ -481,6 +481,8 @@ func publicAccountUpdate(ctx context.Context, q *postgresqueries.Queries, input 
 		AvailabilityScheduleJson: pgTextPtr(input.AvailabilityScheduleJSON),
 		Notes:                    pgTextPtr(input.Notes),
 		ResetFailureState:        input.ResetFailureState,
+		ScheduleHealthCheck:      input.ScheduleHealthCheck,
+		ResetHealthDiagnostics:   input.ResetHealthDiagnostics,
 		UpdatedAt:                pgTimestamptz(input.Now),
 		ID:                       input.ID,
 		SystemAccountID:          input.SystemAccountID,
