@@ -96,6 +96,10 @@ import {
 import { requestModel } from './metadata.js'
 import { gatewayRequestEndpointFamily, openAIRequestEndpointFamily, resolveOpenAIAccountModelMapping } from '../protocols/openai-v1/model-mapping.js'
 import { consumePublicModelsRateLimit } from '../runtime/public-models-rate-limit.service.js'
+import {
+  createSameAccountRetryBudget,
+  type SameAccountRetryBudget
+} from '../dispatch/upstream-dispatch.js'
 
 export interface OpenAIGatewayRequestIdentity {
   systemAccountId: string
@@ -114,6 +118,7 @@ interface OpenAIGatewayRequestPreflightOptions {
   settingsOverride?: Partial<GatewaySettings>
   requestLane?: OpenAIGatewayRequestLane
   ignoreAccountRuntimeSuppression?: boolean
+  sameAccountRetryBudget?: SameAccountRetryBudget
 }
 
 interface PrepareOpenAIGatewayDispatchContextInput {
@@ -147,6 +152,7 @@ export interface OpenAIGatewayDispatchContext {
   normalRouteLatencyDegradationApplied?: boolean
   codexTurnAccountAvoidanceApplied?: boolean
   codexTurnAvoidedAccountIds?: string[]
+  sameAccountRetryBudget: SameAccountRetryBudget
   releaseClientIpConcurrency: () => void
 }
 
@@ -206,6 +212,9 @@ export async function prepareOpenAIGatewayDispatchContext(
     gatewaySettings ?? await readCachedGatewaySettingsAsync(),
     options.settingsOverride
   )
+  const sameAccountRetryBudget = options.sameAccountRetryBudget
+    ?? createSameAccountRetryBudget(activeGatewaySettings.temporaryUnschedulableRetryAttempts)
+  options.sameAccountRetryBudget = sameAccountRetryBudget
   let requestLane = options.requestLane ?? 'text'
   const trafficSource = options.trafficSource ?? 'gateway'
   const gatewayClientIp = trafficSource === 'gateway' ? clientIp : undefined
@@ -789,6 +798,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     modelPriority: candidateFilter.modelPriority,
     requestLane,
     groupSchedulingPolicy: groupAccess.schedulingPolicy,
+    sameAccountRetryBudget,
     signal
   })
   if (codexBridgeCompactPreflight === 'completed') {
@@ -814,6 +824,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     normalRouteLatencyDegradationApplied: dispatchPreparation.normalRouteLatencyDegradationApplied,
     codexTurnAccountAvoidanceApplied: dispatchPreparation.codexTurnAccountAvoidanceApplied,
     codexTurnAvoidedAccountIds: dispatchPreparation.codexTurnAvoidedAccountIds,
+    sameAccountRetryBudget,
     releaseClientIpConcurrency: dispatchPreparation.releaseClientIpConcurrency
   }
 }

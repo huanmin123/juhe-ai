@@ -5,6 +5,7 @@ import {
   gatewayClientProfileHeader,
   resolveOpenAIGatewayClientStrategy
 } from '../../modules/gateway/client-profiles/strategy.js'
+import { buildGatewayStreamFailureEventForProtocol } from '../../modules/gateway/response/responses.js'
 
 const baseIdentity = {
   systemAccountId: 'sys_a',
@@ -37,7 +38,8 @@ function main(): void {
   testGenericAnthropicWithoutExplicitHeader()
   testClaudeCodeHeaderDoesNotAffectOpenAIProtocol()
   testClaudeCodeProfileRequiresSupportedAnthropicProtocolShape()
-  console.log('Claude Code 客户端画像回归通过：显式 header 命中、真实 CLI 多信号命中、普通 Anthropic 隔离、OpenAI 协议不误判、未知流形态不升级')
+  testClaudeCodeRetryEventShape()
+  console.log('Claude Code 客户端画像回归通过：显式 header 命中、真实 CLI 多信号命中、普通 Anthropic 隔离、未知流形态不升级、Messages 可重试错误事件格式正确')
 }
 
 function testExplicitClaudeCodeHeaderUsesAnthropicProfile(): void {
@@ -53,7 +55,8 @@ function testExplicitClaudeCodeHeaderUsesAnthropicProfile(): void {
   assert.equal(strategy.clientProfileSource, 'explicit_header')
   assert.equal(strategy.downstreamProtocol, 'messages_sse')
   assert.equal(strategy.upstreamAdapter, 'anthropic_api_key')
-  assert.equal(strategy.allowCodexStreamClientRetry, false)
+  assert.equal(strategy.retryCoordination.preCommitFailureSignal, 'protocol_error_event')
+  assert.equal(strategy.retryCoordination.committedFailureSignal, 'protocol_error_event')
   assert.equal(strategy.allowCodexTurnAccountAvoidance, false)
 }
 
@@ -72,6 +75,8 @@ function testRealClaudeCodeSignatureUsesAnthropicProfile(): void {
   assert.equal(strategy.clientProfileSource, 'claude_code_request_signature')
   assert.equal(strategy.downstreamProtocol, 'messages_sse')
   assert.equal(strategy.upstreamAdapter, 'anthropic_api_key')
+  assert.equal(strategy.retryCoordination.preCommitFailureSignal, 'protocol_error_event')
+  assert.equal(strategy.retryCoordination.committedFailureSignal, 'protocol_error_event')
 }
 
 function testSingleClaudeCodeSignalDoesNotUpgrade(): void {
@@ -86,6 +91,8 @@ function testSingleClaudeCodeSignalDoesNotUpgrade(): void {
   assert.equal(strategy.requestClientCompatibility, 'anthropic_native')
   assert.equal(strategy.clientProfileSource, 'default')
   assert.equal(strategy.downstreamProtocol, 'messages_sse')
+  assert.equal(strategy.retryCoordination.preCommitFailureSignal, 'http_error')
+  assert.equal(strategy.retryCoordination.committedFailureSignal, 'disconnect')
 }
 
 function testGenericAnthropicWithoutExplicitHeader(): void {
@@ -99,6 +106,8 @@ function testGenericAnthropicWithoutExplicitHeader(): void {
   assert.equal(strategy.clientProfileSource, 'default')
   assert.equal(strategy.downstreamProtocol, 'json')
   assert.equal(strategy.upstreamAdapter, 'anthropic_api_key')
+  assert.equal(strategy.retryCoordination.preCommitFailureSignal, 'http_error')
+  assert.equal(strategy.retryCoordination.committedFailureSignal, 'disconnect')
 }
 
 function testClaudeCodeHeaderDoesNotAffectOpenAIProtocol(): void {
@@ -128,6 +137,22 @@ function testClaudeCodeProfileRequiresSupportedAnthropicProtocolShape(): void {
   assert.equal(strategy.requestClientCompatibility, 'anthropic_native')
   assert.equal(strategy.downstreamProtocol, 'unknown_stream')
   assert.equal(strategy.clientProfileSource, 'default')
+  assert.equal(strategy.retryCoordination.preCommitFailureSignal, 'http_error')
+  assert.equal(strategy.retryCoordination.committedFailureSignal, 'disconnect')
+}
+
+function testClaudeCodeRetryEventShape(): void {
+  const event = buildGatewayStreamFailureEventForProtocol(
+    '上游流式响应在输出前失败，请重试',
+    'upstream_retryable_error',
+    'anthropic',
+    'messages_sse'
+  )?.toString('utf8')
+  assert(event, 'Claude Code Messages SSE 应能构造协议失败事件')
+  assert.match(event, /^event: error$/m)
+  assert.match(event, /"type":"overloaded_error"/)
+  assert.match(event, /"code":"upstream_retryable_error"/)
+  assert.doesNotMatch(event, /response\.failed/)
 }
 
 function createRequest(path: string, body: Record<string, unknown>, headers: Record<string, string> = {}): Request {

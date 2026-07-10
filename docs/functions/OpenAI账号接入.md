@@ -27,9 +27,9 @@ Anthropic、Gemini、智谱 GLM、DeepSeek 的接入细节分别写在 [Anthropi
 
 `GET /models` / `GET /v1/models` 始终读取本地供应商模型目录，不请求某个上游账号。默认 OpenAI-compatible 客户端返回标准 `{"object":"list","data":[...]}`；Codex 模型刷新请求会携带 `client_version` query 参数，或带有可识别的 Codex `originator` / User-Agent，此时返回 Codex `{"models":[...]}` 包装和 `ModelInfo` 字段，避免 Codex 客户端初始化阶段把标准 OpenAI 列表解析失败。两种响应使用同一套本地可见模型目录，只改变客户端响应形态。
 
-单次流式响应收到首段上游内容后，如果本次响应超过输出停顿上限仍没有任何上游新数据，或连接读取异常中断，会进入流式失败链路；如果上游持续发送 SSE comment / 空心跳但没有可见输出、失败或终止事件，也必须在首个协议语义结果等待窗口内失败并触发服务端隐藏重试。持续有 raw chunk 且正在形成未闭合 SSE 事件时只记录诊断并继续转发，避免误杀大事件碎片。当前运行时对下游尚未提交的流式失败优先做服务端内部重试：关闭当前上游，本次请求排除失败账号，继续尝试后续账号 / 后续分组；只有服务端可承接账号耗尽后，才按客户端策略写最终失败。Codex 的 `response.failed/upstream_retryable_error` 只在命中 Codex profile、Responses SSE 和可解析的 `x-codex-turn-metadata.turn_id` 时作为最终可见兜底；客户端可见文案固定为统一可重试提示，上游错误码、状态码、错误文案和 Codex turn 探针摘要只进日志 / 审计 / 诊断，不作为客户端终局失败内容。未命中 Codex profile 的 OpenAI-compatible 请求不伪造 Codex 可重试码。调研结论见 [流式中断与客户端重试调研](流式中断与客户端重试调研.md)。
+单次流式响应收到首段上游内容后，如果本次响应超过输出停顿上限仍没有任何上游新数据，或连接读取异常中断，会进入流式失败链路；如果上游持续发送 SSE comment / 空心跳但没有可见输出、失败或终止事件，也必须在首个协议语义结果等待窗口内失败并触发服务端隐藏重试。持续有 raw chunk 且正在形成未闭合 SSE 事件时只记录诊断并继续转发，避免误杀大事件碎片。当前运行时对下游尚未提交的流式失败优先做服务端内部重试：关闭当前上游，本次请求排除失败账号，继续尝试后续账号 / 后续分组；只有服务端可承接账号耗尽后，才按客户端策略写最终失败。Codex Responses、Claude Code Messages 和 Gemini CLI stream 分别使用各自协议错误事件；通用客户端在下游未提交时返回 HTTP `503/upstream_retryable_error`，已提交时断流。客户端可见文案固定为统一可重试提示，上游错误码、状态码、错误文案和 Codex turn 诊断摘要只进日志 / 审计 / 诊断，不作为客户端终局失败内容。调研结论见 [流式中断与客户端重试调研](流式中断与客户端重试调研.md)。
 
-Codex Responses SSE 请求如果在建流前遇到上游 HTTP 非 `2xx`，仍先进入普通账户错误处理、同账号确认、切后续账号和后续分组流程；当所有可承接账号都失败时，命中 Codex profile 的最终响应不返回裸 `503/429/400` JSON，而是返回 `200 text/event-stream`，写入 `response.failed/upstream_retryable_error` 后立即结束连接，防止 Codex 客户端因初始化或建流阶段错误断开整轮。该兜底只处理已通过本地认证、额度、JSON 校验和调度预检后的上游耗尽；无效本地 API Key、缺少 Bearer、本地 JSON 非法、额度不可用等本地硬失败仍按 OpenAI-compatible JSON 错误返回。
+Codex Responses SSE 请求如果在建流前遇到上游 HTTP 非 `2xx`，仍先进入普通账户错误处理、请求级同账号确认预算、切后续账号和后续分组流程；当所有可承接账号都失败时，命中 Codex profile 的最终响应不返回裸 `503/429/400` JSON，而是返回 `200 text/event-stream`，写入 `response.failed/upstream_retryable_error` 后立即结束连接，防止 Codex 客户端因初始化或建流阶段错误断开整轮。Claude Code 和 Gemini CLI 的流式入口使用各自协议错误事件；通用客户端返回 HTTP `503/upstream_retryable_error`。该兜底只处理已通过本地认证、额度、JSON 校验和调度预检后的上游耗尽；无效本地 API Key、缺少 Bearer、本地 JSON 非法、额度不可用等本地硬失败仍按协议 JSON 错误返回。
 
 ## 协议与供应商定义
 
@@ -250,7 +250,7 @@ OpenAI 网关使用短期内存会话亲和，只影响账号排序，不绕过�
 - 首次成功命中账号后写入短期绑定；同一会话后续请求在同一调度层级内优先尝试同一账号，降低 Codex / Responses 多轮会话被调度到不同 OAuth 账号的概率。
 - 客户可用性优先于粘性：会话亲和不会跨过超级优先、账号优先级和更优质量候选。绑定账号并发满时会先在本请求内做很短的同账号等待和重查，尽量复用上游会话 / 缓存；短等后仍满、账号不可用或请求失败时才让后续候选继续尝试。
 - 绑定只保存在进程内存中，服务重启、缓存淘汰、账号失败、流式首包失败、流式中断、冷却、停用或到期都会自然失效或被清理。
-- 会话亲和不是客户端身份认证，也不是 Codex 重试计数依据。服务端隐藏重试成功时不记录 Codex turn 失败；只有最终可见的 Codex `upstream_retryable_error` 才进入 turn 级失败账号避让。Codex turn 级策略只能使用可解析的 `x-codex-turn-metadata.turn_id` 加本地 API Key / endpoint / 请求体哈希边界；识别不到时不使用 `session_id` 或 `x-client-request-id` 回退。Codex turn 级切号在选择备用账号前会先做真实账号探针，探针等待档位同样使用 `10s -> 20s -> 30s`；但切号探针只在本地超时时同账号递进等待，一旦拿到明确失败结果就立即淘汰当前候选并尝试下一个账号。
+- 会话亲和不是客户端身份认证，也不是 Codex 重试计数依据。服务端隐藏重试成功时不记录 Codex turn 失败；只有最终向 Codex 写出可见的 `response.failed/upstream_retryable_error` 才进入 turn 级失败账号避让。Codex turn 级策略只能使用可解析的 `x-codex-turn-metadata.turn_id` 加本地 API Key / endpoint / 请求体哈希边界；识别不到时不使用 `session_id` 或 `x-client-request-id` 回退。后续同一 turn 到达时先避让已发生客户端可见失败的账号，直接对新候选发起正式请求；新候选全部失败后，先前避让账号仍作为最后兜底重新进入候选。正式请求热路径不执行额外同步探针，手动诊断和后台复测仍保留 `10s -> 20s -> 30s` 探针档位。
 
 ### OpenAI OAuth 额度进度
 

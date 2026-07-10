@@ -97,9 +97,22 @@ interface AccountCapacityLimitFailure {
   message: string
 }
 
+export interface SameAccountRetryBudget {
+  initialAttempts: number
+  remainingAttempts: number
+}
+
 const accountConcurrencyRetryBudgetMs = 1200
 const accountConcurrencyRetryPolicy = exponentialRetryPolicy('gateway_account_concurrency_short_wait', 120, 480)
 const maxAccountApiKeyAttemptsPerAccountPerRequest = 2
+
+export function createSameAccountRetryBudget(maxRetries: number): SameAccountRetryBudget {
+  const attempts = Math.max(0, Math.trunc(maxRetries))
+  return {
+    initialAttempts: attempts,
+    remainingAttempts: attempts
+  }
+}
 
 export async function fetchFirstAvailableUpstream(
   req: Request,
@@ -114,7 +127,8 @@ export async function fetchFirstAvailableUpstream(
   groupSchedulingPolicy?: GroupSchedulingPolicy,
   accountStateMutationEnabled = true,
   requestClientCompatibility?: ClientCompatibilityCapability,
-  modelPriority?: GatewayAccountModelPriority
+  modelPriority?: GatewayAccountModelPriority,
+  sameAccountRetryBudget?: SameAccountRetryBudget
 ): Promise<OpenAIUpstreamDispatchResult> {
   const sameAccountRetryPolicy = fixedRetryPolicy(
     'gateway_temporary_unschedulable_same_account_retry',
@@ -122,6 +136,8 @@ export async function fetchFirstAvailableUpstream(
     settings.temporaryUnschedulableRetryAttempts
   )
   const maxAttemptCount = retryAttemptCount(sameAccountRetryPolicy)
+  const requestSameAccountRetryBudget = sameAccountRetryBudget
+    ?? createSameAccountRetryBudget(maxAttemptCount - 1)
   let lastAttempt: UpstreamAttempt | undefined
   let agentGuidanceResponse: GatewayAgentGuidanceResponse | undefined
   let auditAttemptIndex = 0
@@ -427,12 +443,25 @@ export async function fetchFirstAvailableUpstream(
                   lastAttempt,
                   clientIpAccountAvoidanceTracker,
                   accountStateMutationEnabled,
-                  retrySameAccount: await shouldRetrySameAccountAfterFailure(account, attemptIndex, sameAccountRetryPolicy)
+                  retrySameAccount: await shouldRetrySameAccountAfterFailure(
+                    account,
+                    attemptIndex,
+                    sameAccountRetryPolicy,
+                    requestSameAccountRetryBudget
+                  )
                 })
                 lastAttempt = failedResponseResult.lastAttempt
                 failedAccountIds.add(account.id)
                 if (failedResponseResult.action === 'retry') {
-                  await waitForSameAccountRetry(account, upstreamUrl, attemptIndex, sameAccountRetryPolicy, auditCapture, signal)
+                  await waitForSameAccountRetry(
+                    account,
+                    upstreamUrl,
+                    attemptIndex,
+                    sameAccountRetryPolicy,
+                    requestSameAccountRetryBudget,
+                    auditCapture,
+                    signal
+                  )
                   continue
                 }
                 if (
@@ -490,12 +519,25 @@ export async function fetchFirstAvailableUpstream(
                   error,
                   clientIpAccountAvoidanceTracker,
                   accountStateMutationEnabled,
-                  retrySameAccount: await shouldRetrySameAccountAfterFailure(account, attemptIndex, sameAccountRetryPolicy)
+                  retrySameAccount: await shouldRetrySameAccountAfterFailure(
+                    account,
+                    attemptIndex,
+                    sameAccountRetryPolicy,
+                    requestSameAccountRetryBudget
+                  )
                 })
                 lastAttempt = requestErrorResult.lastAttempt ?? lastAttempt
                 failedAccountIds.add(account.id)
                 if (requestErrorResult.action === 'retry') {
-                  await waitForSameAccountRetry(account, upstreamUrl, attemptIndex, sameAccountRetryPolicy, auditCapture, signal)
+                  await waitForSameAccountRetry(
+                    account,
+                    upstreamUrl,
+                    attemptIndex,
+                    sameAccountRetryPolicy,
+                    requestSameAccountRetryBudget,
+                    auditCapture,
+                    signal
+                  )
                   continue
                 }
                 if (
@@ -825,15 +867,23 @@ function accountRuntimeSourceId(account: UpstreamAccount): string {
 async function shouldRetrySameAccountAfterFailure(
   account: UpstreamAccount,
   attemptIndex: number,
-  sameAccountRetryPolicy: RetryPolicy
+  sameAccountRetryPolicy: RetryPolicy,
+  budget: SameAccountRetryBudget
 ): Promise<boolean> {
   if (account.selectedApiKeyFingerprint && (account.apiKeys?.length ?? 0) > 1) {
+    return false
+  }
+  if (budget.remainingAttempts <= 0) {
     return false
   }
   if (!shouldRetryPolicyAttempt(attemptIndex, sameAccountRetryPolicy)) {
     return false
   }
-  return !(await filterGatewayAccountRuntimeSuppressionsAsync([account])).allSuppressed
+  if ((await filterGatewayAccountRuntimeSuppressionsAsync([account])).allSuppressed) {
+    return false
+  }
+  budget.remainingAttempts -= 1
+  return true
 }
 
 async function orderAccountsForRequestLaneAsync(
@@ -911,11 +961,12 @@ async function waitForSameAccountRetry(
   upstreamUrl: string,
   attemptIndex: number,
   policy: RetryPolicy,
+  budget: SameAccountRetryBudget,
   auditCapture: AuditCaptureContext,
   signal?: AbortSignal
 ): Promise<void> {
   const retryNumber = Math.max(1, Math.trunc(attemptIndex) + 1)
-  const maxRetryCount = Math.max(0, retryAttemptCount(policy) - 1)
+  const requestRetryNumber = budget.initialAttempts - budget.remainingAttempts
   const delayMs = retryDelayMs(policy, retryNumber)
   const safeUpstreamUrl = sanitizeUrlCredentialsForLog(upstreamUrl) ?? upstreamUrl
   getRequestLogger().info({
@@ -924,16 +975,20 @@ async function waitForSameAccountRetry(
     accountName: account.name,
     upstreamUrl: safeUpstreamUrl,
     retryNumber,
-    maxRetryCount,
+    requestRetryNumber,
+    requestRetryBudget: budget.initialAttempts,
+    requestRetryBudgetRemaining: budget.remainingAttempts,
     delayMs
-  }, '上游失败后按临时状态重试配置原地重试当前账号')
+  }, '上游失败后消费请求级共享确认预算，原地重试当前账号')
   auditCapture.addGatewayMetadata({
     label: 'same_account_retry_scheduled',
     metadata: {
       accountId: account.id,
       upstreamUrl: safeUpstreamUrl,
       retryNumber,
-      maxRetryCount,
+      requestRetryNumber,
+      requestRetryBudget: budget.initialAttempts,
+      requestRetryBudgetRemaining: budget.remainingAttempts,
       delayMs
     }
   })

@@ -1,4 +1,5 @@
 import type { Response } from 'express'
+import type { OpenAIGatewayDownstreamProtocol } from '../client-profiles/strategy.js'
 
 export interface GatewayErrorPayload {
   [key: string]: unknown
@@ -77,7 +78,10 @@ export function sendGatewayErrorResponse(
   res: Response,
   statusCode: number,
   payload: GatewayErrorPayload,
-  options: { protocol?: GatewayErrorProtocol } = {}
+  options: {
+    protocol?: GatewayErrorProtocol
+    downstreamProtocol?: OpenAIGatewayDownstreamProtocol
+  } = {}
 ): void {
   if (res.writableEnded || res.destroyed) {
     return
@@ -92,7 +96,8 @@ export function sendGatewayErrorResponse(
       res,
       payload.error.message,
       payload.error.code,
-      options.protocol
+      options.protocol,
+      options.downstreamProtocol
     )
     if (failureEvent) {
       res.write(failureEvent)
@@ -160,23 +165,27 @@ export function writeGatewayStreamFailureEvent(
   res: Response,
   message: string,
   code?: string,
-  protocol: GatewayErrorProtocol = 'openai'
+  protocol: GatewayErrorProtocol = 'openai',
+  downstreamProtocol?: OpenAIGatewayDownstreamProtocol
 ): Buffer | undefined {
-  return buildGatewayStreamFailureEventForProtocol(message, code, protocol)
+  return buildGatewayStreamFailureEventForProtocol(message, code, protocol, downstreamProtocol)
 }
 
 export function buildGatewayStreamFailureEventForProtocol(
   message: string,
   code?: string,
-  protocol: GatewayErrorProtocol = 'openai'
-): Buffer {
+  protocol: GatewayErrorProtocol = 'openai',
+  downstreamProtocol?: OpenAIGatewayDownstreamProtocol
+): Buffer | undefined {
   if (protocol === 'anthropic') {
-    return buildAnthropicGatewayStreamFailureEvent(gatewayErrorPayload(message, 'api_error', code))
+    return buildAnthropicGatewayStreamFailureEvent(gatewayErrorPayload(message, 'service_unavailable', code))
   }
   if (protocol === 'gemini') {
-    return buildGeminiGatewayStreamFailureEvent(gatewayErrorPayload(message, 'api_error', code))
+    return buildGeminiGatewayStreamFailureEvent(gatewayErrorPayload(message, 'service_unavailable', code))
   }
-  return buildGatewayStreamFailureEvent(message, code)
+  return downstreamProtocol === 'responses_sse'
+    ? buildGatewayStreamFailureEvent(message, code)
+    : undefined
 }
 
 export function buildGatewayStreamFailureEvent(message: string, code = gatewayStreamFailureCode(message)): Buffer {
@@ -203,17 +212,8 @@ export function buildGeminiGatewayStreamFailureEvent(payload: GatewayErrorPayloa
   return Buffer.from(`event: error\ndata: ${JSON.stringify(errorPayload)}\n\n`, 'utf8')
 }
 
-export function gatewayStreamFailureCode(message: string): string {
-  const normalized = message.toLowerCase()
-  return normalized.includes('idle timeout')
-    || normalized.includes('timeout')
-    || message.includes('超时')
-    || message.includes('无数据')
-    || message.includes('未返回首段数据')
-    || message.includes('未返回任何新数据')
-    || message.includes('未返回新的有效输出')
-    ? 'upstream_stream_idle_timeout'
-    : 'upstream_stream_interrupted'
+export function gatewayStreamFailureCode(_message: string): string {
+  return 'upstream_stream_interrupted'
 }
 
 function anthropicGatewayErrorType(payload: GatewayErrorPayload): string {
@@ -221,7 +221,7 @@ function anthropicGatewayErrorType(payload: GatewayErrorPayload): string {
   const code = payload.error.code
   if (type === 'rate_limit_exceeded') return 'rate_limit_error'
   if (type === 'invalid_request_error') return 'invalid_request_error'
-  if (type === 'server_overloaded' || code === 'server_overloaded') return 'overloaded_error'
+  if (type === 'server_overloaded' || type === 'service_unavailable' || code === 'server_overloaded') return 'overloaded_error'
   if (type === 'authentication_error') return 'authentication_error'
   if (type === 'permission_error') return 'permission_error'
   if (type === 'not_found_error') return 'not_found_error'

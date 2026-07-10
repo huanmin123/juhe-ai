@@ -105,7 +105,6 @@ import {
   preCommitStreamServerRetryErrorCode,
   shouldExcludeCurrentAccountForStreamServerRetry,
   shouldRememberCodexTurnStreamFailure,
-  shouldRetryCodexPreCommitStreamFailureOnServer,
   shouldRetryPreCommitStreamFailureOnServer,
   shouldRetryResponseInspectionOnServer,
   type StreamServerRetryReason
@@ -260,7 +259,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       (message, errorCode, context) => handleStreamFailure(account, message, settings, errorCode, context, usageContext, shouldMutateAccountForStreamFailure(errorCode, context)),
       signal,
       {
-        clientRetryEnabled: clientStrategy?.allowCodexStreamClientRetry === true,
+        clientRetryEnabled: clientStrategy?.retryCoordination.committedFailureSignal === 'protocol_error_event',
         retryBeforeDownstreamWriteUntilOutput: true,
         onFirstOutput: markFirstOutput,
         captureSuccessPayloads: auditCapture.shouldCaptureSuccessPayloads(),
@@ -276,6 +275,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
           accountClientCompatibility: account.clientCompatibility,
           codexCompactionExpected: clientStrategy?.codexCompactionExpected
         },
+        downstreamProtocol: clientStrategy?.downstreamProtocol,
         responseProtocol,
         endpointFamily: responseEndpointFamily,
         prepareDownstream: () => prepareUpstreamResponseForDownstream(res, upstreamResponse, true)
@@ -425,27 +425,6 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
         uncommittedResponseBody: streamResult.uncommittedResponseBody
       }
     }
-    if (shouldRetryCodexPreCommitStreamFailureOnServer(streamResult, clientStrategy, res)) {
-      auditCapture.addGatewayMetadata({
-        label: 'codex_pre_commit_stream_server_retry',
-        metadata: {
-          errorCode: streamResult.errorCode,
-          message: streamResult.message,
-          downstreamBytesWritten: streamResult.downstreamBytesWritten,
-          outputReceived: streamResult.outputReceived,
-          accountId: account.id
-        }
-      })
-      return {
-        alreadyFinalized: false,
-        retryUpstream: true,
-        retryReason: 'codex_pre_commit_stream_failure',
-        excludeCurrentAccount: true,
-        message: streamResult.message,
-        errorCode: streamResult.errorCode,
-        uncommittedResponseBody: streamResult.uncommittedResponseBody
-      }
-    }
     if (shouldRetryPreCommitStreamFailureOnServer(streamResult, res)) {
       const clientFacingErrorCode = preCommitStreamServerRetryErrorCode(streamResult, clientStrategy)
       auditCapture.addGatewayMetadata({
@@ -491,7 +470,8 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       res,
       upstreamResponse,
       streamResult,
-      clientErrorProtocol
+      clientErrorProtocol,
+      clientStrategy
     )
     const clientIpAvoidanceResult = await confirmClientIpAccountAvoidanceAfterFinalFailureAsync(
       clientIpAccountAvoidanceTracker,
@@ -545,7 +525,8 @@ function writePreCommitStreamFailureToClient(
   res: Response,
   upstreamResponse: GatewayUpstreamResponse,
   streamResult: GatewayStreamPipeResult,
-  protocol: GatewayErrorProtocol
+  protocol: GatewayErrorProtocol,
+  clientStrategy: OpenAIGatewayClientStrategyContext | undefined
 ): Buffer | undefined {
   if (
     streamResult.downstreamBytesWritten !== 0
@@ -558,7 +539,13 @@ function writePreCommitStreamFailureToClient(
   if (!res.headersSent) {
     prepareUpstreamResponseForDownstream(res, upstreamResponse, true)
   }
-  const failureEvent = writeGatewayStreamFailureEvent(res, streamResult.message, streamResult.errorCode, protocol)
+  const failureEvent = writeGatewayStreamFailureEvent(
+    res,
+    streamResult.message,
+    streamResult.errorCode,
+    protocol,
+    clientStrategy?.downstreamProtocol
+  )
   const chunks = [
     streamResult.uncommittedResponseBody,
     failureEvent

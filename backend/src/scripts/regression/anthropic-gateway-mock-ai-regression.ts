@@ -483,16 +483,42 @@ async function assertAnthropicSseRetryExhaustedErrorShape(baseUrl: string, upstr
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 200, `Anthropic SSE 重试耗尽应以 SSE 错误事件返回，实际 HTTP ${response.status}: ${text}`)
-  assert.match(response.headers.get('content-type') ?? '', /text\/event-stream/, 'Anthropic SSE 重试耗尽应保持 text/event-stream')
-  assert.match(text, /^event: error$/m, `Anthropic SSE 失败尾包应使用 event: error：${text}`)
-  assert.equal(text.includes('event: response.failed'), false, 'Anthropic SSE 失败尾包不应使用 OpenAI response.failed 事件')
-  const errorData = text.split(/\r?\n/).find((line) => line.startsWith('data:'))?.slice(5).trim()
-  assert(errorData, `Anthropic SSE 失败尾包应包含 data：${text}`)
+  assert.equal(response.status, 503, `通用 Anthropic 客户端未提交下游时应收到 HTTP 503，实际 HTTP ${response.status}: ${text}`)
+  assert.match(response.headers.get('content-type') ?? '', /application\/json/, '通用 Anthropic 客户端应收到协议 JSON 错误')
+  const genericPayload = JSON.parse(text) as { type?: string; error?: { type?: string; message?: string; code?: string } }
+  assert.equal(genericPayload.type, 'error', '通用 Anthropic HTTP 错误顶层 type 应为 error')
+  assert.equal(genericPayload.error?.type, 'overloaded_error', '通用 Anthropic HTTP 503 应映射为 overloaded_error')
+  assert.equal(genericPayload.error?.code, 'upstream_retryable_error', '通用 Anthropic HTTP 503 应返回网关稳定可重试码')
+  assert.equal(text.includes('event: response.failed'), false, '通用 Anthropic HTTP 错误不应使用 OpenAI response.failed 事件')
+
+  accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
+  gatewayCache.clearGatewayRuntimeCache()
+  const claudeCodeResponse = await fetch(`${baseUrl}/v1/messages`, {
+    method: 'POST',
+    headers: {
+      'x-api-key': apiKey.key,
+      'content-type': 'application/json',
+      [gatewayClientProfileHeader]: 'claude_code'
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5',
+      messages: [{ role: 'user', content: 'trigger empty anthropic sse for claude code' }],
+      max_tokens: 8,
+      stream: true
+    })
+  })
+  const claudeCodeText = await claudeCodeResponse.text()
+  assert.equal(claudeCodeResponse.status, 200, `Claude Code SSE 重试耗尽应以协议错误事件返回，实际 HTTP ${claudeCodeResponse.status}: ${claudeCodeText}`)
+  assert.match(claudeCodeResponse.headers.get('content-type') ?? '', /text\/event-stream/, 'Claude Code SSE 重试耗尽应保持 text/event-stream')
+  assert.match(claudeCodeText, /^event: error$/m, `Claude Code SSE 失败尾包应使用 event: error：${claudeCodeText}`)
+  assert.equal(claudeCodeText.includes('event: response.failed'), false, 'Claude Code SSE 失败尾包不应使用 OpenAI response.failed 事件')
+  const errorData = claudeCodeText.split(/\r?\n/).find((line) => line.startsWith('data:'))?.slice(5).trim()
+  assert(errorData, `Claude Code SSE 失败尾包应包含 data：${claudeCodeText}`)
   const payload = JSON.parse(errorData) as { type?: string; error?: { type?: string; message?: string; code?: string } }
-  assert.equal(payload.type, 'error', 'Anthropic SSE 失败尾包顶层 type 应为 error')
-  assert.equal(payload.error?.type, 'api_error', 'Anthropic SSE 失败尾包 error.type 应为 api_error')
-  assert(payload.error?.message, 'Anthropic SSE 失败尾包应包含错误消息')
+  assert.equal(payload.type, 'error', 'Claude Code SSE 失败尾包顶层 type 应为 error')
+  assert.equal(payload.error?.type, 'overloaded_error', 'Claude Code SSE 失败尾包 error.type 应为 overloaded_error')
+  assert.equal(payload.error?.code, 'upstream_retryable_error', 'Claude Code SSE 失败尾包应返回网关稳定可重试码')
+  assert(payload.error?.message, 'Claude Code SSE 失败尾包应包含错误消息')
   assert(upstreamHits.some((hit) => hit.xApiKey === 'sk-ant-empty-sse'), 'Anthropic SSE 重试耗尽应命中提前结束 mock 上游')
 }
 
@@ -799,8 +825,9 @@ async function assertAnthropicEmptyJsonContentReturnsProtocolError(baseUrl: stri
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 502, `Anthropic empty content 应转成协议错误，实际 HTTP ${response.status}: ${text}`)
-  assert.match(text, /upstream_protocol_error/, 'Anthropic empty content 协议错误应带 upstream_protocol_error')
+  assert.equal(response.status, 503, `Anthropic empty content 且服务端候选耗尽时应返回可重试 HTTP 503，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /upstream_retryable_error/, 'Anthropic empty content 最终失败应返回网关稳定可重试码')
+  assert.doesNotMatch(text, /upstream_protocol_error/, '通用 Anthropic 客户端不应收到内部上游协议分类')
   assert.doesNotMatch(text, /"content"\s*:\s*\[\]/, '网关不应把上游 content:[] 原样暴露给下游客户端')
   assert.equal(upstreamHits.length, 1, 'Anthropic empty content 协议守卫应命中一次 mock 上游')
   assertAnthropicUpstreamHit(upstreamHits[0], {

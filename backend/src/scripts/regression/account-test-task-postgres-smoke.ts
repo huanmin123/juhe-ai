@@ -6,6 +6,7 @@ import { runtimeConfig } from '../../config/runtime.js'
 import {
   accountTestTaskCancelMessageAsync,
   cancelAccountTestSessionAsync,
+  completeAccountTestSessionAsync,
   createAccountTestSessionAsync,
   createAccountTestTaskAsync,
   getAccountTestTaskRecordAsync,
@@ -79,6 +80,8 @@ try {
   const completed = await completeAccountTestTaskAsync(task.id, result)
   assert.equal(completed?.status, 'success', 'PG account test task should complete')
   assert.equal((await getAccountTestTaskRecordAsync(task.id))?.result?.success, true, 'PG completed task result should be readable')
+  const completedSession = await completeAccountTestSessionAsync(session.id, access)
+  assert.equal(completedSession?.status, 'completed', 'PG settled account test session should complete')
 
   const cancelSession = await createAccountTestSessionAsync(access)
   sessionIds.push(cancelSession.id)

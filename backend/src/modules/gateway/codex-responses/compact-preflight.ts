@@ -22,7 +22,10 @@ import { setGatewayModelMappingSourceEndpointFamilyOverride } from '../protocols
 import { gatewayErrorPayload } from '../response/responses.js'
 import { sendGatewayFailureResponse } from '../response/failure-response.js'
 import type { GatewayFailureUsageContext } from '../usage/records.js'
-import { fetchFirstAvailableUpstream } from '../dispatch/upstream-dispatch.js'
+import {
+  fetchFirstAvailableUpstream,
+  type SameAccountRetryBudget
+} from '../dispatch/upstream-dispatch.js'
 import { readUpstreamBodyLimited } from '../upstream/body.js'
 import { resolveGatewayUsageModel } from '../../providers/drivers/registry.js'
 import {
@@ -50,6 +53,7 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
   modelPriority: GatewayAccountModelPriority
   requestLane: OpenAIGatewayRequestLane
   groupSchedulingPolicy?: GroupSchedulingPolicy
+  sameAccountRetryBudget: SameAccountRetryBudget
   signal?: AbortSignal
 }): Promise<'continued' | 'completed'> {
   if (!isChatOnlyCodexResponsesCompactRequest(input.req, input.requestClientCompatibility, input.dispatchAccounts)) {
@@ -93,7 +97,8 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
       input.groupSchedulingPolicy,
       true,
       input.requestClientCompatibility,
-      input.modelPriority
+      input.modelPriority,
+      input.sameAccountRetryBudget
     )
     const readResult = await readUpstreamBodyLimited(upstreamResult.response.body, {
       maxBytes: 1024 * 1024,
